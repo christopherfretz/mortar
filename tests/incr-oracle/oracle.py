@@ -723,12 +723,18 @@ def unfield(t):
     return out.decode('utf-8', 'surrogateescape')
 
 
+# The reasons after which the dry run runs (spec/incr.md IN-10a): a state
+# an update could start from.
+DRY_RUN_REASONS = (None, 'update-not-implemented', 'small-output')
+
+
 class Report:
     """The dry run's lines that make a prediction."""
     def __init__(self, path):
         self.units, self.holes, self.chunks, self.fallbacks, self.files = [], [], [], [], []
         self.policy = None
         self.ended = False
+        self.elided = []
         self.reason = None
         for line in open(path):
             t = line.split()
@@ -749,6 +755,8 @@ class Report:
                 self.files.append((t[2], unfield(t[3]), unfield(t[4]) or None))
             elif t[1] == 'policy':
                 self.policy = t[2]
+            elif t[1] == 'elided':  # kind listed=N total=N (WP-106's bound)
+                self.elided.append(' '.join(t[2:]))
             elif t[1] == 'end':
                 self.ended = True
 
@@ -884,9 +892,13 @@ def ukey(u):
 def judge(F, R, drop, quiet=True):
     """IN-63a: the prediction covers every difference. Returns (ok,
     predicted units of unchanged files, lines)."""
-    if R.reason not in (None, 'update-not-implemented'):
+    if R.reason not in DRY_RUN_REASONS:
         # the state check sent the link to a full link before any delta
         return True, None, ['full link (%s) before the dry run' % R.reason]
+    if R.elided:
+        # the report's bound (REPORT_BOUND per kind) left lines out: the
+        # prediction is not all there, so it cannot be judged
+        return False, None, ['the report elided lines (%s): raise the bound or shrink the scenario' % '; '.join(R.elided)]
     units, holes, chunks, fb = R.view(drop)
     out = []
     unch_keys = {ukey(u) for u in F.unch_units}
@@ -951,7 +963,7 @@ def main():
         drops = [set()]
     F = Facts(pos[0], pos[1])
     R = Report(pos[2])
-    if not R.ended and R.reason == 'update-not-implemented':
+    if not R.ended and R.reason in DRY_RUN_REASONS[1:]:
         print('RESULT FAIL  (the report has no `delta end`)')
         sys.exit(1)
     fail = False

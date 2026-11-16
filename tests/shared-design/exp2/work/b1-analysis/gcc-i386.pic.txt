@@ -1,0 +1,9 @@
+gcc-i386.pic objects 50
+gcc-i386.pic use	i386	ABS	NONALLOC	FUNC	inside	section	915
+gcc-i386.pic use	i386	ABS	NONALLOC	FUNC	start	section	301
+gcc-i386.pic use	i386	GOTOFF	DATA	FUNC	inside	named-local	104
+gcc-i386.pic use	i386	PC	EH	FUNC	start	section	254
+gcc-i386.pic overapprox-objects 3
+gcc-i386.pic overapprox-objects-with-unnamed-def 3
+gcc-i386.pic objects-with-data-hit 0
+gcc-i386.pic RULE-objects-refused 0

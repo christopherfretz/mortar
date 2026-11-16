@@ -1,0 +1,14 @@
+sysrt-a64 objects 1635
+sysrt-a64 use	a64	ABS	NONALLOC	FUNC	inside	section	6
+sysrt-a64 use	a64	BRANCH	CODE	FUNC	start	section	2
+sysrt-a64 use	a64	LO12	CODE	DATA	start	section	2
+sysrt-a64 use	a64	LO12	CODE	FUNC	start	section	9
+sysrt-a64 use	a64	PC	CODE	DATA	start	section	2
+sysrt-a64 use	a64	PC	CODE	FUNC	start	section	9
+sysrt-a64 use	a64	PC	EH	FUNC	start	section	7914
+sysrt-a64 use	a64	RULE	LO12	CODE	start	section	2
+sysrt-a64 use	a64	RULE	PC	CODE	start	section	2
+sysrt-a64 overapprox-objects 1
+sysrt-a64 overapprox-objects-with-unnamed-def 0
+sysrt-a64 objects-with-data-hit 1
+sysrt-a64 RULE-objects-refused 1

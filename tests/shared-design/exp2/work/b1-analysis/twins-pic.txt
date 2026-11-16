@@ -1,0 +1,8 @@
+twins-pic objects 35
+twins-pic use	a64	ABS	NONALLOC	FUNC	inside	section	285
+twins-pic use	a64	ABS	NONALLOC	FUNC	start	section	137
+twins-pic use	a64	PC	EH	FUNC	start	section	149
+twins-pic overapprox-objects 0
+twins-pic overapprox-objects-with-unnamed-def 0
+twins-pic objects-with-data-hit 0
+twins-pic RULE-objects-refused 0

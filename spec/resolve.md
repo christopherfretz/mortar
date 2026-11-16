@@ -762,8 +762,12 @@ cases.
 
 The roots of liveness (`spec/live.md`, M2): the sections defining `def` of
 every key rooted in §4.2 (`-u` included: GNU ld keeps a `-u` symbol's
-section); the entry; every key exported to `.dynsym` (§9.6); every section
-of `SHF_GNU_RETAIN`; `KEEP` (assignment's). `def` itself is the same with
+section); the entry; every key exported to `.dynsym` (§9.6; in a shared
+object after the version script, so a version-local definition is not a
+root, `spec/dyn.md` D-124 item 1); the keys named by `-init` and `-fini`,
+in every output kind, even when hidden (D-124 item 2: GNU ld and lld
+keep them; mold collects a hidden `-init` function, W22) [M4; planned:
+WP-117]; every section of `SHF_GNU_RETAIN`; `KEEP` (assignment's). `def` itself is the same with
 and without `--gc-sections`: extraction is decided before liveness, so a
 member whose sections are later collected still settled its keys (all
 three: a collected member's definition still collides with a later one,
@@ -827,9 +831,10 @@ From the output kind and the options (`spec/cli.md` §3.9, §3.7):
 | … under `--unresolved-symbols=ignore-all` or `=ignore-in-object-files` | nothing (the value is zero, as weak) |
 | … `--unresolved-symbols=ignore-in-shared-libs` | still the error for references from objects |
 | `--ignore-unresolved-symbol=SYM` | nothing for `SYM` (M1) |
-| `Undefined{weak: false}` in a shared object (M4) | nothing, unless `-z defs` / `--no-undefined`: then the error |
+| `Undefined{weak: false}` in a shared object (M4; planned: WP-117) | nothing: the key is left to the loader, an undefined `STB_GLOBAL STT_NOTYPE` `.dynsym` entry reached through records naming it (target kind `Shlib{func: false}`, `spec/dyn.md` D-111 item 2, D-113, D-118). Under `-z defs` / `--no-undefined`: the error, per key as above, and a definition only in an indirect dependency (a shared object not on the command line, reached through `DT_NEEDED`) does not satisfy it (all three, D-118). A reference only from a section `--gc-sections` collected does not survive (§5.1) |
+| a versioned reference `vf@VA` (`.symver`) in any output kind (M4; planned: WP-117) | needs a shared input that defines `vf` at `VA`, with or without `-z defs`; otherwise `undefined-symbol` naming the version (GNU ld and lld; mold links it unversioned and drops `DT_NEEDED`, W42; D-118) |
 | a hidden key (§3.5) not defined in an object or file 0, with a surviving reference | error, whatever the options above say (it cannot be satisfied at run time); weak hidden: zero |
-| undefined references **of shared objects** (M2) | `spec/dyn.md` D-13 (GNU ld's rule, which replaces the exemption this row gave before): an executable checks them by default (`--no-allow-shlib-undefined`; GNU ld and lld, E20; mold does not check, §16); every strong undefined mention of every needed or used shared object (N ∪ U) is judged, and is satisfied by a non-hidden program definition or a visible definition of a member of N ∪ U at the version it requires; otherwise it is the error, unless `--allow-shlib-undefined`. A shared object whose `DT_NEEDED` library is not found is **not** exempt: the references only that library would satisfy are undefined (GNU ld; lld exempts such an object). These have no relocation in the link; resolution emits them (phase 30, unit = the shared object's `FileId`, seq = the `.dynsym` index) |
+| undefined references **of shared objects** (M2) | `spec/dyn.md` D-13 (GNU ld's rule, which replaces the exemption this row gave before): an executable checks them by default (`--no-allow-shlib-undefined`; GNU ld and lld, E20; mold does not check, §16); every strong undefined mention of every needed or used shared object (N ∪ U) is judged, and is satisfied by a non-hidden program definition or a visible definition of a member of N ∪ U at the version it requires; otherwise it is the error, unless `--allow-shlib-undefined`. In a shared object (M4; planned: WP-117) `--allow-shlib-undefined` is the default (GNU ld and lld) and `--no-allow-shlib-undefined` turns D-13's check on (D-118). A shared object whose `DT_NEEDED` library is not found is **not** exempt: the references only that library would satisfy are undefined (GNU ld; lld exempts such an object). These have no relocation in the link; resolution emits them (phase 30, unit = the shared object's `FileId`, seq = the `.dynsym` index) |
 
 `--warn-unresolved-symbols` makes the error a warning; `--error-unresolved-
 symbols` undoes it; the last one wins.
@@ -1259,7 +1264,11 @@ lookup matters for user objects built with `.symver`. In shared-object output (M
 with version `V` and `foo@V` exports a hidden `foo@V`; `V` must be a
 version node of the version script, else the error
 `undefined-version` (GNU ld: ``version node not found for symbol
-foo@V``; not verified here).
+foo@V``; lld ``symbol foo@V1 has undefined version V1``; mold ``symbol
+foo has undefined version V1``: all three refuse, with or without a
+script, WP-110 E-shared-export F2; `spec/dyn.md` D-114). Whether a
+non-default `foo@V` is hidden by its own node's `local:` is §9.7 rule
+12.
 
 ### 9.5 `--as-needed` and `DT_NEEDED`
 
@@ -1303,19 +1312,40 @@ What resolution marks for `.dynsym` (M2 executables; M4 shared output):
   (§8: `__bss_start`, `_edata`, `_end`, …) is exported only when
   `ref_dynamic`, never by `--export-dynamic` or a glob alone
   (`spec/dyn.md` D-21 item 2; lld and mold; GNU ld exports them).
-- **Exported from a shared object** (M4): every defined key of default or
-  protected visibility not made local by a version script (§9.7), by
-  `--exclude-libs` (defined by a member of a named archive, or every
-  archive for `ALL`), or by `-Bsymbolic` variants' export rules (they do
-  not change export, only preemption).
+- **Exported from a shared object** (M4; the normative rule is
+  `spec/dyn.md` D-110): every key defined by a live relocatable object,
+  of default or protected visibility, weak, vague-linkage and
+  `STB_GNU_UNIQUE` ones included, not made local by a version script
+  (§9.7) or by `--exclude-libs` (defined by a member of a named archive,
+  or of every archive for `ALL`). A linker-defined key of file 0 is
+  exported only when `ref_dynamic`, as from an executable (no reference
+  exports `_end`, `_edata`, `__bss_start` from a shared object, WP-110),
+  except `__start_NAME`/`__stop_NAME` of a kept C-identifier section,
+  exported `STV_PROTECTED` (GNU ld and lld; `spec/dyn.md` D-110 item 2). `--export-dynamic`,
+  `--export-dynamic-symbol` and the `-Bsymbolic` variants change nothing
+  in the export set; `--dynamic-list` changes preemption only.
 - **Preemptible** (M2 for executables: a definition in the executable is
-  never preemptible; a `Shared` def always is): in a shared object (M4), a
-  defined default-visibility key is preemptible unless `-Bsymbolic`,
-  `-Bsymbolic-functions` (for `STT_FUNC`), `-Bsymbolic-non-weak-functions`
-  (lld: non-weak `STT_FUNC`) or `-Bsymbolic-non-weak` applies, or it is
-  version-local, or `--dynamic-list` is given and does not list it
-  (`--dynamic-list` keeps the listed symbols preemptible under
-  `-Bsymbolic`). `STV_PROTECTED` is never preemptible.
+  never preemptible; a `Shared` def always is): in a shared object (M4;
+  the normative rule is `spec/dyn.md` D-112's table, measured under
+  `LD_PRELOAD` on AArch64 and x86-64), an exported definition is
+  preemptible unless it is `STV_PROTECTED`, version-local, or bound by
+  the line: `-Bsymbolic` binds every key; `-Bsymbolic-functions` every
+  `STT_FUNC` key, weak ones too (not `STT_NOTYPE`, `STT_GNU_IFUNC`,
+  data, `STT_TLS`: lld; GNU ld also binds `STT_NOTYPE`);
+  `--dynamic-list` binds every key it does not list, of every type
+  (lld; GNU ld keeps `STT_TLS` and `STT_GNU_IFUNC` keys preemptible), and
+  then decides alone: a `-Bsymbolic` form given with it, in either order,
+  changes nothing (GNU ld). Without a list, the last of `-Bsymbolic`,
+  `-Bsymbolic-functions` and `-Bno-symbolic` wins. `--dynamic-list-data`,
+  `--dynamic-list-cpp-new`, `--dynamic-list-cpp-typeinfo`,
+  `-Bsymbolic-non-weak-functions` and `-Bsymbolic-non-weak` are refused
+  by name. A definition of the output that a needed shared input also
+  defines is `def` (the object's definition wins, a weak one over a
+  shared strong one) and stays preemptible. A data definition that a
+  non-PIC use binds inside the library is refused, not made
+  non-preemptible (`spec/dyn.md` D-117, `non-pic-in-shared-object`).
+  Resolution stores the result per key (`preemptible`, `spec/dyn.md`
+  D-113).
 - **Copy relocations and canonical PLTs** are demands of the scan
   (`spec/model.md` §3.7). Resolution gives the scan, for a `Shared`
   definition: the aliases (§7.3); the **alignment** of the copy,
@@ -1329,48 +1359,170 @@ What resolution marks for `.dynsym` (M2 executables; M4 shared output):
   vtables in `.data.rel.ro`) (all three then put the copy
   in RELRO: GNU ld `.data.rel.ro`, lld `.bss.rel.ro`, mold
   `.copyrel.rel.ro`, E17); and its size `st_size`. A copy relocation
-  against an `STV_PROTECTED` definition is an error of the scan (not
-  verified; `spec/arch.md`).
+  against an `STV_PROTECTED` definition is an error of the scan
+  (`spec/dyn.md` D-18; all three refuse it, WP-110 `exp2/escape`). A copy
+  of a definition its library binds locally (`DF_SYMBOLIC`, protected,
+  or a `NONPREEMPTIBLE` row) is refused when the definition is writable
+  by the test above (a `PF_W` `PT_LOAD`, outside `PT_GNU_RELRO`) and
+  warned otherwise (`spec/dyn.md` D-43 as amended by request R-D43 of
+  its §18.4).
 
 ### 9.7 Version scripts (M4; executables too)
 
-Parsed by `spec/script.md`. Applied to each key defined by a live object,
-by its name before `@` (versioned names `foo@V` from `.symver` are not
-matched: they carry their version). The rule, measured (E16), all three
-agreeing except where noted:
+Parsed by `spec/script.md` §9. Applied to each key defined by a live
+object, by its name before `@` (versioned names `foo@V` from `.symver`
+carry their version and are matched only by rule 12, whether `foo@V`
+or `foo@@V`). Restated by WP-110's third pass from two executable
+models written from this text, the author's (`model_a.py`) and the
+re-reviewer's (`model_r.py`), over the union of every script measured
+(`tests/shared-design/exp3/vs3/`: 213 scripts, 2,249 (script, name)
+rows: the second pass's 53 scripts × 3 names `foo`, `_Z3fooi` =
+`foo(int)`, `_ZN2ns3fooEv` = `ns::foo()`; the re-review's 60; 43 glob
+patterns over 22 odd names; 17 duplicate cases; 40 `.symver` cases
+with and without `--export-dynamic`; reference answers from GNU ld 2.44,
+`gnuref.py`). Result line (`compare.out`): `cases 213 model-runs 852
+A/mortar=8 R/mortar=8`: with rule 8 read as GNU ld does (a syntax
+error) both models equal GNU ld on all 213 scripts; in mortar's mode
+both differ from GNU ld on exactly the 8 scripts that put `local:`
+before `global:` (rule 8, the deliberate difference: A-S8, A-L1, A-L2,
+A-E6, R-r11, R-r32, R-r47, R-s10), and on nothing else.
 
-1. A pattern without wildcards (in any node, `global:` or `local:`)
-   matches before any wildcard pattern: `V1 { global: f*; }; V2 { global:
-   foo; };` puts `foo` in `V2`.
-2. Among wildcard patterns, the **last node** that matches wins: `V1 {
-   global: foo*; }; V2 { global: fo*; };` puts `foo` in `V2`; so does the
-   reverse order with `foo*` in `V2`.
-3. Inside one node, a `global:` match wins over a `local:` match of the
-   same kind: `{ global: fo*; local: foo*; }` keeps `foo` global.
-4. `local: *` (or any wildcard local) in a later node does not override an
-   exact global; an exact `local:` overrides any wildcard `global:` (E16:
-   `{ global: *; }; V2 { local: foo; };` hides `foo`).
-5. An exact name in two nodes: GNU ld and lld keep the **first** (lld
-   warns `attempt to reassign symbol 'foo' of version 'V1' to version
-   'V2'`), mold the last. mortar: the first, with the warning
-   `version-reassigned`.
-6. `extern "C++" { "baz()"; }` and `extern "C++" { baz*; }` match the
-   demangled name (all three, E16; demangling is `spec/diag.md` §9's
-   later demangler, which this needs).
+**Entries.** An entry is a pattern under `global:` or `local:` of a
+node, in a language: plain (and `extern "C"`) entries are compared with
+the symbol's name, `extern "C++"` entries with its demangled name (the
+name itself when it does not demangle; `ns::*` matches `ns::foo()`).
+An entry is **exact** when it is quoted, or unquoted without an
+unescaped `*`, `?` or `[` (a `\` followed by a character escapes it);
+any other entry is a **glob**; the glob that is `*` alone is the
+**star**. An exact entry's **name**: a quoted entry's text between the
+quotes, verbatim (no escapes are processed: `"foo\\"` names `foo\\`); an
+unquoted entry's text with every `\c` pair replaced by `c` (`fo\o` names
+`foo`, `fo\*` names `fo*`), a final lone `\` kept (`foo\` names
+`foo\`). A quoted entry is exact even when it holds `*` (`"foo*"`
+matches only the name `foo*`; GNU ld; lld and mold treat it as a glob,
+and keep the `\` of `fo\o`).
+
+A glob matches a subject when the whole subject matches it as
+`fnmatch(3)` without flags matches (GNU ld; `exp3/vs3/globs.py`, 43
+patterns × 22 names): `*` matches any string, the empty one and `.`
+included; `?` one character; `\c` the character `c`; a glob whose last
+character is a lone `\` matches nothing; `[` opens a class closed by
+the next `]`: a first `!` or `^` negates it, then a first `]` is a
+member (`[]o]`, `[!]]`), `a-b` is the range of characters from `a` to
+`b` (empty when `a` > `b`: `f[o-a]?` matches nothing), a `-` first or
+last is itself, `\c` inside is `c`; a `[` with no closing `]` is the
+character `[` (`[oo` matches `[oo`; `f[o` matches only `f[o`). lld and
+mold refuse an unterminated `[` and a glob ending in `\`, lld matches
+nothing with `[!]]`, mold reads a first `!` as a member (17.6 of
+`spec/dyn.md`).
+
+**Refused before matching** (`duplicate-version-pattern`, an error
+naming the entry and both nodes; GNU ld: ``duplicate expression `foo'
+in version information``): the same entry under `global:` in one node
+and under `local:` in another node, either order. Two entries are the
+**same** when they are in the same language and either both are exact
+with equal names (`foo`, `"foo"` and `fo\o` are one; `"fo*"` and
+`fo\*` are one) or both are globs with identical text (`fo*` and
+`fo*`; `*` and `*`; not `fo*` and `fo**`, not `f[o]o` and `foo`). A glob
+and an exact entry are never the same (`global: fo*` with `local:
+"fo*"` is accepted). Measured, `exp3/vs3/dups.py` d01-d17. lld and mold
+accept these with differing answers (17.6). The same entry twice in one
+node, under `global:` in two nodes, under `local:` in two nodes, or
+under `global:` and `local:` of one node, is not an error (the
+`global:` one counts); entries in different languages are never the
+same (`extern "C++" { foo; }` and `foo`).
+
+**The decision** for a name: scan the nodes in script order and, in
+each node, its `global:` entries before its `local:` entries:
+
+1. an **exact** `global:` match in node N: version N, stop (two nodes
+   with the same exact `global:` name: the first, with the warning
+   `version-reassigned`; GNU ld silent, lld warns, mold the last);
+2. an **exact** `local:` match: local, stop;
+3. otherwise remember, each time it matches (a later node replaces an
+   earlier one): G = the node of a glob `global:` match, L = a glob
+   `local:` match, G* = the node of a star `global:` match, L* = a star
+   `local:` match.
+
+After the scan: G if set; else local if L is set; else G* if set; else
+local if L* is set; else the base version (rule 7). So exact names
+first; then non-star globs, where a `global:` glob match in any node
+beats a `local:` glob match in any node and, among `global:` glob
+matches, the last node wins; then `*` (`global: *` in the last such
+node, over `local: *`). Examples, all
+three references agreeing unless noted: `V1 { global: f*; }; V2 {
+global: foo; };` puts `foo` in V2 (exact first); `V1 { global: foo*;
+}; V2 { global: *; };` V1 (star last); `V1 { global: *; local: foo*;
+};` local; `V1 { global: *o*; }; V2 { local: *; };` V1; `V1 { global:
+f*; }; V2 { global: fo*; }; V3 { global: foo*; };` V3.
+
+**Where the references differ** (mortar is GNU ld, the review's
+ruling): `V1 { global: fo*; }; V2 { local: foo*; };` and `V1 { global:
+fo*; local: *; }; V2 { local: foo*; };` give `foo` V1 under GNU ld and
+mold and local under lld; quoted globs (above); the refusals above.
+mold alone: `V1 { global: *; local: *; };` and `extern "C++" { *; }`
+with `local: *` export nothing (W40); an exact `extern "C++"` entry in
+V1 loses to a glob `_Z*` in V2; two exact `global:` names, the last
+(17.6 of `spec/dyn.md`; anomalies, D-114).
+
+The other rules, unchanged in substance:
+
+6. `extern "C++"` entries need the demangler (`spec/diag.md` §9); until
+   it exists a script with `extern "C++"` is refused by name.
+   `extern "C++" { *; }` in `global:` with `local: *` exports every
+   symbol (GNU ld, lld; mold none, `spec/dyn.md` W40).
 7. A key matched by no pattern keeps the base version (exported
    unversioned).
 8. `local:` before `global:` in one node: GNU ld rejects it as a syntax
-   error, lld and mold accept (E16). `spec/script.md` decides (accepting
-   it costs nothing and loses nothing).
-9. A name in a script that no file defines: an error under
-   `--no-undefined-version` (lld's default since lld 16; GNU ld's default
-   accepts it; not verified here), refused until decided (§17 Q6).
+   error, lld and mold accept. Accepted (`spec/script.md` §9); the
+   decision above still scans `global:` entries first.
+9. A name in a script that no file defines: **accepted, with the
+   warning `version-script-undefined-name`** (§17 Q6's recommendation;
+   GNU ld's default accepts silently; lld refuses ``version script
+   assignment of 'V1' to symbol 'nosuch' failed: symbol not defined``,
+   mold warns; zlib's `configure` probe depends on the link
+   succeeding). Under `--no-undefined-version` it is the error
+   `undefined-version` (GNU ld: ``nosuch: undefined version: V1``);
+   `--undefined-version` is a no-op. (Closes §17 Q6, as recommended.)
+10. A node with several parents (`V3 { … } V1 V2;`): accepted, every
+    parent written (GNU ld; lld and mold refuse the syntax). A parent
+    must be a node defined earlier: a forward or missing parent is
+    refused (GNU ld: ``unable to find version dependency `V1'``; lld
+    and mold accept; `exp2/vscript2`).
+11. A script with one anonymous node (`{ global: a; local: *; };`)
+    exports the matched keys unversioned and defines no version (all
+    three).
+12. A definition versioned by `.symver`, `foo@V1` or `foo@@V1`, is
+    matched by node V1 only; no other node's entry affects it (`V2 {
+    global: foo; }` and `V2 { global: *; }` leave `foo@@V1` at V1). It
+    is **local** exactly when one of V1's `local:` entries matches
+    `foo`, none of V1's `global:` entries (exact or glob) matches `foo`,
+    and the line does not have `--export-dynamic` (`-E`); otherwise it
+    keeps version V1. (GNU ld: `V1 { global: bar; local: *; };` drops
+    `foo@V1` and `foo@@V1`; `V1 { global: o*; local: old; };` keeps
+    `old@V1`; with `-E` nothing is dropped; `exp3/vs3/expdyn.py` e01-e13,
+    `atat.py` a01-a07, `exp2/vscript2` `sv_*`.) `-E` affects no other
+    rule of this section: exact, glob and star `local:` entries, and a
+    `local:` in another node, hide unversioned names with and without it
+    (e01-e05). A script without a node V1 (an anonymous script
+    included) is refused, as D-114 says (all three refuse, e04). mortar
+    drops a hidden definition, as GNU ld, with the warning
+    `versioned-definition-hidden` naming it (an executable linked
+    against the earlier library then fails to load: ``undefined symbol:
+    foo, version V1``). lld also hides `foo@V1` when a `global:` glob of
+    V1 matches and under `-E`, hides `foo@@V1` only for an exact
+    `local:`, and refuses a script naming `foo` exactly in another node;
+    mold never hides (anomalies, `spec/dyn.md` 17.8).
+13. Several `--version-script` files are one script: their texts are
+    parsed in command-line order as one sequence of nodes (all three:
+    `V1` in one file and `V2 { … } V1;` in the next link, `exp2/vscript2`
+    `two`).
 
 Version definitions written for shared output keep the script's parent
 links (`V2 { … } V1;`): GNU ld writes them (`readelf -V`: `Parent 1:
 V1`), lld and mold do not (E16). glibc's loader ignores parents; mortar
 follows GNU ld so that `readelf -V` of a mortar library reads like GNU
-ld's (`spec/synth.md`).
+ld's. The section's fields are `spec/dyn.md` D-115.
 
 ## 10. The fate of sections
 
@@ -1872,7 +2024,8 @@ section-symbol signatures (E18), lld's stale `--fortran-common` help text
    flag at resolution, a check in the scan).
 6. **`--no-undefined-version` default** for version scripts (M4): lld's
    default errors, GNU ld's accepts. Recommended: accept with a warning
-   (GNU ld's acceptance plus visibility), decided in `spec/script.md`.
+   (GNU ld's acceptance plus visibility). Closed by WP-110 as
+   recommended (§9.7 rule 9; `spec/dyn.md` D-114).
 7. **`-y` output** (M4): standard output text, not a diagnostic;
    needs a decision in `spec/diag.md` (an informational channel).
 8. **Did-you-mean hints** (§5.3): propose a small WP after M1.

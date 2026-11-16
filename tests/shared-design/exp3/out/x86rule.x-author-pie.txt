@@ -1,0 +1,5 @@
+../exp2/work/b1corpus/obj/clang-x64.pie.case.vague.cc.o pre=0 rule=1 ana=0 words=0 funcs=0
+    RULE .data+0x30 reloc1 .data+0x30 static_end_ptr boundary
+../exp2/work/b1corpus/obj/gcc-x64.pie.case.vague.cc.o pre=0 rule=1 ana=0 words=0 funcs=0
+    RULE .data.rel.local+0x0 reloc1 .data+0x20 exported_table boundary
+TOTAL objs=158 pre=0 rule_objs=2 ana_objs=0 ana_only_objs=0 rule=2 ana=0 words=0 undec=0

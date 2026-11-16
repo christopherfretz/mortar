@@ -1,0 +1,1631 @@
+ objects 290
+ use	a64	ABS	DATA	DATA	start=end-of-local	section	31
+ use	a64	LO12	CODE	DATA	start=end-of-local	section	13
+ use	a64	PC	CODE	DATA	start=end-of-local	section	13
+ use	a64	PC	EH	FUNC	start	section	700
+ use	a64	RULE	ABS	DATA	start	section	31
+ use	a64	RULE	LO12	CODE	start	section	13
+ use	a64	RULE	PC	CODE	start	section	13
+ use	x64	ABS	DATA	DATA	start=end-of-local	section	15
+ use	x64	PC	CODE	DATA	only-with-other-bias	section	125
+ use	x64	PC	CODE	DATA	start	section	3
+ use	x64	PC	CODE	DATA	start=end-of-local	section	12
+ use	x64	PC	EH	FUNC	start	section	500
+ use	x64	RULE	ABS	DATA	start	section	15
+ use	x64	RULE	PC	CODE	start	section	40
+ overapprox-objects 190
+ overapprox-objects-with-unnamed-def 88
+ objects-with-data-hit 94
+ RULE-objects-refused 91
+HIT	c1.clang19-O0-fPIC.o	RULE	a64	ABS	DATA	.bss+32	exported_buf	start=end-of-local
+HIT	c1.clang19-O0-fPIC.o	a64	ABS	257	DATA	.bss+32	exported_buf	DATA	start=end-of-local
+HIT	c1.clang19-O0-fPIC.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.clang19-O0-fPIC.o	a64	PC	261	EH	.text+16	_Z3sumv	FUNC	start
+HIT	c1.clang19-O0-fPIC.o	a64	PC	261	EH	.text+168	_Z6lookupi	FUNC	start
+HIT	c1.clang19-O0-fPIC.o	a64	PC	261	EH	.text+264	_Z6bufendv	FUNC	start
+HIT	c1.clang19-O0-fPIC.o	a64	PC	261	EH	.text+280	_Z5touchv	FUNC	start
+HIT	c1.clang19-O0-fPIC_-fcommon.o	RULE	a64	ABS	DATA	.bss+32	exported_buf	start=end-of-local
+HIT	c1.clang19-O0-fPIC_-fcommon.o	a64	ABS	257	DATA	.bss+32	exported_buf	DATA	start=end-of-local
+HIT	c1.clang19-O0-fPIC_-fcommon.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.clang19-O0-fPIC_-fcommon.o	a64	PC	261	EH	.text+16	_Z3sumv	FUNC	start
+HIT	c1.clang19-O0-fPIC_-fcommon.o	a64	PC	261	EH	.text+168	_Z6lookupi	FUNC	start
+HIT	c1.clang19-O0-fPIC_-fcommon.o	a64	PC	261	EH	.text+264	_Z6bufendv	FUNC	start
+HIT	c1.clang19-O0-fPIC_-fcommon.o	a64	PC	261	EH	.text+280	_Z5touchv	FUNC	start
+HIT	c1.clang19-O0-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.clang19-O0-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+16	_Z3sumv	FUNC	start
+HIT	c1.clang19-O0-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+168	_Z6lookupi	FUNC	start
+HIT	c1.clang19-O0-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+264	_Z6bufendv	FUNC	start
+HIT	c1.clang19-O0-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+280	_Z5touchv	FUNC	start
+HIT	c1.clang19-O0-fPIC_-fno-semantic-interposition.o	RULE	a64	ABS	DATA	.bss+32	exported_buf	start=end-of-local
+HIT	c1.clang19-O0-fPIC_-fno-semantic-interposition.o	a64	ABS	257	DATA	.bss+32	exported_buf	DATA	start=end-of-local
+HIT	c1.clang19-O0-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.clang19-O0-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+16	_Z3sumv	FUNC	start
+HIT	c1.clang19-O0-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+168	_Z6lookupi	FUNC	start
+HIT	c1.clang19-O0-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+264	_Z6bufendv	FUNC	start
+HIT	c1.clang19-O0-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+280	_Z5touchv	FUNC	start
+HIT	c1.clang19-O1-fPIC.o	RULE	a64	ABS	DATA	.bss+32	exported_buf	start=end-of-local
+HIT	c1.clang19-O1-fPIC.o	a64	ABS	257	DATA	.bss+32	exported_buf	DATA	start=end-of-local
+HIT	c1.clang19-O1-fPIC.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.clang19-O1-fPIC.o	a64	PC	261	EH	.text+12	_Z3sumv	FUNC	start
+HIT	c1.clang19-O1-fPIC.o	a64	PC	261	EH	.text+100	_Z6lookupi	FUNC	start
+HIT	c1.clang19-O1-fPIC.o	a64	PC	261	EH	.text+188	_Z6bufendv	FUNC	start
+HIT	c1.clang19-O1-fPIC.o	a64	PC	261	EH	.text+200	_Z5touchv	FUNC	start
+HIT	c1.clang19-O1-fPIC_-fcommon.o	RULE	a64	ABS	DATA	.bss+32	exported_buf	start=end-of-local
+HIT	c1.clang19-O1-fPIC_-fcommon.o	a64	ABS	257	DATA	.bss+32	exported_buf	DATA	start=end-of-local
+HIT	c1.clang19-O1-fPIC_-fcommon.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.clang19-O1-fPIC_-fcommon.o	a64	PC	261	EH	.text+12	_Z3sumv	FUNC	start
+HIT	c1.clang19-O1-fPIC_-fcommon.o	a64	PC	261	EH	.text+100	_Z6lookupi	FUNC	start
+HIT	c1.clang19-O1-fPIC_-fcommon.o	a64	PC	261	EH	.text+188	_Z6bufendv	FUNC	start
+HIT	c1.clang19-O1-fPIC_-fcommon.o	a64	PC	261	EH	.text+200	_Z5touchv	FUNC	start
+HIT	c1.clang19-O1-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.clang19-O1-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+12	_Z3sumv	FUNC	start
+HIT	c1.clang19-O1-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+100	_Z6lookupi	FUNC	start
+HIT	c1.clang19-O1-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+188	_Z6bufendv	FUNC	start
+HIT	c1.clang19-O1-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+200	_Z5touchv	FUNC	start
+HIT	c1.clang19-O1-fPIC_-fno-semantic-interposition.o	RULE	a64	ABS	DATA	.bss+32	exported_buf	start=end-of-local
+HIT	c1.clang19-O1-fPIC_-fno-semantic-interposition.o	a64	ABS	257	DATA	.bss+32	exported_buf	DATA	start=end-of-local
+HIT	c1.clang19-O1-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.clang19-O1-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+12	_Z3sumv	FUNC	start
+HIT	c1.clang19-O1-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+100	_Z6lookupi	FUNC	start
+HIT	c1.clang19-O1-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+188	_Z6bufendv	FUNC	start
+HIT	c1.clang19-O1-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+200	_Z5touchv	FUNC	start
+HIT	c1.clang19-O2-fPIC.o	RULE	a64	ABS	DATA	.bss+32	exported_buf	start=end-of-local
+HIT	c1.clang19-O2-fPIC.o	a64	ABS	257	DATA	.bss+32	exported_buf	DATA	start=end-of-local
+HIT	c1.clang19-O2-fPIC.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.clang19-O2-fPIC.o	a64	PC	261	EH	.text+12	_Z3sumv	FUNC	start
+HIT	c1.clang19-O2-fPIC.o	a64	PC	261	EH	.text+88	_Z6lookupi	FUNC	start
+HIT	c1.clang19-O2-fPIC.o	a64	PC	261	EH	.text+176	_Z6bufendv	FUNC	start
+HIT	c1.clang19-O2-fPIC.o	a64	PC	261	EH	.text+188	_Z5touchv	FUNC	start
+HIT	c1.clang19-O2-fPIC_-fcommon.o	RULE	a64	ABS	DATA	.bss+32	exported_buf	start=end-of-local
+HIT	c1.clang19-O2-fPIC_-fcommon.o	a64	ABS	257	DATA	.bss+32	exported_buf	DATA	start=end-of-local
+HIT	c1.clang19-O2-fPIC_-fcommon.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.clang19-O2-fPIC_-fcommon.o	a64	PC	261	EH	.text+12	_Z3sumv	FUNC	start
+HIT	c1.clang19-O2-fPIC_-fcommon.o	a64	PC	261	EH	.text+88	_Z6lookupi	FUNC	start
+HIT	c1.clang19-O2-fPIC_-fcommon.o	a64	PC	261	EH	.text+176	_Z6bufendv	FUNC	start
+HIT	c1.clang19-O2-fPIC_-fcommon.o	a64	PC	261	EH	.text+188	_Z5touchv	FUNC	start
+HIT	c1.clang19-O2-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.clang19-O2-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+12	_Z3sumv	FUNC	start
+HIT	c1.clang19-O2-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+88	_Z6lookupi	FUNC	start
+HIT	c1.clang19-O2-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+176	_Z6bufendv	FUNC	start
+HIT	c1.clang19-O2-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+188	_Z5touchv	FUNC	start
+HIT	c1.clang19-O2-fPIC_-fno-semantic-interposition.o	RULE	a64	ABS	DATA	.bss+32	exported_buf	start=end-of-local
+HIT	c1.clang19-O2-fPIC_-fno-semantic-interposition.o	a64	ABS	257	DATA	.bss+32	exported_buf	DATA	start=end-of-local
+HIT	c1.clang19-O2-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.clang19-O2-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+12	_Z3sumv	FUNC	start
+HIT	c1.clang19-O2-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+88	_Z6lookupi	FUNC	start
+HIT	c1.clang19-O2-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+176	_Z6bufendv	FUNC	start
+HIT	c1.clang19-O2-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+188	_Z5touchv	FUNC	start
+HIT	c1.clang19-O3-fPIC.o	RULE	a64	ABS	DATA	.bss+32	exported_buf	start=end-of-local
+HIT	c1.clang19-O3-fPIC.o	a64	ABS	257	DATA	.bss+32	exported_buf	DATA	start=end-of-local
+HIT	c1.clang19-O3-fPIC.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.clang19-O3-fPIC.o	a64	PC	261	EH	.text+12	_Z3sumv	FUNC	start
+HIT	c1.clang19-O3-fPIC.o	a64	PC	261	EH	.text+88	_Z6lookupi	FUNC	start
+HIT	c1.clang19-O3-fPIC.o	a64	PC	261	EH	.text+176	_Z6bufendv	FUNC	start
+HIT	c1.clang19-O3-fPIC.o	a64	PC	261	EH	.text+188	_Z5touchv	FUNC	start
+HIT	c1.clang19-O3-fPIC_-fcommon.o	RULE	a64	ABS	DATA	.bss+32	exported_buf	start=end-of-local
+HIT	c1.clang19-O3-fPIC_-fcommon.o	a64	ABS	257	DATA	.bss+32	exported_buf	DATA	start=end-of-local
+HIT	c1.clang19-O3-fPIC_-fcommon.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.clang19-O3-fPIC_-fcommon.o	a64	PC	261	EH	.text+12	_Z3sumv	FUNC	start
+HIT	c1.clang19-O3-fPIC_-fcommon.o	a64	PC	261	EH	.text+88	_Z6lookupi	FUNC	start
+HIT	c1.clang19-O3-fPIC_-fcommon.o	a64	PC	261	EH	.text+176	_Z6bufendv	FUNC	start
+HIT	c1.clang19-O3-fPIC_-fcommon.o	a64	PC	261	EH	.text+188	_Z5touchv	FUNC	start
+HIT	c1.clang19-O3-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.clang19-O3-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+12	_Z3sumv	FUNC	start
+HIT	c1.clang19-O3-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+88	_Z6lookupi	FUNC	start
+HIT	c1.clang19-O3-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+176	_Z6bufendv	FUNC	start
+HIT	c1.clang19-O3-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+188	_Z5touchv	FUNC	start
+HIT	c1.clang19-O3-fPIC_-fno-semantic-interposition.o	RULE	a64	ABS	DATA	.bss+32	exported_buf	start=end-of-local
+HIT	c1.clang19-O3-fPIC_-fno-semantic-interposition.o	a64	ABS	257	DATA	.bss+32	exported_buf	DATA	start=end-of-local
+HIT	c1.clang19-O3-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.clang19-O3-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+12	_Z3sumv	FUNC	start
+HIT	c1.clang19-O3-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+88	_Z6lookupi	FUNC	start
+HIT	c1.clang19-O3-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+176	_Z6bufendv	FUNC	start
+HIT	c1.clang19-O3-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+188	_Z5touchv	FUNC	start
+HIT	c1.clang19-Os-fPIC.o	RULE	a64	ABS	DATA	.bss+32	exported_buf	start=end-of-local
+HIT	c1.clang19-Os-fPIC.o	a64	ABS	257	DATA	.bss+32	exported_buf	DATA	start=end-of-local
+HIT	c1.clang19-Os-fPIC.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.clang19-Os-fPIC.o	a64	PC	261	EH	.text+12	_Z3sumv	FUNC	start
+HIT	c1.clang19-Os-fPIC.o	a64	PC	261	EH	.text+88	_Z6lookupi	FUNC	start
+HIT	c1.clang19-Os-fPIC.o	a64	PC	261	EH	.text+176	_Z6bufendv	FUNC	start
+HIT	c1.clang19-Os-fPIC.o	a64	PC	261	EH	.text+188	_Z5touchv	FUNC	start
+HIT	c1.clang19-Os-fPIC_-fcommon.o	RULE	a64	ABS	DATA	.bss+32	exported_buf	start=end-of-local
+HIT	c1.clang19-Os-fPIC_-fcommon.o	a64	ABS	257	DATA	.bss+32	exported_buf	DATA	start=end-of-local
+HIT	c1.clang19-Os-fPIC_-fcommon.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.clang19-Os-fPIC_-fcommon.o	a64	PC	261	EH	.text+12	_Z3sumv	FUNC	start
+HIT	c1.clang19-Os-fPIC_-fcommon.o	a64	PC	261	EH	.text+88	_Z6lookupi	FUNC	start
+HIT	c1.clang19-Os-fPIC_-fcommon.o	a64	PC	261	EH	.text+176	_Z6bufendv	FUNC	start
+HIT	c1.clang19-Os-fPIC_-fcommon.o	a64	PC	261	EH	.text+188	_Z5touchv	FUNC	start
+HIT	c1.clang19-Os-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.clang19-Os-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+12	_Z3sumv	FUNC	start
+HIT	c1.clang19-Os-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+88	_Z6lookupi	FUNC	start
+HIT	c1.clang19-Os-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+176	_Z6bufendv	FUNC	start
+HIT	c1.clang19-Os-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+188	_Z5touchv	FUNC	start
+HIT	c1.clang19-Os-fPIC_-fno-semantic-interposition.o	RULE	a64	ABS	DATA	.bss+32	exported_buf	start=end-of-local
+HIT	c1.clang19-Os-fPIC_-fno-semantic-interposition.o	a64	ABS	257	DATA	.bss+32	exported_buf	DATA	start=end-of-local
+HIT	c1.clang19-Os-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.clang19-Os-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+12	_Z3sumv	FUNC	start
+HIT	c1.clang19-Os-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+88	_Z6lookupi	FUNC	start
+HIT	c1.clang19-Os-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+176	_Z6bufendv	FUNC	start
+HIT	c1.clang19-Os-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+188	_Z5touchv	FUNC	start
+HIT	c1.clang22-O0-fPIC.o	RULE	a64	ABS	DATA	.bss+32	exported_buf	start=end-of-local
+HIT	c1.clang22-O0-fPIC.o	a64	ABS	257	DATA	.bss+32	exported_buf	DATA	start=end-of-local
+HIT	c1.clang22-O0-fPIC.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.clang22-O0-fPIC.o	a64	PC	261	EH	.text+16	_Z3sumv	FUNC	start
+HIT	c1.clang22-O0-fPIC.o	a64	PC	261	EH	.text+168	_Z6lookupi	FUNC	start
+HIT	c1.clang22-O0-fPIC.o	a64	PC	261	EH	.text+264	_Z6bufendv	FUNC	start
+HIT	c1.clang22-O0-fPIC.o	a64	PC	261	EH	.text+280	_Z5touchv	FUNC	start
+HIT	c1.clang22-O0-fPIC_-fcommon.o	RULE	a64	ABS	DATA	.bss+32	exported_buf	start=end-of-local
+HIT	c1.clang22-O0-fPIC_-fcommon.o	a64	ABS	257	DATA	.bss+32	exported_buf	DATA	start=end-of-local
+HIT	c1.clang22-O0-fPIC_-fcommon.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.clang22-O0-fPIC_-fcommon.o	a64	PC	261	EH	.text+16	_Z3sumv	FUNC	start
+HIT	c1.clang22-O0-fPIC_-fcommon.o	a64	PC	261	EH	.text+168	_Z6lookupi	FUNC	start
+HIT	c1.clang22-O0-fPIC_-fcommon.o	a64	PC	261	EH	.text+264	_Z6bufendv	FUNC	start
+HIT	c1.clang22-O0-fPIC_-fcommon.o	a64	PC	261	EH	.text+280	_Z5touchv	FUNC	start
+HIT	c1.clang22-O0-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.clang22-O0-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+16	_Z3sumv	FUNC	start
+HIT	c1.clang22-O0-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+168	_Z6lookupi	FUNC	start
+HIT	c1.clang22-O0-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+264	_Z6bufendv	FUNC	start
+HIT	c1.clang22-O0-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+280	_Z5touchv	FUNC	start
+HIT	c1.clang22-O0-fPIC_-fno-semantic-interposition.o	RULE	a64	ABS	DATA	.bss+32	exported_buf	start=end-of-local
+HIT	c1.clang22-O0-fPIC_-fno-semantic-interposition.o	a64	ABS	257	DATA	.bss+32	exported_buf	DATA	start=end-of-local
+HIT	c1.clang22-O0-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.clang22-O0-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+16	_Z3sumv	FUNC	start
+HIT	c1.clang22-O0-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+168	_Z6lookupi	FUNC	start
+HIT	c1.clang22-O0-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+264	_Z6bufendv	FUNC	start
+HIT	c1.clang22-O0-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+280	_Z5touchv	FUNC	start
+HIT	c1.clang22-O1-fPIC.o	RULE	a64	ABS	DATA	.bss+32	exported_buf	start=end-of-local
+HIT	c1.clang22-O1-fPIC.o	a64	ABS	257	DATA	.bss+32	exported_buf	DATA	start=end-of-local
+HIT	c1.clang22-O1-fPIC.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.clang22-O1-fPIC.o	a64	PC	261	EH	.text+12	_Z3sumv	FUNC	start
+HIT	c1.clang22-O1-fPIC.o	a64	PC	261	EH	.text+100	_Z6lookupi	FUNC	start
+HIT	c1.clang22-O1-fPIC.o	a64	PC	261	EH	.text+184	_Z6bufendv	FUNC	start
+HIT	c1.clang22-O1-fPIC.o	a64	PC	261	EH	.text+196	_Z5touchv	FUNC	start
+HIT	c1.clang22-O1-fPIC_-fcommon.o	RULE	a64	ABS	DATA	.bss+32	exported_buf	start=end-of-local
+HIT	c1.clang22-O1-fPIC_-fcommon.o	a64	ABS	257	DATA	.bss+32	exported_buf	DATA	start=end-of-local
+HIT	c1.clang22-O1-fPIC_-fcommon.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.clang22-O1-fPIC_-fcommon.o	a64	PC	261	EH	.text+12	_Z3sumv	FUNC	start
+HIT	c1.clang22-O1-fPIC_-fcommon.o	a64	PC	261	EH	.text+100	_Z6lookupi	FUNC	start
+HIT	c1.clang22-O1-fPIC_-fcommon.o	a64	PC	261	EH	.text+184	_Z6bufendv	FUNC	start
+HIT	c1.clang22-O1-fPIC_-fcommon.o	a64	PC	261	EH	.text+196	_Z5touchv	FUNC	start
+HIT	c1.clang22-O1-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.clang22-O1-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+12	_Z3sumv	FUNC	start
+HIT	c1.clang22-O1-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+100	_Z6lookupi	FUNC	start
+HIT	c1.clang22-O1-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+184	_Z6bufendv	FUNC	start
+HIT	c1.clang22-O1-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+196	_Z5touchv	FUNC	start
+HIT	c1.clang22-O1-fPIC_-fno-semantic-interposition.o	RULE	a64	ABS	DATA	.bss+32	exported_buf	start=end-of-local
+HIT	c1.clang22-O1-fPIC_-fno-semantic-interposition.o	a64	ABS	257	DATA	.bss+32	exported_buf	DATA	start=end-of-local
+HIT	c1.clang22-O1-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.clang22-O1-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+12	_Z3sumv	FUNC	start
+HIT	c1.clang22-O1-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+100	_Z6lookupi	FUNC	start
+HIT	c1.clang22-O1-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+184	_Z6bufendv	FUNC	start
+HIT	c1.clang22-O1-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+196	_Z5touchv	FUNC	start
+HIT	c1.clang22-O2-fPIC.o	RULE	a64	ABS	DATA	.bss+32	exported_buf	start=end-of-local
+HIT	c1.clang22-O2-fPIC.o	a64	ABS	257	DATA	.bss+32	exported_buf	DATA	start=end-of-local
+HIT	c1.clang22-O2-fPIC.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.clang22-O2-fPIC.o	a64	PC	261	EH	.text+12	_Z3sumv	FUNC	start
+HIT	c1.clang22-O2-fPIC.o	a64	PC	261	EH	.text+88	_Z6lookupi	FUNC	start
+HIT	c1.clang22-O2-fPIC.o	a64	PC	261	EH	.text+172	_Z6bufendv	FUNC	start
+HIT	c1.clang22-O2-fPIC.o	a64	PC	261	EH	.text+184	_Z5touchv	FUNC	start
+HIT	c1.clang22-O2-fPIC_-fcommon.o	RULE	a64	ABS	DATA	.bss+32	exported_buf	start=end-of-local
+HIT	c1.clang22-O2-fPIC_-fcommon.o	a64	ABS	257	DATA	.bss+32	exported_buf	DATA	start=end-of-local
+HIT	c1.clang22-O2-fPIC_-fcommon.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.clang22-O2-fPIC_-fcommon.o	a64	PC	261	EH	.text+12	_Z3sumv	FUNC	start
+HIT	c1.clang22-O2-fPIC_-fcommon.o	a64	PC	261	EH	.text+88	_Z6lookupi	FUNC	start
+HIT	c1.clang22-O2-fPIC_-fcommon.o	a64	PC	261	EH	.text+172	_Z6bufendv	FUNC	start
+HIT	c1.clang22-O2-fPIC_-fcommon.o	a64	PC	261	EH	.text+184	_Z5touchv	FUNC	start
+HIT	c1.clang22-O2-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.clang22-O2-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+12	_Z3sumv	FUNC	start
+HIT	c1.clang22-O2-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+88	_Z6lookupi	FUNC	start
+HIT	c1.clang22-O2-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+172	_Z6bufendv	FUNC	start
+HIT	c1.clang22-O2-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+184	_Z5touchv	FUNC	start
+HIT	c1.clang22-O2-fPIC_-fno-semantic-interposition.o	RULE	a64	ABS	DATA	.bss+32	exported_buf	start=end-of-local
+HIT	c1.clang22-O2-fPIC_-fno-semantic-interposition.o	a64	ABS	257	DATA	.bss+32	exported_buf	DATA	start=end-of-local
+HIT	c1.clang22-O2-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.clang22-O2-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+12	_Z3sumv	FUNC	start
+HIT	c1.clang22-O2-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+88	_Z6lookupi	FUNC	start
+HIT	c1.clang22-O2-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+172	_Z6bufendv	FUNC	start
+HIT	c1.clang22-O2-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+184	_Z5touchv	FUNC	start
+HIT	c1.clang22-O3-fPIC.o	RULE	a64	ABS	DATA	.bss+32	exported_buf	start=end-of-local
+HIT	c1.clang22-O3-fPIC.o	a64	ABS	257	DATA	.bss+32	exported_buf	DATA	start=end-of-local
+HIT	c1.clang22-O3-fPIC.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.clang22-O3-fPIC.o	a64	PC	261	EH	.text+12	_Z3sumv	FUNC	start
+HIT	c1.clang22-O3-fPIC.o	a64	PC	261	EH	.text+88	_Z6lookupi	FUNC	start
+HIT	c1.clang22-O3-fPIC.o	a64	PC	261	EH	.text+172	_Z6bufendv	FUNC	start
+HIT	c1.clang22-O3-fPIC.o	a64	PC	261	EH	.text+184	_Z5touchv	FUNC	start
+HIT	c1.clang22-O3-fPIC_-fcommon.o	RULE	a64	ABS	DATA	.bss+32	exported_buf	start=end-of-local
+HIT	c1.clang22-O3-fPIC_-fcommon.o	a64	ABS	257	DATA	.bss+32	exported_buf	DATA	start=end-of-local
+HIT	c1.clang22-O3-fPIC_-fcommon.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.clang22-O3-fPIC_-fcommon.o	a64	PC	261	EH	.text+12	_Z3sumv	FUNC	start
+HIT	c1.clang22-O3-fPIC_-fcommon.o	a64	PC	261	EH	.text+88	_Z6lookupi	FUNC	start
+HIT	c1.clang22-O3-fPIC_-fcommon.o	a64	PC	261	EH	.text+172	_Z6bufendv	FUNC	start
+HIT	c1.clang22-O3-fPIC_-fcommon.o	a64	PC	261	EH	.text+184	_Z5touchv	FUNC	start
+HIT	c1.clang22-O3-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.clang22-O3-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+12	_Z3sumv	FUNC	start
+HIT	c1.clang22-O3-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+88	_Z6lookupi	FUNC	start
+HIT	c1.clang22-O3-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+172	_Z6bufendv	FUNC	start
+HIT	c1.clang22-O3-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+184	_Z5touchv	FUNC	start
+HIT	c1.clang22-O3-fPIC_-fno-semantic-interposition.o	RULE	a64	ABS	DATA	.bss+32	exported_buf	start=end-of-local
+HIT	c1.clang22-O3-fPIC_-fno-semantic-interposition.o	a64	ABS	257	DATA	.bss+32	exported_buf	DATA	start=end-of-local
+HIT	c1.clang22-O3-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.clang22-O3-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+12	_Z3sumv	FUNC	start
+HIT	c1.clang22-O3-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+88	_Z6lookupi	FUNC	start
+HIT	c1.clang22-O3-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+172	_Z6bufendv	FUNC	start
+HIT	c1.clang22-O3-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+184	_Z5touchv	FUNC	start
+HIT	c1.clang22-Os-fPIC.o	RULE	a64	ABS	DATA	.bss+32	exported_buf	start=end-of-local
+HIT	c1.clang22-Os-fPIC.o	a64	ABS	257	DATA	.bss+32	exported_buf	DATA	start=end-of-local
+HIT	c1.clang22-Os-fPIC.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.clang22-Os-fPIC.o	a64	PC	261	EH	.text+12	_Z3sumv	FUNC	start
+HIT	c1.clang22-Os-fPIC.o	a64	PC	261	EH	.text+88	_Z6lookupi	FUNC	start
+HIT	c1.clang22-Os-fPIC.o	a64	PC	261	EH	.text+172	_Z6bufendv	FUNC	start
+HIT	c1.clang22-Os-fPIC.o	a64	PC	261	EH	.text+184	_Z5touchv	FUNC	start
+HIT	c1.clang22-Os-fPIC_-fcommon.o	RULE	a64	ABS	DATA	.bss+32	exported_buf	start=end-of-local
+HIT	c1.clang22-Os-fPIC_-fcommon.o	a64	ABS	257	DATA	.bss+32	exported_buf	DATA	start=end-of-local
+HIT	c1.clang22-Os-fPIC_-fcommon.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.clang22-Os-fPIC_-fcommon.o	a64	PC	261	EH	.text+12	_Z3sumv	FUNC	start
+HIT	c1.clang22-Os-fPIC_-fcommon.o	a64	PC	261	EH	.text+88	_Z6lookupi	FUNC	start
+HIT	c1.clang22-Os-fPIC_-fcommon.o	a64	PC	261	EH	.text+172	_Z6bufendv	FUNC	start
+HIT	c1.clang22-Os-fPIC_-fcommon.o	a64	PC	261	EH	.text+184	_Z5touchv	FUNC	start
+HIT	c1.clang22-Os-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.clang22-Os-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+12	_Z3sumv	FUNC	start
+HIT	c1.clang22-Os-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+88	_Z6lookupi	FUNC	start
+HIT	c1.clang22-Os-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+172	_Z6bufendv	FUNC	start
+HIT	c1.clang22-Os-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+184	_Z5touchv	FUNC	start
+HIT	c1.clang22-Os-fPIC_-fno-semantic-interposition.o	RULE	a64	ABS	DATA	.bss+32	exported_buf	start=end-of-local
+HIT	c1.clang22-Os-fPIC_-fno-semantic-interposition.o	a64	ABS	257	DATA	.bss+32	exported_buf	DATA	start=end-of-local
+HIT	c1.clang22-Os-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.clang22-Os-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+12	_Z3sumv	FUNC	start
+HIT	c1.clang22-Os-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+88	_Z6lookupi	FUNC	start
+HIT	c1.clang22-Os-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+172	_Z6bufendv	FUNC	start
+HIT	c1.clang22-Os-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+184	_Z5touchv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O0-fPIC.o	x64	PC	2	CODE	.bss+44	exported_buf	DATA	only-with-other-bias
+HIT	c1.clang22_target_x86_64lin-O0-fPIC.o	x64	PC	2	CODE	.bss+46	exported_buf	DATA	only-with-other-bias
+HIT	c1.clang22_target_x86_64lin-O0-fPIC.o	RULE	x64	ABS	DATA	.bss+32	exported_buf	start=end-of-local
+HIT	c1.clang22_target_x86_64lin-O0-fPIC.o	x64	ABS	1	DATA	.bss+32	exported_buf	DATA	start=end-of-local
+HIT	c1.clang22_target_x86_64lin-O0-fPIC.o	x64	PC	2	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O0-fPIC.o	x64	PC	2	EH	.text+32	_Z3sumv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O0-fPIC.o	x64	PC	2	EH	.text+144	_Z6lookupi	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O0-fPIC.o	x64	PC	2	EH	.text+224	_Z6bufendv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O0-fPIC.o	x64	PC	2	EH	.text+256	_Z5touchv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O0-fPIC_-fcommon.o	x64	PC	2	CODE	.bss+44	exported_buf	DATA	only-with-other-bias
+HIT	c1.clang22_target_x86_64lin-O0-fPIC_-fcommon.o	x64	PC	2	CODE	.bss+46	exported_buf	DATA	only-with-other-bias
+HIT	c1.clang22_target_x86_64lin-O0-fPIC_-fcommon.o	RULE	x64	ABS	DATA	.bss+32	exported_buf	start=end-of-local
+HIT	c1.clang22_target_x86_64lin-O0-fPIC_-fcommon.o	x64	ABS	1	DATA	.bss+32	exported_buf	DATA	start=end-of-local
+HIT	c1.clang22_target_x86_64lin-O0-fPIC_-fcommon.o	x64	PC	2	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O0-fPIC_-fcommon.o	x64	PC	2	EH	.text+32	_Z3sumv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O0-fPIC_-fcommon.o	x64	PC	2	EH	.text+144	_Z6lookupi	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O0-fPIC_-fcommon.o	x64	PC	2	EH	.text+224	_Z6bufendv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O0-fPIC_-fcommon.o	x64	PC	2	EH	.text+256	_Z5touchv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O0-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O0-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+32	_Z3sumv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O0-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+144	_Z6lookupi	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O0-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+224	_Z6bufendv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O0-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+256	_Z5touchv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O0-fPIC_-fno-semantic-interposition.o	x64	PC	2	CODE	.bss+44	exported_buf	DATA	only-with-other-bias
+HIT	c1.clang22_target_x86_64lin-O0-fPIC_-fno-semantic-interposition.o	x64	PC	2	CODE	.bss+46	exported_buf	DATA	only-with-other-bias
+HIT	c1.clang22_target_x86_64lin-O0-fPIC_-fno-semantic-interposition.o	RULE	x64	ABS	DATA	.bss+32	exported_buf	start=end-of-local
+HIT	c1.clang22_target_x86_64lin-O0-fPIC_-fno-semantic-interposition.o	x64	ABS	1	DATA	.bss+32	exported_buf	DATA	start=end-of-local
+HIT	c1.clang22_target_x86_64lin-O0-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O0-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+32	_Z3sumv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O0-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+144	_Z6lookupi	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O0-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+224	_Z6bufendv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O0-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+256	_Z5touchv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O1-fPIC.o	x64	PC	2	CODE	.bss+46	exported_buf	DATA	only-with-other-bias
+HIT	c1.clang22_target_x86_64lin-O1-fPIC.o	RULE	x64	ABS	DATA	.bss+32	exported_buf	start=end-of-local
+HIT	c1.clang22_target_x86_64lin-O1-fPIC.o	x64	ABS	1	DATA	.bss+32	exported_buf	DATA	start=end-of-local
+HIT	c1.clang22_target_x86_64lin-O1-fPIC.o	x64	PC	2	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O1-fPIC.o	x64	PC	2	EH	.text+16	_Z3sumv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O1-fPIC.o	x64	PC	2	EH	.text+80	_Z6lookupi	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O1-fPIC.o	x64	PC	2	EH	.text+160	_Z6bufendv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O1-fPIC.o	x64	PC	2	EH	.text+176	_Z5touchv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O1-fPIC_-fcommon.o	x64	PC	2	CODE	.bss+46	exported_buf	DATA	only-with-other-bias
+HIT	c1.clang22_target_x86_64lin-O1-fPIC_-fcommon.o	RULE	x64	ABS	DATA	.bss+32	exported_buf	start=end-of-local
+HIT	c1.clang22_target_x86_64lin-O1-fPIC_-fcommon.o	x64	ABS	1	DATA	.bss+32	exported_buf	DATA	start=end-of-local
+HIT	c1.clang22_target_x86_64lin-O1-fPIC_-fcommon.o	x64	PC	2	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O1-fPIC_-fcommon.o	x64	PC	2	EH	.text+16	_Z3sumv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O1-fPIC_-fcommon.o	x64	PC	2	EH	.text+80	_Z6lookupi	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O1-fPIC_-fcommon.o	x64	PC	2	EH	.text+160	_Z6bufendv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O1-fPIC_-fcommon.o	x64	PC	2	EH	.text+176	_Z5touchv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O1-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O1-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+16	_Z3sumv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O1-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+80	_Z6lookupi	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O1-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+160	_Z6bufendv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O1-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+176	_Z5touchv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O1-fPIC_-fno-semantic-interposition.o	x64	PC	2	CODE	.bss+46	exported_buf	DATA	only-with-other-bias
+HIT	c1.clang22_target_x86_64lin-O1-fPIC_-fno-semantic-interposition.o	RULE	x64	ABS	DATA	.bss+32	exported_buf	start=end-of-local
+HIT	c1.clang22_target_x86_64lin-O1-fPIC_-fno-semantic-interposition.o	x64	ABS	1	DATA	.bss+32	exported_buf	DATA	start=end-of-local
+HIT	c1.clang22_target_x86_64lin-O1-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O1-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+16	_Z3sumv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O1-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+80	_Z6lookupi	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O1-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+160	_Z6bufendv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O1-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+176	_Z5touchv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O2-fPIC.o	x64	PC	2	CODE	.bss+46	exported_buf	DATA	only-with-other-bias
+HIT	c1.clang22_target_x86_64lin-O2-fPIC.o	RULE	x64	ABS	DATA	.bss+32	exported_buf	start=end-of-local
+HIT	c1.clang22_target_x86_64lin-O2-fPIC.o	x64	ABS	1	DATA	.bss+32	exported_buf	DATA	start=end-of-local
+HIT	c1.clang22_target_x86_64lin-O2-fPIC.o	x64	PC	2	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O2-fPIC.o	x64	PC	2	EH	.text+16	_Z3sumv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O2-fPIC.o	x64	PC	2	EH	.text+96	_Z6lookupi	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O2-fPIC.o	x64	PC	2	EH	.text+176	_Z6bufendv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O2-fPIC.o	x64	PC	2	EH	.text+192	_Z5touchv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O2-fPIC_-fcommon.o	x64	PC	2	CODE	.bss+46	exported_buf	DATA	only-with-other-bias
+HIT	c1.clang22_target_x86_64lin-O2-fPIC_-fcommon.o	RULE	x64	ABS	DATA	.bss+32	exported_buf	start=end-of-local
+HIT	c1.clang22_target_x86_64lin-O2-fPIC_-fcommon.o	x64	ABS	1	DATA	.bss+32	exported_buf	DATA	start=end-of-local
+HIT	c1.clang22_target_x86_64lin-O2-fPIC_-fcommon.o	x64	PC	2	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O2-fPIC_-fcommon.o	x64	PC	2	EH	.text+16	_Z3sumv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O2-fPIC_-fcommon.o	x64	PC	2	EH	.text+96	_Z6lookupi	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O2-fPIC_-fcommon.o	x64	PC	2	EH	.text+176	_Z6bufendv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O2-fPIC_-fcommon.o	x64	PC	2	EH	.text+192	_Z5touchv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O2-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O2-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+16	_Z3sumv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O2-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+96	_Z6lookupi	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O2-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+176	_Z6bufendv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O2-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+192	_Z5touchv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O2-fPIC_-fno-semantic-interposition.o	x64	PC	2	CODE	.bss+46	exported_buf	DATA	only-with-other-bias
+HIT	c1.clang22_target_x86_64lin-O2-fPIC_-fno-semantic-interposition.o	RULE	x64	ABS	DATA	.bss+32	exported_buf	start=end-of-local
+HIT	c1.clang22_target_x86_64lin-O2-fPIC_-fno-semantic-interposition.o	x64	ABS	1	DATA	.bss+32	exported_buf	DATA	start=end-of-local
+HIT	c1.clang22_target_x86_64lin-O2-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O2-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+16	_Z3sumv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O2-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+96	_Z6lookupi	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O2-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+176	_Z6bufendv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O2-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+192	_Z5touchv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O3-fPIC.o	x64	PC	2	CODE	.bss+46	exported_buf	DATA	only-with-other-bias
+HIT	c1.clang22_target_x86_64lin-O3-fPIC.o	RULE	x64	ABS	DATA	.bss+32	exported_buf	start=end-of-local
+HIT	c1.clang22_target_x86_64lin-O3-fPIC.o	x64	ABS	1	DATA	.bss+32	exported_buf	DATA	start=end-of-local
+HIT	c1.clang22_target_x86_64lin-O3-fPIC.o	x64	PC	2	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O3-fPIC.o	x64	PC	2	EH	.text+16	_Z3sumv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O3-fPIC.o	x64	PC	2	EH	.text+96	_Z6lookupi	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O3-fPIC.o	x64	PC	2	EH	.text+176	_Z6bufendv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O3-fPIC.o	x64	PC	2	EH	.text+192	_Z5touchv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O3-fPIC_-fcommon.o	x64	PC	2	CODE	.bss+46	exported_buf	DATA	only-with-other-bias
+HIT	c1.clang22_target_x86_64lin-O3-fPIC_-fcommon.o	RULE	x64	ABS	DATA	.bss+32	exported_buf	start=end-of-local
+HIT	c1.clang22_target_x86_64lin-O3-fPIC_-fcommon.o	x64	ABS	1	DATA	.bss+32	exported_buf	DATA	start=end-of-local
+HIT	c1.clang22_target_x86_64lin-O3-fPIC_-fcommon.o	x64	PC	2	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O3-fPIC_-fcommon.o	x64	PC	2	EH	.text+16	_Z3sumv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O3-fPIC_-fcommon.o	x64	PC	2	EH	.text+96	_Z6lookupi	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O3-fPIC_-fcommon.o	x64	PC	2	EH	.text+176	_Z6bufendv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O3-fPIC_-fcommon.o	x64	PC	2	EH	.text+192	_Z5touchv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O3-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O3-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+16	_Z3sumv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O3-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+96	_Z6lookupi	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O3-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+176	_Z6bufendv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O3-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+192	_Z5touchv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O3-fPIC_-fno-semantic-interposition.o	x64	PC	2	CODE	.bss+46	exported_buf	DATA	only-with-other-bias
+HIT	c1.clang22_target_x86_64lin-O3-fPIC_-fno-semantic-interposition.o	RULE	x64	ABS	DATA	.bss+32	exported_buf	start=end-of-local
+HIT	c1.clang22_target_x86_64lin-O3-fPIC_-fno-semantic-interposition.o	x64	ABS	1	DATA	.bss+32	exported_buf	DATA	start=end-of-local
+HIT	c1.clang22_target_x86_64lin-O3-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O3-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+16	_Z3sumv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O3-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+96	_Z6lookupi	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O3-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+176	_Z6bufendv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-O3-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+192	_Z5touchv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-Os-fPIC.o	x64	PC	2	CODE	.bss+46	exported_buf	DATA	only-with-other-bias
+HIT	c1.clang22_target_x86_64lin-Os-fPIC.o	RULE	x64	ABS	DATA	.bss+32	exported_buf	start=end-of-local
+HIT	c1.clang22_target_x86_64lin-Os-fPIC.o	x64	ABS	1	DATA	.bss+32	exported_buf	DATA	start=end-of-local
+HIT	c1.clang22_target_x86_64lin-Os-fPIC.o	x64	PC	2	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-Os-fPIC.o	x64	PC	2	EH	.text+8	_Z3sumv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-Os-fPIC.o	x64	PC	2	EH	.text+74	_Z6lookupi	FUNC	start
+HIT	c1.clang22_target_x86_64lin-Os-fPIC.o	x64	PC	2	EH	.text+144	_Z6bufendv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-Os-fPIC.o	x64	PC	2	EH	.text+152	_Z5touchv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-Os-fPIC_-fcommon.o	x64	PC	2	CODE	.bss+46	exported_buf	DATA	only-with-other-bias
+HIT	c1.clang22_target_x86_64lin-Os-fPIC_-fcommon.o	RULE	x64	ABS	DATA	.bss+32	exported_buf	start=end-of-local
+HIT	c1.clang22_target_x86_64lin-Os-fPIC_-fcommon.o	x64	ABS	1	DATA	.bss+32	exported_buf	DATA	start=end-of-local
+HIT	c1.clang22_target_x86_64lin-Os-fPIC_-fcommon.o	x64	PC	2	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-Os-fPIC_-fcommon.o	x64	PC	2	EH	.text+8	_Z3sumv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-Os-fPIC_-fcommon.o	x64	PC	2	EH	.text+74	_Z6lookupi	FUNC	start
+HIT	c1.clang22_target_x86_64lin-Os-fPIC_-fcommon.o	x64	PC	2	EH	.text+144	_Z6bufendv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-Os-fPIC_-fcommon.o	x64	PC	2	EH	.text+152	_Z5touchv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-Os-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-Os-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+8	_Z3sumv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-Os-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+74	_Z6lookupi	FUNC	start
+HIT	c1.clang22_target_x86_64lin-Os-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+144	_Z6bufendv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-Os-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+152	_Z5touchv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-Os-fPIC_-fno-semantic-interposition.o	x64	PC	2	CODE	.bss+46	exported_buf	DATA	only-with-other-bias
+HIT	c1.clang22_target_x86_64lin-Os-fPIC_-fno-semantic-interposition.o	RULE	x64	ABS	DATA	.bss+32	exported_buf	start=end-of-local
+HIT	c1.clang22_target_x86_64lin-Os-fPIC_-fno-semantic-interposition.o	x64	ABS	1	DATA	.bss+32	exported_buf	DATA	start=end-of-local
+HIT	c1.clang22_target_x86_64lin-Os-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-Os-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+8	_Z3sumv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-Os-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+74	_Z6lookupi	FUNC	start
+HIT	c1.clang22_target_x86_64lin-Os-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+144	_Z6bufendv	FUNC	start
+HIT	c1.clang22_target_x86_64lin-Os-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+152	_Z5touchv	FUNC	start
+HIT	c1.g-O0-fPIC_-fcommon.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.g-O0-fPIC_-fcommon.o	a64	PC	261	EH	.text+12	_Z3sumv	FUNC	start
+HIT	c1.g-O0-fPIC_-fcommon.o	a64	PC	261	EH	.text+148	_Z6lookupi	FUNC	start
+HIT	c1.g-O0-fPIC_-fcommon.o	a64	PC	261	EH	.text+280	_Z6bufendv	FUNC	start
+HIT	c1.g-O0-fPIC_-fcommon.o	a64	PC	261	EH	.text+292	_Z5touchv	FUNC	start
+HIT	c1.g-O0-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.g-O0-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+12	_Z3sumv	FUNC	start
+HIT	c1.g-O0-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+148	_Z6lookupi	FUNC	start
+HIT	c1.g-O0-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+280	_Z6bufendv	FUNC	start
+HIT	c1.g-O0-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+292	_Z5touchv	FUNC	start
+HIT	c1.g-O0-fPIC_-fno-section-anchors.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.g-O0-fPIC_-fno-section-anchors.o	a64	PC	261	EH	.text+12	_Z3sumv	FUNC	start
+HIT	c1.g-O0-fPIC_-fno-section-anchors.o	a64	PC	261	EH	.text+148	_Z6lookupi	FUNC	start
+HIT	c1.g-O0-fPIC_-fno-section-anchors.o	a64	PC	261	EH	.text+280	_Z6bufendv	FUNC	start
+HIT	c1.g-O0-fPIC_-fno-section-anchors.o	a64	PC	261	EH	.text+292	_Z5touchv	FUNC	start
+HIT	c1.g-O0-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.g-O0-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+12	_Z3sumv	FUNC	start
+HIT	c1.g-O0-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+148	_Z6lookupi	FUNC	start
+HIT	c1.g-O0-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+280	_Z6bufendv	FUNC	start
+HIT	c1.g-O0-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+292	_Z5touchv	FUNC	start
+HIT	c1.g-O0-fPIC_-fsection-anchors.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.g-O0-fPIC_-fsection-anchors.o	a64	PC	261	EH	.text+16	_Z3sumv	FUNC	start
+HIT	c1.g-O0-fPIC_-fsection-anchors.o	a64	PC	261	EH	.text+156	_Z6lookupi	FUNC	start
+HIT	c1.g-O0-fPIC_-fsection-anchors.o	a64	PC	261	EH	.text+288	_Z6bufendv	FUNC	start
+HIT	c1.g-O0-fPIC_-fsection-anchors.o	a64	PC	261	EH	.text+304	_Z5touchv	FUNC	start
+HIT	c1.g-O0-fpic.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.g-O0-fpic.o	a64	PC	261	EH	.text+12	_Z3sumv	FUNC	start
+HIT	c1.g-O0-fpic.o	a64	PC	261	EH	.text+148	_Z6lookupi	FUNC	start
+HIT	c1.g-O0-fpic.o	a64	PC	261	EH	.text+280	_Z6bufendv	FUNC	start
+HIT	c1.g-O0-fpic.o	a64	PC	261	EH	.text+292	_Z5touchv	FUNC	start
+HIT	c1.g-O1-fPIC_-fcommon.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.g-O1-fPIC_-fcommon.o	a64	PC	261	EH	.text+16	_Z3sumv	FUNC	start
+HIT	c1.g-O1-fPIC_-fcommon.o	a64	PC	261	EH	.text+100	_Z6lookupi	FUNC	start
+HIT	c1.g-O1-fPIC_-fcommon.o	a64	PC	261	EH	.text+188	_Z6bufendv	FUNC	start
+HIT	c1.g-O1-fPIC_-fcommon.o	a64	PC	261	EH	.text+204	_Z5touchv	FUNC	start
+HIT	c1.g-O1-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.g-O1-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+12	_Z3sumv	FUNC	start
+HIT	c1.g-O1-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+100	_Z6lookupi	FUNC	start
+HIT	c1.g-O1-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+184	_Z6bufendv	FUNC	start
+HIT	c1.g-O1-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+196	_Z5touchv	FUNC	start
+HIT	c1.g-O1-fPIC_-fno-section-anchors.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.g-O1-fPIC_-fno-section-anchors.o	a64	PC	261	EH	.text+12	_Z3sumv	FUNC	start
+HIT	c1.g-O1-fPIC_-fno-section-anchors.o	a64	PC	261	EH	.text+100	_Z6lookupi	FUNC	start
+HIT	c1.g-O1-fPIC_-fno-section-anchors.o	a64	PC	261	EH	.text+184	_Z6bufendv	FUNC	start
+HIT	c1.g-O1-fPIC_-fno-section-anchors.o	a64	PC	261	EH	.text+196	_Z5touchv	FUNC	start
+HIT	c1.g-O1-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.g-O1-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+16	_Z3sumv	FUNC	start
+HIT	c1.g-O1-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+100	_Z6lookupi	FUNC	start
+HIT	c1.g-O1-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+188	_Z6bufendv	FUNC	start
+HIT	c1.g-O1-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+204	_Z5touchv	FUNC	start
+HIT	c1.g-O1-fPIC_-fsection-anchors.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.g-O1-fPIC_-fsection-anchors.o	a64	PC	261	EH	.text+16	_Z3sumv	FUNC	start
+HIT	c1.g-O1-fPIC_-fsection-anchors.o	a64	PC	261	EH	.text+100	_Z6lookupi	FUNC	start
+HIT	c1.g-O1-fPIC_-fsection-anchors.o	a64	PC	261	EH	.text+188	_Z6bufendv	FUNC	start
+HIT	c1.g-O1-fPIC_-fsection-anchors.o	a64	PC	261	EH	.text+204	_Z5touchv	FUNC	start
+HIT	c1.g-O1-fpic.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.g-O1-fpic.o	a64	PC	261	EH	.text+16	_Z3sumv	FUNC	start
+HIT	c1.g-O1-fpic.o	a64	PC	261	EH	.text+96	_Z6lookupi	FUNC	start
+HIT	c1.g-O1-fpic.o	a64	PC	261	EH	.text+180	_Z6bufendv	FUNC	start
+HIT	c1.g-O1-fpic.o	a64	PC	261	EH	.text+196	_Z5touchv	FUNC	start
+HIT	c1.g-O2-fPIC_-fcommon.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.g-O2-fPIC_-fcommon.o	a64	PC	261	EH	.text+16	_Z3sumv	FUNC	start
+HIT	c1.g-O2-fPIC_-fcommon.o	a64	PC	261	EH	.text+96	_Z6lookupi	FUNC	start
+HIT	c1.g-O2-fPIC_-fcommon.o	a64	PC	261	EH	.text+192	_Z6bufendv	FUNC	start
+HIT	c1.g-O2-fPIC_-fcommon.o	a64	PC	261	EH	.text+208	_Z5touchv	FUNC	start
+HIT	c1.g-O2-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.g-O2-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+12	_Z3sumv	FUNC	start
+HIT	c1.g-O2-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+96	_Z6lookupi	FUNC	start
+HIT	c1.g-O2-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+192	_Z6bufendv	FUNC	start
+HIT	c1.g-O2-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+204	_Z5touchv	FUNC	start
+HIT	c1.g-O2-fPIC_-fno-section-anchors.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.g-O2-fPIC_-fno-section-anchors.o	a64	PC	261	EH	.text+12	_Z3sumv	FUNC	start
+HIT	c1.g-O2-fPIC_-fno-section-anchors.o	a64	PC	261	EH	.text+96	_Z6lookupi	FUNC	start
+HIT	c1.g-O2-fPIC_-fno-section-anchors.o	a64	PC	261	EH	.text+192	_Z6bufendv	FUNC	start
+HIT	c1.g-O2-fPIC_-fno-section-anchors.o	a64	PC	261	EH	.text+204	_Z5touchv	FUNC	start
+HIT	c1.g-O2-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.g-O2-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+16	_Z3sumv	FUNC	start
+HIT	c1.g-O2-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+96	_Z6lookupi	FUNC	start
+HIT	c1.g-O2-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+192	_Z6bufendv	FUNC	start
+HIT	c1.g-O2-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+208	_Z5touchv	FUNC	start
+HIT	c1.g-O2-fPIC_-fsection-anchors.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.g-O2-fPIC_-fsection-anchors.o	a64	PC	261	EH	.text+16	_Z3sumv	FUNC	start
+HIT	c1.g-O2-fPIC_-fsection-anchors.o	a64	PC	261	EH	.text+96	_Z6lookupi	FUNC	start
+HIT	c1.g-O2-fPIC_-fsection-anchors.o	a64	PC	261	EH	.text+192	_Z6bufendv	FUNC	start
+HIT	c1.g-O2-fPIC_-fsection-anchors.o	a64	PC	261	EH	.text+208	_Z5touchv	FUNC	start
+HIT	c1.g-O2-fpic.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.g-O2-fpic.o	a64	PC	261	EH	.text+16	_Z3sumv	FUNC	start
+HIT	c1.g-O2-fpic.o	a64	PC	261	EH	.text+96	_Z6lookupi	FUNC	start
+HIT	c1.g-O2-fpic.o	a64	PC	261	EH	.text+192	_Z6bufendv	FUNC	start
+HIT	c1.g-O2-fpic.o	a64	PC	261	EH	.text+208	_Z5touchv	FUNC	start
+HIT	c1.g-O3-fPIC_-fcommon.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.g-O3-fPIC_-fcommon.o	a64	PC	261	EH	.text+16	_Z3sumv	FUNC	start
+HIT	c1.g-O3-fPIC_-fcommon.o	a64	PC	261	EH	.text+96	_Z6lookupi	FUNC	start
+HIT	c1.g-O3-fPIC_-fcommon.o	a64	PC	261	EH	.text+192	_Z6bufendv	FUNC	start
+HIT	c1.g-O3-fPIC_-fcommon.o	a64	PC	261	EH	.text+208	_Z5touchv	FUNC	start
+HIT	c1.g-O3-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.g-O3-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+12	_Z3sumv	FUNC	start
+HIT	c1.g-O3-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+96	_Z6lookupi	FUNC	start
+HIT	c1.g-O3-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+192	_Z6bufendv	FUNC	start
+HIT	c1.g-O3-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+204	_Z5touchv	FUNC	start
+HIT	c1.g-O3-fPIC_-fno-section-anchors.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.g-O3-fPIC_-fno-section-anchors.o	a64	PC	261	EH	.text+12	_Z3sumv	FUNC	start
+HIT	c1.g-O3-fPIC_-fno-section-anchors.o	a64	PC	261	EH	.text+96	_Z6lookupi	FUNC	start
+HIT	c1.g-O3-fPIC_-fno-section-anchors.o	a64	PC	261	EH	.text+192	_Z6bufendv	FUNC	start
+HIT	c1.g-O3-fPIC_-fno-section-anchors.o	a64	PC	261	EH	.text+204	_Z5touchv	FUNC	start
+HIT	c1.g-O3-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.g-O3-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+16	_Z3sumv	FUNC	start
+HIT	c1.g-O3-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+96	_Z6lookupi	FUNC	start
+HIT	c1.g-O3-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+192	_Z6bufendv	FUNC	start
+HIT	c1.g-O3-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+208	_Z5touchv	FUNC	start
+HIT	c1.g-O3-fPIC_-fsection-anchors.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.g-O3-fPIC_-fsection-anchors.o	a64	PC	261	EH	.text+16	_Z3sumv	FUNC	start
+HIT	c1.g-O3-fPIC_-fsection-anchors.o	a64	PC	261	EH	.text+96	_Z6lookupi	FUNC	start
+HIT	c1.g-O3-fPIC_-fsection-anchors.o	a64	PC	261	EH	.text+192	_Z6bufendv	FUNC	start
+HIT	c1.g-O3-fPIC_-fsection-anchors.o	a64	PC	261	EH	.text+208	_Z5touchv	FUNC	start
+HIT	c1.g-O3-fpic.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.g-O3-fpic.o	a64	PC	261	EH	.text+16	_Z3sumv	FUNC	start
+HIT	c1.g-O3-fpic.o	a64	PC	261	EH	.text+96	_Z6lookupi	FUNC	start
+HIT	c1.g-O3-fpic.o	a64	PC	261	EH	.text+192	_Z6bufendv	FUNC	start
+HIT	c1.g-O3-fpic.o	a64	PC	261	EH	.text+208	_Z5touchv	FUNC	start
+HIT	c1.g-Os-fPIC_-fcommon.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.g-Os-fPIC_-fcommon.o	a64	PC	261	EH	.text+16	_Z3sumv	FUNC	start
+HIT	c1.g-Os-fPIC_-fcommon.o	a64	PC	261	EH	.text+104	_Z6lookupi	FUNC	start
+HIT	c1.g-Os-fPIC_-fcommon.o	a64	PC	261	EH	.text+180	_Z6bufendv	FUNC	start
+HIT	c1.g-Os-fPIC_-fcommon.o	a64	PC	261	EH	.text+196	_Z5touchv	FUNC	start
+HIT	c1.g-Os-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.g-Os-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+12	_Z3sumv	FUNC	start
+HIT	c1.g-Os-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+100	_Z6lookupi	FUNC	start
+HIT	c1.g-Os-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+172	_Z6bufendv	FUNC	start
+HIT	c1.g-Os-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+184	_Z5touchv	FUNC	start
+HIT	c1.g-Os-fPIC_-fno-section-anchors.o	RULE	a64	PC	CODE	.rodata+20	kExported	start=end-of-local
+HIT	c1.g-Os-fPIC_-fno-section-anchors.o	a64	PC	275	CODE	.rodata+20	kExported	DATA	start=end-of-local
+HIT	c1.g-Os-fPIC_-fno-section-anchors.o	RULE	a64	LO12	CODE	.rodata+20	kExported	start=end-of-local
+HIT	c1.g-Os-fPIC_-fno-section-anchors.o	a64	LO12	277	CODE	.rodata+20	kExported	DATA	start=end-of-local
+HIT	c1.g-Os-fPIC_-fno-section-anchors.o	RULE	a64	ABS	DATA	.rodata+20	kExported	start=end-of-local
+HIT	c1.g-Os-fPIC_-fno-section-anchors.o	a64	ABS	257	DATA	.rodata+20	kExported	DATA	start=end-of-local
+HIT	c1.g-Os-fPIC_-fno-section-anchors.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.g-Os-fPIC_-fno-section-anchors.o	a64	PC	261	EH	.text+12	_Z3sumv	FUNC	start
+HIT	c1.g-Os-fPIC_-fno-section-anchors.o	a64	PC	261	EH	.text+100	_Z6lookupi	FUNC	start
+HIT	c1.g-Os-fPIC_-fno-section-anchors.o	a64	PC	261	EH	.text+172	_Z6bufendv	FUNC	start
+HIT	c1.g-Os-fPIC_-fno-section-anchors.o	a64	PC	261	EH	.text+184	_Z5touchv	FUNC	start
+HIT	c1.g-Os-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.g-Os-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+16	_Z3sumv	FUNC	start
+HIT	c1.g-Os-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+104	_Z6lookupi	FUNC	start
+HIT	c1.g-Os-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+180	_Z6bufendv	FUNC	start
+HIT	c1.g-Os-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+196	_Z5touchv	FUNC	start
+HIT	c1.g-Os-fPIC_-fsection-anchors.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.g-Os-fPIC_-fsection-anchors.o	a64	PC	261	EH	.text+16	_Z3sumv	FUNC	start
+HIT	c1.g-Os-fPIC_-fsection-anchors.o	a64	PC	261	EH	.text+104	_Z6lookupi	FUNC	start
+HIT	c1.g-Os-fPIC_-fsection-anchors.o	a64	PC	261	EH	.text+180	_Z6bufendv	FUNC	start
+HIT	c1.g-Os-fPIC_-fsection-anchors.o	a64	PC	261	EH	.text+196	_Z5touchv	FUNC	start
+HIT	c1.g-Os-fpic.o	a64	PC	261	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.g-Os-fpic.o	a64	PC	261	EH	.text+16	_Z3sumv	FUNC	start
+HIT	c1.g-Os-fpic.o	a64	PC	261	EH	.text+96	_Z6lookupi	FUNC	start
+HIT	c1.g-Os-fpic.o	a64	PC	261	EH	.text+168	_Z6bufendv	FUNC	start
+HIT	c1.g-Os-fpic.o	a64	PC	261	EH	.text+184	_Z5touchv	FUNC	start
+HIT	c1.x86_64linuxgnug-O0-fPIC_-fcommon.o	x64	PC	2	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.x86_64linuxgnug-O0-fPIC_-fcommon.o	x64	PC	2	EH	.text+13	_Z3sumv	FUNC	start
+HIT	c1.x86_64linuxgnug-O0-fPIC_-fcommon.o	x64	PC	2	EH	.text+102	_Z6lookupi	FUNC	start
+HIT	c1.x86_64linuxgnug-O0-fPIC_-fcommon.o	x64	PC	2	EH	.text+213	_Z6bufendv	FUNC	start
+HIT	c1.x86_64linuxgnug-O0-fPIC_-fcommon.o	x64	PC	2	EH	.text+226	_Z5touchv	FUNC	start
+HIT	c1.x86_64linuxgnug-O0-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.x86_64linuxgnug-O0-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+13	_Z3sumv	FUNC	start
+HIT	c1.x86_64linuxgnug-O0-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+102	_Z6lookupi	FUNC	start
+HIT	c1.x86_64linuxgnug-O0-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+213	_Z6bufendv	FUNC	start
+HIT	c1.x86_64linuxgnug-O0-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+226	_Z5touchv	FUNC	start
+HIT	c1.x86_64linuxgnug-O0-fPIC_-fno-section-anchors.o	x64	PC	2	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.x86_64linuxgnug-O0-fPIC_-fno-section-anchors.o	x64	PC	2	EH	.text+13	_Z3sumv	FUNC	start
+HIT	c1.x86_64linuxgnug-O0-fPIC_-fno-section-anchors.o	x64	PC	2	EH	.text+102	_Z6lookupi	FUNC	start
+HIT	c1.x86_64linuxgnug-O0-fPIC_-fno-section-anchors.o	x64	PC	2	EH	.text+213	_Z6bufendv	FUNC	start
+HIT	c1.x86_64linuxgnug-O0-fPIC_-fno-section-anchors.o	x64	PC	2	EH	.text+226	_Z5touchv	FUNC	start
+HIT	c1.x86_64linuxgnug-O0-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.x86_64linuxgnug-O0-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+13	_Z3sumv	FUNC	start
+HIT	c1.x86_64linuxgnug-O0-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+102	_Z6lookupi	FUNC	start
+HIT	c1.x86_64linuxgnug-O0-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+213	_Z6bufendv	FUNC	start
+HIT	c1.x86_64linuxgnug-O0-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+226	_Z5touchv	FUNC	start
+HIT	c1.x86_64linuxgnug-O0-fPIC_-fsection-anchors.o	RULE	x64	PC	CODE	.rodata+16	kExported	
+HIT	c1.x86_64linuxgnug-O0-fPIC_-fsection-anchors.o	x64	PC	2	CODE	.rodata+16	kExported	DATA	only-with-other-bias
+HIT	c1.x86_64linuxgnug-O0-fPIC_-fsection-anchors.o	x64	PC	2	CODE	.bss+14	exported_buf	DATA	only-with-other-bias
+HIT	c1.x86_64linuxgnug-O0-fPIC_-fsection-anchors.o	x64	PC	2	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.x86_64linuxgnug-O0-fPIC_-fsection-anchors.o	x64	PC	2	EH	.text+13	_Z3sumv	FUNC	start
+HIT	c1.x86_64linuxgnug-O0-fPIC_-fsection-anchors.o	x64	PC	2	EH	.text+102	_Z6lookupi	FUNC	start
+HIT	c1.x86_64linuxgnug-O0-fPIC_-fsection-anchors.o	x64	PC	2	EH	.text+213	_Z6bufendv	FUNC	start
+HIT	c1.x86_64linuxgnug-O0-fPIC_-fsection-anchors.o	x64	PC	2	EH	.text+226	_Z5touchv	FUNC	start
+HIT	c1.x86_64linuxgnug-O0-fpic.o	x64	PC	2	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.x86_64linuxgnug-O0-fpic.o	x64	PC	2	EH	.text+13	_Z3sumv	FUNC	start
+HIT	c1.x86_64linuxgnug-O0-fpic.o	x64	PC	2	EH	.text+102	_Z6lookupi	FUNC	start
+HIT	c1.x86_64linuxgnug-O0-fpic.o	x64	PC	2	EH	.text+213	_Z6bufendv	FUNC	start
+HIT	c1.x86_64linuxgnug-O0-fpic.o	x64	PC	2	EH	.text+226	_Z5touchv	FUNC	start
+HIT	c1.x86_64linuxgnug-O1-fPIC_-fcommon.o	RULE	x64	PC	CODE	.rodata+16	kExported	
+HIT	c1.x86_64linuxgnug-O1-fPIC_-fcommon.o	x64	PC	2	CODE	.rodata+16	kExported	DATA	only-with-other-bias
+HIT	c1.x86_64linuxgnug-O1-fPIC_-fcommon.o	x64	PC	2	CODE	.bss+14	exported_buf	DATA	only-with-other-bias
+HIT	c1.x86_64linuxgnug-O1-fPIC_-fcommon.o	x64	PC	2	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.x86_64linuxgnug-O1-fPIC_-fcommon.o	x64	PC	2	EH	.text+8	_Z3sumv	FUNC	start
+HIT	c1.x86_64linuxgnug-O1-fPIC_-fcommon.o	x64	PC	2	EH	.text+75	_Z6lookupi	FUNC	start
+HIT	c1.x86_64linuxgnug-O1-fPIC_-fcommon.o	x64	PC	2	EH	.text+144	_Z6bufendv	FUNC	start
+HIT	c1.x86_64linuxgnug-O1-fPIC_-fcommon.o	x64	PC	2	EH	.text+152	_Z5touchv	FUNC	start
+HIT	c1.x86_64linuxgnug-O1-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.x86_64linuxgnug-O1-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+8	_Z3sumv	FUNC	start
+HIT	c1.x86_64linuxgnug-O1-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+75	_Z6lookupi	FUNC	start
+HIT	c1.x86_64linuxgnug-O1-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+144	_Z6bufendv	FUNC	start
+HIT	c1.x86_64linuxgnug-O1-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+152	_Z5touchv	FUNC	start
+HIT	c1.x86_64linuxgnug-O1-fPIC_-fno-section-anchors.o	RULE	x64	PC	CODE	.rodata+16	kExported	
+HIT	c1.x86_64linuxgnug-O1-fPIC_-fno-section-anchors.o	x64	PC	2	CODE	.rodata+16	kExported	DATA	only-with-other-bias
+HIT	c1.x86_64linuxgnug-O1-fPIC_-fno-section-anchors.o	x64	PC	2	CODE	.bss+14	exported_buf	DATA	only-with-other-bias
+HIT	c1.x86_64linuxgnug-O1-fPIC_-fno-section-anchors.o	x64	PC	2	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.x86_64linuxgnug-O1-fPIC_-fno-section-anchors.o	x64	PC	2	EH	.text+8	_Z3sumv	FUNC	start
+HIT	c1.x86_64linuxgnug-O1-fPIC_-fno-section-anchors.o	x64	PC	2	EH	.text+75	_Z6lookupi	FUNC	start
+HIT	c1.x86_64linuxgnug-O1-fPIC_-fno-section-anchors.o	x64	PC	2	EH	.text+144	_Z6bufendv	FUNC	start
+HIT	c1.x86_64linuxgnug-O1-fPIC_-fno-section-anchors.o	x64	PC	2	EH	.text+152	_Z5touchv	FUNC	start
+HIT	c1.x86_64linuxgnug-O1-fPIC_-fno-semantic-interposition.o	RULE	x64	PC	CODE	.rodata+16	kExported	
+HIT	c1.x86_64linuxgnug-O1-fPIC_-fno-semantic-interposition.o	x64	PC	2	CODE	.rodata+16	kExported	DATA	only-with-other-bias
+HIT	c1.x86_64linuxgnug-O1-fPIC_-fno-semantic-interposition.o	x64	PC	2	CODE	.bss+14	exported_buf	DATA	only-with-other-bias
+HIT	c1.x86_64linuxgnug-O1-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.x86_64linuxgnug-O1-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+8	_Z3sumv	FUNC	start
+HIT	c1.x86_64linuxgnug-O1-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+75	_Z6lookupi	FUNC	start
+HIT	c1.x86_64linuxgnug-O1-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+144	_Z6bufendv	FUNC	start
+HIT	c1.x86_64linuxgnug-O1-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+152	_Z5touchv	FUNC	start
+HIT	c1.x86_64linuxgnug-O1-fPIC_-fsection-anchors.o	RULE	x64	PC	CODE	.rodata+16	kExported	
+HIT	c1.x86_64linuxgnug-O1-fPIC_-fsection-anchors.o	x64	PC	2	CODE	.rodata+16	kExported	DATA	only-with-other-bias
+HIT	c1.x86_64linuxgnug-O1-fPIC_-fsection-anchors.o	x64	PC	2	CODE	.bss+14	exported_buf	DATA	only-with-other-bias
+HIT	c1.x86_64linuxgnug-O1-fPIC_-fsection-anchors.o	x64	PC	2	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.x86_64linuxgnug-O1-fPIC_-fsection-anchors.o	x64	PC	2	EH	.text+8	_Z3sumv	FUNC	start
+HIT	c1.x86_64linuxgnug-O1-fPIC_-fsection-anchors.o	x64	PC	2	EH	.text+75	_Z6lookupi	FUNC	start
+HIT	c1.x86_64linuxgnug-O1-fPIC_-fsection-anchors.o	x64	PC	2	EH	.text+144	_Z6bufendv	FUNC	start
+HIT	c1.x86_64linuxgnug-O1-fPIC_-fsection-anchors.o	x64	PC	2	EH	.text+152	_Z5touchv	FUNC	start
+HIT	c1.x86_64linuxgnug-O1-fpic.o	RULE	x64	PC	CODE	.rodata+16	kExported	
+HIT	c1.x86_64linuxgnug-O1-fpic.o	x64	PC	2	CODE	.rodata+16	kExported	DATA	only-with-other-bias
+HIT	c1.x86_64linuxgnug-O1-fpic.o	x64	PC	2	CODE	.bss+14	exported_buf	DATA	only-with-other-bias
+HIT	c1.x86_64linuxgnug-O1-fpic.o	x64	PC	2	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.x86_64linuxgnug-O1-fpic.o	x64	PC	2	EH	.text+8	_Z3sumv	FUNC	start
+HIT	c1.x86_64linuxgnug-O1-fpic.o	x64	PC	2	EH	.text+75	_Z6lookupi	FUNC	start
+HIT	c1.x86_64linuxgnug-O1-fpic.o	x64	PC	2	EH	.text+144	_Z6bufendv	FUNC	start
+HIT	c1.x86_64linuxgnug-O1-fpic.o	x64	PC	2	EH	.text+152	_Z5touchv	FUNC	start
+HIT	c1.x86_64linuxgnug-O2-fPIC_-fcommon.o	RULE	x64	PC	CODE	.rodata+16	kExported	
+HIT	c1.x86_64linuxgnug-O2-fPIC_-fcommon.o	x64	PC	2	CODE	.rodata+16	kExported	DATA	only-with-other-bias
+HIT	c1.x86_64linuxgnug-O2-fPIC_-fcommon.o	x64	PC	2	CODE	.bss+14	exported_buf	DATA	only-with-other-bias
+HIT	c1.x86_64linuxgnug-O2-fPIC_-fcommon.o	x64	PC	2	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.x86_64linuxgnug-O2-fPIC_-fcommon.o	x64	PC	2	EH	.text+16	_Z3sumv	FUNC	start
+HIT	c1.x86_64linuxgnug-O2-fPIC_-fcommon.o	x64	PC	2	EH	.text+96	_Z6lookupi	FUNC	start
+HIT	c1.x86_64linuxgnug-O2-fPIC_-fcommon.o	x64	PC	2	EH	.text+176	_Z6bufendv	FUNC	start
+HIT	c1.x86_64linuxgnug-O2-fPIC_-fcommon.o	x64	PC	2	EH	.text+192	_Z5touchv	FUNC	start
+HIT	c1.x86_64linuxgnug-O2-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.x86_64linuxgnug-O2-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+16	_Z3sumv	FUNC	start
+HIT	c1.x86_64linuxgnug-O2-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+96	_Z6lookupi	FUNC	start
+HIT	c1.x86_64linuxgnug-O2-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+176	_Z6bufendv	FUNC	start
+HIT	c1.x86_64linuxgnug-O2-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+192	_Z5touchv	FUNC	start
+HIT	c1.x86_64linuxgnug-O2-fPIC_-fno-section-anchors.o	RULE	x64	PC	CODE	.rodata+16	kExported	
+HIT	c1.x86_64linuxgnug-O2-fPIC_-fno-section-anchors.o	x64	PC	2	CODE	.rodata+16	kExported	DATA	only-with-other-bias
+HIT	c1.x86_64linuxgnug-O2-fPIC_-fno-section-anchors.o	x64	PC	2	CODE	.bss+14	exported_buf	DATA	only-with-other-bias
+HIT	c1.x86_64linuxgnug-O2-fPIC_-fno-section-anchors.o	x64	PC	2	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.x86_64linuxgnug-O2-fPIC_-fno-section-anchors.o	x64	PC	2	EH	.text+16	_Z3sumv	FUNC	start
+HIT	c1.x86_64linuxgnug-O2-fPIC_-fno-section-anchors.o	x64	PC	2	EH	.text+96	_Z6lookupi	FUNC	start
+HIT	c1.x86_64linuxgnug-O2-fPIC_-fno-section-anchors.o	x64	PC	2	EH	.text+176	_Z6bufendv	FUNC	start
+HIT	c1.x86_64linuxgnug-O2-fPIC_-fno-section-anchors.o	x64	PC	2	EH	.text+192	_Z5touchv	FUNC	start
+HIT	c1.x86_64linuxgnug-O2-fPIC_-fno-semantic-interposition.o	RULE	x64	PC	CODE	.rodata+16	kExported	
+HIT	c1.x86_64linuxgnug-O2-fPIC_-fno-semantic-interposition.o	x64	PC	2	CODE	.rodata+16	kExported	DATA	only-with-other-bias
+HIT	c1.x86_64linuxgnug-O2-fPIC_-fno-semantic-interposition.o	x64	PC	2	CODE	.bss+14	exported_buf	DATA	only-with-other-bias
+HIT	c1.x86_64linuxgnug-O2-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.x86_64linuxgnug-O2-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+16	_Z3sumv	FUNC	start
+HIT	c1.x86_64linuxgnug-O2-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+96	_Z6lookupi	FUNC	start
+HIT	c1.x86_64linuxgnug-O2-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+176	_Z6bufendv	FUNC	start
+HIT	c1.x86_64linuxgnug-O2-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+192	_Z5touchv	FUNC	start
+HIT	c1.x86_64linuxgnug-O2-fPIC_-fsection-anchors.o	RULE	x64	PC	CODE	.rodata+16	kExported	
+HIT	c1.x86_64linuxgnug-O2-fPIC_-fsection-anchors.o	x64	PC	2	CODE	.rodata+16	kExported	DATA	only-with-other-bias
+HIT	c1.x86_64linuxgnug-O2-fPIC_-fsection-anchors.o	x64	PC	2	CODE	.bss+14	exported_buf	DATA	only-with-other-bias
+HIT	c1.x86_64linuxgnug-O2-fPIC_-fsection-anchors.o	x64	PC	2	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.x86_64linuxgnug-O2-fPIC_-fsection-anchors.o	x64	PC	2	EH	.text+16	_Z3sumv	FUNC	start
+HIT	c1.x86_64linuxgnug-O2-fPIC_-fsection-anchors.o	x64	PC	2	EH	.text+96	_Z6lookupi	FUNC	start
+HIT	c1.x86_64linuxgnug-O2-fPIC_-fsection-anchors.o	x64	PC	2	EH	.text+176	_Z6bufendv	FUNC	start
+HIT	c1.x86_64linuxgnug-O2-fPIC_-fsection-anchors.o	x64	PC	2	EH	.text+192	_Z5touchv	FUNC	start
+HIT	c1.x86_64linuxgnug-O2-fpic.o	RULE	x64	PC	CODE	.rodata+16	kExported	
+HIT	c1.x86_64linuxgnug-O2-fpic.o	x64	PC	2	CODE	.rodata+16	kExported	DATA	only-with-other-bias
+HIT	c1.x86_64linuxgnug-O2-fpic.o	x64	PC	2	CODE	.bss+14	exported_buf	DATA	only-with-other-bias
+HIT	c1.x86_64linuxgnug-O2-fpic.o	x64	PC	2	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.x86_64linuxgnug-O2-fpic.o	x64	PC	2	EH	.text+16	_Z3sumv	FUNC	start
+HIT	c1.x86_64linuxgnug-O2-fpic.o	x64	PC	2	EH	.text+96	_Z6lookupi	FUNC	start
+HIT	c1.x86_64linuxgnug-O2-fpic.o	x64	PC	2	EH	.text+176	_Z6bufendv	FUNC	start
+HIT	c1.x86_64linuxgnug-O2-fpic.o	x64	PC	2	EH	.text+192	_Z5touchv	FUNC	start
+HIT	c1.x86_64linuxgnug-O3-fPIC_-fcommon.o	RULE	x64	PC	CODE	.rodata+16	kExported	
+HIT	c1.x86_64linuxgnug-O3-fPIC_-fcommon.o	x64	PC	2	CODE	.rodata+16	kExported	DATA	only-with-other-bias
+HIT	c1.x86_64linuxgnug-O3-fPIC_-fcommon.o	x64	PC	2	CODE	.bss+14	exported_buf	DATA	only-with-other-bias
+HIT	c1.x86_64linuxgnug-O3-fPIC_-fcommon.o	x64	PC	2	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.x86_64linuxgnug-O3-fPIC_-fcommon.o	x64	PC	2	EH	.text+16	_Z3sumv	FUNC	start
+HIT	c1.x86_64linuxgnug-O3-fPIC_-fcommon.o	x64	PC	2	EH	.text+96	_Z6lookupi	FUNC	start
+HIT	c1.x86_64linuxgnug-O3-fPIC_-fcommon.o	x64	PC	2	EH	.text+176	_Z6bufendv	FUNC	start
+HIT	c1.x86_64linuxgnug-O3-fPIC_-fcommon.o	x64	PC	2	EH	.text+192	_Z5touchv	FUNC	start
+HIT	c1.x86_64linuxgnug-O3-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.x86_64linuxgnug-O3-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+16	_Z3sumv	FUNC	start
+HIT	c1.x86_64linuxgnug-O3-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+96	_Z6lookupi	FUNC	start
+HIT	c1.x86_64linuxgnug-O3-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+176	_Z6bufendv	FUNC	start
+HIT	c1.x86_64linuxgnug-O3-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+192	_Z5touchv	FUNC	start
+HIT	c1.x86_64linuxgnug-O3-fPIC_-fno-section-anchors.o	RULE	x64	PC	CODE	.rodata+16	kExported	
+HIT	c1.x86_64linuxgnug-O3-fPIC_-fno-section-anchors.o	x64	PC	2	CODE	.rodata+16	kExported	DATA	only-with-other-bias
+HIT	c1.x86_64linuxgnug-O3-fPIC_-fno-section-anchors.o	x64	PC	2	CODE	.bss+14	exported_buf	DATA	only-with-other-bias
+HIT	c1.x86_64linuxgnug-O3-fPIC_-fno-section-anchors.o	x64	PC	2	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.x86_64linuxgnug-O3-fPIC_-fno-section-anchors.o	x64	PC	2	EH	.text+16	_Z3sumv	FUNC	start
+HIT	c1.x86_64linuxgnug-O3-fPIC_-fno-section-anchors.o	x64	PC	2	EH	.text+96	_Z6lookupi	FUNC	start
+HIT	c1.x86_64linuxgnug-O3-fPIC_-fno-section-anchors.o	x64	PC	2	EH	.text+176	_Z6bufendv	FUNC	start
+HIT	c1.x86_64linuxgnug-O3-fPIC_-fno-section-anchors.o	x64	PC	2	EH	.text+192	_Z5touchv	FUNC	start
+HIT	c1.x86_64linuxgnug-O3-fPIC_-fno-semantic-interposition.o	RULE	x64	PC	CODE	.rodata+16	kExported	
+HIT	c1.x86_64linuxgnug-O3-fPIC_-fno-semantic-interposition.o	x64	PC	2	CODE	.rodata+16	kExported	DATA	only-with-other-bias
+HIT	c1.x86_64linuxgnug-O3-fPIC_-fno-semantic-interposition.o	x64	PC	2	CODE	.bss+14	exported_buf	DATA	only-with-other-bias
+HIT	c1.x86_64linuxgnug-O3-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.x86_64linuxgnug-O3-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+16	_Z3sumv	FUNC	start
+HIT	c1.x86_64linuxgnug-O3-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+96	_Z6lookupi	FUNC	start
+HIT	c1.x86_64linuxgnug-O3-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+176	_Z6bufendv	FUNC	start
+HIT	c1.x86_64linuxgnug-O3-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+192	_Z5touchv	FUNC	start
+HIT	c1.x86_64linuxgnug-O3-fPIC_-fsection-anchors.o	RULE	x64	PC	CODE	.rodata+16	kExported	
+HIT	c1.x86_64linuxgnug-O3-fPIC_-fsection-anchors.o	x64	PC	2	CODE	.rodata+16	kExported	DATA	only-with-other-bias
+HIT	c1.x86_64linuxgnug-O3-fPIC_-fsection-anchors.o	x64	PC	2	CODE	.bss+14	exported_buf	DATA	only-with-other-bias
+HIT	c1.x86_64linuxgnug-O3-fPIC_-fsection-anchors.o	x64	PC	2	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.x86_64linuxgnug-O3-fPIC_-fsection-anchors.o	x64	PC	2	EH	.text+16	_Z3sumv	FUNC	start
+HIT	c1.x86_64linuxgnug-O3-fPIC_-fsection-anchors.o	x64	PC	2	EH	.text+96	_Z6lookupi	FUNC	start
+HIT	c1.x86_64linuxgnug-O3-fPIC_-fsection-anchors.o	x64	PC	2	EH	.text+176	_Z6bufendv	FUNC	start
+HIT	c1.x86_64linuxgnug-O3-fPIC_-fsection-anchors.o	x64	PC	2	EH	.text+192	_Z5touchv	FUNC	start
+HIT	c1.x86_64linuxgnug-O3-fpic.o	RULE	x64	PC	CODE	.rodata+16	kExported	
+HIT	c1.x86_64linuxgnug-O3-fpic.o	x64	PC	2	CODE	.rodata+16	kExported	DATA	only-with-other-bias
+HIT	c1.x86_64linuxgnug-O3-fpic.o	x64	PC	2	CODE	.bss+14	exported_buf	DATA	only-with-other-bias
+HIT	c1.x86_64linuxgnug-O3-fpic.o	x64	PC	2	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.x86_64linuxgnug-O3-fpic.o	x64	PC	2	EH	.text+16	_Z3sumv	FUNC	start
+HIT	c1.x86_64linuxgnug-O3-fpic.o	x64	PC	2	EH	.text+96	_Z6lookupi	FUNC	start
+HIT	c1.x86_64linuxgnug-O3-fpic.o	x64	PC	2	EH	.text+176	_Z6bufendv	FUNC	start
+HIT	c1.x86_64linuxgnug-O3-fpic.o	x64	PC	2	EH	.text+192	_Z5touchv	FUNC	start
+HIT	c1.x86_64linuxgnug-Os-fPIC_-fcommon.o	RULE	x64	PC	CODE	.rodata+16	kExported	
+HIT	c1.x86_64linuxgnug-Os-fPIC_-fcommon.o	x64	PC	2	CODE	.rodata+16	kExported	DATA	only-with-other-bias
+HIT	c1.x86_64linuxgnug-Os-fPIC_-fcommon.o	x64	PC	2	CODE	.bss+14	exported_buf	DATA	only-with-other-bias
+HIT	c1.x86_64linuxgnug-Os-fPIC_-fcommon.o	x64	PC	2	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.x86_64linuxgnug-Os-fPIC_-fcommon.o	x64	PC	2	EH	.text+8	_Z3sumv	FUNC	start
+HIT	c1.x86_64linuxgnug-Os-fPIC_-fcommon.o	x64	PC	2	EH	.text+60	_Z6lookupi	FUNC	start
+HIT	c1.x86_64linuxgnug-Os-fPIC_-fcommon.o	x64	PC	2	EH	.text+112	_Z6bufendv	FUNC	start
+HIT	c1.x86_64linuxgnug-Os-fPIC_-fcommon.o	x64	PC	2	EH	.text+120	_Z5touchv	FUNC	start
+HIT	c1.x86_64linuxgnug-Os-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.x86_64linuxgnug-Os-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+8	_Z3sumv	FUNC	start
+HIT	c1.x86_64linuxgnug-Os-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+60	_Z6lookupi	FUNC	start
+HIT	c1.x86_64linuxgnug-Os-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+112	_Z6bufendv	FUNC	start
+HIT	c1.x86_64linuxgnug-Os-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+120	_Z5touchv	FUNC	start
+HIT	c1.x86_64linuxgnug-Os-fPIC_-fno-section-anchors.o	RULE	x64	PC	CODE	.rodata+16	kExported	
+HIT	c1.x86_64linuxgnug-Os-fPIC_-fno-section-anchors.o	x64	PC	2	CODE	.rodata+16	kExported	DATA	only-with-other-bias
+HIT	c1.x86_64linuxgnug-Os-fPIC_-fno-section-anchors.o	x64	PC	2	CODE	.bss+14	exported_buf	DATA	only-with-other-bias
+HIT	c1.x86_64linuxgnug-Os-fPIC_-fno-section-anchors.o	x64	PC	2	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.x86_64linuxgnug-Os-fPIC_-fno-section-anchors.o	x64	PC	2	EH	.text+8	_Z3sumv	FUNC	start
+HIT	c1.x86_64linuxgnug-Os-fPIC_-fno-section-anchors.o	x64	PC	2	EH	.text+60	_Z6lookupi	FUNC	start
+HIT	c1.x86_64linuxgnug-Os-fPIC_-fno-section-anchors.o	x64	PC	2	EH	.text+112	_Z6bufendv	FUNC	start
+HIT	c1.x86_64linuxgnug-Os-fPIC_-fno-section-anchors.o	x64	PC	2	EH	.text+120	_Z5touchv	FUNC	start
+HIT	c1.x86_64linuxgnug-Os-fPIC_-fno-semantic-interposition.o	RULE	x64	PC	CODE	.rodata+16	kExported	
+HIT	c1.x86_64linuxgnug-Os-fPIC_-fno-semantic-interposition.o	x64	PC	2	CODE	.rodata+16	kExported	DATA	only-with-other-bias
+HIT	c1.x86_64linuxgnug-Os-fPIC_-fno-semantic-interposition.o	x64	PC	2	CODE	.bss+14	exported_buf	DATA	only-with-other-bias
+HIT	c1.x86_64linuxgnug-Os-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.x86_64linuxgnug-Os-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+8	_Z3sumv	FUNC	start
+HIT	c1.x86_64linuxgnug-Os-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+60	_Z6lookupi	FUNC	start
+HIT	c1.x86_64linuxgnug-Os-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+112	_Z6bufendv	FUNC	start
+HIT	c1.x86_64linuxgnug-Os-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+120	_Z5touchv	FUNC	start
+HIT	c1.x86_64linuxgnug-Os-fPIC_-fsection-anchors.o	RULE	x64	PC	CODE	.rodata+16	kExported	
+HIT	c1.x86_64linuxgnug-Os-fPIC_-fsection-anchors.o	x64	PC	2	CODE	.rodata+16	kExported	DATA	only-with-other-bias
+HIT	c1.x86_64linuxgnug-Os-fPIC_-fsection-anchors.o	x64	PC	2	CODE	.bss+14	exported_buf	DATA	only-with-other-bias
+HIT	c1.x86_64linuxgnug-Os-fPIC_-fsection-anchors.o	x64	PC	2	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.x86_64linuxgnug-Os-fPIC_-fsection-anchors.o	x64	PC	2	EH	.text+8	_Z3sumv	FUNC	start
+HIT	c1.x86_64linuxgnug-Os-fPIC_-fsection-anchors.o	x64	PC	2	EH	.text+60	_Z6lookupi	FUNC	start
+HIT	c1.x86_64linuxgnug-Os-fPIC_-fsection-anchors.o	x64	PC	2	EH	.text+112	_Z6bufendv	FUNC	start
+HIT	c1.x86_64linuxgnug-Os-fPIC_-fsection-anchors.o	x64	PC	2	EH	.text+120	_Z5touchv	FUNC	start
+HIT	c1.x86_64linuxgnug-Os-fpic.o	RULE	x64	PC	CODE	.rodata+16	kExported	
+HIT	c1.x86_64linuxgnug-Os-fpic.o	x64	PC	2	CODE	.rodata+16	kExported	DATA	only-with-other-bias
+HIT	c1.x86_64linuxgnug-Os-fpic.o	x64	PC	2	CODE	.bss+14	exported_buf	DATA	only-with-other-bias
+HIT	c1.x86_64linuxgnug-Os-fpic.o	x64	PC	2	EH	.text+0	_Z12end_of_localv	FUNC	start
+HIT	c1.x86_64linuxgnug-Os-fpic.o	x64	PC	2	EH	.text+8	_Z3sumv	FUNC	start
+HIT	c1.x86_64linuxgnug-Os-fpic.o	x64	PC	2	EH	.text+60	_Z6lookupi	FUNC	start
+HIT	c1.x86_64linuxgnug-Os-fpic.o	x64	PC	2	EH	.text+112	_Z6bufendv	FUNC	start
+HIT	c1.x86_64linuxgnug-Os-fpic.o	x64	PC	2	EH	.text+120	_Z5touchv	FUNC	start
+HIT	c2.clang19-O0-fPIC.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.clang19-O0-fPIC.o	a64	PC	261	EH	.text+44	arr_end	FUNC	start
+HIT	c2.clang19-O0-fPIC.o	a64	PC	261	EH	.text+60	loop	FUNC	start
+HIT	c2.clang19-O0-fPIC.o	a64	PC	261	EH	.text+164	name_end	FUNC	start
+HIT	c2.clang19-O0-fPIC.o	a64	PC	261	EH	.text+180	set	FUNC	start
+HIT	c2.clang19-O0-fPIC_-fcommon.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.clang19-O0-fPIC_-fcommon.o	a64	PC	261	EH	.text+44	arr_end	FUNC	start
+HIT	c2.clang19-O0-fPIC_-fcommon.o	a64	PC	261	EH	.text+60	loop	FUNC	start
+HIT	c2.clang19-O0-fPIC_-fcommon.o	a64	PC	261	EH	.text+164	name_end	FUNC	start
+HIT	c2.clang19-O0-fPIC_-fcommon.o	a64	PC	261	EH	.text+180	set	FUNC	start
+HIT	c2.clang19-O0-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.clang19-O0-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+44	arr_end	FUNC	start
+HIT	c2.clang19-O0-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+60	loop	FUNC	start
+HIT	c2.clang19-O0-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+164	name_end	FUNC	start
+HIT	c2.clang19-O0-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+180	set	FUNC	start
+HIT	c2.clang19-O0-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.clang19-O0-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+44	arr_end	FUNC	start
+HIT	c2.clang19-O0-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+60	loop	FUNC	start
+HIT	c2.clang19-O0-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+164	name_end	FUNC	start
+HIT	c2.clang19-O0-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+180	set	FUNC	start
+HIT	c2.clang19-O1-fPIC.o	RULE	a64	PC	CODE	.bss+48	after	start=end-of-local
+HIT	c2.clang19-O1-fPIC.o	a64	PC	275	CODE	.bss+48	after	DATA	start=end-of-local
+HIT	c2.clang19-O1-fPIC.o	RULE	a64	LO12	CODE	.bss+48	after	start=end-of-local
+HIT	c2.clang19-O1-fPIC.o	a64	LO12	277	CODE	.bss+48	after	DATA	start=end-of-local
+HIT	c2.clang19-O1-fPIC.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.clang19-O1-fPIC.o	a64	PC	261	EH	.text+40	arr_end	FUNC	start
+HIT	c2.clang19-O1-fPIC.o	a64	PC	261	EH	.text+52	loop	FUNC	start
+HIT	c2.clang19-O1-fPIC.o	a64	PC	261	EH	.text+92	name_end	FUNC	start
+HIT	c2.clang19-O1-fPIC.o	a64	PC	261	EH	.text+104	set	FUNC	start
+HIT	c2.clang19-O1-fPIC_-fcommon.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.clang19-O1-fPIC_-fcommon.o	a64	PC	261	EH	.text+40	arr_end	FUNC	start
+HIT	c2.clang19-O1-fPIC_-fcommon.o	a64	PC	261	EH	.text+52	loop	FUNC	start
+HIT	c2.clang19-O1-fPIC_-fcommon.o	a64	PC	261	EH	.text+92	name_end	FUNC	start
+HIT	c2.clang19-O1-fPIC_-fcommon.o	a64	PC	261	EH	.text+104	set	FUNC	start
+HIT	c2.clang19-O1-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.clang19-O1-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+40	arr_end	FUNC	start
+HIT	c2.clang19-O1-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+52	loop	FUNC	start
+HIT	c2.clang19-O1-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+92	name_end	FUNC	start
+HIT	c2.clang19-O1-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+104	set	FUNC	start
+HIT	c2.clang19-O1-fPIC_-fno-semantic-interposition.o	RULE	a64	PC	CODE	.bss+48	after	start=end-of-local
+HIT	c2.clang19-O1-fPIC_-fno-semantic-interposition.o	a64	PC	275	CODE	.bss+48	after	DATA	start=end-of-local
+HIT	c2.clang19-O1-fPIC_-fno-semantic-interposition.o	RULE	a64	LO12	CODE	.bss+48	after	start=end-of-local
+HIT	c2.clang19-O1-fPIC_-fno-semantic-interposition.o	a64	LO12	277	CODE	.bss+48	after	DATA	start=end-of-local
+HIT	c2.clang19-O1-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.clang19-O1-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+40	arr_end	FUNC	start
+HIT	c2.clang19-O1-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+52	loop	FUNC	start
+HIT	c2.clang19-O1-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+92	name_end	FUNC	start
+HIT	c2.clang19-O1-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+104	set	FUNC	start
+HIT	c2.clang19-O2-fPIC.o	RULE	a64	PC	CODE	.bss+72	after	start=end-of-local
+HIT	c2.clang19-O2-fPIC.o	a64	PC	275	CODE	.bss+72	after	DATA	start=end-of-local
+HIT	c2.clang19-O2-fPIC.o	RULE	a64	LO12	CODE	.bss+72	after	start=end-of-local
+HIT	c2.clang19-O2-fPIC.o	a64	LO12	277	CODE	.bss+72	after	DATA	start=end-of-local
+HIT	c2.clang19-O2-fPIC.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.clang19-O2-fPIC.o	a64	PC	261	EH	.text+40	arr_end	FUNC	start
+HIT	c2.clang19-O2-fPIC.o	a64	PC	261	EH	.text+52	loop	FUNC	start
+HIT	c2.clang19-O2-fPIC.o	a64	PC	261	EH	.text+92	name_end	FUNC	start
+HIT	c2.clang19-O2-fPIC.o	a64	PC	261	EH	.text+104	set	FUNC	start
+HIT	c2.clang19-O2-fPIC_-fcommon.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.clang19-O2-fPIC_-fcommon.o	a64	PC	261	EH	.text+40	arr_end	FUNC	start
+HIT	c2.clang19-O2-fPIC_-fcommon.o	a64	PC	261	EH	.text+52	loop	FUNC	start
+HIT	c2.clang19-O2-fPIC_-fcommon.o	a64	PC	261	EH	.text+92	name_end	FUNC	start
+HIT	c2.clang19-O2-fPIC_-fcommon.o	a64	PC	261	EH	.text+104	set	FUNC	start
+HIT	c2.clang19-O2-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.clang19-O2-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+40	arr_end	FUNC	start
+HIT	c2.clang19-O2-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+52	loop	FUNC	start
+HIT	c2.clang19-O2-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+92	name_end	FUNC	start
+HIT	c2.clang19-O2-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+104	set	FUNC	start
+HIT	c2.clang19-O2-fPIC_-fno-semantic-interposition.o	RULE	a64	PC	CODE	.bss+72	after	start=end-of-local
+HIT	c2.clang19-O2-fPIC_-fno-semantic-interposition.o	a64	PC	275	CODE	.bss+72	after	DATA	start=end-of-local
+HIT	c2.clang19-O2-fPIC_-fno-semantic-interposition.o	RULE	a64	LO12	CODE	.bss+72	after	start=end-of-local
+HIT	c2.clang19-O2-fPIC_-fno-semantic-interposition.o	a64	LO12	277	CODE	.bss+72	after	DATA	start=end-of-local
+HIT	c2.clang19-O2-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.clang19-O2-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+40	arr_end	FUNC	start
+HIT	c2.clang19-O2-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+52	loop	FUNC	start
+HIT	c2.clang19-O2-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+92	name_end	FUNC	start
+HIT	c2.clang19-O2-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+104	set	FUNC	start
+HIT	c2.clang19-O3-fPIC.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.clang19-O3-fPIC.o	a64	PC	261	EH	.text+40	arr_end	FUNC	start
+HIT	c2.clang19-O3-fPIC.o	a64	PC	261	EH	.text+52	loop	FUNC	start
+HIT	c2.clang19-O3-fPIC.o	a64	PC	261	EH	.text+92	name_end	FUNC	start
+HIT	c2.clang19-O3-fPIC.o	a64	PC	261	EH	.text+104	set	FUNC	start
+HIT	c2.clang19-O3-fPIC_-fcommon.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.clang19-O3-fPIC_-fcommon.o	a64	PC	261	EH	.text+40	arr_end	FUNC	start
+HIT	c2.clang19-O3-fPIC_-fcommon.o	a64	PC	261	EH	.text+52	loop	FUNC	start
+HIT	c2.clang19-O3-fPIC_-fcommon.o	a64	PC	261	EH	.text+92	name_end	FUNC	start
+HIT	c2.clang19-O3-fPIC_-fcommon.o	a64	PC	261	EH	.text+104	set	FUNC	start
+HIT	c2.clang19-O3-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.clang19-O3-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+40	arr_end	FUNC	start
+HIT	c2.clang19-O3-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+52	loop	FUNC	start
+HIT	c2.clang19-O3-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+92	name_end	FUNC	start
+HIT	c2.clang19-O3-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+104	set	FUNC	start
+HIT	c2.clang19-O3-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.clang19-O3-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+40	arr_end	FUNC	start
+HIT	c2.clang19-O3-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+52	loop	FUNC	start
+HIT	c2.clang19-O3-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+92	name_end	FUNC	start
+HIT	c2.clang19-O3-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+104	set	FUNC	start
+HIT	c2.clang19-Os-fPIC.o	RULE	a64	PC	CODE	.bss+48	after	start=end-of-local
+HIT	c2.clang19-Os-fPIC.o	a64	PC	275	CODE	.bss+48	after	DATA	start=end-of-local
+HIT	c2.clang19-Os-fPIC.o	RULE	a64	LO12	CODE	.bss+48	after	start=end-of-local
+HIT	c2.clang19-Os-fPIC.o	a64	LO12	277	CODE	.bss+48	after	DATA	start=end-of-local
+HIT	c2.clang19-Os-fPIC.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.clang19-Os-fPIC.o	a64	PC	261	EH	.text+40	arr_end	FUNC	start
+HIT	c2.clang19-Os-fPIC.o	a64	PC	261	EH	.text+52	loop	FUNC	start
+HIT	c2.clang19-Os-fPIC.o	a64	PC	261	EH	.text+92	name_end	FUNC	start
+HIT	c2.clang19-Os-fPIC.o	a64	PC	261	EH	.text+104	set	FUNC	start
+HIT	c2.clang19-Os-fPIC_-fcommon.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.clang19-Os-fPIC_-fcommon.o	a64	PC	261	EH	.text+40	arr_end	FUNC	start
+HIT	c2.clang19-Os-fPIC_-fcommon.o	a64	PC	261	EH	.text+52	loop	FUNC	start
+HIT	c2.clang19-Os-fPIC_-fcommon.o	a64	PC	261	EH	.text+92	name_end	FUNC	start
+HIT	c2.clang19-Os-fPIC_-fcommon.o	a64	PC	261	EH	.text+104	set	FUNC	start
+HIT	c2.clang19-Os-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.clang19-Os-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+40	arr_end	FUNC	start
+HIT	c2.clang19-Os-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+52	loop	FUNC	start
+HIT	c2.clang19-Os-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+92	name_end	FUNC	start
+HIT	c2.clang19-Os-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+104	set	FUNC	start
+HIT	c2.clang19-Os-fPIC_-fno-semantic-interposition.o	RULE	a64	PC	CODE	.bss+48	after	start=end-of-local
+HIT	c2.clang19-Os-fPIC_-fno-semantic-interposition.o	a64	PC	275	CODE	.bss+48	after	DATA	start=end-of-local
+HIT	c2.clang19-Os-fPIC_-fno-semantic-interposition.o	RULE	a64	LO12	CODE	.bss+48	after	start=end-of-local
+HIT	c2.clang19-Os-fPIC_-fno-semantic-interposition.o	a64	LO12	277	CODE	.bss+48	after	DATA	start=end-of-local
+HIT	c2.clang19-Os-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.clang19-Os-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+40	arr_end	FUNC	start
+HIT	c2.clang19-Os-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+52	loop	FUNC	start
+HIT	c2.clang19-Os-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+92	name_end	FUNC	start
+HIT	c2.clang19-Os-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+104	set	FUNC	start
+HIT	c2.clang22-O0-fPIC.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.clang22-O0-fPIC.o	a64	PC	261	EH	.text+44	arr_end	FUNC	start
+HIT	c2.clang22-O0-fPIC.o	a64	PC	261	EH	.text+60	loop	FUNC	start
+HIT	c2.clang22-O0-fPIC.o	a64	PC	261	EH	.text+164	name_end	FUNC	start
+HIT	c2.clang22-O0-fPIC.o	a64	PC	261	EH	.text+180	set	FUNC	start
+HIT	c2.clang22-O0-fPIC_-fcommon.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.clang22-O0-fPIC_-fcommon.o	a64	PC	261	EH	.text+44	arr_end	FUNC	start
+HIT	c2.clang22-O0-fPIC_-fcommon.o	a64	PC	261	EH	.text+60	loop	FUNC	start
+HIT	c2.clang22-O0-fPIC_-fcommon.o	a64	PC	261	EH	.text+164	name_end	FUNC	start
+HIT	c2.clang22-O0-fPIC_-fcommon.o	a64	PC	261	EH	.text+180	set	FUNC	start
+HIT	c2.clang22-O0-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.clang22-O0-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+44	arr_end	FUNC	start
+HIT	c2.clang22-O0-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+60	loop	FUNC	start
+HIT	c2.clang22-O0-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+164	name_end	FUNC	start
+HIT	c2.clang22-O0-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+180	set	FUNC	start
+HIT	c2.clang22-O0-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.clang22-O0-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+44	arr_end	FUNC	start
+HIT	c2.clang22-O0-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+60	loop	FUNC	start
+HIT	c2.clang22-O0-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+164	name_end	FUNC	start
+HIT	c2.clang22-O0-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+180	set	FUNC	start
+HIT	c2.clang22-O1-fPIC.o	RULE	a64	PC	CODE	.bss+48	after	start=end-of-local
+HIT	c2.clang22-O1-fPIC.o	a64	PC	275	CODE	.bss+48	after	DATA	start=end-of-local
+HIT	c2.clang22-O1-fPIC.o	RULE	a64	LO12	CODE	.bss+48	after	start=end-of-local
+HIT	c2.clang22-O1-fPIC.o	a64	LO12	277	CODE	.bss+48	after	DATA	start=end-of-local
+HIT	c2.clang22-O1-fPIC.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.clang22-O1-fPIC.o	a64	PC	261	EH	.text+40	arr_end	FUNC	start
+HIT	c2.clang22-O1-fPIC.o	a64	PC	261	EH	.text+52	loop	FUNC	start
+HIT	c2.clang22-O1-fPIC.o	a64	PC	261	EH	.text+92	name_end	FUNC	start
+HIT	c2.clang22-O1-fPIC.o	a64	PC	261	EH	.text+104	set	FUNC	start
+HIT	c2.clang22-O1-fPIC_-fcommon.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.clang22-O1-fPIC_-fcommon.o	a64	PC	261	EH	.text+40	arr_end	FUNC	start
+HIT	c2.clang22-O1-fPIC_-fcommon.o	a64	PC	261	EH	.text+52	loop	FUNC	start
+HIT	c2.clang22-O1-fPIC_-fcommon.o	a64	PC	261	EH	.text+92	name_end	FUNC	start
+HIT	c2.clang22-O1-fPIC_-fcommon.o	a64	PC	261	EH	.text+104	set	FUNC	start
+HIT	c2.clang22-O1-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.clang22-O1-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+40	arr_end	FUNC	start
+HIT	c2.clang22-O1-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+52	loop	FUNC	start
+HIT	c2.clang22-O1-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+92	name_end	FUNC	start
+HIT	c2.clang22-O1-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+104	set	FUNC	start
+HIT	c2.clang22-O1-fPIC_-fno-semantic-interposition.o	RULE	a64	PC	CODE	.bss+48	after	start=end-of-local
+HIT	c2.clang22-O1-fPIC_-fno-semantic-interposition.o	a64	PC	275	CODE	.bss+48	after	DATA	start=end-of-local
+HIT	c2.clang22-O1-fPIC_-fno-semantic-interposition.o	RULE	a64	LO12	CODE	.bss+48	after	start=end-of-local
+HIT	c2.clang22-O1-fPIC_-fno-semantic-interposition.o	a64	LO12	277	CODE	.bss+48	after	DATA	start=end-of-local
+HIT	c2.clang22-O1-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.clang22-O1-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+40	arr_end	FUNC	start
+HIT	c2.clang22-O1-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+52	loop	FUNC	start
+HIT	c2.clang22-O1-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+92	name_end	FUNC	start
+HIT	c2.clang22-O1-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+104	set	FUNC	start
+HIT	c2.clang22-O2-fPIC.o	RULE	a64	PC	CODE	.bss+72	after	start=end-of-local
+HIT	c2.clang22-O2-fPIC.o	a64	PC	275	CODE	.bss+72	after	DATA	start=end-of-local
+HIT	c2.clang22-O2-fPIC.o	RULE	a64	LO12	CODE	.bss+72	after	start=end-of-local
+HIT	c2.clang22-O2-fPIC.o	a64	LO12	277	CODE	.bss+72	after	DATA	start=end-of-local
+HIT	c2.clang22-O2-fPIC.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.clang22-O2-fPIC.o	a64	PC	261	EH	.text+40	arr_end	FUNC	start
+HIT	c2.clang22-O2-fPIC.o	a64	PC	261	EH	.text+52	loop	FUNC	start
+HIT	c2.clang22-O2-fPIC.o	a64	PC	261	EH	.text+92	name_end	FUNC	start
+HIT	c2.clang22-O2-fPIC.o	a64	PC	261	EH	.text+104	set	FUNC	start
+HIT	c2.clang22-O2-fPIC_-fcommon.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.clang22-O2-fPIC_-fcommon.o	a64	PC	261	EH	.text+40	arr_end	FUNC	start
+HIT	c2.clang22-O2-fPIC_-fcommon.o	a64	PC	261	EH	.text+52	loop	FUNC	start
+HIT	c2.clang22-O2-fPIC_-fcommon.o	a64	PC	261	EH	.text+92	name_end	FUNC	start
+HIT	c2.clang22-O2-fPIC_-fcommon.o	a64	PC	261	EH	.text+104	set	FUNC	start
+HIT	c2.clang22-O2-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.clang22-O2-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+40	arr_end	FUNC	start
+HIT	c2.clang22-O2-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+52	loop	FUNC	start
+HIT	c2.clang22-O2-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+92	name_end	FUNC	start
+HIT	c2.clang22-O2-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+104	set	FUNC	start
+HIT	c2.clang22-O2-fPIC_-fno-semantic-interposition.o	RULE	a64	PC	CODE	.bss+72	after	start=end-of-local
+HIT	c2.clang22-O2-fPIC_-fno-semantic-interposition.o	a64	PC	275	CODE	.bss+72	after	DATA	start=end-of-local
+HIT	c2.clang22-O2-fPIC_-fno-semantic-interposition.o	RULE	a64	LO12	CODE	.bss+72	after	start=end-of-local
+HIT	c2.clang22-O2-fPIC_-fno-semantic-interposition.o	a64	LO12	277	CODE	.bss+72	after	DATA	start=end-of-local
+HIT	c2.clang22-O2-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.clang22-O2-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+40	arr_end	FUNC	start
+HIT	c2.clang22-O2-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+52	loop	FUNC	start
+HIT	c2.clang22-O2-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+92	name_end	FUNC	start
+HIT	c2.clang22-O2-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+104	set	FUNC	start
+HIT	c2.clang22-O3-fPIC.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.clang22-O3-fPIC.o	a64	PC	261	EH	.text+40	arr_end	FUNC	start
+HIT	c2.clang22-O3-fPIC.o	a64	PC	261	EH	.text+52	loop	FUNC	start
+HIT	c2.clang22-O3-fPIC.o	a64	PC	261	EH	.text+92	name_end	FUNC	start
+HIT	c2.clang22-O3-fPIC.o	a64	PC	261	EH	.text+104	set	FUNC	start
+HIT	c2.clang22-O3-fPIC_-fcommon.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.clang22-O3-fPIC_-fcommon.o	a64	PC	261	EH	.text+40	arr_end	FUNC	start
+HIT	c2.clang22-O3-fPIC_-fcommon.o	a64	PC	261	EH	.text+52	loop	FUNC	start
+HIT	c2.clang22-O3-fPIC_-fcommon.o	a64	PC	261	EH	.text+92	name_end	FUNC	start
+HIT	c2.clang22-O3-fPIC_-fcommon.o	a64	PC	261	EH	.text+104	set	FUNC	start
+HIT	c2.clang22-O3-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.clang22-O3-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+40	arr_end	FUNC	start
+HIT	c2.clang22-O3-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+52	loop	FUNC	start
+HIT	c2.clang22-O3-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+92	name_end	FUNC	start
+HIT	c2.clang22-O3-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+104	set	FUNC	start
+HIT	c2.clang22-O3-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.clang22-O3-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+40	arr_end	FUNC	start
+HIT	c2.clang22-O3-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+52	loop	FUNC	start
+HIT	c2.clang22-O3-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+92	name_end	FUNC	start
+HIT	c2.clang22-O3-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+104	set	FUNC	start
+HIT	c2.clang22-Os-fPIC.o	RULE	a64	PC	CODE	.bss+48	after	start=end-of-local
+HIT	c2.clang22-Os-fPIC.o	a64	PC	275	CODE	.bss+48	after	DATA	start=end-of-local
+HIT	c2.clang22-Os-fPIC.o	RULE	a64	LO12	CODE	.bss+48	after	start=end-of-local
+HIT	c2.clang22-Os-fPIC.o	a64	LO12	277	CODE	.bss+48	after	DATA	start=end-of-local
+HIT	c2.clang22-Os-fPIC.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.clang22-Os-fPIC.o	a64	PC	261	EH	.text+40	arr_end	FUNC	start
+HIT	c2.clang22-Os-fPIC.o	a64	PC	261	EH	.text+52	loop	FUNC	start
+HIT	c2.clang22-Os-fPIC.o	a64	PC	261	EH	.text+92	name_end	FUNC	start
+HIT	c2.clang22-Os-fPIC.o	a64	PC	261	EH	.text+104	set	FUNC	start
+HIT	c2.clang22-Os-fPIC_-fcommon.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.clang22-Os-fPIC_-fcommon.o	a64	PC	261	EH	.text+40	arr_end	FUNC	start
+HIT	c2.clang22-Os-fPIC_-fcommon.o	a64	PC	261	EH	.text+52	loop	FUNC	start
+HIT	c2.clang22-Os-fPIC_-fcommon.o	a64	PC	261	EH	.text+92	name_end	FUNC	start
+HIT	c2.clang22-Os-fPIC_-fcommon.o	a64	PC	261	EH	.text+104	set	FUNC	start
+HIT	c2.clang22-Os-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.clang22-Os-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+40	arr_end	FUNC	start
+HIT	c2.clang22-Os-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+52	loop	FUNC	start
+HIT	c2.clang22-Os-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+92	name_end	FUNC	start
+HIT	c2.clang22-Os-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+104	set	FUNC	start
+HIT	c2.clang22-Os-fPIC_-fno-semantic-interposition.o	RULE	a64	PC	CODE	.bss+48	after	start=end-of-local
+HIT	c2.clang22-Os-fPIC_-fno-semantic-interposition.o	a64	PC	275	CODE	.bss+48	after	DATA	start=end-of-local
+HIT	c2.clang22-Os-fPIC_-fno-semantic-interposition.o	RULE	a64	LO12	CODE	.bss+48	after	start=end-of-local
+HIT	c2.clang22-Os-fPIC_-fno-semantic-interposition.o	a64	LO12	277	CODE	.bss+48	after	DATA	start=end-of-local
+HIT	c2.clang22-Os-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.clang22-Os-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+40	arr_end	FUNC	start
+HIT	c2.clang22-Os-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+52	loop	FUNC	start
+HIT	c2.clang22-Os-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+92	name_end	FUNC	start
+HIT	c2.clang22-Os-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+104	set	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O0-fPIC.o	x64	PC	2	CODE	.bss+-4	g_exported_counter	DATA	only-with-other-bias
+HIT	c2.clang22_target_x86_64lin-O0-fPIC.o	x64	PC	2	CODE	.bss+-4	g_exported_counter	DATA	only-with-other-bias
+HIT	c2.clang22_target_x86_64lin-O0-fPIC.o	x64	PC	2	CODE	.bss+-4	g_exported_counter	DATA	only-with-other-bias
+HIT	c2.clang22_target_x86_64lin-O0-fPIC.o	x64	PC	2	CODE	.rodata+0	exported_name	DATA	only-with-other-bias
+HIT	c2.clang22_target_x86_64lin-O0-fPIC.o	x64	PC	2	CODE	.bss+-8	g_exported_counter	DATA	only-with-other-bias
+HIT	c2.clang22_target_x86_64lin-O0-fPIC.o	x64	PC	2	CODE	.bss+44	after	DATA	only-with-other-bias
+HIT	c2.clang22_target_x86_64lin-O0-fPIC.o	x64	PC	2	EH	.text+0	bump	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O0-fPIC.o	x64	PC	2	EH	.text+48	arr_end	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O0-fPIC.o	x64	PC	2	EH	.text+80	loop	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O0-fPIC.o	x64	PC	2	EH	.text+160	name_end	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O0-fPIC.o	x64	PC	2	EH	.text+192	set	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O0-fPIC_-fcommon.o	x64	PC	2	CODE	.rodata+0	exported_name	DATA	only-with-other-bias
+HIT	c2.clang22_target_x86_64lin-O0-fPIC_-fcommon.o	x64	PC	2	EH	.text+0	bump	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O0-fPIC_-fcommon.o	x64	PC	2	EH	.text+48	arr_end	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O0-fPIC_-fcommon.o	x64	PC	2	EH	.text+80	loop	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O0-fPIC_-fcommon.o	x64	PC	2	EH	.text+160	name_end	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O0-fPIC_-fcommon.o	x64	PC	2	EH	.text+192	set	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O0-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+0	bump	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O0-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+48	arr_end	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O0-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+80	loop	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O0-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+160	name_end	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O0-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+192	set	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O0-fPIC_-fno-semantic-interposition.o	x64	PC	2	CODE	.bss+-4	g_exported_counter	DATA	only-with-other-bias
+HIT	c2.clang22_target_x86_64lin-O0-fPIC_-fno-semantic-interposition.o	x64	PC	2	CODE	.bss+-4	g_exported_counter	DATA	only-with-other-bias
+HIT	c2.clang22_target_x86_64lin-O0-fPIC_-fno-semantic-interposition.o	x64	PC	2	CODE	.bss+-4	g_exported_counter	DATA	only-with-other-bias
+HIT	c2.clang22_target_x86_64lin-O0-fPIC_-fno-semantic-interposition.o	x64	PC	2	CODE	.rodata+0	exported_name	DATA	only-with-other-bias
+HIT	c2.clang22_target_x86_64lin-O0-fPIC_-fno-semantic-interposition.o	x64	PC	2	CODE	.bss+-8	g_exported_counter	DATA	only-with-other-bias
+HIT	c2.clang22_target_x86_64lin-O0-fPIC_-fno-semantic-interposition.o	x64	PC	2	CODE	.bss+44	after	DATA	only-with-other-bias
+HIT	c2.clang22_target_x86_64lin-O0-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+0	bump	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O0-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+48	arr_end	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O0-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+80	loop	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O0-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+160	name_end	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O0-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+192	set	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O1-fPIC.o	x64	PC	2	CODE	.bss+-4	g_exported_counter	DATA	only-with-other-bias
+HIT	c2.clang22_target_x86_64lin-O1-fPIC.o	x64	PC	2	CODE	.bss+-4	g_exported_counter	DATA	only-with-other-bias
+HIT	c2.clang22_target_x86_64lin-O1-fPIC.o	RULE	x64	PC	CODE	.bss+52	after	start=end-of-local
+HIT	c2.clang22_target_x86_64lin-O1-fPIC.o	x64	PC	2	CODE	.bss+52	after	DATA	start=end-of-local
+HIT	c2.clang22_target_x86_64lin-O1-fPIC.o	x64	PC	2	CODE	.bss+-8	g_exported_counter	DATA	only-with-other-bias
+HIT	c2.clang22_target_x86_64lin-O1-fPIC.o	x64	PC	2	CODE	.bss+44	after	DATA	only-with-other-bias
+HIT	c2.clang22_target_x86_64lin-O1-fPIC.o	x64	PC	2	EH	.text+0	bump	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O1-fPIC.o	x64	PC	2	EH	.text+32	arr_end	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O1-fPIC.o	x64	PC	2	EH	.text+48	loop	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O1-fPIC.o	x64	PC	2	EH	.text+80	name_end	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O1-fPIC.o	x64	PC	2	EH	.text+96	set	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O1-fPIC_-fcommon.o	x64	PC	2	EH	.text+0	bump	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O1-fPIC_-fcommon.o	x64	PC	2	EH	.text+32	arr_end	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O1-fPIC_-fcommon.o	x64	PC	2	EH	.text+48	loop	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O1-fPIC_-fcommon.o	x64	PC	2	EH	.text+80	name_end	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O1-fPIC_-fcommon.o	x64	PC	2	EH	.text+96	set	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O1-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+0	bump	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O1-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+32	arr_end	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O1-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+48	loop	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O1-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+80	name_end	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O1-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+96	set	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O1-fPIC_-fno-semantic-interposition.o	x64	PC	2	CODE	.bss+-4	g_exported_counter	DATA	only-with-other-bias
+HIT	c2.clang22_target_x86_64lin-O1-fPIC_-fno-semantic-interposition.o	x64	PC	2	CODE	.bss+-4	g_exported_counter	DATA	only-with-other-bias
+HIT	c2.clang22_target_x86_64lin-O1-fPIC_-fno-semantic-interposition.o	RULE	x64	PC	CODE	.bss+52	after	start=end-of-local
+HIT	c2.clang22_target_x86_64lin-O1-fPIC_-fno-semantic-interposition.o	x64	PC	2	CODE	.bss+52	after	DATA	start=end-of-local
+HIT	c2.clang22_target_x86_64lin-O1-fPIC_-fno-semantic-interposition.o	x64	PC	2	CODE	.bss+-8	g_exported_counter	DATA	only-with-other-bias
+HIT	c2.clang22_target_x86_64lin-O1-fPIC_-fno-semantic-interposition.o	x64	PC	2	CODE	.bss+44	after	DATA	only-with-other-bias
+HIT	c2.clang22_target_x86_64lin-O1-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+0	bump	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O1-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+32	arr_end	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O1-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+48	loop	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O1-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+80	name_end	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O1-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+96	set	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O2-fPIC.o	x64	PC	2	CODE	.bss+-4	g_exported_counter	DATA	only-with-other-bias
+HIT	c2.clang22_target_x86_64lin-O2-fPIC.o	x64	PC	2	CODE	.bss+-4	g_exported_counter	DATA	only-with-other-bias
+HIT	c2.clang22_target_x86_64lin-O2-fPIC.o	RULE	x64	PC	CODE	.bss+68	after	start=end-of-local
+HIT	c2.clang22_target_x86_64lin-O2-fPIC.o	x64	PC	2	CODE	.bss+68	after	DATA	start=end-of-local
+HIT	c2.clang22_target_x86_64lin-O2-fPIC.o	x64	PC	2	CODE	.bss+60	after	DATA	only-with-other-bias
+HIT	c2.clang22_target_x86_64lin-O2-fPIC.o	RULE	x64	PC	CODE	.bss+64	after	start=end-of-local
+HIT	c2.clang22_target_x86_64lin-O2-fPIC.o	x64	PC	2	CODE	.bss+64	after	DATA	only-with-other-bias
+HIT	c2.clang22_target_x86_64lin-O2-fPIC.o	x64	PC	2	CODE	.bss+-8	g_exported_counter	DATA	only-with-other-bias
+HIT	c2.clang22_target_x86_64lin-O2-fPIC.o	x64	PC	2	CODE	.bss+60	after	DATA	only-with-other-bias
+HIT	c2.clang22_target_x86_64lin-O2-fPIC.o	x64	PC	2	EH	.text+0	bump	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O2-fPIC.o	x64	PC	2	EH	.text+32	arr_end	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O2-fPIC.o	x64	PC	2	EH	.text+48	loop	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O2-fPIC.o	x64	PC	2	EH	.text+112	name_end	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O2-fPIC.o	x64	PC	2	EH	.text+128	set	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O2-fPIC_-fcommon.o	x64	PC	2	EH	.text+0	bump	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O2-fPIC_-fcommon.o	x64	PC	2	EH	.text+32	arr_end	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O2-fPIC_-fcommon.o	x64	PC	2	EH	.text+48	loop	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O2-fPIC_-fcommon.o	x64	PC	2	EH	.text+112	name_end	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O2-fPIC_-fcommon.o	x64	PC	2	EH	.text+128	set	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O2-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+0	bump	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O2-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+32	arr_end	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O2-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+48	loop	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O2-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+112	name_end	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O2-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+128	set	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O2-fPIC_-fno-semantic-interposition.o	x64	PC	2	CODE	.bss+-4	g_exported_counter	DATA	only-with-other-bias
+HIT	c2.clang22_target_x86_64lin-O2-fPIC_-fno-semantic-interposition.o	x64	PC	2	CODE	.bss+-4	g_exported_counter	DATA	only-with-other-bias
+HIT	c2.clang22_target_x86_64lin-O2-fPIC_-fno-semantic-interposition.o	RULE	x64	PC	CODE	.bss+68	after	start=end-of-local
+HIT	c2.clang22_target_x86_64lin-O2-fPIC_-fno-semantic-interposition.o	x64	PC	2	CODE	.bss+68	after	DATA	start=end-of-local
+HIT	c2.clang22_target_x86_64lin-O2-fPIC_-fno-semantic-interposition.o	x64	PC	2	CODE	.bss+60	after	DATA	only-with-other-bias
+HIT	c2.clang22_target_x86_64lin-O2-fPIC_-fno-semantic-interposition.o	RULE	x64	PC	CODE	.bss+64	after	start=end-of-local
+HIT	c2.clang22_target_x86_64lin-O2-fPIC_-fno-semantic-interposition.o	x64	PC	2	CODE	.bss+64	after	DATA	only-with-other-bias
+HIT	c2.clang22_target_x86_64lin-O2-fPIC_-fno-semantic-interposition.o	x64	PC	2	CODE	.bss+-8	g_exported_counter	DATA	only-with-other-bias
+HIT	c2.clang22_target_x86_64lin-O2-fPIC_-fno-semantic-interposition.o	x64	PC	2	CODE	.bss+60	after	DATA	only-with-other-bias
+HIT	c2.clang22_target_x86_64lin-O2-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+0	bump	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O2-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+32	arr_end	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O2-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+48	loop	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O2-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+112	name_end	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O2-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+128	set	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O3-fPIC.o	x64	PC	2	CODE	.bss+-4	g_exported_counter	DATA	only-with-other-bias
+HIT	c2.clang22_target_x86_64lin-O3-fPIC.o	x64	PC	2	CODE	.bss+-4	g_exported_counter	DATA	only-with-other-bias
+HIT	c2.clang22_target_x86_64lin-O3-fPIC.o	RULE	x64	PC	CODE	.bss+68	after	start=end-of-local
+HIT	c2.clang22_target_x86_64lin-O3-fPIC.o	x64	PC	2	CODE	.bss+68	after	DATA	start=end-of-local
+HIT	c2.clang22_target_x86_64lin-O3-fPIC.o	x64	PC	2	CODE	.bss+60	after	DATA	only-with-other-bias
+HIT	c2.clang22_target_x86_64lin-O3-fPIC.o	RULE	x64	PC	CODE	.bss+64	after	start=end-of-local
+HIT	c2.clang22_target_x86_64lin-O3-fPIC.o	x64	PC	2	CODE	.bss+64	after	DATA	only-with-other-bias
+HIT	c2.clang22_target_x86_64lin-O3-fPIC.o	x64	PC	2	CODE	.bss+-8	g_exported_counter	DATA	only-with-other-bias
+HIT	c2.clang22_target_x86_64lin-O3-fPIC.o	x64	PC	2	CODE	.bss+60	after	DATA	only-with-other-bias
+HIT	c2.clang22_target_x86_64lin-O3-fPIC.o	x64	PC	2	EH	.text+0	bump	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O3-fPIC.o	x64	PC	2	EH	.text+32	arr_end	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O3-fPIC.o	x64	PC	2	EH	.text+48	loop	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O3-fPIC.o	x64	PC	2	EH	.text+112	name_end	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O3-fPIC.o	x64	PC	2	EH	.text+128	set	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O3-fPIC_-fcommon.o	x64	PC	2	EH	.text+0	bump	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O3-fPIC_-fcommon.o	x64	PC	2	EH	.text+32	arr_end	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O3-fPIC_-fcommon.o	x64	PC	2	EH	.text+48	loop	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O3-fPIC_-fcommon.o	x64	PC	2	EH	.text+112	name_end	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O3-fPIC_-fcommon.o	x64	PC	2	EH	.text+128	set	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O3-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+0	bump	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O3-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+32	arr_end	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O3-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+48	loop	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O3-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+112	name_end	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O3-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+128	set	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O3-fPIC_-fno-semantic-interposition.o	x64	PC	2	CODE	.bss+-4	g_exported_counter	DATA	only-with-other-bias
+HIT	c2.clang22_target_x86_64lin-O3-fPIC_-fno-semantic-interposition.o	x64	PC	2	CODE	.bss+-4	g_exported_counter	DATA	only-with-other-bias
+HIT	c2.clang22_target_x86_64lin-O3-fPIC_-fno-semantic-interposition.o	RULE	x64	PC	CODE	.bss+68	after	start=end-of-local
+HIT	c2.clang22_target_x86_64lin-O3-fPIC_-fno-semantic-interposition.o	x64	PC	2	CODE	.bss+68	after	DATA	start=end-of-local
+HIT	c2.clang22_target_x86_64lin-O3-fPIC_-fno-semantic-interposition.o	x64	PC	2	CODE	.bss+60	after	DATA	only-with-other-bias
+HIT	c2.clang22_target_x86_64lin-O3-fPIC_-fno-semantic-interposition.o	RULE	x64	PC	CODE	.bss+64	after	start=end-of-local
+HIT	c2.clang22_target_x86_64lin-O3-fPIC_-fno-semantic-interposition.o	x64	PC	2	CODE	.bss+64	after	DATA	only-with-other-bias
+HIT	c2.clang22_target_x86_64lin-O3-fPIC_-fno-semantic-interposition.o	x64	PC	2	CODE	.bss+-8	g_exported_counter	DATA	only-with-other-bias
+HIT	c2.clang22_target_x86_64lin-O3-fPIC_-fno-semantic-interposition.o	x64	PC	2	CODE	.bss+60	after	DATA	only-with-other-bias
+HIT	c2.clang22_target_x86_64lin-O3-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+0	bump	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O3-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+32	arr_end	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O3-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+48	loop	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O3-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+112	name_end	FUNC	start
+HIT	c2.clang22_target_x86_64lin-O3-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+128	set	FUNC	start
+HIT	c2.clang22_target_x86_64lin-Os-fPIC.o	x64	PC	2	CODE	.bss+-4	g_exported_counter	DATA	only-with-other-bias
+HIT	c2.clang22_target_x86_64lin-Os-fPIC.o	x64	PC	2	CODE	.bss+-4	g_exported_counter	DATA	only-with-other-bias
+HIT	c2.clang22_target_x86_64lin-Os-fPIC.o	RULE	x64	PC	CODE	.bss+52	after	start=end-of-local
+HIT	c2.clang22_target_x86_64lin-Os-fPIC.o	x64	PC	2	CODE	.bss+52	after	DATA	start=end-of-local
+HIT	c2.clang22_target_x86_64lin-Os-fPIC.o	x64	PC	2	CODE	.bss+-8	g_exported_counter	DATA	only-with-other-bias
+HIT	c2.clang22_target_x86_64lin-Os-fPIC.o	x64	PC	2	CODE	.bss+44	after	DATA	only-with-other-bias
+HIT	c2.clang22_target_x86_64lin-Os-fPIC.o	x64	PC	2	EH	.text+0	bump	FUNC	start
+HIT	c2.clang22_target_x86_64lin-Os-fPIC.o	x64	PC	2	EH	.text+24	arr_end	FUNC	start
+HIT	c2.clang22_target_x86_64lin-Os-fPIC.o	x64	PC	2	EH	.text+32	loop	FUNC	start
+HIT	c2.clang22_target_x86_64lin-Os-fPIC.o	x64	PC	2	EH	.text+63	name_end	FUNC	start
+HIT	c2.clang22_target_x86_64lin-Os-fPIC.o	x64	PC	2	EH	.text+71	set	FUNC	start
+HIT	c2.clang22_target_x86_64lin-Os-fPIC_-fcommon.o	x64	PC	2	EH	.text+0	bump	FUNC	start
+HIT	c2.clang22_target_x86_64lin-Os-fPIC_-fcommon.o	x64	PC	2	EH	.text+24	arr_end	FUNC	start
+HIT	c2.clang22_target_x86_64lin-Os-fPIC_-fcommon.o	x64	PC	2	EH	.text+32	loop	FUNC	start
+HIT	c2.clang22_target_x86_64lin-Os-fPIC_-fcommon.o	x64	PC	2	EH	.text+63	name_end	FUNC	start
+HIT	c2.clang22_target_x86_64lin-Os-fPIC_-fcommon.o	x64	PC	2	EH	.text+71	set	FUNC	start
+HIT	c2.clang22_target_x86_64lin-Os-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+0	bump	FUNC	start
+HIT	c2.clang22_target_x86_64lin-Os-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+24	arr_end	FUNC	start
+HIT	c2.clang22_target_x86_64lin-Os-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+32	loop	FUNC	start
+HIT	c2.clang22_target_x86_64lin-Os-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+63	name_end	FUNC	start
+HIT	c2.clang22_target_x86_64lin-Os-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+71	set	FUNC	start
+HIT	c2.clang22_target_x86_64lin-Os-fPIC_-fno-semantic-interposition.o	x64	PC	2	CODE	.bss+-4	g_exported_counter	DATA	only-with-other-bias
+HIT	c2.clang22_target_x86_64lin-Os-fPIC_-fno-semantic-interposition.o	x64	PC	2	CODE	.bss+-4	g_exported_counter	DATA	only-with-other-bias
+HIT	c2.clang22_target_x86_64lin-Os-fPIC_-fno-semantic-interposition.o	RULE	x64	PC	CODE	.bss+52	after	start=end-of-local
+HIT	c2.clang22_target_x86_64lin-Os-fPIC_-fno-semantic-interposition.o	x64	PC	2	CODE	.bss+52	after	DATA	start=end-of-local
+HIT	c2.clang22_target_x86_64lin-Os-fPIC_-fno-semantic-interposition.o	x64	PC	2	CODE	.bss+-8	g_exported_counter	DATA	only-with-other-bias
+HIT	c2.clang22_target_x86_64lin-Os-fPIC_-fno-semantic-interposition.o	x64	PC	2	CODE	.bss+44	after	DATA	only-with-other-bias
+HIT	c2.clang22_target_x86_64lin-Os-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+0	bump	FUNC	start
+HIT	c2.clang22_target_x86_64lin-Os-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+24	arr_end	FUNC	start
+HIT	c2.clang22_target_x86_64lin-Os-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+32	loop	FUNC	start
+HIT	c2.clang22_target_x86_64lin-Os-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+63	name_end	FUNC	start
+HIT	c2.clang22_target_x86_64lin-Os-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+71	set	FUNC	start
+HIT	c2.g-O0-fPIC_-fcommon.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.g-O0-fPIC_-fcommon.o	a64	PC	261	EH	.text+72	arr_end	FUNC	start
+HIT	c2.g-O0-fPIC_-fcommon.o	a64	PC	261	EH	.text+84	loop	FUNC	start
+HIT	c2.g-O0-fPIC_-fcommon.o	a64	PC	261	EH	.text+172	name_end	FUNC	start
+HIT	c2.g-O0-fPIC_-fcommon.o	a64	PC	261	EH	.text+184	set	FUNC	start
+HIT	c2.g-O0-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.g-O0-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+72	arr_end	FUNC	start
+HIT	c2.g-O0-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+84	loop	FUNC	start
+HIT	c2.g-O0-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+172	name_end	FUNC	start
+HIT	c2.g-O0-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+184	set	FUNC	start
+HIT	c2.g-O0-fPIC_-fno-section-anchors.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.g-O0-fPIC_-fno-section-anchors.o	a64	PC	261	EH	.text+72	arr_end	FUNC	start
+HIT	c2.g-O0-fPIC_-fno-section-anchors.o	a64	PC	261	EH	.text+84	loop	FUNC	start
+HIT	c2.g-O0-fPIC_-fno-section-anchors.o	a64	PC	261	EH	.text+172	name_end	FUNC	start
+HIT	c2.g-O0-fPIC_-fno-section-anchors.o	a64	PC	261	EH	.text+184	set	FUNC	start
+HIT	c2.g-O0-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.g-O0-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+72	arr_end	FUNC	start
+HIT	c2.g-O0-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+84	loop	FUNC	start
+HIT	c2.g-O0-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+172	name_end	FUNC	start
+HIT	c2.g-O0-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+184	set	FUNC	start
+HIT	c2.g-O0-fPIC_-fsection-anchors.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.g-O0-fPIC_-fsection-anchors.o	a64	PC	261	EH	.text+72	arr_end	FUNC	start
+HIT	c2.g-O0-fPIC_-fsection-anchors.o	a64	PC	261	EH	.text+88	loop	FUNC	start
+HIT	c2.g-O0-fPIC_-fsection-anchors.o	a64	PC	261	EH	.text+180	name_end	FUNC	start
+HIT	c2.g-O0-fPIC_-fsection-anchors.o	a64	PC	261	EH	.text+196	set	FUNC	start
+HIT	c2.g-O0-fpic.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.g-O0-fpic.o	a64	PC	261	EH	.text+72	arr_end	FUNC	start
+HIT	c2.g-O0-fpic.o	a64	PC	261	EH	.text+84	loop	FUNC	start
+HIT	c2.g-O0-fpic.o	a64	PC	261	EH	.text+172	name_end	FUNC	start
+HIT	c2.g-O0-fpic.o	a64	PC	261	EH	.text+184	set	FUNC	start
+HIT	c2.g-O1-fPIC_-fcommon.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.g-O1-fPIC_-fcommon.o	a64	PC	261	EH	.text+40	arr_end	FUNC	start
+HIT	c2.g-O1-fPIC_-fcommon.o	a64	PC	261	EH	.text+56	loop	FUNC	start
+HIT	c2.g-O1-fPIC_-fcommon.o	a64	PC	261	EH	.text+104	name_end	FUNC	start
+HIT	c2.g-O1-fPIC_-fcommon.o	a64	PC	261	EH	.text+120	set	FUNC	start
+HIT	c2.g-O1-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.g-O1-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+40	arr_end	FUNC	start
+HIT	c2.g-O1-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+52	loop	FUNC	start
+HIT	c2.g-O1-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+92	name_end	FUNC	start
+HIT	c2.g-O1-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+104	set	FUNC	start
+HIT	c2.g-O1-fPIC_-fno-section-anchors.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.g-O1-fPIC_-fno-section-anchors.o	a64	PC	261	EH	.text+40	arr_end	FUNC	start
+HIT	c2.g-O1-fPIC_-fno-section-anchors.o	a64	PC	261	EH	.text+52	loop	FUNC	start
+HIT	c2.g-O1-fPIC_-fno-section-anchors.o	a64	PC	261	EH	.text+92	name_end	FUNC	start
+HIT	c2.g-O1-fPIC_-fno-section-anchors.o	a64	PC	261	EH	.text+104	set	FUNC	start
+HIT	c2.g-O1-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.g-O1-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+40	arr_end	FUNC	start
+HIT	c2.g-O1-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+56	loop	FUNC	start
+HIT	c2.g-O1-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+104	name_end	FUNC	start
+HIT	c2.g-O1-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+120	set	FUNC	start
+HIT	c2.g-O1-fPIC_-fsection-anchors.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.g-O1-fPIC_-fsection-anchors.o	a64	PC	261	EH	.text+40	arr_end	FUNC	start
+HIT	c2.g-O1-fPIC_-fsection-anchors.o	a64	PC	261	EH	.text+56	loop	FUNC	start
+HIT	c2.g-O1-fPIC_-fsection-anchors.o	a64	PC	261	EH	.text+104	name_end	FUNC	start
+HIT	c2.g-O1-fPIC_-fsection-anchors.o	a64	PC	261	EH	.text+120	set	FUNC	start
+HIT	c2.g-O1-fpic.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.g-O1-fpic.o	a64	PC	261	EH	.text+40	arr_end	FUNC	start
+HIT	c2.g-O1-fpic.o	a64	PC	261	EH	.text+56	loop	FUNC	start
+HIT	c2.g-O1-fpic.o	a64	PC	261	EH	.text+104	name_end	FUNC	start
+HIT	c2.g-O1-fpic.o	a64	PC	261	EH	.text+120	set	FUNC	start
+HIT	c2.g-O2-fPIC_-fcommon.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.g-O2-fPIC_-fcommon.o	a64	PC	261	EH	.text+40	arr_end	FUNC	start
+HIT	c2.g-O2-fPIC_-fcommon.o	a64	PC	261	EH	.text+64	loop	FUNC	start
+HIT	c2.g-O2-fPIC_-fcommon.o	a64	PC	261	EH	.text+128	name_end	FUNC	start
+HIT	c2.g-O2-fPIC_-fcommon.o	a64	PC	261	EH	.text+144	set	FUNC	start
+HIT	c2.g-O2-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.g-O2-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+40	arr_end	FUNC	start
+HIT	c2.g-O2-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+64	loop	FUNC	start
+HIT	c2.g-O2-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+128	name_end	FUNC	start
+HIT	c2.g-O2-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+140	set	FUNC	start
+HIT	c2.g-O2-fPIC_-fno-section-anchors.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.g-O2-fPIC_-fno-section-anchors.o	a64	PC	261	EH	.text+40	arr_end	FUNC	start
+HIT	c2.g-O2-fPIC_-fno-section-anchors.o	a64	PC	261	EH	.text+64	loop	FUNC	start
+HIT	c2.g-O2-fPIC_-fno-section-anchors.o	a64	PC	261	EH	.text+128	name_end	FUNC	start
+HIT	c2.g-O2-fPIC_-fno-section-anchors.o	a64	PC	261	EH	.text+140	set	FUNC	start
+HIT	c2.g-O2-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.g-O2-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+40	arr_end	FUNC	start
+HIT	c2.g-O2-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+64	loop	FUNC	start
+HIT	c2.g-O2-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+128	name_end	FUNC	start
+HIT	c2.g-O2-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+144	set	FUNC	start
+HIT	c2.g-O2-fPIC_-fsection-anchors.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.g-O2-fPIC_-fsection-anchors.o	a64	PC	261	EH	.text+40	arr_end	FUNC	start
+HIT	c2.g-O2-fPIC_-fsection-anchors.o	a64	PC	261	EH	.text+64	loop	FUNC	start
+HIT	c2.g-O2-fPIC_-fsection-anchors.o	a64	PC	261	EH	.text+128	name_end	FUNC	start
+HIT	c2.g-O2-fPIC_-fsection-anchors.o	a64	PC	261	EH	.text+144	set	FUNC	start
+HIT	c2.g-O2-fpic.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.g-O2-fpic.o	a64	PC	261	EH	.text+40	arr_end	FUNC	start
+HIT	c2.g-O2-fpic.o	a64	PC	261	EH	.text+64	loop	FUNC	start
+HIT	c2.g-O2-fpic.o	a64	PC	261	EH	.text+128	name_end	FUNC	start
+HIT	c2.g-O2-fpic.o	a64	PC	261	EH	.text+144	set	FUNC	start
+HIT	c2.g-O3-fPIC_-fcommon.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.g-O3-fPIC_-fcommon.o	a64	PC	261	EH	.text+40	arr_end	FUNC	start
+HIT	c2.g-O3-fPIC_-fcommon.o	a64	PC	261	EH	.text+64	loop	FUNC	start
+HIT	c2.g-O3-fPIC_-fcommon.o	a64	PC	261	EH	.text+108	name_end	FUNC	start
+HIT	c2.g-O3-fPIC_-fcommon.o	a64	PC	261	EH	.text+128	set	FUNC	start
+HIT	c2.g-O3-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.g-O3-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+40	arr_end	FUNC	start
+HIT	c2.g-O3-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+64	loop	FUNC	start
+HIT	c2.g-O3-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+104	name_end	FUNC	start
+HIT	c2.g-O3-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+128	set	FUNC	start
+HIT	c2.g-O3-fPIC_-fno-section-anchors.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.g-O3-fPIC_-fno-section-anchors.o	a64	PC	261	EH	.text+40	arr_end	FUNC	start
+HIT	c2.g-O3-fPIC_-fno-section-anchors.o	a64	PC	261	EH	.text+64	loop	FUNC	start
+HIT	c2.g-O3-fPIC_-fno-section-anchors.o	a64	PC	261	EH	.text+104	name_end	FUNC	start
+HIT	c2.g-O3-fPIC_-fno-section-anchors.o	a64	PC	261	EH	.text+128	set	FUNC	start
+HIT	c2.g-O3-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.g-O3-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+40	arr_end	FUNC	start
+HIT	c2.g-O3-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+64	loop	FUNC	start
+HIT	c2.g-O3-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+108	name_end	FUNC	start
+HIT	c2.g-O3-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+128	set	FUNC	start
+HIT	c2.g-O3-fPIC_-fsection-anchors.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.g-O3-fPIC_-fsection-anchors.o	a64	PC	261	EH	.text+40	arr_end	FUNC	start
+HIT	c2.g-O3-fPIC_-fsection-anchors.o	a64	PC	261	EH	.text+64	loop	FUNC	start
+HIT	c2.g-O3-fPIC_-fsection-anchors.o	a64	PC	261	EH	.text+108	name_end	FUNC	start
+HIT	c2.g-O3-fPIC_-fsection-anchors.o	a64	PC	261	EH	.text+128	set	FUNC	start
+HIT	c2.g-O3-fpic.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.g-O3-fpic.o	a64	PC	261	EH	.text+40	arr_end	FUNC	start
+HIT	c2.g-O3-fpic.o	a64	PC	261	EH	.text+64	loop	FUNC	start
+HIT	c2.g-O3-fpic.o	a64	PC	261	EH	.text+108	name_end	FUNC	start
+HIT	c2.g-O3-fpic.o	a64	PC	261	EH	.text+128	set	FUNC	start
+HIT	c2.g-Os-fPIC_-fcommon.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.g-Os-fPIC_-fcommon.o	a64	PC	261	EH	.text+40	arr_end	FUNC	start
+HIT	c2.g-Os-fPIC_-fcommon.o	a64	PC	261	EH	.text+56	loop	FUNC	start
+HIT	c2.g-Os-fPIC_-fcommon.o	a64	PC	261	EH	.text+100	name_end	FUNC	start
+HIT	c2.g-Os-fPIC_-fcommon.o	a64	PC	261	EH	.text+116	set	FUNC	start
+HIT	c2.g-Os-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.g-Os-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+40	arr_end	FUNC	start
+HIT	c2.g-Os-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+52	loop	FUNC	start
+HIT	c2.g-Os-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+92	name_end	FUNC	start
+HIT	c2.g-Os-fPIC_-fdata-sections.o	a64	PC	261	EH	.text+104	set	FUNC	start
+HIT	c2.g-Os-fPIC_-fno-section-anchors.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.g-Os-fPIC_-fno-section-anchors.o	a64	PC	261	EH	.text+40	arr_end	FUNC	start
+HIT	c2.g-Os-fPIC_-fno-section-anchors.o	a64	PC	261	EH	.text+52	loop	FUNC	start
+HIT	c2.g-Os-fPIC_-fno-section-anchors.o	a64	PC	261	EH	.text+92	name_end	FUNC	start
+HIT	c2.g-Os-fPIC_-fno-section-anchors.o	a64	PC	261	EH	.text+104	set	FUNC	start
+HIT	c2.g-Os-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.g-Os-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+40	arr_end	FUNC	start
+HIT	c2.g-Os-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+56	loop	FUNC	start
+HIT	c2.g-Os-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+100	name_end	FUNC	start
+HIT	c2.g-Os-fPIC_-fno-semantic-interposition.o	a64	PC	261	EH	.text+116	set	FUNC	start
+HIT	c2.g-Os-fPIC_-fsection-anchors.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.g-Os-fPIC_-fsection-anchors.o	a64	PC	261	EH	.text+40	arr_end	FUNC	start
+HIT	c2.g-Os-fPIC_-fsection-anchors.o	a64	PC	261	EH	.text+56	loop	FUNC	start
+HIT	c2.g-Os-fPIC_-fsection-anchors.o	a64	PC	261	EH	.text+100	name_end	FUNC	start
+HIT	c2.g-Os-fPIC_-fsection-anchors.o	a64	PC	261	EH	.text+116	set	FUNC	start
+HIT	c2.g-Os-fpic.o	a64	PC	261	EH	.text+0	bump	FUNC	start
+HIT	c2.g-Os-fpic.o	a64	PC	261	EH	.text+40	arr_end	FUNC	start
+HIT	c2.g-Os-fpic.o	a64	PC	261	EH	.text+56	loop	FUNC	start
+HIT	c2.g-Os-fpic.o	a64	PC	261	EH	.text+100	name_end	FUNC	start
+HIT	c2.g-Os-fpic.o	a64	PC	261	EH	.text+116	set	FUNC	start
+HIT	c2.x86_64linuxgnug-O0-fPIC_-fcommon.o	RULE	x64	PC	CODE	.rodata+0	exported_name	start=end-of-local
+HIT	c2.x86_64linuxgnug-O0-fPIC_-fcommon.o	x64	PC	2	CODE	.rodata+0	exported_name	DATA	start=end-of-local
+HIT	c2.x86_64linuxgnug-O0-fPIC_-fcommon.o	x64	PC	2	EH	.text+0	bump	FUNC	start
+HIT	c2.x86_64linuxgnug-O0-fPIC_-fcommon.o	x64	PC	2	EH	.text+48	arr_end	FUNC	start
+HIT	c2.x86_64linuxgnug-O0-fPIC_-fcommon.o	x64	PC	2	EH	.text+61	loop	FUNC	start
+HIT	c2.x86_64linuxgnug-O0-fPIC_-fcommon.o	x64	PC	2	EH	.text+117	name_end	FUNC	start
+HIT	c2.x86_64linuxgnug-O0-fPIC_-fcommon.o	x64	PC	2	EH	.text+130	set	FUNC	start
+HIT	c2.x86_64linuxgnug-O0-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+0	bump	FUNC	start
+HIT	c2.x86_64linuxgnug-O0-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+48	arr_end	FUNC	start
+HIT	c2.x86_64linuxgnug-O0-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+61	loop	FUNC	start
+HIT	c2.x86_64linuxgnug-O0-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+117	name_end	FUNC	start
+HIT	c2.x86_64linuxgnug-O0-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+130	set	FUNC	start
+HIT	c2.x86_64linuxgnug-O0-fPIC_-fno-section-anchors.o	x64	PC	2	CODE	.bss+4	after	DATA	only-with-other-bias
+HIT	c2.x86_64linuxgnug-O0-fPIC_-fno-section-anchors.o	x64	PC	2	CODE	.bss+4	after	DATA	only-with-other-bias
+HIT	c2.x86_64linuxgnug-O0-fPIC_-fno-section-anchors.o	x64	PC	2	CODE	.bss+4	after	DATA	only-with-other-bias
+HIT	c2.x86_64linuxgnug-O0-fPIC_-fno-section-anchors.o	RULE	x64	PC	CODE	.rodata+0	exported_name	start=end-of-local
+HIT	c2.x86_64linuxgnug-O0-fPIC_-fno-section-anchors.o	x64	PC	2	CODE	.rodata+0	exported_name	DATA	start=end-of-local
+HIT	c2.x86_64linuxgnug-O0-fPIC_-fno-section-anchors.o	RULE	x64	PC	CODE	.bss+0	after	
+HIT	c2.x86_64linuxgnug-O0-fPIC_-fno-section-anchors.o	x64	PC	2	CODE	.bss+0	g_exported_counter	DATA	only-with-other-bias
+HIT	c2.x86_64linuxgnug-O0-fPIC_-fno-section-anchors.o	x64	PC	2	CODE	.bss+0	after	DATA	start
+HIT	c2.x86_64linuxgnug-O0-fPIC_-fno-section-anchors.o	x64	PC	2	EH	.text+0	bump	FUNC	start
+HIT	c2.x86_64linuxgnug-O0-fPIC_-fno-section-anchors.o	x64	PC	2	EH	.text+48	arr_end	FUNC	start
+HIT	c2.x86_64linuxgnug-O0-fPIC_-fno-section-anchors.o	x64	PC	2	EH	.text+61	loop	FUNC	start
+HIT	c2.x86_64linuxgnug-O0-fPIC_-fno-section-anchors.o	x64	PC	2	EH	.text+117	name_end	FUNC	start
+HIT	c2.x86_64linuxgnug-O0-fPIC_-fno-section-anchors.o	x64	PC	2	EH	.text+130	set	FUNC	start
+HIT	c2.x86_64linuxgnug-O0-fPIC_-fno-semantic-interposition.o	x64	PC	2	CODE	.bss+4	after	DATA	only-with-other-bias
+HIT	c2.x86_64linuxgnug-O0-fPIC_-fno-semantic-interposition.o	x64	PC	2	CODE	.bss+4	after	DATA	only-with-other-bias
+HIT	c2.x86_64linuxgnug-O0-fPIC_-fno-semantic-interposition.o	x64	PC	2	CODE	.bss+4	after	DATA	only-with-other-bias
+HIT	c2.x86_64linuxgnug-O0-fPIC_-fno-semantic-interposition.o	RULE	x64	PC	CODE	.rodata+0	exported_name	start=end-of-local
+HIT	c2.x86_64linuxgnug-O0-fPIC_-fno-semantic-interposition.o	x64	PC	2	CODE	.rodata+0	exported_name	DATA	start=end-of-local
+HIT	c2.x86_64linuxgnug-O0-fPIC_-fno-semantic-interposition.o	RULE	x64	PC	CODE	.bss+0	after	
+HIT	c2.x86_64linuxgnug-O0-fPIC_-fno-semantic-interposition.o	x64	PC	2	CODE	.bss+0	g_exported_counter	DATA	only-with-other-bias
+HIT	c2.x86_64linuxgnug-O0-fPIC_-fno-semantic-interposition.o	x64	PC	2	CODE	.bss+0	after	DATA	start
+HIT	c2.x86_64linuxgnug-O0-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+0	bump	FUNC	start
+HIT	c2.x86_64linuxgnug-O0-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+48	arr_end	FUNC	start
+HIT	c2.x86_64linuxgnug-O0-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+61	loop	FUNC	start
+HIT	c2.x86_64linuxgnug-O0-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+117	name_end	FUNC	start
+HIT	c2.x86_64linuxgnug-O0-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+130	set	FUNC	start
+HIT	c2.x86_64linuxgnug-O0-fPIC_-fsection-anchors.o	x64	PC	2	EH	.text+0	bump	FUNC	start
+HIT	c2.x86_64linuxgnug-O0-fPIC_-fsection-anchors.o	x64	PC	2	EH	.text+48	arr_end	FUNC	start
+HIT	c2.x86_64linuxgnug-O0-fPIC_-fsection-anchors.o	x64	PC	2	EH	.text+61	loop	FUNC	start
+HIT	c2.x86_64linuxgnug-O0-fPIC_-fsection-anchors.o	x64	PC	2	EH	.text+117	name_end	FUNC	start
+HIT	c2.x86_64linuxgnug-O0-fPIC_-fsection-anchors.o	x64	PC	2	EH	.text+130	set	FUNC	start
+HIT	c2.x86_64linuxgnug-O0-fpic.o	x64	PC	2	CODE	.bss+4	after	DATA	only-with-other-bias
+HIT	c2.x86_64linuxgnug-O0-fpic.o	x64	PC	2	CODE	.bss+4	after	DATA	only-with-other-bias
+HIT	c2.x86_64linuxgnug-O0-fpic.o	x64	PC	2	CODE	.bss+4	after	DATA	only-with-other-bias
+HIT	c2.x86_64linuxgnug-O0-fpic.o	RULE	x64	PC	CODE	.rodata+0	exported_name	start=end-of-local
+HIT	c2.x86_64linuxgnug-O0-fpic.o	x64	PC	2	CODE	.rodata+0	exported_name	DATA	start=end-of-local
+HIT	c2.x86_64linuxgnug-O0-fpic.o	RULE	x64	PC	CODE	.bss+0	after	
+HIT	c2.x86_64linuxgnug-O0-fpic.o	x64	PC	2	CODE	.bss+0	g_exported_counter	DATA	only-with-other-bias
+HIT	c2.x86_64linuxgnug-O0-fpic.o	x64	PC	2	CODE	.bss+0	after	DATA	start
+HIT	c2.x86_64linuxgnug-O0-fpic.o	x64	PC	2	EH	.text+0	bump	FUNC	start
+HIT	c2.x86_64linuxgnug-O0-fpic.o	x64	PC	2	EH	.text+48	arr_end	FUNC	start
+HIT	c2.x86_64linuxgnug-O0-fpic.o	x64	PC	2	EH	.text+61	loop	FUNC	start
+HIT	c2.x86_64linuxgnug-O0-fpic.o	x64	PC	2	EH	.text+117	name_end	FUNC	start
+HIT	c2.x86_64linuxgnug-O0-fpic.o	x64	PC	2	EH	.text+130	set	FUNC	start
+HIT	c2.x86_64linuxgnug-O1-fPIC_-fcommon.o	x64	PC	2	EH	.text+0	bump	FUNC	start
+HIT	c2.x86_64linuxgnug-O1-fPIC_-fcommon.o	x64	PC	2	EH	.text+26	arr_end	FUNC	start
+HIT	c2.x86_64linuxgnug-O1-fPIC_-fcommon.o	x64	PC	2	EH	.text+34	loop	FUNC	start
+HIT	c2.x86_64linuxgnug-O1-fPIC_-fcommon.o	x64	PC	2	EH	.text+82	name_end	FUNC	start
+HIT	c2.x86_64linuxgnug-O1-fPIC_-fcommon.o	x64	PC	2	EH	.text+90	set	FUNC	start
+HIT	c2.x86_64linuxgnug-O1-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+0	bump	FUNC	start
+HIT	c2.x86_64linuxgnug-O1-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+26	arr_end	FUNC	start
+HIT	c2.x86_64linuxgnug-O1-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+34	loop	FUNC	start
+HIT	c2.x86_64linuxgnug-O1-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+82	name_end	FUNC	start
+HIT	c2.x86_64linuxgnug-O1-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+90	set	FUNC	start
+HIT	c2.x86_64linuxgnug-O1-fPIC_-fno-section-anchors.o	x64	PC	2	EH	.text+0	bump	FUNC	start
+HIT	c2.x86_64linuxgnug-O1-fPIC_-fno-section-anchors.o	x64	PC	2	EH	.text+26	arr_end	FUNC	start
+HIT	c2.x86_64linuxgnug-O1-fPIC_-fno-section-anchors.o	x64	PC	2	EH	.text+34	loop	FUNC	start
+HIT	c2.x86_64linuxgnug-O1-fPIC_-fno-section-anchors.o	x64	PC	2	EH	.text+82	name_end	FUNC	start
+HIT	c2.x86_64linuxgnug-O1-fPIC_-fno-section-anchors.o	x64	PC	2	EH	.text+90	set	FUNC	start
+HIT	c2.x86_64linuxgnug-O1-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+0	bump	FUNC	start
+HIT	c2.x86_64linuxgnug-O1-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+26	arr_end	FUNC	start
+HIT	c2.x86_64linuxgnug-O1-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+34	loop	FUNC	start
+HIT	c2.x86_64linuxgnug-O1-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+82	name_end	FUNC	start
+HIT	c2.x86_64linuxgnug-O1-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+90	set	FUNC	start
+HIT	c2.x86_64linuxgnug-O1-fPIC_-fsection-anchors.o	x64	PC	2	EH	.text+0	bump	FUNC	start
+HIT	c2.x86_64linuxgnug-O1-fPIC_-fsection-anchors.o	x64	PC	2	EH	.text+26	arr_end	FUNC	start
+HIT	c2.x86_64linuxgnug-O1-fPIC_-fsection-anchors.o	x64	PC	2	EH	.text+34	loop	FUNC	start
+HIT	c2.x86_64linuxgnug-O1-fPIC_-fsection-anchors.o	x64	PC	2	EH	.text+82	name_end	FUNC	start
+HIT	c2.x86_64linuxgnug-O1-fPIC_-fsection-anchors.o	x64	PC	2	EH	.text+90	set	FUNC	start
+HIT	c2.x86_64linuxgnug-O1-fpic.o	x64	PC	2	EH	.text+0	bump	FUNC	start
+HIT	c2.x86_64linuxgnug-O1-fpic.o	x64	PC	2	EH	.text+26	arr_end	FUNC	start
+HIT	c2.x86_64linuxgnug-O1-fpic.o	x64	PC	2	EH	.text+34	loop	FUNC	start
+HIT	c2.x86_64linuxgnug-O1-fpic.o	x64	PC	2	EH	.text+82	name_end	FUNC	start
+HIT	c2.x86_64linuxgnug-O1-fpic.o	x64	PC	2	EH	.text+90	set	FUNC	start
+HIT	c2.x86_64linuxgnug-O2-fPIC_-fcommon.o	x64	PC	2	EH	.text+0	bump	FUNC	start
+HIT	c2.x86_64linuxgnug-O2-fPIC_-fcommon.o	x64	PC	2	EH	.text+32	arr_end	FUNC	start
+HIT	c2.x86_64linuxgnug-O2-fPIC_-fcommon.o	x64	PC	2	EH	.text+48	loop	FUNC	start
+HIT	c2.x86_64linuxgnug-O2-fPIC_-fcommon.o	x64	PC	2	EH	.text+80	name_end	FUNC	start
+HIT	c2.x86_64linuxgnug-O2-fPIC_-fcommon.o	x64	PC	2	EH	.text+96	set	FUNC	start
+HIT	c2.x86_64linuxgnug-O2-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+0	bump	FUNC	start
+HIT	c2.x86_64linuxgnug-O2-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+32	arr_end	FUNC	start
+HIT	c2.x86_64linuxgnug-O2-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+48	loop	FUNC	start
+HIT	c2.x86_64linuxgnug-O2-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+80	name_end	FUNC	start
+HIT	c2.x86_64linuxgnug-O2-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+96	set	FUNC	start
+HIT	c2.x86_64linuxgnug-O2-fPIC_-fno-section-anchors.o	x64	PC	2	EH	.text+0	bump	FUNC	start
+HIT	c2.x86_64linuxgnug-O2-fPIC_-fno-section-anchors.o	x64	PC	2	EH	.text+32	arr_end	FUNC	start
+HIT	c2.x86_64linuxgnug-O2-fPIC_-fno-section-anchors.o	x64	PC	2	EH	.text+48	loop	FUNC	start
+HIT	c2.x86_64linuxgnug-O2-fPIC_-fno-section-anchors.o	x64	PC	2	EH	.text+80	name_end	FUNC	start
+HIT	c2.x86_64linuxgnug-O2-fPIC_-fno-section-anchors.o	x64	PC	2	EH	.text+96	set	FUNC	start
+HIT	c2.x86_64linuxgnug-O2-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+0	bump	FUNC	start
+HIT	c2.x86_64linuxgnug-O2-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+32	arr_end	FUNC	start
+HIT	c2.x86_64linuxgnug-O2-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+48	loop	FUNC	start
+HIT	c2.x86_64linuxgnug-O2-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+80	name_end	FUNC	start
+HIT	c2.x86_64linuxgnug-O2-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+96	set	FUNC	start
+HIT	c2.x86_64linuxgnug-O2-fPIC_-fsection-anchors.o	x64	PC	2	EH	.text+0	bump	FUNC	start
+HIT	c2.x86_64linuxgnug-O2-fPIC_-fsection-anchors.o	x64	PC	2	EH	.text+32	arr_end	FUNC	start
+HIT	c2.x86_64linuxgnug-O2-fPIC_-fsection-anchors.o	x64	PC	2	EH	.text+48	loop	FUNC	start
+HIT	c2.x86_64linuxgnug-O2-fPIC_-fsection-anchors.o	x64	PC	2	EH	.text+80	name_end	FUNC	start
+HIT	c2.x86_64linuxgnug-O2-fPIC_-fsection-anchors.o	x64	PC	2	EH	.text+96	set	FUNC	start
+HIT	c2.x86_64linuxgnug-O2-fpic.o	x64	PC	2	EH	.text+0	bump	FUNC	start
+HIT	c2.x86_64linuxgnug-O2-fpic.o	x64	PC	2	EH	.text+32	arr_end	FUNC	start
+HIT	c2.x86_64linuxgnug-O2-fpic.o	x64	PC	2	EH	.text+48	loop	FUNC	start
+HIT	c2.x86_64linuxgnug-O2-fpic.o	x64	PC	2	EH	.text+80	name_end	FUNC	start
+HIT	c2.x86_64linuxgnug-O2-fpic.o	x64	PC	2	EH	.text+96	set	FUNC	start
+HIT	c2.x86_64linuxgnug-O3-fPIC_-fcommon.o	x64	PC	2	EH	.text+0	bump	FUNC	start
+HIT	c2.x86_64linuxgnug-O3-fPIC_-fcommon.o	x64	PC	2	EH	.text+32	arr_end	FUNC	start
+HIT	c2.x86_64linuxgnug-O3-fPIC_-fcommon.o	x64	PC	2	EH	.text+48	loop	FUNC	start
+HIT	c2.x86_64linuxgnug-O3-fPIC_-fcommon.o	x64	PC	2	EH	.text+112	name_end	FUNC	start
+HIT	c2.x86_64linuxgnug-O3-fPIC_-fcommon.o	x64	PC	2	EH	.text+128	set	FUNC	start
+HIT	c2.x86_64linuxgnug-O3-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+0	bump	FUNC	start
+HIT	c2.x86_64linuxgnug-O3-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+32	arr_end	FUNC	start
+HIT	c2.x86_64linuxgnug-O3-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+48	loop	FUNC	start
+HIT	c2.x86_64linuxgnug-O3-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+112	name_end	FUNC	start
+HIT	c2.x86_64linuxgnug-O3-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+128	set	FUNC	start
+HIT	c2.x86_64linuxgnug-O3-fPIC_-fno-section-anchors.o	x64	PC	2	EH	.text+0	bump	FUNC	start
+HIT	c2.x86_64linuxgnug-O3-fPIC_-fno-section-anchors.o	x64	PC	2	EH	.text+32	arr_end	FUNC	start
+HIT	c2.x86_64linuxgnug-O3-fPIC_-fno-section-anchors.o	x64	PC	2	EH	.text+48	loop	FUNC	start
+HIT	c2.x86_64linuxgnug-O3-fPIC_-fno-section-anchors.o	x64	PC	2	EH	.text+112	name_end	FUNC	start
+HIT	c2.x86_64linuxgnug-O3-fPIC_-fno-section-anchors.o	x64	PC	2	EH	.text+128	set	FUNC	start
+HIT	c2.x86_64linuxgnug-O3-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+0	bump	FUNC	start
+HIT	c2.x86_64linuxgnug-O3-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+32	arr_end	FUNC	start
+HIT	c2.x86_64linuxgnug-O3-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+48	loop	FUNC	start
+HIT	c2.x86_64linuxgnug-O3-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+112	name_end	FUNC	start
+HIT	c2.x86_64linuxgnug-O3-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+128	set	FUNC	start
+HIT	c2.x86_64linuxgnug-O3-fPIC_-fsection-anchors.o	x64	PC	2	EH	.text+0	bump	FUNC	start
+HIT	c2.x86_64linuxgnug-O3-fPIC_-fsection-anchors.o	x64	PC	2	EH	.text+32	arr_end	FUNC	start
+HIT	c2.x86_64linuxgnug-O3-fPIC_-fsection-anchors.o	x64	PC	2	EH	.text+48	loop	FUNC	start
+HIT	c2.x86_64linuxgnug-O3-fPIC_-fsection-anchors.o	x64	PC	2	EH	.text+112	name_end	FUNC	start
+HIT	c2.x86_64linuxgnug-O3-fPIC_-fsection-anchors.o	x64	PC	2	EH	.text+128	set	FUNC	start
+HIT	c2.x86_64linuxgnug-O3-fpic.o	x64	PC	2	EH	.text+0	bump	FUNC	start
+HIT	c2.x86_64linuxgnug-O3-fpic.o	x64	PC	2	EH	.text+32	arr_end	FUNC	start
+HIT	c2.x86_64linuxgnug-O3-fpic.o	x64	PC	2	EH	.text+48	loop	FUNC	start
+HIT	c2.x86_64linuxgnug-O3-fpic.o	x64	PC	2	EH	.text+112	name_end	FUNC	start
+HIT	c2.x86_64linuxgnug-O3-fpic.o	x64	PC	2	EH	.text+128	set	FUNC	start
+HIT	c2.x86_64linuxgnug-Os-fPIC_-fcommon.o	x64	PC	2	EH	.text+0	bump	FUNC	start
+HIT	c2.x86_64linuxgnug-Os-fPIC_-fcommon.o	x64	PC	2	EH	.text+24	arr_end	FUNC	start
+HIT	c2.x86_64linuxgnug-Os-fPIC_-fcommon.o	x64	PC	2	EH	.text+32	loop	FUNC	start
+HIT	c2.x86_64linuxgnug-Os-fPIC_-fcommon.o	x64	PC	2	EH	.text+59	name_end	FUNC	start
+HIT	c2.x86_64linuxgnug-Os-fPIC_-fcommon.o	x64	PC	2	EH	.text+67	set	FUNC	start
+HIT	c2.x86_64linuxgnug-Os-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+0	bump	FUNC	start
+HIT	c2.x86_64linuxgnug-Os-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+24	arr_end	FUNC	start
+HIT	c2.x86_64linuxgnug-Os-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+32	loop	FUNC	start
+HIT	c2.x86_64linuxgnug-Os-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+59	name_end	FUNC	start
+HIT	c2.x86_64linuxgnug-Os-fPIC_-fdata-sections.o	x64	PC	2	EH	.text+67	set	FUNC	start
+HIT	c2.x86_64linuxgnug-Os-fPIC_-fno-section-anchors.o	x64	PC	2	EH	.text+0	bump	FUNC	start
+HIT	c2.x86_64linuxgnug-Os-fPIC_-fno-section-anchors.o	x64	PC	2	EH	.text+24	arr_end	FUNC	start
+HIT	c2.x86_64linuxgnug-Os-fPIC_-fno-section-anchors.o	x64	PC	2	EH	.text+32	loop	FUNC	start
+HIT	c2.x86_64linuxgnug-Os-fPIC_-fno-section-anchors.o	x64	PC	2	EH	.text+59	name_end	FUNC	start
+HIT	c2.x86_64linuxgnug-Os-fPIC_-fno-section-anchors.o	x64	PC	2	EH	.text+67	set	FUNC	start
+HIT	c2.x86_64linuxgnug-Os-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+0	bump	FUNC	start
+HIT	c2.x86_64linuxgnug-Os-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+24	arr_end	FUNC	start
+HIT	c2.x86_64linuxgnug-Os-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+32	loop	FUNC	start
+HIT	c2.x86_64linuxgnug-Os-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+59	name_end	FUNC	start
+HIT	c2.x86_64linuxgnug-Os-fPIC_-fno-semantic-interposition.o	x64	PC	2	EH	.text+67	set	FUNC	start
+HIT	c2.x86_64linuxgnug-Os-fPIC_-fsection-anchors.o	x64	PC	2	EH	.text+0	bump	FUNC	start
+HIT	c2.x86_64linuxgnug-Os-fPIC_-fsection-anchors.o	x64	PC	2	EH	.text+24	arr_end	FUNC	start
+HIT	c2.x86_64linuxgnug-Os-fPIC_-fsection-anchors.o	x64	PC	2	EH	.text+32	loop	FUNC	start
+HIT	c2.x86_64linuxgnug-Os-fPIC_-fsection-anchors.o	x64	PC	2	EH	.text+59	name_end	FUNC	start
+HIT	c2.x86_64linuxgnug-Os-fPIC_-fsection-anchors.o	x64	PC	2	EH	.text+67	set	FUNC	start
+HIT	c2.x86_64linuxgnug-Os-fpic.o	x64	PC	2	EH	.text+0	bump	FUNC	start
+HIT	c2.x86_64linuxgnug-Os-fpic.o	x64	PC	2	EH	.text+24	arr_end	FUNC	start
+HIT	c2.x86_64linuxgnug-Os-fpic.o	x64	PC	2	EH	.text+32	loop	FUNC	start
+HIT	c2.x86_64linuxgnug-Os-fpic.o	x64	PC	2	EH	.text+59	name_end	FUNC	start
+HIT	c2.x86_64linuxgnug-Os-fpic.o	x64	PC	2	EH	.text+67	set	FUNC	start
+HIT	c2.clang19-O0-fPIC.o	OVERAPPROX	section 4 unnamed exported_name
+HIT	c2.clang19-O0-fPIC_-fcommon.o	OVERAPPROX	section 4 unnamed exported_name
+HIT	c2.clang19-O0-fPIC_-fno-semantic-interposition.o	OVERAPPROX	section 4 unnamed exported_name
+HIT	c2.clang19-O1-fPIC.o	OVERAPPROX	section 4 unnamed exported_name
+HIT	c2.clang19-O1-fPIC_-fcommon.o	OVERAPPROX	section 4 unnamed exported_name
+HIT	c2.clang19-O1-fPIC_-fno-semantic-interposition.o	OVERAPPROX	section 4 unnamed exported_name
+HIT	c2.clang19-O2-fPIC.o	OVERAPPROX	section 4 unnamed exported_name
+HIT	c2.clang19-O2-fPIC_-fcommon.o	OVERAPPROX	section 4 unnamed exported_name
+HIT	c2.clang19-O2-fPIC_-fno-semantic-interposition.o	OVERAPPROX	section 4 unnamed exported_name
+HIT	c2.clang19-O3-fPIC.o	OVERAPPROX	section 4 unnamed exported_name
+HIT	c2.clang19-O3-fPIC_-fcommon.o	OVERAPPROX	section 4 unnamed exported_name
+HIT	c2.clang19-O3-fPIC_-fno-semantic-interposition.o	OVERAPPROX	section 4 unnamed exported_name
+HIT	c2.clang19-Os-fPIC.o	OVERAPPROX	section 4 unnamed exported_name
+HIT	c2.clang19-Os-fPIC_-fcommon.o	OVERAPPROX	section 4 unnamed exported_name
+HIT	c2.clang19-Os-fPIC_-fno-semantic-interposition.o	OVERAPPROX	section 4 unnamed exported_name
+HIT	c2.clang22-O0-fPIC.o	OVERAPPROX	section 4 unnamed exported_name
+HIT	c2.clang22-O0-fPIC_-fcommon.o	OVERAPPROX	section 4 unnamed exported_name
+HIT	c2.clang22-O0-fPIC_-fno-semantic-interposition.o	OVERAPPROX	section 4 unnamed exported_name
+HIT	c2.clang22-O1-fPIC.o	OVERAPPROX	section 4 unnamed exported_name
+HIT	c2.clang22-O1-fPIC_-fcommon.o	OVERAPPROX	section 4 unnamed exported_name
+HIT	c2.clang22-O1-fPIC_-fno-semantic-interposition.o	OVERAPPROX	section 4 unnamed exported_name
+HIT	c2.clang22-O2-fPIC.o	OVERAPPROX	section 4 unnamed exported_name
+HIT	c2.clang22-O2-fPIC_-fcommon.o	OVERAPPROX	section 4 unnamed exported_name
+HIT	c2.clang22-O2-fPIC_-fno-semantic-interposition.o	OVERAPPROX	section 4 unnamed exported_name
+HIT	c2.clang22-O3-fPIC.o	OVERAPPROX	section 4 unnamed exported_name
+HIT	c2.clang22-O3-fPIC_-fcommon.o	OVERAPPROX	section 4 unnamed exported_name
+HIT	c2.clang22-O3-fPIC_-fno-semantic-interposition.o	OVERAPPROX	section 4 unnamed exported_name
+HIT	c2.clang22-Os-fPIC.o	OVERAPPROX	section 4 unnamed exported_name
+HIT	c2.clang22-Os-fPIC_-fcommon.o	OVERAPPROX	section 4 unnamed exported_name
+HIT	c2.clang22-Os-fPIC_-fno-semantic-interposition.o	OVERAPPROX	section 4 unnamed exported_name
+HIT	c2.clang22_target_x86_64lin-O1-fPIC.o	OVERAPPROX	section 4 unnamed exported_name
+HIT	c2.clang22_target_x86_64lin-O1-fPIC_-fcommon.o	OVERAPPROX	section 4 unnamed exported_name
+HIT	c2.clang22_target_x86_64lin-O1-fPIC_-fno-semantic-interposition.o	OVERAPPROX	section 4 unnamed exported_name
+HIT	c2.clang22_target_x86_64lin-O2-fPIC.o	OVERAPPROX	section 4 unnamed exported_name
+HIT	c2.clang22_target_x86_64lin-O2-fPIC_-fcommon.o	OVERAPPROX	section 4 unnamed exported_name
+HIT	c2.clang22_target_x86_64lin-O2-fPIC_-fno-semantic-interposition.o	OVERAPPROX	section 4 unnamed exported_name
+HIT	c2.clang22_target_x86_64lin-O3-fPIC.o	OVERAPPROX	section 4 unnamed exported_name
+HIT	c2.clang22_target_x86_64lin-O3-fPIC_-fcommon.o	OVERAPPROX	section 4 unnamed exported_name
+HIT	c2.clang22_target_x86_64lin-O3-fPIC_-fno-semantic-interposition.o	OVERAPPROX	section 4 unnamed exported_name
+HIT	c2.clang22_target_x86_64lin-Os-fPIC.o	OVERAPPROX	section 4 unnamed exported_name
+HIT	c2.clang22_target_x86_64lin-Os-fPIC_-fcommon.o	OVERAPPROX	section 4 unnamed exported_name
+HIT	c2.clang22_target_x86_64lin-Os-fPIC_-fno-semantic-interposition.o	OVERAPPROX	section 4 unnamed exported_name
+HIT	c2.g-O0-fPIC_-fcommon.o	OVERAPPROX	section 5 unnamed exported_name
+HIT	c2.g-O0-fPIC_-fno-section-anchors.o	OVERAPPROX	section 4 unnamed after
+HIT	c2.g-O0-fPIC_-fno-semantic-interposition.o	OVERAPPROX	section 4 unnamed after
+HIT	c2.g-O0-fPIC_-fsection-anchors.o	OVERAPPROX	section 4 unnamed after
+HIT	c2.g-O0-fpic.o	OVERAPPROX	section 4 unnamed after
+HIT	c2.g-O1-fPIC_-fcommon.o	OVERAPPROX	section 5 unnamed exported_name
+HIT	c2.g-O1-fPIC_-fno-section-anchors.o	OVERAPPROX	section 4 unnamed after
+HIT	c2.g-O1-fPIC_-fno-semantic-interposition.o	OVERAPPROX	section 4 unnamed after
+HIT	c2.g-O1-fPIC_-fsection-anchors.o	OVERAPPROX	section 4 unnamed after
+HIT	c2.g-O1-fpic.o	OVERAPPROX	section 4 unnamed after
+HIT	c2.g-O2-fPIC_-fcommon.o	OVERAPPROX	section 5 unnamed exported_name
+HIT	c2.g-O2-fPIC_-fno-section-anchors.o	OVERAPPROX	section 4 unnamed after
+HIT	c2.g-O2-fPIC_-fno-semantic-interposition.o	OVERAPPROX	section 4 unnamed after
+HIT	c2.g-O2-fPIC_-fsection-anchors.o	OVERAPPROX	section 4 unnamed after
+HIT	c2.g-O2-fpic.o	OVERAPPROX	section 4 unnamed after
+HIT	c2.g-O3-fPIC_-fcommon.o	OVERAPPROX	section 5 unnamed exported_name
+HIT	c2.g-O3-fPIC_-fno-section-anchors.o	OVERAPPROX	section 4 unnamed after
+HIT	c2.g-O3-fPIC_-fno-semantic-interposition.o	OVERAPPROX	section 4 unnamed after
+HIT	c2.g-O3-fPIC_-fsection-anchors.o	OVERAPPROX	section 4 unnamed after
+HIT	c2.g-O3-fpic.o	OVERAPPROX	section 4 unnamed after
+HIT	c2.g-Os-fPIC_-fcommon.o	OVERAPPROX	section 5 unnamed exported_name
+HIT	c2.g-Os-fPIC_-fno-section-anchors.o	OVERAPPROX	section 4 unnamed after
+HIT	c2.g-Os-fPIC_-fno-semantic-interposition.o	OVERAPPROX	section 4 unnamed after
+HIT	c2.g-Os-fPIC_-fsection-anchors.o	OVERAPPROX	section 4 unnamed after
+HIT	c2.g-Os-fpic.o	OVERAPPROX	section 4 unnamed after
+HIT	c2.x86_64linuxgnug-O0-fPIC_-fsection-anchors.o	OVERAPPROX	section 4 unnamed after
+HIT	c2.x86_64linuxgnug-O1-fPIC_-fcommon.o	OVERAPPROX	section 5 unnamed exported_name
+HIT	c2.x86_64linuxgnug-O1-fPIC_-fno-section-anchors.o	OVERAPPROX	section 4 unnamed after
+HIT	c2.x86_64linuxgnug-O1-fPIC_-fno-semantic-interposition.o	OVERAPPROX	section 4 unnamed after
+HIT	c2.x86_64linuxgnug-O1-fPIC_-fsection-anchors.o	OVERAPPROX	section 4 unnamed after
+HIT	c2.x86_64linuxgnug-O1-fpic.o	OVERAPPROX	section 4 unnamed after
+HIT	c2.x86_64linuxgnug-O2-fPIC_-fcommon.o	OVERAPPROX	section 5 unnamed exported_name
+HIT	c2.x86_64linuxgnug-O2-fPIC_-fno-section-anchors.o	OVERAPPROX	section 4 unnamed after
+HIT	c2.x86_64linuxgnug-O2-fPIC_-fno-semantic-interposition.o	OVERAPPROX	section 4 unnamed after
+HIT	c2.x86_64linuxgnug-O2-fPIC_-fsection-anchors.o	OVERAPPROX	section 4 unnamed after
+HIT	c2.x86_64linuxgnug-O2-fpic.o	OVERAPPROX	section 4 unnamed after
+HIT	c2.x86_64linuxgnug-O3-fPIC_-fcommon.o	OVERAPPROX	section 5 unnamed exported_name
+HIT	c2.x86_64linuxgnug-O3-fPIC_-fno-section-anchors.o	OVERAPPROX	section 4 unnamed after
+HIT	c2.x86_64linuxgnug-O3-fPIC_-fno-semantic-interposition.o	OVERAPPROX	section 4 unnamed after
+HIT	c2.x86_64linuxgnug-O3-fPIC_-fsection-anchors.o	OVERAPPROX	section 4 unnamed after
+HIT	c2.x86_64linuxgnug-O3-fpic.o	OVERAPPROX	section 4 unnamed after
+HIT	c2.x86_64linuxgnug-Os-fPIC_-fcommon.o	OVERAPPROX	section 5 unnamed exported_name
+HIT	c2.x86_64linuxgnug-Os-fPIC_-fno-section-anchors.o	OVERAPPROX	section 4 unnamed after
+HIT	c2.x86_64linuxgnug-Os-fPIC_-fno-semantic-interposition.o	OVERAPPROX	section 4 unnamed after
+HIT	c2.x86_64linuxgnug-Os-fPIC_-fsection-anchors.o	OVERAPPROX	section 4 unnamed after
+HIT	c2.x86_64linuxgnug-Os-fpic.o	OVERAPPROX	section 4 unnamed after

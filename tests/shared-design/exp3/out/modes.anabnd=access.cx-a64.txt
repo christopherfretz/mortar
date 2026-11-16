@@ -1,0 +1,1 @@
+TOTAL objs=170 pre=110 rule_objs=0 ana_objs=0 ana_only_objs=0 rule=0 ana=0 words=5673 undec=194

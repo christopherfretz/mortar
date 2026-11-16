@@ -201,7 +201,9 @@ start of the unit. Every structure below is 8-aligned and a multiple of
 8 bytes, so `u64` fields are naturally aligned when the section is.
 
 **MT-10 (units).** The section's contents are a sequence of **units**,
-one per translation unit. At an 8-aligned offset, a reader finds either a
+one per translation unit and producer [M4; planned, request R-MT11:
+until WP-129 lands a reader may assume one; hod's unit of H-3,
+`odr.md` §11, is the second producer's]. At an 8-aligned offset, a reader finds either a
 unit (its first four bytes are the magic `MASN`, `4d 41 53 4e`) or eight
 zero bytes of padding, which it skips; anything else is malformed. A
 unit is
@@ -335,7 +337,11 @@ record lives and dies with the group. It must **not**:
 
 **MT-20 (one unit per TU, outside every group).** A producer writes the
 records of a translation unit into one unit of one `.mason.meta`
-section that is in no group (MT-2). Records describe every definition
+section that is in no group (MT-2). [M4; planned, request R-MT11,
+WP-129] One unit per translation unit **and producer**: kiln's unit
+and hod's (H-3) may share one container, each written by its own
+producer; a reader merges kind 1 rows of one translation unit's units
+only by name, as it would rows of two translation units. Records describe every definition
 the TU emits **whether or not its copy is kept**; which copy is kept is
 the linker's business and the record says nothing about it.
 
@@ -396,6 +402,7 @@ a row without it is information. Names defined now [kiln]:
 | `abi.wchar` | size in bytes | yes | |
 | `abi.long-double` | size in bits | yes | |
 | `isa` | the target feature string the TU was compiled for | no | K16d: `odr.md` O-31 |
+| `reloc-model` [hod; M4; planned: hod H-3, mortar's reader WP-129; request R-MT11] | `static`, `pie` or `pic`: the relocation model hod's code generation used (`-fno-pic`, `-fPIE`, `-fPIC`) | no | `dyn.md` D-117: exact refusal of non-PIC code in a shared object (`static` or `pie` in an object defining an exported preemptible datum refuses it, `non-pic-in-shared-object`; `pic` never exempts) |
 
 **MT-27 (kinds 2-5).** Their rows are specified in `spec/odr.md` §5
 (kind 2), §6 (kinds 3, 4) and §8.2 (kind 5); the row sizes above are
@@ -603,7 +610,11 @@ needed for incremental links (`spec/incr.md` keeps state in its own
 file).
 
 Implemented for executables (WP-076; static, static-pie, PIE and
-non-PIE; shared-object outputs are M4), `spec/landed/meta/WP-076.md`:
+non-PIE; shared-object outputs are M4), `spec/landed/meta/WP-076.md`.
+[M4; planned: WP-129; request R-MT10] It applies to `Shared` as
+written: the units are kept as in an executable, the section is
+non-allocated and changes no loaded byte (`spec/dyn.md` D-126 item 3;
+unmeasured for `Shared`, the executable tests carry over):
 
 - The units of the live inputs' containers, in `FileId` order, then
   section, then offset, each copied unchanged and followed by zero

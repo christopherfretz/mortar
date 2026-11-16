@@ -1,0 +1,10 @@
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-x64.pie.case.anchorgap.c.o bound 1 symbol=1
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-x64.pie.case.boundary.c.o bound 2 symbol=1 unseen=1
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-x64.pie.case.vague.cc.o bound 6 symbol=6
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-x64.pie.census.lib.c.o bound 2 symbol=2
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-x64.pie.census.lib.cpp.o bound 2 symbol=2
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-x64.pie.gtest.gtest-all.cc.o bound 73 symbol=73
+    CODEPC .text+0x2468 type=2 .bss+67 -> _ZN7testing35FLAGS_gtest_internal_run_death_testB5cxx11E
+    CODEPC .text+0xac20 type=2 .bss+104 -> _ZN7testing8internal9DeathTest24last_death_test_message_B5cxx11E
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-x64.pie.zlib.zutil.c.o bound 1 symbol=1
+TABLE clang-x64 objs=54 users=7 defs=87 symbol=86 exact=0 codepc=0 unseen=1

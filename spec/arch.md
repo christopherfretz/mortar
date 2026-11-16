@@ -59,7 +59,7 @@ pub enum TargetKind {
     Local,                 // defined in this output, not preemptible, not IFUNC, not SHN_ABS
     Abs,                   // defined, SHN_ABS: does not move with the load address
     Preemptible,           // defined in this output (Shared), may be preempted at load time
-    Shlib { func: bool },  // defined only in a shared object (Exec, Pie)
+    Shlib { func: bool },  // defined only in a shared object (Exec, Pie, Shared); in Shared also a strong key nothing defines
     Ifunc,                 // non-preemptible STT_GNU_IFUNC defined in this output
     Weak0,                 // undefined weak, not dynamic: value 0
     WeakDyn,               // undefined weak, in .dynsym and preemptible
@@ -85,6 +85,16 @@ pub enum TargetKind {
   ends the former circle with `spec/resolve.md` §5.4 (a64.md Q4).
 - A `Local(FileId, u32)` key is `Local`, or `Abs` for an `SHN_ABS` local,
   or the kind of the section symbol's section (always `Local`).
+- **`Shared` [M4; planned, WP-117] (§4.5, `spec/dyn.md` D-113).** In a
+  `Shared` output `target_kind` reads `Resolution.preemptible`
+  (`spec/model.md` §3.3) and nothing else that is `Shared`-specific: a
+  key in the set is `Preemptible` (an exported preemptible IFUNC too);
+  a definition outside it keeps the kind above (`Local`, `Abs`, `Ifunc`
+  for a non-preemptible IFUNC); an import is `Shlib`; a strong key that
+  nothing defines is `Shlib{func: false}` (`spec/dyn.md` D-111 item 2,
+  D-118; under `-z defs` it is `Undefined`); every weak undefined key is
+  `WeakDyn` (D-25's `Weak0` does not exist in `Shared`, D-111 item 3).
+  The set is empty outside `Shared`, so no executable's kind changes.
 
 ### 2.2 Values
 
@@ -413,7 +423,9 @@ pub struct PlaceFacts { pub alloc: bool, pub writable: bool, pub exec: Option<bo
     undefined and not weak, no input defines it (including shared
     objects), and `spec/resolve.md` has not made it a dynamic undefined.
     A dynamic undefined is a `Shlib` target, under `--unresolved-symbols`
-    or `-z undefs`, the default for `Shared`.
+    or `-z undefs`, the default for `Shared` (§2.1's `Shared` bullet;
+    `-z defs`/`--no-undefined` make it `Undefined` again, `spec/dyn.md`
+    D-118).
   - **What is reported.** For every live relocation against an
     `Undefined` target that still needs its symbol, scan reports the
     event `reference(Undefined, key)` and no diagnostic; the file and
@@ -884,7 +896,8 @@ record it needs would be a text relocation (`spec/dyn.md` D-47; no
 `Shlib{func: true}` is `canonical-plt-in-pie` (D-44), and a `Weak0` key
 with an unfillable use is refused per key, `weak-undefined-pc-in-pie`
 (D-25). The kinds are registered in `mortar_diag` by WP-041 (and listed
-in `spec/diag.md` with them).
+in `spec/diag.md` with them). The `E` cells of a `Shared` output carry
+the names of §4.5 [M4].
 `Static` never has `Preemptible`, `Shlib` or `WeakDyn` targets.
 
 | class | output | Local | Abs | Preemptible | Shlib | Ifunc | Weak0 | WeakDyn |
@@ -1011,7 +1024,63 @@ output and target kind, is the architecture spec's table (a64.md §10.1);
 the dynamic relocation types come from `dyn_type`. For `Exec` and `Pie`
 the record each slot and absolute word gets is `spec/dyn.md` D-46
 (normative, one table for every architecture), the TLS records D-48,
-and the place contents per record §3.10.
+and the place contents per record §3.10. For `Shared` [M4] the slot of
+a `Preemptible` key gets the `Shlib` row's record (`GLOB_DAT`, a
+symbolic word), a bound key's the `Local` row's (`RELATIVE`), and the
+TLS records are `spec/dyn.md` D-119's (§4.5).
+
+### 4.5 `Shared` outputs [M4; planned: WP-117 (AArch64), WP-127 (x86-64), WP-130 (i386)]
+
+`spec/dyn.md` D-113, D-117, D-119, D-121, D-122 for the trait. The
+rules, which the §4.3 table's `Pie, Shared` rows already express cell by
+cell, read for `Shared`:
+
+- **Target kinds** are §2.1's `Shared` bullet: computed from
+  `Resolution.preemptible`; a non-shared link's kinds are unchanged.
+- **Demands per class** (D-117's table): `AbsWord` in a writable place
+  `R` against `Local` (and `Ifunc`'s IPLT entry), `D` against
+  `Preemptible`, `Shlib`, `WeakDyn`; in a read-only place `TX` for every
+  kind but `Abs` (no `DT_TEXTREL`, D-47). `AbsNarrow`: `E` against every
+  kind but `Abs`. `Pc` and `Lo`: resolved against `Local` (and `I`
+  against `Ifunc`), `E` against `Preemptible`, `Shlib`, `WeakDyn` and
+  `Abs`. `Branch`: direct against `Local`, `PLT` against `Preemptible`,
+  `Shlib`, `WeakDyn` (D-120), `I` against `Ifunc`. `Got`: a slot for
+  every kind (`RELATIVE` for `Local`, `GLOB_DAT` against the key for the
+  others). `GotRel` (i386 `GOTOFF`): `GOT_BASE` against `Local`, `E`
+  otherwise. `TlsLe`: `E` (D-119).
+- **No `C`, no `CANON_PLT`** (D-122): a cell that is `C` in `Exec` or
+  `Pie` is `D` in `Shared` when the place is a writable address-sized
+  word, else `E`. `COPY` and `CANON_PLT` are never raised in a `Shared`
+  link.
+- **No `Weak0`** in `Shared` (D-111 item 3): the `Weak0` column is never
+  read; a use that would need the value 0 at link time is the
+  `WeakDyn` column's `E`.
+- **No TLS relaxation** in `Shared` (D-119): `TlsGd`, `TlsLd`, `TlsDesc`
+  and `TlsIe` keep the input's model; their records per binding are
+  D-119's table (a non-preemptible target: `r_sym` 0 and a static
+  offset).
+- **GOT relaxation** (a64.md R5, x64.md G1-G4) only against a `Local`
+  target; a `Preemptible` target never relaxes.
+- **The names of the `E` cells.** `AbsNarrow`, `Pc`, `Lo` and `GotRel`
+  against a non-`Local` kind, and every `C` cell refused by the rule
+  above: `non-pic-in-shared-object` (`spec/diag.md` §3.4, planned;
+  GNU ld's ``relocation {r_type} against symbol `{name}' which may bind
+  externally can not be used when making a shared object; recompile
+  with -fPIC``); `AbsNarrow` against `Local` the same kind with
+  `{name}` the section and offset (GNU ld: ``relocation R_X86_64_32
+  against `.rodata' can not be used when making a shared object``);
+  `TlsLe`: `relocation-incompatible` with reason `LocalExecInShared`
+  (§3.2 of `spec/diag.md`; D-119). `TX` stays `text-relocation`.
+- **D-117's address-level rule** (a bound use of exported preemptible
+  data through a local symbol) and its AArch64 analysis are generic scan
+  checks over relocations and, for the analysis, AArch64 code
+  (`mortar_scan`, WP-117 and WP-119); they are not cells of this table
+  and need no trait method beyond `classify`.
+- **i386** `Shared` (WP-130): D-130 (PLT `%ebx`-relative; `GOT32X`
+  without a base register `E` for every kind; IFUNC refused).
+
+*Tests:* `shared-reloc-table` (`spec/dyn.md` D-117: every row and kind,
+each architecture, plain and interposed).
 
 ## 5. What is decided when
 

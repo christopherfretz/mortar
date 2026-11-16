@@ -1,0 +1,17 @@
+sysstatic-a64 objects 5002
+sysstatic-a64 use	a64	ABS	DATA	FUNC	inside	section	384
+sysstatic-a64 use	a64	LO12	CODE	DATA	inside	section	1
+sysstatic-a64 use	a64	LO12	CODE	DATA	start	section	93
+sysstatic-a64 use	a64	PC	CODE	DATA	inside	section	1
+sysstatic-a64 use	a64	PC	CODE	DATA	start	section	63
+sysstatic-a64 use	a64	PC	EH	FUNC	start	section	6740
+sysstatic-a64 use	a64	RULE	LO12	CODE	inside	section	1
+sysstatic-a64 use	a64	RULE	LO12	CODE	start	section	93
+sysstatic-a64 use	a64	RULE	PC	CODE	inside	section	1
+sysstatic-a64 use	a64	RULE	PC	CODE	start	section	63
+sysstatic-a64 use	a64	RULE	TLS	CODE	start	named-local	2
+sysstatic-a64 use	a64	TLS	CODE	DATA	start	named-local	2
+sysstatic-a64 overapprox-objects 29
+sysstatic-a64 overapprox-objects-with-unnamed-def 18
+sysstatic-a64 objects-with-data-hit 17
+sysstatic-a64 RULE-objects-refused 17

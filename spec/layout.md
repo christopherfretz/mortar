@@ -649,7 +649,7 @@ order of the output sections themselves is in §10.
 | 0 | R | file header, program headers | M1 |
 | 1 | R | `.interp` | M2 |
 | 2 | R | `.note.gnu.property`, `.note.gnu.build-id`, `.note.ABI-tag`, other allocated notes in `OutSecId` order | M1 |
-| 3 | R | `.gnu.hash`, `.dynsym`, `.dynstr`, `.gnu.version`, `.gnu.version_d`, `.gnu.version_r` (no `.hash`: `spec/dyn.md` D-20) | M2 (`.gnu.version_d` M4) |
+| 3 | R | `.gnu.hash`, `.dynsym`, `.dynstr`, `.gnu.version`, `.gnu.version_d`, `.gnu.version_r` (no `.hash`: `spec/dyn.md` D-20) | M2 (`.gnu.version_d` M4, WP-125; between `.gnu.version` and `.gnu.version_r` as GNU ld, `spec/dyn.md` D-123, request R-L12) |
 | 4 | R | `.rela.dyn` (`.rel.dyn` on i386), `.relr.dyn`, `.rela.plt` (`.rel.plt`) | M1 for `.rela.plt` (IRELATIVE in a static link), M2 the rest (`.relr.dyn` M4) |
 | 5 | R | `.rodata`, read-only orphans (`PROGBITS`, alloc, not W, not X), `.gcc_except_table`, `.eh_frame_hdr`, `.eh_frame` | M1 |
 | 6 | RX | `.init`, `.plt` (`.iplt` content in a static link), `.text`, exec orphans, `.fini` | M1 |
@@ -1169,11 +1169,17 @@ from it:
 
 ### 13.5 x86 and dynamic additions [M2-M4]
 
-- **L-100 [C] [M4]** (shared-object output is M4, `spec/dyn.md` Q8; in
-  an executable these symbols are exported only when `ref_dynamic`,
-  D-21) In a shared object, `_end`, `_edata` and
-  `__bss_start` are exported `STB_GLOBAL STV_DEFAULT` when they are
-  defined (GNU and lld). `_DYNAMIC` is hidden.
+- **L-100 [C] [M4; planned: WP-117]** (shared-object output is M4,
+  `spec/dyn.md` Q8) A linker-defined symbol is exported from a shared
+  object only when `ref_dynamic`, as from an executable (D-21 item 2,
+  D-110 item 2): no reference exports `_end`, `_edata` or
+  `__bss_start` from a `-shared` link (WP-110 [X-A] A1). The one
+  exception: `__start_NAME` and `__stop_NAME` of a C-identifier output
+  section that a live object references are exported `STB_GLOBAL
+  STT_NOTYPE STV_PROTECTED` (GNU ld and lld; D-110 item 2), and are
+  never preempted. `_DYNAMIC` is hidden (D-32). (Until WP-115 this rule
+  said `_end`, `_edata` and `__bss_start` were exported
+  `STB_GLOBAL STV_DEFAULT` when defined; request R-L10 withdrew it.)
 - **L-101 [C]** `_GLOBAL_OFFSET_TABLE_` is tied to the `GOT_BASE`
   demand: a reference to the symbol demands `GOT_BASE` (`spec/arch.md`),
   and so does a definition of the symbol in an input's symbol table, as a
@@ -1208,9 +1214,15 @@ from it:
   defaulting to …" and uses the start of `.text`. mortar does not guess
   an address: a program with entry 0 faults at its first instruction,
   which is a clear failure, where a guessed start runs some code (Q6,
-  decided: a warning, not an error). With `-shared` or `-r` and no
-  `-e`, there is no entry symbol to find: `e_entry = 0`, silently.
-  resolve.md §5.5 must change "the entry is layout's default (GNU's,
+  decided: a warning, not an error). With `-r` and no `-e`, there is
+  no entry symbol to find: `e_entry = 0`, silently. With `-shared`
+  [M4; planned: WP-118] (`spec/dyn.md` D-101, request R-L11) L-102
+  applies as written: when the entry symbol (`-e`'s, else `_start`) is
+  defined, `e_entry` is its address (all three write `&_start` when the
+  library defines it); when the default `_start` is undefined,
+  `e_entry = 0` silently (a library usually has none); an undefined
+  symbol named by `-e` keeps the `entry-not-found` warning and
+  `e_entry = 0`. resolve.md §5.5 must change "the entry is layout's default (GNU's,
   the start of `.text`)" to `e_entry = 0` (§20.7).
 - **L-104 [C]** A defined entry must lie in an exec chunk (`plumb.md`
   S7). An entry outside one is `internal-error` when mortar computed it,

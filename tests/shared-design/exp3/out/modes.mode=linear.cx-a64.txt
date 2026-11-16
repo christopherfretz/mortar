@@ -1,0 +1,2 @@
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.g-Os-fPIC_-fcommon.o pre=1 rule=0 ana=1 words=37 funcs=5
+TOTAL objs=170 pre=110 rule_objs=0 ana_objs=1 ana_only_objs=1 rule=0 ana=1 words=5673 undec=194

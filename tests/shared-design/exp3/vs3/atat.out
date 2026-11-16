@@ -1,0 +1,22 @@
+a01 atat-V2global    -   gnu={bar@@V1 cur@@V1 cur_impl foo fop old@V1 old_impl} | lld={bar@@V1 cur@@V1 cur_impl foo fop old@V1 old_impl} | mold={bar@@V1 cur@@V1 cur_impl foo fop old@V1 old_impl}
+a01 atat-V2global    E   gnu={bar@@V1 cur@@V1 cur_impl foo fop old@V1 old_impl} | lld={bar@@V1 cur@@V1 cur_impl foo fop old@V1 old_impl} | mold={bar@@V1 cur@@V1 cur_impl foo fop old@V1 old_impl}
+     V1 { global: bar; }; V2 { global: cur; };
+a02 atat-V2glob      -   gnu={bar@@V1 cur@@V1 cur_impl@@V2 foo fop old@V1 old_impl} | lld={bar@@V1 cur@@V1 cur_impl@@V2 foo fop old@V1 old_impl} | mold={bar@@V1 cur@@V1 cur_impl@@V2 foo fop old@V1 old_impl}
+a02 atat-V2glob      E   gnu={bar@@V1 cur@@V1 cur_impl@@V2 foo fop old@V1 old_impl} | lld={bar@@V1 cur@@V1 cur_impl@@V2 foo fop old@V1 old_impl} | mold={bar@@V1 cur@@V1 cur_impl@@V2 foo fop old@V1 old_impl}
+     V1 { global: bar; }; V2 { global: c*; };
+a03 atat-V1glob-loc  -   gnu={bar@@V1 foo fop old@V1 old_impl} | lld={bar@@V1 cur@@V1 foo fop old@V1 old_impl} | mold={bar@@V1 cur@@V1 foo fop old@V1 old_impl}
+a03 atat-V1glob-loc  E   gnu={bar@@V1 cur@@V1 foo fop old@V1 old_impl} | lld={bar@@V1 cur@@V1 foo fop old@V1 old_impl} | mold={bar@@V1 cur@@V1 foo fop old@V1 old_impl}
+     V1 { global: bar; local: c*; };
+a04 atat-g-and-l     -   gnu={bar cur@@V1 cur_impl@@V1 foo fop old@V1 old_impl} | lld={bar cur_impl@@V1 foo fop old@V1 old_impl} | mold={bar cur@@V1 cur_impl@@V1 foo fop old@V1 old_impl}
+a04 atat-g-and-l     E   gnu={bar cur@@V1 cur_impl@@V1 foo fop old@V1 old_impl} | lld={bar cur_impl@@V1 foo fop old@V1 old_impl} | mold={bar cur@@V1 cur_impl@@V1 foo fop old@V1 old_impl}
+     V1 { global: c*; local: cur; };
+a05 sv-V2global      -   gnu={bar@@V1 cur@@V1 cur_impl foo fop old@V1 old_impl} | lld=ERR | mold={bar@@V1 cur@@V1 cur_impl foo fop old@V1 old_impl}
+a05 sv-V2global      E   gnu={bar@@V1 cur@@V1 cur_impl foo fop old@V1 old_impl} | lld=ERR | mold={bar@@V1 cur@@V1 cur_impl foo fop old@V1 old_impl}
+     V1 { global: bar; }; V2 { global: old; };
+a06 sv-V1-global     -   gnu={old@V1} | lld={cur@@V1 old@V1} | mold={cur@@V1 old@V1}
+a06 sv-V1-global     E   gnu={cur@@V1 old@V1} | lld={cur@@V1 old@V1} | mold={cur@@V1 old@V1}
+     V1 { global: old; local: *; };
+a07 atat-V2star      -   gnu={bar@@V1 cur@@V1 cur_impl@@V2 foo@@V2 fop@@V2 old@V1 old_impl@@V2} | lld={bar@@V1 cur@@V1 cur_impl@@V2 foo@@V2 fop@@V2 old@V1 old_impl@@V2} | mold={bar@@V1 cur@@V1 cur_impl@@V2 foo@@V2 fop@@V2 old@V1 old_impl@@V2}
+a07 atat-V2star      E   gnu={bar@@V1 cur@@V1 cur_impl@@V2 foo@@V2 fop@@V2 old@V1 old_impl@@V2} | lld={bar@@V1 cur@@V1 cur_impl@@V2 foo@@V2 fop@@V2 old@V1 old_impl@@V2} | mold={bar@@V1 cur@@V1 cur_impl@@V2 foo@@V2 fop@@V2 old@V1 old_impl@@V2}
+     V1 { global: bar; }; V2 { global: *; };
+ATAT-DONE

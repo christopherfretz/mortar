@@ -1,0 +1,546 @@
+CENSUS of -shared link lines (WP-110, area `census`) - REPORT
+
+Reproduce: bash /Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp/census/run.sh WORK
+(fresh WORK; about 80 s; 31 MB). Measured run: work/census.
+Scripts (exp/census/): run.sh, census.py + summary.py (part 1), realbuilds.sh (part 2),
+tools.sh (part 3), odd.sh (the misbehaving outputs), survey.py (survey classification),
+wrap_ld.sh (the -B recording ld), src/ (inputs, all written for this census).
+Logs: work/census/{p1.log, p1/summary/{default-lines.txt, variations.txt, lines.tsv,
+options.tsv, union.txt, mortar.txt}, p1/hashcheck.log, p2.log, p3.log, odd.log, survey.tsv,
+versions.txt}.
+Tools (versions.txt): gcc/g++/gfortran and the cross gcc 14.2.0, clang 19.1.7 and 22.1.8,
+GNU ld 2.44, ld.lld 19.1.7 and 22.1.8, mold 2.37.1, qemu-user 10.0.13 (x86-64 and i386 runs),
+eu-elflint 0.192, cmake 3.31.6. The mortar binary is target-wp-110/release/mortar (49645320 bytes).
+Host: AArch64.
+
+Part 1 scale: 21 drivers (gcc, g++, gfortran x 3 arches; clang/clang++ 19 and 22 x 3 arches)
+x 35 variations = 723 lines. All 723 were captured by the wrapper. GNU ld linked 614 of them.
+578 libraries passed when dlopen'ed (RTLD_NOW) from a GNU-ld-linked host, run natively or
+under qemu, with self-checking output "OK lib_check=42 ...".
+-### against the wrapper: the args are identical for gcc aarch64 C and C++, gcc x86_64 C,
+gcc i686 C, and clang22 on all 3 arches (p1/hashcheck.log).
+
+======================================================================
+1. DEFAULT -shared LINE PER DRIVER PER ARCH (dyn.md 2.1 style)
+======================================================================
+$G = GCC lib directory: /usr/lib/gcc/aarch64-linux-gnu/14, or /usr/lib/gcc-cross/<triple>/14.
+$S = system lib directory: /usr/lib/aarch64-linux-gnu, /usr/x86_64-linux-gnu/lib(64), or
+/usr/i686-linux-gnu/lib.
+Source: p1/summary/default-lines.txt.
+
+gcc, AArch64, C:
+  -plugin … -plugin-opt=… --build-id --eh-frame-hdr --hash-style=gnu --as-needed
+  -shared -X -EL -maarch64linux --fix-cortex-a53-843419 -o OUT
+  $S/crti.o $G/crtbeginS.o -L… OBJ
+  -lgcc --push-state --as-needed -lgcc_s --pop-state -lc
+  -lgcc --push-state --as-needed -lgcc_s --pop-state
+  $G/crtendS.o $S/crtn.o
+gcc, x86-64 / i386: adds --sysroot=/ and "-m elf_x86_64" / "-m elf_i386", placed before
+  --hash-style. It drops -X -EL -maarch64linux --fix-cortex-a53-843419. The rest is identical.
+clang 19 and clang 22 (identical lines on every arch):
+  [-EL on AArch64 only] --hash-style=gnu --build-id --eh-frame-hdr -m <aarch64linux|elf_x86_64|elf_i386>
+  -shared -o OUT $S/crti.o $G/crtbeginS.o -L… OBJ
+  -lgcc --as-needed -lgcc_s --no-as-needed -lc -lgcc --as-needed -lgcc_s --no-as-needed
+  $G/crtendS.o $S/crtn.o
+  (no -plugin, no global --as-needed, no --sysroot)
+
+Compared with dyn.md 2.1 (executables), every -shared line has:
+- no Scrt1.o/crt1.o;
+- no -dynamic-linker;
+- no -pie;
+- crtbeginS/crtendS, as for PIE.
+
+C++ tails:
+- gcc: -lstdc++ -lm -lgcc_s -lc -lgcc_s (NO -lgcc at all, unlike gcc's executable line).
+- clang: -lstdc++ -lm -lgcc_s -lgcc -lc -lgcc_s -lgcc.
+
+gfortran tail: -lgfortran -lm -lgcc_s [--as-needed -lquadmath --no-as-needed] -lm -lc -lgcc_s.
+- The bracketed -lquadmath part appears on x86-64 and i386 only.
+- There is no -lgcc.
+
+-L lists:
+- gcc aarch64: $G $S /usr/lib $S /lib $S /usr/lib /usr/lib (normalised).
+- gcc x86: $G $S /lib/<triple> /lib /usr/lib/<triple> /usr/lib $S.
+- clang: $G [$S(lib64)] /lib/<triple> /usr/lib/<triple> $S /lib /usr/lib.
+
+NEEDED of the default outputs (GNU ld):
+- C: libc.so.6.
+- gcc C++: libstdc++, libgcc_s, libc.
+- clang C++: also libm, because clang has no global --as-needed.
+- gfortran: aarch64 only libgfortran.so.5; x86 adds libm and libc.
+
+What mortar prints on the default line of every driver (21 of 21), and on 525 other
+census lines (546 in total) (p1/summary/mortar.txt):
+  mortar: error: unsupported option: -shared
+  mortar: error: unsupported feature: linking
+  >>> an option above is refused, so nothing is linked (docs/status/options.md)    rc=1
+Every other option on the default lines is already accepted.
+
+Options mortar refuses, by number of census lines carrying each:
+| option | lines |
+|---|---|
+| -shared | 714 |
+| -z initfirst / interpose / nodelete | 63 |
+| -u | 42 |
+| -soname | 21 |
+| --version-script | 21 |
+| --dynamic-list | 21 |
+| --exclude-libs | 21 |
+
+Through real lines mortar also refuses -version-script (one dash, libtool), --whole-archive
+and --no-whole-archive (p3.log).
+
+Mortar on the static-pie lines:
+- aarch64 and x86-64 agree with GNU ld: "undefined symbol: main", referenced by rcrt1.o.
+- i686 gives "unsupported feature: position-independent executable output".
+
+======================================================================
+2. VARIATION TABLE (21 drivers each unless noted; GNU ld; p1/summary/variations.txt)
+======================================================================
+Each row: what the driver adds to the line; how many drivers linked / how many ran OK; the
+ELF effect against the default.
+- soname | -soname ARG | 21/21 | DT_SONAME.
+- version-script | --version-script=FILE | 21/21 | VERDEF+VERDEFNUM, verdef V1. Exported:
+  only lib_check, lib_inited, my_init, my_fini @@V1 plus the ABS symbol V1. lib_data, lib_func
+  and the C++ COMDAT/template symbols are no longer exported (local: *).
+- Bsymbolic | -Bsymbolic | 21/21 | DT_FLAGS SYMBOLIC.
+- Bsymbolic-functions | -Bsymbolic-functions | 21/21 | no tag; same dynamic facts as default.
+- dynamic-list | --dynamic-list=FILE | 21/21 | no visible change (the list only matters for
+  symbolic binding).
+- archive | -u ar_func AR | 21/21 | ar_func exported.
+- exclude-libs | --exclude-libs ALL -u ar_func AR | 21/21 | ar_func pulled in but not exported.
+- undef (object with an undefined call) | UNDEF | links 21, runs 0 | dlopen fails:
+  "undefined symbol: not_defined_anywhere".
+- z-defs / no-undefined | -z defs / --no-undefined | 21/21 | no change.
+- z-defs+undef, no-undefined+undef | links 0. Every driver gives
+  "undef.c:(.text+0x8|0x5|0x14): undefined reference to `not_defined_anywhere'".
+- z-nodelete / z-initfirst / z-interpose | -z X | 21/21 | DT_FLAGS_1 NODELETE / INITFIRST /
+  INTERPOSE.
+- z-now | -z now | 21/21 | DT_FLAGS BIND_NOW + DT_FLAGS_1 NOW.
+- z-relro | -z relro | 21/21 | no change (already the default).
+- as-needed | --as-needed | 21/21 | only clang C++ changes: libm.so.6 is dropped.
+- rpath, rpath+new-dtags | -rpath ARG [--enable-new-dtags] | 21/21 | DT_RUNPATH (the default
+  is new dtags).
+- rpath+old-dtags | --disable-new-dtags | 21/21 | DT_RPATH.
+- init-fini | -init my_init -fini my_fini | 21/21 | DT_INIT/DT_FINI point to the user functions.
+  The run prints init=1.
+- gc-sections | --gc-sections | 21/21 | no change to dynamic facts (exports are GC roots).
+- export-dynamic | --export-dynamic | 21/21 | no change.
+- rdynamic | -export-dynamic on gcc aarch64 and on all clang; NOTHING on gcc x86-64/i386 |
+  21/21, no change.
+- nostdlib | removes crti/crtbeginS/crtendS/crtn and the whole -l tail | links 21, runs 9.
+  C runs; there is no DT_INIT/INIT_ARRAY/VERNEED.
+  - C++: dlopen fails "undefined symbol: _ZNSt13runtime_errorD1Ev" (9 drivers).
+  - Fortran: dlopen fails "undefined symbol: _gfortran_transfer_character_write" (3 drivers).
+- static-libgcc | -lgcc_eh replaces -lgcc_s; gcc C++/Fortran gain -lgcc -lgcc_eh | 21/21 |
+  C++ loses NEEDED libgcc_s; the unwinder becomes internal (+_dl_find_object, malloc... undefs).
+- shared-libgcc:
+  - gcc C: drops -lgcc and the --push-state wrapping, giving -lgcc_s -lc -lgcc_s.
+  - clang C: drops the --as-needed around -lgcc_s, so it gains NEEDED libgcc_s.so.1.
+  - 21/21 linked and ran.
+- static-libstdc++ | 9 C++ drivers | -Bstatic -lstdc++ -Bdynamic | 9/9.
+  - +821 exported symbols (libstdc++ is re-exported).
+  - aarch64 gains TLSDESC_PLT/GOT.
+  - x86 gains NEEDED ld-linux(-x86-64).so.
+- pthread | -lpthread | 21/21 | no change (8-byte empty libpthread.a).
+- nopic (default -fPIE object) | links 7 (all i686), runs 7.
+  Diagnostics quoted exactly:
+  - AArch64 (all 5 C/Fortran drivers and clang C++): "relocation R_AARCH64_ADR_PREL_PG_HI21
+    against symbol `lib_data' which may bind externally can not be used when making a shared
+    object; recompile with -fPIC"
+  - x86-64 C/Fortran: "relocation R_X86_64_PC32 against symbol `lib_data' can not be used when
+    making a shared object; recompile with -fPIC" // "final link failed: bad value"
+  - x86-64 gcc C++: the same, against `_ZTISt13runtime_error@@GLIBCXX_3.4'.
+  - i686: links with "warning: relocation against `lib_func' in read-only section `.text'" and
+    "warning: creating DT_TEXTREL in a shared object". It gets DT_TEXTREL and FLAGS TEXTREL,
+    and runs OK.
+- fno-pic | links 7 (all i686), runs 5.
+  - AArch64: the same ADR_PREL_PG_HI21 error. gcc C++ names
+    `_ZNSt13runtime_errorD1Ev@@GLIBCXX_3.4' and adds "unresolvable R_AARCH64_ADR_PREL_PG_HI21
+    relocation".
+  - x86-64 gcc: "relocation R_X86_64_32 against `.rodata' can not be used when making a shared
+    object; recompile with -fPIC" // "failed to set dynamic section sizes: bad value".
+    Fortran gives R_X86_64_32S. C++ gives R_X86_64_32 against `_ZNSt13runtime_errorD1Ev@@GLIBCXX_3.4'.
+  - x86-64 clang: R_X86_64_32S against `lib_data' (C), or R_X86_64_32 against
+    `_ZTISt13runtime_error@@GLIBCXX_3.4' (C++).
+  - i686: links with TEXTREL warnings. clang 19/22 C++ also gives "warning: relocation in
+    read-only section `.eh_frame'", and the library SEGFAULTS at the throw (see W1).
+- static (-shared -static) | links 3 (gcc i686 only), runs 2.
+  Lines:
+  - gcc: crtbeginT.o/crtend.o and --start-group -lgcc -lgcc_eh -lc --end-group, with no
+    --eh-frame-hdr. gcc aarch64 also adds -Bstatic.
+  - clang: -static plus the same group, keeping crtbeginS and --eh-frame-hdr.
+  Failures:
+  - aarch64 (all): "undefined reference to `_start'" / `__fini_array_end'.
+  - x86-64 gcc: "crtbeginT.o: relocation R_X86_64_32 against hidden symbol `__TMC_END__' can
+    not be used when making a shared object".
+  - x86-64 clang: "libc.a(malloc.o): relocation R_X86_64_TPOFF32 against `tcache' can not be
+    used when making a shared object; recompile with -fPIC".
+  - i686 clang: "undefined reference to `_start'" + "libc.a(dl-support.o): relocation
+    R_386_GOTOFF against undefined hidden symbol `_start' ...".
+  The gcc i686 outputs have TEXTREL and no PT_GNU_EH_FRAME. The C++ one aborts:
+  "terminate called after throwing ... what(): 41" (W2).
+- static-pie (-shared -static-pie) | links 0.
+  - gcc REMOVES -shared and adds rcrt1.o, -pie, --no-dynamic-linker and -z text (x86 also
+    adds -static). It fails with "undefined reference to `main'".
+  - clang KEEPS -shared and adds -pie -static --no-dynamic-linker -z text. It fails with
+    "warning: cannot find entry symbol _start" + "undefined reference to `_start'".
+
+Options on the lines (p1/summary/options.tsv; union.txt holds the full union).
+Count = lines out of 723, with default lines out of 21 in brackets.
+
+| option | lines (default lines) |
+|---|---|
+| --build-id | 723 (21) |
+| --hash-style=gnu | 723 (21) |
+| -L | 723 (21) |
+| -o | 723 (21) |
+| --eh-frame-hdr | 714 (21) |
+| -shared | 714 (21) |
+| -lc | 702 (21) |
+| -lgcc_s | 639 (21) |
+| -lgcc | 516 (15) |
+| --as-needed | 489 (15) |
+| -lm | 405 (12) |
+| -plugin/-plugin-opt | 309 (9) |
+| -lstdc++ | 306 (9) |
+| -EL | 241 (7) |
+| -m elf_i386 | 241 (7) |
+| -m elf_x86_64 | 241 (7) |
+| --no-as-needed | 240 (8) |
+| --sysroot=/ | 206 (6) |
+| -m aarch64linux | 138 (4) |
+| -X | 103 (3) |
+| -maarch64linux | 103 (3) |
+| --fix-cortex-a53-843419 | 103 (3) |
+| -lgfortran | 99 (3) |
+| --push-state/--pop-state | 87 (3) |
+| -lquadmath | 66 (2) |
+| -lgcc_eh | 63 |
+| -rpath | 63 |
+| --start-group/--end-group | 42 |
+| -z defs | 42 |
+| --no-undefined | 42 |
+| -u | 42 |
+| -static | 30 |
+| -Bstatic | 15 |
+| -export-dynamic | 15 |
+| -Bdynamic | 9 |
+
+Options on 21 lines each: --version-script, --dynamic-list, --exclude-libs, --export-dynamic,
+--gc-sections, -Bsymbolic(-functions), -init, -fini, -lpthread, -soname,
+--enable/--disable-new-dtags, -z initfirst/interpose/nodelete/now/relro/text, -pie,
+--no-dynamic-linker.
+
+======================================================================
+3. SURVEY LINES CLASSIFIED + REAL LIBRARIES PER LINKER
+======================================================================
+survey.tsv: kind == shared in .build/real-builds/results/*/lines.
+There are 15 build lines and 4 probes. The control column holds the harness's control
+outcome: GCC+GNU ld for gcc rows, Clang+lld for clang rows.
+
+| project | compiler | lines | kind | lang | options beyond the driver default | control | mortar |
+|---|---|---|---|---|---|---|---|
+| lua | gcc | 5 (lib1, lib11, lib2, lib21, lib2-v2) | build | C | none | 0 | refused -shared |
+| lua | clang | 5 (the same modules) | build | C | none | 0 | refused -shared |
+| googletest | gcc | 2 (libgtest_dll, libshared_gmock_main) | build | C++ | --dependency-file=…, -soname | 0 | refused -shared, -soname |
+| googletest | clang | 2 (the same) | build | C++ | --dependency-file=…, -soname | 0 | refused -shared, -soname |
+| zlib | gcc | 1 (libz.so.1.3.1, 15 .lo, `-lc` first in the tail) | build | C | -soname, --version-script | 0 | refused 3 |
+| zlib | gcc | 1 (ztest) | probe | C | -soname, --version-script | 0 | refused |
+| zlib | clang | 1 (ztest) | probe | C | -soname, --version-script | control 1 | both fail |
+| expat | clang | 1 (conftest) | probe | C++ | none | 0 | refused -shared |
+| gmp | clang | 1 (conftest) | probe | C++ | none | 0 | refused -shared |
+
+Summary of the survey:
+- 12 of 19 lines need nothing beyond -shared plus the default line.
+- 4 need --dependency-file and -soname.
+- 3 need -soname and --version-script.
+
+The zlib clang probe failure is reproduced (p2.log "probe"). zlib's configure probe links a
+1-function ztest.c with zlib.map:
+
+| probe | rc | diagnostics |
+|---|---|---|
+| gcc/clang-22 + GNU ld | 0 | none |
+| gcc/clang-22 + lld 19 or 22 | 1 | 22 lines: "error: version script assignment of 'ZLIB_1.2.0' to symbol 'compressBound' failed: symbol not defined" |
+| mold | 0 | 56 warning lines: "cannot assign version `ZLIB_1.2.0` to symbol `deflate_copyright`: symbol not found" |
+| lld or mold + -Wl,--undefined-version | 0 | none |
+| GNU ld + -Wl,--no-undefined-version | 1 | "inflateCopy: undefined version: ZLIB_1.2.0" |
+
+So under Clang+lld, zlib's configure decides "no shared library". That explains why the
+survey has no clang libz.so build line. This is inferred from configure lines 438-446 and is
+not traced through configure itself.
+
+(a) zlib 1.3.1 (realbuilds.sh; 15 objects compiled by hand with configure's SFLAGS).
+Linked with GNU ld, lld 22, lld 19 and mold:
+`gcc -shared -Wl,-soname,libz.so.1,--version-script,zlib.map -lc` (with -B or -fuse-ld).
+
+zlib.map, quoted whole in p2.log. Its constructs (vscript.py):
+- 14 named version nodes; 13 of them have a parent (a linear chain ZLIB_1.2.0 <- ... <- ZLIB_1.2.12).
+- ZLIB_1.2.0 has "global:" with 6 names and "local:" with 9 names plus the wildcard `_*`.
+- The other 13 nodes list 41 names with no keyword, which means global.
+- There is no "local: *", so symbols not listed stay exported and unversioned.
+- There is no extern "C++" and no other glob.
+
+Results per linker:
+| | GNU ld | lld 22 | lld 19 | mold |
+|---|---|---|---|---|
+| .dynsym entries | 124 | 108 | 108 | 108 |
+| defined | 104 | 88 | 88 | 88 |
+| versioned | 47 | 47 | 47 | 47 |
+| unversioned | 57 | 41 | 41 | 41 |
+| VERDEFNUM | 15 | 15 | 15 | 15 |
+| SONAME | libz.so.1 | libz.so.1 | libz.so.1 | libz.so.1 |
+| NEEDED | libc.so.6 | libc.so.6 | libc.so.6 | libc.so.6 |
+| eu-elflint | "No errors" | rc=1 | rc=1 | rc=1 |
+
+The extra 16 in GNU ld:
+- LOCAL SECTION symbols .data and .init;
+- one GLOBAL OBJECT ABS symbol per version name (14).
+The system /usr/lib/aarch64-linux-gnu/libz.so.1.3.1 matches GNU ld (104 defined).
+
+eu-elflint complaints:
+- lld: '.rodata' merge flag with entsize 0, '.plt' processor flag 0x20000000, '.relro_padding'
+  type.
+- lld19: the .rodata and .relro_padding complaints.
+- mold: '.relro_padding' type/flags, and `__ehdr_start` st_value out of bounds in .symtab.
+
+Run matrix, all 48 cells OK: example, example64 and the minigzip -> minigzip -d round trip.
+Each was built (GNU ld) against each linker's lib and run with LD_LIBRARY_PATH on each
+linker's lib (4x4x3). example64's verneed: libz.so.1 ZLIB_1.2.0.2 and ZLIB_1.2.3.3.
+
+(b) Lua 5.4.7:
+- liblua.a and the lua interpreter were built with GNU ld, -Wl,-E: 145 lua_* and luaL_*
+  symbols are exported.
+- The five test modules were linked with each linker.
+
+Undefined references per module (identical on all 4 linkers):
+| module | undefined references | defines |
+|---|---|---|
+| lib1 | luaL_checkversion_ luaL_setfuncs lua_createtable lua_gettop lua_pushfstring lua_pushstring lua_pushvalue lua_setglobal lua_settop lua_tointegerx | anotherfunc lib1_export luaopen_lib1_sub onefunction |
+| lib11 | lib1_export (a module-to-module reference) | |
+| lib2 | luaL_checkversion_ luaL_setfuncs lua_createtable lua_gettop lua_setglobal lua_settop | |
+| lib21 | luaopen_lib2 | |
+| lib2-v2 | luaL_checkversion_ luaL_setfuncs lua_createtable lua_gettop lua_pushboolean lua_rotate lua_setglobal lua_settop | |
+
+NEEDED: none with GNU ld and lld; libc.so.6 with mold.
+
+Runs:
+- attrib.lua passed for each linker (rc=0).
+- src/luamods.lua gave 9/9 OK for each linker. It checks: lib1 global load; functions;
+  lib11 -> lib1_export resolved from the global lib1; lib2 and lib2-v2 (two luaopen_lib2,
+  local); lib21 -> luaopen_lib2 bound to the global lib2, not lib2-v2; lib1.sub.
+- A mortar-linked lua interpreter (executable, -Wl,-E) passes attrib.lua with the GNU ld
+  modules (rc=0).
+
+(c) googletest libgtest_dll.so: gtest-all and gtest_main, compiled with -DGTEST_CREATE_SHARED_LIBRARY=1
+-fPIC; line `g++ -shared -Wl,--dependency-file=… -Wl,-soname,libgtest_dll.so`.
+
+| | GNU ld | lld 22 | lld 19 | mold |
+|---|---|---|---|---|
+| link | rc=0 | rc=0 | rc=0 | rc=0 |
+| dep-file lines | 85 | 52 | 52 | 35 |
+| size (bytes) | 1772376 | 1736672 | 1736528 | 2581472 |
+| dynsym (defined) | 4080 (3842) | 4078 (3840) | 4078 (3840) | 4078 (3840) |
+| STB_GNU_UNIQUE | 6 | 6 | 6 | 6 |
+| EI_OSABI | GNU | SYSV | SYSV | SYSV |
+| gtest_dll_test | 797 PASSED | 797 PASSED | 797 PASSED | 797 PASSED |
+| crossthrow | OK | OK | OK | OK |
+
+- NEEDED on every linker: libstdc++, libm, libgcc_s, libc. main is exported from the library.
+- The dynsym name sets differ only by GNU ld's LOCAL SECTION .data/.init.
+- crossthrow: a library-thrown GoogleTestFailureException is caught in the exe:
+  "OK caught library-thrown N7testing8internal26GoogleTestFailureExceptionE".
+- Swap test: crossthrow was built against GNU ld's lib and run, without its rpath, against
+  each of the 4 libs. All OK.
+
+======================================================================
+4. LIBTOOL / CMAKE
+======================================================================
+libtool is not installed. Lines L1-L4 are hand-written in libtool 2.4's shape and are
+UNVERIFIED-as-libtool (tools.sh, p3.log).
+- predeps/postdeps that libtool would parse from `g++ -shared -v`: crti crtbeginS ...
+  -lstdc++ -lm -lgcc_s -lc -lgcc_s crtendS crtn.
+- L1: C library with -Wl,-soname -Wl,libfoo.so.1 -Wl,-version-script -Wl,foo.ver.
+  Note the one-dash -version-script spelling.
+- L2: C++ library with -nostdlib and explicit crti crtbeginS OBJ -L$G -lstdc++ -lm -lc -lgcc_s
+  crtendS crtn.
+- L3: -Wl,--whole-archive libconv.a -Wl,--no-whole-archive (a convenience archive).
+- L4: -Wl,-rpath -Wl,/usr/local/lib -L.libs -lfoo.
+
+Results: GNU ld, lld 22, lld 19 and mold each link all four. A GNU-ld-linked host prints 6/6 OK
+for each linker:
+- foo=42;
+- bar(21)=42 ctor=yes;
+- caught exception thrown across the library boundary;
+- conv=7 (from the whole archive);
+- dep=43;
+- symbol hidden by the version script.
+
+Differences:
+- mold adds NEEDED libc.so.6 to libfoo, libwa and libdep; GNU ld and lld drop it under --as-needed.
+- lld orders RUNPATH first in .dynamic.
+
+mortar refuses: L1 (-shared, -soname, -version-script), L2 (-shared, -soname),
+L3 (-shared, --whole-archive, --no-whole-archive, -soname) and L4 (-shared, -soname).
+
+CMake 3.31.6, Unix Makefiles, BUILD_SHARED_LIBS=ON; libcl (C, VERSION 1.2.3, SOVERSION 1),
+libcxl (C++, using libcl) and app. The captured link.txt lines:
+  cc  -fPIC -Wl,--dependency-file=CMakeFiles/cl.dir/link.d -shared -Wl,-soname,libcl.so.1 -o libcl.so.1.2.3 CMakeFiles/cl.dir/cl.c.o
+  c++ -fPIC -Wl,--dependency-file=CMakeFiles/cxl.dir/link.d -shared -Wl,-soname,libcxl.so -o libcxl.so CMakeFiles/cxl.dir/cxl.cpp.o -Wl,-rpath,BUILD libcl.so.1.2.3
+  c++ -Wl,--dependency-file=CMakeFiles/app.dir/link.d CMakeFiles/app.dir/app.cpp.o -o app -Wl,-rpath,BUILD libcxl.so libcl.so.1.2.3
+
+- A shared library is linked by path (libcl.so.1.2.3), not by -l. The recorded ld lines are the
+  default -shared line plus -soname, --dependency-file and -rpath.
+- With CMAKE_LINKER_TYPE=LLD the lines gain -fuse-ld=lld and keep --dependency-file.
+- With MOLD, CMake OMITS --dependency-file.
+- app prints "OK cxl_value(2)=42" for GNU ld, LLD and MOLD.
+- MOLD again adds NEEDED libc.so.6 to libcl.
+- The mortar build stops with rc=2: "unsupported option: -shared", "-soname".
+
+======================================================================
+5. RANKED: WHAT A MINIMAL FIRST MORTAR -shared PACKAGE MUST ACCEPT
+======================================================================
+The real-line base is 25 lines: 19 survey lines, 4 libtool-shaped and 2 CMake library lines.
+The census adds 21 default lines.
+
+1. -shared with the default driver line (21/21 census defaults; 25/25 real lines).
+   Output: ET_DYN without PT_INTERP. The input side is unchanged from executables: crti,
+   crtbeginS, crtendS, crtn, the -l tails with --as-needed, --push-state/--pop-state and
+   --no-as-needed, and -plugin as a no-op. 546 census lines are refused for -shared alone.
+   The output must include:
+   - .dynsym/.dynstr/GNU_HASH exporting every default-visibility global, including C++
+     COMDAT/template instances (gtest: 3840 defined);
+   - PLT/GOT and dynamic relocations for preemptible references;
+   - RELATIVE relocations;
+   - DT_INIT/FINI and the init/fini arrays from crtbeginS;
+   - PT_GNU_EH_FRAME (W2 shows what happens without it);
+   - PT_GNU_RELRO, DT_NEEDED with --as-needed;
+   - STB_GNU_UNIQUE, emitted with EI_OSABI GNU as GNU ld does.
+2. Undefined symbols left for load time (no -z defs): 10/19 survey lines. The lua modules
+   reference lua_* from the host exe and lib11/lib21 reference other modules; mold, lld and
+   GNU ld agree. "-z defs"/"--no-undefined" must turn this into an error naming the symbol
+   (42 census lines). Mortar does not refuse these options today; whether it enforces them
+   for -shared is untested.
+3. -soname: 7/19 survey lines (gtest 4, zlib 3), 4/4 libtool lines, 2/2 CMake lines. In all,
+   13/25 real lines.
+4. --version-script: 3/19 survey lines (zlib) and 1/4 libtool lines spelled -version-script.
+   - The zlib subset: named nodes, a parent chain, global:/local:, an implicit global section,
+     the `_*` local glob, and no `local: *`.
+   - Names in the script that are not defined must be ACCEPTED, as GNU ld does by default.
+     Otherwise zlib's configure probe fails (2/19 lines), as it does under lld.
+   - The output must match GNU ld's VERDEF: BASE = soname, plus 14 entries with parents.
+     Whether to emit the version-name ABS symbols is a choice (GNU ld and the system libz do;
+     lld and mold do not; all run).
+5. --dependency-file: 4/19 survey lines and 2/2 CMake lines. Mortar already accepts it.
+6. -rpath (+ DT_RUNPATH as the default, --disable-new-dtags -> DT_RPATH): CMake libcxl and
+   libtool L4 (2/25 real lines). 63 census lines. Mortar already accepts it.
+7. --whole-archive/--no-whole-archive: libtool convenience archives (L3, 1/25).
+   Currently refused.
+8. -nostdlib with explicit crt files (libtool C++, L2): no new option, just inputs.
+9. Not seen on any real line (census only, 21 lines each): -Bsymbolic(-functions),
+   --dynamic-list, --exclude-libs, -z nodelete/initfirst/interpose/now, -init/-fini, -u,
+   --export-dynamic, --gc-sections. Of these, -u, --dynamic-list, --exclude-libs and
+   -z nodelete/initfirst/interpose are refused by mortar today; they can stay refused in the
+   first package.
+10. Refuse by name, never link:
+    - text relocations in -shared (i686 non-PIC objects: 14 census lines link with GNU ld;
+      lld and mold refuse; W1 shows the GNU ld output crashing);
+    - -shared -static (21 lines; 3 link with GNU ld; W2 and W3 crash);
+    - -shared -static-pie (21 lines, 0 link anywhere).
+    For the non-PIC 64-bit cases, mortar's diagnostic should name the relocation, the symbol
+    and "recompile with -fPIC", as all three references do.
+
+======================================================================
+DISAGREEMENTS BETWEEN THE REFERENCES (all measured)
+======================================================================
+D1 Undefined names in a version script (zlib probe, realbuilds.sh "probe"):
+   - GNU ld: silent, rc=0.
+   - mold: 56 warnings, rc=0.
+   - lld 19/22: an error per name, rc=1, unless --undefined-version.
+   - GNU ld with --no-undefined-version: also rc=1.
+D2 .dynsym contents for zlib.map: GNU ld adds 14 version-name ABS symbols plus the LOCAL
+   SECTION .data/.init (124 vs 108 entries). The system libz agrees with GNU ld. Runtime is
+   the same in all 48 cross runs.
+D3 EI_OSABI with STB_GNU_UNIQUE: GNU ld sets GNU; lld 19/22 and mold leave SYSV, which readelf
+   shows as "<OS specific>: 10". gtest runs identically on all four.
+D4 --as-needed and libc: mold records NEEDED libc.so.6 where GNU ld and lld drop it (all 5 lua
+   modules, libfoo, libwa, libdep, CMake libcl). The cause is UNVERIFIED. It may be that mold
+   counts the weak __cxa_finalize/_ITM_* references from crtbeginS.
+D5 eu-elflint passes GNU ld's libz and flags lld's, lld19's and mold's (.relro_padding type
+   and flags; .rodata merge entsize 0; lld22 .plt flags; mold __ehdr_start out of bounds).
+   All of them load and run.
+D6 i686 non-PIC/-fno-pic objects into -shared:
+   - GNU ld links with TEXTREL warnings (14 lines).
+   - lld refuses: "relocation R_386_32 cannot be used against symbol 'lib_data'; recompile
+     with -fPIC". It still refuses with -z notext ('__gxx_personality_v0').
+   - mold refuses: "relocation R_386_32 in .eh_frame can not be used when making a
+     position-independent output; recompile with -fPIE or -fPIC".
+D7 -shared -static i686:
+   - GNU ld links: TEXTREL, no PT_GNU_EH_FRAME.
+   - lld refuses: "relocation R_386_32 cannot be used against symbol '__TMC_END__'; recompile
+     with -fPIC".
+   - mold links, with PT_GNU_EH_FRAME and PHDR.
+D8 Driver differences:
+   - gcc C++ and Fortran -shared tails have no -lgcc; clang's do.
+   - gcc uses a global --as-needed, so clang C++ keeps NEEDED libm and gcc drops it.
+   - -rdynamic gives -export-dynamic on gcc aarch64 and clang, but nothing on gcc x86-64/i386.
+   - -static-pie: gcc drops -shared, clang keeps it.
+   - -shared -static: gcc swaps in crtbeginT and drops --eh-frame-hdr; clang keeps crtbeginS
+     and --eh-frame-hdr and adds -static.
+   - gfortran -lquadmath appears on x86 only.
+D9 --dependency-file contents: 85 / 52 / 35 lines (GNU ld / lld / mold) for the same gtest link.
+   CMake does not pass the option to mold at all.
+D10 gtest library size: mold 2581472 bytes vs GNU ld 1772376 vs lld 1736672.
+
+======================================================================
+WRONG OUTPUTS (each reproduced by a script; all on lines mortar should refuse)
+======================================================================
+W1 GNU ld 2.44, i686, clang++ 19 and 22 with a -fno-pic C++ object and -shared.
+   - Link: rc=0 with "warning: relocation in read-only section `.eh_frame'" and
+     "warning: creating DT_TEXTREL in a shared object".
+   - Run: the library prints "lib C++ data=41" and then SEGFAULTS (rc=139) when its exception
+     is thrown.
+   - The same source built with i686 g++ -fno-pic also has TEXTREL and runs OK.
+   - lld and mold refuse this link.
+   - Scripts: odd.sh, section A (odd.log); census.py variation fno-pic (clang19/clang22 i686 c++).
+   - Root cause UNVERIFIED. Suspected: .eh_frame in a read-only segment patched by text
+     relocations, or the eh_frame_hdr table computed before relocation.
+W2 GNU ld 2.44, i686-linux-gnu-g++ -shared -static (the driver's own line).
+   - Link: rc=0 with the crtbeginT TEXTREL warning. The output has no PT_GNU_EH_FRAME because
+     the driver omits --eh-frame-hdr.
+   - Run: the C++ library aborts with "terminate called after throwing an instance of
+     'std::runtime_error' what(): 41" (rc=134). The C version runs OK.
+   - Adding -Wl,--eh-frame-hdr makes the C++ library run OK (odd.sh, B').
+   - This is arguably the driver line plus GNU ld accepting it, not GNU ld alone.
+   - Scripts: odd.sh, section B; census.py variation static (gcc i686 c++).
+W3 mold 2.37.1, i686-linux-gnu-gcc -shared -static -fuse-ld=mold, on a C library.
+   - Link: rc=0 with no diagnostic.
+   - Run: dlopen + call SEGFAULTS before the library's first output (rc=139).
+   - The same line with GNU ld runs OK. lld refuses it.
+   - mold's C++ variant runs OK.
+   - One difference is visible: GNU ld resolves crtbeginT's non-PIC calls to
+     __(de)register_frame_info_bases as dynamic R_386_PC32 text relocations. mold routes them
+     through R_386_JUMP_SLOT PLT entries, which in a shared object assume %ebx = GOT. Whether
+     this causes the crash is UNVERIFIED.
+   - Script: odd.sh, section B, "gcc -shared -static (C) + mold".
+
+======================================================================
+NOT VERIFIED
+======================================================================
+- The libtool lines are hand-written. libtool is not installed, so they are UNVERIFIED-as-libtool.
+  The -v predeps/postdeps they rely on were measured.
+- Root causes of W1-W3: only the symptoms and the reloc/phdr differences are measured.
+- Why the survey has no clang libz.so line: inferred from configure's probe logic plus the
+  reproduced probe failure. Configure itself was not rerun.
+- Part 1 linked only with GNU ld. lld and mold were run on the real builds, the libtool/CMake
+  lines and the odd cases, not on all 723 lines.
+- -### was compared with the wrapper only for gcc C (3 arches), g++ aarch64 and clang22 C
+  (3 arches). clang 19, gfortran and the x86 g++ lines rely on the wrapper alone.
+- x86-64 and i386 libraries ran under qemu-user, not on hardware.
+- kiln++, flang and Fortran via clang were not covered. gfortran's Fortran was only C-bound
+  (bind(C)).
+- No mortar -shared output exists: every mortar line here was refused. Nothing about mortar's
+  enforcement of -z defs/--no-undefined, or its handling of version-script semantics, is known.
+- The census libraries are 1-object toys. Real-library behaviour rests on zlib, the lua modules
+  and gtest only (AArch64 native).

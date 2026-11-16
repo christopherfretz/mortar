@@ -1,0 +1,16 @@
+gcc-x64.pie objects 54
+gcc-x64.pie use	x64	ABS	DATA	DATA	start=end-of-local	section	1
+gcc-x64.pie use	x64	ABS	NONALLOC	FUNC	inside	section	82372
+gcc-x64.pie use	x64	ABS	NONALLOC	FUNC	start	section	4891
+gcc-x64.pie use	x64	PC	CODE	DATA	only-with-other-bias	section	4
+gcc-x64.pie use	x64	PC	CODE	DATA	start=end-of-local	section	1
+gcc-x64.pie use	x64	PC	CODE	FUNC	inside	section	1
+gcc-x64.pie use	x64	PC	DATA	FUNC	inside	section	263
+gcc-x64.pie use	x64	PC	DATA	FUNC	start	section	1
+gcc-x64.pie use	x64	PC	EH	FUNC	start	section	997
+gcc-x64.pie use	x64	RULE	ABS	DATA	start	section	1
+gcc-x64.pie use	x64	RULE	PC	CODE	start	section	1
+gcc-x64.pie overapprox-objects 5
+gcc-x64.pie overapprox-objects-with-unnamed-def 4
+gcc-x64.pie objects-with-data-hit 2
+gcc-x64.pie RULE-objects-refused 1

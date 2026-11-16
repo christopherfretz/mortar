@@ -81,6 +81,15 @@ section, under about 2000 lines.
   own (`mortar_testutil::jobs::PrivatePool`), never the machine's.
 - Temporary files go under the worktree's build directory, never in a
   shared location with a fixed name.
+- Never name `/dev/stdout`, `/dev/stderr`, `/dev/fd/N` or
+  `/proc/self/fd/N` as the OUTPUT path of any tool (objcopy, strip, ld,
+  lld, mold, ar, a compiler's `-o`, a script's own writer): several of
+  them unlink or replace their output path on failure (GNU objcopy and
+  GNU ld unlink it; lld and mold replace it in some descriptor states,
+  `spec/landed/image/WP-114.md`), and as root in a container that removes
+  the link for every process on the machine. Write to a scratch file and
+  read it. mortar's own tests of `-Map=/dev/stdout` are the one
+  exception, guarded by `mortar_testutil::dev_stdout::Guard`.
 
 ## Review gates (supervisor)
 

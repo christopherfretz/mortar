@@ -102,6 +102,15 @@ const SMALL: &[(&str, &str)] = &[
     ("libtop2.c", "int mid2_fn(void); int top2_fn(void){return 1000 + mid2_fn();}\n"),
     ("w16.c", "int top2_fn(void); int main(void){return top2_fn() - 1107;}\n"),
     ("libvis.c", "int vf(void){return 3;} int vg(void){return 4;}\n"),
+    // plumb.md §5.8 (WP-104, RB-1): non-alloc words against names only a
+    // library defines (`dw_p` a datum no code references).
+    ("libdw.c", "int dw_var = 1; int dw_p = 3; int dw_fn(void){return 2;}\n"),
+    (
+        "dw.c",
+        "extern int dw_var; int dw_fn(void);\nint main(void){return dw_var + dw_fn() - 3;}\n\
+         __asm__(\".section .debug_mortar_dsoref,\\\"\\\",%progbits\\n\\t\"\n\
+         \".quad dw_var\\n\\t.quad dw_p\\n\\t.quad dw_var+16\\n\\t.quad dw_fn\\n\\t.text\");\n",
+    ),
     ("w1.c", "int vf(void); int main(void){return vf()-3;}\n"),
     (
         "libz.c",
@@ -952,6 +961,44 @@ fn build() -> Option<Corpus> {
             [B, W16, W16],
         );
 
+        // plumb.md §5.8 (WP-104, the RB-1 defect): non-alloc words against
+        // names only libdw.so defines hold their link-time value, 0 + A in
+        // a PIE. GNU ld writes it (on x86-64 the PLT entry for `dw_fn`,
+        // A37); lld drops `dw_var+16`'s addend (A38); mold writes the
+        // library's st_value (A39) and the PLT entry (A40). The `dw_p`
+        // word of GNU ld's output set to the library's loaded address, its
+        // st_value and garbage: R1 each, by name.
+        let d = b.dir(arch, "dsoword");
+        b.so(arch, &d, "libdw.c", "libdw.so", "libdw.so", &[]);
+        b.obj(arch, &d, "dw.c", &["-O1", "-fPIC"], "dw.o");
+        let mold_dw: Option<&[&str]> = Some(&["A39", "A40"]);
+        b.link(
+            "dsoword",
+            arch,
+            &d,
+            "dw",
+            &["-pie", "dw.o", "libdw.so"],
+            a([CLEAN, Some(&["A38"]), mold_dw], [Some(&["A37"]), Some(&["A38"]), mold_dw]),
+        );
+        let v = dynsym_value(&std::fs::read(d.join("libdw.so")).unwrap(), "dw_p");
+        for (what, word) in
+            [("loaded", 0x7f00_0000_0000 + v), ("st_value", v), ("garbage", 0xdead_beef_cafe)]
+        {
+            let mut out = std::fs::read(d.join("dw.bfd")).unwrap();
+            let s = sections(&out);
+            let o = section(&s, ".debug_mortar_dsoref").3 + 8;
+            out[o..o + 8].copy_from_slice(&u64::to_le_bytes(word));
+            let name = format!("dw.bfd.{what}");
+            std::fs::write(d.join(&name), &out).unwrap();
+            std::fs::copy(d.join("dw.bfd.map"), d.join(format!("{name}.map"))).unwrap();
+            let e: Option<&[&str]> = if x64 {
+                Some(&["A37", "R1@'dw_p', which only a shared library defines"])
+            } else {
+                Some(&["R1@'dw_p', which only a shared library defines"])
+            };
+            b.push("dsoword", arch, &d, &name, true, e, Linker::Bfd, d.join("dw.bfd.line"), true);
+        }
+
         // W1: an import whose only definition is STV_HIDDEN.
         let d = b.dir(arch, "W1");
         b.so(arch, &d, "libvis.c", "libvis.so", "libvis.so", &[]);
@@ -1342,6 +1389,17 @@ fn movk_g0_moved(b: &mut [u8]) {
         + 8;
     let v = w(o) + (8 << 5);
     b[o..o + 4].copy_from_slice(&v.to_le_bytes());
+}
+
+/// The value of `.dynsym`'s symbol `name` (a shared object's).
+fn dynsym_value(b: &[u8], name: &str) -> u64 {
+    let s = sections(b);
+    let t = section(&s, ".dynsym");
+    let strs = s[t.5].3;
+    (t.3..t.3 + t.4)
+        .step_by(24)
+        .find(|&o| cstr(b, strs + le32(b, o) as usize) == name)
+        .map_or_else(|| panic!("no dynamic symbol {name}"), |o| le64(b, o + 8))
 }
 
 /// The value of `.symtab`'s symbol `name`.
@@ -1746,6 +1804,15 @@ fn w14_non_tls_reference_to_shared_tls() {
 #[test]
 fn w16_used_object_reference_unsatisfied() {
     judge("W16");
+}
+
+// spec/plumb.md §5.8 (WP-104): a non-alloc word against a name only a
+// shared library defines holds its link-time value; each reference's
+// convention is its own named anomaly (A37-A40), and the mutants of GNU
+// ld's word are R1.
+#[test]
+fn s5_8_a_word_against_a_shared_definition() {
+    judge("dsoword");
 }
 
 // dyn.md W17: what the verifier reports on lld's large-model GD outputs.

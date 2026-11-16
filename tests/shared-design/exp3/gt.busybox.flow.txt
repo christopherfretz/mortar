@@ -1,0 +1,3 @@
+REFUSED /Volumes/AgentWork/mortar-helper/.build/review-110b/bb-pie/libbb/appletlib.o bound 1 analysis - unseen -
+REFUSED /Volumes/AgentWork/mortar-helper/.build/review-110b/bb-pie/sysklogd/syslogd_and_logger.o bound 2 analysis - unseen -
+TABLE busybox objs=577 users=2 refused=2 escapes=0 defs=3 symbol=3 rule=0 analysis=0 unseen=0
