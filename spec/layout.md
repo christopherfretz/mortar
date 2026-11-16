@@ -577,6 +577,15 @@ order of the output sections themselves is in §10.
   chunks', and its `sh_addr` must be a multiple of it (gABI "Sections").
   An empty `.text` (alignment 1) before a 4-aligned island otherwise
   gives `sh_addr` ≡ 1 (mod 4) with `sh_addralign` 4.
+- **L-161 [C] (first chunk; WP-054, WP-083)** The first chunk of every
+  output section is aligned to the section's `sh_addralign`, the largest
+  alignment of its chunks, so that L-5 holds whatever chunk comes later:
+  a leading copy chunk, or the body of `.rodata` before its merged chunk
+  whose `.rodata.cst16` pieces are wider than the body's members (the
+  case WP-054 found, where L-5 held only by accident:
+  `tests/link/dyn/cxx/threads-tls.test` with `-static-libgcc`). L-160 is
+  the case of an island. A section whose first chunk is already the
+  widest is unchanged.
 
 ## 10. Output section order
 
@@ -657,7 +666,8 @@ order of the output sections themselves is in §10.
   1. **R**: ranks 0-5;
   2. **RX**: rank 6;
   3. **RW-RELRO**: rank 7, `PF_R|PF_W`;
-  4. **RW**: rank 8, `PF_R|PF_W`.
+  4. **RW**: rank 8, `PF_R|PF_W`;
+  then, on x86-64, the large sections' 5-7 of L-36a.
   This is the lld/mold shape (E-1). GNU makes one R E segment for ranks
   0-6 (headers and rodata executable) and one RW for ranks 7-8 on
   AArch64. mortar keeps code pages out of the readable-data segment and
@@ -673,7 +683,7 @@ order of the output sections themselves is in §10.
 |---|---|---|---|
 | `PT_PHDR` | `PT_INTERP` is present (M2) | the program header table | 8 (ELF64) / 4 |
 | `PT_INTERP` | an interpreter is named (`Exec`, `Pie`; never `StaticPie`; `spec/dyn.md` D-31, D-61) (M2) | `.interp` | 1 |
-| `PT_LOAD` ×1-4 | L-65 | | `P` = max(maxpage, the largest alignment of a chunk in the segment) |
+| `PT_LOAD` ×1-7 (x86-64 large sections, L-36a; else ×1-4) | L-65 | | `P` = max(maxpage, the largest alignment of a chunk in the segment) |
 | `PT_DYNAMIC` | dynamic (M2) | `.dynamic` | word |
 | `PT_NOTE` ×n | allocated notes | one per run of consecutive note chunks with the same alignment | that alignment |
 | `PT_TLS` | a TLS chunk | §11.4 | max TLS alignment |

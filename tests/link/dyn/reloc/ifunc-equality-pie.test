@@ -11,8 +11,8 @@
 # W3 (dyn.md §13.2): GNU ld and mold give the GOT slot its own
 # `IRELATIVE` to the implementation, so the two addresses differ:
 # x86-64 PIE (GNU ld, mold) and non-PIE (GNU ld); AArch64 PIE with a
-# `-fno-pic` unit (mold, and GNU ld as well: measured here, `a != b`,
-# beyond what §13.2 lists; reported). lld is right everywhere.
+# `-fno-pic` unit (mold, and GNU ld as well: measured here, `a != b`;
+# W3 lists it since WP-083). lld is right everywhere.
 #@ spec: dyn.md "D-45"
 #@ arch: aarch64 x86_64
 #@ xfail(bfd,mold): W3: the executable's IFUNC gets a second address through the GOT's own IRELATIVE

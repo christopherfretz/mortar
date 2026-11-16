@@ -5,8 +5,8 @@
 # stays unresolved at run time (`a_fn` is null, the program prints `0`)
 # and `b_fn` returns 20. dyn.md D-25 then decides the weak reference.
 #
-# Where the references differ (D-11 "mold differs", E-shlib 2.2a; not
-# yet a row of §13.1): GNU ld and lld agree with D-11; mold records
+# Where the references differ (D-11 "mold differs", E-shlib 2.2a; a row
+# of §13.1): GNU ld and lld agree with D-11; mold records
 # `liba.so` as needed and the program prints `1 20`. Not a wrong output
 # (the weak reference binds to a library the program names), so mold is
 # held to its own behaviour; mortar to D-11's.

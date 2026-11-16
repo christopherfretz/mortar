@@ -16,8 +16,7 @@
 # in an x86-64 `-no-pie` link crtbegin.o reaches `_ITM_*` by
 # `R_X86_64_32` only, an unfillable use, so D-25 makes them `Weak0` and
 # they stay out (GNU ld's set) while lld exports them. mortar's set is
-# lld's but there (a spec finding reported with WP-051: D-21's "the set
-# equals lld's" does not hold for x86-64 `-no-pie`).
+# lld's but there (D-21 says so since WP-083).
 #@ spec: dyn.md "D-21"
 #@ spec: dyn.md "D-25"
 #@ arch: aarch64 x86_64

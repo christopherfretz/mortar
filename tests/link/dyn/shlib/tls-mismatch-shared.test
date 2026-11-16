@@ -14,10 +14,10 @@
 # -fPIC`), and mold links both with at most a warning (`symbol type
 # mismatch: nv`; on x86-64 its second link dies on an assertion, signal
 # 6). Their programs crash (SIGSEGV) or print garbage (mold: `1179403647
-# 4`): wrong outputs, not yet in dyn.md §13.2.
+# 4`): wrong outputs, dyn.md §13.2 W14.
 #@ spec: dyn.md "D-16"
 #@ arch: aarch64 x86_64
-#@ xfail(lld,mold): unrecorded in dyn.md §13.2: a TLS/non-TLS mismatch against a shared definition links, and the program crashes or reads garbage
+#@ xfail(lld,mold): W14: a TLS/non-TLS mismatch against a shared definition links, and the program crashes or reads garbage
 
 cc -O1 -fPIC tv.c -o tv.o
 cc -O1 -fPIC nv.c -o nv.o

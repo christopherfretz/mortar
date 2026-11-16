@@ -9,9 +9,8 @@
 # libmid2.so, as GNU ld does (``./libmid2.so: undefined reference to
 # `leaf_fn'``).
 #
-# What the other references do (not a W of dyn.md 13.2; see the report
-# of WP-051): lld and mold link it, drop libleaf.so (DT_NEEDED is
-# libtop2.so, libc.so.6), and the program fails at load with ``symbol
+# What the other references do (dyn.md §13.2 W16): lld and mold link
+# it, drop libleaf.so (DT_NEEDED is libtop2.so, libc.so.6), and the program fails at load with ``symbol
 # lookup error: ... libmid2.so: undefined symbol: leaf_fn`` (exit 127),
 # recorded here as what they do.
 #@ spec: dyn.md "D-13"

@@ -753,8 +753,8 @@ pub fn chunk(
     // pieces are wider than its members) is aligned to the largest
     // alignment of the section's chunks: `sh_addralign` is that largest
     // one, and gABI "Sections" wants `sh_addr` congruent to 0 modulo it
-    // (L-5, as the islands above). A section whose first chunk is
-    // already the widest is unchanged.
+    // (L-5; layout L-161, as L-160 for the islands above). A section
+    // whose first chunk is already the widest is unchanged.
     let mut widest: Vec<u8> = vec![0; outs];
     for (c, o) in out_of.iter().enumerate() {
         if let Some(o) = o {
