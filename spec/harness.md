@@ -2373,8 +2373,9 @@ prints `plumb: clean` (status 0), or `plumb: <n> findings: <rule> x<k>,
 
 ### Outcomes
 
-A line's id is its output's path relative to the build directory (`src/`
-for the sources' copy), with each component a tool named at random
+A line's id is its output's path relative to the build's own directory
+(`build/` out of tree, `src/` for the sources' copy, `extra/` for the
+second archive's), with each component a tool named at random
 written `*` (`cc` and six letters or digits, `rustc` and six, `tmp.` and
 ten, `TryCompile-` and six, `cmTC_` and five), `configure/` before it for
 the configure phase, and `#<n>` for its n-th repetition in the order the

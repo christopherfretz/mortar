@@ -486,15 +486,9 @@ impl Lane {
             }
         }
         run.wall = started.elapsed();
-        run.lines = outcome::read_records(&records, &build)?;
-        // The ids are relative to the build directory; the sources' copy
-        // is its sibling `src` and appears as `../src/...`.
-        let copy_prefix = format!("{}/", copy.display());
-        for (id, _) in &mut run.lines {
-            if let Some(at) = id.find(&copy_prefix) {
-                *id = format!("{}src/{}", &id[..at], &id[at + copy_prefix.len()..]);
-            }
-        }
+        // The ids are relative to the build's directory: `build/...` (out
+        // of tree), `src/...` (the sources' copy), `extra/...`.
+        run.lines = outcome::read_records(&records, &dir)?;
         run.queries =
             std::fs::read_to_string(records.join("queries")).map_or(0, |t| t.lines().count());
         for line in std::fs::read_to_string(&results).unwrap_or_default().lines() {
