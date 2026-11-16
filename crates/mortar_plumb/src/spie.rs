@@ -110,7 +110,13 @@ pub(crate) fn is_static_pie(image: &Image<'_>) -> bool {
 
 /// P-D14 and P-D15.
 #[allow(clippy::too_many_lines)] // one block per property
-pub(crate) fn check(image: &Image<'_>, out: &DynOut, format: Format, v: &mut Vec<Finding>) {
+pub(crate) fn check(
+    image: &Image<'_>,
+    out: &DynOut,
+    entry: Option<&str>,
+    format: Format,
+    v: &mut Vec<Finding>,
+) {
     let machine = image.header.e_machine;
     let mortar = format == Format::Mortar;
     // P-D14, headers: glibc takes the bias from &__ehdr_start.
@@ -126,6 +132,23 @@ pub(crate) fn check(image: &Image<'_>, out: &DynOut, format: Format, v: &mut Vec
         && e.sym.st_value != 0
     {
         v.push(d14(format!("__ehdr_start is {:#x}, not 0 (D-1)", e.sym.st_value)));
+    }
+    // The entry: executable, and the entry symbol's value (`-e`, else
+    // `_start`) when .symtab defines it (S7 judges ET_EXEC only).
+    let e = image.header.e_entry;
+    let insn = if machine == EM_AARCH64 { 4 } else { 1 };
+    if image.load_of(e, insn).is_none_or(|p| p.p_flags & mortar_elf::consts::PF_X == 0) {
+        v.push(d14(format!("the entry point {e:#x} is in no executable PT_LOAD")).at(e));
+    }
+    let name = entry.unwrap_or("_start");
+    if let Some(s) = image.global(name).or_else(|| image.unique(name))
+        && s.sym.st_shndx != 0
+        && s.sym.st_value != e
+    {
+        let mut f = d14(format!("the entry point is not '{name}'")).at(e);
+        f.expected = Some(s.sym.st_value);
+        f.found = Some(e);
+        v.push(f);
     }
     if mortar && image.phdrs.iter().any(|p| p.p_type == PT_PHDR) {
         v.push(d14("PT_PHDR in a static-pie (D-1; layout L-67)"));
@@ -302,5 +325,56 @@ pub(crate) fn check(image: &Image<'_>, out: &DynOut, format: Format, v: &mut Vec
             ))
             .at(lo),
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn out(tags: &[(u64, u64)]) -> DynOut {
+        DynOut { entries: tags.to_vec(), ..DynOut::default() }
+    }
+
+    // spec/plumb.md §12.4: glibc's ranges (_ELF_DYNAMIC_DO_RELOC).
+    #[test]
+    fn s12_4_glibc_ranges() {
+        // lld and mold: one table.
+        assert_eq!(ranges(&out(&[(DT_RELA, 0x300), (DT_RELASZ, 0x60)])), [(0x300, 0x60)]);
+        // GNU ld: DT_JMPREL right after .rela.dyn: one range.
+        let gnu = [(DT_RELA, 0x300), (DT_RELASZ, 0x60), (DT_PLTREL, 7), (DT_JMPREL, 0x360)];
+        let mut t = gnu.to_vec();
+        t.push((DT_PLTRELSZ, 0x30));
+        assert_eq!(ranges(&out(&t)), [(0x300, 0x90)]);
+        // DT_RELASZ covering DT_JMPREL at its end: cut, then joined.
+        let t = [
+            (DT_RELA, 0x300),
+            (DT_RELASZ, 0x90),
+            (DT_PLTREL, 7),
+            (DT_JMPREL, 0x360),
+            (DT_PLTRELSZ, 0x30),
+        ];
+        assert_eq!(ranges(&out(&t)), [(0x300, 0x90)]);
+        // Apart: two ranges, range 0 first.
+        let t = [
+            (DT_RELA, 0x300),
+            (DT_RELASZ, 0x60),
+            (DT_PLTREL, 7),
+            (DT_JMPREL, 0x900),
+            (DT_PLTRELSZ, 0x30),
+        ];
+        assert_eq!(ranges(&out(&t)), [(0x300, 0x60), (0x900, 0x30)]);
+        // No DT_RELA: range 0 is DT_JMPREL's.
+        let t = [(DT_PLTREL, 7), (DT_JMPREL, 0x900), (DT_PLTRELSZ, 0x30)];
+        assert_eq!(ranges(&out(&t)), [(0x900, 0x30)]);
+        // Overlapping, not at the end: applied twice (both ranges).
+        let t = [
+            (DT_RELA, 0x300),
+            (DT_RELASZ, 0x90),
+            (DT_PLTREL, 7),
+            (DT_JMPREL, 0x318),
+            (DT_PLTRELSZ, 0x18),
+        ];
+        assert_eq!(ranges(&out(&t)), [(0x300, 0x90), (0x318, 0x18)]);
     }
 }

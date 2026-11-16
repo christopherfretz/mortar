@@ -73,6 +73,13 @@ pub const CLASSES: &[&str] = &[
     "plt0-disp2",
     "plt-index",
     "plt-back-jump",
+    "spie-rel-drop",
+    "spie-rel-extra",
+    "spie-irel-twice",
+    "spie-interp",
+    "spie-needed",
+    "spie-relacount",
+    "spie-dynamic-word",
 ];
 
 /// How many mutants of each class to run, from which seed, on how many

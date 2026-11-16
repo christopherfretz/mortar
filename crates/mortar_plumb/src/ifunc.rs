@@ -18,7 +18,7 @@ use super::{
     Engine, Evidence, Group, Pending, Rec, Target, Verdict, Want, got_rewrite, is_branch, judge,
     slot_addend, verdict_finding, x_direct, x_got,
 };
-use crate::a64::{self, Op};
+use crate::a64::{self, Field, Op};
 use crate::map::Format;
 use crate::report::{Finding, Reason, Rewrite, Rule, Site, Via};
 
@@ -561,8 +561,8 @@ impl Engine<'_, '_> {
         // resolver picks; view 2 checks it moves with the bias.
         if self.iplt.spie
             && rec.addend == 0
-            && !rec.def.op.is_slot()
-            && !is_branch(rec)
+            && rec.def.op == Op::Abs
+            && matches!(rec.def.field, Field::Data(_))
             && u64::from(rec.def.field.width()) == self.word()
             && self.iplt.words.iter().any(|&(w, r)| w == rec.p && r == resolver)
         {
@@ -772,7 +772,7 @@ impl Engine<'_, '_> {
                 let w = pend.rec.def.field.width();
                 if let Some(c) = chosen
                     && pend.rec.def.op == Op::Abs
-                    && matches!(w, 4 | 8)
+                    && matches!(pend.rec.def.field, Field::Data(4 | 8))
                     && ok.iter().any(|o| o.0 == c)
                     && self.image.load_of(pend.rec.p, u64::from(w)).is_some()
                 {

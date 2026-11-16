@@ -2,7 +2,8 @@
 //! P-D4..P-D8, P-D10..P-D13, and P-D9's record-order part). Where the
 //! references differ by design (`dyn.md` §13.1) a reference output is
 //! judged by its own linker's form; `Format::Mortar` is judged by the
-//! D rules exactly (`spec/plumb.md` §12.4, "per-linker forms").
+//! D rules exactly (`spec/plumb.md` §12.1, "a reference to its own
+//! form"). A static-pie's own rules are `crate::spie`'s (§12.4).
 // ELF fields and addresses read best by the specs' short names.
 #![allow(clippy::many_single_char_names, clippy::similar_names)]
 
@@ -64,7 +65,7 @@ pub(crate) fn check(
     let spie = line.kind == Some(OutputKind::StaticPie);
     if spie {
         // §12.4: a static-pie's .dynsym and records are P-D14's.
-        crate::spie::check(image, out, format, &mut v);
+        crate::spie::check(image, out, line.entry.as_deref(), format, &mut v);
     } else {
         pd7(image, out, model, ld, format, &mut v);
     }
