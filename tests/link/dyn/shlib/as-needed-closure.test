@@ -8,9 +8,6 @@
 # (D-12), loaded through `libtop.so`'s entries, never `DT_NEEDED` of the
 # program. Exactly two entries: `libtop.so`, `libc.so.6`. It runs: 1103.
 # GNU ld, lld and mold agree (E-shlib 2.3a).
-#
-# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
-# tests/link/xfails.
 #@ spec: dyn.md "D-11"
 #@ spec: dyn.md "D-12"
 #@ arch: aarch64 x86_64

@@ -2161,7 +2161,7 @@ FileHeader:
              shlib g++ a.o -o liba.so\nlink gcc a.o\n\
              run a.out\n  env: LD_PRELOAD=./libhook.so\n  env: LD_BIND_NOW=1\n\
              check readelf -dW a.out\n  has: (NEEDED)\n  then: (NEEDED)\n  count: 2 (NEEDED)\n\
-             check elflint a.out\n  allow(mortar): relro_padding\n\
+             check elflint a.out\n  allow(mortar): has wrong flags\n\
              check ldd a.out\n  not: not found\n\
              check gdb a.out \"break main\" run\n  has: Breakpoint 1\n",
         ))

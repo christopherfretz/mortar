@@ -11,9 +11,6 @@
 # the GOT use dynamic and leave the absolute use 0, so under the preload
 # the program prints `got non-null abs null equal 0` and exits 1. GNU ld on
 # x86-64 and mold are right.
-#
-# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
-# tests/link/xfails.
 #@ spec: dyn.md "D-25"
 #@ arch: aarch64 x86_64
 #@ xfail(bfd,aarch64): W12: the GOT use is dynamic, the absolute use 0 (got non-null abs null)

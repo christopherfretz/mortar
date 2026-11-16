@@ -15,9 +15,6 @@
 # W5 (dyn.md §13.2, E-shlib 5.6d): mold links the `-no-pie` line, warns
 # `direct reference to protected function` from glibc at run time, and
 # prints `9 0`.
-#
-# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
-# tests/link/xfails.
 #@ spec: dyn.md "D-18"
 #@ arch: aarch64 x86_64
 #@ fixture: shlib-prot

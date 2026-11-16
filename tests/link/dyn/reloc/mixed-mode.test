@@ -30,9 +30,6 @@
 # mortar refuses (`DIFF vs main: a`). This `-no-pie` mix does not show W3's
 # GNU ld `-no-pie` form, nor this PIE W6's `DT_TEXTREL` (measured: mold
 # writes none here).
-#
-# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
-# tests/link/xfails.
 #@ spec: dyn.md "D-44"
 #@ spec: dyn.md "D-45"
 #@ spec: dyn.md "D-42"

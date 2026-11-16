@@ -4,12 +4,13 @@
 //! PLT and copy plans make of its demands, against the dynamic
 //! relocations GNU ld and lld write for the same link (`readelf -rW`).
 //!
-//! The link stops at the scan (the dynamic output is the join's, WP-053):
-//! [`dyn_link`] runs the phases before it for real, binds each undefined
-//! key a loaded shared object defines to that definition (resolution's
-//! `Def::Shared`, which resolution does not make yet: D-11's binding is
-//! WP-043's) and scans with [`DynA64`] (D-25's AArch64 table and D-49's
-//! lazy target, WP-047's hooks).
+//! The link stops at the scan (the scan's records are this test's
+//! subject; the whole dynamic output is linked since WP-053 and judged by
+//! `tests/link/dyn`): [`dyn_link`] runs the phases before it for real,
+//! binds each undefined key a loaded shared object defines to that
+//! definition (resolution's `Def::Shared`, bound here by the test as it
+//! was written before D-11's binding, WP-043) and scans with [`DynA64`]
+//! (D-25's AArch64 table and D-49's lazy target, WP-047's hooks).
 
 mod support;
 
@@ -204,7 +205,8 @@ impl DynLinked {
         let dynsym = DynsymPlan::new(order, 0, 1).expect("dynsym");
         let diag = Collector::new(Policy::default());
         let kinds = Kinds(self);
-        let cx = DynGotCx { pie: self.output == OutputKind::Pie, bind_now: false };
+        let cx =
+            DynGotCx { pie: self.output == OutputKind::Pie, bind_now: false, static_pie: false };
         let got = GotPlan::new_dynamic(
             &arch,
             &slots,
@@ -595,11 +597,11 @@ fn d47_text_relocation() {
     ) || pie.rendered().contains("can not be used when making a PIE object"), "{}", pie.rendered());
     // An absolute word against a local in an `Exec` needs no record.
     assert!(exec.scanned.diagnostics.is_empty(), "{}", exec.rendered());
-    // A static PIE keeps M1's behaviour.
+    // A static PIE refuses it by the same name (D-1's column; WP-052).
     let mut st = dyn_link_static_pie(dir.path(), &["-pie", "t.o", "-o", "out"]);
     st.sort_unstable();
     eprintln!("static pie: {st:?}");
-    assert!(!st.contains(&"text-relocation"), "{st:?}");
+    assert!(!st.is_empty() && st.iter().all(|&i| i == "text-relocation"), "{st:?}");
 }
 
 /// The scan of a static PIE (`dynamic: false`): the ids.

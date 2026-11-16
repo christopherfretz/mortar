@@ -8,9 +8,6 @@
 # D-13's check, it gets no DT_NEEDED entry, and every default line links.
 # PIE and -no-pie; libc.so.6 is the only DT_NEEDED entry (D-11, E-shlib
 # 1.7). All three references agree (mold never checks, D-13).
-#
-# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
-# tests/link/xfails.
 #@ spec: dyn.md "D-13"
 #@ spec: dyn.md "D-12"
 #@ arch: aarch64 x86_64

@@ -156,7 +156,7 @@ symbol (every `{name}` of the area "symbols", `relocation-incompatible`,
 `relocation-out-of-range`) goes through §5.4, also where it appears
 twice. The areas, in order: command line (`conflicting-options` to
 `unknown-option`), files (`ambiguous-sysroot-path` to
-`static-link-of-shared-object`), file formats, symbols (`archive-backref`
+`written-file-clash`), file formats, symbols (`archive-backref`
 to `version-reassigned`), one-definition rule (`meta-malformed` to
 `odr-vtable-rtti-mismatch`, M6), relocations, layout (`executable-stack` to
 `section-conflict`), incremental linking (`incremental-not-reproducible`
@@ -186,6 +186,7 @@ is added before or after it.
 | `script-cycle` | `ScriptCycle` | `linker script names itself` | own |
 | `skipped-incompatible` | `SkippedIncompatible { path, search }` | `skipping incompatible {path} when searching for {search}` | GNU ld (§8.3) |
 | `static-link-of-shared-object` | `StaticLinkOfSharedObject { path }` | `attempted static link of dynamic object {path}` | GNU ld, lld (§8.3) |
+| `written-file-clash` | `WrittenFileClash { written, what }` | `{written} names {what}; nothing is written to it` | own (`spec/cli.md` §3.14; GNU ld: `input file 'a.o' is the same as output file`) |
 | `cet-report` | `CetReport { path, property }` | `{path}: missing {property} property (-z cet-report)` | own (GNU ld: `an.o: error: missing IBT and SHSTK properties`); severity from `-z cet-report` (`spec/x64.md` X-43) |
 | `malformed-input` | `Malformed { what }` | `{what}` | lld's shape |
 | `unknown-file-type` | `UnknownFileType` | `file not recognized: file format not recognized` | GNU ld (§8.3) |
@@ -236,7 +237,7 @@ is added before or after it.
 | `incremental-not-reproducible` | `IncrementalNotReproducible` | `SOURCE_DATE_EPOCH is set, but an incremental link's output depends on its edit history` | own (`spec/incr.md` IN-7) |
 | `incremental-unsupported` | `IncrementalUnsupported { option }` | `--incremental is not supported with {option}; linking without a state` | own (`spec/incr.md` IN-12) |
 | `incremental-update-failed` | `IncrementalUpdateFailed { reason }` | `--incremental=update: cannot update: {reason}` | own (`spec/incr.md` IN-10) |
-| `incremental-file-clash` | `IncrementalFileClash { option, path, what }` | `{option}={path} names {what}; nothing is written to it` | own (`spec/incr.md` IN-17) |
+| `incremental-file-clash` | `IncrementalFileClash { option, path, what }` | `{option}={path} names {what}; nothing is written to it` | own (`spec/incr.md` IN-17); no longer emitted since WP-087, which made `written-file-clash` cover the state and the report (the id stays, never reused) |
 | `refused` | `Refused { class, name, not_recognized }` | `unsupported {noun of class}: {name}` (§4), then `; file not recognized: file format not recognized` when `not_recognized` (§8.3) | own (§8.2) |
 | `internal-error` | `InternalError { what }` | `internal error in mortar: {what}` | own |
 
@@ -491,6 +492,23 @@ want of a class; a construct with a class of its own uses it.
 Detail (why, what to use instead, the milestone that brings it) goes in a
 note, not in the name: tests compare the name
 (`docs/VALIDATION.md`, "A test of a refusal checks the name").
+
+A `feature` name has no outside document, so the spec that refuses the
+construct spells it, and the test of the refusal compares that spelling.
+The dynamic outputs (M2) added these, without a kind of their own
+(WP-083 found them in the code and not here):
+
+| name | refused by | where |
+|---|---|---|
+| `dynamic executable without -dynamic-linker` | the input phase | `spec/input.md` §8.4 |
+| `a dynamic executable that names no interpreter (-dynamic-linker)` | the plan of `.interp`, behind the input phase's refusal | `spec/dyn.md` D-31 |
+| `dynamically linked output on i386` | the front, until M4 | `spec/dyn.md` §1 (i386 dynamic is M4) |
+| `thread-local undefined weak symbol in a dynamic executable` | the scan | `spec/dyn.md` D-25 |
+| `lazy PLT (shared-library calls)` | `mortar_x64`, `mortar_x86` outside a dynamic plan | `spec/x64.md` §10.3 |
+
+A dynamic link's notes are the refusing spec's as well: the D-12 note
+`defined in {path}, which is not on the command line`
+(`spec/resolve.md`, `spec/dyn.md` D-12) is one, on `undefined-symbol`.
 
 A refusal SHOULD carry the place of the construct: `.at` the section and
 offset for a relocation, the file for a section or a header field, the

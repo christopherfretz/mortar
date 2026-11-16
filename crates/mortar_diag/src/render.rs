@@ -225,6 +225,12 @@ fn message<'d>(kind: &'d Kind, style: &Style<'_>, out: &mut String) -> Option<&'
             out.push_str("attempted static link of dynamic object ");
             escaped(path, out);
         }
+        Kind::WrittenFileClash { written, what } => {
+            escaped(written, out);
+            out.push_str(" names ");
+            escaped(what, out);
+            out.push_str("; nothing is written to it");
+        }
         Kind::CetReport { path, property } => {
             escaped(path, out);
             out.push_str(": missing ");

@@ -363,6 +363,10 @@ fn control_characters_are_made_visible() {
             format!("--incremental=update: cannot update: {shown}"),
         ),
         (
+            Kind::WrittenFileClash { written: h(), what: h() },
+            format!("{shown} names {shown}; nothing is written to it"),
+        ),
+        (
             Kind::IncrementalFileClash { option: h(), path: h(), what: h() },
             format!("{shown}={shown} names {shown}; nothing is written to it"),
         ),
@@ -407,6 +411,7 @@ fn samples() -> Vec<Diagnostic> {
             Kind::ScriptCycle,
             Kind::SkippedIncompatible { path: s(x), search: s(x) },
             Kind::StaticLinkOfSharedObject { path: s(x) },
+            Kind::WrittenFileClash { written: s(x), what: s(x) },
             Kind::CetReport { path: s(x), property: s(x) },
             Kind::Malformed { what: s(x) },
             Kind::UnknownFileType,
