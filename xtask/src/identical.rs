@@ -1,14 +1,15 @@
 //! `cargo xtask static-identical [--update] [-j <n>]` (`spec/harness.md`
-//! "static-identical"): the digests of every static mortar link of a
-//! corpus — every link step of `tests/link` and `tests/identical` on every
-//! architecture — against the checked-in baseline of the machine it runs
-//! on, `tests/identical/baseline.on-<host>.tsv`.
+//! "static-identical"): the digests of every mortar link of a corpus —
+//! every link step of `tests/link` (its dynamic, PIE and static-pie cases
+//! among them) and `tests/identical` on every architecture — against the
+//! checked-in baseline of the machine it runs on,
+//! `tests/identical/baseline.on-<host>.tsv`.
 //!
-//! It is the guard of milestone M2 (`spec/landed/dyn/WP-040.md`): dynamic
-//! output lands behind a refusal, and a static link's bytes, its
-//! `--mortar-map` and its diagnostics stay what they were. A change that
-//! means to change them rewrites the baseline with `--update`, which prints
-//! the links whose digests changed, and the commit carries both.
+//! It holds mortar's output to being deterministic, which incremental
+//! linking rests on: a link's bytes, its `--mortar-map` and its
+//! diagnostics stay what they were. A change that means to change them
+//! rewrites the baseline with `--update`, which prints the links whose
+//! digests changed, and the commit carries both.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -366,7 +367,7 @@ pub fn run(args: &Args) -> bool {
         true
     } else {
         eprintln!(
-            "static-identical: FAILED: a static link changed; if the change is meant, \
+            "static-identical: FAILED: a link changed; if the change is meant, \
              `cargo xtask static-identical --update` and commit the baseline"
         );
         false
