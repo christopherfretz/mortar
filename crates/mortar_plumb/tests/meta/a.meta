@@ -1,0 +1,7 @@
+summary name=lang value=c++
+definition anchor=_Z2viv hash=11111111111111111111111111111111 class=1 flags=3
+definition anchor=_Z2hvv hash=12121212121212121212121212121212 class=1 flags=1
+definition anchor=_Z2wdv hash=13131313131313131313131313131313 class=1 flags=0x101
+definition anchor=_Z2prv hash=14141414141414141414141414141414 class=1 flags=8
+definition anchor=_Z6strongv hash=15151515151515151515151515151515 class=1 flags=0
+type name=1T hash=16161616161616161616161616161616 layout=0x1 size=4 align=4 flags=0
