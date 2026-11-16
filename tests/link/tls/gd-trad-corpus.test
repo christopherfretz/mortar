@@ -1,0 +1,210 @@
+# a64.md §8.4, R4's static column (WP-090): the two cases of WP-052's
+# corpus (spec/landed/dyn/WP-052.md §5) that mortar refused by name
+# ("unsupported relocation type: R_AARCH64_TLSGD_ADR_PAGE21") where GNU ld
+# links and runs them: the review corpus's C and C++ programs built by gcc
+# and g++ with `-fPIC -mtls-dialect=trad`, linked `-static` and
+# `-static-pie`. The C program's traditional GD sequences reach its own
+# and another file's `__thread` variables; the C++ program's reach
+# `thread_local` variables with dynamic initialization (`_ZTH`/`_ZTW`) and
+# libstdc++'s `call_once` state. Every sequence matches R4's pattern and
+# becomes local-exec; the programs print what GNU ld's print.
+#
+# What the references do (measured): GNU ld 2.44 links and runs all four
+# with R4's LE words; mold 2.37.1 links and runs them keeping GD; lld 19
+# does not know relocation 513.
+#@ spec: a64.md "8.4"
+#@ spec: dyn.md "D-2"
+#@ arch: aarch64
+#@ requires: g++
+
+cc -O1 -fPIC -mtls-dialect=trad c_main.c -o c_main.o
+cc -O1 -fPIC -mtls-dialect=trad c_helper.c -o c_helper.o
+cxx -O1 -fPIC -mtls-dialect=trad cxx_main.cc -o cxx_main.o
+cxx -O1 -fPIC -mtls-dialect=trad cxx_helper.cc -o cxx_helper.o
+
+link(lld) gcc -static c_main.o c_helper.o -o c
+  exit: fail
+  diag: unknown relocation (513) against symbol
+link(bfd,mold,mortar) gcc -static c_main.o c_helper.o -o c
+run(bfd,mold,mortar) c
+  stdout: hello 5 1 1 49 3 beta gamma 1 1 -1 20 104
+  stdout: env
+check(mortar) readelf -rW c
+  not: R_AARCH64_TLS
+link(bfd,mold,mortar) gcc -static-pie c_main.o c_helper.o -o c-pie
+run(bfd,mold,mortar) c-pie
+  stdout: hello 5 1 1 49 3 beta gamma 1 1 -1 20 104
+  stdout: env
+check(bfd,mortar) readelf -rW c-pie
+  not: R_AARCH64_TLS
+
+link(lld) g++ -static cxx_main.o cxx_helper.o -o cxx
+  exit: fail
+  diag: unknown relocation (513) against symbol
+link(bfd,mold,mortar) g++ -static cxx_main.o cxx_helper.o -o cxx
+run(bfd,mold,mortar) cxx
+  stdout: boom 5MyErr
+  stdout: helloxy 2 5 4 a 1 4 St9exception 1
+link(bfd,mold,mortar) g++ -static-pie cxx_main.o cxx_helper.o -o cxx-pie
+run(bfd,mold,mortar) cxx-pie
+  stdout: boom 5MyErr
+  stdout: helloxy 2 5 4 a 1 4 St9exception 1
+check(bfd,mortar) readelf -rW cxx-pie
+  not: R_AARCH64_TLS
+
+#--- c_main.c
+/* Corpus TU 1 (C): every way a C TU reaches into a dynamic context. */
+#include <errno.h>
+#include <getopt.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+extern char **environ;
+
+int g_init = 42;                       /* global defined, .data            */
+int g_bss;                             /* global defined, .bss              */
+static int s_local = 7;                /* local                             */
+static const char *const s_ro_ptrs[] = {"alpha", "beta"}; /* relro, local */
+const char *const g_ro_ptrs[] = {"gamma", "delta"};      /* relro, global */
+
+extern int other_tu_data;              /* undefined, defined in c_helper.c  */
+extern int other_tu_func(int);
+extern __thread int ext_tls;           /* undefined TLS (other TU)          */
+__thread int my_tls = 5;               /* TLS defined, global               */
+static __thread int my_static_tls;     /* TLS defined, local                */
+
+__attribute__((weak)) extern int weak_undef_data;     /* undefined weak */
+__attribute__((weak)) extern void weak_undef_fn(void);
+__attribute__((weak)) extern int weak_def_data;       /* weak undef resolving in other TU */
+
+/* locally defined IFUNC */
+static int impl_a(void) { return 1; }
+static int impl_b(void) { return 2; }
+static int (*resolve_f(void))(void) { return s_local == 8 ? impl_b : impl_a; }
+int my_ifunc(void) __attribute__((ifunc("resolve_f")));
+
+/* addresses in initialized data */
+size_t (*p_strlen)(const char *) = strlen;                       /* IFUNC in libc (aarch64/x86-64) */
+void *(*p_memcpy)(void *, const void *, size_t) = memcpy;
+int (*p_puts)(const char *) = puts;                              /* libc FUNC      */
+FILE **p_stdout = &stdout;                                       /* libc OBJECT    */
+char ***p_environ = &environ;
+int (*p_myifunc)(void) = my_ifunc;                               /* local IFUNC    */
+int *p_weak = &weak_undef_data;                                  /* weak undef     */
+void (*p_weak_fn)(void) = weak_undef_fn;
+int *p_other = &other_tu_data;                                   /* other TU data  */
+int (*p_other_fn)(int) = other_tu_func;
+int *p_tls_addr_static_init;                                     /* filled at runtime */
+
+static int helper(int x) { return x + s_local; }
+static int cmp(const void *a, const void *b) { return *(const int *)a - *(const int *)b; }
+static void at_exit_fn(void) { fputs("bye\n", stderr); }
+
+int main(int argc, char **argv) {
+  int arr[3] = {3, 1, 2};
+  size_t (*volatile fp)(const char *) = strlen;                  /* IFUNC address in code */
+  void *(*volatile fm)(void *, const void *, size_t) = memcpy;
+  int (*volatile fi)(void) = my_ifunc;
+  char buf[32];
+  atexit(at_exit_fn);                                            /* libc_nonshared on glibc */
+  qsort(arr, 3, sizeof arr[0], cmp);
+  memcpy(buf, "hello", 6);                                       /* direct call to IFUNC */
+  if (weak_undef_fn) weak_undef_fn();
+  if (&weak_undef_data) g_bss += weak_undef_data;
+  if (&weak_def_data) g_bss += weak_def_data;
+  ext_tls++;
+  my_tls += ext_tls;
+  my_static_tls = my_tls;
+  p_tls_addr_static_init = &ext_tls;
+  int *volatile pt = &my_tls;
+  errno = 0;
+  opterr = 0;
+  int c = getopt(argc, argv, "x");
+  fprintf(stdout, "%s %zu %d %d %d %d %s %s %d %d %d %d %d\n", buf, fp(buf), fi(), my_ifunc(),
+          helper(g_init), other_tu_func(other_tu_data), s_ro_ptrs[argc & 1], g_ro_ptrs[0],
+          environ != 0, optind, c, *pt + my_static_tls, ((char *)fm(buf, buf, 1))[0]);
+  p_puts(*p_environ ? "env" : "noenv");
+  fflush(*p_stdout);
+  return (int)p_strlen("") + (p_myifunc() == 0) + (p_weak != 0) + (p_weak_fn != 0) +
+         (*p_other == 0) + p_other_fn(0);
+}
+#--- c_helper.c
+/* Corpus TU 2 (C): definitions referenced from c_main.c. */
+int other_tu_data = 3;
+int other_tu_func(int x) { return x; }
+__thread int ext_tls = 4;
+int weak_def_data = 9;
+#--- cxx_main.cc
+// Corpus TU 1 (C++): libstdc++/libgcc_s reaching constructs.
+#include <iostream>
+#include <memory>
+#include <mutex>
+#include <new>
+#include <stdexcept>
+#include <string>
+#include <typeinfo>
+#include <vector>
+
+struct MyErr : std::runtime_error {            // typeinfo/vtable refer to libstdc++ ones
+  using std::runtime_error::runtime_error;
+};
+
+template <class T> struct Holder {
+  static int count;                            // static data member of a template
+  static T value;                              // with dynamic init (guard variable)
+};
+template <class T> int Holder<T>::count = 3;
+template <class T> T Holder<T>::value{};
+
+struct Base {
+  virtual ~Base();
+  virtual int f() const { return 1; }
+};
+Base::~Base() {}
+struct Derived : Base {
+  int f() const override { return 2; }
+};
+
+thread_local std::string tl_str = std::string("x") + "y"; // TLS with dynamic init
+extern thread_local int ext_tl_cpp;                        // TLS with init in other TU
+extern thread_local int ext_tl_plain;                      // TLS, other TU, constant init
+std::ostream *p_cout = &std::cout;                         // address of libstdc++ object
+const std::nothrow_t *p_nothrow = &std::nothrow;
+const std::type_info *p_ti = &typeid(std::exception);
+
+static std::once_flag once;                                // call_once -> libstdc++ TLS __once_callable
+
+inline int &counter() {                                    // inline fn static local (unique)
+  static int c = 0;
+  return ++c, c;
+}
+
+int main(int argc, char **) {
+  std::vector<int> v{1, 2, 3};
+  std::call_once(once, [&] { v.push_back(4); });
+  try {
+    if (argc > 0) throw MyErr("boom");
+  } catch (const std::exception &e) {
+    std::cout << e.what() << ' ' << typeid(e).name() << '\n';
+  }
+  int *p = new (std::nothrow) int(5);
+  std::string s = "hello";
+  s += tl_str;
+  std::unique_ptr<Base> b(argc > 5 ? new Base : new Derived);
+  Holder<int>::count++;
+  Holder<std::string>::value += "a";
+  *p_cout << s << ' ' << b->f() << ' ' << *p << ' ' << Holder<int>::count << ' '
+          << Holder<std::string>::value << ' ' << counter() << ' ' << v.size() << ' '
+          << p_ti->name() << ' ' << (p_nothrow != nullptr) << '\n';
+  std::cerr << ext_tl_cpp << ' ' << ext_tl_plain << std::endl;
+  delete p;
+  return 0;
+}
+#--- cxx_helper.cc
+// Corpus TU 2 (C++): thread_local definitions used from cxx_main.cc.
+#include <cstdlib>
+static int init_val() { return std::getenv("MORTAR_X") ? 1 : 7; }
+thread_local int ext_tl_cpp = init_val();   // dynamic init -> _ZTH / _ZTW
+thread_local int ext_tl_plain = 11;

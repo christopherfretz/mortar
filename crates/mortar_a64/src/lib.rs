@@ -32,7 +32,8 @@ use mortar_diag::RefusalClass;
 use mortar_elf::{Class, Machine};
 
 pub use apply::{
-    ADD_X0_X1_X0, LARGE_TLSDESC_DYNAMIC, MRS_X1_TPIDR, NON_ALLOC_TLS_ABS, scan_checks,
+    ADD_X0_X1_X0, LARGE_TLSDESC_DYNAMIC, MRS_X1_TPIDR, NON_ALLOC_TLS_ABS, UNRECOGNIZED_GD,
+    scan_checks,
 };
 
 /// The AArch64 architecture, built with the milestone it enables and its
@@ -208,7 +209,7 @@ impl Arch for A64 {
         at: &RelocAt<'_>,
         out: &mut mortar_arch::DemandSink<'_>,
     ) {
-        apply::scan(cx, at, out);
+        apply::scan(self.enables(Status::M2), cx, at, out);
     }
 
     /// `R_AARCH64_GOTREL64` and `GOTREL32` (M2): a `GotRel` record of a

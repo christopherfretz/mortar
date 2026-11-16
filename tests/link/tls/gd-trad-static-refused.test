@@ -1,0 +1,134 @@
+# a64.md §8.4, R4's static column (WP-090): in a static executable and a
+# static PIE there is no unrelaxed traditional GD (the static tables keep
+# no module/offset pair), so a sequence that does not match R4's pattern
+# is refused by name on its 513 and 514, never applied half; a record that
+# overlaps the matched window is refused by arch.md §3.4's overlap check;
+# and a TP offset beyond 32 bits is `relocation-out-of-range` (§12.3).
+#
+# - nonop.S: the word after `bl __tls_get_addr` is a `mov`, not the `nop`
+#   (as `dyn/reloc/tls-gd-unrelaxed.test` writes it for a dynamic link).
+# - overlap.S: the pattern holds, and an `R_AARCH64_NONE` record sits on
+#   the `nop` (a marker's window is its word, a64.md §6.1).
+# - huge.o: 4 GiB of `.tbss` before `far_v`: T = 0x100000068.
+#
+# What the references do (measured, WP-090 record): lld 19 and 22 do not
+# know relocation 513. mold keeps every sequence as GD (a GOT pair
+# 1, DTPREL(S) and the static `__tls_get_addr`) and its programs run.
+# GNU ld 2.44 relaxes `nonop.S` anyway and overwrites the `mov` (dyn.md
+# §13.2 W15: the program reads a wrong address), relaxes `overlap.S`
+# ignoring the `NONE`, and writes T[31:0] for `far_v` with no diagnostic
+# (`movk x0, #0x68`: a wrong address).
+#@ spec: a64.md "8.4"
+#@ spec: a64.md "12.3"
+#@ spec: arch.md "3.4"
+#@ arch: aarch64
+#@ xfail(bfd): W15: relaxes a traditional GD whose fourth word is not the NOP, overwriting the code after the call
+
+cc -O1 main.c -o main.o
+as nonop.S -o nonop.o
+as overlap.S -o overlap.o
+cc -O1 -fPIC -mtls-dialect=trad far.c -o far.o
+cc -O1 huge.c -o huge.o
+cc -O1 hugemain.c -o hugemain.o
+
+link(lld) gcc -static main.o nonop.o -o nonop
+  exit: fail
+  diag: unknown relocation (513) against symbol tlsx
+link(mortar) gcc -static main.o nonop.o -o nonop
+  exit: fail
+  diag: nonop.o:(.text+0x8): unsupported feature: unrecognized general-dynamic TLS sequence
+  diag: nonop.o:(.text+0xc): unsupported feature: unrecognized general-dynamic TLS sequence
+link(bfd,mold) gcc -static main.o nonop.o -o nonop
+run(bfd,mold) nonop
+  stdout: gd 5 same 1
+link(mortar) gcc -static-pie main.o nonop.o -o nonop-pie
+  exit: fail
+  diag: nonop.o:(.text+0x8): unsupported feature: unrecognized general-dynamic TLS sequence
+link(bfd,mold) gcc -static-pie main.o nonop.o -o nonop-pie
+run(bfd,mold) nonop-pie
+  stdout: gd 5 same 1
+
+link(mortar) gcc -static main.o overlap.o -o overlap
+  exit: fail
+  diag: overlap.o:(.text+0x14): unsupported feature: overlapping relocations
+link(bfd,mold) gcc -static main.o overlap.o -o overlap
+run(bfd,mold) overlap
+  stdout: gd 5 same 1
+link(mortar) gcc -static-pie main.o overlap.o -o overlap-pie
+  exit: fail
+  diag: unsupported feature: overlapping relocations
+link(bfd,mold) gcc -static-pie main.o overlap.o -o overlap-pie
+run(bfd,mold) overlap-pie
+  stdout: gd 5 same 1
+
+# 4 GiB of TLS: linked, not run (the run limit is 1 GiB).
+link(mortar) gcc -static hugemain.o -lc huge.o far.o -o huge
+  exit: fail
+  diag: far.o:(.text+0x8): relocation truncated to fit: R_AARCH64_TLSGD_ADR_PAGE21 against 'far_v': 4294967400 is not in [0, 4294967295]
+link(mold) gcc -static hugemain.o -lc huge.o far.o -o huge
+check(mold) objdump -d --disassemble=a_far huge
+  has: bl * <__tls_get_addr>
+link(mortar) gcc -static-pie hugemain.o -lc huge.o far.o -o huge-pie
+  exit: fail
+  diag: relocation truncated to fit: R_AARCH64_TLSGD_ADR_PAGE21 against 'far_v'
+
+#--- nonop.S
+// The traditional GD sequence of `tlsx`, but the word after the call is
+// a `mov`, not R4's `nop`.
+        .text
+        .globl  gd_addr
+        .type   gd_addr, %function
+gd_addr:
+        stp     x29, x30, [sp, -16]!
+        mov     x29, sp
+        adrp    x0, :tlsgd:tlsx
+        add     x0, x0, :tlsgd_lo12:tlsx
+        bl      __tls_get_addr
+        mov     x1, x0
+        mov     x0, x1
+        ldp     x29, x30, [sp], 16
+        ret
+        .size   gd_addr, .-gd_addr
+        .section .note.GNU-stack,"",%progbits
+#--- overlap.S
+// R4's pattern, with an `R_AARCH64_NONE` record on the `nop` at o+12.
+        .text
+        .globl  gd_addr
+        .type   gd_addr, %function
+gd_addr:
+        stp     x29, x30, [sp, -16]!
+        mov     x29, sp
+.Lgd:
+        adrp    x0, :tlsgd:tlsx
+        add     x0, x0, :tlsgd_lo12:tlsx
+        bl      __tls_get_addr
+        nop
+        .reloc  .Lgd+12, R_AARCH64_NONE, tlsx
+        ldp     x29, x30, [sp], 16
+        ret
+        .size   gd_addr, .-gd_addr
+        .section .note.GNU-stack,"",%progbits
+#--- main.c
+#include <stdio.h>
+__thread int tlsx = 5;
+int *gd_addr(void);
+int main(void) {
+  int *p = gd_addr();
+  printf("gd %d same %d\n", *p, p == &tlsx);
+  return 0;
+}
+#--- huge.c
+/* 4 GiB of zero-initialized TLS, linked after libc's (-lc before it). */
+__thread char huge[0x100000000];
+#--- far.c
+/* A variable past huge.c's 4 GiB: its TP offset is beyond 32 bits. */
+__thread int far_v;
+__attribute__((noinline)) int *a_far(void) { return &far_v; }
+#--- hugemain.c
+#include <stdio.h>
+int *a_far(void);
+int main(void) {
+  *a_far() = 55;
+  printf("%d\n", *a_far());
+  return 0;
+}

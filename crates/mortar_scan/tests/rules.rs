@@ -264,18 +264,20 @@ fn i19_references_from_dropped_sections_make_no_event() {
 fn i19_consumed_sequence_members_make_no_event() {
     let src = ".text\n.globl _start\n_start:\n  adrp x0, :tlsgd:tv\n  add x0, x0, :tlsgd_lo12:tv\n  bl __tls_get_addr\n  nop\n  ret\n\
                .section .tbss,\"awT\",@nobits\n.globl tv\ntv:\n  .space 4\n";
-    // TLSGD is M2 in a64.md's table (`A64::M1` refuses it): the rule is
-    // the driver's, so it is tested with the M2 table.
+    // The rule is the driver's: the static tables (`A64::M1`, R4's
+    // static column since WP-090) and the dynamic ones (M2) alike.
     let m2 = mortar_a64::A64::new(mortar_arch::Status::M2, false);
     let Some((_d, mut l)) = build("scan-i19-consumed", &[("a.o", src)], &[]) else { return };
-    assert_eq!(l.ids(), ["refused", "refused"], "{}", l.rendered());
+    assert!(l.scanned.diagnostics.is_empty(), "{}", l.rendered());
     l.arch = m2;
     l.scanned = l.rescan(&Pool::new(2));
     assert!(l.scanned.diagnostics.is_empty(), "{}", l.rendered());
     // Without the `nop` the call is no sequence: __tls_get_addr is
-    // referenced.
+    // referenced; the static tables also refuse the GD members by name
+    // (a64.md §8.4: no unrelaxed GD in a static link).
     let src = src.replace("  nop\n", "");
     let Some((_d, mut l)) = build("scan-i19-unconsumed", &[("a.o", &src)], &[]) else { return };
+    assert_eq!(l.ids(), ["refused", "refused", "undefined-symbol"], "{}", l.rendered());
     l.arch = m2;
     l.scanned = l.rescan(&Pool::new(2));
     assert_eq!(l.ids(), ["undefined-symbol"], "{}", l.rendered());

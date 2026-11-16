@@ -178,8 +178,8 @@ pub const fn howto(r_type: u32) -> Option<Howto> {
         }
         // TLS, general dynamic.
         512 => h("R_AARCH64_TLSGD_ADR_PREL21", TG, g_p(GTLSIDX), Zero, i(ADR), s(21), 1, Later),
-        513 => h("R_AARCH64_TLSGD_ADR_PAGE21", TG, g_page(GTLSIDX), Zero, i(ADRP), s(33), 1, M2),
-        514 => h("R_AARCH64_TLSGD_ADD_LO12_NC", TG, g(GTLSIDX), Zero, i(ADD12), NONE, 1, M2),
+        513 => h("R_AARCH64_TLSGD_ADR_PAGE21", TG, g_page(GTLSIDX), Zero, i(ADRP), s(33), 1, M1),
+        514 => h("R_AARCH64_TLSGD_ADD_LO12_NC", TG, g(GTLSIDX), Zero, i(ADD12), NONE, 1, M1),
         515 => {
             h("R_AARCH64_TLSGD_MOVW_G1", TG, g_got(GTLSIDX), Zero, i(MOVS + 1), ms(32), 1, Later)
         }
