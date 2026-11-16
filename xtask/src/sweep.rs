@@ -278,6 +278,9 @@ fn sweep_case(
         if case.only.is_empty() { mortar_plumb::sweep::SECTIONS } else { case.only },
     )?;
     drop(tokens);
+    // The whole table beside the output, for a reader of the lane's log.
+    let table = work.join(format!("{}.sweep.txt", case.name));
+    std::fs::write(&table, sweep.render()).map_err(|e| format!("{}: {e}", table.display()))?;
     let mut problems = Vec::new();
     if sweep.baseline > 0 {
         problems.push(format!("the output has {} finding(s) unmutated", sweep.baseline));

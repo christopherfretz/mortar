@@ -38,7 +38,12 @@ pub const SECTIONS: &[&str] = &[
     ".got",
     ".got.plt",
     ".gdb_index",
+    BUILD_ID,
 ];
+
+/// The build-id note: only its descriptor is swept, never resealed (B1's
+/// own case).
+pub const BUILD_ID: &str = ".note.gnu.build-id";
 
 /// The bits each byte is flipped by, one mutant each.
 pub const FLIPS: [u8; 2] = [0x01, 0x80];
@@ -55,6 +60,8 @@ pub struct Byte {
     pub instance: String,
     /// Per flip of [`FLIPS`]: whether a new finding caught it.
     pub caught: [bool; 2],
+    /// Per flip: the rule ids of the new findings (sorted, once each).
+    pub rules: [Vec<String>; 2],
     /// Whether a flip made the verifier panic (a hostile-input bug,
     /// §9.4; counted as caught).
     pub panicked: bool,
@@ -92,6 +99,12 @@ impl Sweep {
         );
         for ((_, sec, kind), (n, some, all)) in &agg {
             let _ = writeln!(s, "{sec:16} {kind:28} {n:>7} {some:>9} {all:>9}");
+        }
+        let flips = self.bytes.len() * FLIPS.len();
+        let caught = self.bytes.iter().flat_map(|b| b.caught).filter(|c| *c).count();
+        let _ = writeln!(s, "flips {flips}, caught {caught}, survived {}", flips - caught);
+        for (rule, (any, only)) in self.by_rule() {
+            let _ = writeln!(s, "caught by {rule:8} {any:>7} flips ({only} by it alone)");
         }
         for b in self.bytes.iter().filter(|b| b.panicked) {
             let _ = writeln!(s, "panic {} +{:#x} {} {}", b.section, b.off, b.kind, b.instance);
@@ -136,6 +149,24 @@ impl Sweep {
             i = j;
         }
         s
+    }
+}
+
+impl Sweep {
+    /// Per rule id: the flips whose new findings include it, and those
+    /// whose only new findings are its.
+    pub fn by_rule(&self) -> BTreeMap<&str, (usize, usize)> {
+        let mut m: BTreeMap<&str, (usize, usize)> = BTreeMap::new();
+        for rules in self.bytes.iter().flat_map(|b| b.rules.iter()) {
+            for r in rules {
+                let e = m.entry(r.as_str()).or_default();
+                e.0 += 1;
+                if rules.len() == 1 {
+                    e.1 += 1;
+                }
+            }
+        }
+        m
     }
 }
 
@@ -317,6 +348,7 @@ fn field(
             }
         }
         ".eh_frame" => at("PLT record"),
+        BUILD_ID => at("build id"),
         _ => at("?"),
     }
 }
@@ -356,6 +388,29 @@ fn plt_eh_ranges(image: &Image<'_>, addr: u64, b: &[u8]) -> Vec<(u64, u64)> {
     v
 }
 
+/// How a sweep runs.
+#[derive(Debug, Clone, Copy)]
+pub struct Options<'s> {
+    pub threads: usize,
+    /// In a section larger than twice this many bytes only the first and
+    /// last `window` bytes are flipped; 0: every byte.
+    pub window: u64,
+    /// The sections swept (each one of [`SECTIONS`]).
+    pub sections: &'s [&'s str],
+    /// Whether mortar's build id is resealed after each flip
+    /// ([`crate::buildid::reseal`]), so that the mutant is the output of
+    /// a linker that wrote the flipped byte (§12.3). A flip inside the id
+    /// itself is never resealed: the id is then the mutant. `false` only
+    /// to measure what B1 alone catches.
+    pub reseal: bool,
+}
+
+impl Default for Options<'_> {
+    fn default() -> Self {
+        Options { threads: 1, window: 0, sections: SECTIONS, reseal: true }
+    }
+}
+
 /// Sweeps `output` (see the module's documentation).
 ///
 /// # Errors
@@ -369,7 +424,7 @@ pub fn run(
     window: u64,
     ctx: &crate::Ctx<'_>,
 ) -> Result<Sweep, String> {
-    run_sections(output, inputs, map, threads, window, ctx, SECTIONS)
+    run_with(output, inputs, map, ctx, &Options { threads, window, ..Options::default() })
 }
 
 /// [`run`] over the sections of `sections` only (each one of
@@ -387,15 +442,32 @@ pub fn run_sections(
     ctx: &crate::Ctx<'_>,
     sections: &[&str],
 ) -> Result<Sweep, String> {
+    run_with(output, inputs, map, ctx, &Options { threads, window, sections, reseal: true })
+}
+
+/// The sweep as `opts` says.
+///
+/// # Errors
+///
+/// When the output cannot be read or is not dynamic.
+#[allow(clippy::too_many_lines)] // the sites, then the judging
+pub fn run_with(
+    output: &[u8],
+    inputs: &[Input<'_>],
+    map: &Map,
+    ctx: &crate::Ctx<'_>,
+    opts: &Options<'_>,
+) -> Result<Sweep, String> {
     let image = Image::read(output)?;
     let out = DynOut::read(&image).ok_or("not a dynamic output")?;
     let verify = |b: &[u8]| crate::verify_with(b, inputs, map, ctx);
     let base = verify(output);
     let base_keys = keys(&base);
+    let ids = crate::buildid::id_ranges(output);
     let mut bytes = Vec::new();
     // (file offset, Byte)
     let mut sites: Vec<(usize, Byte)> = Vec::new();
-    for &name in SECTIONS.iter().filter(|n| sections.contains(n)) {
+    for &name in SECTIONS.iter().filter(|n| opts.sections.contains(n)) {
         for (si, s) in image.sections.iter().enumerate().filter(|(_, s)| s.name == name) {
             if s.shdr.sh_type == SHT_NOBITS || s.shdr.sh_size == 0 {
                 continue;
@@ -407,8 +479,14 @@ pub fn run_sections(
             let file = s.shdr.sh_offset as usize;
             let ranges: Vec<(u64, u64)> = if name == ".eh_frame" {
                 plt_eh_ranges(&image, addr, data)
-            } else if window > 0 && size > 2 * window {
-                vec![(0, window), (size - window, size)]
+            } else if name == BUILD_ID {
+                // The descriptors only (the id's own case, §12.3).
+                ids.iter()
+                    .filter(|r| r.start >= file && r.end <= file + data.len())
+                    .map(|r| ((r.start - file) as u64, (r.end - file) as u64))
+                    .collect()
+            } else if opts.window > 0 && size > 2 * opts.window {
+                vec![(0, opts.window), (size - opts.window, size)]
             } else {
                 vec![(0, size)]
             };
@@ -427,6 +505,7 @@ pub fn run_sections(
                             kind,
                             instance,
                             caught: [false; 2],
+                            rules: [Vec::new(), Vec::new()],
                             panicked: false,
                         },
                     ));
@@ -434,33 +513,47 @@ pub fn run_sections(
             }
         }
     }
-    let judge = |&(o, _): &(usize, Byte)| -> ([bool; 2], bool) {
+    type Verdict = ([bool; 2], [Vec<String>; 2], bool);
+    let judge = |&(o, _): &(usize, Byte)| -> Verdict {
         let mut r = [false; 2];
+        let mut rules: [Vec<String>; 2] = [Vec::new(), Vec::new()];
         let mut panicked = false;
+        let in_id = ids.iter().any(|x| x.contains(&o));
         for (k, f) in FLIPS.iter().enumerate() {
             let mut m = output.to_vec();
             m[o] ^= f;
+            if opts.reseal && !in_id {
+                crate::buildid::reseal(&mut m, map);
+            }
             // A panic is caught (the mutant is reported) and named.
             if let Ok(rep) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| verify(&m))) {
-                r[k] = keys(&rep).iter().any(|x| !base_keys.contains(x));
+                let new: std::collections::BTreeSet<String> = rep
+                    .findings
+                    .iter()
+                    .filter(|x| !base_keys.contains(&(x.rule.id(), x.addr, x.message.clone())))
+                    .map(|x| x.rule.id())
+                    .collect();
+                r[k] = !new.is_empty();
+                rules[k] = new.into_iter().collect();
             } else {
                 r[k] = true;
                 panicked = true;
             }
         }
-        (r, panicked)
+        (r, rules, panicked)
     };
-    let threads = threads.max(1).min(sites.len().max(1));
+    let threads = opts.threads.max(1).min(sites.len().max(1));
     let chunk = sites.len().div_ceil(threads).max(1);
-    let verdicts: Vec<([bool; 2], bool)> = std::thread::scope(|sc| {
+    let verdicts: Vec<Verdict> = std::thread::scope(|sc| {
         let hs: Vec<_> = sites
             .chunks(chunk)
             .map(|c| sc.spawn(move || c.iter().map(judge).collect::<Vec<_>>()))
             .collect();
         hs.into_iter().flat_map(|h| h.join().expect("a sweep thread")).collect()
     });
-    for ((_, mut b), (c, p)) in sites.into_iter().zip(verdicts) {
+    for ((_, mut b), (c, rules, p)) in sites.into_iter().zip(verdicts) {
         b.caught = c;
+        b.rules = rules;
         b.panicked = p;
         bytes.push(b);
     }
