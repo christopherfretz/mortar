@@ -452,9 +452,7 @@ fn is_descriptor_dir(dir: &Path) -> bool {
         !b.is_empty() && b.iter().all(u8::is_ascii_digit)
     };
     match parts.as_slice() {
-        [root, proc, pid, fd] => {
-            *root == "/" && *proc == "proc" && digits(pid) && *fd == "fd"
-        }
+        [root, proc, pid, fd] => *root == "/" && *proc == "proc" && digits(pid) && *fd == "fd",
         [root, proc, pid, task, tid, fd] => {
             *root == "/"
                 && *proc == "proc"

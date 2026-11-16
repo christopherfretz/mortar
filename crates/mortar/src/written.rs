@@ -359,10 +359,7 @@ mod tests {
         let p = parsed(&["a.o", "-Map=m1", "-Map", "m2", "--dependency-file=d"]);
         let r = registry(&p, cwd, Path::new("/w/a.out"), &[]);
         let spellings: Vec<&str> = r.iter().map(|w| w.spelling.as_str()).collect();
-        assert_eq!(
-            spellings,
-            ["the default output a.out", "-Map=m2", "--dependency-file=d"]
-        );
+        assert_eq!(spellings, ["the default output a.out", "-Map=m2", "--dependency-file=d"]);
         assert!(r[0].output && !r[1].output);
     }
 }

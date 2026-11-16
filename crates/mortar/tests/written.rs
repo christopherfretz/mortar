@@ -21,7 +21,8 @@ const B_S: &str = "\t.text\n\t.globl f\nf:\n\tret\n\t.section .note.GNU-stack,\"
 const C_S: &str = "\t.text\n\t.globl g\ng:\n\tret\n\t.section .note.GNU-stack,\"\",%progbits\n";
 /// An object whose reference is never defined: a link that fails after
 /// the front.
-const U_S: &str = "\t.text\n\t.globl h\nh:\n\tbl nowhere\n\t.section .note.GNU-stack,\"\",%progbits\n";
+const U_S: &str =
+    "\t.text\n\t.globl h\nh:\n\tbl nowhere\n\t.section .note.GNU-stack,\"\",%progbits\n";
 
 fn run_in(dir: &Path, exe: &Path, args: &[OsString]) -> Outcome {
     let mut c = Command::new(exe);
@@ -52,7 +53,11 @@ impl Fixture {
         let dir = scratch.path().to_path_buf();
         for (name, text) in [("a", A_S), ("b", B_S), ("c", C_S), ("u", U_S)] {
             let src = scratch.write(&format!("{name}.s"), text);
-            let o = run_in(&dir, &gcc, &os(&["-c", &src.display().to_string(), "-o", &format!("{name}.o")]));
+            let o = run_in(
+                &dir,
+                &gcc,
+                &os(&["-c", &src.display().to_string(), "-o", &format!("{name}.o")]),
+            );
             assert!(o.success(), "gcc: {}", o.stderr_text());
         }
         for args in [["rc", "libb.a", "b.o"], ["rcT", "libt.a", "b.o"]] {
@@ -202,7 +207,9 @@ fn a_temporary_name_of_a_written_file_is_checked() {
     let err = o.stderr_text();
     assert!(!o.success(), "linked: {err}");
     assert!(
-        err.contains("the temporary name ./.out.mortar-old of -o out names the input .out.mortar-old"),
+        err.contains(
+            "the temporary name ./.out.mortar-old of -o out names the input .out.mortar-old"
+        ),
         "{err}"
     );
     assert_eq!(std::fs::read(fx.path(".out.mortar-old")).unwrap(), before);
@@ -215,7 +222,8 @@ fn a_temporary_name_of_a_written_file_is_checked() {
 #[test]
 fn dev_null_and_dev_stdout_keep_working() {
     let Some(fx) = Fixture::new("written-dev") else { return };
-    let stdout_link = || std::fs::symlink_metadata("/dev/stdout").map(|m| m.file_type().is_symlink());
+    let stdout_link =
+        || std::fs::symlink_metadata("/dev/stdout").map(|m| m.file_type().is_symlink());
     let was_link = stdout_link().ok();
     let o = fx.mortar(&["a.o", "libb.a", "-o", "/dev/null"]);
     assert!(o.success(), "{}", o.stderr_text());
