@@ -135,6 +135,19 @@ fn live_files<'o, 'a>(
         }
         let mut units = Vec::new();
         for s in obj.secs.iter().filter(|s| is_container(s.name.as_str(), &s.shdr)) {
+            // MT-2a: a relocated container is not one (never read, never
+            // kept). MT-1's other attributes are the reader's (MT-6): a
+            // section with another alignment, `sh_entsize`, `sh_link` or
+            // `sh_info` is malformed whole (measured: mortar keeps none
+            // of its units; `--odr=strict` names the alignment, MT-1).
+            if s.relocs.is_some() {
+                continue;
+            }
+            let h = &s.shdr;
+            if h.sh_addralign != 8 || h.sh_entsize != 0 || h.sh_link != 0 || h.sh_info != 0 {
+                cov.units_malformed += 1;
+                continue;
+            }
             let sec = meta::read(s.data);
             cov.units_malformed += sec.problems.len() as u64;
             units.extend(sec.units);
@@ -308,17 +321,16 @@ pub(crate) fn check(
             format!("kept section: {} sections named .mason.meta", out_meta.len()),
         ));
     }
+    // A `.mason.meta` without `SHF_EXCLUDE` is copied as any section is
+    // (encoding K, MT-6): refused under the option only when the output
+    // gets the kept section (MT-32, as WP-099 wrote it).
+    let ordinary = live.iter().any(|l| {
+        l.obj.secs.iter().any(|s| s.name == ".mason.meta" && s.shdr.sh_flags & SHF_EXCLUDE == 0)
+    });
     match out_meta.first() {
         Some(&i) if kept_chunk || !mortar => {
-            let ordinary = !kept_chunk
-                && live.iter().any(|l| {
-                    l.obj
-                        .secs
-                        .iter()
-                        .any(|s| s.name == ".mason.meta" && !is_container(&s.name, &s.shdr))
-                });
-            if ordinary {
-                if opts.is_some_and(|o| o.keep) {
+            if !kept_chunk && ordinary {
+                if opts.is_some_and(|o| o.keep) && !expected.is_empty() {
                     f.push(Finding::new(Rule::Meta(1), "kept section: a .mason.meta that is not a container was copied under --keep-mason-meta (MT-32: refused by name)"));
                 }
             } else {
@@ -350,18 +362,12 @@ pub(crate) fn check(
             }
         }
         Some(_) => {
-            let ordinary = live.iter().any(|l| {
-                l.obj
-                    .secs
-                    .iter()
-                    .any(|s| s.name == ".mason.meta" && !is_container(&s.name, &s.shdr))
-            });
             if !ordinary {
                 f.push(Finding::new(
                     Rule::Meta(1),
                     "kept section: a .mason.meta the map does not write and no input copies",
                 ));
-            } else if opts.is_some_and(|o| o.keep) {
+            } else if opts.is_some_and(|o| o.keep) && !expected.is_empty() {
                 f.push(Finding::new(Rule::Meta(1), "kept section: a .mason.meta that is not a container was copied under --keep-mason-meta (MT-32: refused by name)"));
             }
         }

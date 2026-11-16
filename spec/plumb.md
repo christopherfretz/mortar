@@ -4192,8 +4192,13 @@ stage 3 puts outside (P-D1) is still judged here.
 - **The live units.** The map's files in map order (FileId order; §3.2's
   ids count up in the order the linker read the files), each read as an
   `ET_REL`; of each, the sections that are containers (MT-6: name
-  `.mason.meta`, `SHT_PROGBITS`, flags exactly `SHF_EXCLUDE`), in section
-  index order; of each, its units in offset order (MT-10). A unit
+  `.mason.meta`, `SHT_PROGBITS`, flags exactly `SHF_EXCLUDE`; MT-2a: no
+  relocation section applies to it), in section index order; of each,
+  its units in offset order (MT-10). A container whose `sh_addralign` is
+  not 8, or whose `sh_entsize`, `sh_link` or `sh_info` is not 0 (MT-1's
+  attributes, which MT-6 leaves to the reader) has no unit that parses
+  (measured: mortar keeps none of its units, and `--odr=strict` names the
+  alignment by MT-1). A unit
   **parses** when its major is 1 and none of MT-14's malformations holds
   (magic, `unit_size`, blocks inside the unit, kinds strictly increasing,
   rows inside their block, the string table inside the unit, not over
@@ -4238,9 +4243,11 @@ stage 3 puts outside (P-D1) is still judged here.
     one unit parses (options unknown: present only when one parses; the
     option is not judged). An **ordinary copy** is a `.mason.meta` that
     the map fills only from placed input sections that are not containers
-    (encoding K, `spec/meta.md` §2): legal without the option, a finding
-    with it (MT-32: refused by name). Any other `.mason.meta` in an
-    executable is a finding.
+    (encoding K, `spec/meta.md` §2: an input `.mason.meta` without
+    `SHF_EXCLUDE`): legal without the option, and with it when no live
+    unit parses; a finding with the option and a unit (MT-32, as WP-099
+    wrote it: refused by name when the output gets the kept section).
+    Any other `.mason.meta` in an executable is a finding.
   - A relocatable output is not judged (mortar writes none; MT-30 is M4).
 - **P-M2 (`.note.mason`).**
   - *Place.* The section is `SHT_NOTE`, `SHF_ALLOC`, `sh_addralign` 8,
