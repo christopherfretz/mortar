@@ -338,17 +338,58 @@ kind = planned
 about = One libc++ test program as the libc++ lane links it, nine thousand times per run.
 needs = kiln and hod objects; the libc++ build of the L8 lane (WP for M3)
 
+# The large real links (WP-081; spec/harness.md "bench", "Large
+# workloads"): LLVM/clang 19.1.7, the release of the container's clang,
+# lld and lldb, built once by bench/workloads/large/llvm-build.sh
+# (RelWithDebInfo: -O2 -g with LLVM's -ffunction-sections and
+# --gc-sections; the AArch64 target; static tools; the container's clang
+# 19) into <work>/workloads/<tree>/build. The bench captures each link
+# from the tree and keeps its inputs in <work>/workloads/<tree>/inputs;
+# the tree is then deleted. Hours to build: never rebuilt by the bench.
 [cxx-large-g]
-class = large
-kind = planned
-about = A large open-source C++ program's objects with debug information, captured once and pinned.
-needs = a pinned capture of an LLVM-scale build and its disk budget (tens of GB)
+class = on-request
+kind = ninja
+about = clang 19.1.7 at -O2 -g linked -static: some 1 GB of output from 90 archives, the large real link.
+script = bench/workloads/large/llvm-build.sh g
+sha256 = 82401fea7b79d0078043f7598b835284d6650a75b93e64b6f761ea7b63097501
+root = llvm-project-19.1.7.src
+tree = cxx-large-g
+target = bin/clang-19
+driver = clang++
+capture = clang-19
+run = -cc1 -triple aarch64-unknown-linux-gnu -std=c++17 -O2 -S -o /dev/fd/1 $S/clang/test/CodeGenCXX/variadic-templates.cpp
+
+[cxx-large-g-opt]
+class = on-request
+kind = ninja
+about = opt of the same build: the second large tool, sharing clang's LLVM archives.
+script = bench/workloads/large/llvm-build.sh g
+sha256 = 82401fea7b79d0078043f7598b835284d6650a75b93e64b6f761ea7b63097501
+root = llvm-project-19.1.7.src
+tree = cxx-large-g
+target = bin/opt
+driver = clang++
+capture = opt
+run = -passes=default<O3> -S -o /dev/fd/1 $S/llvm/test/Transforms/PhaseOrdering/AArch64/extra-unroll-simplifications.ll
+
+[cxx-large-split]
+class = on-request
+kind = ninja
+about = cxx-large-g compiled with -gsplit-dwarf: the debug information in .dwo files beside the objects, not linked.
+script = bench/workloads/large/llvm-build.sh split
+sha256 = 82401fea7b79d0078043f7598b835284d6650a75b93e64b6f761ea7b63097501
+root = llvm-project-19.1.7.src
+tree = cxx-large-split
+target = bin/clang-19
+driver = clang++
+capture = clang-19
+run = -cc1 -triple aarch64-unknown-linux-gnu -std=c++17 -O2 -S -o /dev/fd/1 $S/clang/test/CodeGenCXX/variadic-templates.cpp
 
 [cxx-large]
 class = large
 kind = planned
 about = The same large program without debug information.
-needs = as cxx-large-g
+needs = a third build of the tree (WP-081 measured -g and split only)
 
 [kiln-hod-medium]
 class = medium
