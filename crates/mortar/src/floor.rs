@@ -205,10 +205,17 @@ fn run(
     };
     let store =
         Store::with_config(StorePolicy::from_env(), config, mortar_input::store::Hooks::default());
+    // The replay's two parts, timed apart (inside phase 90's wall time).
+    let replay_ms = std::cell::Cell::new((0.0_f64, 0.0_f64));
     let hook = |link: &mortar_incr::capture::Link<'_, '_>,
                 computed: &mortar_core::layout::Layout| {
+        let t0 = std::time::Instant::now();
         let keys = mortar_incr::capture::Keys::new(link)?;
-        mortar_incr::capture::replay(link, &keys, &state, computed)
+        let t1 = std::time::Instant::now();
+        let r = mortar_incr::capture::replay(link, &keys, &state, computed);
+        let ms = |d: std::time::Duration| d.as_secs_f64() * 1000.0;
+        replay_ms.set((ms(t1 - t0), ms(t1.elapsed())));
+        r
     };
     let env = crate::front::Env { cwd, pool, replay: Some(&hook) };
     let front = crate::front::front(plan.clone(), env, &store, &diagnostics, timer);
@@ -217,6 +224,9 @@ fn run(
         return Err("the front failed (a replay that does not fit is a changed layout)".to_owned());
     };
     f.keep_leaves = true;
+    let (keys_ms, replay_ms) = replay_ms.get();
+    timer.line(format!("mortar: floor: replay keys: {keys_ms:.1} ms"));
+    timer.line(format!("mortar: floor: replay translate: {replay_ms:.1} ms"));
     if f.dyn_tables.is_some() {
         return Err("incremental-unsupported (a dynamic executable)".to_owned());
     }

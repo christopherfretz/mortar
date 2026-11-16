@@ -59,6 +59,10 @@ def phases(text):
     X ms, ...` (incr_floor): {name: ms}."""
     out = {}
     for line in text.splitlines():
+        if line.startswith("mortar: floor: "):
+            head, _, rest = line[len("mortar: floor: "):].rpartition(": ")
+            out[head] = float(rest.split(" ms", 1)[0])
+            continue
         if "time-phases: " in line:
             line = line.split("time-phases: ", 1)[1]
         head, sep, rest = line.partition(": wall ")
@@ -137,7 +141,7 @@ def main():
             else:
                 tool = {"ld": "ld.bfd", "lld": "ld.lld", "mold": "mold"}[name]
                 out = f"floor.{name}.{i}"
-                cmd = [tool] + line(out)
+                cmd = [tool] + (["--no-fork"] if name == "mold" else []) + line(out)
             wall, peak, err, st = timed(cmd, o.dir)
             if st:
                 sys.exit(f"incr-floor: {name} run {i} failed ({st}):\n{err}")
