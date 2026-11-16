@@ -1355,6 +1355,52 @@ with each phase fed from the state for unchanged files:
   mutation tests: every single-byte change and every truncation of a
   state of the link-test corpus is a named error or (a change of the
   header's flags) accepted; never a panic.
+- **IN-18a2 [v2] Format version 2: the delta tables** (WP-063). Version
+  2 is version 1 with these changes:
+  - The format version is 2.
+  - The table count is 26.
+  - Three tables, kinds 32, 33 and 34 (IN-19's reserved numbers), come
+    after `LEAVES` and before `STRINGS`. The order is 1..22, 32, 33, 34,
+    23, and `STRINGS` stays last.
+
+  A version-1 state still reads. Its header must say 23 tables, and it
+  has no delta tables. An update has nothing to compute a delta from,
+  so a version-1 state is answered `state-version` (`format version 1
+  has no delta tables`), and the link is a full link that writes a
+  version-2 state. Replay (IN-61) still reads both versions. A reader
+  of version 1 only answers a version-2 state `state-version`.
+
+  | kind | table | row (width) | rows |
+  |---|---|---|---|
+  | 32 | `MENTIONS` | file `FILES` row, key `SYMBOLS` row, kind `u8` (0 undefined, 1 in a section, 2 absolute, 3 common), `st_bind u8`, `st_type u8`, `st_other u8`, section `SECTIONS` row (kind 1; else `NONE`) (16) | one per (live object, global key in its symbol table), strictly ascending by (file, key). An entry the file's symbol table repeats keeps the first. |
+  | 33 | `RESOLVED` | kind `u8` (0..5 as `MENTIONS` plus 4 linker-defined and 5 shared object; 6 COMDAT keeper; 7 live file), `st_type u8`, `st_bind u8`, `st_other u8`, key `SYMBOLS` row (kinds 0..5; else `NONE`), file `FILES` row (the definer, the keeper or the live file; `NONE` for kinds 0 and 4), section `SECTIONS` row (kind 1; else `NONE`), value `u64` (`st_value` for kinds 1..3; the definer's symbol index for kind 5, and for a definition outside an object's symbol table, which is recorded as kind 2; else 0), size `u64` (`st_size`; for a common, the resolved size), name str (kind 6: the group signature; else empty) (40). An undefined key has `st_bind` 2 when weak, else 1, and its resolved visibility in `st_other`; a linker-defined key only its visibility. A definition in a section the reader keeps no id for is recorded as kind 2, in both tables. | first one row per key the resolution names (kinds 0..5), ascending by key; then one per COMDAT group with a keeper, ascending by signature bytes; then one per live file, ascending by file |
+  | 34 | `INDEX` | unit `SECTIONS` row, kind `u8` (0 global, 1 section, 2 slot, 3 `.eh_frame`, 4 link order, 5 local slot), pad 3, target `u32` (a `SYMBOLS` row for kinds 0 and 2; a `SECTIONS` row for 1, 3, 4 and 5) (12) | one per (unit, kind, target), strictly ascending in that order |
+
+  `INDEX` records the references of every kept allocated section and of
+  every `.eh_frame` input of a live object file, read from its
+  relocations. One relocation gives these rows:
+  - A global key gives kind 0. Through a GOT, PLT or TLS slot, or the
+    GOT's base (the architecture's class of the type), it also gives
+    kind 2. An undefined entry is first redirected to its definition.
+  - A local with a section gives kind 1 for that section, or kind 3
+    when the section is an `.eh_frame`. A slot class also gives kind 5
+    with the section as target.
+  - Symbol 0, or a local without a section, gives kind 5 with the unit
+    itself as target when the class is a slot.
+  - A type the architecture cannot classify counts as a slot use.
+  - A unit's references to its own section are not recorded.
+  - An `SHF_LINK_ORDER` unit gives kind 4 for its `sh_link` section.
+
+  The reader adds these checks to IN-18a's:
+  - every reference is in range;
+  - `MENTIONS`' kind is 1 exactly when it has a section;
+  - `RESOLVED`'s fields match its kind as stated, and its rows are in
+    the stated order with no key, group or file twice;
+  - `INDEX`'s kind is in range, its target is in its table, and its rows
+    strictly ascend.
+
+  *Test:* `mortar_incr`'s round trip, and the incremental tests' replay
+  (each table matters, the v1 fixtures still read).
 - **IN-18b [v1] The normalized plan.** The plan hash is `L128` of a
   sequence of items, each a tag byte followed by fields that are each a
   `u32` length and that many bytes: first `C` with the working
@@ -2576,11 +2622,11 @@ update), reported as `incremental: full (<reason>)` (IN-10). With
 | `no-state` | no state at the state path (the first link); reported only by `--incremental-report` | permanent |
 | `state-corrupt` | the state fails validation (IN-18) | permanent |
 | `state-version` | the state's format or mortar version differs | permanent |
-| `options-changed` | the normalized plan differs: any option, the target, the emulation, the library search path, the input list's order (adding or removing an input, or an archive's members changing, is not a change of plan) | permanent; [later] options that touch no layout (`-Map`, `--time-phases`, `--threads`, `--incremental-report` are excluded already) |
+| `options-changed` | the normalized plan differs: any option, the target, the emulation, the library search path, the input list's order (adding or removing an input, or an archive's members changing, is not a change of plan). The delta also raises it when a path whose content changed is no file of either link: a linker script, whose content the plan does not hash (WP-063) | permanent; [later] options that touch no layout (`-Map`, `--time-phases`, `--threads`, `--incremental-report` are excluded already) |
 | `output-changed` | `P` is missing, or its stat tuple or build id differs from the state's, or it is racy and a build-id leaf differs (IN-21) | permanent |
 | `output-torn` | the state's "updating" flag is set (IN-46) | permanent |
 | `update-not-implemented` | the state is valid, the plan and the output match it, and the update path does not exist yet (WP-061 stage A: every incremental link is a full one after the checks above, in this order) | stage A only; WP-064 deletes the row |
-| `inputs-reordered` | two unchanged inputs' relative order changed | v1; [later] when no COMDAT keeper or placement order depends on it |
+| `inputs-reordered` | two unchanged inputs' relative order changed. The input list's order is in the plan (`options-changed`, checked first), so the delta meets this only through archive extraction order (WP-063: two unchanged `FILES` rows in a different relative order) | v1; [later] when no COMDAT keeper or placement order depends on it |
 | `too-much-changed` | IN-16's threshold | permanent (it is the compaction rule) |
 | `reserve-exhausted` | a segment reserve, a packed array's, `.eh_frame`'s, a slot region's or a dynamic table's capacity is exhausted (IN-32, IN-34) | permanent |
 | `island-exhausted` | a new thunk or patch does not fit its island | permanent |

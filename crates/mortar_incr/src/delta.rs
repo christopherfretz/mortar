@@ -261,10 +261,19 @@ enum Pos<'s> {
     NonAlloc(&'s [u8], u32, u64),
 }
 
+/// A merged fragment by output section name, ordinal and hash.
+type FragKey = (Vec<u8>, u32, Hash16);
+
 struct Side<'s> {
     s: &'s State,
     /// Per `OUTSECS` row, the least file offset of its chunks.
     out_start: Vec<u64>,
+    /// `DEFINED` and `SYM_PLACE` rows by key (the first row of a key),
+    /// and per section its `SECTION`-kind mentions: indexed once, so a
+    /// lookup per key or per flipped section is not a scan.
+    defined_at: HashMap<u32, usize>,
+    common_at: HashMap<u32, usize>,
+    globals_of: HashMap<u32, Vec<usize>>,
 }
 
 impl<'s> Side<'s> {
@@ -275,7 +284,27 @@ impl<'s> Side<'s> {
                 *o = (*o).min(c.offset);
             }
         }
-        Self { s, out_start }
+        let mut defined_at = HashMap::new();
+        for (i, d) in s.defined.iter().enumerate() {
+            defined_at.entry(d.symbol).or_insert(i);
+        }
+        let mut common_at = HashMap::new();
+        for (i, p) in s.sym_place.iter().enumerate() {
+            common_at.entry(p.symbol).or_insert(i);
+        }
+        let mut globals_of: HashMap<u32, Vec<usize>> = HashMap::new();
+        for (i, m) in s.mentions.iter().enumerate() {
+            if m.kind == def_kind::SECTION {
+                globals_of.entry(m.section).or_default().push(i);
+            }
+        }
+        Self { s, out_start, defined_at, common_at, globals_of }
+    }
+
+    /// The `SECTION`-kind mentions of section `sec`, in `MENTIONS` order.
+    fn globals_in(&self, sec: u32) -> impl Iterator<Item = &'s MentionRow> + '_ {
+        let s = self.s;
+        self.globals_of.get(&sec).into_iter().flatten().map(move |&i| &s.mentions[i])
     }
 
     fn chunk(&self, c: u32) -> Option<&'s ChunkRow> {
@@ -320,7 +349,7 @@ impl<'s> Side<'s> {
 
     /// The output address of a linker-defined key (`DEFINED`).
     fn defined_value(&self, symbol: u32) -> Option<u64> {
-        let d = self.s.defined.iter().find(|d| d.symbol == symbol)?;
+        let d = &self.s.defined[*self.defined_at.get(&symbol)?];
         if d.kind == 0 {
             return Some(d.value);
         }
@@ -329,7 +358,7 @@ impl<'s> Side<'s> {
 
     /// A common's allocation (`SYM_PLACE`): address and size.
     fn common_place(&self, symbol: u32) -> Option<(u64, u64)> {
-        let p = self.s.sym_place.iter().find(|p| p.symbol == symbol)?;
+        let p = &self.s.sym_place[*self.common_at.get(&symbol)?];
         Some((self.chunk(p.chunk)?.addr.wrapping_add(p.offset), p.size))
     }
 }
@@ -358,10 +387,6 @@ fn resolved_map(s: &State) -> HashMap<KeyId<'_>, (u32, ResolvedRow)> {
         .filter(|r| r.kind <= def_kind::SHARED)
         .filter_map(|r| Some((key_id(s, r.symbol)?, (r.symbol, *r))))
         .collect()
-}
-
-fn globals_in(s: &State, sec: u32) -> Vec<&MentionRow> {
-    s.mentions.iter().filter(|m| m.section == sec && m.kind == def_kind::SECTION).collect()
 }
 
 /// A slot's key: a global by identity, a local by (new file row,
@@ -539,12 +564,14 @@ pub fn compute(
         }
     }
     // Merged sections: a fragment whose place differs, or that is in one
-    // link only, or a hash with several offsets (ordinal rows). A FRAGS
-    // offset is relative to its output section's merged chunk, so the
-    // place is that chunk's address (allocated) or its offset in the
-    // output section (non-allocated) plus the offset: a merged chunk that
-    // moves moves every fragment in it (the oracle's `os` scenario).
-    let frag_map = |side: &Side<'_>| -> HashMap<(Vec<u8>, u32, Hash16), Option<u64>> {
+    // link only. A FRAGS offset is relative to its output section's merged
+    // chunk, so the place is that chunk's address (allocated) or its
+    // offset in the output section (non-allocated) plus the offset: a
+    // merged chunk that moves moves every fragment in it (the oracle's
+    // `os` scenario). A hash with several offsets (ordinal rows) compares
+    // as the list of its places; an output section with several merged
+    // chunks has no one base, and its fragments count as moved.
+    let frag_map = |side: &Side<'_>| -> HashMap<FragKey, Option<Vec<u64>>> {
         let s = side.s;
         let mut base: HashMap<u32, Option<u64>> = HashMap::new();
         for c in &s.chunks {
@@ -556,27 +583,32 @@ pub fn compute(
                         side.out_start.get(c.out as usize).copied().unwrap_or(c.offset),
                     )
                 };
-                // Several merged chunks of one output section: no one base.
                 base.entry(c.out).and_modify(|e| *e = None).or_insert(Some(at));
             }
         }
-        let mut m: HashMap<(Vec<u8>, u32, Hash16), Option<u64>> = HashMap::new();
+        let mut m: HashMap<FragKey, Option<Vec<u64>>> = HashMap::new();
         for f in &s.frags {
             let Some(o) = s.outsecs.get(f.out as usize) else { continue };
             let k = (s.str(o.name).to_vec(), o.ordinal, f.hash);
-            let at = base.get(&f.out).copied().flatten();
-            let v = if f.ordinal == NONE { at.map(|b| b.wrapping_add(f.offset)) } else { None };
-            m.entry(k).and_modify(|e| *e = None).or_insert(v);
+            let at = base.get(&f.out).copied().flatten().map(|b| b.wrapping_add(f.offset));
+            let e = m.entry(k).or_insert_with(|| Some(Vec::new()));
+            match (e.as_mut(), at) {
+                (Some(list), Some(at)) => list.push(at),
+                _ => *e = None,
+            }
         }
         m
     };
     let (fa, fb) = (frag_map(&a), frag_map(&b));
     let mut merged_moved = vec![false; nsec];
     let mut frags_changed = fa.len() != fb.len();
+    let mut key = (Vec::new(), 0, [0; 16]);
     for (sec, out, h) in &extra.frags {
         let Some(o) = new.outsecs.get(*out as usize) else { continue };
-        let k = (new.str(o.name).to_vec(), o.ordinal, *h);
-        let (x, y) = (fa.get(&k).copied().flatten(), fb.get(&k).copied().flatten());
+        key.0.clear();
+        key.0.extend_from_slice(new.str(o.name));
+        (key.1, key.2) = (o.ordinal, *h);
+        let (x, y) = (fa.get(&key).and_then(Option::as_ref), fb.get(&key).and_then(Option::as_ref));
         if x.is_none() || x != y {
             if let Some(m) = merged_moved.get_mut(*sec as usize) {
                 *m = true;
@@ -585,7 +617,7 @@ pub fn compute(
         }
     }
     if !frags_changed {
-        frags_changed = fa.iter().any(|(k, v)| fb.get(k) != Some(v));
+        frags_changed = fa.iter().any(|(k, v)| v.is_none() || fb.get(k) != Some(v));
     }
     // .eh_frame: the prefix rule over the records in output order.
     let eh_chunk_moved = a.chunk_by_name(b".eh_frame").map(|c| c.addr)
@@ -830,11 +862,11 @@ pub fn compute(
         {
             set.add(u, file_row);
         }
-        for m in globals_in(new, n as u32) {
+        for m in b.globals_in(n as u32) {
             referrers_of_key(&mut set, m.symbol, row);
         }
         let o = sec_n2o[n];
-        for m in globals_in(old, o) {
+        for m in a.globals_in(o) {
             if let Some(k) = key_id(old, m.symbol)
                 && let Some(&(nsym, _)) = rb.get(&k)
             {

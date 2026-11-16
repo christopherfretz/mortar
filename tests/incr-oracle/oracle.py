@@ -739,7 +739,7 @@ class Report:
                 self.holes.append((set(t[2].split(',')), unfield(t[3]), unfield(t[4]) or None,
                                    None if t[5] == '-' else int(t[5])))
             elif t[1] == 'chunk':   # reasons tag name outsec
-                self.chunks.append((set(t[2].split(',')), unfield(t[4]), unfield(t[5])))
+                self.chunks.append((set(t[2].split(',')), t[3], unfield(t[4]), unfield(t[5])))
             elif t[1] == 'fallback':
                 self.fallbacks.append(t[2])
             elif t[1] == 'file':    # state path member
@@ -765,11 +765,11 @@ class Report:
         for r, p, m, i in self.holes:
             if r - reasons:
                 holes.add((p, m, i))
-        chunks = set()
-        for r, name, out in self.chunks:
+        chunks = collections.defaultdict(set)   # output section -> chunk tags
+        for r, tag, name, out in self.chunks:
             if r - reasons:
                 # a synthetic chunk has no OUTSECS row: its name is its section's
-                chunks.add(out or name)
+                chunks[out or name].add(tag)
         fb = [f for f in self.fallbacks if f not in falls]
         return units, holes, chunks, fb
 
@@ -831,7 +831,7 @@ class Facts:
                 continue
             sa = A.osec(s['name'])
             if sa is None:
-                self.outside.append((s['name'], 'new section', s['size'])); continue
+                self.outside.append((s['name'], 'new section', s['size'], s['size'])); continue
             x = A.out[sa['off']:sa['off'] + sa['size']]
             y = B.out[s['off']:s['off'] + s['size']]
             if x == y and sa['addr'] == s['addr']:
@@ -839,13 +839,22 @@ class Facts:
             mask = bytearray(max(len(x), len(y)))
             for (o, z) in cover.get(s['name'], ()):
                 mask[o:o + z] = b'\1' * len(mask[o:o + z])
-            n = 0
+            # the tail: past the new link's last unit in the section, where
+            # mortar's own chunks (patches, thunks) sit; a `body` chunk
+            # (fill between units) does not name those bytes
+            last = max((o + z for L in (B,) for rs in L.ranges.values()
+                        for (sn, o, z) in rs if sn == s['name'] and o is not None), default=0)
+            n = tail = 0
             for i in range(0, min(len(x), len(y)), 256):
                 if x[i:i + 256] != y[i:i + 256]:
-                    n += sum(1 for j in range(i, min(i + 256, len(x), len(y))) if x[j] != y[j] and not mask[j])
+                    for j in range(i, min(i + 256, len(x), len(y))):
+                        if x[j] != y[j] and not mask[j]:
+                            n += 1
+                            tail += j >= last
             n += abs(len(x) - len(y))
+            tail += max(0, len(y) - max(len(x), last))
             if n or sa['addr'] != s['addr']:
-                self.outside.append((s['name'], 'addr %x->%x size %x->%x' % (sa['addr'], s['addr'], sa['size'], s['size']), n))
+                self.outside.append((s['name'], 'addr %x->%x size %x->%x' % (sa['addr'], s['addr'], sa['size'], s['size']), n, tail))
 
     @staticmethod
     def size(L, u):
@@ -903,9 +912,12 @@ def judge(F, R, drop, quiet=True):
     for u in F.left_units:
         if (u[0][0], u[0][1]) not in left:
             miss.append('MISS unit of a file that left, no hole: %s' % F.uname(u))
-    for name, what, n in F.outside:
+    for name, what, n, tail in F.outside:
         if name not in chunks:
             miss.append('MISS output section %s differs outside units (%d bytes; %s) and no chunk names it' % (name, n, what))
+        elif tail and not chunks[name] - {'body'}:
+            miss.append('MISS output section %s differs past its last unit (%d bytes; %s) and only its body chunk is named'
+                        % (name, tail, what))
     return not miss, len(pred_unch), miss
 
 
@@ -945,7 +957,7 @@ def main():
             print('report fall-backs:', ','.join(R.fallbacks) or 'none', ' policy:', R.policy or 'none')
             print('ORACLE differing=%d (same-place %d, moved %d [beyond the move %d], appeared %d, vanished %d) predicted=%s ratio=%s outside=%s'
                   % (F.differing(), len(F.same_diff), len(F.moved), len(F.mv_diff), len(F.appear), len(F.vanish),
-                     npred, ratio(npred, F.differing()), ';'.join(n for n, _w, _c in F.outside) or 'none'))
+                     npred, ratio(npred, F.differing()), ';'.join(n for n, _w, _c, _t in F.outside) or 'none'))
             for l in lines[:40]:
                 print('  ' + l)
             print('RESULT %s  (%.2fs)' % ('PASS' if ok else 'FAIL', time.time() - T0))

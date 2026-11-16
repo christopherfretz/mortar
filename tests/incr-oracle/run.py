@@ -45,6 +45,7 @@ import os, sys, shutil, subprocess, platform, collections, concurrent.futures, t
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = os.path.join(HERE, 'src')
 sys.path.insert(0, HERE)
+sys.dont_write_bytecode = True  # no __pycache__ in the source tree
 import oracle  # noqa: E402
 
 TRIPLE = {'a64': 'aarch64-linux-gnu', 'x64': 'x86_64-linux-gnu'}
@@ -141,6 +142,12 @@ for arch, sfx in (('a64', ''), ('x64', 'x')):
     own('op', [], {'v0': 'm=o_m u=o_u last=o_pr0', 'v1': 'm=o_m u=o_u last=o_pr1'}, 'v0:v1 v1:v0')
     own('ol', [], {'v0': 'm=o_m u=o_lu last=o_body0 script=o_ls0', 'v1': 'm=o_m u=o_lu last=o_body0 script=o_ls1'},
         'v0:v1 v1:v0')
+# AArch64's erratum 843419 patch (IN-27 row 8): an ADRP at page offset
+# 0xff8 in a page-aligned `.text`; padding before it moves the site and its
+# patch
+scen('pt', 'a64', ['-Wl,--fix-cortex-a53-843419'], {'v0': 'm=o_pm last=o_pt0 u=o_pu',
+                                                     'v1': 'm=o_pm last=o_pt1 u=o_pu'})
+OWN_PAIRS.extend(['pt/v0:pt/v1', 'pt/v1:pt/v0'])
 
 # the quick subset (ci --quick, O0): every IN-27 row's own scenario on the
 # host's architecture and the other, and R3's COMDAT, gc, TLS and IFUNC pairs

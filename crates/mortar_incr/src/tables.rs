@@ -10,6 +10,8 @@
 //! classify is recorded as a slot use as well as a reference: the
 //! conservative answer (it may only add refills).
 
+use std::collections::HashMap;
+
 use mortar_arch::{Arch, DemandClass, Site};
 use mortar_core::FileId;
 use mortar_core::id::{SectionId, SymKey, SymbolId};
@@ -119,9 +121,11 @@ pub(crate) fn fill(
     s.mentions.dedup_by_key(|m| (m.file, m.symbol));
     // RESOLVED: every key, then every kept group, then every live file.
     let mut keys = Vec::new();
+    let commons: HashMap<SymbolId, u64> =
+        link.resolution.common.iter().rev().map(|&(k, shape)| (k, shape.size)).collect();
     for (id, &def) in res.def.iter() {
         let def = link.assignment.def(res, id).unwrap_or(def);
-        keys.push(resolved_row(link, &tables, syms, strings, id, def, &section_row)?);
+        keys.push(resolved_row(link, &tables, syms, strings, id, def, &section_row, &commons)?);
     }
     keys.sort_by_key(|r| r.symbol);
     s.resolved = keys;
@@ -173,6 +177,7 @@ fn resolved_row(
     id: SymbolId,
     def: Def,
     section_row: &dyn Fn(FileId, Result<SymbolSection, mortar_elf::Error>) -> u32,
+    commons: &HashMap<SymbolId, u64>,
 ) -> Result<ResolvedRow, String> {
     let symbol = syms.row(strings, SymKey::global(id))?;
     let mut row = ResolvedRow { symbol, file: NONE, section: NONE, ..ResolvedRow::default() };
@@ -217,10 +222,10 @@ fn resolved_row(
                     row.kind = def_kind::ABSOLUTE;
                 }
             }
-            if let Some(&(_, shape)) =
-                link.resolution.common.iter().find(|(k, _)| *k == id).filter(|_| row.kind == 3)
+            if row.kind == def_kind::COMMON
+                && let Some(&size) = commons.get(&id)
             {
-                row.size = shape.size;
+                row.size = size;
             }
         }
     }
