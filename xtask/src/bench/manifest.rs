@@ -120,8 +120,12 @@ impl Workload {
 /// The class of the workload the calibration link is made on.
 pub const CALIBRATION: &str = "calibration";
 
+/// The class of the workloads built and measured only when named
+/// (`--workload`): their inputs are too large to keep in the cache.
+pub const ON_REQUEST: &str = "on-request";
+
 /// The classes a workload may have.
-const CLASSES: [&str; 6] = ["small", "medium", "large", "extreme", "rust", CALIBRATION];
+const CLASSES: [&str; 7] = ["small", "medium", "large", "extreme", "rust", CALIBRATION, ON_REQUEST];
 
 /// The keys each kind takes, besides `class`, `about`, `kind`.
 fn keys_of(kind: &str) -> Option<&'static [&'static str]> {

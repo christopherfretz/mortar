@@ -15,6 +15,7 @@ pub mod arch;
 pub mod depfile;
 pub mod dynamic;
 pub mod dynlink;
+pub mod floor;
 pub mod front;
 pub mod image;
 pub mod incremental;
