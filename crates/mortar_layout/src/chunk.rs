@@ -1010,7 +1010,7 @@ mod tests {
     fn l22_aligned_prefix_sum() {
         let h = headers(&[(3, 0), (8, 3), (1, 0), (4, 4)]);
         let m: Vec<SectionId> = (0..4).map(SectionId).collect();
-        let parts = plan_parts(&m, &h, None).unwrap();
+        let parts = plan_parts(&m, &h, None, Gaps::None).unwrap();
         assert_eq!(parts.len(), 1);
         let offs: Vec<u64> = parts[0].members.iter().map(|x| x.1).collect();
         assert_eq!(offs, [0, 8, 16, 32]);
@@ -1022,12 +1022,12 @@ mod tests {
     fn l110_parts() {
         let h = headers(&[(60, 2), (40, 2), (8, 2), (100, 2)]);
         let m: Vec<SectionId> = (0..4).map(SectionId).collect();
-        let parts = plan_parts(&m, &h, Some(100)).unwrap();
+        let parts = plan_parts(&m, &h, Some(100), Gaps::None).unwrap();
         let shape: Vec<Vec<(u32, u64)>> =
             parts.iter().map(|p| p.members.iter().map(|x| (x.0.0, x.1)).collect()).collect();
         assert_eq!(shape, [vec![(0, 0), (1, 60)], vec![(2, 0)], vec![(3, 0)]]);
         let big = headers(&[(101, 2)]);
-        let e = plan_parts(&[SectionId(0)], &big, Some(100)).unwrap_err();
+        let e = plan_parts(&[SectionId(0)], &big, Some(100), Gaps::None).unwrap_err();
         assert_eq!(e.refusal().map(|r| r.1), Some("code section larger than branch reach"));
     }
 }

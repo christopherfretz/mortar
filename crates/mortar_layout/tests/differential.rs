@@ -738,6 +738,7 @@ fn staged_from(elf: &Elf) -> (Staged, Vec<(usize, ChunkId)>) {
         islands: Box::new([]),
         relro_padding,
         out_of: Column::from_vec(out_of).unwrap(),
+        holes: Box::new([]),
     };
     (staged, map)
 }

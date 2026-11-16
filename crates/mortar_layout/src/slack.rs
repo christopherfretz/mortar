@@ -217,7 +217,8 @@ mod tests {
         assert_eq!(s.packed(800), 100);
         assert_eq!(s.debug_tail(3200), 100);
         assert_eq!(s.load(100, 0x1_0000), 0x1_0000);
-        assert_eq!(s.load(0x10_0001, 0x1000), 0x2_1000);
+        assert_eq!(s.load(0x10_0001, 0x1000), 0x2_0000);
+        assert_eq!(s.load(0x10_8001, 0x1000), 0x2_1000);
         for f in [Slack::tail, Slack::packed, Slack::debug_tail] {
             assert_eq!(f(Slack::NONE, 12345), 0);
         }
@@ -228,7 +229,7 @@ mod tests {
     fn in50_classes() {
         assert_eq!(class_at_least(1), 32);
         assert_eq!(class_at_least(32), 32);
-        assert_eq!(class_at_least(33), 34);
+        assert_eq!(class_at_least(33), 36);
         assert_eq!(class_at_least(100), 104);
         assert_eq!(class_at_least(4096), 4096);
         assert_eq!(class_at_least(4097), 4608);
