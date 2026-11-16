@@ -7,8 +7,6 @@
 # under `-z now -z norelro` the `JUMP_SLOT` words stay in writable data and
 # nothing is read-only after relocation. The program reads its own headers
 # at run time (`dl_iterate_phdr`, `_DYNAMIC`, `DT_JMPREL`).
-#
-# mortar: AArch64 WP-056 (OPTS), x86-64 WP-056 (OPTS), in tests/link/xfails.
 #@ spec: dyn.md "D-33"
 #@ spec: dyn.md "D-42"
 #@ spec: dyn.md "D-49"

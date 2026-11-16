@@ -5,8 +5,6 @@
 # Needs DT_DEBUG, a writable `.dynamic`, PT_PHDR, PT_INTERP and `.symtab`.
 # gdb runs host programs only here: on x86-64 (qemu) the step is skipped
 # by name (spec/harness.md "Checks").
-#
-# mortar: AArch64 WP-053 (JOIN-C), in tests/link/xfails.
 #@ spec: dyn.md "D-70"
 #@ arch: aarch64 x86_64
 #@ requires: gdb

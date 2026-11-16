@@ -294,6 +294,55 @@ pub struct DynRecords {
     pub iplt: Vec<String>,
 }
 
+/// What a `dead` range of mortar's map is (§3.2; `spec/incr.md` IN-3a,
+/// IN-60). The word decides which grammar the verifier holds the bytes
+/// to (§6.8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DeadKind {
+    /// A remainder, an allotment's slack or a dead `.debug_info` unit in
+    /// its section's neutral form (IN-51, IN-51b).
+    Neutral,
+    /// A whole dead debug contribution left as its compiler wrote it,
+    /// its addresses tombstoned (IN-53).
+    Contribution,
+    /// Dead fragments of a merged string section (`SHF_MERGE|SHF_STRINGS`,
+    /// L-147, S-110): they keep their bytes.
+    Strings,
+    /// One or more whole CIEs of `.eh_frame` that no FDE uses.
+    Cie,
+}
+
+impl DeadKind {
+    pub const ALL: [DeadKind; 4] =
+        [DeadKind::Neutral, DeadKind::Contribution, DeadKind::Strings, DeadKind::Cie];
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            DeadKind::Neutral => "neutral",
+            DeadKind::Contribution => "contribution",
+            DeadKind::Strings => "strings",
+            DeadKind::Cie => "cie",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|k| k.name() == name)
+    }
+}
+
+/// A `hole` or `dead` line of mortar's map (§3.2): bytes `[offset, +size)`
+/// of the output section named `section` that a full link of the current
+/// inputs would not write. `kind` is `None` for a hole (an allocated
+/// range that holds its section's fill, IN-3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeadRange {
+    pub section: String,
+    pub offset: u64,
+    pub size: u64,
+    pub kind: Option<DeadKind>,
+    pub line: u32,
+}
+
 /// The common form of a placement map (§3.1).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Map {
@@ -313,6 +362,13 @@ pub struct Map {
     pub fix_843419: Option<bool>,
     /// mortar's dynamic records (§3.2; P-D3), when the map has any.
     pub dynamic: Option<DynRecords>,
+    /// mortar's `hole` and `dead` lines (§3.2, `spec/incr.md` IN-60), in
+    /// map order.
+    pub dead: Vec<DeadRange>,
+    /// mortar's `incremental` record: the link was made in incremental
+    /// mode, and the map claims IN-60's coverage even with no `hole` or
+    /// `dead` line.
+    pub incremental: bool,
 }
 
 impl Map {
@@ -329,7 +385,16 @@ impl Map {
             nonalloc: Vec::new(),
             fix_843419: None,
             dynamic: None,
+            dead: Vec::new(),
+            incremental: false,
         }
+    }
+
+    /// Whether the map claims IN-60's coverage (§6.8): mortar's format
+    /// with an `incremental` record or any `hole` or `dead` line. Only
+    /// such a map pays for the dead-range checks.
+    pub fn claims_coverage(&self) -> bool {
+        self.format == Format::Mortar && (self.incremental || !self.dead.is_empty())
     }
 
     /// The index of `file`, adding it when it is new. Linear in the number

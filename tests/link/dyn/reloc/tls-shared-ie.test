@@ -10,9 +10,6 @@
 # call, so it is not held to its absence). The program prints the
 # values both units read and whether their addresses equal the
 # library's `&tlsx`, from the main thread. PIE and non-PIE.
-#
-# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
-# tests/link/xfails.
 #@ spec: dyn.md "D-48"
 #@ arch: aarch64 x86_64
 #@ fixture: reloc-libd

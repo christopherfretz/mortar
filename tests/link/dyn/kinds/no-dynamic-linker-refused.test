@@ -17,10 +17,7 @@
 # interpreter and exit 255, lld's and mold's missing PT_INTERP and
 # SIGSEGV).
 #
-# mortar: AArch64 WP-042 (CLI), x86-64 WP-042 (CLI), in
-# tests/link/xfails. (The refusal is input.md 8.4's, which mortar already
-# makes on this line without -pie/-no-pie; what it lacks is those two
-# options, which are mortar_cli's.)
+# mortar refuses the link by name (input.md 8.4, dyn.md D-31).
 #@ spec: dyn.md "D-31"
 #@ arch: aarch64 x86_64
 #@ xfail(lld,mold,aarch64): W10: no PT_INTERP without -dynamic-linker; the program dies by SIGSEGV

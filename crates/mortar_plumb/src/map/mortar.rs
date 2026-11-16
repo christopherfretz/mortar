@@ -12,6 +12,9 @@
 //! fold <file> <section> <into-file> <into-section>
 //! chunk thunk|patch|synthetic|common <name> <addr>|- <size> [<target> <addend>]
 //! define <name> <value>
+//! incremental
+//! hole <output-section> <offset> <size>
+//! dead <output-section> <offset> <size> neutral|contribution|strings|cie
 //! output static|exec|pie|static-pie
 //! interp <path>
 //! runpath|rpath <paths>
@@ -35,8 +38,9 @@
 use std::fmt::Write as _;
 
 use super::{
-    Chunk, ChunkKind, CopyHint, Defined, DiscardReason, Discarded, DynRecords, Fold, Format, Map,
-    MapError, MapFile, NonAlloc, OutputKind, Placed, RunpathTag, SectionRef, dec, hex,
+    Chunk, ChunkKind, CopyHint, DeadKind, DeadRange, Defined, DiscardReason, Discarded, DynRecords,
+    Fold, Format, Map, MapError, MapFile, NonAlloc, OutputKind, Placed, RunpathTag, SectionRef,
+    dec, hex,
 };
 
 /// The first line of a version-1 map.
@@ -112,8 +116,10 @@ fn parse_signed_hex(t: &str) -> Option<i64> {
 }
 
 /// Writes `map` in mortar's format (§3.2). The record order is fixed:
-/// files by id, then places, pieces, discards, folds, chunks and defined
-/// symbols, each in the order of the map's vectors.
+/// files by id, then places, pieces, the non-alloc records, discards,
+/// folds, chunks, defined symbols, `incremental`, holes and dead ranges,
+/// each in the order of the map's vectors, then the dynamic records.
+#[allow(clippy::too_many_lines)] // one block per record, in the fixed order
 pub fn write(map: &Map) -> String {
     let mut out = String::with_capacity(64 * (map.placed.len() + map.files.len()) + 32);
     out.push_str(HEADER);
@@ -203,6 +209,19 @@ pub fn write(map: &Map) -> String {
         out.push_str("define ");
         encode(&d.name, &mut out);
         let _ = writeln!(out, " {:x}", d.value);
+    }
+    if map.incremental {
+        out.push_str("incremental\n");
+    }
+    for d in &map.dead {
+        out.push_str(if d.kind.is_some() { "dead " } else { "hole " });
+        encode(&d.section, &mut out);
+        let _ = write!(out, " {:x} {:x}", d.offset, d.size);
+        if let Some(k) = d.kind {
+            out.push(' ');
+            out.push_str(k.name());
+        }
+        out.push('\n');
     }
     if let Some(d) = &map.dynamic {
         write_dynamic(d, &mut out);
@@ -383,6 +402,23 @@ pub fn parse(text: &str) -> Result<Map, MapError> {
                 value: num(t[2], "value")?,
                 line: n,
             }),
+            ("incremental", 1) => {
+                if map.incremental {
+                    return Err(bad("a second 'incremental' record"));
+                }
+                map.incremental = true;
+            }
+            ("hole", 4) | ("dead", 5) => map.dead.push(DeadRange {
+                section: decode(t[1]).ok_or_else(|| bad("output section"))?,
+                offset: num(t[2], "offset")?,
+                size: num(t[3], "size")?,
+                kind: if t[0] == "dead" {
+                    Some(DeadKind::from_name(t[4]).ok_or_else(|| bad("kind"))?)
+                } else {
+                    None
+                },
+                line: n,
+            }),
             ("output", 2) => {
                 let d = map.dynamic.get_or_insert_with(DynRecords::default);
                 if d.kind.is_some() {
@@ -449,8 +485,9 @@ pub fn parse(text: &str) -> Result<Map, MapError> {
             ("", 1) => return Err(MapError::new(n, "empty line before 'end'")),
             (
                 "end" | "file" | "place" | "piece" | "nplace" | "merged" | "discard" | "fold"
-                | "chunk" | "define" | "output" | "interp" | "runpath" | "rpath" | "bind" | "relro"
-                | "arg" | "needed" | "copy" | "export" | "plt" | "iplt",
+                | "chunk" | "define" | "incremental" | "hole" | "dead" | "output" | "interp"
+                | "runpath" | "rpath" | "bind" | "relro" | "arg" | "needed" | "copy" | "export"
+                | "plt" | "iplt",
                 _,
             ) => {
                 return Err(bad("wrong number of fields"));
@@ -544,6 +581,7 @@ mod tests {
         m.folds.iter_mut().for_each(|p| p.line = 0);
         m.chunks.iter_mut().for_each(|p| p.line = 0);
         m.defined.iter_mut().for_each(|p| p.line = 0);
+        m.dead.iter_mut().for_each(|p| p.line = 0);
         m
     }
 
@@ -665,6 +703,75 @@ mod tests {
             let e = parse(text).unwrap_err();
             assert_eq!(e.line, *line, "{text:?}: {e}");
         }
+    }
+
+    // §3.2 (spec/incr.md IN-60): the incremental records round-trip, after
+    // the defines and before the dynamic records; a map without them
+    // writes none and claims no coverage.
+    #[test]
+    fn s3_2_dead_records_round_trip() {
+        let mut m = sample();
+        let plain = write(&m);
+        assert!(!plain.contains("hole ") && !plain.contains("incremental"));
+        assert!(!m.claims_coverage());
+        m.incremental = true;
+        m.dead.push(DeadRange {
+            section: ".text".into(),
+            offset: 0x40,
+            size: 0x10,
+            kind: None,
+            line: 0,
+        });
+        for (i, k) in DeadKind::ALL.iter().enumerate() {
+            m.dead.push(DeadRange {
+                section: ".debug info".into(),
+                offset: i as u64 * 0x20,
+                size: 0x20,
+                kind: Some(*k),
+                line: 0,
+            });
+        }
+        let text = write(&m);
+        assert!(
+            text.ends_with(
+                "define _end 500000\nincremental\nhole .text 40 10\n\
+                 dead .debug%20info 0 20 neutral\ndead .debug%20info 20 20 contribution\n\
+                 dead .debug%20info 40 20 strings\ndead .debug%20info 60 20 cie\nend\n"
+            ),
+            "{text}"
+        );
+        let back = parse(&text).unwrap();
+        assert!(back.claims_coverage());
+        assert_eq!(strip_lines(back), m);
+        // A hole line alone claims coverage; `incremental` alone too.
+        assert!(parse("mortar-map 1\nhole .data 0 8\nend\n").unwrap().claims_coverage());
+        assert!(parse("mortar-map 1\nincremental\nend\n").unwrap().claims_coverage());
+    }
+
+    // §3.2: malformed incremental records, by line.
+    #[test]
+    fn s3_2_malformed_dead_records_are_errors() {
+        let cases: &[(&str, u32)] = &[
+            ("mortar-map 1\nhole .text 0\nend\n", 2),
+            ("mortar-map 1\nhole .text 0 8 neutral\nend\n", 2),
+            ("mortar-map 1\ndead .text 0 8\nend\n", 2),
+            ("mortar-map 1\ndead .text 0 8 rotten\nend\n", 2),
+            ("mortar-map 1\ndead .text 0 8 Neutral\nend\n", 2),
+            ("mortar-map 1\nhole .text -1 8\nend\n", 2),
+            ("mortar-map 1\nhole .text 0 10000000000000000\nend\n", 2),
+            ("mortar-map 1\nhole %4 0 8\nend\n", 2),
+            ("mortar-map 1\nincremental yes\nend\n", 2),
+            ("mortar-map 1\nincremental\nincremental\nend\n", 3),
+        ];
+        for (text, line) in cases {
+            let e = parse(text).unwrap_err();
+            assert_eq!(e.line, *line, "{text:?}: {e}");
+        }
+        // Lines the reader cannot judge (overlapping, out of a section,
+        // empty) are read: the verifier judges them against the output
+        // (P-I2, §6.8).
+        let m = parse("mortar-map 1\nhole .text 0 0\nhole .text 0 8\nhole .text 4 8\nhole .nowhere ffffffffffffffff ffffffffffffffff\nend\n").unwrap();
+        assert_eq!(m.dead.len(), 4);
     }
 
     // §3.7: every truncation of a valid map is an error or a map, never a

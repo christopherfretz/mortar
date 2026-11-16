@@ -10,13 +10,10 @@
 # `warning: creating DT_TEXTREL in a PIE` on x86-64, silently on
 # AArch64), and mold writes `DT_TEXTREL` silently (W6's behaviour; the
 # crash of W6 is i386's, out of M2), and both programs run. dyn.md D-47
-# says GNU ld refuses on x86-64 and AArch64: that is its answer for a
+# said GNU ld refuses on x86-64 and AArch64: that is its answer for a
 # `-fno-pic` object's 32-bit words (`R_X86_64_32S`, which no record can
-# express), not for this word (reported as a spec finding). The test
+# express), not for this word (D-47 corrected by WP-083). The test
 # records each reference's answer and holds mortar to the refusal.
-#
-# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
-# tests/link/xfails.
 #@ spec: dyn.md "D-47"
 #@ arch: aarch64 x86_64
 #@ anomaly(bfd,mold): A24

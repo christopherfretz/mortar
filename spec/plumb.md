@@ -33,6 +33,7 @@ describes how x86-64 and i386 fit.
 | 3 (M2) | Dynamic executables (`Exec`, `Pie`) and static PIE: the dynamic sections, dynamic relocations, PLT, copies, shared inputs (§12, P-D1-P-D13; not started). Shared-object output is M4 | — |
 | 4 (M6) | Mason metadata and the one-definition-rule table: `.mason.meta` in outputs, `.note.mason` (§13, P-M1-P-M3; **not implemented**, WP-078) | — |
 | x | x86-64 and i386 tables (§4.5) | `machine` |
+| I (M7, WP-091) | An incremental link's holes and dead ranges, for a mortar map that claims them (`incremental`, `hole`, `dead`, §3.2): IN-60's coverage of every allocated section and IN-3a's three checks on every range (§6.8, P-I1–P-I6). `--equiv` (incr.md IN-62) is not started | — |
 
 On the reference corpus, a stage-1 report may give only the stage-2
 reasons in "not checked" (§9.1).
@@ -138,6 +139,9 @@ discard <file> <section> gc|comdat|script|unspecified
 fold <file> <section> <into-file> <into-section>
 chunk thunk|patch|synthetic|common <name> <addr>|- <size> [<target> <addend>]
 define <name> <value>
+incremental
+hole <output-section> <offset> <size>
+dead <output-section> <offset> <size> neutral|contribution|strings|cie
 output static|exec|pie|static-pie
 interp <path>
 runpath|rpath <paths>
@@ -211,10 +215,38 @@ inputs (§12), and a hint only names what is compared. A
 second `output`, `interp`, `runpath`/`rpath`, `bind` or `relro` record
 is a `MapError`.
 
+**The incremental records** (§6.8; `spec/incr.md` IN-3a, IN-60;
+WP-091) follow `define` and come before the dynamic records. A link
+that is not incremental writes none of them, and its map claims nothing
+(the checks of §6.8 do not run).
+
+| record | count | meaning |
+|---|---|---|
+| `incremental` | at most one | the link was made in incremental mode: the map claims IN-60's coverage even with no `hole` or `dead` line |
+| `hole <output-section> <offset> <size>` | any | an allocated range that holds its section's fill (IN-3): room an update left, a dead input section's or a dead constant fragment's bytes |
+| `dead <output-section> <offset> <size> <kind>` | any | a dead range whose bytes are a record of its section's grammar (IN-3a check 2), by `<kind>`: `neutral` (IN-51's block unit or IN-51b's neutral form of a debug section), `contribution` (a whole dead debug contribution as its compiler wrote it, addresses tombstoned, IN-53), `strings` (dead fragments of a merged string section, kept bytes, L-147), `cie` (unused CIEs in `.eh_frame`) |
+
+`<output-section>` is a string token naming the output section;
+`<offset>` is from the section's start (`sh_addr`, or 0 for a non-alloc
+section) and `<size>` its length, both hex. A map with `incremental` or
+any `hole`/`dead` line **claims coverage**. A second `incremental`, an
+unknown kind, a wrong number of fields or a bad number is a `MapError`.
+What only the output can judge (no such section, a range outside it,
+empty, overlapping another line) is read and judged by §6.8 (P-I2).
+
+**The version stays 1.** The records are added within version 1, as the
+dynamic records were (WP-040). A reader of version 1 that predates them
+refuses a map that has them with `MapError` "unknown record 'hole'" (or
+`'incremental'`, `'dead'`): it never misreads one, since a record it
+does not know is an error, never skipped. A new version number would
+make every older reader refuse every map, incremental or not, for no
+gain.
+
 The writer emits records in a fixed order: files by id, then places and
 pieces, the non-alloc records, discards, folds, chunks and defined
-symbols, each group in the order of the map's vectors, then the dynamic
-records in the order of the grammar above.
+symbols, each group in the order of the map's vectors, then
+`incremental`, the `hole` and `dead` lines in the order of the map's
+vector, then the dynamic records in the order of the grammar above.
 
 Every syntax error is a `MapError { line, message }`. Line 0 means the map
 was truncated, with no `end`. Tests:
@@ -223,6 +255,7 @@ was truncated, with no `end`. Tests:
 - `s3_2_tokens_encode_every_byte`
 - `s3_2_malformed_maps_are_errors`
 - `s3_2_dynamic_records_round_trip`, `s3_2_malformed_dynamic_records_are_errors`
+- `s3_2_dead_records_round_trip`, `s3_2_malformed_dead_records_are_errors`
 - `crates/mortar/tests/image.rs map_dynamic_records_read_by_the_verifier`
   (the writer side, `mortar_image::map::DynRecords`)
 - `s3_7_truncations_are_answers`
@@ -1926,6 +1959,202 @@ Tests: `src/buildid.rs` (FIPS 180-4's vectors, image.md §8.4's `L128`
 and tree vectors), `tests/mutation.rs s9_2l_build_id_mutations_are_found`,
 `s9_2l_build_id_style_from_the_map`.
 
+### 6.8 Holes and dead ranges (M7, WP-091)
+
+`spec/incr.md` IN-3, IN-3a, IN-60. An incremental update leaves bytes a
+full link of the current inputs would not write; mortar's map lists them
+(`hole` and `dead`, §3.2). For a map that **claims coverage** (mortar's
+format with `incremental` or any `hole`/`dead` line) `src/dead.rs` and
+`src/deaddwarf.rs` check, from the output and the map alone, after
+stage 2. A map that claims nothing does not run them and pays nothing.
+
+**Resolving (P-I2).** A line names one output section by name; none or
+several is P-I2, and so are an empty range, one past the section's end
+and two lines that overlap. Then a range must be one its section admits:
+
+- a `hole` only in an allocated section (IN-3); not in a packed section
+  (layout.md L-142, incr.md IN-30): `SHT_INIT_ARRAY`, `SHT_FINI_ARRAY`,
+  `SHT_PREINIT_ARRAY`, `SHT_NOTE`, `.init_array`, `.fini_array`,
+  `.preinit_array`, `.ctors`, `.dtors` (and their `.`-suffixed names),
+  `.init`, `.fini`, `.tm_clone_table`, `.eh_frame_hdr`, `.note*`, and a
+  section whose name is a C identifier (reachable by `__start_`/`__stop_`);
+  in a thread-local section only at its end (L-143); `.eh_frame` holes
+  are padding CIEs (below);
+- `neutral` only in the sections IN-51b gives a form: `.debug_info`,
+  `.debug_abbrev`, `.debug_line`, `.debug_rnglists`, `.debug_loclists`,
+  `.debug_str_offsets`, `.debug_addr`, `.debug_ranges`, `.debug_frame`;
+- `contribution` only in IN-53's list: `.debug_line`,
+  `.debug_str_offsets`, `.debug_addr`, `.debug_rnglists`,
+  `.debug_loclists`, `.debug_ranges`, `.debug_loc`, `.debug_macro`,
+  `.debug_frame`;
+- `strings` in a non-executable section holding merged strings (a live
+  piece of an `SHF_MERGE|SHF_STRINGS` input; non-alloc: `.debug_str`,
+  `.debug_line_str` or a `merged` record's section);
+- `cie` in `.eh_frame` only;
+- nothing at all in `.debug_aranges` (IN-54: rewritten whole).
+
+**Coverage (P-I1, IN-60).** Every byte of every allocated output section
+is covered by exactly one item: a live `place` (an input section placed
+whole, assigned to the output section that contains it, a `.tbss`
+input only to a thread-local `NOBITS` section), a `piece`, an addressed
+`chunk` (one of the section's name first), a `copy` record's room, a
+common symbol (the output `.symtab` symbol of a name that only common
+definitions of the inputs give, sized `st_size`, aligned as the largest
+`st_value` asked; no map line names commons), a `hole` or a `dead` line.
+A chunk with pieces or lines inside it is their container (mortar lists
+`.eh_frame` as one chunk and its records as pieces) and does not count.
+Pieces of merged sections may share bytes (deduplication), and so may
+`.eh_frame` pieces (a shared CIE). The rest must be one of:
+
+- **alignment padding** before an item: the gap ends at the item's
+  start, which is the first multiple of its alignment at or after the
+  gap's start. The alignment is the input section's `sh_addralign` for
+  places and pieces; for a merged piece any power of two from its own up
+  to the largest of the merged pieces of that output section (mortar
+  lays them out as one block); for a copy, the largest power of two
+  dividing its address, at most 64; after a copy or a common symbol, also
+  up to the output section's `sh_addralign` (the map records neither
+  their alignment nor their layout). Padding of a `PROGBITS` section
+  holds the section's fill (trap fill in code, zero elsewhere);
+- `.eh_frame`'s terminator: its last 4 bytes, zero;
+- the whole of a `NOBITS` section no line names (today mortar's
+  `.relro_padding`, WP-083's `.pad.relro`: the verifier does not know
+  the name; a request to WP-062 is to list it as a chunk).
+
+Anything else, a gap or a byte covered twice, is P-I1 naming the range
+and what covers it. Measured with `cargo xtask plumb --coverage` (which
+prints the walk's counts for any map, as if it claimed coverage) over
+the 546 mortar outputs of a `cargo xtask linktest` run (AArch64, x86-64,
+i386; static, PIE, dynamic, static-pie): **0 findings on all 546**.
+What today's maps leave to the rules above, summed over the run:
+
+| what | bytes | where |
+|---|---|---|
+| alignment padding, holding the fill | 1,130,391 / 454,831 / 30,199 / 35,604 / 14,726 / 660 / 470 / 143 / 56 / 8 | `.text`, `.rodata`, `.bss`, `.data.rel.ro`, `.data`, `.gcc_except_table`, `.tbss`, `.ltext`, `.bss.rel.ro`, `.tdata` |
+| padding not holding the fill | 0 | — |
+| shared by merge pieces | 782,502 + 288 | `.rodata`, `rodata.cst32` |
+| `.eh_frame` terminator | 4 per output | `.eh_frame` |
+| a `NOBITS` section no line names | 13,557,476 (506 outputs) | `.relro_padding` |
+| covered by commons (symbols) and copies | in `.bss`, `.lbss`, `.bss.rel.ro` | — |
+| other gaps, overlaps, uncovered tails | 0 | — |
+
+Without the common and copy items the run had 1,844 + 6,897,168 bytes
+uncovered in `.bss`/`.lbss`; with pieces aligned only to their entry
+size, 321,063 bytes of `.rodata`. A "claims full coverage" marker is
+therefore needed only to make a map with no line claim (an incremental
+link that has no dead range yet): that is `incremental`.
+
+**Nothing live names a range (IN-3a check 1; P-I3, P-I4).** Judged by
+what a reference names (the re-review's N3):
+
+- P-I3, symbols: a defined symbol of `.symtab` or `.dynsym` (section and
+  file symbols aside; thread-local ones at `PT_TLS`'s `p_vaddr` plus the
+  value) whose value lies in a range of its section. An input symbol
+  defined at its section's end (`x_end`) is accepted when the output's
+  value is the end of a live item;
+- P-I3, relocations: a record of a live input section whose symbol's
+  input section (its base, whatever the addend; an undefined symbol's
+  chosen definition) is placed in a range. So `arr+40` for a 40-byte
+  `arr` and gfortran's `blk_-8` are accepted wherever they point;
+- P-I3, tables: a word of `.got`, `.got.plt`, `.igot`, `.igot.plt`
+  (outside the ranges) holding an address in a range that is not the
+  end of a live item; an allocated relocation record (outside the ranges)
+  that writes in a range, or a `RELATIVE`/`IRELATIVE` record whose target
+  (the addend, REL: the word) is in one; an `.eh_frame_hdr` entry whose
+  location or FDE is in one; `e_entry` in one; a live `.eh_frame` FDE
+  whose CIE pointer lands in one;
+- P-I4, DWARF: every live unit of `.debug_info` (one not in a range) is
+  walked, DIE by DIE: its abbreviation offset, `DW_FORM_ref_addr`,
+  `DW_FORM_strp`, `DW_FORM_line_strp` and `DW_FORM_sec_offset` by
+  attribute (`DW_AT_stmt_list` → `.debug_line`; `DW_AT_ranges`,
+  `DW_AT_start_scope` → `.debug_rnglists` (v5) or `.debug_ranges`; the
+  location attributes → `.debug_loclists` or `.debug_loc`;
+  `DW_AT_str_offsets_base`, `DW_AT_addr_base`, `DW_AT_rnglists_base`,
+  `DW_AT_loclists_base`; `DW_AT_macros`, `DW_AT_GNU_macros`,
+  `DW_AT_macro_info`; before DWARF 4, `data4`/`data8` of the line, range,
+  location and macro attributes) may not point into a range; nor may the
+  `strp`/`line_strp` entries of the v5 `.debug_line` headers live units
+  name, the entries of their `.debug_str_offsets` tables,
+  `.debug_aranges`' unit offsets, or a live `.debug_frame` FDE's CIE
+  pointer. A live unit the walk cannot read (an unknown form, a missing
+  abbreviation) is a P-I4 finding naming it: refused, not passed.
+
+**Fill (IN-3a check 3; P-I5).** An allocated `hole` holds its section's
+fill: `UDF #0` (zero words) in AArch64 code, `0xcc` in x86 code, zero
+elsewhere; nothing in `NOBITS`. In `.eh_frame` a hole is **one** padding
+CIE of IN-34a, exactly: at least 16 bytes and a multiple of 4,
+`length` = size − 4, `CIE_id` 0, version 1, augmentation "", code
+alignment 1, data alignment −4, the machine's return-address register
+(30, 16, 8), `DW_CFA_nop` to the end. In an allocated relocation section
+a hole is whole records: inside `DT_RELACOUNT`'s (`DT_RELCOUNT`'s)
+prefix of the table `DT_RELA` (`DT_REL`) points at, `RELATIVE` records
+with symbol 0, all aimed at one word (the scratch word, dyn.md §14);
+after it, `R_*_NONE` with symbol 0 (or such a `RELATIVE`).
+
+**Well formed (IN-3a check 2; P-I6).** A `strings` range ends with a
+NUL. A `cie` range is whole CIEs (`CIE_id` 0, version 1 or 3), nothing
+else. In the debug sections:
+
+- `neutral`, a sequence of the section's forms tiling the range:
+  `.debug_info`, IN-51's block units (32-bit length; `DW_UT_compile`
+  in v5; abbreviation code 1; the unit's table at its offset in
+  `.debug_abbrev` is `01 11 00 80 40 09 00 00` or `01 11 00 73 17 80 40
+  09 00 00`, the latter with a `DW_AT_addr_base` that lies in a dead
+  `.debug_addr` range; a `DW_FORM_block` of at least one byte ending
+  exactly at the unit's end); `.debug_abbrev`, zero bytes and those two
+  tables; `.debug_line`, IN-51b's table (opcode base 7, empty lists,
+  `header_length` exact, the rest `0x06`); `.debug_rnglists` and
+  `.debug_loclists`, a v5 header with no offsets and a zero body;
+  `.debug_str_offsets`, a v5 header and zero entries; `.debug_addr`, a
+  v5 header of 8-byte addresses and zeros; `.debug_ranges`, at least 16
+  zero bytes; `.debug_frame`, a version-1 CIE with an empty augmentation
+  and `DW_CFA_nop`;
+- `contribution`, a chain of whole units (records) of the section, with
+  every address operand image.md I-47's tombstone: `DW_LNE_set_address`
+  (all ones in ELFCLASS64, 0 in ELFCLASS32); `.debug_addr` entries,
+  `DW_RLE_`/`DW_LLE_` `base_address`, `start_end` and `start_length`
+  operands (0); a `.debug_frame` FDE's initial location (all ones); a
+  `.debug_ranges` base selection's base (1). In a position-independent
+  output (`ET_DYN`) a `contribution` in `.debug_rnglists`,
+  `.debug_loclists`, `.debug_addr` or (ELFCLASS32) `.debug_line` is
+  P-I6 (IN-53: neutral there). `.debug_loc` and `.debug_macro`
+  contributions are accepted as they are (below).
+
+**Not judged, and open questions.**
+
+1. A `.debug_ranges` (and `.debug_loc`) pair other than a base
+   selection is an address or an offset from the dead unit's base, and
+   the output no longer says which: only base selections are judged.
+   `.debug_loc` and `.debug_macro` contributions are not parsed. Proposed
+   text for IN-53: "a dead `.debug_ranges` or `.debug_loc` contribution
+   has every pair `(1, 1)` or a base selection of 1 followed by its
+   offsets", which the verifier could then check.
+2. The `strings` kind is new here: IN-3a says dead fragments are dead
+   ranges but its map grammar has no kind words. Dead **constant**
+   fragments are `hole` lines (they take the fill).
+3. A live reference through `DW_FORM_strx`, `addrx`, `rnglistx`,
+   `loclistx` goes through a live table: the tables' own entries are
+   judged (`.debug_str_offsets`), the others' are not (they point inside
+   their own contribution).
+4. `.gdb_index` and `.debug_names` are not judged (not generated with
+   `--incremental`, incr.md §7).
+5. `R_*_RELATIVE` records' scratch word is not in the map (dyn.md §14):
+   the verifier only requires one word per hole.
+6. Allocated relocation sections other than the `DT_RELA` table (such
+   as `.rela.plt`) take `NONE` records only.
+
+Tests: `tests/dead.rs` (§9.2 (p)), `map::mortar::tests::s3_2_dead_*`.
+Cost (WP-091, measured; release `xtask plumb`, 3 runs each, host load
+about 12; mortar's static AArch64 protoc, 11.7 MB, and protoc `-g`,
+50.3 MB): a map that claims nothing runs none of this (protoc 0.27–0.33 s
+and 175 MiB, protoc `-g` 2.15–2.42 s and 1.30 GiB, against 0.27–0.44 s
+and 1.87–2.12 s at the base commit: noise, same peak RSS). With
+`incremental` added to the map (coverage, the fills, the symbol,
+relocation and table walks): protoc 0.32–0.42 s, `-g` 2.01–2.18 s, RSS
+unchanged, 0 findings: today's protoc maps are complete. With also one
+`dead .debug_str` line (the walk of every live unit): `-g` 2.02–2.76 s,
+RSS unchanged, 0 findings.
+
 ## 7. The report
 
 ### 7.1 Findings
@@ -1933,8 +2162,8 @@ and tree vectors), `tests/mutation.rs s9_2l_build_id_mutations_are_found`,
 A finding has:
 
 - the rule id: `O1`, `S1`–`S21`, `I1`, `I2`, `M1`–`M5`, `R1`–`R9`, `T1`,
-  `Y1`–`Y5`, `E1`–`E5`, `F1`–`F5` (§4.8), `P1`–`P2` (§6.6), `B1` (§6.7)
-  or `C1`–`C6` (§5.10);
+  `Y1`–`Y5`, `E1`–`E5`, `F1`–`F5` (§4.8), `P1`–`P2` (§6.6), `B1` (§6.7),
+  `C1`–`C6` (§5.10), `P-D1`–`P-D13` (§12) or `P-I1`–`P-I6` (§6.8);
 - the output address, if it has one;
 - the site (input file, archive member, section, offset);
 - the relocation type's name and the symbol;
@@ -2173,6 +2402,42 @@ produce a finding that is not a recorded anomaly (`tests/mutation.rs`):
   rewritten): `W2` made a NOP in input and output is C2 (GNU ld's ADR)
   and C3 (lld's patch), the option stated off is C6, and a chunk at
   `.text + 0x1000` is C5.
+- **(p)** Holes and dead ranges (§6.8, `incr.md` IN-60; WP-091,
+  `tests/dead.rs`). A GNU ld link is read as an incremental output: one
+  input (`dead.o`) leaves the map, and the ranges it held become `hole`
+  lines holding their fill (an `.eh_frame` one a padding CIE among
+  `.eh_frame` chunks), or, in a debug program, neutral `.debug_info`,
+  `.debug_abbrev`, `.debug_line` ranges and a tombstoned `.debug_frame`
+  contribution. On AArch64, x86-64 and i386 (REL: the addends are in the
+  words), DWARF 4 and 5:
+  - ACCEPTED: the baseline, with `arr+40` (one past `arr`'s end, the
+    first byte of the `.data` hole), the label `arr_end` there and
+    gfortran's `blk_-8` inside the hole, a `.tdata` hole at the
+    section's end and the dead string GNU ld merged after a live one as
+    a `strings` range; the debug baseline;
+  - REJECTED: a live relocation aimed into a hole (its section declared a
+    hole: P-I3, and P-I1 covered twice); the same with the section out of
+    the map (its symbol: P-I3); `e_entry` in the code hole (P-I3); a
+    stale byte in a code and in a data hole (P-I5); a live unit's
+    `DW_AT_stmt_list` aimed at a dead `.debug_line` range (P-I4); the
+    dead `.debug_info` unit not neutralized (P-I6); a stray byte in the
+    neutral `.debug_abbrev` (P-I6), a line program byte other than
+    `0x06` (P-I6); the dead FDE's address left (P-I6); a 12-byte CIE and
+    a zero word in the `.eh_frame` hole (P-I5); a 12-byte `.eh_frame`
+    hole (P-I5); a `cie` range over an FDE (P-I6); a live FDE whose CIE
+    pointer names the hole's padding CIE (P-I3); a live `.debug_frame`
+    FDE naming the dead contribution's CIE (P-I4); in an i386 output made
+    `ET_DYN`, a dead `.debug_line` left as written (P-I6, IN-53's PIE
+    rule); a `.tdata` hole before a live word (P-I2); the dead string not
+    ending with a NUL (P-I6); a hole in `.init` and
+    a zero slot in the `__start_my_array` array (P-I2); the `.data` hole
+    unlisted (P-I1); overlapping lines, a line past its section, a line
+    naming no section, `cie`, `strings` or `neutral` in a section that
+    has no such range, a hole in `.shstrtab`, a line in `.debug_aranges`
+    (P-I2); a `strings` range of `.debug_str` not ending with a NUL
+    (P-I6);
+  - and every dead line of 8 sections × 5 kinds × 9 offsets × 9 sizes
+    (hostile, 3,240 lines) is judged without a panic.
 
 ### 9.3 Map readers
 
@@ -2304,6 +2569,64 @@ mortar's map only: `e_entry` + 4 (S7's symbol clause), `EI_OSABI` 0 ↔ 3
 x86-64 the locals of merged sections, linker symbols' sizes and mold's
 `$got` symbols. The one `got-slot-swap` miss is mold's `.got` words 0
 and 1 in `ibt` (not examined).
+
+**Holes and dead ranges (WP-091, §6.8).** Each check of `src/dead.rs`
+and `src/deaddwarf.rs` was dropped in a test build, one at a time, and
+`tests/dead.rs` run (AArch64, x86-64, i386; DWARF 4 and 5). "Caught by"
+is the test that failed; 30 of 37 drops are caught.
+
+| check dropped | caught by |
+|---|---|
+| coverage (P-I1) | `in3a_live_relocation_naming_a_hole_is_rejected`, `in60_unlisted_hole_and_bad_lines_are_rejected` |
+| resolution (P-I2: no section, outside, overlap) | `in60_unlisted_hole_and_bad_lines_are_rejected` |
+| admission, whole (P-I2) | `in30_…`, `in3a_debug_mutations_are_rejected`, `in60_unlisted_…` |
+| `.debug_aranges` takes no line | `in3a_debug_mutations_are_rejected` |
+| a hole in a non-allocated section | `in60_unlisted_…` |
+| packed sections (L-142) | `in30_holes_in_packed_sections_are_rejected` |
+| thread-local holes at the end only (L-143) | `in60_unlisted_…` |
+| `cie` outside `.eh_frame` | `in60_unlisted_…` |
+| `strings` in a section without merged strings | `in60_unlisted_…` |
+| `neutral` outside IN-51b's sections | `in60_unlisted_…` |
+| `contribution` outside IN-53's list | `in3a_debug_mutations_are_rejected` |
+| fills, whole (P-I5, allocated P-I6) | `in34a_eh_frame_holes_are_padding_cies`, `in3_stale_bytes_in_holes_are_rejected` |
+| the fill byte | `in3_stale_bytes_in_holes_are_rejected` |
+| the padding CIE (IN-34a) | `in34a_…` |
+| an allocated `strings` range ends with a NUL | `in60_unlisted_…` |
+| a `cie` range is whole CIEs | `in34a_…` |
+| symbols (P-I3) | `in3a_live_relocation_…` |
+| relocations of live sections (P-I3) | `in3a_live_relocation_…` |
+| tables, whole; `e_entry` (P-I3) | `in3a_live_relocation_…` |
+| live `.eh_frame` FDEs' CIE pointers (P-I3) | `in34a_…` |
+| N3: input end labels accepted at a live end | `in60_baseline_and_n3_references_are_accepted` (the baseline rejected) |
+| neutral debug forms; `.debug_abbrev`'s (P-I6) | `in3a_debug_mutations_are_rejected` |
+| contributions; the `.debug_frame` tombstone; the PIE rule (P-I6) | `in3a_debug_…` |
+| a non-allocated `strings` range ends with a NUL | `in3a_debug_…` |
+| the walk of live units (P-I4) | `in3a_debug_…` |
+| live `.debug_frame` FDEs' CIE pointers (P-I4) | `in3a_debug_…` |
+
+**Survivors (7), with the reason:**
+
+1. The relocation-section fill (`DT_RELACOUNT` prefix, `NONE` after
+   it), the `.got` words, allocated relocation records' `r_offset` and
+   `RELATIVE`/`IRELATIVE` targets, and `.eh_frame_hdr` entries: the
+   models are static executables without `--eh-frame-hdr`, so none of
+   these tables exists. Closing them needs a PIE model (a hole whose
+   `.rela.dyn` records are rewritten to the scratch word, a GOT word and
+   a header entry aimed into it): moderate, the first thing to add once
+   WP-062/WP-064 write lines into PIE outputs, whose maps can then be
+   used directly.
+2. Table references at a live item's end accepted (the N3 rule for
+   unnamed words): no model has a table word at a hole's start, so
+   dropping the acceptance makes nothing fail; it only loosens, and
+   the corpus (§6.8) has no dead range yet to show it is needed.
+3. The `strp`/`line_strp` entries of v5 line headers: no case puts a
+   dead range under a string only a line header names. In GCC's output
+   the header's directory and file names are also the unit's
+   `DW_AT_comp_dir`/`DW_AT_name` strings (merged), so such a case would
+   be caught by the DIE walk first (suspected, not separated); a case
+   with a header-only file name would close it.
+4. Live `.debug_str_offsets` entries: GCC does not use `DW_FORM_strx`
+   without split DWARF; needs a Clang DWARF 5 model (cheap).
 
 ## 10. The reference linkers, observed
 

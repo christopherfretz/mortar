@@ -1338,7 +1338,7 @@ fn section_headers(link: &Link<'_, '_>) -> Result<Vec<Shdr>, Diagnostic> {
         });
         row.sh_addralign = row.sh_addralign.max(1u64 << c.align);
         match c.kind {
-            // Layout's own chunk (L-74's `.relro_padding`): NOBITS, no plan.
+            // Layout's own chunk (L-64's `.pad.relro`): NOBITS, no plan.
             ChunkKind::Synthetic(s) if s == mortar_core::layout::Synth::RELRO_PADDING => {}
             ChunkKind::Synthetic(_) => {
                 let Some(kind) = kind_of(id) else {

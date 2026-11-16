@@ -5,9 +5,6 @@
 # and with `-no-pie` (`crt1.o`, `crtbegin.o`), each run. Needed: `libc.so.6`
 # only (§2.2; `libc_nonshared.a` gives `atexit`, `libgcc_s` is as-needed and
 # unused).
-#
-# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
-# tests/link/xfails.
 #@ spec: dyn.md "2.1 Default link lines"
 #@ spec: dyn.md "D-1"
 #@ arch: aarch64 x86_64

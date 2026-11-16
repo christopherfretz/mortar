@@ -5,9 +5,6 @@
 # `ET_DYN` with the same and `DF_1_PIE`; both need `libc.so.6` and carry
 # `DT_DEBUG` (D-30, D-70). The `StaticPie` column is
 # `output-kind-table-static-pie`.
-#
-# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
-# tests/link/xfails.
 #@ spec: dyn.md "D-1"
 #@ arch: aarch64 x86_64
 
