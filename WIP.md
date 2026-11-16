@@ -16,4 +16,4 @@
 - equiv.py (R13) needed: CIE pieces in one output passed over; .tbss units skipped (overlap); thin members; erratum 843419 veneers.
 
 ## Next
-- unit tests, cost runs, ci --quick, spec/landed/incr/WP-062.md, push, hosted CI.
+- ci --quick, push, hosted CI.
