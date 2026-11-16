@@ -698,7 +698,7 @@ fn find_linker(
 }
 
 /// `cargo build --release -p mortar` in the checkout.
-fn build_mortar(workspace: &Path) -> Result<PathBuf, String> {
+pub fn build_mortar(workspace: &Path) -> Result<PathBuf, String> {
     say("building mortar (release profile)");
     let mut cargo = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
     cargo

@@ -143,11 +143,27 @@ fn keys_of(kind: &str) -> Option<&'static [&'static str]> {
 }
 
 /// A key of a section: its line, the key, the value.
-type Entry = (usize, String, String);
+pub type Entry = (usize, String, String);
+
+/// A section of a manifest: the line of its `[name]`, the name, its keys.
+pub type Section = (usize, String, Vec<Entry>);
 
 /// Reads the manifest's text. Every error names its line.
 pub fn parse(text: &str) -> Result<Vec<Workload>, String> {
-    let mut sections: Vec<(usize, String, Vec<Entry>)> = Vec::new();
+    sections(text, "workload")?
+        .into_iter()
+        .map(|(at, name, entries)| section(at, name, &entries))
+        .collect()
+}
+
+/// Splits a manifest in this format into its sections: `[name]` (lower
+/// case letters, digits, `-`) then `key = value` lines, `#` starting a
+/// comment line; a name or a key of a section appearing twice is an error.
+/// `what` names a section in the errors (`workload`, `project`). The
+/// format of the bench's manifest and of the real-builds lane's
+/// (`spec/harness.md` "Workloads", "realbuild").
+pub fn sections(text: &str, what: &str) -> Result<Vec<Section>, String> {
+    let mut sections: Vec<Section> = Vec::new();
     for (at, raw) in text.lines().enumerate().map(|(at, line)| (at + 1, line)) {
         let line = raw.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -158,11 +174,11 @@ pub fn parse(text: &str) -> Result<Vec<Workload>, String> {
                 && name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
             if !valid {
                 return Err(format!(
-                    "line {at}: a workload name is lower-case letters, digits and `-`"
+                    "line {at}: a {what} name is lower-case letters, digits and `-`"
                 ));
             }
             if sections.iter().any(|(_, other, _)| other == name) {
-                return Err(format!("line {at}: workload `{name}` appears twice"));
+                return Err(format!("line {at}: {what} `{name}` appears twice"));
             }
             sections.push((at, name.to_owned(), Vec::new()));
             continue;
@@ -179,7 +195,7 @@ pub fn parse(text: &str) -> Result<Vec<Workload>, String> {
         }
         entries.push((at, key.to_owned(), value.trim().to_owned()));
     }
-    sections.into_iter().map(|(at, name, entries)| section(at, name, &entries)).collect()
+    Ok(sections)
 }
 
 fn section(at: usize, name: String, entries: &[Entry]) -> Result<Workload, String> {
