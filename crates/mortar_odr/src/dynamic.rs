@@ -177,6 +177,26 @@ fn full_rows(
     FullRows { definitions, types }
 }
 
+/// O-50's rows of the exported keepers (`=exported`'s note).
+fn table_rows(resolution: &Resolution, output: Output<'_>, keepers: &[&Keeper]) -> Vec<TableRow> {
+    keepers
+        .iter()
+        .filter(|k| k.flags & (flags::VAGUE | flags::EXPLICIT_SPEC) != 0)
+        .map(|k| {
+            let protected =
+                resolution.props.get(k.sym).is_some_and(|p| p.visibility == STV_PROTECTED);
+            let np = output.executable || protected;
+            let mut hash = [0; 8];
+            hash.copy_from_slice(&k.hash[..8]);
+            TableRow {
+                sym: k.sym,
+                hash,
+                flags: (k.flags & !NONPREEMPTIBLE) | if np { NONPREEMPTIBLE } else { 0 },
+            }
+        })
+        .collect()
+}
+
 /// Runs O-24 and gathers O-50's rows.
 #[must_use]
 pub fn check(
@@ -196,23 +216,7 @@ pub fn check(
     };
     let keepers: Vec<&Keeper> = dynamic.keepers.iter().filter(|k| exported(k.sym)).collect();
     if switches.table {
-        let rows = keepers
-            .iter()
-            .filter(|k| k.flags & (flags::VAGUE | flags::EXPLICIT_SPEC) != 0)
-            .map(|k| {
-                let protected =
-                    resolution.props.get(k.sym).is_some_and(|p| p.visibility == STV_PROTECTED);
-                let np = output.executable || protected;
-                let mut hash = [0; 8];
-                hash.copy_from_slice(&k.hash[..8]);
-                TableRow {
-                    sym: k.sym,
-                    hash,
-                    flags: (k.flags & !NONPREEMPTIBLE) | if np { NONPREEMPTIBLE } else { 0 },
-                }
-            })
-            .collect();
-        found.table = Some(rows);
+        found.table = Some(table_rows(resolution, output, &keepers));
         if switches.full {
             found.full = Some(full_rows(inputs, dynamic, &exported));
         }

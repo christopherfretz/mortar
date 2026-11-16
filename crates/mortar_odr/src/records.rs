@@ -353,6 +353,27 @@ pub(crate) struct Cx<'a, 's, 'l> {
     pub(crate) switches: Switches,
 }
 
+/// O-23 (`--odr-check-archives`) against the keepers of `groups`; its
+/// counts added to `counts`.
+fn archives<'s: 'l, 'l>(
+    cx: &Cx<'_, 's, 'l>,
+    entries: &[Entry<'l>],
+    groups: &[(usize, usize)],
+    pool: &Pool,
+    counts: &mut Counts,
+) -> Vec<(Key, Diagnostic)> {
+    let live = cx.live_defs(entries, groups);
+    let (found, c) = crate::archives::check(cx, &live, pool);
+    counts.findings += found.len() as u64;
+    counts.archive_members = c.archive_members;
+    counts.archive_units = c.archive_units;
+    counts.archive_bytes = c.archive_bytes;
+    counts.archive_compared = c.archive_compared;
+    counts.system_std += c.system_std;
+    counts.pairs_not_compared += c.pairs_not_compared;
+    found
+}
+
 /// Runs the record checks `switches` asks for over the containers of the
 /// live files.
 #[must_use]
@@ -451,16 +472,7 @@ pub fn check(
     }
     let dynamic = cx.dynamic(&entries, &groups);
     if switches.archives {
-        let live = cx.live_defs(&entries, &groups);
-        let (found, c) = crate::archives::check(&cx, &live, pool);
-        counts.findings += found.len() as u64;
-        counts.archive_members = c.archive_members;
-        counts.archive_units = c.archive_units;
-        counts.archive_bytes = c.archive_bytes;
-        counts.archive_compared = c.archive_compared;
-        counts.system_std += c.system_std;
-        counts.pairs_not_compared += c.pairs_not_compared;
-        diagnostics.extend(found);
+        diagnostics.extend(archives(&cx, &entries, &groups, pool, &mut counts));
     }
     if switches.abi {
         let before = diagnostics.len();
