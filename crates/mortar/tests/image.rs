@@ -670,7 +670,7 @@ fn map_dynamic_records_read_by_the_verifier() {
     assert_eq!(d.needed, ["libc.so.6"]);
     assert_eq!(
         d.copies,
-        [pm::CopyHint { name: "environ".into(), addr: 0x40_1000, size: 8, align: Some(8) }]
+        [pm::CopyHint { name: "environ".into(), addr: 0x40_1000, size: 8, align: 8 }]
     );
     assert_eq!(
         (d.exports, d.plt, d.iplt),

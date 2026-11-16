@@ -273,8 +273,8 @@ pub struct CopyHint {
     pub addr: u64,
     pub size: u64,
     /// The alignment the copy was placed at (§3.2's allocation records,
-    /// judged by M8), when the record states it.
-    pub align: Option<u64>,
+    /// judged by M8): a power of two.
+    pub align: u64,
 }
 
 /// The dynamic records of a map (§3.2, `spec/plumb.md` P-D3): facts of the

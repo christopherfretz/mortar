@@ -366,37 +366,19 @@ fn items(image: &Image<'_>, objs: &[Obj<'_>], map: &Map, set: &DeadSet) -> Vec<V
             }
         }
     }
-    // Common symbols (no map line names them, §6.8): the output symbol
-    // of a name no placed section of an input defines, with the largest
-    // alignment its common definitions ask.
-    let listed = map.chunks.iter().any(|c| c.kind == crate::map::ChunkKind::Common);
-    for (name, align) in if listed {
-        std::collections::BTreeMap::default()
-    } else {
-        crate::maprec::common_only(objs)
-    } {
-        let Some(sym) = image.global(&name) else { continue };
-        let (a, size) = (sym.sym.st_value, sym.sym.st_size.max(1));
+    // Common symbols and copies, as the map's allocation records state
+    // them (§3.2; M7 and M8 hold each to the output): the allocation and
+    // the alignment it was placed at.
+    let commons = map.commons.iter().map(|c| (c.addr, c.size.max(1), c.align));
+    let copies = map
+        .dynamic
+        .iter()
+        .flat_map(|d| &d.copies)
+        .filter(|c| c.size > 0)
+        .map(|c| (c.addr, c.size, c.align));
+    for (a, size, align) in commons.chain(copies) {
         if let Some(i) = owner(image, a, size, false, None) {
             per[i].push(Item { start: a, end: a + size, align, group: 0, kind: ItemKind::Common });
-        }
-    }
-    // Copy relocations' room (mortar's `copy` records, §3.2): the
-    // alignment the shared object's symbol asks is not in the map; the
-    // address's own, up to 64, stands for it.
-    for c in map.dynamic.iter().flat_map(|d| &d.copies) {
-        if c.size == 0 {
-            continue;
-        }
-        if let Some(i) = owner(image, c.addr, c.size, false, None) {
-            let align = 1u64 << c.addr.trailing_zeros().min(6);
-            per[i].push(Item {
-                start: c.addr,
-                end: c.addr + c.size,
-                align,
-                group: 0,
-                kind: ItemKind::Common,
-            });
         }
     }
     for c in &map.chunks {
@@ -490,7 +472,7 @@ pub(crate) fn coverage(
         }
         if its.is_empty() {
             c.unlisted = true;
-            if claim && !nobits {
+            if claim {
                 out.push(
                     finding(
                         1,
@@ -518,9 +500,10 @@ pub(crate) fn coverage(
             let (st, en) = (it.start.max(lo), it.end.min(hi));
             if st > cur {
                 let gap = st - cur;
-                // After common symbols and copies, whose layout the map
-                // does not record, the section's own alignment may pad
-                // (measured: mortar aligns what follows a copy block).
+                // After common symbols and copies the section's own
+                // alignment may pad: their records state each one, not
+                // the block's tail, and mortar aligns what follows a copy
+                // block (measured: 12 of 791 corpus maps rely on it).
                 let after_common = last.is_some_and(|l| l.kind == ItemKind::Common);
                 let top = if after_common { sh.sh_addralign.max(it.group) } else { it.group };
                 let aligned = it.align.is_power_of_two()

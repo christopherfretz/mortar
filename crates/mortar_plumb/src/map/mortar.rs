@@ -274,11 +274,7 @@ fn write_dynamic(d: &DynRecords, out: &mut String) {
     for c in &d.copies {
         out.push_str("copy ");
         encode(&c.name, out);
-        let _ = write!(out, " {:x} {:x}", c.addr, c.size);
-        if let Some(a) = c.align {
-            let _ = write!(out, " {a:x}");
-        }
-        out.push('\n');
+        let _ = writeln!(out, " {:x} {:x} {:x}", c.addr, c.size, c.align);
     }
     for e in &d.exports {
         named(out, "export", e);
@@ -297,9 +293,7 @@ pub fn parse(text: &str) -> Result<Map, MapError> {
     let mut map = Map::new(Format::Mortar);
     let mut lines = text.split('\n').enumerate().map(|(i, l)| ((i + 1) as u32, l));
     match lines.next() {
-        // Version 1 is read until the allocation records are required
-        // (WP-096 step 3).
-        Some((_, HEADER | "mortar-map 1")) => {}
+        Some((_, HEADER)) => {}
         Some((_, l)) if l.starts_with("mortar-map ") => {
             return Err(MapError::new(1, format!("unsupported mortar map version '{}'", &l[11..])));
         }
@@ -498,12 +492,12 @@ pub fn parse(text: &str) -> Result<Map, MapError> {
                     _ => d.iplt.push(v),
                 }
             }
-            ("copy", 4 | 5) => {
+            ("copy", 5) => {
                 let c = CopyHint {
                     name: decode(t[1]).ok_or_else(|| bad("name"))?,
                     addr: num(t[2], "address")?,
                     size: num(t[3], "size")?,
-                    align: if t.len() == 5 { Some(align(t[4])?) } else { None },
+                    align: align(t[4])?,
                 };
                 map.dynamic.get_or_insert_with(DynRecords::default).copies.push(c);
             }
@@ -657,24 +651,25 @@ mod tests {
         let cases: &[(&str, u32)] = &[
             ("", 1),
             ("mortar-map 3\nend\n", 1),
-            ("mortar-map 1\n", 0),
-            ("mortar-map 1\nfile 1 a.o\nend\n", 2),
-            ("mortar-map 1\nplace 0 1 0 0\nend\n", 2),
-            ("mortar-map 1\nfile 0 a.o\nplace 0 1 0\nend\n", 3),
-            ("mortar-map 1\nfile 0 a.o\nplace 0 x 0 0\nend\n", 3),
-            ("mortar-map 1\nfile 0 a.o\nplace 0 1 0g 0\nend\n", 3),
-            ("mortar-map 1\nfile 0 a.o\ndiscard 0 1 why\nend\n", 3),
-            ("mortar-map 1\nfrob\nend\n", 2),
-            ("mortar-map 1\nend\nfile 0 a.o\n", 3),
-            ("mortar-map 1\n\nend\n", 2),
-            ("mortar-map 1\nfile 0 a.o\nchunk thunk x 0 4 y 1z\nend\n", 3),
-            ("mortar-map 1\nfile 0  a.o\nend\n", 2),
+            ("mortar-map 1\nend\n", 1),
+            ("mortar-map 2\n", 0),
+            ("mortar-map 2\nfile 1 a.o\nend\n", 2),
+            ("mortar-map 2\nplace 0 1 0 0\nend\n", 2),
+            ("mortar-map 2\nfile 0 a.o\nplace 0 1 0\nend\n", 3),
+            ("mortar-map 2\nfile 0 a.o\nplace 0 x 0 0\nend\n", 3),
+            ("mortar-map 2\nfile 0 a.o\nplace 0 1 0g 0\nend\n", 3),
+            ("mortar-map 2\nfile 0 a.o\ndiscard 0 1 why\nend\n", 3),
+            ("mortar-map 2\nfrob\nend\n", 2),
+            ("mortar-map 2\nend\nfile 0 a.o\n", 3),
+            ("mortar-map 2\n\nend\n", 2),
+            ("mortar-map 2\nfile 0 a.o\nchunk thunk x 0 4 y 1z\nend\n", 3),
+            ("mortar-map 2\nfile 0  a.o\nend\n", 2),
         ];
         for (text, line) in cases {
             let e = parse(text).unwrap_err();
             assert_eq!(e.line, *line, "{text:?}: {e}");
         }
-        assert!(parse("mortar-map 1\nend\n\n").is_ok());
+        assert!(parse("mortar-map 2\nend\n\n").is_ok());
     }
 
     // §3.2 (P-D3 of spec/dyn.md): the dynamic records round-trip, in their
@@ -692,8 +687,8 @@ mod tests {
             args: vec!["-pie".into(), "--as-needed".into(), "-lc".into(), String::new()],
             needed: vec!["libc.so.6".into(), "libm.so.6".into()],
             copies: vec![
-                CopyHint { name: "stdout".into(), addr: 0x2_0010, size: 8, align: Some(8) },
-                CopyHint { name: "environ".into(), addr: 0x2_0018, size: 8, align: None },
+                CopyHint { name: "stdout".into(), addr: 0x2_0010, size: 8, align: 8 },
+                CopyHint { name: "environ".into(), addr: 0x2_0018, size: 8, align: 1 },
             ],
             exports: vec!["main".into()],
             plt: vec!["puts".into(), "memcpy@GLIBC_2.2.5".into()],
@@ -705,14 +700,14 @@ mod tests {
                 "define _end 500000\noutput pie\ninterp /lib/ld-linux-aarch64.so.1\n\
                  runpath $ORIGIN/lib:/opt/x%20y\nbind now\nrelro off\narg -pie\n\
                  arg --as-needed\narg -lc\narg %\nneeded libc.so.6\nneeded libm.so.6\n\
-                 copy stdout 20010 8 8\ncopy environ 20018 8\nexport main\nplt puts\nplt memcpy@GLIBC_2.2.5\n\
+                 copy stdout 20010 8 8\ncopy environ 20018 8 1\nexport main\nplt puts\nplt memcpy@GLIBC_2.2.5\n\
                  iplt my_ifunc\nend\n"
             ),
             "{text}"
         );
         assert_eq!(strip_lines(parse(&text).unwrap()), m);
         // Every record is optional.
-        let only = parse("mortar-map 1\nrpath /a\nend\n").unwrap();
+        let only = parse("mortar-map 2\nrpath /a\nend\n").unwrap();
         assert_eq!(
             only.dynamic,
             Some(DynRecords {
@@ -726,21 +721,22 @@ mod tests {
     #[test]
     fn s3_2_malformed_dynamic_records_are_errors() {
         let cases: &[(&str, u32)] = &[
-            ("mortar-map 1\noutput shared\nend\n", 2),
-            ("mortar-map 1\noutput pie\noutput pie\nend\n", 3),
-            ("mortar-map 1\ninterp a\ninterp b\nend\n", 3),
-            ("mortar-map 1\nrunpath a\nrpath b\nend\n", 3),
-            ("mortar-map 1\nbind eager\nend\n", 2),
-            ("mortar-map 1\nrelro yes\nend\n", 2),
-            ("mortar-map 1\nbind now\nbind now\nend\n", 3),
-            ("mortar-map 1\ncopy x 10\nend\n", 2),
-            ("mortar-map 1\ncopy x 10 zz\nend\n", 2),
-            ("mortar-map 1\nneeded\nend\n", 2),
-            ("mortar-map 1\nplt a b\nend\n", 2),
-            ("mortar-map 1\nexport %4\nend\n", 2),
-            ("mortar-map 1\ncopy x 10 8 3\nend\n", 2),
-            ("mortar-map 1\ncopy x 10 8 0\nend\n", 2),
-            ("mortar-map 1\ncopy x 10 8 4 4\nend\n", 2),
+            ("mortar-map 2\noutput shared\nend\n", 2),
+            ("mortar-map 2\noutput pie\noutput pie\nend\n", 3),
+            ("mortar-map 2\ninterp a\ninterp b\nend\n", 3),
+            ("mortar-map 2\nrunpath a\nrpath b\nend\n", 3),
+            ("mortar-map 2\nbind eager\nend\n", 2),
+            ("mortar-map 2\nrelro yes\nend\n", 2),
+            ("mortar-map 2\nbind now\nbind now\nend\n", 3),
+            ("mortar-map 2\ncopy x 10\nend\n", 2),
+            ("mortar-map 2\ncopy x 10 zz\nend\n", 2),
+            ("mortar-map 2\ncopy x 10 8\nend\n", 2),
+            ("mortar-map 2\nneeded\nend\n", 2),
+            ("mortar-map 2\nplt a b\nend\n", 2),
+            ("mortar-map 2\nexport %4\nend\n", 2),
+            ("mortar-map 2\ncopy x 10 8 3\nend\n", 2),
+            ("mortar-map 2\ncopy x 10 8 0\nend\n", 2),
+            ("mortar-map 2\ncopy x 10 8 4 4\nend\n", 2),
         ];
         for (text, line) in cases {
             let e = parse(text).unwrap_err();
@@ -787,24 +783,24 @@ mod tests {
         assert!(back.claims_coverage());
         assert_eq!(strip_lines(back), m);
         // A hole line alone claims coverage; `incremental` alone too.
-        assert!(parse("mortar-map 1\nhole .data 0 8\nend\n").unwrap().claims_coverage());
-        assert!(parse("mortar-map 1\nincremental\nend\n").unwrap().claims_coverage());
+        assert!(parse("mortar-map 2\nhole .data 0 8\nend\n").unwrap().claims_coverage());
+        assert!(parse("mortar-map 2\nincremental\nend\n").unwrap().claims_coverage());
     }
 
     // §3.2: malformed incremental records, by line.
     #[test]
     fn s3_2_malformed_dead_records_are_errors() {
         let cases: &[(&str, u32)] = &[
-            ("mortar-map 1\nhole .text 0\nend\n", 2),
-            ("mortar-map 1\nhole .text 0 8 neutral\nend\n", 2),
-            ("mortar-map 1\ndead .text 0 8\nend\n", 2),
-            ("mortar-map 1\ndead .text 0 8 rotten\nend\n", 2),
-            ("mortar-map 1\ndead .text 0 8 Neutral\nend\n", 2),
-            ("mortar-map 1\nhole .text -1 8\nend\n", 2),
-            ("mortar-map 1\nhole .text 0 10000000000000000\nend\n", 2),
-            ("mortar-map 1\nhole %4 0 8\nend\n", 2),
-            ("mortar-map 1\nincremental yes\nend\n", 2),
-            ("mortar-map 1\nincremental\nincremental\nend\n", 3),
+            ("mortar-map 2\nhole .text 0\nend\n", 2),
+            ("mortar-map 2\nhole .text 0 8 neutral\nend\n", 2),
+            ("mortar-map 2\ndead .text 0 8\nend\n", 2),
+            ("mortar-map 2\ndead .text 0 8 rotten\nend\n", 2),
+            ("mortar-map 2\ndead .text 0 8 Neutral\nend\n", 2),
+            ("mortar-map 2\nhole .text -1 8\nend\n", 2),
+            ("mortar-map 2\nhole .text 0 10000000000000000\nend\n", 2),
+            ("mortar-map 2\nhole %4 0 8\nend\n", 2),
+            ("mortar-map 2\nincremental yes\nend\n", 2),
+            ("mortar-map 2\nincremental\nincremental\nend\n", 3),
         ];
         for (text, line) in cases {
             let e = parse(text).unwrap_err();
@@ -813,7 +809,7 @@ mod tests {
         // Lines the reader cannot judge (overlapping, out of a section,
         // empty) are read: the verifier judges them against the output
         // (P-I2, §6.8).
-        let m = parse("mortar-map 1\nhole .text 0 0\nhole .text 0 8\nhole .text 4 8\nhole .nowhere ffffffffffffffff ffffffffffffffff\nend\n").unwrap();
+        let m = parse("mortar-map 2\nhole .text 0 0\nhole .text 0 8\nhole .text 4 8\nhole .nowhere ffffffffffffffff ffffffffffffffff\nend\n").unwrap();
         assert_eq!(m.dead.len(), 4);
     }
 
@@ -821,18 +817,18 @@ mod tests {
     #[test]
     fn s3_2_malformed_allocation_records_are_errors() {
         let cases: &[(&str, u32)] = &[
-            ("mortar-map 1\ncommon x 10 8\nend\n", 2),
-            ("mortar-map 1\ncommon x 10 8 8 8\nend\n", 2),
-            ("mortar-map 1\ncommon x 10 8 c\nend\n", 2),
-            ("mortar-map 1\ncommon x 10 8 0\nend\n", 2),
-            ("mortar-map 1\ncommon x 1g 8 8\nend\n", 2),
-            ("mortar-map 1\ncommon %4 10 8 8\nend\n", 2),
+            ("mortar-map 2\ncommon x 10 8\nend\n", 2),
+            ("mortar-map 2\ncommon x 10 8 8 8\nend\n", 2),
+            ("mortar-map 2\ncommon x 10 8 c\nend\n", 2),
+            ("mortar-map 2\ncommon x 10 8 0\nend\n", 2),
+            ("mortar-map 2\ncommon x 1g 8 8\nend\n", 2),
+            ("mortar-map 2\ncommon %4 10 8 8\nend\n", 2),
         ];
         for (text, line) in cases {
             let e = parse(text).unwrap_err();
             assert_eq!(e.line, *line, "{text:?}: {e}");
         }
-        let m = parse("mortar-map 1\ncommon x 10 8 1\nend\n").unwrap();
+        let m = parse("mortar-map 2\ncommon x 10 8 1\nend\n").unwrap();
         assert_eq!(m.commons.len(), 1);
         assert_eq!(m.commons[0].align, 1);
     }

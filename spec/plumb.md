@@ -2219,9 +2219,9 @@ is covered by exactly one item: a live `place` (an input section placed
 whole, assigned to the output section that contains it, a `.tbss`
 input only to a thread-local `NOBITS` section), a `piece`, an addressed
 `chunk` (one of the section's name first), a `copy` record's room, a
-common symbol (the output `.symtab` symbol of a name that only common
-definitions of the inputs give, sized `st_size`, aligned as the largest
-`st_value` asked; no map line names commons), a `hole` or a `dead` line.
+`common` record's (§3.2; M7 holds each to the output's symbol and to
+the alignment its definitions ask, M8 each copy to its `COPY` record),
+a `hole` or a `dead` line.
 A chunk with pieces or lines inside it is their container (mortar lists
 `.eh_frame` as one chunk and its records as pieces) and does not count.
 Pieces of merged sections may share bytes (deduplication), and so may
@@ -2232,15 +2232,23 @@ Pieces of merged sections may share bytes (deduplication), and so may
   gap's start. The alignment is the input section's `sh_addralign` for
   places and pieces; for a merged piece any power of two from its own up
   to the largest of the merged pieces of that output section (mortar
-  lays them out as one block); for a copy, the largest power of two
-  dividing its address, at most 64; after a copy or a common symbol, also
-  up to the output section's `sh_addralign` (the map records neither
-  their alignment nor their layout). Padding of a `PROGBITS` section
+  lays them out as one block); for a common or a copy, the `<align>` its
+  record states; after a copy or a common symbol, also up to the output
+  section's `sh_addralign` (mortar aligns what follows the block of
+  copies or commons to its chunk's alignment, which the map does not
+  record). Padding of a `PROGBITS` section
   holds the section's fill (trap fill in code, zero elsewhere);
-- `.eh_frame`'s terminator: its last 4 bytes, zero;
-- the whole of a `NOBITS` section no line names (today mortar's
-  `.relro_padding`, WP-083's `.pad.relro`: the verifier does not know
-  the name; a request to WP-062 is to list it as a chunk).
+- `.eh_frame`'s terminator: its last 4 bytes, zero.
+
+A `NOBITS` section no line names is P-I1 like any other: the one the
+linker makes (`.pad.relro`) is a `chunk` (§3.2, M6 requires it). Until
+WP-096 these three facts were inferred here: a `NOBITS` section with no
+line was accepted whole, a common's alignment was taken from the inputs
+and its place from the output symbol, and a copy's alignment from its
+address (the largest power of two dividing it, at most 64). An
+inference in the checker can agree with a wrong output by guessing as
+the linker erred; the map now states each, and M6-M8 check the
+statement.
 
 Anything else, a gap or a byte covered twice, is P-I1 naming the range
 and what covers it. Measured with `cargo xtask plumb --coverage` (which
@@ -2422,11 +2430,14 @@ another format, or an `X` map that claims nothing, is a usage error
   `(file, section index, input offset)` for a `piece`; a `merged`
   record: `(file, section index, output section name)`;
 - a **chunk**: `(kind, name, k)`, its kind and name and the number of
-  earlier chunks of that kind and name in its map; a common symbol: its
-  name;
+  earlier chunks of that kind and name in its map;
+- a **common** or a **copy** (§3.2's allocation records): its `common`
+  record's name, or the name its `copy` record names; its range is the
+  record's `<addr>` and `<size>`, stated (WP-096: before version 2 a
+  common's place was known only through its output symbol);
 - an **address** `v` of side `O`: `ids_O(v)`, the set of
-  `(unit, offset)` for every unit of `O`'s map placed at `a` with size
-  `z` and `a ≤ v ≤ a + z` (an input unit's offset is the input offset:
+  `(unit, offset)` for every unit, chunk, common or copy of `O`'s map
+  placed at `a` with size `z` and `a ≤ v ≤ a + z` (an input unit's offset is the input offset:
   `piece`s of one section share it; a `.tbss` unit by its TLS address),
   plus `(section name, start)` when `v` is an allocated output section's
   `sh_addr` and `(section name, end)` when it is its `sh_addr + sh_size`
@@ -2459,7 +2470,8 @@ records that absorbed a 4-, 8- or 12-byte hole): a piece whose input
 record is a CIE (`CIE_id` 0) is not a unit of this rule; an FDE piece is,
 its size equal or (in `X` only) larger by 4, 8 or 12. Chunks: the
 `common` chunks by name and the `synthetic` chunks by `(name, k)` are
-the same sets; `thunk` and `patch` chunks may differ (item 4). `fold`
+the same sets, and so are the `common` records by name (an update that
+allocates a common the full link does not, or the reverse, is P-E2); `thunk` and `patch` chunks may differ (item 4). `fold`
 records are the same set. Each identity of one side missing from the
 other is one finding.
 
@@ -2807,7 +2819,10 @@ produce a finding that is not a recorded anomaly (`tests/mutation.rs`):
   link with the records stated as the output holds them (ACCEPTED, no M6,
   M7 or M8 finding), each field of each record changed (`<name>`,
   `<addr>`, `<size>`, `<align>`, and a record added twice) is REJECTED
-  by its rule.
+  by its rule. So is each record left out (the padding chunk, each
+  common, a copy) and each output symbol a `common` record is judged by
+  changed (made local, made `SHN_ABS`, moved into `.data`, sized past
+  `.bss`).
 - **(f)** Thread-local storage (`tls-types`, every linker): (1) bits 0, 5,
   10, 16, 22 and 31 of every TLS-relocated instruction, relaxed or not,
   are flipped, and all must be found (516/516); (2) `PT_TLS` is moved by

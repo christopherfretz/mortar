@@ -1882,7 +1882,7 @@ fn s3_3_m8_copy_records_are_the_copies() {
         let copies = ["ro_p", "rw_v"]
             .map(|name| {
                 let (addr, size, _) = dynsym(&out, name);
-                CopyHint { name: name.into(), addr, size, align: Some(copy_align(&lib, name)) }
+                CopyHint { name: name.into(), addr, size, align: copy_align(&lib, name) }
             })
             .to_vec();
         base.dynamic = Some(DynRecords { copies, ..DynRecords::default() });
@@ -1902,11 +1902,12 @@ fn s3_3_m8_copy_records_are_the_copies() {
                 .collect()
         };
         assert!(m8(&base).is_empty(), "{}: {:#?}", o.label(), m8(&base));
-        let cases: [Case; 6] = [
+        let cases: [Case; 7] = [
             ("name", "names 'rw_v'", |c| c.name = "rw_v".into()),
             ("size", "is stated of size", |c| c.size += 1),
-            ("align up", "is stated aligned to", |c| *c.align.as_mut().unwrap() *= 2),
-            ("align down", "is stated aligned to", |c| *c.align.as_mut().unwrap() /= 2),
+            ("align up", "is stated aligned to", |c| c.align *= 2),
+            ("align down", "is stated aligned to", |c| c.align /= 2),
+            ("align past the address", "not a multiple", |c| c.align = 1 << 40),
             ("addr", "names no COPY record", |c| c.addr += 0x100),
             ("addr unaligned", "names no COPY record", |c| c.addr += 1),
         ];
@@ -1921,6 +1922,15 @@ fn s3_3_m8_copy_records_are_the_copies() {
         m.dynamic.as_mut().unwrap().copies.push(again);
         let got = m8(&m);
         assert!(got.iter().any(|g| g.contains("second record")), "{} twice: {got:#?}", o.label());
+        // Required: a COPY record whose copy record is left out.
+        let mut m = base.clone();
+        m.dynamic.as_mut().unwrap().copies.remove(0);
+        let got = m8(&m);
+        assert!(
+            got.iter().any(|g| g.contains("'ro_p'") && g.contains("has no copy record")),
+            "{} left out: {got:#?}",
+            o.label()
+        );
     }
     assert!(n > 0 || c.outs.is_empty(), "no lld outputs of copy-relro");
 }

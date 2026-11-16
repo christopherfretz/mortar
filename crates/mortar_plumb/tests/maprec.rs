@@ -35,7 +35,9 @@ fn sources(arch: Arch) -> [(&'static str, String); 2] {
          \t.data\n\t.globl dat\ndat:\t{word} 1\n\
          \t.comm ca,4,4\n\t.comm cb,800,32\n\t.comm cc,24,8\n"
     );
-    let b = "\t.comm cb,800,64\n\t.comm cd,1,1\n".to_string();
+    // `dat` is also a common of `b.o`: a definition in a placed section
+    // wins, so it is not a common-only name and has no record.
+    let b = "\t.comm cb,800,64\n\t.comm cd,1,1\n\t.comm dat,4,4\n".to_string();
     [("a", a), ("b", b)]
 }
 
@@ -78,6 +80,58 @@ fn section(bytes: &[u8], name: &str) -> (u64, u64) {
     t.iter()
         .find(|s| s.name().is_ok_and(|n| n == name.as_bytes()))
         .map_or_else(|| panic!("no section {name}"), |s| (s.header().sh_addr, s.header().sh_size))
+}
+
+/// The output with the `.symtab` entry of `name` changed by `change`, given
+/// its fields as `(st_info, st_shndx, st_value, st_size)` (ELF32 and
+/// ELF64, little-endian: the three targets).
+fn patched(
+    bytes: &[u8],
+    name: &str,
+    change: impl Fn(&mut u8, &mut u16, &mut u64, &mut u64),
+) -> Vec<u8> {
+    let h = mortar_elf::header::FileHeader::parse(bytes).unwrap();
+    let t = mortar_elf::section::SectionTable::parse(bytes, &h).unwrap();
+    let s = t.find_symbol_table(mortar_elf::consts::SHT_SYMTAB).unwrap().unwrap();
+    let index = s
+        .iter()
+        .find(|(_, y)| s.name(y).is_ok_and(|n| n == name.as_bytes()))
+        .map_or_else(|| panic!("no symbol {name}"), |(k, _)| k.0);
+    let symtab = t
+        .iter()
+        .find(|x| x.sh_type() == mortar_elf::consts::SHT_SYMTAB)
+        .map(|x| *x.header())
+        .unwrap();
+    let wide = symtab.sh_entsize == 24;
+    let at = usize::try_from(symtab.sh_offset + u64::from(index) * symtab.sh_entsize).unwrap();
+    let mut out = bytes.to_vec();
+    let ent = &mut out[at..at + usize::try_from(symtab.sh_entsize).unwrap()];
+    let word = |ent: &[u8], at: usize, width: usize| {
+        let mut w = [0u8; 8];
+        w[..width].copy_from_slice(&ent[at..at + width]);
+        u64::from_le_bytes(w)
+    };
+    // The offsets of st_info, st_shndx, st_value, st_size; the width of
+    // st_value and st_size.
+    let (info_at, shndx_at, value_at, size_at, width) =
+        if wide { (4, 6, 8, 16, 8) } else { (12, 14, 4, 8, 4) };
+    let mut info = ent[info_at];
+    let mut shndx = u16::from_le_bytes([ent[shndx_at], ent[shndx_at + 1]]);
+    let (mut value, mut size) = (word(ent, value_at, width), word(ent, size_at, width));
+    change(&mut info, &mut shndx, &mut value, &mut size);
+    ent[info_at] = info;
+    ent[shndx_at..shndx_at + 2].copy_from_slice(&shndx.to_le_bytes());
+    ent[value_at..value_at + width].copy_from_slice(&value.to_le_bytes()[..width]);
+    ent[size_at..size_at + width].copy_from_slice(&size.to_le_bytes()[..width]);
+    out
+}
+
+/// The index of the output section `name`.
+fn section_index(bytes: &[u8], name: &str) -> u16 {
+    let h = mortar_elf::header::FileHeader::parse(bytes).unwrap();
+    let t = mortar_elf::section::SectionTable::parse(bytes, &h).unwrap();
+    let s = t.iter().find(|s| s.name().is_ok_and(|n| n == name.as_bytes())).unwrap();
+    u16::try_from(s.index().0).unwrap()
 }
 
 /// One link: the output, its inputs and its map (in the linker's format).
@@ -254,10 +308,75 @@ fn s3_3_allocation_records_each_field_is_judged() {
         // M8: a copy record in an output with no dynamic section.
         rejected(&p, &base, "copy in a static output", "M8", "names no COPY record", |m| {
             m.dynamic = Some(DynRecords {
-                copies: vec![CopyHint { name: "dat".into(), addr: bss, size: 4, align: Some(4) }],
+                copies: vec![CopyHint { name: "dat".into(), addr: bss, size: 4, align: 4 }],
                 ..DynRecords::default()
             });
         });
+    }
+}
+
+// §3.3 M6, M7: each record is required where its fact exists, and a
+// `common` record is judged by the output's symbol of its name.
+#[test]
+fn s3_3_allocation_records_are_required_and_judged_by_the_output() {
+    for arch in archs() {
+        let Some(p) = build(arch) else { continue };
+        let base = stated(&p.lld);
+        // Required: a linker-made NOBITS section with no record, a
+        // common-only name with no record.
+        rejected(&p, &base, "chunk left out", "M6", "holds no record of the map", |m| {
+            m.chunks.retain(|c| c.name != ".relro_padding");
+        });
+        for (name, _) in COMMONS {
+            let needle = format!("'{name}' (asked aligned to");
+            rejected(&p, &base, &format!("{name} left out"), "M7", &needle, |m| {
+                m.commons.retain(|c| c.name != name);
+            });
+        }
+        // The output's symbol of a record, changed: not global, not in a
+        // section, in a section that is not NOBITS, past its section.
+        let judge_out = |case: &str, out: Vec<u8>, map: &Map, needle: &str| {
+            let l = Linked { output: out, ..p.lld.clone() };
+            let got = l.judge(map);
+            assert!(
+                got.iter().any(|g| g.starts_with("M7 ") && g.contains(needle)),
+                "{arch:?} {case}: no M7 finding with '{needle}': {got:#?}"
+            );
+        };
+        let out = &p.lld.output;
+        judge_out(
+            "local",
+            patched(out, "cb", |i, _, _, _| *i &= 0x0f),
+            &base,
+            "not a global symbol",
+        );
+        judge_out(
+            "absolute",
+            patched(out, "cb", |_, s, _, _| *s = mortar_elf::consts::SHN_ABS),
+            &base,
+            "not defined in a section",
+        );
+        let data = section_index(out, ".data");
+        let (dat, _) = symbol(out, "dat");
+        let mut m = base.clone();
+        common(&mut m, "ca").addr = dat;
+        judge_out(
+            "in .data",
+            patched(out, "ca", |_, s, v, _| (*s, *v) = (data, dat)),
+            &m,
+            "not inside the allocated NOBITS",
+        );
+        let (ca, _) = symbol(out, "ca");
+        let (bss_at, bss_size) = section(out, ".bss");
+        let past = bss_at + bss_size - ca + 1;
+        let mut m = base.clone();
+        common(&mut m, "ca").size = past;
+        judge_out(
+            "past .bss",
+            patched(out, "ca", |_, _, _, z| *z = past),
+            &m,
+            "not inside the allocated NOBITS",
+        );
     }
 }
 

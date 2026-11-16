@@ -9,7 +9,11 @@
 //! - **M8**: a `copy` record is a `COPY` record of the output, with the
 //!   size of its symbol and the alignment of the copied definition.
 //!
-//! These run for every map of mortar's format, whatever it claims.
+//! These run for every map of mortar's format (version 2), whatever it
+//! claims, and each record is required where its fact exists: a
+//! linker-made `NOBITS` section no line names, a common symbol of the
+//! inputs with no `common` record and a `COPY` record with no `copy`
+//! record are findings of the same rules.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -68,8 +72,37 @@ pub(crate) fn check(image: &Image<'_>, objs: &[Obj<'_>], map: &Map) -> Vec<Findi
 }
 
 /// M6: a synthetic chunk in an allocated, not thread-local `NOBITS`
-/// section is that section.
+/// section is that section; such a section of size above 0 that no
+/// record of the map lies in (no input section, piece, common, copy or
+/// chunk) is a linker-made one, and has its chunk.
 fn nobits_chunks(image: &Image<'_>, map: &Map, out: &mut Vec<Finding>) {
+    let starts: Vec<u64> = map
+        .placed
+        .iter()
+        .map(|p| p.addr)
+        .chain(map.commons.iter().map(|c| c.addr))
+        .chain(map.dynamic.iter().flat_map(|d| &d.copies).map(|c| c.addr))
+        .chain(map.chunks.iter().filter_map(|c| c.addr))
+        .collect();
+    for s in image.sections.iter().skip(1) {
+        let h = &s.shdr;
+        if !s.alloc() || h.sh_type != SHT_NOBITS || h.sh_flags & SHF_TLS != 0 || h.sh_size == 0 {
+            continue;
+        }
+        let end = h.sh_addr.saturating_add(h.sh_size);
+        if !starts.iter().any(|&a| h.sh_addr <= a && a < end) {
+            out.push(
+                finding(
+                    6,
+                    format!(
+                        "the NOBITS section '{}' [{:#x}, +{:#x}) holds no record of the map: a section the linker made is stated as a chunk",
+                        s.name, h.sh_addr, h.sh_size
+                    ),
+                )
+                .at(h.sh_addr),
+            );
+        }
+    }
     for c in &map.chunks {
         let (ChunkKind::Synthetic, Some(a)) = (c.kind, c.addr) else { continue };
         let Some(s) = image.sections.iter().skip(1).find(|s| {
@@ -103,6 +136,20 @@ fn nobits_chunks(image: &Image<'_>, map: &Map, out: &mut Vec<Finding>) {
 /// where the output's `.symtab` says, aligned as its definitions ask.
 fn commons(image: &Image<'_>, objs: &[Obj<'_>], map: &Map, out: &mut Vec<Finding>) {
     let only = common_only(objs);
+    for (name, want) in &only {
+        if !map.commons.iter().any(|r| &r.name == name) {
+            let at = image.global(name).map_or(0, |s| s.sym.st_value);
+            out.push(
+                finding(
+                    7,
+                    format!(
+                        "the common symbol '{name}' (asked aligned to {want:#x}) has no common record"
+                    ),
+                )
+                .at(at),
+            );
+        }
+    }
     let mut seen: BTreeSet<&str> = BTreeSet::new();
     for r in &map.commons {
         let say = |msg: String| {
@@ -184,10 +231,22 @@ pub(crate) struct ActualCopy {
     pub align: Option<u64>,
 }
 
-/// M8: each `copy` record is a `COPY` record of the output. `actual` is
-/// empty for an output with no dynamic section.
+/// M8: each `copy` record is a `COPY` record of the output, and each
+/// `COPY` record has one. `actual` is empty for an output with no
+/// dynamic section.
 pub(crate) fn copies(map: &Map, actual: &[ActualCopy]) -> Vec<Finding> {
     let mut out = Vec::new();
+    for a in actual {
+        if !map.dynamic.iter().flat_map(|d| &d.copies).any(|c| c.addr == a.addr) {
+            out.push(
+                finding(
+                    8,
+                    format!("the COPY record of '{}' at {:#x} has no copy record", a.name, a.addr),
+                )
+                .at(a.addr),
+            );
+        }
+    }
     let stated = map.dynamic.iter().flat_map(|d| &d.copies);
     let mut seen: BTreeSet<u64> = BTreeSet::new();
     for c in stated {
@@ -214,7 +273,7 @@ pub(crate) fn copies(map: &Map, actual: &[ActualCopy]) -> Vec<Finding> {
             f.found = Some(c.size);
             out.push(f);
         }
-        let Some(stated) = c.align else { continue };
+        let stated = c.align;
         if let Some(want) = a.align
             && stated != want
         {

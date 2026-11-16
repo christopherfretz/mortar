@@ -361,8 +361,8 @@ fn i66_stale_output_removed_after_failure() {
 fn i79_whole_file_writer() {
     let d = TempDir::new("map");
     let p = d.path("out.map");
-    mortar_image::output::write_whole(&p, b"mortar-map 1\nend\n", 0o666).unwrap();
-    assert_eq!(fs::read(&p).unwrap(), b"mortar-map 1\nend\n");
+    mortar_image::output::write_whole(&p, b"mortar-map 2\nend\n", 0o666).unwrap();
+    assert_eq!(fs::read(&p).unwrap(), b"mortar-map 2\nend\n");
     assert_eq!(d.names(), vec!["out.map"]);
     let _ = fs::metadata(&p).unwrap().ino();
 }
