@@ -1349,7 +1349,7 @@ PIE: headers, `.interp`, notes, `.gnu.hash`, `.dynsym`, `.dynstr`,
 `.gnu.version`, `.gnu.version_r`, `.rela.dyn`, `.rela.plt`, read-only
 data, `.eh_frame_hdr`, `.eh_frame` | `.init`, `.plt`, `.text`, `.fini` |
 TLS, `.init_array`, `.fini_array`, `.data.rel.ro`, `.dynamic`, `.got`,
-`.got.plt` (`-z now`), `.bss.rel.ro`, `.relro_padding` (RELRO) |
+`.got.plt` (`-z now`), `.bss.rel.ro`, `.pad.relro` (RELRO) |
 `.got.plt` (lazy), `.data`, `.bss` (with `.dynbss` first). That is lld's
 order with GNU ld's placement of the dynamic tables (E-dynamic §2); the
 two missing slots are added: `.dynbss` (D-42) and `.bss.rel.ro`'s copy
@@ -1394,15 +1394,15 @@ lldb needs `settings set target.disable-aslr false` in this container
 (static-pie: "statically linked"), natively on AArch64 and through
 `qemu ld.so --list` on x86-64 and i386, except lld's i386 non-PIE
 outputs, on which `ld.so --list` under qemu-i386 dies with `SIGSEGV`
-while the programs themselves run (Appendix B). `eu-elflint --gnu-ld` passes only GNU
-ld's outputs; its complaints about lld and mold are about their
-`.relro_padding` (`NOBITS`/`WA`), all-headers-first `Vernaux` layout,
+while the programs themselves run (Appendix B). `eu-elflint --gnu-ld` passes GNU ld's outputs and mortar's
+with nothing allowed; its complaints about lld and mold are about their
+`.relro_padding` (`NOBITS`/`WA`: elflint takes a name that starts with
+`.rel` for a relocation section), all-headers-first `Vernaux` layout,
 `.gnu.hash` `sh_entsize` 4 on ELF32 and `.rodata` entry sizes. mortar
 writes `Vernaux` interleaved (D-27) and the ELF32 `sh_entsize` 4 of every
-reference; its `.relro_padding` chunk (model §4.4) will draw the same
-complaint as lld's; it is kept (Q5, ruled: model §4.4, it is what makes
-RELRO end on maxpage cheaply) and the complaint is on the allow-list of
-`elflint-dynamic`. The `prelink` fields nobody reads (D-30)
+reference; its padding chunk (model §4.4) is kept (Q5, ruled: model
+§4.4, it is what makes RELRO end on maxpage cheaply) and is named
+`.pad.relro` (layout L-156, WP-083), which elflint does not flag. The `prelink` fields nobody reads (D-30)
 are never written. *Test:* `elflint-dynamic` (the complaints are a fixed
 allow-list).
 
@@ -1599,7 +1599,9 @@ WP-040r; Q1 measured and written by WP-043).
 - **Q5. Closed: kept.** `.relro_padding` draws an elflint complaint. *Recommendation:*
   keep it (model §4.4; it is what makes RELRO end on maxpage cheaply);
   add the message to the allow-list of `elflint-dynamic`. *Ruled as
-  recommended*: D-71.
+  recommended*: D-71. Superseded in part by WP-083: the chunk is kept and
+  renamed `.pad.relro` (layout L-156), which elflint does not flag; the
+  allow-list is gone.
 - **Q6. Closed: 0, as lld.** Debug tombstone in a PIE (image I-47). *Recommendation:* 0, as
   lld, for every `.debug_*` but `.debug_ranges`/`.debug_loc` (1).
   *Ruled as recommended*: D-72, image I-47 (applied to I-47's open item,

@@ -8,11 +8,12 @@
 #   .interp, notes, .gnu.hash, .dynsym, .dynstr, .gnu.version,
 #   .gnu.version_r, .rela.dyn, .rela.plt, .rodata, .eh_frame_hdr,
 #   .eh_frame | .init, .plt, .text, .fini | .tdata, .tbss, .init_array,
-#   .fini_array, .data.rel.ro, .dynamic, .got, .relro_padding |
+#   .fini_array, .data.rel.ro, .dynamic, .got, .pad.relro |
 #   .got.plt, .data, .bss.
 # No reference writes exactly that (measured, both architectures):
 # GNU ld puts the notes before `.interp` (dyn.md 13.1, ".interp
-# position"), `.rodata` after `.fini`, and has no `.relro_padding`; lld
+# position"), `.rodata` after `.fini`, and has no padding section (lld's and
+# mold's is `.relro_padding`, layout L-156); lld
 # puts `.gnu.hash` after `.gnu.version_r`, `.text` before `.init`, and
 # `.fini_array` before `.init_array`; mold puts `.eh_frame` before the
 # read-only data, `.fini` and `.init` first in the code, and the arrays
@@ -70,7 +71,7 @@ check readelf -SW pie
   then(mortar): ] .data.rel.ro PROGBITS
   then(mortar): ] .dynamic DYNAMIC
   then(mortar): ] .got PROGBITS
-  then(mortar): ] .relro_padding NOBITS
+  then(mortar): ] .pad.relro NOBITS
   then(mortar): ] .got.plt PROGBITS
   then(mortar): ] .data PROGBITS
   then(mortar): ] .bss NOBITS

@@ -1706,7 +1706,7 @@ write the terminator last and the program runs.
 **R-L2. §20.6, replace the request list with its resolution.**
 *Applied by WP-027a.*
 Current: the four bullets under "### 20.6 `synth.md` (not yet written)".
-Proposed: "### 20.6 `synth.md` — applied: `.relro_padding` is a layout
+Proposed: "### 20.6 `synth.md` — applied: `.relro_padding` [now `.pad.relro`, layout L-156] is a layout
 chunk (synth.md does not list it, S-3); `.eh_frame` keeps input order
 (S-46) and its type follows L-49 (S-54); the static IPLT is in `.plt`,
 `.rela.plt` and `.got.plt` (S-68); `.note.gnu.property` is merged by

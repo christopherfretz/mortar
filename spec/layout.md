@@ -146,7 +146,8 @@ as S1-S12 are not repeated; §17 maps each rule here to a verifier rule.
   from 0x710 to 0x1d8 and left `PT_GNU_RELRO` at 0x710 (E-14). The
   stripped file then breaks L-7: RELRO reaches memory no `PT_LOAD`
   maps, and glibc's `mprotect` of it fails. This is why lld and mold emit
-  `.relro_padding`, and why mortar does (L-64).
+  a padding section (`.relro_padding`), and why mortar does (`.pad.relro`,
+  L-64, L-156).
 
 ## 4. Thread-local storage (generic)
 
@@ -223,7 +224,7 @@ tables before it.
 | A. assign (§8) | `Inputs`, `Resolution`, `Plan` | `Assignment` | files |
 | B. order (§9) | `Assignment`, `Liveness`, `Folds`, `Split` | per output section, the ordered live sections | output sections |
 | C. chunk (§10, §12) | B, `MergeMap`, `Slots`, `Demands` | `chunks` (kind, flags, align, size), `order` | output sections |
-| D. address (§11) | C, `Facts`, the patch set | `addr`, `offset`, `segments`, `tls`, `shndx`; the alignment gaps, the 843419 start padding (L-118) and the size of `.relro_padding` (L-64) | sequential over chunks (O(chunks)) |
+| D. address (§11) | C, `Facts`, the patch set | `addr`, `offset`, `segments`, `tls`, `shndx`; the alignment gaps, the 843419 start padding (L-118) and the size of `.pad.relro` (L-64) | sequential over chunks (O(chunks)) |
 | E. fixed point (§14) | D, the relocations through `spec/arch.md` | `patches`; then D again | sites, by section |
 | F. symbols (§13) | D/E | `defined`, `sym_place`, `entry` | none needed |
 
@@ -241,11 +242,11 @@ output sections need no sort.
   - **Address-independent (stages A to C):** the assignment, the input
     order, which chunks exist (patch chunks included, empty or not), the
     body sizes and alignments of every chunk that is not a patch chunk,
-    a `.relro_padding` or in `sized`, and the offsets of sections
+    a `.pad.relro` or in `sized`, and the offsets of sections
     within chunks.
   - **Outputs of stage D:** every address and file offset, the
     alignment gaps between chunks, the 843419 start padding before a
-    synthetic code chunk (L-118), and the size of `.relro_padding`
+    synthetic code chunk (L-118), and the size of `.pad.relro`
     (L-64). Each is computed in one sequential pass over `order` from
     the stage C output and the sizes of the patch chunks.
   - **Inputs of stage D that stage E changes:** the patch set. A patch
@@ -633,7 +634,7 @@ order of the output sections themselves is in §10.
 - **L-63 [C]** The section header table comes last. The `.symtab`,
   `.strtab` and `.shstrtab` order follows GNU, lld and mold.
 - **L-64 [C] (relro padding)** When rank 7 is non-empty, a NOBITS chunk
-  named `.relro_padding` (L-156) ends rank 7. Its size makes the RELRO
+  named `.pad.relro` (L-156) ends rank 7. Its size makes the RELRO
   end a multiple of maxpage: `align_up(end, maxpage) − end`, where `end`
   is the end of the chunk before it. Stage D sets the size (L-21); it is
   the only chunk whose size stage D writes. The chunk exists whenever
@@ -687,7 +688,7 @@ order of the output sections themselves is in §10.
     `_Alignas(0x40000)` object gives `p_align` 0x40000 for the segment
     that holds it, in GNU, lld and mold (E-21).
   - `PT_GNU_RELRO`: `p_offset`/`p_vaddr` are the first RELRO chunk's,
-    `p_memsz` runs to the end of `.relro_padding` (a multiple of
+    `p_memsz` runs to the end of `.pad.relro` (a multiple of
     maxpage), and `p_filesz` runs to the end of the last RELRO chunk
     that is in the file (`p_filesz` < `p_memsz` when the run ends in
     NOBITS chunks; it may be 0). This is lld's and mold's value; GNU
@@ -1284,7 +1285,7 @@ layout adds:
   what L-76 to L-78 derive (through L-125).
 - **L-129 [C] (RELRO)** Beyond `check.rs` `relro()`: the page that the
   RELRO end must be a multiple of is maxpage (`CheckContext.page_size`),
-  the last chunk of the run is the `.relro_padding` chunk (L-64), and
+  the last chunk of the run is the `.pad.relro` chunk (L-64), and
   `PT_GNU_RELRO`'s `p_filesz` is L-67's.
 
 ## 16. Static executables
@@ -1297,7 +1298,7 @@ layout adds:
   - `PT_LOAD` RX: `.init`, `.plt`, `.text` (islands), exec orphans,
     `.fini`;
   - `PT_LOAD` RW (RELRO): `.tdata`, `.tbss`, `.init_array`,
-    `.fini_array`, `.data.rel.ro`, `.got`, `.relro_padding`;
+    `.fini_array`, `.data.rel.ro`, `.got`, `.pad.relro`;
   - `PT_LOAD` RW: `.got.plt`, `.data`, `.tm_clone_table`, writable
     orphans, `.bss`;
   - `PT_TLS`, `PT_NOTE`(s), `PT_GNU_PROPERTY`, `PT_GNU_STACK`,
@@ -1371,7 +1372,7 @@ must make possible, so that M1 does not foreclose it.
   `PT_LOAD` that would break L-9 (strip would shrink the segment), so
   an incremental policy gives the last chunk of each `PT_LOAD` no slack
   and keeps its reserve in the chunks before it (the RELRO run ends with
-  `.relro_padding`, which already covers its tail). The default policy
+  `.pad.relro`, which already covers its tail). The default policy
   leaves no slack, so a normal link pays nothing (L-87). An incremental
   policy is opted into (`--incremental`, `cli.md`, M7). Its reserve is a
   percentage per output section, as in gold. The percentage and its
@@ -1416,7 +1417,7 @@ must make possible, so that M1 does not foreclose it.
   Each step yields a valid layout or reports why it gave up.
 - **L-145 [C] [M7]** Step 4 reruns stage D: a sequential O(chunks) pass
   that recomputes every address, alignment gap, 843419 start padding
-  and the `.relro_padding` size from the stage C output and the patch
+  and the `.pad.relro` size from the stage C output and the patch
   set (L-21). Stages A to C rerun only for the output sections whose
   members changed. Then the fixed point (arch.md §6) starts from the
   previous patches, and round 1 re-evaluates every site against the new
@@ -1451,13 +1452,18 @@ objcopy and eu-elflint (E-14 to E-16).
   dead sections resolved as `arch.md`/`plumb.md` R5 say (tombstone).
 - **L-155 [T]** `.symtab` keeps locals and `STT_FILE` entries in input
   order (`synth.md`). gdb uses `STT_FILE` to scope static symbols.
-- **L-156 [T]** The padding section is named `.relro_padding`, lld's and
-  mold's name, which llvm-objdump and lld-based tooling know (Q3,
-  decided). eu-elflint `--gnu-ld` flags it: it takes any name beginning
-  with `.rel`, `.rela` or `.relr` for a relocation section ("expected
-  REL", E-12 and review; `_relro_padding` and `.re_ro_padding` pass).
-  The harness therefore runs eu-elflint with that one message expected
-  for that one section, on mortar's, lld's and mold's outputs alike.
+- **L-156 [T]** The padding section is named `.pad.relro` (Q3; WP-083
+  renamed it from lld's and mold's `.relro_padding`). eu-elflint, with
+  and without `--gnu-ld`, takes any name beginning with `.rel`, `.rela`
+  or `.relr` for a relocation section and flags lld's and mold's name
+  ("expected RELR", "has wrong flags", E-12 and review). `.pad.relro`
+  draws no complaint, and readelf, llvm-readelf, objdump -h,
+  llvm-objdump -h, gdb, lldb, strip, llvm-strip, objcopy and llvm-objcopy
+  treat it as any other `NOBITS` section: their output differs from the
+  old name's in the name alone, and the stripped and copied programs run
+  (WP-083, measured on AArch64 and x86-64 PIE, non-PIE and static
+  outputs). No loader or tool reads the name. The harness runs eu-elflint
+  on mortar's outputs with nothing allowed (`elflint-dynamic`).
 - **L-157 [T]** gdb and lldb set breakpoints on static `-g` C outputs
   of all three references (E-16). lldb needs ASLR enabled to launch
   (`settings set target.disable-aslr false`) in the test container.
@@ -1477,7 +1483,7 @@ invalid computed layout as `internal-error`. Those requests are dropped.
    L-111). The `ChunkId` creation order puts each part's island after
    the part.
 2. The RELRO padding is a chunk: `Synthetic(Synth { name:
-   ".relro_padding", .. })` with `relro: true`, `SHT_NOBITS`, whose size
+   ".pad.relro", .. })` with `relro: true`, `SHT_NOBITS`, whose size
    layout's stage D writes (L-64). §4.4's list of chunk kinds names it,
    and states that it is the last chunk of the RELRO run.
 3. Validity rule 3: segments are equal to `derive_segments(...)` in
@@ -1598,7 +1604,7 @@ New refusal names (class `feature` unless noted):
 
 ### 20.6 `synth.md` — applied
 
-`.relro_padding` is a layout chunk (synth.md does not list it, S-3);
+`.pad.relro` is a layout chunk (synth.md does not list it, S-3);
 `.eh_frame` keeps input order (S-46) and its type follows L-49 (S-54);
 the static IPLT is in `.plt`, `.rela.plt` and `.got.plt` (S-68);
 `.note.gnu.property` is merged by S-95, which keeps the AND rule and adds
@@ -1640,7 +1646,7 @@ the static IPLT is in `.plt`, `.rela.plt` and `.got.plt` (S-68);
 | x86-64 `.eh_frame` type | UNWIND iff all inputs are | PROGBITS | PROGBITS | GNU | L-49 |
 | `.ARM.attributes` | dropped | copied | dropped (and no property note) | dropped | L-35 |
 | code fill (AArch64) | NOP | not examined | not examined | trap (zero) | L-82 |
-| padding section name | none | `.relro_padding` | `.relro_padding` | `.relro_padding` (eu-elflint flags it) | L-156 |
+| padding section name | none | `.relro_padding` | `.relro_padding` | `.pad.relro` (eu-elflint flags a `.rel*` name) | L-156 |
 | `_end` | aligned 8 | exact | exact | exact | L-95 |
 | `__preinit_array_*` absent | location counter (in TLS) | base, index 1 | undefined | base, index 1 | L-93 |
 | `__dso_handle` | crt | defines, local hidden, base | defines, local, first section | crt | L-99 |
@@ -1687,8 +1693,9 @@ Decided in the review of 2026-11-14 (WP-024-spec §5):
 - **Q1.** RELRO is padded to maxpage (L-64).
 - **Q2.** Separate-code is off by default on every target (L-71); GNU
   differs on x86-64 and i386 (§21).
-- **Q3.** The padding section keeps lld's name `.relro_padding`
-  (L-156).
+- **Q3.** The padding section is named `.pad.relro` (L-156; lld's name
+  `.relro_padding` until WP-083, which eu-elflint takes for a relocation
+  section).
 - **Q5.** GNU's bases (L-68).
 - **Q6.** An undefined entry is a warning, with `e_entry = 0` (L-103).
 - **Q7.** GNU's `.text` categories (L-53). This affects every `-O2`

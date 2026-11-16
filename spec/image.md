@@ -754,7 +754,7 @@ buffer; the clip only selects which of them a job writes.
     static output; [M2] the dynamic sections' `sh_type`, `sh_flags`,
     `sh_link`, `sh_info`, `sh_entsize` and `sh_addralign` are
     `spec/dyn.md` D-34's table (`.rela.plt` then links `.dynsym`);
-  - `.relro_padding` (layout's own `NOBITS` chunk, L-64) has a header
+  - `.pad.relro` (layout's own `NOBITS` chunk, L-64, L-156) has a header
     and no synthetic plan;
   - extended numbering (gABI): when the section count or `.shstrtab`'s
     index reaches `SHN_LORESERVE`, `e_shnum` 0 and `e_shstrndx`

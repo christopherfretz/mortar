@@ -1503,7 +1503,7 @@ impl<'a, 't, 'n> Checker<'a, 't, 'n> {
         need(
             p.chunks[last].is_relro_padding(),
             r,
-            || "the RELRO run does not end with .relro_padding".into(),
+            || "the RELRO run does not end with .pad.relro".into(),
             [Row::Chunk(last)],
         )?;
         let [seg] = segs[..] else {

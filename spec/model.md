@@ -477,7 +477,7 @@ bucket order in `.dynsym`; ...), listed in `spec/synth.md`.
 
 | part | row | columns |
 |---|---|---|
-| `chunks[ChunkId]` | chunk | kind: file header, program headers, section headers, part *k* of the body of an output section (`Body(OutSecId, k)`), the patch island after part *k* (`Patches(OutSecId, k)`), a merged section, a synthetic section (`spec/synth.md`) including the RELRO padding (`.relro_padding`, below), and for `-r` the group and relocation chunks of an output section; name, type, flags, alignment; `size`, `capacity ≥ size`; `addr` (none for a non-alloc chunk), `offset` (file); the output section index |
+| `chunks[ChunkId]` | chunk | kind: file header, program headers, section headers, part *k* of the body of an output section (`Body(OutSecId, k)`), the patch island after part *k* (`Patches(OutSecId, k)`), a merged section, a synthetic section (`spec/synth.md`) including the RELRO padding (`.pad.relro`, below), and for `-r` the group and relocation chunks of an output section; name, type, flags, alignment; `size`, `capacity ≥ size`; `addr` (none for a non-alloc chunk), `offset` (file); the output section index |
 | `order` | — | the chunks in file order |
 | `segments[SegmentId]` | program header | type, flags, offset, address, file size, memory size, alignment |
 | `place[SectionId]` | section | `(ChunkId, offset in chunk)`, or none; a folded section has the place of its target |
@@ -499,7 +499,7 @@ one of its synthetic chunks (its input sections are split and have no
 `place`). (Rust form: `ChunkKind::Body(Part)` and `Patches(Part)` with
 `Part { out, part }`; the padding is `Synthetic(Synth::RELRO_PADDING)`.)
 
-The RELRO padding is a `SHT_NOBITS` synthetic chunk named `.relro_padding`
+The RELRO padding is a `SHT_NOBITS` synthetic chunk named `.pad.relro`
 with `relro: true`, whose size stage D writes so that the RELRO run ends on
 a maxpage boundary (`spec/layout.md` L-64). When there is a RELRO run it is
 its last chunk.
