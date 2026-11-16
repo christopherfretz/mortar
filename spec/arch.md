@@ -915,8 +915,47 @@ place in a section without `SHF_ALLOC`:
 - raises no demand (except `GotRel`'s `GOT_BASE`, below) and no `E` of
   the table, and never gets a dynamic relocation;
 - takes `S` as the link-time value. That is 0 for a `Weak0` target, and
-  0 for a `Shlib`, `Preemptible` or `WeakDyn` target that is not defined
-  in this output. An `Undefined` target is still the `undefined-symbol`
+  for a `Shlib`, `Preemptible` or `WeakDyn` target that is not defined
+  in this output it is what the output gives the symbol as its address
+  for the whole program, else 0 (supervisor ruling, WP-113):
+
+  | what the output gives the symbol | `S` at a non-alloc place |
+  |---|---|
+  | a copy relocation (`COPY`, `spec/dyn.md` D-43) | the copy's address |
+  | a canonical PLT entry (`CANON_PLT`, `Exec` only, D-44) | the entry's address |
+  | an ordinary PLT entry (a `JUMP_SLOT`'s; a library IFUNC's) | 0 |
+  | a GOT slot, or nothing | 0 |
+
+  An ordinary PLT entry is a stand-in for calls, not the symbol's
+  address: a debugger reading the word would take the stub for the
+  function. So the field is `0 + A` for an absolute class and `0 + A −
+  P` for a PC-relative one, as GNU ld 2.44 writes them on AArch64 (on
+  x86-64, and in an AArch64 `Exec`, GNU ld writes the stub; lld 22
+  writes 0 and drops `A`). The same holds for a `Preemptible` or IFUNC
+  target defined in this output: its `S` is its definition (an IFUNC
+  defined here and not preemptible: its IPLT entry, S-71), never its
+  PLT entry (a called `Preemptible` function of a `-shared` link: GNU
+  ld 2.44 and lld 22 write its definition, measured; mortar does not
+  link `Shared` outputs yet). `FillTables::sym` gives this `S` at every place; an alloc
+  place reaches a PLT entry only through `L` or `plt()`.
+- `TlsDtpRel` against a TLS target only a shared library defines
+  (x86-64 `DTPOFF64`/`DTPOFF32`, AArch64 `TLS_DTPREL64`) writes
+  `0 + A`, whether or not the output has a `PT_TLS` of its own. The
+  symbol is in the library's TLS block, not this module's, so no offset
+  in this output's block is its value; `S = 0` and the offset base 0
+  leave the addend, the field's one meaningful part (the supervisor's
+  ruling on WP-113; plumb.md §5.8 requires the same). Measured on
+  x86-64 (WP-113, WP-104): without a `PT_TLS` GNU ld 2.44 and mold 2.37
+  write `0 + A`; with one they write `A − ` the `PT_TLS` address
+  (`S = 0` run through the offset formula, a number that names nothing),
+  and lld 22 writes 0 in both (its addend dropped). mortar follows none
+  of them where they differ from `0 + A`. An `AbsWord` or `AbsNarrow`
+  against such a symbol is not the exception below: it is `E`
+  (`relocation-incompatible`, `it is thread-local`, when the reference is
+  typed `STT_TLS`; `TLS attribute mismatch` at resolution when it is
+  untyped), as GNU ld refuses an untyped reference to a library's TLS
+  symbol.
+- An `Undefined` target is still the `undefined-symbol`
   error of §3.4, as GNU ld 2.44 and mold 2.37 report a reference from
   `.debug_info` (lld 22 accepts it).
 - against a target in a section that is not live, gets
@@ -936,7 +975,7 @@ Only data relocations are allowed there:
   `-gsplit-dwarf` `.debug_addr` entries for `DW_OP_form_tls_address`,
   `spec/x64.md` X-53); this is the one exception to the rule that a
   non-TLS class against a TLS symbol is `E`, and it holds at non-alloc
-  places only.
+  places only, against a TLS symbol defined in this output (WP-113).
 
 An instruction form of one of those classes is not a data relocation.
 a64.md §13.2 lists the AArch64 types: `NONE`, `ABS64/32/16`,

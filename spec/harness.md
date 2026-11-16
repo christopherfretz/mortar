@@ -950,6 +950,19 @@ mortar included (`docs/VALIDATION.md` layer L3).
   refuses, static-pie, version definitions, a closure object no search
   finds) is counted as not judged, `outside stage 3`, its other findings
   still judged; mortar's fails on that finding like any other.
+- **The erratum option** (WP-103). The verifier is told whether the link
+  had `--fix-cortex-a53-843419` (`Map.fix_843419`, `spec/plumb.md`
+  §5.10) from the words the linker received, for every linker, mortar
+  included: the `.linktest-ld-status-<line>.line` words of a driver
+  step, a `link ld` step's own words (`xtask::plumb::line_fix_843419`:
+  the last of `--fix-cortex-a53-843419[=...]` and
+  `--no-fix-cortex-a53-843419` wins, through `@file`, `-Wl,` and
+  `-Xlinker`; neither is no option). A driver's default is in those
+  words: GCC on Debian passes the option to every link, Clang does not.
+  Before WP-103 every lane left it to be inferred from the fixes found,
+  so an output with an unfixed site and no fix at all passed unjudged.
+  `census` states it the same way, and `mason` through the line it hands
+  `verify_link_line`.
 - **The verdict.** A finding fails the step: `FAIL`, or `XFAIL` under an
   `xfail` marker, with the detail `<step>: L3: the verifier finds
   <output>: <rule> <message> at <address> (and N more)`. Run
@@ -998,8 +1011,14 @@ mortar included (`docs/VALIDATION.md` layer L3).
   is outside the defaults, under the strict rule above in both directions.
 - **The note.** The summary has the note `L3: the verifier judged N link
   outputs in T s` (T is the verifier's time summed over the threads), the
-  number of findings expected as anomalies, and the counts not judged by
-  reason.
+  number of findings expected as anomalies, the counts not judged by
+  reason, and per linker `erratum 843419 outputs: <linker> N with the
+  option (S sites fixed, U not judged), M without (K sites)` (WP-103):
+  the outputs whose line had the option, their fixed and not judged
+  sites (`erratum_sites`, `erratum_not_judged`), and the outputs whose
+  line had not, whose K sites are none of them judged. On a mortar
+  output with the option U is 0: the verifier judges every site of it.
+  `census` prints the same counts in a line of its own.
 
 **Cost.** This was measured with WP-028 on the reference machine, on the
 AArch64 corpus at `-j 8` with a load average of about 28, in the debug

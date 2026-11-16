@@ -347,6 +347,49 @@ pub struct Plumb {
     /// The default anomalies (`Matrix::defaults`) found, by architecture
     /// and linker.
     pub defaults_seen: BTreeSet<(Arch, Linker, String)>,
+    /// What the verifier judged of erratum 843419 (WP-103), by linker.
+    pub erratum: BTreeMap<Linker, ErratumJudged>,
+}
+
+/// The erratum 843419 judgement of the outputs L3 judged (WP-103): the
+/// outputs whose link line had the option, those whose line had not (or
+/// was not known), the fixed and the not judged sites of the former
+/// (`mortar_plumb` coverage `erratum_sites`, `erratum_not_judged`), and
+/// the sites of the latter, none of which is judged.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ErratumJudged {
+    pub with_option: u64,
+    pub without: u64,
+    pub unknown: u64,
+    pub sites: u64,
+    pub not_judged: u64,
+    pub sites_without: u64,
+}
+
+impl ErratumJudged {
+    /// Counts one judged output, whose line said `fix` of the option.
+    pub fn count(&mut self, fix: Option<bool>, c: &mortar_plumb::report::Coverage) {
+        match fix {
+            Some(true) => {
+                self.with_option += 1;
+                self.sites += c.erratum_sites;
+                self.not_judged += c.erratum_not_judged;
+                return;
+            }
+            Some(false) => self.without += 1,
+            None => self.unknown += 1,
+        }
+        self.sites_without += c.erratum_sites + c.erratum_not_judged;
+    }
+
+    fn add(&mut self, o: &ErratumJudged) {
+        self.with_option += o.with_option;
+        self.without += o.without;
+        self.unknown += o.unknown;
+        self.sites += o.sites;
+        self.not_judged += o.not_judged;
+        self.sites_without += o.sites_without;
+    }
 }
 
 impl Plumb {
@@ -359,6 +402,9 @@ impl Plumb {
         self.time += other.time;
         self.judged_by.extend(other.judged_by.iter().copied());
         self.defaults_seen.extend(other.defaults_seen.iter().cloned());
+        for (linker, e) in &other.erratum {
+            self.erratum.entry(*linker).or_default().add(e);
+        }
     }
 
     /// The default anomalies that apply to a judged output of the run and
@@ -399,6 +445,30 @@ impl Plumb {
             let parts: Vec<String> =
                 self.not_judged.iter().map(|(reason, n)| format!("{reason} {n}")).collect();
             let _ = write!(text, "; not judged: {}", parts.join(", "));
+        }
+        // WP-103: how many outputs were judged for erratum 843419 sites.
+        let parts: Vec<String> = self
+            .erratum
+            .iter()
+            .map(|(linker, e)| {
+                let mut p = format!(
+                    "{} {} with the option ({} sites fixed, {} not judged), {} without \
+                     ({} sites)",
+                    linker.name(),
+                    e.with_option,
+                    e.sites,
+                    e.not_judged,
+                    e.without,
+                    e.sites_without
+                );
+                if e.unknown > 0 {
+                    let _ = write!(p, ", {} with no line", e.unknown);
+                }
+                p
+            })
+            .collect();
+        if !parts.is_empty() {
+            let _ = write!(text, "; erratum 843419 outputs: {}", parts.join("; "));
         }
         text
     }
@@ -1240,18 +1310,19 @@ impl Unit<'_> {
         }
         match map_file {
             Some(map) if self.matrix.plumb => {
-                let words = match (linker, ld_words) {
-                    (Linker::Mortar, _) => None,
-                    (_, Some(words)) => Some(words),
-                    (_, None) => {
-                        let mut recorded = status_file.clone().into_os_string();
-                        recorded.push(".line");
-                        std::fs::read_to_string(&recorded)
-                            .ok()
-                            .map(|text| text.lines().map(str::to_owned).collect())
-                    }
-                };
-                self.verify(step, linker, output_file, &map, dir, words, judged)
+                let words: Option<Vec<String>> = ld_words.or_else(|| {
+                    let mut recorded = status_file.clone().into_os_string();
+                    recorded.push(".line");
+                    std::fs::read_to_string(&recorded)
+                        .ok()
+                        .map(|text| text.lines().map(str::to_owned).collect())
+                });
+                // The linker's words state `--fix-cortex-a53-843419`
+                // (WP-103), mortar's too; stage 3 judges a mortar output
+                // with its map's `arg` records only ("L3").
+                let fix = words.as_deref().map(|w| crate::plumb::line_fix_843419(w, dir));
+                let words = if linker == Linker::Mortar { None } else { words };
+                self.verify(step, linker, output_file, &map, dir, words, fix, judged)
             }
             _ => Ok(()),
         }
@@ -1309,6 +1380,7 @@ impl Unit<'_> {
         map_file: &Path,
         dir: &Path,
         line: Option<Vec<String>>,
+        fix_843419: Option<bool>,
         judged: &mut Judged,
     ) -> Result<(), Raw> {
         let error = |what: &dyn Display| Raw::Error(format!("{}: L3: {what}", step.describe()));
@@ -1336,10 +1408,18 @@ impl Unit<'_> {
             Linker::Mortar => mortar_plumb::Format::Mortar,
         };
         let started = Instant::now();
-        let verified =
-            crate::plumb::verify_link_line(output_file, map_file, format, dir, None, None, line);
+        let verified = crate::plumb::verify_link_line(
+            output_file,
+            map_file,
+            format,
+            dir,
+            None,
+            fix_843419,
+            line,
+        );
         judged.plumb.time += started.elapsed();
         let (bytes, report, _) = verified.map_err(|e| error(&e))?;
+        judged.plumb.erratum.entry(linker).or_default().count(fix_843419, &report.coverage);
         // A reference's link that stage 3 does not model (P-D1 "outside
         // stage 3": an option dyn.md refuses, an i386 dynamic output,
         // version definitions, a closure object no search finds; a
@@ -2025,6 +2105,35 @@ fn mortar_xfail<'a>(
 
 #[cfg(test)]
 mod tests {
+    // WP-103: the sites of an output whose line has the option are counted
+    // apart from those of an output whose line has not.
+    #[test]
+    fn wp103_erratum_counts() {
+        let cov = |sites, not| mortar_plumb::report::Coverage {
+            erratum_sites: sites,
+            erratum_not_judged: not,
+            ..Default::default()
+        };
+        let mut e = super::ErratumJudged::default();
+        e.count(Some(true), &cov(3, 1));
+        e.count(Some(false), &cov(0, 2));
+        e.count(None, &cov(0, 4));
+        let want = super::ErratumJudged {
+            with_option: 1,
+            without: 1,
+            unknown: 1,
+            sites: 3,
+            not_judged: 1,
+            sites_without: 6,
+        };
+        assert_eq!(e, want);
+        let mut sum = super::ErratumJudged::default();
+        sum.add(&e);
+        sum.add(&e);
+        assert_eq!(sum.sites_without, 12);
+        assert_eq!(sum.with_option, 2);
+    }
+
     // spec/harness.md "static-identical": gcc's resolution file is the
     // one word of a map replaced, and only in its own form.
     #[test]

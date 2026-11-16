@@ -253,8 +253,9 @@ pub struct Link<'a, 's> {
     pub options: LinkOptions,
     /// Words written over fill's bytes, by address, sorted: the erratum
     /// fixes (`spec/a64.md` §11.2; the front computes them from the words
-    /// fill writes at the final addresses).
-    pub fixups: &'a [(u64, [u8; 4])],
+    /// fill writes at the final addresses), each with the word fill must
+    /// have written under it ([`crate::fill::Fixup`]).
+    pub fixups: &'a [fill::Fixup],
 }
 
 impl std::fmt::Debug for Link<'_, '_> {
@@ -654,8 +655,20 @@ impl LinkTables<'_, '_> {
                 (self.global.get(id.0 as usize).copied().flatten(), live)
             }
         };
-        // S-71: every address of an IFUNC with an IPLT entry is the entry.
-        let s = self.plt(key).or(s).unwrap_or(0);
+        // A PLT entry is `S` only where it is the symbol's address for the
+        // whole program (`spec/arch.md` §3.6, WP-113): the canonical entry
+        // of a `CANON_PLT` key (`spec/dyn.md` D-44), and, S-71, the IPLT
+        // entry of an IFUNC defined in this output. An ordinary PLT entry
+        // (a `JUMP_SLOT`'s, a library IFUNC's) is a stand-in for calls
+        // only: such a key's `S` is its copy, or 0 (arch.md §4.3).
+        let entry = if self.flags(key).contains(DemandFlags::CANON_PLT) {
+            self.plt(key)
+        } else if matches!(facts.kind, TargetKind::Shlib { .. } | TargetKind::WeakDyn) {
+            None
+        } else {
+            self.link.synth.got.iplt_address(&self.got_addrs, key)
+        };
+        let s = entry.or(s).unwrap_or(0);
         (SymValue { s, kind: facts.kind, size, live, tls: facts.tls }, is_split)
     }
 }
@@ -1162,7 +1175,7 @@ fn plt_first_word(link: &Link<'_, '_>, target: u64) -> Option<u32> {
 /// # Errors
 ///
 /// `internal-error` for a word in no such chunk.
-fn file_fixups(link: &Link<'_, '_>) -> Result<Vec<(u64, [u8; 4])>, Diagnostic> {
+fn file_fixups(link: &Link<'_, '_>) -> Result<Vec<fill::Fixup>, Diagnostic> {
     let pl = &link.layout.placement;
     let mut spans: Vec<(u64, u64, u64)> = pl
         .chunks
@@ -1172,7 +1185,7 @@ fn file_fixups(link: &Link<'_, '_>) -> Result<Vec<(u64, [u8; 4])>, Diagnostic> {
         .collect();
     spans.sort_unstable();
     let mut out = Vec::with_capacity(link.fixups.len());
-    for &(addr, word) in link.fixups {
+    for &(addr, word, under) in link.fixups {
         let at = spans.partition_point(|s| s.0 <= addr);
         let off = at
             .checked_sub(1)
@@ -1180,7 +1193,7 @@ fn file_fixups(link: &Link<'_, '_>) -> Result<Vec<(u64, [u8; 4])>, Diagnostic> {
             .filter(|&(a, size, _)| addr + 4 <= a + size)
             .map(|(a, _, off)| off + (addr - a))
             .ok_or_else(|| internal(format!("image: a fixed word at {addr:#x} is in no chunk")))?;
-        out.push((off, word));
+        out.push((off, word, under));
     }
     out.sort_unstable_by_key(|f| f.0);
     Ok(out)
