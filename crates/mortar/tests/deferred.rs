@@ -370,6 +370,7 @@ fn raises(arch: &dyn mortar_arch::Arch, r_type: u32) -> bool {
                     dead: false,
                     comdat_only: false,
                     gnu_warning: false,
+                    large: false,
                 });
                 let at = mortar_arch::RelocAt {
                     file: mortar_core::FileId(1),

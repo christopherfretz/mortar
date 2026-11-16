@@ -214,12 +214,61 @@ fn x19_x22_conditions_keep_the_got() {
     let out = applied(&t, &input, OutputKind::Static, &[rel(p, SYM, 42, -5)]);
     let x = (SLOT.wrapping_sub(5).wrapping_sub(ADDR + p as u64) as i32).to_le_bytes();
     assert_eq!(out, with(&input, p, &x));
-    // `S + A − P` outside s(32).
+    // `S + A − P` outside s(32), the key's slot kept by another use.
     let t = tables(TargetKind::Local, false, ADDR + (1 << 32));
     assert_eq!(applied(&t, &input, OutputKind::Static, &[rel(p, SYM, 42, -4)]), unrelaxed);
-    // The scan demand is the same in every case (kind 2).
+    // X-19 (WP-059): scan decides the relaxation from input facts, so the
+    // record demands no slot; the conditions that keep the GOT demand it.
     let s = scan(&t, OutputKind::Static, &input, &[rel(p, SYM, 42, -4)]);
+    assert_eq!(raised(&s, key(SYM)), DemandFlags::empty());
+    for kind in [TargetKind::Abs, TargetKind::Ifunc, TargetKind::Weak0] {
+        let t = tables(kind, false, S);
+        let s = scan(&t, OutputKind::Static, &input, &[rel(p, SYM, 42, -4)]);
+        assert!(raised(&s, key(SYM)).contains(DemandFlags::GOT), "{kind:?}");
+    }
+    let s = scan(&t, OutputKind::Static, &input, &[rel(p, SYM, 42, -5)]);
+    assert_eq!(raised(&s, key(SYM)), DemandFlags::GOT, "A = -5");
+}
+
+#[test]
+fn x19_the_slot_of_a_relaxed_record() {
+    let p = AT + 3;
+    let mov = section(&[0x48, 0x8b, 0x05, 0, 0, 0, 0]);
+    let add = section(&[0x48, 0x03, 0x05, 0, 0, 0, 0]);
+    // Large data (X-52): the slot is demanded, and the record relaxes at
+    // fill when it fits (lld's bytes).
+    let mut t = tables(TargetKind::Local, false, S);
+    t.facts.get_mut(&key(SYM)).unwrap().large = true;
+    let s = scan(&t, OutputKind::Static, &mov, &[rel(p, SYM, 42, -4)]);
     assert_eq!(raised(&s, key(SYM)), DemandFlags::GOT);
+    let out = applied(&t, &mov, OutputKind::Static, &[rel(p, SYM, 42, -4)]);
+    assert_eq!(out[AT + 1], 0x8d);
+    // G5 relaxes only in a non-PIE output: in `pie` it demands the slot.
+    let t = tables(TargetKind::Local, false, S);
+    let s = scan(&t, OutputKind::Static, &add, &[rel(p, SYM, 42, -4)]);
+    assert_eq!(raised(&s, key(SYM)), DemandFlags::empty());
+    let s = scan(&t, OutputKind::Pie, &add, &[rel(p, SYM, 42, -4)]);
+    assert_eq!(raised(&s, key(SYM)), DemandFlags::GOT);
+    // No slot and a field that does not fit: `relocation-out-of-range` on
+    // the relaxed field (s(32) for G1, `S` < 2^31 for G5).
+    let far = ADDR + (1 << 32);
+    let mut t = tables(TargetKind::Local, false, far);
+    t.slots.remove(&(key(SYM), SlotKind::Addr));
+    let e = case(&t, &mov, OutputKind::Static).apply(&[rel(p, SYM, 42, -4)]).unwrap_err();
+    let x = i128::from(far) - 4 - i128::from(ADDR + p as u64);
+    assert_eq!(
+        e,
+        FieldError::Range(mortar_arch::Range {
+            value: x,
+            min: -(1 << 31),
+            max: (1 << 31) - 1
+        })
+    );
+    let e = case(&t, &add, OutputKind::Static).apply(&[rel(p, SYM, 42, -4)]).unwrap_err();
+    assert_eq!(
+        e,
+        FieldError::Range(mortar_arch::Range { value: i128::from(far), min: 0, max: (1 << 31) - 1 })
+    );
 }
 
 #[test]

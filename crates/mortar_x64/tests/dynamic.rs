@@ -306,7 +306,10 @@ fn local_and_ifunc_cells_are_the_generic_table() {
     // D-46: a `Local` word is `RELATIVE` in `pie`, a value in `exec`.
     assert_eq!(cell(1, Pie, l, RW, &[]), Got::Demand(F::empty(), none, Some(DynRole::Relative)));
     assert_eq!(cell(1, Exec, l, RW, &[]), d(F::empty()));
-    assert_eq!(cell(42, Pie, l, RO, &[0x48, 0x8b, 0x05]), d(F::GOT));
+    // X-19 (WP-059): a relaxable `REX_GOTPCRELX` load of a `Local` key
+    // demands no slot; a `GOTPCREL` keeps it.
+    assert_eq!(cell(42, Pie, l, RO, &[0x48, 0x8b, 0x05]), d(F::empty()));
+    assert_eq!(cell(9, Pie, l, RO, &[0x48, 0x8b, 0x05]), d(F::GOT));
     // D-45: one IPLT entry, the address everywhere; a GOT slot holds it.
     for o in DYN {
         assert_eq!(cell(42, o, i, RO, &[0x48, 0x8b, 0x05]), d(F::GOT | F::IPLT), "{o:?}");

@@ -42,6 +42,7 @@ impl ScanTables for Facts {
             dead: false,
             comdat_only: false,
             gnu_warning: false,
+            large: false,
         }
     }
 }

@@ -15,9 +15,12 @@ use mortar_core::inputs::{CopyError, Inputs, Reader};
 use mortar_core::resolution::{Def, InternalDef, RefFlags, Resolution, Verdict};
 use mortar_core::{FileId, IdSet, Liveness, SectionId, SymEntry, SymKey, SymKind, SymbolId};
 use mortar_diag::{Diagnostic, FileRef, Kind};
-use mortar_elf::consts::{SHT_REL, SHT_RELA, STT_FUNC, STT_GNU_IFUNC, STT_SECTION, STT_TLS};
+use mortar_elf::consts::{
+    SHF_X86_64_LARGE, SHT_REL, SHT_RELA, STT_FUNC, STT_GNU_IFUNC, STT_SECTION, STT_TLS,
+};
 use mortar_elf::{
-    Object, Rel, Rela, Section, SectionIndex, Sym, SymbolIndex, SymbolSection, SymbolTable, Table,
+    Machine, Object, Rel, Rela, Section, SectionIndex, Sym, SymbolIndex, SymbolSection, SymbolTable,
+    Table,
 };
 
 use crate::{CodeProof, Mark, Mismatch, ScanInputs, ScanOptions};
@@ -216,6 +219,7 @@ impl<'a, 's> View<'a, 's> {
             dead: false,
             comdat_only: false,
             gnu_warning: false,
+            large: false,
         };
         let Some(prep) = self.prep(e.file) else { return abs };
         let Some(table) = prep.table() else { return abs };
@@ -230,6 +234,10 @@ impl<'a, 's> View<'a, 's> {
         // symbol read once for the kind and for this).
         let dead = e.index.0 != 0
             && matches!(section, Ok(SymbolSection::Section(sec)) if !self.is_live(e.file, sec));
+        let large = match section {
+            Ok(SymbolSection::Section(sec)) => self.large_section(prep, sec),
+            _ => false,
+        };
         SymFacts {
             kind,
             sym_type: sym.sym_type(),
@@ -238,7 +246,16 @@ impl<'a, 's> View<'a, 's> {
             dead,
             comdat_only: false,
             gnu_warning: false,
+            large,
         }
+    }
+
+    /// x86-64: section `sec` of the file is `SHF_X86_64_LARGE`
+    /// (`SymFacts::large`).
+    fn large_section(&self, prep: &Prep<'s>, sec: SectionIndex) -> bool {
+        self.inputs.target.machine == Machine::X86_64
+            && prep.obj.and_then(|o| o.section(sec).ok())
+                .is_some_and(|s| s.header().sh_flags & SHF_X86_64_LARGE != 0)
     }
 
     fn global_facts(&self, id: SymbolId, mention: Option<SymEntry>, depth: u32) -> SymFacts {
@@ -250,6 +267,7 @@ impl<'a, 's> View<'a, 's> {
             dead: false,
             comdat_only: false,
             gnu_warning: false,
+            large: false,
         };
         let props = self.resolution.props.get(id).copied().unwrap_or_default();
         let preemptible = props.refs.contains(RefFlags::PREEMPTIBLE);
@@ -278,9 +296,18 @@ impl<'a, 's> View<'a, 's> {
                     }
                     _ => false,
                 };
-                SymFacts { dead, ..of(kind, s) }
+                let large = match place {
+                    Some(SymbolSection::Section(i)) => {
+                        self.prep(e.file).is_some_and(|p| self.large_section(p, i))
+                    }
+                    _ => false,
+                };
+                SymFacts { dead, large, ..of(kind, s) }
             }
-            Def::Common(e) => of(TargetKind::Local, self.sym(e.file, e.index)),
+            Def::Common(e) => SymFacts {
+                large: self.resolution.common_of(id).is_some_and(|c| c.large),
+                ..of(TargetKind::Local, self.sym(e.file, e.index))
+            },
             Def::Shared(e) => {
                 let s = self.sym(e.file, e.index);
                 let func = s.is_some_and(|s| matches!(s.sym_type(), STT_FUNC | STT_GNU_IFUNC));
@@ -303,6 +330,7 @@ impl<'a, 's> View<'a, 's> {
                     dead: false,
                     comdat_only: false,
                     gnu_warning: false,
+                    large: false,
                 }
             }
             Def::Undefined { weak } => {
