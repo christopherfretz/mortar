@@ -1,12 +1,9 @@
 # WP-091 work in progress (deleted in the final commit)
 
-Done: map reader/writer (`incremental`, `hole`, `dead` records, mortar-map 1
-kept); `dead.rs` (resolve, coverage, P-I1/2/3/5/6 alloc); `deaddwarf.rs`
-(P-I4, P-I6 debug); hook in `run_engine` when `Map::claims_coverage`;
-`cargo xtask plumb --coverage`.
+Done: map reader/writer; `dead.rs`, `deaddwarf.rs`; `--coverage`; coverage
+measured over the kept linktest corpus (546/546 clean); `tests/dead.rs`
+(9 tests, IN-60 cases on aarch64/x86-64/i386, debug on 64-bit);
+plumb.md §1, §3.2, §6.8, §7.1.
 
-Next: coverage table over the kept linktest corpus
-(`.build/target-wp-091/linktest/run-3079192`, script in the scratch dir),
-finalize the padding rule; mutation tests (IN-60 cases) in
-`tests/dead.rs`; mutation coverage table; plumb.md; record
-`spec/landed/incr/WP-091.md`; costs on protoc; gate; hosted run.
+Next: drop-each-check mutation table (§9.5), §9.2 item; costs on protoc;
+record `spec/landed/incr/WP-091.md`; sweep; gate; hosted run.

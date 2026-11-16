@@ -27,8 +27,8 @@ use std::fmt::Write as _;
 use mortar_elf::consts::{
     EM_386, EM_AARCH64, EM_X86_64, ET_DYN, SHF_ALLOC, SHF_EXECINSTR, SHF_MERGE, SHF_STRINGS,
     SHF_TLS, SHN_ABS, SHN_COMMON, SHN_UNDEF, SHN_XINDEX, SHT_DYNSYM, SHT_FINI_ARRAY,
-    SHT_INIT_ARRAY, SHT_NOBITS, SHT_NOTE, SHT_PREINIT_ARRAY, SHT_REL, SHT_RELA,
-    SHT_X86_64_UNWIND, STT_FILE, STT_SECTION, STT_TLS,
+    SHT_INIT_ARRAY, SHT_NOBITS, SHT_NOTE, SHT_PREINIT_ARRAY, SHT_REL, SHT_RELA, SHT_X86_64_UNWIND,
+    STT_FILE, STT_SECTION, STT_TLS,
 };
 use mortar_elf::{Class, SymbolIndex, SymbolSection};
 
@@ -120,6 +120,9 @@ struct Item {
     end: u64,
     /// The alignment the item demands of its address (1 when unknown).
     align: u64,
+    /// The largest alignment that may pad before it: `align`, or for a
+    /// merged piece the largest of its block's.
+    group: u64,
     kind: ItemKind,
 }
 
@@ -177,7 +180,11 @@ impl Cover {
                 c.tail,
                 c.other,
                 if c.unlisted { " unlisted" } else { "" },
-                if c.containers > 0 { format!(" containers={}", c.containers) } else { String::new() },
+                if c.containers > 0 {
+                    format!(" containers={}", c.containers)
+                } else {
+                    String::new()
+                },
             );
         }
         s
@@ -263,9 +270,7 @@ pub(crate) fn resolve(image: &Image<'_>, lines: &[DeadRange], out: &mut Vec<Find
             && r.start < prev.end
         {
             let d = r.describe(image);
-            out.push(
-                finding(2, format!("{d} overlaps {}", prev.describe(image))).at(r.start),
-            );
+            out.push(finding(2, format!("{d} overlaps {}", prev.describe(image))).at(r.start));
             continue;
         }
         keep.push(r);
@@ -309,6 +314,7 @@ fn fill_byte(image: &Image<'_>, sec: usize) -> u8 {
 }
 
 /// The items of each allocated section.
+#[allow(clippy::too_many_lines)] // one block per kind of line
 fn items(image: &Image<'_>, objs: &[Obj<'_>], map: &Map, set: &DeadSet) -> Vec<Vec<Item>> {
     let mut per: Vec<Vec<Item>> = vec![Vec::new(); image.sections.len()];
     for o in objs {
@@ -319,12 +325,15 @@ fn items(image: &Image<'_>, objs: &[Obj<'_>], map: &Map, set: &DeadSet) -> Vec<V
             }
             let align = s.shdr.sh_addralign.max(1);
             match &s.place {
-                Place::Whole(a) if s.shdr.sh_size > 0 => {
+                // An empty section is an item too: its alignment can be
+                // what pads before it.
+                Place::Whole(a) => {
                     if let Some(i) = owner(image, *a, s.shdr.sh_size, s.tbss(), None) {
                         per[i].push(Item {
                             start: *a,
                             end: *a + s.shdr.sh_size,
                             align,
+                            group: 0,
                             kind: ItemKind::Place,
                         });
                     }
@@ -343,7 +352,13 @@ fn items(image: &Image<'_>, objs: &[Obj<'_>], map: &Map, set: &DeadSet) -> Vec<V
                             // Every piece keeps its section's alignment
                             // (measured: mortar aligns each string of an
                             // aligned string section).
-                            per[i].push(Item { start: p.addr, end: p.addr + p.size, align, kind });
+                            per[i].push(Item {
+                                start: p.addr,
+                                end: p.addr + p.size,
+                                align,
+                                group: 0,
+                                kind,
+                            });
                         }
                     }
                 }
@@ -354,11 +369,12 @@ fn items(image: &Image<'_>, objs: &[Obj<'_>], map: &Map, set: &DeadSet) -> Vec<V
     // Common symbols (no map line names them, §6.8): the output symbol
     // of a name no placed section of an input defines, with the largest
     // alignment its common definitions ask.
-    for (name, align) in commons(objs) {
+    let listed = map.chunks.iter().any(|c| c.kind == crate::map::ChunkKind::Common);
+    for (name, align) in if listed { Vec::new() } else { commons(objs) } {
         let Some(sym) = image.global(&name) else { continue };
         let (a, size) = (sym.sym.st_value, sym.sym.st_size.max(1));
         if let Some(i) = owner(image, a, size, false, None) {
-            per[i].push(Item { start: a, end: a + size, align, kind: ItemKind::Common });
+            per[i].push(Item { start: a, end: a + size, align, group: 0, kind: ItemKind::Common });
         }
     }
     // Copy relocations' room (mortar's `copy` records, §3.2): the
@@ -370,7 +386,13 @@ fn items(image: &Image<'_>, objs: &[Obj<'_>], map: &Map, set: &DeadSet) -> Vec<V
         }
         if let Some(i) = owner(image, c.addr, c.size, false, None) {
             let align = 1u64 << c.addr.trailing_zeros().min(6);
-            per[i].push(Item { start: c.addr, end: c.addr + c.size, align, kind: ItemKind::Common });
+            per[i].push(Item {
+                start: c.addr,
+                end: c.addr + c.size,
+                align,
+                group: 0,
+                kind: ItemKind::Common,
+            });
         }
     }
     for c in &map.chunks {
@@ -379,15 +401,41 @@ fn items(image: &Image<'_>, objs: &[Obj<'_>], map: &Map, set: &DeadSet) -> Vec<V
             continue;
         }
         if let Some(i) = owner(image, a, c.size, false, Some(&c.name)) {
-            per[i].push(Item { start: a, end: a + c.size, align: 1, kind: ItemKind::Chunk });
+            per[i].push(Item {
+                start: a,
+                end: a + c.size,
+                align: 1,
+                group: 0,
+                kind: ItemKind::Chunk,
+            });
         }
     }
     for (k, r) in set.ranges.iter().enumerate() {
         if image.sections[r.sec].alloc() {
-            per[r.sec].push(Item { start: r.start, end: r.end, align: 1, kind: ItemKind::Dead(k) });
+            per[r.sec].push(Item {
+                start: r.start,
+                end: r.end,
+                align: 1,
+                group: 0,
+                kind: ItemKind::Dead(k),
+            });
         }
     }
+    // The pieces of merged sections are laid out as one block per output
+    // section, aligned to the largest alignment among them (measured: a
+    // `.rodata.str1.1` piece after a 16-aligned one starts 16-aligned).
     for v in &mut per {
+        let group = v
+            .iter()
+            .filter(|it| matches!(it.kind, ItemKind::Piece { merge: true, .. }))
+            .map(|it| it.align)
+            .max()
+            .unwrap_or(1);
+        for it in v.iter_mut() {
+            if matches!(it.kind, ItemKind::Piece { merge: true, .. }) {
+                it.group = group;
+            }
+        }
         v.sort_by_key(|it| (it.start, it.end));
     }
     per
@@ -411,7 +459,9 @@ fn commons(objs: &[Obj<'_>]) -> Vec<(String, u64)> {
                 let a = common.entry(name).or_insert(1);
                 *a = (*a).max(sym.st_value.max(1));
             } else if let Ok(SymbolSection::Section(k)) = t.section_of(i, &sym)
-                && o.secs.get(k.0 as usize).is_some_and(|s| matches!(s.place, Place::Whole(_) | Place::Pieces(_)))
+                && o.secs
+                    .get(k.0 as usize)
+                    .is_some_and(|s| matches!(s.place, Place::Whole(_) | Place::Pieces(_)))
             {
                 defined.insert(name);
             }
@@ -422,6 +472,7 @@ fn commons(objs: &[Obj<'_>]) -> Vec<(String, u64)> {
 
 /// IN-60's coverage over every allocated output section. Findings
 /// (P-I1) only when `claim`.
+#[allow(clippy::too_many_lines)] // one walk, its gap and overlap cases in order
 pub(crate) fn coverage(
     image: &Image<'_>,
     objs: &[Obj<'_>],
@@ -438,7 +489,8 @@ pub(crate) fn coverage(
             continue;
         }
         let nobits = sh.sh_type == SHT_NOBITS;
-        let mut c = SectionCover { name: s.name.clone(), size: sh.sh_size, nobits, ..Default::default() };
+        let mut c =
+            SectionCover { name: s.name.clone(), size: sh.sh_size, nobits, ..Default::default() };
         let mut its = per[si].clone();
         let eh = is_eh_frame(image, si);
         // A synthetic chunk with pieces or lines inside it is their
@@ -491,7 +543,15 @@ pub(crate) fn coverage(
             let (st, en) = (it.start.max(lo), it.end.min(hi));
             if st > cur {
                 let gap = st - cur;
-                let aligned = it.align.is_power_of_two() && cur.next_multiple_of(it.align) == st;
+                // After common symbols and copies, whose layout the map
+                // does not record, the section's own alignment may pad
+                // (measured: mortar aligns what follows a copy block).
+                let after_common = last.is_some_and(|l| l.kind == ItemKind::Common);
+                let top = if after_common { sh.sh_addralign.max(it.group) } else { it.group };
+                let aligned = it.align.is_power_of_two()
+                    && std::iter::successors(Some(it.align), |p| p.checked_mul(2))
+                        .take_while(|&p| p <= top.max(it.align))
+                        .any(|p| cur.next_multiple_of(p) == st);
                 if aligned {
                     c.padding += gap;
                     let bytes = if nobits { None } else { image.bytes(cur, gap) };
@@ -527,12 +587,14 @@ pub(crate) fn coverage(
                 }
                 cur = st;
             }
-            if st < cur {
+            if st < cur && en > st {
                 // Overlap with what came before.
                 let shared_ok = matches!(
                     (last.map(|l| l.kind), it.kind),
-                    (Some(ItemKind::Piece { merge: true, .. }), ItemKind::Piece { merge: true, .. })
-                        | (Some(ItemKind::Piece { eh: true, .. }), ItemKind::Piece { eh: true, .. })
+                    (
+                        Some(ItemKind::Piece { merge: true, .. }),
+                        ItemKind::Piece { merge: true, .. }
+                    ) | (Some(ItemKind::Piece { eh: true, .. }), ItemKind::Piece { eh: true, .. })
                 );
                 let n = en.min(cur) - st;
                 if shared_ok {
@@ -543,7 +605,9 @@ pub(crate) fn coverage(
                         let what = |k: Option<ItemKind>| match k {
                             Some(ItemKind::Dead(j)) => set.ranges[j].describe(image),
                             Some(ItemKind::Place) => "a placed input section".to_string(),
-                            Some(ItemKind::Piece { .. }) => "a piece of an input section".to_string(),
+                            Some(ItemKind::Piece { .. }) => {
+                                "a piece of an input section".to_string()
+                            }
                             Some(ItemKind::Chunk) => "a chunk".to_string(),
                             Some(ItemKind::Common) => "a common symbol or copy".to_string(),
                             None => String::new(),
@@ -603,10 +667,11 @@ pub(crate) fn check(e: &mut Engine<'_, '_>, map: &Map) {
     let mut out = Vec::new();
     let set = resolve(image, &map.dead, &mut out);
     let _ = coverage(image, e.objs, map, &set, true, &mut out);
-    let ends = live_ends(image, e.objs, map);
+    let ends = live_ends(image, e.objs, map, false);
     admit(image, e.objs, map, &set, &mut out);
     fill(image, &set, &mut out);
-    named_by_symbols(image, &set, &ends, &mut out);
+    let labels = (live_ends(image, e.objs, map, true), end_labels(e.objs));
+    named_by_symbols(image, &set, &labels, &mut out);
     named_by_relocations(e, &set, &mut out);
     named_by_tables(image, &set, &ends, &mut out);
     crate::deaddwarf::check(image, e.objs, map, &set, &mut out);
@@ -616,10 +681,40 @@ pub(crate) fn check(e: &mut Engine<'_, '_>, map: &Map) {
 /// The ends of every live item of the allocated sections, by address: an
 /// address that is a live input section's end belongs to that section
 /// (IN-3a check 1, the re-review's N3).
-pub(crate) fn live_ends(image: &Image<'_>, objs: &[Obj<'_>], map: &Map) -> BTreeSet<u64> {
+pub(crate) fn live_ends(
+    image: &Image<'_>,
+    objs: &[Obj<'_>],
+    map: &Map,
+    empty: bool,
+) -> BTreeSet<u64> {
     let set = DeadSet::default();
     let per = items(image, objs, map, &set);
-    per.iter().flatten().filter(|i| !matches!(i.kind, ItemKind::Dead(_))).map(|i| i.end).collect()
+    per.iter()
+        .flatten()
+        .filter(|i| !matches!(i.kind, ItemKind::Dead(_)) && (empty || i.end > i.start))
+        .map(|i| i.end)
+        .collect()
+}
+
+/// The names of the inputs' symbols defined at the end of a placed
+/// section (`st_value` = `sh_size`): labels such as `x_end` that the N3
+/// rule gives to the section they end.
+fn end_labels(objs: &[Obj<'_>]) -> BTreeSet<String> {
+    let mut v = BTreeSet::new();
+    for o in objs {
+        let Some(t) = &o.symtab else { continue };
+        for (i, sym) in t.iter() {
+            let Ok(SymbolSection::Section(k)) = t.section_of(i, &sym) else { continue };
+            let Some(s) = o.secs.get(k.0 as usize) else { continue };
+            if matches!(s.place, Place::Whole(_) | Place::Pieces(_))
+                && sym.st_value == s.shdr.sh_size
+                && let Ok(n) = t.name(&sym)
+            {
+                v.insert(String::from_utf8_lossy(n).into_owned());
+            }
+        }
+    }
+    v
 }
 
 /// The sections with a neutral form (incr.md IN-51, IN-51b).
@@ -658,32 +753,34 @@ fn admit(image: &Image<'_>, objs: &[Obj<'_>], map: &Map, set: &DeadSet, out: &mu
         let alloc = sh.sh_flags & SHF_ALLOC != 0;
         let eh = is_eh_frame(image, r.sec);
         let why: Option<String> = match r.kind {
-            _ if s.name == ".debug_aranges" => {
-                Some("'.debug_aranges' has no dead range: it is rewritten whole (incr.md IN-54)".into())
-            }
+            _ if s.name == ".debug_aranges" => Some(
+                "'.debug_aranges' has no dead range: it is rewritten whole (incr.md IN-54)".into(),
+            ),
             None if !alloc => Some("a hole is in an allocated section only (IN-3)".into()),
-            None if eh => None,
-            None if packed(&s.name, sh.sh_type) => Some(format!(
+            None if !eh && packed(&s.name, sh.sh_type) => Some(format!(
                 "'{}' is a packed section (layout.md L-142, incr.md IN-30): it has no hole",
                 s.name
             )),
-            None if sh.sh_flags & SHF_TLS != 0 && r.end != sh.sh_addr + sh.sh_size => Some(
-                "a thread-local section has holes only at its end (layout.md L-143)".into(),
-            ),
-            None => None,
+            None if !eh && sh.sh_flags & SHF_TLS != 0 && r.end != sh.sh_addr + sh.sh_size => {
+                Some("a thread-local section has holes only at its end (layout.md L-143)".into())
+            }
             Some(DeadKind::Cie) if !eh => Some("a 'cie' range is in .eh_frame only".into()),
             Some(DeadKind::Strings) => strings_section(image, objs, map, r.sec)
                 .err()
                 .map(|m| format!("a 'strings' range {m}")),
-            Some(DeadKind::Neutral) if alloc || !NEUTRAL.contains(&s.name.as_str()) => Some(format!(
-                "a 'neutral' range is in a section with a neutral form only (incr.md IN-51, IN-51b: {})",
-                NEUTRAL.join(", ")
-            )),
-            Some(DeadKind::Contribution) if alloc || !AS_WRITTEN.contains(&s.name.as_str()) => Some(format!(
-                "a 'contribution' range is in a section where a dead contribution may be left as written only (incr.md IN-53: {})",
-                AS_WRITTEN.join(", ")
-            )),
-            Some(_) => None,
+            Some(DeadKind::Neutral) if alloc || !NEUTRAL.contains(&s.name.as_str()) => {
+                Some(format!(
+                    "a 'neutral' range is in a section with a neutral form only (incr.md IN-51, IN-51b: {})",
+                    NEUTRAL.join(", ")
+                ))
+            }
+            Some(DeadKind::Contribution) if alloc || !AS_WRITTEN.contains(&s.name.as_str()) => {
+                Some(format!(
+                    "a 'contribution' range is in a section where a dead contribution may be left as written only (incr.md IN-53: {})",
+                    AS_WRITTEN.join(", ")
+                ))
+            }
+            None | Some(_) => None,
         };
         if let Some(why) = why {
             out.push(finding(2, format!("{}: {why}", r.describe(image))).at(r.start));
@@ -695,7 +792,12 @@ fn admit(image: &Image<'_>, objs: &[Obj<'_>], map: &Map, set: &DeadSet, out: &mu
 /// there): a non-executable section with a live piece of an
 /// `SHF_MERGE|SHF_STRINGS` input, or, non-alloc, the output section of a
 /// `merged` record of one.
-fn strings_section(image: &Image<'_>, objs: &[Obj<'_>], map: &Map, sec: usize) -> Result<(), String> {
+fn strings_section(
+    image: &Image<'_>,
+    objs: &[Obj<'_>],
+    map: &Map,
+    sec: usize,
+) -> Result<(), String> {
     let s = &image.sections[sec];
     if s.shdr.sh_flags & SHF_EXECINSTR != 0 {
         return Err("is in an executable section".into());
@@ -703,9 +805,8 @@ fn strings_section(image: &Image<'_>, objs: &[Obj<'_>], map: &Map, sec: usize) -
     let alloc = s.shdr.sh_flags & SHF_ALLOC != 0;
     let lo = s.shdr.sh_addr;
     let hi = lo + s.shdr.sh_size;
-    let merged_strings = |sh: &mortar_elf::Shdr| {
-        sh.sh_flags & (SHF_MERGE | SHF_STRINGS) == SHF_MERGE | SHF_STRINGS
-    };
+    let merged_strings =
+        |sh: &mortar_elf::Shdr| sh.sh_flags & (SHF_MERGE | SHF_STRINGS) == SHF_MERGE | SHF_STRINGS;
     let found = if alloc {
         objs.iter().flat_map(|o| &o.secs).any(|x| {
             x.alloc()
@@ -859,7 +960,8 @@ fn rel_fill(image: &Image<'_>, r: &Range) -> Result<(), String> {
     let mut a = r.start;
     while a < r.end {
         let off = image.value(a, w as u8).ok_or("its bytes are not in the output's file image")?;
-        let info = image.value(a + w, w as u8).ok_or("its bytes are not in the output's file image")?;
+        let info =
+            image.value(a + w, w as u8).ok_or("its bytes are not in the output's file image")?;
         let ty = if w == 8 { info & 0xffff_ffff } else { info & 0xff };
         let sym = if w == 8 { info >> 32 } else { info >> 8 };
         let index = (a - s.sh_addr) / ent;
@@ -924,16 +1026,28 @@ fn dyn_value(image: &Image<'_>, tag: u64) -> Option<u64> {
 
 /// Whether address `v` lies in an allocated dead range and is not the end
 /// of a live item (N3): the range it names.
-fn names_dead<'s>(image: &Image<'_>, set: &'s DeadSet, ends: &BTreeSet<u64>, v: u64) -> Option<&'s Range> {
+fn names_dead<'s>(
+    image: &Image<'_>,
+    set: &'s DeadSet,
+    ends: &BTreeSet<u64>,
+    v: u64,
+) -> Option<&'s Range> {
     let r = set.in_memory(image, v)?;
     (!ends.contains(&v)).then_some(r)
 }
 
 /// IN-3a check 1 for symbols (P-I3): no defined symbol of `.symtab` or
-/// `.dynsym` is in a dead range, unless its value is the end of a live
+/// `.dynsym` is in a dead range, unless an input defines a symbol of its
+/// name at the end of its section and the value is the end of a live
 /// item (a label at its section's end, N3).
-fn named_by_symbols(image: &Image<'_>, set: &DeadSet, ends: &BTreeSet<u64>, out: &mut Vec<Finding>) {
-    let tls = image.phdrs.iter().find(|p| p.p_type == mortar_elf::consts::PT_TLS).map(|p| p.p_vaddr);
+fn named_by_symbols(
+    image: &Image<'_>,
+    set: &DeadSet,
+    (ends, labels): &(BTreeSet<u64>, BTreeSet<String>),
+    out: &mut Vec<Finding>,
+) {
+    let tls =
+        image.phdrs.iter().find(|p| p.p_type == mortar_elf::consts::PT_TLS).map(|p| p.p_vaddr);
     let mut judge = |table: &str, name: &str, shndx: u16, info: u8, value: u64| {
         let ty = info & 0xf;
         if matches!(shndx, SHN_UNDEF | SHN_ABS | SHN_COMMON | SHN_XINDEX)
@@ -953,8 +1067,9 @@ fn named_by_symbols(image: &Image<'_>, set: &DeadSet, ends: &BTreeSet<u64>, out:
             value
         };
         let Some(r) = set.in_section(sec, a) else { return };
-        // A label at the end of a live item (N3): the item's own.
-        if ends.contains(&a) && s.shdr.sh_flags & SHF_ALLOC != 0 {
+        // A label an input defines at the end of its section, at the end
+        // of a live item (N3): that section's.
+        if s.shdr.sh_flags & SHF_ALLOC != 0 && ends.contains(&a) && labels.contains(name) {
             return;
         }
         out.push(
@@ -992,7 +1107,12 @@ fn dynsym(image: &Image<'_>) -> Vec<(String, u16, u8, u64)> {
         for e in d.chunks_exact(24).skip(1) {
             let mut x = [0u8; 8];
             x.copy_from_slice(&e[8..16]);
-            v.push((name(r32(e, 0) as usize), u16::from_le_bytes([e[6], e[7]]), e[4], u64::from_le_bytes(x)));
+            v.push((
+                name(r32(e, 0) as usize),
+                u16::from_le_bytes([e[6], e[7]]),
+                e[4],
+                u64::from_le_bytes(x),
+            ));
         }
     } else {
         for e in d.chunks_exact(16).skip(1) {
@@ -1022,7 +1142,9 @@ fn named_by_relocations(e: &Engine<'_, '_>, set: &DeadSet, out: &mut Vec<Finding
             }
             let hit = match &s.place {
                 Place::Whole(a) => over(image, set, *a, s.shdr.sh_size.max(1), s.tbss()),
-                Place::Pieces(ps) => ps.iter().any(|p| over(image, set, p.addr, p.size.max(1), s.tbss())),
+                Place::Pieces(ps) => {
+                    ps.iter().any(|p| over(image, set, p.addr, p.size.max(1), s.tbss()))
+                }
                 _ => false,
             };
             if hit {
@@ -1046,7 +1168,8 @@ fn named_by_relocations(e: &Engine<'_, '_>, set: &DeadSet, out: &mut Vec<Finding
                 let base = match symtab.section_of(SymbolIndex(sym), &st) {
                     Ok(SymbolSection::Section(k)) => Some((oi, k.0 as usize)),
                     Ok(SymbolSection::Undefined) => {
-                        let n = String::from_utf8_lossy(symtab.name(&st).unwrap_or(b"")).into_owned();
+                        let n =
+                            String::from_utf8_lossy(symtab.name(&st).unwrap_or(b"")).into_owned();
                         e.chosen_def(&n).and_then(|(doi, di)| {
                             let dt = e.objs[doi].symtab?;
                             let ds = dt.get(SymbolIndex(di)).ok()?;
@@ -1061,7 +1184,8 @@ fn named_by_relocations(e: &Engine<'_, '_>, set: &DeadSet, out: &mut Vec<Finding
                 if let Some(b) = base
                     && bad.contains(&b)
                 {
-                    let name = String::from_utf8_lossy(symtab.name(&st).unwrap_or(b"")).into_owned();
+                    let name =
+                        String::from_utf8_lossy(symtab.name(&st).unwrap_or(b"")).into_owned();
                     out.push(
                         finding(
                             3,
@@ -1084,7 +1208,10 @@ fn over(image: &Image<'_>, set: &DeadSet, a: u64, len: u64, tbss: bool) -> bool 
     set.ranges.iter().any(|r| {
         let s = &image.sections[r.sec].shdr;
         let tls_nobits = s.sh_flags & SHF_TLS != 0 && s.sh_type == SHT_NOBITS;
-        s.sh_flags & SHF_ALLOC != 0 && tls_nobits == tbss && r.start < a.saturating_add(len) && a < r.end
+        s.sh_flags & SHF_ALLOC != 0
+            && tls_nobits == tbss
+            && r.start < a.saturating_add(len)
+            && a < r.end
     })
 }
 
@@ -1099,7 +1226,9 @@ fn named_by_tables(image: &Image<'_>, set: &DeadSet, ends: &BTreeSet<u64>, out: 
     if entry != 0
         && let Some(r) = names_dead(image, set, ends, entry)
     {
-        out.push(finding(3, format!("{}: e_entry ({entry:#x}) is in it", r.describe(image))).at(entry));
+        out.push(
+            finding(3, format!("{}: e_entry ({entry:#x}) is in it", r.describe(image))).at(entry),
+        );
     }
     for (i, s) in image.sections.iter().enumerate() {
         let sh = &s.shdr;
@@ -1114,8 +1243,15 @@ fn named_by_tables(image: &Image<'_>, set: &DeadSet, ends: &BTreeSet<u64>, out: 
                     && let Some(r) = names_dead(image, set, ends, v)
                 {
                     out.push(
-                        finding(3, format!("{}: the {} word at {a:#x} holds {v:#x}", r.describe(image), s.name))
-                            .at(a),
+                        finding(
+                            3,
+                            format!(
+                                "{}: the {} word at {a:#x} holds {v:#x}",
+                                r.describe(image),
+                                s.name
+                            ),
+                        )
+                        .at(a),
                     );
                 }
                 a += w;
@@ -1130,7 +1266,9 @@ fn named_by_tables(image: &Image<'_>, set: &DeadSet, ends: &BTreeSet<u64>, out: 
                     a += ent;
                     continue;
                 }
-                let (Some(off), Some(info)) = (image.value(a, w as u8), image.value(a + w, w as u8)) else {
+                let (Some(off), Some(info)) =
+                    (image.value(a, w as u8), image.value(a + w, w as u8))
+                else {
                     break;
                 };
                 let ty = (if w == 8 { info & 0xffff_ffff } else { info & 0xff }) as u32;
@@ -1140,7 +1278,11 @@ fn named_by_tables(image: &Image<'_>, set: &DeadSet, ends: &BTreeSet<u64>, out: 
                         out.push(
                             finding(
                                 3,
-                                format!("{}: the {} record at {a:#x} (type {ty}) writes at {off:#x}", r.describe(image), s.name),
+                                format!(
+                                    "{}: the {} record at {a:#x} (type {ty}) writes at {off:#x}",
+                                    r.describe(image),
+                                    s.name
+                                ),
                             )
                             .at(a),
                         );
@@ -1157,7 +1299,11 @@ fn named_by_tables(image: &Image<'_>, set: &DeadSet, ends: &BTreeSet<u64>, out: 
                             out.push(
                                 finding(
                                     3,
-                                    format!("{}: the {} record at {a:#x} (type {ty}) targets {t:#x}", r.describe(image), s.name),
+                                    format!(
+                                        "{}: the {} record at {a:#x} (type {ty}) targets {t:#x}",
+                                        r.describe(image),
+                                        s.name
+                                    ),
                                 )
                                 .at(a),
                             );
@@ -1175,7 +1321,13 @@ fn named_by_tables(image: &Image<'_>, set: &DeadSet, ends: &BTreeSet<u64>, out: 
 
 /// `.eh_frame_hdr`'s table (LSB "Exception Frames"): no entry's initial
 /// location or FDE is in a dead range.
-fn eh_frame_hdr(image: &Image<'_>, i: usize, set: &DeadSet, ends: &BTreeSet<u64>, out: &mut Vec<Finding>) {
+fn eh_frame_hdr(
+    image: &Image<'_>,
+    i: usize,
+    set: &DeadSet,
+    ends: &BTreeSet<u64>,
+    out: &mut Vec<Finding>,
+) {
     let sh = &image.sections[i].shdr;
     let Some(d) = image.section_data(i) else { return };
     // version 1, eh_frame_ptr enc, fde_count enc, table enc: the usual
@@ -1188,7 +1340,8 @@ fn eh_frame_hdr(image: &Image<'_>, i: usize, set: &DeadSet, ends: &BTreeSet<u64>
         0x1c => 12,
         _ => return,
     };
-    let Some(cnt) = d.get(off..off + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]])) else {
+    let Some(cnt) = d.get(off..off + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    else {
         return;
     };
     let base = sh.sh_addr;
@@ -1196,20 +1349,32 @@ fn eh_frame_hdr(image: &Image<'_>, i: usize, set: &DeadSet, ends: &BTreeSet<u64>
     for k in 0..cnt as usize {
         let at = off + 4 + 8 * k;
         let Some(e) = d.get(at..at + 8) else { break };
-        let loc = base.wrapping_add(i32::from_le_bytes([e[0], e[1], e[2], e[3]]) as i64 as u64);
-        let fde = base.wrapping_add(i32::from_le_bytes([e[4], e[5], e[6], e[7]]) as i64 as u64);
+        let loc = base.wrapping_add(i64::from(i32::from_le_bytes([e[0], e[1], e[2], e[3]])) as u64);
+        let fde = base.wrapping_add(i64::from(i32::from_le_bytes([e[4], e[5], e[6], e[7]])) as u64);
         if let Some(r) = names_dead(image, set, ends, loc) {
             out.push(
-                finding(3, format!("{}: .eh_frame_hdr entry {k} names the location {loc:#x}", r.describe(image)))
-                    .at(base + at as u64),
+                finding(
+                    3,
+                    format!(
+                        "{}: .eh_frame_hdr entry {k} names the location {loc:#x}",
+                        r.describe(image)
+                    ),
+                )
+                .at(base + at as u64),
             );
         }
         if let Some(ei) = eh
             && let Some(r) = set.in_section(ei, fde)
         {
             out.push(
-                finding(3, format!("{}: .eh_frame_hdr entry {k} names an FDE at {fde:#x}", r.describe(image)))
-                    .at(base + at as u64),
+                finding(
+                    3,
+                    format!(
+                        "{}: .eh_frame_hdr entry {k} names an FDE at {fde:#x}",
+                        r.describe(image)
+                    ),
+                )
+                .at(base + at as u64),
             );
         }
     }
@@ -1224,7 +1389,11 @@ pub(crate) fn position_independent(image: &Image<'_>) -> bool {
 /// `cargo xtask plumb --coverage` (§6.8): the coverage table of a link
 /// whatever its map claims, and the findings it would have under the
 /// claim.
-pub fn coverage_table(output: &[u8], inputs: &[crate::Input<'_>], map: &Map) -> Result<(Cover, Vec<Finding>), String> {
+pub fn coverage_table(
+    output: &[u8],
+    inputs: &[crate::Input<'_>],
+    map: &Map,
+) -> Result<(Cover, Vec<Finding>), String> {
     let image = Image::read(output)?;
     let located = crate::locate::locate(map, inputs, &image);
     let mut out = Vec::new();

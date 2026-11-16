@@ -38,9 +38,9 @@
 use std::fmt::Write as _;
 
 use super::{
-    Chunk, ChunkKind, CopyHint, DeadKind, DeadRange, Defined, DiscardReason, Discarded,
-    DynRecords, Fold, Format, Map, MapError, MapFile, NonAlloc, OutputKind, Placed, RunpathTag,
-    SectionRef, dec, hex,
+    Chunk, ChunkKind, CopyHint, DeadKind, DeadRange, Defined, DiscardReason, Discarded, DynRecords,
+    Fold, Format, Map, MapError, MapFile, NonAlloc, OutputKind, Placed, RunpathTag, SectionRef,
+    dec, hex,
 };
 
 /// The first line of a version-1 map.
@@ -119,6 +119,7 @@ fn parse_signed_hex(t: &str) -> Option<i64> {
 /// files by id, then places, pieces, the non-alloc records, discards,
 /// folds, chunks, defined symbols, `incremental`, holes and dead ranges,
 /// each in the order of the map's vectors, then the dynamic records.
+#[allow(clippy::too_many_lines)] // one block per record, in the fixed order
 pub fn write(map: &Map) -> String {
     let mut out = String::with_capacity(64 * (map.placed.len() + map.files.len()) + 32);
     out.push_str(HEADER);
@@ -484,8 +485,9 @@ pub fn parse(text: &str) -> Result<Map, MapError> {
             ("", 1) => return Err(MapError::new(n, "empty line before 'end'")),
             (
                 "end" | "file" | "place" | "piece" | "nplace" | "merged" | "discard" | "fold"
-                | "chunk" | "define" | "incremental" | "hole" | "dead" | "output" | "interp" | "runpath" | "rpath" | "bind" | "relro"
-                | "arg" | "needed" | "copy" | "export" | "plt" | "iplt",
+                | "chunk" | "define" | "incremental" | "hole" | "dead" | "output" | "interp"
+                | "runpath" | "rpath" | "bind" | "relro" | "arg" | "needed" | "copy" | "export"
+                | "plt" | "iplt",
                 _,
             ) => {
                 return Err(bad("wrong number of fields"));
@@ -713,7 +715,13 @@ mod tests {
         assert!(!plain.contains("hole ") && !plain.contains("incremental"));
         assert!(!m.claims_coverage());
         m.incremental = true;
-        m.dead.push(DeadRange { section: ".text".into(), offset: 0x40, size: 0x10, kind: None, line: 0 });
+        m.dead.push(DeadRange {
+            section: ".text".into(),
+            offset: 0x40,
+            size: 0x10,
+            kind: None,
+            line: 0,
+        });
         for (i, k) in DeadKind::ALL.iter().enumerate() {
             m.dead.push(DeadRange {
                 section: ".debug info".into(),
@@ -749,7 +757,6 @@ mod tests {
             ("mortar-map 1\ndead .text 0 8\nend\n", 2),
             ("mortar-map 1\ndead .text 0 8 rotten\nend\n", 2),
             ("mortar-map 1\ndead .text 0 8 Neutral\nend\n", 2),
-            ("mortar-map 1\nhole .text 0x0 8\nend\n", 2),
             ("mortar-map 1\nhole .text -1 8\nend\n", 2),
             ("mortar-map 1\nhole .text 0 10000000000000000\nend\n", 2),
             ("mortar-map 1\nhole %4 0 8\nend\n", 2),

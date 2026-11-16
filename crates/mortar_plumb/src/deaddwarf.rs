@@ -18,6 +18,8 @@
 //! A live unit the walk cannot read is a P-I4 finding naming it: the
 //! check refuses rather than passes what it could not judge.
 
+#![allow(clippy::many_single_char_names)] // byte readers: r, p, b, v, n
+
 use mortar_elf::Class;
 use mortar_elf::consts::SHF_ALLOC;
 
@@ -139,7 +141,13 @@ fn tombstone(name: &str, class: Class, width: usize) -> u64 {
 }
 
 /// The checks of the debug sections' dead ranges.
-pub(crate) fn check(image: &Image<'_>, _objs: &[Obj<'_>], _map: &Map, set: &DeadSet, out: &mut Vec<Finding>) {
+pub(crate) fn check(
+    image: &Image<'_>,
+    _objs: &[Obj<'_>],
+    _map: &Map,
+    set: &DeadSet,
+    out: &mut Vec<Finding>,
+) {
     let dbg = Debug { image };
     let debug_ranges: Vec<&Range> = set
         .ranges
@@ -163,7 +171,8 @@ pub(crate) fn check(image: &Image<'_>, _objs: &[Obj<'_>], _map: &Map, set: &Dead
             out.push(finding(6, format!("{}: {m}", r.describe(image))).at(r.start));
         }
     }
-    if debug_ranges.is_empty() && !set.ranges.iter().any(|r| crate::dead::is_eh_frame(image, r.sec)) {
+    if debug_ranges.is_empty() && !set.ranges.iter().any(|r| crate::dead::is_eh_frame(image, r.sec))
+    {
         return;
     }
     live_references(&dbg, set, out);
@@ -179,16 +188,28 @@ fn dead_at<'s>(dbg: &Debug<'_>, set: &'s DeadSet, name: &str, off: u64) -> Optio
 // Check 2: the forms of a dead range.
 
 /// A `neutral` range: one or more of IN-51b's forms of `name`, tiling it.
-fn neutral(image: &Image<'_>, set: &DeadSet, name: &str, b: &[u8], base: usize) -> Result<(), String> {
+fn neutral(
+    image: &Image<'_>,
+    set: &DeadSet,
+    name: &str,
+    b: &[u8],
+    base: usize,
+) -> Result<(), String> {
     match name {
         ".debug_abbrev" => neutral_abbrev(b, base),
         ".debug_ranges" => match b.iter().position(|&x| x != 0) {
             None if b.len() >= 16 => Ok(()),
-            None => Err(format!("a neutral .debug_ranges range is at least 16 zero bytes, not {}", b.len())),
-            Some(i) => Err(format!("a neutral .debug_ranges range is zero bytes: byte at offset {:#x}", base + i)),
+            None => Err(format!(
+                "a neutral .debug_ranges range is at least 16 zero bytes, not {}",
+                b.len()
+            )),
+            Some(i) => Err(format!(
+                "a neutral .debug_ranges range is zero bytes: byte at offset {:#x}",
+                base + i
+            )),
         },
-        ".debug_info" | ".debug_line" | ".debug_rnglists" | ".debug_loclists" | ".debug_str_offsets"
-        | ".debug_addr" | ".debug_frame" => {
+        ".debug_info" | ".debug_line" | ".debug_rnglists" | ".debug_loclists"
+        | ".debug_str_offsets" | ".debug_addr" | ".debug_frame" => {
             let mut p = 0usize;
             while p < b.len() {
                 let n = neutral_unit(image, set, name, &b[p..], base + p)
@@ -225,7 +246,14 @@ fn neutral_abbrev(b: &[u8], base: usize) -> Result<(), String> {
 }
 
 /// One neutral unit at the start of `b`: its size.
-fn neutral_unit(image: &Image<'_>, set: &DeadSet, name: &str, b: &[u8], off: usize) -> Result<usize, String> {
+#[allow(clippy::too_many_lines)] // one block per section, IN-51b's table
+fn neutral_unit(
+    image: &Image<'_>,
+    set: &DeadSet,
+    name: &str,
+    b: &[u8],
+    off: usize,
+) -> Result<usize, String> {
     let mut r = Rd::new(b, 0);
     let len = match r.u32() {
         Some(v) if v < 0xffff_fff0 => v as usize,
@@ -245,7 +273,9 @@ fn neutral_unit(image: &Image<'_>, set: &DeadSet, name: &str, b: &[u8], off: usi
                 5 => {
                     let ut = r.u8().ok_or_else(short)?;
                     if ut != 1 {
-                        return Err(format!("a neutral unit is DW_UT_compile (1), not unit type {ut}"));
+                        return Err(format!(
+                            "a neutral unit is DW_UT_compile (1), not unit type {ut}"
+                        ));
                     }
                     let _asz = r.u8().ok_or_else(short)?;
                     r.u32().ok_or_else(short)?
@@ -266,8 +296,8 @@ fn neutral_unit(image: &Image<'_>, set: &DeadSet, name: &str, b: &[u8], off: usi
             let dbg = Debug { image };
             let table = dbg.data(".debug_abbrev").and_then(|(_, d)| d.get(abbrev as usize..));
             let with_base = match table {
-                Some(t) if t.starts_with(&[1, 0x11, 0, 0x80, 0x40, 9, 0, 0]) => false,
-                Some(t) if t.starts_with(&[1, 0x11, 0, 0x73, 0x17, 0x80, 0x40, 9, 0, 0]) => true,
+                Some([1, 0x11, 0, 0x80, 0x40, 9, 0, 0, ..]) => false,
+                Some([1, 0x11, 0, 0x73, 0x17, 0x80, 0x40, 9, 0, 0, ..]) => true,
                 _ => {
                     return Err(format!(
                         "a neutral unit's abbreviation table (.debug_abbrev+{abbrev:#x}) is IN-51's"
@@ -310,7 +340,10 @@ fn neutral_unit(image: &Image<'_>, set: &DeadSet, name: &str, b: &[u8], off: usi
             r.skip(6).ok_or_else(short)?;
             let lists: &[u8] = if v == 5 { &[1, 1, 8, 0, 1, 1, 8, 0] } else { &[0, 0] };
             if body.get(r.p..r.p + lists.len()) != Some(lists) {
-                return Err("a neutral line table's directory and file lists are empty (incr.md IN-51b)".into());
+                return Err(
+                    "a neutral line table's directory and file lists are empty (incr.md IN-51b)"
+                        .into(),
+                );
             }
             if r.p + lists.len() != prog {
                 return Err("a neutral line table's header_length is exact".into());
@@ -329,7 +362,9 @@ fn neutral_unit(image: &Image<'_>, set: &DeadSet, name: &str, b: &[u8], off: usi
             let _seg = r.u8().ok_or_else(short)?;
             let cnt = r.u32().ok_or_else(short)?;
             if v != 5 || cnt != 0 {
-                return Err(format!("a neutral list table is version 5 with offset_entry_count 0, not {v} and {cnt}"));
+                return Err(format!(
+                    "a neutral list table is version 5 with offset_entry_count 0, not {v} and {cnt}"
+                ));
             }
             zeros(body, r.p, off)?;
         }
@@ -337,7 +372,9 @@ fn neutral_unit(image: &Image<'_>, set: &DeadSet, name: &str, b: &[u8], off: usi
             let v = r.u16().ok_or_else(short)?;
             let _pad = r.u16().ok_or_else(short)?;
             if v != 5 || !(end - 8).is_multiple_of(4) {
-                return Err(format!("a neutral .debug_str_offsets table is version 5 with 4-byte entries, not version {v}"));
+                return Err(format!(
+                    "a neutral .debug_str_offsets table is version 5 with 4-byte entries, not version {v}"
+                ));
             }
             zeros(body, r.p, off)?;
         }
@@ -346,7 +383,9 @@ fn neutral_unit(image: &Image<'_>, set: &DeadSet, name: &str, b: &[u8], off: usi
             let asz = r.u8().ok_or_else(short)?;
             let _seg = r.u8().ok_or_else(short)?;
             if v != 5 || asz != 8 || !(end - 8).is_multiple_of(8) {
-                return Err(format!("a neutral .debug_addr table is version 5 with 8-byte addresses, not version {v}, size {asz}"));
+                return Err(format!(
+                    "a neutral .debug_addr table is version 5 with 8-byte addresses, not version {v}, size {asz}"
+                ));
             }
             zeros(body, r.p, off)?;
         }
@@ -370,12 +409,17 @@ fn neutral_unit(image: &Image<'_>, set: &DeadSet, name: &str, b: &[u8], off: usi
 fn zeros(b: &[u8], from: usize, off: usize) -> Result<(), String> {
     match b.get(from..).and_then(|t| t.iter().position(|&x| x != 0)) {
         None => Ok(()),
-        Some(i) => Err(format!("the body is zero: byte {:#04x} at offset {:#x}", b[from + i], off + from + i)),
+        Some(i) => Err(format!(
+            "the body is zero: byte {:#04x} at offset {:#x}",
+            b[from + i],
+            off + from + i
+        )),
     }
 }
 
 /// A `contribution` range: whole units of `name` as a compiler wrote
 /// them, every address operand the tombstone (IN-53).
+#[allow(clippy::too_many_lines)] // one block per section, IN-53's list
 fn contribution(image: &Image<'_>, name: &str, b: &[u8], base: usize) -> Result<(), String> {
     let class = image.class();
     let pie = position_independent(image);
@@ -387,16 +431,21 @@ fn contribution(image: &Image<'_>, name: &str, b: &[u8], base: usize) -> Result<
         ));
     }
     match name {
-        ".debug_line" | ".debug_rnglists" | ".debug_loclists" | ".debug_str_offsets" | ".debug_addr" => {
+        ".debug_line" | ".debug_rnglists" | ".debug_loclists" | ".debug_str_offsets"
+        | ".debug_addr" => {
             let mut p = 0usize;
             while p < b.len() {
                 let mut r = Rd::new(b, p);
-                let (len, osz) = r.initial_length().ok_or_else(|| format!("no unit starts at offset {:#x}", base + p))?;
+                let (len, osz) = r
+                    .initial_length()
+                    .ok_or_else(|| format!("no unit starts at offset {:#x}", base + p))?;
                 let start = r.p;
                 let end = start
                     .checked_add(usize::try_from(len).map_err(|_| "unit_length")?)
                     .filter(|&e| e <= b.len())
-                    .ok_or_else(|| format!("the unit at offset {:#x} runs past the range", base + p))?;
+                    .ok_or_else(|| {
+                        format!("the unit at offset {:#x} runs past the range", base + p)
+                    })?;
                 let unit = &b[..end];
                 let v = r.u16().unwrap_or(0);
                 let ok = match name {
@@ -408,7 +457,9 @@ fn contribution(image: &Image<'_>, name: &str, b: &[u8], base: usize) -> Result<
                 }
                 let tomb = |w| tombstone(name, class, w);
                 let res = match name {
-                    ".debug_line" => line_addresses(unit, start, end, v, osz, tomb(addr_width(class))),
+                    ".debug_line" => {
+                        line_addresses(unit, start, end, v, osz, tomb(addr_width(class)))
+                    }
                     ".debug_addr" => {
                         let asz = r.u8().unwrap_or(0) as usize;
                         r.skip(1);
@@ -417,7 +468,10 @@ fn contribution(image: &Image<'_>, name: &str, b: &[u8], base: usize) -> Result<
                         while asz > 0 && q + asz <= end {
                             let val = Rd::new(unit, q).n(asz).unwrap_or(0);
                             if val != tomb(asz) {
-                                res = Err(format!("address {val:#x} at offset {:#x} is not the tombstone", base + q));
+                                res = Err(format!(
+                                    "address {val:#x} at offset {:#x} is not the tombstone",
+                                    base + q
+                                ));
                                 break;
                             }
                             q += asz;
@@ -440,12 +494,15 @@ fn contribution(image: &Image<'_>, name: &str, b: &[u8], base: usize) -> Result<
             let w = addr_width(class);
             while p < b.len() {
                 let mut r = Rd::new(b, p);
-                let (len, osz) = r.initial_length().ok_or_else(|| format!("no record starts at offset {:#x}", base + p))?;
-                let end = r
-                    .p
-                    .checked_add(usize::try_from(len).map_err(|_| "length")?)
-                    .filter(|&e| e <= b.len() && len > 0)
-                    .ok_or_else(|| format!("the record at offset {:#x} runs past the range", base + p))?;
+                let (len, osz) = r
+                    .initial_length()
+                    .ok_or_else(|| format!("no record starts at offset {:#x}", base + p))?;
+                let end =
+                    r.p.checked_add(usize::try_from(len).map_err(|_| "length")?)
+                        .filter(|&e| e <= b.len() && len > 0)
+                        .ok_or_else(|| {
+                            format!("the record at offset {:#x} runs past the range", base + p)
+                        })?;
                 let id = r.n(osz).unwrap_or(0);
                 let cie = id == if osz == 8 { u64::MAX } else { 0xffff_ffff };
                 if !cie {
@@ -494,13 +551,21 @@ fn addr_width(class: Class) -> usize {
 }
 
 /// A line table's `DW_LNE_set_address` operands are the tombstone.
-fn line_addresses(u: &[u8], start: usize, end: usize, v: u16, osz: usize, tomb: u64) -> Result<(), String> {
+fn line_addresses(
+    u: &[u8],
+    start: usize,
+    end: usize,
+    v: u16,
+    osz: usize,
+    tomb: u64,
+) -> Result<(), String> {
     let mut r = Rd::new(u, start + 2);
     if v == 5 {
         r.skip(2).ok_or("short header")?;
     }
     let hl = r.n(osz).ok_or("short header")? as usize;
-    let prog = r.p.checked_add(hl).filter(|&e| e <= end).ok_or("header_length runs past the unit")?;
+    let prog =
+        r.p.checked_add(hl).filter(|&e| e <= end).ok_or("header_length runs past the unit")?;
     r.skip(if v >= 4 { 5 } else { 4 }).ok_or("short header")?;
     let ob = r.u8().ok_or("short header")?;
     let lens: Vec<u8> = (1..ob.max(1)).map_while(|_| r.u8()).collect();
@@ -520,7 +585,9 @@ fn line_addresses(u: &[u8], start: usize, end: usize, v: u16, osz: usize, tomb: 
                 let ones = if w >= 8 { u64::MAX } else { (1u64 << (8 * w)) - 1 };
                 let want = if tomb == u64::MAX { ones } else { tomb };
                 if a != want {
-                    return Err(format!("DW_LNE_set_address {a:#x} is not the tombstone {want:#x}"));
+                    return Err(format!(
+                        "DW_LNE_set_address {a:#x} is not the tombstone {want:#x}"
+                    ));
                 }
             }
             r.p = at;
@@ -540,7 +607,15 @@ fn line_addresses(u: &[u8], start: usize, end: usize, v: u16, osz: usize, tomb: 
 
 /// The entries of a v5 list table's body: address operands are the
 /// tombstone.
-fn lists(u: &[u8], header_end: usize, end: usize, loc: bool, osz: usize, asz: usize, tomb: u64) -> Result<(), String> {
+fn lists(
+    u: &[u8],
+    header_end: usize,
+    end: usize,
+    loc: bool,
+    osz: usize,
+    asz: usize,
+    tomb: u64,
+) -> Result<(), String> {
     let mut r = Rd::new(u, header_end - 4);
     let cnt = r.u32().ok_or("short header")? as usize;
     if !matches!(asz, 4 | 8) {
@@ -550,7 +625,11 @@ fn lists(u: &[u8], header_end: usize, end: usize, loc: bool, osz: usize, asz: us
     r.skip((cnt as u64).saturating_mul(osz as u64)).ok_or("the offset array runs past the unit")?;
     let addr = |r: &mut Rd<'_>| -> Result<(), String> {
         let a = r.n(asz).ok_or("short entry")?;
-        if a == tomb { Ok(()) } else { Err(format!("address {a:#x} is not the tombstone {tomb:#x}")) }
+        if a == tomb {
+            Ok(())
+        } else {
+            Err(format!("address {a:#x} is not the tombstone {tomb:#x}"))
+        }
     };
     while r.p < end {
         let e = r.u8().ok_or("short entry")?;
@@ -587,7 +666,12 @@ fn lists(u: &[u8], header_end: usize, end: usize, loc: bool, osz: usize, asz: us
                     expr(&mut r)?;
                 }
             }
-            _ => return Err(format!("unknown list entry kind {e:#04x} at unit offset {:#x}", r.p - 1)),
+            _ => {
+                return Err(format!(
+                    "unknown list entry kind {e:#04x} at unit offset {:#x}",
+                    r.p - 1
+                ));
+            }
         }
     }
     Ok(())
@@ -596,10 +680,9 @@ fn lists(u: &[u8], header_end: usize, end: usize, loc: bool, osz: usize, asz: us
 // ---------------------------------------------------------------------
 // Check 1: what live units name.
 
-/// An abbreviation: tag aside, whether it has children and its
-/// attributes `(name, form, implicit const)`.
+/// An abbreviation's attributes `(name, form)` (tag and children aside:
+/// the walk reads DIEs in order, null entries included).
 struct Abbrev {
-    children: bool,
     attrs: Vec<(u64, u64)>,
 }
 
@@ -612,7 +695,7 @@ fn abbrevs(d: &[u8], off: usize) -> Option<std::collections::HashMap<u64, Abbrev
             return Some(m);
         }
         let _tag = r.uleb()?;
-        let children = r.u8()? != 0;
+        let _children = r.u8()?;
         let mut attrs = Vec::new();
         loop {
             let (a, f) = (r.uleb()?, r.uleb()?);
@@ -624,7 +707,7 @@ fn abbrevs(d: &[u8], off: usize) -> Option<std::collections::HashMap<u64, Abbrev
             }
             attrs.push((a, f));
         }
-        m.insert(code, Abbrev { children, attrs });
+        m.insert(code, Abbrev { attrs });
         if m.len() > 1_000_000 {
             return None;
         }
@@ -765,6 +848,7 @@ fn sec_offset_target(at: u64, version: u16) -> Option<&'static str> {
 
 /// IN-3a check 1 over the debug sections (P-I4) and the frame tables'
 /// CIE pointers (P-I3 for `.eh_frame`).
+#[allow(clippy::too_many_lines)] // one pass per table, in IN-3a's order
 fn live_references(dbg: &Debug<'_>, set: &DeadSet, out: &mut Vec<Finding>) {
     let image = dbg.image;
     let say = |msg: String, out: &mut Vec<Finding>| {
@@ -788,9 +872,15 @@ fn live_references(dbg: &Debug<'_>, set: &DeadSet, out: &mut Vec<Finding>) {
                 say(format!("cannot read the .debug_info unit at {p:#x}: its length"), out);
                 break;
             };
-            let Some(end) = usize::try_from(len).ok().and_then(|l| r.p.checked_add(l)).filter(|&e| e <= info.len())
+            let Some(end) = usize::try_from(len)
+                .ok()
+                .and_then(|l| r.p.checked_add(l))
+                .filter(|&e| e <= info.len())
             else {
-                say(format!("cannot read the .debug_info unit at {p:#x}: it runs past the section"), out);
+                say(
+                    format!("cannot read the .debug_info unit at {p:#x}: it runs past the section"),
+                    out,
+                );
                 break;
             };
             let unit_at = p;
@@ -810,13 +900,17 @@ fn live_references(dbg: &Debug<'_>, set: &DeadSet, out: &mut Vec<Finding>) {
                     (ab, r.u8().unwrap_or(0), 1)
                 }
                 _ => {
-                    say(format!("cannot walk the live .debug_info unit at {unit_at:#x}: version {v}"), out);
+                    say(
+                        format!(
+                            "cannot walk the live .debug_info unit at {unit_at:#x}: version {v}"
+                        ),
+                        out,
+                    );
                     continue;
                 }
             };
             // Skeleton/split/type units carry an id or signature first.
             match ut {
-                1 | 3 => {}
                 4 | 5 => {
                     r.skip(8);
                 }
@@ -826,31 +920,50 @@ fn live_references(dbg: &Debug<'_>, set: &DeadSet, out: &mut Vec<Finding>) {
                 _ => {}
             }
             if let Some(d) = dead_at(dbg, set, ".debug_abbrev", ab) {
-                say(format!("{}: the live .debug_info unit at {unit_at:#x} names it as its abbreviation table", d.describe(image)), out);
+                say(
+                    format!(
+                        "{}: the live .debug_info unit at {unit_at:#x} names it as its abbreviation table",
+                        d.describe(image)
+                    ),
+                    out,
+                );
                 continue;
             }
             let Some(table) = usize::try_from(ab).ok().and_then(|a| abbrevs(abbrev, a)) else {
-                say(format!("cannot walk the live .debug_info unit at {unit_at:#x}: its abbreviation table at {ab:#x}"), out);
+                say(
+                    format!(
+                        "cannot walk the live .debug_info unit at {unit_at:#x}: its abbreviation table at {ab:#x}"
+                    ),
+                    out,
+                );
                 continue;
             };
             let ctx = UnitCtx { version: v, osz, asz: usize::from(asz) };
             let mut r = Rd::new(&info[..end], r.p);
-            let mut depth = 0i64;
             while r.p < end {
                 let die_at = r.p;
                 let Some(code) = r.uleb() else { break };
                 if code == 0 {
-                    depth -= 1;
                     continue;
                 }
                 let Some(a) = table.get(&code) else {
-                    say(format!("cannot walk the live .debug_info unit at {unit_at:#x}: abbreviation code {code} at {die_at:#x}"), out);
+                    say(
+                        format!(
+                            "cannot walk the live .debug_info unit at {unit_at:#x}: abbreviation code {code} at {die_at:#x}"
+                        ),
+                        out,
+                    );
                     break;
                 };
                 let mut bad = false;
                 for &(at, form) in &a.attrs {
                     let Some(val) = form_value(&mut r, form, &ctx) else {
-                        say(format!("cannot walk the live .debug_info unit at {unit_at:#x}: form {form:#x} of the DIE at {die_at:#x}"), out);
+                        say(
+                            format!(
+                                "cannot walk the live .debug_info unit at {unit_at:#x}: form {form:#x} of the DIE at {die_at:#x}"
+                            ),
+                            out,
+                        );
                         bad = true;
                         break;
                     };
@@ -885,10 +998,6 @@ fn live_references(dbg: &Debug<'_>, set: &DeadSet, out: &mut Vec<Finding>) {
                 if bad {
                     break;
                 }
-                if a.children {
-                    depth += 1;
-                }
-                let _ = depth;
             }
         }
     }
@@ -911,7 +1020,13 @@ fn live_references(dbg: &Debug<'_>, set: &DeadSet, out: &mut Vec<Finding>) {
             while q + 4 <= end {
                 let s = Rd::new(so, q).n(4).unwrap_or(0);
                 if let Some(d) = dead_at(dbg, set, ".debug_str", s) {
-                    say(format!("{}: the live .debug_str_offsets entry at {q:#x} names .debug_str+{s:#x}", d.describe(image)), out);
+                    say(
+                        format!(
+                            "{}: the live .debug_str_offsets entry at {q:#x} names .debug_str+{s:#x}",
+                            d.describe(image)
+                        ),
+                        out,
+                    );
                 }
                 q += 4;
             }
@@ -923,12 +1038,20 @@ fn live_references(dbg: &Debug<'_>, set: &DeadSet, out: &mut Vec<Finding>) {
         while p < ar.len() {
             let mut r = Rd::new(ar, p);
             let Some((len, osz)) = r.initial_length() else { break };
-            let Some(end) = usize::try_from(len).ok().and_then(|l| r.p.checked_add(l)) else { break };
+            let Some(end) = usize::try_from(len).ok().and_then(|l| r.p.checked_add(l)) else {
+                break;
+            };
             r.skip(2);
             if let Some(o) = r.n(osz)
                 && let Some(d) = dead_at(dbg, set, ".debug_info", o)
             {
-                say(format!("{}: the .debug_aranges set at {p:#x} names unit .debug_info+{o:#x}", d.describe(image)), out);
+                say(
+                    format!(
+                        "{}: the .debug_aranges set at {p:#x} names unit .debug_info+{o:#x}",
+                        d.describe(image)
+                    ),
+                    out,
+                );
             }
             if end <= p {
                 break;
@@ -945,7 +1068,13 @@ fn live_references(dbg: &Debug<'_>, set: &DeadSet, out: &mut Vec<Finding>) {
 
 /// A v5 line table header's `strp`/`line_strp` entries (v2–v4 headers
 /// hold strings inline).
-fn line_header_strings(dbg: &Debug<'_>, set: &DeadSet, d: &[u8], off: u64, out: &mut Vec<Finding>) -> Result<(), String> {
+fn line_header_strings(
+    dbg: &Debug<'_>,
+    set: &DeadSet,
+    d: &[u8],
+    off: u64,
+    out: &mut Vec<Finding>,
+) -> Result<(), String> {
     let mut r = Rd::new(d, usize::try_from(off).map_err(|_| "offset")?);
     let (_, osz) = r.initial_length().ok_or("its length")?;
     let v = r.u16().ok_or("short")?;
@@ -968,19 +1097,17 @@ fn line_header_strings(dbg: &Debug<'_>, set: &DeadSet, d: &[u8], off: u64, out: 
         let n = r.uleb().ok_or("short")?;
         for _ in 0..n {
             for &(ct, form) in &fmt {
-                match form_value(&mut r, form, &ctx).ok_or_else(|| format!("form {form:#x}"))? {
-                    Named::Offset(s, o) => {
-                        if let Some(dd) = dead_at(dbg, set, s, o) {
-                            out.push(finding(
-                                4,
-                                format!(
-                                    "{}: the live .debug_line table at {off:#x} names {s}+{o:#x} (content type {ct:#x})",
-                                    dd.describe(dbg.image)
-                                ),
-                            ));
-                        }
-                    }
-                    _ => {}
+                let v = form_value(&mut r, form, &ctx).ok_or_else(|| format!("form {form:#x}"))?;
+                if let Named::Offset(s, o) = v
+                    && let Some(dd) = dead_at(dbg, set, s, o)
+                {
+                    out.push(finding(
+                        4,
+                        format!(
+                            "{}: the live .debug_line table at {off:#x} names {s}+{o:#x} (content type {ct:#x})",
+                            dd.describe(dbg.image)
+                        ),
+                    ));
                 }
             }
         }
@@ -1007,7 +1134,10 @@ fn frame_cie_pointers(dbg: &Debug<'_>, set: &DeadSet, name: &str, out: &mut Vec<
         {
             out.push(finding(
                 4,
-                format!("{}: the live {name} FDE at {p:#x} names a CIE at {id:#x}", dd.describe(dbg.image)),
+                format!(
+                    "{}: the live {name} FDE at {p:#x} names a CIE at {id:#x}",
+                    dd.describe(dbg.image)
+                ),
             ));
         }
         p = end;
@@ -1036,8 +1166,14 @@ fn eh_cie_pointers(image: &Image<'_>, i: usize, set: &DeadSet, out: &mut Vec<Fin
             let cie = field.wrapping_sub(id);
             if let Some(dd) = set.in_section(i, cie) {
                 out.push(
-                    finding(3, format!("{}: the live .eh_frame FDE at {at:#x} names a CIE at {cie:#x}", dd.describe(image)))
-                        .at(at),
+                    finding(
+                        3,
+                        format!(
+                            "{}: the live .eh_frame FDE at {at:#x} names a CIE at {cie:#x}",
+                            dd.describe(image)
+                        ),
+                    )
+                    .at(at),
                 );
             }
         }
