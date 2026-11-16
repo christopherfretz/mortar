@@ -12,6 +12,7 @@ use mortar_elf::consts::{PF_R, PF_W, PF_X};
 use mortar_elf::{Class, Machine};
 
 use crate::diag::{LayoutDiag, feature, invalid_option};
+use crate::slack::Slack;
 
 /// The machine facts of layout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,6 +127,9 @@ pub struct Options {
     /// base 0 (L-68).
     pub pie: bool,
     pub entry: EntryName,
+    /// The slack policy (`spec/incr.md` IN-33): [`Slack::NONE`] but in an
+    /// incremental-mode link.
+    pub slack: Slack,
 }
 
 impl Options {
@@ -143,6 +147,7 @@ impl Options {
             now: false,
             pie: false,
             entry: EntryName::Symbol(b"_start".to_vec()),
+            slack: Slack::NONE,
         }
     }
 

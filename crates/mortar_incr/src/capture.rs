@@ -21,9 +21,9 @@ use mortar_core::identity::{
 };
 use mortar_core::inputs::{Inputs, Reader};
 use mortar_core::layout::{
-    AllocKey, Chunk, ChunkKind, DefValue, Defined, EhRecord, Erratum, Layout, MergeMap, Patch,
-    PatchKind, Place, Placement, Redirect, Segment, Sized, SlotKind, Slots, SymPlace, ThunkTarget,
-    Tls,
+    AllocKey, Chunk, ChunkKind, DefValue, Defined, EhRecord, Erratum, Hole, HoleKind, Layout,
+    MergeMap, Patch, PatchKind, Place, Placement, Redirect, Segment, Sized, SlotKind, Slots,
+    SymPlace, ThunkTarget, Tls,
 };
 use mortar_core::resolution::Resolution;
 use mortar_core::split::Split;
@@ -31,9 +31,9 @@ use mortar_elf::consts::{STT_FILE, STT_SECTION};
 use mortar_elf::{SectionIndex, SymbolSection};
 
 use crate::format::{
-    ChunkRow, DefinedRow, EhRow, FileRow, FragRow, NONE, OutSecRow, PatchRow, ProbeRow,
+    ChunkRow, DefinedRow, EhRow, FileRow, FragRow, HoleRow, NONE, OutSecRow, PatchRow, ProbeRow,
     RedirectRow, SectionRow, SegmentRow, SizeRow, SlotRow, SpanRow, State, Str, Strings,
-    SymPlaceRow, SymbolRow, chunk_bits, layout_bits, patch_kind, sym_kind,
+    SymPlaceRow, SymbolRow, chunk_bits, hole_kind, layout_bits, patch_kind, sym_kind,
 };
 
 /// The tables of one link that identities are computed from.
@@ -96,6 +96,31 @@ const TAGS: [ChunkTag; 9] = [
     ChunkTag::Group,
     ChunkTag::Relocs,
 ];
+
+fn hole_byte(kind: HoleKind) -> u8 {
+    match kind {
+        HoleKind::Fill => hole_kind::FILL,
+        HoleKind::EhPad => hole_kind::EH_PAD,
+        HoleKind::Debug => hole_kind::DEBUG,
+        HoleKind::AbbrevTable => hole_kind::ABBREV_TABLE,
+        HoleKind::DeadDebug => hole_kind::DEAD_DEBUG,
+        HoleKind::DeadFragment => hole_kind::DEAD_FRAGMENT,
+        HoleKind::DeadCie => hole_kind::DEAD_CIE,
+    }
+}
+
+fn hole_of(b: u8) -> Result<HoleKind, String> {
+    Ok(match b {
+        hole_kind::FILL => HoleKind::Fill,
+        hole_kind::EH_PAD => HoleKind::EhPad,
+        hole_kind::DEBUG => HoleKind::Debug,
+        hole_kind::ABBREV_TABLE => HoleKind::AbbrevTable,
+        hole_kind::DEAD_DEBUG => HoleKind::DeadDebug,
+        hole_kind::DEAD_FRAGMENT => HoleKind::DeadFragment,
+        hole_kind::DEAD_CIE => HoleKind::DeadCie,
+        _ => return Err(format!("hole kind {b}")),
+    })
+}
 
 fn tag_byte(tag: ChunkTag) -> u8 {
     TAGS.iter().position(|&t| t == tag).unwrap_or(0) as u8
@@ -482,6 +507,16 @@ pub fn capture(
         .map(|r| RedirectRow { section: r.section.0, patch: r.patch, offset: r.offset })
         .collect();
     s.sized = p.sized.iter().map(|z| SizeRow { chunk: z.chunk.0, size: z.size }).collect();
+    s.holes = p
+        .holes
+        .iter()
+        .map(|h| HoleRow {
+            chunk: h.chunk.0,
+            kind: hole_byte(h.kind),
+            offset: h.offset,
+            size: h.size,
+        })
+        .collect();
     let mut bits = 0;
     if let Some(tls) = p.tls {
         bits |= layout_bits::TLS;
@@ -724,6 +759,17 @@ pub fn replay(
     for z in &s.sized {
         sized.push(Sized { chunk: chunk(z.chunk)?, size: z.size });
     }
+    let mut holes = Vec::with_capacity(s.holes.len());
+    for h in &s.holes {
+        holes.push(Hole {
+            chunk: chunk(h.chunk)?,
+            offset: h.offset,
+            size: h.size,
+            kind: hole_of(h.kind)?,
+        });
+    }
+    // The state's order is by row; the replay's by the present chunk ids.
+    holes.sort_unstable();
     let l = &s.layout;
     let placement = Placement {
         chunks: Column::from_vec(chunks).map_err(|_| "chunks")?,
@@ -757,6 +803,7 @@ pub fn replay(
             align: l.tls_align,
         }),
         entry: (l.bits & layout_bits::ENTRY != 0).then_some(l.entry),
+        holes: holes.into(),
     };
     // The merged map: this link's live fragments take their identity's
     // stored offset; its dead ones stay dead (IN-18a `FRAGS`).

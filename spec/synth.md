@@ -1519,13 +1519,19 @@ edit changes.
   next `FragId`; its referrers are the edited file's units, refilled
   anyway. An unused fragment keeps its bytes. A full link given these
   tables gives the same bytes (model §7.3): `MergeMap` is stored in
-  identity terms (output section and content hash, model §7.1).
+  identity terms (output section and content hash, model §7.1). An
+  unused piece is a dead range (`spec/incr.md` IN-3a): recorded in the
+  decision tables, never the target of a live reference, and exempt
+  from fill, because a live reference may share its suffix.
 - **S-111 [M7] (an FDE added or removed).** The edited file's records
-  are a contiguous range of `.eh_frame` (S-46), refilled. When it grows
-  past its capacity, `.eh_frame` grows by layout L-144, and the moved
-  records and the hdr table are refilled (moved FDEs carry their CIE
-  pointers). A CIE that becomes unused stays; a CIE needed for the first
-  time is appended in the edited file's range. `.eh_frame_hdr` is one
+  are a contiguous range of `.eh_frame` (S-46), refilled. In
+  incremental mode `.eh_frame` is grouped in per-file ranges in S-46's
+  order, CIEs are deduplicated within a file only, and a range's unused
+  tail is 0 bytes, absorbed `DW_CFA_nop` padding of the range's last
+  record (4, 8 or 12 bytes), or one padding CIE of at least 16 bytes
+  (`spec/incr.md` IN-34a, with its bytes). A range that outgrows its
+  capacity makes the whole section be rewritten in full-link order. The
+  terminator is always the section's last word. `.eh_frame_hdr` is one
   unit, refilled whenever an FDE's address changes (a sort of 10^6
   entries, about 10 ms). Per-file capacity is `spec/incr.md`'s policy;
   the shape allows it because `Slots.eh_records` is a table and a hole

@@ -1590,7 +1590,7 @@ class or shape, and a missing required key, are errors naming the line.
 
 | key | kinds | meaning |
 |---|---|---|
-| `class` | all | `small`, `medium`, `large`, `extreme`, `rust`, or `calibration` (exactly one workload: "Calibration") |
+| `class` | all | `small`, `medium`, `large`, `extreme`, `rust`, `calibration` (exactly one workload: "Calibration"), or `on-request` (built and measured only when named with `--workload`: inputs too large to keep, generated, measured and deleted) |
 | `kind` | all | `sources`, `synthetic`, `cmake`, `cargo`, `planned` |
 | `about` | all | one sentence for the report |
 | `sources` | sources | files of `bench/workloads/src/` |
@@ -1622,6 +1622,7 @@ The workloads (sizes as the census of this machine counted them are in
 | `rust-self-static` | rust | `rust-self` with `-C target-feature=+crt-static -C relocation-model=static`: static, not PIE |
 | `synthetic-<shape>-static` | extreme | each `synthetic-*` above with `ldflags = -static`, the same sources and flags |
 | `synthetic-library-static` | extreme | one archive of 20000 members of which `main` needs every 50th, `-static` |
+| `synthetic-objects-g10x` | on-request | `synthetic-objects` at 8150 objects with `-g` (`-O1 -g`), `-static`: at least 10× protoc `-g`'s live input, the large workload of `spec/incr.md` §1.5's go/no-go rule (WP-061 stage B) |
 | `fortran-static` | small | `fortran.f90` (a Fortran main calling C through `BIND(C)`) and `fortran-sum.c`, gfortran `-O1`, `-static` against libgfortran |
 
 **Static twins.** Until M2 mortar links static, non-PIE executables only
