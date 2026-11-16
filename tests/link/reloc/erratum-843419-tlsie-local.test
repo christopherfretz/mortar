@@ -1,0 +1,156 @@
+# A TLS IE page (541) of the program's own variable at 0xFF8/0xFFC is no
+# site in an executable (WP-103): R3 makes the ADRP a MOVZ and the load a
+# MOVK (a64.md 8.3), and a relaxed word is no `W1` (11.2: "A relaxation
+# that turns `W1` into a MOVZ removes the site"). mortar writes R3 in a
+# dynamic output only (an M2 rule; static and static-pie outputs keep IE,
+# crates/mortar/src/dynamic.rs), so its static outputs have the site, and
+# the ADR to the slot's page.
+#@ spec: a64.md "11.1 The predicate"
+#@ spec: a64.md "11.2 The fix"
+#@ spec: a64.md "8.3 R3: IE → LE"
+#@ arch: aarch64
+# GNU ld's static PIE: the GOT slot of glibc's absolute
+# `_nl_current_*_used` gets a RELATIVE record (plumb.md 10.2).
+#@ anomaly(bfd): A30
+
+as f.S -o f.o
+cc -O1 -fno-pie main.c -o main-static.o
+cc -O1 -fPIE main.c -o main-static-pie.o
+cc -O1 -fPIE main.c -o main-pie-now.o
+cc -O1 -fPIE main.c -o main-pie-lazy.o
+cc -O1 -fno-pie main.c -o main-exec.o
+# a static executable; the option spelled (the x86-64 host's cross driver may not pass it).
+link gcc -static -no-pie -Wl,--fix-cortex-a53-843419 main-static.o f.o -o static
+run static
+  stdout: ok
+check(mortar) objdump -d --disassemble=f static
+  has: ff8: * adr x0, 
+  has: ffc: * adr x0, 
+check(bfd) objdump -d --disassemble=f static
+  not: ff8: * adr x0, 
+  not: ff8: * adrp x0, 
+  not: 000: * b 
+  not: ffc: * adr x0, 
+  not: ffc: * adrp x0, 
+  not: 004: * b 
+# a static PIE; the option spelled (the x86-64 host's cross driver may not pass it).
+link gcc -static-pie -Wl,--fix-cortex-a53-843419 main-static-pie.o f.o -o static-pie
+run static-pie
+  stdout: ok
+check(mortar) objdump -d --disassemble=f static-pie
+  has: ff8: * adr x0, 
+  has: ffc: * adr x0, 
+check(bfd) objdump -d --disassemble=f static-pie
+  not: ff8: * adr x0, 
+  not: ff8: * adrp x0, 
+  not: 000: * b 
+  not: ffc: * adr x0, 
+  not: ffc: * adrp x0, 
+  not: 004: * b 
+# a PIE, -z now; the option spelled (the x86-64 host's cross driver may not pass it).
+link gcc -pie -Wl,-z,now -Wl,--fix-cortex-a53-843419 main-pie-now.o f.o -o pie-now
+run pie-now
+  stdout: ok
+check(mortar) objdump -d --disassemble=f pie-now
+  not: ff8: * adr x0, 
+  not: ff8: * adrp x0, 
+  not: 000: * b 
+  not: ffc: * adr x0, 
+  not: ffc: * adrp x0, 
+  not: 004: * b 
+check(bfd) objdump -d --disassemble=f pie-now
+  not: ff8: * adr x0, 
+  not: ff8: * adrp x0, 
+  not: 000: * b 
+  not: ffc: * adr x0, 
+  not: ffc: * adrp x0, 
+  not: 004: * b 
+# a PIE, lazy; the option spelled (the x86-64 host's cross driver may not pass it).
+link gcc -pie -Wl,-z,lazy -Wl,--fix-cortex-a53-843419 main-pie-lazy.o f.o -o pie-lazy
+run pie-lazy
+  stdout: ok
+check(mortar) objdump -d --disassemble=f pie-lazy
+  not: ff8: * adr x0, 
+  not: ff8: * adrp x0, 
+  not: 000: * b 
+  not: ffc: * adr x0, 
+  not: ffc: * adrp x0, 
+  not: 004: * b 
+check(bfd) objdump -d --disassemble=f pie-lazy
+  not: ff8: * adr x0, 
+  not: ff8: * adrp x0, 
+  not: 000: * b 
+  not: ffc: * adr x0, 
+  not: ffc: * adrp x0, 
+  not: 004: * b 
+# a dynamic executable; the option spelled (the x86-64 host's cross driver may not pass it).
+link gcc -no-pie -Wl,--fix-cortex-a53-843419 main-exec.o f.o -o exec
+run exec
+  stdout: ok
+check(mortar) objdump -d --disassemble=f exec
+  not: ff8: * adr x0, 
+  not: ff8: * adrp x0, 
+  not: 000: * b 
+  not: ffc: * adr x0, 
+  not: ffc: * adrp x0, 
+  not: 004: * b 
+check(bfd) objdump -d --disassemble=f exec
+  not: ff8: * adr x0, 
+  not: ff8: * adrp x0, 
+  not: 000: * b 
+  not: ffc: * adr x0, 
+  not: ffc: * adrp x0, 
+  not: 004: * b 
+
+#--- f.S
+	.section .text.f,"ax",%progbits
+	.balign	4096
+	.globl	f
+	.type	f, %function
+f:
+	stp	x29, x30, [sp, #-16]!
+	mov	x10, x0
+	.rept	1020
+	nop
+	.endr
+	// the site at 0xFF8: W1, W2, then the final word
+	adrp	x0, :gottprel:tv
+	ldr	x9, [sp]
+	ldr	x0, [x0, :gottprel_lo12:tv]
+	mrs	x1, tpidr_el0
+	add	x0, x1, x0
+	str	x0, [x10]
+	.rept	1019
+	nop
+	.endr
+	// the site at 0xFFC of the next page
+	adrp	x0, :gottprel:tv
+	ldr	x9, [sp]
+	ldr	x0, [x0, :gottprel_lo12:tv]
+	mrs	x1, tpidr_el0
+	add	x0, x1, x0
+	str	x0, [x10, #8]
+	ldp	x29, x30, [sp], #16
+	ret
+	.size	f, .-f
+	.section .tbss,"awT",%nobits
+	.balign	4
+	.globl	tv
+tv:	.zero	4
+	.section .note.GNU-stack,"",%progbits
+#--- main.c
+#include <stdio.h>
+extern __thread int tv;
+void f(void **out);
+
+int main(void) {
+  void *o[2];
+  f(o);
+  void *want = (void *)&tv;
+  if (o[0] != want || o[1] != want) {
+    printf("wrong: %p %p, want %p\n", o[0], o[1], want);
+    return 1;
+  }
+  puts("ok");
+  return 0;
+}
