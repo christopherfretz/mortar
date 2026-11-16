@@ -1,0 +1,4 @@
+V1 {
+  global: lib_check; lib_inited; my_init; my_fini;
+  local: *;
+};
