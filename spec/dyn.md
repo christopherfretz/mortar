@@ -1296,7 +1296,7 @@ already) nor the `Pie` and `Exec` rows of D-42/D-43 for a library that
 does not bind locally. A mold `-Bsymbolic` library carries neither tag
 and is not seen (a recorded gap); a `NONPREEMPTIBLE` row is read once
 WP-129 writes the tables of shared objects, `DT_SYMBOLIC`/`DF_SYMBOLIC`
-before. The verifier's side is P-R9 (plumb.md §12.7, P-D11). *Test:*
+before. The verifier's side is P-R9, plumb.md P-D24 (§12.5, added to P-D11). *Test:*
 `copy-of-symbolic` (refuse `.data`/`.bss`, warn `.rodata`/
 `.data.rel.ro`, refuse outside every `PT_LOAD`; a GNU ld and an lld
 `-Bsymbolic` library and a mortar one with a table; W30).

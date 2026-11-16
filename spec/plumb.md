@@ -4675,6 +4675,200 @@ made `DT_NEEDED`), `spie-relacount` (plus and minus one; minus one is
 equivalent for a reference: glibc applies that record as an ordinary
 one), `spie-dynamic-word` (the GOT's `_DYNAMIC` word 0 or plus 8).
 
+### 12.5 Shared objects (M4; planned: WP-121)
+
+Requests P-R1-P-R11 of `spec/dyn.md` §18.3, applied by WP-115 as rules
+P-D16-P-D26 (P-R*n* is P-D(15+*n*)). Until WP-121 lands, P-D1 rejects
+an `ET_DYN` without `DF_1_PIE` and without `PT_INTERP` that is not a
+static-pie, as today. The `D-` rules cited are `spec/dyn.md` §17's; D-117
+items 1-9 are its "Bound use through a register" and are cited, not
+restated: the verifier implements them from that text.
+
+A shared object cannot be judged "resolves as the program assumed" from
+the library alone: what a preemptible reference binds to depends on the
+process (D-112). **The interposer stands in for the host.** P-D9's
+loader model runs with a synthetic first module, the interposer, in
+place of an executable. It defines **every key the verifier computes as
+exported** (D-110: the whole export set, preemptible and bound alike)
+**and every key the inputs import**, each at a fresh address: a
+function at a fresh code address, data at a fresh allocation of its
+`st_size`, a TLS key at a fresh offset in a second module's block, as a
+preloaded library would. Both sets and each key's binding are
+**recomputed** from the inputs and the map's record of the line (the
+`-Bsymbolic` forms in order, `--dynamic-list` and version-script files,
+`--exclude-libs`, `-soname`, `-init`/`-fini`: D-110, D-112, D-114),
+never read from the output's `.dynsym`, `.gnu.version_d` or
+`DF_SYMBOLIC`. Two views:
+
+- **view A**: no interposer; a defined key resolves to the library's
+  own definition, an import to its definition in the shared inputs
+  (P-D2), at P-D9's two load biases;
+- **view B**: the interposer first in lookup order.
+
+The loader model resolves every record of the output by the symbol it
+names, as glibc would. Each input relocation's place must hold, in both
+views, the value the input computes with `S` the **expected**
+definition: the library's own for a key the verifier computes as bound,
+in both views and whatever the interposer defines; the interposer's for
+a preemptible key or an import in view B. So a record that names a
+bound key resolves to the interposer in view B and its place differs
+from the expected value, and P-D25 names the cause. This is P-D9's view
+3 generalised from `WeakDyn` keys to every exported and imported key,
+and what turns P-D9's equality into a check of D-112.
+
+- **P-D16 (accept; request P-R1).** P-D1 accepts `ET_DYN` without
+  `DF_1_PIE` and without `PT_INTERP`, and with no static-pie line
+  (`-static-pie` absent from the map's line), as `Shared`; the kind is
+  recomputed from the headers and the line (`-shared`) and must agree.
+  P-D2-P-D15 apply with this section's changes: P-D4 has no `PT_PHDR`
+  and no `PT_INTERP` rule for `Shared` (D-100: mortar writes neither; a
+  reference's `PT_PHDR` is accepted); P-D9 runs views A and B in place
+  of its views 1 and 3 (view 2, a second load bias, stays, within view
+  A); P-D12 is replaced by P-D26; P-D7's set is P-D19's.
+- **P-D17 (the views; request P-R2).** *Recomputed:* for every relocation
+  of an `SHF_ALLOC` place of a live input (`.eh_frame` and the LSDA
+  included: checked by value, not by the address clause), the expected
+  value in each view. *Read:* the place's bytes after the loader model
+  applies the output's records. *Reported:* a place whose value differs
+  in either view, naming the input relocation, the view and the key.
+  **The address clause** (D-117): a use whose named address lies in a
+  preemptible data definition is reported even when both views agree
+  on its value. The named address is computed by the verifier's own
+  implementation, written from D-117's text, of (a) the relocation-level
+  rule with its scope (exact fields only; on x86 no PC-relative code
+  field is judged, so there is no x86 instruction decoder in the
+  verifier), its boundary rule and its "before the start" paragraph (a
+  known refusal of correct code, reported like the linker's), and (b)
+  on AArch64 the analysis, D-117 items 1-9 (an AArch64 def-use decoder
+  of the verifier's own). Each part is checked, off the gate, against
+  the oracle `tests/shared-design/exp3/s1d.py` on the record's corpora
+  (same refused objects, same definitions). *Not checked:* non-alloc
+  places (debug sections hold link-time addresses by design); the
+  residual hole D-117 names (asserted not caught, by a test).
+- **P-D18 (IFUNC; request P-R3).** Every use of one IFUNC key, in every
+  place and both views, yields one address: the IPLT entry for a bound
+  key, the interposer's or the resolver's record for a preemptible one
+  (W21). An i386 `Shared` output has no `STT_GNU_IFUNC` symbol and no
+  `IRELATIVE` record (D-130).
+- **P-D19 (`.dynsym`; request P-R4).** *Recomputed:* the export set
+  (D-110, `__start_`/`__stop_` `PROTECTED` included) with each entry's
+  binding, type, visibility and version (D-115). *Read:* `.dynsym`'s
+  defined entries and `.gnu.version`. *Reported:* a defined entry
+  missing, extra or with a field or version that differs. Imports are
+  P-D7's import rule and P-D8, unchanged.
+- **P-D20 (forbidden forms; request P-R5).** Reported, each by name: a
+  `COPY` record; a canonical PLT (`SHN_UNDEF` with a non-zero
+  `st_value`); `DT_TEXTREL`; a dynamic record whose place is in a
+  `PT_LOAD` without `PF_W` outside `PT_GNU_RELRO`; an LE TLS form in the
+  output's code (D-117, D-119, D-122); an output section `.ctors` or
+  `.dtors` (their input goes to `.init_array`/`.fini_array`, D-124).
+  i386: every place the output resolves to a PLT entry or GOT slot comes
+  from an input relocation whose form sets `%ebx` (`PLT32`, `GOT32X`
+  with a base register; D-130).
+- **P-D21 (segments; request P-R6).** Each `PT_LOAD` has `p_align` the
+  max page size and `p_offset ≡ p_vaddr (mod p_align)` (glibc checks
+  only the page, D-123).
+- **P-D22 (`.dynamic` of a shared object; request P-R7).** In addition
+  to P-D6 with D-102's rows: `DT_SYMBOLIC` and `DF_SYMBOLIC` present iff
+  the line's last `-Bsymbolic` form is `-Bsymbolic` and the line has no
+  `--dynamic-list` (D-112, D-102, D-103); `DT_INIT`/`DT_FINI` point at
+  defined, live code (D-124); `DT_SONAME` the `-soname` string;
+  `DT_VERDEF`/`DT_VERDEFNUM` consistent with `.gnu.version_d` (D-115);
+  `GNU_PROPERTY_1_NEEDED_INDIRECT_EXTERN_ACCESS` present iff an input
+  has it (D-112).
+- **P-D23 (mutations; request P-R8).** Each wrong output of `spec/dyn.md`
+  §17.7, written into a correct mortar library (or, where it concerns
+  the executable, a host), is reported by the rule the table below
+  names, and each row is a test (`dynmutate.rs`); a row marked NOT
+  caught is a test that asserts it is not.
+- **P-D24 (executables: a copy of locally bound data; request P-R9).**
+  P-D11 gains, for `Exec` and `Pie`: a `COPY` of a definition its
+  library binds locally (`DT_SYMBOLIC`/`DF_SYMBOLIC`, or a `.note.mason`
+  row with `NONPREEMPTIBLE`, odr.md O-60) whose `st_value` lies in a
+  writable `PT_LOAD` of that library outside `PT_GNU_RELRO`, or in no
+  `PT_LOAD`, is reported (`spec/dyn.md` D-43a; WP-122 owns this rule's
+  body in `dyncheck.rs`, WP-121 its call). Decided from the library's
+  program headers and `.dynamic`, as the linker's rule.
+- **P-D25 (records name only preemptible keys; request P-R10; amends
+  P-D9 for `Shared`).** No dynamic record of a `Shared` output names
+  (`r_sym` not 0) a key the verifier computes as bound (D-112: hidden,
+  protected, local by a version script, `-Bsymbolic`,
+  `-Bsymbolic-functions` for a function, unlisted by `--dynamic-list`).
+  A use of a bound key that needs a record has one of these kinds, with
+  `r_sym` 0: AArch64 `R_AARCH64_RELATIVE` (1027), `IRELATIVE` (1032),
+  `TLS_DTPMOD64` (1028), `TLS_TPREL64` (1030), `TLSDESC` (1031); x86-64
+  `R_X86_64_RELATIVE` (8), `IRELATIVE` (37), `DTPMOD64` (16), `TPOFF64`
+  (18), `TLSDESC` (36, refused as an input form by x64.md §6.2 until a
+  compiler emits it); i386 `R_386_RELATIVE` (8), `IRELATIVE` (42, never
+  in i386 `Shared`: D-130), `TLS_DTPMOD32` (35), `TLS_TPOFF` (14),
+  `TLS_DESC` (41). Every other kind with `r_sym` 0 is reported (P-D9's
+  `RELATIVE`/`IRELATIVE` symbol-0 rule stays).
+- **P-D26 (TLS in a shared object; request P-R11; replaces P-D12's
+  executable forms for `Shared`; D-119).** Per model and binding, the
+  records of a live TLS use are:
+  - GD and LD against a preemptible key or an import: `DTPMOD` +
+    `DTPOFF` (AArch64 `TLS_DTPMOD64` + `TLS_DTPREL64`, x86-64 `DTPMOD64`
+    + `DTPOFF64`, i386 `TLS_DTPMOD32` + `TLS_DTPOFF32`), both naming the
+    key; against a bound key: one `DTPMOD` with `r_sym` 0 per pair, the
+    offset word the static offset with no record (a `DTPOFF` record with
+    `r_sym` 0 holding the same offset is accepted from a reference);
+  - TLSDESC against a preemptible key or an import: one `TLSDESC`
+    naming the key (in `.rela.dyn` for mortar, D-119; in `.rela.plt`
+    from a reference); against a bound key: `TLSDESC` with `r_sym` 0 and
+    the offset as addend (RELA) or in the descriptor's second word
+    (i386 REL);
+  - IE against a preemptible key or an import: `TPREL64`/`TPOFF64`/
+    `TLS_TPOFF` naming the key; against a bound key: the same type with
+    `r_sym` 0 and the offset as addend (RELA) or in place (REL);
+  - LE: none (refused, P-D20).
+
+  No relaxation: the number of `__tls_get_addr` calls equals the
+  input's (D-119). `DF_STATIC_TLS` iff some IE slot exists. The values:
+  in view B a preemptible key's module and offset are the interposer's,
+  a bound key's the library's (P-D17). P-D12's D-16 direction (W14)
+  applies unchanged.
+
+What reports each wrong output of `spec/dyn.md` §17.7 (P-D23; the P-D
+rules are this section's, applied through P-D16; the table was redone
+by WP-110's third pass against the interposer above, P-D25 and P-D26):
+
+| wrong output | reported by |
+|---|---|
+| W19 (LE TLS against own TLS, AArch64) | P-D20 (LE form in a shared object's code); P-D26 (a live TLS use without its records) |
+| W20 (exported IFUNC bound) | P-D17, view B; P-D18 |
+| W21 (two addresses of one IFUNC) | P-D18 |
+| W22 (`DT_INIT = 0`, the function collected) | P-D22 |
+| W23 (`__start_` undefined, section dropped) | P-D17 (the input's relocation against `__start_cid_ref` computes the section's address; the output's place holds 0); not P-D19: the version script makes `__start_cid_ref` local, so it is outside the export set |
+| W24 (`.ctors` kept as an output section) | P-D20 |
+| W25 (text relocations in `.eh_frame`, i386) | P-D20 (record in a non-writable `PT_LOAD`; `DT_TEXTREL`) |
+| W26 (`%ebx`-relative IPLT entry as canonical address, i386) | P-D18 (no IFUNC in i386 `Shared`) |
+| W27 (hidden IFUNC called through an `%ebx` stub, i386) | P-D18 |
+| W28 (`-shared -static` C++ without `--eh-frame-hdr`, i386) | NOT caught: the image is what the line asks (no `--eh-frame-hdr`, so no `PT_GNU_EH_FRAME`); needs a check of the line, not the image (a `-shared` line with C++ unwind tables and no `--eh-frame-hdr`), proposed for WP-130 (i386), which reduces the root cause the record lists as untraced (D-100's `-shared -static` cell) |
+| W29 (`-shared -static` C library crashes, mold i386) | NOT caught: the cause was not isolated (record §B); WP-130 (i386) reduces it to a record or a PLT form before a rule can name it |
+| W30 (a `COPY` of writable locally bound data) | P-D24 (executables) |
+| W31 (`DF_SYMBOLIC` with `--dynamic-list`) | P-D22; view B (P-D17) |
+| W32 (`ADR_PREL_LO21`, `LD_PREL_LO19`, `PREL32` without a record, AArch64) | P-D17, view B |
+| W33 (`PREL32` in `.data` bound; weak undefined non-zero) | P-D17, view B; P-D9 (P-D16) for the weak key |
+| W34 (`PC32` dynamic record truncated, x86-64) | P-D17: view A with P-D9's second bias gives a truncated value |
+| W35 (`PC32` call through an `%ebx` PLT, i386) | P-D20 (i386 clause) |
+| W36 (`GOT32X` without a base register, i386) | P-D20 (i386 clause) |
+| W37 (`GOTOFF` to a preemptible key, i386) | P-D17, view B |
+| W38 (`&f` of an import is a PLT stub, AArch64) | P-D17: view A's value is the import's definition, the place holds the stub |
+| W39 (`R_386_TLS_IE` in `.text` without `DT_TEXTREL`) | P-D20 (record in a non-writable `PT_LOAD`) |
+| W40 (`extern "C++" {*}` exports nothing) | P-D19 |
+| W41 (`NEEDED_INDIRECT_EXTERN_ACCESS` dropped) | P-D22 |
+| W42 (versioned reference unversioned, `DT_NEEDED` dropped) | P-D6, P-D8 (P-D16) |
+| W43 (TLS GD pair half bound, x86-64) | P-D25 (the `DTPMOD64` names `tv`, which `--dynamic-list` leaves bound) and P-D26 (a bound GD pair is `DTPMOD` with `r_sym` 0); P-D17, view B: the interposer defines `tv` (it is exported), the loader model resolves the `DTPMOD64` to the interposer's module while the offset is the library's, and the expected value is the library's own `tv` |
+| W44 (anchor+immediate bound use, AArch64) | P-D17's address clause (b): the verifier's analysis derives `.data + 4`, inside `g`, from the `ldr` that follows the anchor (both views agree on the value, the clause reports it). What D-117's residual hole names stays not caught, by the verifier as by the linker |
+| a use of a preemptible key bound locally through a named symbol (a `PREL32`, `ABS64` or `ADRP`/`ADD` resolved statically, no record) | P-D17, view B: the interposer defines the key, the place holds the library's own address |
+| an export missing from `.dynsym` | P-D19 (the defined set differs from the verifier's export set); P-D17, view B, for every record that should have named it |
+| a wrong version index on a defined entry or an import | P-D19 (a defined entry's version, D-115); P-D8 (an import's `.gnu.version` index against its Verneed and the shared definition's version, through P-D16) |
+| a `JUMP_SLOT` naming the wrong symbol index | P-D10 (the slot's record is against another key than its PLT entry's); P-D17, view B (the interposer defines both keys at distinct addresses, the call place reaches the wrong one); P-D25 too when the named key is bound |
+
+`[unmeasured]` for WP-121: its own implementation of D-117 against the
+oracle on every corpus of `spec/landed/dyn/WP-110.md` §G.1 (same
+verdicts); each row above as a mutation of a mortar library.
+
 ## 13. Stage 4: Mason metadata and the ODR table (M6)
 
 Implemented by WP-078 (amendment A-7 of `spec/odr.md` §14; the rules
