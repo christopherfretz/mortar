@@ -19,16 +19,6 @@
 
 # WP-042 (CLI): the command line: the refused option or value is named once the dynamic options are accepted.
 
-# WP-052 (SPIE): static-pie is written; what it leaves to a verifier change (plumb.md has no static-pie in stage 3).
-mortar,aarch64,x86_64 dyn/kinds/output-kind-table-static-pie.test: M2: verifier request (WP-052 finding); plumb P-D1 names every static-pie link outside stage 3 (dyn.md D-2), so mortar's output fails L3; it passes with --no-plumb and runs
-mortar,aarch64,x86_64 dyn/spie/cxx-exceptions-tls.test: M2: verifier request (WP-052 finding); plumb P-D1 names every static-pie link outside stage 3 (dyn.md D-2), so mortar's output fails L3; it passes with --no-plumb and runs
-mortar,aarch64,x86_64 dyn/spie/export-dynamic-refused.test: M2: verifier request (WP-052 finding); plumb P-D1 names every static-pie link outside stage 3 (dyn.md D-2), so mortar's output fails L3; it passes with --no-plumb and runs
-mortar,aarch64,x86_64 dyn/spie/fortran.test: M2: verifier request (WP-052 finding); plumb P-D1 names every static-pie link outside stage 3 (dyn.md D-2), so mortar's output fails L3; it passes with --no-plumb and runs
-mortar,aarch64,x86_64 dyn/spie/ifunc.test: M2: verifier request (WP-052 finding); plumb P-D1 names every static-pie link outside stage 3 (dyn.md D-2), so mortar's output fails L3; it passes with --no-plumb and runs
-mortar,aarch64,x86_64 dyn/spie/tls-dynamic-init.test: M2: verifier request (WP-052 finding); plumb P-D1 names every static-pie link outside stage 3 (dyn.md D-2), so mortar's output fails L3; it passes with --no-plumb and runs
-mortar,aarch64,x86_64 dyn/spie/weak-undef.test: M2: verifier request (WP-052 finding); plumb P-D1 names every static-pie link outside stage 3 (dyn.md D-2), so mortar's output fails L3; it passes with --no-plumb and runs
-mortar,aarch64,x86_64 dyn/spie/z-now.test: M2: verifier request (WP-052 finding); plumb P-D1 names every static-pie link outside stage 3 (dyn.md D-2), so mortar's output fails L3; it passes with --no-plumb and runs
-mortar,aarch64 dyn/spie/debuggers.test: M2: verifier request (WP-052 finding); plumb P-D1 names every static-pie link outside stage 3 (dyn.md D-2), so mortar's output fails L3; it passes with --no-plumb and runs
 
 # WP-084: x86-64 large sections, left by the x86-64 join (WP-055).
 mortar,x86_64 dyn/reloc/weak-class-table.test: x86-64 large sections (x64.md X-52's staging refusal: Clang's -mcmodel=large movw.c has .ltext, SHF_X86_64_LARGE; the PIE half passes; WP-084; WP-055 record)
