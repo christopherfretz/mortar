@@ -2,6 +2,12 @@
 //! delta layout and patching. May depend on every linker crate below the
 //! facade (`docs/ARCHITECTURE.md`); never on `mortar_plumb`.
 //!
-//! The shell of the crate; the state's format, writer and reader land with
-//! WP-061.
+//! WP-061 (stage A): the state's bytes ([`format`], IN-18a), the stamps
+//! and the stat rule ([`stamp`], IN-21, IN-22, IN-22a), and the
+//! translation between a link's tables and the state's identity terms
+//! ([`capture`]: the writer's rows and the replay of IN-61).
 #![forbid(unsafe_code)]
+
+pub mod capture;
+pub mod format;
+pub mod stamp;

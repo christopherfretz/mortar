@@ -286,8 +286,8 @@ impl Line {
         if no_interp {
             l.interp = None;
         }
-        if l.kind == Some(OutputKind::StaticPie) {
-            l.outside.push("static-pie (dyn.md D-2; WP-052)".into());
+        if l.kind == Some(OutputKind::StaticPie) && l.export_dynamic {
+            l.outside.push("static-pie with --export-dynamic (dyn.md D-1; M4)".into());
         }
         l
     }
@@ -574,7 +574,12 @@ mod tests {
             out("-pie -dynamic-linker /x --hash-style both"),
             ["--hash-style=both (dyn.md D-20; cli.md §4.4)"]
         );
-        assert_eq!(out("-static-pie -o a"), ["static-pie (dyn.md D-2; WP-052)"]);
+        assert!(out("-static-pie -o a").is_empty());
+        assert!(out("-pie --no-dynamic-linker -o a").is_empty());
+        assert_eq!(
+            out("-static-pie -E -o a"),
+            ["static-pie with --export-dynamic (dyn.md D-1; M4)"]
+        );
         assert_eq!(
             out("-dynamic-linker /x --copy-dt-needed-entries"),
             ["--copy-dt-needed-entries (dyn.md D-15)"]

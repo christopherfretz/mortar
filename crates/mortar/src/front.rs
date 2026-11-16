@@ -126,6 +126,9 @@ pub struct Front<'s> {
     /// The command line's words, response files expanded (the map's `arg`
     /// records, `spec/plumb.md` §3.2); set by the driver after `front`.
     pub args: Vec<Vec<u8>>,
+    /// Keep the build-id leaves for the link state (`spec/incr.md` IN-21);
+    /// set by the driver in incremental mode only.
+    pub keep_leaves: bool,
     pub commons: Vec<Common>,
     pub layout: Layout,
     /// What `place` returned besides the placement (the segment rules
@@ -250,10 +253,29 @@ fn capped(pool: Pool, plan: &Plan, resident: u64) -> Pool {
 }
 
 /// Where a link runs.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct Env<'e> {
     pub cwd: &'e Path,
     pub pool: Pool,
+    /// The replay hook of `spec/incr.md` IN-61 (tests only; `None` in every
+    /// link the command line runs): given the link's tables and its
+    /// computed layout, the decision tables to write instead, put in place
+    /// before `Layout::validate`.
+    pub replay: Option<&'e Replay<'e>>,
+}
+
+/// The replay hook's function (IN-61).
+pub type Replay<'e> =
+    dyn Fn(&mortar_incr::capture::Link<'_, '_>, &Layout) -> Result<Layout, String> + 'e;
+
+impl std::fmt::Debug for Env<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Env")
+            .field("cwd", &self.cwd)
+            .field("pool", &self.pool)
+            .field("replay", &self.replay.is_some())
+            .finish()
+    }
 }
 
 /// The scan's output kind for a plan's.
@@ -462,7 +484,7 @@ pub fn front<'s>(
             return None;
         }
     };
-    let order = offsets(&pool, &merge.split, &merge.meta, &liveness.frag_live);
+    let mut order = offsets(&pool, &merge.split, &merge.meta, &liveness.frag_live);
     timer.phase(50, "liveness");
 
     // 70: scan.
@@ -855,6 +877,25 @@ pub fn front<'s>(
         shapes: &shapes,
     };
     steps.step("checks", 0, "");
+    // IN-61: the replay's decision tables in place of the computed ones.
+    let layout = match env.replay {
+        None => layout,
+        Some(replay) => {
+            let link = mortar_incr::capture::Link {
+                inputs: &inputs,
+                resolution: &resolution,
+                assignment: &placement_assignment,
+                split: &merge.split,
+            };
+            match replay(&link, &layout) {
+                Ok(l) => l,
+                Err(e) => {
+                    diag.emit(Key::new(90, 0, u64::MAX), internal(format!("replay: {e}")));
+                    return None;
+                }
+            }
+        }
+    };
     let validated = layout.validate(&cx);
     steps.step("validate", 0, "");
     if let Err(v) = validated {
@@ -869,6 +910,10 @@ pub fn front<'s>(
     drop(kept_sites);
     drop(walker);
     drop(merge_eh);
+    if env.replay.is_some() {
+        // `order.map` is `layout.merge` (S-24).
+        order.map = layout.merge.clone();
+    }
     Some(Front {
         plan,
         pool,
@@ -890,6 +935,7 @@ pub fn front<'s>(
         synth: plans,
         dyn_tables,
         args: Vec::new(),
+        keep_leaves: false,
         commons,
         layout,
         placed,

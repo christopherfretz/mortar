@@ -191,6 +191,10 @@ pub struct LinkOptions {
     /// The output's BTI property is set (a thunk's target must be a
     /// landing pad, `Arch::thunk_target_ok`).
     pub bti: bool,
+    /// Keep the build-id leaves (I-76; `spec/incr.md` IN-21): an
+    /// incremental-mode link stores them in its state, `L128` leaves when
+    /// no id is hashed. `false` in a plain link.
+    pub keep_leaves: bool,
 }
 
 /// The tree of a `--build-id` style (I-72); `None` for a style the
@@ -257,6 +261,16 @@ impl std::fmt::Debug for Link<'_, '_> {
 pub struct Written {
     /// The build id written into the note, when one was hashed.
     pub build_id: Option<Vec<u8>>,
+    /// With `LinkOptions::keep_leaves`: the leaves, in window order, and
+    /// their function.
+    pub leaves: Option<(mortar_digest::TreeFn, Vec<mortar_digest::Leaf>)>,
+    /// The build id's descriptor in the file (hashed as zeros, I-73).
+    pub sealed: Option<std::ops::Range<u64>>,
+    /// The output file's size.
+    pub file_size: u64,
+    /// With `LinkOptions::keep_leaves`: the device and inode of the file
+    /// written (`spec/incr.md` IN-21), from its descriptor.
+    pub file: Option<(u64, u64)>,
     /// The plan's size: rows and jobs (for `--time-phases` and tests).
     pub rows: usize,
     pub jobs: usize,
@@ -1957,6 +1971,10 @@ fn write_link(
         }
     };
     let build_id = if sealed.is_some() { link.options.build_id } else { None };
+    let leaf_fn = link
+        .options
+        .keep_leaves
+        .then(|| build_id.map_or(mortar_digest::TreeFn::L128, TreeStyle::tree_fn));
     let fixups = file_fixups(link).map_err(failed)?;
     let img = Image {
         plan: &plan,
@@ -1985,6 +2003,7 @@ fn write_link(
             _ => None,
         },
         build_id,
+        leaf_fn,
         fixups: &fixups,
     };
     let out = Output::create(path, opts).map_err(|kd| Failed { diagnostics: vec![kd] })?;
@@ -2037,9 +2056,22 @@ fn write_link(
     }
     steps.step("recheck", 0, "");
     on_phase(PHASE_IMAGE, "image");
-    out.commit().map_err(|kd| Failed { diagnostics: vec![kd] })?;
+    let written = if link.options.keep_leaves {
+        out.commit_identified()
+    } else {
+        out.commit().map(|()| None)
+    }
+    .map_err(|kd| Failed { diagnostics: vec![kd] })?;
     on_phase(PHASE_OUTPUT, "output file");
-    Ok(Written { build_id: filled.build_id, rows: plan.rows.len(), jobs: plan.jobs.len() })
+    Ok(Written {
+        build_id: filled.build_id,
+        leaves: leaf_fn.zip(filled.leaves),
+        sealed,
+        file_size: plan.file_size,
+        file: written,
+        rows: plan.rows.len(),
+        jobs: plan.jobs.len(),
+    })
 }
 
 // ---- the map (§9.2) --------------------------------------------------------

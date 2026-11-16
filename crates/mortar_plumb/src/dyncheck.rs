@@ -2,7 +2,8 @@
 //! P-D4..P-D8, P-D10..P-D13, and P-D9's record-order part). Where the
 //! references differ by design (`dyn.md` §13.1) a reference output is
 //! judged by its own linker's form; `Format::Mortar` is judged by the
-//! D rules exactly (`spec/plumb.md` §12.4, "per-linker forms").
+//! D rules exactly (`spec/plumb.md` §12.1, "a reference to its own
+//! form"). A static-pie's own rules are `crate::spie`'s (§12.4).
 // ELF fields and addresses read best by the specs' short names.
 #![allow(clippy::many_single_char_names, clippy::similar_names)]
 
@@ -61,10 +62,16 @@ pub(crate) fn check(
     pd4(image, out, line, format, &mut v);
     pd5(image, out, format, &mut v);
     pd6(image, out, line, model, format, &mut v);
-    pd7(image, out, model, ld, format, &mut v);
+    let spie = line.kind == Some(OutputKind::StaticPie);
+    if spie {
+        // §12.4: a static-pie's .dynsym and records are P-D14's.
+        crate::spie::check(image, out, line.entry.as_deref(), format, &mut v);
+    } else {
+        pd7(image, out, model, ld, format, &mut v);
+    }
     pd8(out, model, ld, &mut v);
     pd9_order(out, ld.machine, &mut v);
-    pd10(image, out, ld.machine, format, &mut v);
+    pd10(image, out, ld.machine, format, spie, &mut v);
     pd11_13(image, out, model, ld, &mut v);
     pd12(image, out, ld, objs, format, &mut v);
     fields(image, out, model, line, objs, format, &mut v);
@@ -532,7 +539,7 @@ fn pd6(
     } else if fl & DF_BIND_NOW != 0 || f1 & DF_1_NOW != 0 || out.has(dynout::DT_BIND_NOW) {
         v.push(fd(6, "DF_BIND_NOW or DF_1_NOW without -z now (D-49)"));
     }
-    if (kind == OutputKind::Pie) != (f1 & DF_1_PIE != 0) {
+    if matches!(kind, OutputKind::Pie | OutputKind::StaticPie) != (f1 & DF_1_PIE != 0) {
         v.push(fd(6, "DF_1_PIE does not match the output kind (D-30)"));
     }
     // Run path.
@@ -918,7 +925,14 @@ fn pd9_order(out: &DynOut, machine: u16, v: &mut Vec<Finding>) {
 }
 
 /// P-D10: PLT entries, their words, the lazy word, IRELATIVE order (H1).
-fn pd10(image: &Image<'_>, out: &DynOut, machine: u16, format: Format, v: &mut Vec<Finding>) {
+fn pd10(
+    image: &Image<'_>,
+    out: &DynOut,
+    machine: u16,
+    format: Format,
+    spie: bool,
+    v: &mut Vec<Finding>,
+) {
     let entries = crate::loader::plt_entries(image);
     let mut by_slot: BTreeMap<u64, Vec<(usize, Kind)>> = BTreeMap::new();
     let jmprel: Vec<_> = out.rels.iter().filter(|r| r.plt).collect();
@@ -938,7 +952,11 @@ fn pd10(image: &Image<'_>, out: &DynOut, machine: u16, format: Format, v: &mut V
             .iter()
             .filter(|(_, k)| matches!(k, Kind::JumpSlot | Kind::Irelative | Kind::GlobDat))
             .count();
-        if n != 1 {
+        // A static-pie's entry of an undefined weak function jumps through
+        // a word holding 0 that no record writes: it reaches 0 at any
+        // bias, as the call does in a static executable (§12.4).
+        let weak0 = spie && n == 0 && slot % 8 == 0 && image.value(slot, 8) == Some(0);
+        if n != 1 && !weak0 {
             v.push(
                 fd(10, format!("the PLT entry jumps through {slot:#x}, which has {n} JUMP_SLOT/IRELATIVE/GLOB_DAT records"))
                     .at(e),
@@ -976,8 +994,11 @@ fn pd10(image: &Image<'_>, out: &DynOut, machine: u16, format: Format, v: &mut V
             v.push(fd(10, "a JUMP_SLOT word no PLT entry jumps through").at(r.offset));
         }
     }
-    // The header, the lazy words and the way back (WP-082).
-    crate::plt::check(image, out, &entries, format, v);
+    // The header, the lazy words and the way back (WP-082). A static-pie
+    // binds nothing lazily: glibc relocates it with lazy 0 (§12.4).
+    if !spie {
+        crate::plt::check(image, out, &entries, format, v);
+    }
     // H1 (D-41): every IRELATIVE after every symbolic record, in
     // application order, so a resolver that calls through the PLT or GOT,
     // or reads a copied object, runs after those are bound.
@@ -1599,7 +1620,12 @@ fn fields(
                     .at(r.offset),
             );
         }
-        if r.plt && !matches!(k, Kind::JumpSlot | Kind::Irelative | Kind::TlsDesc) {
+        // A static-pie is relocated with lazy 0 (§12.4): its DT_JMPREL is
+        // P-D15's.
+        if r.plt
+            && line.kind != Some(OutputKind::StaticPie)
+            && !matches!(k, Kind::JumpSlot | Kind::Irelative | Kind::TlsDesc)
+        {
             v.push(
                 fd(
                     10,

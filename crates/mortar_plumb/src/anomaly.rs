@@ -107,8 +107,9 @@ pub fn classify(linker: Format, output: &[u8], f: &Finding) -> Option<&'static s
 }
 
 /// The anomalies of dynamic outputs (stage 3, `spec/plumb.md` §10.2,
-/// A20-A29): the wrong outputs of `spec/dyn.md` §13.2 a test records
+/// A20-A32): the wrong outputs of `spec/dyn.md` §13.2 a test records
 /// for a reference, and two found by WP-050's judging of WP-051's cases.
+#[allow(clippy::too_many_lines)] // one block per anomaly
 fn dynamic(linker: Format, output: &[u8], f: &Finding) -> Option<&'static str> {
     let (bfd, lld, mold) = (linker == Format::Gnu, linker == Format::Lld, linker == Format::Mold);
     let d = |n| f.rule == Rule::Dyn(n);
@@ -174,6 +175,49 @@ fn dynamic(linker: Format, output: &[u8], f: &Finding) -> Option<&'static str> {
             (h.sh_addr, h.sh_addr.saturating_add(h.sh_size))
         })
     };
+    // A static-pie: ET_DYN with .dynamic and no .interp (spec/plumb.md
+    // §12.4); the machine.
+    let header = mortar_elf::FileHeader::parse(output).ok();
+    let spie = header.as_ref().is_some_and(|h| h.e_type == mortar_elf::consts::ET_DYN)
+        && section(b".dynamic").is_some()
+        && section(b".interp").is_none();
+    let machine = header.as_ref().map_or(0, |h| h.e_machine);
+    if bfd
+        && spie
+        && machine == mortar_elf::consts::EM_AARCH64
+        && d(9)
+        && m.starts_with("view 2 ")
+        && m.ends_with("(a record moves a value that is not an address of the executable)")
+    {
+        return Some(
+            "A30: GNU ld writes a RELATIVE record on an AArch64 static-pie's GOT slot of an absolute symbol; the program reads the value plus the load bias",
+        );
+    }
+    if bfd && spie && machine == mortar_elf::consts::EM_X86_64 {
+        let odd = d(10)
+            && m.strip_prefix("the PLT entry jumps through 0x")
+                .and_then(|r| r.split(',').next())
+                .and_then(|h| u64::from_str_radix(h, 16).ok())
+                .is_some_and(|slot| slot % 8 != 0);
+        let call = f.rule == Rule::Field
+            && f.symbol.as_deref() == Some("__cxa_finalize")
+            && f.reloc.as_deref() == Some("R_X86_64_PLT32");
+        if odd || call {
+            return Some(
+                "A31: GNU ld's x86-64 static-pie .plt.got entry of an undefined weak function jumps through its GOT slot plus 1 (dead behind crtbeginS's null test)",
+            );
+        }
+    }
+    if (bfd || mold)
+        && spie
+        && machine == mortar_elf::consts::EM_X86_64
+        && f.rule == Rule::Ifunc(3)
+        && m.starts_with("takes the function its IRELATIVE record resolves to")
+    {
+        return Some(
+            "A32: GNU ld and mold give an x86-64 static-pie IFUNC two addresses: an address word the resolved function, a PC-relative use the IPLT entry (dyn.md W3)",
+        );
+    }
     if mold
         && f.rule == Rule::EhFrame(3)
         && m.ends_with("differs in its personality routine")
