@@ -62,7 +62,7 @@ pub const USAGE: &str = "usage: cargo xtask mason [programs] [--mortar <path>] [
      [--results <file>] [--baseline <file>] [--write-baseline <file>] [<dir>...]\n       \
      cargo xtask mason libcxx --collect <dir> [--results <file>] [--baseline <file>]\n       \
      cargo xtask mason libcxx --compare <file>[:<mode>] <file>[:<mode>]\n       \
-     cargo xtask mason verify <output> <map>\n";
+     cargo xtask mason verify <output> <map> [<line>]\n";
 
 /// The entry point.
 pub fn main(args: &[String]) -> ExitCode {
@@ -84,6 +84,43 @@ pub fn main(args: &[String]) -> ExitCode {
             ExitCode::from(2)
         }
     }
+}
+
+/// The gate's `mason` step (`cargo xtask ci`, spec/harness.md "ci";
+/// WP-058): libc++'s `ci` sample linked by mortar fully static and on the
+/// dynamic line (kiln's: static libc++, dynamic glibc, PIE), every output
+/// verified, against `tests/mason/baseline-mortar.tsv`; the full gate adds
+/// the programs table. Skipped by name where the workspace has no kiln and
+/// hod builds or no lane (`cargo xtask mason setup`), unless
+/// `MASON_REQUIRE_TOOLS=1`.
+pub fn ci(quick: bool) -> bool {
+    let mortar = match crate::linktest::build_mortar() {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("[ci] mason: {e}");
+            return false;
+        }
+    };
+    let baseline = crate::linktest::workspace_root().join("tests/mason/baseline-mortar.tsv");
+    let mut args: Vec<String> =
+        ["--sample", "ci", "--mode", "mortar", "--mode", "dyn-mortar", "--plumb", "-j", "4"]
+            .map(str::to_owned)
+            .into();
+    args.extend(["--mortar".to_owned(), mortar.display().to_string()]);
+    args.extend(["--baseline".to_owned(), baseline.display().to_string()]);
+    let ok = |r: Result<ExitCode, String>| match r {
+        Ok(c) => c == ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("[ci] mason: {e}");
+            false
+        }
+    };
+    let mut passed = ok(libcxx::main(&args));
+    if !quick {
+        let p = ["--mortar".to_owned(), mortar.display().to_string(), "-j".into(), "4".into()];
+        passed &= ok(programs::main(&p));
+    }
+    passed
 }
 
 /// The root of the build directories: the parent of this checkout's
@@ -264,10 +301,23 @@ impl std::fmt::Display for Plumbed {
 }
 
 /// Runs the verifier on mortar's `output` and its mortar-map `map`, the
-/// inputs read relative to `base`.
-pub fn plumb(output: &Path, map: &Path, base: &Path) -> Result<Plumbed, String> {
-    let (_, report, _) =
-        crate::plumb::verify_link(output, map, mortar_plumb::Format::Mortar, base, None)?;
+/// inputs read relative to `base`; `line`, the linker's words, lets stage 3
+/// judge a dynamic output with its line (spec/plumb.md §12).
+pub fn plumb(
+    output: &Path,
+    map: &Path,
+    base: &Path,
+    line: Option<Vec<String>>,
+) -> Result<Plumbed, String> {
+    let (_, report, _) = crate::plumb::verify_link_line(
+        output,
+        map,
+        mortar_plumb::Format::Mortar,
+        base,
+        None,
+        None,
+        line,
+    )?;
     let mut p = Plumbed::default();
     let name = output.display().to_string();
     for f in &report.findings {
@@ -280,11 +330,19 @@ pub fn plumb(output: &Path, map: &Path, base: &Path) -> Result<Plumbed, String> 
     Ok(p)
 }
 
-/// `verify <output> <map>`: one line, `plumb: <result>[: <first>]`; exit 0
-/// when clean.
+/// `verify <output> <map> [<line>]`: one line, `plumb: <result>[:
+/// <first>]`; exit 0 when clean. `<line>` is a file of the linker's words,
+/// one per line.
 fn verify_main(args: &[String]) -> Result<ExitCode, String> {
-    let [output, map] = args else { return Err("verify needs <output> <map>".into()) };
-    let p = plumb(Path::new(output), Path::new(map), Path::new(""))?;
+    let (output, map, line) = match args {
+        [output, map] => (output, map, None),
+        [output, map, line] => {
+            let text = std::fs::read_to_string(line).map_err(|e| format!("{line}: {e}"))?;
+            (output, map, Some(text.lines().map(str::to_owned).collect()))
+        }
+        _ => return Err("verify needs <output> <map> [<line>]".into()),
+    };
+    let p = plumb(Path::new(output), Path::new(map), Path::new(""), line)?;
     match &p.first {
         Some(first) => say!("plumb: {p}: {first}"),
         None => say!("plumb: {p}"),

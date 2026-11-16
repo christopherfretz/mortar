@@ -361,7 +361,10 @@ fn drivers(arches: &[Arch], host: Option<Arch>, notes: &mut Vec<String>) -> Vec<
                 }
             }
         }
-        if arch == Arch::Aarch64 {
+        // kiln++ with hod, on an AArch64 host: natively for AArch64, with
+        // `--target=<triple>` for x86-64 (WP-058; its programs run under
+        // qemu as the other drivers' do). i386 is not kiln's target.
+        if arch != Arch::I386 {
             match crate::mason::Mason::find() {
                 Ok(m) if host == Some(Arch::Aarch64) => {
                     let hod_dir = m.hod.parent().map(Path::to_path_buf).unwrap_or_default();
@@ -370,12 +373,16 @@ fn drivers(arches: &[Arch], host: Option<Arch>, notes: &mut Vec<String>) -> Vec<
                     dirs.extend(std::env::split_paths(&path));
                     let path = std::env::join_paths(dirs).unwrap_or(path);
                     out.push(Driver {
-                        name: "kiln/aarch64/c++".into(),
+                        name: format!("kiln/{}/c++", arch.name()),
                         family: "kiln",
                         arch,
                         lang: Lang::Cxx,
                         program: m.kiln.clone(),
-                        args: Vec::new(),
+                        args: if host == Some(arch) {
+                            Vec::new()
+                        } else {
+                            vec![format!("--target={}", arch.triple())]
+                        },
                         env: vec![
                             ("PATH".into(), path.to_string_lossy().into_owned()),
                             ("KILN_BACKEND".into(), "hod".into()),
@@ -384,9 +391,11 @@ fn drivers(arches: &[Arch], host: Option<Arch>, notes: &mut Vec<String>) -> Vec<
                         ],
                     });
                 }
-                Ok(_) => notes
-                    .push("kiln++: skipped, the census runs kiln natively on AArch64 only".into()),
-                Err(e) => notes.push(format!("kiln++: skipped: {e}")),
+                Ok(_) => notes.push(format!(
+                    "kiln++ ({}): skipped, the census runs kiln on an AArch64 host only",
+                    arch.name()
+                )),
+                Err(e) => notes.push(format!("kiln++ ({}): skipped: {e}", arch.name())),
             }
         }
     }
