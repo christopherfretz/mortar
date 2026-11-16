@@ -1,0 +1,40 @@
+# The GOT site of dyn/reloc/erratum-843419-got-shared.test alone (WP-103):
+# an erratum 843419 site whose ADRP is a GOT page (311) against libc.so's
+# `environ`, and no other site in the output. Before WP-103 the verifier
+# inferred the option from the fixes it found, so this output, with no
+# fix at all, had its site counted as not judged and mortar's unfixed
+# ADRP passed; it now reads the option from the line. GNU ld and mortar
+# write the ADR to the slot's page.
+#@ spec: a64.md "11.1 The predicate"
+#@ spec: a64.md "11.2 The fix"
+#@ arch: aarch64
+
+as f.s -o f.o
+cc -O1 -fPIE main.c -o main.o
+link gcc -pie -Wl,--fix-cortex-a53-843419 main.o f.o -o prog
+run prog
+  stdout: ok
+check(mortar) objdump -d --disassemble=f prog
+  has: ffc: * adr x0, 
+check(bfd) objdump -d --disassemble=f prog
+  has: ffc: * adr x0, 
+
+#--- f.s
+	.text
+	.balign	4096
+	.globl	f
+	.type	f, %function
+f:
+	.rept	1023
+	nop
+	.endr
+	// A site whose ADRP is a GOT page against a symbol of libc.so.
+	adrp	x0, :got:environ
+	ldr	x0, [x0, :got_lo12:environ]
+	ldrb	w0, [x0]
+	ret
+	.size	f, .-f
+#--- main.c
+#include <stdio.h>
+int f(void);
+int main(void) { f(); puts("ok"); return 0; }

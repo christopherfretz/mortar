@@ -1,0 +1,95 @@
+# Erratum 843419 at a GOT page (311) of data a shared library defines
+# (preemptible: the program has a GLOB_DAT slot and no copy; WP-103).
+# `V` is the slot's address, which the fixed point's rounds know although
+# the symbol has no address in the output: the ADR, as GNU ld writes.
+# Until WP-103 the round's stand-in for the unknown `S` (which the GOT
+# page does not use) made the ADRP an ADD and the site was left unfixed
+# (RB-2, dyn/reloc/erratum-843419-got-shared.test).
+#@ spec: a64.md "11.1 The predicate"
+#@ spec: a64.md "11.2 The fix"
+#@ arch: aarch64
+
+as f.S -o f.o
+cc -O1 -fPIC lib.c -o lib.o
+shlib gcc lib.o -Wl,-soname,libs.so -o libs.so
+cc -O1 -fPIE main.c -o main-pie-now.o
+cc -O1 -fPIE main.c -o main-pie-lazy.o
+cc -O1 -fno-pie main.c -o main-exec.o
+# a PIE, -z now; the option spelled (the x86-64 host's cross driver may not pass it).
+link gcc -pie -Wl,-z,now -Wl,--fix-cortex-a53-843419 main-pie-now.o f.o -L. -ls -o pie-now
+run pie-now
+  stdout: ok
+check(mortar) objdump -d --disassemble=f pie-now
+  has: ff8: * adr x0, 
+  has: ffc: * adr x0, 
+check(bfd) objdump -d --disassemble=f pie-now
+  has: ff8: * adr x0, 
+  has: ffc: * adr x0, 
+# a PIE, lazy; the option spelled (the x86-64 host's cross driver may not pass it).
+link gcc -pie -Wl,-z,lazy -Wl,--fix-cortex-a53-843419 main-pie-lazy.o f.o -L. -ls -o pie-lazy
+run pie-lazy
+  stdout: ok
+check(mortar) objdump -d --disassemble=f pie-lazy
+  has: ff8: * adr x0, 
+  has: ffc: * adr x0, 
+check(bfd) objdump -d --disassemble=f pie-lazy
+  has: ff8: * adr x0, 
+  has: ffc: * adr x0, 
+# a dynamic executable; the option spelled (the x86-64 host's cross driver may not pass it).
+link gcc -no-pie -Wl,--fix-cortex-a53-843419 main-exec.o f.o -L. -ls -o exec
+run exec
+  stdout: ok
+check(mortar) objdump -d --disassemble=f exec
+  has: ff8: * adr x0, 
+  has: ffc: * adr x0, 
+check(bfd) objdump -d --disassemble=f exec
+  has: ff8: * adr x0, 
+  has: ffc: * adr x0, 
+
+#--- f.S
+	.section .text.f,"ax",%progbits
+	.balign	4096
+	.globl	f
+	.type	f, %function
+f:
+	stp	x29, x30, [sp, #-16]!
+	mov	x10, x0
+	.rept	1020
+	nop
+	.endr
+	// the site at 0xFF8: W1, W2, then the final word
+	adrp	x0, :got:ld_var
+	ldr	x9, [sp]
+	ldr	x0, [x0, :got_lo12:ld_var]
+	str	x0, [x10]
+	.rept	1021
+	nop
+	.endr
+	// the site at 0xFFC of the next page
+	adrp	x0, :got:ld_var
+	ldr	x9, [sp]
+	ldr	x0, [x0, :got_lo12:ld_var]
+	str	x0, [x10, #8]
+	ldp	x29, x30, [sp], #16
+	ret
+	.size	f, .-f
+	.section .note.GNU-stack,"",%progbits
+#--- main.c
+#include <stdio.h>
+extern int ld_var;
+void f(void **out);
+
+int main(void) {
+  void *o[2];
+  f(o);
+  void *want = (void *)&ld_var;
+  if (o[0] != want || o[1] != want) {
+    printf("wrong: %p %p, want %p\n", o[0], o[1], want);
+    return 1;
+  }
+  puts("ok");
+  return 0;
+}
+#--- lib.c
+int ld_var = 7;
+__thread int lt = 9;
