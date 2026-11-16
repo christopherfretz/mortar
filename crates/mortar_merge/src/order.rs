@@ -48,6 +48,28 @@ impl Order {
         let b = all.partition_point(|f| self.map.frag_off[*f] < range.end);
         &all[a..b.max(a)]
     }
+
+    /// This order with `map` in place of its own (a layout's
+    /// `Layout.merge`, which may place a chunk's fragments in another
+    /// order): each chunk's fragments sorted again by offset, then
+    /// `FragId`. The chunks and their sizes stay: `Layout::check` has
+    /// held `map` to them.
+    ///
+    /// Cost: a parallel sort per chunk.
+    pub fn follow(&mut self, map: MergeMap, pool: &Pool) {
+        self.map = map;
+        let bounds: Vec<usize> = self
+            .chunks
+            .iter()
+            .map(|c| c.frags.start as usize)
+            .chain(std::iter::once(self.order.len()))
+            .collect();
+        let off = &self.map.frag_off;
+        let parts = mortar_core::par::split_offsets(&mut self.order, &bounds);
+        pool.unit_cost(200).for_each_part(parts, |_, part| {
+            part.sort_unstable_by_key(|&f| (off[f], f));
+        });
+    }
 }
 
 /// S-24: the sort key of a fragment: output section, then strings before

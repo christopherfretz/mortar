@@ -165,13 +165,31 @@ const LIVE_FDE: u8 = 1;
 const USED_CIE: u8 = 2;
 
 impl EhPlan {
-    /// The plan of S-41 to S-49. `code_live(s)` is S-41's test for an
-    /// FDE's code section: live and not folded away (`Liveness::fde_live`).
+    /// The plan of S-41 to S-49: [`EhPlan::select`], then
+    /// [`EhPlan::from_records`] of its list.
+    pub fn new<S, L>(src: &S, code_live: L, pool: &Pool, diag: &Collector) -> Result<Self, Failed>
+    where
+        S: EhSource + ?Sized,
+        L: Fn(SectionId) -> bool + Sync,
+    {
+        let records = Self::select(src, code_live, pool, diag)?;
+        Self::from_records(src, &records, pool, diag)
+    }
+
+    /// The decision of S-41 to S-46 (`Slots.eh_records`, S-49): the kept
+    /// records in output order. `code_live(s)` is S-41's test for an
+    /// FDE's code section: live and not folded away
+    /// (`Liveness::fde_live`).
     ///
     /// Cost: a parallel pass marking the records, one walk over the CIEs
     /// for S-44 ([`EhFrames::keepers`]: the identity classes are merge's,
-    /// S-43), two parallel passes writing the output rows, a prefix sum.
-    pub fn new<S, L>(src: &S, code_live: L, pool: &Pool, diag: &Collector) -> Result<Self, Failed>
+    /// S-43), a parallel pass writing the list.
+    pub fn select<S, L>(
+        src: &S,
+        code_live: L,
+        pool: &Pool,
+        diag: &Collector,
+    ) -> Result<Vec<EhRecord>, Failed>
     where
         S: EhSource + ?Sized,
         L: Fn(SectionId) -> bool + Sync,
@@ -180,65 +198,125 @@ impl EhPlan {
         let sections = &frames.sections;
         let n_sec = sections.len();
         check_rows(frames, diag)?;
-        let internal_sec: Vec<bool> =
-            (0..n_sec).map(|s| src.info(s).file == FileId::INTERNAL).collect();
-        // S-55, review finding 13: the internal file's records come last.
-        let order: Vec<u32> = (0..n_sec as u32)
-            .filter(|&i| !internal_sec[i as usize])
-            .chain((0..n_sec as u32).filter(|&i| internal_sec[i as usize]))
-            .collect();
-        let mut pos = vec![0u32; n_sec];
-        for (p, &i) in order.iter().enumerate() {
-            pos[i as usize] = p as u32;
-        }
+        let (internal_sec, order, _) = section_order(src);
         let mut marks = mark_live(src, &code_live, pool, diag)?;
-        let cies = Cies::new(frames, &internal_sec, &mut marks);
+        Cies::new(frames, &internal_sec, &mut marks);
         // S-46: the kept records per position.
-        let counts: Vec<u32> = pool.unit_cost(31).map(n_sec, |p| {
+        let mut first: Vec<u32> = pool.unit_cost(31).map(n_sec, |p| {
             let r = sections[order[p] as usize].records;
             marks[r.start as usize..(r.start + r.len) as usize]
                 .iter()
                 .filter(|&&m| m != REMOVED)
                 .count() as u32
         });
-        let mut first = counts;
         first.push(0);
         let total = pool.unit_cost(1).prefix_sum(&mut first) as usize;
-        first[n_sec] = total as u32;
-        let out_index = output_indices(frames, &marks, &first, &pos, pool);
         let mut records = vec![EhRecord { section: SectionId(0), piece: 0 }; total];
-        let mut glob = vec![0u32; total];
-        let mut srcs = vec![0u32; total];
-        let mut cie = vec![NONE; total];
-        let mut out_size = vec![0u64; total + 1];
         let bounds: Vec<usize> = first.iter().map(|&f| f as usize).collect();
-        let parts = mortar_core::par::split_offsets(&mut records, &bounds)
-            .into_iter()
-            .zip(mortar_core::par::split_offsets(&mut glob, &bounds))
-            .zip(mortar_core::par::split_offsets(&mut srcs, &bounds))
-            .zip(mortar_core::par::split_offsets(&mut cie, &bounds))
-            .zip(mortar_core::par::split_offsets(&mut out_size[..total], &bounds));
-        pool.unit_cost(140).for_each_part(parts, |p, ((((recs, g), s), c), size)| {
-            let i = order[p];
-            let sec = &sections[i as usize];
-            let base = sec.records.start;
-            let mut k = 0;
-            for (r, rec) in frames.records_of(i as usize).iter().enumerate() {
-                let gi = base + r as u32;
-                if marks[gi as usize] == REMOVED {
-                    continue;
-                }
-                recs[k] = EhRecord { section: sec.section, piece: r as u32 };
-                g[k] = gi;
-                s[k] = i;
-                if let Kind::Fde(f) = rec.kind {
-                    c[k] = out_index[cies.rep(frames, base + f.cie) as usize];
-                }
-                // S-47.
-                size[k] = rec.out_size();
-                k += 1;
+        let parts = mortar_core::par::split_offsets(&mut records, &bounds);
+        pool.unit_cost(40).for_each_part(parts, |p, recs| {
+            let sec = &sections[order[p] as usize];
+            let m =
+                &marks[sec.records.start as usize..(sec.records.start + sec.records.len) as usize];
+            let kept = m.iter().enumerate().filter(|&(_, &m)| m != REMOVED);
+            for (slot, (r, _)) in recs.iter_mut().zip(kept) {
+                *slot = EhRecord { section: sec.section, piece: r as u32 };
             }
         });
+        Ok(records)
+    }
+
+    /// The plan of `records`, a layout's `Slots.eh_records` (S-49): each
+    /// FDE takes its own input CIE when that is listed, else the nearest
+    /// earlier listed CIE of its identity class (S-43); then the output
+    /// offsets and the size. A list the rules do not admit fails by name
+    /// (S-49's validity rules): a record that is not one, an order that
+    /// is not S-46's (a record given twice included), an FDE with no CIE
+    /// to take (an internal FDE takes only its own, S-55), a listed CIE no
+    /// listed FDE takes (S-42). Which FDEs are listed (S-41) is
+    /// `Layout::check`'s.
+    ///
+    /// Cost: a walk of the list (a lookup per section run), a parallel
+    /// pass per section writing the CIEs and sizes, a walk marking the
+    /// used CIEs, a prefix sum.
+    pub fn from_records<S>(
+        src: &S,
+        records: &[EhRecord],
+        pool: &Pool,
+        diag: &Collector,
+    ) -> Result<Self, Failed>
+    where
+        S: EhSource + ?Sized,
+    {
+        let frames = src.frames();
+        let sections = &frames.sections;
+        let n_sec = sections.len();
+        check_rows(frames, diag)?;
+        let (internal_sec, order, pos) = section_order(src);
+        let ids: Vec<SectionId> = sections.iter().map(|s| s.section).collect();
+        let total = records.len();
+        let bad = |k: usize, what: String| {
+            let r = records[k];
+            fail(
+                diag,
+                record_key(r.section, r.piece),
+                internal(format!("EH_RECORDS row {k}: {what}")),
+            )
+        };
+        let ListRuns { src_row, glob, first, cies } =
+            match list_runs(frames, records, &ids, &pos, &internal_sec) {
+                Ok(l) => l,
+                Err((k, what)) => return bad(k, what),
+            };
+        let out_index = list_index(frames, records, &first, &pos, pool);
+        // S-49: each FDE's CIE, and each record's output size (S-47).
+        let mut cie = vec![NONE; total];
+        let mut out_size = vec![0u64; total + 1];
+        let mut errs: Vec<Option<(usize, String)>> = vec![None; n_sec];
+        let bounds: Vec<usize> = first.iter().map(|&f| f as usize).collect();
+        let parts = mortar_core::par::split_offsets(&mut cie, &bounds)
+            .into_iter()
+            .zip(mortar_core::par::split_offsets(&mut out_size[..total], &bounds))
+            .zip(errs.chunks_mut(1));
+        pool.unit_cost(60).for_each_part(parts, |p, ((c, size), err)| {
+            let row = order[p] as usize;
+            let base = sections[row].records.start;
+            let k0 = first[p] as usize;
+            for (j, (c, size)) in c.iter_mut().zip(size.iter_mut()).enumerate() {
+                let k = k0 + j;
+                let rec = &frames.records[glob[k] as usize];
+                *size = rec.out_size();
+                let Kind::Fde(f) = rec.kind else { continue };
+                let own = base + f.cie;
+                let taken = match out_index.get(own as usize) {
+                    Some(&o) if o != NONE => Some(o).filter(|&o| (o as usize) < k),
+                    _ if internal_sec[row] => None,
+                    _ => frames.records.get(own as usize).and_then(|r| r.cie()).and_then(|ci| {
+                        let list = &cies[ci.class as usize];
+                        let at = list.partition_point(|&x| (x as usize) < k);
+                        at.checked_sub(1).map(|a| list[a])
+                    }),
+                };
+                let Some(o) = taken else {
+                    err[0] = Some((k, "an FDE with no CIE to take (S-49)".to_owned()));
+                    return;
+                };
+                *c = o;
+            }
+        });
+        if let Some((k, what)) = errs.into_iter().flatten().min_by_key(|e| e.0) {
+            return bad(k, what);
+        }
+        // S-42: every listed CIE is taken.
+        let mut used = vec![false; total];
+        for &c in &cie {
+            if c != NONE {
+                used[c as usize] = true;
+            }
+        }
+        if let Some(k) = (0..total).find(|&k| cie[k] == NONE && !used[k]) {
+            return bad(k, "a CIE no listed FDE takes (S-42)".to_owned());
+        }
         let body = pool.unit_cost(1).prefix_sum(&mut out_size);
         out_size[total] = body;
         if body + 4 > u64::from(u32::MAX) {
@@ -254,13 +332,13 @@ impl EhPlan {
         Ok(Self {
             records: records.into(),
             glob: glob.into(),
-            src: srcs.into(),
+            src: src_row.into(),
             cie: cie.into(),
             out_off: out_size.into(),
             out_index: out_index.into(),
             pos: pos.into(),
             first: first.into(),
-            ids: sections.iter().map(|s| s.section).collect(),
+            ids: ids.into(),
             align,
             sh_type,
             fdes,
@@ -505,34 +583,114 @@ impl Cies {
     }
 }
 
-/// Per input record, its output index (`NONE` when removed); parallel by
-/// section.
-fn output_indices(
+/// The list's section runs (`EhPlan::from_records`), in S-46's order: per
+/// record its row in `EhFrames::sections` and its index in
+/// `EhFrames::records`; per position the first record; per class the
+/// listed CIEs.
+struct ListRuns {
+    src_row: Vec<u32>,
+    glob: Vec<u32>,
+    first: Vec<u32>,
+    cies: Vec<Vec<u32>>,
+}
+
+/// Walks the list (a lookup per section run); a row out of S-46's order,
+/// or naming no live record, is the error `(row, what)`.
+fn list_runs(
     frames: &EhFrames,
-    marks: &[u8],
+    records: &[EhRecord],
+    ids: &[SectionId],
+    pos: &[u32],
+    internal_sec: &[bool],
+) -> Result<ListRuns, (usize, String)> {
+    let sections = &frames.sections;
+    let total = records.len();
+    let mut src_row = vec![0u32; total];
+    let mut glob = vec![0u32; total];
+    let mut first = vec![0u32; sections.len() + 1];
+    let mut cies: Vec<Vec<u32>> = vec![Vec::new(); frames.classes as usize];
+    let mut next_pos = 0usize;
+    let mut k = 0usize;
+    while k < total {
+        let section = records[k].section;
+        let Ok(row) = ids.binary_search(&section) else {
+            return Err((k, format!("section {} is no live .eh_frame", section.0)));
+        };
+        let p = pos[row] as usize;
+        if p < next_pos {
+            return Err((k, "not in S-46's order (sections)".to_owned()));
+        }
+        first[next_pos..=p].fill(k as u32);
+        next_pos = p + 1;
+        let sec = &sections[row];
+        let mut prev: Option<u32> = None;
+        while k < total && records[k].section == section {
+            let piece = records[k].piece;
+            if piece >= sec.records.len {
+                return Err((k, format!("section {} has no record {piece}", section.0)));
+            }
+            if prev.is_some_and(|q| q >= piece) {
+                return Err((k, "not in S-46's order (records), or given twice".to_owned()));
+            }
+            prev = Some(piece);
+            let g = sec.records.start + piece;
+            src_row[k] = row as u32;
+            glob[k] = g;
+            if let Kind::Cie(c) = frames.records[g as usize].kind
+                && !internal_sec[row]
+            {
+                cies[c.class as usize].push(k as u32);
+            }
+            k += 1;
+        }
+    }
+    first[next_pos..].fill(total as u32);
+    Ok(ListRuns { src_row, glob, first, cies })
+}
+
+/// Per input record its row in the list, or `NONE` (a parallel pass per
+/// section).
+fn list_index(
+    frames: &EhFrames,
+    records: &[EhRecord],
     first: &[u32],
     pos: &[u32],
     pool: &Pool,
 ) -> Vec<u32> {
-    let sections = &frames.sections;
     let mut out_index = vec![NONE; frames.records.len()];
-    let bounds: Vec<usize> = sections
+    let bounds: Vec<usize> = frames
+        .sections
         .iter()
         .map(|s| s.records.start as usize)
         .chain(std::iter::once(frames.records.len()))
         .collect();
     let parts = mortar_core::par::split_offsets(&mut out_index, &bounds);
-    pool.unit_cost(71).for_each_part(parts, |s, part| {
-        let r = sections[s].records;
-        let mut k = first[pos[s] as usize];
-        for (j, &m) in marks[r.start as usize..(r.start + r.len) as usize].iter().enumerate() {
-            if m != REMOVED {
-                part[j] = k;
-                k += 1;
-            }
+    pool.unit_cost(40).for_each_part(parts, |s, part| {
+        let p = pos[s] as usize;
+        for k in first[p]..first[p + 1] {
+            part[records[k as usize].piece as usize] = k;
         }
     });
     out_index
+}
+
+/// S-46, S-55: per section row whether it is the internal file's, the
+/// section rows in output order (the internal file's last), and each
+/// row's position in it.
+fn section_order<S: EhSource + ?Sized>(src: &S) -> (Vec<bool>, Vec<u32>, Vec<u32>) {
+    let n_sec = src.frames().sections.len();
+    let internal_sec: Vec<bool> =
+        (0..n_sec).map(|s| src.info(s).file == FileId::INTERNAL).collect();
+    // S-55, review finding 13: the internal file's records come last.
+    let order: Vec<u32> = (0..n_sec as u32)
+        .filter(|&i| !internal_sec[i as usize])
+        .chain((0..n_sec as u32).filter(|&i| internal_sec[i as usize]))
+        .collect();
+    let mut pos = vec![0u32; n_sec];
+    for (p, &i) in order.iter().enumerate() {
+        pos[i as usize] = p as u32;
+    }
+    (internal_sec, order, pos)
 }
 
 /// S-41, S-42: per input record (`EhFrames::records`), [`REMOVED`],

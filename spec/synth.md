@@ -610,9 +610,26 @@ with one terminator, and the pointers inside them rewritten.
   run (X-13). A link with no `crtend.o` gets one too (lld, mold; GNU
   none). This changes layout L-58 (§14).
 - **S-49 [C] (Slots).** `Slots.eh_records` lists the output records in
-  order as `(SectionId, record index)`; the terminator is implied. The
-  size is the sum of the records' output sizes (S-47) plus 4; offsets are
-  a prefix sum, parallel by section (S-56).
+  order as `(SectionId, record index)`; the terminator is implied. It is
+  a decision of the layout (`spec/layout.md` §4.3): S-41 to S-46 choose
+  it in a link that computes its layout, and the output `.eh_frame` is a
+  function of the list whoever chose it (WP-086). An FDE's CIE is its
+  own input CIE when the list holds it, else the nearest earlier listed
+  CIE of the same identity class (S-43); an FDE of the internal file
+  takes only its own (S-55). The size is the sum of the records' output
+  sizes (S-47) plus 4; offsets are a prefix sum, parallel by section
+  (S-56). A list the rules do not admit fails the link by name:
+  1. a row that names no record of a live `.eh_frame`;
+  2. rows out of S-46's order, or one record twice;
+  3. an FDE that is not live, or a live FDE not listed (S-41; checked
+     by `Layout::check`);
+  4. an FDE with no CIE to take by the rule above;
+  5. a listed CIE that no listed FDE takes (S-42).
+
+  So the only freedom a list has beyond S-41 to S-46's choice is to keep
+  a CIE that S-44 would remove, which its section's FDEs then take
+  (IN-34a keeps one per file this way). The plan and the bytes depend on
+  the list only, never on how it was chosen.
 
 ### 4.4 References into .eh_frame
 
@@ -1193,6 +1210,17 @@ gdb, lldb, perf, nm, addr2line, objdump and valgrind (§12).
   combined by a prefix sum over `FileId`. `Slots.symtab_locals` holds
   each file's `(first, count)`; demoted symbols are counted per defining
   file by a pass over globals (a parallel counting sort by `FileId`).
+  The spans are a table of the layout that the symbol table is held to:
+  a layout whose spans are not the plan's fails the link by name
+  (WP-086). In state format version 1 (`spec/incr.md` IN-18a) the plan's
+  are the only admissible value, since each file's block starts where
+  the one before it ends (file 0's at entry 1) and holds exactly its
+  kept locals and demoted symbols; the table exists so that an update
+  can find an unchanged file's entries in the previous output (IN-49a),
+  which needs the previous link's spans and cannot derive them. Q8's
+  per-file ranges with null-entry holes would admit other spans (a block
+  with room to grow); with them the plan would place each file's block
+  at its span instead of checking it.
 - **S-89 [C] (cost).** For 10^7 symbols (240 MB of `.symtab` on ELF64,
   and about 300 MB of names for a large C++ program): counting is one
   parallel pass over the kept symbols; filling is parallel by window
@@ -2069,5 +2097,7 @@ differ. Required, per family:
 - **unit tests** (`mortar_merge`, `mortar_synth`): S-28 determinism (one
   `Split` and `MergeMap` at 1, 2, 4, 8 and 64 threads and with equal-named
   inputs permuted, equal to a sequential first-occurrence numbering);
-  S-46, S-47 and S-49 on synthetic record lists; S-50's five cases; S-88
+  S-46, S-47 and S-49 on synthetic record lists (S-49: `select` then
+  `from_records` is the plan; a kept equal CIE is taken by its section's
+  FDEs; each of the five refusals by name); S-50's five cases; S-88
   counts against a model; S-95 and S-126 against a table of cases.

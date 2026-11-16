@@ -726,6 +726,36 @@ impl<'a, 't, 'n> Checker<'a, 't, 'n> {
                 [Row::Entry("eh_records", at as u32)],
             )?;
         }
+        // S-41: the listed FDEs are exactly the live ones (an FDE whose
+        // code section is live and not folded away). With no record given
+        // twice, every listed FDE live and as many listed as live suffice.
+        let folded = |s: SectionId| self.layout.folds.is_folded(s);
+        let fde_live = |p: crate::split::EhPiece| cx.liveness.fde_live(p, folded);
+        let piece = |row: &crate::layout::EhRecord| {
+            let span = cx.split.eh_pieces(row.section)?;
+            cx.split.eh_piece.get(span.start as usize + row.piece as usize).copied()
+        };
+        let mut listed_fdes = 0usize;
+        for (at, row) in slots.eh_records.iter().enumerate() {
+            let Some(p) = piece(row) else { continue };
+            if p.is_cie() {
+                continue;
+            }
+            listed_fdes += 1;
+            need(
+                fde_live(p),
+                r,
+                || "an .eh_frame FDE whose code is not live (S-41)".into(),
+                [Row::Entry("eh_records", at as u32)],
+            )?;
+        }
+        let live_fdes = cx.split.eh_piece.iter().filter(|&&p| !p.is_cie() && fde_live(p)).count();
+        need(
+            listed_fdes == live_fdes,
+            r,
+            || format!("{live_fdes} live .eh_frame FDEs, {listed_fdes} listed (S-41)"),
+            [],
+        )?;
         let mut relocs = slots.dyn_relocs.to_vec();
         relocs.sort_unstable();
         if let Some(pair) = relocs.windows(2).find(|p| p[0] == p[1]) {
@@ -1072,8 +1102,15 @@ impl<'a, 't, 'n> Checker<'a, 't, 'n> {
                     || format!("the chunks of section index {index} are not consecutive"),
                     [Row::Chunk(id)],
                 )?;
+                // L-86: indices are given densely in chunk order.
+                need(
+                    index == count + 1,
+                    r,
+                    || format!("section index {index} is not the next in chunk order"),
+                    [Row::Chunk(id)],
+                )?;
                 done[index as usize] = true;
-                count = count.max(index);
+                count = index;
             }
             previous = Some(index);
         }
