@@ -4,6 +4,7 @@
 //!   cargo xtask ci [--quick] [--no-fail-fast] [--step <name>]...    the gate: fmt, clippy, tests, link tests
 //!   cargo xtask linktest [options] [paths...]      the link tests ("Link tests")
 //!   cargo xtask census [--quick] [options]         the driver-line census (spec/dyn.md §2)
+//!   cargo xtask sweep [--quick] ...                the byte sweep on mortar's outputs (spec/plumb.md §12.3)
 //!   cargo xtask static-identical [--update]        static links' digests ("static-identical")
 //!   cargo xtask bench [options]                    link speed and memory
 //!   cargo xtask plumb <output> --map <file> ...    the verifier (spec/plumb.md §8)
@@ -13,9 +14,10 @@
 
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: cargo xtask ci [--quick] [--no-fail-fast] [--step fmt|clippy|test|linktest|census|static-identical]...\n       \
+const USAGE: &str = "usage: cargo xtask ci [--quick] [--no-fail-fast] [--step fmt|clippy|test|linktest|census|mason|sweep|static-identical]...\n       \
                      cargo xtask linktest [options] [<file or directory>...]\n       \
                      cargo xtask census [--quick] [--arch <a>[,<a>]] [--filter <s>]... [--mortar <path>] [-j <n>] [--keep]\n       \
+                     cargo xtask sweep [--quick] [--arch <a>[,<a>]] [--threads <n>]\n       \
                      cargo xtask static-identical [--update] [-j <n>]\n       \
                      cargo xtask bench [options]   (cargo xtask bench --help)\n       \
                      cargo xtask plumb <output> --map <file> --map-format <format> ...\n       \
@@ -37,6 +39,8 @@ fn main() -> ExitCode {
         Some("linktest") => ExitCode::from(xtask::linktest::main(&args[1..])),
         #[cfg(unix)]
         Some("census") => ExitCode::from(xtask::census::main(&args[1..])),
+        #[cfg(unix)]
+        Some("sweep") => ExitCode::from(xtask::sweep::main(&args[1..])),
         #[cfg(unix)]
         Some("static-identical") => ExitCode::from(xtask::identical::main(&args[1..])),
         Some("plumb") => xtask::plumb::main(&args[1..]),

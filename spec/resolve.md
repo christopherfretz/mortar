@@ -1384,7 +1384,7 @@ classification is per file (I-file), the state needs `comdat`:
 | `SHT_X86_64_UNWIND` (x86-64) or name `.eh_frame` | `EhFrame` | `Kept` | |
 | `SHF_MERGE` with entry size > 0 | `Merge`, or `Regular` when `spec/synth.md` S-6 places it whole (writable, code, TLS, relocated, `SHF_COMPRESSED`, odd shape) | `Kept`; a non-alloc `.debug*` one (`.debug_str`, `.debug_line_str`) under `-S`/`-s`: `Dropped(Stripped)`, as the `Debug` row (WP-027a: GNU ld, lld and mold drop them) | |
 | `SHF_MERGE` with entry size 0 | `Regular` | `Kept` (not merged; lld) | not verified with GNU ld |
-| non-alloc, name `.debug_*` | `Debug` | `Kept` (unless `-S`/`-s`: `Dropped(Stripped)`) | |
+| non-alloc, name `.debug_*` | `Debug` | `Kept` (unless `-S`/`-s`: `Dropped(Stripped)`); with `--gdb-index` and neither `-S` nor `-s`, exactly `.debug_gnu_pubnames` and `.debug_gnu_pubtypes` are `Dropped(Consumed)`: the index reads them (`spec/synth.md` S-G6, WP-097) | lld and mold drop them with `--gdb-index` |
 | `SHT_NOTE` other | `Note` | `Kept` | |
 | `SHT_NOBITS` | `Nobits` | `Kept` | |
 | `SHT_PROGBITS`, `SHT_INIT_ARRAY`, `SHT_FINI_ARRAY`, `SHT_PREINIT_ARRAY`, alloc `SHT_STRTAB` | `Regular` | `Kept` | |

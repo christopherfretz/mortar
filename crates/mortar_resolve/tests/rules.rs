@@ -1753,6 +1753,43 @@ fn s10_mason_containers() {
     }
 }
 
+/// A section with MT-1's name, type and flags that a relocation section
+/// applies to is not a container (MT-2): not listed, the `SHF_EXCLUDE`
+/// row, its relocations dropped with it, one warning per file; the
+/// file's other container is still one.
+// spec: meta.md MT-2, MT-6 (WP-099: hod writes `.rela.mason.meta` for an
+// initializer with a pointer)
+#[test]
+fn s10_relocated_container_is_not_one() {
+    const META: &str = ".mason.meta";
+    let mut m = Model::new(A64);
+    let a = m.obj("a.o");
+    let i = m.section(a, MSection::new(META, SHT_PROGBITS, SHF_EXCLUDE));
+    let mut rela = MSection::new(".rela.mason.meta", SHT_RELA, 0);
+    rela.info = i;
+    let ri = m.section(a, rela);
+    let j = m.section(a, MSection::new(META, SHT_PROGBITS, SHF_EXCLUDE));
+    let k = m.section(a, MSection::new(META, SHT_PROGBITS, SHF_EXCLUDE));
+    let mut rela2 = MSection::new(".rela.mason.meta", SHT_RELA, 0);
+    rela2.info = k;
+    m.section(a, rela2);
+    let r = link(&m);
+    let base = r.section_base[a.0 as usize].start.0 as usize;
+    let row = r.sections[base + i as usize];
+    assert_eq!(
+        (row.kind, row.state, row.reloc),
+        (SectionKind::Excluded, SectionState::Dropped(DropReason::Excluded), SectionIndex(ri))
+    );
+    assert_eq!(r.sections[base + k as usize].kind, SectionKind::Excluded);
+    assert_eq!(r.meta, vec![(a, SectionIndex(j))]);
+    assert_eq!(ids(&r), ["meta-malformed"]);
+    assert!(matches!(
+        r.problems[0].what,
+        What::MetaNotContainer { file, section, relocated: true } if file == a && section.0 == i
+    ));
+    assert_eq!(r.problems[0].severity(), mortar_resolve::Severity::Warning);
+}
+
 #[test]
 fn s10_slim_lto_refused() {
     let mut m = Model::new(A64);

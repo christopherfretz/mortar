@@ -60,6 +60,12 @@ pub fn no_code(_: CodeRef) -> Option<u64> {
     None
 }
 
+/// No non-allocated section offset is known.
+#[must_use]
+pub fn no_offset(_: SectionId) -> Option<u64> {
+    None
+}
+
 /// The answers of [`NoAddrs`] as a chunk's `write` takes them.
 #[must_use]
 pub fn no_answers<'a>(
@@ -76,5 +82,6 @@ pub fn no_answers<'a>(
         got: GotAddrs { got: 0, got_plt: 0, plt: 0 },
         hdr: HdrAddrs { hdr: 0, eh: 0 },
         code_addr: &no_code,
+        section_offset: &no_offset,
     }
 }

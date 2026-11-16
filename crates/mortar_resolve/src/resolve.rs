@@ -473,7 +473,7 @@ fn misnamed_container(
     }
     out.problems.push(Problem {
         key: DiagKey::of(file, u64::from(i)),
-        what: What::MetaNotContainer { file, section: SectionIndex(i) },
+        what: What::MetaNotContainer { file, section: SectionIndex(i), relocated: false },
     });
     true
 }
@@ -599,6 +599,62 @@ fn d1_file<V: View>(
     }
 }
 
+/// spec: meta.md MT-2a, MT-6 (WP-099): a container a relocation section
+/// applies to is not one. Its records are not read (mortar applies no
+/// relocation to a container, and a producer that meant one meant
+/// something MT-2 forbids); it takes the `SHF_EXCLUDE` row, its
+/// relocations are dropped with it, and the file is warned once
+/// (`misnamed`: it was already).
+fn relocated_containers<V: View>(
+    ctx: &Ctx<'_, V>,
+    file: FileId,
+    n: u32,
+    rows: &mut [SectionRow],
+    map: &SectionMap,
+    mut misnamed: bool,
+    out: &mut Found,
+) {
+    for i in 1..n {
+        let row = &mut rows[i as usize];
+        if row.kind != SectionKind::Meta || row.reloc.0 == 0 {
+            continue;
+        }
+        let Some(s) = ctx.view.section(file, SectionIndex(i)) else { continue };
+        row.kind = SectionKind::Excluded;
+        let excluded = sections::excluded_reason(&s, Note::None);
+        let strip = ctx.opts.strip_debug && sections::is_debug(&s);
+        row.state = sections::state(SectionKind::Excluded, excluded, map.is_dropped(i), strip);
+        out.meta.retain(|&m| m != (file, SectionIndex(i)));
+        if !misnamed {
+            misnamed = true;
+            out.problems.push(Problem {
+                key: DiagKey::of(file, u64::from(i)),
+                what: What::MetaNotContainer { file, section: SectionIndex(i), relocated: true },
+            });
+        }
+    }
+}
+
+/// The state of one kept-kind section (§10); with `--gdb-index` the
+/// index consumes the GNU name sets (spec/synth.md S-G6).
+fn row_state(
+    opts: &Options,
+    s: &crate::view::SectionInfo<'_>,
+    kind: SectionKind,
+    excluded: DropReason,
+    dropped: bool,
+) -> SectionState {
+    let strip = opts.strip_debug && sections::is_debug(s);
+    let state = sections::state(kind, excluded, dropped, strip);
+    if opts.consume_gnu_pubnames
+        && state == SectionState::Kept
+        && matches!(s.name, b".debug_gnu_pubnames" | b".debug_gnu_pubtypes")
+    {
+        return SectionState::Dropped(DropReason::Consumed);
+    }
+    state
+}
+
 /// §10 for the sections of one live object.
 fn section_rows<V: View>(
     ctx: &Ctx<'_, V>,
@@ -611,9 +667,7 @@ fn section_rows<V: View>(
     let n = rows.len() as u32;
     let mut misnamed = false;
     for i in 0..n {
-        let Some(s) = ctx.view.section(file, SectionIndex(i)) else {
-            continue;
-        };
+        let Some(s) = ctx.view.section(file, SectionIndex(i)) else { continue };
         let group = map.group_of(i);
         let dropped = map.is_dropped(i);
         let row = &mut rows[i as usize];
@@ -627,8 +681,7 @@ fn section_rows<V: View>(
                     out.meta.push((file, SectionIndex(i)));
                 }
                 let excluded = sections::excluded_reason(&s, note);
-                let strip = ctx.opts.strip_debug && sections::is_debug(&s);
-                row.state = sections::state(kind, excluded, dropped, strip);
+                row.state = row_state(ctx.opts, &s, kind, excluded, dropped);
                 match note {
                     Note::Retain if row.is_kept() => out.retained.push((file, SectionIndex(i))),
                     Note::GnuWarning if !dropped => out.problems.push(Problem {
@@ -690,6 +743,7 @@ fn section_rows<V: View>(
             });
         }
     }
+    relocated_containers(ctx, file, n, rows, map, misnamed, out);
     // synth.md S-6: a `Merge` section that is not certain to merge safely
     // is placed whole, as `Regular` (§10), so every later phase (layout's
     // `place`, `addr_in`, the symbol stage) treats it as one piece.
