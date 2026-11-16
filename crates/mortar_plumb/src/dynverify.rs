@@ -202,30 +202,22 @@ pub fn verify_with(output: &[u8], inputs: &[Input<'_>], map: &Map, ctx: &Ctx<'_>
                 && !known.contains(&r.offset)
             {
                 let placed = engine.occupied_at(r.offset);
-                // A linker-made word (a GOT slot no reference left in use)
-                // holding an address of the image is an address word.
+                // A linker-made word: a GOT slot an input's GOT reference
+                // demands, relaxed or not (WP-101; before, any word whose
+                // addend was inside a PT_LOAD passed).
                 let a = r.addend.unwrap_or(0) as u64;
-                let inside = image.phdrs.iter().any(|p| {
-                    p.p_type == mortar_elf::consts::PT_LOAD
-                        && p.p_vaddr <= a
-                        && a <= p.p_vaddr.saturating_add(p.p_memsz)
-                });
-                if !placed && inside {
-                    continue;
-                }
-                report.findings.push(
-                    Finding::new(
-                        Rule::Dyn(9),
-                        if placed {
-                            "a RELATIVE record on a word of an input section that no input relocation makes an address of the executable"
-                        } else {
-                            "a RELATIVE record on a linker-made word that holds no address of the executable the inputs ask for"
-                        },
-                    )
-                    .at(r.offset),
-                );
+                let why = if placed {
+                    Some("a RELATIVE record on a word of an input section that no input relocation makes an address of the executable".to_string())
+                } else {
+                    crate::dynfields::linker_word(&image, r.offset, a, &engine.got_demands)
+                };
+                let Some(why) = why else { continue };
+                report.findings.push(Finding::new(Rule::Dyn(9), why).at(r.offset));
             }
         }
+    }
+    if map.format == crate::Format::Mortar {
+        report.findings.extend(crate::dynfields::unrecorded_got(&image, &dout, &engine.got_demands));
     }
     let chosen = std::mem::take(&mut engine.ifunc_chosen);
     // A static-pie's exports bind nothing (§12.4, P-D14 judges them): W13

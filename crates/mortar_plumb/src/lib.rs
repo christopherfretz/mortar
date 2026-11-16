@@ -16,6 +16,7 @@ mod content;
 pub mod dead;
 mod deaddwarf;
 mod dyncheck;
+mod dynfields;
 mod dynmodel;
 mod dynmutate;
 pub mod dynout;

@@ -86,6 +86,7 @@ pub(crate) fn check(
     pd11_13(image, out, model, ld, format, &mut v);
     pd12(image, out, ld, objs, format, &mut v);
     fields(image, out, model, line, objs, format, &mut v);
+    crate::dynfields::check(image, out, line, model, ld, objs, format, &mut v);
     v
 }
 
@@ -898,7 +899,9 @@ fn pd8(out: &DynOut, model: &Model, ld: &Loader<'_>, v: &mut Vec<Finding>) {
         if x & 0x8000 != 0 {
             v.push(sym_finding(8, &s.name, "a .gnu.version entry with bit 15 set (D-27)"));
         }
-        if !s.defined() && x & 0x7fff == 1 {
+        // Index 0 of an import is an unversioned lookup too (glibc reads
+        // `l_versions[0]` with hash 0; WP-101: it escaped this check).
+        if !s.defined() && x & 0x7fff <= 1 {
             // Unversioned: D-27 records the version of a versioned
             // definition (an asked `.symver` one, or the default).
             let asked = model.keys.get(&s.name).and_then(|k| k.version.clone());

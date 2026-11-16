@@ -502,6 +502,12 @@ pub(crate) struct Engine<'a, 'b> {
     /// Verified absolute words and GOT words: `(place, width, value,
     /// internal)`, for the bias view (P-D9 view 2).
     pub(crate) abs_words: Vec<(u64, u8, u64, bool)>,
+    /// What the inputs' GOT-indirect references demand a GOT word hold
+    /// (WP-101): `S + A` of every non-TLS GOT reference to a defined or
+    /// weak-undefined target, relaxed or not, and the values of every TLS
+    /// slot pushed; a linker-made GOT word must hold one of them (P-D9,
+    /// `spec/plumb.md` §12.3).
+    pub(crate) got_demands: std::collections::BTreeSet<u64>,
     /// Stage 3: each IFUNC resolver's canonical IPLT entry, `None` when
     /// every reference reaches its IRELATIVE slot.
     pub(crate) ifunc_chosen: BTreeMap<u64, Option<u64>>,
@@ -697,6 +703,7 @@ impl<'a, 'b> Engine<'a, 'b> {
             plt: BTreeMap::new(),
             plt_depths: None,
             abs_words: Vec::new(),
+            got_demands: std::collections::BTreeSet::new(),
             ifunc_chosen: BTreeMap::new(),
             extent: {
                 let loads = image.phdrs.iter().filter(|p| p.p_type == mortar_elf::consts::PT_LOAD);
@@ -1397,6 +1404,7 @@ impl<'a, 'b> Engine<'a, 'b> {
         let weak = matches!(target, Target::UndefWeak);
         let op = rec.def.op;
         if let Op::Slot(slot, _) = op {
+            self.got_demands.insert(sa);
             if let Some(rw) = got_rewrite(rec, sa, &partner) {
                 self.cov.add_accepted(rw, rec.def.r_type);
                 return;
@@ -1686,6 +1694,7 @@ impl<'a, 'b> Engine<'a, 'b> {
         symbol: String,
         want: Want,
     ) {
+        self.demand(want);
         let Some(ev) = self.slot_evidence(rec) else {
             return self.not_checked(Reason::SymbolUnresolved, 1);
         };
@@ -2147,6 +2156,19 @@ impl<'a, 'b> Engine<'a, 'b> {
         };
         let pend = Pending { rec: rec.clone(), site, symbol, want: Want::Word(0), w1, loaded };
         self.piece_groups.entry((oi, sec, r, extra)).or_default().members.push((pend, ev));
+    }
+
+    /// Records what a GOT slot of `want` holds ([`Self::got_demands`]).
+    fn demand(&mut self, want: Want) {
+        match want {
+            Want::Word(v) => {
+                self.got_demands.insert(v);
+            }
+            Want::Pair(m, v) => {
+                self.got_demands.insert(m);
+                self.got_demands.insert(v);
+            }
+        }
     }
 
     /// Decides the GOT groups (§5.5).

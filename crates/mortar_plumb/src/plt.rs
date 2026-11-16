@@ -118,7 +118,7 @@ fn fetch<'a>(image: &Image<'a>, at: u64) -> Option<&'a [u8]> {
 /// x86-64: the entry at `entry` run to the jump through `slot`, then from
 /// the slot's initial word to the next indirect jump.
 fn x64_walk(image: &Image<'_>, entry: u64, slot: u64) -> Result<Walk, (String, u64)> {
-    x64_walk_depths(image, entry, slot, &mut Vec::new())
+    x64_walk_depths(image, entry, slot, &mut Vec::new(), &mut Vec::new())
 }
 
 /// [`x64_walk`], recording in `depths` each instruction it reaches with
@@ -131,6 +131,7 @@ fn x64_walk_depths(
     entry: u64,
     slot: u64,
     depths: &mut Vec<(u64, u64)>,
+    ran: &mut Vec<(u64, u64)>,
 ) -> Result<Walk, (String, u64)> {
     let mut depth = 8u64;
     let mut pc = entry;
@@ -154,13 +155,18 @@ fn x64_walk_depths(
         let c = &b[o..];
         let next = |len: usize| at + (o + len) as u64;
         match c {
-            [0xf3, 0x0f, 0x1e, 0xfa, ..] if o == 0 => pc = next(4),
+            [0xf3, 0x0f, 0x1e, 0xfa, ..] if o == 0 => {
+                ran.push((at, 4));
+                pc = next(4);
+            }
             [0x41, 0xbb, _, _, _, _, ..] if o == 0 => {
+                ran.push((at, 6));
                 r11 = Some(rel32(c, 2) as u64 & 0xffff_ffff);
                 trace.push((Step::MovR11, at, lazy.is_some()));
                 pc = next(6);
             }
             [0x68, _, _, _, _, ..] if o == 0 => {
+                ran.push((at, 5));
                 if lazy.is_none() {
                     return Err(early(at));
                 }
@@ -170,6 +176,7 @@ fn x64_walk_depths(
                 pc = next(5);
             }
             [0x41, 0x53, ..] if o == 0 => {
+                ran.push((at, 2));
                 let Some(v) = r11 else {
                     return Err((
                         format!("the lazy path pushes %r11 at {at:#x}, which nothing set"),
@@ -184,6 +191,7 @@ fn x64_walk_depths(
                 pc = next(2);
             }
             [0xff, 0x35, _, _, _, _, ..] if o == 0 => {
+                ran.push((at, 6));
                 if lazy.is_none() {
                     return Err(early(at));
                 }
@@ -193,11 +201,16 @@ fn x64_walk_depths(
                 pc = next(6);
             }
             [0xe9, _, _, _, _, ..] => {
+                ran.push((at, o as u64 + 5));
                 trace.push((Step::Jmp, at + o as u64, lazy.is_some()));
                 pc = next(5).wrapping_add_signed(rel32(c, 1));
             }
-            [0xeb, d, ..] if o == 0 => pc = next(2).wrapping_add_signed(i64::from(*d as i8)),
+            [0xeb, d, ..] if o == 0 => {
+                ran.push((at, 2));
+                pc = next(2).wrapping_add_signed(i64::from(*d as i8));
+            }
             [0xff, 0x25, _, _, _, _, ..] => {
+                ran.push((at, o as u64 + 6));
                 let word = next(6).wrapping_add_signed(rel32(c, 2));
                 trace.push((Step::JmpInd, at + o as u64, lazy.is_some()));
                 let Some(l) = lazy else {
@@ -237,6 +250,17 @@ fn x64_walk_depths(
 
 /// AArch64: as [`x64_walk`], with `x16` and `x17` followed.
 fn a64_walk(image: &Image<'_>, entry: u64, slot: u64) -> Result<Walk, (String, u64)> {
+    a64_walk_ran(image, entry, slot, &mut Vec::new())
+}
+
+/// [`a64_walk`], recording in `ran` each instruction it executes
+/// (address, 4); kept on an error too.
+fn a64_walk_ran(
+    image: &Image<'_>,
+    entry: u64,
+    slot: u64,
+    ran: &mut Vec<(u64, u64)>,
+) -> Result<Walk, (String, u64)> {
     let mut pc = entry;
     let mut x16: Option<u64> = None;
     let mut x17: Option<u64> = None;
@@ -255,6 +279,7 @@ fn a64_walk(image: &Image<'_>, entry: u64, slot: u64) -> Result<Walk, (String, u
                 (format!("the lazy path reaches {at:#x}, outside executable bytes"), at)
             })?;
         pc = at + 4;
+        ran.push((at, 4));
         if insn == 0xd503_201f || crate::a64::bti(insn) {
             continue;
         }
@@ -585,7 +610,7 @@ pub(crate) fn x64_depths(image: &Image<'_>) -> BTreeMap<u64, u64> {
     let mut v = Vec::new();
     for (&e, &slot) in &entries {
         v.clear();
-        let _ = x64_walk_depths(image, e, slot, &mut v);
+        let _ = x64_walk_depths(image, e, slot, &mut v, &mut Vec::new());
         for &(pc, d) in &v {
             if in_plt(image, pc).is_some() {
                 out.entry(pc).or_insert(d);
@@ -621,4 +646,30 @@ pub(crate) fn traces(image: &Image<'_>, out: &DynOut) -> Vec<(u64, u64, Trace)> 
         }
     }
     v
+}
+
+/// The bytes of the PLT sections that some path executes (WP-101, the
+/// sweep's equivalence of unreached padding, `spec/plumb.md` §12.3): from
+/// every entry [`crate::loader::plt_entries`] finds, the walk of §12.2 to
+/// the jump through the entry's word and, from the word's initial
+/// content, on to the next indirect jump (what was reached before a walk
+/// stops is kept). An x86-64 or AArch64 output; empty for another
+/// machine.
+pub(crate) fn executed(image: &Image<'_>) -> BTreeSet<u64> {
+    let machine = image.header.e_machine;
+    let mut ran = Vec::new();
+    for (&e, &slot) in &crate::loader::plt_entries(image) {
+        let _ = match machine {
+            EM_X86_64 => x64_walk_depths(image, e, slot, &mut Vec::new(), &mut ran),
+            EM_AARCH64 => a64_walk_ran(image, e, slot, &mut ran),
+            _ => continue,
+        };
+    }
+    let mut out = BTreeSet::new();
+    for (at, len) in ran {
+        if in_plt(image, at).is_some() {
+            out.extend(at..at.saturating_add(len));
+        }
+    }
+    out
 }

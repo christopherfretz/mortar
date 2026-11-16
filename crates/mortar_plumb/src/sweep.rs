@@ -188,6 +188,7 @@ fn field(
     addr: u64,
     size: u64,
     off: u64,
+    ran: &std::collections::BTreeSet<u64>,
 ) -> (String, String) {
     let machine = image.header.e_machine;
     let at = |k: &str| (k.to_string(), String::new());
@@ -330,7 +331,8 @@ fn field(
         }
         ".plt" | ".plt.sec" | ".plt.got" | ".iplt" => {
             let unit = if machine == mortar_elf::consts::EM_AARCH64 { 4 } else { 1 };
-            ("code".into(), format!("+{:#x}", off - off % unit))
+            let k = if ran.contains(&(addr + off)) { "code" } else { "code no path executes" };
+            (k.into(), format!("+{:#x}", off - off % unit))
         }
         ".eh_frame_hdr" => {
             if off < 4 {
@@ -464,6 +466,7 @@ pub fn run_with(
     let base = verify(output);
     let base_keys = keys(&base);
     let ids = crate::buildid::id_ranges(output);
+    let ran = crate::plt::executed(&image);
     let mut bytes = Vec::new();
     // (file offset, Byte)
     let mut sites: Vec<(usize, Byte)> = Vec::new();
@@ -495,7 +498,7 @@ pub fn run_with(
                     let (kind, instance) = if name == crate::gdbindex::NAME {
                         crate::gdbindex::field(data, off)
                     } else {
-                        field(&image, &out, name, addr, size, off)
+                        field(&image, &out, name, addr, size, off, &ran)
                     };
                     sites.push((
                         file + off as usize,
