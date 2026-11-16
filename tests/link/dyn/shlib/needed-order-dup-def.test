@@ -20,9 +20,6 @@
 # PIE (GCC's x86-64 PIE code copies `dv`, D-43) with `fa` and `fb` also
 # called: GNU ld's image, which mortar must write (`bind` gives the copy
 # its 32 bytes, so no size warning and `fb=16`).
-#
-# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
-# tests/link/xfails.
 #@ spec: dyn.md "D-11"
 #@ spec: dyn.md "D-19a"
 #@ arch: aarch64 x86_64

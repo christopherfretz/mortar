@@ -1,0 +1,69 @@
+# dyn.md D-46, the `Copy` row's GOT columns: a GOT slot of a key with a
+# copy allocation (D-42) holds 0 and gets `GLOB_DAT` against the key, as
+# for `Shlib`; the loader binds the key to the copy, so the slot holds
+# the copy's address (`got==copy 1`) and the library reads the value the
+# executable stored (`lib 7`). The access is one the linkers do not
+# relax: x86-64 `R_X86_64_GOTPCREL` (no `X`), AArch64 an `ADR_GOT_PAGE`
+# and its `LD64_GOT_LO12_NC` kept apart by a `nop`. GNU ld, lld and
+# mortar write the same record and slot on both targets (WP-083's
+# measurement); the copy is in `-no-pie` on both and in the x86-64 PIE
+# (GCC's `-fPIE` reads extern data directly there); the AArch64 PIE has
+# no copy and is the `Shlib` row.
+#
+#@ spec: dyn.md "D-46"
+#@ arch: aarch64 x86_64
+
+cc -O1 -fPIC lib.c -o lib.o
+shlib gcc lib.o -Wl,-soname,libd.so -o libd.so
+as g-%{arch}.s -o g.o
+cc -O1 -fno-pic main.c -o main-exec.o
+cc -O1 -fPIE main.c -o main-pie.o
+link gcc -no-pie main-exec.o g.o -L. -ld -o exec
+run exec
+  stdout: got==copy 1 lib 7
+check readelf -rW exec
+  has(aarch64): R_AARCH64_COPY * dvar + 0
+  has(aarch64): R_AARCH64_GLOB_DAT * dvar + 0
+  has(x86_64): R_X86_64_COPY * dvar + 0
+  has(x86_64): R_X86_64_GLOB_DAT * dvar + 0
+link gcc -pie main-pie.o g.o -L. -ld -o pie
+run pie
+  stdout: got==copy 1 lib 7
+check readelf -rW pie
+  has(aarch64): R_AARCH64_GLOB_DAT * dvar + 0
+  has(x86_64): R_X86_64_COPY * dvar + 0
+  has(x86_64): R_X86_64_GLOB_DAT * dvar + 0
+
+#--- lib.c
+int dvar = 5;
+int lib_read(void) { return dvar; }
+#--- main.c
+#include <stdio.h>
+extern int dvar;
+int *get(void);
+int lib_read(void);
+int main(void) {
+  dvar = 7;
+  printf("got==copy %d lib %d\n", get() == &dvar, lib_read());
+  return 0;
+}
+#--- g-aarch64.s
+	.text
+	.globl get
+	.type get, %function
+get:
+	adrp x0, :got:dvar
+	nop
+	ldr x0, [x0, :got_lo12:dvar]
+	ret
+	.size get, .-get
+	.section .note.GNU-stack,"",%progbits
+#--- g-x86_64.s
+	.text
+	.globl get
+	.type get, @function
+get:
+	movq dvar@GOTPCREL(%rip), %rax
+	ret
+	.size get, .-get
+	.section .note.GNU-stack,"",@progbits

@@ -39,9 +39,6 @@
 # against a weak key (an x86-64 `PC32` on a call or `jcc` opcode, AArch64
 # `CONDBR19`/`TSTBR14`, `ADR_PREL_*`, `PREL*`): `weak-undef-pc-pie-refused`
 # has the AArch64 `ADR_PREL_PG_HI21` and the x86-64 `PC32` data read.
-#
-# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
-# tests/link/xfails.
 #@ spec: dyn.md "D-25"
 #@ arch: aarch64 x86_64
 #@ requires: clang

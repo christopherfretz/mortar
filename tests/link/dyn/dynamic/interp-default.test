@@ -22,9 +22,6 @@
 #
 # Where the references differ (D-31): GNU ld puts the notes before
 # `.interp`; lld, mold and mortar put `.interp` first.
-#
-# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
-# tests/link/xfails.
 #@ spec: dyn.md "D-31"
 #@ arch: aarch64 x86_64
 

@@ -9,9 +9,6 @@
 # executable and the library both read 0 where the library wrote 0x5a);
 # mold makes a 0-byte copy outside every section, and the program
 # crashes (measured: `SIGSEGV` on both architectures).
-#
-# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
-# tests/link/xfails.
 #@ spec: dyn.md "D-42"
 #@ arch: aarch64 x86_64
 #@ fixture: reloc-libd

@@ -3,9 +3,6 @@
 # PIE and of a non-PIE against a fixture library, and finds the library
 # through LD_LIBRARY_PATH (the linker's directory, spec/harness.md
 # "Runs"). The interpreter is listed by its path.
-#
-# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
-# tests/link/xfails.
 #@ spec: dyn.md "D-71"
 #@ arch: aarch64 x86_64
 #@ fixture: greet

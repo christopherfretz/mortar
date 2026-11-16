@@ -24,7 +24,7 @@ use mortar_plumb::{Format, Input};
 pub const USAGE: &str = "usage: cargo xtask plumb <output> --map <file> --map-format gnu|lld|mold|mortar \
                          [--inputs-from <response file>|map] [--line <file>] \
                          [--fix-cortex-a53-843419|--no-fix-cortex-a53-843419] \
-                         [--mutate [--per-class N] [--seed S] [--threads T]] [--sweep [--window W]]\n";
+                         [--mutate [--per-class N] [--seed S] [--threads T]] [--sweep [--window W]] [--coverage]\n";
 
 /// The command line of `xtask plumb`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,6 +42,9 @@ pub struct Args {
     /// `--line`: the linker's words, one per line (stage 3, a dynamic
     /// output); else the response file's words, else the map's `arg`s.
     pub line: Option<PathBuf>,
+    /// `--coverage`: print IN-60's coverage of every allocated section
+    /// and what a map claiming it would be told (spec/plumb.md §6.8).
+    pub coverage: bool,
 }
 
 impl Args {
@@ -53,6 +56,7 @@ impl Args {
         let mut inputs_from = None;
         let mut fix_843419 = None;
         let mut line = None;
+        let mut coverage = false;
         let mut mutate: Option<mortar_plumb::mutate::Config> = None;
         let mut cfg = mortar_plumb::mutate::Config::default();
         let mut it = args.iter();
@@ -72,6 +76,7 @@ impl Args {
                     inputs_from = (v != "map").then(|| PathBuf::from(v));
                 }
                 "--mutate" => mutate = Some(cfg),
+                "--coverage" => coverage = true,
                 // The byte sweep of a dynamic output's synthetic sections
                 // (mortar_plumb::sweep, WP-082).
                 "--sweep" => {
@@ -108,6 +113,7 @@ impl Args {
             fix_843419,
             mutate: mutate.map(|_| cfg),
             line,
+            coverage,
         })
     }
 }
@@ -418,6 +424,27 @@ pub fn run(args: &Args) -> Result<bool, String> {
             )
         }
     };
+    if args.coverage {
+        let (output, _, files) = verify_link_with(
+            &args.output,
+            &args.map,
+            args.format,
+            Path::new(""),
+            allowed.as_ref(),
+            fix,
+        )?;
+        let map_bytes = read(&args.map)?;
+        let parsed = mortar_plumb::map::parse(args.format, &String::from_utf8_lossy(&map_bytes))
+            .map_err(|e| format!("{}:{}: {}", args.map.display(), e.line, e.message))?;
+        let inputs: Vec<Input<'_>> =
+            files.iter().map(|(p, b)| Input { path: p, bytes: b }).collect();
+        let (cover, findings) = mortar_plumb::dead::coverage_table(&output, &inputs, &parsed)?;
+        print!("{}", cover.render());
+        for f in &findings {
+            println!("finding {}: {}", f.rule.id(), f.message);
+        }
+        return Ok(findings.is_empty());
+    }
     if let Some(cfg) = &args.mutate {
         let (output, _, files) = verify_link_with(
             &args.output,

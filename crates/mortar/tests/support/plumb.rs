@@ -100,9 +100,6 @@ pub fn readers(out: &Path) {
 /// eu-elflint's findings on a static executable that are not mortar's to
 /// fix, as (text the line contains, text it ends with, reason).
 pub const ELFLINT_KNOWN: &[(&str, &str, &str)] = &[
-    // L-64's `.relro_padding` is NOBITS with a `.rel*` name, which elflint
-    // takes for a relocation section.
-    ("'.relro_padding' has wrong ", "", "lld's and mold's outputs have the same lines"),
     // `R_AARCH64_IRELATIVE` has no symbol; elflint does not know the type
     // in a static executable and wants a symbol index.
     ("'.rela.plt': relocation ", "invalid type", "GNU ld, lld and mold write the same records"),

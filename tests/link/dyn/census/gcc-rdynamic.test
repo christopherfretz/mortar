@@ -4,8 +4,6 @@
 # executable is exported: `dlsym(RTLD_DEFAULT, ...)` finds the program's
 # own function and datum at the addresses the program uses, and the
 # `.dynsym` has them and `main`.
-#
-# mortar: AArch64 WP-056 (OPTS), x86-64 WP-056 (OPTS), in tests/link/xfails.
 #@ spec: dyn.md "2.1 Default link lines"
 #@ spec: dyn.md "D-21"
 #@ arch: aarch64 x86_64

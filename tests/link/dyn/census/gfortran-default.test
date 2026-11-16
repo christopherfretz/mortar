@@ -11,9 +11,6 @@
 #
 # W9 (dyn.md §13.2): mold keeps the first mention's as-needed flag and
 # drops `libm.so.6` and `libgcc_s.so.1` from an x86-64 output (it runs).
-#
-# mortar: AArch64 WP-056 (OPTS: the gfortran tail), x86-64 WP-055
-# (X64-JOIN: its target 3 names the Fortran default line), in tests/link/xfails.
 #@ spec: dyn.md "2.1 Default link lines"
 #@ spec: dyn.md "D-19a"
 #@ arch: aarch64 x86_64

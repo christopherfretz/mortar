@@ -9,9 +9,6 @@
 # W8 (dyn.md §13.2, E-shlib 4.2a): lld and mold do not export `hook`; their
 # programs fail at the call (`symbol lookup error: .../libhmid.so:
 # undefined symbol: hook`, status 127). GNU ld exports it and runs.
-#
-# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
-# tests/link/xfails.
 #@ spec: dyn.md "D-12"
 #@ arch: aarch64 x86_64
 #@ xfail(lld,mold): W8: a symbol referenced only by a closure library is not exported; the program fails at load

@@ -106,7 +106,7 @@ const ALLOC_ORDER: &[&str] = &[
     ".fini_array",
     ".data.rel.ro",
     ".got",
-    ".relro_padding",
+    ".pad.relro",
     ".got.plt",
     ".data",
     ".tm_clone_table",
@@ -164,12 +164,13 @@ fn compare(label: &str, driver: Driver, flags: &[&str], program: &[Source]) {
         table(&[("mortar", &ours), ("bfd", bfd), ("lld", lld), ("mold", mold)])
     );
 
-    // The set: GNU's, plus `.relro_padding` (layout L-64, as lld and
-    // mold). An output section whose live members are all empty has no
-    // chunk (L-159), so an empty `.tm_clone_table` is dropped as GNU
-    // drops it (lld and mold keep it).
+    // The set: GNU's, plus `.pad.relro` (layout L-64, L-156; lld and
+    // mold write the same padding as `.relro_padding`). An output
+    // section whose live members are all empty has no chunk (L-159), so
+    // an empty `.tm_clone_table` is dropped as GNU drops it (lld and
+    // mold keep it).
     let mut want: Vec<String> = names(bfd);
-    want.push(".relro_padding".into());
+    want.push(".pad.relro".into());
     let mut got = names(&ours);
     want.sort();
     got.sort();

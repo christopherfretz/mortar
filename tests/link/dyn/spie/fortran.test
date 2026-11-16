@@ -1,0 +1,45 @@
+# dyn.md D-1, the `StaticPie` column with Fortran: gfortran's runtime
+# (libgfortran.a, libquadmath.a where there is one) in a static-pie, a
+# list-directed write and a BIND(C) call into C.
+#
+# Stage 3 judges it (spec/plumb.md §12.4, WP-089): GNU ld's static-pie
+# carries A30 on AArch64 (a RELATIVE on the GOT slot of glibc's absolute
+# `_nl_current_*_used`) and A31 on x86-64 (crtbeginS's `.plt.got` entry
+# of `__cxa_finalize` through the slot plus 1); plumb.md §10.2.
+#@ anomaly(bfd,aarch64): A30
+#@ anomaly(bfd,x86_64): A31
+#@ spec: dyn.md "D-1"
+#@ arch: aarch64 x86_64
+#@ requires: gfortran
+
+fc -O1 -fPIE main.f90 -o main.o
+cc -O1 -fPIE sum.c -o sum.o
+link gfortran -static-pie main.o sum.o -o spie
+run spie
+  stdout: hello from fortran
+  stdout: sum 55
+check readelf -dW spie
+  not: (NEEDED)
+check readelf -lW spie
+  not: ^ INTERP
+
+#--- main.f90
+program main
+  use iso_c_binding
+  implicit none
+  interface
+    integer(c_int) function c_sum(n) bind(c, name="c_sum")
+      import :: c_int
+      integer(c_int), value :: n
+    end function
+  end interface
+  print '(A)', 'hello from fortran'
+  print '(A,I0)', 'sum ', c_sum(10_c_int)
+end program
+#--- sum.c
+int c_sum(int n) {
+  int total = 0;
+  for (int i = 1; i <= n; i++)
+    total += i;
+  return total;
+}

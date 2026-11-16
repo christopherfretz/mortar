@@ -243,7 +243,7 @@ fn expected(k: Kind) -> Vec<&'static str> {
         v.push(".got.plt");
     }
     if k.relro {
-        v.extend([".bss.rel.ro", ".relro_padding"]);
+        v.extend([".bss.rel.ro", ".pad.relro"]);
     }
     if !k.now {
         v.push(".got.plt");
@@ -352,7 +352,7 @@ fn d60_d61_table() {
             covers(PT_DYNAMIC, dynamic, PF_R | PF_W);
 
             // L-64: the RELRO run ends on a maxpage boundary at
-            // .relro_padding's end; .dynamic, .got, (now) .got.plt and
+            // .pad.relro's end; .dynamic, .got, (now) .got.plt and
             // .bss.rel.ro inside it.
             if k.relro {
                 let r = seg(PT_GNU_RELRO).unwrap();
@@ -524,6 +524,7 @@ fn shaped(machine: Machine, exe: &[u8], k: Kind) -> (World, Vec<CopyRow>) {
     let mut synthetic = Vec::new();
     let mut copies = Vec::new();
     for s in elf.sections.iter().skip(1) {
+        // lld's RELRO padding (mortar's is `.pad.relro`, L-156).
         if s.flags & SHF_ALLOC == 0 || s.name == ".relro_padding" {
             continue;
         }
@@ -583,7 +584,9 @@ fn classes(elf: &common::elf::Elf) -> std::collections::BTreeMap<String, &'stati
     let relro = elf.segments.iter().find(|p| p.ty == PT_GNU_RELRO);
     let mut out = std::collections::BTreeMap::new();
     for s in &elf.sections {
-        if s.flags & SHF_ALLOC == 0 || s.size == 0 || s.name == ".relro_padding" {
+        // The RELRO padding: lld's name and mortar's (L-156).
+        let padding = matches!(s.name.as_str(), ".relro_padding" | ".pad.relro");
+        if s.flags & SHF_ALLOC == 0 || s.size == 0 || padding {
             continue;
         }
         let Some(load) = elf

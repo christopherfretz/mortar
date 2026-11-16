@@ -139,6 +139,7 @@ fn reference_shaped(machine: Machine, exe: &[u8]) -> World {
     let mut rows = Vec::new();
     let mut synthetic = Vec::new();
     for s in elf.sections.iter().skip(1) {
+        // lld's RELRO padding (mortar's is `.pad.relro`, L-156).
         if matches!(s.ty, SHT_SYMTAB | SHT_STRTAB) || s.name == ".relro_padding" {
             continue;
         }

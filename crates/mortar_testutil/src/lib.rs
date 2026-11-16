@@ -409,6 +409,31 @@ fn spawn(command: &mut Command) -> std::io::Result<Child> {
     }
 }
 
+/// Runs the command `make` builds, again while a shell in it reports that
+/// it cannot execute its program (status 126).
+///
+/// A test that writes a program and runs it through `sh -c '...; exec
+/// "$@"'` (the shell is there to set a limit first) can find the program
+/// busy (`ETXTBSY`), as [`spawn`] says; here the shell's `exec` meets it,
+/// not ours, and the shell exits with 126. No program of a test exits with
+/// 126 itself: after the tries the outcome is returned as it is.
+pub fn run_exec_with(
+    mut make: impl FnMut() -> Command,
+    stdin: &[u8],
+    timeout: Duration,
+) -> Outcome {
+    let mut attempts = 0;
+    loop {
+        let outcome = run_with(&mut make(), stdin, timeout);
+        if outcome.status.and_then(|s| s.code()) == Some(126) && attempts < 200 {
+            attempts += 1;
+            std::thread::sleep(Duration::from_millis(5));
+            continue;
+        }
+        return outcome;
+    }
+}
+
 fn wait_until(child: &mut Child, deadline: Instant) -> Option<ExitStatus> {
     loop {
         match child.try_wait() {

@@ -13,12 +13,9 @@
 # W2 (dyn.md §13.2): GNU ld exports only the referenced alias and one
 # more; the library's `_environ` is libc's stale variable (`&_environ 0`,
 # `_environ 0`) on both architectures. lld and mold export all three.
-# Bindings differ (not in §13.1; reported with WP-051): lld makes the
+# Bindings differ (dyn.md §13.1, "binding of a copy"): lld makes the
 # referenced `environ` global, mold makes `environ` global and `__environ`
 # weak; mortar's are D-23's.
-#
-# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
-# tests/link/xfails.
 #@ spec: dyn.md "D-21"
 #@ spec: dyn.md "D-23"
 #@ arch: aarch64 x86_64

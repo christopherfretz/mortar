@@ -10,22 +10,21 @@
 #
 # AArch64 only: every x86-64 GD form the compilers write (GD16, GD16x,
 # GD22, x64.md §8.3) matches, and all three references relax it; an
-# unmatched x86-64 `TLSGD` in an `Exec`/`Pie` has no rule in dyn.md or
-# x64.md beyond X-26 (static: refused; shared: kept) (reported).
+# unmatched x86-64 `TLSGD` in an `Exec`/`Pie` is x64.md X-26's [M2]
+# sentence (kept against a shared key, refused against the executable's
+# own TLS).
 #
 # What the references do (measured): mold keeps the pair, as D-48 says,
 # and the program runs. lld does not know `R_AARCH64_TLSGD_ADR_PAGE21`
 # (513) and `TLSGD_ADD_LO12_NC` (514) at all, and refuses (a64.md §8.4).
 # GNU ld relaxes to IE without checking the fourth word, overwriting the
 # `mov` with its `add x0, x1, x0`, and the program reads the wrong
-# address (`same 0` and a garbage value): a wrong output of GNU ld that
-# dyn.md §13.2 does not list (reported).
-#
-# mortar: AArch64 WP-053 (JOIN-C), in tests/link/xfails.
+# address (`same 0` and a garbage value): a wrong output of GNU ld,
+# dyn.md §13.2 W15.
 #@ spec: dyn.md "D-48"
 #@ arch: aarch64
 #@ fixture: reloc-libd
-#@ xfail(bfd): relaxes a traditional GD whose fourth word is not the NOP, overwriting the code after the call (not in dyn.md 13.2)
+#@ xfail(bfd): W15: relaxes a traditional GD whose fourth word is not the NOP, overwriting the code after the call
 
 cc -O1 -fPIE main.c -o pie.o
 cc -O1 -fno-pie main.c -o exec.o

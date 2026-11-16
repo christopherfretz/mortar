@@ -1064,7 +1064,7 @@ static executable; "lld/GNU/mold" columns: defined by that linker):
 | name | defined when | binding, visibility (mortar) | GNU ld | lld | mold | M |
 |---|---|---|---|---|---|---|
 | `_GLOBAL_OFFSET_TABLE_` | always (a `.got` exists when referenced) | local, hidden | yes | yes | yes | M1 |
-| `_DYNAMIC` | dynamic links only (the `.dynamic` section) | local, hidden | dynamic only | dynamic only | always | M2 |
+| `_DYNAMIC` | outputs with `.dynamic`: dynamic links and static-pie (`spec/dyn.md` D-2, D-32; WP-052) | local, hidden | dynamic and static-pie | dynamic and static-pie | always | M2 |
 | `__ehdr_start` | always | local, hidden | yes | yes | yes | M1 |
 | `__executable_start` | executables | local, hidden | yes (global) | yes | yes | M1 |
 | `_etext`, `etext`, `__etext` | always | global | all three | `_etext`, `etext` | `_etext`, `etext` | M1 |

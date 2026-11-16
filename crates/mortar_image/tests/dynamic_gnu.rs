@@ -564,6 +564,16 @@ fn run_program(target: &Target, name: &str, exe: &Path) {
     let mut args: Vec<&std::ffi::OsStr> =
         vec!["-c".as_ref(), script.as_ref(), "sh".as_ref(), program.as_os_str()];
     args.extend(lead.iter().map(std::ffi::OsString::as_os_str));
-    let o = run("sh", args);
+    // The program was written by this process: it can be busy for a
+    // moment (`run_exec_with`).
+    let o = mortar_testutil::run_exec_with(
+        || {
+            let mut c = std::process::Command::new("sh");
+            c.args(&args);
+            c
+        },
+        &[],
+        std::time::Duration::from_mins(1),
+    );
     assert!(o.success() && o.stdout_text() == "1\n", "{name}: {:?} {}", o.status, o.stderr_text());
 }

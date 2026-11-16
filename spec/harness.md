@@ -782,8 +782,10 @@ A check tool that does not exit with status 0 fails the step, except
 - `check elflint <file>`: `eu-elflint --gnu-ld <file>`; its standard
   output and error together. Every non-blank line that is not `No errors`
   must match an `allow` line that applies to the linker, whatever its exit
-  status; `allow` lines are the allow-list of `spec/dyn.md` Q5 (mortar's
-  `.relro_padding`). A check with no other expectation is valid.
+  status; `allow` lines are a test's allow-list for the other linkers
+  (mortar's outputs need none since its RELRO padding is named
+  `.pad.relro`, `spec/layout.md` L-156). A check with no other
+  expectation is valid.
 - `check ldd <program>`: the architecture's dynamic loader, `<system
   root><interpreter> --list ./<program>`, natively or under the
   architecture's qemu, with the run's `LD_LIBRARY_PATH` ("Runs"): what

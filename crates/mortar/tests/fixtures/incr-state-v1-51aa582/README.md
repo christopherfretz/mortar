@@ -20,3 +20,13 @@ How they were made (AArch64 host, 2026-11-15), in each directory:
 
 `a.s` is the test's `ASM` / `ASM_X86_64` text as of that commit. The
 objects are committed so that no assembler's version changes the input.
+
+Re-cut by WP-083 (the RELRO padding renamed `.pad.relro`, layout L-156):
+a state names its chunks, so a state that says `.relro_padding` no
+longer replays (`replay: CHUNKS row 10: no such chunk in this link`, an
+internal error; nothing is written). `out` and `out.mortar-state` were
+made again as above, with the 51aa582 tree whose one change is that
+name (`Synth::RELRO_PADDING` in `crates/mortar_core/src/layout.rs`);
+the objects are the same. Each new `out` differs from the old only by
+the section's name (`.shstrtab` and what follows from it: the record's
+comparator, `spec/landed/dyn/WP-083.md`).

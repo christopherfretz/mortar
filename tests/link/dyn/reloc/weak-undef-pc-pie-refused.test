@@ -14,9 +14,6 @@
 # resolve an `ADRP` against an undefined weak symbol in `-no-pie` to the
 # page of the place, not 0 (measured: "v present", reading code; mold
 # gives 0), so the program's test means nothing there.
-#
-# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
-# tests/link/xfails.
 #@ spec: dyn.md "D-25"
 #@ arch: aarch64 x86_64
 

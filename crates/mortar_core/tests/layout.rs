@@ -704,7 +704,7 @@ fn s4_4_rule3_tls_offset_aligned() {
     assert_eq!(w.validate(), Ok(()));
 }
 
-/// The world with `.tdata` and `.tbss` RELRO: `.relro_padding` (chunk 10)
+/// The world with `.tdata` and `.tbss` RELRO: `.pad.relro` (chunk 10)
 /// follows them to the page end, and `.data` and `.bss` move to the next page
 /// in their own `PT_LOAD` (spec/layout.md L-64, L-70).
 fn relro_world() -> World {
@@ -730,7 +730,7 @@ fn relro_world() -> World {
     w
 }
 
-// spec: model.md §4.4 rule 3 (the RELRO run is contiguous, ends with .relro_padding and on a
+// spec: model.md §4.4 rule 3 (the RELRO run is contiguous, ends with .pad.relro and on a
 // page boundary; PT_GNU_RELRO is the derived one)
 #[test]
 fn s4_4_rule3_relro() {
@@ -744,13 +744,13 @@ fn s4_4_rule3_relro() {
     // The padding is not RELRO: the run ends at .tbss.
     let mut w = relro_world();
     w.p().chunks[ChunkId(10)].relro = false;
-    w.rejects(Rule::Segments, "does not end with .relro_padding");
+    w.rejects(Rule::Segments, "does not end with .pad.relro");
 
     // .data RELRO after the padding: the run is contiguous, the padding not
     // last.
     let mut w = relro_world();
     w.p().chunks[ChunkId(7)].relro = true;
-    w.rejects(Rule::Segments, "does not end with .relro_padding");
+    w.rejects(Rule::Segments, "does not end with .pad.relro");
 
     // .rodata RELRO and .tdata not: not contiguous.
     let mut w = relro_world();

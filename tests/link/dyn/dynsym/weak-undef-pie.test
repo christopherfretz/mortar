@@ -14,9 +14,6 @@
 # in a PIE"): GNU ld calls through `.plt.got` on x86-64 (a `GLOB_DAT`, no
 # `JUMP_SLOT`); mold makes the keys 0 everywhere (no entry, no record:
 # the preloaded hook never runs). mortar's form is lld's.
-#
-# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
-# tests/link/xfails.
 #@ spec: dyn.md "D-25"
 #@ arch: aarch64 x86_64
 

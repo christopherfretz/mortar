@@ -13,9 +13,6 @@
 # `.gnu.version_r` to 8, and on AArch64 its PIE `.dynsym` has `sh_info` 3
 # (two section symbols); mold leaves `SHF_INFO_LINK` off `.rela.plt`.
 # mortar's are lld's, the table's.
-#
-# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
-# tests/link/xfails.
 #@ spec: dyn.md "D-34"
 #@ arch: aarch64 x86_64
 

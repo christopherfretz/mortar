@@ -136,7 +136,8 @@ pub struct DynPlans<'a> {
     pub src: &'a dyn DynSymSource,
     pub rela: &'a RelaPlan,
     pub dynamic: &'a DynamicPlan,
-    pub interp: &'a InterpPlan,
+    /// `.interp` (D-31): `None` in a `StaticPie` (D-1).
+    pub interp: Option<&'a InterpPlan>,
     pub runpath: Option<(RunpathTag, &'a [u8])>,
     /// Per copy allocation (as `Slots.copies`): its size (D-42).
     pub copy_size: &'a [u64],
@@ -1330,7 +1331,7 @@ fn section_headers(link: &Link<'_, '_>) -> Result<Vec<Shdr>, Diagnostic> {
         });
         row.sh_addralign = row.sh_addralign.max(1u64 << c.align);
         match c.kind {
-            // Layout's own chunk (L-74's `.relro_padding`): NOBITS, no plan.
+            // Layout's own chunk (L-64's `.pad.relro`): NOBITS, no plan.
             ChunkKind::Synthetic(s) if s == mortar_core::layout::Synth::RELRO_PADDING => {}
             ChunkKind::Synthetic(_) => {
                 let Some(kind) = kind_of(id) else {
@@ -1515,7 +1516,7 @@ impl SynthChunk for Nobits {
 
 /// The dynamic sections' chunks (D-20 to D-49), over a [`DynView`].
 struct DynChunks<'v> {
-    interp: &'v InterpPlan,
+    interp: Option<&'v InterpPlan>,
     gnu_hash: GnuHashChunk<'v>,
     dynsym: DynsymChunk<'v>,
     dynstr: DynstrChunk<'v>,
@@ -1581,7 +1582,7 @@ impl<'v> DynChunks<'v> {
 
     fn get(&self, kind: SynthKind) -> Option<&(dyn SynthChunk + Sync + 'v)> {
         Some(match kind {
-            SynthKind::Interp => self.interp,
+            SynthKind::Interp => self.interp?,
             SynthKind::GnuHash => &self.gnu_hash,
             SynthKind::Dynsym => &self.dynsym,
             SynthKind::Dynstr => &self.dynstr,
@@ -1727,7 +1728,9 @@ fn rela_dyn(view: &DynView<'_, '_, '_>) -> Result<crate::dynrel::RelaDyn, Diagno
     for (_, r) in recs {
         other.extend(r.other);
     }
-    crate::dynrel::RelaDyn::new(d.rela, class, form, relative, other)
+    // S-70: a `StaticPie`'s IPLT `IRELATIVE`s, last.
+    let irelative = got.irelative_records(&ga, t).map_err(SynthError::into_diagnostic)?;
+    crate::dynrel::RelaDyn::new(d.rela, class, form, relative, other, irelative)
         .map_err(SynthError::into_diagnostic)
 }
 
@@ -2333,14 +2336,7 @@ impl LinkTables<'_, '_> {
         let slots = &l.layout.slots;
         let view = DynView { t: self, d };
         let mut r = crate::map::DynRecords::default();
-        crate::dynamic::fill_records(
-            &mut r,
-            d.kind,
-            Some(d.interp),
-            d.runpath,
-            d.bind_now,
-            d.relro,
-        );
+        crate::dynamic::fill_records(&mut r, d.kind, d.interp, d.runpath, d.bind_now, d.relro);
         r.args = d.args.to_vec();
         r.needed = slots.needed.iter().map(|&f| d.src.needed(f).to_vec()).collect();
         r.copies = slots

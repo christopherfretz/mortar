@@ -10,13 +10,10 @@
 # notes last; mold puts PT_NOTE after PT_INTERP. GNU ld writes two
 # PT_LOADs on AArch64 (RX with the read-only data, RW) and four on x86-64
 # (R, RX, R, RW: its -z separate-code default, layout L-71 Q2); lld and
-# mold put -no-pie at 0x200000, which dyn.md D-1 does not record. lld
+# mold put -no-pie at 0x200000 (dyn.md §13.1, D-61). lld
 # writes no PT_GNU_PROPERTY on x86-64. Every reference: PT_PHDR,
 # PT_INTERP, a PT_LOAD and PT_DYNAMIC in that order, and PT_TLS,
 # PT_GNU_EH_FRAME, PT_GNU_STACK, PT_GNU_RELRO present.
-#
-# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
-# tests/link/xfails.
 #@ spec: dyn.md "D-61"
 #@ arch: aarch64 x86_64
 

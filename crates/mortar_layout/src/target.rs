@@ -152,28 +152,28 @@ impl Options {
     }
 
     /// The options of a plan. Layout places static executables and the
-    /// dynamic ones of `spec/dyn.md` D-1 (`Exec`, and `Pie` at base 0) on
-    /// ELF64; another output kind is refused by name. (The command line's
-    /// dynamic gates are refused before layout until the M2 join,
-    /// `mortar::dynamic`.)
+    /// other kinds of `spec/dyn.md` D-1 (`Exec`; `Pie` and `StaticPie` at
+    /// base 0) on ELF64; another output kind is refused by name.
     ///
     /// # Errors
     ///
     /// `invalid-option-value` for a page size L-74 or L-75 does not accept;
-    /// `refused` for an output kind layout does not place: static-pie
-    /// (its own package, WP-M2-SPIE), shared objects and `-r` (M4), and a
-    /// dynamic executable of ELFCLASS32 (i386 dynamic links are M4,
-    /// `spec/landed/dyn/WP-040.md` §6).
+    /// `refused` for an output kind layout does not place: shared objects
+    /// and `-r` (M4), and a dynamic executable or a static-pie of
+    /// ELFCLASS32 (i386 dynamic links are M4, `spec/landed/dyn/WP-040.md`
+    /// §6; i386 static-pie is not an M2 target).
     pub fn from_plan(plan: &Plan, target: &Target) -> Result<Self, LayoutDiag> {
         let pie = match plan.kind {
             OutputKind::Executable | OutputKind::PieExecutable if target.class == Class::Elf32 => {
                 return Err(feature("ELFCLASS32 dynamic executable"));
             }
-            OutputKind::StaticExecutable | OutputKind::Executable => false,
-            OutputKind::PieExecutable => true,
-            OutputKind::StaticPie => {
+            // i386 static-pie is not an M2 target (`spec/dyn.md` §1): the
+            // refusal keeps its name.
+            OutputKind::StaticPie if target.class == Class::Elf32 => {
                 return Err(feature("position-independent executable output"));
             }
+            OutputKind::StaticExecutable | OutputKind::Executable => false,
+            OutputKind::PieExecutable | OutputKind::StaticPie => true,
             OutputKind::Shared => return Err(feature("shared object output")),
             OutputKind::Relocatable => return Err(feature("relocatable output")),
         };
@@ -290,8 +290,8 @@ mod tests {
         assert!(!with(kind(OutputKind::Executable)).unwrap().pie);
         assert!(with(kind(OutputKind::PieExecutable)).unwrap().pie);
         assert!(!with(kind(OutputKind::StaticExecutable)).unwrap().pie);
-        let e = with(kind(OutputKind::StaticPie)).unwrap_err();
-        assert_eq!(e.refusal().map(|r| r.1), Some("position-independent executable output"));
+        // WP-052: static-pie is placed as a `Pie` (base 0).
+        assert!(with(kind(OutputKind::StaticPie)).unwrap().pie);
         let o = with(|p| {
             p.kind = OutputKind::PieExecutable;
             p.z.now = Some(true);
@@ -306,5 +306,9 @@ mod tests {
         }
         let plan = Plan { kind: OutputKind::StaticExecutable, ..Plan::default() };
         assert!(Options::from_plan(&plan, &Target::of(Machine::I386)).is_ok());
+        // i386 static-pie stays refused by its name (not an M2 target).
+        let plan = Plan { kind: OutputKind::StaticPie, ..Plan::default() };
+        let e = Options::from_plan(&plan, &Target::of(Machine::I386)).unwrap_err();
+        assert_eq!(e.refusal().map(|r| r.1), Some("position-independent executable output"));
     }
 }

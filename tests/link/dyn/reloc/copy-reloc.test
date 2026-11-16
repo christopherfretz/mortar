@@ -14,9 +14,6 @@
 # primary name, mold to an alias (§13.1). Here the program names `dvar`
 # and `environ` only: lld, mold and mortar name those; GNU ld names
 # `__environ` (its primary), so it is held to that.
-#
-# mortar: AArch64 WP-054 (CXX), x86-64 WP-055 (X64-JOIN), in
-# tests/link/xfails.
 #@ spec: dyn.md "D-42"
 #@ arch: aarch64 x86_64
 #@ requires: g++

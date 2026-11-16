@@ -15,9 +15,6 @@
 #
 # All three references agree here (their tables differ in size, D-26,
 # §13.1, and all three find every name).
-#
-# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
-# tests/link/xfails.
 #@ spec: dyn.md "D-22"
 #@ spec: dyn.md "D-26"
 #@ arch: aarch64 x86_64

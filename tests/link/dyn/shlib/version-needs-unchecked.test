@@ -14,9 +14,6 @@
 # GNU ld and lld refuse ``libvn.so: undefined reference to
 # `dep_fn@DEP_2'``, measured). What is left is the `Vernaux` entry for
 # `DEP_2`, which no linker checks.
-#
-# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
-# tests/link/xfails.
 #@ spec: dyn.md "D-14"
 #@ arch: aarch64 x86_64
 
