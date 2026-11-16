@@ -3,9 +3,11 @@
 # 6.3.0's tests/cxx/t-ops2z, Clang 22 row: Clang's `.debug_addr` entry for
 # the `_vtable$` variable of std::bad_alloc, `_ZTVSt9bad_alloc` in
 # libstdc++.so). Nothing relocates a non-alloc section at run time, so
-# the word cannot hold the library's address: GNU ld, lld and mortar all
-# write 0 (GNU ld refuses the same word in a non-debug section,
-# "unresolvable R_AARCH64_ABS64 relocation"; lld writes 0 there too).
+# the word cannot hold the library's address: GNU ld, lld and mortar
+# write 0, mold the symbol's `st_value` in the library (0x1b7308 for
+# `environ` in Debian 13's libc.so.6, an address of nothing). GNU ld
+# refuses the same word in a non-debug section ("unresolvable
+# R_AARCH64_ABS64 relocation"); lld writes 0 there too.
 # The program's own references go through the GOT as usual.
 #
 # The verifier (spec/plumb.md §5.8) expects the library's run-time
@@ -28,7 +30,7 @@ cc -O1 -fPIE main.c -o main.o
 link gcc -pie main.o -o prog
 run prog
   stdout: env
-check readelf -x .debug_mortar_dsoref prog
+check(bfd,lld,mortar) readelf -x .debug_mortar_dsoref prog
   has: 0x00000000 00000000 00000000
 
 #--- main.c
