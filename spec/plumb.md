@@ -3038,9 +3038,23 @@ is judged by the input record's name.
 **The equivalence check** (WP-092, §6.9): 25 mutations of
 `src/equiv.rs` (a condition made `false`, a clause or a finding
 dropped), each run against `tests/equiv.rs` and the unit test; caught
-23. Survivors: the `.dynsym` name and `st_info` clauses (the tests
-change an entry's size only) and the `.eh_frame_hdr` entries (no pair
-here has an `.eh_frame_hdr`; the real pairs of the record do).
+23 (the `.dynsym` name and `st_info` clauses and the `.eh_frame_hdr`
+entries survived). WP-092b re-ran them (four patterns re-cut after
+`rustfmt`) with six more, over `src/equiv.rs` and `src/reloc.rs`, against
+`tests/equiv.rs`, the unit test and `tests/tls.rs
+s4_7_undefined_weak_tls_initial_exec_is_judged`: 31 mutations, caught
+29. The two former survivors are caught (`p_e5_dynamic_tables` mutates
+a `.dynsym` entry's `st_info` and `st_name`; `p_e5_eh_frame_hdr`, an
+AArch64 GNU ld pair with `--eh-frame-hdr`, a table entry). Survivors:
+
+- the locals of a thunk or patch passed over (P-E3): no test pair has a
+  thunk on one side only; the real AArch64 pair of WP-092's record §6
+  (two 63.5 MiB sections, a veneer in `X` only) fails without it;
+- a GOT group's member's outcome traced after its record (P-E4): an
+  equivalent mutant today, since `finish_got`'s outcomes other than the
+  traced `got-unpaired` are W2/W3 (which may differ) and findings
+  (which the side reports); a deferred outcome that must not differ
+  would catch it.
 
 ## 10. The reference linkers, observed
 
