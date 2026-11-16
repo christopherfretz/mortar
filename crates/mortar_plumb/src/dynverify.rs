@@ -40,6 +40,11 @@ pub fn is_dynamic(output: &[u8]) -> bool {
 
 /// Whether section `si` of `o` has a record naming one of `names`.
 pub(crate) fn names_any(o: &Obj<'_>, si: usize, names: &HashSet<String>) -> bool {
+    // A non-alloc use is never relocated at run time: view 3 leaves it to
+    // view 1 (§5.8, §12.1 "The views"; WP-104).
+    if !o.secs[si].alloc() {
+        return false;
+    }
     let (Some(t), Some(rs)) = (o.symtab, o.secs[si].relocs) else { return false };
     let Some(raw) = o.records(rs) else { return false };
     raw.iter().any(|r| {
@@ -190,8 +195,11 @@ pub fn verify_with(output: &[u8], inputs: &[Input<'_>], map: &Map, ctx: &Ctx<'_>
     } else {
         std::collections::BTreeMap::new()
     };
+    // §5.8: a non-alloc word against a name only a library defines.
+    let dso_words = reloc::dsoword::build(&image, &dout, &model, &ld.order, &plt);
     let mut engine = reloc::Engine::new(&img1, &objs, map.format);
     dyn_engine(&mut engine, &v1, &plt, &depths);
+    engine.dso_words = Some(dso_words.clone());
     run_engine(&mut engine, &image, map, None);
     // D-45: an IFUNC's GOT slot holds its IPLT entry, wherever the linker
     // put the entry (mortar's follow the PLT entries in `.plt`).
@@ -302,6 +310,7 @@ pub fn verify_with(output: &[u8], inputs: &[Input<'_>], map: &Map, ctx: &Ctx<'_>
             let names: HashSet<String> = fresh.keys().cloned().collect();
             let mut e3 = reloc::Engine::new(&img3, &objs, map.format);
             dyn_engine(&mut e3, &v3, &plt, &depths);
+            e3.dso_words = Some(dso_words.clone());
             run_engine(&mut e3, &image, map, Some(&names));
             let mut bad: HashMap<String, Vec<Finding>> = HashMap::new();
             let mut ok: HashMap<String, u64> = HashMap::new();

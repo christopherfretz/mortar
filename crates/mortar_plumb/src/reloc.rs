@@ -21,6 +21,8 @@ use crate::locate::{Obj, Place};
 use crate::map::Format;
 #[path = "debug.rs"]
 mod debug;
+#[path = "dsoword.rs"]
+pub(crate) mod dsoword;
 #[path = "eh.rs"]
 mod eh;
 #[path = "ifunc.rs"]
@@ -493,6 +495,9 @@ pub(crate) struct Engine<'a, 'b> {
     /// Stage 3: the output is dynamic (kept TLS sequences are the
     /// loader's to finish).
     pub(crate) dynamic: bool,
+    /// Stage 3: what §5.8's rule for a target only a shared library
+    /// defines reads (`None`: a static output).
+    pub(crate) dso_words: Option<dsoword::DsoWords>,
     /// PLT entries: entry address -> `.got.plt` word (stage 3).
     pub(crate) plt: BTreeMap<u64, u64>,
     /// Stage 3, x86-64: [`crate::plt::x64_depths`] of the file (the
@@ -700,6 +705,7 @@ impl<'a, 'b> Engine<'a, 'b> {
             dyn_tls: std::collections::HashSet::new(),
             dyn_tls_mod: HashMap::default(),
             dynamic: false,
+            dso_words: None,
             plt: BTreeMap::new(),
             plt_depths: None,
             abs_words: Vec::new(),
@@ -1320,6 +1326,11 @@ impl<'a, 'b> Engine<'a, 'b> {
             .is_some();
             return self.tombstone(oi, si, rec, &site, &symbol, after);
         }
+        // A non-alloc word against a name only a shared library defines
+        // holds its link-time value (§5.8, WP-104).
+        if !self.objs[oi].secs[si].alloc() && self.dso_word(oi, rec, &site, &symbol) {
+            return;
+        }
         // i386 (§4.5, §5.11).
         if self.image.header.e_machine == mortar_elf::consts::EM_386 {
             return self.x86_record(oi, si, recs, i, site, symbol);
@@ -1481,13 +1492,19 @@ impl<'a, 'b> Engine<'a, 'b> {
                 format!("the value {x:#x} has low bits the field drops"),
             ),
             Verdict::Mismatch(e) => {
-                let mut f = Self::finding(
-                    Rule::Field,
-                    rec,
-                    &site,
-                    &symbol,
-                    "the relocated field holds the wrong value",
-                );
+                // §5.8: lld's S = 0 for an undefined weak in a non-alloc
+                // PC-relative word (A43), named for the anomaly.
+                let msg = if weak
+                    && op == Op::Prel
+                    && !self.objs[oi].secs[si].alloc()
+                    && rec.out_word
+                        == rec.def.field.encode(rec.input_word, x.wrapping_sub(rec.p as i64))
+                {
+                    format!("the relocated field holds the wrong value{}", dsoword::WEAK_ZERO)
+                } else {
+                    "the relocated field holds the wrong value".to_string()
+                };
+                let mut f = Self::finding(Rule::Field, rec, &site, &symbol, msg);
                 f.expected = Some(e);
                 f.found = Some(rec.out_word);
                 f
