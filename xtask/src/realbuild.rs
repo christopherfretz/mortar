@@ -280,8 +280,8 @@ fn verify_main(args: &[String]) -> u8 {
 }
 
 /// One line of a results file: the name, then a tab and the word, which
-/// is the last field (a name may hold a tab: BusyBox's `sed s with <TAB>
-/// (GNU ext)`). The name's control characters become spaces, so that it
+/// is the last field (a name may hold a tab, as one of `BusyBox`'s `sed`
+/// tests does). The name's control characters become spaces, so that it
 /// is one field of `tests.tsv`.
 fn test_result(line: &str) -> Option<(String, String)> {
     let (name, word) = line.rsplit_once('\t')?;
