@@ -1846,14 +1846,16 @@ fn plain_and_incremental_maps_state_the_allocations() {
 
 /// The members of the archive tests (WP-106): `m1` (`f1`, edited as
 /// `m1b`, the same size), `m2` (`f2`), both extracted by `main`; `m3`
-/// and `m4` define names nothing references (never extracted).
+/// and `m4` define names nothing references (never extracted); `m5`
+/// defines `f2` too (it replaces `m2`).
 const THIN_MAIN: &str = "\t.text\n\t.globl _start\n_start:\n\tbl f1\n\tbl f2\n\tmov x8, #93\n\tsvc #0\n";
-const THIN_MEMBERS: [(&str, &str); 5] = [
+const THIN_MEMBERS: [(&str, &str); 6] = [
     ("m1", "\t.text\n\t.globl f1\nf1:\n\tmov x0, #1\n\tret\n"),
     ("m1b", "\t.text\n\t.globl f1\nf1:\n\tmov x0, #3\n\tret\n"),
     ("m2", "\t.text\n\t.globl f2\nf2:\n\tret\n"),
     ("m3", "\t.text\n\t.globl u3\nu3:\n\tret\n"),
     ("m4", "\t.text\n\t.globl u4\nu4:\n\tret\n"),
+    ("m5", "\t.text\n\t.globl f2\nf2:\n\tnop\n\tret\n"),
 ];
 
 /// A directory with `main.o`, `lib/m*.o` (and `lib/m1b.o`), and the
@@ -1982,6 +1984,15 @@ fn a_changed_thin_member_is_a_changed_file() {
         m.archive(name, flags, &["m1", "m2", "m3", "m4"]);
         let rep = m.link(".", &["main.o", &lib]);
         no_fallback(&rep, &format!("{name}: m3, m4 added"));
+        // An extracted member removed, another that defines its name
+        // added: the old member file left, the new one is read.
+        m.archive(name, flags, &["m1", "m5", "m3", "m4"]);
+        let rep = m.link(".", &["main.o", &lib]);
+        no_fallback(&rep, &format!("{name}: m2 replaced by m5"));
+        for want in [format!("delta file appeared {lib} m5.o"), format!("delta file gone {lib} m2.o")] {
+            assert!(rep.lines().any(|l| l == want), "{name}: no `{want}`:\n{rep}");
+        }
+        m.archive(name, flags, &["m1", "m2", "m3", "m4"]);
         // In a group.
         let group = ["main.o", "--start-group", lib.as_str(), "--end-group"];
         m.link(".", &group);

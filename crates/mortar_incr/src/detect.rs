@@ -254,13 +254,18 @@ pub fn detect(old: &State, new: &State) -> Changes {
             c.probes.push((p.to_vec(), a, b));
         }
     }
-    // A changed path that is no file of either link: a script.
-    let file_paths: std::collections::HashSet<&[u8]> = old
+    // A changed path that is no file of either link: a script. A thin
+    // archive's member is a file of its own (IN-24): its `STAT` path is
+    // the member's, its `FILES` path the archive's (model §7.1), so it is
+    // matched by its bytes (WP-106).
+    let mut file_paths: std::collections::HashSet<&[u8]> = old
         .files
         .iter()
         .map(|f| old.str(f.path))
         .chain(new.files.iter().map(|f| new.str(f.path)))
         .collect();
+    file_paths.extend(thin_member_paths(old));
+    file_paths.extend(thin_member_paths(new));
     c.script_changed = c
         .paths
         .iter()
@@ -271,6 +276,37 @@ pub fn detect(old: &State, new: &State) -> Changes {
         })
         .map(|(_, p)| p.clone());
     c
+}
+
+/// The `STAT` input paths of `s` that are a thin archive's member files
+/// (WP-106): a path read and hashed (trust 0) whose whole bytes are a
+/// member row's (`FILES` member 1, an object, base 0, the same length and
+/// content hash: a thin member's range is its own file, `spec/input.md`
+/// §7.2) and whose last components are that row's member name (the
+/// stored path, which the archive's directory prefixes unless it is
+/// absolute). Such a path changes with its member, which `FILES` judges;
+/// any other changed path that is no file's stays a script's.
+fn thin_member_paths(s: &State) -> Vec<&[u8]> {
+    let mut members: HashMap<(crate::format::Hash16, u64), Vec<&[u8]>> = HashMap::new();
+    for f in s.files.iter().filter(|f| f.member == 1 && f.kind == 1 && f.base == 0) {
+        members.entry((f.hash, f.len)).or_default().push(s.str(f.member_name));
+    }
+    let names = |name: &[u8], path: &[u8]| {
+        !name.is_empty()
+            && (path == name
+                || (path.len() > name.len()
+                    && path.ends_with(name)
+                    && path[path.len() - name.len() - 1] == b'/'))
+    };
+    s.stat
+        .iter()
+        .filter(|r| r.tag == stat_tag::INPUT && r.trust == 0)
+        .filter_map(|r| {
+            let path = s.str(r.path);
+            let rows = members.get(&(r.hash, r.size))?;
+            rows.iter().any(|name| names(name, path)).then_some(path)
+        })
+        .collect()
 }
 
 /// Counts of [`Changes`], for the report's `delta inputs` line.
@@ -348,5 +384,73 @@ mod tests {
         assert_eq!(stat_rule(&row, (7, 1, 10, 6, 100), &[dev(7, 0, 101)]), Stat::Differs);
         let untrusted = StatRow { trust: 1, ..row };
         assert_eq!(stat_rule(&untrusted, t, &[dev(7, 0, 101)]), Stat::Untrusted);
+    }
+
+    /// A state whose inputs are `stat` (path, size, first hash byte) and
+    /// whose files are `files` (path, member name, length, first hash
+    /// byte; a member when the name is not empty).
+    fn state(stat: &[(&str, u64, u8)], files: &[(&str, &str, u64, u8)]) -> State {
+        let mut strings = crate::format::Strings::default();
+        let mut s = State::default();
+        for &(path, size, h) in stat {
+            let mut hash = [0; 16];
+            hash[0] = h;
+            s.stat.push(StatRow {
+                tag: stat_tag::INPUT,
+                path: strings.add(path.as_bytes()),
+                size,
+                hash,
+                ..StatRow::default()
+            });
+        }
+        for &(path, member, len, h) in files {
+            let mut hash = [0; 16];
+            hash[0] = h;
+            s.files.push(FileRow {
+                kind: 1,
+                member: u8::from(!member.is_empty()),
+                path: strings.add(path.as_bytes()),
+                member_name: strings.add(member.as_bytes()),
+                len,
+                hash,
+                ..FileRow::default()
+            });
+        }
+        s.strings = strings.into_bytes();
+        s
+    }
+
+    // spec: incr.md IN-24 (a thin archive's member is a file), §7
+    // (`options-changed` for a changed path no file of either link has: a
+    // script), WP-106
+    #[test]
+    fn a_thin_member_path_is_not_a_script() {
+        let files = [("lib/libt.a", "m1.o", 100, 7), ("lib/libt.a", "sub/m2.o", 50, 8)];
+        // The member files changed (their bytes are the new rows'); the
+        // archive's own path is a file's.
+        let old = state(&[("lib/libt.a", 80, 1), ("lib/m1.o", 100, 6), ("x.ld", 9, 3)], &files);
+        let new = state(&[("lib/libt.a", 80, 1), ("lib/m1.o", 100, 7), ("x.ld", 9, 3)], &files);
+        assert_eq!(detect(&old, &new).script_changed, None);
+        assert_eq!(thin_member_paths(&new), vec![b"lib/m1.o".as_slice()]);
+        // Removed (in the old state only), and a stored path with a
+        // directory.
+        let old = state(&[("lib/sub/m2.o", 50, 8)], &files);
+        assert_eq!(detect(&old, &state(&[], &[])).script_changed, None);
+        // A script changed: named.
+        let new = state(&[("lib/libt.a", 80, 1), ("lib/m1.o", 100, 6), ("x.ld", 9, 4)], &files);
+        let old = state(&[("lib/libt.a", 80, 1), ("lib/m1.o", 100, 6), ("x.ld", 9, 3)], &files);
+        assert_eq!(detect(&old, &new).script_changed, Some(b"x.ld".to_vec()));
+        // Neither another member's bytes under the name, nor the bytes
+        // under another name, nor a name that is only a suffix, nor an
+        // unhashed row, is a member's.
+        for (path, size, h) in [("lib/m1.o", 100, 9), ("lib/m9.o", 100, 7), ("lib/xm1.o", 100, 7)] {
+            let old = state(&[(path, size, 1)], &files);
+            let new = state(&[(path, size, h)], &files);
+            assert_eq!(detect(&old, &new).script_changed, Some(path.as_bytes().to_vec()), "{path}");
+        }
+        let mut new = state(&[("lib/m1.o", 100, 7)], &files);
+        new.stat[0].trust = 1;
+        let old = state(&[("lib/m1.o", 100, 1)], &files);
+        assert_eq!(detect(&old, &new).script_changed, Some(b"lib/m1.o".to_vec()));
     }
 }
