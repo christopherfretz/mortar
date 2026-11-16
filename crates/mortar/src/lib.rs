@@ -338,7 +338,14 @@ fn invoke_with(
             if let Some(s) = session
                 && !diagnostics.has_errors()
             {
+                let times = s.times_handle();
                 incremental_lines = s.finish(f, &store, &written, cwd, &out_path, &diagnostics);
+                if timer.on() {
+                    for (name, ms) in times.borrow().iter() {
+                        timer.line(format!("mortar: incremental: {name}: {ms:.1} ms"));
+                    }
+                }
+                timer.phase(110, "incremental state");
             }
         }
     }

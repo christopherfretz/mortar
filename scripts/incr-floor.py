@@ -21,7 +21,12 @@ the series):
   in-place    the update in place (IN-46)
   ld lld mold GNU ld, ld.lld, mold: full links, each to a fresh path
 With --quiet L each run waits until the 1-minute load is under L; the load
-at each run's start is recorded.
+at each run's start is recorded. With --interleave (WP-094) the series run
+round-robin, one run of each per round, so that their ratios are taken
+under the same load; a series item may be `LABEL:KIND:BIN:MORTAR` to
+compare binaries (each update chain has its own output and state, and the
+edit is set before each update to the value its chain's state does not
+hold).
 After each update series the output is compared byte for byte with an
 incremental-mode full link of the same (edited) inputs (its layout has the
 slack a state's layout has, WP-062; a plain link's has none). Files the script writes in DIR are named
@@ -98,6 +103,24 @@ def summary(xs):
     return {"median": statistics.median(xs), "min": min(xs), "max": max(xs), "n": len(xs)}
 
 
+def parse_series(text, mortar, floor):
+    """`LABEL[:KIND[:BIN[:MORTAR]]]` items, comma-separated: KIND defaults to
+    LABEL; BIN is the linker (plain, incr-full) or the floor driver (copy,
+    in-place), MORTAR the linker an update chain's first full link uses."""
+    out = []
+    for item in text.split(","):
+        parts = item.split(":")
+        label = parts[0]
+        kind = parts[1] if len(parts) > 1 and parts[1] else label
+        if kind not in ("plain", "incr-full", "copy", "in-place", "ld", "lld", "mold"):
+            sys.exit(f"incr-floor: unknown series kind {kind}")
+        update = kind in ("copy", "in-place")
+        b = parts[2] if len(parts) > 2 and parts[2] else (floor if update else mortar)
+        m = parts[3] if len(parts) > 3 and parts[3] else mortar
+        out.append({"label": label, "kind": kind, "bin": b, "mortar": m})
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dir", required=True)
@@ -108,89 +131,113 @@ def main():
     ap.add_argument("--runs", type=int, default=7)
     ap.add_argument("--series", default="plain,incr-full,copy,in-place,ld,lld,mold")
     ap.add_argument("--json")
+    ap.add_argument("--extra", default="", help="words added to every mortar link line (space-separated)")
     ap.add_argument("--quiet", type=float, default=0.0,
                     help="before each run, wait until the 1-minute load is under this")
+    ap.add_argument("--interleave", action="store_true",
+                    help="round-robin: each round runs every series once (WP-094)")
     o = ap.parse_args()
     words = [w for w in open(o.args).read().split("\n") if w]
+    extra = [w for w in o.extra.split(" ") if w]
     efile, eoff, eold, enew = o.edit.split(":")
     efile = os.path.join(o.dir, efile)
     eoff = int(eoff, 0)
     eold, enew = bytes.fromhex(eold), bytes.fromhex(enew)
-    state = {"edited": open(efile, "rb").read()[eoff:eoff + len(enew)] == enew}
+    cur = {"edited": open(efile, "rb").read()[eoff:eoff + len(enew)] == enew}
+    start_edited = cur["edited"]
 
     def line(out):
-        return [out if w == "OUTPUT" else w for w in words]
+        return [out if w == "OUTPUT" else w for w in words] + extra
 
-    def toggle():
-        if state["edited"]:
-            edit(efile, eoff, enew, eold)
-        else:
+    def set_input(edited):
+        if cur["edited"] == edited:
+            return
+        if edited:
             edit(efile, eoff, eold, enew)
-        state["edited"] = not state["edited"]
+        else:
+            edit(efile, eoff, enew, eold)
+        cur["edited"] = edited
 
+    series = parse_series(o.series, o.mortar, o.floor)
     results = {"dir": o.dir, "fs": subprocess.run(["stat", "-f", "-c", "%T", o.dir],
-                                                  capture_output=True, text=True).stdout.strip()}
-    for name in o.series.split(","):
-        runs = []
-        load = uptime()
+                                                  capture_output=True, text=True).stdout.strip(),
+               "interleaved": o.interleave}
+    runs = {s["label"]: [] for s in series}
+    chain = {}  # label -> the input's value its state was written from
+    loads = {s["label"]: uptime() for s in series}
+
+    def one(s, i):
+        label, kind = s["label"], s["kind"]
+        if kind in ("plain", "incr-full"):
+            more = ["--time-phases"] + (["--incremental=full"] if kind == "incr-full" else [])
+            cmd = [s["bin"]] + line(f"floor.{label}") + more
+        elif kind in ("copy", "in-place"):
+            if label not in chain:
+                w, p, err, st = timed([s["mortar"]] + line(f"floor.{label}") + ["--incremental=full"], o.dir)
+                if st:
+                    sys.exit(f"incr-floor: the full link failed:\n{err}")
+                chain[label] = cur["edited"]
+            set_input(not chain[label])
+            chain[label] = cur["edited"]
+            cmd = [s["bin"], kind, "--"] + line(f"floor.{label}") + ["--incremental"]
+        else:
+            tool = {"ld": "ld.bfd", "lld": "ld.lld", "mold": "mold"}[kind]
+            out = f"floor.{label}.{i}"
+            cmd = [tool] + (["--no-fork"] if kind == "mold" else []) + [w for w in line(out) if w not in extra]
+        if o.quiet:
+            while load1() >= o.quiet:
+                time.sleep(10)
+        before = load1()
+        wall, peak, err, st = timed(cmd, o.dir)
+        if st:
+            sys.exit(f"incr-floor: {label} run {i} failed ({st}):\n{err}")
+        if kind in ("ld", "lld", "mold"):
+            os.remove(os.path.join(o.dir, f"floor.{label}.{i}"))
+        if i == 0:
+            return
+        runs[label].append({"wall": wall, "peak_kib": peak, "phases": phases(err), "load": before,
+                            "first": err.splitlines()[0] if err else ""})
+
+    if o.interleave:
         for i in range(o.runs + 1):
-            if name in ("plain", "incr-full"):
-                extra = ["--time-phases"] + (["--incremental=full"] if name == "incr-full" else [])
-                out = "floor.plain" if name == "plain" else "floor.incr-full"
-                cmd = [o.mortar] + line(out) + extra
-            elif name in ("copy", "in-place"):
-                if i == 0:
-                    # The state the series starts from: a full link of the
-                    # current inputs (the warm-up run is the first update).
-                    w, p, err, st = timed([o.mortar] + line("floor.incr") + ["--incremental=full"], o.dir)
-                    if st:
-                        sys.exit(f"incr-floor: the full link failed:\n{err}")
-                toggle()
-                cmd = [o.floor, name, "--"] + line("floor.incr") + ["--incremental"]
-            else:
-                tool = {"ld": "ld.bfd", "lld": "ld.lld", "mold": "mold"}[name]
-                out = f"floor.{name}.{i}"
-                cmd = [tool] + (["--no-fork"] if name == "mold" else []) + line(out)
-            if o.quiet:
-                while load1() >= o.quiet:
-                    time.sleep(10)
-            before = load1()
-            wall, peak, err, st = timed(cmd, o.dir)
-            if st:
-                sys.exit(f"incr-floor: {name} run {i} failed ({st}):\n{err}")
-            if name in ("ld", "lld", "mold"):
-                os.remove(os.path.join(o.dir, out))
-            if i == 0:
-                continue
-            runs.append({"wall": wall, "peak_kib": peak, "phases": phases(err), "load": before,
-                         "first": err.splitlines()[0] if err else ""})
-        r = {"uptime_before": load, "uptime_after": uptime(),
-             "wall": summary([x["wall"] for x in runs]),
-             "peak_kib": summary([x["peak_kib"] for x in runs]),
-             "load": summary([x["load"] for x in runs])}
+            for s in series:
+                one(s, i)
+    else:
+        for s in series:
+            loads[s["label"]] = uptime()
+            for i in range(o.runs + 1):
+                one(s, i)
+    for s in series:
+        label, kind = s["label"], s["kind"]
+        rs = runs[label]
+        r = {"kind": kind, "bin": s["bin"], "uptime_before": loads[label], "uptime_after": uptime(),
+             "wall": summary([x["wall"] for x in rs]),
+             "peak_kib": summary([x["peak_kib"] for x in rs]),
+             "load": summary([x["load"] for x in rs])}
         names = []
-        for x in runs:
+        for x in rs:
             for k in x["phases"]:
                 if k not in names:
                     names.append(k)
-        r["phases"] = {k: summary([x["phases"].get(k, 0.0) for x in runs]) for k in names}
-        if name in ("copy", "in-place"):
-            r["first"] = runs[-1]["first"]
-            w, p, err, st = timed([o.mortar] + line("floor.check") + ["--incremental=full"], o.dir)
+        r["phases"] = {k: summary([x["phases"].get(k, 0.0) for x in rs]) for k in names}
+        if kind in ("copy", "in-place"):
+            r["first"] = rs[-1]["first"]
+            set_input(chain[label])
+            w, p, err, st = timed([s["mortar"]] + line("floor.check") + ["--incremental=full"], o.dir)
             if st:
                 sys.exit(f"incr-floor: the reference link failed:\n{err}")
-            same = open(os.path.join(o.dir, "floor.incr"), "rb").read() == \
+            same = open(os.path.join(o.dir, f"floor.{label}"), "rb").read() == \
                 open(os.path.join(o.dir, "floor.check"), "rb").read()
             r["identical_to_full"] = same
             if not same:
-                sys.exit(f"incr-floor: {name}: the update differs from the incremental-mode full link")
-        results[name] = r
+                print(f"incr-floor: {label}: the update differs from the incremental-mode full link", flush=True)
+        results[label] = r
         ph = " ".join(f"{k}={v['median']:.1f}" for k, v in r["phases"].items())
-        print(f"{name}: wall median {r['wall']['median'] * 1000:.1f} ms "
+        print(f"{label}: wall median {r['wall']['median'] * 1000:.1f} ms "
               f"[{r['wall']['min'] * 1000:.1f}-{r['wall']['max'] * 1000:.1f}], "
               f"peak median {r['peak_kib']['median'] / 1024:.1f} MiB "
               f"[{r['peak_kib']['min'] / 1024:.1f}-{r['peak_kib']['max'] / 1024:.1f}] "
-              f"n={o.runs} | load at each run {r['load']['min']:.1f}-{r['load']['max']:.1f} | {load}", flush=True)
+              f"n={o.runs} | load at each run {r['load']['min']:.1f}-{r['load']['max']:.1f} | {r['uptime_before']}", flush=True)
         if ph:
             print(f"  phases (median ms): {ph}", flush=True)
         if "identical_to_full" in r:
@@ -198,8 +245,7 @@ def main():
     if o.json:
         with open(o.json, "w") as f:
             json.dump(results, f, indent=1)
-    if state["edited"]:
-        toggle()
+    set_input(start_edited)
 
 
 if __name__ == "__main__":

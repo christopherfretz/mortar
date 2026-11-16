@@ -319,6 +319,20 @@ driver = gcc
 cflags = -O1 -g
 ldflags = -static
 
+# Its split-DWARF variant (WP-094: split DWARF is a first-class
+# configuration, docs/ROADMAP.md "The reference configuration"): the same
+# objects compiled with -gsplit-dwarf, so that the link reads skeleton
+# units; the .dwo files are not inputs of the link.
+[synthetic-objects-g10x-split]
+class = on-request
+kind = synthetic
+about = synthetic-objects-g10x compiled with -gsplit-dwarf.
+shape = objects
+params = 8150 200
+driver = gcc
+cflags = -O1 -g -gsplit-dwarf
+ldflags = -static
+
 # A Fortran program and its C callee (tests/link/lang/fortran-c.test):
 # libgfortran from its archive.
 [fortran-static]

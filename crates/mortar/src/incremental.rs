@@ -68,6 +68,19 @@ pub struct Session {
     /// link without the report keeps nothing.
     old: Option<Box<State>>,
     start: Instant,
+    /// WP-094: the parts of the state's work, timed (ms), for
+    /// `--time-phases` lines.
+    times: Times,
+}
+
+/// WP-094: timed parts (name, ms), shared with the caller.
+pub type Times = std::rc::Rc<std::cell::RefCell<Vec<(&'static str, f64)>>>;
+
+/// WP-094: `(name, ms since t)`, and `t` moved to now.
+fn lap(times: &Times, t: &mut Instant, name: &'static str) {
+    let now = Instant::now();
+    times.borrow_mut().push((name, (now - *t).as_secs_f64() * 1e3));
+    *t = now;
 }
 
 /// The option of IN-12 incremental mode does not support, if any, from
@@ -226,6 +239,7 @@ pub fn start(parsed: &Parsed, cwd: &Path, out_path: &Path, diagnostics: &Collect
         recorded_target,
         old,
         start,
+        times: Times::default(),
     })
 }
 
@@ -397,6 +411,13 @@ impl Session {
         &self.reason
     }
 
+    /// WP-094: the timed parts of the state's work, filled by
+    /// [`Session::finish`].
+    #[must_use]
+    pub fn times_handle(&self) -> Times {
+        Times::clone(&self.times)
+    }
+
     /// After a successful full link: the state written and bound to the
     /// output, and the lines for standard error (the fall-back's, or the
     /// report's when it goes there).
@@ -433,7 +454,10 @@ impl Session {
                     if let Some(old) = self.old.take() {
                         dry = Some(dry_run(&old, &state, f));
                     }
-                    if let Err(why) = self.write_state(state, out_path, written) {
+                    let mut t = Instant::now();
+                    let r = self.write_state(state, out_path, written);
+                    lap(&self.times, &mut t, "bind, encode and write");
+                    if let Err(why) = r {
                         let _ = writeln!(stderr, "incremental: no state written: {why}");
                     }
                 }
@@ -503,7 +527,9 @@ impl Session {
             assignment: &f.assignment,
             split: &f.merge.split,
         };
+        let mut t = Instant::now();
         let keys = Keys::new(&link)?;
+        lap(&self.times, &mut t, "keys");
         let mut strings = Strings::default();
         // IN-24: the files' and members' hashes, one task per file on the
         // link's pool (WP-063; a member is a range of its archive).
@@ -518,6 +544,7 @@ impl Session {
             Some(hash_bytes(h))
         };
         let hashes = f.pool.map(f.inputs.files.len() as usize, |i| hash_of(FileId(i as u32)));
+        lap(&self.times, &mut t, "file hashes");
         let file_hash = |id: FileId| hashes.get(id.0 as usize).copied().flatten();
         let mut state = mortar_incr::capture::capture(
             &link,
@@ -527,6 +554,7 @@ impl Session {
             &file_hash,
             f.arch.get(),
         )?;
+        lap(&self.times, &mut t, "capture");
         state.plan_hash = self.plan_hash;
         for s in &self.stamps {
             state.stat.push(StatRow {
@@ -571,6 +599,7 @@ impl Session {
             }
             state.stat.push(row);
         }
+        lap(&self.times, &mut t, "stat rows");
         let (leaf_fn, leaves) = written.leaves.as_ref().ok_or("the image kept no leaves")?;
         let sealed = written.sealed.clone().unwrap_or(0..0);
         state.meta = Meta {
