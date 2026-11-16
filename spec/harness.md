@@ -1727,9 +1727,10 @@ the scale this machine's disk and time allow, by `synthetic-objects` and
 --descriptor_set_out=/dev/fd/1 $S/src/google/protobuf/unittest.proto`
 (the descriptor set of `unittest.proto` and its imports, written to
 standard output); `rust-self*` `--version`; the `synthetic-*` workloads
-without arguments (their `main` exits 0) except `synthetic-objects*`,
-which is not run: each of its functions calls two further on, so a run
-makes exponentially many calls.
+without arguments (their `main` exits 0) except `synthetic-objects*`
+and `synthetic-line-*`, which are not run: each of their functions (each
+needed member's first function) calls two further on, so a run makes
+exponentially many calls.
 
 ### Planned workloads
 

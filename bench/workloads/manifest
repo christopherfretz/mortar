@@ -349,7 +349,6 @@ params = 1000 25
 driver = gcc
 cflags = -O1
 ldflags = -static
-run =
 
 [synthetic-line-1000-group]
 class = on-request
@@ -361,7 +360,6 @@ group = yes
 driver = gcc
 cflags = -O1
 ldflags = -static
-run =
 
 [synthetic-line-3000]
 class = on-request
@@ -372,7 +370,6 @@ params = 3000 25
 driver = gcc
 cflags = -O1
 ldflags = -static
-run =
 
 [synthetic-line-3000-group]
 class = on-request
@@ -384,7 +381,6 @@ group = yes
 driver = gcc
 cflags = -O1
 ldflags = -static
-run =
 
 # The large real links (WP-081; spec/harness.md "bench", "Large
 # workloads"): LLVM/clang 19.1.7, the release of the container's clang,
