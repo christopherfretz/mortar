@@ -85,7 +85,9 @@ runs on the host's architecture (AArch64 when the host is neither 64-bit
 one; `cargo xtask sweep --arch aarch64,x86_64` for both), so the two
 hosted lanes cover both targets. With `--quick` it runs the cases
 `pie.lazy` and `nopie` (about 30 s); the full gate runs every case
-(about 4 minutes a target with the debug `xtask`, measured by WP-088).
+(with the debug `xtask`: about 4 minutes a target on the reference
+machine, 7.6 and 8.4 minutes on the hosted x86-64 and AArch64 lanes;
+WP-088).
 Each sweep thread holds a jobserver token (at most 4, `--threads`).
 
 `static-identical` is run in-process after `sweep`, with or without
