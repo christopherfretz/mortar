@@ -291,7 +291,7 @@ impl Synth {
     /// and makes its end a multiple of the maximum page size. Layout's
     /// address stage writes its size; it is not in `sized` (its size is a
     /// function of the addresses before it, not of encoding inputs).
-    pub const RELRO_PADDING: Self = Self { name: b".relro_padding", address_dependent: false };
+    pub const RELRO_PADDING: Self = Self { name: b".pad.relro", address_dependent: false };
 }
 
 /// One part of an output section (`spec/layout.md` L-110): the body of an

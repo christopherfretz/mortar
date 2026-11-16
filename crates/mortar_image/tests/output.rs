@@ -188,9 +188,11 @@ fn i58_fifo_socket_block_device_refused() {
     assert_eq!(d.names(), vec!["fifo", "sock"]);
 }
 
-// spec: image.md I-62, I-113, I-66: an output that is an input is
-// accepted; it is not set aside, an open descriptor of it keeps its bytes,
-// and a failed link does not remove it.
+// spec: image.md I-113, I-66 (and I-62's history): the facade refuses an
+// output that is an input since WP-087 (`crates/mortar/tests/written.rs`);
+// the writer's defensive guard is still exercised here: such a `P` is not
+// set aside, an open descriptor of it keeps its bytes, and a failed link
+// does not remove it.
 #[test]
 fn i62_output_is_an_input() {
     let d = TempDir::new("input");

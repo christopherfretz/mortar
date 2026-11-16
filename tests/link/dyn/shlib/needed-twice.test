@@ -12,9 +12,6 @@
 # case holds it to GNU ld's list, which mortar must write. (W9's second
 # form, a later -lname after -Bstatic ignored, is needed_order.sh
 # bstatic_first: an option variation, not ported here.)
-#
-# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
-# tests/link/xfails.
 #@ spec: dyn.md "D-19a"
 #@ arch: aarch64 x86_64
 #@ fixture: needed-libs

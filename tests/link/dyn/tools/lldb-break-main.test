@@ -3,8 +3,6 @@
 # target.disable-aslr false`, the harness's: the container refuses
 # `personality`). lldb runs host programs only here: on x86-64 (qemu) the
 # step is skipped by name (spec/harness.md "Checks").
-#
-# mortar: AArch64 WP-053 (JOIN-C), in tests/link/xfails.
 #@ spec: dyn.md "D-70"
 #@ arch: aarch64 x86_64
 #@ requires: lldb

@@ -12,9 +12,6 @@
 # creates an unsatisfiable circular dependency", exit 127); GNU ld's
 # AArch64 non-PIE gives the library and `dlsym` a different address
 # (`lib==exe 0`). lld is right on both architectures, mold on AArch64.
-#
-# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
-# tests/link/xfails.
 #@ spec: dyn.md "D-45"
 #@ spec: dyn.md "D-23"
 #@ arch: aarch64 x86_64

@@ -1341,7 +1341,7 @@ fn synth_chunks(
 
 /// The output section names before layout (S-90's set): every output
 /// section with a live member, the synthetic chunks that exist, and
-/// layout's `.relro_padding`. An estimate; [`front`] runs layout again in
+/// layout's `.pad.relro`. An estimate; [`front`] runs layout again in
 /// the rare case it differs from the placement's names.
 fn estimated_names<'n>(
     a: &Assignment<'n>,
@@ -1370,7 +1370,7 @@ fn estimated_names<'n>(
         // `.dynbss` is a chunk of `.bss` (D-42, D-60).
         names.push(mortar_layout::rank::home(k.name(rel)));
     }
-    // layout's `.relro_padding` (L-64), when RELRO has content: a static
+    // layout's `.pad.relro` (L-64), when RELRO has content: a static
     // executable's `.got` always does.
     if relro {
         names.push(mortar_core::layout::Synth::RELRO_PADDING.name);

@@ -19,9 +19,6 @@
 # the x86-64 PIE's `__cxa_finalize` (one more hashed entry); mold has
 # `n/8 + 1` buckets. Each is held to its own sizes below; all three
 # tables find every name.
-#
-# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
-# tests/link/xfails.
 #@ spec: dyn.md "D-26"
 #@ arch: aarch64 x86_64
 #@ requires: llvm-readelf

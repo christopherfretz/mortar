@@ -713,7 +713,74 @@ impl Row {
     pub fn is_z(&self) -> bool {
         self.spellings[0].form == Form::Z
     }
+
+    /// The role of the file this row's value names, when the link writes
+    /// it (`spec/cli.md` §3.14): `the map` for `-Map`.
+    #[must_use]
+    pub fn writes(&self) -> Option<&'static str> {
+        let name = self.name();
+        WRITES.iter().find(|(n, _)| *n == name).map(|(_, role)| *role)
+    }
 }
+
+/// The registry of written paths (`spec/cli.md` §3.14): every row whose
+/// value names a file (or a directory) the link writes, honored or not,
+/// with the role a diagnostic names it by. `tests/table.rs` holds every
+/// row whose value is a path to this list or to [`READS`], so a new one
+/// is classified when it is added; the facade's tests hold every row here
+/// that is not `refused` to the facade's check.
+pub const WRITES: &[(&str, &str)] = &[
+    ("-o", "the output"),
+    ("--out-implib", "the import library"),
+    ("--separate-debug-file", "the separate debug file"),
+    ("--why-extract", "the archive extraction report"),
+    ("--print-archive-stats", "the archive statistics"),
+    ("--print-symbol-order", "the symbol order"),
+    ("-Map", "the map"),
+    ("--dependency-file", "the dependency file"),
+    ("--reproduce", "the reproduce archive"),
+    ("--mortar-map", "the machine map"),
+    ("--incremental-state", "the incremental state"),
+    ("--incremental-report", "the incremental report"),
+    ("--time-trace", "the time trace"),
+    ("--opt-remarks-filename", "the optimization remarks"),
+    ("--thinlto-cache-dir", "the ThinLTO cache"),
+];
+
+/// The rows whose value is a path the link reads, searches or only
+/// records (`spec/cli.md` §3.14): the complement of [`WRITES`] among the
+/// path-valued rows.
+pub const READS: &[&str] = &[
+    "-R",
+    "--remap-inputs-file",
+    "--remap-inputs",
+    "-L",
+    "--sysroot",
+    "-rpath-link",
+    "-Y",
+    "-C",
+    "--chroot",
+    "-T",
+    "--default-script",
+    "-c",
+    "--version-script",
+    "--dynamic-list",
+    "--export-dynamic-symbol-list",
+    "--retain-symbols-file",
+    "--section-ordering-file",
+    "--symbol-ordering-file",
+    "--call-graph-ordering-file",
+    "--irpgo-profile",
+    "-rpath",
+    "-I",
+    "--incremental-changed",
+    "--lto-sample-profile",
+    "--lto-cs-profile-file",
+    "--load-pass-plugin",
+    "--thinlto-distributor",
+    "--thinlto-remote-compiler",
+    "--in-implib",
+];
 
 /// The table (`spec/cli.md` §4).
 #[must_use]

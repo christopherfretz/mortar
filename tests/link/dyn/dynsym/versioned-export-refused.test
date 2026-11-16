@@ -11,8 +11,8 @@
 # `VERS_1`) and exports `vfoo@@VERS_1`; lld and mold export `vfoo`
 # unversioned. All three run.
 #
-# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
-# tests/link/xfails (the refusal is resolve's, behind the dynamic output).
+# mortar refuses the export by name (`versioned-export`, resolve's
+# refusal; WP-053).
 #@ spec: dyn.md "D-27"
 #@ arch: aarch64 x86_64
 

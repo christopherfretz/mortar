@@ -13,9 +13,6 @@
 # GOT sees the definition (`hp==hook 0`). mold makes the key 0 everywhere
 # (dyn.md §13.1: consistent, the hook never runs); its run is held to what
 # it prints.
-#
-# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
-# tests/link/xfails.
 #@ spec: dyn.md "D-25"
 #@ arch: aarch64 x86_64
 #@ xfail(bfd): W12: no record for the data word in -no-pie (hp==hook 0 under LD_PRELOAD)

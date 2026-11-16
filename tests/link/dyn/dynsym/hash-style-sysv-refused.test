@@ -10,9 +10,8 @@
 # finds the library's callback through either table). `none` is not
 # linked by the references here: it is refused by mortar alike.
 #
-# mortar: WP-042 (CLI) on both architectures, in tests/link/xfails
-# (a command-line refusal; mortar names every refused option at once, so
-# the diagnostic appears as soon as the CLI refuses the value).
+# mortar refuses the value on the command line (cli.md R-C1), naming
+# every refused option at once.
 #@ spec: dyn.md "D-20"
 #@ spec: cli.md "4.4 Refused uses"
 #@ arch: aarch64 x86_64
