@@ -213,6 +213,7 @@ is added before or after it.
 | `meta-malformed` | `MetaMalformed { reason }` | `malformed Mason metadata: {reason}` | own |
 | `meta-version` | `MetaVersion { major }` | `Mason metadata version {major} is not supported; its records are ignored` | own |
 | `odr-abi-mismatch` | `OdrAbiMismatch { option, first, second }` | `translation units compiled with different {option}: {first} and {second}` | own (WP-073) |
+| `odr-archive-shadow` | `OdrArchiveShadow { name }` | `{name} in an archive member that is not linked is defined differently` | own (`spec/odr.md` O-23; WP-076) |
 | `odr-contents-mismatch` | `OdrContentsMismatch { name }` | `{name} has different contents in different files` | own (`spec/odr.md` §8.1 W4; WP-072) |
 | `odr-declaration-mismatch` | `OdrDeclarationMismatch { name }` | `{name} is declared with a type that does not match its definition` | own (WP-073) |
 | `odr-internal-reference` | `OdrInternalReference { name }` | `{name} refers to an entity with internal linkage, which differs in each translation unit` | own (WP-073) |
@@ -240,18 +241,6 @@ is added before or after it.
 | `incremental-file-clash` | `IncrementalFileClash { option, path, what }` | `{option}={path} names {what}; nothing is written to it` | own (`spec/incr.md` IN-17); no longer emitted since WP-087, which made `written-file-clash` cover the state and the report (the id stays, never reused) |
 | `refused` | `Refused { class, name, not_recognized }` | `unsupported {noun of class}: {name}` (§4), then `; file not recognized: file format not recognized` when `not_recognized` (§8.3) | own (§8.2) |
 | `internal-error` | `InternalError { what }` | `internal error in mortar: {what}` | own |
-
-The kind of M6 (the one-definition rule, `spec/odr.md` §9.1) **not yet
-in the code**. Its row moves into the table above, at the place of its
-area in the order stated before the table, with the package that
-implements it (§3.3): WP-076, with `--odr-check-archives` (WP-071 moved
-the two `meta-` kinds, WP-072 the kinds of the checks on foreign objects,
-WP-073 those of the record checks). The table above stays the list of
-`Kind::IDS`, which a test compares with the code.
-
-| id | variant | message | wording from |
-|---|---|---|---|
-| `odr-archive-shadow` | `OdrArchiveShadow { name }` | `{name} in an archive member that is not linked is defined differently` | own |
 
 ### 3.2 Notes on the kinds
 
@@ -416,7 +405,8 @@ WP-073 those of the record checks). The table above stays the list of
   by default is `spec/odr.md` O-47's register; `odr-internal-reference`
   `odr-strong-and-comdat` and `odr-contents-mismatch` are reported only
   under `--odr=strict`,
-  `odr-archive-shadow` only with `--odr-check-archives`. Every `{name}`
+  `odr-archive-shadow` only with `--odr-check-archives`, a warning in
+  every mode but `off` (`spec/odr.md` O-23). Every `{name}`
   goes through §5.4. Their context lines (§2.4) and their key (phase 40,
   `spec/model.md` §8; `2^40 +` the row's index for a row without a
   symbol) are `spec/odr.md` §9.1's. Never a `refused`: a finding is not a
