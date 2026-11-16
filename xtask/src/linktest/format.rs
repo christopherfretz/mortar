@@ -305,6 +305,8 @@ pub enum CheckTool {
     Nm,
     Objdump,
     LlvmReadelf,
+    /// `llvm-dwarfdump` (WP-080: `--verify` on split-DWARF outputs).
+    LlvmDwarfdump,
     /// The lines of a file the link wrote.
     Text,
     /// `eu-elflint --gnu-ld <file>`: its complaints, each allowed by an
@@ -321,11 +323,12 @@ pub enum CheckTool {
 }
 
 impl CheckTool {
-    const ALL: [Self; 9] = [
+    const ALL: [Self; 10] = [
         Self::Readelf,
         Self::Nm,
         Self::Objdump,
         Self::LlvmReadelf,
+        Self::LlvmDwarfdump,
         Self::Text,
         Self::Elflint,
         Self::Ldd,
@@ -340,6 +343,7 @@ impl CheckTool {
             Self::Nm => "nm",
             Self::Objdump => "objdump",
             Self::LlvmReadelf => "llvm-readelf",
+            Self::LlvmDwarfdump => "llvm-dwarfdump",
             Self::Text => "text",
             Self::Elflint => "elflint",
             Self::Ldd => "ldd",
@@ -515,6 +519,7 @@ impl Step {
             },
             StepKind::Check(check) => match check.tool {
                 CheckTool::LlvmReadelf => Some(Feature::LlvmReadelf),
+                CheckTool::LlvmDwarfdump => Some(Feature::LlvmDwarfdump),
                 CheckTool::Gdb => Some(Feature::Gdb),
                 CheckTool::Lldb => Some(Feature::Lldb),
                 CheckTool::Elflint => Some(Feature::Elflint),
@@ -2108,6 +2113,20 @@ FileHeader:
             )
             .is_ok()
         );
+        // WP-080: `llvm-dwarfdump` (`--verify` on split-DWARF outputs).
+        let dump = "link ld a.o\ncheck llvm-dwarfdump --verify a.out\n  has: No errors.\n";
+        assert!(has_error(&with(dump), 3, "needs 'llvm-dwarfdump'"));
+        let required = format!("#@ requires: llvm-dwarfdump\n{dump}");
+        let test = parse(&with(&required)).unwrap();
+        let tools: Vec<CheckTool> = test
+            .steps
+            .iter()
+            .filter_map(|s| match &s.kind {
+                StepKind::Check(c) => Some(c.tool),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(tools, [CheckTool::LlvmDwarfdump]);
     }
 
     // "Expectations": which a step takes, and their values.

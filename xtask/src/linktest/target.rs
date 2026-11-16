@@ -213,6 +213,8 @@ pub enum Feature {
     Clang,
     Yaml2obj,
     LlvmReadelf,
+    /// `check llvm-dwarfdump`: LLVM's DWARF dumper and verifier (WP-080).
+    LlvmDwarfdump,
     /// `check gdb`: GNU's debugger.
     Gdb,
     /// `check lldb`: LLVM's debugger, of a pinned major.
@@ -223,12 +225,13 @@ pub enum Feature {
 
 impl Feature {
     /// Every feature.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Gxx,
         Self::Gfortran,
         Self::Clang,
         Self::Yaml2obj,
         Self::LlvmReadelf,
+        Self::LlvmDwarfdump,
         Self::Gdb,
         Self::Lldb,
         Self::Elflint,
@@ -242,6 +245,7 @@ impl Feature {
             Self::Clang => "clang",
             Self::Yaml2obj => "yaml2obj",
             Self::LlvmReadelf => "llvm-readelf",
+            Self::LlvmDwarfdump => "llvm-dwarfdump",
             Self::Gdb => "gdb",
             Self::Lldb => "lldb",
             Self::Elflint => "eu-elflint",
@@ -356,6 +360,7 @@ pub struct CommonTools {
     pub clangxx: Option<PathBuf>,
     pub yaml2obj: Option<PathBuf>,
     pub llvm_readelf: Option<PathBuf>,
+    pub llvm_dwarfdump: Option<PathBuf>,
     pub lld: Option<PathBuf>,
     pub mold: Option<PathBuf>,
     /// The `requires: gdb` tool (the host's gdb).
@@ -376,6 +381,7 @@ impl CommonTools {
             clangxx: find("clang++"),
             yaml2obj: find("yaml2obj"),
             llvm_readelf: find("llvm-readelf"),
+            llvm_dwarfdump: find("llvm-dwarfdump"),
             lld: find("ld.lld"),
             mold: find("mold").or_else(|| find("ld.mold")),
             gdb: find("gdb"),
@@ -395,6 +401,7 @@ pub fn feature_tool_name(feature: Feature, arch: Arch, host: Option<Arch>) -> St
         Feature::Clang => "clang and clang++ of a pinned LLVM major".to_owned(),
         Feature::Yaml2obj => "yaml2obj of a pinned LLVM major".to_owned(),
         Feature::LlvmReadelf => "llvm-readelf of a pinned LLVM major".to_owned(),
+        Feature::LlvmDwarfdump => "llvm-dwarfdump of a pinned LLVM major".to_owned(),
         Feature::Gdb => "gdb".to_owned(),
         Feature::Lldb => "lldb of a pinned LLVM major".to_owned(),
         Feature::Elflint => "eu-elflint (Debian package elfutils)".to_owned(),

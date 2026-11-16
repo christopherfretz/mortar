@@ -1,0 +1,130 @@
+# Split DWARF (WP-080), GCC 14: each form of the census (spec/landed/
+# image/WP-080.md) linked static non-PIE. The skeleton units, .debug_addr,
+# the GNU name index (.debug_gnu_pubnames/pubtypes), .debug_rnglists,
+# .debug_str_offsets and .debug_line_str are ordinary debug sections; no
+# .dwo section is in any input or output (GCC writes the .dwo files
+# itself). readelf follows each skeleton's DW_AT_comp_dir and
+# DW_AT_dwo_name to the .dwo beside the object, so the output still names
+# them; llvm-dwarfdump --verify is clean on every linker's output.
+# GCC's .debug_addr entry of a TLS variable (R_X86_64_64/R_386_32
+# against tl_count) is its DTP offset (spec/x64.md X-53, spec/x86.md
+# X86-62); GNU ld and mold write the template address (plumb.md A15).
+#@ anomaly(bfd,mold,x86_64,i386): A15
+#@ spec: image.md I-49a
+#@ requires: g++ llvm-dwarfdump
+
+cxx -g -gsplit-dwarf -gdwarf-5 -O0 -ffunction-sections main.cc -o main-d5.o
+cxx -g -gsplit-dwarf -gdwarf-5 -O0 -ffunction-sections b.cc -o b-d5.o
+cxx -g -gsplit-dwarf -gdwarf-4 -O0 -ffunction-sections main.cc -o main-d4.o
+cxx -g -gsplit-dwarf -gdwarf-4 -O0 -ffunction-sections b.cc -o b-d4.o
+cxx -g -gsplit-dwarf -gdwarf-5 -fdebug-types-section -O0 -ffunction-sections main.cc -o main-d5t.o
+cxx -g -gsplit-dwarf -gdwarf-5 -fdebug-types-section -O0 -ffunction-sections b.cc -o b-d5t.o
+cxx -g -gsplit-dwarf -gdwarf-4 -fdebug-types-section -O0 -ffunction-sections main.cc -o main-d4t.o
+cxx -g -gsplit-dwarf -gdwarf-4 -fdebug-types-section -O0 -ffunction-sections b.cc -o b-d4t.o
+cxx -g -gsplit-dwarf -gdwarf-5 -O2 -ffunction-sections main.cc -o main-d5o.o
+cxx -g -gsplit-dwarf -gdwarf-5 -O2 -ffunction-sections b.cc -o b-d5o.o
+cxx -g -gsplit-dwarf -gdwarf-4 -gno-pubnames -O0 -ffunction-sections main.cc -o main-d4np.o
+cxx -g -gsplit-dwarf -gdwarf-4 -gno-pubnames -O0 -ffunction-sections b.cc -o b-d4np.o
+link g++ -static -no-pie -fno-use-linker-plugin main-d5.o b-d5.o -o prog-d5
+run prog-d5
+  stdout: 5 10 8
+check readelf -SW prog-d5
+  has: .debug_addr
+  has: .debug_info
+  not: .dwo
+check readelf --debug-dump=info prog-d5
+  has: DW_UT_skeleton
+  has: DW_AT_dwo_name
+  has: DW_UT_split_compile
+  has: Found separate debug object file: */main-d5.dwo
+  has: Found separate debug object file: */b-d5.dwo
+check llvm-dwarfdump --verify prog-d5
+  has: No errors.
+link g++ -static -no-pie -fno-use-linker-plugin main-d4.o b-d4.o -o prog-d4
+run prog-d4
+  stdout: 5 10 8
+check readelf -SW prog-d4
+  has: .debug_addr
+  has: .debug_info
+  not: .dwo
+check readelf --debug-dump=info prog-d4
+  has: DW_AT_GNU_dwo_name
+  has: Found separate debug object file: */main-d4.dwo
+  has: Found separate debug object file: */b-d4.dwo
+check llvm-dwarfdump --verify prog-d4
+  has: No errors.
+link g++ -static -no-pie -fno-use-linker-plugin main-d5t.o b-d5t.o -o prog-d5t
+run prog-d5t
+  stdout: 5 10 8
+check readelf -SW prog-d5t
+  has: .debug_addr
+  has: .debug_info
+  not: .dwo
+check readelf --debug-dump=info prog-d5t
+  has: DW_UT_skeleton
+  has: DW_AT_dwo_name
+  has: DW_UT_split_compile
+  has: Found separate debug object file: */main-d5t.dwo
+  has: Found separate debug object file: */b-d5t.dwo
+check llvm-dwarfdump --verify prog-d5t
+  has: No errors.
+link g++ -static -no-pie -fno-use-linker-plugin main-d4t.o b-d4t.o -o prog-d4t
+run prog-d4t
+  stdout: 5 10 8
+check readelf -SW prog-d4t
+  has: .debug_addr
+  has: .debug_info
+  not: .dwo
+check readelf --debug-dump=info prog-d4t
+  has: DW_AT_GNU_dwo_name
+  has: Found separate debug object file: */main-d4t.dwo
+  has: Found separate debug object file: */b-d4t.dwo
+check llvm-dwarfdump --verify prog-d4t
+  has: No errors.
+link g++ -static -no-pie -fno-use-linker-plugin main-d5o.o b-d5o.o -o prog-d5o
+run prog-d5o
+  stdout: 5 10 8
+check readelf -SW prog-d5o
+  has: .debug_addr
+  has: .debug_info
+  not: .dwo
+check readelf --debug-dump=info prog-d5o
+  has: DW_UT_skeleton
+  has: DW_AT_dwo_name
+  has: DW_UT_split_compile
+  has: Found separate debug object file: */main-d5o.dwo
+  has: Found separate debug object file: */b-d5o.dwo
+check llvm-dwarfdump --verify prog-d5o
+  has: No errors.
+link g++ -static -no-pie -fno-use-linker-plugin main-d4np.o b-d4np.o -o prog-d4np
+run prog-d4np
+  stdout: 5 10 8
+check readelf -SW prog-d4np
+  has: .debug_addr
+  has: .debug_info
+  not: .dwo
+check readelf --debug-dump=info prog-d4np
+  has: DW_AT_GNU_dwo_name
+  has: Found separate debug object file: */main-d4np.dwo
+  has: Found separate debug object file: */b-d4np.dwo
+check llvm-dwarfdump --verify prog-d4np
+  has: No errors.
+
+#--- main.cc
+#include <cstdio>
+template <class T> __attribute__((noinline)) T twice(T x) { return x + x; }
+struct Point { int x; double y; };
+thread_local int tl_count = 5;
+int g_total = 3;
+int helper(int);
+int main(int argc, char **) {
+  Point p{argc, 2.5};
+  tl_count += argc;
+  std::printf("%d %d %d\n", twice(argc) + g_total, helper(argc), (int)p.y + tl_count);
+  return 0;
+}
+#--- b.cc
+template <class T> __attribute__((noinline)) T twice(T x) { return x + x; }
+extern thread_local int tl_count;
+__attribute__((noinline)) int unused_fn(int x) { return x * 9 + tl_count; }
+__attribute__((noinline)) int helper(int x) { return twice(x + 1) + tl_count; }
