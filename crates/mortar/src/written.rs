@@ -1,6 +1,7 @@
 //! One rule for every file a link writes (`spec/cli.md` §3.14, WP-087):
 //! no file the link writes is a file it read, or another file it writes,
-//! decided after the front and before anything is written.
+//! decided after the front and before anything is written. The output is
+//! no exception (`spec/image.md` I-62 since WP-087).
 //!
 //! The registry is [`mortar_cli::table::WRITES`]: the last use of each row
 //! there names a written file, so a row that becomes honored is checked
@@ -48,10 +49,6 @@ pub struct Written {
     pub path: PathBuf,
     /// The path as given, for diagnostics.
     pub given: PathBuf,
-    /// The output (`-o`): it may replace a file the link read
-    /// (`spec/image.md` I-62: it is renamed into place after every input
-    /// was read, and GNU's `ld -r -o a.o a.o b.o` idiom keeps working).
-    pub output: bool,
 }
 
 /// The registry of one link: the output first, then the last use of each
@@ -73,14 +70,12 @@ pub fn registry(
             role: format!("the output {}", shown(p)),
             path: out_path.to_path_buf(),
             given: PathBuf::from(p),
-            output: true,
         },
         None => Written {
             spelling: "the default output a.out".to_owned(),
             role: "the output a.out".to_owned(),
             path: out_path.to_path_buf(),
             given: PathBuf::from("a.out"),
-            output: true,
         },
     });
     for (name, role) in mortar_cli::table::WRITES {
@@ -100,7 +95,6 @@ pub fn registry(
             role: format!("{role} {}", shown(p)),
             path: cwd.join(p),
             given: PathBuf::from(p),
-            output: false,
         });
     }
     for (option, path) in incremental {
@@ -113,7 +107,6 @@ pub fn registry(
             role: format!("{role} {}", path.display()),
             path: path.to_path_buf(),
             given: path.to_path_buf(),
-            output: false,
         });
     }
     v
@@ -206,8 +199,8 @@ impl Reads {
         Self { store, named }
     }
 
-    /// Every identity read, sorted (the output's checks: image.md I-62,
-    /// I-66, I-113).
+    /// Every identity read, sorted (`spec/image.md` I-66: a stale output
+    /// that is one of them is never removed).
     #[must_use]
     pub fn identities(&self) -> Vec<(u64, u64)> {
         let mut v = self.store.clone();
@@ -245,8 +238,8 @@ impl Reads {
 }
 
 /// The rule (`spec/cli.md` §3.14) over `written` and `reads`: one
-/// `written-file-clash` per written file that names a file read (unless it
-/// is the output, I-62) or an earlier written file. Emitted to
+/// `written-file-clash` per written file that names a file read (the
+/// output included, I-62) or an earlier written file. Emitted to
 /// `diagnostics`; `true` when there is none.
 pub fn clear(
     written: &[Written],
@@ -274,9 +267,6 @@ pub fn clear(
         let mut clash = None;
         for (k, id) in idents[i].iter().enumerate() {
             let Ident::File(dev, ino) = *id else { continue };
-            if k == 0 && w.output {
-                continue;
-            }
             if let Some(what) = reads.find((dev, ino), opened, cwd) {
                 clash = Some((k, what));
                 break;
@@ -360,6 +350,6 @@ mod tests {
         let r = registry(&p, cwd, Path::new("/w/a.out"), &[]);
         let spellings: Vec<&str> = r.iter().map(|w| w.spelling.as_str()).collect();
         assert_eq!(spellings, ["the default output a.out", "-Map=m2", "--dependency-file=d"]);
-        assert!(r[0].output && !r[1].output);
+        assert_eq!(r[0].path, Path::new("/w/a.out"));
     }
 }

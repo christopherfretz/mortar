@@ -1,8 +1,8 @@
 //! A file the link writes is not a file it reads, or another file it
 //! writes (`spec/cli.md` §3.14, WP-087): every clash class is refused by
 //! `written-file-clash` before anything is written, the file named is
-//! byte-equal afterwards and no output is left; the output may still
-//! replace an input (`spec/image.md` I-62); `-o /dev/null` and
+//! byte-equal afterwards and no output is left; the output is no exception
+//! (`spec/image.md` I-62 since WP-087); `-o /dev/null` and
 //! `-Map=/dev/stdout` keep working (I-58, I-58a, I-79a).
 
 use std::ffi::OsString;
@@ -103,13 +103,13 @@ const READ: &[(&str, &[&str], &str, &str)] = &[
 
 // spec: cli.md §3.14 (a written file naming a file the link reads, by the
 // same path, another spelling, a symbolic link or a hard link: refused by
-// name before anything is written; the file is byte-equal afterwards);
-// diag.md §3.1 `written-file-clash`
+// name before anything is written; the file is byte-equal afterwards; the
+// output too, image.md I-62); diag.md §3.1 `written-file-clash`
 #[test]
 fn a_written_file_never_names_a_file_the_link_reads() {
     let Some(fx) = Fixture::new("written-reads") else { return };
     for (class, inputs, file, role) in READ {
-        for writer in ["-Map", "--dependency-file", "--mortar-map"] {
+        for writer in ["-o", "-Map", "--dependency-file", "--mortar-map"] {
             for spelling in ["same", "./", "symlink", "hard link"] {
                 let named = match spelling {
                     "same" => (*file).to_owned(),
@@ -128,9 +128,17 @@ fn a_written_file_never_names_a_file_the_link_reads() {
                     }
                 };
                 let before = std::fs::read(fx.path(file)).unwrap();
-                let w = format!("{writer}={named}");
+                let w = if writer == "-o" {
+                    format!("-o {named}")
+                } else {
+                    format!("{writer}={named}")
+                };
                 let mut args: Vec<&str> = inputs.to_vec();
-                args.extend(["-o", "out", &w]);
+                if writer == "-o" {
+                    args.extend(["-o", &named]);
+                } else {
+                    args.extend(["-o", "out", &w]);
+                }
                 let o = fx.mortar(&args);
                 let err = o.stderr_text();
                 let case = format!("{class}, {writer}, {spelling}");
@@ -141,6 +149,10 @@ fn a_written_file_never_names_a_file_the_link_reads() {
                 );
                 assert_eq!(std::fs::read(fx.path(file)).unwrap(), before, "{case}: {file} changed");
                 assert!(!fx.path("out").exists(), "{case}: an output was written");
+                for t in [format!(".{named}.mortar-tmp"), format!(".{named}.mortar-old")] {
+                    let t = t.replace("./", "");
+                    assert!(!fx.path(&t).exists(), "{case}: {t} was left");
+                }
             }
         }
     }
@@ -178,22 +190,35 @@ fn written_files_never_name_each_other() {
     }
 }
 
-// spec: cli.md §3.14 (the output may replace a file the link reads:
-// image.md I-62, GNU's `ld -r -o a.o a.o b.o`), and a link that fails
-// after the front leaves a response file named as the output in place
-// (I-66: never a file the link read)
+// spec: image.md I-62 (the output naming an input is refused: GNU's
+// `ld -r -o a.o a.o b.o` refusal, which mortar now shares) and I-66 (the
+// refused link, a failure after the front, never removes the input as a
+// stale output: it exists and is byte-equal)
 #[test]
-fn the_output_may_replace_an_input_and_a_failure_keeps_it() {
+fn the_output_never_replaces_an_input_and_a_refusal_keeps_it() {
     let Some(fx) = Fixture::new("written-output") else { return };
-    std::fs::copy(fx.path("a.o"), fx.path("in.o")).unwrap();
-    let o = fx.mortar(&["in.o", "libb.a", "-o", "in.o"]);
-    assert!(o.success(), "{}", o.stderr_text());
-    assert_eq!(std::fs::read(fx.path("in.o")).unwrap().get(16..18), Some(&[2u8, 0][..]), "ET_EXEC");
-    fx.scratch.write("u.rsp", "a.o libb.a u.o\n");
-    let before = std::fs::read(fx.path("u.rsp")).unwrap();
-    let o = fx.mortar(&["@u.rsp", "-o", "u.rsp"]);
-    assert!(!o.success() && o.stderr_text().contains("nowhere"), "{}", o.stderr_text());
-    assert_eq!(std::fs::read(fx.path("u.rsp")).unwrap(), before, "the response file changed");
+    let before = std::fs::read(fx.path("a.o")).unwrap();
+    // GNU's `ld -r -o a.o a.o b.o`, as an executable link (mortar refuses
+    // `-r` today).
+    let o = fx.mortar(&["-o", "a.o", "a.o", "b.o"]);
+    let err = o.stderr_text();
+    assert!(!o.success(), "linked: {err}");
+    assert!(err.contains("error: -o a.o names the input a.o; nothing is written to it"), "{err}");
+    assert_eq!(std::fs::read(fx.path("a.o")).unwrap(), before, "a.o changed");
+    // A response file named as the output: refused by the rule; and a link
+    // that fails before the rule runs (an undefined symbol) keeps it too.
+    for (text, expected) in [
+        ("a.o libb.a\n", "-o u.rsp names the response file u.rsp"),
+        ("a.o libb.a u.o\n", "undefined symbol: nowhere"),
+    ] {
+        fx.scratch.write("u.rsp", text);
+        let before = std::fs::read(fx.path("u.rsp")).unwrap();
+        let o = fx.mortar(&["@u.rsp", "-o", "u.rsp"]);
+        let err = o.stderr_text();
+        assert!(!o.success(), "linked: {err}");
+        assert!(err.contains(expected), "{err}");
+        assert_eq!(std::fs::read(fx.path("u.rsp")).unwrap(), before, "the response file changed");
+    }
 }
 
 // spec: cli.md §3.14 (the names the writer touches count: an input named

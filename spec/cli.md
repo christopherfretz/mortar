@@ -613,11 +613,15 @@ temporary name ./.out.mortar-old of -o out names the input
 .out.mortar-old`). The `T0.<pid>` names are created with `create_new`
 and can replace nothing.
 
-**The output.** `-o` may name a file the link read: `spec/image.md`
-I-62 accepts it (the output is renamed into place after every input was
-read whole or through a descriptor that pins it), as lld and mold do,
-and GNU's `ld -r -o a.o a.o b.o` keeps working. Only the output has this
-exception; its temporary names do not.
+**The output is no exception.** `-o` naming a file the link read, by
+any spelling, is `written-file-clash` like every written file
+(`spec/image.md` I-62, ruled by WP-087's review): `-o a.o names the input
+a.o; nothing is written to it`. GNU ld 2.44 refuses it too (by name or
+symbolic link; `ld -r -o a.o a.o b.o` exits 1 with `input file 'a.o' is
+the same as output file` and leaves `a.o` unchanged); lld accepts it and
+replaces the input; mold 2.37.1 aborts on an assertion after replacing
+it. A failed link never removes the input as a stale output (I-66).
+Before WP-087 mortar accepted it, as lld does.
 
 **Files outside the rule.** A written path that names, following
 symbolic links, a directory (I-57's `cannot-open-output`), a character

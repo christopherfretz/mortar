@@ -1109,9 +1109,8 @@ with each phase fed from the state for unchanged files:
   anything is written: since WP-087 by the one rule of every written
   path (`spec/cli.md` §3.14, `written-file-clash`; `incremental-file-clash`
   is no longer emitted), to which the session gives its two files
-  (`Session::written`). image.md I-62 accepts the output as an input
-  because the output is renamed into place, which a state or a report
-  written over an input would not be. *Test:*
+  (`Session::written`), which refuses the output as an input too
+  (image.md I-62 since WP-087). *Test:*
   `the_state_or_report_naming_a_file_of_the_link_is_refused`,
   `crates/mortar/tests/written.rs`.
 - **IN-18 [v1] Format and version.** Little-endian, fixed-width rows,

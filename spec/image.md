@@ -1151,8 +1151,11 @@ Opening a running executable for writing fails with `ETXTBSY` on Linux
   time. A hard link to the old output keeps it alive, so the unlink frees
   nothing and the other name keeps the old bytes (§7.1). A symbolic link
   at `P` is itself moved, and its target is untouched. If `P` is an input,
-  nothing is set aside (I-62 needs its name and bytes until the
-  store is done). If the rename to `A` fails (it is in the same directory, so
+  nothing is set aside: since WP-087 the facade never reaches this (I-62
+  refuses such a link before `T` is created); the skip stays in
+  `Output::create`, whose `OutputOptions::inputs` callers other than the
+  facade may still pass, as a defensive guard that no link can now
+  trigger. If the rename to `A` fails (it is in the same directory, so
   only a permission or a race can fail it), the image proceeds without it. On the
   workspace share the write itself dominates (0.8–1.2 s for 220 MB), and
   the set-aside changes nothing measurable.
@@ -1160,13 +1163,29 @@ Opening a running executable for writing fails with `ETXTBSY` on Linux
   is a build artifact, re-creatable, and an `fsync` of a 2 GB debug
   output would wait for the device. (Whether the references sync was not
   measured, E14.)
-- **I-62 [M1] [C] The output is an input.** Accepted (lld, mold). It is
-  safe because mortar never writes in place: the resident store has read
-  every input whole before fill (`spec/input.md` §11.2), and the staged
-  store reads through descriptors opened before `T` is created, which pin
-  the old inode. Neither the rename of I-60 nor I-113 (which skips such
-  a `P`) changes that inode. GNU ld's refusal guards against writing in
-  place.
+- **I-62 [M1] [C] The output is an input: refused (WP-087).** An output
+  `P` that is, following symbolic links, the same file (device and inode)
+  as a file the link read (an object, an archive, a thin archive's member,
+  a linker script, a response file, a shared object) is
+  `written-file-clash` by the one rule of every written file
+  (`spec/cli.md` §3.14), decided after the front and before `T` is
+  created: nothing is written and the input is byte-equal afterwards
+  (I-66 does not remove it). A non-regular `P` (`-o /dev/null`) is outside
+  the rule (I-58). GNU ld 2.44 refuses it by name or symbolic link (not
+  by hard link: `input file 'a.o' is the same as output file`); lld 19
+  and 22 accept it and replace the input; mold 2.37.1 writes in place and
+  fails with the input destroyed (`ld -r -o a.o a.o b.o`: an assertion
+  after replacing it, measured by the coordinator).
+  *History.* Before WP-087 mortar accepted it, as lld and mold do (Q8):
+  it was safe for the link itself because mortar never writes in place
+  (the resident store has read every input whole before fill,
+  `spec/input.md` §11.2; the staged store reads through descriptors
+  opened before `T` is created, which pin the old inode), and I-113
+  skipped such a `P`. It changed because the input is still replaced
+  when the link succeeds: a prebuilt object or archive named by a typo in
+  `-o` cannot be rebuilt, a refusal by name is recoverable, and GNU ld,
+  the reference of record, already refuses it, so no build written for
+  it depends on the output being an input.
 
 ### 7.3 Writing
 
@@ -1984,7 +2003,7 @@ pub trait SynthChunk {
 | teardown of a replaced output | in `rename`, on the critical path | hidden | hidden | on a helper thread | I-113 |
 | existing output after a failed link | removed | kept | kept | removed, unless it is an input | I-66 |
 | read-only directory, writable output | written in place | error | error (names its temporary) | error naming the output | I-59 |
-| output is an input | refused | accepted | accepted | accepted | I-62 |
+| output is an input | refused (by name or symbolic link; a hard link passes) | accepted, input replaced | written in place: an object fails with the input destroyed, an archive or script is replaced | refused by name, any spelling (accepted before WP-087) | I-62 |
 | `-Map` or `--dependency-file` names an input (WP-087) | overwritten (an archive: truncated before it is read, the link fails) | overwritten | `SIGBUS`, overwritten | refused by name | `spec/cli.md` §3.14 |
 | `-Map` names the output | the output overwritten by the map | the same | the same | refused by name | `spec/cli.md` §3.14 |
 | `-Map=/dev/stdout` redirected to a file | written | written | written | written in place | I-58a, I-79a |
@@ -2471,4 +2490,5 @@ Resolved by the review (2026-11-15):
   (I-120).
 - Q6: `uuid` accepted in M2, excluded from the determinism gate (I-69).
 - Q7: `fast` is 8 bytes; `sha256` accepted in M1 (I-69).
-- Q8: `-o` equal to an input, accepted (I-62).
+- Q8: `-o` equal to an input, accepted (I-62). Reversed by WP-087's
+  review: refused (`written-file-clash`).

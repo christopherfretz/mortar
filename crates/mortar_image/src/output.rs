@@ -40,7 +40,8 @@ pub struct OutputOptions {
     /// `0o777` for executables and shared objects, `0o666` for `-r`
     /// (I-59); the kernel applies the umask.
     pub mode: u32,
-    /// The identities of every input file (I-62, I-66, I-113).
+    /// The identities of every input file (I-66, I-113; the facade
+    /// refuses an output that is one of them before this, I-62).
     pub inputs: Vec<FileIdentity>,
     pub lock: LockMode,
 }
@@ -203,7 +204,8 @@ impl Output {
             aside: None,
             helper: None,
         };
-        // I-113: set the old output aside, unless it is an input.
+        // I-113: set the old output aside, unless it is an input (a guard
+        // the facade can no longer trigger: I-62 refuses such a link).
         if let Some(m) = link
             && (m.file_type().is_file() || m.file_type().is_symlink())
             && identity(path).is_none_or(|id| !opts.inputs.contains(&id))
