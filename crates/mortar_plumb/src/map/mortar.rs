@@ -539,12 +539,37 @@ pub fn parse(text: &str) -> Result<Map, MapError> {
     if !ended {
         return Err(MapError::new(0, "truncated mortar map: no 'end' record"));
     }
+    // §3.2a: every mortar map states its line; a link has at least one
+    // word (none is `no-input-files`). A map without one (written before
+    // WP-102) is refused rather than judged without its options.
+    if map.args.is_empty() {
+        return Err(MapError::new(
+            0,
+            "no 'arg' record: a mortar map states its link's line (spec/plumb.md §3.2a)",
+        ));
+    }
     Ok(map)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The reader, for the tests of the other records: a text with no
+    /// `arg` record is read with one added before `end`, and the result
+    /// has none (§3.2a's requirement is `s3_7_malformed_maps_are_errors`').
+    fn parse(text: &str) -> Result<Map, MapError> {
+        match super::parse(text) {
+            Err(e) if e.message.contains("no 'arg' record") => {
+                let at = text.rfind("end\n").unwrap_or(text.len());
+                let with = format!("{}arg a.o\n{}", &text[..at], &text[at..]);
+                let mut m = super::parse(&with)?;
+                m.args.clear();
+                Ok(m)
+            }
+            r => r,
+        }
+    }
 
     fn sample() -> Map {
         let mut m = Map::new(Format::Mortar);
@@ -687,7 +712,10 @@ mod tests {
             let e = parse(text).unwrap_err();
             assert_eq!(e.line, *line, "{text:?}: {e}");
         }
-        assert!(parse("mortar-map 2\nend\n\n").is_ok());
+        assert!(parse("mortar-map 2\narg a.o\nend\n\n").is_ok());
+        // §3.2a: a map without its line (written before WP-102) is refused.
+        let e = super::parse("mortar-map 2\nend\n").unwrap_err();
+        assert!(e.message.contains("no 'arg' record"), "{e}");
     }
 
     // §3.2 (P-D3 of spec/dyn.md): the dynamic records round-trip, in their

@@ -1273,10 +1273,14 @@ pub fn run_with(
     let image = Image::read(output)?;
     let mut rng = Rng(cfg.seed);
     let mut base = verify(output, inputs, map);
-    // A link whose fixes show the erratum option keeps it when a mutant
-    // undoes them (§5.10: otherwise the option would be inferred off).
+    // A reference's link whose fixes show the erratum option keeps it when
+    // a mutant undoes them (§5.10: otherwise the option would be inferred
+    // off). Mortar's map states it in its line (§3.2a).
     let mut given = map.clone();
-    if given.fix_843419.is_none() && base.coverage.erratum_sites > 0 {
+    if map.format != crate::Format::Mortar
+        && given.fix_843419.is_none()
+        && base.coverage.erratum_sites > 0
+    {
         given.fix_843419 = Some(true);
         base = verify(output, inputs, &given);
     }

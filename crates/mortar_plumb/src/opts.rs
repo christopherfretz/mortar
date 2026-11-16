@@ -427,7 +427,7 @@ impl Options {
 /// The options of a mortar map's line (§3.2a), when it has `arg`
 /// records.
 pub(crate) fn of(map: &crate::Map) -> Option<Options> {
-    (map.format == crate::Format::Mortar && !map.args.is_empty()).then(|| Options::read(&map.args))
+    (map.format == crate::Format::Mortar).then(|| Options::read(&map.args))
 }
 
 /// M9 (§3.2a): each word of a mortar map's line that no option mortar

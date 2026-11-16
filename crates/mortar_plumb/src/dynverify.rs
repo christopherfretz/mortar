@@ -72,8 +72,10 @@ pub fn verify_with(output: &[u8], inputs: &[Input<'_>], map: &Map, ctx: &Ctx<'_>
     let objs = located.objs;
     // A mortar map's line is its `arg` records (§3.2a); a reference's is
     // the caller's.
-    let args = if map.format == crate::Format::Mortar && !map.args.is_empty() {
-        Some(map.args.iter().map(|w| String::from_utf8_lossy(w).into_owned()).collect::<Vec<_>>())
+    let args = if map.format == crate::Format::Mortar {
+        (!map.args.is_empty()).then(|| {
+            map.args.iter().map(|w| String::from_utf8_lossy(w).into_owned()).collect::<Vec<_>>()
+        })
     } else {
         ctx.line.clone()
     };

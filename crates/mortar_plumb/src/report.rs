@@ -665,7 +665,7 @@ impl Report {
                 m.full_rows,
                 m.not_judged,
                 m.kept_bytes,
-                if m.options_known { "known" } else { "unknown (no arg records)" }
+                if m.options_known { "known" } else { "none (a reference's map)" }
             );
         }
         if let Some(b) = &c.build_id {

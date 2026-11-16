@@ -407,9 +407,8 @@ pub fn reseal(file: &mut [u8], map: &crate::Map) -> usize {
 /// token of its `chunk synthetic .note.gnu.build-id` record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Style {
-    /// The map states none (maps written before the record had a
-    /// target): any tree that fits the length is accepted, and an
-    /// 8-, 20- or 32-byte `--build-id=0xHEX` is judged as a hash.
+    /// The line asks for no note (B1 then finds the note by its
+    /// presence): any tree that fits the length is accepted.
     Unstated,
     /// `default`, `sha1`, `sha256` or `fast` (image.md I-69): the tree
     /// and the length.
@@ -422,14 +421,11 @@ pub enum Style {
 
 impl Style {
     /// The style of `map`'s build id: its line's (§3.2a, the last of
-    /// `--build-id[=STYLE]` and `--no-build-id`) when the map has `arg`
-    /// records, else its build-id chunk's. A line that asks for no note
-    /// gives [`Style::Unstated`]: [`line_rules`] judges the presence.
+    /// `--build-id[=STYLE]` and `--no-build-id`). A line that asks for no
+    /// note, or a map that is not mortar's, gives [`Style::Unstated`]:
+    /// [`line_rules`] judges the presence.
     pub fn of(map: &crate::Map) -> Style {
-        match crate::opts::of(map) {
-            Some(o) => Self::asked(&o.build_id).unwrap_or(Style::Unstated),
-            None => Self::of_chunk(map),
-        }
+        crate::opts::of(map).and_then(|o| Self::asked(&o.build_id)).unwrap_or(Style::Unstated)
     }
 
     /// The style a line asks for; `None`: no note (I-69).
@@ -449,14 +445,6 @@ impl Style {
             "sha256" => Style::Tree(Tree::Sha256, 32),
             "given" => Style::Given,
             _ => Style::Unknown,
-        }
-    }
-
-    /// The style of `map`'s build-id chunk (§6.7, WP-028d).
-    pub fn of_chunk(map: &crate::Map) -> Style {
-        match chunk_style(map) {
-            None => Style::Unstated,
-            Some(t) => Self::named(t),
         }
     }
 }

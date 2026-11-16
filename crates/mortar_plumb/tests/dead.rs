@@ -180,7 +180,7 @@ impl Built {
     }
     /// The P-I findings, `"<id> <message>"`, through the map's text form.
     fn judge(&self) -> Vec<String> {
-        let text = mortar_plumb::map::mortar::write(&self.map);
+        let text = mortar_plumb::map::mortar::write(&with_line(&self.map));
         let map = mortar_plumb::map::parse(Format::Mortar, &text).unwrap();
         let inputs: Vec<Input<'_>> =
             self.files.iter().map(|(p, b)| Input { path: p, bytes: b }).collect();
@@ -1252,4 +1252,19 @@ fn in3a_dwarf5_line_strings_and_str_offsets() {
         m.dead(".debug_str", at, 7, DeadKind::Strings);
         expect(arch, "str_offsets entry", &base, &m, "P-I4", "live .debug_str_offsets entry");
     }
+}
+
+/// `map` with a line (`spec/plumb.md` §3.2a: every mortar map states its
+/// link's words, and mortar's reader refuses one without). A reference's
+/// map has none: these links gave none of the options §3.2a's rules read,
+/// so the map's input paths stand for the words.
+fn with_line(map: &Map) -> Map {
+    let mut m = map.clone();
+    if m.args.is_empty() {
+        m.args = m.paths().iter().map(|p| p.as_bytes().to_vec()).collect();
+        if m.args.is_empty() {
+            m.args.push(b"a.o".to_vec());
+        }
+    }
+    m
 }

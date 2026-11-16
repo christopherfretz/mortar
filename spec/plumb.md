@@ -324,10 +324,13 @@ nothing else: not from the caller, not from the output, not from a
 chunk that only exists because of the option. A reference linker's map
 has no line; for it the caller supplies the line (`xtask plumb --line`,
 the `--inputs-from` response file, or the link test's `ld` wrapper
-words) wherever a rule reads one, as the table says. A mortar map
-without `arg` records (one written before WP-102 by a static link) is
-read as before: the caller's statement, the chunk, or not judged, rule
-by rule (§5.10, §6.7, §6.10, §13.1).
+words) wherever a rule reads one, as the table says. A mortar map has
+at least one `arg` record (a link of no word is `no-input-files` and
+writes no map): a map without one, as a static link's map before WP-102,
+is malformed (§3.7), not judged without its options. For mortar's map
+nothing else is read for an option: not the caller's statement
+(`Map.fix_843419`, `Ctx.line`), not a chunk that exists because of the
+option.
 
 **Reading the words** is `spec/cli.md` §2's grammar, not restated: one
 or two dashes by §2.2's forms (a long name starting with `l`, `m` or `o`
@@ -580,7 +583,10 @@ Tests: `map::mold::tests::s3_6_mold_map_excerpt` and
 
 ### 3.7 Errors
 
-Each reader returns `Ok(Map)` or `Err(MapError)`. It never panics. No
+Each reader returns `Ok(Map)` or `Err(MapError)`. It never panics.
+Mortar's reader also refuses a map with no `arg` record (§3.2a: every
+mortar map states its line; one written before WP-102 by a static link
+has none). No
 input, however truncated or corrupted, leads to any other outcome (tests:
 `s3_7_truncations_are_answers`, `tests/hostile.rs s9_4_mutated_maps`).
 
@@ -1589,13 +1595,14 @@ outputs:
    relaxed `ADRP` is not a `W1`).
 3. **The sites** are a64.md §11.1's on the pre-fix words, both forms.
 4. **The option.** Mortar's map gives it: its line (§3.2a), the option
-   given or not. A map without `arg` records (written before WP-102),
-   and a reference's map, have the caller state it (`Map.fix_843419`:
+   given or not; the caller's statement is not read for it. A
+   reference's map has the caller state it (`Map.fix_843419`:
    `xtask plumb --fix-cortex-a53-843419`/`--no-fix-cortex-a53-843419`,
    or read from the `--inputs-from` response file); otherwise any fix
    found shows it was given, and a link with no fix leaves its sites not
    judged (coverage `erratum_not_judged`, and the coverage line says
-   which: the link without the option, or the option unknown).
+   which: the link without the option, or, for a reference, the option
+   unknown).
 
 The rules (ids C1-C6):
 
@@ -2263,8 +2270,8 @@ style as the line asks it (§3.2a; image.md I-69, the last of
 any other value not judged. The line decides, and two more clauses of
 B1 hold: the output has an `NT_GNU_BUILD_ID` note exactly when the line
 asks for one (absent, `--build-id=none` or `--no-build-id` last: none),
-and a style the build-id chunk states is the line's. Without `arg`
-records the chunk's style is read as above.
+and a style the build-id chunk states is the line's. The tree is the
+line's style's, never the chunk's alone.
 
 SHA-1 and SHA-256 are written from FIPS 180-4 and `L128` from I-114's
 text, in `src/buildid.rs`; none is shared with `mortar_digest`. The
@@ -2843,10 +2850,9 @@ writes adjacent ranges of a unit as one entry.
 
 **Mortar's rules.** The option is read from the map's line (§3.2a: the
 last of `--gdb-index` and `--no-gdb-index` wins; `-S`, `--strip-debug`,
-`-s`, `--strip-all` strip the debug information, S-G8). A map without
-`arg` records (written before WP-102) has the option taken from its
-chunk: a map with `chunk synthetic .gdb_index - <size>` says the link
-had the option and one without it says it did not. Which inputs are units, and their name
+`-s`, `--strip-all` strip the debug information, S-G8); the chunk
+`chunk synthetic .gdb_index - <size>` is the section's size, not the
+option. Which inputs are units, and their name
 sets, are read again from the inputs, by synth.md S-G2, S-G3a, S-G4a
 and S-G5, through the inputs' relocations (§4.4: a symbol's section and
 `st_value + addend`, REL's implicit addend) and the map's places.
@@ -4687,10 +4693,8 @@ stage 3 puts outside (P-D1) is still judged here.
   §2's forms: `--odr-table` and `--odr` take two dashes only):
   `--odr-table=V` and `--odr-table V` (the last wins, default `off`),
   `--odr=M` and `--odr M` (default `warn`), `--no-odr-check`
-  (`--odr=off`), `--keep-mason-meta`. A map without `arg` records
-  (written before WP-102) has the options **unknown**, and every rule
-  below that needs them is counted as not judged (`meta: options
-  unknown`); the rules that need no option still run.
+  (`--odr=off`), `--keep-mason-meta`. A reference's map has none of
+  them (none of mortar's options).
 - **The output kind.** A table is due (O-50, as implemented: WP-075)
   exactly when the output has a `PT_INTERP` (a dynamic executable, PIE
   or not), `--odr-table` is not `off` and `--odr` is not `off`, units
@@ -4750,8 +4754,7 @@ stage 3 puts outside (P-D1) is still judged here.
     0, `sh_addralign` 8, and its bytes must equal MT-32's: the units that
     parse, in the order above, each followed by zeros to a multiple of 8.
     It is present exactly when `--keep-mason-meta` was given and at least
-    one unit parses (options unknown: present only when one parses; the
-    option is not judged). An **ordinary copy** is a `.mason.meta` that
+    one unit parses. An **ordinary copy** is a `.mason.meta` that
     the map fills only from placed input sections that are not containers
     (encoding K, `spec/meta.md` §2: an input `.mason.meta` without
     `SHF_EXCLUDE`): legal without the option, and with it when no live
