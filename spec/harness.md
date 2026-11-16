@@ -930,8 +930,8 @@ step's own expectations have passed. This applies to every linker,
 mortar included (`docs/VALIDATION.md` layer L3).
 
 - **The map.** If the link line names one already (`-Map=X`, `-Map X`,
-  `--Map=X`, `-Wl,-Map=X`, `-Wl,-Map,X`), that map is used. Otherwise the
-  harness adds `-Map=.linktest-plumb-<line>.map` to a `link ld` step, or
+  `--Map=X`, `-Wl,-Map=X`, `-Wl,-Map,X`; for mortar, its `--mortar-map`
+  in the same forms, WP-112), that map is used. Otherwise the harness adds `-Map=.linktest-plumb-<line>.map` to a `link ld` step, or
   `-Wl,-Map=.linktest-plumb-<line>.map` to a driver step, in the linker's
   directory. All four linkers take `-Map=`: mortar must accept it and
   write its own format (`spec/plumb.md` §3.2). The format is the

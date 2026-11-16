@@ -522,6 +522,14 @@ pub fn not_judged(bytes: &[u8]) -> Option<&'static str> {
 /// The map file a link line writes already (`-Map=X`, `-Map X`,
 /// `-Wl,-Map=X`, `-Wl,-Map,X`, and the same with `--Map`).
 pub fn map_option(args: &[String]) -> Option<String> {
+    map_option_named(args, "Map")
+}
+
+/// The file a link line gives the map option `name` (`Map`, or mortar's
+/// `mortar-map`), in the forms of [`map_option`] (WP-112: a test that
+/// writes `--mortar-map` keeps its file, and L3 reads that one).
+pub fn map_option_named(args: &[String], name: &str) -> Option<String> {
+    let (dashed, eq_dashed, eq) = (format!("-{name}"), format!("-{name}="), format!("{name}="));
     let mut found = None;
     let mut next_is_map = false;
     for arg in args {
@@ -537,9 +545,11 @@ pub fn map_option(args: &[String]) -> Option<String> {
         let mut words = words.into_iter();
         while let Some(word) = words.next() {
             let word = word.strip_prefix('-').unwrap_or(word);
-            if let Some(file) = word.strip_prefix("-Map=").or_else(|| word.strip_prefix("Map=")) {
+            if let Some(file) =
+                word.strip_prefix(eq_dashed.as_str()).or_else(|| word.strip_prefix(eq.as_str()))
+            {
                 found = Some(file.to_owned());
-            } else if word == "-Map" || word == "Map" {
+            } else if word == dashed || word == name {
                 match words.next() {
                     Some(file) => found = Some(file.to_owned()),
                     None => next_is_map = !arg.starts_with("-Wl,"),
@@ -1124,7 +1134,10 @@ impl Unit<'_> {
         let map_file = if link.fails || link.informs || !(self.matrix.plumb || self.matrix.digest)
         {
             None
-        } else if let Some(map) = map_option(&args).filter(|_| linker != Linker::Mortar) {
+        } else if let Some(map) = match linker {
+            Linker::Mortar => map_option_named(&args, "mortar-map"),
+            _ => map_option(&args),
+        } {
             Some(dir.join(map))
         } else {
             let name = format!(".linktest-plumb-{}.map", step.line);
@@ -2275,6 +2288,11 @@ mod tests {
     #[test]
     fn the_map_of_a_link_line() {
         let map = |args: &[&str]| map_option(&strings(args));
+        let mortar = |args: &[&str]| super::map_option_named(&strings(args), "mortar-map");
+        assert_eq!(mortar(&["a.o", "--mortar-map=m.map"]), Some("m.map".to_owned()));
+        assert_eq!(mortar(&["-Wl,--mortar-map,m.map"]), Some("m.map".to_owned()));
+        assert_eq!(mortar(&["--mortar-map", "m.map", "-Map=x.map"]), Some("m.map".to_owned()));
+        assert_eq!(mortar(&["-Map=x.map"]), None);
         assert_eq!(map(&["a.o", "-o", "p"]), None);
         assert_eq!(map(&["-Map=p.map", "a.o"]).as_deref(), Some("p.map"));
         assert_eq!(map(&["-Map", "p.map"]).as_deref(), Some("p.map"));

@@ -1,0 +1,59 @@
+# `--no-odr-check` and `--odr-stats` (mortar's; spec/cli.md §3.9,
+# spec/odr.md O-41):
+# - `--no-odr-check` is `--odr=off`: the program of k5-vtable-size.test
+#   (a class with different virtual functions in a.o and b.o), which
+#   mortar reports by default (`odr-size-mismatch`, a warning), links
+#   with no diagnostic and runs. The check never changes the output, so
+#   the bytes are those of the default link (checked by hand; that link
+#   is not made here, because its warning would fail this test, which
+#   names no `diag`).
+# - `--odr-stats` prints one line of statistics on standard error, with
+#   the mode (`off` under `--no-odr-check`, `warn` by default) and the
+#   findings (none on the legal program main.o a.o).
+# The references know neither option and link the line plainly.
+#@ spec: odr.md "§8.1"
+#@ requires: g++
+
+cxx -O0 a.cc -o a.o
+cxx -O0 b.cc -o b.o
+cxx -O0 main.cc -o main.o
+cxx -O0 main-a.cc -o main-a.o
+link(bfd,lld,mold) g++ -static main.o a.o b.o -o prog
+link(mortar) g++ -static main.o a.o b.o -Wl,--no-odr-check -o prog
+  no-diag: odr
+run prog
+  stdout: 1 1
+link(mortar) g++ -static main.o a.o b.o -Wl,--no-odr-check -Wl,--odr-stats -o prog2
+  diag: ^*: odr-stats: mode off; 
+  no-diag: different sizes
+link(mortar) g++ -static main-a.o a.o -Wl,--odr-stats -o legal
+  diag: ^*: odr-stats: mode warn; 
+  diag: findings W1 0, W2 0, W3 0, W4 0;
+link(bfd,lld,mold) g++ -static main-a.o a.o -o legal
+run legal
+  stdout: 1
+check(mortar) cmp prog2 prog
+  has: ^identical$
+
+#--- a.cc
+struct B {
+  virtual int f() { return 1; }
+  virtual int g() { return 2; }
+  virtual ~B() {}
+};
+int from_a() { B b; B* p = &b; return p->f(); }
+#--- b.cc
+struct B {
+  virtual int f() { return 1; }
+  virtual ~B() {}
+};
+int from_b() { B b; B* p = &b; return p->f(); }
+#--- main.cc
+#include <cstdio>
+int from_a();
+int from_b();
+int main() { std::printf("%d %d\n", from_a(), from_b()); }
+#--- main-a.cc
+#include <cstdio>
+int from_a();
+int main() { std::printf("%d\n", from_a()); }
