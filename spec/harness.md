@@ -80,11 +80,13 @@ the verifier; a static-pie's sections are swept 256 bytes at each end.
 The cases are a C PIE (lazy and `-z now`), a C `-no-pie`, a C++ PIE and
 a C static-pie. Any exit status but 0 fails it: a finding on the
 unmutated output, a panic of the verifier on a mutant, or a byte no flip
-makes a new finding for (a survivor; mortar's outputs have none). With
-`--quick` it runs the host's architecture (AArch64 when the host is
-neither 64-bit one) and the cases `pie.lazy` and `nopie`; the
-full gate runs every case on AArch64 and x86-64. Each sweep thread holds
-a jobserver token (at most 4, `--threads`).
+makes a new finding for (a survivor; mortar's outputs have none). It
+runs on the host's architecture (AArch64 when the host is neither 64-bit
+one; `cargo xtask sweep --arch aarch64,x86_64` for both), so the two
+hosted lanes cover both targets. With `--quick` it runs the cases
+`pie.lazy` and `nopie` (about 30 s); the full gate runs every case
+(about 4 minutes a target with the debug `xtask`, measured by WP-088).
+Each sweep thread holds a jobserver token (at most 4, `--threads`).
 
 `static-identical` is run in-process after `sweep`, with or without
 `--quick`, on every architecture ("static-identical"); any failure fails

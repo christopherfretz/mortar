@@ -12,9 +12,11 @@
 //! survives: no flip of it makes a new finding. Mortar's outputs have no
 //! survivor (measured by WP-088 on both targets); one is a gap of the
 //! verifier to close, or a byte to explain in §12.3 and name here.
-//! `--quick` is what `cargo xtask ci --quick` runs: the host's
-//! architecture, [`QUICK_CASES`]; the full lane runs every case on
-//! AArch64 and x86-64.
+//! The architecture is the host's (AArch64 when the host is neither
+//! 64-bit one) unless `--arch` names others: each hosted lane sweeps its
+//! own, so the full gate's two lanes cover both targets. `--quick` is
+//! what `cargo xtask ci --quick` runs: [`QUICK_CASES`]; the full lane
+//! runs every case.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -123,14 +125,13 @@ pub fn main(args: &[String]) -> u8 {
     }
 }
 
-/// The architectures of a run: those asked, else the host's for
-/// `--quick` (AArch64 when the host is none of the two), else both.
+/// The architectures of a run: those asked, else the host's (AArch64
+/// when the host is none of the two 64-bit ones).
 fn arches(a: &Args, host: Option<Arch>) -> Vec<Arch> {
     if !a.arches.is_empty() {
         return a.arches.clone();
     }
     match host {
-        _ if !a.quick => vec![Arch::Aarch64, Arch::X86_64],
         Some(h @ (Arch::Aarch64 | Arch::X86_64)) => vec![h],
         _ => vec![Arch::Aarch64],
     }
@@ -276,13 +277,15 @@ mod tests {
         assert!(Args::parse(&["--bogus".into()]).is_err());
     }
 
-    // `--quick` is the host's architecture; the full lane both 64-bit ones.
+    // The host's architecture unless `--arch` names others.
     #[test]
     fn architectures() {
         let quick = Args { quick: true, ..Args::default() };
         assert_eq!(arches(&quick, Some(Arch::X86_64)), [Arch::X86_64]);
         assert_eq!(arches(&quick, Some(Arch::I386)), [Arch::Aarch64]);
-        assert_eq!(arches(&Args::default(), Some(Arch::X86_64)), [Arch::Aarch64, Arch::X86_64]);
+        assert_eq!(arches(&Args::default(), Some(Arch::Aarch64)), [Arch::Aarch64]);
+        let both = Args { arches: vec![Arch::Aarch64, Arch::X86_64], ..Args::default() };
+        assert_eq!(arches(&both, None), [Arch::Aarch64, Arch::X86_64]);
     }
 
     #[test]
