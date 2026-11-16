@@ -6,6 +6,7 @@
 //! `-Map=/dev/stdout` keep working (I-58, I-58a, I-79a).
 
 use std::ffi::OsString;
+use std::os::unix::fs::FileTypeExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -237,7 +238,6 @@ fn dev_null_and_dev_stdout_keep_working() {
         "--mortar-map=/dev/null",
     ]);
     assert!(o.success(), "{}", o.stderr_text());
-    use std::os::unix::fs::FileTypeExt as _;
     assert!(std::fs::metadata("/dev/null").unwrap().file_type().is_char_device());
     // Standard output is a pipe here (run_with).
     let o = fx.mortar(&["a.o", "libb.a", "-o", "out", "-Map=/dev/stdout"]);
