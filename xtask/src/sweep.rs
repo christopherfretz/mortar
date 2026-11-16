@@ -46,20 +46,77 @@ struct Case {
     /// their two ends only (every byte of them is one of a few fields
     /// repeated: 537 s on AArch64 for the whole, measured).
     window: u64,
+    /// A test-producer description (`cargo xtask meta`) added to the
+    /// object as its `.mason.meta`; the case then compiles `odr.c`
+    /// (stage 4, `spec/plumb.md` §13; WP-078).
+    meta: Option<&'static str>,
 }
 
+/// The source of the stage-4 cases: an exported and a hidden definition.
+const ODR_C: &str = "#include <stdio.h>\n\
+                     __attribute__((visibility(\"hidden\"))) int helper(void){return puts(\"hello\");}\n\
+                     int main(void){return helper() < 0;}\n";
+
+/// Their units: both definitions vague (O-15 bit 0), `helper` also
+/// `SYSTEM` (bit 8), and two types.
+const ODR_META: &str = "summary name=lang value=c++\n\
+    definition anchor=main hash=0123456789abcdef0123456789abcdef class=1 flags=1\n\
+    definition anchor=helper hash=fedcba9876543210fedcba9876543210 class=1 flags=0x101\n\
+    type name=1S hash=00112233445566778899aabbccddeeff layout=0x55 size=8 align=4 flags=0\n\
+    type name=1T hash=ffeeddccbbaa99887766554433221100 layout=0x66 size=16 align=8 flags=1\n";
+
 const CASES: &[Case] = &[
-    Case { name: "pie.lazy", cxx: false, compile: &["-fPIE"], link: &["-pie"], window: 0 },
+    Case {
+        name: "pie.lazy",
+        cxx: false,
+        compile: &["-fPIE"],
+        link: &["-pie"],
+        window: 0,
+        meta: None,
+    },
     Case {
         name: "pie.now",
         cxx: false,
         compile: &["-fPIE"],
         link: &["-pie", "-Wl,-z,now"],
         window: 0,
+        meta: None,
     },
-    Case { name: "nopie", cxx: false, compile: &["-fno-PIE"], link: &["-no-pie"], window: 0 },
-    Case { name: "cxx", cxx: true, compile: &["-fPIE"], link: &["-pie"], window: 0 },
-    Case { name: "spie", cxx: false, compile: &["-fPIE"], link: &["-static-pie"], window: 256 },
+    // Stage 4: a table (`=exported`, `main` exported by `-rdynamic`), and
+    // `=full` with the kept container (`helper` a hidden definition row).
+    Case {
+        name: "table",
+        cxx: false,
+        compile: &["-fPIE"],
+        link: &["-pie", "-rdynamic", "-Wl,--odr-table=exported"],
+        window: 0,
+        meta: Some(ODR_META),
+    },
+    Case {
+        name: "table.full",
+        cxx: false,
+        compile: &["-fPIE"],
+        link: &["-pie", "-rdynamic", "-Wl,--odr-table=full", "-Wl,--keep-mason-meta"],
+        window: 0,
+        meta: Some(ODR_META),
+    },
+    Case {
+        name: "nopie",
+        cxx: false,
+        compile: &["-fno-PIE"],
+        link: &["-no-pie"],
+        window: 0,
+        meta: None,
+    },
+    Case { name: "cxx", cxx: true, compile: &["-fPIE"], link: &["-pie"], window: 0, meta: None },
+    Case {
+        name: "spie",
+        cxx: false,
+        compile: &["-fPIE"],
+        link: &["-static-pie"],
+        window: 256,
+        meta: None,
+    },
 ];
 
 /// The cases of `--quick`.
@@ -155,6 +212,7 @@ fn run_lane(a: &Args) -> Result<bool, String> {
         std::os::unix::fs::symlink(&mortar, &ld).map_err(|e| format!("{}: {e}", ld.display()))?;
         std::fs::write(work.join("hello.c"), HELLO_C).map_err(|e| e.to_string())?;
         std::fs::write(work.join("hello.cc"), HELLO_CXX).map_err(|e| e.to_string())?;
+        std::fs::write(work.join("odr.c"), ODR_C).map_err(|e| e.to_string())?;
         for case in CASES.iter().filter(|c| !a.quick || QUICK_CASES.contains(&c.name)) {
             let id = format!("{}/{}", arch.name(), case.name);
             let t = Instant::now();
@@ -201,7 +259,11 @@ fn sweep_case(
     let driver_name = arch.gnu_tool(host, if case.cxx { "g++" } else { "gcc" });
     let driver: PathBuf = mortar_testutil::find_listed_tool(&driver_name)
         .ok_or_else(|| format!("`{driver_name}` not found"))?;
-    let source = if case.cxx { "hello.cc" } else { "hello.c" };
+    let source = match (case.cxx, case.meta) {
+        (_, Some(_)) => "odr.c",
+        (true, None) => "hello.cc",
+        (false, None) => "hello.c",
+    };
     let object = format!("{}.o", case.name);
     let output = case.name.to_owned();
     let map = format!("{}.map", case.name);
@@ -209,6 +271,13 @@ fn sweep_case(
     compile.extend(case.compile.iter().map(|s| (*s).to_owned()));
     compile.extend([source.to_owned(), "-o".into(), object.clone()]);
     tool(&driver, &compile, work)?;
+    if let Some(desc) = case.meta {
+        let sections = crate::meta::parse(desc)?;
+        let plain = work.join(&object);
+        let with = work.join(format!("{}.meta.o", case.name));
+        crate::meta::add_to(&sections[0], &plain, &with)?;
+        std::fs::rename(&with, &plain).map_err(|e| format!("{}: {e}", plain.display()))?;
+    }
     let mut link: Vec<String> = vec![format!("-B{}/", bin.display())];
     link.extend(case.link.iter().map(|s| (*s).to_owned()));
     link.extend([object, "-o".into(), output.clone(), format!("-Wl,--mortar-map={map}")]);

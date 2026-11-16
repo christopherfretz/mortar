@@ -37,6 +37,9 @@ pub const SECTIONS: &[&str] = &[
     ".dynamic",
     ".got",
     ".got.plt",
+    // Stage 4 (§13; WP-078): the ODR table and the kept container.
+    ".note.mason",
+    ".mason.meta",
 ];
 
 /// The bits each byte is flipped by, one mutant each.
@@ -316,8 +319,57 @@ fn field(
             }
         }
         ".eh_frame" => at("PLT record"),
+        ".note.mason" => note_field(image.bytes(addr, size).unwrap_or(&[]), off),
+        ".mason.meta" => at("unit bytes"),
         _ => at("?"),
     }
+}
+
+/// The field of `.note.mason` (spec/odr.md O-51, O-52) holding byte `off`.
+fn note_field(b: &[u8], off: u64) -> (String, String) {
+    let rd = |o: usize| b.get(o..o + 4).map_or(0, |x| u32::from_le_bytes([x[0], x[1], x[2], x[3]]));
+    let mut at = 0usize;
+    let off = off as usize;
+    while at + 24 <= b.len() {
+        let (desc, ty) = (rd(at + 4) as usize, rd(at + 8));
+        let d = at + 24;
+        let next = d + desc.div_ceil(8) * 8;
+        if off < at + 12 {
+            return (
+                ["n_namesz", "n_descsz", "n_type"][(off - at) / 4].into(),
+                format!("note {ty:#x}"),
+            );
+        }
+        if off < d {
+            return ("owner".into(), format!("note {ty:#x}"));
+        }
+        if off < next {
+            let o = off - d;
+            if o < 16 {
+                return (format!("header word {}", o / 4), format!("note {ty:#x}"));
+            }
+            let (size, fields): (usize, &[(usize, &str)]) = if ty == 0x4d4f_4402 {
+                (
+                    32,
+                    &[
+                        (8, "key"),
+                        (16, "hash"),
+                        (24, "layout"),
+                        (28, "size"),
+                        (30, "align"),
+                        (32, "flags"),
+                    ],
+                )
+            } else {
+                (24, &[(8, "key"), (16, "hash"), (20, "dynsym"), (22, "flags"), (24, "reserved")])
+            };
+            let (row, f) = ((o - 16) / size, (o - 16) % size);
+            let name = fields.iter().find(|(end, _)| f < *end).map_or("?", |x| x.1);
+            return (format!("row {name}"), format!("note {ty:#x} row {row}"));
+        }
+        at = next;
+    }
+    ("?".into(), String::new())
 }
 
 fn rel_name(machine: u16, ty: u32) -> String {
@@ -382,7 +434,12 @@ pub fn run(
                 continue;
             }
             let (addr, size) = (s.shdr.sh_addr, s.shdr.sh_size);
-            let Some(data) = image.bytes(addr, size) else { continue };
+            let data = if s.alloc() {
+                image.bytes(addr, size)
+            } else {
+                image.data.get(s.shdr.sh_offset as usize..(s.shdr.sh_offset + size) as usize)
+            };
+            let Some(data) = data else { continue };
             let file = s.shdr.sh_offset as usize;
             let ranges: Vec<(u64, u64)> = if name == ".eh_frame" {
                 plt_eh_ranges(&image, addr, data)
