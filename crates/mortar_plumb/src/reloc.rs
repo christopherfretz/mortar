@@ -208,7 +208,7 @@ struct Rec {
     patched: bool,
 }
 
-/// A record waiting for its group (GOT slot or mergeable piece).
+/// A record waiting for its GOT group (§5.5).
 #[derive(Debug, Clone)]
 struct Pending {
     rec: Rec,
@@ -216,12 +216,6 @@ struct Pending {
     symbol: String,
     /// What the GOT entry of a GOT-indirect record holds.
     want: Want,
-    /// The record is half of an ADRP+ADD made NOP+ADR (merge path).
-    w1: bool,
-    /// The place is in an allocated section (merge path: only a loaded
-    /// word is an address word of stage 3's view 2; a `.debug_*` place's
-    /// address overlaps the image's).
-    loaded: bool,
 }
 
 /// What a GOT entry must hold (§5.5, §4.7).
@@ -266,20 +260,57 @@ struct Group {
 }
 
 impl Group {
-    /// The addresses the members' evidence allows, in order, without
-    /// duplicates: every exact value, then every page with every low part.
-    fn candidates(&self) -> Vec<u64> {
-        self.candidates_from(None)
-    }
-
     /// As [`Group::candidates`], with the GOT base for MOVW evidence.
     fn candidates_from(&self, got: Option<u64>) -> Vec<u64> {
+        candidates_of(self.members.iter().map(|(_, e)| e), got)
+    }
+
+    /// Whether the evidence is one-sided: pages with no low part or the
+    /// reverse, and no exact value.
+    fn unpaired(&self) -> bool {
+        let has = |f: fn(&Evidence) -> bool| self.members.iter().any(|(_, e)| f(e));
+        !has(|e| matches!(e, Evidence::Exact(_)))
+            && (has(|e| matches!(e, Evidence::Page(_))) != has(|e| matches!(e, Evidence::Low(_)))
+                || has(|e| matches!(e, Evidence::MovHi(_)))
+                    != has(|e| matches!(e, Evidence::MovLo(_))))
+    }
+}
+
+/// A reference to a mergeable piece waiting for its group (§5.6): the
+/// record and where it is, its site and symbol made again only for a
+/// finding (WP-109: a [`Pending`] with its `Site` and name was some
+/// 350 B a reference, and a `-g` link has tens of millions).
+#[derive(Debug, Clone)]
+struct PieceRef {
+    rec: Rec,
+    /// The referring object and section.
+    oi: u32,
+    si: u32,
+    /// The record is half of an ADRP+ADD made NOP+ADR.
+    w1: bool,
+    /// The place is in an allocated section: only a loaded word is an
+    /// address word of stage 3's view 2; a `.debug_*` place's address
+    /// overlaps the image's.
+    loaded: bool,
+    ev: Evidence,
+}
+
+/// The references to one piece (§5.6).
+#[derive(Debug, Default)]
+struct PieceGroup {
+    members: Vec<PieceRef>,
+}
+
+/// The addresses evidence allows, in order, without duplicates: every
+/// exact value, then every page with every low part ([`Group`]'s).
+fn candidates_of<'e>(evidence: impl Iterator<Item = &'e Evidence>, got: Option<u64>) -> Vec<u64> {
+    {
         let mut v: Vec<u64> = Vec::new();
         let mut pages: Vec<u64> = Vec::new();
         let mut lows: Vec<u64> = Vec::new();
         let mut highs: Vec<u64> = Vec::new();
         let mut movk: Vec<u64> = Vec::new();
-        for (_, e) in &self.members {
+        for e in evidence {
             match *e {
                 Evidence::Exact(x) => v.push(x),
                 Evidence::Page(x) => pages.push(x),
@@ -309,16 +340,26 @@ impl Group {
         v.retain(|x| seen.insert(*x));
         v
     }
+}
 
-    /// Whether the evidence is one-sided: pages with no low part or the
-    /// reverse, and no exact value.
-    fn unpaired(&self) -> bool {
-        let has = |f: fn(&Evidence) -> bool| self.members.iter().any(|(_, e)| f(e));
-        !has(|e| matches!(e, Evidence::Exact(_)))
-            && (has(|e| matches!(e, Evidence::Page(_))) != has(|e| matches!(e, Evidence::Low(_)))
-                || has(|e| matches!(e, Evidence::MovHi(_)))
-                    != has(|e| matches!(e, Evidence::MovLo(_))))
+/// The mergeable sections that hold a definition other objects can name
+/// (global, weak or unique binding), as `(object, section)` (WP-109).
+fn shared_merge(objs: &[Obj<'_>]) -> std::collections::HashSet<(usize, usize)> {
+    let mut out = std::collections::HashSet::new();
+    for (oi, o) in objs.iter().enumerate() {
+        let Some(t) = o.symtab else { continue };
+        for (i, sym) in t.iter() {
+            if sym.binding() == mortar_elf::consts::STB_LOCAL {
+                continue;
+            }
+            if let Ok(SymbolSection::Section(k)) = t.section_of(i, &sym)
+                && o.secs.get(k.0 as usize).is_some_and(crate::locate::Sec::merge)
+            {
+                out.insert((oi, k.0 as usize));
+            }
+        }
     }
+    out
 }
 
 /// The verdict on one record (§5.2).
@@ -465,7 +506,17 @@ pub(crate) struct Engine<'a, 'b> {
     /// Output words a specified rewriting changed that no relocation
     /// record covers (W12's last word): S12 accepts them (§6.2).
     pub(crate) rewritten_words: std::collections::BTreeSet<u64>,
-    piece_groups: BTreeMap<(usize, usize, u64, i64), Group>,
+    piece_groups: BTreeMap<(usize, usize, u64, i64), PieceGroup>,
+    /// The mergeable sections `(object, section)` that hold a global,
+    /// weak or unique definition: other objects may refer to their
+    /// pieces. A piece of any other mergeable section is named only by
+    /// its own object's records, so its group is decided once that
+    /// object's sections are judged (WP-109), not at the end.
+    shared_merge: std::collections::HashSet<(usize, usize)>,
+    /// The object [`Engine::section`] last judged a section of, and
+    /// whether every call so far was in object order.
+    pieces_last: Option<usize>,
+    pieces_early: bool,
     /// Allocated input `.eh_frame` sections, checked by record (§6.4).
     eh_sections: Vec<(usize, usize)>,
     /// The output's IRELATIVE records and IPLT entries (§4.8).
@@ -535,7 +586,8 @@ impl<'a, 'b> Engine<'a, 'b> {
         g("got groups", self.got_groups.len(), 64);
         g("got group members", members(&self.got_groups), size_of::<(Pending, Evidence)>());
         g("piece groups", self.piece_groups.len(), 64);
-        g("piece group members", members(&self.piece_groups), size_of::<(Pending, Evidence)>());
+        let pieces = self.piece_groups.values().map(|g| g.members.capacity()).sum();
+        g("piece group members", pieces, size_of::<PieceRef>());
         g("rewritten words", self.rewritten_words.len(), 16);
         g("abs words", self.abs_words.capacity(), size_of::<(u64, u8, u64, bool)>());
         g("got demands", self.got_demands.len(), 16);
@@ -716,6 +768,9 @@ impl<'a, 'b> Engine<'a, 'b> {
             got_groups: BTreeMap::new(),
             rewritten_words: std::collections::BTreeSet::new(),
             piece_groups: BTreeMap::new(),
+            shared_merge: shared_merge(objs),
+            pieces_last: None,
+            pieces_early: true,
             eh_sections: Vec::new(),
             iplt: ifunc::Iplt::default(),
             ifunc_groups: BTreeMap::new(),
@@ -1124,6 +1179,17 @@ impl<'a, 'b> Engine<'a, 'b> {
     /// Checks every record of section `si` of object `oi` (§5).
     #[allow(clippy::too_many_lines, clippy::many_single_char_names)] // §5.1, step by step
     pub fn section(&mut self, oi: usize, si: usize) {
+        // The previous object's own piece groups are complete (WP-109).
+        // Objects are judged in index order; any other order leaves
+        // every group to `finish_pieces`.
+        match self.pieces_last {
+            Some(last) if last < oi && self.pieces_early => self.finish_pieces_of(last),
+            Some(last) if last > oi => self.pieces_early = false,
+            _ => {}
+        }
+        if self.pieces_last.is_none_or(|last| last < oi) {
+            self.pieces_last = Some(oi);
+        }
         let objs = self.objs;
         let o = &objs[oi];
         let s = &o.secs[si];
@@ -1412,9 +1478,9 @@ impl<'a, 'b> Engine<'a, 'b> {
                     value,
                     section_sym,
                     rec,
-                    site,
-                    symbol,
-                    self.objs[oi].secs[si].alloc(),
+                    &site,
+                    &symbol,
+                    (oi, si),
                     &partner,
                 );
             }
@@ -1441,14 +1507,7 @@ impl<'a, 'b> Engine<'a, 'b> {
             let Some(ev) = self.slot_evidence(rec) else {
                 return self.not_checked(Reason::SymbolUnresolved, 1);
             };
-            let pend = Pending {
-                rec: rec.clone(),
-                site,
-                symbol,
-                want: Want::Word(sa),
-                w1: false,
-                loaded: false,
-            };
+            let pend = Pending { rec: rec.clone(), site, symbol, want: Want::Word(sa) };
             self.got_groups
                 .entry((slot, oi, rec.sym, rec.addend))
                 .or_default()
@@ -1742,7 +1801,7 @@ impl<'a, 'b> Engine<'a, 'b> {
         let Some(ev) = self.slot_evidence(rec) else {
             return self.not_checked(Reason::SymbolUnresolved, 1);
         };
-        let pend = Pending { rec: rec.clone(), site, symbol, want, w1: false, loaded: false };
+        let pend = Pending { rec: rec.clone(), site, symbol, want };
         self.got_groups
             .entry((slot, oi, rec.sym, rec.addend))
             .or_default()
@@ -2118,11 +2177,12 @@ impl<'a, 'b> Engine<'a, 'b> {
         value: u64,
         section_sym: bool,
         rec: &Rec,
-        site: Site,
-        symbol: String,
-        loaded: bool,
+        site: &Site,
+        symbol: &str,
+        from: (usize, usize),
         partner: &dyn Fn(i64, &[u32]) -> Option<&'r Rec>,
     ) {
+        let loaded = self.objs[from.0].secs[from.1].alloc();
         let (r, extra) = if section_sym {
             (value.wrapping_add(rec.addend as u64), 0)
         } else {
@@ -2138,8 +2198,8 @@ impl<'a, 'b> Engine<'a, 'b> {
             let f = Self::finding(
                 Rule::MergePiece,
                 rec,
-                &site,
-                &symbol,
+                site,
+                symbol,
                 "a section-symbol reference outside its mergeable section (spec/synth.md S-18 refuses it)",
             );
             return self.fail(f);
@@ -2178,8 +2238,8 @@ impl<'a, 'b> Engine<'a, 'b> {
                         let f = Self::finding(
                             Rule::Field,
                             rec,
-                            &site,
-                            &symbol,
+                            site,
+                            symbol,
                             "the ADRP is a NOP but the ADD after it is not the ADR of its register (W1)",
                         );
                         return self.fail(f);
@@ -2198,8 +2258,9 @@ impl<'a, 'b> Engine<'a, 'b> {
             }
             _ => Evidence::None,
         };
-        let pend = Pending { rec: rec.clone(), site, symbol, want: Want::Word(0), w1, loaded };
-        self.piece_groups.entry((oi, sec, r, extra)).or_default().members.push((pend, ev));
+        let (oi_from, si_from) = (from.0 as u32, from.1 as u32);
+        let member = PieceRef { rec: rec.clone(), oi: oi_from, si: si_from, w1, loaded, ev };
+        self.piece_groups.entry((oi, sec, r, extra)).or_default().members.push(member);
     }
 
     /// Records what a GOT slot of `want` holds ([`Self::got_demands`]).
@@ -2305,77 +2366,107 @@ impl<'a, 'b> Engine<'a, 'b> {
         }
     }
 
-    /// Decides the mergeable-piece groups (§5.6).
+    /// Decides the mergeable-piece groups (§5.6) not decided yet.
     pub fn finish_pieces(&mut self) {
         let groups = std::mem::take(&mut self.piece_groups);
-        for ((oi, sec, r, extra), g) in groups {
-            let cands = g.candidates();
-            if cands.is_empty() {
-                self.not_checked(Reason::PieceNotLocatable, g.members.len() as u64);
+        for (key, g) in groups {
+            self.decide_pieces(key, &g);
+        }
+    }
+
+    /// Decides the groups of object `oi`'s own mergeable sections, which
+    /// no later object's record can name (WP-109), in key order.
+    fn finish_pieces_of(&mut self, oi: usize) {
+        let lo = (oi, 0, 0, i64::MIN);
+        let hi = (oi, usize::MAX, u64::MAX, i64::MAX);
+        let keys: Vec<_> = self
+            .piece_groups
+            .range(lo..=hi)
+            .map(|(k, _)| *k)
+            .filter(|k| !self.shared_merge.contains(&(k.0, k.1)))
+            .collect();
+        for key in keys {
+            if let Some(g) = self.piece_groups.remove(&key) {
+                self.decide_pieces(key, &g);
+            }
+        }
+    }
+
+    /// Decides one piece group: the references to offset `r` of mergeable
+    /// section `sec` of object `oi` (§5.6).
+    fn decide_pieces(&mut self, (oi, sec, r, extra): (usize, usize, u64, i64), g: &PieceGroup) {
+        let cands = candidates_of(g.members.iter().map(|m| &m.ev), None);
+        if cands.is_empty() {
+            self.not_checked(Reason::PieceNotLocatable, g.members.len() as u64);
+            return;
+        }
+        let valid: Vec<u64> = cands
+            .iter()
+            .copied()
+            .filter(|&v| self.piece_matches(oi, sec, r, v.wrapping_sub(extra as u64)))
+            .collect();
+        for m in &g.members {
+            let rec = &m.rec;
+            let at = |e: &Self| {
+                let (from, fsi) = (m.oi as usize, m.si as usize);
+                (e.objs[from].site(fsi, rec.off), e.sym_name(from, rec.sym))
+            };
+            if valid.is_empty() {
+                let (site, symbol) = at(self);
+                let mut f = Self::finding(
+                    Rule::MergePiece,
+                    rec,
+                    &site,
+                    &symbol,
+                    format!(
+                        "the reference to offset {r:#x} of mergeable section '{}' reaches other bytes",
+                        self.objs[oi].secs[sec].name
+                    ),
+                );
+                f.found = cands.first().copied();
+                self.fail(f);
                 continue;
             }
-            let valid: Vec<u64> = cands
-                .iter()
-                .copied()
-                .filter(|&v| self.piece_matches(oi, sec, r, v.wrapping_sub(extra as u64)))
-                .collect();
-            for (pend, _) in &g.members {
-                let rec = &pend.rec;
-                if valid.is_empty() {
-                    let mut f = Self::finding(
-                        Rule::MergePiece,
-                        rec,
-                        &pend.site,
-                        &pend.symbol,
-                        format!(
-                            "the reference to offset {r:#x} of mergeable section '{}' reaches other bytes",
-                            self.objs[oi].secs[sec].name
-                        ),
-                    );
-                    f.found = cands.first().copied();
-                    self.fail(f);
+            if m.w1 {
+                // The NOP of a NOP+ADR, or the ADR itself: the ADR's
+                // target is the piece.
+                let ok = rec.out_word as u32 == a64::NOP
+                    || a64::adr(rec.out_word as u32, rec.p)
+                        .is_some_and(|(_, t)| valid.contains(&t));
+                if ok {
+                    self.cov.add_accepted(Rewrite::AdrpAddToAdr, rec.def.r_type);
                     continue;
                 }
-                if pend.w1 {
-                    // The NOP of a NOP+ADR, or the ADR itself: the ADR's
-                    // target is the piece.
-                    let ok = rec.out_word as u32 == a64::NOP
-                        || a64::adr(rec.out_word as u32, rec.p)
-                            .is_some_and(|(_, t)| valid.contains(&t));
-                    if ok {
-                        self.cov.add_accepted(Rewrite::AdrpAddToAdr, rec.def.r_type);
-                        continue;
-                    }
-                }
-                let mut last = None;
-                let mut ok = None;
-                for &v in &valid {
-                    let Some(x) = x_direct(rec.def.op, v, rec.p, self.got) else { continue };
-                    match judge(rec, x) {
-                        Verdict::Ok(rw) => {
-                            ok = Some(rw);
-                            // Stage 3's view 2: an absolute word naming a
-                            // piece moves with the executable.
-                            let w = rec.def.field.width();
-                            if rec.def.op == Op::Abs
-                                && matches!(rec.def.field, Field::Data(4 | 8))
-                                && pend.loaded
-                                && self.image.load_of(rec.p, u64::from(w)).is_some()
-                            {
-                                self.abs_words.push((rec.p, w, v, true));
-                            }
-                            break;
+            }
+            let mut last = None;
+            let mut ok = None;
+            for &v in &valid {
+                let Some(x) = x_direct(rec.def.op, v, rec.p, self.got) else { continue };
+                match judge(rec, x) {
+                    Verdict::Ok(rw) => {
+                        ok = Some(rw);
+                        // Stage 3's view 2: an absolute word naming a
+                        // piece moves with the executable.
+                        let w = rec.def.field.width();
+                        if rec.def.op == Op::Abs
+                            && matches!(rec.def.field, Field::Data(4 | 8))
+                            && m.loaded
+                            && self.image.load_of(rec.p, u64::from(w)).is_some()
+                        {
+                            self.abs_words.push((rec.p, w, v, true));
                         }
-                        vv => last = Some((vv, x)),
+                        break;
                     }
+                    vv => last = Some((vv, x)),
                 }
-                match ok {
-                    Some(Some(rw)) => self.cov.add_accepted(rw, rec.def.r_type),
-                    Some(None) => self.cov.add_verified(Via::Piece, rec.def.r_type),
-                    None => {
-                        let f = verdict_finding(rec, &pend.site, &pend.symbol, last);
-                        self.fail(f);
-                    }
+            }
+            match ok {
+                Some(Some(rw)) => self.cov.add_accepted(rw, rec.def.r_type),
+                Some(None) => self.cov.add_verified(Via::Piece, rec.def.r_type),
+                None => {
+                    let (site, symbol) = at(self);
+                    let f = verdict_finding(rec, &site, &symbol, last);
+                    self.fail(f);
                 }
             }
         }

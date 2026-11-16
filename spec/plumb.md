@@ -2896,7 +2896,11 @@ cargo xtask plumb <output> --map <file> --map-format gnu|lld|mold|mortar
 ```
 
 The inputs are the files the map names, read from the paths it gives.
-Relative paths are taken from the current directory.
+Relative paths are taken from the current directory (no map format this
+verifier reads records the link's directory; a mortar map has no `cwd`
+record, §3.2). When the map names files and not one of them can be read,
+the command is a usage error naming the first file and the directory it
+looked in (WP-109): before, it judged every input I1.
 
 With `--inputs-from <file>`, only the map's files whose canonical path
 equals that of an entry in the response file are read; the others are I1.
@@ -2913,12 +2917,25 @@ effect (`-Bdynamic` and `--push-state`/`--pop-state` as the linker reads
 them). A library found nowhere adds nothing (WP-036: before it, every
 member of `libc.a` was I1 on a static hello).
 
+A file of the response file, or a library found, that is neither an ELF
+file nor an archive is read as a linker script (glibc's `libm.a` is
+`GROUP ( libm-2.41.a libmvec.a )`; WP-109: before, its two archives were
+I1 and every reference into them E4). It stands for the files of its
+`INPUT` and `GROUP` commands, an `AS_NEEDED` list inside them included,
+each a plain file name found as GNU ld finds it: an absolute name as it
+is, any other in the current directory and then the library directories
+in order; a name found nowhere adds nothing. `OUTPUT_FORMAT` names no
+file and is passed over. Any other command, an `-l` name inside the
+script, unbalanced parentheses or scripts nested more than 8 deep are a
+usage error naming the script, not a guess.
+
 The command prints the rendered findings and the coverage summary. It
 exits 0 when the report is clean, 1 on any finding, and 2 on a usage error
 or an unreadable output or map.
 
 Tests: `xtask/src/plumb.rs s8_arguments`, `s8_response_files`,
-`s8_libraries_are_resolved`.
+`s8_libraries_are_resolved`, `s8_linker_scripts_are_followed`,
+`s8_no_input_resolved_is_a_usage_error`.
 
 ```text
 cargo xtask plumb --equiv <X.map> <F.map> <X> <F>
@@ -2933,7 +2950,8 @@ line per side and for the pair. It exits 0 when both sides are clean
 and no P-E finding was made, 1 on any finding, and 2 on a usage error:
 a missing or extra argument, an option it does not take, an output or
 map it cannot read, a map that is not a mortar map, or an `X` map that
-claims no coverage (§3.2: a plain map given as `X`). Swapped arguments
+claims no coverage (§3.2: a plain map given as `X`), or maps none of
+whose files can be read from the current directory. Swapped arguments
 (a map where an output is expected) are one of these. It never panics:
 a truncated output is the side's findings (O1, S1) or exit 2.
 
