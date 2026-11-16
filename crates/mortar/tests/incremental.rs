@@ -1843,3 +1843,164 @@ fn plain_and_incremental_maps_state_the_allocations() {
         }
     }
 }
+
+/// The members of the archive tests (WP-106): `m1` (`f1`, edited as
+/// `m1b`, the same size), `m2` (`f2`), both extracted by `main`; `m3`
+/// and `m4` define names nothing references (never extracted).
+const THIN_MAIN: &str = "\t.text\n\t.globl _start\n_start:\n\tbl f1\n\tbl f2\n\tmov x8, #93\n\tsvc #0\n";
+const THIN_MEMBERS: [(&str, &str); 5] = [
+    ("m1", "\t.text\n\t.globl f1\nf1:\n\tmov x0, #1\n\tret\n"),
+    ("m1b", "\t.text\n\t.globl f1\nf1:\n\tmov x0, #3\n\tret\n"),
+    ("m2", "\t.text\n\t.globl f2\nf2:\n\tret\n"),
+    ("m3", "\t.text\n\t.globl u3\nu3:\n\tret\n"),
+    ("m4", "\t.text\n\t.globl u4\nu4:\n\tret\n"),
+];
+
+/// A directory with `main.o`, `lib/m*.o` (and `lib/m1b.o`), and the
+/// archive tools.
+struct Members {
+    scratch: Scratch,
+    ar: PathBuf,
+}
+
+impl Members {
+    fn new(label: &str) -> Option<Self> {
+        let (Some(gcc), Some(ar)) = (AARCH64.tool("gcc"), AARCH64.tool("ar")) else {
+            assert!(!tools_required(), "{} and {} are required", AARCH64.gnu("gcc"), AARCH64.gnu("ar"));
+            return None;
+        };
+        let scratch = Scratch::new(label);
+        std::fs::create_dir_all(scratch.join("lib")).unwrap();
+        std::fs::create_dir_all(scratch.join("run")).unwrap();
+        let sources =
+            std::iter::once(("main", THIN_MAIN)).chain(THIN_MEMBERS.iter().copied());
+        for (name, text) in sources {
+            let src = scratch.write(&format!("{name}.s"), text);
+            let obj = if name == "main" {
+                scratch.join("main.o")
+            } else {
+                scratch.join(format!("lib/{name}.o"))
+            };
+            let o = run_in(
+                scratch.path(),
+                &gcc,
+                &["-c".into(), src.into(), "-o".into(), obj.into()],
+                &[],
+            );
+            assert!(o.success(), "gcc: {}", o.stderr_text());
+        }
+        std::fs::copy(scratch.join("lib/m1.o"), scratch.join("lib/m1a.o")).unwrap();
+        Some(Self { scratch, ar })
+    }
+
+    /// `lib/<name>` made again from `members` (thin with `T`).
+    fn archive(&self, name: &str, flags: &str, members: &[&str]) {
+        let path = self.scratch.join(format!("lib/{name}"));
+        if path.exists() {
+            std::fs::remove_file(&path).unwrap();
+        }
+        let mut a: Vec<OsString> = vec![flags.into(), name.into()];
+        a.extend(members.iter().map(|m| OsString::from(format!("{m}.o"))));
+        let o = run_in(&self.scratch.join("lib"), &self.ar, &a, &[]);
+        assert!(o.success(), "ar: {}", o.stderr_text());
+    }
+
+    /// `lib/m1.o` rewritten in place with the other version's bytes
+    /// (`m1b`'s, or `m1`'s again: the same size); with `keep_times`, its
+    /// mtime set back to what it was.
+    fn edit_m1(&self, keep_times: bool) {
+        let path = self.scratch.join("lib/m1.o");
+        let before = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let now = std::fs::read(&path).unwrap();
+        let [a, b] = ["lib/m1a.o", "lib/m1b.o"].map(|p| std::fs::read(self.scratch.join(p)).unwrap());
+        let bytes = if now == b { a } else { b };
+        assert_eq!(bytes.len(), now.len(), "the two versions have one size");
+        let f = std::fs::File::options().write(true).open(&path).unwrap();
+        f.write_all_at(&bytes, 0).unwrap();
+        if keep_times {
+            f.set_modified(before).unwrap();
+        }
+        drop(f);
+    }
+
+    /// mortar from `dir` (relative to the scratch) with `args`, linking
+    /// `out` with `--incremental` and the report to `rep.txt`; the report.
+    fn link(&self, dir: &str, args: &[&str]) -> String {
+        let cwd = self.scratch.join(dir);
+        let rep = cwd.join("rep.txt");
+        if rep.exists() {
+            std::fs::remove_file(&rep).unwrap();
+        }
+        let mut a: Vec<OsString> = args.iter().map(OsString::from).collect();
+        a.extend(
+            ["-static", "-o", "out", "--incremental", "--incremental-report=rep.txt"]
+                .map(OsString::from),
+        );
+        let o = run_in(&cwd, Path::new(MORTAR), &a, &[]);
+        assert!(o.success(), "mortar {args:?}: {}", o.stderr_text());
+        std::fs::read_to_string(rep).unwrap()
+    }
+}
+
+// spec: incr.md IN-24 (a thin archive's members are files, stat'ed as
+// such; a changed member is a changed file, not a change of plan), §7
+// (`options-changed` is not raised by a member's edit), WP-094's finding
+// (the dry run named a changed thin member `options-changed`, "is not an
+// object or archive"). The neighbours: a member removed, added, replaced
+// with its size and mtime kept, the archive in a group, the link run from
+// another directory with relative paths, and a regular archive (the
+// control).
+#[test]
+fn a_changed_thin_member_is_a_changed_file() {
+    let Some(m) = Members::new("incr-thin") else { return };
+    let no_fallback = |rep: &str, what: &str| {
+        assert!(rep.lines().last() == Some("delta end"), "{what}: no dry run:\n{rep}");
+        let falls: Vec<&str> = rep.lines().filter(|l| l.starts_with("delta fallback ")).collect();
+        assert!(falls.is_empty(), "{what}: {falls:?}\n{rep}");
+    };
+    let changed = |rep: &str, archive: &str, what: &str| {
+        let want = format!("delta file changed {archive} m1.o");
+        assert!(rep.lines().any(|l| l.ends_with(&want) || l == want), "{what}: no `{want}`:\n{rep}");
+    };
+    for (flags, name) in [("rcsT", "libt.a"), ("rcs", "libr.a")] {
+        let lib = format!("lib/{name}");
+        let thin = flags.ends_with('T');
+        // The member edited (the same size, a new mtime).
+        m.archive(name, flags, &["m1", "m2", "m3"]);
+        m.link(".", &["main.o", &lib]);
+        m.edit_m1(false);
+        if !thin {
+            m.archive(name, flags, &["m1", "m2", "m3"]);
+        }
+        let rep = m.link(".", &["main.o", &lib]);
+        no_fallback(&rep, &format!("{name}: m1 edited"));
+        changed(&rep, &lib, &format!("{name}: m1 edited"));
+        // An unextracted member removed, then added back, then another.
+        m.archive(name, flags, &["m1", "m2"]);
+        let rep = m.link(".", &["main.o", &lib]);
+        no_fallback(&rep, &format!("{name}: m3 removed"));
+        m.archive(name, flags, &["m1", "m2", "m3", "m4"]);
+        let rep = m.link(".", &["main.o", &lib]);
+        no_fallback(&rep, &format!("{name}: m3, m4 added"));
+        // In a group.
+        let group = ["main.o", "--start-group", lib.as_str(), "--end-group"];
+        m.link(".", &group);
+        m.edit_m1(true);
+        if !thin {
+            m.archive(name, flags, &["m1", "m2", "m3", "m4"]);
+        }
+        let rep = m.link(".", &group);
+        no_fallback(&rep, &format!("{name}: in a group, m1 edited, its mtime kept"));
+        changed(&rep, &lib, &format!("{name}: in a group, m1 edited, its mtime kept"));
+        // From another directory, by relative paths.
+        let rel = format!("../{lib}");
+        m.link("run", &["../main.o", &rel]);
+        m.edit_m1(false);
+        if !thin {
+            m.archive(name, flags, &["m1", "m2", "m3", "m4"]);
+        }
+        let rep = m.link("run", &["../main.o", &rel]);
+        no_fallback(&rep, &format!("{name}: from run/, m1 edited"));
+        changed(&rep, &rel, &format!("{name}: from run/, m1 edited"));
+    }
+}
