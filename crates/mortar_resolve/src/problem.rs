@@ -94,7 +94,7 @@ pub enum What {
     WeakCommon { entry: SymEntry },
     /// `Refused{SymbolType, ..}` (§1.2).
     SymbolType { entry: SymEntry, sym_type: u8 },
-    /// `Refused{Feature, "SHN_X86_64_LCOMMON"}` or `"SHN 0x.."` (§2).
+    /// `Refused{Feature, "SHN 0x.."}` (§2).
     ReservedSection { entry: SymEntry, shndx: u16 },
     /// `malformed-input` for a symbol (§3.3, §3.4, §3.6).
     Malformed { entry: SymEntry, why: MalformedSymbol },

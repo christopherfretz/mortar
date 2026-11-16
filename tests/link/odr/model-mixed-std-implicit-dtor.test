@@ -1,0 +1,53 @@
+# Model case mixed-std-implicit-dtor (spec/odr.md §12.7, experiments 2 and 3), under
+# --odr=strict.
+# The implicit destructor of X is constexpr in C++20 only; the revised O-10
+# hashes explicitly written specifiers only, so both units write one hash
+# (N25).
+#@ spec: odr.md §3 N25, §12.7, "O-10"
+#@ requires: g++
+
+cxx -O0 -std=c++17 a.cc -o a0.o
+meta a.meta a0.o -o a.o
+cxx -O0 -std=c++20 b.cc -o b0.o
+meta b.meta b0.o -o b.o
+cxx -O0 main.cc -o main.o
+link(bfd,lld,mold) g++ -static -no-pie main.o a.o b.o -o prog
+link(mortar) g++ -static -no-pie main.o a.o b.o -Wl,--odr=strict -o prog
+run prog
+  stdout: 0 0
+
+#--- a.cc
+#include <string>
+struct X { std::string s; };
+__attribute__((noinline)) inline int use() { X x; return (int)x.s.size(); }
+int fa() { return use(); }
+#--- a.meta
+# the records kiln would write (spec/odr.md §12.7)
+summary name=abi.rtti value=on
+summary name=lang value=c++
+summary name=odr.scheme value=model-1
+summary name=producer value="hand (WP-070 model)"
+summary name=std value=c++17
+definition anchor=_ZN1XD2Ev hash=6b56c7972bebc108c898005f42c755da class=1 flags=1 file=h.h line=1
+definition anchor=_Z3usev hash=411e614109af950227af2a49fb49a9f2 class=1 flags=1 file=h.h line=1
+type name=1X hash=70ca51ca726cb65a975adad368474a0a layout=0xe5540e86a9cc2861 size=32 align=8 flags=0 file=h.h line=1
+#--- b.cc
+#include <string>
+struct X { std::string s; };
+__attribute__((noinline)) inline int use() { X x; return (int)x.s.size(); }
+int fb() { return use(); }
+#--- b.meta
+# the records kiln would write (spec/odr.md §12.7)
+summary name=abi.rtti value=on
+summary name=lang value=c++
+summary name=odr.scheme value=model-1
+summary name=producer value="hand (WP-070 model)"
+summary name=std value=c++20
+definition anchor=_ZN1XD2Ev hash=6b56c7972bebc108c898005f42c755da class=1 flags=1 file=h.h line=1
+definition anchor=_Z3usev hash=411e614109af950227af2a49fb49a9f2 class=1 flags=1 file=h.h line=1
+type name=1X hash=70ca51ca726cb65a975adad368474a0a layout=0xe5540e86a9cc2861 size=32 align=8 flags=0 file=h.h line=1
+#--- main.cc
+#include <cstdio>
+int fa();
+int fb();
+int main() { std::printf("%d %d\n", fa(), fb()); }

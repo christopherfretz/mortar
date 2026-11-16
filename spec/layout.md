@@ -371,13 +371,35 @@ wins.
   - lld's list matches the table, with `.ldata`/`.lrodata`/`.lbss` added
     for x86-64 large sections (L-36; mortar places them by L-36a, not where
     lld does).
-- **L-36a [M1] (x86-64 large sections).** The large output sections
-  follow every other alloc section, `.bss` and the commons included, in
-  the order `.lrodata` (its own R `PT_LOAD`), `.ltext` (its own RX
-  `PT_LOAD`), `.ldata` then `.lbss` (one RW `PT_LOAD`); an empty one is
-  omitted. No other section's address depends on their size, so the
+- **L-36a [M1] (x86-64 large sections).** On x86-64 an alloc input
+  section with `SHF_X86_64_LARGE` goes, whatever its name, to `.ltext`
+  (`SHF_EXECINSTR`), `.lbss` (`NOBITS`, writable), `.ldata` (writable
+  `PROGBITS`) or `.lrodata` (`PROGBITS`, not writable); the output
+  section keeps the flag. `SHF_TLS` with the flag, a non-alloc section
+  with it, a type other than `PROGBITS`/`NOBITS`, and a `NOBITS` one that
+  is not writable or is executable are refused by name (`section-flag`,
+  `SHF_X86_64_LARGE`); live inputs with and without the flag in one
+  output section are `section-conflict`. On AArch64 the bit means
+  nothing (a processor flag of another machine). The large output
+  sections follow every other alloc section, `.bss` and the commons
+  included: rank 8, within-rank 16 (`.lrodata`), 17 (`.ltext`), 18
+  (`.ldata`), 19 (`.lbss`), after every L-60 within-rank of rank 8.
+  Each has its load class, so L-65's list goes on after RW with
+  5. **large R** (`.lrodata`), 6. **large RX** (`.ltext`), 7. **large
+  RW** (`.ldata` then `.lbss`, its `NOBITS` tail), each its own
+  `PT_LOAD`, present only when it has a chunk, except that a `.lbss`
+  with no `.ldata` right after the RW segment ends that segment rather
+  than make a `PT_LOAD` without file bytes (GNU ld, lld and mold do the
+  same; no small section moves); `-z separate-code`
+  page-separates the large RX segment as it does RX (L-8). An empty one
+  is omitted. No small section's address depends on their size, so the
   small-model sections stay within 2 GiB of each other however large the
-  large data is (`spec/x64.md` X-54).
+  large data is (`spec/x64.md` X-54); the large sections add up to three
+  program headers, which move the small sections after the header table
+  by their size, as in the three references. `_edata`, `__bss_start`
+  and `etext` describe the small sections only (their end, their
+  `.bss`, the RX segment's end); `_end` is the end of the last alloc
+  chunk, large ones included (GNU ld 2.44: `_end` after `.ldata`).
 - **L-45 [C]** Notes (`SHT_NOTE`) are not merged by name. Each distinct
   note name is its own output section, with the name kept:
   `.note.ABI-tag`, `.note.stapsdt` and the rest. The synthetic notes are
@@ -1554,7 +1576,9 @@ New refusal names (class `feature` unless noted):
 - `entry point outside code`;
 - `_TLS_MODULE_BASE_ without TLS`;
 - `non-PIE image base 0`;
-- class `section-flag`: `SHF_X86_64_LARGE` with `SHF_TLS` (x86-64, L-36).
+- class `section-flag`: `SHF_X86_64_LARGE` with `SHF_TLS`, on a non-alloc
+  section, on a type other than `PROGBITS`/`NOBITS`, or on a read-only
+  or executable `NOBITS` (x86-64, L-36a).
 
 (`.gnu.linkonce` and `.zdebug` are resolve.md's refusals already.)
 

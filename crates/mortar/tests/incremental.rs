@@ -74,6 +74,20 @@ const ASM_X86_64: &str = "\t.text\n\t.globl _start\n\t.type _start, @function\n_
     \t.section .rodata\n\t.long 7\n\t.long m3 - .\n\t.long m4 - .\n\
     \t.section .note.GNU-stack,\"\",@progbits\n";
 
+/// x86-64 large sections (`spec/x64.md` X-52, X-54): `.lrodata`, `.ldata`,
+/// `.lbss` and a large common, reached by 64-bit absolute addresses; their
+/// chunks, load classes and segments go through the state like any other.
+const ASM_X86_64_LARGE: &str = "\t.text\n\t.globl _start\n\t.type _start, @function\n_start:\n\t.cfi_startproc\n\
+    \tmovabsq $lr, %rax\n\tmovabsq $ld, %rcx\n\tmovabsq $lb, %rdx\n\tmovabsq $lc, %rsi\n\
+    \tmovl (%rax), %edi\n\taddl (%rcx), %edi\n\tmovl %edi, (%rdx)\n\tmovl %edi, 65532(%rsi)\n\
+    \tmovl $60, %eax\n\tsyscall\n\t.cfi_endproc\n\
+    \t.data\n\t.globl word\nword:\t.quad 1\n\
+    \t.section .lrodata,\"al\",@progbits\nlr:\t.long 40\n\
+    \t.section .ldata,\"awl\",@progbits\nld:\t.long 2\n\t.quad lr\n\
+    \t.section .lbss,\"awl\",@nobits\nlb:\t.zero 65536\n\
+    \t.largecomm lc,65536,32\n\
+    \t.section .note.GNU-stack,\"\",@progbits\n";
+
 fn run_in(dir: &Path, exe: &Path, args: &[OsString], env: &[(&str, &str)]) -> Outcome {
     let mut c = Command::new(exe);
     c.args(args).current_dir(dir).env_remove("MORTAR_SCHED_SEED").env_remove("SOURCE_DATE_EPOCH");
@@ -129,6 +143,11 @@ impl Prog {
     /// The x86-64 assembly program.
     fn asm_x86_64() -> Option<Self> {
         Self::asm_for(Arch::X86_64, "incr-asm-x86-64", ASM_X86_64, &[])
+    }
+
+    /// The x86-64 program with large sections and a large common.
+    fn asm_x86_64_large() -> Option<Self> {
+        Self::asm_for(Arch::X86_64, "incr-asm-x86-64-large", ASM_X86_64_LARGE, &[])
     }
 
     fn asm_for(arch: Arch, label: &str, text: &str, extra: &[&str]) -> Option<Self> {
@@ -213,7 +232,8 @@ impl Prog {
 // bytes as the plain link), IN-18a (the state round-trips)
 #[test]
 fn a_full_link_in_incremental_mode_is_the_plain_link() {
-    for prog in [Prog::asm(), Prog::c(), Prog::cxx(), Prog::asm_x86_64()].into_iter().flatten() {
+    let progs = [Prog::asm(), Prog::c(), Prog::cxx(), Prog::asm_x86_64(), Prog::asm_x86_64_large()];
+    for prog in progs.into_iter().flatten() {
         let err = prog.link("plain", &[]);
         assert!(!err.contains("incremental"), "{err}");
         assert!(!prog.state_of("plain").exists(), "a plain link wrote a state");
@@ -749,8 +769,15 @@ fn reason(report: &str) -> &str {
 // fails the link)
 #[test]
 fn replay_reproduces_and_each_table_matters() {
-    let progs =
-        [Prog::asm(), Prog::c(), Prog::cxx(), Prog::asm_x86_64(), Prog::erratum(), Prog::thunks()];
+    let progs = [
+        Prog::asm(),
+        Prog::c(),
+        Prog::cxx(),
+        Prog::asm_x86_64(),
+        Prog::asm_x86_64_large(),
+        Prog::erratum(),
+        Prog::thunks(),
+    ];
     for prog in progs.into_iter().flatten() {
         let dir = prog.built.dir.display().to_string();
         prog.link("plain", &[]);

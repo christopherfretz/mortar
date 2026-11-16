@@ -1,7 +1,9 @@
 //! Ranks (`spec/layout.md` §10, L-60, L-61): the position class of an
 //! output section or a synthetic chunk, and its order inside the rank.
 
-use mortar_elf::consts::{SHF_ALLOC, SHF_EXECINSTR, SHF_TLS, SHF_WRITE, SHT_NOBITS, SHT_NOTE};
+use mortar_elf::consts::{
+    SHF_ALLOC, SHF_EXECINSTR, SHF_TLS, SHF_WRITE, SHF_X86_64_LARGE, SHT_NOBITS, SHT_NOTE,
+};
 
 /// A position: `(rank, within)`; chunks sort by it, then by `OutSecId`
 /// (L-60).
@@ -137,6 +139,10 @@ pub struct Z {
     pub relro: bool,
 }
 
+/// The `within` of `.lrodata` in rank 8 (L-36a): after every small rank-8
+/// row (the largest is 5, writable `NOBITS` orphans).
+const LARGE_WITHIN: u8 = 16;
+
 /// The non-allocated sections of rank 10 (L-63).
 const SYMBOL_TABLES: [&[u8]; 4] = [b".symtab", b".symtab_shndx", b".strtab", b".shstrtab"];
 
@@ -159,9 +165,24 @@ pub fn rank_with(name: &[u8], sh_type: u32, flags: u64, now: bool) -> Rank {
 
 /// [`rank_of`] under the options `z` (`rank_with`, and `.bss.rel.ro`
 /// under `-z norelro`).
+///
+/// An x86-64 large output section (`SHF_X86_64_LARGE`, which layout keeps
+/// only on x86-64) ends the allocated order, after every chunk of rank 8:
+/// `.lrodata`, `.ltext`, `.ldata`, `.lbss` (L-36a), each class its own
+/// `PT_LOAD` (`LoadClass::LargeR`, `LargeRx`, `LargeRw`).
 #[must_use]
 pub fn rank_in(name: &[u8], sh_type: u32, flags: u64, z: Z) -> Rank {
     let c = class(sh_type, flags);
+    if flags & SHF_X86_64_LARGE != 0 {
+        match c {
+            Class::Ro | Class::RoNobits => return Rank::new(8, LARGE_WITHIN),
+            Class::Exec => return Rank::new(8, LARGE_WITHIN + 1),
+            Class::Rw => return Rank::new(8, LARGE_WITHIN + 2),
+            Class::RwNobits => return Rank::new(8, LARGE_WITHIN + 3),
+            // Refused before layout ranks them (L-36: TLS, non-alloc).
+            Class::NonAlloc | Class::Note | Class::Tls | Class::TlsNobits => {}
+        }
+    }
     if z.now && name == b".got.plt" && c == Class::Rw {
         return Rank::new(7, 10);
     }
@@ -248,6 +269,26 @@ mod tests {
         assert!(Rank::HEADERS < order[0]);
         assert!(r(b".tdata", SHT_PROGBITS, WAT).is_relro());
         assert!(!r(b".data", SHT_PROGBITS, WA).is_relro());
+    }
+
+    // spec: layout.md §8.2 L-36a (the large sections after every small alloc section, in order)
+    #[test]
+    fn l36a_large_sections_end_the_alloc_order() {
+        const L: u64 = SHF_X86_64_LARGE;
+        let order = [
+            rank_of(b".bss", SHT_NOBITS, WA),
+            rank_of(b"rw_nobits", SHT_NOBITS, WA),
+            rank_of(b".lrodata", SHT_PROGBITS, A | L),
+            rank_of(b".ltext", SHT_PROGBITS, AX | L),
+            rank_of(b".ldata", SHT_PROGBITS, WA | L),
+            rank_of(b".lbss", SHT_NOBITS, WA | L),
+            rank_of(b".comment", SHT_PROGBITS, 0),
+        ];
+        assert!(order.windows(2).all(|w| w[0] < w[1]), "{order:?}");
+        // By flags, whatever the name; never RELRO.
+        assert_eq!(rank_of(b"x", SHT_PROGBITS, WA | L), order[4]);
+        assert!(!order[4].is_relro());
+        assert_eq!(rank_with(b".ldata", SHT_PROGBITS, WA | L, true), order[4]);
     }
 
     // spec: layout.md §10 L-60 (a named row applies only with its class)

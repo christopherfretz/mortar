@@ -676,30 +676,42 @@ pub fn assemble(sections: &Sections, target: &str, out: &Path) -> Result<(), Str
 /// # Errors
 /// The writer's, or objcopy's.
 pub fn add_to(items: &[Item], input: &Path, out: &Path) -> Result<(), String> {
+    let program = crate::mason::tool("objcopy").ok_or("objcopy is not installed")?;
+    add_with(&program, items, input, out)
+}
+
+/// [`add_to`] with the `objcopy` given (a cross target's own).
+///
+/// # Errors
+/// The writer's, or objcopy's.
+pub fn add_with(objcopy: &Path, items: &[Item], input: &Path, out: &Path) -> Result<(), String> {
+    let run = |args: &[String]| -> Result<(), String> {
+        let dir = std::env::current_dir().map_err(|e| e.to_string())?;
+        let o = crate::mason::run_in(objcopy, args, &dir, &[], crate::mason::TOOL_LIMITS)?;
+        if o.end.success() {
+            Ok(())
+        } else {
+            Err(format!("objcopy failed: {}", String::from_utf8_lossy(&o.stderr)))
+        }
+    };
     let bin = out.with_extension("mason.bin");
     let step = out.with_extension("mason.o");
     std::fs::write(&bin, section_bytes(items)?).map_err(|e| e.to_string())?;
-    let r = run_tool(
-        "objcopy",
-        &[
-            "--add-section".into(),
-            format!(".mason.meta={}", bin.display()),
-            "--set-section-flags".into(),
-            ".mason.meta=exclude,readonly".into(),
-            input.display().to_string(),
-            step.display().to_string(),
-        ],
-    )
+    let r = run(&[
+        "--add-section".into(),
+        format!(".mason.meta={}", bin.display()),
+        "--set-section-flags".into(),
+        ".mason.meta=exclude,readonly".into(),
+        input.display().to_string(),
+        step.display().to_string(),
+    ])
     .and_then(|()| {
-        run_tool(
-            "objcopy",
-            &[
-                "--set-section-alignment".into(),
-                ".mason.meta=8".into(),
-                step.display().to_string(),
-                out.display().to_string(),
-            ],
-        )
+        run(&[
+            "--set-section-alignment".into(),
+            ".mason.meta=8".into(),
+            step.display().to_string(),
+            out.display().to_string(),
+        ])
     });
     let _ = std::fs::remove_file(&bin);
     let _ = std::fs::remove_file(&step);
