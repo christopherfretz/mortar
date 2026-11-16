@@ -82,9 +82,11 @@ pub fn expand_recorded(args: &[OsString]) -> Expanded {
             continue;
         }
         // GNU ld: a file that cannot be read is an ordinary argument.
-        let read = opened.and_then(|(mut f, m)| {
+        let read = opened.and_then(|(f, m)| {
             let mut contents = Vec::with_capacity(usize::try_from(m.len()).unwrap_or(0));
-            f.read_to_end(&mut contents).map(|_| (contents, m))
+            // Through `Take`: `File::read_to_end` would `fstat` again for
+            // its size hint, which the capacity already gives.
+            f.take(u64::MAX).read_to_end(&mut contents).map(|_| (contents, m))
         });
         let Ok((contents, meta)) = read else {
             i += 1;

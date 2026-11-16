@@ -600,9 +600,9 @@ they are not).
 **Identity.** A file is identified by its device and inode, following
 symbolic links (std's `MetadataExt`): the same path, `./a.o`, a symbolic
 link and a hard link to it all clash. A written file that does not exist
-yet has no identity; two of them are the same file when their
-directories have one identity and their names are equal (else when
-their paths are equal component by component).
+yet has no identity; two of them are the same file when their names
+are equal and either their paths are equal or their directories have
+one identity (the directories are `stat`ed only then).
 
 **The names the writer touches.** A file written through
 `spec/image.md` §7's protocol also writes its temporary name
@@ -637,9 +637,11 @@ seen; mortar does not lock its inputs. What it rules out is a command
 line that names one file twice.
 
 **What a plain link pays.** One `stat` per written file and two for its
-temporary names (`-o` alone: 3), one `stat` of the directory of each
-written file that does not exist when there are several, one `stat` per
-script the command line names; nothing per input. Measured on protoc
+temporary names (`-o` alone: 3), two more when two written names not yet
+there have one name in different directories' spellings, one `stat` per
+script the command line names; nothing per input. A file written whole
+that is a regular file costs one `stat` more when it is written (the
+stream test of `spec/image.md` I-79a). Measured on protoc
 (`spec/landed/cli/WP-087.md`).
 
 **The references** (`spec/landed/cli/WP-087.md` has the table): GNU ld

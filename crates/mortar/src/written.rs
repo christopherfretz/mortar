@@ -136,35 +136,37 @@ fn names(path: &Path) -> [PathBuf; 3] {
 enum Ident {
     /// A regular file, following symbolic links: its device and inode.
     File(u64, u64),
-    /// Nothing there yet: its directory's identity (when it has one) and
-    /// its name, else the path itself.
-    Absent(Option<(u64, u64)>, OsString, PathBuf),
+    /// Nothing there yet: its name and its path (directories are
+    /// compared only when two names are equal and their paths are not).
+    Absent(OsString, PathBuf),
     /// A directory, a device, a FIFO or a socket: outside the rule.
     Special,
 }
 
-fn ident(path: &Path, absent_key: bool) -> Ident {
+fn ident(path: &Path) -> Ident {
     match std::fs::metadata(path) {
         Ok(m) if m.is_file() => Ident::File(m.dev(), m.ino()),
         Ok(_) => Ident::Special,
-        Err(_) if absent_key => {
-            let dir = path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
-            let dir_id = std::fs::metadata(dir).ok().map(|m| (m.dev(), m.ino()));
+        Err(_) => {
             let name = path.file_name().map(OsStr::to_os_string).unwrap_or_default();
-            Ident::Absent(dir_id, name, path.to_path_buf())
+            Ident::Absent(name, path.to_path_buf())
         }
-        Err(_) => Ident::Absent(None, OsString::new(), path.to_path_buf()),
     }
+}
+
+/// The identity of the directory holding `path`, if it has one.
+fn dir_id(path: &Path) -> Option<(u64, u64)> {
+    let dir = path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    std::fs::metadata(dir).ok().map(|m| (m.dev(), m.ino()))
 }
 
 /// Whether two names are one file for the rule.
 fn same(a: &Ident, b: &Ident) -> bool {
     match (a, b) {
         (Ident::File(..), Ident::File(..)) => a == b,
-        (Ident::Absent(da, na, pa), Ident::Absent(db, nb, pb)) => match (da, db) {
-            (Some(x), Some(y)) => x == y && na == nb,
-            _ => pa == pb,
-        },
+        (Ident::Absent(na, pa), Ident::Absent(nb, pb)) => {
+            na == nb && (pa == pb || dir_id(pa).is_some_and(|x| dir_id(pb) == Some(x)))
+        }
         _ => false,
     }
 }
@@ -253,18 +255,17 @@ pub fn clear(
     cwd: &Path,
     diagnostics: &Collector,
 ) -> bool {
-    let several = written.len() > 1;
     // A file outside the rule is written in place (I-58, I-79a): its
     // temporary names are never made.
     let idents: Vec<[Ident; 3]> = written
         .iter()
         .map(|w| {
-            let main = ident(&w.path, several);
+            let main = ident(&w.path);
             if main == Ident::Special {
                 return [Ident::Special, Ident::Special, Ident::Special];
             }
             let n = names(&w.path);
-            [main, ident(&n[1], several), ident(&n[2], several)]
+            [main, ident(&n[1]), ident(&n[2])]
         })
         .collect();
     let mut ok = true;

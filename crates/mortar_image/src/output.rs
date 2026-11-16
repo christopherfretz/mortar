@@ -473,13 +473,15 @@ fn is_descriptor_dir(dir: &Path) -> bool {
 /// descriptor table (`-Map=/dev/stdout` redirected to a file), which is
 /// truncated first. `None` for every other path.
 fn stream_target(path: &Path) -> Option<bool> {
-    let m = fs::metadata(path).ok()?;
+    // One `stat` for a file that is not a symbolic link (the common case).
+    let link = fs::symlink_metadata(path).ok()?;
+    let is_link = link.file_type().is_symlink();
+    let m = if is_link { fs::metadata(path).ok()? } else { link };
     let t = m.file_type();
     if t.is_char_device() || t.is_fifo() {
         return Some(false);
     }
-    let link = fs::symlink_metadata(path).ok()?;
-    (m.is_file() && link.file_type().is_symlink() && through_descriptor(path)).then_some(true)
+    (m.is_file() && is_link && through_descriptor(path)).then_some(true)
 }
 
 /// Writes `bytes` to `path` with the same protocol (I-79: the map file),
