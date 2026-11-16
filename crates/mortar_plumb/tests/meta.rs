@@ -195,6 +195,7 @@ fn p_m2_table_mutants() {
             ("place", "n_namesz", Box::new(move |p| wr(p, off, 4, 9))),
             ("place", "n_type", Box::new(move |p| wr(p, off + 8, 4, 0x4d4f_4403))),
             ("place", "n_descsz", Box::new(move |p| wr(p, off + 4, 4, 0x1000))),
+            ("place", "the name's padding", Box::new(move |p| p[off + 23] = 1)),
             ("header", "version", Box::new(move |p| wr(p, d1, 4, 2))),
             ("header", "count", Box::new(move |p| wr(p, d1 + 4, 4, 2))),
             ("header", "row_size", Box::new(move |p| wr(p, d1 + 8, 4, 32))),

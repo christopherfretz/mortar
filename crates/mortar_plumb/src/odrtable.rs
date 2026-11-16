@@ -486,8 +486,18 @@ fn notes(data: &[u8]) -> Result<Vec<Note<'_>>, String> {
             .checked_add(descsz as usize)
             .and_then(|e| data.get(d..e))
             .ok_or(format!("the note at offset {at}: its descriptor runs past the section"))?;
+        // The padding after the name (to offset 24) and after the
+        // descriptor (to 8) is zero: the bytes are a function of the
+        // rows (O-50), and nothing else determines a padding byte.
+        let next = d + (descsz as usize).div_ceil(8) * 8;
+        let pads = [(at + 22, d), (d + descsz as usize, next)];
+        for (from, to) in pads {
+            if data.get(from..to.min(data.len())).is_some_and(|p| p.iter().any(|&b| b != 0)) {
+                return Err(format!("the note at offset {at}: a padding byte that is not zero"));
+            }
+        }
         out.push(Note { ty, at: d, desc });
-        at = d + (descsz as usize).div_ceil(8) * 8;
+        at = next;
     }
     Ok(out)
 }

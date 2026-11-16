@@ -35,6 +35,7 @@ i386 fit.
 | 3 (M2) | Dynamic executables (`Exec`, `Pie`) and static PIE: the dynamic sections, dynamic relocations, PLT, copies, shared inputs (§12, P-D1-P-D13; static-pie P-D14 and P-D15, §12.4). Shared-object output is M4 | — |
 | 4 (M6) | Mason metadata and the one-definition-rule table: `.mason.meta` in outputs, `.note.mason` (§13, P-M1-P-M3; WP-078) | — |
 | x | x86-64 and i386 tables (§4.5) | `machine` |
+| G (WP-098) | `.gdb_index`: gdb's format for every producer (P-G1–P-G5) and synth.md §17 for mortar's (P-G6–P-G9), §6.10. `.debug_names` is not judged | — |
 | I (M7, WP-091) | An incremental link's holes and dead ranges, for a mortar map that claims them (`incremental`, `hole`, `dead`, §3.2): IN-60's coverage of every allocated section and IN-3a's three checks on every range (§6.8, P-I1–P-I6). `--equiv` (incr.md IN-62) is not started | — |
 
 On the reference corpus, a stage-1 report may give only the stage-2
@@ -2310,7 +2311,8 @@ else. In the debug sections:
    `loclistx` goes through a live table: the tables' own entries are
    judged (`.debug_str_offsets`), the others' are not (they point inside
    their own contribution).
-4. `.gdb_index` and `.debug_names` are not judged (not generated with
+4. `.gdb_index` (judged in a full link's output, §6.10) and
+   `.debug_names` are not judged here (not generated with
    `--incremental`, incr.md §7).
 5. `R_*_RELATIVE` records' scratch word is not in the map (dyn.md §14):
    the verifier only requires one word per hole.
@@ -2555,6 +2557,194 @@ rule above is as ruled):
 
 Tests: `tests/equiv.rs` (§9.2 (q)).
 
+### 6.10 `.gdb_index` (WP-098)
+
+`spec/synth.md` §17 (S-G1 to S-G9) says what mortar writes under
+`--gdb-index`; gdb's manual, appendix "`.gdb_index` section format", says
+what any producer's index is. gdb trusts the index: a name it leaves out
+is a name gdb does not find, a range it gets wrong attributes an address
+to the wrong unit. The rules below run in the plain pass (§5, after the
+relocation engine, `src/gdbindex.rs` and `src/gdbnames.rs`) on every
+output with a section named `.gdb_index`; an output without one pays
+only for the presence check (P-G6). They read the output's own
+`.debug_info`, `.debug_abbrev`, `.debug_addr`, `.debug_rnglists` and
+`.debug_ranges` (relocated: what gdb reads), and for mortar's map the
+inputs. Every count, offset and length is untrusted: each read is
+bounded by its section, a probe by the table's size, a walk by its
+section's end, and what cannot be read is a finding of the rule reading
+it, never a panic.
+
+Two kinds of rule:
+
+- **format rules** (P-G1 to P-G5) hold for every producer: lld's,
+  mold's and `gdb-add-index`'s indexes are judged by them too, and what
+  they find there is recorded in §10.2;
+- **mortar's rules** (P-G6 to P-G9, `Format::Mortar` only) hold mortar's
+  index to S-G1 to S-G7 exactly: complete against the inputs' name
+  sets, and byte for byte.
+
+**Reading the index.** All integers little-endian (gdb's format). The
+header is the version and then the offsets of the areas, each a `u32`
+from the section's start: the CU list, the TU list, the address area,
+the symbol table, (version 9 only) the shortcut table, the constant
+pool: 24 bytes, 28 for version 9. An area runs from its offset to the
+next one's; the constant pool to the section's end.
+
+**The units of the output.** The output's `.debug_info` is walked from
+offset 0 to its end, unit by unit: a 32-bit `unit_length` (not
+`0xffffffff`, and not past the section), the version (2 to 5), for
+version 5 the unit type, the address size (the output's word size) and
+the abbreviation offset; the next unit starts `4 + unit_length` after
+this one. A *type unit* is a version-5 unit of type `DW_UT_type` (2) or
+`DW_UT_split_type` (6). The root DIE is read with its abbreviation from
+the output's `.debug_abbrev` at the unit's offset: its tag, whether it
+has children, and its attributes, each skipped by its form's size
+(synth.md S-G5's list: every DWARF 5 form, `DW_FORM_indirect`, GNU's
+`0x1f01`, `0x1f02`, `0x1f20`, `0x1f21`).
+
+**A unit's claimed ranges.** The ranges the root DIE states in the
+output, read as S-G5 reads them in the inputs but from the output's
+relocated bytes (no relocation: every value is what gdb reads):
+`DW_AT_low_pc` with `DW_AT_high_pc` (an address, or a constant added to
+`low_pc`); `DW_AT_ranges` (DWARF 5: a `DW_FORM_sec_offset` into
+`.debug_rnglists` or `DW_FORM_rnglistx` through the offsets table at
+`DW_AT_rnglists_base`; DWARF 2-4: an offset into `.debug_ranges`, with
+`DW_AT_low_pc` as the base); addresses through `.debug_addr` at
+`DW_AT_addr_base` (`DW_AT_GNU_addr_base`). A claimed range is *live*
+when it is not empty and lies inside one allocated section of the
+output (`SHF_ALLOC`): a tombstone (0, 1 or all ones, §5.8) or an address
+offset from one lies in none, since no allocated section of an
+executable starts at 0. A unit's live claimed ranges are merged where
+they touch or overlap before an entry is held to them: `gdb-add-index`
+writes adjacent ranges of a unit as one entry.
+
+- **P-G1 (the header).** The section is not allocated and has at least
+  a header's bytes. The version is 7, 8 or 9 (gdb reads them; 1 to 6
+  are obsolete). The offsets are in order, CU list ≤ TU list ≤ address
+  area ≤ symbol table (≤ shortcut table) ≤ constant pool ≤ the
+  section's size, and the CU list starts at the header's end. Each
+  area's size is a whole number of its entries: 16 bytes in the CU
+  list, 24 in the TU list, 20 in the address area, 8 in the symbol
+  table, 8 in the shortcut table.
+- **P-G2 (the CU list).** The CU list equals the units of the output's
+  `.debug_info` that are not type units, in section order: entry `i` is
+  `(offset, 4 + unit_length)` of the `i`-th such unit, both `u64`. A
+  unit the walk cannot read, a missing or extra entry, or another offset
+  or length is P-G2, naming the entry. (A non-empty TU list is not
+  judged entry by entry; mortar's must be empty, P-G7.)
+- **P-G3 (the address area).** Each entry `(low, high, cu)`: `cu` is
+  below the CU count; `low < high`; `[low, high)` lies inside one
+  allocated section of the output. So no entry is at a tombstone or at
+  address 0 of a discarded function. In mortar's output (S-G5: the area
+  is the units' ranges), each entry also lies inside one merged live
+  claimed range of unit `cu`: no entry names a unit that does not cover
+  it, and a unit all of whose ranges are dead (S-G5a) has no entry; a
+  unit whose claimed ranges cannot be read (a form, a code or an offset
+  the reading above does not know, a read past a section) makes each of
+  its entries P-G3. That bound is not a format rule: gdb 16's
+  `gdb-add-index`, on clang's split-DWARF units, writes an entry
+  `[a, a + 1)` for a unit's global variable at `a` in `.data`, outside
+  every range the unit's root DIE states (WP-098). The format sets no
+  order and no completeness: gdb builds its own map, and a unit without
+  entries is found by name.
+- **P-G4 (the symbol table).** The slot count `T` is a power of two
+  (gdb's reader masks with `T − 1`) and at least one slot is empty: a
+  slot is empty when both its words are 0, and gdb's lookup of a name
+  the table does not hold ends only at an empty slot. For each slot
+  that is not empty: its name offset and its vector offset lie in the
+  constant pool; the name is NUL-terminated inside the pool; the
+  vector's count and values lie inside the pool; gdb's probe for the
+  name **finds this slot**: with `h` the hash of synth.md S-G7 (gdb's
+  `mapped_index_string_hash`, versions 5 and later: `h = h × 67 +
+  lower(c) − 113` modulo 2^32 over the name's bytes, `lower` ASCII-only)
+  and `m = T − 1`, the sequence `h & m`, then `+ (((h × 17) & m) | 1)`
+  modulo `T`, reaches this slot before any empty slot and before any
+  other slot holding the same name; and no name is held by two slots.
+  The probe is bounded by `T` steps (the step is odd, so `T` steps visit
+  every slot).
+- **P-G5 (the CU vectors).** Each vector has a count of at least 1, and
+  each value `v`: bits 0-23 (the unit) below the number of CU and TU
+  entries; bits 24-27 zero (reserved, the manual); bits 28-30 (the
+  kind) not 5, 6 or 7 (reserved). Kind 0 is accepted: gdb's manual
+  calls it reserved, but GCC writes it (`GDB_INDEX_SYMBOL_KIND_NONE`)
+  and gdb reads it.
+
+**Mortar's rules.** The option is read from the map's `arg` words when
+it has them (the last of `--gdb-index` and `--no-gdb-index` wins;
+`-S`, `--strip-debug`, `-s`, `--strip-all` strip the debug information,
+S-G8). A static link's map has no `arg` record (§3.2: the dynamic
+records), so there the option is taken from the map's chunk: a map with
+`chunk synthetic .gdb_index - <size>` says the link had the option and
+one without it says it did not. Which inputs are units, and their name
+sets, are read again from the inputs, by synth.md S-G2, S-G3a, S-G4a
+and S-G5, through the inputs' relocations (§4.4: a symbol's section and
+`st_value + addend`, REL's implicit addend) and the map's places.
+
+- **P-G6 (presence, S-G1, S-G6, S-G8).** With the option in force, no
+  strip option and at least one unit in the output's `.debug_info`, the
+  output has exactly one `.gdb_index`, and the map one chunk of that
+  name whose size is the section's; otherwise none. The section is
+  `SHT_PROGBITS`, `sh_flags` 0, `sh_addralign` 4, `sh_entsize` 0, and
+  its header comes after every `.debug_*` section's and before
+  `.symtab`'s. With an index, no output section is named
+  `.debug_gnu_pubnames` or `.debug_gnu_pubtypes` and the map places no
+  input section of those names (they are consumed, S-G6).
+- **P-G7 (the units of the inputs, S-G2, S-G3, S-G3a).** Each input
+  `.debug_info` section the map places (`nplace`, or a `place` of a
+  non-alloc section) is walked as S-G2 walks it: its units, at the
+  section's output offset plus their own, must be the CU list's entries
+  in that order and none other; no unit is a type unit, a partial unit,
+  DWARF64 or of another address size, and no live input `.debug_types`
+  is in the output. Every unit that is debug-bearing (S-G3a: a
+  skeleton, a root DIE with `DW_AT_GNU_dwo_name` or `DW_AT_dwo_name`, or
+  a root DIE with children) is named by exactly one pubnames set and
+  exactly one pubtypes set of S-G4a (sets of input sections not
+  dropped as COMDAT copies, their `debug_info_offset` read through its
+  relocation). A debug-bearing unit without its sets is the silent form
+  of `gdb-index-incomplete`: the index mortar should have refused. A set
+  that does not parse, names no unit start, names a unit twice, or names
+  a unit whose section is not in the output (S-G4a's refusals) is P-G7
+  too.
+- **P-G8 (complete, S-G4, S-G5).** The index's names and values are the
+  inputs': for each name, the set of values of its CU vector equals the
+  set `{cu | attributes << 24}` over every entry of that name in every
+  live unit's sets (`cu` that unit's CU-list index); no name is in the
+  index without such an entry and no entry's name is missing. The
+  address area equals S-G5's list for the inputs: for each unit in
+  CU-list order, its ranges in the order its root DIE and range list
+  state them, read through the inputs' relocations, with the empty ones
+  and those whose section the map does not place left out, each `(low,
+  high, cu)` with `low` the output address of the range's start
+  (the section's place plus the offset; a piece's address for a
+  section placed by pieces) and `high = low + length`.
+- **P-G9 (the bytes, S-G7, S-G7a).** The section's bytes are exactly
+  S-G7's for that content: version 7 (8 and 9 are valid indexes, P-G1,
+  but not mortar's); the offsets `24`, `24 + 16C`,
+  the same, `24 + 16C + 20R`, then `+ 8T`; `T = max(1024, P)` with `P`
+  the smallest power of two above `⌊4N/3⌋`; each CU vector sorted
+  ascending with each value once; the names inserted in name order (the
+  order of first occurrence, units in CU-list order, pubnames before
+  pubtypes, set order) at the first empty slot of their probe; the
+  constant pool the vectors in name order, then the names in name
+  order, each with its NUL; empty slots `(0, 0)`; the size S-G7a's. The
+  first area that differs is named, with the offset of its first
+  differing byte. This rule judges what the content rules do not see
+  (the order of the vectors and names, the empty slots, the padding a
+  writer could leave): with it every byte of mortar's index is decided.
+
+**Not judged.** `.debug_names` (lld's `--debug-names` is refused by
+mortar, synth.md S-G9; input tables are copied, I-49a). The TU list's
+entries (mortar's is empty; a reference's is counted, not read). The
+shortcut table of a version-9 index (`gdb-add-index`'s). Whether a name
+is spelled as gdb canonicalizes it (the manual: "the names of C++
+symbols in the hash table are canonicalized"; S-G4 copies the
+compiler's spelling, as lld and mold do; §6.10's gdb witness, below,
+found no lookup that fails on it).
+
+Tests: `tests/gdb_index.rs` (§9.2 (r), §9.4); `src/gdbindex.rs`'s unit
+tests (the hash, the probe, the header). The byte sweep's `gdbindex` case
+(§12.3) sweeps every byte of mortar's index.
+
 ## 7. The report
 
 ### 7.1 Findings
@@ -2563,8 +2753,9 @@ A finding has:
 
 - the rule id: `O1`, `S1`–`S21`, `I1`, `I2`, `M1`–`M5`, `R1`–`R9`, `T1`,
   `Y1`–`Y5`, `E1`–`E5`, `F1`–`F5` (§4.8), `P1`–`P2` (§6.6), `B1` (§6.7),
-  `C1`–`C6` (§5.10), `P-D1`–`P-D13` (§12), `P-I1`–`P-I6` (§6.8), `P-M1`–`P-M3` (§13) or `P-E1`–`P-E6`
-  (§6.9; a side's finding there carries its side, `X:` or `F:`);
+  `C1`–`C6` (§5.10), `P-D1`–`P-D13` (§12), `P-I1`–`P-I6` (§6.8), `P-M1`–`P-M3` (§13), `P-E1`–`P-E6`
+  (§6.9; a side's finding there carries its side, `X:` or `F:`) or
+  `P-G1`–`P-G9` (§6.10);
 - the output address, if it has one;
 - the site (input file, archive member, section, offset);
 - the relocation type's name and the symbol;
@@ -2602,8 +2793,10 @@ records of sections not in the output are counted separately
 and left unchecked, the bytes S12 compared, and the FDEs and header
 entries of §6.4, the symbols of §6.5, the IRELATIVE records and IPLT
 entries of §4.8, and the property types §6.6 judged and did not judge, what B1 made of
-the build id (§6.7), and the x86-64 large sections whose placement no
-rule judges (`placement_not_judged`, §6.5), and stage 4's `meta` (§13.2).
+the build id (§6.7), the x86-64 large sections whose placement no
+rule judges (`placement_not_judged`, §6.5), stage 4's `meta` (§13.2), and for an output with a
+`.gdb_index` its version, units, address entries and names and the rules
+that judged it (`gdb index: ...`, §6.10).
 
 The four stage-2 reasons are the only ones allowed on the reference
 corpus.
@@ -2909,6 +3102,39 @@ produce a finding that is not a recorded anomaly (`tests/mutation.rs`):
     flipped at 300 bytes, either map's text cut at 100 lengths, the
     outputs swapped, a foreign `F`, an empty `F`: no panic, and a cut,
     swapped, foreign or empty side is never clean.
+- **(r)** `.gdb_index` (§6.10; WP-098, `tests/gdb_index.rs`). Three
+  hand-written objects, each a function, a DWARF 4 unit with a child DIE
+  and GNU name sets whose names, attributes and order the test states
+  (`main_a` and `Main_a` share a hash; `shared` and `T_a` occur in more
+  than one unit; `fn_c` is static), linked by lld `--gdb-index` on
+  AArch64, x86-64 and i386. lld's output judged as lld's has no P-G
+  finding. The model of mortar's output is lld's with its index replaced
+  (`objcopy --update-section`, alignment 4) by the bytes S-G7 gives for
+  the sets, written by the test from synth.md, and the map read as
+  mortar's with the chunk:
+  - ACCEPTED: the model (no P-G finding);
+  - REJECTED, each by the rule named, and the format rules' mutants also
+    when judged as lld's: version 6 (P-G1); version 8 (P-G9); the CU
+    list not at the header's end, the symbol table after the pool, the
+    pool past the end, a non-empty TU list (P-G1); a CU entry's offset
+    or length (P-G2); an address entry's `cu` out of range, `low ≥
+    high` (P-G3, both), its `cu` another unit's, its range past or
+    before the unit's (P-G3, mortar's bound); a slot emptied, a value of
+    another kind, a static bit (P-G8); a name copied into an empty slot,
+    a name or vector offset past the pool, the last name without its
+    NUL (P-G4); a vector of count 0, a value's unit past the units, its
+    reserved bits, kind 5 (P-G5); a name's case changed (same hash:
+    P-G8); a vector's values swapped (P-G9 only: the sets are equal);
+    the section's alignment 1, the chunk's size, no chunk (P-G6);
+  - the silent `gdb-index-incomplete` (`p_g7_incomplete_index`): `c`
+    assembled without its sets and the index built from `a`'s and `b`'s,
+    everything else consistent: P-G7 only, naming unit 2; judged as
+    lld's, no finding (the index is a valid one);
+  - hostile (`p_g_hostile_index`, §9.4): each header word set to 0, 1,
+    3, 23, 24, 25, the size − 1, the size, the size + 1, `2^31` and
+    `2^32 − 1`; a 1000-slot table; a full table (P-G4); every byte of the
+    header, CU list and area and 400 random bytes set to 0, `0xff` and
+    flipped by bit 7: findings, no panic.
 
 ### 9.3 Map readers
 
@@ -3957,13 +4183,21 @@ the entry's `JUMP_SLOT` record in `DT_JMPREL`.
 of every byte of the synthetic sections (`.dynamic`, `.dynsym`,
 `.dynstr`, `.gnu.hash`, `.gnu.version`, `.gnu.version_r`, `.rela.dyn`,
 `.rela.plt`, `.plt`, `.plt.got`, `.plt.sec`, `.iplt`, `.got`, `.got.plt`,
-`.interp`, `.eh_frame_hdr`, `.eh_frame`; stage 4's `.note.mason` and the kept
-`.mason.meta`, §13) one mutant at a time and
+`.interp`, `.eh_frame_hdr`, `.eh_frame`, and `.gdb_index`, WP-098; stage 4's
+`.note.mason` and the kept `.mason.meta`, §13) one mutant at a time and
 judges each. A mutant is caught when a finding key appears that the
 unmutated output does not have (a panic counts as caught). It prints,
 per section and field range, the flips and the survivors. It is a
 measuring tool, not a gate: a survivor is either closed by a rule below
 or named as equivalent or as a follow-up row in WP-082's record.
+
+The lane's `gdbindex` case (WP-098; full lane) sweeps `.gdb_index` only,
+of a `-g -ggnu-pubnames` PIE linked `--gdb-index --build-id=none`: 8441
+bytes, no survivor on AArch64. Without a build id because the sweep does
+not reseal one (the mutation tool does, §9.5): in an output with mortar's
+build id every flip is a B1 finding, so the other cases measure B1 first
+(WP-098's record, §4: the `-pie` case without the id leaves 33 survivor
+ranges).
 
 **The field rules** (`dyncheck.rs` `fields`, every format unless marked):
 
@@ -4255,8 +4489,9 @@ stage 3 puts outside (P-D1) is still judged here.
   - *Place.* The section is `SHT_NOTE`, `SHF_ALLOC`, `sh_addralign` 8,
     and lies inside a `PT_NOTE` with `p_align` 8 whose file range holds
     its bytes. It holds whole notes (`n_namesz`, `n_descsz`, `n_type`,
-    the name padded to 4 and the descriptor to 8 from offset 24, O-52),
-    each owned by `MasonMeta` (`n_namesz` 10), with types `0x4d4f4401`
+    the name padded to 4 and the descriptor to 8 from offset 24, O-52;
+    every padding byte zero, since the bytes are a function of the rows,
+    O-50: WP-078's spec finding 11), each owned by `MasonMeta` (`n_namesz` 10), with types `0x4d4f4401`
     (exactly one) and `0x4d4f4402` (at most one, after the first).
   - *Presence.* The section exists exactly when a table is due (§13.1);
     the second note exactly when `--odr-table=full`. Options unknown:
