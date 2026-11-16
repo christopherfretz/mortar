@@ -2,8 +2,10 @@
 # its line is refused by name (input.md §8.4: "attempted static link of
 # dynamic object"), as GNU ld and lld refuse it (measured, both
 # architectures, the same words). mold links it: its output names no
-# library and the call has nowhere to go (W-class: not checked here).
+# library and the call has nowhere to go; the verifier names that A33
+# (spec/plumb.md §10.2: a shared object accepted after -Bstatic).
 #
+#@ anomaly(mold): A33
 #@ spec: dyn.md "D-2"
 #@ spec: input.md §8.4
 #@ arch: aarch64 x86_64
