@@ -1,0 +1,108 @@
+# Erratum 843419 sites with the fix not asked for (WP-103): every linker
+# leaves the ADRP at 0xFF8 and at 0xFFC, with no ADR and no patch
+# (a64.md 11.2: the fix is the option's). Two ways to have no option: a
+# bare `ld` line, and GCC's -mno-fix-cortex-a53-843419, which drops the
+# --fix-cortex-a53-843419 Debian's driver passes to every link. The
+# verifier reads the line (the last of the options wins) and judges no
+# site of these outputs. No reference linker accepts
+# --no-fix-cortex-a53-843419 (GNU ld 2.44, lld 19 and mold refuse it as
+# unknown), and neither does mortar, so it is not a line here.
+#@ spec: a64.md "11.1 The predicate"
+#@ spec: a64.md "11.2 The fix"
+#@ arch: aarch64
+
+as f.S -o f.o
+as start.S -o start.o
+cc -O1 -fPIE main.c -o main.o
+# no option on the line
+link ld -static start.o f.o -o bare
+run bare
+  exit: 42
+check objdump -d --disassemble=f bare
+  has: ff8: * adrp x0, 
+  has: ffc: * adrp x0, 
+  not: * adr x0, 
+  not: 000: * b 
+  not: 004: * b 
+# the driver's option taken away
+link gcc -pie -mno-fix-cortex-a53-843419 main.o f.o -o nofix
+run nofix
+  stdout: ok
+check objdump -d --disassemble=f nofix
+  has: ff8: * adrp x0, 
+  has: ffc: * adrp x0, 
+  not: * adr x0, 
+  not: 000: * b 
+  not: 004: * b 
+
+#--- f.S
+	.section .text.f,"ax",%progbits
+	.balign	4096
+	.globl	f
+	.type	f, %function
+f:
+	stp	x29, x30, [sp, #-16]!
+	mov	x10, x0
+	.rept	1020
+	nop
+	.endr
+	// the site at 0xFF8: W1, W2, then the final word
+	adrp	x0, v
+	ldr	x9, [sp]
+	ldrb	w9, [x0, :lo12:v]
+	add	x0, x0, :lo12:v
+	str	x0, [x10]
+	.rept	1020
+	nop
+	.endr
+	// the site at 0xFFC of the next page
+	adrp	x0, v
+	ldr	x9, [sp]
+	ldrb	w9, [x0, :lo12:v]
+	add	x0, x0, :lo12:v
+	str	x0, [x10, #8]
+	ldp	x29, x30, [sp], #16
+	ret
+	.size	f, .-f
+	.data
+	.balign	8
+	.globl	v
+v:	.quad	1
+	.section .note.GNU-stack,"",%progbits
+#--- start.S
+// _start: f(out) on the stack, then exit 42 when both sites load &v.
+	.text
+	.globl	_start
+	.type	_start, %function
+_start:
+	sub	sp, sp, #32
+	mov	x0, sp
+	bl	f
+	adrp	x1, v
+	add	x1, x1, :lo12:v
+	ldp	x2, x3, [sp]
+	mov	x0, #1
+	cmp	x2, x1
+	b.ne	1f
+	cmp	x3, x1
+	b.ne	1f
+	mov	x0, #42
+1:	mov	x8, #93
+	svc	#0
+	.section .note.GNU-stack,"",%progbits
+#--- main.c
+#include <stdio.h>
+extern char v[];
+void f(void **out);
+
+int main(void) {
+  void *o[2];
+  f(o);
+  void *want = (void *)v;
+  if (o[0] != want || o[1] != want) {
+    printf("wrong: %p %p, want %p\n", o[0], o[1], want);
+    return 1;
+  }
+  puts("ok");
+  return 0;
+}

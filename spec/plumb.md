@@ -174,7 +174,10 @@ The token rules:
 - **Strings.** `<path>`, `<member>`, `<name>` and `<target>` are string
   tokens. A byte from `!` to `~`, other than `%`, stands for itself. Every
   other byte is written `%XX` in upper-case hex. The empty string is a
-  lone `%`. A decoded string must be UTF-8.
+  lone `%`. A decoded string must be UTF-8, except an `arg` word: a word
+  of the line is bytes (`spec/cli.md` §2.1), so a word with a space, a
+  newline or bytes that are not UTF-8 is written and read exactly
+  (`%20`, `%0A`, `%FF`).
 - **Lines.** No line is empty before `end`. After `end`, only empty lines
   may follow.
 - **Versions.** The version is the integer in the header. A reader refuses
@@ -193,9 +196,12 @@ section's `sh_addr` (0) plus the offset: that is what a converted GNU ld
 or lld map holds.
 
 **The dynamic records** (§12 P-D3; WP-040 step 0d) follow
-`define`. A static link writes none of them; a dynamic link (`Exec`,
+`define`. A static link writes none of them but `arg`, which every map
+has (**the line records**, §3.2a; WP-102); a dynamic link (`Exec`,
 `Pie`, `StaticPie`) writes them, each package filling its own. Every
-string is a string token.
+string is a string token. The `arg` records keep their place in the
+grammar's order in every map: in a static map they follow `define` and
+the incremental records and end the map.
 
 | record | count | meaning |
 |---|---|---|
@@ -204,16 +210,17 @@ string is a string token.
 | `runpath <paths>`, `rpath <paths>` | at most one of the two | the `-rpath` list joined by `:` as written (`$ORIGIN` kept); `rpath` under `--disable-new-dtags` (`DT_RPATH`) |
 | `bind lazy`, `bind now` | at most one | `-z now` in force or not |
 | `relro on`, `relro off` | at most one | `-z norelro` in force or not |
-| `arg <word>` | any | the link's command line, one word per record, in order, with response files expanded and the program name left out |
+| `arg <word>` | one per word, in every map (§3.2a) | the link's command line, one word per record, in order, with response files expanded and the program name left out |
 | `needed <name>` | any | **hint**: a `DT_NEEDED` name, in the order written |
 | `copy <name> <addr> <size> <align>` | one per `COPY` record | **hint**: a copy allocation, by the name its `COPY` record names; `<align>` is its alignment, stated (the allocation records below, M8) |
 | `export <name>` | any | **hint**: an exported name |
 | `plt <name>` | any | **hint**: the key of a PLT entry, in PLT order (`name` or `name@version`) |
 | `iplt <name>` | any | **hint**: the key of an IPLT entry, in IPLT order |
 
-The first six records are facts of the command line: the verifier
-recomputes each from the `arg` words (or, for a reference link, from its
-response file) and reports a record that disagrees. The **hints** are
+The first five records are facts of the command line and the sixth,
+`arg`, is the line itself: the verifier recomputes each of the five
+from the `arg` words (or, for a reference link, from its response file)
+and reports a record that disagrees. The **hints** are
 never the expected value: every decision they name (the needed set and
 order, the copies, the export set, PLT order) is recomputed from the
 inputs (§12), and a hint only names what is compared. A
@@ -306,6 +313,80 @@ was truncated, with no `end`. Tests:
   (the writer side, `mortar_image::map::DynRecords`)
 - `s3_7_truncations_are_answers`
 - `tests/corpus.rs s3_2_reference_maps_round_trip_through_mortar_format`
+
+### 3.2a The line's options (WP-102)
+
+A mortar map carries its link's command line as `arg` records (§3.2),
+in **every** map: static, static-pie, dynamic, plain or incremental. The
+verifier's rules that hold only when an option was given read the
+option from those words, through one reader (`src/opts.rs`), and from
+nothing else: not from the caller, not from the output, not from a
+chunk that only exists because of the option. A reference linker's map
+has no line; for it the caller supplies the line (`xtask plumb --line`,
+the `--inputs-from` response file, or the link test's `ld` wrapper
+words) wherever a rule reads one, as the table says. A mortar map has
+at least one `arg` record (a link of no word is `no-input-files` and
+writes no map): a map without one, as a static link's map before WP-102,
+is malformed (§3.7), not judged without its options. For mortar's map
+nothing else is read for an option: not the caller's statement
+(`Map.fix_843419`, `Ctx.line`), not a chunk that exists because of the
+option.
+
+**Reading the words** is `spec/cli.md` §2's grammar, not restated: one
+or two dashes by §2.2's forms (a long name starting with `l`, `m` or `o`
+with two only, so `-odr-table=full` is `-o dr-table=full`), §2.2's
+lookup order (an exact name, a short option, an abbreviation of a GNU
+long name, §2.4, then a short option with its value joined), §2.3's
+values (a required value joined by `=` or the next word whatever it is,
+an optional one by `=` only), §2.7's `-z keyword` and `-zkeyword`, and
+the last of an option and its negation winning (§2.10; image.md I-69 for
+`--build-id`). Which spellings exist, which take a value and which are
+GNU's (and so abbreviate) are the rows of `docs/status/options.md` that
+mortar does not refuse: an accepted line has no other word (a refused
+option fails the link, and a failed link writes no map, image.md I-77).
+The reader holds a copy of those rows, and a test holds it equal to the
+table (`opts::tests::s3_2a_accepted_is_the_options_table`). An
+abbreviation is read as the one accepted GNU spelling it is a prefix
+of: mortar accepted the line, so it named exactly one GNU spelling
+(§2.4), and the accepted one with that prefix is it.
+
+- **M9 (the line, mortar's map).** A word that starts with `-`, is not
+  `-` alone, and that no accepted option spells by the rules above (an
+  unknown name, a value given to an option that takes none, a required
+  value missing at the end of the line, an unknown `-z` keyword, a word
+  that is not UTF-8 where an option's name stands) is a finding, one per
+  word: no link of this mortar wrote that line. The options are read
+  from the other words.
+
+**The rules and where they read their option:**
+
+| rule | option | mortar's map | a reference's map |
+|---|---|---|---|
+| C1, C5, C6 (§5.10; a64.md §11.3) | `--fix-cortex-a53-843419` (any value) given or not | the line | the caller (`Map.fix_843419`: `xtask plumb --fix-cortex-a53-843419` or `--no-fix-cortex-a53-843419`, or the `--inputs-from` response file), else inferred from the fixes found |
+| P-G6 (§6.10) | the last of `--gdb-index` and `--no-gdb-index`; `-s`, `--strip-all`, `-S`, `--strip-debug` | the line | not judged: P-G6 to P-G9 are mortar's rules |
+| B1 (§6.7) | the last of `--build-id[=STYLE]` and `--no-build-id` (I-69): presence, length and tree | the line; the build-id chunk's style, when it states one, must be the line's | not judged (no tool recomputes their ids) |
+| P-M1's kept section, P-M2's presence, P-M3's second half (§13) | `--keep-mason-meta`; the last `--odr-table`; the last of `--odr=M` and `--no-odr-check` | the line | none of them (a reference has none of mortar's options) |
+| P-D4's `PF_X` (dynamic), S10's `PF_X` (static) | the last of `-z execstack` and `-z noexecstack` (L-84) | the line | P-D4: the caller's line; S10: not judged (no line) |
+| stage 3 (§12, P-D1 to P-D15) | the whole line: D-1's kind, the files, `-dynamic-linker`, `-z now`, `-z relro`, `-E`, ... (`line.rs`) | the line | the caller's line (`Ctx.line`); without one, P-D2 |
+
+**Static outputs, S10's clause** (§9.5 hole 1, §11 item 11): in an
+output of mortar's map, `PT_GNU_STACK`'s `PF_X` is P-D4's rule
+(L-84): set under the line's last `-z execstack`, clear under `-z
+noexecstack`, and with neither set exactly when an input object's
+`.note.GNU-stack` is `SHF_EXECINSTR`; a finding is S10.
+
+Still read without the line, and why: P-M3's second half ("every
+relocatable file the map names is on the command line") needs the
+line's files found as the linker found them (`-l` searched in the `-L`
+directories, scripts read), which only stage 3's entry has (`Ctx.files`):
+on a static output it is not judged. S7's entry symbol (`-e`) is judged
+in stage 3 only (P-D4); a static output's entry is held to "some
+symbol's value" (S7, mortar's clause).
+
+Tests: `opts::tests` (the forms, values, last wins, abbreviations, M9's
+words, the table), `map::mortar::tests::s3_2_arg_records_in_every_map`
+(a static map's words, with a space, a newline, `%`, the empty word and
+bytes that are not UTF-8, round-trip and make no dynamic record).
 
 ### 3.3 Resolving a map
 
@@ -502,7 +583,10 @@ Tests: `map::mold::tests::s3_6_mold_map_excerpt` and
 
 ### 3.7 Errors
 
-Each reader returns `Ok(Map)` or `Err(MapError)`. It never panics. No
+Each reader returns `Ok(Map)` or `Err(MapError)`. It never panics.
+Mortar's reader also refuses a map with no `arg` record (§3.2a: every
+mortar map states its line; one written before WP-102 by a static link
+has none). No
 input, however truncated or corrupted, leads to any other outcome (tests:
 `s3_7_truncations_are_answers`, `tests/hostile.rs s9_4_mutated_maps`).
 
@@ -1481,8 +1565,8 @@ WP-029b's linker writes has a rule and a mutation that it catches
   mutant (§9.5); judging them needs the map to name each slot's owner.
 - the non-`PT_LOAD` segments' `p_flags` and `p_align`, and
   `PT_GNU_RELRO`'s `p_filesz` (the loader reads `p_memsz`);
-- `PT_GNU_STACK`'s `PF_X` in a static output (§11 item 11; a dynamic
-  output's is P-D4's, WP-088);
+- `PT_GNU_STACK`'s `PF_X` in a static output of a reference (no line;
+  mortar's is S10's, §3.2a, and a dynamic output's P-D4's, WP-088);
 - the large-model sections' placement (`placement_not_judged`).
 
 A record whose rewriting cannot be judged (its symbol unresolved, as in a
@@ -1519,12 +1603,15 @@ outputs:
    Other words are their output words (§8 rewritings applied, so a
    relaxed `ADRP` is not a `W1`).
 3. **The sites** are a64.md §11.1's on the pre-fix words, both forms.
-4. **The option.** No map format records `--fix-cortex-a53-843419`. The
-   caller states it (`Map.fix_843419`: `xtask plumb
-   --fix-cortex-a53-843419`/`--no-fix-cortex-a53-843419`, or read from
-   the `--inputs-from` response file); otherwise any fix found shows it
-   was given, and a link with no fix leaves its sites not judged
-   (coverage `erratum_not_judged`). The map should carry it (request).
+4. **The option.** Mortar's map gives it: its line (§3.2a), the option
+   given or not; the caller's statement is not read for it. A
+   reference's map has the caller state it (`Map.fix_843419`:
+   `xtask plumb --fix-cortex-a53-843419`/`--no-fix-cortex-a53-843419`,
+   or read from the `--inputs-from` response file); otherwise any fix
+   found shows it was given, and a link with no fix leaves its sites not
+   judged (coverage `erratum_not_judged`, and the coverage line says
+   which: the link without the option, or, for a reference, the option
+   unknown).
 
 The rules (ids C1-C6):
 
@@ -1542,7 +1629,8 @@ The rules (ids C1-C6):
 - **C5** (mortar, the option in effect). A map chunk in an executable
   section starts at page offset `0xFFC`, `0x000`, `0x004` or `0x008`
   (§11.3 item 8, `spec/layout.md` L-118).
-- **C6** (mortar). A fix in a link stated to be without the option.
+- **C6** (mortar). A fix in a link without the option (its line, §3.2a,
+  or the caller's statement).
 
 Coverage counts the sites found with their fix (`erratum_sites`) and the
 sites not judged.
@@ -1703,7 +1791,10 @@ that breaks it (`tests/mutation.rs s9_2e_each_structure_rule_is_enforced`).
   the block). A wrong `p_memsz` moves every x86-64 TP offset; a wrong
   `p_align` moves every AArch64 one (§4.7's `tcb`).
 - **S10.** There is at most one `PT_GNU_STACK`. **(mortar, i386)** Its
-  `p_align` is 16 (x86.md X86-66).
+  `p_align` is 16 (x86.md X86-66). **(mortar's map, static)** Its `PF_X`
+  is the line's (§3.2a, L-84): set under the last `-z execstack`, clear
+  under `-z noexecstack`, and with neither set exactly when an input's
+  `.note.GNU-stack` is `SHF_EXECINSTR`.
 - **S11.** Every `PT_NOTE` lies in the file and is a sequence of whole
   notes (gABI "Note Section"), with padding to 4, or to 8 when `p_align`
   is 8. The padding after a descriptor is there "to ensure 4-byte
@@ -2180,6 +2271,16 @@ above. The writer that must carry it is `crates/mortar_image/src/link.rs`'s
 synthetic chunk loop, from `LinkOptions::build_id`: `Some(TreeStyle::…)`
 gives the tree's name and `None` (a given id) gives `given`. This is a
 request to the image package; the verifier reads both forms now.
+
+**The style from the line (WP-102).** A map with `arg` records gives the
+style as the line asks it (§3.2a; image.md I-69, the last of
+`--build-id[=STYLE]` and `--no-build-id`): bare `--build-id` is
+`default`, `=fast`, `=sha1`, `=sha256` their trees, `=0xHEX` `given`,
+any other value not judged. The line decides, and two more clauses of
+B1 hold: the output has an `NT_GNU_BUILD_ID` note exactly when the line
+asks for one (absent, `--build-id=none` or `--no-build-id` last: none),
+and a style the build-id chunk states is the line's. The tree is the
+line's style's, never the chunk's alone.
 
 SHA-1 and SHA-256 are written from FIPS 180-4 and `L128` from I-114's
 text, in `src/buildid.rs`; none is shared with `mortar_digest`. The
@@ -2756,13 +2857,11 @@ writes adjacent ranges of a unit as one entry.
   calls it reserved, but GCC writes it (`GDB_INDEX_SYMBOL_KIND_NONE`)
   and gdb reads it.
 
-**Mortar's rules.** The option is read from the map's `arg` words when
-it has them (the last of `--gdb-index` and `--no-gdb-index` wins;
-`-S`, `--strip-debug`, `-s`, `--strip-all` strip the debug information,
-S-G8). A static link's map has no `arg` record (§3.2: the dynamic
-records), so there the option is taken from the map's chunk: a map with
-`chunk synthetic .gdb_index - <size>` says the link had the option and
-one without it says it did not. Which inputs are units, and their name
+**Mortar's rules.** The option is read from the map's line (§3.2a: the
+last of `--gdb-index` and `--no-gdb-index` wins; `-S`, `--strip-debug`,
+`-s`, `--strip-all` strip the debug information, S-G8); the chunk
+`chunk synthetic .gdb_index - <size>` is the section's size, not the
+option. Which inputs are units, and their name
 sets, are read again from the inputs, by synth.md S-G2, S-G3a, S-G4a
 and S-G5, through the inputs' relocations (§4.4: a symbol's section and
 `st_value + addend`, REL's implicit addend) and the map's places.
@@ -3364,7 +3463,8 @@ every linker and asserts the classes that must have no miss.
   on x86-64 (relaxed references keep their slot); `GOTPCREL` against
   glibc's `_nl_current_*_used` (every slot holds 1, so another slot or
   symbol gives the same value); the non-`PT_LOAD` segments' flags and
-  alignment (but `PT_GNU_STACK`'s `PF_X`, P-D4 in stage 3, and
+  alignment (but `PT_GNU_STACK`'s `PF_X`, P-D4 in stage 3 and S10 in a
+  static output of mortar's, and
   `PT_NOTE`'s and `PT_GNU_PROPERTY`'s `p_align`, S11; `PT_DYNAMIC`'s
   `PF_W` is read by glibc since 2.35 as "`.dynamic` is read-only", which
   only changes whether ld.so relocates its pointers in place or adds the
@@ -3380,10 +3480,9 @@ every linker and asserts the classes that must have no miss.
   (RELRO), S21 (`PT_GNU_EH_FRAME`), and Y4's mapping symbols (no `$x`
   or `$d` was judged before).
 - **Holes, by cost:**
-  1. `PT_GNU_STACK` `PF_X` flipped (the stack made executable): needs
-     the link's `-z execstack` from the map (§11 item 11). Judged in
-     stage 3, which has the line (P-D4, WP-088); a static output's map
-     does not carry it yet.
+  1. `PT_GNU_STACK` `PF_X` flipped (the stack made executable): judged
+     in stage 3 (P-D4, WP-088) and, since WP-102, in a static output of
+     mortar's map from its line (S10, §3.2a).
   2. Linker-defined symbols' `st_size` (`_GLOBAL_OFFSET_TABLE_`,
      `__init_array_start`, … made 1): no spec states the size; a line
      in synth.md (size 0) makes it a Y5 clause.
@@ -3951,10 +4050,10 @@ DWARF's text, and each is accepted only from its own linker.
    until one exists every i386 record is `machine`.
 10. X-48: resolved (WP-028d, §5.9): in mortar's static `ET_EXEC`
     output, a branch or GOT reference to `__tls_get_addr` is R8.
-11. The map should state the link's options that decide a rule: the
-    erratum option (§5.10) and `-z execstack`/`-z noexecstack` (with
-    them `PT_GNU_STACK`'s `PF_X` could be judged against L-84's table;
-    today a flipped `PF_X` there is not found, §9.5).
+11. (Resolved by WP-102, §3.2a.) The map states the link's options that
+    decide a rule: its line, in every map; the erratum option (§5.10)
+    and `-z execstack`/`-z noexecstack` (S10's `PF_X` clause) are read
+    from it.
 
 ## 12. Stage 3: dynamic executables (M2)
 
@@ -4169,10 +4268,11 @@ shrink a copy to 0, overlap two copies, misorder `IRELATIVE`, drop a
 ### 12.1 How the verifier reaches them (WP-050)
 
 This subsection records how WP-050's verifier reaches the rules above.
-A dynamic output (`PT_DYNAMIC`) is judged with the map, the inputs and the **line** (the linker's words: `--line FILE`,
-one word per line, or `--inputs-from`; a mortar map's `arg` records when
-neither). The line gives D-1's kind, `-dynamic-linker`, `-z now`,
-`-z relro`, `-E` and the files of D-11/D-12; the shared objects are read
+A dynamic output (`PT_DYNAMIC`) is judged with the map, the inputs and
+the **line**: a mortar map's `arg` records (§3.2a), a reference's from
+the caller (the linker's words: `--line FILE`, one word per line, or
+`--inputs-from`). The line gives D-1's kind, `-dynamic-linker`, `-z
+now`, `-z relro`, `-E` and the files of D-11/D-12; the shared objects are read
 from the file system (`line::Files`).
 
 - **The model** (`dynmodel.rs`): D-11's needed set, D-12's used set and
@@ -4656,14 +4756,12 @@ stage 3 puts outside (P-D1) is still judged here.
 
 ### 13.1 What the rules read
 
-- **The options**, from the link's words (`Ctx::line`, else the mortar
-  map's `arg` records, §3.2): `--odr-table=V` and `--odr-table V` (the
-  last wins, default `off`), `--odr=M` and `--odr M` (default `warn`),
-  `--no-odr-check` (`--odr=off`), `--keep-mason-meta`; one or two
-  dashes (`spec/cli.md` §2.2). A static link's map has no `arg` records
-  (§3.2): the options are then **unknown**, and every rule below that
-  needs them is counted as not judged (`meta: options unknown`); the
-  rules that need no option still run.
+- **The options**, from the mortar map's line (§3.2a; `spec/cli.md`
+  §2's forms: `--odr-table` and `--odr` take two dashes only):
+  `--odr-table=V` and `--odr-table V` (the last wins, default `off`),
+  `--odr=M` and `--odr M` (default `warn`), `--no-odr-check`
+  (`--odr=off`), `--keep-mason-meta`. A reference's map has none of
+  them (none of mortar's options).
 - **The output kind.** A table is due (O-50, as implemented: WP-075)
   exactly when the output has a `PT_INTERP` (a dynamic executable, PIE
   or not), `--odr-table` is not `off` and `--odr` is not `off`, units
@@ -4723,8 +4821,7 @@ stage 3 puts outside (P-D1) is still judged here.
     0, `sh_addralign` 8, and its bytes must equal MT-32's: the units that
     parse, in the order above, each followed by zeros to a multiple of 8.
     It is present exactly when `--keep-mason-meta` was given and at least
-    one unit parses (options unknown: present only when one parses; the
-    option is not judged). An **ordinary copy** is a `.mason.meta` that
+    one unit parses. An **ordinary copy** is a `.mason.meta` that
     the map fills only from placed input sections that are not containers
     (encoding K, `spec/meta.md` §2: an input `.mason.meta` without
     `SHF_EXCLUDE`): legal without the option, and with it when no live

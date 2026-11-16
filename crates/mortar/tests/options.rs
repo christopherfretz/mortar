@@ -9,6 +9,9 @@
 
 mod support;
 
+use mortar_plumb::Rule;
+use support::plumb::LineEdit;
+
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -394,22 +397,10 @@ impl Cx {
         if let (Some(out), Some(map), true) = (out, &map, o.success()) {
             let out = self.scratch.join(out);
             if out.exists() {
+                // A given id (`0xHEX`) is judged as given: the map's line
+                // states it (spec/plumb.md §6.7 "The style from the line").
                 let findings = support::plumb::verify(&out, map, self.scratch.path());
-                if args.iter().any(|a| a.starts_with("--build-id=0x")) {
-                    // spec/plumb.md §6.7 "The style from the map": a given
-                    // id (`0xHEX`) of a hash's length is judged as a hash
-                    // (a false B1) until mortar's map states the style
-                    // `given` (a request to the image package). When it
-                    // does, this exception is stale and fails.
-                    assert!(
-                        !findings.is_empty()
-                            && findings.iter().all(|f| f.rule == mortar_plumb::Rule::BuildId),
-                        "{args:?}: the given build id's exception is stale or hides more: \
-                         {findings:#?}"
-                    );
-                } else {
-                    assert!(findings.is_empty(), "plumb on {}: {findings:#?}", out.display());
-                }
+                assert!(findings.is_empty(), "plumb on {}: {findings:#?}", out.display());
             }
         }
         o
@@ -438,6 +429,14 @@ impl Cx {
         let o = self.ld(&args);
         assert!(o.success(), "ld.bfd {extra:?}: {}", o.stderr_text());
         self.scratch.join(out)
+    }
+
+    /// [`support::plumb::line_mutants`] on mortar's link of `start.o` with
+    /// `extra`.
+    fn line_mutants(&self, extra: &[&str], cases: &[(LineEdit, Rule)]) {
+        let out = self.link(extra, "line.out");
+        let map = self.scratch.join("line.out.mortar-map");
+        support::plumb::line_mutants(&out, &map, self.scratch.path(), cases);
     }
 
     fn bytes(&self, extra: &[&str], out: &str) -> Vec<u8> {
@@ -593,6 +592,26 @@ fn build_id_styles(cx: &Cx) {
     }
     let hex = cx.readelf("-nW", &cx.link(&["--build-id=0x0123456789abcdef"], "bid.out"));
     assert!(hex.contains("Build ID: 0123456789abcdef"), "{hex}");
+    // spec: plumb.md §3.2a, §6.7 (WP-102): B1 takes the note's presence and
+    // style from the map's line. The word removed (no note asked for),
+    // `--no-build-id` or another style later (the last wins); and a link
+    // without a note, `--build-id` added.
+    cx.line_mutants(
+        &["--build-id=sha1"],
+        &[
+            (LineEdit::Remove(&["--build-id=sha1"]), Rule::BuildId),
+            (LineEdit::Add(&["--no-build-id"]), Rule::BuildId),
+            (LineEdit::Add(&["--build-id=sha256"]), Rule::BuildId),
+            (LineEdit::Add(&["--build-id=fast"]), Rule::BuildId),
+        ],
+    );
+    cx.line_mutants(
+        &[],
+        &[
+            (LineEdit::Add(&["--build-id"]), Rule::BuildId),
+            (LineEdit::Add(&["--build-id=sha1"]), Rule::BuildId),
+        ],
+    );
 }
 
 // spec: synth.md S-57 (`--eh-frame-hdr`, `--no-eh-frame-hdr`)
@@ -854,6 +873,51 @@ fn execstack(cx: &Cx) {
             assert_eq!(stack.1, want, "{extra:?}");
         }
     }
+    // spec: plumb.md §3.2a, S10 (WP-102): a static output's `PF_X` is the
+    // map's line's (L-84). The option removed, the other one later, both
+    // spellings; and with no option, `-z execstack` added.
+    cx.line_mutants(
+        &["-z", "execstack"],
+        &[
+            (LineEdit::Remove(&["-z", "execstack"]), Rule::Structure(10)),
+            (LineEdit::Add(&["-z", "noexecstack"]), Rule::Structure(10)),
+            (LineEdit::Add(&["-znoexecstack"]), Rule::Structure(10)),
+        ],
+    );
+    cx.line_mutants(
+        &[],
+        &[
+            (LineEdit::Add(&["-z", "execstack"]), Rule::Structure(10)),
+            (LineEdit::Add(&["-zexecstack"]), Rule::Structure(10)),
+        ],
+    );
+}
+
+// spec: plumb.md §3.2a, §6.10 P-G6 (WP-102): a static output's
+// `--gdb-index` is read from the map's line, not from its chunk. The word
+// removed, `--no-gdb-index` or a strip option (S-G8) later; and with no
+// option, `--gdb-index` added. And M9: a word no accepted option spells.
+#[test]
+fn the_line_decides_the_rules() {
+    let Some(cx) = Cx::new() else { return };
+    cx.line_mutants(
+        &["--gdb-index"],
+        &[
+            (LineEdit::Remove(&["--gdb-index"]), Rule::GdbIndex(6)),
+            (LineEdit::Add(&["--no-gdb-index"]), Rule::GdbIndex(6)),
+            (LineEdit::Add(&["-S"]), Rule::GdbIndex(6)),
+            (LineEdit::Add(&["--strip-all"]), Rule::GdbIndex(6)),
+        ],
+    );
+    cx.line_mutants(
+        &[],
+        &[
+            (LineEdit::Add(&["--gdb-index"]), Rule::GdbIndex(6)),
+            (LineEdit::Add(&["-gdb-index"]), Rule::GdbIndex(6)),
+            (LineEdit::Add(&["--no-such-option"]), Rule::Map(9)),
+            (LineEdit::Add(&["-z", "no-such-keyword"]), Rule::Map(9)),
+        ],
+    );
 }
 
 // spec: layout.md L-71 (`-z separate-code`: the RX segment starts and

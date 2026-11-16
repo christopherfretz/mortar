@@ -387,11 +387,14 @@ impl Case {
             target: None,
             line: 0,
         });
-        let map =
-            mortar_plumb::map::parse(Format::Mortar, &mortar_plumb::map::mortar::write(&base))
-                .unwrap_or_else(|e| {
-                    panic!("{arch:?}: mortar's map: line {}: {}", e.line, e.message)
-                });
+        // The line (plumb.md §3.2a): the modelled link had `--gdb-index`.
+        base.args = base.paths().iter().map(|p| p.as_bytes().to_vec()).collect();
+        base.args.push(b"--gdb-index".to_vec());
+        let map = mortar_plumb::map::parse(
+            Format::Mortar,
+            &mortar_plumb::map::mortar::write(&with_line(&base)),
+        )
+        .unwrap_or_else(|e| panic!("{arch:?}: mortar's map: line {}: {}", e.line, e.message));
         Some(Case { arch, lld, files, lld_map, out: mbytes, map, at, index, _scratch: scratch })
     }
 
@@ -532,6 +535,25 @@ impl Case {
         map.chunks.retain(|c| c.name != ".gdb_index");
         let r = self.pg(&self.out, &map);
         assert!(r.iter().any(|f| f.starts_with("P-G6 ")), "{:?}: no chunk: {r:#?}", self.arch);
+        // §3.2a (WP-102): the option is the line's. Without `--gdb-index`,
+        // or with `--no-gdb-index` or `-S` later, the index is not asked for.
+        for (what, edit) in [
+            (
+                "removed",
+                (|a: &mut Vec<Vec<u8>>| a.retain(|w| w != b"--gdb-index")) as fn(&mut Vec<Vec<u8>>),
+            ),
+            ("negated", |a| a.push(b"--no-gdb-index".to_vec())),
+            ("stripped", |a| a.push(b"-S".to_vec())),
+        ] {
+            let mut map = self.map.clone();
+            edit(&mut map.args);
+            let r = self.pg(&self.out, &map);
+            assert!(
+                r.iter().any(|f| f.starts_with("P-G6 ") && f.contains("do not ask")),
+                "{:?}: the option {what}: {r:#?}",
+                self.arch
+            );
+        }
     }
 }
 
@@ -635,4 +657,19 @@ fn p_g_hostile_index() {
             let _ = c.pg(&m, &c.map);
         }
     }
+}
+
+/// `map` with a line (`spec/plumb.md` §3.2a: every mortar map states its
+/// link's words, and mortar's reader refuses one without). A reference's
+/// map has none: these links gave none of the options §3.2a's rules read,
+/// so the map's input paths stand for the words.
+fn with_line(map: &Map) -> Map {
+    let mut m = map.clone();
+    if m.args.is_empty() {
+        m.args = m.paths().iter().map(|p| p.as_bytes().to_vec()).collect();
+        if m.args.is_empty() {
+            m.args.push(b"a.o".to_vec());
+        }
+    }
+    m
 }

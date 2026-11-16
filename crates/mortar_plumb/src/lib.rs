@@ -36,6 +36,7 @@ mod maprec;
 mod meta;
 pub mod mutate;
 mod odrtable;
+pub mod opts;
 mod plt;
 pub mod prof;
 mod property;
@@ -101,11 +102,21 @@ pub fn verify(output: &[u8], inputs: &[Input<'_>], map: &Map) -> Report {
         report.findings.extend(maprec::copies(map, &[]));
     }
     report.coverage = std::mem::take(&mut engine.cov);
-    // Stage 4 (§13): a static map has no `arg` records, so the options
-    // are unknown unless a static-pie's map gives them.
-    let args = map.dynamic.as_ref().map(|d| d.args.clone()).filter(|a| !a.is_empty());
-    let meta =
-        odrtable::check(&image, &objs, map, args.as_deref(), None, &mut report.coverage.meta);
+    // The line's options (§3.2a), from a mortar map's `arg` records.
+    let opts = opts::of(map);
+    if let Some(o) = &opts {
+        report.findings.extend(opts::unread_findings(o));
+        // S10 (§3.2a): a static output's PT_GNU_STACK's PF_X is the
+        // line's (L-84); a dynamic output's is P-D4's, in stage 3.
+        let dynamic = dynout::DynOut::read(&image).is_some();
+        if let Some((m, at)) = dyncheck::stack(&image, o.execstack, &objs, map.format)
+            && !dynamic
+        {
+            report.findings.push(Finding::new(Rule::Structure(10), m).at(at));
+        }
+    }
+    // Stage 4 (§13).
+    let meta = odrtable::check(&image, &objs, map, opts.as_ref(), None, &mut report.coverage.meta);
     report.findings.extend(meta);
     report.sort();
     prof::mark("odr table, sort");
@@ -219,6 +230,9 @@ pub(crate) fn run_engine(
     if map.format == Format::Mortar {
         let ids = buildid::check(image, &mut engine.cov, buildid::Style::of(map));
         engine.findings.extend(ids);
+        if let Some(o) = opts::of(map) {
+            engine.findings.extend(buildid::line_rules(image, map, &o));
+        }
         prof::mark("build id");
         // M6, M7 (§3.3): the allocation records, in every mortar map.
         engine.findings.extend(maprec::check(image, objs, map));

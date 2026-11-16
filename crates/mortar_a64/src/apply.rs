@@ -546,7 +546,7 @@ fn value(
         Base::GotBase => cx.got_base.ok_or(FieldError::MissingTerm("GOT base"))?,
         // §7: `A` for `weak0`, whose TP and DTP offsets are 0.
         Base::TpRel => tls_off(cx, sym, a, |x, tls| TLS.tp_rel(x, tls))? as u64,
-        Base::DtpRel => tls_off(cx, sym, a, mortar_arch::TlsAbi::dtp_rel)? as u64,
+        Base::DtpRel => cx.dtp_rel(sym, a)? as u64,
         Base::Size => sym.size,
     };
     let got = match h.value.minus {

@@ -3,24 +3,31 @@
 # abseil 20240722.0's absl_log_structured_test, gcc row: GCC's
 # `adrp x0, :got:__libc_single_threaded; ldr x0, [x0, :got_lo12:...];
 # ldrb w0, [x0]` at page offset 0xFFC). spec/a64.md §11.1 makes it a
-# site and §11.2 gives it a fix (`W1` 311: `V` is `G(GDAT(S))`); GCC on
-# Debian passes --fix-cortex-a53-843419 to every link. GNU ld writes the
-# ADR fix. mortar leaves the ADRP: on a Cortex-A53 the load can read the
-# wrong address. The same shape against the executable's own data, one
-# page later in the same section, is fixed by mortar (ADR), so this is
-# the GOT page of a dynamic symbol's slot only. The verifier finds it
-# (C1) once the output has a fix elsewhere, which the second site
-# provides: without one it counts the sites as not judged
-# (`mortar_plumb` erratum.rs: the map does not say the option was given).
+# site and §11.2 gives it a fix (`W1` 311: `V` is `G(GDAT(S))`). GCC on
+# Debian passes --fix-cortex-a53-843419 to every link; the line spells it
+# as well, for a driver that does not. GNU ld writes the ADR to the
+# slot's page at both sites, and since WP-103 so does mortar. Until
+# then mortar left the GOT site's ADRP: the erratum scan's stand-in for
+# the symbol's unknown address made the ADRP an ADD in the round's words,
+# so the predicate never saw it. The verifier knows the option from the
+# line (WP-103; before, it inferred it from the fixes it found). lld and
+# mold leave both ADRPs (`W2` writes `Xn`, a shape the verifier does not
+# judge on a reference output, plumb.md A4).
+#@ spec: a64.md "11.1 The predicate"
 #@ spec: a64.md "11.2 The fix"
 #@ arch: aarch64
-#@ xfail(mortar): RB-2: an erratum 843419 site whose ADRP is R_AARCH64_ADR_GOT_PAGE against a shared library's symbol is not fixed (a64.md §11.2)
 
 as f.s -o f.o
 cc -O1 -fPIE main.c -o main.o
-link gcc -pie main.o f.o -o prog
+link gcc -pie -Wl,--fix-cortex-a53-843419 main.o f.o -o prog
 run prog
   stdout: ok
+check(mortar) objdump -d --disassemble=f prog
+  has: ffc: * adr x0, 
+  has: ff8: * adr x1, 
+check(bfd) objdump -d --disassemble=f prog
+  has: ffc: * adr x0, 
+  has: ff8: * adr x1, 
 
 #--- f.s
 	.text

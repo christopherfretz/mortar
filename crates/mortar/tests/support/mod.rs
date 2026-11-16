@@ -475,7 +475,11 @@ pub fn front_of<'s>(
     );
     let report = diag.finish();
     match f {
-        Some(f) if !report.failed() => Ok(f),
+        Some(mut f) if !report.failed() => {
+            // The map's line (plumb.md §3.2a), as `mortar::link` sets it.
+            f.args = parsed.args.iter().map(|a| a.as_encoded_bytes().to_vec()).collect();
+            Ok(f)
+        }
         _ => Err(report),
     }
 }

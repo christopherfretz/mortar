@@ -143,7 +143,7 @@ pub struct Front<'s> {
     pub placed: Placed,
     /// The erratum fixes (`spec/a64.md` §11.2): words written over fill's
     /// bytes, by address, sorted (`LinkSites::erratum_fixes`).
-    pub erratum_fixes: Vec<(u64, [u8; 4])>,
+    pub erratum_fixes: Vec<mortar_image::fill::Fixup>,
 }
 
 /// One output section of a [`Front`]'s layout, as its section header will
@@ -807,6 +807,7 @@ pub fn front<'s>(
             slots: demand_slots,
             got: &plans.got,
             ids,
+            output,
         };
         if kept_sites.as_ref().is_none_or(|(i, _)| *i != ids) {
             match LinkSites::new(site_inputs, &branch_candidates, arch, &walker, &pool) {
@@ -1087,6 +1088,7 @@ pub fn front<'s>(
             slots: &layout.slots,
             got: final_got.as_ref().unwrap_or(&plans.got),
             ids,
+            output,
         };
         match LinkSites::new(site_inputs, &branch_candidates, arch, &walker, &pool) {
             Ok(s) => s.erratum_fixes(&layout.placement, &pool),

@@ -1,0 +1,115 @@
+# Erratum 843419 at a GOT page (311) of the program's own data, the GOT
+# load not next to its ADRP so that no linker relaxes it (a64.md 8.5,
+# R5 needs the pair; WP-103): `V` is the slot (11.2, `G(GDAT(S))`), the ADR.
+#@ spec: a64.md "11.1 The predicate"
+#@ spec: a64.md "11.2 The fix"
+#@ arch: aarch64
+# GNU ld's static PIE: the GOT slot of glibc's absolute
+# `_nl_current_*_used` gets a RELATIVE record (plumb.md 10.2).
+#@ anomaly(bfd): A30
+
+as f.S -o f.o
+cc -O1 -fno-pie main.c -o main-static.o
+cc -O1 -fPIE main.c -o main-static-pie.o
+cc -O1 -fPIE main.c -o main-pie-now.o
+cc -O1 -fPIE main.c -o main-pie-lazy.o
+cc -O1 -fno-pie main.c -o main-exec.o
+# a static executable; the option spelled (the x86-64 host's cross driver may not pass it).
+link gcc -static -no-pie -Wl,--fix-cortex-a53-843419 main-static.o f.o -o static
+run static
+  stdout: ok
+check(mortar) objdump -d --disassemble=f static
+  has: ff8: * adr x0, 
+  has: ffc: * adr x0, 
+check(bfd) objdump -d --disassemble=f static
+  has: ff8: * adr x0, 
+  has: ffc: * adr x0, 
+# a static PIE; the option spelled (the x86-64 host's cross driver may not pass it).
+link gcc -static-pie -Wl,--fix-cortex-a53-843419 main-static-pie.o f.o -o static-pie
+run static-pie
+  stdout: ok
+check(mortar) objdump -d --disassemble=f static-pie
+  has: ff8: * adr x0, 
+  has: ffc: * adr x0, 
+check(bfd) objdump -d --disassemble=f static-pie
+  has: ff8: * adr x0, 
+  has: ffc: * adr x0, 
+# a PIE, -z now; the option spelled (the x86-64 host's cross driver may not pass it).
+link gcc -pie -Wl,-z,now -Wl,--fix-cortex-a53-843419 main-pie-now.o f.o -o pie-now
+run pie-now
+  stdout: ok
+check(mortar) objdump -d --disassemble=f pie-now
+  has: ff8: * adr x0, 
+  has: ffc: * adr x0, 
+check(bfd) objdump -d --disassemble=f pie-now
+  has: ff8: * adr x0, 
+  has: ffc: * adr x0, 
+# a PIE, lazy; the option spelled (the x86-64 host's cross driver may not pass it).
+link gcc -pie -Wl,-z,lazy -Wl,--fix-cortex-a53-843419 main-pie-lazy.o f.o -o pie-lazy
+run pie-lazy
+  stdout: ok
+check(mortar) objdump -d --disassemble=f pie-lazy
+  has: ff8: * adr x0, 
+  has: ffc: * adr x0, 
+check(bfd) objdump -d --disassemble=f pie-lazy
+  has: ff8: * adr x0, 
+  has: ffc: * adr x0, 
+# a dynamic executable; the option spelled (the x86-64 host's cross driver may not pass it).
+link gcc -no-pie -Wl,--fix-cortex-a53-843419 main-exec.o f.o -o exec
+run exec
+  stdout: ok
+check(mortar) objdump -d --disassemble=f exec
+  has: ff8: * adr x0, 
+  has: ffc: * adr x0, 
+check(bfd) objdump -d --disassemble=f exec
+  has: ff8: * adr x0, 
+  has: ffc: * adr x0, 
+
+#--- f.S
+	.section .text.f,"ax",%progbits
+	.balign	4096
+	.globl	f
+	.type	f, %function
+f:
+	stp	x29, x30, [sp, #-16]!
+	mov	x10, x0
+	.rept	1020
+	nop
+	.endr
+	// the site at 0xFF8: W1, W2, then the final word
+	adrp	x0, :got:v
+	ldr	x9, [sp]
+	ldr	x0, [x0, :got_lo12:v]
+	str	x0, [x10]
+	.rept	1021
+	nop
+	.endr
+	// the site at 0xFFC of the next page
+	adrp	x0, :got:v
+	ldr	x9, [sp]
+	ldr	x0, [x0, :got_lo12:v]
+	str	x0, [x10, #8]
+	ldp	x29, x30, [sp], #16
+	ret
+	.size	f, .-f
+	.data
+	.balign	8
+	.globl	v
+v:	.quad	1
+	.section .note.GNU-stack,"",%progbits
+#--- main.c
+#include <stdio.h>
+extern char v[];
+void f(void **out);
+
+int main(void) {
+  void *o[2];
+  f(o);
+  void *want = (void *)v;
+  if (o[0] != want || o[1] != want) {
+    printf("wrong: %p %p, want %p\n", o[0], o[1], want);
+    return 1;
+  }
+  puts("ok");
+  return 0;
+}

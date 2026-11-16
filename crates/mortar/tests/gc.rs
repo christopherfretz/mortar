@@ -630,8 +630,12 @@ fn i8_the_mark_is_schedule_independent() {
     let first = built.dir.join("first.out");
     let m = mortar(&built.dir, &built.args, &first, &[&gc[..], &["--threads=1"]].concat(), &[]);
     assert!(m.success(), "{}", m.stderr_text());
-    let want =
-        (std::fs::read(&first).unwrap(), std::fs::read(map_of(&first)).unwrap(), m.stderr_text());
+    // The map without its line (plumb.md §3.2a: the words differ).
+    let want = (
+        std::fs::read(&first).unwrap(),
+        support::plumb::map_without_line(&map_of(&first)),
+        m.stderr_text(),
+    );
     assert!(!want.2.is_empty());
     let mut runs = 0;
     for store in ["staged", "resident"] {
@@ -653,7 +657,7 @@ fn i8_the_mark_is_schedule_independent() {
                 assert!(m.success(), "{store} {threads} {seed}: {}", m.stderr_text());
                 let got = (
                     std::fs::read(&out).unwrap(),
-                    std::fs::read(map_of(&out)).unwrap(),
+                    support::plumb::map_without_line(&map_of(&out)),
                     m.stderr_text(),
                 );
                 assert!(

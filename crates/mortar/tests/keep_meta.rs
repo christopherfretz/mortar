@@ -7,6 +7,11 @@
 //! and what the strip tools do to it (MT-32's measurement, re-run here on
 //! the harness's tool versions).
 
+mod support;
+
+use mortar_plumb::Rule;
+use support::plumb::LineEdit;
+
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::Command;
@@ -220,6 +225,26 @@ fn kept_in_every_output_kind() {
             assert!(o.success(), "{kind} {out}: {}", o.stderr_text());
             assert_eq!(o.stdout_text(), "7\n", "{kind} {out}");
         }
+    }
+}
+
+// spec: plumb.md §3.2a, §13 P-M1 (WP-102): a static output's
+// `--keep-mason-meta` is read from the map's line (before WP-102 a static
+// map had none, and P-M1's kept-section clauses were not judged). The kept
+// section with the word removed is "present without"; the plain link with
+// it added is "absent under".
+#[test]
+fn the_kept_section_follows_the_line() {
+    let Some(cx) = Cx::new("keep-meta-line") else { return };
+    let dir = cx.scratch.path();
+    for (out, extra, edit) in [
+        ("kl", "-Wl,--keep-mason-meta", LineEdit::Remove(&["--keep-mason-meta"])),
+        ("pl", "-Wl,--build-id", LineEdit::Add(&["--keep-mason-meta"])),
+    ] {
+        let map = format!("-Wl,--mortar-map={out}.mm");
+        cx.link("-static", &[extra, &map], out);
+        let (out, map) = (cx.scratch.join(out), cx.scratch.join(format!("{out}.mm")));
+        support::plumb::line_mutants(&out, &map, dir, &[(edit, Rule::Meta(1))]);
     }
 }
 
