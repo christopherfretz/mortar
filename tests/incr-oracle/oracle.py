@@ -203,6 +203,7 @@ class Link:
         self.discard = set()
         self.defines = {}
         self.chunks = {}
+        self.holes = []        # (outsec name, start off, len): `hole`/`dead` lines
         pieces = collections.defaultdict(list)
         for line in open(os.path.join(d, 'prog.map')):
             t = line.split()
@@ -228,6 +229,8 @@ class Link:
                 self.chunks[t[2]] = (int(t[3], 16), int(t[4], 16))
             elif t[0] == 'define':
                 self.defines[t[1]] = int(t[2], 16)
+            elif t[0] in ('hole', 'dead'):
+                self.holes.append((t[1], int(t[2], 16), int(t[3], 16)))
         for k, ps in pieces.items():
             ps.sort()
             self.units[k] = tuple(ps)
@@ -839,11 +842,14 @@ class Facts:
             mask = bytearray(max(len(x), len(y)))
             for (o, z) in cover.get(s['name'], ()):
                 mask[o:o + z] = b'\1' * len(mask[o:o + z])
-            # the tail: past the new link's last unit in the section, where
-            # mortar's own chunks (patches, thunks) sit; a `body` chunk
-            # (fill between units) does not name those bytes
+            # the tail: past the new link's last unit or hole in the section,
+            # where mortar's own chunks (patches, thunks) sit; a `body` chunk
+            # (fill between units) does not name those bytes. A hole or dead
+            # range (an incremental-mode layout's slack, WP-062) is the body
+            # chunk's: its bytes are rewritten with the body's fill.
             last = max((o + z for L in (B,) for rs in L.ranges.values()
                         for (sn, o, z) in rs if sn == s['name'] and o is not None), default=0)
+            last = max([last] + [o + z for (sn, o, z) in B.holes if sn == s['name']])
             n = tail = 0
             for i in range(0, min(len(x), len(y)), 256):
                 if x[i:i + 256] != y[i:i + 256]:
