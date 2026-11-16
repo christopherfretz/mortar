@@ -222,7 +222,11 @@ pub fn verify_with(output: &[u8], inputs: &[Input<'_>], map: &Map, ctx: &Ctx<'_>
         }
     }
     let chosen = std::mem::take(&mut engine.ifunc_chosen);
-    report.findings.extend(exported_ifuncs(&image, &dout, &model, &chosen, map.format));
+    // A static-pie's exports bind nothing (§12.4, P-D14 judges them): W13
+    // is a library's binding, so only an executable that loads one owes it.
+    if kind != OutputKind::StaticPie {
+        report.findings.extend(exported_ifuncs(&image, &dout, &model, &chosen, map.format));
+    }
     let view1_findings = std::mem::take(&mut engine.findings);
     report.coverage = std::mem::take(&mut engine.cov);
     drop(engine);

@@ -126,7 +126,7 @@ and x86-64 linked, run and verified; `spec/landed/dyn/WP-056.md`).
 | `--push-state`, `--pop-state` | 57 | supported | supported (they carry the as-needed state) |
 | `--build-id` | 426 | partial (bare form) | partial (`=md5`, `=uuid` refused); the note is in the first `PT_LOAD` after `.interp` |
 | `--eh-frame-hdr` | 426 | supported | supported; off unless given (GNU ld, lld; Q3, ruled) |
-| `-export-dynamic`/`-E` | 22 | noop | supported (D-21); refused by name in a static-pie (D-1, WP-056 §3.1) |
+| `-export-dynamic`/`-E` | 22 | noop | supported (D-21); no effect in a static-pie (D-1; WP-056 §3.1, WP-088) |
 | `--export-dynamic-symbol` | 0 | supported (matched literally) | supported, by name and by glob (resolve.md §4.2; WP-056 §2); no effect in a static-pie |
 | `-rpath` | 22 | noop | supported (D-30 row 2); `--enable-new-dtags` default, `--disable-new-dtags` writes `DT_RPATH` |
 | `-z now` | 22 | supported (static) | supported (D-49), PIE and `-no-pie` |
@@ -286,8 +286,9 @@ are refused by name, each by a rule that puts it out of M2:
    lines either on this host.
 
 The 137 i686 lines stay refused (`dynamically linked output on i386`;
-M4). Of the variations a real build adds (`x-` in the census lane),
-`-static-pie --export-dynamic` is refused by name (D-1; WP-056 §3.1).
+M4). The variations a real build adds (`x-` in the census lane) all
+link; `-static-pie --export-dynamic` is accepted and has no effect (D-1;
+WP-056 §3.1; the verifier judges the line: P-D14, WP-088).
 
 ## 3. Inventory of what the specs already say
 
@@ -384,7 +385,7 @@ in E-dynamic (108 outputs: C, C++, Fortran hello × PIE, `-no-pie`,
 | `PT_PHDR` | no | yes | yes | no (GNU ld; lld and mold write one; layout L-67 "iff `PT_INTERP`") |
 | `.dynamic`, `PT_DYNAMIC`, `_DYNAMIC` | no | yes | yes | yes |
 | `DT_NEEDED`, versions | no | yes | yes | no (a shared input is refused, input §8.4) |
-| `.dynsym` | none | D-21 | D-21 | the null entry only: `--export-dynamic` is refused by name [M4], `--export-dynamic-symbol` accepted with no effect (WP-056 measured exports from a static-pie useless; §13.1) |
+| `.dynsym` | none | D-21 | D-21 | the null entry only: `--export-dynamic` and `--export-dynamic-symbol` are accepted with no effect (WP-056 measured exports from a static-pie useless; §13.1) |
 | `DT_DEBUG` | — | yes | yes | yes (all three) |
 | `DT_FLAGS_1` | — | `DF_1_NOW` under `-z now` | `DF_1_PIE` (+ `DF_1_NOW`) | `DF_1_PIE` (+ `DF_1_NOW` under `-z now`: all three references; WP-052) |
 | `RELATIVE` | never | never (absolute values are final) | every absolute word (GOT slots included) of a non-preemptible target that is an address of the executable; never one of an absolute symbol (`SHN_ABS`: the word holds the value, D-46 row `Abs`; GNU ld's AArch64 record there is A30, §13.2) | same as `Pie` |
@@ -1572,7 +1573,7 @@ unchanged. Every `P-D` id this spec cites is that section's.
 | Bloom words, buckets | own formula | D-26 | own | lld's (D-26) |
 | `Vernaux` layout | interleaved | headers first | headers first | interleaved (D-27; elflint) |
 | writable place (D-25) of a read-only input section in a writable output section | the output section: links (RWX segment, no `PT_GNU_RELRO`) | the input section: refuses the PIE ("recompile with -fPIC") | the output section: links (`DT_TEXTREL`, A24) | the output section; records, RELRO kept (D-25, WP-056) |
-| `--export-dynamic` in a static-pie | exports every global (x86-64: the program dies at start-up) | exports every global | exports every global | refused by name (D-1); the exports are useless: a library the program `dlopen`s does not bind to them and `dlsym(RTLD_DEFAULT)` does not find them (WP-056, all three) |
+| `--export-dynamic` in a static-pie | exports every global (x86-64: the program dies at start-up) | exports every global | exports every global | accepted, no effect: `.dynsym` stays the null entry (D-1, P-D14); the exports are useless: a library the program `dlopen`s does not bind to them and `dlsym(RTLD_DEFAULT)` does not find them (WP-056, all three) |
 | `--export-dynamic-symbol` in a static-pie | exports the name | exports the name | exports the name | accepted, no effect: `.dynsym` stays the null entry (D-1, P-D14) |
 | `--export-dynamic-symbol=GLOB` | glob | glob | glob | glob (resolve.md §4.2; WP-056 fixed a literal match) |
 | `.gnu.version_r` align | 8 | 4 | 4 | 4 (D-34) |
@@ -1612,6 +1613,7 @@ unchanged. Every `P-D` id this spec cites is that section's.
 | a writable word pointing at a copied key (D-46 `Copy`; its GOT slot is not a difference: all four write `GLOB_DAT`, `copy-got`) | the copy's address, no record | symbolic record | not measured | symbolic record (D-46; WP-054 §4) |
 | AArch64 `-no-pie`: an `ABS64` in a writable word of a PIC or PIE object against shared data (`environ` in `.data.rel`) | refused (`unresolvable R_AARCH64_ABS64 relocation against symbol environ@@GLIBC_2.17`, as WP-053 quotes it) | symbolic record | not measured | symbolic record (D-46; the program runs; WP-053, E-corpus C, 44 links) |
 | `IRELATIVE` before `JUMP_SLOT`s | no | in every output with an IFUNC and a PLT (H1) | in every output with an IFUNC and a PLT (H1) | no (D-41; plumb.md P-D10) |
+| AArch64 traditional GD (`-mtls-dialect=trad`) in a static executable or a static-pie | R4's LE words | refused (`unknown relocation (513)`) | kept: GOT pair `1, DTPREL(S)` and the static `__tls_get_addr` | R4's LE words, GNU ld's bytes; a sequence outside R4's pattern refused (a64.md §8.4's static column; WP-090, `tls/gd-trad-static.test`) |
 
 ### 13.2 Wrong outputs found (each with its script)
 
@@ -1637,6 +1639,7 @@ wrong" means the program links without a diagnostic and then misbehaves.
 | W15 | GNU ld (AArch64) | a traditional GD sequence whose fourth word is not a64 R4's `nop` is relaxed to IE anyway, overwriting the instruction after the call; the program reads a wrong address (`same 0`) | `tests/link/dyn/reloc/tls-gd-unrelaxed.test` (WP-051) |
 | W16 | lld, mold | X3: a library referenced only by an under-linked used object is dropped from `DT_NEEDED`; load fails (``symbol lookup error: … undefined symbol: leaf_fn``, exit 127). GNU ld and mortar refuse (D-13) | `tests/link/dyn/shlib/used-underlinks-refused.test` (WP-051) |
 | W17 | lld 19, 22 (x86-64) | general-dynamic access in the large code model (`-mcmodel=large -fPIC`, GCC 14) to the executable's own TLS links, and the program crashes (SIGSEGV) in a PIE and in `-no-pie`; GNU ld, mold and mortar run it (`GD ok 7`); x64.md X-25 records only the static case. Run under qemu-x86_64, where the other three run | WP-083's experiment: `__thread int own = 7;` printed by `main`, one `-fPIC -mcmodel=large` unit (record, §5) |
+| W18 | GNU ld (AArch64) | `-static` and `-static-pie`: a traditional GD sequence whose TP offset is beyond 32 bits (4 GiB of `.tbss` before the variable) is relaxed to LE with `T[31:0]` and no diagnostic (`movk x0, #0x68` for `T` = 0x100000068): a wrong address. mold keeps GD and is right; mortar refuses (`relocation-out-of-range`, a64.md §8.4) | `tests/link/tls/gd-trad-static-refused.test` (WP-090) |
 | A30 | GNU ld (AArch64) | static-pie and `-pie`: the GOT slot of an absolute symbol (`SHN_ABS`, glibc's `_nl_current_*_used`) gets a `RELATIVE` record, so the program reads the value plus the load bias; glibc's own words are only tested for non-zero, a program's absolute symbol read through the GOT is wrong (lld and mold write the value, no record) | `plumb.md` §10.2 A30; `crates/mortar_plumb/tests/spie.rs` (`absgot.c` exits 1) |
 | A31 | GNU ld (x86-64) | static-pie: the `.plt.got` entry of an undefined weak function (`__cxa_finalize`, a `_ZTH` init guard) jumps through its GOT slot + 1, a misaligned word no record writes; dead code, each caller tests the slot for 0 first | `plumb.md` §10.2 A31 |
 | A32 | GNU ld, mold (x86-64) | W3 in a static-pie: an IFUNC's address word is its own `IRELATIVE` slot while a PC-relative use takes the IPLT entry, so `fp == f` is false (lld right; on AArch64 every use of all three is the resolved function) | `plumb.md` §10.2 A32; `tests/link/dyn/spie/ifunc.test` |
@@ -1683,6 +1686,12 @@ work within, stated so that M2's rules do not close the door.
   written only with `--odr-table`; O-24 reads the tables of
   shared-object inputs that stay in `DT_NEEDED`, identifying rows by
   (name, version node). No runtime is added in M6 (`spec/odr.md` O-58).
+  Implemented (WP-075): `--odr-table=exported` writes it in a dynamic
+  executable (synthetic chunk 26, `spec/synth.md` S-3), in a `PT_NOTE`
+  of alignment 8 after the 4-aligned notes' one; `eu-elflint` names its
+  type as unknown (`spec/odr.md` O-52), so D-71's "no allowance" holds
+  for an output without the table. O-24 reads input tables under
+  `--odr=strict` only.
 
 ## 15. Open questions (each with a recommendation)
 

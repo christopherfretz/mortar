@@ -124,6 +124,7 @@ a diagnostic is model §8's: 60 for split and merge (unit `FileId`, seq
   | 23 | `.comment` | mortar's identification (S-100) | always | M1 |
   | 24 | `.dynbss` | copy allocations of writable shared data (`spec/dyn.md` D-42); the first chunk of output section `.bss` | some such allocation | M2 |
   | 25 | `.bss.rel.ro` | copy allocations of read-only or RELRO shared data (D-42); output section `.bss.rel.ro` | some such allocation | M2 |
+  | 26 | `.note.mason` | the one-definition-rule table (`spec/odr.md` O-50-O-52): `SHT_NOTE`, `SHF_ALLOC`, alignment 8 | `--odr-table=exported` and a dynamic executable | M6 |
 
   There is no `.hash` chunk: an executable gets `.gnu.hash` only
   (`spec/dyn.md` D-20; `--hash-style` other than `gnu` is refused).
@@ -131,7 +132,7 @@ a diagnostic is model §8's: 60 for split and merge (unit `FileId`, seq
   A chunk that does not exist gets no `ChunkId`. The numbering is a
   name, not an order: `Placement.order` (layout §10) is the order.
   `.comment` was last so the earlier chunks kept their ids (WP-027e); the
-  M2 rows 24-25 follow it for the same reason.
+  M2 rows 24-25 and M6's row 26 (WP-075) follow it for the same reason.
 - **S-4 [C] (division).** Each chunk declares its `Division`
   (`spec/image.md` §13, I-104) through the `SynthChunk` interface
   (`size`, `division`, `write(cx, range, out)`, `sealed`). `Divisible`
@@ -147,6 +148,7 @@ a diagnostic is model §8's: 60 for split and merge (unit `FileId`, seq
   | `.shstrtab` | `1 + Σ (name + 1)` over output sections |
   | `.note.gnu.build-id` | `16 + align_up(n, 4)` |
   | `.note.gnu.property` | `16 + Σ(8 + align_up(datasz, a))` |
+  | `.note.mason` | `40 + 24 × rows` (`spec/odr.md` O-51, O-52) |
 
   `.strtab`'s range start is found through per-file prefix sums and the
   name offset of every 1024th symbol (input local, global id, or demoted

@@ -1,0 +1,36 @@
+# O-24 and O-51 (spec/odr.md): a library's table with 16-byte rows is
+# malformed: meta-malformed at the library's .note.mason, an error, never
+# a panic; the link writes nothing. Other linkers do not read the note.
+#@ spec: odr.md "O-51"
+#@ arch: aarch64 x86_64
+
+cc -O1 -fPIC lib.c -o a.o
+as bad.s -o bad.o
+shlib gcc a.o bad.o -Wl,-soname,liba.so -o liba.so
+cc -O1 -fPIE main.c -o main.o
+link(bfd,lld,mold) gcc -pie main.o -L. -la -o prog
+link(mortar) gcc -pie main.o -L. -la -Wl,--odr=strict -o prog
+  exit: fail
+  diag: malformed Mason metadata: the .note.mason table's rows are 16 bytes, not 24
+  diag: *liba.so:(.note.mason
+link(mortar) gcc -pie main.o -L. -la -o prog
+run prog
+  stdout: 1
+
+#--- lib.c
+int f(void) { return 1; }
+#--- main.c
+#include <stdio.h>
+int f(void);
+int main(void) { printf("%d\n", f()); return 0; }
+#--- bad.s
+	.section .note.mason,"a",%note
+	.p2align 3
+	.long 10
+	.long 40
+	.long 0x4d4f4401
+	.asciz "MasonMeta"
+	.p2align 3
+	.long 1, 1, 16, 0
+	.zero 24
+	.section .note.GNU-stack,"",%progbits

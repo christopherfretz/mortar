@@ -10,6 +10,8 @@
 //! - [`write`]: the canonical writer (MT-38): the same rows in any order
 //!   give the same bytes.
 //! - [`anchor`]: the name of an anchored row (MT-12, `spec/odr.md` O-4).
+//! - [`table`]: the `.note.mason` table of a dynamic output (`spec/odr.md`
+//!   O-50 to O-52), its encoder and its reader.
 //!
 //! This is the format's single implementation: the test producer
 //! (`cargo xtask meta`) is a front end to [`write`], the dumper to [`read`].
@@ -17,6 +19,7 @@
 
 pub mod anchor;
 pub mod read;
+pub mod table;
 pub mod write;
 
 use mortar_elf::consts::{SHF_EXCLUDE, SHT_PROGBITS};

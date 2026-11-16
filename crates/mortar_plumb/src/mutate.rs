@@ -69,6 +69,8 @@ pub const CLASSES: &[&str] = &[
     "relro",
     "lazy-slot",
     "copy-size",
+    "copy-relro",
+    "copy-section",
     "plt0-disp1",
     "plt0-disp2",
     "plt-index",

@@ -839,6 +839,10 @@ WP-072 landed the first four: `--odr`, `--no-odr-check` and `--odr-stats`
 `supported`, `--detect-odr-violations` `noop` (its reason is O-41's sentence;
 nothing is printed, since `spec/diag.md` §2.1 has no note severity); the other three are
 `refused` with their fields in `plan.diagnostics.odr` (§3.9).
+WP-075 made `--odr-table` `partial`: `=off` and `=exported` are
+accepted (the table is written in dynamic executables, `spec/odr.md`
+O-50; a static executable exports nothing and gets none), `=full` is
+refused by name until WP-076.
 `docs/status/options.md` has the counts.
 
 Rows whose status the M1 and M2 packages change (`spec/input.md` §17,

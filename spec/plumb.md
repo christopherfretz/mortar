@@ -800,9 +800,9 @@ from the MOVZ/MOVN high half and the MOVK low half.
 type against a TLS symbol; a TLSDESC sequence kept for a dynamic loader;
 the TLS records of an output whose `PT_TLS` is unusable (S9).
 
-Static PIE (`ET_DYN` with no `PT_INTERP`) is stage 3: on the reference
-linkers its TLS takes the same forms and has no TLS dynamic relocation,
-but S1 refuses `ET_DYN` today (§11).
+Static PIE (`ET_DYN` with no `PT_INTERP`) is stage 3 (§12.4, WP-089): on
+the reference linkers its TLS takes the same forms and has no TLS
+dynamic relocation (P-D14 names one).
 
 Tests: `tests/tls.rs` (§9.1), `tests/mutation.rs
 s9_2f_tls_mutations_are_found`.
@@ -1395,7 +1395,8 @@ only in the forms the map's linker writes; under mortar's map only
 mortar's (x86.md §8, §9). Every form was linked by each reference
 linker in `tests/x86/relax.s` (the `relax` case of `tests/x86.rs`,
 which asserts each family is accepted); the W rows are `tests/x86/wforms.s`.
-"Static" is a static `ET_EXEC`; static-pie is outside stage 1 (S1).
+"Static" is a static `ET_EXEC`; static-pie is judged by stage 3
+(§12.4).
 
 | form | mortar | GNU ld 2.44 | lld 22 | mold 2.37 |
 |---|---|---|---|---|
@@ -1583,8 +1584,8 @@ S18 is S17 here; its T1 is S18):
   (address, offset, size, `p_memsz` = `p_filesz`): the unwinder finds the
   search table through it (LSB "Exception Frames").
 
-Not taken from layout.md §20.3: its S19 (`ET_DYN` alignment) has no
-output to apply to while S1 accepts `ET_EXEC` only, and is stage 3; its
+Not taken from layout.md §20.3: its S19 (`ET_DYN` alignment) is stage
+3's (S1 accepts `ET_DYN` only through P-D1, §12); its
 S20 (`PT_TLS` alignment) is S9; its Y2 (the start-up symbol contract,
 L-13 to L-15) is Y5's table; the RWX `PT_LOAD` note of L-6 and its notes
 A7 and A8 are §10.2 notes, since they are never findings (their ids are
@@ -1817,7 +1818,7 @@ line is "symbol attributes: …".
 - locals of archive members the map does not list, which are counted in
   `locals_unchecked` (lld under `--gc-sections`);
 - the static-pie `.dynsym`, `.hash` and `.gnu.hash`. They are stage 3,
-  with the rest of the dynamic sections (§11 item 7).
+  with the rest of the dynamic sections (P-D5, P-D14; §12.4).
 
 Tests: `tests/corpus.rs s9_1_reference_links_verify_clean` (on the glibc
 cases: more than 1000 globals, more than 300 locals and at least 9
@@ -2843,6 +2844,15 @@ Static-pie (WP-089, §12.4; each shown by running a program, the cases of
   (WP-052's `dyn/spie/shlib-refused`, both architectures: SIGSEGV). GNU
   ld and lld refuse it, as D-19 and D-2 do; stage 3 stops at P-D2 "a
   shared object after -Bstatic (dyn.md D-19)".
+- **A34 (GNU ld).** A static-pie linked with `--export-dynamic` (WP-088,
+  `tests/spie.rs` case `export`): the absolute symbols it exports (glibc's
+  `_nl_current_*_used`, value 2) get `RELATIVE` records on the words that
+  hold them, input words (`setlocale.o`'s `.data.rel.ro`) as well as GOT
+  slots (P-D9, view 2 and §12.4's non-address rule; both machines), and
+  on x86-64 the GOT slots of exported TLS variables get `TPOFF64`
+  records that glibc's self-relocation applies before the thread pointer
+  exists (P-D14): the program faults at start-up (SIGSEGV, WP-056 F4).
+  lld and mold write neither.
 
 On i386 (WP-028e, `tests/x86.rs`; x86.md §15.2): W1 (two readings of a
 `GOT32X` operand) is R8 under every map; W3 (mold's no-base GOT value
@@ -2851,14 +2861,16 @@ from P − 3) is R1; W5 (GNU ld's `GOTOFF` of an IFUNC, the entry − 12)
 is F4; W10 is A15 (GNU ld, mold); W11 (GNU ld's `16`/`8` truncation) is
 R2; W12 (`SHT_RELA` in `EM_386`) is R8 under every map; W14 (GNU ld's
 dynamic types) is R8. W2 reads as based (X86-13) and is accepted (an
-accepted risk of the spec). W6–W9 and W16 are static-pie (S1, not
-judged); W13 and W15 are false refusals, so there is no output.
+accepted risk of the spec). W6–W9 and W16 are static-pie forms, judged
+by stage 3 on AArch64 and x86-64 (§12.4); i386 dynamic outputs,
+static-pie included, are outside stage 3 (§12.1), so on i386 they are
+not judged; W13 and W15 are false refusals, so there is no output.
 
 W1 (GNU ld truncates `16`/`8` fields) and W2 (GNU ld writes `PC16` one
 past either end) are violations, R2; W3 (GNU ld writes S + A for a
 dynamic-only type) is R8; W5 (lld writes
-a link-time value in a static-pie) is S1, since S1 accepts `ET_EXEC` only
-(§11 item 7). GNU ld and mold refuse W5's input; lld and mold refuse
+a link-time value in a static-pie) is an i386 static-pie, outside stage
+3 (§12.1: one P-D1 line). GNU ld and mold refuse W5's input; lld and mold refuse
 W1's, W2's and W3's.
 
 **Notes, not anomalies** (`spec/layout.md` §20.3; never findings, so no
@@ -2998,12 +3010,11 @@ DWARF's text, and each is accepted only from its own linker.
 6. A7 and A8 (§10.2): mortar's TLS relaxations must use `tcb` =
    align_up(16, `p_align`) and must relax IE only when Xt = Xn = Xd (else
    keep the GOT entry, as mold does). `spec/a64.md` should state both.
-7. Static PIE: S1 accepts `ET_EXEC` only, so a static-pie output is an S1 finding
-   today. Its TLS forms are those of §4.7 with no TLS dynamic relocation;
-   accepting `ET_DYN` without `PT_INTERP` needs the `RELATIVE` relocations
-   of `.rela.dyn` judged first, which is stage 3 (§12, P-D1, P-D9). So
-   are its `.dynsym` and `.gnu.hash` (§6.5; an executable has no `.hash`,
-   `spec/dyn.md` D-20).
+7. Static PIE: closed by WP-089. Stage 3 judges it (§12.4: P-D1 accepts
+   `ET_DYN` without `PT_INTERP`, P-D9's views judge the `RELATIVE`
+   records, P-D14 its `.dynsym` and `.dynamic`, P-D15 glibc's
+   application); with `-E` too since WP-088. i386 static-pie stays
+   outside stage 3 (§12.1).
 8. A9 to A11 (§10.2): mortar's `.symtab` must keep the inputs' bindings,
    name the section that holds each label (or `SHN_ABS`), and define
    `__bss_start` within §6.5's range even when there is no `.bss`.
@@ -3105,12 +3116,20 @@ own implementation of D-11-D-27 and compared with the output.
   trampoline reads, and `.got.plt`'s reserved words are the loader's
   (§12.2, WP-082).
 - **P-D11 (copies).** Each `COPY` record's place is an allocation of the
-  shared definition's `st_size` (never 0: W4) and alignment, the
-  allocations do not overlap each other or any other definition, the
-  allocation is inside `.bss.rel.ro` when the definition lies in a
-  `PT_GNU_RELRO` or non-writable `PT_LOAD` of its library and inside
-  `.dynbss` otherwise (D-42); every alias at that `(file, value)` is
-  defined in `.dynsym` at the copy (W2).
+  shared definition's `st_size` (never 0: W4) and alignment in a writable
+  `PT_LOAD`, the allocations do not overlap each other or any other
+  definition, and every alias at that `(file, value)` is defined in
+  `.dynsym` at the copy (W2). Where the output has a `PT_GNU_RELRO`, the
+  allocation is inside it exactly when the definition lies in a
+  `PT_GNU_RELRO` or non-writable `PT_LOAD` of its library (D-42). Without
+  one (`-z norelro`; a missing segment the line asks for is P-D4's)
+  nothing is read-only after relocation and RELRO membership is not
+  judged: every reference then copies a read-only definition into
+  ordinary writable memory (measured, WP-088, x86-64 C++ PIE and both
+  machines' `copy-relro` case: GNU ld `.data.rel.ro`, lld `.bss.rel.ro`,
+  mold `.copyrel`). `Format::Mortar`, with or without RELRO: the
+  allocation is in the output section `.bss.rel.ro` for a read-only
+  definition and in `.bss` (its `.dynbss` chunk) otherwise (D-42).
 - **P-D12 (TLS).** Every TLS slot holds the record of its model (IE:
   `TPREL`; unrelaxed GD: `DTPMOD` + `DTPOFF`; LE: none, value checked by
   stage 2) and no TLS relocation against an executable-defined symbol
@@ -3196,8 +3215,7 @@ from the file system (`line::Files`).
   `mortar_plumb::OUTSIDE`): a link stage 3 does not model is named and
   nothing of stage 3 is judged: an option `spec/dyn.md` refuses
   (`--hash-style` other than `gnu`, `--copy-dt-needed-entries`,
-  `-shared`), a static-pie linked with `-E` (its exports are M4, D-1),
-  any i386 dynamic output (`Pie`, `Exec` with `PT_DYNAMIC`, static-pie:
+  `-shared`), any i386 dynamic output (`Pie`, `Exec` with `PT_DYNAMIC`, static-pie:
   REL records and `DT_REL`, while every stage 3 rule is written for the
   RELA targets; one line "outside stage 3: i386 ..." replaces every
   other, WP-089), an output with version definitions
@@ -3243,7 +3261,10 @@ from the file system (`line::Files`).
   `dyn-rel-order` (only swaps that move a `RELATIVE` or `IRELATIVE`),
   `dynsym-value`, `dynsym-visibility`, `dynsym-unique` (§12.3), `gnu-hash`, `versym`,
   `version-need`, `interp`, `relro`, `lazy-slot` (under `-z now` too,
-  WP-082), `copy-size`, and §12.2's `plt0-disp1`, `plt0-disp2`,
+  WP-082), `copy-size`, `copy-relro` (`PT_GNU_RELRO`'s end moved so a
+  copy's membership flips) and `copy-section` (the copy's output section
+  renamed: only `Format::Mortar`'s chunk rule reads the name, equivalent
+  for a reference; both WP-088), and §12.2's `plt0-disp1`, `plt0-disp2`,
   `plt-index`, `plt-back-jump`, and §12.4's static-pie classes. `xtask plumb --mutate --line` judges each mutant with
   stage 3. The kill table and its survivors are WP-050's record.
 - **Stage 2 inside a dynamic output**: `__rela_iplt_start` and
@@ -3380,10 +3401,13 @@ symbol lookup answering with the executable itself; TLS is set up after
 it. `csu/libc-start.c` then applies `[__rela_iplt_start,
 __rela_iplt_end)` with `apply_irel`, which adds no load bias. The
 verifier judges a static-pie with the whole of stage 3 (the views, the
-model, P-D4..P-D13) plus the rules below; a static-pie linked with `-E`
-is outside stage 3 (its exports are M4, D-1), so is an i386 static-pie
-(REL records; §12.1, one P-D1 line), and `.dynsym`'s set is
-P-D14's, not P-D7's.
+model, P-D4..P-D13) plus the rules below, with `-E` or
+`--export-dynamic-symbol` on its line as well (WP-088; WP-056 measured
+the exports useless: glibc's static `dlopen` binds no library to them and
+`dlsym(RTLD_DEFAULT)` does not find them); an i386 static-pie is outside
+stage 3 (REL records; §12.1, one P-D1 line), and `.dynsym`'s set is
+P-D14's, not P-D7's (nor W13's exported-IFUNC rule: nothing binds an
+export).
 
 - **P-D14, the headers.** The first `PT_LOAD` maps the ELF header at
   address 0 (`p_vaddr` and `p_offset` 0) and `__ehdr_start`, where
@@ -3407,9 +3431,19 @@ P-D14's, not P-D7's.
   `Format::Mortar` is D-30's set and order (P-D6).
 - **P-D14, `.dynsym`.** No defined entry (nothing can look one up),
   except GNU ld's AArch64 `STT_SECTION` entries (`.init`, `.data`) in a
-  reference's output; `Format::Mortar`: the null entry only (D-1). An
-  undefined entry in a reference's output is inert (no record names one:
-  lld 19's x86-64 `__tls_get_addr`). `.gnu.hash` is P-D5's.
+  reference's output; `Format::Mortar`: the null entry only (D-1),
+  whatever the line says (`-E` and `--export-dynamic-symbol` have no
+  effect, D-1). An undefined entry in a reference's output is inert (no
+  record names one: lld 19's x86-64 `__tls_get_addr`). `.gnu.hash` is
+  P-D5's. With `-E` or `--export-dynamic-symbol` on the line a
+  reference writes the exports (measured, WP-088, hello: GNU ld 439
+  AArch64 / 457 x86-64 global entries, lld and mold 432 / 454; with
+  `--export-dynamic-symbol=main` the one name), and each defined entry
+  that is not a section symbol is held to the program's definition: the
+  value of `.symtab`'s global of that name, a name `.symtab` defines
+  (when it has one), and not `STV_HIDDEN` or `STV_INTERNAL`. The records
+  stay this rule's: GNU ld's x86-64 `-E` output carries `TPOFF64`
+  records against exported TLS variables and faults at start-up (A34).
 - **P-D14, the records.** Every record of an allocated `SHT_RELA`
   section is `RELATIVE` or `IRELATIVE` with symbol 0, or `R_*_NONE`
   (GNU ld writes two on AArch64, mold two on x86-64; `Format::Mortar`:

@@ -528,3 +528,31 @@ pub fn check_note_alignment(
         None => Ok(()),
     }
 }
+
+/// `.note.mason` (`spec/odr.md` O-50 to O-52; WP-075): the note's bytes as
+/// `mortar_meta::table::note` encoded them; the content is planned before
+/// layout and does not depend on addresses.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NoteMasonPlan {
+    bytes: Box<[u8]>,
+}
+
+impl NoteMasonPlan {
+    /// The plan for the note `bytes`.
+    #[must_use]
+    pub fn new(bytes: Vec<u8>) -> Self {
+        Self { bytes: bytes.into() }
+    }
+
+    /// The note's bytes.
+    #[must_use]
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    /// The size.
+    #[must_use]
+    pub fn size(&self) -> u64 {
+        self.bytes.len() as u64
+    }
+}

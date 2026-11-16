@@ -746,6 +746,13 @@ impl Parser<'_> {
             }
             Lands::NoOdrCheck => plan.diagnostics.odr.mode = crate::plan::OdrMode::Off,
             Lands::OdrStats => plan.diagnostics.odr.stats = true,
+            Lands::OdrTable => {
+                plan.diagnostics.odr.table = match word().as_str() {
+                    "exported" => crate::plan::OdrTable::Exported,
+                    "full" => crate::plan::OdrTable::Full,
+                    _ => crate::plan::OdrTable::Off,
+                };
+            }
             Lands::NoinhibitExec => plan.diagnostics.noinhibit_exec = true,
             Lands::Map => plan.bookkeeping.map = Some(text()),
             Lands::PrintMap => plan.bookkeeping.print_map = true,
