@@ -20,10 +20,12 @@ use mortar_core::par::Pool;
 use mortar_core::resolution::{Def, InternalDef, Resolution};
 use mortar_core::split::Split;
 use mortar_elf::Class;
-use mortar_elf::consts::{SHF_ALLOC, SHF_EXECINSTR, SHF_WRITE, SHT_NOBITS, SHT_PROGBITS, STT_TLS};
+use mortar_elf::consts::{
+    SHF_ALLOC, SHF_EXECINSTR, SHF_WRITE, SHF_X86_64_LARGE, SHT_NOBITS, SHT_PROGBITS, STT_TLS,
+};
 
 use crate::assign::{OutInfo, is_c_identifier};
-use crate::diag::{LayoutDiag, feature, internal};
+use crate::diag::{LayoutDiag, feature, internal, section_conflict};
 use crate::headers::Headers;
 use crate::order::Ordered;
 use crate::rank::{Rank, Z, home, leads, rank_in};
@@ -50,6 +52,9 @@ pub struct Common {
     /// log2.
     pub align: u8,
     pub tls: bool,
+    /// x86-64: every mention is `SHN_X86_64_LCOMMON`, so it is allocated
+    /// in `.lbss` (L-88, `spec/resolve.md` §3.3).
+    pub large: bool,
 }
 
 /// The commons of a resolution, in `SymbolId` order, reading each one's
@@ -72,7 +77,13 @@ pub fn commons(resolution: &Resolution, inputs: Option<&Inputs<'_>>) -> Vec<Comm
                     .and_then(|t| t.get(entry.index).ok())
                     .is_some_and(|sym| sym.st_info & 0xf == STT_TLS)
             });
-            Some(Common { symbol: s, size: shape.size, align: shape.align, tls })
+            Some(Common {
+                symbol: s,
+                size: shape.size,
+                align: shape.align,
+                tls,
+                large: shape.large,
+            })
         })
         .collect()
 }
@@ -325,7 +336,22 @@ pub fn chunk(
     if inputs.commons.iter().any(|c| c.tls) {
         return Err(feature("TLS common symbol"));
     }
-    let bss = a.outsecs.iter().find(|(_, o)| o.name == b".bss").map(|(id, _)| id);
+    let named = |name: &[u8]| a.outsecs.iter().find(|(_, o)| o.name == name).map(|(id, _)| id);
+    let bss = named(b".bss");
+    let lbss = named(b".lbss");
+    // L-88: the commons of each section, in SymbolId order: the small ones
+    // in `.bss`, x86-64's large ones in `.lbss` (L-36a), which must then be
+    // the large section (an input named `.lbss` without the flag is not).
+    let commons_of = |o: OutSecId| -> Vec<&Common> {
+        let large = Some(o) == lbss;
+        inputs.commons.iter().filter(|c| c.large == large).collect()
+    };
+    if let Some(l) = lbss
+        && inputs.commons.iter().any(|c| c.large)
+        && a.outsecs[l].flags & SHF_X86_64_LARGE == 0
+    {
+        return Err(section_conflict(".lbss".into(), "SHF_X86_64_LARGE", "not SHF_X86_64_LARGE"));
+    }
     // Parts per output section, parallel over output sections (L-22).
     let planned: Vec<Result<Vec<PartPlan>, LayoutDiag>> = pool.unit_cost(10000).map(outs, |o| {
         let id = OutSecId(o as u32);
@@ -367,7 +393,10 @@ pub fn chunk(
         has_synth[j.0 as usize] = true;
     }
     // Which output sections have chunks (L-43).
-    let commons_in_bss = !inputs.commons.is_empty();
+    let has_commons = |id: OutSecId| {
+        (Some(id) == bss && inputs.commons.iter().any(|c| !c.large))
+            || (Some(id) == lbss && inputs.commons.iter().any(|c| c.large))
+    };
     // L-159: an allocated output section whose live members are all empty
     // and that nothing else fills has no chunk; its members are placed
     // beside a neighbour once the order is known (below).
@@ -380,7 +409,7 @@ pub fn chunk(
                 && members.iter().all(|&s| inputs.headers[s].size == 0)
                 && merged[o].is_none()
                 && !has_synth[o]
-                && !(commons_in_bss && Some(id) == bss)
+                && !has_commons(id)
                 && !inputs.keep_empty.contains(&id)
                 && !a.outsecs[id].keep
         })
@@ -390,7 +419,7 @@ pub fn chunk(
             let id = OutSecId(o as u32);
             (!inputs.ordered.members[id].is_empty()
                 || merged[o].is_some()
-                || (commons_in_bss && Some(id) == bss)
+                || has_commons(id)
                 || inputs.keep_empty.contains(&id)
                 || a.outsecs[id].keep)
                 && !empty_only[o]
@@ -566,7 +595,7 @@ pub fn chunk(
         // From 1: a leading copy chunk is (o, 0, 0).
         let mut sub = 1u32;
         let has_body = !inputs.ordered.members[id].is_empty()
-            || (commons_in_bss && Some(id) == bss)
+            || has_commons(id)
             || (merged[o].is_none() && !has_synth[o]);
         for (k, plan) in plans[o].iter().enumerate() {
             if !has_body {
@@ -582,9 +611,10 @@ pub fn chunk(
                 align = align.max(target.islands.map_or(2, |i| i.align));
             }
             let body = ChunkId(chunks.len() as u32);
-            if Some(id) == bss && k + 1 == n_parts {
-                // L-88: commons after the .bss inputs, in SymbolId order.
-                for c in inputs.commons {
+            if (Some(id) == bss || Some(id) == lbss) && k + 1 == n_parts {
+                // L-88: commons after the .bss (.lbss) inputs, in SymbolId
+                // order.
+                for c in commons_of(id) {
                     let at = size
                         .checked_next_multiple_of(1u64 << c.align.min(63))
                         .ok_or_else(|| internal("common offsets overflow"))?;

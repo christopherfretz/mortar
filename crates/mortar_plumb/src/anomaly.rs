@@ -109,7 +109,7 @@ pub fn classify(linker: Format, output: &[u8], f: &Finding) -> Option<&'static s
 /// The anomalies of dynamic outputs (stage 3, `spec/plumb.md` §10.2,
 /// A20-A32): the wrong outputs of `spec/dyn.md` §13.2 a test records
 /// for a reference, and two found by WP-050's judging of WP-051's cases.
-#[allow(clippy::too_many_lines)] // one block per anomaly
+#[allow(clippy::too_many_lines, clippy::many_single_char_names)] // one block per anomaly
 fn dynamic(linker: Format, output: &[u8], f: &Finding) -> Option<&'static str> {
     let (bfd, lld, mold) = (linker == Format::Gnu, linker == Format::Lld, linker == Format::Mold);
     let d = |n| f.rule == Rule::Dyn(n);
@@ -153,6 +153,11 @@ fn dynamic(linker: Format, output: &[u8], f: &Finding) -> Option<&'static str> {
     {
         return Some(
             "A25: lld exports a -no-pie executable's undefined weak key and writes no record for its uses, which a preloaded definition never reaches (dyn.md D-25, W12)",
+        );
+    }
+    if mold && d(2) && m.ends_with("a shared object after -Bstatic (dyn.md D-19)") {
+        return Some(
+            "A33: mold links a shared object named after -Bstatic (-static-pie): DT_NEEDED and no PT_INTERP, so nothing loads it and the program faults (dyn.md D-19, D-2)",
         );
     }
     if (lld || mold) && d(6) && m.contains("which D-11 item 3 makes needed") {
@@ -199,12 +204,44 @@ fn dynamic(linker: Format, output: &[u8], f: &Finding) -> Option<&'static str> {
                 .and_then(|r| r.split(',').next())
                 .and_then(|h| u64::from_str_radix(h, 16).ok())
                 .is_some_and(|slot| slot % 8 != 0);
+        // A call to such an entry (crtbeginS's `__cxa_finalize`, g++'s
+        // `_ZTH` init guard of a `thread_local`): its rel32 reaches a
+        // `.plt.got` entry whose `jmp *disp(%rip)` reads a misaligned slot.
+        let bytes = |addr: u64, n: u64| {
+            let h = mortar_elf::FileHeader::parse(output).ok()?;
+            let table = mortar_elf::SectionTable::parse(output, &h).ok()?;
+            let (base, off) = table
+                .iter()
+                .map(|sec| {
+                    let x = sec.header();
+                    (x.sh_type, x.sh_addr, x.sh_size, x.sh_offset)
+                })
+                .find(|&(ty, lo, size, _)| {
+                    ty != mortar_elf::consts::SHT_NOBITS
+                        && lo <= addr
+                        && addr.saturating_add(n) <= lo.saturating_add(size)
+                })
+                .map(|(_, lo, _, off)| (lo, off))?;
+            let at = usize::try_from(off + (addr - base)).ok()?;
+            output.get(at..at + usize::try_from(n).ok()?)
+        };
+        let rel32 = |addr: u64| {
+            bytes(addr, 4).map(|w| i64::from(i32::from_le_bytes([w[0], w[1], w[2], w[3]])))
+        };
         let call = f.rule == Rule::Field
-            && f.symbol.as_deref() == Some("__cxa_finalize")
-            && f.reloc.as_deref() == Some("R_X86_64_PLT32");
+            && f.reloc.as_deref() == Some("R_X86_64_PLT32")
+            && f.addr.is_some_and(|place| {
+                let Some(to) = rel32(place).map(|disp| (place + 4).wrapping_add_signed(disp))
+                else {
+                    return false;
+                };
+                section(b".plt.got").is_some_and(|(lo, hi)| (lo..hi).contains(&to))
+                    && bytes(to, 2) == Some(&[0xff, 0x25][..])
+                    && rel32(to + 2).is_some_and(|disp| (to + 6).wrapping_add_signed(disp) % 8 != 0)
+            });
         if odd || call {
             return Some(
-                "A31: GNU ld's x86-64 static-pie .plt.got entry of an undefined weak function jumps through its GOT slot plus 1 (dead behind crtbeginS's null test)",
+                "A31: GNU ld's x86-64 static-pie .plt.got entry of an undefined weak function jumps through its GOT slot plus 1 (dead behind the caller's null test: crtbeginS, a thread_local's init guard)",
             );
         }
     }

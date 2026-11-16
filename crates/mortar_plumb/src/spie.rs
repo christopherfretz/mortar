@@ -68,11 +68,14 @@ pub(crate) fn records(image: &Image<'_>) -> BTreeMap<u64, Rec> {
 /// glibc's ranges (`elf/dynamic-link.h` `_ELF_DYNAMIC_DO_RELOC`): range 0
 /// is `DT_RELA`/`DT_RELASZ`; `DT_JMPREL`/`DT_PLTRELSZ` joins it when it
 /// starts where range 0 ends, is cut off its end when range 0 ends where
-/// it does, and is range 1 otherwise. `(start, size)` each.
+/// it does, and is range 1 otherwise. `(start, size)` each. glibc
+/// looks at `DT_JMPREL` only under `l_info[DT_PLTREL]`, and the RELA pass
+/// only when its value is `DT_RELA`: a `DT_JMPREL` without `DT_PLTREL` =
+/// `DT_RELA` is a table glibc does not apply.
 pub(crate) fn ranges(out: &DynOut) -> Vec<(u64, u64)> {
     let mut r0 = (out.get(DT_RELA).unwrap_or(0), out.get(DT_RELASZ).unwrap_or(0));
     let mut v = Vec::new();
-    if out.has(DT_PLTREL) || out.has(DT_JMPREL) {
+    if out.get(DT_PLTREL) == Some(DT_RELA) {
         let (start, size) = (out.get(DT_JMPREL).unwrap_or(0), out.get(DT_PLTRELSZ).unwrap_or(0));
         if r0.0 == 0 {
             r0.0 = start;
@@ -284,7 +287,7 @@ pub(crate) fn check(
         match applied.get(&r.at).copied().unwrap_or(0) {
             1 => {}
             0 => v.push(
-                d15("a record glibc's self-relocation does not apply (outside DT_RELA and DT_JMPREL)")
+                d15("a record glibc's self-relocation does not apply (outside DT_RELA and a DT_JMPREL under DT_PLTREL = DT_RELA)")
                     .at(r.offset),
             ),
             n => v.push(d15(format!("a record glibc applies {n} times")).at(r.offset)),
@@ -371,5 +374,19 @@ mod tests {
             (DT_PLTRELSZ, 0x18),
         ];
         assert_eq!(ranges(&out(&t)), [(0x300, 0x90), (0x318, 0x18)]);
+        // DT_JMPREL without DT_PLTREL: glibc does not apply it.
+        let t = [(DT_RELA, 0x300), (DT_RELASZ, 0x60), (DT_JMPREL, 0x360), (DT_PLTRELSZ, 0x30)];
+        assert_eq!(ranges(&out(&t)), [(0x300, 0x60)]);
+        let t = [(DT_JMPREL, 0x900), (DT_PLTRELSZ, 0x30)];
+        assert_eq!(ranges(&out(&t)), []);
+        // DT_PLTREL naming DT_REL (17): not the RELA pass's table.
+        let t = [
+            (DT_RELA, 0x300),
+            (DT_RELASZ, 0x60),
+            (DT_PLTREL, 17),
+            (DT_JMPREL, 0x360),
+            (DT_PLTRELSZ, 0x30),
+        ];
+        assert_eq!(ranges(&out(&t)), [(0x300, 0x60)]);
     }
 }

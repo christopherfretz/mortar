@@ -145,9 +145,10 @@ fn by_name<'n>(h: &Header<'n>, machine: Machine) -> Result<Fate<'n>, LayoutDiag>
     if machine == Machine::AArch64 && h.sh_type == SHT_AARCH64_ATTRIBUTES {
         return Ok(Fate::Consumed);
     }
-    // L-36.
+    // L-36: an x86-64 large section goes to its large output section by
+    // flags and type, whatever its name.
     if machine == Machine::X86_64 && h.flags & SHF_X86_64_LARGE != 0 {
-        return Err(refused(RefusalClass::SectionFlag, "SHF_X86_64_LARGE"));
+        return large_output(h).map(Fate::Out);
     }
     // L-37.
     if n.starts_with(b".gnu.linkonce.") {
@@ -168,6 +169,36 @@ fn by_name<'n>(h: &Header<'n>, machine: Machine) -> Result<Fate<'n>, LayoutDiag>
     Ok(Fate::Out(output_name(h)))
 }
 
+/// The four large output sections of L-36 (x86-64), in L-36a's order.
+pub const LARGE_NAMES: [&[u8]; 4] = [b".lrodata", b".ltext", b".ldata", b".lbss"];
+
+/// L-36: the large output section of an `SHF_X86_64_LARGE` input by its
+/// flags and type: `.ltext` (exec), `.lbss` (`NOBITS`), `.ldata`
+/// (writable `PROGBITS`), `.lrodata` (the rest). A TLS large section is
+/// refused by name; so are the kinds no producer emits and L-36 does not
+/// place: a non-allocated one, one of another `sh_type` (a note, an init
+/// array, unwind tables), and a `NOBITS` one that is not writable data.
+fn large_output<'n>(h: &Header<'n>) -> Result<&'n [u8], LayoutDiag> {
+    let alloc = h.flags & SHF_ALLOC != 0;
+    let typed = match h.sh_type {
+        SHT_PROGBITS => true,
+        SHT_NOBITS => h.flags & SHF_WRITE != 0 && h.flags & SHF_EXECINSTR == 0,
+        _ => false,
+    };
+    if h.flags & SHF_TLS != 0 || !alloc || !typed {
+        return Err(refused(RefusalClass::SectionFlag, "SHF_X86_64_LARGE"));
+    }
+    Ok(if h.flags & SHF_EXECINSTR != 0 {
+        b".ltext"
+    } else if h.sh_type == SHT_NOBITS {
+        b".lbss"
+    } else if h.flags & SHF_WRITE != 0 {
+        b".ldata"
+    } else {
+        b".lrodata"
+    })
+}
+
 /// Whether a section is a root of liveness by rule (model §3.4 `keep`):
 /// `SHF_GNU_RETAIN` (L-97), the start-up arrays and `.init`/`.fini`, and
 /// allocated notes. `spec/live.md` is not written; this is GNU's `KEEP`
@@ -178,6 +209,45 @@ fn keep_by_rule(h: &Header<'_>, out: &[u8]) -> bool {
         || [&b".init"[..], b".fini", b".init_array", b".fini_array", b".preinit_array"]
             .contains(&out)
         || (h.sh_type == SHT_NOTE && h.flags & SHF_ALLOC != 0)
+}
+
+/// Whether the resolution has small commons and large ones (L-88,
+/// L-36a): `(small, large)`.
+fn common_kinds(resolution: &Resolution) -> (bool, bool) {
+    let (mut small, mut large) = (false, false);
+    for (s, d) in resolution.def.iter() {
+        if matches!(d, Def::Common(_)) {
+            if resolution.common_of(s).is_some_and(|c| c.large) {
+                large = true;
+            } else {
+                small = true;
+            }
+        }
+    }
+    (small, large)
+}
+
+/// An output section's provisional row: the commons' `.bss` (and, with
+/// large commons, `.lbss`) start as writable `NOBITS`; every other row
+/// takes its first input's type and the OR of its inputs' flags.
+fn provisional(name: &[u8], large: bool) -> OutSec<'_> {
+    let lbss = large && name == b".lbss";
+    OutSec {
+        name,
+        sh_type: if name == b".bss" || lbss { SHT_NOBITS } else { 0 },
+        flags: if name == b".bss" {
+            SHF_ALLOC | SHF_WRITE
+        } else if lbss {
+            SHF_ALLOC | SHF_WRITE | SHF_X86_64_LARGE
+        } else {
+            0
+        },
+        merge: None,
+        keep: false,
+        fill: None,
+        constraint: None,
+        script_position: None,
+    }
 }
 
 /// The output of stage A.
@@ -254,28 +324,21 @@ pub fn assign<'n>(
             });
         }
     }
-    // L-88: commons go to `.bss`.
-    let has_common = resolution.def.iter().any(|(_, d)| matches!(d, Def::Common(_)));
-    if has_common && !ids.contains_key(&b".bss"[..]) {
-        names.push(b".bss");
-        ids.insert(b".bss", OutSecId(names.len() as u32 - 1));
+    // L-88: small commons go to `.bss`, x86-64 large ones to `.lbss`.
+    let (small, large) = common_kinds(resolution);
+    for (has, name) in [(small, &b".bss"[..]), (large, &b".lbss"[..])] {
+        if has && !ids.contains_key(name) {
+            names.push(name);
+            ids.insert(name, OutSecId(names.len() as u32 - 1));
+        }
     }
     let mut assignment = Assignment::empty(n);
     // Provisional type and flags: the first input's type, the OR of the
     // flags of every input (finish() replaces them with the live inputs').
-    let mut outsecs: Vec<OutSec<'n>> = names
-        .iter()
-        .map(|&name| OutSec {
-            name,
-            sh_type: if name == b".bss" { SHT_NOBITS } else { 0 },
-            flags: if name == b".bss" { SHF_ALLOC | SHF_WRITE } else { 0 },
-            merge: None,
-            keep: false,
-            fill: None,
-            constraint: None,
-            script_position: None,
-        })
-        .collect();
+    // The commons' sections start as writable `NOBITS`; `.lbss` exists
+    // only on x86-64 (a large common is x86-64's, resolve.md §3.3).
+    let out_flags = out_flags(target.machine);
+    let mut outsecs: Vec<OutSec<'n>> = names.iter().map(|&name| provisional(name, large)).collect();
     let mut s = 0u32;
     for f in &per_file {
         for fate in &f.fates {
@@ -291,7 +354,7 @@ pub fn assign<'n>(
                     if row.sh_type == 0 {
                         row.sh_type = h.sh_type;
                     }
-                    row.flags |= h.flags & OUT_FLAGS;
+                    row.flags |= h.flags & out_flags;
                     if resolution.sections[id].is_kept() && keep_by_rule(h, name) {
                         assignment.keep[id] = true;
                     }
@@ -307,8 +370,12 @@ pub fn assign<'n>(
     Ok(Assigned { assignment })
 }
 
-/// The output flags of L-50.
-const OUT_FLAGS: u64 = SHF_WRITE | SHF_ALLOC | SHF_EXECINSTR | SHF_TLS | SHF_GNU_RETAIN;
+/// The output flags of L-50, and on x86-64 `SHF_X86_64_LARGE` (L-36:
+/// the large output sections keep it).
+const fn out_flags(machine: Machine) -> u64 {
+    let base = SHF_WRITE | SHF_ALLOC | SHF_EXECINSTR | SHF_TLS | SHF_GNU_RETAIN;
+    if matches!(machine, Machine::X86_64) { base | SHF_X86_64_LARGE } else { base }
+}
 
 /// Whether a name is a C identifier (`__start_`/`__stop_`, L-48).
 #[must_use]
@@ -386,6 +453,7 @@ struct Acc {
     merge: MergeAcc,
     alloc: Option<bool>,
     tls: Option<bool>,
+    large: Option<bool>,
     live: u32,
     align: u8,
     error: Option<(String, String)>,
@@ -399,6 +467,7 @@ impl Acc {
         merge: MergeAcc::Unseen,
         alloc: None,
         tls: None,
+        large: None,
         live: 0,
         align: 0,
         error: None,
@@ -428,7 +497,20 @@ impl Acc {
             }
             _ => self.tls = Some(tls),
         }
-        self.flags |= h.flags & OUT_FLAGS;
+        // L-36: a large output section holds large inputs only (an input
+        // without the flag named like one, `.ldata` say, is not moved
+        // after every small section by its name).
+        let out_flags = out_flags(target.machine);
+        let large = h.flags & out_flags & SHF_X86_64_LARGE != 0;
+        match self.large {
+            Some(was) if was != large => {
+                let word = |l: bool| if l { "SHF_X86_64_LARGE" } else { "not SHF_X86_64_LARGE" };
+                self.error = Some((word(was).into(), word(large).into()));
+                return;
+            }
+            _ => self.large = Some(large),
+        }
+        self.flags |= h.flags & out_flags;
         let class = (h.flags & SHF_MERGE != 0)
             .then_some(MergeClass { strings: h.flags & SHF_STRINGS != 0, entsize: h.entsize });
         self.merge = MergeAcc::Uniform(match self.merge {

@@ -135,7 +135,8 @@ impl World {
             Def::Common(entry(2, 5)),
             Def::Defined(entry(2, 6)),
         ]);
-        resolution.common = Box::new([(SymbolId(2), CommonShape { size: 0x20, align: 3 })]);
+        resolution.common =
+            Box::new([(SymbolId(2), CommonShape { size: 0x20, align: 3, large: false })]);
 
         let mut assignment = Assignment::empty(10);
         assignment.outsecs = col(vec![

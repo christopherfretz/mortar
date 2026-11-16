@@ -2502,17 +2502,24 @@ Static-pie (WP-089, §12.4; each shown by running a program, the cases of
   are harmless; a program's absolute symbol read through the GOT is wrong
   (`tests/spie/absgot.c` exits 1). lld and mold write 2 and no record.
 - **A31 (GNU ld, x86-64, new).** The `.plt.got` entry of an undefined
-  weak function (crtbeginS's `__cxa_finalize`) jumps through its GOT slot
+  weak function (crtbeginS's `__cxa_finalize`, g++'s `_ZTH` init guard of
+  a `thread_local` with a constant initializer) jumps through its GOT slot
   plus 1, a misaligned word no record writes (P-D10 "jumps through" an
-  address not a multiple of 8, and R1 on crtbeginS's
-  `R_X86_64_PLT32` against `__cxa_finalize`). Dead code: crtbeginS tests
-  the slot itself for 0 first.
+  address not a multiple of 8, and R1 on each `R_X86_64_PLT32` call whose
+  rel32 reaches such an entry). Dead code: each caller tests the slot
+  itself for 0 first (`cmpq $0, sym@GOTPCREL(%rip)`; `je`).
 - **A32 (GNU ld, mold, x86-64).** W3 in a static-pie: an address word of
   an IFUNC is its own `IRELATIVE` slot (the resolved function) while a
   PC-relative use takes the IPLT entry, so `fp == f` is false (F3 "takes
   the function its IRELATIVE record resolves to"; `tests/spie/ifunc.c`
   prints 0). lld makes every use the IPLT entry; on AArch64 every use of
   all three is the resolved function (a GOT load).
+- **A33 (mold).** A shared object named on a `-static-pie` line (after
+  the driver's `-Bstatic`) is linked: the output has `DT_NEEDED` and no
+  `PT_INTERP`, nothing loads the library, and the call to it faults
+  (WP-052's `dyn/spie/shlib-refused`, both architectures: SIGSEGV). GNU
+  ld and lld refuse it, as D-19 and D-2 do; stage 3 stops at P-D2 "a
+  shared object after -Bstatic (dyn.md D-19)".
 
 On i386 (WP-028e, `tests/x86.rs`; x86.md §15.2): W1 (two readings of a
 `GOT32X` operand) is R8 under every map; W3 (mold's no-base GOT value
@@ -2867,7 +2874,10 @@ from the file system (`line::Files`).
   nothing of stage 3 is judged: an option `spec/dyn.md` refuses
   (`--hash-style` other than `gnu`, `--copy-dt-needed-entries`,
   `-shared`), a static-pie linked with `-E` (its exports are M4, D-1),
-  an output with version definitions
+  any i386 dynamic output (`Pie`, `Exec` with `PT_DYNAMIC`, static-pie:
+  REL records and `DT_REL`, while every stage 3 rule is written for the
+  RELA targets; one line "outside stage 3: i386 ..." replaces every
+  other, WP-089), an output with version definitions
   (`DT_VERDEF`, M4), and a `DT_NEEDED` object of the closure no search
   finds (a link D-13 refuses, which lld and mold make). It is a finding,
   so mortar's output fails with it; the link-test harness counts a
@@ -3048,7 +3058,8 @@ it. `csu/libc-start.c` then applies `[__rela_iplt_start,
 __rela_iplt_end)` with `apply_irel`, which adds no load bias. The
 verifier judges a static-pie with the whole of stage 3 (the views, the
 model, P-D4..P-D13) plus the rules below; a static-pie linked with `-E`
-is outside stage 3 (its exports are M4, D-1), and `.dynsym`'s set is
+is outside stage 3 (its exports are M4, D-1), so is an i386 static-pie
+(REL records; §12.1, one P-D1 line), and `.dynsym`'s set is
 P-D14's, not P-D7's.
 
 - **P-D14, the headers.** The first `PT_LOAD` maps the ELF header at
@@ -3093,6 +3104,9 @@ P-D14's, not P-D7's.
   `DT_JMPREL` is present it becomes range 0's start if `DT_RELA` is
   absent, is cut off range 0's end when range 0 ends where it does, joins
   range 0 when it starts where range 0 ends, and is range 1 otherwise.
+  glibc reads `DT_JMPREL` only under `DT_PLTREL`, and the RELA pass only
+  when `DT_PLTREL` is `DT_RELA` (7): a `DT_JMPREL` without it is a table
+  glibc does not apply, and its records are "does not apply".
   Every `RELATIVE` and `IRELATIVE` record of an allocated `SHT_RELA`
   section is in exactly one range (0: "does not apply"; 2: "applies n
   times"), and a range covers records only. The first `DT_RELACOUNT`

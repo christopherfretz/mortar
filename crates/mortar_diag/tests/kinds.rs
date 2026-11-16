@@ -578,7 +578,7 @@ fn versioned_export() {
 #[test]
 fn odr_kinds_with_a_symbol() {
     type Row = (fn(String) -> Kind, &'static str, &'static str);
-    let rows: [Row; 4] = [
+    let rows: [Row; 10] = [
         (
             |name| Kind::OdrContentsMismatch { name },
             "odr-contents-mismatch",
@@ -599,6 +599,33 @@ fn odr_kinds_with_a_symbol() {
             "odr-symbol-type-mismatch",
             "x is a function in one file and data in another",
         ),
+        (
+            |name| Kind::OdrDeclarationMismatch { name },
+            "odr-declaration-mismatch",
+            "x is declared with a type that does not match its definition",
+        ),
+        (
+            |name| Kind::OdrInternalReference { name },
+            "odr-internal-reference",
+            "x refers to an entity with internal linkage, which differs in each translation unit",
+        ),
+        (
+            |name| Kind::OdrIsaMismatch { name },
+            "odr-isa-mismatch",
+            "the kept copy of x was compiled for other target features than a translation unit \
+             that uses it",
+        ),
+        (
+            |name| Kind::OdrTypeMismatch { name },
+            "odr-type-mismatch",
+            "type x violates the one-definition rule",
+        ),
+        (|name| Kind::OdrViolation { name }, "odr-violation", "x violates the one-definition rule"),
+        (
+            |name| Kind::OdrVtableRttiMismatch { name },
+            "odr-vtable-rtti-mismatch",
+            "the vtable of x is emitted by translation units compiled with and without RTTI",
+        ),
     ];
     for (make, id, message) in rows {
         let kind = make(s("x"));
@@ -606,6 +633,19 @@ fn odr_kinds_with_a_symbol() {
         assert_eq!(kind.symbol(), Some("x"));
         assert_eq!(symbol_text(kind), format!("ld: error: {message}\n"));
     }
+}
+
+// spec: diag.md §3.1 `odr-abi-mismatch` (odr.md O-30)
+#[test]
+fn odr_abi_mismatch() {
+    let kind =
+        Kind::OdrAbiMismatch { option: s("abi.short-enums"), first: s("on"), second: s("off") };
+    assert_eq!(kind.id(), "odr-abi-mismatch");
+    assert_eq!(kind.symbol(), None);
+    assert_eq!(
+        text(kind),
+        "ld: error: translation units compiled with different abi.short-enums: on and off\n"
+    );
 }
 
 // spec: diag.md §3.1 `canonical-plt-in-pie` (dyn.md D-44)

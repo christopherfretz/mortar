@@ -1,0 +1,44 @@
+# Model case C-struct-node (spec/odr.md §12.7, experiments 2 and 3), under
+# --odr=strict.
+# Two unrelated C libraries, each with its own struct node: legal C (N27);
+# C units write no kind 3 rows, and the kind 5 rows name different
+# functions.
+#@ spec: odr.md §3 N27, §12.7, "O-33"
+
+cc -O0 liba.c -o liba0.o
+meta liba.meta liba0.o -o liba.o
+cc -O0 libb.c -o libb0.o
+meta libb.meta libb0.o -o libb.o
+cc -O0 main.c -o main.o
+link(bfd,lld,mold) gcc -static -no-pie main.o liba.o libb.o -o prog
+link(mortar) gcc -static -no-pie main.o liba.o libb.o -Wl,--odr=strict -o prog
+run prog
+  stdout: 0 0
+
+#--- liba.c
+struct node { int v; struct node* next; };
+int a_len(struct node* n) { int k = 0; while (n) { k++; n = n->next; } return k; }
+#--- liba.meta
+# the records kiln would write (spec/odr.md §12.7)
+summary name=abi.rtti value=on
+summary name=lang value=c
+summary name=odr.scheme value=model-1
+summary name=producer value="hand (WP-070 model)"
+summary name=std value=c11
+declaration anchor=a_len ty=0x172f02997c2d9cf9 size=0 type_name=Fi(P4node) flags=5
+#--- libb.c
+struct node { const char* key; double w; struct node *l, *r; };
+int b_count(struct node* n) { return n ? 1 + b_count(n->l) + b_count(n->r) : 0; }
+#--- libb.meta
+# the records kiln would write (spec/odr.md §12.7)
+summary name=abi.rtti value=on
+summary name=lang value=c
+summary name=odr.scheme value=model-1
+summary name=producer value="hand (WP-070 model)"
+summary name=std value=c11
+declaration anchor=b_count ty=0x172f02997c2d9cf9 size=0 type_name=Fi(P4node) flags=5
+#--- main.c
+#include <stdio.h>
+int a_len(void*);
+int b_count(void*);
+int main(void) { printf("%d %d\n", a_len(0), b_count(0)); return 0; }

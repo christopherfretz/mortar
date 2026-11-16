@@ -94,9 +94,9 @@ pub fn classify(m: &Mention, entry: SymEntry) -> (Class, Option<What>) {
             }
         }
         SymbolSection::Reserved(shndx) => {
-            // SHN_X86_64_LCOMMON (x86-64, §3.3: refused until `.lbss`
-            // exists, `spec/x64.md` X-52's staging note) and every other
-            // reserved index: the mention contributes nothing.
+            // A reserved index §3.3 does not name (x86-64's
+            // SHN_X86_64_LCOMMON arrives as `Common`, `view::place_of`):
+            // the mention contributes nothing.
             fault = fault.or(Some(What::ReservedSection { entry, shndx }));
             Class::Undefined { weak: true }
         }

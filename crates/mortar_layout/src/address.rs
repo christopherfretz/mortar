@@ -74,7 +74,7 @@ pub fn address(
     let mut runs: Vec<(LoadClass, u8)> = Vec::new();
     for &c in order {
         let chunk = &chunks[c];
-        let Some(class) = chunk.load_class() else { continue };
+        let Some(class) = chunk.run_class(runs.last().map(|r| r.0)) else { continue };
         match runs.last_mut() {
             Some((last, align)) if *last == class => *align = (*align).max(chunk.align),
             _ => runs.push((class, chunk.align)),
@@ -97,7 +97,9 @@ pub fn address(
     if base == 0 && !options.pie {
         return Err(feature("non-PIE image base 0"));
     }
-    let rx_run = runs.iter().position(|r| r.0 == LoadClass::Rx);
+    // L-71: every code segment (the small one, and x86-64's `.ltext`,
+    // L-36a) and the segment after it start on a fresh page.
+    let is_code = |r: usize| matches!(runs[r].0, LoadClass::Rx | LoadClass::LargeRx);
     let mut cur: u128 = base; // memory cursor: end of the previous chunk
     let mut fcur: u128 = 0; // file cursor
     let mut prev_run: Option<usize> = None;
@@ -135,8 +137,7 @@ pub fn address(
         if new_load {
             // L-70: a new PT_LOAD at A ≡ o (mod P).
             let p = p_of(run);
-            let separate =
-                options.separate_code && rx_run.is_some_and(|rx| run == rx || run == rx + 1);
+            let separate = options.separate_code && (is_code(run) || run > 0 && is_code(run - 1));
             let o = if prev_run.is_none() {
                 0
             } else if separate {

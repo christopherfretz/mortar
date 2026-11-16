@@ -431,6 +431,30 @@ fn s12_4_irelative_order_is_measured_then_judged() {
     }
 }
 
+// spec/plumb.md §12.4: glibc applies DT_JMPREL only under DT_PLTREL =
+// DT_RELA. GNU ld's output with DT_PLTREL removed (made DT_DEBUG) or
+// naming DT_REL leaves its .rela.plt IRELATIVE records unapplied: P-D15.
+#[test]
+fn s12_4_jmprel_without_pltrel_is_not_applied() {
+    let Some(c) = corpus() else { return };
+    for o in c.outs.iter().filter(|o| o.case == "hello" && o.link.linker == Linker::Bfd) {
+        let base = o.link.output_bytes();
+        let (pa, ..) = *dynamic(&base).iter().find(|e| e.1 == 20).expect("DT_PLTREL");
+        for (what, at, v) in [("no DT_PLTREL", pa, 21), ("DT_PLTREL = DT_REL", pa + 8, 17)] {
+            let mut b = base.clone();
+            set(&mut b, at, v);
+            let r = o.verify_bytes(&b);
+            assert!(
+                r.findings.iter().any(|f| f.rule.id() == "P-D15"
+                    && f.message.starts_with("a record glibc's self-relocation does not apply")),
+                "{} ({what}): P-D15\n{}",
+                o.label(),
+                listing(o, &r)
+            );
+        }
+    }
+}
+
 // spec/plumb.md §12.4: the static-pie mutation classes are caught on the
 // references' C outputs, both architectures (the kill table is WP-089's
 // record; `spie-relacount` minus one and a dropped record of a GOT word
@@ -465,5 +489,64 @@ fn s12_4_static_pie_mutants_are_caught() {
     for class in ["spie-relacount", "spie-rel-drop"] {
         let r = total.classes.iter().find(|r| r.class == class).unwrap();
         assert!(r.caught > 0, "{class}\n{table}");
+    }
+}
+
+// spec/plumb.md §12.1: stage 3 has no i386 (REL records, `DT_REL`). An
+// i386 static-pie of each reference is answered by one P-D1 "outside
+// stage 3: i386" line, never by the rules written for RELA targets
+// (before: P-D15 on GNU ld's `.rel.dyn`, F4 on lld's and mold's IFUNCs).
+#[test]
+fn s12_1_i386_static_pie_is_outside_stage_3() {
+    let (Some(cc), Some(bfd), Some(lld), Some(mold)) = (
+        tool("i686-linux-gnu-gcc"),
+        tool("i686-linux-gnu-ld.bfd"),
+        tool("ld.lld-22"),
+        tool("mold"),
+    ) else {
+        return;
+    };
+    let scratch = Scratch::new("plumb-spie-i386");
+    let dir = scratch.path().to_path_buf();
+    std::fs::write(dir.join("hello.c"), SOURCES[0].1).unwrap();
+    assert!(run_in(&dir, &cc, &["-O1", "-fPIE", "-c", "hello.c", "-o", "hello.o"], None));
+    for (linker, real) in Linker::ALL.iter().zip([&bfd, &lld, &mold]) {
+        let bin = dir.join(format!("ld-{}", linker.name()));
+        std::fs::create_dir_all(&bin).unwrap();
+        let p = bin.join("ld");
+        let script = format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$LINE_OUT\"\nexec {} \"$@\"\n",
+            real.display()
+        );
+        std::fs::write(&p, script).unwrap();
+        let mut perm = std::fs::metadata(&p).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perm, 0o755);
+        std::fs::set_permissions(&p, perm).unwrap();
+        let name = format!("hello.{}", linker.name());
+        let line = dir.join(format!("{name}.line"));
+        let (b, m) = (format!("-B{}/", bin.display()), format!("-Wl,-Map={name}.map"));
+        let a = [b.as_str(), "-static-pie", "hello.o", "-o", &name, &m];
+        assert!(run_in(&dir, &cc, &a, Some(&line)), "{name}: link");
+        let o = Out {
+            case: "hello",
+            arch: Arch::X64,
+            link: Link {
+                case: "hello",
+                linker: *linker,
+                dir: dir.clone(),
+                output: dir.join(&name),
+                map: dir.join(format!("{name}.map")),
+            },
+            line,
+            expect: Vec::new(),
+        };
+        let r = o.verify();
+        let left: Vec<_> =
+            r.findings.iter().filter(|f| known_anomaly(&o.link, f).is_none()).collect();
+        assert!(
+            left.len() == 1 && left[0].outside() && left[0].message.contains("i386"),
+            "{name} [i386]: one P-D1 line\n{}",
+            listing(&o, &r)
+        );
     }
 }

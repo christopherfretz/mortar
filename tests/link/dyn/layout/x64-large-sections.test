@@ -1,0 +1,97 @@
+# x86-64 large sections in PIE and `-no-pie` executables (spec/x64.md
+# X-52, X-54; layout.md L-36a): the medium and large code models'
+# `.lbss`, `.ldata` and `.lrodata` (GCC and Clang), `.ltext` (Clang's
+# large model), C and C++. The static cases are layout/x64-large-sections.
+# The output sections keep `SHF_X86_64_LARGE` (readelf's `l`); mortar
+# places them after every small section (X-54), the references each their
+# own way (X-54's table), so only the programs' output and the flags are
+# compared. No common here (`-fno-common`): large commons are
+# x64-large-common.
+#@ spec: x64.md "X-52"
+#@ spec: layout.md "L-36a"
+#@ arch: x86_64
+#@ requires: g++ clang
+#@ anomaly(lld): A29
+#@ anomaly(mold): A28
+
+cc -O2 -mcmodel=medium -fPIE -fno-common lg.c -o gm-pie.o
+cc -O2 -mcmodel=medium -fno-pic -fno-common lg.c -o gm.o
+cc -O2 -mcmodel=large -fPIE -fno-common lg.c -o gl-pie.o
+cc -O2 -mcmodel=large -fno-pic -fno-common lg.c -o gl.o
+cc(clang) -O2 -mcmodel=medium -fPIE lg.c -o cm-pie.o
+cc(clang) -O2 -mcmodel=large -fPIE lg.c -o cl-pie.o
+cc(clang) -O2 -mcmodel=large -fno-pic lg.c -o cl.o
+cc -O2 -fPIE ext.c -o ext.o
+cxx -O2 -mcmodel=medium -fPIE lg.cc -o xm-pie.o
+cxx -O2 -mcmodel=large -fno-pic lg.cc -o xl.o
+cxx(clang) -O2 -mcmodel=medium -fPIE lg.cc -o ym-pie.o
+
+link gcc -pie gm-pie.o ext.o -o gm-pie
+link gcc -no-pie gm.o ext.o -o gm
+link gcc -pie gl-pie.o ext.o -o gl-pie
+link gcc -no-pie gl.o ext.o -o gl
+link gcc -pie cm-pie.o ext.o -o cm-pie
+link gcc -pie cl-pie.o ext.o -o cl-pie
+link gcc -no-pie cl.o ext.o -o cl
+link g++ -pie xm-pie.o -o xm-pie
+link g++ -no-pie xl.o -o xl
+link g++ -pie ym-pie.o -o ym-pie
+
+run gm-pie
+  stdout: 5 1 2 6 3 0 4 b 42
+run gm
+  stdout: 5 1 2 6 3 0 4 b 42
+run gl-pie
+  stdout: 5 1 2 6 3 0 4 b 42
+run gl
+  stdout: 5 1 2 6 3 0 4 b 42
+run cm-pie
+  stdout: 5 1 2 6 3 0 4 b 42
+run cl-pie
+  stdout: 5 1 2 6 3 0 4 b 42
+run cl
+  stdout: 5 1 2 6 3 0 4 b 42
+run xm-pie
+  stdout: 7 8 3 1.5 9 1
+run xl
+  stdout: 7 8 3 1.5 9 1
+run ym-pie
+  stdout: 7 8 3 1.5 9 1
+
+check readelf -SW gm-pie
+  has: .lbss NOBITS * WAl 
+  has: .ldata PROGBITS * WAl 
+  has: .lrodata PROGBITS * Al 
+check readelf -SW cl
+  has: .ltext PROGBITS * AXl 
+
+#--- lg.c
+#include <stdio.h>
+#ifndef BIG
+#define BIG (1<<20)
+#endif
+static char lb[BIG];                 /* .lbss */
+char ld_[BIG] = {1};                 /* .ldata */
+const char lr[1<<20] = {2};          /* .lrodata */
+char lc[BIG];                        /* LCOMMON with -fcommon */
+int small_d = 3; int small_b; const int small_r = 4;
+extern int ext_fn(int);
+static const char *strs[] = {"a", "b"};
+int main(void){ lb[BIG-1]=5; lc[BIG-1]=6; printf("%d %d %d %d %d %d %d %s %d\n", lb[BIG-1], ld_[0], lr[0], lc[BIG-1], small_d, small_b, small_r, strs[1], ext_fn(1)); return 0; }
+#--- ext.c
+int ext_fn(int x) { return x + 41; }
+#--- lg.cc
+#include <cstdio>
+#include <string>
+#include <stdexcept>
+struct Big { int v[1<<18]; Big() { v[0] = 7; v[(1<<18)-1] = 8; } virtual ~Big() {} virtual int f() const { return v[0]; } };
+Big big_obj;                               // .lbss (ctor-initialised)
+static int table[1<<17] = {1, 2, 3};       // .ldata
+const double ctab[1<<15] = {1.5};          // .lrodata
+thread_local int tl = 9;
+static int thrower(int x) { if (x > 1) throw std::runtime_error("boom"); return x; }
+int main() {
+  int caught = 0;
+  try { thrower(3); } catch (const std::exception &e) { caught = std::string(e.what()) == "boom"; }
+  std::printf("%d %d %d %g %d %d\n", big_obj.f(), big_obj.v[(1<<18)-1], table[2], ctab[0], tl, caught);
+}

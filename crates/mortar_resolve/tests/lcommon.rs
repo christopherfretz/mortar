@@ -1,7 +1,7 @@
 //! `spec/resolve.md` §3.3 (`SHN_X86_64_LCOMMON`, request R-16 of
-//! `spec/x64.md`): the index is x86-64's large common on x86-64 only, and
-//! staged there as a named refusal until `.lbss` exists (`spec/x64.md`
-//! X-52's staging note); on AArch64 it is any reserved index (§2).
+//! `spec/x64.md`): the index is x86-64's large common on x86-64 only (a
+//! common allocated in `.lbss`, R-16); on AArch64 it is any reserved
+//! index (§2).
 
 mod support;
 
@@ -54,6 +54,17 @@ fn errors(machine: Machine, object: std::path::PathBuf) -> Vec<String> {
         .collect()
 }
 
+/// The common shapes of resolving `objects` together.
+fn commons(machine: Machine, objects: &[std::path::PathBuf]) -> Vec<(u64, bool)> {
+    let items: Vec<Item> = objects.iter().cloned().map(Item::Object).collect();
+    let inputs = build(machine, &items).unwrap();
+    let pool = Pool::new(1);
+    let view = mortar_resolve::InputsView::new(&inputs, &pool);
+    let opts = Options { entry: Entry::None, ..Options::default() };
+    let r = resolve(&view, &opts, &pool);
+    r.common.iter().map(|(_, c)| (c.size, c.large)).collect()
+}
+
 fn assemble(asm: &str, src: &str, scratch: &Scratch, name: &str) -> Option<std::path::PathBuf> {
     let asm = tool(asm)?;
     let s = scratch.write(&format!("{name}.s"), src);
@@ -63,15 +74,23 @@ fn assemble(asm: &str, src: &str, scratch: &Scratch, name: &str) -> Option<std::
     Some(o)
 }
 
-// spec: resolve.md §3.3 (`SHN_X86_64_LCOMMON` machine-gated; refused by
-// name on x86-64 until `.lbss` exists)
+// spec: resolve.md §3.3 (`SHN_X86_64_LCOMMON` machine-gated: a large
+// common on x86-64, a reserved index elsewhere)
 #[test]
 fn s3_3_lcommon_is_x86_64_only() {
     let scratch = Scratch::new("lcommon");
     if let Some(x) = assemble(&Arch::X86_64.gnu("as"), ".largecomm lc,8,8\n", &scratch, "x64") {
-        let e = errors(Machine::X86_64, x);
-        assert_eq!(e.len(), 1, "{e:?}");
-        assert!(e[0].contains("unsupported feature: SHN_X86_64_LCOMMON"), "{e:?}");
+        let e = errors(Machine::X86_64, x.clone());
+        assert!(e.is_empty(), "{e:?}");
+        assert_eq!(commons(Machine::X86_64, std::slice::from_ref(&x)), [(8, true)]);
+        // Q14 / X-55: a COMMON and an LCOMMON of one name give a small
+        // common of the largest size; .lbss only when every mention is
+        // LCOMMON.
+        let small = assemble(&Arch::X86_64.gnu("as"), ".comm lc,16,8\n", &scratch, "x64s");
+        if let Some(small) = small {
+            assert_eq!(commons(Machine::X86_64, &[x.clone(), small.clone()]), [(16, false)]);
+            assert_eq!(commons(Machine::X86_64, &[small, x]), [(16, false)]);
+        }
     }
     if let Some(a) = assemble(&Arch::Aarch64.gnu("as"), ".comm lc,8,8\n", &scratch, "a64") {
         let mut bytes = std::fs::read(&a).unwrap();

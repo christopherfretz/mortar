@@ -1,0 +1,65 @@
+# x86-64 large sections in static executables (spec/x64.md X-52, X-54;
+# layout.md L-36a): GCC's medium and large models (`.lbss`, `.ldata`,
+# `.lrodata`) and Clang's large model (`.ltext` too). The output sections
+# keep `SHF_X86_64_LARGE` (readelf's `l`); mortar places them after every
+# small section (X-54: `.lrodata`, `.ltext`, `.ldata`, `.lbss`, each class
+# its own `PT_LOAD`), the references each their own way (X-54's table).
+# The PIE and `-no-pie` cases, and C++, are dyn/layout/x64-large-sections.
+# No common here (`-fno-common`): large commons are x64.rs's and
+# dyn/layout/x64-large-common's.
+#@ spec: x64.md "X-52"
+#@ spec: layout.md "L-36a"
+#@ arch: x86_64
+#@ requires: clang
+
+cc -O2 -mcmodel=medium -fno-pic -fno-common lg.c -o gm.o
+cc -O2 -mcmodel=large -fno-pic -fno-common lg.c -o gl.o
+cc(clang) -O2 -mcmodel=large -fno-pic lg.c -o cl.o
+cc -O2 -fno-pic ext.c -o ext.o
+
+link gcc -static gm.o ext.o -o gm-static
+link gcc -static gl.o ext.o -o gl-static
+link gcc -static cl.o ext.o -o cl-static
+
+run gm-static
+  stdout: 5 1 2 6 3 0 4 b 42
+run gl-static
+  stdout: 5 1 2 6 3 0 4 b 42
+run cl-static
+  stdout: 5 1 2 6 3 0 4 b 42
+
+check readelf -SW gm-static
+  has: .lbss NOBITS * WAl 
+  has: .ldata PROGBITS * WAl 
+  has: .lrodata PROGBITS * Al 
+check readelf -SW cl-static
+  has: .ltext PROGBITS * AXl 
+# mortar's order (X-54): every large section after the last small one.
+check readelf -SW cl-static
+  has(mortar): .bss NOBITS
+  then(mortar): .lrodata PROGBITS
+  then(mortar): .ltext PROGBITS
+  then(mortar): .ldata PROGBITS
+  then(mortar): .lbss NOBITS
+check readelf -lW cl-static
+  has(mortar): LOAD * R E 
+  then(mortar): LOAD * RW 
+  then(mortar): LOAD * R 
+  then(mortar): LOAD * R E 
+  then(mortar): LOAD * RW 
+
+#--- lg.c
+#include <stdio.h>
+#ifndef BIG
+#define BIG (1<<20)
+#endif
+static char lb[BIG];                 /* .lbss */
+char ld_[BIG] = {1};                 /* .ldata */
+const char lr[1<<20] = {2};          /* .lrodata */
+char lc[BIG];                        /* LCOMMON with -fcommon */
+int small_d = 3; int small_b; const int small_r = 4;
+extern int ext_fn(int);
+static const char *strs[] = {"a", "b"};
+int main(void){ lb[BIG-1]=5; lc[BIG-1]=6; printf("%d %d %d %d %d %d %d %s %d\n", lb[BIG-1], ld_[0], lr[0], lc[BIG-1], small_d, small_b, small_r, strs[1], ext_fn(1)); return 0; }
+#--- ext.c
+int ext_fn(int x) { return x + 41; }
