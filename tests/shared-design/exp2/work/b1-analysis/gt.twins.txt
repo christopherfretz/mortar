@@ -1,0 +1,2 @@
+gcc-a64 sources 35; objects whose code accesses its own exported data 0; -fPIE objects refused (the new rule, or D-117 against the symbol) 0; locally bound defs 0, of which named by a use the rule sees 0
+defs named by D-117 (symbol) only: 0

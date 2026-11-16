@@ -1,0 +1,13 @@
+gcc-a64.picvih objects 4
+gcc-a64.picvih use	a64	ABS	DATA	DATA	start=end-of-local	section	1
+gcc-a64.picvih use	a64	ABS	NONALLOC	DATA	start=end-of-local	section	18
+gcc-a64.picvih use	a64	ABS	NONALLOC	FUNC	inside	section	83915
+gcc-a64.picvih use	a64	ABS	NONALLOC	FUNC	start	section	2450
+gcc-a64.picvih use	a64	LO12	CODE	FUNC	start	section	17
+gcc-a64.picvih use	a64	PC	CODE	FUNC	start	section	11
+gcc-a64.picvih use	a64	PC	EH	FUNC	start	section	520
+gcc-a64.picvih use	a64	RULE	ABS	DATA	start	section	1
+gcc-a64.picvih overapprox-objects 2
+gcc-a64.picvih overapprox-objects-with-unnamed-def 1
+gcc-a64.picvih objects-with-data-hit 1
+gcc-a64.picvih RULE-objects-refused 1

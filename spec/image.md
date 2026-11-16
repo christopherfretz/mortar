@@ -769,6 +769,14 @@ buffer; the clip only selects which of them a job writes.
     `SHN_XINDEX`, with the values in section header 0;
   - each structural chunk's size is checked against its encoding
     (`internal-error` otherwise).
+- **I-123 [M4; planned: WP-117 (`e_type`), WP-125 (`.gnu.version_d`)]
+  (I-40 in a `Shared` output).** Request R-I10 of `spec/dyn.md` §18.2.
+  `e_type` is `ET_DYN` for `Shared` too (`spec/dyn.md` D-1, D-100), and
+  `e_entry` is D-101's (layout L-103). The section header of
+  `.gnu.version_d` is `spec/dyn.md` D-115's row of D-34's table:
+  `SHT_GNU_verdef`, `SHF_ALLOC`, `sh_link` the `.dynstr` section,
+  `sh_info` the number of `Verdef` entries, `sh_addralign` 4, `sh_entsize`
+  0; `.gnu.version`'s header is unchanged (it links `.dynsym`).
 
 - **I-116 [M1] The phase's entry point** (`link::write`, WP-027b). It
   reads the front's tables (`Front` of `spec/landed/pipeline/

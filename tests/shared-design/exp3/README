@@ -1,0 +1,31 @@
+WP-110 third pass (the fixes of review-110-shared-2.md): every backing script, one line each.
+Results are cited by spec/dyn.md §17-18 and the record spec/landed/dyn/WP-110.md §G (Appendix A, "Third pass").
+Each runner cd's to its own directory, sets ulimit -c 0, writes fresh outputs, links mold to fresh paths.
+
+elf.py            minimal ELF/archive reader (objects, archive members, sections, symbols, RELA/REL) used by the scripts below
+s1d.py            THE ORACLE: D-117's relocation-level address rule (with the m-1 boundary rule; --x86 = the exact x86 scope) and the AArch64 analysis (items 1-9; --mode, --calls, --boundary, --anabnd variants; --hits lists uses)
+gt3.py            detection table on -fPIE/-fPIC twins: bound definitions by symbol / rule / analysis / unseen; objects refused or escaping
+x86gt.py          how x86 non-PIC code reaches own exported data: SYMBOL / EXACT / CODEPC / UNSEEN (the M-1 ruling's measurement; S5 repeats it)
+i386how.py        counts per compiler the i386 -fPIE relocation forms against own exported data (i386/*.o)
+run_s1d.sh        s1d.py over every lists/*.lst and gt3.py over every pairs/*.txt -> out/s1d.*, out/gt.*; prints ALL-DONE
+run_modes.sh      s1d.py's variants over the AArch64 lists -> out/modes.*; prints MODES-DONE
+run_x86.sh        s1d.py --x86 over lists/x-*.lst -> out/x86rule.*; prints X86-DONE
+run_bnd.sh        s1d.py --boundary=always|never over the lists -> out/bnd.*; prints BND-DONE
+hod/build.sh      kiln++ -fkiln-backend=hod -O0 over 11 units, x86-64 and AArch64, -fPIE/-fno-pic/-fPIC; hod/backend.txt says which back end wrote each; prints BUILD-DONE
+i386/build.sh     the 6 constructed units for i386 with GCC 14, Clang 22, Clang 19, -O0/-O2, -fPIE/-fno-pic
+lists/            the corpus lists (objects and archive paths) the runners read
+pairs/            the twin pair files ("PIC PIE" per line) gt3.py and x86gt.py read
+vs3/run.sh        version scripts: builds the objects, runs globs.py, dups.py, expdyn.py, atat.py, gnuref.py, compare.py; prints compare.out's RESULT line
+vs3/globs.py      43 glob patterns x 22 odd names (odd.s, odd.names), GNU ld / lld 22 / mold -> globs.out
+vs3/dups.py       the duplicate rule, d01-d17, three linkers -> dups.out
+vs3/expdyn.py     rule 12 and --export-dynamic, e01-e13 with and without -E (sv3.c) -> expdyn.out
+vs3/atat.py       foo@@V against other nodes and globs, a01-a07 -> atat.out
+vs3/cases.py      the union of scripts (213: second pass 53, re-review 60, this pass 100) with names and .symver maps
+vs3/gnuref.py     links every case with GNU ld into ref/ -> gnuref.json (the reference answers)
+vs3/model_a.py    the author's model of resolve.md 9.7, corrected (entries, fnmatch, duplicates, rule 12)
+vs3/model_r.py    the re-reviewer's vmodel.py (review-110b), patched the same way
+vs3/compare.py    both models, GNU and mortar modes, against gnuref.json -> compare.out
+ss/run.sh         -shared -static: gcc's line, a trivial and a printf object with GNU ld / lld / mold (fresh r-* outputs); prints SS-DONE
+bsym3/run.sh      mold's --dynamic-list with -Bsymbolic-functions, both orders (gen.sh writes the sources), GNU ld and lld for comparison
+patch/d117.md     the D-117 text spliced into spec/dyn.md
+patch/g.md        the record's §G text

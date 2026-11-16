@@ -106,7 +106,7 @@ a diagnostic is model §8's: 60 for split and merge (unit `FileId`, seq
   | 5 | `.dynsym` | dynamic symbols | dynamic output | M2 |
   | 6 | `.dynstr` | dynamic strings | dynamic output | M2 |
   | 7 | `.gnu.version` | `versym` | `.gnu.version_r` exists (`spec/dyn.md` D-27) | M2 |
-  | 8 | `.gnu.version_d` | version definitions | a version script defines one (never in an executable, `spec/dyn.md` D-27) | M4 |
+  | 8 | `.gnu.version_d` | version definitions, written by `spec/dyn.md` D-115 (S-128) | a version script (or a `.symver` definition) names a version node, `Shared` only (never in an executable, `spec/dyn.md` D-27) | M4 (WP-125) |
   | 9 | `.gnu.version_r` | version needs | a needed object's definition of some imported key is versioned (`spec/dyn.md` D-27) | M2 |
   | 10 | `.rela.dyn` (`.rel.dyn`) | dynamic relocations | some dynamic relocation | M2 |
   | 11 | `.relr.dyn` | packed relative relocations | `-z pack-relative-relocs` | M4 (`spec/dyn.md` D-27, D-62) |
@@ -1510,6 +1510,21 @@ the rules below keep their ids and cite it (request R-S1).
   `.got.plt` header (three words on AArch64 too, a64 §10.2), and the
   lazy `JUMP_SLOT` words and `-z now` placement are `spec/dyn.md` D-49's
   (request R-S6).
+- **S-128 [M4; planned: WP-118 (`.dynamic`, `DT_SONAME`, `DT_SYMBOLIC`),
+  WP-125 (`.gnu.version_d`, `DT_VERDEF*`)] (the synthetic chunks of a
+  `Shared` output).** Request R-S10 of `spec/dyn.md` §18.2. In a
+  `Shared` output: row 8 (`.gnu.version_d`) exists and is written as
+  `spec/dyn.md` D-115 says (entries, order, `.gnu.version` indices,
+  section header); row 18 (`.dynamic`) holds D-30's tags with D-102's
+  changes for `Shared`: `DT_SONAME` iff `-soname`, then `DT_SYMBOLIC`
+  iff the line's last `-Bsymbolic` form is `-Bsymbolic` and it has no
+  `--dynamic-list` (D-112), `DT_VERDEF`/`DT_VERDEFNUM` iff row 8 exists
+  (before `DT_VERNEED`), `DT_VERSYM` also when only row 8 exists, no
+  `DT_DEBUG`, `DT_FLAGS`/`DT_FLAGS_1` by D-103; row 1 (`.interp`) never
+  exists (`spec/cli.md` §3.2: `-dynamic-linker` with `-shared` is
+  accepted and writes nothing); rows 24-25 never exist (no copies,
+  D-122). Every one of these is sized before addresses (S-107 stands).
+  *Tests:* `dynamic-tags` (its `Shared` rows), `versions-verdef`.
 
 ## 11. Sizes as data, units and incremental linking
 

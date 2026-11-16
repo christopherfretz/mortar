@@ -1,0 +1,10 @@
+census-pic objects 47
+census-pic use	a64	ABS	NONALLOC	FUNC	inside	section	272
+census-pic use	a64	ABS	NONALLOC	FUNC	start	section	141
+census-pic use	a64	PC	EH	FUNC	start	section	199
+census-pic use	i386	PC	EH	FUNC	start	section	95
+census-pic use	x64	PC	EH	FUNC	start	section	95
+census-pic overapprox-objects 2
+census-pic overapprox-objects-with-unnamed-def 2
+census-pic objects-with-data-hit 0
+census-pic RULE-objects-refused 0

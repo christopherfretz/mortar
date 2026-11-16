@@ -1,0 +1,14 @@
+clang-a64.picvih objects 4
+clang-a64.picvih use	a64	ABS	DATA	DATA	start=end-of-local	section	1
+clang-a64.picvih use	a64	ABS	NONALLOC	FUNC	inside	section	14009
+clang-a64.picvih use	a64	ABS	NONALLOC	FUNC	start	section	664
+clang-a64.picvih use	a64	LO12	CODE	DATA	start=end-of-local	section	1
+clang-a64.picvih use	a64	PC	CODE	DATA	start=end-of-local	section	1
+clang-a64.picvih use	a64	PC	EH	FUNC	start	section	540
+clang-a64.picvih use	a64	RULE	ABS	DATA	start	section	1
+clang-a64.picvih use	a64	RULE	LO12	CODE	start	section	1
+clang-a64.picvih use	a64	RULE	PC	CODE	start	section	1
+clang-a64.picvih overapprox-objects 2
+clang-a64.picvih overapprox-objects-with-unnamed-def 2
+clang-a64.picvih objects-with-data-hit 1
+clang-a64.picvih RULE-objects-refused 1

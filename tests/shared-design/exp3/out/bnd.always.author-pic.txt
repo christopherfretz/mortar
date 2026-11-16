@@ -1,0 +1,11 @@
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pic.case.boundary.c.o pre=1 rule=3 ana=0 words=32 funcs=7 selfgot
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pic.case.vague.cc.o pre=1 rule=3 ana=0 words=586 funcs=19 selfgot
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.picnsi.case.boundary.c.o pre=1 rule=3 ana=0 words=32 funcs=7 selfgot
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.picnsi.case.vague.cc.o pre=1 rule=3 ana=0 words=586 funcs=19 selfgot
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.picvih.case.vague.cc.o pre=1 rule=3 ana=0 words=586 funcs=19 selfgot
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.case.boundary.c.o pre=1 rule=1 ana=1 words=33 funcs=7 selfgot
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.case.vague.cc.o pre=1 rule=1 ana=1 words=510 funcs=16 selfgot
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.picnsi.case.boundary.c.o pre=1 rule=1 ana=1 words=29 funcs=7 selfgot
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.picnsi.case.vague.cc.o pre=1 rule=1 ana=1 words=518 funcs=16 selfgot
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.picvih.case.vague.cc.o pre=1 rule=1 ana=1 words=510 funcs=16 selfgot
+TOTAL objs=224 pre=24 rule_objs=10 ana_objs=5 ana_only_objs=0 rule=20 ana=5 words=381784 undec=2443

@@ -1,0 +1,12 @@
+a64 bfd nogc: dynsym: __start_cid(GLOBAL,PROTECTED) __stop_cid(GLOBAL,PROTECTED)  preloaded: count=1  section-kept: 1
+a64 bfd gc: dynsym: __start_cid(GLOBAL,PROTECTED) __stop_cid(GLOBAL,PROTECTED)  preloaded: count=1  section-kept: 1
+a64 lld nogc: dynsym: __stop_cid(GLOBAL,PROTECTED) __start_cid(GLOBAL,PROTECTED)  preloaded: count=1  section-kept: 1
+a64 lld gc: dynsym: __stop_cid(GLOBAL,PROTECTED) __start_cid(GLOBAL,PROTECTED)  preloaded: count=1  section-kept: 1
+a64 mold nogc: dynsym:  preloaded: count=1  section-kept: 1
+a64 mold gc: dynsym:  preloaded: count=1  section-kept: 1
+x64 bfd nogc: dynsym: __start_cid(GLOBAL,PROTECTED) __stop_cid(GLOBAL,PROTECTED)  preloaded: count=1  section-kept: 1
+x64 bfd gc: dynsym: __start_cid(GLOBAL,PROTECTED) __stop_cid(GLOBAL,PROTECTED)  preloaded: count=1  section-kept: 1
+x64 lld nogc: dynsym: __stop_cid(GLOBAL,PROTECTED) __start_cid(GLOBAL,PROTECTED)  preloaded: count=1  section-kept: 1
+x64 lld gc: dynsym: __stop_cid(GLOBAL,PROTECTED) __start_cid(GLOBAL,PROTECTED)  preloaded: count=1  section-kept: 1
+x64 mold nogc: dynsym:  preloaded: count=1  section-kept: 1
+x64 mold gc: dynsym:  preloaded: count=1  section-kept: 1

@@ -1,0 +1,41 @@
+== a64 lib by bfd; host copies: ro rr rw bz 
+   run: ro OK rr OK rw MISLINK bz MISLINK
+   ro                                 WARN             .rodata
+   rr                                 WARN             .data.rel.ro
+   rw                                 REFUSE           .data
+   bz                                 REFUSE           .bss
+== a64 lib by lld; host copies: ro rr rw bz 
+   run: ro OK rr OK rw MISLINK bz MISLINK
+   rw                                 REFUSE           .data
+   ro                                 WARN             .rodata
+   bz                                 REFUSE           .bss
+   rr                                 WARN             .data.rel.ro
+== a64 lib by mold; host copies: ro rr rw bz 
+   run: ro OK rr OK rw MISLINK bz MISLINK
+   ro                                 WARN             .rodata
+   rw                                 REFUSE           .data
+   bz                                 REFUSE           .bss
+   rr                                 WARN             .data.rel.ro
+== x64 lib by bfd; host copies: ro rr rw bz 
+   run: ro OK rr OK rw MISLINK bz MISLINK
+   ro                                 WARN             .rodata
+   rr                                 WARN             .data.rel.ro
+   rw                                 REFUSE           .data
+   bz                                 REFUSE           .bss
+== x64 lib by lld; host copies: ro rr rw bz 
+   run: ro OK rr OK rw MISLINK bz MISLINK
+   rw                                 REFUSE           .data
+   ro                                 WARN             .rodata
+   bz                                 REFUSE           .bss
+   rr                                 WARN             .data.rel.ro
+== x64 lib by mold; host copies: ro rr rw bz 
+   run: ro OK rr OK rw MISLINK bz MISLINK
+   ro                                 WARN             .rodata
+   rw                                 REFUSE           .data
+   bz                                 REFUSE           .bss
+   rr                                 WARN             .data.rel.ro
+== /usr/lib/aarch64-linux-gnu/libgdk_pixbuf-2.0.so.0.4200.12
+   gdk_pixbuf_version                 REFUSE           .data
+   gdk_pixbuf_minor_version           WARN             .rodata
+   gdk_pixbuf_micro_version           WARN             .rodata
+   gdk_pixbuf_major_version           WARN             .rodata

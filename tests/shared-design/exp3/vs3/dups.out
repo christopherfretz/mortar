@@ -1,0 +1,18 @@
+d01 V1 { global: foo; }; V2 { local: "foo"; };                   gnu=ERR(duplicate expression `foo' in version information) | lld=foo:foo@@V1 fo*:fo* | mold=foo:foo@@V1 fo*:fo*
+d02 V1 { global: fo\o; }; V2 { local: foo; };                    gnu=ERR(duplicate expression `foo' in version information) | lld=foo:local fo*:fo* | mold=foo:local fo*:fo*
+d03 V1 { global: "fo*"; }; V2 { local: fo\*; };                  gnu=ERR(duplicate expression `fo*' in version information) | lld=foo:foo@@V1 fo*:local | mold=foo:foo@@V1 fo*:fo*@@V1
+d04 V1 { global: fo*; }; V2 { local: "fo*"; };                   gnu=foo:foo@@V1 fo*:local | lld=foo:local fo*:local | mold=foo:foo@@V1 fo*:fo*@@V1
+d05 V1 { global: fo*; }; V2 { local: fo*; };                     gnu=ERR(duplicate expression `fo*' in version information) | lld=foo:local fo*:local | mold=foo:foo@@V1 fo*:fo*@@V1
+d06 V1 { global: f[o]o; }; V2 { local: foo; };                   gnu=foo:local fo*:fo* | lld=foo:local fo*:fo* | mold=foo:local fo*:fo*
+d07 V1 { global: fo?; }; V2 { local: fo[?]; };                   gnu=foo:foo@@V1 fo*:fo*@@V1 | lld=foo:foo@@V1 fo*:fo*@@V1 | mold=foo:foo@@V1 fo*:fo*@@V1
+d08 V1 { global: fo\*; }; V2 { local: fo\*; };                   gnu=ERR(duplicate expression `fo*' in version information) | lld=foo:foo fo*:local | mold=foo:foo fo*:fo*
+d09 V1 { global: foo; }; V2 { local: foo; };                     gnu=ERR(duplicate expression `foo' in version information) | lld=foo:foo@@V1 fo*:fo* | mold=foo:foo@@V1 fo*:fo*
+d10 V1 { global: foo; }; V2 { local: foo; }; V3 { global: foo; }; gnu=ERR(duplicate expression `foo' in version information) | lld=foo:foo@@V1 fo*:fo* | mold=foo:foo@@V3 fo*:fo*
+d11 V1 { global: foo; local: foo; };                             gnu=foo:foo@@V1 fo*:fo* | lld=foo:foo@@V1 fo*:fo* | mold=foo:foo@@V1 fo*:fo*
+d12 V1 { global: foo; }; V2 { global: foo; };                    gnu=foo:foo@@V1 fo*:fo* | lld=foo:foo@@V1 fo*:fo* | mold=foo:foo@@V2 fo*:fo*
+d13 V1 { local: foo; }; V2 { local: foo; };                      gnu=foo:local fo*:fo* | lld=foo:local fo*:fo* | mold=foo:local fo*:fo*
+d14 V1 { global: *; }; V2 { local: *; };                         gnu=ERR(duplicate expression `*' in version information) | lld=foo:local fo*:local | mold=foo:local fo*:local
+d15 V1 { global: fo*; }; V2 { local: fo**; };                    gnu=foo:foo@@V1 fo*:fo*@@V1 | lld=foo:local fo*:local | mold=foo:foo@@V1 fo*:fo*@@V1
+d16 V1 { global: extern "C++" { foo; }; }; V2 { local: foo; };   gnu=foo:foo@@V1 fo*:fo* | lld=foo:foo@@V1 fo*:fo* | mold=foo:local fo*:fo*
+d17 V1 { global: fo\*; }; V2 { local: "fo*"; };                  gnu=ERR(duplicate expression `fo*' in version information) | lld=foo:local fo*:local | mold=foo:local fo*:local
+DUPS-DONE

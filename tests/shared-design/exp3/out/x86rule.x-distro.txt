@@ -1,0 +1,13 @@
+/usr/i686-linux-gnu/lib/libc.a(ttyname.o) pre=0 rule=3 ana=0 words=0 funcs=0
+    RULE .text+0x33 reloc9 .bss+0x0 __ttyname_freemem_ptr 
+    RULE .text+0x4c reloc9 .bss+0x0 __ttyname_freemem_ptr 
+    RULE .text+0x82 reloc9 .bss+0x0 __ttyname_freemem_ptr 
+/usr/i686-linux-gnu/lib/libc.a(getsgent.o) pre=0 rule=1 ana=0 words=0 funcs=0
+    RULE .text+0x30 reloc9 .bss+0x14 __libc_getsgent_freemem_ptr boundary
+/usr/i686-linux-gnu/lib/libc.a(getsgnam.o) pre=0 rule=5 ana=0 words=0 funcs=0
+    RULE .text+0x37 reloc9 .bss+0x14 __libc_getsgnam_freemem_ptr boundary
+    RULE .text+0x86 reloc9 .bss+0x14 __libc_getsgnam_freemem_ptr boundary
+    RULE .text+0x9f reloc9 .bss+0x14 __libc_getsgnam_freemem_ptr boundary
+    RULE .text+0xfc reloc9 .bss+0x14 __libc_getsgnam_freemem_ptr boundary
+    RULE .text+0x16a reloc9 .bss+0x14 __libc_getsgnam_freemem_ptr boundary
+TOTAL objs=5184 pre=0 rule_objs=3 ana_objs=0 ana_only_objs=0 rule=9 ana=0 words=0 undec=0

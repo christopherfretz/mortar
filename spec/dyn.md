@@ -1271,6 +1271,36 @@ the same data through `GOTPCRELX` unless `-fdirect-access-external-data`).
 `Pc` against `Shlib{func: true}` in `Pie` stays `E` (D-44). *Test:*
 `copy-in-pie-x86-64`.
 
+**D-43a [M4; planned: WP-122] (a copy of a definition its library binds
+locally).** Request R-D43 (§18.4), the rule of D-126 item 2, for `Exec`
+and `Pie` (a `Shared` output never copies, D-122). When a `COPY` demand
+(D-42, D-43) copies a definition whose library binds it locally, the
+executable's copy and the library's own instance are two objects. "Binds
+locally": the library has `DT_SYMBOLIC` or `DF_SYMBOLIC`, or a
+`.note.mason` row (odr.md O-51, O-60) for the definition carries
+`NONPREEMPTIBLE`. Decided from the library's program headers and
+`.dynamic` only (the symbol count from `DT_GNU_HASH` or `DT_HASH`),
+never its section headers; where the definition's `st_value` lies:
+
+- in a `PT_LOAD` with `PF_W` and outside every `PT_GNU_RELRO`: refused,
+  `copy-of-locally-bound-definition` (diag.md §3.4, planned), naming the
+  symbol and the library;
+- in a read-only `PT_LOAD` or inside a `PT_GNU_RELRO`: the same kind as
+  a warning, with the note `{name} is read-only in {file}: two equal
+  copies` (two instances of a constant: defined behaviour, only `&v`
+  differs);
+- in no `PT_LOAD`: refused (mortar cannot tell).
+
+The rule does not change D-18 (a protected definition is refused
+already) nor the `Pie` and `Exec` rows of D-42/D-43 for a library that
+does not bind locally. A mold `-Bsymbolic` library carries neither tag
+and is not seen (a recorded gap); a `NONPREEMPTIBLE` row is read once
+WP-129 writes the tables of shared objects, `DT_SYMBOLIC`/`DF_SYMBOLIC`
+before. The verifier's side is P-R9, plumb.md P-D24 (§12.5, added to P-D11). *Test:*
+`copy-of-symbolic` (refuse `.data`/`.bss`, warn `.rodata`/
+`.data.rel.ro`, refuse outside every `PT_LOAD`; a GNU ld and an lld
+`-Bsymbolic` library and a mortar one with a table; W30).
+
 **D-44 [M2] (canonical PLTs).** In `Exec`, a non-GOT address use of a
 shared function (`C` against `Shlib{func: true}`: `R_AARCH64_ADR_PREL_PG_HI21`,
 `ABS64` in a read-only place, `R_X86_64_32S`/`PC32`, `R_386_32` in code)
@@ -1789,11 +1819,11 @@ x86-64 and i386, each library loaded and run by a host program
 (`DT_NEEDED` and `dlopen`); the experiments are `E-shared-*` of
 Appendix A, and `[A]`-`[F]` below cite the `dyn` area's parts. The
 second design pass (after the adversarial review) re-measured what it
-changed with the scripts of `.build/target-wp-110/exp2/` (README there;
+changed with the scripts of `tests/shared-design/exp2/` (README there;
 cited `exp2/<dir>`), on AArch64 natively and x86-64 under qemu-user.
 The third pass (after the re-review) measured D-117's x86 scope,
 boundary rule and analysis, version-script syntax and rule 12, and
-`-shared -static` with the scripts of `.build/target-wp-110/exp3/`
+`-shared -static` with the scripts of `tests/shared-design/exp3/`
 (README there; cited `exp3/<file>`).
 
 ### 17.1 The kind, the entry, `.dynamic`
@@ -1803,7 +1833,7 @@ specs cite it as `Shared` (arch.md §2.1's kind):
 
 | property | `Shared` |
 |---|---|
-| line | `-shared` (`-Bshareable`), by cli §3.2 unchanged (the last of `-shared`/`-pie`/`-no-pie` wins; `-r` with it is `conflicting-options`). `-dynamic-linker` with `-shared`: accepted, no `PT_INTERP` [unmeasured; no driver passes both, record §A]. `-shared -static`: gcc's driver turns it into `-Bstatic -shared … crtbeginT.o … --start-group -lgcc -lgcc_eh -lc --end-group` (no `--eh-frame-hdr`), and GNU ld's own `-static` is `-Bstatic`: `ld -shared -static s.o` and `ld -shared s.o -Bstatic -lc` behave alike (`exp3/ss`). So mortar does not refuse it by name (it cannot tell it from a legitimate `-Bstatic`): `-static` is `-Bstatic` on a `-shared` line too, archives only, and the members it pulls are judged by D-117, D-118 and D-122 like any input. Measured (AArch64): an object that needs nothing from `libc.a` links with all three (a `Shared` output with no `DT_NEEDED`), and so with mortar; one that calls `printf` pulls `libc.a(dl-support.o)`, whose non-PIC reference to `_start` GNU ld refuses (`undefined reference to _start`), and lld and mold refuse the LE TLS of `libc.a(malloc.o)` (`R_AARCH64_TLSLE_ADD_TPREL_*`), as mortar does (D-119; D-117 for `dl-support.o`) (`exp3/ss/run.sh`); on x86-64 GNU ld refuses `crtbeginT.o`'s `R_X86_64_32` (the re-review's `w28/`), as D-117 does. On i386 GNU ld links it and the C++ library aborts on a throw, mold links it and the C library crashes (W28, W29: S8's to reduce). `-shared -static-pie` links nowhere (gcc drops `-shared`; clang's line has no `_start`) |
+| line | `-shared` (`-Bshareable`), by cli §3.2 unchanged (the last of `-shared`/`-pie`/`-no-pie` wins; `-r` with it is `conflicting-options`). `-dynamic-linker` with `-shared`: accepted, no `PT_INTERP` [unmeasured; no driver passes both, record §A]. `-shared -static`: gcc's driver turns it into `-Bstatic -shared … crtbeginT.o … --start-group -lgcc -lgcc_eh -lc --end-group` (no `--eh-frame-hdr`), and GNU ld's own `-static` is `-Bstatic`: `ld -shared -static s.o` and `ld -shared s.o -Bstatic -lc` behave alike (`exp3/ss`). So mortar does not refuse it by name (it cannot tell it from a legitimate `-Bstatic`): `-static` is `-Bstatic` on a `-shared` line too, archives only, and the members it pulls are judged by D-117, D-118 and D-122 like any input. Measured (AArch64): an object that needs nothing from `libc.a` links with all three (a `Shared` output with no `DT_NEEDED`), and so with mortar; one that calls `printf` pulls `libc.a(dl-support.o)`, whose non-PIC reference to `_start` GNU ld refuses (`undefined reference to _start`), and lld and mold refuse the LE TLS of `libc.a(malloc.o)` (`R_AARCH64_TLSLE_ADD_TPREL_*`), as mortar does (D-119; D-117 for `dl-support.o`) (`exp3/ss/run.sh`); on x86-64 GNU ld refuses `crtbeginT.o`'s `R_X86_64_32` (the re-review's `w28/`), as D-117 does. On i386 GNU ld links it and the C++ library aborts on a throw, mold links it and the C library crashes (W28, W29: WP-130's to reduce). `-shared -static-pie` links nowhere (gcc drops `-shared`; clang's line has no `_start`) |
 | `e_type` | `ET_DYN` (all three, [A]) |
 | base (layout L-68) | 0; `--image-base=N` sets it (GNU ld and lld; mold ignores it silently in `-shared`, [A]); `-Ttext-segment` stays refused (lld refuses it, mold fails on it) |
 | `.interp`, `PT_INTERP` | no (all three) |
@@ -2262,9 +2292,9 @@ where `all=107 g=7` is right, all three). The rule:
   the constructed 120; 37 system archives; x86-64 `libc.a` and
   `libm.a`), and 3 non-PIC members of i686 `libc.a` (`ttyname.o`,
   `getsgent.o`, `getsgnam.o`: correct refusals) (`exp3/run_x86.sh`).
-  **S5 repeats this measurement on its own corpus** (kiln with hod and
+  **WP-127 repeats this measurement on its own corpus** (kiln with hod and
   with llc, GCC, Clang, at every `-O`) before x86-64 `Shared` ships, and
-  S8 for i386; a producer found to reach exported data through a
+  WP-130 for i386; a producer found to reach exported data through a
   section-relative PC-relative code field reopens this clause.
 - A judged use whose named address lies in a preemptible data
   definition's interval is a **bound use**, refused,
@@ -2314,6 +2344,43 @@ where `all=107 g=7` is right, all three). The rule:
   computed by the analysis in an object with no self-GOT): a correct
   `-fPIC` object refused, with the `-fdata-sections` note; none in real
   code.
+- **Before the start of a local object: a known refusal of correct
+  code (the supervisor's ruling, WP-115).** Correct `-fPIC` code that
+  forms an address *before* the start of a local object (`double *p =
+  tab - 1;`, the 1-based idiom: undefined behaviour in C, accepted by
+  every compiler) names an address that, after the compiler's folding,
+  can lie inside or at the start of an exported preemptible datum that
+  precedes the local object in its section. Such a use is not a bound
+  use (the code reaches the datum, if at all, through the GOT), but the
+  rule and the analysis cannot tell it from one, and the boundary rule
+  does not apply (the address is not one past the end of a *local*
+  object). **The rule stays as it is**: a named refusal beats a silent
+  bound use, and refining it by "the object has a GOT relocation against
+  that same definition" would reopen the hole for `ld -r` mixes of PIC
+  and non-PIC code. The refusal is `non-pic-in-shared-object` like any
+  bound use; its note names the remedy as the boundary's does,
+  `-fdata-sections` (each object in its own section: no preceding
+  datum), and adds `do not form an address before an object`.
+  Measured (WP-115, `tests/shared-design/sup/`: `c.c`, `static double
+  tab[8]` between `int gvar[4]` and `int gcount`, and gfortran's
+  1-based `SAVE` arrays beside module variables, `m.f90`, `l.f90`; every
+  `-O` of `-O0`, `-O1`, `-O2`, `-O3`, `-Os`, `-fPIC`, through the oracle
+  `s1d.py --hits`; 45 objects, 3 refused, every one self-GOT):
+
+  | compiler, target | refused | how |
+  |---|---|---|
+  | GCC 14 AArch64 `-O0` | `c.c` | by the rule: `ADR_PREL_PG_HI21`/`ADD_ABS_LO12_NC` (275, 277) at `f+0xc`, `f+0x10` against `.data + 8`, inside `gvar` (`.data` 0-0x10; `tab` at 0x10) |
+  | Clang 22 AArch64 `-O0` (and Clang 19) | `c.c` | by the analysis: `adrp`/`add` of `.data + 0x18` (`tab`), then `sub #8`, an address-valued `.data + 0x10`, the start of `gcount` (after `gvar`, a global, so not a boundary) |
+  | GCC 14, Clang 22, Clang 19 AArch64 `-O1`-`-Os` | none | the locals are placed first or the address is formed exactly |
+  | gfortran 14 AArch64, every `-O` | none | exact addresses (`m.f90`, `l.f90`) |
+  | GCC 14, Clang 22, gfortran 14 x86-64, every `-O` | none | the before-start address is a code `R_X86_64_PC32` (`.data + 0x14`, GCC `-O0`; `.data + 0x1c` and a register subtract, Clang `-O0`): a PC-relative field in an `SHF_EXECINSTR` place, **not judged on x86** (the scope above); no absolute word and no PC-relative data word of this kind in any object |
+
+  `[unmeasured]` for WP-117: the number of interior address-valued uses
+  (rule or analysis hits that are not accesses) in self-GOT objects
+  over its corpora at `-O0` (the design's corpora were mostly optimised
+  builds), each listed in its record. *Test:* `shared-pic-before-start`
+  (WP-117 for the rule's GCC case, WP-119 for the analysis's Clang
+  case: refused with both notes; the `-O2` objects link).
 
 Not uses: debug and other non-alloc places (every `DW_OP_addr` of an
 exported variable, 864k measured references in `.debug_*` against
@@ -2340,7 +2407,7 @@ boundary rule:
 | GCC x86-64, Clang AArch64 and x86-64, GCC i386 `-fPIE` | 212 | 3 by this rule | `vague.cc`'s one-past-the-end words (Clang AArch64, GCC and Clang x86-64), each object also refused by the table; every bound definition but the assembly label is named by symbol |
 | distribution `libc.a`, `libm.a`, BLAS, LAPACK, `libcrypt.a`, `libresolv.a` (default, non-PIC) | 8,071 | 21 | non-PIC members (correct refusals) |
 
-**Bound use through a register (the analysis; package S1d; AArch64;
+**Bound use through a register (the analysis; package WP-119; AArch64;
 the M-2 ruling).** GCC AArch64 `-fPIE` also forms the anchor's address
 in a register and reaches the datum through an instruction immediate
 (`adrp x0, .data; add x0, x0, :lo12:.data; ldr w1, [x0, #8]`): the only
@@ -2529,7 +2596,7 @@ object links correctly. Neither changes a link of an executable.
 links; GCC `boundary.c` `-fPIC` links; a load at the boundary in an
 object with self-GOT and an address-valued boundary without self-GOT
 are refused with the `-fdata-sections` note; `libobjc.a(selector.o)`
-refused), `shared-nonpic-analysis` (S1d: `gap2.c` W44 refused; abseil's
+refused), `shared-nonpic-analysis` (WP-119: `gap2.c` W44 refused; abseil's
 `raw_logging.cc` and `format.cc` `-fPIE` refused; their `-fPIC` twins
 link; one case per item of the decoding table, each checked against
 `exp3/s1d.py`), `shared-nonpic-x86-scope` (x86-64 `format.cc` `-fPIC`
@@ -2655,7 +2722,7 @@ from `-fPIC` twins; `review-110-adv/fpie`):
 
 | `-fPIE` object | own exported data | own exported function's address | in `-shared` |
 |---|---|---|---|
-| GCC 14, AArch64 | through the section anchor (`.data + off`, local symbol), the anchor plus an instruction immediate, or by symbol | by symbol (`ADR_PREL_PG_HI21 f`) | refused: by D-117's address-level rule (anchor), by D-117's analysis (anchor+immediate, S1d), by D-117's table (symbol); what neither follows is D-117's residual hole (2 of 85 definitions, `exp3/gt3.py`) |
+| GCC 14, AArch64 | through the section anchor (`.data + off`, local symbol), the anchor plus an instruction immediate, or by symbol | by symbol (`ADR_PREL_PG_HI21 f`) | refused: by D-117's address-level rule (anchor), by D-117's analysis (anchor+immediate, WP-119), by D-117's table (symbol); what neither follows is D-117's residual hole (2 of 85 definitions, `exp3/gt3.py`) |
 | Clang 22, AArch64 | by symbol (`ADR_PREL_PG_HI21 g`) | by symbol | refused by D-117's table (all three refuse it too) |
 | GCC 14 and Clang 22, x86-64 | by symbol (`R_X86_64_PC32 g`) | by symbol | refused by D-117's table (all three refuse) |
 | GCC 14, Clang 19 and 22, i386 | by `GOTOFF` against the symbol, by `GOTOFF` against the section (exact), or through the GOT (`GOT32X`), per access (`exp3/i386how.py`, 6 units: 21, 2 and 2-3 uses per compiler); the 50 census sources bind none | through the GOT | refused: by D-117's table (`GOTOFF` against the symbol), by D-117's address rule (section-relative `GOTOFF`, exact on x86) |
@@ -2775,7 +2842,7 @@ TLS is D-119's refusal.
    output's definitions are unversioned (`--version-script` is refused)"
    becomes "a row's version is its `.dynsym` entry's version node"
    (request R-O10). The bit is truthful because D-117's address-level
-   rule and its analysis (S1d) refuse a library in which non-PIC code
+   rule and its analysis (WP-119) refuse a library in which non-PIC code
    binds a preemptible datum without naming it: a row says
    `NONPREEMPTIBLE` clear only when every use of the definition goes
    through a record. The one exception is D-117's residual hole (named
@@ -2788,7 +2855,7 @@ TLS is D-119's refusal.
    an object whose row says `pic` it is proof.
 2. **A copy of a definition that its library binds locally** is a rule
    for `Exec` and `Pie`, not for `Shared`: it is request R-D43 against
-   D-43 (§18.4), its own package (record §D, S-R43). Its substance: the
+   D-43 (§18.4), its own package (record §D, WP-122). Its substance: the
    executable's copy and the library's own instance are two objects, and
    whether that is wrong depends on where the library keeps the datum,
    which the executable's link reads from the library's program headers
@@ -2915,8 +2982,8 @@ form):
 ### 17.7 Wrong outputs found (each with its script)
 
 Continuing §13.2's numbering. Scripts under
-`/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp/`; each runs
-from `run-all.sh WORK`.
+`tests/shared-design/exp/` (WP-115's copy; the scripts name their
+original `.build` paths); each runs from `run-all.sh WORK`.
 
 | # | reference | finding | script |
 |---|---|---|---|
@@ -2948,7 +3015,7 @@ from `run-all.sh WORK`.
 | W44 | GNU ld, lld, mold (AArch64) | GCC `-fPIE` code reaching its own exported datum through the section anchor and an instruction immediate links into `-shared` silently; a `-no-pie` host that copies the datum runs with two instances (`all=10 g=100`) | `exp2/gapdemo/run.sh` |
 
 Every one is a test on which mortar refuses or is right (the rules
-cited in §17.6). W44 is refused by D-117's analysis (S1d: `exp3/s1d.py`
+cited in §17.6). W44 is refused by D-117's analysis (WP-119: `exp3/s1d.py`
 finds the `ldr` at `.data + 4`, inside `g`); the forms the analysis
 does not follow are D-117's residual hole, each a
 `shared-nonpic-analysis` case asserting that it links.
@@ -2982,33 +3049,36 @@ by themselves produce a wrong program (each measured, `exp2/`):
 ## 18. Requests from §17 (WP-110)
 
 Proposed wording or substance; the owning spec's maintainer lands it.
-The packages of the record's §D name the requests each needs.
+The packages of the record's §D name the requests each needs. **Every
+request below is applied** (WP-115, `spec/landed/dyn/WP-115.md`): each
+row opens with the owning spec and the id it now has, and the text
+after it is the request as made.
 
 ### 18.1 Architecture specs
 
 | id | target | request |
 |---|---|---|
-| R-A10 | arch §2.1, §4.3 (`Shared` row) | `target_kind` reads D-113's `preemptible` bit; the `Shared` row is D-117's table: AbsWord in a read-only place `E` (was `D`+`TX`), AbsNarrow `E` for every kind, `Pc` resolved against `Local` and `E` against `Preemptible`/`Shlib`/`WeakDyn`, Branch `PLT` for those three; `C` and `CANON_PLT` never (D-122); no TLS relaxation (D-119) |
-| R-A11 | a64 §5, §8 (not §11) | a64's `Shared` cells as D-117 and D-119 (traditional GD kept with `DTPMOD64`/`DTPREL64`; TLSDESC eager in `.rela.dyn`; LE refused); a non-preemptible IFUNC's IPLT entry canonical in `Shared` (D-121) |
-| R-X10 | x64 §4, §6.2 | the same for x86-64: GOT relaxation only against `Local`; `PC32` against a non-`Local` key `E` whatever the opcode; `DTPMOD64`/`DTPOFF64`/`TPOFF64`/`TLSDESC` with `r_sym` 0 for a local target; D-117's address rule judges only exact fields on x86-64 (absolute words, `GOTOFF64`, PC-relative fields in non-code places): a section-relative PC-relative code use is not judged, and S5 repeats `exp3/x86gt.py`'s measurement before x86-64 `Shared` ships |
-| R-X86-10 | x86 (M4) | i386 `Shared`: D-130 (PLT with `%ebx`; `GOTOFF` against `Local` only; `GOT32X` without a base register refused; IFUNC refused); D-117's exact scope on i386 (`R_386_32`, `16`, `8`, `GOTOFF`, PC-relative fields in non-code places), section-relative `GOTOFF` to own exported data judged (GCC and Clang `-fPIE` emit it, `exp3/i386how.py`); S8 repeats the measurement |
+| R-A10 | arch §2.1, §4.3 (`Shared` row) | **applied: arch §2.1 (the `Shared` bullet), §3.4, §4.3, §4.4, §4.5.** `target_kind` reads D-113's `preemptible` bit; the `Shared` row is D-117's table: AbsWord in a read-only place `E` (was `D`+`TX`), AbsNarrow `E` for every kind, `Pc` resolved against `Local` and `E` against `Preemptible`/`Shlib`/`WeakDyn`, Branch `PLT` for those three; `C` and `CANON_PLT` never (D-122); no TLS relaxation (D-119) |
+| R-A11 | a64 §5, §8 (not §11) | **applied: a64 §5.1.** a64's `Shared` cells as D-117 and D-119 (traditional GD kept with `DTPMOD64`/`DTPREL64`; TLSDESC eager in `.rela.dyn`; LE refused); a non-preemptible IFUNC's IPLT entry canonical in `Shared` (D-121) |
+| R-X10 | x64 §4, §6.2 | **applied: x64 X-59-X-62 (§5.1).** the same for x86-64: GOT relaxation only against `Local`; `PC32` against a non-`Local` key `E` whatever the opcode; `DTPMOD64`/`DTPOFF64`/`TPOFF64`/`TLSDESC` with `r_sym` 0 for a local target; D-117's address rule judges only exact fields on x86-64 (absolute words, `GOTOFF64`, PC-relative fields in non-code places): a section-relative PC-relative code use is not judged, and WP-127 repeats `exp3/x86gt.py`'s measurement before x86-64 `Shared` ships |
+| R-X86-10 | x86 (M4) | **applied: x86 X86-69-X86-73 (§5.1).** i386 `Shared`: D-130 (PLT with `%ebx`; `GOTOFF` against `Local` only; `GOT32X` without a base register refused; IFUNC refused); D-117's exact scope on i386 (`R_386_32`, `16`, `8`, `GOTOFF`, PC-relative fields in non-code places), section-relative `GOTOFF` to own exported data judged (GCC and Clang `-fPIE` emit it, `exp3/i386how.py`); WP-130 repeats the measurement |
 
 ### 18.2 Input, resolution, model, CLI, layout, synth, ODR, metadata
 
 | id | target | request |
 |---|---|---|
-| R-R10 | resolve §4.7 | the keys named by `-init`/`-fini` are roots, every kind (D-124) |
-| R-R11 | resolve §5.2 | `--allow-shlib-undefined` is the default in `Shared`; `-z defs`/`--no-undefined` refuse undefined references in `Shared` with an indirect-dependency definition not counting (D-118); a versioned reference needs its version (D-118) |
-| R-M10 | model §3 (`Resolution`) | a `preemptible` bit per key (D-113) |
-| R-C10 | cli §2.3, §4.2, `docs/status/options.md` | per package (record §D): `-shared`, `-soname`/`-h`, `--version-script`/`-version-script`, `--no-undefined-version`, `--undefined-version`, `-z defs`/`--no-undefined`, `--whole-archive`, `-Bsymbolic`, `-Bsymbolic-functions`, `--dynamic-list`, `-Bno-symbolic`, `--exclude-libs`, `-z nodelete`/`nodlopen`/`initfirst`/`interpose`/`origin`, `--allow-shlib-undefined` supported; several `--version-script` options read as one script, in order (resolve §9.7 rule 13; all three, m-4); `-Bsymbolic-functions` and `-z now` in the first packages (`-Bsymbolic-functions` S1a, `-z now` S1b: Python's `LDSHARED` line and rustc's `cdylib` line carry them, record §A.4); `-Bsymbolic-non-weak*`, `--dynamic-list-data`, `--dynamic-list-cpp-new`, `--dynamic-list-cpp-typeinfo`, `-z notext`, `-f`/`-F`, `--spare-dynamic-tags` refused (class `option`, D-112); the `-Bsymbolic` and `-z defs` no-op rows written for executables keep their meaning there |
-| R-L10 | layout L-100 | withdrawn: no linker-defined symbol is exported from a shared object unless `ref_dynamic` (D-110) |
-| R-L11 | layout L-103 | last sentence replaced by D-101 (`_start` or `-e` in `Shared`; 0 silently when the default `_start` is undefined) |
-| R-L12 | layout L-60 | `.gnu.version_d` between `.gnu.version` and `.gnu.version_r` (D-123) |
-| R-S10 | synth S-3 | row 8 (verdef) written by D-115; `.dynamic` of `Shared` per D-102; `DT_SONAME`, `DT_VERDEF*`, `DT_SYMBOLIC` rows |
-| R-I10 | image I-40 | section header of `.gnu.version_d` (D-115) |
-| R-O10 | odr O-24, O-50, O-51 | a row's version is its `.dynsym` version node (D-115); `NONPREEMPTIBLE` is D-112's bound set, truthful but for D-117's residual hole (D-126 item 1); a consumer of a row (odr.md's cross-library checks) reads `NONPREEMPTIBLE` as R-D43 does (D-126 item 2) |
-| R-MT10 | meta MT-32 | `--keep-mason-meta` applies to `Shared` (D-126) |
-| R-N10 | incr IN-12 | `-shared` stays an unsupported incremental kind until D-127's interface comparison is designed |
+| R-R10 | resolve §4.7 | **applied: resolve §4.7 (the roots).** the keys named by `-init`/`-fini` are roots, every kind (D-124) |
+| R-R11 | resolve §5.2 | **applied: resolve §5.2 (the D-118 rows, the D-13 row).** `--allow-shlib-undefined` is the default in `Shared`; `-z defs`/`--no-undefined` refuse undefined references in `Shared` with an indirect-dependency definition not counting (D-118); a versioned reference needs its version (D-118) |
+| R-M10 | model §3 (`Resolution`) | **applied: model §3.3 (the `preemptible` key bit, check (8)).** a `preemptible` bit per key (D-113) |
+| R-C10 | cli §2.3, §4.2, `docs/status/options.md` | **applied: cli §3.2, §3.6 (`bsymbolic`), §4.2 (the M4 shared-object block); `docs/status/options.md` by each package (WP-117 first).** per package (record §D): `-shared`, `-soname`/`-h`, `--version-script`/`-version-script`, `--no-undefined-version`, `--undefined-version`, `-z defs`/`--no-undefined`, `--whole-archive`, `-Bsymbolic`, `-Bsymbolic-functions`, `--dynamic-list`, `-Bno-symbolic`, `--exclude-libs`, `-z nodelete`/`nodlopen`/`initfirst`/`interpose`/`origin`, `--allow-shlib-undefined` supported; several `--version-script` options read as one script, in order (resolve §9.7 rule 13; all three, m-4); `-Bsymbolic-functions` and `-z now` in the first packages (`-Bsymbolic-functions` WP-117, `-z now` WP-118: Python's `LDSHARED` line and rustc's `cdylib` line carry them, record §A.4); `-Bsymbolic-non-weak*`, `--dynamic-list-data`, `--dynamic-list-cpp-new`, `--dynamic-list-cpp-typeinfo`, `-z notext`, `-f`/`-F`, `--spare-dynamic-tags` refused (class `option`, D-112); the `-Bsymbolic` and `-z defs` no-op rows written for executables keep their meaning there |
+| R-L10 | layout L-100 | **applied: layout L-100.** withdrawn: no linker-defined symbol is exported from a shared object unless `ref_dynamic` (D-110) |
+| R-L11 | layout L-103 | **applied: layout L-103.** last sentence replaced by D-101 (`_start` or `-e` in `Shared`; 0 silently when the default `_start` is undefined) |
+| R-L12 | layout L-60 | **applied: layout L-60 rank 3.** `.gnu.version_d` between `.gnu.version` and `.gnu.version_r` (D-123) |
+| R-S10 | synth S-3 | **applied: synth S-3 row 8, S-128.** row 8 (verdef) written by D-115; `.dynamic` of `Shared` per D-102; `DT_SONAME`, `DT_VERDEF*`, `DT_SYMBOLIC` rows |
+| R-I10 | image I-40 | **applied: image I-123.** section header of `.gnu.version_d` (D-115) |
+| R-O10 | odr O-24, O-50, O-51 | **applied: odr O-24 (amended), O-50, O-60.** a row's version is its `.dynsym` version node (D-115); `NONPREEMPTIBLE` is D-112's bound set, truthful but for D-117's residual hole (D-126 item 1); a consumer of a row (odr.md's cross-library checks) reads `NONPREEMPTIBLE` as R-D43 does (D-126 item 2) |
+| R-MT10 | meta MT-32 | **applied: meta MT-32.** `--keep-mason-meta` applies to `Shared` (D-126) |
+| R-N10 | incr IN-12 | **applied: incr IN-12a.** `-shared` stays an unsupported incremental kind until D-127's interface comparison is designed |
 
 ### 18.3 Requests to `plumb.md` (stage 3 for a shared object)
 
@@ -3042,17 +3112,17 @@ key, and it is what turns P-D9's equality into a check of D-112.
 
 | id | request |
 |---|---|
-| P-R1 | P-D1 accepts `ET_DYN` without `DF_1_PIE` and without `PT_INTERP` as `Shared`; P-D2-P-D13 apply with this section's changes; P-D9 runs the two views above in place of its views 1 and 3 (view 2, a second load bias, stays) |
-| P-R2 | for every relocation of an `SHF_ALLOC` place of a live input (`.eh_frame` and the LSDA included: they are checked by value, not by the address rule) the views agree with the input. Plus D-117's address-level clause: a use whose named address lies in a preemptible data definition is reported even when both views agree on its value, the address computed by the verifier's own implementation, from D-117's text, of (a) the relocation-level rule with its scope (exact fields; on x86 no PC-relative code field is judged, so no x86 instruction decoder), its boundary rule, and (b) on AArch64 the analysis (S1d's def-use decoder over the input's code: D-117 items 1-9), each checked against the oracle `exp3/s1d.py` on the record's corpora. Not checked: non-alloc places (debug sections hold link-time addresses by design); the residual hole D-117 names |
-| P-R3 | every use of one IFUNC key, in every place and both views, yields one address: the IPLT entry for a bound key, the interposer's or the resolver's record for a preemptible one (W21); an i386 `Shared` output has no `STT_GNU_IFUNC` and no `IRELATIVE` (D-130) |
-| P-R4 | `.dynsym`'s defined set equals the verifier's export set (D-110, `__start_`/`__stop_` `PROTECTED` included), with each entry's binding, type, visibility and version (D-115) |
-| P-R5 | no `COPY`, no canonical PLT, no `DT_TEXTREL`, no dynamic record whose place is in a `PT_LOAD` without `PF_W` (outside `PT_GNU_RELRO`: such a record would write read-only text), no LE TLS form in the output's code (D-117, D-119, D-122), no output section `.ctors` or `.dtors` (their input goes to `.init_array`/`.fini_array`, D-124). i386: every place the output resolves to a PLT entry or GOT slot comes from an input relocation whose form sets `%ebx` (`PLT32`, `GOT32X` with a base register; D-130) |
-| P-R6 | each `PT_LOAD` has `p_align` the max page size and `p_offset ≡ p_vaddr (mod p_align)` (glibc checks only the page, D-123) |
-| P-R7 | `DT_SYMBOLIC` and `DF_SYMBOLIC` present iff the line's last `-Bsymbolic` form is `-Bsymbolic` and it has no `--dynamic-list` (D-112, D-102, D-103); `DT_INIT`/`DT_FINI` point at defined, live code (D-124); `DT_SONAME`, `DT_VERDEF*` consistent with `.gnu.version_d`; `GNU_PROPERTY_1_NEEDED_INDIRECT_EXTERN_ACCESS` present iff an input has it (D-112) |
-| P-R8 | mutations: each wrong output of §17.7 written into a correct mortar library (or, where it concerns the executable, a host) is reported as the table below says, and its test says so |
-| P-R9 | (executables, with R-D43) P-D11 gains: a `COPY` of a definition its library binds locally (`DT_SYMBOLIC`/`DF_SYMBOLIC`, or a `NONPREEMPTIBLE` row) whose `st_value` lies in a writable `PT_LOAD` of that library outside `PT_GNU_RELRO`, or in none, is reported |
-| P-R10 | no dynamic record of a `Shared` output names (`r_sym` not 0) a key the verifier computes as bound (D-112: hidden, protected, local by a version script, `-Bsymbolic`, `-Bsymbolic-functions` for a function, unlisted by `--dynamic-list`); a use of a bound key that needs a record has one of the kinds with `r_sym` 0: AArch64 `R_AARCH64_RELATIVE` (1027), `IRELATIVE` (1032), `TLS_DTPMOD64` (1028), `TLS_TPREL64` (1030), `TLSDESC` (1031); x86-64 `R_X86_64_RELATIVE` (8), `IRELATIVE` (37), `DTPMOD64` (16), `TPOFF64` (18), `TLSDESC` (36, refused as an input form by x64.md §6.2 until a compiler emits it); i386 `R_386_RELATIVE` (8), `IRELATIVE` (42, never in i386 `Shared`: D-130), `TLS_DTPMOD32` (35), `TLS_TPOFF` (14), `TLS_DESC` (41). Every other kind with `r_sym` 0 is reported (P-D9's `RELATIVE`/`IRELATIVE` symbol-0 rule stays) |
-| P-R11 | P-D12 for `Shared` (it replaces P-D12's executable forms; D-119): per model and binding, the records of a live TLS use are: GD and LD against a preemptible key or an import: `DTPMOD` + `DTPOFF` (AArch64 `TLS_DTPMOD64` + `TLS_DTPREL64`, x86-64 `DTPMOD64` + `DTPOFF64`, i386 `TLS_DTPMOD32` + `TLS_DTPOFF32`) both naming the key; GD and LD against a bound key: one `DTPMOD` with `r_sym` 0 per pair, the offset word the static offset with no record (a `DTPOFF` record with `r_sym` 0 holding the same offset is accepted from a reference); TLSDESC against a preemptible key or an import: one `TLSDESC` naming the key (in `.rela.dyn` for mortar, D-119; in `.rela.plt` from a reference); against a bound key: `TLSDESC` with `r_sym` 0 and the offset as addend (RELA) or in the descriptor's second word (i386 REL); IE against a preemptible key or an import: `TPREL64`/`TPOFF64`/`TLS_TPOFF` naming the key; against a bound key: the same type with `r_sym` 0 and the offset as addend (RELA) or in place (REL); LE: none (refused, P-R5). No relaxation: the number of `__tls_get_addr` calls equals the input's (D-119). `DF_STATIC_TLS` iff some IE slot exists. The values: in view B a preemptible key's module and offset are the interposer's, a bound key's the library's (P-R2). P-D12's D-16 direction (W14) applies unchanged |
+| P-R1 | **applied: plumb P-D16 (§12.5).** P-D1 accepts `ET_DYN` without `DF_1_PIE` and without `PT_INTERP` as `Shared`; P-D2-P-D13 apply with this section's changes; P-D9 runs the two views above in place of its views 1 and 3 (view 2, a second load bias, stays) |
+| P-R2 | **applied: plumb P-D17 (§12.5).** for every relocation of an `SHF_ALLOC` place of a live input (`.eh_frame` and the LSDA included: they are checked by value, not by the address rule) the views agree with the input. Plus D-117's address-level clause: a use whose named address lies in a preemptible data definition is reported even when both views agree on its value, the address computed by the verifier's own implementation, from D-117's text, of (a) the relocation-level rule with its scope (exact fields; on x86 no PC-relative code field is judged, so no x86 instruction decoder), its boundary rule, and (b) on AArch64 the analysis (WP-119's def-use decoder over the input's code: D-117 items 1-9), each checked against the oracle `exp3/s1d.py` on the record's corpora. Not checked: non-alloc places (debug sections hold link-time addresses by design); the residual hole D-117 names |
+| P-R3 | **applied: plumb P-D18 (§12.5).** every use of one IFUNC key, in every place and both views, yields one address: the IPLT entry for a bound key, the interposer's or the resolver's record for a preemptible one (W21); an i386 `Shared` output has no `STT_GNU_IFUNC` and no `IRELATIVE` (D-130) |
+| P-R4 | **applied: plumb P-D19 (§12.5).** `.dynsym`'s defined set equals the verifier's export set (D-110, `__start_`/`__stop_` `PROTECTED` included), with each entry's binding, type, visibility and version (D-115) |
+| P-R5 | **applied: plumb P-D20 (§12.5).** no `COPY`, no canonical PLT, no `DT_TEXTREL`, no dynamic record whose place is in a `PT_LOAD` without `PF_W` (outside `PT_GNU_RELRO`: such a record would write read-only text), no LE TLS form in the output's code (D-117, D-119, D-122), no output section `.ctors` or `.dtors` (their input goes to `.init_array`/`.fini_array`, D-124). i386: every place the output resolves to a PLT entry or GOT slot comes from an input relocation whose form sets `%ebx` (`PLT32`, `GOT32X` with a base register; D-130) |
+| P-R6 | **applied: plumb P-D21 (§12.5).** each `PT_LOAD` has `p_align` the max page size and `p_offset ≡ p_vaddr (mod p_align)` (glibc checks only the page, D-123) |
+| P-R7 | **applied: plumb P-D22 (§12.5).** `DT_SYMBOLIC` and `DF_SYMBOLIC` present iff the line's last `-Bsymbolic` form is `-Bsymbolic` and it has no `--dynamic-list` (D-112, D-102, D-103); `DT_INIT`/`DT_FINI` point at defined, live code (D-124); `DT_SONAME`, `DT_VERDEF*` consistent with `.gnu.version_d`; `GNU_PROPERTY_1_NEEDED_INDIRECT_EXTERN_ACCESS` present iff an input has it (D-112) |
+| P-R8 | **applied: plumb P-D23 (§12.5).** mutations: each wrong output of §17.7 written into a correct mortar library (or, where it concerns the executable, a host) is reported as the table below says, and its test says so |
+| P-R9 | **applied: plumb P-D24 (§12.5).** (executables, with R-D43) P-D11 gains: a `COPY` of a definition its library binds locally (`DT_SYMBOLIC`/`DF_SYMBOLIC`, or a `NONPREEMPTIBLE` row) whose `st_value` lies in a writable `PT_LOAD` of that library outside `PT_GNU_RELRO`, or in none, is reported |
+| P-R10 | **applied: plumb P-D25 (§12.5).** no dynamic record of a `Shared` output names (`r_sym` not 0) a key the verifier computes as bound (D-112: hidden, protected, local by a version script, `-Bsymbolic`, `-Bsymbolic-functions` for a function, unlisted by `--dynamic-list`); a use of a bound key that needs a record has one of the kinds with `r_sym` 0: AArch64 `R_AARCH64_RELATIVE` (1027), `IRELATIVE` (1032), `TLS_DTPMOD64` (1028), `TLS_TPREL64` (1030), `TLSDESC` (1031); x86-64 `R_X86_64_RELATIVE` (8), `IRELATIVE` (37), `DTPMOD64` (16), `TPOFF64` (18), `TLSDESC` (36, refused as an input form by x64.md §6.2 until a compiler emits it); i386 `R_386_RELATIVE` (8), `IRELATIVE` (42, never in i386 `Shared`: D-130), `TLS_DTPMOD32` (35), `TLS_TPOFF` (14), `TLS_DESC` (41). Every other kind with `r_sym` 0 is reported (P-D9's `RELATIVE`/`IRELATIVE` symbol-0 rule stays) |
+| P-R11 | **applied: plumb P-D26 (§12.5).** P-D12 for `Shared` (it replaces P-D12's executable forms; D-119): per model and binding, the records of a live TLS use are: GD and LD against a preemptible key or an import: `DTPMOD` + `DTPOFF` (AArch64 `TLS_DTPMOD64` + `TLS_DTPREL64`, x86-64 `DTPMOD64` + `DTPOFF64`, i386 `TLS_DTPMOD32` + `TLS_DTPOFF32`) both naming the key; GD and LD against a bound key: one `DTPMOD` with `r_sym` 0 per pair, the offset word the static offset with no record (a `DTPOFF` record with `r_sym` 0 holding the same offset is accepted from a reference); TLSDESC against a preemptible key or an import: one `TLSDESC` naming the key (in `.rela.dyn` for mortar, D-119; in `.rela.plt` from a reference); against a bound key: `TLSDESC` with `r_sym` 0 and the offset as addend (RELA) or in the descriptor's second word (i386 REL); IE against a preemptible key or an import: `TPREL64`/`TPOFF64`/`TLS_TPOFF` naming the key; against a bound key: the same type with `r_sym` 0 and the offset as addend (RELA) or in place (REL); LE: none (refused, P-R5). No relaxation: the number of `__tls_get_addr` calls equals the input's (D-119). `DF_STATIC_TLS` iff some IE slot exists. The values: in view B a preemptible key's module and offset are the interposer's, a bound key's the library's (P-R2). P-D12's D-16 direction (W14) applies unchanged |
 
 P-R8's table (the P-D rules are main's plumb.md §12, applied through
 P-R1; redone by the third pass against the interposer above, P-R10 and
@@ -3070,8 +3140,8 @@ attack 2, each written into a correct mortar library):
 | W25 (text relocations in `.eh_frame`, i386) | P-R5 (record in a non-writable `PT_LOAD`; `DT_TEXTREL`) |
 | W26 (`%ebx`-relative IPLT entry as canonical address, i386) | P-R3 (no IFUNC in i386 `Shared`) |
 | W27 (hidden IFUNC called through an `%ebx` stub, i386) | P-R3 |
-| W28 (`-shared -static` C++ without `--eh-frame-hdr`, i386) | NOT caught: the image is what the line asks (no `--eh-frame-hdr`, so no `PT_GNU_EH_FRAME`); needs a check of the line, not the image (a `-shared` line with C++ unwind tables and no `--eh-frame-hdr`), proposed for S8 (i386), which reduces the root cause the record lists as untraced (D-100's `-shared -static` cell) |
-| W29 (`-shared -static` C library crashes, mold i386) | NOT caught: the cause was not isolated (record §B); S8 (i386) reduces it to a record or a PLT form before a rule can name it |
+| W28 (`-shared -static` C++ without `--eh-frame-hdr`, i386) | NOT caught: the image is what the line asks (no `--eh-frame-hdr`, so no `PT_GNU_EH_FRAME`); needs a check of the line, not the image (a `-shared` line with C++ unwind tables and no `--eh-frame-hdr`), proposed for WP-130 (i386), which reduces the root cause the record lists as untraced (D-100's `-shared -static` cell) |
+| W29 (`-shared -static` C library crashes, mold i386) | NOT caught: the cause was not isolated (record §B); WP-130 (i386) reduces it to a record or a PLT form before a rule can name it |
 | W30 (a `COPY` of writable locally bound data) | P-R9 (executables) |
 | W31 (`DF_SYMBOLIC` with `--dynamic-list`) | P-R7; view B (P-R2) |
 | W32 (`ADR_PREL_LO21`, `LD_PREL_LO19`, `PREL32` without a record, AArch64) | P-R2, view B |
@@ -3096,8 +3166,8 @@ attack 2, each written into a correct mortar library):
 
 | id | target | request |
 |---|---|---|
-| R-D10 | diag §3.1 (symbols and relocations areas), §3.2 | new kinds: `non-pic-in-shared-object` (`NonPicInSharedObject { r_type, name, file }`, error, ``relocation {r_type} against symbol `{name}' which may bind externally can not be used when making a shared object; recompile with -fPIC``, GNU ld's; for D-117's address-level rule `{name}` is the definition and a note names the relocation's own symbol and place, and `-fdata-sections` at a boundary (D-117's boundary rule); for D-117's analysis the note names the function, the instruction's offset and the relocation that formed the address); `duplicate-version-pattern` (`DuplicateVersionPattern { pattern, first, second }`, error, `{pattern} is listed as global in version {first} and local in version {second}`, own; GNU ld: `duplicate expression`); `versioned-definition-hidden` (`VersionedDefinitionHidden { name, version }`, warning, `{name}@{version} is made local by version {version}'s local: entries; executables linked against {name}@{version} will not load`, own); `copy-of-locally-bound-definition` (`CopyOfLocallyBoundDefinition { name, file }`, error, `copy relocation against {name}, which {file} binds to itself; the program and {file} would use two different objects`, own; warning when R-D43 says so, with the note `{name} is read-only in {file}: two equal copies`); `version-script-undefined-name` (`VersionScriptUndefinedName { name, version }`, warning, `version script assigns {name} to {version}, but no file defines it`, own). `version-reassigned` exists (§3.1) and is used by resolve §9.7 rule 7 |
-| R-D43 | this spec, D-43 (and D-18's neighbourhood) | the copy rule of D-126 item 2 for `Exec` and `Pie`: refuse `copy-of-locally-bound-definition` when the copied definition's library binds it locally and its `st_value` lies in a `PF_W` `PT_LOAD` outside `PT_GNU_RELRO` or in none; warn when it lies in a read-only `PT_LOAD` or in `PT_GNU_RELRO`. "Binds locally": `DT_SYMBOLIC`/`DF_SYMBOLIC`, or a `.note.mason` row with `NONPREEMPTIBLE`. Decided from the library's program headers and `.dynamic` (the symbol count from `DT_GNU_HASH` or `DT_HASH`), never its section headers. Its own package (record §D, S-R43); plumb request P-R9 |
+| R-D10 | diag §3.1 (symbols and relocations areas), §3.2 | **applied: diag §3.4 (planned kinds; §3.1 rows by WP-116).** new kinds: `non-pic-in-shared-object` (`NonPicInSharedObject { r_type, name, file }`, error, ``relocation {r_type} against symbol `{name}' which may bind externally can not be used when making a shared object; recompile with -fPIC``, GNU ld's; for D-117's address-level rule `{name}` is the definition and a note names the relocation's own symbol and place, and `-fdata-sections` at a boundary (D-117's boundary rule); for D-117's analysis the note names the function, the instruction's offset and the relocation that formed the address); `duplicate-version-pattern` (`DuplicateVersionPattern { pattern, first, second }`, error, `{pattern} is listed as global in version {first} and local in version {second}`, own; GNU ld: `duplicate expression`); `versioned-definition-hidden` (`VersionedDefinitionHidden { name, version }`, warning, `{name}@{version} is made local by version {version}'s local: entries; executables linked against {name}@{version} will not load`, own); `copy-of-locally-bound-definition` (`CopyOfLocallyBoundDefinition { name, file }`, error, `copy relocation against {name}, which {file} binds to itself; the program and {file} would use two different objects`, own; warning when R-D43 says so, with the note `{name} is read-only in {file}: two equal copies`); `version-script-undefined-name` (`VersionScriptUndefinedName { name, version }`, warning, `version script assigns {name} to {version}, but no file defines it`, own). `version-reassigned` exists (§3.1) and is used by resolve §9.7 rule 7 |
+| R-D43 | this spec, D-43 (and D-18's neighbourhood) | **applied: this spec, D-43a.** the copy rule of D-126 item 2 for `Exec` and `Pie`: refuse `copy-of-locally-bound-definition` when the copied definition's library binds it locally and its `st_value` lies in a `PF_W` `PT_LOAD` outside `PT_GNU_RELRO` or in none; warn when it lies in a read-only `PT_LOAD` or in `PT_GNU_RELRO`. "Binds locally": `DT_SYMBOLIC`/`DF_SYMBOLIC`, or a `.note.mason` row with `NONPREEMPTIBLE`. Decided from the library's program headers and `.dynamic` (the symbol count from `DT_GNU_HASH` or `DT_HASH`), never its section headers. Its own package (record §D, WP-122); plumb request P-R9 |
 
 ## Appendix A. Experiments
 
@@ -3123,15 +3193,19 @@ and this spec cites them by directory (`review-m2-adv/<dir>`).
 | E-weakpc | `reloc/weakpc.sh` (`weakcls.py`) | weak undefined: which compilers produce which classes; the references' handling in PIE and `-no-pie`; `-z [no]dynamic-undefined-weak`; the hook program with `LD_PRELOAD`; mixed GOT/absolute uses (F2) | 1008 objects; links per combo |
 | E-mixed | `corpus/mixed.sh` | links mixing `-fno-pic`, `-fPIE`, `-fPIC`, `-fno-plt` objects; equality checks | C and C++, GCC and Clang 22, 2 architectures, 3 references, PIE and `-no-pie` |
 | review | `/Volumes/AgentWork/mortar-helper/.build/review-m2-adv/{ldso,weaksplit,copyro,canonpie,unique,dyntags,…}/run.sh` | the adversarial review's reproducers; `ldso`, `weaksplit`, `copyro`, `canonpie`, `unique`, `dyntags` re-run for the first fix pass; `dupdef`, `weaksplit2`, `neededorder` (`underlink-after`) cited from the re-review | — |
-| E-shared-census | `target-wp-110/exp/census/run.sh` (`census.py`, `realbuilds.sh`, `tools.sh`, `odd.sh`, `survey.py`) | §17: 723 `-shared` driver lines (21 drivers × 35 variations), the survey's 19 lines, zlib, Lua modules, googletest, libtool-shaped and CMake lines, by four references, run | about 80 s |
-| E-shared-export | `target-wp-110/exp/export/run.sh` (`partA.py`-`partG.py`) | §17: export set, protected, preemption under `LD_PRELOAD`, relocation classes × target kinds, versions written, archives | 3 architectures × 4 references; about 2 min |
-| E-shared-dyn | `target-wp-110/exp/dyn/run.sh` (`partA.py`-`partF.py`) | §17: the kind's headers, `.dynamic` per option and its run-time effect, TLS, IFUNC, other rules, `p_align` and the loader | 3 architectures × 4 references; about 45 s |
-| E-shared-tools | `target-wp-110/exp/tools/run.sh` (`part_a.sh`-`part_e.sh`) | §17: gdb, lldb, ldd, `ld.so --verify`, elflint on libraries; `dlopen`, TLS, EH, Fortran; which definition a library's own references reach; mortar-linked hosts | 21 libraries per architecture and reference; about 70 s |
-| E-shared-exp2 | `target-wp-110/exp2/` (README; `b1/`, `gapdemo/`, `escape/`, `bsym2/`, `vmatch2/`, `vscript2/`, `comments/`, `startstop/`, `q10b/`, `dynorder/`, `maxpage/`, `ldlines/`) | §17's second pass: the address-level rule over about 14,400 objects; the anchor gap; the protected escape; preemption per line; version-script model and grammar; `__start_`; copies of locally bound data; orders; max page; generators' lines (record §F) | each under a minute but `b1/` (about 10 min) |
-| E-shared-exp3 | `target-wp-110/exp3/` (README; `s1d.py` the analysis's oracle, `gt3.py`, `x86gt.py`, `i386how.py`, `run_s1d.sh`, `run_modes.sh`, `run_x86.sh`, `run_bnd.sh`, `hod/build.sh`, `i386/build.sh`, `vs3/run.sh`, `ss/run.sh`, `bsym3/run.sh`) | §17's third pass: D-117's analysis (S1d) and its detection table, its control-flow variants, the x86 exact scope, hod and i386 producers, the boundary rule; version-script globs, duplicates, rule 12 with `@@` and `-E`, both models over 213 scripts; `-shared -static`; mold's `--dynamic-list` order (record §G) | background, at most 4 jobs; `run_s1d.sh` and `run_bnd.sh` over the 11,699 system members are the longest |
+| E-shared-census | `tests/shared-design/exp/census/run.sh` (`census.py`, `realbuilds.sh`, `tools.sh`, `odd.sh`, `survey.py`) | §17: 723 `-shared` driver lines (21 drivers × 35 variations), the survey's 19 lines, zlib, Lua modules, googletest, libtool-shaped and CMake lines, by four references, run | about 80 s |
+| E-shared-export | `tests/shared-design/exp/export/run.sh` (`partA.py`-`partG.py`) | §17: export set, protected, preemption under `LD_PRELOAD`, relocation classes × target kinds, versions written, archives | 3 architectures × 4 references; about 2 min |
+| E-shared-dyn | `tests/shared-design/exp/dyn/run.sh` (`partA.py`-`partF.py`) | §17: the kind's headers, `.dynamic` per option and its run-time effect, TLS, IFUNC, other rules, `p_align` and the loader | 3 architectures × 4 references; about 45 s |
+| E-shared-tools | `tests/shared-design/exp/tools/run.sh` (`part_a.sh`-`part_e.sh`) | §17: gdb, lldb, ldd, `ld.so --verify`, elflint on libraries; `dlopen`, TLS, EH, Fortran; which definition a library's own references reach; mortar-linked hosts | 21 libraries per architecture and reference; about 70 s |
+| E-shared-exp2 | `tests/shared-design/exp2/` (README; `b1/`, `gapdemo/`, `escape/`, `bsym2/`, `vmatch2/`, `vscript2/`, `comments/`, `startstop/`, `q10b/`, `dynorder/`, `maxpage/`, `ldlines/`) | §17's second pass: the address-level rule over about 14,400 objects; the anchor gap; the protected escape; preemption per line; version-script model and grammar; `__start_`; copies of locally bound data; orders; max page; generators' lines (record §F) | each under a minute but `b1/` (about 10 min) |
+| E-shared-exp3 | `tests/shared-design/exp3/` (README; `s1d.py` the analysis's oracle, `gt3.py`, `x86gt.py`, `i386how.py`, `run_s1d.sh`, `run_modes.sh`, `run_x86.sh`, `run_bnd.sh`, `hod/build.sh`, `i386/build.sh`, `vs3/run.sh`, `ss/run.sh`, `bsym3/run.sh`) | §17's third pass: D-117's analysis (WP-119) and its detection table, its control-flow variants, the x86 exact scope, hod and i386 producers, the boundary rule; version-script globs, duplicates, rule 12 with `@@` and `-E`, both models over 213 scripts; `-shared -static`; mold's `--dynamic-list` order (record §G) | background, at most 4 jobs; `run_s1d.sh` and `run_bnd.sh` over the 11,699 system members are the longest |
 
-`target-wp-110` is `/Volumes/AgentWork/mortar-helper/.build/target-wp-110`;
-its `exp/run-all.sh WORK` runs the four into a fresh directory.
+`tests/shared-design/` holds the scripts, sources, lists and small
+results of these experiments (WP-115; its README says what was left
+behind: objects, third-party trees, reference outputs, the largest
+result files); `exp/run-all.sh WORK` runs the four into a fresh
+directory. The scripts still name the `.build/target-wp-110/` paths
+they were run from.
 
 Tools: GCC/G++/gfortran 14.2.0-19 (native and cross), clang 19.1.7 and
 22.1.8, GNU ld 2.44, ld.lld 19.1.7 and 22.1.8, mold 2.37.1, qemu-user

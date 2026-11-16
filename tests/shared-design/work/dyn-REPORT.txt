@@ -1,0 +1,332 @@
+WP-110 area `dyn`: what changes for -shared (GNU ld 2.44, lld 22.1.8 / 19.1.7, mold 2.37.1)
+=============================================================================================
+
+Reproduce:  bash .build/target-wp-110/exp/dyn/run.sh WORK   (WORK must not exist; ~45 s; serial)
+Scripts:    .build/target-wp-110/exp/dyn/{common,partA..partF}.py, run.sh
+Logs used:  .build/target-wp-110/work/dyn/logs/{A..F}.log, versions.log (final run 2026-11-16 19:40 UTC);
+            every output has a `<out>.readelf` dump (readelf -hlSdr --dyn-syms -V) beside it.
+Tools (versions.log): gcc/x86_64-/i686-linux-gnu-gcc Debian 14.2.0-19; clang 22.1.8 (recorded, NOT used);
+  GNU ld 2.44 (native aarch64 + both cross); LLD 22.1.8 and 19.1.7; mold 2.37.1; qemu-user 10.0.13;
+  glibc 2.41; host kernel page size 4096 (getconf, F.log).
+Method: gcc driver line (Debian: --build-id --eh-frame-hdr --hash-style=gnu --as-needed -shared, crti/crtbeginS,
+  -lgcc --push-state --as-needed -lgcc_s --pop-state -lc, crtendS/crtn; NO -z relro on the line, so RELRO is
+  each linker's own default). lld/mold chosen with `-B WORK/bin/<lk>/` (symlink `ld`). Host programs: GNU ld,
+  default driver line. Every library is loaded by a host (DT_NEEDED and/or dlopen) that prints OK/FAIL.
+  lld 19 = lld 22 in every block of every log (after normalising addresses): "lld" below means both.
+Notation: [A] = A.log etc.  "RUN" = program output quoted from the log.
+
+---------------------------------------------------------------------------------------------
+A. D-1 Shared column (partA.py, [A])
+---------------------------------------------------------------------------------------------
+Common to all linkers and arches (measured on every variant):
+  e_type=DYN; first PT_LOAD vaddr 0; no PT_INTERP, no .interp; no DT_DEBUG; FLAGS/FLAGS_1 absent by default;
+  DT_SONAME only with -soname. Every variant ran OK (DT_NEEDED and dlopen, "f()=42 OK same=1").
+Entry: default e_entry=0; library defines `_start` -> e_entry=&_start (all three); defines only `main` -> 0;
+  `-e f` -> &f; `-e nosuchsym` -> 0, bfd and lld warn "cannot find entry symbol nosuchsym; not setting start
+  address", mold silent.
+PT_PHDR: bfd NO; lld YES; mold YES.
+
+Program headers, verbatim (base variant; TLS variant inserts TLS where shown):
+  bfd a64      LOAD(RE) LOAD(RW) DYNAMIC NOTE [TLS] GNU_EH_FRAME GNU_STACK GNU_RELRO
+  bfd x64/i386 LOAD(R) LOAD(RE) LOAD(R) LOAD(RW) DYNAMIC NOTE [TLS] GNU_EH_FRAME GNU_STACK GNU_RELRO
+  lld (all)    PHDR LOAD(R) LOAD(RE) LOAD(RW) LOAD(RW) [TLS] DYNAMIC GNU_RELRO GNU_EH_FRAME GNU_STACK NOTE
+  mold (all)   PHDR NOTE LOAD(R) LOAD(RE) LOAD(RW) LOAD(RW) [TLS] DYNAMIC GNU_EH_FRAME GNU_STACK GNU_RELRO
+separate-code: bfd a64 default = 2 LOADs, -z separate-code -> R RE R RW (4); bfd x86 default = 4, -z
+  noseparate-code -> RE RW (2). lld and mold: segment list unchanged by either option (layout addresses only).
+p_align: a64 0x10000 for all three; x64/i386 0x1000 for all. -z max-page-size=N sets p_align=N for all (F).
+
+Sections in file order (base, a64; x86 identical apart from .plt.got/.rel):
+  bfd : .note.gnu.build-id .gnu.hash .dynsym .dynstr .gnu.version .gnu.version_r .rela.dyn .rela.plt .init .plt
+        .text .fini .rodata .eh_frame_hdr .eh_frame .init_array .fini_array .dynamic .got .got.plt .data .bss
+  lld : .note .dynsym .gnu.version .gnu.version_r .gnu.hash .dynstr .rela.dyn .rela.plt .rodata .eh_frame_hdr
+        .eh_frame .text .init .fini .plt .fini_array .init_array .dynamic .got .relro_padding .data
+        .tm_clone_table .got.plt .bss
+  mold: .note .gnu.hash .dynsym .dynstr .gnu.version .gnu.version_r .rela.dyn .rela.plt .eh_frame .eh_frame_hdr
+        .rodata.str .fini .init .plt .plt.got .text .dynamic .fini_array .init_array .got .relro_padding .data
+        .got.plt .tm_clone_table .bss
+
+RELRO placement and end ([A] lines ".dynamic=... RELRO end="):
+  linker  arch  .dynamic/.got   .got.plt (lazy)                    -z now .got.plt   RELRO end   (mod 64K)
+  bfd     a64   RELRO           first 0x18 of 0x30 in RELRO        merged into .got  0x20000     0
+  bfd     x64   RELRO           first 0x18 of 0x20 in RELRO        merged into .got  0x4000      0x4000
+  bfd     i386  RELRO           first 0xc of 0x10 in RELRO         merged into .got  0x4000      0x4000
+  lld     a64   RELRO (L2)      outside, 2nd RW LOAD (L3)          RELRO (L2)        0x21000     0x1000
+  lld     x64   RELRO           outside (L3)                       RELRO             0x3000
+  lld     i386  RELRO           outside (L3)                       RELRO             0x3000
+  mold    a64   RELRO (L2)      outside (L3)                       RELRO (L2)        0x30000     0
+  mold    x64   RELRO           outside (L3)                       RELRO             0x3000
+  mold    i386  RELRO           outside (L3)                       RELRO             0x3000
+  So bfd covers exactly the reserved .got.plt header (3 words) with RELRO and leaves the PLT slots writable.
+  RELRO end is aligned to max-page-size by bfd and mold (x64 -z max-page-size=0x10000: bfd 0x40000, mold
+  0x30000) but only to 4K by lld (a64 default and x64/i386 mp64k: 0x21000). With -z norelro: no GNU_RELRO; lld
+  then has 3 LOADs, bfd/mold unchanged count.
+Base address: --image-base=0x10000000 -> base 0x10000000 with bfd and lld; mold ignores it SILENTLY in -shared
+  (base stays 0, rc=0). -Ttext-segment=0x20000000: bfd base 0x20000000; lld refuses "-Ttext-segment is not
+  supported. Use --image-base if you intend to set the base address"; mold fails "fatal: cannot open
+  text-segment=0x20000000: No such file or directory".
+BTI (a64, -mbranch-protection=standard): bfd and lld write PT_GNU_PROPERTY ("AArch64 feature: BTI, PAC") and
+  DT_AARCH64_BTI_PLT; mold writes neither (the property is dropped from the output). x86 -fcf-protection: no
+  GNU_PROPERTY from any linker (Debian crt files carry no IBT/SHSTK note, so the AND is empty: expected).
+
+---------------------------------------------------------------------------------------------
+B. .dynamic (partB.py, [B])
+---------------------------------------------------------------------------------------------
+Tag order, verbatim (b_base, a64; x64 identical; i386 identical with REL/RELSZ/RELENT/RELCOUNT):
+  bfd : NEEDED SONAME INIT FINI INIT_ARRAY INIT_ARRAYSZ FINI_ARRAY FINI_ARRAYSZ GNU_HASH STRTAB SYMTAB STRSZ
+        SYMENT PLTGOT PLTRELSZ PLTREL JMPREL RELA RELASZ RELAENT VERNEED VERNEEDNUM VERSYM RELACOUNT NULL
+  lld : NEEDED SONAME RELA RELASZ RELAENT RELACOUNT JMPREL PLTRELSZ PLTGOT PLTREL SYMTAB SYMENT STRTAB STRSZ
+        GNU_HASH INIT_ARRAY INIT_ARRAYSZ FINI_ARRAY FINI_ARRAYSZ INIT FINI VERSYM VERNEED VERNEEDNUM NULL
+  mold: NEEDED SONAME RELA RELASZ RELAENT JMPREL PLTRELSZ PLTREL PLTGOT SYMTAB SYMENT STRTAB STRSZ INIT_ARRAY
+        INIT_ARRAYSZ FINI_ARRAY FINI_ARRAYSZ VERSYM VERNEED VERNEEDNUM INIT FINI GNU_HASH NULL
+Where option tags go:
+  RUNPATH/RPATH : bfd and mold right after NEEDED (in SONAME's slot); lld FIRST, before NEEDED.
+  FLAGS, FLAGS_1: bfd after RELAENT (before VERNEED); lld right after NEEDED/SONAME; mold just before NULL.
+  SYMBOLIC      : bfd only, after NEEDED.
+  VERDEF VERDEFNUM: bfd before VERNEED; lld after VERSYM; mold after VERNEEDNUM.
+  TEXTREL       : bfd after RELAENT, followed by FLAGS; lld after STRSZ (FLAGS stays near the front); mold
+                  "TEXTREL FLAGS" before NULL.
+  RELR RELRSZ RELRENT (-z pack-relative-relocs): bfd after VERSYM (RELACOUNT gone); lld and mold after RELAENT.
+  RELACOUNT: bfd and lld yes, mold NEVER. -z nocombreloc drops it (bfd, lld).
+Entries / DT_NULLs counted from sh_size (readelf -d stops at the first NULL), identical on all three arches:
+  b_base: bfd 29/5, lld 25/1, mold 29/6.   b_nostdlib: bfd 18/6, lld 13/1, mold 18/6.
+Exact flags per option (all linkers, all arches unless noted):
+  -z now         FLAGS=BIND_NOW, FLAGS_1=NOW
+  -z nodelete    FLAGS_1=NODELETE         -z initfirst FLAGS_1=INITFIRST     -z interpose FLAGS_1=INTERPOSE
+  -z nodlopen    FLAGS_1=NOOPEN           -z origin    FLAGS=ORIGIN, FLAGS_1=ORIGIN
+  -Bsymbolic     bfd: DT_SYMBOLIC + FLAGS=SYMBOLIC; lld: FLAGS=SYMBOLIC only; mold: NO tag at all
+  -Bsymbolic-functions: no tag from any linker
+  -soname / -rpath / --enable-new-dtags (default) -> RUNPATH; --disable-new-dtags -> RPATH (all)
+  --version-script with 2 versions -> VERDEF, VERDEFNUM=3 (all)
+  -z notext (textrel) -> TEXTREL + FLAGS=TEXTREL (all)
+  STATIC_TLS -> see C.   PLTGOT present in every output that has a .got.plt (mold also in -nostdlib -init).
+  --hash-style: driver passes gnu -> GNU_HASH only (all). sysv -> HASH only; both -> HASH and GNU_HASH (all).
+    Raw `ld -shared` (no driver flags): bfd GNU_HASH only; lld and mold HASH + GNU_HASH (E3 agrees).
+  -nostdlib: no NEEDED, no INIT/FINI/INIT_ARRAY. -nostdlib -init=..: bfd "INIT GNU_HASH STRTAB SYMTAB STRSZ
+    SYMENT NULL"; lld "SYMTAB SYMENT STRTAB STRSZ GNU_HASH INIT NULL"; mold "PLTGOT SYMTAB ... INIT GNU_HASH NULL".
+  as-needed: driver default and --as-needed drop the unreferenced libb_dep.so; --no-as-needed keeps it (all).
+  -init=myinit -fini=myfini: DT_INIT/DT_FINI point at them (crti's _init is not used); RUN "myinit ran / in f /
+    f=42 / myfini ran" (all). -init=nosuch: all three silently omit DT_INIT and DT_FINI (rc=0, no diagnostic).
+Run-time effect of each option (RUN lines identical for every linker x arch, 12 of 12 or 9 of 9):
+  nodelete : "after dlclose: RTLD_NOLOAD handle non-null (still mapped) / counter after reopen = 3"
+             (base: "handle null (unmapped) / counter after reopen = 1")
+  nodlopen : "dlopen(LAZY) FAILED libb_nodlopen.so: shared object cannot be dlopen()ed" (base: ok)
+  lazy lib with missing_fn: RTLD_LAZY ok "maybe(0)=11"; RTLD_NOW "undefined symbol: missing_fn";
+             -z now lib: both RTLD_LAZY and RTLD_NOW fail with "undefined symbol: missing_fn"
+  -Bsymbolic and -Bsymbolic-functions: "lib's callg() -> 1 (bound locally)"; base "-> 99 (preempted by exe)";
+             mold binds locally despite writing no tag.
+  init order (exe NEEDED oA, oB): plain "ctor B / ctor A / ctor exe"; initfirst on A "ctor A / ctor B";
+             initfirst on B "ctor B / ctor A" (unchanged).
+  interpose on B: no effect as DT_NEEDED ("which() -> A"); with LD_PRELOAD=B "ctor A / ctor B / ... -> B".
+  textrel: lib with -z notext RUN "getx()=5 OK" (all).
+Defaults on a textrel input (-fno-pic .rodata pointer, no -z notext):
+  bfd: x86 warns "warning: relocation in read-only section `.rodata'", a64 silent; writes TEXTREL; runs OK.
+  lld: refuses "relocation R_AARCH64_ABS64 cannot be used against local symbol; recompile with -fPIC"
+       (R_X86_64_64 / R_386_32).   mold: silent, writes TEXTREL + FLAGS=TEXTREL, runs OK.
+
+---------------------------------------------------------------------------------------------
+C. TLS in a .so (partC.py, [C])
+---------------------------------------------------------------------------------------------
+Library: s (static), h (hidden), e (exported), o (libother.so), x (defined by the exe, -rdynamic). Host:
+4 threads + main, DT_NEEDED run and dlopen run (with a thread started before dlopen). Code models from GCC:
+a64 GD=-mtls-dialect=trad, DESC=desc (GCC a64 default), x86 GD default, DESC=-mtls-dialect=gnu2.
+Relaxation in -shared: NONE by any linker. __tls_get_addr call count in the output equals the input's
+(GD: 16 on a64/x64/i386 for bfd, lld, mold; DESC/IE: 0). GCC's "GD" for s/h is already LD on x86.
+Records (local ones carry sym 0 = "addend N" / "sym 0"):
+  GD a64   bfd, mold: DTPMOD64[sym0] (one LD slot) + DTPMOD64+DTPREL64 for x, o, e.  lld: LINK REFUSED
+           "unknown relocation (513) against symbol .LANCHOR0" (R_AARCH64_TLSGD_ADR_PAGE21 against a section
+           symbol; 514 = ADD_LO12_NC). Same for lld 19.
+  GD x64   all: DTPMOD64[addend 0] + DTPMOD64/DTPOFF64 pairs for x, o, e.
+  GD i386  all: three DTPMOD32[sym 0] + DTPMOD32/DTPOFF32 for x, o, e; in-place words: the DTPOFF32 slot after
+           a local DTPMOD32 holds 0x8 / 0x4 (s/h offsets) and 0 for the LD slot.
+  DESC a64 bfd: in .rela.plt (lazy) with DT_TLSDESC_PLT + DT_TLSDESC_GOT; lld, mold: in .rela.dyn, no
+           TLSDESC_PLT/GOT. One local TLSDESC[addend 0] (GCC uses .LANCHOR0 + add).
+  DESC x64 bfd: .rela.plt + TLSDESC_PLT/GOT; locals addend 8, 4, 0. lld, mold: .rela.dyn, addends 4/0/8 resp.
+  DESC i386 bfd: .rel.plt but NO DT_TLSDESC_PLT/GOT; lld, mold: .rel.dyn. In-place: the addend sits in the
+           SECOND word of each descriptor (0x8, 0x4 for the locals, 0 otherwise); first word 0 (all).
+  IE       TPREL64 (a64) / TPOFF64 (x64) / TLS_TPOFF (i386); locals sym 0 with RELA addends 4, 8 (x64) / 0 (a64,
+           section-anchor) and in-place words 0x8, 0x4 on i386.
+DF_STATIC_TLS: IE: lld and mold on all arches; bfd on x64 and i386, NOT on a64 (bfd a64 IE: FLAGS=[]).
+  GD/DESC: none from anyone.  bfd i386 LE: FLAGS "TEXTREL STATIC_TLS".
+LE in -shared (whole library incl. o_tls/x_tls):
+  a64: bfd refuses "relocation truncated to fit: R_AARCH64_TLSLE_ADD_TPREL_HI12 against symbol `o_tls' defined
+       in .tdata section in .../libother.so"; lld "relocation R_AARCH64_TLSLE_ADD_TPREL_HI12 against .LANCHOR0
+       cannot be used with -shared"; mold "... can not be used when making a shared object; recompile with -fPIC".
+  x64: all refuse (bfd "relocation R_X86_64_TPOFF32 against `s_tls' can not be used when making a shared
+       object; recompile with -fPIC").
+  i386: bfd ACCEPTS with "warning: relocation in read-only section `.text'", writes R_386_TLS_TPOFF records
+       against .text (sym 0 for locals, in-place 0x8/0x4), FLAGS=TEXTREL STATIC_TLS, and RUNs OK (needed and
+       dlopen). lld "relocation R_386_TLS_LE against s_tls cannot be used with -shared"; mold refuses.
+LE against local TLS only (LE_local: s and h only):
+  a64 bfd: LINKS, rc=0, no diagnostic, NO dynamic record, FLAGS=[]; RUN dlopen "FAIL main=0 thread=0 (main sum
+       -285999425)" -> WRONG OUTPUT (W1). lld, mold refuse (as above).
+  x64: all refuse (bfd "relocation R_X86_64_TPOFF32 against hidden symbol `h_tls' can not be used when making a
+       shared object").  i386: bfd TEXTREL+STATIC_TLS, three TLS_TPOFF[sym 0], RUN "OK main=1 thread=1"; lld,
+       mold refuse.
+Every GD/DESC/IE output of every linker: RUN needed "OK (0 failures)", RUN dlopen "OK (0 failures)"
+(thread values, &x_tls exe==lib, &o_tls lib==other all checked).
+IE library dlopened (static TLS of N bytes, one TU): 64 and 1024 OK ("dlopen ok, big_touch=N OK"); 4096 and
+65536 "cannot allocate memory in static TLS block" -- all linkers, all arches, independent of whether
+DF_STATIC_TLS is set (bfd a64 has it unset and behaves identically).
+
+---------------------------------------------------------------------------------------------
+D. IFUNC in a .so (partD.py, [D])
+---------------------------------------------------------------------------------------------
+TU1: exported IFUNC f_exp, static IFUNC g_loc, hidden IFUNC h_hid; data words ptr_*; addr_*/call_*; plain_fn
+control. TU2 (-fPIC): hidden h_hid used from another TU. Hosts: pie, nopie, pie_interpose (exe defines f_exp
+returning 100, -rdynamic). Variants: ifunc, ifunc_now, ifunc_tu1 (TU1 only).
+.dynsym f_exp: STT_GNU_IFUNC from all three. bfd sets OS/ABI "UNIX - GNU"; lld and mold leave "UNIX - System
+  V" (readelf then prints the type as "<OS specific>: 10"). lld rewrites local/hidden IFUNCs to FUNC in .symtab
+  (value = .iplt entry); bfd and mold keep IFUNC at the resolver.
+Records: bfd: GLOB_DAT + ABS64 against f_exp, JUMP_SLOT f_exp in .rela.plt, IRELATIVE in both .rela.dyn and
+  .rela.plt. lld: GLOB_DAT/ABS64/JUMP_SLOT against f_exp, IRELATIVE in .rela.dyn, .iplt section. mold: NO
+  GLOB_DAT/ABS64/JUMP_SLOT against f_exp, only IRELATIVE -- the exported IFUNC is bound inside the library.
+Control: with a non-PIE host every linker shows "dlsym(handle) != exe" for plain_fn too (glibc returns the
+  library's own definition, the exe has a canonical PLT): not a linker property; excluded below.
+Results (FAIL lines quoted from [D]; lld = lld22 = lld19):
+  a64  bfd : ifunc pie "FAIL hidden IFUNC across TUs" (tu2 gets a PLT address, tu1/data the resolved one);
+             ifunc_tu1 OK.
+       lld : all OK.
+       mold: as bfd for h; plus nopie "exported IFUNC: exe/lib-code/lib-data/dlsym(DEFAULT) differ" and
+             pie_interpose "FAIL interposition: lib's call_f()=1" (W2).
+  x64  bfd : "FAIL local IFUNC: code ... data ..." and hidden code != data, in every variant incl. tu1.
+       lld : all OK.
+       mold: same as bfd x64 + W2 interposition and non-PIE inequality.
+  i386 bfd : ifunc/ifunc_now LINK REFUSED "unsupported non-PIC call to IFUNC `h_hid'" (TU2's `call h_hid` is
+             R_386_PC32 because h_hid is hidden); ifunc_tu1 OK.
+       lld : ifunc/ifunc_now SIGSEGV in pie, nopie and pie_interpose; ifunc_tu1 pie "FAIL g calls", nopie
+             SIGSEGV (W3).
+       mold: ifunc pie "FAIL hidden IFUNC across TUs / FAIL h calls", nopie SIGSEGV (W4); ifunc_tu1 pie OK,
+             nopie/interpose show W2.
+ifunc_now behaves exactly like ifunc in every cell.
+
+---------------------------------------------------------------------------------------------
+E. Other -shared rules (partE.py, [E])
+---------------------------------------------------------------------------------------------
+E1 COPY / non-PIC references to ext_data (defined in libedata.so):
+  -fPIC: GLOB_DAT + 64/32-bit absolute against ext_data, all linkers/arches; RUN "OK get_ext=5 &exe==&lib==ptr".
+  -fno-pic: a64 refused by all (bfd "relocation R_AARCH64_ADR_PREL_PG_HI21 against symbol `ext_data' which may
+    bind externally can not be used when making a shared object; recompile with -fPIC"); x64 refused by all
+    (bfd R_X86_64_32, lld/mold R_X86_64_PC32); i386: bfd (warning "relocation against `ext_data' in read-only
+    section `.text'") and mold ACCEPT with R_386_32 in .text + TEXTREL/FLAGS and run OK; lld refuses "relocation
+    R_386_32 cannot be used against symbol 'ext_data'; recompile with -fPIC".
+  -fPIE: x64 refused by all (bfd prints the read-only warning then fails); a64 and i386 link like -fPIC, run OK.
+  E6: scanned 972 shared objects under WORK: no R_*_COPY anywhere.
+E2 --gc-sections roots (RUN = read_cid()==8, constructor ran, .ctors entry ran, -init fn ran):
+  Kept by all: exported/protected functions and data, .init_array ctor (its symbol may go), init_opt_fn.
+  Collected by all: hidden/static unreferenced functions and data, dead_caller; with a version script also the
+    version-local symbols.
+  -init=hidden_init_opt_fn + gc: bfd and lld keep it, INIT -> it, RUN "-init=1". mold COLLECTS it and writes
+    DT_INIT=0x0: RUN a64 rc=-11 (no output), x64/i386 "qemu: uncaught target signal 11" (W5), also with a version
+    script.
+  .ctors input section: bfd and mold fold it into .init_array (RUN ".ctors=1"); lld keeps a separate .ctors
+    output section and the entry never runs (RUN ".ctors=0", every arch, gc and nogc) (W6).
+  C-identifier sections (cid_ref read via __start_cid_ref; cid_unref; cid_noref_used, attribute used, no
+    SHF_GNU_RETAIN in the GCC 14 object):
+    without a version script every cid_*_var is exported, so all three keep everything.
+    with the version script: bfd keeps cid_ref only; mold keeps all three (and warns "unknown command line
+    option: -z nostart-stop-gc"); lld drops cid_ref, leaves __start_cid_ref UND GLOBAL in .dynsym, and the
+    library fails to load: "dlopen FAILED: ...libgc_gc_vers.so: undefined symbol: __start_cid_ref" (W7).
+    With -z nostart-stop-gc lld keeps cid_ref and runs OK.
+  -z defs: a dead section's undefined reference is not diagnosed after gc (gc_zdefs links with all three); without
+    gc all refuse "undefined symbol: undef_in_dead". (The nogc library itself fails RTLD_NOW dlopen for the same
+    symbol: expected, it is the test's dead reference.)
+E3 raw `ld -shared`: .eh_frame_hdr/PT_GNU_EH_FRAME only with --eh-frame-hdr for bfd and lld; mold always.
+  bfd: .gnu.hash only; lld, mold: .hash + .gnu.hash. GNU_STACK and GNU_RELRO present for all.
+E4 section headers vs D-34 (a64 with a version script; x86 same pattern):
+  .dynsym sh_info (first non-local): bfd 3 on a64 (local section dynsyms for .init and .data), 1 on x64/i386;
+    lld, mold 1 everywhere.
+  .gnu.version_d / _r sh_addralign: bfd 8 (x64/a64) / 4 (i386); lld, mold 4.
+  .rela.plt: bfd and lld flags AI, sh_info=.got.plt; mold flags A (no SHF_INFO_LINK) with info=24 (a section
+    index).  .got/.got.plt sh_entsize: bfd 8 (4 on i386), lld/mold 0. .gnu.hash entsize: bfd i386 4, mold 0.
+  Order: lld puts .gnu.hash after .gnu.version_r; mold puts .gnu.version_d after .rela.plt / .rel.plt.
+E5 libgcc: -static-libgcc: no libgcc_s NEEDED; __divti3/__divdi3, _Unwind_Backtrace, _Unwind_GetIP LOCAL in
+  .symtab (bfd DEFAULT visibility, lld and mold HIDDEN), absent from .dynsym. -shared-libgcc: NEEDED
+  libgcc_s.so.1 (mold also libc.so.6), `__divti3@GCC_3.0` / i386 `__divdi3@GLIBC_2.0` and
+  `_Unwind_Backtrace@GCC_3.3` UND. All runs "OK divit... depth=6".
+
+---------------------------------------------------------------------------------------------
+F. p_align, congruence, loader (partF.py, [F])
+---------------------------------------------------------------------------------------------
+Every PT_LOAD of every output satisfies p_offset == p_vaddr mod p_align for max-page-size 4K, 16K, 64K, 2M
+(congruent=True everywhere) and dlopen runs "f()=42" with the 4K host.
+File layout: bfd pads the file to the page (x64 mp2m file 0x600af0, a64 64K default file 0x10ee8); lld and mold
+  do not pad (file stays 0x1380 / 0x1b38 on x64 at every max-page-size; vaddr jumps instead).
+Loader checks on patched copies of the default output (second PT_LOAD), all linkers, all arches:
+  p_align 0x10 or 0x800 (below page size): accepted, "dlopen ok f()=42".
+  p_offset + 0x10: refused "ELF load command address/offset not page-aligned".
+  p_offset + 0x1000 (still page-congruent, wrong bytes): not detected; crash (a64 rc=-7/-4, x64 SIGSEGV,
+  i386 SIGBUS/SIGSEGV).
+So glibc 2.41 checks only (p_vaddr - p_offset) mod pagesize; it does not check p_align or the congruence
+modulo p_align.
+
+---------------------------------------------------------------------------------------------
+Disagreements (all measured above)
+---------------------------------------------------------------------------------------------
+ 1. PT_PHDR in -shared: lld, mold yes; bfd no.
+ 2. Program header order and NOTE position differ on all three (A).
+ 3. RELRO end: aligned to max-page-size by bfd and mold, only to 4K by lld (a64 0x21000).
+ 4. .got.plt: bfd puts its 3 reserved words in RELRO; lld and mold leave all of .got.plt writable when lazy.
+ 5. .dynamic order: three different orders; RUNPATH before NEEDED only in lld; FLAGS near the end only in mold.
+ 6. DT_NULL padding: bfd 5-6, lld 1, mold 6.
+ 7. RELACOUNT: never from mold.
+ 8. -Bsymbolic tags: bfd SYMBOLIC+FLAGS, lld FLAGS only, mold none (binding is the same).
+ 9. TLSDESC: bfd lazy (.rela.plt + TLSDESC_PLT/GOT; i386 without the tags), lld/mold eager in .rela.dyn.
+10. DF_STATIC_TLS for IE: missing from bfd on a64 only (no visible run-time effect measured).
+11. Raw `ld -shared`: lld and mold emit .hash too; mold always emits .eh_frame_hdr.
+12. --image-base ignored by mold in -shared; -Ttext-segment refused by lld and mold.
+13. BTI property and DT_AARCH64_BTI_PLT dropped by mold.
+14. Textrel inputs: lld refuses, bfd/mold accept (bfd warns on x86 only). i386 non-PIC data refs: bfd and mold
+    accept with TEXTREL; lld refuses.
+15. a64 traditional GD (R_AARCH64_TLSGD_*): lld 19 and 22 do not support it ("unknown relocation (513)").
+16. IFUNC: OS/ABI GNU only from bfd; lld turns local IFUNCs into FUNC in .symtab.
+17. .dynsym sh_info and local section dynsyms (bfd a64), version-section alignment, mold .rela.plt without
+    SHF_INFO_LINK, .got entsize 0 (lld/mold).
+18. -z nostart-stop-gc unknown to mold (warning); mold treats every C-identifier section as a root.
+19. Entry: mold silent on `-e nosuchsym`.
+
+---------------------------------------------------------------------------------------------
+Wrong outputs (link succeeded, program misbehaved; each reproduced by run.sh)
+---------------------------------------------------------------------------------------------
+W1 GNU ld, aarch64, local-exec TLS in -shared (partC.py "LE_local"): `gcc -fPIC -ftls-model=local-exec -shared`
+   of a library with only static/hidden TLS links with no diagnostic, no dynamic record, no STATIC_TLS/TEXTREL;
+   the TP offsets are fixed at link time. RUN (dlopen): "FAIL main=0 thread=0 (main sum -285999425)".
+   lld and mold refuse; x64 bfd refuses; i386 bfd emits TLS_TPOFF textrels and runs OK.
+W2 mold, exported IFUNC bound locally (partD.py, all arches): no GLOB_DAT/JUMP_SLOT against f_exp. RUN
+   pie_interpose: "FAIL interposition: lib's call_f()=1, lib &f ..., exe &f ..." (bfd and lld: OK, call_f()=100);
+   non-PIE host: "exported IFUNC: exe/lib-code/lib-data/dlsym(DEFAULT) differ" (bfd, lld: equal).
+W3 lld, i386 IFUNC in -shared (partD.py): the .iplt entries are `jmpl *N(%ebx)` (llvm-objdump of
+   libifunc_tu1.so: "18b0 <g_loc>: ff a3 18 00 00 00 jmpl *0x18(%ebx)") and lld also uses them as the
+   canonical address in data words / &g; called from the executable (other %ebx) they jump through the wrong
+   GOT. RUN ifunc_tu1 pie "FAIL g calls", nopie SIGSEGV; with TU2's non-PIC call (bfd refuses) SIGSEGV in every
+   host. Mechanism inferred from the disassembly; the failure is measured.
+W4 mold, i386, hidden IFUNC called by `call h_hid` (R_386_PC32) from TU2: linked (bfd refuses), call goes to an
+   %ebx-relative `h_hid$pltgot` stub without %ebx set ("calll 0x1780 <h_hid$pltgot>"). RUN pie "FAIL h calls",
+   nopie SIGSEGV.
+W5 mold, `-init=<hidden function>` + --gc-sections (partE.py gc_init, gc_vers_init): the function is collected
+   and DT_INIT=0x0 is written; loading the library crashes (a64 rc=-11, x86 "uncaught target signal 11").
+W6 lld, `.ctors` input section in -shared (partE.py, every variant): kept as a separate `.ctors` output
+   section, not merged into .init_array; the constructor never runs (RUN ".ctors=0"; bfd and mold ".ctors=1").
+   (lld documents not converting .ctors; the output still silently loses a constructor.)
+W7 lld, --gc-sections + version script hiding a C-identifier section's symbol, accessed only via
+   __start_cid_ref (partE.py gc_vers, gc_vers_init): section dropped, __start_cid_ref left UND GLOBAL; RUN
+   "dlopen FAILED: ... undefined symbol: __start_cid_ref". OK with -z nostart-stop-gc; bfd and mold OK.
+Address-equality violations (not crashes, but C requires &f to be one value):
+   bfd and mold a64: hidden IFUNC h_hid has a different address in TU2 (PLT) than in TU1/data
+   ("FAIL hidden IFUNC across TUs"); bfd and mold x64: static and hidden IFUNC code address != data word
+   ("FAIL local IFUNC: code ... data ..."). lld: equal everywhere on 64-bit.
+
+---------------------------------------------------------------------------------------------
+Not verified
+---------------------------------------------------------------------------------------------
+- Clang 22: recorded in versions.log but no object in this area was compiled by clang; all inputs are GCC 14.
+- 64K-page kernel: lld's 4K-aligned RELRO end (0x21000) was not run under 64K pages; the effect (tail of RELRO
+  left writable, or mprotect rounding) is UNVERIFIED. Likewise the 16K/64K/2M max-page-size outputs were only
+  run on 4K pages.
+- x86 runs are under qemu-user, not a real kernel (the loader is the real glibc 2.41 i386/x86-64 ld.so, but
+  mmap/page behaviour is qemu's). x86 static-TLS surplus limits match a64's, but are qemu-hosted.
+- DF_1_INTERPOSE semantics beyond glibc (no effect for DT_NEEDED objects here); DF_1_INITFIRST across dlopen.
+- Whether bfd a64's missing DF_STATIC_TLS matters to any loader other than glibc 2.41 (none observed here).
+- W3 mechanism (wrong %ebx) is read from the disassembly, not single-stepped.
+- -z separate-code effect on lld/mold page placement (only the segment list was compared).
+- -Bsymbolic with data (only functions measured), --dynamic-list, protected data in -shared.
+- i386 lld/mold IFUNC with -fno-plt or with TU2 compiled -fno-pic (not tried).

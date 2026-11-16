@@ -1,0 +1,21 @@
+bfd v_hash.map: accepted; exported=[V1 bar@@V1 foo@@V1 ] 
+bfd v_block.map: accepted; exported=[V1 bar@@V1 foo@@V1 ] 
+bfd v_slash.map: ERROR /usr/bin/ld.bfd:v_slash.map:1: ignoring invalid character `/' in script
+bfd v_hashmid.map: accepted; exported=[V1 foo@@V1 ] 
+bfd d_hash.list: accepted; dynsym=[bar baz foo ] flags=[] 
+bfd d_block.list: accepted; dynsym=[bar baz foo ] flags=[] 
+bfd d_slash.list: ERROR /usr/bin/ld.bfd:d_slash.list:1: ignoring invalid character `/' in script
+lld v_hash.map: accepted; exported=[bar@@V1 foo@@V1 ] 
+lld v_block.map: accepted; exported=[bar@@V1 foo@@V1 ] 
+lld v_slash.map: ERROR ld.lld: error: v_slash.map:1: { expected, but got slash
+lld v_hashmid.map: accepted; exported=[foo@@V1 ] 
+lld d_hash.list: accepted; dynsym=[bar baz foo ] flags=[FLAGS)              SYMBOLIC ] 
+lld d_block.list: accepted; dynsym=[bar baz foo ] flags=[FLAGS)              SYMBOLIC ] 
+lld d_slash.list: ERROR ld.lld: error: d_slash.list:1: { expected, but got //
+mold v_hash.map: accepted; exported=[bar@@V1 foo@@V1 ] 
+mold v_block.map: accepted; exported=[bar@@V1 foo@@V1 ] 
+mold v_slash.map: ERROR mold: fatal: v_slash.map:1: // slash
+mold v_hashmid.map: accepted; exported=[foo@@V1 ] 
+mold d_hash.list: accepted; dynsym=[bar baz foo ] flags=[] 
+mold d_block.list: accepted; dynsym=[bar baz foo ] flags=[] 
+mold d_slash.list: ERROR mold: fatal: d_slash.list:1: // slash

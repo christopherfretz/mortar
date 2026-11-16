@@ -1,0 +1,40 @@
+WP-110 second pass (the fixes of review-110-shared.md): every backing script.
+Run each from anywhere; it cd's to its own directory, sets ulimit -c 0, and
+writes a fresh work.run/ next to itself (mold links to fresh paths). b1/
+writes into exp2/work/. Results cited by spec/dyn.md §17-18 and the record
+spec/landed/dyn/WP-110.md §F (Appendix A, "Second pass").
+
+b1/corpus.sh WORK        B-1 corpus: Lua, zlib, googletest, census lib, C++,
+                         constructed cases (src/boundary.c, src/anchorgap.c,
+                         src/vague.cc); GCC 14 + Clang 22, a64/x64 (+GCC i386);
+                         -fPIC, -fPIC -fno-semantic-interposition,
+                         -fvisibility-inlines-hidden, -fPIE. (WORK = exp2/work)
+b1/libtool-twins.sh WORK expat 2.6.4 + pcre2 10.44 by configure+make; the .libs
+                         -fPIC objects and their default twins -> WORK/twins
+b1/analyze.sh WORK       relscan.py over every group -> WORK/b1-analysis/
+b1/relscan.py            D-117's address-level rule as code (RULE-objects-refused)
+b1/groundtruth.py        -fPIC/-fPIE twins: bound exported data, what the rule sees
+b1/onlyrule.py           objects the rule refuses that no symbol-named use names
+b1/fds/run.sh            the one-past-the-end boundary under -fdata-sections
+gapdemo/run.sh           W44: the a64 anchor+immediate mislink (gap2.c, host.c)
+escape/run.sh            Q22: protected data vs COPY / GOT hosts, link time
+escape/run2.sh           Q22: glibc 2.41 run time, with and without the W41 property
+bsym2/run.sh             D-112 table: 14 defs x 17 lines x 3 linkers x 2 targets
+                         (lib.c, pre.c, pre2.c, pre3.c, host.c, dl.list) -> result.txt
+bsym2/tvprobe.sh         W43: lld x86-64 --dynamic-list TLS half binding (tvprobe.c)
+vmatch2/run.sh           resolve §9.7 model (model.py) vs GNU ld, lld, mold on
+                         scripts.txt (53 scripts) -> result.txt
+vscript2/run.sh          .symver vs local:, parents, duplicate/anonymous nodes,
+                         empty and several scripts -> result.txt
+comments/run.sh          # /* */ // in version scripts and dynamic lists -> result.txt
+startstop/run.sh         __start_/__stop_ export and interposition -> result.txt
+q10b/run.sh              copies of locally bound data per section; classify.py
+                         (phdr-only decision) -> result.txt
+dynorder/check.py MODE LIB...   D-26 (.gnu.hash, MODE hash) and D-102
+                         (.dynamic, MODE dynamic) order models vs libraries
+maxpage/run.sh           p_align, congruence, RELRO end per max page (phdr.py)
+ldlines/run.sh           Python LDSHARED and rustc 1.95 cdylib link line
+patch_dyn1.py .. patch_dyn7.py, patch_rec1.py, rec_*.md
+                         the scripted edits of this pass (spec text sources)
+probe/                   first-pass scratch (alias.c, two.c, gap2.c objects)
+*.log                    logs of the b1 corpus, analysis and twins runs

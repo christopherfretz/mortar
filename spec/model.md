@@ -239,6 +239,7 @@ need them (§5).
 | `comdat_copies` | live copy of a group | `(ComdatId, FileId)` pairs, sorted; the keeper first; for `mortar_odr` (`spec/resolve.md` §6.7) |
 | `section_base[FileId]` | live object | §2.2 |
 | `exported`, `imported`, `ref_dynamic`, `defined_dynamic` | key (bit sets; empty in a static link) | the dynamic columns (`spec/dyn.md` D-11, D-12, D-21): `exported`, a program definition (`Defined`, `Common`, `Internal`) in `.dynsym`; `imported`, a key whose `def` is `Shared` that a live object mentions; `ref_dynamic`, referenced by a member of N ∪ U; `defined_dynamic`, defined by one. `def`'s `Shared` entry is `bind(k)` (D-11: the first member of N ∪ U in loader order with a visible definition, never `giver(k)`), read through `Resolution::bind` |
+| `preemptible` [M4; planned: the column WP-116, filled by WP-117] | key (bit set; empty unless the output kind is `Shared`) | the exported definitions of a shared output that are **preemptible** by `spec/dyn.md` D-112 (the line's `-Bsymbolic` form, `--dynamic-list`, visibility, version-local, the key's type), computed by resolution after the export set and before the scan (D-113). `spec/arch.md` §2.1's `target_kind` reads it: a key in it is `Preemptible`, an exported key outside it is bound. It is not the merged property `preemptible` of `def`'s row, which says that the definition can be replaced at run time and holds for every `Shared` `def` (rule (6) below) |
 | `sections[SectionId]` | section | `kind` (below); the relocation section(s) applying to it; its `ComdatId`, if any; `state`: `Kept`, or `Dropped(reason)`: COMDAT group not kept (with the keeping file), excluded, consumed by the linker (the kinds without output), stripped by option |
 
 `kind` classifies a section once, from its type, flags and name, for every
@@ -274,7 +275,8 @@ output kept, a section dropped for its group in one; (5) `comdat_copies`
 sorted and live, the keeper the least copy; (6) an undefined key with a
 strong reference is not weak, a `Shared` definition is preemptible;
 (7) each dynamic column empty or per key, an import's `def` `Shared`, an
-export's the program's.
+export's the program's; (8) [M4] `preemptible` empty outside `Shared`,
+and a subset of `exported`.
 `Resolution::check_against(&Inputs)` adds: (1) one row per file, key and
 signature; (2) `Shared` liveness only for a loaded shared object, with
 exactly one of `needed` and `used`, `needed` only for a shared object of

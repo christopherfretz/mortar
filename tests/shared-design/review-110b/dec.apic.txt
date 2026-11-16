@@ -1,0 +1,11 @@
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.case.anchorgap.c.o DEC-block - DEC-func -
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.case.boundary.c.o DEC-block exported_unused_here DEC-func exported_unused_here
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.case.vague.cc.o DEC-block exported_after_static DEC-func exported_after_static
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.census.lib.c.o DEC-block - DEC-func -
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.census.lib.cpp.o DEC-block - DEC-func -
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.gtest.gtest-all.cc.o DEC-block - DEC-func -
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.lua.lapi.c.o DEC-block - DEC-func -
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.zlib.deflate.c.o DEC-block - DEC-func -
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.zlib.inftrees.c.o DEC-block - DEC-func -
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.zlib.zutil.c.o DEC-block - DEC-func -
+TOTAL {'objs': 10, 'block': 2, 'func': 2}

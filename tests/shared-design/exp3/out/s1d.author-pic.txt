@@ -1,0 +1,225 @@
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pic.case.anchorgap.c.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pic.case.boundary.c.o pre=1 rule=0 ana=0 words=32 funcs=7 selfgot
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pic.case.vague.cc.o pre=1 rule=0 ana=0 words=586 funcs=19 selfgot
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pic.census.lib.c.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pic.census.lib.cpp.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pic.gtest.gtest-all.cc.o pre=1 rule=0 ana=0 words=68900 funcs=713 selfgot
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pic.gtest.gtest_main.cc.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pic.lua.lapi.c.o pre=1 rule=0 ana=0 words=3892 funcs=84
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pic.lua.lauxlib.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pic.lua.lbaselib.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pic.lua.lcode.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pic.lua.lcorolib.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pic.lua.lctype.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pic.lua.ldblib.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pic.lua.ldebug.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pic.lua.ldo.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pic.lua.ldump.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pic.lua.lfunc.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pic.lua.lgc.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pic.lua.linit.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pic.lua.liolib.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pic.lua.llex.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pic.lua.lmathlib.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pic.lua.lmem.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pic.lua.loadlib.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pic.lua.lobject.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pic.lua.lopcodes.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pic.lua.loslib.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pic.lua.lparser.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pic.lua.lstate.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pic.lua.lstring.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pic.lua.lstrlib.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pic.lua.ltable.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pic.lua.ltablib.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pic.lua.ltm.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pic.lua.lundump.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pic.lua.lutf8lib.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pic.lua.lvm.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pic.lua.lzio.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pic.zlib.adler32.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pic.zlib.compress.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pic.zlib.crc32.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pic.zlib.deflate.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pic.zlib.gzclose.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pic.zlib.gzlib.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pic.zlib.gzread.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pic.zlib.gzwrite.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pic.zlib.infback.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pic.zlib.inffast.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pic.zlib.inflate.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pic.zlib.inftrees.c.o pre=1 rule=0 ana=0 words=389 funcs=1
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pic.zlib.trees.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pic.zlib.uncompr.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pic.zlib.zutil.c.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.picnsi.case.anchorgap.c.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.picnsi.case.boundary.c.o pre=1 rule=0 ana=0 words=32 funcs=7 selfgot
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.picnsi.case.vague.cc.o pre=1 rule=0 ana=0 words=586 funcs=19 selfgot
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.picnsi.census.lib.c.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.picnsi.census.lib.cpp.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.picnsi.gtest.gtest-all.cc.o pre=1 rule=0 ana=0 words=68900 funcs=713 selfgot
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.picnsi.gtest.gtest_main.cc.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.picnsi.lua.lapi.c.o pre=1 rule=0 ana=0 words=3892 funcs=84
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.picnsi.lua.lauxlib.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.picnsi.lua.lbaselib.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.picnsi.lua.lcode.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.picnsi.lua.lcorolib.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.picnsi.lua.lctype.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.picnsi.lua.ldblib.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.picnsi.lua.ldebug.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.picnsi.lua.ldo.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.picnsi.lua.ldump.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.picnsi.lua.lfunc.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.picnsi.lua.lgc.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.picnsi.lua.linit.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.picnsi.lua.liolib.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.picnsi.lua.llex.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.picnsi.lua.lmathlib.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.picnsi.lua.lmem.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.picnsi.lua.loadlib.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.picnsi.lua.lobject.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.picnsi.lua.lopcodes.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.picnsi.lua.loslib.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.picnsi.lua.lparser.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.picnsi.lua.lstate.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.picnsi.lua.lstring.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.picnsi.lua.lstrlib.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.picnsi.lua.ltable.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.picnsi.lua.ltablib.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.picnsi.lua.ltm.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.picnsi.lua.lundump.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.picnsi.lua.lutf8lib.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.picnsi.lua.lvm.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.picnsi.lua.lzio.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.picnsi.zlib.adler32.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.picnsi.zlib.compress.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.picnsi.zlib.crc32.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.picnsi.zlib.deflate.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.picnsi.zlib.gzclose.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.picnsi.zlib.gzlib.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.picnsi.zlib.gzread.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.picnsi.zlib.gzwrite.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.picnsi.zlib.infback.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.picnsi.zlib.inffast.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.picnsi.zlib.inflate.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.picnsi.zlib.inftrees.c.o pre=1 rule=0 ana=0 words=389 funcs=1
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.picnsi.zlib.trees.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.picnsi.zlib.uncompr.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.picnsi.zlib.zutil.c.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.picvih.case.vague.cc.o pre=1 rule=0 ana=0 words=586 funcs=19 selfgot
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.picvih.census.lib.cpp.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.picvih.gtest.gtest-all.cc.o pre=1 rule=0 ana=0 words=68900 funcs=713 selfgot
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.picvih.gtest.gtest_main.cc.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.case.anchorgap.c.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.case.boundary.c.o pre=1 rule=0 ana=0 words=33 funcs=7 selfgot
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.case.vague.cc.o pre=1 rule=0 ana=0 words=510 funcs=16 selfgot
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.census.lib.c.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.census.lib.cpp.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.gtest.gtest-all.cc.o pre=1 rule=0 ana=0 words=51746 funcs=699 selfgot
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.gtest.gtest_main.cc.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.lua.lapi.c.o pre=1 rule=0 ana=0 words=3335 funcs=84
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.lua.lauxlib.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.lua.lbaselib.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.lua.lcode.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.lua.lcorolib.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.lua.lctype.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.lua.ldblib.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.lua.ldebug.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.lua.ldo.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.lua.ldump.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.lua.lfunc.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.lua.lgc.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.lua.linit.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.lua.liolib.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.lua.llex.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.lua.lmathlib.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.lua.lmem.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.lua.loadlib.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.lua.lobject.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.lua.lopcodes.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.lua.loslib.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.lua.lparser.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.lua.lstate.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.lua.lstring.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.lua.lstrlib.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.lua.ltable.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.lua.ltablib.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.lua.ltm.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.lua.lundump.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.lua.lutf8lib.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.lua.lvm.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.lua.lzio.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.zlib.adler32.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.zlib.compress.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.zlib.crc32.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.zlib.deflate.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.zlib.gzclose.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.zlib.gzlib.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.zlib.gzread.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.zlib.gzwrite.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.zlib.infback.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.zlib.inffast.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.zlib.inflate.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.zlib.inftrees.c.o pre=1 rule=0 ana=0 words=284 funcs=1
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.zlib.trees.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.zlib.uncompr.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pic.zlib.zutil.c.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.picnsi.case.anchorgap.c.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.picnsi.case.boundary.c.o pre=1 rule=0 ana=0 words=29 funcs=7 selfgot
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.picnsi.case.vague.cc.o pre=1 rule=0 ana=0 words=518 funcs=16 selfgot
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.picnsi.census.lib.c.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.picnsi.census.lib.cpp.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.picnsi.gtest.gtest-all.cc.o pre=1 rule=0 ana=0 words=52378 funcs=710 selfgot
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.picnsi.gtest.gtest_main.cc.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.picnsi.lua.lapi.c.o pre=1 rule=0 ana=0 words=3335 funcs=84
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.picnsi.lua.lauxlib.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.picnsi.lua.lbaselib.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.picnsi.lua.lcode.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.picnsi.lua.lcorolib.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.picnsi.lua.lctype.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.picnsi.lua.ldblib.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.picnsi.lua.ldebug.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.picnsi.lua.ldo.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.picnsi.lua.ldump.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.picnsi.lua.lfunc.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.picnsi.lua.lgc.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.picnsi.lua.linit.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.picnsi.lua.liolib.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.picnsi.lua.llex.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.picnsi.lua.lmathlib.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.picnsi.lua.lmem.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.picnsi.lua.loadlib.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.picnsi.lua.lobject.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.picnsi.lua.lopcodes.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.picnsi.lua.loslib.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.picnsi.lua.lparser.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.picnsi.lua.lstate.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.picnsi.lua.lstring.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.picnsi.lua.lstrlib.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.picnsi.lua.ltable.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.picnsi.lua.ltablib.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.picnsi.lua.ltm.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.picnsi.lua.lundump.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.picnsi.lua.lutf8lib.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.picnsi.lua.lvm.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.picnsi.lua.lzio.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.picnsi.zlib.adler32.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.picnsi.zlib.compress.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.picnsi.zlib.crc32.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.picnsi.zlib.deflate.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.picnsi.zlib.gzclose.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.picnsi.zlib.gzlib.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.picnsi.zlib.gzread.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.picnsi.zlib.gzwrite.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.picnsi.zlib.infback.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.picnsi.zlib.inffast.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.picnsi.zlib.inflate.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.picnsi.zlib.inftrees.c.o pre=1 rule=0 ana=0 words=284 funcs=1
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.picnsi.zlib.trees.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.picnsi.zlib.uncompr.c.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.picnsi.zlib.zutil.c.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.picvih.case.vague.cc.o pre=1 rule=0 ana=0 words=510 funcs=16 selfgot
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.picvih.census.lib.cpp.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.picvih.gtest.gtest-all.cc.o pre=1 rule=0 ana=0 words=51738 funcs=699 selfgot
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.picvih.gtest.gtest_main.cc.o pre=0 rule=0 ana=0 words=0 funcs=0
+TOTAL objs=224 pre=24 rule_objs=0 ana_objs=0 ana_only_objs=0 rule=0 ana=0 words=381784 undec=2443

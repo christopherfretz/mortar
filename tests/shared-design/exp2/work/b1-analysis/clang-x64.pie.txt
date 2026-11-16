@@ -1,0 +1,16 @@
+clang-x64.pie objects 54
+clang-x64.pie use	x64	ABS	DATA	DATA	start=end-of-local	section	2
+clang-x64.pie use	x64	ABS	NONALLOC	FUNC	inside	section	18254
+clang-x64.pie use	x64	ABS	NONALLOC	FUNC	start	section	1375
+clang-x64.pie use	x64	BRANCH	CODE	FUNC	only-with-other-bias	section	3
+clang-x64.pie use	x64	PC	CODE	DATA	inside	section	2
+clang-x64.pie use	x64	PC	CODE	DATA	only-with-other-bias	section	151
+clang-x64.pie use	x64	PC	CODE	DATA	start=end-of-local	section	2
+clang-x64.pie use	x64	PC	DATA	FUNC	inside	section	531
+clang-x64.pie use	x64	PC	EH	FUNC	start	section	1007
+clang-x64.pie use	x64	RULE	ABS	DATA	start	section	2
+clang-x64.pie use	x64	RULE	PC	CODE	start	section	2
+clang-x64.pie overapprox-objects 6
+clang-x64.pie overapprox-objects-with-unnamed-def 5
+clang-x64.pie objects-with-data-hit 4
+clang-x64.pie RULE-objects-refused 2

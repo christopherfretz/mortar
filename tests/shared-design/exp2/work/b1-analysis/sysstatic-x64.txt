@@ -1,0 +1,15 @@
+sysstatic-x64 objects 3069
+sysstatic-x64 use	x64	ABS	DATA	FUNC	inside	section	384
+sysstatic-x64 use	x64	PC	CODE	DATA	inside	section	5
+sysstatic-x64 use	x64	PC	CODE	DATA	only-with-other-bias	section	52
+sysstatic-x64 use	x64	PC	CODE	DATA	start	section	5
+sysstatic-x64 use	x64	PC	CODE	DATA	start=end-of-local	section	5
+sysstatic-x64 use	x64	PC	CODE	FUNC	inside	section	1
+sysstatic-x64 use	x64	PC	DATA	FUNC	inside	section	1233
+sysstatic-x64 use	x64	PC	EH	FUNC	inside	section	8
+sysstatic-x64 use	x64	PC	EH	FUNC	start	section	4818
+sysstatic-x64 use	x64	RULE	PC	CODE	start	section	11
+sysstatic-x64 overapprox-objects 20
+sysstatic-x64 overapprox-objects-with-unnamed-def 4
+sysstatic-x64 objects-with-data-hit 12
+sysstatic-x64 RULE-objects-refused 4

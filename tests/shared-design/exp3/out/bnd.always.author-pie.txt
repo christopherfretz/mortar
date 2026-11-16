@@ -1,0 +1,10 @@
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pie.case.boundary.c.o pre=1 rule=3 ana=0 words=22 funcs=7 selfgot
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pie.case.vague.cc.o pre=1 rule=3 ana=0 words=574 funcs=19
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pie.case.anchorgap.c.o pre=1 rule=2 ana=0 words=4 funcs=1
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pie.case.boundary.c.o pre=1 rule=7 ana=1 words=23 funcs=7 selfgot
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pie.case.vague.cc.o pre=1 rule=1 ana=2 words=509 funcs=16
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pie.census.lib.c.o pre=1 rule=7 ana=0 words=22 funcs=4
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pie.census.lib.cpp.o pre=1 rule=6 ana=0 words=272 funcs=5
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pie.gtest.gtest-all.cc.o pre=1 rule=215 ana=228 words=51989 funcs=710
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-a64.pie.zlib.zutil.c.o pre=1 rule=2 ana=0 words=21 funcs=5
+TOTAL objs=108 pre=14 rule_objs=9 ana_objs=3 ana_only_objs=0 rule=246 ana=231 words=129015 undec=839

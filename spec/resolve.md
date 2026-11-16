@@ -744,8 +744,12 @@ cases.
 
 The roots of liveness (`spec/live.md`, M2): the sections defining `def` of
 every key rooted in §4.2 (`-u` included: GNU ld keeps a `-u` symbol's
-section); the entry; every key exported to `.dynsym` (§9.6); every section
-of `SHF_GNU_RETAIN`; `KEEP` (assignment's). `def` itself is the same with
+section); the entry; every key exported to `.dynsym` (§9.6; in a shared
+object after the version script, so a version-local definition is not a
+root, `spec/dyn.md` D-124 item 1); the keys named by `-init` and `-fini`,
+in every output kind, even when hidden (D-124 item 2: GNU ld and lld
+keep them; mold collects a hidden `-init` function, W22) [M4; planned:
+WP-117]; every section of `SHF_GNU_RETAIN`; `KEEP` (assignment's). `def` itself is the same with
 and without `--gc-sections`: extraction is decided before liveness, so a
 member whose sections are later collected still settled its keys (all
 three: a collected member's definition still collides with a later one,
@@ -809,9 +813,10 @@ From the output kind and the options (`spec/cli.md` §3.9, §3.7):
 | … under `--unresolved-symbols=ignore-all` or `=ignore-in-object-files` | nothing (the value is zero, as weak) |
 | … `--unresolved-symbols=ignore-in-shared-libs` | still the error for references from objects |
 | `--ignore-unresolved-symbol=SYM` | nothing for `SYM` (M1) |
-| `Undefined{weak: false}` in a shared object (M4) | nothing, unless `-z defs` / `--no-undefined`: then the error |
+| `Undefined{weak: false}` in a shared object (M4; planned: WP-117) | nothing: the key is left to the loader, an undefined `STB_GLOBAL STT_NOTYPE` `.dynsym` entry reached through records naming it (target kind `Shlib{func: false}`, `spec/dyn.md` D-111 item 2, D-113, D-118). Under `-z defs` / `--no-undefined`: the error, per key as above, and a definition only in an indirect dependency (a shared object not on the command line, reached through `DT_NEEDED`) does not satisfy it (all three, D-118). A reference only from a section `--gc-sections` collected does not survive (§5.1) |
+| a versioned reference `vf@VA` (`.symver`) in any output kind (M4; planned: WP-117) | needs a shared input that defines `vf` at `VA`, with or without `-z defs`; otherwise `undefined-symbol` naming the version (GNU ld and lld; mold links it unversioned and drops `DT_NEEDED`, W42; D-118) |
 | a hidden key (§3.5) not defined in an object or file 0, with a surviving reference | error, whatever the options above say (it cannot be satisfied at run time); weak hidden: zero |
-| undefined references **of shared objects** (M2) | `spec/dyn.md` D-13 (GNU ld's rule, which replaces the exemption this row gave before): an executable checks them by default (`--no-allow-shlib-undefined`; GNU ld and lld, E20; mold does not check, §16); every strong undefined mention of every needed or used shared object (N ∪ U) is judged, and is satisfied by a non-hidden program definition or a visible definition of a member of N ∪ U at the version it requires; otherwise it is the error, unless `--allow-shlib-undefined`. A shared object whose `DT_NEEDED` library is not found is **not** exempt: the references only that library would satisfy are undefined (GNU ld; lld exempts such an object). These have no relocation in the link; resolution emits them (phase 30, unit = the shared object's `FileId`, seq = the `.dynsym` index) |
+| undefined references **of shared objects** (M2) | `spec/dyn.md` D-13 (GNU ld's rule, which replaces the exemption this row gave before): an executable checks them by default (`--no-allow-shlib-undefined`; GNU ld and lld, E20; mold does not check, §16); every strong undefined mention of every needed or used shared object (N ∪ U) is judged, and is satisfied by a non-hidden program definition or a visible definition of a member of N ∪ U at the version it requires; otherwise it is the error, unless `--allow-shlib-undefined`. In a shared object (M4; planned: WP-117) `--allow-shlib-undefined` is the default (GNU ld and lld) and `--no-allow-shlib-undefined` turns D-13's check on (D-118). A shared object whose `DT_NEEDED` library is not found is **not** exempt: the references only that library would satisfy are undefined (GNU ld; lld exempts such an object). These have no relocation in the link; resolution emits them (phase 30, unit = the shared object's `FileId`, seq = the `.dynsym` index) |
 
 `--warn-unresolved-symbols` makes the error a warning; `--error-unresolved-
 symbols` undoes it; the last one wins.
@@ -1352,7 +1357,7 @@ carry their version and are matched only by rule 12, whether `foo@V`
 or `foo@@V`). Restated by WP-110's third pass from two executable
 models written from this text, the author's (`model_a.py`) and the
 re-reviewer's (`model_r.py`), over the union of every script measured
-(`.build/target-wp-110/exp3/vs3/`: 213 scripts, 2,249 (script, name)
+(`tests/shared-design/exp3/vs3/`: 213 scripts, 2,249 (script, name)
 rows: the second pass's 53 scripts × 3 names `foo`, `_Z3fooi` =
 `foo(int)`, `_ZN2ns3fooEv` = `ns::foo()`; the re-review's 60; 43 glob
 patterns over 22 odd names; 17 duplicate cases; 40 `.symver` cases
