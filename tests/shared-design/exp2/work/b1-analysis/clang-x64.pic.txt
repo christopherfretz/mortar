@@ -1,0 +1,16 @@
+clang-x64.pic objects 54
+clang-x64.pic use	x64	ABS	DATA	DATA	start=end-of-local	section	2
+clang-x64.pic use	x64	ABS	NONALLOC	FUNC	inside	section	18454
+clang-x64.pic use	x64	ABS	NONALLOC	FUNC	start	section	1315
+clang-x64.pic use	x64	BRANCH	CODE	FUNC	only-with-other-bias	section	3
+clang-x64.pic use	x64	PC	CODE	DATA	inside	section	2
+clang-x64.pic use	x64	PC	CODE	DATA	only-with-other-bias	section	150
+clang-x64.pic use	x64	PC	CODE	DATA	start=end-of-local	section	2
+clang-x64.pic use	x64	PC	DATA	FUNC	inside	section	531
+clang-x64.pic use	x64	PC	EH	FUNC	start	section	979
+clang-x64.pic use	x64	RULE	ABS	DATA	start	section	2
+clang-x64.pic use	x64	RULE	PC	CODE	start	section	2
+clang-x64.pic overapprox-objects 6
+clang-x64.pic overapprox-objects-with-unnamed-def 5
+clang-x64.pic objects-with-data-hit 4
+clang-x64.pic RULE-objects-refused 2

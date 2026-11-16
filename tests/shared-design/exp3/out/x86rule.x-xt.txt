@@ -1,0 +1,7 @@
+/Volumes/AgentWork/mortar-helper/.build/review-110b/xt/p.def.o pre=1 rule=2 ana=0 words=3 funcs=1
+    RULE .text+0x0 reloc275 .bss+0x0 g 
+    RULE .text+0x4 reloc285 .bss+0x0 g 
+/Volumes/AgentWork/mortar-helper/.build/review-110b/xt/p.pie.o pre=1 rule=2 ana=0 words=3 funcs=1
+    RULE .text+0x0 reloc275 .bss+0x0 g 
+    RULE .text+0x4 reloc285 .bss+0x0 g 
+TOTAL objs=52 pre=2 rule_objs=2 ana_objs=0 ana_only_objs=0 rule=4 ana=0 words=6 undec=0

@@ -1,0 +1,12 @@
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-x64.pie.case.anchorgap.c.o bound 1 symbol=1
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-x64.pie.case.boundary.c.o bound 2 symbol=2
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-x64.pie.case.vague.cc.o bound 5 symbol=5
+    CODEPC .text+0x133 type=2 .data-4 -> exported_after_static
+    CODEPC .text+0x2ac type=2 .data-4 -> exported_after_static
+    CODEPC .text+0x753 type=2 .data+28 -> exported_table
+    EXACT .data.rel.local+0x0 type=1 .data+32 -> exported_table
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-x64.pie.census.lib.c.o bound 2 symbol=2
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-x64.pie.census.lib.cpp.o bound 2 symbol=2
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-x64.pie.gtest.gtest-all.cc.o bound 72 symbol=72
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-x64.pie.zlib.zutil.c.o bound 1 symbol=1
+TABLE gcc-x64 objs=54 users=7 defs=85 symbol=85 exact=0 codepc=0 unseen=0

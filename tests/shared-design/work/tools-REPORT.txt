@@ -1,0 +1,278 @@
+WP-110 area `tools` -- debuggers, tools, dlopen lifecycles, interposition, mortar as host linker
+================================================================================================
+Scripts: /Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp/tools/  (entry point: run.sh WORK;
+parts part_a.sh .. part_e.sh, checkers check_{a,b,c,d}.py, sources src/{a,c,d}). Run order a c d b e,
+about 70 s wall in total. Final run: WORK=/Volumes/AgentWork/mortar-helper/.build/target-wp-110/work/tools (20 MB).
+Each part writes WORK/<part>/log.txt (its table); raw transcripts are WORK/<part>/<arch>.<linker>.<test>.out.
+Versions are in WORK/versions.txt: GCC/G++/gfortran 14.2.0 (native and x86_64-linux-gnu cross), GNU ld 2.44,
+LLD 22.1.8, LLD 19.1.7, mold 2.37.1, gdb/gdb-multiarch 16.3, lldb 19.1.7, elfutils 0.192, qemu 10.0.13,
+glibc 2.41, mortar 0.0.0.
+Linker selection: gcc has no --ld-path, so lld is chosen with "-B WORK/bin/l22 -fuse-ld=lld" (that directory
+holds a symlink ld.lld -> /usr/bin/ld.lld-22; l19 likewise for lld 19). GNU ld is -fuse-ld=bfd, mold is -fuse-ld=mold.
+mortar is "-B WORK/bin/mortar" (that directory holds a symlink ld -> mortar). The cross gcc also finds `ld` there:
+-Wl,--version printed "mortar 0.0.0" and .comment has "mortar 0.0.0".
+Libraries are built with -fPIC -shared by each linker. Host programs are linked by GNU ld with the default driver
+line (PIE), except in part E. x86-64 runs under qemu-x86_64 -L /usr/x86_64-linux-gnu -E LD_LIBRARY_PATH=...
+Arch keys: aa = AArch64 native, x64 = x86-64 under qemu. i386 was not asked for in this area and is not covered.
+
+------------------------------------------------------------------------------------------------
+A. Debuggers on shared objects (part_a.sh; grid in a/log.txt from check_a.py)
+------------------------------------------------------------------------------------------------
+Libraries (-g -O0): libbar.so (bar_fn); libfoo.so (libfn, which calls bar_fn; foo_global=42; __thread foo_tls=7;
+DT_NEEDED libbar.so); libplug.so (plugfn, plug_global=99; dlopened); libcxx.so (C++: ns::Widget::get,
+thread_local ns::cxx_tls, std::string ns::cxx_name). Hosts: host (calls libfn through the PLT, dlopens libplug)
+and hostcxx.
+
+check                                              bfd  lld22 lld19 mold   (aa native gdb 16.3 / lldb 19)
+gdb: pending `break libfn` before run, stops        ok    ok    ok    ok   "Breakpoint 1, libfn (x=5) at .../foo.c:7"
+gdb: info sharedlibrary lists libfoo+libbar          ok    ok    ok    ok
+gdb: bt exe->libfoo->libbar (3 frames, lines)        ok    ok    ok    ok   "#2 ... in main () at .../host.c:9"
+gdb: finish                                          ok    ok    ok    ok   "Value returned is $3 = 11"
+gdb: print lib global / __thread                     ok    ok    ok    ok   "$1 = 42", "$2 = 7"
+gdb: pending break in dlopened lib (set pre-dlopen)  ok    ok    ok    ok   "Breakpoint 3, plugfn (x=4) at .../plug.c:5"
+gdb: break set after the dlopen                      ok    ok    ok    ok
+gdb: lib listed after dlopen, its global 99          ok    ok    ok    ok
+gdb: step exe->PLT->libfn, libfn->PLT->bar_fn        ok    ok    ok    ok   "libfn (x=5) at .../foo.c:7"
+gdb: C++ line break, *this, thread_local, finish     ok    ok    ok    ok   "{v = 4}", "$2 = 4", "= 40"
+gdb: `break ns::Widget::get` gets a PLT location     ok    ok    ok    ok   "... in ns::Widget::get() const@plt () from libcxx.so"
+lldb: pending break, image list, 3-frame bt, finish  ok    ok    ok    ok   "libfoo.so`libfn(x=5) at foo.c:7:13", "Return value: (int) $0 = 11"
+lldb: dlopened lib break + image list + global       ok    ok    ok    ok   "libplug.so`plugfn(x=4) at plug.c:5:9", "(int) 99"
+lldb: thread step-in exe->PLT->libfn                 ok    ok    ok    ok
+lldb: C++ break, p std::string global                ok    ok    ok    ok   '(std::string) "widget"'
+lldb: p *this at the C++ breakpoint                FAIL  FAIL  FAIL  FAIL   "(v = -1463583747)": this = the return address
+lldb: target variable of a __thread/thread_local   FAIL  FAIL  FAIL  FAIL   "error: can't find global variable 'foo_tls'"
+x64 qemu -g + gdb-multiarch (set sysroot /usr/x86_64-linux-gnu):
+pending break libfn, sharedlibrary, 3-frame bt,      ok    ok    ok    ok
+  finish, global, pending dlopen break, step via PLT
+C++ line break, print *this                          ok    ok    ok    ok
+print __thread / thread_local                      FAIL  FAIL  FAIL  FAIL   "Cannot find thread-local storage for Thread N.N, shared library
+                                                                             .../libfoo.so: Remote target doesn't support qGetTLSAddr packet"
+`break ns::Widget::get` gets a PLT location          ok    ok    ok  FAIL   see below
+
+Normalised transcripts (addresses, pids and the linker's directory replaced) are byte-identical across the four
+linkers for gdb_session, gdb_after_dlopen, gdb_step, gdb_cxx_line, all lldb sessions, qgdb, qgdb_step and
+qgdb_cxx. The differences (a/log.txt "DIFFER"):
+ * gdb_cxx / qgdb_cxxname, lld vs bfd: only the location numbering. gdb numbers locations by address and lld puts
+   .plt after .text (libcxx.so x64 lld22: .plt at 0x2c30, above get's code), so get@plt is 1.2 instead of 1.1.
+   This is cosmetic.
+ * qgdb_cxxname, mold x64: no "get() const@plt" location. BFD's synthetic @plt symbols do not recognise mold's
+   x86-64 .plt. `x86_64-linux-gnu-objdump -d -j .plt` names no mold PLT entry; only the .plt.got entry is named
+   "__cxa_finalize@plt". mold's .plt also has sh_entsize 0 where GNU ld has 0x10. On AArch64, gdb names mold's
+   PLT entries normally. Effect: under gdb, a backtrace or a stop inside a mold x86-64 PLT stub has no symbol
+   name. Correctness is not affected.
+ * The lldb failures are the same for all four linkers, so they come from lldb 19, not from the output.
+   The *this failure: lldb puts the breakpoint before the -O0 prologue stores `this`; gdb, on the same bytes,
+   shows this=0xffff... and {v = 4}.
+ * Under qemu, TLS printing fails for every linker because qemu's gdbstub has no qGetTLSAddr. Everything else
+   works under qemu.
+ * Not shown in the table: gdb places `break libfn`, set before run, at the executable's PLT entry
+   ("Breakpoint 1 at 0x870"). After the library loads, it re-resolves to libfn in libfoo.so. All linkers behave
+   alike.
+
+------------------------------------------------------------------------------------------------
+B. Tools (part_b.sh; summary in b/log.txt from check_b.py; raw files b/<arch>.<lk>.{elflint,ldd,readelf,verify,syms})
+------------------------------------------------------------------------------------------------
+21 libraries per (arch, linker): parts A, C and D's libraries, including noeh/libexc.so and the -Bsymbolic variants.
+* ldd (native) and `ld-linux-x86-64.so.2 --list` (qemu): exit 0 on every library and on every host executable
+  (28 entries per arch and linker). No "not found" lines.
+* readelf -a -W: no warnings or errors on any library from any linker.
+* ld.so --verify: exit 2 for all 21 libraries of every linker on both arches. The controls in b/log.txt show
+  the meaning: libc.so.6 gives 0, the GNU ld PIE host gives 0, a shell script gives 1, a missing file gives 1.
+  So 2 is "a dynamic object without PT_INTERP" (libc.so.6 has PT_INTERP). No linker differs.
+* nm -D vs objdump -T: entry counts agree for lld and mold. On AArch64 they disagree for all 21 GNU ld libraries,
+  because GNU ld puts STT_SECTION symbols in .dynsym (".init" index 7 and ".data" index 19 in a/aa/bfd/libfoo.so,
+  "1: ... SECTION LOCAL DEFAULT 7 .init"). objdump -T lists them; nm -D does not. GNU ld x86-64 has none.
+  The defined dynamic symbols (name and type) are the same across linkers for every library, apart from the
+  linker-defined section symbols above.
+* eu-elflint --gnu-ld (messages verbatim, numbers normalised to N; count = libraries out of 21):
+  GNU ld x64: 21/21 "No errors".
+  GNU ld aa: 20/21 clean. libtls.so: "section [N] '.dynsym': symbol N (t) does not fit completely in referenced
+    section [N] '.tbss'" (the same in .symtab). Every linker gets this on aa libtls.so, so it is an elflint false
+    positive: t is at TLS offset 0x10 with size 4, PT_TLS memsz is 0x14, and .tbss starts 8 bytes in after
+    alignment padding behind a 4-byte .tdata.
+  lld 22 and lld 19, both arches, 0/21 clean:
+    [21] '.relro_padding' has wrong type: expected RELR, is NOBITS / has wrong flags: expected none and possibly
+         ALLOC, is WRITE|ALLOC   (elflint takes ".rel*" for a relocation section, as D-71 says)
+    [5]  '.gnu.version': symbol N: invalid version index N   and   '.gnu.version_r': entry N has invalid offset
+         to next entry   (lld's all-headers-first Vernaux layout, D-71)
+    [2]  '.rodata': merge flag set but entry size is zero   (libexc.so, noeh/libexc.so)
+    aa lld22 only [21]: "section [N] '.plt' contains invalid processor-specific flag(s) 0x20000000". lld 22 sets
+         SHF_AARCH64_PURECODE on .plt: readelf flags "AXp" for lld22, "AX" for lld19 (a/aa/lld*/libfoo.so).
+  mold, both arches, 0/21 clean:
+    [21] the same .relro_padding pair
+    [21] '.symtab': symbol N (__ehdr_start): st_value out of bounds  and  (__executable_start): st_value out of
+         bounds   (mold defines both in a library's .symtab)
+    [21] '.symtab': symbol N (_TLS_MODULE_BASE_): referenced section [N] '.note.gnu.build-id' does not have
+         SHF_TLS flag set; [18] ... TLS symbol but no TLS program header entry; [3] ... st_value short of
+         referenced section   (mold emits _TLS_MODULE_BASE_ in every library, TLS or not)
+  Other static facts, not flagged by elflint:
+    mold .rela.plt has no SHF_INFO_LINK ("A", where GNU ld and lld have "AI").
+    mold -Bsymbolic writes neither DT_SYMBOLIC nor DF_SYMBOLIC (d/relocs.txt). GNU ld writes both
+      (DT_SYMBOLIC 0x0 and FLAGS SYMBOLIC); lld writes FLAGS SYMBOLIC only.
+    DT_NEEDED under the driver's --as-needed: mold keeps libc.so.6 in libraries whose only libc references are
+      weak (__cxa_finalize, _ITM_*, __gmon_start__): a/*/mold/libbar.so NEEDED [libc.so.6]. GNU ld and lld leave
+      those libraries with no NEEDED at all (libbar.so; d/*/def/libL.so). x64 libfoo.so (bfd, lld): [libbar.so,
+      ld-linux-x86-64.so.2], with no libc.so.6 (__tls_get_addr@GLIBC_2.3 keeps ld.so); mold adds libc.so.6.
+      All of these load and run.
+    __dso_handle (c/static.txt): in no library's .dynsym from any linker. In .symtab it is LOCAL HIDDEN for lld
+      and mold, and LOCAL DEFAULT for GNU ld (GNU ld drops STV_HIDDEN when it localises the symbol).
+
+------------------------------------------------------------------------------------------------
+C. dlopen/dlsym/dlclose, TLS, exceptions, Fortran (part_c.sh; grid in c/log.txt from check_c.py)
+------------------------------------------------------------------------------------------------
+Host dlhost: dlopen(mode), dlsym cyc_call, call it, dlclose, then repeat the whole sequence; modes RTLD_NOW and
+RTLD_LAZY, each with RTLD_LOCAL and RTLD_GLOBAL. The libraries use -Wl,-init,lib_init -Wl,-fini,lib_fini, so
+DT_INIT and DT_FINI are named functions.
+
+check (each of 4 modes)                                    bfd lld22 lld19 mold  (aa and x64 alike)
+libcyc_c.so  exact event sequence (below), x2 rounds        ok   ok    ok    ok
+libcyc_cxx.so same sequence for all, S dtors inside dlclose ok   ok    ok    ok
+libdel.so (no -z nodelete): ctor x2, dtor x2, state resets  ok   ok    ok    ok
+libnodel.so (-z nodelete, FLAGS_1 NODELETE): ctor once;     ok   ok    ok    ok
+   round 2 cyc_call returns 2 (state kept); dtor once, after "HOST exit"
+tls: 2 live threads + main, values, distinct &t             ok   ok    ok    ok
+tls: T ctor x3, T dtor x3, main's dtor after "HOST exit"    ok   ok    ok    ok   (glibc defers unloading while
+                                                                                  a thread_local dtor is pending)
+exc t0..t7 with PT_GNU_EH_FRAME                             ok   ok    ok    ok
+exc t0..t5 lib linked -Wl,--no-eh-frame-hdr               rc134 rc134 rc134 rc134
+exc t6, t7 (no throw) with --no-eh-frame-hdr               ok   ok    ok    ok
+Fortran main: module procedure + common /blk/               ok   ok    ok    ok
+Fortran main sees BLOCK DATA initial values (1110)          ok   ok    ok    ok   "add_twice(5)=1110 mod_counter=1"
+C main: bind(c) f_add + bind(c) common cblk                 ok   ok    ok    ok   "f_add(5)=39"
+
+Event order, the same for every linker, arch and mode. The C library's order (DT_INIT first, the array forwards;
+at dlclose the fini array backwards, then DT_FINI):
+  DT_INIT lib_init, ctor_prio200, ctor_attr, init_array ia2, init_array ia1, cyc_call | dlclose: fini_array fa1,
+  fini_array fa2, dtor_attr, dtor_prio200, DT_FINI lib_fini
+  (GCC 14 -O1 emits p_ia2 before p_ia1. .init_array.00200 is sorted ahead of plain .init_array by every linker.)
+The C++ library (c/log.txt "reference sequence"):
+  DT_INIT lib_init, ctor_attr, S ctor s1, S ctor s2, cyc_call, S ctor s3-function-local | dlclose: dtor_attr,
+  S dtor s3-function-local, S dtor s2, S dtor s1, DT_FINI lib_fini
+  The S dtors run inside dlclose, from __cxa_finalize(__dso_handle) called by crtbeginS's __do_global_dtors_aux.
+  That is the last entry in .fini_array order, after dtor_attr and before DT_FINI. "HOST dso_handle distinct":
+  the library's &__dso_handle differs from the executable's, for every linker.
+Exceptions (t0 throw and catch inside the library; t1 the host catches the library's exact type; t2 by
+std::runtime_error; t3 by std::exception with what(); t4 the library catches the host's HostDerived as
+libns::Base&; t5 the library catches libns::Derived thrown by a host callback; t6 dynamic_cast and typeid across
+the boundary, with the typeinfo object address unique; t7 std::string, ostringstream and cout inside the library):
+all pass with every linker.
+Without --eh-frame-hdr: every linker omits PT_GNU_EH_FRAME (c/static.txt "(no PT_GNU_EH_FRAME)") and keeps
+.eh_frame. Every throw whose unwind crosses a frame of the library aborts, even t0, which never leaves the
+library: "terminate called after throwing an instance of 'int'" (and 'libns::LibError', 'HostDerived',
+'libns::Derived'), exit 134. On this glibc, libgcc_s finds FDEs only through dl_iterate_phdr and PT_GNU_EH_FRAME.
+crtbeginS registers nothing with __register_frame_info (no such symbol in the library's .symtab), so there is no
+fallback. PT_GNU_EH_FRAME is therefore required in a C++ shared library, and every reference behaves the same way.
+
+------------------------------------------------------------------------------------------------
+D. Which definition L's own references reach (part_d.sh; table d/log.txt from check_d.py, raw d/results.txt)
+------------------------------------------------------------------------------------------------
+L: f() returns 1, v = 10, plus L_calls_f, L_reads_v and L_addr_f/v (L's own &f/&v). M: f=3, v=30. P (LD_PRELOAD):
+f=4, v=40. The exe defines f=2, v=20 where stated. Default L relocations: aa GLOB_DAT f, GLOB_DAT v, JUMP_SLOT f;
+x64 GLOB_DAT f, GLOB_DAT v (+JUMP_SLOT f). -Bsymbolic: no symbolic relocation against f or v (RELATIVE only).
+-Bsymbolic-functions: GLOB_DAT v only. Same for all linkers.
+EVERY row below is identical for GNU ld, lld 22, lld 19 and mold (check_d prints "all:"). Value = what L's code
+reached. For DT_NEEDED hosts: exe&f==L&f. For dlopen hosts: dlsym(RTLD_DEFAULT,"f")==L&f and dlsym(L,"f")==L&f.
+
+case                                         default L (aa = x64)      -Bsymbolic L              -Bsymbolic-functions
+1 exe defines neither                        f1 v10                    f1 v10 (x64: exe&v!=L&v)  f1 v10
+2 exe defines f,v (PIE and -no-pie)          f2 v20 (exe wins)         f1 v10, exe&f!= exe&v!=   f1 v20, exe&f!=L&f
+3 dlopen L RTLD_LOCAL alone                  f1 v10                    f1 v10                    f1 v10
+3 dlopen M GLOBAL, then L LOCAL              f3 v30 (global scope      f1 v10                    f1 v30
+                                             first; dlsym(L,"f") is L's own f, != L&f)
+3 dlopen M LOCAL, then L LOCAL               f1 v10                    f1 v10                    f1 v10
+3 M DT_NEEDED of exe, dlopen L LOCAL         f3 v30                    f1 v10                    f1 v30
+4 LD_PRELOAD P, exe defines neither          f4 v40                    f1 v10                    f1 v40
+4 LD_PRELOAD P, exe defines f,v              f2 v20 (exe before P)     f1 v10                    f1 v20
+5 exe -rdynamic defines f,v; dlopen L LOCAL  f2 v20                    f1 v10                    f1 v20
+5 same with RTLD_LOCAL|RTLD_DEEPBIND         f1 v10 (L's own scope     f1 v10                    f1 v10
+                                             first)
+5 DEEPBIND L after M GLOBAL                  f1 v10                    f1 v10                    f1 v10
+6 exe writes extern v=99, PIE                v99                       aa v99; x64 v10 !!        v99
+6 exe writes extern v=99, -fno-pie -no-pie   v99                       aa v10 !!; x64 v10 !!     v99 (exe&f!=L&f)
+6 hosts linked by L's own linker             the same values; no diagnostic from any of the four (d/log.txt
+                                             "(none: every link was silent)")
+
+Case 6 under -Bsymbolic is a silent wrong program. The executable gets R_*_COPY for v: on x64 in PIE as well,
+because GCC x86-64 PIE code uses copy relocations (d/relocs.txt "R_X86_64_COPY ... v"); on aa only for
+-fno-pie code ("R_AARCH64_COPY ... v"). AArch64 PIE code uses R_AARCH64_GLOB_DAT. L, bound to itself, keeps
+reading its own v, so the exe's write is lost (L.v->10 after v=99). For f, the non-PIE exe's canonical PLT
+address differs from L's own &f.
+For the verifier: when the output is a library with preemptible symbols, "every lookup resolves as the linker
+assumed" cannot be checked from the library alone. Which definition wins depends on the host (cases 2-5), so
+the linker's only assumption is "symbolic relocation, resolved by the loader's scope". The check that can be made
+is structural: every reference to a preemptible own symbol must go through a dynamic relocation naming that symbol
+(GLOB_DAT/JUMP_SLOT/ABS), and none may be resolved at link time. Under -Bsymbolic(-functions), the bound
+references must be exactly the ones the option names. DF_SYMBOLIC cannot be relied on to tell a later executable
+link about -Bsymbolic, because mold does not write it.
+
+------------------------------------------------------------------------------------------------
+E. mortar as the hosts' linker (part_e.sh; e/log.txt, e/compare.txt, e/<arch>/<lk>/*.link.txt)
+------------------------------------------------------------------------------------------------
+Every host from parts A, C and D (host, hostcxx, dlhost, tlshost, exchost, fmain via gfortran -B, fcmain, and
+D's h1/h2/h2np/h6/h6np/h5 for L=def and L=sym) links with mortar against each reference's libraries, on aa
+natively and on x64 with x86_64-linux-gnu-gcc -B. Every link exits 0 with nothing on stderr (e/diagnostics.txt is
+empty). 104 run comparisons per arch (26 per reference linker): the mortar host's output equals the GNU ld host's output in all of them
+(e/compare.txt: 0 DIFFER). That covers:
+  DT_NEEDED and dlopen loading; constructor/destructor order and counts in all four modes; -z nodelete;
+  two-thread TLS with thread_local destructors; t0-t7 (exceptions both ways, typeinfo, dynamic_cast);
+  the Fortran common block and BLOCK DATA initial values; interposition case D(2) (f2 v20, PIE and
+  -fno-pie -no-pie); -rdynamic plus DEEPBIND.
+mortar also reproduces the case 6 hazard silently, like GNU ld: an x64 PIE h6 against a -Bsymbolic L prints
+"L.v->10". A target without -m (the driver line with -m and the plugin options removed): mortar picks AArch64,
+or x86-64 from the objects (readelf Machine), exit 0. With a wrong -m it refuses: on x64 objects with
+-m aarch64linux, "mortar: error: .../Scrt1.o: incompatible file: elf64-littleaarch64 is expected but got
+elf64-x86-64 >>> the target was set by -m aarch64linux"; on aa with -m elf_x86_64, "mortar: error: unknown
+argument '--fix-cortex-a53-843419' >>> --fix-cortex-a53-843419 is an option of AArch64 only; this link is for
+x86-64". mortar refuses -shared by name: "ld: error: unsupported option: -shared ... >>> an option above is
+refused, so nothing is linked (docs/status/options.md)" (seen by hand, not in run.sh).
+
+------------------------------------------------------------------------------------------------
+(1) Disagreements between references
+------------------------------------------------------------------------------------------------
+No behavioural disagreement. Every program result in parts C, D and E is identical across GNU ld, lld 22, lld 19
+and mold on both arches. Static disagreements, none of which changes what a run does:
+ a. mold -Bsymbolic writes no DF_SYMBOLIC/DT_SYMBOLIC; GNU ld writes both, lld writes DF_SYMBOLIC
+    (d/relocs.txt). The relocations are already bound, so glibc's run is the same (case table D). Only tools and a
+    later executable link lose the information.
+ b. --as-needed with weak-only references: mold keeps DT_NEEDED libc.so.6; GNU ld and lld drop it (B). Which is
+    right: GNU ld and lld, since a weak undefined reference does not make a library needed (the ld manual's
+    --as-needed rule). mold's extra entry is harmless here.
+ c. GNU ld aarch64 puts STT_SECTION .init/.data in .dynsym; the others do not. They are unused by glibc.
+ d. lld 22 sets SHF_AARCH64_PURECODE on .plt; lld 19 does not. elflint 0.192 flags it as an invalid flag.
+ e. mold x86-64 .plt is not recognised by BFD's synthetic @plt symbols, so gdb and objdump give no `foo@plt`
+    names. mold .rela.plt has no SHF_INFO_LINK.
+ f. mold emits __ehdr_start, __executable_start and _TLS_MODULE_BASE_ in every library's .symtab (elflint
+    complaints). GNU ld drops STV_HIDDEN on the localised __dso_handle in .symtab.
+For mortar's shared-object output, GNU ld's choices in a-c, minus the section dynsyms, are the conservative
+ones. GNU ld x64 is the only reference that elflint passes clean.
+
+------------------------------------------------------------------------------------------------
+(2) Wrong outputs found (link without a diagnostic, misbehave)
+------------------------------------------------------------------------------------------------
+None that is one reference linker's fault. One silent wrong program is common to all four linkers and to mortar
+as the executable linker: an executable referencing data that a -Bsymbolic library defines gets a copy
+relocation, and the library keeps using its own copy. x64: PIE and non-PIE. aa: -fno-pie only.
+Reproduce: part_d.sh case "6 exe writes extern v=99" with L=sym. The program prints "RESULT L.f()->1 L.v->10
+exe&f==L&f:1 exe&v==L&v:0" after the exe stored 99. Function-pointer identity also breaks for -fno-pie hosts.
+Every linker is silent both when it makes L and when it makes the host (h6k/h6knp). This is a candidate for a
+mortar diagnostic when it links an executable: a COPY or canonical PLT against a DF_SYMBOLIC input. Since mold's
+-Bsymbolic libraries carry no flag, such a diagnostic cannot cover them.
+Also measured, not a linker bug: a C++ library linked with --no-eh-frame-hdr aborts on any throw (C); all
+linkers accept the option silently.
+
+------------------------------------------------------------------------------------------------
+(3) Not verified
+------------------------------------------------------------------------------------------------
+* lldb under qemu: not attempted. lldb-19 would need its gdb-remote to qemu (`gdb-remote PORT`) with a sysroot.
+  UNVERIFIED.
+* TLS printing in gdb under qemu fails for every linker (no qGetTLSAddr in qemu's gdbstub). Natively, gdb prints
+  __thread and thread_local of all four linkers' libraries; lldb 19 prints neither. So "the debugger sees the
+  library's TLS" is verified for gdb on AArch64 only. On x86-64 it would need a native x86-64 machine.
+* i386: not covered in this area (not asked). D-71's lld i386 `ld.so --list` crash on non-PIE was not retested
+  for libraries.
+* lldb's wrong `this` at the -O0 C++ breakpoint is attributed to lldb because it is identical for all linkers and
+  gdb is right on the same bytes. The prologue analysis itself was not dissected.
+* `ld.so --verify` exit-code meaning comes from the controls (0 with PT_INTERP, 2 without, 1 not dynamic), not
+  from reading glibc's source.
+* Clang 22 as the C++ compiler was not used. All C++ is g++ 14. Building libexc/libcxx with clang++-22
+  --target=... and rerunning C/t0-t7 would verify it.

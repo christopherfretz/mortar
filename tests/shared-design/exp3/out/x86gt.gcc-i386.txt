@@ -1,0 +1,5 @@
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-i386.pie.case.anchorgap.c.o bound 1 symbol=1
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-i386.pie.case.boundary.c.o bound 2 symbol=1 unseen=1
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-i386.pie.census.lib.c.o bound 2 symbol=2
+/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/gcc-i386.pie.zlib.zutil.c.o bound 1 symbol=1
+TABLE gcc-i386 objs=50 users=4 defs=6 symbol=5 exact=0 codepc=0 unseen=1

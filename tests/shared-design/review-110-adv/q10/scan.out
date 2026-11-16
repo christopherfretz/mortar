@@ -1,0 +1,5 @@
+SYMBOLIC /usr/lib/aarch64-linux-gnu/libgdk_pixbuf-2.0.so.0.4200.12: 4 exported objects: gdk_pixbuf_version gdk_pixbuf_minor_version gdk_pixbuf_micro_version gdk_pixbuf_major_version
+SYMBOLIC /usr/lib/aarch64-linux-gnu/libpango-1.0.so.0.5600.3: 0 exported objects: 
+SYMBOLIC /usr/lib/aarch64-linux-gnu/libpangocairo-1.0.so.0.5600.3: 0 exported objects: 
+SYMBOLIC /usr/lib/aarch64-linux-gnu/libpangoft2-1.0.so.0.5600.3: 0 exported objects: 
+# 769 shared objects scanned, 4 symbolic

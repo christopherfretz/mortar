@@ -1,0 +1,16 @@
+gcc-x64.picvih objects 4
+gcc-x64.picvih use	x64	ABS	DATA	DATA	start=end-of-local	section	1
+gcc-x64.picvih use	x64	ABS	NONALLOC	FUNC	inside	section	74028
+gcc-x64.picvih use	x64	ABS	NONALLOC	FUNC	start	section	2744
+gcc-x64.picvih use	x64	PC	CODE	DATA	only-with-other-bias	section	3
+gcc-x64.picvih use	x64	PC	CODE	DATA	start=end-of-local	section	1
+gcc-x64.picvih use	x64	PC	CODE	FUNC	inside	section	2
+gcc-x64.picvih use	x64	PC	DATA	FUNC	inside	section	157
+gcc-x64.picvih use	x64	PC	DATA	FUNC	start	section	1
+gcc-x64.picvih use	x64	PC	EH	FUNC	start	section	521
+gcc-x64.picvih use	x64	RULE	ABS	DATA	start	section	1
+gcc-x64.picvih use	x64	RULE	PC	CODE	start	section	1
+gcc-x64.picvih overapprox-objects 2
+gcc-x64.picvih overapprox-objects-with-unnamed-def 1
+gcc-x64.picvih objects-with-data-hit 2
+gcc-x64.picvih RULE-objects-refused 1

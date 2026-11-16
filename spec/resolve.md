@@ -1357,7 +1357,7 @@ carry their version and are matched only by rule 12, whether `foo@V`
 or `foo@@V`). Restated by WP-110's third pass from two executable
 models written from this text, the author's (`model_a.py`) and the
 re-reviewer's (`model_r.py`), over the union of every script measured
-(`.build/target-wp-110/exp3/vs3/`: 213 scripts, 2,249 (script, name)
+(`tests/shared-design/exp3/vs3/`: 213 scripts, 2,249 (script, name)
 rows: the second pass's 53 scripts × 3 names `foo`, `_Z3fooi` =
 `foo(int)`, `_ZN2ns3fooEv` = `ns::foo()`; the re-review's 60; 43 glob
 patterns over 22 odd names; 17 duplicate cases; 40 `.symver` cases

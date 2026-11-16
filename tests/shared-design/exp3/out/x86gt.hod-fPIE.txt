@@ -1,0 +1,9 @@
+hod/anchorgap.x86_64-fPIE.o bound 1 symbol=1
+hod/c1.x86_64-fPIE.o bound 7 symbol=7
+    CODEPC .text+0x34 type=2 .bss+28 -> exported_buf
+    EXACT .data+0x18 type=1 .bss+32 -> exported_buf
+hod/c2.x86_64-fPIE.o bound 1 symbol=1
+hod/gap2.x86_64-fPIE.o bound 1 symbol=1
+hod/hodt.x86_64-fPIE.o bound 2 symbol=2
+hod/vague.x86_64-fPIE.o bound 7 symbol=7
+TABLE hod-x64-fPIE objs=10 users=6 defs=19 symbol=19 exact=0 codepc=0 unseen=0

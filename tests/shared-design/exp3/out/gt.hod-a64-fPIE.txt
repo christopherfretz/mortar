@@ -1,0 +1,7 @@
+REFUSED hod/anchorgap.aarch64-fPIE.o bound 1 analysis - unseen -
+REFUSED hod/c1.aarch64-fPIE.o bound 7 analysis - unseen -
+REFUSED hod/c2.aarch64-fPIE.o bound 1 analysis - unseen -
+REFUSED hod/gap2.aarch64-fPIE.o bound 1 analysis - unseen -
+REFUSED hod/hodt.aarch64-fPIE.o bound 2 analysis - unseen -
+REFUSED hod/vague.aarch64-fPIE.o bound 7 analysis - unseen -
+TABLE hod-a64-fPIE objs=10 users=6 refused=6 escapes=0 defs=19 symbol=19 rule=0 analysis=0 unseen=0

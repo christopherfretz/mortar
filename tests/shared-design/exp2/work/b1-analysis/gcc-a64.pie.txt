@@ -1,0 +1,18 @@
+gcc-a64.pie objects 54
+gcc-a64.pie use	a64	ABS	DATA	DATA	start=end-of-local	section	2
+gcc-a64.pie use	a64	ABS	NONALLOC	DATA	start	section	27
+gcc-a64.pie use	a64	ABS	NONALLOC	DATA	start=end-of-local	section	12
+gcc-a64.pie use	a64	ABS	NONALLOC	FUNC	inside	section	92309
+gcc-a64.pie use	a64	ABS	NONALLOC	FUNC	start	section	4331
+gcc-a64.pie use	a64	LO12	CODE	DATA	start	section	151
+gcc-a64.pie use	a64	PC	CODE	DATA	start	section	85
+gcc-a64.pie use	a64	PC	EH	FUNC	start	section	996
+gcc-a64.pie use	a64	RULE	ABS	DATA	start	section	2
+gcc-a64.pie use	a64	RULE	LO12	CODE	start	section	151
+gcc-a64.pie use	a64	RULE	PC	CODE	start	section	85
+gcc-a64.pie use	a64	RULE	TLS	CODE	start	named-local	2
+gcc-a64.pie use	a64	TLS	CODE	DATA	start	named-local	2
+gcc-a64.pie overapprox-objects 9
+gcc-a64.pie overapprox-objects-with-unnamed-def 4
+gcc-a64.pie objects-with-data-hit 7
+gcc-a64.pie RULE-objects-refused 7

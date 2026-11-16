@@ -1,0 +1,15 @@
+gcc-a64.picnsi objects 54
+gcc-a64.picnsi use	a64	ABS	DATA	DATA	start=end-of-local	section	2
+gcc-a64.picnsi use	a64	ABS	DATA	FUNC	start	section	93
+gcc-a64.picnsi use	a64	ABS	NONALLOC	DATA	start=end-of-local	section	12
+gcc-a64.picnsi use	a64	ABS	NONALLOC	FUNC	inside	section	92267
+gcc-a64.picnsi use	a64	ABS	NONALLOC	FUNC	start	section	4338
+gcc-a64.picnsi use	a64	BRANCH	CODE	FUNC	start	section	227
+gcc-a64.picnsi use	a64	LO12	CODE	FUNC	start	section	31
+gcc-a64.picnsi use	a64	PC	CODE	FUNC	start	section	31
+gcc-a64.picnsi use	a64	PC	EH	FUNC	start	section	996
+gcc-a64.picnsi use	a64	RULE	ABS	DATA	start	section	2
+gcc-a64.picnsi overapprox-objects 5
+gcc-a64.picnsi overapprox-objects-with-unnamed-def 3
+gcc-a64.picnsi objects-with-data-hit 2
+gcc-a64.picnsi RULE-objects-refused 2

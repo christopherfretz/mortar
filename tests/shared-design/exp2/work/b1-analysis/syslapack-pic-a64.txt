@@ -1,0 +1,6 @@
+syslapack-pic-a64 objects 1983
+syslapack-pic-a64 use	a64	PC	EH	FUNC	start	section	1989
+syslapack-pic-a64 overapprox-objects 0
+syslapack-pic-a64 overapprox-objects-with-unnamed-def 0
+syslapack-pic-a64 objects-with-data-hit 0
+syslapack-pic-a64 RULE-objects-refused 0

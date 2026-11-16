@@ -1,0 +1,8 @@
+census-fpie objects 54
+census-fpie use	a64	PC	EH	FUNC	start	section	250
+census-fpie use	i386	PC	EH	FUNC	start	section	95
+census-fpie use	x64	PC	EH	FUNC	start	section	95
+census-fpie overapprox-objects 1
+census-fpie overapprox-objects-with-unnamed-def 1
+census-fpie objects-with-data-hit 0
+census-fpie RULE-objects-refused 0

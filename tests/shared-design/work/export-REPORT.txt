@@ -1,0 +1,446 @@
+WP-110 area "export": the dynamic export set, STV_PROTECTED, preemption, illegal relocations in -shared,
+absolute references to imports, versions written, archive exports, duplicate definitions.
+
+Reproduce:  exp/export/run.sh WORK [A B C D F G]   (bash, python3 -I; ~2 min; 63 MB). Each part writes
+            WORK/<P>/summary.txt ("S:<P>" below) and WORK/<P>/cmds.log (every command, rc, full output).
+Final run:  work/export (A and B re-run after late script fixes, rc=0). Part E is measured inside part D.
+Paths:      exp = /Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp
+            work = /Volumes/AgentWork/mortar-helper/.build/target-wp-110/work
+
+Tools (work/export/versions.log)
+  GCC 14.2.0 (Debian 14.2.0-19), native and x86_64-/i686-linux-gnu cross; Clang 22.1.8 and 19.1.7 (Debian)
+  GNU ld 2.44 (bfd; native and both cross); LLD 22.1.8 and 19.1.7; mold 2.37.1; glibc 2.41
+  qemu-x86_64 and qemu-i386 10.0.13; readelf 2.44
+  lld is chosen with gcc -B WORK/bin/lldNN -fuse-ld=lld (WORK/bin/lldNN/ld.lld points at /usr/bin/ld.lld-NN).
+  The Debian gcc driver adds --as-needed, --hash-style=gnu and --build-id to every link.
+Arches:     a64 = aarch64 (native); x64 = x86-64 (qemu); i386 (qemu).
+Linkers:    bfd, lld22, lld19 (lld19 is run where it might differ), mold.
+            "lld" below means both lld versions; they never disagreed with each other except where stated.
+
+==================================================================================================
+A. Export set (exp/export/partA.py; S:A)
+==================================================================================================
+Input. One object set: C globals and weak definitions, protected, hidden and internal symbols, statics,
+common, weak undefineds (called, through the GOT, in a data word, call-only), and an archive member
+(ar_f/ar_g/ar_v) of which a second member is never pulled. C++ adds COMDAT inline functions, a vtable,
+typeinfo, template statics and function-local statics.
+Variants: default; -fvisibility=hidden; --exclude-libs=ALL, =libar.a, =libzz.a; version script {global:
+def_f;def_v;ar_f; local:*}; an anonymous version script; --dynamic-list; --export-dynamic.
+
+A1 Default export set: the same in every linker on all 3 arches, with two exceptions.
+  - bfd on a64 also writes 2 LOCAL SECTION entries (SECTION#9 and SECTION#23).
+  - __cxa_finalize is WEAK NOTYPE UND in bfd and WEAK FUNC UND in lld and mold.
+  Common to all:
+  - C++ COMDAT functions are WEAK FUNC; the vtable and typeinfo are WEAK OBJECT; template statics and
+    function-local statics are UNIQUE (GNU_UNIQUE) OBJECT.
+  - Every referenced weak undefined (wk_call, wk_got, wk_word, wk_callonly) is WEAK NOTYPE UND.
+  - prot_f and prot_v are exported and keep st_other = PROTECTED.
+  - Hidden, internal, static and the unpulled archive member (ar_unref) are absent.
+  - No linker-defined symbol is exported.
+A2 Variants (A-cmp in S:A gives the removed and added names per variant):
+  - exclude-libs ALL and libar.a: remove ar_f, ar_g and ar_v in all linkers. libzz.a: no change.
+  - vishidden: removes the C++ symbols, com_v and so on, but keeps prot_*, expl_def_f and ar_* (the
+    archive was built without the flag).
+  - vs_global: only def_f, def_v and ar_f. bfd also exports the version node's name V1 as a GLOBAL OBJECT
+    (ABS) entry; lld and mold do not.
+  - vs_anon: def_f and def_v only.
+  - dynlist and export-dynamic: identical to default for -shared, in all linkers.
+A3 .dynsym order and .gnu.hash (A-hash), with n = 32 hashed symbols:
+           nbuckets       maskwords (64/i386)   shift   order of defined symbols
+  bfd      17             4 / 8                 8       hash order
+  lld      8              8 / 16                26      first appearance (matches D-26's formula)
+  mold     5 (= n/8+1)    8 / 16                26      sorted
+  - All three put the undefined entries first and sort the hashed part by bucket.
+  - None of them writes .hash.
+  - sh_entsize of .gnu.hash on i386: bfd 4, lld 0, mold 0. D-26 says "4 on ELF32 for all three"; that
+    is wrong for -shared on lld and mold.
+A4 -z defs / --no-undefined (A-zdefs; the same on all arches)
+  - Plain undefined reference, function or data: all refuse.
+      bfd:  "a64/z/z_nosuch.o: in function `z': | z_nosuch.c:(.text+0x8): undefined reference to `nosuch'"
+      lld:  "ld.lld: error: undefined symbol: nosuch | >>> referenced by z_nosuch.c | >>> a64/z/z_nosuch.o:(z)"
+      mold: "mold: error: undefined symbol: nosuch", followed by the same two >>> lines.
+  - A definition in a direct shared input satisfies the check. One that is only in an indirect
+    dependency does not (all refuse). A weak undefined is allowed by all.
+  - Reference to vf@VB, where libver.so does not define version VB:
+      without a flag: bfd refuses ("no symbol version section for versioned symbol `vf@VB' |
+        final link failed"); lld refuses ("undefined symbol: vf@VB"); mold LINKS (see W13).
+      with -z defs: mold refuses with "undefined symbol: vf".
+  - Reference to vf@VA, where libver.so defines VA:
+      bfd and lld: link with FUNC UND vf@VA and NEEDED libver.so; the dlopen host gets z()=1.
+      mold without a flag: links, but drops the version AND the NEEDED entry (W13).
+      mold with -z defs: refuses a valid link with "mold: error: undefined symbol: vf".
+
+==================================================================================================
+B. STV_PROTECTED (exp/export/partB.py; S:B)
+==================================================================================================
+Input. libp.so defines protected pf() and pv=7 and checks pointer equality and writes from the inside.
+It is built from gcc, from clang, and on x86 also from gcc -mno-direct-extern-access (gcc_nodea), plus
+bfd with -z indirect-extern-access (gcc.bfd.ziea).
+B1 The library link: every linker, compiler and arch links it with no dynamic record against pf or pv
+   (they bind locally).
+B2 Executables linked against the real libp.so, by the same linker (rc and run per arch):
+  exe kind                  a64                       x64                          i386
+  gcc -fPIE (GOT)           all OK                    all REFUSE (PC32 to pv)      all OK
+  clang -fPIE (GOT)         all OK                    all OK                       all OK
+  gcc/clang -fno-pic        all REFUSE                all REFUSE                   all REFUSE
+  clang -fPIE -mno-dea      all REFUSE                all REFUSE                   n/a
+  gcc -fPIE -mno-dea (x64)  n/a                       all OK                       n/a
+  - Every linked case runs fn_eq=1 data_eq=1 write_seen=1 call=7. mold's executables have no
+    JUMP_SLOT for pf (GLOB_DAT only).
+  - Refusal texts:
+      bfd copy:    "copy reloc against protected `pv' is dangerous | copy relocation against
+                    non-copyable protected symbol `pf'" (a64)
+                   "copy relocation against non-copyable protected symbol `pv' in x64/libp.so" (x64)
+      bfd x86:     "non-canonical reference to canonical protected function `pf' in x64/libp.so |
+                    failed to set dynamic section sizes: bad value" (-fno-pic)
+      bfd a64:     "relocation R_AARCH64_ADR_PREL_PG_HI21 against symbol `pv' which may bind
+                    externally can not be used when making a shared object; recompile with -fPIC"
+                   (clang_pie_dea; the text says "shared object" although the output is a PIE)
+      lld:         "ld.lld: error: cannot preempt symbol: pv | >>> defined in a64/libp.so" (pf for
+                    clang -fno-pic)
+      mold:        "mold: error: a64/libp.so: cannot create a copy relocation for protected symbol
+                    'pv'; recompile with -fPIC"
+B3 GNU_PROPERTY_1_NEEDED_INDIRECT_EXTERN_ACCESS
+   - Only bfd writes it: gcc_nodea.bfd and gcc.bfd.ziea, on x64 and i386.
+   - lld22, lld19 and mold link the same -mno-direct-extern-access objects without the property
+     (disagreement D5).
+B4 glibc at load time. The executable is linked by bfd against a default-visibility stub, then run
+   against each real libp.so (the "glibc load-time" block in S:B).
+   - GOT and PIE executables: OK everywhere.
+   - COPY plus canonical-PLT executables (-fno-pic on all arches; gcc_pie and clang_pie_dea on x64):
+     they load, print the glibc warnings, and run wrongly.
+       "warning: copy relocation against non-copyable protected symbol `pv' in `.../libp.so'"
+       "warning: direct reference to protected function `pf' in `.../libp.so' may break pointer equality"
+       -fno-pic:             fn_eq=0 data_eq=0 write_seen=0 call=7
+       x64 PIE (PC32 to pv): fn_eq=1 data_eq=0 write_seen=0
+   - Against a library that carries the property (gcc_nodea.bfd or gcc.bfd.ziea): rc=127 with
+     ".../x_gcc_pie: pv: .../libp.so: error due to GNU_PROPERTY_1_NEEDED_INDIRECT_EXTERN_ACCESS".
+     The lld and mold builds of the same library lack the property, so they only warn and then run wrongly.
+
+==================================================================================================
+C. Preemption, proven by interposition (exp/export/partC.py; S:C)
+==================================================================================================
+Input. libc1.so has f, v, weak wf and wv, IFUNC ifn and protected pf, with internal call_/read_/addr_
+users. A host prints the internal result and whether addr_X() equals dlsym(RTLD_DEFAULT,"X"); it runs
+plain and under LD_PRELOAD of pre.so (which defines all six names returning 3).
+Cell format: <internal call result><address equal>, under preload. 31 = preempted (correct for an
+exported, preemptible symbol). 10 = bound locally. Without preload every case prints 11.
+
+C1 Object level (the "relocations" block in S:C):
+   - gcc emits f@PLT; with -fno-semantic-interposition it emits a call to f.localalias.
+   - clang (22 and 19) emits f@PLT; with -fno-semantic-interposition it emits .Lf$local, so &f also
+     differs from dlsym under preload (f=10).
+   - clang's default for ifn is local (ifn=10) in every linker: a compiler effect, not a linker one.
+   - pf is always a direct call.
+C2 gcc objects, the same on all 3 arches unless marked:
+  option           bfd                           lld22 (lld19 =)                mold
+  default          all 31 except pf=10           same                           same, but ifn=10 IREL=1
+  -Bsymbolic       x86: all 10, DT_SYMBOLIC +    all 10, DT_FLAGS=SYMBOLIC      all 10, no DT flag
+                   DT_FLAGS=SYMBOLIC; a64: REFUSED
+  -Bsymbolic-func  x86: f,wf=10, v,wv,ifn=31;    f,wf=10, v,wv,ifn=31           f,wf=10, v,wv=31, ifn=10
+                   a64: REFUSED
+  -Bsym-non-weak-f bfd: unknown option           f=10, rest 31                  f=10, ifn=10, rest 31
+  -Bsym-non-weak   bfd: unknown option           f,v,ifn=10; wf,wv=31           same
+  vs local:*       all 10, not exported          same                           same
+  --dynamic-list f x86: f=31 ifn=31, rest 10;    f=31, rest 10                  f=31, rest 10
+                   a64: REFUSED
+  dynlist + -Bsym  x86: f=31 ifn=31, rest 10;    ALL 10, DT_FLAGS=SYMBOLIC      f=31, rest 10
+                   a64: REFUSED                  (f is exported and has a record, but is not preempted)
+  - gcc_noifunc (ifn an ordinary function): all linkers agree on every option. With bfd on a64
+    -Bsymbolic, Bsym-func and dynlist then link fine, which isolates the refusal to the IFUNC.
+  - clang22_si (-fsemantic-interposition) behaves like gcc (including the bfd a64 refusals and mold
+    ifn=10). Clang default and nsi objects: the linkers agree except on dynlist+Bsymbolic (lld f=10).
+  - The bfd a64 refusal is an assertion: "ld.bfd: BFD (GNU Binutils for Debian) 2.44 assertion fail
+    ../../bfd/elfnn-aarch64.c:10072". It fires for a locally bound IFUNC reached through the PLT.
+  - The bfd option error: "ld.bfd: unrecognized option '-Bsymbolic-non-weak-functions'".
+  - The DT flags column in S:C shows bfd writes DT_SYMBOLIC plus DT_FLAGS 0x2, lld writes DT_FLAGS 0x2
+    only, and mold writes neither.
+
+==================================================================================================
+D. Relocation classes in -shared (exp/export/partD.py; S:D)
+==================================================================================================
+Input. Hand-written assembly forms, each applied to five target kinds:
+  loc  local static
+  hid  hidden global
+  pre  default-visibility global defined in the output (preemptible)
+  imp  import from libdep.so
+  wk   undefined weak
+Each library is loaded by a host and the value it reads is checked against the expected one. The
+interposed run uses a host that defines pre_d and pre_fn, so a correct pre must yield the host's copy.
+Verdicts: OK; FAIL (wrong value, no crash); CRASH (SIGSEGV); REFUSED; TEXTREL (linked with DT_TEXTREL).
+
+D1 Forms that are OK for all kinds in all linkers:
+   a64:  ADR_GOT_PAGE+LD64_GOT, CALL26, JUMP26, ABS64 in .data and .data.rel.ro
+   x64:  REX_GOTPCRELX, GOTPCREL, PLT32 (call and jmp), R_X86_64_64 in .data and .data.rel.ro
+   i386: PLT32 with ebx, GOT32X with ebx, GOT32, R_386_32 in .data and .data.rel.ro
+D2 Forms that are OK only for loc and hid, and must be refused for pre/imp/wk:
+   - a64: ADR_PREL_PG_HI21, ADR_PREL_LO21, LD_PREL_LO19, PREL32 in .data and .rodata.
+   - x64: PC32 (lea, mov, call, jmp e9), PC32 in .data.
+   - i386: PC32 call without ebx, GOTOFF.
+   Diagnostics (pre):
+     bfd:  "relocation R_AARCH64_ADR_PREL_PG_HI21 against symbol `pre_d' which may bind externally can not
+            be used when making a shared object; recompile with -fPIC"
+     lld:  "relocation R_AARCH64_ADR_PREL_PG_HI21 cannot be used against symbol 'pre_d'; recompile with
+            -fPIC | >>> defined in a64/defs.o"
+     mold: "mold: error: a64/f00_pre.o:(.text): R_AARCH64_ADR_PREL_PG_HI21 relocation at offset 0x20
+            against symbol `pre_d' can not be used; recompile with -fPIC"
+   Per form, against pre, imp and wk:
+     a64 ADR_PREL_PG_HI21:    all refuse
+     a64 ADR_PREL_LO21:       bfd and lld refuse; mold links -> FAIL (W3)
+     a64 LD_PREL_LO19:        bfd and lld refuse; mold links -> FAIL (W3; wk linked, not run)
+     a64 PREL32 @.data:       lld refuses all three.
+                              bfd links pre (interposed FAIL) and wk (non-zero), and refuses imp:
+                                "unresolvable R_AARCH64_PREL32 relocation against symbol `imp_d'"
+                              mold links all three -> FAIL (W3, W4)
+     a64 PREL32 @.rodata:     bfd and lld refuse; mold links -> FAIL (W3)
+     x64 PC32 lea/mov:        all refuse
+     x64 PC32 call/jmp e9:    bfd and lld refuse with "relocation R_X86_64_PC32 against symbol
+                              `pre_fn' can not be used when making a shared object; recompile with
+                              -fPIC". mold makes a PLT entry: OK, interposition included. That is a
+                              legitimate extension, not an error.
+     x64 PC32 @.data:         bfd writes a dynamic PC32 record -> pre/wk FAIL (W5; imp OK by luck of
+                              placement); lld and mold refuse.
+     i386 PC32 call, no ebx:  bfd TEXTREL, OK (interposition included); lld refuses; mold JUMP_SLOT
+                              -> CRASH (W6)
+     i386 GOTOFF:             lld refuses all; bfd and mold bind pre locally (W8); imp/wk: mold FAIL
+                              (W8), bfd refuses ("relocation R_386_GOTOFF against undefined symbol
+                              `imp_d' can not be used when making a shared object | final link
+                              failed: bad value").
+D3 Absolute forms (E):
+   Refused by all four linkers for every kind:
+     a64 MOVW_UABS_G3 (bfd: "relocation R_AARCH64_MOVW_UABS_G3 against `a local symbol' can not be
+       used when making a shared object; recompile with -fPIC")
+     a64 ABS32 @.data (mold: "unknown relocation: R_AARCH64_ABS32")
+     x64 R_X86_64_32 and 32S, in text or data (bfd: "... can not be used when making a shared object;
+       recompile with -fPIC | failed to set dynamic section sizes: bad value")
+   TEXTREL forms: a64 ABS64 @.rodata, x64 64 @.text (movabs) and @.rodata, i386 32 @.text and @.rodata.
+     bfd: links with DT_TEXTREL and warns "warning: relocation against `X' in read-only section
+          `.text' | warning: creating DT_TEXTREL in a shared object" (no warning for a64 .rodata).
+     mold: links with DT_TEXTREL silently.
+     lld: refuses ("relocation R_X86_64_64 cannot be used against symbol 'hid_d'; recompile with -fPIC").
+     Every TEXTREL output runs correctly, interposition included.
+   i386 GOT32X with no base register:
+     bfd refuses: "direct GOT relocation R_386_GOT32X against `pre_d' without base register can not be
+          used when making a shared object | failed to set dynamic section sizes: Success" (sic).
+     lld refuses.
+     mold links -> loc and hid FAIL, pre, imp and wk CRASH (W7).
+   i386 R_386_PC32 @.data: bfd and lld write a PC32 record and run OK; mold refuses.
+D4 Compiler output without -fPIC, linked -shared (the "compiler-generated" blocks in S:D):
+   - a64 addrext -fno-pic (ADRP+ADD to imp_fn):
+       bfd and lld refuse.
+       mold links through a PLT, and the address of the function is the PLT stub's, not the real
+       function's -> FAIL plain and interposed (W9).
+   - a64 gcc -fno-pic ptr_ro: bfd and mold TEXTREL OK; lld refuses.
+   - x64 gcc -fPIE dataext and defsame (PC32): all refuse. clang -fPIE uses GOTPCRELX: OK.
+   - i386 -fno-pic callext/callsame: bfd TEXTREL OK; lld refuses; mold CRASH (W6).
+   - i386 tls -fno-pic (R_386_TLS_IE in .text), gcc and clang:
+       bfd: TEXTREL plus STATIC_TLS, OK.
+       lld22, lld19 and mold: link with no TEXTREL -> CRASH (W10).
+   - i386 ptr_data/ptr_ro -fPIE (GOTOFF against a global p): bfd and mold bind locally; lld refuses
+     ("relocation R_386_GOTOFF cannot be used against symbol 'p'; recompile with -fPIC").
+
+E. Absolute references to imported data and functions (results in D3 and D4; script partD.py)
+   - A word in .data or .data.rel.ro: every linker writes a symbolic record (ABS64, R_X86_64_64,
+     R_386_32) against imp_d or imp_fn, and the host reads the right value, interposed too.
+   - A word in .rodata or .text: bfd and mold TEXTREL (correct at run time); lld refuses.
+   - A 32-bit absolute on a 64-bit arch: refused by all.
+   - Function addresses through ADRP (a64, -fno-pic): only mold accepts, and gives a wrong address (W9).
+
+==================================================================================================
+F. Versions written (exp/export/partF.py; S:F; the same on all 3 arches unless stated)
+==================================================================================================
+F1 Version scripts. The symbols are foo, foobar, fob, fo, a, b, c, other, cfun, say and C++ ns::f, g, h, baz.
+  case                              bfd                     lld22/lld19              mold
+  single/inherit/multi3             same assignment in all three
+    verdef of a child               cnt=2, parent named     cnt=1, no parent         cnt=1, no parent
+  twoparents (V3 {..} V1 V2;)       accepted, cnt=3         REFUSED                  REFUSED
+  r1 exact beats wildcard           foo=V2                  same                     same
+  r2 the last matching wildcard     same in all three
+  r3 global fo* vs local foo*       global wins (foo=V1)    same                     same
+  r3b local exact vs global wildcard  foo LOCAL             same                     same
+  r4a/r4b, r5w, r6 (fo? vs fo*=V2)  same in all three
+  r5 exact name in V1 and V2        foo=V1, silent          foo=V1 + warning         foo=V2, silent
+  localfirst (local: before global:) REFUSED syntax error   accepted                 accepted
+  extern "C++"/"C" exact names      same in all three
+  cxx_wild_all extern "C++" {*};    ALL exported in V1      ALL exported + warning   NOTHING exported (W11)
+    local:*
+  undefname (unknown name)          links silently          REFUSED                  links + warning
+  --undefined-version               links                   links                    links
+  --no-undefined-version            REFUSED                 REFUSED                  links + warning (D7)
+  Diagnostics:
+    lld twoparents:  "twoparents.map:1: ; expected, but got V2"
+    mold twoparents: "mold: fatal: twoparents.map:1: ... ^ expected ';'"
+    lld r5:          "warning: attempt to reassign symbol 'foo' of version 'V1' to version 'V2'"
+    bfd localfirst:  "localfirst.map:1: syntax error in VERSION script"
+    lld cxx_wild_all: "warning: wildcard pattern '*' is used for both 'local' and 'global' scopes in
+                      version script"
+    lld undefname:   "version script assignment of 'V1' to symbol 'nosuch' failed: symbol not defined"
+    mold undefname:  "warning: undefname.map: cannot assign version `V1` to symbol `nosuch`: symbol not found"
+    bfd --no-undefined-version: "nosuch: undefined version: V1 | failed to set dynamic section sizes:
+                      bad value"
+  - anon ({global: a; local: *;}) exports a, unversioned, with no verdef, in all three.
+  - bfd exports the version-name symbols V1@V1 and V2@V2 (ABS); lld and mold do not.
+F2 .symver in an object (foo@V1 old, foo@@V2 new):
+  - Script V1{global: other; local:*}; V2{global: other2} V1:
+      bfd and lld DROP foo@V1. host_old, built against the old library, fails at load: "symbol lookup
+      error: ...: undefined symbol: foo, version V1".
+      mold keeps foo@V1 (hidden): host_old prints foo()=1 and host_new prints foo()=2.
+  - With foo listed in V1 (symfoo.map): all three keep foo@V1(h) and foo@V2; host_old prints 1 and
+    host_new prints 2.
+  - readelf -V reports no problem for any output.
+  - Without a version script all refuse:
+      bfd:  "version node not found for symbol foo@V1"
+      lld:  "symbol foo@V1 has undefined version V1"
+      mold: "symbol foo has undefined version V1"
+    The foo@@V2-only object is refused by all the same way. This contradicts D-27 for -shared: the
+    "bfd writes a verdef, lld and mold export unversioned" note holds only for executables.
+F3 Base verdef (index 1, flags BASE): it names the soname when one is given. Without -soname:
+   - bfd and mold use the output's basename.
+   - lld uses the output path exactly as written on the command line ("a64/base_nosoname/libb.lld22.so").
+F4 verneed (lib.o calls printf): all write one need on libc.so.6 with GLIBC_x, vna_flags 0 and
+   vna_other 2. On i386 the vna entries come out in a different order per linker.
+   Versym of the unversioned weak-undefined imports (__gmon_start__, _ITM_*): lld22 writes 0 (LOCAL);
+   bfd, mold and lld19 write 1 (GLOBAL). __cxa_finalize and printf get 2 in all. D-27 says "1 for
+   unversioned imports", which lld22 does not do. glibc accepts both.
+
+==================================================================================================
+G. Archive-member exports; a symbol defined in the output and in a needed shared input
+   (exp/export/partG.py; S:G; the same on all 3 arches and all 4 linkers unless stated)
+==================================================================================================
+G1 User archive libga.a. main.o references only ga_used.
+   - plain: the whole pulled member is exported (ga_used and ga_same_member, DEF GLOBAL FUNC). The
+     member's hidden ga_hidden and the unpulled member's ga_unpulled are absent.
+   - --exclude-libs,libga.a: all of them are absent; lib_entry stays.
+G1b libgcc.a helpers, from objects that reference __aarch64_ldadd4_acq_rel (a64, -moutline-atomics),
+    __popcountdi2 (x64 and i386, -mno-popcnt) and __udivdi3 (i386):
+   - Never in .dynsym, with the default driver or with -static-libgcc.
+   - In .symtab: bfd LOCAL/DEFAULT; lld and mold LOCAL/HIDDEN. init_have_lse_atomics is LOCAL/DEFAULT
+     in all.
+   - NEEDED on x64 and i386: bfd and lld write none (as-needed drops libc); mold keeps libc.so.6.
+G2 dup_f, weak dup_w and dup_v are defined in out.o (value 1) AND in libdep2.so (value 2).
+   libout.so is linked from out.o with --no-as-needed -ldep2.
+   - No diagnostic. The output's own definitions are exported (dup_w stays WEAK) and win at link time,
+     even the weak one over the shared strong one.
+   - Default link: records GLOB_DAT dup_v, JUMP_SLOT dup_f and dup_w, so all three stay preemptible.
+     host NEEDED -lout -ldep2: everything 1.
+     host NEEDED -ldep2 -lout: host and library internal calls all 2 (libdep2 interposes).
+   - -Bsymbolic: no records; with -ldep2 -lout the host sees 2 and the library's own calls stay 1.
+
+==================================================================================================
+1. Disagreements (and which linker is right)
+==================================================================================================
+D1 -Bsymbolic DT tag: bfd writes DT_SYMBOLIC and DF_SYMBOLIC; lld writes DF_SYMBOLIC; mold writes
+   nothing (S:C).
+   All three bind locally, so outputs behave the same; bfd is the most complete. The tag is not
+   harmless (W2).
+D2 Parents in verdef: bfd writes them (vd_cnt>1); lld and mold do not. bfd follows the documented
+   GNU format. glibc ignores parents, so it is harmless at run time.
+D3 Version-script syntax: twoparents is accepted only by bfd; localfirst is refused only by bfd. bfd
+   defines the language, so lld and mold are wrong on twoparents, and bfd is stricter on localfirst.
+D4 r5 (exact name in two nodes): bfd and lld give V1, mold gives V2. bfd is the reference; mold differs
+   silently, so the ABI changes.
+D5 NEEDED_INDIRECT_EXTERN_ACCESS: only bfd propagates it. bfd is right: the property is the
+   library's protection against copy relocations (B4 shows glibc then refuses with rc=127 instead of
+   running wrongly).
+D6 .symver plus a version script that sends the foo pattern to local: bfd and lld drop foo@V1; mold keeps
+   it. bfd is the reference and lld agrees, so mold differs. Arguably mold's result is the more useful
+   one: dropping the old version silently breaks old binaries, as host_old shows. UNVERIFIED which is
+   normative; GNU ld's manual is silent.
+D7 Unknown name in a version script: bfd is silent, lld errors, mold warns. With --no-undefined-version,
+   mold still only warns, so it ignores the flag. mold is wrong there.
+D8 .gnu.hash geometry and .dynsym order differ (A3). All are valid; the lookups succeed.
+   sh_entsize on i386 differs (bfd 4, others 0).
+D9 Harmless: base verdef without soname (F3); lld22 versym 0 for weak imports (F4); __cxa_finalize
+   NOTYPE in bfd (A1); bfd exporting version names as ABS symbols (A2, F1).
+D10 TEXTREL policy (D3/D4): bfd TEXTREL with a warning, mold TEXTREL silently, lld refuses. All are
+   correct when they link. lld is the safest.
+D11 mold keeps NEEDED libc.so.6 on x64 and i386 where the others drop it under --as-needed (G1b). Harmless.
+
+==================================================================================================
+2. Wrong outputs: the link succeeds and the program misbehaves. Every item is a RUN in S:<P>.
+==================================================================================================
+W1  mold binds an exported IFUNC locally. The library still exports ifn, writes an IRELATIVE for its own
+    calls, and so ignores interposition: ifn=10 where bfd and lld give 31, on all arches, for gcc
+    default, gcc_nsi and clang -fsemantic-interposition.
+    [partC.py; S:C "gcc default mold ... ifn=10 ... IREL=1"]
+W2  lld with --dynamic-list={f;} -Bsymbolic writes DF_SYMBOLIC (DT_FLAGS 0x2).
+    - glibc honours DF_SYMBOLIC, so f binds locally (f=10 under preload) even though lld exported f and
+      wrote a GLOB_DAT/JUMP_SLOT for it.
+    - bfd and mold give f=31. Same with lld19, all arches, gcc and clang.
+    [partC.py; S:C "dynlist-f+Bsym lld22 ... f=10 ... DT_FLAGS=0x2"]
+W3  mold on a64 accepts PC-relative forms against preemptible, imported and weak symbols (ADR_PREL_LO21,
+    LD_PREL_LO19, PREL32 in .data and .rodata) with no record:
+      pre  interposed FAIL (reads the library's 0x33, expected 0x99)
+      imp  FAIL (wrong address; LDR literal reads 0)
+      wk   FAIL (non-zero, expected 0)
+    bfd and lld refuse. [partD.py; S:D a64 "mold [ADR_PREL_LO21] ok ... FAIL"]
+W4  bfd on a64, PREL32 in .data against pre: it binds locally (interposed FAIL). Against wk it gives a
+    non-zero value (FAIL). lld refuses. [partD.py; S:D a64 "pre bfd [PREL32] ... interp:FAIL"]
+W5  bfd on x64, PC32 in .data against pre/wk/imp: writes a dynamic R_X86_64_PC32. ld.so truncates the
+    difference to 32 bits:
+      interposed pre: got=0xf7e65555a040, expected 0x55555555a040
+      wk: got=0xf65b00000000, expected 0
+    lld and mold refuse. [partD.py; S:D x64 "pre bfd [PC32] ok recs=[PC32:pre_d]"]
+W6  mold on i386, PC32 call without ebx (asm form, and gcc/clang -fno-pic callext/callsame): it routes
+    the call through a PLT that needs ebx = GOT -> SIGSEGV, plain and interposed. bfd TEXTREL works; lld
+    refuses. [partD.py; S:D i386 "pre mold [PC32] ok recs=[JUMP_SLOT:pre_fn] plain:CRASH"]
+W7  mold on i386, GOT32X with no base register: loc and hid read wrong values (got=0x101c, i.e. a GOT
+    offset); pre, imp and wk CRASH. bfd and lld refuse. [partD.py; S:D i386 "[GOT32X] ... FAIL/CRASH"]
+W8  i386 GOTOFF against a preemptible symbol: bfd and mold bind locally (interposed FAIL). Against imp
+    and wk, mold yields garbage (FAIL); bfd refuses. lld refuses all of them.
+    [partD.py; S:D i386 "[GOTOFF]"]
+W9  mold on a64, gcc and clang -fno-pic addrext (ADRP+ADD of imp_fn) in -shared: the address taken is a
+    PLT stub inside the library, not the function, so address equality fails ("got=...0780
+    exp=...05a0"). bfd and lld refuse.
+    [partD.py; S:D a64 "addrext ... mold ... recs=[JUMP_SLOT:imp_fn] plain:FAIL"]
+W10 i386 R_386_TLS_IE in .text (gcc and clang -fno-pic tls): lld22, lld19 and mold link without
+    DT_TEXTREL and the library CRASHes on load or use. bfd writes TEXTREL plus STATIC_TLS and runs OK
+    (0x55).
+    - Manual readelf in the dev run (U3): lld writes an R_386_RELATIVE at 0x1551 inside .text
+      (0x1450-0x15b5) with FLAGS=STATIC_TLS only, no TEXTREL; mold writes no text relocation at all.
+    [partD.py; S:D i386 "tls gcc -fno-pic lld22 ... CRASH"]
+W11 mold with version script V1 { global: extern "C++" { *; }; local: *; } exports nothing; bfd and lld
+    export every symbol in V1. A library linked like this cannot be used.
+    [partF.py; S:F "cxx_wild_all" mold row]
+W12 lld and mold drop GNU_PROPERTY_1_NEEDED_INDIRECT_EXTERN_ACCESS from -mno-direct-extern-access input.
+    The resulting library loads into a copy-relocating executable and runs with data_eq=0 and
+    write_seen=0, where bfd's build makes glibc refuse it (rc=127).
+    [partB.py; S:B x64/i386 "glibc load-time" blocks]
+W13 mold with a versioned reference (.symver vf_ref,vf@VA):
+    - Without -z defs it resolves nothing. It writes an unversioned NOTYPE UND vf and, because nothing
+      bound to libver.so, --as-needed drops NEEDED libver.so. dlopen of the output fails with
+      "undefined symbol: vf", for a valid version VA as well as the absent VB. bfd and lld link VA
+      correctly (z()=1) and refuse VB.
+    - With -z defs, mold refuses the valid VA link ("undefined symbol: vf").
+    All 3 arches. [partA.py; S:A A-zdefs "vok (none) mold ... dlopen FAILED"]
+Not wrong outputs: the GNU ld aarch64 assertion (C2) is a refusal by crash; B4's data_eq=0 after a
+glibc warning is loader policy, which all four linkers avoid by refusing against the real library.
+
+==================================================================================================
+3. Could not verify (UNVERIFIED, with how to verify)
+==================================================================================================
+U1 i386 and x86-64 were run only under qemu-user 10.0.13, not on hardware or a kernel.
+   - The TEXTREL, TLS and crash results depend on ld.so mprotect behaviour, which qemu emulates.
+   - Verify: rerun on an x86-64 host (change QEMU in common.py).
+U2 Clang 19: covered in part C (a C object, all options) and in the lld19/clang19 rows elsewhere.
+   - Parts B, D and F use Clang 22 only, and C++ in part A is GCC only.
+   - Verify: add 'clang19' to the COMPS/compiler lists in partB.py and partD.py.
+U3 W10's RELATIVE-in-.text detail was read by hand, not by the script (the CRASH itself is scripted).
+U4 D6 (which .symver-vs-version-script behaviour is normative) has no authority to settle it.
+   - Verify: read GNU ld's version matching for symbols already versioned by .symver.
+U5 W1 is shown for an IFUNC defined and called in the same output. Not tested: an IFUNC referenced only
+   through a data pointer, and a protected IFUNC.
+U6 B4 was run only with executables linked by GNU ld against a stub. Not tested: executables linked by
+   lld or mold against a stub (lld and mold refuse against the real library, so B2 covers what they link).
+U7 Part G covered only libgcc.a and one user archive. libstdc++.a/libsupc++.a members under
+   -static-libstdc++ in -shared were not tested.
+   - Verify: link a C++ object with -shared -static-libstdc++ and dump .dynsym.
+U8 The F4 i386 vna ordering difference is recorded, not explained (all load).
+U9 Spec contradictions found (for the spec owner, not verified against spec text revisions newer than the
+   worktree):
+   - D-26: "sh_entsize 4 on ELF32 for all three" is false for -shared under lld and mold (0).
+   - D-27: "versym 1 for unversioned imports" is false for lld22 weak imports (0).
+   - D-27: "`.symver foo@@V` without a script: bfd writes a verdef, lld and mold export it unversioned"
+     does not hold for -shared; all three refuse.
+
+No edits to the mortar repository; work/export is 63 MB.

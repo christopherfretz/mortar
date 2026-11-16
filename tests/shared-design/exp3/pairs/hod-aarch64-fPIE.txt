@@ -1,0 +1,10 @@
+hod/anchorgap.aarch64-fPIC.o hod/anchorgap.aarch64-fPIE.o
+hod/c1.aarch64-fPIC.o hod/c1.aarch64-fPIE.o
+hod/c2.aarch64-fPIC.o hod/c2.aarch64-fPIE.o
+hod/gap2.aarch64-fPIC.o hod/gap2.aarch64-fPIE.o
+hod/hodt.aarch64-fPIC.o hod/hodt.aarch64-fPIE.o
+hod/vague.aarch64-fPIC.o hod/vague.aarch64-fPIE.o
+hod/x1.aarch64-fPIC.o hod/x1.aarch64-fPIE.o
+hod/x2.aarch64-fPIC.o hod/x2.aarch64-fPIE.o
+hod/x3.aarch64-fPIC.o hod/x3.aarch64-fPIE.o
+hod/x4.aarch64-fPIC.o hod/x4.aarch64-fPIE.o

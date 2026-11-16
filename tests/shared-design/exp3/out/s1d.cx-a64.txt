@@ -1,0 +1,172 @@
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.clang19-O0-fPIC.o pre=1 rule=0 ana=0 words=82 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.clang19-O0-fPIC_-fcommon.o pre=1 rule=0 ana=0 words=82 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.clang19-O0-fPIC_-fdata-sections.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.clang19-O0-fPIC_-fno-semantic-interposition.o pre=1 rule=0 ana=0 words=82 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.clang19-O0-fPIC_-fvisibility_hidden.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.clang19-O1-fPIC.o pre=1 rule=0 ana=0 words=61 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.clang19-O1-fPIC_-fcommon.o pre=1 rule=0 ana=0 words=61 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.clang19-O1-fPIC_-fdata-sections.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.clang19-O1-fPIC_-fno-semantic-interposition.o pre=1 rule=0 ana=0 words=61 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.clang19-O1-fPIC_-fvisibility_hidden.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.clang19-O2-fPIC.o pre=1 rule=0 ana=0 words=58 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.clang19-O2-fPIC_-fcommon.o pre=1 rule=0 ana=0 words=58 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.clang19-O2-fPIC_-fdata-sections.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.clang19-O2-fPIC_-fno-semantic-interposition.o pre=1 rule=0 ana=0 words=58 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.clang19-O2-fPIC_-fvisibility_hidden.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.clang19-O3-fPIC.o pre=1 rule=0 ana=0 words=58 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.clang19-O3-fPIC_-fcommon.o pre=1 rule=0 ana=0 words=58 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.clang19-O3-fPIC_-fdata-sections.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.clang19-O3-fPIC_-fno-semantic-interposition.o pre=1 rule=0 ana=0 words=58 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.clang19-O3-fPIC_-fvisibility_hidden.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.clang19-Os-fPIC.o pre=1 rule=0 ana=0 words=58 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.clang19-Os-fPIC_-fcommon.o pre=1 rule=0 ana=0 words=58 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.clang19-Os-fPIC_-fdata-sections.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.clang19-Os-fPIC_-fno-semantic-interposition.o pre=1 rule=0 ana=0 words=58 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.clang19-Os-fPIC_-fvisibility_hidden.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.clang22-O0-fPIC.o pre=1 rule=0 ana=0 words=82 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.clang22-O0-fPIC_-fcommon.o pre=1 rule=0 ana=0 words=82 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.clang22-O0-fPIC_-fdata-sections.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.clang22-O0-fPIC_-fno-semantic-interposition.o pre=1 rule=0 ana=0 words=82 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.clang22-O0-fPIC_-fvisibility_hidden.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.clang22-O1-fPIC.o pre=1 rule=0 ana=0 words=60 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.clang22-O1-fPIC_-fcommon.o pre=1 rule=0 ana=0 words=60 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.clang22-O1-fPIC_-fdata-sections.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.clang22-O1-fPIC_-fno-semantic-interposition.o pre=1 rule=0 ana=0 words=60 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.clang22-O1-fPIC_-fvisibility_hidden.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.clang22-O2-fPIC.o pre=1 rule=0 ana=0 words=57 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.clang22-O2-fPIC_-fcommon.o pre=1 rule=0 ana=0 words=57 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.clang22-O2-fPIC_-fdata-sections.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.clang22-O2-fPIC_-fno-semantic-interposition.o pre=1 rule=0 ana=0 words=57 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.clang22-O2-fPIC_-fvisibility_hidden.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.clang22-O3-fPIC.o pre=1 rule=0 ana=0 words=57 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.clang22-O3-fPIC_-fcommon.o pre=1 rule=0 ana=0 words=57 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.clang22-O3-fPIC_-fdata-sections.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.clang22-O3-fPIC_-fno-semantic-interposition.o pre=1 rule=0 ana=0 words=57 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.clang22-O3-fPIC_-fvisibility_hidden.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.clang22-Os-fPIC.o pre=1 rule=0 ana=0 words=57 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.clang22-Os-fPIC_-fcommon.o pre=1 rule=0 ana=0 words=57 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.clang22-Os-fPIC_-fdata-sections.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.clang22-Os-fPIC_-fno-semantic-interposition.o pre=1 rule=0 ana=0 words=57 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.clang22-Os-fPIC_-fvisibility_hidden.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.g-O0-fPIC_-fcommon.o pre=1 rule=0 ana=0 words=85 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.g-O0-fPIC_-fdata-sections.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.g-O0-fPIC_-fno-section-anchors.o pre=1 rule=0 ana=0 words=85 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.g-O0-fPIC_-fno-semantic-interposition.o pre=1 rule=0 ana=0 words=85 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.g-O0-fPIC_-fsection-anchors.o pre=1 rule=0 ana=0 words=88 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.g-O0-fPIC_-fvisibility_hidden.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.g-O0-fpic.o pre=1 rule=0 ana=0 words=85 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.g-O1-fPIC_-fcommon.o pre=1 rule=0 ana=0 words=62 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.g-O1-fPIC_-fdata-sections.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.g-O1-fPIC_-fno-section-anchors.o pre=1 rule=0 ana=0 words=60 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.g-O1-fPIC_-fno-semantic-interposition.o pre=1 rule=0 ana=0 words=62 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.g-O1-fPIC_-fsection-anchors.o pre=1 rule=0 ana=0 words=62 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.g-O1-fPIC_-fvisibility_hidden.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.g-O1-fpic.o pre=1 rule=0 ana=0 words=59 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.g-O2-fPIC_-fcommon.o pre=1 rule=0 ana=0 words=60 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.g-O2-fPIC_-fdata-sections.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.g-O2-fPIC_-fno-section-anchors.o pre=1 rule=0 ana=0 words=57 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.g-O2-fPIC_-fno-semantic-interposition.o pre=1 rule=0 ana=0 words=60 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.g-O2-fPIC_-fsection-anchors.o pre=1 rule=0 ana=0 words=60 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.g-O2-fPIC_-fvisibility_hidden.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.g-O2-fpic.o pre=1 rule=0 ana=0 words=56 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.g-O3-fPIC_-fcommon.o pre=1 rule=0 ana=0 words=60 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.g-O3-fPIC_-fdata-sections.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.g-O3-fPIC_-fno-section-anchors.o pre=1 rule=0 ana=0 words=57 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.g-O3-fPIC_-fno-semantic-interposition.o pre=1 rule=0 ana=0 words=60 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.g-O3-fPIC_-fsection-anchors.o pre=1 rule=0 ana=0 words=60 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.g-O3-fPIC_-fvisibility_hidden.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.g-O3-fpic.o pre=1 rule=0 ana=0 words=56 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.g-Os-fPIC_-fcommon.o pre=1 rule=0 ana=0 words=60 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.g-Os-fPIC_-fdata-sections.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.g-Os-fPIC_-fno-section-anchors.o pre=1 rule=0 ana=0 words=57 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.g-Os-fPIC_-fno-semantic-interposition.o pre=1 rule=0 ana=0 words=60 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.g-Os-fPIC_-fsection-anchors.o pre=1 rule=0 ana=0 words=60 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.g-Os-fPIC_-fvisibility_hidden.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c1.g-Os-fpic.o pre=1 rule=0 ana=0 words=56 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.clang19-O0-fPIC.o pre=1 rule=0 ana=0 words=54 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.clang19-O0-fPIC_-fcommon.o pre=1 rule=0 ana=0 words=54 funcs=5
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.clang19-O0-fPIC_-fdata-sections.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.clang19-O0-fPIC_-fno-semantic-interposition.o pre=1 rule=0 ana=0 words=54 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.clang19-O0-fPIC_-fvisibility_hidden.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.clang19-O1-fPIC.o pre=1 rule=0 ana=0 words=34 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.clang19-O1-fPIC_-fcommon.o pre=1 rule=0 ana=0 words=34 funcs=5
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.clang19-O1-fPIC_-fdata-sections.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.clang19-O1-fPIC_-fno-semantic-interposition.o pre=1 rule=0 ana=0 words=34 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.clang19-O1-fPIC_-fvisibility_hidden.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.clang19-O2-fPIC.o pre=1 rule=0 ana=0 words=34 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.clang19-O2-fPIC_-fcommon.o pre=1 rule=0 ana=0 words=34 funcs=5
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.clang19-O2-fPIC_-fdata-sections.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.clang19-O2-fPIC_-fno-semantic-interposition.o pre=1 rule=0 ana=0 words=34 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.clang19-O2-fPIC_-fvisibility_hidden.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.clang19-O3-fPIC.o pre=1 rule=0 ana=0 words=34 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.clang19-O3-fPIC_-fcommon.o pre=1 rule=0 ana=0 words=34 funcs=5
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.clang19-O3-fPIC_-fdata-sections.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.clang19-O3-fPIC_-fno-semantic-interposition.o pre=1 rule=0 ana=0 words=34 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.clang19-O3-fPIC_-fvisibility_hidden.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.clang19-Os-fPIC.o pre=1 rule=0 ana=0 words=34 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.clang19-Os-fPIC_-fcommon.o pre=1 rule=0 ana=0 words=34 funcs=5
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.clang19-Os-fPIC_-fdata-sections.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.clang19-Os-fPIC_-fno-semantic-interposition.o pre=1 rule=0 ana=0 words=34 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.clang19-Os-fPIC_-fvisibility_hidden.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.clang22-O0-fPIC.o pre=1 rule=0 ana=0 words=54 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.clang22-O0-fPIC_-fcommon.o pre=1 rule=0 ana=0 words=54 funcs=5
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.clang22-O0-fPIC_-fdata-sections.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.clang22-O0-fPIC_-fno-semantic-interposition.o pre=1 rule=0 ana=0 words=54 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.clang22-O0-fPIC_-fvisibility_hidden.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.clang22-O1-fPIC.o pre=1 rule=0 ana=0 words=34 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.clang22-O1-fPIC_-fcommon.o pre=1 rule=0 ana=0 words=34 funcs=5
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.clang22-O1-fPIC_-fdata-sections.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.clang22-O1-fPIC_-fno-semantic-interposition.o pre=1 rule=0 ana=0 words=34 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.clang22-O1-fPIC_-fvisibility_hidden.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.clang22-O2-fPIC.o pre=1 rule=0 ana=0 words=34 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.clang22-O2-fPIC_-fcommon.o pre=1 rule=0 ana=0 words=34 funcs=5
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.clang22-O2-fPIC_-fdata-sections.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.clang22-O2-fPIC_-fno-semantic-interposition.o pre=1 rule=0 ana=0 words=34 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.clang22-O2-fPIC_-fvisibility_hidden.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.clang22-O3-fPIC.o pre=1 rule=0 ana=0 words=34 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.clang22-O3-fPIC_-fcommon.o pre=1 rule=0 ana=0 words=34 funcs=5
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.clang22-O3-fPIC_-fdata-sections.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.clang22-O3-fPIC_-fno-semantic-interposition.o pre=1 rule=0 ana=0 words=34 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.clang22-O3-fPIC_-fvisibility_hidden.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.clang22-Os-fPIC.o pre=1 rule=0 ana=0 words=34 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.clang22-Os-fPIC_-fcommon.o pre=1 rule=0 ana=0 words=34 funcs=5
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.clang22-Os-fPIC_-fdata-sections.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.clang22-Os-fPIC_-fno-semantic-interposition.o pre=1 rule=0 ana=0 words=34 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.clang22-Os-fPIC_-fvisibility_hidden.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.g-O0-fPIC_-fcommon.o pre=1 rule=0 ana=0 words=57 funcs=5
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.g-O0-fPIC_-fdata-sections.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.g-O0-fPIC_-fno-section-anchors.o pre=1 rule=0 ana=0 words=57 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.g-O0-fPIC_-fno-semantic-interposition.o pre=1 rule=0 ana=0 words=57 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.g-O0-fPIC_-fsection-anchors.o pre=1 rule=0 ana=0 words=60 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.g-O0-fPIC_-fvisibility_hidden.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.g-O0-fpic.o pre=1 rule=0 ana=0 words=57 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.g-O1-fPIC_-fcommon.o pre=1 rule=0 ana=0 words=38 funcs=5
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.g-O1-fPIC_-fdata-sections.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.g-O1-fPIC_-fno-section-anchors.o pre=1 rule=0 ana=0 words=34 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.g-O1-fPIC_-fno-semantic-interposition.o pre=1 rule=0 ana=0 words=38 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.g-O1-fPIC_-fsection-anchors.o pre=1 rule=0 ana=0 words=38 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.g-O1-fPIC_-fvisibility_hidden.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.g-O1-fpic.o pre=1 rule=0 ana=0 words=38 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.g-O2-fPIC_-fcommon.o pre=1 rule=0 ana=0 words=39 funcs=5
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.g-O2-fPIC_-fdata-sections.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.g-O2-fPIC_-fno-section-anchors.o pre=1 rule=0 ana=0 words=37 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.g-O2-fPIC_-fno-semantic-interposition.o pre=1 rule=0 ana=0 words=39 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.g-O2-fPIC_-fsection-anchors.o pre=1 rule=0 ana=0 words=39 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.g-O2-fPIC_-fvisibility_hidden.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.g-O2-fpic.o pre=1 rule=0 ana=0 words=39 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.g-O3-fPIC_-fcommon.o pre=1 rule=0 ana=0 words=37 funcs=5
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.g-O3-fPIC_-fdata-sections.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.g-O3-fPIC_-fno-section-anchors.o pre=1 rule=0 ana=0 words=34 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.g-O3-fPIC_-fno-semantic-interposition.o pre=1 rule=0 ana=0 words=37 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.g-O3-fPIC_-fsection-anchors.o pre=1 rule=0 ana=0 words=37 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.g-O3-fPIC_-fvisibility_hidden.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.g-O3-fpic.o pre=1 rule=0 ana=0 words=37 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.g-Os-fPIC_-fcommon.o pre=1 rule=0 ana=1 words=37 funcs=5
+    ANA name_end+0x8 add .rodata+0x4 exported_name boundary
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.g-Os-fPIC_-fdata-sections.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.g-Os-fPIC_-fno-section-anchors.o pre=1 rule=0 ana=0 words=34 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.g-Os-fPIC_-fno-semantic-interposition.o pre=1 rule=0 ana=0 words=37 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.g-Os-fPIC_-fsection-anchors.o pre=1 rule=0 ana=0 words=37 funcs=5 selfgot
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.g-Os-fPIC_-fvisibility_hidden.o pre=0 rule=0 ana=0 words=0 funcs=0
+/Volumes/AgentWork/mortar-helper/.build/review-110b/cx/c2.g-Os-fpic.o pre=1 rule=0 ana=0 words=37 funcs=5 selfgot
+TOTAL objs=170 pre=110 rule_objs=0 ana_objs=1 ana_only_objs=1 rule=0 ana=1 words=5673 undec=194

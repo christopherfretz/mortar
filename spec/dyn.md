@@ -1819,11 +1819,11 @@ x86-64 and i386, each library loaded and run by a host program
 (`DT_NEEDED` and `dlopen`); the experiments are `E-shared-*` of
 Appendix A, and `[A]`-`[F]` below cite the `dyn` area's parts. The
 second design pass (after the adversarial review) re-measured what it
-changed with the scripts of `.build/target-wp-110/exp2/` (README there;
+changed with the scripts of `tests/shared-design/exp2/` (README there;
 cited `exp2/<dir>`), on AArch64 natively and x86-64 under qemu-user.
 The third pass (after the re-review) measured D-117's x86 scope,
 boundary rule and analysis, version-script syntax and rule 12, and
-`-shared -static` with the scripts of `.build/target-wp-110/exp3/`
+`-shared -static` with the scripts of `tests/shared-design/exp3/`
 (README there; cited `exp3/<file>`).
 
 ### 17.1 The kind, the entry, `.dynamic`
@@ -2982,8 +2982,8 @@ form):
 ### 17.7 Wrong outputs found (each with its script)
 
 Continuing §13.2's numbering. Scripts under
-`/Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp/`; each runs
-from `run-all.sh WORK`.
+`tests/shared-design/exp/` (WP-115's copy; the scripts name their
+original `.build` paths); each runs from `run-all.sh WORK`.
 
 | # | reference | finding | script |
 |---|---|---|---|
@@ -3193,15 +3193,19 @@ and this spec cites them by directory (`review-m2-adv/<dir>`).
 | E-weakpc | `reloc/weakpc.sh` (`weakcls.py`) | weak undefined: which compilers produce which classes; the references' handling in PIE and `-no-pie`; `-z [no]dynamic-undefined-weak`; the hook program with `LD_PRELOAD`; mixed GOT/absolute uses (F2) | 1008 objects; links per combo |
 | E-mixed | `corpus/mixed.sh` | links mixing `-fno-pic`, `-fPIE`, `-fPIC`, `-fno-plt` objects; equality checks | C and C++, GCC and Clang 22, 2 architectures, 3 references, PIE and `-no-pie` |
 | review | `/Volumes/AgentWork/mortar-helper/.build/review-m2-adv/{ldso,weaksplit,copyro,canonpie,unique,dyntags,…}/run.sh` | the adversarial review's reproducers; `ldso`, `weaksplit`, `copyro`, `canonpie`, `unique`, `dyntags` re-run for the first fix pass; `dupdef`, `weaksplit2`, `neededorder` (`underlink-after`) cited from the re-review | — |
-| E-shared-census | `target-wp-110/exp/census/run.sh` (`census.py`, `realbuilds.sh`, `tools.sh`, `odd.sh`, `survey.py`) | §17: 723 `-shared` driver lines (21 drivers × 35 variations), the survey's 19 lines, zlib, Lua modules, googletest, libtool-shaped and CMake lines, by four references, run | about 80 s |
-| E-shared-export | `target-wp-110/exp/export/run.sh` (`partA.py`-`partG.py`) | §17: export set, protected, preemption under `LD_PRELOAD`, relocation classes × target kinds, versions written, archives | 3 architectures × 4 references; about 2 min |
-| E-shared-dyn | `target-wp-110/exp/dyn/run.sh` (`partA.py`-`partF.py`) | §17: the kind's headers, `.dynamic` per option and its run-time effect, TLS, IFUNC, other rules, `p_align` and the loader | 3 architectures × 4 references; about 45 s |
-| E-shared-tools | `target-wp-110/exp/tools/run.sh` (`part_a.sh`-`part_e.sh`) | §17: gdb, lldb, ldd, `ld.so --verify`, elflint on libraries; `dlopen`, TLS, EH, Fortran; which definition a library's own references reach; mortar-linked hosts | 21 libraries per architecture and reference; about 70 s |
-| E-shared-exp2 | `target-wp-110/exp2/` (README; `b1/`, `gapdemo/`, `escape/`, `bsym2/`, `vmatch2/`, `vscript2/`, `comments/`, `startstop/`, `q10b/`, `dynorder/`, `maxpage/`, `ldlines/`) | §17's second pass: the address-level rule over about 14,400 objects; the anchor gap; the protected escape; preemption per line; version-script model and grammar; `__start_`; copies of locally bound data; orders; max page; generators' lines (record §F) | each under a minute but `b1/` (about 10 min) |
-| E-shared-exp3 | `target-wp-110/exp3/` (README; `s1d.py` the analysis's oracle, `gt3.py`, `x86gt.py`, `i386how.py`, `run_s1d.sh`, `run_modes.sh`, `run_x86.sh`, `run_bnd.sh`, `hod/build.sh`, `i386/build.sh`, `vs3/run.sh`, `ss/run.sh`, `bsym3/run.sh`) | §17's third pass: D-117's analysis (WP-119) and its detection table, its control-flow variants, the x86 exact scope, hod and i386 producers, the boundary rule; version-script globs, duplicates, rule 12 with `@@` and `-E`, both models over 213 scripts; `-shared -static`; mold's `--dynamic-list` order (record §G) | background, at most 4 jobs; `run_s1d.sh` and `run_bnd.sh` over the 11,699 system members are the longest |
+| E-shared-census | `tests/shared-design/exp/census/run.sh` (`census.py`, `realbuilds.sh`, `tools.sh`, `odd.sh`, `survey.py`) | §17: 723 `-shared` driver lines (21 drivers × 35 variations), the survey's 19 lines, zlib, Lua modules, googletest, libtool-shaped and CMake lines, by four references, run | about 80 s |
+| E-shared-export | `tests/shared-design/exp/export/run.sh` (`partA.py`-`partG.py`) | §17: export set, protected, preemption under `LD_PRELOAD`, relocation classes × target kinds, versions written, archives | 3 architectures × 4 references; about 2 min |
+| E-shared-dyn | `tests/shared-design/exp/dyn/run.sh` (`partA.py`-`partF.py`) | §17: the kind's headers, `.dynamic` per option and its run-time effect, TLS, IFUNC, other rules, `p_align` and the loader | 3 architectures × 4 references; about 45 s |
+| E-shared-tools | `tests/shared-design/exp/tools/run.sh` (`part_a.sh`-`part_e.sh`) | §17: gdb, lldb, ldd, `ld.so --verify`, elflint on libraries; `dlopen`, TLS, EH, Fortran; which definition a library's own references reach; mortar-linked hosts | 21 libraries per architecture and reference; about 70 s |
+| E-shared-exp2 | `tests/shared-design/exp2/` (README; `b1/`, `gapdemo/`, `escape/`, `bsym2/`, `vmatch2/`, `vscript2/`, `comments/`, `startstop/`, `q10b/`, `dynorder/`, `maxpage/`, `ldlines/`) | §17's second pass: the address-level rule over about 14,400 objects; the anchor gap; the protected escape; preemption per line; version-script model and grammar; `__start_`; copies of locally bound data; orders; max page; generators' lines (record §F) | each under a minute but `b1/` (about 10 min) |
+| E-shared-exp3 | `tests/shared-design/exp3/` (README; `s1d.py` the analysis's oracle, `gt3.py`, `x86gt.py`, `i386how.py`, `run_s1d.sh`, `run_modes.sh`, `run_x86.sh`, `run_bnd.sh`, `hod/build.sh`, `i386/build.sh`, `vs3/run.sh`, `ss/run.sh`, `bsym3/run.sh`) | §17's third pass: D-117's analysis (WP-119) and its detection table, its control-flow variants, the x86 exact scope, hod and i386 producers, the boundary rule; version-script globs, duplicates, rule 12 with `@@` and `-E`, both models over 213 scripts; `-shared -static`; mold's `--dynamic-list` order (record §G) | background, at most 4 jobs; `run_s1d.sh` and `run_bnd.sh` over the 11,699 system members are the longest |
 
-`target-wp-110` is `/Volumes/AgentWork/mortar-helper/.build/target-wp-110`;
-its `exp/run-all.sh WORK` runs the four into a fresh directory.
+`tests/shared-design/` holds the scripts, sources, lists and small
+results of these experiments (WP-115; its README says what was left
+behind: objects, third-party trees, reference outputs, the largest
+result files); `exp/run-all.sh WORK` runs the four into a fresh
+directory. The scripts still name the `.build/target-wp-110/` paths
+they were run from.
 
 Tools: GCC/G++/gfortran 14.2.0-19 (native and cross), clang 19.1.7 and
 22.1.8, GNU ld 2.44, ld.lld 19.1.7 and 22.1.8, mold 2.37.1, qemu-user

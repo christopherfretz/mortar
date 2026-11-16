@@ -1,0 +1,10 @@
+hod/anchorgap.x86_64-fPIC.o hod/anchorgap.x86_64-fno-pic.o
+hod/c1.x86_64-fPIC.o hod/c1.x86_64-fno-pic.o
+hod/c2.x86_64-fPIC.o hod/c2.x86_64-fno-pic.o
+hod/gap2.x86_64-fPIC.o hod/gap2.x86_64-fno-pic.o
+hod/hodt.x86_64-fPIC.o hod/hodt.x86_64-fno-pic.o
+hod/vague.x86_64-fPIC.o hod/vague.x86_64-fno-pic.o
+hod/x1.x86_64-fPIC.o hod/x1.x86_64-fno-pic.o
+hod/x2.x86_64-fPIC.o hod/x2.x86_64-fno-pic.o
+hod/x3.x86_64-fPIC.o hod/x3.x86_64-fno-pic.o
+hod/x4.x86_64-fPIC.o hod/x4.x86_64-fno-pic.o

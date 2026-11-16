@@ -1,0 +1,8 @@
+rust-std-a64 objects 405
+rust-std-a64 use	a64	ABS	NONALLOC	FUNC	inside	section	40924
+rust-std-a64 use	a64	ABS	NONALLOC	FUNC	start	section	6160
+rust-std-a64 use	a64	PC	EH	FUNC	start	section	1432
+rust-std-a64 overapprox-objects 0
+rust-std-a64 overapprox-objects-with-unnamed-def 0
+rust-std-a64 objects-with-data-hit 0
+rust-std-a64 RULE-objects-refused 0
