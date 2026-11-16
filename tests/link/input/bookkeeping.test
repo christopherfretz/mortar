@@ -11,7 +11,10 @@
 #   `--incremental` the state is kept at PATH and the report (spec/cli.md
 #   §3.13, IN-10's first line `incremental: full (<reason>) ...`) goes to
 #   FILE, or to standard error when no FILE is given; a second link finds
-#   the state (its reason is no longer `no-state`).
+#   the state (its reason is no longer `no-state`). That second report
+#   goes to a file: its `delta inputs` line says `clean` or `hashed-same`
+#   by the input's stamp, which differs between hosts, and the
+#   byte-identical lane digests standard error (WP-112).
 # - `--no-incremental` (the default) after `--incremental`: a plain link,
 #   the same bytes as no option, and no report.
 #@ spec: cli.md "§3.13"
@@ -42,9 +45,12 @@ check(mortar) text inc.report
   has: ^incremental: full (no-state) 
 check(mortar) cmp inc.state inc.state
   has: ^identical$
-link(mortar) ld start.o --incremental --incremental-state=inc.state --incremental-report -o inc
-  diag: ^incremental: full (
-  no-diag: no-state
+link(mortar) ld start.o --incremental --incremental-state=inc.state --incremental-report=again.report -o inc
+check(mortar) text again.report
+  has: ^incremental: full (
+  not: no-state
+link(mortar) ld start.o --incremental --incremental-state=fresh.state --incremental-report -o fresh
+  diag: ^incremental: full (no-state) 
 link(mortar) ld start.o --incremental --incremental-report --no-incremental -o noinc
   no-diag: incremental:
 check(mortar) cmp noinc plain
