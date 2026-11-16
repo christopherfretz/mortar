@@ -310,6 +310,9 @@ fn print_map_to_a_broken_stdout() {
 #[test]
 fn written_files_to_a_broken_stdout() {
     let Some(f) = Fixture::new("streams-dev-stdout") else { return };
+    // image.md I-58b: the real /dev/stdout is named here (it is what users
+    // type); the guard restores it and fails this test if it was replaced.
+    let guard = mortar_testutil::dev_stdout::Guard::new("written_files_to_a_broken_stdout");
     for option in ["-Map=/dev/stdout", "--mortar-map=/dev/stdout", "--dependency-file=/dev/stdout"]
     {
         for (n, sink) in [Sink::Gone, Sink::Full].into_iter().enumerate() {
@@ -328,4 +331,5 @@ fn written_files_to_a_broken_stdout() {
         assert_eq!(f.left("d2.out"), ["d2.out"]);
         let _ = std::fs::remove_file(f.dir().join("d2.out"));
     }
+    guard.check();
 }

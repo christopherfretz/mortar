@@ -1515,6 +1515,78 @@ pub fn compute(
 
 // ---- the report (`docs/cli.md`, `--incremental-report`) -------------------
 
+/// The most lines of one kind the report lists (`docs/cli.md` §3.13,
+/// `spec/incr.md` IN-10, WP-106): the first `REPORT_BOUND` of each kind,
+/// in the report's order, then one `delta elided` line with the kind's
+/// total, so that nothing is left out unsaid. The count lines (`delta
+/// inputs`, `delta symbols`, `delta refill`) are not bounded. 10,000
+/// keeps every oracle-lane report whole (the largest kind there, the
+/// units of `ovx`, is 2,137) and caps a report at nine kinds of 10,000
+/// lines (WP-094's g10x fall-back wrote 12.9 million).
+pub const REPORT_BOUND: usize = 10_000;
+
+/// The report's bounded line kinds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Path,
+    StatMissed,
+    File,
+    Probe,
+    Symbol,
+    Fallback,
+    Unit,
+    Hole,
+    Chunk,
+}
+
+impl Kind {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Path => "path",
+            Self::StatMissed => "stat-missed",
+            Self::File => "file",
+            Self::Probe => "probe",
+            Self::Symbol => "symbol",
+            Self::Fallback => "fallback",
+            Self::Unit => "unit",
+            Self::Hole => "hole",
+            Self::Chunk => "chunk",
+        }
+    }
+}
+
+/// The lines of the kind being listed, and every line elided so far.
+#[derive(Debug, Default)]
+struct Bounded {
+    count: usize,
+    elided: usize,
+}
+
+impl Bounded {
+    /// Whether the next line of the kind being listed is written: one of
+    /// its first `REPORT_BOUND` (it is counted either way).
+    fn take(&mut self) -> bool {
+        self.count += 1;
+        self.count <= REPORT_BOUND
+    }
+
+    /// The end of a kind's lines: `delta elided <kind> listed=N total=N`
+    /// when some were left out.
+    fn close(&mut self, s: &mut String, kind: Kind) {
+        use std::fmt::Write as _;
+        if self.count > REPORT_BOUND {
+            let _ = writeln!(
+                s,
+                "delta elided {} listed={REPORT_BOUND} total={}",
+                kind.name(),
+                self.count
+            );
+            self.elided += self.count - REPORT_BOUND;
+        }
+        self.count = 0;
+    }
+}
+
 /// A field of a report line: bytes other than printable ASCII, space and
 /// `%` are written `%XX`; an empty field is `-`.
 #[must_use]
@@ -1553,6 +1625,7 @@ const TAG_NAMES: [&str; 9] = [
 pub fn report(old: &State, new: &State, changes: &Changes, d: &Delta, extra: &Extra) -> String {
     use std::fmt::Write as _;
     let mut s = String::new();
+    let mut bound = Bounded::default();
     let n = changes.counts();
     let _ = writeln!(
         s,
@@ -1569,13 +1642,17 @@ pub fn report(old: &State, new: &State, changes: &Changes, d: &Delta, extra: &Ex
         n.unextracted
     );
     for (state, path) in &changes.paths {
-        if *state != crate::detect::PathState::Clean {
+        if *state != crate::detect::PathState::Clean && bound.take() {
             let _ = writeln!(s, "delta path {} {}", state.name(), field(path));
         }
     }
+    bound.close(&mut s, Kind::Path);
     for path in &changes.stat_missed {
-        let _ = writeln!(s, "delta stat-missed {}", field(path));
+        if bound.take() {
+            let _ = writeln!(s, "delta stat-missed {}", field(path));
+        }
     }
+    bound.close(&mut s, Kind::StatMissed);
     let file_fields = |st: &State, row: u32| -> String {
         st.files.get(row as usize).map_or_else(
             || "- -".to_owned(),
@@ -1587,23 +1664,27 @@ pub fn report(old: &State, new: &State, changes: &Changes, d: &Delta, extra: &Ex
         )
     };
     for (i, (_, state)) in changes.new_files.iter().enumerate() {
-        if state.refills_all() {
+        if state.refills_all() && bound.take() {
             let _ = writeln!(s, "delta file {} {}", state.name(), file_fields(new, i as u32));
         }
     }
     for (i, (_, state)) in changes.old_files.iter().enumerate() {
-        if matches!(state, FileState::Gone | FileState::Unextracted) {
+        if matches!(state, FileState::Gone | FileState::Unextracted) && bound.take() {
             let _ = writeln!(s, "delta file {} {}", state.name(), file_fields(old, i as u32));
         }
     }
+    bound.close(&mut s, Kind::File);
     let present = |p: Option<bool>| match p {
         Some(true) => "present",
         Some(false) => "absent",
         None => "-",
     };
     for (path, a, b) in &changes.probes {
-        let _ = writeln!(s, "delta probe {} {} {}", field(path), present(*a), present(*b));
+        if bound.take() {
+            let _ = writeln!(s, "delta probe {} {} {}", field(path), present(*a), present(*b));
+        }
     }
+    bound.close(&mut s, Kind::Probe);
     let y = &d.symbols;
     let _ = writeln!(
         s,
@@ -1622,11 +1703,17 @@ pub fn report(old: &State, new: &State, changes: &Changes, d: &Delta, extra: &Ex
         y.tls
     );
     for (what, name) in &d.symbol_lines {
-        let _ = writeln!(s, "delta symbol {what} {}", field(name.as_bytes()));
+        if bound.take() {
+            let _ = writeln!(s, "delta symbol {what} {}", field(name.as_bytes()));
+        }
     }
+    bound.close(&mut s, Kind::Symbol);
     for f in &d.fallbacks {
-        let _ = writeln!(s, "delta fallback {} {}", f.reason, field(f.detail.as_bytes()));
+        if bound.take() {
+            let _ = writeln!(s, "delta fallback {} {}", f.reason, field(f.detail.as_bytes()));
+        }
     }
+    bound.close(&mut s, Kind::Fallback);
     if let Some(p) = &d.policy {
         let _ = writeln!(s, "delta policy too-much-changed {}", field(p.as_bytes()));
     }
@@ -1638,7 +1725,11 @@ pub fn report(old: &State, new: &State, changes: &Changes, d: &Delta, extra: &Ex
         d.chunks.len(),
         d.unit_bytes
     );
+    // Past the bound a line is counted, not formatted.
     for u in &d.units {
+        if !bound.take() {
+            continue;
+        }
         let x = &new.sections[u.section as usize];
         let shndx = extra.shndx.get(u.section as usize).copied().unwrap_or(0);
         let _ = writeln!(
@@ -1649,8 +1740,12 @@ pub fn report(old: &State, new: &State, changes: &Changes, d: &Delta, extra: &Ex
             field(new.str(x.name))
         );
     }
+    bound.close(&mut s, Kind::Unit);
     let a = Side::new(old);
     for h in &d.holes {
+        if !bound.take() {
+            continue;
+        }
         let x = &old.sections[h.old as usize];
         let shndx = if h.new == NONE {
             "-".to_owned()
@@ -1667,7 +1762,11 @@ pub fn report(old: &State, new: &State, changes: &Changes, d: &Delta, extra: &Ex
             field(old.str(x.name))
         );
     }
+    bound.close(&mut s, Kind::Hole);
     for c in &d.chunks {
+        if !bound.take() {
+            continue;
+        }
         let row = &new.chunks[c.chunk as usize];
         let out = new.outsecs.get(row.out as usize).map_or(&[][..], |o| new.str(o.name));
         let _ = writeln!(
@@ -1679,6 +1778,44 @@ pub fn report(old: &State, new: &State, changes: &Changes, d: &Delta, extra: &Ex
             field(out)
         );
     }
+    bound.close(&mut s, Kind::Chunk);
+    let _ = writeln!(s, "delta listed bound={REPORT_BOUND} elided={}", bound.elided);
     s.push_str("delta end\n");
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Bounded, Kind, REPORT_BOUND};
+
+    // spec: incr.md IN-10, docs/cli.md §3.13 (the report lists at most
+    // REPORT_BOUND lines per kind and says what it left out), WP-106
+    #[test]
+    fn the_report_bound() {
+        let mut s = String::new();
+        let mut b = Bounded::default();
+        // Under and at the bound: every line, no `elided` line.
+        for n in [0, 1, REPORT_BOUND] {
+            assert!((0..n).all(|_| b.take()), "{n}");
+            b.close(&mut s, Kind::Unit);
+        }
+        assert_eq!((s.as_str(), b.elided), ("", 0));
+        // Past it: the first REPORT_BOUND, then the total.
+        let taken = (0..REPORT_BOUND + 5).filter(|_| b.take()).count();
+        assert_eq!(taken, REPORT_BOUND);
+        b.close(&mut s, Kind::Hole);
+        let taken = (0..3 * REPORT_BOUND).filter(|_| b.take()).count();
+        assert_eq!(taken, REPORT_BOUND);
+        b.close(&mut s, Kind::Symbol);
+        assert_eq!(
+            s,
+            format!(
+                "delta elided hole listed={REPORT_BOUND} total={}\n\
+                 delta elided symbol listed={REPORT_BOUND} total={}\n",
+                REPORT_BOUND + 5,
+                3 * REPORT_BOUND
+            )
+        );
+        assert_eq!(b.elided, 5 + 2 * REPORT_BOUND);
+    }
 }

@@ -16,7 +16,8 @@ use std::path::Path;
 use mortar_core::par::Pool;
 use mortar_image::fill::{self, Sink};
 use mortar_image::output::{
-    LockMode, Output, OutputOptions, aside_name, identity, remove_stale_output, temp_name,
+    Disposition, LockMode, Output, OutputOptions, Use, aside_name, disposition, identity,
+    remove_stale_output, system_dir, temp_name, write_whole,
 };
 use support::*;
 
@@ -361,7 +362,7 @@ fn i66_stale_output_removed_after_failure() {
 fn i79_whole_file_writer() {
     let d = TempDir::new("map");
     let p = d.path("out.map");
-    mortar_image::output::write_whole(&p, b"mortar-map 2\nend\n", 0o666).unwrap();
+    write_whole(&p, b"mortar-map 2\nend\n", 0o666).unwrap();
     assert_eq!(fs::read(&p).unwrap(), b"mortar-map 2\nend\n");
     assert_eq!(d.names(), vec!["out.map"]);
     let _ = fs::metadata(&p).unwrap().ino();
@@ -384,4 +385,96 @@ fn i63_fill_into_the_output_file() {
         assert!(fs::read(&p).unwrap() == want, "{threads} threads");
     }
     assert_eq!(d.names(), vec!["a.out"]);
+}
+
+// spec: image.md I-58b: the table, row by row, on files of this test's
+// own: a link through a descriptor table (`/proc/self/fd/N` of a file
+// this process holds open, and of a descriptor it does not have) is
+// written in place or refused, never replaced; a chain that cannot be
+// walked is refused; an ordinary link, dangling or not, is replaced.
+#[test]
+fn i58b_every_outcome_of_resolving_a_path() {
+    use std::os::fd::AsRawFd as _;
+    let d = TempDir::new("disposition");
+    let w = Use::Whole;
+    let o = Use::Output;
+    // Absent, regular, a directory, a character device.
+    assert_eq!(disposition(&d.path("none"), o), Disposition::Replace);
+    fs::write(d.path("f"), b"f").unwrap();
+    assert_eq!(disposition(&d.path("f"), o), Disposition::Replace);
+    assert!(matches!(disposition(d.path("").as_path(), o), Disposition::Refused { .. }));
+    assert_eq!(disposition(Path::new("/dev/null"), o), Disposition::InPlace { truncate: false });
+    // `lstat` fails other than ENOENT: ENOTDIR.
+    assert!(matches!(disposition(&d.path("f/x"), o), Disposition::Refused { .. }));
+    // Ordinary links: to a regular file, dangling: replaced.
+    symlink(d.path("f"), d.path("to-f")).unwrap();
+    assert_eq!(disposition(&d.path("to-f"), o), Disposition::Replace);
+    symlink(d.path("gone"), d.path("dangling")).unwrap();
+    assert_eq!(disposition(&d.path("dangling"), o), Disposition::Replace);
+    // A loop: ELOOP, refused.
+    symlink(d.path("b"), d.path("a")).unwrap();
+    symlink(d.path("a"), d.path("b")).unwrap();
+    assert!(matches!(disposition(&d.path("a"), o), Disposition::Forbidden { .. }));
+    // Through a descriptor table, to a regular file: in place, truncated,
+    // directly and by a chain of two links.
+    let held = fs::File::create(d.path("held")).unwrap();
+    let fd = held.as_raw_fd();
+    symlink(format!("/proc/self/fd/{fd}"), d.path("alias")).unwrap();
+    symlink(d.path("alias"), d.path("alias2")).unwrap();
+    symlink(format!("/dev/fd/{fd}"), d.path("alias3")).unwrap();
+    for name in ["alias", "alias2", "alias3"] {
+        assert_eq!(
+            disposition(&d.path(name), w),
+            Disposition::InPlace { truncate: true },
+            "{name}"
+        );
+    }
+    // ... and the file is written there, the links kept.
+    write_whole(&d.path("alias2"), b"through", 0o666).unwrap();
+    assert_eq!(fs::read(d.path("held")).unwrap(), b"through");
+    assert!(fs::symlink_metadata(d.path("alias2")).unwrap().file_type().is_symlink());
+    // A descriptor this process does not have: refused, never replaced
+    // (before WP-114 an ordinary dangling link, renamed over).
+    symlink("/proc/self/fd/987654", d.path("closed")).unwrap();
+    let r = disposition(&d.path("closed"), w);
+    assert!(matches!(r, Disposition::Forbidden { .. }), "{r:?}");
+    let (_, e) = write_whole(&d.path("closed"), b"x", 0o666).unwrap_err();
+    assert_eq!(e.id(), "cannot-write-output");
+    assert!(!remove_stale_output(&d.path("closed"), &[]));
+    assert_eq!(fs::read_link(d.path("closed")).unwrap(), Path::new("/proc/self/fd/987654"));
+    // A FIFO through a descriptor: in place written whole, refused as the
+    // output.
+    let (_reader, writer) = std::io::pipe().unwrap();
+    symlink(format!("/proc/self/fd/{}", writer.as_raw_fd()), d.path("pipe")).unwrap();
+    assert_eq!(disposition(&d.path("pipe"), w), Disposition::InPlace { truncate: false });
+    assert!(matches!(disposition(&d.path("pipe"), o), Disposition::Refused { .. }));
+    drop(held);
+    assert_eq!(
+        d.names(),
+        vec![
+            "a", "alias", "alias2", "alias3", "b", "closed", "dangling", "f", "held", "pipe",
+            "to-f"
+        ]
+    );
+}
+
+// spec: image.md I-58b: a system directory is `/dev` itself, `/proc` and
+// `/sys` and below, after resolving links; `/dev/shm` is not one. A name
+// there is refused by name: nothing is created (`/proc` refuses creation
+// anyway, so this test can try it safely).
+#[test]
+fn i58b_system_directories() {
+    assert!(system_dir(Path::new("/dev")));
+    assert!(system_dir(Path::new("/dev/fd/..")));
+    assert!(system_dir(Path::new("/proc/self")));
+    assert!(system_dir(Path::new("/sys")));
+    assert!(!system_dir(Path::new("/dev/shm")));
+    assert!(!system_dir(Path::new("/tmp")));
+    assert!(!system_dir(Path::new("/nonexistent-dir-of-wp-114")));
+    let p = Path::new("/proc/self/mortar-wp114");
+    let r = disposition(p, Use::Output);
+    assert!(matches!(r, Disposition::Forbidden { .. }), "{r:?}");
+    let (_, e) = Output::create(p, &opts()).unwrap_err();
+    assert_eq!(e.id(), "cannot-write-output");
+    assert!(format!("{:?}", e.kind()).contains("a system directory"));
 }

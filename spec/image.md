@@ -1121,6 +1121,92 @@ Opening a running executable for writing fails with `ETXTBSY` on Linux
   WP-087), or fail as `cannot-open-output` elsewhere. A FIFO or a socket
   behind such a link is I-58's case for the output and I-79a's for the
   other files; a terminal is a character device.
+- **I-58b [M1] [C] One decision for every written path (WP-114).** What
+  the link does with a path `P` it writes (the output, a file written
+  whole, the incremental state and report) is decided by one function,
+  `mortar_image::output::disposition`, and every place that creates,
+  writes, renames over or removes such a path obeys it (`Output::create`,
+  `write_whole`, `remove_stale_output` (I-66), the set-aside of I-113,
+  `may_replace` for the incremental state and the in-place update's copy,
+  `spec/incr.md` IN-17, IN-47). There are three outcomes: **replace** (the
+  protocol of I-59, I-60, I-113: a temporary beside `P` renamed over it),
+  **in place** (opened for writing without creating it, never renamed or
+  removed) and **refused by name** (nothing created, renamed or removed;
+  the link fails). The table is total: every outcome of `lstat(P)`, of
+  walking `P`'s symbolic links and of `stat(P)` has a row.
+
+  | `P` | output (`-o`) | written whole |
+  |---|---|---|
+  | does not exist | replace | replace |
+  | a regular file | replace | replace |
+  | a directory (following links) | `cannot-open-output`, `Is a directory` | same |
+  | a character device (following links) | in place | in place |
+  | a FIFO (following links) | `cannot-open-output`, `output is a FIFO` | in place (I-79a) |
+  | a socket, a block device (following links) | `cannot-open-output`, its note | same |
+  | of no file type: `st_mode & S_IFMT == 0` (an eventfd, epoll, pidfd, ... reached through `/proc/<pid>/fd`) | `cannot-write-output`, note `of no file type` | same |
+  | `lstat(P)` fails other than `ENOENT` (`EACCES`, `ENOTDIR`, `ELOOP`, `ENAMETOOLONG`) | `cannot-open-output` with the system's reason | same |
+  | a symbolic link **through a descriptor table** (I-58a) to a regular file | in place, truncated | in place, truncated |
+  | such a link whose `stat` fails (the descriptor is closed; a deleted file the file system cannot reopen; `ENXIO`) | `cannot-write-output` with the system's reason, note `a symbolic link through a descriptor table ... is written in place or refused, never replaced` | same |
+  | a symbolic link whose chain cannot be walked (`readlink` or the directory of a link fails other than `ENOENT`: `EACCES`, `ENOTDIR`; more than 40 links: `ELOOP`) | `cannot-write-output` with the system's reason | same |
+  | an ordinary symbolic link to a regular file | replace (the link, not its target) | same |
+  | an ordinary **dangling** symbolic link | replace (the link) | same |
+  | an ordinary symbolic link whose `stat` fails other than `ENOENT` (`EACCES`, `ELOOP`, `ENOTDIR`) | `cannot-write-output` with the system's reason | same |
+  | replace would create, rename over or remove a name in a **system directory** | `cannot-write-output`, reason `a system directory` | same |
+
+  *Through a descriptor table* is decided by walking the chain with
+  `readlink`, without following the last target: each name's directory
+  is resolved (`realpath`) before the name itself is examined, and the
+  chain passes through a descriptor table as soon as one directory is
+  `/proc/<pid>/fd` or `/proc/<pid>/task/<tid>/fd`. A name in such a
+  directory that does not exist (descriptor 1 closed: `/proc/self/fd/1`
+  is then absent) is still in a descriptor table, so the link is an
+  alias, never an ordinary dangling link: it is refused, not replaced.
+  *A system directory* is the directory of `P` as given (`dir(P)`), after
+  resolving its symbolic links, when it is exactly `/dev`, or is `/proc`
+  or `/sys` or below. A file system mounted below `/dev` (`/dev/shm`, a
+  tmpfs where builds and this repository's stamp tests create files;
+  `/dev/mqueue`, `/dev/pts`) is an ordinary directory: the rule names
+  `/dev` itself, where only the container's or the system's device
+  nodes and their links live, because safe Rust's `std` has no `statfs`
+  to ask for `devtmpfs` (a `/dev` that is a plain tmpfs, as in this
+  container, would not be recognised by it either). A path whose
+  directory cannot be resolved is not a system directory: creating `T`
+  there fails by name (I-59). The rule decides by the path, so a
+  descriptor alias (`/dev/stdout`) is in place or refused by the rows
+  above whatever its directory; the system-directory row stops the
+  replace protocol only, which is what a missing or already broken
+  `/dev/stdout` would otherwise get.
+
+  **Why.** Before WP-114 the classification was spread over
+  `Output::create` and `stream_target`, each with a `stat` whose failure
+  meant "not special": a descriptor alias whose `stat` failed, and a
+  descriptor of no type (`st_mode` with no type bits: `Output::create`
+  checked character device, FIFO, socket and block device and let the
+  rest through), fell to the replace protocol, which created
+  `dir(P)/.<base>.mortar-tmp`, renamed `P` aside (I-113) and renamed
+  the temporary over it: as root in a container, `/dev/stdout` became a
+  regular file holding the map (WP-114 measured it for eventfd, epoll and
+  pidfd on a private link: 100 %). The incremental state's own writer
+  renamed over a descriptor alias in every state, and read a pipe
+  behind one until it hung. And a `/dev/stdout` already removed by
+  another tool (GNU objcopy and GNU ld unlink an output path that is a
+  symbolic link when they fail, `spec/landed/image/WP-114.md`) was
+  re-created as a regular file by the next `-Map=/dev/stdout`, for every
+  process in the container. Now none of these can rename or create
+  anything: a written path that is not plainly a file the link may
+  replace is written in place or refused by name.
+
+  **The ordinary dangling link** (a build directory's `out -> ../gone`)
+  is kept as before: the link is replaced by the output (and by a map),
+  as lld 19 does for `-o`. Measured (WP-114, `out -> target.bin`
+  dangling): GNU ld 2.44 and mold 2.37.1 write through it and create
+  `target.bin` for `-o` and `-Map`; lld writes through it for `-Map`.
+  The reason to keep it: writing through creates a file at a path the
+  command line never named, wherever the link points (another
+  directory, `/dev`: the hazard this rule exists for), and the replace
+  protocol is the one that keeps the old output whole until the new one
+  is complete (I-60). A build that wants the target written names the
+  target.
 - **I-59 [M1] [C] Otherwise: a temporary file.** Let `T0 =
   dir(P)/.<base(P)>.mortar-tmp`. The image opens `T0` with `create_new`, or,
   if it exists, opens the existing file, write-only, mode `0o777` for executables and shared
@@ -1262,7 +1348,8 @@ Opening a running executable for writing fails with `ETXTBSY` on Linux
   "an input" is every file the link read (`spec/cli.md` §3.14: the
   response files included). A symbolic link at `P` is removed, not its
   target, unless its target is not a regular file or it is a descriptor
-  alias (I-58a: `-o /dev/stdout`); a non-regular `P` is left alone. Accepted by the coordinator (Q4).
+  alias (I-58a: `-o /dev/stdout`); a non-regular `P` is left alone; only a
+  path I-58b says may be replaced is ever removed. Accepted by the coordinator (Q4).
 - **I-67 [M1]** A link killed by a signal leaves `T` (and possibly `A`)
   behind: safe Rust installs no handler. On a file system that enforces
   `flock`, the next link to the same `P` reuses `T0` (I-59) and replaces
@@ -1644,7 +1731,9 @@ random input's).
   terminal or a pipe, `-Map=/dev/null`), or a descriptor alias of a
   regular file (I-58a, truncated): they are written in order, so a FIFO
   is no obstacle. A FIFO with no reader blocks the link until one opens
-  it, as it does for every program. Every written path is first checked
+  it, as it does for every program. Which of these a path is, and what
+  happens to every other kind (refused by name, never replaced), is
+  I-58b's one decision. Every written path is first checked
   against the files the link read and the other written paths
   (`spec/cli.md` §3.14).
 
@@ -2069,6 +2158,11 @@ pub trait SynthChunk {
 | `-Map` or `--dependency-file` names an input (WP-087) | overwritten (an archive: truncated before it is read, the link fails) | overwritten | `SIGBUS`, overwritten | refused by name | `spec/cli.md` §3.14 |
 | `-Map` names the output | the output overwritten by the map | the same | the same | refused by name | `spec/cli.md` §3.14 |
 | `-Map=/dev/stdout` redirected to a file | written | written | written | written in place | I-58a, I-79a |
+| `-o L`, `L -> /proc/self/fd/1`, descriptor 1 a regular file (WP-114) | written in place | `L` replaced by the output | written in place | written in place, truncated | I-58b |
+| the same, descriptor 1 closed (a C program; mortar's Rust start-up opens `/dev/null`) | `cannot open output file` | `L` replaced | `L` replaced | `/dev/null` (S-4) | I-58b |
+| the same, `-o`, descriptor 1 a pipe or `/dev/full` and the link fails | `L` unlinked | written (a pipe), error (`/dev/full`) | written | refused (a FIFO), error (`/dev/full`), `L` kept | I-58, I-58b, I-66 |
+| `-Map=L`, descriptor 1 of no file type (an eventfd) | (not measured) | (not measured) | (not measured) | refused by name; before WP-114 `L` replaced by the map | I-58b |
+| ordinary dangling link at `-o` / `-Map` | target created / target created | link replaced / target created | target created / target created | link replaced / link replaced | I-58b |
 | bare `--build-id` | 20 (hash not reproducible) | 20 | 20 | 20, the `L128` tree | I-69 |
 | `--build-id=fast` | warning, no note | 8 bytes | 32 bytes | 8 bytes (the bare id's prefix) | I-69 |
 | `--build-id=sha256` | warning, no note | error | 32 bytes | 32 bytes | I-69 |
