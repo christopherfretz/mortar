@@ -76,6 +76,57 @@ pub struct Matrix {
     /// `-ffile-prefix-map=<inputs>=.` so that no object names the work
     /// directory.
     pub digest: bool,
+    /// Who makes the objects of compile and `meta` steps (WP-099).
+    pub producer: Producer,
+    /// kiln's and hod's builds, when [`Matrix::producer`] needs them.
+    pub mason: Option<crate::mason::Mason>,
+    /// The digest mode's option variants (WP-099): when not empty, each
+    /// mortar link step runs once per variant, the variant's options after
+    /// the test's (`-Wl,` before each for a driver link), each recorded
+    /// as a [`DigestRow`] of its index; variant 0 last, and only its link
+    /// is judged and leaves its output for the later steps.
+    pub variants: Vec<Vec<String>>,
+}
+
+/// Who makes a test's objects (WP-099, `spec/landed/meta/WP-099.md`): the
+/// compile steps of C and C++ and the `meta` steps that add a container.
+/// Assembly, Fortran and every other step are the same for each.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Producer {
+    /// The architecture's compilers; `meta` by objcopy (the test
+    /// producer's ELF form, `spec/meta.md` §12).
+    #[default]
+    Gcc,
+    /// C++ by kiln and C by clang to LLVM IR (`-S -emit-llvm`, the step's
+    /// options), then hod; `meta` by objcopy into hod's object.
+    HodObjcopy,
+    /// As [`Producer::HodObjcopy`], but `meta` writes the container into
+    /// the object's IR (`cargo xtask meta write --into-ll`) and hod makes
+    /// the object: the container is hod's (`spec/odr.md` §11, H-1).
+    Hod,
+    /// The architecture's compilers, the IR kept beside each object; the
+    /// first, third, ... `meta` step as [`Producer::Hod`] does it, the
+    /// others by objcopy into the compiler's object: one unit from each
+    /// producer, hod's beside objects without records.
+    Mixed,
+}
+
+impl Producer {
+    pub const ALL: [Producer; 4] =
+        [Producer::Gcc, Producer::HodObjcopy, Producer::Hod, Producer::Mixed];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Producer::Gcc => "gcc",
+            Producer::HodObjcopy => "hod-objcopy",
+            Producer::Hod => "hod",
+            Producer::Mixed => "mixed",
+        }
+    }
+
+    pub fn parse(word: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|p| p.name() == word)
+    }
 }
 
 /// The fixtures a run has built or is building, by name and architecture:
@@ -202,10 +253,19 @@ pub struct DigestRow {
     pub arch: Arch,
     /// The link step's line in the test file.
     pub line: usize,
+    /// The index of [`Matrix::variants`]; 0 without variants.
+    pub variant: usize,
     pub end: String,
     pub output: String,
     pub map: String,
     pub stderr: String,
+    /// The standard error itself, with the paths replaced as for its
+    /// digest.
+    pub stderr_text: String,
+    /// Whether the output has a section named `.mason.meta`.
+    pub meta_section: bool,
+    /// Whether the link line asks for `--keep-mason-meta`.
+    pub keeps_meta: bool,
 }
 
 /// The SHA-256 of `bytes`, in hex.
@@ -674,6 +734,7 @@ impl Unit<'_> {
             std::fs::write(&path, &file.contents).map_err(|e| error(e, &path))?;
         }
         let vars = Vars { arch: self.arch(), host: self.matrix.host, linker: None };
+        let mut meta_steps = 0usize;
         for step in steps {
             if !step.is_build() || !step.scope.has_arch(self.arch()) {
                 continue;
@@ -681,8 +742,27 @@ impl Unit<'_> {
             let args = expand(build_args(step), vars);
             if let StepKind::Meta(_) = step.kind {
                 let (program, _) = self.build_tool(step)?;
-                meta_step(step, &program, &args, dir)?;
+                let through_ir = match self.matrix.producer {
+                    Producer::Gcc | Producer::HodObjcopy => false,
+                    Producer::Hod => true,
+                    Producer::Mixed => meta_steps.is_multiple_of(2),
+                };
+                meta_steps += 1;
+                if through_ir {
+                    self.meta_step_ir(step, &args, dir)?;
+                } else {
+                    meta_step(step, &program, &args, dir)?;
+                }
                 continue;
+            }
+            if let StepKind::Compile(compile) = &step.kind
+                && self.matrix.producer != Producer::Gcc
+                && matches!(compile.language, Language::C | Language::Cxx)
+            {
+                self.compile_ir(step, compile, &args, dir)?;
+                if self.matrix.producer != Producer::Mixed {
+                    continue;
+                }
             }
             let (program, mut full) = self.build_tool(step)?;
             full.extend(args.into_iter().map(OsString::from));
@@ -697,6 +777,139 @@ impl Unit<'_> {
             }
         }
         Ok(())
+    }
+
+    /// kiln's and hod's builds, which a [`Producer`] other than GCC needs.
+    fn mason(&self, step: &Step) -> Result<&crate::mason::Mason, Raw> {
+        self.matrix.mason.as_ref().ok_or_else(|| {
+            Raw::Error(format!(
+                "{}: producer {} without kiln and hod",
+                step.describe(),
+                self.matrix.producer.name()
+            ))
+        })
+    }
+
+    /// A C or C++ compile step for a producer other than GCC (WP-099): the
+    /// step's source to LLVM IR beside its object (`<out>.ll`; C++ by kiln,
+    /// C by clang, the step's options), the relocation model it asks for in
+    /// `<out>.model`, and (except for [`Producer::Mixed`]) the object by
+    /// hod at `-O0` as kiln's own hod route makes it.
+    fn compile_ir(
+        &self,
+        step: &Step,
+        compile: &super::format::Compile,
+        args: &[String],
+        dir: &Path,
+    ) -> Result<(), Raw> {
+        let fail = |e: String| Raw::Error(format!("{}: {e}", step.describe()));
+        let mason = self.mason(step)?;
+        let program = match compile.language {
+            Language::Cxx => mason.kiln.clone(),
+            _ => self
+                .matrix
+                .common
+                .clang
+                .clone()
+                .ok_or_else(|| fail("no clang for C to IR".to_owned()))?,
+        };
+        let Some(at) = args.iter().position(|a| a == "-o") else {
+            return Err(fail("a compile step for hod names its output with -o".to_owned()));
+        };
+        let Some(out) = args.get(at + 1).cloned() else {
+            return Err(fail("-o without a file".to_owned()));
+        };
+        let ll = format!("{out}.ll");
+        let mut full: Vec<OsString> = vec![
+            format!("--target={}", self.arch().triple()).into(),
+            "-S".into(),
+            "-emit-llvm".into(),
+        ];
+        if self.matrix.digest {
+            let mut map = OsString::from("-ffile-prefix-map=");
+            map.push(self.dir.join("inputs").as_os_str());
+            map.push("=.");
+            full.push(map);
+        }
+        for (i, a) in args.iter().enumerate() {
+            full.push(if i == at + 1 { ll.clone().into() } else { a.into() });
+        }
+        let output = spawn(step, &program, &full, dir, &[], TOOL_LIMITS)?;
+        if !output.end.success() {
+            return Err(fail(format!("to IR: {}: {}", output.end, first_error(&output))));
+        }
+        // The last of the options that choose it, as GCC reads them.
+        let model = args
+            .iter()
+            .rev()
+            .find_map(|a| match a.as_str() {
+                "-fno-pic" | "-fno-PIC" | "-fno-pie" | "-fno-PIE" => Some("static"),
+                "-fpic" | "-fPIC" | "-fpie" | "-fPIE" => Some("pic"),
+                _ => None,
+            })
+            .unwrap_or("pic");
+        let model_file = dir.join(format!("{out}.model"));
+        std::fs::write(&model_file, model)
+            .map_err(|e| fail(format!("cannot write '{}': {e}", model_file.display())))?;
+        if self.matrix.producer == Producer::Mixed {
+            return Ok(());
+        }
+        self.hod(step, &ll, &out, dir)
+    }
+
+    /// `<out>` by hod from `<ll>`, with the relocation model of the object
+    /// the IR was made for.
+    fn hod(&self, step: &Step, ll: &str, out: &str, dir: &Path) -> Result<(), Raw> {
+        let fail = |e: String| Raw::Error(format!("{}: {e}", step.describe()));
+        let mason = self.mason(step)?;
+        let base = ll.strip_suffix(".ll").unwrap_or(ll);
+        let model = std::fs::read_to_string(dir.join(format!("{base}.model")))
+            .unwrap_or_else(|_| "pic".to_owned());
+        let full: Vec<OsString> = vec![
+            "--strict".into(),
+            "-O0".into(),
+            format!("-relocation-model={}", model.trim()).into(),
+            "-filetype=obj".into(),
+            format!("-mtriple={}", hod_triple(self.arch())).into(),
+            ll.into(),
+            "-o".into(),
+            out.into(),
+        ];
+        let output = spawn(step, &mason.hod, &full, dir, &[], TOOL_LIMITS)?;
+        if !output.end.success() {
+            return Err(fail(format!("hod: {}: {}", output.end, first_error(&output))));
+        }
+        Ok(())
+    }
+
+    /// A `meta <description> <in.o> -o <out.o>` step through hod (WP-099):
+    /// the description's section written into `<in.o>.ll` as IR
+    /// (`cargo xtask meta write --into-ll`), and `<out.o>` made by hod from
+    /// it; the container is hod's.
+    fn meta_step_ir(&self, step: &Step, args: &[String], dir: &Path) -> Result<(), Raw> {
+        let fail = |e: String| Raw::Error(format!("{}: {e}", step.describe()));
+        let [description, input, _, out] = args else {
+            return Err(fail("not 'meta <description> <in.o> -o <out.o>'".to_owned()));
+        };
+        if Path::new(input).extension().is_some_and(|e| e == "so") {
+            let (program, _) = self.build_tool(step)?;
+            return meta_step(step, &program, args, dir);
+        }
+        let text = std::fs::read_to_string(dir.join(description))
+            .map_err(|e| fail(format!("cannot read '{description}': {e}")))?;
+        let sections = crate::meta::parse(&text).map_err(fail)?;
+        let in_ll = dir.join(format!("{input}.ll"));
+        let module = std::fs::read_to_string(&in_ll).map_err(|e| {
+            fail(format!("no IR for '{input}' (made by a compile step of C or C++?): {e}"))
+        })?;
+        let with = crate::meta::into_ir(&module, &sections).map_err(fail)?;
+        let out_ll = format!("{out}.ll");
+        std::fs::write(dir.join(&out_ll), with)
+            .map_err(|e| fail(format!("cannot write '{out_ll}': {e}")))?;
+        if let Ok(model) = std::fs::read(dir.join(format!("{input}.model"))) {
+            let _ = std::fs::write(dir.join(format!("{out}.model")), model);
+        }
+        self.hod(step, &out_ll, out, dir)
     }
 
     /// The program of a build step and the arguments the harness puts
@@ -857,7 +1070,59 @@ impl Unit<'_> {
                 Raw::Error(format!("cannot remove '{}': {e}", output_file.display()))
             })?;
         }
+        // WP-099: the option variants of the digest mode, variant 0 last.
+        let variants = &self.matrix.variants;
+        if self.matrix.digest && linker == Linker::Mortar && variants.len() > 1 {
+            for (k, extra) in variants.iter().enumerate().skip(1) {
+                let mut words = args.clone();
+                words.extend(extra.iter().map(|o| variant_word(link.driver, o)));
+                if output_file.symlink_metadata().is_ok() {
+                    let _ = std::fs::remove_file(&output_file);
+                }
+                let keeps = keeps_meta(&words);
+                let (output, end) = self.run_link_line(step, link, linker, dir, words)?;
+                let mut row = self.digest_row(step, k, end, &output, &output_file, dir);
+                row.keeps_meta = keeps;
+                judged.digests.push(row);
+            }
+        }
+        if let Some(extra) = variants.first().filter(|_| linker == Linker::Mortar) {
+            args.extend(extra.iter().map(|o| variant_word(link.driver, o)));
+        }
+        let keeps = keeps_meta(&args);
+        let (output, linker_end) = self.run_link_line(step, link, linker, dir, args.clone())?;
+        let ld_words = (link.driver == Driver::Ld).then_some(args);
+        if self.matrix.digest {
+            let mut row = self.digest_row(step, 0, linker_end, &output, &output_file, dir);
+            row.keeps_meta = keeps;
+            judged.digests.push(row);
+        }
+        self.judge_link(
+            step,
+            link,
+            linker,
+            dir,
+            &output_file,
+            map_file,
+            ld_words,
+            &output,
+            linker_end,
+            judged,
+        )
+    }
+
+    /// Runs one link line of a link step: the driver (or the linker), and
+    /// how the linker itself ended.
+    fn run_link_line(
+        &self,
+        step: &Step,
+        link: &Link,
+        linker: Linker,
+        dir: &Path,
+        args: Vec<String>,
+    ) -> Result<(Output, End), Raw> {
         let status_file = dir.join(format!(".linktest-ld-status-{}", step.line));
+        let _ = std::fs::remove_file(&status_file);
         let wrapper = self.matrix.wrapper_dir(self.arch(), linker);
         let common = &self.matrix.common;
         let (program, mut full): (Option<&PathBuf>, Vec<OsString>) = match link.driver {
@@ -896,10 +1161,6 @@ impl Unit<'_> {
                 return Err(Raw::Error(format!("{}: no {}", step.describe(), driver.name())));
             }
         };
-        // Stage 3's line (spec/plumb.md §12.1): a reference link's words
-        // as its linker saw them. A mortar link gets none: its map's `arg`
-        // records are the line, and a map without them is P-D2.
-        let ld_words = (link.driver == Driver::Ld).then(|| args.clone());
         full.extend(args.into_iter().map(OsString::from));
         let limits = self.limits(LINK_LIMITS);
         let output =
@@ -922,9 +1183,29 @@ impl Unit<'_> {
                 }
             }
         };
-        if self.matrix.digest {
-            judged.digests.push(self.digest_row(step, linker_end, &output, &output_file, dir));
-        }
+        Ok((output, linker_end))
+    }
+
+    /// The expectations of a link step on its link's end and standard
+    /// error, then L3. `ld_words` is stage 3's line (spec/plumb.md
+    /// §12.1): a reference link's words as its linker saw them; a mortar
+    /// link gets none (its map's `arg` records are the line, and a map
+    /// without them is P-D2).
+    #[allow(clippy::too_many_arguments)] // the step, its link, and what it did
+    fn judge_link(
+        &self,
+        step: &Step,
+        link: &Link,
+        linker: Linker,
+        dir: &Path,
+        output_file: &Path,
+        map_file: Option<PathBuf>,
+        ld_words: Option<Vec<String>>,
+        output: &Output,
+        linker_end: End,
+        judged: &mut Judged,
+    ) -> Result<(), Raw> {
+        let status_file = dir.join(format!(".linktest-ld-status-{}", step.line));
         let fail = |what: &dyn Display| Raw::Fail(format!("{}: {what}", step.describe()));
         if link.fails {
             match linker_end {
@@ -941,12 +1222,12 @@ impl Unit<'_> {
             if output_file.symlink_metadata().is_ok() {
                 return Err(fail(&format_args!(
                     "the failed link left its output file '{}'",
-                    output_name_of(&output_file)
+                    output_name_of(output_file)
                 )));
             }
         } else if !linker_end.success() || !output.end.success() {
             let end = if linker_end.success() { output.end } else { linker_end };
-            return Err(fail(&format_args!("{end}: {}", first_error(&output))));
+            return Err(fail(&format_args!("{end}: {}", first_error(output))));
         }
         let stderr = String::from_utf8_lossy(&output.stderr);
         self.expect(&link.diags, linker, &stderr, "the link's standard error")
@@ -970,7 +1251,7 @@ impl Unit<'_> {
                             .map(|text| text.lines().map(str::to_owned).collect())
                     }
                 };
-                self.verify(step, linker, &output_file, &map, dir, words, judged)
+                self.verify(step, linker, output_file, &map, dir, words, judged)
             }
             _ => Ok(()),
         }
@@ -980,6 +1261,7 @@ impl Unit<'_> {
     fn digest_row(
         &self,
         step: &Step,
+        variant: usize,
         end: End,
         output: &Output,
         output_file: &Path,
@@ -997,14 +1279,20 @@ impl Unit<'_> {
             Err(_) => "-".to_owned(),
         };
         let map = dir.join(format!(".linktest-plumb-{}.map", step.line));
+        let stderr = normalise(&output.stderr, &subs);
+        let meta_section = std::fs::read(output_file).is_ok_and(|bytes| has_meta_section(&bytes));
         DigestRow {
             test: self.name.to_owned(),
             arch: self.arch(),
             line: step.line,
+            variant,
             end: end.to_string(),
             output: file(output_file, false),
             map: file(&map, true),
-            stderr: digest_hex(&normalise(&output.stderr, &subs)),
+            stderr: digest_hex(&stderr),
+            stderr_text: String::from_utf8_lossy(&stderr).into_owned(),
+            meta_section,
+            keeps_meta: false,
         }
     }
 
@@ -1492,6 +1780,60 @@ fn meta_step(step: &Step, objcopy: &Path, args: &[String], dir: &Path) -> Result
         return Err(fail("the description of a 'meta' step has one section".to_owned()));
     };
     crate::meta::add_with(objcopy, items, &dir.join(input), &dir.join(out)).map_err(fail)
+}
+
+/// The triple hod is given for an architecture.
+fn hod_triple(arch: Arch) -> &'static str {
+    match arch {
+        Arch::Aarch64 => "aarch64-unknown-linux-gnu",
+        Arch::X86_64 => "x86_64-unknown-linux-gnu",
+        Arch::I386 => "i686-unknown-linux-gnu",
+    }
+}
+
+/// Whether a link line asks for `--keep-mason-meta`.
+fn keeps_meta(words: &[String]) -> bool {
+    words.iter().any(|w| w.split(',').any(|o| o == "--keep-mason-meta"))
+}
+
+/// One option of a digest variant on a link line: bare for `link ld`,
+/// `-Wl,` before it for a driver.
+fn variant_word(driver: Driver, option: &str) -> String {
+    match driver {
+        Driver::Ld => option.to_owned(),
+        _ => format!("-Wl,{option}"),
+    }
+}
+
+/// Whether an ELF file (64-bit, little-endian: the targets hod has) has a
+/// section named `.mason.meta`; anything it cannot read has none.
+pub fn has_meta_section(bytes: &[u8]) -> bool {
+    let word = |at: usize, n: usize| -> Option<u64> {
+        let b = bytes.get(at..at.checked_add(n)?)?;
+        Some(b.iter().rev().fold(0u64, |v, &x| (v << 8) | u64::from(x)))
+    };
+    let names = || -> Option<bool> {
+        if bytes.get(..6)? != b"\x7fELF\x02\x01" {
+            return Some(false);
+        }
+        let shoff = usize::try_from(word(0x28, 8)?).ok()?;
+        let shentsize = usize::try_from(word(0x3a, 2)?).ok()?;
+        let shnum = usize::try_from(word(0x3c, 2)?).ok()?;
+        let shstrndx = usize::try_from(word(0x3e, 2)?).ok()?;
+        let header = |i: usize| shoff.checked_add(i.checked_mul(shentsize)?);
+        let strtab = usize::try_from(word(header(shstrndx)? + 0x18, 8)?).ok()?;
+        for i in 0..shnum {
+            let name = usize::try_from(word(header(i)?, 4)?).ok()?;
+            let at = strtab.checked_add(name)?;
+            let text = bytes.get(at..)?;
+            let end = text.iter().position(|&b| b == 0)?;
+            if &text[..end] == mortar_meta::SECTION_NAME {
+                return Some(true);
+            }
+        }
+        Some(false)
+    };
+    names().unwrap_or(false)
 }
 
 /// The arguments of a build step.

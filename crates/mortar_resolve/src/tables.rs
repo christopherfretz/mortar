@@ -1287,15 +1287,17 @@ impl Ctx<'_, '_, '_> {
                     Place::section(self.file_ref(*file), self.section_name(*file, *section), 0);
                 warn(Kind::GnuWarning { text }).at(at)
             }
-            What::MetaNotContainer { file, section } => {
+            What::MetaNotContainer { file, section, relocated } => {
                 let at =
                     Place::section(self.file_ref(*file), self.section_name(*file, *section), 0);
-                warn(Kind::MetaMalformed {
-                    reason: "the section is not a container: its type or flags are not \
-                             SHT_PROGBITS with exactly SHF_EXCLUDE (meta.md MT-1, MT-6)"
-                        .to_owned(),
-                })
-                .at(at)
+                let reason = if *relocated {
+                    "the section is not a container: a relocation section applies to it \
+                     (meta.md MT-2, MT-6)"
+                } else {
+                    "the section is not a container: its type or flags are not SHT_PROGBITS \
+                     with exactly SHF_EXCLUDE (meta.md MT-1, MT-6)"
+                };
+                warn(Kind::MetaMalformed { reason: reason.to_owned() }).at(at)
             }
         }
     }

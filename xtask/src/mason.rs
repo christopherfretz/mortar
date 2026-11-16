@@ -7,6 +7,7 @@
 //!   cargo xtask mason setup                  libc++ tree, tests, kiln's runner
 //!   cargo xtask mason libcxx [options] ...   libc++'s tests through the lane
 //!   cargo xtask mason verify <out> <map>     plumb, for the lane's `ld` shim
+//!   cargo xtask mason producers [--update]   the ODR corpus through hod (WP-099)
 //!
 //! kiln and hod are not built here: their release builds are found in the
 //! build root (`<root>/target-kiln/release/kiln++`,
@@ -38,6 +39,7 @@ macro_rules! say_raw {
 pub mod census;
 pub mod libcxx;
 pub mod outcomes;
+pub mod producers;
 pub mod programs;
 pub mod setup;
 
@@ -62,12 +64,15 @@ pub const USAGE: &str = "usage: cargo xtask mason [programs] [--mortar <path>] [
      [--results <file>] [--baseline <file>] [--write-baseline <file>] [<dir>...]\n       \
      cargo xtask mason libcxx --collect <dir> [--results <file>] [--baseline <file>]\n       \
      cargo xtask mason libcxx --compare <file>[:<mode>] <file>[:<mode>]\n       \
-     cargo xtask mason verify <output> <map> [<line>]\n";
+     cargo xtask mason verify <output> <map> [<line>]\n       \
+     cargo xtask mason producers [--update] [--mortar <path>] [-j <n>] [--filter <s>]...\n";
 
 /// The entry point.
 pub fn main(args: &[String]) -> ExitCode {
     let (cmd, rest) = match args.first().map(String::as_str) {
-        Some(c @ ("programs" | "census" | "setup" | "libcxx" | "verify")) => (c, &args[1..]),
+        Some(c @ ("programs" | "census" | "setup" | "libcxx" | "verify" | "producers")) => {
+            (c, &args[1..])
+        }
         _ => ("programs", args),
     };
     let result = match cmd {
@@ -75,6 +80,7 @@ pub fn main(args: &[String]) -> ExitCode {
         "setup" => setup::main(rest),
         "libcxx" => libcxx::main(rest),
         "verify" => verify_main(rest),
+        "producers" => producers::main(rest),
         _ => programs::main(rest),
     };
     match result {
@@ -89,8 +95,10 @@ pub fn main(args: &[String]) -> ExitCode {
 /// The gate's `mason` step (`cargo xtask ci`, spec/harness.md "ci";
 /// WP-058): libc++'s `ci` sample linked by mortar fully static and on the
 /// dynamic line (kiln's: static libc++, dynamic glibc, PIE), every output
-/// verified, against `tests/mason/baseline-mortar.tsv`; the full gate adds
-/// the programs table. Skipped by name where the workspace has no kiln and
+/// verified, against `tests/mason/baseline-mortar.tsv`, and the
+/// one-definition-rule corpus through hod against
+/// `tests/mason/producers.tsv` (WP-099); the full gate adds the programs
+/// table. Skipped by name where the workspace has no kiln and
 /// hod builds or no lane (`cargo xtask mason setup`), unless
 /// `MASON_REQUIRE_TOOLS=1`.
 pub fn ci(quick: bool) -> bool {
@@ -116,6 +124,10 @@ pub fn ci(quick: bool) -> bool {
         }
     };
     let mut passed = ok(libcxx::main(&args));
+    // WP-099: the one-definition-rule corpus through hod, against
+    // tests/mason/producers.tsv.
+    let p = ["--mortar".to_owned(), mortar.display().to_string(), "-j".into(), "4".into()];
+    passed &= ok(producers::main(&p));
     if !quick {
         let p = ["--mortar".to_owned(), mortar.display().to_string(), "-j".into(), "4".into()];
         passed &= ok(programs::main(&p));
