@@ -3,7 +3,7 @@
 //! dynamic executable, read back, deterministic, absent without
 //! `--odr-table`, and the program runs; and the read counter of a link
 //! against a library without a table. The shapes of O-24 with tables are
-//! `tests/link/odr/o24-*.test`.
+//! `tests/link/dyn/odr/o24-*.test`.
 
 use std::ffi::OsString;
 use std::path::PathBuf;

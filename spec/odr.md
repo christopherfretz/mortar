@@ -1309,7 +1309,7 @@ note-removed programs run; `eu-elflint --gnu-ld` makes the one
 complaint above twice (the segment and the section), and nothing else:
 the same output without the table passes with no allowance (`dyn.md`
 D-71); gdb (aarch64) and lldb stop at `main` and print the backtrace
-(`tests/link/odr/o50-table.test`).
+(`tests/link/dyn/odr/o50-table.test`).
 
 Why a note, measured against the alternatives (`dynamic`; the same table
 in a `PT_NOTE`, in a `PT_LOOS`-range segment `0x6d736e00`, and found
@@ -1837,7 +1837,7 @@ implementation of the verdict) is Q11.
 | O-20, O-21 | T-O-21 | the optimisation and the normative rule report the same findings over the whole corpus, K13 included |
 | O-22 | T-O-22 | kind 3 and 5 rows from 3 units grouped in `FileId` order |
 | O-23 | T-O-23 | K17 with and without `--odr-check-archives` |
-| O-24 | T-O-24 | the shapes listed in O-24: (a) exported and hidden; (b) two libraries; `-Bsymbolic`, `-Bsymbolic-functions` and `protected` libraries (R4/R5, findings); an `--as-needed`-dropped library (none); one version node per library (R6, none) and a shared node (a finding); unversioned against versioned, both orders; (c) K18b; a malformed table; libraries without tables and the default mode (none). `tests/link/odr/o24-*.test` (WP-075) |
+| O-24 | T-O-24 | the shapes listed in O-24: (a) exported and hidden; (b) two libraries; `-Bsymbolic`, `-Bsymbolic-functions` and `protected` libraries (R4/R5, findings); an `--as-needed`-dropped library (none); one version node per library (R6, none) and a shared node (a finding); unversioned against versioned, both orders; (c) K18b; a malformed table; libraries without tables and the default mode (none). `tests/link/dyn/odr/o24-*.test` (WP-075) |
 | O-25 | T-O-25 | K16c with two vtable copies; F5 silent |
 | O-30, O-31 | T-O-30 | K16a/K16e/K16d notes under strict; `abi.rtti` never a finding |
 | O-32 | T-O-32 | `mixed-std-system-row` → a stats count; `mixed-std-user-body` → a finding |
@@ -1848,7 +1848,7 @@ implementation of the verdict) is Q11.
 | O-42 | T-O-42 | `meta.md` T-MT-42: bytes read counted |
 | O-44 | T-O-44 | the stats line's fields on a corpus link |
 | O-45 | T-O-45 | the bench lane's comparison |
-| O-50, O-51 | T-O-50 | the row set: default, protected, `-Bsymbolic` and `-Bsymbolic-functions` definitions have rows (the last three `NONPREEMPTIBLE`), hidden and version-script `local:` ones do not; versioned names; the keeper's hash after a warned link. In an executable (WP-075, `tests/link/odr/o50-table.test`, `crates/mortar/tests/odr_dynamic.rs`): default and protected rows, every one `NONPREEMPTIBLE`, none for hidden; identical bytes on two links; none without the option |
+| O-50, O-51 | T-O-50 | the row set: default, protected, `-Bsymbolic` and `-Bsymbolic-functions` definitions have rows (the last three `NONPREEMPTIBLE`), hidden and version-script `local:` ones do not; versioned names; the keeper's hash after a warned link. In an executable (WP-075, `tests/link/dyn/odr/o50-table.test`, `crates/mortar/tests/odr_dynamic.rs`): default and protected rows, every one `NONPREEMPTIBLE`, none for hidden; identical bytes on two links; none without the option |
 | O-52 | T-O-52 | `note-final`'s tolerance matrix |
 | O-53, O-54, O-56 | T-O-54 | WP-077's prototype matrix (O-58) on three targets; not a release test until a runtime ships |
 | O-55, O-57 | T-O-57 | K18c's two outcomes unchanged by the table |
