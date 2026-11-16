@@ -6,10 +6,19 @@
 //!   cargo xtask meta write <description> --bin <out>        (one section's bytes)
 //!   cargo xtask meta write <description> --object <out.o> --target <arch>
 //!   cargo xtask meta write <description> --into <in.o> -o <out.o>   (objcopy)
+//!   cargo xtask meta write <description> --ll <out.ll>                (LLVM IR, WP-099)
+//!   cargo xtask meta write <description> --into-ll <in.ll> -o <out.ll>
 //!   cargo xtask meta dump <object>
 //!   cargo xtask meta table <rows> --into <in.so> -o <out.so>    (`.note.mason`)
 //!
 //! `<arch>` is `x86_64`, `aarch64` or `i386`.
+//!
+//! The IR forms (WP-099) write the same bytes as LLVM IR for a code
+//! generator (hod, llc): one `private constant [N x i8] c"...", section
+//! ".mason.meta", align 8, !exclude !{}` per section of the description,
+//! in `@llvm.compiler.used`; `--into-ll` adds them to a module (kiln's or
+//! clang's `-S -emit-llvm`), merging its `@llvm.compiler.used`. A code
+//! generator puts them all into one section ([`ir_module`]).
 //!
 //! # The description
 //!
@@ -80,7 +89,8 @@ use mortar_meta::write::{Declaration, Definition, RawBlock, Summary, Type};
 use mortar_meta::{UnitBuilder, kind, producer};
 
 pub const USAGE: &str = "usage: cargo xtask meta write <description> (-o <out.s> | --bin <out> | \
-                         --object <out.o> --target x86_64|aarch64|i386 | --into <in.o> -o <out.o>)\n       \
+                         --object <out.o> --target x86_64|aarch64|i386 | --into <in.o> -o <out.o> |\n                                            \
+                         --ll <out.ll> | --into-ll <in.ll> -o <out.ll>)\n       \
                          cargo xtask meta dump <object>\n       \
                          cargo xtask meta table <rows> --into <in.so> -o <out.so>\n";
 
@@ -277,6 +287,143 @@ pub fn assembly(sections: &Sections) -> Result<String, String> {
     // An executable stack is not what the test objects mean to ask for.
     s.push_str("\t.section .note.GNU-stack,\"\",%progbits\n");
     Ok(s)
+}
+
+/// The IR global of the `i`-th section of a description.
+fn ir_name(i: usize) -> String {
+    if i == 0 { IR_GLOBAL.to_owned() } else { format!("{IR_GLOBAL}.{i}") }
+}
+
+/// The name of the container's IR global (`spec/odr.md` §11, K-1: the
+/// spelling is kiln's to choose; this is the test producer's).
+pub const IR_GLOBAL: &str = "@__mason_meta";
+
+/// `bytes` as an LLVM IR string constant's body (`c"..."`): a printable
+/// ASCII byte other than `"` and `\` as itself, every other byte as `\XX`
+/// (LLVM's own printer, `printEscapedString`). Exact for every byte value.
+pub fn c_string(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(bytes.len() + 2);
+    for &b in bytes {
+        if (b' '..=b'~').contains(&b) && b != b'"' && b != b'\\' {
+            s.push(char::from(b));
+        } else {
+            let _ = write!(s, "\\{b:02X}");
+        }
+    }
+    s
+}
+
+/// The IR globals of the sections (WP-099), in hod's accepted shape
+/// (hod `spec/codegen.md` §9.7.4; `spec/odr.md` §11, H-1): each
+/// `private constant [N x i8] c"...", section ".mason.meta", align 8,
+/// !exclude !{}`, and their names for `@llvm.compiler.used`. A code
+/// generator puts variables of one section name and flags into ONE
+/// section, each at its alignment: several sections of a description
+/// become one `.mason.meta` whose bytes are theirs concatenated (each is a
+/// multiple of 8 bytes, MT-10, so nothing is inserted between them), which
+/// a reader reads as the same sequence of units (MT-4).
+///
+/// # Errors
+/// [`section_bytes`]'s.
+fn ir_globals(sections: &Sections) -> Result<(String, Vec<String>), String> {
+    let mut text = String::new();
+    let mut names = Vec::new();
+    for (i, items) in sections.iter().enumerate() {
+        let bytes = section_bytes(items)?;
+        let name = ir_name(i);
+        let _ = writeln!(
+            text,
+            "{name} = private constant [{} x i8] c\"{}\", section \".mason.meta\", align 8, \
+             !exclude !{{}}",
+            bytes.len(),
+            c_string(&bytes),
+        );
+        names.push(name);
+    }
+    Ok((text, names))
+}
+
+/// An LLVM IR module holding only the sections' globals and
+/// `@llvm.compiler.used` (without it `opt -O2` deletes them, `spec/odr.md`
+/// K-1). It names no target: hod is given `-mtriple`.
+///
+/// # Errors
+/// [`section_bytes`]'s.
+pub fn ir_module(sections: &Sections) -> Result<String, String> {
+    let (globals, names) = ir_globals(sections)?;
+    let used: Vec<String> = names.iter().map(|n| format!("ptr {n}")).collect();
+    Ok(format!(
+        "; Mason metadata: cargo xtask meta write --ll\n{globals}@llvm.compiler.used = appending \
+         global [{} x ptr] [{}], section \"llvm.metadata\"\n",
+        used.len(),
+        used.join(", ")
+    ))
+}
+
+/// The IR module `module` with the sections' globals added (the IR form of
+/// `--into`): the globals after the module's text, their names added to
+/// the module's `@llvm.compiler.used` (or one written).
+///
+/// # Errors
+/// [`section_bytes`]'s; the module already has a global of the name; its
+/// `@llvm.compiler.used` is not one line of LLVM's printed form
+/// (`appending global [K x ptr] [ptr @a, ...], section "llvm.metadata"`).
+pub fn into_ir(module: &str, sections: &Sections) -> Result<String, String> {
+    let (globals, names) = ir_globals(sections)?;
+    for n in &names {
+        let taken = module.lines().any(|l| {
+            l.strip_prefix(n.as_str()).is_some_and(|r| r.trim_start().starts_with('='))
+        });
+        if taken {
+            return Err(format!("the module already defines {n}"));
+        }
+    }
+    let mut out = String::with_capacity(module.len() + globals.len() + 128);
+    let mut merged = false;
+    for line in module.lines() {
+        if let Some(rest) = line.strip_prefix("@llvm.compiler.used = appending global [") {
+            out.push_str(&merge_used(rest, &names).ok_or_else(|| {
+                format!("@llvm.compiler.used is not in the form this writer knows: {line}")
+            })?);
+            merged = true;
+        } else {
+            out.push_str(line);
+        }
+        out.push('\n');
+    }
+    out.push_str("\n; Mason metadata: cargo xtask meta write --into-ll\n");
+    out.push_str(&globals);
+    if !merged {
+        let used: Vec<String> = names.iter().map(|n| format!("ptr {n}")).collect();
+        let _ = writeln!(
+            out,
+            "@llvm.compiler.used = appending global [{} x ptr] [{}], section \"llvm.metadata\"",
+            used.len(),
+            used.join(", ")
+        );
+    }
+    Ok(out)
+}
+
+/// `rest` (after `@llvm.compiler.used = appending global [`) with `names`
+/// added, or `None` if it is not `K x ptr] [<list>], section "llvm.metadata"`.
+fn merge_used(rest: &str, names: &[String]) -> Option<String> {
+    let (count, tail) = rest.split_once(" x ptr] [")?;
+    let count: usize = count.parse().ok()?;
+    let (list, tail) = tail.split_once(']')?;
+    if tail != ", section \"llvm.metadata\"" {
+        return None;
+    }
+    let mut items: Vec<String> = list.split(", ").map(str::to_owned).collect();
+    if items.len() != count || items.iter().any(|i| !i.starts_with("ptr @")) {
+        return None;
+    }
+    items.extend(names.iter().map(|n| format!("ptr {n}")));
+    Some(format!(
+        "@llvm.compiler.used = appending global [{} x ptr] [{}], section \"llvm.metadata\"",
+        items.len(),
+        items.join(", ")
+    ))
 }
 
 /// The text dump of every container of the ELF object `bytes` (MT-4: in
@@ -976,7 +1123,9 @@ fn run(args: &[String]) -> Result<(), String> {
                     || it.next().map(String::as_str).ok_or(format!("{a} takes a value"));
                 match a.as_str() {
                     "-o" => out = Some(PathBuf::from(value()?)),
-                    "--bin" | "--object" | "--into" => mode = Some((a.as_str(), value()?)),
+                    "--bin" | "--object" | "--into" | "--ll" | "--into-ll" => {
+                        mode = Some((a.as_str(), value()?));
+                    }
                     "--target" => target = Some(value()?),
                     _ => return Err(format!("unknown argument '{a}'")),
                 }
@@ -1000,7 +1149,17 @@ fn run(args: &[String]) -> Result<(), String> {
                     };
                     add_to(items, Path::new(input), &o)
                 }
-                _ => Err("one output: -o, --bin, --object with --target, or --into with -o".into()),
+                (Some(("--ll", path)), None, None) => {
+                    std::fs::write(path, ir_module(&sections)?).map_err(|e| e.to_string())
+                }
+                (Some(("--into-ll", input)), Some(o), None) => {
+                    let module =
+                        std::fs::read_to_string(input).map_err(|e| format!("{input}: {e}"))?;
+                    std::fs::write(&o, into_ir(&module, &sections)?).map_err(|e| e.to_string())
+                }
+                _ => Err("one output: -o, --bin, --object with --target, --into with -o, --ll, or \
+                          --into-ll with -o"
+                    .into()),
             }
         }
         _ => Err("unknown command".into()),
@@ -1151,5 +1310,73 @@ definition name=f
         assert_eq!(a.matches(".section .mason.meta,\"e\",%progbits,unique,").count(), 2);
         let one = assembly(&parse("summary name=a value=b\n").unwrap()).unwrap();
         assert!(one.contains(".section .mason.meta,\"e\",%progbits\n\t.p2align 3"));
+    }
+
+    /// LLVM's lexer for a `c"..."` body (`\\` or `\XX`), to read back.
+    fn unescape(body: &str) -> Vec<u8> {
+        let b = body.as_bytes();
+        let (mut out, mut i) = (Vec::new(), 0);
+        while i < b.len() {
+            if b[i] == b'\\' {
+                if b.get(i + 1) == Some(&b'\\') {
+                    out.push(b'\\');
+                    i += 2;
+                } else {
+                    out.push(u8::from_str_radix(&body[i + 1..i + 3], 16).unwrap());
+                    i += 3;
+                }
+            } else {
+                out.push(b[i]);
+                i += 1;
+            }
+        }
+        out
+    }
+
+    // spec: meta.md §12 "The test producer" (WP-099: the IR form, exact
+    // for every byte value)
+    #[test]
+    fn c_string_is_exact_for_every_byte() {
+        let all: Vec<u8> = (0..=255u8).chain([b'"', b'\\', b'\\', b'x', b'0']).collect();
+        let s = c_string(&all);
+        assert!(!s.contains('"') && s.is_ascii());
+        assert_eq!(unescape(&s), all);
+        assert_eq!(c_string(b"MASN\x01\x00\"\\"), "MASN\\01\\00\\22\\5C");
+    }
+
+    // spec: meta.md §12 (WP-099): one global per section, the bytes of
+    // the ELF form, `@llvm.compiler.used`, and the merge into a module
+    #[test]
+    fn ir_forms() {
+        let s = parse(ALL).unwrap();
+        let m = ir_module(&s).unwrap();
+        let globals: Vec<&str> = m.lines().filter(|l| l.starts_with("@__mason_meta")).collect();
+        assert_eq!(globals.len(), 2);
+        for (g, items) in globals.iter().zip(&s) {
+            let bytes = section_bytes(items).unwrap();
+            assert!(g.contains(&format!("= private constant [{} x i8] c\"", bytes.len())));
+            assert!(g.ends_with(", section \".mason.meta\", align 8, !exclude !{}"));
+            let body = g.split_once("c\"").unwrap().1.rsplit_once("\", section").unwrap().0;
+            assert_eq!(unescape(body), bytes);
+        }
+        assert!(m.contains(
+            "@llvm.compiler.used = appending global [2 x ptr] [ptr @__mason_meta, ptr \
+             @__mason_meta.1], section \"llvm.metadata\"\n"
+        ));
+        let one = parse("summary name=a value=b\n").unwrap();
+        let module = "define i32 @main() {\n  ret i32 0\n}\n@llvm.compiler.used = appending \
+                      global [1 x ptr] [ptr @x], section \"llvm.metadata\"\n";
+        let into = into_ir(module, &one).unwrap();
+        assert!(into.starts_with("define i32 @main() {\n"));
+        assert!(into.contains(
+            "@llvm.compiler.used = appending global [2 x ptr] [ptr @x, ptr @__mason_meta], \
+             section \"llvm.metadata\"\n"
+        ));
+        assert_eq!(into.matches("@llvm.compiler.used").count(), 1);
+        let fresh = into_ir("define void @f() {\n  ret void\n}\n", &one).unwrap();
+        assert!(fresh.contains("[1 x ptr] [ptr @__mason_meta]"));
+        assert!(into_ir(&fresh, &one).unwrap_err().contains("already defines @__mason_meta"));
+        let odd = "@llvm.compiler.used = appending global [1 x ptr] [ptr @x]\n";
+        assert!(into_ir(odd, &one).unwrap_err().contains("not in the form"));
     }
 }

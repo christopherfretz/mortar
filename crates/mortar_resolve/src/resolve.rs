@@ -473,7 +473,7 @@ fn misnamed_container(
     }
     out.problems.push(Problem {
         key: DiagKey::of(file, u64::from(i)),
-        what: What::MetaNotContainer { file, section: SectionIndex(i) },
+        what: What::MetaNotContainer { file, section: SectionIndex(i), relocated: false },
     });
     true
 }
@@ -687,6 +687,30 @@ fn section_rows<V: View>(
                     section: SectionIndex(i),
                     why: SectionRefusal::SecondReloc(s.info),
                 },
+            });
+        }
+    }
+    // spec: meta.md MT-2, MT-6 (WP-099): a container a relocation section
+    // applies to is not one. Its records are not read (mortar applies no
+    // relocation to a container, and a producer that meant one meant
+    // something MT-2 forbids); it takes the `SHF_EXCLUDE` row, its
+    // relocations are dropped with it, and the file is warned once.
+    for i in 1..n {
+        let row = &mut rows[i as usize];
+        if row.kind != SectionKind::Meta || row.reloc.0 == 0 {
+            continue;
+        }
+        let Some(s) = ctx.view.section(file, SectionIndex(i)) else { continue };
+        row.kind = SectionKind::Excluded;
+        let excluded = sections::excluded_reason(&s, Note::None);
+        let strip = ctx.opts.strip_debug && sections::is_debug(&s);
+        row.state = sections::state(SectionKind::Excluded, excluded, map.is_dropped(i), strip);
+        out.meta.retain(|&m| m != (file, SectionIndex(i)));
+        if !misnamed {
+            misnamed = true;
+            out.problems.push(Problem {
+                key: DiagKey::of(file, u64::from(i)),
+                what: What::MetaNotContainer { file, section: SectionIndex(i), relocated: true },
             });
         }
     }
