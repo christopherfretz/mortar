@@ -25,26 +25,10 @@ const PUBNAMES: &str = ".debug_gnu_pubnames";
 const PUBTYPES: &str = ".debug_gnu_pubtypes";
 
 /// Whether the link had `--gdb-index` (the last of it and
-/// `--no-gdb-index`) and a strip option, from the map's `arg` words;
-/// `None` when the map has none (a static link's).
-fn option(map: &Map) -> Option<(bool, bool)> {
-    let args = &map.dynamic.as_ref()?.args;
-    if args.is_empty() {
-        return None;
-    }
-    let mut on = false;
-    let mut strip = false;
-    for a in args {
-        match a.as_str() {
-            "--gdb-index" | "-gdb-index" => on = true,
-            "--no-gdb-index" | "-no-gdb-index" => on = false,
-            "-S" | "--strip-debug" | "-strip-debug" | "-s" | "--strip-all" | "-strip-all" => {
-                strip = true;
-            }
-            _ => {}
-        }
-    }
-    Some((on, strip))
+/// `--no-gdb-index`) and no strip option (S-G8), from mortar's map's line
+/// (§3.2a); `false` for a reference's map (P-G6 is mortar's rule).
+fn option(map: &Map) -> bool {
+    crate::opts::of(map).is_some_and(|o| o.gdb_index && !o.strip_debug)
 }
 
 /// P-G6: presence, the section's header, the consumed sets.
@@ -62,20 +46,11 @@ pub(crate) fn presence(
         .map(|c| c.size)
         .collect();
     let opt = option(map);
-    if found.is_empty() && chunks.is_empty() && !opt.is_some_and(|(on, strip)| on && !strip) {
+    if found.is_empty() && chunks.is_empty() && !opt {
         return;
     }
     let units = gdbindex::out_units(image).units.len();
-    let want = match opt {
-        Some((on, strip)) => on && !strip && units > 0,
-        None => !chunks.is_empty(),
-    };
-    if want && units == 0 {
-        out.push(finding(
-            6,
-            "the map has a .gdb_index chunk and the output's .debug_info has no unit",
-        ));
-    }
+    let want = opt && units > 0;
     match (want, found.len()) {
         (true, 0) => out.push(finding(
             6,
@@ -83,11 +58,7 @@ pub(crate) fn presence(
         )),
         (false, n) if n > 0 => out.push(finding(
             6,
-            if opt.is_some() {
-                format!("the output has {NAME} and the link's words do not ask for one with debug information (S-G1, S-G8)")
-            } else {
-                format!("the output has {NAME} and the map has no chunk of that name")
-            },
+            format!("the output has {NAME} and the link's words do not ask for one with debug information (S-G1, S-G8)"),
         )),
         (_, n) if n > 1 => out.push(finding(6, format!("the output has {n} sections named {NAME}"))),
         _ => {}
@@ -100,7 +71,10 @@ pub(crate) fn presence(
                 6,
                 format!("the map's chunk is {z:#x} bytes and the section {:#x}", s.shdr.sh_size),
             )),
-            [] => {}
+            [] => out.push(finding(
+                6,
+                format!("the output has {NAME} and the map has no chunk of that name"),
+            )),
             _ => out.push(finding(6, "the map has more than one .gdb_index chunk")),
         }
         let h = &s.shdr;

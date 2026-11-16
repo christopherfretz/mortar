@@ -161,7 +161,7 @@ mod s50 {
             let mut map = mortar_plumb::map::parse(Format::Gnu, &self.text).unwrap();
             map.format = format;
             let map = if format == Format::Mortar {
-                let t = mortar_plumb::map::mortar::write(&map);
+                let t = mortar_plumb::map::mortar::write(&super::with_line(&map));
                 mortar_plumb::map::parse(Format::Mortar, &t).unwrap()
             } else {
                 map
@@ -270,4 +270,19 @@ fn s4_4_eh_frame_offset_zero_is_the_output_section_start() {
         let f = m.judge(Format::Mortar);
         assert!(f.len() == 1 && f[0].starts_with("Y4 "), "{arch:?}: {f:#?}");
     }
+}
+
+/// `map` with a line (`spec/plumb.md` §3.2a: every mortar map states its
+/// link's words, and mortar's reader refuses one without). A reference's
+/// map has none: these links gave none of the options §3.2a's rules read,
+/// so the map's input paths stand for the words.
+fn with_line(map: &mortar_plumb::Map) -> mortar_plumb::Map {
+    let mut m = map.clone();
+    if m.args.is_empty() {
+        m.args = m.paths().iter().map(|p| p.as_bytes().to_vec()).collect();
+        if m.args.is_empty() {
+            m.args.push(b"a.o".to_vec());
+        }
+    }
+    m
 }

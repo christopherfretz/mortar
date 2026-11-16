@@ -278,7 +278,7 @@ pub struct CopyHint {
 }
 
 /// The dynamic records of a map (§3.2, `spec/plumb.md` P-D3): facts of the
-/// command line, and **order hints** (`needed`, `copy`, `export`, `plt`,
+/// command line (the words themselves are [`Map::args`], in every map), and **order hints** (`needed`, `copy`, `export`, `plt`,
 /// `iplt`) the verifier uses only to name what it compares, never as the
 /// expected value. Every field is optional in the text: a record that is
 /// absent leaves its default.
@@ -294,9 +294,6 @@ pub struct DynRecords {
     pub now: Option<bool>,
     /// `relro on` or `relro off` (`-z norelro`).
     pub relro: Option<bool>,
-    /// `arg`: the link's command line, one word per record, in order,
-    /// response files expanded; the program name is not a word.
-    pub args: Vec<String>,
     /// `needed`: the `DT_NEEDED` names, in the order written.
     pub needed: Vec<String>,
     /// `copy`: the copy allocations, by the name of the record's alias.
@@ -379,6 +376,10 @@ pub struct Map {
     pub fix_843419: Option<bool>,
     /// mortar's dynamic records (§3.2; P-D3), when the map has any.
     pub dynamic: Option<DynRecords>,
+    /// mortar's `arg` records (§3.2, §3.2a): the link's command line, one
+    /// word per record, in order, response files expanded, the program
+    /// name left out. A word is bytes (`spec/cli.md` §2.1), not text.
+    pub args: Vec<Vec<u8>>,
     /// mortar's `hole` and `dead` lines (§3.2, `spec/incr.md` IN-60), in
     /// map order.
     pub dead: Vec<DeadRange>,
@@ -403,6 +404,7 @@ impl Map {
             nonalloc: Vec::new(),
             fix_843419: None,
             dynamic: None,
+            args: Vec::new(),
             dead: Vec::new(),
             incremental: false,
         }

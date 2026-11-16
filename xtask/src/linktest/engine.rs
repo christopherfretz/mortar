@@ -1339,11 +1339,14 @@ impl Unit<'_> {
                         .ok()
                         .map(|text| text.lines().map(str::to_owned).collect())
                 });
-                // The linker's words state `--fix-cortex-a53-843419`
-                // (WP-103), mortar's too; stage 3 judges a mortar output
-                // with its map's `arg` records only ("L3").
-                let fix = words.as_deref().map(|w| crate::plumb::line_fix_843419(w, dir));
-                let words = if linker == Linker::Mortar { None } else { words };
+                // A reference's words state `--fix-cortex-a53-843419`
+                // (WP-103); a mortar output is judged with its map's `arg`
+                // records only, the option and stage 3 alike ("L3").
+                let (fix, words) = if linker == Linker::Mortar {
+                    (None, None)
+                } else {
+                    (words.as_deref().map(|w| crate::plumb::line_fix_843419(w, dir)), words)
+                };
                 self.verify(step, linker, output_file, &map, dir, words, fix, judged)
             }
             _ => Ok(()),
@@ -1394,6 +1397,7 @@ impl Unit<'_> {
     /// is a recorded anomaly (`spec/plumb.md` §10.2) that the test expects
     /// of this linker.
     #[allow(clippy::too_many_arguments)] // the step's facts and its line
+    #[allow(clippy::too_many_lines, reason = "one output, read to verdict")]
     fn verify(
         &self,
         step: &Step,
@@ -1441,7 +1445,12 @@ impl Unit<'_> {
         );
         judged.plumb.time += started.elapsed();
         let (bytes, report, _) = verified.map_err(|e| error(&e))?;
-        judged.plumb.erratum.entry(linker).or_default().count(fix_843419, &report.coverage);
+        // Counted under the option the verifier judged with: mortar's is
+        // its map's line (`Coverage::erratum_option`), a reference's the
+        // caller's.
+        let fix =
+            if linker == Linker::Mortar { report.coverage.erratum_option } else { fix_843419 };
+        judged.plumb.erratum.entry(linker).or_default().count(fix, &report.coverage);
         // A reference's link that stage 3 does not model (P-D1 "outside
         // stage 3": an option dyn.md refuses, an i386 dynamic output,
         // version definitions, a closure object no search finds; a

@@ -2498,7 +2498,8 @@ Everything S-G1 to S-G7 use is in the inputs and the map
 output offsets are their `nplace` records, the code sections' addresses
 their `place` records, and the consumed sets are input sections of
 known names whose state the verifier recomputes from the option (`arg`
-records give `--gdb-index`). The chunk is named by its `chunk synthetic
+records give `--gdb-index`, in every map since WP-102, `spec/plumb.md`
+§3.2a). The chunk is named by its `chunk synthetic
 .gdb_index - <size>` record. No map record is added.
 
 ### 17.8 Where the references differ

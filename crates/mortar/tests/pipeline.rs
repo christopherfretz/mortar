@@ -7,6 +7,9 @@
 
 mod support;
 
+use mortar_plumb::Rule;
+use support::plumb::LineEdit;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -494,11 +497,14 @@ fn the_output_is_a_function_of_the_inputs_alone() {
         t.replace(&out.display().to_string(), "OUT")
     };
     let text_option = |out: &Path| format!("-Map={}", out.with_extension("txt").display());
+    // The map's `arg` records are the link's words (plumb.md §3.2a), which
+    // name the output and the thread count: compared without them.
+    let map_body = |out: &Path| support::plumb::map_without_line(&map_of(out));
     let first = built.dir.join("first.out");
     let t1 = text_option(&first);
     let m = mortar(&built, &first, &["--threads=1", &t1], &[("MORTAR_STORE", "staged")]);
     assert!(m.success(), "{}", m.stderr_text());
-    let want = (read(&first), read(&map_of(&first)), text_of(&first));
+    let want = (read(&first), map_body(&first), text_of(&first));
     let mut runs = 1;
     for store in ["staged", "resident"] {
         for threads in ["1", "2", "4", "8"] {
@@ -512,7 +518,7 @@ fn the_output_is_a_function_of_the_inputs_alone() {
                 let tm = text_option(&out);
                 let m = mortar_unverified(&built, &out, &[t.as_str(), &tm], &env);
                 assert!(m.success(), "{store} {threads} {seed}: {}", m.stderr_text());
-                let got = (read(&out), read(&map_of(&out)), text_of(&out));
+                let got = (read(&out), map_body(&out), text_of(&out));
                 assert!(
                     got.0 == want.0,
                     "{store}, {threads} threads, seed {seed:?}: the output differs"
@@ -1161,6 +1167,9 @@ fn compressed_debug_is_refused_by_name() {
     assert_eq!(execute(&out).1, Some(0));
 }
 
+/// The erratum option, as a line edit's words (WP-102).
+const OPT: &[&str] = &["--fix-cortex-a53-843419"];
+
 /// Erratum 843419 (`spec/a64.md` §11.2) under `--fix-cortex-a53-843419`,
 /// which gcc passes by default on this host: an ADRP at a page's `0xff8`
 /// whose target is beyond the ADR's ±1 MiB (a 2 MiB code gap) gets a
@@ -1224,6 +1233,30 @@ fn an_erratum_site_goes_through_a_patch() {
     assert_eq!(w(1) >> 26, 0b00_0101, "then a b: {:#x}", w(1));
     support::plumb::readers(&ours);
     support::plumb::elflint(&ours);
+    // spec: plumb.md §3.2a, §5.10 C1, C6 (WP-102): the option is the map's
+    // line's. The fixed link with the word removed is a fix in a link
+    // without the option (C6); the link without it, its site unfixed and
+    // not judged, with the word added is a site not fixed (C1).
+    let opt = OPT[0];
+    support::plumb::line_mutants(
+        &ours,
+        &map_of(&ours),
+        &built.dir,
+        &[(LineEdit::Remove(OPT), Rule::Erratum(6))],
+    );
+    let plain = Built {
+        dir: built.dir.clone(),
+        args: built.args.iter().filter(|a| *a != opt).cloned().collect(),
+    };
+    let unfixed = built.dir.join("e.nofix");
+    let ran = mortar(&plain, &unfixed, &[], &[]);
+    assert!(ran.success(), "mortar: {}", ran.stderr_text());
+    support::plumb::line_mutants(
+        &unfixed,
+        &map_of(&unfixed),
+        &built.dir,
+        &[(LineEdit::Add(OPT), Rule::Erratum(1))],
+    );
 }
 
 /// Erratum 843419 under `--gc-sections` (WP-031, `spec/image.md` I-7;

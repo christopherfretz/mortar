@@ -104,10 +104,13 @@ fn both_fix(w2: u32, w3: Option<u32>, n: u32) -> bool {
     (single || store_pair) && !loads_n && !w3.is_some_and(branch)
 }
 
-/// The link's `--fix-cortex-a53-843419`, as the caller knows it, or
-/// inferred from the fixes found (§5.10).
+/// §5.10's rules. The option: a mortar map's line (§3.2a), else what the
+/// caller knows, else inferred from the fixes found.
 #[allow(clippy::too_many_lines)] // §11.3's steps in order
 pub(crate) fn check(e: &mut Engine<'_, '_>, map: &Map) {
+    // The option as read (§3.2a), stated for every mortar output, so that
+    // a lane counts what the verifier read whatever the machine.
+    e.cov.erratum_option = crate::opts::of(map).map(|o| o.fix_843419);
     if e.image.header.e_machine != EM_AARCH64 {
         return;
     }
@@ -173,7 +176,12 @@ pub(crate) fn check(e: &mut Engine<'_, '_>, map: &Map) {
         }
         pre.insert(a, word);
     }
-    let fix = map.fix_843419.or((!redirects.is_empty() || !adr_fixes.is_empty()).then_some(true));
+    let option = match crate::opts::of(map) {
+        Some(o) => Some(o.fix_843419),
+        None => map.fix_843419,
+    };
+    let fix = option.or((!redirects.is_empty() || !adr_fixes.is_empty()).then_some(true));
+    e.cov.erratum_option = fix;
     // 2. The sites, on the pre-fix words (§11.1).
     let mut site_starts: BTreeSet<u64> = BTreeSet::new();
     let mut site_ends: BTreeSet<u64> = BTreeSet::new();
@@ -283,7 +291,7 @@ pub(crate) fn check(e: &mut Engine<'_, '_>, map: &Map) {
                 .site(e.objs[w.obj].site(w.sec, w.offset)),
             );
         }
-        if map.fix_843419 == Some(false) {
+        if option == Some(false) {
             for &a in redirects.union(&adr_fixes) {
                 findings.push(
                     Finding::new(

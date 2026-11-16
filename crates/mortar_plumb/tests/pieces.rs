@@ -73,7 +73,7 @@ fn piece_map(link: &common::Link, shift: Option<(&str, u64)>) -> (Map, Vec<(Stri
         }
     }
     // Through the text form, as mortar writes it.
-    let text = mortar_plumb::map::mortar::write(&map);
+    let text = mortar_plumb::map::mortar::write(&with_line(&map));
     (mortar_plumb::map::parse(Format::Mortar, &text).unwrap(), files)
 }
 
@@ -114,4 +114,19 @@ fn s17_section_symbol_addend_selects_the_piece() {
             );
         }
     }
+}
+
+/// `map` with a line (`spec/plumb.md` §3.2a: every mortar map states its
+/// link's words, and mortar's reader refuses one without). A reference's
+/// map has none: these links gave none of the options §3.2a's rules read,
+/// so the map's input paths stand for the words.
+fn with_line(map: &Map) -> Map {
+    let mut m = map.clone();
+    if m.args.is_empty() {
+        m.args = m.paths().iter().map(|p| p.as_bytes().to_vec()).collect();
+        if m.args.is_empty() {
+            m.args.push(b"a.o".to_vec());
+        }
+    }
+    m
 }

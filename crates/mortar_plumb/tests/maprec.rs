@@ -147,7 +147,7 @@ impl Linked {
     /// mortar's text form when it is mortar's).
     fn judge(&self, map: &Map) -> Vec<String> {
         let map = if map.format == Format::Mortar {
-            let text = mortar_plumb::map::mortar::write(map);
+            let text = mortar_plumb::map::mortar::write(&with_line(map));
             mortar_plumb::map::parse(Format::Mortar, &text).unwrap()
         } else {
             map.clone()
@@ -423,4 +423,19 @@ fn s3_3_foreign_maps_have_no_allocation_records() {
             assert!(l.judge(&l.map).is_empty(), "{arch:?} {name}: {:#?}", l.judge(&l.map));
         }
     }
+}
+
+/// `map` with a line (`spec/plumb.md` §3.2a: every mortar map states its
+/// link's words, and mortar's reader refuses one without). A reference's
+/// map has none: these links gave none of the options §3.2a's rules read,
+/// so the map's input paths stand for the words.
+fn with_line(map: &Map) -> Map {
+    let mut m = map.clone();
+    if m.args.is_empty() {
+        m.args = m.paths().iter().map(|p| p.as_bytes().to_vec()).collect();
+        if m.args.is_empty() {
+            m.args.push(b"a.o".to_vec());
+        }
+    }
+    m
 }
