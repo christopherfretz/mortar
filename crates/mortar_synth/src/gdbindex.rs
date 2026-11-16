@@ -396,7 +396,7 @@ mod tests {
     use super::*;
 
     // S-G7: gdb's hash (values computed with gdb 16.3's formula by hand
-    // and checked against `gdb-add-index`'s table in tests/gdbindex.rs).
+    // and checked against `gdb-add-index`'s table in tests/gdb_add_index.rs).
     #[test]
     fn the_hash_is_gdbs() {
         assert_eq!(hash(b""), 0);
