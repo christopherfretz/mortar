@@ -33,7 +33,7 @@ i386 fit.
 | 1 | `ET_EXEC`, static, non-PIE, AArch64. Placement, relocations (the §4.2 table), the GOT slots of a static link, structure (§6), content, symbol values | — |
 | 2 (WP-028) | Static TLS: every AAELF64 TLS type and the relaxations W9–W13 (§4.7); IFUNC/`IRELATIVE`, `.eh_frame` and `.eh_frame_hdr` contents (§6.4), the symbol table (§6.5), non-alloc (DWARF) relocations | `tls` (except the constructs §4.7 names), `ifunc`, `eh-frame` (except labels inside `.eh_frame`, §6.4), `non-alloc` |
 | 3 (M2) | Dynamic executables (`Exec`, `Pie`) and static PIE: the dynamic sections, dynamic relocations, PLT, copies, shared inputs (§12, P-D1-P-D13; static-pie P-D14 and P-D15, §12.4). Shared-object output is M4 | — |
-| 4 (M6) | Mason metadata and the one-definition-rule table: `.mason.meta` in outputs, `.note.mason` (§13, P-M1-P-M3; **not implemented**, WP-078) | — |
+| 4 (M6) | Mason metadata and the one-definition-rule table: `.mason.meta` in outputs, `.note.mason` (§13, P-M1-P-M3; WP-078) | — |
 | x | x86-64 and i386 tables (§4.5) | `machine` |
 | G (WP-098) | `.gdb_index`: gdb's format for every producer (P-G1–P-G5) and synth.md §17 for mortar's (P-G6–P-G9), §6.10. `.debug_names` is not judged | — |
 | I (M7, WP-091) | An incremental link's holes and dead ranges, for a mortar map that claims them (`incremental`, `hole`, `dead`, §3.2): IN-60's coverage of every allocated section and IN-3a's three checks on every range (§6.8, P-I1–P-I6). `--equiv` (incr.md IN-62) is not started | — |
@@ -121,18 +121,19 @@ Every reader produces the same `Map`:
 | `discarded` | `file`, `section`, `reason` (`gc`, `comdat`, `script`, `unspecified`) | an input section not in the output |
 | `folds` | `file`, `section`, `into_file`, `into_section` | identical code folding: the section has the place of `into` |
 | `chunks` | `kind` (`thunk`, `patch`, `synthetic`, `common`), `name`, `addr`, `size`, `target` | memory the linker made: veneers, erratum patches, merged strings, COMMON |
+| `commons` | `name`, `addr`, `size`, `align` | one common symbol's allocation (mortar's format only, §3.2's allocation records; a foreign map's COMMON is a `common` chunk) |
 | `defined` | `name`, `value` | a symbol the linker defined |
 
 A section is named by its index in its file (mortar's format) or by its
 name (the foreign formats). §3.3 resolves names.
 
-### 3.2 mortar's format, version 1
+### 3.2 mortar's format, version 2
 
 The format is line-oriented UTF-8 text. Each record is one line of tokens
 separated by single spaces, and the map ends with `end`:
 
 ```text
-mortar-map 1
+mortar-map 2
 file <id> <path> [<member> <member-header-offset>]
 place <file> <section> <addr> <size>
 piece <file> <section> <input-offset> <addr> <size>
@@ -141,6 +142,7 @@ merged <file> <section> <output-section>
 discard <file> <section> gc|comdat|script|unspecified
 fold <file> <section> <into-file> <into-section>
 chunk thunk|patch|synthetic|common <name> <addr>|- <size> [<target> <addend>]
+common <name> <addr> <size> <align>
 define <name> <value>
 incremental
 hole <output-section> <offset> <size>
@@ -152,7 +154,7 @@ bind lazy|now
 relro on|off
 arg <word>
 needed <name>
-copy <name> <addr> <size>
+copy <name> <addr> <size> <align>
 export <name>
 plt <name>
 iplt <name>
@@ -204,7 +206,7 @@ string is a string token.
 | `relro on`, `relro off` | at most one | `-z norelro` in force or not |
 | `arg <word>` | any | the link's command line, one word per record, in order, with response files expanded and the program name left out |
 | `needed <name>` | any | **hint**: a `DT_NEEDED` name, in the order written |
-| `copy <name> <addr> <size>` | any | **hint**: a copy allocation, by the name its `COPY` record names |
+| `copy <name> <addr> <size> <align>` | one per `COPY` record | **hint**: a copy allocation, by the name its `COPY` record names; `<align>` is its alignment, stated (the allocation records below, M8) |
 | `export <name>` | any | **hint**: an exported name |
 | `plt <name>` | any | **hint**: the key of a PLT entry, in PLT order (`name` or `name@version`) |
 | `iplt <name>` | any | **hint**: the key of an IPLT entry, in IPLT order |
@@ -246,17 +248,49 @@ unknown kind, a wrong number of fields or a bad number is a `MapError`.
 What only the output can judge (no such section, a range outside it,
 empty, overlapping another line) is read and judged by §6.8 (P-I2).
 
-**The version stays 1.** The records are added within version 1, as the
-dynamic records were (WP-040). A reader of version 1 that predates them
-refuses a map that has them with `MapError` "unknown record 'hole'" (or
-`'incremental'`, `'dead'`): it never misreads one, since a record it
-does not know is an error, never skipped. A new version number would
-make every older reader refuse every map, incremental or not, for no
-gain.
+**The allocation records** (WP-096) state three facts of the layout
+that neither the output nor the other records give, and that §6.8's
+coverage would otherwise have to infer: where a `NOBITS` section the
+linker makes lies, the alignment of each common symbol's allocation and
+the alignment of each copy. Every mortar map writes them, a plain link's
+as an incremental-mode one's, so the verifier has one path, and each is
+checked against the output by a map rule (§3.3, M6–M8) whether or not
+the map claims coverage.
+
+| record | count | meaning |
+|---|---|---|
+| `chunk synthetic <name> <addr> <size>` | one per linker-made `NOBITS` section | the memory of a `NOBITS` synthetic chunk that holds no allocation of its own: today `.pad.relro` (`spec/layout.md` L-64, L-156). The copy chunks (`.dynbss`, `.bss.rel.ro`'s, `spec/dyn.md` D-42) are not listed: their allocations are `copy` records. The record is the existing `chunk` form, so it has no new grammar |
+| `common <name> <addr> <size> <align>` | one per common symbol allocated | a common symbol (gABI `SHN_COMMON`, x86-64 `SHN_X86_64_LCOMMON`) the link allocated (`spec/layout.md` L-88): `<name>` its symbol, `<addr>` and `<size>` its allocation, `<align>` the alignment it was placed at. After the `chunk` records |
+| `copy <name> <addr> <size> <align>` | one per `COPY` record | the copy allocation (above), with `<align>` the alignment it was placed at (`spec/dyn.md` D-42) |
+
+`<align>` is hex as every other number, a power of two (1 included). A
+`common` or `copy` record with an `<align>` that is not a power of two,
+or a wrong number of fields, is a `MapError`. A foreign map never has
+them (§3.4 to §3.6 do not change): GNU ld's and lld's `COMMON` and
+mold's `.common` stay `common` chunks, one per file, and their maps
+state no alignment.
+
+**Versions.** The incremental records were added within version 1, as
+the dynamic records were (WP-040): a reader of version 1 that predates
+them refuses a map that has them with `MapError` "unknown record 'hole'"
+(or `'incremental'`, `'dead'`), since a record it does not know is an
+error, never skipped, and their absence claims nothing (a map without
+them claims no coverage), so no reader misreads either kind of map.
+
+The allocation records make **version 2** (WP-096). They do not only add
+lines: they change what a missing line means. In version 2 a map with
+no `common` record says the link allocated no common, and a `copy`
+record without `<align>` is malformed. A version 1 map, written before
+the records existed, says neither. A reader of version 2 that took a
+version 1 map would judge a correct link by a fact the map never
+stated, as a missing record; a version 2 reader therefore refuses
+version 1 by its number ("Versions" above), and a version 1 reader
+refuses version 2 the same way. Version 2 is version 1 with the
+allocation records; nothing else changes.
 
 The writer emits records in a fixed order: files by id, then places and
-pieces, the non-alloc records, discards, folds, chunks and defined
-symbols, each group in the order of the map's vectors, then
+pieces, the non-alloc records, discards, folds, chunks, commons and
+defined symbols, each group in the order of the map's vectors, then
 `incremental`, the `hole` and `dead` lines in the order of the map's
 vector, then the dynamic records in the order of the grammar above.
 
@@ -327,6 +361,38 @@ input section:
   occupies no memory and is exempt.
 
 Each rule has a test: `tests/mutation.rs s9_2e_each_map_rule_is_enforced`.
+
+The allocation records (§3.2; WP-096) are mortar's: these rules judge a
+map of mortar's format only, every such map, and each is a finding at
+the record's address naming its map line. What the output must hold for
+each record:
+
+- **M6 (a `NOBITS` chunk).** A `synthetic` chunk whose `<addr>` lies in
+  an allocated `SHT_NOBITS` output section that is not thread-local
+  (`[sh_addr, sh_addr + sh_size)`, size above 0) is that section:
+  `<name>` its name, `<addr>` its `sh_addr`, `<size>` its `sh_size`.
+- **M7 (a common).** `<name>` is a name the inputs give only common
+  definitions (a global or weak symbol of `SHN_COMMON`, or x86-64
+  `SHN_X86_64_LCOMMON`, and no definition in a section the map places),
+  named by one record only. The output's `.symtab` defines it (a global or
+  weak symbol in a section) with `st_value` = `<addr>` and `st_size` =
+  `<size>`, in an allocated `SHT_NOBITS` output section that holds
+  `[<addr>, <addr> + <size>)`. `<align>` is the largest alignment the
+  inputs' common definitions of the name ask (their `st_value`, gABI
+  "Symbol Values"), and `<addr>` is a multiple of it. An output without
+  `.symtab` (stripped) has its records' names and alignments judged and
+  their addresses and sizes not.
+- **M8 (a copy).** `<addr>` is the `r_offset` of one `COPY` record of
+  the output's dynamic relocations, named by one record only; that
+  record's symbol is `<name>`, its `.dynsym` `st_size` is `<size>`, and
+  `<align>` is P-D11's alignment of the copied definition, `min(sh_addralign`
+  of its defining section`, 2^ctz(st_value))` (`spec/dyn.md` D-42), with
+  `<addr>` a multiple of it. A `copy` record in an output that has no
+  dynamic section is M8. A dynamic output stage 3 does not model (P-D1)
+  has its `copy` records not judged.
+
+Tests: `tests/maprec.rs` (§9.2 (e)), `tests/dyn.rs
+s3_3_m8_copy_records_are_the_copies`.
 
 ### 3.4 GNU ld (`-Map`)
 
@@ -2154,9 +2220,9 @@ is covered by exactly one item: a live `place` (an input section placed
 whole, assigned to the output section that contains it, a `.tbss`
 input only to a thread-local `NOBITS` section), a `piece`, an addressed
 `chunk` (one of the section's name first), a `copy` record's room, a
-common symbol (the output `.symtab` symbol of a name that only common
-definitions of the inputs give, sized `st_size`, aligned as the largest
-`st_value` asked; no map line names commons), a `hole` or a `dead` line.
+`common` record's (§3.2; M7 holds each to the output's symbol and to
+the alignment its definitions ask, M8 each copy to its `COPY` record),
+a `hole` or a `dead` line.
 A chunk with pieces or lines inside it is their container (mortar lists
 `.eh_frame` as one chunk and its records as pieces) and does not count.
 Pieces of merged sections may share bytes (deduplication), and so may
@@ -2167,15 +2233,23 @@ Pieces of merged sections may share bytes (deduplication), and so may
   gap's start. The alignment is the input section's `sh_addralign` for
   places and pieces; for a merged piece any power of two from its own up
   to the largest of the merged pieces of that output section (mortar
-  lays them out as one block); for a copy, the largest power of two
-  dividing its address, at most 64; after a copy or a common symbol, also
-  up to the output section's `sh_addralign` (the map records neither
-  their alignment nor their layout). Padding of a `PROGBITS` section
+  lays them out as one block); for a common or a copy, the `<align>` its
+  record states; after a copy or a common symbol, also up to the output
+  section's `sh_addralign` (mortar aligns what follows the block of
+  copies or commons to its chunk's alignment, which the map does not
+  record). Padding of a `PROGBITS` section
   holds the section's fill (trap fill in code, zero elsewhere);
-- `.eh_frame`'s terminator: its last 4 bytes, zero;
-- the whole of a `NOBITS` section no line names (today mortar's
-  `.relro_padding`, WP-083's `.pad.relro`: the verifier does not know
-  the name; a request to WP-062 is to list it as a chunk).
+- `.eh_frame`'s terminator: its last 4 bytes, zero.
+
+A `NOBITS` section no line names is P-I1 like any other: the one the
+linker makes (`.pad.relro`) is a `chunk` (§3.2, M6 requires it). Until
+WP-096 these three facts were inferred here: a `NOBITS` section with no
+line was accepted whole, a common's alignment was taken from the inputs
+and its place from the output symbol, and a copy's alignment from its
+address (the largest power of two dividing it, at most 64). An
+inference in the checker can agree with a wrong output by guessing as
+the linker erred; the map now states each, and M6-M8 check the
+statement.
 
 Anything else, a gap or a byte covered twice, is P-I1 naming the range
 and what covers it. Measured with `cargo xtask plumb --coverage` (which
@@ -2358,11 +2432,14 @@ another format, or an `X` map that claims nothing, is a usage error
   `(file, section index, input offset)` for a `piece`; a `merged`
   record: `(file, section index, output section name)`;
 - a **chunk**: `(kind, name, k)`, its kind and name and the number of
-  earlier chunks of that kind and name in its map; a common symbol: its
-  name;
+  earlier chunks of that kind and name in its map;
+- a **common** or a **copy** (§3.2's allocation records): its `common`
+  record's name, or the name its `copy` record names; its range is the
+  record's `<addr>` and `<size>`, stated (WP-096: before version 2 a
+  common's place was known only through its output symbol);
 - an **address** `v` of side `O`: `ids_O(v)`, the set of
-  `(unit, offset)` for every unit of `O`'s map placed at `a` with size
-  `z` and `a ≤ v ≤ a + z` (an input unit's offset is the input offset:
+  `(unit, offset)` for every unit, chunk, common or copy of `O`'s map
+  placed at `a` with size `z` and `a ≤ v ≤ a + z` (an input unit's offset is the input offset:
   `piece`s of one section share it; a `.tbss` unit by its TLS address),
   plus `(section name, start)` when `v` is an allocated output section's
   `sh_addr` and `(section name, end)` when it is its `sh_addr + sh_size`
@@ -2395,7 +2472,8 @@ records that absorbed a 4-, 8- or 12-byte hole): a piece whose input
 record is a CIE (`CIE_id` 0) is not a unit of this rule; an FDE piece is,
 its size equal or (in `X` only) larger by 4, 8 or 12. Chunks: the
 `common` chunks by name and the `synthetic` chunks by `(name, k)` are
-the same sets; `thunk` and `patch` chunks may differ (item 4). `fold`
+the same sets, and so are the `common` records by name (an update that
+allocates a common the full link does not, or the reverse, is P-E2); `thunk` and `patch` chunks may differ (item 4). `fold`
 records are the same set. Each identity of one side missing from the
 other is one finding.
 
@@ -2751,9 +2829,9 @@ tests (the hash, the probe, the header). The byte sweep's `gdbindex` case
 
 A finding has:
 
-- the rule id: `O1`, `S1`–`S21`, `I1`, `I2`, `M1`–`M5`, `R1`–`R9`, `T1`,
+- the rule id: `O1`, `S1`–`S21`, `I1`, `I2`, `M1`–`M8`, `R1`–`R9`, `T1`,
   `Y1`–`Y5`, `E1`–`E5`, `F1`–`F5` (§4.8), `P1`–`P2` (§6.6), `B1` (§6.7),
-  `C1`–`C6` (§5.10), `P-D1`–`P-D13` (§12), `P-I1`–`P-I6` (§6.8), `P-E1`–`P-E6`
+  `C1`–`C6` (§5.10), `P-D1`–`P-D13` (§12), `P-I1`–`P-I6` (§6.8), `P-M1`–`P-M3` (§13), `P-E1`–`P-E6`
   (§6.9; a side's finding there carries its side, `X:` or `F:`) or
   `P-G1`–`P-G9` (§6.10);
 - the output address, if it has one;
@@ -2794,7 +2872,7 @@ and left unchecked, the bytes S12 compared, and the FDEs and header
 entries of §6.4, the symbols of §6.5, the IRELATIVE records and IPLT
 entries of §4.8, and the property types §6.6 judged and did not judge, what B1 made of
 the build id (§6.7), the x86-64 large sections whose placement no
-rule judges (`placement_not_judged`, §6.5), and for an output with a
+rule judges (`placement_not_judged`, §6.5), stage 4's `meta` (§13.2), and for an output with a
 `.gdb_index` its version, units, address entries and names and the rules
 that judged it (`gdb index: ...`, §6.10).
 
@@ -2929,7 +3007,15 @@ produce a finding that is not a recorded anomaly (`tests/mutation.rs`):
 - **(d)** Each of the first 3 words of the veneer is corrupted. All must
   be found.
 - **(e)** Each structure rule (S1–S12) and map rule (M1–M5) is broken.
-  Each must produce its own finding.
+  Each must produce its own finding. The allocation records' rules
+  (M6–M8, WP-096; `tests/maprec.rs`, and `tests/dyn.rs` for M8): on a
+  link with the records stated as the output holds them (ACCEPTED, no M6,
+  M7 or M8 finding), each field of each record changed (`<name>`,
+  `<addr>`, `<size>`, `<align>`, and a record added twice) is REJECTED
+  by its rule. So is each record left out (the padding chunk, each
+  common, a copy) and each output symbol a `common` record is judged by
+  changed (made local, made `SHN_ABS`, moved into `.data`, sized past
+  `.bss`).
 - **(f)** Thread-local storage (`tls-types`, every linker): (1) bits 0, 5,
   10, 16, 22 and 31 of every TLS-relocated instruction, relaxed or not,
   are flipped, and all must be found (516/516); (2) `PT_TLS` is moved by
@@ -3169,7 +3255,9 @@ a property bit; a linker-defined symbol; two sections overlapping; a
 thunk's target; an IPLT entry; an erratum fix (§5.10). A mutant is
 **caught** when the report has a finding the unmutated output's report
 does not. mortar's build id is resealed after each edit (B1 would
-otherwise catch everything). Places that carry a baseline finding are
+otherwise catch everything), by `buildid::reseal`, the function the byte
+sweep uses too (§12.3, WP-101): a map in mortar's format only, so a
+reference's id is never rewritten. Places that carry a baseline finding are
 not mutated. The choice is a SplitMix64 sequence from a fixed seed: the
 table is the same on every run. `cargo xtask plumb <out> --map <map>
 --map-format F --mutate [--per-class N] [--seed S] [--threads T]`
@@ -4177,27 +4265,51 @@ the entry's `JUMP_SLOT` record in `DT_JMPREL`.
   path's `jmp PLT0` ±16; AArch64 has none: the lazy word is its way
   back), `lazy-slot` (the lazy word + 4).
 
-### 12.3 The byte sweep and the field rules (WP-082)
+### 12.3 The byte sweep and the field rules (WP-082, WP-101)
 
 **The sweep** (`sweep.rs`, `xtask plumb --sweep`) flips bit 0 and bit 7
 of every byte of the synthetic sections (`.dynamic`, `.dynsym`,
 `.dynstr`, `.gnu.hash`, `.gnu.version`, `.gnu.version_r`, `.rela.dyn`,
 `.rela.plt`, `.plt`, `.plt.got`, `.plt.sec`, `.iplt`, `.got`, `.got.plt`,
-`.interp`, `.eh_frame_hdr`, `.eh_frame`, and `.gdb_index`, WP-098) one
-mutant at a time and
-judges each. A mutant is caught when a finding key appears that the
-unmutated output does not have (a panic counts as caught). It prints,
-per section and field range, the flips and the survivors. It is a
-measuring tool, not a gate: a survivor is either closed by a rule below
-or named as equivalent or as a follow-up row in WP-082's record.
+`.interp`, `.eh_frame_hdr`, `.eh_frame`, `.gdb_index` (WP-098), stage
+4's `.note.mason` and the kept `.mason.meta` (§13), and the descriptor
+of `.note.gnu.build-id`) one mutant at a time and judges each. A mutant
+is caught when a finding key (rule, address, message) appears that the
+unmutated output does not have (a panic counts as caught).
 
-The lane's `gdbindex` case (WP-098; full lane) sweeps `.gdb_index` only,
-of a `-g -ggnu-pubnames` PIE linked `--gdb-index --build-id=none`: 8441
-bytes, no survivor on AArch64. Without a build id because the sweep does
-not reseal one (the mutation tool does, §9.5): in an output with mortar's
-build id every flip is a B1 finding, so the other cases measure B1 first
-(WP-098's record, §4: the `-pie` case without the id leaves 33 survivor
-ranges).
+**What it measures** (WP-101). In an output with mortar's build id (B1,
+§6.7: a hash of the whole file with the id zeroed) every unsealed flip
+is a B1 finding, so before WP-101 the sweep measured B1 and nothing
+else: "0 survivors" on mortar's outputs (WP-082, WP-088) was B1's. Now,
+after each flip of a byte outside the id, the sweep reseals the id with
+the mutation tool's function (`buildid::reseal`, §9.5: mortar's map
+only; a reference's id is left as its linker wrote it, so a reference's
+sweep measures the same as before), and records for each flip the rules
+whose findings are new. Two cases keep B1 judged: the id's own bytes
+are flipped and never resealed (each must be B1's), and one flip of
+`e_ident`'s last padding byte is judged unsealed (B1 must be among its
+rules). `--no-reseal` turns the reseal off (to measure B1 alone). It
+prints per section and field the bytes and survivors, each surviving
+range (marked `equivalent` when its field is in the table below), then
+`flips N, caught M, survived K (E of fields named equivalent)`, and per
+rule the flips it caught and those it alone caught.
+
+**The equivalent fields.** A survivor is closed either by a rule (below,
+and "The field rules of WP-101") or by naming its field here, with who
+reads the bytes and why no correct consumer can act otherwise. By field
+(the sweep's `kind`), never by offset; `sweep::EQUIVALENT` holds the same
+rows and the lane (harness.md "ci") fails on a survivor of any other
+field.
+
+| section | field | reason |
+|---|---|---|
+| `.plt` | code no path executes | Bytes of the PLT that no walk of §12.2 reaches (from every entry `loader::plt_entries` finds, to the jump through its word and on from the word's initial content to the next indirect jump; `plt::executed`): the AArch64 header's three `nop`s after `br x17`, x86-64's padding after the header's `jmp *GOTPLT+16`. Every path through the PLT ends in an unconditional indirect jump before them, and every input branch into the PLT is judged to reach an entry (R1-R4), so no instruction there is ever fetched. |
+
+**The lane's cases** (WP-101, resealed). The `gdbindex` case (WP-098)
+sweeps `.gdb_index` only, of a PIE linked `--gdb-index --build-id=none`.
+Measured on both targets after WP-101's rules: every case but the
+equivalent `.plt` bytes is caught (`spec/landed/plumb/WP-101.md` has the
+table before and after).
 
 **The field rules** (`dyncheck.rs` `fields`, every format unless marked):
 
@@ -4250,6 +4362,74 @@ ranges).
   dynamic output is `mov G(%rip), %reg` into any of the sixteen
   registers (REX.W and ModRM kept, `8d` made `8b`), G a GOT entry with
   the symbol's `TPOFF64` record.
+
+**The field rules of WP-101** (`dynfields.rs`, and where named
+`dynverify.rs`, `eh.rs`): what the resealed sweep showed no rule judged.
+Each was written here before its code; the ones marked **(mortar)** hold
+`Format::Mortar` only, where `spec/dyn.md`, `a64.md` or `x64.md` gives
+mortar a single answer and the references differ or are not ruled.
+
+- **P-D5 (mortar), D-26.** The Bloom words are exactly the two bits of
+  each hashed entry (a cleared bit is every format's finding already: the
+  name's lookup fails; a bit no entry sets only sends a lookup on to the
+  chains, which no correct loader can tell from a true hit). `symoffset`
+  is the index of the first hashed entry (the `.dynsym` count when none
+  is hashed).
+- **P-D6 (mortar), D-30.** Every `DT_NULL` from the first to the end of
+  `PT_DYNAMIC` has value 0 (the first's is every format's; the spare
+  ones' `d_un` the gABI says is ignored).
+- **P-D7 (mortar), D-23.** An import (not under `-static-pie`) has
+  `st_size` 0; `STB_WEAK` exactly when no input references it strongly
+  and the line does not `-u` it; type `STT_FUNC` for a function or IFUNC
+  definition or a canonical PLT, else the definition's, `STT_NOTYPE` when
+  nothing defines it (`WeakDyn`); on AArch64 `STO_AARCH64_VARIANT_PCS`
+  exactly when the definition has it or, with none, an input's undefined
+  reference has it. A defined entry at a `COPY` record's place (the copy
+  and each alias) has the shared definition's type and `st_size`, and
+  `STV_DEFAULT` (D-23's copy row).
+- **P-D8.** Every format: a defined global or weak entry (a local one,
+  GNU ld's `STT_SECTION` entries, is index 0 by right) with version index 0 (gABI
+  `VER_NDX_LOCAL`: musl skips it, glibc does not, so the export is one a
+  loader may refuse). An import's index 0 is read as 1 (unversioned:
+  glibc reads 0 and 1 alike for a reference, musl reads no reference's
+  index), and
+  **(mortar)** is a finding (D-27 writes 1).
+- **P-D9.** Every format: a `RELATIVE` record on a word that no input's
+  absolute use makes an address is the record of a GOT slot an input
+  demands (D-40, D-46): its place is an aligned word of `.got` and its
+  addend the value some GOT-indirect reference of the inputs asks a slot
+  to hold (relaxed or not, a TLS reference's TPREL word or module pair
+  included; `reloc.rs`'s `got_demands`), or an IPLT entry (D-45: an
+  entry whose word carries an `IRELATIVE`, in `.plt` or `.iplt`). For a
+  reference the value of `_GLOBAL_OFFSET_TABLE_` is accepted too: mold
+  gives an x86-64 `GOTPC64` reference to it a GOT slot of that symbol
+  which nothing loads (measured, WP-101: `weak-class-table`, the
+  large-model tests; harmless, so not an anomaly). Before WP-101 any
+  addend inside a `PT_LOAD` passed.
+  **(mortar)**, D-46: a record's place holds in the file `S + A` for
+  `RELATIVE` (the addend) and 0 for `GLOB_DAT`, the symbolic word type
+  and `TPOFF`; an `IRELATIVE` record's place (the IPLT word) holds the
+  resolver's address on AArch64 (a64.md §10.2) and 0 on x86-64 (x64.md
+  X-39); a `.got` word no record writes (AArch64's `.got[0]` aside)
+  holds a value an input's GOT reference demands. For a reference these
+  bytes are equivalent (every RELA type of the two machines but a lazy
+  `JUMP_SLOT` computes the word from S, A and the base and ignores the
+  place), so the rule is mortar's alone.
+- **P-D10 (mortar).** AArch64's `.got[0]` holds `_DYNAMIC`'s link-time
+  address and no record writes it (D-32); `DT_PLTGOT` is `.got.plt`'s
+  address and `.got.plt[0..3]` are (x86-64 `_DYNAMIC`, else 0), 0, 0
+  with no record on them, in every kind, a static-pie's included (D-32,
+  D-49; §12.2 judges them only with a `JUMP_SLOT`); no `JUMP_SLOT` record
+  is outside `DT_JMPREL` (D-41); every AArch64 PLT and IPLT entry's third
+  instruction is `add x16, x16, #lo12(G)` (a64.md §10.3, §10.4: the walk
+  judges it where the lazy path reads `x16`; an IPLT entry's `x16`
+  reaches only the chosen function, where IP0 is scratch, so only
+  mortar's single answer holds it).
+- **E5, every format.** `.eh_frame_hdr`'s encodings with
+  `DW_EH_PE_indirect` (0x80) are read as libgcc's
+  `read_encoded_value_with_base` and LLVM libunwind's `getEncodedP` read
+  them: the value is the word at the decoded address. The flag was
+  ignored, and a header no unwinder reads as written passed.
 
 **Mutations.** `dynsym-unique`: an exported `STB_GNU_UNIQUE` definition
 made `STB_GLOBAL` in `.dynsym` and in its `.symtab` entry (WP-054's case
@@ -4397,32 +4577,150 @@ one), `spie-dynamic-word` (the GOT's `_DYNAMIC` word 0 or plus 8).
 
 ## 13. Stage 4: Mason metadata and the ODR table (M6)
 
-**Not implemented**; WP-078 implements it (amendment A-7 of
-`spec/odr.md` §14; the rules are `spec/odr.md` §12.5's, ids `P-M`*n*
-new here). It comes after stage 3: the table's rules need the dynamic
-symbol table stage 3 checks. The verifier re-reads the container format
-of `spec/meta.md` itself (about 150 lines: the format is small on
-purpose, and a second reader is the point), with `mortar_elf` and
-`mortar_diag` only.
+Implemented by WP-078 (amendment A-7 of `spec/odr.md` §14; the rules
+are `spec/odr.md` §12.5's; record `spec/landed/meta/WP-078.md`). The
+verifier re-reads the container format of `spec/meta.md` itself
+(`meta.rs`, a second reader: `mortar_elf` and `mortar_diag` only) and
+judges the output's `.mason.meta` and `.note.mason` (`odrtable.rs`).
+Stage 4 runs on every output `verify` and `verify_with` read, of every
+format (a reference linker has none of these options, so it is held to
+"none of these sections"), before stage 3's early returns: an output
+stage 3 puts outside (P-D1) is still judged here.
 
-- **P-M1 (containers in outputs).** An executable or shared object
-  contains no `.mason.meta` unless `--keep-mason-meta` (`spec/meta.md`
-  MT-31, MT-32); a relocatable output's `.mason.meta` is the
-  concatenation of the live inputs' units in input order (MT-30).
-- **P-M2 (`.note.mason`).** If present, it lies in a `PT_NOTE` with
-  `p_align` 8; its rows are sorted; each row's key is the FNV-1a 64 of
-  its `.dynsym` name; each row's hash is the first 8 bytes of the kind 2
-  row of **the keeper's unit** for that name (`spec/odr.md` O-51; the
-  keeper is `comdat[G]`'s file for a vague definition, the defining file
-  otherwise); the row set equals O-50's (exported definitions, protected
-  and `-Bsymbolic` ones included, hidden ones not); each row's flags
-  equal the keeper's row's, plus `NONPREEMPTIBLE` exactly for protected
-  and locally bound definitions; each row's `.dynsym` entry carries the
-  version node the output gives the name.
-- **P-M3 (no code).** A table adds no code: no `.init_array`/
-  `.fini_array` entry and no input section that mortar did not read from
-  the command line. If a runtime ever ships (`spec/odr.md` O-58), a rule
-  for its entries and bytes is added then.
+### 13.1 What the rules read
 
-Whether the verifier should also re-run the comparison (a second
-implementation of the verdict) is `spec/odr.md` Q11.
+- **The options**, from the link's words (`Ctx::line`, else the mortar
+  map's `arg` records, §3.2): `--odr-table=V` and `--odr-table V` (the
+  last wins, default `off`), `--odr=M` and `--odr M` (default `warn`),
+  `--no-odr-check` (`--odr=off`), `--keep-mason-meta`; one or two
+  dashes (`spec/cli.md` §2.2). A static link's map has no `arg` records
+  (§3.2): the options are then **unknown**, and every rule below that
+  needs them is counted as not judged (`meta: options unknown`); the
+  rules that need no option still run.
+- **The output kind.** A table is due (O-50, as implemented: WP-075)
+  exactly when the output has a `PT_INTERP` (a dynamic executable, PIE
+  or not), `--odr-table` is not `off` and `--odr` is not `off`, units
+  or none (with none, every row set is empty: a count-0 table; measured
+  with no `.mason.meta` input at all, with and without shared inputs,
+  with and without tables in them). An output with no `PT_INTERP`
+  (static, static-pie) never has one, `=full` included; a shared object
+  is M4 and is held to "no table" until then.
+- **The live units.** The map's files in map order (FileId order; §3.2's
+  ids count up in the order the linker read the files), each read as an
+  `ET_REL`; of each, the sections that are containers (MT-6: name
+  `.mason.meta`, `SHT_PROGBITS`, flags exactly `SHF_EXCLUDE`; MT-2a: no
+  relocation section applies to it), in section index order; of each,
+  its units in offset order (MT-10). A container whose `sh_addralign` is
+  not 8, or whose `sh_entsize`, `sh_link` or `sh_info` is not 0 (MT-1's
+  attributes, which MT-6 leaves to the reader) has no unit that parses
+  (measured: mortar keeps none of its units, and `--odr=strict` names the
+  alignment by MT-1). A unit
+  **parses** when its major is 1 and none of MT-14's malformations holds
+  (magic, `unit_size`, blocks inside the unit, kinds strictly increasing,
+  rows inside their block, the string table inside the unit, not over
+  the header and starting with the empty string, the string fields of
+  kinds 1-3 inside the table and NUL-terminated, kind 1 sorted strictly
+  by name bytes, kinds 2 and 3 sorted by key, ties of two named rows by
+  name bytes). Zero words between units are skipped; after a malformation
+  that leaves no next offset the section's other units are not read
+  (MT-14). A unit of another major is skipped (MT-35).
+- **A kind 2 row's name**: its string, or for an anchored row (name 0)
+  the name of a symbol its object defines (non-local, not `SHN_UNDEF`)
+  whose FNV-1a 64 is the row's key; an anchored key no defined symbol of
+  the object has names nothing. Rows match a name when their key is the
+  name's FNV-1a 64 and their name is the name. A row is **qualifying**
+  when its flags have `VAGUE` (bit 0) or `EXPLICIT_SPEC` (bit 3).
+- **The keeper** of a name (odr.md O-51): the input file whose
+  definition the output holds. Candidates are the map's files whose
+  symbol table defines the name non-locally in a section the map places
+  whole; the keeper is the one candidate whose definition's output
+  address (place + `st_value`) equals the output's symbol value
+  (`.dynsym` for an exported name, `.symtab` otherwise). A single
+  candidate is the keeper whatever its address only for a name the output
+  does not hold (a definition `--gc-sections` collected). No candidate,
+  or two at the output's value (two weak copies at one place are not
+  possible in a correct output, but the verifier does not assume it),
+  and the name is **not judged** (counted). The keeper's row is the
+  first matching kind 2 row of the keeper's live units, in unit then row
+  order; a keeper without one has no row (measured: a keeper without a
+  unit gives no table row even when a losing copy's unit has one).
+
+### 13.2 The rules
+
+- **P-M1 (containers in outputs).**
+  - No input container is placed (`place`, `piece`, `merged`) in an
+    executable or shared object: MT-31 consumes them.
+  - A `.mason.meta` output section in an executable is either the kept
+    section or an ordinary copy. The **kept section** is the one the map
+    calls `chunk synthetic .mason.meta`; it must be `SHT_PROGBITS`, flags
+    0, `sh_addralign` 8, and its bytes must equal MT-32's: the units that
+    parse, in the order above, each followed by zeros to a multiple of 8.
+    It is present exactly when `--keep-mason-meta` was given and at least
+    one unit parses (options unknown: present only when one parses; the
+    option is not judged). An **ordinary copy** is a `.mason.meta` that
+    the map fills only from placed input sections that are not containers
+    (encoding K, `spec/meta.md` §2: an input `.mason.meta` without
+    `SHF_EXCLUDE`): legal without the option, and with it when no live
+    unit parses; a finding with the option and a unit (MT-32, as WP-099
+    wrote it: refused by name when the output gets the kept section).
+    Any other `.mason.meta` in an executable is a finding.
+  - A relocatable output is not judged (mortar writes none; MT-30 is M4).
+- **P-M2 (`.note.mason`).**
+  - *Place.* The section is `SHT_NOTE`, `SHF_ALLOC`, `sh_addralign` 8,
+    and lies inside a `PT_NOTE` with `p_align` 8 whose file range holds
+    its bytes. It holds whole notes (`n_namesz`, `n_descsz`, `n_type`,
+    the name padded to 4 and the descriptor to 8 from offset 24, O-52;
+    every padding byte zero, since the bytes are a function of the rows,
+    O-50: WP-078's spec finding 11), each owned by `MasonMeta` (`n_namesz` 10), with types `0x4d4f4401`
+    (exactly one) and `0x4d4f4402` (at most one, after the first).
+  - *Presence.* The section exists exactly when a table is due (§13.1);
+    the second note exactly when `--odr-table=full`. Options unknown:
+    presence is not judged, the content rules run.
+  - *Header and shape* (O-51): version 1, `row_size` 24, reserved 0,
+    `n_descsz` exactly `16 + 24 × count`; each row's reserved `u16` 0;
+    rows sorted by key, then `.dynsym` index, no two equal; each
+    `dynsym` index inside `.dynsym` and not 0.
+  - *Key.* A row's key is FNV-1a 64 of the `.dynsym` entry's name
+    (MT-13; without a version, which `.gnu.version` carries).
+  - *Version.* The entry's `.gnu.version` index (when the output has
+    one) is not 0 (local); two rows of one name have different indices.
+  - *Row set* (O-50). The rows' `.dynsym` indices are exactly the
+    entries that are defined (`st_shndx` not `SHN_UNDEF`), `STV_DEFAULT`
+    or `STV_PROTECTED`, and whose keeper's row qualifies; entries whose
+    keeper is not judged are left out of both sides (counted).
+  - *Hash.* A row's hash is the first 8 bytes of its keeper's row's hash.
+  - *Flags.* A row's flags are the keeper's row's flags with bit 15
+    (`NONPREEMPTIBLE`) set; in an executable every row has it (O-51,
+    WP-075 finding 1: the executable binds its own definitions).
+  - *`=full`'s note* (O-51, O-52): header version 1, `row_size` 32,
+    `n_descsz` exactly `16 + 32 × (definitions + types)`, each array
+    sorted by its bytes as integers in field order with no two equal.
+    *Definitions*: layout, size and alignment 0, bit 15 clear; each row
+    is the first 8 hash bytes and the flags of a qualifying kind 2 row of
+    a live unit whose key is the row's, and when the name's keeper is
+    judged, of the keeper's row; no row's name is one the first note
+    carries. Every name a live file defines non-locally, not carried by
+    the first note, whose keeper is judged and whose keeper's row
+    qualifies has a row. *Types*: exactly one row per kind 3 group (key
+    and name) of the live units, the group's first row in (file, unit,
+    row) order, carrying its key, the first 8 bytes of its hash, its
+    layout, size, alignment and flags.
+- **P-M3 (no code).** In an output with a `.note.mason` or with
+  `--odr-table` not `off`: every byte of `.init_array`, `.fini_array`
+  and `.preinit_array` (by `sh_type`) is covered by input sections of the
+  same type the map places there, and no `chunk` record lies in them;
+  every relocatable file the map names is on the command line (a
+  `Relocatable` item of `Line`, by path, or a member of an archive that
+  is). Options unknown: the second half is not judged.
+
+Messages start with the sub-rule's name (`kept section`, `place`,
+`presence`, `header`, `order`, `key`, `version`, `row set`, `hash`,
+`flags`, `full`, `init array`, `input`), so a mutant's catch is named
+by rule and field. Coverage: `meta` counts outputs judged, live units,
+rows checked, names not judged, and whether the options were known
+(§7.2; `Report::summary`'s `ODR metadata` line).
+
+What stage 4 does **not** judge: `-r` outputs (M4); shared-object tables
+(M4); a unit's kinds 4 and 5 beyond their framing; the ODR verdict
+itself (`spec/odr.md` Q11, answered in WP-078's record: not
+implemented); the load-time hook (O-58).

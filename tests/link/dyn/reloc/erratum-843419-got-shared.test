@@ -1,0 +1,53 @@
+# Erratum 843419 at a GOT page against a symbol only a shared library
+# defines (WP-100 defect RB-2, found by `cargo xtask realbuild` in
+# abseil 20240722.0's absl_log_structured_test, gcc row: GCC's
+# `adrp x0, :got:__libc_single_threaded; ldr x0, [x0, :got_lo12:...];
+# ldrb w0, [x0]` at page offset 0xFFC). spec/a64.md §11.1 makes it a
+# site and §11.2 gives it a fix (`W1` 311: `V` is `G(GDAT(S))`); GCC on
+# Debian passes --fix-cortex-a53-843419 to every link. GNU ld writes the
+# ADR fix. mortar leaves the ADRP: on a Cortex-A53 the load can read the
+# wrong address. The same shape against the executable's own data, one
+# page later in the same section, is fixed by mortar (ADR), so this is
+# the GOT page of a dynamic symbol's slot only. The verifier finds it
+# (C1) once the output has a fix elsewhere, which the second site
+# provides: without one it counts the sites as not judged
+# (`mortar_plumb` erratum.rs: the map does not say the option was given).
+#@ spec: a64.md "11.2 The fix"
+#@ arch: aarch64
+#@ xfail(mortar): RB-2: an erratum 843419 site whose ADRP is R_AARCH64_ADR_GOT_PAGE against a shared library's symbol is not fixed (a64.md §11.2)
+
+as f.s -o f.o
+cc -O1 -fPIE main.c -o main.o
+link gcc -pie main.o f.o -o prog
+run prog
+  stdout: ok
+
+#--- f.s
+	.text
+	.balign	4096
+	.globl	f
+	.type	f, %function
+f:
+	.rept	1023
+	nop
+	.endr
+	// A site whose ADRP is a GOT page against a symbol of libc.so.
+	adrp	x0, :got:environ
+	ldr	x0, [x0, :got_lo12:environ]
+	ldrb	w0, [x0]
+	.rept	1020
+	nop
+	.endr
+	// A site whose ADRP is a direct page of the executable's own data.
+	adrp	x1, v
+	ldr	x1, [x1, :lo12:v]
+	ldrb	w1, [x1]
+	ret
+	.size	f, .-f
+	.data
+	.balign	8
+v:	.quad	v
+#--- main.c
+#include <stdio.h>
+int f(void);
+int main(void) { f(); puts("ok"); return 0; }

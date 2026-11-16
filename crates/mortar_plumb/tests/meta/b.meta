@@ -1,0 +1,9 @@
+summary name=lang value=c++
+definition anchor=_Z2viv hash=21212121212121212121212121212121 class=1 flags=3
+definition name=_Z2hvv hash=22222222222222222222222222222222 class=1 flags=1
+definition anchor=_Z2wdv hash=23232323232323232323232323232323 class=1 flags=1
+type name=1T hash=26262626262626262626262626262626 layout=0x2 size=8 align=8 flags=0
+type name=1A hash=27272727272727272727272727272727 layout=0x3 size=1 align=1 flags=1
+pad 1
+unit producer=4
+definition name=other hash=28282828282828282828282828282828 class=1 flags=1

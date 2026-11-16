@@ -27,4 +27,6 @@ pub mod plumb;
 #[cfg(unix)]
 pub mod process;
 #[cfg(unix)]
+pub mod realbuild;
+#[cfg(unix)]
 pub mod sweep;

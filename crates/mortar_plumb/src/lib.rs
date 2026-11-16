@@ -16,6 +16,7 @@ mod content;
 pub mod dead;
 mod deaddwarf;
 mod dyncheck;
+mod dynfields;
 mod dynmodel;
 mod dynmutate;
 pub mod dynout;
@@ -31,7 +32,10 @@ pub mod line;
 mod loader;
 mod locate;
 pub mod map;
+mod maprec;
+mod meta;
 pub mod mutate;
+mod odrtable;
 mod plt;
 mod property;
 mod reloc;
@@ -54,7 +58,9 @@ pub const STAGE: u8 = 3;
 pub use line::{Files, HostFiles};
 pub use locate::thin_members;
 pub use map::{Format, Map, MapError, MapFile};
-pub use report::{Coverage, Finding, OUTSIDE, Reason, Report, Rewrite, Rule, Site, Via};
+pub use report::{
+    Coverage, Finding, MetaCoverage, OUTSIDE, Reason, Report, Rewrite, Rule, Site, Via,
+};
 
 /// An input file of the link, by the path the map names it with (§2.1).
 #[derive(Debug, Clone, Copy)]
@@ -82,7 +88,17 @@ pub fn verify(output: &[u8], inputs: &[Input<'_>], map: &Map) -> Report {
     let mut engine = reloc::Engine::new(&image, &objs, map.format);
     run_engine(&mut engine, &image, map, None);
     report.findings.append(&mut engine.findings);
+    // M8 (§3.3): an output with no dynamic section has no COPY record.
+    if map.format == Format::Mortar && dynout::DynOut::read(&image).is_none() {
+        report.findings.extend(maprec::copies(map, &[]));
+    }
     report.coverage = std::mem::take(&mut engine.cov);
+    // Stage 4 (§13): a static map has no `arg` records, so the options
+    // are unknown unless a static-pie's map gives them.
+    let args = map.dynamic.as_ref().map(|d| d.args.clone()).filter(|a| !a.is_empty());
+    let meta =
+        odrtable::check(&image, &objs, map, args.as_deref(), None, &mut report.coverage.meta);
+    report.findings.extend(meta);
     report.sort();
     report
 }
@@ -143,6 +159,8 @@ pub(crate) fn run_engine(
     if map.format == Format::Mortar {
         let ids = buildid::check(image, &mut engine.cov, buildid::Style::of(map));
         engine.findings.extend(ids);
+        // M6, M7 (§3.3): the allocation records, in every mortar map.
+        engine.findings.extend(maprec::check(image, objs, map));
     }
     if image.header.e_machine == mortar_elf::consts::EM_X86_64 {
         use mortar_elf::consts::{SHF_ALLOC, SHF_X86_64_LARGE};

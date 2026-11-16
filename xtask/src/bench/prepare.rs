@@ -404,14 +404,31 @@ fn fetch_and_unpack(
     env: &Env,
     log: Log<'_>,
 ) -> Result<PathBuf, String> {
-    let downloads = env.work.join("downloads");
-    let unpacked = env.work.join("src").join(&cmake.sha256[..16]);
+    Ok(fetch_archive(&w.name, &cmake.url, &cmake.sha256, &env.work, log)?.join(&cmake.root))
+}
+
+/// Fetches `url` into `<work>/downloads` (named by the URL's last
+/// component; only when the file is missing or its SHA-256 is not
+/// `sha256`), checks it against `sha256`, and unpacks it once into
+/// `<work>/src/<first 16 digits of sha256>` (`tar -xf`, which reads gzip,
+/// xz and bzip2 alike). Returns the unpacked directory. `what` names the
+/// workload or project in the messages. Shared by the bench and the
+/// real-builds lane (`spec/harness.md` "The cache", "realbuild").
+pub fn fetch_archive(
+    what: &str,
+    url: &str,
+    sha256: &str,
+    work: &Path,
+    log: Log<'_>,
+) -> Result<PathBuf, String> {
+    let downloads = work.join("downloads");
+    let unpacked = work.join("src").join(&sha256[..16.min(sha256.len())]);
     let done = unpacked.join(".unpacked");
     if done.is_file() {
-        return Ok(unpacked.join(&cmake.root));
+        return Ok(unpacked);
     }
     mkdir(&downloads)?;
-    let file = cmake.url.rsplit('/').next().filter(|f| !f.is_empty()).unwrap_or("download");
+    let file = url.rsplit('/').next().filter(|f| !f.is_empty()).unwrap_or("download");
     let archive = downloads.join(file);
     let sha256sum = which("sha256sum")?;
     let digest = |path: &Path| -> Result<String, String> {
@@ -425,24 +442,21 @@ fn fetch_and_unpack(
         )?;
         Ok(String::from_utf8_lossy(&out.stdout).split_whitespace().next().unwrap_or("").to_owned())
     };
-    if !archive.is_file() || digest(&archive)? != cmake.sha256 {
-        log(&format!("{}: fetching {}", w.name, cmake.url));
+    if !archive.is_file() || digest(&archive)? != sha256 {
+        log(&format!("{what}: fetching {url}"));
         let part = downloads.join(format!("{file}.part"));
         tool(
-            &format!("{}: fetching {}", w.name, cmake.url),
+            &format!("{what}: fetching {url}"),
             &which("curl")?,
             |c| {
-                c.args(["-fsSL", "--retry", "3", "-o"]).arg(&part).arg(&cmake.url);
+                c.args(["-fsSL", "--retry", "3", "-o"]).arg(&part).arg(url);
             },
             FETCH_LIMITS,
         )?;
         let got = digest(&part)?;
-        if got != cmake.sha256 {
+        if got != sha256 {
             let _ = std::fs::remove_file(&part);
-            return Err(format!(
-                "{}: {} has SHA-256 {got}, the manifest pins {}",
-                w.name, cmake.url, cmake.sha256
-            ));
+            return Err(format!("{what}: {url} has SHA-256 {got}, the manifest pins {sha256}"));
         }
         std::fs::rename(&part, &archive)
             .map_err(|e| format!("cannot rename {}: {e}", part.display()))?;
@@ -453,15 +467,15 @@ fn fetch_and_unpack(
     }
     mkdir(&unpacked)?;
     tool(
-        &format!("{}: unpacking {file}", w.name),
+        &format!("{what}: unpacking {file}"),
         &which("tar")?,
         |c| {
-            c.args(["-xzf"]).arg(&archive).arg("-C").arg(&unpacked).arg("--no-same-owner");
+            c.args(["-xf"]).arg(&archive).arg("-C").arg(&unpacked).arg("--no-same-owner");
         },
         TOOL_LIMITS,
     )?;
     std::fs::write(&done, b"").map_err(|e| format!("cannot write {}: {e}", done.display()))?;
-    Ok(unpacked.join(&cmake.root))
+    Ok(unpacked)
 }
 
 fn build_cmake(

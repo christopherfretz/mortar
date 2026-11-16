@@ -37,8 +37,32 @@ pub const SECTIONS: &[&str] = &[
     ".dynamic",
     ".got",
     ".got.plt",
+    // Stage 4 (§13; WP-078): the ODR table and the kept container.
+    ".note.mason",
+    ".mason.meta",
     ".gdb_index",
+    BUILD_ID,
 ];
+
+/// The build-id note: only its descriptor is swept, never resealed (B1's
+/// own case).
+pub const BUILD_ID: &str = ".note.gnu.build-id";
+
+/// The fields whose bytes are equivalent mutants (`spec/plumb.md` §12.3,
+/// the table): `(section, field kind, who reads it and why no correct
+/// consumer can do otherwise)`. Equivalence is by field, never by offset;
+/// a survivor of any other field fails the lane.
+pub const EQUIVALENT: &[(&str, &str, &str)] = &[(
+    ".plt",
+    "code no path executes",
+    "no path executes it: every PLT entry and its lazy path, walked as §12.2 walks them, ends in an unconditional indirect jump before these bytes, and every input branch into the PLT is judged to reach an entry",
+)];
+
+/// The reason a surviving byte is equivalent, when its field is in
+/// [`EQUIVALENT`].
+pub fn equivalent(b: &Byte) -> Option<&'static str> {
+    EQUIVALENT.iter().find(|(s, k, _)| *s == b.section && *k == b.kind).map(|e| e.2)
+}
 
 /// The bits each byte is flipped by, one mutant each.
 pub const FLIPS: [u8; 2] = [0x01, 0x80];
@@ -55,6 +79,8 @@ pub struct Byte {
     pub instance: String,
     /// Per flip of [`FLIPS`]: whether a new finding caught it.
     pub caught: [bool; 2],
+    /// Per flip: the rule ids of the new findings (sorted, once each).
+    pub rules: [Vec<String>; 2],
     /// Whether a flip made the verifier panic (a hostile-input bug,
     /// §9.4; counted as caught).
     pub panicked: bool,
@@ -65,6 +91,12 @@ pub struct Byte {
 pub struct Sweep {
     pub baseline: usize,
     pub bytes: Vec<Byte>,
+    /// The id's own case (§12.3): in an output with mortar's build id,
+    /// the rules a flip of `e_ident`'s last padding byte left unsealed
+    /// brings (B1
+    /// among them, or B1 does not judge the id); `None` without an id or
+    /// with `reseal` off.
+    pub unsealed: Option<Vec<String>>,
 }
 
 impl Sweep {
@@ -92,6 +124,25 @@ impl Sweep {
         );
         for ((_, sec, kind), (n, some, all)) in &agg {
             let _ = writeln!(s, "{sec:16} {kind:28} {n:>7} {some:>9} {all:>9}");
+        }
+        let flips = self.bytes.len() * FLIPS.len();
+        let caught = self.bytes.iter().flat_map(|b| b.caught).filter(|c| *c).count();
+        let equiv: usize = self
+            .bytes
+            .iter()
+            .filter(|b| equivalent(b).is_some())
+            .map(|b| b.caught.iter().filter(|c| !**c).count())
+            .sum();
+        let _ = writeln!(
+            s,
+            "flips {flips}, caught {caught}, survived {} ({equiv} of fields named equivalent)",
+            flips - caught
+        );
+        if let Some(u) = &self.unsealed {
+            let _ = writeln!(s, "an e_ident padding flip left unsealed: {}", u.join(", "));
+        }
+        for (rule, (any, only)) in self.by_rule() {
+            let _ = writeln!(s, "caught by {rule:8} {any:>7} flips ({only} by it alone)");
         }
         for b in self.bytes.iter().filter(|b| b.panicked) {
             let _ = writeln!(s, "panic {} +{:#x} {} {}", b.section, b.off, b.kind, b.instance);
@@ -125,17 +176,36 @@ impl Sweep {
                 .collect();
             let _ = writeln!(
                 s,
-                "survives {} [{:#x}, {:#x}) {} {} (flip {})",
+                "survives {} [{:#x}, {:#x}) {} {} (flip {}){}",
                 b.section,
                 b.off,
                 self.bytes[j - 1].off + 1,
                 b.kind,
                 b.instance,
-                flips.join(",")
+                flips.join(","),
+                if equivalent(b).is_some() { " equivalent" } else { "" }
             );
             i = j;
         }
         s
+    }
+}
+
+impl Sweep {
+    /// Per rule id: the flips whose new findings include it, and those
+    /// whose only new findings are its.
+    pub fn by_rule(&self) -> BTreeMap<&str, (usize, usize)> {
+        let mut m: BTreeMap<&str, (usize, usize)> = BTreeMap::new();
+        for rules in self.bytes.iter().flat_map(|b| b.rules.iter()) {
+            for r in rules {
+                let e = m.entry(r.as_str()).or_default();
+                e.0 += 1;
+                if rules.len() == 1 {
+                    e.1 += 1;
+                }
+            }
+        }
+        m
     }
 }
 
@@ -157,6 +227,7 @@ fn field(
     addr: u64,
     size: u64,
     off: u64,
+    ran: &std::collections::BTreeSet<u64>,
 ) -> (String, String) {
     let machine = image.header.e_machine;
     let at = |k: &str| (k.to_string(), String::new());
@@ -299,7 +370,8 @@ fn field(
         }
         ".plt" | ".plt.sec" | ".plt.got" | ".iplt" => {
             let unit = if machine == mortar_elf::consts::EM_AARCH64 { 4 } else { 1 };
-            ("code".into(), format!("+{:#x}", off - off % unit))
+            let k = if ran.contains(&(addr + off)) { "code" } else { "code no path executes" };
+            (k.into(), format!("+{:#x}", off - off % unit))
         }
         ".eh_frame_hdr" => {
             if off < 4 {
@@ -317,8 +389,58 @@ fn field(
             }
         }
         ".eh_frame" => at("PLT record"),
+        BUILD_ID => at("build id"),
+        ".note.mason" => note_field(image.bytes(addr, size).unwrap_or(&[]), off),
+        ".mason.meta" => at("unit bytes"),
         _ => at("?"),
     }
+}
+
+/// The field of `.note.mason` (spec/odr.md O-51, O-52) holding byte `off`.
+fn note_field(b: &[u8], off: u64) -> (String, String) {
+    let rd = |o: usize| b.get(o..o + 4).map_or(0, |x| u32::from_le_bytes([x[0], x[1], x[2], x[3]]));
+    let mut at = 0usize;
+    let off = off as usize;
+    while at + 24 <= b.len() {
+        let (desc, ty) = (rd(at + 4) as usize, rd(at + 8));
+        let d = at + 24;
+        let next = d + desc.div_ceil(8) * 8;
+        if off < at + 12 {
+            return (
+                ["n_namesz", "n_descsz", "n_type"][(off - at) / 4].into(),
+                format!("note {ty:#x}"),
+            );
+        }
+        if off < d {
+            return ("owner".into(), format!("note {ty:#x}"));
+        }
+        if off < next {
+            let o = off - d;
+            if o < 16 {
+                return (format!("header word {}", o / 4), format!("note {ty:#x}"));
+            }
+            let (size, fields): (usize, &[(usize, &str)]) = if ty == 0x4d4f_4402 {
+                (
+                    32,
+                    &[
+                        (8, "key"),
+                        (16, "hash"),
+                        (24, "layout"),
+                        (28, "size"),
+                        (30, "align"),
+                        (32, "flags"),
+                    ],
+                )
+            } else {
+                (24, &[(8, "key"), (16, "hash"), (20, "dynsym"), (22, "flags"), (24, "reserved")])
+            };
+            let (row, f) = ((o - 16) / size, (o - 16) % size);
+            let name = fields.iter().find(|(end, _)| f < *end).map_or("?", |x| x.1);
+            return (format!("row {name}"), format!("note {ty:#x} row {row}"));
+        }
+        at = next;
+    }
+    ("?".into(), String::new())
 }
 
 fn rel_name(machine: u16, ty: u32) -> String {
@@ -356,6 +478,29 @@ fn plt_eh_ranges(image: &Image<'_>, addr: u64, b: &[u8]) -> Vec<(u64, u64)> {
     v
 }
 
+/// How a sweep runs.
+#[derive(Debug, Clone, Copy)]
+pub struct Options<'s> {
+    pub threads: usize,
+    /// In a section larger than twice this many bytes only the first and
+    /// last `window` bytes are flipped; 0: every byte.
+    pub window: u64,
+    /// The sections swept (each one of [`SECTIONS`]).
+    pub sections: &'s [&'s str],
+    /// Whether mortar's build id is resealed after each flip
+    /// ([`crate::buildid::reseal`]), so that the mutant is the output of
+    /// a linker that wrote the flipped byte (§12.3). A flip inside the id
+    /// itself is never resealed: the id is then the mutant. `false` only
+    /// to measure what B1 alone catches.
+    pub reseal: bool,
+}
+
+impl Default for Options<'_> {
+    fn default() -> Self {
+        Options { threads: 1, window: 0, sections: SECTIONS, reseal: true }
+    }
+}
+
 /// Sweeps `output` (see the module's documentation).
 ///
 /// # Errors
@@ -369,7 +514,7 @@ pub fn run(
     window: u64,
     ctx: &crate::Ctx<'_>,
 ) -> Result<Sweep, String> {
-    run_sections(output, inputs, map, threads, window, ctx, SECTIONS)
+    run_with(output, inputs, map, ctx, &Options { threads, window, ..Options::default() })
 }
 
 /// [`run`] over the sections of `sections` only (each one of
@@ -387,15 +532,36 @@ pub fn run_sections(
     ctx: &crate::Ctx<'_>,
     sections: &[&str],
 ) -> Result<Sweep, String> {
+    run_with(output, inputs, map, ctx, &Options { threads, window, sections, reseal: true })
+}
+
+/// A byte's verdict: caught per flip, the new rules per flip, a panic.
+type Verdict = ([bool; 2], [Vec<String>; 2], bool);
+
+/// The sweep as `opts` says.
+///
+/// # Errors
+///
+/// When the output cannot be read or is not dynamic.
+#[allow(clippy::too_many_lines)] // the sites, then the judging
+pub fn run_with(
+    output: &[u8],
+    inputs: &[Input<'_>],
+    map: &Map,
+    ctx: &crate::Ctx<'_>,
+    opts: &Options<'_>,
+) -> Result<Sweep, String> {
     let image = Image::read(output)?;
     let out = DynOut::read(&image).ok_or("not a dynamic output")?;
     let verify = |b: &[u8]| crate::verify_with(b, inputs, map, ctx);
     let base = verify(output);
     let base_keys = keys(&base);
+    let ids = crate::buildid::id_ranges(output);
+    let ran = crate::plt::executed(&image);
     let mut bytes = Vec::new();
     // (file offset, Byte)
     let mut sites: Vec<(usize, Byte)> = Vec::new();
-    for &name in SECTIONS.iter().filter(|n| sections.contains(n)) {
+    for &name in SECTIONS.iter().filter(|n| opts.sections.contains(n)) {
         for (si, s) in image.sections.iter().enumerate().filter(|(_, s)| s.name == name) {
             if s.shdr.sh_type == SHT_NOBITS || s.shdr.sh_size == 0 {
                 continue;
@@ -407,8 +573,14 @@ pub fn run_sections(
             let file = s.shdr.sh_offset as usize;
             let ranges: Vec<(u64, u64)> = if name == ".eh_frame" {
                 plt_eh_ranges(&image, addr, data)
-            } else if window > 0 && size > 2 * window {
-                vec![(0, window), (size - window, size)]
+            } else if name == BUILD_ID {
+                // The descriptors only (the id's own case, §12.3).
+                ids.iter()
+                    .filter(|r| r.start >= file && r.end <= file + data.len())
+                    .map(|r| ((r.start - file) as u64, (r.end - file) as u64))
+                    .collect()
+            } else if opts.window > 0 && size > 2 * opts.window {
+                vec![(0, opts.window), (size - opts.window, size)]
             } else {
                 vec![(0, size)]
             };
@@ -417,7 +589,7 @@ pub fn run_sections(
                     let (kind, instance) = if name == crate::gdbindex::NAME {
                         crate::gdbindex::field(data, off)
                     } else {
-                        field(&image, &out, name, addr, size, off)
+                        field(&image, &out, name, addr, size, off, &ran)
                     };
                     sites.push((
                         file + off as usize,
@@ -427,6 +599,7 @@ pub fn run_sections(
                             kind,
                             instance,
                             caught: [false; 2],
+                            rules: [Vec::new(), Vec::new()],
                             panicked: false,
                         },
                     ));
@@ -434,35 +607,65 @@ pub fn run_sections(
             }
         }
     }
-    let judge = |&(o, _): &(usize, Byte)| -> ([bool; 2], bool) {
+    let judge = |&(o, _): &(usize, Byte)| -> Verdict {
         let mut r = [false; 2];
+        let mut rules: [Vec<String>; 2] = [Vec::new(), Vec::new()];
         let mut panicked = false;
+        let in_id = ids.iter().any(|x| x.contains(&o));
         for (k, f) in FLIPS.iter().enumerate() {
             let mut m = output.to_vec();
             m[o] ^= f;
+            if opts.reseal && !in_id {
+                crate::buildid::reseal(&mut m, map);
+            }
             // A panic is caught (the mutant is reported) and named.
             if let Ok(rep) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| verify(&m))) {
-                r[k] = keys(&rep).iter().any(|x| !base_keys.contains(x));
+                let new: std::collections::BTreeSet<String> = rep
+                    .findings
+                    .iter()
+                    .filter(|x| !base_keys.contains(&(x.rule.id(), x.addr, x.message.clone())))
+                    .map(|x| x.rule.id())
+                    .collect();
+                r[k] = !new.is_empty();
+                rules[k] = new.into_iter().collect();
             } else {
                 r[k] = true;
                 panicked = true;
             }
         }
-        (r, panicked)
+        (r, rules, panicked)
     };
-    let threads = threads.max(1).min(sites.len().max(1));
+    let threads = opts.threads.max(1).min(sites.len().max(1));
     let chunk = sites.len().div_ceil(threads).max(1);
-    let verdicts: Vec<([bool; 2], bool)> = std::thread::scope(|sc| {
+    let verdicts: Vec<Verdict> = std::thread::scope(|sc| {
         let hs: Vec<_> = sites
             .chunks(chunk)
             .map(|c| sc.spawn(move || c.iter().map(judge).collect::<Vec<_>>()))
             .collect();
         hs.into_iter().flat_map(|h| h.join().expect("a sweep thread")).collect()
     });
-    for ((_, mut b), (c, p)) in sites.into_iter().zip(verdicts) {
+    for ((_, mut b), (c, rules, p)) in sites.into_iter().zip(verdicts) {
         b.caught = c;
+        b.rules = rules;
         b.panicked = p;
         bytes.push(b);
     }
-    Ok(Sweep { baseline: base.findings.len(), bytes })
+    // The id's own case: one flip the reseal does not follow.
+    let unsealed = (opts.reseal && !ids.is_empty())
+        .then(|| {
+            // e_ident's last padding byte (gABI: reserved, set to 0).
+            let o = 15;
+            let mut m = output.to_vec();
+            *m.get_mut(o)? ^= 1;
+            let rep = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| verify(&m))).ok()?;
+            let new: std::collections::BTreeSet<String> = rep
+                .findings
+                .iter()
+                .filter(|x| !base_keys.contains(&(x.rule.id(), x.addr, x.message.clone())))
+                .map(|x| x.rule.id())
+                .collect();
+            Some(new.into_iter().collect())
+        })
+        .flatten();
+    Ok(Sweep { baseline: base.findings.len(), bytes, unsealed })
 }

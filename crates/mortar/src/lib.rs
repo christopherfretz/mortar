@@ -338,7 +338,14 @@ fn invoke_with(
             if let Some(s) = session
                 && !diagnostics.has_errors()
             {
+                let laps = s.times_handle();
                 incremental_lines = s.finish(f, &store, &written, cwd, &out_path, &diagnostics);
+                if timer.on() {
+                    for (name, ms) in laps.borrow().iter() {
+                        timer.line(format!("mortar: incremental: {name}: {ms:.1} ms"));
+                    }
+                }
+                timer.phase(110, "incremental state");
             }
         }
     }
@@ -392,7 +399,7 @@ fn write_dependency_file(f: &front::Front<'_>, path: &Path, diagnostics: &Collec
 }
 
 /// The maps a link writes: the text of `-Map`/`-M` (I-121) and
-/// `mortar-map 1` for `--mortar-map` (I-77); each empty when not asked for.
+/// `mortar-map 2` for `--mortar-map` (I-77); each empty when not asked for.
 #[derive(Default)]
 struct Maps {
     text: Vec<u8>,

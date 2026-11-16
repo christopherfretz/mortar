@@ -1560,7 +1560,7 @@ random input's).
 ### 9.2 mortar's map
 
 - **I-77 [M1] [C]** `--mortar-map=FILE` writes `spec/plumb.md` §3.2's
-  `mortar-map 1` format to `FILE` after a successful link, for the
+  `mortar-map 2` format to `FILE` after a successful link, for the
   verifier and tools. `-Map` and `-M` write GNU's text instead (§9.3,
   I-120; WP-027e replaced Q5's "`-Map` is `mortar-map 1`"). A failed link
   writes neither and prints nothing on standard output (`spec/diag.md`
@@ -1581,7 +1581,21 @@ random input's).
     (`Dropped(Excluded)`, `Dropped(Stripped)`). Consumed sections
     (symbol tables, relocations, groups) are not listed;
   - `chunk` per synthetic chunk with bytes (`synthetic`), patch island
-    or thunk (`patch`, `thunk`), and the commons' chunk (`common`);
+    or thunk (`patch`, `thunk`);
+  - the allocation records (`spec/plumb.md` §3.2, WP-096), in every map,
+    plain or incremental-mode, each a fact the layout holds (no layout
+    decision depends on writing it):
+    - `chunk synthetic` per `NOBITS` synthetic chunk of size above 0
+      that holds no allocation of its own: today `.pad.relro` (L-64 of
+      `spec/layout.md`), at its address with its size. The copy chunks
+      (`.dynbss`, `.bss.rel.ro`'s, `spec/dyn.md` D-42) are not listed:
+      their allocations are `copy` records;
+    - `common <name> <addr> <size> <align>` per common symbol the link
+      allocated (`spec/layout.md` L-88: `.bss`, or `.lbss` for an x86-64
+      large common), its address, size and the alignment it was placed
+      at, after the `chunk` records;
+    - `copy <name> <addr> <size> <align>` (P-D3's hint) with the
+      alignment the copy was placed at (`spec/dyn.md` D-42);
   - `define` per symbol of file 0 that layout defined
     (`spec/layout.md` §13), with its value;
   - non-alloc input sections (R-9, applied by WP-028b; written by
@@ -1597,8 +1611,9 @@ random input's).
   - `thunk` and `patch` chunks: one record per `Placement.patches` row,
     named as `.symtab` names it (S-80), a thunk with its target's name
     (`@plt` appended for a PLT target) and addend (WP-027c).
-  - Not yet written: `fold` (M2). `common` is not a
-    chunk of its own in M1 (commons are placed in `.bss`, layout §8).
+  - Not yet written: `fold` (M2). `chunk common` is not written: the
+    commons are placed in `.bss` (layout §12.2) and each is a `common`
+    record.
 - **I-79 [M1]** The map is a function of the tables and the file names,
   written after layout and independent of fill. Each record group is
   formatted in parallel per file (`map_collect`, rule 3) and the buffers
@@ -1622,7 +1637,7 @@ random input's).
 
 - **I-120 [M1]** `-Map=FILE`, `-Map FILE` and `-M` (`--print-map`, to
   standard output) write a human-readable map in GNU ld's text layout;
-  `--mortar-map=FILE` writes `mortar-map 1` (I-77, I-78) for the
+  `--mortar-map=FILE` writes `mortar-map 2` (I-77, I-78) for the
   verifier and tools. Every consumer of the machine map uses
   `--mortar-map`: the pipeline and options tests
   (`crates/mortar/tests/pipeline.rs` `mortar()`, `x64.rs`,
@@ -1690,7 +1705,7 @@ random input's).
   placed input sections and the taken members are GNU's, but for what
   item 4 says mortar makes itself and the kept COMDAT copy.
 - **I-122 [M1] Determinism and cost.** The text is a function of the
-  same tables as `mortar-map 1` (I-79) and the output's name, and of
+  same tables as `mortar-map 2` (I-79) and the output's name, and of
   nothing else; it is formatted per output section in parallel and is
   written only when asked. The determinism matrix
   (`the_output_is_a_function_of_the_inputs_alone`) covers it like the
@@ -2048,7 +2063,7 @@ pub trait SynthChunk {
 | `--build-id=0x` | warning, no note | empty descriptor | error | error | I-70 |
 | build-id note size for a 2-byte id | 18 (unpadded) | 18 | 18 | 20 (padded to 4) | I-71 |
 | what the hash covers | not the whole file, not a 64 KiB/1 MiB/4 MiB tree (E12) | same | same | a public tree over 1 MiB blocks | I-72 |
-| `-Map` / `-M` format | GNU text | lld's own text | mold's own text | GNU's layout (`mortar-map 1` is `--mortar-map`) | I-77, I-121 |
+| `-Map` / `-M` format | GNU text | lld's own text | mold's own text | GNU's layout (`mortar-map 2` is `--mortar-map`) | I-77, I-121 |
 | `--gc-sections` in M1 | supported | supported | supported | supported since WP-031 | I-5 |
 | COMDAT group with one live member, `--gc-sections` | whole group kept | whole group kept | members one by one | whole group kept | I-7 |
 | non-alloc sections of an object with no marked section; non-alloc non-debug with relocations | removed | kept | kept | kept | I-6 |

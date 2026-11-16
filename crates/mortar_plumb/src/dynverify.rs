@@ -83,6 +83,11 @@ pub fn verify_with(output: &[u8], inputs: &[Input<'_>], map: &Map, ctx: &Ctx<'_>
         return report;
     };
     let line = Line::parse(&args, ctx.files);
+    // Stage 4 (§13) runs before stage 3's early returns.
+    let mut meta_cov = crate::report::MetaCoverage::default();
+    let meta = crate::odrtable::check(&image, &objs, map, Some(&args), Some(&line), &mut meta_cov);
+    report.findings.extend(meta);
+    report.coverage.meta = meta_cov.clone();
     // P-D1: a link stage 3 does not model is reported by name, as one
     // finding each, and nothing else is judged (§12.1).
     let mut outside: Vec<String> = line.outside.clone();
@@ -170,9 +175,7 @@ pub fn verify_with(output: &[u8], inputs: &[Input<'_>], map: &Map, ctx: &Ctx<'_>
         machine: image.header.e_machine,
     };
     let kind = line.kind.unwrap_or(OutputKind::Exec);
-    report
-        .findings
-        .extend(crate::dyncheck::check(&image, &dout, &line, &model, &ld, &objs, map.format));
+    report.findings.extend(crate::dyncheck::check(&image, &dout, &line, &model, &ld, &objs, map));
     // View 1: bias 0.
     let p1 = Params::default();
     let v1 = loader::apply(&image, &dout, &ld, &p1, true);
@@ -190,6 +193,18 @@ pub fn verify_with(output: &[u8], inputs: &[Input<'_>], map: &Map, ctx: &Ctx<'_>
     let mut engine = reloc::Engine::new(&img1, &objs, map.format);
     dyn_engine(&mut engine, &v1, &plt, &depths);
     run_engine(&mut engine, &image, map, None);
+    // D-45: an IFUNC's GOT slot holds its IPLT entry, wherever the linker
+    // put the entry (mortar's follow the PLT entries in `.plt`).
+    engine.got_demands.extend(crate::dynfields::iplt_entries(&image, &dout));
+    // mold gives an x86-64 `GOTPC64`/`GOTPC32` reference to
+    // `_GLOBAL_OFFSET_TABLE_` a GOT slot of that symbol, which no input
+    // loads (WP-101, measured on `weak-class-table` and the large-model
+    // tests; harmless: no reference reads it). Accepted for a reference.
+    if map.format != crate::Format::Mortar
+        && let Some(g) = image.symbols.iter().find(|s| s.name == "_GLOBAL_OFFSET_TABLE_")
+    {
+        engine.got_demands.insert(g.sym.st_value);
+    }
     let abs = std::mem::take(&mut engine.abs_words);
     if matches!(kind, OutputKind::StaticPie | OutputKind::Pie) {
         // §12.4 (a Pie's too since WP-088): no RELATIVE record on a word
@@ -202,30 +217,26 @@ pub fn verify_with(output: &[u8], inputs: &[Input<'_>], map: &Map, ctx: &Ctx<'_>
                 && !known.contains(&r.offset)
             {
                 let placed = engine.occupied_at(r.offset);
-                // A linker-made word (a GOT slot no reference left in use)
-                // holding an address of the image is an address word.
+                // A linker-made word: a GOT slot an input's GOT reference
+                // demands, relaxed or not (WP-101; before, any word whose
+                // addend was inside a PT_LOAD passed).
                 let a = r.addend.unwrap_or(0) as u64;
-                let inside = image.phdrs.iter().any(|p| {
-                    p.p_type == mortar_elf::consts::PT_LOAD
-                        && p.p_vaddr <= a
-                        && a <= p.p_vaddr.saturating_add(p.p_memsz)
-                });
-                if !placed && inside {
-                    continue;
-                }
-                report.findings.push(
-                    Finding::new(
-                        Rule::Dyn(9),
-                        if placed {
-                            "a RELATIVE record on a word of an input section that no input relocation makes an address of the executable"
-                        } else {
-                            "a RELATIVE record on a linker-made word that holds no address of the executable the inputs ask for"
-                        },
-                    )
-                    .at(r.offset),
-                );
+                let why = if placed {
+                    Some("a RELATIVE record on a word of an input section that no input relocation makes an address of the executable".to_string())
+                } else {
+                    crate::dynfields::linker_word(&image, r.offset, a, &engine.got_demands)
+                };
+                let Some(why) = why else { continue };
+                report.findings.push(Finding::new(Rule::Dyn(9), why).at(r.offset));
             }
         }
+    }
+    if map.format == crate::Format::Mortar {
+        report.findings.extend(crate::dynfields::unrecorded_got(
+            &image,
+            &dout,
+            &engine.got_demands,
+        ));
     }
     let chosen = std::mem::take(&mut engine.ifunc_chosen);
     // A static-pie's exports bind nothing (§12.4, P-D14 judges them): W13
@@ -235,6 +246,7 @@ pub fn verify_with(output: &[u8], inputs: &[Input<'_>], map: &Map, ctx: &Ctx<'_>
     }
     let view1_findings = std::mem::take(&mut engine.findings);
     report.coverage = std::mem::take(&mut engine.cov);
+    report.coverage.meta = meta_cov;
     drop(engine);
     // View 2: a second bias (Pie): every word that holds an address of the
     // executable moves with it, every other word does not.

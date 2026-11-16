@@ -88,6 +88,17 @@ const ASM_X86_64_LARGE: &str = "\t.text\n\t.globl _start\n\t.type _start, @funct
     \t.largecomm lc,65536,32\n\
     \t.section .note.GNU-stack,\"\",@progbits\n";
 
+/// Commons and a RELRO run (`spec/plumb.md` §3.2, the allocation
+/// records): four commons, `cb` asked 32-aligned here and 64-aligned by
+/// a second definition, and a `.data.rel.ro` word, so the RELRO run
+/// ends with layout's NOBITS `.pad.relro` (L-64). Exits 0.
+const ASM_COMMONS: &str = "\t.text\n\t.globl _start\n\t.type _start, %function\n_start:\n\
+    \tmov x0, #0\n\tmov x8, #93\n\tsvc #0\n\
+    \t.section .data.rel.ro,\"aw\",%progbits\n\t.balign 8\n\t.quad _start\n\
+    \t.data\n\t.globl dat\ndat:\t.quad 1\n\
+    \t.comm ca,4,4\n\t.comm cb,800,32\n\t.comm cc,24,8\n\t.comm cb,800,64\n\t.comm cd,1,1\n\
+    \t.section .note.GNU-stack,\"\",%progbits\n";
+
 fn run_in(dir: &Path, exe: &Path, args: &[OsString], env: &[(&str, &str)]) -> Outcome {
     let mut c = Command::new(exe);
     c.args(args).current_dir(dir).env_remove("MORTAR_SCHED_SEED").env_remove("SOURCE_DATE_EPOCH");
@@ -148,6 +159,11 @@ impl Prog {
     /// The x86-64 program with large sections and a large common.
     fn asm_x86_64_large() -> Option<Self> {
         Self::asm_for(Arch::X86_64, "incr-asm-x86-64-large", ASM_X86_64_LARGE, &[])
+    }
+
+    /// Commons and a RELRO run (the allocation records).
+    fn commons() -> Option<Self> {
+        Self::asm_for(AARCH64, "incr-commons", ASM_COMMONS, &[])
     }
 
     fn asm_for(arch: Arch, label: &str, text: &str, extra: &[&str]) -> Option<Self> {
@@ -1187,6 +1203,19 @@ fn a_version_1_state_is_refused_by_name() {
 /// when set, the system's temporary directory and `/dev/shm`, each when
 /// it is writable and on a file system not already in the list (here an
 /// overlay `/tmp` and a tmpfs; on the hosted runners whatever they have).
+/// Held by every test that takes stamps in [`stamp_dirs`]: the stamp file
+/// is `<dir>/.mortar-stamp-<pid>` (IN-22), one name per process and
+/// directory, and the system temporary directory and `/dev/shm` are the
+/// same directories for every test of this process. Two tests there at
+/// once create and remove one file between them, and the second removal
+/// is `NotFound` (seen once in a gate under load). A link takes its stamps
+/// from one thread, so only the tests need this.
+static STAMP_DIRS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn stamp_lock() -> std::sync::MutexGuard<'static, ()> {
+    STAMP_DIRS.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 fn stamp_dirs(scratch: &Scratch) -> Vec<PathBuf> {
     use std::os::unix::fs::MetadataExt as _;
     let mut v = vec![scratch.path().to_path_buf()];
@@ -1219,6 +1248,7 @@ fn fs_of(dir: &Path) -> String {
 // with its size kept right after the link read it is never clean)
 #[test]
 fn stamp_rule_a_a_rewrite_after_the_read_is_never_clean() {
+    let _stamps = stamp_lock();
     let scratch = Scratch::new("incr-stamp-a");
     for dir in stamp_dirs(&scratch) {
         let input = dir.join(format!("race-input-{}.o", std::process::id()));
@@ -1252,6 +1282,7 @@ fn stamp_rule_a_a_rewrite_after_the_read_is_never_clean() {
 // or racy by the next link)
 #[test]
 fn stamp_rule_b_own_output_is_clean() {
+    let _stamps = stamp_lock();
     let scratch = Scratch::new("incr-stamp-b");
     for dir in stamp_dirs(&scratch) {
         let pid = std::process::id();
@@ -1304,6 +1335,7 @@ fn stamp_rule_b_own_output_is_clean() {
 // at hand; a stamp per device)
 #[test]
 fn probe_on_the_file_systems_at_hand() {
+    let _stamps = stamp_lock();
     let scratch = Scratch::new("incr-probe");
     for dir in stamp_dirs(&scratch) {
         let fs = fs_of(&dir);
@@ -1763,5 +1795,51 @@ fn the_floor_update_is_the_full_link_of_the_edited_inputs() {
             "{}",
             o.stderr_text()
         );
+    }
+}
+
+// spec: plumb.md §3.2 (the allocation records, WP-096) and image.md
+// I-78: a plain map and an incremental-mode map both state the NOBITS
+// `.pad.relro` as a chunk and each common with the alignment it was
+// placed at, and the verifier, which checks each (M6, M7), accepts both.
+#[test]
+fn plain_and_incremental_maps_state_the_allocations() {
+    let progs = [Prog::commons(), Prog::asm_x86_64_large()];
+    for (k, prog) in progs.into_iter().enumerate() {
+        let Some(prog) = prog else { continue };
+        prog.link("plain", &["--mortar-map=plain.map"]);
+        prog.link("full", &["--incremental=full", "--mortar-map=full.map"]);
+        for out in ["plain", "full"] {
+            let map = std::fs::read_to_string(prog.path(&format!("{out}.map"))).unwrap();
+            assert!(map.starts_with("mortar-map 2\n"), "{out}");
+            let commons: Vec<(String, u64)> = map
+                .lines()
+                .filter_map(|l| {
+                    let t: Vec<&str> = l.split(' ').collect();
+                    (t[0] == "common").then(|| {
+                        assert_eq!(t.len(), 5, "{l}");
+                        (t[1].to_owned(), u64::from_str_radix(t[4], 16).unwrap())
+                    })
+                })
+                .collect();
+            let want: &[(&str, u64)] = if k == 0 {
+                &[("ca", 4), ("cb", 0x40), ("cc", 8), ("cd", 1)]
+            } else {
+                &[("lc", 0x20)]
+            };
+            let mut got = commons.clone();
+            got.sort();
+            let want: Vec<(String, u64)> =
+                want.iter().map(|(n, a)| ((*n).to_owned(), *a)).collect();
+            assert_eq!(got, want, "{out}: the common records");
+            assert!(!map.lines().any(|l| l.starts_with("chunk common ")), "{out}: a chunk common");
+            if k == 0 {
+                let pad: Vec<&str> =
+                    map.lines().filter(|l| l.starts_with("chunk synthetic .pad.relro ")).collect();
+                assert_eq!(pad.len(), 1, "{out}: the .pad.relro chunk: {pad:?}");
+            }
+            let dir = prog.built.dir.clone();
+            support::plumb::clean(&prog.path(out), &prog.path(&format!("{out}.map")), &dir);
+        }
     }
 }
