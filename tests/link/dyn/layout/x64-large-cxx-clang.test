@@ -1,0 +1,40 @@
+# x86-64 large sections from Clang's C++ large model (spec/x64.md X-52,
+# X-54): `.ltext.*` and `.lrodata._ZT*` in COMDAT groups, in a PIE
+# (`.ldata.rel.ro._ZT*`) and a `-no-pie` executable, with an exception
+# thrown and caught. lld 22's programs abort when the exception is thrown
+# (its `.ltext` comes first, before `.eh_frame_hdr`'s table covers it:
+# plumb.md A29); GNU ld's, mold's and mortar's run.
+#@ spec: x64.md "X-52"
+#@ spec: layout.md "L-36a"
+#@ arch: x86_64
+#@ requires: g++ clang
+#@ anomaly(lld): A29
+#@ anomaly(mold): A28
+#@ xfail(lld): A29: lld places .ltext first and the program aborts when the exception is thrown (terminate called)
+
+cxx(clang) -O2 -mcmodel=large -fPIE lg.cc -o yl-pie.o
+cxx(clang) -O2 -mcmodel=large -fno-pic lg.cc -o yl.o
+link g++ -pie yl-pie.o -o yl-pie
+link g++ -no-pie yl.o -o yl
+run yl-pie
+  stdout: 7 8 3 1.5 9 1
+run yl
+  stdout: 7 8 3 1.5 9 1
+check readelf -SW yl
+  has: .ltext PROGBITS * AXl 
+
+#--- lg.cc
+#include <cstdio>
+#include <string>
+#include <stdexcept>
+struct Big { int v[1<<18]; Big() { v[0] = 7; v[(1<<18)-1] = 8; } virtual ~Big() {} virtual int f() const { return v[0]; } };
+Big big_obj;                               // .lbss (ctor-initialised)
+static int table[1<<17] = {1, 2, 3};       // .ldata
+const double ctab[1<<15] = {1.5};          // .lrodata
+thread_local int tl = 9;
+static int thrower(int x) { if (x > 1) throw std::runtime_error("boom"); return x; }
+int main() {
+  int caught = 0;
+  try { thrower(3); } catch (const std::exception &e) { caught = std::string(e.what()) == "boom"; }
+  std::printf("%d %d %d %g %d %d\n", big_obj.f(), big_obj.v[(1<<18)-1], table[2], ctab[0], tl, caught);
+}

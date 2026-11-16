@@ -77,6 +77,13 @@ pub const ELFLINT_KNOWN: &[(&str, &str, &str)] = &[
     ),
     // i386's (WP-030c): `R_386_IRELATIVE` in `.rel.plt`, the same records.
     ("'.rel.plt': relocation ", "invalid symbol index", "GNU ld's output has the same lines"),
+    // x86-64's `SHF_X86_64_LARGE` (x64.md X-52, L-36a), a processor flag
+    // elflint does not know.
+    (
+        "contains invalid processor-specific flag(s) 0x10000000",
+        "",
+        "GNU ld, lld and mold keep the flag the same",
+    ),
     // `__ehdr_start` is valued at the file header, below section 1
     // (synth.md S-122's header exception).
     ("(__ehdr_start): st_value out of bounds", "", "GNU ld, lld and mold value it the same"),

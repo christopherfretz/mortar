@@ -119,10 +119,12 @@ impl Table<'_, '_> {
     }
 
     /// `edata`: the end of the last allocated chunk with file content
-    /// (L-95); the base when there is none.
+    /// (L-95), the x86-64 large sections aside (L-36a: they follow
+    /// `.bss`; GNU ld's `_edata` is before `.bss` too); the base when
+    /// there is none.
     fn edata(&self) -> DefValue {
         self.alloc_order()
-            .rfind(|&c| self.chunks()[c].in_file())
+            .rfind(|&c| self.chunks()[c].in_file() && !self.chunks()[c].is_large())
             .map_or(self.base, |c| end(self.chunks(), c))
     }
 
@@ -137,14 +139,18 @@ impl Table<'_, '_> {
         self.alloc_order()
             .find(|&c| {
                 let ch = &self.chunks()[c];
-                self.cx.ranks[c].rank == 8 && ch.sh_type == SHT_NOBITS && !ch.is_tls()
+                self.cx.ranks[c].rank == 8
+                    && ch.sh_type == SHT_NOBITS
+                    && !ch.is_tls()
+                    && !ch.is_large()
             })
             .map_or_else(|| self.edata(), start)
     }
 
+    /// `etext`: the end of the last exec chunk, `.ltext` aside (L-36a).
     fn etext(&self) -> DefValue {
         self.alloc_order()
-            .rfind(|&c| self.chunks()[c].flags & SHF_EXECINSTR != 0)
+            .rfind(|&c| self.chunks()[c].flags & SHF_EXECINSTR != 0 && !self.chunks()[c].is_large())
             .map_or(self.base, |c| end(self.chunks(), c))
     }
 

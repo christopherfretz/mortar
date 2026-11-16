@@ -292,6 +292,7 @@ impl Model {
         } else {
             (self.key_bytes(name), OptId::NONE)
         };
+        let (place, large) = mortar_resolve::view::place_of(self.machine, place);
         let f = &mut self.files[file.0 as usize];
         f.next_index = f.next_index.max(index.0 + 1);
         f.mentions.push(Mention {
@@ -304,6 +305,7 @@ impl Model {
             place,
             value,
             size,
+            large,
         });
     }
 
