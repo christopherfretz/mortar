@@ -17,6 +17,11 @@
 # static `__tls_get_addr` with a GOT pair (1, DTPREL(S)): a correct form
 # mortar does not write. Every program prints the same.
 #
+# The static-pie links pass `-fno-use-linker-plugin` (no input is LTO):
+# a static-pie's `--mortar-map` records the command line (plumb.md
+# `arg`), and gcc's plugin option names a new `/tmp/ccXXXXXX.res` each
+# run, which static-identical's map digest would not reproduce.
+#
 # GNU ld's static-pie carries A30 (plumb.md §10.2: the GOT slot of
 # glibc's absolute `_nl_current_*_used` gets a RELATIVE record),
 # unrelated to TLS.
@@ -71,10 +76,10 @@ check(bfd,mortar) objdump -d --disassemble=a_far prog
 check(mold) objdump -d --disassemble=a_first prog
   has: bl * <__tls_get_addr>
 
-link(lld) gcc -static-pie main.o vars.o -lc big.o far.o -o spie
+link(lld) gcc -static-pie -fno-use-linker-plugin main.o vars.o -lc big.o far.o -o spie
   exit: fail
   diag: unknown relocation (513) against symbol first_g
-link(bfd,mold,mortar) gcc -static-pie main.o vars.o -lc big.o far.o -o spie
+link(bfd,mold,mortar) gcc -static-pie -fno-use-linker-plugin main.o vars.o -lc big.o far.o -o spie
 run(bfd,mold,mortar) spie
   stdout: 11 22 33 44 55
   stdout: 45 56 7

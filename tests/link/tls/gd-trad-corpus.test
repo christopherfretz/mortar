@@ -13,6 +13,11 @@
 # with R4's LE words; mold 2.37.1 links and runs them keeping GD; lld 19
 # does not know relocation 513.
 #
+# The static-pie links pass `-fno-use-linker-plugin` (no input is LTO):
+# a static-pie's `--mortar-map` records the command line (plumb.md
+# `arg`), and gcc's plugin option names a new `/tmp/ccXXXXXX.res` each
+# run, which static-identical's map digest would not reproduce.
+#
 # GNU ld's static-pie carries A30 (plumb.md §10.2: the GOT slot of
 # glibc's absolute `_nl_current_*_used` gets a RELATIVE record),
 # unrelated to TLS.
@@ -36,7 +41,7 @@ run(bfd,mold,mortar) c
   stdout: env
 check(mortar) readelf -rW c
   not: R_AARCH64_TLS
-link(bfd,mold,mortar) gcc -static-pie c_main.o c_helper.o -o c-pie
+link(bfd,mold,mortar) gcc -static-pie -fno-use-linker-plugin c_main.o c_helper.o -o c-pie
 run(bfd,mold,mortar) c-pie
   stdout: hello 5 1 1 49 3 beta gamma 1 1 -1 20 104
   stdout: env
@@ -50,7 +55,7 @@ link(bfd,mold,mortar) g++ -static cxx_main.o cxx_helper.o -o cxx
 run(bfd,mold,mortar) cxx
   stdout: boom 5MyErr
   stdout: helloxy 2 5 4 a 1 4 St9exception 1
-link(bfd,mold,mortar) g++ -static-pie cxx_main.o cxx_helper.o -o cxx-pie
+link(bfd,mold,mortar) g++ -static-pie -fno-use-linker-plugin cxx_main.o cxx_helper.o -o cxx-pie
 run(bfd,mold,mortar) cxx-pie
   stdout: boom 5MyErr
   stdout: helloxy 2 5 4 a 1 4 St9exception 1
