@@ -202,6 +202,7 @@ pub fn with_link<T>(
             shstrtab: &s.shstrtab,
             build_id: s.build_id.as_ref(),
             property: &s.property,
+            mason_meta: s.mason_meta.as_ref(),
             dynamic: match (dyn_tables, &dyn_src) {
                 (Some(d), Some(src)) => Some(link::DynPlans {
                     kind: d.kind,

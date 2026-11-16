@@ -556,3 +556,31 @@ impl NoteMasonPlan {
         self.bytes.len() as u64
     }
 }
+
+/// `.mason.meta` kept for tools (`spec/meta.md` MT-32; WP-076): the live
+/// inputs' units, concatenated by `mortar_odr::kept_units`; the content is
+/// planned before layout and does not depend on addresses.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MasonMetaPlan {
+    bytes: Box<[u8]>,
+}
+
+impl MasonMetaPlan {
+    /// The plan for the section's `bytes`.
+    #[must_use]
+    pub fn new(bytes: Vec<u8>) -> Self {
+        Self { bytes: bytes.into() }
+    }
+
+    /// The section's bytes.
+    #[must_use]
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    /// The size.
+    #[must_use]
+    pub fn size(&self) -> u64 {
+        self.bytes.len() as u64
+    }
+}

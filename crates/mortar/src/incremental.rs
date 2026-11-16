@@ -89,6 +89,10 @@ fn unsupported(parsed: &Parsed) -> Option<String> {
     if s.emit_relocs {
         return Some("--emit-relocs".to_owned());
     }
+    // meta.md MT-32 (WP-076): the kept units are not part of the state.
+    if plan.diagnostics.odr.keep_meta {
+        return Some("--keep-mason-meta".to_owned());
+    }
     if s.icf.is_some_and(|i| i != Icf::None) {
         return Some("--icf".to_owned());
     }

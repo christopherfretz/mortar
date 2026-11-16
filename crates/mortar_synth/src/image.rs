@@ -376,6 +376,22 @@ impl SynthChunk for crate::notes::NoteMasonPlan {
     }
 }
 
+impl SynthChunk for crate::notes::MasonMetaPlan {
+    fn size(&self, _: &SizeCx<'_>) -> u64 {
+        crate::notes::MasonMetaPlan::size(self)
+    }
+
+    fn division(&self) -> Division {
+        Division::Whole { max_size: crate::notes::MasonMetaPlan::size(self) }
+    }
+
+    fn write(&self, _: &FillCx<'_>, range: Range<u64>, out: &mut [u8]) -> Result<(), SynthError> {
+        check(&range, out, crate::notes::MasonMetaPlan::size(self))?;
+        out.copy_from_slice(&self.bytes()[range.start as usize..range.end as usize]);
+        Ok(())
+    }
+}
+
 impl SynthChunk for PropertyPlan {
     fn size(&self, _: &SizeCx<'_>) -> u64 {
         PropertyPlan::size(self)

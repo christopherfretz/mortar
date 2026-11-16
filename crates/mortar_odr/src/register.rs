@@ -76,6 +76,8 @@ pub enum Check {
     SharedInputs,
     /// O-50's `.note.mason` table (`--odr-table`).
     Table,
+    /// O-23, `odr-archive-shadow` (`--odr-check-archives`; WP-076).
+    ArchiveShadow,
 }
 
 impl Check {
@@ -100,6 +102,7 @@ impl Check {
             Self::SharedInputs => 14,
             Self::Table => 15,
             Self::SystemStd => 17,
+            Self::ArchiveShadow => 18,
         }]
     }
 
@@ -236,6 +239,12 @@ mod tests {
         }
         assert!(!Status::OptIn.runs(&at(OdrMode::Strict)));
         assert!(Status::OptIn.runs(&Odr { check_archives: true, ..at(OdrMode::Warn) }));
+        // O-23: its own switch, in any mode but off (WP-076).
+        let archives = |mode| Odr { check_archives: true, ..at(mode) };
+        for mode in [OdrMode::Off, OdrMode::Warn, OdrMode::Error, OdrMode::Strict] {
+            assert!(!Check::ArchiveShadow.runs(&at(mode)));
+            assert_eq!(Check::ArchiveShadow.runs(&archives(mode)), mode != OdrMode::Off);
+        }
         assert!(!Status::Off.runs(&at(OdrMode::Strict)));
         // The table: its own switch, in any mode but off (O-42).
         let table = |mode| Odr { table: OdrTable::Exported, ..at(mode) };

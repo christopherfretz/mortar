@@ -1391,11 +1391,22 @@ fn verify_against(label: &str, t: &Tools, pair: &Pair, eo: &Elf, et: &Elf) {
 /// `spec/image.md` I-47); mortar's once, under the kept copy's file: the
 /// signature sets are equal and mortar's entries are a subset of GNU's.
 // spec: VALIDATION.md L6; image.md I-47 (tombstones)
-fn symtabs_against(label: &str, t: &Tools, pair: &Pair, (eo, et): (&Elf, &Elf)) {
+fn symtabs_against(label: &str, t: &Tools, pair: &Pair, elfs: (&Elf, &Elf)) {
+    symtabs_against_with(label, t, pair, elfs, false);
+}
+
+/// [`symtabs_against`]; with `shared`, a `maint check-symtabs` finding on
+/// GNU ld's output too is not mortar's (a split-DWARF `.dwo` that gdb
+/// rejects whatever the linker, WP-080).
+fn symtabs_against_with(label: &str, t: &Tools, pair: &Pair, (eo, et): (&Elf, &Elf), shared: bool) {
     let ours = gdb_symtabs(t, &pair.ours, &pair.dir, eo);
     let theirs = gdb_symtabs(t, &pair.theirs, &pair.dir, et);
-    let check: Vec<&String> =
-        ours.check.iter().filter(|l| !l.contains("Error disabling address space")).collect();
+    let check: Vec<&String> = ours
+        .check
+        .iter()
+        .filter(|l| !l.contains("Error disabling address space"))
+        .filter(|l| !(shared && theirs.check.contains(*l)))
+        .collect();
     assert!(check.is_empty(), "{label}: maint check-symtabs: {check:#?}");
     let extra: Vec<&String> = ours
         .complaints
@@ -1609,4 +1620,376 @@ fn incr_dwarf_cxx_clangxx() {
 #[test]
 fn incr_dwarf_fortran_gfortran() {
     dwarf_incr("incr-dwarf-f-gfortran", Driver::Gfortran, &FORTRAN);
+}
+
+// ---------------------------------------------------------------------
+// Split DWARF (WP-080, `spec/image.md` I-49a): the C++ program compiled
+// with `-gsplit-dwarf`, the `.dwo` files beside the objects (where the
+// skeleton units' `DW_AT_comp_dir` and `DW_AT_dwo_name` lead the
+// debuggers), linked by mortar and by GNU ld. GNU ld is the control on
+// AArch64: no producer writes a relocation against a TLS symbol in an
+// AArch64 debug section (`spec/x64.md` X-53's note), which is where GNU
+// ld's split-DWARF output is wrong on x86 (W10).
+
+/// The split-DWARF forms: tag, flags, and whether only Clang takes them:
+/// GCC 14 has no `-gsplit-dwarf=single`, and gdb 16.3 cannot read the
+/// `.dwo` GCC 14 writes for `-gsplit-dwarf -gdwarf-5
+/// -fdebug-types-section` (`DWARF Error: wrong version in compilation unit
+/// header (is 0, ...)`, on GNU ld's output as on mortar's; the census of
+/// WP-080's record links and runs that form).
+const SPLIT_FLAGS: &[(&str, &[&str], bool)] = &[
+    ("split-d5-O0", &["-g", "-gsplit-dwarf", "-gdwarf-5", "-O0"], false),
+    ("split-d4-O0", &["-g", "-gsplit-dwarf", "-gdwarf-4", "-O0"], false),
+    ("split-d5-O2", &["-g", "-gsplit-dwarf", "-gdwarf-5", "-O2"], false),
+    ("split-d5-types", &["-g", "-gsplit-dwarf", "-gdwarf-5", "-fdebug-types-section"], true),
+    ("single-d5-O0", &["-g", "-gsplit-dwarf=single", "-gdwarf-5", "-O0"], true),
+];
+
+/// The tags of [`SPLIT_FLAGS`] whose `.dwo` files are also packaged into
+/// a `.dwp` (`llvm-dwp`) for a second pair of sessions, and whether GCC's
+/// are: `llvm-dwp` 19 and 22 do not finish on GCC 14's DWARF 5 `.dwo`
+/// files of two units (they finish on each alone, and on GCC's DWARF 4;
+/// WP-080's record), and GNU's `dwp` (binutils-gold) is not in
+/// `scripts/ci-tools.sh`.
+const SPLIT_DWP: &[(&str, bool)] =
+    &[("split-d5-O0", false), ("split-d4-O0", true), ("single-d5-O0", false)];
+
+/// The commands of a function that `--gc-sections` collects: a breakpoint
+/// on it by name and by line, and its scope (`spec/image.md` I-47: its
+/// `.debug_addr` entries are 0, its line sequence the tombstone).
+const GC_GDB: &[&str] = &["break gc_unused", "break gc_unused.cpp:2", "info scope gc_unused"];
+/// lldb: the breakpoints (an `image lookup` that finds nothing would end
+/// the batch session).
+const GC_LLDB: &[&str] = &["breakpoint set -n gc_unused", "breakpoint set -f gc_unused.cpp -l 2"];
+
+/// gdb on the split program: a breakpoint by line (`dx_b.cpp:7`, in
+/// `level3` after `local3` is set) and by function (`level2`), a
+/// backtrace with arguments, an argument, a global, a type, a scope, a
+/// step into a function of another unit (`twice<int>`, whose kept copy is
+/// `dx_main.cpp`'s), a local, and a backtrace from the throw.
+fn split_gdb_args(gc: bool) -> Vec<String> {
+    let mut ex: Vec<&str> =
+        vec!["set pagination off", "set width 0", "set confirm off", "set print pretty off"];
+    if gc {
+        ex.extend_from_slice(GC_GDB);
+    }
+    ex.extend_from_slice(&[
+        "tbreak dx_b.cpp:7",
+        "tbreak level2",
+        "catch throw",
+        "run > /dev/null 2>&1",
+        "bt",
+        "print y",
+        "print g_count",
+        "ptype Oops",
+        "info scope level3",
+        "step",
+        "bt",
+        "continue",
+        "print local3",
+        "bt",
+        "continue",
+        "bt",
+        "continue",
+    ]);
+    let mut args: Vec<String> =
+        ["-batch", "-nx", "-iex", "set debuginfod enabled off"].map(String::from).to_vec();
+    for x in ex {
+        args.push("-ex".into());
+        args.push(x.into());
+    }
+    args
+}
+
+/// lldb on the split program: the commands of [`split_gdb_args`].
+fn split_lldb_args(gc: bool) -> Vec<String> {
+    let mut o: Vec<&str> = vec!["settings set target.disable-aslr false"];
+    if gc {
+        o.extend_from_slice(GC_LLDB);
+    }
+    o.extend_from_slice(&[
+        "breakpoint set -f dx_b.cpp -l 7 -o true",
+        "breakpoint set -n level2 -o true",
+        "breakpoint set -E c++",
+        "process launch -o /dev/null -e /dev/null",
+        "bt",
+        "frame variable y",
+        "target variable g_count",
+        "type lookup Oops",
+        "thread step-in",
+        "bt",
+        "continue",
+        "frame variable local3",
+        "bt",
+        "continue",
+        "bt",
+        "continue",
+    ]);
+    let mut args: Vec<String> = vec!["-b".into(), "-x".into()];
+    for x in o {
+        args.push("-o".into());
+        args.push(x.into());
+    }
+    args
+}
+
+/// What says that a debugger did not find a `.dwo` (or the `.dwp`).
+const NO_DWO: &[&str] =
+    &["Could not find DWO", "could not find '", "unable to locate separate debug"];
+
+/// The split sessions did their work on mortar's output (at `-O0`, where
+/// every value is there): both stops, the values, the type, the step into
+/// the other unit, the throw, the end; and no debugger missed a `.dwo`.
+fn split_sessions_did_their_work(label: &str, gdb: &str, lldb: &str) {
+    for t in [gdb, lldb] {
+        assert!(!NO_DWO.iter().any(|m| t.contains(m)), "{label}: a .dwo was not found:\n{t}");
+    }
+    if !label.contains("-O0") {
+        return;
+    }
+    for want in [
+        "level2 (y=",
+        "$2 = 7",
+        "type = struct Oops {",
+        "twice<int> (x=",
+        "level3 (z=",
+        "/dx_b.cpp:7",
+        "Catchpoint ",
+        "exited normally",
+    ] {
+        assert!(gdb.contains(want), "{label}: gdb's transcript lacks `{want}`:\n{gdb}");
+    }
+    for want in [
+        "level2(y=",
+        "(int) g_count = 7",
+        "struct Oops {",
+        "twice<int>(x=",
+        "dx_b.cpp:7",
+        "(int) local3 = ",
+        "exited with status = 0",
+    ] {
+        assert!(lldb.contains(want), "{label}: lldb's transcript lacks `{want}`:\n{lldb}");
+    }
+}
+
+/// gdb's entry values (`x=x@entry=2`, `x@entry=2`) written as the value
+/// alone. At `-O2` gdb finds a parameter's entry value through the call
+/// site's `DW_AT_call_origin`; when that names the DIE of a discarded
+/// COMDAT copy in the caller's unit, mortar's tombstone leaves it without
+/// an address ([`CALL_TARGET_DEAD`], `spec/image.md` I-47) and GNU ld's
+/// redirect gives it the kept copy's (I-47 "GNU ld's redirect to the kept
+/// copy was rejected"), so only GNU ld's transcript has them.
+fn entry_values_masked(t: &str) -> String {
+    let mut out = String::with_capacity(t.len());
+    let mut rest = t;
+    while let Some(at) = rest.find("@entry=") {
+        let head = &rest[..at];
+        // `name=name@entry=` → `name=`; `name@entry=` → `name=`.
+        let name_at =
+            head.rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).map_or(0, |i| i + 1);
+        let name = &head[name_at..];
+        let dup = format!("{name}={name}");
+        if head.ends_with(&dup) {
+            out.push_str(&head[..head.len() - name.len() - 1]);
+        } else {
+            out.push_str(head);
+        }
+        out.push('=');
+        rest = &rest[at + "@entry=".len()..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The two sessions on both outputs of `pair`, compared (mortar against
+/// GNU ld, with [`entry_values_masked`]); returns mortar's transcripts.
+fn split_session_pair(label: &str, t: &Tools, pair: &Pair) -> (String, String) {
+    let (eo, et) = (elf(&pair.ours), elf(&pair.theirs));
+    let (ga, la) = (split_gdb_args(pair.gc), split_lldb_args(pair.gc));
+    let g_ours = entry_values_masked(&session(&t.gdb, &ga, &pair.ours, &pair.dir, &eo));
+    let g_theirs = entry_values_masked(&session(&t.gdb, &ga, &pair.theirs, &pair.dir, &et));
+    let l_ours = session(&t.lldb, &la, &pair.ours, &pair.dir, &eo);
+    let l_theirs = session(&t.lldb, &la, &pair.theirs, &pair.dir, &et);
+    assert!(!g_ours.contains("not in symtab"), "{label}: gdb lost a CU's ranges:\n{g_ours}");
+    same(label, "the gdb session", &g_ours, &g_theirs);
+    same(label, "the lldb session", &l_ours, &l_theirs);
+    split_sessions_did_their_work(label, &g_ours, &l_ours);
+    (g_ours, l_ours)
+}
+
+/// Packages the `.dwo` files each output names into `<output>.dwp` with
+/// `llvm-dwp -e`, then moves the `.dwo` files out of the way, so that the
+/// debuggers can only read the package.
+fn package_dwp(label: &str, dwp: &Path, pair: &Pair) {
+    for prog in [&pair.ours, &pair.theirs] {
+        let args = vec![
+            "-e".to_owned(),
+            prog.display().to_string(),
+            "-o".to_owned(),
+            format!("{}.dwp", prog.display()),
+        ];
+        let o = tool_run(dwp, &args, &pair.dir, Duration::from_mins(1));
+        assert!(o.success(), "{label}: llvm-dwp -e {}: {}", prog.display(), text(&o));
+    }
+    let dwos: Vec<PathBuf> = std::fs::read_dir(&pair.dir)
+        .expect("the scratch directory")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|e| e == "dwo"))
+        .collect();
+    for d in dwos {
+        std::fs::rename(&d, d.with_extension("dwo-packaged")).expect("move a .dwo away");
+    }
+}
+
+/// The objects of the C++ program in the split form `tag`, for `driver`;
+/// `None` (after a note) when a tool is missing.
+fn split_built(label: &str, driver: Driver, flags: &[&str], gc: bool) -> Option<(Scratch, Built)> {
+    let scratch = Scratch::new(label);
+    let mut flags = flags.to_vec();
+    if gc {
+        flags.extend(["-ffunction-sections", "-fdata-sections"]);
+    }
+    let sources = if gc { gc_sources(&CXX) } else { CXX.sources.to_vec() };
+    let Some(built) = build(&scratch, driver, &flags, &sources) else {
+        assert!(!tools_required(), "{} is required", driver.tool());
+        eprintln!("note: {} is missing; skipping {label}", driver.tool());
+        return None;
+    };
+    Some((scratch, built))
+}
+
+/// The forms of [`SPLIT_FLAGS`] `driver` takes.
+fn split_forms(
+    driver: Driver,
+) -> impl Iterator<Item = &'static (&'static str, &'static [&'static str], bool)> {
+    let clang = matches!(driver, Driver::Clang | Driver::Clangxx | Driver::Clang22);
+    SPLIT_FLAGS.iter().filter(move |f| clang || !f.2)
+}
+
+/// The gdb and lldb sessions against the `.dwo` files and, for
+/// [`SPLIT_DWP`], against a `.dwp` instead; with `--gc-sections` when
+/// `gc` (the d5 and d4 forms only, with [`GC_GDB`]'s commands).
+// spec: image.md I-49a (split DWARF); VALIDATION.md L6
+fn split_sessions(name: &str, driver: Driver, gc: bool) {
+    if !AARCH64.is_host() {
+        mortar_testutil::named_skip(
+            &format!("debuggers::{name}"),
+            "gdb and lldb sessions run the AArch64 program: on an AArch64 host only",
+        );
+        return;
+    }
+    let Some(t) = tools() else { return };
+    let Some(dwp) = tool("llvm-dwp") else { return };
+    for (tag, flags, _) in split_forms(driver) {
+        if gc && !matches!(*tag, "split-d5-O0" | "split-d4-O0") {
+            continue;
+        }
+        let label = format!("{name}-{tag}");
+        let Some((_scratch, built)) = split_built(&label, driver, flags, gc) else { return };
+        let pair = link(&t, &label, &built, gc);
+        let (g, l) = split_session_pair(&label, &t, &pair);
+        let gcc = matches!(driver, Driver::Gcc | Driver::Gxx);
+        if !gc && SPLIT_DWP.iter().any(|(t, g)| t == tag && (*g || !gcc)) {
+            package_dwp(&label, &dwp, &pair);
+            let label = format!("{label}-dwp");
+            let (gp, lp) = split_session_pair(&label, &t, &pair);
+            same(&label, "the gdb session with the .dwp against the .dwo files", &gp, &g);
+            same(&label, "the lldb session with the .dwp against the .dwo files", &lp, &l);
+        }
+    }
+}
+
+/// The static checks of the split forms, plain and with `--gc-sections`:
+/// `llvm-dwarfdump --verify` and gdb's symbol tables against GNU ld's
+/// output (gdb reads the `.dwo` files), every address of mortar's debug
+/// sections in its section or I-47's tombstone, and the discarded copies
+/// of `twice<int>` (and, under `--gc-sections`, the collected functions)
+/// tombstoned in `.debug_addr` (0, I-47), which both compilers index in
+/// every split form.
+// spec: image.md I-47, I-49a; VALIDATION.md L6
+fn split_dwarf(name: &str, driver: Driver) {
+    let Some(t) = tools() else { return };
+    for gc in [false, true] {
+        for (tag, flags, _) in split_forms(driver) {
+            let label = format!("{name}-{}{tag}", if gc { "gc-" } else { "" });
+            let Some((_scratch, built)) = split_built(&label, driver, flags, gc) else { return };
+            let pair = link(&t, &label, &built, gc);
+            let (eo, et) = (elf(&pair.ours), elf(&pair.theirs));
+            split_verify_against(&label, &t, &pair, (&eo, &et), gc);
+            symtabs_against_with(&label, &t, &pair, (&eo, &et), true);
+            let ours = debug_addrs(&t, &pair, &pair.ours, &eo);
+            assert!(ours.wrong.is_empty(), "{label}: mortar's output: {:#?}", ours.wrong);
+            let dead = ours.dead.get(".debug_addr").copied().unwrap_or(0);
+            let want = if gc { 3 } else { 2 };
+            assert!(dead >= want, "{label}: {dead} tombstones in .debug_addr: {:?}", ours.dead);
+        }
+    }
+}
+
+/// `llvm-dwarfdump --verify` on a split pair: mortar's complaints are GNU
+/// ld's, but under `--gc-sections` for `DIE has overlapping ranges`: a
+/// skeleton's `DW_RLE_startx_length` entries index `.debug_addr` slots
+/// that are 0 for every collected function, so a unit with two of them
+/// claims `[0, len)` twice (`spec/image.md` I-47: lld and mold write the
+/// same; GNU ld writes 0 for one collected function in the census, so it
+/// draws no such line there).
+// spec: image.md I-47, I-49a
+fn split_verify_against(label: &str, t: &Tools, pair: &Pair, (eo, et): (&Elf, &Elf), gc: bool) {
+    let Some(theirs) = verify(t, &pair.theirs, &pair.dir, et) else {
+        eprintln!("note: {label}: llvm-dwarfdump --verify does not finish on GNU ld's output");
+        return;
+    };
+    let ours = verify(t, &pair.ours, &pair.dir, eo)
+        .unwrap_or_else(|| panic!("{label}: llvm-dwarfdump --verify timed out on mortar's output"));
+    let overlap =
+        |l: &str| l.contains("overlapping ranges") || l.contains("overlapping DW_AT_ranges");
+    let extra: Vec<&String> = ours.difference(&theirs).filter(|l| !(gc && overlap(l))).collect();
+    assert!(
+        extra.is_empty(),
+        "{label}: llvm-dwarfdump --verify complains of mortar's output only:\n{extra:#?}"
+    );
+}
+
+#[test]
+fn entry_values_are_masked() {
+    assert_eq!(entry_values_masked("twice<int> (x=x@entry=2) at"), "twice<int> (x=2) at");
+    assert_eq!(entry_values_masked("f (a=1, b=b@entry=3)"), "f (a=1, b=3)");
+    assert_eq!(entry_values_masked("$1 = 2\nx@entry=5"), "$1 = 2\nx=5");
+    assert_eq!(entry_values_masked("no entry values"), "no entry values");
+}
+
+// spec: image.md I-49a; VALIDATION.md L6
+#[test]
+fn split_sessions_cxx_gxx() {
+    split_sessions("split-dbg-cxx-gxx", Driver::Gxx, false);
+}
+
+// spec: image.md I-49a; VALIDATION.md L6
+#[test]
+fn split_sessions_cxx_clangxx() {
+    split_sessions("split-dbg-cxx-clangxx", Driver::Clangxx, false);
+}
+
+// spec: image.md I-47, I-49a; VALIDATION.md L6
+#[test]
+fn split_gc_sessions_cxx_gxx() {
+    split_sessions("split-gc-dbg-cxx-gxx", Driver::Gxx, true);
+}
+
+// spec: image.md I-47, I-49a; VALIDATION.md L6
+#[test]
+fn split_gc_sessions_cxx_clangxx() {
+    split_sessions("split-gc-dbg-cxx-clangxx", Driver::Clangxx, true);
+}
+
+// spec: image.md I-47, I-49a; VALIDATION.md L6
+#[test]
+fn split_dwarf_cxx_gxx() {
+    split_dwarf("split-dwarf-cxx-gxx", Driver::Gxx);
+}
+
+// spec: image.md I-47, I-49a; VALIDATION.md L6
+#[test]
+fn split_dwarf_cxx_clangxx() {
+    split_dwarf("split-dwarf-cxx-clangxx", Driver::Clangxx);
 }

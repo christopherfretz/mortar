@@ -22,9 +22,11 @@ if [ $st = 0 ] && [ "${MASON_PLUMB:-}" = 1 ]; then
   elif ! cmp -s "$out" "$out.plumb"; then
     plumb="nondeterministic: the output with --mortar-map differs"
   else
-    plumb=$("${MASON_XTASK:?}" mason verify "$out.plumb" "$out.map" 2>&1 | head -c 1000 | tr '\n\t' '  ')
+    # The link's words (stage 3 judges a dynamic output with its line).
+    printf '%s\n' "$@" > "$out.line"
+    plumb=$("${MASON_XTASK:?}" mason verify "$out.plumb" "$out.map" "$out.line" 2>&1 | head -c 1000 | tr '\n\t' '  ')
   fi
-  rm -f "$out.plumb" "$out.map"
+  rm -f "$out.plumb" "$out.map" "$out.line"
 fi
 if [ -n "${MASON_LOG:-}" ]; then
   printf '%s\tmortar\t%s\t%s\t%s\n' "$PWD" "$st" "$(printf '%s' "$err" | head -n 1 | head -c 1000 | tr '\t' ' ')" "$plumb" >> "$MASON_LOG"

@@ -992,6 +992,25 @@ writes a value chosen by the referring section's name, as
   image does not parse DWARF in M1 (no `.debug_aranges` rebuild, no
   `.debug_line` rewriting): all three references copy and relocate it
   too (E9).
+- **I-49a [M2] Split DWARF** (WP-080, `spec/landed/image/WP-080.md`).
+  An object built with `-gsplit-dwarf` (DWARF 4's GNU extension or
+  DWARF 5) is linked by I-49 with nothing added: its skeleton units
+  (`DW_UT_skeleton`, or DWARF 4's `DW_AT_GNU_dwo_name` unit),
+  `.debug_addr`, `.debug_str_offsets`, `.debug_rnglists`/`.debug_ranges`,
+  `.debug_aranges`, `.debug_gnu_pubnames`/`.debug_gnu_pubtypes` and a
+  producer's per-unit `.debug_names` are ordinary units, concatenated in
+  input order and filled per §5.4 (no index is merged or rebuilt: I-54);
+  `.debug_str` and `.debug_line_str` merge per I-38. A dead target's
+  entry gets I-47's row (`.debug_addr` 0, `.debug_ranges` 1); a TLS
+  variable's `.debug_addr` entry is its DTP offset (`spec/x64.md` X-53,
+  `spec/x86.md` X86-62). The `.dwo` sections Clang's
+  `-gsplit-dwarf=single` leaves in the object carry `SHF_EXCLUDE` and are
+  dropped (`spec/layout.md` L-31). The `.dwo` files are not opened, read
+  or rewritten, and `DW_AT_dwo_name`/`DW_AT_comp_dir` reach the output as
+  the producer wrote them: a debugger finds the `.dwo` files (or a `.dwp`
+  that `dwp`/`llvm-dwp` makes from the output) as for GNU ld's output.
+  All three references do the same with every section (WP-080's census,
+  256 links each).
 - **I-50 [M1] Volume.** Debug bytes dominate a debug link: in
   `cxx-medium-g`, 102 MB of the 132 MB of section bytes are `.debug_*`
   and 87% of the relocations are in them (E5); in lld's output (48.3 MB)

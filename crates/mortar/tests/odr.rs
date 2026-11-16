@@ -171,7 +171,8 @@ fn stats_line() {
     // O-42: the default reads no container.
     assert!(
         last.contains(
-            ", container bytes read 0, shared-object tables 0 (0 rows), record findings 0;"
+            ", container bytes read 0, shared-object tables 0 (0 rows), archive members 0 (0 \
+             units, 0 bytes, 0 rows compared), record findings 0;"
         ),
         "{e}"
     );
