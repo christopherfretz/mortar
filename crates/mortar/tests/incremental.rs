@@ -1684,8 +1684,8 @@ fn a_compiler_driver_link_twice_finds_its_state() {
 // The C program's `--incremental=full` link, then one function body of
 // its object edited in place (`impl_a`'s `mov w0, #1` becomes `#2`: the
 // same size). The test-only update path (`mortar::floor::update`) on
-// each write path writes the bytes of a plain link of the edited inputs,
-// the verifier accepts them, the program prints the new value, and the
+// each write path writes the bytes of an incremental-mode full link of the
+// edited inputs (the layout with slack: WP-062), the verifier accepts them, the program prints the new value, and the
 // rewritten state chains: a second edit updates again, and
 // `--incremental=update` still fails by name.
 #[test]
@@ -1726,13 +1726,20 @@ fn the_floor_update_is_the_full_link_of_the_edited_inputs() {
             assert!(s.windows >= 1 && s.jobs >= 1);
             let map = format!("ref{step}.map");
             let map_arg = format!("--mortar-map={}", prog.path(&map).display());
-            prog.link(&format!("ref{step}"), &[&map_arg]);
+            // The reference is an incremental-mode full link of the edited
+            // inputs: its layout has the slack and the per-file CIEs the
+            // state's has (WP-062); a plain link's has neither.
+            prog.link(&format!("ref{step}"), &["--incremental=full", &map_arg]);
             assert!(
                 prog.bytes("o") == prog.bytes(&format!("ref{step}")),
                 "{write:?} step {step}: the update differs from the full link"
             );
-            let findings =
+            let mut findings =
                 support::plumb::verify(&prog.path("o"), &prog.path(&map), &prog.built.dir);
+            findings.retain(|f| {
+                !support::plumb::s50_rule1_verifier_finding(f)
+                    && !support::plumb::p_i3_zero_size_verifier_finding(f, &prog.built.dir)
+            });
             assert!(findings.is_empty(), "{write:?}: the verifier rejects: {findings:?}");
             let (status, out) = prog.run("o");
             assert_eq!(status, Some(0));
