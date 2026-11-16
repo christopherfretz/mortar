@@ -1271,6 +1271,36 @@ the same data through `GOTPCRELX` unless `-fdirect-access-external-data`).
 `Pc` against `Shlib{func: true}` in `Pie` stays `E` (D-44). *Test:*
 `copy-in-pie-x86-64`.
 
+**D-43a [M4; planned: WP-122] (a copy of a definition its library binds
+locally).** Request R-D43 (§18.4), the rule of D-126 item 2, for `Exec`
+and `Pie` (a `Shared` output never copies, D-122). When a `COPY` demand
+(D-42, D-43) copies a definition whose library binds it locally, the
+executable's copy and the library's own instance are two objects. "Binds
+locally": the library has `DT_SYMBOLIC` or `DF_SYMBOLIC`, or a
+`.note.mason` row (odr.md O-51, O-60) for the definition carries
+`NONPREEMPTIBLE`. Decided from the library's program headers and
+`.dynamic` only (the symbol count from `DT_GNU_HASH` or `DT_HASH`),
+never its section headers; where the definition's `st_value` lies:
+
+- in a `PT_LOAD` with `PF_W` and outside every `PT_GNU_RELRO`: refused,
+  `copy-of-locally-bound-definition` (diag.md §3.4, planned), naming the
+  symbol and the library;
+- in a read-only `PT_LOAD` or inside a `PT_GNU_RELRO`: the same kind as
+  a warning, with the note `{name} is read-only in {file}: two equal
+  copies` (two instances of a constant: defined behaviour, only `&v`
+  differs);
+- in no `PT_LOAD`: refused (mortar cannot tell).
+
+The rule does not change D-18 (a protected definition is refused
+already) nor the `Pie` and `Exec` rows of D-42/D-43 for a library that
+does not bind locally. A mold `-Bsymbolic` library carries neither tag
+and is not seen (a recorded gap); a `NONPREEMPTIBLE` row is read once
+WP-129 writes the tables of shared objects, `DT_SYMBOLIC`/`DF_SYMBOLIC`
+before. The verifier's side is P-R9 (plumb.md §12.7, P-D11). *Test:*
+`copy-of-symbolic` (refuse `.data`/`.bss`, warn `.rodata`/
+`.data.rel.ro`, refuse outside every `PT_LOAD`; a GNU ld and an lld
+`-Bsymbolic` library and a mortar one with a table; W30).
+
 **D-44 [M2] (canonical PLTs).** In `Exec`, a non-GOT address use of a
 shared function (`C` against `Shlib{func: true}`: `R_AARCH64_ADR_PREL_PG_HI21`,
 `ABS64` in a read-only place, `R_X86_64_32S`/`PC32`, `R_386_32` in code)
@@ -2314,6 +2344,43 @@ where `all=107 g=7` is right, all three). The rule:
   computed by the analysis in an object with no self-GOT): a correct
   `-fPIC` object refused, with the `-fdata-sections` note; none in real
   code.
+- **Before the start of a local object: a known refusal of correct
+  code (the supervisor's ruling, WP-115).** Correct `-fPIC` code that
+  forms an address *before* the start of a local object (`double *p =
+  tab - 1;`, the 1-based idiom: undefined behaviour in C, accepted by
+  every compiler) names an address that, after the compiler's folding,
+  can lie inside or at the start of an exported preemptible datum that
+  precedes the local object in its section. Such a use is not a bound
+  use (the code reaches the datum, if at all, through the GOT), but the
+  rule and the analysis cannot tell it from one, and the boundary rule
+  does not apply (the address is not one past the end of a *local*
+  object). **The rule stays as it is**: a named refusal beats a silent
+  bound use, and refining it by "the object has a GOT relocation against
+  that same definition" would reopen the hole for `ld -r` mixes of PIC
+  and non-PIC code. The refusal is `non-pic-in-shared-object` like any
+  bound use; its note names the remedy as the boundary's does,
+  `-fdata-sections` (each object in its own section: no preceding
+  datum), and adds `do not form an address before an object`.
+  Measured (WP-115, `tests/shared-design/sup/`: `c.c`, `static double
+  tab[8]` between `int gvar[4]` and `int gcount`, and gfortran's
+  1-based `SAVE` arrays beside module variables, `m.f90`, `l.f90`; every
+  `-O` of `-O0`, `-O1`, `-O2`, `-O3`, `-Os`, `-fPIC`, through the oracle
+  `s1d.py --hits`; 45 objects, 3 refused, every one self-GOT):
+
+  | compiler, target | refused | how |
+  |---|---|---|
+  | GCC 14 AArch64 `-O0` | `c.c` | by the rule: `ADR_PREL_PG_HI21`/`ADD_ABS_LO12_NC` (275, 277) at `f+0xc`, `f+0x10` against `.data + 8`, inside `gvar` (`.data` 0-0x10; `tab` at 0x10) |
+  | Clang 22 AArch64 `-O0` (and Clang 19) | `c.c` | by the analysis: `adrp`/`add` of `.data + 0x18` (`tab`), then `sub #8`, an address-valued `.data + 0x10`, the start of `gcount` (after `gvar`, a global, so not a boundary) |
+  | GCC 14, Clang 22, Clang 19 AArch64 `-O1`-`-Os` | none | the locals are placed first or the address is formed exactly |
+  | gfortran 14 AArch64, every `-O` | none | exact addresses (`m.f90`, `l.f90`) |
+  | GCC 14, Clang 22, gfortran 14 x86-64, every `-O` | none | the before-start address is a code `R_X86_64_PC32` (`.data + 0x14`, GCC `-O0`; `.data + 0x1c` and a register subtract, Clang `-O0`): a PC-relative field in an `SHF_EXECINSTR` place, **not judged on x86** (the scope above); no absolute word and no PC-relative data word of this kind in any object |
+
+  `[unmeasured]` for WP-117: the number of interior address-valued uses
+  (rule or analysis hits that are not accesses) in self-GOT objects
+  over its corpora at `-O0` (the design's corpora were mostly optimised
+  builds), each listed in its record. *Test:* `shared-pic-before-start`
+  (WP-117 for the rule's GCC case, WP-119 for the analysis's Clang
+  case: refused with both notes; the `-O2` objects link).
 
 Not uses: debug and other non-alloc places (every `DW_OP_addr` of an
 exported variable, 864k measured references in `.debug_*` against
