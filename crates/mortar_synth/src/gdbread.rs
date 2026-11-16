@@ -325,10 +325,11 @@ impl<'t, 'u, 's> FileCx<'t, 'u, 's> {
                 ));
             }
             let s = object.section(index).map_err(|e| input(index, e))?;
-            let bytes = src
-                .link
-                .bytes(file, &s)
-                .map_err(|what| ReadError::Input { file, section: index, what })?;
+            let bytes = src.link.bytes(file, &s).map_err(|what| ReadError::Input {
+                file,
+                section: index,
+                what,
+            })?;
             let relocs = match rel_of.get(&index.0) {
                 Some(&r) if name != ".debug_abbrev" => cx.raw_relocs(r)?,
                 _ => Vec::new(),
@@ -366,11 +367,11 @@ impl<'t, 'u, 's> FileCx<'t, 'u, 's> {
             section: r,
             what: What::Malformed(e.to_string()),
         })?;
-        let records = self
-            .src
-            .link
-            .bytes(file, &s)
-            .map_err(|what| ReadError::Input { file, section: r, what })?;
+        let records = self.src.link.bytes(file, &s).map_err(|what| ReadError::Input {
+            file,
+            section: r,
+            what,
+        })?;
         let class = self.object.class();
         let mut out: Vec<Raw> = match self.src.link.form() {
             RelocForm::Rela => Table::<Rela>::new(&records, class)
@@ -393,7 +394,11 @@ impl<'t, 'u, 's> FileCx<'t, 'u, 's> {
 
     /// The relocation at `at` of `sec`, classified and resolved; `None`
     /// without one (or with `R_*_NONE`).
-    fn reloc(&self, sec: usize, at: u64) -> Result<Option<(Target, i64, RelocClass, u8)>, ReadError> {
+    fn reloc(
+        &self,
+        sec: usize,
+        at: u64,
+    ) -> Result<Option<(Target, i64, RelocClass, u8)>, ReadError> {
         let s = &self.secs[sec];
         let i = s.relocs.partition_point(|r| r.offset < at);
         let Some(r) = s.relocs.get(i).filter(|r| r.offset == at) else { return Ok(None) };
@@ -443,10 +448,9 @@ impl<'t, 'u, 's> FileCx<'t, 'u, 's> {
                     ));
                 }
                 match t {
-                    Target::Section { section, value } => Ok(Addr {
-                        sec: Some(section),
-                        off: i128::from(value) + i128::from(addend),
-                    }),
+                    Target::Section { section, value } => {
+                        Ok(Addr { sec: Some(section), off: i128::from(value) + i128::from(addend) })
+                    }
                     Target::Absolute(v) => {
                         Ok(Addr { sec: None, off: i128::from(v) + i128::from(addend) })
                     }
@@ -492,7 +496,11 @@ impl<'t, 'u, 's> FileCx<'t, 'u, 's> {
 
     fn past_end(&self, sec: usize, at: u64) -> ReadError {
         let s = &self.secs[sec];
-        self.refuse(MALFORMED_UNIT, Some((s.index, at)), format!("a read past the end of {}", s.name))
+        self.refuse(
+            MALFORMED_UNIT,
+            Some((s.index, at)),
+            format!("a read past the end of {}", s.name),
+        )
     }
 
     /// The units of `.debug_info` section `sec` (S-G2), with their
@@ -595,7 +603,9 @@ impl<'t, 'u, 's> FileCx<'t, 'u, 's> {
             match (name, form) {
                 (dw::AT_LOW_PC, _) => root.low = Some(self.pc(sec, &mut c, form, version, &bad)?),
                 (dw::AT_HIGH_PC, 0x0b | 0x05 | 0x06 | 0x07 | 0x0f) => {
-                    root.high = Some(High::Len(c.data(form).ok_or_else(|| bad(self, "a truncated root DIE"))?));
+                    root.high = Some(High::Len(
+                        c.data(form).ok_or_else(|| bad(self, "a truncated root DIE"))?,
+                    ));
                 }
                 (dw::AT_HIGH_PC, 0x21) => {
                     root.high = Some(High::Len(
@@ -650,7 +660,8 @@ impl<'t, 'u, 's> FileCx<'t, 'u, 's> {
         let first = self.out.ranges.len();
         self.ranges(&root, word, &bad)?;
         let count = self.out.ranges.len() - first;
-        let too_large = |cx: &Self| cx.refuse(TOO_LARGE, Some((index, start)), "2^32 ranges".into());
+        let too_large =
+            |cx: &Self| cx.refuse(TOO_LARGE, Some((index, start)), "2^32 ranges".into());
         self.out.units.push(Unit {
             section: id,
             offset: start,
@@ -798,7 +809,8 @@ impl<'t, 'u, 's> FileCx<'t, 'u, 's> {
         loop {
             let s = &self.secs[sec];
             let begin_raw = uint(&s.bytes, off, word).ok_or_else(|| self.past_end(sec, off))?;
-            let end_raw = uint(&s.bytes, off + w, word).ok_or_else(|| self.past_end(sec, off + w))?;
+            let end_raw =
+                uint(&s.bytes, off + w, word).ok_or_else(|| self.past_end(sec, off + w))?;
             let begin = self.addr(sec, off, word)?;
             let end = self.addr(sec, off + w, word)?;
             let plain = begin.sec.is_none() && end.sec.is_none();
@@ -848,7 +860,10 @@ impl<'t, 'u, 's> FileCx<'t, 'u, 's> {
                 2 => {
                     let first = c.uleb().ok_or_else(|| short(self, off))?;
                     let second = c.uleb().ok_or_else(|| short(self, off))?;
-                    found.push((self.addr_index(root, first, bad)?, self.addr_index(root, second, bad)?));
+                    found.push((
+                        self.addr_index(root, first, bad)?,
+                        self.addr_index(root, second, bad)?,
+                    ));
                 }
                 3 => {
                     let first = c.uleb().ok_or_else(|| short(self, off))?;
@@ -896,7 +911,11 @@ impl<'t, 'u, 's> FileCx<'t, 'u, 's> {
         let mut sets = Vec::new();
         while at < len {
             let bad = |note: &str| {
-                self.refuse(MALFORMED_SET, Some((index, at)), format!("{note} ({} set at {at:#x})", s.name))
+                self.refuse(
+                    MALFORMED_SET,
+                    Some((index, at)),
+                    format!("{note} ({} set at {at:#x})", s.name),
+                )
             };
             let mut c = Cur { b: bytes, pos: at };
             let unit_length = c.u32().ok_or_else(|| bad("a truncated header"))?;

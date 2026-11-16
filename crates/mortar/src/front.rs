@@ -1574,13 +1574,16 @@ fn gdb_index_diag(inputs: &Inputs<'_>, e: mortar_synth::gdbread::ReadError) -> D
     match e {
         ReadError::Refused { name, at, note, .. } => {
             let place = match at {
-                Some((index, offset)) => Place::section(file.display(), section_name(index), offset),
+                Some((index, offset)) => {
+                    Place::section(file.display(), section_name(index), offset)
+                }
                 None => Place::File(file.display()),
             };
             Diagnostic::refused(mortar_diag::RefusalClass::Feature, name).at(place).note(note)
         }
         ReadError::Input { file: id, section, what } => {
-            let p = mortar_merge::Problem { file: id, section: section.0, piece: 0, offset: 0, what };
+            let p =
+                mortar_merge::Problem { file: id, section: section.0, piece: 0, offset: 0, what };
             p.diagnostic(file.display(), &section_name(section))
         }
     }

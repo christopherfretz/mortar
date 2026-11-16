@@ -11,8 +11,8 @@
 use std::collections::HashMap;
 use std::ops::Range;
 
-use mortar_core::{FileId, SectionId};
 use mortar_core::par::Pool;
+use mortar_core::{FileId, SectionId};
 
 use crate::eh::CodeRef;
 use crate::error::{SynthError, internal};
@@ -142,9 +142,10 @@ impl GdbIndexPlan {
                 of.entry(s.unit).or_default()[usize::from(s.types)] = Some(i);
             }
             for u in &file.units {
-                let cu = u32::try_from(units.len()).ok().filter(|&c| c < 1 << 24).ok_or_else(|| {
-                    too_large(fid, "2^24 units or more: a CU index has 24 bits (S-G4)")
-                })?;
+                let cu =
+                    u32::try_from(units.len()).ok().filter(|&c| c < 1 << 24).ok_or_else(|| {
+                        too_large(fid, "2^24 units or more: a CU index has 24 bits (S-G4)")
+                    })?;
                 let sets = of.remove(&(u.section, u.offset)).unwrap_or_default();
                 if u.bearing && sets.iter().any(Option::is_none) {
                     return Err(incomplete(fid, file, u, sets[0].is_none()));
@@ -168,14 +169,17 @@ impl GdbIndexPlan {
                     name: gdbread::MALFORMED_SET,
                     file: fid,
                     at: Some((s.section, s.at)),
-                    note: format!("a name set naming offset {off:#x} of .debug_info, where no unit starts"),
+                    note: format!(
+                        "a name set naming offset {off:#x} of .debug_info, where no unit starts"
+                    ),
                 });
             }
         }
         if units.is_empty() {
             return Ok(None);
         }
-        let (table, slots) = names.table().ok_or_else(|| too_large(FileId(0), "the symbol table"))?;
+        let (table, slots) =
+            names.table().ok_or_else(|| too_large(FileId(0), "the symbol table"))?;
         let plan = Self { units, ranges, slots, table, names: names.bytes };
         if plan.size() > u64::from(u32::MAX) {
             return Err(too_large(FileId(0), "a .gdb_index of 4 GiB or more (S-G7)"));
@@ -212,8 +216,9 @@ impl GdbIndexPlan {
         }
         let mut last: Option<u64> = None;
         for u in &self.units {
-            let base = (cx.section_offset)(u.section)
-                .ok_or_else(|| internal::<SynthError>("a .gdb_index unit's section has no offset"))?;
+            let base = (cx.section_offset)(u.section).ok_or_else(|| {
+                internal::<SynthError>("a .gdb_index unit's section has no offset")
+            })?;
             let at = base + u.offset;
             if last.is_some_and(|l| at <= l) {
                 return Err(internal("the .gdb_index CU list is not in output order"));
@@ -223,8 +228,9 @@ impl GdbIndexPlan {
             out.extend_from_slice(&u.length.to_le_bytes());
         }
         for r in &self.ranges {
-            let low = (cx.code_addr)(r.start)
-                .ok_or_else(|| internal::<SynthError>("a .gdb_index range's start has no address"))?;
+            let low = (cx.code_addr)(r.start).ok_or_else(|| {
+                internal::<SynthError>("a .gdb_index range's start has no address")
+            })?;
             let high = low
                 .checked_add(r.len)
                 .ok_or_else(|| internal::<SynthError>("a .gdb_index range wraps"))?;
