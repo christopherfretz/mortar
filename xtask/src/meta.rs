@@ -371,9 +371,9 @@ pub fn ir_module(sections: &Sections) -> Result<String, String> {
 pub fn into_ir(module: &str, sections: &Sections) -> Result<String, String> {
     let (globals, names) = ir_globals(sections)?;
     for n in &names {
-        let taken = module.lines().any(|l| {
-            l.strip_prefix(n.as_str()).is_some_and(|r| r.trim_start().starts_with('='))
-        });
+        let taken = module
+            .lines()
+            .any(|l| l.strip_prefix(n.as_str()).is_some_and(|r| r.trim_start().starts_with('=')));
         if taken {
             return Err(format!("the module already defines {n}"));
         }
@@ -1157,9 +1157,11 @@ fn run(args: &[String]) -> Result<(), String> {
                         std::fs::read_to_string(input).map_err(|e| format!("{input}: {e}"))?;
                     std::fs::write(&o, into_ir(&module, &sections)?).map_err(|e| e.to_string())
                 }
-                _ => Err("one output: -o, --bin, --object with --target, --into with -o, --ll, or \
+                _ => {
+                    Err("one output: -o, --bin, --object with --target, --into with -o, --ll, or \
                           --into-ll with -o"
-                    .into()),
+                        .into())
+                }
             }
         }
         _ => Err("unknown command".into()),

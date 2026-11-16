@@ -39,7 +39,7 @@ use target::{Arch, ArchTools, CommonTools, Linker};
 pub const USAGE: &str = "usage: cargo xtask linktest [--linker bfd,lld,mold,mortar] \
                          [--arch aarch64,x86_64,i386] [--filter <text>]... [-j <n>] \
                          [--mortar <binary>] [--results <file>] [--keep] [--no-plumb] [-v] \
-                         [<file or directory>...]\n";
+                         [--producer gcc|hod-objcopy|hod|mixed] [<file or directory>...]\n";
 
 /// The most worker threads a run starts by default.
 const DEFAULT_JOBS: usize = 8;
@@ -72,6 +72,12 @@ pub struct Args {
     /// The digest mode of `cargo xtask static-identical` (not an option of
     /// `linktest`: [`engine::Matrix::digest`]).
     pub digest: bool,
+    /// Who makes the objects of C and C++ compile steps and `meta` steps
+    /// (WP-099, [`engine::Producer`]).
+    pub producer: engine::Producer,
+    /// The digest mode's option variants ([`engine::Matrix::variants`];
+    /// not an option of `linktest`).
+    pub variants: Vec<Vec<String>>,
 }
 
 impl Args {
@@ -115,6 +121,12 @@ impl Args {
                 "-j" | "--jobs" => parsed.jobs = Some(jobs(&value("-j")?)?),
                 "--mortar" => parsed.mortar = Some(PathBuf::from(value("--mortar")?)),
                 "--results" => parsed.results = Some(PathBuf::from(value("--results")?)),
+                "--producer" => {
+                    let word = value("--producer")?;
+                    parsed.producer = engine::Producer::parse(&word).ok_or_else(|| {
+                        format!("unknown producer `{word}` (gcc, hod-objcopy, hod, mixed)")
+                    })?;
+                }
                 "--keep" if inline.is_none() => parsed.keep = true,
                 "--no-plumb" if inline.is_none() => parsed.no_plumb = true,
                 "-v" | "--verbose" if inline.is_none() => parsed.verbose = true,
@@ -294,8 +306,16 @@ fn find_tools(
         if required { report.missing.push(text) } else { report.notes.push(text) }
     };
     let find = mortar_testutil::find_listed_tool;
-    let wanted_arches =
+    let mut wanted_arches =
         if args.arches.is_empty() { Arch::ALL.to_vec() } else { args.arches.clone() };
+    // hod and kiln target AArch64 and x86-64 only (WP-099).
+    if args.producer != engine::Producer::Gcc && wanted_arches.contains(&Arch::I386) {
+        wanted_arches.retain(|&arch| arch != Arch::I386);
+        report.notes.push(format!(
+            "--producer {}: i386 is not run (kiln and hod do not target it)",
+            args.producer.name()
+        ));
+    }
     let mut arches: Vec<ArchTools> = Vec::new();
     for arch in wanted_arches {
         match ArchTools::find(arch, host, find) {
@@ -598,7 +618,16 @@ pub fn run(args: &Args) -> Result<Report, String> {
         fixtures: std::collections::BTreeMap::new(),
         fixture_dir: work.join("fixtures"),
         built: engine::FixtureCache::default(),
+        producer: args.producer,
+        mason: None,
+        variants: args.variants.clone(),
     };
+    if args.producer != engine::Producer::Gcc {
+        match crate::mason::Mason::find() {
+            Ok(mason) => matrix.mason = Some(mason),
+            Err(e) => report.errors.push(format!("--producer {}: {e}", args.producer.name())),
+        }
+    }
     if let Err(e) = matrix.write_wrappers(&arches) {
         report.errors.push(e);
     }

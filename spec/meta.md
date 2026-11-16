@@ -107,12 +107,26 @@ component checks MT-2 on its own terms. A section of the container's name
 with `SHF_GROUP` set (a group member, as GNU as writes `"eG"`) fails
 MT-6's flags test ("exactly `SHF_EXCLUDE`"): it is not a container, takes
 `spec/resolve.md` §10's `SHF_EXCLUDE` row (dropped) and gives one
-`meta-malformed` warning per file; its bytes are never read as units. A
-container with a relocation section is classified as a container and
-read as one; its relocation section is consumed with it (no relocation
-is applied: the container has no output, MT-31/MT-33) and nothing is
-reported. On Mason objects MT-2 is checked by the verifier's container
-rules (WP-078).
+`meta-malformed` warning per file; its bytes are never read as units.
+This is also what two units' groups of one signature come to (a
+producer that puts its container in a comdat, as hod does for a global
+in one, `odr.md` §11): neither section is a container, whichever copy
+the election keeps, so no record of either is read and each file is
+warned once; a record never depends on a group election, which is the
+point of MT-2.
+
+**MT-2a (a relocated container is not one; WP-099, judgement call).** A
+section that passes MT-6's test but has a relocation section applying to
+it (`sh_info` of an `SHT_REL`/`SHT_RELA` naming it: hod writes
+`.rela.mason.meta` for an initializer with a pointer) is not a
+container: it takes kind `Excluded` (dropped, with its relocation
+section), its bytes are never read as units, it is never kept by MT-32,
+and the file gets MT-6's `meta-malformed` warning once ("a relocation
+section applies to it"). Until WP-099 such a section was read as a
+container and its relocations ignored: records whose bytes a relocation
+was meant to fill would have been read as the zeros the object holds,
+the silent acceptance principle 2 forbids. On Mason objects MT-2 is also
+checked by the verifier's container rules (WP-078).
 
 **MT-3 (other linkers).** Final links by GNU ld 2.44, lld 19 and mold
 2.37 drop the section and produce the same program as without it (P,
@@ -167,6 +181,17 @@ row), and mortar warns `meta-malformed` (`odr.md` §9) once per file,
 because a producer meant something and got it wrong. That warning is on
 by default: it was run on every corpus of `odr.md` §12.3 (no object there
 has such a section) with zero findings (`odr.md` O-1).
+
+What a code generator puts around the section (hod `a598555f`, its rule
+9.7.4, measured by WP-099; `spec/landed/meta/WP-099.md` has the table):
+`SHF_GNU_RETAIN` (a global in `@llvm.used`), `SHF_GROUP` (a comdat) and
+an allocated section (no `!exclude`) each fail the flags test and get
+this warning; a large-data name (`.ldata.mason.meta`, x86-64) is not the
+container's name and is dropped by its `SHF_EXCLUDE` without a word
+(MT-1: the name decides; a producer that renames the section has written
+no container). Two IR globals in one section are one section whose
+contents are their units in order, which MT-10's framing reads as it
+reads any sequence of units.
 
 ## 4. Record framing
 
@@ -592,8 +617,18 @@ non-PIE; shared-object outputs are M4), `spec/landed/meta/WP-076.md`:
   non-allocated section it already accepts).
 - An input section named `.mason.meta` that is **not** a container
   (MT-6's warning) and would be copied into the output is refused by
-  name with this option: its bytes would be merged into the kept
-  section by name. Without the option nothing changes.
+  name with this option when the output gets the kept section (some
+  live unit): its bytes would be merged into the kept section by name.
+  With no unit there is no kept section, and the section is copied as
+  without the option, with MT-6's warning (what mortar did before
+  WP-099 wrote this sentence down; measured with hod's allocated
+  section, `spec/landed/meta/WP-099.md`; a judgement call). Without the
+  option nothing changes.
+- A unit that is malformed (MT-14: an alignment below 8 is one) is
+  dropped from the kept section without a word unless `--odr=strict`;
+  WP-099 measured it with hod's `align 4` and proposes, as an open
+  judgement call, MT-14's warning in that case too (the option reads
+  the unit, so the warning would not cost a read).
 - An incremental link with the option falls back to a full link (the
   section is a function of every live unit).
 
@@ -662,6 +697,15 @@ has seen every definition (`odr.md` O-20).
 - **T-MT-6**: one object per non-container variant (`SHF_ALLOC`, no
   `SHF_EXCLUDE`, `SHF_ALLOC|SHF_EXCLUDE`, `SHT_NOTE`): classified by the
   fall-through rows, one `meta-malformed` per file.
+- **T-MT-2a, T-MT-hod** (WP-099): `crates/mortar_resolve/tests/rules.rs`
+  (`s10_relocated_container_is_not_one`); `crates/mortar/tests/hod_meta.rs`
+  on hod-made objects (`tests/fixtures/hod-meta-a598555f/`, re-made and
+  compared where hod is built): the container, records through it, two
+  units of one file, two globals in one section, `SHF_GNU_RETAIN`,
+  `SHF_GROUP`, a relocation section, `SHF_ALLOC`, a large-data name,
+  alignment 4, empty; and `cargo xtask mason producers` (the Mason step):
+  the one-definition-rule corpus through hod's container, the test
+  producer's, and both, against `tests/mason/producers.tsv`.
 - **T-MT-1, 2, 4, 11-16, 20, 21, 26-28, 31-33, 37, 41**: MT-1/2 by the
   test producer's output read back; MT-4 two sections in one object;
   MT-15/16 after `objcopy --redefine-sym` and `-r`; MT-20/21 a unit whose
