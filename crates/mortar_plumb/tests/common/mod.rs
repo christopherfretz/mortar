@@ -1648,8 +1648,16 @@ pub fn known_anomaly(link: &Link, f: &mortar_plumb::Finding) -> Option<&'static 
     // The output is read only for the one class that needs its sections.
     let format = link.linker.format();
     mortar_plumb::anomaly::classify(format, &[], f).or_else(|| {
-        // S8, and Y1 for i386's A2 (its value is 16 bytes before .plt.got).
-        matches!(f.rule, mortar_plumb::Rule::Structure(8) | mortar_plumb::Rule::SymbolValue)
+        // S8, Y1 for i386's A2 (its value is 16 bytes before .plt.got),
+        // and the static-pie classes A30-A32 (the output's kind).
+        matches!(
+            f.rule,
+            mortar_plumb::Rule::Structure(8)
+                | mortar_plumb::Rule::SymbolValue
+                | mortar_plumb::Rule::Dyn(9 | 10)
+                | mortar_plumb::Rule::Field
+                | mortar_plumb::Rule::Ifunc(3)
+        )
             .then(|| mortar_plumb::anomaly::classify(format, &link.output_bytes(), f))
             .flatten()
     })

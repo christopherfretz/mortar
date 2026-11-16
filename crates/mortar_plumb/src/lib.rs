@@ -28,6 +28,7 @@ pub mod mutate;
 mod plt;
 mod property;
 mod reloc;
+mod spie;
 pub mod report;
 mod structure;
 pub mod sweep;

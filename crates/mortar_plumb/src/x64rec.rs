@@ -277,7 +277,8 @@ impl Engine<'_, '_> {
             && self.cov.failed == failed
             && self.objs[oi].secs[si].alloc()
         {
-            self.abs_words.push((rec.p, rec.def.field.width(), xv, self.internal(s)));
+            let internal = self.internal(s) && !self.absolute(oi, rec.sym);
+            self.abs_words.push((rec.p, rec.def.field.width(), xv, internal));
         }
     }
 

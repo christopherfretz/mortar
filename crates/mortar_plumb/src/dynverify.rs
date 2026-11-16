@@ -181,6 +181,41 @@ pub fn verify_with(output: &[u8], inputs: &[Input<'_>], map: &Map, ctx: &Ctx<'_>
     dyn_engine(&mut engine, &v1, &plt);
     run_engine(&mut engine, &image, map, None);
     let abs = std::mem::take(&mut engine.abs_words);
+    if kind == OutputKind::StaticPie {
+        // §12.4: no RELATIVE record on a word that holds no address of the
+        // executable (what view 2 cannot see when the word is not an
+        // input's absolute use).
+        let known: BTreeSet<u64> = abs.iter().filter(|w| w.3).map(|w| w.0).collect();
+        for r in &dout.rels {
+            if loader::kind(image.header.e_machine, r.ty) == loader::Kind::Relative
+                && !known.contains(&r.offset)
+            {
+                let placed = engine.occupied_at(r.offset);
+                // A linker-made word (a GOT slot no reference left in use)
+                // holding an address of the image is an address word.
+                let a = r.addend.unwrap_or(0) as u64;
+                let inside = image.phdrs.iter().any(|p| {
+                    p.p_type == mortar_elf::consts::PT_LOAD
+                        && p.p_vaddr <= a
+                        && a <= p.p_vaddr.saturating_add(p.p_memsz)
+                });
+                if !placed && inside {
+                    continue;
+                }
+                report.findings.push(
+                    Finding::new(
+                        Rule::Dyn(9),
+                        if placed {
+                            "a RELATIVE record on a word of an input section that no input relocation makes an address of the executable"
+                        } else {
+                            "a RELATIVE record on a linker-made word that holds no address of the executable the inputs ask for"
+                        },
+                    )
+                    .at(r.offset),
+                );
+            }
+        }
+    }
     let chosen = std::mem::take(&mut engine.ifunc_chosen);
     report.findings.extend(exported_ifuncs(&image, &dout, &model, &chosen, map.format));
     let view1_findings = std::mem::take(&mut engine.findings);
@@ -208,7 +243,13 @@ pub fn verify_with(output: &[u8], inputs: &[Input<'_>], map: &Map, ctx: &Ctx<'_>
                     format!(
                         "view 2 (load bias {BIAS2:#x}): the word holds {found:#x}, the program needs {:#x}{}",
                         want & mask,
-                        if internal { " (no record moves it with the executable)" } else { "" }
+                        if internal {
+                            " (no record moves it with the executable)"
+                        } else if found & mask == v.wrapping_add(BIAS2) & mask {
+                            " (a record moves a value that is not an address of the executable)"
+                        } else {
+                            ""
+                        }
                     ),
                 )
                 .at(at);

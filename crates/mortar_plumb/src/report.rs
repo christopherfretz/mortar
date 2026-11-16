@@ -55,7 +55,7 @@ pub enum Rule {
     BuildId,
     /// C1-C6: erratum 843419 fixes by site (§5.10).
     Erratum(u8),
-    /// P-D1 .. P-D13: stage 3, dynamic executables (§12).
+    /// P-D1 .. P-D15: stage 3, dynamic executables and static-pie (§12).
     Dyn(u8),
 }
 
@@ -313,7 +313,7 @@ pub struct Finding {
 
 /// The start of a P-D1 finding that names why an output is outside
 /// stage 3 (`spec/plumb.md` §12.1): a link the verifier does not model
-/// (an option `spec/dyn.md` refuses, static-pie, version definitions, a
+/// (an option `spec/dyn.md` refuses, version definitions, a
 /// `DT_NEEDED` object no search finds). It is a finding, never a pass;
 /// a harness may count a reference linker's output with only such
 /// findings as not judged ([`Finding::outside`]).
