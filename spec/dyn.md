@@ -126,7 +126,7 @@ and x86-64 linked, run and verified; `spec/landed/dyn/WP-056.md`).
 | `--push-state`, `--pop-state` | 57 | supported | supported (they carry the as-needed state) |
 | `--build-id` | 426 | partial (bare form) | partial (`=md5`, `=uuid` refused); the note is in the first `PT_LOAD` after `.interp` |
 | `--eh-frame-hdr` | 426 | supported | supported; off unless given (GNU ld, lld; Q3, ruled) |
-| `-export-dynamic`/`-E` | 22 | noop | supported (D-21); refused by name in a static-pie (D-1, WP-056 §3.1) |
+| `-export-dynamic`/`-E` | 22 | noop | supported (D-21); no effect in a static-pie (D-1; WP-056 §3.1, WP-088) |
 | `--export-dynamic-symbol` | 0 | supported (matched literally) | supported, by name and by glob (resolve.md §4.2; WP-056 §2); no effect in a static-pie |
 | `-rpath` | 22 | noop | supported (D-30 row 2); `--enable-new-dtags` default, `--disable-new-dtags` writes `DT_RPATH` |
 | `-z now` | 22 | supported (static) | supported (D-49), PIE and `-no-pie` |
@@ -286,8 +286,9 @@ are refused by name, each by a rule that puts it out of M2:
    lines either on this host.
 
 The 137 i686 lines stay refused (`dynamically linked output on i386`;
-M4). Of the variations a real build adds (`x-` in the census lane),
-`-static-pie --export-dynamic` is refused by name (D-1; WP-056 §3.1).
+M4). The variations a real build adds (`x-` in the census lane) all
+link; `-static-pie --export-dynamic` is accepted and has no effect (D-1;
+WP-056 §3.1; the verifier judges the line: P-D14, WP-088).
 
 ## 3. Inventory of what the specs already say
 
@@ -384,7 +385,7 @@ in E-dynamic (108 outputs: C, C++, Fortran hello × PIE, `-no-pie`,
 | `PT_PHDR` | no | yes | yes | no (GNU ld; lld and mold write one; layout L-67 "iff `PT_INTERP`") |
 | `.dynamic`, `PT_DYNAMIC`, `_DYNAMIC` | no | yes | yes | yes |
 | `DT_NEEDED`, versions | no | yes | yes | no (a shared input is refused, input §8.4) |
-| `.dynsym` | none | D-21 | D-21 | the null entry only: `--export-dynamic` is refused by name [M4], `--export-dynamic-symbol` accepted with no effect (WP-056 measured exports from a static-pie useless; §13.1) |
+| `.dynsym` | none | D-21 | D-21 | the null entry only: `--export-dynamic` and `--export-dynamic-symbol` are accepted with no effect (WP-056 measured exports from a static-pie useless; §13.1) |
 | `DT_DEBUG` | — | yes | yes | yes (all three) |
 | `DT_FLAGS_1` | — | `DF_1_NOW` under `-z now` | `DF_1_PIE` (+ `DF_1_NOW`) | `DF_1_PIE` (+ `DF_1_NOW` under `-z now`: all three references; WP-052) |
 | `RELATIVE` | never | never (absolute values are final) | every absolute word (GOT slots included) of a non-preemptible target that is an address of the executable; never one of an absolute symbol (`SHN_ABS`: the word holds the value, D-46 row `Abs`; GNU ld's AArch64 record there is A30, §13.2) | same as `Pie` |
@@ -1572,7 +1573,7 @@ unchanged. Every `P-D` id this spec cites is that section's.
 | Bloom words, buckets | own formula | D-26 | own | lld's (D-26) |
 | `Vernaux` layout | interleaved | headers first | headers first | interleaved (D-27; elflint) |
 | writable place (D-25) of a read-only input section in a writable output section | the output section: links (RWX segment, no `PT_GNU_RELRO`) | the input section: refuses the PIE ("recompile with -fPIC") | the output section: links (`DT_TEXTREL`, A24) | the output section; records, RELRO kept (D-25, WP-056) |
-| `--export-dynamic` in a static-pie | exports every global (x86-64: the program dies at start-up) | exports every global | exports every global | refused by name (D-1); the exports are useless: a library the program `dlopen`s does not bind to them and `dlsym(RTLD_DEFAULT)` does not find them (WP-056, all three) |
+| `--export-dynamic` in a static-pie | exports every global (x86-64: the program dies at start-up) | exports every global | exports every global | accepted, no effect: `.dynsym` stays the null entry (D-1, P-D14); the exports are useless: a library the program `dlopen`s does not bind to them and `dlsym(RTLD_DEFAULT)` does not find them (WP-056, all three) |
 | `--export-dynamic-symbol` in a static-pie | exports the name | exports the name | exports the name | accepted, no effect: `.dynsym` stays the null entry (D-1, P-D14) |
 | `--export-dynamic-symbol=GLOB` | glob | glob | glob | glob (resolve.md §4.2; WP-056 fixed a literal match) |
 | `.gnu.version_r` align | 8 | 4 | 4 | 4 (D-34) |

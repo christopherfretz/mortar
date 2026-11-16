@@ -169,10 +169,6 @@ pub const OUT_OF_M2: &[(&str, &str)] = &[
         "unsupported option: --whole-archive",
         "asan's runtime: --whole-archive is out of M2 (dyn.md §2.7, item 6)",
     ),
-    (
-        "unsupported feature: --export-dynamic in a static-pie",
-        "dyn.md D-1: a static-pie's .dynsym is the null entry; exports are M4 (WP-056 measured them useless)",
-    ),
     ("unsupported feature: dynamically linked output on i386", "i386 dynamic output is M4"),
     ("unsupported feature: position-independent executable output", "i386 PIE output is M4"),
 ];
