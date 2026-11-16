@@ -584,7 +584,7 @@ hex digits. An empty field is `-`. The lines appear in this order:
 | `delta file <state> <path> <member>` | per file whose units are all refilled (`changed`, `appeared`, `extracted`), then per old file that left (`gone`, `unextracted`). `<member>` is the archive member's name or `-`. |
 | `delta probe <path> <old> <new>` | per IN-23 probe whose answer changed: `present`, `absent` or `-`. |
 | `delta symbols new=N gone=N definer=N value=N size=N kind=N attrs=N comdat=N commons=N live=N dead=N tls=N` | once: IN-26's classes. |
-| `delta symbol <what> <name>` | per changed global key. `<what>` is one of the classes above. |
+| `delta symbol <what> <name>` | per changed global key. `<what>` is one of the classes above. The keys of the new link come first, in its `RESOLVED` order (by `SYMBOLS` row); then the `gone` keys, in the old link's `RESOLVED` order. A key with an `attrs` line and another class has the `attrs` line first. |
 | `delta fallback <reason> <detail>` | per correctness fall-back (IN-16) the delta found. An update would link in full. |
 | `delta policy too-much-changed <detail>` | when IN-16's policy limit would send an update to a full link. |
 | `delta refill units=N holes=N chunks=N bytes=N` | once. `bytes` is the units' total size. |

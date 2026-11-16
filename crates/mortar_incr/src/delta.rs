@@ -16,7 +16,7 @@
 //! removing its bit. A rule that cannot answer exactly is a named
 //! fall-back (§7), never "unchanged".
 
-use std::collections::{HashMap, HashSet};
+use mortar_core::hash::{HashMap, HashSet};
 
 use crate::detect::{Changes, FileState};
 use crate::format::{
@@ -287,9 +287,12 @@ fn key_id(s: &State, row: u32) -> Option<KeyId<'_>> {
     Some((y.kind, s.str(y.name), s.str(y.version)))
 }
 
-/// A section's identity: file (as a NEW `FILES` row), anchor, name,
-/// ordinal.
-type SecId<'s> = (u32, u8, &'s [u8], &'s [u8], u32);
+/// A section's identity within its file: anchor, name, ordinal.
+type SecId<'s> = (u8, &'s [u8], &'s [u8], u32);
+
+fn sec_id<'s>(s: &'s State, x: &SectionRow) -> SecId<'s> {
+    (x.anchor_kind, s.str(x.anchor), s.str(x.name), x.ordinal)
+}
 
 /// Where a placed unit is: allocated by address; non-allocated by its
 /// output section and offset in it.
@@ -299,8 +302,63 @@ enum Pos<'s> {
     NonAlloc(&'s [u8], u32, u64),
 }
 
-/// A merged fragment by output section name, ordinal and hash.
-type FragKey = (Vec<u8>, u32, Hash16);
+/// The places of one merged fragment identity (output section, hash):
+/// one, several (ordinal rows, in order), or unknown (its output section
+/// has no one merged chunk to be relative to).
+#[derive(Debug, PartialEq, Eq)]
+enum Places {
+    Unknown,
+    One(u64),
+    Many(Vec<u64>),
+}
+
+/// Items grouped by a key in `0..n`, each group in push order (a
+/// counting sort, no map). A key outside `0..n` (a damaged state) is kept
+/// aside and searched, so a lookup is never less than what was pushed.
+struct Csr {
+    start: Vec<u32>,
+    items: Vec<u32>,
+    other: Vec<(u32, u32)>,
+}
+
+impl Csr {
+    fn new(n: usize, pairs: impl Iterator<Item = (u32, u32)> + Clone) -> Self {
+        let mut start = vec![0u32; n + 1];
+        let mut other = Vec::new();
+        for (k, v) in pairs.clone() {
+            match start.get_mut(k as usize + 1) {
+                Some(c) if (k as usize) < n => *c += 1,
+                _ => other.push((k, v)),
+            }
+        }
+        let mut sum = 0;
+        for c in &mut start {
+            sum += *c;
+            *c = sum;
+        }
+        let mut fill = start[..n].to_vec();
+        let mut items = vec![0; sum as usize];
+        for (k, v) in pairs {
+            if let Some(at) = fill.get_mut(k as usize) {
+                items[*at as usize] = v;
+                *at += 1;
+            }
+        }
+        Self { start, items, other }
+    }
+
+    fn get(&self, k: u32) -> impl Iterator<Item = u32> + '_ {
+        let k = k as usize;
+        let range = match (self.start.get(k), self.start.get(k + 1)) {
+            (Some(&a), Some(&b)) => a as usize..b as usize,
+            _ => 0..0,
+        };
+        self.items[range]
+            .iter()
+            .copied()
+            .chain(self.other.iter().filter(move |x| x.0 as usize == k).map(|x| x.1))
+    }
+}
 
 struct Side<'s> {
     s: &'s State,
@@ -311,7 +369,11 @@ struct Side<'s> {
     /// lookup per key or per flipped section is not a scan.
     defined_at: HashMap<u32, usize>,
     common_at: HashMap<u32, usize>,
-    globals_of: std::cell::OnceCell<HashMap<u32, Vec<usize>>>,
+    globals_of: std::cell::OnceCell<Csr>,
+    /// Per `FILES` row, its `SECTIONS` rows.
+    by_file: Csr,
+    /// `RESOLVED`'s COMDAT block and whether it is sorted (on first use).
+    comdat: std::cell::OnceCell<(usize, usize, bool)>,
 }
 
 impl<'s> Side<'s> {
@@ -322,31 +384,68 @@ impl<'s> Side<'s> {
                 *o = (*o).min(c.offset);
             }
         }
-        let mut defined_at = HashMap::new();
+        let mut defined_at = HashMap::default();
         for (i, d) in s.defined.iter().enumerate() {
             defined_at.entry(d.symbol).or_insert(i);
         }
-        let mut common_at = HashMap::new();
+        let mut common_at = HashMap::default();
         for (i, p) in s.sym_place.iter().enumerate() {
             common_at.entry(p.symbol).or_insert(i);
         }
-        Self { s, out_start, defined_at, common_at, globals_of: std::cell::OnceCell::new() }
+        let by_file =
+            Csr::new(s.files.len(), s.sections.iter().enumerate().map(|(i, x)| (x.file, i as u32)));
+        Self {
+            s,
+            out_start,
+            defined_at,
+            common_at,
+            globals_of: std::cell::OnceCell::new(),
+            by_file,
+            comdat: std::cell::OnceCell::new(),
+        }
     }
 
     /// The `SECTION`-kind mentions of section `sec`, in `MENTIONS` order.
     fn globals_in(&self, sec: u32) -> impl Iterator<Item = &'s MentionRow> + '_ {
         let s = self.s;
         // Built on first use: only a liveness flip asks.
-        let map = self.globals_of.get_or_init(|| {
-            let mut m: HashMap<u32, Vec<usize>> = HashMap::new();
-            for (i, x) in s.mentions.iter().enumerate() {
-                if x.kind == def_kind::SECTION {
-                    m.entry(x.section).or_default().push(i);
-                }
-            }
-            m
+        let csr = self.globals_of.get_or_init(|| {
+            Csr::new(
+                s.sections.len(),
+                s.mentions
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, x)| x.kind == def_kind::SECTION)
+                    .map(|(i, x)| (x.section, i as u32)),
+            )
         });
-        map.get(&sec).into_iter().flatten().map(move |&i| &s.mentions[i])
+        csr.get(sec).map(move |i| &s.mentions[i as usize])
+    }
+
+    /// Marks in `c` the keys the files `wanted` says mention: per file its
+    /// range when `MENTIONS` is sorted by file (IN-18a), else by a scan.
+    fn mark_mentions(&self, c: &mut [bool], wanted: impl Fn(u32) -> bool) {
+        let m = &self.s.mentions;
+        let mut mark = |x: &MentionRow| {
+            if let Some(v) = c.get_mut(x.symbol as usize) {
+                *v = true;
+            }
+        };
+        if !m.windows(2).all(|w| w[0].file <= w[1].file) {
+            m.iter().filter(|x| wanted(x.file)).for_each(mark);
+            return;
+        }
+        let n = self.s.files.len() as u32;
+        for f in 0..n {
+            if wanted(f) {
+                let lo = m.partition_point(|x| x.file < f);
+                let hi = m.partition_point(|x| x.file <= f);
+                m[lo..hi].iter().for_each(&mut mark);
+            }
+        }
+        // Rows of no file (a damaged state).
+        let tail = m.partition_point(|x| x.file < n);
+        m[tail..].iter().filter(|x| wanted(x.file)).for_each(mark);
     }
 
     fn chunk(&self, c: u32) -> Option<&'s ChunkRow> {
@@ -403,6 +502,29 @@ impl<'s> Side<'s> {
         let p = &self.s.sym_place[*self.common_at.get(&symbol)?];
         Some((self.chunk(p.chunk)?.addr.wrapping_add(p.offset), p.size))
     }
+
+    /// A COMDAT group's keeper (`RESOLVED` kind 6, sorted by signature):
+    /// `None` when the link has no such group, else the keeper's file.
+    fn keeper(&self, sig: &[u8]) -> Option<u32> {
+        let r = &self.s.resolved;
+        let &(lo, hi, sorted) = self.comdat.get_or_init(|| {
+            let lo = r.partition_point(|x| x.kind < def_kind::COMDAT);
+            let hi = lo + r[lo..].partition_point(|x| x.kind == def_kind::COMDAT);
+            let block = &r[lo..hi];
+            let sorted = r.windows(2).all(|w| w[0].kind <= w[1].kind)
+                && block.windows(2).all(|w| self.s.str(w[0].name) < self.s.str(w[1].name));
+            (lo, hi, sorted)
+        });
+        let block = &r[lo..hi];
+        if sorted {
+            let at = block.binary_search_by(|x| self.s.str(x.name).cmp(sig)).ok()?;
+            Some(block[at].file)
+        } else {
+            r.iter()
+                .find(|x| x.kind == def_kind::COMDAT && self.s.str(x.name) == sig)
+                .map(|x| x.file)
+        }
+    }
 }
 
 fn is_eh(s: &State, x: &SectionRow) -> bool {
@@ -421,14 +543,6 @@ fn tp_offset(s: &State, addr: u64) -> i64 {
     } else {
         off.wrapping_sub(up(l.tls_size)) as i64
     }
-}
-
-fn resolved_map(s: &State) -> HashMap<KeyId<'_>, (u32, ResolvedRow)> {
-    s.resolved
-        .iter()
-        .filter(|r| r.kind <= def_kind::SHARED)
-        .filter_map(|r| Some((key_id(s, r.symbol)?, (r.symbol, *r))))
-        .collect()
 }
 
 /// A slot's key: a global by identity, a local by (new file row,
@@ -475,6 +589,40 @@ impl Set {
     }
 }
 
+/// Nothing changed between the two links (IN-25): the same options and
+/// target, every input path the same content, every live file the same
+/// in the same order, every search answered the same. A link is a
+/// function of those (the output is deterministic), so the delta is
+/// empty and nothing is refilled; [`compute`] then answers without
+/// resolving anything.
+#[must_use]
+pub fn nothing_changed(old: &State, new: &State, changes: &Changes) -> bool {
+    use crate::detect::PathState;
+    let same_path =
+        |p: &(PathState, Vec<u8>)| matches!(p.0, PathState::Clean | PathState::HashedSame);
+    let same_file =
+        |f: &(Option<u32>, FileState)| matches!(f.1, FileState::Unchanged | FileState::Dead);
+    let mut last = None;
+    let ordered = changes.old_files.iter().all(|&(n, state)| {
+        if state != FileState::Unchanged {
+            return true;
+        }
+        let ok = n.is_some() && last <= n;
+        last = n;
+        ok
+    });
+    old.plan_hash == new.plan_hash
+        && (old.meta.machine, old.meta.class) == (new.meta.machine, new.meta.class)
+        && old.files.len() == new.files.len()
+        && changes.paths.iter().all(same_path)
+        && changes.new_files.iter().all(same_file)
+        && changes.old_files.iter().all(same_file)
+        && changes.stat_missed.is_empty()
+        && changes.probes.is_empty()
+        && changes.script_changed.is_none()
+        && ordered
+}
+
 /// The delta from `old` to `new` and the refill set (IN-25..IN-29).
 #[allow(clippy::too_many_lines, clippy::many_single_char_names, clippy::similar_names)] // IN-27's rows, in its order
 #[must_use]
@@ -486,6 +634,11 @@ pub fn compute(
     drop: Drop<'_>,
 ) -> Delta {
     let mut d = Delta::default();
+    if nothing_changed(old, new, changes) {
+        d.alloc_bytes =
+            new.chunks.iter().filter(|c| c.sh_flags & SHF_ALLOC != 0).map(|c| c.size).sum();
+        return d;
+    }
     let (a, b) = (Side::new(old), Side::new(new));
     let nfile = |row: u32| changes.new_files.get(row as usize).map_or(FileState::Dead, |f| f.1);
     let unchanged_new = |row: u32| nfile(row) == FileState::Unchanged;
@@ -497,22 +650,30 @@ pub fn compute(
         }
     };
     // ---- sections by identity -------------------------------------------
-    let new_by_id: HashMap<SecId<'_>, u32> = new
-        .sections
-        .iter()
-        .enumerate()
-        .map(|(i, x)| {
-            ((x.file, x.anchor_kind, new.str(x.anchor), new.str(x.name), x.ordinal), i as u32)
-        })
-        .collect();
+    // Within a file pair: by position when both list the same identities
+    // in the same order (an unchanged file always does), else by a map of
+    // that file's sections.
     let mut sec_o2n: Vec<u32> = vec![NONE; old.sections.len()];
     let mut sec_n2o: Vec<u32> = vec![NONE; new.sections.len()];
-    for (i, x) in old.sections.iter().enumerate() {
-        let Some(f) = old_to_new_file(x.file) else { continue };
-        let id = (f, x.anchor_kind, old.str(x.anchor), old.str(x.name), x.ordinal);
-        if let Some(&n) = new_by_id.get(&id) {
-            sec_o2n[i] = n;
-            sec_n2o[n as usize] = i as u32;
+    for of in 0..old.files.len() as u32 {
+        let Some(nf) = old_to_new_file(of) else { continue };
+        let os: Vec<u32> = a.by_file.get(of).collect();
+        let ns: Vec<u32> = b.by_file.get(nf).collect();
+        let id_o = |o: u32| sec_id(old, &old.sections[o as usize]);
+        let id_n = |n: u32| sec_id(new, &new.sections[n as usize]);
+        if os.len() == ns.len() && os.iter().zip(&ns).all(|(&o, &n)| id_o(o) == id_n(n)) {
+            for (&o, &n) in os.iter().zip(&ns) {
+                sec_o2n[o as usize] = n;
+                sec_n2o[n as usize] = o;
+            }
+        } else {
+            let by_id: HashMap<SecId<'_>, u32> = ns.iter().map(|&n| (id_n(n), n)).collect();
+            for &o in &os {
+                if let Some(&n) = by_id.get(&id_o(o)) {
+                    sec_o2n[o as usize] = n;
+                    sec_n2o[n as usize] = o;
+                }
+            }
         }
     }
     // ---- fall-backs on the shape of the output ---------------------------
@@ -613,11 +774,36 @@ pub fn compute(
     // `os` scenario). A hash with several offsets (ordinal rows) compares
     // as the list of its places; an output section with several merged
     // chunks has no one base, and its fragments count as moved.
-    let frag_map = |side: &Side<'_>| -> HashMap<FragKey, Option<Vec<u64>>> {
+    //
+    // Output sections are named by one number on both sides: per
+    // (name, ordinal), a new `OUTSECS` row, or past them an old row the
+    // new link has not.
+    let mut out_ids: HashMap<(&[u8], u32), u32> = HashMap::default();
+    let new_out: Vec<u32> = new
+        .outsecs
+        .iter()
+        .enumerate()
+        .map(|(i, o)| *out_ids.entry((new.str(o.name), o.ordinal)).or_insert(i as u32))
+        .collect();
+    let mut next = new.outsecs.len() as u32;
+    let old_out: Vec<u32> = old
+        .outsecs
+        .iter()
+        .map(|o| {
+            *out_ids.entry((old.str(o.name), o.ordinal)).or_insert_with(|| {
+                next += 1;
+                next - 1
+            })
+        })
+        .collect();
+    let frag_map = |side: &Side<'_>, ids: &[u32]| -> HashMap<(u32, Hash16), Places> {
         let s = side.s;
-        let mut base: HashMap<u32, Option<u64>> = HashMap::new();
+        // Per OUTSECS row: no merged chunk, one (its base), several.
+        let mut base: Vec<Option<Option<u64>>> = vec![None; s.outsecs.len()];
         for c in &s.chunks {
-            if c.tag == TAG_MERGED {
+            if c.tag == TAG_MERGED
+                && let Some(e) = base.get_mut(c.out as usize)
+            {
                 let at = if c.sh_flags & SHF_ALLOC != 0 {
                     c.addr
                 } else {
@@ -625,42 +811,52 @@ pub fn compute(
                         side.out_start.get(c.out as usize).copied().unwrap_or(c.offset),
                     )
                 };
-                base.entry(c.out).and_modify(|e| *e = None).or_insert(Some(at));
+                *e = Some(if e.is_some() { None } else { Some(at) });
             }
         }
-        let mut m: HashMap<FragKey, Option<Vec<u64>>> = HashMap::new();
+        let mut m: HashMap<(u32, Hash16), Places> = HashMap::default();
+        m.reserve(s.frags.len());
         for f in &s.frags {
-            let Some(o) = s.outsecs.get(f.out as usize) else { continue };
-            let k = (s.str(o.name).to_vec(), o.ordinal, f.hash);
-            let at = base.get(&f.out).copied().flatten().map(|b| b.wrapping_add(f.offset));
-            let e = m.entry(k).or_insert_with(|| Some(Vec::new()));
-            match (e.as_mut(), at) {
-                (Some(list), Some(at)) => list.push(at),
-                _ => *e = None,
+            let Some(&id) = ids.get(f.out as usize) else { continue };
+            let at = base.get(f.out as usize).copied().flatten().flatten();
+            let at = at.map(|b| b.wrapping_add(f.offset));
+            match m.entry((id, f.hash)) {
+                std::collections::hash_map::Entry::Vacant(v) => {
+                    v.insert(at.map_or(Places::Unknown, Places::One));
+                }
+                std::collections::hash_map::Entry::Occupied(mut e) => {
+                    let p = e.get_mut();
+                    *p = match (std::mem::replace(p, Places::Unknown), at) {
+                        (Places::One(x), Some(at)) => Places::Many(vec![x, at]),
+                        (Places::Many(mut v), Some(at)) => {
+                            v.push(at);
+                            Places::Many(v)
+                        }
+                        _ => Places::Unknown,
+                    };
+                }
             }
         }
         m
     };
-    let (fa, fb) = (frag_map(&a), frag_map(&b));
+    let (fa, fb) = (frag_map(&a, &old_out), frag_map(&b, &new_out));
+    let known = |p: &&Places| **p != Places::Unknown;
     let mut merged_moved = vec![false; nsec];
     let mut frags_changed = fa.len() != fb.len();
-    let mut key = (Vec::new(), 0, [0; 16]);
-    for (sec, out, h) in &extra.frags {
-        let Some(o) = new.outsecs.get(*out as usize) else { continue };
-        key.0.clear();
-        key.0.extend_from_slice(new.str(o.name));
-        (key.1, key.2) = (o.ordinal, *h);
-        let (x, y) = (fa.get(&key).and_then(Option::as_ref), fb.get(&key).and_then(Option::as_ref));
+    for &(sec, out, h) in &extra.frags {
+        let Some(&id) = new_out.get(out as usize) else { continue };
+        let (x, y) = (fa.get(&(id, h)).filter(known), fb.get(&(id, h)).filter(known));
         if x.is_none() || x != y {
-            if let Some(m) = merged_moved.get_mut(*sec as usize) {
+            if let Some(m) = merged_moved.get_mut(sec as usize) {
                 *m = true;
             }
             frags_changed = true;
         }
     }
     if !frags_changed {
-        frags_changed = fa.iter().any(|(k, v)| v.is_none() || fb.get(k) != Some(v));
+        frags_changed = fa.iter().any(|(k, v)| *v == Places::Unknown || fb.get(k) != Some(v));
     }
+    std::mem::drop((fa, fb));
     // .eh_frame (IN-34a): the records in output order. S-47 packs them
     // back to back, each record's size a function of its input bytes. A
     // record is the same on both sides when its file is unchanged and it
@@ -707,15 +903,28 @@ pub fn compute(
             tail += 1;
         }
         let first = rn.len() - tail;
-        let at: HashMap<(u32, u32), usize> =
-            rn.iter().enumerate().map(|(i, y)| ((y.section, y.piece), i)).collect();
+        // A record by (section, piece): the records are in S-46's order,
+        // sorted by both, so a search; a map when they are not.
+        let sorted = rn.windows(2).all(|w| (w[0].section, w[0].piece) < (w[1].section, w[1].piece));
+        let at_map: HashMap<(u32, u32), usize> = if sorted {
+            HashMap::default()
+        } else {
+            rn.iter().enumerate().map(|(i, y)| ((y.section, y.piece), i)).collect()
+        };
+        let at = |key: (u32, u32)| -> Option<usize> {
+            if sorted {
+                rn.binary_search_by_key(&key, |y| (y.section, y.piece)).ok()
+            } else {
+                at_map.get(&key).copied()
+            }
+        };
         let suffix_start = |shared_ok: bool| {
             let mut start = first;
             for (i, y) in rn.iter().enumerate().skip(first) {
                 let ok = match extra.eh_cie(y.section, y.piece) {
                     Some(EhCie::Cie) => true,
-                    Some(EhCie::Fde(cie)) => match at.get(&(y.section, cie)) {
-                        Some(&j) => j >= start,
+                    Some(EhCie::Fde(cie)) => match at((y.section, cie)) {
+                        Some(j) => j >= start,
                         None => shared_ok,
                     },
                     None => false,
@@ -762,44 +971,47 @@ pub fn compute(
         }
     }
     // Per new file: its present eh units and its placed non-alloc units.
-    let mut eh_of: HashMap<u32, Vec<u32>> = HashMap::new();
-    let mut nonalloc_of: HashMap<u32, Vec<u32>> = HashMap::new();
-    for (i, x) in new.sections.iter().enumerate() {
-        if !present[i] {
-            continue;
-        }
-        if is_eh(new, x) {
-            eh_of.entry(x.file).or_default().push(i as u32);
-        } else if x.sh_flags & SHF_ALLOC == 0 && x.place_chunk != NONE {
-            nonalloc_of.entry(x.file).or_default().push(i as u32);
-        }
-    }
+    let present_of = |eh: bool| {
+        let present = &present;
+        Csr::new(
+            new.files.len(),
+            new.sections
+                .iter()
+                .enumerate()
+                .filter(move |&(i, x)| {
+                    present[i]
+                        && if eh {
+                            is_eh(new, x)
+                        } else {
+                            !is_eh(new, x) && x.sh_flags & SHF_ALLOC == 0 && x.place_chunk != NONE
+                        }
+                })
+                .map(|(i, x)| (x.file, i as u32)),
+        )
+    };
+    let (eh_of, nonalloc_of) = (present_of(true), present_of(false));
     // The index backwards: target -> units.
-    let mut by_global: HashMap<u32, Vec<u32>> = HashMap::new();
-    let mut by_section: HashMap<u32, Vec<u32>> = HashMap::new();
-    let mut slot_users: Vec<u32> = Vec::new();
-    let mut eh_refs: Vec<(u32, u32)> = Vec::new();
-    for x in &new.index {
-        match x.kind {
-            index_kind::GLOBAL => by_global.entry(x.target).or_default().push(x.unit),
-            index_kind::SECTION => by_section.entry(x.target).or_default().push(x.unit),
-            index_kind::SLOT | index_kind::LOCAL_SLOT => slot_users.push(x.unit),
-            index_kind::EH_FRAME => eh_refs.push((x.unit, x.target)),
-            _ => {}
-        }
-    }
+    let index_of = |kind: u8, n: usize| {
+        Csr::new(n, new.index.iter().filter(move |x| x.kind == kind).map(|x| (x.target, x.unit)))
+    };
+    let by_global = index_of(index_kind::GLOBAL, new.symbols.len());
+    let by_section = index_of(index_kind::SECTION, nsec);
+    let slot_users: Vec<u32> = new
+        .index
+        .iter()
+        .filter(|x| matches!(x.kind, index_kind::SLOT | index_kind::LOCAL_SLOT))
+        .map(|x| x.unit)
+        .collect();
     // Mentions by key (new SYMBOLS row), for the non-alloc referrers.
-    let mut files_mentioning: HashMap<u32, Vec<u32>> = HashMap::new();
-    for m in &new.mentions {
-        files_mentioning.entry(m.symbol).or_default().push(m.file);
-    }
+    let files_mentioning =
+        Csr::new(new.symbols.len(), new.mentions.iter().map(|m| (m.symbol, m.file)));
     let mut set = Set { units: vec![0; nsec], drop: drop.reasons };
     let referrers_of_key = |set: &mut Set, key: u32, r: u32| {
-        for &u in by_global.get(&key).into_iter().flatten() {
+        for u in by_global.get(key) {
             set.add(u, r);
         }
-        for f in files_mentioning.get(&key).into_iter().flatten() {
-            for &u in nonalloc_of.get(f).into_iter().flatten() {
+        for f in files_mentioning.get(key) {
+            for u in nonalloc_of.get(f) {
                 set.add(u, r);
             }
         }
@@ -811,20 +1023,11 @@ pub fn compute(
         }
     }
     // ---- globals (IN-26) -----------------------------------------------
-    let (ra, rb) = (resolved_map(old), resolved_map(new));
-    // Keys an unchanged file mentions (in the old state).
-    let mut unchanged_mentions: HashSet<u32> = HashSet::new();
-    for m in &old.mentions {
-        if ofile(m.file) == FileState::Unchanged {
-            unchanged_mentions.insert(m.symbol);
-        }
-    }
-    let file_id = |s: &State, side: bool, f: u32| -> Option<u32> {
+    let file_id = |side: bool, f: u32| -> Option<u32> {
         // As a NEW files row (the old side translated).
         if f == NONE {
             return None;
         }
-        let _ = s;
         if side { Some(f) } else { old_to_new_file(f) }
     };
     let sec_new = |side: bool, sec: u32| -> u32 {
@@ -837,9 +1040,97 @@ pub fn compute(
             || merged_moved.get(n as usize).copied().unwrap_or(false)
             || eh_moved.get(n as usize).copied().unwrap_or(false)
     };
-    let mut keys: Vec<KeyId<'_>> = ra.keys().chain(rb.keys()).copied().collect();
-    keys.sort_unstable();
-    keys.dedup();
+    // The keys that can differ. A key that only unchanged files mention
+    // (in both links: they are the same files with the same bytes) is
+    // resolved from the same mentions in the same order (IN-26; another
+    // order is `inputs-reordered`), so it has the same definer and the
+    // same kind, size and attributes, and it is in both links. Its value
+    // differs only when its section moved (row 6, the merged fragments,
+    // the `.eh_frame` records, a liveness flip) or when the layout
+    // gives it (internal, common, shared, absolute: compared always).
+    // So the candidates are:
+    // - the keys a new file other than unchanged mentions, and those an
+    //   old one other than unchanged mentions (gone, unextracted,
+    //   changed): per file, its `MENTIONS` range;
+    // - the keys defined in a section that moved, flipped or whose
+    //   fragments or records moved, on either side;
+    // - the layout's own kinds, on either side;
+    // - the keys of an old section that flipped (the flip below asks for
+    //   their new rows).
+    let mut cand_new = vec![false; new.symbols.len()];
+    let mut cand_old = vec![false; old.symbols.len()];
+    let mark = |c: &mut Vec<bool>, sym: u32| {
+        if let Some(x) = c.get_mut(sym as usize) {
+            *x = true;
+        }
+    };
+    b.mark_mentions(&mut cand_new, |f| !unchanged_new(f));
+    a.mark_mentions(&mut cand_old, |f| ofile(f) != FileState::Unchanged);
+    let layout_kind = |k: u8| {
+        matches!(k, def_kind::ABSOLUTE | def_kind::COMMON | def_kind::INTERNAL | def_kind::SHARED)
+    };
+    for r in new.resolved.iter().filter(|r| r.kind <= def_kind::SHARED) {
+        if layout_kind(r.kind) || (r.kind == def_kind::SECTION && section_moved(r.section)) {
+            mark(&mut cand_new, r.symbol);
+        }
+    }
+    for r in old.resolved.iter().filter(|r| r.kind <= def_kind::SHARED) {
+        if layout_kind(r.kind)
+            || (r.kind == def_kind::SECTION && section_moved(sec_new(false, r.section)))
+        {
+            mark(&mut cand_old, r.symbol);
+        }
+    }
+    for (n, &f) in flipped.iter().enumerate() {
+        if f {
+            for m in a.globals_in(sec_n2o[n]) {
+                mark(&mut cand_old, m.symbol);
+            }
+        }
+    }
+    // Pair the candidates across the links by identity: a map of the
+    // candidates only, then one pass over each side's other keys to find
+    // a candidate's row there (the state has no index by name).
+    let mut pair: HashMap<KeyId<'_>, (u32, u32)> = HashMap::default();
+    let mut in_pair_new = vec![false; new.resolved.len()];
+    for (i, r) in new.resolved.iter().enumerate() {
+        if r.kind <= def_kind::SHARED
+            && cand_new.get(r.symbol as usize).copied().unwrap_or(false)
+            && let Some(k) = key_id(new, r.symbol)
+        {
+            pair.entry(k).or_insert((NONE, NONE)).0 = i as u32;
+            in_pair_new[i] = true;
+        }
+    }
+    for (j, r) in old.resolved.iter().enumerate() {
+        if r.kind <= def_kind::SHARED
+            && cand_old.get(r.symbol as usize).copied().unwrap_or(false)
+            && let Some(k) = key_id(old, r.symbol)
+        {
+            pair.entry(k).or_insert((NONE, NONE)).1 = j as u32;
+        }
+    }
+    if !pair.is_empty() {
+        for (j, r) in old.resolved.iter().enumerate() {
+            if r.kind <= def_kind::SHARED
+                && !cand_old.get(r.symbol as usize).copied().unwrap_or(false)
+                && let Some(k) = key_id(old, r.symbol)
+                && let Some(e) = pair.get_mut(&k)
+            {
+                e.1 = j as u32;
+            }
+        }
+        for (i, r) in new.resolved.iter().enumerate() {
+            if r.kind <= def_kind::SHARED
+                && !in_pair_new[i]
+                && let Some(k) = key_id(new, r.symbol)
+                && let Some(e) = pair.get_mut(&k)
+            {
+                e.0 = i as u32;
+                in_pair_new[i] = true;
+            }
+        }
+    }
     let key_name = |k: &KeyId<'_>| {
         let mut n = String::from_utf8_lossy(k.1).into_owned();
         if k.0 == 1 {
@@ -848,17 +1139,23 @@ pub fn compute(
         }
         n
     };
-    for k in &keys {
-        let (Some(&(osym, o)), Some(&(nsym, n))) = (ra.get(k), rb.get(k)) else {
-            if rb.contains_key(k) {
-                d.symbols.new += 1;
-                d.symbol_lines.push(("new", key_name(k)));
-            } else {
-                d.symbols.gone += 1;
-                d.symbol_lines.push(("gone", key_name(k)));
-            }
+    // In the report's order: the new link's keys in `RESOLVED` order (by
+    // their `SYMBOLS` row), then the keys gone in the old one's.
+    for (i, n) in new.resolved.iter().enumerate() {
+        if !in_pair_new[i] {
             continue;
-        };
+        }
+        let Some(k) = key_id(new, n.symbol) else { continue };
+        let nsym = n.symbol;
+        let n = *n;
+        let Some(&(_, j)) = pair.get(&k) else { continue };
+        if j == NONE {
+            d.symbols.new += 1;
+            d.symbol_lines.push(("new", key_name(&k)));
+            continue;
+        }
+        let o = old.resolved[j as usize];
+        let osym = o.symbol;
         let defined = |r: &ResolvedRow| r.kind != def_kind::UNDEFINED;
         // Attributes (IN-26 v1): type, binding, st_other, or became
         // absolute or common, for a key an unchanged file mentions.
@@ -868,13 +1165,14 @@ pub fn compute(
         let became = o.kind != n.kind && (special(&o) || special(&n));
         if attrs || became {
             d.symbols.attrs += 1;
-            d.symbol_lines.push(("attrs", key_name(k)));
-            if unchanged_mentions.contains(&osym) {
-                fallback(&mut d, "symbol-kind-changed", key_name(k));
+            d.symbol_lines.push(("attrs", key_name(&k)));
+            // An unchanged file's mentions are the same in both links.
+            if files_mentioning.get(nsym).any(&unchanged_new) {
+                fallback(&mut d, "symbol-kind-changed", key_name(&k));
             }
         }
         // The definition (IN-27 row 3).
-        let definer = file_id(old, false, o.file) != file_id(new, true, n.file);
+        let definer = file_id(false, o.file) != file_id(true, n.file);
         let mut what = None;
         if o.kind != n.kind {
             d.symbols.kind += 1;
@@ -913,30 +1211,50 @@ pub fn compute(
             }
         }
         if let Some(w) = what {
-            d.symbol_lines.push((w, key_name(k)));
+            d.symbol_lines.push((w, key_name(&k)));
             referrers_of_key(&mut set, nsym, reason::GLOBAL);
         }
     }
-    // COMDAT keepers (IN-27 row 4).
-    let keepers = |s: &'_ State, side: bool| -> HashMap<Vec<u8>, Option<u32>> {
-        s.resolved
-            .iter()
-            .filter(|r| r.kind == def_kind::COMDAT)
-            .map(|r| (s.str(r.name).to_vec(), file_id(s, side, r.file)))
-            .collect()
-    };
-    let (ka, kb) = (keepers(old, false), keepers(new, true));
-    let mut changed_groups: HashSet<Vec<u8>> = HashSet::new();
-    for (sig, keeper) in &ka {
-        if kb.get(sig) != Some(keeper) {
-            changed_groups.insert(sig.clone());
+    for r in old.resolved.iter().filter(|r| r.kind <= def_kind::SHARED) {
+        if !cand_old.get(r.symbol as usize).copied().unwrap_or(false) {
+            continue;
+        }
+        let Some(k) = key_id(old, r.symbol) else { continue };
+        if pair.get(&k).is_some_and(|e| e.0 == NONE) {
+            d.symbols.gone += 1;
+            d.symbol_lines.push(("gone", key_name(&k)));
         }
     }
-    for sig in kb.keys() {
-        if !ka.contains_key(sig) {
-            changed_groups.insert(sig.clone());
+    // COMDAT keepers (IN-27 row 4). A group only unchanged files have
+    // (in both links) keeps its keeper: the first of them in the same
+    // order. So the candidates are the groups of the sections of the
+    // other files, on either side, each looked up in both.
+    let mut sigs: HashSet<&[u8]> = HashSet::default();
+    for f in 0..new.files.len() as u32 {
+        if !unchanged_new(f) {
+            for x in b.by_file.get(f).map(|i| &new.sections[i as usize]) {
+                if x.anchor_kind == 1 {
+                    sigs.insert(new.str(x.anchor));
+                }
+            }
         }
     }
+    for f in 0..old.files.len() as u32 {
+        if ofile(f) != FileState::Unchanged {
+            for x in a.by_file.get(f).map(|i| &old.sections[i as usize]) {
+                if x.anchor_kind == 1 {
+                    sigs.insert(old.str(x.anchor));
+                }
+            }
+        }
+    }
+    // Changed: in one link only, or kept by another file.
+    let changed_groups: HashSet<&[u8]> = sigs
+        .into_iter()
+        .filter(|sig| {
+            a.keeper(sig).map(|f| file_id(false, f)) != b.keeper(sig).map(|f| file_id(true, f))
+        })
+        .collect();
     d.symbols.comdat = changed_groups.len();
     // Liveness flips of unchanged files' placed sections (rows 4 and 9).
     for n in 0..nsec {
@@ -956,12 +1274,7 @@ pub fn compute(
         } else {
             d.symbols.dead += 1;
         }
-        for &u in eh_of
-            .get(&x.file)
-            .into_iter()
-            .flatten()
-            .chain(nonalloc_of.get(&x.file).into_iter().flatten())
-        {
+        for u in eh_of.get(x.file).chain(nonalloc_of.get(x.file)) {
             set.add(u, file_row);
         }
         for m in b.globals_in(n as u32) {
@@ -970,9 +1283,10 @@ pub fn compute(
         let o = sec_n2o[n];
         for m in a.globals_in(o) {
             if let Some(k) = key_id(old, m.symbol)
-                && let Some(&(nsym, _)) = rb.get(&k)
+                && let Some(&(i, _)) = pair.get(&k)
+                && i != NONE
             {
-                referrers_of_key(&mut set, nsym, row);
+                referrers_of_key(&mut set, new.resolved[i as usize].symbol, row);
             }
         }
     }
@@ -987,10 +1301,10 @@ pub fn compute(
         }
         if moved[n] {
             set.add(n as u32, reason::MOVED);
-            for &u in by_section.get(&(n as u32)).into_iter().flatten() {
+            for u in by_section.get(n as u32) {
                 set.add(u, reason::MOVED_REF);
             }
-            for &u in nonalloc_of.get(&x.file).into_iter().flatten() {
+            for u in nonalloc_of.get(x.file) {
                 set.add(u, reason::MOVED_FILE);
             }
         }
@@ -998,10 +1312,10 @@ pub fn compute(
             if present[n] {
                 set.add(n as u32, reason::FRAG);
             }
-            for &u in by_section.get(&(n as u32)).into_iter().flatten() {
+            for u in by_section.get(n as u32) {
                 set.add(u, reason::FRAG);
             }
-            for &u in nonalloc_of.get(&x.file).into_iter().flatten() {
+            for u in nonalloc_of.get(x.file) {
                 set.add(u, reason::FRAG);
             }
         }
@@ -1015,15 +1329,19 @@ pub fn compute(
     // piece resolves to the next kept record (S-50 case 3), which may be
     // between them.
     if eh_changed {
-        let mut kept: HashMap<u32, u32> = HashMap::new();
+        let mut kept = vec![0u32; nsec];
         for y in rn {
-            *kept.entry(y.section).or_default() += 1;
+            if let Some(c) = kept.get_mut(y.section as usize) {
+                *c += 1;
+            }
         }
-        for &(u, t) in &eh_refs {
+        for x in new.index.iter().filter(|x| x.kind == index_kind::EH_FRAME) {
+            let (u, t) = (x.unit, x.target);
             // An empty section: every reference is S-50 case 1, the
             // output section's start (the chunk did not move: a prefix).
             let empty = new.sections.get(t as usize).is_some_and(|x| x.size == 0);
-            let whole = extra.eh_pieces(t).is_some_and(|n| kept.get(&t) == Some(&n));
+            let count = kept.get(t as usize).copied().unwrap_or(0);
+            let whole = count > 0 && extra.eh_pieces(t) == Some(count);
             let same = (empty && !eh_chunk_moved)
                 || (whole && !eh_moved.get(t as usize).copied().unwrap_or(true));
             if !same {
@@ -1038,8 +1356,7 @@ pub fn compute(
         a.chunk_by_name(n).map(|c| (c.addr, c.size)) != b.chunk_by_name(n).map(|c| (c.addr, c.size))
     });
     let slots_changed = slot_chunks_moved
-        || slot_list(old, &|f| file_id(old, false, f))
-            != slot_list(new, &|f| file_id(new, true, f));
+        || slot_list(old, &|f| file_id(false, f)) != slot_list(new, &|f| file_id(true, f));
     if slots_changed {
         for &u in &slot_users {
             set.add(u, reason::SLOTS);
@@ -1128,14 +1445,14 @@ pub fn compute(
     let old_chunks: HashMap<(u8, &[u8], u32), &ChunkRow> =
         old.chunks.iter().map(|c| (a.chunk_key(c), c)).collect();
     // Body chunks holding a unit or a hole.
-    let mut touched: HashSet<u32> = HashSet::new();
+    let mut touched: HashSet<u32> = HashSet::default();
     for u in &d.units {
         let x = &new.sections[u.section as usize];
         if x.place_chunk != NONE {
             touched.insert(x.place_chunk);
         }
     }
-    let mut old_touched: HashSet<(u8, &[u8], u32)> = HashSet::new();
+    let mut old_touched: HashSet<(u8, &[u8], u32)> = HashSet::default();
     for h in &d.holes {
         let x = &old.sections[h.old as usize];
         if let Some(c) = a.chunk(x.place_chunk) {

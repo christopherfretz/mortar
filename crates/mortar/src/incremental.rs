@@ -608,7 +608,13 @@ fn dry_run(old: &State, new: &State, f: &Front<'_>) -> DryRun {
         assignment: &f.assignment,
         split: &f.merge.split,
     };
-    let extra = mortar_incr::capture::extra(&link);
+    // Nothing changed: nothing to resolve, and nothing of the new link
+    // beyond its state is asked for.
+    let extra = if mortar_incr::delta::nothing_changed(old, new, &changes) {
+        mortar_incr::delta::Extra::default()
+    } else {
+        mortar_incr::capture::extra(&link)
+    };
     let delta =
         mortar_incr::delta::compute(old, new, &changes, &extra, mortar_incr::delta::Drop::NONE);
     let t2 = Instant::now();
