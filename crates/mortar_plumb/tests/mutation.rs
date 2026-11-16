@@ -454,7 +454,8 @@ fn mortar_map(c: &'static Corpus) -> (Ctx, Map) {
         c.addr = Some(s.header().sh_addr);
         c.size = s.header().sh_size;
     }
-    let text = mortar_plumb::map::mortar::write(&ctx.map);
+    // The line (§3.2a): the bare tree sealed above is `--build-id`'s.
+    let text = mortar_plumb::map::mortar::write(&with_words(&ctx.map, &["--build-id"]));
     let map = mortar_plumb::map::parse(Format::Mortar, &text).unwrap();
     (ctx, map)
 }
@@ -1099,7 +1100,7 @@ fn s9_2j_debug_mutations_are_found() {
         });
     }
     assert!(base.nonalloc.len() > 6, "{} nplace records", base.nonalloc.len());
-    let text = mortar_plumb::map::mortar::write(&base);
+    let text = mortar_plumb::map::mortar::write(&with_line(&base));
     let map = mortar_plumb::map::parse(Format::Mortar, &text).unwrap();
     // R-9's map rules within one output section: M2 and M5.
     let mut twice = map.clone();
@@ -1199,7 +1200,7 @@ fn s9_2k_property_mutations_are_found() {
         // Mortar's rules, on the same bytes.
         for case in ["prop-and", "prop-two"] {
             let ctx = Ctx::of(c.get(case, linker));
-            let text = mortar_plumb::map::mortar::write(&ctx.map);
+            let text = mortar_plumb::map::mortar::write(&with_line(&ctx.map));
             let map = mortar_plumb::map::parse(Format::Mortar, &text).unwrap();
             let props = |out: &[u8]| -> Vec<String> {
                 verify_with(out, &ctx.files, &map)
@@ -1245,16 +1246,25 @@ fn s9_2l_build_id_mutations_are_found() {
     let note = shdrs(&ctx.output).into_iter().find(|s| s.1 == ".note.gnu.build-id");
     let note = note.expect("the start link has no build id: the driver passes --build-id");
     let id = note.5 as usize + 16;
-    let text = mortar_plumb::map::mortar::write(&ctx.map);
-    let map = mortar_plumb::map::parse(Format::Mortar, &text).unwrap();
+    // The line (§3.2a) names the tree: `--build-id` the bare one.
+    let mapped = |words: &[&str]| {
+        let text = mortar_plumb::map::mortar::write(&with_words(&ctx.map, words));
+        mortar_plumb::map::parse(Format::Mortar, &text).unwrap()
+    };
+    let map = mapped(&["--build-id"]);
     let b1 = |out: &[u8]| verify_with(out, &ctx.files, &map);
     let mut n = 0;
     expect_rule(&b1(&ctx.output), "B1", "lld's SHA-1 id as mortar's");
-    n += 1;
-    for t in [Tree::L128, Tree::Sha1] {
+    expect_rule(
+        &verify_with(&ctx.output, &ctx.files, &mapped(&["--build-id=sha1"])),
+        "B1",
+        "lld's SHA-1 id as mortar's sha1 tree",
+    );
+    n += 2;
+    for (t, word) in [(Tree::L128, "--build-id"), (Tree::Sha1, "--build-id=sha1")] {
         let mut m = ctx.output.clone();
         assert_eq!(seal(&mut m, t), 1);
-        let r = b1(&m);
+        let r = verify_with(&m, &ctx.files, &mapped(&[word]));
         assert!(r.with_rule("B1").next().is_none(), "{t:?} sealed:\n{}", r.render("o"));
         let what = r.coverage.build_id.clone().unwrap_or_default();
         assert!(what.contains(&format!("{t:?}")), "{t:?}: coverage says {what:?}");
@@ -1341,8 +1351,10 @@ fn s9_2l_build_id_style_from_the_map() {
     let ctx = Ctx::of(c.get("start", Linker::Lld));
     let note = shdrs(&ctx.output).into_iter().find(|s| s.1 == ".note.gnu.build-id").unwrap();
     let id = note.5 as usize + 16;
-    let text = mortar_plumb::map::mortar::write(&ctx.map);
+    let text = mortar_plumb::map::mortar::write(&with_line(&ctx.map));
     let base = mortar_plumb::map::parse(Format::Mortar, &text).unwrap();
+    // Since WP-102 the style is the line's (§3.2a, §6.7): `style` gives both
+    // the chunk's token and the line's word, which must agree.
     let with_style = |style: Option<&str>| {
         let mut m = base.clone();
         m.chunks.retain(|c| c.name != ".note.gnu.build-id");
@@ -1354,8 +1366,13 @@ fn s9_2l_build_id_style_from_the_map() {
             target: style.map(|s| (s.to_owned(), 0)),
             line: 0,
         });
+        m.args.push(match style {
+            None | Some("default") => b"--build-id".to_vec(),
+            Some("given") => b"--build-id=0x1011".to_vec(),
+            Some(s) => format!("--build-id={s}").into_bytes(),
+        });
         // Through the text form: the style survives the writer and reader.
-        let text = mortar_plumb::map::mortar::write(&m);
+        let text = mortar_plumb::map::mortar::write(&with_line(&m));
         mortar_plumb::map::parse(Format::Mortar, &text).unwrap()
     };
     let b1 = |out: &[u8], style: Option<&str>| {
@@ -1366,7 +1383,7 @@ fn s9_2l_build_id_style_from_the_map() {
     for (k, b) in given[id..id + 20].iter_mut().enumerate() {
         *b = 0x10 + k as u8;
     }
-    assert_eq!(b1(&given, None).0, 1, "(1) a given id with no style is judged as a hash");
+    assert_eq!(b1(&given, None).0, 1, "(1) a given id under a bare --build-id is judged");
     let (n, what) = b1(&given, Some("given"));
     assert_eq!(n, 0, "(2) {what}");
     assert!(what.contains("given"), "(2) {what}");
@@ -1375,6 +1392,15 @@ fn s9_2l_build_id_style_from_the_map() {
     assert_eq!(b1(&tree, Some("sha1")).0, 1, "(3) the bare tree under sha1");
     assert_eq!(b1(&tree, Some("default")).0, 0, "(3) the bare tree under default");
     assert_eq!(b1(&tree, Some("fast")).0, 1, "(4) 20 bytes under fast");
+    // The chunk's token against the line's (§6.7): `sha1` stated, `fast` asked.
+    let mut m = with_style(Some("sha1"));
+    m.args.push(b"--build-id=fast".to_vec());
+    let r = verify_with(&tree, &ctx.files, &m);
+    assert!(
+        r.with_rule("B1").any(|f| f.message.contains("states the style 'sha1'")),
+        "(5) the chunk against the line:\n{}",
+        r.render("o")
+    );
 }
 
 // spec/plumb.md §9.5 (WP-028d): mutation coverage as a number on the small
@@ -1514,7 +1540,7 @@ fn s9_2o_erratum_fixes_are_judged_by_meaning_and_site() {
 // mortar's output only, the erratum links read as mortar's. (1) `W2` made
 // a NOP (in the input too): the site is gone, so lld's patch is a
 // redirect at no site (C3) and GNU ld's ADR a fix outside a site (C2).
-// (2) The option known off: C6 on each fix. (3) A code chunk at page
+// (2) The option off the line: C6 on each fix. (3) A code chunk at page
 // offset 0: C5.
 #[test]
 fn s9_2o_erratum_rules_on_mortar_output() {
@@ -1522,7 +1548,9 @@ fn s9_2o_erratum_rules_on_mortar_output() {
     let Some(c) = small() else { return };
     for (linker, rule) in [(Linker::Bfd, "C2"), (Linker::Lld, "C3")] {
         let ctx = Ctx::of(c.get("erratum", linker));
-        let text = mortar_plumb::map::mortar::write(&ctx.map);
+        // The line (§3.2a): the link had the option.
+        let text =
+            mortar_plumb::map::mortar::write(&with_words(&ctx.map, &["--fix-cortex-a53-843419"]));
         let map = mortar_plumb::map::parse(Format::Mortar, &text).unwrap();
         let label = ctx.link.label();
         let base = verify_with(&ctx.output, &ctx.files, &map);
@@ -1536,7 +1564,7 @@ fn s9_2o_erratum_rules_on_mortar_output() {
         let m = verify_with(&out, &files, &map);
         assert_eq!(c_rules(&m), [rule], "{label}: {}", m.render("e"));
         let mut off = map.clone();
-        off.fix_843419 = Some(false);
+        off.args.retain(|w| w != b"--fix-cortex-a53-843419");
         let m = verify_with(&ctx.output, &ctx.files, &off);
         assert_eq!(c_rules(&m), ["C6"], "{label}: {}", m.render("e"));
         let mut chunk = map.clone();
@@ -1604,4 +1632,26 @@ fn s6_2_s2_s17_an_empty_file_image_lies_anywhere() {
     let r = with(inside, 16, 0);
     assert!(r.findings.is_empty(), "empty image inside .symtab: {}", r.render("out"));
     expect_rule(&with(inside, 16, 8), "S17", "8 bytes inside .symtab");
+}
+
+/// `map` with a line (`spec/plumb.md` §3.2a: every mortar map states its
+/// link's words, and mortar's reader refuses one without). A reference's
+/// map has none: these links gave none of the options §3.2a's rules read,
+/// so the map's input paths stand for the words.
+/// [`with_line`], and then `words` (the options the modelled link had).
+fn with_words(map: &Map, words: &[&str]) -> Map {
+    let mut m = with_line(map);
+    m.args.extend(words.iter().map(|w| w.as_bytes().to_vec()));
+    m
+}
+
+fn with_line(map: &Map) -> Map {
+    let mut m = map.clone();
+    if m.args.is_empty() {
+        m.args = m.paths().iter().map(|p| p.as_bytes().to_vec()).collect();
+        if m.args.is_empty() {
+            m.args.push(b"a.o".to_vec());
+        }
+    }
+    m
 }

@@ -218,7 +218,6 @@ pub fn with_link<T>(
                     relro: d.relro,
                     note_mason: d.note_mason.as_ref(),
                     syms: cx,
-                    args: &f.args,
                 }),
                 _ => None,
             },
@@ -237,6 +236,7 @@ pub fn with_link<T>(
             keep_leaves: f.keep_leaves,
         },
         fixups: &f.erratum_fixes,
+        args: &f.args,
     };
     Ok(go(&link))
 }

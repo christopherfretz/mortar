@@ -666,9 +666,24 @@ fn x64_x48_no_tls_runtime_call_in_a_static_output() {
     let ctx = Ctx::of(link_of(c, "x48", Linker::Bfd).unwrap());
     let x48 = |r: &Report| r.findings.iter().filter(|f| f.message.contains("X-48")).count();
     assert_eq!(x48(&ctx.report(&ctx.output)), 0, "GNU ld's map: not mortar's rule");
-    let text = mortar_plumb::map::mortar::write(&ctx.map);
+    let text = mortar_plumb::map::mortar::write(&with_line(&ctx.map));
     let map = mortar_plumb::map::parse(mortar_plumb::Format::Mortar, &text).unwrap();
     let r = common::verify_with(&ctx.output, &ctx.files, &map);
     assert_eq!(x48(&r), 2, "{}", r.render("x48"));
     assert!(r.findings.iter().filter(|f| f.message.contains("X-48")).all(|f| f.rule.id() == "R8"));
+}
+
+/// `map` with a line (`spec/plumb.md` §3.2a: every mortar map states its
+/// link's words, and mortar's reader refuses one without). A reference's
+/// map has none: these links gave none of the options §3.2a's rules read,
+/// so the map's input paths stand for the words.
+fn with_line(map: &mortar_plumb::Map) -> mortar_plumb::Map {
+    let mut m = map.clone();
+    if m.args.is_empty() {
+        m.args = m.paths().iter().map(|p| p.as_bytes().to_vec()).collect();
+        if m.args.is_empty() {
+            m.args.push(b"a.o".to_vec());
+        }
+    }
+    m
 }
