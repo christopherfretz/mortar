@@ -22,6 +22,7 @@ pub mod odr;
 pub mod outcome;
 pub mod pattern;
 pub mod report;
+pub mod spelled;
 pub mod target;
 
 use std::fmt::Write as _;

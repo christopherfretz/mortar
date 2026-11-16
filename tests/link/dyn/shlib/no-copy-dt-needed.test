@@ -1,0 +1,55 @@
+# `--no-copy-dt-needed-entries` (also `--no-add-needed`; a `noop` row,
+# "dyn.md D-15: the default; a library reached only through another's
+# DT_NEEDED entries never defines a symbol of the link (D-12), and
+# --copy-dt-needed-entries is refused"; GNU ld manual
+# "--copy-dt-needed-entries"). It is GNU ld's default since 2.22, and the
+# only behaviour of lld and mold.
+#
+# - The program calls `top_fn` of `libtop.so`, which needs `libmid.so`
+#   (fixture shlib-chain): the output needs only `libtop.so`, and is the
+#   same bytes with and without the option (either spelling) in all four
+#   linkers.
+# - The default it keeps: a program that calls `mid_fn`, which only
+#   `libmid.so`, a closure file of `libtop.so`, defines, does not link
+#   with the option (or without it): `mid_fn` is undefined. Its inverse
+#   would copy `libmid.so` in and link it (dyn/shlib/copy-dt-needed-refused,
+#   where mortar refuses it by name).
+#@ spec: dyn.md "D-15"
+#@ spec: dyn.md "D-12"
+#@ arch: aarch64 x86_64
+#@ fixture: shlib-chain
+
+cc -O1 -fPIE top-main.c -o top-main.o
+cc -O1 -fPIE mid-main.c -o mid-main.o
+link gcc -pie top-main.o -L. -ltop -Wl,-rpath-link,. -o plain
+link gcc -pie top-main.o -Wl,--no-copy-dt-needed-entries -L. -ltop -Wl,-rpath-link,. -o nocopy
+link gcc -pie top-main.o -Wl,--no-add-needed -L. -ltop -Wl,-rpath-link,. -o noadd
+run nocopy
+  stdout: 1103
+check readelf -dW nocopy
+  has: (NEEDED) Shared library: [libtop.so]
+  not: libmid.so
+check cmp nocopy plain
+  has: ^identical$
+check cmp noadd plain
+  has: ^identical$
+link gcc -pie mid-main.o -Wl,--no-copy-dt-needed-entries -L. -ltop -Wl,-rpath-link,. -o mid
+  exit: fail
+  diag: mid_fn
+
+#--- top-main.c
+#include <stdio.h>
+#include "chain.h"
+
+int main(void) {
+  printf("%d\n", top_fn());
+  return 0;
+}
+#--- mid-main.c
+#include <stdio.h>
+#include "chain.h"
+
+int main(void) {
+  printf("%d\n", mid_fn());
+  return 0;
+}

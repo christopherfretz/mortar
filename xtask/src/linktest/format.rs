@@ -309,6 +309,10 @@ pub enum CheckTool {
     LlvmDwarfdump,
     /// The lines of a file the link wrote.
     Text,
+    /// Two files the linker's steps wrote, compared byte for byte: one
+    /// line, `identical`, or `differ: ...` (WP-112: an option's effect is
+    /// the difference between a link with it and one without).
+    Cmp,
     /// `eu-elflint --gnu-ld <file>`: its complaints, each allowed by an
     /// `allow` line or a failure.
     Elflint,
@@ -323,13 +327,14 @@ pub enum CheckTool {
 }
 
 impl CheckTool {
-    const ALL: [Self; 10] = [
+    const ALL: [Self; 11] = [
         Self::Readelf,
         Self::Nm,
         Self::Objdump,
         Self::LlvmReadelf,
         Self::LlvmDwarfdump,
         Self::Text,
+        Self::Cmp,
         Self::Elflint,
         Self::Ldd,
         Self::Gdb,
@@ -345,6 +350,7 @@ impl CheckTool {
             Self::LlvmReadelf => "llvm-readelf",
             Self::LlvmDwarfdump => "llvm-dwarfdump",
             Self::Text => "text",
+            Self::Cmp => "cmp",
             Self::Elflint => "elflint",
             Self::Ldd => "ldd",
             Self::Gdb => "gdb",
@@ -410,8 +416,14 @@ pub struct Link {
     pub args: Vec<Template>,
     /// `exit: fail`: the link is expected to fail.
     pub fails: bool,
+    /// `exit: info` (WP-112): the link only informs (`--version`,
+    /// `--help`): it succeeds and writes no output, so it has no map and
+    /// the verifier judges nothing.
+    pub informs: bool,
     /// The `diag` and `no-diag` lines.
     pub diags: Vec<Expectation>,
+    /// The `print` and `no-print` lines (WP-112): of its standard output.
+    pub prints: Vec<Expectation>,
 }
 
 /// How a program is expected to end.
@@ -527,6 +539,7 @@ impl Step {
                 | CheckTool::Nm
                 | CheckTool::Objdump
                 | CheckTool::Text
+                | CheckTool::Cmp
                 | CheckTool::Ldd => None,
             },
             StepKind::Ar(_) | StepKind::Meta(_) | StepKind::Run(_) => None,
@@ -1082,7 +1095,17 @@ impl Parser {
                     ));
                 };
                 args.remove(0);
-                ("link", StepKind::Link(Link { driver, args, fails: false, diags: Vec::new() }))
+                (
+                    "link",
+                    StepKind::Link(Link {
+                        driver,
+                        args,
+                        fails: false,
+                        informs: false,
+                        diags: Vec::new(),
+                        prints: Vec::new(),
+                    }),
+                )
             }
             "run" => {
                 qualifiers.no_family("'run'")?;
@@ -1109,6 +1132,9 @@ impl Parser {
                     && args.len() != 1
                 {
                     return Err(format!("'check {first}' takes one file"));
+                }
+                if tool == CheckTool::Cmp && args.len() != 2 {
+                    return Err(format!("'check {first}' takes two files"));
                 }
                 if args.is_empty() {
                     return Err(format!("'check {first}' has no arguments"));
@@ -1164,23 +1190,30 @@ impl Parser {
                 match value.trim() {
                     "0" => linking.fails = false,
                     "fail" => linking.fails = true,
+                    "info" => linking.informs = true,
                     other => {
                         return Err(format!(
-                            "'exit: {other}' of a link is not '0' (it succeeds) or 'fail'"
+                            "'exit: {other}' of a link is not '0' (it succeeds), 'fail' or \
+                             'info' (it succeeds and writes no output)"
                         ));
                     }
                 }
                 Ok(())
             }),
-            (StepKind::Link(linking), "diag" | "no-diag") => {
+            (StepKind::Link(linking), "diag" | "no-diag" | "print" | "no-print") => {
                 if let Some(pattern) = self.pattern(line, value) {
-                    linking.diags.push(Expectation {
+                    let expectation = Expectation {
                         line,
                         scope,
-                        present: key == "diag",
+                        present: matches!(key, "diag" | "print"),
                         want: Want::Line,
                         pattern,
-                    });
+                    };
+                    if key.ends_with("diag") {
+                        linking.diags.push(expectation);
+                    } else {
+                        linking.prints.push(expectation);
+                    }
                 }
                 Ok(())
             }
@@ -1257,9 +1290,10 @@ impl Parser {
                     Stdout::Reference => Err("a second 'output' for this step".to_owned()),
                 }
             }),
-            (StepKind::Link(_), _) => {
-                Err(format!("'{key}' is not an expectation of a link (exit, diag, no-diag)"))
-            }
+            (StepKind::Link(_), _) => Err(format!(
+                "'{key}' is not an expectation of a link (exit, diag, no-diag, print, \
+                     no-print)"
+            )),
             (StepKind::Run(_), _) => {
                 Err(format!("'{key}' is not an expectation of a run (exit, stdout, output, env)"))
             }
@@ -1374,6 +1408,9 @@ impl Parser {
                 _ => &[],
             };
             scopes.extend(expectations.iter().map(|expect| (expect.line, &expect.scope)));
+            if let StepKind::Link(link) = &step.kind {
+                scopes.extend(link.prints.iter().map(|expect| (expect.line, &expect.scope)));
+            }
         }
         let markers = self.markers.clone();
         scopes.extend(markers.iter().map(|marker| (marker.line, &marker.scope)));
@@ -2068,6 +2105,11 @@ FileHeader:
         let checked = ok("link ld a.o\ncheck text a.map\n  has: .text\n");
         let StepKind::Check(check) = &checked.steps[1].kind else { panic!() };
         assert_eq!(check.tool, CheckTool::Text);
+        let compared =
+            ok("link ld a.o -o a\nlink ld b.o -o b\ncheck cmp a b\n  has: ^identical$\n");
+        let StepKind::Check(check) = &compared.steps[2].kind else { panic!() };
+        assert_eq!((check.tool, check.args.len()), (CheckTool::Cmp, 2));
+        assert!(has_error(&with("link ld a.o\ncheck cmp a\n  has: x\n"), 3, "takes two files"));
 
         assert!(has_error(&with("compile a.c\nlink ld a.o\n"), 2, "unknown step 'compile'"));
         assert!(has_error(&with("cc\nlink ld a.o\n"), 2, "'cc' has no arguments"));
@@ -2146,6 +2188,14 @@ FileHeader:
         assert_eq!(run.exit, Exit::NoStart);
         let reference = parse(&with("link ld a.o\nrun a.out\n  output: reference\n")).unwrap();
         assert!(reference.compares_output());
+        // WP-112: a link that only informs, and its standard output.
+        let info =
+            parse(&with("link ld --version\n  exit: info\n  print: ^GNU ld\n  no-print: x\n"))
+                .unwrap();
+        let StepKind::Link(link) = &info.steps[0].kind else { panic!() };
+        assert!(link.informs && !link.fails && link.diags.is_empty());
+        assert_eq!(link.prints.len(), 2);
+        assert!(link.prints[0].present && !link.prints[1].present);
 
         assert!(has_error(&with("  exit: 0\nlink ld a.o\n"), 2, "without a step"));
         assert!(has_error(&with("link ld a.o\n  exit: 1\n"), 3, "not '0'"));

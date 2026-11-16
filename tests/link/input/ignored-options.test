@@ -1,0 +1,141 @@
+# The options mortar accepts and ignores, whose `noop` rows in
+# docs/status/options.md say the option does not change an executable's
+# link. Each link with an option below writes the same bytes as the
+# link without it. Each row's reason is quoted beside its lines. An
+# option line names the references that know the option. GNU ld's output
+# is also compared where GNU ld ignores the option as well.
+#
+# The references DIFFER (spec/harness.md "Where the references differ"):
+# - GNU ld's `--hash-size` and `--reduce-memory-overheads` reorder its
+#   `.symtab` (the size of its symbol hash table changes the order it
+#   writes symbols in), so its output is not the same bytes.
+# - lld refuses a `-plugin-opt=` it does not know (it has no plugin; it
+#   reads the words itself).
+# - mold does not know `-g`, `-Qy`, `-qmagic`, `-assert`,
+#   `--map-whole-files`, `--reduce-memory-overheads`, `--hash-size` or
+#   `-plugin-save-temps`.
+# mortar follows GNU ld's meaning (a hint about BFD's memory, ignored),
+# not its symbol order.
+#@ spec: cli.md "Accepted options"
+
+cc -O1 prog.c -o prog.o
+as start-%{arch}.s -o start.o
+link gcc -static prog.o -o plain
+run plain
+  stdout: hello 42
+
+# "every target mortar links for is little-endian"
+link gcc -static prog.o -Wl,-EL -o el
+check(bfd,mortar) cmp el plain
+  has: ^identical$
+# "GNU ld ignores it too"
+link(bfd,lld,mortar) gcc -static prog.o -Wl,-g -o g
+check(bfd,mortar) cmp g plain
+  has: ^identical$
+# "synth.md S-32: mortar merges at every level, as GNU ld and mold do"
+link gcc -static prog.o -Wl,-O2 -o o2
+link gcc -static prog.o -Wl,-O0 -o o0
+check(bfd,mold,mortar) cmp o2 plain
+  has: ^identical$
+check(bfd,mold,mortar) cmp o0 plain
+  has: ^identical$
+# "GNU ld ignores it too (SVR4)", "(Linux a.out)", "(SunOS)", "(gold)"
+link(bfd,mortar) gcc -static prog.o -Wl,-Qy -o qy
+link(bfd,mortar) gcc -static prog.o -Wl,-qmagic -o qmagic
+link(bfd,mortar) gcc -static prog.o -Wl,-assert,pure-text -o assert
+link(bfd,mortar) gcc -static prog.o -Wl,--map-whole-files -o mwf
+link(bfd,mortar) gcc -static prog.o -Wl,--no-map-whole-files -o nmwf
+check(bfd,mortar) cmp qy plain
+  has: ^identical$
+check(bfd,mortar) cmp qmagic plain
+  has: ^identical$
+check(bfd,mortar) cmp assert plain
+  has: ^identical$
+check(bfd,mortar) cmp mwf plain
+  has: ^identical$
+check(bfd,mortar) cmp nmwf plain
+  has: ^identical$
+# "a memory-use hint for BFD; it does not change the output",
+# "a table-size hint for BFD; it does not change the output"
+link gcc -static prog.o -Wl,--no-keep-memory -o nkm
+link(bfd,mortar) gcc -static prog.o -Wl,--reduce-memory-overheads -o rmo
+link(bfd,mortar) gcc -static prog.o -Wl,--hash-size=31 -o hs
+link(bfd,mold,mortar) gcc -static prog.o -Wl,--max-cache-size=1000000 -o mcs
+check(bfd,mold,mortar) cmp nkm plain
+  has: ^identical$
+check(mortar) cmp rmo plain
+  has: ^identical$
+check(mortar) cmp hs plain
+  has: ^identical$
+check(bfd,mold,mortar) cmp mcs plain
+  has: ^identical$
+# "GNU ld ignores it too; GCC passes it on some LTO links",
+# "GNU ld ignores it too; it chooses the linker, which is chosen"
+link(bfd,mortar) gcc -static prog.o -Wl,-flto -o flto
+link(bfd,mortar) gcc -static prog.o -Wl,-flto-partition=none -o fltop
+check(bfd,mortar) cmp flto plain
+  has: ^identical$
+check(bfd,mortar) cmp fltop plain
+  has: ^identical$
+# (`-fuse-ld=` is linked without the driver: collect2 reads the word
+# itself and would run ld.bfd in place of the linker under test.)
+link(bfd,mortar) ld start.o -fuse-ld=bfd -o fuse
+link(bfd,mortar) ld start.o -o fuse-plain
+run(bfd,mortar) fuse
+  exit: 42
+check(bfd,mortar) cmp fuse fuse-plain
+  has: ^identical$
+# "only the plugin reads it, and mortar loads none"
+link(bfd,mold,mortar) gcc -static prog.o -Wl,-plugin-opt=foo -o popt
+link(bfd,mortar) gcc -static prog.o -Wl,-plugin-save-temps -o pst
+check(bfd,mortar) cmp popt plain
+  has: ^identical$
+check(bfd,mortar) cmp pst plain
+  has: ^identical$
+# "layout.md L-75: the value is checked, and no layout rule reads it"
+link gcc -static prog.o -Wl,-z,common-page-size=4096 -o cps
+check(bfd,mortar) cmp cps plain
+  has: ^identical$
+# "layout.md L-63: the section header table is always written"
+link gcc -static prog.o -Wl,-z,sectionheader -o sh
+check(bfd,mortar) cmp sh plain
+  has: ^identical$
+# "layout.md L-96: the default"
+link(bfd,lld,mortar) gcc -static prog.o -Wl,-z,nostart-stop-gc -o nssg
+check(bfd,mortar) cmp nssg plain
+  has: ^identical$
+# "layout.md L-65: read-only data always has a PT_LOAD of its own"
+link gcc -static prog.o -Wl,--rosegment -o roseg
+check(mortar) cmp roseg plain
+  has: ^identical$
+# "odr.md O-41: mortar checks the one-definition rule by default"
+link(mortar) gcc -static prog.o -Wl,--detect-odr-violations -o odr
+check(mortar) cmp odr plain
+  has: ^identical$
+
+#--- prog.c
+#include <stdio.h>
+static const char msg[] = "hello";
+int value = 42;
+int main(void) { printf("%s %d\n", msg, value); return 0; }
+#--- start-aarch64.s
+	.globl	_start
+_start:
+	mov	x0, #42
+	mov	x8, #93
+	svc	#0
+	.section .note.GNU-stack,"",%progbits
+#--- start-x86_64.s
+	.globl	_start
+_start:
+	movl	$60, %eax
+	movl	$42, %edi
+	syscall
+	.section .note.GNU-stack,"",%progbits
+#--- start-i386.s
+	.globl	_start
+_start:
+	movl	$1, %eax
+	movl	$42, %ebx
+	int	$0x80
+	.section .note.GNU-stack,"",%progbits

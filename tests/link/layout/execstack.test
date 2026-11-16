@@ -1,0 +1,95 @@
+# `-z execstack`, `-z noexecstack` and `--warn-execstack` (spec/layout.md
+# L-84; GNU ld manual "-z execstack", "--warn-execstack"): the flags of
+# PT_GNU_STACK, which the kernel reads to make the stack executable or
+# not. Each input object says what it needs in its `.note.GNU-stack`
+# section (`""`: not executable; `"x"`, SHF_EXECINSTR: executable).
+#
+# - start.o alone (a `""` note): RW without an option, RWE (PF_X) with
+#   `-z execstack`, in all four linkers.
+# - with xs.o (an `"x"` note): GNU ld gives RWE and warns "requires
+#   executable stack"; `-z noexecstack` gives RW without the warning;
+#   `-z execstack` RWE without it. This is what a real build passes
+#   `-z noexecstack` for (an assembler file without its note).
+# - `--warn-execstack` is GNU ld's default (L-84): a `noop` row, "the
+#   executable-stack warning is the default"; GNU ld's and mortar's
+#   outputs and warnings are the same with and without it.
+#
+# The references DIFFER on xs.o without an option (spec/harness.md "Where
+# the references differ"): lld 22 refuses the link ("requires an
+# executable stack, but -z execstack is not specified"), and refuses it
+# under `-z noexecstack` too; mold warns and writes RW, and warns under
+# `-z noexecstack` as well. mortar follows GNU ld (L-84).
+#@ spec: layout.md "L-84"
+
+as start-%{arch}.s -o start.o
+as xs.s -o xs.o
+link ld start.o -o plain
+link ld start.o -z execstack -o exec
+link ld start.o -zexecstack -o exec-glued
+link(bfd,mold,mortar) ld start.o xs.o -z noexecstack -o noexec
+  no-diag(bfd,mortar): executable stack
+link(lld) ld start.o xs.o -z noexecstack -o noexec
+  exit: fail
+  diag(lld): xs.o: requires an executable stack, but -z execstack is not specified
+link ld start.o xs.o -z execstack -o xexec
+  no-diag(bfd,lld,mortar): executable stack
+run exec
+  exit: 42
+run(bfd,mold,mortar) noexec
+  exit: 42
+check readelf -lW plain
+  has: GNU_STACK * RW 0
+check readelf -lW exec
+  has: GNU_STACK * RWE 0
+check cmp exec exec-glued
+  has: ^identical$
+check cmp plain exec
+  has: ^differ
+check(bfd,mold,mortar) readelf -lW noexec
+  has: GNU_STACK * RW 0
+check readelf -lW xexec
+  has: GNU_STACK * RWE 0
+# Without an option, and with `--warn-execstack`.
+link(bfd,mold,mortar) ld start.o xs.o -o xplain
+  diag(bfd,mortar): xs.o: requires executable stack (because the .note.GNU-stack section is executable)
+  diag(mold): xs.o: this file may cause a segmentation fault because it requires an executable stack
+link(bfd,mold,mortar) ld start.o xs.o --warn-execstack -o xwarn
+  diag(bfd,mortar): xs.o: requires executable stack (because the .note.GNU-stack section is executable)
+link(lld) ld start.o xs.o -o xplain
+  exit: fail
+  diag(lld): xs.o: requires an executable stack, but -z execstack is not specified
+check(bfd,mortar) readelf -lW xplain
+  has: GNU_STACK * RWE 0
+check(mold) readelf -lW xplain
+  has: GNU_STACK * RW 0
+check(bfd,mold,mortar) cmp xplain xwarn
+  has: ^identical$
+run(bfd,mold,mortar) xwarn
+  exit: 42
+
+#--- start-aarch64.s
+	.text
+	.globl	_start
+_start:
+	mov	x0, #42
+	mov	x8, #93		// exit
+	svc	#0
+	.section .note.GNU-stack,"",%progbits
+#--- start-x86_64.s
+	.text
+	.globl	_start
+_start:
+	movl	$60, %eax	# exit
+	movl	$42, %edi
+	syscall
+	.section .note.GNU-stack,"",%progbits
+#--- start-i386.s
+	.text
+	.globl	_start
+_start:
+	movl	$1, %eax	# exit
+	movl	$42, %ebx
+	int	$0x80
+	.section .note.GNU-stack,"",%progbits
+#--- xs.s
+	.section .note.GNU-stack,"x",%progbits

@@ -802,7 +802,7 @@ keeps blanks (with `\"` and `\\`).
 | `shlib <driver> <args>` | a shared library, by the architecture's `gcc`, `g++` or `gfortran` with `-shared -fuse-ld=bfd`: GNU ld links every fixture library, whatever the run's linkers |
 | `link <driver> <args>` | a link; `<driver>` is `ld` (the linker itself) or `gcc`, `g++`, `gfortran`, `clang`, `clang++` |
 | `run <program> [<args>]` | runs a linked program |
-| `check <tool> <args>` | `readelf`, `nm`, `objdump` (the architecture's), `llvm-readelf`, `llvm-dwarfdump` (WP-080: `--verify`, the DWARF of a split-DWARF output), `text` (the file named by the one argument, read), `elflint`, `ldd`, `gdb`, `lldb` ("Checks") |
+| `check <tool> <args>` | `readelf`, `nm`, `objdump` (the architecture's), `llvm-readelf`, `llvm-dwarfdump` (WP-080: `--verify`, the DWARF of a split-DWARF output), `text` (the file named by the one argument, read), `cmp` (two files, compared byte for byte), `elflint`, `ldd`, `gdb`, `lldb` ("Checks") |
 
 The build steps come before every link, run and check step. Expectations
 are the indented lines under a step:
@@ -813,6 +813,8 @@ are the indented lines under a step:
 | link | `exit: fail` | it fails ("Expected failures") |
 | link | `diag: <pattern>` | some line of its standard error matches |
 | link | `no-diag: <pattern>` | no line does |
+| link | `exit: info` | it only informs (`--version`, `--help`; WP-112): it succeeds and writes no output file (a stale one is removed first); no map is added and the verifier judges nothing |
+| link | `print: <pattern>`, `no-print: <pattern>` | some line of its standard output matches, no line does (WP-112: `-v`, `-M`) |
 | run | `exit: <n>` (default 0), `exit: signal <n>` | how the program ends |
 | run | `exit: no-start` | it cannot be started (its interpreter is not there): status 127 natively (the harness's shell, whose exec fails), 255 under qemu (which cannot load it); the same expectation on both hosts |
 | run | `stdout: <text>` | its standard output, one line per expectation, exactly; with none, it prints nothing |
@@ -828,6 +830,14 @@ A check tool that does not exit with status 0 fails the step, except
 `elflint`.
 
 **Checks** beyond the binutils, for dynamic outputs (`spec/dyn.md` §10):
+
+- `check cmp <a> <b>` (WP-112): the two files, in the linker's directory,
+  compared byte for byte; its one line of output is `identical`, or
+  `differ: sizes <m> and <n>, first at byte <offset> (<x>, <y>)` (or
+  `equal up to the shorter`). It does not fail by itself: `has:
+  ^identical$` says that an option changes no byte of the output (a
+  `noop` row of `docs/status/options.md`), `has: ^differ` that it changes
+  some.
 
 - `check elflint <file>`: `eu-elflint --gnu-ld <file>`; its standard
   output and error together. Every non-blank line that is not `No errors`
@@ -920,8 +930,8 @@ step's own expectations have passed. This applies to every linker,
 mortar included (`docs/VALIDATION.md` layer L3).
 
 - **The map.** If the link line names one already (`-Map=X`, `-Map X`,
-  `--Map=X`, `-Wl,-Map=X`, `-Wl,-Map,X`), that map is used. Otherwise the
-  harness adds `-Map=.linktest-plumb-<line>.map` to a `link ld` step, or
+  `--Map=X`, `-Wl,-Map=X`, `-Wl,-Map,X`; for mortar, its `--mortar-map`
+  in the same forms, WP-112), that map is used. Otherwise the harness adds `-Map=.linktest-plumb-<line>.map` to a `link ld` step, or
   `-Wl,-Map=.linktest-plumb-<line>.map` to a driver step, in the linker's
   directory. All four linkers take `-Map=`: mortar must accept it and
   write its own format (`spec/plumb.md` §3.2). The format is the
@@ -1061,6 +1071,27 @@ Each (test, architecture, linker) gets one **record**:
 `KILLED` and `ERROR` are not covered by markers: a marker says how mortar
 answers, and neither is an answer.
 
+### Every accepted option is spelled
+
+Every row of `docs/status/options.md` that mortar accepts (`supported`,
+`partial`, `noop`) is spelled by a link step of some test under
+`tests/link` (WP-112): a long option with one dash or two, alone, as
+`--opt=value` or followed by its value; a one-letter option alone or with
+its value glued; a `-z` keyword as `-z kw`, `-zkw`, `-z kw=value`; in a
+driver's link the words of `-Wl,` and `-Xlinker` and the driver options
+GCC hands the linker as they are (`-static`, `-pie`, `-no-pie`,
+`-shared`, `-s`, `-r`, `-e`, `-u`, `-T`, `-L`, `-l`, `-o`; `-rdynamic` as
+`-export-dynamic`). What a driver adds on its own does not count.
+`cargo xtask spelled` prints the rows no test spells and their number;
+`xtask/src/linktest/spelled.rs`
+`every_accepted_option_is_spelled_by_a_link_test` (in `cargo test`, so
+in the quick gate; under a tenth of a second) wants none. A row's test
+lives beside the tests of its subject (`tests/link/layout/execstack.test`,
+`tests/link/dyn/shlib/bsymbolic.test`, ...): it shows the option's effect
+against the same link without it and the references' links, or, for a
+`noop`, that the output is the same bytes with and without it (`check
+cmp`) and, in its comment, the row's reason why that is right.
+
 ### The self-check
 
 Once the references of a unit have run:
@@ -1127,6 +1158,22 @@ says what mortar does.
 | IFUNC address equality with `-fpie` objects in a `-no-pie` link, x86-64 | **broken** | kept | kept | kept | `ifunc/irelative` uses `-fno-pie` |
 | IRELATIVE relocations of a static executable | `.rela.plt` | `.rela.dyn` | `.rela.dyn` | not checked | `ifunc/irelative` |
 | `.text` not placed while another section is (`--section-start`) | at its default | next to it | next to it | not checked | `reloc/aarch64-veneer` places both |
+| `--dependency-file`: a prerequisite's indent; a file named twice | two blanks; listed per mention | one blank; once | on the target's line; once | lld's form, once | `input/dependency-file` |
+| `-call_shared` | known | known | unknown option | known | `dyn/shlib/bdynamic` |
+| an object's executable-stack note, no `-z execstack` | RWE stack (`--warn-execstack` warns) | refused, even under `-z noexecstack` | RW stack, warns | as GNU ld | `layout/execstack` |
+| `--discard-none`, `--no-build-id`, `--gc-keep-exported`, `--strip-discarded` | some unknown (the test's qualifiers say which) | some unknown | some unknown | accepted | `resolve/discard`, `layout/no-build-id`, `layout/gc-options`, `resolve/strip-discarded` |
+| `--print-gc-sections` | standard error | standard output | standard output | standard error | `layout/gc-options` |
+| a `.deplibs` library (`#pragma comment(lib, ...)`) | not loaded | loaded (not under `--no-dependent-libraries`) | not loaded | not loaded | `resolve/no-dependent-libraries` |
+| `--hash-size`, `--reduce-memory-overheads` | `.symtab` reordered | unknown | unknown | the same bytes | `input/ignored-options` |
+| `-plugin-opt=` a plugin does not know | ignored | refused | ignored | ignored | `input/ignored-options` |
+| `-Bsymbolic` in an executable | nothing | `DF_SYMBOLIC` | nothing | nothing (verifier: WP-112 V2) | `dyn/shlib/bsymbolic` |
+| AArch64 static PIE: the word at `_GLOBAL_OFFSET_TABLE_` | `_DYNAMIC` | `_DYNAMIC` (no symbol) | 0 | `_DYNAMIC` | `dyn/dynamic/no-dynamic-linker` (`skip(mold,aarch64)`) |
+| `-z max-page-size=0x10000`: a non-PIE base | rounded down (i386 0x08040000) | own base | own base | as GNU ld (verifier: WP-112 V3) | `layout/max-page-size` |
+| `--push-state -Bstatic --pop-state -lx` | `libx.so` | `libx.so` | **no `.dynamic`, crashes** (a bug) | `libx.so` | `dyn/shlib/push-state` (`skip(mold)`) |
+| `--color-diagnostics` alone | unknown | always | auto | always | `diag/diagnostic-switches` |
+| `--fatal-warnings`: the severity word | `warning:` | `error:` | `error:` | `error:` | `diag/diagnostic-switches` |
+| `-M` with `-Map=FILE` | the map to FILE | no FILE written | the map to FILE | the map to standard output | `input/info-requests` |
+| `--threads` without N | unknown | reads the next word as N | all processors | all processors | `input/bookkeeping` |
 
 ### The corpus
 
@@ -1173,7 +1220,8 @@ lands (`docs/VALIDATION.md`).
 `references_that_disagree_on_output_refute_a_test`.
 `xtask/src/linktest/report.rs`: `the_exit_status_of_a_run`,
 `the_results_file`, `the_summary`, `who_a_line_is_for`.
-`xtask/src/linktest/engine.rs`: `the_output_file_of_a_link_line`,
+`xtask/src/linktest/engine.rs`: `two_files_compared` (`check cmp`),
+`the_output_file_of_a_link_line`,
 `the_map_of_a_link_line`, `what_the_verifier_does_not_judge`,
 `a_default_anomaly_goes_stale`.
 `xtask/src/linktest/format.rs`: `anomaly_declarations`,
@@ -1345,6 +1393,19 @@ counts (2, the default 8, and 10) and once from a copy of the checkout at anothe
 with its own build of mortar: without this rule 404 map digests moved and
 nothing else; with it, 0 of 806 rows (and 0 of 898 on main `42e7ad3`,
 run with two `TMPDIR`s).
+
+The times mortar measures change from run to run too, and the options
+that print them are tested (WP-112). So, before the paths are replaced,
+the standard error has, in a line holding `: time-phases: `
+(`--time-phases`, image.md I-88), all after its first `: wall `; in a
+line holding `: odr-stats: ` (`--odr-stats`), all after its last
+`; time `; in a line beginning `incremental: ` (`--incremental-report`
+without a file), all after its last ` time=`; and in a line beginning
+`delta time `, all after those words, replaced by `<time>`
+(`normalise_stderr`). The counts on those lines are kept. The map
+digested is always `.linktest-plumb-<line>.map`: a link that names its
+own `--mortar-map` has `-` in the map column, as before WP-112, so that
+no row of the baseline moves.
 
 `--mortar <binary>` runs a binary whose file name is its program name in
 diagnostics (`<name>: error: ...`): one not named `mortar` changes every

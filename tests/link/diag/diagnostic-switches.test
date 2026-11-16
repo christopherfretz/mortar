@@ -1,0 +1,86 @@
+# The switches of diagnostics (spec/diag.md §5.6, §6; spec/cli.md §3.9),
+# shown on mortar's `--warn-backrefs` warning (resolve.md §4.6, the
+# program of archive-backref.test) and on three undefined symbols:
+# - `--fatal-warnings`: the warning is an error and the link fails
+#   (`error:`, as lld and mold; GNU ld prints `warning:` and fails, diag.md
+#   §8.1); `--no-fatal-warnings` after it undoes it.
+# - `-w`, `--no-warnings` (GNU ld's and lld's): no warning is reported,
+#   so under `--fatal-warnings` the link succeeds and prints nothing.
+# - `--color-diagnostics` (alone: always, as lld; mold's alone is auto,
+#   so its line says `=always`; lld's and mold's): the severity
+#   word is wrapped in lld's escape sequences (ESC[0;35m for a warning,
+#   ESC[0;31m for an error, diag.md §5.6); `=never` and
+#   `--no-color-diagnostics` (lld's) write none.
+# - `--error-limit=N` (lld's): after N errors one limit line ends the
+#   report (`too many errors emitted, stopping now`); 0 shows all.
+# Only lld knows all of them; GNU ld and mold do not know
+# `--warn-backrefs` (nor `--error-limit`), so the warning lines are lld's
+# and mortar's.
+#@ spec: diag.md "§5.6"
+
+cc -O1 main.c -o main.o
+cc -O1 helper.c -o helper.o
+cc -O1 user.c -o user.o
+cc -O1 undef.c -o undef.o
+ar rcs libhelper.a helper.o
+ar rcs libuser.a user.o
+link(lld,mortar) gcc -static main.o -L. -lhelper -luser -Wl,--warn-backrefs -o warns
+  diag: warning:*backward reference
+link(lld,mortar) gcc -static main.o -L. -lhelper -luser -Wl,--warn-backrefs -Wl,--fatal-warnings -o fatal
+  exit: fail
+  diag: error:*backward reference
+  no-diag: warning:
+link(lld,mortar) gcc -static main.o -L. -lhelper -luser -Wl,--warn-backrefs -Wl,--fatal-warnings -Wl,--no-fatal-warnings -o notfatal
+  diag: warning:*backward reference
+link(lld,mortar) gcc -static main.o -L. -lhelper -luser -Wl,--warn-backrefs -Wl,--fatal-warnings -Wl,-w -o quiet
+  no-diag: backward reference
+link(lld,mortar) gcc -static main.o -L. -lhelper -luser -Wl,--warn-backrefs -Wl,--fatal-warnings -Wl,--no-warnings -o quiet2
+  no-diag: backward reference
+run(lld,mortar) quiet
+  exit: 7
+check(lld,mortar) cmp quiet warns
+  has: ^identical$
+
+link(lld,mortar) gcc -static main.o -L. -lhelper -luser -Wl,--warn-backrefs -Wl,--color-diagnostics -o colored
+  diag: [0;35mwarning:
+link(lld,mortar) gcc -static main.o -L. -lhelper -luser -Wl,--warn-backrefs -Wl,--color-diagnostics=always -o colored2
+  diag: [0;35mwarning:
+link(lld,mortar) gcc -static main.o -L. -lhelper -luser -Wl,--warn-backrefs -Wl,--color-diagnostics -Wl,--color-diagnostics=never -o plain1
+  diag: ^*: warning:*backward reference
+  no-diag: [0;
+link(lld,mortar) gcc -static main.o -L. -lhelper -luser -Wl,--warn-backrefs -Wl,--color-diagnostics -Wl,--no-color-diagnostics -o plain2
+  diag: ^*: warning:*backward reference
+  no-diag: [0;
+link(lld,mold,mortar) gcc -static undef.o -Wl,--color-diagnostics=always -o undef
+  exit: fail
+  diag(lld,mortar): [0;31merror:
+  diag(mold): [0;1;31merror:
+
+link gcc -static undef.o -o undef
+  exit: fail
+  diag: u1
+  diag: u3
+link(lld,mortar) gcc -static undef.o -Wl,--error-limit=2 -o undef
+  exit: fail
+  diag: undefined symbol: u1
+  diag: undefined symbol: u2
+  no-diag: undefined symbol: u3
+  diag: error: too many errors emitted, stopping now (use --error-limit=0 to see all errors)
+link(lld,mortar) gcc -static undef.o -Wl,--error-limit=2 -Wl,--error-limit=0 -o undef
+  exit: fail
+  diag: undefined symbol: u3
+  no-diag: too many errors
+
+#--- main.c
+int user(void);
+
+int main(void) { return user(); }
+#--- user.c
+int helper(void);
+
+int user(void) { return helper(); }
+#--- helper.c
+int helper(void) { return 7; }
+#--- undef.c
+int u1(void), u2(void), u3(void);
+int main(void) { return u1() + u2() + u3(); }

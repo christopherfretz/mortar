@@ -1,0 +1,82 @@
+# `-z max-page-size=SIZE` (spec/layout.md L-74, L-68): SIZE is every
+# PT_LOAD's `p_align` (the default is 64 KiB on AArch64, 4 KiB on x86-64
+# and i386), and a non-PIE base is rounded down to it (i386's 0x08048000
+# becomes 0x08040000 at 64 KiB, as GNU ld's does; lld and mold have
+# bases of their own, layout.md L-68).
+#
+# On i386 mortar's output is what the spec says, but the verifier's rule
+# S2 for mortar's i386 output (crates/mortar_plumb/src/structure.rs,
+# "every PT_LOAD has p_align 0x1000 and a static executable starts at
+# 0x08048000") does not read the option and reports every PT_LOAD
+# (WP-112 finding V3).
+#@ spec: layout.md "L-74"
+#@ xfail(mortar,i386): WP-112 finding V3: the verifier's S2 holds mortar's i386 p_align at 0x1000 and its base at 0x08048000 whatever -z max-page-size says
+
+as start-%{arch}.s -o start.o
+link ld start.o -o plain
+link ld start.o -z max-page-size=0x2000 -o page8k
+link ld start.o -z max-page-size=0x10000 -o page64k
+run page8k
+  exit: 42
+run page64k
+  exit: 42
+check readelf -lW page8k
+  has: LOAD * 0x2000$
+  not: LOAD * 0x1000$
+  not: LOAD * 0x10000$
+check readelf -lW page64k
+  has: LOAD * 0x10000$
+  not: LOAD * 0x1000$
+check(bfd,mortar,i386) readelf -lW page64k
+  has: LOAD 0x000000 0x08040000 
+check(bfd,mortar,aarch64,x86_64) readelf -lW page64k
+  has: LOAD 0x000000 0x0000000000400000 
+check(bfd,lld,mortar,aarch64) cmp page64k plain
+  has: ^identical$
+
+#--- start-aarch64.s
+	.globl	_start
+_start:
+	adrp	x1, value
+	ldr	w0, [x1, :lo12:value]
+	mov	x8, #93
+	svc	#0
+	.section .rodata
+	.byte 1
+	.data
+	.balign 4
+	.globl	value
+value:	.long 42
+	.section .data.rel.ro,"aw"
+	.quad value
+	.section .note.GNU-stack,"",%progbits
+#--- start-x86_64.s
+	.globl	_start
+_start:
+	movl	$60, %eax
+	movl	value(%rip), %edi
+	syscall
+	.section .rodata
+	.byte 1
+	.data
+	.balign 4
+	.globl	value
+value:	.long 42
+	.section .data.rel.ro,"aw"
+	.quad value
+	.section .note.GNU-stack,"",%progbits
+#--- start-i386.s
+	.globl	_start
+_start:
+	movl	$1, %eax
+	movl	value, %ebx
+	int	$0x80
+	.section .rodata
+	.byte 1
+	.data
+	.balign 4
+	.globl	value
+value:	.long 42
+	.section .data.rel.ro,"aw"
+	.long value
+	.section .note.GNU-stack,"",%progbits
