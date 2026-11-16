@@ -1358,26 +1358,35 @@ with each phase fed from the state for unchanged files:
   mutation tests: every single-byte change and every truncation of a
   state of the link-test corpus is a named error or (a change of the
   header's flags) accepted; never a panic.
-- **IN-18a2 [v2] Format version 2: the delta tables** (WP-063). Version
-  2 is version 1 with these changes:
+- **IN-18a2 [v2] Format version 2: the delta tables and the holes**
+  (WP-063, WP-062). Version 2 is version 1 with these changes:
   - The format version is 2.
-  - The table count is 26.
-  - Three tables, kinds 32, 33 and 34 (IN-19's reserved numbers), come
-    after `LEAVES` and before `STRINGS`. The order is 1..22, 32, 33, 34,
-    23, and `STRINGS` stays last.
+  - The table count is 27.
+  - Four tables, kinds 32, 33, 34 and 39 (IN-19's reserved numbers),
+    come after `LEAVES` and before `STRINGS`. Kind numbers do not give
+    the order; the file order is this list, each table exactly once:
+    `META` (1), `STAT` (2), `FILES` (3), `PROBES` (4), `OUTSECS` (5),
+    `SYMBOLS` (6), `SECTIONS` (7), `CHUNKS` (8), `ORDER` (9),
+    `SEGMENTS` (10), `FRAGS` (11), `SLOTS` (12), `EH_RECORDS` (13),
+    `SYMTAB_LOCALS` (14), `SIZES` (15), `SYM_PLACE` (16), `DEFINED`
+    (17), `PATCHES` (18), `REDIRECTS` (19), `SIZED` (20), `LAYOUT` (21),
+    `LEAVES` (22), `MENTIONS` (32), `RESOLVED` (33), `INDEX` (34),
+    `HOLES` (39), `STRINGS` (23) last.
 
-  A version-1 state still reads. Its header must say 23 tables, and it
-  has no delta tables. An update has nothing to compute a delta from,
-  so a version-1 state is answered `state-version` (`format version 1
-  has no delta tables`), and the link is a full link that writes a
-  version-2 state. Replay (IN-61) still reads both versions. A reader
-  of version 1 only answers a version-2 state `state-version`.
+  There is one version 2. A state of version 1 is refused by name like
+  any other version (`state-version`, `format version 1, this mortar
+  reads 2`): it has none of these tables, an update has nothing to
+  compute a delta from, and no compatibility path reads it (nothing
+  shipped a version-1 state). The link is a full link that writes a
+  version-2 state. A reader of version 1 likewise answers a version-2
+  state `state-version`.
 
   | kind | table | row (width) | rows |
   |---|---|---|---|
   | 32 | `MENTIONS` | file `FILES` row, key `SYMBOLS` row, kind `u8` (0 undefined, 1 in a section, 2 absolute, 3 common), `st_bind u8`, `st_type u8`, `st_other u8`, section `SECTIONS` row (kind 1; else `NONE`) (16) | one per (live object, global key in its symbol table), strictly ascending by (file, key). An entry the file's symbol table repeats keeps the first. |
   | 33 | `RESOLVED` | kind `u8` (0..5 as `MENTIONS` plus 4 linker-defined and 5 shared object; 6 COMDAT keeper; 7 live file), `st_type u8`, `st_bind u8`, `st_other u8`, key `SYMBOLS` row (kinds 0..5; else `NONE`), file `FILES` row (the definer, the keeper or the live file; `NONE` for kinds 0 and 4), section `SECTIONS` row (kind 1; else `NONE`), value `u64` (`st_value` for kinds 1..3; the definer's symbol index for kind 5, and for a definition outside an object's symbol table, which is recorded as kind 2; else 0), size `u64` (`st_size`; for a common, the resolved size), name str (kind 6: the group signature; else empty) (40). An undefined key has `st_bind` 2 when weak, else 1, and its resolved visibility in `st_other`; a linker-defined key only its visibility. A definition in a section the reader keeps no id for is recorded as kind 2, in both tables. | first one row per key the resolution names (kinds 0..5), ascending by key; then one per COMDAT group with a keeper, ascending by signature bytes; then one per live file, ascending by file |
   | 34 | `INDEX` | unit `SECTIONS` row, kind `u8` (0 global, 1 section, 2 slot, 3 `.eh_frame`, 4 link order, 5 local slot), pad 3, target `u32` (a `SYMBOLS` row for kinds 0 and 2; a `SECTIONS` row for 1, 3, 4 and 5) (12) | one per (unit, kind, target), strictly ascending in that order |
+  | 39 | `HOLES` | chunk `CHUNKS` row, kind `u8` (`mortar_core::layout::HoleKind`: 0 fill, 1 `.eh_frame` padding, 2 debug, 3 abbreviation table, 4 dead debug, 5 dead fragment, 6 dead CIE), pad 3, offset `u64`, size `u64` (24) | one per range of a chunk no live unit owns (IN-3, IN-3a, IN-30), ascending by (chunk, offset), never overlapping, inside the chunk's size (a capacity tail is not a hole, L-141) (WP-062) |
 
   `INDEX` records the references of every kept allocated section and of
   every `.eh_frame` input of a live object file, read from its
@@ -1401,9 +1410,14 @@ with each phase fed from the state for unchanged files:
     the stated order with no key, group or file twice;
   - `INDEX`'s kind is in range, its target is in its table, and its rows
     strictly ascend.
+  - `HOLES`' chunk and kind are in range, no size is 0, its rows
+    ascend by (chunk, offset) without overlap, and each lies inside its
+    chunk's size.
 
-  *Test:* `mortar_incr`'s round trip, and the incremental tests' replay
-  (each table matters, the v1 fixtures still read).
+  *Test:* `mortar_incr`'s round trip, the incremental tests' replay
+  (each table matters), and `a_version_1_state_is_refused_by_name` (the
+  version-1 fixtures `crates/mortar/tests/fixtures/incr-state-v1-51aa582/`
+  are `state-version` and give a full link).
 - **IN-18b [v1] The normalized plan.** The plan hash is `L128` of a
   sequence of items, each a tag byte followed by fields that are each a
   `u32` length and that many bytes: first `C` with the working
@@ -2228,7 +2242,7 @@ objects.
   (image.md I-100). A failed update removes the output (image.md I-66)
   and the state. *Test:* an update that introduces an undefined symbol
   leaves neither file; the next `--incremental` link reports `no-state`.
-- **IN-49 [v1] The map** (`--mortar-map`, plumb.md §2.3) is rewritten
+- **IN-49 [v1] The map** (`--mortar-map`, plumb.md §3.2) is rewritten
   whole (image.md I-99), with `hole` and `dead` lines (§8.2). *Test:*
   plumb reads every L10 step's map.
 - **IN-49a [v1] `.symtab` and `.strtab`.** S-112 rewrites them whole. In
@@ -2380,6 +2394,8 @@ file changes or when one of its file's sections moves (IN-25).
   `.debug_addr`, `.debug_rnglists`, `.debug_loclists`, `.debug_ranges`,
   `.debug_loc`, `.debug_macro` or `.debug_frame` may keep the bytes its
   compiler wrote, with every address in it tombstoned (image.md I-47).
+  A dead `.debug_ranges` or `.debug_loc` contribution has every pair
+  `(1, 1)` or a base selection of 1 followed by its offsets.
   Nothing live names it (IN-3a check 1). E6b and R9 left `.debug_line`,
   `.debug_str_offsets`, `.debug_addr` and `.debug_rnglists` this way and
   measured equal transcripts. When part of it is reused, the remainder
@@ -2700,9 +2716,12 @@ time and of peak RSS on protoc (*target*, S1 measures it).
 
 - **IN-60 [v1] The verifier needs no state.** `mortar_plumb` checks an
   update's output from the output and the map alone, as for any link
-  (`docs/VALIDATION.md` "independent verifier"). The map gains two line
-  kinds (plumb.md §2.3): `hole <output section> <offset> <size>` and
-  `dead <output section> <offset> <size> <kind>`. plumb checks that every
+  (`docs/VALIDATION.md` "independent verifier"). The map gains the
+  `incremental` record, exactly once in every map of an
+  incremental-mode layout and never in a plain one, and two line kinds
+  (plumb.md §3.2, after the defines and before the dynamic records):
+  `hole <output section> <offset> <size>` and `dead <output section>
+  <offset> <size> neutral|contribution|strings|cie`. plumb checks that every
   byte of an allocated output section is covered exactly once by a
   `place`, `piece`, synthetic chunk, `hole` or `dead` line, and runs
   IN-3a's three checks on every `hole` and `dead` range. *Test:* plumb's
@@ -3008,7 +3027,7 @@ urgent for M2 code.
 | 4 | `synth.md` S-111 | text D | "`.eh_frame` grows by layout L-144" and "a CIE that becomes unused stays" vs IN-34a's per-file ranges, padding CIEs and rewrite in full-link order |
 | 5 | `layout.md` L-147, `synth.md` S-110 | text E | L-147's "every hole is a valid piece" says nothing of the verifier; IN-3a makes dead fragments dead ranges with its three checks |
 | 6 | `model.md` §7.3 | invariant (C) and equivalence (IN-1, IN-2); (B) holds modulo the dead ranges of IN-3a, which the decision tables record | — |
-| 7 | `plumb.md` §2.3, §9 | the map's `hole` and `dead` lines; plumb's dead-range checker (IN-3a's three checks) and its mutation cases (IN-60); `--equiv` (IN-62) | — |
+| 7 | `plumb.md` §3.2, §6.8, §9 | the map's `hole` and `dead` lines; plumb's dead-range checker (IN-3a's three checks) and its mutation cases (IN-60); `--equiv` (IN-62) | — |
 | 8 | `model.md` §7.2 | IN-25 implements §7.2's per-unit index; it adds the liveness graph and names the non-relocation targets (slots, patches' redirected sites, demand flags) | — |
 | 9 | `image.md` I-96 | IN-45's default (copy) and conditions for in place; IN-46's order with four `fdatasync`s; IN-47's sync before rename | — |
 | 10 | `model.md` §7.1, `docs/ROADMAP.md` "Cross-project" | drop the request to kiln and hod for per-section content hashes (§8.3); IN-31 computes its own | — |

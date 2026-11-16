@@ -294,11 +294,6 @@ fn check(
 }
 
 pub(crate) fn check_state(state: &State, plan_hash: [u8; 16], out_path: &Path) -> String {
-    // A version-1 state is read (its tables replay) but has no delta
-    // tables (WP-063): an update cannot use it (§7 `state-version`).
-    if state.format == 1 {
-        return "state-version: format version 1 has no delta tables".to_owned();
-    }
     if state.plan_hash != plan_hash {
         return "options-changed".to_owned();
     }

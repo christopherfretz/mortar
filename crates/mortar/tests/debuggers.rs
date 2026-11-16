@@ -387,6 +387,35 @@ fn link(t: &Tools, label: &str, built: &Built, gc: bool) -> Pair {
     Pair { dir: built.dir.clone(), ours, theirs, gc }
 }
 
+/// The incremental lane (WP-062; `spec/incr.md` IN-30, IN-50, IN-51b):
+/// `ours` is mortar's incremental-mode first link of `built` (regions with
+/// slack, debug contributions in size classes with neutral units between
+/// them), `theirs` mortar's plain link of the same objects. The
+/// incremental output goes through the verifier.
+fn link_incr(label: &str, built: &Built) -> Pair {
+    let ours = built.dir.join("incr").join("prog");
+    let theirs = built.dir.join("plain").join("prog");
+    for out in [&ours, &theirs] {
+        std::fs::create_dir_all(out.parent().expect("a directory")).expect("create a directory");
+    }
+    let map = ours.with_extension("map");
+    let mut args = with_output(&built.args, &ours);
+    args.push(map_option(&map));
+    args.push("--incremental=full".into());
+    let m = linker(Path::new(MORTAR), &args, &built.dir);
+    assert!(m.success(), "{label}: mortar --incremental=full: {}", m.stderr_text());
+    assert_eq!(m.stderr_text(), "", "{label}: mortar --incremental=full warns");
+    let p = linker(Path::new(MORTAR), &with_output(&built.args, &theirs), &built.dir);
+    assert!(p.success(), "{label}: mortar: {}", p.stderr_text());
+    let mut findings = support::plumb::verify(&ours, &map, &built.dir);
+    findings.retain(|f| {
+        !support::plumb::s50_rule1_verifier_finding(f)
+            && !support::plumb::p_i3_zero_size_verifier_finding(f, &built.dir)
+    });
+    assert!(findings.is_empty(), "plumb on {}: {findings:#?}", ours.display());
+    Pair { dir: built.dir.clone(), ours, theirs, gc: false }
+}
+
 /// Runs a debugger or dump tool in `dir`, with debuginfod off.
 fn tool_run(exe: &Path, args: &[String], dir: &Path, limit: Duration) -> Outcome {
     // One stream, in the order the tool wrote it.
@@ -850,6 +879,24 @@ fn each_gc(
     gc: bool,
     check: impl Fn(&str, &str, &Tools, &Pair),
 ) {
+    each_with(name, driver, p, gc, |t, label, built| link(t, label, built, gc), check);
+}
+
+/// [`each`] on the incremental lane ([`link_incr`]).
+fn each_incr(name: &str, driver: Driver, p: &Program, check: impl Fn(&str, &str, &Tools, &Pair)) {
+    each_with(name, driver, p, false, |_, label, built| link_incr(label, built), check);
+}
+
+/// Builds `p` over the flag matrix (the `--gc-sections` variant when
+/// `gc`), makes each pair with `pair`, and runs `check` on it.
+fn each_with(
+    name: &str,
+    driver: Driver,
+    p: &Program,
+    gc: bool,
+    pair: impl Fn(&Tools, &str, &Built) -> Pair,
+    check: impl Fn(&str, &str, &Tools, &Pair),
+) {
     let Some(t) = tools() else { return };
     let sources = if gc { gc_sources(p) } else { p.sources.to_vec() };
     for (tag, flags) in FLAGS {
@@ -864,7 +911,7 @@ fn each_gc(
             eprintln!("note: {} is missing; skipping {name}", driver.tool());
             return;
         };
-        let pair = link(&t, &label, &built, gc);
+        let pair = pair(&t, &label, &built);
         check(&label, tag, &t, &pair);
     }
 }
@@ -889,7 +936,52 @@ fn sessions_gc(name: &str, driver: Driver, p: &Program, gc: bool) {
         );
         return;
     }
-    each_gc(name, driver, p, gc, |label, _, t, pair| {
+    each_gc(name, driver, p, gc, |label, _, t, pair| session_pair(label, t, pair, p, false));
+}
+
+/// The incremental lane's sessions: mortar's incremental-mode output
+/// against its plain output, equal transcripts (WP-062: the neutral debug
+/// units and the slack are invisible to gdb and lldb).
+// spec: incr.md IN-50, IN-51b (debuggers read past the neutral units)
+fn sessions_incr(name: &str, driver: Driver, p: &Program) {
+    if !AARCH64.is_host() {
+        mortar_testutil::named_skip(
+            &format!("debuggers::{name}"),
+            "gdb and lldb sessions run the AArch64 program: on an AArch64 host only",
+        );
+        return;
+    }
+    each_incr(name, driver, p, |label, _, t, pair| session_pair(label, t, pair, p, true));
+}
+
+/// lldb's `<section> + <offset>` with the offset masked: on the
+/// incremental lane a function's offset in `.text` is its region's
+/// (`spec/incr.md` IN-30: each file's code is followed by slack), so it
+/// differs from the plain link's as its address does.
+fn section_offsets_masked(t: &str) -> String {
+    let mut out = String::with_capacity(t.len());
+    let mut rest = t;
+    while let Some(at) = rest.find(" + ") {
+        let (head, tail) = rest.split_at(at + 3);
+        out.push_str(head);
+        let digits = tail.chars().take_while(char::is_ascii_digit).count();
+        let word = head[..head.len() - 3].rsplit(['(', ' ']).next();
+        let in_section = word.is_some_and(|w| w.contains("PT_LOAD"));
+        if digits > 0 && in_section {
+            out.push('?');
+            rest = &tail[digits..];
+        } else {
+            rest = tail;
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The gdb and lldb sessions on one pair, compared; with
+/// [`section_offsets_masked`] on the incremental lane (`incr`).
+fn session_pair(label: &str, t: &Tools, pair: &Pair, p: &Program, incr: bool) {
+    {
         let (eo, et) = (elf(&pair.ours), elf(&pair.theirs));
         let addr = |e: &Elf| p.comdat.map(|(sym, _)| e.values[sym]);
         let g_ours = session(&t.gdb, &gdb_args(p, addr(&eo)), &pair.ours, &pair.dir, &eo);
@@ -903,12 +995,17 @@ fn sessions_gc(name: &str, driver: Driver, p: &Program, gc: bool) {
             "{label}: gdb lost a CU's ranges (spec/image.md I-47):\n{g_ours}"
         );
         same(label, "the gdb session", &g_ours, &g_theirs);
-        same(label, "the lldb session", &l_ours, &l_theirs);
+        if incr {
+            let (a, b) = (section_offsets_masked(&l_ours), section_offsets_masked(&l_theirs));
+            same(label, "the lldb session", &a, &b);
+        } else {
+            same(label, "the lldb session", &l_ours, &l_theirs);
+        }
         sessions_did_their_work(label, p, pair.gc, &g_ours, &l_ours);
         if let Some((sym, kept)) = p.comdat {
             comdat_kept_copy(label, t, pair, sym, kept);
         }
-    });
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -1220,6 +1317,28 @@ fn dwarf(name: &str, driver: Driver, p: &Program) {
     });
 }
 
+/// The incremental lane's static checks: `llvm-dwarfdump --verify`,
+/// gdb's symbol tables and complaints, and the subprogram addresses of
+/// mortar's incremental-mode output, held to its plain output's.
+// spec: incr.md IN-50, IN-51b (the neutral units: verify-clean)
+fn dwarf_incr(name: &str, driver: Driver, p: &Program) {
+    each_incr(name, driver, p, |label, _, t, pair| {
+        let (eo, et) = (elf(&pair.ours), elf(&pair.theirs));
+        verify_against(label, t, pair, &eo, &et);
+        symtabs_against(label, t, pair, (&eo, &et));
+        // Every address in range or a tombstone, and the same tombstones
+        // as the plain link's (both are mortar's, I-47).
+        let ours = debug_addrs(t, pair, &pair.ours, &eo);
+        let theirs = debug_addrs(t, pair, &pair.theirs, &et);
+        assert!(ours.wrong.is_empty(), "{label}: the incremental output: {:#?}", ours.wrong);
+        assert_eq!(ours.dead, theirs.dead, "{label}: tombstones");
+        assert_eq!(
+            ours.dead_subprograms, theirs.dead_subprograms,
+            "{label}: tombstoned subprograms"
+        );
+    });
+}
+
 /// The static checks under `--gc-sections` (WP-031, `spec/image.md`
 /// I-47): `llvm-dwarfdump --verify` and gdb's complaints as without it;
 /// every address in mortar's debug sections is in its section or the
@@ -1456,4 +1575,43 @@ fn gc_dwarf_cxx_clangxx() {
 #[test]
 fn gc_dwarf_fortran_gfortran() {
     dwarf_gc("gc-dwarf-f-gfortran", Driver::Gfortran, &FORTRAN);
+}
+
+// ---------------------------------------------------------------------
+// The incremental lane (WP-062): mortar's incremental-mode first link
+// against its plain link.
+
+#[test]
+fn incr_sessions_c_gcc() {
+    sessions_incr("incr-dbg-c-gcc", Driver::Gcc, &C);
+}
+
+#[test]
+fn incr_sessions_cxx_gxx() {
+    sessions_incr("incr-dbg-cxx-gxx", Driver::Gxx, &CXX);
+}
+
+#[test]
+fn incr_sessions_cxx_clangxx() {
+    sessions_incr("incr-dbg-cxx-clangxx", Driver::Clangxx, &CXX);
+}
+
+#[test]
+fn incr_dwarf_c_gcc() {
+    dwarf_incr("incr-dwarf-c-gcc", Driver::Gcc, &C);
+}
+
+#[test]
+fn incr_dwarf_cxx_gxx() {
+    dwarf_incr("incr-dwarf-cxx-gxx", Driver::Gxx, &CXX);
+}
+
+#[test]
+fn incr_dwarf_cxx_clangxx() {
+    dwarf_incr("incr-dwarf-cxx-clangxx", Driver::Clangxx, &CXX);
+}
+
+#[test]
+fn incr_dwarf_fortran_gfortran() {
+    dwarf_incr("incr-dwarf-f-gfortran", Driver::Gfortran, &FORTRAN);
 }

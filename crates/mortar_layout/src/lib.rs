@@ -23,6 +23,7 @@ pub mod headers;
 pub mod order;
 pub mod rank;
 pub mod run;
+pub mod slack;
 pub mod stack;
 pub mod symbols;
 pub mod target;
