@@ -419,8 +419,21 @@ fn in60_unlisted_hole_and_bad_lines_are_rejected() {
         expect(arch, "kind", &base, &m, "P-I2", "'cie' range");
         // A section the map names twice or not at all.
         let mut m = b.clone();
-        m.map.dead.push(DeadRange { section: ".nowhere".into(), ..d });
+        m.map.dead.push(DeadRange { section: ".nowhere".into(), ..d.clone() });
         expect(arch, "no section", &base, &m, "P-I2", "names 0 output sections");
+        // `strings` and `neutral` in a data section, a hole in a
+        // non-allocated one.
+        for (kind, needle) in
+            [(DeadKind::Strings, "'strings' range"), (DeadKind::Neutral, "'neutral' range")]
+        {
+            let mut m = b.clone();
+            let i = m.map.dead.iter().position(|x| x.section == ".data").unwrap();
+            m.map.dead[i].kind = Some(kind);
+            expect(arch, "kind in .data", &base, &m, "P-I2", needle);
+        }
+        let mut m = b.clone();
+        m.map.dead.push(DeadRange { section: ".shstrtab".into(), offset: 0, size: 1, ..d });
+        expect(arch, "non-alloc hole", &base, &m, "P-I2", "allocated section only");
     }
 }
 
@@ -665,8 +678,8 @@ impl Debug {
     }
 }
 
-fn debug_archs() -> [Arch; 2] {
-    [Arch::Aarch64, Arch::X86_64]
+fn debug_archs() -> [Arch; 3] {
+    [Arch::Aarch64, Arch::X86_64, Arch::I386]
 }
 
 // IN-51, IN-51b, IN-53: neutral units, the neutral line table, IN-51's
@@ -736,6 +749,17 @@ fn in3a_debug_mutations_are_rejected() {
             let i = m.map.dead.iter().position(|x| x.section == ".debug_info").unwrap();
             m.map.dead[i].kind = Some(DeadKind::Contribution);
             expect(arch, &case("contribution kind"), &base, &m, "P-I2", "'contribution' range");
+            // `.debug_aranges` has no dead range (IN-54).
+            let mut m = d.b.clone();
+            m.dead(".debug_aranges", 0, 4, DeadKind::Neutral);
+            expect(arch, &case("aranges"), &base, &m, "P-I2", "IN-54");
+            // A `strings` range of `.debug_str` not ending with a NUL.
+            let mut m = d.b.clone();
+            let size = m.sec(".debug_str").size;
+            let o = d.file_offset(".debug_str", size - 2);
+            m.output[o] = b'x';
+            m.dead(".debug_str", size - 2, 1, DeadKind::Strings);
+            expect(arch, &case("strings"), &base, &m, "P-I6", "NUL");
         }
     }
 }

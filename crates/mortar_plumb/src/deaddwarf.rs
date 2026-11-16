@@ -165,6 +165,9 @@ pub(crate) fn check(
         let res = match r.kind {
             Some(DeadKind::Neutral) => neutral(image, set, name, bytes, lo),
             Some(DeadKind::Contribution) => contribution(image, name, bytes, lo),
+            Some(DeadKind::Strings) if bytes.last() != Some(&0) => {
+                Err("the range does not end with a string's NUL".into())
+            }
             _ => Ok(()),
         };
         if let Err(m) = res {
