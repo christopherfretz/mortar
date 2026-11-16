@@ -840,7 +840,11 @@ named, indirect dependencies: shape "closure", where `libd` comes in by
 `libe`'s `DT_NEEDED`, is X12).
 
 `SYSTEM` rows follow O-32. Cost: a merge of sorted sequences (the tables
-and the output's rows are sorted by key); measured in the record.
+and the output's rows are sorted by key); measured (WP-075, release
+build, generated tables): about 150 ns of CPU and 65 bytes of peak RSS
+per library row read (two tables of 15,000 rows: +4.6 ms, +1.9 MB), and
+about 200 ns per row written by O-50; zero unless `--odr=strict` or
+`--odr-table` asks for it.
 Status: like kind 2 (`--odr=strict` until its corpus, O-47). T-O-24's
 shapes: (a) an executable exporting a vague definition that a
 mortar-made `.so` defines differently, and the same unexported
@@ -2074,7 +2078,7 @@ Experiment 7 (real units at real row counts) is WP-071's acceptance test
   sections (`meta.md` MT-16).
 - What `strip` does to a non-allocated `.mason.meta` in an executable
   (MT-32).
-- Every cost marked `[estimate]`: O-4, O-21, O-22, O-24, O-30, the W
+- Every cost marked `[estimate]`: O-4, O-21, O-22, O-30, the W
   checks' cost in mortar (only Python prototypes ran); the hook's cost on
   real x86 hardware.
 - Everything that needs kiln's hasher: the false-positive rates of the

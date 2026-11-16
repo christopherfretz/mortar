@@ -1052,7 +1052,7 @@ definition name=f
             assert_eq!(meta.header().sh_addralign, 8, "{target}");
             assert!(mortar_meta::is_container(b".mason.meta", meta.sh_type(), meta.flags()));
             let text = dump(&bytes).unwrap();
-            assert!(text.contains("definition key="), "{target}: {text}");
+            assert!(text.contains("definition name=f "), "{target}: {text}");
         }
         assert!(objcopy_for(b"not an elf file at all").is_err());
     }
