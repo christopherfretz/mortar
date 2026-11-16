@@ -358,7 +358,7 @@ pub(crate) static ROWS: &[Row] = &[
     r(&[x("threads")], Arg::Optional(Values::Count), "N", LM, &[], Group::Bookkeeping, Supported, Lands::Threads, "Use N threads (alone: all processors)"),
     r(&[x("thread-count")], Arg::Required(Values::Count), "N", M, &[], Group::Bookkeeping, Refused, Lands::ThreadCount, "Use N threads"),
     r(&[x("no-threads")], Arg::None, "", M, &[], Group::Bookkeeping, Refused, Lands::NoThreads, "Use one thread"),
-    r(&[x("mortar-map")], Arg::Required(Values::Any), "FILE", MORTAR, &[], Group::Bookkeeping, Supported, Lands::MortarMap, "Write the machine-readable map (mortar-map 1) to FILE"),
+    r(&[x("mortar-map")], Arg::Required(Values::Any), "FILE", MORTAR, &[], Group::Bookkeeping, Supported, Lands::MortarMap, "Write the machine-readable map (mortar-map 2) to FILE"),
     r(&[x("time-phases")], Arg::None, "", MORTAR, &[], Group::Bookkeeping, Supported, Lands::TimePhases, "Report the time and memory of each phase"),
     r(&[x("verify")], Arg::None, "", MORTAR, &[], Group::Bookkeeping, Refused, Lands::Verify, "Check the output with mortar_plumb (reserved)"),
     r(&[x("incremental")], Arg::Optional(Values::Choice(&["full", "update"])), "MODE", MORTAR, &[], Group::Bookkeeping, Supported, Lands::Incremental, "Link incrementally: update the output from its state if possible (alone), always from scratch (full), or update or fail (update)"),

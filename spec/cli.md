@@ -513,7 +513,7 @@ The facade does two things with these:
 `plan.bookkeeping` holds:
 - `map` (`-Map`) and `print_map` (`-M`): GNU's text map
   (`spec/image.md` I-120, I-121);
-- `mortar_map` (`--mortar-map`): `mortar-map 1`, the verifier's map
+- `mortar_map` (`--mortar-map`): `mortar-map 2`, the verifier's map
   (`spec/image.md` I-77);
 - `cref`;
 - `reproduce`;

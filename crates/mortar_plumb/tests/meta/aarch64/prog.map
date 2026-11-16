@@ -1,4 +1,4 @@
-mortar-map 1
+mortar-map 2
 file 0 a.o
 file 1 b.o
 piece 0 13 0 508 14
@@ -41,6 +41,7 @@ chunk synthetic .shstrtab - a2
 chunk synthetic .comment - d
 chunk synthetic .note.mason 280 f8
 chunk synthetic .mason.meta - 378
+chunk synthetic .pad.relro 208a0 f760
 output pie
 interp /lib/ld.so
 bind lazy

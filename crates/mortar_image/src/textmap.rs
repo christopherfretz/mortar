@@ -1,6 +1,6 @@
 //! The text map (§9.3, I-120..I-122): GNU ld 2.44's `-Map` layout, for
 //! people and the scripts that read GNU maps. The machine map is
-//! `crate::map` (`mortar-map 1`, `--mortar-map`).
+//! `crate::map` (`mortar-map 2`, `--mortar-map`).
 
 use std::fmt::Write as _;
 

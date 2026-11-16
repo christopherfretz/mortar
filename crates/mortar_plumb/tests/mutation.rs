@@ -444,6 +444,16 @@ fn mortar_map(c: &'static Corpus) -> (Ctx, Map) {
     let link = c.get("start", Linker::Lld);
     let mut ctx = Ctx::of(link);
     mortar_plumb::buildid::seal(&mut ctx.output, mortar_plumb::buildid::Tree::L128);
+    // lld's row for `.relro_padding` has size 0 (it sizes the section
+    // after it writes its map); mortar's states the section (§3.2, M6).
+    let h = FileHeader::parse(&ctx.output).unwrap();
+    let t = SectionTable::parse(&ctx.output, &h).unwrap();
+    if let Some(s) = t.iter().find(|s| s.name().is_ok_and(|n| n == b".relro_padding"))
+        && let Some(c) = ctx.map.chunks.iter_mut().find(|c| c.name == ".relro_padding")
+    {
+        c.addr = Some(s.header().sh_addr);
+        c.size = s.header().sh_size;
+    }
     let text = mortar_plumb::map::mortar::write(&ctx.map);
     let map = mortar_plumb::map::parse(Format::Mortar, &text).unwrap();
     (ctx, map)
