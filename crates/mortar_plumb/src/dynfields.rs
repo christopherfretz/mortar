@@ -260,11 +260,7 @@ fn imports(
             }
         }
         if !bad.is_empty() {
-            v.push(sym_fd(
-                7,
-                &s.name,
-                format!("the import '{}' has {}", s.name, bad.join(", ")),
-            ));
+            v.push(sym_fd(7, &s.name, format!("the import '{}' has {}", s.name, bad.join(", "))));
         }
         // D-27: unversioned is index 1 (0 is gABI's VER_NDX_LOCAL).
         if let Some(&x) = out.versym.as_ref().and_then(|vs| vs.get(j))
@@ -347,7 +343,10 @@ fn got_header(image: &Image<'_>, out: &DynOut, v: &mut Vec<Finding>) {
         v.push(f);
     }
     if out.rels.iter().any(|r| r.offset == at) {
-        v.push(fd(10, "a record writes .got[0], which holds _DYNAMIC's link-time address (D-32)").at(at));
+        v.push(
+            fd(10, "a record writes .got[0], which holds _DYNAMIC's link-time address (D-32)")
+                .at(at),
+        );
     }
 }
 

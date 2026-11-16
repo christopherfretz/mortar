@@ -217,7 +217,11 @@ pub fn verify_with(output: &[u8], inputs: &[Input<'_>], map: &Map, ctx: &Ctx<'_>
         }
     }
     if map.format == crate::Format::Mortar {
-        report.findings.extend(crate::dynfields::unrecorded_got(&image, &dout, &engine.got_demands));
+        report.findings.extend(crate::dynfields::unrecorded_got(
+            &image,
+            &dout,
+            &engine.got_demands,
+        ));
     }
     let chosen = std::mem::take(&mut engine.ifunc_chosen);
     // A static-pie's exports bind nothing (§12.4, P-D14 judges them): W13

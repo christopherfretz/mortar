@@ -49,13 +49,11 @@ pub const BUILD_ID: &str = ".note.gnu.build-id";
 /// the table): `(section, field kind, who reads it and why no correct
 /// consumer can do otherwise)`. Equivalence is by field, never by offset;
 /// a survivor of any other field fails the lane.
-pub const EQUIVALENT: &[(&str, &str, &str)] = &[
-    (
-        ".plt",
-        "code no path executes",
-        "no path executes it: every PLT entry and its lazy path, walked as §12.2 walks them, ends in an unconditional indirect jump before these bytes, and every input branch into the PLT is judged to reach an entry",
-    ),
-];
+pub const EQUIVALENT: &[(&str, &str, &str)] = &[(
+    ".plt",
+    "code no path executes",
+    "no path executes it: every PLT entry and its lazy path, walked as §12.2 walks them, ends in an unconditional indirect jump before these bytes, and every input branch into the PLT is judged to reach an entry",
+)];
 
 /// The reason a surviving byte is equivalent, when its field is in
 /// [`EQUIVALENT`].
