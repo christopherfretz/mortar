@@ -1083,11 +1083,12 @@ GCC hands the linker as they are (`-static`, `-pie`, `-no-pie`,
 `cargo xtask spelled` prints the rows no test spells and their number;
 `xtask/src/linktest/spelled.rs`
 `every_accepted_option_is_spelled_by_a_link_test` (in `cargo test`, so
-in the quick gate; under a tenth of a second) wants none. The tests of
-those rows are under `tests/link/options/`: each shows the option's
-effect against the same link without it and the references' links, or,
-for a `noop`, that the output is the same bytes with and without it
-(`check cmp`) and why that is right.
+in the quick gate; under a tenth of a second) wants none. A row's test
+lives beside the tests of its subject (`tests/link/layout/execstack.test`,
+`tests/link/dyn/shlib/bsymbolic.test`, ...): it shows the option's effect
+against the same link without it and the references' links, or, for a
+`noop`, that the output is the same bytes with and without it (`check
+cmp`) and, in its comment, the row's reason why that is right.
 
 ### The self-check
 
@@ -1155,6 +1156,22 @@ says what mortar does.
 | IFUNC address equality with `-fpie` objects in a `-no-pie` link, x86-64 | **broken** | kept | kept | kept | `ifunc/irelative` uses `-fno-pie` |
 | IRELATIVE relocations of a static executable | `.rela.plt` | `.rela.dyn` | `.rela.dyn` | not checked | `ifunc/irelative` |
 | `.text` not placed while another section is (`--section-start`) | at its default | next to it | next to it | not checked | `reloc/aarch64-veneer` places both |
+| `--dependency-file`: a prerequisite's indent; a file named twice | two blanks; listed per mention | one blank; once | on the target's line; once | lld's form, once | `input/dependency-file` |
+| `-call_shared` | known | known | unknown option | known | `dyn/shlib/bdynamic` |
+| an object's executable-stack note, no `-z execstack` | RWE stack (`--warn-execstack` warns) | refused, even under `-z noexecstack` | RW stack, warns | as GNU ld | `layout/execstack` |
+| `--discard-none`, `--no-build-id`, `--gc-keep-exported`, `--strip-discarded` | some unknown (the test's qualifiers say which) | some unknown | some unknown | accepted | `resolve/discard`, `layout/no-build-id`, `layout/gc-options`, `resolve/strip-discarded` |
+| `--print-gc-sections` | standard error | standard output | standard output | standard error | `layout/gc-options` |
+| a `.deplibs` library (`#pragma comment(lib, ...)`) | not loaded | loaded (not under `--no-dependent-libraries`) | not loaded | not loaded | `resolve/no-dependent-libraries` |
+| `--hash-size`, `--reduce-memory-overheads` | `.symtab` reordered | unknown | unknown | the same bytes | `input/ignored-options` |
+| `-plugin-opt=` a plugin does not know | ignored | refused | ignored | ignored | `input/ignored-options` |
+| `-Bsymbolic` in an executable | nothing | `DF_SYMBOLIC` | nothing | nothing (verifier: WP-112 V2) | `dyn/shlib/bsymbolic` |
+| AArch64 static PIE: the word at `_GLOBAL_OFFSET_TABLE_` | `_DYNAMIC` | `_DYNAMIC` (no symbol) | 0 | `_DYNAMIC` | `dyn/dynamic/no-dynamic-linker` (`skip(mold,aarch64)`) |
+| `-z max-page-size=0x10000`: a non-PIE base | rounded down (i386 0x08040000) | own base | own base | as GNU ld (verifier: WP-112 V3) | `layout/max-page-size` |
+| `--push-state -Bstatic --pop-state -lx` | `libx.so` | `libx.so` | **no `.dynamic`, crashes** (a bug) | `libx.so` | `dyn/shlib/push-state` (`skip(mold)`) |
+| `--color-diagnostics` alone | unknown | always | auto | always | `diag/diagnostic-switches` |
+| `--fatal-warnings`: the severity word | `warning:` | `error:` | `error:` | `error:` | `diag/diagnostic-switches` |
+| `-M` with `-Map=FILE` | the map to FILE | no FILE written | the map to FILE | the map to standard output | `input/info-requests` |
+| `--threads` without N | unknown | reads the next word as N | all processors | all processors | `input/bookkeeping` |
 
 ### The corpus
 
