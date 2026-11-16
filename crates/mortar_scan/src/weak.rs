@@ -261,7 +261,7 @@ fn file_uses(view: &View<'_, '_>, file: FileId, weak: &IdSet<SymbolId>) -> Vec<U
         }
         // A section that cannot be read is the walk's diagnostic.
         let Ok(sec) = Sec::open(view, file, sid, index, row.reloc.0, &mut bufs) else { continue };
-        let writable = view.opts.sections.map_or(sec.place.writable, |m| m.writable(sid));
+        let writable = sec.place.writable;
         let n = u32::try_from(sec.recs.records.len()).unwrap_or(u32::MAX);
         for i in 0..n {
             let Some(raw) = sec.recs.records.raw(i) else { continue };
