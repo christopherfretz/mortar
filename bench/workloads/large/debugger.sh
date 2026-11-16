@@ -3,7 +3,11 @@
 # a breakpoint in a template instantiation of clang's template
 # instantiator, the backtrace, a local, an argument, a type. Two clangs
 # linked from the same inputs must give the same normalized transcripts
-# (addresses written `0x?`, the binary's path written `CLANG`). Each
+# (addresses written `0x?`, the binary's path written `CLANG`). The
+# container may not disable address-space randomisation, so values derived
+# from addresses (a hash of a pointer, a source location of a heap buffer)
+# can differ from run to run of the same binary; compare against a second
+# run of the control. Each
 # session's wall time and peak RSS (GNU time) are in OUT/*.time.
 #
 # usage: debugger.sh CLANG OUT
@@ -29,6 +33,7 @@ kill
 quit
 EOF
 cat > "$OUT/lldb.cmd" <<EOF
+settings set target.disable-aslr false
 breakpoint set -n "$BP"
 run
 thread backtrace -c 6
@@ -42,7 +47,7 @@ quit
 EOF
 ARGS="-cc1 -fsyntax-only -std=c++17 -x c++ $HERE/templates.cc -I/usr/include/c++/14 -I/usr/include/aarch64-linux-gnu/c++/14 -I/usr/include/aarch64-linux-gnu -I/usr/include"
 norm() {
-  sed -e "s|$CLANG|CLANG|g" -e 's/0x[0-9a-f]\{4,\}/0x?/g' -e 's/process [0-9]*/process N/g' \
+  sed -e "s|$CLANG|CLANG|g" -e "s|$OUT|OUT|g" -e 's/0x[0-9a-f]\{4,\}/0x?/g' -e 's/process [0-9]*/process N/g' \
       -e 's/Process [0-9]*/Process N/g' -e 's/\[LWP [0-9]*\]/[LWP N]/g' -e 's/ pid [0-9]*/ pid N/g' \
       -e 's/thread #1, name = .[^,]*,/thread #1,/'
 }

@@ -1670,6 +1670,7 @@ class or shape, and a missing required key, are errors naming the line.
 | `about` | all | one sentence for the report |
 | `sources` | sources | files of `bench/workloads/src/` |
 | `shape`, `params` | synthetic | the generator's shape and its two parameters ("Generated workloads") |
+| `group` | synthetic | `yes`: the link puts every input after `main.o` in one `-Wl,--start-group` … `-Wl,--end-group`; default `no` |
 | `url`, `sha256`, `root` | cmake | the source archive, its SHA-256, the directory in it with the top `CMakeLists.txt` |
 | `options`, `prebuild`, `target` | cmake | cmake `-D` options; make targets built first without capture; the make target whose link is the workload |
 | `rev`, `package`, `bin`, `rustc_args` | cargo | a commit of this repository; `cargo rustc -p <package> --bin <bin> -- <rustc_args>` |
@@ -1699,6 +1700,11 @@ The workloads (sizes as the census of this machine counted them are in
 | `synthetic-<shape>-static` | extreme | each `synthetic-*` above with `ldflags = -static`, the same sources and flags |
 | `synthetic-library-static` | extreme | one archive of 20000 members of which `main` needs every 50th, `-static` |
 | `synthetic-objects-g10x` | on-request | `synthetic-objects` at 8150 objects with `-g` (`-O1 -g`), `-static`: at least 10× protoc `-g`'s live input, the large workload of `spec/incr.md` §1.5's go/no-go rule (WP-061 stage B) |
+| `synthetic-line-1000`, `synthetic-line-3000` | on-request | 1000 / 3000 static archives of 25 members (the `line` shape), on one line in dependency order, `-static`: what the count of archives alone costs (WP-081) |
+| `synthetic-line-1000-group`, `synthetic-line-3000-group` | on-request | the same with the archives in one `--start-group` … `--end-group` (`group = yes`) |
+| `cxx-large-g` | on-request | clang 19.1.7, `RelWithDebInfo` (`-O2 -g`), AArch64 target only, linked `-static`: 88 archives, 2.4 GB of input, some 1.1 GB of output ("Large workloads"; record `spec/landed/harness/WP-081.md`) |
+| `cxx-large-g-opt` | on-request | `opt` of the same tree: 52 of the same archives, some 530 MB of output |
+| `cxx-large-split` | on-request | `cxx-large-g` compiled with `-gsplit-dwarf` (`LLVM_USE_SPLIT_DWARF`): the `.dwo` files stay beside the objects and are not linked |
 | `fortran-static` | small | `fortran.f90` (a Fortran main calling C through `BIND(C)`) and `fortran-sum.c`, gfortran `-O1`, `-static` against libgfortran |
 
 **Static twins.** Until M2 mortar links static, non-PIE executables only
@@ -1730,8 +1736,8 @@ makes exponentially many calls.
 `kind = planned` sections are specified and not built: `--list` and the
 report name them with what they need. Today: `libcxx-test` (one libc++
 test program as the L8 lane links it; needs kiln and hod and the libc++
-build), `cxx-large-g` and `cxx-large` (a large open-source C++ program's
-objects captured once and pinned; needs tens of GB of disk),
+build), `cxx-large` (`cxx-large-g`'s program without debug information:
+needs a third build of the tree),
 `kiln-hod-medium` (the medium program compiled by kiln and hod),
 `incremental-function`, `incremental-object`, `incremental-archive`
 (M7), and `cross-x86-64` (the x86-64 and i386 rows, on an x86-64 machine).
@@ -2276,10 +2282,12 @@ test.
 | `strings (n, s)` | `n` objects with a table of `s` literals; even positions the same in every object | mergeable string sections |
 | `comdat (n, i)` | a header of `i` inline functions (an inline variable per eight, a class template) and `n` C++ units that all use them | COMDAT groups, duplicate debug information |
 | `archives (a, m)` | `a` archives of `m` members of eight functions; the first half of each archive's members call the same member of the next archive | archive member extraction |
+| `line (a, m)` | `a` archives of `m` members of 64 functions and a table; seven members in eight are needed: function 0 of each calls the same member of the next archive and of one archive further on, never backwards, so one pass over the line in order loads them all | the count of archives: opening, symbol-table scans, the order of extraction |
 | `library (m, k)` | one archive of `m` members of eight functions that call nothing; `main` calls every `k`-th member, the first included | the search of a big archive of which little is needed |
 
 Every shape has a `main` that calls into every unit (for `archives`, into
-the needed members of the first; for `library`, into its needed
+the needed members of the first; for `line`, into the needed members of
+the first archive; for `library`, into its needed
 members), so a link drops nothing it was meant to keep. Adding a shape
 changes no other shape's output and so not `GENERATOR`.
 
@@ -2298,6 +2306,7 @@ changes no other shape's output and so not `GENERATOR`.
 `dependency_files_are_parsed`, `globs`. `xtask/src/bench/prepare.rs`:
 `arguments_are_normalized`, `files_are_classified`,
 `symbol_tables_are_counted`, `stamps_round_trip`, `the_cache_is_locked`.
+`xtask/src/bench/tree.rs`: `arguments_are_relocated`.
 `xtask/src/bench/measure.rs`: `linker_configurations`, `statuses`,
 `figures_of_runs`. `xtask/src/bench/manifest.rs`:
 `the_manifest_is_read`, `malformed_manifests`.

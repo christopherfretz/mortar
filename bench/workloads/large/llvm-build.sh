@@ -61,7 +61,7 @@ cmake -S "$SRC/llvm-project-19.1.7.src/llvm" -B "$B" -G Ninja \
   -DLLVM_ENABLE_ZLIB=OFF -DLLVM_ENABLE_ZSTD=OFF -DLLVM_ENABLE_LIBXML2=OFF \
   -DLLVM_ENABLE_TERMINFO=OFF -DLLVM_ENABLE_LIBEDIT=OFF -DLLVM_ENABLE_LIBPFM=OFF \
   -DLLVM_ENABLE_BINDINGS=OFF -DLLVM_INCLUDE_BENCHMARKS=OFF \
-  -DLLVM_INCLUDE_EXAMPLES=OFF -DCLANG_ENABLE_ARCMT=ON \
+  -DLLVM_INCLUDE_EXAMPLES=OFF -DCLANG_ENABLE_ARCMT=ON -DLLVM_APPEND_VC_REV=OFF \
   $EXTRA
 # The small tools the tests need, linked by the build; of the three large
 # links only the inputs (the capture records the links themselves).

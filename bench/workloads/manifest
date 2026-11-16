@@ -397,7 +397,7 @@ run =
 [cxx-large-g]
 class = on-request
 kind = ninja
-about = clang 19.1.7 at -O2 -g linked -static: some 1 GB of output from 90 archives, the large real link.
+about = clang 19.1.7 at -O2 -g linked -static: some 1.1 GB of output from 88 archives, the large real link.
 script = bench/workloads/large/llvm-build.sh g
 sha256 = 82401fea7b79d0078043f7598b835284d6650a75b93e64b6f761ea7b63097501
 root = llvm-project-19.1.7.src
