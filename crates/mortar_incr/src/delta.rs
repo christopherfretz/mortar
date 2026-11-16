@@ -1519,8 +1519,11 @@ pub fn compute(
 /// `spec/incr.md` IN-10, WP-106): the first `REPORT_BOUND` of each kind,
 /// in the report's order, then one `delta elided` line with the kind's
 /// total, so that nothing is left out unsaid. The count lines (`delta
-/// inputs`, `delta symbols`, `delta refill`) are not bounded.
-pub const REPORT_BOUND: usize = 1000;
+/// inputs`, `delta symbols`, `delta refill`) are not bounded. 10,000
+/// keeps every oracle-lane report whole (the largest kind there, the
+/// units of `ovx`, is 2,137) and caps a report at nine kinds of 10,000
+/// lines (WP-094's g10x fall-back wrote 12.9 million).
+pub const REPORT_BOUND: usize = 10_000;
 
 /// The report's bounded line kinds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

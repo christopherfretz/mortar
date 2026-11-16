@@ -2201,7 +2201,7 @@ fn the_report_is_bounded() {
         .sum();
     assert_eq!(elided, total, "{listed}");
     assert_eq!(rep.lines().last(), Some("delta end"));
-    assert!(rep.len() < 1 << 20, "the report is {} bytes", rep.len());
+    assert!(rep.len() < 4 << 20, "the report is {} bytes", rep.len());
     // Deterministic: the same history, the same report, but for the times.
     let mask = |r: &str| -> String {
         r.lines()

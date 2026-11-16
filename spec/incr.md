@@ -1060,17 +1060,19 @@ program is the program a from-scratch link would have made.
   801,742,419 B, 12,924,615 lines, on one fall-back of g10x). Each kind
   of listing line (`path`, `stat-missed`, `file`, `probe`, `symbol`,
   `fallback`, `unit`, `hole`, `chunk`: `docs/cli.md` §3.13) is written
-  for its first `REPORT_BOUND` = 1,000 instances in the report's order
+  for its first `REPORT_BOUND` = 10,000 instances in the report's order
   (`mortar_incr::delta::REPORT_BOUND`); past that the lines are counted,
   not formatted, and the kind's last line is followed by `delta elided
-  <kind> listed=1000 total=<n>`. The count lines (`delta inputs`, `delta
+  <kind> listed=10000 total=<n>`. The count lines (`delta inputs`, `delta
   symbols`, `delta refill`) are never bounded, so every total is stated,
-  and `delta listed bound=1000 elided=<n>` before `delta time` gives the
+  and `delta listed bound=10000 elided=<n>` before `delta time` gives the
   number of lines left out (0 when none): nothing is dropped unsaid. A
   reader that needs every line (the oracle lane, IN-63a) treats a report
   with a `delta elided` line as one it cannot judge. The report is a
   function of the link's inputs, options and state except for its two
-  times (`time=` and `delta time`). *Test:* `the_report_is_bounded`
+  times (`time=` and `delta time`). The bound keeps every oracle-lane
+  report whole (its largest kind is 2,137 units) and caps a report at
+  90,000 listing lines. *Test:* `the_report_is_bounded`
   (100,000 moved sections), `delta::tests::the_report_bound`.
 - **IN-11 [v1] A plain link never looks.** Without `--incremental`,
   mortar does not open, stat or remove a state file. A state left beside

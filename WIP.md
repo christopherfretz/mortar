@@ -3,7 +3,8 @@
 ## Done
 - Item 1: `detect.rs` `thin_member_paths` (commits 0f3907b test, 7f8a5dd fix).
 - Item 2: `delta.rs` `REPORT_BOUND`, `Bounded`; `the_report_is_bounded`
-  (100k sections, 109,522 B / 3,022 lines), `delta::tests::the_report_bound`;
+  (100k sections, 1,135,526 B / 30,022 lines at bound 10,000;
+  1,000 elided 12 oracle pairs), `delta::tests::the_report_bound`;
   oracle fails an elided report.
 - Item 3: `incremental.rs` `dry_run_wanted`, `self.old = None` after the
   target check (failed on main: a dry run on a state of another target).

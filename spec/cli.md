@@ -593,8 +593,8 @@ hex digits. An empty field is `-`. The lines appear in this order:
 | `delta unit <reasons> <path> <member> <shndx> <name>` | per refilled unit, in the new link's section order. `<shndx>` is the section's index in its file (as in `--mortar-map`). |
 | `delta hole <reasons> <path> <member> <shndx> <old address> <size> <name>` | per old unit whose bytes are not where the new link puts that unit. `<shndx>` is the index in the new link's file, or `-` when the file left. The address and size are hex; the address is `-` when the old unit was not allocated. |
 | `delta chunk <reasons> <tag> <chunk> <output section>` | per refilled chunk (headers, synthetic tables, merged sections, patches, a body's fill between units). |
-| `delta elided <kind> listed=1000 total=<n>` | after the last line of a kind above (`path`, `stat-missed`, `file`, `probe`, `symbol`, `fallback`, `unit`, `hole`, `chunk`) of which more than 1,000 were found: the bound below. |
-| `delta listed bound=1000 elided=<n>` | once: the bound, and the number of lines of every kind left out (0 when none). |
+| `delta elided <kind> listed=10000 total=<n>` | after the last line of a kind above (`path`, `stat-missed`, `file`, `probe`, `symbol`, `fallback`, `unit`, `hole`, `chunk`) of which more than 10,000 were found: the bound below. |
+| `delta listed bound=10000 elided=<n>` | once: the bound, and the number of lines of every kind left out (0 when none). |
 | `delta time detect=<ms> delta=<ms>` | the cost of detection, and of the delta and the report. |
 | `delta end` | last. A report without it is truncated. |
 
@@ -618,7 +618,7 @@ hex digits. An empty field is `-`. The lines appear in this order:
 
 **The bound** (`spec/incr.md` IN-10b, WP-106). Of each kind of line
 that names one item (`path`, `stat-missed`, `file`, `probe`, `symbol`,
-`fallback`, `unit`, `hole`, `chunk`) the report writes the first 1,000
+`fallback`, `unit`, `hole`, `chunk`) the report writes the first 10,000
 in the order above (`mortar_incr::delta::REPORT_BOUND`) and counts the
 rest, which its `delta elided` line states. The count lines (`delta
 inputs`, `delta symbols`, `delta refill`) are not bounded. A report is
