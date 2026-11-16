@@ -146,13 +146,10 @@ impl Elf {
     fn u64(&self, o: usize) -> u64 {
         u64::from_le_bytes(self.0[o..o + 8].try_into().unwrap())
     }
-    fn at(&self, o: u64) -> usize {
-        usize::try_from(o).unwrap()
-    }
 
     /// (`sh_name`, `sh_offset`, `sh_size`, `sh_link`) of every section.
     fn sections(&self) -> Vec<(u32, u64, u64, u32)> {
-        let (off, size, n) = (self.at(self.u64(0x28)), self.u16(0x3a), self.u16(0x3c));
+        let (off, size, n) = (at(self.u64(0x28)), self.u16(0x3a), self.u16(0x3c));
         (0..n)
             .map(|i| {
                 let s = off + i * size;
@@ -162,7 +159,7 @@ impl Elf {
     }
 
     fn cstr(&self, o: u64) -> &[u8] {
-        let o = self.at(o);
+        let o = at(o);
         let end = self.0[o..].iter().position(|&b| b == 0).unwrap();
         &self.0[o..o + end]
     }
@@ -174,7 +171,7 @@ impl Elf {
             .iter()
             .find(|s| self.cstr(strtab + u64::from(s.0)) == name.as_bytes())
             .unwrap_or_else(|| panic!("no section {name}"));
-        &self.0[self.at(off)..self.at(off + size)]
+        &self.0[at(off)..at(off + size)]
     }
 
     /// `st_value` of `name` in `.dynsym`.
@@ -185,15 +182,14 @@ impl Elf {
             all.iter().find(|s| self.cstr(strtab + u64::from(s.0)) == b".dynsym").unwrap();
         let dynstr = all[link as usize].1;
         (0..size / 24)
-            .map(|i| self.at(off + i * 24))
+            .map(|i| at(off + i * 24))
             .find(|&e| self.cstr(dynstr + u64::from(self.u32(e))) == name.as_bytes())
-            .map(|e| self.u64(e + 8))
-            .unwrap_or_else(|| panic!("no .dynsym entry {name}"))
+            .map_or_else(|| panic!("no .dynsym entry {name}"), |e| self.u64(e + 8))
     }
 
     /// `p_vaddr` of the `PT_TLS` program header, if any.
     fn tls_start(&self) -> Option<u64> {
-        let (off, size, n) = (self.at(self.u64(0x20)), self.u16(0x36), self.u16(0x38));
+        let (off, size, n) = (at(self.u64(0x20)), self.u16(0x36), self.u16(0x38));
         (0..n).map(|i| off + i * size).find(|&p| self.u32(p) == 7).map(|p| self.u64(p + 0x10))
     }
 }
@@ -347,4 +343,8 @@ fn absolute_word_against_a_library_tls_variable_is_refused() {
             assert!(!cx.path().join("abs").exists(), "a failed link left its output");
         }
     }
+}
+
+fn at(o: u64) -> usize {
+    usize::try_from(o).unwrap()
 }
