@@ -9,6 +9,8 @@
 
 #[cfg(unix)]
 pub mod bench;
+#[cfg(unix)]
+pub mod census;
 pub mod ci;
 #[cfg(unix)]
 pub mod identical;

@@ -480,7 +480,7 @@ reference):
 | `-u SYM` | `SYM` (R4b: all three extract) | M1 |
 | `--require-defined=SYM` | `SYM`; if still undefined after the closure: `required-symbol` (error; GNU: ``required symbol `x' not defined``, mold: `--require-defined: undefined symbol: x`; lld 22 has no such option, E13) | M1 |
 | `--defsym A=EXPR` | the symbols `EXPR` names, wherever the option is on the line (finding 17: GNU ld extracts them only when the option precedes the archive, ``undefined symbol `k' referenced in expression`` otherwise; lld and mold in any position, R10: §16) | M4 |
-| `--export-dynamic-symbol=GLOB` | each key matching the glob that some file mentions (lld; not verified for GNU ld) | M2 |
+| `--export-dynamic-symbol=GLOB` | each unversioned key whose name matches the glob, among the keys some file mentions (`*` any run, `?` one byte, `[set]` with ranges and `!`/`^` negation, `\` quotes the next byte; a `[` without `]` is literal, fnmatch(3)); a value without a wildcard names its key. GNU ld, lld and mold agree on `exp_d*` (WP-056, `export-dynamic-symbol`); before WP-056 mortar matched the value as a literal name | M2 |
 | a script's `EXTERN(SYM)` | `SYM` | M4 |
 
 ### 4.3 What GNU ld users see

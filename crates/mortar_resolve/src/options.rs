@@ -200,3 +200,113 @@ impl Options {
         redirect
     }
 }
+
+/// Whether `pattern` has a wildcard of [`glob_match`] (`*`, `?` or `[`).
+#[must_use]
+pub fn is_glob(pattern: &[u8]) -> bool {
+    pattern.iter().any(|b| matches!(b, b'*' | b'?' | b'['))
+}
+
+/// Whether `name` matches the glob `pattern` (`spec/resolve.md` §4.2, the
+/// patterns of `--export-dynamic-symbol`): `*` any run of bytes, `?` one
+/// byte, `[set]` one byte of the set (ranges `a-z`; `!` or `^` first
+/// negates; `]` first is literal), `\` makes the next byte literal; a `[`
+/// without its `]` is a literal `[` (fnmatch(3), GNU ld's matcher).
+#[must_use]
+pub fn glob_match(pattern: &[u8], name: &[u8]) -> bool {
+    // Iterative with one backtrack point: the last `*` seen.
+    let (mut p, mut n) = (0, 0);
+    let mut star: Option<(usize, usize)> = None;
+    while n < name.len() {
+        let step = match pattern.get(p) {
+            Some(b'*') => {
+                star = Some((p + 1, n));
+                p += 1;
+                continue;
+            }
+            Some(b'?') => Some(p + 1),
+            Some(b'[') => match class(pattern, p + 1, name[n]) {
+                Some((hit, end)) => hit.then_some(end),
+                None => (name[n] == b'[').then_some(p + 1),
+            },
+            Some(b'\\') if p + 1 < pattern.len() => (pattern[p + 1] == name[n]).then_some(p + 2),
+            Some(&c) => (c == name[n]).then_some(p + 1),
+            None => None,
+        };
+        match (step, star) {
+            (Some(next), _) => {
+                p = next;
+                n += 1;
+            }
+            (None, Some((sp, sn))) => {
+                p = sp;
+                n = sn + 1;
+                star = Some((sp, sn + 1));
+            }
+            (None, None) => return false,
+        }
+    }
+    pattern[p..].iter().all(|&b| b == b'*')
+}
+
+/// The bracket class starting after its `[` at `start`: whether `byte` is
+/// in it and the index past its `]`; `None` when it has no `]`.
+fn class(pattern: &[u8], start: usize, byte: u8) -> Option<(bool, usize)> {
+    let mut i = start;
+    let negate = matches!(pattern.get(i), Some(b'!' | b'^'));
+    if negate {
+        i += 1;
+    }
+    let mut hit = false;
+    let mut first = true;
+    loop {
+        let c = *pattern.get(i)?;
+        if c == b']' && !first {
+            return Some((hit != negate, i + 1));
+        }
+        first = false;
+        let lo = if c == b'\\' {
+            i += 1;
+            *pattern.get(i)?
+        } else {
+            c
+        };
+        if pattern.get(i + 1) == Some(&b'-') && pattern.get(i + 2).is_some_and(|&h| h != b']') {
+            let hi = pattern[i + 2];
+            hit |= (lo..=hi).contains(&byte);
+            i += 3;
+        } else {
+            hit |= lo == byte;
+            i += 1;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::glob_match;
+
+    #[test]
+    fn globs() {
+        let yes = |p: &str, n: &str| assert!(glob_match(p.as_bytes(), n.as_bytes()), "{p} {n}");
+        let no = |p: &str, n: &str| assert!(!glob_match(p.as_bytes(), n.as_bytes()), "{p} {n}");
+        yes("exp_d*", "exp_data");
+        yes("exp_d*", "exp_d");
+        no("exp_d*", "exp_fn");
+        yes("*", "");
+        yes("a*b*c", "aXXbYYc");
+        no("a*b*c", "aXXbYY");
+        yes("f?o", "foo");
+        no("f?o", "fo");
+        yes("[a-c]x", "bx");
+        no("[a-c]x", "dx");
+        yes("[!a-c]x", "dx");
+        yes("[^a]x", "bx");
+        yes("[]]", "]");
+        yes("a[", "a[");
+        yes("\\*", "*");
+        no("\\*", "a");
+        yes("_ZN*Foo*", "_ZN3FooC1Ev");
+        no("abc", "abcd");
+    }
+}
