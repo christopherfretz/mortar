@@ -274,9 +274,9 @@ impl Engine<'_, '_> {
                     value,
                     section_sym,
                     rec,
-                    site,
-                    symbol,
-                    self.objs[oi].secs[si].alloc(),
+                    &site,
+                    &symbol,
+                    (oi, si),
                     &|_, _| None,
                 );
             }
@@ -340,14 +340,7 @@ impl Engine<'_, '_> {
                 let Some(ev) = self.slot_evidence(rec) else {
                     return self.x86_unjudged(rec, Reason::SymbolUnresolved);
                 };
-                let pend = Pending {
-                    rec: rec.clone(),
-                    site,
-                    symbol,
-                    want: Want::Word(s),
-                    w1: false,
-                    loaded: false,
-                };
+                let pend = Pending { rec: rec.clone(), site, symbol, want: Want::Word(s) };
                 self.got_groups.entry((slot, oi, rec.sym, 0)).or_default().members.push((pend, ev));
                 return;
             }
@@ -751,14 +744,7 @@ impl Engine<'_, '_> {
         let Some(ev) = self.slot_evidence(rec) else {
             return self.x86_unjudged(rec, Reason::SymbolUnresolved);
         };
-        let pend = Pending {
-            rec: rec.clone(),
-            site,
-            symbol,
-            want: Want::Word(t),
-            w1: false,
-            loaded: false,
-        };
+        let pend = Pending { rec: rec.clone(), site, symbol, want: Want::Word(t) };
         self.got_groups.entry((Slot::TpRel, oi, rec.sym, 0)).or_default().members.push((pend, ev));
     }
 

@@ -1417,6 +1417,15 @@ a *merged* section:
    - **R1, R2 or R3** otherwise;
    - **`piece-not-locatable`** if there are no candidates at all.
 
+When a group is decided does not change its verdict, only how long its
+members are held (WP-109). A group whose section no other object can
+name (the section defines no symbol that is not `STB_LOCAL`) has all its
+members once the objects are read past its own, so it is decided then;
+the others, and every group when the objects are not read in order, are
+decided after the last section. Before WP-109 every group waited for the
+end: tens of millions of members on a `-g` link (`.debug_info`'s
+references to `.debug_str`), the verifier's largest structure.
+
 ### 5.7 Discarded targets (R5)
 
 A relocation of a placed section whose symbol's section is discarded or
@@ -2995,7 +3004,11 @@ cargo xtask plumb <output> --map <file> --map-format gnu|lld|mold|mortar
 ```
 
 The inputs are the files the map names, read from the paths it gives.
-Relative paths are taken from the current directory.
+Relative paths are taken from the current directory (no map format this
+verifier reads records the link's directory; a mortar map has no `cwd`
+record, §3.2). When the map names files and not one of them can be read,
+the command is a usage error naming the first file and the directory it
+looked in (WP-109): before, it judged every input I1.
 
 With `--inputs-from <file>`, only the map's files whose canonical path
 equals that of an entry in the response file are read; the others are I1.
@@ -3012,12 +3025,25 @@ effect (`-Bdynamic` and `--push-state`/`--pop-state` as the linker reads
 them). A library found nowhere adds nothing (WP-036: before it, every
 member of `libc.a` was I1 on a static hello).
 
+A file of the response file, or a library found, that is neither an ELF
+file nor an archive is read as a linker script (glibc's `libm.a` is
+`GROUP ( libm-2.41.a libmvec.a )`; WP-109: before, its two archives were
+I1 and every reference into them E4). It stands for the files of its
+`INPUT` and `GROUP` commands, an `AS_NEEDED` list inside them included,
+each a plain file name found as GNU ld finds it: an absolute name as it
+is, any other in the current directory and then the library directories
+in order; a name found nowhere adds nothing. `OUTPUT_FORMAT` names no
+file and is passed over. Any other command, an `-l` name inside the
+script, unbalanced parentheses or scripts nested more than 8 deep are a
+usage error naming the script, not a guess.
+
 The command prints the rendered findings and the coverage summary. It
 exits 0 when the report is clean, 1 on any finding, and 2 on a usage error
 or an unreadable output or map.
 
 Tests: `xtask/src/plumb.rs s8_arguments`, `s8_response_files`,
-`s8_libraries_are_resolved`.
+`s8_libraries_are_resolved`, `s8_linker_scripts_are_followed`,
+`s8_no_input_resolved_is_a_usage_error`.
 
 ```text
 cargo xtask plumb --equiv <X.map> <F.map> <X> <F>
@@ -3032,11 +3058,52 @@ line per side and for the pair. It exits 0 when both sides are clean
 and no P-E finding was made, 1 on any finding, and 2 on a usage error:
 a missing or extra argument, an option it does not take, an output or
 map it cannot read, a map that is not a mortar map, or an `X` map that
-claims no coverage (§3.2: a plain map given as `X`). Swapped arguments
+claims no coverage (§3.2: a plain map given as `X`), or maps none of
+whose files can be read from the current directory. Swapped arguments
 (a map where an output is expected) are one of these. It never panics:
 a truncated output is the side's findings (O1, S1) or exit 2.
 
 Tests: `xtask/src/plumb.rs s8_equiv_arguments`; `tests/equiv.rs`.
+
+### 8.1 Resources (WP-109)
+
+The verifier judges every link mortar is asked to make, so it must fit
+where the link fits. **The budget**: the verifier's peak resident set is
+at most twice the linker's peak on the same link, and at most 4 GB on the
+reference `-g` link (`cxx-large-g`, LLVM's clang with `-g`, linker peak
+1,958 MiB); `--equiv` holds two outputs and two engines, and is held to
+the same 4 GB. Time: a plain pass is linear in the records and bytes it
+judges; `--equiv` costs about two plain passes and a comparison linear in
+what it compares. Memory is saved by not holding data, never by skipping
+a rule: a rule that cannot be run within the budget is named in the
+coverage (§7.2), not dropped.
+
+What is held, and for how long:
+
+- the output, whole, for the run (every rule reads it);
+- the inputs the map names, whole, for the run (WP-109's design for
+  positioned reads, which hold an object's skeleton only, is in
+  `spec/landed/plumb/WP-109.md`);
+- per record, nothing after its verdict, except the members of a GOT
+  group (§5.5) and of a piece group (§5.6) until the group is decided
+  (§5.6: as early as its members are known);
+- `--equiv`: each side's traced form per record, keyed by input section
+  (§6.9), and its identity spans in a segment tree (each lookup
+  logarithmic in the spans, linear in those that hold the address).
+
+`MORTAR_PLUMB_PROFILE=1` (or `=<file>`) prints (or appends to the file,
+line by line, so a run killed at a memory cap keeps them) the resident
+set and its peak after each phase and the sizes of the large structures.
+It is the measurement of this section, not a rule; it changes no verdict.
+
+Measured (WP-109, the dev-profile verifier as the bench and CI run it):
+
+| link | plain: peak, time | `--equiv`: peak, time |
+|---|---|---|
+| protoc `-g` static (control) | 365 MB, 1.0 s | |
+| clang split (`cxx-large-split`) | 1.83 GB, 3.8 s | 4.7 GB, 22 s |
+| opt `-g` (`cxx-large-g-opt`) | 1.80 GB, 5.9 s | 3.4 GB, 17 s |
+| clang `-g` (`cxx-large-g`) | 3.85 GB, 15 s | not run (the two outputs alone are 2.3 GB) |
 
 ## 9. Validation
 
