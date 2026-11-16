@@ -12,6 +12,8 @@ pub mod a64;
 pub mod anomaly;
 pub mod buildid;
 mod content;
+pub mod dead;
+mod deaddwarf;
 mod dyncheck;
 mod dynmodel;
 mod dynmutate;
@@ -127,6 +129,9 @@ pub(crate) fn run_engine(
     symbols::check(engine);
     let props = property::check(image, objs, map.format, &mut engine.cov);
     engine.findings.extend(props);
+    if map.claims_coverage() {
+        dead::check(engine, map);
+    }
     if map.format == Format::Mortar {
         let ids = buildid::check(image, &mut engine.cov, buildid::Style::of(map));
         engine.findings.extend(ids);
