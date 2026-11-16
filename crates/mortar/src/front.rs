@@ -180,8 +180,7 @@ impl Front<'_> {
             split: &self.merge.split,
         };
         let sections = LinkSections { core, assignment: &self.assignment };
-        let syms = CoreSyms::new(&self.inputs, &self.resolution, &self.assignment)
-            .dynamic(self.dyn_tables.is_some());
+        let syms = CoreSyms::new(&self.inputs, &self.resolution, &self.assignment);
         let cx = SymCtx {
             syms: &syms,
             sections: &sections,
@@ -625,7 +624,7 @@ pub fn front<'s>(
     steps.step("property got build-id", 0, "");
     let core = CoreSections { resolution: &resolution, liveness: &liveness, split: &merge.split };
     let sections = LinkSections { core, assignment: &assignment };
-    let syms = CoreSyms::new(&inputs, &resolution, &assignment).dynamic(dynamic);
+    let syms = CoreSyms::new(&inputs, &resolution, &assignment);
     let strip_all = plan.shaping.strip == Some(Strip::All);
     let sym_cx = SymCtx {
         syms: &syms,

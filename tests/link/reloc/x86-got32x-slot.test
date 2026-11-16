@@ -1,0 +1,71 @@
+# x86.md X86-25 (WP-059): a static i386 link drops the GOT slot of a key
+# whose every `GOT32X` use is relaxed (G1–G5 are kind 1, decided from the
+# bytes, so scan demands no slot for them). The keys: `allr` (two `mov`
+# loads, both relaxed), `some` (one relaxed `mov`, one `movd`, a plain
+# `GOT32`), `none` (`movd` only), `bin` (an `add`, G2, relaxed). The
+# program sums the four values through the loads (1+1+2+2+3+4 = 13).
+#
+# Measured (GNU ld 2.44, lld 19/22, mold 2.37.1): GNU ld relaxes G1 and
+# G2 and keeps two slots (`some`, `none`: 8 bytes); lld relaxes nothing
+# (four slots, 16 bytes); mold rewrites G1 to `lea` off the GOT base,
+# keeps `bin`'s `add`, and has five words. mortar is GNU ld; before
+# WP-059 it relaxed the same records and kept all four slots.
+#@ spec: x86.md "X86-25"
+#@ arch: i386
+
+cc x.s -o x.o
+link gcc -static -nostdlib x.o -o prog
+run prog
+  exit: 13
+check readelf -SW prog
+  has(bfd,mortar): ] .got PROGBITS * 000008 0
+  has(lld): ] .got PROGBITS * 000010 0
+  has(mold): ] .got PROGBITS * 000014 0
+check objdump -d prog
+  has(bfd,mortar): c7 c0 * mov *,%eax
+  has(bfd,mortar): 81 c2 * add *,%edx
+  has(lld): 8b 83 * mov *(%ebx),%eax
+  has(mold): 8d 83 * lea *(%ebx),%eax
+
+#--- x.s
+	.text
+	.globl	_start
+_start:
+	call	probe
+	movl	%eax, %ebx
+	movl	$1, %eax
+	int	$0x80
+	.globl	probe
+	.type	probe,@function
+probe:
+	pushl	%ebx
+	call	1f
+1:	popl	%ebx
+	addl	$_GLOBAL_OFFSET_TABLE_+[.-1b], %ebx
+	# allr: every use a relaxable form (G1)
+	movl	allr@GOT(%ebx), %eax
+	movl	(%eax), %eax
+	movl	allr@GOT(%ebx), %ecx
+	addl	(%ecx), %eax
+	# some: one relaxable use, one movd (no form)
+	movl	some@GOT(%ebx), %edx
+	addl	(%edx), %eax
+	movd	some@GOT(%ebx), %xmm0
+	movd	%xmm0, %edx
+	addl	(%edx), %eax
+	# none: movd only
+	movd	none@GOT(%ebx), %xmm1
+	movd	%xmm1, %edx
+	addl	(%edx), %eax
+	# bin: a binop (G2)
+	xorl	%edx, %edx
+	addl	bin@GOT(%ebx), %edx
+	addl	(%edx), %eax
+	popl	%ebx
+	ret
+	.data
+	.globl	allr, some, none, bin
+allr:	.long 1
+some:	.long 2
+none:	.long 3
+bin:	.long 4

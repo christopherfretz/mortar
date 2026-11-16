@@ -530,6 +530,7 @@ impl View for InputsView<'_, '_> {
                 binding: sym.binding(),
                 sym_type: sym.sym_type(),
                 visibility: sym.st_other & 3,
+                other: sym.st_other & !3,
                 place,
                 value: sym.st_value,
                 size: sym.st_size,
@@ -556,6 +557,7 @@ impl View for InputsView<'_, '_> {
             binding: sym.binding(),
             sym_type: sym.sym_type(),
             visibility: sym.st_other & 3,
+            other: sym.st_other & !3,
             place,
             value: sym.st_value,
             size: sym.st_size,
@@ -969,6 +971,9 @@ fn sym_props(key: SymbolId, d: Def, p: crate::Props, opts: &Options) -> SymProps
     }
     if p.flags & flags::REF_STRONG != 0 {
         refs |= RefFlags::STRONG;
+    }
+    if p.flags & flags::VARIANT_PCS != 0 {
+        refs |= RefFlags::VARIANT_PCS;
     }
     let v = match verdict(key, d, p, opts.unresolved, &opts.ignore_unresolved) {
         Verdict::Zero if matches!(d, Def::Undefined { weak: false }) => TableVerdict::Ignored,

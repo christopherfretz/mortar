@@ -848,7 +848,10 @@ fn elf_facts(path: &Path) -> ElfFacts {
     assert!(o.success(), "readelf -sW: {}", o.stderr_text());
     let mut syms: BTreeMap<String, BTreeSet<u64>> = BTreeMap::new();
     for ln in o.stdout_text().lines() {
-        let w: Vec<&str> = ln.split_whitespace().collect();
+        // readelf shows `st_other` bits above the visibility as a bracketed
+        // column (`[VARIANT_PCS]`, S-127) before the section index.
+        let mut w: Vec<&str> = ln.split_whitespace().collect();
+        w.retain(|t| !(t.starts_with('[') && t.ends_with(']')));
         if w.len() < 8 || !w[0].ends_with(':') || w[6] == "UND" {
             continue;
         }
