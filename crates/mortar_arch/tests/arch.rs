@@ -856,6 +856,20 @@ fn s7_s10_diagnostic_texts_and_keys() {
         diag::fill(FieldError::Instruction { word: 0 }, &at, ty, "foo").1.kind().id(),
         "relocation-incompatible"
     );
+    // a64.md §11.1 condition 5: the note names a way out that exists
+    // (no linker accepts --no-fix-cortex-a53-843419; WP-103).
+    let d = diag::unproved(mortar_arch::Erratum::E843419);
+    assert_eq!(d.kind().id(), "refused");
+    assert_eq!(
+        render(&d),
+        format!(
+            "mortar: error: unsupported {}: erratum 843419 scan without mapping symbols\n\
+             >>> the candidate cannot be proved code or data; link without \
+             --fix-cortex-a53-843419 (a GCC driver that passes it drops it with \
+             -mno-fix-cortex-a53-843419), for no erratum fix\n",
+            mortar_diag::RefusalClass::Feature.noun()
+        )
+    );
     // undefined-symbol: the key of the first reference.
     assert_eq!(diag::undefined_key(mortar_core::FileId(3), 7, 9), scan_key);
     assert_eq!(RefName::Hex(0x1234).to_string(), "0x1234");

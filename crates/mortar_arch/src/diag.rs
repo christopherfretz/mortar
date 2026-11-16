@@ -168,21 +168,27 @@ pub fn chunk(
 
 /// The refusal of an erratum candidate that is neither proved code nor
 /// safely skipped (§3.7 `erratum_sites`, a64.md §11.1 condition 5):
-/// `refused`, class `feature`, with a note naming the option that turns
-/// the fix off. The caller adds the place, the candidate's input section
-/// and the offset of `W1` in it (`Unproved.q_unit`, `q_unit_offset`).
+/// `refused`, class `feature`, with a note naming the way to link without
+/// the fix: leaving out the option that asks for it (mortar, like GNU ld,
+/// lld and mold, has no option that turns it off), and for a GCC driver
+/// that passes it, `-mno-fix-cortex-a53-843419`. The caller adds the place,
+/// the candidate's input section and the offset of `W1` in it
+/// (`Unproved.q_unit`, `q_unit_offset`).
 #[must_use]
 pub fn unproved(e: Erratum) -> Diagnostic {
-    let (name, option) = match e {
-        Erratum::E843419 => {
-            ("erratum 843419 scan without mapping symbols", "--no-fix-cortex-a53-843419")
-        }
+    let (name, way_out) = match e {
+        Erratum::E843419 => (
+            "erratum 843419 scan without mapping symbols",
+            "link without --fix-cortex-a53-843419 (a GCC driver that passes it \
+             drops it with -mno-fix-cortex-a53-843419)",
+        ),
         // `Erratum` is `non_exhaustive`; every variant has its own arm.
-        _ => ("erratum scan without mapping symbols", "turning the erratum's fix off"),
+        _ => {
+            ("erratum scan without mapping symbols", "link without the option of the erratum's fix")
+        }
     };
-    Diagnostic::refused(RefusalClass::Feature, name).note(format!(
-        "the candidate cannot be proved code or data; {option} links without the erratum fix"
-    ))
+    Diagnostic::refused(RefusalClass::Feature, name)
+        .note(format!("the candidate cannot be proved code or data; {way_out}, for no erratum fix"))
 }
 
 /// The key of [`unproved`]'s diagnostic: `(90, 0, ChunkId)` of the
