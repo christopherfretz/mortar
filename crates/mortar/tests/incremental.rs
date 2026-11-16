@@ -88,6 +88,17 @@ const ASM_X86_64_LARGE: &str = "\t.text\n\t.globl _start\n\t.type _start, @funct
     \t.largecomm lc,65536,32\n\
     \t.section .note.GNU-stack,\"\",@progbits\n";
 
+/// Commons and a RELRO run (`spec/plumb.md` §3.2, the allocation
+/// records): four commons, `cb` asked 32-aligned here and 64-aligned by
+/// a second definition, and a `.data.rel.ro` word, so the RELRO run
+/// ends with layout's NOBITS `.pad.relro` (L-64). Exits 0.
+const ASM_COMMONS: &str = "\t.text\n\t.globl _start\n\t.type _start, %function\n_start:\n\
+    \tmov x0, #0\n\tmov x8, #93\n\tsvc #0\n\
+    \t.section .data.rel.ro,\"aw\",%progbits\n\t.balign 8\n\t.quad _start\n\
+    \t.data\n\t.globl dat\ndat:\t.quad 1\n\
+    \t.comm ca,4,4\n\t.comm cb,800,32\n\t.comm cc,24,8\n\t.comm cb,800,64\n\t.comm cd,1,1\n\
+    \t.section .note.GNU-stack,\"\",%progbits\n";
+
 fn run_in(dir: &Path, exe: &Path, args: &[OsString], env: &[(&str, &str)]) -> Outcome {
     let mut c = Command::new(exe);
     c.args(args).current_dir(dir).env_remove("MORTAR_SCHED_SEED").env_remove("SOURCE_DATE_EPOCH");
@@ -148,6 +159,11 @@ impl Prog {
     /// The x86-64 program with large sections and a large common.
     fn asm_x86_64_large() -> Option<Self> {
         Self::asm_for(Arch::X86_64, "incr-asm-x86-64-large", ASM_X86_64_LARGE, &[])
+    }
+
+    /// Commons and a RELRO run (the allocation records).
+    fn commons() -> Option<Self> {
+        Self::asm_for(AARCH64, "incr-commons", ASM_COMMONS, &[])
     }
 
     fn asm_for(arch: Arch, label: &str, text: &str, extra: &[&str]) -> Option<Self> {
@@ -1763,5 +1779,51 @@ fn the_floor_update_is_the_full_link_of_the_edited_inputs() {
             "{}",
             o.stderr_text()
         );
+    }
+}
+
+// spec: plumb.md §3.2 (the allocation records, WP-096) and image.md
+// I-78: a plain map and an incremental-mode map both state the NOBITS
+// `.pad.relro` as a chunk and each common with the alignment it was
+// placed at, and the verifier, which checks each (M6, M7), accepts both.
+#[test]
+fn plain_and_incremental_maps_state_the_allocations() {
+    let progs = [Prog::commons(), Prog::asm_x86_64_large()];
+    for (k, prog) in progs.into_iter().enumerate() {
+        let Some(prog) = prog else { continue };
+        prog.link("plain", &["--mortar-map=plain.map"]);
+        prog.link("full", &["--incremental=full", "--mortar-map=full.map"]);
+        for out in ["plain", "full"] {
+            let map = std::fs::read_to_string(prog.path(&format!("{out}.map"))).unwrap();
+            assert!(map.starts_with("mortar-map 2\n"), "{out}");
+            let commons: Vec<(String, u64)> = map
+                .lines()
+                .filter_map(|l| {
+                    let t: Vec<&str> = l.split(' ').collect();
+                    (t[0] == "common").then(|| {
+                        assert_eq!(t.len(), 5, "{l}");
+                        (t[1].to_owned(), u64::from_str_radix(t[4], 16).unwrap())
+                    })
+                })
+                .collect();
+            let want: &[(&str, u64)] = if k == 0 {
+                &[("ca", 4), ("cb", 0x40), ("cc", 8), ("cd", 1)]
+            } else {
+                &[("lc", 0x20)]
+            };
+            let mut got = commons.clone();
+            got.sort();
+            let want: Vec<(String, u64)> =
+                want.iter().map(|(n, a)| ((*n).to_owned(), *a)).collect();
+            assert_eq!(got, want, "{out}: the common records");
+            assert!(!map.lines().any(|l| l.starts_with("chunk common ")), "{out}: a chunk common");
+            if k == 0 {
+                let pad: Vec<&str> =
+                    map.lines().filter(|l| l.starts_with("chunk synthetic .pad.relro ")).collect();
+                assert_eq!(pad.len(), 1, "{out}: the .pad.relro chunk: {pad:?}");
+            }
+            let dir = prog.built.dir.clone();
+            support::plumb::clean(&prog.path(out), &prog.path(&format!("{out}.map")), &dir);
+        }
     }
 }

@@ -10,7 +10,7 @@
 //! - [`fill::write`]: fills the plan's jobs in parallel and hands each
 //!   window to a [`fill::Sink`] (I-33, I-63).
 //! - [`output::Output`]: the output file (§7), a [`fill::Sink`].
-//! - [`map::render`]: `mortar-map 1` (§9), written by [`output::write_whole`].
+//! - [`map::render`]: `mortar-map 2` (§9), written by [`output::write_whole`].
 //! - [`phases`]: `--time-phases` lines (I-88) and the memory bound (I-92).
 //! - [`link::write`]: the phase over the front's tables, the driver's one
 //!   call: the fill tables over the layout's addresses, the synthetic

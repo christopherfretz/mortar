@@ -210,6 +210,18 @@ pub struct Chunk {
     pub line: u32,
 }
 
+/// A common symbol's allocation as mortar's map states it (§3.2, the
+/// allocation records; WP-096): judged against the output by M7 (§3.3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommonAlloc {
+    pub name: String,
+    pub addr: u64,
+    pub size: u64,
+    /// The alignment it was placed at: a power of two.
+    pub align: u64,
+    pub line: u32,
+}
+
 /// A linker-defined symbol and its value (§3.2; not read by stage 1).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Defined {
@@ -260,6 +272,9 @@ pub struct CopyHint {
     pub name: String,
     pub addr: u64,
     pub size: u64,
+    /// The alignment the copy was placed at (§3.2's allocation records,
+    /// judged by M8): a power of two.
+    pub align: u64,
 }
 
 /// The dynamic records of a map (§3.2, `spec/plumb.md` P-D3): facts of the
@@ -353,6 +368,8 @@ pub struct Map {
     pub discarded: Vec<Discarded>,
     pub folds: Vec<Fold>,
     pub chunks: Vec<Chunk>,
+    /// mortar's `common` records (§3.2, the allocation records).
+    pub commons: Vec<CommonAlloc>,
     pub defined: Vec<Defined>,
     /// mortar's non-alloc records (§3.2).
     pub nonalloc: Vec<NonAlloc>,
@@ -381,6 +398,7 @@ impl Map {
             discarded: Vec::new(),
             folds: Vec::new(),
             chunks: Vec::new(),
+            commons: Vec::new(),
             defined: Vec::new(),
             nonalloc: Vec::new(),
             fix_843419: None,

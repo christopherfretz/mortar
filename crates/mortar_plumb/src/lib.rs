@@ -32,6 +32,7 @@ pub mod line;
 mod loader;
 mod locate;
 pub mod map;
+mod maprec;
 mod meta;
 pub mod mutate;
 mod odrtable;
@@ -87,6 +88,10 @@ pub fn verify(output: &[u8], inputs: &[Input<'_>], map: &Map) -> Report {
     let mut engine = reloc::Engine::new(&image, &objs, map.format);
     run_engine(&mut engine, &image, map, None);
     report.findings.append(&mut engine.findings);
+    // M8 (§3.3): an output with no dynamic section has no COPY record.
+    if map.format == Format::Mortar && dynout::DynOut::read(&image).is_none() {
+        report.findings.extend(maprec::copies(map, &[]));
+    }
     report.coverage = std::mem::take(&mut engine.cov);
     // Stage 4 (§13): a static map has no `arg` records, so the options
     // are unknown unless a static-pie's map gives them.
@@ -154,6 +159,8 @@ pub(crate) fn run_engine(
     if map.format == Format::Mortar {
         let ids = buildid::check(image, &mut engine.cov, buildid::Style::of(map));
         engine.findings.extend(ids);
+        // M6, M7 (§3.3): the allocation records, in every mortar map.
+        engine.findings.extend(maprec::check(image, objs, map));
     }
     if image.header.e_machine == mortar_elf::consts::EM_X86_64 {
         use mortar_elf::consts::{SHF_ALLOC, SHF_X86_64_LARGE};

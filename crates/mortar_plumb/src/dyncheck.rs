@@ -26,7 +26,7 @@ use crate::image::Image;
 use crate::line::Line;
 use crate::loader::{Bound, Kind, Loader, Params, kind};
 use crate::locate::Obj;
-use crate::map::{Format, OutputKind};
+use crate::map::{Format, Map, OutputKind};
 use crate::report::{Finding, Rule};
 
 fn fd(n: u8, msg: impl Into<String>) -> Finding {
@@ -52,8 +52,9 @@ pub(crate) fn check(
     model: &Model,
     ld: &Loader<'_>,
     objs: &[Obj<'_>],
-    format: Format,
+    map: &Map,
 ) -> Vec<Finding> {
+    let format = map.format;
     let mut v = Vec::new();
     for p in &out.problems {
         v.push(fd(6, p.clone()));
@@ -83,7 +84,11 @@ pub(crate) fn check(
     pd8(out, model, ld, &mut v);
     pd9_order(out, ld.machine, &mut v);
     pd10(image, out, ld.machine, format, spie, &mut v);
-    pd11_13(image, out, model, ld, format, &mut v);
+    let copies = pd11_13(image, out, model, ld, format, &mut v);
+    if format == Format::Mortar {
+        // M8 (§3.3): the map's copy records are the output's copies.
+        v.extend(crate::maprec::copies(map, &copies));
+    }
     pd12(image, out, ld, objs, format, &mut v);
     fields(image, out, model, line, objs, format, &mut v);
     crate::dynfields::check(image, out, line, model, ld, objs, format, &mut v);
@@ -1120,7 +1125,8 @@ fn pd11_13(
     ld: &Loader<'_>,
     format: Format,
     v: &mut Vec<Finding>,
-) {
+) -> Vec<crate::maprec::ActualCopy> {
+    let mut actual = Vec::new();
     let p = Params::default();
     let relro: Vec<(u64, u64)> = image
         .phdrs
@@ -1135,6 +1141,12 @@ fn pd11_13(
             continue;
         }
         let Some(s) = out.syms.get(r.sym as usize) else { continue };
+        actual.push(crate::maprec::ActualCopy {
+            addr: r.offset,
+            name: s.name.clone(),
+            size: s.st_size,
+            align: None,
+        });
         let b = ld.bind_copy(out, r.sym as usize, &p);
         let Bound::Lib { i, .. } = b else { continue };
         let ver = out.need_of(r.sym as usize).map(|n| n.name.as_str());
@@ -1170,6 +1182,9 @@ fn pd11_13(
             v.push(f);
         }
         let align = model.dsos[i].copy_align(d.shndx, d.value);
+        if let Some(a) = actual.last_mut() {
+            a.align = Some(align);
+        }
         if !r.offset.is_multiple_of(align) {
             v.push(
                 sym_finding(
@@ -1344,6 +1359,7 @@ fn pd11_13(
             ));
         }
     }
+    actual
 }
 
 /// D-48's kept descriptor (a64 R2, WP-082): the slot pairs that a kept
