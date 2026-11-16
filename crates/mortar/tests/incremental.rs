@@ -70,7 +70,7 @@ fn run_in(dir: &Path, exe: &Path, args: &[OsString], env: &[(&str, &str)]) -> Ou
 
 /// A program's link line, built in its scratch directory.
 struct Prog {
-    _scratch: Scratch,
+    scratch: Scratch,
     built: Built,
     /// The programs' architecture (natively on its host, else under qemu).
     arch: Arch,
@@ -91,7 +91,7 @@ impl Prog {
             assert!(!tools_required(), "{} is required", driver.tool());
             return None;
         };
-        Some(Self { _scratch: scratch, built, arch: AARCH64 })
+        Some(Self { scratch, built, arch: AARCH64 })
     }
 
     /// The AArch64 assembly program: `gcc -c` and a bare link line.
@@ -133,7 +133,7 @@ impl Prog {
                 .chain(["-o".into(), "out".into()])
                 .collect(),
         };
-        Some(Self { _scratch: scratch, built, arch })
+        Some(Self { scratch, built, arch })
     }
 
     fn path(&self, name: &str) -> PathBuf {
@@ -756,13 +756,13 @@ fn a_kept_equal_cie_is_followed() {
             "out".into(),
         ],
     };
-    let prog = Prog { _scratch: scratch, built, arch: AARCH64 };
+    let prog = Prog { scratch, built, arch: AARCH64 };
     prog.link("full", &["--incremental=full"]);
     let (_, state) = prog.read_state("full");
     let kept = |s: &State| s.eh_records.iter().filter(|r| r.piece == 0).count();
     assert_eq!(kept(&state), 2, "two CIEs that differ are both kept");
     // b.o again, its CIE now equal to a.o's: the same size.
-    let equal = gcc_c(&prog._scratch, "b30.s", &b(30), "b.o");
+    let equal = gcc_c(&prog.scratch, "b30.s", &b(30), "b.o");
     assert_eq!(own.len(), equal.len());
     prog.link("plain", &[]);
     let plain = prog.bytes("plain");

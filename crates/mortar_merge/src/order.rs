@@ -66,7 +66,7 @@ impl Order {
             .collect();
         let off = &self.map.frag_off;
         let parts = mortar_core::par::split_offsets(&mut self.order, &bounds);
-        pool.unit_cost(200).for_each_part(parts.into_iter(), |_, part| {
+        pool.unit_cost(200).for_each_part(parts, |_, part| {
             part.sort_unstable_by_key(|&f| (off[f], f));
         });
     }
