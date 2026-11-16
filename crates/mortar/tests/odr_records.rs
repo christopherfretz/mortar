@@ -573,6 +573,76 @@ fn container_bytes_read() {
     }
 }
 
+/// `ar <flags> <archive> <members>` in the scratch directory.
+fn ar(cx: &Cx, flags: &str, archive: &str, members: &[&str]) {
+    let Some(ar) = tool("ar") else { panic!("ar is required") };
+    let mut c = Command::new(ar);
+    c.arg(flags).arg(archive).args(members).current_dir(cx.scratch.path());
+    let o = run_with(&mut c, b"", Duration::from_mins(1));
+    assert!(o.success(), "ar: {}", o.stderr_text());
+}
+
+/// The number after `what` in an `--odr-stats` line.
+fn stat(e: &str, what: &str) -> u64 {
+    let line = e.lines().find(|l| l.contains("odr-stats:")).unwrap_or_else(|| panic!("{e}"));
+    let at = line.find(what).unwrap_or_else(|| panic!("{what}: {line}")) + what.len();
+    line[at..].split(|c: char| !c.is_ascii_digit()).next().unwrap().parse().unwrap()
+}
+
+// spec: odr.md O-23, O-41, O-42 (WP-076): without --odr-check-archives no
+// member's container is read, in any mode; with it, the container of each
+// member that is not extracted is read exactly once (its bytes counted),
+// its differing row is odr-archive-shadow, a warning; under --odr=off the
+// option reads nothing and the output is the default link's. A member
+// that is not ELF is never a file of the link; a member that a reference
+// extracts is not read by O-23 (it is live: the record checks own it).
+#[test]
+fn archive_members_are_read_only_on_request() {
+    let Some(cx) = Cx::new("odr-archives") else { return };
+    let mut a = cxx("a.cc");
+    a.definitions.push(def("_Z1fv", 1, flags::VAGUE));
+    cx.object("a.o", &[Sym::Comdat("_Z1fv")], Some(&bytes(&[a])));
+    let mut m = cxx("m.cc");
+    m.definitions.push(def("_Z1fv", 2, flags::VAGUE));
+    let meta = bytes(&[m]);
+    cx.object("m.o", &[Sym::Comdat("_Z1fv"), Sym::Func("fm")], Some(&meta));
+    cx.scratch.write("notelf.txt", "not an object\n");
+    ar(&cx, "rcs", "libm.a", &["m.o", "notelf.txt"]);
+    for mode in ["--odr=warn", "--odr=error", "--odr=strict", "--odr=off"] {
+        let o = cx.link(&["a.o", "libm.a"], &[mode, "--odr-stats"], "out");
+        let e = o.stderr_text();
+        assert!(o.success(), "{mode}: {e}");
+        assert!(!e.contains("archive member that is not linked"), "{mode}: {e}");
+        assert_eq!(stat(&e, "archive members "), 0, "{mode}: {e}");
+        assert_eq!(stat(&e, "units, "), 0, "{mode}: {e}");
+    }
+    for mode in ["--odr=warn", "--odr=error", "--odr=strict"] {
+        let o = cx.link(&["a.o", "libm.a"], &[mode, "--odr-stats", "--odr-check-archives"], "out");
+        let e = o.stderr_text();
+        assert!(o.success(), "{mode}: {e}");
+        assert_eq!(count(&e, "warning: _Z1fv in an archive member that is not linked"), 1, "{e}");
+        assert!(e.contains(">>> defined differently in libm.a(m.o):(_Z1fv)"), "{e}");
+        assert_eq!(stat(&e, "archive members "), 1, "{mode}: {e}");
+        assert_eq!(stat(&e, "units, "), meta.len() as u64, "{mode}: {e}");
+        assert!(!e.contains("panicked"), "{e}");
+    }
+    // --odr=off: nothing read, the default link's bytes.
+    let o = cx.link(&["a.o", "libm.a"], &["--odr=off", "--odr-stats", "--odr-check-archives"], "off");
+    let e = o.stderr_text();
+    assert!(o.success() && !e.contains("archive member that is not linked"), "{e}");
+    assert_eq!(stat(&e, "archive members "), 0, "{e}");
+    assert_eq!(stat(&e, "container bytes read "), 0, "{e}");
+    cx.link(&["a.o", "libm.a"], &[], "plain");
+    let read = |f: &str| std::fs::read(cx.scratch.join(f)).unwrap();
+    assert_eq!(read("off"), read("plain"));
+    // fm's reference extracts m.o: live, so O-23 reads no member.
+    cx.object("use.o", &[Sym::Undef("fm")], None);
+    let o = cx.link(&["a.o", "use.o", "libm.a"], &["--odr-stats", "--odr-check-archives"], "out");
+    let e = o.stderr_text();
+    assert!(o.success() && !e.contains("archive member that is not linked"), "{e}");
+    assert_eq!(stat(&e, "archive members "), 0, "{e}");
+}
+
 struct Rng(u64);
 
 impl Rng {
