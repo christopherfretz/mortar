@@ -962,8 +962,9 @@ pub fn front<'s>(
     // section index order. One path.
     plans.shstrtab = ShstrtabPlan::new(&placed_names(&layout.placement, &placement_assignment));
     // `.got` (S-64) of a static link: the final layout's slot lists. One
-    // path. (A dynamic link's is `dynlink`'s, WP-066.)
-    let final_got = if dynamic {
+    // path. (An output with `.dynamic`, a `StaticPie` among them, has
+    // `dynlink`'s, WP-066.)
+    let final_got = if has_dynamic {
         None
     } else {
         Some(GotPlan::new(arch, &layout.slots, got_output, variant, diag).ok()?)
