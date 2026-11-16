@@ -17,8 +17,11 @@ fn word(at: usize) -> usize {
     u32::from_le_bytes(BYTES[at..at + 4].try_into().unwrap()) as usize
 }
 
-/// The filled slots: (slot, name, CU-vector values).
-fn slots() -> (usize, Vec<(usize, Vec<u8>, Vec<u32>)>) {
+/// One filled slot: (slot, name, CU-vector values).
+type Slot = (usize, Vec<u8>, Vec<u32>);
+
+/// The table size and the filled slots.
+fn slots() -> (usize, Vec<Slot>) {
     assert_eq!(word(0), 9, "the fixture is version 9");
     let (sym, shortcut, pool) = (word(16), word(20), word(24));
     let n = (shortcut - sym) / 8;

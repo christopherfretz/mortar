@@ -2122,7 +2122,7 @@ fn gdb_index_of_a_mixed_build_is_refused() {
         );
         return;
     }
-    let Some(t) = tools() else { return };
+    let Some(tools) = tools() else { return };
     let Some(lld) = tool("ld.lld") else {
         assert!(!tools_required(), "{label}: ld.lld is required");
         return;
@@ -2132,30 +2132,30 @@ fn gdb_index_of_a_mixed_build_is_refused() {
     let Some(built) = build(&scratch, Driver::Gxx, &split, MIXED_SOURCES) else { return };
     // The third unit again, without split DWARF and so without pubnames.
     let gxx = tool(&Driver::Gxx.tool()).expect("g++");
-    let c = built.dir.join("gm_c.cpp.o");
-    let o = run_with(
+    let unit = built.dir.join("gm_c.cpp.o");
+    let compiled = run_with(
         Command::new(&gxx)
             .args(["-g", "-O0", "-c", "gm_c.cpp", "-o"])
-            .arg(&c)
+            .arg(&unit)
             .current_dir(&built.dir),
         b"",
         Duration::from_mins(1),
     );
-    assert!(o.success(), "{label}: g++: {}", o.stderr_text());
+    assert!(compiled.success(), "{label}: g++: {}", compiled.stderr_text());
     let plain = link_mortar(label, &built, "plain", &[]);
     let theirs = built.dir.join("lld").join("prog");
     std::fs::create_dir_all(theirs.parent().expect("a directory")).expect("create a directory");
     let mut args = with_output(&built.args, &theirs);
     args.push("--gdb-index".into());
-    let l = linker(&lld, &args, &built.dir);
-    assert!(l.success(), "{label}: ld.lld --gdb-index: {}", l.stderr_text());
+    let lld_link = linker(&lld, &args, &built.dir);
+    assert!(lld_link.success(), "{label}: ld.lld --gdb-index: {}", lld_link.stderr_text());
     let ask: Vec<String> = ["-batch", "-nx", "-iex", "set debuginfod enabled off"]
         .into_iter()
         .chain(["-ex", "ptype ns::OnlyInC", "-ex", "print g_only_c"])
         .map(String::from)
         .collect();
-    let without = session(&t.gdb, &ask, &plain, &built.dir, &elf(&plain));
-    let with_lld = session(&t.gdb, &ask, &theirs, &built.dir, &elf(&theirs));
+    let without = session(&tools.gdb, &ask, &plain, &built.dir, &elf(&plain));
+    let with_lld = session(&tools.gdb, &ask, &theirs, &built.dir, &elf(&theirs));
     assert!(without.contains("type = struct ns::OnlyInC {"), "{label}: no index:\n{without}");
     assert!(without.contains("{a = 4, b = 2}"), "{label}: no index:\n{without}");
     assert!(
@@ -2165,9 +2165,9 @@ fn gdb_index_of_a_mixed_build_is_refused() {
     );
     let mut args = with_output(&built.args, &built.dir.join("refused"));
     args.push("--gdb-index".into());
-    let m = linker(Path::new(MORTAR), &args, &built.dir);
-    let err = m.stderr_text();
-    assert!(!m.success(), "{label}: mortar linked a mixed build with --gdb-index");
+    let refused = linker(Path::new(MORTAR), &args, &built.dir);
+    let err = refused.stderr_text();
+    assert!(!refused.success(), "{label}: mortar linked a mixed build with --gdb-index");
     assert!(
         err.contains("gm_c.cpp.o: unsupported feature: gdb-index-incomplete"),
         "{label}: {err}"

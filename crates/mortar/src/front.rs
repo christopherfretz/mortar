@@ -659,7 +659,10 @@ pub fn front<'s>(
     let gdb_index = if plan.shaping.gdb_index == Some(true) {
         let in_output = |s: SectionId| {
             liveness.is_live(s)
-                && resolution.sections.get(s).is_some_and(|r| r.is_kept())
+                && resolution
+                    .sections
+                    .get(s)
+                    .is_some_and(mortar_core::resolution::SectionRow::is_kept)
                 && assignment.out(s).is_some()
         };
         let consumed = |s: SectionId| {
