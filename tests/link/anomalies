@@ -29,3 +29,9 @@ bfd,aarch64,x86_64: A10
 # an x86-64 host) has no .note.package, every note then falls on 8, and
 # the same PT_NOTE reads right (WP-015).
 mold,x86_64,cross: A13
+
+# mold on AArch64: it accepts --fix-cortex-a53-843419 and fixes no site
+# (A4), on every output with a site and the option. Since WP-103 the
+# verifier knows the option from the link line, and the erratum matrix
+# (reloc/erratum-843419-*.test) gives mold a site on every run.
+mold,aarch64: A4

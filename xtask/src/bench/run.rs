@@ -64,12 +64,13 @@ pub fn compare(mortar: &Output, gnu: &Output) -> Ran {
 }
 
 /// The directory `$S` of a `run` line stands for: the unpacked archive's
-/// root (`cmake`), the bench's sources (`sources`), else the workload's
+/// root (`cmake`, `ninja`), the bench's sources (`sources`), else the workload's
 /// own directory.
 pub fn source_dir(prepared: &Prepared, work: &Path, workspace: &Path) -> PathBuf {
     use super::manifest::Kind;
     match &prepared.workload.kind {
         Kind::Cmake(c) => work.join("src").join(&c.sha256[..16]).join(&c.root),
+        Kind::Ninja(n) => work.join("src").join(&n.sha256[..16]).join(&n.root),
         Kind::Sources { .. } => workspace.join(super::manifest::SOURCES),
         _ => prepared.dir.clone(),
     }

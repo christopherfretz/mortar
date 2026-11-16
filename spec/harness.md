@@ -950,6 +950,20 @@ mortar included (`docs/VALIDATION.md` layer L3).
   refuses, static-pie, version definitions, a closure object no search
   finds) is counted as not judged, `outside stage 3`, its other findings
   still judged; mortar's fails on that finding like any other.
+- **The erratum option** (WP-103, WP-102). A mortar output's option is
+  its map's line (the `arg` records, `spec/plumb.md` §3.2a): the
+  verifier reads it there and nothing the lane says. For a reference
+  linker's output the verifier is told whether the link
+  had `--fix-cortex-a53-843419` (`Map.fix_843419`, `spec/plumb.md`
+  §5.10) from the words the linker received: the `.linktest-ld-status-<line>.line` words of a driver
+  step, a `link ld` step's own words (`xtask::plumb::line_fix_843419`:
+  the last of `--fix-cortex-a53-843419[=...]` and
+  `--no-fix-cortex-a53-843419` wins, through `@file`, `-Wl,` and
+  `-Xlinker`; neither is no option). A driver's default is in those
+  words: GCC on Debian passes the option to every link, Clang does not.
+  Before WP-103 every lane left it to be inferred from the fixes found,
+  so an output with an unfixed site and no fix at all passed unjudged.
+  `census` and `mason` judge mortar's outputs, so the map's line.
 - **The verdict.** A finding fails the step: `FAIL`, or `XFAIL` under an
   `xfail` marker, with the detail `<step>: L3: the verifier finds
   <output>: <rule> <message> at <address> (and N more)`. Run
@@ -998,8 +1012,15 @@ mortar included (`docs/VALIDATION.md` layer L3).
   is outside the defaults, under the strict rule above in both directions.
 - **The note.** The summary has the note `L3: the verifier judged N link
   outputs in T s` (T is the verifier's time summed over the threads), the
-  number of findings expected as anomalies, and the counts not judged by
-  reason.
+  number of findings expected as anomalies, the counts not judged by
+  reason, and per linker `erratum 843419 outputs: <linker> N with the
+  option (S sites fixed, U not judged), M without (K sites)` (WP-103):
+  the outputs whose line had the option (for mortar, the map's line as
+  the verifier read it, `Coverage::erratum_option`), their fixed and not judged
+  sites (`erratum_sites`, `erratum_not_judged`), and the outputs whose
+  line had not, whose K sites are none of them judged. On a mortar
+  output with the option U is 0: the verifier judges every site of it.
+  `census` prints the same counts in a line of its own.
 
 **Cost.** This was measured with WP-028 on the reference machine, on the
 AArch64 corpus at `-j 8` with a load average of about 28, in the debug
@@ -1693,14 +1714,16 @@ class or shape, and a missing required key, are errors naming the line.
 | key | kinds | meaning |
 |---|---|---|
 | `class` | all | `small`, `medium`, `large`, `extreme`, `rust`, `calibration` (exactly one workload: "Calibration"), or `on-request` (built and measured only when named with `--workload`: inputs too large to keep, generated, measured and deleted) |
-| `kind` | all | `sources`, `synthetic`, `cmake`, `cargo`, `planned` |
+| `kind` | all | `sources`, `synthetic`, `cmake`, `cargo`, `ninja`, `planned` |
 | `about` | all | one sentence for the report |
 | `sources` | sources | files of `bench/workloads/src/` |
 | `shape`, `params` | synthetic | the generator's shape and its two parameters ("Generated workloads") |
+| `group` | synthetic | `yes`: the link puts every input after `main.o` in one `-Wl,--start-group` … `-Wl,--end-group`; default `no` |
 | `url`, `sha256`, `root` | cmake | the source archive, its SHA-256, the directory in it with the top `CMakeLists.txt` |
 | `options`, `prebuild`, `target` | cmake | cmake `-D` options; make targets built first without capture; the make target whose link is the workload |
 | `rev`, `package`, `bin`, `rustc_args` | cargo | a commit of this repository; `cargo rustc -p <package> --bin <bin> -- <rustc_args>` |
-| `driver`, `cflags`, `ldflags` | sources, synthetic, cmake (no `ldflags`) | the compiler driver on `PATH`, compiler flags, driver flags of the link |
+| `script`, `sha256`, `root`, `tree`, `target` | ninja | the script of this checkout that makes the build tree, and its arguments after `<work>`; the SHA-256 of the source archive it unpacks and the directory in it (`$S`); the directory under `<work>/workloads` that holds the tree and the captured inputs, shared by the workloads of one tree; the Ninja output whose link is the workload ("Large workloads") |
+| `driver`, `cflags`, `ldflags` | sources, synthetic, cmake (no `ldflags`), ninja (`driver` only, for the key) | the compiler driver on `PATH`, compiler flags, driver flags of the link |
 | `capture` | all built | the pattern the basename of the captured link's output matches (`*` is any run of characters); default `out` |
 | `needs` | planned | what the workload waits for |
 | `run` | all built | the arguments the linked program is run with once ("Running the outputs"); `run =` runs it without arguments, no `run` does not run it; `$S` in an argument is the source directory (the unpacked archive's `root` for `cmake`, `bench/workloads/src` for `sources`, else the workload's directory) |
@@ -1725,6 +1748,11 @@ The workloads (sizes as the census of this machine counted them are in
 | `synthetic-<shape>-static` | extreme | each `synthetic-*` above with `ldflags = -static`, the same sources and flags |
 | `synthetic-library-static` | extreme | one archive of 20000 members of which `main` needs every 50th, `-static` |
 | `synthetic-objects-g10x` | on-request | `synthetic-objects` at 8150 objects with `-g` (`-O1 -g`), `-static`: at least 10× protoc `-g`'s live input, the large workload of `spec/incr.md` §1.5's go/no-go rule (WP-061 stage B) |
+| `synthetic-line-1000`, `synthetic-line-3000` | on-request | 1000 / 3000 static archives of 25 members (the `line` shape), on one line in dependency order, `-static`: what the count of archives alone costs (WP-081) |
+| `synthetic-line-1000-group`, `synthetic-line-3000-group` | on-request | the same with the archives in one `--start-group` … `--end-group` (`group = yes`) |
+| `cxx-large-g` | on-request | clang 19.1.7, `RelWithDebInfo` (`-O2 -g`), AArch64 target only, linked `-static`: 88 archives, 2.4 GB of input, some 1.1 GB of output ("Large workloads"; record `spec/landed/harness/WP-081.md`) |
+| `cxx-large-g-opt` | on-request | `opt` of the same tree: 52 of the same archives, some 530 MB of output |
+| `cxx-large-split` | on-request | `cxx-large-g` compiled with `-gsplit-dwarf` (`LLVM_USE_SPLIT_DWARF`): the `.dwo` files stay beside the objects and are not linked |
 | `fortran-static` | small | `fortran.f90` (a Fortran main calling C through `BIND(C)`) and `fortran-sum.c`, gfortran `-O1`, `-static` against libgfortran |
 
 **Static twins.** Until M2 mortar links static, non-PIE executables only
@@ -1747,17 +1775,18 @@ the scale this machine's disk and time allow, by `synthetic-objects` and
 --descriptor_set_out=/dev/fd/1 $S/src/google/protobuf/unittest.proto`
 (the descriptor set of `unittest.proto` and its imports, written to
 standard output); `rust-self*` `--version`; the `synthetic-*` workloads
-without arguments (their `main` exits 0) except `synthetic-objects*`,
-which is not run: each of its functions calls two further on, so a run
-makes exponentially many calls.
+without arguments (their `main` exits 0) except `synthetic-objects*`
+and `synthetic-line-*`, which are not run: each of their functions (each
+needed member's first function) calls two further on, so a run makes
+exponentially many calls.
 
 ### Planned workloads
 
 `kind = planned` sections are specified and not built: `--list` and the
 report name them with what they need. Today: `libcxx-test` (one libc++
 test program as the L8 lane links it; needs kiln and hod and the libc++
-build), `cxx-large-g` and `cxx-large` (a large open-source C++ program's
-objects captured once and pinned; needs tens of GB of disk),
+build), `cxx-large` (`cxx-large-g`'s program without debug information:
+needs a third build of the tree),
 `kiln-hod-medium` (the medium program compiled by kiln and hod),
 `incremental-function`, `incremental-object`, `incremental-archive`
 (M7), and `cross-x86-64` (the x86-64 and i386 rows, on an x86-64 machine).
@@ -1804,7 +1833,9 @@ The key is FNV-1a 64 over the stamp's first line, the manifest section
 line of `<driver> --version` and of `ld.bfd --version`, and per kind: the
 name and bytes of each source; the generator's version (`GENERATOR` in
 `xtask/src/bench/synth.rs`); `cmake --version` and `make --version`;
-`rustc --version`. A workload is ready when its stamp's key is the current
+`rustc --version`; the bytes of the `ninja` kind's script and `ninja
+--version`. A `ninja` workload is never rebuilt by the bench ("Large
+workloads"). A workload is ready when its stamp's key is the current
 key, its `response.txt` exists and every `file` line still has its size
 and time. When only files changed (a system library was upgraded), the
 census alone is redone. Otherwise the workload's directory is removed and
@@ -1832,7 +1863,8 @@ directory is the cache's, the same for every checkout.
   `<file>.part`, checked with `sha256sum` against `sha256` (a mismatch
   removes it and is an error) and renamed; it is fetched only when the
   downloaded file is missing or its digest is not the pinned one, and
-  unpacked with `tar -xzf … --no-same-owner`. Then `cmake -S
+  unpacked with `tar -xf … --no-same-owner` (which reads gzip, xz and
+  bzip2 alike; the code is shared with "realbuild"). Then `cmake -S
   <src>/<root> -B <workload>/build -G "Unix Makefiles"
   -DCMAKE_CXX_COMPILER=<driver> -DCMAKE_CXX_FLAGS=<cflags>
   -DCMAKE_C_FLAGS=<cflags> <options>`, `make <prebuild…>`, and the
@@ -1851,6 +1883,52 @@ directory is the cache's, the same for every checkout.
   `CARGO_BUILD_RUSTFLAGS`, `RUSTC_WRAPPER` removed. `rust-self` passes
   `-C save-temps`: without it rustc deletes the `symbols.o` its link reads
   (under `deps/rustcXXXXXX/`) once the link is done.
+
+### Large workloads
+
+A `ninja` workload (WP-081) is a link of a build too long for a bench
+run: LLVM/clang takes hours to compile on the shared host. Its tree is
+made ONCE, outside the bench, by the section's `script`; the bench
+captures the link of `target` from the tree and keeps what that link
+reads, not the tree.
+
+- **The tree**: `<script> <work> <args>` makes `<work>/workloads/<tree>/build`
+  (a Ninja tree; its archives are thin while it is built, half the disk).
+  It fetches the pinned archive into `<work>/downloads/`, checks its
+  SHA-256 and unpacks it once into `<work>/src/<first 16 digits>/`, as the
+  `cmake` kind does. It compiles every input of the large links and links
+  none of them. Ninja 1.12 is not a jobserver client: the script takes a
+  fixed `-j` (at most 6 on the shared host, 4 while other packages wait for
+  the load) and runs under `nice -n 10`.
+- **The capture** (`--prepare --workload <name>`, or any run naming the
+  workload, when `<work>/workloads/<name>/response.txt` does not exist):
+  `ninja -C <build> -t commands -s <target>` gives the link's command; it
+  runs with `/bin/sh -c` in the tree with the recording `ld` of
+  "Capture" (`COMPILER_PATH`; the wrapper exits 0 and writes nothing), and
+  the one record whose output matches `capture` is the link. The link
+  must have run in the tree. Each argument that names a file of the tree
+  (relative to it, or absolute under it; also after `-L` and after
+  `--<option>=`) is copied to `<work>/workloads/<tree>/inputs/` under the
+  same relative path and named by it; a thin archive is written as the
+  regular archive of the same members in the same order (`ar Dqc`, then
+  `ranlib -D`: LLVM's own archive rule); a directory of the tree after
+  `-L`, or the directory of a file a `--<option>=` names in the tree (the
+  `--dependency-file` CMake passes), is made there. Arguments outside the
+  tree stay as they are. `response.txt` gets the relocated arguments, and
+  the link runs in `inputs/` (the stamp's `cwd`). A file already in
+  `inputs/` (by the same size, or a regular archive already written) is
+  not copied again: the workloads of one tree share their inputs.
+- **The census** is "Census"'s, with `$W` standing for the tree's
+  directory.
+- **Never rebuilt.** A prepared `ninja` workload whose key changed, or
+  whose files changed, is counted again; it is never deleted or rebuilt by
+  the bench. Without `response.txt` and without a tree the preparation is
+  an error naming the script to run. To rebuild: delete
+  `<work>/workloads/<tree>` and the workloads' directories, run the script,
+  prepare.
+- **After the capture** the tree is deleted by hand
+  (`rm -rf <work>/workloads/<tree>/build`, a literal path); the cache keeps
+  `inputs/` and each workload's `response.txt` and `stamp`.
 
 ### Capture
 
@@ -2009,8 +2087,8 @@ linkers and `--no-verify` is not given, before the warm-up:
   and counted, never silent.
 - Else `xtask plumb <out> --map <map> --map-format mortar` runs as a
   child process in the recorded directory (the inputs are the files the
-  map names; `--fix-cortex-a53-843419` or `--no-fix-…` as the response
-  file says, else inferred, `spec/plumb.md` §5.10). A child, so that what
+  map names; the erratum option is the map's line, `spec/plumb.md`
+  §3.2a). A child, so that what
   the verifier allocates never stays in the process that starts the
   measured links. Exit 0 is `clean`; 1 is `findings <n>: <rule> <count>,
   ...`; anything else `failed`.
@@ -2254,10 +2332,12 @@ test.
 | `strings (n, s)` | `n` objects with a table of `s` literals; even positions the same in every object | mergeable string sections |
 | `comdat (n, i)` | a header of `i` inline functions (an inline variable per eight, a class template) and `n` C++ units that all use them | COMDAT groups, duplicate debug information |
 | `archives (a, m)` | `a` archives of `m` members of eight functions; the first half of each archive's members call the same member of the next archive | archive member extraction |
+| `line (a, m)` | `a` archives of `m` members of 64 functions and a table; seven members in eight are needed: function 0 of each calls the same member of the next archive and of one archive further on, never backwards, so one pass over the line in order loads them all | the count of archives: opening, symbol-table scans, the order of extraction |
 | `library (m, k)` | one archive of `m` members of eight functions that call nothing; `main` calls every `k`-th member, the first included | the search of a big archive of which little is needed |
 
 Every shape has a `main` that calls into every unit (for `archives`, into
-the needed members of the first; for `library`, into its needed
+the needed members of the first; for `line`, into the needed members of
+the first archive; for `library`, into its needed
 members), so a link drops nothing it was meant to keep. Adding a shape
 changes no other shape's output and so not `GENERATOR`.
 
@@ -2276,6 +2356,7 @@ changes no other shape's output and so not `GENERATOR`.
 `dependency_files_are_parsed`, `globs`. `xtask/src/bench/prepare.rs`:
 `arguments_are_normalized`, `files_are_classified`,
 `symbol_tables_are_counted`, `stamps_round_trip`, `the_cache_is_locked`.
+`xtask/src/bench/tree.rs`: `arguments_are_relocated`.
 `xtask/src/bench/measure.rs`: `linker_configurations`, `statuses`,
 `figures_of_runs`. `xtask/src/bench/manifest.rs`:
 `the_manifest_is_read`, `malformed_manifests`.
@@ -2293,3 +2374,208 @@ The end-to-end behavior (building, capturing, replaying with the real
 linkers, the census) is exercised by `cargo xtask bench` itself and not by
 a unit test: it builds and fetches, which the gate does not. Its evidence
 is the committed baseline and `spec/landed/harness/WP-012.md`.
+
+## realbuild
+
+`cargo xtask realbuild` is layer L9's open-source lane (`docs/VALIDATION.md`;
+WP-100): real projects built by their own build systems (CMake, autotools
+with libtool, Kbuild, hand-written Makefiles, rustc) with mortar as the
+linker, their own tests run, and every link line counted: linked
+correctly, refused by name, or a defect. It is an **off-gate lane**: it
+fetches from the network and takes hours, so `cargo xtask ci` runs only
+its unit tests, and the hosted lanes never run it; its evidence is the
+checked-in baseline and the report it generates.
+
+```
+cargo xtask realbuild [--project <p>]... [--row gcc|clang]... [-j <n>] [--mortar <path>]
+                      [--work <dir>] [--keep] [--keep-going] [--update-baseline]
+cargo xtask realbuild --report
+cargo xtask realbuild verify <output> <map> <argv file>
+```
+
+### The projects
+
+`tests/realbuild/manifest`, in the bench manifest's format ("Workloads":
+`[name]`, then `key = value`; the parser is shared): `version`, `url`,
+`sha256`, `root` (the archive's directory holding the sources),
+`licence`, `why` (one sentence: what the project covers), `rows` (`gcc`,
+`clang`), optionally `extra = <url> <sha256> <root>` (a second archive:
+a test suite shipped apart, a dependency's sources) and `tests` (which
+tests, when not all, and why). An unknown key, a missing one, a digest
+that is not 64 lower-case hexadecimal digits and an unknown row are
+errors naming the line. Archives are fetched and unpacked by the bench's
+code ("Preparation", `fetch_archive`: `curl`, `sha256sum`, `tar -xf`)
+into `<work>/downloads` and `<work>/src/<first 16 digits>`; nothing is
+committed and no project is patched (a configuration choice, such as
+turning one applet off, is not a patch; a project that does not build
+unpatched is replaced and named in the record).
+
+A project's build is `tests/realbuild/projects/<name>.sh`, which
+defines `rb_build` and `rb_test` and is run by `tests/realbuild/run.sh
+<script> build|test` with `tests/realbuild/lib.sh` sourced. It runs the
+project's own build system, and passes no linker: the wrapper is found as
+`ld`. Its environment: `RB_SRC` (a fresh copy of the sources), `RB_EXTRA`
+(of the extra archive), `RB_BUILD` (an empty directory, the current one),
+`RB_ROW`, `CC`, `CXX`, `FC`, `F77` (GCC's `gcc`, `g++`, `gfortran`; for
+`clang`, `clang`, `clang++` (22, else 19) and `gfortran`), `CFLAGS`,
+`CXXFLAGS`, `FFLAGS`, `FCFLAGS` `-g -O2`, `RB_JOBS` and `RB_TEST_JOBS`
+(the lane's `-j`, 1 to 6, default 3: rustc's code generation units and
+ctest's `-j`), `RB_RESULTS` (the tests'
+results, `<name> TAB PASS|FAIL|SKIP` per line, written by the library's
+`rb_run`, `rb_ctest` (ctest's JUnit file) and `rb_automake` (automake's
+`.trs` files); the word is the line's last field, so a name may hold a
+tab, and a name's control characters are read as spaces), `LC_ALL=C`, `TMPDIR` inside the build's directory, and
+`MAKEFLAGS=-j<n>` in place of the machine's pool: make is the
+jobserver of its own `n` slots for all it starts, and no script passes
+`-j` to it; CMake uses the Unix Makefiles generator. A fixed count rather
+than the pool because the shared host caps this lane at 3 jobs under
+`nice -n 10` (supervisor, WP-100): the pool's free tokens can be many
+more. Each step runs under `nice -n 10`. The script's
+`rb_configure <command>` marks the links its command makes (autoconf's,
+CMake's and hand-written checks) as the `configure` phase. Each step is a
+child of `process::run` (one token; 2 hours and 8 GiB of address space),
+its output appended to the build's `log`. Before each build the lane
+waits until the 1-minute load average is under 10.
+
+### Rows and modes
+
+A row is a project with one compiler family: `gcc` (the control linker is
+GNU ld, `/usr/bin/ld.bfd`) or `clang` (the control is lld, `ld.lld`).
+Fortran is gfortran's in both. Each row is built twice, each time from a
+fresh copy in `<work>/build/<project>-<row>-<mode>`: in mode `control`
+the wrapper hands every line to the control; in mode `mortar` it links
+every line with mortar. The directory is removed when its results are
+recorded (`--keep` keeps it), and the unpacked sources when the project's
+rows are done: one build tree on disk at a time.
+
+### The wrapper
+
+`tests/realbuild/ld` is installed as `ld`, `ld.bfd`, `ld.lld`, `ld.gold`
+and `<triple>-ld` in `<build>/wrap`, which is first on `COMPILER_PATH`
+(where gcc, collect2 and clang look for the linker first) and on `PATH`
+(where a build that runs `ld` itself, such as Kbuild's `ld -r`, finds
+it). A run that names no output (`-v`, `--version`, `--help`,
+`--verbose`: a build asking which linker it has) is a query: the control
+answers it, and it is only counted. Every other run is a record, a
+directory `<build>/records/link.XXXXXXXX` with the working directory and
+the arguments (each ended by a NUL), copies of the response files it
+names, the phase, the start time, and:
+
+- mode `control`: the control links the line; its status and standard
+  error.
+- mode `mortar`: the control links the line to a scratch output, which is
+  removed (its status is the oracle: whether the line links); then mortar
+  links the line with `--mortar-map=<record>/map`. When mortar's status
+  is 0, `xtask realbuild verify <output> <map> <argv>` judges the output
+  with the line, and the build goes on with mortar's output. Otherwise the
+  control links the line for the build (the fallback, recorded), so one
+  refusal does not hide the rest of the project; the build sees the
+  control's diagnostics and status.
+  An output that exists and is not a regular file (`-o /dev/null`,
+  Kbuild's and configure's probes of whether a line links) is not one the
+  verifier can read: mortar links such a line to `<record>/mortar.out`,
+  which is judged and then removed, and the build's output is not
+  touched.
+
+`realbuild verify` expands the line's `@file` words (GNU ld's quoting,
+the bench's `parse_response`), runs the verifier (`plumb::verify_link_line`,
+the inputs read from the working directory, stage 3 with the line, and
+`--fix-cortex-a53-843419` as the line gives it: the last of it and
+`--no-fix-cortex-a53-843419`, so that erratum 843419 sites are judged
+whenever the option was given, not only when the output has a fix) and
+prints `plumb: clean` (status 0), or `plumb: <n> findings: <rule> x<k>,
+...` and the report's first 20 lines (status 1), or `plumb: error: <what>` (status
+2: the verifier could not judge).
+
+### Outcomes
+
+A line's id is its output's path relative to the build's own directory
+(`build/` out of tree, `src/` for the sources' copy, `extra/` for the
+second archive's), with each component a tool named at random
+written `*` (`cc` and six letters or digits, `rustc` and six, `tmp.` and
+ten, `TryCompile-` and six, `cmTC_` and five), `configure/` before it for
+the configure phase, and `#<n>` for its n-th repetition in the order the
+links started. A **probe** is a line of the configure phase, or one whose
+id names `conftest`, `CMakeScratch`, `CMakeTmp`, `TryCompile`, `cmTC_`,
+or `tmp/`. The output's kind is `shared` (`-shared`), `relocatable`
+(`-r`, `-i`, `-Ur`), `static-pie` (`-static` or `--no-dynamic-linker`
+with `-pie`), `static`, `pie` or `exec` (the last of `-pie`, `-no-pie`
+wins). A line of mode `mortar` is:
+
+| outcome | when | a defect |
+|---|---|---|
+| `linked` | mortar's status 0, the control's 0, the verifier clean | no |
+| `refused <noun>: <name>; ...` | mortar's status is not 0 and its standard error names refusals (`<prog>: error: [<place>: ]unsupported <noun>: <name>`, `spec/diag.md` §4; `feature: linking`, the consequence of a refused option, is not counted); the control links the line | no |
+| `both-fail` | neither links it (mostly probes of what is not there) | no |
+| `finding <report>` | mortar linked, the verifier found something | yes |
+| `verifier-error <what>` | the verifier could not judge | yes |
+| `links-control-cannot` | mortar links a line the control does not | yes |
+| `crash <status>: <line>` | mortar ended by a signal, with a status of 128 or more, or a panic | yes |
+| `error <status>: <line>` | mortar failed with no refusal, the control links it | yes |
+| `incomplete` | the record lacks a status (the wrapper was cut short) | yes |
+
+A refused name with a path after `=` is counted without it
+(`--version-script=<file>`). A **lost test** passes with the control and
+not with mortar. The lane prints each row's counts, every defect, and
+`STOP:` when a row has a lost test and no defect line: a silent mislink
+that both mortar and its verifier missed. It then stops the survey
+(`--keep-going` goes on), as WP-100's stop condition says.
+
+### Results
+
+Each mode leaves `<work>/results/<project>.<row>.<mode>/` (`log`, `tests`,
+and `lines`: every line's id, kind, outcome, directory and words, with
+mortar's first diagnostics and the verifier's report where it did not
+link cleanly), and each row `<work>/results/<project>.<row>.tsv`. The
+checked-in files, which `--update-baseline` rewrites for the rows the run
+has and keeps for the others:
+
+- `tests/realbuild/baseline.tsv`: `# mortar-realbuild-baseline 1`, then
+  `project TAB row TAB line TAB kind TAB outcome`, the mortar mode's lines;
+- `tests/realbuild/tests.tsv`: `project TAB row TAB test TAB control TAB
+  mortar`;
+- `tests/realbuild/runs.tsv`: per mode, the wall time, the build tree's
+  peak size (`du -sk` after each step), the lines and whether it built,
+  and mortar's commit.
+
+A run compares its rows with the baseline's for the same project and row:
+**regressed** (linked before and not now, or a defect now that was not
+one), **fixed** (linked now and not before), **changed** (another
+outcome, such as another refusal), **new** and **lost** lines; exit status
+1 when one regressed or the run stopped, 3 for an error of the harness
+(a fetch, a missing tool), 2 for a usage error, else 0.
+
+### The ranking
+
+`--report` writes `docs/status/realbuild.md` from the manifest and the
+three files, measuring nothing: the projects (version, licence, why,
+URL and digest), the outcome table per project and row (lines, linked,
+refused, neither, defects, probes, tests passed with each linker, lost
+tests), the lines by kind of output, **the ranking** (every refused
+name with the lines it is refused on, the projects, the **unlock** count:
+the lines on which it is the only refusal, an upper bound because mortar
+stops at the first phase that refuses), the lines by their whole set of
+refusals, the defects, the tests that differ, and the runs.
+
+### One project alone
+
+`cargo xtask realbuild --project zlib --row gcc` (with `--keep` to keep
+the build trees for a look, `--mortar <binary>` for a mortar built
+elsewhere). The work directory is `real-builds` beside the checkout's
+target directory (`--work` to change it); without `--keep` its peak size
+is the largest single build tree (each mode's tree is removed before the
+next starts) plus the downloads, not the sum.
+
+### Tests
+
+`xtask/src/realbuild.rs`: `the_erratum_option_is_read_from_the_line`, `a_test_name_with_a_tab_is_one_field`, `arguments_parse`,
+`the_manifest_parses_and_names_its_errors`,
+`the_checked_in_manifest_parses_and_each_project_has_a_script`.
+`xtask/src/realbuild/outcome.rs`: `refusals_are_read_by_noun`,
+`kinds_follow_the_line`, `outcomes_follow_mortar_the_control_and_the_verifier`,
+`ids_are_relative_and_random_names_starred`, `response_files_are_expanded`,
+`the_baseline_round_trips_and_compares`. `xtask/src/realbuild/report.rs`:
+`the_ranking_counts_lines_projects_and_unlocks`,
+`tests_and_runs_round_trip_through_the_report`. The builds themselves are
+exercised by running the lane; its evidence is the baseline and
+`spec/landed/harness/WP-100.md`.

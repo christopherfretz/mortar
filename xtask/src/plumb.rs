@@ -269,6 +269,50 @@ pub fn response_fix_843419(text: &str) -> Option<bool> {
     })
 }
 
+/// Whether a linker's words (`line`, the program name not among them)
+/// give `--fix-cortex-a53-843419` (spec/a64.md §11, WP-103): the last of
+/// it (with or without a value) and `--no-fix-cortex-a53-843419` wins, as
+/// the linker reads them. A response file `@<file>` (read from `base` when
+/// relative) is its words in place; a driver's `-Wl,<a>,<b>` and
+/// `-Xlinker <a>` are the words they pass. Neither word: `false`, every
+/// linker's default. Every lane hands the verifier the words the linker
+/// received (the `ld` wrappers record them after the driver ran), so a
+/// driver's own default (GCC on Debian passes the option to every link,
+/// Clang does not) is in them.
+pub fn line_fix_843419(line: &[String], base: &Path) -> bool {
+    fn scan(words: &[String], base: &Path, depth: u32, fix: &mut bool) {
+        let mut it = words.iter();
+        while let Some(w) = it.next() {
+            let one = |w: &str, fix: &mut bool| {
+                if w == "--no-fix-cortex-a53-843419" {
+                    *fix = false;
+                } else if w == "--fix-cortex-a53-843419"
+                    || w.starts_with("--fix-cortex-a53-843419=")
+                {
+                    *fix = true;
+                }
+            };
+            if let Some(file) = w.strip_prefix('@')
+                && depth < 8
+                && let Ok(text) = std::fs::read(base.join(file))
+            {
+                scan(&response_words(&String::from_utf8_lossy(&text)), base, depth + 1, fix);
+            } else if let Some(list) = w.strip_prefix("-Wl,") {
+                list.split(',').for_each(|a| one(a, fix));
+            } else if w == "-Xlinker" {
+                if let Some(a) = it.next() {
+                    one(a, fix);
+                }
+            } else {
+                one(w, fix);
+            }
+        }
+    }
+    let mut fix = false;
+    scan(line, base, 0, &mut fix);
+    fix
+}
+
 /// The words of a response file (see [`response_entries`]).
 fn response_words(text: &str) -> Vec<String> {
     let mut words = Vec::new();
@@ -373,7 +417,14 @@ pub fn verify_link_line(
     let text = String::from_utf8_lossy(&map_bytes);
     let mut parsed = mortar_plumb::map::parse(format, &text)
         .map_err(|e| format!("{}:{}: {}", map.display(), e.line, e.message))?;
-    parsed.fix_843419 = fix_843419;
+    // A reference's map: the caller's word, else the link's own words
+    // (WP-103: every lane passes the linker's line; with neither, the
+    // verifier infers it). Mortar's map states its line (`arg`,
+    // spec/plumb.md §3.2a), which is all the verifier reads.
+    if format != Format::Mortar {
+        parsed.fix_843419 =
+            fix_843419.or_else(|| line.as_deref().map(|l| line_fix_843419(l, base)));
+    }
     let files = link_files(&parsed, base, allowed);
     let inputs: Vec<Input<'_>> = files.iter().map(|(p, b)| Input { path: p, bytes: b }).collect();
     let report = if mortar_plumb::is_dynamic(&output) {
@@ -661,6 +712,28 @@ pub fn run_equiv(a: &EquivArgs) -> Result<bool, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // WP-103: the option as the line gives it, the last word winning.
+    #[test]
+    fn wp103_line_fix_843419() {
+        let base = std::env::temp_dir().join(format!("mortar-wp103-line-{}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+        let f = |w: &[&str]| line_fix_843419(&s(w), &base);
+        assert!(!f(&["-o", "a", "a.o"]));
+        assert!(f(&["--fix-cortex-a53-843419", "a.o"]));
+        assert!(f(&["--fix-cortex-a53-843419=full"]));
+        assert!(!f(&["--fix-cortex-a53-843419", "--no-fix-cortex-a53-843419"]));
+        assert!(f(&["--no-fix-cortex-a53-843419", "--fix-cortex-a53-843419"]));
+        assert!(f(&["-Wl,-z,now,--fix-cortex-a53-843419", "a.o"]));
+        assert!(f(&["-Xlinker", "--fix-cortex-a53-843419"]));
+        // `-Xlinker` takes its word: the word after it is not read twice.
+        assert!(!f(&["-Xlinker", "--no-fix-cortex-a53-843419"]));
+        std::fs::write(base.join("rsp"), "a.o '--fix-cortex-a53-843419'\n").unwrap();
+        assert!(f(&["@rsp"]));
+        assert!(!f(&["@rsp", "--no-fix-cortex-a53-843419"]));
+        assert!(!f(&["@missing"]));
+        std::fs::remove_dir_all(&base).unwrap();
+    }
 
     // spec/plumb.md §8: `--equiv`.
     #[test]

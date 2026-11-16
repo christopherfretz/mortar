@@ -197,8 +197,17 @@ pub struct Image<'a> {
     pub leaf_fn: Option<mortar_digest::TreeFn>,
     /// Words written over the rows' bytes, by file offset, sorted (the
     /// erratum fixes, `crate::link::Link::fixups`).
-    pub fixups: &'a [(u64, [u8; 4])],
+    pub fixups: &'a [Fixup],
 }
+
+/// A word written over fill's bytes (an erratum fix, `spec/a64.md`
+/// §11.2): its place (an address in [`crate::link::Link::fixups`], a file
+/// offset in [`Image::fixups`]), the word, and the word fill must have
+/// written there, from which the fix was computed (`None`: a patch's own
+/// words, over nothing of fill's). Fill refuses the link when its word
+/// differs (WP-103): the fix would be computed from a word the output
+/// does not have.
+pub type Fixup = (u64, [u8; 4], Option<[u8; 4]>);
 
 impl std::fmt::Debug for Image<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -519,12 +528,26 @@ fn fill_into(
     }
     // The fixed words over the rows (a word may straddle the range).
     let first = img.fixups.partition_point(|f| f.0 + 4 <= lo);
-    for &(off, word) in img.fixups[first..].iter().take_while(|f| f.0 < hi) {
+    for &(off, word, under) in img.fixups[first..].iter().take_while(|f| f.0 < hi) {
+        let mut differs = false;
+        let mut had = [0u8; 4];
         for (i, b) in word.iter().enumerate() {
             let at = off + i as u64;
             if (lo..hi).contains(&at) {
-                out[(at - lo) as usize] = *b;
+                let o = &mut out[(at - lo) as usize];
+                had[i] = *o;
+                differs |= under.is_some_and(|u| u[i] != *o);
+                *o = *b;
             }
+        }
+        if differs {
+            let what = format!(
+                "fill: the erratum 843419 fix at file offset {off:#x} was computed from the word \
+                 {:#010x}, and fill writes {:#010x} there (spec/a64.md §11.2)",
+                u32::from_le_bytes(under.unwrap_or_default()),
+                u32::from_le_bytes(had)
+            );
+            errs.push((Key::new(PHASE_IMAGE, 0, off), internal(what)));
         }
     }
     Ok(())

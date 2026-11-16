@@ -108,6 +108,9 @@ fn both_fix(w2: u32, w3: Option<u32>, n: u32) -> bool {
 /// caller knows, else inferred from the fixes found.
 #[allow(clippy::too_many_lines)] // §11.3's steps in order
 pub(crate) fn check(e: &mut Engine<'_, '_>, map: &Map) {
+    // The option as read (§3.2a), stated for every mortar output, so that
+    // a lane counts what the verifier read whatever the machine.
+    e.cov.erratum_option = crate::opts::of(map).map(|o| o.fix_843419);
     if e.image.header.e_machine != EM_AARCH64 {
         return;
     }

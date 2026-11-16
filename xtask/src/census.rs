@@ -423,6 +423,8 @@ struct Lane {
     work: PathBuf,
     mortar: PathBuf,
     arch_tools: BTreeMap<Arch, ArchTools>,
+    /// What the verifier judged of erratum 843419 (WP-103).
+    erratum: Mutex<crate::linktest::engine::ErratumJudged>,
 }
 
 impl Lane {
@@ -578,6 +580,8 @@ impl Lane {
                 ours.1.trim()
             ));
         }
+        // Mortar's map states its line (`arg`, spec/plumb.md §3.2a): the
+        // verifier reads the option and stage 3's words from it alone.
         let verified = crate::plumb::verify_link_line(
             &out,
             &map,
@@ -585,12 +589,16 @@ impl Lane {
             &dir,
             None,
             None,
-            Some(words),
+            None,
         );
         let report = match verified {
             Ok((_, report, _)) => report,
             Err(e) => return Outcome::Fail(format!("the verifier: {e}")),
         };
+        self.erratum
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .count(report.coverage.erratum_option, &report.coverage);
         if !report.findings.is_empty() {
             let text = report.render(&out.display().to_string());
             let rules: Vec<String> = report.findings.iter().map(|f| f.rule.id()).collect();
@@ -719,7 +727,7 @@ pub fn run_lane(args: &Args) -> Result<bool, String> {
     };
     let work =
         crate::linktest::build_dir().join("census").join(format!("run-{}", std::process::id()));
-    let lane = Lane { work, mortar, arch_tools };
+    let lane = Lane { work, mortar, arch_tools, erratum: Mutex::default() };
     let mk = |p: &Path| std::fs::create_dir_all(p).map_err(|e| format!("{}: {e}", p.display()));
     mk(&lane.work.join("obj"))?;
     let lld = mortar_testutil::find_listed_tool("ld.lld");
@@ -788,6 +796,12 @@ pub fn run_lane(args: &Args) -> Result<bool, String> {
         all.len(),
         results.len() - results.iter().filter(|l| !l.outcome.passes()).count(),
         started.elapsed().as_secs_f64()
+    );
+    let e = *lane.erratum.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    eprintln!(
+        "census: erratum 843419: {} outputs judged with the option ({} sites fixed, {} not \
+         judged), {} without ({} sites)",
+        e.with_option, e.sites, e.not_judged, e.without, e.sites_without
     );
     if args.keep {
         eprintln!("census: kept {}", lane.work.display());

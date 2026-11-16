@@ -27,7 +27,8 @@ const STAMP_MAGIC: &str = "# mortar-bench-stamp 1";
 pub const GNU_LD: &str = "/usr/bin/ld.bfd";
 
 /// A compiler or archiver of a build.
-const TOOL_LIMITS: Limits = Limits { time: Duration::from_mins(15), memory_kib: 8 << 20 };
+pub(super) const TOOL_LIMITS: Limits =
+    Limits { time: Duration::from_mins(15), memory_kib: 8 << 20 };
 /// make, for a whole build.
 const MAKE_LIMITS: Limits = Limits { time: Duration::from_hours(3), memory_kib: 8 << 20 };
 /// A download.
@@ -82,6 +83,10 @@ pub type Log<'a> = &'a (dyn Fn(&str) + Sync);
 pub fn prepare(w: &Workload, env: &Env, log: Log<'_>) -> Result<Prepared, String> {
     let dir = env.workloads().join(&w.name);
     let key = stamp_key(w, env)?;
+    if let Kind::Ninja(ninja) = &w.kind {
+        // Captured from a tree made outside the bench, never rebuilt here.
+        return super::tree::prepare(w, ninja, env, &key, log);
+    }
     let stamp_path = dir.join("stamp");
     let response = dir.join("response.txt");
     let stamp = std::fs::read_to_string(&stamp_path).ok().and_then(|t| Stamp::parse(&t));
@@ -90,7 +95,7 @@ pub fn prepare(w: &Workload, env: &Env, log: Log<'_>) -> Result<Prepared, String
             return Ok(stamp.prepared(w, dir, response));
         }
         log(&format!("{}: the files the link reads changed; counting them again", w.name));
-        let stamp = census(w, &dir, &stamp.cwd, &key, env)?;
+        let stamp = census(w, &dir, &stamp.cwd, &dir, &key, env)?;
         stamp.write(&stamp_path)?;
         return Ok(stamp.prepared(w, dir, response));
     }
@@ -105,7 +110,7 @@ pub fn prepare(w: &Workload, env: &Env, log: Log<'_>) -> Result<Prepared, String
     let capture = build(w, &dir, env, log)?;
     std::fs::write(&response, write_response(&capture.args))
         .map_err(|e| format!("cannot write {}: {e}", response.display()))?;
-    let stamp = census(w, &dir, &capture.cwd, &key, env)?;
+    let stamp = census(w, &dir, &capture.cwd, &dir, &key, env)?;
     stamp.write(&stamp_path)?;
     Ok(stamp.prepared(w, dir, response))
 }
@@ -123,7 +128,7 @@ pub fn which(name: &str) -> Result<PathBuf, String> {
 }
 
 /// Runs a tool of a build; a failure is an error naming the step.
-fn tool(
+pub(super) fn tool(
     what: &str,
     program: &Path,
     configure: impl FnOnce(&mut Command),
@@ -180,6 +185,13 @@ fn stamp_key(w: &Workload, env: &Env) -> Result<String, String> {
         Kind::Cargo(_) => {
             let rustc = which("rustc")?;
             key.field(version_line(&rustc)?.as_bytes());
+        }
+        Kind::Ninja(ninja) => {
+            let path = env.workspace.join(&ninja.script[0]);
+            let bytes =
+                std::fs::read(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+            key.field(&bytes);
+            key.field(version_line(&which("ninja")?)?.as_bytes());
         }
         Kind::Planned { .. } => return Err(format!("{}: a planned workload is not built", w.name)),
     }
@@ -242,6 +254,7 @@ fn build(w: &Workload, dir: &Path, env: &Env, log: Log<'_>) -> Result<Capture, S
         }
         Kind::Cmake(cmake) => build_cmake(w, cmake, &driver, dir, env, log, &capture_env)?,
         Kind::Cargo(cargo) => build_cargo(w, cargo, dir, env, log, &capture_env)?,
+        Kind::Ninja(_) => unreachable!("ninja workloads are captured by `tree::prepare`"),
         Kind::Planned { .. } => unreachable!("planned workloads have no stamp key"),
     }
     select_capture(w, &records)
@@ -249,7 +262,7 @@ fn build(w: &Workload, dir: &Path, env: &Env, log: Log<'_>) -> Result<Capture, S
 
 /// Writes an executable script. Written before any child of this run
 /// starts that could inherit the file open.
-fn write_executable(path: &Path, text: &str) -> Result<(), String> {
+pub(super) fn write_executable(path: &Path, text: &str) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
     std::fs::write(path, text).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
@@ -268,7 +281,17 @@ fn link_with_driver(
         &format!("{}: linking with the recording ld", w.name),
         driver,
         |c| {
-            c.args(&w.ldflags).args(inputs).args(["-o", "out"]).current_dir(build);
+            c.args(&w.ldflags);
+            match inputs.split_first() {
+                // The generated inputs after `main.o` in one group.
+                Some((first, rest)) if w.group => {
+                    c.arg(first).arg("-Wl,--start-group").args(rest).arg("-Wl,--end-group");
+                }
+                _ => {
+                    c.args(inputs);
+                }
+            }
+            c.args(["-o", "out"]).current_dir(build);
             capture_env(c);
         },
         TOOL_LIMITS,
@@ -345,7 +368,7 @@ fn synthesize(
         return Err(e);
     }
     let main = "main.o".to_owned();
-    if !matches!(request.shape, Shape::Archives | Shape::Library) {
+    if !matches!(request.shape, Shape::Archives | Shape::Library | Shape::Line) {
         let mut inputs = vec![main.clone()];
         inputs.extend(
             compiled
@@ -381,14 +404,31 @@ fn fetch_and_unpack(
     env: &Env,
     log: Log<'_>,
 ) -> Result<PathBuf, String> {
-    let downloads = env.work.join("downloads");
-    let unpacked = env.work.join("src").join(&cmake.sha256[..16]);
+    Ok(fetch_archive(&w.name, &cmake.url, &cmake.sha256, &env.work, log)?.join(&cmake.root))
+}
+
+/// Fetches `url` into `<work>/downloads` (named by the URL's last
+/// component; only when the file is missing or its SHA-256 is not
+/// `sha256`), checks it against `sha256`, and unpacks it once into
+/// `<work>/src/<first 16 digits of sha256>` (`tar -xf`, which reads gzip,
+/// xz and bzip2 alike). Returns the unpacked directory. `what` names the
+/// workload or project in the messages. Shared by the bench and the
+/// real-builds lane (`spec/harness.md` "The cache", "realbuild").
+pub fn fetch_archive(
+    what: &str,
+    url: &str,
+    sha256: &str,
+    work: &Path,
+    log: Log<'_>,
+) -> Result<PathBuf, String> {
+    let downloads = work.join("downloads");
+    let unpacked = work.join("src").join(&sha256[..16.min(sha256.len())]);
     let done = unpacked.join(".unpacked");
     if done.is_file() {
-        return Ok(unpacked.join(&cmake.root));
+        return Ok(unpacked);
     }
     mkdir(&downloads)?;
-    let file = cmake.url.rsplit('/').next().filter(|f| !f.is_empty()).unwrap_or("download");
+    let file = url.rsplit('/').next().filter(|f| !f.is_empty()).unwrap_or("download");
     let archive = downloads.join(file);
     let sha256sum = which("sha256sum")?;
     let digest = |path: &Path| -> Result<String, String> {
@@ -402,24 +442,21 @@ fn fetch_and_unpack(
         )?;
         Ok(String::from_utf8_lossy(&out.stdout).split_whitespace().next().unwrap_or("").to_owned())
     };
-    if !archive.is_file() || digest(&archive)? != cmake.sha256 {
-        log(&format!("{}: fetching {}", w.name, cmake.url));
+    if !archive.is_file() || digest(&archive)? != sha256 {
+        log(&format!("{what}: fetching {url}"));
         let part = downloads.join(format!("{file}.part"));
         tool(
-            &format!("{}: fetching {}", w.name, cmake.url),
+            &format!("{what}: fetching {url}"),
             &which("curl")?,
             |c| {
-                c.args(["-fsSL", "--retry", "3", "-o"]).arg(&part).arg(&cmake.url);
+                c.args(["-fsSL", "--retry", "3", "-o"]).arg(&part).arg(url);
             },
             FETCH_LIMITS,
         )?;
         let got = digest(&part)?;
-        if got != cmake.sha256 {
+        if got != sha256 {
             let _ = std::fs::remove_file(&part);
-            return Err(format!(
-                "{}: {} has SHA-256 {got}, the manifest pins {}",
-                w.name, cmake.url, cmake.sha256
-            ));
+            return Err(format!("{what}: {url} has SHA-256 {got}, the manifest pins {sha256}"));
         }
         std::fs::rename(&part, &archive)
             .map_err(|e| format!("cannot rename {}: {e}", part.display()))?;
@@ -430,15 +467,15 @@ fn fetch_and_unpack(
     }
     mkdir(&unpacked)?;
     tool(
-        &format!("{}: unpacking {file}", w.name),
+        &format!("{what}: unpacking {file}"),
         &which("tar")?,
         |c| {
-            c.args(["-xzf"]).arg(&archive).arg("-C").arg(&unpacked).arg("--no-same-owner");
+            c.args(["-xf"]).arg(&archive).arg("-C").arg(&unpacked).arg("--no-same-owner");
         },
         TOOL_LIMITS,
     )?;
     std::fs::write(&done, b"").map_err(|e| format!("cannot write {}: {e}", done.display()))?;
-    Ok(unpacked.join(&cmake.root))
+    Ok(unpacked)
 }
 
 fn build_cmake(
@@ -557,7 +594,7 @@ fn build_cargo(
 
 /// The one recorded link whose output's basename matches the workload's
 /// `capture` pattern.
-fn select_capture(w: &Workload, records: &Path) -> Result<Capture, String> {
+pub(super) fn select_capture(w: &Workload, records: &Path) -> Result<Capture, String> {
     let mut entries: Vec<PathBuf> = std::fs::read_dir(records)
         .map_err(|e| format!("cannot list {}: {e}", records.display()))?
         .filter_map(|entry| entry.ok().map(|e| e.path()))
@@ -759,19 +796,19 @@ impl Stamp {
         Some(Self { key, cwd, info, files })
     }
 
-    fn write(&self, path: &Path) -> Result<(), String> {
+    pub(super) fn write(&self, path: &Path) -> Result<(), String> {
         std::fs::write(path, self.to_text())
             .map_err(|e| format!("cannot write {}: {e}", path.display()))
     }
 
     /// Every file the census read has its recorded size and time.
-    fn files_unchanged(&self) -> bool {
+    pub(super) fn files_unchanged(&self) -> bool {
         self.files
             .iter()
             .all(|(size, time, path)| file_stat(path).is_some_and(|now| now == (*size, *time)))
     }
 
-    fn prepared(self, w: &Workload, dir: PathBuf, response: PathBuf) -> Prepared {
+    pub(super) fn prepared(self, w: &Workload, dir: PathBuf, response: PathBuf) -> Prepared {
         let info = WorkloadInfo { name: w.name.clone(), class: w.class.clone(), ..self.info };
         Prepared { workload: w.clone(), dir, cwd: self.cwd, response, info }
     }
@@ -787,7 +824,14 @@ fn file_stat(path: &Path) -> Option<(u64, u128)> {
 /// `--dependency-file`; the files it names are counted by kind, their
 /// bytes summed, and the normalized arguments and every file's contents
 /// hashed. A workload GNU ld cannot replay is not admitted.
-fn census(w: &Workload, dir: &Path, cwd: &Path, key: &str, env: &Env) -> Result<Stamp, String> {
+pub(super) fn census(
+    w: &Workload,
+    dir: &Path,
+    cwd: &Path,
+    root: &Path,
+    key: &str,
+    env: &Env,
+) -> Result<Stamp, String> {
     let scratch = env.scratch();
     mkdir(&scratch)?;
     let output = scratch.join(format!("census-{}.out", w.name));
@@ -816,7 +860,7 @@ fn census(w: &Workload, dir: &Path, cwd: &Path, key: &str, env: &Env) -> Result<
             replay.first_error_line()
         ));
     }
-    let result = count_inputs(w, dir, cwd, &response, &output, &depfile);
+    let result = count_inputs(w, root, cwd, &response, &output, &depfile);
     cleanup();
     let (info, files) = result?;
     Ok(Stamp { key: key.to_owned(), cwd: cwd.to_owned(), info, files })
