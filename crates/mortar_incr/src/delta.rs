@@ -302,15 +302,8 @@ enum Pos<'s> {
     NonAlloc(&'s [u8], u32, u64),
 }
 
-/// The places of one merged fragment identity (output section, hash):
-/// one, several (ordinal rows, in order), or unknown (its output section
-/// has no one merged chunk to be relative to).
-#[derive(Debug, PartialEq, Eq)]
-enum Places {
-    Unknown,
-    One(u64),
-    Many(Vec<u64>),
-}
+/// A merged fragment: output section number, hash, place.
+type Frag = (u32, Hash16, Option<u64>);
 
 /// Items grouped by a key in `0..n`, each group in push order (a
 /// counting sort, no map). A key outside `0..n` (a damaged state) is kept
@@ -796,7 +789,11 @@ pub fn compute(
             })
         })
         .collect();
-    let frag_map = |side: &Side<'_>, ids: &[u32]| -> HashMap<(u32, Hash16), Places> {
+    // Per side: (output section number, hash, place) in FRAGS order,
+    // sorted by the first two (stably: a hash's rows stay in ordinal
+    // order). The place is `None` when the output section has no one
+    // merged chunk.
+    let frag_list = |side: &Side<'_>, ids: &[u32]| -> Vec<Frag> {
         let s = side.s;
         // Per OUTSECS row: no merged chunk, one (its base), several.
         let mut base: Vec<Option<Option<u64>>> = vec![None; s.outsecs.len()];
@@ -814,47 +811,66 @@ pub fn compute(
                 *e = Some(if e.is_some() { None } else { Some(at) });
             }
         }
-        let mut m: HashMap<(u32, Hash16), Places> = HashMap::default();
-        m.reserve(s.frags.len());
-        for f in &s.frags {
-            let Some(&id) = ids.get(f.out as usize) else { continue };
-            let at = base.get(f.out as usize).copied().flatten().flatten();
-            let at = at.map(|b| b.wrapping_add(f.offset));
-            match m.entry((id, f.hash)) {
-                std::collections::hash_map::Entry::Vacant(v) => {
-                    v.insert(at.map_or(Places::Unknown, Places::One));
-                }
-                std::collections::hash_map::Entry::Occupied(mut e) => {
-                    let p = e.get_mut();
-                    *p = match (std::mem::replace(p, Places::Unknown), at) {
-                        (Places::One(x), Some(at)) => Places::Many(vec![x, at]),
-                        (Places::Many(mut v), Some(at)) => {
-                            v.push(at);
-                            Places::Many(v)
-                        }
-                        _ => Places::Unknown,
-                    };
-                }
-            }
+        let mut v: Vec<Frag> = s
+            .frags
+            .iter()
+            .filter_map(|f| {
+                let &id = ids.get(f.out as usize)?;
+                let at = base.get(f.out as usize).copied().flatten().flatten();
+                Some((id, f.hash, at.map(|b| b.wrapping_add(f.offset))))
+            })
+            .collect();
+        if !v.windows(2).all(|w| (w[0].0, w[0].1) <= (w[1].0, w[1].1)) {
+            v.sort_by_key(|x| (x.0, x.1));
         }
-        m
+        v
     };
-    let (fa, fb) = (frag_map(&a, &old_out), frag_map(&b, &new_out));
-    let known = |p: &&Places| **p != Places::Unknown;
+    let (fa, fb) = (frag_list(&a, &old_out), frag_list(&b, &new_out));
+    // The rows of one (output section, hash).
+    let group = |v: &[Frag], k: (u32, Hash16)| -> std::ops::Range<usize> {
+        let lo = v.partition_point(|x| (x.0, x.1) < k);
+        lo..lo + v[lo..].partition_point(|x| (x.0, x.1) == k)
+    };
+    // The same: in both links, every place known, the same places in the
+    // same order.
+    let same = |x: &[Frag], y: &[Frag]| {
+        !x.is_empty()
+            && x.len() == y.len()
+            && x.iter().zip(y).all(|(p, q)| p.2.is_some() && p.2 == q.2)
+    };
+    // One walk over both lists: per hash of the new link, the same or
+    // not; any hash not the same changes the merged chunks.
+    let mut frags_changed = false;
+    let mut same_of: HashMap<(u32, Hash16), bool> = HashMap::default();
+    same_of.reserve(fb.len());
+    let (mut i, mut j) = (0, 0);
+    while i < fa.len() || j < fb.len() {
+        let k = match (fa.get(i), fb.get(j)) {
+            (Some(p), Some(q)) => (p.0, p.1).min((q.0, q.1)),
+            (Some(p), None) => (p.0, p.1),
+            (None, Some(q)) => (q.0, q.1),
+            (None, None) => break,
+        };
+        let (x, y) = (group(&fa[i..], k), group(&fb[j..], k));
+        let s = same(&fa[i..][x.clone()], &fb[j..][y.clone()]);
+        frags_changed |= !s;
+        if !y.is_empty() {
+            same_of.insert(k, s);
+        }
+        i += x.len();
+        j += y.len();
+    }
+    // A section's fragment whose hash is not the same, or in neither
+    // link's FRAGS, moved.
     let mut merged_moved = vec![false; nsec];
-    let mut frags_changed = fa.len() != fb.len();
     for &(sec, out, h) in &extra.frags {
         let Some(&id) = new_out.get(out as usize) else { continue };
-        let (x, y) = (fa.get(&(id, h)).filter(known), fb.get(&(id, h)).filter(known));
-        if x.is_none() || x != y {
+        if !same_of.get(&(id, h)).copied().unwrap_or(false) {
             if let Some(m) = merged_moved.get_mut(sec as usize) {
                 *m = true;
             }
             frags_changed = true;
         }
-    }
-    if !frags_changed {
-        frags_changed = fa.iter().any(|(k, v)| *v == Places::Unknown || fb.get(k) != Some(v));
     }
     std::mem::drop((fa, fb));
     // .eh_frame (IN-34a): the records in output order. S-47 packs them

@@ -2898,6 +2898,14 @@ time and of peak RSS on protoc (*target*, S1 measures it).
   `f(5)=10`; wx `-100` then `14`; lx `1 -1` then `1 -1 -2`), as the
   AArch64 runs do.
 
+  A fall-back row may be not caught, conservative, with its reason: a
+  full link is never wrong, and two full links cannot show that a
+  fall-back was needed (only an update without it can, WP-064). WP-063's
+  record lists `inputs-reordered`, `options-changed`, `property-changed`
+  and `symbol-kind-changed` this way. A refill row (not a fall-back) not
+  caught still needs a scenario: the `.eh_frame`-reference row is one
+  (WP-069).
+
 - **IN-64 [v1] The bench** gains incremental rows: for protoc `-g` and
   without, and for the go/no-go workload, the full link plain and in
   incremental mode, and an update after (a) one body edit in
@@ -3134,6 +3142,13 @@ default) are in the record, not here.
     `dm-flakey` here). Default: argue it in the spec and test it where a
     host provides `dm-flakey` or a fault-injecting file system (WP-064's
     gate, if available; not a blocker).
+11. **`property-changed` on the size only** (WP-063). The trigger is the
+    `.note.gnu.property` chunk's size; the note itself is refilled
+    either way. Open for WP-064: whether a change of the property bits
+    (BTI, IBT, SHSTK) at the same size changes anything else in the
+    image (segment flags, the PLT's form). Default: the size; if
+    something depends on the bits, the trigger becomes "the bits
+    differ".
 
 ## 12. Appendix: experiments
 

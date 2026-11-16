@@ -172,7 +172,9 @@ impl<'s> Keys<'s> {
 }
 
 /// The content hash of a fragment's bytes (`L128`, IN-18a `FRAGS`).
-fn frag_hash(link: &Link<'_, '_>, frag: FragId) -> Option<[u8; 16]> {
+/// `buf` holds the bytes of a fragment not resident in the store; it is
+/// reused from one fragment to the next.
+fn frag_hash(link: &Link<'_, '_>, frag: FragId, buf: &mut Vec<u8>) -> Option<[u8; 16]> {
     let f = link.split.frags.get(frag)?;
     let (file, index) = link.resolution.sh_index(f.section)?;
     let Reader::Object(object) = link.inputs.files.get(file)?.reader else { return None };
@@ -182,9 +184,10 @@ fn frag_hash(link: &Link<'_, '_>, frag: FragId) -> Option<[u8; 16]> {
     if let Some(bytes) = link.inputs.resident(file, range.clone()) {
         return Some(mortar_digest::l128(bytes));
     }
-    let mut buf = vec![0u8; f.size as usize];
-    link.inputs.copy_to(file, range, &mut buf).ok()?;
-    Some(mortar_digest::l128(&buf))
+    buf.clear();
+    buf.resize(f.size as usize, 0);
+    link.inputs.copy_to(file, range, buf).ok()?;
+    Some(mortar_digest::l128(buf))
 }
 
 /// What the dry run needs of the new link beyond its state
@@ -198,13 +201,14 @@ pub fn extra(link: &Link<'_, '_>) -> crate::delta::Extra {
         res.sections.iter().map(|(id, _)| res.sh_index(id).map_or(0, |(_, i)| i.0)).collect();
     let mut hashes: Vec<Option<Option<[u8; 16]>>> = vec![None; link.split.frags.len() as usize];
     let mut frags = Vec::new();
+    let mut buf = Vec::new();
     for row in &link.split.merge_of {
         let Some(out) = link.assignment.out(row.section) else { continue };
         let mut seen = Vec::new();
         for p in row.pieces.slots() {
             let Some(&frag) = link.split.piece_frag.get(p) else { continue };
             let Some(slot) = hashes.get_mut(frag.0 as usize) else { continue };
-            let h = *slot.get_or_insert_with(|| frag_hash(link, frag));
+            let h = *slot.get_or_insert_with(|| frag_hash(link, frag, &mut buf));
             // A fragment whose bytes cannot be read is no fragment the
             // delta can find: the section counts as moved (an unknown hash).
             let h = h.unwrap_or([0xff; 16]);
@@ -418,13 +422,14 @@ pub fn capture(
         .collect();
     // FRAGS: per (output section, hash), the live fragments' offsets.
     let mut live: Vec<(u32, [u8; 16], u32, u64)> = Vec::new();
+    let mut buf = Vec::new();
     for (frag, &off) in layout.merge.frag_off.iter() {
         if off == MergeMap::NONE {
             continue;
         }
         let f = link.split.frags.get(frag).ok_or("a fragment")?;
         let out = link.assignment.out(f.section).ok_or("a live fragment without output section")?;
-        let hash = frag_hash(link, frag).ok_or("a fragment's bytes")?;
+        let hash = frag_hash(link, frag, &mut buf).ok_or("a fragment's bytes")?;
         live.push((out.0, hash, frag.0, off));
     }
     live.sort_unstable();
@@ -806,6 +811,7 @@ pub fn replay(
         by_identity.entry((out, f.hash)).or_default().push(f);
     }
     let mut frag_off = computed.merge.frag_off.clone();
+    let mut buf = Vec::new();
     let mut rank: HashMap<(OutSecId, [u8; 16]), u32> = HashMap::new();
     for (i, off) in frag_off.as_mut_slice().iter_mut().enumerate() {
         let frag = FragId::from_index(i as u32);
@@ -814,7 +820,7 @@ pub fn replay(
         }
         let f = link.split.frags.get(frag).ok_or("a fragment")?;
         let out = link.assignment.out(f.section).ok_or("a fragment's output section")?;
-        let hash = frag_hash(link, frag).ok_or("a fragment's bytes")?;
+        let hash = frag_hash(link, frag, &mut buf).ok_or("a fragment's bytes")?;
         let rows = by_identity.get(&(out, hash)).ok_or("a live fragment has no FRAGS row")?;
         let n = rank.entry((out, hash)).or_insert(0);
         let row = if rows.len() == 1 && rows[0].ordinal == NONE {
