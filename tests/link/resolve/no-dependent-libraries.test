@@ -1,0 +1,58 @@
+# `--no-dependent-libraries` (lld's; a `noop` row, "mortar never loads
+# the libraries .deplibs sections name (resolve.md §10)"; spec/resolve.md
+# "Dependent libraries"). Clang writes `#pragma comment(lib, "name")` as a
+# `.deplibs` section. lld loads the libraries it names by default and
+# not with this option; GNU ld and mold never load them (neither knows
+# the option), and neither does mortar, so for mortar the option changes
+# nothing:
+#
+# - nosuch.o names a library that does not exist: lld refuses the link
+#   without the option ("unable to find library from dependent library
+#   specifier: nosuch") and links with it; GNU ld, mold and mortar link,
+#   and mortar's output is the same bytes with and without the option.
+# - dep-main.o calls `dep_fn`, which only libdep.a (named by its
+#   `.deplibs`, and in `-L.`) defines: lld links it by loading libdep.a
+#   unless given the option; with the option lld, and GNU ld, mold and
+#   mortar always, report `dep_fn` undefined.
+#
+# The reason it is right: a library not loaded can only leave a symbol
+# undefined, a named error (resolve.md §5), never change an output.
+#@ spec: resolve.md "Dependent libraries"
+#@ requires: clang
+
+cc(clang) -O1 -fno-pic nosuch.c -o nosuch.o
+cc(clang) -O1 -fno-pic dep-main.c -o dep-main.o
+cc -O1 -fno-pic dep.c -o dep.o
+ar rcs libdep.a dep.o
+link(bfd,mold,mortar) gcc -static nosuch.o -o plain
+link(lld) gcc -static nosuch.o -o plain
+  exit: fail
+  diag(lld): unable to find library from dependent library specifier: nosuch
+link(lld,mortar) gcc -static nosuch.o -Wl,--no-dependent-libraries -o nodeps
+run(bfd,mold,mortar) plain
+  stdout: 7
+run(lld,mortar) nodeps
+  stdout: 7
+check(mortar) cmp plain nodeps
+  has: ^identical$
+link(lld) gcc -static dep-main.o -L. -o dep
+run(lld) dep
+  stdout: 5
+link(lld,mortar) gcc -static dep-main.o -L. -Wl,--no-dependent-libraries -o dep-nodeps
+  exit: fail
+  diag: dep_fn
+link(bfd,mold,mortar) gcc -static dep-main.o -L. -o dep
+  exit: fail
+  diag: dep_fn
+
+#--- nosuch.c
+#include <stdio.h>
+#pragma comment(lib, "nosuch")
+int main(void) { printf("7\n"); return 0; }
+#--- dep-main.c
+#include <stdio.h>
+#pragma comment(lib, "dep")
+int dep_fn(void);
+int main(void) { printf("%d\n", dep_fn()); return 0; }
+#--- dep.c
+int dep_fn(void) { return 5; }
