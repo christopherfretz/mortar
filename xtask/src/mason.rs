@@ -86,6 +86,43 @@ pub fn main(args: &[String]) -> ExitCode {
     }
 }
 
+/// The gate's `mason` step (`cargo xtask ci`, spec/harness.md "ci";
+/// WP-058): libc++'s `ci` sample linked by mortar fully static and on the
+/// dynamic line (kiln's: static libc++, dynamic glibc, PIE), every output
+/// verified, against `tests/mason/baseline-mortar.tsv`; the full gate adds
+/// the programs table. Skipped by name where the workspace has no kiln and
+/// hod builds or no lane (`cargo xtask mason setup`), unless
+/// `MASON_REQUIRE_TOOLS=1`.
+pub fn ci(quick: bool) -> bool {
+    let mortar = match crate::linktest::build_mortar() {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("[ci] mason: {e}");
+            return false;
+        }
+    };
+    let baseline = crate::linktest::workspace_root().join("tests/mason/baseline-mortar.tsv");
+    let mut args: Vec<String> =
+        ["--sample", "ci", "--mode", "mortar", "--mode", "dyn-mortar", "--plumb", "-j", "4"]
+            .map(str::to_owned)
+            .into();
+    args.extend(["--mortar".to_owned(), mortar.display().to_string()]);
+    args.extend(["--baseline".to_owned(), baseline.display().to_string()]);
+    let ok = |r: Result<ExitCode, String>| match r {
+        Ok(c) => c == ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("[ci] mason: {e}");
+            false
+        }
+    };
+    let mut passed = ok(libcxx::main(&args));
+    if !quick {
+        let p = ["--mortar".to_owned(), mortar.display().to_string(), "-j".into(), "4".into()];
+        passed &= ok(programs::main(&p));
+    }
+    passed
+}
+
 /// The root of the build directories: the parent of this checkout's
 /// target directory (`.build` of the wrapper repository).
 pub fn build_root() -> PathBuf {

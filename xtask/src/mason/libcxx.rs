@@ -75,6 +75,27 @@ pub const SAMPLES: &[(&str, &[&str], Option<&str>)] = &[
         ],
         Some("1/4"),
     ),
+    // The gate's sample (`cargo xtask ci`, WP-058): one test each of what a
+    // dynamic link of C++ meets (type identity across the boundary,
+    // exceptions, a replaced `operator new`, `quick_exit`, threads and
+    // `call_once`, locales, iostream, the file system, atomics, the typical
+    // container test).
+    ("ci", CI_SAMPLE, None),
+];
+
+/// The tests of the `ci` sample.
+pub const CI_SAMPLE: &[&str] = &[
+    "std/language.support/support.rtti/type.info/type_info.pass.cpp",
+    "std/language.support/support.exception/except.nested/throw_with_nested.pass.cpp",
+    "std/language.support/support.dynamic/new.delete/new.delete.single/new.size.replace.pass.cpp",
+    "std/language.support/support.start.term/quick_exit.pass.cpp",
+    "std/thread/thread.threads/thread.thread.class/thread.thread.constr/F.pass.cpp",
+    "std/thread/thread.mutex/thread.once/thread.once.callonce/call_once.pass.cpp",
+    "std/localization/locales/locale/locale.cons/default.pass.cpp",
+    "std/input.output/iostream.objects/narrow.stream.objects/cout.sh.cpp",
+    "std/input.output/filesystems/fs.op.funcs/fs.op.current_path/current_path.pass.cpp",
+    "std/atomics/atomics.types.generic/bool.pass.cpp",
+    "std/containers/sequences/vector/vector.modifiers/push_back.pass.cpp",
 ];
 
 #[derive(Debug)]
@@ -390,20 +411,33 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
     if let Some(p) = &args.report {
         std::fs::write(p, &report).map_err(|e| format!("{}: {e}", p.display()))?;
     }
+    // The result file and the baseline read the run's directory: before
+    // it is removed.
+    let names: Vec<String> = modes.iter().map(|m| m.name.clone()).collect();
+    let code = if args.results.is_some() || args.baseline.is_some() || args.write_baseline.is_some()
+    {
+        collect_dir(&scratch, Some(&names)).and_then(|recs| finish(&args, &recs))
+    } else {
+        Ok(ExitCode::SUCCESS)
+    };
     if args.keep || args.out.is_some() {
         say!("xtask mason libcxx: kept {}", scratch.display());
     } else {
         let _ = std::fs::remove_dir_all(&scratch);
     }
+    let code = code?;
     let wrong = modes.iter().any(|m| !wrong_outputs(&modes, m).is_empty());
-    let names: Vec<String> = modes.iter().map(|m| m.name.clone()).collect();
-    let code = if args.results.is_some() || args.baseline.is_some() || args.write_baseline.is_some()
-    {
-        finish(&args, &collect_dir(&scratch, Some(&names))?)?
-    } else {
-        ExitCode::SUCCESS
-    };
-    Ok(if wrong { ExitCode::FAILURE } else { code })
+    // With `--plumb`, every mortar output must be verifier-clean and its
+    // second link (with the map) the same bytes.
+    let unclean: usize = modes
+        .iter()
+        .flat_map(|m| m.links.iter())
+        .filter(|(st, _, p)| args.plumb && st == "0" && p.trim() != "plumb: clean")
+        .count();
+    if unclean > 0 {
+        say!("xtask mason libcxx: {unclean} mortar link(s) not verifier-clean (see the report)");
+    }
+    Ok(if wrong || unclean > 0 { ExitCode::FAILURE } else { code })
 }
 
 /// The records of the mode directories of `dir` (`names`, else every

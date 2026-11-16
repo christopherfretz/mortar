@@ -21,6 +21,7 @@ tests ("Link tests"), the gate's hosted runs on GitHub Actions
 | `test` | `cargo test --workspace` |
 | `linktest` | `cargo xtask linktest --arch <host>` (`--quick`), `cargo xtask linktest` (full) |
 | `census` | `cargo xtask census --quick` (`--quick`), `cargo xtask census` (full) |
+| `mason` | `cargo xtask mason libcxx --sample ci --mode mortar --mode dyn-mortar --plumb --baseline tests/mason/baseline-mortar.tsv` (both); `cargo xtask mason programs` (full) |
 | `static-identical` | `cargo xtask static-identical` (both; every architecture) |
 
 Before a step it prints `[ci] <step>` on standard error. It stops at the
@@ -55,7 +56,21 @@ subset of the drivers and variations (20 lines on AArch64; 2 s measured
 by WP-056); the full gate runs every census line of AArch64 and x86-64
 (440 lines; 19 s on the reference machine with `-j 6`).
 
-`static-identical` is run in-process after `census`, with or without
+`mason` is run in-process after `census` (WP-058): libc++'s `ci`
+sample (eleven tests, `tests/mason/README.md` "libc++") through the
+Mason lane, linked by the debug mortar fully static (`mortar`) and on
+kiln's dynamic line (`dyn-mortar`: static libc++, dynamic glibc, PIE),
+every output verified with its line, the outcomes held to
+`tests/mason/baseline-mortar.tsv`; the full gate adds the programs table
+(`cargo xtask mason programs`, static and dynamic variants, AArch64 and
+x86-64). It fails on a test that does not pass and is not in the
+baseline, a verifier finding, a second link that differs, or a cell
+that does not hold. Without kiln and hod builds or the lane's
+`setup` it says `skipped` and passes (the hosted lanes have neither),
+unless `MASON_REQUIRE_TOOLS=1`. Cost on the reference machine: see
+`spec/landed/mason/WP-058.md`.
+
+`static-identical` is run in-process after `census` and `mason`, with or without
 `--quick`, on every architecture ("static-identical"); any failure fails
 it.
 
@@ -1147,8 +1162,11 @@ drivers are those of `scripts/ci-tools.sh`, found through the tool
 guard: GCC's `gcc`, `g++` and `gfortran` of each architecture (plain on
 the host, `<triple>-` otherwise), `clang-22`/`clang++-22` and
 `clang-19`/`clang++-19` (with `--target=<triple>` off the host), and
-`kiln++` with hod where the workspace has their builds (natively on
-AArch64; skipped by name otherwise, with the reason as a note). Each
+`kiln++` with hod where the workspace has their builds, on an AArch64
+host: natively for AArch64 and with `--target=x86_64-linux-gnu` for
+x86-64 (WP-058); skipped by name otherwise, with the reason as a note.
+kiln++ rejects `-shared-libgcc`, `-static-libgcc`, `-static-libstdc++`
+and `-static-pie` (`unknown argument`): those lines are "no line". Each
 compiles a hello (C; C++ with an exception, iostream and a
 `thread_local`; Fortran) once per flavour (plain, `-fsanitize=address`,
 `-flto`) and links it in each variation of `VARIATIONS` (the census's
