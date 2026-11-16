@@ -33,7 +33,7 @@ i386 fit.
 | 1 | `ET_EXEC`, static, non-PIE, AArch64. Placement, relocations (the §4.2 table), the GOT slots of a static link, structure (§6), content, symbol values | — |
 | 2 (WP-028) | Static TLS: every AAELF64 TLS type and the relaxations W9–W13 (§4.7); IFUNC/`IRELATIVE`, `.eh_frame` and `.eh_frame_hdr` contents (§6.4), the symbol table (§6.5), non-alloc (DWARF) relocations | `tls` (except the constructs §4.7 names), `ifunc`, `eh-frame` (except labels inside `.eh_frame`, §6.4), `non-alloc` |
 | 3 (M2) | Dynamic executables (`Exec`, `Pie`) and static PIE: the dynamic sections, dynamic relocations, PLT, copies, shared inputs (§12, P-D1-P-D13; static-pie P-D14 and P-D15, §12.4). Shared-object output is M4 | — |
-| 4 (M6) | Mason metadata and the one-definition-rule table: `.mason.meta` in outputs, `.note.mason` (§13, P-M1-P-M3; **not implemented**, WP-078) | — |
+| 4 (M6) | Mason metadata and the one-definition-rule table: `.mason.meta` in outputs, `.note.mason` (§13, P-M1-P-M3; WP-078) | — |
 | x | x86-64 and i386 tables (§4.5) | `machine` |
 | G (WP-098) | `.gdb_index`: gdb's format for every producer (P-G1–P-G5) and synth.md §17 for mortar's (P-G6–P-G9), §6.10. `.debug_names` is not judged | — |
 | I (M7, WP-091) | An incremental link's holes and dead ranges, for a mortar map that claims them (`incremental`, `hole`, `dead`, §3.2): IN-60's coverage of every allocated section and IN-3a's three checks on every range (§6.8, P-I1–P-I6). `--equiv` (incr.md IN-62) is not started | — |
@@ -2753,7 +2753,7 @@ A finding has:
 
 - the rule id: `O1`, `S1`–`S21`, `I1`, `I2`, `M1`–`M5`, `R1`–`R9`, `T1`,
   `Y1`–`Y5`, `E1`–`E5`, `F1`–`F5` (§4.8), `P1`–`P2` (§6.6), `B1` (§6.7),
-  `C1`–`C6` (§5.10), `P-D1`–`P-D13` (§12), `P-I1`–`P-I6` (§6.8), `P-E1`–`P-E6`
+  `C1`–`C6` (§5.10), `P-D1`–`P-D13` (§12), `P-I1`–`P-I6` (§6.8), `P-M1`–`P-M3` (§13), `P-E1`–`P-E6`
   (§6.9; a side's finding there carries its side, `X:` or `F:`) or
   `P-G1`–`P-G9` (§6.10);
 - the output address, if it has one;
@@ -2794,7 +2794,7 @@ and left unchecked, the bytes S12 compared, and the FDEs and header
 entries of §6.4, the symbols of §6.5, the IRELATIVE records and IPLT
 entries of §4.8, and the property types §6.6 judged and did not judge, what B1 made of
 the build id (§6.7), the x86-64 large sections whose placement no
-rule judges (`placement_not_judged`, §6.5), and for an output with a
+rule judges (`placement_not_judged`, §6.5), stage 4's `meta` (§13.2), and for an output with a
 `.gdb_index` its version, units, address entries and names and the rules
 that judged it (`gdb index: ...`, §6.10).
 
@@ -4183,8 +4183,8 @@ the entry's `JUMP_SLOT` record in `DT_JMPREL`.
 of every byte of the synthetic sections (`.dynamic`, `.dynsym`,
 `.dynstr`, `.gnu.hash`, `.gnu.version`, `.gnu.version_r`, `.rela.dyn`,
 `.rela.plt`, `.plt`, `.plt.got`, `.plt.sec`, `.iplt`, `.got`, `.got.plt`,
-`.interp`, `.eh_frame_hdr`, `.eh_frame`, and `.gdb_index`, WP-098) one
-mutant at a time and
+`.interp`, `.eh_frame_hdr`, `.eh_frame`, and `.gdb_index`, WP-098; stage 4's
+`.note.mason` and the kept `.mason.meta`, §13) one mutant at a time and
 judges each. A mutant is caught when a finding key appears that the
 unmutated output does not have (a panic counts as caught). It prints,
 per section and field range, the flips and the survivors. It is a
@@ -4397,32 +4397,150 @@ one), `spie-dynamic-word` (the GOT's `_DYNAMIC` word 0 or plus 8).
 
 ## 13. Stage 4: Mason metadata and the ODR table (M6)
 
-**Not implemented**; WP-078 implements it (amendment A-7 of
-`spec/odr.md` §14; the rules are `spec/odr.md` §12.5's, ids `P-M`*n*
-new here). It comes after stage 3: the table's rules need the dynamic
-symbol table stage 3 checks. The verifier re-reads the container format
-of `spec/meta.md` itself (about 150 lines: the format is small on
-purpose, and a second reader is the point), with `mortar_elf` and
-`mortar_diag` only.
+Implemented by WP-078 (amendment A-7 of `spec/odr.md` §14; the rules
+are `spec/odr.md` §12.5's; record `spec/landed/meta/WP-078.md`). The
+verifier re-reads the container format of `spec/meta.md` itself
+(`meta.rs`, a second reader: `mortar_elf` and `mortar_diag` only) and
+judges the output's `.mason.meta` and `.note.mason` (`odrtable.rs`).
+Stage 4 runs on every output `verify` and `verify_with` read, of every
+format (a reference linker has none of these options, so it is held to
+"none of these sections"), before stage 3's early returns: an output
+stage 3 puts outside (P-D1) is still judged here.
 
-- **P-M1 (containers in outputs).** An executable or shared object
-  contains no `.mason.meta` unless `--keep-mason-meta` (`spec/meta.md`
-  MT-31, MT-32); a relocatable output's `.mason.meta` is the
-  concatenation of the live inputs' units in input order (MT-30).
-- **P-M2 (`.note.mason`).** If present, it lies in a `PT_NOTE` with
-  `p_align` 8; its rows are sorted; each row's key is the FNV-1a 64 of
-  its `.dynsym` name; each row's hash is the first 8 bytes of the kind 2
-  row of **the keeper's unit** for that name (`spec/odr.md` O-51; the
-  keeper is `comdat[G]`'s file for a vague definition, the defining file
-  otherwise); the row set equals O-50's (exported definitions, protected
-  and `-Bsymbolic` ones included, hidden ones not); each row's flags
-  equal the keeper's row's, plus `NONPREEMPTIBLE` exactly for protected
-  and locally bound definitions; each row's `.dynsym` entry carries the
-  version node the output gives the name.
-- **P-M3 (no code).** A table adds no code: no `.init_array`/
-  `.fini_array` entry and no input section that mortar did not read from
-  the command line. If a runtime ever ships (`spec/odr.md` O-58), a rule
-  for its entries and bytes is added then.
+### 13.1 What the rules read
 
-Whether the verifier should also re-run the comparison (a second
-implementation of the verdict) is `spec/odr.md` Q11.
+- **The options**, from the link's words (`Ctx::line`, else the mortar
+  map's `arg` records, §3.2): `--odr-table=V` and `--odr-table V` (the
+  last wins, default `off`), `--odr=M` and `--odr M` (default `warn`),
+  `--no-odr-check` (`--odr=off`), `--keep-mason-meta`; one or two
+  dashes (`spec/cli.md` §2.2). A static link's map has no `arg` records
+  (§3.2): the options are then **unknown**, and every rule below that
+  needs them is counted as not judged (`meta: options unknown`); the
+  rules that need no option still run.
+- **The output kind.** A table is due (O-50, as implemented: WP-075)
+  exactly when the output has a `PT_INTERP` (a dynamic executable, PIE
+  or not), `--odr-table` is not `off` and `--odr` is not `off`, units
+  or none (with none, every row set is empty: a count-0 table; measured
+  with no `.mason.meta` input at all, with and without shared inputs,
+  with and without tables in them). An output with no `PT_INTERP`
+  (static, static-pie) never has one, `=full` included; a shared object
+  is M4 and is held to "no table" until then.
+- **The live units.** The map's files in map order (FileId order; §3.2's
+  ids count up in the order the linker read the files), each read as an
+  `ET_REL`; of each, the sections that are containers (MT-6: name
+  `.mason.meta`, `SHT_PROGBITS`, flags exactly `SHF_EXCLUDE`; MT-2a: no
+  relocation section applies to it), in section index order; of each,
+  its units in offset order (MT-10). A container whose `sh_addralign` is
+  not 8, or whose `sh_entsize`, `sh_link` or `sh_info` is not 0 (MT-1's
+  attributes, which MT-6 leaves to the reader) has no unit that parses
+  (measured: mortar keeps none of its units, and `--odr=strict` names the
+  alignment by MT-1). A unit
+  **parses** when its major is 1 and none of MT-14's malformations holds
+  (magic, `unit_size`, blocks inside the unit, kinds strictly increasing,
+  rows inside their block, the string table inside the unit, not over
+  the header and starting with the empty string, the string fields of
+  kinds 1-3 inside the table and NUL-terminated, kind 1 sorted strictly
+  by name bytes, kinds 2 and 3 sorted by key, ties of two named rows by
+  name bytes). Zero words between units are skipped; after a malformation
+  that leaves no next offset the section's other units are not read
+  (MT-14). A unit of another major is skipped (MT-35).
+- **A kind 2 row's name**: its string, or for an anchored row (name 0)
+  the name of a symbol its object defines (non-local, not `SHN_UNDEF`)
+  whose FNV-1a 64 is the row's key; an anchored key no defined symbol of
+  the object has names nothing. Rows match a name when their key is the
+  name's FNV-1a 64 and their name is the name. A row is **qualifying**
+  when its flags have `VAGUE` (bit 0) or `EXPLICIT_SPEC` (bit 3).
+- **The keeper** of a name (odr.md O-51): the input file whose
+  definition the output holds. Candidates are the map's files whose
+  symbol table defines the name non-locally in a section the map places
+  whole; the keeper is the one candidate whose definition's output
+  address (place + `st_value`) equals the output's symbol value
+  (`.dynsym` for an exported name, `.symtab` otherwise). A single
+  candidate is the keeper whatever its address only for a name the output
+  does not hold (a definition `--gc-sections` collected). No candidate,
+  or two at the output's value (two weak copies at one place are not
+  possible in a correct output, but the verifier does not assume it),
+  and the name is **not judged** (counted). The keeper's row is the
+  first matching kind 2 row of the keeper's live units, in unit then row
+  order; a keeper without one has no row (measured: a keeper without a
+  unit gives no table row even when a losing copy's unit has one).
+
+### 13.2 The rules
+
+- **P-M1 (containers in outputs).**
+  - No input container is placed (`place`, `piece`, `merged`) in an
+    executable or shared object: MT-31 consumes them.
+  - A `.mason.meta` output section in an executable is either the kept
+    section or an ordinary copy. The **kept section** is the one the map
+    calls `chunk synthetic .mason.meta`; it must be `SHT_PROGBITS`, flags
+    0, `sh_addralign` 8, and its bytes must equal MT-32's: the units that
+    parse, in the order above, each followed by zeros to a multiple of 8.
+    It is present exactly when `--keep-mason-meta` was given and at least
+    one unit parses (options unknown: present only when one parses; the
+    option is not judged). An **ordinary copy** is a `.mason.meta` that
+    the map fills only from placed input sections that are not containers
+    (encoding K, `spec/meta.md` §2: an input `.mason.meta` without
+    `SHF_EXCLUDE`): legal without the option, and with it when no live
+    unit parses; a finding with the option and a unit (MT-32, as WP-099
+    wrote it: refused by name when the output gets the kept section).
+    Any other `.mason.meta` in an executable is a finding.
+  - A relocatable output is not judged (mortar writes none; MT-30 is M4).
+- **P-M2 (`.note.mason`).**
+  - *Place.* The section is `SHT_NOTE`, `SHF_ALLOC`, `sh_addralign` 8,
+    and lies inside a `PT_NOTE` with `p_align` 8 whose file range holds
+    its bytes. It holds whole notes (`n_namesz`, `n_descsz`, `n_type`,
+    the name padded to 4 and the descriptor to 8 from offset 24, O-52;
+    every padding byte zero, since the bytes are a function of the rows,
+    O-50: WP-078's spec finding 11), each owned by `MasonMeta` (`n_namesz` 10), with types `0x4d4f4401`
+    (exactly one) and `0x4d4f4402` (at most one, after the first).
+  - *Presence.* The section exists exactly when a table is due (§13.1);
+    the second note exactly when `--odr-table=full`. Options unknown:
+    presence is not judged, the content rules run.
+  - *Header and shape* (O-51): version 1, `row_size` 24, reserved 0,
+    `n_descsz` exactly `16 + 24 × count`; each row's reserved `u16` 0;
+    rows sorted by key, then `.dynsym` index, no two equal; each
+    `dynsym` index inside `.dynsym` and not 0.
+  - *Key.* A row's key is FNV-1a 64 of the `.dynsym` entry's name
+    (MT-13; without a version, which `.gnu.version` carries).
+  - *Version.* The entry's `.gnu.version` index (when the output has
+    one) is not 0 (local); two rows of one name have different indices.
+  - *Row set* (O-50). The rows' `.dynsym` indices are exactly the
+    entries that are defined (`st_shndx` not `SHN_UNDEF`), `STV_DEFAULT`
+    or `STV_PROTECTED`, and whose keeper's row qualifies; entries whose
+    keeper is not judged are left out of both sides (counted).
+  - *Hash.* A row's hash is the first 8 bytes of its keeper's row's hash.
+  - *Flags.* A row's flags are the keeper's row's flags with bit 15
+    (`NONPREEMPTIBLE`) set; in an executable every row has it (O-51,
+    WP-075 finding 1: the executable binds its own definitions).
+  - *`=full`'s note* (O-51, O-52): header version 1, `row_size` 32,
+    `n_descsz` exactly `16 + 32 × (definitions + types)`, each array
+    sorted by its bytes as integers in field order with no two equal.
+    *Definitions*: layout, size and alignment 0, bit 15 clear; each row
+    is the first 8 hash bytes and the flags of a qualifying kind 2 row of
+    a live unit whose key is the row's, and when the name's keeper is
+    judged, of the keeper's row; no row's name is one the first note
+    carries. Every name a live file defines non-locally, not carried by
+    the first note, whose keeper is judged and whose keeper's row
+    qualifies has a row. *Types*: exactly one row per kind 3 group (key
+    and name) of the live units, the group's first row in (file, unit,
+    row) order, carrying its key, the first 8 bytes of its hash, its
+    layout, size, alignment and flags.
+- **P-M3 (no code).** In an output with a `.note.mason` or with
+  `--odr-table` not `off`: every byte of `.init_array`, `.fini_array`
+  and `.preinit_array` (by `sh_type`) is covered by input sections of the
+  same type the map places there, and no `chunk` record lies in them;
+  every relocatable file the map names is on the command line (a
+  `Relocatable` item of `Line`, by path, or a member of an archive that
+  is). Options unknown: the second half is not judged.
+
+Messages start with the sub-rule's name (`kept section`, `place`,
+`presence`, `header`, `order`, `key`, `version`, `row set`, `hash`,
+`flags`, `full`, `init array`, `input`), so a mutant's catch is named
+by rule and field. Coverage: `meta` counts outputs judged, live units,
+rows checked, names not judged, and whether the options were known
+(§7.2; `Report::summary`'s `ODR metadata` line).
+
+What stage 4 does **not** judge: `-r` outputs (M4); shared-object tables
+(M4); a unit's kinds 4 and 5 beyond their framing; the ODR verdict
+itself (`spec/odr.md` Q11, answered in WP-078's record: not
+implemented); the load-time hook (O-58).

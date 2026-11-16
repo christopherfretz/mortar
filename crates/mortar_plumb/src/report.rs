@@ -63,6 +63,8 @@ pub enum Rule {
     /// P-E1 .. P-E6: an update and a full link not equivalent (§6.9;
     /// `spec/incr.md` IN-2, IN-62).
     Equiv(u8),
+    /// P-M1 .. P-M3: stage 4, Mason metadata and the ODR table (§13).
+    Meta(u8),
     /// P-G1 .. P-G9: `.gdb_index` (§6.10; `spec/synth.md` §17).
     GdbIndex(u8),
 }
@@ -96,6 +98,7 @@ impl Rule {
             Rule::Dyn(n) => format!("P-D{n}"),
             Rule::Incr(n) => format!("P-I{n}"),
             Rule::Equiv(n) => format!("P-E{n}"),
+            Rule::Meta(n) => format!("P-M{n}"),
             Rule::GdbIndex(n) => format!("P-G{n}"),
         }
     }
@@ -461,6 +464,29 @@ pub struct Coverage {
     pub erratum_not_judged: u64,
     /// Verified or accepted records by relocation type.
     pub checked_types: BTreeMap<u32, u64>,
+    /// Stage 4 (§13).
+    pub meta: MetaCoverage,
+}
+
+/// What stage 4 judged (§13.2).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MetaCoverage {
+    /// Executables and shared objects stage 4 ran on (0 or 1 per report).
+    pub outputs: u64,
+    /// Whether the link's options were known (a static map has no `arg`
+    /// records, §13.1).
+    pub options_known: bool,
+    /// Live units that parse, and the malformed or other-major ones.
+    pub units: u64,
+    pub units_malformed: u64,
+    /// `.note.mason` sections, table rows and `=full` rows checked.
+    pub tables: u64,
+    pub rows: u64,
+    pub full_rows: u64,
+    /// Names whose keeper the map does not decide (§13.1).
+    pub not_judged: u64,
+    /// Bytes of the kept `.mason.meta` compared.
+    pub kept_bytes: u64,
 }
 
 impl Coverage {
@@ -616,6 +642,21 @@ impl Report {
                 s,
                 "erratum 843419 sites: fixed {}, not judged {}",
                 c.erratum_sites, c.erratum_not_judged
+            );
+        }
+        if c.meta.outputs > 0 && (c.meta.units + c.meta.units_malformed + c.meta.tables > 0) {
+            let m = &c.meta;
+            let _ = writeln!(
+                s,
+                "ODR metadata: live units {} (malformed or other major {}), tables {}, rows {}, =full rows {}, names not judged {}, kept bytes {}, options {}",
+                m.units,
+                m.units_malformed,
+                m.tables,
+                m.rows,
+                m.full_rows,
+                m.not_judged,
+                m.kept_bytes,
+                if m.options_known { "known" } else { "unknown (no arg records)" }
             );
         }
         if let Some(b) = &c.build_id {
