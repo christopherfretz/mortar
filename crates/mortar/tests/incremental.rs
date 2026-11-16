@@ -312,9 +312,11 @@ fn fall_back_reasons() {
     prog.link("o", &["--incremental", "--incremental-report=rep.txt"]);
     prog.link("o", &["--incremental", "--incremental-report=rep.txt"]);
     let rep = std::fs::read_to_string(prog.path("rep.txt")).unwrap();
-    let lines: Vec<&str> = rep.lines().collect();
+    let lines: Vec<&str> = rep.lines().filter(|l| l.starts_with("incremental:")).collect();
     assert_eq!(lines.len(), 2, "{rep}");
     assert!(lines[1].starts_with("incremental: full (update-not-implemented) changed="), "{rep}");
+    // WP-063: the dry run's lines follow the second (docs/cli.md §3.13).
+    assert_eq!(rep.lines().last(), Some("delta end"), "{rep}");
 }
 
 // spec: incr.md IN-10 (`--incremental=update` fails by name rather than
