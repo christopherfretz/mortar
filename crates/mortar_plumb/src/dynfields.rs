@@ -168,14 +168,19 @@ fn tables(image: &Image<'_>, out: &DynOut, v: &mut Vec<Finding>) {
     }
 }
 
-/// P-D8 (gABI "Symbol Versioning", `VER_NDX_LOCAL`): a defined entry with
+/// P-D8 (gABI "Symbol Versioning", `VER_NDX_LOCAL`): a defined global or
+/// weak entry with
 /// version index 0 is local to the object, not available to another (musl
 /// skips it; glibc does not), so an export with it is a definition the
 /// program means to give and a loader may not. Every format.
 fn versym_zero(out: &DynOut, v: &mut Vec<Finding>) {
     let Some(vs) = &out.versym else { return };
     for (j, s) in out.syms.iter().enumerate().skip(1) {
-        if s.defined() && vs.get(j).is_some_and(|&x| x.trailing_zeros() >= 15) {
+        // A local entry (GNU ld's `STT_SECTION` ones) is index 0 by right.
+        if s.defined()
+            && s.binding() != mortar_elf::consts::STB_LOCAL
+            && vs.get(j).is_some_and(|&x| x.trailing_zeros() >= 15)
+        {
             v.push(sym_fd(
                 8,
                 &s.name,
@@ -491,6 +496,20 @@ pub(crate) fn linker_word(
             "a RELATIVE record on a .got slot with addend {addend:#x}, which no GOT-indirect reference of the inputs asks a slot to hold (D-46)"
         ))
     }
+}
+
+/// The IPLT entries (D-45): every PLT-like entry (`loader::plt_entries`)
+/// whose word carries an `IRELATIVE` record, at its first word (a `bti
+/// c` before the `adrp` included).
+pub(crate) fn iplt_entries(image: &Image<'_>, out: &DynOut) -> std::collections::BTreeSet<u64> {
+    let m = image.header.e_machine;
+    let irel: std::collections::BTreeSet<u64> =
+        out.rels.iter().filter(|r| kind(m, r.ty) == Kind::Irelative).map(|r| r.offset).collect();
+    crate::loader::plt_entries(image)
+        .into_iter()
+        .filter(|(_, slot)| irel.contains(slot))
+        .map(|(e, _)| e)
+        .collect()
 }
 
 /// P-D9 **(mortar)**, D-46: a `.got` word no record writes (AArch64's

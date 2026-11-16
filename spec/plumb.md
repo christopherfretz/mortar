@@ -4301,7 +4301,8 @@ mortar a single answer and the references differ or are not ruled.
   reference has it. A defined entry at a `COPY` record's place (the copy
   and each alias) has the shared definition's type and `st_size`, and
   `STV_DEFAULT` (D-23's copy row).
-- **P-D8.** Every format: a defined entry with version index 0 (gABI
+- **P-D8.** Every format: a defined global or weak entry (a local one,
+  GNU ld's `STT_SECTION` entries, is index 0 by right) with version index 0 (gABI
   `VER_NDX_LOCAL`: musl skips it, glibc does not, so the export is one a
   loader may refuse). An import's index 0 is read as 1 (unversioned:
   glibc reads 0 and 1 alike for a reference, musl reads no reference's
@@ -4311,8 +4312,14 @@ mortar a single answer and the references differ or are not ruled.
   absolute use makes an address is the record of a GOT slot an input
   demands (D-40, D-46): its place is an aligned word of `.got` and its
   addend the value some GOT-indirect reference of the inputs asks a slot
-  to hold (relaxed or not; `reloc.rs`'s `got_demands`), or an IPLT entry
-  (D-45). Before WP-101 any addend inside a `PT_LOAD` passed.
+  to hold (relaxed or not, a TLS reference's TPREL word or module pair
+  included; `reloc.rs`'s `got_demands`), or an IPLT entry (D-45: an
+  entry whose word carries an `IRELATIVE`, in `.plt` or `.iplt`). For a
+  reference the value of `_GLOBAL_OFFSET_TABLE_` is accepted too: mold
+  gives an x86-64 `GOTPC64` reference to it a GOT slot of that symbol
+  which nothing loads (measured, WP-101: `weak-class-table`, the
+  large-model tests; harmless, so not an anomaly). Before WP-101 any
+  addend inside a `PT_LOAD` passed.
   **(mortar)**, D-46: a record's place holds in the file `S + A` for
   `RELATIVE` (the addend) and 0 for `GLOB_DAT`, the symbolic word type
   and `TPOFF`; an `IRELATIVE` record's place (the IPLT word) holds the

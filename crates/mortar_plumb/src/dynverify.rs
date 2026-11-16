@@ -190,6 +190,18 @@ pub fn verify_with(output: &[u8], inputs: &[Input<'_>], map: &Map, ctx: &Ctx<'_>
     let mut engine = reloc::Engine::new(&img1, &objs, map.format);
     dyn_engine(&mut engine, &v1, &plt, &depths);
     run_engine(&mut engine, &image, map, None);
+    // D-45: an IFUNC's GOT slot holds its IPLT entry, wherever the linker
+    // put the entry (mortar's follow the PLT entries in `.plt`).
+    engine.got_demands.extend(crate::dynfields::iplt_entries(&image, &dout));
+    // mold gives an x86-64 `GOTPC64`/`GOTPC32` reference to
+    // `_GLOBAL_OFFSET_TABLE_` a GOT slot of that symbol, which no input
+    // loads (WP-101, measured on `weak-class-table` and the large-model
+    // tests; harmless: no reference reads it). Accepted for a reference.
+    if map.format != crate::Format::Mortar
+        && let Some(g) = image.symbols.iter().find(|s| s.name == "_GLOBAL_OFFSET_TABLE_")
+    {
+        engine.got_demands.insert(g.sym.st_value);
+    }
     let abs = std::mem::take(&mut engine.abs_words);
     if matches!(kind, OutputKind::StaticPie | OutputKind::Pie) {
         // §12.4 (a Pie's too since WP-088): no RELATIVE record on a word

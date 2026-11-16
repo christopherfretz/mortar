@@ -1632,6 +1632,21 @@ impl<'a, 'b> Engine<'a, 'b> {
             Ok(v) => v,
             Err(o) => return self.outcome(rec, &site, &symbol, o),
         };
+        // What a slot of this reference holds, relaxed or not (WP-101,
+        // `got_demands`): a relaxed sequence may leave its slot, or a GD
+        // or descriptor relaxed to initial-exec loads a TPREL slot.
+        match rec.def.op {
+            Op::Slot(Slot::TpRel | Slot::Desc, _) | Op::DescCall => {
+                self.demand(Want::Word(b.tprel(sa)));
+            }
+            Op::Slot(slot @ (Slot::Gd | Slot::Ld), _) => {
+                let module = self.dyn_tls_mod.get(&symbol).copied().unwrap_or(1);
+                let ld = slot == Slot::Ld;
+                self.demand(Want::Word(b.tprel(sa)));
+                self.demand(Want::Pair(module, if ld { 0 } else { b.dtprel(sa) }));
+            }
+            _ => {}
+        }
         let o = match rec.def.op {
             Op::TpRel | Op::DtpRel => {
                 let x = if rec.def.op == Op::TpRel { b.tprel(sa) } else { b.dtprel(sa) } as i64;
