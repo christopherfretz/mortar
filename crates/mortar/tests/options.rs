@@ -152,21 +152,21 @@ const AUDIT: &[(&str, Proof)] = &[
         "--incremental",
         Test(
             "crates/mortar/tests/incremental.rs",
-            "a_full_link_in_incremental_mode_is_the_plain_link",
+            "a_full_link_in_incremental_mode_lays_out_slack",
         ),
     ),
     (
         "--no-incremental",
         Test(
             "crates/mortar/tests/incremental.rs",
-            "a_full_link_in_incremental_mode_is_the_plain_link",
+            "a_full_link_in_incremental_mode_lays_out_slack",
         ),
     ),
     (
         "--incremental-state",
         Test(
             "crates/mortar/tests/incremental.rs",
-            "a_full_link_in_incremental_mode_is_the_plain_link",
+            "a_full_link_in_incremental_mode_lays_out_slack",
         ),
     ),
     ("--incremental-report", Test("crates/mortar/tests/incremental.rs", "fall_back_reasons")),
