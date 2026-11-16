@@ -13,7 +13,16 @@ a2.patch = the .dynsym WeakDyn fix, re-applied after commit A).
   dyn/dynsym/symtab-variant-pcs. static-identical: 70 aarch64 links change, each exactly two
   .symtab entries (libgcc __arm_tpidr2_save, __arm_za_disable: other 0x2 -> 0x82) + build-id.
 
+- A2 committed (15de784): WeakDyn .dynsym bit + DT_AARCH64_VARIANT_PCS; test dyn/dynsym/weak-undef-variant-pcs.
+- B: syms.rs keeps STB_GNU_UNIQUE in every kind (CoreSyms::dynamic removed); spec resolve §3.7
+  paragraph, synth S-75 cite, D-23 sentence; tests resolve/symtab-unique(+ -debuggers). aarch64
+  baseline: 36 links change (.symtab info 0x11->0xa1 + build-id; OSABI already 3), 7 rows added.
+  Changed links verifier-clean (linktest incl. tests/identical/{clang-cxx,cxx-large,gc-debug}).
+
 ## Findings so far
+- -nostdlib static link with a .bss-only writable PT_LOAD: verifier S17 on mortar x86_64
+  (.comment inside the PT_LOAD's (empty) file image; same with main's binary) and S2 on GNU ld
+  aarch64. Not B's; for the record.
 - .dynsym WeakDyn entry drops VARIANT_PCS and DT_AARCH64_VARIANT_PCS is missing for a JUMP_SLOT
   to it (GNU ld, lld write both): A2 commit (a2.patch), D-23 row text.
 - B: mortar -r refused ("unsupported option: -r"): -r not in play.
@@ -21,7 +30,5 @@ a2.patch = the .dynsym WeakDyn fix, re-applied after commit A).
   relaxed form does not fit; GNU keeps the GOT (no relax) for a target in SHF_X86_64_LARGE.
 
 ## Next
-- commit A (after update + tests), apply a2.patch, D-23 text, test, commit A2.
-- B: syms.rs keep_unique always; spec; tests; baseline.
 - C: x64 scan: GOTPCRELX relaxed at scan (kind 1 + refusal when it does not fit and no slot);
   SymFacts.large; i386 GOT32X scan; spec X-19, X86-25; tests; baseline.

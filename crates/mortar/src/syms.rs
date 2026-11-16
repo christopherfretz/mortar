@@ -32,9 +32,6 @@ pub struct CoreSyms<'a, 's> {
     assignment: &'a Assignment<'a>,
     /// Per file: the symbol table of a live object.
     tables: Vec<Option<SymbolTable<'s>>>,
-    /// An output with `.dynamic`: a `STB_GNU_UNIQUE` definition keeps its
-    /// binding in `.symtab` and `.dynsym` (`spec/dyn.md` D-23).
-    keep_unique: bool,
 }
 
 impl std::fmt::Debug for CoreSyms<'_, '_> {
@@ -61,20 +58,7 @@ impl<'a, 's> CoreSyms<'a, 's> {
                 }
             })
             .collect();
-        Self { inputs, resolution, assignment, tables, keep_unique: false }
-    }
-
-    /// `dynamic`: the output has `.dynamic`. Its `STB_GNU_UNIQUE`
-    /// definitions stay unique in `.symtab` and, when exported, in
-    /// `.dynsym` (`spec/dyn.md` D-23, as GNU ld, lld and mold write them):
-    /// glibc's unique-symbol table then holds the executable's instance,
-    /// which an `RTLD_DEEPBIND` library also binds to. A static link
-    /// keeps resolve §3.7's `STB_GLOBAL` (its bytes are unchanged; the
-    /// follow-up is the record's, `spec/landed/dyn/WP-054.md`).
-    #[must_use]
-    pub fn dynamic(mut self, dynamic: bool) -> Self {
-        self.keep_unique = dynamic;
-        self
+        Self { inputs, resolution, assignment, tables }
     }
 
     fn table(&self, file: FileId) -> Option<&SymbolTable<'s>> {
@@ -189,10 +173,10 @@ impl SymSource for CoreSyms<'_, '_> {
         Some(match def {
             Def::Defined(e) => {
                 let (s, t) = self.sym(e)?;
-                let binding = if self.keep_unique
-                    && props.binding == STB_GLOBAL
-                    && s.st_info >> 4 == STB_GNU_UNIQUE
-                {
+                // resolve.md §3.7, synth.md S-75, dyn.md D-23: a unique
+                // definition stays `STB_GNU_UNIQUE` in every output kind,
+                // static included (GNU ld and lld; WP-059 B).
+                let binding = if props.binding == STB_GLOBAL && s.st_info >> 4 == STB_GNU_UNIQUE {
                     STB_GNU_UNIQUE
                 } else {
                     props.binding

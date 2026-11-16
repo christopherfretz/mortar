@@ -851,7 +851,9 @@ of the output holds an `STT_GNU_IFUNC` or `STB_GNU_UNIQUE` symbol or the
 output has an `IRELATIVE` record, else `ELFOSABI_NONE`. An executable's
 own unique definitions (GCC template statics, function-local statics of
 inline functions) stay `STB_GNU_UNIQUE` in `.symtab`, so a C++ PIE is
-usually `ELFOSABI_GNU`. Only GNU ld also writes `EI_OSABI` 3; lld and
+usually `ELFOSABI_GNU`; that is resolve.md §3.7's rule, the same for a
+static output (WP-059 B: before it a static `.symtab` wrote them
+`STB_GLOBAL`). Only GNU ld also writes `EI_OSABI` 3; lld and
 mold write 0 (`review-m2-adv/unique`, both architectures; glibc accepts
 both). *Test:* `dynsym-fields` (one case per row,
 per architecture).

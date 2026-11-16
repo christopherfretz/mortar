@@ -121,7 +121,7 @@ impl<'a, 's> DynSource<'a, 's> {
                 })
             })
             .collect();
-        Self { inputs, syms: CoreSyms::new(inputs, resolution, assignment).dynamic(true), shared }
+        Self { inputs, syms: CoreSyms::new(inputs, resolution, assignment), shared }
     }
 
     fn shared_of(&self, file: FileId) -> Option<&Shared<'s>> {

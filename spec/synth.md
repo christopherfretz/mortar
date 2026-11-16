@@ -991,7 +991,8 @@ gdb, lldb, perf, nm, addr2line, objdump and valgrind (§12).
   output keeps (resolve.md §3.7, its output binding not `STB_LOCAL`), in
   `SymbolId` order. `STB_GLOBAL`, `STB_WEAK` and `STB_GNU_UNIQUE` keep
   their binding (GNU and lld keep `STB_GNU_UNIQUE` in a static output,
-  X-17; resolve.md §3.7). mold makes every symbol local in a static
+  resolve.md §3.7, one rule with dyn.md D-23; `resolve/symtab-unique`,
+  WP-059). mold makes every symbol local in a static
   output; GNU and lld do not (`tests/link/resolve/symtab`). A global
   defined in a section that is not live has no entry, as a local in one
   has none (S-76): at M1 `--gc-sections` is refused, so such a section is

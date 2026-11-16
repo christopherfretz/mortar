@@ -318,7 +318,7 @@ What `spec/synth.md` writes, decided here:
 | `def` and visibility | `.symtab` (M1) | `.dynsym` (M2) |
 |---|---|---|
 | hidden (any def) | `STB_LOCAL`, visibility kept (gABI: "converted to STB_LOCAL"; lld, mold. GNU ld keeps `STB_GLOBAL STV_HIDDEN` in a static executable, E6: §16) | absent |
-| `Strong` | `STB_GLOBAL` (`STB_GNU_UNIQUE` kept for a unique definition) | if exported (§9.6), as `.symtab` |
+| `Strong` | `STB_GLOBAL` (`STB_GNU_UNIQUE` kept for a unique definition, in every output kind: one rule with `spec/dyn.md` D-23, below) | if exported (§9.6), as `.symtab` |
 | `Common` | `STB_GLOBAL` `STT_OBJECT`, allocated by layout | as `Strong` |
 | `Weak` | `STB_WEAK` | as `.symtab` |
 | `Assign`, `Provide` | §8 | §8 |
@@ -327,6 +327,23 @@ What `spec/synth.md` writes, decided here:
 
 An undefined key that no live relocation uses is absent from both tables
 (all three, E15).
+
+A unique definition (`STB_GNU_UNIQUE`, the binding of the entry that
+defines the key) is written `STB_GNU_UNIQUE` in `.symtab` of a static,
+static-pie, PIE or non-PIE output alike, and in `.dynsym` when exported
+(D-23); `EI_OSABI` is then `ELFOSABI_GNU` (a64.md Q11, x64 X-49, x86
+X86-64). Measured on all three targets (WP-059): GNU ld and lld keep
+binding 10 in every kind (GNU ld with `EI_OSABI` 3, lld with 0); mold
+makes the symbol `STB_LOCAL` in every executable. Where they disagree the
+consumers decide: glibc reads the binding only from `.dynsym` (its
+unique-symbol table), so a static `.symtab` has no loader consumer; gdb
+and lldb treat binding 10 as a global (a lookup of `S<int>::v` finds it
+either way); `nm` prints `u`, which tells a reader the definition was
+vague-linkage and deduplicated — the information an ODR diagnosis or
+Tuck needs and which `STB_GLOBAL` or mold's `STB_LOCAL` erases. One rule
+for every kind also keeps a static-pie, a PIE and a static link of the
+same objects naming the symbol the same way. *Test:*
+`tests/link/resolve/symtab-unique.test`.
 
 The `st_other` bits above the visibility (AArch64's
 `STO_AARCH64_VARIANT_PCS`) are the defining entry's for a definition,
