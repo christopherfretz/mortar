@@ -115,6 +115,14 @@ fn unsupported(parsed: &Parsed) -> Option<String> {
     if s.gdb_index == Some(true) {
         return Some("--gdb-index".to_owned());
     }
+    // layout.md L-88a, L-53a (WP-111): the in-place update keeps each
+    // input's place and does not re-sort; a sorted link is a plain one.
+    if s.sort_common.is_some() {
+        return Some("--sort-common".to_owned());
+    }
+    if s.sort_section.is_some() {
+        return Some("--sort-section".to_owned());
+    }
     // A script given by -T may hold SECTIONS; which it does is known only
     // once it is read, so every -T is unsupported here (conservative).
     if plan.scripts.iter().any(|x| x.role == ScriptRole::Script) {

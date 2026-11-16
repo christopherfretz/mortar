@@ -197,7 +197,13 @@ fn invoke_with(
         Some(Exit::Help) if !parsed.failed() => return done(mortar_cli::help_text(prog)),
         _ => {}
     }
-    if let Some(style) = plan.print_version
+    // cli.md §5.1: `--verbose` without inputs answers as `-V` does.
+    let style = if plan.bookkeeping.verbose {
+        Some(mortar_cli::VersionStyle::Emulations)
+    } else {
+        plan.print_version
+    };
+    if let Some(style) = style
         && !parsed.failed()
         && plan.inputs.is_empty()
     {
@@ -314,12 +320,23 @@ fn invoke_with(
             if let Some(d) = &dependency_path {
                 write_dependency_file(f, d, &diagnostics);
             }
+            // cli.md §5.1: `--verbose`'s text (a message, S-1) of a link
+            // that succeeded, before -M's map.
+            if plan.bookkeeping.verbose && !diagnostics.has_errors() {
+                let text = mortar_cli::print_version_text(mortar_cli::VersionStyle::Emulations);
+                match print_to {
+                    PrintMap::Capture => stdout.push_str(&text),
+                    PrintMap::Stdout => {
+                        let _ = mortar_diag::stream::to_stdout(&text);
+                    }
+                }
+            }
             // cli.md §3.15 (S-2): -M's map is an output; written last of
             // the outputs that can fail the link, before the state.
             if print_map && !diagnostics.has_errors() {
                 let text = String::from_utf8_lossy(&maps.text);
                 match print_to {
-                    PrintMap::Capture => stdout = text.into_owned(),
+                    PrintMap::Capture => stdout.push_str(&text),
                     PrintMap::Stdout => {
                         if let Err(e) = mortar_diag::stream::to_stdout(&text) {
                             diagnostics.emit(

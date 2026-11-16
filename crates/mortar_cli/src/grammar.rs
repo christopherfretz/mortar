@@ -739,6 +739,18 @@ impl Parser<'_> {
             Lands::AllowShlibUndefined(on) => plan.dynamic.allow_shlib_undefined = Some(on),
             Lands::WarnBackrefs(on) => plan.diagnostics.warn_backrefs = on,
             Lands::WarnCommon(on) => plan.diagnostics.warn_common = on,
+            Lands::SortCommon => {
+                plan.shaping.sort_common = Some(match value.as_ref().map(|v| v.to_string_lossy()) {
+                    Some(v) if v == "ascending" => crate::plan::SortCommon::Ascending,
+                    _ => crate::plan::SortCommon::Descending,
+                });
+            }
+            Lands::SortSection => {
+                plan.shaping.sort_section = Some(match word().as_str() {
+                    "name" => crate::plan::SortSection::Name,
+                    _ => crate::plan::SortSection::Alignment,
+                });
+            }
             Lands::Odr => {
                 plan.diagnostics.odr.mode = match word().as_str() {
                     "error" => crate::plan::OdrMode::Error,
@@ -913,7 +925,13 @@ impl Parser<'_> {
             .scripts
             .iter()
             .any(|s| matches!(s.role, ScriptRole::Script | ScriptRole::DefaultScript));
-        if plan.inputs.is_empty() && !scripted && plan.print_version.is_none() {
+        // cli.md §5.1: `-v`, `-V` and `--verbose` without inputs are
+        // answered, not linked.
+        if plan.inputs.is_empty()
+            && !scripted
+            && plan.print_version.is_none()
+            && !plan.bookkeeping.verbose
+        {
             self.error(end, Diagnostic::error(Kind::NoInputFiles));
         }
     }
