@@ -1060,7 +1060,7 @@ until the phase that honors them lands with its test:
     `--dynamic-list-cpp-typeinfo` (D-112), `-z notext`/`-z textoff`
     (D-47, D-117), `-f`/`--auxiliary`, `-F`/`--filter` (D-102),
     `--spare-dynamic-tags` (D-102); with `--incremental`, `-shared`
-    stays IN-12's (`spec/incr.md`, request R-N10).
+    stays IN-12's (`spec/incr.md` IN-12a, request R-N10).
   - Rows whose executable `noop` reason names a shared object
     (`-Bsymbolic`, `-Bsymbolic-functions`, `-Bno-symbolic`,
     `--no-undefined`, `-z defs`): when the row becomes `supported` its
