@@ -113,7 +113,9 @@ fn live_files<'o, 'a>(
             continue;
         }
         let mut units = Vec::new();
-        for s in obj.secs.iter().filter(|s| is_container(s.name.as_str(), &s.shdr)) {
+        for (si, s) in
+            obj.secs.iter().enumerate().filter(|(_, s)| is_container(s.name.as_str(), &s.shdr))
+        {
             // MT-2a: a relocated container is not one (never read, never
             // kept). MT-1's other attributes are the reader's (MT-6): a
             // section with another alignment, `sh_entsize`, `sh_link` or
@@ -127,7 +129,8 @@ fn live_files<'o, 'a>(
                 cov.units_malformed += 1;
                 continue;
             }
-            let sec = meta::read(s.data);
+            // The skeleton holds every `.mason.meta` (§8.1).
+            let sec = meta::read(obj.resident(si).unwrap_or(&[]));
             cov.units_malformed += sec.problems.len() as u64;
             units.extend(sec.units);
         }

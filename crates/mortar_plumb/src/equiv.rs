@@ -26,7 +26,8 @@ use crate::locate::{Obj, Place};
 use crate::map::{ChunkKind, Map, SectionRef};
 use crate::reloc::Engine;
 use crate::report::{Finding, Reason, Report, Rewrite, Rule};
-use crate::{Input, a64};
+use crate::store::Store;
+use crate::{Input, Source, a64};
 
 /// What `equiv` found (§6.9).
 #[derive(Debug, Default)]
@@ -331,14 +332,15 @@ fn le(b: &[u8], o: usize, w: usize) -> Option<u64> {
 fn run_side<'a>(
     tag: &'static str,
     output: &'a [u8],
-    inputs: &[Input<'a>],
+    src: &dyn Source,
     map: &'a Map,
 ) -> Result<Side<'a>, Report> {
     let Ok(image) = Image::read(output) else {
-        return Err(crate::verify(output, inputs, map));
+        return Err(crate::verify_static(output, src, map));
     };
-    let located = crate::locate::locate(map, inputs, &image);
-    let objs: Vec<Obj<'a>> = located.objs;
+    let store = Store::read(src, &[map]);
+    let located = crate::locate::locate(map, &store, 0, &image);
+    let objs: Vec<Obj<'_>> = located.objs;
     let mut engine = Engine::new(&image, &objs, map.format);
     engine.trace = Some(Trace::default());
     crate::run_engine(&mut engine, &image, map, None);
@@ -346,7 +348,7 @@ fn run_side<'a>(
     let dynamic = crate::is_dynamic(output);
     let report = if dynamic {
         let ctx = crate::Ctx { line: None, files: &crate::HostFiles };
-        crate::verify_with(output, inputs, map, &ctx)
+        crate::dynverify::verify_src(output, src, map, &ctx)
     } else {
         let mut r = Report::default();
         r.findings.extend(crate::structure::check(&image));
@@ -355,6 +357,7 @@ fn run_side<'a>(
         r.findings.append(&mut engine.findings);
         r.coverage = std::mem::take(&mut engine.cov);
         r.sort();
+        crate::read_errors(&store, &mut r);
         r
     };
     let mut seen: BTreeMap<(String, Option<String>), u32> = BTreeMap::new();
@@ -412,8 +415,9 @@ fn run_side<'a>(
             let eh = s.alloc() && s.is_eh_frame(machine);
             let mut eh_len = BTreeMap::new();
             if eh {
+                let data = o.data(si);
                 for (o_in, _, _) in &pieces {
-                    if let Some(l) = le(s.data, *o_in as usize, 4) {
+                    if let Some(l) = le(&data, *o_in as usize, 4) {
                         eh_len.insert(*o_in, l + 4);
                     }
                 }
@@ -542,23 +546,13 @@ fn finding(n: u8, msg: impl Into<String>) -> Finding {
 /// [`check`] with the inputs read through `src` (§8.1), which holds the
 /// files both maps name; both sides share it. A file that cannot be read
 /// whole is an I2 finding of each side.
-pub fn check_from(
-    x_out: &[u8],
-    x_map: &Map,
-    f_out: &[u8],
-    f_map: &Map,
-    src: &dyn crate::Source,
-) -> Equiv {
-    let mut unread = Vec::new();
-    let files = crate::read_whole(src, &mut unread);
-    let inputs: Vec<Input<'_>> = files.iter().map(|(p, b)| Input { path: p, bytes: b }).collect();
-    let mut eq = check(x_out, x_map, f_out, f_map, &inputs);
-    if !unread.is_empty() {
-        for side in [&mut eq.x, &mut eq.f] {
-            side.findings.extend(unread.iter().cloned());
-            side.sort();
-        }
-    }
+pub fn check_from(x_out: &[u8], x_map: &Map, f_out: &[u8], f_map: &Map, src: &dyn Source) -> Equiv {
+    let mut eq = Equiv::default();
+    let x = run_side("X", x_out, src, x_map);
+    crate::prof::mark("equiv side X");
+    let f = run_side("F", f_out, src, f_map);
+    crate::prof::mark("equiv side F");
+    compare(&mut eq, x, f);
     eq
 }
 
@@ -566,29 +560,29 @@ pub fn check_from(
 /// or plain link of the same inputs. `inputs` holds the files both maps
 /// name. Never panics.
 pub fn check(x_out: &[u8], x_map: &Map, f_out: &[u8], f_map: &Map, inputs: &[Input<'_>]) -> Equiv {
-    let mut eq = Equiv::default();
-    let x = run_side("X", x_out, inputs, x_map);
-    crate::prof::mark("equiv side X");
-    let f = run_side("F", f_out, inputs, f_map);
-    crate::prof::mark("equiv side F");
+    check_from(x_out, x_map, f_out, f_map, &inputs)
+}
+
+/// The comparison of the two sides (§6.9).
+fn compare<'a>(eq: &mut Equiv, x: Result<Side<'a>, Report>, f: Result<Side<'a>, Report>) {
     let (x, f) = match (x, f) {
         (Ok(x), Ok(f)) => (x, f),
         (x, f) => {
             eq.x = x.map_or_else(|r| r, |s| s.report);
             eq.f = f.map_or_else(|r| r, |s| s.report);
             eq.findings.push(finding(1, "a side's output cannot be read: nothing to compare"));
-            return eq;
+            return;
         }
     };
     let mut out = Vec::new();
     headers(&x, &f, &mut out);
-    units(&x, &f, &mut out, &mut eq);
+    units(&x, &f, &mut out, eq);
     crate::prof::mark("equiv headers, units");
-    symbols(&x, &f, &mut out, &mut eq);
+    symbols(&x, &f, &mut out, eq);
     crate::prof::mark("equiv symbols");
-    records(&x, &f, &mut out, &mut eq);
+    records(&x, &f, &mut out, eq);
     crate::prof::mark("equiv records");
-    tables(&x, &f, &mut out, &mut eq);
+    tables(&x, &f, &mut out, eq);
     crate::prof::mark("equiv tables");
     packed(&x, &f, &mut out);
     crate::prof::mark("equiv packed");
@@ -607,7 +601,6 @@ pub fn check(x_out: &[u8], x_map: &Map, f_out: &[u8], f_map: &Map, inputs: &[Inp
     eq.findings = out;
     eq.x = x.report;
     eq.f = f.report;
-    eq
 }
 
 /// P-E1: sections and segments.

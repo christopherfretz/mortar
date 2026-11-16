@@ -442,7 +442,8 @@ impl Engine<'_, '_> {
                 Machine::X86_64 => |ty| matches!(ty, 1 | 2 | 10 | 11 | 24),
                 Machine::I386 => |ty| matches!(ty, 1 | 2),
             };
-            let frames = match parse_as(s.data, self.word() as usize) {
+            let data = o.data(si);
+            let frames = match parse_as(&data, self.word() as usize) {
                 Ok(f) => f,
                 Err(m) => {
                     self.fail_n(
