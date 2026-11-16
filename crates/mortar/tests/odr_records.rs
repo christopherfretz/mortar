@@ -627,7 +627,8 @@ fn archive_members_are_read_only_on_request() {
         assert!(!e.contains("panicked"), "{e}");
     }
     // --odr=off: nothing read, the default link's bytes.
-    let o = cx.link(&["a.o", "libm.a"], &["--odr=off", "--odr-stats", "--odr-check-archives"], "off");
+    let o =
+        cx.link(&["a.o", "libm.a"], &["--odr=off", "--odr-stats", "--odr-check-archives"], "off");
     let e = o.stderr_text();
     assert!(o.success() && !e.contains("archive member that is not linked"), "{e}");
     assert_eq!(stat(&e, "archive members "), 0, "{e}");

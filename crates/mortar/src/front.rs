@@ -385,6 +385,7 @@ pub fn front<'s>(
     let odr =
         mortar_odr::check(&inputs, &outcome.resolution, &plan.diagnostics.odr, odr_output, &pool);
     let odr_table = odr.table;
+    let odr_full = odr.full;
     for (k, d) in odr.diagnostics {
         diag.emit(k, d);
     }
@@ -615,7 +616,7 @@ pub fn front<'s>(
         let (got, mut tables) = crate::dynlink::plan(&t, &mut slots, diag)?;
         // O-50 to O-52: the table, once `.dynsym`'s order is known.
         if let Some(rows) = &odr_table {
-            tables.note_mason = Some(note_mason(&inputs, rows, &slots.dynsym));
+            tables.note_mason = Some(note_mason(&inputs, rows, odr_full.as_ref(), &slots.dynsym));
         }
         (got, Some(tables))
     } else {
@@ -1266,9 +1267,12 @@ fn got_base_defined(
 /// `.dynsym` index is its symbol's place in `dynsym` plus one (entry 0 is
 /// the null symbol). A row whose symbol is not in `.dynsym` has no index
 /// and is not written (O-50's rows are exported, so in `.dynsym`, D-21).
+/// With `=full` its second note follows the first in the same section
+/// (O-52, WP-076); both are a multiple of 8 bytes long.
 fn note_mason(
     inputs: &Inputs<'_>,
     rows: &[mortar_odr::TableRow],
+    full: Option<&mortar_odr::FullRows>,
     dynsym: &[SymbolId],
 ) -> mortar_synth::NoteMasonPlan {
     let mut index: Vec<(SymbolId, u32)> =
@@ -1282,7 +1286,11 @@ fn note_mason(
             Some(r.row(name, index[at].1))
         })
         .collect();
-    mortar_synth::NoteMasonPlan::new(mortar_odr::table_note(&table))
+    let mut bytes = mortar_odr::table_note(&table);
+    if let Some(f) = full {
+        bytes.extend(mortar_odr::full_note(&f.definitions, &f.types));
+    }
+    mortar_synth::NoteMasonPlan::new(bytes)
 }
 
 /// A dynamic output's synthetic chunk: its kind and size, and for a copy

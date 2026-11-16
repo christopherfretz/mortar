@@ -18,16 +18,16 @@ pub mod register;
 use std::time::Instant;
 
 use mortar_core::par::Pool;
-use mortar_core::plan::{Odr, OdrMode};
+use mortar_core::plan::{Odr, OdrMode, OdrTable};
 use mortar_core::{Inputs, Resolution};
 use mortar_diag::{Diagnostic, Key};
 
-pub use crate::dynamic::{Output, TableRow};
+pub use crate::dynamic::{FullRows, Output, TableRow};
 use crate::foreign::{Checks, Counts};
 use crate::records::Switches;
 use crate::register::Check;
 /// O-51's row and O-52's note encoder, for the front that writes the table.
-pub use mortar_meta::table::{Row as NoteRow, note as table_note};
+pub use mortar_meta::table::{FullRow, Row as NoteRow, full_note, note as table_note};
 
 /// What the checks of a link found.
 #[derive(Debug, Default)]
@@ -39,6 +39,9 @@ pub struct Outcome {
     /// The `.note.mason` table's rows (O-50), sorted by symbol, when the
     /// output is dynamic and `--odr-table` asks for one.
     pub table: Option<Vec<TableRow>>,
+    /// `=full`'s rows (O-50, WP-076), with the table, under
+    /// `--odr-table=full`.
+    pub full: Option<FullRows>,
 }
 
 /// The one-definition-rule phase (40, after resolution): runs the checks
@@ -65,9 +68,11 @@ pub fn check(
     let mut s = switches(odr);
     s.keepers = dyn_switches.shared || dyn_switches.table;
     s.declared = dyn_switches.shared;
+    s.types = dyn_switches.full;
     let (records, mut r, rows) = records::check(inputs, resolution, s, pool);
     diagnostics.extend(records);
     let mut table = None;
+    let mut full = None;
     if let Some(output) = output
         && (dyn_switches.shared || dyn_switches.table)
     {
@@ -78,9 +83,10 @@ pub fn check(
         diagnostics.extend(found.diagnostics);
         diagnostics.sort_by_key(|(k, _)| *k);
         table = found.table;
+        full = found.full;
     }
     let stats = odr.stats.then(|| stats_line(*odr, &counts, &r, start.elapsed().as_micros()));
-    Outcome { diagnostics, stats, table }
+    Outcome { diagnostics, stats, table, full }
 }
 
 /// The dynamic checks the switches turn on, for a dynamic output
@@ -90,6 +96,7 @@ pub fn dynamic_switches(odr: &Odr, dynamic: bool) -> dynamic::Switches {
     dynamic::Switches {
         shared: dynamic && Check::SharedInputs.runs(odr),
         table: dynamic && Check::Table.runs(odr),
+        full: dynamic && Check::Table.runs(odr) && odr.table == OdrTable::Full,
     }
 }
 

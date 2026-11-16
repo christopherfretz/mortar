@@ -1,0 +1,65 @@
+# O-50's =full table in a shared-object input (spec/odr.md O-24, O-50 to
+# O-52; WP-076): liba's .note.mason holds the =exported note (f, hash 01)
+# and, after it, the second note (type 0x4d4f4402) with hidden definitions
+# (one of them named f, with another hash) and a type; libb's first note
+# is empty and its second note has a hidden f. O-24 reads the first note
+# only: the executable's exported f (hash 02) is reported against liba
+# once, from its first note, and libb is silent. The hidden rows bind
+# nothing across modules and O-24 compares no type (Q14).
+#@ spec: odr.md "O-24", "O-50", "O-51", "O-52"
+#@ arch: aarch64 x86_64
+#@ diag: odr-violation main.o ./liba.so
+
+cc -O1 -fPIC -DN=1 -DF=fa lib.c -o a.o
+cc -O1 -fPIC -DN=3 -DF=fb lib.c -o b.o
+as note.s -o note.o
+shlib gcc a.o note.o -Wl,-soname,liba.so -o liba0.so
+meta a.rows liba0.so -o liba.so
+shlib gcc b.o note.o -Wl,-soname,libb.so -o libb0.so
+meta b.rows libb0.so -o libb.so
+cc -O1 -fPIE main.c -o main0.o
+meta main.meta main0.o -o main.o
+link(bfd,lld,mold) gcc -pie main.o -Wl,--no-as-needed -L. -la -lb -o prog
+link(mortar) gcc -pie main.o -Wl,--no-as-needed -L. -la -lb -Wl,--odr=strict -o prog
+  exit: fail
+  diag: comes first in lookup order: it runs its own copy; *liba.so runs the output's copy
+run(bfd,lld,mold) prog
+  stdout: 2 2 2
+
+#--- lib.c
+int f(void) { return N; }
+int F(void) { return f(); }
+#--- main.c
+#include <stdio.h>
+int f(void) { return 2; }
+int fa(void);
+int fb(void);
+int main(void) { printf("%d %d %d\n", f(), fa(), fb()); return 0; }
+#--- main.meta
+summary name=lang value=c++
+definition anchor=f hash=02020202020202020202020202020202 class=1 flags=1
+#--- a.rows
+row name=f hash=0101010101010101 flags=1
+hidden name=f hash=0909090909090909 flags=1
+hidden name=g hash=0707070707070707 flags=1
+type name=1S hash=0404040404040404 layout=85 size=8 align=4 flags=0
+#--- b.rows
+hidden name=f hash=0505050505050505 flags=1
+#--- note.s
+	.section .note.mason,"a",%note
+	.p2align 3
+	.long 10
+	.long 40
+	.long 0x4d4f4401
+	.asciz "MasonMeta"
+	.p2align 3
+	.long 1, 0, 24, 0
+	.zero 24
+	.long 10
+	.long 112
+	.long 0x4d4f4402
+	.asciz "MasonMeta"
+	.p2align 3
+	.long 1, 0, 32, 0
+	.zero 96
+	.section .note.GNU-stack,"",%progbits
