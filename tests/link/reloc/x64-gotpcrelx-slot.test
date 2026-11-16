@@ -21,7 +21,10 @@
 #   load and its slot.
 # lld's and mold's `-no-pie -nostdlib` programs do not start under qemu
 # (not a property of this rule), and static-pie needs the C library's
-# self-relocation, so neither is run.
+# self-relocation, so neither is run. Without `-static`, gcc passes its
+# LTO plugin and a `/tmp/ccXXXXXX.res` of a new name per link, which
+# mortar's map records: `-fno-use-linker-plugin` keeps static-identical
+# stable.
 #@ spec: x64.md "X-19"
 #@ spec: x64.md "X-21"
 #@ arch: x86_64
@@ -32,11 +35,11 @@ cc far.s -o far.o
 link gcc -static -nostdlib x.o -o static
 run static
   exit: 13
-link gcc -pie -nostdlib x.o -o pie
+link gcc -pie -fno-use-linker-plugin -nostdlib x.o -o pie
 run pie
   exit: 13
-link gcc -static-pie -nostdlib x.o -o spie
-link gcc -no-pie -nostdlib x.o -o exec
+link gcc -static-pie -fno-use-linker-plugin -nostdlib x.o -o spie
+link gcc -no-pie -fno-use-linker-plugin -nostdlib x.o -o exec
 run(bfd,mortar) exec
   exit: 13
 check objdump -d static
