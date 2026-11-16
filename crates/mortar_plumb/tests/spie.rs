@@ -398,12 +398,15 @@ fn ranges_swapped(b: &mut [u8]) {
 // on AArch64; a second range (DT_JMPREL apart from DT_RELA) is applied
 // after the first. The verifier's P-D15 says so exactly where the
 // program goes wrong.
+/// A byte patch over a linked output.
+type Patch = Box<dyn Fn(&mut [u8])>;
+
 #[test]
 fn s12_4_irelative_order_is_measured_then_judged() {
     let Some(c) = corpus() else { return };
     for o in c.outs.iter().filter(|o| o.case == "order") {
         let a64 = o.arch == Arch::A64;
-        let (patch, wrong): (Box<dyn Fn(&mut [u8])>, bool) = match o.link.linker {
+        let (patch, wrong): (Patch, bool) = match o.link.linker {
             Linker::Bfd => (Box::new(ranges_swapped), true),
             _ => {
                 (Box::new(move |b: &mut [u8]| irelative_first(b, if a64 { 1032 } else { 37 })), a64)
