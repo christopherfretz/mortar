@@ -20,6 +20,8 @@ the series):
   copy        the update by copy (IN-47), phase lines from `incr_floor`
   in-place    the update in place (IN-46)
   ld lld mold GNU ld, ld.lld, mold: full links, each to a fresh path
+With --quiet L each run waits until the 1-minute load is under L; the load
+at each run's start is recorded.
 After each update series the output is compared byte for byte with a plain
 link of the same (edited) inputs. Files the script writes in DIR are named
 `floor.*`; it removes the ones it creates for the other linkers.
@@ -36,6 +38,10 @@ import time
 
 def uptime():
     return subprocess.run(["uptime"], capture_output=True, text=True).stdout.strip()
+
+
+def load1():
+    return float(open("/proc/loadavg").read().split()[0])
 
 
 def timed(cmd, cwd):
@@ -101,6 +107,8 @@ def main():
     ap.add_argument("--runs", type=int, default=7)
     ap.add_argument("--series", default="plain,incr-full,copy,in-place,ld,lld,mold")
     ap.add_argument("--json")
+    ap.add_argument("--quiet", type=float, default=0.0,
+                    help="before each run, wait until the 1-minute load is under this")
     o = ap.parse_args()
     words = [w for w in open(o.args).read().split("\n") if w]
     efile, eoff, eold, enew = o.edit.split(":")
@@ -142,6 +150,10 @@ def main():
                 tool = {"ld": "ld.bfd", "lld": "ld.lld", "mold": "mold"}[name]
                 out = f"floor.{name}.{i}"
                 cmd = [tool] + (["--no-fork"] if name == "mold" else []) + line(out)
+            if o.quiet:
+                while load1() >= o.quiet:
+                    time.sleep(10)
+            before = load1()
             wall, peak, err, st = timed(cmd, o.dir)
             if st:
                 sys.exit(f"incr-floor: {name} run {i} failed ({st}):\n{err}")
@@ -149,11 +161,12 @@ def main():
                 os.remove(os.path.join(o.dir, out))
             if i == 0:
                 continue
-            runs.append({"wall": wall, "peak_kib": peak, "phases": phases(err),
+            runs.append({"wall": wall, "peak_kib": peak, "phases": phases(err), "load": before,
                          "first": err.splitlines()[0] if err else ""})
         r = {"uptime_before": load, "uptime_after": uptime(),
              "wall": summary([x["wall"] for x in runs]),
-             "peak_kib": summary([x["peak_kib"] for x in runs])}
+             "peak_kib": summary([x["peak_kib"] for x in runs]),
+             "load": summary([x["load"] for x in runs])}
         names = []
         for x in runs:
             for k in x["phases"]:
@@ -174,7 +187,7 @@ def main():
               f"[{r['wall']['min'] * 1000:.1f}-{r['wall']['max'] * 1000:.1f}], "
               f"peak median {r['peak_kib']['median'] / 1024:.1f} MiB "
               f"[{r['peak_kib']['min'] / 1024:.1f}-{r['peak_kib']['max'] / 1024:.1f}] "
-              f"n={o.runs} | {load}", flush=True)
+              f"n={o.runs} | load at each run {r['load']['min']:.1f}-{r['load']['max']:.1f} | {load}", flush=True)
         if ph:
             print(f"  phases (median ms): {ph}", flush=True)
         if "identical_to_plain" in r:
