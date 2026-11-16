@@ -102,6 +102,9 @@ const SUPPORTED: &[&str] = &[
     "--odr",
     "--no-odr-check",
     "--odr-stats",
+    "--odr-check-archives",
+    "--odr-table",
+    "--keep-mason-meta",
     "--version",
     "-v",
     "-V",
@@ -150,8 +153,8 @@ fn statuses() {
         }
         // A row of mortar's own is reserved, so refused; `--time-phases`
         // (image.md §11), `--mortar-map` (I-77) and the one-definition-rule
-        // switches of WP-072 (odr.md O-41) and the incremental options of
-        // WP-061 (incr.md IN-10) are mortar's own and implemented.
+        // switches of WP-072 and WP-076 (odr.md O-41) and the incremental
+        // options of WP-061 (incr.md IN-10) are mortar's own and implemented.
         if !row.linkers.gnu()
             && !row.linkers.lld()
             && !row.linkers.mold()
@@ -162,7 +165,9 @@ fn statuses() {
                     | "--odr"
                     | "--no-odr-check"
                     | "--odr-stats"
+                    | "--odr-check-archives"
                     | "--odr-table"
+                    | "--keep-mason-meta"
                     | "--detect-odr-violations"
                     | "--incremental"
                     | "--no-incremental"
