@@ -1,0 +1,88 @@
+# Erratum 843419 at a direct page (275) of an absolute symbol (WP-103):
+# its page is 0x12345000, out of the ADR's reach from the code, so the
+# site takes a patch (a64.md 11.2), from mortar and from GNU ld. The final
+# word is a PRFM, which never faults.
+#@ spec: a64.md "11.1 The predicate"
+#@ spec: a64.md "11.2 The fix"
+#@ arch: aarch64
+
+as f.S -o f.o
+cc -O1 -fno-pie main.c -o main-static.o
+cc -O1 -fno-pie main.c -o main-exec.o
+# a static executable; the option spelled (the x86-64 host's cross driver may not pass it).
+link gcc -static -no-pie -Wl,--fix-cortex-a53-843419 main-static.o f.o -o static
+run static
+  stdout: ok
+check(mortar) objdump -d --disassemble=f static
+  has: ff8: * adrp x0, 
+  has: 000: * b 
+  has: ffc: * adrp x0, 
+  has: 004: * b 
+check(bfd) objdump -d --disassemble=f static
+  has: ff8: * adrp x0, 
+  has: 000: * b 
+  has: ffc: * adrp x0, 
+  has: 004: * b 
+# a dynamic executable; the option spelled (the x86-64 host's cross driver may not pass it).
+link gcc -no-pie -Wl,--fix-cortex-a53-843419 main-exec.o f.o -o exec
+run exec
+  stdout: ok
+check(mortar) objdump -d --disassemble=f exec
+  has: ff8: * adrp x0, 
+  has: 000: * b 
+  has: ffc: * adrp x0, 
+  has: 004: * b 
+check(bfd) objdump -d --disassemble=f exec
+  has: ff8: * adrp x0, 
+  has: 000: * b 
+  has: ffc: * adrp x0, 
+  has: 004: * b 
+
+#--- f.S
+	.section .text.f,"ax",%progbits
+	.balign	4096
+	.globl	f
+	.type	f, %function
+f:
+	stp	x29, x30, [sp, #-16]!
+	mov	x10, x0
+	.rept	1020
+	nop
+	.endr
+	// the site at 0xFF8: W1, W2, then the final word
+	adrp	x0, absv
+	ldr	x9, [sp]
+	prfm	pldl1keep, [x0, :lo12:absv]
+	add	x0, x0, :lo12:absv
+	str	x0, [x10]
+	.rept	1020
+	nop
+	.endr
+	// the site at 0xFFC of the next page
+	adrp	x0, absv
+	ldr	x9, [sp]
+	prfm	pldl1keep, [x0, :lo12:absv]
+	add	x0, x0, :lo12:absv
+	str	x0, [x10, #8]
+	ldp	x29, x30, [sp], #16
+	ret
+	.size	f, .-f
+	.globl	absv
+	.set	absv, 0x12345678
+	.section .note.GNU-stack,"",%progbits
+#--- main.c
+#include <stdio.h>
+
+void f(void **out);
+
+int main(void) {
+  void *o[2];
+  f(o);
+  void *want = (void *)0x12345678;
+  if (o[0] != want || o[1] != want) {
+    printf("wrong: %p %p, want %p\n", o[0], o[1], want);
+    return 1;
+  }
+  puts("ok");
+  return 0;
+}
