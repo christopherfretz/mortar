@@ -84,6 +84,8 @@ pub(crate) struct Traced {
     pub oi: usize,
     pub si: usize,
     pub off: u64,
+    /// The output place, by which a GOT group's member is found again.
+    pub p: u64,
     pub form: Form,
 }
 
@@ -113,8 +115,8 @@ fn grew<K: Copy + Ord>(now: &BTreeMap<K, u64>, was: &[(K, u64)]) -> Option<K> {
         .map(|(k, _)| *k)
 }
 
-pub(crate) fn traced(e: &mut Engine<'_, '_>, oi: usize, si: usize, off: u64, b: &Tally) {
-    let form = if e.findings.len() > b.findings || e.cov.failed > b.failed {
+fn form_since(e: &Engine<'_, '_>, b: &Tally) -> Form {
+    if e.findings.len() > b.findings || e.cov.failed > b.failed {
         Form::Failed
     } else if let Some(r) = grew(&e.cov.accepted, &b.accepted) {
         Form::Rewrite(r)
@@ -123,9 +125,31 @@ pub(crate) fn traced(e: &mut Engine<'_, '_>, oi: usize, si: usize, off: u64, b: 
     } else {
         let _ = b.verified;
         Form::Plain
-    };
+    }
+}
+
+pub(crate) fn traced(e: &mut Engine<'_, '_>, at: (usize, usize, u64), p: u64, b: &Tally) {
+    let form = form_since(e, b);
     if let Some(t) = e.trace.as_mut() {
-        t.push(Traced { oi, si, off, form });
+        t.push(Traced { oi: at.0, si: at.1, off: at.2, p, form });
+    }
+}
+
+/// A GOT group's member judged after its record (§5.5): its outcome
+/// replaces the one traced when the record was read (§6.9, P-E4).
+pub(crate) fn retraced(e: &mut Engine<'_, '_>, p: u64, b: &Tally) {
+    let form = form_since(e, b);
+    reform(e, p, form);
+}
+
+/// Sets the form of the record traced at the output place `p`, unless
+/// it is already a finding.
+pub(crate) fn reform(e: &mut Engine<'_, '_>, p: u64, form: Form) {
+    if let Some(t) = e.trace.as_mut()
+        && let Some(r) = t.iter_mut().rev().find(|r| r.p == p)
+        && r.form != Form::Failed
+    {
+        r.form = form;
     }
 }
 
@@ -416,6 +440,15 @@ fn run_side<'a>(
         tls,
         machine,
         tbss,
+    })
+}
+
+/// Whether `v` is inside a range thunk or an erratum patch of the side's
+/// map (their places and symbols are the linker's, §6.9 P-E2/P-E3).
+fn in_thunk(s: &Side<'_>, v: u64) -> bool {
+    s.map.chunks.iter().any(|c| {
+        matches!(c.kind, ChunkKind::Thunk | ChunkKind::Patch)
+            && c.addr.is_some_and(|a| a <= v && v < a.saturating_add(c.size))
     })
 }
 
@@ -737,8 +770,12 @@ fn symbols(x: &Side<'_>, f: &Side<'_>, out: &mut Vec<Finding>, eq: &mut Equiv) {
     let locals = |s: &Side<'_>| {
         let mut m: BTreeMap<Key, Vec<u64>> = BTreeMap::new();
         for y in s.image.symbols.iter().skip(1) {
-            // A per-file CIE's mapping symbol (IN-34a) is in one link only.
-            if bind_global(y.sym.binding()) || shndx_kind(s, y.sym.st_shndx) == ".eh_frame" {
+            // A per-file CIE's mapping symbol (IN-34a) is in one link only,
+            // as are a thunk's or a patch's own symbols (W6-W8 may differ).
+            if bind_global(y.sym.binding())
+                || shndx_kind(s, y.sym.st_shndx) == ".eh_frame"
+                || in_thunk(s, y.sym.st_value)
+            {
                 continue;
             }
             let k = (

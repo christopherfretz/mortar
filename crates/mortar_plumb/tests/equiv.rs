@@ -239,6 +239,39 @@ impl Pair {
         x
     }
 
+    /// GNU ld's map places `.eh_frame` per file; mortar's per record (a
+    /// piece each, §3.2). Splits each placement by its input's records
+    /// (GNU ld keeps them in order when one file has them, as here).
+    fn eh_pieces(&self, mut l: Link) -> Link {
+        let mut add = Vec::new();
+        l.map.placed.retain(|q| {
+            if q.section != SectionRef::Name(".eh_frame".into()) || q.size == 0 {
+                return true;
+            }
+            let path = &l.map.files[q.file as usize].path;
+            let b = &self.files.iter().find(|f| &f.0 == path).unwrap().1;
+            let (_, _, size, off) = sections(b).into_iter().find(|s| s.0 == ".eh_frame").unwrap();
+            let eh = &b[off as usize..(off + size) as usize];
+            let mut o = 0usize;
+            while o + 4 <= eh.len() {
+                let n = u32::from_le_bytes(eh[o..o + 4].try_into().unwrap()) as usize;
+                if n == 0 {
+                    break;
+                }
+                add.push(Placed {
+                    input_offset: Some(o as u64),
+                    addr: q.addr + o as u64,
+                    size: n as u64 + 4,
+                    ..q.clone()
+                });
+                o += n + 4;
+            }
+            false
+        });
+        l.map.placed.extend(add);
+        l
+    }
+
     /// `equiv(X, F)` through the maps' text form: the P-E findings
     /// (`"<id> <message>"`) and each side's own finding count.
     fn equiv(&self, x: &Link, f: &Link) -> (Vec<String>, usize, usize) {
@@ -630,18 +663,48 @@ fn p_e1_to_p_e3_clauses() {
     }
 }
 
-// A record neither side checks (AArch64: an initial-exec load of an
-// undefined weak TLS symbol, glibc's pattern in `setlocale.o`): REJECTED
-// by P-E4 1 (the value is not seen; the conservative reading, §6.9).
+// AArch64: an initial-exec load of an undefined weak TLS symbol (glibc's
+// `setlocale.o` pattern, question 8). GNU ld's entry (TPREL with S = 0)
+// is made mortar's 0 (a64.md §7, `T = A`) on both sides, as the maps are
+// mortar's: judged on each side, the pair is ACCEPTED; X's entry made 8
+// is X's R4, and the pair is REJECTED.
+#[test]
+fn p_e4_undefined_weak_tls_initial_exec() {
+    let arch = Arch::Aarch64;
+    let seq = "\t.section .tbss,\"awT\",%nobits\n\t.space 8\n\t.text\n\t.weak tv\n\tadrp x0, :gottprel:tv\n\tldr x0, [x0, :gottprel_lo12:tv]\n";
+    let Some(p) = assemble(arch, "wtls", seq, "", &[]) else { return };
+    let as_mortar = |l: &Link| {
+        let (g, size, _) = l.sec(".got");
+        let mut m = l.clone();
+        let o = (0..size / 8)
+            .map(|k| m.off(g + 8 * k))
+            .find(|&o| m.output[o + 7] == 0xff)
+            .expect("GNU ld's GOT entry holding a negative TPREL");
+        m.output[o..o + 8].fill(0);
+        (m, o)
+    };
+    let (x, o) = as_mortar(&p.update(&[]));
+    let (f, _) = as_mortar(&p.link(&["main.o", "a.o", "b.o"], &[]));
+    let (pe, xs, fs) = p.equiv(&x, &f);
+    assert!(pe.is_empty() && xs == 0 && fs == 0, "{pe:#?}");
+    let mut m = x.clone();
+    m.output[o] = 8;
+    let (_, xs, _) = p.equiv(&m, &f);
+    assert!(xs > 0, "X's mutated TPREL entry passes");
+}
+
+// A record neither side checks (AArch64: a GOT page with no LDR to pair
+// it, `got-unpaired`): REJECTED by P-E4 1 (the value is not seen; the
+// conservative reading, §6.9).
 #[test]
 fn p_e4_a_record_neither_side_checks_is_rejected() {
     let arch = Arch::Aarch64;
-    let seq = "\t.section .tbss,\"awT\",%nobits\n\t.space 8\n\t.text\n\t.weak tv\n\tadrp x0, :gottprel:tv\n\tldr x0, [x0, :gottprel_lo12:tv]\n";
+    let seq = "\tadrp x0, :got:avar\n";
     let Some(p) = assemble(arch, "nc", seq, "", &[]) else { return };
     let x = p.update(&[]);
     let f = p.link(&["main.o", "a.o", "b.o"], &[]);
     let (pe, _, _) = p.equiv(&x, &f);
-    assert!(has(&pe, "P-E4", "not checked (tls)"), "{pe:#?}");
+    assert!(has(&pe, "P-E4", "not checked"), "{pe:#?}");
 }
 
 // x86-64: a GOT kept (`addq S@GOTPCREL`, not relaxable): the update's
@@ -758,13 +821,42 @@ fn p_e5_dynamic_tables() {
         m.output[o] ^= 1;
         let (pe, _, _) = p.equiv(&m, &f);
         assert!(has(&pe, "P-E5", ".dynstr differs"), "{arch:?}: {pe:#?}");
-        // The last `.dynsym` entry's size + 1.
+        // The last `.dynsym` entry's size + 1, its type (st_info), and its
+        // name (st_name one byte on, the same string's tail).
         let (y, z, _) = x.sec(".dynsym");
+        let last = x.off(y) + z as usize - 24;
+        for (at, delta) in [(16, 1), (4, 1), (0, 1)] {
+            let mut m = x.clone();
+            let o = last + at;
+            m.output[o] = m.output[o].wrapping_add(delta);
+            let (pe, _, _) = p.equiv(&m, &f);
+            assert!(has(&pe, "P-E3", ".dynsym entry"), "{arch:?} +{at}: {pe:#?}");
+        }
+    }
+}
+
+// `.eh_frame_hdr` (GNU ld's `--eh-frame-hdr`, an FDE in a.o): the pair
+// is ACCEPTED; X's first table entry's location made another FDE's (+4)
+// is REJECTED by P-E5. AArch64 only: on x86 GNU ld rewrites the records
+// it writes a header for (a.o's 0x30 bytes become 0x2c), so its map
+// cannot be split into mortar's per-record pieces.
+#[test]
+fn p_e5_eh_frame_hdr() {
+    for arch in [Arch::Aarch64] {
+        let cfi = "\t.cfi_startproc\n\tnop\n\t.cfi_endproc\n";
+        let Some(p) = assemble(arch, "ehh", "", cfi, &[]) else { return };
+        let flags = ["--eh-frame-hdr", "-z", "norelro"];
+        let x = p.eh_pieces(p.update(&flags));
+        let f = p.eh_pieces(p.link(&["main.o", "a.o", "b.o"], &flags));
+        let (pe, xs, fs) = p.equiv(&x, &f);
+        assert!(pe.is_empty() && xs == 0 && fs == 0, "{arch:?}: {pe:#?}");
+        let (h, z, _) = x.sec(".eh_frame_hdr");
+        assert!(z >= 20, "{arch:?}: a table entry");
         let mut m = x.clone();
-        let o = m.off(y) + z as usize - 24 + 16;
-        m.output[o] = m.output[o].wrapping_add(1);
+        let o = m.off(h) + 12;
+        m.output[o] = m.output[o].wrapping_add(4);
         let (pe, _, _) = p.equiv(&m, &f);
-        assert!(has(&pe, "P-E3", ".dynsym entry"), "{arch:?}: {pe:#?}");
+        assert!(has(&pe, "P-E5", ".eh_frame_hdr"), "{arch:?}: {pe:#?}");
     }
 }
 
