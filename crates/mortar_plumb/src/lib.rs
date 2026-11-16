@@ -20,6 +20,7 @@ mod dynmodel;
 mod dynmutate;
 pub mod dynout;
 mod dynverify;
+pub mod equiv;
 mod erratum;
 mod hasher;
 mod image;

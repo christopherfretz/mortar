@@ -508,6 +508,9 @@ pub(crate) struct Engine<'a, 'b> {
     /// The executable's extent `[lo, hi)`: a target inside it moves with
     /// the load bias.
     pub(crate) extent: (u64, u64),
+    /// §6.9: each record's outcome, by section and offset, when the
+    /// equivalence check runs the engine (`None` otherwise).
+    pub(crate) trace: Option<Vec<crate::equiv::Traced>>,
 }
 
 impl<'a, 'b> Engine<'a, 'b> {
@@ -701,6 +704,7 @@ impl<'a, 'b> Engine<'a, 'b> {
                 let hi = loads.map(|p| p.p_vaddr.saturating_add(p.p_memsz)).max().unwrap_or(0);
                 (lo, hi)
             },
+            trace: None,
         };
         e.build_iplt();
         e
@@ -1281,7 +1285,12 @@ impl<'a, 'b> Engine<'a, 'b> {
         order.sort_by_key(|&i| (recs[i].off, i));
         let sorted: Vec<(u64, usize)> = order.iter().map(|&i| (recs[i].off, i)).collect();
         for i in 0..recs.len() {
+            // §6.9 (P-E4): each record's outcome, when asked for.
+            let before = self.trace.is_some().then(|| crate::equiv::tally(self));
             self.record(oi, si, &recs, &sorted, i);
+            if let Some(b) = before {
+                crate::equiv::traced(self, oi, si, recs[i].off, &b);
+            }
         }
     }
 

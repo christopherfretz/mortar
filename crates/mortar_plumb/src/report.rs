@@ -60,6 +60,9 @@ pub enum Rule {
     /// P-I1 .. P-I6: holes and dead ranges of an incremental link (§6.8;
     /// `spec/incr.md` IN-3a, IN-60).
     Incr(u8),
+    /// P-E1 .. P-E6: an update and a full link not equivalent (§6.9;
+    /// `spec/incr.md` IN-2, IN-62).
+    Equiv(u8),
 }
 
 impl Rule {
@@ -90,6 +93,7 @@ impl Rule {
             Rule::Erratum(n) => format!("C{n}"),
             Rule::Dyn(n) => format!("P-D{n}"),
             Rule::Incr(n) => format!("P-I{n}"),
+            Rule::Equiv(n) => format!("P-E{n}"),
         }
     }
 }

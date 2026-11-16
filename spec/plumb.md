@@ -2203,7 +2203,10 @@ what a reference names (the re-review's N3):
   (outside the ranges) holding an address in a range that is not the
   end of a live item; an allocated relocation record (outside the ranges)
   that writes in a range, or a `RELATIVE`/`IRELATIVE` record whose target
-  (the addend, REL: the word) is in one; an `.eh_frame_hdr` entry whose
+  (the addend, REL: the word) is in one, except a `RELATIVE` record whose
+  `r_offset` is the place of a live input section's relocation record:
+  that is the record's dynamic form, judged by what it names (the
+  relocation rule above; gfortran's `blk_-8` in a PIE, WP-092); an `.eh_frame_hdr` entry whose
   location or FDE is in one; `e_entry` in one; a live `.eh_frame` FDE
   whose CIE pointer lands in one;
 - P-I4, DWARF: every live unit of `.debug_info` (one not in a range) is
@@ -2298,6 +2301,237 @@ unchanged, 0 findings: today's protoc maps are complete. With also one
 `dead .debug_str` line (the walk of every live unit): `-g` 2.02–2.76 s,
 RSS unchanged, 0 findings.
 
+### 6.9 Equivalence of an update and a full link (M7, WP-092)
+
+`spec/incr.md` IN-2, IN-62. `equiv(X, F)` judges two links of the same
+inputs and options: `X` an incremental update, `F` a full link
+(`--incremental=full`; any mortar map is accepted for `F`, so a plain
+link is an `F` too, which is IN-8's pair). Each side is an output, its
+mortar map, and the inputs its map names (one set, read once; §8). It
+never panics on any of them (§9.4).
+
+**The two sides first.** Each side is verified as any link
+(`verify`/`verify_with`, every stage; §1). `X`'s map must claim coverage
+(§3.2: `incremental` or a `hole`/`dead` line), so §6.8 runs on `X`;
+`F`'s need not. Every finding of either side is part of the answer,
+named by its side (`X:`, `F:`): `X` not verified is IN-1 (A) failing,
+and an `F` that is not verified cannot be compared with. P-E findings
+come on top. A side whose output or map cannot be read, a map of
+another format, or an `X` map that claims nothing, is a usage error
+(§8), not a finding.
+
+**Identities.** An item's identity is what it is, not where it went:
+
+- a **file**: its map record's `(path, member, member offset)`, the same
+  string tokens in both maps (file ids are per map and never compared);
+- an **input unit**: `(file, section index)` for a `place` or `nplace`;
+  `(file, section index, input offset)` for a `piece`; a `merged`
+  record: `(file, section index, output section name)`;
+- a **chunk**: `(kind, name, k)`, its kind and name and the number of
+  earlier chunks of that kind and name in its map; a common symbol: its
+  name;
+- an **address** `v` of side `O`: `ids_O(v)`, the set of
+  `(unit, offset)` for every unit of `O`'s map placed at `a` with size
+  `z` and `a ≤ v ≤ a + z` (an input unit's offset is the input offset:
+  `piece`s of one section share it; a `.tbss` unit by its TLS address),
+  plus `(section name, start)` when `v` is an allocated output section's
+  `sh_addr` and `(section name, end)` when it is its `sh_addr + sh_size`
+  (a `NOBITS` section's too). Two addresses **correspond** when their
+  sets meet. Where `F`'s set has two members and `X`'s only one of
+  them, the meaning `F`'s reference had is not known from the files;
+  for a global symbol it is (P-E3 below), elsewhere (table words, the
+  linker's symbols) the check accepts either (not judged further).
+
+**P-E1, item 1: sections and segments.** From the two section header
+tables: the same count; at each index the same name, `sh_type`,
+`sh_flags`, `sh_entsize` and, where `sh_link`/`sh_info` name a section,
+that section's name. From the program headers: the same count; at each
+index the same `p_type`, `p_flags` and `p_align`, and the same list of
+allocated section names of size above 0 whose `sh_addr` is inside
+`[p_vaddr, p_vaddr + p_memsz)`, counting the `SHF_TLS` sections in
+`PT_TLS` only and only those there (`.tbss` overlaps what follows it). From the file
+header: the same `e_ident` (class, data, OS ABI), `e_type`, `e_machine`,
+`e_flags`; and `e_entry`s that correspond. Sizes, addresses and offsets
+are not compared.
+
+**P-E2, item 2: the same live units, each placed once.** From the two
+maps: the set of input-unit identities placed (`place`, `nplace`,
+`piece`, `merged`) is the same in both, a `place` or `nplace` has the
+same size in both, and no identity is placed twice in one map (M2
+catches the whole case; a piece repeated is P-E2). A unit discarded or
+absent in one map and placed in the other is P-E2, whatever the reason
+word. `.eh_frame` is apart (IN-34a: per-file CIEs in incremental mode,
+records that absorbed a 4-, 8- or 12-byte hole): a piece whose input
+record is a CIE (`CIE_id` 0) is not a unit of this rule; an FDE piece is,
+its size equal or (in `X` only) larger by 4, 8 or 12. Chunks: the
+`common` chunks by name and the `synthetic` chunks by `(name, k)` are
+the same sets; `thunk` and `patch` chunks may differ (item 4). `fold`
+records are the same set. Each identity of one side missing from the
+other is one finding.
+
+**P-E3, item 3: symbols.** `.symtab` of each side, symbol 0 aside:
+
+- every symbol with a global, weak or unique binding is matched by name
+  (a name defined twice in one table is P-E3) and has the same
+  `st_info`, `st_other`, `st_size` and kind of `st_shndx` (undefined,
+  absolute, common, or a section, compared by name). Its value: for a
+  section-defined symbol whose name has defining symbols in the inputs
+  (placed, not common), some one definition `(file, section, value)`
+  is in both `ids_X(v_X)` and `ids_F(v_F)` (for `STT_TLS`, `v` is
+  `PT_TLS`'s `p_vaddr` plus `st_value`): the **same definition**,
+  checked by identity, not only "one of the placed ones" (Y1). Without
+  an input definition (the linker's symbols), the values correspond;
+  an absolute symbol's values are equal;
+- the local symbols are the same multiset of `(name, st_info,
+  st_other, st_size, section name)` with corresponding values; their
+  order and indexes may differ (a moved section's locals are
+  renumbered); `STT_SECTION` and `STT_FILE` symbols are compared without
+  their values; the locals of `.eh_frame` are passed over (an input's
+  mapping symbol at its CIE: per-file CIEs are in incremental mode only,
+  IN-34a);
+- `.dynsym`, when there is one: the same entries **in the same order**
+  (its indexes are named by relocations and hash tables), each as a
+  global above.
+
+**P-E4, item 4: relocated fields by value.** For every relocation record
+of every input unit placed in both (a piece: the record its piece
+covers), each side's engine (§5) gives the record's outcome: verified,
+accepted by a named rewriting (W1-W13, X1-X4), not checked, or a
+finding. The value check is each side's own: the engine recomputes `S`
+from the definition through that side's placement and checks the
+field, so a record that is verified or accepted on both sides holds
+the same value up to placement, provided `S` names the same item in
+both, which P-E3 (globals), the input symbol table (locals and section
+symbols, the same bytes on both sides) and P-E5 (GOT slots) make so.
+P-E4 is then:
+
+1. a record verified or accepted on one side and not on the other, or
+   not checked on either side (the reason is named: a value the check
+   cannot see is not passed);
+2. a record whose forms differ, unless both forms are in IN-2's set:
+   none (the unrelaxed form), W1 (`ADRP`+`ADD` ↔ `NOP`+`ADR`), W2 and
+   W3 (the GOT load and its relaxed forms), W6 (a range thunk ↔ a direct
+   branch), W7 and W8 (erratum 843419), and, in a position-independent
+   output (`ET_DYN`) only, X1-X4 (x86-64 `GOTPCRELX`). Every other
+   rewriting must be the same on both sides: the TLS ones (W9-W13, GD to
+   IE), the weak-branch ones (W4, W5), and X1-X4 in an `ET_EXEC` output
+   (IN-2: "`GOTPCRELX` for a non-preemptible symbol in a non-PIC link";
+   see question 2);
+3. a byte of a unit placed in both that differs between `X` and `F`
+   outside the relocated ranges of its records (§6.3; on x86, also the
+   bytes of an accepted rewriting's window) and outside the words a
+   side's S12 accepted as rewritten (an erratum site's branch, W7's
+   `ADR`, W12's word). `piece` units are compared too (S12 does not
+   read them); an `.eh_frame` FDE piece is compared over its input
+   record's length, outside its relocated ranges and its CIE pointer,
+   with its length word and any absorbed bytes (all `DW_CFA_nop`) apart.
+
+DWARF is reached only through relocated fields (IN-2 item 4): a debug
+unit's non-relocated bytes are compared byte for byte (3), its
+relocated fields by value (§5.8 tombstones included).
+
+**P-E5, item 5: synthetic tables and packed order.**
+
+- the GOT (`.got`, `.got.plt`, `.igot`, `.igot.plt`): the multisets of
+  words outside `X`'s holes, each word that lies in an allocated section
+  by its address identity (corresponding), every other word by value
+  (a TP offset, a module index, 0), are the same; the GOT header's
+  reserved words (`.got.plt`'s first three) by position;
+- `.rela.plt`'s and `.rela.iplt`'s records: the same, **in the same
+  order** (IN-2 item 5: the `IRELATIVE`s), each by type, symbol name,
+  `r_offset` in the same output section, and corresponding addends;
+- `.rela.dyn` (`.rel.dyn`): the same multiset of records outside `X`'s
+  holes, each by type, symbol name, corresponding `r_offset` and
+  addend (an addend that lies in no allocated section by value);
+- `.eh_frame_hdr`: the same set of entries, each the pair (initial
+  location, FDE) by identity (the location corresponding, the FDE the
+  same input record);
+- notes: in each allocated `SHT_NOTE` section (a non-allocated one,
+  `.note.stapsdt` with addresses in its descriptors, is made of units
+  that (4) and P-E6 compare), the same notes in the same order,
+  each by name, type and descriptor, except the descriptor of
+  `NT_GNU_BUILD_ID` ("GNU", 3), whose length only is compared (IN-2: the
+  build id differs);
+- the dynamic tables: `.dynamic`'s entries, the same tags in the same
+  order, an address tag's value corresponding (`DT_INIT`, `DT_FINI`,
+  the arrays, hash and string and symbol tables, `DT_JMPREL`,
+  `DT_PLTGOT`, the relocation tables, the version tables), every other
+  value equal except `DT_RELASZ`/`DT_RELSZ` and `DT_RELACOUNT`/
+  `DT_RELCOUNT`, which in `X` may exceed `F`'s by the bytes and
+  records of `X`'s holes in that table; `.dynstr`, `.hash`, `.gnu.hash`
+  (its bloom filter included), `.gnu.version`, `.gnu.version_r` and
+  `.gnu.version_d` byte for byte;
+- **packed order**: in every packed output section (§6.8's list:
+  `SHT_INIT_ARRAY`, `SHT_FINI_ARRAY`, `SHT_PREINIT_ARRAY`, `SHT_NOTE`,
+  `.init_array`, `.fini_array`, `.preinit_array`, `.ctors`, `.dtors`
+  and their `.`-suffixed names, `.init`, `.fini`, `.tm_clone_table`,
+  `.note*`, a C-identifier name), the units of size above 0 in address
+  order are the same sequence of identities (a `.tbss` unit, whose TLS
+  address overlaps what follows it, is none of them); in `.eh_frame`, the FDE
+  pieces in address order are the same sequence (CIEs and padding CIEs
+  passed over).
+
+**P-E6, item 6: nothing else.** `X`'s §6.8 findings are item 6's
+(every allocated byte covered once; every range passing IN-3a's three
+checks). Beyond the allocated sections, every byte of `X`'s file is: in
+the file header, the program or section header table, a section's file
+image, or zero (file padding; on x86, inside an executable `PT_LOAD`'s
+file image, also `0xcc` and `0x90`, the code fill and the nop padding); a non-allocated output section with
+`nplace` units is tiled by them, `dead` lines of `X`'s map and zero
+alignment padding; a non-allocated section with no unit and no `merged`
+record, other than `.symtab`, `.strtab` and `.shstrtab` (P-E1, P-E3),
+holds the same bytes as `F`'s.
+
+**Item 7**, the diagnostics, is not in the files: the harness compares
+the two links' diagnostics (IN-5, L10; `spec/incr.md` IN-63).
+
+**What it does not judge.** The program's behaviour beyond these items
+(a program run is L10's); the meaning of a table word or a linker
+symbol whose address has two identities (above); merged strings of a
+non-allocated `merged` section (their references are checked by content
+on each side, §5.6); thunks' and patches' placement (only the values
+they carry); `.symtab`'s order of local symbols.
+
+**Questions for the spec** (`spec/incr.md` IN-2; each taken
+conservatively above):
+
+1. Local symbols of a moved section are renumbered: is `.symtab`
+   "the same symbols" as a multiset (the rule above) or the same order?
+2. `GOTPCRELX`: IN-2 lists it among the distance-dependent relaxations
+   and also says it must be the same for a non-preemptible symbol in a
+   non-PIC link. The rule above lets X1-X4 differ only in `ET_DYN`; a
+   static executable over 2 GiB, where X1 is not taken by distance, is
+   then refused (P-E4).
+3. `.eh_frame_hdr`'s table is sorted by location on each side (§6.4),
+   so its order may differ; the rule compares entries as a set.
+4. The build id: compared by length only. A `--build-id` style that
+   hashes the output differs by design.
+5. `.gnu.hash`'s bloom filter, `.hash`, `.dynstr`: byte for byte, which
+   holds when `.dynsym` is the same in the same order; an update that
+   appends an export would be refused.
+6. `.eh_frame`'s CIEs are not compared by order (per-file CIEs); is the
+   CIE an FDE names part of "the same contribution"? Here: §6.4 judges
+   it against the input's on each side, which suffices for its content.
+7. File padding outside every section is required to be zero in `X`
+   (P-E6); IN-2 does not say what the bytes of a gap between segments
+   hold.
+8. A record neither side checks is P-E4 (the value is not seen). On a
+   real glibc static AArch64 pair this is 20 records of `setlocale.o`
+   (initial-exec loads of undefined weak TLS symbols, §4.7's `tls`
+   reason): every such pair is refused until the verifier judges them,
+   or IN-2 says such a field compares by its bytes.
+9. IN-2 item 5 lists `.eh_frame`'s records among the packed sections, so
+   a re-link with the files in another command-line order (R13's
+   "a.o main.o b.o", which its prototype accepted) is refused by
+   `.eh_frame`'s order even where `myset` agrees; R13's case 1 is
+   therefore the pair at other addresses in the same order (the IN-8
+   pair, or the model of `tests/equiv.rs`).
+10. Two values whose identity sets meet only at a unit's end and the
+    next unit's start correspond (a label at an end is either); `F`
+    cannot say which it meant (identities, above).
+
+Tests: `tests/equiv.rs` (§9.2 (q)).
+
 ## 7. The report
 
 ### 7.1 Findings
@@ -2306,7 +2540,8 @@ A finding has:
 
 - the rule id: `O1`, `S1`–`S21`, `I1`, `I2`, `M1`–`M5`, `R1`–`R9`, `T1`,
   `Y1`–`Y5`, `E1`–`E5`, `F1`–`F5` (§4.8), `P1`–`P2` (§6.6), `B1` (§6.7),
-  `C1`–`C6` (§5.10), `P-D1`–`P-D13` (§12) or `P-I1`–`P-I6` (§6.8);
+  `C1`–`C6` (§5.10), `P-D1`–`P-D13` (§12), `P-I1`–`P-I6` (§6.8) or `P-E1`–`P-E6`
+  (§6.9; a side's finding there carries its side, `X:` or `F:`);
 - the output address, if it has one;
 - the site (input file, archive member, section, offset);
 - the relocation type's name and the symbol;
@@ -2390,6 +2625,26 @@ or an unreadable output or map.
 
 Tests: `xtask/src/plumb.rs s8_arguments`, `s8_response_files`,
 `s8_libraries_are_resolved`.
+
+```text
+cargo xtask plumb --equiv <X.map> <F.map> <X> <F>
+```
+
+The equivalence check (§6.9; `spec/incr.md` IN-62 names it
+`mortar_plumb --equiv`: the verifier has no binary of its own, and this
+is that command). Both maps are mortar maps; their files are read once,
+from the paths they give (relative to the current directory), and a
+file named by both maps is one input. It prints `X`'s findings, `F`'s
+findings (each prefixed with its side), the P-E findings and one summary
+line per side and for the pair. It exits 0 when both sides are clean
+and no P-E finding was made, 1 on any finding, and 2 on a usage error:
+a missing or extra argument, an option it does not take, an output or
+map it cannot read, a map that is not a mortar map, or an `X` map that
+claims no coverage (§3.2: a plain map given as `X`). Swapped arguments
+(a map where an output is expected) are one of these. It never panics:
+a truncated output is the side's findings (O1, S1) or exit 2.
+
+Tests: `xtask/src/plumb.rs s8_equiv_arguments`; `tests/equiv.rs`.
 
 ## 9. Validation
 
@@ -2581,6 +2836,54 @@ produce a finding that is not a recorded anomaly (`tests/mutation.rs`):
     (P-I6);
   - and every dead line of 8 sections × 5 kinds × 9 offsets × 9 sizes
     (hostile, 3,240 lines) is judged without a panic.
+  - **PIE** (WP-092, `in3a_pie_tables_and_relocation_fill`; AArch64 and
+    x86-64, GNU ld `-pie --no-dynamic-linker --eh-frame-hdr`): `dead.o`'s
+    two `RELATIVE` records become a `.rela.dyn` hole of `RELATIVE`
+    records aimed at one scratch word. ACCEPTED: that baseline, with
+    `ptrs`' records for `arr+40` and `blk_-8` (judged by name) and
+    `arr_end`'s GOT word at the data hole's first byte (a live end).
+    REJECTED (P-I3): a `.got` word, a live `RELATIVE` target, a live
+    record's `r_offset` and an `.eh_frame_hdr` location aimed into a
+    hole; (P-I5) a hole record not `RELATIVE`, a `NONE` record inside
+    `DT_RELACOUNT`'s prefix, the hole's records aimed at two words.
+  - **Clang DWARF 5** (WP-092, `in3a_dwarf5_line_strings_and_str_offsets`;
+    AArch64, x86-64, i386; clang-22 `-gdwarf-5`): ACCEPTED, the link with
+    the claim and no range; REJECTED (P-I4), a `strings` range of
+    `.debug_line_str` under a file name only the v5 line header names,
+    and one of `.debug_str` under a name only a `.debug_str_offsets`
+    entry names (`DW_FORM_strx1`).
+
+- **(q)** Equivalence (§6.9, `incr.md` IN-2, IN-62; WP-092,
+  `tests/equiv.rs`). `X` is a GNU ld link with `pad.o` (code, data) after
+  `main.o`, `pad.o` out of the map and its ranges holes holding the fill
+  (every unit of `a.o` and `b.o` at another address); `F` the link
+  without it. AArch64, x86-64 and i386 unless named:
+  - ACCEPTED: R13 case 1, `X` against `F`, and `X` against itself; a
+    `--build-id` pair (the descriptors differ); a non-allocated
+    section of units; a PIE pair (AArch64, x86-64: `-pie
+    --no-dynamic-linker --export-dynamic`); AArch64 `ADRP`+`ADD` in `F`,
+    `NOP`+`ADR` in `X` (W1); x86-64 a GOT kept by `addq S@GOTPCREL`;
+  - REJECTED: R13 case 2, `F` of `main.o b.o a.o` (P-E5, `myset` in
+    another order); the one-byte control, a code byte no relocation
+    covers flipped in `X` (P-E4); `e_flags`, a section's flags, a
+    segment's flags, `e_entry` (P-E1); a unit in one map only, a size, a
+    synthetic chunk in one map only (P-E2); a global naming another
+    placed definition, a global renamed, a global made local (P-E3); the
+    `.init` byte (P-E4); a note's type (P-E5); a stray byte between
+    sections (P-E6); a non-allocated unit made shorter (P-E6, P-E2);
+    AArch64 an undefined weak TLS initial-exec load neither side checks
+    (P-E4 1); x86-64 `GOTPCRELX` as `mov $S` (X4, `F`, GNU ld's map) and
+    as `lea` (X1, `X`) in an `ET_EXEC` output (P-E4 2); a `.got` word
+    (P-E5); in the PIE pair a `.rela.dyn` addend, a `.dynamic` value, a
+    `.dynstr` byte (P-E5) and a `.dynsym` entry's size (P-E3);
+  - the forms that may differ, per output type
+    (`equiv::tests::p_e4_forms_that_may_differ`: W1-W3, W6-W8 always,
+    X1-X4 in `ET_DYN` only; W4, W5, W9-W13, GD to IE never; a record not
+    checked never);
+  - hostile (`hostile_pairs_never_panic`): `X` cut at 300 lengths and
+    flipped at 300 bytes, either map's text cut at 100 lengths, the
+    outputs swapped, a foreign `F`, an empty `F`: no panic, and a cut,
+    swapped, foreign or empty side is never clean.
 
 ### 9.3 Map readers
 
@@ -2757,7 +3060,8 @@ is the test that failed; 30 of 37 drops are caught.
 | the walk of live units (P-I4) | `in3a_debug_…` |
 | live `.debug_frame` FDEs' CIE pointers (P-I4) | `in3a_debug_…` |
 
-**Survivors (7), with the reason:**
+**Survivors (7), with the reason** (WP-091; all caught since WP-092,
+below):
 
 1. The relocation-section fill (`DT_RELACOUNT` prefix, `NONE` after
    it), the `.got` words, allocated relocation records' `r_offset` and
@@ -2780,6 +3084,34 @@ is the test that failed; 30 of 37 drops are caught.
    with a header-only file name would close it.
 4. Live `.debug_str_offsets` entries: GCC does not use `DW_FORM_strx`
    without split DWARF; needs a Clang DWARF 5 model (cheap).
+
+**Re-run with WP-092's two models** (§9.2 (p), PIE and Clang DWARF 5):
+the seven, with the relocation records split into where they write and
+what a `RELATIVE`/`IRELATIVE` record targets, eight drops, **all caught**:
+
+| check dropped | caught by |
+|---|---|
+| the relocation-section fill (`rel_fill`) | `in3a_pie_tables_and_relocation_fill` |
+| the `.got` words | `in3a_pie_…` |
+| an allocated record that writes in a range | `in3a_pie_…` |
+| a `RELATIVE`/`IRELATIVE` target in a range | `in3a_pie_…` |
+| `.eh_frame_hdr` entries | `in3a_pie_…` |
+| table words at a live item's end (N3) | `in3a_pie_…` (the baseline: `arr_end`'s GOT word) |
+| v5 line-header strings | `in3a_dwarf5_line_strings_and_str_offsets` |
+| `.debug_str_offsets` entries | `in3a_dwarf5_…` |
+
+The PIE model found one false finding of the table walk, now ruled
+(§6.8 P-I3, tables): a `RELATIVE` record at a live relocation's place
+carries an address that may lie in a hole by an addend (`blk_-8`); it
+is judged by the input record's name.
+
+
+**The equivalence check** (WP-092, §6.9): 25 mutations of
+`src/equiv.rs` (a condition made `false`, a clause or a finding
+dropped), each run against `tests/equiv.rs` and the unit test; caught
+23. Survivors: the `.dynsym` name and `st_info` clauses (the tests
+change an entry's size only) and the `.eh_frame_hdr` entries (no pair
+here has an `.eh_frame_hdr`; the real pairs of the record do).
 
 ## 10. The reference linkers, observed
 
