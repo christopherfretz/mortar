@@ -57,6 +57,9 @@ pub enum Rule {
     Erratum(u8),
     /// P-D1 .. P-D15: stage 3, dynamic executables and static-pie (§12).
     Dyn(u8),
+    /// P-I1 .. P-I6: holes and dead ranges of an incremental link (§6.8;
+    /// `spec/incr.md` IN-3a, IN-60).
+    Incr(u8),
 }
 
 impl Rule {
@@ -86,6 +89,7 @@ impl Rule {
             Rule::BuildId => "B1".into(),
             Rule::Erratum(n) => format!("C{n}"),
             Rule::Dyn(n) => format!("P-D{n}"),
+            Rule::Incr(n) => format!("P-I{n}"),
         }
     }
 }

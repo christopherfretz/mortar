@@ -26,9 +26,6 @@
 # load (symbol lookup error, exit 127: recorded here as what they do);
 # mortar needs libnq.so at its first mention (nq np nc) and the program
 # runs.
-#
-# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
-# tests/link/xfails.
 #@ spec: dyn.md "D-19a"
 #@ spec: dyn.md "D-11"
 #@ arch: aarch64 x86_64

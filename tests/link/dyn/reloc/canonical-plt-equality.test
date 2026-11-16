@@ -9,9 +9,6 @@
 # library), `dlsym`'s, and `&puts` against libc's `dlsym`, and calls
 # through each pointer. All three references agree, lazily and with
 # `LD_BIND_NOW=1` (E-reloc §5).
-#
-# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
-# tests/link/xfails.
 #@ spec: dyn.md "D-44"
 #@ spec: dyn.md "D-23"
 #@ arch: aarch64 x86_64

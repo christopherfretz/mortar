@@ -10,9 +10,6 @@
 # a library whose first mention is as-needed and unreferenced even when a
 # later mention is plain (W9, dyn.md 13.2): the case holds it to GNU ld's
 # list, which mortar must write.
-#
-# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
-# tests/link/xfails.
 #@ spec: dyn.md "D-19a"
 #@ arch: aarch64 x86_64
 #@ fixture: needed-libs

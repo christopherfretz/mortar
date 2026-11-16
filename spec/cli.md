@@ -28,13 +28,16 @@ so and why.
   - `plan`;
   - `uses`, every option used, in argument order (§4.4);
   - `diagnostics`, the errors the grammar found, with their keys (§2.10);
-  - `args`, the command line after response files are expanded (§2.6).
+  - `args`, the command line after response files are expanded (§2.6);
+  - `response_files`, each response file read, with its device and
+    inode (§2.6.4).
 - `Parsed::failed()` is true when any diagnostic is an error.
 - `Parsed::refused_uses()` and `Parsed::refusals()` cover the refused
   options (§4.4).
 - `check_target(&Plan, Target)` reports the options of other targets
   (§2.9).
-- `rows()` is the table (§4).
+- `rows()` is the table (§4); `table::WRITES` and `table::READS`
+  classify every row whose value is a path (§3.14).
 - `version_line`, `version_text`, `print_version_text`, `help_text(prog)`
   and `status_markdown` are the texts (§5, §4.5).
 
@@ -194,6 +197,15 @@ This is libiberty's `buildargv`, as GNU ld uses it.
 - The 2000th is `response-file-limit`, and expansion stops.
 - A file that names itself therefore ends with that error, and not with
   a hang.
+
+#### 2.6.4 What is recorded
+
+Each response file expanded is recorded in `Parsed::response_files`:
+the path as the `@file` argument spelled it, and the device and inode
+of the file whose bytes were read (one `open`, one `fstat` of that
+descriptor, then the read; the `stat` of the directory check is made
+only when the `open` fails). A file the link writes must not be one of
+them (§3.14).
 
 ### 2.7 `-z` keywords
 
@@ -608,6 +620,110 @@ The fall-back reasons are IN-16's. The dry run raises
 
 A link without `--incremental-report` computes no delta.
 
+### 3.14 Written paths (WP-087)
+
+**The rule.** No file the link writes is a file the link read, or a
+file it writes for another option. A clash is `written-file-clash`
+(`spec/diag.md` §3.1), naming the written file by its option and path
+as given (`-Map=a.o`) and the other by its role and path (`the input
+a.o`, `the archive libb.a`, `the linker script s.ld`, `the shared object
+./libc2.so`, `the response file r.rsp`, `the output out`, `the map x`):
+`-Map=a.o names the input a.o; nothing is written to it`. One per
+written file that clashes, key `(95, 0, n)` with `n` its place in the
+registry (`spec/model.md` §8). The link fails (`spec/diag.md` §7), and
+nothing is written: the check runs after the front (every file read is
+known, including the ones a search or a script found) and before the
+image phase creates anything. A failed link removes a stale output as
+`spec/image.md` I-66 says, never a file the link read (a response file
+included).
+
+**The registry.** `mortar_cli::table::WRITES` lists every row whose
+value names a file (or a directory) the link writes, honored or not,
+with its role; `READS` lists the other rows whose value is a path.
+`tests/table.rs` fails while a row whose value is a path (`FILE`,
+`PATH`, `DIR` in its meta) is in neither list, so a new row is
+classified when it is added. The facade (`crates/mortar/src/written.rs`)
+builds a link's written files from the registry: the output (the last
+`-o`, else `a.out`), then the last use of each other row of `WRITES`
+that is not `refused` (a refused row never reaches the link, §4.3), in
+the table's order, then incremental mode's state and report when the
+link is in incremental mode (`spec/incr.md` IN-17; their rows alone
+depend on the mode). Its unit test fails while an honored row of
+`WRITES` is missing from the facade's list: an option that becomes
+honored is checked without being remembered. Today: `-o`, `-Map`,
+`--mortar-map`, `--dependency-file`, `--incremental-state`,
+`--incremental-report=FILE`.
+
+**The files read.** Every file the input phase read (objects, archives,
+thin archives' members, linker scripts named as inputs or found through
+them, shared objects): the store's identities (`Store::inodes`), known
+already, so no file read costs a `stat` more. The response files
+(§2.6.4). The script files the command line names (`-T`, `-dT`,
+`--version-script`, ...; refused today, and read through the store when
+they are not).
+
+**Identity.** A file is identified by its device and inode, following
+symbolic links (std's `MetadataExt`): the same path, `./a.o`, a symbolic
+link and a hard link to it all clash. A written file that does not exist
+yet has no identity; two of them are the same file when their names
+are equal and either their paths are equal or their directories have
+one identity (the directories are `stat`ed only then).
+
+**The names the writer touches.** A file written through
+`spec/image.md` §7's protocol also writes its temporary name
+`.<base>.mortar-tmp` (I-59: reused or removed when stale) and its
+set-aside name `.<base>.mortar-old` (I-113: replaced). Both count as
+written: an input named `.out.mortar-old` clashes with `-o out` (`the
+temporary name ./.out.mortar-old of -o out names the input
+.out.mortar-old`). The `T0.<pid>` names are created with `create_new`
+and can replace nothing.
+
+**The output is no exception.** `-o` naming a file the link read, by
+any spelling, is `written-file-clash` like every written file
+(`spec/image.md` I-62, ruled by WP-087's review): `-o a.o names the input
+a.o; nothing is written to it`. GNU ld 2.44 refuses it too (by name or
+symbolic link; `ld -r -o a.o a.o b.o` exits 1 with `input file 'a.o' is
+the same as output file` and leaves `a.o` unchanged); lld accepts it and
+replaces the input; mold 2.37.1 aborts on an assertion after replacing
+it. A failed link never removes the input as a stale output (I-66).
+Before WP-087 mortar accepted it, as lld does.
+
+**Files outside the rule.** A written path that names, following
+symbolic links, a directory (I-57's `cannot-open-output`), a character
+device, a FIFO or a socket is outside the rule: writing a device or a
+stream destroys no file, and `-o /dev/null -Map=/dev/null
+--dependency-file=/dev/null` is an idiom (GNU ld, lld and mold accept
+it). Such a file is written in place (`spec/image.md` I-58, I-79a), so
+its temporary names are not touched either. `-Map=/dev/stdout` names a
+terminal or a pipe (outside the rule) or, redirected, a regular file:
+then the rule applies to that file (`> a.o` with `a.o` an input
+clashes; the shell truncated it before mortar ran).
+
+**A guard against mistakes, not against races.** The check reads the
+file system once, before anything is written. A file renamed, replaced
+or created between the check and the write (by another process) is not
+seen; mortar does not lock its inputs. What it rules out is a command
+line that names one file twice.
+
+**What a plain link pays.** One `stat` per written file and two for its
+temporary names (`-o` alone: 3), two more when two written names not yet
+there have one name in different directories' spellings, one `stat` per
+script the command line names; nothing per input. A file written whole
+that is a regular file costs one `stat` more when it is written (the
+stream test of `spec/image.md` I-79a). Measured on protoc
+(`spec/landed/cli/WP-087.md`).
+
+**The references** (`spec/landed/cli/WP-087.md` has the table): GNU ld
+2.44 refuses `-o` naming an input by its path or a symbolic link (not a
+hard link; `input file 'a.o' is the same as output file`), and checks
+nothing else: `-Map` and `--dependency-file` overwrite any input, and a
+map over an archive is written before the archive is read (the link
+then fails, the archive destroyed). lld 19 and 22 check nothing:
+`-Map=a.o` exits 0 with the object replaced by the map. mold 2.37.1
+checks nothing and writes in place: `-o a.o` with `a.o` an input fails
+with the input destroyed, `-Map=a.o` dies of `SIGBUS` with the input
+replaced by the map.
+
 ## 4. The table and the status of options
 
 ### 4.1 Rows
@@ -978,6 +1094,7 @@ The test fails when the outcome is not the recorded one.
 | `crates/mortar_cli/tests/differential.rs` | §7 |
 | `crates/mortar/src/lib.rs` (unit tests) | §4.3, §3.9, §5 |
 | `crates/mortar/tests/cli.rs` | §2.1 (non-UTF-8), §5.1 (through a symlink), §6 with `spec/diag.md` §7 (gcc running mortar as `ld`) |
+| `crates/mortar/tests/written.rs`, `crates/mortar/src/written.rs` (unit tests), `crates/mortar_cli/tests/table.rs` (`every_path_valued_row_is_classified`) | §2.6.4, §3.14 |
 
 Each test names the section it checks in a `// spec: cli.md §...`
 comment.

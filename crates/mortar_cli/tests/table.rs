@@ -314,3 +314,32 @@ fn no_status_rests_on_the_dynamic_refusal() {
         }
     }
 }
+
+// spec: cli.md §3.14 (one registry of written paths: every row whose value
+// is a path is classified as written or read, so a new one cannot be
+// added without a decision)
+#[test]
+fn every_path_valued_row_is_classified() {
+    use mortar_cli::table::{READS, WRITES};
+    let names: HashSet<String> = rows().iter().map(mortar_cli::table::Row::name).collect();
+    for (name, role) in WRITES {
+        assert!(names.contains(*name), "WRITES names {name}, which is no row");
+        assert!(role.starts_with("the "), "{name}: {role}");
+    }
+    for name in READS {
+        assert!(names.contains(*name), "READS names {name}, which is no row");
+        assert!(WRITES.iter().all(|(w, _)| w != name), "{name} is in both lists");
+    }
+    for row in rows() {
+        let pathy = ["FILE", "PATH", "DIR"].iter().any(|m| row.meta.contains(m));
+        if !pathy {
+            continue;
+        }
+        let name = row.name();
+        assert!(
+            row.writes().is_some() || READS.contains(&name.as_str()),
+            "{name} takes a path ({}): add it to WRITES or READS (cli.md §3.14)",
+            row.meta
+        );
+    }
+}

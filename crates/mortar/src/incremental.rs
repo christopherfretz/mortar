@@ -197,33 +197,8 @@ pub fn start(parsed: &Parsed, cwd: &Path, out_path: &Path, diagnostics: &Collect
         None => Report::Stderr,
         Some(p) => Report::File(cwd.join(p)),
     });
-    // IN-17: neither file may be one the link reads or writes, checked
-    // before anything is written (the inputs a search finds are checked
-    // again after the front, `Session::clear_of`).
-    let mut named: Vec<(&Path, String)> = vec![(out_path, "the output".to_owned())];
-    let inputs: Vec<PathBuf> = plan
-        .inputs
-        .iter()
-        .filter_map(|i| match &i.spec {
-            InputSpec::Path(p) => Some(cwd.join(p)),
-            _ => None,
-        })
-        .collect();
-    for p in &inputs {
-        named.push((p, format!("the input {}", p.display())));
-    }
-    let ours = own_files(&state_path, report.as_ref());
-    for (option, path) in &ours {
-        if let Some(what) = clash(path, &named) {
-            let kind = Kind::IncrementalFileClash {
-                option: (*option).to_owned(),
-                path: path.display().to_string(),
-                what,
-            };
-            emit(diagnostics, 4, Diagnostic::error(kind));
-            return Start::Failed;
-        }
-    }
+    // IN-17: neither file is one the link reads or writes: the one rule of
+    // cli.md §3.14 (`crate::written`), given them by `Session::written`.
     let plan_hash = plan_hash(parsed, cwd);
     // IN-22a: one stamp per device, before any input is read.
     let mut dirs: Vec<PathBuf> = Vec::new();
@@ -280,20 +255,6 @@ fn own_files<'a>(
         v.push(("--incremental-report", p.as_path()));
     }
     v
-}
-
-/// What `path` names among `named` (the same path, or the same file),
-/// if anything.
-fn clash(path: &Path, named: &[(&Path, String)]) -> Option<String> {
-    use std::os::unix::fs::MetadataExt as _;
-    let id = std::fs::metadata(path).ok().map(|m| (m.dev(), m.ino()));
-    named.iter().find_map(|(p, what)| {
-        let same = *p == path
-            || id.is_some_and(|id| {
-                std::fs::metadata(p).ok().is_some_and(|m| (m.dev(), m.ino()) == id)
-            });
-        same.then(|| what.clone())
-    })
 }
 
 /// The fall-back reason of an existing state, in §7's order: the state
@@ -412,26 +373,11 @@ fn hash_bytes(h: mortar_core::inputs::ContentHash) -> [u8; 16] {
 }
 
 impl Session {
-    /// IN-17 after the front: neither file incremental mode writes is an
-    /// input the front opened (one a library search found, say). An error
-    /// is emitted and `false` returned before the output is written.
+    /// The files incremental mode writes, with the option naming each
+    /// (IN-17): entries of the registry of cli.md §3.14.
     #[must_use]
-    pub fn clear_of(&self, store: &Store, diagnostics: &Collector) -> bool {
-        use std::os::unix::fs::MetadataExt as _;
-        let inodes = store.inodes();
-        for (option, path) in own_files(&self.state_path, self.report.as_ref()) {
-            let Ok(m) = std::fs::metadata(path) else { continue };
-            if inodes.contains(&(m.dev(), m.ino())) {
-                let kind = Kind::IncrementalFileClash {
-                    option: option.to_owned(),
-                    path: path.display().to_string(),
-                    what: "an input of the link".to_owned(),
-                };
-                emit(diagnostics, 5, Diagnostic::error(kind));
-                return false;
-            }
-        }
-        true
+    pub fn written(&self) -> Vec<(&'static str, &Path)> {
+        own_files(&self.state_path, self.report.as_ref())
     }
 
     /// The fall-back reason (for tests).

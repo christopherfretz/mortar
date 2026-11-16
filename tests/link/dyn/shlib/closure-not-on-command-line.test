@@ -8,9 +8,6 @@
 # (GNU ld: `undefined reference to symbol 'mid_fn'` and `DSO missing from
 # command line`; lld and mold: `undefined symbol: mid_fn`; E-shlib 2.10a).
 # Naming `-lmid` makes it link and run: `1103 103`.
-#
-# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
-# tests/link/xfails.
 #@ spec: dyn.md "D-12"
 #@ arch: aarch64 x86_64
 #@ fixture: shlib-chain

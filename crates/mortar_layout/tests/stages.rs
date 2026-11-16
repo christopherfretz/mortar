@@ -101,7 +101,7 @@ fn hello_is_valid() {
             ".tdata",
             ".tbss",
             ".init_array",
-            ".relro_padding",
+            ".pad.relro",
             ".data",
             ".bss",
             ".comment",
@@ -526,7 +526,7 @@ fn norelro() {
     let (a, placed) = w.run(&Pool::sequential()).unwrap();
     w.check(&a, &placed).unwrap();
     let p = &placed.placement;
-    assert!(!names(&w, &a, &placed).iter().any(|n| n == ".relro_padding"));
+    assert!(!names(&w, &a, &placed).iter().any(|n| n == ".pad.relro"));
     assert!(!p.segments.iter().any(|(_, s)| s.p_type == PT_GNU_RELRO));
     let rw =
         p.segments.iter().filter(|(_, s)| s.p_type == PT_LOAD && s.flags == PF_R | PF_W).count();

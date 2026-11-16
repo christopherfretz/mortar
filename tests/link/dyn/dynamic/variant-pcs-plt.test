@@ -19,8 +19,6 @@
 # references write the tag and the `st_other` bit (E-dynamic §1); the tag
 # order differs (lld and mold put it after `DT_FLAGS_1`). The absence of
 # the tag without a variant-PCS import is `dynamic-tags`'.
-#
-# mortar: AArch64 WP-053 (JOIN-C), in tests/link/xfails.
 #@ spec: dyn.md "D-30"
 #@ spec: dyn.md "D-23"
 #@ arch: aarch64
