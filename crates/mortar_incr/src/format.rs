@@ -1,8 +1,8 @@
 //! The bytes of a link state, format version 2 (`spec/incr.md` IN-18a):
 //! the rows as plain values, the encoder, and the validating decoder.
-//! Version 2 is version 1 with the `HOLES` table (kind 39) before
-//! `STRINGS`; the reader also takes version 1, whose links laid out no
-//! slack, as a state with no holes.
+//! Version 2 is version 1 with the tables `MENTIONS`, `RESOLVED`,
+//! `INDEX` (kinds 32-34) and `HOLES` (39) between `LEAVES` and
+//! `STRINGS`. A state of version 1 is refused by name (`state-version`).
 //!
 //! The decoder is the only way in: a state is untrusted input, so every
 //! length, hash, enumeration, pad and reference is checked before a row
@@ -19,8 +19,6 @@ use mortar_digest::{L128, l128};
 pub const MAGIC: [u8; 8] = *b"MORTARST";
 /// The format version this crate writes and reads.
 pub const FORMAT_VERSION: u32 = 2;
-/// The earlier format version it also reads (without `HOLES`).
-pub const FORMAT_VERSION_1: u32 = 1;
 /// The header's size.
 pub const HEADER_LEN: usize = 64;
 /// A table record's size.
@@ -84,7 +82,7 @@ pub type Hash16 = [u8; 16];
 // ---- the table kinds --------------------------------------------------------
 
 /// The table kinds of format version 2, in file order (IN-18a): 1 to 22,
-/// then 39, then `STRINGS` last. Version 1 has no 39.
+/// then 32, 33, 34 and 39, then `STRINGS` last.
 pub mod kind {
     pub const META: u32 = 1;
     pub const STAT: u32 = 2;
@@ -109,12 +107,15 @@ pub mod kind {
     pub const LAYOUT: u32 = 21;
     pub const LEAVES: u32 = 22;
     pub const STRINGS: u32 = 23;
+    /// Format version 2's delta tables (WP-063, IN-18a): written after
+    /// `LEAVES`, before `HOLES` and `STRINGS`, which stays last.
+    pub const MENTIONS: u32 = 32;
+    pub const RESOLVED: u32 = 33;
+    pub const INDEX: u32 = 34;
     /// Regions and holes (IN-18a's reserved kind 39): format version 2.
     pub const HOLES: u32 = 39;
     /// The number of tables of version 2.
-    pub const COUNT: u32 = 24;
-    /// The number of tables of version 1.
-    pub const COUNT_1: u32 = 23;
+    pub const COUNT: u32 = 27;
 
     /// The name of a kind, for diagnostics.
     #[must_use]
@@ -144,10 +145,13 @@ pub mod kind {
             "LEAVES",
             "STRINGS",
         ];
-        if kind == HOLES {
-            return "HOLES";
+        match kind {
+            MENTIONS => "MENTIONS",
+            RESOLVED => "RESOLVED",
+            INDEX => "INDEX",
+            HOLES => "HOLES",
+            _ => kind.checked_sub(1).and_then(|i| NAMES.get(i as usize)).copied().unwrap_or("?"),
         }
-        kind.checked_sub(1).and_then(|i| NAMES.get(i as usize)).copied().unwrap_or("?")
     }
 }
 
@@ -394,6 +398,79 @@ pub struct LayoutRow {
     pub entry: u64,
 }
 
+/// `MENTIONS` and `RESOLVED` kinds of a definition (IN-26's columns).
+pub mod def_kind {
+    pub const UNDEFINED: u8 = 0;
+    pub const SECTION: u8 = 1;
+    pub const ABSOLUTE: u8 = 2;
+    pub const COMMON: u8 = 3;
+    /// `RESOLVED` only: a linker-defined key (`Def::Internal`).
+    pub const INTERNAL: u8 = 4;
+    /// `RESOLVED` only: a shared object's definition.
+    pub const SHARED: u8 = 5;
+    /// `RESOLVED` only: a COMDAT group's keeper (`name` the signature).
+    pub const COMDAT: u8 = 6;
+    /// `RESOLVED` only: a live file (`file`).
+    pub const LIVE: u8 = 7;
+}
+
+/// `MENTIONS` (v2): a global key in the symbol table of a live object,
+/// with the entry's attributes (IN-26: what an unchanged file references
+/// or defines).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct MentionRow {
+    pub file: u32,
+    pub symbol: u32,
+    pub kind: u8,
+    pub bind: u8,
+    pub typ: u8,
+    pub other: u8,
+    /// The `SECTIONS` row of a definition in a section, else `NONE`.
+    pub section: u32,
+}
+
+/// `RESOLVED` (v2): per global key its resolution (kinds 0-5), per
+/// COMDAT group its keeper (6), per live file a row (7) (IN-26).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ResolvedRow {
+    pub kind: u8,
+    pub typ: u8,
+    pub bind: u8,
+    pub other: u8,
+    pub symbol: u32,
+    pub file: u32,
+    pub section: u32,
+    /// The definition's `st_value` (kind 1, 2), the common's size (3).
+    pub value: u64,
+    pub size: u64,
+    /// The group signature (kind 6).
+    pub name: Str,
+}
+
+/// `INDEX` kinds (IN-25).
+pub mod index_kind {
+    /// The unit's relocations name the global key `target` (`SYMBOLS`).
+    pub const GLOBAL: u8 = 0;
+    /// ... a section `target` of its own file (`SECTIONS`).
+    pub const SECTION: u8 = 1;
+    /// ... use a slot (GOT, TLS) or the GOT's base for global `target`.
+    pub const SLOT: u8 = 2;
+    /// ... name an input `.eh_frame` `target` (S-50, IN-34a).
+    pub const EH_FRAME: u8 = 3;
+    /// The unit is `SHF_LINK_ORDER` with `sh_link` `target`.
+    pub const LINK_ORDER: u8 = 4;
+    /// ... use a slot of a local of section `target`.
+    pub const LOCAL_SLOT: u8 = 5;
+}
+
+/// `INDEX` (v2): one (referring unit, target) pair (IN-25).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct IndexRow {
+    pub unit: u32,
+    pub kind: u8,
+    pub target: u32,
+}
+
 /// `HOLES` kinds (`mortar_core::layout::HoleKind`, in its order).
 pub mod hole_kind {
     pub const FILL: u8 = 0;
@@ -443,7 +520,9 @@ pub struct State {
     pub sized: Vec<SizeRow>,
     pub layout: LayoutRow,
     pub leaves: Vec<[u8; 32]>,
-    /// Empty in a state of format version 1.
+    pub mentions: Vec<MentionRow>,
+    pub resolved: Vec<ResolvedRow>,
+    pub index: Vec<IndexRow>,
     pub holes: Vec<HoleRow>,
     pub strings: Vec<u8>,
 }
@@ -911,6 +990,59 @@ impl Row for LayoutRow {
     }
 }
 
+impl Row for MentionRow {
+    const WIDTH: usize = 16;
+    fn put(&self, w: &mut W<'_>) {
+        w.u32(self.file).u32(self.symbol).u8(self.kind).u8(self.bind).u8(self.typ).u8(self.other);
+        w.u32(self.section);
+    }
+    fn get(r: &mut R<'_>) -> Self {
+        Self {
+            file: r.u32(),
+            symbol: r.u32(),
+            kind: r.u8(),
+            bind: r.u8(),
+            typ: r.u8(),
+            other: r.u8(),
+            section: r.u32(),
+        }
+    }
+}
+
+impl Row for ResolvedRow {
+    const WIDTH: usize = 40;
+    fn put(&self, w: &mut W<'_>) {
+        w.u8(self.kind).u8(self.typ).u8(self.bind).u8(self.other).u32(self.symbol);
+        w.u32(self.file).u32(self.section).u64(self.value).u64(self.size).s(self.name);
+    }
+    fn get(r: &mut R<'_>) -> Self {
+        Self {
+            kind: r.u8(),
+            typ: r.u8(),
+            bind: r.u8(),
+            other: r.u8(),
+            symbol: r.u32(),
+            file: r.u32(),
+            section: r.u32(),
+            value: r.u64(),
+            size: r.u64(),
+            name: r.s(),
+        }
+    }
+}
+
+impl Row for IndexRow {
+    const WIDTH: usize = 12;
+    fn put(&self, w: &mut W<'_>) {
+        w.u32(self.unit).u8(self.kind).pad(3).u32(self.target);
+    }
+    fn get(r: &mut R<'_>) -> Self {
+        let (unit, kind) = (r.u32(), r.u8());
+        r.pad(3);
+        Self { unit, kind, target: r.u32() }
+    }
+}
+
 impl Row for HoleRow {
     const WIDTH: usize = 24;
     fn put(&self, w: &mut W<'_>) {
@@ -935,13 +1067,25 @@ impl Row for [u8; 32] {
 
 // ---- encoding -------------------------------------------------------------------
 
+/// A table's record, its rows written in place after its head (no copy
+/// of the body), the head filled in once the body's hash is known.
 fn table<T: Row>(out: &mut Vec<u8>, kind: u32, rows: &[T]) {
-    let mut body = Vec::with_capacity(rows.len().saturating_mul(T::WIDTH));
-    let mut w = W(&mut body);
+    let head = out.len();
+    out.resize(head + RECORD_LEN, 0);
+    out.reserve(rows.len().saturating_mul(T::WIDTH));
+    let mut w = W(out);
     for row in rows {
         row.put(&mut w);
     }
-    record(out, kind, rows.len() as u64, &body);
+    let body = &out[head + RECORD_LEN..];
+    let mut h = Vec::with_capacity(RECORD_LEN);
+    W(&mut h).u32(kind).u32(0).u64(rows.len() as u64).u64(body.len() as u64).bytes(&l128(body));
+    out[head..head + RECORD_LEN].copy_from_slice(&h);
+}
+
+/// The bytes a table's record takes.
+fn table_len<T: Row>(rows: &[T]) -> usize {
+    RECORD_LEN + rows.len().saturating_mul(T::WIDTH)
 }
 
 fn record(out: &mut Vec<u8>, kind: u32, rows: u64, body: &[u8]) {
@@ -961,7 +1105,38 @@ fn header_hash(header: &[u8]) -> Hash16 {
 /// The bytes of a state.
 #[must_use]
 pub fn encode(s: &State) -> Vec<u8> {
-    let mut out = vec![0u8; HEADER_LEN];
+    // The whole size up front: one allocation, no growth by copies.
+    let len = HEADER_LEN
+        + table_len(std::slice::from_ref(&s.meta))
+        + table_len(&s.stat)
+        + table_len(&s.files)
+        + table_len(&s.probes)
+        + table_len(&s.outsecs)
+        + table_len(&s.symbols)
+        + table_len(&s.sections)
+        + table_len(&s.chunks)
+        + table_len(&s.order)
+        + table_len(&s.segments)
+        + table_len(&s.frags)
+        + table_len(&s.slots)
+        + table_len(&s.eh_records)
+        + table_len(&s.symtab_locals)
+        + table_len(&s.sizes)
+        + table_len(&s.sym_place)
+        + table_len(&s.defined)
+        + table_len(&s.patches)
+        + table_len(&s.redirects)
+        + table_len(&s.sized)
+        + table_len(std::slice::from_ref(&s.layout))
+        + table_len(&s.leaves)
+        + table_len(&s.mentions)
+        + table_len(&s.resolved)
+        + table_len(&s.index)
+        + table_len(&s.holes)
+        + RECORD_LEN
+        + s.strings.len();
+    let mut out = Vec::with_capacity(len);
+    out.resize(HEADER_LEN, 0);
     table(&mut out, kind::META, std::slice::from_ref(&s.meta));
     table(&mut out, kind::STAT, &s.stat);
     table(&mut out, kind::FILES, &s.files);
@@ -984,6 +1159,9 @@ pub fn encode(s: &State) -> Vec<u8> {
     table(&mut out, kind::SIZED, &s.sized);
     table(&mut out, kind::LAYOUT, std::slice::from_ref(&s.layout));
     table(&mut out, kind::LEAVES, &s.leaves);
+    table(&mut out, kind::MENTIONS, &s.mentions);
+    table(&mut out, kind::RESOLVED, &s.resolved);
+    table(&mut out, kind::INDEX, &s.index);
     table(&mut out, kind::HOLES, &s.holes);
     record(&mut out, kind::STRINGS, s.strings.len() as u64, &s.strings);
     let len = out.len() as u64;
@@ -1070,8 +1248,6 @@ impl<'a> Tables<'a> {
 pub struct Header {
     pub flags: u32,
     pub plan_hash: Hash16,
-    /// [`FORMAT_VERSION`] or [`FORMAT_VERSION_1`].
-    pub version: u32,
 }
 
 /// Reads and checks the header alone (magic, version, hash, length).
@@ -1082,11 +1258,14 @@ pub fn header(bytes: &[u8]) -> Result<Header, StateError> {
         return Err(corrupt("not a link state (magic)"));
     }
     let version = r.u32();
-    if version != FORMAT_VERSION && version != FORMAT_VERSION_1 {
+    // Version 1 (no MENTIONS, RESOLVED, INDEX, HOLES) is refused by name
+    // like any other: an update cannot start from it (IN-18a).
+    if version != FORMAT_VERSION {
         return Err(StateError::Version(format!(
-            "format version {version}, this mortar reads {FORMAT_VERSION_1} and {FORMAT_VERSION}"
+            "format version {version}, this mortar reads {FORMAT_VERSION}"
         )));
     }
+    let tables = kind::COUNT;
     let flags = r.u32();
     let (count, pad, len, plan_hash, hash) = (r.u32(), r.u32(), r.u64(), r.h(), r.h());
     if header_hash(head) != hash {
@@ -1095,20 +1274,19 @@ pub fn header(bytes: &[u8]) -> Result<Header, StateError> {
     if flags & !FLAG_UPDATING != 0 {
         return Err(corrupt(format!("unknown header flags {flags:#x}")));
     }
-    let want = if version == FORMAT_VERSION { kind::COUNT } else { kind::COUNT_1 };
-    if count != want || pad != 0 {
-        return Err(corrupt(format!("{count} tables, format {version} has {want}")));
+    if count != tables || pad != 0 {
+        return Err(corrupt(format!("{count} tables, format {version} has {tables}")));
     }
     if len != bytes.len() as u64 {
         return Err(corrupt(format!("{} bytes, the header says {len}", bytes.len())));
     }
-    Ok(Header { flags, plan_hash, version })
+    Ok(Header { flags, plan_hash })
 }
 
 /// Decodes and validates a state (IN-18a's reader). `version` is this
 /// mortar's version string: a state of another is `state-version`.
 pub fn decode(bytes: &[u8], version: &[u8]) -> Result<State, StateError> {
-    let Header { flags, plan_hash, version: format } = header(bytes)?;
+    let Header { flags, plan_hash } = header(bytes)?;
     let mut t = Tables { bytes, at: HEADER_LEN };
     let mut s = State {
         flags,
@@ -1135,12 +1313,12 @@ pub fn decode(bytes: &[u8], version: &[u8]) -> Result<State, StateError> {
         sized: t.rows(kind::SIZED)?,
         layout: t.one(kind::LAYOUT)?,
         leaves: t.rows(kind::LEAVES)?,
-        holes: Vec::new(),
+        mentions: t.rows(kind::MENTIONS)?,
+        resolved: t.rows(kind::RESOLVED)?,
+        index: t.rows(kind::INDEX)?,
+        holes: t.rows(kind::HOLES)?,
         strings: Vec::new(),
     };
-    if format == FORMAT_VERSION {
-        s.holes = t.rows(kind::HOLES)?;
-    }
     let (_, strings) = t.next(kind::STRINGS, 1)?;
     s.strings = strings.to_vec();
     if t.at != bytes.len() {
@@ -1428,6 +1606,96 @@ fn validate(s: &State) -> Result<(), StateError> {
     };
     if s.leaves.iter().any(|l| l[leaf_len..].iter().any(|&b| b != 0)) {
         return Err(corrupt("LEAVES: bytes past the digest not zero"));
+    }
+    validate_delta(s)
+}
+
+/// The checks of version 2's delta tables: references in range, rows
+/// sorted and unique, enumerations known.
+fn validate_delta(s: &State) -> Result<(), StateError> {
+    let strings = s.strings.len() as u64;
+    let str_ok = |x: Str| u64::from(x.off) + u64::from(x.len) <= strings;
+    let (files, symbols, sections) = (s.files.len(), s.symbols.len(), s.sections.len());
+    let reference = |n: usize, v: u32, none: bool| (v as usize) < n || (none && v == NONE);
+    let bad = |table: u32, row: usize, what: &str| {
+        corrupt(format!("{} row {row}: {what}", kind::name(table)))
+    };
+    for (i, m) in s.mentions.iter().enumerate() {
+        let ok = reference(files, m.file, false)
+            && reference(symbols, m.symbol, false)
+            && m.kind <= def_kind::COMMON
+            && reference(sections, m.section, true)
+            && (m.kind == def_kind::SECTION) == (m.section != NONE);
+        if !ok {
+            return Err(bad(kind::MENTIONS, i, "field out of range"));
+        }
+    }
+    for (i, w) in s.mentions.windows(2).enumerate() {
+        if (w[0].file, w[0].symbol) >= (w[1].file, w[1].symbol) {
+            return Err(bad(kind::MENTIONS, i + 1, "rows not sorted"));
+        }
+    }
+    // RESOLVED: the keys' rows by symbol, then the groups' by name, then
+    // the live files' by file.
+    let mut last: (u8, u32, &[u8]) = (0, 0, &[]);
+    for (i, r) in s.resolved.iter().enumerate() {
+        let ok = match r.kind {
+            def_kind::UNDEFINED..=def_kind::SHARED => {
+                reference(symbols, r.symbol, false)
+                    && reference(files, r.file, true)
+                    && reference(sections, r.section, true)
+                    && r.name == Str::default()
+            }
+            def_kind::COMDAT => {
+                r.symbol == NONE
+                    && reference(files, r.file, false)
+                    && r.section == NONE
+                    && str_ok(r.name)
+            }
+            def_kind::LIVE => {
+                r.symbol == NONE
+                    && reference(files, r.file, false)
+                    && r.section == NONE
+                    && r.name == Str::default()
+            }
+            _ => false,
+        };
+        if !ok {
+            return Err(bad(kind::RESOLVED, i, "field out of range"));
+        }
+        let class = match r.kind {
+            def_kind::COMDAT => 1,
+            def_kind::LIVE => 2,
+            _ => 0,
+        };
+        let key: (u8, u32, &[u8]) = match class {
+            0 => (0, r.symbol, &[]),
+            1 => (1, 0, s.str(r.name)),
+            _ => (2, r.file, &[]),
+        };
+        if i > 0 && key <= last {
+            return Err(bad(kind::RESOLVED, i, "rows not sorted"));
+        }
+        last = key;
+    }
+    for (i, x) in s.index.iter().enumerate() {
+        let ok = reference(sections, x.unit, false)
+            && match x.kind {
+                index_kind::GLOBAL | index_kind::SLOT => reference(symbols, x.target, false),
+                index_kind::SECTION
+                | index_kind::EH_FRAME
+                | index_kind::LINK_ORDER
+                | index_kind::LOCAL_SLOT => reference(sections, x.target, false),
+                _ => false,
+            };
+        if !ok {
+            return Err(bad(kind::INDEX, i, "field out of range"));
+        }
+    }
+    for (i, w) in s.index.windows(2).enumerate() {
+        if w[0] >= w[1] {
+            return Err(bad(kind::INDEX, i + 1, "rows not sorted"));
+        }
     }
     Ok(())
 }
