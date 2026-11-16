@@ -126,6 +126,7 @@ fn x64_walk(image: &Image<'_>, entry: u64, slot: u64) -> Result<Walk, (String, u
 /// counting the return address (the CFA is `%rsp` + that at the
 /// instruction): 8 at the entry, 8 more per `push`. Kept on an error too:
 /// what was reached before it.
+#[allow(clippy::too_many_lines)] // one arm per instruction the walk knows
 fn x64_walk_depths(
     image: &Image<'_>,
     entry: u64,

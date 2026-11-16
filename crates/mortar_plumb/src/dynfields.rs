@@ -175,7 +175,7 @@ fn tables(image: &Image<'_>, out: &DynOut, v: &mut Vec<Finding>) {
 fn versym_zero(out: &DynOut, v: &mut Vec<Finding>) {
     let Some(vs) = &out.versym else { return };
     for (j, s) in out.syms.iter().enumerate().skip(1) {
-        if s.defined() && vs.get(j).is_some_and(|&x| x & 0x7fff == 0) {
+        if s.defined() && vs.get(j).is_some_and(|&x| x.trailing_zeros() >= 15) {
             v.push(sym_fd(
                 8,
                 &s.name,

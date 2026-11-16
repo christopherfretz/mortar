@@ -483,6 +483,9 @@ pub fn run_sections(
     run_with(output, inputs, map, ctx, &Options { threads, window, sections, reseal: true })
 }
 
+/// A byte's verdict: caught per flip, the new rules per flip, a panic.
+type Verdict = ([bool; 2], [Vec<String>; 2], bool);
+
 /// The sweep as `opts` says.
 ///
 /// # Errors
@@ -552,7 +555,6 @@ pub fn run_with(
             }
         }
     }
-    type Verdict = ([bool; 2], [Vec<String>; 2], bool);
     let judge = |&(o, _): &(usize, Byte)| -> Verdict {
         let mut r = [false; 2];
         let mut rules: [Vec<String>; 2] = [Vec::new(), Vec::new()];
