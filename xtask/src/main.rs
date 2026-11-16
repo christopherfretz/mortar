@@ -8,6 +8,7 @@
 //!   cargo xtask plumb <output> --map <file> ...    the verifier (spec/plumb.md §8)
 //!   cargo xtask mason [programs|census|setup|libcxx|verify] ...  the Mason lane (tests/mason/README.md)
 //!   cargo xtask meta [write|dump] ...              Mason metadata: test producer, dumper (spec/meta.md §12)
+//!   cargo xtask incr-oracle [--quick] ...          the incremental dry run's oracle lane (tests/incr-oracle)
 
 use std::process::ExitCode;
 
@@ -17,7 +18,8 @@ const USAGE: &str = "usage: cargo xtask ci [--quick] [--no-fail-fast] [--step fm
                      cargo xtask bench [options]   (cargo xtask bench --help)\n       \
                      cargo xtask plumb <output> --map <file> --map-format <format> ...\n       \
                      cargo xtask mason [programs|census|setup|libcxx|verify] ...   (tests/mason/README.md)\n       \
-                     cargo xtask meta [write|dump] ...   (cargo xtask meta)\n";
+                     cargo xtask meta [write|dump] ...   (cargo xtask meta)\n       \
+                     cargo xtask incr-oracle [--quick] [--only <scenario>,...] [-j <n>] [--keep]\n";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -46,6 +48,8 @@ fn main() -> ExitCode {
         Some("mason") => xtask::mason::main(&args[1..]),
         #[cfg(unix)]
         Some("meta") => xtask::meta::main(&args[1..]),
+        #[cfg(unix)]
+        Some("incr-oracle") => xtask::incr_oracle::main(&args[1..]),
         _ => {
             eprint!("{USAGE}");
             ExitCode::from(2)

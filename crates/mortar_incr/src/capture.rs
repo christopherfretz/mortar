@@ -198,7 +198,7 @@ pub fn extra(link: &Link<'_, '_>) -> crate::delta::Extra {
         res.sections.iter().map(|(id, _)| res.sh_index(id).map_or(0, |(_, i)| i.0)).collect();
     let mut hashes: Vec<Option<Option<[u8; 16]>>> = vec![None; link.split.frags.len() as usize];
     let mut frags = Vec::new();
-    for row in link.split.merge_of.iter() {
+    for row in &link.split.merge_of {
         let Some(out) = link.assignment.out(row.section) else { continue };
         let mut seen = Vec::new();
         for p in row.pieces.slots() {

@@ -12,7 +12,7 @@
 
 use std::collections::HashMap;
 
-use crate::format::{FileRow, State, StatRow, def_kind, stat_tag};
+use crate::format::{FileRow, StatRow, State, def_kind, stat_tag};
 
 /// The stat rule's verdict on one path (IN-22).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -156,6 +156,7 @@ pub fn live_files(s: &State) -> Vec<bool> {
 }
 
 /// Detects what changed from `old` to `new` (IN-22..IN-24).
+#[allow(clippy::too_many_lines)] // paths, then files, then the old side, in that order
 #[must_use]
 pub fn detect(old: &State, new: &State) -> Changes {
     let mut c = Changes::default();
@@ -208,9 +209,7 @@ pub fn detect(old: &State, new: &State) -> Changes {
     }
     for (n, f) in new.files.iter().enumerate() {
         let old_row = c.new_files[n].0;
-        let state = if !new_live[n] {
-            FileState::Dead
-        } else {
+        let state = if new_live[n] {
             match old_row {
                 None => FileState::Appeared,
                 Some(o) if !old_live[o as usize] => FileState::Extracted,
@@ -225,6 +224,8 @@ pub fn detect(old: &State, new: &State) -> Changes {
                     if same { FileState::Unchanged } else { FileState::Changed }
                 }
             }
+        } else {
+            FileState::Dead
         };
         c.new_files[n].1 = state;
     }
@@ -263,7 +264,11 @@ pub fn detect(old: &State, new: &State) -> Changes {
     c.script_changed = c
         .paths
         .iter()
-        .find(|(s, p)| *s != PathState::Clean && *s != PathState::HashedSame && !file_paths.contains(p.as_slice()))
+        .find(|(s, p)| {
+            *s != PathState::Clean
+                && *s != PathState::HashedSame
+                && !file_paths.contains(p.as_slice())
+        })
         .map(|(_, p)| p.clone());
     c
 }

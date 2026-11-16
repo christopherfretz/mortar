@@ -66,7 +66,7 @@ pub struct Session {
     /// The state read, kept for the dry run of `--incremental-report`
     /// (WP-063) when it passed every check; `None` otherwise, so that a
     /// link without the report keeps nothing.
-    old: Option<State>,
+    old: Option<Box<State>>,
     start: Instant,
 }
 
@@ -248,7 +248,7 @@ pub fn start(parsed: &Parsed, cwd: &Path, out_path: &Path, diagnostics: &Collect
     } else {
         check(&state_path, plan_hash, out_path)
     };
-    let old = old.filter(|_| report.is_some() && reason == "update-not-implemented");
+    let old = old.filter(|_| report.is_some() && reason == "update-not-implemented").map(Box::new);
     if update {
         emit(diagnostics, 2, Diagnostic::error(Kind::IncrementalUpdateFailed { reason }));
         return Start::Failed;
@@ -486,9 +486,10 @@ impl Session {
                 }
             }
         }
-        let (changed, refilled) = dry
-            .as_ref()
-            .map_or((f.inputs.files.len().saturating_sub(1) as usize, 0), |d| (d.changed, d.refilled));
+        let (changed, refilled) =
+            dry.as_ref().map_or((f.inputs.files.len().saturating_sub(1) as usize, 0), |d| {
+                (d.changed, d.refilled)
+            });
         let mut line = format!(
             "incremental: full ({}) changed={changed} refilled={refilled} bytes={} time={:.3}\n",
             self.reason,
@@ -561,15 +562,14 @@ impl Session {
         };
         let hashes = f.pool.map(f.inputs.files.len() as usize, |i| hash_of(FileId(i as u32)));
         let file_hash = |id: FileId| hashes.get(id.0 as usize).copied().flatten();
-        let mut state =
-            mortar_incr::capture::capture(
-                &link,
-                &keys,
-                &f.layout,
-                &mut strings,
-                &file_hash,
-                f.arch.get(),
-            )?;
+        let mut state = mortar_incr::capture::capture(
+            &link,
+            &keys,
+            &f.layout,
+            &mut strings,
+            &file_hash,
+            f.arch.get(),
+        )?;
         state.plan_hash = self.plan_hash;
         for s in &self.stamps {
             state.stat.push(StatRow {
@@ -663,13 +663,8 @@ fn dry_run(old: &State, new: &State, f: &Front<'_>) -> DryRun {
         split: &f.merge.split,
     };
     let extra = mortar_incr::capture::extra(&link);
-    let delta = mortar_incr::delta::compute(
-        old,
-        new,
-        &changes,
-        &extra,
-        mortar_incr::delta::Drop::NONE,
-    );
+    let delta =
+        mortar_incr::delta::compute(old, new, &changes, &extra, mortar_incr::delta::Drop::NONE);
     let t2 = Instant::now();
     let mut lines = mortar_incr::delta::report(old, new, &changes, &delta, &extra);
     lines.truncate(lines.len().saturating_sub("delta end\n".len()));

@@ -125,15 +125,19 @@ pub const ROWS: [(&str, u32, &[&str]); 14] = [
     ("eh-frame", reason::EH, &[]),
     ("eh-ref", reason::EH_REF, &[]),
     ("chunks", reason::HEADERS | reason::GAPS, &[]),
-    ("fallbacks", 0, &[
-        "tls-layout-changed",
-        "symbol-kind-changed",
-        "new-output-section",
-        "property-changed",
-        "link-order-moved",
-        "inputs-reordered",
-        "options-changed",
-    ]),
+    (
+        "fallbacks",
+        0,
+        &[
+            "tls-layout-changed",
+            "symbol-kind-changed",
+            "new-output-section",
+            "property-changed",
+            "link-order-moved",
+            "inputs-reordered",
+            "options-changed",
+        ],
+    ),
 ];
 
 /// What a mutation (IN-63b) drops: reason bits and fall-back names.
@@ -240,7 +244,7 @@ const TAG_SYNTHETIC: u8 = 6;
 /// A global key's identity: kind (global, versioned), name, version.
 type KeyId<'s> = (u8, &'s [u8], &'s [u8]);
 
-fn key_id<'s>(s: &'s State, row: u32) -> Option<KeyId<'s>> {
+fn key_id(s: &State, row: u32) -> Option<KeyId<'_>> {
     let y = s.symbols.get(row as usize)?;
     Some((y.kind, s.str(y.name), s.str(y.version)))
 }
@@ -288,7 +292,11 @@ impl<'s> Side<'s> {
         let name = o.map_or_else(|| self.s.str(c.name), |o| self.s.str(o.name));
         let ordinal = o.map_or(c.ordinal, |o| o.ordinal);
         let start = self.out_start.get(c.out as usize).copied().unwrap_or(c.offset);
-        Some(Pos::NonAlloc(name, ordinal, c.offset.wrapping_sub(start).wrapping_add(x.place_offset)))
+        Some(Pos::NonAlloc(
+            name,
+            ordinal,
+            c.offset.wrapping_sub(start).wrapping_add(x.place_offset),
+        ))
     }
 
     fn addr(&self, row: u32) -> Option<u64> {
@@ -364,7 +372,9 @@ fn slot_list<'s>(s: &'s State, file: &dyn Fn(u32) -> Option<u32>) -> Vec<SlotKey
     s.slots
         .iter()
         .map(|x| match s.symbols.get(x.symbol as usize) {
-            Some(y) if y.kind == 2 => (x.kind, Some((2, s.str(y.name), &[][..])), file(y.file), y.ordinal),
+            Some(y) if y.kind == 2 => {
+                (x.kind, Some((2, s.str(y.name), &[][..])), file(y.file), y.ordinal)
+            }
             _ => (x.kind, key_id(s, x.symbol), None, 0),
         })
         .collect()
@@ -373,7 +383,15 @@ fn slot_list<'s>(s: &'s State, file: &dyn Fn(u32) -> Option<u32>) -> Vec<SlotKey
 fn patch_view<'s>(s: &Side<'s>) -> Vec<(u8, u64, Option<KeyId<'s>>, u64, u64)> {
     s.s.patches
         .iter()
-        .map(|p| (p.kind, p.offset, key_id(s.s, p.symbol), p.value, s.chunk(p.chunk).map_or(0, |c| c.addr)))
+        .map(|p| {
+            (
+                p.kind,
+                p.offset,
+                key_id(s.s, p.symbol),
+                p.value,
+                s.chunk(p.chunk).map_or(0, |c| c.addr),
+            )
+        })
         .collect()
 }
 
@@ -391,9 +409,15 @@ impl Set {
 }
 
 /// The delta from `old` to `new` and the refill set (IN-25..IN-29).
-#[allow(clippy::too_many_lines)] // IN-27's rows, in its order
+#[allow(clippy::too_many_lines, clippy::many_single_char_names, clippy::similar_names)] // IN-27's rows, in its order
 #[must_use]
-pub fn compute(old: &State, new: &State, changes: &Changes, extra: &Extra, drop: Drop<'_>) -> Delta {
+pub fn compute(
+    old: &State,
+    new: &State,
+    changes: &Changes,
+    extra: &Extra,
+    drop: Drop<'_>,
+) -> Delta {
     let mut d = Delta::default();
     let (a, b) = (Side::new(old), Side::new(new));
     let nfile = |row: u32| changes.new_files.get(row as usize).map_or(FileState::Dead, |f| f.1);
@@ -410,7 +434,9 @@ pub fn compute(old: &State, new: &State, changes: &Changes, extra: &Extra, drop:
         .sections
         .iter()
         .enumerate()
-        .map(|(i, x)| ((x.file, x.anchor_kind, new.str(x.anchor), new.str(x.name), x.ordinal), i as u32))
+        .map(|(i, x)| {
+            ((x.file, x.anchor_kind, new.str(x.anchor), new.str(x.name), x.ordinal), i as u32)
+        })
         .collect();
     let mut sec_o2n: Vec<u32> = vec![NONE; old.sections.len()];
     let mut sec_n2o: Vec<u32> = vec![NONE; new.sections.len()];
@@ -434,7 +460,11 @@ pub fn compute(old: &State, new: &State, changes: &Changes, extra: &Extra, drop:
             .iter()
             .filter(|x| !o.contains(x))
             .map(|x| format!("+{}", String::from_utf8_lossy(&x.0)))
-            .chain(o.iter().filter(|x| !n.contains(x)).map(|x| format!("-{}", String::from_utf8_lossy(&x.0))))
+            .chain(
+                o.iter()
+                    .filter(|x| !n.contains(x))
+                    .map(|x| format!("-{}", String::from_utf8_lossy(&x.0))),
+            )
             .collect();
         let detail = if diff.is_empty() {
             format!("{} segments, now {}", old.segments.len(), new.segments.len())
@@ -462,8 +492,13 @@ pub fn compute(old: &State, new: &State, changes: &Changes, extra: &Extra, drop:
         }
         let Some(n) = n else { continue };
         if last.is_some_and(|(_, l)| l > n) {
-            let name = |s: &State, r: usize| String::from_utf8_lossy(s.str(s.files[r].path)).into_owned();
-            fallback(&mut d, "inputs-reordered", format!("{} moved before {}", name(old, o), name(new, n as usize)));
+            let name =
+                |s: &State, r: usize| String::from_utf8_lossy(s.str(s.files[r].path)).into_owned();
+            fallback(
+                &mut d,
+                "inputs-reordered",
+                format!("{} moved before {}", name(old, o), name(new, n as usize)),
+            );
             break;
         }
         last = Some((o, n));
@@ -479,8 +514,13 @@ pub fn compute(old: &State, new: &State, changes: &Changes, extra: &Extra, drop:
             if tp_a != tp_b {
                 d.symbols.tls += 1;
                 let name = String::from_utf8_lossy(old.str(x.name)).into_owned();
-                let file = String::from_utf8_lossy(old.str(old.files[x.file as usize].path)).into_owned();
-                fallback(&mut d, "tls-layout-changed", format!("{file}:{name} {tp_a:#x} -> {tp_b:#x}"));
+                let file =
+                    String::from_utf8_lossy(old.str(old.files[x.file as usize].path)).into_owned();
+                fallback(
+                    &mut d,
+                    "tls-layout-changed",
+                    format!("{file}:{name} {tp_a:#x} -> {tp_b:#x}"),
+                );
             }
         }
     }
@@ -498,19 +538,39 @@ pub fn compute(old: &State, new: &State, changes: &Changes, extra: &Extra, drop:
             _ => flipped[n] = true,
         }
     }
-    // Merged sections: a fragment whose offset differs, or that is in one
-    // link only, or a hash with several offsets (ordinal rows).
-    let frag_map = |s: &'_ State| -> HashMap<(Vec<u8>, u32, Hash16), Option<u64>> {
+    // Merged sections: a fragment whose place differs, or that is in one
+    // link only, or a hash with several offsets (ordinal rows). A FRAGS
+    // offset is relative to its output section's merged chunk, so the
+    // place is that chunk's address (allocated) or its offset in the
+    // output section (non-allocated) plus the offset: a merged chunk that
+    // moves moves every fragment in it (the oracle's `os` scenario).
+    let frag_map = |side: &Side<'_>| -> HashMap<(Vec<u8>, u32, Hash16), Option<u64>> {
+        let s = side.s;
+        let mut base: HashMap<u32, Option<u64>> = HashMap::new();
+        for c in &s.chunks {
+            if c.tag == TAG_MERGED {
+                let at = if c.sh_flags & SHF_ALLOC != 0 {
+                    c.addr
+                } else {
+                    c.offset.wrapping_sub(
+                        side.out_start.get(c.out as usize).copied().unwrap_or(c.offset),
+                    )
+                };
+                // Several merged chunks of one output section: no one base.
+                base.entry(c.out).and_modify(|e| *e = None).or_insert(Some(at));
+            }
+        }
         let mut m: HashMap<(Vec<u8>, u32, Hash16), Option<u64>> = HashMap::new();
         for f in &s.frags {
             let Some(o) = s.outsecs.get(f.out as usize) else { continue };
             let k = (s.str(o.name).to_vec(), o.ordinal, f.hash);
-            let v = if f.ordinal == NONE { Some(f.offset) } else { None };
+            let at = base.get(&f.out).copied().flatten();
+            let v = if f.ordinal == NONE { at.map(|b| b.wrapping_add(f.offset)) } else { None };
             m.entry(k).and_modify(|e| *e = None).or_insert(v);
         }
         m
     };
-    let (fa, fb) = (frag_map(old), frag_map(new));
+    let (fa, fb) = (frag_map(&a), frag_map(&b));
     let mut merged_moved = vec![false; nsec];
     let mut frags_changed = fa.len() != fb.len();
     for (sec, out, h) in &extra.frags {
@@ -535,7 +595,10 @@ pub fn compute(old: &State, new: &State, changes: &Changes, extra: &Extra, drop:
         while k < old.eh_records.len() && k < new.eh_records.len() {
             let (x, y) = (&old.eh_records[k], &new.eh_records[k]);
             let file = new.sections.get(y.section as usize).map_or(NONE, |s| s.file);
-            if sec_o2n.get(x.section as usize) != Some(&y.section) || x.piece != y.piece || !unchanged_new(file) {
+            if sec_o2n.get(x.section as usize) != Some(&y.section)
+                || x.piece != y.piece
+                || !unchanged_new(file)
+            {
                 break;
             }
             k += 1;
@@ -666,7 +729,8 @@ pub fn compute(old: &State, new: &State, changes: &Changes, extra: &Extra, drop:
         // Attributes (IN-26 v1): type, binding, st_other, or became
         // absolute or common, for a key an unchanged file mentions.
         let special = |r: &ResolvedRow| matches!(r.kind, def_kind::ABSOLUTE | def_kind::COMMON);
-        let attrs = defined(&o) && defined(&n) && (o.typ, o.bind, o.other) != (n.typ, n.bind, n.other);
+        let attrs =
+            defined(&o) && defined(&n) && (o.typ, o.bind, o.other) != (n.typ, n.bind, n.other);
         let became = o.kind != n.kind && (special(&o) || special(&n));
         if attrs || became {
             d.symbols.attrs += 1;
@@ -690,7 +754,9 @@ pub fn compute(old: &State, new: &State, changes: &Changes, extra: &Extra, drop:
         } else {
             let value = match n.kind {
                 def_kind::SECTION => {
-                    sec_new(false, o.section) != n.section || o.value != n.value || section_moved(n.section)
+                    sec_new(false, o.section) != n.section
+                        || o.value != n.value
+                        || section_moved(n.section)
                 }
                 def_kind::ABSOLUTE => o.value != n.value,
                 def_kind::COMMON => {
@@ -727,7 +793,7 @@ pub fn compute(old: &State, new: &State, changes: &Changes, extra: &Extra, drop:
     };
     let (ka, kb) = (keepers(old, false), keepers(new, true));
     let mut changed_groups: HashSet<Vec<u8>> = HashSet::new();
-    for (sig, keeper) in ka.iter() {
+    for (sig, keeper) in &ka {
         if kb.get(sig) != Some(keeper) {
             changed_groups.insert(sig.clone());
         }
@@ -745,15 +811,23 @@ pub fn compute(old: &State, new: &State, changes: &Changes, extra: &Extra, drop:
             continue;
         }
         let grouped = x.anchor_kind == 1 && changed_groups.contains(new.str(x.anchor));
-        let (row, file_row) =
-            if grouped { (reason::COMDAT, reason::COMDAT_FILE) } else { (reason::LIVE, reason::LIVE_FILE) };
+        let (row, file_row) = if grouped {
+            (reason::COMDAT, reason::COMDAT_FILE)
+        } else {
+            (reason::LIVE, reason::LIVE_FILE)
+        };
         if b.placed(n as u32) {
             d.symbols.live += 1;
             set.add(n as u32, row);
         } else {
             d.symbols.dead += 1;
         }
-        for &u in eh_of.get(&x.file).into_iter().flatten().chain(nonalloc_of.get(&x.file).into_iter().flatten()) {
+        for &u in eh_of
+            .get(&x.file)
+            .into_iter()
+            .flatten()
+            .chain(nonalloc_of.get(&x.file).into_iter().flatten())
+        {
             set.add(u, file_row);
         }
         for m in globals_in(new, n as u32) {
@@ -808,12 +882,14 @@ pub fn compute(old: &State, new: &State, changes: &Changes, extra: &Extra, drop:
         }
     }
     // Slot tables (rows 5 and 7).
-    let slot_names: [&[u8]; 6] = [b".got", b".got.plt", b".plt", b".iplt", b".rela.plt", b".rela.iplt"];
+    let slot_names: [&[u8]; 6] =
+        [b".got", b".got.plt", b".plt", b".iplt", b".rela.plt", b".rela.iplt"];
     let slot_chunks_moved = slot_names.iter().any(|n| {
         a.chunk_by_name(n).map(|c| (c.addr, c.size)) != b.chunk_by_name(n).map(|c| (c.addr, c.size))
     });
     let slots_changed = slot_chunks_moved
-        || slot_list(old, &|f| file_id(old, false, f)) != slot_list(new, &|f| file_id(new, true, f));
+        || slot_list(old, &|f| file_id(old, false, f))
+            != slot_list(new, &|f| file_id(new, true, f));
     if slots_changed {
         for &u in &slot_users {
             set.add(u, reason::SLOTS);
@@ -826,7 +902,8 @@ pub fn compute(old: &State, new: &State, changes: &Changes, extra: &Extra, drop:
     let redirect_view = |s: &'_ State, side: bool| -> Vec<(u32, u32, u64)> {
         s.redirects.iter().map(|r| (sec_new(side, r.section), r.patch, r.offset)).collect()
     };
-    let patches_changed = patch_view(&a) != patch_view(&b) || redirect_view(old, false) != redirect_view(new, true);
+    let patches_changed =
+        patch_view(&a) != patch_view(&b) || redirect_view(old, false) != redirect_view(new, true);
     if patches_changed {
         for r in &new.redirects {
             set.add(r.section, reason::PATCH);
@@ -861,7 +938,9 @@ pub fn compute(old: &State, new: &State, changes: &Changes, extra: &Extra, drop:
             FileState::Unchanged => {
                 if n == NONE || flipped[n as usize] {
                     let nx = new.sections.get(n as usize);
-                    if nx.is_some_and(|nx| nx.anchor_kind == 1 && changed_groups.contains(new.str(nx.anchor))) {
+                    if nx.is_some_and(|nx| {
+                        nx.anchor_kind == 1 && changed_groups.contains(new.str(nx.anchor))
+                    }) {
                         reason::COMDAT
                     } else {
                         reason::LIVE
@@ -922,13 +1001,16 @@ pub fn compute(old: &State, new: &State, changes: &Changes, extra: &Extra, drop:
         }
         let key = b.chunk_key(c);
         let before = old_chunks.get(&key);
-        let shifted = before.is_none_or(|o| (o.addr, o.offset, o.size) != (c.addr, c.offset, c.size));
+        let shifted =
+            before.is_none_or(|o| (o.addr, o.offset, o.size) != (c.addr, c.offset, c.size));
         let r = match c.tag {
             0..=2 => reason::HEADERS,
             TAG_SYNTHETIC | 7 | 8 => reason::SYNTH,
             TAG_MERGED if frags_changed || shifted => reason::SYNTH,
             TAG_PATCHES if patches_changed || shifted => reason::PATCH,
-            TAG_BODY if shifted || touched.contains(&(i as u32)) || old_touched.contains(&key) => reason::GAPS,
+            TAG_BODY if shifted || touched.contains(&(i as u32)) || old_touched.contains(&key) => {
+                reason::GAPS
+            }
             _ => 0,
         };
         let r = r & !drop.reasons;
@@ -938,8 +1020,7 @@ pub fn compute(old: &State, new: &State, changes: &Changes, extra: &Extra, drop:
     }
     // ---- policy (IN-16) ---------------------------------------------------
     let live_inputs = changes.new_files.iter().filter(|f| f.1 != FileState::Dead).count() as u64;
-    let changed_inputs =
-        changes.new_files.iter().filter(|f| f.1.refills_all()).count() as u64;
+    let changed_inputs = changes.new_files.iter().filter(|f| f.1.refills_all()).count() as u64;
     let (num, den) = TOO_MUCH;
     if d.unit_bytes * den > d.alloc_bytes * num {
         d.policy = Some(format!("refilled-bytes={} alloc-bytes={}", d.unit_bytes, d.alloc_bytes));
@@ -955,6 +1036,7 @@ pub fn compute(old: &State, new: &State, changes: &Changes, extra: &Extra, drop:
 /// `%` are written `%XX`; an empty field is `-`.
 #[must_use]
 pub fn field(b: &[u8]) -> String {
+    use std::fmt::Write as _;
     if b.is_empty() {
         return "-".to_owned();
     }
@@ -963,7 +1045,7 @@ pub fn field(b: &[u8]) -> String {
         if c > b' ' && c < 0x7f && c != b'%' {
             out.push(char::from(c));
         } else {
-            out.push_str(&format!("%{c:02X}"));
+            let _ = write!(out, "%{c:02X}");
         }
     }
     out
@@ -983,6 +1065,7 @@ const TAG_NAMES: [&str; 9] = [
 
 /// The report's `delta` lines (after the `incremental:` line), in the
 /// order `docs/cli.md` §3.13 gives.
+#[allow(clippy::too_many_lines, clippy::many_single_char_names)] // one block per line kind, in order
 #[must_use]
 pub fn report(old: &State, new: &State, changes: &Changes, d: &Delta, extra: &Extra) -> String {
     use std::fmt::Write as _;
@@ -1014,7 +1097,8 @@ pub fn report(old: &State, new: &State, changes: &Changes, d: &Delta, extra: &Ex
         st.files.get(row as usize).map_or_else(
             || "- -".to_owned(),
             |f| {
-                let member = if f.member != 0 { field(st.str(f.member_name)) } else { "-".to_owned() };
+                let member =
+                    if f.member != 0 { field(st.str(f.member_name)) } else { "-".to_owned() };
                 format!("{} {member}", field(st.str(f.path)))
             },
         )
@@ -1041,7 +1125,18 @@ pub fn report(old: &State, new: &State, changes: &Changes, d: &Delta, extra: &Ex
     let _ = writeln!(
         s,
         "delta symbols new={} gone={} definer={} value={} size={} kind={} attrs={} comdat={} commons={} live={} dead={} tls={}",
-        y.new, y.gone, y.definer, y.value, y.size, y.kind, y.attrs, y.comdat, y.commons, y.live, y.dead, y.tls
+        y.new,
+        y.gone,
+        y.definer,
+        y.value,
+        y.size,
+        y.kind,
+        y.attrs,
+        y.comdat,
+        y.commons,
+        y.live,
+        y.dead,
+        y.tls
     );
     for (what, name) in &d.symbol_lines {
         let _ = writeln!(s, "delta symbol {what} {}", field(name.as_bytes()));

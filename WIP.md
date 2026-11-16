@@ -1,10 +1,13 @@
 # WIP — WP-063 (delta, refill set, dry run)
 
 Done:
-- format v2 (crates/mortar_incr/src/format.rs): MENTIONS 32, RESOLVED 33, INDEX 34; v1 still decodes (State.format).
-- capture of the new tables (crates/mortar_incr/src/tables.rs), `capture()` takes `arch`.
-- detect.rs (IN-22..24 from two states), delta.rs (compute + report), wired in crates/mortar/src/incremental.rs (dry_run, old state kept only with the report).
-- parallel file/member hashes in incremental.rs `state()`.
+- format v2 (MENTIONS 32, RESOLVED 33, INDEX 34), capture, detect.rs, delta.rs, the dry run in incremental.rs.
+- the oracle lane tests/incr-oracle/ (oracle.py, run.py, src/), cargo test crates/mortar/tests/incr_oracle.rs (quick),
+  cargo xtask incr-oracle (full + mutations). Full run: 160 pairs pass.
+- merged chunks that move move their fragments (delta.rs frag_map), found by the `os` scenario.
+- spec/cli.md 3.13: the report format.
 
 Next:
-- run incremental tests; unit tests for delta (drop equivalence); oracle lane under tests/incr-oracle/; xtask entry; docs (incr.md IN-18a, cli.md §3.13, §7); record; measurements.
+- measurements on protoc -g (report vs none vs plain; static-identical).
+- spec/incr.md IN-18a (v2 tables), docs/ARCHITECTURE.md (mortar_incr -> mortar_arch), record spec/landed/incr/WP-063.md.
+- gate, push once, hosted run.

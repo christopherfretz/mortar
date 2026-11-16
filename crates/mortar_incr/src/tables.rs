@@ -11,15 +11,15 @@
 //! conservative answer (it may only add refills).
 
 use mortar_arch::{Arch, DemandClass, Site};
+use mortar_core::FileId;
 use mortar_core::id::{SectionId, SymKey, SymbolId};
 use mortar_core::inputs::{Inputs, Reader};
 use mortar_core::resolution::{Def, FileLive, SectionKind};
-use mortar_core::FileId;
+use mortar_elf::SymbolSection;
 use mortar_elf::consts::{SHF_ALLOC, SHF_LINK_ORDER, SHT_REL, SHT_RELA};
+use mortar_elf::symbol::SymbolIndex;
 use mortar_elf::symbol::SymbolTable;
 use mortar_elf::{Object, Rel, Rela, SectionIndex, Table};
-use mortar_elf::symbol::SymbolIndex;
-use mortar_elf::SymbolSection;
 
 use crate::capture::{Link, Symbols};
 use crate::format::{
@@ -339,10 +339,10 @@ fn index_file(
             }
             Err(_) => &[],
         };
-        let recs = records(inputs, file, object, row.reloc, buf)
+        let records = records(inputs, file, object, row.reloc, buf)
             .map_err(|e| format!("{}: {e}", path()))?;
-        for r in 0..recs.len() {
-            let Some((r_offset, r_sym, r_type)) = recs.get(r) else { continue };
+        for r in 0..records.len() {
+            let Some((r_offset, r_sym, r_type)) = records.get(r) else { continue };
             let slot = arch
                 .classify(r_type, Site { bytes, offset: r_offset })
                 .map_or(true, |h| uses_slot(h.class));
@@ -388,8 +388,7 @@ fn index_file(
             if target == SectionId(unit) {
                 continue;
             }
-            let into_eh =
-                res.sections.get(target).is_some_and(|t| t.kind == SectionKind::EhFrame);
+            let into_eh = res.sections.get(target).is_some_and(|t| t.kind == SectionKind::EhFrame);
             let kind = if into_eh { index_kind::EH_FRAME } else { index_kind::SECTION };
             s.index.push(IndexRow { unit, kind, target: target.0 });
         }

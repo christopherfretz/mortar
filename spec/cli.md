@@ -543,6 +543,71 @@ phase that reads it meets it.
 are parsed and refused (reserved for the update, WP-064). None of them
 is part of the normalized plan (IN-18b).
 
+#### The report (`--incremental-report[=FILE]`)
+
+The report is text, one record per line, written to FILE or to
+standard error. Its first line is IN-10's:
+
+    incremental: full (<reason>) changed=<files> refilled=<units> bytes=<written> time=<ms>
+
+When the link found and checked a state of its output that could be
+updated (the reason would be `update-not-implemented`), the dry run
+(WP-063) follows. It is IN-22's change detection, IN-25..29's delta and
+IN-27's refill set computed against the old state. The link then runs
+in full. The new side is the full link's own layout, so the set says
+which units an update laid out that way would rewrite. It is not yet
+the set of a slack-preserving update. `changed=` counts the files whose
+units are all refilled (IN-27 row 1); `refilled=` counts the units.
+
+Each dry-run line starts with `delta`. The words are separated by one
+space. A free-form field (a path, a name, a detail) is percent-encoded:
+every byte outside `0x21..0x7e`, and `%`, becomes `%XX` with upper-case
+hex digits. An empty field is `-`. The lines appear in this order:
+
+| line | when, and what |
+|---|---|
+| `delta inputs clean=N hashed-same=N changed=N added=N removed=N files-changed=N appeared=N extracted=N gone=N unextracted=N` | once. The first five count FILES paths by IN-22: clean by the stamp rule, hashed and equal, hashed and different, new, gone. The rest count the link's files (archive members included): changed, newly loaded, newly extracted from an archive; old files no longer loaded or no longer extracted. |
+| `delta path <state> <path>` | per path that is not clean. `<state>` is `hashed-same`, `changed`, `added` or `removed`. |
+| `delta stat-missed <path>` | per path whose stamp tuple was equal but whose content differed (`stat_missed`, IN-24). |
+| `delta file <state> <path> <member>` | per file whose units are all refilled (`changed`, `appeared`, `extracted`), then per old file that left (`gone`, `unextracted`). `<member>` is the archive member's name or `-`. |
+| `delta probe <path> <old> <new>` | per IN-23 probe whose answer changed: `present`, `absent` or `-`. |
+| `delta symbols new=N gone=N definer=N value=N size=N kind=N attrs=N comdat=N commons=N live=N dead=N tls=N` | once: IN-26's classes. |
+| `delta symbol <what> <name>` | per changed global key. `<what>` is one of the classes above. |
+| `delta fallback <reason> <detail>` | per correctness fall-back (IN-16) the delta found. An update would link in full. |
+| `delta policy too-much-changed <detail>` | when IN-16's policy limit would send an update to a full link. |
+| `delta refill units=N holes=N chunks=N bytes=N` | once. `bytes` is the units' total size. |
+| `delta unit <reasons> <path> <member> <shndx> <name>` | per refilled unit, in the new link's section order. `<shndx>` is the section's index in its file (as in `--mortar-map`). |
+| `delta hole <reasons> <path> <member> <shndx> <old address> <size> <name>` | per old unit whose bytes are not where the new link puts that unit. `<shndx>` is the index in the new link's file, or `-` when the file left. The address and size are hex; the address is `-` when the old unit was not allocated. |
+| `delta chunk <reasons> <tag> <chunk> <output section>` | per refilled chunk (headers, synthetic tables, merged sections, patches, a body's fill between units). |
+| `delta time detect=<ms> delta=<ms>` | the cost of detection, and of the delta and the report. |
+| `delta end` | last. A report without it is truncated. |
+
+`<reasons>` is a comma-separated list of these names:
+
+| name | meaning |
+|---|---|
+| `file` | IN-27 row 1: the unit's file changed, appeared or was extracted. |
+| `gone` | Row 2: its file left. |
+| `global` | Row 3: a global it names was defined elsewhere, moved, or changed value, size or kind. |
+| `comdat`, `comdat-file` | Row 4: a COMDAT keeper changed. These are the group's members and its symbols' referrers. The `-file` reason covers the old and new keepers' `.eh_frame` and non-allocated units. |
+| `slots` | Rows 5 and 7: it uses a GOT, PLT, IPLT or TLS slot, and the slot tables moved or changed. |
+| `moved`, `moved-ref`, `moved-file` | Row 6: the unit of an unchanged file moved. These are the unit itself, its referrers through its file's symbols, and its file's non-allocated units. |
+| `frag` | A fragment of a merged section of an unchanged file moved. This covers the section's referrers and the file's non-allocated units. |
+| `synthetic` | Row 7: a synthetic table (chunks). |
+| `patch` | Row 8: a patch or thunk was added, moved or removed. |
+| `liveness`, `liveness-file` | Row 9: `--gc-sections` liveness flipped. This covers the section, its globals' referrers, and its file's `.eh_frame` and non-allocated units. |
+| `eh-frame` | IN-34a: an `.eh_frame` contribution after the first record that differs. |
+| `eh-ref` | Row 10: a reference into an input `.eh_frame`. |
+| `headers`, `gaps` | The file, program and section headers, and a body's fill (chunks). |
+
+The fall-back reasons are IN-16's. The dry run raises
+`new-output-section`, `property-changed`, `options-changed`,
+`inputs-reordered`, `tls-layout-changed`, `symbol-kind-changed` and
+`link-order-moved`. Their triggers are listed in
+`spec/landed/incr/WP-063.md`.
+
+A link without `--incremental-report` computes no delta.
+
 ## 4. The table and the status of options
 
 ### 4.1 Rows
