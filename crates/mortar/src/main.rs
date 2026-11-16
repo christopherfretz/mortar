@@ -13,9 +13,7 @@ fn colored(choice: Color) -> bool {
     match choice {
         Color::Always => true,
         Color::Never => false,
-        Color::Auto => {
-            stderr_is_terminal() && std::env::var_os("TERM").is_none_or(|t| t != "dumb")
-        }
+        Color::Auto => stderr_is_terminal() && std::env::var_os("TERM").is_none_or(|t| t != "dumb"),
     }
 }
 

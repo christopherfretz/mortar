@@ -344,6 +344,26 @@ pub fn run_with(command: &mut Command, stdin: &[u8], timeout: Duration) -> Outco
     run_on(jobs::global(), command, stdin, timeout)
 }
 
+/// [`run_with`] with no input, and standard output and standard error
+/// given (`Some`) rather than captured (`None`): a pipe whose reader has
+/// gone, `/dev/full` (`spec/cli.md` §3.15). A stream given is empty in the
+/// [`Outcome`].
+///
+/// # Panics
+/// Panics if the process cannot be started.
+pub fn run_with_streams(
+    command: &mut Command,
+    stdout: Option<Stdio>,
+    stderr: Option<Stdio>,
+    timeout: Duration,
+) -> Outcome {
+    let _slot = jobs::global().acquire();
+    command.stdout(stdout.unwrap_or_else(Stdio::piped));
+    command.stderr(stderr.unwrap_or_else(Stdio::piped));
+    command.stdin(Stdio::null());
+    collect(command, Vec::new(), timeout)
+}
+
 /// [`run_with`] as a client of `client`.
 fn run_on(
     client: &jobs::Client,
@@ -355,26 +375,38 @@ fn run_on(
     // path, kill or panic by `Drop`); the time limit starts once it is held.
     let _slot = client.acquire();
     command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    collect(command, stdin.to_vec(), timeout)
+}
+
+/// Starts `command` (its streams set), feeds `stdin` to it when piped and
+/// reads its piped outputs until it ends or `timeout` passes.
+fn collect(command: &mut Command, stdin: Vec<u8>, timeout: Duration) -> Outcome {
     let mut child = spawn(command)
         .unwrap_or_else(|e| panic!("cannot run {}: {e}", command.get_program().display()));
-    let mut input = child.stdin.take().expect("piped stdin");
-    let mut out = child.stdout.take().expect("piped stdout");
-    let mut err = child.stderr.take().expect("piped stderr");
-    let stdin = stdin.to_vec();
+    let input = child.stdin.take();
+    let out = child.stdout.take();
+    let err = child.stderr.take();
+    let read = |pipe: Option<&mut dyn Read>| {
+        let mut buf = Vec::new();
+        if let Some(pipe) = pipe {
+            let _ = pipe.read_to_end(&mut buf);
+        }
+        buf
+    };
     let (stdout, stderr, status) = std::thread::scope(|scope| {
         // A child that exits early closes the pipe; that is not our error.
         scope.spawn(move || {
-            let _ = input.write_all(&stdin);
+            if let Some(mut input) = input {
+                let _ = input.write_all(&stdin);
+            }
         });
         let out_reader = scope.spawn(move || {
-            let mut buf = Vec::new();
-            let _ = out.read_to_end(&mut buf);
-            buf
+            let mut out = out;
+            read(out.as_mut().map(|o| o as &mut dyn Read))
         });
         let err_reader = scope.spawn(move || {
-            let mut buf = Vec::new();
-            let _ = err.read_to_end(&mut buf);
-            buf
+            let mut err = err;
+            read(err.as_mut().map(|e| e as &mut dyn Read))
         });
         let status = wait_until(&mut child, Instant::now() + timeout);
         (out_reader.join().unwrap_or_default(), err_reader.join().unwrap_or_default(), status)

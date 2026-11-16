@@ -48,7 +48,8 @@ pub enum Outcome {
     Done(String),
     /// The output file was written. `report` holds the link's warnings
     /// (rendered to standard error; none is an error), `stdout` the map
-    /// under `-M` (image.md I-77). The exit status is 0.
+    /// under `-M` (image.md I-77; empty from [`run`], which prints it
+    /// itself, `spec/cli.md` §3.15). The exit status is 0.
     Linked { report: Report, stdout: String },
     /// The link was refused or failed (`spec/diag.md` §7). The report is
     /// rendered to standard error; nothing goes to standard output, the
