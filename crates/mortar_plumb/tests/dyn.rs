@@ -57,6 +57,10 @@ const SOURCES: &[(&str, &str)] = src![
 /// Small sources written by the test itself.
 const SMALL: &[(&str, &str)] = &[
     ("hello.c", "#include <stdio.h>\nint main(void){puts(\"hi\");return 0;}\n"),
+    // AArch64's large-model local-exec sequence against the executable's
+    // own TLS variable, defined in another file (WP-082 follow-up 4).
+    ("tlsle_u.c", "extern __thread int gv;\nint main(void){return gv - 5;}\n"),
+    ("tlsle_d.c", "__thread int gv = 5;\n"),
     // P-D4's PT_GNU_STACK (WP-088): an object whose stack note asks for
     // an executable stack.
     (
@@ -594,6 +598,31 @@ fn build() -> Option<Corpus> {
                 );
             }
         }
+        // R1 in a dynamic executable (WP-082 follow-up 4, WP-088): the
+        // AArch64 large-model local-exec `movz`/`movk`/`movk` (TLSLE
+        // MOVW_TPREL_G2/G1_NC/G0_NC) against the executable's own `gv`;
+        // clean from the three linkers, and GNU ld's with the `G0_NC`
+        // `movk`'s immediate + 8 is R1.
+        if !x64 {
+            let d = b.dir(arch, "tlsle");
+            let large =
+                ["-O1", "-fno-pie", "-mcmodel=large", "-ftls-model=local-exec", "-mtls-size=48"];
+            b.obj(arch, &d, "tlsle_u.c", &large, "u.o");
+            b.obj(arch, &d, "tlsle_d.c", &["-O1"], "d.o");
+            b.link("tlsle", arch, &d, "le", &["-no-pie", "u.o", "d.o"], [CLEAN; 3]);
+            b.patched(
+                "tlsle",
+                arch,
+                &d,
+                "le.bfd",
+                "le.bfd.g0",
+                "le.bfd.map",
+                "le.bfd.line",
+                Linker::Bfd,
+                movk_g0_moved,
+                &["R1"],
+            );
+        }
         // S5 (every format since WP-088): the text PT_LOAD made PF_W, the
         // data PT_LOAD made PF_X, in each linker's lazy hello PIE.
         let hello = b.dir(arch, "hello");
@@ -1120,6 +1149,25 @@ fn plt0_jump_lowered(b: &mut [u8]) {
     b[o..o + 4].copy_from_slice(&v.to_le_bytes());
 }
 
+/// R1: the first `movk x<n>, #imm` (no shift) after a `movz ..., lsl #32`
+/// in `.text` gets imm + 8 (the large-model local-exec sequence's G0).
+fn movk_g0_moved(b: &mut [u8]) {
+    let s = sections(b);
+    let t = section(&s, ".text");
+    let w = |o: usize| le32(b, o);
+    let o = (t.3..t.3 + t.4 - 8)
+        .step_by(4)
+        .find(|&o| {
+            w(o) & 0xffe0_0000 == 0xd2c0_0000
+                && w(o + 4) & 0xffe0_0000 == 0xf2a0_0000
+                && w(o + 8) & 0xffe0_0000 == 0xf280_0000
+        })
+        .expect("movz lsl 32; movk lsl 16; movk")
+        + 8;
+    let v = w(o) + (8 << 5);
+    b[o..o + 4].copy_from_slice(&v.to_le_bytes());
+}
+
 /// The file offset of the last `STT_SECTION` entry of `.dynsym`.
 fn dynsym_section(b: &[u8]) -> usize {
     let s = sections(b);
@@ -1454,6 +1502,13 @@ fn s12_h1_irelative_before_jump_slot_is_p_d10() {
 #[test]
 fn s12_p_d10_plt_header_reads_its_words() {
     judge("PLT0");
+}
+
+// spec/plumb.md §4.7, R1 in stage 3 (WP-082 follow-up 4, WP-088): AArch64's
+// large-model local-exec against the executable's own TLS variable.
+#[test]
+fn r1_a64_large_model_local_exec_in_a_dynamic_executable() {
+    judge("tlsle");
 }
 
 // spec/plumb.md §12 P-D7 (WP-088): a reference's `.dynsym` section symbol

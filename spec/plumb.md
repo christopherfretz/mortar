@@ -3427,7 +3427,13 @@ from the file system (`line::Files`).
   `-z now` `_GLOBAL_OFFSET_TABLE_` is the `.got` word holding `_DYNAMIC`
   (GOT[0], after the PLT's slots); a GNU map's repeated `.eh_frame`
   placement of the first input is skipped; an output FDE covering a PLT
-  section (GNU ld x86-64) is the linker's, judged by E6 (§6.4).
+  section (GNU ld x86-64) is the linker's, judged by E6 (§6.4). The
+  executable's own TLS block is the engine's, so a local-exec sequence
+  against the executable's variable is R1's as in a static output
+  (AArch64's large-model `movz`/`movk`/`movk`, `MOVW_TPREL_G2`/`G1_NC`/
+  `G0_NC`, against a variable of another file: clean from the three
+  linkers, a moved `G0_NC` immediate is R1; `tests/dyn.rs`
+  `r1_a64_large_model_local_exec_in_a_dynamic_executable`, WP-088).
 
 - **Static-pie** (WP-089): §12.4.
 
