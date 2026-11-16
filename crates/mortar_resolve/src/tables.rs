@@ -507,6 +507,7 @@ impl View for InputsView<'_, '_> {
         let mut also = self.also[from..].iter().take_while(|a| a.0 == file).peekable();
         for ((index, sym), &key) in t.globals().zip(keys) {
             let Ok(place) = t.section_of(index, &sym) else { continue };
+            let (place, large) = crate::view::place_of(self.inputs.target.machine, place);
             if shared && !shared_mention(&sym, place) {
                 continue;
             }
@@ -531,6 +532,7 @@ impl View for InputsView<'_, '_> {
                 place,
                 value: sym.st_value,
                 size: sym.st_size,
+                large,
             });
         }
     }
@@ -544,6 +546,7 @@ impl View for InputsView<'_, '_> {
         let key = *self.inputs.sym_map_of(file).get((index.0 - first) as usize)?;
         let sym = t.get(index).ok()?;
         let place = t.section_of(index, &sym).ok()?;
+        let (place, large) = crate::view::place_of(self.inputs.target.machine, place);
         let at = self.also.binary_search_by(|a| (a.0, a.1).cmp(&(file, index.0))).ok();
         Some(Mention {
             index,
@@ -555,6 +558,7 @@ impl View for InputsView<'_, '_> {
             place,
             value: sym.st_value,
             size: sym.st_size,
+            large,
         })
     }
 
@@ -1119,18 +1123,9 @@ impl Ctx<'_, '_, '_> {
                 Diagnostic::refused(C::SymbolType, format!("{sym_type:#x}")).at(self.entry(*entry))
             }
             What::ReservedSection { entry, shndx } => {
-                // §3.3: the index is x86-64's large common only on x86-64
-                // (accepted there by `spec/x64.md` X-55, staged as this
-                // refusal until `.lbss` exists); elsewhere it is any
-                // reserved index (§2).
-                let name = if *shndx == mortar_elf::consts::SHN_X86_64_LCOMMON
-                    && self.inputs.target.machine == mortar_elf::Machine::X86_64
-                {
-                    "SHN_X86_64_LCOMMON".to_owned()
-                } else {
-                    format!("SHN {shndx:#x}")
-                };
-                Diagnostic::refused(C::Feature, name).at(self.entry(*entry))
+                // §2: a reserved index this spec does not name (x86-64's
+                // large common is a common there, §3.3, `view::place_of`).
+                Diagnostic::refused(C::Feature, format!("SHN {shndx:#x}")).at(self.entry(*entry))
             }
             What::Malformed { entry, why } => {
                 let what = match why {

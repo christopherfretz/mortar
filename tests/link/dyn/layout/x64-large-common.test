@@ -1,0 +1,78 @@
+# Large commons (spec/x64.md X-55; resolve.md §3.3, R-16): GCC's
+# `-fcommon` large array and gfortran's large COMMON block are
+# `SHN_X86_64_LCOMMON` symbols, allocated in `.lbss`, in PIE and `-no-pie`
+# executables, medium and large models. lld 22 makes them absolute (W9):
+# its PIE links are refused ("R_X86_64_GOTOFF64 cannot refer to absolute
+# symbol") and its C `-no-pie` programs die by SIGSEGV. mold 2.37.1
+# refuses them ("refers to a discarded COMDAT section probably due to an
+# ODR violation"). GNU ld's and mortar's run.
+#@ spec: x64.md "X-55"
+#@ spec: resolve.md "SHN_X86_64_LCOMMON"
+#@ arch: x86_64
+#@ requires: gfortran
+#@ xfail(lld): W9: lld makes SHN_X86_64_LCOMMON symbols absolute
+#@ xfail(mold): mold 2.37.1 refuses SHN_X86_64_LCOMMON ("refers to a discarded COMDAT section")
+
+cc -O2 -mcmodel=medium -fPIE -fcommon lg.c -o cm-pie.o
+cc -O2 -mcmodel=large -fno-pic -fcommon lg.c -o cl.o
+cc -O2 -fPIE ext.c -o ext.o
+fc -O2 -mcmodel=medium -fPIE lg.f90 -o fm-pie.o
+fc -O2 -mcmodel=large -fno-pic lg.f90 -o fl.o
+link gcc -pie cm-pie.o ext.o -o cm-pie
+link gcc -no-pie cl.o ext.o -o cl
+link gfortran -pie fm-pie.o -o fm-pie
+link gfortran -no-pie fl.o -o fl
+run cm-pie
+  stdout: 5 1 2 6 3 0 4 b 42
+run cl
+  stdout: 5 1 2 6 3 0 4 b 42
+run fm-pie
+  stdout: 2.5 4.5 4
+run fl
+  stdout: 2.5 4.5 4
+check nm cl
+  has: B lc$
+check readelf -sW cl
+  has: OBJECT GLOBAL DEFAULT * lc$
+check readelf -SW fl
+  has: .lbss NOBITS * WAl 
+
+#--- lg.c
+#include <stdio.h>
+#ifndef BIG
+#define BIG (1<<20)
+#endif
+static char lb[BIG];                 /* .lbss */
+char ld_[BIG] = {1};                 /* .ldata */
+const char lr[1<<20] = {2};          /* .lrodata */
+char lc[BIG];                        /* LCOMMON with -fcommon */
+int small_d = 3; int small_b; const int small_r = 4;
+extern int ext_fn(int);
+static const char *strs[] = {"a", "b"};
+int main(void){ lb[BIG-1]=5; lc[BIG-1]=6; printf("%d %d %d %d %d %d %d %s %d\n", lb[BIG-1], ld_[0], lr[0], lc[BIG-1], small_d, small_b, small_r, strs[1], ext_fn(1)); return 0; }
+#--- ext.c
+int ext_fn(int x) { return x + 41; }
+#--- lg.f90
+module bigmod
+  implicit none
+  real(8) :: marr(200000)
+end module bigmod
+program lgf
+  use bigmod
+  implicit none
+  real(8) :: cblk(300000)
+  integer :: n
+  common /bigcom/ cblk, n
+  marr(200000) = 2.5d0
+  cblk(300000) = 4.5d0
+  n = 3
+  call sub()
+  print '(F3.1,1X,F3.1,1X,I0)', marr(200000), cblk(300000), n
+end program lgf
+subroutine sub()
+  implicit none
+  real(8) :: cblk(300000)
+  integer :: n
+  common /bigcom/ cblk, n
+  n = n + 1
+end subroutine sub

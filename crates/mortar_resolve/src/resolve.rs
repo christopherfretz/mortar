@@ -98,6 +98,9 @@ pub mod flags {
     pub(crate) const MULTI_COMMON: u16 = 1 << 7;
     /// A live mention is demoted (§6.2).
     pub const DEMOTED: u16 = 1 << 8;
+    /// A live common mention is `SHN_COMMON` (not x86-64's
+    /// `SHN_X86_64_LCOMMON`): the common is small (§3.3).
+    pub const SMALL_COMMON: u16 = 1 << 9;
 }
 
 /// The entry address (§5.5).
@@ -318,6 +321,8 @@ pub fn resolve_steps<V: View>(
             let shape = CommonShape {
                 size: acc.csize[k].load(Relaxed),
                 align: acc.calign[k].load(Relaxed),
+                // §3.3: large only when every common mention is LCOMMON.
+                large: acc.flags[k].load(Relaxed) & flags::SMALL_COMMON == 0,
             };
             (SymbolId(k as u32), shape)
         })
@@ -570,7 +575,8 @@ fn d1_file<V: View>(
                             min_u64(&acc.common[k], word);
                             max_u64(&acc.csize[k], m.size);
                             max_u8(&acc.calign[k], align_log2(m.value));
-                            let old = or_u16(&acc.flags[k], tls | flags::HAS_COMMON);
+                            let small = if m.large { 0 } else { flags::SMALL_COMMON };
+                            let old = or_u16(&acc.flags[k], tls | small | flags::HAS_COMMON);
                             if old & flags::HAS_COMMON != 0 {
                                 or_u16(&acc.flags[k], flags::MULTI_COMMON);
                             }

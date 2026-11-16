@@ -458,6 +458,9 @@ pub enum StepKind {
     Compile(Compile),
     Yaml2obj(Vec<Template>),
     Ar(Vec<Template>),
+    /// `meta <description> <in.o> -o <out.o>`: the test producer
+    /// (`spec/meta.md` §12) adds one container to an object.
+    Meta(Vec<Template>),
     Shlib(Shlib),
     Link(Link),
     Run(Run),
@@ -480,7 +483,11 @@ impl Step {
     pub fn is_build(&self) -> bool {
         matches!(
             self.kind,
-            StepKind::Compile(_) | StepKind::Yaml2obj(_) | StepKind::Ar(_) | StepKind::Shlib(_)
+            StepKind::Compile(_)
+                | StepKind::Yaml2obj(_)
+                | StepKind::Ar(_)
+                | StepKind::Meta(_)
+                | StepKind::Shlib(_)
         )
     }
 
@@ -517,7 +524,7 @@ impl Step {
                 | CheckTool::Text
                 | CheckTool::Ldd => None,
             },
-            StepKind::Ar(_) | StepKind::Run(_) => None,
+            StepKind::Ar(_) | StepKind::Meta(_) | StepKind::Run(_) => None,
         }
     }
 
@@ -1017,6 +1024,15 @@ impl Parser {
             "cxx" => ("cxx", compile("cxx", Language::Cxx, &qualifiers, args)?),
             "fc" => ("fc", compile("fc", Language::Fortran, &qualifiers, args)?),
             "as" => ("as", compile("as", Language::Asm, &qualifiers, args)?),
+            "meta" => {
+                qualifiers.no_family("'meta'")?;
+                qualifiers.no_linker("'meta'")?;
+                let shape = raw.len() == 4 && raw[2] == "-o";
+                if !shape {
+                    return Err("'meta' is 'meta <description> <in.o> -o <out.o>'".to_owned());
+                }
+                ("meta", StepKind::Meta(args))
+            }
             "yaml2obj" | "ar" => {
                 let keyword = if key == "ar" { "ar" } else { "yaml2obj" };
                 let what = format!("'{keyword}'");
@@ -1092,12 +1108,12 @@ impl Parser {
             }
             _ => {
                 return Err(format!(
-                    "unknown step '{key}' (cc, cxx, fc, as, yaml2obj, ar, shlib, link, run, check)"
+                    "unknown step '{key}' (cc, cxx, fc, as, yaml2obj, ar, meta, shlib, link, run, check)"
                 ));
             }
         };
         if self.fixture
-            && !matches!(keyword, "cc" | "cxx" | "fc" | "as" | "yaml2obj" | "ar" | "shlib")
+            && !matches!(keyword, "cc" | "cxx" | "fc" | "as" | "yaml2obj" | "ar" | "meta" | "shlib")
         {
             return Err(format!("a fixture builds inputs only: '{keyword}' is a step of a test"));
         }
@@ -1242,7 +1258,11 @@ impl Parser {
                 "'{key}' is not an expectation of a check (has, not, then, count, allow)"
             )),
             (
-                StepKind::Compile(_) | StepKind::Yaml2obj(_) | StepKind::Ar(_) | StepKind::Shlib(_),
+                StepKind::Compile(_)
+                | StepKind::Yaml2obj(_)
+                | StepKind::Ar(_)
+                | StepKind::Meta(_)
+                | StepKind::Shlib(_),
                 _,
             ) => Err(format!("'{keyword}' builds an input and has no expectations")),
         };
@@ -1396,6 +1416,7 @@ impl Parser {
                 StepKind::Compile(Compile { args, .. })
                 | StepKind::Yaml2obj(args)
                 | StepKind::Ar(args)
+                | StepKind::Meta(args)
                 | StepKind::Shlib(Shlib { args, .. }) => {
                     if uses_linker(args) {
                         self.error(
