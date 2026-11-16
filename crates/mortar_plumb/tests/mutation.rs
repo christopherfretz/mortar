@@ -1542,3 +1542,56 @@ fn s9_2o_erratum_rules_on_mortar_output() {
         assert!(m.with_rule("C5").next().is_some(), "{label}: {}", m.render("e"));
     }
 }
+
+// spec/plumb.md §6.2 S2 and S17 (WP-059's F1): a writable PT_LOAD whose
+// only section is `.bss` has an empty file image `[p_offset, p_offset)`.
+// It lies inside any file whatever `p_offset` (S2: GNU ld's AArch64
+// `-nostdlib` output puts it at 0xffe8 of a 1,736-byte file) and overlaps
+// no section (S17: mortar's x86-64 one puts it inside `.comment`). Each
+// shape, built from GNU ld's link of a `.bss`-only program, is ACCEPTED;
+// the same segment with 8 file bytes is REJECTED by the rule.
+#[test]
+fn s6_2_s2_s17_an_empty_file_image_lies_anywhere() {
+    let (Some(asm), Some(ld)) = (common::ARCH.tool("as"), common::ARCH.tool("ld.bfd")) else {
+        return;
+    };
+    let dir = mortar_testutil::Scratch::new("plumb-empty-image");
+    dir.write(
+        "b.s",
+        "\t.text\n\t.globl _start\n_start:\n\tadrp x0, w\n\tadd x0, x0, :lo12:w\n\tb .\n\
+         \t.bss\n\t.balign 8\nw:\t.skip 8\n",
+    );
+    common::run_in(dir.path(), &asm, &["b.s", "-o", "b.o"]);
+    common::run_in(dir.path(), &ld, &["-e", "_start", "-o", "out", "-Map=out.map", "b.o"]);
+    let o = std::fs::read(dir.join("out")).unwrap();
+    let text = std::fs::read_to_string(dir.join("out.map")).unwrap();
+    let map = mortar_plumb::map::parse(Format::Gnu, &text).unwrap();
+    let files = vec![("b.o".to_string(), std::fs::read(dir.join("b.o")).unwrap())];
+    let check = |m: &[u8]| verify_with(m, &files, &map);
+    let r = check(&o);
+    assert!(r.findings.is_empty(), "{}", r.render("out"));
+    let ph = phdrs(&o);
+    let bss = ph.iter().find(|p| p.1 == PT_LOAD && p.2 & 2 != 0).unwrap();
+    assert_eq!(bss.5, 0, "GNU ld's .bss segment has no file bytes");
+    let align = le64(&o, bss.0 + 48);
+    let with = |offset: u64, align: u64, filesz: u64| {
+        let mut m = o.clone();
+        put64(&mut m, bss.0 + 8, offset);
+        put64(&mut m, bss.0 + 32, filesz);
+        put64(&mut m, bss.0 + 48, align);
+        check(&m)
+    };
+    // S2: past the end of the file, congruent.
+    let past = bss.3 + align * (o.len() as u64 / align + 1);
+    assert!(past > o.len() as u64);
+    let r = with(past, align, 0);
+    assert!(r.findings.is_empty(), "empty image past the end: {}", r.render("out"));
+    expect_rule(&with(past, align, 8), "S2", "8 bytes past the end");
+    // S17: inside `.symtab` (with a 16-byte alignment, congruent).
+    let symtab = shdrs(&o).into_iter().find(|s| s.1 == ".symtab").unwrap();
+    let inside = symtab.5 + 16 + (bss.4 - symtab.5 - 16) % 16;
+    assert!(symtab.5 < inside && inside < symtab.5 + symtab.6);
+    let r = with(inside, 16, 0);
+    assert!(r.findings.is_empty(), "empty image inside .symtab: {}", r.render("out"));
+    expect_rule(&with(inside, 16, 8), "S17", "8 bytes inside .symtab");
+}

@@ -8,11 +8,11 @@
 # member of N or U satisfies: the link is refused, `undefined-symbol` at
 # libmid2.so, as GNU ld does (``./libmid2.so: undefined reference to
 # `leaf_fn'``).
-#
-# What the other references do (dyn.md §13.2 W16): lld and mold link
-# it, drop libleaf.so (DT_NEEDED is libtop2.so, libc.so.6), and the program fails at load with ``symbol
-# lookup error: ... libmid2.so: undefined symbol: leaf_fn`` (exit 127),
-# recorded here as what they do.
+# What the other references do (dyn.md §13.2 W16): lld and mold link it, drop
+# libleaf.so (DT_NEEDED is libtop2.so, libc.so.6), and the program fails at load
+# with ``symbol lookup error: ... libmid2.so: undefined symbol: leaf_fn`` (exit
+# 127), recorded here; the verifier names it P-D6 (D-13, WP-088): A36.
+#@ anomaly(lld,mold): A36
 #@ spec: dyn.md "D-13"
 #@ spec: dyn.md "D-11"
 #@ spec: dyn.md "D-12"

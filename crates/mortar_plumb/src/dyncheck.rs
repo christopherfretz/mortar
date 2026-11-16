@@ -60,8 +60,10 @@ pub(crate) fn check(
     }
     pd1(image, out, line, &mut v);
     pd4(image, out, line, format, &mut v);
+    pd4_stack(image, line, objs, format, &mut v);
     pd5(image, out, format, &mut v);
     pd6(image, out, line, model, format, &mut v);
+    pd6_shlib_undefined(model, line, &mut v);
     let spie = line.kind == Some(OutputKind::StaticPie);
     if spie {
         // §12.4: a static-pie's .dynsym and records are P-D14's.
@@ -75,6 +77,8 @@ pub(crate) fn check(
         );
     } else {
         pd7(image, out, model, ld, format, &mut v);
+        // P-D14's entry rule for an Exec or a Pie (WP-088).
+        crate::spie::entry_point(image, line.entry.as_deref(), 4, &mut v);
     }
     pd8(out, model, ld, &mut v);
     pd9_order(out, ld.machine, &mut v);
@@ -115,6 +119,50 @@ fn pd1(image: &Image<'_>, out: &DynOut, line: &Line, v: &mut Vec<Finding>) {
     }
     if want == OutputKind::Pie && h.e_type == ET_DYN && !pie {
         v.push(fd(1, "a PIE without DF_1_PIE in DT_FLAGS_1 (D-1)"));
+    }
+}
+
+/// P-D4, `PT_GNU_STACK`'s `PF_X` (WP-088): the line's last `-z execstack`
+/// sets it and `-z noexecstack` clears it; with neither it is set only
+/// when an input object's `.note.GNU-stack` is `SHF_EXECINSTR` (GNU ld
+/// and mortar set it then, lld and mold never: under mortar's map it is
+/// set exactly then). An executable stack the link did not ask for is a
+/// permission the program does not need; one it asked for and did not
+/// get faults in the code that needed it (a nested function's
+/// trampoline). With no `PT_GNU_STACK` nothing is judged here.
+fn pd4_stack(
+    image: &Image<'_>,
+    line: &Line,
+    objs: &[Obj<'_>],
+    format: Format,
+    v: &mut Vec<Finding>,
+) {
+    let Some(p) = image.phdrs.iter().find(|p| p.p_type == mortar_elf::consts::PT_GNU_STACK) else {
+        return;
+    };
+    let x = p.p_flags & mortar_elf::consts::PF_X != 0;
+    let note = objs.iter().find(|o| {
+        o.secs.iter().any(|s| {
+            s.name == ".note.GNU-stack" && s.shdr.sh_flags & mortar_elf::consts::SHF_EXECINSTR != 0
+        })
+    });
+    let why = match (line.execstack, x) {
+        (Some(true), false) => Some("PT_GNU_STACK is not PF_X under -z execstack".to_string()),
+        (Some(false), true) => Some("PT_GNU_STACK is PF_X under -z noexecstack".to_string()),
+        (None, true) if note.is_none() => Some(
+            "PT_GNU_STACK is PF_X: no -z execstack and no input's .note.GNU-stack is executable"
+                .to_string(),
+        ),
+        (None, false) if format == Format::Mortar => note.map(|o| {
+            format!(
+                "PT_GNU_STACK is not PF_X and {}'s .note.GNU-stack is executable (L-84)",
+                o.label()
+            )
+        }),
+        _ => None,
+    };
+    if let Some(m) = why {
+        v.push(fd(4, m).at(p.p_vaddr));
     }
 }
 
@@ -363,6 +411,39 @@ fn pd5(image: &Image<'_>, out: &DynOut, format: Format, v: &mut Vec<Finding>) {
                 format!(
                     ".gnu.hash header (nbuckets {}, maskwords {}, shift {}) is not D-26's ({nb}, {mw}, 26)",
                     g.nbuckets, g.bloom_size, g.bloom_shift
+                ),
+            ));
+        }
+    }
+}
+
+/// P-D6, D-13 (WP-088, dyn.md W16): unless `--allow-shlib-undefined`,
+/// every strong undefined reference of a member of N ∪ U is satisfied by
+/// a non-hidden program definition or by a visible definition, of the
+/// version it requires, in a member of N ∪ U. A link that leaves one
+/// unsatisfied is one D-13 refuses; lld and mold make it, dropping the
+/// library that defines it from `DT_NEEDED`, and the program fails at
+/// load (`symbol lookup error`, exit 127). One finding per name.
+fn pd6_shlib_undefined(model: &Model, line: &Line, v: &mut Vec<Finding>) {
+    if line.allow_shlib_undefined {
+        return;
+    }
+    let set: BTreeSet<usize> = model.needed.union(&model.used).copied().collect();
+    let mut seen = BTreeSet::new();
+    for &i in &set {
+        for r in model.dsos[i].refs.iter().filter(|r| !r.weak) {
+            if model.keys.get(&r.name).is_some_and(|k| k.defined && !k.hidden)
+                || set.iter().any(|&j| model.dsos[j].def(&r.name, r.version.as_deref()).is_some())
+                || !seen.insert(r.name.clone())
+            {
+                continue;
+            }
+            v.push(sym_finding(
+                6,
+                &r.name,
+                format!(
+                    "'{}', a strong reference of {} (in N ∪ U), is defined by no member of N ∪ U and not by the program (D-13: the link is refused)",
+                    r.name, model.dsos[i].path
                 ),
             ));
         }
@@ -1403,7 +1484,63 @@ fn pd12(
             );
         }
     }
+    pd12_tls_definition(out, ld, objs, &p, v);
     let _ = DT_NEEDED;
+}
+
+/// P-D12, D-16's other direction (WP-088, dyn.md W14): an input's
+/// non-TLS reference (a type of the machine's table that is not
+/// thread-local, from an allocated section) to an undefined name that the
+/// loader binds to a library's `STT_TLS` definition. lld writes the GOT
+/// word as a `TPREL64` slot the code reads as an address, mold a
+/// `GLOB_DAT` that glibc resolves to the library's base plus the TLS
+/// offset (the program reads the ELF header): both run wrong. One finding
+/// per name.
+fn pd12_tls_definition(
+    out: &DynOut,
+    ld: &Loader<'_>,
+    objs: &[Obj<'_>],
+    p: &Params,
+    v: &mut Vec<Finding>,
+) {
+    let def = |ty: u32| match ld.machine {
+        EM_AARCH64 => crate::a64::def(ty),
+        mortar_elf::consts::EM_X86_64 => crate::x64::def(ty),
+        _ => None,
+    };
+    let mut seen = BTreeSet::new();
+    for o in objs {
+        let Some(t) = o.symtab else { continue };
+        for (si, sc) in o.secs.iter().enumerate().filter(|(_, sc)| sc.alloc()) {
+            let Some(recs) = sc.relocs.and_then(|r| o.records(r)) else { continue };
+            for &(off, sym, ty, _) in &recs {
+                if def(ty).is_none_or(|d| d.op.is_tls() || d.op == crate::a64::Op::None) {
+                    continue;
+                }
+                let Ok(x) = t.get(mortar_elf::SymbolIndex(sym)) else { continue };
+                if sym == 0 || x.st_shndx != mortar_elf::consts::SHN_UNDEF {
+                    continue;
+                }
+                let name = String::from_utf8_lossy(t.name(&x).unwrap_or(b"")).into_owned();
+                if seen.contains(&name) {
+                    continue;
+                }
+                let Some(j) = out.syms.iter().position(|s| s.name == name) else { continue };
+                if let Bound::Lib { tls: true, .. } = ld.bind(out, j, false, p) {
+                    let mut f = sym_finding(
+                        12,
+                        &name,
+                        format!(
+                            "a non-TLS reference to '{name}', whose shared definition is STT_TLS (D-16)"
+                        ),
+                    );
+                    f.site = Some(o.site(si, off));
+                    v.push(f);
+                    seen.insert(name);
+                }
+            }
+        }
+    }
 }
 
 /// The fields WP-082's byte sweep found judged by no rule (`spec/plumb.md`
