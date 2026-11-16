@@ -20,7 +20,7 @@ use mortar_elf::consts::{
 };
 
 use crate::a64::{self, Def, Field, Form, Op};
-use crate::buildid::{self, Style, Tree};
+use crate::buildid;
 use crate::image::Image;
 use crate::locate::{self, Place};
 use crate::{Input, Map, verify};
@@ -1284,7 +1284,6 @@ pub fn run_with(
     let failed: BTreeSet<u64> = base.findings.iter().filter_map(|f| f.addr).collect();
     let all = candidates(&image, map, inputs, &mut rng, &failed);
     let base_keys = keys(&base);
-    let style = Style::of(map);
     let mut chosen: Vec<Mutant> = Vec::new();
     let mut classes: Vec<ClassResult> =
         CLASSES.iter().map(|c| ClassResult { class: c, ..ClassResult::default() }).collect();
@@ -1309,15 +1308,7 @@ pub fn run_with(
         for (o, b) in &m.edits {
             out[*o..*o + b.len()].copy_from_slice(b);
         }
-        match style {
-            Style::Tree(t, _) => {
-                buildid::seal(&mut out, t);
-            }
-            Style::Unstated => {
-                buildid::seal(&mut out, Tree::L128);
-            }
-            Style::Given | Style::Unknown => {}
-        }
+        buildid::reseal(&mut out, map);
         let r = verify(&out, inputs, map);
         keys(&r).iter().any(|k| !base_keys.contains(k))
     };
