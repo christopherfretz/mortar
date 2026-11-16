@@ -86,7 +86,12 @@ pub fn verify_with(output: &[u8], inputs: &[Input<'_>], map: &Map, ctx: &Ctx<'_>
     // P-D1: a link stage 3 does not model is reported by name, as one
     // finding each, and nothing else is judged (§12.1).
     let mut outside: Vec<String> = line.outside.clone();
-    if dout.has(DT_VERDEF) {
+    // Stage 3's rules are written for RELA targets (AArch64, x86-64);
+    // an i386 dynamic output (REL records, `DT_REL`, any kind) is not
+    // modelled: one P-D1 line, nothing judged by them (§12.1).
+    if image.header.e_machine == mortar_elf::consts::EM_386 {
+        outside = vec!["i386 (EM_386: REL records and DT_REL; stage 3 models the RELA targets AArch64 and x86-64, dyn.md D-1)".into()];
+    } else if dout.has(DT_VERDEF) {
         outside.push("the output defines versions (.gnu.version_d; dyn.md D-27, M4)".into());
     }
     if !outside.is_empty() {
