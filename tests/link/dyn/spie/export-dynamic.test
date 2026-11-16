@@ -1,20 +1,16 @@
 # dyn.md D-1: a static-pie's `.dynsym` holds the null entry only, so
 # `--export-dynamic` (which asks for every defined global in it) is
-# refused by name until shared-object output (M4) settles the export
-# rules. Measured: GNU ld, lld and mold export several hundred symbols
+# accepted and has no effect, as `--export-dynamic-symbol` is, by name or
+# by glob. Measured: GNU ld, lld and mold export several hundred symbols
 # (GNU ld's x86-64 output then crashes at start-up; lld's and mold's
-# run). `gcc -static-pie -rdynamic` passes no `--export-dynamic`, so only
-# the explicit option is refused.
+# run). `gcc -static-pie -rdynamic` passes no `--export-dynamic`.
 #
 # WP-056 measured the exports useless (glibc 2.41, AArch64 and x86-64): a
 # library the static-pie `dlopen`s does not bind to the program's
 # symbols (`undefined symbol: exe_value`, with GNU ld's, lld's and mold's
 # exporting outputs alike) and `dlsym(RTLD_DEFAULT, ...)` does not find
-# them. The rule it proposes (accepted, no effect: `.dynsym` stays the
-# null entry) waits for the verifier, which keeps the line outside
-# stage 3 (`mortar_plumb` line.rs, "static-pie with --export-dynamic").
-# `--export-dynamic-symbol` is accepted already and has that effect:
-# `.dynsym` keeps its one entry, glob or name.
+# them. mortar refused the option by name until the verifier judged the
+# line (P-D14 and A34, WP-088); the refusal went at that package's merge.
 #
 # Stage 3 judges it (spec/plumb.md §12.4, WP-089): GNU ld's static-pie
 # carries A30 on AArch64 (a RELATIVE on the GOT slot of glibc's absolute
@@ -27,8 +23,11 @@
 
 cc -O1 -fPIE main.c -o main.o
 link(mortar) gcc -static-pie -Wl,--export-dynamic main.o -o spie
-  exit: fail
-  diag: --export-dynamic in a static-pie
+run(mortar) spie
+  stdout: 0
+check(mortar) readelf -W --dyn-syms spie
+  has: Symbol table '.dynsym' contains 1 entry:
+  not: main$
 link gcc -static-pie -rdynamic main.o -o spie-r
 run spie-r
   stdout: 0

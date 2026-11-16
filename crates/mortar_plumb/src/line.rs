@@ -47,6 +47,9 @@ pub struct Line {
     /// `-z relro` unless `-z norelro` (the default on GNU ld, lld, mold).
     pub relro: bool,
     pub export_dynamic: bool,
+    /// `--export-dynamic-symbol` or `--export-dynamic-symbol-list` (D-21;
+    /// in a static-pie D-1 gives them no effect, §12.4).
+    pub export_symbols: bool,
     pub allow_shlib_undefined: bool,
     /// `--enable-new-dtags` (the default): `DT_RUNPATH`, else `DT_RPATH`.
     pub new_dtags: bool,
@@ -106,6 +109,10 @@ const WITH_ARG: &[&str] = &[
     "--exclude-libs",
     "--chroot",
     "--hash-style",
+    "--export-dynamic-symbol",
+    "-export-dynamic-symbol",
+    "--export-dynamic-symbol-list",
+    "-export-dynamic-symbol-list",
 ];
 
 struct State {
@@ -232,6 +239,13 @@ impl Line {
                         l.hash_style(&v);
                     }
                 }
+                "--export-dynamic-symbol"
+                | "-export-dynamic-symbol"
+                | "--export-dynamic-symbol-list"
+                | "-export-dynamic-symbol-list" => {
+                    l.export_symbols = true;
+                    i += 1;
+                }
                 _ if WITH_ARG.contains(&a) => i += 1,
                 _ => {
                     if let Some(v) =
@@ -260,6 +274,12 @@ impl Line {
                     } else if let Some(v) = val(a, "--hash-style").or_else(|| val(a, "-hash-style"))
                     {
                         l.hash_style(&v);
+                    } else if ["--export-dynamic-symbol", "-export-dynamic-symbol"]
+                        .iter()
+                        .chain(&["--export-dynamic-symbol-list", "-export-dynamic-symbol-list"])
+                        .any(|o| val(a, o).is_some())
+                    {
+                        l.export_symbols = true;
                     } else if a.starts_with('-') {
                         // Every other option leaves the inputs alone.
                     } else {
@@ -285,9 +305,6 @@ impl Line {
         });
         if no_interp {
             l.interp = None;
-        }
-        if l.kind == Some(OutputKind::StaticPie) && l.export_dynamic {
-            l.outside.push("static-pie with --export-dynamic (dyn.md D-1; M4)".into());
         }
         l
     }
@@ -576,15 +593,33 @@ mod tests {
         );
         assert!(out("-static-pie -o a").is_empty());
         assert!(out("-pie --no-dynamic-linker -o a").is_empty());
-        assert_eq!(
-            out("-static-pie -E -o a"),
-            ["static-pie with --export-dynamic (dyn.md D-1; M4)"]
-        );
+        // A static-pie with exports is judged (§12.4, WP-088).
+        assert!(out("-static-pie -E -o a").is_empty());
+        assert!(out("-pie --no-dynamic-linker --export-dynamic -o a").is_empty());
         assert_eq!(
             out("-dynamic-linker /x --copy-dt-needed-entries"),
             ["--copy-dt-needed-entries (dyn.md D-15)"]
         );
         assert_eq!(out("-shared -o a.so"), ["-shared (M4)"]);
+    }
+
+    // spec: plumb.md §12.4 — `--export-dynamic-symbol` in either form is
+    // read as an option with its value (never as an input file) and
+    // recorded: in a static-pie it allows a reference's exports.
+    #[test]
+    fn s12_4_export_dynamic_symbol_is_an_option_with_a_value() {
+        let m = Mem(HashMap::new());
+        for s in [
+            "-static-pie --export-dynamic-symbol foo -o a",
+            "-static-pie --export-dynamic-symbol=f* -o a",
+            "-static-pie -export-dynamic-symbol-list list -o a",
+        ] {
+            let l = Line::parse(&words(s), &m);
+            assert!(l.export_symbols, "{s}");
+            assert!(!l.export_dynamic, "{s}");
+            assert!(l.items.is_empty() && l.problems.is_empty(), "{s}: {:?}", l.problems);
+        }
+        assert!(!Line::parse(&words("-static-pie -E -o a"), &m).export_symbols);
     }
 
     // spec: dyn.md D-30 (input §8.6) — a shared object without a soname is
