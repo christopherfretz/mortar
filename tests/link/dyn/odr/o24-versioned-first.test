@@ -1,0 +1,68 @@
+# O-24 (b) (spec/odr.md), versioned first: libnv defines f@V1 (version
+# index 2) and f@@V2 and comes first; libp defines f unversioned and
+# calls it. glibc's loader (2.41, measured by WP-075's prototype) binds
+# libp's unversioned reference to libnv's index-2 definition: libnv's
+# f@V1 and libp's f are compared, and reported. libnv's f@@V2 is not
+# compared with libp's f (O-24, "Not compared").
+#@ spec: odr.md "O-24"
+#@ arch: aarch64 x86_64
+#@ diag: odr-violation ./libnv.so ./libp.so
+
+cc -O1 -fPIC nv.c -o nv.o
+cc -O1 -fPIC -DN=5 -DF=fp lib.c -o p.o
+as note1.s -o note1.o
+as note2.s -o note2.o
+shlib gcc nv.o note2.o -Wl,--version-script=nv.map -Wl,-soname,libnv.so -o libnv0.so
+meta nv.rows libnv0.so -o libnv.so
+shlib gcc p.o note1.o -Wl,-soname,libp.so -o libp0.so
+meta p.rows libp0.so -o libp.so
+cc -O1 -fPIE main.c -o main.o
+link(bfd,lld,mold) gcc -pie main.o -Wl,--no-as-needed -L. -lnv -lp -o prog
+link(mortar) gcc -pie main.o -Wl,--no-as-needed -L. -lnv -lp -Wl,--odr=strict -o prog
+  exit: fail
+  diag: an unversioned reference binds the definition at version index 2 of an earlier library (glibc's loader, measured)
+run(bfd,lld,mold) prog
+  stdout: 1
+
+#--- nv.c
+int f1(void) { return 1; }
+int f2(void) { return 2; }
+__asm__(".symver f1,f@V1");
+__asm__(".symver f2,f@@V2");
+#--- nv.map
+V1 { global: f; local: *; };
+V2 { global: f; } V1;
+#--- lib.c
+int f(void) { return N; }
+int F(void) { return f(); }
+#--- main.c
+#include <stdio.h>
+int fp(void);
+int main(void) { printf("%d\n", fp()); return 0; }
+#--- nv.rows
+row name=f version=V1 hash=0101010101010101 flags=1
+row name=f version=V2 hash=0202020202020202 flags=1
+#--- p.rows
+row name=f hash=0505050505050505 flags=1
+#--- note1.s
+	.section .note.mason,"a",%note
+	.p2align 3
+	.long 10
+	.long 40
+	.long 0x4d4f4401
+	.asciz "MasonMeta"
+	.p2align 3
+	.long 1, 1, 24, 0
+	.zero 24
+	.section .note.GNU-stack,"",%progbits
+#--- note2.s
+	.section .note.mason,"a",%note
+	.p2align 3
+	.long 10
+	.long 64
+	.long 0x4d4f4401
+	.asciz "MasonMeta"
+	.p2align 3
+	.long 1, 2, 24, 0
+	.zero 48
+	.section .note.GNU-stack,"",%progbits

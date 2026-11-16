@@ -6,7 +6,8 @@ mod support;
 
 use mortar_core::par::{self, Pool};
 use mortar_image::map::{
-    ChunkKind, DiscardWhy, Fold, Map, MapChunk, MapFile, NonAlloc, Placed, render, token,
+    ChunkKind, DeadKind, DeadLine, DiscardWhy, Fold, Map, MapChunk, MapFile, NonAlloc, Placed,
+    render, token,
 };
 use support::Gen;
 
@@ -140,6 +141,26 @@ fn parse(text: &str) -> Map {
                 });
             }
             "define" => m.defines.push((untoken(t[1]), hex(t[2]))),
+            "incremental" => {
+                assert!(!m.incremental && t.len() == 1, "a second or malformed incremental");
+                m.incremental = true;
+            }
+            "hole" | "dead" => {
+                let kind = (t[0] == "dead").then(|| match t[4] {
+                    "neutral" => DeadKind::Neutral,
+                    "contribution" => DeadKind::Contribution,
+                    "strings" => DeadKind::Strings,
+                    "cie" => DeadKind::Cie,
+                    k => panic!("unknown dead kind {k}"),
+                });
+                assert_eq!(t.len(), if kind.is_some() { 5 } else { 4 });
+                m.dead.push(DeadLine {
+                    out: untoken(t[1]),
+                    offset: hex(t[2]),
+                    size: hex(t[3]),
+                    kind,
+                });
+            }
             "end" => ended = true,
             r => panic!("unknown record {r}"),
         }
@@ -217,6 +238,18 @@ fn random_map(g: &mut Gen) -> Map {
     for _ in 0..g.below(6) {
         m.defines.push((name(g), g.next()));
     }
+    let kinds = [
+        None,
+        Some(DeadKind::Neutral),
+        Some(DeadKind::Contribution),
+        Some(DeadKind::Strings),
+        Some(DeadKind::Cie),
+    ];
+    m.incremental = g.below(2) == 1;
+    for _ in 0..g.below(6) {
+        let kind = kinds[g.below(5) as usize];
+        m.dead.push(DeadLine { out: name(g), offset: g.next(), size: g.next(), kind });
+    }
     m
 }
 
@@ -231,8 +264,20 @@ fn i79_map_round_trips_through_the_grammar() {
         let s = String::from_utf8(text).unwrap();
         assert_eq!(parse(&s), m);
         // Group order: files, places/pieces, the non-alloc records,
-        // discards, folds, chunks, defines.
-        let order = ["file", "place", "nplace", "discard", "fold", "chunk", "define", "end"];
+        // discards, folds, chunks, defines, `incremental`, holes and dead
+        // ranges.
+        let order = [
+            "file",
+            "place",
+            "nplace",
+            "discard",
+            "fold",
+            "chunk",
+            "define",
+            "incremental",
+            "hole",
+            "end",
+        ];
         let ranks: Vec<usize> = s
             .lines()
             .skip(1)
@@ -241,6 +286,7 @@ fn i79_map_round_trips_through_the_grammar() {
                 let w = match w {
                     "piece" => "place",
                     "merged" => "nplace",
+                    "dead" => "hole",
                     w => w,
                 };
                 order.iter().position(|o| *o == w).unwrap()

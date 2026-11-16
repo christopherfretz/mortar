@@ -466,8 +466,13 @@ pub fn front_of<'s>(
     let parsed = mortar_cli::parse(args);
     assert!(!parsed.failed(), "{:?}", parsed.diagnostics);
     let diag = Collector::new(Policy::default());
-    let f =
-        front(parsed.plan, Env { cwd, pool, replay: None }, store, &diag, &mut Timer::new(false));
+    let f = front(
+        parsed.plan,
+        Env { cwd, pool, replay: None, slack: false },
+        store,
+        &diag,
+        &mut Timer::new(false),
+    );
     let report = diag.finish();
     match f {
         Some(f) if !report.failed() => Ok(f),

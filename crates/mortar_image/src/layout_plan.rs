@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 use mortar_arch::{ProofRun, Reloc};
 use mortar_core::assignment::Assignment;
 use mortar_core::inputs::Reader;
-use mortar_core::layout::ChunkKind;
+use mortar_core::layout::{ChunkKind, HoleKind};
 use mortar_core::par::Pool;
 use mortar_core::resolution::SectionState;
 use mortar_core::{
@@ -286,6 +286,7 @@ pub fn from_layout(
         b.input(chunk.offset + off, size, unit);
     }
     merged(m, &mut b, &mut paths)?;
+    debug_holes(m, target, &mut b)?;
     for (&c, bytes) in &extras.fixed {
         b.bytes(chunks[c].offset, bytes.clone());
     }
@@ -310,6 +311,62 @@ pub fn from_layout(
         b.sealed(s.clone());
     }
     b.finish(window, pool)
+}
+
+/// `spec/incr.md` IN-51b: the bytes of every debug hole (a neutral unit
+/// of its section's form) and of the neutral abbreviation table.
+fn debug_holes(m: &Model<'_, '_>, target: Target, b: &mut Builder) -> Result<(), Diagnostic> {
+    let pl = &m.layout.placement;
+    if pl.holes.is_empty() {
+        return Ok(());
+    }
+    // The start of an output section: its first chunk's offset (by
+    // section index).
+    let start = |shndx: Option<u32>| {
+        pl.chunks
+            .iter()
+            .filter(|(_, c)| c.shndx == shndx && c.in_file())
+            .map(|(_, c)| c.offset)
+            .min()
+            .unwrap_or(0)
+    };
+    let abbrev = pl.holes.iter().find(|h| h.kind == HoleKind::AbbrevTable).map_or(0, |h| {
+        let c = &pl.chunks[h.chunk];
+        c.offset + h.offset - start(c.shndx)
+    });
+    let abbrev =
+        u32::try_from(abbrev).map_err(|_| internal("a neutral abbrev table past 4 GiB"))?;
+    let addr_size = match target.class {
+        mortar_elf::Class::Elf64 => 8,
+        mortar_elf::Class::Elf32 => 4,
+    };
+    for h in &pl.holes {
+        let c = &pl.chunks[h.chunk];
+        if !c.in_file() {
+            continue;
+        }
+        let at = c.offset + h.offset;
+        let bytes = match h.kind {
+            HoleKind::AbbrevTable => {
+                let mut t = crate::neutral::ABBREV_TABLE.to_vec();
+                t.resize(usize::try_from(h.size).unwrap_or(0).max(t.len()), 0);
+                t
+            }
+            HoleKind::Debug | HoleKind::DeadDebug => {
+                let name = c.name(m.assignment).unwrap_or(b"");
+                crate::neutral::unit(name, h.size, 5, addr_size, abbrev).ok_or_else(|| {
+                    internal(&format!(
+                        "no neutral unit of {:#x} bytes in {}",
+                        h.size,
+                        String::from_utf8_lossy(name)
+                    ))
+                })?
+            }
+            _ => continue,
+        };
+        b.bytes(at, bytes.into_boxed_slice());
+    }
+    Ok(())
 }
 
 /// The table of relocation section `rel` of `file` (`SHT_RELA`; REL is
@@ -437,7 +494,8 @@ fn pads(m: &Model<'_, '_>, target: Target, separate_code: bool, b: &mut Builder)
         .map(|(_, c)| {
             let exec = c.flags & SHF_EXECINSTR != 0;
             let init = matches!(c.name(m.assignment), Some(b".init" | b".fini"));
-            (c.offset, c.offset + c.size, exec, init)
+            // spec/incr.md IN-33: a code chunk's capacity is trap fill too.
+            (c.offset, c.offset + c.capacity, exec, init)
         })
         .collect();
     chunks.sort_unstable_by_key(|c| c.0);

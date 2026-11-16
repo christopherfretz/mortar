@@ -312,6 +312,7 @@ impl World {
             sized: Box::new([Sized { chunk: ChunkId(3), size: 0x10 }]),
             tls: Some(Tls { start: 0x40_3000, size: 0x18, align: 3 }),
             entry: Some(0x40_1000),
+            holes: Box::new([]),
         };
         let slots = Slots {
             symtab_locals: col(vec![

@@ -756,6 +756,7 @@ keeps blanks (with `\"` and `\\`).
 | `as <args>` | the C driver with `-c` (so `.S` files are preprocessed) |
 | `yaml2obj <args>` | `yaml2obj` |
 | `ar <args>` | the architecture's `ar` |
+| `meta <description> <in> -o <out>` | the test producer (`spec/meta.md` §12): a `.mason.meta` container added to the object `<in>` by the architecture's `objcopy`; with a shared object `<in>.so`, its placeholder `.note.mason` table filled from `row` lines (`spec/odr.md` O-50 to O-52; `cargo xtask meta table`, WP-075) |
 | `shlib <driver> <args>` | a shared library, by the architecture's `gcc`, `g++` or `gfortran` with `-shared -fuse-ld=bfd`: GNU ld links every fixture library, whatever the run's linkers |
 | `link <driver> <args>` | a link; `<driver>` is `ld` (the linker itself) or `gcc`, `g++`, `gfortran`, `clang`, `clang++` |
 | `run <program> [<args>]` | runs a linked program |
@@ -1169,7 +1170,12 @@ of `OUT_OF_M2` (the rule that puts it out of the milestone is printed);
 or GNU ld cannot link it either and mortar refuses it; or the driver
 writes no line (a note); or its findings are all of one rule
 `KNOWN_FINDINGS` lists for that variation (a verifier defect a record
-names). Anything else fails: a refusal no rule names, a program that
+names). Where the reference's own program is known broken
+(`REFERENCE_BROKEN`: `x-static-pie-export` on x86-64, where GNU ld's
+output dies at start-up, `plumb.md` A34), mortar's program is compared
+with the reference program of the variation the entry names
+(`x-static-pie`), and the line fails when the reference's program runs
+after all (a stale entry). Anything else fails: a refusal no rule names, a program that
 runs differently, a line mortar links that GNU ld cannot, any other
 finding. It prints a table (architecture, variation, outcome, lines),
 one line per line that is not plain ok, and `census: <n> lines, <d>
@@ -1590,7 +1596,7 @@ class or shape, and a missing required key, are errors naming the line.
 
 | key | kinds | meaning |
 |---|---|---|
-| `class` | all | `small`, `medium`, `large`, `extreme`, `rust`, or `calibration` (exactly one workload: "Calibration") |
+| `class` | all | `small`, `medium`, `large`, `extreme`, `rust`, `calibration` (exactly one workload: "Calibration"), or `on-request` (built and measured only when named with `--workload`: inputs too large to keep, generated, measured and deleted) |
 | `kind` | all | `sources`, `synthetic`, `cmake`, `cargo`, `planned` |
 | `about` | all | one sentence for the report |
 | `sources` | sources | files of `bench/workloads/src/` |
@@ -1622,6 +1628,7 @@ The workloads (sizes as the census of this machine counted them are in
 | `rust-self-static` | rust | `rust-self` with `-C target-feature=+crt-static -C relocation-model=static`: static, not PIE |
 | `synthetic-<shape>-static` | extreme | each `synthetic-*` above with `ldflags = -static`, the same sources and flags |
 | `synthetic-library-static` | extreme | one archive of 20000 members of which `main` needs every 50th, `-static` |
+| `synthetic-objects-g10x` | on-request | `synthetic-objects` at 8150 objects with `-g` (`-O1 -g`), `-static`: at least 10× protoc `-g`'s live input, the large workload of `spec/incr.md` §1.5's go/no-go rule (WP-061 stage B) |
 | `fortran-static` | small | `fortran.f90` (a Fortran main calling C through `BIND(C)`) and `fortran-sum.c`, gfortran `-O1`, `-static` against libgfortran |
 
 **Static twins.** Until M2 mortar links static, non-PIE executables only

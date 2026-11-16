@@ -308,7 +308,9 @@ fn run_inner(options: &Options) -> Result<u8, String> {
     let selected: Vec<&Workload> = all
         .iter()
         .filter(|w| {
-            w.measured() && (options.workloads.is_empty() || options.workloads.contains(&w.name))
+            w.measured()
+                && (options.workloads.contains(&w.name)
+                    || (options.workloads.is_empty() && w.class != manifest::ON_REQUEST))
         })
         .collect();
     let calibration = all

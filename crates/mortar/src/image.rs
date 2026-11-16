@@ -215,6 +215,7 @@ pub fn with_link<T>(
                     copy_size: &d.copy.size,
                     bind_now: d.bind_now,
                     relro: d.relro,
+                    note_mason: d.note_mason.as_ref(),
                     syms: cx,
                     args: &f.args,
                 }),
@@ -304,6 +305,26 @@ pub fn write(
     let opts = output_options(store);
     match with_link(front, store, before_recheck, |l| link::write(l, path, &opts, on_phase)) {
         Ok(w) => w,
+        Err(e) => {
+            Err(Failed { diagnostics: vec![(mortar_synth::error::key(0), e.into_diagnostic())] })
+        }
+    }
+}
+
+/// The test-only update path's image phase (`link::refill`): the jobs of
+/// the dirty `windows` of `front`'s output, filled into memory.
+///
+/// # Errors
+///
+/// The image phase's diagnostics.
+pub fn refill(
+    front: &Front<'_>,
+    store: &Store,
+    path: &Path,
+    windows: &[u64],
+) -> Result<link::Refilled, Failed> {
+    match with_link(front, store, &|_| {}, |l| link::refill(l, path, windows)) {
+        Ok(r) => r,
         Err(e) => {
             Err(Failed { diagnostics: vec![(mortar_synth::error::key(0), e.into_diagnostic())] })
         }

@@ -1,0 +1,50 @@
+# O-24 (b) (spec/odr.md): two libraries define f at one version node V1
+# (same node name: one entity, MT-13): the earlier provides it to both
+# (glibc 2.41, measured: libs1, libs2 at V1: 1,1); reported. Two nodes
+# of different names are o24-silent.test's r6.
+#@ spec: odr.md "O-24"
+#@ arch: aarch64 x86_64
+#@ diag: odr-violation ./libs1.so ./libs2.so
+
+cc -O1 -fPIC -DN=1 -DF=f1 lib.c -o s1.o
+cc -O1 -fPIC -DN=2 -DF=f2 lib.c -o s2.o
+as note1.s -o note1.o
+shlib gcc s1.o note1.o -Wl,--version-script=s1.map -Wl,-soname,libs1.so -o libs10.so
+meta s1.rows libs10.so -o libs1.so
+shlib gcc s2.o note1.o -Wl,--version-script=s2.map -Wl,-soname,libs2.so -o libs20.so
+meta s2.rows libs20.so -o libs2.so
+cc -O1 -fPIE main.c -o main.o
+link(bfd,lld,mold) gcc -pie main.o -Wl,--no-as-needed -L. -ls1 -ls2 -o prog
+link(mortar) gcc -pie main.o -Wl,--no-as-needed -L. -ls1 -ls2 -Wl,--odr=strict -o prog
+  exit: fail
+  diag: *libs1.so runs its own copy and provides it to *libs2.so
+run(bfd,lld,mold) prog
+  stdout: 1 1
+
+#--- lib.c
+int f(void) { return N; }
+int F(void) { return f(); }
+#--- s1.map
+V1 { global: f; f1; local: *; };
+#--- s2.map
+V1 { global: f; f2; local: *; };
+#--- main.c
+#include <stdio.h>
+int f1(void);
+int f2(void);
+int main(void) { printf("%d %d\n", f1(), f2()); return 0; }
+#--- s1.rows
+row name=f version=V1 hash=0101010101010101 flags=1
+#--- s2.rows
+row name=f version=V1 hash=0202020202020202 flags=1
+#--- note1.s
+	.section .note.mason,"a",%note
+	.p2align 3
+	.long 10
+	.long 40
+	.long 0x4d4f4401
+	.asciz "MasonMeta"
+	.p2align 3
+	.long 1, 1, 24, 0
+	.zero 24
+	.section .note.GNU-stack,"",%progbits

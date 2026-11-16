@@ -15,6 +15,7 @@ pub mod arch;
 pub mod depfile;
 pub mod dynamic;
 pub mod dynlink;
+pub mod floor;
 pub mod front;
 pub mod image;
 pub mod incremental;
@@ -248,7 +249,7 @@ fn invoke_with(
             return failed(diagnostics, timer.finish());
         }
     };
-    let env = front::Env { cwd, pool, replay };
+    let env = front::Env { cwd, pool, replay, slack: session.is_some() };
     let mut front = front::front(plan.clone(), env, &store, &diagnostics, &mut timer);
     if let Some(f) = &mut front
         && f.dyn_tables.is_some()

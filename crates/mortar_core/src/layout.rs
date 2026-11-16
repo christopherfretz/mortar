@@ -953,6 +953,58 @@ pub struct Tls {
     pub align: u8,
 }
 
+/// What a [`Hole`] holds (`spec/incr.md` IN-3, IN-3a, IN-34a, IN-51b).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum HoleKind {
+    /// A region's slack in an allocated L-143 section (IN-30): the
+    /// chunk's fill (trap in code, zero in data, nothing in `NOBITS`).
+    Fill,
+    /// The unused tail of an `.eh_frame` per-file range (IN-34a): 4, 8 or
+    /// 12 bytes absorbed as `DW_CFA_nop` padding of the record before
+    /// it, or one padding CIE of at least 16 bytes.
+    EhPad,
+    /// A debug contribution's allotment beyond its size (IN-50): the
+    /// section's neutral form (IN-51b).
+    Debug,
+    /// The neutral abbreviation table (`01 11 00 80 40 09 00 00`, then
+    /// zeros) in `.debug_abbrev` that the neutral `.debug_info` units
+    /// name (IN-51b).
+    AbbrevTable,
+    /// A dead range an earlier link's debug contribution held (IN-3a):
+    /// the section's neutral form.
+    DeadDebug,
+    /// A dead merged string piece (IN-3a, L-147): its bytes are left as
+    /// written (the map's `dead … strings`). A dead constant piece takes
+    /// the fill instead: it is a [`HoleKind::Fill`] hole.
+    DeadFragment,
+    /// An unused CIE in `.eh_frame` (IN-3a): a padding CIE.
+    DeadCie,
+}
+
+impl HoleKind {
+    /// Whether it is a dead range (IN-3a): what an earlier link's live
+    /// unit held, not slack.
+    #[must_use]
+    pub fn is_dead(self) -> bool {
+        matches!(self, Self::DeadDebug | Self::DeadFragment | Self::DeadCie)
+    }
+}
+
+/// A range of a chunk's content no live unit owns, made by an
+/// incremental-mode link (`spec/incr.md` IN-3, IN-3a): a region's slack,
+/// an `.eh_frame` range's padding, a debug contribution's allotment, or a
+/// dead range. A plain link has none. The bytes are a function of the
+/// kind, the chunk and the target (the image writes them, layout.md
+/// L-141).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Hole {
+    pub chunk: ChunkId,
+    /// From the chunk's start.
+    pub offset: u64,
+    pub size: u64,
+    pub kind: HoleKind,
+}
+
 /// The table (§4.4).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Placement {
@@ -974,6 +1026,9 @@ pub struct Placement {
     pub sized: Box<[Sized]>,
     pub tls: Option<Tls>,
     pub entry: Option<u64>,
+    /// Sorted by `(chunk, offset)`, never overlapping (`spec/incr.md`
+    /// IN-3): empty in a plain link.
+    pub holes: Box<[Hole]>,
 }
 
 impl Placement {

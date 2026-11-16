@@ -329,7 +329,7 @@ pub(crate) static ROWS: &[Row] = &[
     r(&[x("no-odr-check")], Arg::None, "", MORTAR, &[], Group::Diagnostics, Supported, Lands::NoOdrCheck, "Run no one-definition-rule check (--odr=off)"),
     r(&[x("odr-stats")], Arg::None, "", MORTAR, &[], Group::Diagnostics, Supported, Lands::OdrStats, "Print one line of one-definition-rule statistics"),
     r(&[x("odr-check-archives")], Arg::None, "", MORTAR, &[], Group::Diagnostics, Refused, Lands::Other, "Also check archive members that are not linked (WP-076)"),
-    r(&[x("odr-table")], Arg::Required(Values::Choice(&["off", "exported", "full"])), "ROWS", MORTAR, &[], Group::Diagnostics, Refused, Lands::Other, "Write a loadable one-definition-rule table (WP-075, WP-076)"),
+    r(&[x("odr-table")], Arg::Required(Values::Choice(&["off", "exported", "full"])), "ROWS", MORTAR, &[], Group::Diagnostics, Partial { refused: &["full"], note: "odr.md O-50: =full is WP-076; mortar writes =off and =exported (dynamic executables)" }, Lands::OdrTable, "Write a loadable one-definition-rule table: off (default), exported or full"),
     r(&[x("keep-mason-meta")], Arg::None, "", MORTAR, &[], Group::Diagnostics, Refused, Lands::Other, "Keep Mason metadata in the output (WP-076)"),
     r(&[x("detect-odr-violations")], Arg::None, "", MORTAR, &[], Group::Diagnostics, Noop(DETECT_ODR), Lands::Other, "GNU gold's: check the one-definition rule"),
     r(&[g("version")], Arg::None, "", GLM, &[], Group::Bookkeeping, Supported, Lands::Version, "Print the version and exit"),

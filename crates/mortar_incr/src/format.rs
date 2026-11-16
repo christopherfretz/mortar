@@ -1,5 +1,8 @@
-//! The bytes of a link state, format version 1 (`spec/incr.md` IN-18a):
+//! The bytes of a link state, format version 2 (`spec/incr.md` IN-18a):
 //! the rows as plain values, the encoder, and the validating decoder.
+//! Version 2 is version 1 with the `HOLES` table (kind 39) before
+//! `STRINGS`; the reader also takes version 1, whose links laid out no
+//! slack, as a state with no holes.
 //!
 //! The decoder is the only way in: a state is untrusted input, so every
 //! length, hash, enumeration, pad and reference is checked before a row
@@ -15,7 +18,9 @@ use mortar_digest::{L128, l128};
 /// `MORTARST`.
 pub const MAGIC: [u8; 8] = *b"MORTARST";
 /// The format version this crate writes and reads.
-pub const FORMAT_VERSION: u32 = 1;
+pub const FORMAT_VERSION: u32 = 2;
+/// The earlier format version it also reads (without `HOLES`).
+pub const FORMAT_VERSION_1: u32 = 1;
 /// The header's size.
 pub const HEADER_LEN: usize = 64;
 /// A table record's size.
@@ -78,7 +83,8 @@ pub type Hash16 = [u8; 16];
 
 // ---- the table kinds --------------------------------------------------------
 
-/// The table kinds of format version 1, in file order (IN-18a).
+/// The table kinds of format version 2, in file order (IN-18a): 1 to 22,
+/// then 39, then `STRINGS` last. Version 1 has no 39.
 pub mod kind {
     pub const META: u32 = 1;
     pub const STAT: u32 = 2;
@@ -103,8 +109,12 @@ pub mod kind {
     pub const LAYOUT: u32 = 21;
     pub const LEAVES: u32 = 22;
     pub const STRINGS: u32 = 23;
+    /// Regions and holes (IN-18a's reserved kind 39): format version 2.
+    pub const HOLES: u32 = 39;
+    /// The number of tables of version 2.
+    pub const COUNT: u32 = 24;
     /// The number of tables of version 1.
-    pub const COUNT: u32 = 23;
+    pub const COUNT_1: u32 = 23;
 
     /// The name of a kind, for diagnostics.
     #[must_use]
@@ -134,6 +144,9 @@ pub mod kind {
             "LEAVES",
             "STRINGS",
         ];
+        if kind == HOLES {
+            return "HOLES";
+        }
         kind.checked_sub(1).and_then(|i| NAMES.get(i as usize)).copied().unwrap_or("?")
     }
 }
@@ -381,6 +394,28 @@ pub struct LayoutRow {
     pub entry: u64,
 }
 
+/// `HOLES` kinds (`mortar_core::layout::HoleKind`, in its order).
+pub mod hole_kind {
+    pub const FILL: u8 = 0;
+    pub const EH_PAD: u8 = 1;
+    pub const DEBUG: u8 = 2;
+    pub const ABBREV_TABLE: u8 = 3;
+    pub const DEAD_DEBUG: u8 = 4;
+    pub const DEAD_FRAGMENT: u8 = 5;
+    pub const DEAD_CIE: u8 = 6;
+}
+
+/// `HOLES`: a range of a chunk no live unit owns (IN-3, IN-3a, IN-30),
+/// sorted by `(chunk, offset)`, never overlapping, inside the chunk's size
+/// (a capacity tail past the size is not a hole, L-141).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HoleRow {
+    pub chunk: u32,
+    pub kind: u8,
+    pub offset: u64,
+    pub size: u64,
+}
+
 /// A whole state, as rows (`spec/incr.md` IN-18a).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct State {
@@ -408,6 +443,8 @@ pub struct State {
     pub sized: Vec<SizeRow>,
     pub layout: LayoutRow,
     pub leaves: Vec<[u8; 32]>,
+    /// Empty in a state of format version 1.
+    pub holes: Vec<HoleRow>,
     pub strings: Vec<u8>,
 }
 
@@ -874,6 +911,18 @@ impl Row for LayoutRow {
     }
 }
 
+impl Row for HoleRow {
+    const WIDTH: usize = 24;
+    fn put(&self, w: &mut W<'_>) {
+        w.u32(self.chunk).u8(self.kind).pad(3).u64(self.offset).u64(self.size);
+    }
+    fn get(r: &mut R<'_>) -> Self {
+        let (chunk, kind) = (r.u32(), r.u8());
+        r.pad(3);
+        Self { chunk, kind, offset: r.u64(), size: r.u64() }
+    }
+}
+
 impl Row for [u8; 32] {
     const WIDTH: usize = 32;
     fn put(&self, w: &mut W<'_>) {
@@ -935,6 +984,7 @@ pub fn encode(s: &State) -> Vec<u8> {
     table(&mut out, kind::SIZED, &s.sized);
     table(&mut out, kind::LAYOUT, std::slice::from_ref(&s.layout));
     table(&mut out, kind::LEAVES, &s.leaves);
+    table(&mut out, kind::HOLES, &s.holes);
     record(&mut out, kind::STRINGS, s.strings.len() as u64, &s.strings);
     let len = out.len() as u64;
     let mut header = Vec::with_capacity(HEADER_LEN);
@@ -956,11 +1006,11 @@ pub const FLAGS_OFFSET: u64 = 12;
 struct Tables<'a> {
     bytes: &'a [u8],
     at: usize,
-    next_kind: u32,
 }
 
 impl<'a> Tables<'a> {
-    /// The next table's rows: its record checked (kind, size, hash).
+    /// The next table's rows: its record checked (kind, size, hash). The
+    /// caller asks for the kinds in file order.
     fn next(&mut self, kind: u32, width: usize) -> Result<(u64, &'a [u8]), StateError> {
         let name = kind::name(kind);
         let rec = self
@@ -970,7 +1020,7 @@ impl<'a> Tables<'a> {
             .ok_or_else(|| corrupt(format!("{name}: truncated record")))?;
         let mut r = R::new(rec);
         let (k, pad, rows, len, hash) = (r.u32(), r.u32(), r.u64(), r.u64(), r.h());
-        if k != kind || k != self.next_kind {
+        if k != kind {
             return Err(corrupt(format!("table {k} where {name} ({kind}) was expected")));
         }
         if pad != 0 {
@@ -989,7 +1039,6 @@ impl<'a> Tables<'a> {
             return Err(corrupt(format!("{name}: hash of the rows differs")));
         }
         self.at = start + body.len();
-        self.next_kind += 1;
         Ok((rows, body))
     }
 
@@ -1021,6 +1070,8 @@ impl<'a> Tables<'a> {
 pub struct Header {
     pub flags: u32,
     pub plan_hash: Hash16,
+    /// [`FORMAT_VERSION`] or [`FORMAT_VERSION_1`].
+    pub version: u32,
 }
 
 /// Reads and checks the header alone (magic, version, hash, length).
@@ -1031,9 +1082,9 @@ pub fn header(bytes: &[u8]) -> Result<Header, StateError> {
         return Err(corrupt("not a link state (magic)"));
     }
     let version = r.u32();
-    if version != FORMAT_VERSION {
+    if version != FORMAT_VERSION && version != FORMAT_VERSION_1 {
         return Err(StateError::Version(format!(
-            "format version {version}, this mortar reads {FORMAT_VERSION}"
+            "format version {version}, this mortar reads {FORMAT_VERSION_1} and {FORMAT_VERSION}"
         )));
     }
     let flags = r.u32();
@@ -1044,20 +1095,21 @@ pub fn header(bytes: &[u8]) -> Result<Header, StateError> {
     if flags & !FLAG_UPDATING != 0 {
         return Err(corrupt(format!("unknown header flags {flags:#x}")));
     }
-    if count != kind::COUNT || pad != 0 {
-        return Err(corrupt(format!("{count} tables, format 1 has {}", kind::COUNT)));
+    let want = if version == FORMAT_VERSION { kind::COUNT } else { kind::COUNT_1 };
+    if count != want || pad != 0 {
+        return Err(corrupt(format!("{count} tables, format {version} has {want}")));
     }
     if len != bytes.len() as u64 {
         return Err(corrupt(format!("{} bytes, the header says {len}", bytes.len())));
     }
-    Ok(Header { flags, plan_hash })
+    Ok(Header { flags, plan_hash, version })
 }
 
 /// Decodes and validates a state (IN-18a's reader). `version` is this
 /// mortar's version string: a state of another is `state-version`.
 pub fn decode(bytes: &[u8], version: &[u8]) -> Result<State, StateError> {
-    let Header { flags, plan_hash } = header(bytes)?;
-    let mut t = Tables { bytes, at: HEADER_LEN, next_kind: 1 };
+    let Header { flags, plan_hash, version: format } = header(bytes)?;
+    let mut t = Tables { bytes, at: HEADER_LEN };
     let mut s = State {
         flags,
         plan_hash,
@@ -1083,8 +1135,12 @@ pub fn decode(bytes: &[u8], version: &[u8]) -> Result<State, StateError> {
         sized: t.rows(kind::SIZED)?,
         layout: t.one(kind::LAYOUT)?,
         leaves: t.rows(kind::LEAVES)?,
+        holes: Vec::new(),
         strings: Vec::new(),
     };
+    if format == FORMAT_VERSION {
+        s.holes = t.rows(kind::HOLES)?;
+    }
     let (_, strings) = t.next(kind::STRINGS, 1)?;
     s.strings = strings.to_vec();
     if t.at != bytes.len() {
@@ -1349,6 +1405,21 @@ fn validate(s: &State) -> Result<(), StateError> {
     let want = mortar_digest::leaf_count(m.file_size);
     if s.leaves.len() as u64 != want {
         return Err(corrupt(format!("LEAVES: {} rows, the output needs {want}", s.leaves.len())));
+    }
+    for (i, h) in s.holes.iter().enumerate() {
+        let ok = h.kind <= hole_kind::DEAD_CIE
+            && h.size != 0
+            && s.chunks
+                .get(h.chunk as usize)
+                .is_some_and(|c| h.offset.checked_add(h.size).is_some_and(|end| end <= c.size));
+        if !ok {
+            return Err(bad(kind::HOLES, i, "field out of range"));
+        }
+    }
+    for (i, w) in s.holes.windows(2).enumerate() {
+        if (w[0].chunk, w[0].offset + w[0].size) > (w[1].chunk, w[1].offset) {
+            return Err(bad(kind::HOLES, i + 1, "rows not sorted or overlapping"));
+        }
     }
     let leaf_len = match m.leaf_fn {
         0 => 16,
