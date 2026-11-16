@@ -916,3 +916,309 @@ fn hostile_dead_lines_never_panic() {
     }
     assert!(n > 1000);
 }
+
+// ---------------------------------------------------------------------
+// A position-independent output (WP-092: WP-091's first missing model).
+// The dynamic tables IN-3a check 1 reads (the GOT's words, `.rela.dyn`'s
+// records and their targets, `.eh_frame_hdr`) and IN-3's fill of an
+// allocated relocation section exist only there.
+
+/// The PIE program: `main.s` loads `live` through the GOT and holds the
+/// three N3 words (each a `RELATIVE` record in a PIE), `dead.s` the dead
+/// version of a file with code and two words that point at it (two
+/// `RELATIVE` records that become the `.rela.dyn` hole).
+fn pie_sources(arch: Arch) -> [(&'static str, String); 4] {
+    let (got, ty, sec) = match arch {
+        Arch::Aarch64 => (
+            "\tadrp x0, :got:live\n\tldr x0, [x0, :got_lo12:live]\n\tbl live\n\tb .\n",
+            "%function",
+            "%progbits",
+        ),
+        _ => ("\taddq live@GOTPCREL(%rip), %rax\n\tcall live\n\thlt\n", "@function", "@progbits"),
+    };
+    let ret = "\tret\n";
+    let main = format!(
+        "\t.text\n\t.globl _start\n_start:\n\t.cfi_startproc\n{got}\t.cfi_endproc\n\
+         \t.section .text.live,\"ax\",{sec}\n\t.globl live\n\t.type live,{ty}\nlive:\n\
+         \t.cfi_startproc\n{ret}\t.cfi_endproc\n\t.size live, .-live\n\
+         \t.data\n\t.globl ptrs\nptrs:\n\t.quad arr+40\n\t.quad blk_-8\n\t.quad arr_end\n"
+    );
+    let arr =
+        "\t.data\n\t.balign 8\n\t.globl arr\narr:\t.fill 40,1,1\n\t.globl arr_end\narr_end:\n"
+            .to_string();
+    let fill = if arch == Arch::Aarch64 { ".fill 8,4,0" } else { ".fill 32,1,0xcc" };
+    let dead = format!("\t.text\ndead_code:\n\t{fill}\n\t.data\n\t.quad dead_code\n\t.quad dead_code+4\n");
+    let blk = "\t.data\n\t.globl blk_\nblk_:\t.quad 7\n".to_string();
+    [("main", main), ("arr", arr), ("dead", dead), ("blk", blk)]
+}
+
+/// The `.rela.dyn` records: `(address, r_offset, type, symbol, addend)`.
+fn rela_dyn(b: &Built) -> Vec<(u64, u64, u32, u32, u64)> {
+    let s = b.sec(".rela.dyn").clone();
+    let rd = |o: usize| u64::from_le_bytes(b.output[o..o + 8].try_into().unwrap());
+    (0..s.size / 24)
+        .map(|k| {
+            let o = (s.offset + 24 * k) as usize;
+            let info = rd(o + 8);
+            (s.addr + 24 * k, rd(o), info as u32, (info >> 32) as u32, rd(o + 16))
+        })
+        .collect()
+}
+
+/// `R_*_RELATIVE` of the 64-bit machines.
+fn relative(arch: Arch) -> u64 {
+    if arch == Arch::Aarch64 { 1027 } else { 8 }
+}
+
+/// Links the PIE program with GNU ld (`-pie --eh-frame-hdr`) and models
+/// the update that removed `dead.o`: its code and data are holes, its two
+/// `RELATIVE` records (inside `DT_RELACOUNT`'s prefix) a `.rela.dyn` hole
+/// of `RELATIVE` records aimed at one scratch word (IN-3, dyn.md §14).
+fn build_pie(arch: Arch) -> Option<(Scratch, Built)> {
+    let asm = tool(arch, "as")?;
+    let ld = tool(arch, "ld.bfd")?;
+    let dir = Scratch::new(&format!("dead-pie-{}", arch.triple()));
+    let mut objs = Vec::new();
+    for (name, text) in pie_sources(arch) {
+        std::fs::write(dir.join(format!("{name}.s")), text).unwrap();
+        let (s, o) = (format!("{name}.s"), format!("{name}.o"));
+        let mut a = vec![s.as_str(), "-o", o.as_str()];
+        if arch != Arch::Aarch64 {
+            // GOTPCREL in an `add`, which GNU ld keeps: the GOT word stays.
+            a.push("-mrelax-relocations=no");
+        }
+        run(dir.path(), &asm, &a);
+        objs.push(o);
+    }
+    let mut args = vec![
+        "-pie",
+        "--no-dynamic-linker",
+        "--eh-frame-hdr",
+        "-z",
+        "combreloc",
+        "-x",
+        "-e",
+        "_start",
+        "-o",
+        "out",
+        "-Map=out.map",
+        "-z",
+        "noexecstack",
+    ];
+    args.extend(objs.iter().map(String::as_str));
+    run(dir.path(), &ld, &args);
+    let output = std::fs::read(dir.join("out")).unwrap();
+    let text = std::fs::read_to_string(dir.join("out.map")).unwrap();
+    let mut map = mortar_plumb::map::parse(Format::Gnu, &text).unwrap();
+    let files: Vec<(String, Vec<u8>)> = map
+        .paths()
+        .into_iter()
+        .filter(|p| *p != "dead.o")
+        .filter_map(|p| std::fs::read(dir.join(p)).ok().map(|b| (p.to_string(), b)))
+        .collect();
+    map.format = Format::Mortar;
+    map.incremental = true;
+    let gone = drop_file(&mut map, "dead.o");
+    let secs = sections(&output);
+    let mut b = Built { arch, output, map, files, secs };
+    let mut data_hole = None;
+    for p in gone.iter().filter(|p| p.size > 0) {
+        let Some(owner) = b.owner(p.addr, p.size).map(|s| s.name.clone()) else { continue };
+        let f = if owner == ".text" { code_fill(arch) } else { 0 };
+        b.patch(&owner, p.addr, &vec![f; p.size as usize]);
+        b.hole(&owner, p.addr, p.size);
+        if owner == ".data" {
+            data_hole = Some((p.addr, p.size));
+        }
+    }
+    let (lo, size) = data_hole.expect("dead.o's .data");
+    // The dead words' records: RELATIVE at the scratch word (the first
+    // word of the data hole), addend 0, and a hole line over them.
+    let dead: Vec<_> =
+        rela_dyn(&b).into_iter().filter(|r| r.1 >= lo && r.1 < lo + size).collect();
+    assert_eq!(dead.len(), 2, "{arch:?}: dead.o's two RELATIVE records: {dead:x?}");
+    for r in &dead {
+        let mut rec = lo.to_le_bytes().to_vec();
+        rec.extend_from_slice(&relative(arch).to_le_bytes());
+        rec.extend_from_slice(&0u64.to_le_bytes());
+        b.patch(".rela.dyn", r.0, &rec);
+    }
+    assert_eq!(dead[1].0, dead[0].0 + 24, "{arch:?}: the dead records are adjacent");
+    b.hole(".rela.dyn", dead[0].0, 48);
+    // The tables GNU ld's map does not list, as mortar lists them: linker
+    // content (chunks) around the holes.
+    b.map.placed.retain(|p| p.section != SectionRef::Name(".eh_frame".into()));
+    for name in [
+        ".gnu.hash",
+        ".dynsym",
+        ".dynstr",
+        ".rela.dyn",
+        ".eh_frame_hdr",
+        ".eh_frame",
+        ".dynamic",
+        ".got",
+        ".got.plt",
+    ] {
+        let s = b.sec(name).clone();
+        let mut at = s.addr;
+        let mut holes: Vec<(u64, u64)> = b
+            .map
+            .dead
+            .iter()
+            .filter(|d| d.section == name)
+            .map(|d| (s.addr + d.offset, d.size))
+            .collect();
+        holes.push((s.addr + s.size, 0));
+        holes.sort_unstable();
+        for (h, size) in holes {
+            if h > at {
+                b.map.chunks.push(Chunk {
+                    kind: ChunkKind::Synthetic,
+                    name: name.into(),
+                    addr: Some(at),
+                    size: h - at,
+                    target: None,
+                    line: 0,
+                });
+            }
+            at = h + size;
+        }
+    }
+    Some((dir, b))
+}
+
+fn pie_archs() -> [Arch; 2] {
+    [Arch::Aarch64, Arch::X86_64]
+}
+
+// The PIE model is ACCEPTED: the `.rela.dyn` hole's RELATIVE records aim
+// at one scratch word, and `ptrs`' `RELATIVE` record for `arr+40` targets
+// the data hole's first byte, which is the end of the live `arr` (N3:
+// a table word at a live item's end names that item). Each table
+// reference into a range is REJECTED (P-I3), and so is each wrong fill
+// of the relocation hole (P-I5).
+#[test]
+fn in3a_pie_tables_and_relocation_fill() {
+    for arch in pie_archs() {
+        let Some((_dir, b)) = build_pie(arch) else { return };
+        let base = b.judge();
+        assert!(base.is_empty(), "{arch:?}: {base:#?}");
+        let text_hole = b.map.dead.iter().find(|d| d.section == ".text").unwrap().clone();
+        let in_text = b.sec(".text").addr + text_hole.offset + 4;
+        let data_hole = b.map.dead.iter().find(|d| d.section == ".data").unwrap().clone();
+        let in_data = b.sec(".data").addr + data_hole.offset;
+        let (ptrs, _) = b.placed("main.o", ".data");
+        let recs = rela_dyn(&b);
+        let live = recs.iter().find(|r| r.1 == ptrs).copied().expect("ptrs' RELATIVE record");
+        assert_eq!(live.4, in_data, "{arch:?}: arr+40's record targets the hole's first byte");
+        // A GOT word aimed into the code hole.
+        let got = b.sec(".got").clone();
+        let slot = recs
+            .iter()
+            .find(|r| r.1 >= got.addr && r.1 < got.addr + got.size)
+            .copied()
+            .expect("the GOT slot's RELATIVE record");
+        let mut m = b.clone();
+        m.patch(".got", slot.1, &in_text.to_le_bytes());
+        expect(arch, "got word", &base, &m, "P-I3", ".got word");
+        // A live RELATIVE record's target in the code hole.
+        let mut m = b.clone();
+        m.patch(".rela.dyn", slot.0 + 16, &in_text.to_le_bytes());
+        expect(arch, "relative target", &base, &m, "P-I3", "targets");
+        // A live record that writes into the data hole.
+        let mut m = b.clone();
+        m.patch(".rela.dyn", live.0, &(in_data + 8).to_le_bytes());
+        expect(arch, "record writes", &base, &m, "P-I3", "writes at");
+        // An `.eh_frame_hdr` entry whose location is in the code hole.
+        let mut m = b.clone();
+        let hdr = m.sec(".eh_frame_hdr").clone();
+        let entry = hdr.addr + 12;
+        let rel = in_text.wrapping_sub(hdr.addr) as u32;
+        m.patch(".eh_frame_hdr", entry, &rel.to_le_bytes());
+        expect(arch, "eh_frame_hdr", &base, &m, "P-I3", ".eh_frame_hdr entry");
+        // The hole's records: one not RELATIVE, one NONE inside the
+        // prefix, two aimed at different words.
+        let hole = b.map.dead.iter().find(|d| d.section == ".rela.dyn").unwrap().clone();
+        let at = b.sec(".rela.dyn").addr + hole.offset;
+        let mut m = b.clone();
+        let abs = if arch == Arch::Aarch64 { 257u64 } else { 1 };
+        m.patch(".rela.dyn", at + 8, &abs.to_le_bytes());
+        expect(arch, "hole record type", &base, &m, "P-I5", "is not RELATIVE");
+        let mut m = b.clone();
+        m.patch(".rela.dyn", at + 24 + 8, &0u64.to_le_bytes());
+        expect(arch, "NONE in prefix", &base, &m, "P-I5", "inside DT_RELACOUNT's prefix");
+        let mut m = b.clone();
+        m.patch(".rela.dyn", at + 24, &(in_data + 8).to_le_bytes());
+        expect(arch, "two words", &base, &m, "P-I5", "more than one word");
+    }
+}
+
+// ---------------------------------------------------------------------
+// Clang's DWARF 5 (WP-092: WP-091's second missing model): strings named
+// through `DW_FORM_strx` (the unit's `.debug_str_offsets` table) and
+// through the v5 line header (`DW_FORM_line_strp` into
+// `.debug_line_str`), each the only reference to its string.
+
+/// `main.c`, compiled by clang `-gdwarf-5` and linked by GNU ld, as an
+/// incremental map that claims coverage with no range: "only.h" is named
+/// only by the line header's file table, "helper" only through a
+/// `.debug_str_offsets` entry.
+fn build_clang5(arch: Arch) -> Option<(Scratch, Built)> {
+    let clang = mortar_testutil::tool("clang-22")?;
+    let ld = tool(arch, "ld.bfd")?;
+    let dir = Scratch::new(&format!("dead-clang5-{}", arch.triple()));
+    std::fs::write(dir.join("only.h"), "static inline int helper(int x) { return x + 1; }\n")
+        .unwrap();
+    std::fs::write(
+        dir.join("main.c"),
+        "#include \"only.h\"\nint g = 5;\nint main(void) { return helper(g); }\n",
+    )
+    .unwrap();
+    let target = format!("--target={}", arch.triple());
+    let mut flags = vec![target.as_str(), "-c", "-O0", "-g", "-gdwarf-5", "-fno-pic"];
+    flags.extend(["-fno-asynchronous-unwind-tables", "main.c", "-o", "main.o"]);
+    run(dir.path(), &clang, &flags);
+    run(
+        dir.path(),
+        &ld,
+        &["-x", "-e", "main", "-o", "out", "-Map=out.map", "-z", "noexecstack", "main.o"],
+    );
+    let output = std::fs::read(dir.join("out")).unwrap();
+    let text = std::fs::read_to_string(dir.join("out.map")).unwrap();
+    let mut map = mortar_plumb::map::parse(Format::Gnu, &text).unwrap();
+    map.format = Format::Mortar;
+    map.incremental = true;
+    let files = vec![("main.o".to_string(), std::fs::read(dir.join("main.o")).unwrap())];
+    let secs = sections(&output);
+    Some((dir, Built { arch, output, map, files, secs }))
+}
+
+/// The offset of string `s` (with its NUL) in non-allocated section
+/// `name`.
+fn string_at(b: &Built, name: &str, s: &str) -> u64 {
+    let sec = b.sec(name);
+    let data = &b.output[sec.offset as usize..(sec.offset + sec.size) as usize];
+    let needle: Vec<u8> = s.bytes().chain([0]).collect();
+    let at = data.windows(needle.len()).position(|w| w == needle.as_slice());
+    at.unwrap_or_else(|| panic!("no '{s}' in {name}")) as u64
+}
+
+// IN-3a check 1 for the DWARF 5 indirections (P-I4): a dead `strings`
+// range under a string that only a live line header names, or only a
+// live `.debug_str_offsets` entry, is REJECTED; the model is ACCEPTED.
+#[test]
+fn in3a_dwarf5_line_strings_and_str_offsets() {
+    for arch in debug_archs() {
+        let Some((_dir, b)) = build_clang5(arch) else { return };
+        let base = b.judge();
+        assert!(base.is_empty(), "{arch:?}: {base:#?}");
+        let mut m = b.clone();
+        let at = string_at(&m, ".debug_line_str", "only.h");
+        m.dead(".debug_line_str", at, 7, DeadKind::Strings);
+        expect(arch, "line header string", &base, &m, "P-I4", "live .debug_line table");
+        let mut m = b.clone();
+        let at = string_at(&m, ".debug_str", "helper");
+        m.dead(".debug_str", at, 7, DeadKind::Strings);
+        expect(arch, "str_offsets entry", &base, &m, "P-I4", "live .debug_str_offsets entry");
+    }
+}
