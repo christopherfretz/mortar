@@ -252,7 +252,7 @@ fn verify_main(args: &[String]) -> u8 {
         mortar_plumb::Format::Mortar,
         Path::new(""),
         None,
-        None,
+        fix_843419(&words),
         Some(words),
     );
     let report = match verified {
@@ -277,6 +277,20 @@ fn verify_main(args: &[String]) -> u8 {
         println!("{line}");
     }
     1
+}
+
+/// What the line says of `--fix-cortex-a53-843419`: the last of it (with
+/// or without a value) and `--no-fix-cortex-a53-843419` wins. The verifier
+/// judges erratum 843419 sites only when it knows the option was given
+/// (or sees a fix in the output): GCC on Debian passes it to every link.
+fn fix_843419(words: &[String]) -> Option<bool> {
+    words.iter().rev().find_map(|w| match w.as_str() {
+        "--no-fix-cortex-a53-843419" => Some(false),
+        w if w == "--fix-cortex-a53-843419" || w.starts_with("--fix-cortex-a53-843419=") => {
+            Some(true)
+        }
+        _ => None,
+    })
 }
 
 /// The compilers and the control linker of a row.
@@ -815,6 +829,18 @@ mod tests {
 
     fn s(a: &[&str]) -> Vec<String> {
         a.iter().map(|w| (*w).to_owned()).collect()
+    }
+
+    #[test]
+    fn the_erratum_option_is_read_from_the_line() {
+        let w = |v: &[&str]| v.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        assert_eq!(fix_843419(&w(&["-pie", "-o", "a"])), None);
+        assert_eq!(fix_843419(&w(&["--fix-cortex-a53-843419", "a.o"])), Some(true));
+        assert_eq!(fix_843419(&w(&["--fix-cortex-a53-843419=full"])), Some(true));
+        assert_eq!(
+            fix_843419(&w(&["--fix-cortex-a53-843419", "--no-fix-cortex-a53-843419"])),
+            Some(false)
+        );
     }
 
     #[test]

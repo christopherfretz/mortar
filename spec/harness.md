@@ -2386,7 +2386,10 @@ names, the phase, the start time, and:
 
 `realbuild verify` expands the line's `@file` words (GNU ld's quoting,
 the bench's `parse_response`), runs the verifier (`plumb::verify_link_line`,
-the inputs read from the working directory, stage 3 with the line) and
+the inputs read from the working directory, stage 3 with the line, and
+`--fix-cortex-a53-843419` as the line gives it: the last of it and
+`--no-fix-cortex-a53-843419`, so that erratum 843419 sites are judged
+whenever the option was given, not only when the output has a fix) and
 prints `plumb: clean` (status 0), or `plumb: <n> findings: <rule> x<k>,
 ...` and the report's first 20 lines (status 1), or `plumb: error: <what>` (status
 2: the verifier could not judge).
@@ -2472,7 +2475,7 @@ next starts) plus the downloads, not the sum.
 
 ### Tests
 
-`xtask/src/realbuild.rs`: `arguments_parse`,
+`xtask/src/realbuild.rs`: `the_erratum_option_is_read_from_the_line`, `arguments_parse`,
 `the_manifest_parses_and_names_its_errors`,
 `the_checked_in_manifest_parses_and_each_project_has_a_script`.
 `xtask/src/realbuild/outcome.rs`: `refusals_are_read_by_noun`,
