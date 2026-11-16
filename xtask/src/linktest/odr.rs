@@ -183,7 +183,7 @@ mod tests {
         );
         let other = "ld: error: undefined symbol: f\n>>> referenced by a.o:(.text+0x0)\n";
         assert!(reported(other).is_empty());
-        assert_eq!(ids().len(), 11);
+        assert_eq!(ids().len(), 12);
         let record = "ld: error: type 1S violates the one-definition rule\n\
             >>> defined in a.o (kept), at h.h:1\n\
             >>> defined differently in b.o, at h.h:1\n";
