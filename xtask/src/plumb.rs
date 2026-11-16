@@ -422,6 +422,7 @@ pub fn sweep_link(
     base: &Path,
     threads: usize,
     window: u64,
+    sections: &[&str],
 ) -> Result<mortar_plumb::sweep::Sweep, String> {
     let read = |p: &Path| std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()));
     let bytes = read(output)?;
@@ -432,7 +433,7 @@ pub fn sweep_link(
     let inputs: Vec<Input<'_>> = files.iter().map(|(p, b)| Input { path: p, bytes: b }).collect();
     let dir = BaseFiles(base);
     let ctx = mortar_plumb::Ctx { line: None, files: &dir };
-    mortar_plumb::sweep::run(&bytes, &inputs, &parsed, threads, window, &ctx)
+    mortar_plumb::sweep::run_sections(&bytes, &inputs, &parsed, threads, window, &ctx, sections)
 }
 
 /// [`verify_link`]'s answer: the output's bytes, the report, and the
