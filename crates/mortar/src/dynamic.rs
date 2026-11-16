@@ -10,7 +10,8 @@
 //! object in a link that names no interpreter (`spec/input.md` §8.4)
 //! stays, because `spec/dyn.md` D-31 keeps it at M2; `-shared` (a shared
 //! object as output) is M4 and stays a refused row of the table; a static
-//! pie is refused where the layout reads the kind (WP-052).
+//! pie on i386 is refused where the layout reads the kind
+//! (`mortar_layout::target`; written on AArch64 and x86-64 since WP-052).
 
 use mortar_arch::Status;
 use mortar_cli::Plan;
@@ -21,7 +22,10 @@ use mortar_elf::Machine;
 /// The architecture status of a link of `plan` on `machine`:
 /// [`Status::M2`] for a dynamic output (`Exec`, `Pie`) on an architecture
 /// whose join has landed (AArch64, WP-053; x86-64, WP-055), `M1` for
-/// every other output, so a static link's path is unchanged. A dynamic
+/// every other output, so a static link's path is unchanged. A static-pie
+/// is `M1` too (`spec/dyn.md` D-2, WP-052): nothing in it is shared, so
+/// its relocations take the static tables' outcomes in the `Pie` column,
+/// and only its `.dynamic` machinery is the dynamic link's. A dynamic
 /// output on i386 is refused by name for all of M2 (ELFCLASS32 dynamic
 /// output is M4).
 ///

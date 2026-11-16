@@ -15,9 +15,6 @@
 # (STT_SECTION symbols of `.init` and `.data`); lld's and mold's, and GNU
 # ld's on x86-64, have the null entry only.
 #
-# mortar: AArch64 WP-052 (SPIE), x86-64 WP-052 (SPIE), in
-# tests/link/xfails.
-#
 # Stage 3 judges it (spec/plumb.md §12.4, WP-089). GNU ld's wrong outputs
 # here, each shown by running a program: on AArch64 it writes a RELATIVE
 # record on the GOT slot of an absolute symbol (glibc's

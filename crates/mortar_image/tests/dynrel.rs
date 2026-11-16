@@ -211,7 +211,12 @@ fn d40_rela_dyn_windows() {
     assert_eq!((plan.relative_count(), plan.other_count(), plan.size()), (2, 4, 144));
     let mut rel = vec![0u8; 48];
     rela::encode(Class::Elf64, RelForm::Rela, &r.relative, &mut rel);
-    let dynr = RelaDyn::new(&plan, Class::Elf64, RelForm::Rela, rel, r.other.clone()).unwrap();
+    let dynr =
+        RelaDyn::new(&plan, Class::Elf64, RelForm::Rela, rel.clone(), r.other.clone(), Vec::new())
+            .unwrap();
+    // An IRELATIVE the plan does not count (not a StaticPie) is an error.
+    let stray = r.other[..1].to_vec();
+    assert!(RelaDyn::new(&plan, Class::Elf64, RelForm::Rela, rel, r.other.clone(), stray).is_err());
     let mut whole = vec![0u8; 144];
     dynr.write(&mut Window::new(0, &mut whole));
     let syms: Vec<(u64, u64)> = whole[48..]

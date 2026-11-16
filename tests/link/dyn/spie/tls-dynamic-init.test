@@ -1,0 +1,42 @@
+# dyn.md D-2 with C++ TLS: a `thread_local` with a dynamic initializer
+# (its TLS wrapper function and init guard, `_ZTW`/`_ZTH`, the latter a
+# weak reference) in a g++ static-pie. The undefined weak `_ZTH` of a
+# variable with a constant initializer resolves to 0 (no dynamic record:
+# a static-pie has nothing to bind it to), the wrapper's TLS access is
+# local-exec, and the program runs the initializer once.
+#
+# Stage 3 judges it (spec/plumb.md §12.4, WP-089): GNU ld's static-pie
+# carries A30 on AArch64 (a RELATIVE on the GOT slot of glibc's absolute
+# `_nl_current_*_used`) and A31 on x86-64 (crtbeginS's `.plt.got` entry
+# of `__cxa_finalize` through the slot plus 1); plumb.md §10.2.
+#@ anomaly(bfd,aarch64): A30
+#@ anomaly(bfd,x86_64): A31
+#@ spec: dyn.md "D-2"
+#@ arch: aarch64 x86_64
+#@ requires: g++
+
+cxx -O1 -fPIE main.cc -o main.o
+cxx -O1 -fPIE other.cc -o other.o
+link g++ -static-pie main.o other.o -o spie
+run spie
+  stdout: tls 42 3
+check readelf -rW spie
+  not: TPOFF
+  not: _TLS
+  not: DTPMOD
+  not: _GLOB_DAT
+
+#--- main.cc
+#include <cstdio>
+#include <cstdlib>
+
+static int init() { return std::atoi("7") * 6; }
+thread_local int tv = init();
+extern thread_local int tc;
+
+int main() {
+  std::printf("tls %d %d\n", tv, tc);
+  return tv == 42 ? 0 : 1;
+}
+#--- other.cc
+thread_local int tc = 3;

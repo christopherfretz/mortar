@@ -1487,6 +1487,12 @@ fn s8_1_table() {
     m.undef(a, "_DYNAMIC");
     let r = link_with(&m, &Options { output: Output { pie: true, dynamic: true }, ..opts() });
     assert!(matches!(def(&m, &r, "_DYNAMIC"), Def::Provide { .. }));
+    // So does a static-pie (dyn.md D-2, D-32; WP-052), and a static
+    // non-PIE output does not.
+    let r = link_with(&m, &Options { output: Output { pie: true, dynamic: false }, ..opts() });
+    assert!(matches!(def(&m, &r, "_DYNAMIC"), Def::Provide { .. }));
+    let r = link_with(&m, &Options { output: Output { pie: false, dynamic: false }, ..opts() });
+    assert!(def(&m, &r, "_DYNAMIC").is_undefined());
 }
 
 /// Under `-static-pie` the IPLT range names stay undefined: the
