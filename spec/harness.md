@@ -1237,10 +1237,11 @@ test builds as inputs (`shlib`, by gcc and GNU ld) are inputs, like its
 objects: their bytes are the host's toolchain's, which "One baseline per
 host" absorbs; they are not digested themselves.
 
-Measured by WP-093 (AArch64, the development container, load 8 to 12):
-before, 301 links of 81 tests (110 AArch64, 101 x86-64, 90 i386); with
-`tests/link/dyn`, 806 links of 205 tests (363 AArch64, 352 x86-64, 91
-i386), of which 88 dynamic-case rows are refusals.
+Measured by WP-093 on main `42e7ad3` (the same count on both hosts):
+without `tests/link/dyn`, 385 links of 90 tests (142 AArch64, 131 x86-64,
+112 i386); with it, 898 links of 217 tests (399 AArch64, 386 x86-64, 113
+i386), of which `dyn/` is 513 links of 127 tests (257, 255, 1) and 90 of
+those are refusals.
 
 **The digest mode** of the link-test engine runs mortar alone (no
 reference, no self-check, no verifier) and only the build and link steps:
@@ -1294,7 +1295,8 @@ not write its command line into the image), not in the standard error.
 WP-093 ran the dynamic cases three times with other `TMPDIR`s and job
 counts (2, the default 8, and 10) and once from a copy of the checkout at another path
 with its own build of mortar: without this rule 404 map digests moved and
-nothing else; with it, 0 of 806 rows.
+nothing else; with it, 0 of 806 rows (and 0 of 898 on main `42e7ad3`,
+run with two `TMPDIR`s).
 
 `--mortar <binary>` runs a binary whose file name is its program name in
 diagnostics (`<name>: error: ...`): one not named `mortar` changes every
@@ -1318,10 +1320,14 @@ usage error is exit status 2. `--mortar` runs another build of mortar (another
 commit's) against the baseline instead of building the workspace's.
 
 The run is well under two minutes on the reference machine (the debug
-mortar; no program is run): 30 s for the 301 static links before WP-093,
-22 to 28 s for 806 with the dynamic cases at the default job count
-(load 8 to 12; the links are small, and the build of the inputs, which
-the two runs share, is most of it), 81 s with `-j 2`.
+mortar; no program is run). Measured by WP-093 on the development
+container (load 8 to 12): 30 s for 301 links without the dynamic cases
+and 22 to 28 s for 806 with them, at the default job count, on main
+`61e806c` (the links are small; the build of the inputs, which both runs
+share, is most of it), 81 s with `-j 2`; 51 to 54 s for 898 on main
+`42e7ad3`, which added `tests/link/split` (`-g` C++ links). Hosted, on
+`61e806c`: 33.5 s (AArch64) and 37.0 s (x86-64) without the dynamic cases,
+about 60 s and 66 s with them.
 
 Tests: `xtask/src/identical.rs` `baseline_and_diff`, `the_command_line`,
 `the_corpus_is_every_link_test`; `xtask/src/linktest/engine.rs`
