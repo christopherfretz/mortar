@@ -671,6 +671,8 @@ fn by_copy(
     jobs: &[(Range<u64>, Vec<u8>)],
     size: u64,
 ) -> std::io::Result<(u64, u64)> {
+    // I-58b: the output is replaced only where the link may replace it.
+    mortar_image::output::may_replace(out_path).map_err(std::io::Error::other)?;
     let mut tmp = out_path.as_os_str().to_owned();
     tmp.push(format!(".mortar-update-{}", std::process::id()));
     let tmp = PathBuf::from(tmp);
