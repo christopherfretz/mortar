@@ -165,6 +165,10 @@ pub fn scan(cx: &ScanCx<'_>, at: &RelocAt<'_>, out: &mut DemandSink<'_>) {
         return;
     }
     let kind = effective(sym.kind, h.class);
+    // X86-25 (kind 1): a `GOT32X` that relaxes demands no GOT slot.
+    if got_relaxable(cx, at, kind) {
+        return;
+    }
     let data = matches!(h.field, Field::Data { .. });
     let base = if needs_got_base(at) { GlobalFlags::GOT_BASE } else { GlobalFlags::empty() };
     let mut outcome = class_outcome(h.class, data, cx.output, kind, cx.place, sym.tls);
@@ -224,6 +228,32 @@ pub fn scan(cx: &ScanCx<'_>, at: &RelocAt<'_>, out: &mut DemandSink<'_>) {
 /// the place's `SHF_EXECINSTR` is known, `PlaceFacts.exec`; fill refuses
 /// the rest; steps 2 and 3), the no-base GOT form in static-pie (X86-27,
 /// X86-58), and `GOTOFF` and `Pc` against an IFUNC in static-pie (X86-50).
+/// X86-25 as scan decides it: a `GOT32X` in code (`exec` known), with an
+/// operand form (X86-13 step 1, so [`i386_cells`] has nothing to say),
+/// that [`got_relaxed`] rewrites: the same input facts, so scan and fill
+/// agree, and its key demands no GOT slot for it (X86-28).
+fn got_relaxable(cx: &ScanCx<'_>, at: &RelocAt<'_>, kind: TargetKind) -> bool {
+    cx.output == OutputKind::Static
+        && at.r_type == GOT32X
+        && cx.place.alloc
+        && cx.place.exec == Some(true)
+        && forms::got_operand(at.site).is_some()
+        && addend_is_zero(at)
+        && forms::form(GOT32X, at.site).is_some_and(|f| relaxes(f, kind))
+}
+
+/// The form and target conditions of X86-25: G1–G3 against `local`,
+/// `abs` or `weak0`; G4 and G5 against `local` or `abs`.
+fn relaxes(form: Form, kind: TargetKind) -> bool {
+    match form {
+        Form::G1 { .. } | Form::G2 { .. } | Form::G3 { .. } => {
+            matches!(kind, TargetKind::Local | TargetKind::Abs | TargetKind::Weak0)
+        }
+        Form::G4 | Form::G5 => matches!(kind, TargetKind::Local | TargetKind::Abs),
+        _ => false,
+    }
+}
+
 fn i386_cells(cx: &ScanCx<'_>, at: &RelocAt<'_>, kind: TargetKind) -> Result<(), ScanError> {
     let pie = cx.output == OutputKind::Pie;
     match at.r_type {
@@ -551,13 +581,7 @@ fn got_relaxed(
     }
     let form = forms::form(GOT32X, at.site)?;
     let weak0 = sym.kind == TargetKind::Weak0;
-    let ok = match form {
-        Form::G1 { .. } | Form::G2 { .. } | Form::G3 { .. } => {
-            matches!(sym.kind, TargetKind::Local | TargetKind::Abs | TargetKind::Weak0)
-        }
-        _ => matches!(sym.kind, TargetKind::Local | TargetKind::Abs),
-    };
-    if !ok {
+    if !relaxes(form, sym.kind) {
         return None;
     }
     let s = if weak0 { 0 } else { sym.s };

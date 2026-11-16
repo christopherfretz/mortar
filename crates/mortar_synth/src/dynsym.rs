@@ -414,7 +414,16 @@ impl DynsymInputs<'_> {
                 let pcs = if machine == Machine::AArch64 { STO_AARCH64_VARIANT_PCS } else { 0 };
                 (p.info & 0xf0 | typ, p.other & (STV_MASK | pcs), shndx, value, p.size)
             }
-            Form::WeakDyn => (STB_WEAK << 4 | STT_NOTYPE, 0, u32::from(SHN_UNDEF), 0, 0),
+            // D-23's `WeakDyn` row: `STO_AARCH64_VARIANT_PCS` when a
+            // reference has it (resolve §3.7), so that a `JUMP_SLOT` to a
+            // vector-PCS function a library supplies is bound at load
+            // (D-30 row 25; GNU ld and lld).
+            Form::WeakDyn => {
+                let pcs = machine == Machine::AArch64
+                    && res.props.get(k).is_some_and(|p| p.refs.contains(RefFlags::VARIANT_PCS));
+                let other = if pcs { STO_AARCH64_VARIANT_PCS } else { 0 };
+                (STB_WEAK << 4 | STT_NOTYPE, other, u32::from(SHN_UNDEF), 0, 0)
+            }
         };
         if shndx >= u32::from(SHN_LORESERVE) && shndx != u32::from(SHN_ABS) {
             return Err(feature(format!(

@@ -302,6 +302,7 @@ impl Model {
             binding,
             sym_type,
             visibility,
+            other: 0,
             place,
             value,
             size,

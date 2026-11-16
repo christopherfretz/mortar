@@ -752,6 +752,16 @@ An error means the link fails and leaves no output file.
   failed link; the `mortar` executable then writes `report.render(..)` to
   standard error, nothing to standard output, and exits with status 1.
 
+### 7.1 Emission (WP-095)
+
+The executable writes the report to standard error through
+`mortar_diag::stream::to_stderr`, the one writer of `spec/cli.md` §3.15:
+a report that cannot be written (a pipe whose reader has gone, a full
+device) is dropped and the exit status is still the link's, 1 for a
+failed link and 0 for a link with warnings (`spec/cli.md` §3.15, S-1).
+Writing never panics, so no report, however long, can end the process
+before its verdict.
+
 ## 8. Survey and choices
 
 ### 8.1 What the reference linkers print
@@ -1002,3 +1012,4 @@ Files are under `crates/mortar_diag/` unless a crate is named.
 | §6.5 | counts, empty report, warnings only, the report's text | `tests/collect.rs` `report_of_nothing_and_of_warnings_only`, `report_renders_each_diagnostic_with_the_style` |
 | §7 | `has_errors` | `tests/collect.rs` `has_errors_*` |
 | §7 | the facade and the executable: standard error only, status 1, no output file | `crates/mortar/src/lib.rs` `a_link_is_refused_not_faked`, `crates/mortar/tests/cli.rs` `a_failed_link_reports_on_stderr_and_leaves_no_output` |
+| §7.1 | a report nobody reads: status kept, no signal; no raw print in a shipped crate | `crates/mortar/tests/streams.rs` `errors_to_a_broken_stderr`, `warnings_to_a_broken_stderr`; `tests/streams.rs` |

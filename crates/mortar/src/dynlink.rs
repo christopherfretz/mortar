@@ -19,7 +19,7 @@ use mortar_core::inputs::{Inputs, Origin, Reader};
 use mortar_core::layout::Slots;
 use mortar_core::par::Pool;
 use mortar_core::plan::{DynamicLinker, InputSpec, OutputKind, Plan};
-use mortar_core::resolution::{Def, Resolution};
+use mortar_core::resolution::{Def, RefFlags, Resolution};
 use mortar_core::{FileId, SectionId, SymEntry, SymKey, SymbolId, VerIndex};
 use mortar_diag::{Collector, Diagnostic, RefusalClass};
 use mortar_elf::consts::{SHF_WRITE, STO_AARCH64_VARIANT_PCS, STT_OBJECT};
@@ -121,7 +121,7 @@ impl<'a, 's> DynSource<'a, 's> {
                 })
             })
             .collect();
-        Self { inputs, syms: CoreSyms::new(inputs, resolution, assignment).dynamic(true), shared }
+        Self { inputs, syms: CoreSyms::new(inputs, resolution, assignment), shared }
     }
 
     fn shared_of(&self, file: FileId) -> Option<&Shared<'s>> {
@@ -384,6 +384,10 @@ pub fn plan(
         match t.resolution.def.get(id) {
             Some(Def::Shared(e)) => {
                 t.src.shared(*e).is_some_and(|d| d.other & STO_AARCH64_VARIANT_PCS != 0)
+            }
+            // A `WeakDyn` key's entry has the bit of its references (D-23).
+            Some(Def::Undefined { .. }) => {
+                t.resolution.props.get(id).is_some_and(|p| p.refs.contains(RefFlags::VARIANT_PCS))
             }
             _ => false,
         }

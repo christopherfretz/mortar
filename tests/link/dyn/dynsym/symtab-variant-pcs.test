@@ -1,0 +1,81 @@
+# synth.md S-127: `STO_AARCH64_VARIANT_PCS` in the `.symtab` of a PIE and
+# a static-pie (the static case, and the references' rows, are
+# `tests/link/resolve/symtab-variant-pcs.test`, with the same sources).
+# Measured: GNU ld 2.44, lld 19/22 and mold 2.37.1 keep the bit of every
+# variant-PCS definition in both kinds (mold writes them local, A9; GNU
+# ld's demoted `vhid` is `LOCAL DEFAULT`). `plain_def` (defined without
+# the bit, declared with it): GNU ld ORs (bit), lld and mold the
+# definition's (none), as mortar. The weak undefined `wref2` (the bit in
+# the second mention only): GNU ld's PIE ORs, lld and mold take the
+# first mention (none), mortar ORs; GNU ld's static-pie has no entry.
+# GNU ld's static-pie carries A30 (plumb.md §10.2), as in `spie/ifunc`.
+#@ anomaly(bfd,aarch64): A30
+#@ spec: synth.md "S-127"
+#@ arch: aarch64
+
+cc -O1 -fPIE main.c -o main.o
+cc -O1 -fPIE defs.c -o defs.o
+cc -O1 -fPIE refs.c -o refs.o
+link gcc -pie main.o refs.o defs.o -o pie
+run pie
+  stdout: 0 15 3 0
+link gcc -static-pie main.o refs.o defs.o -o spie
+run spie
+  stdout: 0 15 3 0
+check readelf -sW pie
+  has: FUNC LOCAL DEFAULT [VARIANT_PCS] * vloc$
+  has(lld,mold,mortar): FUNC LOCAL HIDDEN [VARIANT_PCS] * vhid$
+  has(bfd): FUNC LOCAL DEFAULT [VARIANT_PCS] * vhid$
+  has(bfd,lld,mortar): FUNC GLOBAL DEFAULT [VARIANT_PCS] * vglob$
+  has(bfd,lld,mortar): FUNC WEAK DEFAULT [VARIANT_PCS] * vweak$
+  has(bfd,lld,mortar): FUNC GLOBAL PROTECTED [VARIANT_PCS] * vprot$
+  has(mold): FUNC LOCAL PROTECTED [VARIANT_PCS] * vprot$
+  has(bfd): FUNC GLOBAL DEFAULT [VARIANT_PCS] * plain_def$
+  has(lld,mortar): FUNC GLOBAL DEFAULT * plain_def$
+  not(lld,mold,mortar): [VARIANT_PCS] * plain_def$
+  has(bfd,lld,mortar): FUNC GLOBAL DEFAULT [VARIANT_PCS] * marked_def$
+  has(bfd,lld,mortar): NOTYPE WEAK DEFAULT [VARIANT_PCS] UND wref$
+  has(bfd,mortar): NOTYPE WEAK DEFAULT [VARIANT_PCS] UND wref2$
+  not(lld,mold): [VARIANT_PCS] UND wref2$
+check readelf -sW spie
+  has: FUNC LOCAL DEFAULT [VARIANT_PCS] * vloc$
+  has(lld,mold,mortar): FUNC LOCAL HIDDEN [VARIANT_PCS] * vhid$
+  has(bfd): FUNC LOCAL DEFAULT [VARIANT_PCS] * vhid$
+  has(bfd,lld,mortar): FUNC GLOBAL DEFAULT [VARIANT_PCS] * vglob$
+  has(bfd,lld,mortar): FUNC WEAK DEFAULT [VARIANT_PCS] * vweak$
+  has(bfd,lld,mortar): FUNC GLOBAL PROTECTED [VARIANT_PCS] * vprot$
+  has(lld,mortar): FUNC GLOBAL DEFAULT * plain_def$
+  has(bfd,lld,mortar): FUNC GLOBAL DEFAULT [VARIANT_PCS] * marked_def$
+  not(bfd): UND wref
+  has(lld,mortar): NOTYPE WEAK DEFAULT [VARIANT_PCS] UND wref$
+  has(mortar): NOTYPE WEAK DEFAULT [VARIANT_PCS] UND wref2$
+  not(lld,mold): [VARIANT_PCS] UND wref2$
+
+#--- main.c
+#include <stdio.h>
+#define V __attribute__((aarch64_vector_pcs, noinline))
+V int vglob(int x) { return x + 1; }
+V __attribute__((visibility("hidden"))) int vhid(int x) { return x + 2; }
+V static int vloc(int x) { return x + 3; }
+V __attribute__((weak)) int vweak(int x) { return x + 4; }
+V __attribute__((visibility("protected"))) int vprot(int x) { return x + 5; }
+__attribute__((aarch64_vector_pcs)) int (*volatile fp)(int) = vloc;
+int refs(void);
+__attribute__((weak)) int wref2(int);
+int main(void) {
+  printf("%d %d %d\n", vglob(0) + vhid(0) + fp(0) + vweak(0) + vprot(0), refs(), wref2 != 0);
+  return 0;
+}
+#--- refs.c
+#include <stdio.h>
+__attribute__((aarch64_vector_pcs)) int plain_def(int);
+int marked_def(int);
+__attribute__((aarch64_vector_pcs, weak)) int wref(int);
+__attribute__((aarch64_vector_pcs, weak)) int wref2(int);
+int refs(void) {
+  printf("%d ", wref != 0 || wref2 != 0);
+  return plain_def(0) + marked_def(0);
+}
+#--- defs.c
+int plain_def(int x) { return x + 1; }
+__attribute__((aarch64_vector_pcs)) int marked_def(int x) { return x + 2; }
