@@ -733,9 +733,41 @@ WP-071's acceptance test and WP-073 (§13) against O-45.
 the units of archive members that were **not** extracted are read too,
 and a member whose kind 2 row disagrees with a live definition of the
 same key is reported as the warning `odr-archive-shadow` (K17). Off by
-default: such a member is not part of the program (N14), and reading it
-costs a parse of every member's section headers [estimate: linear in
-archive size; for a 100 MB archive, ~20 ms].
+default: such a member is not part of the program (N14). The member's
+section headers are read by every link already (the input store parses
+every member it is given); the option adds the read of the members'
+containers and of the live units' (O-42).
+
+Implemented (WP-076, `mortar_odr::archives`;
+`spec/landed/meta/WP-076.md`):
+
+- "Not extracted" is resolution's final answer: a member that a later
+  reference extracted is live and is compared by the record checks
+  (O-10..O-17) in the modes that run them, never by O-23. Only members of
+  archives (`ar` and thin): objects between `--start-lib` and
+  `--end-lib` that were not loaded are not read (an open question of
+  the record, §7). A member that is not ELF, or has no container, is never read
+  (T-O-23's read counter).
+- Each kind 2 row of a member is anchored to the member's own defined
+  global (O-4) and compared with the first kind 2 row of the same class
+  in the keeper's unit (the unit of the definition resolution kept). Only
+  the hash is compared: K13's flags are not (O-15 compares them under
+  strict, for live units). Units of different schemes, or without one,
+  are counted as pairs not compared (O-11); C units are not compared
+  (O-14); O-32's `SYSTEM`/`-std` case is reported under strict only, as
+  for live units. At most one warning per (member, symbol).
+- A warning in `warn`, `error` and `strict` (`--fatal-warnings` makes it
+  an error); nothing under `--odr=off`. A member unit that does not parse
+  gives no rows and is not reported, in any mode: the member is not part
+  of the program (strict's `meta-malformed` covers live units only).
+- The warning's places: "defined in" the keeper, "defined differently
+  in" `libx.a(m.o)` with the row's source line; a note says why the
+  member is not linked. `--odr-stats` adds "archive members N (U units,
+  B bytes, C rows compared)".
+- Cost (measured, §5 of the record): with no container in any member,
+  the option costs nothing measurable; with containers, the reads of
+  the members' and the live units' containers and one binary search per
+  member row.
 
 **O-24 (the static check against shared-object inputs: "dynamic link
 time" without a runtime).** `[M6]` for executables, `[M4]` for
@@ -1098,7 +1130,12 @@ every warning (`spec/diag.md` §6.3).
   loadable table is written (§10). The output is byte-identical to the
   default link's when that link succeeds and the table is off (T-O-41).
 - `--odr-check-archives` (O-23), `--odr-table=off|exported|full` (O-50),
-  `--odr-stats` (O-44).
+  `--odr-stats` (O-44). With `--odr=off` the first two do nothing (no
+  check runs, no table is written); in `warn`, `error` and `strict` each
+  does the same thing, except that the record checks O-24 and O-32 make
+  strict-only decisions inside them (WP-076). `--keep-mason-meta`
+  (`meta.md` MT-32) is not an ODR switch: it keeps the containers in
+  every mode, `--odr=off` included.
 - GNU gold's `--detect-odr-violations`: accepted as a **no-op**: mortar
   already checks by default. It prints nothing (`spec/diag.md` §2.1 has
   no note severity); the option table's reason for the row is `mortar
@@ -1113,7 +1150,10 @@ record-based check as on, mortar makes the reads it would make with no
 container, keeps no container byte resident and parses no unit
 (`meta.md` MT-42, amendment A-8 to `spec/input.md` §11.1), hashes no
 name (O-4) and writes no table. The W checks read only what resolution
-holds already. T-O-42 counts bytes read.
+holds already. T-O-42 counts bytes read. The opt-ins that need
+containers read them only when asked: `--odr-check-archives` (O-23),
+`--odr-table` (O-50) and `--keep-mason-meta` (MT-32, in every mode);
+each one's read counter is tested off (WP-076).
 
 **O-44 (`--odr-stats`).** One line to standard error: units read, rows by
 kind, schemes seen and the unit pairs not compared because of them,
@@ -1229,15 +1269,35 @@ output. The runtime of §10.3 is added only by the prototype option of
 WP-077, never by `--odr-table`.
 
 Implemented (WP-075) for dynamic executables, PIE or not: `=exported`
-writes the table; `=full` is refused by name until WP-076; a static
-executable exports nothing and gets no table; a shared object's table
-is `[M4]`. Every row of an executable's table carries `NONPREEMPTIBLE`:
+writes the table; `=full` writes it and a second note (WP-076, O-52);
+a static executable exports nothing and gets no table, with `=full`
+too; a shared object's table is `[M4]`. Every row of an executable's table carries `NONPREEMPTIBLE`:
 an executable comes first in lookup order and binds its own definitions
 at link time, so it always runs its own copy. The keeper's unit is the
 file whose definition resolution kept; its first kind 2 row for the
 symbol is the row written. Bytes are a function of the rows (sorted by
 key, then `.dynsym` index), so the output stays deterministic, and the
 verifier's verdict on an output does not change with the table (T-O-50).
+
+`=full` (WP-076): the table above, unchanged, and a second note (O-52)
+of two arrays. **Hidden definitions**: one row per live definition that
+the table above does not carry (not exported: hidden or internal, or
+not in `.dynsym`, which in an executable is most definitions) whose
+keeper's kind 2 row has `VAGUE` or `EXPLICIT_SPEC`; its key is the
+FNV-1a 64 of the symbol's name, its hash and flags the keeper's row's
+(`NONPREEMPTIBLE` clear: the row says nothing about binding). **Types**:
+one row per kind 3 group of the live units (key and `<type>` encoding,
+O-17), the group's first row in (file, unit, row) order: key, hash,
+layout, size, alignment and flags. A link that only warned may have
+several layouts for a key; the table carries the first, as the
+definitions carry the keeper's. The rows are a function of the live
+units: the bytes are deterministic (T-O-50). What O-24 does with them:
+**nothing** today. O-24 reads the first note only (`table::find`); the
+second is read by `table::find_full` (`xtask meta table`'s reader and
+the tests), and a malformed second note is not reported by a link. A
+reader that compares types across modules (Q14: strict use only) is
+future work (WP-077's runtime, Tuck); the encoding is fixed here so that
+it does not change under them.
 
 **O-51 (row).** `{u64 key; u64 hash; u32 dynsym; u16 flags; u16
 reserved}` (24 bytes), sorted by key: the key of MT-13; the first 8 bytes
@@ -1266,6 +1326,16 @@ and every single-byte change of a table is a table or a named error).
 Tables are read only under `--odr=strict` (O-24), where a malformed one
 stops the link like any other malformed container (MT-14).
 
+`=full`'s note: header `{u32 version = 1; u32 definitions; u32 row_size
+= 32; u32 types}`, then `definitions` rows and `types` rows, each array
+sorted by its bytes as integers in field order (key first). A row is
+`{u64 key; u8 hash[8]; u64 layout; u32 size; u16 align; u16 flags}`
+(32 bytes); a definition's layout, size and alignment are zero. It is
+malformed for the same causes as the table (too short, version, a
+`row_size` other than 32, counts the descriptor cannot hold, an array
+out of order, a second note of the type), never a panic (the mutation
+test of `mortar_meta::table`).
+
 Size: 24 bytes per exported vague definition. Measured counts of
 exported weak or unique definitions in system libraries (`nm -D`, by
 hand): `libstdc++.so.6` 3,991, `libclang-cpp.so.19.1` 12,929,
@@ -1278,7 +1348,12 @@ that are read at load and never written.
 `sh_addralign` 8, holding one note: owner `MasonMeta` (`n_namesz` 10),
 `n_type` **`0x4d4f4401`** (`NT_MASON_ODR`; a distinctive value, because
 binutils `readelf -n` prints type 1 under an unknown owner as
-`NT_VERSION`), descriptor = O-51's header and rows. It lies in a
+`NT_VERSION`), descriptor = O-51's header and rows. With `=full` it holds
+a second note after the first: the same owner, `n_type`
+**`0x4d4f4402`** (`NT_MASON_ODR_FULL`), descriptor = `=full`'s header
+and rows (O-51) (WP-076). A reader of the first note never sees the
+second (a different type), so `=exported`'s readers read a `=full`
+table unchanged. It lies in a
 `PT_NOTE` with `p_align` 8, which it may share with other 8-aligned notes
 (`spec/layout.md` places one `PT_NOTE` per run of notes of one
 alignment); readers walk every note of every `PT_NOTE`. With `n_namesz`
@@ -1836,7 +1911,7 @@ implementation of the verdict) is Q11.
 | O-19 | T-O-19 | a kind 4 entry renders the first difference |
 | O-20, O-21 | T-O-21 | the optimisation and the normative rule report the same findings over the whole corpus, K13 included |
 | O-22 | T-O-22 | kind 3 and 5 rows from 3 units grouped in `FileId` order |
-| O-23 | T-O-23 | K17 with and without `--odr-check-archives` |
+| O-23 | T-O-23 | K17 with and without `--odr-check-archives` (WP-076: `tests/link/odr/k17-archive-{shadow,silent,thin}.test`: a differing member warns, an equal one and one without a container say nothing, thin archives, the option off; `crates/mortar/tests/odr_records.rs::archive_members_are_read_only_on_request`: the read counter in each mode with the option on and off, a member extracted by a later reference compared as a live unit, a non-ELF member) |
 | O-24 | T-O-24 | the shapes listed in O-24: (a) exported and hidden; (b) two libraries; `-Bsymbolic`, `-Bsymbolic-functions` and `protected` libraries (R4/R5, findings); an `--as-needed`-dropped library (none); one version node per library (R6, none) and a shared node (a finding); unversioned against versioned, both orders; (c) K18b; a malformed table; libraries without tables and the default mode (none). `tests/link/dyn/odr/o24-*.test` (WP-075) |
 | O-25 | T-O-25 | K16c with two vtable copies; F5 silent |
 | O-30, O-31 | T-O-30 | K16a/K16e/K16d notes under strict; `abi.rtti` never a finding |
@@ -1848,7 +1923,7 @@ implementation of the verdict) is Q11.
 | O-42 | T-O-42 | `meta.md` T-MT-42: bytes read counted |
 | O-44 | T-O-44 | the stats line's fields on a corpus link |
 | O-45 | T-O-45 | the bench lane's comparison |
-| O-50, O-51 | T-O-50 | the row set: default, protected, `-Bsymbolic` and `-Bsymbolic-functions` definitions have rows (the last three `NONPREEMPTIBLE`), hidden and version-script `local:` ones do not; versioned names; the keeper's hash after a warned link. In an executable (WP-075, `tests/link/dyn/odr/o50-table.test`, `crates/mortar/tests/odr_dynamic.rs`): default and protected rows, every one `NONPREEMPTIBLE`, none for hidden; identical bytes on two links; none without the option |
+| O-50, O-51 | T-O-50 | `=full` (WP-076, `tests/link/dyn/odr/o50-full{,-input}.test`, `odr_dynamic.rs::full_table_in_a_dynamic_executable`, `mortar_meta::table`'s mutation test of the second note): hidden vague definitions and types in the second note, the first note unchanged; a `.so` input with a `=full` table read by O-24 as with `=exported`. The row set: default, protected, `-Bsymbolic` and `-Bsymbolic-functions` definitions have rows (the last three `NONPREEMPTIBLE`), hidden and version-script `local:` ones do not; versioned names; the keeper's hash after a warned link. In an executable (WP-075, `tests/link/dyn/odr/o50-table.test`, `crates/mortar/tests/odr_dynamic.rs`): default and protected rows, every one `NONPREEMPTIBLE`, none for hidden; identical bytes on two links; none without the option |
 | O-52 | T-O-52 | `note-final`'s tolerance matrix |
 | O-53, O-54, O-56 | T-O-54 | WP-077's prototype matrix (O-58) on three targets; not a release test until a runtime ships |
 | O-55, O-57 | T-O-57 | K18c's two outcomes unchanged by the table |
@@ -1879,7 +1954,7 @@ corpus, not evidence about kiln's hasher.
 | WP-073 | record checks, all `--odr=strict`, in kiln's landing order so each is ready when its kind lands: kind 1 (notes, O-30, O-31), kind 5 (O-35, O-33's canonical rows), kind 3 (O-17, O-18), then kind 2 (O-4-O-16, O-25); the L11 static corpus (the model's 13 cases first) | `mortar_odr`, `tests/link/odr/` | WP-071, WP-072 | the test producer (no kiln) | 1.5-2 weeks | kiln K-1..K-5 |
 | WP-074 | the Mason L11 lane and the false-positive oracle (§12.3, the C corpus of O-33); moves checks per O-46, per kind as kiln lands it: kind 1 and kind 5 after K-1/K-2/K-5, kind 3 after K-4, kind 2 after K-3 (so kinds 5 and 3 can run, and turn on, before kind 2) | `xtask`, `tests/mason/` | WP-073; kiln K-1 + K-2 to start, then K-5, K-4, K-3; hod H-1 for the hod route | kiln objects | 1-1.5 weeks, spread over kiln's landings | WP-075 |
 | WP-075 | the O-24 check against `.so` inputs, **starting with its prototype** (a script over test-producer `.so`s with tables, the shapes of T-O-24: R4/R5, `--as-needed`, R6), then the loadable table (O-50-O-52) for executables and the check in mortar; `[M4]` the same for `.so` outputs | `mortar_odr`, `mortar_synth`, `mortar_layout` | WP-073; M2's dynamic executable; A-3; M4 for `.so` | test-producer units; `note-final` | 1.5-2 weeks | WP-074 |
-| WP-076 | opt-ins: `--odr-check-archives`, `--odr-table=full`, `--keep-mason-meta`, `-r` pass-through (MT-30, with M4) | `mortar_odr`, `mortar_meta` | WP-073 | | 4 days | WP-075 |
+| WP-076 | opt-ins: `--odr-check-archives`, `--odr-table=full`, `--keep-mason-meta`, `-r` pass-through (MT-30, with M4). Landed without `-r` (`spec/landed/meta/WP-076.md`) | `mortar_odr`, `mortar_meta` | WP-073 | | 4 days | WP-075 |
 | WP-077 | **prototype package** for the load-time hook (§10.3): evaluate the candidate mechanisms of O-54 (recorded answers via the module's own GOT with `-z now`; glibc's audit interface; initial global scope only; versioned keys with `dlvsym`) and deliver the matrix of O-58 on three targets, the quadratic conflict path at 300 plugins and K = 10, and a recommendation. Deliverable: the matrix, the measurements and a spec proposal, **not shipped code**; it reports and never aborts | `.build`-style prototype under `xtask` or `tests/hook/` only | WP-075 (tables); no operator decision needed to prototype | `hook2`, `hook-rebind`, `hook-quadratic` | 1.5-2 weeks | WP-078 |
 | WP-078 | verifier rules (§12.5) | `mortar_plumb` | A-7; WP-071 (format only) | the outputs of WP-073/075 | 3-4 days | WP-077 |
 | WP-079 | apply the amendments of §14 | specs | this draft accepted | — | 1 day | first |

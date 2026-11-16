@@ -21,6 +21,8 @@ Done:
   `tests/link/{odr,dyn/odr}/mt32-keep-meta.test`. Strip tools measured
   (keep_meta.rs::what_the_strip_tools_do).
 
+- Options, status regenerated, diag IDS.
+- Measurements, O-1 corpus, spec edits, record `spec/landed/meta/WP-076.md`.
+
 Next:
-- options.rs AUDIT, docs/status/options.md regen
-- measurements (cost on/off, corpus O-1, strip tools), spec edits, record
+- clippy, identical baselines, the gate; delete this file; push; hosted CI
