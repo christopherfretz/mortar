@@ -834,7 +834,7 @@ permutations that keep `SymbolId`s; `--threads=1` vs many).
 | import with `CANON_PLT` | as above, `STT_FUNC` | `STV_DEFAULT` (plus `STO_AARCH64_VARIANT_PCS` when the definition has it) | `SHN_UNDEF` | the PLT entry's address | 0 |
 | copy allocation (each alias) | binding `STB_WEAK` iff the shared definition is weak, else `STB_GLOBAL`; the definition's type | `STV_DEFAULT` | the copy's output section | the copy's address | the definition's `st_size` |
 | export | the output binding and type of `.symtab` (an exported non-preemptible IFUNC: `STT_FUNC` at its IPLT entry, a64 §10.4) | the merged visibility (`STV_PROTECTED` kept), plus `STO_AARCH64_VARIANT_PCS` when the defining entry has it (GNU ld, lld and mold, WP-053) | its output section | its address | its size |
-| `WeakDyn` | `STB_WEAK`, `STT_NOTYPE` | `STV_DEFAULT` | `SHN_UNDEF` | 0 | 0 |
+| `WeakDyn` | `STB_WEAK`, `STT_NOTYPE` | `STV_DEFAULT` (plus `STO_AARCH64_VARIANT_PCS` when a live reference has it, resolve §3.7 `RefFlags::VARIANT_PCS`: the loader reads the bit of the `JUMP_SLOT`'s symbol, so a lazy binding of a vector-PCS callee keeps its registers only if it is there; GNU ld and lld, WP-059) | `SHN_UNDEF` | 0 | 0 |
 
 The canonical PLT is `SHN_UNDEF` with the entry's address in all three
 references, on every architecture (E-dynsym §2, E-reloc §5); a64.md §10.5
@@ -852,7 +852,9 @@ of the output holds an `STT_GNU_IFUNC` or `STB_GNU_UNIQUE` symbol or the
 output has an `IRELATIVE` record, else `ELFOSABI_NONE`. An executable's
 own unique definitions (GCC template statics, function-local statics of
 inline functions) stay `STB_GNU_UNIQUE` in `.symtab`, so a C++ PIE is
-usually `ELFOSABI_GNU`. Only GNU ld also writes `EI_OSABI` 3; lld and
+usually `ELFOSABI_GNU`; that is resolve.md §3.7's rule, the same for a
+static output (WP-059 B: before it a static `.symtab` wrote them
+`STB_GLOBAL`). Only GNU ld also writes `EI_OSABI` 3; lld and
 mold write 0 (`review-m2-adv/unique`, both architectures; glibc accepts
 both). *Test:* `dynsym-fields` (one case per row,
 per architecture).
@@ -1081,7 +1083,7 @@ each is present exactly under its condition, which depends on no address:
 | 18-20 | `DT_PLTRELSZ`, `DT_PLTREL`, `DT_JMPREL` | `.rela.plt` is not empty | size, `DT_RELA` (`DT_REL` on i386), address |
 | 21-23 | `DT_RELA`, `DT_RELASZ`, `DT_RELAENT` (i386: `DT_REL`, `DT_RELSZ`, `DT_RELENT`) | `.rela.dyn` is not empty (mold; GNU ld and lld also write an empty one) | address, size, 24 (8) |
 | 24 | `DT_AARCH64_BTI_PLT` | a64 §10.3 (the output has the BTI property) | 0 |
-| 25 | `DT_AARCH64_VARIANT_PCS` | a64 §10.3 (a `JUMP_SLOT` symbol is `STO_AARCH64_VARIANT_PCS`; all four references, E-dynamic §1) | 0 |
+| 25 | `DT_AARCH64_VARIANT_PCS` | a64 §10.3 (a `JUMP_SLOT` symbol is `STO_AARCH64_VARIANT_PCS`, a `WeakDyn` one included by its D-23 row; all four references, E-dynamic §1) | 0 |
 | 26 | `DT_FLAGS` | `-z now` | `DF_BIND_NOW` |
 | 27 | `DT_FLAGS_1` | `Pie`, or `-z now` | `DF_1_PIE` if `Pie`, `DF_1_NOW` if `-z now` |
 | 28-30 | `DT_VERNEED`, `DT_VERNEEDNUM`, `DT_VERSYM` | `.gnu.version_r` exists (D-27) | address, count, address |
@@ -1613,6 +1615,7 @@ unchanged. Every `P-D` id this spec cites is that section's.
 | a writable word pointing at a copied key (D-46 `Copy`; its GOT slot is not a difference: all four write `GLOB_DAT`, `copy-got`) | the copy's address, no record | symbolic record | not measured | symbolic record (D-46; WP-054 §4) |
 | AArch64 `-no-pie`: an `ABS64` in a writable word of a PIC or PIE object against shared data (`environ` in `.data.rel`) | refused (`unresolvable R_AARCH64_ABS64 relocation against symbol environ@@GLIBC_2.17`, as WP-053 quotes it) | symbolic record | not measured | symbolic record (D-46; the program runs; WP-053, E-corpus C, 44 links) |
 | `IRELATIVE` before `JUMP_SLOT`s | no | in every output with an IFUNC and a PLT (H1) | in every output with an IFUNC and a PLT (H1) | no (D-41; plumb.md P-D10) |
+| AArch64 traditional GD (`-mtls-dialect=trad`) in a static executable or a static-pie | R4's LE words | refused (`unknown relocation (513)`) | kept: GOT pair `1, DTPREL(S)` and the static `__tls_get_addr` | R4's LE words, GNU ld's bytes; a sequence outside R4's pattern refused (a64.md §8.4's static column; WP-090, `tls/gd-trad-static.test`) |
 
 ### 13.2 Wrong outputs found (each with its script)
 
@@ -1638,6 +1641,7 @@ wrong" means the program links without a diagnostic and then misbehaves.
 | W15 | GNU ld (AArch64) | a traditional GD sequence whose fourth word is not a64 R4's `nop` is relaxed to IE anyway, overwriting the instruction after the call; the program reads a wrong address (`same 0`) | `tests/link/dyn/reloc/tls-gd-unrelaxed.test` (WP-051) |
 | W16 | lld, mold | X3: a library referenced only by an under-linked used object is dropped from `DT_NEEDED`; load fails (``symbol lookup error: … undefined symbol: leaf_fn``, exit 127). GNU ld and mortar refuse (D-13) | `tests/link/dyn/shlib/used-underlinks-refused.test` (WP-051) |
 | W17 | lld 19, 22 (x86-64) | general-dynamic access in the large code model (`-mcmodel=large -fPIC`, GCC 14) to the executable's own TLS links, and the program crashes (SIGSEGV) in a PIE and in `-no-pie`; GNU ld, mold and mortar run it (`GD ok 7`); x64.md X-25 records only the static case. Run under qemu-x86_64, where the other three run | WP-083's experiment: `__thread int own = 7;` printed by `main`, one `-fPIC -mcmodel=large` unit (record, §5) |
+| W18 | GNU ld (AArch64) | `-static` and `-static-pie`: a traditional GD sequence whose TP offset is beyond 32 bits (4 GiB of `.tbss` before the variable) is relaxed to LE with `T[31:0]` and no diagnostic (`movk x0, #0x68` for `T` = 0x100000068): a wrong address. mold keeps GD and is right; mortar refuses (`relocation-out-of-range`, a64.md §8.4) | `tests/link/tls/gd-trad-static-refused.test` (WP-090) |
 | A30 | GNU ld (AArch64) | static-pie and `-pie`: the GOT slot of an absolute symbol (`SHN_ABS`, glibc's `_nl_current_*_used`) gets a `RELATIVE` record, so the program reads the value plus the load bias; glibc's own words are only tested for non-zero, a program's absolute symbol read through the GOT is wrong (lld and mold write the value, no record) | `plumb.md` §10.2 A30; `crates/mortar_plumb/tests/spie.rs` (`absgot.c` exits 1) |
 | A31 | GNU ld (x86-64) | static-pie: the `.plt.got` entry of an undefined weak function (`__cxa_finalize`, a `_ZTH` init guard) jumps through its GOT slot + 1, a misaligned word no record writes; dead code, each caller tests the slot for 0 first | `plumb.md` §10.2 A31 |
 | A32 | GNU ld, mold (x86-64) | W3 in a static-pie: an IFUNC's address word is its own `IRELATIVE` slot while a PC-relative use takes the IPLT entry, so `fp == f` is false (lld right; on AArch64 every use of all three is the resolved function) | `plumb.md` §10.2 A32; `tests/link/dyn/spie/ifunc.test` |
@@ -1684,6 +1688,12 @@ work within, stated so that M2's rules do not close the door.
   written only with `--odr-table`; O-24 reads the tables of
   shared-object inputs that stay in `DT_NEEDED`, identifying rows by
   (name, version node). No runtime is added in M6 (`spec/odr.md` O-58).
+  Implemented (WP-075): `--odr-table=exported` writes it in a dynamic
+  executable (synthetic chunk 26, `spec/synth.md` S-3), in a `PT_NOTE`
+  of alignment 8 after the 4-aligned notes' one; `eu-elflint` names its
+  type as unknown (`spec/odr.md` O-52), so D-71's "no allowance" holds
+  for an output without the table. O-24 reads input tables under
+  `--odr=strict` only.
 
 ## 15. Open questions (each with a recommendation)
 

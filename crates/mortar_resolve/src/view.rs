@@ -84,6 +84,9 @@ pub struct Mention {
     pub sym_type: u8,
     /// `st_other & 3`: `STV_*`.
     pub visibility: u8,
+    /// `st_other & !3`: the bits above the visibility (AArch64's
+    /// `STO_AARCH64_VARIANT_PCS`; §3.7).
+    pub other: u8,
     /// `st_shndx`, decoded; on x86-64 `SHN_X86_64_LCOMMON` is given as
     /// `Common` with [`Mention::large`] set (§3.3).
     pub place: SymbolSection,

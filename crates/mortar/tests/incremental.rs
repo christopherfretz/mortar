@@ -322,9 +322,11 @@ fn fall_back_reasons() {
     prog.link("o", &["--incremental", "--incremental-report=rep.txt"]);
     prog.link("o", &["--incremental", "--incremental-report=rep.txt"]);
     let rep = std::fs::read_to_string(prog.path("rep.txt")).unwrap();
-    let lines: Vec<&str> = rep.lines().collect();
+    let lines: Vec<&str> = rep.lines().filter(|l| l.starts_with("incremental:")).collect();
     assert_eq!(lines.len(), 2, "{rep}");
     assert!(lines[1].starts_with("incremental: full (update-not-implemented) changed="), "{rep}");
+    // WP-063: the dry run's lines follow the second (docs/cli.md §3.13).
+    assert_eq!(rep.lines().last(), Some("delta end"), "{rep}");
 }
 
 // spec: incr.md IN-10 (`--incremental=update` fails by name rather than
@@ -1146,11 +1148,11 @@ fn a_kept_equal_cie_is_followed() {
     }
 }
 
-// spec: incr.md IN-18a (WP-086 keeps format version 1: a state written
-// before the image read EH_RECORDS and SYMTAB_LOCALS replays to the same
-// bytes); the fixtures' README says how they were made.
+// spec: incr.md IN-18a (one format version 2: a state of version 1 is
+// refused by name, `state-version`, and the link is a full one); the
+// fixtures' README says how the version-1 states were made.
 #[test]
-fn a_state_written_before_wp086_replays_identically() {
+fn a_version_1_state_is_refused_by_name() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/incr-state-v1-51aa582");
     for (dir, objects) in [("a64", &["a.o", "b.o"][..]), ("x86_64", &["a.o"][..])] {
         let scratch = Scratch::new(&format!("incr-v1-{dir}"));
@@ -1158,22 +1160,23 @@ fn a_state_written_before_wp086_replays_identically() {
             std::fs::copy(root.join(dir).join(f), scratch.join(f)).unwrap();
         }
         let bytes = std::fs::read(scratch.join("out.mortar-state")).unwrap();
-        let state = format::decode(&bytes, mortar::VERSION.as_bytes())
-            .unwrap_or_else(|e| panic!("{dir}: {}: {}", e.reason(), e.detail()));
-        let want = std::fs::read(scratch.join("out")).unwrap();
-        let args = |out: &str| -> Vec<OsString> {
-            objects
-                .iter()
-                .map(|o| (*o).into())
-                .chain(["-static", "--eh-frame-hdr", "-o", out].map(OsString::from))
-                .collect()
-        };
-        let inv = mortar::replay_link("mortar", &args("replayed"), scratch.path(), &state);
-        assert!(matches!(inv.outcome, mortar::Outcome::Linked { .. }), "{dir}: replay failed");
-        assert!(std::fs::read(scratch.join("replayed")).unwrap() == want, "{dir}: replay differs");
-        let o = run_in(scratch.path(), Path::new(MORTAR), &args("plain"), &[]);
+        let e = format::decode(&bytes, mortar::VERSION.as_bytes())
+            .expect_err("a version-1 state decodes");
+        assert_eq!(e.reason(), "state-version", "{dir}: {}", e.detail());
+        assert!(e.detail().starts_with("format version 1,"), "{dir}: {}", e.detail());
+        let args: Vec<OsString> = objects
+            .iter()
+            .map(|o| (*o).into())
+            .chain(
+                ["-static", "--eh-frame-hdr", "--incremental", "--incremental-report", "-o", "out"]
+                    .map(OsString::from),
+            )
+            .collect();
+        let o = run_in(scratch.path(), Path::new(MORTAR), &args, &[]);
         assert!(o.success(), "{dir}: {}", o.stderr_text());
-        assert!(std::fs::read(scratch.join("plain")).unwrap() == want, "{dir}: plain differs");
+        line_with(&o.stderr_text(), "full (state-version: format version 1,");
+        let bytes = std::fs::read(scratch.join("out.mortar-state")).unwrap();
+        assert!(format::decode(&bytes, mortar::VERSION.as_bytes()).is_ok(), "{dir}: not rewritten");
     }
 }
 

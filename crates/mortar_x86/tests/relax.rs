@@ -184,6 +184,34 @@ fn g4_g5_call_and_jmp_become_direct() {
     }
 }
 
+/// X86-25 (WP-059): in code whose `SHF_EXECINSTR` scan knows, a record
+/// that relaxes demands no GOT slot; one that does not relax, or a place
+/// whose kind scan does not know, demands it.
+#[test]
+fn x86_25_a_relaxed_record_demands_no_slot() {
+    let code = PlaceFacts { alloc: true, writable: false, exec: Some(true) };
+    let p = AT + 2;
+    let scan_in = |t: &Tables, output, place, input: &[u8], r_type| {
+        let mut sink = Sink::default();
+        scan_all(X86::M1, t, output, place, input, &[rel(p, SYM, r_type)], &mut sink).unwrap();
+        raised(&sink, key(SYM))
+    };
+    for kind in [TargetKind::Local, TargetKind::Abs, TargetKind::Weak0] {
+        let t = tables(kind, false, S);
+        let mov = section(&[0x8b, modrm(0, true), 0, 0, 0, 0]);
+        assert!(scan_in(&t, OutputKind::Static, code, &mov, GOT32X).is_empty(), "{kind:?}");
+        assert!(scan_in(&t, OutputKind::Static, TEXT, &mov, GOT32X).contains(DemandFlags::GOT));
+        assert!(scan_in(&t, OutputKind::Static, code, &mov, GOT32).contains(DemandFlags::GOT));
+        assert!(scan_in(&t, OutputKind::Pie, code, &mov, GOT32X).contains(DemandFlags::GOT));
+        let call = section(&[0xff, modrm(2, true), 0, 0, 0, 0]);
+        let relaxed = kind != TargetKind::Weak0;
+        assert_eq!(scan_in(&t, OutputKind::Static, code, &call, GOT32X).is_empty(), relaxed);
+    }
+    let t = tables(TargetKind::Ifunc, false, S);
+    let mov = section(&[0x8b, modrm(0, true), 0, 0, 0, 0]);
+    assert!(scan_in(&t, OutputKind::Static, code, &mov, GOT32X).contains(DemandFlags::GOT));
+}
+
 #[test]
 fn x86_25_conditions_keep_the_got_load() {
     let p = AT + 2;

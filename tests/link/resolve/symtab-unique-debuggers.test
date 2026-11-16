@@ -1,0 +1,33 @@
+# resolve.md §3.7 (WP-059 B): gdb and lldb read an `STB_GNU_UNIQUE`
+# `.symtab` entry of a static executable as a global: gdb prints the
+# template static `S<int>::v` and names `counter()::c` by its address,
+# lldb finds `S<int>::v` by its mangled name. Measured with GNU ld (unique,
+# `EI_OSABI` 3), lld (binding 10, `EI_OSABI` 0), mold (local) and mortar
+# before and after WP-059 (`STB_GLOBAL`, then unique): the same answers
+# for all, so keeping the binding costs the debuggers nothing. gdb and
+# lldb run host programs only.
+#@ spec: resolve.md "3.7"
+#@ arch: aarch64
+#@ requires: g++ gdb lldb
+
+cxx -O0 -g u.cc -o u.o
+cxx -O0 -g u2.cc -o u2.o
+link g++ -static u.o u2.o -o prog
+check gdb prog "print 'S<int>::v'" "print &'counter()::c'"
+  has: $1 = 7
+  has: <counter()::c>
+check lldb prog "image lookup -s _ZN1SIiE1vE"
+  has: Summary: S<int>::v$
+
+#--- u.cc
+#include <cstdio>
+template<typename T> struct S { static int v; };
+template<typename T> int S<T>::v = 7;
+inline int &counter() { static int c = 0; return ++c, c; }
+int use();
+int main() { int a = counter(); std::printf("%d %d\n", S<int>::v, a + use()); return 0; }
+#--- u2.cc
+template<typename T> struct S { static int v; };
+template<typename T> int S<T>::v = 7;
+inline int &counter() { static int c = 0; return ++c, c; }
+int use() { return S<int>::v + counter(); }

@@ -1,0 +1,47 @@
+# dyn.md D-23 (`WeakDyn` row) and D-30 row 25: a weak undefined
+# vector-PCS function (`aarch64_vector_pcs`) of a PIE, tested and called
+# (`if (vweak) vweak(1)`), is `WeakDyn` (D-25): a `.dynsym` entry, a
+# `GLOB_DAT` and a `JUMP_SLOT`. The entry carries
+# `STO_AARCH64_VARIANT_PCS` from the reference (there is no definition),
+# and so `.dynamic` holds `DT_AARCH64_VARIANT_PCS`: with it glibc binds
+# the slot at load time instead of through the lazy resolver, which saves
+# only the base-PCS registers. The run shows both outcomes: no library
+# (`none`), and `LD_PRELOAD` of one that defines it (`42`).
+#
+# Measured (WP-059): GNU ld 2.44 and lld 19/22 write the bit and the tag;
+# mold 2.37.1 makes the key 0 (no entry, no record, dyn.md §13.1, as in
+# `weak-undef-pie`), so the preloaded definition is not called. mortar
+# wrote neither the bit nor the tag before WP-059.
+#@ spec: dyn.md "D-23"
+#@ spec: dyn.md "D-30"
+#@ arch: aarch64
+
+cc -O1 -fPIE main.c -o main.o
+cc -O1 -fPIC lib.c -o lib.o
+shlib gcc lib.o -o libv.so
+
+link gcc -pie main.o -o prog
+run prog
+  stdout: none
+run(bfd,lld,mortar) prog
+  env: LD_PRELOAD=./libv.so
+  stdout: 42
+check(bfd,lld,mortar) readelf --dyn-syms -W prog
+  has: 0000000000000000 0 NOTYPE WEAK DEFAULT [VARIANT_PCS] UND vweak$
+check(bfd,lld,mortar) readelf -rW prog
+  count: 1 R_AARCH64_GLOB_DAT * vweak + 0
+  count: 1 R_AARCH64_JUMP_SLOT * vweak + 0
+check(bfd,lld,mortar) readelf -dW prog
+  count: 1 (AARCH64_VARIANT_PCS) 0x0$
+check(mold) readelf --dyn-syms -W prog
+  not: vweak
+
+#--- main.c
+#include <stdio.h>
+__attribute__((aarch64_vector_pcs, weak)) int vweak(int);
+int main(void) {
+  if (vweak) printf("%d\n", vweak(1)); else puts("none");
+  return 0;
+}
+#--- lib.c
+__attribute__((aarch64_vector_pcs)) int vweak(int x) { return x + 41; }

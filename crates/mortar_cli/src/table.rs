@@ -523,6 +523,8 @@ pub enum Lands {
     NoOdrCheck,
     /// `diagnostics.odr.stats`.
     OdrStats,
+    /// `diagnostics.odr.table` (`--odr-table=`).
+    OdrTable,
     /// `bookkeeping.map`.
     Map,
     /// `bookkeeping.print_map`.
@@ -649,6 +651,7 @@ impl Lands {
             Self::WarnCommon(_) => "diagnostics.warn_common",
             Self::Odr | Self::NoOdrCheck => "diagnostics.odr.mode",
             Self::OdrStats => "diagnostics.odr.stats",
+            Self::OdrTable => "diagnostics.odr.table",
             Self::Map => "bookkeeping.map",
             Self::PrintMap => "bookkeeping.print_map",
             Self::MortarMap => "bookkeeping.mortar_map",

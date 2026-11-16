@@ -555,6 +555,71 @@ phase that reads it meets it.
 are parsed and refused (reserved for the update, WP-064). None of them
 is part of the normalized plan (IN-18b).
 
+#### The report (`--incremental-report[=FILE]`)
+
+The report is text, one record per line, written to FILE or to
+standard error. Its first line is IN-10's:
+
+    incremental: full (<reason>) changed=<files> refilled=<units> bytes=<written> time=<ms>
+
+When the link found and checked a state of its output that could be
+updated (the reason would be `update-not-implemented`), the dry run
+(WP-063) follows. It is IN-22's change detection, IN-25..29's delta and
+IN-27's refill set computed against the old state. The link then runs
+in full. The new side is the full link's own layout, so the set says
+which units an update laid out that way would rewrite. It is not yet
+the set of a slack-preserving update. `changed=` counts the files whose
+units are all refilled (IN-27 row 1); `refilled=` counts the units.
+
+Each dry-run line starts with `delta`. The words are separated by one
+space. A free-form field (a path, a name, a detail) is percent-encoded:
+every byte outside `0x21..0x7e`, and `%`, becomes `%XX` with upper-case
+hex digits. An empty field is `-`. The lines appear in this order:
+
+| line | when, and what |
+|---|---|
+| `delta inputs clean=N hashed-same=N changed=N added=N removed=N files-changed=N appeared=N extracted=N gone=N unextracted=N` | once. The first five count FILES paths by IN-22: clean by the stamp rule, hashed and equal, hashed and different, new, gone. The rest count the link's files (archive members included): changed, newly loaded, newly extracted from an archive; old files no longer loaded or no longer extracted. |
+| `delta path <state> <path>` | per path that is not clean. `<state>` is `hashed-same`, `changed`, `added` or `removed`. |
+| `delta stat-missed <path>` | per path whose stamp tuple was equal but whose content differed (`stat_missed`, IN-24). |
+| `delta file <state> <path> <member>` | per file whose units are all refilled (`changed`, `appeared`, `extracted`), then per old file that left (`gone`, `unextracted`). `<member>` is the archive member's name or `-`. |
+| `delta probe <path> <old> <new>` | per IN-23 probe whose answer changed: `present`, `absent` or `-`. |
+| `delta symbols new=N gone=N definer=N value=N size=N kind=N attrs=N comdat=N commons=N live=N dead=N tls=N` | once: IN-26's classes. |
+| `delta symbol <what> <name>` | per changed global key. `<what>` is one of the classes above. The keys of the new link come first, in its `RESOLVED` order (by `SYMBOLS` row); then the `gone` keys, in the old link's `RESOLVED` order. A key with an `attrs` line and another class has the `attrs` line first. |
+| `delta fallback <reason> <detail>` | per correctness fall-back (IN-16) the delta found. An update would link in full. |
+| `delta policy too-much-changed <detail>` | when IN-16's policy limit would send an update to a full link. |
+| `delta refill units=N holes=N chunks=N bytes=N` | once. `bytes` is the units' total size. |
+| `delta unit <reasons> <path> <member> <shndx> <name>` | per refilled unit, in the new link's section order. `<shndx>` is the section's index in its file (as in `--mortar-map`). |
+| `delta hole <reasons> <path> <member> <shndx> <old address> <size> <name>` | per old unit whose bytes are not where the new link puts that unit. `<shndx>` is the index in the new link's file, or `-` when the file left. The address and size are hex; the address is `-` when the old unit was not allocated. |
+| `delta chunk <reasons> <tag> <chunk> <output section>` | per refilled chunk (headers, synthetic tables, merged sections, patches, a body's fill between units). |
+| `delta time detect=<ms> delta=<ms>` | the cost of detection, and of the delta and the report. |
+| `delta end` | last. A report without it is truncated. |
+
+`<reasons>` is a comma-separated list of these names:
+
+| name | meaning |
+|---|---|
+| `file` | IN-27 row 1: the unit's file changed, appeared or was extracted. |
+| `gone` | Row 2: its file left. |
+| `global` | Row 3: a global it names was defined elsewhere, moved, or changed value, size or kind. |
+| `comdat`, `comdat-file` | Row 4: a COMDAT keeper changed. These are the group's members and its symbols' referrers. The `-file` reason covers the old and new keepers' `.eh_frame` and non-allocated units. |
+| `slots` | Rows 5 and 7: it uses a GOT, PLT, IPLT or TLS slot, and the slot tables moved or changed. |
+| `moved`, `moved-ref`, `moved-file` | Row 6: the unit of an unchanged file moved. These are the unit itself, its referrers through its file's symbols, and its file's non-allocated units. |
+| `frag` | A fragment of a merged section of an unchanged file moved. This covers the section's referrers and the file's non-allocated units. |
+| `synthetic` | Row 7: a synthetic table (chunks). |
+| `patch` | Row 8: a patch or thunk was added, moved or removed. |
+| `liveness`, `liveness-file` | Row 9: `--gc-sections` liveness flipped. This covers the section, its globals' referrers, and its file's `.eh_frame` and non-allocated units. |
+| `eh-frame` | IN-34a: an `.eh_frame` contribution after the first record that differs. |
+| `eh-ref` | Row 10: a reference into an input `.eh_frame`. |
+| `headers`, `gaps` | The file, program and section headers, and a body's fill (chunks). |
+
+The fall-back reasons are IN-16's. The dry run raises
+`new-output-section`, `property-changed`, `options-changed`,
+`inputs-reordered`, `tls-layout-changed`, `symbol-kind-changed` and
+`link-order-moved`. Their triggers are listed in
+`spec/landed/incr/WP-063.md`.
+
+A link without `--incremental-report` computes no delta.
+
 ### 3.14 Written paths (WP-087)
 
 **The rule.** No file the link writes is a file the link read, or a
@@ -658,6 +723,85 @@ then fails, the archive destroyed). lld 19 and 22 check nothing:
 checks nothing and writes in place: `-o a.o` with `a.o` an input fails
 with the input destroyed, `-Map=a.o` dies of `SIGBUS` with the input
 replaced by the map.
+
+### 3.15 The standard streams (WP-095)
+
+**What goes where.** Standard error: the report (`spec/diag.md` §5,
+§7), `--print-gc-sections`' lines (`spec/image.md` I-10),
+`--time-phases`' lines (I-88), incremental mode's lines
+(`--incremental-report` without a file, a fall-back's line;
+`spec/incr.md` IN-10) and `MORTAR_STEPS`' lines (`mortar_core::
+wp032b_steps`). Standard output: the answers of §5 (`--version`, `-v`,
+`-V`, `--help`) and `-M`'s map (I-120). Nothing else.
+
+**The rule.** A build system reads a linker's verdict from its exit
+status and its product from the files it named; it does not promise to
+read the linker's messages to the end (`ld ... 2>&1 | head`, `ld --help
+| grep -q`, a log on a full disk).
+
+- **S-1 (messages).** Every byte on standard error, and the answers of
+  §5 on standard output, are messages. A message that cannot be written
+  (the reader of a pipe has gone, `EPIPE`; a full device, `ENOSPC`; any
+  other error) is dropped, and so is the rest of that write: mortar does
+  not panic, raises no signal, dumps no core, and says nothing about it
+  (there is nowhere to say it). The link goes on to its own verdict, and
+  the exit status is the link's: 0 for a link that succeeded whose
+  warnings nobody read, 1 for a failed link whose errors nobody read, 0
+  for `--version` and `--help` whose answer nobody read.
+- **S-2 (outputs).** A file the link was asked to write is an output
+  wherever it points: `-o`, `-Map`, `--mortar-map`, `--dependency-file`
+  naming a pipe, a terminal, `/dev/stdout` or a full device (written in
+  place, `spec/image.md` I-58, I-79a), and `-M`'s map, written to
+  standard output. An output that cannot be written is
+  `cannot-write-output` (`spec/diag.md` §3.1) naming it (`/dev/stdout`
+  as given; `standard output (-M)` for `-M`): the link fails, exit 1,
+  and leaves no output file (`spec/diag.md` §7, `spec/image.md` I-66).
+  `-M`'s map is written after every other output that can fail the
+  link and before the incremental state (`spec/incr.md` IN-17), so a
+  map that cannot be written leaves no state either. Part of the map may
+  have reached the stream before the failure.
+- **S-3 (nothing half-written).** Since no write to a stream can end
+  the process, the output protocol (`spec/image.md` §7: a temporary
+  name, then a rename or a removal) and the state's (IN-17, IN-46) run
+  to their end on every path: no `.<out>.mortar-tmp` is left by a
+  message nobody read. Before WP-095 a `MORTAR_STEPS` line to a closed
+  pipe or a full device aborted the process (`SIGABRT`) wherever it was
+  printed, the image phase's temporary file included.
+- **S-4 (closed descriptors).** A descriptor 0, 1 or 2 closed when
+  mortar starts (`2>&-`) is opened on `/dev/null` by Rust's start-up
+  code before `main`: what mortar writes there vanishes (S-1, a success
+  for `-M` and `-Map=/dev/stdout`), and no file mortar opens can take
+  descriptor 1 or 2 (GNU ld 2.44 under `2>&-` writes its warnings into
+  the output file it opened there).
+- **S-5 (one writer).** Every write to standard error or standard output
+  by a shipped crate goes through `mortar_diag::stream` (`to_stderr`
+  drops a failure, `to_stdout` returns it for S-1 or S-2). It lives in
+  `mortar_diag` because every crate that prints depends on it already,
+  the verifier included, and it depends on nothing.
+  `crates/mortar_diag/tests/streams.rs` fails on any `print!`,
+  `println!`, `eprint!`, `eprintln!`, `dbg!`, `stdout()`/`stderr()` call
+  or `io::Stdout`/`io::Stderr` type in `crates/*/src` elsewhere: those
+  panic on a failed write, and the release profile aborts on a panic.
+  mortar ignores `SIGPIPE`, as every Rust program does at start-up: it is
+  never killed by a pipe, it sees `EPIPE`.
+
+**Why S-2 covers `-M` and S-1 covers `--help`.** `-M` is `-Map` to
+standard output, and `-Map=/dev/stdout` that cannot be written has been
+an error since WP-087: the two spellings of one request agree, and a map
+asked for and lost on a full disk is not a success (lld 22 makes both an
+error; GNU ld 2.44 and mold 2.37.1 exit 0 with the map lost). The answers
+of §5 are read by scripts that stop at the first match (libtool's
+`$LD --help | grep -q ...`); under `set -o pipefail` a status other than
+0 would fail them, and the references with `SIGPIPE` ignored all exit 0
+(lld 19 exits 74).
+
+**The references** (`spec/landed/cli/WP-095.md` has the tables): with
+`SIGPIPE` at its default, a pipe whose reader has gone kills GNU ld
+2.44, lld 22 and mold 2.37.1 at their first write to it (GNU ld leaving
+an empty output file behind); lld 19 exits 74. With `SIGPIPE` ignored,
+and on `/dev/full`, all three keep the link's status for their
+messages; for the map on standard output lld fails the link (exit 1),
+GNU ld and mold exit 0.
 
 ## 4. The table and the status of options
 
@@ -774,6 +918,10 @@ WP-072 landed the first four: `--odr`, `--no-odr-check` and `--odr-stats`
 `supported`, `--detect-odr-violations` `noop` (its reason is O-41's sentence;
 nothing is printed, since `spec/diag.md` §2.1 has no note severity); the other three are
 `refused` with their fields in `plan.diagnostics.odr` (§3.9).
+WP-075 made `--odr-table` `partial`: `=off` and `=exported` are
+accepted (the table is written in dynamic executables, `spec/odr.md`
+O-50; a static executable exports nothing and gets none), `=full` is
+refused by name until WP-076.
 `docs/status/options.md` has the counts.
 
 Rows whose status the M1 and M2 packages change (`spec/input.md` §17,
@@ -1030,6 +1178,7 @@ The test fails when the outcome is not the recorded one.
 | `crates/mortar/src/lib.rs` (unit tests) | §4.3, §3.9, §5 |
 | `crates/mortar/tests/cli.rs` | §2.1 (non-UTF-8), §5.1 (through a symlink), §6 with `spec/diag.md` §7 (gcc running mortar as `ld`) |
 | `crates/mortar/tests/written.rs`, `crates/mortar/src/written.rs` (unit tests), `crates/mortar_cli/tests/table.rs` (`every_path_valued_row_is_classified`) | §2.6.4, §3.14 |
+| `crates/mortar/tests/streams.rs` (one test per row of `spec/landed/cli/WP-095.md`'s table), `crates/mortar_diag/tests/streams.rs` (the source scan) | §3.15 |
 
 Each test names the section it checks in a `// spec: cli.md §...`
 comment.

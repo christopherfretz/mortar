@@ -643,7 +643,8 @@ pub struct Odr {
     /// `--odr-check-archives` (O-23): also compare archive members that
     /// are not linked. Its row stays `refused` until WP-075/WP-076.
     pub check_archives: bool,
-    /// `--odr-table=` (O-50). Its row stays `refused` until WP-075/WP-076.
+    /// `--odr-table=` (O-50): `exported` since WP-075 (a dynamic
+    /// executable's `.note.mason`); `full` stays refused until WP-076.
     pub table: OdrTable,
     /// `--odr-stats` (O-44): one line to standard error.
     pub stats: bool,

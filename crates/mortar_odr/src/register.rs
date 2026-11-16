@@ -3,7 +3,7 @@
 //! against it (`tests` below), so that moving a check (O-46) is one line
 //! here and one row there.
 
-use mortar_core::plan::{Odr, OdrMode};
+use mortar_core::plan::{Odr, OdrMode, OdrTable};
 
 /// A check's status in O-47's register.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -17,7 +17,7 @@ pub enum Status {
     /// `--odr-check-archives`).
     OptIn,
     /// Off unless its own switch asks (the `.note.mason` table,
-    /// `--odr-table`).
+    /// `--odr-table`); then on in every mode but `--odr=off`.
     Off,
     /// Counted by `--odr-stats` only, never reported.
     StatsOnly,
@@ -72,6 +72,10 @@ pub enum Check {
     VtableRtti,
     /// O-32's `SYSTEM` `-std` differences.
     SystemStd,
+    /// O-24, the check against shared-object inputs (WP-075).
+    SharedInputs,
+    /// O-50's `.note.mason` table (`--odr-table`).
+    Table,
 }
 
 impl Check {
@@ -93,6 +97,8 @@ impl Check {
             Self::InternalReference => 11,
             Self::AbiIsa => 12,
             Self::VtableRtti => 13,
+            Self::SharedInputs => 14,
+            Self::Table => 15,
             Self::SystemStd => 17,
         }]
     }
@@ -114,6 +120,7 @@ impl Status {
             (_, OdrMode::Off) => false,
             (Self::On, _) | (Self::Strict, OdrMode::Strict) => true,
             (Self::OptIn, _) => odr.check_archives,
+            (Self::Off, _) => !matches!(odr.table, OdrTable::Off),
             _ => false,
         }
     }
@@ -230,6 +237,16 @@ mod tests {
         assert!(!Status::OptIn.runs(&at(OdrMode::Strict)));
         assert!(Status::OptIn.runs(&Odr { check_archives: true, ..at(OdrMode::Warn) }));
         assert!(!Status::Off.runs(&at(OdrMode::Strict)));
+        // The table: its own switch, in any mode but off (O-42).
+        let table = |mode| Odr { table: OdrTable::Exported, ..at(mode) };
+        assert!(Check::Table.runs(&table(OdrMode::Warn)));
+        assert!(Check::Table.runs(&table(OdrMode::Strict)));
+        assert!(!Check::Table.runs(&table(OdrMode::Off)));
+        assert!(!Check::Table.runs(&at(OdrMode::Strict)));
+        // O-24: strict only.
+        for mode in [OdrMode::Off, OdrMode::Warn, OdrMode::Error, OdrMode::Strict] {
+            assert_eq!(Check::SharedInputs.runs(&at(mode)), mode == OdrMode::Strict);
+        }
         assert!(!Status::Never.runs(&at(OdrMode::Strict)));
     }
 }

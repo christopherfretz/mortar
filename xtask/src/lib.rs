@@ -14,6 +14,8 @@ pub mod census;
 pub mod ci;
 #[cfg(unix)]
 pub mod identical;
+#[cfg(unix)]
+pub mod incr_oracle;
 pub mod jobs;
 #[cfg(unix)]
 pub mod linktest;

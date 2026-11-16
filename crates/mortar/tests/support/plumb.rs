@@ -81,6 +81,10 @@ pub const ELFLINT_KNOWN: &[(&str, &str, &str)] = &[
         "",
         "GNU ld, lld and mold keep the flag the same",
     ),
+    // `STO_AARCH64_VARIANT_PCS` (0x80) in `.symtab` (synth.md S-127,
+    // WP-059): elflint knows no processor-specific `st_other` bit. libgcc's
+    // `__arm_tpidr2_save` and `__arm_za_disable` carry it.
+    ("): unknown bit set in st_other", "", "GNU ld's and lld's outputs have the same lines"),
     // `__ehdr_start` is valued at the file header, below section 1
     // (synth.md S-122's header exception).
     ("(__ehdr_start): st_value out of bounds", "", "GNU ld, lld and mold value it the same"),
