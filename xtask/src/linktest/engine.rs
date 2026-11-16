@@ -1009,8 +1009,9 @@ impl Unit<'_> {
         judged.plumb.time += started.elapsed();
         let (bytes, report, _) = verified.map_err(|e| error(&e))?;
         // A reference's link that stage 3 does not model (P-D1 "outside
-        // stage 3": an option dyn.md refuses, static-pie, version
-        // definitions, a closure object no search finds) is counted as not
+        // stage 3": an option dyn.md refuses, an i386 dynamic output,
+        // version definitions, a closure object no search finds; a
+        // static-pie is judged, plumb.md §12.4) is counted as not
         // judged by stage 3, by that name; what the earlier stages found
         // is still judged below. mortar's never is: its finding fails.
         let outside =

@@ -180,12 +180,7 @@ pub const OUT_OF_M2: &[(&str, &str)] = &[
 /// Verifier findings judged wrong in the verifier, not in mortar (a
 /// finding of the record that names them): the variation, the rule, and
 /// the reason. Only a line whose findings are all of that rule passes.
-pub const KNOWN_FINDINGS: &[(&str, &str, &str)] = &[(
-    "x-norelro",
-    "P-D11",
-    "suspected verifier defect: with -z norelro there is no PT_GNU_RELRO, D-42 keeps the copy in \
-     .bss.rel.ro, and P-D11 asks for RELRO (spec/landed/dyn/WP-056.md, finding F1)",
-)];
+pub const KNOWN_FINDINGS: &[(&str, &str, &str)] = &[];
 
 /// A compiler driver of the census.
 #[derive(Clone, Debug)]

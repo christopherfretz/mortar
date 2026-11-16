@@ -163,6 +163,9 @@ fn expect(case: &str, arch: Arch, linker: Linker) -> Vec<&'static str> {
     if case == "ifunc" && arch == Arch::X64 && linker != Linker::Lld {
         v.push("A32");
     }
+    if case == "export" && linker == Linker::Bfd {
+        v.push("A34");
+    }
     v
 }
 
@@ -207,6 +210,11 @@ fn build() -> Option<Corpus> {
         if arch == Arch::A64 {
             cases.push(("absgot", &t.cc[i], "absgot.c"));
         }
+        // §12.4 (WP-088): exports in a static-pie are judged; the
+        // references write them (several hundred with -E), nothing reads
+        // them.
+        cases.push(("export", &t.cc[i], "hello.c"));
+        cases.push(("export-sym", &t.cc[i], "hello.c"));
         if let Some(fc) = &t.fc[i] {
             cases.push(("fhello", fc, "hello.f90"));
         }
@@ -220,7 +228,7 @@ fn build() -> Option<Corpus> {
             for linker in Linker::ALL {
                 for now in [false, true] {
                     // order and absgot are measured once, lazily.
-                    if now && matches!(case, "order" | "absgot") {
+                    if now && matches!(case, "order" | "absgot" | "export" | "export-sym") {
                         continue;
                     }
                     let name = format!("{case}.{}{}", linker.name(), if now { ".now" } else { "" });
@@ -231,6 +239,11 @@ fn build() -> Option<Corpus> {
                     let mut a = vec![b.as_str(), "-static-pie", &obj, "-o", &name, &m];
                     if now {
                         a.push("-Wl,-z,now");
+                    }
+                    match case {
+                        "export" => a.push("-Wl,--export-dynamic"),
+                        "export-sym" => a.push("-Wl,--export-dynamic-symbol=main"),
+                        _ => {}
                     }
                     assert!(
                         run_in(&dir, driver, &a, Some(&line)),
@@ -314,8 +327,16 @@ fn s12_4_static_pie_references_verify_clean() {
                 listing(o, &r)
             ));
         }
+        // A34 is real: GNU ld's x86-64 static-pie with -E faults at
+        // start-up (its TPOFF64 records).
+        let faults = o.case == "export" && o.arch == Arch::X64 && o.link.linker == Linker::Bfd;
         if o.arch.host() && o.case != "order" && o.case != "absgot" {
-            assert_eq!(status(&o.link.dir, &o.link.output), Some(0), "{}: run", o.label());
+            let s = status(&o.link.dir, &o.link.output);
+            if faults {
+                assert_ne!(s, Some(0), "{}: A34 ran", o.label());
+            } else {
+                assert_eq!(s, Some(0), "{}: run", o.label());
+            }
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
@@ -489,6 +510,34 @@ fn s12_4_static_pie_mutants_are_caught() {
     for class in ["spie-relacount", "spie-rel-drop"] {
         let r = total.classes.iter().find(|r| r.class == class).unwrap();
         assert!(r.caught > 0, "{class}\n{table}");
+    }
+}
+
+// spec/plumb.md §12.4 (WP-088): a reference's exports in a static-pie
+// are held to the program's definitions: a moved or hidden export is
+// caught (P-D14).
+#[test]
+fn s12_4_static_pie_export_mutants_are_caught() {
+    use mortar_plumb::mutate::{Config, Outcome, run_with};
+    let Some(c) = corpus() else { return };
+    let cfg = Config { per_class: 4, threads: 4, ..Config::default() };
+    let mut total = Outcome::default();
+    for o in c.outs.iter().filter(|o| o.case == "export") {
+        let map = o.link.parse_map();
+        let files = o.link.inputs(&map);
+        let inputs: Vec<Input<'_>> =
+            files.iter().map(|(p, b)| Input { path: p, bytes: b }).collect();
+        let line: Vec<String> =
+            std::fs::read_to_string(&o.line).unwrap().lines().map(str::to_string).collect();
+        let ctx = Ctx { line: Some(line), files: &Dir(&o.link.dir) };
+        let r = run_with(&o.link.output_bytes(), &inputs, &map, &cfg, Some(&ctx)).unwrap();
+        total.add(&r, &o.label());
+    }
+    let table = total.render();
+    println!("{table}");
+    for class in ["dynsym-value", "dynsym-visibility"] {
+        let r = total.classes.iter().find(|r| r.class == class).unwrap();
+        assert!(r.applied > 0 && r.missed.is_empty(), "{class}\n{table}");
     }
 }
 
