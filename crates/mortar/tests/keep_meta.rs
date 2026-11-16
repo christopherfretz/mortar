@@ -79,14 +79,14 @@ impl Cx {
         std::fs::write(scratch.join("u.bin"), section(&[unit("u.cc", "u", 4)], 0)).unwrap();
         scratch.write(
             "main.c",
-            &source(
+            source(
                 "#include <stdio.h>\nint g(void);\n\
                  int main(void) { printf(\"%d\\n\", g()); return 0; }",
                 "main.bin",
             ),
         );
-        scratch.write("g.c", &source("int g(void) { return 7; }", "g.bin"));
-        scratch.write("u.c", &source("int u(void) { return 4; }", "u.bin"));
+        scratch.write("g.c", source("int g(void) { return 7; }", "g.bin"));
+        scratch.write("u.c", source("int u(void) { return 4; }", "u.bin"));
         let mut expected = Vec::new();
         for u in [&m1, &m2, &g] {
             expected.extend_from_slice(u);
