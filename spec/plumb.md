@@ -1495,7 +1495,8 @@ Measured (WP-104, `spec/landed/plumb/WP-104.md`, the table in §10.6):
 GNU ld on AArch64 writes exactly this rule's values on every variant;
 lld writes them for every PC-relative word and 0 for every absolute
 one (A38); GNU ld on x86-64 writes the PLT entry for a function or an
-IFUNC that has one in a PIE (A37); mold writes the library's `st_value`
+IFUNC that has one in a PIE, and on AArch64 too in a non-PIE for a
+function the program only calls (A37); mold writes the library's `st_value`
 (A39) or the PLT entry (A40). Test:
 `tests/link/dyn/reloc/debug-word-shared.test` (the RB-1 defect's file,
 moved and extended), `tests/dyn.rs` `s5_8_a_word_against_a_shared_definition`.
@@ -3793,11 +3794,12 @@ word at run time, so none of them is a mislink of the program; each
 gives a debugger a value that is not the symbol's address (§10.6). Each
 is accepted from its linker only, never from mortar's map.
 
-- **A37 (GNU ld, x86-64).** In a PIE, a word against a function or an
-  IFUNC the library defines, for which the output has an ordinary PLT
-  entry, holds that entry's address + A (PC-relative: − P): R1 ending
-  "; it holds the library's PLT entry". On AArch64 and i386 GNU ld
-  writes 0 + A. Reproducer: `tests/link/dyn/reloc/debug-word-shared.test`.
+- **A37 (GNU ld; x86-64, and AArch64 `-no-pie`).** A word against a
+  function or an IFUNC the library defines, for which the output has an
+  ordinary PLT entry (a PIE's, or a non-PIE's for a function the program
+  only calls), holds that entry's address + A (PC-relative: − P): R1
+  ending "; it holds the library's PLT entry". In an AArch64 or i386 PIE
+  GNU ld writes 0 + A. Reproducer: `tests/link/dyn/reloc/debug-word-shared.test`.
 - **A38 (lld).** An absolute word against a name the library defines
   holds 0: the addend dropped (S + A with S = 0 would be A). R1 ending
   "; it holds 0, the addend dropped"; with A = 0 lld's word is the
@@ -3996,6 +3998,7 @@ library's `st_value`, `plt` the output's ordinary PLT entry, `copy` and
 | protected in the library; weak reference the library defines; a name only debug words reference | 0 + A | 0 | st + A (A39) | 0 + A |
 | data object, non-PIE (copied) | copy + A | copy + A | copy + A | copy + A |
 | function, non-PIE (address taken) | canon + A | canon + A | canon + A | canon + A |
+| function, non-PIE (only called: an ordinary PLT entry) | plt + A (A37) | 0 (A38) | plt + A (A40) | 0 + A |
 | undefined weak, no definition, PC-relative | AArch64 A (S = P), x86 A − P | A − P (AArch64: A43) | A − P | §4.4 |
 | library `STT_TLS`, absolute | refused ("bad value") | 0 (A41) | st + A (A41) | refused by name (P-D12) |
 | library `STT_TLS`, `DTPOFF64`/`DTPOFF32`, no `PT_TLS` | 0 + A | 0 (A38) | 0 + A | 0 + A |

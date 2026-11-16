@@ -128,10 +128,12 @@ fn dynamic(linker: Format, output: &[u8], f: &Finding) -> Option<&'static str> {
     {
         use crate::reloc::dsoword as w;
         let x64 = output.get(18..20) == Some(&[62, 0][..]);
+        let exec = mortar_elf::FileHeader::parse(output)
+            .is_ok_and(|h| h.e_type == mortar_elf::consts::ET_EXEC);
         match w::holds(f) {
-            Some(h) if bfd && x64 && h == w::HOLDS_PLT => {
+            Some(h) if bfd && (x64 || exec) && h == w::HOLDS_PLT => {
                 return Some(
-                    "A37: GNU ld writes a function's PLT entry, in an x86-64 PIE, into a non-alloc word against a function or IFUNC only a shared library defines (spec/plumb.md §5.8)",
+                    "A37: GNU ld writes a function's ordinary PLT entry (x86-64; AArch64 -no-pie) into a non-alloc word against a function or IFUNC only a shared library defines (spec/plumb.md §5.8)",
                 );
             }
             Some(h) if lld && h == w::HOLDS_NO_ADDEND => {

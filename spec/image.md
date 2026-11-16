@@ -982,6 +982,23 @@ writes a value chosen by the referring section's name, as
   for range (it is not a value of `X`), and replaces `X` for every type
   allowed in a non-alloc section (`spec/a64.md` §13.2), including
   `PREL32` and `TLS_DTPREL64`.
+- **I-48a [M2] A word against a symbol only a shared library defines**
+  (WP-104, WP-113). A word in a section without `SHF_ALLOC` whose
+  target is not defined in this output and is defined by a shared
+  library holds the symbol's link-time value, because nothing relocates
+  that section at run time: S is the copy's address when the output
+  gives the symbol a copy relocation, the canonical PLT entry's address
+  when an `Exec` gives it one, and 0 otherwise; the field is S + A for
+  an absolute class and S + A − P for a PC-relative one. An ordinary PLT
+  entry, an IPLT entry for a library's IFUNC, a GOT slot and the
+  library's `st_value` are never written there. A DTP-offset word
+  (`R_X86_64_DTPOFF64`/`DTPOFF32`) against the library's TLS symbol
+  holds 0 + A, with or without a `PT_TLS` in the output; an absolute word
+  against it is refused by name (a PC-relative one: `spec/plumb.md` §5.8
+  makes it P-D12; `spec/arch.md` §4.3 does not yet say). The table of what the
+  output gives the symbol is `spec/arch.md` §4.3 "Non-alloc places"; the
+  verifier's rule is `spec/plumb.md` §5.8 "A target only a shared
+  library defines".
 
 ### 6.2 Debug sections
 

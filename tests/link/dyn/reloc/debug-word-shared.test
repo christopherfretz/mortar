@@ -15,7 +15,8 @@
 # library's definition and reported R1 on every linker; the `.quad
 # environ` word is that defect's minimised form. WP-104 measured the
 # references (plumb.md §10.6) and named their conventions (§10.2): GNU
-# ld writes an x86-64 PIE's PLT entry for a function or IFUNC (A37),
+# ld writes an ordinary PLT entry for a function or IFUNC (A37: an
+# x86-64 PIE, and a non-PIE's for `cfn`, which the program only calls),
 # lld drops an absolute word's addend (A38), mold writes the library's
 # st_value (A39) or the PLT entry (A40), and on AArch64 lld writes
 # A - P for an undefined weak's PC-relative word where §4.4 has S = P
@@ -29,7 +30,7 @@
 #@ spec: plumb.md "5.8 Non-alloc relocations"
 #@ spec: plumb.md "10.6 Tombstones"
 #@ arch: aarch64 x86_64
-#@ anomaly(bfd,x86_64): A37
+#@ anomaly(bfd): A37
 #@ anomaly(lld): A38
 #@ anomaly(lld,aarch64): A43
 #@ anomaly(mold): A39 A40
@@ -66,6 +67,7 @@ link(mold) gcc -no-pie exec.o prel.o -L. -lv -o exec-prel
 #--- lib.c
 int dvar = 1;
 int dfunc(void) { return 2; }
+int cfn(void) { return 4; }
 __attribute__((visibility("protected"))) int pvar = 3;
 int wk = 5;
 int onlydbg = 7;
@@ -80,9 +82,10 @@ extern int dvar, pvar;
 extern int wk __attribute__((weak));
 int dfunc(void);
 int ifn(void);
+int cfn(void);
 int main(void) {
-  int s = dvar + dfunc() + pvar + (&wk ? wk : 0) + ifn();
-  puts(s == 1 + 2 + 3 + 5 + 6 ? "ok" : "bad");
+  int s = dvar + dfunc() + pvar + (&wk ? wk : 0) + ifn() + cfn();
+  puts(s == 1 + 2 + 3 + 5 + 6 + 4 ? "ok" : "bad");
   return 0;
 }
 #--- exec.c
@@ -91,19 +94,22 @@ extern int dvar;
 extern int wk __attribute__((weak));
 int dfunc(void);
 int ifn(void);
+int cfn(void);
 void *lib_dfunc(void);
 void *lib_ifn(void);
 int main(void) {
-  int s = dvar + dfunc() + (&wk ? wk : 0) + ifn();
+  int s = dvar + dfunc() + (&wk ? wk : 0) + ifn() + cfn();
   int eq = (void *)dfunc == lib_dfunc() && (void *)ifn == lib_ifn();
-  puts(s == 1 + 2 + 5 + 6 && eq ? "ok" : "bad");
+  puts(s == 1 + 2 + 5 + 6 + 4 && eq ? "ok" : "bad");
   return 0;
 }
 #--- abs.c
 /* Absolute words: the RB-1 word first (environ, which only libc.so
    defines), then the library's data, function, IFUNC, protected datum,
-   weakly referenced datum, a name only these words reference, and an
-   undefined weak nothing defines. */
+   weakly referenced datum, a name only these words reference, an
+   undefined weak nothing defines, then the function with an addend (in
+   the non-PIE its canonical PLT entry + 8) and `cfn`, a function the
+   program only calls (an ordinary PLT entry in both outputs: 0 + A). */
 #ifdef __aarch64__
 #define PB "%progbits"
 #else
@@ -114,6 +120,7 @@ __asm__(".weak wk\n\t.weak nowhere\n\t"
         ".quad environ\n\t.quad dvar\n\t.quad dvar+16\n\t.quad dfunc\n\t"
         ".quad ifn\n\t.quad pvar\n\t.quad wk\n\t.quad onlydbg\n\t"
         ".quad nowhere\n\t.long dvar+16\n\t.long dfunc\n\t"
+        ".quad dfunc+8\n\t.quad cfn\n\t.quad cfn+8\n\t"
         ".text");
 #--- prel.c
 /* PC-relative words against the same names. */
@@ -126,4 +133,5 @@ __asm__(".weak nowhere\n\t"
         ".section .debug_mortar_dsoref,\"\"," PB "\n\t"
         ".long dvar - .\n\t.long dvar+16 - .\n\t.long dfunc - .\n\t"
         ".quad dvar - .\n\t.quad ifn - .\n\t.long nowhere - .\n\t"
+        ".long cfn - .\n\t.quad dfunc+8 - .\n\t"
         ".text");
