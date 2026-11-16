@@ -20,12 +20,12 @@ use mortar_core::identity::{
     outsec_ordinals, symbol_id, symbol_lookup,
 };
 use mortar_core::inputs::{Inputs, Reader};
-use mortar_core::par::Pool;
 use mortar_core::layout::{
     AllocKey, Chunk, ChunkKind, DefValue, Defined, EhRecord, Erratum, Hole, HoleKind, Layout,
     MergeMap, Patch, PatchKind, Place, Placement, Redirect, Segment, Sized, SlotKind, Slots,
     SymPlace, ThunkTarget, Tls,
 };
+use mortar_core::par::Pool;
 use mortar_core::resolution::Resolution;
 use mortar_core::split::Split;
 use mortar_elf::consts::{STT_FILE, STT_SECTION};
@@ -176,8 +176,7 @@ impl<'s> Keys<'s> {
                     names.push(name);
                 }
                 let kind = sym.st_info & 0xf;
-                if name.is_empty() || kind == STT_SECTION || kind == STT_FILE || sym.st_value != 0
-                {
+                if name.is_empty() || kind == STT_SECTION || kind == STT_FILE || sym.st_value != 0 {
                     continue;
                 }
                 let Ok(SymbolSection::Section(at)) = symbols.section_of(index, &sym) else {
@@ -409,11 +408,12 @@ pub fn capture(
     file_hash: &dyn Fn(FileId) -> Option<[u8; 16]>,
     arch: &dyn mortar_arch::Arch,
 ) -> Result<State, String> {
-    capture_timed(link, keys, layout, strings, file_hash, arch, &mut Laps::new())
+    let pool = Pool::sequential();
+    capture_timed(link, keys, layout, strings, file_hash, arch, &pool, &mut Laps::new())
 }
 
 /// [`capture`], with its parts timed into `laps` (WP-094).
-#[allow(clippy::too_many_lines)] // one block per table, in IN-18a's order
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)] // one block per table, in IN-18a's order
 pub fn capture_timed(
     link: &Link<'_, '_>,
     keys: &Keys<'_>,
@@ -421,6 +421,7 @@ pub fn capture_timed(
     strings: &mut Strings,
     file_hash: &dyn Fn(FileId) -> Option<[u8; 16]>,
     arch: &dyn mortar_arch::Arch,
+    pool: &Pool,
     laps: &mut Laps,
 ) -> Result<State, String> {
     let mut clock = Clock { laps, at: std::time::Instant::now() };
@@ -567,7 +568,11 @@ pub fn capture_timed(
         let hash = frag_hash(link, frag, &mut buf).ok_or("a fragment's bytes")?;
         live.push((out.0, hash, frag.0, off));
         // `SECTIONS` has a row per `SectionId`, in order.
-        s.frag_at.push(crate::format::FragAtRow { section: f.section.0, offset: f.offset, at: off });
+        s.frag_at.push(crate::format::FragAtRow {
+            section: f.section.0,
+            offset: f.offset,
+            at: off,
+        });
     }
     s.frag_at.sort_unstable();
     live.sort_unstable();
@@ -692,7 +697,7 @@ pub fn capture_timed(
     }
     s.layout.bits = bits;
     clock.lap("capture slots to holes");
-    crate::tables::fill(link, &mut syms, strings, &mut s, arch)?;
+    crate::tables::fill(link, &mut syms, strings, &mut s, arch, pool)?;
     clock.lap("capture delta tables");
     s.symbols = syms.rows;
     if !strings.fits() {
@@ -760,7 +765,11 @@ struct Pos {
 impl Pos {
     /// The present file of a positional `FILES` row.
     fn file(&self, files: &[Option<FileId>], row: u32) -> Option<FileId> {
-        if *self.positional.get(row as usize)? { files.get(row as usize).copied().flatten() } else { None }
+        if *self.positional.get(row as usize)? {
+            files.get(row as usize).copied().flatten()
+        } else {
+            None
+        }
     }
 }
 
@@ -814,7 +823,9 @@ fn map(
                     && count != 0
                     && count != link.resolution.section_base[f].len()
                 {
-                    return Err(format!("positional replay: FILES row {r}'s section count changed"));
+                    return Err(format!(
+                        "positional replay: FILES row {r}'s section count changed"
+                    ));
                 }
             }
             Some(Pos { positional, first, row_of })
@@ -914,7 +925,10 @@ fn map(
                 if let Some(p) = &pos
                     && let Some(f) = p.file(&files, y.at_file)
                     && let Some(&id) = inputs.sym_map_of(f).get(y.at_index as usize)
-                    && inputs.symbols.get(id).is_some_and(|k| k.name == name && k.version == version)
+                    && inputs
+                        .symbols
+                        .get(id)
+                        .is_some_and(|k| k.name == name && k.version == version)
                 {
                     symbols.push(Some(SymKey::global(id)));
                     continue;
@@ -1202,7 +1216,8 @@ fn replay_inner(
                 continue;
             }
             let f = link.split.frags.get(frag).ok_or("a fragment")?;
-            let (file, index) = link.resolution.sh_index(f.section).ok_or("a fragment's section")?;
+            let (file, index) =
+                link.resolution.sh_index(f.section).ok_or("a fragment's section")?;
             let row = p.row_of.get(file.0 as usize).copied().unwrap_or(NONE);
             if row != NONE && p.positional[row as usize] {
                 let section = p.first[row as usize].0 + index.0;

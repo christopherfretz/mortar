@@ -122,7 +122,11 @@ fn add_str(state: &mut State, s: &[u8]) -> Str {
     at
 }
 
-#[allow(clippy::too_many_lines, reason = "the steps of the module's text, in order")]
+#[allow(
+    clippy::too_many_lines,
+    clippy::many_single_char_names,
+    reason = "the steps of the module's text, in order"
+)]
 fn run(
     args: &[OsString],
     cwd: &Path,
@@ -248,7 +252,13 @@ fn run(
         } else {
             let keys = mortar_incr::capture::Keys::new(link)?;
             t1 = std::time::Instant::now();
-            mortar_incr::capture::replay_timed(link, &keys, &state, computed, &mut laps.borrow_mut())
+            mortar_incr::capture::replay_timed(
+                link,
+                &keys,
+                &state,
+                computed,
+                &mut laps.borrow_mut(),
+            )
         };
         let ms = |d: std::time::Duration| d.as_secs_f64() * 1000.0;
         replay_ms.set((ms(t1 - t0), ms(t1.elapsed())));
@@ -590,7 +600,10 @@ fn per_file_ranges(
             if hi - lo + 1 != mine.len() {
                 return Err("the changed file's .eh_frame records are not one range".to_owned());
             }
-            ranges.push(("eh_frame", c.offset + f.eh.out_offset(lo)..c.offset + f.eh.out_offset(hi + 1)));
+            ranges.push((
+                "eh_frame",
+                c.offset + f.eh.out_offset(lo)..c.offset + f.eh.out_offset(hi + 1),
+            ));
         }
     }
     Ok(())

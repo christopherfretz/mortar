@@ -520,6 +520,7 @@ impl Session {
     }
 
     /// The state of the link `f`, all but its output row.
+    #[allow(clippy::too_many_lines)] // the state's parts, each timed (WP-094)
     fn state(
         &self,
         f: &Front<'_>,
@@ -561,6 +562,7 @@ impl Session {
             &mut strings,
             &file_hash,
             f.arch.get(),
+            &f.pool,
             &mut laps,
         )?;
         lap(&self.times, &mut t, "capture");

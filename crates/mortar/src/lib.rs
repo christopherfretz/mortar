@@ -338,10 +338,10 @@ fn invoke_with(
             if let Some(s) = session
                 && !diagnostics.has_errors()
             {
-                let times = s.times_handle();
+                let laps = s.times_handle();
                 incremental_lines = s.finish(f, &store, &written, cwd, &out_path, &diagnostics);
                 if timer.on() {
-                    for (name, ms) in times.borrow().iter() {
+                    for (name, ms) in laps.borrow().iter() {
                         timer.line(format!("mortar: incremental: {name}: {ms:.1} ms"));
                     }
                 }

@@ -11,6 +11,7 @@
 //! conservative answer (it may only add refills).
 
 use mortar_core::hash::HashMap;
+use mortar_core::par::Pool;
 
 use mortar_arch::{Arch, DemandClass, Site};
 use mortar_core::FileId;
@@ -54,12 +55,14 @@ fn sym_kind(section: Result<SymbolSection, mortar_elf::Error>) -> u8 {
 }
 
 /// Fills `MENTIONS`, `RESOLVED` and `INDEX` of `s`.
+#[allow(clippy::too_many_lines)] // one block per table
 pub(crate) fn fill(
     link: &Link<'_, '_>,
     syms: &mut Symbols<'_, '_>,
     strings: &mut Strings,
     s: &mut State,
     arch: &dyn Arch,
+    pool: &Pool,
 ) -> Result<(), String> {
     let inputs = link.inputs;
     let res = link.resolution;
@@ -85,10 +88,13 @@ pub(crate) fn fill(
             _ => NONE,
         }
     };
-    // MENTIONS: the global entries of every live object.
-    for (n, entry) in tables.iter().enumerate() {
-        let Some((_, table)) = entry else { continue };
+    // MENTIONS and INDEX are read per file in parallel with each global
+    // as its `SymbolId`; the ids become rows below, in file order, so the
+    // rows are numbered as a serial pass numbers them (WP-094).
+    let per_file = pool.map(tables.len(), |n| -> Result<_, String> {
+        let Some((object, table)) = &tables[n] else { return Ok((Vec::new(), Vec::new())) };
         let file = FileId(n as u32);
+        let mut mentions = Vec::new();
         let first = table.first_global().0;
         let map = inputs.sym_map_of(file);
         for (index, sym) in table.iter() {
@@ -100,7 +106,7 @@ pub(crate) fn fill(
             let kind = sym_kind(section);
             let row = MentionRow {
                 file: file.0,
-                symbol: syms.row(strings, SymKey::global(id))?,
+                symbol: id.0,
                 kind,
                 bind: sym.st_info >> 4,
                 typ: sym.st_info & 0xf,
@@ -114,8 +120,20 @@ pub(crate) fn fill(
             } else {
                 row
             };
-            s.mentions.push(row);
+            mentions.push(row);
         }
+        let mut index = Vec::new();
+        index_file(inputs, link, file, object, table, arch, &mut index)?;
+        Ok((mentions, index))
+    });
+    let mut index = Vec::new();
+    for part in per_file {
+        let (mentions, rows) = part?;
+        for mut m in mentions {
+            m.symbol = syms.row(strings, SymKey::global(SymbolId(m.symbol)))?;
+            s.mentions.push(m);
+        }
+        index.push(rows);
     }
     s.mentions.sort_by_key(|m| (m.file, m.symbol));
     s.mentions.dedup_by_key(|m| (m.file, m.symbol));
@@ -155,13 +173,14 @@ pub(crate) fn fill(
             ..ResolvedRow::default()
         });
     }
-    // INDEX.
-    let mut buf = Vec::new();
-    let mut data = Vec::new();
-    for (n, entry) in tables.iter().enumerate() {
-        let Some((object, table)) = entry else { continue };
-        let file = FileId(n as u32);
-        index_file(inputs, link, file, object, table, syms, strings, arch, s, &mut buf, &mut data)?;
+    // INDEX: a GLOBAL or SLOT row's target is a symbol row.
+    for rows in index {
+        for mut r in rows {
+            if r.kind == index_kind::GLOBAL || r.kind == index_kind::SLOT {
+                r.target = syms.row(strings, SymKey::global(SymbolId(r.target)))?;
+            }
+            s.index.push(r);
+        }
     }
     s.index.sort_unstable();
     s.index.dedup();
@@ -300,13 +319,12 @@ fn index_file(
     file: FileId,
     object: &Object<'_>,
     table: &SymbolTable<'_>,
-    syms: &mut Symbols<'_, '_>,
-    strings: &mut Strings,
     arch: &dyn Arch,
-    s: &mut State,
-    buf: &mut Vec<u8>,
-    data: &mut Vec<u8>,
+    out: &mut Vec<IndexRow>,
 ) -> Result<(), String> {
+    let mut buf = Vec::new();
+    let mut data = Vec::new();
+    let (buf, data) = (&mut buf, &mut data);
     let res = link.resolution;
     let path = || String::from_utf8_lossy(inputs.files[file].path).into_owned();
     let first = table.first_global().0;
@@ -328,7 +346,7 @@ fn index_file(
             && let Ok(to) = sec.link()
             && let Some(target) = res.section_id(file, to)
         {
-            s.index.push(IndexRow { unit, kind: index_kind::LINK_ORDER, target: target.0 });
+            out.push(IndexRow { unit, kind: index_kind::LINK_ORDER, target: target.0 });
         }
         if row.reloc.0 == 0 {
             continue;
@@ -353,7 +371,7 @@ fn index_file(
                 .map_or(true, |h| uses_slot(h.class));
             if r_sym == 0 {
                 if slot {
-                    s.index.push(IndexRow { unit, kind: index_kind::LOCAL_SLOT, target: unit });
+                    out.push(IndexRow { unit, kind: index_kind::LOCAL_SLOT, target: unit });
                 }
                 continue;
             }
@@ -369,10 +387,11 @@ fn index_file(
                     });
                     if undefined { to } else { id }
                 };
-                let target = syms.row(strings, SymKey::global(key))?;
-                s.index.push(IndexRow { unit, kind: index_kind::GLOBAL, target });
+                // The key's id: `fill` makes it a symbol row.
+                let target = key.0;
+                out.push(IndexRow { unit, kind: index_kind::GLOBAL, target });
                 if slot {
-                    s.index.push(IndexRow { unit, kind: index_kind::SLOT, target });
+                    out.push(IndexRow { unit, kind: index_kind::SLOT, target });
                 }
                 continue;
             }
@@ -383,19 +402,19 @@ fn index_file(
             };
             let Some(target) = target else {
                 if slot {
-                    s.index.push(IndexRow { unit, kind: index_kind::LOCAL_SLOT, target: unit });
+                    out.push(IndexRow { unit, kind: index_kind::LOCAL_SLOT, target: unit });
                 }
                 continue;
             };
             if slot {
-                s.index.push(IndexRow { unit, kind: index_kind::LOCAL_SLOT, target: target.0 });
+                out.push(IndexRow { unit, kind: index_kind::LOCAL_SLOT, target: target.0 });
             }
             if target == SectionId(unit) {
                 continue;
             }
             let into_eh = res.sections.get(target).is_some_and(|t| t.kind == SectionKind::EhFrame);
             let kind = if into_eh { index_kind::EH_FRAME } else { index_kind::SECTION };
-            s.index.push(IndexRow { unit, kind, target: target.0 });
+            out.push(IndexRow { unit, kind, target: target.0 });
         }
     }
     Ok(())

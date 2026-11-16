@@ -339,6 +339,10 @@ enum PatchSym {
     Mapping(usize),
 }
 
+/// A file's entry ranges (in entries) and their string ranges (in bytes)
+/// in `.symtab` and `.strtab` ([`SymtabPlan::file_entries`], WP-094).
+pub type FileEntries = (Vec<Range<u32>>, Vec<Range<u64>>);
+
 /// The plan of §7.1 to §7.3.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SymtabPlan {
@@ -1024,7 +1028,7 @@ impl SymtabPlan {
         cx: &SymCtx<'_>,
         file: FileId,
         defined: &[SymbolId],
-    ) -> Result<(Vec<Range<u32>>, Vec<Range<u64>>), SynthError> {
+    ) -> Result<FileEntries, SynthError> {
         let mut entries = Vec::new();
         let mut strings = Vec::new();
         let str_end = |i: usize| self.segs.get(i + 1).map_or(self.strtab, |n| n.str_off);
@@ -1044,7 +1048,8 @@ impl SymtabPlan {
             let c = self.checks.partition_point(|c| {
                 (c.seg as usize) < gseg || (c.seg as usize == gseg && c.cursor <= id.0)
             });
-            let Some(c) = c.checked_sub(1).map(|c| self.checks[c]).filter(|c| c.seg as usize == gseg)
+            let Some(c) =
+                c.checked_sub(1).map(|c| self.checks[c]).filter(|c| c.seg as usize == gseg)
             else {
                 continue;
             };
