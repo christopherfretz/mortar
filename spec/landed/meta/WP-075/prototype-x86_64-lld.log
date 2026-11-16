@@ -1,14 +1,14 @@
 hid.note.s: Assembler messages:
 hid.note.s:9: Warning: .space repeat count is zero, ignored
-# target aarch64, linker lld; tables:
-  liba.so: 7bd6863440358cee 0101010101010101 _ZN7fmtlite7versionEv@(unversioned) flags=0x1;
-  libsym.so: 7bd6863440358cee 0101010101010101 _ZN7fmtlite7versionEv@(unversioned) flags=0x8001;
-  libbsf.so: 7bd6863440358cee 0101010101010101 _ZN7fmtlite7versionEv@(unversioned) flags=0x8001;
-  libprot.so: 7bd6863440358cee 0101010101010101 _ZN7fmtlite7versionEv@(unversioned) flags=0x8001;
+# target x86_64, linker lld; tables:
+  liba.so: 7bd6863440358cee 0101010101010101 _ZN7fmtlite7versionEv@@(unversioned) flags=0x1 versym=0x1;
+  libsym.so: 7bd6863440358cee 0101010101010101 _ZN7fmtlite7versionEv@@(unversioned) flags=0x8001 versym=0x1;
+  libbsf.so: 7bd6863440358cee 0101010101010101 _ZN7fmtlite7versionEv@@(unversioned) flags=0x8001 versym=0x1;
+  libprot.so: 7bd6863440358cee 0101010101010101 _ZN7fmtlite7versionEv@@(unversioned) flags=0x8001 versym=0x1;
   libhid.so: 
-  libv1.so: 7bd6863440358cee 0101010101010101 _ZN7fmtlite7versionEv@LIB1_1 flags=0x1;
-  libs1.so: 7bd6863440358cee 0101010101010101 _ZN7fmtlite7versionEv@V1 flags=0x1;
-  libd.so: 7bd6863440358cee 0303030303030303 _ZN7fmtlite7versionEv@(unversioned) flags=0x1;
+  libv1.so: 7bd6863440358cee 0101010101010101 _ZN7fmtlite7versionEv@@LIB1_1 flags=0x1 versym=0x2;
+  libs1.so: 7bd6863440358cee 0101010101010101 _ZN7fmtlite7versionEv@@V1 flags=0x1 versym=0x2;
+  libd.so: 7bd6863440358cee 0303030303030303 _ZN7fmtlite7versionEv@@(unversioned) flags=0x1 versym=0x1;
 == (a) exported: exe body 2 exports version, liba body 1
   rule:     finding (a)
   literal:
@@ -184,4 +184,107 @@ hid.note.s:9: Warning: .space repeat count is zero, ignored
     not in scope: libd.so (not in DT_NEEDED)
     not read: libc.so.6 (DT_NEEDED, not an input of this check)
   ran:      e=1 ed=1 
+  (exit 0)
+# version tables (versym of f; .gnu.version present; version definitions):
+  libp1.so: .gnu.version yes, version definitions no; defined _ZN7fmtlite7versionEv versym 0x1 ((unversioned))
+  libp2.so: .gnu.version no, version definitions no; defined _ZN7fmtlite7versionEv versym 0x1 ((unversioned))
+  libp3.so: .gnu.version yes, version definitions yes; defined _ZN7fmtlite7versionEv versym 0x1 ((unversioned))
+  libnv.so: .gnu.version yes, version definitions yes; defined _ZN7fmtlite7versionEv versym 0x3 (V2), defined _ZN7fmtlite7versionEv versym 0x8002 (V1)
+  libu.so: .gnu.version yes, version definitions no; undefined _ZN7fmtlite7versionEv versym 0x2 ((unversioned))
+  libnv.so table: 7bd6863440358cee 1515151515151515 _ZN7fmtlite7versionEv@V1 flags=0x1 versym=0x8002;7bd6863440358cee 1616161616161616 _ZN7fmtlite7versionEv@@V2 flags=0x1 versym=0x3;
+== (versions) libp1 1 unversioned, then libnv f@V1=21 f@@V2=22, then libu (refers f@V1)
+  rule:     see the record
+  literal:
+    no table: libu.so
+    not read: libc.so.6 (DT_NEEDED, not an input of this check)
+  amended:
+    no table: libu.so
+    not read: libc.so.6 (DT_NEEDED, not an input of this check)
+    odr-violation _ZN7fmtlite7versionEv (unversioned)/V1: defined in libp1.so, defined differently in libnv.so; the one earlier in DT_NEEDED order (libp1.so) provides the definition to both
+    odr-violation _ZN7fmtlite7versionEv (unversioned)/V2: defined in libp1.so, defined differently in libnv.so; the one earlier in DT_NEEDED order (libp1.so) provides the definition to both
+  ran:      p1=1 nv=1 u=1 
+  (exit 0)
+== (versions) libnv first, then libp1 1 unversioned, then libu (refers f@V1)
+  rule:     see the record
+  literal:
+    no table: libu.so
+    not read: libc.so.6 (DT_NEEDED, not an input of this check)
+  amended:
+    no table: libu.so
+    not read: libc.so.6 (DT_NEEDED, not an input of this check)
+    odr-violation _ZN7fmtlite7versionEv V1/(unversioned): defined in libnv.so, defined differently in libp1.so; the one earlier in DT_NEEDED order (libnv.so) provides the definition to both
+    odr-violation _ZN7fmtlite7versionEv V2/(unversioned): defined in libnv.so, defined differently in libp1.so; the one earlier in DT_NEEDED order (libnv.so) provides the definition to both
+  ran:      p1=21 nv=22 u=21 
+  (exit 0)
+== (versions) libp2 1 unversioned, then libnv f@V1=21 f@@V2=22, then libu (refers f@V1)
+  rule:     see the record
+  literal:
+    no table: libu.so
+    not read: libc.so.6 (DT_NEEDED, not an input of this check)
+  amended:
+    no table: libu.so
+    not read: libc.so.6 (DT_NEEDED, not an input of this check)
+    odr-violation _ZN7fmtlite7versionEv (unversioned)/V1: defined in libp2.so, defined differently in libnv.so; the one earlier in DT_NEEDED order (libp2.so) provides the definition to both
+    odr-violation _ZN7fmtlite7versionEv (unversioned)/V2: defined in libp2.so, defined differently in libnv.so; the one earlier in DT_NEEDED order (libp2.so) provides the definition to both
+  ran:      p2=1 nv=1 u=1 
+  (exit 0)
+== (versions) libnv first, then libp2 1 unversioned, then libu (refers f@V1)
+  rule:     see the record
+  literal:
+    no table: libu.so
+    not read: libc.so.6 (DT_NEEDED, not an input of this check)
+  amended:
+    no table: libu.so
+    not read: libc.so.6 (DT_NEEDED, not an input of this check)
+    odr-violation _ZN7fmtlite7versionEv V1/(unversioned): defined in libnv.so, defined differently in libp2.so; the one earlier in DT_NEEDED order (libnv.so) provides the definition to both
+    odr-violation _ZN7fmtlite7versionEv V2/(unversioned): defined in libnv.so, defined differently in libp2.so; the one earlier in DT_NEEDED order (libnv.so) provides the definition to both
+  ran:      p2=21 nv=22 u=21 
+  (exit 0)
+== (versions) libp3 1 unversioned, then libnv f@V1=21 f@@V2=22, then libu (refers f@V1)
+  rule:     see the record
+  literal:
+    no table: libu.so
+    not read: libc.so.6 (DT_NEEDED, not an input of this check)
+  amended:
+    no table: libu.so
+    not read: libc.so.6 (DT_NEEDED, not an input of this check)
+    odr-violation _ZN7fmtlite7versionEv (unversioned)/V1: defined in libp3.so, defined differently in libnv.so; the one earlier in DT_NEEDED order (libp3.so) provides the definition to both
+    odr-violation _ZN7fmtlite7versionEv (unversioned)/V2: defined in libp3.so, defined differently in libnv.so; the one earlier in DT_NEEDED order (libp3.so) provides the definition to both
+  ran:      p3=1 nv=1 u=1 
+  (exit 0)
+== (versions) libnv first, then libp3 1 unversioned, then libu (refers f@V1)
+  rule:     see the record
+  literal:
+    no table: libu.so
+    not read: libc.so.6 (DT_NEEDED, not an input of this check)
+  amended:
+    no table: libu.so
+    not read: libc.so.6 (DT_NEEDED, not an input of this check)
+    odr-violation _ZN7fmtlite7versionEv V1/(unversioned): defined in libnv.so, defined differently in libp3.so; the one earlier in DT_NEEDED order (libnv.so) provides the definition to both
+    odr-violation _ZN7fmtlite7versionEv V2/(unversioned): defined in libnv.so, defined differently in libp3.so; the one earlier in DT_NEEDED order (libnv.so) provides the definition to both
+  ran:      p3=21 nv=22 u=21 
+  (exit 0)
+== (c) K18b: exe declares int arr[4], links and runs against libk int arr[8]
+  rule:     finding (c)
+  literal:
+    no table: libk.so
+    not read: libc.so.6 (DT_NEEDED, not an input of this check)
+    odr-size-mismatch arr: declared with size 16 in the output, defined with size 32 in libk.so
+  amended:
+    no table: libk.so
+    not read: libc.so.6 (DT_NEEDED, not an input of this check)
+    odr-size-mismatch arr: declared with size 16 in the output, defined with size 32 in libk.so
+  ran:      arr[3]=4 k_last=8
+  (exit 0)
+  copy size in c1: 32, in c2: 16
+== (c) K18b: exe linked against the old libk (int arr[4]), run with the new one (int arr[8])
+  rule:     none at link time (X12: another build at run time)
+  literal:
+    no table: libk.so
+    not read: libc.so.6 (DT_NEEDED, not an input of this check)
+  amended:
+    no table: libk.so
+    not read: libc.so.6 (DT_NEEDED, not an input of this check)
+  ran:      ./c2: Symbol `arr' has different size in shared object, consider re-linking
+arr[3]=4 k_last=0
   (exit 0)

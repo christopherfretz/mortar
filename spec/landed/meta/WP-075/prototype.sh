@@ -39,6 +39,7 @@ lib() { # lib NAME N VIS [link flags...]; VIS = default | protected | hidden
   local attr=""; [ "$vis" != default ] && attr="__attribute__((visibility(\"$vis\")))"
   printf 'namespace fmtlite { %s inline int version() { return %d; } }\nextern "C" int %s_entry() { return fmtlite::version(); }\n' \
     "$attr" "$v" "$n" > "$n.cpp"
+  [ -n "${LIBEXTRA:-}" ] && printf '%s\n' "$LIBEXTRA" >> "$n.cpp"
   $CXX -O0 -fPIC -c "$n.cpp" -o "$n.o.plain" || exit 1
   unit "$n.o" "$v"
   local bsf=""; for f in "$@"; do [ "$f" = -Wl,-Bsymbolic-functions ] && bsf=--bsf; done
@@ -149,3 +150,64 @@ exe b9r "a v2" - default -lv2 -la
 shape "(b) libv2 2 at LIB2_1, liba 1 unversioned (reversed)" "none as written (different nodes)" b9r b9r.o -- liba.so libv2.so
 exe b10 "e ed" - default -le
 shape "(b) libe 1, whose DT_NEEDED brings libd 3 (closure)" "none (libd not read)" b10 b10.o -- libe.so libd.so
+
+# ---- The version shapes of the ruling of 2026-11-15 (rows 4, 16, 17 refined) ----
+# libnv: f@V1 (body 21, non-default, by .symver) and f@@V2 (body 22); nv_entry calls f.
+cat > nv.cpp <<'C'
+extern "C" int nv_old() { return 21; }
+extern "C" int nv_new() { return 22; }
+__asm__(".symver nv_old, _ZN7fmtlite7versionEv@V1");
+__asm__(".symver nv_new, _ZN7fmtlite7versionEv@@V2");
+namespace fmtlite { int version(); }
+extern "C" int nv_entry() { return fmtlite::version(); }
+C
+printf 'V1 { local: nv_old; nv_new; };\nV2 { global: nv_entry; } V1;\n' > nv.map
+$CXX -O0 -fPIC -c nv.cpp -o nv.o.plain || exit 1
+printf 'definition anchor=%s@V1 hash=%s class=1 flags=1\ndefinition anchor=%s@@V2 hash=%s class=1 flags=1\n' \
+  $NAME 15151515151515151515151515151515 $NAME 16161616161616161616161616161616 > nv.desc
+"$XTASK" meta write nv.desc -o nv.unit.s && $CXX -c nv.unit.s -o nv.unit.o && $LDR -r nv.o.plain nv.unit.o -o nv.o || exit 1
+c=$($CXX "${LDF[@]}" -shared nv.o -o libnv.so -Wl,-soname,libnv.so -Wl,--version-script=nv.map && $P rows libnv.so nv.o)
+$P note "$c" > nv.note.s; $CXX -c nv.note.s -o nv.note.o
+$CXX "${LDF[@]}" -shared nv.o nv.note.o -o libnv.so -Wl,-soname,libnv.so -Wl,--version-script=nv.map || exit 1
+$P patch libnv.so nv.o || exit 1
+# the old libnv (only f@@V1, body 21), to link libu against: libu's reference is f@V1
+mkdir -p old
+printf 'namespace fmtlite { int version() { return 21; } }\n' > nvold.cpp
+printf 'V1 { global: *; };\n' > nvold.map
+$CXX -O0 -fPIC -shared nvold.cpp -o old/libnv.so -Wl,-soname,libnv.so -Wl,--version-script=nvold.map "${LDF[@]}" || exit 1
+printf 'namespace fmtlite { int version(); }\nextern "C" int u_entry() { return fmtlite::version(); }\n' > u.cpp
+$CXX -O0 -fPIC -shared u.cpp -o libu.so -Wl,-soname,libu.so -Lold -lnv "${LDF[@]}" || exit 1
+# unversioned providers of f, body 1: p1 has a .gnu.version table (it needs glibc: index 1,
+# no version definitions); p2 has none (-nostdlib, no versioned dependency); p3 has version
+# definitions (a version script naming p3_entry only), f left at index 1 = the base node.
+LIBEXTRA='#include <cstdio>
+extern "C" int p1_need() { return std::puts("p1"); }' lib p1 1 default
+lib p2 1 default -nostdlib
+printf 'PV { global: p3_entry; };\n' > p3.map
+lib p3 1 default -Wl,--version-script=p3.map
+echo "# version tables (versym of f; .gnu.version present; version definitions):"
+for l in libp1.so libp2.so libp3.so libnv.so libu.so; do
+  echo "  $l: $($P versym $l $NAME)"
+done
+echo "  libnv.so table: $($P table libnv.so | tr '\n' ';')"
+for p in p1 p2 p3; do
+  exe "v$p" "$p nv u" - default -l$p -lnv -lu
+  shape "(versions) lib$p 1 unversioned, then libnv f@V1=21 f@@V2=22, then libu (refers f@V1)" "see the record" "v$p" "v$p.o" -- lib$p.so libnv.so libu.so
+  exe "v${p}r" "$p nv u" - default -lnv -l$p -lu
+  shape "(versions) libnv first, then lib$p 1 unversioned, then libu (refers f@V1)" "see the record" "v${p}r" "v${p}r.o" -- lib$p.so libnv.so libu.so
+done
+
+# ---- (c) K18b: a copy-relocated array whose size differs ----
+printf 'int arr[8] = {1,2,3,4,5,6,7,8};\nextern "C" int k_last() { return arr[7]; }\n' > k.cpp
+$CXX -O0 -fPIC -shared k.cpp -o libk.so -Wl,-soname,libk.so "${LDF[@]}" || exit 1
+printf 'int arr[4] = {1,2,3,4};\nextern "C" int k_last() { return arr[3]; }\n' > kold.cpp
+$CXX -O0 -fPIC -shared kold.cpp -o old/libk.so -Wl,-soname,libk.so "${LDF[@]}" || exit 1
+printf '#include <cstdio>\nextern int arr[4];\nextern "C" int k_last();\nint main() { std::printf("arr[3]=%%d k_last=%%d\\n", arr[3], k_last()); return 0; }\n' > c.cpp
+$CXX -O0 -fno-pic -c c.cpp -o c.o.plain || exit 1
+printf 'declaration anchor=arr ty=0x1234 size=16 type_name=A4_i flags=2\n' > c.desc
+"$XTASK" meta write c.desc -o c.unit.s && $CXX -c c.unit.s -o c.unit.o && $LDR -r c.o.plain c.unit.o -o c.o || exit 1
+$CXX "${LDF[@]}" -no-pie c.o -o c1 -L. -lk || exit 1
+shape "(c) K18b: exe declares int arr[4], links and runs against libk int arr[8]" "finding (c)" c1 c.o -- libk.so
+$CXX "${LDF[@]}" -no-pie c.o -o c2 -Lold -lk || exit 1
+echo "  copy size in c1: $(readelf -W --dyn-syms c1 | grep ' arr' | awk '{print $3}'), in c2: $(readelf -W --dyn-syms c2 | grep ' arr' | awk '{print $3}')"
+shape "(c) K18b: exe linked against the old libk (int arr[4]), run with the new one (int arr[8])" "none at link time (X12: another build at run time)" c2 c.o -- old/libk.so

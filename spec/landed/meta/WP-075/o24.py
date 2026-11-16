@@ -6,14 +6,17 @@
 #   o24.py rows SO [--bsf] OBJ...               the number of rows O-50 gives SO
 #   o24.py patch SO [--bsf] OBJ...              write O-51's rows into SO's placeholder note
 #   o24.py table FILE                           print the rows of FILE's table (PT_NOTE walk)
-#   o24.py check EXE [--literal|--amended] OBJ... -- SO...   O-24 (a) and (b)
+#   o24.py check EXE [--literal|--amended] OBJ... -- SO...   O-24 (a), (b) and (c)
+#   o24.py versym SO NAME                       a name's .gnu.version entries
 #
 # OBJ are the objects the module was linked from, in link order (their units give the
 # keeper's kind 2 rows: the first object, in link order, whose unit has a row for the key
 # and which defines the name). --bsf: the module was linked -Bsymbolic-functions (no
 # dynamic tag records it). --literal applies O-24's identity as written (a version node
 # is a name or "unversioned"; unversioned and a node are different entities);
-# --amended applies the binding rule glibc implements (see the WP-075 record).
+# --amended applies the identity the prototype measured (the WP-075 record, section 2):
+# an unversioned definition is one entity with every version node of its name, two
+# different node names are two entities; and (b) skips only names the output exports.
 import struct, subprocess, sys, os
 
 XTASK = os.environ.get('XTASK', 'xtask')
@@ -127,7 +130,8 @@ class Elf:
                 node = vd[ndx][0]
             out.append(dict(index=i, name=self.dynstr(nm), bind=info >> 4, type=info & 15,
                             vis=oth & 3, shndx=shn, versym=versym, node=node,
-                            has_versym=vs is not None))
+                            hidden=bool(versym & 0x8000), size=sz,
+                            has_versym=vs is not None, has_verdef=bool(vd)))
         return out
 
     def exports(self):
@@ -185,18 +189,36 @@ class Elf:
         return out
 
 
-def units(obj):
-    """The kind 2 rows of an object's units: {key: (hash16, flags)} (first row per key)."""
+def dump(obj):
+    return subprocess.run([XTASK, 'meta', 'dump', obj], capture_output=True, text=True,
+                          check=True).stdout
+
+
+def units(obj, kind='definition'):
+    """The kind 2 rows of an object's units: {key: (hash16, flags)} (first row per key);
+    with kind='declaration', the kind 5 rows: {key: (size, flags)}."""
     out = {}
-    txt = subprocess.run([XTASK, 'meta', 'dump', obj], capture_output=True, text=True,
-                         check=True).stdout
-    for line in txt.splitlines():
+    for line in dump(obj).splitlines():
         w = line.split()
-        if not w or w[0] != 'definition':
+        if not w or w[0] != kind:
             continue
         f = dict(x.split('=', 1) for x in w[1:] if '=' in x)
-        out.setdefault(int(f['key'], 0), (bytes.fromhex(f['hash']), int(f['flags'], 0)))
+        if kind == 'definition':
+            out.setdefault(int(f['key'], 0), (bytes.fromhex(f['hash']), int(f['flags'], 0)))
+        else:
+            out.setdefault(int(f['key'], 0), (int(f.get('size', '0'), 0), int(f['flags'], 0)))
     return out
+
+
+def row_key(s, keep):
+    """The unit row for a .dynsym entry: a `.symver` name (`f@V1`, `f@@V2`) is the object's
+    own symbol name (MT-13), so it is tried first; then the bare name."""
+    if s['node']:
+        for sep in (b'@', b'@@'):
+            k = fnv(s['name'] + sep + s['node'])
+            if k in keep:
+                return k
+    return fnv(s['name'])
 
 
 def keeper_rows(objs):
@@ -217,14 +239,15 @@ def rows_for(so, objs, bsf):
     symbolic = e.symbolic()
     rows = []
     for s in e.exports():
-        k = fnv(s['name'])
+        k = row_key(s, keep)
         if k not in keep or not keep[k][1] & (VAGUE | EXPLICIT_SPEC):
             continue
         h, fl, _ = keep[k]
         flags = fl & 0x7fff
         if s['vis'] == 3 or symbolic or (bsf and s['type'] == 2):
             flags |= NONPREEMPTIBLE
-        rows.append((k, struct.unpack('<Q', h[:8])[0], s['index'], flags))
+        # the row's key is FNV-1a 64 of its .dynsym name (spec/odr.md 12.5)
+        rows.append((fnv(s['name']), struct.unpack('<Q', h[:8])[0], s['index'], flags))
     rows.sort()
     return rows
 
@@ -333,6 +356,23 @@ def check(exe, objs, libs, mode):
                 out.append('  odr-violation %s %s/%s: defined in %s, defined differently in '
                            '%s; %s' % (name.decode(), node_str(a['node']), node_str(b['node']),
                                        a['lib'], b['lib'], who))
+    # (c) sizes: a variable the output's kind 5 rows declare with a size, which an
+    # in-scope library defines with another st_size
+    decl = {}
+    for o in objs:
+        for key, (size, fl) in units(o, 'declaration').items():
+            if fl & 0x2 and size and not fl & 0x1:
+                decl.setdefault(key, size)
+    for so in libs:
+        l = Elf(so)
+        if l.soname() not in needed:
+            continue
+        for sy in l.exports():
+            k = fnv(sy['name'])
+            if k in decl and sy['size'] != decl[k]:
+                out.append('  odr-size-mismatch %s: declared with size %d in the output, '
+                           'defined with size %d in %s' % (sy['name'].decode(), decl[k],
+                                                           sy['size'], l.soname().decode()))
     return out
 
 
@@ -359,6 +399,16 @@ def main(argv):
             struct.pack_into('<QQIHH', e.b, d + 16 + 24 * i, r[0], r[1], r[2], r[3], 0)
         open(so, 'wb').write(e.b)
         return 0
+    if cmd == 'versym':
+        e = Elf(argv[2])
+        print('.gnu.version %s, version definitions %s; %s' % (
+            'yes' if e.sec('.gnu.version') else 'no',
+            'yes' if e.sec('.gnu.version_d') else 'no',
+            ', '.join('%s %s versym %#x%s' % ('defined' if s['shndx'] else 'undefined',
+                                               s['name'].decode(), s['versym'],
+                                               ' (' + node_str(s['node']) + ')')
+                      for s in e.dynsyms() if s['name'] == argv[3].encode())))
+        return 0
     if cmd == 'table':
         e = Elf(argv[2])
         t = e.table()
@@ -367,8 +417,10 @@ def main(argv):
             return 0
         syms = e.dynsyms()
         for key, h8, idx, flags in t:
-            print('%016x %016x %s@%s flags=%#x' % (key, h8, syms[idx]['name'].decode(),
-                                                  node_str(syms[idx]['node']), flags))
+            sy = syms[idx]
+            print('%016x %016x %s%s%s flags=%#x versym=%#x' % (
+                key, h8, sy['name'].decode(), '@' if sy['hidden'] else '@@',
+                node_str(sy['node']), flags, sy['versym']))
         return 0
     if cmd == 'check':
         exe = argv[2]
