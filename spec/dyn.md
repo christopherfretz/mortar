@@ -367,7 +367,7 @@ in E-dynamic (108 outputs: C, C++, Fortran hello × PIE, `-no-pie`,
 | `.dynsym` | none | D-21 | D-21 | the null entry only, unless `--export-dynamic` [M4] |
 | `DT_DEBUG` | — | yes | yes | yes (all three) |
 | `DT_FLAGS_1` | — | `DF_1_NOW` under `-z now` | `DF_1_PIE` (+ `DF_1_NOW`) | `DF_1_PIE` (+ `DF_1_NOW` under `-z now`: all three references; WP-052) |
-| `RELATIVE` | never | never (absolute values are final) | every absolute word of a non-preemptible target | same as `Pie` |
+| `RELATIVE` | never | never (absolute values are final) | every absolute word (GOT slots included) of a non-preemptible target that is an address of the executable; never one of an absolute symbol (`SHN_ABS`: the word holds the value, D-46 row `Abs`; GNU ld's AArch64 record there is A30, §13.2) | same as `Pie` |
 | `COPY` | never | shared data reached by a non-GOT class | same, x86-64 GCC code (D-43) | never |
 | canonical PLT | never | shared function whose address a non-GOT class takes | never (refused by name, D-44) | never |
 | `IRELATIVE` | `.rela.plt`, bracketed by `__rela_iplt_*` (synth S-69) | last in `.rela.plt` (D-41) | last in `.rela.plt` | `.rela.dyn` (synth S-70) |
@@ -1602,6 +1602,10 @@ wrong" means the program links without a diagnostic and then misbehaves.
 | W15 | GNU ld (AArch64) | a traditional GD sequence whose fourth word is not a64 R4's `nop` is relaxed to IE anyway, overwriting the instruction after the call; the program reads a wrong address (`same 0`) | `tests/link/dyn/reloc/tls-gd-unrelaxed.test` (WP-051) |
 | W16 | lld, mold | X3: a library referenced only by an under-linked used object is dropped from `DT_NEEDED`; load fails (``symbol lookup error: … undefined symbol: leaf_fn``, exit 127). GNU ld and mortar refuse (D-13) | `tests/link/dyn/shlib/used-underlinks-refused.test` (WP-051) |
 | W17 | lld 19, 22 (x86-64) | general-dynamic access in the large code model (`-mcmodel=large -fPIC`, GCC 14) to the executable's own TLS links, and the program crashes (SIGSEGV) in a PIE and in `-no-pie`; GNU ld, mold and mortar run it (`GD ok 7`); x64.md X-25 records only the static case. Run under qemu-x86_64, where the other three run | WP-083's experiment: `__thread int own = 7;` printed by `main`, one `-fPIC -mcmodel=large` unit (record, §5) |
+| A30 | GNU ld (AArch64) | static-pie and `-pie`: the GOT slot of an absolute symbol (`SHN_ABS`, glibc's `_nl_current_*_used`) gets a `RELATIVE` record, so the program reads the value plus the load bias; glibc's own words are only tested for non-zero, a program's absolute symbol read through the GOT is wrong (lld and mold write the value, no record) | `plumb.md` §10.2 A30; `crates/mortar_plumb/tests/spie.rs` (`absgot.c` exits 1) |
+| A31 | GNU ld (x86-64) | static-pie: the `.plt.got` entry of an undefined weak function (`__cxa_finalize`, a `_ZTH` init guard) jumps through its GOT slot + 1, a misaligned word no record writes; dead code, each caller tests the slot for 0 first | `plumb.md` §10.2 A31 |
+| A32 | GNU ld, mold (x86-64) | W3 in a static-pie: an IFUNC's address word is its own `IRELATIVE` slot while a PC-relative use takes the IPLT entry, so `fp == f` is false (lld right; on AArch64 every use of all three is the resolved function) | `plumb.md` §10.2 A32; `tests/link/dyn/spie/ifunc.test` |
+| A33 | mold | a shared object named on a `-static-pie` line (after the driver's `-Bstatic`) is linked: `DT_NEEDED`, no `PT_INTERP`, nothing loads it and the call faults (SIGSEGV, both architectures); GNU ld and lld refuse, as D-19 and D-2 do | `plumb.md` §10.2 A33; `tests/link/dyn/spie/shlib-refused.test` |
 | H1 | lld, mold | (hazard, not a wrong output) `IRELATIVE` before `JUMP_SLOT`s: a resolver calling through the PLT crashes | `reloc/run.sh` (ifh_plt) |
 
 Every one is a test of §16 on which mortar must refuse or be right.
