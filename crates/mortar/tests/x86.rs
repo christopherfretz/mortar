@@ -305,7 +305,9 @@ fn x86_the_output_is_a_function_of_the_inputs_alone() {
     assert!(m.success(), "{}", m.stderr_text());
     let read = |p: &Path| std::fs::read(p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
     plumb(&first, &map_of(&first), &built.dir);
-    let want = (read(&first), read(&map_of(&first)));
+    // The map without its line (plumb.md §3.2a: the words differ).
+    let line_less = |p: &Path| support::plumb::map_without_line(&map_of(p));
+    let want = (read(&first), line_less(&first));
     for store in ["staged", "resident"] {
         for threads in ["1", "4", "8"] {
             for seed in ["", "977"] {
@@ -318,7 +320,7 @@ fn x86_the_output_is_a_function_of_the_inputs_alone() {
                 let m = mortar(&built, &out, &[t.as_str()], &env);
                 assert!(m.success(), "{store} {threads} {seed}: {}", m.stderr_text());
                 assert!(read(&out) == want.0, "{store}, {threads} threads, seed {seed:?}: output");
-                assert!(read(&map_of(&out)) == want.1, "{store}, {threads}, {seed:?}: map");
+                assert!(line_less(&out) == want.1, "{store}, {threads}, {seed:?}: map");
                 std::fs::remove_file(&out).unwrap();
                 std::fs::remove_file(map_of(&out)).unwrap();
             }

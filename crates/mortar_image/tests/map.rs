@@ -172,6 +172,10 @@ fn parse(text: &str) -> Map {
                     kind,
                 });
             }
+            "arg" => {
+                assert_eq!(t.len(), 2, "arg <word>");
+                m.args.push(untoken(t[1]));
+            }
             "end" => ended = true,
             r => panic!("unknown record {r}"),
         }
@@ -265,6 +269,10 @@ fn random_map(g: &mut Gen) -> Map {
         let kind = kinds[g.below(5) as usize];
         m.dead.push(DeadLine { out: name(g), offset: g.next(), size: g.next(), kind });
     }
+    // The line (plumb.md §3.2a): at least one word, in every map.
+    for _ in 0..=g.below(6) {
+        m.args.push(name(g));
+    }
     m
 }
 
@@ -280,7 +288,7 @@ fn i79_map_round_trips_through_the_grammar() {
         assert_eq!(parse(&s), m);
         // Group order: files, places/pieces, the non-alloc records,
         // discards, folds, chunks, commons, defines, `incremental`, holes
-        // and dead ranges.
+        // and dead ranges, the line (`arg`, at the dynamic records' place).
         let order = [
             "file",
             "place",
@@ -292,6 +300,7 @@ fn i79_map_round_trips_through_the_grammar() {
             "define",
             "incremental",
             "hole",
+            "arg",
             "end",
         ];
         let ranks: Vec<usize> = s

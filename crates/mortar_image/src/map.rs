@@ -128,6 +128,10 @@ pub struct Map {
     /// The dynamic records (`spec/plumb.md` §3.2, `spec/dyn.md` P-D3);
     /// `None` for a static link, which then writes none of them.
     pub dynamic: Option<DynRecords>,
+    /// The `arg` records, in every map (`spec/plumb.md` §3.2a, image.md
+    /// I-78): the command line's words in order, response files
+    /// expanded, the program name excluded.
+    pub args: Vec<Vec<u8>>,
 }
 
 /// The kind of a `dead` record (`spec/plumb.md` §3.2 and §6.8,
@@ -221,9 +225,6 @@ pub struct DynRecords {
     pub now: Option<bool>,
     /// `Some(false)` under `-z norelro`.
     pub relro: Option<bool>,
-    /// The command line's words in order, response files expanded, the
-    /// program name excluded.
-    pub args: Vec<Vec<u8>>,
     /// The `DT_NEEDED` names, in the order written.
     pub needed: Vec<Vec<u8>>,
     pub copies: Vec<CopyHint>,
@@ -344,9 +345,7 @@ pub fn render(map: &Map, pool: &Pool) -> Vec<u8> {
         let _ = writeln!(out, " {value:x}");
     }
     render_dead(map, &mut out);
-    if let Some(d) = &map.dynamic {
-        render_dynamic(d, &mut out);
-    }
+    render_dynamic(map.dynamic.as_ref(), &map.args, &mut out);
     out.push_str("end\n");
     out.into_bytes()
 }
@@ -368,8 +367,11 @@ fn render_dead(map: &Map, out: &mut String) {
     }
 }
 
-/// The dynamic records, in the format's fixed order (`spec/plumb.md` §3.2).
-fn render_dynamic(d: &DynRecords, out: &mut String) {
+/// The dynamic records, in the format's fixed order (`spec/plumb.md` §3.2),
+/// with the `arg` records at their place: a static map has those only.
+fn render_dynamic(d: Option<&DynRecords>, args: &[Vec<u8>], out: &mut String) {
+    let empty = DynRecords::default();
+    let d = d.unwrap_or(&empty);
     let named = |out: &mut String, record: &str, name: &[u8]| {
         out.push_str(record);
         out.push(' ');
@@ -395,7 +397,7 @@ fn render_dynamic(d: &DynRecords, out: &mut String) {
     if let Some(relro) = d.relro {
         out.push_str(if relro { "relro on\n" } else { "relro off\n" });
     }
-    for a in &d.args {
+    for a in args {
         named(out, "arg", a);
     }
     for n in &d.needed {

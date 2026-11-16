@@ -61,7 +61,9 @@ pub(crate) fn check(
     }
     pd1(image, out, line, &mut v);
     pd4(image, out, line, format, &mut v);
-    pd4_stack(image, line, objs, format, &mut v);
+    if let Some((m, at)) = stack(image, line.execstack, objs, format) {
+        v.push(fd(4, m).at(at));
+    }
     pd5(image, out, format, &mut v);
     pd6(image, out, line, model, format, &mut v);
     pd6_shlib_undefined(model, line, &mut v);
@@ -135,24 +137,22 @@ fn pd1(image: &Image<'_>, out: &DynOut, line: &Line, v: &mut Vec<Finding>) {
 /// set exactly then). An executable stack the link did not ask for is a
 /// permission the program does not need; one it asked for and did not
 /// get faults in the code that needed it (a nested function's
-/// trampoline). With no `PT_GNU_STACK` nothing is judged here.
-fn pd4_stack(
+/// trampoline). With no `PT_GNU_STACK` nothing is judged here. The
+/// same rule is S10's for a static output of mortar's map (§3.2a).
+pub(crate) fn stack(
     image: &Image<'_>,
-    line: &Line,
+    execstack: Option<bool>,
     objs: &[Obj<'_>],
     format: Format,
-    v: &mut Vec<Finding>,
-) {
-    let Some(p) = image.phdrs.iter().find(|p| p.p_type == mortar_elf::consts::PT_GNU_STACK) else {
-        return;
-    };
+) -> Option<(String, u64)> {
+    let p = image.phdrs.iter().find(|p| p.p_type == mortar_elf::consts::PT_GNU_STACK)?;
     let x = p.p_flags & mortar_elf::consts::PF_X != 0;
     let note = objs.iter().find(|o| {
         o.secs.iter().any(|s| {
             s.name == ".note.GNU-stack" && s.shdr.sh_flags & mortar_elf::consts::SHF_EXECINSTR != 0
         })
     });
-    let why = match (line.execstack, x) {
+    let why = match (execstack, x) {
         (Some(true), false) => Some("PT_GNU_STACK is not PF_X under -z execstack".to_string()),
         (Some(false), true) => Some("PT_GNU_STACK is PF_X under -z noexecstack".to_string()),
         (None, true) if note.is_none() => Some(
@@ -167,9 +167,7 @@ fn pd4_stack(
         }),
         _ => None,
     };
-    if let Some(m) = why {
-        v.push(fd(4, m).at(p.p_vaddr));
-    }
+    why.map(|m| (m, p.p_vaddr))
 }
 
 #[allow(clippy::too_many_lines)] // one block per segment

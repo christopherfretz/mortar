@@ -273,9 +273,8 @@ fn invoke_with(
     };
     let env = front::Env { cwd, pool, replay, slack: session.is_some() };
     let mut front = front::front(plan.clone(), env, &store, &diagnostics, &mut timer);
-    if let Some(f) = &mut front
-        && f.dyn_tables.is_some()
-    {
+    // The map's `arg` records, in every map (`spec/plumb.md` §3.2a).
+    if let Some(f) = &mut front {
         f.args = parsed.args.iter().map(|a| a.as_encoded_bytes().to_vec()).collect();
     }
     if let Some(f) = &mut front {

@@ -17,6 +17,7 @@ use crate::line::{Item, Line};
 use crate::locate::{Obj, Place};
 use crate::map::{ChunkKind, Format, Map, SectionRef};
 use crate::meta::{self, KIND2_ROW, KIND3_ROW, Unit, fnv1a, u16_at, u32_at, u64_at};
+use crate::opts::{OdrTable, Options};
 use crate::report::{Finding, MetaCoverage, Rule};
 
 const NT_ODR: u32 = 0x4d4f_4401;
@@ -44,39 +45,17 @@ struct Opts {
     keep: bool,
 }
 
-#[allow(clippy::many_single_char_names)]
-fn options(args: &[String]) -> Opts {
-    let mut o = Opts { table: Table::Off, odr_off: false, keep: false };
-    let mut i = 0;
-    while i < args.len() {
-        let a = args[i].as_str();
-        let long = a.strip_prefix("--").or_else(|| a.strip_prefix('-')).unwrap_or("");
-        let (name, value) = match long.split_once('=') {
-            Some((n, v)) => (n, Some(v.to_string())),
-            None => (long, None),
-        };
-        let value_of = |i: &mut usize| {
-            value.clone().or_else(|| {
-                *i += 1;
-                args.get(*i).cloned()
-            })
-        };
-        match name {
-            "odr-table" => {
-                o.table = match value_of(&mut i).as_deref() {
-                    Some("exported") => Table::Exported,
-                    Some("full") => Table::Full,
-                    _ => Table::Off,
-                };
-            }
-            "odr" => o.odr_off = value_of(&mut i).as_deref() == Some("off"),
-            "no-odr-check" => o.odr_off = true,
-            "keep-mason-meta" => o.keep = true,
-            _ => {}
-        }
-        i += 1;
+/// Stage 4's options from §3.2a's reader.
+fn options(o: &Options) -> Opts {
+    Opts {
+        table: match o.odr_table {
+            OdrTable::Off => Table::Off,
+            OdrTable::Exported => Table::Exported,
+            OdrTable::Full => Table::Full,
+        },
+        odr_off: o.odr_off,
+        keep: o.keep_mason_meta,
     }
-    o
 }
 
 /// A live relocatable file, with its units and its definitions.
@@ -254,14 +233,14 @@ struct Note<'a> {
     desc: &'a [u8],
 }
 
-/// Stage 4's rules over one output. `args` are the link's words when
-/// known; `line` the line stage 3 read from them.
+/// Stage 4's rules over one output. `opts` are the line's options when
+/// known (§3.2a); `line` the line stage 3 read from its words.
 #[allow(clippy::too_many_lines, clippy::similar_names)] // one rule after another, in §13.2's order
 pub(crate) fn check(
     image: &Image<'_>,
     objs: &[Obj<'_>],
     map: &Map,
-    args: Option<&[String]>,
+    opts: Option<&Options>,
     line: Option<&Line>,
     cov: &mut MetaCoverage,
 ) -> Vec<Finding> {
@@ -269,7 +248,7 @@ pub(crate) fn check(
     let mortar = map.format == Format::Mortar;
     // A reference linker has none of mortar's options.
     let opts = if mortar {
-        args.map(options)
+        opts.map(options)
     } else {
         Some(Opts { table: Table::Off, odr_off: false, keep: false })
     };
@@ -390,7 +369,7 @@ pub(crate) fn check(
             ));
         }
         if opts.is_some_and(|o| o.table != Table::Off) {
-            pm3(image, objs, map, args.is_some(), line, &mut f);
+            pm3(image, objs, map, opts.is_some(), line, &mut f);
         }
         return f;
     };
@@ -464,7 +443,7 @@ pub(crate) fn check(
         let base = sh.sh_addr + n.at as u64;
         full_note(n.desc, base, image, &live, &carried, cov, &mut f);
     }
-    pm3(image, objs, map, args.is_some(), line, &mut f);
+    pm3(image, objs, map, opts.is_some(), line, &mut f);
     f
 }
 
