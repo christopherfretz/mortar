@@ -22,8 +22,9 @@ the series):
   ld lld mold GNU ld, ld.lld, mold: full links, each to a fresh path
 With --quiet L each run waits until the 1-minute load is under L; the load
 at each run's start is recorded.
-After each update series the output is compared byte for byte with a plain
-link of the same (edited) inputs. Files the script writes in DIR are named
+After each update series the output is compared byte for byte with an
+incremental-mode full link of the same (edited) inputs (its layout has the
+slack a state's layout has, WP-062; a plain link's has none). Files the script writes in DIR are named
 `floor.*`; it removes the ones it creates for the other linkers.
 """
 
@@ -175,12 +176,14 @@ def main():
         r["phases"] = {k: summary([x["phases"].get(k, 0.0) for x in runs]) for k in names}
         if name in ("copy", "in-place"):
             r["first"] = runs[-1]["first"]
-            w, p, err, st = timed([o.mortar] + line("floor.check"), o.dir)
+            w, p, err, st = timed([o.mortar] + line("floor.check") + ["--incremental=full"], o.dir)
+            if st:
+                sys.exit(f"incr-floor: the reference link failed:\n{err}")
             same = open(os.path.join(o.dir, "floor.incr"), "rb").read() == \
                 open(os.path.join(o.dir, "floor.check"), "rb").read()
-            r["identical_to_plain"] = same
+            r["identical_to_full"] = same
             if not same:
-                sys.exit(f"incr-floor: {name}: the update differs from the plain link")
+                sys.exit(f"incr-floor: {name}: the update differs from the incremental-mode full link")
         results[name] = r
         ph = " ".join(f"{k}={v['median']:.1f}" for k, v in r["phases"].items())
         print(f"{name}: wall median {r['wall']['median'] * 1000:.1f} ms "
@@ -190,8 +193,8 @@ def main():
               f"n={o.runs} | load at each run {r['load']['min']:.1f}-{r['load']['max']:.1f} | {load}", flush=True)
         if ph:
             print(f"  phases (median ms): {ph}", flush=True)
-        if "identical_to_plain" in r:
-            print(f"  {r['first']}; identical to a plain link: {r['identical_to_plain']}", flush=True)
+        if "identical_to_full" in r:
+            print(f"  {r['first']}; identical to an incremental-mode full link: {r['identical_to_full']}", flush=True)
     if o.json:
         with open(o.json, "w") as f:
             json.dump(results, f, indent=1)
