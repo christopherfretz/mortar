@@ -832,8 +832,35 @@ from the MOVZ/MOVN high half and the MOVK low half.
   per record (GOT pair, ordinary `CALL26`). Anything else is R1, on the
   call as well.
 
-**Not judged** (`tls`): an undefined weak TLS symbol (glibc's
-`_nl_current_LC_*`, referenced by `setlocale.o` through IE); a non-TLS
+**A thread-local undefined weak** (AArch64, WP-092b; glibc's
+`_nl_current_LC_*`, referenced by `setlocale.o` and `uselocale.o`
+through IE): in a static output, `S + A` is judged by the TP and DTP
+offsets its linker writes for it, which no ABI text fixes (the gABI,
+the TLS ABI and AAELF64 do not say what an undefined weak TLS symbol's
+offset is; GNU ld warns "Weak TLS is implementation defined"), so per
+map format, from the references measured (a64.md §7's experiment, and
+WP-092b's runs of a static glibc `setlocale` program):
+
+- **T1w** mortar and lld: `TPREL(S + A) = DTPREL(S + A) = A` (a64.md
+  §7 "thread-local `weak0`": the TP offset 0, no `PT_TLS` needed). The
+  IE GOT entry holds `A`, or IE is relaxed to LE with `T = A` (W9);
+  TLSDESC and GD are judged with the same `T`.
+- **T2w** GNU ld and mold: the formula with `S = 0` against `PT_TLS`
+  (`TPREL(A) = A − tls.start + TCB`) for IE's GOT entry and TLSDESC;
+  mold's LE too. GNU ld's LE (`0`, the addend dropped) and both linkers'
+  GD (a module/offset pair) stay `tls`, as does any reference without a
+  `PT_TLS`.
+- In an output with `PT_DYNAMIC` the symbol stays `tls` (a64.md D-25:
+  mortar refuses it there; lld adds a `TLS_TPREL64`).
+
+On x86-64 and i386 the same records were already judged (x64.md X-18,
+x86.md X86-23: 0 for mortar and lld, `TpRel(0)` for GNU ld and mold;
+§10.4's tables). The value a program computes is `TP + T`, never read
+by glibc (each access is guarded by the non-TLS weak
+`_nl_current_LC_<cat>_used`).
+
+**Not judged** (`tls`): an AArch64 thread-local undefined weak in the
+cases T2w and the dynamic bullet leave; a non-TLS
 type against a TLS symbol; a TLSDESC sequence kept for a dynamic loader;
 the TLS records of an output whose `PT_TLS` is unusable (S9).
 
@@ -841,7 +868,8 @@ Static PIE (`ET_DYN` with no `PT_INTERP`) is stage 3 (§12.4, WP-089): on
 the reference linkers its TLS takes the same forms and has no TLS
 dynamic relocation (P-D14 names one).
 
-Tests: `tests/tls.rs` (§9.1), `tests/mutation.rs
+Tests: `tests/tls.rs` (§9.1; T1w/T2w: `s4_7_undefined_weak_tls_initial_exec_is_judged`,
+per reference linker, with a code and a GOT-entry mutant), `tests/mutation.rs
 s9_2f_tls_mutations_are_found`.
 
 ### 4.8 IFUNC (stage 2, WP-028b)
@@ -2330,7 +2358,8 @@ P-E4 is then:
    rewriting must be the same on both sides: the TLS ones (W9-W13, GD to
    IE), the weak-branch ones (W4, W5), and X1-X4 in an `ET_EXEC` output
    (IN-2: "`GOTPCRELX` for a non-preemptible symbol in a non-PIC link";
-   see question 2);
+   ruled for v1, 2026-11-16: a static or other `ET_EXEC` output whose
+   distances would make them differ is refused, `incr.md` IN-2 item 4);
 3. a byte of a unit placed in both that differs between `X` and `F`
    outside the relocated ranges of its records (§6.3; on x86, also the
    bytes of an accepted rewriting's window) and outside the words a
@@ -2406,43 +2435,37 @@ non-allocated `merged` section (their references are checked by content
 on each side, §5.6); thunks' and patches' placement (only the values
 they carry); `.symtab`'s order of local symbols.
 
-**Questions for the spec** (`spec/incr.md` IN-2; each taken
-conservatively above):
+**Rulings** (the coordinator, 2026-11-16, on WP-092's questions; each
+rule above is as ruled):
 
-1. Local symbols of a moved section are renumbered: is `.symtab`
-   "the same symbols" as a multiset (the rule above) or the same order?
-2. `GOTPCRELX`: IN-2 lists it among the distance-dependent relaxations
-   and also says it must be the same for a non-preemptible symbol in a
-   non-PIC link. The rule above lets X1-X4 differ only in `ET_DYN`; a
-   static executable over 2 GiB, where X1 is not taken by distance, is
-   then refused (P-E4).
-3. `.eh_frame_hdr`'s table is sorted by location on each side (§6.4),
-   so its order may differ; the rule compares entries as a set.
-4. The build id: compared by length only. A `--build-id` style that
+1. `.symtab`'s locals are compared as a multiset (P-E3): yes.
+2. `GOTPCRELX`: X1-X4 may differ only in an `ET_DYN` output (P-E4 2):
+   the conservative reading, accepted for v1. A static executable whose
+   distances would make them differ (over 2 GiB, where X1 is not taken
+   by distance) is refused; `incr.md` IN-2 item 4 says so.
+3. `.eh_frame_hdr`'s table is compared as a set (P-E5): yes (each side
+   sorts it by location, §6.4).
+4. The build id is compared by length only (P-E1): yes; a style that
    hashes the output differs by design.
-5. `.gnu.hash`'s bloom filter, `.hash`, `.dynstr`: byte for byte, which
-   holds when `.dynsym` is the same in the same order; an update that
-   appends an export would be refused.
-6. `.eh_frame`'s CIEs are not compared by order (per-file CIEs); is the
-   CIE an FDE names part of "the same contribution"? Here: §6.4 judges
-   it against the input's on each side, which suffices for its content.
-7. File padding outside every section is required to be zero in `X`
-   (P-E6); IN-2 does not say what the bytes of a gap between segments
-   hold.
-8. A record neither side checks is P-E4 (the value is not seen). On a
-   real glibc static AArch64 pair this is 20 records of `setlocale.o`
-   (initial-exec loads of undefined weak TLS symbols, §4.7's `tls`
-   reason): every such pair is refused until the verifier judges them,
-   or IN-2 says such a field compares by its bytes.
-9. IN-2 item 5 lists `.eh_frame`'s records among the packed sections, so
-   a re-link with the files in another command-line order (R13's
-   "a.o main.o b.o", which its prototype accepted) is refused by
-   `.eh_frame`'s order even where `myset` agrees; R13's case 1 is
-   therefore the pair at other addresses in the same order (the IN-8
-   pair, or the model of `tests/equiv.rs`).
+5. `.gnu.hash`'s bloom filter, `.hash`, `.dynstr` byte for byte (P-E5):
+   accepted for v1 (static executables first); an update that appends
+   an export is refused.
+6. `.eh_frame`'s CIEs are not compared by order; §6.4 judges the CIE an
+   FDE names against the input's on each side: as written.
+7. File padding outside every section is zero in `X` (x86 code fill
+   inside an executable `PT_LOAD`, P-E6): as written.
+8. A record neither side checks is P-E4 1, and stays so. The 20 AArch64
+   records of static glibc's `setlocale.o` (initial-exec loads of
+   undefined weak TLS symbols) are now judged (§4.7 T1w, WP-092b): the
+   R13 pair is equivalent on all three targets.
+9. `.eh_frame`'s records are a packed section (IN-2 item 5): a re-link
+   with the files in another command-line order is refused by
+   `.eh_frame`'s order: as written. R13's case 1 is the pair at other
+   addresses in the same order.
 10. Two values whose identity sets meet only at a unit's end and the
-    next unit's start correspond (a label at an end is either); `F`
-    cannot say which it meant (identities, above).
+    next unit's start correspond: as written.
+11. IN-62's command is `cargo xtask plumb --equiv X.map F.map X F` (§8);
+    `incr.md` says so (WP-092b).
 
 Tests: `tests/equiv.rs` (§9.2 (q)).
 
@@ -2544,9 +2567,8 @@ Tests: `xtask/src/plumb.rs s8_arguments`, `s8_response_files`,
 cargo xtask plumb --equiv <X.map> <F.map> <X> <F>
 ```
 
-The equivalence check (§6.9; `spec/incr.md` IN-62 names it
-`mortar_plumb --equiv`: the verifier has no binary of its own, and this
-is that command). Both maps are mortar maps; their files are read once,
+The equivalence check (§6.9; `spec/incr.md` IN-62; the verifier has no
+binary of its own). Both maps are mortar maps; their files are read once,
 from the paths they give (relative to the current directory), and a
 file named by both maps is one input. It prints `X`'s findings, `F`'s
 findings (each prefixed with its side), the P-E findings and one summary
@@ -2785,8 +2807,11 @@ produce a finding that is not a recorded anomaly (`tests/mutation.rs`):
     placed definition, a global renamed, a global made local (P-E3); the
     `.init` byte (P-E4); a note's type (P-E5); a stray byte between
     sections (P-E6); a non-allocated unit made shorter (P-E6, P-E2);
-    AArch64 an undefined weak TLS initial-exec load neither side checks
-    (P-E4 1); x86-64 `GOTPCRELX` as `mov $S` (X4, `F`, GNU ld's map) and
+    AArch64 a GOT page no `LDR` pairs (`got-unpaired`, a record neither
+    side checks: P-E4 1, also for a GOT group's member judged after its
+    record); AArch64 an undefined weak TLS initial-exec load whose GOT
+    entry, mortar's `A` on both sides (T1w), is made 8 in `X` (`X`'s R4;
+    ACCEPTED before the mutation, `p_e4_undefined_weak_tls_initial_exec`); x86-64 `GOTPCRELX` as `mov $S` (X4, `F`, GNU ld's map) and
     as `lea` (X1, `X`) in an `ET_EXEC` output (P-E4 2); a `.got` word
     (P-E5); in the PIE pair a `.rela.dyn` addend, a `.dynamic` value, a
     `.dynstr` byte (P-E5) and a `.dynsym` entry's size (P-E3);
@@ -3013,9 +3038,23 @@ is judged by the input record's name.
 **The equivalence check** (WP-092, §6.9): 25 mutations of
 `src/equiv.rs` (a condition made `false`, a clause or a finding
 dropped), each run against `tests/equiv.rs` and the unit test; caught
-23. Survivors: the `.dynsym` name and `st_info` clauses (the tests
-change an entry's size only) and the `.eh_frame_hdr` entries (no pair
-here has an `.eh_frame_hdr`; the real pairs of the record do).
+23 (the `.dynsym` name and `st_info` clauses and the `.eh_frame_hdr`
+entries survived). WP-092b re-ran them (four patterns re-cut after
+`rustfmt`) with six more, over `src/equiv.rs` and `src/reloc.rs`, against
+`tests/equiv.rs`, the unit test and `tests/tls.rs
+s4_7_undefined_weak_tls_initial_exec_is_judged`: 31 mutations, caught
+29. The two former survivors are caught (`p_e5_dynamic_tables` mutates
+a `.dynsym` entry's `st_info` and `st_name`; `p_e5_eh_frame_hdr`, an
+AArch64 GNU ld pair with `--eh-frame-hdr`, a table entry). Survivors:
+
+- the locals of a thunk or patch passed over (P-E3): no test pair has a
+  thunk on one side only; the real AArch64 pair of WP-092's record §6
+  (two 63.5 MiB sections, a veneer in `X` only) fails without it;
+- a GOT group's member's outcome traced after its record (P-E4): an
+  equivalent mutant today, since `finish_got`'s outcomes other than the
+  traced `got-unpaired` are W2/W3 (which may differ) and findings
+  (which the side reports); a deferred outcome that must not differ
+  would catch it.
 
 ## 10. The reference linkers, observed
 

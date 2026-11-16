@@ -1252,6 +1252,24 @@ _start:
 	.hword wu - .
 ";
 
+/// An initial-exec load of an undefined weak TLS symbol (§4.7,
+/// thread-local `weak0`; glibc's `setlocale.o` pattern), with a `.tbss`
+/// of its own (GNU ld needs a `PT_TLS` for it).
+pub const WEAK_TLS_S: &str = r#"
+	.section .tbss,"awT",%nobits
+	.balign 8
+tv:	.space 8
+	.text
+	.globl _start
+_start:
+	adrp x1, :gottprel:tw
+	ldr x1, [x1, :gottprel_lo12:tw]
+	mov x0, #0
+	mov x8, #93
+	svc #0
+	.weak tw
+"#;
+
 /// A global and a local IFUNC of one resolver (§4.8): calls, ADRP+ADD,
 /// GOT pairs and data words to each. `_start` applies the IRELATIVE
 /// records between `__rela_iplt_start` and `__rela_iplt_end` itself (there
@@ -1421,6 +1439,7 @@ fn tls_cases(t: &Tools, scratch: &Scratch) -> Vec<Case> {
     w("tieregs.s", TLS_IE_REGS_S);
     w("gotw.s", GOT_LDR_W_S);
     w("weakprel.s", WEAK_PREL_S);
+    w("weaktls.s", WEAK_TLS_S);
     w("ehf.s", EH_FRAMES_S);
     w("ifs.s", IFUNC_S);
     w("ipick.c", IFUNC_PICK_C);
@@ -1470,6 +1489,7 @@ fn tls_cases(t: &Tools, scratch: &Scratch) -> Vec<Case> {
         ("tieregs.s", "tieregs.o"),
         ("gotw.s", "gotw.o"),
         ("weakprel.s", "weakprel.o"),
+        ("weaktls.s", "weaktls.o"),
         ("ehf.s", "ehf.o"),
         ("ifs.s", "ifs.o"),
         ("pstart.s", "pstart.o"),
@@ -1633,6 +1653,14 @@ fn tls_cases(t: &Tools, scratch: &Scratch) -> Vec<Case> {
             linkers: NOT_MOLD,
             driver: gcc_driver,
             objects: vec!["weakprel.o"],
+            flags: free.clone(),
+            per_linker: none,
+        },
+        Case {
+            name: "weak-tls-ie",
+            linkers: &Linker::ALL,
+            driver: gcc_driver,
+            objects: vec!["weaktls.o"],
             flags: free,
             per_linker: none,
         },
