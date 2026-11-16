@@ -187,6 +187,36 @@ fn frag_hash(link: &Link<'_, '_>, frag: FragId) -> Option<[u8; 16]> {
     Some(mortar_digest::l128(&buf))
 }
 
+/// What the dry run needs of the new link beyond its state
+/// ([`crate::delta::Extra`]): each section's index in its file, and the
+/// content hash of every fragment of its merged sections that have an
+/// output section.
+#[must_use]
+pub fn extra(link: &Link<'_, '_>) -> crate::delta::Extra {
+    let res = link.resolution;
+    let shndx =
+        res.sections.iter().map(|(id, _)| res.sh_index(id).map_or(0, |(_, i)| i.0)).collect();
+    let mut hashes: Vec<Option<Option<[u8; 16]>>> = vec![None; link.split.frags.len() as usize];
+    let mut frags = Vec::new();
+    for row in link.split.merge_of.iter() {
+        let Some(out) = link.assignment.out(row.section) else { continue };
+        let mut seen = Vec::new();
+        for p in row.pieces.slots() {
+            let Some(&frag) = link.split.piece_frag.get(p) else { continue };
+            let Some(slot) = hashes.get_mut(frag.0 as usize) else { continue };
+            let h = *slot.get_or_insert_with(|| frag_hash(link, frag));
+            // A fragment whose bytes cannot be read is no fragment the
+            // delta can find: the section counts as moved (an unknown hash).
+            let h = h.unwrap_or([0xff; 16]);
+            seen.push(h);
+        }
+        seen.sort_unstable();
+        seen.dedup();
+        frags.extend(seen.into_iter().map(|h| (row.section.0, out.0, h)));
+    }
+    crate::delta::Extra { shndx, frags }
+}
+
 fn anchor_row(strings: &mut Strings, anchor: Anchor<'_>) -> (u8, Str) {
     match anchor {
         Anchor::None => (0, Str::default()),
@@ -196,7 +226,7 @@ fn anchor_row(strings: &mut Strings, anchor: Anchor<'_>) -> (u8, Str) {
     }
 }
 
-struct Symbols<'k, 's> {
+pub(crate) struct Symbols<'k, 's> {
     keys: &'k Keys<'s>,
     inputs: &'k Inputs<'s>,
     rows: Vec<SymbolRow>,
@@ -204,7 +234,7 @@ struct Symbols<'k, 's> {
 }
 
 impl Symbols<'_, '_> {
-    fn row(&mut self, strings: &mut Strings, key: SymKey) -> Result<u32, String> {
+    pub(crate) fn row(&mut self, strings: &mut Strings, key: SymKey) -> Result<u32, String> {
         if let Some(&row) = self.index.get(&key) {
             return Ok(row);
         }
@@ -249,6 +279,7 @@ pub fn capture(
     layout: &Layout,
     strings: &mut Strings,
     file_hash: &dyn Fn(FileId) -> Option<[u8; 16]>,
+    arch: &dyn mortar_arch::Arch,
 ) -> Result<State, String> {
     let slots = &layout.slots;
     let p = &layout.placement;
@@ -497,6 +528,7 @@ pub fn capture(
         bits |= layout_bits::TLS_LD;
     }
     s.layout.bits = bits;
+    crate::tables::fill(link, &mut syms, strings, &mut s, arch)?;
     s.symbols = syms.rows;
     if !strings.fits() {
         return Err("the string pool exceeds 4 GiB".into());

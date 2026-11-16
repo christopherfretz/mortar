@@ -63,6 +63,10 @@ pub struct Session {
     reason: String,
     /// The state's target (`META` machine and class), when it was read.
     recorded_target: Option<(u16, u8)>,
+    /// The state read, kept for the dry run of `--incremental-report`
+    /// (WP-063) when it passed every check; `None` otherwise, so that a
+    /// link without the report keeps nothing.
+    old: Option<State>,
     start: Instant,
 }
 
@@ -238,17 +242,27 @@ pub fn start(parsed: &Parsed, cwd: &Path, out_path: &Path, diagnostics: &Collect
     }
     let mountinfo = std::fs::read_to_string("/proc/self/mountinfo").unwrap_or_default();
     let stamps = stamp::stamps(&dirs, &mountinfo);
-    let (reason, recorded_target) = if mode == IncrementalMode::Full {
+    let (reason, recorded_target, old) = if mode == IncrementalMode::Full {
         // `--incremental=full` links from scratch whatever the state says.
-        ("full requested".to_owned(), None)
+        ("full requested".to_owned(), None, None)
     } else {
         check(&state_path, plan_hash, out_path)
     };
+    let old = old.filter(|_| report.is_some() && reason == "update-not-implemented");
     if update {
         emit(diagnostics, 2, Diagnostic::error(Kind::IncrementalUpdateFailed { reason }));
         return Start::Failed;
     }
-    Start::Full(Session { state_path, report, plan_hash, stamps, reason, recorded_target, start })
+    Start::Full(Session {
+        state_path,
+        report,
+        plan_hash,
+        stamps,
+        reason,
+        recorded_target,
+        old,
+        start,
+    })
 }
 
 /// The link's target as `META` records it: `e_machine` and the ELF class.
@@ -286,21 +300,32 @@ fn clash(path: &Path, named: &[(&Path, String)]) -> Option<String> {
 /// read and validated, the plan, the updating flag, the output; with the
 /// state's target, which the link's is compared with once it is known
 /// (`Session::finish`).
-fn check(state_path: &Path, plan_hash: [u8; 16], out_path: &Path) -> (String, Option<(u16, u8)>) {
+fn check(
+    state_path: &Path,
+    plan_hash: [u8; 16],
+    out_path: &Path,
+) -> (String, Option<(u16, u8)>, Option<State>) {
     let bytes = match std::fs::read(state_path) {
         Ok(b) => b,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return ("no-state".to_owned(), None),
-        Err(e) => return (format!("state-corrupt: cannot read the state: {e}"), None),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return ("no-state".to_owned(), None, None);
+        }
+        Err(e) => return (format!("state-corrupt: cannot read the state: {e}"), None, None),
     };
     let state = match format::decode(&bytes, crate::VERSION.as_bytes()) {
         Ok(s) => s,
-        Err(e) => return (format!("{}: {}", e.reason(), e.detail()), None),
+        Err(e) => return (format!("{}: {}", e.reason(), e.detail()), None, None),
     };
     let target = Some((state.meta.machine, state.meta.class));
-    (check_state(&state, plan_hash, out_path), target)
+    (check_state(&state, plan_hash, out_path), target, Some(state))
 }
 
 fn check_state(state: &State, plan_hash: [u8; 16], out_path: &Path) -> String {
+    // A version-1 state is read (its tables replay) but has no delta
+    // tables (WP-063): an update cannot use it (§7 `state-version`).
+    if state.format == 1 {
+        return "state-version: format version 1 has no delta tables".to_owned();
+    }
     if state.plan_hash != plan_hash {
         return "options-changed".to_owned();
     }
@@ -428,6 +453,7 @@ impl Session {
         diagnostics: &Collector,
     ) -> String {
         let mut stderr = String::new();
+        let mut dry = None;
         // §7: the target is part of the options; a state of another
         // target is `options-changed`, ahead of the output's reasons.
         if let Some(recorded) = self.recorded_target
@@ -444,16 +470,34 @@ impl Session {
                     option: "a shared object input (a dynamic executable)".to_owned(),
                 }),
             );
-        } else if let Err(why) = self.write_state(f, store, written, cwd, out_path) {
-            let _ = writeln!(stderr, "incremental: no state written: {why}");
+        } else {
+            match self.state(f, store, written, cwd) {
+                Ok(state) => {
+                    if let Some(old) = self.old.take() {
+                        dry = Some(dry_run(&old, &state, f));
+                    }
+                    if let Err(why) = self.write_state(state, out_path, written) {
+                        let _ = writeln!(stderr, "incremental: no state written: {why}");
+                    }
+                }
+                Err(why) => {
+                    let _ = std::fs::remove_file(&self.state_path);
+                    let _ = writeln!(stderr, "incremental: no state written: {why}");
+                }
+            }
         }
-        let line = format!(
-            "incremental: full ({}) changed={} refilled=0 bytes={} time={:.3}\n",
+        let (changed, refilled) = dry
+            .as_ref()
+            .map_or((f.inputs.files.len().saturating_sub(1) as usize, 0), |d| (d.changed, d.refilled));
+        let mut line = format!(
+            "incremental: full ({}) changed={changed} refilled={refilled} bytes={} time={:.3}\n",
             self.reason,
-            f.inputs.files.len().saturating_sub(1),
             written.file_size,
             self.start.elapsed().as_secs_f64() * 1e3
         );
+        if let Some(d) = &dry {
+            line.push_str(&d.lines);
+        }
         match &self.report {
             Some(Report::Stderr) => stderr.push_str(&line),
             Some(Report::File(path)) => {
@@ -474,16 +518,8 @@ impl Session {
         stderr
     }
 
-    fn write_state(
-        &self,
-        f: &Front<'_>,
-        store: &Store,
-        written: &Written,
-        cwd: &Path,
-        out_path: &Path,
-    ) -> Result<(), String> {
-        let result = self.state(f, store, written, cwd).and_then(|state| {
-            let state = bind(state, out_path, written)?;
+    fn write_state(&self, state: State, out_path: &Path, written: &Written) -> Result<(), String> {
+        let result = bind(state, out_path, written).and_then(|state| {
             write_atomically(&self.state_path, &format::encode(&state))
                 .map_err(|e| format!("cannot write {}: {e}", self.state_path.display()))
         });
@@ -511,7 +547,9 @@ impl Session {
         };
         let keys = Keys::new(&link)?;
         let mut strings = Strings::default();
-        let file_hash = |id: FileId| -> Option<[u8; 16]> {
+        // IN-24: the files' and members' hashes, one task per file on the
+        // link's pool (WP-063; a member is a range of its archive).
+        let hash_of = |id: FileId| -> Option<[u8; 16]> {
             let b = f.inputs.files.get(id)?.bytes?;
             let blob = store.blob_of_model(b.blob)?;
             let h = if b.base == 0 && b.len == store.len(blob) {
@@ -521,8 +559,17 @@ impl Session {
             };
             Some(hash_bytes(h))
         };
+        let hashes = f.pool.map(f.inputs.files.len() as usize, |i| hash_of(FileId(i as u32)));
+        let file_hash = |id: FileId| hashes.get(id.0 as usize).copied().flatten();
         let mut state =
-            mortar_incr::capture::capture(&link, &keys, &f.layout, &mut strings, &file_hash)?;
+            mortar_incr::capture::capture(
+                &link,
+                &keys,
+                &f.layout,
+                &mut strings,
+                &file_hash,
+                f.arch.get(),
+            )?;
         state.plan_hash = self.plan_hash;
         for s in &self.stamps {
             state.stat.push(StatRow {
@@ -592,6 +639,51 @@ impl Session {
         }
         state.strings = strings.into_bytes();
         Ok(state)
+    }
+}
+
+/// The dry run's outcome (WP-063).
+struct DryRun {
+    changed: usize,
+    refilled: usize,
+    lines: String,
+}
+
+/// Change detection, the delta and the refill set from the state read
+/// (`old`) to the full link's (`new`), as `delta` lines (`docs/cli.md`
+/// §3.13).
+fn dry_run(old: &State, new: &State, f: &Front<'_>) -> DryRun {
+    let t0 = Instant::now();
+    let changes = mortar_incr::detect::detect(old, new);
+    let t1 = Instant::now();
+    let link = Link {
+        inputs: &f.inputs,
+        resolution: &f.resolution,
+        assignment: &f.assignment,
+        split: &f.merge.split,
+    };
+    let extra = mortar_incr::capture::extra(&link);
+    let delta = mortar_incr::delta::compute(
+        old,
+        new,
+        &changes,
+        &extra,
+        mortar_incr::delta::Drop::NONE,
+    );
+    let t2 = Instant::now();
+    let mut lines = mortar_incr::delta::report(old, new, &changes, &delta, &extra);
+    lines.truncate(lines.len().saturating_sub("delta end\n".len()));
+    let _ = writeln!(
+        lines,
+        "delta time detect={:.3} delta={:.3}",
+        (t1 - t0).as_secs_f64() * 1e3,
+        (t2 - t1).as_secs_f64() * 1e3
+    );
+    lines.push_str("delta end\n");
+    DryRun {
+        changed: changes.new_files.iter().filter(|x| x.1.refills_all()).count(),
+        refilled: delta.units.len(),
+        lines,
     }
 }
 
