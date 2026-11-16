@@ -108,30 +108,35 @@ $G/crtendS.o $S/crtn.o
   `<first shared object>: unsupported feature: dynamic executable without
   -dynamic-linker`.
 
-### 2.3 Options on the lines and their status today
+### 2.3 Options on the lines: their status then and now
 
-Statuses of `docs/status/options.md` (472 rows) on a mortar built from
-main after WP-027e (the shared release binary predates WP-027e and still
-refuses `--push-state`, `-z now`, `-E` and `-rpath`).
+"Then": statuses of `docs/status/options.md` (472 rows) on a mortar built
+from main after WP-027e, when this census was taken (the shared release
+binary of that day predated WP-027e and still refused `--push-state`,
+`-z now`, `-E` and `-rpath`). "Now": re-measured by WP-056 on main
+74feb7f with `cargo xtask census` (§2.1's drivers, every line of AArch64
+and x86-64 linked, run and verified; `spec/landed/dyn/WP-056.md`).
 
-| option | lines of 426 | status today | M2 status (rule) |
+| option | lines of 426 | status then | status now (WP-056) |
 |---|---|---|---|
-| `-dynamic-linker` | 426 | **refused** | supported (D-31) |
+| `-dynamic-linker` | 426 | **refused** | supported (D-31; WP-053) |
 | `-pie` | 404 | **refused** | supported (D-1) |
-| `--hash-style=gnu` | 426 | noop "dynamic is refused" | supported; `sysv`/`both`/`none` refused (D-20, R-C1) |
+| `--hash-style=gnu` | 426 | noop "dynamic is refused" | supported; `sysv`/`both`/`none` refused by name (D-20, R-C1): the 30 `hash-sysv`/`hash-both` lines |
 | `--as-needed`, `--no-as-needed` | 282, 155 | noop "shared inputs refused" | supported (D-11) |
 | `--push-state`, `--pop-state` | 57 | supported | supported (they carry the as-needed state) |
-| `--build-id` | 426 | partial (bare form) | partial; the note is in the first `PT_LOAD` after `.interp` |
+| `--build-id` | 426 | partial (bare form) | partial (`=md5`, `=uuid` refused); the note is in the first `PT_LOAD` after `.interp` |
 | `--eh-frame-hdr` | 426 | supported | supported; off unless given (GNU ld, lld; Q3, ruled) |
-| `-export-dynamic`/`-E` | 22 | noop | supported (D-21) |
-| `-rpath` | 22 | noop | supported (D-30 row 2); `--enable-new-dtags` default |
-| `-z now` | 22 | supported (static) | supported (D-49) |
-| `-z relro` | 22 | supported | supported; RELRO is the default (all three) |
+| `-export-dynamic`/`-E` | 22 | noop | supported (D-21); refused by name in a static-pie (D-1, WP-056 §3.1) |
+| `--export-dynamic-symbol` | 0 | supported (matched literally) | supported, by name and by glob (resolve.md §4.2; WP-056 §2); no effect in a static-pie |
+| `-rpath` | 22 | noop | supported (D-30 row 2); `--enable-new-dtags` default, `--disable-new-dtags` writes `DT_RPATH` |
+| `-z now` | 22 | supported (static) | supported (D-49), PIE and `-no-pie` |
+| `-z relro`, `-z norelro` | 22, 0 | supported | supported; RELRO is the default (all three); `-z norelro` per D-33, D-42, D-49 |
+| `-z text` | 0 | supported | supported (the default, D-47) |
 | `-Bdynamic` (`-call_shared`, `-dy`) | 9 | **refused** | supported: the inverse of `-Bstatic` |
 | `-Bstatic` | 9 | supported | supported; a shared object found under it is never chosen |
 | `-init`, `-fini` | 0 | refused | supported (D-30) |
 | `--no-copy-dt-needed-entries` | 0 | — | noop; the positive form refused (D-15) |
-| `--whole-archive` | 12 (asan) | refused | out of M2 |
+| `--whole-archive` | 12 (asan) | refused | refused: out of M2 |
 | `-plugin`, `-plugin-opt`, `-X`, `-EL`, `-m`, `--sysroot=/`, `--fix-cortex-a53-843419` | | supported / noop | unchanged |
 
 No driver on this host passes `-z relro`, `-z now`, `-z text`,
@@ -251,9 +256,9 @@ be a script, `INPUT(libc++.so.1 -lc++abi)`). mortar's Mason lane
 the C++ target is met, and the static and dynamic suites then run side
 by side, which is M2's end-to-end acceptance on AArch64.
 
-### 2.7 What is refused today, ranked
+### 2.7 What is refused, ranked: then and now
 
-By lines blocked (of 426):
+Then (when the census was taken), by lines blocked (of 426):
 
 1. `-dynamic-linker` (option): 426.
 2. A dynamic output itself (shared-object inputs, `.dynamic`, every
@@ -266,9 +271,24 @@ By lines blocked (of 426):
 6. Out of M2: `--whole-archive` (12, asan), LLVM bitcode and GCC LTO
    objects (21, `-flto`).
 
-The noop rows whose reason is "dynamic is refused" (`--hash-style`,
-`--as-needed`, `--no-as-needed`, `-E`, `-rpath`) are wrong the moment
-items 1-3 lift: each becomes supported in the same package (WP-M2-CLI).
+The noop rows whose reason was "dynamic is refused" (`--hash-style`,
+`--as-needed`, `--no-as-needed`, `-E`, `-rpath`) became supported with
+items 1-3 (WP-M2-CLI).
+
+Now (WP-056, `cargo xtask census`, mortar of main 74feb7f): of the 289
+AArch64 and x86-64 lines, 237 link, run as GNU ld's and are verifier
+clean (3 of them asan under qemu, failing alike with GNU ld's); the rest
+are refused by name, each by a rule that puts it out of M2:
+
+1. `--hash-style=sysv`, `--hash-style=both`: 30 (D-20).
+2. LTO objects (`GCC LTO object`, `LLVM bitcode`): 14.
+3. `--whole-archive` (Clang's asan runtime): 8; GNU ld cannot link these
+   lines either on this host.
+
+The 137 i686 lines stay refused (`dynamically linked output on i386`;
+M4). Of the variations a real build adds (`x-` in the census lane),
+`-static-pie --export-dynamic` is refused by name (D-1; WP-056 §3.1).
+
 ## 3. Inventory of what the specs already say
 
 Read at 7bfe1af. Status: **ok** complete and consistent; **unmeasured**
@@ -364,7 +384,7 @@ in E-dynamic (108 outputs: C, C++, Fortran hello × PIE, `-no-pie`,
 | `PT_PHDR` | no | yes | yes | no (GNU ld; lld and mold write one; layout L-67 "iff `PT_INTERP`") |
 | `.dynamic`, `PT_DYNAMIC`, `_DYNAMIC` | no | yes | yes | yes |
 | `DT_NEEDED`, versions | no | yes | yes | no (a shared input is refused, input §8.4) |
-| `.dynsym` | none | D-21 | D-21 | the null entry only, unless `--export-dynamic` [M4] |
+| `.dynsym` | none | D-21 | D-21 | the null entry only: `--export-dynamic` is refused by name [M4], `--export-dynamic-symbol` accepted with no effect (WP-056 measured exports from a static-pie useless; §13.1) |
 | `DT_DEBUG` | — | yes | yes | yes (all three) |
 | `DT_FLAGS_1` | — | `DF_1_NOW` under `-z now` | `DF_1_PIE` (+ `DF_1_NOW`) | `DF_1_PIE` (+ `DF_1_NOW` under `-z now`: all three references; WP-052) |
 | `RELATIVE` | never | never (absolute values are final) | every absolute word (GOT slots included) of a non-preemptible target that is an address of the executable; never one of an absolute symbol (`SHN_ABS`: the word holds the value, D-46 row `Abs`; GNU ld's AArch64 record there is A30, §13.2) | same as `Pie` |
@@ -865,7 +885,16 @@ x86.md; **a type not listed is unfillable**:
 - A **writable place** is a place whose output section has `SHF_WRITE`
   after layout.md's section rules (known from the section mapping,
   before addresses); RELRO sections count as writable (the loader writes
-  them before `mprotect`), `.text` and `.rodata` do not.
+  them before `mprotect`), `.text` and `.rodata` do not. The input
+  section's own flags never decide: a read-only input section in an
+  output section that another input makes writable (layout L-50, the OR
+  of the inputs' flags) is a writable place, and its words get records
+  (D-46). Before WP-056 mortar judged the input section (a refusal where
+  this rule allows a record; WP-083 finding 39); test
+  `writable-place-output`. GNU ld and mold judge the output section
+  (GNU ld then writes the writable `.rodata` into an RWX segment with no
+  `PT_GNU_RELRO`, mold sets `DT_TEXTREL`); lld judges the input section
+  and refuses the PIE (§13.1).
 - A **branch opcode** (x86-64 and i386 `PC32`, whose type alone does not
   say): the bytes before the place are `E8` (call) or `E9` (jmp) at
   offset −1, or `0F 80`…`0F 8F` (jcc rel32) at offset −2, inside the same
@@ -1542,6 +1571,10 @@ unchanged. Every `P-D` id this spec cites is that section's.
 | `.dynsym` unhashed block order | hash order | first appearance | library index | `SymbolId` (D-22) |
 | Bloom words, buckets | own formula | D-26 | own | lld's (D-26) |
 | `Vernaux` layout | interleaved | headers first | headers first | interleaved (D-27; elflint) |
+| writable place (D-25) of a read-only input section in a writable output section | the output section: links (RWX segment, no `PT_GNU_RELRO`) | the input section: refuses the PIE ("recompile with -fPIC") | the output section: links (`DT_TEXTREL`, A24) | the output section; records, RELRO kept (D-25, WP-056) |
+| `--export-dynamic` in a static-pie | exports every global (x86-64: the program dies at start-up) | exports every global | exports every global | refused by name (D-1); the exports are useless: a library the program `dlopen`s does not bind to them and `dlsym(RTLD_DEFAULT)` does not find them (WP-056, all three) |
+| `--export-dynamic-symbol` in a static-pie | exports the name | exports the name | exports the name | accepted, no effect: `.dynsym` stays the null entry (D-1, P-D14) |
+| `--export-dynamic-symbol=GLOB` | glob | glob | glob | glob (resolve.md §4.2; WP-056 fixed a literal match) |
 | `.gnu.version_r` align | 8 | 4 | 4 | 4 (D-34) |
 | `IRELATIVE` in a PIE | last of `.rela.plt` | end of `.rela.dyn` | end of `.rela.dyn` | GNU ld's (D-41) |
 | `.rela.dyn` non-`RELATIVE` order | offset, `COPY` last | (sym, offset) | (sym, offset) | (sym, offset) (D-40) |

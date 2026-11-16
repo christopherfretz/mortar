@@ -262,7 +262,7 @@ fn walk(dir: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> {
 }
 
 /// Builds the workspace's mortar binary and returns its path.
-fn build_mortar() -> Result<PathBuf, String> {
+pub fn build_mortar() -> Result<PathBuf, String> {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let mut command = Command::new(cargo);
     command.args(["build", "--quiet", "--package", "mortar", "--bin", "mortar"]);

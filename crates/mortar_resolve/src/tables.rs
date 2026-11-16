@@ -29,6 +29,7 @@ use mortar_elf::{SectionIndex, SymbolIndex, SymbolSection, SymbolTable};
 use crate::index::HashIndex;
 use crate::options::{
     Entry, MentionGroup, Named, Options, Output, SharedLink, SharedMention, ShlibUndefined,
+    glob_match, is_glob,
 };
 use crate::problem::{DefPlace, MalformedSymbol, Problem, What};
 use crate::resolve::{Def, Resolved, flags, resolve_steps};
@@ -831,7 +832,17 @@ fn shared_link(
     } else {
         ShlibUndefined::Error
     };
+    // resolve.md §4.2: each key matching the glob (a value without a
+    // wildcard names its key; a glob is matched against the unversioned
+    // keys' names).
     let mut export_symbols: Vec<SymbolId> = export.iter().filter_map(|n| n.key.get()).collect();
+    let globs: Vec<&[u8]> = export.iter().map(|n| &*n.name).filter(|p| is_glob(p)).collect();
+    if !globs.is_empty() {
+        export_symbols.extend((0..view.keys()).map(SymbolId).filter(|&k| {
+            let (name, version) = view.key_name(k);
+            version.is_none() && globs.iter().any(|p| glob_match(p, name))
+        }));
+    }
     export_symbols.sort_unstable();
     export_symbols.dedup();
     SharedLink {
