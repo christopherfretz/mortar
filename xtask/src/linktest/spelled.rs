@@ -166,10 +166,10 @@ pub fn link_lines(dir: &Path) -> Result<Vec<Vec<String>>, String> {
     for file in files {
         let text = std::fs::read_to_string(&file.path)
             .map_err(|e| format!("cannot read '{}': {e}", file.path.display()))?;
-        let test = format::parse(&text).map_err(|errors| {
+        let parsed = format::parse(&text).map_err(|errors| {
             format!("'{}' does not parse ({} errors)", file.name, errors.len())
         })?;
-        for step in &test.steps {
+        for step in &parsed.steps {
             if let StepKind::Link(link) = &step.kind {
                 let args: Vec<String> = link
                     .args
