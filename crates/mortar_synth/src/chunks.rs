@@ -76,6 +76,11 @@ pub enum SynthKind {
     /// [`crate::NoteMasonPlan`]. After `.bss.rel.ro` so every chunk keeps
     /// its id.
     NoteMason = 26,
+    /// WP-076: `.mason.meta`, the live inputs' Mason units kept for tools
+    /// (`spec/meta.md` MT-32; `--keep-mason-meta`), non-allocated, planned
+    /// by the front from `mortar_odr::kept_units` as
+    /// [`crate::MasonMetaPlan`]. Last, so every chunk keeps its id.
+    MasonMeta = 27,
 }
 
 /// The section header fields of a synthetic chunk that do not depend on
@@ -137,6 +142,7 @@ impl SynthKind {
             Self::DynBss => b".dynbss",
             Self::BssRelRo => b".bss.rel.ro",
             Self::NoteMason => b".note.mason",
+            Self::MasonMeta => b".mason.meta",
         }
     }
 
@@ -160,6 +166,9 @@ impl SynthKind {
             Self::NoteGnuBuildId => h(SHT_NOTE, SHF_ALLOC, 4, 0),
             // odr.md O-52: alignment 8 in both classes.
             Self::NoteMason => h(SHT_NOTE, SHF_ALLOC, 8, 0),
+            // meta.md MT-32: `SHT_PROGBITS`, no flags, alignment 8 (MT-1's,
+            // without `SHF_EXCLUDE`).
+            Self::MasonMeta => h(SHT_PROGBITS, 0, 8, 0),
             // S-69: SHF_INFO_LINK, sh_info `.got.plt`.
             Self::RelaPlt => {
                 let (t, e) = rel_form(class, rel);
@@ -246,6 +255,13 @@ mod tests {
             assert!(m4.header(Class::Elf64, false).is_none());
         }
         assert_eq!(SynthKind::BssRelRo.name(false), b".bss.rel.ro");
+        // meta.md MT-32 (WP-076): `.mason.meta` is last, non-allocated.
+        let m = h(SynthKind::MasonMeta, Class::Elf32);
+        assert_eq!(
+            (m.name, m.sh_type, m.flags, m.align),
+            (&b".mason.meta"[..], SHT_PROGBITS, 0, 8)
+        );
+        assert!(SynthKind::MasonMeta > SynthKind::NoteMason);
         assert!(SynthKind::DynBss > SynthKind::Comment && SynthKind::BssRelRo > SynthKind::DynBss);
         let ids = chunk_ids(ChunkId(4), &[(SynthKind::Comment, 9), (SynthKind::Shstrtab, 3)]);
         assert_eq!(ids.unwrap()[..], [(ChunkId(4), 3), (ChunkId(5), 9)]);

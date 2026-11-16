@@ -6,12 +6,14 @@
 //!
 //! WP-072: the foreign checks and the switches; WP-073: the record
 //! checks; WP-075: the check against shared-object inputs (O-24) and the
-//! `.note.mason` table's rows (O-50).
+//! `.note.mason` table's rows (O-50); WP-076: O-23 (`archives`), `=full`
+//! and `--keep-mason-meta` (`kept`).
 #![forbid(unsafe_code)]
 
 pub mod archives;
 pub mod dynamic;
 pub mod foreign;
+pub mod kept;
 pub mod records;
 pub mod register;
 
@@ -24,6 +26,7 @@ use mortar_diag::{Diagnostic, Key};
 
 pub use crate::dynamic::{FullRows, Output, TableRow};
 use crate::foreign::{Checks, Counts};
+pub use crate::kept::kept_units;
 use crate::records::Switches;
 use crate::register::Check;
 /// O-51's row and O-52's note encoder, for the front that writes the table.
@@ -124,10 +127,11 @@ pub fn switches(odr: &Odr) -> Switches {
 }
 
 /// Whether the link reads Mason containers: a record check is on
-/// (`spec/meta.md` MT-42, O-42). The store's `containers` switch.
+/// (`spec/meta.md` MT-42, O-42), or `--keep-mason-meta` copies them
+/// (MT-32, in every mode). The store's `containers` switch.
 #[must_use]
 pub fn reads_containers(odr: &Odr) -> bool {
-    switches(odr).any() || Check::Table.runs(odr) || Check::SharedInputs.runs(odr)
+    switches(odr).any() || Check::Table.runs(odr) || Check::SharedInputs.runs(odr) || odr.keep_meta
 }
 
 /// O-44's line.

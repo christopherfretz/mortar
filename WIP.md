@@ -13,6 +13,14 @@ Done:
   `odr_dynamic.rs::full_table_in_a_dynamic_executable`,
   `tests/link/dyn/odr/o50-full{,-input}.test`, mutation tests in table.rs.
 
+- `--keep-mason-meta`: SynthKind 27 `.mason.meta` (PROGBITS, flags 0,
+  align 8), `mortar_odr::kept_units`, refusal of a copied non-container
+  `.mason.meta`, incremental falls back; tests `keep_meta.rs`,
+  `odr_records.rs::{the_kept_section_of_mutated_containers,
+  keep_refuses_a_copied_section_of_the_name}`, link tests
+  `tests/link/{odr,dyn/odr}/mt32-keep-meta.test`. Strip tools measured
+  (keep_meta.rs::what_the_strip_tools_do).
+
 Next:
-- `--keep-mason-meta` (SynthKind 27 `.mason.meta`)
+- options.rs AUDIT, docs/status/options.md regen
 - measurements (cost on/off, corpus O-1, strip tools), spec edits, record

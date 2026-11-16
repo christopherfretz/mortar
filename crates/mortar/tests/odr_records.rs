@@ -753,6 +753,93 @@ fn mutated_containers_never_panic_the_link() {
     }
 }
 
+/// The contents of the section named `name` of an ELF64 little-endian
+/// image, if any.
+fn section_bytes<'i>(image: &'i [u8], name: &[u8]) -> Option<&'i [u8]> {
+    let u16_at = |o: usize| u16::from_le_bytes(image[o..o + 2].try_into().unwrap()) as usize;
+    let u32_at = |o: usize| u32::from_le_bytes(image[o..o + 4].try_into().unwrap()) as usize;
+    let u64_at = |o: usize| u64::from_le_bytes(image[o..o + 8].try_into().unwrap()) as usize;
+    let (shoff, entsize, count, strndx) = (u64_at(0x28), u16_at(0x3a), u16_at(0x3c), u16_at(0x3e));
+    let strtab = u64_at(shoff + strndx * entsize + 24);
+    (0..count).map(|i| shoff + i * entsize).find_map(|h| {
+        let at = strtab + u32_at(h);
+        let end = at + image[at..].iter().position(|&b| b == 0)?;
+        (&image[at..end] == name).then(|| &image[u64_at(h + 24)..u64_at(h + 24) + u64_at(h + 32)])
+    })
+}
+
+// spec: meta.md MT-30, MT-32, MT-14 (WP-076): with --keep-mason-meta, a
+// link of mutated containers never panics, and the kept section holds
+// exactly the units that read without a finding, each one byte for byte,
+// so that its reader finds nothing malformed in it; with no such unit
+// there is no section.
+#[test]
+fn the_kept_section_of_mutated_containers() {
+    use mortar_meta::read::{FileReader, SectionAttrs};
+    let Some(cx) = Cx::new("odr-keep-mut") else { return };
+    let attrs = SectionAttrs { index: 1, addralign: 8, entsize: 0, link: 0, info: 0 };
+    for seed in 1..=200u64 {
+        let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
+        let mut want: Vec<Vec<u8>> = Vec::new();
+        for f in ["k1.o", "k2.o"] {
+            let n = 1 + rng.below(2);
+            let units: Vec<UnitBuilder> =
+                (0..n).map(|i| rich(&mut rng, &format!("{f}{i}.cc"))).collect();
+            let mut b = bytes(&units);
+            if rng.below(4) != 0 {
+                mutate(&mut rng, &mut b);
+            }
+            let mut reader = FileReader::new();
+            reader.section(attrs, &b);
+            want.extend(reader.units.iter().map(|u| u.bytes().to_vec()));
+            cx.object(f, &[], Some(&b));
+        }
+        let o = cx.link(&["k1.o", "k2.o"], &["--keep-mason-meta"], "out-keep");
+        let e = o.stderr_text();
+        assert!(o.success() && !e.contains("panicked"), "seed {seed}: {e}");
+        let image = std::fs::read(cx.scratch.join("out-keep")).unwrap();
+        let Some(kept) = section_bytes(&image, b".mason.meta") else {
+            assert!(want.is_empty(), "seed {seed}: no section, {} units", want.len());
+            continue;
+        };
+        let mut reader = FileReader::new();
+        reader.section(attrs, kept);
+        assert!(reader.findings.is_empty(), "seed {seed}: {:?}", reader.findings);
+        let got: Vec<Vec<u8>> = reader.units.iter().map(|u| u.bytes().to_vec()).collect();
+        assert_eq!(got, want, "seed {seed}");
+    }
+}
+
+// spec: meta.md MT-6, MT-32 (WP-076): a section named .mason.meta that is
+// not a container is copied (MT-6); with --keep-mason-meta and a kept unit
+// it would join the kept section, so the link is refused by name; without
+// a unit to keep, or without the option, it links as before.
+#[test]
+fn keep_refuses_a_copied_section_of_the_name() {
+    let Some(cx) = Cx::new("odr-keep-copied") else { return };
+    let src = cx.scratch.write(
+        "bad.s",
+        "\t.section .mason.meta,\"\",%progbits\n\t.quad 1\n\
+         \t.section .note.GNU-stack,\"\",%progbits\n",
+    );
+    let mut c = Command::new(&cx.gcc);
+    c.args([OsString::from("-c"), src.into(), "-o".into(), "bad.o".into()])
+        .current_dir(cx.scratch.path());
+    assert!(run_with(&mut c, b"", Duration::from_mins(1)).success());
+    let mut a = cxx("a.cc");
+    a.definitions.push(def("_Z1fv", 1, flags::VAGUE));
+    cx.object("a.o", &[], Some(&bytes(&[a])));
+    let o = cx.link(&["a.o", "bad.o"], &["--keep-mason-meta"], "out");
+    let e = o.stderr_text();
+    assert!(!o.success(), "{e}");
+    assert!(e.contains("error: unsupported feature: --keep-mason-meta with an input section named .mason.meta that is not a container"), "{e}");
+    for (inputs, extra) in [(&["a.o", "bad.o"][..], &[][..]), (&["bad.o"], &["--keep-mason-meta"])]
+    {
+        let o = cx.link(inputs, extra, "out");
+        assert!(o.success(), "{inputs:?} {extra:?}: {}", o.stderr_text());
+    }
+}
+
 /// The legal link of the mutation tests: every record check has rows,
 /// and they agree. `a.o` keeps the COMDAT copies; `c.o` is another
 /// scheme's unit of the same type.

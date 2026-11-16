@@ -263,6 +263,35 @@ pub(crate) struct Loaded<'s> {
     pub(crate) first_global: u32,
 }
 
+/// A container's header fields and bytes: borrowed when the store holds
+/// them, copied from the file otherwise; `None` when the section cannot
+/// be read (its findings are the reader's, or the store's).
+pub(crate) fn container<'s>(
+    inputs: &Inputs<'s>,
+    file: FileId,
+    index: SectionIndex,
+) -> Option<(SectionAttrs, Cow<'s, [u8]>)> {
+    let Reader::Object(obj) = inputs.files.get(file)?.reader else { return None };
+    let sec = obj.section(index).ok()?;
+    let h = sec.header();
+    let attrs = SectionAttrs {
+        index: index.0,
+        addralign: h.sh_addralign,
+        entsize: h.sh_entsize,
+        link: h.sh_link,
+        info: h.sh_info,
+    };
+    let bytes = if let Ok(data) = sec.data() {
+        Cow::Borrowed(data)
+    } else {
+        let range = sec.file_range().ok()??;
+        let mut buf = vec![0; range.len()];
+        inputs.copy_to(file, range.start as u64..range.end as u64, &mut buf).ok()?;
+        Cow::Owned(buf)
+    };
+    Some((attrs, bytes))
+}
+
 /// One file's units, parsed.
 struct Parsed<'l> {
     units: Vec<Unit<'l>>,
@@ -456,29 +485,8 @@ pub(crate) fn load<'s>(
 ) -> Option<Loaded<'s>> {
     let file = sections.first()?.0;
     let Reader::Object(obj) = inputs.files.get(file)?.reader else { return None };
-    let mut out = Vec::with_capacity(sections.len());
-    for &(_, index) in sections {
-        let Ok(sec) = obj.section(index) else { continue };
-        let h = sec.header();
-        let attrs = SectionAttrs {
-            index: index.0,
-            addralign: h.sh_addralign,
-            entsize: h.sh_entsize,
-            link: h.sh_link,
-            info: h.sh_info,
-        };
-        let bytes = if let Ok(data) = sec.data() {
-            Cow::Borrowed(data)
-        } else {
-            let Ok(Some(range)) = sec.file_range() else { continue };
-            let mut buf = vec![0; range.len()];
-            if inputs.copy_to(file, range.start as u64..range.end as u64, &mut buf).is_err() {
-                continue;
-            }
-            Cow::Owned(buf)
-        };
-        out.push((attrs, bytes));
-    }
+    let out: Vec<_> =
+        sections.iter().filter_map(|&(_, index)| container(inputs, file, index)).collect();
     let mut syms = Vec::new();
     let mut first_global = 0;
     if let Ok(Some(table)) = obj.symbols() {
