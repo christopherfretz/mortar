@@ -22,6 +22,9 @@ pub mod dynout;
 mod dynverify;
 pub mod equiv;
 mod erratum;
+mod gdbdwarf;
+mod gdbindex;
+mod gdbnames;
 mod hasher;
 mod image;
 pub mod line;
@@ -129,6 +132,9 @@ pub(crate) fn run_engine(
     content::check_init_padding(engine);
     content::check_symbols(engine);
     symbols::check(engine);
+    let (gdb, line) = gdbindex::check(image, objs, map);
+    engine.findings.extend(gdb);
+    engine.cov.gdb_index = line;
     let props = property::check(image, objs, map.format, &mut engine.cov);
     engine.findings.extend(props);
     if map.claims_coverage() {

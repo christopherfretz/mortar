@@ -63,6 +63,8 @@ pub enum Rule {
     /// P-E1 .. P-E6: an update and a full link not equivalent (§6.9;
     /// `spec/incr.md` IN-2, IN-62).
     Equiv(u8),
+    /// P-G1 .. P-G9: `.gdb_index` (§6.10; `spec/synth.md` §17).
+    GdbIndex(u8),
 }
 
 impl Rule {
@@ -94,6 +96,7 @@ impl Rule {
             Rule::Dyn(n) => format!("P-D{n}"),
             Rule::Incr(n) => format!("P-I{n}"),
             Rule::Equiv(n) => format!("P-E{n}"),
+            Rule::GdbIndex(n) => format!("P-G{n}"),
         }
     }
 }
@@ -444,6 +447,8 @@ pub struct Coverage {
     pub properties_not_judged: u64,
     /// What B1 made of the build id, when the output has one (§6.7).
     pub build_id: Option<String>,
+    /// What §6.10 made of `.gdb_index`, when the output has one.
+    pub gdb_index: Option<String>,
     pub linker_defined_not_judged: Vec<String>,
     /// Output sections whose placement no rule judges, by name: x86-64
     /// large sections (`SHF_X86_64_LARGE`), whose order differs by linker
@@ -615,6 +620,9 @@ impl Report {
         }
         if let Some(b) = &c.build_id {
             let _ = writeln!(s, "build id: {b}");
+        }
+        if let Some(g) = &c.gdb_index {
+            let _ = writeln!(s, "gdb index: {g}");
         }
         if !c.linker_defined_not_judged.is_empty() {
             let _ = writeln!(

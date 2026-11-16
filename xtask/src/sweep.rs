@@ -5,7 +5,7 @@
 //! output's synthetic sections in-process: every byte flipped by bit 0
 //! and by bit 7, each mutant judged by the verifier.
 //!
-//!   cargo xtask sweep [--quick] [--arch <a>[,<a>]] [--threads <n>]
+//!   cargo xtask sweep [--quick] [--arch <a>[,<a>]] [--case <c>[,<c>]] [--threads <n>]
 //!
 //! The lane fails when the unmutated output has a finding, when a mutant
 //! makes the verifier panic (a hostile-input bug, §9.4), or when a byte
@@ -24,7 +24,8 @@ use std::time::{Duration, Instant};
 use crate::linktest::target::Arch;
 use crate::process::{self, Limits};
 
-pub const USAGE: &str = "usage: cargo xtask sweep [--quick] [--arch <a>[,<a>]] [--threads <n>]\n";
+pub const USAGE: &str =
+    "usage: cargo xtask sweep [--quick] [--arch <a>[,<a>]] [--case <c>[,<c>]] [--threads <n>]\n";
 
 /// The limits of a compile or a link.
 const TOOL_LIMITS: Limits = Limits { time: Duration::from_mins(3), memory_kib: 8 << 20 };
@@ -46,20 +47,55 @@ struct Case {
     /// their two ends only (every byte of them is one of a few fields
     /// repeated: 537 s on AArch64 for the whole, measured).
     window: u64,
+    /// The sections swept: [`mortar_plumb::sweep::SECTIONS`] when empty.
+    only: &'static [&'static str],
 }
 
 const CASES: &[Case] = &[
-    Case { name: "pie.lazy", cxx: false, compile: &["-fPIE"], link: &["-pie"], window: 0 },
+    Case {
+        name: "pie.lazy",
+        cxx: false,
+        compile: &["-fPIE"],
+        link: &["-pie"],
+        window: 0,
+        only: &[],
+    },
     Case {
         name: "pie.now",
         cxx: false,
         compile: &["-fPIE"],
         link: &["-pie", "-Wl,-z,now"],
         window: 0,
+        only: &[],
     },
-    Case { name: "nopie", cxx: false, compile: &["-fno-PIE"], link: &["-no-pie"], window: 0 },
-    Case { name: "cxx", cxx: true, compile: &["-fPIE"], link: &["-pie"], window: 0 },
-    Case { name: "spie", cxx: false, compile: &["-fPIE"], link: &["-static-pie"], window: 256 },
+    Case {
+        name: "nopie",
+        cxx: false,
+        compile: &["-fno-PIE"],
+        link: &["-no-pie"],
+        window: 0,
+        only: &[],
+    },
+    Case { name: "cxx", cxx: true, compile: &["-fPIE"], link: &["-pie"], window: 0, only: &[] },
+    Case {
+        name: "spie",
+        cxx: false,
+        compile: &["-fPIE"],
+        link: &["-static-pie"],
+        window: 256,
+        only: &[],
+    },
+    // `.gdb_index` (WP-098), its bytes only. Without a build id: B1
+    // would catch every flip (the other cases' outputs have one, so
+    // their sweep measures B1 first; WP-098's record).
+    Case {
+        name: "gdbindex",
+        cxx: false,
+        compile: &["-fPIE", "-g", "-ggnu-pubnames"],
+        link: &["-pie", "-Wl,--gdb-index", "-Wl,--build-id=none"],
+        window: 0,
+        only: &[".gdb_index"],
+    },
 ];
 
 /// The cases of `--quick`.
@@ -71,6 +107,8 @@ pub struct Args {
     pub quick: bool,
     pub arches: Vec<Arch>,
     pub threads: Option<usize>,
+    /// `--case <name>[,<name>]`: these cases only.
+    pub cases: Vec<String>,
 }
 
 impl Args {
@@ -98,6 +136,15 @@ impl Args {
                             .filter(|n| *n > 0)
                             .ok_or_else(|| format!("bad --threads `{n}`"))?,
                     );
+                }
+                "--case" => {
+                    let list = it.next().ok_or("--case needs a value")?;
+                    for name in list.split(',') {
+                        if !CASES.iter().any(|c| c.name == name) {
+                            return Err(format!("unknown case `{name}`"));
+                        }
+                        a.cases.push(name.to_owned());
+                    }
                 }
                 other => return Err(format!("unknown argument `{other}`")),
             }
@@ -155,7 +202,11 @@ fn run_lane(a: &Args) -> Result<bool, String> {
         std::os::unix::fs::symlink(&mortar, &ld).map_err(|e| format!("{}: {e}", ld.display()))?;
         std::fs::write(work.join("hello.c"), HELLO_C).map_err(|e| e.to_string())?;
         std::fs::write(work.join("hello.cc"), HELLO_CXX).map_err(|e| e.to_string())?;
-        for case in CASES.iter().filter(|c| !a.quick || QUICK_CASES.contains(&c.name)) {
+        let wanted = |c: &&Case| {
+            (!a.quick || QUICK_CASES.contains(&c.name))
+                && (a.cases.is_empty() || a.cases.iter().any(|n| n == c.name))
+        };
+        for case in CASES.iter().filter(wanted) {
             let id = format!("{}/{}", arch.name(), case.name);
             let t = Instant::now();
             let verdict = sweep_case(arch, host, case, &work, &bin, threads);
@@ -224,6 +275,7 @@ fn sweep_case(
         work,
         threads,
         case.window,
+        if case.only.is_empty() { mortar_plumb::sweep::SECTIONS } else { case.only },
     )?;
     drop(tokens);
     let mut problems = Vec::new();
@@ -275,6 +327,8 @@ mod tests {
         assert_eq!(Args::parse(&["--threads".into(), "3".into()]).unwrap().threads, Some(3));
         assert!(Args::parse(&["--threads".into(), "0".into()]).is_err());
         assert!(Args::parse(&["--bogus".into()]).is_err());
+        assert_eq!(Args::parse(&["--case".into(), "gdbindex".into()]).unwrap().cases, ["gdbindex"]);
+        assert!(Args::parse(&["--case".into(), "nope".into()]).is_err());
     }
 
     // The host's architecture unless `--arch` names others.
