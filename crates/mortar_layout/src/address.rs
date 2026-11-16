@@ -63,8 +63,10 @@ pub fn address(
         return Err(internal("island sizes are not per island"));
     }
     for (&i, &size) in staged.islands.iter().zip(island_sizes) {
+        // Stage C's capacity of an island is the tail it may carry as
+        // its section's last chunk (`spec/incr.md` IN-33; 0 without slack).
         chunks[i].size = size;
-        chunks[i].capacity = size;
+        chunks[i].capacity = size.saturating_add(staged.chunks[i].capacity);
     }
     let max_page = u128::from(options.max_page);
     let limit = target.address_limit();
@@ -80,6 +82,23 @@ pub fn address(
             _ => runs.push((class, chunk.align)),
         }
         run_of[c.0 as usize] = runs.len() - 1;
+    }
+    // layout.md L-141, L-9: the last chunk of each PT_LOAD has no slack
+    // (with the empty chunks after it, and the one before the RELRO
+    // padding, whose size is not known yet).
+    if options.slack.on {
+        let mut done = vec![false; runs.len()];
+        for &c in order.iter().rev() {
+            let r = run_of[c.0 as usize];
+            if r == usize::MAX || done[r] {
+                continue;
+            }
+            let chunk = &mut chunks[c];
+            chunk.capacity = chunk.size;
+            if chunk.size > 0 && Some(c) != staged.relro_padding {
+                done[r] = true;
+            }
+        }
     }
     let page_log = options.max_page.trailing_zeros() as u8;
     let p_of = |r: usize| -> u128 { 1u128 << runs[r].1.max(page_log).min(64) };
@@ -137,6 +156,14 @@ pub fn address(
         if new_load {
             // L-70: a new PT_LOAD at A ≡ o (mod P).
             let p = p_of(run);
+            // spec/incr.md IN-33: the previous PT_LOAD's reserve, in file
+            // and address space.
+            if prev_run.is_some() && options.slack.on {
+                let filesz = u64::try_from(fcur.saturating_sub(seg.1)).unwrap_or(u64::MAX);
+                let reserve = u128::from(options.slack.load(filesz, options.max_page));
+                fcur += reserve;
+                cur += reserve;
+            }
             let separate = options.separate_code && (is_code(run) || run > 0 && is_code(run - 1));
             let o = if prev_run.is_none() {
                 0

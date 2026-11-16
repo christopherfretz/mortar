@@ -1170,7 +1170,12 @@ of `OUT_OF_M2` (the rule that puts it out of the milestone is printed);
 or GNU ld cannot link it either and mortar refuses it; or the driver
 writes no line (a note); or its findings are all of one rule
 `KNOWN_FINDINGS` lists for that variation (a verifier defect a record
-names). Anything else fails: a refusal no rule names, a program that
+names). Where the reference's own program is known broken
+(`REFERENCE_BROKEN`: `x-static-pie-export` on x86-64, where GNU ld's
+output dies at start-up, `plumb.md` A34), mortar's program is compared
+with the reference program of the variation the entry names
+(`x-static-pie`), and the line fails when the reference's program runs
+after all (a stale entry). Anything else fails: a refusal no rule names, a program that
 runs differently, a line mortar links that GNU ld cannot, any other
 finding. It prints a table (architecture, variation, outcome, lines),
 one line per line that is not plain ok, and `census: <n> lines, <d>

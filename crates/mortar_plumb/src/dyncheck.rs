@@ -65,14 +65,21 @@ pub(crate) fn check(
     let spie = line.kind == Some(OutputKind::StaticPie);
     if spie {
         // §12.4: a static-pie's .dynsym and records are P-D14's.
-        crate::spie::check(image, out, line.entry.as_deref(), format, &mut v);
+        crate::spie::check(
+            image,
+            out,
+            line.entry.as_deref(),
+            line.export_dynamic || line.export_symbols,
+            format,
+            &mut v,
+        );
     } else {
         pd7(image, out, model, ld, format, &mut v);
     }
     pd8(out, model, ld, &mut v);
     pd9_order(out, ld.machine, &mut v);
     pd10(image, out, ld.machine, format, spie, &mut v);
-    pd11_13(image, out, model, ld, &mut v);
+    pd11_13(image, out, model, ld, format, &mut v);
     pd12(image, out, ld, objs, format, &mut v);
     fields(image, out, model, line, objs, format, &mut v);
     v
@@ -1022,7 +1029,14 @@ fn pd10(
 
 /// P-D11 (copies) and P-D13 (protected).
 #[allow(clippy::too_many_lines)] // one block per property
-fn pd11_13(image: &Image<'_>, out: &DynOut, model: &Model, ld: &Loader<'_>, v: &mut Vec<Finding>) {
+fn pd11_13(
+    image: &Image<'_>,
+    out: &DynOut,
+    model: &Model,
+    ld: &Loader<'_>,
+    format: Format,
+    v: &mut Vec<Finding>,
+) {
     let p = Params::default();
     let relro: Vec<(u64, u64)> = image
         .phdrs
@@ -1088,7 +1102,13 @@ fn pd11_13(image: &Image<'_>, out: &DynOut, model: &Model, ld: &Loader<'_>, v: &
         let ro = model.dsos[i].read_only_at(d.value);
         let in_relro =
             relro.iter().any(|&(lo, hi)| lo <= r.offset && r.offset + s.st_size.max(1) <= hi);
-        if ro != in_relro {
+        // Without PT_GNU_RELRO (`-z norelro`, D-42) nothing is read-only
+        // after relocation: every reference then copies a read-only
+        // definition into ordinary writable memory (GNU ld `.data.rel.ro`,
+        // lld `.bss.rel.ro`, mold `.copyrel`; WP-088), and only the
+        // writable place below and mortar's section are judged. A missing
+        // PT_GNU_RELRO the line asks for is P-D4's.
+        if !relro.is_empty() && ro != in_relro {
             v.push(
                 sym_finding(
                     11,
@@ -1105,6 +1125,29 @@ fn pd11_13(image: &Image<'_>, out: &DynOut, model: &Model, ld: &Loader<'_>, v: &
         }
         if image.load_of(r.offset, s.st_size.max(1)).is_none_or(|l| l.p_flags & PF_W == 0) {
             v.push(sym_finding(11, &s.name, "a copy outside writable memory").at(r.offset));
+        }
+        // mortar's chunk by the output section, with or without RELRO
+        // (D-42: `.bss.rel.ro` for a read-only definition, else `.dynbss`,
+        // the first chunk of `.bss`).
+        if format == Format::Mortar {
+            let want = if ro { ".bss.rel.ro" } else { ".bss" };
+            let found =
+                image.alloc_section_of(r.offset, s.st_size.max(1)).map(|(_, o)| o.name.as_str());
+            if found != Some(want) {
+                v.push(
+                    sym_finding(
+                        11,
+                        &s.name,
+                        format!(
+                            "the copy of '{}' is in {}; its definition is {}, so D-42's section is {want}",
+                            s.name,
+                            found.unwrap_or("no allocated section"),
+                            if ro { "read-only" } else { "writable" }
+                        ),
+                    )
+                    .at(r.offset),
+                );
+            }
         }
         // Aliases at the same (file, value) are defined at the copy (W2).
         for (name, defs) in &model.dsos[i].defs {
