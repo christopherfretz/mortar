@@ -1994,6 +1994,19 @@ with each phase fed from the state for unchanged files:
     holds 0x41d4a8 and 0x41d4c0 in the two full links, each the start of
     that link's `.eh_frame`, and the oracle, which did not implement
     S-50, compared it raw.
+  - **Which records the delta refills** (WP-063, against a full link's
+    layout, S-46/S-47's packing): the records equal from the start (same
+    piece of the same section of an unchanged file) keep their offsets;
+    when the output `.eh_frame` keeps its address and size, so do the
+    records equal from the end, provided each FDE there points to the
+    same CIE in both links: its own CIE kept at or after the suffix's
+    start, or its own CIE removed by S-44 (an equal CIE earlier) while
+    the new link keeps no CIE between the prefix and the suffix; a piece
+    the new link's split does not know counts as a CIE. The records
+    between are refilled (`eh-frame`). A reference into an input
+    `.eh_frame` is refilled unless its section is empty and the chunk
+    did not move (rule 1), or every piece of its section is kept and
+    none is between (rule 3's next record is then the same).
   *Test:* R5 in L10 (each row a scenario; the first three must pass, the
   others are the verifier's negative cases: plumb rejects a hole that is
   not one padding CIE of ≥ 16 bytes, and a zero word before the end); an
