@@ -28,6 +28,10 @@ pub enum Kind {
     /// A package of this repository at a pinned revision built by cargo;
     /// the link of its binary is the workload.
     Cargo(Cargo),
+    /// A Ninja build tree made by a pinned script of this checkout (hours
+    /// of compiling: never run by the bench); the bench captures the link
+    /// of `target` from it and keeps the link's inputs, not the tree.
+    Ninja(Ninja),
     /// Specified, not built: named in the report with what it needs.
     Planned { needs: String },
 }
@@ -39,6 +43,7 @@ impl Kind {
             Self::Synthetic(_) => "synthetic",
             Self::Cmake(_) => "cmake",
             Self::Cargo(_) => "cargo",
+            Self::Ninja(_) => "ninja",
             Self::Planned { .. } => "planned",
         }
     }
@@ -71,6 +76,26 @@ pub struct Cargo {
     pub rustc_args: Vec<String>,
 }
 
+/// A `ninja` workload's build (`spec/harness.md` "bench", "Large
+/// workloads").
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Ninja {
+    /// The script that makes the tree and its arguments after `<work>`,
+    /// as words: a path of this checkout first.
+    pub script: Vec<String>,
+    /// The SHA-256 of the source archive the script unpacks: `$S` of a
+    /// `run` line is `<work>/src/<first 16 digits>/<root>`.
+    pub sha256: String,
+    pub root: String,
+    /// The directory under `<work>/workloads` that holds the build tree
+    /// (`build/`) and the captured inputs (`inputs/`), shared by the
+    /// workloads captured from one tree.
+    pub tree: String,
+    /// The Ninja target (an output path of the tree) whose link is the
+    /// workload.
+    pub target: String,
+}
+
 /// One section of the manifest.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Workload {
@@ -88,6 +113,9 @@ pub struct Workload {
     pub cflags: Vec<String>,
     /// Driver flags of the link, as words.
     pub ldflags: Vec<String>,
+    /// `group = yes` (synthetic): the generated inputs after `main.o`
+    /// between `-Wl,--start-group` and `-Wl,--end-group`.
+    pub group: bool,
     /// The glob the basename of the captured link's output must match;
     /// exactly one recorded link matches.
     pub capture: String,
@@ -131,23 +159,42 @@ const CLASSES: [&str; 7] = ["small", "medium", "large", "extreme", "rust", CALIB
 fn keys_of(kind: &str) -> Option<&'static [&'static str]> {
     Some(match kind {
         "sources" => &["sources", "driver", "cflags", "ldflags", "capture", "run"],
-        "synthetic" => &["shape", "params", "driver", "cflags", "ldflags", "capture", "run"],
+        "synthetic" => {
+            &["shape", "params", "group", "driver", "cflags", "ldflags", "capture", "run"]
+        }
         "cmake" => &[
             "url", "sha256", "root", "options", "prebuild", "target", "driver", "cflags",
             "capture", "run",
         ],
         "cargo" => &["rev", "package", "bin", "rustc_args", "capture", "run"],
+        "ninja" => &["script", "sha256", "root", "tree", "target", "driver", "capture", "run"],
         "planned" => &["needs"],
         _ => return None,
     })
 }
 
 /// A key of a section: its line, the key, the value.
-type Entry = (usize, String, String);
+pub type Entry = (usize, String, String);
+
+/// A section of a manifest: the line of its `[name]`, the name, its keys.
+pub type Section = (usize, String, Vec<Entry>);
 
 /// Reads the manifest's text. Every error names its line.
 pub fn parse(text: &str) -> Result<Vec<Workload>, String> {
-    let mut sections: Vec<(usize, String, Vec<Entry>)> = Vec::new();
+    sections(text, "workload")?
+        .into_iter()
+        .map(|(at, name, entries)| section(at, name, &entries))
+        .collect()
+}
+
+/// Splits a manifest in this format into its sections: `[name]` (lower
+/// case letters, digits, `-`) then `key = value` lines, `#` starting a
+/// comment line; a name or a key of a section appearing twice is an error.
+/// `what` names a section in the errors (`workload`, `project`). The
+/// format of the bench's manifest and of the real-builds lane's
+/// (`spec/harness.md` "Workloads", "realbuild").
+pub fn sections(text: &str, what: &str) -> Result<Vec<Section>, String> {
+    let mut sections: Vec<Section> = Vec::new();
     for (at, raw) in text.lines().enumerate().map(|(at, line)| (at + 1, line)) {
         let line = raw.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -158,11 +205,11 @@ pub fn parse(text: &str) -> Result<Vec<Workload>, String> {
                 && name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
             if !valid {
                 return Err(format!(
-                    "line {at}: a workload name is lower-case letters, digits and `-`"
+                    "line {at}: a {what} name is lower-case letters, digits and `-`"
                 ));
             }
             if sections.iter().any(|(_, other, _)| other == name) {
-                return Err(format!("line {at}: workload `{name}` appears twice"));
+                return Err(format!("line {at}: {what} `{name}` appears twice"));
             }
             sections.push((at, name.to_owned(), Vec::new()));
             continue;
@@ -179,9 +226,10 @@ pub fn parse(text: &str) -> Result<Vec<Workload>, String> {
         }
         entries.push((at, key.to_owned(), value.trim().to_owned()));
     }
-    sections.into_iter().map(|(at, name, entries)| section(at, name, &entries)).collect()
+    Ok(sections)
 }
 
+#[allow(clippy::too_many_lines, reason = "one arm per kind, read top to bottom")]
 fn section(at: usize, name: String, entries: &[Entry]) -> Result<Workload, String> {
     let get = |key: &str| entries.iter().find(|(_, k, _)| k == key).map(|(_, _, v)| v.as_str());
     let fail = |what: String| format!("line {at}: workload `{name}`: {what}");
@@ -191,6 +239,15 @@ fn section(at: usize, name: String, entries: &[Entry]) -> Result<Workload, Strin
         get(key).map(|v| v.split_whitespace().map(str::to_owned).collect()).unwrap_or_default()
     };
 
+    let sha256 = || {
+        let sha256 = need("sha256")?.to_owned();
+        if sha256.len() != 64
+            || !sha256.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err(fail("`sha256` is 64 lower-case hexadecimal digits".into()));
+        }
+        Ok(sha256)
+    };
     let kind_name = need("kind")?;
     let allowed = keys_of(kind_name).ok_or_else(|| fail(format!("unknown kind `{kind_name}`")))?;
     for (line, key, _) in entries {
@@ -221,12 +278,7 @@ fn section(at: usize, name: String, entries: &[Entry]) -> Result<Workload, Strin
             Kind::Synthetic(Request { shape, params: (a, b) })
         }
         "cmake" => {
-            let sha256 = need("sha256")?.to_owned();
-            if sha256.len() != 64
-                || !sha256.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-            {
-                return Err(fail("`sha256` is 64 lower-case hexadecimal digits".into()));
-            }
+            let sha256 = sha256()?;
             Kind::Cmake(Cmake {
                 url: need("url")?.to_owned(),
                 sha256,
@@ -242,6 +294,23 @@ fn section(at: usize, name: String, entries: &[Entry]) -> Result<Workload, Strin
             bin: need("bin")?.to_owned(),
             rustc_args: words("rustc_args"),
         }),
+        "ninja" => {
+            let script: Vec<String> = words("script");
+            if script.is_empty() {
+                return Err(fail("no `script`".into()));
+            }
+            let tree = need("tree")?.to_owned();
+            if !tree.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-') {
+                return Err(fail("`tree` is lower-case letters, digits and `-`".into()));
+            }
+            Kind::Ninja(Ninja {
+                script,
+                sha256: sha256()?,
+                root: need("root")?.to_owned(),
+                tree,
+                target: need("target")?.to_owned(),
+            })
+        }
         _ => Kind::Planned { needs: need("needs")?.to_owned() },
     };
     let sources_missing = matches!(&kind, Kind::Sources { sources } if sources.is_empty());
@@ -253,6 +322,11 @@ fn section(at: usize, name: String, entries: &[Entry]) -> Result<Workload, Strin
         Kind::Planned { .. } => String::new(),
         Kind::Cargo(_) => "cc".to_owned(),
         _ => need("driver")?.to_owned(),
+    };
+    let group = match get("group") {
+        None | Some("no") => false,
+        Some("yes") => true,
+        Some(_) => return Err(fail("`group` is `yes` or `no`".into())),
     };
     let capture = get("capture").unwrap_or("out").to_owned();
     if !planned && (capture.is_empty() || capture.contains('/')) {
@@ -269,6 +343,7 @@ fn section(at: usize, name: String, entries: &[Entry]) -> Result<Workload, Strin
         driver,
         cflags: words("cflags"),
         ldflags: words("ldflags"),
+        group,
         capture,
         run: get("run").map(|v| v.split_whitespace().map(str::to_owned).collect()),
         text,
@@ -326,6 +401,18 @@ capture = mortar-*
 class = small
 kind = planned
 needs = kiln and hod
+
+[big]
+class = on-request
+kind = ninja
+script = bench/b.sh g
+sha256 = 4eab9b524aa5913c6fffb20b2a8abf5ef7f95a80bc0701f3a6dbb4c607f73460
+root = p-1.0
+tree = big-g
+target = bin/big
+driver = clang++
+capture = big
+run = -cc1 $S/x.c
 ";
 
     // "Workloads": each kind and what it takes.
@@ -335,7 +422,7 @@ needs = kiln and hod
         let names: Vec<_> = workloads.iter().map(|w| w.name.as_str()).collect();
         assert_eq!(
             names,
-            ["hello-c", "synthetic-objects", "cxx-medium", "rust-self", "libcxx-test"]
+            ["hello-c", "synthetic-objects", "cxx-medium", "rust-self", "libcxx-test", "big"]
         );
         let hello = &workloads[0];
         assert_eq!(hello.kind, Kind::Sources { sources: vec!["hello.c".into()] });
@@ -367,6 +454,14 @@ needs = kiln and hod
         assert_eq!(workloads[3].driver, "cc");
         assert_eq!(workloads[4].kind, Kind::Planned { needs: "kiln and hod".into() });
         assert!(workloads[0].measured() && !workloads[4].measured());
+        let Kind::Ninja(ninja) = &workloads[5].kind else { panic!("{:?}", workloads[5]) };
+        assert_eq!(ninja.script, ["bench/b.sh", "g"]);
+        assert_eq!((ninja.tree.as_str(), ninja.target.as_str()), ("big-g", "bin/big"));
+        assert_eq!(
+            (workloads[5].driver.as_str(), workloads[5].capture.as_str()),
+            ("clang++", "big")
+        );
+        assert!(workloads[5].measured());
     }
 
     // "Workloads": what the reader refuses, with the line.
@@ -406,6 +501,16 @@ needs = kiln and hod
         assert!(
             broken("needs = kiln and hod", "needs = kiln and hod\nrun = x")
                 .contains("kind `planned` takes no `run`")
+        );
+        assert!(broken("tree = big-g", "tree = ../x").contains("`tree`"));
+        assert!(broken("params = 10 20", "params = 10 20\ngroup = maybe").contains("`group`"));
+        assert!(
+            parse(&GOOD.replace("params = 10 20", "params = 10 20\ngroup = yes")).unwrap()[1].group
+        );
+        assert!(broken("script = bench/b.sh g\n", "").contains("no `script`"));
+        assert!(broken("target = bin/big\n", "").contains("no `target`"));
+        assert!(
+            broken("tree = big-g", "tree = big-g\noptions = -DX").contains("takes no `options`")
         );
     }
 }

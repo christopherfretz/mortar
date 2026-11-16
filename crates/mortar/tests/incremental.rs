@@ -1203,6 +1203,19 @@ fn a_version_1_state_is_refused_by_name() {
 /// when set, the system's temporary directory and `/dev/shm`, each when
 /// it is writable and on a file system not already in the list (here an
 /// overlay `/tmp` and a tmpfs; on the hosted runners whatever they have).
+/// Held by every test that takes stamps in [`stamp_dirs`]: the stamp file
+/// is `<dir>/.mortar-stamp-<pid>` (IN-22), one name per process and
+/// directory, and the system temporary directory and `/dev/shm` are the
+/// same directories for every test of this process. Two tests there at
+/// once create and remove one file between them, and the second removal
+/// is `NotFound` (seen once in a gate under load). A link takes its stamps
+/// from one thread, so only the tests need this.
+static STAMP_DIRS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn stamp_lock() -> std::sync::MutexGuard<'static, ()> {
+    STAMP_DIRS.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 fn stamp_dirs(scratch: &Scratch) -> Vec<PathBuf> {
     use std::os::unix::fs::MetadataExt as _;
     let mut v = vec![scratch.path().to_path_buf()];
@@ -1235,6 +1248,7 @@ fn fs_of(dir: &Path) -> String {
 // with its size kept right after the link read it is never clean)
 #[test]
 fn stamp_rule_a_a_rewrite_after_the_read_is_never_clean() {
+    let _stamps = stamp_lock();
     let scratch = Scratch::new("incr-stamp-a");
     for dir in stamp_dirs(&scratch) {
         let input = dir.join(format!("race-input-{}.o", std::process::id()));
@@ -1268,6 +1282,7 @@ fn stamp_rule_a_a_rewrite_after_the_read_is_never_clean() {
 // or racy by the next link)
 #[test]
 fn stamp_rule_b_own_output_is_clean() {
+    let _stamps = stamp_lock();
     let scratch = Scratch::new("incr-stamp-b");
     for dir in stamp_dirs(&scratch) {
         let pid = std::process::id();
@@ -1320,6 +1335,7 @@ fn stamp_rule_b_own_output_is_clean() {
 // at hand; a stamp per device)
 #[test]
 fn probe_on_the_file_systems_at_hand() {
+    let _stamps = stamp_lock();
     let scratch = Scratch::new("incr-probe");
     for dir in stamp_dirs(&scratch) {
         let fs = fs_of(&dir);

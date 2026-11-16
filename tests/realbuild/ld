@@ -1,0 +1,116 @@
+#!/bin/bash
+# The real-builds lane's linker (spec/harness.md "realbuild", "The
+# wrapper"). Installed by `cargo xtask realbuild` as `ld`, `ld.bfd`,
+# `ld.lld` and `ld.gold` in a directory that is first on the build's
+# COMPILER_PATH and PATH, so that compiler drivers and direct `ld` calls
+# alike run it. It records every link line and then links it:
+#
+#   RB_MODE=control  the control linker ($RB_CONTROL) links the line.
+#   RB_MODE=mortar   the control links the line to a scratch output (its
+#                    status is the oracle of whether the line links), then
+#                    mortar ($RB_MORTAR) links it with --mortar-map; when
+#                    mortar links it, the verifier ($RB_XTASK realbuild
+#                    verify) judges the output with the line; when mortar
+#                    does not, the control links the line for the build
+#                    (the fallback), so that one refusal hides nothing else.
+#
+# A record is a directory `$RB_RECORDS/link.XXXXXXXX` with `cwd` and `argv`
+# (NUL-terminated words), `name` (the name the wrapper ran as), copies of
+# the response files (`rsp.<n>`, their arguments in `rsp.list`), and the
+# result files: `control.status`, `control.err`, `mortar.status`,
+# `mortar.err`, `plumb`, `plumb.status`, `fallback.status`, `times`, and
+# `start` (when the wrapper started: the records' order) and `phase`
+# (`$RB_PHASE`: `configure` while a script's `rb_configure` runs, else
+# `build` or `test`).
+# A run of the linker that names no output (`-v`, `--version`, `--help`,
+# `--verbose`: a build asking which linker it has) is a query: the control
+# answers it, and it is counted in `$RB_RECORDS/queries`, not recorded.
+# This is a script file of the lane: no `rm` (files are removed with
+# `unlink`, by the path the line named).
+name=${0##*/}
+control=${RB_CONTROL:?}
+has_output=
+for a in "$@"; do
+  case $a in -o|-o?*|--output|--output=*) has_output=1 ;; esac
+done
+if [ -z "$has_output" ]; then
+  printf '%s\t%s\n' "$PWD" "$*" >> "${RB_RECORDS:?}/queries"
+  exec "$control" "$@"
+fi
+rec=$(mktemp -d "${RB_RECORDS:?}/link.XXXXXXXX") || exit 125
+printf '%s\n' "$EPOCHREALTIME" > "$rec/start"
+printf '%s\0' "$PWD" > "$rec/cwd"
+printf '%s\0' "$@" > "$rec/argv"
+printf '%s\n' "$name" > "$rec/name"
+printf '%s\n' "${RB_PHASE:-build}" > "$rec/phase"
+n=0
+for a in "$@"; do
+  case $a in
+    @*) n=$((n + 1)); printf '%s\n' "${a#@}" >> "$rec/rsp.list"
+        cp -- "${a#@}" "$rec/rsp.$n" 2>/dev/null ;;
+  esac
+done
+# The output: the last -o, as the linkers read it.
+out=a.out; prev=
+for a in "$@"; do
+  if [ "$prev" = -o ] || [ "$prev" = --output ]; then out=$a
+  else case $a in --output=*) out=${a#--output=} ;; -o?*) out=${a#-o} ;; esac; fi
+  prev=$a
+done
+if [ "${RB_MODE:?}" = control ]; then
+  t0=$EPOCHREALTIME
+  "$control" "$@" 2> >(tee "$rec/control.err" >&2); st=$?
+  t1=$EPOCHREALTIME
+  printf '%s\n' "$st" > "$rec/control.status"
+  printf 'control\t%s\n' "$(( ${t1/./} - ${t0/./} ))" >> "$rec/times"
+  exit $st
+fi
+# with_output <path> <words>: the words with every output replaced by
+# <path>, in the array `args`.
+with_output() {
+  local to=$1 a prev=; shift; args=()
+  for a in "$@"; do
+    if [ "$prev" = -o ] || [ "$prev" = --output ]; then args+=("$to")
+    else case $a in
+      --output=*) args+=("--output=$to") ;;
+      -o?*) args+=("-o$to") ;;
+      *) args+=("$a") ;;
+    esac; fi
+    prev=$a
+  done
+}
+# The oracle: the control's link of the same line to a scratch output.
+scratch="$rec/control.out"
+with_output "$scratch" "$@"
+t0=$EPOCHREALTIME
+"$control" "${args[@]}" > /dev/null 2> "$rec/control.err"; cst=$?
+t1=$EPOCHREALTIME
+printf '%s\n' "$cst" > "$rec/control.status"
+printf 'control\t%s\n' "$(( ${t1/./} - ${t0/./} ))" >> "$rec/times"
+[ -e "$scratch" ] && unlink "$scratch"
+# An output that exists and is not a regular file (`-o /dev/null`: a
+# build's probe of whether a line links) is not one the verifier can
+# read: mortar links such a line to a scratch output, which is judged
+# and removed, and the build's output is left alone.
+mout=$out; margs=("$@")
+if [ -e "$out" ] && [ ! -f "$out" ]; then
+  mout="$rec/mortar.out"; with_output "$mout" "$@"; margs=("${args[@]}")
+fi
+t0=$EPOCHREALTIME
+"${RB_MORTAR:?}" "${margs[@]}" --mortar-map="$rec/map" 2> "$rec/mortar.err"; st=$?
+t1=$EPOCHREALTIME
+printf '%s\n' "$st" > "$rec/mortar.status"
+printf 'mortar\t%s\n' "$(( ${t1/./} - ${t0/./} ))" >> "$rec/times"
+if [ $st = 0 ]; then
+  cat "$rec/mortar.err" >&2
+  "${RB_XTASK:?}" realbuild verify "$mout" "$rec/map" "$rec/argv" > "$rec/plumb" 2>&1
+  printf '%s\n' "$?" > "$rec/plumb.status"
+  [ -e "$rec/map" ] && unlink "$rec/map"
+  [ "$mout" = "$rec/mortar.out" ] && [ -e "$mout" ] && unlink "$mout"
+  exit 0
+fi
+[ -e "$rec/map" ] && unlink "$rec/map"
+# The fallback: the control links the line for the build.
+"$control" "$@"; fst=$?
+printf '%s\n' "$fst" > "$rec/fallback.status"
+exit $fst

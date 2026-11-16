@@ -5,7 +5,7 @@
 //!                     [--inputs-from <response file>|map]
 //!                     [--fix-cortex-a53-843419|--no-fix-cortex-a53-843419]
 //!                     [--mutate [--per-class N] [--seed S] [--threads T]]
-//!                     [--sweep [--window W] [--threads T]]
+//!                     [--sweep [--window W] [--threads T] [--no-reseal]]
 //!
 //! With `--mutate`, the link is not judged but mutated (§9.5): the table
 //! of mutants applied, caught and missed per class, then every missed one.
@@ -24,7 +24,7 @@ use mortar_plumb::{Format, Input};
 pub const USAGE: &str = "usage: cargo xtask plumb <output> --map <file> --map-format gnu|lld|mold|mortar \
                          [--inputs-from <response file>|map] [--line <file>] \
                          [--fix-cortex-a53-843419|--no-fix-cortex-a53-843419] \
-                         [--mutate [--per-class N] [--seed S] [--threads T]] [--sweep [--window W]] [--coverage]\n";
+                         [--mutate [--per-class N] [--seed S] [--threads T]] [--sweep [--window W] [--no-reseal]] [--coverage]\n";
 
 /// The command line of `xtask plumb`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,6 +45,9 @@ pub struct Args {
     /// `--coverage`: print IN-60's coverage of every allocated section
     /// and what a map claiming it would be told (spec/plumb.md §6.8).
     pub coverage: bool,
+    /// `--no-reseal`: the sweep leaves mortar's build id as it was after
+    /// a flip (to measure what B1 alone catches; spec/plumb.md §12.3).
+    pub no_reseal: bool,
 }
 
 impl Args {
@@ -57,6 +60,7 @@ impl Args {
         let mut fix_843419 = None;
         let mut line = None;
         let mut coverage = false;
+        let mut no_reseal = false;
         let mut mutate: Option<mortar_plumb::mutate::Config> = None;
         let mut cfg = mortar_plumb::mutate::Config::default();
         let mut it = args.iter();
@@ -77,6 +81,7 @@ impl Args {
                 }
                 "--mutate" => mutate = Some(cfg),
                 "--coverage" => coverage = true,
+                "--no-reseal" => no_reseal = true,
                 // The byte sweep of a dynamic output's synthetic sections
                 // (mortar_plumb::sweep, WP-082).
                 "--sweep" => {
@@ -114,6 +119,7 @@ impl Args {
             mutate: mutate.map(|_| cfg),
             line,
             coverage,
+            no_reseal,
         })
     }
 }
@@ -551,8 +557,13 @@ pub fn run(args: &Args) -> Result<bool, String> {
         let files = BaseFiles(Path::new(""));
         let ctx = mortar_plumb::Ctx { line: line.clone(), files: &files };
         if cfg.sweep {
-            let sweep =
-                mortar_plumb::sweep::run(&output, &inputs, &parsed, cfg.threads, cfg.window, &ctx)?;
+            let opts = mortar_plumb::sweep::Options {
+                threads: cfg.threads,
+                window: cfg.window,
+                reseal: !args.no_reseal,
+                ..mortar_plumb::sweep::Options::default()
+            };
+            let sweep = mortar_plumb::sweep::run_with(&output, &inputs, &parsed, &ctx, &opts)?;
             println!("{}: baseline findings {}", args.output.display(), sweep.baseline);
             print!("{}", sweep.render());
             return Ok(true);

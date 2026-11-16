@@ -815,10 +815,19 @@ impl Engine<'_, '_> {
         if version != 1 {
             return self.findings.push(e(5, format!(".eh_frame_hdr version {version}")).at(hdr));
         }
-        // datarel is relative to the start of .eh_frame_hdr.
-        let value = |enc: u8, raw: u64, at: u64| match enc & 0x70 {
-            0x30 => Some(hdr.wrapping_add(raw)),
-            _ => decode(enc, raw, at),
+        // datarel is relative to the start of .eh_frame_hdr. An encoding
+        // with DW_EH_PE_indirect (0x80) is read as the unwinders read it
+        // (libgcc's `read_encoded_value_with_base`, LLVM libunwind's
+        // `getEncodedP`): the value is the word at the decoded address
+        // (WP-101: the flag was ignored, and a header no unwinder reads
+        // as written passed).
+        let word = self.word() as u8;
+        let value = |enc: u8, raw: u64, at: u64| {
+            let v = match enc & 0x70 {
+                0x30 => Some(hdr.wrapping_add(raw)),
+                _ => decode(enc, raw, at),
+            }?;
+            if enc != OMIT && enc & 0x80 != 0 { image.value(v, word) } else { Some(v) }
         };
         let at = hdr + r.pos as u64;
         let Some(ptr) = r.ptr(ptr_enc).and_then(|raw| value(ptr_enc, raw, at)) else {
