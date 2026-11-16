@@ -144,6 +144,7 @@ impl Matrix {
             Feature::Clang => self.common.clang.is_some() && self.common.clangxx.is_some(),
             Feature::Yaml2obj => self.common.yaml2obj.is_some(),
             Feature::LlvmReadelf => self.common.llvm_readelf.is_some(),
+            Feature::LlvmDwarfdump => self.common.llvm_dwarfdump.is_some(),
             Feature::Gdb => self.common.gdb.is_some(),
             Feature::Lldb => self.common.lldb.is_some(),
             Feature::Elflint => self.common.elflint.is_some(),
@@ -1263,6 +1264,7 @@ impl Unit<'_> {
                                 CheckTool::Nm => (Some(&self.tools.nm), &[]),
                                 CheckTool::Objdump => (Some(&self.tools.objdump), &[]),
                                 CheckTool::LlvmReadelf => (common.llvm_readelf.as_ref(), &[]),
+                                CheckTool::LlvmDwarfdump => (common.llvm_dwarfdump.as_ref(), &[]),
                                 _ => (common.elflint.as_ref(), &["--gnu-ld"]),
                             };
                             let Some(program) = program else {

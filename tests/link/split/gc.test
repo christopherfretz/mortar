@@ -1,0 +1,79 @@
+# Split DWARF (WP-080) with --gc-sections and a COMDAT function
+# (spec/image.md I-47): unused_fn is collected and the second copy of
+# twice<int> loses. A skeleton unit indexes its functions' addresses in
+# .debug_addr (DW_FORM_addrx, DW_RLE_startx_length), so their dead
+# entries take .debug_addr's row: 0, as lld and mold write it (GNU ld
+# redirects the losing COMDAT copy to the kept one, I-47 "GNU ld's
+# redirect"). The line tables stay in the output and take .debug_line's
+# row (all ones in ELFCLASS64, 0 in ELFCLASS32). llvm-dwarfdump --verify
+# is not run here: lld's, mold's and mortar's outputs draw "DIE has
+# overlapping ranges" for a unit with two dead functions, I-47's
+# recorded line; crates/mortar/tests/debuggers.rs split_dwarf_* holds
+# mortar's complaints to GNU ld's but for that one.
+# GCC's .debug_addr entry of a TLS variable (R_X86_64_64/R_386_32
+# against tl_count) is its DTP offset (spec/x64.md X-53, spec/x86.md
+# X86-62); GNU ld and mold write the template address (plumb.md A15).
+#@ anomaly(bfd,mold,x86_64,i386): A15
+#@ spec: image.md I-47
+#@ spec: image.md I-49a
+#@ requires: g++ clang
+
+cxx -g -gsplit-dwarf -gdwarf-5 -O0 -ffunction-sections -fdata-sections main.cc -o main-g5.o
+cxx -g -gsplit-dwarf -gdwarf-5 -O0 -ffunction-sections -fdata-sections b.cc -o b-g5.o
+cxx -g -gsplit-dwarf -gdwarf-4 -O0 -ffunction-sections -fdata-sections main.cc -o main-g4.o
+cxx -g -gsplit-dwarf -gdwarf-4 -O0 -ffunction-sections -fdata-sections b.cc -o b-g4.o
+cxx(clang) -g -gsplit-dwarf -gdwarf-5 -O0 -ffunction-sections -fdata-sections main.cc -o main-c5.o
+cxx(clang) -g -gsplit-dwarf -gdwarf-5 -O0 -ffunction-sections -fdata-sections b.cc -o b-c5.o
+cxx(clang) -g -gsplit-dwarf=single -gdwarf-5 -O0 -ffunction-sections -fdata-sections main.cc -o main-s5.o
+cxx(clang) -g -gsplit-dwarf=single -gdwarf-5 -O0 -ffunction-sections -fdata-sections b.cc -o b-s5.o
+link g++ -static -no-pie -fno-use-linker-plugin -Wl,--gc-sections main-g5.o b-g5.o -o gc-g5
+run gc-g5
+  stdout: 5 10 8
+check readelf -sW gc-g5
+  has: FUNC * _Z6helperi$
+  not: unused_fn
+check readelf --debug-dump=info gc-g5
+  has: Found separate debug object file: */main-g5.
+link g++ -static -no-pie -fno-use-linker-plugin -Wl,--gc-sections main-g4.o b-g4.o -o gc-g4
+run gc-g4
+  stdout: 5 10 8
+check readelf -sW gc-g4
+  has: FUNC * _Z6helperi$
+  not: unused_fn
+check readelf --debug-dump=info gc-g4
+  has: Found separate debug object file: */main-g4.
+link g++ -static -no-pie -fno-use-linker-plugin -Wl,--gc-sections main-c5.o b-c5.o -o gc-c5
+run gc-c5
+  stdout: 5 10 8
+check readelf -sW gc-c5
+  has: FUNC * _Z6helperi$
+  not: unused_fn
+check readelf --debug-dump=info gc-c5
+  has: Found separate debug object file: */main-c5.
+link g++ -static -no-pie -fno-use-linker-plugin -Wl,--gc-sections main-s5.o b-s5.o -o gc-s5
+run gc-s5
+  stdout: 5 10 8
+check readelf -sW gc-s5
+  has: FUNC * _Z6helperi$
+  not: unused_fn
+check readelf --debug-dump=info gc-s5
+  has: Found separate debug object file: */main-s5.
+
+#--- main.cc
+#include <cstdio>
+template <class T> __attribute__((noinline)) T twice(T x) { return x + x; }
+struct Point { int x; double y; };
+thread_local int tl_count = 5;
+int g_total = 3;
+int helper(int);
+int main(int argc, char **) {
+  Point p{argc, 2.5};
+  tl_count += argc;
+  std::printf("%d %d %d\n", twice(argc) + g_total, helper(argc), (int)p.y + tl_count);
+  return 0;
+}
+#--- b.cc
+template <class T> __attribute__((noinline)) T twice(T x) { return x + x; }
+extern thread_local int tl_count;
+__attribute__((noinline)) int unused_fn(int x) { return x * 9 + tl_count; }
+__attribute__((noinline)) int helper(int x) { return twice(x + 1) + tl_count; }

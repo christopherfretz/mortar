@@ -171,6 +171,9 @@ pub struct SynthPlans<'a> {
     pub shstrtab: &'a ShstrtabPlan,
     pub build_id: Option<&'a BuildIdPlan>,
     pub property: &'a PropertyPlan,
+    /// `.mason.meta` kept for tools (`spec/meta.md` MT-32), with
+    /// `--keep-mason-meta` and some live unit; any output kind.
+    pub mason_meta: Option<&'a mortar_synth::MasonMetaPlan>,
     /// An output with `.dynamic`'s plans; `None` in a static link.
     pub dynamic: Option<DynPlans<'a>>,
 }
@@ -1793,6 +1796,7 @@ impl<'a> Chunks<'a> {
             SynthKind::NoteGnuBuildId => link.synth.build_id?,
             SynthKind::NoteGnuProperty => link.synth.property,
             SynthKind::Comment => &mortar_synth::Comment,
+            SynthKind::MasonMeta => link.synth.mason_meta?,
             _ => return None,
         })
     }

@@ -483,7 +483,8 @@ MT-42.
 
 **MT-42 (a link that does not use the feature does not pay for it).**
 A hard rule (the operator's, 2026-11-15). Mortar reads a container's
-bytes only when a check that needs them is on (`odr.md` O-42): with
+bytes only when a check that needs them is on, or `--keep-mason-meta`
+(MT-32) asks for them (`odr.md` O-42): without that option, with
 `--odr=off`, and in the default mode as long as every record-based check
 is `--odr=strict` only (`odr.md` O-47), **a link pays nothing for the
 containers**: mortar parses no unit and keeps no container byte. This
@@ -554,6 +555,13 @@ are concatenated, in `FileId` order, into one `.mason.meta` section that
 satisfies MT-1, unchanged (mortar does not re-encode a unit it did not
 write; a malformed unit is dropped with its warning, MT-14). This is
 what the three references do (P) and keeps the losers' records (§6).
+What `-r` needs from WP-076: the concatenation is
+`mortar_odr::kept_units` (MT-32's bytes: units in `FileId`, section,
+offset order, each padded with zeros to 8, malformed units dropped);
+`-r` writes those bytes as an input section with MT-1's attributes
+(`SHF_EXCLUDE`, alignment 8) instead of MT-32's non-allocated
+`PROGBITS` without flags, and must not also let the inputs' containers
+through as ordinary sections. Not built (M4).
 
 **MT-31 (executables and shared objects).** The container is consumed
 (MT-6) and not copied. If the loadable table is on (`odr.md` O-50), the
@@ -562,12 +570,52 @@ output gets the allocated note `.note.mason` in a `PT_NOTE` with
 8-aligned notes, as `spec/layout.md` places notes); shared-object
 outputs are M4.
 
-**MT-32 (kept for tools).** With `--keep-mason-meta` (proposed,
-`spec/cli.md`, amendment A-5 of `odr.md` §14; default off), an executable or shared
+**MT-32 (kept for tools).** With `--keep-mason-meta` (`spec/cli.md`,
+amendment A-5 of `odr.md` §14; default off), an executable or shared
 object also gets a non-allocated `.mason.meta` (`SHT_PROGBITS`, no
-flags) holding MT-30's concatenation, for tuck. Not needed for
-incremental links (`spec/incr.md` keeps state in its own file).
-[unverified: what `strip` does to such a section in an executable.]
+flags, `sh_addralign` 8) holding MT-30's concatenation, for tuck. Not
+needed for incremental links (`spec/incr.md` keeps state in its own
+file).
+
+Implemented for executables (WP-076; static, static-pie, PIE and
+non-PIE; shared-object outputs are M4), `spec/landed/meta/WP-076.md`:
+
+- The units of the live inputs' containers, in `FileId` order, then
+  section, then offset, each copied unchanged and followed by zero
+  padding to a multiple of 8 (MT-10 lets a reader pass over it). A
+  unit that does not parse is dropped (MT-30); under `--odr=strict` it
+  is `meta-malformed` as always, an error. With no unit, no section.
+- In every `--odr` mode, `--odr=off` included: the option is a request
+  for the bytes, not a check, so it reads the live containers itself
+  (O-42 holds: off, nothing is read). The section is the map's like any
+  other synthetic one; the verifier is asked nothing new (a
+  non-allocated section it already accepts).
+- An input section named `.mason.meta` that is **not** a container
+  (MT-6's warning) and would be copied into the output is refused by
+  name with this option: its bytes would be merged into the kept
+  section by name. Without the option nothing changes.
+- An incremental link with the option falls back to a full link (the
+  section is a function of every live unit).
+
+What the strip tools do to it (measured, WP-076, on mortar's static and
+PIE outputs, aarch64; binutils 2.44, elfutils 0.192, LLVM 22 and 19;
+`crates/mortar/tests/keep_meta.rs::what_the_strip_tools_do`):
+
+| tool | the section |
+|---|---|
+| `strip` (default, `--strip-debug`, `--strip-all`), `objcopy --strip-all` | kept, byte for byte |
+| `objcopy --only-keep-debug`, `llvm-objcopy --only-keep-debug` | kept, contents intact |
+| `llvm-strip --strip-debug`, `llvm-strip --strip-all-gnu` | kept |
+| `llvm-strip` (default `--strip-all`; it removes `.comment` too) | removed |
+| `eu-strip` | removed; with `-f file` moved into the debug file intact |
+
+So GNU's tools keep it in every mode and LLVM's and elfutils' full
+strips remove it, as they remove every non-allocated section that is
+not theirs to keep. No type or flag would keep it under all of them
+without making it allocated (loaded at run time, which the bytes are
+not for), so the proposal stands: `SHT_PROGBITS`, flags 0, alignment
+8. A developer who strips with `llvm-strip` or `eu-strip` keeps it with
+`--keep-section=.mason.meta` (`llvm-strip`) or `-f` (`eu-strip`).
 
 **MT-33 (static executables).** As MT-31 without a table: a static
 executable has no other module to disagree with, and the static check
@@ -584,6 +632,14 @@ has seen every definition (`odr.md` O-20).
 - **T-MT-25, 35, 36**: unknown kind skipped silently; `version` 2 row
   with a longer `row_size` read as version 1; major 2 skipped with
   `meta-version`; minor 1 with a longer header read.
+- **T-MT-32** (WP-076): `crates/mortar/tests/keep_meta.rs` (each output
+  kind; identical bytes on two links; `--odr=off`; a malformed unit
+  dropped, and an error under strict; the map; the program runs; the
+  strip tools); `crates/mortar/tests/odr_records.rs`
+  (`the_kept_section_of_mutated_containers`: 200 mutated containers
+  never panic and keep exactly the units that parse;
+  `keep_refuses_a_copied_section_of_the_name`);
+  `tests/link/{odr,dyn/odr}/mt32-keep-meta.test`.
 - **T-MT-30** (M4): `mortar -r` of two Mason objects, then a final link
   by mortar: the same diagnostics as linking the two objects directly.
 - **T-MT-38**: determinism, above.

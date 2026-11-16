@@ -1,0 +1,75 @@
+# Split DWARF (WP-080) under gdb and lldb, the .dwo files beside the
+# objects: a breakpoint by line and by function, a backtrace with
+# arguments, a global, a type, a step into a function of another unit
+# (twice<int>, whose kept copy is main.cc's); with --gc-sections a
+# breakpoint by line in the collected unused_fn finds no code (gdb's
+# "No compiled code for line 3" goes to standard error, which a check does
+# not read; the pending-breakpoint question on standard output and the
+# next breakpoint's being number 1 say the same). gdb and
+# lldb run host programs only. The transcripts against GNU ld's are
+# crates/mortar/tests/debuggers.rs split_sessions_*.
+#@ spec: image.md I-47
+#@ spec: image.md I-49a
+#@ arch: aarch64
+#@ requires: g++ clang gdb lldb
+
+cxx -g -gsplit-dwarf -gdwarf-5 -O0 -ffunction-sections main.cc -o main-g5.o
+cxx -g -gsplit-dwarf -gdwarf-5 -O0 -ffunction-sections b.cc -o b-g5.o
+cxx(clang) -g -gsplit-dwarf -gdwarf-4 -O0 -ffunction-sections main.cc -o main-c4.o
+cxx(clang) -g -gsplit-dwarf -gdwarf-4 -O0 -ffunction-sections b.cc -o b-c4.o
+link g++ -static -no-pie -fno-use-linker-plugin -Wl,--gc-sections main-g5.o b-g5.o -o g5
+link g++ -static -no-pie -fno-use-linker-plugin -Wl,--gc-sections main-c4.o b-c4.o -o c4
+check gdb g5 "break b.cc:3" "break b.cc:4" run bt "print x" "print g_total" "ptype Point" step bt kill
+  has: Make breakpoint pending on future shared library load?
+  then: Breakpoint 1 at * file b.cc, line 4.
+  has: Breakpoint 1, helper (x=1) at b.cc:4
+  has: #1 * in main (argc=1) at main.cc:10
+  has: $1 = 1
+  has: $2 = 3
+  has: type = struct Point {
+  has: twice<int> (x=2) at main.cc:2
+  then: #1 * in helper (x=1) at b.cc:4
+  not: Could not find DWO
+check gdb c4 "break b.cc:3" "break b.cc:4" run bt "print x" "print g_total" "ptype Point" step bt kill
+  has: Make breakpoint pending on future shared library load?
+  then: Breakpoint 1 at * file b.cc, line 4.
+  has: Breakpoint 1, helper (x=1) at b.cc:4
+  has: #1 * in main (argc=1) at main.cc:10
+  has: $2 = 3
+  has: type = struct Point {
+  has: twice<int> (x=2) at main.cc:2
+  not: Could not find DWO
+check lldb g5 "b b.cc:4" run bt "frame variable x" "target variable g_total" "type lookup Point" "thread step-in" bt kill
+  has: stop reason = breakpoint 1.1
+  has: frame #0: * g5`helper(x=1) at b.cc:4
+  has: frame #1: * g5`main(argc=1, (null)=*) at main.cc:10
+  has: (int) x = 1
+  has: (int) g_total = 3
+  has: struct Point {
+  has: frame #0: * g5`int twice<int>(x=2) at main.cc:2
+  not: unable to locate separate debug file
+check lldb c4 "b b.cc:4" run bt "frame variable x" "target variable g_total" "type lookup Point" "thread step-in" bt kill
+  has: stop reason = breakpoint 1.1
+  has: frame #0: * c4`helper(x=1) at b.cc:4
+  has: (int) g_total = 3
+  has: struct Point {
+  not: unable to locate separate debug file
+
+#--- main.cc
+#include <cstdio>
+template <class T> __attribute__((noinline)) T twice(T x) { return x + x; }
+struct Point { int x; double y; };
+thread_local int tl_count = 5;
+int g_total = 3;
+int helper(int);
+int main(int argc, char **) {
+  Point p{argc, 2.5};
+  tl_count += argc;
+  std::printf("%d %d %d\n", twice(argc) + g_total, helper(argc), (int)p.y + tl_count);
+  return 0;
+}
+#--- b.cc
+template <class T> __attribute__((noinline)) T twice(T x) { return x + x; }
+extern thread_local int tl_count;
+__attribute__((noinline)) int unused_fn(int x) { return x * 9 + tl_count; }
+__attribute__((noinline)) int helper(int x) { return twice(x + 1) + tl_count; }

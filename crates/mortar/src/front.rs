@@ -79,6 +79,9 @@ pub struct SynthPlans {
     pub shstrtab: ShstrtabPlan,
     pub build_id: Option<BuildIdPlan>,
     pub property: PropertyPlan,
+    /// `.mason.meta` kept for tools (`spec/meta.md` MT-32): with
+    /// `--keep-mason-meta` and some live unit.
+    pub mason_meta: Option<mortar_synth::MasonMetaPlan>,
     /// The synthetic chunks that exist, in S-3 order, with their ids
     /// (`Link::synthetic` has them in this order).
     pub chunks: Vec<(SynthKind, ChunkId)>,
@@ -384,6 +387,15 @@ pub fn front<'s>(
     let odr =
         mortar_odr::check(&inputs, &outcome.resolution, &plan.diagnostics.odr, odr_output, &pool);
     let odr_table = odr.table;
+    let odr_full = odr.full;
+    // meta.md MT-32 (WP-076): the live inputs' units, kept for tools.
+    let kept_meta = plan
+        .diagnostics
+        .odr
+        .keep_meta
+        .then(|| mortar_odr::kept_units(&inputs, &outcome.resolution, &pool))
+        .filter(|b| !b.is_empty())
+        .map(mortar_synth::MasonMetaPlan::new);
     for (k, d) in odr.diagnostics {
         diag.emit(k, d);
     }
@@ -614,7 +626,7 @@ pub fn front<'s>(
         let (got, mut tables) = crate::dynlink::plan(&t, &mut slots, diag)?;
         // O-50 to O-52: the table, once `.dynsym`'s order is known.
         if let Some(rows) = &odr_table {
-            tables.note_mason = Some(note_mason(&inputs, rows, &slots.dynsym));
+            tables.note_mason = Some(note_mason(&inputs, rows, odr_full.as_ref(), &slots.dynsym));
         }
         (got, Some(tables))
     } else {
@@ -653,6 +665,7 @@ pub fn front<'s>(
         shstrtab: ShstrtabPlan::new(&[]),
         build_id,
         property,
+        mason_meta: kept_meta,
         chunks: Vec::new(),
     };
     // The section names, estimated from the output sections with live
@@ -684,6 +697,23 @@ pub fn front<'s>(
         .iter()
         .map(|p| p.0)
         .collect();
+    // meta.md MT-32 (WP-076): an input section named `.mason.meta` that
+    // is not a container is copied (MT-6) and would join the kept units'
+    // section, which a reader would then find malformed: refused by name.
+    if plans.mason_meta.is_some()
+        && copied_section(&assignment, &liveness, SynthKind::MasonMeta.name(false))
+    {
+        diag.emit(
+            Key::new(80, 0, 1),
+            Diagnostic::refused(
+                mortar_diag::RefusalClass::Feature,
+                "--keep-mason-meta with an input section named .mason.meta that is not a \
+                 container (it would be copied into the kept section)",
+            )
+            .note("meta.md MT-6, MT-32: the section is copied as any other; its warning names it"),
+        );
+        return None;
+    }
     let names: Vec<&[u8]> =
         estimated_names(&assignment, &liveness, &resolution, &kinds, options.relro, rel);
     let mut shstrtab = ShstrtabPlan::new(&names);
@@ -1265,9 +1295,12 @@ fn got_base_defined(
 /// `.dynsym` index is its symbol's place in `dynsym` plus one (entry 0 is
 /// the null symbol). A row whose symbol is not in `.dynsym` has no index
 /// and is not written (O-50's rows are exported, so in `.dynsym`, D-21).
+/// With `=full` its second note follows the first in the same section
+/// (O-52, WP-076); both are a multiple of 8 bytes long.
 fn note_mason(
     inputs: &Inputs<'_>,
     rows: &[mortar_odr::TableRow],
+    full: Option<&mortar_odr::FullRows>,
     dynsym: &[SymbolId],
 ) -> mortar_synth::NoteMasonPlan {
     let mut index: Vec<(SymbolId, u32)> =
@@ -1281,7 +1314,11 @@ fn note_mason(
             Some(r.row(name, index[at].1))
         })
         .collect();
-    mortar_synth::NoteMasonPlan::new(mortar_odr::table_note(&table))
+    let mut bytes = mortar_odr::table_note(&table);
+    if let Some(f) = full {
+        bytes.extend(mortar_odr::full_note(&f.definitions, &f.types));
+    }
+    mortar_synth::NoteMasonPlan::new(bytes)
 }
 
 /// A dynamic output's synthetic chunk: its kind and size, and for a copy
@@ -1400,6 +1437,9 @@ fn synth_chunks(
     // S-100: mortar's `.comment` piece, after the inputs' strings.
     present.push((SynthKind::Comment, mortar_synth::COMMENT.len() as u64));
     present.extend(dynamic.iter().map(|d| (d.0, d.1)));
+    if let Some(m) = &p.mason_meta {
+        present.push((SynthKind::MasonMeta, m.size()));
+    }
     present.sort_by_key(|c| c.0);
     let copy_align = |kind: SynthKind| dynamic.iter().find(|d| d.0 == kind).and_then(|d| d.2);
     let chunks = present
@@ -1466,6 +1506,13 @@ fn estimated_names<'n>(
     names.sort_unstable();
     names.dedup();
     names
+}
+
+/// Whether an output section named `name` has a live input section.
+fn copied_section(a: &Assignment<'_>, liveness: &Liveness, name: &[u8]) -> bool {
+    a.out_of.iter().any(|(sid, out)| {
+        out.out().is_some_and(|o| a.outsecs[o].name == name) && liveness.is_live(sid)
+    })
 }
 
 /// The output section names of a placement, in section index order.

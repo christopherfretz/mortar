@@ -1,0 +1,129 @@
+# Split DWARF (WP-080) in the M2 output kinds of the 64-bit targets: a
+# PIE against the C library and a static-pie, from GCC's and Clang's
+# DWARF 5 split objects (-fPIE). The skeletons' .debug_addr entries are
+# link-time addresses relative to the image base, as in a non-split PIE
+# (spec/dyn.md D-72; I-47's rows stand).
+# GCC's .debug_addr entry of a TLS variable (R_X86_64_64/R_386_32
+# against tl_count) is its DTP offset (spec/x64.md X-53, spec/x86.md
+# X86-62); GNU ld and mold write the template address (plumb.md A15).
+# GNU ld's static-pie carries A30 on AArch64 and A31 on x86-64
+# (crtbeginS's .plt.got entry; plumb.md §10.2).
+#@ anomaly(bfd,mold,x86_64): A15
+#@ anomaly(bfd,aarch64): A30
+#@ anomaly(bfd,x86_64): A31
+#@ spec: image.md I-49a
+#@ spec: dyn.md "D-72"
+#@ arch: aarch64 x86_64
+#@ requires: g++ clang llvm-dwarfdump
+
+cxx -g -gsplit-dwarf -gdwarf-5 -O0 -fPIE -ffunction-sections main.cc -o main-g5.o
+cxx -g -gsplit-dwarf -gdwarf-5 -O0 -fPIE -ffunction-sections b.cc -o b-g5.o
+cxx(clang) -g -gsplit-dwarf -gdwarf-5 -O0 -fPIE -ffunction-sections main.cc -o main-c5.o
+cxx(clang) -g -gsplit-dwarf -gdwarf-5 -O0 -fPIE -ffunction-sections b.cc -o b-c5.o
+cxx -g -gsplit-dwarf -gdwarf-4 -O0 -fPIE -ffunction-sections main.cc -o main-g4.o
+cxx -g -gsplit-dwarf -gdwarf-4 -O0 -fPIE -ffunction-sections b.cc -o b-g4.o
+link g++ -pie -fno-use-linker-plugin main-g5.o b-g5.o -o pie-g5
+run pie-g5
+  stdout: 5 10 8
+check readelf -SW pie-g5
+  has: .debug_addr
+  has: .debug_info
+  not: .dwo
+check readelf --debug-dump=info pie-g5
+  has: DW_UT_skeleton
+  has: DW_AT_dwo_name
+  has: DW_UT_split_compile
+  has: Found separate debug object file: */main-g5.dwo
+  has: Found separate debug object file: */b-g5.dwo
+check llvm-dwarfdump --verify pie-g5
+  has: No errors.
+link g++ -static-pie -fno-use-linker-plugin main-g5.o b-g5.o -o spie-g5
+run spie-g5
+  stdout: 5 10 8
+check readelf -SW spie-g5
+  has: .debug_addr
+  has: .debug_info
+  not: .dwo
+check readelf --debug-dump=info spie-g5
+  has: DW_UT_skeleton
+  has: DW_AT_dwo_name
+  has: DW_UT_split_compile
+  has: Found separate debug object file: */main-g5.dwo
+  has: Found separate debug object file: */b-g5.dwo
+check llvm-dwarfdump --verify spie-g5
+  has: No errors.
+link g++ -pie -fno-use-linker-plugin main-c5.o b-c5.o -o pie-c5
+run pie-c5
+  stdout: 5 10 8
+check readelf -SW pie-c5
+  has: .debug_addr
+  has: .debug_info
+  not: .dwo
+check readelf --debug-dump=info pie-c5
+  has: DW_UT_skeleton
+  has: DW_AT_dwo_name
+  has: DW_UT_split_compile
+  has: Found separate debug object file: */main-c5.dwo
+  has: Found separate debug object file: */b-c5.dwo
+check llvm-dwarfdump --verify pie-c5
+  has: No errors.
+link g++ -static-pie -fno-use-linker-plugin main-c5.o b-c5.o -o spie-c5
+run spie-c5
+  stdout: 5 10 8
+check readelf -SW spie-c5
+  has: .debug_addr
+  has: .debug_info
+  not: .dwo
+check readelf --debug-dump=info spie-c5
+  has: DW_UT_skeleton
+  has: DW_AT_dwo_name
+  has: DW_UT_split_compile
+  has: Found separate debug object file: */main-c5.dwo
+  has: Found separate debug object file: */b-c5.dwo
+check llvm-dwarfdump --verify spie-c5
+  has: No errors.
+link g++ -pie -fno-use-linker-plugin main-g4.o b-g4.o -o pie-g4
+run pie-g4
+  stdout: 5 10 8
+check readelf -SW pie-g4
+  has: .debug_addr
+  has: .debug_info
+  not: .dwo
+check readelf --debug-dump=info pie-g4
+  has: DW_AT_GNU_dwo_name
+  has: Found separate debug object file: */main-g4.dwo
+  has: Found separate debug object file: */b-g4.dwo
+check llvm-dwarfdump --verify pie-g4
+  has: No errors.
+link g++ -static-pie -fno-use-linker-plugin main-g4.o b-g4.o -o spie-g4
+run spie-g4
+  stdout: 5 10 8
+check readelf -SW spie-g4
+  has: .debug_addr
+  has: .debug_info
+  not: .dwo
+check readelf --debug-dump=info spie-g4
+  has: DW_AT_GNU_dwo_name
+  has: Found separate debug object file: */main-g4.dwo
+  has: Found separate debug object file: */b-g4.dwo
+check llvm-dwarfdump --verify spie-g4
+  has: No errors.
+
+#--- main.cc
+#include <cstdio>
+template <class T> __attribute__((noinline)) T twice(T x) { return x + x; }
+struct Point { int x; double y; };
+thread_local int tl_count = 5;
+int g_total = 3;
+int helper(int);
+int main(int argc, char **) {
+  Point p{argc, 2.5};
+  tl_count += argc;
+  std::printf("%d %d %d\n", twice(argc) + g_total, helper(argc), (int)p.y + tl_count);
+  return 0;
+}
+#--- b.cc
+template <class T> __attribute__((noinline)) T twice(T x) { return x + x; }
+extern thread_local int tl_count;
+__attribute__((noinline)) int unused_fn(int x) { return x * 9 + tl_count; }
+__attribute__((noinline)) int helper(int x) { return twice(x + 1) + tl_count; }

@@ -21,6 +21,7 @@ tests ("Link tests"), the gate's hosted runs on GitHub Actions
 | `test` | `cargo test --workspace` |
 | `linktest` | `cargo xtask linktest --arch <host>` (`--quick`), `cargo xtask linktest` (full) |
 | `census` | `cargo xtask census --quick` (`--quick`), `cargo xtask census` (full) |
+| `mason` | `cargo xtask mason libcxx --sample ci --mode mortar --mode dyn-mortar --plumb --baseline tests/mason/baseline-mortar.tsv` (both); `cargo xtask mason programs` (full) |
 | `sweep` | `cargo xtask sweep --quick` (`--quick`), `cargo xtask sweep` (full) |
 | `static-identical` | `cargo xtask static-identical` (both; every architecture) |
 
@@ -56,7 +57,21 @@ subset of the drivers and variations (20 lines on AArch64; 2 s measured
 by WP-056); the full gate runs every census line of AArch64 and x86-64
 (440 lines; 19 s on the reference machine with `-j 6`).
 
-`sweep` is run in-process after `census` (WP-088): the byte sweep of
+`mason` is run in-process after `census` (WP-058): libc++'s `ci`
+sample (eleven tests, `tests/mason/README.md` "libc++") through the
+Mason lane, linked by the debug mortar fully static (`mortar`) and on
+kiln's dynamic line (`dyn-mortar`: static libc++, dynamic glibc, PIE),
+every output verified with its line, the outcomes held to
+`tests/mason/baseline-mortar.tsv`; the full gate adds the programs table
+(`cargo xtask mason programs`, static and dynamic variants, AArch64 and
+x86-64). It fails on a test that does not pass and is not in the
+baseline, a verifier finding, a second link that differs, or a cell
+that does not hold. Without kiln and hod builds or the lane's
+`setup` it says `skipped` and passes (the hosted lanes have neither),
+unless `MASON_REQUIRE_TOOLS=1`. Cost on the reference machine: see
+`spec/landed/mason/WP-058.md`.
+
+`sweep` is run in-process after `mason` (WP-088): the byte sweep of
 `spec/plumb.md` §12.3 on mortar's own dynamic outputs. GCC compiles a
 hello program, mortar links it behind a `-B` directory whose `ld` is
 mortar, with its map (`--mortar-map`), and every byte of the output's
@@ -709,8 +724,8 @@ file with neither architecture nor linker.
 - `requires: <word>...`: once; exactly the tools the steps use beyond
   `gcc` and the binutils: `g++` (a `cxx` step, `link g++` or `shlib g++`),
   `gfortran`, `clang` (a `(clang)` compile step or `link clang`/`clang++`),
-  `yaml2obj`, `llvm-readelf`, `gdb`, `lldb`, `eu-elflint` (a `check` with
-  that tool). A missing word and an unused one are both errors. A
+  `yaml2obj`, `llvm-readelf`, `llvm-dwarfdump`, `gdb`, `lldb`, `eu-elflint`
+  (a `check` with that tool). A missing word and an unused one are both errors. A
   fixture states its own `requires`, which every test naming it gets.
 - `fixture: <name>...`: the fixtures (each named once) whose built files the test's
   inputs start from ("Fixtures").
@@ -772,11 +787,11 @@ keeps blanks (with `\"` and `\\`).
 | `as <args>` | the C driver with `-c` (so `.S` files are preprocessed) |
 | `yaml2obj <args>` | `yaml2obj` |
 | `ar <args>` | the architecture's `ar` |
-| `meta <description> <in> -o <out>` | the test producer (`spec/meta.md` §12): a `.mason.meta` container added to the object `<in>` by the architecture's `objcopy`; with a shared object `<in>.so`, its placeholder `.note.mason` table filled from `row` lines (`spec/odr.md` O-50 to O-52; `cargo xtask meta table`, WP-075) |
+| `meta <description> <in> -o <out>` | the test producer (`spec/meta.md` §12): a `.mason.meta` container added to the object `<in>` by the architecture's `objcopy`; with a shared object `<in>.so`, its placeholder `.note.mason` table filled from `row` lines (`spec/odr.md` O-50 to O-52; `cargo xtask meta table`, WP-075), and `=full`'s second note (placeholder type `0x4d4f4402`) from `hidden` and `type` lines (WP-076) |
 | `shlib <driver> <args>` | a shared library, by the architecture's `gcc`, `g++` or `gfortran` with `-shared -fuse-ld=bfd`: GNU ld links every fixture library, whatever the run's linkers |
 | `link <driver> <args>` | a link; `<driver>` is `ld` (the linker itself) or `gcc`, `g++`, `gfortran`, `clang`, `clang++` |
 | `run <program> [<args>]` | runs a linked program |
-| `check <tool> <args>` | `readelf`, `nm`, `objdump` (the architecture's), `llvm-readelf`, `text` (the file named by the one argument, read), `elflint`, `ldd`, `gdb`, `lldb` ("Checks") |
+| `check <tool> <args>` | `readelf`, `nm`, `objdump` (the architecture's), `llvm-readelf`, `llvm-dwarfdump` (WP-080: `--verify`, the DWARF of a split-DWARF output), `text` (the file named by the one argument, read), `elflint`, `ldd`, `gdb`, `lldb` ("Checks") |
 
 The build steps come before every link, run and check step. Expectations
 are the indented lines under a step:
@@ -1163,8 +1178,11 @@ drivers are those of `scripts/ci-tools.sh`, found through the tool
 guard: GCC's `gcc`, `g++` and `gfortran` of each architecture (plain on
 the host, `<triple>-` otherwise), `clang-22`/`clang++-22` and
 `clang-19`/`clang++-19` (with `--target=<triple>` off the host), and
-`kiln++` with hod where the workspace has their builds (natively on
-AArch64; skipped by name otherwise, with the reason as a note). Each
+`kiln++` with hod where the workspace has their builds, on an AArch64
+host: natively for AArch64 and with `--target=x86_64-linux-gnu` for
+x86-64 (WP-058); skipped by name otherwise, with the reason as a note.
+kiln++ rejects `-shared-libgcc`, `-static-libgcc`, `-static-libstdc++`
+and `-static-pie` (`unknown argument`): those lines are "no line". Each
 compiles a hello (C; C++ with an exception, iostream and a
 `thread_local`; Fortran) once per flavour (plain, `-fsanitize=address`,
 `-flto`) and links it in each variation of `VARIATIONS` (the census's

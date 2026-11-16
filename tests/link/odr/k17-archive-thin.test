@@ -1,0 +1,59 @@
+# K17 (spec/odr.md §3, O-23) with a thin archive and a member that is not
+# ELF: the thin member is read from its own file, and the other is never
+# a file of the link.
+# The member m.o defines f() differently from the definition the link
+# keeps and is not extracted: odr-archive-shadow, as in k17-archive-shadow.
+#@ spec: odr.md §3, "O-23", "O-41", "O-47"
+#@ requires: g++
+#@ diag: odr-archive-shadow a.o libthin.a(m.o)
+
+cxx -O0 a.cc -o a0.o
+meta a.meta a0.o -o a.o
+cxx -O0 m.cc -o m0.o
+meta m.meta m0.o -o m.o
+cxx -O0 same.cc -o same0.o
+meta same.meta same0.o -o same.o
+cxx -O0 plain.cc -o plain.o
+ar rcsT libthin.a m.o same.o plain.o notelf.txt
+cxx -O0 main.cc -o main.o
+link(bfd,lld,mold) g++ -static -no-pie main.o a.o libthin.a -o prog
+link(mortar) g++ -static -no-pie main.o a.o libthin.a -Wl,--odr-check-archives -o prog
+run prog
+  stdout: 1
+
+#--- a.cc
+__attribute__((noinline)) inline int f() { return 1; }
+int fa() { return f(); }
+#--- a.meta
+summary name=lang value=c++
+summary name=odr.scheme value=model-1
+summary name=producer value="hand (WP-076 model)"
+summary name=std value=c++17
+definition anchor=_Z1fv hash=11111111111111111111111111111111 class=1 flags=1 file=h.h line=1
+#--- m.cc
+__attribute__((noinline)) inline int f() { return 2; }
+int fm() { return f(); }
+#--- m.meta
+summary name=lang value=c++
+summary name=odr.scheme value=model-1
+summary name=producer value="hand (WP-076 model)"
+summary name=std value=c++17
+definition anchor=_Z1fv hash=22222222222222222222222222222222 class=1 flags=1 file=h.h line=1
+#--- same.cc
+__attribute__((noinline)) inline int f() { return 1; }
+int fs() { return f(); }
+#--- same.meta
+summary name=lang value=c++
+summary name=odr.scheme value=model-1
+summary name=producer value="hand (WP-076 model)"
+summary name=std value=c++17
+definition anchor=_Z1fv hash=11111111111111111111111111111111 class=1 flags=1 file=h.h line=1
+#--- plain.cc
+__attribute__((noinline)) inline int f() { return 3; }
+int fp() { return f(); }
+#--- main.cc
+#include <cstdio>
+int fa();
+int main() { std::printf("%d\n", fa()); }
+#--- notelf.txt
+not an object

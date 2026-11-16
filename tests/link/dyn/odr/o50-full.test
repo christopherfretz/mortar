@@ -1,0 +1,51 @@
+# O-50 to O-52 (spec/odr.md; WP-076): --odr-table=full writes the
+# =exported note unchanged (f and g, NONPREEMPTIBLE) and, after it in the
+# same .note.mason, a second MasonMeta note of type 0x4d4f4402: one row
+# for the hidden vague definition h (hash 04, flags VAGUE, no layout) and
+# one for the type 1S (hash 05, layout 0x55, size 8, align 4). The section
+# is 0x58 + 0x68 bytes, still one PT_NOTE of alignment 8.
+#
+# The tools that read the image take it as it is: readelf prints both
+# notes as unknown types; gdb and lldb stop at main. eu-elflint names each
+# unknown note type, as for =exported (o50-table.test).
+#@ spec: odr.md "O-50", "O-51", "O-52"
+#@ arch: aarch64 x86_64
+#@ requires: eu-elflint gdb lldb
+
+cc -O0 -g -fPIE main.c -o main0.o
+meta main.meta main0.o -o main.o
+link(bfd,lld,mold) gcc -pie -rdynamic main.o -o prog
+link(mortar) gcc -pie -rdynamic main.o -Wl,--odr-table=full -o prog
+run prog
+  stdout: 2 3 4
+check(mortar) readelf -nW prog
+  has: Displaying notes found in: .note.mason
+  has: ^ *MasonMeta *0x00000040 *Unknown note type: (0x4d4f4401) *description data: 01 00 00 00 02 00 00 00 18 00 00 00 00 00 00 00 * 01 80 00 00 * 01 80 00 00
+  has: ^ *MasonMeta *0x00000050 *Unknown note type: (0x4d4f4402) *description data: 01 00 00 00 01 00 00 00 20 00 00 00 01 00 00 00 * 04 04 04 04 04 04 04 04 00 00 00 00 00 00 00 00 00 00 00 00 00 00 01 00 * 05 05 05 05 05 05 05 05 55 00 00 00 00 00 00 00 08 00 00 00 04 00 00 00
+check(mortar) readelf -SW prog
+  has: ] .note.mason * NOTE * 0* 0* 0000c0 00 * A * 0 * 0 * 8$
+check(mortar) readelf -lW prog
+  has: ^ *NOTE * 0x* 0x* 0x* 0x0000c0 0x0000c0 R * 0x8$
+check(mortar) elflint prog
+  allow: unknown object file note type 1297040385 with owner name 'MasonMeta' at offset *
+  allow: unknown object file note type 1297040386 with owner name 'MasonMeta' at offset *
+  allow: (g): symbol in dynamic symbol table with non-default visibility
+check(mortar) gdb prog "break main" run bt kill
+  has: Breakpoint 1, main () at main.c:
+  has: #0 main () at main.c:
+check(mortar) lldb prog "b main" run bt kill
+  has: stop reason = breakpoint 1.1
+  has: main.c:
+
+#--- main.c
+#include <stdio.h>
+int f(void) { return 2; }
+__attribute__((visibility("protected"))) int g(void) { return 3; }
+__attribute__((visibility("hidden"))) int h(void) { return 4; }
+int main(void) { printf("%d %d %d\n", f(), g(), h()); return 0; }
+#--- main.meta
+summary name=lang value=c++
+definition anchor=f hash=02020202020202020202020202020202 class=1 flags=1
+definition anchor=g hash=03030303030303030303030303030303 class=1 flags=1
+definition anchor=h hash=04040404040404040404040404040404 class=1 flags=1
+type name=1S hash=05050505050505050505050505050505 layout=0x55 size=8 align=4 flags=0 file=h.h line=1

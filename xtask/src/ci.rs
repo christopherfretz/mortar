@@ -103,14 +103,20 @@ pub const STATIC_IDENTICAL: &str = "static-identical";
 /// (`spec/harness.md` "ci", "census").
 pub const CENSUS: &str = "census";
 
-/// The sweep step, after the census: `cargo xtask sweep --quick`
+/// The Mason step, after the census: libc++'s `ci` sample through the
+/// Mason lane, static and dynamic (`crate::mason::ci`; the full gate adds
+/// the programs table), skipped by name without kiln and hod builds
+/// (`spec/harness.md` "ci").
+pub const MASON: &str = "mason";
+
+/// The sweep step, after the Mason step: `cargo xtask sweep --quick`
 /// (`--quick`) or `cargo xtask sweep` (full) in-process
-/// (`spec/harness.md` "ci", "sweep").
+/// (`spec/harness.md` "ci").
 pub const SWEEP: &str = "sweep";
 
 /// Every step's name, in the order they run.
-pub const STEP_NAMES: [&str; 7] =
-    [STEPS[0].0, STEPS[1].0, STEPS[2].0, LINKTEST, CENSUS, SWEEP, STATIC_IDENTICAL];
+pub const STEP_NAMES: [&str; 8] =
+    [STEPS[0].0, STEPS[1].0, STEPS[2].0, LINKTEST, CENSUS, MASON, SWEEP, STATIC_IDENTICAL];
 
 /// The arguments of the census step.
 pub fn census_args(quick: bool) -> Vec<String> {
@@ -247,6 +253,7 @@ pub fn run(args: &Args) -> bool {
             None if name == LINKTEST => crate::linktest::main(&linktest_args(args.quick)) == 0,
             #[cfg(unix)]
             None if name == CENSUS => crate::census::main(&census_args(args.quick)) == 0,
+            None if name == MASON => crate::mason::ci(args.quick),
             #[cfg(unix)]
             None if name == SWEEP => crate::sweep::main(&sweep_args(args.quick)) == 0,
             None => crate::identical::run(&crate::identical::Args::default()),
@@ -291,7 +298,7 @@ mod tests {
         assert_eq!(all.steps, STEP_NAMES);
         assert_eq!(
             all.steps,
-            ["fmt", "clippy", "test", "linktest", "census", "sweep", "static-identical"]
+            ["fmt", "clippy", "test", "linktest", "census", "mason", "sweep", "static-identical"]
         );
         assert_eq!(parse(&[]).unwrap().steps, all.steps);
         let two = parse(&["--step", "test", "--step=fmt"]).unwrap();

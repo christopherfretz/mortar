@@ -14,7 +14,7 @@
 
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: cargo xtask ci [--quick] [--no-fail-fast] [--step fmt|clippy|test|linktest|census|sweep|static-identical]...\n       \
+const USAGE: &str = "usage: cargo xtask ci [--quick] [--no-fail-fast] [--step fmt|clippy|test|linktest|census|mason|sweep|static-identical]...\n       \
                      cargo xtask linktest [options] [<file or directory>...]\n       \
                      cargo xtask census [--quick] [--arch <a>[,<a>]] [--filter <s>]... [--mortar <path>] [-j <n>] [--keep]\n       \
                      cargo xtask sweep [--quick] [--arch <a>[,<a>]] [--threads <n>]\n       \
