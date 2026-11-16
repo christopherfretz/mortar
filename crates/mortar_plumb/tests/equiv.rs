@@ -24,7 +24,13 @@ fn run(dir: &Path, program: &Path, args: &[&str]) {
     let mut c = std::process::Command::new(program);
     c.current_dir(dir).args(args);
     let out = run_with(&mut c, b"", mortar_testutil::DEFAULT_TIMEOUT);
-    assert!(out.success(), "{} {} failed: {}", program.display(), args.join(" "), out.stderr_text());
+    assert!(
+        out.success(),
+        "{} {} failed: {}",
+        program.display(),
+        args.join(" "),
+        out.stderr_text()
+    );
 }
 
 /// The sources: `main.s` calls `afun` and `bfun` and points at `avar`,
@@ -136,7 +142,13 @@ struct Pair {
     files: Vec<(String, Vec<u8>)>,
 }
 
-fn assemble(arch: Arch, label: &str, extra_main: &str, extra_a: &str, asm_args: &[&str]) -> Option<Pair> {
+fn assemble(
+    arch: Arch,
+    label: &str,
+    extra_main: &str,
+    extra_a: &str,
+    asm_args: &[&str],
+) -> Option<Pair> {
     let asm = arch.tool("as")?;
     arch.tool("ld.bfd")?;
     let dir = Scratch::new(&format!("equiv-{label}-{}", arch.triple()));
@@ -172,14 +184,25 @@ impl Pair {
             .iter()
             .map(|f| {
                 let b = std::fs::read(self.dir.join(&f.path)).unwrap_or_default();
-                if b.starts_with(b"\x7fELF") { sections(&b).into_iter().map(|s| s.0).collect() } else { Vec::new() }
+                if b.starts_with(b"\x7fELF") {
+                    sections(&b).into_iter().map(|s| s.0).collect()
+                } else {
+                    Vec::new()
+                }
             })
             .collect();
         let mut chunks = Vec::new();
         map.placed.retain(|q| match &q.section {
             SectionRef::Name(n) if !names[q.file as usize].contains(n) => {
                 if q.size > 0 {
-                    chunks.push(Chunk { kind: ChunkKind::Synthetic, name: n.clone(), addr: Some(q.addr), size: q.size, target: None, line: 0 });
+                    chunks.push(Chunk {
+                        kind: ChunkKind::Synthetic,
+                        name: n.clone(),
+                        addr: Some(q.addr),
+                        size: q.size,
+                        target: None,
+                        line: 0,
+                    });
                 }
                 false
             }
@@ -205,7 +228,13 @@ impl Pair {
             let fill = if name == ".text" && self.arch != Arch::Aarch64 { 0xcc } else { 0 };
             let o = x.off(p.addr);
             x.output[o..o + p.size as usize].fill(fill);
-            x.map.dead.push(DeadRange { section: name, offset: p.addr - addr, size: p.size, kind: None, line: 0 });
+            x.map.dead.push(DeadRange {
+                section: name,
+                offset: p.addr - addr,
+                size: p.size,
+                kind: None,
+                line: 0,
+            });
         }
         x
     }
@@ -324,7 +353,11 @@ fn p_e1_sections_and_segments() {
         let mut m = x.clone();
         let e = 24;
         let v = u64::from_le_bytes(m.output[e..e + 8].try_into().unwrap());
-        let n = if w == 8 { (v + 4).to_le_bytes().to_vec() } else { ((v as u32) + 4).to_le_bytes().to_vec() };
+        let n = if w == 8 {
+            (v + 4).to_le_bytes().to_vec()
+        } else {
+            ((v as u32) + 4).to_le_bytes().to_vec()
+        };
         m.output[e..e + n.len()].copy_from_slice(&n);
         let (pe, _, _) = p.equiv(&m, &f);
         assert!(has(&pe, "P-E1", "e_entry"), "{arch:?}: {pe:#?}");
@@ -343,14 +376,22 @@ fn p_e2_live_units() {
         let fi = m.map.files.iter().position(|q| q.path == "b.o").unwrap() as u32;
         m.map.placed.retain(|q| !(q.file == fi && q.section == SectionRef::Name(".data".into())));
         let (pe, _, _) = p.equiv(&m, &f);
-        assert!(has(&pe, "P-E2", "b.o()@None:.data is placed in the full link, not in the update"), "{arch:?}: {pe:#?}");
+        assert!(
+            has(&pe, "P-E2", "b.o()@None:.data is placed in the full link, not in the update"),
+            "{arch:?}: {pe:#?}"
+        );
         // F has an extra unit X lacks, the other way round.
         let (pe, _, _) = p.equiv(&x, &{
             let mut g = f.clone();
-            g.map.placed.retain(|q| !(q.file == fi && q.section == SectionRef::Name(".data".into())));
+            g.map
+                .placed
+                .retain(|q| !(q.file == fi && q.section == SectionRef::Name(".data".into())));
             g
         });
-        assert!(has(&pe, "P-E2", "placed in the update, not in the full link"), "{arch:?}: {pe:#?}");
+        assert!(
+            has(&pe, "P-E2", "placed in the update, not in the full link"),
+            "{arch:?}: {pe:#?}"
+        );
     }
 }
 
@@ -371,18 +412,24 @@ fn p_e3_symbols() {
             let st = x.secs.iter().find(|q| q.0 == ".symtab").unwrap();
             (st.3 as usize, if word(arch) == 8 { 24 } else { 16 })
         };
-        let idx = s.iter().find(|(_, y)| s.name(y).ok() == Some(b"bvar".as_slice())).unwrap().0.0 as usize;
+        let idx = s.iter().find(|(_, y)| s.name(y).ok() == Some(b"bvar".as_slice())).unwrap().0.0
+            as usize;
         let val = sym_off + idx * ent + if ent == 24 { 8 } else { 4 };
         let mut m = x.clone();
         let av = x.symbol("bfun");
-        let n = if ent == 24 { av.to_le_bytes().to_vec() } else { (av as u32).to_le_bytes().to_vec() };
+        let n =
+            if ent == 24 { av.to_le_bytes().to_vec() } else { (av as u32).to_le_bytes().to_vec() };
         m.output[val..val + n.len()].copy_from_slice(&n);
         let (pe, _, _) = p.equiv(&m, &f);
-        assert!(has(&pe, "P-E3", "the global 'bvar' names another definition"), "{arch:?}: {pe:#?}");
+        assert!(
+            has(&pe, "P-E3", "the global 'bvar' names another definition"),
+            "{arch:?}: {pe:#?}"
+        );
         // A global renamed in X (`bvar` -> `bvaz`): in one link only.
         let name_at = {
             let strtab = x.secs.iter().find(|q| q.0 == ".strtab").unwrap().3 as usize;
-            let st_name = u32::from_le_bytes(x.output[sym_off + idx * ent..][..4].try_into().unwrap());
+            let st_name =
+                u32::from_le_bytes(x.output[sym_off + idx * ent..][..4].try_into().unwrap());
             strtab + st_name as usize + 3
         };
         let mut m = x.clone();
@@ -451,7 +498,8 @@ fn p_e6_stray_file_bytes() {
         let f = p.link(&["main.o", "a.o", "b.o"], &[]);
         // The last byte before `.text`'s file image, when it is padding.
         let (_, _, to) = x.sec(".text");
-        let mut used: Vec<(u64, u64)> = x.secs.iter().filter(|s| s.0 != ".bss").map(|s| (s.3, s.3 + s.2)).collect();
+        let mut used: Vec<(u64, u64)> =
+            x.secs.iter().filter(|s| s.0 != ".bss").map(|s| (s.3, s.3 + s.2)).collect();
         used.sort_unstable();
         let gap = (0..to).rev().find(|o| !used.iter().any(|(a, b)| a <= o && o < b) && *o > 0x100);
         let Some(gap) = gap else { continue };
@@ -506,7 +554,11 @@ fn p_e4_x86_64_gotpcrelx_must_not_differ_in_exec() {
     // writes and mortar does not (§5.9), so F's map stays GNU ld's (any
     // map is an F; the command line takes mortar maps only).
     let mut f = p.link(&["main.o", "a.o", "b.o"], &[]);
-    f.map = mortar_plumb::map::parse(Format::Gnu, &std::fs::read_to_string(p.dir.join("out.map")).unwrap()).unwrap();
+    f.map = mortar_plumb::map::parse(
+        Format::Gnu,
+        &std::fs::read_to_string(p.dir.join("out.map")).unwrap(),
+    )
+    .unwrap();
     let site = x0.symbol("_start") + 10;
     let o = x0.off(site);
     let target = x0.symbol("avar");
@@ -547,13 +599,25 @@ fn p_e1_to_p_e3_clauses() {
         assert!(has(&pe, "P-E1", "file headers differ"), "{arch:?}: {pe:#?}");
         let mut m = x.clone();
         let fi = m.map.files.iter().position(|q| q.path == "b.o").unwrap() as u32;
-        for q in m.map.placed.iter_mut().filter(|q| q.file == fi && q.section == SectionRef::Name(".data".into())) {
+        for q in m
+            .map
+            .placed
+            .iter_mut()
+            .filter(|q| q.file == fi && q.section == SectionRef::Name(".data".into()))
+        {
             q.size += 8;
         }
         let (pe, _, _) = p.equiv(&m, &f);
         assert!(has(&pe, "P-E2", "has size"), "{arch:?}: {pe:#?}");
         let mut m = x.clone();
-        m.map.chunks.push(Chunk { kind: ChunkKind::Synthetic, name: ".extra".into(), addr: None, size: 0, target: None, line: 0 });
+        m.map.chunks.push(Chunk {
+            kind: ChunkKind::Synthetic,
+            name: ".extra".into(),
+            addr: None,
+            size: 0,
+            target: None,
+            line: 0,
+        });
         let (pe, _, _) = p.equiv(&m, &f);
         assert!(has(&pe, "P-E2", "chunk '.extra'"), "{arch:?}: {pe:#?}");
         // `bvar`'s binding made STB_LOCAL in X.
@@ -634,7 +698,10 @@ fn p_e6_non_alloc_tiling() {
         let mut m = x.clone();
         nplace(&mut m, 2);
         let (pe, _, _) = p.equiv(&m, &f);
-        assert!(has(&pe, "P-E6", ".myinfo, which no unit holds") || has(&pe, "P-E6", "in no unit"), "{arch:?}: {pe:#?}");
+        assert!(
+            has(&pe, "P-E6", ".myinfo, which no unit holds") || has(&pe, "P-E6", "in no unit"),
+            "{arch:?}: {pe:#?}"
+        );
     }
 }
 
@@ -654,7 +721,14 @@ fn p_e5_dynamic_tables() {
             let covered = x.map.placed.iter().any(|q| *a <= q.addr && q.addr < a + z)
                 || x.map.chunks.iter().any(|c| c.addr.is_some_and(|ca| *a <= ca && ca < a + z));
             if *a != 0 && *z > 0 && !covered {
-                chunks.push(Chunk { kind: ChunkKind::Synthetic, name: n.clone(), addr: Some(*a), size: *z, target: None, line: 0 });
+                chunks.push(Chunk {
+                    kind: ChunkKind::Synthetic,
+                    name: n.clone(),
+                    addr: Some(*a),
+                    size: *z,
+                    target: None,
+                    line: 0,
+                });
             }
         }
         x.map.chunks.extend(chunks);
@@ -703,7 +777,8 @@ fn hostile_pairs_never_panic() {
         let Some(p) = assemble(arch, "hostile", "", "", &[]) else { return };
         let x = p.update(&[]);
         let f = p.link(&["main.o", "a.o", "b.o"], &[]);
-        let inputs: Vec<Input<'_>> = p.files.iter().map(|(q, b)| Input { path: q, bytes: b }).collect();
+        let inputs: Vec<Input<'_>> =
+            p.files.iter().map(|(q, b)| Input { path: q, bytes: b }).collect();
         let xt = mortar_plumb::map::mortar::write(&x.map);
         let ft = mortar_plumb::map::mortar::write(&f.map);
         let xm = mortar_plumb::map::parse(Format::Mortar, &xt).unwrap();
@@ -730,7 +805,9 @@ fn hostile_pairs_never_panic() {
         let e = mortar_plumb::equiv::check(&f.output, &xm, &x.output, &fm, &inputs);
         assert!(!e.clean(), "{arch:?}: swapped outputs are clean");
         let other = p.link(&["main.o", "a.o", "b.o", "pad.o"], &[]);
-        let om = mortar_plumb::map::parse(Format::Mortar, &mortar_plumb::map::mortar::write(&other.map)).unwrap();
+        let om =
+            mortar_plumb::map::parse(Format::Mortar, &mortar_plumb::map::mortar::write(&other.map))
+                .unwrap();
         let e = mortar_plumb::equiv::check(&x.output, &xm, &other.output, &om, &inputs);
         assert!(!e.clean(), "{arch:?}: a foreign F is clean");
         let e = mortar_plumb::equiv::check(&x.output, &xm, &[], &fm, &inputs);

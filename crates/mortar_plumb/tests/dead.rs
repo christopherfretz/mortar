@@ -955,7 +955,8 @@ fn pie_sources(arch: Arch) -> [(&'static str, String); 4] {
         "\t.data\n\t.balign 8\n\t.globl arr\narr:\t.fill 40,1,1\n\t.globl arr_end\narr_end:\n"
             .to_string();
     let fill = if arch == Arch::Aarch64 { ".fill 8,4,0" } else { ".fill 32,1,0xcc" };
-    let dead = format!("\t.text\ndead_code:\n\t{fill}\n\t.data\n\t.quad dead_code\n\t.quad dead_code+4\n");
+    let dead =
+        format!("\t.text\ndead_code:\n\t{fill}\n\t.data\n\t.quad dead_code\n\t.quad dead_code+4\n");
     let blk = "\t.data\n\t.globl blk_\nblk_:\t.quad 7\n".to_string();
     [("main", main), ("arr", arr), ("dead", dead), ("blk", blk)]
 }
@@ -982,6 +983,7 @@ fn relative(arch: Arch) -> u64 {
 /// the update that removed `dead.o`: its code and data are holes, its two
 /// `RELATIVE` records (inside `DT_RELACOUNT`'s prefix) a `.rela.dyn` hole
 /// of `RELATIVE` records aimed at one scratch word (IN-3, dyn.md §14).
+#[allow(clippy::too_many_lines)] // one model, built in one place
 fn build_pie(arch: Arch) -> Option<(Scratch, Built)> {
     let asm = tool(arch, "as")?;
     let ld = tool(arch, "ld.bfd")?;
@@ -1042,8 +1044,7 @@ fn build_pie(arch: Arch) -> Option<(Scratch, Built)> {
     let (lo, size) = data_hole.expect("dead.o's .data");
     // The dead words' records: RELATIVE at the scratch word (the first
     // word of the data hole), addend 0, and a hole line over them.
-    let dead: Vec<_> =
-        rela_dyn(&b).into_iter().filter(|r| r.1 >= lo && r.1 < lo + size).collect();
+    let dead: Vec<_> = rela_dyn(&b).into_iter().filter(|r| r.1 >= lo && r.1 < lo + size).collect();
     assert_eq!(dead.len(), 2, "{arch:?}: dead.o's two RELATIVE records: {dead:x?}");
     for r in &dead {
         let mut rec = lo.to_le_bytes().to_vec();

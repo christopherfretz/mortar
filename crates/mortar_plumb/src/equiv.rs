@@ -4,12 +4,18 @@
 //! Each side is verified as any link; the P-E rules then compare the two
 //! through identities (what an item is, not where it went). Never panics.
 
+#![allow(clippy::many_single_char_names)] // x and f, the two sides (§6.9)
+#![allow(clippy::too_many_lines)] // each check reads as one rule of §6.9
+#![allow(clippy::struct_excessive_bools)] // a unit's flags, each from the map
+#![allow(clippy::result_large_err)] // a side that cannot be read is reported once
+
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Write as _;
 
 use mortar_elf::Machine;
 use mortar_elf::consts::{
-    ET_DYN, PT_TLS, SHF_ALLOC, SHF_MERGE, SHF_STRINGS, SHN_ABS, SHN_COMMON, SHN_UNDEF,
-    SHT_NOBITS, SHT_NOTE, STB_GLOBAL, STB_GNU_UNIQUE, STB_WEAK, STT_FILE, STT_SECTION, STT_TLS,
+    ET_DYN, PT_TLS, SHF_ALLOC, SHF_MERGE, SHF_STRINGS, SHN_ABS, SHN_COMMON, SHN_UNDEF, SHT_NOBITS,
+    SHT_NOTE, STB_GLOBAL, STB_GNU_UNIQUE, STB_WEAK, STT_FILE, STT_SECTION, STT_TLS,
 };
 use mortar_elf::{SectionIndex, SymbolIndex, SymbolSection};
 
@@ -262,9 +268,8 @@ fn run_side<'a>(
     inputs: &[Input<'a>],
     map: &'a Map,
 ) -> Result<Side<'a>, Report> {
-    let image = match Image::read(output) {
-        Ok(i) => i,
-        Err(_) => return Err(crate::verify(output, inputs, map)),
+    let Ok(image) = Image::read(output) else {
+        return Err(crate::verify(output, inputs, map));
     };
     let located = crate::locate::locate(map, inputs, &image);
     let objs: Vec<Obj<'a>> = located.objs;
@@ -398,7 +403,6 @@ fn run_side<'a>(
         .map(|(((p, m, _), i), _)| (p.clone(), m.clone(), *i))
         .collect();
     Ok(Side {
-        tbss,
         tag,
         image,
         map,
@@ -411,6 +415,7 @@ fn run_side<'a>(
         pmax,
         tls,
         machine,
+        tbss,
     })
 }
 
@@ -432,18 +437,9 @@ fn finding(n: u8, msg: impl Into<String>) -> Finding {
 /// `equiv(X, F)` (§6.9): `X` an update (its map claims coverage), `F` a full
 /// or plain link of the same inputs. `inputs` holds the files both maps
 /// name. Never panics.
-pub fn check(
-    x_out: &[u8],
-    x_map: &Map,
-    f_out: &[u8],
-    f_map: &Map,
-    inputs: &[Input<'_>],
-) -> Equiv {
+pub fn check(x_out: &[u8], x_map: &Map, f_out: &[u8], f_map: &Map, inputs: &[Input<'_>]) -> Equiv {
     let mut eq = Equiv::default();
-    let (x, f) = match (
-        run_side("X", x_out, inputs, x_map),
-        run_side("F", f_out, inputs, f_map),
-    ) {
+    let (x, f) = match (run_side("X", x_out, inputs, x_map), run_side("F", f_out, inputs, f_map)) {
         (Ok(x), Ok(f)) => (x, f),
         (x, f) => {
             eq.x = x.map_or_else(|r| r, |s| s.report);
@@ -485,7 +481,10 @@ fn headers(x: &Side<'_>, f: &Side<'_>, out: &mut Vec<Finding>) {
         || hx.e_machine != hf.e_machine
         || hx.e_flags != hf.e_flags
     {
-        out.push(finding(1, "the file headers differ (class, OS ABI, e_type, e_machine or e_flags)"));
+        out.push(finding(
+            1,
+            "the file headers differ (class, OS ABI, e_type, e_machine or e_flags)",
+        ));
     }
     if !corr(x, hx.e_entry, f, hf.e_entry) {
         let mut g = finding(1, "e_entry names another place").at(hx.e_entry);
@@ -518,7 +517,10 @@ fn headers(x: &Side<'_>, f: &Side<'_>, out: &mut Vec<Finding>) {
     }
     let (px, pf) = (&x.image.phdrs, &f.image.phdrs);
     if px.len() != pf.len() {
-        out.push(finding(1, format!("{} program headers, the full link has {}", px.len(), pf.len())));
+        out.push(finding(
+            1,
+            format!("{} program headers, the full link has {}", px.len(), pf.len()),
+        ));
     }
     let inside = |s: &Side<'_>, p: &crate::image::Phdr| -> Vec<String> {
         s.image
@@ -553,7 +555,10 @@ fn units(x: &Side<'_>, f: &Side<'_>, out: &mut Vec<Finding>, _eq: &mut Equiv) {
         for p in &s.map.placed {
             // The section holding the unit's first byte (not one ending there).
             let eh = s.image.sections.iter().any(|o| {
-                o.alloc() && o.name == ".eh_frame" && o.shdr.sh_addr <= p.addr && p.addr < o.shdr.sh_addr + o.shdr.sh_size
+                o.alloc()
+                    && o.name == ".eh_frame"
+                    && o.shdr.sh_addr <= p.addr
+                    && p.addr < o.shdr.sh_addr + o.shdr.sh_size
             });
             let cie = eh
                 && p.input_offset.is_some()
@@ -563,11 +568,27 @@ fn units(x: &Side<'_>, f: &Side<'_>, out: &mut Vec<Finding>, _eq: &mut Equiv) {
             }
             let k = (file_key(s.map, p.file), sec_key(&p.section), p.input_offset);
             if m.insert(k.clone(), (p.size, eh, false)).is_some() && p.input_offset.is_some() {
-                out.push(finding(2, format!("{}: the piece {}:{} at {:#x} is placed twice", s.tag, k.0, k.1, p.input_offset.unwrap_or(0))).at(p.addr));
+                out.push(
+                    finding(
+                        2,
+                        format!(
+                            "{}: the piece {}:{} at {:#x} is placed twice",
+                            s.tag,
+                            k.0,
+                            k.1,
+                            p.input_offset.unwrap_or(0)
+                        ),
+                    )
+                    .at(p.addr),
+                );
             }
         }
         for n in &s.map.nonalloc {
-            let k = (file_key(s.map, n.file), format!("{}>{}", sec_key(&n.section), n.out), n.offset.map(|_| 0));
+            let k = (
+                file_key(s.map, n.file),
+                format!("{}>{}", sec_key(&n.section), n.out),
+                n.offset.map(|_| 0),
+            );
             m.insert(k, (n.size, false, true));
         }
         m
@@ -576,16 +597,25 @@ fn units(x: &Side<'_>, f: &Side<'_>, out: &mut Vec<Finding>, _eq: &mut Equiv) {
     let at = |o: Option<u64>| o.map_or_else(String::new, |o| format!("+{o:#x}"));
     for (k, (zx, eh, _)) in &mx {
         match mf.get(k) {
-            None => out.push(finding(2, format!("{}:{}{} is placed in the update, not in the full link", k.0, k.1, at(k.2)))),
+            None => out.push(finding(
+                2,
+                format!("{}:{}{} is placed in the update, not in the full link", k.0, k.1, at(k.2)),
+            )),
             Some((zf, _, _)) if zx != zf && !(*eh && zx > zf && matches!(zx - zf, 4 | 8 | 12)) => {
-                out.push(finding(2, format!("{}:{} has size {zx:#x}, {zf:#x} in the full link", k.0, k.1)));
+                out.push(finding(
+                    2,
+                    format!("{}:{} has size {zx:#x}, {zf:#x} in the full link", k.0, k.1),
+                ));
             }
             Some(_) => {}
         }
     }
     for k in mf.keys() {
         if !mx.contains_key(k) {
-            out.push(finding(2, format!("{}:{}{} is placed in the full link, not in the update", k.0, k.1, at(k.2))));
+            out.push(finding(
+                2,
+                format!("{}:{}{} is placed in the full link, not in the update", k.0, k.1, at(k.2)),
+            ));
         }
     }
     let chunks = |s: &Side<'_>| -> BTreeSet<(String, String, u32)> {
@@ -601,9 +631,14 @@ fn units(x: &Side<'_>, f: &Side<'_>, out: &mut Vec<Finding>, _eq: &mut Equiv) {
         }
         set
     };
-    for (a, b, which) in [(chunks(x), chunks(f), "the update"), (chunks(f), chunks(x), "the full link")] {
+    for (a, b, which) in
+        [(chunks(x), chunks(f), "the update"), (chunks(f), chunks(x), "the full link")]
+    {
         for c in a.difference(&b) {
-            out.push(finding(2, format!("the {} chunk '{}' ({}) is only in {which}", c.0, c.1, c.2)));
+            out.push(finding(
+                2,
+                format!("the {} chunk '{}' ({}) is only in {which}", c.0, c.1, c.2),
+            ));
         }
     }
     let folds = |s: &Side<'_>| -> BTreeSet<String> {
@@ -637,16 +672,24 @@ fn shndx_kind(s: &Side<'_>, n: u16) -> String {
         SHN_ABS => "abs".into(),
         SHN_COMMON => "common".into(),
         k if k >= 0xff00 => format!("reserved {k:#x}"),
-        k => s.image.sections.get(usize::from(k)).map_or_else(|| format!("#{k}"), |c| c.name.clone()),
+        k => {
+            s.image.sections.get(usize::from(k)).map_or_else(|| format!("#{k}"), |c| c.name.clone())
+        }
     }
 }
 
 /// The globals of `.symtab` by name; a name twice is P-E3.
-fn globals<'s>(s: &'s Side<'_>, out: &mut Vec<Finding>) -> BTreeMap<&'s str, &'s crate::image::OutSym> {
+fn globals<'s>(
+    s: &'s Side<'_>,
+    out: &mut Vec<Finding>,
+) -> BTreeMap<&'s str, &'s crate::image::OutSym> {
     let mut m: BTreeMap<&str, &crate::image::OutSym> = BTreeMap::new();
     for y in s.image.symbols.iter().skip(1) {
         if bind_global(y.sym.binding()) && m.insert(y.name.as_str(), y).is_some() {
-            out.push(finding(3, format!("{}: the global '{}' is defined twice in .symtab", s.tag, y.name)));
+            out.push(finding(
+                3,
+                format!("{}: the global '{}' is defined twice in .symtab", s.tag, y.name),
+            ));
         }
     }
     m
@@ -654,6 +697,7 @@ fn globals<'s>(s: &'s Side<'_>, out: &mut Vec<Finding>) -> BTreeMap<&'s str, &'s
 
 /// P-E3: symbols.
 fn symbols(x: &Side<'_>, f: &Side<'_>, out: &mut Vec<Finding>, eq: &mut Equiv) {
+    type Key = (String, u8, u8, u64, String);
     let (gx, gf) = (globals(x, out), globals(f, out));
     for (name, a) in &gx {
         let Some(b) = gf.get(name) else {
@@ -667,11 +711,17 @@ fn symbols(x: &Side<'_>, f: &Side<'_>, out: &mut Vec<Finding>, eq: &mut Equiv) {
             || p.st_size != q.st_size
             || shndx_kind(x, p.st_shndx) != shndx_kind(f, q.st_shndx)
         {
-            out.push(finding(3, format!("the global '{name}' differs in type, binding, visibility, size or section")));
+            out.push(finding(
+                3,
+                format!(
+                    "the global '{name}' differs in type, binding, visibility, size or section"
+                ),
+            ));
             continue;
         }
         if !value_same(x, f, name, p, q) {
-            let mut g = finding(3, format!("the global '{name}' names another definition or place"));
+            let mut g =
+                finding(3, format!("the global '{name}' names another definition or place"));
             g.symbol = Some((*name).to_string());
             g.expected = Some(q.st_value);
             g.found = Some(p.st_value);
@@ -684,7 +734,6 @@ fn symbols(x: &Side<'_>, f: &Side<'_>, out: &mut Vec<Finding>, eq: &mut Equiv) {
         }
     }
     // Locals: a multiset with corresponding values.
-    type Key = (String, u8, u8, u64, String);
     let locals = |s: &Side<'_>| {
         let mut m: BTreeMap<Key, Vec<u64>> = BTreeMap::new();
         for y in s.image.symbols.iter().skip(1) {
@@ -692,7 +741,13 @@ fn symbols(x: &Side<'_>, f: &Side<'_>, out: &mut Vec<Finding>, eq: &mut Equiv) {
             if bind_global(y.sym.binding()) || shndx_kind(s, y.sym.st_shndx) == ".eh_frame" {
                 continue;
             }
-            let k = (y.name.clone(), y.sym.st_info, y.sym.st_other, y.sym.st_size, shndx_kind(s, y.sym.st_shndx));
+            let k = (
+                y.name.clone(),
+                y.sym.st_info,
+                y.sym.st_other,
+                y.sym.st_size,
+                shndx_kind(s, y.sym.st_shndx),
+            );
             m.entry(k).or_default().push(y.sym.st_value);
         }
         m
@@ -702,7 +757,10 @@ fn symbols(x: &Side<'_>, f: &Side<'_>, out: &mut Vec<Finding>, eq: &mut Equiv) {
         let empty = Vec::new();
         let vf = lf.get(k).unwrap_or(&empty);
         if vx.len() != vf.len() {
-            out.push(finding(3, format!("{} local symbols '{}', {} in the full link", vx.len(), k.0, vf.len())));
+            out.push(finding(
+                3,
+                format!("{} local symbols '{}', {} in the full link", vx.len(), k.0, vf.len()),
+            ));
             continue;
         }
         eq.symbols += vx.len() as u64;
@@ -727,36 +785,63 @@ fn symbols(x: &Side<'_>, f: &Side<'_>, out: &mut Vec<Finding>, eq: &mut Equiv) {
         }
         for a in rest {
             let hit = (0..vf.len()).find(|&j| !used[j] && corr(x, tls(x, a), f, tls(f, vf[j])));
-            match hit {
-                Some(j) => used[j] = true,
-                None => {
-                    let mut g = finding(3, format!("the local '{}' has a value no local of the full link corresponds to", k.0)).at(a);
-                    g.symbol = Some(k.0.clone());
-                    out.push(g);
-                }
+            if let Some(j) = hit {
+                used[j] = true;
+            } else {
+                let mut g = finding(
+                    3,
+                    format!(
+                        "the local '{}' has a value no local of the full link corresponds to",
+                        k.0
+                    ),
+                )
+                .at(a);
+                g.symbol = Some(k.0.clone());
+                out.push(g);
             }
         }
     }
     for (k, v) in &lf {
         if !lx.contains_key(k) {
-            out.push(finding(3, format!("{} local symbols '{}' only in the full link", v.len(), k.0)));
+            out.push(finding(
+                3,
+                format!("{} local symbols '{}' only in the full link", v.len(), k.0),
+            ));
         }
     }
     // .dynsym: the same entries in the same order.
     let (dx, df) = (dynsyms(x), dynsyms(f));
     if dx.len() != df.len() {
-        out.push(finding(3, format!(".dynsym has {} entries, {} in the full link", dx.len(), df.len())));
+        out.push(finding(
+            3,
+            format!(".dynsym has {} entries, {} in the full link", dx.len(), df.len()),
+        ));
     }
     for (i, (a, b)) in dx.iter().zip(df.iter()).enumerate() {
         eq.symbols += 1;
-        if a.0 != b.0 || a.1 != b.1 || a.2 != b.2 || a.4 != b.4 || shndx_kind(x, a.5) != shndx_kind(f, b.5) || !corr(x, a.3, f, b.3) {
-            out.push(finding(3, format!(".dynsym entry {i} ('{}') differs from the full link's ('{}')", a.0, b.0)));
+        if a.0 != b.0
+            || a.1 != b.1
+            || a.2 != b.2
+            || a.4 != b.4
+            || shndx_kind(x, a.5) != shndx_kind(f, b.5)
+            || !corr(x, a.3, f, b.3)
+        {
+            out.push(finding(
+                3,
+                format!(".dynsym entry {i} ('{}') differs from the full link's ('{}')", a.0, b.0),
+            ));
         }
     }
 }
 
 /// Whether a global's two values name the same definition (P-E3).
-fn value_same(x: &Side<'_>, f: &Side<'_>, name: &str, p: &mortar_elf::Sym, q: &mortar_elf::Sym) -> bool {
+fn value_same(
+    x: &Side<'_>,
+    f: &Side<'_>,
+    name: &str,
+    p: &mortar_elf::Sym,
+    q: &mortar_elf::Sym,
+) -> bool {
     if p.st_shndx == SHN_ABS || p.st_shndx == SHN_UNDEF {
         return p.st_value == q.st_value;
     }
@@ -795,12 +880,33 @@ fn dynsyms(s: &Side<'_>) -> Vec<(String, u8, u8, u64, u64, u16)> {
     for i in 0..d.len() / ent {
         let o = i * ent;
         let (name, info, other, shndx, value, size) = if w64 {
-            (le(d, o, 4), d.get(o + 4), d.get(o + 5), le(d, o + 6, 2), le(d, o + 8, 8), le(d, o + 16, 8))
+            (
+                le(d, o, 4),
+                d.get(o + 4),
+                d.get(o + 5),
+                le(d, o + 6, 2),
+                le(d, o + 8, 8),
+                le(d, o + 16, 8),
+            )
         } else {
-            (le(d, o, 4), d.get(o + 12), d.get(o + 13), le(d, o + 14, 2), le(d, o + 4, 4), le(d, o + 8, 4))
+            (
+                le(d, o, 4),
+                d.get(o + 12),
+                d.get(o + 13),
+                le(d, o + 14, 2),
+                le(d, o + 4, 4),
+                le(d, o + 8, 4),
+            )
         };
         let n = name.and_then(|n| cstr(st, n as usize)).unwrap_or_default();
-        v.push((n, *info.unwrap_or(&0), *other.unwrap_or(&0), value.unwrap_or(0), size.unwrap_or(0), shndx.unwrap_or(0) as u16));
+        v.push((
+            n,
+            *info.unwrap_or(&0),
+            *other.unwrap_or(&0),
+            value.unwrap_or(0),
+            size.unwrap_or(0),
+            shndx.unwrap_or(0) as u16,
+        ));
     }
     v
 }
@@ -868,8 +974,15 @@ fn records(x: &Side<'_>, f: &Side<'_>, out: &mut Vec<Finding>, eq: &mut Equiv) {
         };
         if bad {
             out.push(
-                finding(4, format!("the record is {} in the update and {} in the full link", form_name(*a), form_name(*b)))
-                    .site(site(u, *off)),
+                finding(
+                    4,
+                    format!(
+                        "the record is {} in the update and {} in the full link",
+                        form_name(*a),
+                        form_name(*b)
+                    ),
+                )
+                .site(site(u, *off)),
             );
         }
     }
@@ -898,7 +1011,9 @@ fn records(x: &Side<'_>, f: &Side<'_>, out: &mut Vec<Finding>, eq: &mut Equiv) {
             }
             let (Some(bx), Some(bf)) = (bytes(x, ux, *ax, len), bytes(f, uf, *af, len)) else {
                 if len > 0 {
-                    out.push(finding(4, "a unit's bytes cannot be read on one side").site(site(u, *io)));
+                    out.push(
+                        finding(4, "a unit's bytes cannot be read on one side").site(site(u, *io)),
+                    );
                 }
                 continue;
             };
@@ -929,9 +1044,12 @@ fn records(x: &Side<'_>, f: &Side<'_>, out: &mut Vec<Finding>, eq: &mut Equiv) {
                 x.rewritten.contains(&(ax + k)) || f.rewritten.contains(&(af + k))
             };
             if let Some(k) = (0..len).find(|&k| bx[k as usize] != bf[k as usize] && !masked(k)) {
-                let mut g = finding(4, format!("a byte no relocation covers differs at offset {:#x}", io + k))
-                    .at(ax + k)
-                    .site(site(u, io + k));
+                let mut g = finding(
+                    4,
+                    format!("a byte no relocation covers differs at offset {:#x}", io + k),
+                )
+                .at(ax + k)
+                .site(site(u, io + k));
                 g.expected = Some(u64::from(bf[k as usize]));
                 g.found = Some(u64::from(bx[k as usize]));
                 out.push(g);
@@ -939,7 +1057,11 @@ fn records(x: &Side<'_>, f: &Side<'_>, out: &mut Vec<Finding>, eq: &mut Equiv) {
             if ux.eh && zx > &len {
                 // Absorbed bytes: DW_CFA_nop.
                 if bytes(x, ux, ax + len, zx - len).is_some_and(|b| b.iter().any(|&c| c != 0)) {
-                    out.push(finding(4, "an FDE's absorbed bytes are not DW_CFA_nop").at(ax + len).site(site(u, *io)));
+                    out.push(
+                        finding(4, "an FDE's absorbed bytes are not DW_CFA_nop")
+                            .at(ax + len)
+                            .site(site(u, *io)),
+                    );
                 }
             }
         }
@@ -961,7 +1083,9 @@ fn match_items(x: &Side<'_>, xs: Vec<Item>, f: &Side<'_>, fs: Vec<Item>) -> (Vec
     for (k, a) in xs {
         let cands = by.get_mut(&k);
         let hit = cands.as_ref().and_then(|c| {
-            c.iter().position(|b| b.len() == a.len() && a.iter().zip(b).all(|(p, q)| corr(x, *p, f, *q)))
+            c.iter().position(|b| {
+                b.len() == a.len() && a.iter().zip(b).all(|(p, q)| corr(x, *p, f, *q))
+            })
         });
         match (cands, hit) {
             (Some(c), Some(j)) => {
@@ -970,7 +1094,8 @@ fn match_items(x: &Side<'_>, xs: Vec<Item>, f: &Side<'_>, fs: Vec<Item>) -> (Vec
             _ => left.push((k, a)),
         }
     }
-    let rest = by.into_iter().flat_map(|(k, v)| v.into_iter().map(move |a| (k.clone(), a))).collect();
+    let rest =
+        by.into_iter().flat_map(|(k, v)| v.into_iter().map(move |a| (k.clone(), a))).collect();
     (left, rest)
 }
 
@@ -985,10 +1110,16 @@ fn is_addr(s: &Side<'_>, v: u64) -> bool {
 
 fn report_left(n: u8, what: &str, left: (Vec<Item>, Vec<Item>), out: &mut Vec<Finding>) {
     for (k, a) in left.0 {
-        out.push(finding(n, format!("{what} {k} {a:x?} of the update has no match in the full link")));
+        out.push(finding(
+            n,
+            format!("{what} {k} {a:x?} of the update has no match in the full link"),
+        ));
     }
     for (k, a) in left.1 {
-        out.push(finding(n, format!("{what} {k} {a:x?} of the full link has no match in the update")));
+        out.push(finding(
+            n,
+            format!("{what} {k} {a:x?} of the full link has no match in the update"),
+        ));
     }
 }
 
@@ -1026,7 +1157,10 @@ fn tables(x: &Side<'_>, f: &Side<'_>, out: &mut Vec<Finding>, eq: &mut Equiv) {
     let dynsym_f = dynsyms(f);
     for name in [".rela.dyn", ".rel.dyn", ".rela.plt", ".rel.plt", ".rela.iplt", ".rel.iplt"] {
         let rela = name.starts_with(".rela");
-        let recs = |s: &Side<'_>, syms: &[(String, u8, u8, u64, u64, u16)], holes: &[(u64, u64)]| -> Vec<Item> {
+        let recs = |s: &Side<'_>,
+                    syms: &[(String, u8, u8, u64, u64, u16)],
+                    holes: &[(u64, u64)]|
+         -> Vec<Item> {
             let Some(b) = s.sec_bytes(name) else { return Vec::new() };
             let ent = if rela { 3 * w } else { 2 * w };
             let mut v = Vec::new();
@@ -1037,7 +1171,11 @@ fn tables(x: &Side<'_>, f: &Side<'_>, out: &mut Vec<Finding>, eq: &mut Equiv) {
                 }
                 let r_off = le(b, o as usize, w as usize).unwrap_or(0);
                 let info = le(b, (o + w) as usize, w as usize).unwrap_or(0);
-                let (ty, sym) = if w == 8 { (info & 0xffff_ffff, info >> 32) } else { (info & 0xff, info >> 8) };
+                let (ty, sym) = if w == 8 {
+                    (info & 0xffff_ffff, info >> 32)
+                } else {
+                    (info & 0xff, info >> 8)
+                };
                 let sname = syms.get(sym as usize).map_or("", |e| e.0.as_str());
                 let osec = s.image.alloc_section_of(r_off, 0).map_or("", |(_, c)| c.name.as_str());
                 let mut key = format!("type {ty} '{sname}' in {osec}");
@@ -1047,7 +1185,7 @@ fn tables(x: &Side<'_>, f: &Side<'_>, out: &mut Vec<Finding>, eq: &mut Equiv) {
                     if is_addr(s, a) {
                         addrs.push(a);
                     } else {
-                        key.push_str(&format!(" addend {a:#x}"));
+                        let _ = write!(key, " addend {a:#x}");
                     }
                 }
                 v.push((key, addrs));
@@ -1059,9 +1197,14 @@ fn tables(x: &Side<'_>, f: &Side<'_>, out: &mut Vec<Finding>, eq: &mut Equiv) {
         if name.contains("plt") {
             // In the same order (the IRELATIVEs).
             if xs.len() != fs.len()
-                || xs.iter().zip(&fs).any(|(a, b)| a.0 != b.0 || a.1.iter().zip(&b.1).any(|(p, q)| !corr(x, *p, f, *q)))
+                || xs.iter().zip(&fs).any(|(a, b)| {
+                    a.0 != b.0 || a.1.iter().zip(&b.1).any(|(p, q)| !corr(x, *p, f, *q))
+                })
             {
-                out.push(finding(5, format!("{name}'s records differ from the full link's, or their order does")));
+                out.push(finding(
+                    5,
+                    format!("{name}'s records differ from the full link's, or their order does"),
+                ));
             }
         } else {
             report_left(5, &format!("the {name} record"), match_items(x, xs, f, fs), out);
@@ -1081,7 +1224,13 @@ fn tables(x: &Side<'_>, f: &Side<'_>, out: &mut Vec<Finding>, eq: &mut Equiv) {
             let o = 12 + 8 * k as usize;
             let loc = le(b, o, 4)? as u32 as i32;
             let fde = le(b, o + 4, 4)? as u32 as i32;
-            v.push((String::new(), vec![base.wrapping_add(loc as i64 as u64), base.wrapping_add(fde as i64 as u64)]));
+            v.push((
+                String::new(),
+                vec![
+                    base.wrapping_add(i64::from(loc) as u64),
+                    base.wrapping_add(i64::from(fde) as u64),
+                ],
+            ));
         }
         Some(v)
     };
@@ -1091,7 +1240,10 @@ fn tables(x: &Side<'_>, f: &Side<'_>, out: &mut Vec<Finding>, eq: &mut Equiv) {
             report_left(5, "the .eh_frame_hdr entry", match_items(x, a, f, b), out);
         }
         (None, None) => {}
-        _ => out.push(finding(5, ".eh_frame_hdr's table cannot be read on one side, or is on one side only")),
+        _ => out.push(finding(
+            5,
+            ".eh_frame_hdr's table cannot be read on one side, or is on one side only",
+        )),
     }
     // Notes, in order.
     for (i, c) in x.image.sections.iter().enumerate() {
@@ -1107,7 +1259,9 @@ fn tables(x: &Side<'_>, f: &Side<'_>, out: &mut Vec<Finding>, eq: &mut Equiv) {
         }
     }
     dynamic(x, f, out, eq);
-    for name in [".dynstr", ".hash", ".gnu.hash", ".gnu.version", ".gnu.version_r", ".gnu.version_d"] {
+    for name in
+        [".dynstr", ".hash", ".gnu.hash", ".gnu.version", ".gnu.version_r", ".gnu.version_d"]
+    {
         if x.sec_bytes(name) != f.sec_bytes(name) {
             out.push(finding(5, format!("{name} differs from the full link's")));
         }
@@ -1121,7 +1275,9 @@ fn notes(b: &[u8]) -> Vec<(Vec<u8>, u64, Vec<u8>)> {
     let mut o = 0usize;
     let up = |n: usize| n.div_ceil(4) * 4;
     while o + 12 <= b.len() {
-        let (Some(nz), Some(dz), Some(ty)) = (le(b, o, 4), le(b, o + 4, 4), le(b, o + 8, 4)) else { break };
+        let (Some(nz), Some(dz), Some(ty)) = (le(b, o, 4), le(b, o + 4, 4), le(b, o + 8, 4)) else {
+            break;
+        };
         let (nz, dz) = (nz as usize, dz as usize);
         let name = b.get(o + 12..o + 12 + nz).map(<[u8]>::to_vec).unwrap_or_default();
         let d0 = o + 12 + up(nz);
@@ -1151,15 +1307,18 @@ fn dynamic(x: &Side<'_>, f: &Side<'_>, out: &mut Vec<Finding>, eq: &mut Equiv) {
     let ent = |rela: bool| if rela { 3 * w } else { 2 * w };
     let hole_bytes = |name: &str| x.holes(name).iter().map(|h| h.1).sum::<u64>();
     if dx.len() != df.len() {
-        out.push(finding(5, format!(".dynamic has {} entries, {} in the full link", dx.len(), df.len())));
+        out.push(finding(
+            5,
+            format!(".dynamic has {} entries, {} in the full link", dx.len(), df.len()),
+        ));
     }
     for (i, (a, b)) in dx.iter().zip(&df).enumerate() {
         eq.entries += 1;
         let ok = a.0 == b.0
             && match a.0 {
                 // Address tags.
-                3 | 4 | 5 | 6 | 7 | 12 | 13 | 17 | 23 | 25 | 26 | 32 | 0x6fff_fef5 | 0x6fff_fff0
-                | 0x6fff_fffc | 0x6fff_fffe => corr(x, a.1, f, b.1),
+                3 | 4 | 5 | 6 | 7 | 12 | 13 | 17 | 23 | 25 | 26 | 32 | 0x6fff_fef5
+                | 0x6fff_fff0 | 0x6fff_fffc | 0x6fff_fffe => corr(x, a.1, f, b.1),
                 // DT_RELASZ, DT_RELSZ.
                 8 => a.1 >= b.1 && a.1 - b.1 == hole_bytes(".rela.dyn"),
                 18 => a.1 >= b.1 && a.1 - b.1 == hole_bytes(".rel.dyn"),
@@ -1169,7 +1328,10 @@ fn dynamic(x: &Side<'_>, f: &Side<'_>, out: &mut Vec<Finding>, eq: &mut Equiv) {
                 _ => a.1 == b.1,
             };
         if !ok {
-            let mut g = finding(5, format!(".dynamic entry {i} (tag {:#x}) differs from the full link's", a.0));
+            let mut g = finding(
+                5,
+                format!(".dynamic entry {i} (tag {:#x}) differs from the full link's", a.0),
+            );
             g.expected = Some(b.1);
             g.found = Some(a.1);
             out.push(g);
@@ -1203,13 +1365,21 @@ fn packed(x: &Side<'_>, f: &Side<'_>, out: &mut Vec<Finding>) {
         if !c.alloc() || !(crate::dead::packed(&c.name, c.shdr.sh_type) || c.name == ".eh_frame") {
             continue;
         }
-        let Some(d) = f.image.sections.iter().find(|d| d.name == c.name && d.alloc()) else { continue };
+        let Some(d) = f.image.sections.iter().find(|d| d.name == c.name && d.alloc()) else {
+            continue;
+        };
         let (a, b) = (seq(x, c), seq(f, d));
         if a != b {
             let k = a.iter().zip(&b).position(|(p, q)| p != q).unwrap_or(a.len().min(b.len()));
             out.push(
-                finding(5, format!("the packed section {}'s units are in another order (first at unit {k})", c.name))
-                    .at(c.shdr.sh_addr),
+                finding(
+                    5,
+                    format!(
+                        "the packed section {}'s units are in another order (first at unit {k})",
+                        c.name
+                    ),
+                )
+                .at(c.shdr.sh_addr),
             );
         }
     }
@@ -1239,13 +1409,22 @@ fn rest(x: &Side<'_>, f: &Side<'_>, out: &mut Vec<Finding>) {
         .map(|p| (p.p_offset, p.p_offset.saturating_add(p.p_filesz)))
         .collect();
     let pad = |o: usize, b: u8| {
-        b == 0 || (x86 && matches!(b, 0xcc | 0x90) && exec.iter().any(|(a, z)| *a <= o as u64 && (o as u64) < *z))
+        b == 0
+            || (x86
+                && matches!(b, 0xcc | 0x90)
+                && exec.iter().any(|(a, z)| *a <= o as u64 && (o as u64) < *z))
     };
-    let all_pad = |a: usize, z: usize| img.data[a..z].iter().enumerate().all(|(k, &b)| pad(a + k, b));
+    let all_pad =
+        |a: usize, z: usize| img.data[a..z].iter().enumerate().all(|(k, &b)| pad(a + k, b));
     let mut at = 0u64;
     for (o, z) in used {
         if o > at && !all_pad(at as usize, o.min(len) as usize) {
-            out.push(finding(6, format!("file bytes {at:#x}..{o:#x}, outside every section and header, are not zero")));
+            out.push(finding(
+                6,
+                format!(
+                    "file bytes {at:#x}..{o:#x}, outside every section and header, are not zero"
+                ),
+            ));
         }
         at = at.max(o.saturating_add(z)).min(len);
     }
@@ -1277,7 +1456,10 @@ fn rest(x: &Side<'_>, f: &Side<'_>, out: &mut Vec<Finding>) {
                 continue;
             }
             if f.sec_bytes(&c.name) != Some(b) {
-                out.push(finding(6, format!("{}, which no unit holds, differs from the full link's", c.name)));
+                out.push(finding(
+                    6,
+                    format!("{}, which no unit holds, differs from the full link's", c.name),
+                ));
             }
             continue;
         }
@@ -1286,12 +1468,21 @@ fn rest(x: &Side<'_>, f: &Side<'_>, out: &mut Vec<Finding>) {
         let mut at = 0u64;
         for (o, z) in u {
             if o > at && b.get(at as usize..o as usize).is_some_and(|s| s.iter().any(|&v| v != 0)) {
-                out.push(finding(6, format!("{} bytes {at:#x}..{o:#x} are in no unit or dead range and not zero", c.name)));
+                out.push(finding(
+                    6,
+                    format!(
+                        "{} bytes {at:#x}..{o:#x} are in no unit or dead range and not zero",
+                        c.name
+                    ),
+                ));
             }
             at = at.max(o.saturating_add(z));
         }
         if (at as usize) < b.len() && b[at as usize..].iter().any(|&v| v != 0) {
-            out.push(finding(6, format!("{} bytes from {at:#x} are in no unit or dead range and not zero", c.name)));
+            out.push(finding(
+                6,
+                format!("{} bytes from {at:#x} are in no unit or dead range and not zero", c.name),
+            ));
         }
     }
     let _ = SectionIndex(0);

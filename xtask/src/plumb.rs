@@ -546,7 +546,8 @@ impl EquivArgs {
 /// A mortar map, read and parsed; a usage error otherwise (§8).
 fn read_mortar_map(p: &Path) -> Result<mortar_plumb::Map, String> {
     let b = std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()))?;
-    let text = std::str::from_utf8(&b).map_err(|_| format!("{}: not a mortar map (not text)", p.display()))?;
+    let text = std::str::from_utf8(&b)
+        .map_err(|_| format!("{}: not a mortar map (not text)", p.display()))?;
     mortar_plumb::map::parse(Format::Mortar, text)
         .map_err(|e| format!("{}:{}: not a mortar map: {}", p.display(), e.line, e.message))
 }
@@ -566,7 +567,10 @@ pub fn run_equiv(a: &EquivArgs) -> Result<bool, String> {
     let (x, f) = (read(&a.x)?, read(&a.f)?);
     for (p, b) in [(&a.x, &x), (&a.f, &f)] {
         if !b.starts_with(b"\x7fELF") {
-            return Err(format!("{}: not an ELF file (are the arguments in the order X.map F.map X F?)", p.display()));
+            return Err(format!(
+                "{}: not an ELF file (are the arguments in the order X.map F.map X F?)",
+                p.display()
+            ));
         }
     }
     let mut paths: BTreeSet<String> = BTreeSet::new();
@@ -592,7 +596,10 @@ pub fn run_equiv(a: &EquivArgs) -> Result<bool, String> {
     for line in eq.f.render(&fname).lines() {
         println!("F: {line}");
     }
-    let pe = mortar_plumb::Report { findings: eq.findings.clone(), coverage: Default::default() };
+    let pe = mortar_plumb::Report {
+        findings: eq.findings.clone(),
+        coverage: mortar_plumb::Coverage::default(),
+    };
     print!("{}", pe.render(&xn));
     println!("X: {} findings, {} records", eq.x.findings.len(), eq.x.coverage.records);
     println!("F: {} findings, {} records", eq.f.findings.len(), eq.f.coverage.records);
@@ -621,11 +628,26 @@ mod tests {
         std::fs::write(&elf, b"\x7fELF\x02\x01").unwrap();
         let arg = |p: &Path| p.display().to_string();
         // A plain map as X, a missing file, swapped arguments: exit 2.
-        let r = run_equiv(&EquivArgs::parse(&s(&["--equiv", &arg(&plain), &arg(&plain), &arg(&elf), &arg(&elf)])).unwrap());
+        let r = run_equiv(
+            &EquivArgs::parse(&s(&["--equiv", &arg(&plain), &arg(&plain), &arg(&elf), &arg(&elf)]))
+                .unwrap(),
+        );
         assert!(r.is_err(), "{r:?}");
-        let r = run_equiv(&EquivArgs::parse(&s(&["--equiv", &arg(&elf), &arg(&plain), &arg(&plain), &arg(&elf)])).unwrap());
+        let r = run_equiv(
+            &EquivArgs::parse(&s(&["--equiv", &arg(&elf), &arg(&plain), &arg(&plain), &arg(&elf)]))
+                .unwrap(),
+        );
         assert!(r.is_err(), "{r:?}");
-        let r = run_equiv(&EquivArgs::parse(&s(&["--equiv", "/nonexistent/x.map", &arg(&plain), &arg(&elf), &arg(&elf)])).unwrap());
+        let r = run_equiv(
+            &EquivArgs::parse(&s(&[
+                "--equiv",
+                "/nonexistent/x.map",
+                &arg(&plain),
+                &arg(&elf),
+                &arg(&elf),
+            ]))
+            .unwrap(),
+        );
         assert!(r.is_err(), "{r:?}");
         std::fs::remove_file(&plain).unwrap();
         std::fs::remove_file(&elf).unwrap();
