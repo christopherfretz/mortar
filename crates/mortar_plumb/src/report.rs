@@ -462,6 +462,9 @@ pub struct Coverage {
     /// unproved code in a reference's output (§5.10).
     pub erratum_sites: u64,
     pub erratum_not_judged: u64,
+    /// The erratum option the sites were judged under (§5.10): `None`
+    /// unknown (no fix found and nothing states it).
+    pub erratum_option: Option<bool>,
     /// Verified or accepted records by relocation type.
     pub checked_types: BTreeMap<u32, u64>,
     /// Stage 4 (§13).
@@ -638,9 +641,15 @@ impl Report {
             c.properties_judged, c.properties_not_judged
         );
         if c.erratum_sites + c.erratum_not_judged > 0 {
+            let why = match c.erratum_option {
+                _ if c.erratum_not_judged == 0 => "",
+                Some(false) => " (the link was without --fix-cortex-a53-843419)",
+                None => " (the option is unknown and no fix was found)",
+                Some(true) => "",
+            };
             let _ = writeln!(
                 s,
-                "erratum 843419 sites: fixed {}, not judged {}",
+                "erratum 843419 sites: fixed {}, not judged {}{why}",
                 c.erratum_sites, c.erratum_not_judged
             );
         }

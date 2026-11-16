@@ -25,26 +25,10 @@ const PUBNAMES: &str = ".debug_gnu_pubnames";
 const PUBTYPES: &str = ".debug_gnu_pubtypes";
 
 /// Whether the link had `--gdb-index` (the last of it and
-/// `--no-gdb-index`) and a strip option, from the map's `arg` words;
-/// `None` when the map has none (a static link's).
+/// `--no-gdb-index`) and a strip option, from the map's line (§3.2a);
+/// `None` when the map has no `arg` record.
 fn option(map: &Map) -> Option<(bool, bool)> {
-    let args = &map.dynamic.as_ref()?.args;
-    if args.is_empty() {
-        return None;
-    }
-    let mut on = false;
-    let mut strip = false;
-    for a in args {
-        match a.as_str() {
-            "--gdb-index" | "-gdb-index" => on = true,
-            "--no-gdb-index" | "-no-gdb-index" => on = false,
-            "-S" | "--strip-debug" | "-strip-debug" | "-s" | "--strip-all" | "-strip-all" => {
-                strip = true;
-            }
-            _ => {}
-        }
-    }
-    Some((on, strip))
+    crate::opts::of(map).map(|o| (o.gdb_index, o.strip_debug))
 }
 
 /// P-G6: presence, the section's header, the consumed sets.

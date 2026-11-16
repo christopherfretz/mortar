@@ -661,12 +661,13 @@ fn map_dynamic_records_read_by_the_verifier() {
     });
     let text = String::from_utf8(mortar_image::map::render(&m, &pool)).unwrap();
     let parsed = pm::parse(pm::Format::Mortar, &text).unwrap();
+    // The line is the map's, not a dynamic record of the verifier's.
+    assert_eq!(parsed.args, [b"--as-needed".to_vec(), b"-lc".to_vec()]);
     let d = parsed.dynamic.expect("the dynamic records");
     assert_eq!(d.kind, Some(pm::OutputKind::Exec));
     assert_eq!(d.interp.as_deref(), Some("/lib64/ld-linux-x86-64.so.2"));
     assert_eq!(d.runpath, Some((pm::RunpathTag::Rpath, "$ORIGIN:/a b".into())));
     assert_eq!((d.now, d.relro), (Some(false), Some(true)));
-    assert_eq!(d.args, ["--as-needed", "-lc"]);
     assert_eq!(d.needed, ["libc.so.6"]);
     assert_eq!(
         d.copies,
