@@ -1,0 +1,45 @@
+# `-Bdynamic` (also `--dy`, `--call_shared`; spec/cli.md §3.3, the
+# `link_static` switch; GNU ld manual "-Bdynamic"): it undoes `-Bstatic`,
+# so that a later `-lgreet` finds `libgreet.so` again (searched before
+# `libgreet.a` in each directory) and the program needs it. Without it,
+# after `-Bstatic`, the same `-lgreet` takes `libgreet.a` and the program
+# needs no `libgreet.so`; with `-Bdynamic` after `-lgreet` the archive
+# is still taken (the switch is positional). No name is given twice (mold
+# ignores a second `-lname` after a switch, dyn.md W9).
+#
+# The spellings are written with one dash (`-dy`, `-call_shared`), which
+# every reference takes: with two (`--dy`, `--call_shared`, the table's)
+# the verifier's reader of the line (mortar_plumb line.rs) does not see
+# the switch and reports P-D2 on every linker's correct output (WP-112
+# finding V1). mold 2.37 does not know `-call_shared` ("unknown command
+# line option"), so that line is GNU ld's, lld's and mortar's.
+#@ spec: cli.md "§3.3"
+#@ arch: aarch64 x86_64
+#@ fixture: greet
+
+cc -O1 -fno-pie main.c -o main.o
+ar rcs libgreet.a greet.o
+link gcc -no-pie main.o -L. -Wl,-Bstatic -Wl,-Bdynamic -lgreet -o dy
+link gcc -no-pie main.o -L. -Wl,-Bstatic -Wl,-dy -lgreet -o dy2
+link(bfd,lld,mortar) gcc -no-pie main.o -L. -Wl,-Bstatic -Wl,-call_shared -lgreet -o dy3
+link gcc -no-pie main.o -L. -Wl,-Bstatic -lgreet -Wl,-Bdynamic -o st
+run dy
+  stdout: hello, bdynamic
+run st
+  stdout: hello, bdynamic
+check readelf -dW dy
+  has: (NEEDED) * Shared library: [libgreet.so]
+check readelf -dW dy2
+  has: (NEEDED) * Shared library: [libgreet.so]
+check(bfd,lld,mortar) readelf -dW dy3
+  has: (NEEDED) * Shared library: [libgreet.so]
+check readelf -dW st
+  has: (NEEDED) * Shared library: [libc.so
+  not: libgreet.so
+check readelf -sW st
+  has: FUNC * greet$
+  not: UND greet$
+
+#--- main.c
+#include "greet.h"
+int main(void) { greet("bdynamic"); return 0; }

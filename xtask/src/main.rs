@@ -12,6 +12,7 @@
 //!   cargo xtask meta [write|dump] ...              Mason metadata: test producer, dumper (spec/meta.md §12)
 //!   cargo xtask incr-oracle [--quick] ...          the incremental dry run's oracle lane (tests/incr-oracle)
 //!   cargo xtask realbuild [options]                real open-source builds linked by mortar ("realbuild")
+//!   cargo xtask spelled                            the accepted options no link test spells
 
 use std::process::ExitCode;
 
@@ -25,7 +26,8 @@ const USAGE: &str = "usage: cargo xtask ci [--quick] [--no-fail-fast] [--step fm
                      cargo xtask mason [programs|census|setup|libcxx|verify] ...   (tests/mason/README.md)\n       \
                      cargo xtask meta [write|dump] ...   (cargo xtask meta)\n       \
                      cargo xtask incr-oracle [--quick] [--only <scenario>,...] [-j <n>] [--keep]\n       \
-                     cargo xtask realbuild [options]   (spec/harness.md \"realbuild\")\n";
+                     cargo xtask realbuild [options]   (spec/harness.md \"realbuild\")\n       \
+                     cargo xtask spelled   (spec/harness.md \"Every accepted option is spelled\")\n";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -39,6 +41,8 @@ fn main() -> ExitCode {
             }
         },
         Some("linktest") => ExitCode::from(xtask::linktest::main(&args[1..])),
+        #[cfg(unix)]
+        Some("spelled") => ExitCode::from(xtask::linktest::spelled::main(&args[1..])),
         #[cfg(unix)]
         Some("census") => ExitCode::from(xtask::census::main(&args[1..])),
         #[cfg(unix)]

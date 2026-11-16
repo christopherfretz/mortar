@@ -1121,7 +1121,8 @@ impl Unit<'_> {
         // L3: a link that is to succeed writes a map, for the verifier:
         // mortar's machine map is `--mortar-map` (image.md I-120), whatever
         // `-Map` the test asks for; a reference's is its `-Map`.
-        let map_file = if link.fails || !(self.matrix.plumb || self.matrix.digest) {
+        let map_file = if link.fails || link.informs || !(self.matrix.plumb || self.matrix.digest)
+        {
             None
         } else if let Some(map) = map_option(&args).filter(|_| linker != Linker::Mortar) {
             Some(dir.join(map))
@@ -1135,7 +1136,7 @@ impl Unit<'_> {
             });
             Some(dir.join(name))
         };
-        if link.fails && output_file.symlink_metadata().is_ok() {
+        if (link.fails || link.informs) && output_file.symlink_metadata().is_ok() {
             std::fs::remove_file(&output_file).map_err(|e| {
                 Raw::Error(format!("cannot remove '{}': {e}", output_file.display()))
             })?;
@@ -1299,8 +1300,17 @@ impl Unit<'_> {
             let end = if linker_end.success() { output.end } else { linker_end };
             return Err(fail(&format_args!("{end}: {}", first_error(output))));
         }
+        if link.informs && output_file.symlink_metadata().is_ok() {
+            return Err(fail(&format_args!(
+                "the link wrote '{}'; the test expects it only to inform",
+                output_name_of(output_file)
+            )));
+        }
         let stderr = String::from_utf8_lossy(&output.stderr);
         self.expect(&link.diags, linker, &stderr, "the link's standard error")
+            .map_err(|what| Raw::Fail(format!("{}: {what}", step.describe())))?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        self.expect(&link.prints, linker, &stdout, "the link's standard output")
             .map_err(|what| Raw::Fail(format!("{}: {what}", step.describe())))?;
         // spec/harness.md "Directives" (`diag`): the one-definition-rule
         // diagnostics of a mortar link are exactly those the test names.
@@ -1636,6 +1646,13 @@ impl Unit<'_> {
                     Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
                     Err(e) => return Err(fail(&format_args!("cannot read '{}': {e}", args[0]))),
                 }
+            }
+            CheckTool::Cmp => {
+                let read = |name: &String| {
+                    std::fs::read(dir.join(name))
+                        .map_err(|e| fail(&format_args!("cannot read '{name}': {e}")))
+                };
+                compare(&read(&args[0])?, &read(&args[1])?)
             }
             CheckTool::Gdb | CheckTool::Lldb if self.tools.runner != Runner::Native => {
                 return Err(Raw::Skip(format!(
@@ -2103,8 +2120,37 @@ fn mortar_xfail<'a>(
         .or_else(|| marker.filter(|m| m.kind == MarkerKind::Xfail).map(|m| m.reason.as_str()))
 }
 
+/// `check cmp`: `identical`, or `differ: ` with the sizes and the first
+/// byte that differs (`spec/harness.md` "Checks").
+pub fn compare(a: &[u8], b: &[u8]) -> String {
+    match a.iter().zip(b).position(|(x, y)| x != y) {
+        None if a.len() == b.len() => "identical".to_owned(),
+        None => format!("differ: sizes {} and {}, equal up to the shorter", a.len(), b.len()),
+        Some(at) => format!(
+            "differ: sizes {} and {}, first at byte {at:#x} ({:#04x}, {:#04x})",
+            a.len(),
+            b.len(),
+            a[at],
+            b[at]
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    // spec/harness.md "Checks" (WP-112): `check cmp` says whether two
+    // files are the same bytes, and where they first differ.
+    #[test]
+    fn two_files_compared() {
+        assert_eq!(super::compare(b"abc", b"abc"), "identical");
+        assert_eq!(super::compare(b"", b""), "identical");
+        assert_eq!(
+            super::compare(b"abc", b"abd"),
+            "differ: sizes 3 and 3, first at byte 0x2 (0x63, 0x64)"
+        );
+        assert_eq!(super::compare(b"ab", b"abc"), "differ: sizes 2 and 3, equal up to the shorter");
+    }
+
     // WP-103: the sites of an output whose line has the option are counted
     // apart from those of an output whose line has not.
     #[test]

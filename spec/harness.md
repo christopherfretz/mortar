@@ -802,7 +802,7 @@ keeps blanks (with `\"` and `\\`).
 | `shlib <driver> <args>` | a shared library, by the architecture's `gcc`, `g++` or `gfortran` with `-shared -fuse-ld=bfd`: GNU ld links every fixture library, whatever the run's linkers |
 | `link <driver> <args>` | a link; `<driver>` is `ld` (the linker itself) or `gcc`, `g++`, `gfortran`, `clang`, `clang++` |
 | `run <program> [<args>]` | runs a linked program |
-| `check <tool> <args>` | `readelf`, `nm`, `objdump` (the architecture's), `llvm-readelf`, `llvm-dwarfdump` (WP-080: `--verify`, the DWARF of a split-DWARF output), `text` (the file named by the one argument, read), `elflint`, `ldd`, `gdb`, `lldb` ("Checks") |
+| `check <tool> <args>` | `readelf`, `nm`, `objdump` (the architecture's), `llvm-readelf`, `llvm-dwarfdump` (WP-080: `--verify`, the DWARF of a split-DWARF output), `text` (the file named by the one argument, read), `cmp` (two files, compared byte for byte), `elflint`, `ldd`, `gdb`, `lldb` ("Checks") |
 
 The build steps come before every link, run and check step. Expectations
 are the indented lines under a step:
@@ -813,6 +813,8 @@ are the indented lines under a step:
 | link | `exit: fail` | it fails ("Expected failures") |
 | link | `diag: <pattern>` | some line of its standard error matches |
 | link | `no-diag: <pattern>` | no line does |
+| link | `exit: info` | it only informs (`--version`, `--help`; WP-112): it succeeds and writes no output file (a stale one is removed first); no map is added and the verifier judges nothing |
+| link | `print: <pattern>`, `no-print: <pattern>` | some line of its standard output matches, no line does (WP-112: `-v`, `-M`) |
 | run | `exit: <n>` (default 0), `exit: signal <n>` | how the program ends |
 | run | `exit: no-start` | it cannot be started (its interpreter is not there): status 127 natively (the harness's shell, whose exec fails), 255 under qemu (which cannot load it); the same expectation on both hosts |
 | run | `stdout: <text>` | its standard output, one line per expectation, exactly; with none, it prints nothing |
@@ -828,6 +830,14 @@ A check tool that does not exit with status 0 fails the step, except
 `elflint`.
 
 **Checks** beyond the binutils, for dynamic outputs (`spec/dyn.md` §10):
+
+- `check cmp <a> <b>` (WP-112): the two files, in the linker's directory,
+  compared byte for byte; its one line of output is `identical`, or
+  `differ: sizes <m> and <n>, first at byte <offset> (<x>, <y>)` (or
+  `equal up to the shorter`). It does not fail by itself: `has:
+  ^identical$` says that an option changes no byte of the output (a
+  `noop` row of `docs/status/options.md`), `has: ^differ` that it changes
+  some.
 
 - `check elflint <file>`: `eu-elflint --gnu-ld <file>`; its standard
   output and error together. Every non-blank line that is not `No errors`
@@ -1059,6 +1069,26 @@ Each (test, architecture, linker) gets one **record**:
 `KILLED` and `ERROR` are not covered by markers: a marker says how mortar
 answers, and neither is an answer.
 
+### Every accepted option is spelled
+
+Every row of `docs/status/options.md` that mortar accepts (`supported`,
+`partial`, `noop`) is spelled by a link step of some test under
+`tests/link` (WP-112): a long option with one dash or two, alone, as
+`--opt=value` or followed by its value; a one-letter option alone or with
+its value glued; a `-z` keyword as `-z kw`, `-zkw`, `-z kw=value`; in a
+driver's link the words of `-Wl,` and `-Xlinker` and the driver options
+GCC hands the linker as they are (`-static`, `-pie`, `-no-pie`,
+`-shared`, `-s`, `-r`, `-e`, `-u`, `-T`, `-L`, `-l`, `-o`; `-rdynamic` as
+`-export-dynamic`). What a driver adds on its own does not count.
+`cargo xtask spelled` prints the rows no test spells and their number;
+`xtask/src/linktest/spelled.rs`
+`every_accepted_option_is_spelled_by_a_link_test` (in `cargo test`, so
+in the quick gate; under a tenth of a second) wants none. The tests of
+those rows are under `tests/link/options/`: each shows the option's
+effect against the same link without it and the references' links, or,
+for a `noop`, that the output is the same bytes with and without it
+(`check cmp`) and why that is right.
+
 ### The self-check
 
 Once the references of a unit have run:
@@ -1171,7 +1201,8 @@ lands (`docs/VALIDATION.md`).
 `references_that_disagree_on_output_refute_a_test`.
 `xtask/src/linktest/report.rs`: `the_exit_status_of_a_run`,
 `the_results_file`, `the_summary`, `who_a_line_is_for`.
-`xtask/src/linktest/engine.rs`: `the_output_file_of_a_link_line`,
+`xtask/src/linktest/engine.rs`: `two_files_compared` (`check cmp`),
+`the_output_file_of_a_link_line`,
 `the_map_of_a_link_line`, `what_the_verifier_does_not_judge`,
 `a_default_anomaly_goes_stale`.
 `xtask/src/linktest/format.rs`: `anomaly_declarations`,
