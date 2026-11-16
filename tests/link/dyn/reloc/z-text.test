@@ -1,0 +1,51 @@
+# `-z text` (spec/dyn.md D-47: "`-z text` is the default and
+# `supported`"): a dynamic record whose place is in a section without
+# SHF_WRITE is an error. The program of textrel-refused.test (an
+# address-sized word to its own datum in a read-only section of a `-fPIE`
+# object, so a RELATIVE record in read-only memory) is refused by every
+# linker under `-z text`, where without it GNU ld and mold write
+# DT_TEXTREL (textrel-refused.test); mortar refuses it the same way with
+# and without the option, by name. A program with no text relocation is
+# the same bytes with `-z text` as without.
+#
+# The references word it differently: GNU ld `read-only segment has
+# dynamic relocations`, lld `relocation ... cannot be used against
+# symbol`, mold in words of its own (not checked here).
+#@ spec: dyn.md "D-47"
+#@ arch: aarch64 x86_64
+
+cc -O1 -fPIE main.c -o main.o
+cc -O1 -fPIE ok.c -o ok.o
+link gcc -pie main.o -Wl,-z,text -o prog
+  exit: fail
+  diag(bfd): read-only segment has dynamic relocations
+  diag(lld): cannot be used against symbol 'loc'; recompile with -fPIC
+  diag(mortar): relocation * against symbol `*' can not be used when making a PIE object; recompile with -fPIE
+link gcc -pie ok.o -o plain
+link gcc -pie ok.o -Wl,-z,text -o text
+run text
+  stdout: ok 5
+check(bfd,mortar) cmp text plain
+  has: ^identical$
+
+#--- main.c
+#include <stdio.h>
+
+int loc = 5;
+/* an address-sized word to `loc` in a read-only, non-executable section */
+__asm__(".section .rodata.tr,\"a\",%progbits\n.p2align 3\n.globl tr_ptr\n"
+        "tr_ptr: .dc.a loc\n.text\n");
+extern int *const tr_ptr;
+
+int main(void) {
+  printf("loc %d\n", *tr_ptr);
+  return 0;
+}
+#--- ok.c
+#include <stdio.h>
+int loc = 5;
+int *volatile ptr = &loc;
+int main(void) {
+  printf("ok %d\n", *ptr);
+  return 0;
+}

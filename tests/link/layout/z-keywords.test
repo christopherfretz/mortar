@@ -1,0 +1,106 @@
+# `-z` keywords of the layout and the notes (spec/cli.md §3.7, layout.md):
+# - `-z separate-code` (L-71): the RX segment's offset and the next
+#   segment's are rounded up to the max page size, so no page holds code
+#   and other bytes; `-z noseparate-code` (mortar's default on every
+#   target, lld's and mold's; GNU ld's on AArch64, while it separates on
+#   x86-64 and i386) undoes it: the same bytes as no option.
+# - `-z relro` after `-z norelro`: PT_GNU_RELRO again, the same bytes as
+#   no option (the default).
+# - `-z memory-seal` (GNU ld's): a GNU_PROPERTY_MEMORY_SEAL property in
+#   `.note.gnu.property`; `-z nomemory-seal` undoes it (the default).
+#@ spec: layout.md "L-71"
+
+as start-%{arch}.s -o start.o
+link ld start.o -o plain
+link ld start.o -z separate-code -o sep
+link ld start.o -z separate-code -z noseparate-code -o nosep
+run sep
+  exit: 42
+check(aarch64) readelf -lW sep
+  has: LOAD * R 0x10000
+  then: LOAD 0x010000 * R E 0x10000
+  then: LOAD 0x020000 
+check(x86_64,i386) readelf -lW sep
+  has: LOAD * R 0x1000
+  then: LOAD 0x001000 * R E 0x1000
+  then: LOAD 0x002000 
+check(lld,mold,mortar,aarch64) readelf -lW plain
+  not: LOAD 0x010000
+check(lld,mold,mortar,x86_64,i386) readelf -lW plain
+  not: LOAD 0x001000
+check(bfd,x86_64,i386) readelf -lW plain
+  has: LOAD 0x001000 * R E 0x1000
+check(lld,mold,mortar) cmp nosep plain
+  has: ^identical$
+check(bfd,aarch64) cmp nosep plain
+  has: ^identical$
+link(bfd,x86_64,i386) ld start.o -z noseparate-code -o nosep-only
+check(bfd,x86_64,i386) readelf -lW nosep-only
+  not: LOAD 0x001000
+
+link ld start.o -z norelro -o norelro
+link ld start.o -z norelro -z relro -o relro
+check readelf -lW plain
+  has: GNU_RELRO
+check readelf -lW norelro
+  not: GNU_RELRO
+check cmp relro plain
+  has: ^identical$
+
+link(bfd,mortar) ld start.o -z memory-seal -o seal
+link(bfd,mortar) ld start.o -z memory-seal -z nomemory-seal -o noseal
+run(bfd,mortar) seal
+  exit: 42
+check(bfd,mortar) readelf -nW seal
+  has: Properties: memory seal
+check readelf -nW plain
+  not: memory seal
+check(bfd,mortar) cmp noseal plain
+  has: ^identical$
+
+#--- start-aarch64.s
+	.globl	_start
+_start:
+	adrp	x1, value
+	ldr	w0, [x1, :lo12:value]
+	mov	x8, #93
+	svc	#0
+	.section .rodata
+	.byte 1
+	.data
+	.balign 4
+	.globl	value
+value:	.long 42
+	.section .data.rel.ro,"aw"
+	.quad value
+	.section .note.GNU-stack,"",%progbits
+#--- start-x86_64.s
+	.globl	_start
+_start:
+	movl	$60, %eax
+	movl	value(%rip), %edi
+	syscall
+	.section .rodata
+	.byte 1
+	.data
+	.balign 4
+	.globl	value
+value:	.long 42
+	.section .data.rel.ro,"aw"
+	.quad value
+	.section .note.GNU-stack,"",%progbits
+#--- start-i386.s
+	.globl	_start
+_start:
+	movl	$1, %eax
+	movl	value, %ebx
+	int	$0x80
+	.section .rodata
+	.byte 1
+	.data
+	.balign 4
+	.globl	value
+value:	.long 42
+	.section .data.rel.ro,"aw"
+	.long value
+	.section .note.GNU-stack,"",%progbits
