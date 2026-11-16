@@ -2383,6 +2383,11 @@ names, the phase, the start time, and:
   control links the line for the build (the fallback, recorded), so one
   refusal does not hide the rest of the project; the build sees the
   control's diagnostics and status.
+  An output that exists and is not a regular file (`-o /dev/null`,
+  Kbuild's and configure's probes of whether a line links) is not one the
+  verifier can read: mortar links such a line to `<record>/mortar.out`,
+  which is judged and then removed, and the build's output is not
+  touched.
 
 `realbuild verify` expands the line's `@file` words (GNU ld's quoting,
 the bench's `parse_response`), runs the verifier (`plumb::verify_link_line`,
