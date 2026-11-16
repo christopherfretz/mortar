@@ -746,6 +746,8 @@ impl Parser<'_> {
             }
             Lands::NoOdrCheck => plan.diagnostics.odr.mode = crate::plan::OdrMode::Off,
             Lands::OdrStats => plan.diagnostics.odr.stats = true,
+            Lands::OdrCheckArchives => plan.diagnostics.odr.check_archives = true,
+            Lands::KeepMasonMeta => plan.diagnostics.odr.keep_meta = true,
             Lands::OdrTable => {
                 plan.diagnostics.odr.table = match word().as_str() {
                     "exported" => crate::plan::OdrTable::Exported,

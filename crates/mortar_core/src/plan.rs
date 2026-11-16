@@ -641,15 +641,15 @@ pub struct Odr {
     /// `--odr=`, `--no-odr-check`; the last one given wins.
     pub mode: OdrMode,
     /// `--odr-check-archives` (O-23): also compare archive members that
-    /// are not linked. Its row stays `refused` until WP-075/WP-076.
+    /// are not linked (WP-076).
     pub check_archives: bool,
-    /// `--odr-table=` (O-50): `exported` since WP-075 (a dynamic
-    /// executable's `.note.mason`); `full` stays refused until WP-076.
+    /// `--odr-table=` (O-50): a dynamic executable's `.note.mason`;
+    /// `exported` since WP-075, `full` (a second note) since WP-076.
     pub table: OdrTable,
     /// `--odr-stats` (O-44): one line to standard error.
     pub stats: bool,
-    /// `--keep-mason-meta` (`spec/meta.md` MT-32): keep the Mason metadata in the output.
-    /// Its row stays `refused` until WP-075/WP-076.
+    /// `--keep-mason-meta` (`spec/meta.md` MT-32): keep the inputs' Mason
+    /// metadata in the output, as a non-allocated `.mason.meta` (WP-076).
     pub keep_meta: bool,
 }
 

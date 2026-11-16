@@ -10,8 +10,9 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
 
-use mortar_meta::write::{Definition, Summary, section};
-use mortar_meta::{UnitBuilder, class, flags, fnv1a64, producer};
+use mortar_meta::table::{DESC_OFFSET, FullTable, NT_MASON_ODR_FULL};
+use mortar_meta::write::{Definition, Summary, Type, section};
+use mortar_meta::{NO_DETAILS, UnitBuilder, class, flags, fnv1a64, producer};
 use mortar_testutil::{Outcome, Scratch, run_exec_with, run_with, tool, tools_required};
 
 const MORTAR: &str = env!("CARGO_BIN_EXE_mortar");
@@ -19,7 +20,8 @@ const MORTAR: &str = env!("CARGO_BIN_EXE_mortar");
 /// The container is in the file that defines f: a row is anchored to a
 /// symbol of its own file.
 const MAIN: &str = "#include <stdio.h>\nint f(void) { return 2; }\n\
-    int main(void) { printf(\"%d\\n\", f()); return 0; }\n\
+    __attribute__((visibility(\"hidden\"))) int h(void) { return 0; }\n\
+    int main(void) { printf(\"%d\\n\", f() + h()); return 0; }\n\
     __asm__(\".section .mason.meta,\\\"e\\\",%progbits\\n.balign 8\\n\
     .incbin \\\"m.bin\\\"\\n.previous\");\n";
 const LIB: &str = "int f(void) { return 1; }\nint g(void) { return f(); }\n";
@@ -58,6 +60,29 @@ impl Cx {
             module: Vec::new(),
             file: b"h.h".to_vec(),
             line: 3,
+        });
+        // h: hidden, a vague definition only `=full` writes (WP-076).
+        u.definitions.push(Definition {
+            key: fnv1a64(b"h"),
+            hash: [3; 16],
+            name: None,
+            class: class::FUNCTION,
+            flags: flags::VAGUE,
+            module: Vec::new(),
+            file: b"h.h".to_vec(),
+            line: 4,
+        });
+        u.types.push(Type {
+            key: fnv1a64(b"1S"),
+            hash: [4; 16],
+            layout: 0x55,
+            name: b"1S".to_vec(),
+            size: 8,
+            align: 4,
+            flags: 0,
+            file: b"h.h".to_vec(),
+            line: 5,
+            details: NO_DETAILS,
         });
         std::fs::write(cx.scratch.join("m.bin"), section(&[u.finish().unwrap()], 0)).unwrap();
         cx.scratch.write("main.c", MAIN);
@@ -173,6 +198,62 @@ fn table_in_a_dynamic_executable() {
         assert!(o.success(), "{out}: {}", o.stderr_text());
         assert_eq!(o.stdout_text(), "2\n", "{out}");
     }
+}
+
+/// Every `MasonMeta` note of `image` after the first: (`n_type`,
+/// descriptor), found by their owner.
+fn later_notes(image: &[u8]) -> Vec<(u32, &[u8])> {
+    let owner = b"MasonMeta\0";
+    let word = |o: usize| u32::from_le_bytes(image[o..o + 4].try_into().unwrap());
+    let mut out = Vec::new();
+    let mut from = 0;
+    while let Some(p) = image[from..].windows(owner.len()).position(|w| w == owner) {
+        let head = from + p - 12;
+        let size = word(head + 4) as usize;
+        out.push((word(head + 8), &image[head + DESC_OFFSET..head + DESC_OFFSET + size]));
+        from = head + DESC_OFFSET + size;
+    }
+    out.split_off(1.min(out.len()))
+}
+
+// spec: odr.md O-50, O-51, O-52 (WP-076): `--odr-table=full` writes the
+// `=exported` note unchanged and, after it in the same section, a second
+// note (`NT_MASON_ODR_FULL`): the hidden vague definition h (its key, its
+// hash's first 8 bytes, VAGUE without NONPREEMPTIBLE; f is exported and is
+// only in the first note) and the type 1S. Deterministic; under --odr=off
+// no table at all; the program runs.
+#[test]
+fn full_table_in_a_dynamic_executable() {
+    let Some(cx) = Cx::new("odr-dyn-full") else { return };
+    cx.link(&["-Wl,--odr-table=full"], "f1");
+    cx.link(&["-Wl,--odr-table=full"], "f2");
+    cx.link(&["-Wl,--odr-table=exported"], "e");
+    let f1 = cx.bytes("f1");
+    assert_eq!(f1, cx.bytes("f2"), "=full's links differ");
+    assert_eq!(note(&f1), note(&cx.bytes("e")), "the first note");
+    let later = later_notes(&f1);
+    assert_eq!(later.len(), 1, "one second note");
+    let (ty, desc) = later[0];
+    assert_eq!(ty, NT_MASON_ODR_FULL);
+    let t = FullTable::parse(desc).unwrap();
+    let defs: Vec<_> = t.definitions().collect();
+    assert_eq!(defs.len(), 1, "{defs:?}");
+    assert_eq!((defs[0].key, defs[0].hash, defs[0].flags), (fnv1a64(b"h"), [3; 8], flags::VAGUE));
+    assert_eq!((defs[0].layout, defs[0].size, defs[0].align), (0, 0, 0));
+    let types: Vec<_> = t.types().collect();
+    assert_eq!(types.len(), 1, "{types:?}");
+    let ty = types[0];
+    assert_eq!(
+        (ty.key, ty.hash, ty.layout, ty.size, ty.align),
+        (fnv1a64(b"1S"), [4; 8], 0x55, 8, 4)
+    );
+    assert!(later_notes(&cx.bytes("e")).is_empty(), "=exported writes one note");
+    cx.link(&["-Wl,--odr-table=full,--odr=off"], "off");
+    cx.link(&[], "plain");
+    assert_eq!(cx.bytes("off"), cx.bytes("plain"), "--odr=off writes no table");
+    let o = cx.run("f1");
+    assert!(o.success(), "{}", o.stderr_text());
+    assert_eq!(o.stdout_text(), "2\n");
 }
 
 // spec: odr.md O-24 (WP-075): a library without a table (the system

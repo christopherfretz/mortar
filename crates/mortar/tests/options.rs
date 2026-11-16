@@ -128,7 +128,15 @@ const AUDIT: &[(&str, Proof)] = &[
     ("--odr", Test("crates/mortar/tests/odr.rs", "modes")),
     ("--no-odr-check", Test("crates/mortar/tests/odr.rs", "off_reads_nothing_and_changes_no_byte")),
     ("--odr-stats", Test("crates/mortar/tests/odr.rs", "stats_line")),
-    ("--odr-table", Test("crates/mortar/tests/odr_dynamic.rs", "table_in_a_dynamic_executable")),
+    (
+        "--odr-check-archives",
+        Test("crates/mortar/tests/odr_records.rs", "archive_members_are_read_only_on_request"),
+    ),
+    (
+        "--odr-table",
+        Test("crates/mortar/tests/odr_dynamic.rs", "full_table_in_a_dynamic_executable"),
+    ),
+    ("--keep-mason-meta", Test("crates/mortar/tests/keep_meta.rs", "kept_in_every_output_kind")),
     ("--detect-odr-violations", Same(&["--detect-odr-violations"], None)),
     ("--version", Test("crates/mortar/tests/cli.rs", "version_goes_to_stdout")),
     ("-v", Test("crates/mortar/src/lib.rs", "requests_are_answered")),

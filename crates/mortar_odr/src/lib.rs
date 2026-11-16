@@ -6,27 +6,31 @@
 //!
 //! WP-072: the foreign checks and the switches; WP-073: the record
 //! checks; WP-075: the check against shared-object inputs (O-24) and the
-//! `.note.mason` table's rows (O-50).
+//! `.note.mason` table's rows (O-50); WP-076: O-23 (`archives`), `=full`
+//! and `--keep-mason-meta` (`kept`).
 #![forbid(unsafe_code)]
 
+pub mod archives;
 pub mod dynamic;
 pub mod foreign;
+pub mod kept;
 pub mod records;
 pub mod register;
 
 use std::time::Instant;
 
 use mortar_core::par::Pool;
-use mortar_core::plan::{Odr, OdrMode};
+use mortar_core::plan::{Odr, OdrMode, OdrTable};
 use mortar_core::{Inputs, Resolution};
 use mortar_diag::{Diagnostic, Key};
 
-pub use crate::dynamic::{Output, TableRow};
+pub use crate::dynamic::{FullRows, Output, TableRow};
 use crate::foreign::{Checks, Counts};
+pub use crate::kept::kept_units;
 use crate::records::Switches;
 use crate::register::Check;
 /// O-51's row and O-52's note encoder, for the front that writes the table.
-pub use mortar_meta::table::{Row as NoteRow, note as table_note};
+pub use mortar_meta::table::{FullRow, Row as NoteRow, full_note, note as table_note};
 
 /// What the checks of a link found.
 #[derive(Debug, Default)]
@@ -38,6 +42,9 @@ pub struct Outcome {
     /// The `.note.mason` table's rows (O-50), sorted by symbol, when the
     /// output is dynamic and `--odr-table` asks for one.
     pub table: Option<Vec<TableRow>>,
+    /// `=full`'s rows (O-50, WP-076), with the table, under
+    /// `--odr-table=full`.
+    pub full: Option<FullRows>,
 }
 
 /// The one-definition-rule phase (40, after resolution): runs the checks
@@ -64,9 +71,11 @@ pub fn check(
     let mut s = switches(odr);
     s.keepers = dyn_switches.shared || dyn_switches.table;
     s.declared = dyn_switches.shared;
+    s.types = dyn_switches.full;
     let (records, mut r, rows) = records::check(inputs, resolution, s, pool);
     diagnostics.extend(records);
     let mut table = None;
+    let mut full = None;
     if let Some(output) = output
         && (dyn_switches.shared || dyn_switches.table)
     {
@@ -77,9 +86,10 @@ pub fn check(
         diagnostics.extend(found.diagnostics);
         diagnostics.sort_by_key(|(k, _)| *k);
         table = found.table;
+        full = found.full;
     }
     let stats = odr.stats.then(|| stats_line(*odr, &counts, &r, start.elapsed().as_micros()));
-    Outcome { diagnostics, stats, table }
+    Outcome { diagnostics, stats, table, full }
 }
 
 /// The dynamic checks the switches turn on, for a dynamic output
@@ -89,6 +99,7 @@ pub fn dynamic_switches(odr: &Odr, dynamic: bool) -> dynamic::Switches {
     dynamic::Switches {
         shared: dynamic && Check::SharedInputs.runs(odr),
         table: dynamic && Check::Table.runs(odr),
+        full: dynamic && Check::Table.runs(odr) && odr.table == OdrTable::Full,
     }
 }
 
@@ -110,14 +121,17 @@ pub fn switches(odr: &Odr) -> Switches {
         inlined_only: odr.mode == OdrMode::Strict,
         keepers: false,
         declared: false,
+        archives: Check::ArchiveShadow.runs(odr),
+        types: false,
     }
 }
 
 /// Whether the link reads Mason containers: a record check is on
-/// (`spec/meta.md` MT-42, O-42). The store's `containers` switch.
+/// (`spec/meta.md` MT-42, O-42), or `--keep-mason-meta` copies them
+/// (MT-32, in every mode). The store's `containers` switch.
 #[must_use]
 pub fn reads_containers(odr: &Odr) -> bool {
-    switches(odr).any() || Check::Table.runs(odr) || Check::SharedInputs.runs(odr)
+    switches(odr).any() || Check::Table.runs(odr) || Check::SharedInputs.runs(odr) || odr.keep_meta
 }
 
 /// O-44's line.
@@ -126,7 +140,8 @@ fn stats_line(odr: Odr, c: &Counts, r: &records::Counts, micros: u128) -> String
         "mortar: odr-stats: mode {}; units {}, rows {} (kind 1 {}, kind 2 {}, kind 3 {}, kind 5 \
          {}), schemes {}, pairs not compared {}, type groups compared across schemes {}, ambiguous anchors {}, unanchored rows {}, \
          system -std differences {}, rows set aside {}, container bytes read {}, shared-object \
-         tables {} ({} rows), record findings {}; files with COMDAT copies {}, groups {}, copies {}, definitions {}; \
+         tables {} ({} rows), archive members {} ({} units, {} bytes, {} rows compared), record \
+         findings {}; files with COMDAT copies {}, groups {}, copies {}, definitions {}; \
          findings W1 {}, W2 {}, W3 {}, W4 {}; time {}.{:03} ms",
         odr.mode.word(),
         r.units,
@@ -145,6 +160,10 @@ fn stats_line(odr: Odr, c: &Counts, r: &records::Counts, micros: u128) -> String
         r.bytes,
         r.tables,
         r.table_rows,
+        r.archive_members,
+        r.archive_units,
+        r.archive_bytes,
+        r.archive_compared,
         r.findings,
         c.files,
         c.groups,

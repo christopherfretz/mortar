@@ -63,6 +63,8 @@ pub(crate) mod tag {
     pub const DYN_META: u64 = 10;
     /// O-24 (c).
     pub const SIZE: u64 = 11;
+    /// O-23, `odr-archive-shadow` (`crate::archives`).
+    pub const ARCHIVE: u64 = 12;
 }
 
 /// A record check's `seq`: its tag above `base`.
@@ -107,6 +109,13 @@ pub struct Switches {
     /// The sized kind 5 declarations of variables are gathered (O-24
     /// (c)): [`Dynamic::declared`].
     pub declared: bool,
+    /// O-23 (`--odr-check-archives`): the kind 2 rows of the archive
+    /// members that are not linked are compared with the keepers' rows
+    /// (`crate::archives`).
+    pub archives: bool,
+    /// O-50's `=full` table: one kind 3 row per type of the live units is
+    /// gathered ([`Dynamic::types`]).
+    pub types: bool,
 }
 
 impl Switches {
@@ -124,6 +133,8 @@ impl Switches {
             || self.internal
             || self.keepers
             || self.declared
+            || self.archives
+            || self.types
     }
 }
 
@@ -138,6 +149,26 @@ pub struct Dynamic {
     /// anchored or named to a symbol: (symbol, size, declaring file),
     /// sorted.
     pub declared: Vec<(SymbolId, u64, FileId)>,
+    /// With [`Switches::types`]: per kind 3 entity (key and `<type>`
+    /// encoding) of the live units, the first row in (file, unit, row)
+    /// order, sorted by key (O-50's `=full`).
+    pub types: Vec<TypeEntry>,
+}
+
+/// A type of the live units, for O-50's `=full` table: the first kind 3
+/// row of its (key, name) in (file, unit, row) order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TypeEntry {
+    /// MT-13's key of the `<type>` encoding.
+    pub key: u64,
+    /// O-17's definition hash, whole.
+    pub hash: [u8; 16],
+    /// O-18's layout hash.
+    pub layout: u64,
+    pub size: u32,
+    pub align: u16,
+    /// O-17's flags.
+    pub flags: u16,
 }
 
 /// The keeper's kind 2 row of a symbol (O-51: "the copy that runs").
@@ -187,6 +218,13 @@ pub struct Counts {
     pub table_rows: u64,
     /// Findings, by diagnostic.
     pub findings: u64,
+    /// O-23: archive members that are not linked whose containers were
+    /// read, their units, their container bytes, and their kind 2 rows
+    /// compared with a keeper's row.
+    pub archive_members: u64,
+    pub archive_units: u64,
+    pub archive_bytes: u64,
+    pub archive_compared: u64,
 }
 
 impl Counts {
@@ -208,7 +246,7 @@ impl Counts {
 
 /// A global symbol of a file with a container, for anchoring (O-4).
 #[derive(Debug, Clone, Copy)]
-struct Sym<'s> {
+pub(crate) struct Sym<'s> {
     key: u64,
     name: &'s [u8],
     index: SymbolIndex,
@@ -216,13 +254,42 @@ struct Sym<'s> {
 }
 
 /// One file's containers, read.
-struct Loaded<'s> {
-    file: FileId,
-    sections: Vec<(SectionAttrs, Cow<'s, [u8]>)>,
+pub(crate) struct Loaded<'s> {
+    pub(crate) file: FileId,
+    pub(crate) sections: Vec<(SectionAttrs, Cow<'s, [u8]>)>,
     /// Sorted by (key, name).
-    syms: Vec<Sym<'s>>,
+    pub(crate) syms: Vec<Sym<'s>>,
     /// The symbol table's first global (`sym_map_of` is indexed from it).
-    first_global: u32,
+    pub(crate) first_global: u32,
+}
+
+/// A container's header fields and bytes: borrowed when the store holds
+/// them, copied from the file otherwise; `None` when the section cannot
+/// be read (its findings are the reader's, or the store's).
+pub(crate) fn container<'s>(
+    inputs: &Inputs<'s>,
+    file: FileId,
+    index: SectionIndex,
+) -> Option<(SectionAttrs, Cow<'s, [u8]>)> {
+    let Reader::Object(obj) = inputs.files.get(file)?.reader else { return None };
+    let sec = obj.section(index).ok()?;
+    let h = sec.header();
+    let attrs = SectionAttrs {
+        index: index.0,
+        addralign: h.sh_addralign,
+        entsize: h.sh_entsize,
+        link: h.sh_link,
+        info: h.sh_info,
+    };
+    let bytes = if let Ok(data) = sec.data() {
+        Cow::Borrowed(data)
+    } else {
+        let range = sec.file_range().ok()??;
+        let mut buf = vec![0; range.len()];
+        inputs.copy_to(file, range.start as u64..range.end as u64, &mut buf).ok()?;
+        Cow::Owned(buf)
+    };
+    Some((attrs, bytes))
 }
 
 /// One file's units, parsed.
@@ -233,18 +300,18 @@ struct Parsed<'l> {
 
 /// What a unit's kind 1 says that the comparisons use (MT-26).
 #[derive(Debug, Clone, Copy)]
-struct Info<'l> {
+pub(crate) struct Info<'l> {
     /// Index of the unit's file in `loaded`.
     at: usize,
     file: FileId,
-    lang_c: bool,
-    std: Option<&'l [u8]>,
-    scheme: Option<&'l [u8]>,
+    pub(crate) lang_c: bool,
+    pub(crate) std: Option<&'l [u8]>,
+    pub(crate) scheme: Option<&'l [u8]>,
 }
 
 /// A row that takes part in a comparison.
 #[derive(Debug, Clone, Copy)]
-struct Entry<'l> {
+pub(crate) struct Entry<'l> {
     kind: u8,
     key: u64,
     /// The entity's name: the anchor's, the row's own, or empty for an
@@ -252,7 +319,7 @@ struct Entry<'l> {
     name: &'l [u8],
     /// Kind 2's class; 0 for the other kinds.
     class: u16,
-    unit: u32,
+    pub(crate) unit: u32,
     row: u32,
     /// The anchor's symbol index, if any.
     sym: Option<SymbolIndex>,
@@ -277,13 +344,34 @@ impl Entry<'_> {
 }
 
 /// The context of the comparisons.
-struct Cx<'a, 's, 'l> {
-    inputs: &'a Inputs<'s>,
-    resolution: &'a Resolution,
+pub(crate) struct Cx<'a, 's, 'l> {
+    pub(crate) inputs: &'a Inputs<'s>,
+    pub(crate) resolution: &'a Resolution,
     loaded: &'a [Loaded<'s>],
     units: &'a [&'a Unit<'l>],
-    info: &'a [Info<'l>],
-    switches: Switches,
+    pub(crate) info: &'a [Info<'l>],
+    pub(crate) switches: Switches,
+}
+
+/// O-23 (`--odr-check-archives`) against the keepers of `groups`; its
+/// counts added to `counts`.
+fn archives<'s: 'l, 'l>(
+    cx: &Cx<'_, 's, 'l>,
+    entries: &[Entry<'l>],
+    groups: &[(usize, usize)],
+    pool: &Pool,
+    counts: &mut Counts,
+) -> Vec<(Key, Diagnostic)> {
+    let live = cx.live_defs(entries, groups);
+    let (found, c) = crate::archives::check(cx, &live, pool);
+    counts.findings += found.len() as u64;
+    counts.archive_members = c.archive_members;
+    counts.archive_units = c.archive_units;
+    counts.archive_bytes = c.archive_bytes;
+    counts.archive_compared = c.archive_compared;
+    counts.system_std += c.system_std;
+    counts.pairs_not_compared += c.pairs_not_compared;
+    found
 }
 
 /// Runs the record checks `switches` asks for over the containers of the
@@ -383,6 +471,9 @@ pub fn check(
         diagnostics.extend(f.diagnostic);
     }
     let dynamic = cx.dynamic(&entries, &groups);
+    if switches.archives {
+        diagnostics.extend(archives(&cx, &entries, &groups, pool, &mut counts));
+    }
     if switches.abi {
         let before = diagnostics.len();
         cx.enforce(&mut diagnostics);
@@ -400,32 +491,14 @@ pub fn check(
 
 /// Reads one live file's containers (`sections` all of that file) and
 /// hashes its global names (O-4).
-fn load<'s>(inputs: &Inputs<'s>, sections: &[(FileId, SectionIndex)]) -> Option<Loaded<'s>> {
+pub(crate) fn load<'s>(
+    inputs: &Inputs<'s>,
+    sections: &[(FileId, SectionIndex)],
+) -> Option<Loaded<'s>> {
     let file = sections.first()?.0;
     let Reader::Object(obj) = inputs.files.get(file)?.reader else { return None };
-    let mut out = Vec::with_capacity(sections.len());
-    for &(_, index) in sections {
-        let Ok(sec) = obj.section(index) else { continue };
-        let h = sec.header();
-        let attrs = SectionAttrs {
-            index: index.0,
-            addralign: h.sh_addralign,
-            entsize: h.sh_entsize,
-            link: h.sh_link,
-            info: h.sh_info,
-        };
-        let bytes = if let Ok(data) = sec.data() {
-            Cow::Borrowed(data)
-        } else {
-            let Ok(Some(range)) = sec.file_range() else { continue };
-            let mut buf = vec![0; range.len()];
-            if inputs.copy_to(file, range.start as u64..range.end as u64, &mut buf).is_err() {
-                continue;
-            }
-            Cow::Owned(buf)
-        };
-        out.push((attrs, bytes));
-    }
+    let out: Vec<_> =
+        sections.iter().filter_map(|&(_, index)| container(inputs, file, index)).collect();
     let mut syms = Vec::new();
     let mut first_global = 0;
     if let Ok(Some(table)) = obj.symbols() {
@@ -447,7 +520,7 @@ fn load<'s>(inputs: &Inputs<'s>, sections: &[(FileId, SectionIndex)]) -> Option<
     Some(Loaded { file, sections: out, syms, first_global })
 }
 
-fn info_of<'l>(at: usize, file: FileId, u: &Unit<'l>) -> Info<'l> {
+pub(crate) fn info_of<'l>(at: usize, file: FileId, u: &Unit<'l>) -> Info<'l> {
     let value = |name: &[u8]| u.summary_value(name).map(|(v, _)| v);
     Info {
         at,
@@ -570,13 +643,13 @@ fn container_finding(
 }
 
 /// The anchor of a row (O-4).
-enum Anchor<'s> {
+pub(crate) enum Anchor<'s> {
     Name(&'s [u8], SymbolIndex),
     Missing,
     Ambiguous,
 }
 
-fn anchor<'s>(syms: &[Sym<'s>], key: u64, defined_only: bool) -> Anchor<'s> {
+pub(crate) fn anchor<'s>(syms: &[Sym<'s>], key: u64, defined_only: bool) -> Anchor<'s> {
     let start = syms.partition_point(|s| s.key < key);
     let mut found: Option<(&'s [u8], SymbolIndex)> = None;
     for s in syms[start..].iter().take_while(|s| s.key == key) {
@@ -620,12 +693,12 @@ enum Severity {
 }
 
 impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
-    fn file_ref(&self, file: FileId) -> FileRef {
+    pub(crate) fn file_ref(&self, file: FileId) -> FileRef {
         self.inputs.files.get(file).map_or_else(|| FileRef::new(""), File::display)
     }
 
     /// A file as a note writes it: `a.o`, `libx.a(y.o)`.
-    fn file_text(&self, file: FileId) -> String {
+    pub(crate) fn file_text(&self, file: FileId) -> String {
         let f = self.file_ref(file);
         match f.member() {
             Some(m) => format!("{}({m})", f.path()),
@@ -652,7 +725,7 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
         let syms = &self.loaded[info.at].syms;
         let unit_id = u as u32;
         let s = self.switches;
-        if (s.kind2 || s.internal || s.keepers) && !info.lang_c {
+        if (s.kind2 || s.internal || s.keepers || s.archives) && !info.lang_c {
             for (i, r) in unit.definitions().iter().enumerate() {
                 let (name, sym) = if r.name != 0 {
                     (unit.string(r.name), None)
@@ -677,7 +750,7 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
                 });
             }
         }
-        if (s.kind3_layout || s.kind3_shape || s.kind3_definition) && !info.lang_c {
+        if (s.kind3_layout || s.kind3_shape || s.kind3_definition || s.types) && !info.lang_c {
             for (i, r) in unit.types().iter().enumerate() {
                 out.push(Entry {
                     kind: 3,
@@ -745,7 +818,7 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
         c
     }
 
-    fn definition(&self, e: &Entry<'_>) -> Option<DefinitionRow> {
+    pub(crate) fn definition(&self, e: &Entry<'_>) -> Option<DefinitionRow> {
         self.units[e.unit as usize].definitions().get(e.row as usize)
     }
 
@@ -757,7 +830,7 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
         self.units[e.unit as usize].declarations().get(e.row as usize)
     }
 
-    fn file_of(&self, e: &Entry<'_>) -> FileId {
+    pub(crate) fn file_of(&self, e: &Entry<'_>) -> FileId {
         self.info[e.unit as usize].file
     }
 
@@ -794,38 +867,87 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
         self.inputs.sym_map_of(l.file).get(i as usize).copied()
     }
 
+    /// Per symbol whose definition the link keeps from a file with a kind
+    /// 2 row for it: that file's first row (in unit, row order), as its
+    /// entry; sorted by symbol, one per symbol (O-51's "the keeper's
+    /// unit's row"; O-23's "live definition").
+    pub(crate) fn live_defs(
+        &self,
+        entries: &[Entry<'l>],
+        groups: &[(usize, usize)],
+    ) -> Vec<(SymbolId, Entry<'l>)> {
+        let mut out = Vec::new();
+        for &(a, b) in groups {
+            let group = &entries[a..b];
+            if group[0].kind != 2 {
+                continue;
+            }
+            let Some(sym) = group.iter().find_map(|e| self.symbol_of(e)) else { continue };
+            let file = match self.resolution.def.get(sym) {
+                Some(Def::Defined(d) | Def::Common(d)) => d.file,
+                _ => continue,
+            };
+            let Some(e) =
+                group.iter().find(|e| self.file_of(e) == file && self.definition(e).is_some())
+            else {
+                continue;
+            };
+            out.push((sym, *e));
+        }
+        out.sort_by_key(|(s, _)| *s);
+        out.dedup_by_key(|(s, _)| *s);
+        out
+    }
+
+    /// O-50's `=full` type rows: per kind 3 group of the live units (key
+    /// and `<type>` encoding), its first row in (file, unit, row) order;
+    /// sorted by key, then by that row's bytes, so that the order never
+    /// depends on the threads.
+    fn type_entries(&self, entries: &[Entry<'l>], groups: &[(usize, usize)]) -> Vec<TypeEntry> {
+        let mut out: Vec<TypeEntry> = Vec::new();
+        for &(a, b) in groups {
+            let group = &entries[a..b];
+            if group[0].kind != 3 || group[0].name.is_empty() {
+                continue;
+            }
+            let Some(first) = group.iter().min_by_key(|e| (self.file_of(e), e.unit, e.row)) else {
+                continue;
+            };
+            let Some(r) = self.type_row(first) else { continue };
+            out.push(TypeEntry {
+                key: r.key,
+                hash: r.hash,
+                layout: r.layout,
+                size: r.size,
+                align: r.align,
+                flags: r.flags,
+            });
+        }
+        out.sort_unstable_by(|a, b| {
+            (a.key, a.hash, a.layout, a.size, a.align, a.flags)
+                .cmp(&(b.key, b.hash, b.layout, b.size, b.align, b.flags))
+        });
+        out
+    }
+
     /// The dynamic side's rows (O-24, O-50): each kind 2 group's keeper
     /// row, and the sized kind 5 declarations of variables.
     fn dynamic(&self, entries: &[Entry<'_>], groups: &[(usize, usize)]) -> Dynamic {
         let mut out = Dynamic::default();
         if self.switches.keepers {
-            for &(a, b) in groups {
-                let group = &entries[a..b];
-                if group[0].kind != 2 {
-                    continue;
-                }
-                let Some(sym) = group.iter().find_map(|e| self.symbol_of(e)) else { continue };
-                let file = match self.resolution.def.get(sym) {
-                    Some(Def::Defined(d) | Def::Common(d)) => d.file,
-                    _ => continue,
-                };
-                let Some(row) = group
-                    .iter()
-                    .filter(|e| self.file_of(e) == file)
-                    .find_map(|e| self.definition(e))
-                else {
-                    continue;
-                };
+            for (sym, e) in self.live_defs(entries, groups) {
+                let Some(row) = self.definition(&e) else { continue };
                 out.keepers.push(Keeper {
                     sym,
-                    file,
+                    file: self.file_of(&e),
                     hash: row.hash,
                     flags: row.flags,
                     class: row.class,
                 });
             }
-            out.keepers.sort_by_key(|k| k.sym);
-            out.keepers.dedup_by_key(|k| k.sym);
+        }
+        if self.switches.types {
+            out.types = self.type_entries(entries, groups);
         }
         if self.switches.declared {
             for e in entries.iter().filter(|e| e.kind == 5) {
@@ -1381,7 +1503,7 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
 
     /// The record place of an entry (§9.1): the symbol for an anchored or
     /// named function or variable, the source position the row gives.
-    fn place(&self, e: &Entry<'_>, keeper: Option<FileId>) -> Place {
+    pub(crate) fn place(&self, e: &Entry<'_>, keeper: Option<FileId>) -> Place {
         let file = self.file_of(e);
         let unit = self.units[e.unit as usize];
         let source = |path: u32, line: u32| {

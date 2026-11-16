@@ -373,6 +373,11 @@ fn message<'d>(kind: &'d Kind, style: &Style<'_>, out: &mut String) -> Option<&'
             out.push_str(" is declared with a type that does not match its definition");
             return shown.then_some(name);
         }
+        Kind::OdrArchiveShadow { name } => {
+            let shown = symbol_into(name, style, out);
+            out.push_str(" in an archive member that is not linked is defined differently");
+            return shown.then_some(name);
+        }
         Kind::OdrInternalReference { name } => {
             let shown = symbol_into(name, style, out);
             out.push_str(

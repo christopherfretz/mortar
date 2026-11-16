@@ -1,0 +1,58 @@
+# K17 (spec/odr.md §3, O-23): an archive member that the link does not
+# extract defines f() differently from the definition it keeps. With
+# --odr-check-archives the member's records are read too, and its row is
+# odr-archive-shadow, a warning in every mode but off: the link succeeds.
+# A second member whose row equals the kept one is read and says nothing,
+# and a member without a container is not read at all.
+#@ spec: odr.md §3, "O-23", "O-41", "O-47"
+#@ requires: g++
+#@ diag: odr-archive-shadow a.o libk17.a(m.o)
+
+cxx -O0 a.cc -o a0.o
+meta a.meta a0.o -o a.o
+cxx -O0 m.cc -o m0.o
+meta m.meta m0.o -o m.o
+cxx -O0 same.cc -o same0.o
+meta same.meta same0.o -o same.o
+cxx -O0 plain.cc -o plain.o
+ar rcs libk17.a m.o same.o plain.o
+cxx -O0 main.cc -o main.o
+link(bfd,lld,mold) g++ -static -no-pie main.o a.o libk17.a -o prog
+link(mortar) g++ -static -no-pie main.o a.o libk17.a -Wl,--odr-check-archives -o prog
+run prog
+  stdout: 1
+
+#--- a.cc
+__attribute__((noinline)) inline int f() { return 1; }
+int fa() { return f(); }
+#--- a.meta
+summary name=lang value=c++
+summary name=odr.scheme value=model-1
+summary name=producer value="hand (WP-076 model)"
+summary name=std value=c++17
+definition anchor=_Z1fv hash=11111111111111111111111111111111 class=1 flags=1 file=h.h line=1
+#--- m.cc
+__attribute__((noinline)) inline int f() { return 2; }
+int fm() { return f(); }
+#--- m.meta
+summary name=lang value=c++
+summary name=odr.scheme value=model-1
+summary name=producer value="hand (WP-076 model)"
+summary name=std value=c++17
+definition anchor=_Z1fv hash=22222222222222222222222222222222 class=1 flags=1 file=h.h line=1
+#--- same.cc
+__attribute__((noinline)) inline int f() { return 1; }
+int fs() { return f(); }
+#--- same.meta
+summary name=lang value=c++
+summary name=odr.scheme value=model-1
+summary name=producer value="hand (WP-076 model)"
+summary name=std value=c++17
+definition anchor=_Z1fv hash=11111111111111111111111111111111 class=1 flags=1 file=h.h line=1
+#--- plain.cc
+__attribute__((noinline)) inline int f() { return 3; }
+int fp() { return f(); }
+#--- main.cc
+#include <cstdio>
+int fa();
+int main() { std::printf("%d\n", fa()); }

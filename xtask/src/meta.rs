@@ -56,6 +56,20 @@
 //! must be the only one); the key is FNV-1a 64 of `S` (O-51); `hash` is the
 //! 8 bytes written (16 hex digits); `flags` are O-51's (`0x8000` is
 //! `NONPREEMPTIBLE`). The header's count becomes the number of rows.
+//!
+//! `--odr-table=full`'s second note (type `0x4d4f4402`, WP-076) is filled
+//! the same way, from a placeholder of that type (`.long 1, 0, 32, 0` and
+//! `.zero 32*N`), by these lines:
+//!
+//! ```text
+//! hidden name=S hash=HEX16 flags=N
+//! type name=ENC hash=HEX16 layout=N size=N align=N flags=N
+//! ```
+//!
+//! `hidden`: a definition the library does not export (the key is FNV-1a
+//! 64 of `S`; no `.dynsym` entry is looked up); `type`: a kind 3 type of
+//! encoding `ENC` (its key FNV-1a 64 of `ENC`). A description with either
+//! needs the second placeholder; one without leaves it as it is.
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -774,26 +788,62 @@ struct TableRow {
     flags: u16,
 }
 
-fn table_rows(text: &str) -> Result<Vec<TableRow>, String> {
-    let mut out = Vec::new();
+/// A `meta table` description: the first note's rows and `=full`'s.
+#[derive(Default)]
+struct TableText {
+    rows: Vec<TableRow>,
+    hidden: Vec<mortar_meta::table::FullRow>,
+    types: Vec<mortar_meta::table::FullRow>,
+}
+
+fn table_rows(text: &str) -> Result<TableText, String> {
+    let mut out = TableText::default();
     for (n, line) in text.lines().enumerate() {
         let at = |e: String| format!("line {}: {e}", n + 1);
         let words = split(line).map_err(at)?;
         let Some((directive, rest)) = words.split_first() else { continue };
-        if directive != b"row" {
-            return Err(at(format!("'{}' is not 'row'", String::from_utf8_lossy(directive))));
-        }
         let fields = Fields::parse(rest).map_err(at)?;
-        fields.done(&["name", "version", "hash", "flags"]).map_err(at)?;
-        let hash = fields.bytes("hash").map_err(at)?;
-        let hash: [u8; 8] =
-            hash.try_into().map_err(|_| at("hash= takes 8 bytes (16 hex digits)".into()))?;
-        out.push(TableRow {
-            name: fields.string("name"),
-            version: fields.get("version").map(|_| fields.string("version")),
-            hash,
-            flags: fields.num("flags", 0).map_err(at)?,
-        });
+        let hash = || -> Result<[u8; 8], String> {
+            let hash = fields.bytes("hash").map_err(at)?;
+            hash.try_into().map_err(|_| at("hash= takes 8 bytes (16 hex digits)".into()))
+        };
+        match directive.as_slice() {
+            b"row" => {
+                fields.done(&["name", "version", "hash", "flags"]).map_err(at)?;
+                out.rows.push(TableRow {
+                    name: fields.string("name"),
+                    version: fields.get("version").map(|_| fields.string("version")),
+                    hash: hash()?,
+                    flags: fields.num("flags", 0).map_err(at)?,
+                });
+            }
+            b"hidden" => {
+                fields.done(&["name", "hash", "flags"]).map_err(at)?;
+                out.hidden.push(mortar_meta::table::FullRow {
+                    key: mortar_meta::fnv1a64(&fields.string("name")),
+                    hash: hash()?,
+                    flags: fields.num("flags", 0).map_err(at)?,
+                    ..Default::default()
+                });
+            }
+            b"type" => {
+                fields.done(&["name", "hash", "layout", "size", "align", "flags"]).map_err(at)?;
+                out.types.push(mortar_meta::table::FullRow {
+                    key: mortar_meta::fnv1a64(&fields.string("name")),
+                    hash: hash()?,
+                    layout: fields.num("layout", 0).map_err(at)?,
+                    size: fields.num("size", 0).map_err(at)?,
+                    align: fields.num("align", 0).map_err(at)?,
+                    flags: fields.num("flags", 0).map_err(at)?,
+                });
+            }
+            other => {
+                return Err(at(format!(
+                    "'{}' is not 'row', 'hidden' or 'type'",
+                    String::from_utf8_lossy(other)
+                )));
+            }
+        }
     }
     Ok(out)
 }
@@ -806,43 +856,58 @@ fn table_rows(text: &str) -> Result<Vec<TableRow>, String> {
 /// whose symbol is not defined once.
 pub fn fill_table(text: &str, input: &Path, out: &Path) -> Result<(), String> {
     use mortar_meta::table;
-    let rows = table_rows(text)?;
+    let text = table_rows(text)?;
+    let full = !text.hidden.is_empty() || !text.types.is_empty();
     let mut bytes = std::fs::read(input).map_err(|e| format!("{}: {e}", input.display()))?;
-    let (at, room, encoded) = {
+    let mut fills: Vec<(usize, usize, Vec<u8>)> = Vec::new();
+    {
         let so = mortar_elf::SharedObject::parse(&bytes).map_err(|e| e.to_string())?;
-        let mut place = None;
+        let (mut place, mut full_place) = (None, None);
         for seg in so.program_headers() {
             if seg.p_type() != mortar_elf::consts::PT_NOTE {
                 continue;
             }
             for note in seg.notes().map_err(|e| e.to_string())? {
                 let note = note.map_err(|e| e.to_string())?;
-                if note.n_type == table::NT_MASON_ODR && note.name_bytes() == table::OWNER {
-                    let at = note.desc().as_ptr() as usize - so.data().as_ptr() as usize;
-                    place = Some((at, note.desc().len()));
+                let at = note.desc().as_ptr() as usize - so.data().as_ptr() as usize;
+                if note.name_bytes() != table::OWNER {
+                    continue;
+                }
+                match note.n_type {
+                    table::NT_MASON_ODR => place = Some((at, note.desc().len())),
+                    table::NT_MASON_ODR_FULL => full_place = Some((at, note.desc().len())),
+                    _ => {}
                 }
             }
         }
         let (at, len) = place.ok_or("no placeholder .note.mason table in a PT_NOTE")?;
         let symbols = so.symbols().map_err(|e| e.to_string())?.ok_or("no .dynsym")?;
         let versions = so.versions().map_err(|e| e.to_string())?;
-        let mut encoded = Vec::new();
-        for r in &rows {
-            let mut found = Vec::new();
-            for (index, sym) in symbols.iter() {
-                if sym.st_shndx == 0 || symbols.name(&sym).ok() != Some(r.name.as_slice()) {
-                    continue;
-                }
-                let node = versions
-                    .of(index)
-                    .ok()
-                    .flatten()
-                    .and_then(|v| v.name().ok().flatten())
-                    .map(<[u8]>::to_vec);
-                if r.version.is_none() || node == r.version {
-                    found.push(index.0);
-                }
+        // The defined symbols, (name, version node, index), sorted once.
+        let mut defined: Vec<(Vec<u8>, Option<Vec<u8>>, u32)> = Vec::new();
+        for (index, sym) in symbols.iter() {
+            let Ok(name) = symbols.name(&sym) else { continue };
+            if sym.st_shndx == 0 {
+                continue;
             }
+            let node = versions
+                .of(index)
+                .ok()
+                .flatten()
+                .and_then(|v| v.name().ok().flatten())
+                .map(<[u8]>::to_vec);
+            defined.push((name.to_vec(), node, index.0));
+        }
+        defined.sort();
+        let mut encoded = Vec::new();
+        for r in &text.rows {
+            let from = defined.partition_point(|d| d.0 < r.name);
+            let found: Vec<u32> = defined[from..]
+                .iter()
+                .take_while(|d| d.0 == r.name)
+                .filter(|d| r.version.is_none() || d.1 == r.version)
+                .map(|d| d.2)
+                .collect();
             let [dynsym] = found.as_slice() else {
                 return Err(format!(
                     "row {}: {} definitions in .dynsym",
@@ -857,13 +922,22 @@ pub fn fill_table(text: &str, input: &Path, out: &Path) -> Result<(), String> {
                 flags: r.flags,
             });
         }
-        (at, len, table::note(&encoded))
-    };
-    let desc = &encoded[table::DESC_OFFSET..];
-    if desc.len() > room {
-        return Err(format!("the placeholder holds {room} bytes, the table takes {}", desc.len()));
+        fills.push((at, len, table::note(&encoded)));
+        if full {
+            let (at, len) = full_place.ok_or("no placeholder =full note (type 0x4d4f4402)")?;
+            fills.push((at, len, table::full_note(&text.hidden, &text.types)));
+        }
     }
-    bytes[at..at + desc.len()].copy_from_slice(desc);
+    for (at, room, encoded) in fills {
+        let desc = &encoded[table::DESC_OFFSET..];
+        if desc.len() > room {
+            return Err(format!(
+                "the placeholder holds {room} bytes, the table takes {}",
+                desc.len()
+            ));
+        }
+        bytes[at..at + desc.len()].copy_from_slice(desc);
+    }
     std::fs::write(out, &bytes).map_err(|e| format!("{}: {e}", out.display()))
 }
 
