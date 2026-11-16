@@ -844,7 +844,7 @@ fn map(
                 e.1 += 1;
             }
             if !by_file {
-                positional.iter_mut().for_each(|p| *p = false);
+                positional.fill(false);
             }
             for (r, &(_, count)) in first.iter().enumerate() {
                 if let Some(f) = files[r]
