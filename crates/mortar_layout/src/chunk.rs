@@ -304,7 +304,12 @@ enum Gaps<'a> {
     /// IN-50: a contribution per run of one file's members, allotted its
     /// size class; the rest a [`HoleKind::Debug`] hole. With `abbrev`, the
     /// neutral abbreviation table follows the last member.
-    Debug { file: &'a dyn Fn(SectionId) -> u64, slack: Slack, form: Neutral, abbrev: bool },
+    Debug {
+        file: &'a dyn Fn(SectionId) -> u64,
+        slack: Slack,
+        form: Neutral,
+        abbrev: bool,
+    },
 }
 
 /// The open region of [`plan_parts`]: its key, start offset in the
@@ -467,9 +472,10 @@ pub fn chunk(
         let cat = if h.flags & SHF_EXECINSTR != 0 { u64::from(text_category(h.name)) } else { 0 };
         file_of(s) << 8 | cat
     };
-    let debug_info = a.outsecs.iter().any(|(id, o)| {
-        o.name == b".debug_info" && !inputs.ordered.members[id].is_empty()
-    });
+    let debug_info = a
+        .outsecs
+        .iter()
+        .any(|(id, o)| o.name == b".debug_info" && !inputs.ordered.members[id].is_empty());
     // Parts per output section, parallel over output sections (L-22).
     let planned: Vec<Result<Vec<PartPlan>, LayoutDiag>> = pool.unit_cost(10000).map(outs, |o| {
         let id = OutSecId(o as u32);
@@ -908,9 +914,11 @@ pub fn chunk(
     // spec/incr.md IN-34a: the holes the caller lays out in synthetic
     // chunks.
     for h in inputs.synth_holes {
-        let Some(c) = order.iter().copied().find(
-            |&c| matches!(chunks[c].kind, ChunkKind::Synthetic(s) if s == h.synth),
-        ) else {
+        let Some(c) = order
+            .iter()
+            .copied()
+            .find(|&c| matches!(chunks[c].kind, ChunkKind::Synthetic(s) if s == h.synth))
+        else {
             return Err(internal("a hole in a synthetic chunk that does not exist"));
         };
         holes.push(Hole { chunk: c, offset: h.offset, size: h.size, kind: h.kind });

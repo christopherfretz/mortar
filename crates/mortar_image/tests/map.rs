@@ -149,7 +149,12 @@ fn parse(text: &str) -> Map {
                     k => panic!("unknown dead kind {k}"),
                 });
                 assert_eq!(t.len(), if kind.is_some() { 5 } else { 4 });
-                m.dead.push(DeadLine { out: untoken(t[1]), offset: hex(t[2]), size: hex(t[3]), kind });
+                m.dead.push(DeadLine {
+                    out: untoken(t[1]),
+                    offset: hex(t[2]),
+                    size: hex(t[3]),
+                    kind,
+                });
             }
             "end" => ended = true,
             r => panic!("unknown record {r}"),

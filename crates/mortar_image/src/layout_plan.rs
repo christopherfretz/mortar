@@ -339,7 +339,8 @@ fn debug_holes(m: &Model<'_, '_>, target: Target, b: &mut Builder) -> Result<(),
             c.offset + h.offset - start(c.shndx)
         })
         .unwrap_or(0);
-    let abbrev = u32::try_from(abbrev).map_err(|_| internal("a neutral abbrev table past 4 GiB"))?;
+    let abbrev =
+        u32::try_from(abbrev).map_err(|_| internal("a neutral abbrev table past 4 GiB"))?;
     let addr_size = match target.class {
         mortar_elf::Class::Elf64 => 8,
         mortar_elf::Class::Elf32 => 4,
