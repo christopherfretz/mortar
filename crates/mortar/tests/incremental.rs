@@ -297,9 +297,9 @@ fn fall_back_reasons() {
     let Some(prog) = Prog::asm() else { return };
     let inc = ["--incremental", "--incremental-report"];
     line_with(&prog.link("o", &inc), "full (no-state) changed=");
-    line_with(&prog.link("o", &inc), "full (update-not-implemented)");
+    line_with(&prog.link("o", &inc), "full (small-output)");
     // Without the report, a reason other than the first link's is a line.
-    line_with(&prog.link("o", &["--incremental"]), "full (update-not-implemented)");
+    line_with(&prog.link("o", &["--incremental"]), "full (small-output)");
     line_with(&prog.link("o", &["--incremental=full", "--incremental-report"]), "(full requested)");
     // The output touched: its tuple differs.
     let f = std::fs::File::options().write(true).open(prog.path("o")).unwrap();
@@ -340,7 +340,7 @@ fn fall_back_reasons() {
     let rep = std::fs::read_to_string(prog.path("rep.txt")).unwrap();
     let lines: Vec<&str> = rep.lines().filter(|l| l.starts_with("incremental:")).collect();
     assert_eq!(lines.len(), 2, "{rep}");
-    assert!(lines[1].starts_with("incremental: full (update-not-implemented) changed="), "{rep}");
+    assert!(lines[1].starts_with("incremental: full (small-output) changed="), "{rep}");
     // WP-063: the dry run's lines follow the second (docs/cli.md §3.13).
     assert_eq!(rep.lines().last(), Some("delta end"), "{rep}");
 }
@@ -1476,9 +1476,15 @@ fn a_target_change_at_the_same_path_is_options_changed() {
         o.stderr_text()
     };
     line_with(&link(&x64), "full (no-state)");
-    line_with(&link(&x64), "full (update-not-implemented)");
-    line_with(&link(&a64), "full (options-changed)");
-    line_with(&link(&a64), "full (update-not-implemented)");
+    line_with(&link(&x64), "full (small-output)");
+    // WP-106: no update could start from a state of another target, so
+    // the report names the reason and computes no delta.
+    let err = link(&a64);
+    line_with(&err, "full (options-changed)");
+    assert!(!err.lines().any(|l| l.starts_with("delta ")), "a dry run: {err}");
+    let err = link(&a64);
+    line_with(&err, "full (small-output)");
+    assert!(err.lines().any(|l| l == "delta end"), "no dry run: {err}");
 }
 
 // spec: incr.md IN-12 (dynamic outputs link plain with a warning on
@@ -1704,7 +1710,7 @@ fn a_compiler_driver_link_twice_finds_its_state() {
         let err = second.stderr_text();
         let line = err.lines().find(|l| l.starts_with("incremental:")).unwrap_or("");
         eprintln!("{name}: second link: {line}");
-        line_with(&err, "full (update-not-implemented)");
+        line_with(&err, "full (small-output)");
     }
 }
 
@@ -1842,4 +1848,373 @@ fn plain_and_incremental_maps_state_the_allocations() {
             support::plumb::clean(&prog.path(out), &prog.path(&format!("{out}.map")), &dir);
         }
     }
+}
+
+/// The members of the archive tests (WP-106): `m1` (`f1`, edited as
+/// `m1b`, the same size), `m2` (`f2`), both extracted by `main`; `m3`
+/// and `m4` define names nothing references (never extracted); `m5`
+/// defines `f2` too (it replaces `m2`).
+const THIN_MAIN: &str =
+    "\t.text\n\t.globl _start\n_start:\n\tbl f1\n\tbl f2\n\tmov x8, #93\n\tsvc #0\n";
+const THIN_MEMBERS: [(&str, &str); 6] = [
+    ("m1", "\t.text\n\t.globl f1\nf1:\n\tmov x0, #1\n\tret\n"),
+    ("m1b", "\t.text\n\t.globl f1\nf1:\n\tmov x0, #3\n\tret\n"),
+    ("m2", "\t.text\n\t.globl f2\nf2:\n\tret\n"),
+    ("m3", "\t.text\n\t.globl u3\nu3:\n\tret\n"),
+    ("m4", "\t.text\n\t.globl u4\nu4:\n\tret\n"),
+    ("m5", "\t.text\n\t.globl f2\nf2:\n\tnop\n\tret\n"),
+];
+
+/// A directory with `main.o`, `lib/m*.o` (and `lib/m1b.o`), and the
+/// archive tools.
+struct Members {
+    scratch: Scratch,
+    ar: PathBuf,
+}
+
+impl Members {
+    fn new(label: &str) -> Option<Self> {
+        let (Some(gcc), Some(ar)) = (AARCH64.tool("gcc"), AARCH64.tool("ar")) else {
+            assert!(
+                !tools_required(),
+                "{} and {} are required",
+                AARCH64.gnu("gcc"),
+                AARCH64.gnu("ar")
+            );
+            return None;
+        };
+        let scratch = Scratch::new(label);
+        std::fs::create_dir_all(scratch.join("lib")).unwrap();
+        std::fs::create_dir_all(scratch.join("run")).unwrap();
+        let sources = std::iter::once(("main", THIN_MAIN)).chain(THIN_MEMBERS.iter().copied());
+        for (name, text) in sources {
+            let src = scratch.write(&format!("{name}.s"), text);
+            let obj = if name == "main" {
+                scratch.join("main.o")
+            } else {
+                scratch.join(format!("lib/{name}.o"))
+            };
+            let o = run_in(
+                scratch.path(),
+                &gcc,
+                &["-c".into(), src.into(), "-o".into(), obj.into()],
+                &[],
+            );
+            assert!(o.success(), "gcc: {}", o.stderr_text());
+        }
+        std::fs::copy(scratch.join("lib/m1.o"), scratch.join("lib/m1a.o")).unwrap();
+        Some(Self { scratch, ar })
+    }
+
+    /// `lib/<name>` made again from `members` (thin with `T`).
+    fn archive(&self, name: &str, flags: &str, members: &[&str]) {
+        let path = self.scratch.join(format!("lib/{name}"));
+        if path.exists() {
+            std::fs::remove_file(&path).unwrap();
+        }
+        let mut a: Vec<OsString> = vec![flags.into(), name.into()];
+        a.extend(members.iter().map(|m| OsString::from(format!("{m}.o"))));
+        let o = run_in(&self.scratch.join("lib"), &self.ar, &a, &[]);
+        assert!(o.success(), "ar: {}", o.stderr_text());
+    }
+
+    /// `lib/m1.o` rewritten in place with the other version's bytes
+    /// (`m1b`'s, or `m1`'s again: the same size); with `keep_times`, its
+    /// mtime set back to what it was.
+    fn edit_m1(&self, keep_times: bool) {
+        let path = self.scratch.join("lib/m1.o");
+        let before = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let now = std::fs::read(&path).unwrap();
+        let [a, b] =
+            ["lib/m1a.o", "lib/m1b.o"].map(|p| std::fs::read(self.scratch.join(p)).unwrap());
+        let bytes = if now == b { a } else { b };
+        assert_eq!(bytes.len(), now.len(), "the two versions have one size");
+        let f = std::fs::File::options().write(true).open(&path).unwrap();
+        f.write_all_at(&bytes, 0).unwrap();
+        if keep_times {
+            f.set_modified(before).unwrap();
+        }
+        drop(f);
+    }
+
+    /// mortar from `dir` (relative to the scratch) with `args`, linking
+    /// `out` with `--incremental` and the report to `rep.txt`; the report.
+    fn link(&self, dir: &str, args: &[&str]) -> String {
+        let cwd = self.scratch.join(dir);
+        let rep = cwd.join("rep.txt");
+        if rep.exists() {
+            std::fs::remove_file(&rep).unwrap();
+        }
+        let mut a: Vec<OsString> = args.iter().map(OsString::from).collect();
+        a.extend(
+            ["-static", "-o", "out", "--incremental", "--incremental-report=rep.txt"]
+                .map(OsString::from),
+        );
+        let o = run_in(&cwd, Path::new(MORTAR), &a, &[]);
+        assert!(o.success(), "mortar {args:?}: {}", o.stderr_text());
+        std::fs::read_to_string(rep).unwrap()
+    }
+}
+
+// spec: incr.md IN-24 (a thin archive's members are files, stat'ed as
+// such; a changed member is a changed file, not a change of plan), §7
+// (`options-changed` is not raised by a member's edit), WP-094's finding
+// (the dry run named a changed thin member `options-changed`, "is not an
+// object or archive"). The neighbours: a member removed, added, replaced
+// with its size and mtime kept, the archive in a group, the link run from
+// another directory with relative paths, and a regular archive (the
+// control).
+#[test]
+fn a_changed_thin_member_is_a_changed_file() {
+    let Some(m) = Members::new("incr-thin") else { return };
+    let no_fallback = |rep: &str, what: &str| {
+        assert!(rep.lines().last() == Some("delta end"), "{what}: no dry run:\n{rep}");
+        let falls: Vec<&str> = rep.lines().filter(|l| l.starts_with("delta fallback ")).collect();
+        assert!(falls.is_empty(), "{what}: {falls:?}\n{rep}");
+    };
+    let changed = |rep: &str, archive: &str, what: &str| {
+        let want = format!("delta file changed {archive} m1.o");
+        assert!(
+            rep.lines().any(|l| l.ends_with(&want) || l == want),
+            "{what}: no `{want}`:\n{rep}"
+        );
+    };
+    for (flags, name) in [("rcsT", "libt.a"), ("rcs", "libr.a")] {
+        let lib = format!("lib/{name}");
+        let thin = flags.ends_with('T');
+        // The member edited (the same size, a new mtime).
+        m.archive(name, flags, &["m1", "m2", "m3"]);
+        m.link(".", &["main.o", &lib]);
+        m.edit_m1(false);
+        if !thin {
+            m.archive(name, flags, &["m1", "m2", "m3"]);
+        }
+        let rep = m.link(".", &["main.o", &lib]);
+        no_fallback(&rep, &format!("{name}: m1 edited"));
+        changed(&rep, &lib, &format!("{name}: m1 edited"));
+        // An unextracted member removed, then added back, then another.
+        m.archive(name, flags, &["m1", "m2"]);
+        let rep = m.link(".", &["main.o", &lib]);
+        no_fallback(&rep, &format!("{name}: m3 removed"));
+        m.archive(name, flags, &["m1", "m2", "m3", "m4"]);
+        let rep = m.link(".", &["main.o", &lib]);
+        no_fallback(&rep, &format!("{name}: m3, m4 added"));
+        // An extracted member removed, another that defines its name
+        // added: the old member file left, the new one is read.
+        m.archive(name, flags, &["m1", "m5", "m3", "m4"]);
+        let rep = m.link(".", &["main.o", &lib]);
+        no_fallback(&rep, &format!("{name}: m2 replaced by m5"));
+        for want in
+            [format!("delta file appeared {lib} m5.o"), format!("delta file gone {lib} m2.o")]
+        {
+            assert!(rep.lines().any(|l| l == want), "{name}: no `{want}`:\n{rep}");
+        }
+        m.archive(name, flags, &["m1", "m2", "m3", "m4"]);
+        // In a group.
+        let group = ["main.o", "--start-group", lib.as_str(), "--end-group"];
+        m.link(".", &group);
+        m.edit_m1(true);
+        if !thin {
+            m.archive(name, flags, &["m1", "m2", "m3", "m4"]);
+        }
+        let rep = m.link(".", &group);
+        no_fallback(&rep, &format!("{name}: in a group, m1 edited, its mtime kept"));
+        changed(&rep, &lib, &format!("{name}: in a group, m1 edited, its mtime kept"));
+        // From another directory, by relative paths.
+        let rel = format!("../{lib}");
+        m.link("run", &["../main.o", &rel]);
+        m.edit_m1(false);
+        if !thin {
+            m.archive(name, flags, &["m1", "m2", "m3", "m4"]);
+        }
+        let rep = m.link("run", &["../main.o", &rel]);
+        no_fallback(&rep, &format!("{name}: from run/, m1 edited"));
+        changed(&rep, &rel, &format!("{name}: from run/, m1 edited"));
+    }
+}
+
+// spec: incr.md §7 (`small-output`: a state of an output below
+// `mortar_incr::SMALL_OUTPUT` is linked in full, by that name;
+// `--incremental=update` is not bound by it), IN-10a (the dry run still
+// runs for it when the report asks), WP-106
+#[test]
+fn a_small_output_is_linked_in_full_by_name() {
+    let Some(prog) = Prog::asm() else { return };
+    prog.link("o", &["--incremental"]);
+    let size = std::fs::metadata(prog.path("o")).unwrap().len();
+    assert!(size < mortar_incr::SMALL_OUTPUT && mortar_incr::small_output(size), "{size}");
+    let err = prog.link("o", &["--incremental"]);
+    assert_eq!(err.lines().filter(|l| l.starts_with("incremental:")).count(), 1, "{err}");
+    line_with(&err, "full (small-output)");
+    let err = prog.link("o", &["--incremental", "--incremental-report"]);
+    line_with(&err, "full (small-output) changed=");
+    assert_eq!(err.lines().last(), Some("delta end"), "{err}");
+    let o = prog.mortar_env("o", &["--incremental=update"], &[]);
+    assert!(!o.success());
+    assert!(
+        o.stderr_text().contains("cannot update: update-not-implemented"),
+        "{}",
+        o.stderr_text()
+    );
+}
+
+// spec: incr.md IN-11 (a plain link never opens, removes or writes a
+// state or a report; `--incremental-report` and `--incremental-state`
+// without `--incremental` do nothing), IN-10a, WP-106. A FIFO at the
+// state paths would block a plain link that opened one; an existing
+// state keeps its bytes, inode and times; the directory gains only the
+// output. (A `stat` alone is not observable here: no tracer is in
+// `scripts/ci-tools.sh`.)
+#[test]
+fn a_plain_link_touches_nothing_of_incremental_mode() {
+    let Some(prog) = Prog::asm() else { return };
+    let Some(mkfifo) = mortar_testutil::tool("mkfifo") else {
+        assert!(!tools_required(), "mkfifo is required");
+        return;
+    };
+    prog.link("o", &["--incremental"]);
+    let state = prog.state_of("o");
+    let meta = |p: &Path| {
+        use std::os::unix::fs::MetadataExt as _;
+        let m = std::fs::symlink_metadata(p).unwrap();
+        (m.ino(), m.len(), m.mtime(), m.mtime_nsec(), m.ctime(), m.ctime_nsec())
+    };
+    let before = (std::fs::read(&state).unwrap(), meta(&state));
+    for fifo in ["p.mortar-state", "p.st"] {
+        let o = run_in(&prog.built.dir, &mkfifo, &[fifo.into()], &[]);
+        assert!(o.success(), "{}", o.stderr_text());
+    }
+    let listing = || {
+        let mut v: Vec<OsString> =
+            std::fs::read_dir(&prog.built.dir).unwrap().map(|e| e.unwrap().file_name()).collect();
+        v.sort();
+        v
+    };
+    let entries = listing();
+    std::thread::sleep(Duration::from_millis(20));
+    for (out, extra) in [
+        ("o", &[][..]),
+        ("p", &["--incremental-report=rep.txt"][..]),
+        ("p", &["--incremental-state=p.st", "--incremental-report"][..]),
+        ("p", &["--incremental", "--no-incremental", "--incremental-report=rep.txt"][..]),
+    ] {
+        let err = prog.link(out, extra);
+        assert!(!err.contains("incremental") && !err.contains("delta"), "{extra:?}: {err}");
+    }
+    assert_eq!((std::fs::read(&state).unwrap(), meta(&state)), before, "the state was touched");
+    for fifo in ["p.mortar-state", "p.st"] {
+        use std::os::unix::fs::FileTypeExt as _;
+        let t = std::fs::symlink_metadata(prog.path(fifo)).unwrap().file_type();
+        assert!(t.is_fifo(), "{fifo} replaced");
+    }
+    let mut want = entries;
+    want.push("p".into());
+    want.sort();
+    assert_eq!(listing(), want, "a plain link left another file");
+    // IN-11: the state no longer matches the output a plain link replaced.
+    line_with(&prog.link("o", &["--incremental"]), "full (output-changed: ");
+}
+
+/// `n` functions, each global in its own section; `pad` instructions
+/// ahead of the first, so that with `pad = 1` every function moves.
+fn many_sections(n: usize, pad: usize) -> String {
+    use std::fmt::Write as _;
+    let mut s = String::from("\t.text\n\t.globl _start\n_start:\n");
+    s.push_str(&"\tnop\n".repeat(pad));
+    s.push_str("\tmov x8, #93\n\tsvc #0\n");
+    for i in 0..n {
+        let _ = write!(s, "\t.section .text.f{i},\"ax\",%progbits\n\t.globl f{i}\nf{i}:\n\tret\n");
+    }
+    s.push_str("\t.section .note.GNU-stack,\"\",%progbits\n");
+    s
+}
+
+// spec: incr.md IN-10 (the report is bounded: per kind the first
+// `REPORT_BOUND` lines and a `delta elided` line with the total, a
+// `delta listed` line with the sum; nothing left out unsaid), docs/cli.md
+// §3.13, WP-106. One object of 100,000 sections, each with its global,
+// all moved by one instruction: 100,000 refilled units, holes and moved
+// symbols. Two links of the same history give the same report, but for
+// its two time fields.
+#[test]
+fn the_report_is_bounded() {
+    use mortar_incr::delta::REPORT_BOUND;
+    const N: usize = 100_000;
+    let Some(gcc) = AARCH64.tool("gcc") else {
+        assert!(!tools_required(), "{} is required", AARCH64.gnu("gcc"));
+        return;
+    };
+    let scratch = Scratch::new("incr-bound");
+    for v in 0..2 {
+        let src = scratch.write(&format!("v{v}.s"), many_sections(N, v));
+        let obj = scratch.join(format!("v{v}.o"));
+        let o =
+            run_in(scratch.path(), &gcc, &["-c".into(), src.into(), "-o".into(), obj.into()], &[]);
+        assert!(o.success(), "gcc: {}", o.stderr_text());
+    }
+    let mut reports = Vec::new();
+    for run in ["a", "b"] {
+        let dir = scratch.join(run);
+        std::fs::create_dir_all(&dir).unwrap();
+        let link = |v: usize, report: bool| {
+            std::fs::copy(scratch.join(format!("v{v}.o")), dir.join("in.o")).unwrap();
+            let mut a: Vec<OsString> =
+                ["in.o", "-static", "-o", "out", "--incremental"].map(OsString::from).to_vec();
+            if report {
+                a.push("--incremental-report=rep.txt".into());
+            }
+            let o = run_in(&dir, Path::new(MORTAR), &a, &[]);
+            assert!(o.success(), "{}", o.stderr_text());
+        };
+        link(0, false);
+        link(1, true);
+        let rep = std::fs::read_to_string(dir.join("rep.txt")).unwrap();
+        // The files of this run, before the next (about 40 MB).
+        for f in ["out", "out.mortar-state", "in.o"] {
+            std::fs::remove_file(dir.join(f)).unwrap();
+        }
+        reports.push(rep);
+    }
+    let rep = &reports[0];
+    let count =
+        |kind: &str| rep.lines().filter(|l| l.starts_with(&format!("delta {kind} "))).count();
+    for kind in ["unit", "hole", "symbol"] {
+        assert_eq!(count(kind), REPORT_BOUND, "{kind}");
+        let elided = rep
+            .lines()
+            .find_map(|l| {
+                l.strip_prefix(&format!("delta elided {kind} listed={REPORT_BOUND} total="))
+            })
+            .unwrap_or_else(|| panic!("no `delta elided {kind}` line"));
+        assert!(elided.parse::<usize>().unwrap() >= N, "{kind}: {elided}");
+    }
+    let refill = rep.lines().find(|l| l.starts_with("delta refill ")).unwrap();
+    let units: usize =
+        refill.split(' ').find_map(|w| w.strip_prefix("units=")).unwrap().parse().unwrap();
+    assert!(units >= N, "{refill}");
+    let listed = rep.lines().find(|l| l.starts_with("delta listed ")).unwrap();
+    let elided: usize = listed.rsplit_once("elided=").unwrap().1.parse().unwrap();
+    let total: usize = rep
+        .lines()
+        .filter_map(|l| l.strip_prefix("delta elided "))
+        .map(|l| l.rsplit_once("total=").unwrap().1.parse::<usize>().unwrap() - REPORT_BOUND)
+        .sum();
+    assert_eq!(elided, total, "{listed}");
+    assert_eq!(rep.lines().last(), Some("delta end"));
+    assert!(rep.len() < 4 << 20, "the report is {} bytes", rep.len());
+    // Deterministic: the same history, the same report, but for the times.
+    let mask = |r: &str| -> String {
+        r.lines()
+            .map(|l| {
+                if l.starts_with("delta time ") {
+                    "delta time".to_owned()
+                } else {
+                    l.split(' ').filter(|w| !w.starts_with("time=")).collect::<Vec<_>>().join(" ")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    assert!(mask(&reports[0]) == mask(&reports[1]), "two reports of one history differ");
+    eprintln!("the report: {} bytes, {} lines; {listed}", rep.len(), rep.lines().count());
 }
