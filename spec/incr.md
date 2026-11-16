@@ -976,8 +976,13 @@ program is the program a from-scratch link would have made.
   nothing else: not of `--threads`, the schedule, the time, or what else
   is in the directory. The same sequence of edits replayed from the same
   first link gives the same bytes. *Test:* L10 replays each sequence
-  twice, with `--threads=1` and the default, and compares outputs and
-  states byte for byte.
+  twice, with `--threads=1` and the default, and compares the outputs
+  byte for byte and the states byte for byte apart from what records the
+  file system rather than the link: `STAT`'s stamps (the device rows'
+  `stamp_ns`) and the output row's `ino`, `mtime_ns`, `ctime_ns` and
+  `stamp_ns` (IN-18a). Every other table is identical (measured on
+  WP-061's corpus by the review: two identical links, and `--threads=1`
+  against `--threads=7`, differ only there).
 - **IN-7 [v1] Not reproducible across histories.** Two developers with
   different edit histories get different (equivalent, IN-2) bytes. So
   incremental mode is for development; reproducible and release builds
@@ -1018,7 +1023,8 @@ program is the program a from-scratch link would have made.
   | `--incremental-report[=FILE]` | one line per link to `FILE` (default stderr): `incremental: update` or `incremental: full (<reason>)`, then `changed=<files> refilled=<units> bytes=<written> time=<ms>` |
 
   A fall-back is reported without `--incremental-report` too, as one
-  note (`incr-full-link`, `spec/diag.md`) naming the reason; an update
+  report line (`incr-full-link`; a line, not a diagnostic: `spec/diag.md`
+  §2.1) naming the reason; an update
   that succeeds prints nothing. gold's `--incremental-changed`,
   `--incremental-unchanged` and `--incremental-unknown` are not taken
   (IN-23); `--incremental-base` neither (the state names its output).
@@ -1030,7 +1036,11 @@ program is the program a from-scratch link would have made.
   over an incremental output, then `--incremental`, checks the reason.
 - **IN-12 [v1] Incompatible modes.** With `-r`, `--emit-relocs`, a
   `SECTIONS` script, `--compress-debug-sections` other than `none`,
-  `--gdb-index`/`--debug-names` generation or `--icf`, `--incremental`
+  `--gdb-index`/`--debug-names` generation or `--icf`, and (until WP-066)
+  an output kind other than a static executable (`-pie`, `-static-pie`,
+  `-shared`, a dynamic `-no-pie` executable; keyed on the plan's output
+  kind, so `-no-pie` without `-static` is unsupported even when no
+  shared object is linked), `--incremental`
   gives one warning (`incremental-unsupported`, naming the option) and
   links plainly, writing no state; with `--incremental=update` it is an
   error. These are §7's "unsupported" rows: a state for them would never
@@ -1093,6 +1103,13 @@ with each phase fed from the state for unchanged files:
   checks the state's path with and without `--incremental-state`, that
   no temporary file is left after success or a crash at IN-46 step 5,
   and that a plain link creates no state file.
+  `--incremental-state` and `--incremental-report=FILE` naming the output
+  or any input (the same path, or the same `(dev, ino)` as an existing
+  one) are refused by name, `incremental-file-clash`, before anything is
+  written, and checked again before the state and the report are
+  written; image.md I-62 accepts the output as an input because the
+  output is renamed into place, which a state or a report written over
+  an input would not be. *Test:* `the_state_or_report_naming_a_file_of_the_link_is_refused`.
 - **IN-18 [v1] Format and version.** Little-endian, fixed-width rows,
   no pointers; a header of magic `MORTARST`, a format version (u32), the
   mortar version string (any difference: `state-version`), the target,
@@ -1150,6 +1167,10 @@ with each phase fed from the state for unchanged files:
   unit), decision tables after layout. No phase keeps a copy for the
   state's sake beyond what it already holds. *Test:* peak RSS of an
   incremental-mode full link is within 10% of a plain link's (bench).
+  *Amended at WP-061 stage A:* the version 1 state is built in memory
+  after the link and encoded at once (8 MB for protoc `-g`); stage B
+  measures the peak of an incremental-mode full link against a plain
+  one on its workloads and decides then whether the writer streams.
 - **IN-21 [v1] Bound to its output.** After its last write to the
   output (IN-46 step 5), the link `fstat`s it, then takes **stamps**
   (IN-22a) on the output's file system until a stamp's ctime is later
@@ -1159,7 +1180,15 @@ with each phase fed from the state for unchanged files:
   second tuple `(dev, ino, size, mtime_ns, ctime_ns)`, that stamp's
   ctime as the output's **reference stamp**, and the build-id. If the two
   `fstat`s differ, something wrote the output during the link: no state
-  is written (the next link says `output-changed`). An update proceeds
+  is written (the next link says `output-changed`). The state is bound to
+  the file the link wrote, not to the path: the link `fstat`s its
+  temporary output before the rename (IN-46) and keeps its `(dev, ino)`;
+  if the path's `(dev, ino)` or size after the rename are not those,
+  another link has replaced the output, and no state is written and any
+  state at the state's path is removed, so nothing is left that the next
+  link could accept for this link's command line and the other's output
+  (a plain link does not pay this `fstat`: it is taken only in
+  incremental mode). An update proceeds
   only if `stat(P)` gives the recorded tuple, `P`'s ctime is strictly
   older than its reference stamp, and the build-id note read from `P` (one
   positioned read at the offset the state records) is the same. A tuple
@@ -1185,7 +1214,170 @@ with each phase fed from the state for unchanged files:
   the next link's check, 200–400 times on overlay and virtiofs: own
   output seen as changed 0 times) and the reviewer's `state_tick.py`
   (39/200 and 60/200 own-output fall-backs under the old rule) become L10
-  cases on a coarse-timestamp file system.
+  cases on a coarse-timestamp file system; the WP-061 review's
+  `cross_race.sh` (two links racing to one output and one state, with
+  `--build-id=none`) is `concurrent_links_never_cross_output_and_state`:
+  0 crossed pairs.
+- **IN-18a [v1] The bytes, format version 1** (S1, written by WP-061
+  stage A; the contract a reader is checked against, and the one a
+  re-implementation must write). All integers little-endian, rows
+  fixed-width and packed (no alignment padding); `u8`…`u64`, `i64` as
+  usual; a **str** is `(offset u32, len u32)` into the `STRINGS` table's
+  bytes; a **row reference** is a `u32` row number in the named table,
+  `NONE = 0xffff_ffff` where the field says it may be absent; `pad`
+  fields are zero. A hash is 16 bytes of `L128` (image.md I-114).
+
+  **Header**, 64 bytes at offset 0:
+
+  | offset | field |
+  |---|---|
+  | 0 | magic `MORTARST` (8 bytes) |
+  | 8 | format version `u32` = 1 |
+  | 12 | flags `u32`: bit 0 **updating** (IN-46); any other bit set is `state-corrupt`; not covered by the header hash, so IN-46 can set and clear it with one positioned write |
+  | 16 | table count `u32` = 23 (any other count is `state-corrupt`) |
+  | 20 | pad `u32` |
+  | 24 | file length `u64`: the state's size in bytes |
+  | 32 | plan hash: `L128` of the normalized plan (IN-18b) |
+  | 48 | header hash: `L128` of bytes 0..12 followed by bytes 16..48 |
+
+  **Tables** follow the header back to back to the end of the file, each
+  a 40-byte record `(kind u32, pad u32, row count u64, byte length u64,
+  L128 of the rows' bytes)` and then its rows. Byte length is row count
+  × the kind's row width (`STRINGS`: row count, one byte per row). In
+  version 1 every kind below appears exactly once, in ascending kind
+  order, `STRINGS` last; the end of the last table is the file length.
+  Kinds 32–63 are reserved for the later tables of IN-19 (32 symbol
+  summaries, 33 resolution, 34 dependency index, 35 liveness graph, 36
+  warnings, 37 armaps, 38 section hashes, 39 regions and holes, 40 debug
+  layout); a kind this version does not define is `state-corrupt` (a new
+  table is a new format version, never an optional extra).
+
+  | kind | table | row (width) | rows |
+  |---|---|---|---|
+  | 1 | `META` | version str, `e_machine u16`, class `u8` (1, 2), output kind `u8` (0 static executable; the others are refused by IN-12 in this stage), leaf function `u8` (0 L128, 1 SHA-1, 2 SHA-256), pad 3, output size `u64`, build-id descriptor start `u64`, end `u64` (the file offsets of the build id's bytes in the output; both 0: none), build id str (the id's bytes, at most 64; empty: none) (48) | 1 |
+  | 2 | `STAT` | tag `u8` (0 device stamp, 1 input file, 2 output), trust `u8`, pad `u16`, pad `u32`, path str, `dev u64`, `ino u64`, `size u64`, `mtime_ns i64`, `ctime_ns i64`, `stamp_ns i64`, content hash, file-system type str (88) | device rows sorted by `dev`, then one row per path opened (`spec/input.md` §10.4 `opened`, in that order, a path opened twice once, at its first opening), then exactly one output row |
+  | 3 | `FILES` | kind `u8` (0 internal, 1 object, 2 shared object), member `u8` (0, 1), pad `u16`, path str, mention `u32`, member name str, member ordinal `u32`, base `u64`, length `u64`, content hash (60) | one per `FileId`, in order (row 0 the internal file) |
+
+  `STAT`'s rows by tag (a field a row does not use is zero, a str
+  `(0, 0)`). A **device** row (IN-22a): path the directory the stamp was
+  taken in, `dev`, `stamp_ns` the stamp's ctime, trust 1 when the file
+  system is not trusted (IN-22a's allow-list and probe), file-system
+  type the mountinfo type; `ino`, `size`, the times and the hash zero. An
+  **input** row: path as the link opened it, the stat tuple
+  `(dev, ino, size, mtime_ns, ctime_ns)` of the file read, its content
+  hash and trust 0 when the link read and hashed it, else the tuple of a
+  `stat` and trust 1 (hash zero; the whole tuple zero when the file is
+  gone). The **output** row: path the output, the second tuple of IN-21
+  and `stamp_ns` its reference stamp; its `size` is `META`'s output
+  size. Times are nanoseconds since the epoch (`st_*tim` seconds × 10⁹ +
+  nanoseconds), as `i64`.
+
+  `FILES`: path and mention are the file's identity (model §7.1:
+  for a file named directly, how many earlier files not archive members
+  have that path; for a member, how many earlier archive mentions have
+  its archive's path), with member name and ordinal for a member (for a
+  file that is not a member: `(0, 0)` and 0); base and length are the
+  file's byte range in what was read (its archive, for a member; base
+  plus length must not pass 2⁶⁴), both 0 for the internal file, which has
+  no bytes; the content hash is `L128` of that range (zero without
+  bytes).
+  | 4 | `PROBES` | path str, present `u8`, pad 3 (12) | `Inputs::probe_checks`, in order |
+  | 5 | `OUTSECS` | name str, ordinal `u32` among earlier rows with that name (12) | one per output section, `OutSecId` order |
+  | 6 | `SYMBOLS` | kind `u8` (0 global, 1 versioned global, 2 local), pad 3, file `FILES` row (locals; else `NONE`), ordinal `u32` (locals; else 0), name str, version str (kind 1; else `(0, 0)`) (28) | every key the other tables name, in first-use order, no duplicates |
+  | 7 | `SECTIONS` | file `FILES` row, anchor kind `u8` (0 none, 1 COMDAT, 2 global, 3 local), pad 3, anchor str (`(0, 0)` when the kind is 0), name str, ordinal `u32`, `sh_type u32`, `sh_flags u64`, `sh_size u64`, alignment `u64`, file offset `u64` (0 for `SHT_NOBITS`), place chunk `CHUNKS` row or `NONE`, place offset `u64` (0 when `NONE`) (76) | one per `SectionId`, in order |
+  | 8 | `CHUNKS` | tag `u8` (below), bits `u8` (0 has address, 1 has `shndx`, 2 relro, 3 address-dependent synthetic), alignment `u8` (log2, below 64), pad `u8`, name str, ordinal `u32`, output section `OUTSECS` row or `NONE`, part `u32`, `sh_type u32`, `sh_flags u64`, size, capacity (size ≤ capacity), address (0 without bit 0), file offset `u64`, `shndx u32` (0 without bit 1) (72) | one per `ChunkId`, in order |
+  | 9 | `ORDER` | chunk `CHUNKS` row (4) | `Placement::order` |
+  | 10 | `SEGMENTS` | `p_type u32`, `p_flags u32`, offset, address, `filesz`, `memsz` `u64`, alignment `u64` holding the **log2** of `p_align` (below 64), as `Segment::align` (48) | `Placement::segments` |
+  | 11 | `FRAGS` | output section `OUTSECS` row, ordinal `u32` or `NONE`, content hash, offset `u64` (32) | one per fragment identity (model §7.1: output section and content hash) that has a live fragment, strictly ascending by (output section as a number, hash compared as 16 bytes from the first, ordinal as a number, `NONE` greatest); ordinal `NONE` when all its live fragments share one offset, else one row per live fragment with its ordinal among them in `FragId` order |
+  | 12 | `SLOTS` | slot kind `u8` (0 GOT, 1 PLT, 2 IPLT, 3 TLS descriptor, 4 TLS GD, 5 TLS IE), pad 3, key `SYMBOLS` row (8) | the slot lists in that kind order, each in its order |
+  | 13 | `EH_RECORDS` | section `SECTIONS` row, piece `u32` (8) | `Slots::eh_records` |
+  | 14 | `SYMTAB_LOCALS` | start `u32`, length `u32` (8) | `Slots::symtab_locals`, one per `FILES` row (or none) |
+  | 15 | `SIZES` | chunk `CHUNKS` row, size `u64` (12) | `Slots::sizes` |
+  | 16 | `SYM_PLACE` | kind `u8` (0 common), pad 3, symbol `SYMBOLS` row, chunk `CHUNKS` row, offset, size `u64`, alignment `u8` (log2), pad 3 (32) | `Placement::sym_place` |
+  | 17 | `DEFINED` | symbol `SYMBOLS` row, kind `u8` (0 absolute, 1 in a chunk), pad 3, chunk `CHUNKS` row (kind 1; else `NONE`), value or offset `u64` (20) | `Placement::defined` |
+  | 18 | `PATCHES` | chunk `CHUNKS` row, kind `u8` (0 thunk to a key, 1 thunk to a key's PLT entry, 2 erratum 843419 patch), pad 3, offset `u64`, key `SYMBOLS` row (kinds 0, 1; else `NONE`), section `SECTIONS` row (kind 2; else `NONE`), addend `i64` (kind 0) or site offset (kind 2) (32) | `Placement::patches` |
+  | 19 | `REDIRECTS` | section `SECTIONS` row, patch `PATCHES` row, offset `u64` (16) | `Placement::redirects` |
+  | 20 | `SIZED` | chunk `CHUNKS` row, size `u64` (12) | `Placement::sized` |
+  | 21 | `LAYOUT` | bits `u8` (0 TLS, 1 entry, 2 TLS LD module slot), TLS alignment `u8` (log2), pad `u16`, pad `u32`, TLS start, TLS size, entry `u64` (32) | 1 |
+  | 22 | `LEAVES` | digest (32: the leaf function's bytes, zero-filled) (32) | `leaf_count(output size)` (image.md I-72), window order |
+  | 23 | `STRINGS` | bytes (1) | the pool |
+
+  `CHUNKS`' tag is the chunk's kind (`ChunkTag`): 0 file header, 1
+  program headers, 2 section headers, 3 body, 4 merged, 5 patches, 6
+  synthetic, 7 group, 8 relocations. Its name is the synthetic chunk's
+  name for tag 6, the output section's name for tags 3, 4, 5, 7 and 8,
+  and `(0, 0)` for the headers; its output section is the chunk's for
+  tags 3, 4, 5, 7 and 8 and `NONE` otherwise; part is the body or patch
+  part's number (tags 3 and 5), else 0. The **ordinal** (the chunk's
+  identity, model §7.1, with tag and name) is the number of earlier
+  chunks, in `ChunkId` order, with the same tag and the same name (no
+  name counts as one name). `OUTSECS`' ordinal is the same count among
+  output sections by name.
+
+  **The validating reader** checks, before any row is used and in this
+  order: the length is at least 64; magic (else `state-corrupt`); the
+  format version (else `state-version`); the header hash; the file length
+  equals the file's size; each table record lies inside the file, has
+  the expected kind in order, a byte length equal to row count × width,
+  and its hash; then every row: pad and reserved bits zero, enumerations
+  and booleans in range, every str inside `STRINGS`, every row reference
+  inside its table (or `NONE` where allowed), the counts of one-row
+  tables, no bytes after `STRINGS`; then, table by table: `META`'s
+  build-id descriptor inside the output and exactly the build id's
+  length, at most 64 bytes (so the output check reads that many bytes
+  and no more); the `STAT` order (device rows ascending by `dev`, then
+  inputs, then one output row), no input path twice, the output row's
+  size equal to `META`'s output size; `FILES`' member fields zero for a
+  file that is not a member, and base plus length within 2⁶⁴; `OUTSECS`
+  ordinals as stated; `SYMBOLS`' fields by kind (a global: file `NONE`,
+  ordinal 0, no version; versioned: file `NONE`, ordinal 0; a local: a
+  file, no version) and no key twice; `SECTIONS`' anchor empty for kind
+  0 and place offset 0 without a chunk; `CHUNKS`' fields as stated in
+  its row; `ORDER` a permutation of the chunks (each once); `SEGMENTS`'
+  alignment below 64; `FRAGS` strictly ascending as stated; `SLOTS` in
+  kind order with no (kind, key) twice; `SYMTAB_LOCALS` empty or as long
+  as `FILES`; `SYM_PLACE` kind 0 and alignment below 64; `DEFINED`'s
+  chunk by kind and no symbol twice; `PATCHES`' key, section and value
+  by kind (a thunk to a key's PLT entry has value 0); `LAYOUT`'s fields
+  zero where their bit is clear; `LEAVES` as long as the output size
+  says, its bytes past the leaf function's digest zero. Then
+  `META`'s version string is compared with this mortar's
+  (`state-version`). Any failure is `state-corrupt` with a detail naming
+  the table, row and field (`state-corrupt (CHUNKS row 7: output section
+  out of range)`), never a panic; arithmetic on stored values is checked.
+  What can only be checked against the present link (identities that
+  must resolve, model §7.2) is the replay's and the update's (IN-61,
+  WP-064), not the reader's. **Dynamic tables** (`Slots::dynsym`,
+  `dyn_relocs`, `needed`, `verneed`, `dynstr`, `copies`, `copy_of`) and
+  `Folds` have no table: version 1 states exist only for static
+  executables (IN-12), where they are empty; a writer that finds them
+  non-empty writes no state. *Test:* `mortar_incr`'s round trip and
+  mutation tests: every single-byte change and every truncation of a
+  state of the link-test corpus is a named error or (a change of the
+  header's flags) accepted; never a panic.
+- **IN-18b [v1] The normalized plan.** The plan hash is `L128` of a
+  sequence of items, each a tag byte followed by fields that are each a
+  `u32` length and that many bytes: first `C` with the working
+  directory; then, by argument index (after `@file` expansion), `O`
+  with the option row's canonical name (its first spelling) and its
+  value (empty when it takes none) for every option use whose row is not
+  excluded, and `I` with the path of every input named by a path (an
+  argument that is not an option). Excluded rows touch no output byte:
+  `-Map`, `-M`/`--print-map`, `--mortar-map`, `--time-phases`,
+  `--threads`, `--thread-count`, `--no-threads`, `--dependency-file`,
+  every `--incremental` row (IN-10), and every row the option table
+  accepts and ignores (status `noop`, `docs/status/options.md`: its
+  audit links it to the same bytes as without it). The last class is
+  why a compiler driver's second link finds its state: gcc passes
+  `-plugin-opt=-fresolution=/tmp/ccXXXXXX.res`, a new name on every run
+  (the WP-061 review's F1). Any other difference of the
+  command line, its spelling included, is `options-changed`: conservative
+  (`-o x` and `--output=x` hash alike, being one row, but two orders of
+  the same options do not). *Test:* a link test: `--time-phases` and
+  `--threads` added keep the plan; `-O1` added changes it;
+  `a_compiler_driver_link_twice_finds_its_state` links twice through
+  gcc, g++, gfortran and clang with `-B` naming mortar as `ld`, and the
+  second link finds the first's state.
 
 ### 5.4 Change detection
 
@@ -1253,6 +1445,20 @@ with each phase fed from the state for unchanged files:
   trusting that; a content-addressed store whose path names the content
   (Nix) is a [later] exception.
 
+  **Where the stamps are taken** (WP-061): before the input phase, in
+  this order of directories, the first writable one of each `st_dev`
+  wins: the output's directory, the state's, `TMPDIR` (else `/tmp`), the
+  working directory, then the directories of the plan's path inputs and
+  `-L` directories. A file opened on a device with no stamp row is
+  hashed. In `STAT` a device row's trust is 0 when its type is on the
+  list and the probe passed, else 1 (always hashed); an input row's
+  trust is 0 when its content hash is recorded, 1 when none could be
+  (it is then changed on every update); the output row's `stamp_ns` is
+  its reference stamp (IN-21). The device's major and minor numbers for
+  mountinfo are Linux's (glibc's `major`, `minor`): major `(dev >> 8)
+  & 0xfff | (dev >> 32) & 0xffff_f000`, minor `dev & 0xff | (dev >> 12)
+  & 0xffff_ff00`.
+
   *Test:* `stamp_rule.py` (R6) with the state and the inputs on the same
   and on different file systems; `stamp_probe.py` on each allow-listed
   type; a unit test that maps a mountinfo line to its type and an
@@ -1276,7 +1482,12 @@ with each phase fed from the state for unchanged files:
   hashed); on virtiofs neither rule missed one. The reviewer's
   `clock_race.py` (2,000/2,000 late, 1,983/2,000 tuple-identical on
   overlay) is the same case. Per-file hashes decide change; per-section
-  hashes are IN-31's, [v2]. `--incremental-verify` hashes every input
+  hashes are IN-31's, [v2]. **The content hash** of a file or of an
+  archive member's bytes is `L128(le64(n) ‖ L128(b_0) ‖ … ‖
+  L128(b_{k−1}))`, where `n` is the byte count and `b_i` the
+  consecutive 4 MiB blocks (the last one shorter; none when `n = 0`): a
+  tree of one level, so that blocks hash in parallel as they are read
+  (`spec/input.md` §11.6's store computes it). `--incremental-verify` hashes every input
   regardless of stat (all 217 MB of protoc's inputs, 120–220 ms), for
   file systems whose timestamps cannot be trusted. *Test:* L10 steps that
   rewrite an input with the same size and an `mtime` set back
@@ -2368,6 +2579,7 @@ update), reported as `incremental: full (<reason>)` (IN-10). With
 | `options-changed` | the normalized plan differs: any option, the target, the emulation, the library search path, the input list's order (adding or removing an input, or an archive's members changing, is not a change of plan) | permanent; [later] options that touch no layout (`-Map`, `--time-phases`, `--threads`, `--incremental-report` are excluded already) |
 | `output-changed` | `P` is missing, or its stat tuple or build id differs from the state's, or it is racy and a build-id leaf differs (IN-21) | permanent |
 | `output-torn` | the state's "updating" flag is set (IN-46) | permanent |
+| `update-not-implemented` | the state is valid, the plan and the output match it, and the update path does not exist yet (WP-061 stage A: every incremental link is a full one after the checks above, in this order) | stage A only; WP-064 deletes the row |
 | `inputs-reordered` | two unchanged inputs' relative order changed | v1; [later] when no COMDAT keeper or placement order depends on it |
 | `too-much-changed` | IN-16's threshold | permanent (it is the compaction rule) |
 | `reserve-exhausted` | a segment reserve, a packed array's, `.eh_frame`'s, a slot region's or a dynamic table's capacity is exhausted (IN-32, IN-34) | permanent |
@@ -2441,13 +2653,28 @@ time and of peak RSS on protoc (*target*, S1 measures it).
   be **accepted** (N3): an `arr+size` reference whose address is the
   first byte of the region's slack, and a gfortran `blk_-8` reference
   whose address is in the hole before the common block.
-- **IN-61 [v1] The replay hook.** A test-only entry (an environment
-  variable read by the test build, not an option; model §7.3) runs a
-  full link whose decision tables come from a state file; the harness
+- **IN-61 [v1] The replay hook.** A test-only entry (a library
+  function of the `mortar` crate, `replay_link`, that tests call; not an
+  option and not an environment variable, which a shipped binary would
+  read; model §7.3) runs a full link whose decision tables come from a
+  state file, translated by identity to the link's ids (a row that does
+  not translate is a named replay failure) and put in place of the
+  computed ones before `Layout::validate`; the harness
   compares its output with the update's byte for byte outside the dead
-  ranges, which it compares by IN-3a's checks (IN-1 B). *Test:* every L10
+  ranges, which it compares by IN-3a's checks (IN-1 B). Some stored
+  rows are words the image does not take from the layout but from plans
+  the front computed with its own layout: `.eh_frame`'s record list
+  (`EH_RECORDS`), `.symtab`'s local spans (`SYMTAB_LOCALS`), and the
+  erratum fixes (the branch at each erratum site and its patch's words,
+  `Front::erratum_fixes`, computed from the placement before the replay
+  puts its own in place, so an erratum patch's `REDIRECTS` row is not
+  read by the image: dropping it replayed to the same bytes, the WP-061
+  review's F8). For those the replay refuses a stored row that is not
+  the computed one, by name; S-49 (WP-086) makes the image follow the
+  layout for the first two. *Test:* every L10
   step runs it; a mutation that changes one decision-table entry in the
-  state must make the comparison fail.
+  state must make the comparison fail or the replay refuse it
+  (`replay_reproduces_and_each_table_matters`, with an erratum link).
 - **IN-62 [v1] The equivalence check.** `mortar_plumb --equiv X.map
   F.map X F` checks IN-2's items 1–6 between an update `X` and a full
   link `F` of the same inputs (§3). It lives in `mortar_plumb` because it

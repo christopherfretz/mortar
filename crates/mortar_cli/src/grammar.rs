@@ -762,6 +762,16 @@ impl Parser<'_> {
             Lands::NoThreads => plan.bookkeeping.threads = Some(Threads::Count(1)),
             Lands::TimePhases => plan.bookkeeping.time_phases = true,
             Lands::Verify => plan.bookkeeping.verify = true,
+            Lands::Incremental => {
+                plan.incremental.mode = Some(match value.as_ref().map(|v| v.to_string_lossy()) {
+                    None => crate::plan::IncrementalMode::Auto,
+                    Some(v) if v == "update" => crate::plan::IncrementalMode::Update,
+                    Some(_) => crate::plan::IncrementalMode::Full,
+                });
+            }
+            Lands::NoIncremental => plan.incremental.mode = None,
+            Lands::IncrementalState => plan.incremental.state = Some(text()),
+            Lands::IncrementalReport => plan.incremental.report = Some(value.clone()),
             Lands::Version => {
                 plan.exit = Some(Exit::Version);
                 return true;

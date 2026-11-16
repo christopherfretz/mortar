@@ -243,6 +243,7 @@ fn main() {
         merged: None,
         eh: None,
         build_id: None,
+        leaf_fn: None,
         fixups: &[],
     };
     std::fs::create_dir_all(&dir).unwrap();

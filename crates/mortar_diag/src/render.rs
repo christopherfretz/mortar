@@ -449,6 +449,26 @@ fn message<'d>(kind: &'d Kind, style: &Style<'_>, out: &mut String) -> Option<&'
             out.push_str(" exceeds ");
             escaped(limit, out);
         }
+        Kind::IncrementalNotReproducible => out.push_str(
+            "SOURCE_DATE_EPOCH is set, but an incremental link's output depends on its edit history",
+        ),
+        Kind::IncrementalUnsupported { option } => {
+            out.push_str("--incremental is not supported with ");
+            escaped(option, out);
+            out.push_str("; linking without a state");
+        }
+        Kind::IncrementalUpdateFailed { reason } => {
+            out.push_str("--incremental=update: cannot update: ");
+            escaped(reason, out);
+        }
+        Kind::IncrementalFileClash { option, path, what } => {
+            escaped(option, out);
+            out.push('=');
+            escaped(path, out);
+            out.push_str(" names ");
+            escaped(what, out);
+            out.push_str("; nothing is written to it");
+        }
         Kind::SectionConflict { name, first, second } => {
             out.push_str("section ");
             escaped(name, out);
