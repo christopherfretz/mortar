@@ -1318,7 +1318,7 @@ fn the_state_or_report_naming_a_file_of_the_link_is_refused() {
             .collect();
     let o = run_in(&prog.built.dir, Path::new(MORTAR), &args, &[]);
     let err = o.stderr_text();
-    assert!(!o.success() && err.contains("an input of the link"), "{err}");
+    assert!(!o.success() && err.contains("names the input"), "{err}");
     assert!(!prog.path("o").exists());
     assert_eq!(std::fs::read(&input).unwrap(), before, "the searched input changed");
 }

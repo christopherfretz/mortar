@@ -32,6 +32,8 @@ pub struct Parsed {
     /// The command line after `@file` expansion (§2.6); argument indexes
     /// count in it.
     pub args: Vec<OsString>,
+    /// The response files read (§2.6.4), in expansion order.
+    pub response_files: Vec<response::ResponseFile>,
 }
 
 /// One use of an option (`spec/cli.md` §4.4).
@@ -205,7 +207,7 @@ fn index() -> &'static Index {
 /// (`spec/cli.md` §2, §3). Never fails: problems are diagnostics.
 #[must_use]
 pub fn parse(args: &[OsString]) -> Parsed {
-    let (args, diagnostics) = response::expand(args);
+    let response::Expanded { args, diagnostics, files } = response::expand_recorded(args);
     let mut p = Parser {
         args: &args,
         i: 0,
@@ -222,6 +224,7 @@ pub fn parse(args: &[OsString]) -> Parsed {
     p.run();
     let mut out = p.out;
     out.args = args;
+    out.response_files = files;
     out
 }
 
