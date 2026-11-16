@@ -49,7 +49,14 @@ consumes, `spec/resolve.md` §10); and x86-64 (`x64-O0`, `x64-g`,
 libstdc++ only, every program: kiln's `--target=x86_64-linux-gnu` with
 hod, Debian's `x86_64-linux-gnu-g++`/`-gfortran`, Clang's `--target`,
 GNU ld `x86_64-linux-gnu-ld.bfd`; the programs run under `qemu-x86_64`,
-and the verifier, which judges AArch64 outputs only, is not run). Each
+and the verifier is not run on these static x86-64 outputs). On the
+dynamic line (WP-058), every program also links as the driver's default
+PIE and with `-no-pie`: `pie`, `pie-g`, `nopie`, `nopic-nopie`
+(`-fno-pic` objects go on `-no-pie` lines only), `libcxx-pie` and
+`libcxx-nopie` (libc++ static, glibc dynamic: kiln's libc++ line), and
+`x64-pie`, `x64-nopie`, `x64-nopic-nopie` (run under `qemu-x86_64 -L
+/usr/x86_64-linux-gnu`); the verifier judges every dynamic output, on
+both architectures, with the link's words (stage 3). Each
 cell links the
 same objects with GNU ld (the reference), lld, mold (when present) and
 mortar, runs every output, and compares standard output, standard error
@@ -60,8 +67,9 @@ also compiles the kiln sources with g++ and clang++ and prints the census
 of the three producers' objects.
 
 The run took 41 s at `-j 4` (mortar already built, a loaded shared
-machine); with the x64 variants (80 cells), 58 s at `-j 2`. It is not in `ci --quick`: it needs kiln and hod builds, and
-its time is close to the one-minute budget.
+machine); with the x64 variants (80 cells), 58 s at `-j 2`; with the
+dynamic variants (171 cells), see `spec/landed/mason/WP-058.md`. The full
+gate (`cargo xtask ci`) runs it in its `mason` step; `ci --quick` does not.
 
 ## Census
 
@@ -98,16 +106,28 @@ modes are `bfd` and `mortar`). `mortar-noattrs` and `mortar-stripped`
 link the archives without `.ARM.attributes` (and `.deplibs`) that
 `setup` makes; since WP-034 they show nothing `mortar` does not, and stay
 for comparison. `dyn` is kiln's procedure unchanged (static libc++,
-dynamic glibc, the host's `ld`). mortar's `ld` logs each link, and with
+dynamic glibc, the host's `ld`). `dyn-bfd`, `dyn-lld`, `dyn-mold` and
+`dyn-mortar` (WP-058) keep kiln's line as `dyn` does (static libc++,
+dynamic glibc, the driver's default PIE) and link it with the lane's
+`ld` of that linker; `dyn-bfd` is their reference, as `bfd` is the fully
+static modes'. kiln's runner keeps its scratch under the mode's
+directory (`<out>/<mode>/runner`): with `--out` outside the synced
+workspace (`/tmp/...`), the links write there. mortar's `ld` logs each link, and with
 `--plumb` links a second time with `--mortar-map` (the verifier's
 machine map), checks that the output is the
-same bytes, and runs `xtask mason verify` on it. The report: kiln's
+same bytes, and runs `xtask mason verify` on it with the link's words
+(stage 3 judges a dynamic output with its line); with `--plumb`, a
+mortar link that is not verifier-clean fails the command. The report: kiln's
 summary per mode; for each mortar mode the tests the reference (`bfd`,
 else `dyn`) passes and it does not, of which WRONG (mortar linked and the
 test then failed); refusals by diagnostic; the verifier's results; the
 back end of every object job. The command fails when a WRONG test exists.
 
-Samples: `vector` (`std/containers/sequences/vector`, 83 tests);
+Samples: `ci` (eleven tests: type identity, nested exceptions, a
+replaced `operator new`, `quick_exit`, threads, `call_once`, locales,
+`cout`, the file system, atomics, `push_back`; the gate's `mason` step
+runs it in modes `mortar` and `dyn-mortar` with `--plumb` and the
+baseline); `vector` (`std/containers/sequences/vector`, 83 tests);
 `wp033` (`std/algorithms`, `strings`, `input.output`,
 `language.support`, `thread`, `localization`, shard 1/4); `full`
 (`--full`: `std` and `libcxx`, the 9247 tests of kiln's release runs).
@@ -138,7 +158,8 @@ counts (both pass, both fail, both xfail, both unsupported) and the
 DIFFERENT tests of two result files with a cause for each (a refusal by
 its diagnostic, a timeout, a test that linked and then failed to run).
 
-**Baseline** (`baseline-mortar.tsv`): the tests mortar mode does not
+**Baseline** (`baseline-mortar.tsv`): the tests mortar mode (and
+`dyn-mortar`: the same tests, WP-058) does not
 pass (not PASS, UNSUPPORTED or XFAIL) on the full suite, with their
 reason. `--baseline tests/mason/baseline-mortar.tsv` prints `regressed:`
 for a test that does not pass and is not listed (and fails the command)

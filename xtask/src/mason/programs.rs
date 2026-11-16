@@ -98,6 +98,33 @@ pub struct Variant {
     /// cross compilers and kiln's `--target`, GNU ld is the target's, and
     /// the programs run under `qemu-x86_64`. `None`: the host (AArch64).
     pub target: Option<&'static str>,
+    /// The kind of executable the driver's line makes.
+    pub link: Link,
+}
+
+/// The kind of executable of a variant's link line (WP-058).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Link {
+    /// `-static`: a static, non-PIE executable.
+    Static,
+    /// The driver's default dynamic line: a PIE against the shared C
+    /// library (and, for libstdc++, `libstdc++.so`; libc++ stays static,
+    /// as on kiln's libc++ line).
+    Pie,
+    /// `-no-pie`: a dynamic, position-dependent executable. The only
+    /// dynamic kind for `-fno-pic` objects.
+    NoPie,
+}
+
+impl Link {
+    /// The driver's option for the kind.
+    fn option(self) -> Option<&'static str> {
+        match self {
+            Link::Static => Some("-static"),
+            Link::Pie => None,
+            Link::NoPie => Some("-no-pie"),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -111,20 +138,42 @@ pub enum Stdlib {
 }
 
 pub const VARIANTS: &[Variant] = &[
-    Variant { name: "O0", flags: &[], stdlib: Stdlib::Libstdcxx, target: None },
-    Variant { name: "g", flags: &["-g"], stdlib: Stdlib::Libstdcxx, target: None },
-    Variant {
-        name: "sections",
-        flags: &["-ffunction-sections", "-fdata-sections"],
-        stdlib: Stdlib::Libstdcxx,
-        target: None,
-    },
-    Variant { name: "nopic", flags: &["-fno-pic"], stdlib: Stdlib::Libstdcxx, target: None },
-    Variant { name: "libcxx", flags: &[], stdlib: Stdlib::Libcxx, target: None },
-    Variant { name: "libcxx-g", flags: &["-g"], stdlib: Stdlib::Libcxx, target: None },
-    Variant { name: "x64-O0", flags: &[], stdlib: Stdlib::Libstdcxx, target: Some(X64) },
-    Variant { name: "x64-g", flags: &["-g"], stdlib: Stdlib::Libstdcxx, target: Some(X64) },
+    v("O0", &[], Stdlib::Libstdcxx, None, Link::Static),
+    v("g", &["-g"], Stdlib::Libstdcxx, None, Link::Static),
+    v(
+        "sections",
+        &["-ffunction-sections", "-fdata-sections"],
+        Stdlib::Libstdcxx,
+        None,
+        Link::Static,
+    ),
+    v("nopic", &["-fno-pic"], Stdlib::Libstdcxx, None, Link::Static),
+    v("libcxx", &[], Stdlib::Libcxx, None, Link::Static),
+    v("libcxx-g", &["-g"], Stdlib::Libcxx, None, Link::Static),
+    v("x64-O0", &[], Stdlib::Libstdcxx, Some(X64), Link::Static),
+    v("x64-g", &["-g"], Stdlib::Libstdcxx, Some(X64), Link::Static),
+    // The dynamic line (WP-058): the driver's default PIE and `-no-pie`;
+    // `-fno-pic` objects on `-no-pie` lines only.
+    v("pie", &[], Stdlib::Libstdcxx, None, Link::Pie),
+    v("pie-g", &["-g"], Stdlib::Libstdcxx, None, Link::Pie),
+    v("nopie", &[], Stdlib::Libstdcxx, None, Link::NoPie),
+    v("nopic-nopie", &["-fno-pic"], Stdlib::Libstdcxx, None, Link::NoPie),
+    v("libcxx-pie", &[], Stdlib::Libcxx, None, Link::Pie),
+    v("libcxx-nopie", &[], Stdlib::Libcxx, None, Link::NoPie),
+    v("x64-pie", &[], Stdlib::Libstdcxx, Some(X64), Link::Pie),
+    v("x64-nopie", &[], Stdlib::Libstdcxx, Some(X64), Link::NoPie),
+    v("x64-nopic-nopie", &["-fno-pic"], Stdlib::Libstdcxx, Some(X64), Link::NoPie),
 ];
+
+const fn v(
+    name: &'static str,
+    flags: &'static [&'static str],
+    stdlib: Stdlib,
+    target: Option<&'static str>,
+    link: Link,
+) -> Variant {
+    Variant { name, flags, stdlib, target, link }
+}
 
 /// The cross target of the `x64-*` variants (WP-034): libstdc++ only (no
 /// x86-64 libc++ tree here), the cross toolchains of Debian's
@@ -138,6 +187,9 @@ struct Cross {
     gfortran: PathBuf,
     bfd: PathBuf,
     qemu: PathBuf,
+    /// The target's root for `qemu -L` (its dynamic loader and shared
+    /// libraries): `/usr/<triple>`.
+    sysroot: PathBuf,
 }
 
 /// The libc++ tree of `setup`: headers and static archives.
@@ -253,6 +305,7 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
                 gfortran: tool(&format!("{X64}-gfortran"))?,
                 bfd: tool(&format!("{X64}-ld.bfd"))?,
                 qemu: tool("qemu-x86_64")?,
+                sysroot: PathBuf::from(format!("/usr/{X64}")),
             })
         })(),
     };
@@ -465,7 +518,7 @@ fn link_line(
     objects: &[PathBuf],
     dir: &Path,
 ) -> Result<Vec<String>, String> {
-    let mut argv: Vec<String> = vec!["-static".into()];
+    let mut argv: Vec<String> = var.link.option().map(str::to_owned).into_iter().collect();
     let cross = var.target.and(tools.cross.as_ref());
     if !prog.gnu_driver {
         argv.extend(var.target.map(|t| format!("--target={t}")));
@@ -560,8 +613,10 @@ fn run_cell(
         let mut argv = with_output(&line, &out);
         // The verifier's map is mortar's machine map (`--mortar-map`,
         // image.md I-120; `-Map` is the GNU text map, WP-027e). It judges
-        // AArch64 outputs (plumb.md §1): no map elsewhere.
-        if *name == "mortar" && cross.is_none() {
+        // AArch64 outputs, and x86-64 dynamic ones (stage 3, as the census
+        // lane does); a static x86-64 output has no map.
+        let judged = cross.is_none() || var.link != Link::Static;
+        if *name == "mortar" && judged {
             argv.push(format!("--mortar-map={out}.map"));
         }
         let ld = match (cross, *name) {
@@ -569,7 +624,14 @@ fn run_cell(
             _ => linker,
         };
         let (runner, run_args) = match cross {
-            Some(c) => (c.qemu.clone(), vec![dir.join(&out).display().to_string()]),
+            Some(c) => (
+                c.qemu.clone(),
+                vec![
+                    "-L".to_owned(),
+                    c.sysroot.display().to_string(),
+                    dir.join(&out).display().to_string(),
+                ],
+            ),
             None => (dir.join(&out), Vec::new()),
         };
         let r = match run_in(ld, &argv, dir, &[], TOOL_LIMITS) {
@@ -610,9 +672,10 @@ fn run_cell(
         (Some(Ok(run)), Some(refr)) => run == refr,
         _ => false,
     };
-    if let (Some(Ok(_)), None) = (ours, cross) {
+    if let (Some(Ok(_)), true) = (ours, cross.is_none() || var.link != Link::Static) {
         let out = dir.join("out.mortar");
-        let pl = super::plumb(&out, &dir.join("out.mortar.map"), dir);
+        let words = with_output(&line, "out.mortar");
+        let pl = super::plumb(&out, &dir.join("out.mortar.map"), dir, Some(words));
         if !matches!(&pl, Ok(p) if p.findings == 0) {
             cell.ok = false;
         }
