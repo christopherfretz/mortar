@@ -2111,8 +2111,9 @@ what a reference names (the re-review's N3):
   debug-only kinds (`contribution`, `neutral`) never meet the case
   (P-I4 judges those); a size-0 section at a `contribution` range's start
   would name the boundary the same way. Tests: `tests/dead.rs
-  in3a_size_zero_section_at_a_range_boundary_is_accepted` (at the hole's
-  start and end: accepted; 8 bytes inside: P-I3);
+  in3a_size_zero_section_at_a_range_boundary_is_accepted` (a PROGBITS
+  `.data.empty` and a NOBITS `.bss.empty`, libgfortran's shape, each at
+  its hole's start and end: accepted; 8 bytes inside: P-I3);
 - P-I3, tables: a word of `.got`, `.got.plt`, `.igot`, `.igot.plt`
   (outside the ranges) holding an address in a range that is not the
   end of a live item; an allocated relocation record (outside the ranges)

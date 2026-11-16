@@ -250,7 +250,11 @@ fn build(arch: Arch) -> Option<(Scratch, Built)> {
 /// [`build`]; with `empty`, `arr.o` also has `.data.empty`, an input
 /// section of size 0 with the global `empty_lbl` (8-aligned, after `arr`:
 /// GNU ld places it at `arr`'s end, which is the start of the hole
-/// `dead.o`'s `.data` leaves), and `main.o` a word referring to it.
+/// `dead.o`'s `.data` leaves), and `main.o` a word referring to it. The
+/// same in `.bss` (libgfortran's shape: NOBITS): `arr.o` has an 8-byte
+/// `.bss` object and `.bss.empty` (size 0, `empty_bss`) after it,
+/// `dead.o` 16 bytes of `.bss` (its hole), and `main.o` a word referring
+/// to `empty_bss`.
 fn build_with(arch: Arch, empty: bool) -> Option<(Scratch, Built)> {
     let asm = tool(arch, "as")?;
     let ld = tool(arch, "ld.bfd")?;
@@ -263,12 +267,16 @@ fn build_with(arch: Arch, empty: bool) -> Option<(Scratch, Built)> {
             Arch::X86_64 => (".quad", "@progbits"),
             Arch::I386 => (".long", "@progbits"),
         };
-        write!(texts[0].1, "\t.data\n\t{word} empty_lbl\n").unwrap();
+        let nobits = if arch == Arch::Aarch64 { "%nobits" } else { "@nobits" };
+        write!(texts[0].1, "\t.data\n\t{word} empty_lbl\n\t{word} empty_bss\n").unwrap();
         write!(
             texts[1].1,
-            "\t.section .data.empty,\"aw\",{sec}\n\t.balign 8\n\t.globl empty_lbl\nempty_lbl:\n"
+            "\t.section .data.empty,\"aw\",{sec}\n\t.balign 8\n\t.globl empty_lbl\nempty_lbl:\n\
+             \t.bss\n\t.balign 8\n\t.skip 8\n\
+             \t.section .bss.empty,\"aw\",{nobits}\n\t.balign 8\n\t.globl empty_bss\nempty_bss:\n"
         )
         .unwrap();
+        write!(texts[2].1, "\t.bss\n\t.balign 8\n\t.skip 16\n").unwrap();
     }
     for (name, text) in texts {
         std::fs::write(dir.join(format!("{name}.s")), text).unwrap();
@@ -317,9 +325,12 @@ fn build_with(arch: Arch, empty: bool) -> Option<(Scratch, Built)> {
                 }
             }
         } else {
-            // What an update leaves in a hole: the fill (IN-3).
+            // What an update leaves in a hole: the fill (IN-3); a
+            // `NOBITS` hole has no bytes.
             let f = if owner == ".text" { code_fill(arch) } else { 0 };
-            b.patch(&owner, p.addr, &vec![f; p.size as usize]);
+            if owner != ".bss" {
+                b.patch(&owner, p.addr, &vec![f; p.size as usize]);
+            }
         }
         b.hole(&owner, p.addr, p.size);
     }
@@ -427,26 +438,31 @@ fn in3a_size_zero_section_at_a_range_boundary_is_accepted() {
         let Some((_dir, b)) = build_with(arch, true) else { return };
         let base = b.judge();
         assert!(base.is_empty(), "{arch:?}: {base:#?}");
-        let hole = b.map.dead.iter().find(|d| d.section == ".data").unwrap().clone();
-        let lo = b.sec(".data").addr + hole.offset;
-        let (at, size) = b.placed("arr.o", ".data.empty");
-        assert_eq!((at, size), (lo, 0), "{arch:?}: .data.empty is at the hole's start");
-        let fi = b.map.files.iter().position(|f| f.path == "arr.o").unwrap() as u32;
-        let moved = |to: u64| {
-            let mut m = b.clone();
-            let p = m
-                .map
-                .placed
-                .iter_mut()
-                .find(|p| p.file == fi && p.section == SectionRef::Name(".data.empty".into()))
-                .unwrap();
-            p.addr = to;
-            m
-        };
-        let end = moved(lo + hole.size);
-        assert!(added(&base, &end).is_empty(), "{arch:?}: at the end: {:#?}", added(&base, &end));
-        let inside = moved(lo + 8);
-        expect(arch, "size 0 inside", &base, &inside, "P-I3", "names 'empty_lbl'");
+        for (section, name, label) in
+            [(".data", ".data.empty", "empty_lbl"), (".bss", ".bss.empty", "empty_bss")]
+        {
+            let hole = b.map.dead.iter().find(|d| d.section == section).unwrap().clone();
+            let lo = b.sec(section).addr + hole.offset;
+            let (at, size) = b.placed("arr.o", name);
+            assert_eq!((at, size), (lo, 0), "{arch:?}: {name} is at the hole's start");
+            let fi = b.map.files.iter().position(|f| f.path == "arr.o").unwrap() as u32;
+            let moved = |to: u64| {
+                let mut m = b.clone();
+                let p = m
+                    .map
+                    .placed
+                    .iter_mut()
+                    .find(|p| p.file == fi && p.section == SectionRef::Name(name.into()))
+                    .unwrap();
+                p.addr = to;
+                m
+            };
+            let end = moved(lo + hole.size);
+            let got = added(&base, &end);
+            assert!(got.is_empty(), "{arch:?}: {name} at the end: {got:#?}");
+            let inside = moved(lo + 8);
+            expect(arch, name, &base, &inside, "P-I3", &format!("names '{label}'"));
+        }
     }
 }
 
