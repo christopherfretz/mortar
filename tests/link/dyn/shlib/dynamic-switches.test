@@ -1,0 +1,77 @@
+# Switches of a dynamic executable (spec/cli.md §3.6; GNU ld manual):
+# - `--no-export-dynamic` undoes an earlier `-E`: `.dynsym` holds only
+#   the symbols a shared object needs (here `greet_hook`), not every
+#   global of the program (`own`); the link is the same bytes as one
+#   without `-E` at all.
+# - `--enable-new-dtags` undoes an earlier `--disable-new-dtags`: `-rpath`
+#   is written as DT_RUNPATH, not DT_RPATH (the same bytes as the
+#   default).
+# - `--no-undefined` and `-z defs` (`noop` rows: "resolve.md §5: an
+#   undefined symbol of an executable's objects is an error already; the
+#   option only changes a shared object's link"): the program links to
+#   the same bytes with them, and a program with an undefined reference
+#   fails the same way with and without them.
+#@ spec: cli.md "§3.6"
+#@ arch: aarch64 x86_64
+#@ fixture: greet
+
+cc -O1 -fno-pie main.c -o main.o
+cc -O1 -fno-pie undef.c -o undef.o
+link gcc -no-pie main.o -L. -lgreet -o plain
+link gcc -no-pie main.o -L. -lgreet -Wl,-E -o exported
+link gcc -no-pie main.o -L. -lgreet -Wl,-E -Wl,--no-export-dynamic -o nexported
+run plain
+  stdout: hello, switches
+  stdout: hook 40
+run nexported
+  stdout: hello, switches
+  stdout: hook 40
+check readelf --dyn-syms -W exported
+  has: own$
+check readelf --dyn-syms -W nexported
+  has: greet_hook$
+  not: own$
+check(bfd,mortar) cmp nexported plain
+  has: ^identical$
+
+link gcc -no-pie main.o -L. -lgreet -Wl,-rpath,/opt/greet -o rpath
+link gcc -no-pie main.o -L. -lgreet -Wl,-rpath,/opt/greet -Wl,--disable-new-dtags -o old
+link gcc -no-pie main.o -L. -lgreet -Wl,-rpath,/opt/greet -Wl,--disable-new-dtags -Wl,--enable-new-dtags -o new
+check readelf -dW old
+  has: (RPATH) * Library rpath: [/opt/greet]
+  not: RUNPATH
+check readelf -dW new
+  has: (RUNPATH) * Library runpath: [/opt/greet]
+  not: (RPATH)
+check(bfd,mortar) cmp new rpath
+  has: ^identical$
+
+link gcc -no-pie main.o -L. -lgreet -Wl,--no-undefined -o nu
+link gcc -no-pie main.o -L. -lgreet -Wl,-z,defs -o zdefs
+check(bfd,mortar) cmp nu plain
+  has: ^identical$
+check(bfd,mortar) cmp zdefs plain
+  has: ^identical$
+link gcc -no-pie undef.o -L. -lgreet -o undef
+  exit: fail
+  diag: missing_fn
+link gcc -no-pie undef.o -L. -lgreet -Wl,--no-undefined -o undef-nu
+  exit: fail
+  diag: missing_fn
+link gcc -no-pie undef.o -L. -lgreet -Wl,-z,defs -o undef-zdefs
+  exit: fail
+  diag: missing_fn
+
+#--- main.c
+#include <stdio.h>
+#include "greet.h"
+void greet_hook(void) { printf("hook"); }
+int own(int x) { return x + 1; }
+int main(void) {
+  int n = greet("switches");
+  printf(" %d\n", own(n - 2));
+  return 0;
+}
+#--- undef.c
+int missing_fn(void);
+int main(void) { return missing_fn(); }
