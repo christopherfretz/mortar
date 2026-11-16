@@ -211,12 +211,40 @@ fn run(
         Store::with_config(StorePolicy::from_env(), config, mortar_input::store::Hooks::default());
     // The replay's two parts, timed apart (inside phase 90's wall time).
     let replay_ms = std::cell::Cell::new((0.0_f64, 0.0_f64));
+    // WP-094 (a): the replay by position unless MORTAR_FLOOR_IDENTITY is set.
+    let by_position = std::env::var_os("MORTAR_FLOOR_IDENTITY").is_none();
+    let laps = std::cell::RefCell::new(mortar_incr::capture::Laps::new());
     let hook = |link: &mortar_incr::capture::Link<'_, '_>,
                 computed: &mortar_core::layout::Layout| {
         let t0 = std::time::Instant::now();
-        let keys = mortar_incr::capture::Keys::new(link)?;
-        let t1 = std::time::Instant::now();
-        let r = mortar_incr::capture::replay(link, &keys, &state, computed);
+        let t1;
+        let r = if by_position {
+            // WP-094 (a): every file but the changed one has the bytes
+            // its FILES row was captured from (IN-22: clean or hashed
+            // equal, step 3).
+            let changed_id = link.inputs.link.opened.iter().find_map(|o| match o.kind {
+                mortar_core::inputs::OpenedKind::Object(id) if o.path == &changed_path[..] => {
+                    Some(id)
+                }
+                _ => None,
+            });
+            let changed_id = changed_id.ok_or("the changed file is not an object of this link")?;
+            let changed = |f: mortar_core::id::FileId| f == changed_id;
+            let keys = mortar_incr::capture::Keys::partial(link, &changed)?;
+            t1 = std::time::Instant::now();
+            mortar_incr::capture::replay_by_position(
+                link,
+                &keys,
+                &state,
+                computed,
+                &changed,
+                &mut laps.borrow_mut(),
+            )
+        } else {
+            let keys = mortar_incr::capture::Keys::new(link)?;
+            t1 = std::time::Instant::now();
+            mortar_incr::capture::replay_timed(link, &keys, &state, computed, &mut laps.borrow_mut())
+        };
         let ms = |d: std::time::Duration| d.as_secs_f64() * 1000.0;
         replay_ms.set((ms(t1 - t0), ms(t1.elapsed())));
         r
@@ -233,6 +261,9 @@ fn run(
     let (keys_ms, replay_ms) = replay_ms.get();
     timer.line(format!("mortar: floor: replay keys: {keys_ms:.1} ms"));
     timer.line(format!("mortar: floor: replay translate: {replay_ms:.1} ms"));
+    for (name, ms) in laps.borrow().iter() {
+        timer.line(format!("mortar: floor: replay {name}: {ms:.1} ms"));
+    }
     if f.dyn_tables.is_some() {
         return Err("incremental-unsupported (a dynamic executable)".to_owned());
     }

@@ -18,7 +18,7 @@ use mortar_digest::{L128, l128};
 /// `MORTARST`.
 pub const MAGIC: [u8; 8] = *b"MORTARST";
 /// The format version this crate writes and reads.
-pub const FORMAT_VERSION: u32 = 2;
+pub const FORMAT_VERSION: u32 = 3;
 /// The header's size.
 pub const HEADER_LEN: usize = 64;
 /// A table record's size.
@@ -114,8 +114,11 @@ pub mod kind {
     pub const INDEX: u32 = 34;
     /// Regions and holes (IN-18a's reserved kind 39): format version 2.
     pub const HOLES: u32 = 39;
-    /// The number of tables of version 2.
-    pub const COUNT: u32 = 27;
+    /// WP-094 prototype (format version 3): the live fragments by position
+    /// (`SECTIONS` row, offset in the section), after `HOLES`.
+    pub const FRAG_AT: u32 = 40;
+    /// The number of tables of version 3.
+    pub const COUNT: u32 = 28;
 
     /// The name of a kind, for diagnostics.
     #[must_use]
@@ -150,6 +153,7 @@ pub mod kind {
             RESOLVED => "RESOLVED",
             INDEX => "INDEX",
             HOLES => "HOLES",
+            FRAG_AT => "FRAG_AT",
             _ => kind.checked_sub(1).and_then(|i| NAMES.get(i as usize)).copied().unwrap_or("?"),
         }
     }
@@ -237,6 +241,22 @@ pub struct SymbolRow {
     pub ordinal: u32,
     pub name: Str,
     pub version: Str,
+    /// WP-094 (format version 3): where the key is read in a file, for
+    /// the replay by position: the `FILES` row (a local's own file; a
+    /// global's first mention, `NONE` if none) and the index (a local's
+    /// symbol-table index; a global's entry among its file's non-local
+    /// entries, from `first_global`).
+    pub at_file: u32,
+    pub at_index: u32,
+}
+
+/// `FRAG_AT` (WP-094, format version 3): a live fragment by the position
+/// of its first occurrence, and its offset in its output section.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct FragAtRow {
+    pub section: u32,
+    pub offset: u32,
+    pub at: u64,
 }
 
 /// `SECTIONS`: one per `SectionId`.
@@ -524,6 +544,7 @@ pub struct State {
     pub resolved: Vec<ResolvedRow>,
     pub index: Vec<IndexRow>,
     pub holes: Vec<HoleRow>,
+    pub frag_at: Vec<FragAtRow>,
     pub strings: Vec<u8>,
 }
 
@@ -772,14 +793,33 @@ impl Row for OutSecRow {
 }
 
 impl Row for SymbolRow {
-    const WIDTH: usize = 28;
+    const WIDTH: usize = 36;
     fn put(&self, w: &mut W<'_>) {
         w.u8(self.kind).pad(3).u32(self.file).u32(self.ordinal).s(self.name).s(self.version);
+        w.u32(self.at_file).u32(self.at_index);
     }
     fn get(r: &mut R<'_>) -> Self {
         let kind = r.u8();
         r.pad(3);
-        Self { kind, file: r.u32(), ordinal: r.u32(), name: r.s(), version: r.s() }
+        Self {
+            kind,
+            file: r.u32(),
+            ordinal: r.u32(),
+            name: r.s(),
+            version: r.s(),
+            at_file: r.u32(),
+            at_index: r.u32(),
+        }
+    }
+}
+
+impl Row for FragAtRow {
+    const WIDTH: usize = 16;
+    fn put(&self, w: &mut W<'_>) {
+        w.u32(self.section).u32(self.offset).u64(self.at);
+    }
+    fn get(r: &mut R<'_>) -> Self {
+        Self { section: r.u32(), offset: r.u32(), at: r.u64() }
     }
 }
 
@@ -1133,6 +1173,7 @@ pub fn encode(s: &State) -> Vec<u8> {
         + table_len(&s.resolved)
         + table_len(&s.index)
         + table_len(&s.holes)
+        + table_len(&s.frag_at)
         + RECORD_LEN
         + s.strings.len();
     let mut out = Vec::with_capacity(len);
@@ -1163,6 +1204,7 @@ pub fn encode(s: &State) -> Vec<u8> {
     table(&mut out, kind::RESOLVED, &s.resolved);
     table(&mut out, kind::INDEX, &s.index);
     table(&mut out, kind::HOLES, &s.holes);
+    table(&mut out, kind::FRAG_AT, &s.frag_at);
     record(&mut out, kind::STRINGS, s.strings.len() as u64, &s.strings);
     let len = out.len() as u64;
     let mut header = Vec::with_capacity(HEADER_LEN);
@@ -1317,6 +1359,7 @@ pub fn decode(bytes: &[u8], version: &[u8]) -> Result<State, StateError> {
         resolved: t.rows(kind::RESOLVED)?,
         index: t.rows(kind::INDEX)?,
         holes: t.rows(kind::HOLES)?,
+        frag_at: t.rows(kind::FRAG_AT)?,
         strings: Vec::new(),
     };
     let (_, strings) = t.next(kind::STRINGS, 1)?;
@@ -1433,9 +1476,16 @@ fn validate(s: &State) -> Result<(), StateError> {
         let ok = match y.kind {
             sym_kind::GLOBAL => y.file == NONE && y.ordinal == 0 && y.version == Str::default(),
             sym_kind::VERSIONED => y.file == NONE && y.ordinal == 0,
-            sym_kind::LOCAL => reference(files, y.file, false) && y.version == Str::default(),
+            sym_kind::LOCAL => {
+                reference(files, y.file, false)
+                    && y.version == Str::default()
+                    && y.at_file == y.file
+            }
             _ => false,
         };
+        let ok = ok
+            && reference(files, y.at_file, y.kind != sym_kind::LOCAL)
+            && (y.at_file != NONE || y.at_index == 0);
         if !ok || !str_ok(y.name) || !str_ok(y.version) {
             return Err(bad(kind::SYMBOLS, i, "field out of range"));
         }
@@ -1499,6 +1549,16 @@ fn validate(s: &State) -> Result<(), StateError> {
     for (i, w) in s.frags.windows(2).enumerate() {
         if (w[0].out, w[0].hash, w[0].ordinal) >= (w[1].out, w[1].hash, w[1].ordinal) {
             return Err(bad(kind::FRAGS, i + 1, "rows not sorted"));
+        }
+    }
+    for (i, f) in s.frag_at.iter().enumerate() {
+        if !reference(s.sections.len(), f.section, false) {
+            return Err(bad(kind::FRAG_AT, i, "section out of range"));
+        }
+    }
+    for (i, w) in s.frag_at.windows(2).enumerate() {
+        if (w[0].section, w[0].offset) >= (w[1].section, w[1].offset) {
+            return Err(bad(kind::FRAG_AT, i + 1, "rows not sorted"));
         }
     }
     let mut last_kind = 0;
