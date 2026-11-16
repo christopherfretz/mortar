@@ -2,6 +2,12 @@
 # (libgfortran.a, libquadmath.a where there is one) in a static-pie, a
 # list-directed write and a BIND(C) call into C.
 #
+# Stage 3 judges it (spec/plumb.md §12.4, WP-089): GNU ld's static-pie
+# carries A30 on AArch64 (a RELATIVE on the GOT slot of glibc's absolute
+# `_nl_current_*_used`) and A31 on x86-64 (crtbeginS's `.plt.got` entry
+# of `__cxa_finalize` through the slot plus 1); plumb.md §10.2.
+#@ anomaly(bfd,aarch64): A30
+#@ anomaly(bfd,x86_64): A31
 #@ spec: dyn.md "D-1"
 #@ arch: aarch64 x86_64
 #@ requires: gfortran

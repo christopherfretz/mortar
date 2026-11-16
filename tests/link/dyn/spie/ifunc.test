@@ -13,6 +13,15 @@
 # neither. W3 (dyn.md §13.2) on x86-64: GNU ld and mold give `fp` its own
 # IRELATIVE to the implementation, so `fp == f` is 0.
 #
+# Stage 3 judges it (spec/plumb.md §12.4, WP-089): GNU ld's static-pie
+# carries A30 on AArch64 (a RELATIVE on the GOT slot of glibc's absolute
+# `_nl_current_*_used`) and A31 on x86-64 (crtbeginS's `.plt.got` entry
+# of `__cxa_finalize` through the slot plus 1); plumb.md §10.2.
+# W3 is A32 to the verifier (F3, GNU ld and mold on x86-64); the run
+# shows it too, so those two keep the xfail.
+#@ anomaly(bfd,aarch64): A30
+#@ anomaly(bfd,x86_64): A31 A32
+#@ anomaly(mold,x86_64): A32
 #@ spec: synth.md "S-70"
 #@ spec: dyn.md "D-45"
 #@ arch: aarch64 x86_64
