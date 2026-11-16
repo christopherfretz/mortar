@@ -100,6 +100,15 @@ pub fn classify(linker: Format, output: &[u8], f: &Finding) -> Option<&'static s
             "A19: mold gives an FDE with address range 0 an entry in .eh_frame_hdr's table (spec/synth.md S-59)",
         );
     }
+    if mold
+        && f.rule == Rule::Field
+        && f.reloc.as_deref() == Some("R_X86_64_PLT32")
+        && f.message.ends_with("(spec/plumb.md §5.1a)")
+    {
+        return Some(
+            "A35: mold links an x86-64 PLT32 call to an absolute symbol in a PIE or static-pie as a PC-relative call, right at load bias 0 only (spec/plumb.md §5.1a)",
+        );
+    }
     if let Some(a) = dynamic(linker, output, f) {
         return Some(a);
     }

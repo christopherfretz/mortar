@@ -191,9 +191,10 @@ pub fn verify_with(output: &[u8], inputs: &[Input<'_>], map: &Map, ctx: &Ctx<'_>
     dyn_engine(&mut engine, &v1, &plt, &depths);
     run_engine(&mut engine, &image, map, None);
     let abs = std::mem::take(&mut engine.abs_words);
-    if kind == OutputKind::StaticPie {
-        // §12.4: no RELATIVE record on a word that holds no address of the
-        // executable (what view 2 cannot see when the word is not an
+    if matches!(kind, OutputKind::StaticPie | OutputKind::Pie) {
+        // §12.4 (a Pie's too since WP-088): no RELATIVE record on a word
+        // that holds no address of the executable (what view 2 cannot see
+        // when the word is not an
         // input's absolute use).
         let known: BTreeSet<u64> = abs.iter().filter(|w| w.3).map(|w| w.0).collect();
         for r in &dout.rels {

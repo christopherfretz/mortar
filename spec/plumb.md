@@ -21,8 +21,10 @@ written from public documents:
 The linker's code and the reference linkers' sources are not read
 (`docs/AGENTS.md` rule 10). The output is deterministic (§7.1).
 
-Stage 1 covers `-static` executables that are not PIE, on AArch64. §4.5
-describes how x86-64 and i386 fit.
+Stage 1 began with `-static` executables that are not PIE, on AArch64;
+the table below says what each stage covers now (dynamic executables and
+static-pie are stage 3, §12 and §12.4). §4.5 describes how x86-64 and
+i386 fit.
 
 ## 1. Scope and the stages
 
@@ -30,7 +32,7 @@ describes how x86-64 and i386 fit.
 |---|---|---|
 | 1 | `ET_EXEC`, static, non-PIE, AArch64. Placement, relocations (the §4.2 table), the GOT slots of a static link, structure (§6), content, symbol values | — |
 | 2 (WP-028) | Static TLS: every AAELF64 TLS type and the relaxations W9–W13 (§4.7); IFUNC/`IRELATIVE`, `.eh_frame` and `.eh_frame_hdr` contents (§6.4), the symbol table (§6.5), non-alloc (DWARF) relocations | `tls` (except the constructs §4.7 names), `ifunc`, `eh-frame` (except labels inside `.eh_frame`, §6.4), `non-alloc` |
-| 3 (M2) | Dynamic executables (`Exec`, `Pie`) and static PIE: the dynamic sections, dynamic relocations, PLT, copies, shared inputs (§12, P-D1-P-D13; not started). Shared-object output is M4 | — |
+| 3 (M2) | Dynamic executables (`Exec`, `Pie`) and static PIE: the dynamic sections, dynamic relocations, PLT, copies, shared inputs (§12, P-D1-P-D13; static-pie P-D14 and P-D15, §12.4). Shared-object output is M4 | — |
 | 4 (M6) | Mason metadata and the one-definition-rule table: `.mason.meta` in outputs, `.note.mason` (§13, P-M1-P-M3; **not implemented**, WP-078) | — |
 | x | x86-64 and i386 tables (§4.5) | `machine` |
 | I (M7, WP-091) | An incremental link's holes and dead ranges, for a mortar map that claims them (`incremental`, `hole`, `dead`, §3.2): IN-60's coverage of every allocated section and IN-3a's three checks on every range (§6.8, P-I1–P-I6). `--equiv` (incr.md IN-62) is not started | — |
@@ -993,6 +995,31 @@ The records of a section are checked in index order. For each record:
 7. **Everything else.** Compute X and give a verdict (§5.2). A record that
    is not verified may still be accepted as a rewriting (§5.3).
 
+### 5.1a A PC-relative field to an absolute symbol (x86-64, WP-088)
+
+In an `ET_DYN` output (a `Pie` or a static-pie) every address moves with
+the load bias and an absolute symbol's value does not, so S + A − P with
+S `SHN_ABS` (§4.4's resolution; an undefined input reference counts by the
+output's symbol, `x64_abs`) is right at bias 0 only. On x86-64, a record of
+an allocated section whose operation is PC-relative (`PC8`..`PC64`,
+`PLT32`) against such a symbol, and a GOT load rewritten to `lea S(%rip)`
+(X1) for one, is R1 "a PC-relative field to an absolute symbol in a
+position-independent output", whatever the field holds. A GOT load kept,
+or rewritten to `mov $S` (X4), is right. `ET_EXEC` is not judged by this
+rule: nothing moves. i386 is not judged by it (no case measured).
+
+Measured (WP-088; `absv` = 0x1234 defined `SHN_ABS` in another object,
+x86-64, `-pie` and `-static-pie`): GNU ld 2.44, lld 22 and mortar refuse
+`lea absv(%rip)` (`PC32`), `call absv@PLT` (`PLT32`) and `.long`/`.quad
+absv - .` in `.data` (`PC32`, `PC64`); mold 2.37.1 refuses the `.data`
+pair but links the `PLT32` call as `call 0x1234`, wrong at any nonzero
+bias (anomaly A35). `movq absv@GOTPCREL(%rip)` (`REX_GOTPCRELX`): GNU ld
+writes `mov $0x1234`, lld, mold and mortar keep the GOT load; all eight
+outputs run (qemu, glibc 2.41). Under `-no-pie` all four link
+`lea absv(%rip)` and the program runs. Test: `tests/dyn.rs`
+`x64_pc_relative_to_an_absolute_symbol_in_a_pie` (case `abspc`: GNU ld
+and lld refuse, mold's output is this rule's).
+
 ### 5.2 Verdicts
 
 Let E = `field.encode(input_word, X)`. The record is decided in this
@@ -1485,7 +1512,8 @@ that breaks it (`tests/mutation.rs s9_2e_each_structure_rule_is_enforced`).
 
 - **S1.** `e_type` is `ET_EXEC`, and the machine is supported in its
   class. [M2] Stage 3 widens it by P-D1 (§12): `ET_DYN` with
-  `DF_1_PIE`, and `ET_EXEC` with `PT_INTERP`, are verified. `EI_OSABI` is `ELFOSABI_NONE` (0) or `ELFOSABI_GNU` (3); on
+  `DF_1_PIE` (a `Pie`, and a static-pie when it has no `PT_INTERP`,
+  §12.4), and `ET_EXEC` with `PT_INTERP`, are verified. `EI_OSABI` is `ELFOSABI_NONE` (0) or `ELFOSABI_GNU` (3); on
   `EM_386` and `EM_X86_64`, `e_flags` is 0 (the psABIs define none,
   x86.md X86-1). **(mortar)** `EI_OSABI` is 3 exactly when `.symtab` or
   `.dynsym` holds an `STT_GNU_IFUNC` or `STB_GNU_UNIQUE` symbol (dyn.md
@@ -1889,7 +1917,7 @@ rules below judge the rest. Code: `src/symbols.rs`.
   | `__bss_start`, `__bss_start__` | in [E, the first writable `NOBITS` section at or after E] |
   | `_end`, `end`, `__end__`, `_bss_end__`, `__bss_end__` | in [M, M rounded up to 8] |
   | `_etext`, `etext`, `__etext` | in [the end of `.text`, the next non-executable section's start] |
-  | `__rela_iplt_start`/`_end` (AArch64, x86-64), `__rel_iplt_start`/`_end` (i386) | the bounds of the only allocated `SHT_RELA` (i386: `SHT_REL`) section; with none, start = end (synth.md R-P6; under `-static-pie` they are not defined, and S1 refuses an `ET_DYN` output) |
+  | `__rela_iplt_start`/`_end` (AArch64, x86-64), `__rel_iplt_start`/`_end` (i386) | the bounds of the only allocated `SHT_RELA` (i386: `SHT_REL`) section; with none, start = end (synth.md R-P6; under `-static-pie` they are not defined, and an `ET_DYN` output's range is P-D15's, §12.4) |
   | `_DYNAMIC` | the start of `.dynamic`, else 0 |
   | `_TLS_MODULE_BASE_` | 0, and `STT_TLS` (§4.7) |
   | `__start_X`, `__stop_X` (X a C identifier) | the bounds of section X |
@@ -2977,6 +3005,13 @@ Static-pie (WP-089, §12.4; each shown by running a program, the cases of
   records that glibc's self-relocation applies before the thread pointer
   exists (P-D14): the program faults at start-up (SIGSEGV, WP-056 F4).
   lld and mold write neither.
+- **A35 (mold, x86-64, new).** A `call sym@PLT` (`R_X86_64_PLT32`) to
+  an absolute symbol (`SHN_ABS`) in a `-pie` or `-static-pie` output is
+  written as a PC-relative `call` to the symbol's value, right at load
+  bias 0 only (R1 "a PC-relative field to an absolute symbol in a
+  position-independent output", §5.1a). GNU ld, lld and mortar refuse the
+  link; mold refuses the `PC32`/`PC64` data forms. Reproducer:
+  `tests/dyn.rs` case `abspc`.
 
 On i386 (WP-028e, `tests/x86.rs`; x86.md §15.2): W1 (two readings of a
 `GOT32X` operand) is R8 under every map; W3 (mold's no-base GOT value
@@ -3218,6 +3253,14 @@ own implementation of D-11-D-27 and compared with the output.
   linkers' `-z execstack` and `-z noexecstack` PIEs and GNU ld's and
   mold's executable-note PIEs clean, each `-z` output and the lazy hello PIE with `PF_X` flipped
   P-D4).
+  The entry point (WP-088, P-D14's rule in an `Exec` or a `Pie`): it is
+  in an executable `PT_LOAD` and is the entry symbol's value (`-e`, else
+  `_start`) where `.symtab` defines it; S7 already judges an `ET_EXEC`'s
+  segment, and a `Pie` had no entry rule before. The references' outputs
+  all hold it (the corpus and §12.1's cases clean). Test: `tests/dyn.rs`
+  `s12_pie_entry_and_non_address_relative` (case `pie-rules`: each
+  linker's `-pie` output of `relx.c` with `e_entry` + 4 is P-D4 on both
+  machines, missed with the rule dropped).
 - **P-D5 (`.gnu.hash`).** Recompute the table from `.dynsym` with D-26's
   formulas and compare word for word; then look up every exported and
   every canonical-PLT name with the loader's algorithm (it is found at
@@ -3665,7 +3708,7 @@ export).
   inside a placed section that no such word claims is F2. P-D10's header
   and lazy walk (§12.2) and the lazy-binding record rule do not apply:
   nothing is bound lazily.
-- **No record on a non-address word (P-D9, static-pie).** Every
+- **No record on a non-address word (P-D9, static-pie and `Pie`).** Every
   `RELATIVE` record's place is a word the verifier knows holds an address
   of the executable: an input's absolute use of an internal target
   (direct, through a mergeable piece, an IFUNC's canonical IPLT entry),
@@ -3676,6 +3719,13 @@ export).
   holds an absolute symbol's word (`SHN_ABS`, glibc's
   `_nl_current_*_used`) to its value at any bias, in a `Pie` as well:
   A30.
+  The direction from a record to its word holds in a `Pie` as well
+  (WP-088): the references' corpus and §12.1's PIE cases are clean, and
+  each linker's `-pie` output of `tests/dyn.rs`'s `relx.c` with `rx_p`'s
+  record moved onto `rx_v`, its addend the number `rx_v` holds, is this
+  rule's on both machines (missed with the rule kept to static-pie; lld,
+  which leaves a `RELATIVE` word 0 in the file, is R1 as well, since
+  `rx_p` then holds 0).
 - **What is stricter for `Format::Mortar`.** No `PT_PHDR`; the null
   `.dynsym` entry only; no `R_*_NONE`; GOT[0] holds `_DYNAMIC` at D-32's
   place; `DT_RELACOUNT` exactly the leading run; D-30's tags in order.

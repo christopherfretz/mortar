@@ -76,6 +76,8 @@ pub(crate) fn check(
         );
     } else {
         pd7(image, out, model, ld, format, &mut v);
+        // P-D14's entry rule for an Exec or a Pie (WP-088).
+        crate::spie::entry_point(image, line.entry.as_deref(), 4, &mut v);
     }
     pd8(out, model, ld, &mut v);
     pd9_order(out, ld.machine, &mut v);

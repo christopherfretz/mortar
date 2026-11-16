@@ -61,6 +61,26 @@ const SMALL: &[(&str, &str)] = &[
     // own TLS variable, defined in another file (WP-082 follow-up 4).
     ("tlsle_u.c", "extern __thread int gv;\nint main(void){return gv - 5;}\n"),
     ("tlsle_d.c", "__thread int gv = 5;\n"),
+    // P-D9's non-address rule in a Pie (WP-088): `rx_v` holds a number,
+    // `rx_p` its address.
+    (
+        "relx.c",
+        "long rx_v = 12345; long *rx_p = &rx_v;\nint main(void){return (int)(*rx_p - 12345);}\n",
+    ),
+    // x86-64 PC-relative code to an absolute symbol (WP-088): `absv` is
+    // `SHN_ABS` 0x1234; `main` calls it.
+    ("abspc_a.s", "\t.globl absv\n\t.set absv, 0x1234\n"),
+    (
+        "abspc_c.s",
+        "\t.text\n\t.globl main\nmain:\tlea 1f(%rip), %rdi\n\tcall absv@PLT\n1:\tret\n\t.section .note.GNU-stack,\"\",@progbits\n",
+    ),
+    (
+        "abspc_g.s",
+        "\t.text\n\t.globl main\nmain:\tmovq absv@GOTPCREL(%rip), %rax\n\tcmp $0x1234, %rax\n\tsetne %al\n\tmovzbl %al, %eax\n\tret\n\t.section .note.GNU-stack,\"\",@progbits\n",
+    ),
+    // dyn.md W17 (WP-088): general-dynamic access to the executable's own
+    // TLS, x86-64 large code model.
+    ("gd17.c", "__thread int own = 7;\nint main(void){return own - 7;}\n"),
     // P-D4's PT_GNU_STACK (WP-088): an object whose stack note asks for
     // an executable stack.
     (
@@ -250,6 +270,14 @@ const CLEAN: Option<&[&str]> = Some(&[]);
 const H1: Option<&[&str]> = Some(&["P-D10", "A20"]);
 /// The linker refuses the link.
 const B: Option<&[&str]> = None;
+/// lld leaves a `RELATIVE` word 0 in the file (no `--apply-dynamic-relocs`),
+/// so `rx_p` without its record also holds the wrong value: R1, measured.
+const LLD_RELX: &[&str] =
+    &["P-D9@that no input relocation makes an address of the executable", "R1"];
+/// mold's `call 0x1234` in a PIE (plumb.md §5.1a).
+const A35: Option<&[&str]> = Some(&["R1@to an absolute symbol", "A35"]);
+/// lld's x86-64 large-model GD outputs (dyn.md W17).
+const A12: Option<&[&str]> = Some(&["A12"]);
 
 /// The expectations of one case on one architecture: per linker (bfd,
 /// lld, mold). A rule written `P-D9@view 3` must be found with a finding
@@ -622,6 +650,74 @@ fn build() -> Option<Corpus> {
                 movk_g0_moved,
                 &["R1"],
             );
+        }
+        // P-D14's entry rule and §12.4's non-address RELATIVE rule, in a
+        // Pie (WP-088): each linker's output with `e_entry` one
+        // instruction on (P-D4), and with `rx_p`'s RELATIVE record moved
+        // to `rx_v` with the number as its addend (view 1 unchanged; P-D9
+        // by that rule, and view 2 for `rx_p`).
+        let d = b.dir(arch, "pie-rules");
+        b.obj(arch, &d, "relx.c", &["-O1", "-fPIE"], "rx.o");
+        b.link("pie-rules", arch, &d, "rx", &["-pie", "rx.o"], [CLEAN; 3]);
+        let rules: [Patch; 2] = [("entry", entry_moved), ("relx", relative_to_number)];
+        let expect: [&'static [&'static str]; 2] = [
+            &["P-D4@the entry point is not '_start'"],
+            &["P-D9@that no input relocation makes an address of the executable"],
+        ];
+        for linker in Linker::ALL {
+            for ((what, patch), e) in rules.into_iter().zip(expect) {
+                let e = if what == "relx" && linker.name() == "lld" { LLD_RELX } else { e };
+                let from = format!("rx.{}", linker.name());
+                b.patched(
+                    "pie-rules",
+                    arch,
+                    &d,
+                    &from,
+                    &format!("{from}.{what}"),
+                    &format!("{from}.map"),
+                    &format!("{from}.line"),
+                    linker,
+                    patch,
+                    e,
+                );
+            }
+        }
+        // An x86-64 PC-relative field against an `SHN_ABS` symbol in a
+        // PIE (WP-088): GNU ld and lld refuse the `PLT32` call, mold
+        // writes `call 0x1234`, right at load bias 0 only.
+        if x64 {
+            let d = b.dir(arch, "abspc");
+            b.obj(arch, &d, "abspc_a.s", &[], "a.o");
+            b.obj(arch, &d, "abspc_c.s", &[], "c.o");
+            b.link("abspc", arch, &d, "ac", &["-pie", "c.o", "a.o"], [B, B, A35]);
+            // The GOT load: GNU ld writes `mov $0x1234`, lld and mold keep
+            // it (all clean); mold's with the mov made `lea absv(%rip)`
+            // (its X1 form) is the rule's.
+            b.obj(arch, &d, "abspc_g.s", &[], "g.o");
+            b.link("abspc", arch, &d, "ag", &["-pie", "g.o", "a.o"], [CLEAN; 3]);
+            b.patched(
+                "abspc",
+                arch,
+                &d,
+                "ag.mold",
+                "ag.mold.lea",
+                "ag.mold.map",
+                "ag.mold.line",
+                Linker::Mold,
+                got_load_to_lea,
+                &["R1@to an absolute symbol"],
+            );
+        }
+        // dyn.md W17: lld's x86-64 large-model general-dynamic outputs
+        // crash (PIE and `-no-pie`); GNU ld's and mold's run and are
+        // clean, lld's are A12 (R1: the 16-byte local-exec form written
+        // over the 22-byte sequence, x64.md W4).
+        if x64 {
+            let d = b.dir(arch, "w17");
+            b.obj(arch, &d, "gd17.c", &["-O1", "-fPIC", "-mcmodel=large"], "g.o");
+            for (out, pm) in [("gd.pie", "-pie"), ("gd.nopie", "-no-pie")] {
+                b.link("w17", arch, &d, out, &[pm, "g.o"], [CLEAN, A12, CLEAN]);
+            }
         }
         // S5 (every format since WP-088): the text PT_LOAD made PF_W, the
         // data PT_LOAD made PF_X, in each linker's lazy hello PIE.
@@ -1168,6 +1264,49 @@ fn movk_g0_moved(b: &mut [u8]) {
     b[o..o + 4].copy_from_slice(&v.to_le_bytes());
 }
 
+/// The value of `.symtab`'s symbol `name`.
+fn sym_value(b: &[u8], name: &str) -> u64 {
+    let s = sections(b);
+    let t = section(&s, ".symtab");
+    let strs = s[t.5].3;
+    (t.3..t.3 + t.4)
+        .step_by(24)
+        .find(|&o| cstr(b, strs + le32(b, o) as usize) == name)
+        .map_or_else(|| panic!("no symbol {name}"), |o| le64(b, o + 8))
+}
+
+/// §5.1a: `main`'s `movq absv@GOTPCREL(%rip), %rax` made `lea
+/// absv(%rip), %rax` (mold's X1 rewriting, wrong for an absolute symbol in
+/// a PIE).
+fn got_load_to_lea(b: &mut [u8]) {
+    let s = sections(b);
+    let text = section(&s, ".text");
+    let main = sym_value(b, "main");
+    let o = text.3 + (main - text.2) as usize;
+    assert_eq!(b[o..o + 3], [0x48, 0x8b, 0x05], "main's GOT load");
+    b[o + 1] = 0x8d;
+    let disp = 0x1234_i64 - (main as i64 + 7);
+    b[o + 3..o + 7].copy_from_slice(&(disp as i32).to_le_bytes());
+}
+
+/// P-D4: `e_entry` one instruction on (4 bytes: an AArch64 instruction;
+/// inside x86-64's `_start`, whose first is `endbr64` or `xor %ebp`).
+fn entry_moved(b: &mut [u8]) {
+    let v = le64(b, 0x18) + 4;
+    b[0x18..0x20].copy_from_slice(&v.to_le_bytes());
+}
+
+/// P-D9: the `RELATIVE` record of `rx_p` (addend `&rx_v`) moved to
+/// `rx_v`, its addend the number `rx_v` holds.
+fn relative_to_number(b: &mut [u8]) {
+    let (p, v) = (sym_value(b, "rx_p"), sym_value(b, "rx_v"));
+    let s = sections(b);
+    let r = section(&s, ".rela.dyn");
+    let o = (r.3..r.3 + r.4).step_by(24).find(|&o| le64(b, o) == p).expect("rx_p's record");
+    b[o..o + 8].copy_from_slice(&v.to_le_bytes());
+    b[o + 16..o + 24].copy_from_slice(&12345u64.to_le_bytes());
+}
+
 /// The file offset of the last `STT_SECTION` entry of `.dynsym`.
 fn dynsym_section(b: &[u8]) -> usize {
     let s = sections(b);
@@ -1509,6 +1648,24 @@ fn s12_p_d10_plt_header_reads_its_words() {
 #[test]
 fn r1_a64_large_model_local_exec_in_a_dynamic_executable() {
     judge("tlsle");
+}
+
+// dyn.md W17: what the verifier reports on lld's large-model GD outputs.
+#[test]
+fn w17_x64_large_model_general_dynamic() {
+    judge("w17");
+}
+
+// An x86-64 PC-relative field against an absolute symbol in a PIE (WP-088).
+#[test]
+fn x64_pc_relative_to_an_absolute_symbol_in_a_pie() {
+    judge("abspc");
+}
+
+// spec/plumb.md §12.4's entry and non-address rules in a Pie (WP-088).
+#[test]
+fn s12_pie_entry_and_non_address_relative() {
+    judge("pie-rules");
 }
 
 // spec/plumb.md §12 P-D7 (WP-088): a reference's `.dynsym` section symbol

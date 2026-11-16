@@ -8,14 +8,16 @@
 //! table); under mortar's map only mortar's forms.
 
 use mortar_elf::SymbolIndex;
-use mortar_elf::consts::{ET_EXEC, PT_DYNAMIC, PT_INTERP, SHF_EXECINSTR, SHN_ABS, SHN_UNDEF};
+use mortar_elf::consts::{
+    ET_DYN, ET_EXEC, PT_DYNAMIC, PT_INTERP, SHF_EXECINSTR, SHN_ABS, SHN_UNDEF,
+};
 
 use super::{
     Engine, Pending, Rec, Target, TlsBlock, Verdict, Want, find_at, judge, verdict_finding,
 };
 use crate::a64::{Op, Slot};
 use crate::map::Format;
-use crate::report::{Reason, Rewrite, Rule, Site, Via};
+use crate::report::{Finding, Reason, Rewrite, Rule, Site, Via};
 use crate::x64::{self as x, rex_rb, rip_reg};
 use crate::x86op::{self, CALL_DISP32, JMP_DISP32, imm_form, le};
 
@@ -226,6 +228,9 @@ impl Engine<'_, '_> {
             },
             Op::Slot(slot, _) => {
                 if alloc && let Some(rw) = self.x64_got_form(oi, si, rec, s, kind) {
+                    if rw == Rewrite::GotToLea && self.abs_in_pic(oi, rec.sym, kind) {
+                        return self.fail(Self::pc_to_absolute(rec, &site, &symbol));
+                    }
                     return self.cov.add_accepted(rw, ty);
                 }
                 if !self.x64_window_kept(oi, si, rec) {
@@ -258,6 +263,11 @@ impl Engine<'_, '_> {
             }
             _ => return self.not_checked(Reason::Type, 1),
         };
+        // §5.1a (WP-088): in a position-independent output, S − P against
+        // an absolute S is right at load bias 0 only.
+        if rec.def.op == Op::Prel && alloc && self.abs_in_pic(oi, rec.sym, kind) {
+            return self.fail(Self::pc_to_absolute(rec, &site, &symbol));
+        }
         let failed = self.cov.failed;
         // Stage 3: a call or jump through a PLT entry whose word holds S.
         // (A weak undefined call through a PLT whose word holds 0 calls 0.)
@@ -287,6 +297,29 @@ impl Engine<'_, '_> {
             let internal = self.internal(s) && !self.absolute(oi, rec.sym);
             self.abs_words.push((rec.p, rec.def.field.width(), xv, internal));
         }
+    }
+
+    /// Whether a target of `kind`, symbol `idx` of object `oi`, is absolute
+    /// in an `ET_DYN` output (a `Pie` or a static-pie: every address moves
+    /// with the load bias). The chosen input definition decides as well as
+    /// the output's global: mold makes the symbol local.
+    fn abs_in_pic(&self, oi: usize, idx: u32, kind: Kind) -> bool {
+        self.image.header.e_type == ET_DYN
+            && (kind == Kind::Abs || (kind == Kind::Local && self.absolute(oi, idx)))
+    }
+
+    /// §5.1a: a PC-relative field (or a GOT load rewritten to one, X1)
+    /// whose target is an absolute symbol, in an `ET_DYN` output.
+    fn pc_to_absolute(rec: &Rec, site: &Site, symbol: &str) -> Finding {
+        let mut f = Self::finding(
+            Rule::Field,
+            rec,
+            site,
+            symbol,
+            "a PC-relative field to an absolute symbol in a position-independent output: right at load bias 0 only (spec/plumb.md §5.1a)",
+        );
+        f.found = Some(rec.out_word);
+        f
     }
 
     /// A record not judged for `r`: the bytes a rewriting of it may change
