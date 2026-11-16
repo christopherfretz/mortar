@@ -79,8 +79,13 @@ pub struct FillCx<'a> {
     pub got: GotAddrs,
     /// `.eh_frame_hdr`'s and `.eh_frame`'s addresses.
     pub hdr: HdrAddrs,
-    /// The output address of an FDE's initial location.
+    /// The output address of an FDE's initial location (and of a
+    /// `.gdb_index` range's start, `spec/synth.md` S-G5).
     pub code_addr: &'a (dyn Fn(CodeRef) -> Option<u64> + Sync),
+    /// The offset of a non-allocated input section from the start of its
+    /// output section (`.gdb_index`'s CU list, S-G2); `None` when it is not
+    /// placed.
+    pub section_offset: &'a (dyn Fn(mortar_core::SectionId) -> Option<u64> + Sync),
 }
 
 impl std::fmt::Debug for FillCx<'_> {
@@ -112,7 +117,7 @@ pub trait SynthChunk {
     }
 }
 
-fn check(range: &Range<u64>, out: &[u8], size: u64) -> Result<(), SynthError> {
+pub(crate) fn check(range: &Range<u64>, out: &[u8], size: u64) -> Result<(), SynthError> {
     if range.start > range.end || range.end > size || out.len() as u64 != range.end - range.start {
         return Err(internal(format!(
             "a synthetic chunk of {size} bytes written at {}..{} into {} bytes",

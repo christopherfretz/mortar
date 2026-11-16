@@ -2188,8 +2188,10 @@ Rules that only gdb's reader defines cite it: gdb's manual, appendix
   output is what it was before WP-097 (S-109; the bench's static rows
   and the byte-identical lane show it).
 - **S-G8 [M2] (with other options).** `--gdb-index` with
-  `--incremental` is refused (`spec/incr.md` IN-58, unchanged:
-  `unsupported option: --gdb-index`). With `-S`/`--strip-debug` or `-s`
+  `--incremental` is one of `spec/incr.md` IN-12's incompatible modes
+  (IN-58, unchanged): the warning `incremental-unsupported` names
+  `--gdb-index` and the link is plain, with its index and without a
+  state; `--incremental=update` is an error. With `-S`/`--strip-debug` or `-s`
   the output has no `.debug_info`, so S-G1 makes no chunk and nothing is
   read or refused. `-r` is refused as a whole today (`spec/cli.md`);
   when it lands, a relocatable output gets no `.gdb_index` (an index is a
@@ -2293,8 +2295,9 @@ Rules that only gdb's reader defines cite it: gdb's manual, appendix
   static bit: gdb's `.gdb_index` reader treats a name without the static
   bit as global, so a file-local `static int x` in two units would be
   indexed as two globals. And stage B's observation that lld and mold
-  build 30 symbols from such inputs is not what lld 22 and mold write
-  here: both write an empty symbol table for Clang `-gpubnames` objects
+  build 30 symbols from such inputs is not what lld 19 and 22 and mold
+  2.37 write here: each writes an empty symbol table for Clang
+  `-gsplit-dwarf -gpubnames` objects
   (`spec/landed/image/WP-097.md`). So a unit named only by `.debug_names`
   has no set (S-G3). Input `.debug_names` sections are copied as
   before (I-49a; lldb reads them): gdb 16.3 ignores a `.debug_names` it
@@ -2482,8 +2485,10 @@ detail in a note. Each stops the link in phase 80.
 | `gdb-index-orphan-name-set` | a set naming a unit whose section is not in the output | S-G4a, S-G5a |
 | `gdb-index-too-large` | `2^24` units or more, or a section above `2^32 − 1` bytes | S-G4, S-G7 |
 
-`--gdb-index` with `--incremental` is `unsupported option: --gdb-index`
-(IN-58), and `--debug-names` is `unsupported option: --debug-names`
+`--gdb-index` with `--incremental` is one of IN-12's incompatible modes
+(IN-58): the warning `incremental-unsupported` names it and the link is
+plain, with the index and without a state; with `--incremental=update`
+it is an error. `--debug-names` is `unsupported option: --debug-names`
 with S-G9's note.
 
 ### 17.7 What the verifier reads (WP-098)

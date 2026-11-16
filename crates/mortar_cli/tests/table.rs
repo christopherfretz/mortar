@@ -66,6 +66,8 @@ const SUPPORTED: &[&str] = &[
     "--print-gc-sections",
     "--no-print-gc-sections",
     "--gc-keep-exported",
+    // WP-097 (synth.md S-G1).
+    "--gdb-index",
     "-l",
     "-(",
     "-)",

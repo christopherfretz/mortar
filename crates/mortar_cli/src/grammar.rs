@@ -68,7 +68,13 @@ impl Use {
                 Diagnostic::refused(RefusalClass::OptionValue, format!("{}={value}", self.spelling))
                     .note(note)
             }
-            _ => Diagnostic::refused(RefusalClass::Option, self.spelling.clone()),
+            _ => {
+                let d = Diagnostic::refused(RefusalClass::Option, self.spelling.clone());
+                match self.row().refused_note() {
+                    Some(note) => d.note(note),
+                    None => d,
+                }
+            }
         };
         (Key::new(PHASE, self.arg, u64::MAX), d)
     }

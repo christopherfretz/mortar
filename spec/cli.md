@@ -907,10 +907,12 @@ WP-097 (`spec/synth.md` §17) changed three rows of the output group:
 - `--no-debug-names` is `noop` ("the default: no merged .debug_names is
   written"); it was `refused`, which refused a request for the
   default.
-- `--debug-names` stays `refused`, and its refusal carries a note (the
-  status `refused` with a reason, `Status::RefusedWhy`): "gdb 16 ignores
-  a .debug_names it did not write; use --gdb-index (spec/synth.md
-  S-G9)".
+- `--debug-names` stays `refused`, and its refusal carries a note:
+  "gdb 16 ignores a .debug_names it did not write; use --gdb-index
+  (spec/synth.md S-G9)". A refused row's reason is in
+  `rows::REFUSED_NOTES` by row name (`Row::refused_note`); the refusal
+  of §4.4 adds it as a note and the generated table prints it after
+  `refused:`.
 
 A work package that implements an option changes the row's status in the
 same change, and adds the row's evidence to the audit, which fails while

@@ -4,7 +4,7 @@ Generated from `crates/mortar_cli/src/rows.rs` by `mortar_cli::status_markdown`;
 do not edit. `MORTAR_BLESS=1 cargo test -p mortar_cli --test table` rewrites it.
 The rules are `spec/cli.md`.
 
-487 rows: 80 supported, 4 partial, 35 noop, 368 refused.
+487 rows: 81 supported, 4 partial, 36 noop, 366 refused.
 
 Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 18 mortar's own.
 
@@ -57,10 +57,10 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 18 mortar'
 | `--keep-unique` | SYMBOL | lld | all | refused | `other` | Do not fold SYMBOL |
 | `--ignore-data-address-equality` |  | lld, mold | all | refused | `other` | Allow folding data whose address is compared |
 | `--ignore-function-address-equality` |  | lld | all | refused | `other` | Allow folding functions whose address is compared |
-| `--gdb-index` |  | lld, mold | all | refused | `shaping.gdb_index` | Write a .gdb_index section |
-| `--no-gdb-index` |  | lld, mold | all | noop: mortar writes no .gdb_index (the default); --gdb-index is refused | `shaping.gdb_index` | Write no .gdb_index section (default) |
-| `--debug-names` |  | lld | all | refused | `other` | Write a merged .debug_names section |
-| `--no-debug-names` |  | lld | all | refused | `other` | Write no merged .debug_names (default) |
+| `--gdb-index` |  | lld, mold | all | supported | `shaping.gdb_index` | Write a .gdb_index section |
+| `--no-gdb-index` |  | lld, mold | all | noop: the default: no .gdb_index is written; the last of --gdb-index and --no-gdb-index wins | `shaping.gdb_index` | Write no .gdb_index section (default) |
+| `--debug-names` |  | lld | all | refused: gdb 16 ignores a .debug_names it did not write; use --gdb-index (spec/synth.md S-G9) | `other` | Write a merged .debug_names section |
+| `--no-debug-names` |  | lld | all | noop: the default: no merged .debug_names is written | `other` | Write no merged .debug_names (default) |
 | `--relax` |  | GNU, lld, mold | all | refused | `other` | Relax instructions where the target allows |
 | `--no-relax` |  | GNU, lld, mold | all | refused | `other` | Do not relax instructions |
 | `--force-group-allocation` |  | GNU, lld | all | refused | `other` | Place section group members as ordinary sections |

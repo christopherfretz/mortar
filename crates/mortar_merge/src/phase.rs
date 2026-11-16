@@ -439,8 +439,15 @@ fn eh_relocs<'s>(
 }
 
 /// What symbol `index` of `file` resolves to (resolve.md: locals by their
-/// section, globals by [`Link::global`]).
-fn target(
+/// section, globals by [`Link::global`]). Public for the readers of
+/// phase 80 that resolve a relocation's target the same way
+/// (`mortar_synth`'s `.gdb_index`, `spec/synth.md` S-G5).
+///
+/// # Errors
+///
+/// `malformed-input` for a symbol the table does not hold, or a local in
+/// a reserved section index.
+pub fn target(
     t: &dyn Link<'_>,
     file: FileId,
     symbols: &mortar_elf::SymbolTable<'_>,

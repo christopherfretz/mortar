@@ -629,6 +629,13 @@ fn section_rows<V: View>(
                 let excluded = sections::excluded_reason(&s, note);
                 let strip = ctx.opts.strip_debug && sections::is_debug(&s);
                 row.state = sections::state(kind, excluded, dropped, strip);
+                // spec/synth.md S-G6: the index consumes the GNU name sets.
+                if ctx.opts.consume_gnu_pubnames
+                    && row.state == SectionState::Kept
+                    && matches!(s.name, b".debug_gnu_pubnames" | b".debug_gnu_pubtypes")
+                {
+                    row.state = SectionState::Dropped(DropReason::Consumed);
+                }
                 match note {
                     Note::Retain if row.is_kept() => out.retained.push((file, SectionIndex(i))),
                     Note::GnuWarning if !dropped => out.problems.push(Problem {
