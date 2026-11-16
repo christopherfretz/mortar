@@ -12,7 +12,9 @@
 //! A line passes when mortar's program runs as the reference's (exit
 //! status and standard output) and the verifier is clean, or when mortar
 //! refuses it by a name of [`OUT_OF_M2`] (a rule puts it out of the
-//! milestone), or when GNU ld cannot link it either. Every other outcome
+//! milestone), or when GNU ld cannot link it either. Where the
+//! reference's own program is known broken ([`REFERENCE_BROKEN`]), the
+//! oracle is another variation's reference run. Every other outcome
 //! fails the lane: a refusal no rule names, a program that runs
 //! differently, a verifier finding [`KNOWN_FINDINGS`] does not list.
 //! `--quick` is the subset `cargo xtask ci --quick` runs: the host's
@@ -172,6 +174,18 @@ pub const OUT_OF_M2: &[(&str, &str)] = &[
     ("unsupported feature: dynamically linked output on i386", "i386 dynamic output is M4"),
     ("unsupported feature: position-independent executable output", "i386 PIE output is M4"),
 ];
+
+/// Lines whose REFERENCE program is known broken: the variation, the
+/// architecture, the variation whose reference run is the oracle
+/// instead, and the reason. The line fails when the reference's program
+/// runs after all (the entry is stale), and passes when mortar's program
+/// runs as the oracle variation's reference does.
+pub const REFERENCE_BROKEN: &[(&str, &str, &str, &str)] = &[(
+    "x-static-pie-export",
+    "x86_64",
+    "x-static-pie",
+    "plumb.md A34: GNU ld's x86-64 static-pie with --export-dynamic dies at start-up (TPOFF64 records applied before the thread pointer exists)",
+)];
 
 /// Verifier findings judged wrong in the verifier, not in mortar (a
 /// finding of the record that names them): the variation, the rule, and
@@ -424,6 +438,30 @@ impl Lane {
         Ok((o.end, String::from_utf8_lossy(&o.stdout).into_owned()))
     }
 
+    /// The run of `d`'s reference program in the variation `oracle`,
+    /// linked into `dir` (a line of `REFERENCE_BROKEN`).
+    fn oracle_run(&self, d: &Driver, oracle: &str, dir: &Path) -> Result<(End, String), String> {
+        let var = VARIATIONS
+            .iter()
+            .find(|v| v.name == oracle)
+            .ok_or_else(|| "no such variation".to_owned())?;
+        let exe = dir.join("ref-oracle");
+        let mut argv = d.args.clone();
+        argv.push(format!("-B{}/", self.wrap_dir(d.arch).display()));
+        argv.extend(var.args.iter().map(|s| (*s).to_owned()));
+        argv.push(self.object(d, var.flavour).display().to_string());
+        argv.extend(["-o".to_owned(), exe.display().to_string()]);
+        let args_s = dir.join("ld-oracle.args").display().to_string();
+        let mut env: Vec<(&str, &str)> =
+            d.env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        env.push(("CENSUS_ARGS", &args_s));
+        let linked = run(&d.program, &argv, dir, &env, TOOL_LIMITS)?;
+        if !linked.end.success() || !exe.is_file() {
+            return Err(format!("GNU ld cannot link it: {}", linked.first_error_line()));
+        }
+        self.run_program(d.arch, &exe)
+    }
+
     #[allow(clippy::too_many_lines, reason = "one line, start to verdict")]
     fn line(&self, d: &Driver, var: &Variation) -> Outcome {
         let id = format!("{}.{}", d.name.replace('/', "_"), var.name);
@@ -464,6 +502,25 @@ impl Lane {
             }
         } else {
             None
+        };
+        // A reference known broken (`REFERENCE_BROKEN`): the oracle is
+        // another variation's reference run.
+        let broken = REFERENCE_BROKEN
+            .iter()
+            .find(|(name, arch, _, _)| *name == var.name && *arch == d.arch.name());
+        let ref_run = match (broken, ref_run) {
+            (Some((_, _, oracle, why)), Some(theirs)) => {
+                if theirs.0.success() {
+                    return Outcome::Fail(format!(
+                        "the reference's program runs now; remove the REFERENCE_BROKEN entry ({why})"
+                    ));
+                }
+                match self.oracle_run(d, oracle, &dir) {
+                    Ok(r) => Some(r),
+                    Err(e) => return Outcome::Fail(format!("the oracle {oracle}: {e}")),
+                }
+            }
+            (_, r) => r,
         };
         // mortar on the same words, its output and map beside.
         let out = dir.join("mortar.out");
