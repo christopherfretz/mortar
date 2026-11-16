@@ -124,11 +124,14 @@ fn linker_words(driver: Driver, args: &[String]) -> Vec<String> {
 /// Whether `words` spell `spelling` of an option that takes `takes`.
 fn spells(words: &[String], spelling: &str, takes: Takes) -> bool {
     if let Some(keyword) = spelling.strip_prefix("-z ") {
-        let is_keyword =
-            |word: &str| word == keyword || word.strip_prefix(keyword).is_some_and(|v| v.starts_with('='));
+        let is_keyword = |word: &str| {
+            word == keyword || word.strip_prefix(keyword).is_some_and(|v| v.starts_with('='))
+        };
         return words.iter().enumerate().any(|(at, word)| {
             (word == "-z" && words.get(at + 1).is_some_and(|next| is_keyword(next)))
-                || word.strip_prefix("-z").is_some_and(|glued| !glued.is_empty() && is_keyword(glued))
+                || word
+                    .strip_prefix("-z")
+                    .is_some_and(|glued| !glued.is_empty() && is_keyword(glued))
         });
     }
     let name = spelling.trim_start_matches('-');
@@ -253,10 +256,7 @@ mod tests {
         assert_eq!(rows[0].spellings, ["-x", "--discard-all"]);
         assert_eq!(rows[2].status, "partial");
         let left = |line: &str| -> Vec<String> {
-            unspelled(table, &[words(line)])
-                .iter()
-                .map(|row| row.spellings[0].clone())
-                .collect()
+            unspelled(table, &[words(line)]).iter().map(|row| row.spellings[0].clone()).collect()
         };
         let all = ["-x", "-L", "--build-id", "-z max-page-size", "-z defs", "--lto-O"];
         assert_eq!(left("a.o"), all);
@@ -279,7 +279,8 @@ mod tests {
     // spells what the file hands the linker, not what the driver adds.
     #[test]
     fn a_drivers_words() {
-        let line = words("-static -Wl,-z,now,--gc-sections -Xlinker -E -rdynamic -O2 -g -e main a.o");
+        let line =
+            words("-static -Wl,-z,now,--gc-sections -Xlinker -E -rdynamic -O2 -g -e main a.o");
         assert_eq!(
             linker_words(Driver::Gcc, &line),
             ["-static", "-z", "now", "--gc-sections", "-E", "-export-dynamic", "-e", "main"]

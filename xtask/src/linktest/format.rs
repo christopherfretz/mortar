@@ -1095,14 +1095,17 @@ impl Parser {
                     ));
                 };
                 args.remove(0);
-                ("link", StepKind::Link(Link {
-                    driver,
-                    args,
-                    fails: false,
-                    informs: false,
-                    diags: Vec::new(),
-                    prints: Vec::new(),
-                }))
+                (
+                    "link",
+                    StepKind::Link(Link {
+                        driver,
+                        args,
+                        fails: false,
+                        informs: false,
+                        diags: Vec::new(),
+                        prints: Vec::new(),
+                    }),
+                )
             }
             "run" => {
                 qualifiers.no_family("'run'")?;
@@ -1287,12 +1290,10 @@ impl Parser {
                     Stdout::Reference => Err("a second 'output' for this step".to_owned()),
                 }
             }),
-            (StepKind::Link(_), _) => {
-                Err(format!(
-                    "'{key}' is not an expectation of a link (exit, diag, no-diag, print, \
+            (StepKind::Link(_), _) => Err(format!(
+                "'{key}' is not an expectation of a link (exit, diag, no-diag, print, \
                      no-print)"
-                ))
-            }
+            )),
             (StepKind::Run(_), _) => {
                 Err(format!("'{key}' is not an expectation of a run (exit, stdout, output, env)"))
             }
@@ -2104,7 +2105,8 @@ FileHeader:
         let checked = ok("link ld a.o\ncheck text a.map\n  has: .text\n");
         let StepKind::Check(check) = &checked.steps[1].kind else { panic!() };
         assert_eq!(check.tool, CheckTool::Text);
-        let compared = ok("link ld a.o -o a\nlink ld b.o -o b\ncheck cmp a b\n  has: ^identical$\n");
+        let compared =
+            ok("link ld a.o -o a\nlink ld b.o -o b\ncheck cmp a b\n  has: ^identical$\n");
         let StepKind::Check(check) = &compared.steps[2].kind else { panic!() };
         assert_eq!((check.tool, check.args.len()), (CheckTool::Cmp, 2));
         assert!(has_error(&with("link ld a.o\ncheck cmp a\n  has: x\n"), 3, "takes two files"));

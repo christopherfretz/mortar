@@ -1131,8 +1131,7 @@ impl Unit<'_> {
         // L3: a link that is to succeed writes a map, for the verifier:
         // mortar's machine map is `--mortar-map` (image.md I-120), whatever
         // `-Map` the test asks for; a reference's is its `-Map`.
-        let map_file = if link.fails || link.informs || !(self.matrix.plumb || self.matrix.digest)
-        {
+        let map_file = if link.fails || link.informs || !(self.matrix.plumb || self.matrix.digest) {
             None
         } else if let Some(map) = match linker {
             Linker::Mortar => map_option_named(&args, "mortar-map"),
