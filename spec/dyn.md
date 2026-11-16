@@ -1282,7 +1282,7 @@ architectures).
 | `Shlib`, `WeakDyn` | 0, `GLOB_DAT` | 0, `GLOB_DAT` | symbolic record, `r_sym` the key, addend `A` (RELA) | same |
 | `Ifunc` | the IPLT entry | the entry, `RELATIVE` | the entry | the entry, `RELATIVE` |
 | `Weak0` | 0 | 0 | `A` | `A`, no record |
-| `Copy` (a key with a copy allocation, D-42) | — | — | symbolic record, `r_sym` the key, addend `A` (RELA), as `Shlib` | same |
+| `Copy` (a key with a copy allocation, D-42) | 0, `GLOB_DAT`, as `Shlib` | 0, `GLOB_DAT`, as `Shlib` | symbolic record, `r_sym` the key, addend `A` (RELA), as `Shlib` | same |
 
 All three agree (E-reloc §3), but on the `Copy` row: a word that points
 at a copied key gets the key's symbolic record, as lld writes; GNU ld
@@ -1290,8 +1290,10 @@ writes the copy's address and no record (§13.1). Both run, since the
 loader binds the key to the copy; the record keeps `LD_PRELOAD`
 interposition of the copied object working, as for any import
 (WP-054, supervisor's ruling in WP-083; `copy-reloc`, `exceptions-rtti`,
-`-fno-pic -no-pie`). The row rules words only; a GOT slot of a copied
-key is not ruled here. A word in a read-only place that would need
+`-fno-pic -no-pie`). A GOT slot of a copied key is the `Shlib` slot:
+GNU ld, lld, mold and mortar write 0 and `GLOB_DAT` against the key, in
+`Exec` on both 64-bit targets and in the x86-64 `Pie` (WP-083's
+measurement, `copy-got`). A word in a read-only place that would need
 a record is a text relocation (D-47), except in `Exec` where arch.md §4.3
 turns it into `COPY` or a canonical PLT. GOT relaxation in `Exec` and
 `Pie` is the architecture's (a64 R5; x64 G1-G4 extended to `Exec` and
@@ -1574,7 +1576,7 @@ unchanged. Every `P-D` id this spec cites is that section's.
 | `.plt` `sh_entsize` | 16 (8 for `.plt.got`) | 0 | 0 | 0 (WP-055; no loader or tool reads it) |
 | `.tdata` `sh_addralign` | raised to `PT_TLS`'s (8 in `gxx-static-libstdcxx`) | the inputs' | the inputs' | the inputs' maximum, 4 there (layout L-76; `PT_TLS` and the addresses agree) |
 | a program referencing `foo` and `foo@V` of one shared definition (no copy, no canonical PLT) | not measured | not measured | one `UND` entry | two `UND` entries, one name and version (the loader binds both alike; WP-053) |
-| a writable word pointing at a copied key (D-46 `Copy`) | the copy's address, no record | symbolic record | not measured | symbolic record (D-46; WP-054 §4) |
+| a writable word pointing at a copied key (D-46 `Copy`; its GOT slot is not a difference: all four write `GLOB_DAT`, `copy-got`) | the copy's address, no record | symbolic record | not measured | symbolic record (D-46; WP-054 §4) |
 | AArch64 `-no-pie`: an `ABS64` in a writable word of a PIC or PIE object against shared data (`environ` in `.data.rel`) | refused (`unresolvable R_AARCH64_ABS64 relocation against symbol environ@@GLIBC_2.17`, as WP-053 quotes it) | symbolic record | not measured | symbolic record (D-46; the program runs; WP-053, E-corpus C, 44 links) |
 | `IRELATIVE` before `JUMP_SLOT`s | no | in every output with an IFUNC and a PLT (H1) | in every output with an IFUNC and a PLT (H1) | no (D-41; plumb.md P-D10) |
 
