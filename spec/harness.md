@@ -2368,7 +2368,7 @@ names, the phase, the start time, and:
 the bench's `parse_response`), runs the verifier (`plumb::verify_link_line`,
 the inputs read from the working directory, stage 3 with the line) and
 prints `plumb: clean` (status 0), or `plumb: <n> findings: <rule> x<k>,
-...` and the first finding (status 1), or `plumb: error: <what>` (status
+...` and the report's first 20 lines (status 1), or `plumb: error: <what>` (status
 2: the verifier could not judge).
 
 ### Outcomes
@@ -2446,8 +2446,9 @@ refusals, the defects, the tests that differ, and the runs.
 `cargo xtask realbuild --project zlib --row gcc` (with `--keep` to keep
 the build trees for a look, `--mortar <binary>` for a mortar built
 elsewhere). The work directory is `real-builds` beside the checkout's
-target directory (`--work` to change it); its peak size is the largest
-project's two trees, not the sum.
+target directory (`--work` to change it); without `--keep` its peak size
+is the largest single build tree (each mode's tree is removed before the
+next starts) plus the downloads, not the sum.
 
 ### Tests
 

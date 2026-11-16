@@ -272,8 +272,9 @@ fn verify_main(args: &[String]) -> u8 {
     }
     let by_rule: Vec<String> = rules.iter().map(|(r, n)| format!("{r} x{n}")).collect();
     println!("plumb: {} findings: {}", report.findings.len(), by_rule.join(", "));
-    if let Some(first) = report.render(output).lines().next() {
-        println!("{first}");
+    // The report's first lines: every finding of a line, up to 20.
+    for line in report.render(output).lines().take(20) {
+        println!("{line}");
     }
     1
 }
