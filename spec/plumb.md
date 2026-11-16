@@ -2403,7 +2403,9 @@ produce a finding that is not a recorded anomaly (`tests/mutation.rs`):
   words), DWARF 4 and 5:
   - ACCEPTED: the baseline, with `arr+40` (one past `arr`'s end, the
     first byte of the `.data` hole), the label `arr_end` there and
-    gfortran's `blk_-8` inside the hole; the debug baseline;
+    gfortran's `blk_-8` inside the hole, a `.tdata` hole at the
+    section's end and the dead string GNU ld merged after a live one as
+    a `strings` range; the debug baseline;
   - REJECTED: a live relocation aimed into a hole (its section declared a
     hole: P-I3, and P-I1 covered twice); the same with the section out of
     the map (its symbol: P-I3); `e_entry` in the code hole (P-I3); a
@@ -2413,7 +2415,12 @@ produce a finding that is not a recorded anomaly (`tests/mutation.rs`):
     neutral `.debug_abbrev` (P-I6), a line program byte other than
     `0x06` (P-I6); the dead FDE's address left (P-I6); a 12-byte CIE and
     a zero word in the `.eh_frame` hole (P-I5); a 12-byte `.eh_frame`
-    hole (P-I5); a `cie` range over an FDE (P-I6); a hole in `.init` and
+    hole (P-I5); a `cie` range over an FDE (P-I6); a live FDE whose CIE
+    pointer names the hole's padding CIE (P-I3); a live `.debug_frame`
+    FDE naming the dead contribution's CIE (P-I4); in an i386 output made
+    `ET_DYN`, a dead `.debug_line` left as written (P-I6, IN-53's PIE
+    rule); a `.tdata` hole before a live word (P-I2); the dead string not
+    ending with a NUL (P-I6); a hole in `.init` and
     a zero slot in the `__start_my_array` array (P-I2); the `.data` hole
     unlisted (P-I1); overlapping lines, a line past its section, a line
     naming no section, `cie`, `strings` or `neutral` in a section that
@@ -2553,6 +2560,64 @@ mortar's map only: `e_entry` + 4 (S7's symbol clause), `EI_OSABI` 0 ↔ 3
 x86-64 the locals of merged sections, linker symbols' sizes and mold's
 `$got` symbols. The one `got-slot-swap` miss is mold's `.got` words 0
 and 1 in `ibt` (not examined).
+
+**Holes and dead ranges (WP-091, §6.8).** Each check of `src/dead.rs`
+and `src/deaddwarf.rs` was dropped in a test build, one at a time, and
+`tests/dead.rs` run (AArch64, x86-64, i386; DWARF 4 and 5). "Caught by"
+is the test that failed; 30 of 37 drops are caught.
+
+| check dropped | caught by |
+|---|---|
+| coverage (P-I1) | `in3a_live_relocation_naming_a_hole_is_rejected`, `in60_unlisted_hole_and_bad_lines_are_rejected` |
+| resolution (P-I2: no section, outside, overlap) | `in60_unlisted_hole_and_bad_lines_are_rejected` |
+| admission, whole (P-I2) | `in30_…`, `in3a_debug_mutations_are_rejected`, `in60_unlisted_…` |
+| `.debug_aranges` takes no line | `in3a_debug_mutations_are_rejected` |
+| a hole in a non-allocated section | `in60_unlisted_…` |
+| packed sections (L-142) | `in30_holes_in_packed_sections_are_rejected` |
+| thread-local holes at the end only (L-143) | `in60_unlisted_…` |
+| `cie` outside `.eh_frame` | `in60_unlisted_…` |
+| `strings` in a section without merged strings | `in60_unlisted_…` |
+| `neutral` outside IN-51b's sections | `in60_unlisted_…` |
+| `contribution` outside IN-53's list | `in3a_debug_mutations_are_rejected` |
+| fills, whole (P-I5, allocated P-I6) | `in34a_eh_frame_holes_are_padding_cies`, `in3_stale_bytes_in_holes_are_rejected` |
+| the fill byte | `in3_stale_bytes_in_holes_are_rejected` |
+| the padding CIE (IN-34a) | `in34a_…` |
+| an allocated `strings` range ends with a NUL | `in60_unlisted_…` |
+| a `cie` range is whole CIEs | `in34a_…` |
+| symbols (P-I3) | `in3a_live_relocation_…` |
+| relocations of live sections (P-I3) | `in3a_live_relocation_…` |
+| tables, whole; `e_entry` (P-I3) | `in3a_live_relocation_…` |
+| live `.eh_frame` FDEs' CIE pointers (P-I3) | `in34a_…` |
+| N3: input end labels accepted at a live end | `in60_baseline_and_n3_references_are_accepted` (the baseline rejected) |
+| neutral debug forms; `.debug_abbrev`'s (P-I6) | `in3a_debug_mutations_are_rejected` |
+| contributions; the `.debug_frame` tombstone; the PIE rule (P-I6) | `in3a_debug_…` |
+| a non-allocated `strings` range ends with a NUL | `in3a_debug_…` |
+| the walk of live units (P-I4) | `in3a_debug_…` |
+| live `.debug_frame` FDEs' CIE pointers (P-I4) | `in3a_debug_…` |
+
+**Survivors (7), with the reason:**
+
+1. The relocation-section fill (`DT_RELACOUNT` prefix, `NONE` after
+   it), the `.got` words, allocated relocation records' `r_offset` and
+   `RELATIVE`/`IRELATIVE` targets, and `.eh_frame_hdr` entries: the
+   models are static executables without `--eh-frame-hdr`, so none of
+   these tables exists. Closing them needs a PIE model (a hole whose
+   `.rela.dyn` records are rewritten to the scratch word, a GOT word and
+   a header entry aimed into it): moderate, the first thing to add once
+   WP-062/WP-064 write lines into PIE outputs, whose maps can then be
+   used directly.
+2. Table references at a live item's end accepted (the N3 rule for
+   unnamed words): no model has a table word at a hole's start, so
+   dropping the acceptance makes nothing fail; it only loosens, and
+   the corpus (§6.8) has no dead range yet to show it is needed.
+3. The `strp`/`line_strp` entries of v5 line headers: no case puts a
+   dead range under a string only a line header names. In GCC's output
+   the header's directory and file names are also the unit's
+   `DW_AT_comp_dir`/`DW_AT_name` strings (merged), so such a case would
+   be caught by the DIE walk first (suspected, not separated); a case
+   with a header-only file name would close it.
+4. Live `.debug_str_offsets` entries: GCC does not use `DW_FORM_strx`
+   without split DWARF; needs a Clang DWARF 5 model (cheap).
 
 ## 10. The reference linkers, observed
 
