@@ -516,9 +516,10 @@ impl<'a, 'b> Engine<'a, 'b> {
     /// definition (`SHN_ABS`): its value is not an address of the image
     /// and no load bias moves it (gABI "Symbol Values"; dyn.md D-46's
     /// `Abs` row: the value, no record). Resolution follows §4.4: a local
-    /// by its own section, a global by the output's symbol of the name,
-    /// else the chosen input definition (stage 3, WP-089: glibc's
-    /// `_nl_current_*_used`, mold's absolute `__rela_iplt_*`).
+    /// by its own section, a global by the chosen input definition, else
+    /// (linker-defined) by the output's symbol of the name (stage 3,
+    /// WP-089: glibc's `_nl_current_*_used`, mold's absolute
+    /// `__rela_iplt_*`).
     pub(crate) fn absolute(&self, oi: usize, idx: u32) -> bool {
         let o = &self.objs[oi];
         let Some(t) = o.symtab else { return false };
@@ -530,17 +531,25 @@ impl<'a, 'b> Engine<'a, 'b> {
             return matches!(t.section_of(SymbolIndex(idx), &sym), Ok(SymbolSection::Absolute));
         }
         let name = String::from_utf8_lossy(t.name(&sym).unwrap_or(b"")).into_owned();
-        if let Some(out) = self.image.global(&name).or_else(|| self.image.unique(&name))
-            && out.sym.st_shndx != 0
-        {
-            return out.sym.st_shndx == mortar_elf::consts::SHN_ABS;
-        }
-        self.chosen_def(&name).is_some_and(|(doi, di)| {
-            self.objs[doi].symtab.is_some_and(|dt| {
+        if let Some((doi, di)) = self.chosen_def(&name) {
+            return self.objs[doi].symtab.is_some_and(|dt| {
                 dt.get(SymbolIndex(di)).is_ok_and(|ds| {
                     matches!(dt.section_of(SymbolIndex(di), &ds), Ok(SymbolSection::Absolute))
                 })
-            })
+            });
+        }
+        // A linker-defined symbol: GNU ld writes `_DYNAMIC` and
+        // `_GLOBAL_OFFSET_TABLE_` as `SHN_ABS` on AArch64 although they
+        // are addresses, so `SHN_ABS` counts only for a value no allocated
+        // section holds (end inclusive; mold's absolute 0 `__rela_iplt_*`).
+        self.image.global(&name).or_else(|| self.image.unique(&name)).is_some_and(|out| {
+            let v = out.sym.st_value;
+            out.sym.st_shndx == mortar_elf::consts::SHN_ABS
+                && !self.image.sections.iter().any(|x| {
+                    x.shdr.sh_flags & mortar_elf::consts::SHF_ALLOC != 0
+                        && x.shdr.sh_addr <= v
+                        && v <= x.shdr.sh_addr + x.shdr.sh_size
+                })
         })
     }
 
