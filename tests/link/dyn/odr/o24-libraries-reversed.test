@@ -1,0 +1,59 @@
+# O-24 (b) (spec/odr.md), o24-libraries.test in the other lookup order:
+# libb comes first, runs its copy (3) and provides it to liba. The
+# finding names libb first.
+#@ spec: odr.md "O-24"
+#@ arch: aarch64 x86_64
+#@ diag: odr-violation ./libb.so ./liba.so
+
+cc -O1 -fPIC -DN=1 -DF=fa lib.c -o a.o
+cc -O1 -fPIC -DN=3 -DF=fb lib.c -o b.o
+as note1.s -o note1.o
+shlib gcc a.o note1.o -Wl,-soname,liba.so -o liba0.so
+meta a.rows liba0.so -o liba.so
+shlib gcc b.o note1.o -Wl,-soname,libb.so -o libb0.so
+meta b.rows libb0.so -o libb.so
+cc -O1 -fPIE main.c -o main.o
+cc -O1 -fPIE -DHIDDEN main.c -o hidden0.o
+meta hidden.meta hidden0.o -o hidden.o
+link(bfd,lld,mold) gcc -pie main.o -Wl,--no-as-needed -L. -lb -la -o prog
+link(mortar) gcc -pie main.o -Wl,--no-as-needed -L. -lb -la -Wl,--odr=strict -o prog
+  exit: fail
+  diag: *libb.so comes before *liba.so in lookup order (DT_NEEDED): *libb.so runs its own copy and provides it to *liba.so
+link(bfd,lld,mold) gcc -pie hidden.o -Wl,--no-as-needed -L. -lb -la -o hidden
+link(mortar) gcc -pie hidden.o -Wl,--no-as-needed -L. -lb -la -Wl,--odr=strict -o hidden
+  exit: fail
+  diag: *libb.so runs its own copy and provides it to *liba.so
+run(bfd,lld,mold) prog
+  stdout: 3 3
+run(bfd,lld,mold) hidden
+  stdout: 3 3
+
+#--- lib.c
+int f(void) { return N; }
+int F(void) { return f(); }
+#--- main.c
+#include <stdio.h>
+#ifdef HIDDEN
+__attribute__((visibility("hidden"))) int f(void) { return 2; }
+#endif
+int fa(void);
+int fb(void);
+int main(void) { printf("%d %d\n", fa(), fb()); return 0; }
+#--- hidden.meta
+summary name=lang value=c++
+definition anchor=f hash=02020202020202020202020202020202 class=1 flags=1
+#--- a.rows
+row name=f hash=0101010101010101 flags=1
+#--- b.rows
+row name=f hash=0303030303030303 flags=1
+#--- note1.s
+	.section .note.mason,"a",%note
+	.p2align 3
+	.long 10
+	.long 40
+	.long 0x4d4f4401
+	.asciz "MasonMeta"
+	.p2align 3
+	.long 1, 1, 24, 0
+	.zero 24
+	.section .note.GNU-stack,"",%progbits

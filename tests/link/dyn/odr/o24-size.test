@@ -1,0 +1,28 @@
+# O-24 (c) (spec/odr.md): the executable declares v (kind 5, VARIABLE,
+# not DEFINITION) with 8 bytes; the needed library defines it with 16.
+# A copy relocation made for one size runs against the other:
+# odr-size-mismatch, from the library's .dynsym st_size (no table read).
+#@ spec: odr.md "O-24"
+#@ arch: aarch64 x86_64
+#@ diag: odr-size-mismatch ./libk.so
+
+cc -O1 -fPIC lib.c -o k.o
+shlib gcc k.o -Wl,-soname,libk.so -o libk.so
+cc -O1 -fno-pie main.c -o main0.o
+meta main.meta main0.o -o main.o
+link(bfd,lld,mold) gcc -no-pie main.o -Wl,--no-as-needed -L. -lk -o prog
+link(mortar) gcc -no-pie main.o -Wl,--no-as-needed -L. -lk -Wl,--odr=strict -o prog
+  exit: fail
+  diag: the declaration's size is 8 bytes and *libk.so defines 16: a copy relocation made for one size runs against the other
+run(bfd,lld,mold) prog
+  stdout: 7
+
+#--- lib.c
+int v[4] = { 7, 8, 9, 10 };
+#--- main.c
+#include <stdio.h>
+extern int v[2];
+int main(void) { printf("%d\n", v[0]); return 0; }
+#--- main.meta
+summary name=lang value=c++
+declaration anchor=v size=8 flags=2

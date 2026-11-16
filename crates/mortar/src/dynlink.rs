@@ -202,6 +202,9 @@ pub struct DynTables {
     /// The sizes of `.gnu.hash`, `.dynsym`, `.dynstr` and, when some entry
     /// is versioned, `.gnu.version` and `.gnu.version_r` (S-108).
     pub sizes: Vec<(SynthKind, u64)>,
+    /// `.note.mason` (`spec/odr.md` O-50 to O-52), with `--odr-table`;
+    /// filled by the front once `.dynsym`'s order is known.
+    pub note_mason: Option<mortar_synth::NoteMasonPlan>,
 }
 
 /// What [`plan`] reads.
@@ -420,6 +423,7 @@ pub fn plan(
         bind_now: t.output_cx.bind_now,
         relro: t.relro,
         sizes,
+        note_mason: None,
     };
     Some((got, tables))
 }

@@ -1,0 +1,46 @@
+# O-24 (b) and O-51 (spec/odr.md): the later library is linked -Bsymbolic
+# (its row NONPREEMPTIBLE): each library runs its own copy, which is
+# still two copies of one entity, reported. -Bsymbolic-functions binds
+# functions the same way (the row's flag, O-51).
+#@ spec: odr.md "O-24"
+#@ arch: aarch64 x86_64
+#@ diag: odr-violation ./liba.so ./libs.so
+
+cc -O1 -fPIC -DN=1 -DF=fa lib.c -o a.o
+cc -O1 -fPIC -DN=3 -DF=fs lib.c -o s.o
+as note1.s -o note1.o
+shlib gcc a.o note1.o -Wl,-soname,liba.so -o liba0.so
+meta a.rows liba0.so -o liba.so
+shlib gcc s.o note1.o -Wl,-Bsymbolic-functions -Wl,-soname,libs.so -o libs0.so
+meta s.rows libs0.so -o libs.so
+cc -O1 -fPIE main.c -o main.o
+link(bfd,lld,mold) gcc -pie main.o -Wl,--no-as-needed -L. -la -ls -o prog
+link(mortar) gcc -pie main.o -Wl,--no-as-needed -L. -la -ls -Wl,--odr=strict -o prog
+  exit: fail
+  diag: *liba.so runs its own copy; so does *libs.so (its row is NONPREEMPTIBLE)
+run(bfd,lld,mold) prog
+  stdout: 1 3
+
+#--- lib.c
+int f(void) { return N; }
+int F(void) { return f(); }
+#--- main.c
+#include <stdio.h>
+int fa(void);
+int fs(void);
+int main(void) { printf("%d %d\n", fa(), fs()); return 0; }
+#--- a.rows
+row name=f hash=0101010101010101 flags=1
+#--- s.rows
+row name=f hash=0303030303030303 flags=0x8001
+#--- note1.s
+	.section .note.mason,"a",%note
+	.p2align 3
+	.long 10
+	.long 40
+	.long 0x4d4f4401
+	.asciz "MasonMeta"
+	.p2align 3
+	.long 1, 1, 24, 0
+	.zero 24
+	.section .note.GNU-stack,"",%progbits

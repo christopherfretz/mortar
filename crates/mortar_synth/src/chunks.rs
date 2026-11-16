@@ -70,6 +70,12 @@ pub enum SynthKind {
     /// [`mortar_core::CopyPlace::RelRo`] (inside RELRO): as [`Self::DynBss`]
     /// (D-42, D-60).
     BssRelRo = 25,
+    /// WP-075: `.note.mason`, the one-definition-rule table of a dynamic
+    /// output (`spec/odr.md` O-50 to O-52; `--odr-table`), planned by the
+    /// front (`mortar/src/front.rs`, from `mortar_odr`'s rows) as
+    /// [`crate::NoteMasonPlan`]. After `.bss.rel.ro` so every chunk keeps
+    /// its id.
+    NoteMason = 26,
 }
 
 /// The section header fields of a synthetic chunk that do not depend on
@@ -130,6 +136,7 @@ impl SynthKind {
             Self::Comment => b".comment",
             Self::DynBss => b".dynbss",
             Self::BssRelRo => b".bss.rel.ro",
+            Self::NoteMason => b".note.mason",
         }
     }
 
@@ -151,6 +158,8 @@ impl SynthKind {
             Self::NoteGnuProperty => h(SHT_NOTE, SHF_ALLOC, word, 0),
             // S-91: alignment 4.
             Self::NoteGnuBuildId => h(SHT_NOTE, SHF_ALLOC, 4, 0),
+            // odr.md O-52: alignment 8 in both classes.
+            Self::NoteMason => h(SHT_NOTE, SHF_ALLOC, 8, 0),
             // S-69: SHF_INFO_LINK, sh_info `.got.plt`.
             Self::RelaPlt => {
                 let (t, e) = rel_form(class, rel);

@@ -1,0 +1,49 @@
+# O-24 (b) (spec/odr.md), unversioned against versioned: liba defines f
+# unversioned and comes first; libv defines f@@LIB2_1. glibc's loader
+# (2.41, measured by WP-075's prototype) binds every versioned reference
+# to f, libv's own included, to the earlier unversioned definition: one
+# entity, two copies, reported.
+#@ spec: odr.md "O-24"
+#@ arch: aarch64 x86_64
+#@ diag: odr-violation ./liba.so ./libv.so
+
+cc -O1 -fPIC -DN=1 -DF=fa lib.c -o a.o
+cc -O1 -fPIC -DN=2 -DF=fv lib.c -o v.o
+as note1.s -o note1.o
+shlib gcc a.o note1.o -Wl,-soname,liba.so -o liba0.so
+meta a.rows liba0.so -o liba.so
+shlib gcc v.o note1.o -Wl,--version-script=v.map -Wl,-soname,libv.so -o libv0.so
+meta v.rows libv0.so -o libv.so
+cc -O1 -fPIE main.c -o main.o
+link(bfd,lld,mold) gcc -pie main.o -Wl,--no-as-needed -L. -la -lv -o prog
+link(mortar) gcc -pie main.o -Wl,--no-as-needed -L. -la -lv -Wl,--odr=strict -o prog
+  exit: fail
+  diag: an unversioned definition earlier in lookup order binds every versioned reference to its name (glibc's loader, measured)
+run(bfd,lld,mold) prog
+  stdout: 1 1
+
+#--- lib.c
+int f(void) { return N; }
+int F(void) { return f(); }
+#--- v.map
+LIB2_1 { global: f; fv; local: *; };
+#--- main.c
+#include <stdio.h>
+int fa(void);
+int fv(void);
+int main(void) { printf("%d %d\n", fa(), fv()); return 0; }
+#--- a.rows
+row name=f hash=0101010101010101 flags=1
+#--- v.rows
+row name=f version=LIB2_1 hash=0202020202020202 flags=1
+#--- note1.s
+	.section .note.mason,"a",%note
+	.p2align 3
+	.long 10
+	.long 40
+	.long 0x4d4f4401
+	.asciz "MasonMeta"
+	.p2align 3
+	.long 1, 1, 24, 0
+	.zero 24
+	.section .note.GNU-stack,"",%progbits
