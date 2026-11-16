@@ -1333,6 +1333,15 @@ a *merged* section:
    - **R1, R2 or R3** otherwise;
    - **`piece-not-locatable`** if there are no candidates at all.
 
+When a group is decided does not change its verdict, only how long its
+members are held (WP-109). A group whose section no other object can
+name (the section defines no symbol that is not `STB_LOCAL`) has all its
+members once the objects are read past its own, so it is decided then;
+the others, and every group when the objects are not read in order, are
+decided after the last section. Before WP-109 every group waited for the
+end: tens of millions of members on a `-g` link (`.debug_info`'s
+references to `.debug_str`), the verifier's largest structure.
+
 ### 5.7 Discarded targets (R5)
 
 A relocation of a placed section whose symbol's section is discarded or
@@ -2956,6 +2965,46 @@ whose files can be read from the current directory. Swapped arguments
 a truncated output is the side's findings (O1, S1) or exit 2.
 
 Tests: `xtask/src/plumb.rs s8_equiv_arguments`; `tests/equiv.rs`.
+
+### 8.1 Resources (WP-109)
+
+The verifier judges every link mortar is asked to make, so it must fit
+where the link fits. **The budget**: the verifier's peak resident set is
+at most twice the linker's peak on the same link, and at most 4 GB on the
+reference `-g` link (`cxx-large-g`, LLVM's clang with `-g`, linker peak
+1,958 MiB); `--equiv` holds two outputs and two engines, and is held to
+the same 4 GB. Time: a plain pass is linear in the records and bytes it
+judges; `--equiv` costs about two plain passes and a comparison linear in
+what it compares. Memory is saved by not holding data, never by skipping
+a rule: a rule that cannot be run within the budget is named in the
+coverage (§7.2), not dropped.
+
+What is held, and for how long:
+
+- the output, whole, for the run (every rule reads it);
+- the inputs the map names, whole, for the run (WP-109's design for
+  positioned reads, which hold an object's skeleton only, is in
+  `spec/landed/plumb/WP-109.md`);
+- per record, nothing after its verdict, except the members of a GOT
+  group (§5.5) and of a piece group (§5.6) until the group is decided
+  (§5.6: as early as its members are known);
+- `--equiv`: each side's traced form per record, keyed by input section
+  (§6.9), and its identity spans in a segment tree (each lookup
+  logarithmic in the spans, linear in those that hold the address).
+
+`MORTAR_PLUMB_PROFILE=1` (or `=<file>`) prints (or appends to the file,
+line by line, so a run killed at a memory cap keeps them) the resident
+set and its peak after each phase and the sizes of the large structures.
+It is the measurement of this section, not a rule; it changes no verdict.
+
+Measured (WP-109, the dev-profile verifier as the bench and CI run it):
+
+| link | plain: peak, time | `--equiv`: peak, time |
+|---|---|---|
+| protoc `-g` static (control) | 365 MB, 1.0 s | |
+| clang split (`cxx-large-split`) | 1.83 GB, 3.8 s | 4.7 GB, 22 s |
+| opt `-g` (`cxx-large-g-opt`) | 1.80 GB, 5.9 s | 3.4 GB, 17 s |
+| clang `-g` (`cxx-large-g`) | 3.85 GB, 15 s | not run (the two outputs alone are 2.3 GB) |
 
 ## 9. Validation
 
