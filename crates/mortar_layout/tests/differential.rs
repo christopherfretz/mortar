@@ -652,10 +652,11 @@ fn compare_stage_a(
 
 // -- stage D against lld --------------------------------------------------
 
-/// The synthetic chunk names `derive_segments` looks for.
+/// The synthetic chunk names `derive_segments` looks for, from lld's
+/// section names (lld's RELRO padding is mortar's `.pad.relro`, L-156).
 fn synth_name(name: &str) -> Option<&'static [u8]> {
     match name {
-        ".relro_padding" => Some(b".relro_padding"),
+        ".relro_padding" => Some(b".pad.relro"),
         ".eh_frame_hdr" => Some(b".eh_frame_hdr"),
         ".note.gnu.property" => Some(b".note.gnu.property"),
         _ => None,

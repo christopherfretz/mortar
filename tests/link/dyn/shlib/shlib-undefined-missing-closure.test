@@ -16,9 +16,6 @@
 # the first line, and their programs run once the loader finds `sub/`.
 # Not wrong outputs (the loader checks at load); held to their own
 # behaviour, mortar to GNU ld's.
-#
-# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
-# tests/link/xfails.
 #@ spec: dyn.md "D-13"
 #@ arch: aarch64 x86_64
 

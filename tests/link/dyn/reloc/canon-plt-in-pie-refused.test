@@ -12,9 +12,6 @@
 # absolute word gets no record, so the `-fno-pic` code sees the
 # unrelocated link-time address: W11 (§13.2), held here to the correct
 # output, the 1s. mortar takes GNU ld's behaviour on both architectures.
-#
-# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
-# tests/link/xfails.
 #@ spec: dyn.md "D-44"
 #@ arch: aarch64 x86_64
 #@ fixture: reloc-libd

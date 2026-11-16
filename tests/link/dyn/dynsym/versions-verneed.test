@@ -17,9 +17,6 @@
 # first), `vna_other` numbering (each its own) and `.gnu.version_r`
 # alignment (GNU ld 8). Each reference is held to its own layout below;
 # mortar's is D-27's composite, which no reference writes.
-#
-# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
-# tests/link/xfails.
 #@ spec: dyn.md "D-27"
 #@ spec: dyn.md "D-34"
 #@ arch: aarch64 x86_64

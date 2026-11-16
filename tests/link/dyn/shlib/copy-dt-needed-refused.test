@@ -6,8 +6,7 @@
 # argument`) and mold (`unknown command line option`) refuse it (E-shlib
 # 2.10b).
 #
-# mortar: passes already (mortar_cli refuses the option by name); no line
-# in tests/link/xfails. WP-042 (CLI) keeps the refusal.
+# mortar_cli refuses the option by name.
 #@ spec: dyn.md "D-15"
 #@ arch: aarch64 x86_64
 #@ fixture: shlib-chain

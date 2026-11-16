@@ -11,9 +11,6 @@
 #
 # All three references agree. The `-z norelro` variant is
 # `norelro-dynamic`'s.
-#
-# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
-# tests/link/xfails.
 #@ spec: dyn.md "D-33"
 #@ arch: aarch64 x86_64
 

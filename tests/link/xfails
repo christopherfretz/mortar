@@ -14,9 +14,5 @@
 
 # Run-wide: none (i386 joined with WP-030c).
 
-# M2 (dynamic executables, spec/dyn.md section 16): the package that makes
-# each case pass for mortar (spec/landed/dyn/WP-040.md), grouped by package.
-
-# WP-042 (CLI): the command line: the refused option or value is named once the dynamic options are accepted.
-
-# WP-056 (OPTS): the option variations.
+# M2 (dynamic executables, spec/dyn.md section 16): none; every M2
+# package has landed (the last, WP-052 static-pie).

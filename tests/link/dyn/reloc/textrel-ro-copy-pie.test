@@ -11,9 +11,6 @@
 # silently with a `COPY` of `dvar` and no record for the word, which
 # keeps the unrelocated link-time address: the program crashes. The case
 # holds lld to the correct run (42); mortar refuses where lld miswrites.
-#
-# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
-# tests/link/xfails.
 #@ spec: dyn.md "D-47"
 #@ arch: aarch64 x86_64
 #@ fixture: reloc-libd

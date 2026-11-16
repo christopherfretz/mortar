@@ -24,11 +24,8 @@
 # Where the references differ: mold leaves the dynamic weak undefined key
 # out (D-25, §13.1: 0 everywhere). The copy of a weak shared definition
 # (`lib_wobj`) is `STB_WEAK` in GNU ld's output, as D-23 says, and
-# `STB_GLOBAL` in lld's and mold's (not in §13.1: a spec finding reported
-# with WP-051); mortar follows D-23. The other fields agree in all three.
-#
-# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
-# tests/link/xfails.
+# `STB_GLOBAL` in lld's and mold's (dyn.md §13.1, "binding of a copy");
+# mortar follows D-23. The other fields agree in all three.
 #@ spec: dyn.md "D-23"
 #@ arch: aarch64 x86_64
 
