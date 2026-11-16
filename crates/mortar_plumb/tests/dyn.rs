@@ -57,6 +57,50 @@ const SOURCES: &[(&str, &str)] = src![
 /// Small sources written by the test itself.
 const SMALL: &[(&str, &str)] = &[
     ("hello.c", "#include <stdio.h>\nint main(void){puts(\"hi\");return 0;}\n"),
+    // AArch64's large-model local-exec sequence against the executable's
+    // own TLS variable, defined in another file (WP-082 follow-up 4).
+    ("tlsle_u.c", "extern __thread int gv;\nint main(void){return gv - 5;}\n"),
+    ("tlsle_d.c", "__thread int gv = 5;\n"),
+    // P-D9's non-address rule in a Pie (WP-088): `rx_v` holds a number,
+    // `rx_p` its address.
+    (
+        "relx.c",
+        "long rx_v = 12345; long *rx_p = &rx_v;\nint main(void){return (int)(*rx_p - 12345);}\n",
+    ),
+    // x86-64 PC-relative code to an absolute symbol (WP-088): `absv` is
+    // `SHN_ABS` 0x1234; `main` calls it.
+    ("abspc_a.s", "\t.globl absv\n\t.set absv, 0x1234\n"),
+    (
+        "abspc_c.s",
+        "\t.text\n\t.globl main\nmain:\tlea 1f(%rip), %rdi\n\tcall absv@PLT\n1:\tret\n\t.section .note.GNU-stack,\"\",@progbits\n",
+    ),
+    (
+        "abspc_g.s",
+        "\t.text\n\t.globl main\nmain:\tmovq absv@GOTPCREL(%rip), %rax\n\tcmp $0x1234, %rax\n\tsetne %al\n\tmovzbl %al, %eax\n\tret\n\t.section .note.GNU-stack,\"\",@progbits\n",
+    ),
+    // dyn.md W17 (WP-088): general-dynamic access to the executable's own
+    // TLS, x86-64 large code model.
+    ("gd17.c", "__thread int own = 7;\nint main(void){return own - 7;}\n"),
+    // P-D4's PT_GNU_STACK (WP-088): an object whose stack note asks for
+    // an executable stack.
+    (
+        "xstack.s",
+        "\t.text\n\t.globl xs_f\nxs_f:\tnop\n\t.section .note.GNU-stack,\"x\",%progbits\n",
+    ),
+    // W13 (WP-088): an exported IFUNC the program never references.
+    (
+        "ifx.c",
+        "static int ifx_impl(void){return 1;}\nstatic void *ifx_resolve(void){return (void *)ifx_impl;}\nint ifx(void) __attribute__((ifunc(\"ifx_resolve\")));\nint main(void){return 0;}\n",
+    ),
+    // dyn.md W14 (WP-088): a non-TLS reference to a shared TLS definition.
+    ("libtv.c", "__thread int tv = 4; int get_tv(void){return tv;}\n"),
+    ("w14.c", "extern int tv; int get_tv(void);\nint main(void){return tv + get_tv() - 8;}\n"),
+    // dyn.md W16 (WP-088): a used object's reference no member of N ∪ U
+    // satisfies (D-13).
+    ("libleaf.c", "int leaf_fn(void){return 7;}\n"),
+    ("libmid2.c", "int leaf_fn(void); int mid2_fn(void){return 100 + leaf_fn();}\n"),
+    ("libtop2.c", "int mid2_fn(void); int top2_fn(void){return 1000 + mid2_fn();}\n"),
+    ("w16.c", "int top2_fn(void); int main(void){return top2_fn() - 1107;}\n"),
     ("libvis.c", "int vf(void){return 3;} int vg(void){return 4;}\n"),
     ("w1.c", "int vf(void); int main(void){return vf()-3;}\n"),
     (
@@ -240,6 +284,28 @@ const CLEAN: Option<&[&str]> = Some(&[]);
 const H1: Option<&[&str]> = Some(&["P-D10", "A20"]);
 /// The linker refuses the link.
 const B: Option<&[&str]> = None;
+/// lld leaves a `RELATIVE` word 0 in the file (no `--apply-dynamic-relocs`),
+/// so `rx_p` without its record also holds the wrong value: R1, measured.
+const LLD_RELX: &[&str] =
+    &["P-D9@that no input relocation makes an address of the executable", "R1"];
+/// mold's `call 0x1234` in a PIE (plumb.md §5.1a).
+const A35: Option<&[&str]> = Some(&["R1@to an absolute symbol", "A35"]);
+/// dyn.md W14's outputs (lld, mold).
+const W14: Option<&[&str]> = Some(&["P-D12@whose shared definition is STT_TLS"]);
+/// mold's x86-64 W14 output: a `COPY` of the `STT_TLS` definition (a PIE's
+/// `PC32` to it; lld refuses that link).
+const W14_COPY: Option<&[&str]> = Some(&["S8@TLS symbol 'tv' and no PT_TLS"]);
+/// mold's `-no-pie -E` export of an unreferenced IFUNC, outside every
+/// section.
+const MOLD_IFX: Option<&[&str]> = Some(&[
+    "S8@is outside its section",
+    "Y1@is not STT_GNU_IFUNC at its resolver",
+    "P-D7@which does not hold it",
+]);
+/// dyn.md W16's outputs (lld, mold).
+const W16: Option<&[&str]> = Some(&["P-D6@(D-13: the link is refused)", "A36"]);
+/// lld's x86-64 large-model GD outputs (dyn.md W17).
+const A12: Option<&[&str]> = Some(&["A12"]);
 
 /// The expectations of one case on one architecture: per linker (bfd,
 /// lld, mold). A rule written `P-D9@view 3` must be found with a finding
@@ -497,6 +563,228 @@ fn build() -> Option<Corpus> {
             }
         }
 
+        // E6 (WP-088, WP-082 follow-up 1): GNU ld's x86-64 PLT FDEs
+        // (`.plt`, `.plt.got`, `.plt.sec`), judged against the PLT's
+        // stack at each instruction: the lazy PIE, the `-z now` no-PIE
+        // and the IBT shape, each with its `.plt` FDE's range run past
+        // the section, the expression's `lit11`/`lit9` raised by one (the
+        // CFA at each entry's `jmp PLT0` 8 short) and PLT0's
+        // `def_cfa_offset 24` lowered to 16.
+        if x64 {
+            let patches: [Patch; 3] = [
+                ("range", plt_fde_range_past),
+                ("lit", plt_fde_lit_raised),
+                ("offset", plt_fde_offset_lowered),
+            ];
+            for (dir, from) in [
+                ("hello", "hello-pie.lazy"),
+                ("hello", "hello-no-pie.now"),
+                ("shapes", "shapes.lazy"),
+            ] {
+                let d = b.dir(arch, dir);
+                let from = format!("{from}.bfd");
+                for (what, patch) in patches {
+                    b.patched(
+                        "plt-fde",
+                        arch,
+                        &d,
+                        &from,
+                        &format!("{from}.fde-{what}"),
+                        &format!("{from}.map"),
+                        &format!("{from}.line"),
+                        Linker::Bfd,
+                        patch,
+                        &["E6"],
+                    );
+                }
+            }
+        }
+
+        // P-D4, PT_GNU_STACK's PF_X (WP-088): `-z execstack` (all three
+        // set it), `-z noexecstack`, and an input whose `.note.GNU-stack`
+        // is executable (GNU ld sets PF_X, mold does not: both clean;
+        // lld 22 refuses the link); each `-z` output with PF_X flipped is P-D4, and so is
+        // the lazy hello PIE with PF_X set.
+        let d = b.dir(arch, "stack");
+        b.obj(arch, &d, "hello.c", &["-O1", "-fPIE"], "h.o");
+        b.obj(arch, &d, "xstack.s", &[], "x.o");
+        for (out, z) in [("stack.exec", "-Wl,-z,execstack"), ("stack.noexec", "-Wl,-z,noexecstack")]
+        {
+            b.link("stack", arch, &d, out, &["-pie", z, "h.o"], [CLEAN; 3]);
+            for linker in Linker::ALL {
+                let from = format!("{out}.{}", linker.name());
+                b.patched(
+                    "stack",
+                    arch,
+                    &d,
+                    &from,
+                    &format!("{from}.flipped"),
+                    &format!("{from}.map"),
+                    &format!("{from}.line"),
+                    linker,
+                    gnu_stack_x_flipped,
+                    &["P-D4@PT_GNU_STACK"],
+                );
+            }
+        }
+        // lld 22 refuses the executable note without `-z execstack`.
+        for k in [0, 2] {
+            b.link_one("stack", arch, &d, "stack.note", &["-pie", "h.o", "x.o"], k, CLEAN);
+        }
+        // P-D7 (WP-082 follow-up 3, WP-088): GNU ld's AArch64 PIE writes
+        // `.dynsym` section symbols (`.init`, `.data`); one moved 8 bytes
+        // into its section, and one naming the next section.
+        if !x64 {
+            let hello = b.dir(arch, "hello");
+            let from = "hello-pie.lazy.bfd";
+            let secsyms: [Patch; 2] =
+                [("secsym-value", dynsym_section_value), ("secsym-shndx", dynsym_section_shndx)];
+            for (what, patch) in secsyms {
+                b.patched(
+                    "secsym",
+                    arch,
+                    &hello,
+                    from,
+                    &format!("{from}.{what}"),
+                    &format!("{from}.map"),
+                    &format!("{from}.line"),
+                    Linker::Bfd,
+                    patch,
+                    &["P-D7@which does not hold it"],
+                );
+            }
+        }
+        // R1 in a dynamic executable (WP-082 follow-up 4, WP-088): the
+        // AArch64 large-model local-exec `movz`/`movk`/`movk` (TLSLE
+        // MOVW_TPREL_G2/G1_NC/G0_NC) against the executable's own `gv`;
+        // clean from the three linkers, and GNU ld's with the `G0_NC`
+        // `movk`'s immediate + 8 is R1.
+        if !x64 {
+            let d = b.dir(arch, "tlsle");
+            let large =
+                ["-O1", "-fno-pie", "-mcmodel=large", "-ftls-model=local-exec", "-mtls-size=48"];
+            b.obj(arch, &d, "tlsle_u.c", &large, "u.o");
+            b.obj(arch, &d, "tlsle_d.c", &["-O1"], "d.o");
+            b.link("tlsle", arch, &d, "le", &["-no-pie", "u.o", "d.o"], [CLEAN; 3]);
+            b.patched(
+                "tlsle",
+                arch,
+                &d,
+                "le.bfd",
+                "le.bfd.g0",
+                "le.bfd.map",
+                "le.bfd.line",
+                Linker::Bfd,
+                movk_g0_moved,
+                &["R1"],
+            );
+        }
+        // P-D14's entry rule and §12.4's non-address RELATIVE rule, in a
+        // Pie (WP-088): each linker's output with `e_entry` one
+        // instruction on (P-D4), and with `rx_p`'s RELATIVE record moved
+        // to `rx_v` with the number as its addend (view 1 unchanged; P-D9
+        // by that rule, and view 2 for `rx_p`).
+        let d = b.dir(arch, "pie-rules");
+        b.obj(arch, &d, "relx.c", &["-O1", "-fPIE"], "rx.o");
+        b.link("pie-rules", arch, &d, "rx", &["-pie", "rx.o"], [CLEAN; 3]);
+        let rules: [Patch; 2] = [("entry", entry_moved), ("relx", relative_to_number)];
+        let expect: [&'static [&'static str]; 2] = [
+            &["P-D4@the entry point is not '_start'"],
+            &["P-D9@that no input relocation makes an address of the executable"],
+        ];
+        for linker in Linker::ALL {
+            for ((what, patch), e) in rules.into_iter().zip(expect) {
+                let e = if what == "relx" && linker.name() == "lld" { LLD_RELX } else { e };
+                let from = format!("rx.{}", linker.name());
+                b.patched(
+                    "pie-rules",
+                    arch,
+                    &d,
+                    &from,
+                    &format!("{from}.{what}"),
+                    &format!("{from}.map"),
+                    &format!("{from}.line"),
+                    linker,
+                    patch,
+                    e,
+                );
+            }
+        }
+        // An x86-64 PC-relative field against an `SHN_ABS` symbol in a
+        // PIE (WP-088): GNU ld and lld refuse the `PLT32` call, mold
+        // writes `call 0x1234`, right at load bias 0 only.
+        if x64 {
+            let d = b.dir(arch, "abspc");
+            b.obj(arch, &d, "abspc_a.s", &[], "a.o");
+            b.obj(arch, &d, "abspc_c.s", &[], "c.o");
+            b.link("abspc", arch, &d, "ac", &["-pie", "c.o", "a.o"], [B, B, A35]);
+            // The GOT load: GNU ld writes `mov $0x1234`, lld and mold keep
+            // it (all clean); mold's with the mov made `lea absv(%rip)`
+            // (its X1 form) is the rule's.
+            b.obj(arch, &d, "abspc_g.s", &[], "g.o");
+            b.link("abspc", arch, &d, "ag", &["-pie", "g.o", "a.o"], [CLEAN; 3]);
+            b.patched(
+                "abspc",
+                arch,
+                &d,
+                "ag.mold",
+                "ag.mold.lea",
+                "ag.mold.map",
+                "ag.mold.line",
+                Linker::Mold,
+                got_load_to_lea,
+                &["R1@to an absolute symbol"],
+            );
+        }
+        // dyn.md W17: lld's x86-64 large-model general-dynamic outputs
+        // crash (PIE and `-no-pie`); GNU ld's and mold's run and are
+        // clean, lld's are A12 (R1: the 16-byte local-exec form written
+        // over the 22-byte sequence, x64.md W4).
+        if x64 {
+            let d = b.dir(arch, "w17");
+            b.obj(arch, &d, "gd17.c", &["-O1", "-fPIC", "-mcmodel=large"], "g.o");
+            for (out, pm) in [("gd.pie", "-pie"), ("gd.nopie", "-no-pie")] {
+                b.link("w17", arch, &d, out, &[pm, "g.o"], [CLEAN, A12, CLEAN]);
+            }
+        }
+        // S5 (every format since WP-088): the text PT_LOAD made PF_W, the
+        // data PT_LOAD made PF_X, in each linker's lazy hello PIE.
+        let hello = b.dir(arch, "hello");
+        let perms: [Patch; 2] = [("textw", text_writable), ("datax", data_executable)];
+        for linker in Linker::ALL {
+            for (what, patch) in perms {
+                let from = format!("hello-pie.lazy.{}", linker.name());
+                b.patched(
+                    "perm",
+                    arch,
+                    &hello,
+                    &from,
+                    &format!("{from}.{what}"),
+                    &format!("{from}.map"),
+                    &format!("{from}.line"),
+                    linker,
+                    patch,
+                    &["S5@holds no section that needs it"],
+                );
+            }
+        }
+        let hello = b.dir(arch, "hello");
+        for linker in Linker::ALL {
+            let from = format!("hello-pie.lazy.{}", linker.name());
+            b.patched(
+                "stack",
+                arch,
+                &hello,
+                &from,
+                &format!("{from}.xstack"),
+                &format!("{from}.map"),
+                &format!("{from}.line"),
+                linker,
+                gnu_stack_x_flipped,
+                &["P-D4@PT_GNU_STACK"],
+            );
+        }
+
         // X-58 (WP-082 V2): a TLS descriptor relaxed to initial-exec
         // into each of the sixteen registers (`f_R` in the source; the
         // programs exit 0 when every one reads the library's 5).
@@ -610,6 +898,58 @@ fn build() -> Option<Corpus> {
             // The program's TLS uses then see the wrong offset (R1, R4);
             // x86-64 PIE keeps GNU ld's F3 (W3).
             if x64 { &["F3", "P-D12", "R1", "R4"] } else { &["P-D12", "R1", "R4"] },
+        );
+
+        // W13 measured (WP-088): `-E` exports `ifx`, an IFUNC nothing
+        // references, from a PIE and from a `-no-pie` executable. Every
+        // reference exports it at its resolver (clean); mold's `-no-pie`
+        // export (and `.symtab` entry) is 0xfffffff0 / 0xfffffff8, in no
+        // section.
+        let d = b.dir(arch, "W13E");
+        b.obj(arch, &d, "ifx.c", &["-O1", "-fPIE"], "p.o");
+        b.obj(arch, &d, "ifx.c", &["-O1", "-fno-pie"], "n.o");
+        b.link("W13E", arch, &d, "ifx.pie", &["-pie", "-Wl,-E", "p.o"], [CLEAN; 3]);
+        b.link(
+            "W13E",
+            arch,
+            &d,
+            "ifx.nopie",
+            &["-no-pie", "-Wl,-E", "n.o"],
+            [CLEAN, CLEAN, MOLD_IFX],
+        );
+
+        // W14: data.o reads `tv` as an address; libtv.so's `tv` is
+        // STT_TLS. GNU ld refuses (D-16); on AArch64 lld (a TPREL64 GOT
+        // slot) and mold (a GLOB_DAT) link it and the program runs
+        // wrong: P-D12. On x86-64 lld refuses the PIE's PC32 and mold
+        // copies the TLS definition: S8.
+        let d = b.dir(arch, "W14");
+        b.so(arch, &d, "libtv.c", "libtv.so", "libtv.so", &[]);
+        b.obj(arch, &d, "w14.c", &["-O1", "-fPIE"], "w14.o");
+        b.link(
+            "W14",
+            arch,
+            &d,
+            "w14",
+            &["-pie", "w14.o", "libtv.so"],
+            a([B, W14, W14], [B, B, W14_COPY]),
+        );
+
+        // W16: libmid2.so (used: libtop2.so needs it) calls leaf_fn, which
+        // only the as-needed libleaf.so defines. GNU ld refuses (D-13);
+        // lld and mold drop libleaf.so: P-D6.
+        let d = b.dir(arch, "W16");
+        b.so(arch, &d, "libleaf.c", "libleaf.so", "libleaf.so", &[]);
+        b.so(arch, &d, "libmid2.c", "libmid2.so", "libmid2.so", &[]);
+        b.so(arch, &d, "libtop2.c", "libtop2.so", "libtop2.so", &["-L.", "-lmid2"]);
+        b.obj(arch, &d, "w16.c", &["-O1", "-fPIE"], "w16.o");
+        b.link(
+            "W16",
+            arch,
+            &d,
+            "w16",
+            &["-pie", "w16.o", "-L.", "-ltop2", "-lmid2", "-lleaf"],
+            [B, W16, W16],
         );
 
         // W1: an import whose only definition is STV_HIDDEN.
@@ -907,6 +1247,9 @@ fn build() -> Option<Corpus> {
 
 // ---- ELF64 little-endian edits ----
 
+/// A named edit of an output's bytes.
+type Patch = (&'static str, fn(&mut [u8]));
+
 fn le16(b: &[u8], o: usize) -> usize {
     u16::from_le_bytes([b[o], b[o + 1]]) as usize
 }
@@ -980,6 +1323,168 @@ fn plt0_jump_lowered(b: &mut [u8]) {
     let o = (p..p + 16).find(|&o| b[o..o + 2] == [0xff, 0x25]).expect("PLT0's jmp") + 2;
     let v = le32(b, o).wrapping_sub(0x1030);
     b[o..o + 4].copy_from_slice(&v.to_le_bytes());
+}
+
+/// R1: the first `movk x<n>, #imm` (no shift) after a `movz ..., lsl #32`
+/// in `.text` gets imm + 8 (the large-model local-exec sequence's G0).
+fn movk_g0_moved(b: &mut [u8]) {
+    let s = sections(b);
+    let t = section(&s, ".text");
+    let w = |o: usize| le32(b, o);
+    let o = (t.3..t.3 + t.4 - 8)
+        .step_by(4)
+        .find(|&o| {
+            w(o) & 0xffe0_0000 == 0xd2c0_0000
+                && w(o + 4) & 0xffe0_0000 == 0xf2a0_0000
+                && w(o + 8) & 0xffe0_0000 == 0xf280_0000
+        })
+        .expect("movz lsl 32; movk lsl 16; movk")
+        + 8;
+    let v = w(o) + (8 << 5);
+    b[o..o + 4].copy_from_slice(&v.to_le_bytes());
+}
+
+/// The value of `.symtab`'s symbol `name`.
+fn sym_value(b: &[u8], name: &str) -> u64 {
+    let s = sections(b);
+    let t = section(&s, ".symtab");
+    let strs = s[t.5].3;
+    (t.3..t.3 + t.4)
+        .step_by(24)
+        .find(|&o| cstr(b, strs + le32(b, o) as usize) == name)
+        .map_or_else(|| panic!("no symbol {name}"), |o| le64(b, o + 8))
+}
+
+/// §5.1a: `main`'s `movq absv@GOTPCREL(%rip), %rax` made `lea
+/// absv(%rip), %rax` (mold's X1 rewriting, wrong for an absolute symbol in
+/// a PIE).
+fn got_load_to_lea(b: &mut [u8]) {
+    let s = sections(b);
+    let text = section(&s, ".text");
+    let main = sym_value(b, "main");
+    let o = text.3 + (main - text.2) as usize;
+    assert_eq!(b[o..o + 3], [0x48, 0x8b, 0x05], "main's GOT load");
+    b[o + 1] = 0x8d;
+    let disp = 0x1234_i64 - (main as i64 + 7);
+    b[o + 3..o + 7].copy_from_slice(&(disp as i32).to_le_bytes());
+}
+
+/// P-D4: `e_entry` one instruction on (4 bytes: an AArch64 instruction;
+/// inside x86-64's `_start`, whose first is `endbr64` or `xor %ebp`).
+fn entry_moved(b: &mut [u8]) {
+    let v = le64(b, 0x18) + 4;
+    b[0x18..0x20].copy_from_slice(&v.to_le_bytes());
+}
+
+/// P-D9: the `RELATIVE` record of `rx_p` (addend `&rx_v`) moved to
+/// `rx_v`, its addend the number `rx_v` holds.
+fn relative_to_number(b: &mut [u8]) {
+    let (p, v) = (sym_value(b, "rx_p"), sym_value(b, "rx_v"));
+    let s = sections(b);
+    let r = section(&s, ".rela.dyn");
+    let o = (r.3..r.3 + r.4).step_by(24).find(|&o| le64(b, o) == p).expect("rx_p's record");
+    b[o..o + 8].copy_from_slice(&v.to_le_bytes());
+    b[o + 16..o + 24].copy_from_slice(&12345u64.to_le_bytes());
+}
+
+/// The file offset of the last `STT_SECTION` entry of `.dynsym`.
+fn dynsym_section(b: &[u8]) -> usize {
+    let s = sections(b);
+    let d = section(&s, ".dynsym");
+    (d.3..d.3 + d.4).step_by(24).rfind(|&o| b[o + 4] & 0xf == 3).expect("a section symbol")
+}
+
+/// P-D7: a `.dynsym` section symbol's value 8 bytes into its section.
+fn dynsym_section_value(b: &mut [u8]) {
+    let o = dynsym_section(b) + 8;
+    let v = le64(b, o) + 8;
+    b[o..o + 8].copy_from_slice(&v.to_le_bytes());
+}
+
+/// P-D7: a `.dynsym` section symbol naming the next section.
+fn dynsym_section_shndx(b: &mut [u8]) {
+    let o = dynsym_section(b) + 6;
+    let v = le16(b, o) as u16 + 1;
+    b[o..o + 2].copy_from_slice(&v.to_le_bytes());
+}
+
+/// The file offset of the first `PT_LOAD` whose flags have `has`.
+fn load_with(b: &[u8], has: u32) -> usize {
+    let (phoff, phentsize, phnum) = (le64(b, 0x20) as usize, le16(b, 0x36), le16(b, 0x38));
+    (0..phnum)
+        .map(|i| phoff + i * phentsize)
+        .find(|&o| le32(b, o) == 1 && le32(b, o + 4) & has != 0)
+        .expect("a PT_LOAD with the flag")
+}
+
+/// S5: the text `PT_LOAD` made `PF_W`.
+fn text_writable(b: &mut [u8]) {
+    let o = load_with(b, 1);
+    b[o + 4] |= 2;
+}
+
+/// S5: the data `PT_LOAD` made `PF_X`.
+fn data_executable(b: &mut [u8]) {
+    let o = load_with(b, 2);
+    b[o + 4] |= 1;
+}
+
+/// P-D4: `PT_GNU_STACK`'s `PF_X` flipped.
+fn gnu_stack_x_flipped(b: &mut [u8]) {
+    let (phoff, phentsize, phnum) = (le64(b, 0x20) as usize, le16(b, 0x36), le16(b, 0x38));
+    let o = (0..phnum)
+        .map(|i| phoff + i * phentsize)
+        .find(|&o| le32(b, o) == 0x6474_e551)
+        .expect("PT_GNU_STACK");
+    b[o + 4] ^= 1;
+}
+
+/// The file offset of the `.eh_frame` FDE whose initial location (GNU
+/// ld's `pcrel|sdata4`) is `.plt`'s address, and its length.
+fn plt_fde(b: &[u8]) -> (usize, usize) {
+    let s = sections(b);
+    let plt = section(&s, ".plt").2;
+    let eh = section(&s, ".eh_frame");
+    let (mut o, end) = (eh.3, eh.3 + eh.4);
+    while o + 16 <= end {
+        let len = le32(b, o) as usize;
+        if len == 0 {
+            break;
+        }
+        if le32(b, o + 4) != 0 {
+            let field = eh.2 + (o + 8 - eh.3) as u64;
+            if field.wrapping_add_signed(i64::from(le32(b, o + 8) as i32)) == plt {
+                return (o, len + 4);
+            }
+        }
+        o += len + 4;
+    }
+    panic!("no FDE for .plt");
+}
+
+/// E6: the `.plt` FDE's address range 16 bytes longer (past `.plt`).
+fn plt_fde_range_past(b: &mut [u8]) {
+    let (o, _) = plt_fde(b);
+    let v = le32(b, o + 12) + 16;
+    b[o + 12..o + 16].copy_from_slice(&v.to_le_bytes());
+}
+
+/// E6: the `.plt` FDE's expression compares the entry offset with one
+/// more than the `push` ends at (`DW_OP_and; DW_OP_lit11` or `lit9`).
+fn plt_fde_lit_raised(b: &mut [u8]) {
+    let (o, n) = plt_fde(b);
+    let i = (o + 17..o + n - 1)
+        .find(|&i| b[i] == 0x1a && (0x30..0x4f).contains(&b[i + 1]))
+        .expect("DW_OP_and; DW_OP_lit<n>");
+    b[i + 1] += 1;
+}
+
+/// E6: the `.plt` FDE's second `DW_CFA_def_cfa_offset` (24, after PLT0's
+/// `push`) lowered to 16.
+fn plt_fde_offset_lowered(b: &mut [u8]) {
+    let (o, n) = plt_fde(b);
+    let i = (o + 17..o + n - 1).find(|&i| b[i..i + 2] == [0x0e, 0x18]).expect("def_cfa_offset 24");
+    b[i + 1] = 0x10;
 }
 
 /// AArch64: the PLT header's `ldr x17, [x16, #lo]` (its third word, after
@@ -1216,6 +1721,77 @@ fn s12_h1_irelative_before_jump_slot_is_p_d10() {
 #[test]
 fn s12_p_d10_plt_header_reads_its_words() {
     judge("PLT0");
+}
+
+// spec/plumb.md §4.7, R1 in stage 3 (WP-082 follow-up 4, WP-088): AArch64's
+// large-model local-exec against the executable's own TLS variable.
+#[test]
+fn r1_a64_large_model_local_exec_in_a_dynamic_executable() {
+    judge("tlsle");
+}
+
+// W13 (WP-088): an exported, unreferenced IFUNC under `-E`.
+#[test]
+fn w13_exported_unreferenced_ifunc() {
+    judge("W13E");
+}
+
+// dyn.md W14 and W16 (WP-088): P-D12's non-TLS reference to a shared TLS
+// definition, P-D6's D-13 check of the used objects' references.
+#[test]
+fn w14_non_tls_reference_to_shared_tls() {
+    judge("W14");
+}
+
+#[test]
+fn w16_used_object_reference_unsatisfied() {
+    judge("W16");
+}
+
+// dyn.md W17: what the verifier reports on lld's large-model GD outputs.
+#[test]
+fn w17_x64_large_model_general_dynamic() {
+    judge("w17");
+}
+
+// An x86-64 PC-relative field against an absolute symbol in a PIE (WP-088).
+#[test]
+fn x64_pc_relative_to_an_absolute_symbol_in_a_pie() {
+    judge("abspc");
+}
+
+// spec/plumb.md §12.4's entry and non-address rules in a Pie (WP-088).
+#[test]
+fn s12_pie_entry_and_non_address_relative() {
+    judge("pie-rules");
+}
+
+// spec/plumb.md §12 P-D7 (WP-088): a reference's `.dynsym` section symbol
+// is at its section's start.
+#[test]
+fn s12_p_d7_dynsym_section_symbols() {
+    judge("secsym");
+}
+
+// spec/plumb.md §6.2 S5 (every format since WP-088): no PT_LOAD asks for
+// a permission none of its sections needs.
+#[test]
+fn s6_2_s5_no_unneeded_permission() {
+    judge("perm");
+}
+
+// spec/plumb.md §12 P-D4 (WP-088): PT_GNU_STACK's PF_X against the line's
+// `-z execstack`/`-z noexecstack` and the inputs' stack notes.
+#[test]
+fn s12_p_d4_gnu_stack_execute() {
+    judge("stack");
+}
+
+// spec/plumb.md §6.4 E6 (WP-088): GNU ld's x86-64 PLT FDEs are judged
+// against the PLT's stack; the clean ones are the other cases'.
+#[test]
+fn s6_4_e6_plt_fde_against_the_plt() {
+    judge("plt-fde");
 }
 
 // spec/plumb.md §12 P-D10 (WP-082): the IBT and BTI PLT shapes are judged.

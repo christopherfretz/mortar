@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 
 use mortar_elf::Machine;
-use mortar_elf::consts::PT_GNU_EH_FRAME;
+use mortar_elf::consts::{EM_X86_64, PT_GNU_EH_FRAME};
 
 use super::{Engine, Target};
 use crate::report::{Finding, Reason, Rule, Via};
@@ -660,16 +660,24 @@ impl Engine<'_, '_> {
             );
         }
         // Output FDEs no live input FDE gives.
+        let mut depths: Option<BTreeMap<u64, u64>> = self.plt_depths.take();
         for (i, x) in outs.iter().enumerate() {
             if used[i] {
                 continue;
             }
             if x.range == 0 || x.pc == 0 {
                 self.cov.fdes_neutralised += 1;
-            } else if self.format != crate::map::Format::Mortar && in_plt(image, x.pc) {
+            } else if self.format != crate::map::Format::Mortar
+                && let Some(sec) = crate::plt::in_plt(image, x.pc)
+            {
                 // A reference linker's own unwind information for the PLT
-                // it makes (GNU ld's `--ld-generated-unwind-info`, x86).
+                // it makes (GNU ld's `--ld-generated-unwind-info`, x86):
+                // E6 judges it on x86-64.
                 self.cov.fdes_linker_plt += 1;
+                if image.header.e_machine == EM_X86_64 {
+                    let d = depths.get_or_insert_with(|| crate::plt::x64_depths(image));
+                    self.check_plt_fde(x, sec, d);
+                }
             } else if !unknown_inputs {
                 let mut f = e(4, "an FDE of the output's .eh_frame that no live input FDE gives")
                     .at(x.addr);
@@ -678,6 +686,90 @@ impl Engine<'_, '_> {
             }
         }
         self.check_eh_frame_hdr(parsed.as_ref().map(|p| p.0), &outs);
+    }
+
+    /// E6 (§6.4): an x86-64 PLT FDE a reference linker made lies in its
+    /// PLT section, and at every instruction a PLT entry or its lazy path
+    /// executes (`plt::x64_depths`) its CIE's and its own instructions
+    /// give the CFA `%rsp` + the bytes pushed since the call, the return
+    /// address at CFA - 8, and no rule for another register but "same
+    /// value".
+    fn check_plt_fde(&mut self, x: &OutFde, sec: (&str, u64, u64), depths: &BTreeMap<u64, u64>) {
+        let (name, lo, hi) = sec;
+        let end = x.pc.checked_add(x.range).filter(|&e| e <= hi);
+        let Some(end) = end else {
+            let mut f = e(
+                6,
+                format!(
+                    "the PLT FDE for [{:#x}, +{:#x}) runs past {name} [{lo:#x}, {hi:#x})",
+                    x.pc, x.range
+                ),
+            )
+            .at(x.addr);
+            f.found = Some(x.range);
+            return self.findings.push(f);
+        };
+        let rows =
+            match crate::cfa::run(&x.cie.insns, &x.insns, x.cie.code_align, x.cie.data_align, x.pc)
+            {
+                Ok(r) => r,
+                Err(m) => {
+                    return self.findings.push(
+                        e(6, format!("the PLT FDE's call frame instructions cannot be run: {m}"))
+                            .at(x.addr),
+                    );
+                }
+            };
+        let ra = x.cie.ra;
+        let mut bad: Option<(u64, String)> = None;
+        let mut n_bad = 0u64;
+        for (&pc, &depth) in depths.range(x.pc..end) {
+            self.cov.plt_fde_insns += 1;
+            let Some(row) = crate::cfa::row_at(&rows, pc) else { continue };
+            // Two stack pointers: the CFA must follow %rsp, not a constant.
+            let cfa_at = |rsp: u64| -> Option<u64> {
+                match row.cfa.as_ref()? {
+                    crate::cfa::Cfa::Reg(7, n) => Some(rsp.wrapping_add_signed(*n)),
+                    crate::cfa::Cfa::Reg(..) => None,
+                    crate::cfa::Cfa::Expr(b) => {
+                        let reg = |r: u64| match r {
+                            7 => Some(rsp),
+                            16 => Some(pc),
+                            _ => None,
+                        };
+                        crate::cfa::eval(b, &reg)
+                    }
+                }
+            };
+            let what = if [0x7fff_0000_0000u64, 0x1000_0000]
+                .iter()
+                .any(|&s| cfa_at(s) != Some(s.wrapping_add(depth)))
+            {
+                Some(format!("the CFA is not %rsp+{depth}"))
+            } else if row.regs.get(&ra) != Some(&crate::cfa::RegRule::Offset(-8)) {
+                Some(format!("the return address (register {ra}) is not at CFA-8"))
+            } else {
+                row.regs
+                    .iter()
+                    .find(|(r, k)| **r != ra && **k != crate::cfa::RegRule::Same)
+                    .map(|(r, _)| format!("register {r} has a rule (the PLT saves no register)"))
+            };
+            if let Some(w) = what {
+                n_bad += 1;
+                bad.get_or_insert((pc, w));
+            }
+        }
+        if let Some((pc, w)) = bad {
+            let mut f = e(
+                6,
+                format!(
+                    "the PLT FDE is wrong at {n_bad} instruction(s) of {name}; first at {pc:#x}: {w}"
+                ),
+            )
+            .at(x.addr);
+            f.found = Some(pc);
+            self.findings.push(f);
+        }
     }
 
     fn fail_n(&mut self, f: Finding, n: u64) {
@@ -808,14 +900,6 @@ impl Engine<'_, '_> {
             }
         }
     }
-}
-
-/// Whether `pc` is in a PLT section of the output.
-fn in_plt(image: &crate::image::Image<'_>, pc: u64) -> bool {
-    image.sections.iter().any(|s| {
-        matches!(s.name.as_str(), ".plt" | ".plt.got" | ".plt.sec" | ".iplt")
-            && (s.shdr.sh_addr..s.shdr.sh_addr + s.shdr.sh_size).contains(&pc)
-    })
 }
 
 #[cfg(test)]

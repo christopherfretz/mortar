@@ -493,15 +493,26 @@ fn spie_classes(image: &Image<'_>, out: &DynOut, c: &mut Vec<Cand>) {
             c.push(("spie-relacount", format!("DT_RELACOUNT {k} {d}"), vec![(o + 8, wr(to, 8))]));
         }
     }
-    // spie-dynamic-word: the GOT's _DYNAMIC word changed.
-    if let Some(g) = sym("_GLOBAL_OFFSET_TABLE_")
-        && let Some(o) = off(image, g.sym.st_value, 8)
+    // spie-dynamic-word: the GOT's _DYNAMIC word changed: the word at
+    // _GLOBAL_OFFSET_TABLE_, else (WP-088: mortar's AArch64 static-pie
+    // defines none) an AArch64 `.got[0]` that holds `_DYNAMIC`, the word
+    // `Format::Mortar`'s stricter rule reads.
+    let got0 = || {
+        let dyn_at = out.dynamic?.0;
+        let h = image.sections.iter().find(|s| s.name == ".got")?;
+        (m == mortar_elf::consts::EM_AARCH64
+            && h.shdr.sh_size >= 8
+            && image.value(h.shdr.sh_addr, 8) == Some(dyn_at))
+        .then_some(h.shdr.sh_addr)
+    };
+    if let Some(at) = sym("_GLOBAL_OFFSET_TABLE_").map(|g| g.sym.st_value).or_else(got0)
+        && let Some(o) = off(image, at, 8)
     {
         let v = rd(b, o, 8);
         for to in [0, v.wrapping_add(8)] {
             c.push((
                 "spie-dynamic-word",
-                format!("the word at _GLOBAL_OFFSET_TABLE_ {v:#x} -> {to:#x}"),
+                format!("the GOT's _DYNAMIC word at {at:#x}: {v:#x} -> {to:#x}"),
                 vec![(o, wr(to, 8))],
             ));
         }

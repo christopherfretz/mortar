@@ -695,6 +695,8 @@ pub fn options(plan: &Plan, inputs: &Inputs<'_>, view: &InputsView<'_, '_>) -> O
         warn_common: d.warn_common,
         warn_backrefs: d.warn_backrefs,
         strip_debug: matches!(plan.shaping.strip, Some(Strip::Debug | Strip::All)),
+        consume_gnu_pubnames: plan.shaping.gdb_index == Some(true)
+            && !matches!(plan.shaping.strip, Some(Strip::Debug | Strip::All)),
         output: Output {
             pie: matches!(plan.kind, OutputKind::PieExecutable | OutputKind::StaticPie),
             dynamic: matches!(plan.kind, OutputKind::Executable | OutputKind::PieExecutable),

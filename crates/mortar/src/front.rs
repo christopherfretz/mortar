@@ -82,6 +82,9 @@ pub struct SynthPlans {
     /// `.mason.meta` kept for tools (`spec/meta.md` MT-32): with
     /// `--keep-mason-meta` and some live unit.
     pub mason_meta: Option<mortar_synth::MasonMetaPlan>,
+    /// `.gdb_index` (`spec/synth.md` §17): with `--gdb-index` and some
+    /// unit in the output's `.debug_info`.
+    pub gdb_index: Option<mortar_synth::GdbIndexPlan>,
     /// The synthetic chunks that exist, in S-3 order, with their ids
     /// (`Link::synthetic` has them in this order).
     pub chunks: Vec<(SynthKind, ChunkId)>,
@@ -651,6 +654,43 @@ pub fn front<'s>(
         Some(SymtabPlan::new(&sym_cx, target.class, &[], facts, &pool, diag).ok()?)
     };
     steps.step("symtab plan", 0, "");
+    // spec/synth.md S-G1 (WP-097): `.gdb_index` only with `--gdb-index`;
+    // without it nothing is read (S-109).
+    let gdb_index = if plan.shaping.gdb_index == Some(true) {
+        let in_output = |s: SectionId| {
+            liveness.is_live(s)
+                && resolution
+                    .sections
+                    .get(s)
+                    .is_some_and(mortar_core::resolution::SectionRow::is_kept)
+                && assignment.out(s).is_some()
+        };
+        let consumed = |s: SectionId| {
+            resolution.sections.get(s).is_some_and(|r| {
+                r.state
+                    == mortar_core::resolution::SectionState::Dropped(
+                        mortar_core::resolution::DropReason::Consumed,
+                    )
+            })
+        };
+        let src = mortar_synth::gdbread::Source {
+            link: &tables,
+            relocs: &ArchRelocs(arch),
+            in_output: &in_output,
+            consumed: &consumed,
+            word: target.class.word_size() as u8,
+        };
+        match mortar_synth::GdbIndexPlan::new(&src, &pool) {
+            Ok(p) => p,
+            Err(e) => {
+                diag.emit(mortar_synth::error::key(0), gdb_index_diag(&inputs, e));
+                return None;
+            }
+        }
+    } else {
+        None
+    };
+    steps.step("gdb index plan", 0, "");
     timer.phase(80, "synthetic");
     let mut steps = mortar_core::wp032b_steps::Steps::new("layout");
 
@@ -666,6 +706,7 @@ pub fn front<'s>(
         build_id,
         property,
         mason_meta: kept_meta,
+        gdb_index,
         chunks: Vec::new(),
     };
     // The section names, estimated from the output sections with live
@@ -1440,6 +1481,9 @@ fn synth_chunks(
     if let Some(m) = &p.mason_meta {
         present.push((SynthKind::MasonMeta, m.size()));
     }
+    if let Some(g) = &p.gdb_index {
+        present.push((SynthKind::GdbIndex, g.size()));
+    }
     present.sort_by_key(|c| c.0);
     let copy_align = |kind: SynthKind| dynamic.iter().find(|d| d.0 == kind).and_then(|d| d.2);
     let chunks = present
@@ -1513,6 +1557,39 @@ fn copied_section(a: &Assignment<'_>, liveness: &Liveness, name: &[u8]) -> bool 
     a.out_of.iter().any(|(sid, out)| {
         out.out().is_some_and(|o| a.outsecs[o].name == name) && liveness.is_live(sid)
     })
+}
+
+/// The diagnostic of a `.gdb_index` reader's error (`spec/synth.md`
+/// §17.6): a refusal by name at the file (and section), or the input
+/// error.
+fn gdb_index_diag(inputs: &Inputs<'_>, e: mortar_synth::gdbread::ReadError) -> Diagnostic {
+    use mortar_synth::gdbread::ReadError;
+    let file = &inputs.files[e.file()];
+    let section_name = |index: SectionIndex| match file.reader {
+        Reader::Object(o) => o
+            .section(index)
+            .ok()
+            .and_then(|s| s.name().ok())
+            .map(|n| String::from_utf8_lossy(n).into_owned())
+            .unwrap_or_default(),
+        _ => String::new(),
+    };
+    match e {
+        ReadError::Refused { name, at, note, .. } => {
+            let place = match at {
+                Some((index, offset)) => {
+                    Place::section(file.display(), section_name(index), offset)
+                }
+                None => Place::File(file.display()),
+            };
+            Diagnostic::refused(mortar_diag::RefusalClass::Feature, name).at(place).note(note)
+        }
+        ReadError::Input { file: id, section, what } => {
+            let p =
+                mortar_merge::Problem { file: id, section: section.0, piece: 0, offset: 0, what };
+            p.diagnostic(file.display(), &section_name(section))
+        }
+    }
 }
 
 /// The output section names of a placement, in section index order.
