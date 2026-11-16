@@ -1034,7 +1034,7 @@ busybox	clang	sed s [delimiter]	PASS	PASS
 busybox	clang	sed s arbitrary delimiter	PASS	PASS
 busybox	clang	sed s chains	PASS	PASS
 busybox	clang	sed s chains2	PASS	PASS
-busybox	clang	sed s with  (GNU ext)	PASS	PASS
+busybox	clang	sed s with   (GNU ext)	PASS	PASS
 busybox	clang	sed s///NUM test	PASS	PASS
 busybox	clang	sed s//g (exhaustive)	PASS	PASS
 busybox	clang	sed s//p	PASS	PASS
@@ -1961,7 +1961,7 @@ busybox	gcc	sed s [delimiter]	PASS	PASS
 busybox	gcc	sed s arbitrary delimiter	PASS	PASS
 busybox	gcc	sed s chains	PASS	PASS
 busybox	gcc	sed s chains2	PASS	PASS
-busybox	gcc	sed s with  (GNU ext)	PASS	PASS
+busybox	gcc	sed s with   (GNU ext)	PASS	PASS
 busybox	gcc	sed s///NUM test	PASS	PASS
 busybox	gcc	sed s//g (exhaustive)	PASS	PASS
 busybox	gcc	sed s//p	PASS	PASS
@@ -2803,6 +2803,136 @@ googletest	gcc	gtest_throw_on_failure_ex_test	PASS	PASS
 googletest	gcc	gtest_unittest	PASS	PASS
 googletest	gcc	gtest_xml_outfiles_test	PASS	PASS
 googletest	gcc	gtest_xml_output_unittest	PASS	PASS
+lapack	clang	BLAS-xblat1d	PASS	PASS
+lapack	clang	BLAS-xblat1z	PASS	PASS
+lapack	clang	BLAS-xblat2d	PASS	PASS
+lapack	clang	BLAS-xblat2z	PASS	PASS
+lapack	clang	BLAS-xblat3d	PASS	PASS
+lapack	clang	BLAS-xblat3z	PASS	PASS
+lapack	clang	CBLAS-xdcblat1	PASS	PASS
+lapack	clang	CBLAS-xdcblat2	PASS	PASS
+lapack	clang	CBLAS-xdcblat3	PASS	PASS
+lapack	clang	CBLAS-xzcblat1	PASS	PASS
+lapack	clang	CBLAS-xzcblat2	PASS	PASS
+lapack	clang	CBLAS-xzcblat3	PASS	PASS
+lapack	clang	LAPACK-xeigtstd_csd_in	PASS	PASS
+lapack	clang	LAPACK-xeigtstd_dbak_in	PASS	PASS
+lapack	clang	LAPACK-xeigtstd_dbal_in	PASS	PASS
+lapack	clang	LAPACK-xeigtstd_dbb_in	PASS	PASS
+lapack	clang	LAPACK-xeigtstd_dec_in	PASS	PASS
+lapack	clang	LAPACK-xeigtstd_ded_in	PASS	PASS
+lapack	clang	LAPACK-xeigtstd_dgbak_in	PASS	PASS
+lapack	clang	LAPACK-xeigtstd_dgbal_in	PASS	PASS
+lapack	clang	LAPACK-xeigtstd_dgd_in	PASS	PASS
+lapack	clang	LAPACK-xeigtstd_dgg_in	PASS	PASS
+lapack	clang	LAPACK-xeigtstd_dsb_in	PASS	PASS
+lapack	clang	LAPACK-xeigtstd_dsg_in	PASS	PASS
+lapack	clang	LAPACK-xeigtstd_glm_in	PASS	PASS
+lapack	clang	LAPACK-xeigtstd_gqr_in	PASS	PASS
+lapack	clang	LAPACK-xeigtstd_gsv_in	PASS	PASS
+lapack	clang	LAPACK-xeigtstd_lse_in	PASS	PASS
+lapack	clang	LAPACK-xeigtstd_nep_in	PASS	PASS
+lapack	clang	LAPACK-xeigtstd_se2_in	PASS	PASS
+lapack	clang	LAPACK-xeigtstd_sep_in	PASS	PASS
+lapack	clang	LAPACK-xeigtstd_svd_in	PASS	PASS
+lapack	clang	LAPACK-xeigtstz_csd_in	PASS	PASS
+lapack	clang	LAPACK-xeigtstz_glm_in	PASS	PASS
+lapack	clang	LAPACK-xeigtstz_gqr_in	PASS	PASS
+lapack	clang	LAPACK-xeigtstz_gsv_in	PASS	PASS
+lapack	clang	LAPACK-xeigtstz_lse_in	PASS	PASS
+lapack	clang	LAPACK-xeigtstz_nep_in	PASS	PASS
+lapack	clang	LAPACK-xeigtstz_se2_in	PASS	PASS
+lapack	clang	LAPACK-xeigtstz_sep_in	PASS	PASS
+lapack	clang	LAPACK-xeigtstz_svd_in	PASS	PASS
+lapack	clang	LAPACK-xeigtstz_zbak_in	PASS	PASS
+lapack	clang	LAPACK-xeigtstz_zbal_in	PASS	PASS
+lapack	clang	LAPACK-xeigtstz_zbb_in	PASS	PASS
+lapack	clang	LAPACK-xeigtstz_zec_in	PASS	PASS
+lapack	clang	LAPACK-xeigtstz_zed_in	PASS	PASS
+lapack	clang	LAPACK-xeigtstz_zgbak_in	PASS	PASS
+lapack	clang	LAPACK-xeigtstz_zgbal_in	PASS	PASS
+lapack	clang	LAPACK-xeigtstz_zgd_in	PASS	PASS
+lapack	clang	LAPACK-xeigtstz_zgg_in	PASS	PASS
+lapack	clang	LAPACK-xeigtstz_zsb_in	PASS	PASS
+lapack	clang	LAPACK-xeigtstz_zsg_in	PASS	PASS
+lapack	clang	LAPACK-xlintstd_dtest_in	PASS	PASS
+lapack	clang	LAPACK-xlintstrfd_dtest_rfp_in	PASS	PASS
+lapack	clang	LAPACK-xlintstrfz_ztest_rfp_in	PASS	PASS
+lapack	clang	LAPACK-xlintstz_ztest_in	PASS	PASS
+lapack	clang	LAPACK_Test_Summary	PASS	PASS
+lapack	clang	example1_64_CBLAS	PASS	PASS
+lapack	clang	example1_CBLAS	PASS	PASS
+lapack	clang	example2_64_CBLAS	PASS	PASS
+lapack	clang	example2_CBLAS	PASS	PASS
+lapack	clang	example_DGELS_colmajor	PASS	PASS
+lapack	clang	example_DGELS_rowmajor	PASS	PASS
+lapack	clang	example_DGESV_colmajor	PASS	PASS
+lapack	clang	example_DGESV_rowmajor	PASS	PASS
+lapack	gcc	BLAS-xblat1d	PASS	PASS
+lapack	gcc	BLAS-xblat1z	PASS	PASS
+lapack	gcc	BLAS-xblat2d	PASS	PASS
+lapack	gcc	BLAS-xblat2z	PASS	PASS
+lapack	gcc	BLAS-xblat3d	PASS	PASS
+lapack	gcc	BLAS-xblat3z	PASS	PASS
+lapack	gcc	CBLAS-xdcblat1	PASS	PASS
+lapack	gcc	CBLAS-xdcblat2	PASS	PASS
+lapack	gcc	CBLAS-xdcblat3	PASS	PASS
+lapack	gcc	CBLAS-xzcblat1	PASS	PASS
+lapack	gcc	CBLAS-xzcblat2	PASS	PASS
+lapack	gcc	CBLAS-xzcblat3	PASS	PASS
+lapack	gcc	LAPACK-xeigtstd_csd_in	PASS	PASS
+lapack	gcc	LAPACK-xeigtstd_dbak_in	PASS	PASS
+lapack	gcc	LAPACK-xeigtstd_dbal_in	PASS	PASS
+lapack	gcc	LAPACK-xeigtstd_dbb_in	PASS	PASS
+lapack	gcc	LAPACK-xeigtstd_dec_in	PASS	PASS
+lapack	gcc	LAPACK-xeigtstd_ded_in	PASS	PASS
+lapack	gcc	LAPACK-xeigtstd_dgbak_in	PASS	PASS
+lapack	gcc	LAPACK-xeigtstd_dgbal_in	PASS	PASS
+lapack	gcc	LAPACK-xeigtstd_dgd_in	PASS	PASS
+lapack	gcc	LAPACK-xeigtstd_dgg_in	PASS	PASS
+lapack	gcc	LAPACK-xeigtstd_dsb_in	PASS	PASS
+lapack	gcc	LAPACK-xeigtstd_dsg_in	PASS	PASS
+lapack	gcc	LAPACK-xeigtstd_glm_in	PASS	PASS
+lapack	gcc	LAPACK-xeigtstd_gqr_in	PASS	PASS
+lapack	gcc	LAPACK-xeigtstd_gsv_in	PASS	PASS
+lapack	gcc	LAPACK-xeigtstd_lse_in	PASS	PASS
+lapack	gcc	LAPACK-xeigtstd_nep_in	PASS	PASS
+lapack	gcc	LAPACK-xeigtstd_se2_in	PASS	PASS
+lapack	gcc	LAPACK-xeigtstd_sep_in	PASS	PASS
+lapack	gcc	LAPACK-xeigtstd_svd_in	PASS	PASS
+lapack	gcc	LAPACK-xeigtstz_csd_in	PASS	PASS
+lapack	gcc	LAPACK-xeigtstz_glm_in	PASS	PASS
+lapack	gcc	LAPACK-xeigtstz_gqr_in	PASS	PASS
+lapack	gcc	LAPACK-xeigtstz_gsv_in	PASS	PASS
+lapack	gcc	LAPACK-xeigtstz_lse_in	PASS	PASS
+lapack	gcc	LAPACK-xeigtstz_nep_in	PASS	PASS
+lapack	gcc	LAPACK-xeigtstz_se2_in	PASS	PASS
+lapack	gcc	LAPACK-xeigtstz_sep_in	PASS	PASS
+lapack	gcc	LAPACK-xeigtstz_svd_in	PASS	PASS
+lapack	gcc	LAPACK-xeigtstz_zbak_in	PASS	PASS
+lapack	gcc	LAPACK-xeigtstz_zbal_in	PASS	PASS
+lapack	gcc	LAPACK-xeigtstz_zbb_in	PASS	PASS
+lapack	gcc	LAPACK-xeigtstz_zec_in	PASS	PASS
+lapack	gcc	LAPACK-xeigtstz_zed_in	PASS	PASS
+lapack	gcc	LAPACK-xeigtstz_zgbak_in	PASS	PASS
+lapack	gcc	LAPACK-xeigtstz_zgbal_in	PASS	PASS
+lapack	gcc	LAPACK-xeigtstz_zgd_in	PASS	PASS
+lapack	gcc	LAPACK-xeigtstz_zgg_in	PASS	PASS
+lapack	gcc	LAPACK-xeigtstz_zsb_in	PASS	PASS
+lapack	gcc	LAPACK-xeigtstz_zsg_in	PASS	PASS
+lapack	gcc	LAPACK-xlintstd_dtest_in	PASS	PASS
+lapack	gcc	LAPACK-xlintstrfd_dtest_rfp_in	PASS	PASS
+lapack	gcc	LAPACK-xlintstrfz_ztest_rfp_in	PASS	PASS
+lapack	gcc	LAPACK-xlintstz_ztest_in	PASS	PASS
+lapack	gcc	LAPACK_Test_Summary	PASS	PASS
+lapack	gcc	example1_64_CBLAS	PASS	PASS
+lapack	gcc	example1_CBLAS	PASS	PASS
+lapack	gcc	example2_64_CBLAS	PASS	PASS
+lapack	gcc	example2_CBLAS	PASS	PASS
+lapack	gcc	example_DGELS_colmajor	PASS	PASS
+lapack	gcc	example_DGELS_rowmajor	PASS	PASS
+lapack	gcc	example_DGESV_colmajor	PASS	PASS
+lapack	gcc	example_DGESV_rowmajor	PASS	PASS
 lua	clang	all.lua	PASS	PASS
 lua	clang	luac	PASS	PASS
 lua	gcc	all.lua	PASS	PASS
