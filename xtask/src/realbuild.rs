@@ -33,7 +33,7 @@ use crate::process::{self, Limits};
 use outcome::{Outcome, Row};
 
 pub const USAGE: &str = "usage: cargo xtask realbuild [--project <p>]... [--row gcc|clang]... \
-                         [--mortar <path>] [--work <dir>] [--keep] [--keep-going] [--update-baseline]\n       \
+                         [-j <n>] [--mortar <path>] [--work <dir>] [--keep] [--keep-going] [--update-baseline]\n       \
                          cargo xtask realbuild --report\n       \
                          cargo xtask realbuild verify <output> <map> <argv file>\n";
 
@@ -50,8 +50,11 @@ const BUILD_LIMITS: Limits = Limits { time: Duration::from_hours(2), memory_kib:
 const DU_LIMITS: Limits = Limits { time: Duration::from_mins(5), memory_kib: 1 << 20 };
 /// The 1-minute load average under which a build starts.
 const MAX_LOAD: f64 = 10.0;
-/// The job count of a test runner that is not a jobserver client.
-const TEST_JOBS: u32 = 4;
+/// The default job count of a build and of its test runner (`-j`): the
+/// shared host's cap for this lane (supervisor, WP-100).
+const DEFAULT_JOBS: u32 = 3;
+/// The niceness every build and test run gets.
+const NICE: &str = "10";
 
 macro_rules! say {
     ($($t:tt)*) => { eprintln!("[realbuild] {}", format_args!($($t)*)) };
@@ -158,11 +161,13 @@ pub struct Args {
     pub keep_going: bool,
     pub update_baseline: bool,
     pub report: bool,
+    /// The job count of make, ctest and rustc (`-j`, default 3).
+    pub jobs: u32,
 }
 
 impl Args {
     pub fn parse(args: &[String]) -> Result<Self, String> {
-        let mut a = Self::default();
+        let mut a = Self { jobs: DEFAULT_JOBS, ..Self::default() };
         let mut it = args.iter();
         while let Some(arg) = it.next() {
             let (name, inline) = match arg.split_once('=') {
@@ -187,6 +192,13 @@ impl Args {
                 "--keep-going" => a.keep_going = true,
                 "--update-baseline" => a.update_baseline = true,
                 "--report" => a.report = true,
+                "-j" | "--jobs" => {
+                    a.jobs = value("a number")?
+                        .parse()
+                        .ok()
+                        .filter(|n| (1..=6).contains(n))
+                        .ok_or("-j takes 1 to 6")?;
+                }
                 other => return Err(format!("unknown argument {other}")),
             }
         }
@@ -351,6 +363,7 @@ struct Lane {
     work: PathBuf,
     mortar: PathBuf,
     xtask: PathBuf,
+    jobs: u32,
 }
 
 impl Lane {
@@ -386,6 +399,14 @@ impl Lane {
         // A fresh copy of the sources for this build.
         let copy = dir.join("src");
         copy_tree(src, &copy)?;
+        let extra = match extra {
+            Some(e) => {
+                let to = dir.join("extra");
+                copy_tree(e, &to)?;
+                Some(to)
+            }
+            None => None,
+        };
         let results = dir.join("results");
         let log = dir.join("log");
         let path = std::env::var_os("PATH").unwrap_or_default();
@@ -412,7 +433,12 @@ impl Lane {
                 .env("RB_ROW", row)
                 .env("RB_RESULTS", &results)
                 .env("RB_LOG", &log)
-                .env("RB_TEST_JOBS", TEST_JOBS.to_string())
+                .env("RB_TEST_JOBS", self.jobs.to_string())
+                .env("RB_JOBS", self.jobs.to_string())
+                // A fixed job count, not the machine's pool: make is its
+                // own jobserver of `jobs` slots for everything it starts.
+                .env("MAKEFLAGS", format!("-j{}", self.jobs))
+                .env_remove("CARGO_MAKEFLAGS")
                 .env("CC", &tools.cc)
                 .env("CXX", &tools.cxx)
                 .env("FC", &tools.fc)
@@ -421,7 +447,7 @@ impl Lane {
                 .env("CXXFLAGS", "-g -O2")
                 .env("FFLAGS", "-g -O2")
                 .env("FCFLAGS", "-g -O2");
-            if let Some(e) = extra {
+            if let Some(e) = &extra {
                 c.env("RB_EXTRA", e);
             }
         };
@@ -430,11 +456,11 @@ impl Lane {
                 break;
             }
             say!("{} {row} {mode}: {step}", p.name);
-            let bash = crate::bench::prepare::which("bash")?;
+            let nice = crate::bench::prepare::which("nice")?;
             let out = process::run(
-                &bash,
+                &nice,
                 |c| {
-                    c.arg("-c")
+                    c.args(["-n", NICE, "bash", "-c"])
                         .arg("exec >> \"$RB_LOG\" 2>&1; exec bash \"$0\" \"$1\" \"$2\"")
                         .arg(&run_sh)
                         .arg(&script)
@@ -623,7 +649,13 @@ fn run(a: &Args, workspace: &Path) -> Result<bool, String> {
         None => crate::bench::build_mortar(workspace)?,
     };
     let xtask = std::env::current_exe().map_err(|e| format!("this xtask's path: {e}"))?;
-    let lane = Lane { workspace: workspace.to_path_buf(), work: work.clone(), mortar, xtask };
+    let lane = Lane {
+        workspace: workspace.to_path_buf(),
+        work: work.clone(),
+        mortar,
+        xtask,
+        jobs: a.jobs,
+    };
     std::fs::create_dir_all(lane.results()).map_err(|e| format!("{e}"))?;
     let baseline = outcome::parse_rows(
         &std::fs::read_to_string(workspace.join(BASELINE)).unwrap_or_default(),
@@ -793,6 +825,9 @@ mod tests {
     #[test]
     fn arguments_parse() {
         let a = Args::parse(&s(&["--project", "zlib", "--row=gcc", "--keep"])).unwrap();
+        assert_eq!(a.jobs, 3);
+        assert_eq!(Args::parse(&s(&["-j", "2"])).unwrap().jobs, 2);
+        assert!(Args::parse(&s(&["-j", "12"])).is_err());
         assert_eq!(a.projects, ["zlib"]);
         assert_eq!(a.rows, ["gcc"]);
         assert!(a.keep);

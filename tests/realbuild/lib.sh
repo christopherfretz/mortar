@@ -11,12 +11,12 @@
 #               the project's build system allows it)
 #   RB_ROW      gcc | clang (the compilers of the row)
 #   CC CXX FC   the row's compilers; CFLAGS CXXFLAGS FFLAGS FCFLAGS "-g -O2"
-#   RB_TEST_JOBS  the job count of a test runner that is not a jobserver
-#               client (ctest), at most 6
+#   RB_JOBS, RB_TEST_JOBS  the lane's job count (-j, default 3, at most
+#               6): of rustc's code generation and of ctest
 #   RB_RESULTS  the file the tests' results go to, one `<name> TAB
 #               PASS|FAIL|SKIP` per line
-#   MAKEFLAGS   the machine's jobserver: make takes its parallelism from it
-#               (never pass -j to make)
+#   MAKEFLAGS   -j<RB_JOBS>: make is its own jobserver of that many slots
+#               (never pass -j to make). Everything runs under nice -n 10.
 #
 # A project script defines `rb_build` and `rb_test`. Nothing in it passes
 # a linker: the wrapper (tests/realbuild/ld) is found as `ld` through
