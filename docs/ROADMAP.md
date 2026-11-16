@@ -161,7 +161,11 @@ Parallel tracks, each closing a class of real-world links.
   class-generic readers, tables and writers it needs are in place from M0
   (`docs/ARCHITECTURE.md`, "Scope").
 - Shared-object output: symbol visibility and export rules, version scripts,
-  `-Bsymbolic*`, `--dynamic-list`, `DT_SONAME`, `DT_RUNPATH`.
+  `-Bsymbolic*`, `--dynamic-list`, `DT_SONAME`, `DT_RUNPATH`. Designed by
+  WP-110 (`spec/dyn.md` §17; the cut in `spec/landed/dyn/WP-110.md` §D):
+  first joined target a C library with a soname on AArch64, loaded by a
+  GNU-ld-linked and a mortar-linked host, verified; then versions, C++,
+  x86-64, the option tail.
 - Linker scripts: `SECTIONS`, `MEMORY`, `PHDRS`, expressions, `PROVIDE`,
   `KEEP`, `INSERT`.
 - `-r`, `-static-pie` (x86-64's rows from M1 and M2, above), `--wrap`, `--defsym`, `--exclude-libs`,
