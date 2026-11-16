@@ -933,7 +933,7 @@ fn sessions_gc(name: &str, driver: Driver, p: &Program, gc: bool) {
         );
         return;
     }
-    each_gc(name, driver, p, gc, |label, _, t, pair| session_pair(label, t, pair, p));
+    each_gc(name, driver, p, gc, |label, _, t, pair| session_pair(label, t, pair, p, false));
 }
 
 /// The incremental lane's sessions: mortar's incremental-mode output
@@ -948,11 +948,36 @@ fn sessions_incr(name: &str, driver: Driver, p: &Program) {
         );
         return;
     }
-    each_incr(name, driver, p, |label, _, t, pair| session_pair(label, t, pair, p));
+    each_incr(name, driver, p, |label, _, t, pair| session_pair(label, t, pair, p, true));
 }
 
-/// The gdb and lldb sessions on one pair, compared.
-fn session_pair(label: &str, t: &Tools, pair: &Pair, p: &Program) {
+/// lldb's `<section> + <offset>` with the offset masked: on the
+/// incremental lane a function's offset in `.text` is its region's
+/// (`spec/incr.md` IN-30: each file's code is followed by slack), so it
+/// differs from the plain link's as its address does.
+fn section_offsets_masked(t: &str) -> String {
+    let mut out = String::with_capacity(t.len());
+    let mut rest = t;
+    while let Some(at) = rest.find(" + ") {
+        let (head, tail) = rest.split_at(at + 3);
+        out.push_str(head);
+        let digits = tail.chars().take_while(char::is_ascii_digit).count();
+        let word = head[..head.len() - 3].rsplit(['(', ' ']).next();
+        let in_section = word.is_some_and(|w| w.contains("PT_LOAD"));
+        if digits > 0 && in_section {
+            out.push('?');
+            rest = &tail[digits..];
+        } else {
+            rest = tail;
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The gdb and lldb sessions on one pair, compared; with
+/// [`section_offsets_masked`] on the incremental lane (`incr`).
+fn session_pair(label: &str, t: &Tools, pair: &Pair, p: &Program, incr: bool) {
     {
         let (eo, et) = (elf(&pair.ours), elf(&pair.theirs));
         let addr = |e: &Elf| p.comdat.map(|(sym, _)| e.values[sym]);
@@ -967,7 +992,12 @@ fn session_pair(label: &str, t: &Tools, pair: &Pair, p: &Program) {
             "{label}: gdb lost a CU's ranges (spec/image.md I-47):\n{g_ours}"
         );
         same(label, "the gdb session", &g_ours, &g_theirs);
-        same(label, "the lldb session", &l_ours, &l_theirs);
+        if incr {
+            let (a, b) = (section_offsets_masked(&l_ours), section_offsets_masked(&l_theirs));
+            same(label, "the lldb session", &a, &b);
+        } else {
+            same(label, "the lldb session", &l_ours, &l_theirs);
+        }
         sessions_did_their_work(label, p, pair.gc, &g_ours, &l_ours);
         if let Some((sym, kept)) = p.comdat {
             comdat_kept_copy(label, t, pair, sym, kept);
@@ -1293,7 +1323,16 @@ fn dwarf_incr(name: &str, driver: Driver, p: &Program) {
         let (eo, et) = (elf(&pair.ours), elf(&pair.theirs));
         verify_against(label, t, pair, &eo, &et);
         symtabs_against(label, t, pair, (&eo, &et));
-        addresses(label, t, pair, p, driver == Driver::Gxx, (&eo, &et));
+        // Every address in range or a tombstone, and the same tombstones
+        // as the plain link's (both are mortar's, I-47).
+        let ours = debug_addrs(t, pair, &pair.ours, &eo);
+        let theirs = debug_addrs(t, pair, &pair.theirs, &et);
+        assert!(ours.wrong.is_empty(), "{label}: the incremental output: {:#?}", ours.wrong);
+        assert_eq!(ours.dead, theirs.dead, "{label}: tombstones");
+        assert_eq!(
+            ours.dead_subprograms, theirs.dead_subprograms,
+            "{label}: tombstoned subprograms"
+        );
     });
 }
 
