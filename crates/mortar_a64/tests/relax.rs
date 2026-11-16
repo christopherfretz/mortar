@@ -393,6 +393,96 @@ fn s8_4_pattern_fails() {
     assert_eq!(word(&out, 0), insert(forms::ADRP, GD[0], 0x43_2000 - 0x40_0000));
 }
 
+// spec: a64.md §8.4, R4's static column (WP-090). The static tables
+// (`A64::M1`: a static executable, `Static`, and a static PIE, `Pie`)
+// accept the traditional GD pair only inside R4's pattern: the sequence
+// becomes LE (the words GNU ld writes in both outputs), with `T` checked
+// `u(32)`; a member whose sequence does not match is refused by name on
+// every member, nothing demanded and nothing applied, where the dynamic
+// tables keep the module/offset pair (D-48).
+#[test]
+fn s8_4_r4_static_tables() {
+    let m1 = A64::M1;
+    let input = words(&GD);
+    let le = |t: u32| {
+        words(&[
+            0xD2A0_0000 | (t >> 16) << 5,
+            0xF280_0000 | (t & 0xFFFF) << 5,
+            MRS_X1_TPIDR,
+            ADD_X0_X1_X0,
+        ])
+    };
+    for output in [OutputKind::Static, OutputKind::Pie] {
+        // A TLS-local target, and a thread-local `weak0` (§7: `T = 0`).
+        for (kind, t) in [(TargetKind::Local, T), (TargetKind::Weak0, 0)] {
+            let tables = gd_tables(kind);
+            let mut c = Case::new(&tables, &input, 0x40_0ff8);
+            c.arch = m1;
+            c.output = output;
+            c.tls = Some(TLS);
+            assert_eq!(apply_both(&c, &gd_relocs()).unwrap(), le(t), "{output:?} {kind:?}");
+            let s = scan(m1, &tables, output, &input, &gd_relocs());
+            assert!(s.raised.iter().all(|(_, f)| f.is_empty()), "{:?}", s.raised);
+            assert!(s.errors.is_empty() && s.undefined.is_empty(), "{:?}", s.errors);
+        }
+        // `T` beyond 32 bits: `relocation-out-of-range` on the member
+        // being rewritten (§12.3), never a truncated `movz`/`movk` (GNU ld
+        // 2.44 writes `T[31:0]`, measured).
+        let far = TlsBlock { start: 0x42_0000, size: 1 << 33, align: 16 };
+        let mut tables = gd_tables(TargetKind::Local);
+        tables.tls_sym(key(1), far.start + (1 << 32), TargetKind::Local);
+        let mut c = Case::new(&tables, &input, 0x40_0ff8);
+        c.arch = m1;
+        c.output = output;
+        c.tls = Some(far);
+        for i in 0..2 {
+            assert!(matches!(c.apply_at(&gd_relocs(), i), Err(FieldError::Range(_))), "{i}");
+        }
+        // The pattern fails: the callee is not `__tls_get_addr`, the word
+        // after the call is not the `nop`, or it is past the section's end.
+        let refused = |s: &Sink| {
+            let named: Vec<u32> = s
+                .errors
+                .iter()
+                .filter(|(_, e)| {
+                    matches!(e, mortar_arch::ScanError::Refused(r)
+                        if r.class == mortar_diag::RefusalClass::Feature
+                            && r.name.to_string() == mortar_a64::UNRECOGNIZED_GD)
+                })
+                .map(|&(i, _)| i)
+                .collect();
+            assert_eq!(named, [0, 1], "{:?}", s.errors);
+            assert!(!raised(s, key(1)).contains(DemandFlags::TLS_GD), "{:?}", s.raised);
+        };
+        let mut other = gd_tables(TargetKind::Local);
+        other.names.insert(key(9), b"f".to_vec());
+        refused(&scan(m1, &other, output, &input, &gd_relocs()));
+        let t = gd_tables(TargetKind::Local);
+        for bytes in [words(&[GD[0], GD[1], GD[2], 0xD503_203F]), words(&GD[..3])] {
+            refused(&scan(m1, &t, output, &bytes, &gd_relocs()));
+            // The dynamic tables keep the pair (D-48, unchanged).
+            let s = scan(M2, &t, output, &bytes, &gd_relocs());
+            assert!(raised(&s, key(1)).contains(DemandFlags::TLS_GD), "{:?}", s.raised);
+            assert!(s.errors.is_empty(), "{:?}", s.errors);
+        }
+        // A 514 alone, or a 513 whose 514 is missing.
+        refused_one(m1, &t, output, &input, &[r(4, 1, 514)]);
+        refused_one(m1, &t, output, &input, &[r(0, 1, 513), r(8, 9, 283)]);
+    }
+}
+
+fn refused_one(arch: A64, t: &Tables, output: OutputKind, input: &[u8], relocs: &[Reloc]) {
+    let s = scan(arch, t, output, input, relocs);
+    assert!(
+        s.errors.iter().any(|(i, e)| *i == 0
+            && matches!(e, mortar_arch::ScanError::Refused(r)
+                if r.name.to_string() == mortar_a64::UNRECOGNIZED_GD)),
+        "{:?}",
+        s.errors
+    );
+    assert!(!raised(&s, key(1)).contains(DemandFlags::TLS_GD), "{:?}", s.raised);
+}
+
 #[test]
 fn s8_4_the_call26_member_is_consumed() {
     let t = gd_tables(TargetKind::Local);

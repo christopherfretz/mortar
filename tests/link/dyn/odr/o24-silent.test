@@ -1,0 +1,130 @@
+# O-24 (spec/odr.md): shapes that are silent, each a mortar link under
+# --odr=strict that must report no one-definition-rule diagnostic (no
+# directive):
+#  hidden: the executable's f is hidden and one library exports f: no
+#    pair (the output does not export f; one library).
+#  r6: libx defines f@@X1, liby f@@Y1: different node names, never
+#    compared (R6).
+#  dropped: libb would pair with liba, but --as-needed drops it (nothing
+#    references it): not in scope.
+#  untabled: libc0 has no table: its f (which runs liba's copy) has no
+#    row, nothing is compared, and no byte of it is read beyond what
+#    resolution reads.
+#  default: the shape of o24-libraries.test without --odr=strict: the
+#    check is strict only.
+#  size: o24-size.test with the declaration's size equal to st_size.
+#  cxx: a C++ program against the system libstdc++ (no table).
+#@ spec: odr.md "O-24"
+#@ arch: aarch64 x86_64
+#@ requires: g++
+
+cc -O1 -fPIC -DN=1 -DF=fa lib.c -o a.o
+cc -O1 -fPIC -DN=3 -DF=fb lib.c -o b.o
+cc -O1 -fPIC -DN=4 -DF=fc lib.c -o c.o
+cc -O1 -fPIC -DN=5 -DF=fx lib.c -o x.o
+cc -O1 -fPIC -DN=6 -DF=fy lib.c -o y.o
+cc -O1 -fPIC k.c -o k.o
+as note1.s -o note1.o
+shlib gcc a.o note1.o -Wl,-soname,liba.so -o liba0.so
+meta a.rows liba0.so -o liba.so
+shlib gcc b.o note1.o -Wl,-soname,libb.so -o libb0.so
+meta b.rows libb0.so -o libb.so
+shlib gcc c.o -Wl,-soname,libc0.so -o libc0.so
+shlib gcc x.o note1.o -Wl,--version-script=x.map -Wl,-soname,libx.so -o libx0.so
+meta x.rows libx0.so -o libx.so
+shlib gcc y.o note1.o -Wl,--version-script=y.map -Wl,-soname,liby.so -o liby0.so
+meta y.rows liby0.so -o liby.so
+shlib gcc k.o -Wl,-soname,libk.so -o libk.so
+cc -O1 -fPIE -DHIDDEN -DCALLS=fa main.c -o hidden0.o
+meta f.meta hidden0.o -o hidden.o
+cc -O1 -fPIE -DCALLS=fx -DCALLS2=fy main.c -o r6.o
+cc -O1 -fPIE -DCALLS=fa main.c -o dropped.o
+cc -O1 -fPIE -DCALLS=fa -DCALLS2=fc main.c -o untabled.o
+cc -O1 -fPIE -DCALLS=fa -DCALLS2=fb main.c -o default.o
+cc -O1 -fno-pie size.c -o size0.o
+meta size.meta size0.o -o size.o
+cxx -O1 -fPIE hello.cc -o hello.o
+link(bfd,lld,mold) gcc -pie hidden.o -L. -la -o hidden
+link(mortar) gcc -pie hidden.o -L. -la -Wl,--odr=strict -o hidden
+link(bfd,lld,mold) gcc -pie r6.o -L. -lx -ly -o r6
+link(mortar) gcc -pie r6.o -L. -lx -ly -Wl,--odr=strict -o r6
+link(bfd,lld,mold) gcc -pie dropped.o -Wl,--as-needed -L. -la -lb -o dropped
+link(mortar) gcc -pie dropped.o -Wl,--as-needed -L. -la -lb -Wl,--odr=strict -o dropped
+link(bfd,lld,mold) gcc -pie untabled.o -L. -la -lc0 -o untabled
+link(mortar) gcc -pie untabled.o -L. -la -lc0 -Wl,--odr=strict -o untabled
+link gcc -pie default.o -L. -la -lb -o default
+link(bfd,lld,mold) gcc -no-pie size.o -L. -lk -o size
+link(mortar) gcc -no-pie size.o -L. -lk -Wl,--odr=strict -o size
+link(bfd,lld,mold) g++ -pie hello.o -o hello
+link(mortar) g++ -pie hello.o -Wl,--odr=strict -o hello
+run hidden
+  stdout: 1 0
+run r6
+  stdout: 5 6
+check readelf -dW dropped
+  not: libb.so
+run dropped
+  stdout: 1 0
+run untabled
+  stdout: 1 1
+run default
+  stdout: 1 1
+run size
+  stdout: 7
+run hello
+  stdout: hello
+
+#--- lib.c
+int f(void) { return N; }
+int F(void) { return f(); }
+#--- x.map
+X1 { global: f; fx; local: *; };
+#--- y.map
+Y1 { global: f; fy; local: *; };
+#--- main.c
+#include <stdio.h>
+#ifdef HIDDEN
+__attribute__((visibility("hidden"))) int f(void) { return 2; }
+#endif
+int CALLS(void);
+#ifdef CALLS2
+int CALLS2(void);
+#define SECOND CALLS2()
+#else
+#define SECOND 0
+#endif
+int main(void) { printf("%d %d\n", CALLS(), SECOND); return 0; }
+#--- f.meta
+summary name=lang value=c++
+definition anchor=f hash=02020202020202020202020202020202 class=1 flags=1
+#--- k.c
+int v[4] = { 7, 8, 9, 10 };
+#--- size.c
+#include <stdio.h>
+extern int v[4];
+int main(void) { printf("%d\n", v[0]); return 0; }
+#--- size.meta
+summary name=lang value=c++
+declaration anchor=v size=16 flags=2
+#--- hello.cc
+#include <iostream>
+int main() { std::cout << "hello" << std::endl; return 0; }
+#--- a.rows
+row name=f hash=0101010101010101 flags=1
+#--- b.rows
+row name=f hash=0303030303030303 flags=1
+#--- x.rows
+row name=f version=X1 hash=0505050505050505 flags=1
+#--- y.rows
+row name=f version=Y1 hash=0606060606060606 flags=1
+#--- note1.s
+	.section .note.mason,"a",%note
+	.p2align 3
+	.long 10
+	.long 40
+	.long 0x4d4f4401
+	.asciz "MasonMeta"
+	.p2align 3
+	.long 1, 1, 24, 0
+	.zero 24
+	.section .note.GNU-stack,"",%progbits

@@ -1,0 +1,152 @@
+# a64.md §8.4, R4's static column (WP-090): GCC's traditional
+# general-dynamic sequence (`-fPIC -mtls-dialect=trad`: `adrp x0,
+# :tlsgd:v`, `add x0, x0, :tlsgd_lo12:v`, `bl __tls_get_addr`, `nop`) in a
+# static executable and in a static PIE (dyn.md D-1/D-2: the static
+# tables) becomes local-exec: `movz x0, #T[31:16], lsl #16`, `movk x0,
+# #T[15:0]`, `mrs x1, tpidr_el0`, `add x0, x1, x0`, `T = TPREL(S)` checked
+# u(32) (a64.md §12.3). A global, a local (GCC names it by its section
+# anchor), a hidden variable, the program's first TLS variable and later
+# ones, TP offsets within 12 bits, beyond 12 (8 KiB of `pad`) and beyond 24
+# (`far_v` after 16 MiB of `big`, which `-lc` before it keeps after
+# libc's own TLS: libc's `TLSLE_ADD_TPREL_HI12` reaches 16 MiB only).
+#
+# What the references do (measured, WP-090 record): GNU ld 2.44 writes
+# exactly these words in both outputs (also with `--no-relax`, `-z now`,
+# `-z norelro`), and mortar's are byte-identical to it; lld 19 and 22 do
+# not know relocation 513; mold 2.37.1 keeps the sequence, calling the
+# static `__tls_get_addr` with a GOT pair (1, DTPREL(S)): a correct form
+# mortar does not write. Every program prints the same.
+#
+# The static-pie links pass `-fno-use-linker-plugin` (no input is LTO):
+# a static-pie's `--mortar-map` records the command line (plumb.md
+# `arg`), and gcc's plugin option names a new `/tmp/ccXXXXXX.res` each
+# run, which static-identical's map digest would not reproduce.
+#
+# GNU ld's static-pie carries A30 (plumb.md §10.2: the GOT slot of
+# glibc's absolute `_nl_current_*_used` gets a RELATIVE record),
+# unrelated to TLS.
+#@ anomaly(bfd): A30
+#@ spec: a64.md "8.4"
+#@ spec: a64.md "12.5"
+#@ spec: dyn.md "D-2"
+#@ arch: aarch64
+
+cc -O1 -fPIC -mtls-dialect=trad vars.c -o vars.o
+cc -O1 -fPIC -mtls-dialect=trad far.c -o far.o
+cc -O1 big.c -o big.o
+cc -O1 main.c -o main.o
+
+link(lld) gcc -static main.o vars.o -lc big.o far.o -o prog
+  exit: fail
+  diag: unknown relocation (513) against symbol first_g
+link(bfd,mold,mortar) gcc -static main.o vars.o -lc big.o far.o -o prog
+run(bfd,mold,mortar) prog
+  stdout: 11 22 33 44 55
+  stdout: 45 56 7
+# a_first: the first variable, after 8 KiB of `pad`: T = 0x2020.
+check(bfd,mortar) objdump -d --disassemble=a_first prog
+  has: : d2a00000
+  then: : f2840400 * movk x0,
+  then: : d53bd041 * mrs x1, tpidr_el0
+  then: : 8b000020 * add x0, x1, x0
+# a_loc: the local one, through `.LANCHOR0`: T = 0x10.
+check(bfd,mortar) objdump -d --disassemble=a_loc prog
+  has: : d2a00000
+  then: : f2800200 * movk x0,
+  then: : d53bd041 * mrs x1, tpidr_el0
+  then: : 8b000020 * add x0, x1, x0
+# a_hid: the hidden one, the anchor then `add x0, x0, #4`: T = 0x10.
+check(bfd,mortar) objdump -d --disassemble=a_hid prog
+  has: : d2a00000
+  then: : f2800200 * movk x0,
+  then: : d53bd041 * mrs x1, tpidr_el0
+  then: : 8b000020 * add x0, x1, x0
+# a_later: a later variable: T = 0x18.
+check(bfd,mortar) objdump -d --disassemble=a_later prog
+  has: : d2a00000
+  then: : f2800300 * movk x0,
+  then: : d53bd041 * mrs x1, tpidr_el0
+  then: : 8b000020 * add x0, x1, x0
+# a_far: past 16 MiB: T = 0x1002090.
+check(bfd,mortar) objdump -d --disassemble=a_far prog
+  has: : d2a02000
+  then: : f2841200 * movk x0,
+  then: : d53bd041 * mrs x1, tpidr_el0
+  then: : 8b000020 * add x0, x1, x0
+check(mold) objdump -d --disassemble=a_first prog
+  has: bl * <__tls_get_addr>
+
+link(lld) gcc -static-pie -fno-use-linker-plugin main.o vars.o -lc big.o far.o -o spie
+  exit: fail
+  diag: unknown relocation (513) against symbol first_g
+link(bfd,mold,mortar) gcc -static-pie -fno-use-linker-plugin main.o vars.o -lc big.o far.o -o spie
+run(bfd,mold,mortar) spie
+  stdout: 11 22 33 44 55
+  stdout: 45 56 7
+# a_first: the first variable, after 8 KiB of `pad`: T = 0x2020.
+check(bfd,mortar) objdump -d --disassemble=a_first spie
+  has: : d2a00000
+  then: : f2840400 * movk x0,
+  then: : d53bd041 * mrs x1, tpidr_el0
+  then: : 8b000020 * add x0, x1, x0
+# a_loc: the local one, through `.LANCHOR0`: T = 0x10.
+check(bfd,mortar) objdump -d --disassemble=a_loc spie
+  has: : d2a00000
+  then: : f2800200 * movk x0,
+  then: : d53bd041 * mrs x1, tpidr_el0
+  then: : 8b000020 * add x0, x1, x0
+# a_hid: the hidden one, the anchor then `add x0, x0, #4`: T = 0x10.
+check(bfd,mortar) objdump -d --disassemble=a_hid spie
+  has: : d2a00000
+  then: : f2800200 * movk x0,
+  then: : d53bd041 * mrs x1, tpidr_el0
+  then: : 8b000020 * add x0, x1, x0
+# a_later: a later variable: T = 0x18.
+check(bfd,mortar) objdump -d --disassemble=a_later spie
+  has: : d2a00000
+  then: : f2800300 * movk x0,
+  then: : d53bd041 * mrs x1, tpidr_el0
+  then: : 8b000020 * add x0, x1, x0
+# a_far: past 16 MiB: T = 0x1002090.
+check(bfd,mortar) objdump -d --disassemble=a_far spie
+  has: : d2a02000
+  then: : f2841200 * movk x0,
+  then: : d53bd041 * mrs x1, tpidr_el0
+  then: : 8b000020 * add x0, x1, x0
+check(mold) objdump -d --disassemble=a_first spie
+  has: bl * <__tls_get_addr>
+
+#--- vars.c
+/* The first TLS variable of the program (global), a local one, a hidden
+   one, 8 KiB of initialized TLS, then a later global variable: TP
+   offsets below 12 bits and beyond. */
+__thread int first_g = 11;
+static __thread int loc_s = 22;
+__attribute__((visibility("hidden"))) __thread int hid = 33;
+__thread char pad[0x2000] = {1};
+__thread int later_g = 44;
+__attribute__((noinline)) int *a_first(void) { return &first_g; }
+__attribute__((noinline)) int *a_loc(void) { return &loc_s; }
+__attribute__((noinline)) int *a_hid(void) { return &hid; }
+__attribute__((noinline)) int *a_later(void) { return &later_g; }
+#--- big.c
+/* 16 MiB of zero-initialized TLS, linked after libc's (-lc before it). */
+__thread char big[0x1000010];
+#--- far.c
+/* A variable past the 16 MiB of big.c: its TP offset is beyond 24 bits. */
+__thread int far_v;
+__attribute__((noinline)) int *a_far(void) { return &far_v; }
+#--- main.c
+#include <stdio.h>
+int *a_first(void), *a_loc(void), *a_hid(void), *a_later(void), *a_far(void);
+extern __thread int later_g, far_v;
+extern __thread char big[];
+int main(void) {
+  *a_far() = 55;
+  printf("%d %d %d %d %d\n", *a_first(), *a_loc(), *a_hid(), *a_later(), *a_far());
+  *a_later() += 1;
+  *a_far() += 1;
+  big[0x100000f] = 7;
+  printf("%d %d %d\n", later_g, far_v, big[0x100000f]);
+  return 0;
+}

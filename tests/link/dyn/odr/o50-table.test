@@ -1,0 +1,60 @@
+# O-50 to O-52 (spec/odr.md): --odr-table=exported writes the loadable
+# .note.mason table in a dynamic executable: one SHT_NOTE section,
+# SHF_ALLOC, aligned 8, in a PT_NOTE of its own alignment; owner
+# MasonMeta, type 0x4d4f4401 (which readelf calls unknown); one row per
+# exported vague definition: f (default visibility, exported by
+# -rdynamic) and g (protected), none for the hidden h. Every row of an
+# executable is NONPREEMPTIBLE (flags 0x8001). Without the option there
+# is no such section.
+#
+# The tools that read the image take it as it is: gdb and lldb stop at
+# main. eu-elflint names the note's type as unknown, twice (the segment
+# and the section), as it does any note type it does not know in an
+# executable (O-52); its other complaint, the protected g in .dynsym, it
+# makes of GNU ld's output too (bfd's prog), and the output without the
+# table draws that one only (dyn.md D-71).
+#@ spec: odr.md "O-50"
+#@ arch: aarch64 x86_64
+#@ requires: eu-elflint gdb lldb
+
+cc -O0 -g -fPIE main.c -o main0.o
+meta main.meta main0.o -o main.o
+link(bfd,lld,mold) gcc -pie -rdynamic main.o -o prog
+link(mortar) gcc -pie -rdynamic main.o -Wl,--odr-table=exported -o prog
+link(mortar) gcc -pie -rdynamic main.o -o plain
+run prog
+  stdout: 2 3 4
+check(mortar) readelf -nW prog
+  has: Displaying notes found in: .note.mason
+  has: ^ *MasonMeta *0x00000040 *Unknown note type: (0x4d4f4401) *description data: 01 00 00 00 02 00 00 00 18 00 00 00 00 00 00 00 * 01 80 00 00 * 01 80 00 00
+check(mortar) readelf -SW prog
+  has: ] .note.mason * NOTE * 0* 0* 000058 00 * A * 0 * 0 * 8$
+check(mortar) readelf -lW prog
+  has: ^ *NOTE * 0x* 0x* 0x* 0x000058 0x000058 R * 0x8$
+check(mortar) readelf -SW plain
+  not: .note.mason
+check(mortar) elflint prog
+  allow: unknown object file note type 1297040385 with owner name 'MasonMeta' at offset *
+  allow: (g): symbol in dynamic symbol table with non-default visibility
+check(mortar) elflint plain
+  allow: (g): symbol in dynamic symbol table with non-default visibility
+check(bfd) elflint prog
+  allow: (g): symbol in dynamic symbol table with non-default visibility
+check(mortar) gdb prog "break main" run bt kill
+  has: Breakpoint 1, main () at main.c:
+  has: #0 main () at main.c:
+check(mortar) lldb prog "b main" run bt kill
+  has: stop reason = breakpoint 1.1
+  has: main.c:
+
+#--- main.c
+#include <stdio.h>
+int f(void) { return 2; }
+__attribute__((visibility("protected"))) int g(void) { return 3; }
+__attribute__((visibility("hidden"))) int h(void) { return 4; }
+int main(void) { printf("%d %d %d\n", f(), g(), h()); return 0; }
+#--- main.meta
+summary name=lang value=c++
+definition anchor=f hash=02020202020202020202020202020202 class=1 flags=1
+definition anchor=g hash=03030303030303030303030303030303 class=1 flags=1
+definition anchor=h hash=04040404040404040404040404040404 class=1 flags=1

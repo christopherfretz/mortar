@@ -1,0 +1,56 @@
+# O-24 (a) (spec/odr.md): an executable that exports a vague definition
+# (body 2) which two in-scope libraries also define with body 1, one of
+# them linked -Bsymbolic (its row NONPREEMPTIBLE, O-51). The executable is
+# first in lookup order: it and liba run its copy, libsym runs its own
+# (WP-075's prototype rows "(a) exported" and R4/R5, both targets, GNU ld
+# and lld). mortar, under --odr=strict, reports the output against each
+# library; the note says which module runs which copy.
+#@ spec: odr.md "O-24"
+#@ arch: aarch64 x86_64
+#@ diag: odr-violation main.o ./liba.so
+#@ diag: odr-violation main.o ./libsym.so
+
+cc -O1 -fPIC -DN=1 -DF=fa lib.c -o a.o
+cc -O1 -fPIC -DN=1 -DF=fsym lib.c -o sym.o
+as note1.s -o note1.o
+shlib gcc a.o note1.o -Wl,-soname,liba.so -o liba0.so
+meta lib.rows liba0.so -o liba.so
+shlib gcc sym.o note1.o -Wl,-Bsymbolic -Wl,-soname,libsym.so -o libsym0.so
+meta sym.rows libsym0.so -o libsym.so
+cc -O1 -fPIE main.c -o main0.o
+meta main.meta main0.o -o main.o
+link(bfd,lld,mold) gcc -pie main.o -Wl,--no-as-needed -L. -la -lsym -o prog
+link(mortar) gcc -pie main.o -Wl,--no-as-needed -L. -la -lsym -Wl,--odr=strict -o prog
+  exit: fail
+  diag: comes first in lookup order: it runs its own copy; *liba.so runs the output's copy
+  diag: *libsym.so runs its own copy (its row is NONPREEMPTIBLE
+run(bfd,lld,mold) prog
+  stdout: 2 2 1
+
+#--- lib.c
+int f(void) { return N; }
+int F(void) { return f(); }
+#--- main.c
+#include <stdio.h>
+int f(void) { return 2; }
+int fa(void);
+int fsym(void);
+int main(void) { printf("%d %d %d\n", f(), fa(), fsym()); return 0; }
+#--- main.meta
+summary name=lang value=c++
+definition anchor=f hash=02020202020202020202020202020202 class=1 flags=1
+#--- lib.rows
+row name=f hash=0101010101010101 flags=1
+#--- sym.rows
+row name=f hash=0101010101010101 flags=0x8001
+#--- note1.s
+	.section .note.mason,"a",%note
+	.p2align 3
+	.long 10
+	.long 40
+	.long 0x4d4f4401
+	.asciz "MasonMeta"
+	.p2align 3
+	.long 1, 1, 24, 0
+	.zero 24
+	.section .note.GNU-stack,"",%progbits

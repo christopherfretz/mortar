@@ -739,63 +739,122 @@ archive size; for a 100 MB archive, ~20 ms].
 
 **O-24 (the static check against shared-object inputs: "dynamic link
 time" without a runtime).** `[M6]` for executables, `[M4]` for
-shared-object outputs. Specified, not prototyped: its package (WP-075,
-§13) starts with a prototype over test-producer outputs and the shapes
-below. When the output is dynamic, mortar compares, before it writes
-anything, the output's rows with the tables (`.note.mason`, O-50..O-52)
-of the shared objects that are **in the output's scope**: those it reads
-as inputs (named on the command line or found by `-l`) **and** that end
-up in the output's `DT_NEEDED`. A library that `--as-needed` dropped is
-never loaded with this output and is not compared; the indirect
-`DT_NEEDED` closure is not read. Identity is (name, version node)
-(`meta.md` MT-13): a table row's version is its `.dynsym` entry's
-`.gnu.version` node; the output's own definition's version is the one
-its version script or `.symver` gives; two definitions of one name with
-different version nodes are different entities and are never compared
-(R6: one node per library, the `libLLVM`/`libclang-cpp` practice, is
-legal). Unversioned definitions, and definitions with the same node
-name, are one entity.
+shared-object outputs. Prototyped (WP-075, `spec/landed/meta/WP-075.md`:
+every shape below on aarch64 and x86-64, linked by GNU ld and by lld,
+run under glibc 2.41's loader; musl's loader is not measured). When the
+output is dynamic, mortar compares, before it writes anything, the
+output's rows with the tables (`.note.mason`, O-50..O-52) of the shared
+objects that are **in the output's scope**: those it reads as inputs
+(named on the command line or found by `-l`) **and** that end up in the
+output's `DT_NEEDED`. A library that `--as-needed` dropped is never
+loaded with this output and is not compared; the indirect `DT_NEEDED`
+closure is not read. Lookup order is the output first, then its
+`DT_NEEDED` order. A library without a table is not compared and no byte
+of it is read beyond what the link reads today.
 
-- **(a) output against library.** For each row of a library's table whose
-  (name, version) the output defines from a live unit with a kind 2 row
-  and **exports** (in the output's `.dynsym`, `STV_DEFAULT` or
-  `STV_PROTECTED`, not reduced to local by a version script): the
-  keeper's row hash (its first 8 bytes, O-51) is compared with the
-  table's; a difference is `odr-violation` naming the library as the
-  other place. Protected and `-Bsymbolic` definitions are compared like
-  any other: they stop only the defining module from being preempted,
-  and other modules still bind them (re-review R4/R5). A name the output
-  does not export at all (hidden, version-script `local:`) is not
-  compared: no other module can bind it. The diagnostic's note says
-  which module runs which copy, from the rows' `NONPREEMPTIBLE` flags
-  (O-51) and the lookup order.
+Identity (`meta.md` MT-13) is (name, version node): a table row's
+version is its `.dynsym` entry's `.gnu.version` index (index 1, or no
+`.gnu.version` at all, is **unversioned**); a mortar-made output's
+definitions are unversioned (`--version-script` is refused). Two rows of
+one name are compared when the loader connects them, which glibc's does
+as follows (each measured, the rows of the record):
+
+- **Same version node name, or both unversioned:** one entity; the one
+  earlier in lookup order provides it to both (`libs1`, `libs2` at node
+  `V1`: 1,1).
+- **Different node names:** different entities, never compared (R6: one
+  node per library, the `libLLVM`/`libclang-cpp` practice, is legal;
+  `libv1@LIB1_1`, `libv2@LIB2_1`: 1,2).
+- **Unversioned against versioned:** an unversioned definition earlier
+  in lookup order binds every versioned reference to its name, default
+  (`f@@V2`) and non-default (`f@V1`) alike. Measured with the
+  unversioned definition in a library with `.gnu.version` and no version
+  definitions (index 1), in one built `-nostdlib` with no `.gnu.version`,
+  and in one with version definitions where the symbol has index 1 (the
+  base node): the three behave the same (1,1,1). With the versioned
+  library earlier, an unversioned reference binds that library's
+  definition at version index 2, whether default (`libv2@@LIB2_1`: 2,2)
+  or not (`f@V1` when `f@@V2` is index 3: 21, not 22).
+
+Which comparisons that makes:
+
+- **(a) output against library.** The output's definition of a name it
+  **exports** (in the output's `.dynsym`, `STV_DEFAULT` or
+  `STV_PROTECTED`, not reduced to local by a version script), from a
+  live unit with a kind 2 row, is first in lookup order, so every
+  in-scope library whose references to the name are not bound locally
+  runs it. The keeper's row hash (its first 8 bytes, O-51) is compared
+  with each library row of that name that is unversioned, or that is
+  the library's default version (`@@`, the version its own references
+  name); a difference is `odr-violation` naming the library as the
+  other place. A row flagged `NONPREEMPTIBLE` is compared like any
+  other: the flag stops only the library's own references from binding
+  the output's copy, and the output and every other module still run
+  the output's (re-review R4/R5). A name the output does not export at
+  all (hidden, version-script `local:`) is not compared: no other module
+  can bind it (shape "exe hidden": 2,1, none).
 - **(b) library against library.** Two in-scope libraries whose tables
-  carry one (name, version) that the output does not define: their
-  hashes are compared, and a difference is `odr-violation` naming both.
-  Only when neither row is `NONPREEMPTIBLE` and the definitions are
-  unversioned or of one version node does the note say "the one earlier
-  in `DT_NEEDED` order provides the definition to both" (K18 at static
-  link time); a `NONPREEMPTIBLE` library runs its own copy and the other
-  binds it if it comes first in lookup order (R4/R5).
+  carry rows of one name that the output does **not export** (export as
+  (a) defines it; a hidden copy in the output binds nothing, so the
+  libraries still bind each other: "exe hidden, liba, libb": 2,1,1).
+  When the output does export the name, (a) against each library is the
+  whole report: the output's copy is first in lookup order. Of the
+  library earlier in lookup order (E) and the later one (L):
+  - rows of one entity (same node name, or both unversioned): compared;
+  - E unversioned, L versioned: E's row against L's default row (L's
+    own references name that version and bind E's copy);
+  - E versioned, L unversioned: L's row against E's row at version
+    index 2 (L's references bind it); when E has no row of the name at
+    index 2, not compared (see the exclusions).
+
+  A `NONPREEMPTIBLE` row does not remove a pair: its module runs its own
+  copy while the other runs another, which is the violation either way
+  (R4/R5). A difference is `odr-violation` naming both.
 - **(c) sizes.** A variable the output references and an in-scope
   library defines, with a kind 5 row of the output carrying a size:
-  compared with the library's `st_size` (`odr-size-mismatch`, K18b's
-  copy relocation would truncate).
+  compared with the library's `st_size` (`odr-size-mismatch`): K18b's
+  copy relocation would truncate (linked against the old size, glibc
+  prints ``Symbol `arr' has different size in shared object`` and the
+  program reads `0`).
 
-`SYSTEM` rows follow O-32. Cost: merges of sorted sequences (the tables
-and the output's kind 2 rows are sorted by key) [estimate: about 2.3 ns
-a row for a merge, measured by the first draft's hook prototype,
-`dynamic`]. Status: like kind 2 (`--odr=strict` until its corpus,
-O-47). T-O-24's shapes: (a) an executable exporting a vague definition
-that a mortar-made `.so` defines differently, and the same unexported
-(hidden): one finding, then none; (b) two `.so` inputs, differing; a
-`.so` linked `-Bsymbolic`, `-Bsymbolic-functions`, and one with a
-`protected` definition, each against a default-visibility library
-(R4/R5: findings); a differing library that `--as-needed` drops (no
-finding); two libraries with one version node each (R6: no finding) and
-with one shared node (a finding); (c) K18b. What only load time can see
-(a different build of the library at run time, `dlopen`ed libraries,
-libraries the link never named, indirect dependencies) is X12.
+The diagnostic's note says which module runs which copy, from the
+lookup order, the rows' `NONPREEMPTIBLE` flags (O-51) and the binding
+rows above: "`liba` is earlier in lookup order: it provides the
+definition to `libb`" and, for a `NONPREEMPTIBLE` row, "`libsym` runs
+its own copy". Measured: `-Bsymbolic` and protected libraries run their
+own copy in both orders and the other library binds theirs when they
+come first (1,1 then 1,2); `-Bsymbolic-functions` the same (1,1).
+
+**Not compared** (the outcome depends on what the link cannot see; no
+false positive is the rule): a library's non-default version (`f@V1`
+beside the default `f@@V2`), except as the index-2 row that a later
+unversioned library binds in (b): only modules that name that version
+bind it, and they are outside the scope (a module linked against the old `f@V1` ran the
+unversioned provider's copy when it came first, 1, and `libnv`'s `f@V1`
+otherwise, 21); an unversioned reference against a versioned library
+earlier in lookup order whose name has no definition at index 2 (glibc
+then takes a non-hidden version only when there is exactly one; not
+measured); and everything only load time sees (a different build of
+the library at run time, `dlopen`ed libraries, libraries the link never
+named, indirect dependencies: shape "closure", where `libd` comes in by
+`libe`'s `DT_NEEDED`, is X12).
+
+`SYSTEM` rows follow O-32. Cost: a merge of sorted sequences (the tables
+and the output's rows are sorted by key); measured (WP-075, release
+build, generated tables): about 150 ns of CPU and 65 bytes of peak RSS
+per library row read (two tables of 15,000 rows: +4.6 ms, +1.9 MB), and
+about 200 ns per row written by O-50; zero unless `--odr=strict` or
+`--odr-table` asks for it.
+Status: like kind 2 (`--odr=strict` until its corpus, O-47). T-O-24's
+shapes: (a) an executable exporting a vague definition that a
+mortar-made `.so` defines differently, and the same unexported
+(hidden): one finding, then none; (b) two `.so` inputs, differing, both
+orders; a `.so` linked `-Bsymbolic`, `-Bsymbolic-functions`, and one
+with a `protected` definition, each against a default-visibility
+library (R4/R5: findings); a differing library that `--as-needed` drops
+(no finding); two libraries with one version node each (R6: no finding)
+and with one shared node (a finding); unversioned against versioned in
+both orders; (c) K18b.
 
 **O-25 (vtables emitted with and without RTTI; K16c).** For each `_ZTV`
 symbol defined by COMDAT copies in two or more live files whose units'
@@ -1099,7 +1158,7 @@ O-47's table, by amendment.
 | `odr-internal-reference` | K-3 | strict | `k12proxy`: libstdc++ sets it | Q5 |
 | `odr-abi-mismatch` (`ENFORCE` keys), `odr-isa-mismatch` | K-2 | strict | cannot run yet | WP-074's oracle at zero |
 | `odr-vtable-rtti-mismatch` | K-2 | strict | model only | WP-074's oracle at zero |
-| O-24 (shared-object inputs) | K-3 and libraries with tables | strict | specified, not prototyped (WP-075 starts with the prototype) | with kind 2 |
+| O-24 (shared-object inputs) | K-3 and libraries with tables | strict | prototyped and implemented (WP-075): (a), (b), (c) | with kind 2 |
 | `.note.mason` table | K-3 | off (`--odr-table`) | `note-final` | Q2 |
 | O-34 kind 5 vs foreign sizes | K-5 | strict | cannot run yet | WP-074's oracle at zero |
 | `SYSTEM` `-std` differences (O-32) | K-3 | strict (warnings, O-32); an `--odr-stats` count in any other mode that compares | `std-mix`: 210 in one pair of TUs | Q6 |
@@ -1169,6 +1228,17 @@ default), no table. The table is data only: it adds no code to the
 output. The runtime of §10.3 is added only by the prototype option of
 WP-077, never by `--odr-table`.
 
+Implemented (WP-075) for dynamic executables, PIE or not: `=exported`
+writes the table; `=full` is refused by name until WP-076; a static
+executable exports nothing and gets no table; a shared object's table
+is `[M4]`. Every row of an executable's table carries `NONPREEMPTIBLE`:
+an executable comes first in lookup order and binds its own definitions
+at link time, so it always runs its own copy. The keeper's unit is the
+file whose definition resolution kept; its first kind 2 row for the
+symbol is the row written. Bytes are a function of the rows (sorted by
+key, then `.dynsym` index), so the output stays deterministic, and the
+verifier's verdict on an output does not change with the table (T-O-50).
+
 **O-51 (row).** `{u64 key; u64 hash; u32 dynsym; u16 flags; u16
 reserved}` (24 bytes), sorted by key: the key of MT-13; the first 8 bytes
 of the kind 2 hash of the **keeper's unit's** row (the copy that runs:
@@ -1180,8 +1250,21 @@ table carries no strings and the identity is (name, version), MT-13);
 O-15's flags as a `u16`, so `SYSTEM` (bit 8) reaches readers, plus bit
 15 `NONPREEMPTIBLE` (table rows only: the module binds its own copy,
 because the definition is protected or bound by `-Bsymbolic`/
-`-Bsymbolic-functions`). Header `{u32 version =
-1; u32 count; u32 row_size = 24; u32 reserved}`.
+`-Bsymbolic-functions`). `-Bsymbolic-functions` leaves no trace in the
+`.so` (GNU ld and lld set `DF_SYMBOLIC` for `-Bsymbolic`, nothing for
+`-Bsymbolic-functions`; measured), so the row's `NONPREEMPTIBLE` flag is
+the only carrier of that fact for a reader of the output. The key is
+FNV-1a 64 of the `.dynsym` name (without its version, which
+`.gnu.version` carries). Header `{u32 version = 1; u32 count; u32
+row_size = 24; u32 reserved}`. A table that does not parse (a note too
+short for its header, a version other than 1, a `row_size` other than
+24, a `count` the descriptor cannot hold, rows out of key order, a
+second `MasonMeta` table note in the same object, a `dynsym` index
+outside `.dynsym`) is `meta-malformed` at the library's `.note.mason`,
+never a panic (`mortar_meta::table`'s mutation test: every truncation
+and every single-byte change of a table is a table or a named error).
+Tables are read only under `--odr=strict` (O-24), where a malformed one
+stops the link like any other malformed container (MT-14).
 
 Size: 24 bytes per exported vague definition. Measured counts of
 exported weak or unique definitions in system libraries (`nm -D`, by
@@ -1213,6 +1296,20 @@ the program. `eu-elflint` exits non-zero (`unknown object file note type
 … with owner name 'MasonMeta'`), as for every unknown note; whether any
 distribution's QA runs `eu-elflint` on development builds is not known:
 a known cost of `--odr-table`, and one reason it is off by default.
+
+Measured again on mortar's own output (WP-075; aarch64 natively, x86-64
+under qemu; binutils 2.44, elfutils 0.192, gdb 16.3, lldb 19):
+`.note.mason` gets a `PT_NOTE` of its own (alignment 8) after the
+4-aligned one; `readelf -n` and `eu-readelf -n` print the note as
+above; `strip` (default, `--strip-debug`, `--strip-unneeded`,
+`--strip-all`) and `eu-strip` keep the descriptor byte for byte;
+`objcopy --remove-section=.note.mason` removes the section and the note
+(`readelf -n` no longer finds it), and the stripped and the
+note-removed programs run; `eu-elflint --gnu-ld` makes the one
+complaint above twice (the segment and the section), and nothing else:
+the same output without the table passes with no allowance (`dyn.md`
+D-71); gdb (aarch64) and lldb stop at `main` and print the backtrace
+(`tests/link/dyn/odr/o50-table.test`).
 
 Why a note, measured against the alternatives (`dynamic`; the same table
 in a `PT_NOTE`, in a `PT_LOOS`-range segment `0x6d736e00`, and found
@@ -1740,7 +1837,7 @@ implementation of the verdict) is Q11.
 | O-20, O-21 | T-O-21 | the optimisation and the normative rule report the same findings over the whole corpus, K13 included |
 | O-22 | T-O-22 | kind 3 and 5 rows from 3 units grouped in `FileId` order |
 | O-23 | T-O-23 | K17 with and without `--odr-check-archives` |
-| O-24 | T-O-24 | the shapes listed in O-24: (a) exported and hidden; (b) two libraries; `-Bsymbolic`, `-Bsymbolic-functions` and `protected` libraries (R4/R5, findings); an `--as-needed`-dropped library (none); one version node per library (R6, none) and a shared node (a finding); (c) K18b |
+| O-24 | T-O-24 | the shapes listed in O-24: (a) exported and hidden; (b) two libraries; `-Bsymbolic`, `-Bsymbolic-functions` and `protected` libraries (R4/R5, findings); an `--as-needed`-dropped library (none); one version node per library (R6, none) and a shared node (a finding); unversioned against versioned, both orders; (c) K18b; a malformed table; libraries without tables and the default mode (none). `tests/link/dyn/odr/o24-*.test` (WP-075) |
 | O-25 | T-O-25 | K16c with two vtable copies; F5 silent |
 | O-30, O-31 | T-O-30 | K16a/K16e/K16d notes under strict; `abi.rtti` never a finding |
 | O-32 | T-O-32 | `mixed-std-system-row` → a stats count; `mixed-std-user-body` → a finding |
@@ -1751,7 +1848,7 @@ implementation of the verdict) is Q11.
 | O-42 | T-O-42 | `meta.md` T-MT-42: bytes read counted |
 | O-44 | T-O-44 | the stats line's fields on a corpus link |
 | O-45 | T-O-45 | the bench lane's comparison |
-| O-50, O-51 | T-O-50 | the row set: default, protected, `-Bsymbolic` and `-Bsymbolic-functions` definitions have rows (the last three `NONPREEMPTIBLE`), hidden and version-script `local:` ones do not; versioned names; the keeper's hash after a warned link |
+| O-50, O-51 | T-O-50 | the row set: default, protected, `-Bsymbolic` and `-Bsymbolic-functions` definitions have rows (the last three `NONPREEMPTIBLE`), hidden and version-script `local:` ones do not; versioned names; the keeper's hash after a warned link. In an executable (WP-075, `tests/link/dyn/odr/o50-table.test`, `crates/mortar/tests/odr_dynamic.rs`): default and protected rows, every one `NONPREEMPTIBLE`, none for hidden; identical bytes on two links; none without the option |
 | O-52 | T-O-52 | `note-final`'s tolerance matrix |
 | O-53, O-54, O-56 | T-O-54 | WP-077's prototype matrix (O-58) on three targets; not a release test until a runtime ships |
 | O-55, O-57 | T-O-57 | K18c's two outcomes unchanged by the table |
@@ -1981,15 +2078,19 @@ Experiment 7 (real units at real row counts) is WP-071's acceptance test
   sections (`meta.md` MT-16).
 - What `strip` does to a non-allocated `.mason.meta` in an executable
   (MT-32).
-- Every cost marked `[estimate]`: O-4, O-21, O-22, O-24, O-30, the W
+- Every cost marked `[estimate]`: O-4, O-21, O-22, O-30, the W
   checks' cost in mortar (only Python prototypes ran); the hook's cost on
   real x86 hardware.
 - Everything that needs kiln's hasher: the false-positive rates of the
   record checks, of the odr-use analysis and of the C canonical types;
   the model (§12.7) checks the rules, not the hasher.
-- The O-24 check itself (specified, not prototyped).
-- The O-24 shapes R4/R5, `--as-needed` and R6 at static link time (the
-  re-review ran them at load time only).
+- O-24 under musl's loader, and glibc's choice for an unversioned
+  reference against an earlier versioned library with no definition at
+  index 2 (excluded, "Not compared"). O-24 for shared-object outputs
+  (`[M4]`).
+- O-24's cost in a link of real libraries with tables (none exist before
+  M4): measured on generated tables of 4,000, 13,000 and 15,000 rows
+  only (`spec/landed/meta/WP-075.md`).
 - The hook as a whole: the open problem of O-54 (R1m, R2m, R3m, R6 fail
   on prototype 2), versioned lookup, the quadratic path at K = 10, its
   `secure_getenv` and `write`-only output: WP-077's matrix.

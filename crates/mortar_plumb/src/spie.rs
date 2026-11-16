@@ -112,6 +112,7 @@ pub(crate) fn check(
     image: &Image<'_>,
     out: &DynOut,
     entry: Option<&str>,
+    exports: bool,
     format: Format,
     v: &mut Vec<Finding>,
 ) {
@@ -164,10 +165,44 @@ pub(crate) fn check(
             v.push(d14(format!("{} in a static-pie: {why}", dynout::tag_name(tag))));
         }
     }
-    // P-D14, .dynsym: exports nothing (no -E, which is outside stage 3).
+    // P-D14, .dynsym: exports nothing. `-E` and `--export-dynamic-symbol`
+    // have no effect in mortar's output (D-1); a reference then writes
+    // the exports, which nothing reads (glibc's static `dlopen` binds no
+    // library to them, WP-056), each held to the program's definition.
     for s in out.syms.iter().skip(1) {
+        let section = s.sym_type() == mortar_elf::consts::STT_SECTION;
+        if exports && !mortar && s.defined() && !section {
+            let vis = s.st_other & 3;
+            if vis == 1 || vis == 2 {
+                v.push(d14(format!(
+                    "'{}' is exported with visibility {vis} (gABI: made local)",
+                    s.name
+                )));
+            }
+            let def = image.global(&s.name).or_else(|| image.unique(&s.name));
+            match def {
+                Some(o) if o.sym.st_shndx != 0 && o.sym.st_value != s.st_value => {
+                    let mut f = d14(format!(
+                        "'{}' is exported at {:#x}, the program defines it at {:#x}",
+                        s.name, s.st_value, o.sym.st_value
+                    ));
+                    f.expected = Some(o.sym.st_value);
+                    f.found = Some(s.st_value);
+                    v.push(f);
+                }
+                None if image.sections.iter().any(|x| x.name == ".symtab") => {
+                    v.push(d14(format!(
+                        "'{}' is exported by a static-pie whose .symtab defines no global of that name",
+                        s.name
+                    )));
+                }
+                // The program's value, or no .symtab to compare with.
+                _ => {}
+            }
+            continue;
+        }
         // GNU ld's AArch64 section symbols name nothing a lookup finds.
-        if s.defined() && (mortar || s.sym_type() != mortar_elf::consts::STT_SECTION) {
+        if s.defined() && (mortar || !section) {
             v.push(d14(format!(
                 "'{}' is exported by a static-pie: nothing can look it up (D-1)",
                 s.name

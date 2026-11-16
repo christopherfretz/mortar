@@ -1385,9 +1385,11 @@ must make possible, so that M1 does not foreclose it.
   and keeps its reserve in the chunks before it (the RELRO run ends with
   `.pad.relro`, which already covers its tail). The default policy
   leaves no slack, so a normal link pays nothing (L-87). An incremental
-  policy is opted into (`--incremental`, `cli.md`, M7). Its reserve is a
-  percentage per output section, as in gold. The percentage and its
-  unit are open (Q8).
+  policy is opted into (`--incremental`, `cli.md`, M7). Its capacities
+  are `spec/incr.md` IN-33's: per (file, output section, category)
+  region in the hole-tolerant sections of L-143, a tail per output
+  section, a reserve per `PT_LOAD`, `size/8` past each packed chunk, and
+  a size class per debug contribution. Q8 is answered there.
 - **L-142 [C] [M7] (packed sections)** Some output sections must not have
   holes, because something reads them as a dense array or a
   self-delimiting sequence:
@@ -1398,10 +1400,18 @@ must make possible, so that M1 does not foreclose it.
   - notes (a sequence);
   - `.tm_clone_table`;
   - `.debug_*`, where a hole is read as a unit header.
-  Each is one chunk. Its slack is only its capacity beyond `size`, which
-  is beyond `sh_size` (L-86, L-141), and an edit inside it relays the
-  whole chunk. Growing such a section changes its end symbol's value,
-  and the dependency index records the symbol's users (**Q4**, open).
+  Each is one chunk whose contributions keep the full link's order. Its
+  slack is only its capacity beyond `size`, which is beyond `sh_size`
+  (L-86, L-141); an edit inside it rewrites the whole chunk in the full
+  link's order, within its capacity. Two packed sections admit dead
+  ranges that are records of their own grammar rather than holes:
+  `.eh_frame`, whose per-file ranges may end in a padding CIE
+  (`spec/incr.md` IN-34a), and the `.debug_*` sections, whose dead
+  contributions are neutral units (IN-50–IN-53). Both are dead ranges in
+  the sense of IN-3a, recorded in the decision tables and checked by the
+  verifier. No other packed section has a dead range. Growing such a
+  section changes its end symbol's value, and the dependency index
+  records the symbol's users (`spec/incr.md` IN-25).
 - **L-143 [C] [M7] (hole-tolerant)** `.text` (holes filled with the trap
   pattern), `.rodata`, `.data`, `.bss`, `.data.rel.ro`, `.tdata`/`.tbss`
   (holes only at the end, since TLS offsets are baked into code) and
@@ -1415,17 +1425,20 @@ must make possible, so that M1 does not foreclose it.
   constant of the class) and the chunk still parses as its class
   (`SHF_MERGE|SHF_STRINGS` with any `sh_entsize`). Pieces never move,
   so no reference to a kept piece changes. The chunk is repacked only by
-  L-144 step 3.
-- **L-144 [C] [M7] (growth)** When a section changes size, the
-  incremental link tries, in order, and takes the first that works:
-  1. in place, if it fits the same offset (shrinking leaves a hole);
-  2. move it into slack of the same chunk, and refill its referrers
-     through the dependency index;
-  3. relayout the chunk (stage C for that chunk only), which keeps the
-     chunk's address if its capacity holds;
-  4. a full relayout, keeping every decision that the new inputs do not
-     invalidate.
-  Each step yields a valid layout or reports why it gave up.
+  L-144 step 3. An unused piece is a dead range (`spec/incr.md` IN-3a):
+  recorded in the decision tables, never the target of a live
+  reference, and exempt from fill, because a live reference may share
+  its suffix.
+- **L-144 [C] [M7] (growth)** When a contribution changes size, the
+  incremental link tries, in order: (1) in place, within its region's
+  capacity (a shrink leaves a hole, L-143 sections only); (2) the output
+  section's tail reserve, the old region becoming a hole; (3) a growth
+  step of the output section into its `PT_LOAD`'s reserve, moving the
+  sections after it in the segment and refilling their units and
+  referrers; (4) a full link with the reason `reserve-exhausted`. A
+  packed chunk (L-142) skips (1) and (2): it is rewritten whole within
+  its capacity, then (3), then (4). Each step yields a valid layout or
+  reports why it gave up (`spec/incr.md` IN-32).
 - **L-145 [C] [M7]** Step 4 reruns stage D: a sequential O(chunks) pass
   that recomputes every address, alignment gap, 843419 start padding
   and the `.pad.relro` size from the stage C output and the patch

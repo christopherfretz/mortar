@@ -211,6 +211,7 @@ impl World {
             merge: &self.merge,
             commons: &self.commons,
             synthetic: &self.synthetic,
+            synth_holes: &[],
             stack_notes: &self.stack_notes,
             target: &self.target,
             options: &self.options,

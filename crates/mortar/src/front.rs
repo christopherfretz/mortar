@@ -262,6 +262,10 @@ pub struct Env<'e> {
     /// computed layout, the decision tables to write instead, put in place
     /// before `Layout::validate`.
     pub replay: Option<&'e Replay<'e>>,
+    /// An incremental-mode link (`spec/incr.md` IN-30 to IN-34a, IN-50):
+    /// layout takes IN-33's slack and `.eh_frame` its per-file CIEs.
+    /// `false` in a plain link, which pays nothing for it (L-87).
+    pub slack: bool,
 }
 
 /// The replay hook's function (IN-61).
@@ -274,6 +278,7 @@ impl std::fmt::Debug for Env<'_> {
             .field("cwd", &self.cwd)
             .field("pool", &self.pool)
             .field("replay", &self.replay.is_some())
+            .field("slack", &self.slack)
             .finish()
     }
 }
@@ -371,7 +376,14 @@ pub fn front<'s>(
     }
     // 40: the one-definition rule (`spec/odr.md` §8.1, O-41); nothing is
     // read under `--odr=off` (O-42).
-    let odr = mortar_odr::check(&inputs, &outcome.resolution, &plan.diagnostics.odr, &pool);
+    // A dynamic output's scope (O-24: its `DT_NEEDED`) and kind; the only
+    // dynamic outputs are executables (shared objects are M4).
+    let odr_output =
+        matches!(plan.kind, plan::OutputKind::Executable | plan::OutputKind::PieExecutable)
+            .then_some(mortar_odr::Output { needed: &outcome.needed, executable: true });
+    let odr =
+        mortar_odr::check(&inputs, &outcome.resolution, &plan.diagnostics.odr, odr_output, &pool);
+    let odr_table = odr.table;
     for (k, d) in odr.diagnostics {
         diag.emit(k, d);
     }
@@ -400,7 +412,12 @@ pub fn front<'s>(
     };
     let target = Target::of(machine);
     let options = match Options::from_plan(&plan, &target) {
-        Ok(o) => o,
+        Ok(mut o) => {
+            if env.slack {
+                o.slack = mortar_layout::slack::Slack::INCREMENTAL;
+            }
+            o
+        }
         Err(d) => {
             let (k, d) = layout_diag(&inputs, &resolution, d, Key::new(90, 0, 0));
             diag.emit(k, d);
@@ -539,8 +556,9 @@ pub fn front<'s>(
     // S-49: the decision (`Slots.eh_records`), then the plan of that list:
     // the one the image writes unless a replay's list differs (rebuilt
     // after the layout, WP-086).
-    let eh_list =
-        EhPlan::select(&merge_eh, |s: SectionId| liveness.is_live(s), &pool, diag).ok()?;
+    // spec/incr.md IN-34a: CIEs de-duplicated per file in incremental mode.
+    let live = |s: SectionId| liveness.is_live(s);
+    let eh_list = EhPlan::select_in(&merge_eh, live, env.slack, &pool, diag).ok()?;
     let mut eh = EhPlan::from_records(&merge_eh, &eh_list, &pool, diag).ok()?;
     drop(eh_list);
     steps.step("eh plan", 0, "");
@@ -593,7 +611,11 @@ pub fn front<'s>(
             relro: options.relro,
             pool: &pool,
         };
-        let (got, tables) = crate::dynlink::plan(&t, &mut slots, diag)?;
+        let (got, mut tables) = crate::dynlink::plan(&t, &mut slots, diag)?;
+        // O-50 to O-52: the table, once `.dynsym`'s order is known.
+        if let Some(rows) = &odr_table {
+            tables.note_mason = Some(note_mason(&inputs, rows, &slots.dynsym));
+        }
         (got, Some(tables))
     } else {
         (GotPlan::new(arch, &slots, got_output, variant, diag).ok()?, None)
@@ -737,6 +759,7 @@ pub fn front<'s>(
             merge: &order.map,
             commons: &commons,
             synthetic: &synthetic,
+            synth_holes: &eh_holes(&eh),
             stack_notes: &stack_notes,
             target: &target,
             options: &options,
@@ -923,8 +946,11 @@ pub fn front<'s>(
     // `.eh_frame`, `.eh_frame_hdr` and `.symtab` (S-49, S-76: the symbol
     // table reads the `.eh_frame` plan), compare-then-rebuild: a second
     // symbol table plan is a cost.
-    if layout.slots.eh_records[..] != *eh.records() {
-        eh = EhPlan::from_records(&merge_eh, &layout.slots.eh_records, &pool, diag).ok()?;
+    let pads = eh_pads(&layout);
+    if layout.slots.eh_records[..] != *eh.records() || pads[..] != *eh.pads() {
+        let ra = padding_ra(machine);
+        let records = &layout.slots.eh_records;
+        eh = EhPlan::from_records_padded(&merge_eh, records, &pads, ra, &pool, diag).ok()?;
         plans.hdr = HdrPlan::new(&merge_eh, &eh, eh_frame_hdr, &pool, diag).ok()?;
         if plans.symtab.is_some() {
             let cx = SymCtx {
@@ -1235,6 +1261,29 @@ fn got_base_defined(
     if defined { output | GlobalFlags::GOT_BASE } else { output }
 }
 
+/// The `.note.mason` table (`spec/odr.md` O-50 to O-52): each row's
+/// `.dynsym` index is its symbol's place in `dynsym` plus one (entry 0 is
+/// the null symbol). A row whose symbol is not in `.dynsym` has no index
+/// and is not written (O-50's rows are exported, so in `.dynsym`, D-21).
+fn note_mason(
+    inputs: &Inputs<'_>,
+    rows: &[mortar_odr::TableRow],
+    dynsym: &[SymbolId],
+) -> mortar_synth::NoteMasonPlan {
+    let mut index: Vec<(SymbolId, u32)> =
+        dynsym.iter().enumerate().map(|(i, &s)| (s, i as u32 + 1)).collect();
+    index.sort_unstable();
+    let table: Vec<mortar_odr::NoteRow> = rows
+        .iter()
+        .filter_map(|r| {
+            let at = index.binary_search_by_key(&r.sym, |e| e.0).ok()?;
+            let name = inputs.symbols.get(r.sym)?.name;
+            Some(r.row(name, index[at].1))
+        })
+        .collect();
+    mortar_synth::NoteMasonPlan::new(mortar_odr::table_note(&table))
+}
+
 /// A dynamic output's synthetic chunk: its kind and size, and for a copy
 /// chunk (`.dynbss`, `.bss.rel.ro`, whose header no plan fixes, D-42) its
 /// alignment (log2).
@@ -1255,6 +1304,9 @@ fn dyn_chunks(
         v.push((SynthKind::RelaDyn, d.rela.size(), None));
     }
     v.push((SynthKind::Dynamic, d.dynamic.size(), None));
+    if let Some(n) = &d.note_mason {
+        v.push((SynthKind::NoteMason, n.size(), None));
+    }
     for (kind, place) in [
         (SynthKind::DynBss, mortar_core::CopyPlace::DynBss),
         (SynthKind::BssRelRo, mortar_core::CopyPlace::RelRo),
@@ -1265,6 +1317,41 @@ fn dyn_chunks(
         }
     }
     Ok(v)
+}
+
+/// The padding of `eh` as holes of the `.eh_frame` chunk (`spec/incr.md`
+/// IN-34a).
+fn eh_holes(eh: &EhPlan) -> Vec<mortar_layout::chunk::SynthHole> {
+    let synth = SynthKind::EhFrame.synth(false);
+    eh.pads()
+        .iter()
+        .map(|&(offset, size)| mortar_layout::chunk::SynthHole {
+            synth,
+            offset,
+            size,
+            kind: mortar_core::layout::HoleKind::EhPad,
+        })
+        .collect()
+}
+
+/// The `.eh_frame` chunk's holes in `layout` (IN-34a), as `EhPlan` pads.
+fn eh_pads(layout: &Layout) -> Vec<(u64, u64)> {
+    let synth = SynthKind::EhFrame.synth(false);
+    let p = &layout.placement;
+    p.holes
+        .iter()
+        .filter(|h| matches!(p.chunks[h.chunk].kind, ChunkKind::Synthetic(s) if s == synth))
+        .map(|h| (h.offset, h.size))
+        .collect()
+}
+
+/// A padding CIE's return-address register (IN-34a).
+fn padding_ra(machine: mortar_elf::Machine) -> u8 {
+    match machine {
+        mortar_elf::Machine::AArch64 => 30,
+        mortar_elf::Machine::X86_64 => 16,
+        mortar_elf::Machine::I386 => 8,
+    }
 }
 
 /// The synthetic chunks that exist, in S-3 order, as layout takes them,

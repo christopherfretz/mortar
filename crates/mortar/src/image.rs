@@ -214,6 +214,7 @@ pub fn with_link<T>(
                     copy_size: &d.copy.size,
                     bind_now: d.bind_now,
                     relro: d.relro,
+                    note_mason: d.note_mason.as_ref(),
                     syms: cx,
                     args: &f.args,
                 }),

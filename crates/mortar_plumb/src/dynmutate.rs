@@ -34,6 +34,8 @@ pub const CLASSES: &[(&str, &str)] = &[
     ("relro", "P-D4"),
     ("lazy-slot", "P-D10"),
     ("copy-size", "P-D11"),
+    ("copy-relro", "P-D11"),
+    ("copy-section", "P-D11 (Format::Mortar)"),
     ("plt0-disp1", "P-D10"),
     ("plt0-disp2", "P-D10"),
     ("plt-index", "P-D10"),
@@ -63,6 +65,54 @@ fn rd(b: &[u8], o: usize, w: usize) -> u64 {
 
 fn wr(v: u64, w: usize) -> Vec<u8> {
     v.to_le_bytes()[..w].to_vec()
+}
+
+/// The place of a copy at `at` (`size` bytes) mutated (WP-088):
+/// `copy-relro` moves `PT_GNU_RELRO`'s end so that the copy's membership
+/// flips (a read-only definition's copy left writable after relocation,
+/// or a writable one's made read-only); `copy-section` renames the
+/// output section holding it (its name's last letter's case), which only
+/// `Format::Mortar`'s chunk rule reads (D-42; equivalent for a
+/// reference).
+fn copy_place(image: &Image<'_>, at: u64, size: u64, name: &str, c: &mut Vec<Cand>) {
+    let (phoff, phent) = (image.header.e_phoff as usize, usize::from(image.header.e_phentsize));
+    if let Some((i, p)) = image.phdrs.iter().enumerate().find(|(_, p)| p.p_type == PT_GNU_RELRO) {
+        let h = phoff + i * phent;
+        let inside = p.p_vaddr <= at && at + size <= p.p_vaddr + p.p_memsz;
+        let memsz = if inside {
+            Some(at - p.p_vaddr)
+        } else if at >= p.p_vaddr {
+            Some(at + size - p.p_vaddr)
+        } else {
+            None
+        };
+        if let Some(m) = memsz {
+            c.push((
+                "copy-relro",
+                format!(
+                    "PT_GNU_RELRO memsz {:#x} -> {m:#x}: the copy of '{name}' {}",
+                    p.p_memsz,
+                    if inside { "left out" } else { "taken in" }
+                ),
+                vec![(h + 0x28, wr(m, 8)), (h + 0x20, wr(p.p_filesz.min(m), 8))],
+            ));
+        }
+    }
+    let strtab = image.sections.get(usize::from(image.header.e_shstrndx));
+    if let (Some((_, sec)), Some(t)) = (image.alloc_section_of(at, size), strtab)
+        && !sec.name.is_empty()
+    {
+        let o = (t.shdr.sh_offset + u64::from(sec.shdr.sh_name)) as usize + sec.name.len() - 1;
+        if let Some(&x) = image.data.get(o)
+            && x.is_ascii_alphabetic()
+        {
+            c.push((
+                "copy-section",
+                format!("{} (the copy of '{name}') renamed", sec.name),
+                vec![(o, vec![x ^ 0x20])],
+            ));
+        }
+    }
 }
 
 /// Every candidate of the dynamic classes in `image` (none for a static
@@ -212,6 +262,7 @@ pub fn candidates(image: &Image<'_>) -> Vec<Cand> {
                     format!("'{}' size {} -> {}", s.name, s.st_size, s.st_size * 2 + 8),
                     vec![(o + 16, wr(s.st_size * 2 + 8, 8))],
                 ));
+                copy_place(image, r.offset, s.st_size.max(1), &s.name, &mut c);
             }
         }
     }

@@ -104,9 +104,52 @@ pub struct Map {
     pub folds: Vec<Fold>,
     pub chunks: Vec<MapChunk>,
     pub defines: Vec<(Vec<u8>, u64)>,
+    /// The `incremental` record (`spec/plumb.md` §3.2): the link was made
+    /// in incremental mode, so the map claims IN-60's coverage, with or
+    /// without `hole`/`dead` lines. `false` in a plain link.
+    pub incremental: bool,
+    /// The `hole` and `dead` records (`spec/plumb.md` §3.2, `spec/incr.md`
+    /// IN-60), by output section in header order, then offset: empty in
+    /// a plain link.
+    pub dead: Vec<DeadLine>,
     /// The dynamic records (`spec/plumb.md` §3.2, `spec/dyn.md` P-D3);
     /// `None` for a static link, which then writes none of them.
     pub dynamic: Option<DynRecords>,
+}
+
+/// The kind of a `dead` record (`spec/plumb.md` §3.2 and §6.8,
+/// `spec/incr.md` IN-3a): `neutral` an IN-51/IN-51b neutral form of a
+/// debug section, `contribution` a whole dead debug contribution as its
+/// compiler wrote it (IN-53), `strings` dead fragments of a merged string
+/// section (L-147), `cie` unused CIEs in `.eh_frame`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DeadKind {
+    Neutral,
+    Contribution,
+    Strings,
+    Cie,
+}
+
+impl DeadKind {
+    #[must_use]
+    pub const fn token(self) -> &'static str {
+        match self {
+            Self::Neutral => "neutral",
+            Self::Contribution => "contribution",
+            Self::Strings => "strings",
+            Self::Cie => "cie",
+        }
+    }
+}
+
+/// A `hole` record (`kind` `None`) or a `dead` record: a range of output
+/// section `out` at `offset` from its start.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct DeadLine {
+    pub out: Vec<u8>,
+    pub offset: u64,
+    pub size: u64,
+    pub kind: Option<DeadKind>,
 }
 
 /// The output kind of the `output` record (`spec/dyn.md` D-1).
@@ -280,11 +323,29 @@ pub fn render(map: &Map, pool: &Pool) -> Vec<u8> {
         token(name, &mut out);
         let _ = writeln!(out, " {value:x}");
     }
+    render_dead(map, &mut out);
     if let Some(d) = &map.dynamic {
         render_dynamic(d, &mut out);
     }
     out.push_str("end\n");
     out.into_bytes()
+}
+
+/// The `incremental`, `hole` and `dead` records (`spec/plumb.md` §3.2).
+fn render_dead(map: &Map, out: &mut String) {
+    if map.incremental {
+        out.push_str("incremental\n");
+    }
+    for d in &map.dead {
+        out.push_str(if d.kind.is_some() { "dead " } else { "hole " });
+        token(&d.out, out);
+        let _ = write!(out, " {:x} {:x}", d.offset, d.size);
+        if let Some(k) = d.kind {
+            out.push(' ');
+            out.push_str(k.token());
+        }
+        out.push('\n');
+    }
 }
 
 /// The dynamic records, in the format's fixed order (`spec/plumb.md` §3.2).

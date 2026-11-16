@@ -202,6 +202,9 @@ pub struct DynTables {
     /// The sizes of `.gnu.hash`, `.dynsym`, `.dynstr` and, when some entry
     /// is versioned, `.gnu.version` and `.gnu.version_r` (S-108).
     pub sizes: Vec<(SynthKind, u64)>,
+    /// `.note.mason` (`spec/odr.md` O-50 to O-52), with `--odr-table`;
+    /// filled by the front once `.dynsym`'s order is known.
+    pub note_mason: Option<mortar_synth::NoteMasonPlan>,
 }
 
 /// What [`plan`] reads.
@@ -304,15 +307,10 @@ fn kind_and_interp(
             return None;
         }
     };
-    // D-1: a `StaticPie`'s `.dynsym` is the null entry only; exporting
-    // into it is M4's (`--export-dynamic`; GNU ld, lld and mold export
-    // every global there).
-    if kind == DynKind::StaticPie && plan.dynamic.export_dynamic {
-        emit(refused("--export-dynamic in a static-pie").note(
-            "a static-pie's .dynsym holds the null entry only (spec/dyn.md D-1); exports are M4",
-        ));
-        return None;
-    }
+    // D-1: a `StaticPie`'s `.dynsym` is the null entry only, whatever the
+    // line exports: `--export-dynamic` and `--export-dynamic-symbol` are
+    // accepted and have no effect there (GNU ld, lld and mold export, and
+    // nothing can bind the exports: WP-056; judged by P-D14, WP-088).
     // D-1: a `StaticPie` names no interpreter and has no `.interp`.
     let interp = match kind {
         DynKind::StaticPie => None,
@@ -429,6 +427,7 @@ pub fn plan(
         bind_now: t.output_cx.bind_now,
         relro: t.relro,
         sizes,
+        note_mason: None,
     };
     Some((got, tables))
 }

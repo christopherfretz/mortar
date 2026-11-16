@@ -1009,8 +1009,9 @@ impl Unit<'_> {
         judged.plumb.time += started.elapsed();
         let (bytes, report, _) = verified.map_err(|e| error(&e))?;
         // A reference's link that stage 3 does not model (P-D1 "outside
-        // stage 3": an option dyn.md refuses, static-pie, version
-        // definitions, a closure object no search finds) is counted as not
+        // stage 3": an option dyn.md refuses, an i386 dynamic output,
+        // version definitions, a closure object no search finds; a
+        // static-pie is judged, plumb.md §12.4) is counted as not
         // judged by stage 3, by that name; what the earlier stages found
         // is still judged below. mortar's never is: its finding fails.
         let outside =
@@ -1436,6 +1437,11 @@ fn meta_step(step: &Step, objcopy: &Path, args: &[String], dir: &Path) -> Result
     };
     let text = std::fs::read_to_string(dir.join(description))
         .map_err(|e| fail(format!("cannot read '{description}': {e}")))?;
+    // A shared object: its `.note.mason` table (`spec/odr.md` O-50 to
+    // O-52), from `row` lines (`cargo xtask meta table`).
+    if Path::new(input).extension().is_some_and(|e| e == "so") {
+        return crate::meta::fill_table(&text, &dir.join(input), &dir.join(out)).map_err(fail);
+    }
     let sections = crate::meta::parse(&text).map_err(fail)?;
     let [items] = sections.as_slice() else {
         return Err(fail("the description of a 'meta' step has one section".to_owned()));

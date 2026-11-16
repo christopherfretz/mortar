@@ -198,6 +198,19 @@ fn dynamic(linker: Format, output: &[u8], f: &Finding) -> Option<&'static str> {
             "A30: GNU ld writes a RELATIVE record on an AArch64 static-pie's GOT slot of an absolute symbol; the program reads the value plus the load bias",
         );
     }
+    if bfd && spie && exports(output) {
+        let tls = machine == mortar_elf::consts::EM_X86_64
+            && d(14)
+            && m.starts_with("a TLS record (type 18) in a static-pie");
+        let abs = d(9)
+            && (m.ends_with("(a record moves a value that is not an address of the executable)")
+                || m == "a RELATIVE record on a word of an input section that no input relocation makes an address of the executable");
+        if tls || abs {
+            return Some(
+                "A34: GNU ld's static-pie with --export-dynamic: RELATIVE records on words that hold an exported absolute symbol (glibc's _nl_current_*_used), and on x86-64 TPOFF64 records the self-relocation applies before the thread pointer exists (SIGSEGV at start-up)",
+            );
+        }
+    }
     if bfd && spie && machine == mortar_elf::consts::EM_X86_64 {
         let odd = d(10)
             && m.strip_prefix("the PLT entry jumps through 0x")
@@ -312,6 +325,25 @@ fn ifunc_alias(output: &[u8], f: &Finding) -> Option<&'static str> {
     in_plt.then_some(
         "A1: mold's canonical IFUNC symbol is in .plt.got but names .text with the resolver's size",
     )
+}
+
+/// Whether `output`'s `.dynsym` (ELF64) holds a defined entry that is not
+/// a section symbol: a reference's static-pie linked with exports.
+fn exports(output: &[u8]) -> bool {
+    let Ok(h) = mortar_elf::FileHeader::parse(output) else { return false };
+    let Ok(table) = mortar_elf::SectionTable::parse(output, &h) else { return false };
+    let Some(d) = table.iter().find(|s| s.name().is_ok_and(|n| n == b".dynsym")) else {
+        return false;
+    };
+    let x = d.header();
+    let (Ok(at), Ok(size)) = (usize::try_from(x.sh_offset), usize::try_from(x.sh_size)) else {
+        return false;
+    };
+    let Some(b) = output.get(at..at.saturating_add(size)) else { return false };
+    b.chunks_exact(24).skip(1).any(|e| {
+        let shndx = u16::from_le_bytes([e[6], e[7]]);
+        shndx != 0 && e[4] & 0xf != mortar_elf::consts::STT_SECTION
+    })
 }
 
 /// The id of an anomaly text: `"A9"` of `"A9: ..."`.

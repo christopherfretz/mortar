@@ -12,7 +12,9 @@ use mortar_core::resolution::Resolution;
 use mortar_core::split::Split;
 
 use crate::assign::finish;
-use crate::chunk::{ChunkInputs, Common, CopyRow, Staged, SynthChunk, chunk, start_stop_outputs};
+use crate::chunk::{
+    ChunkInputs, Common, CopyRow, Staged, SynthChunk, SynthHole, chunk, start_stop_outputs,
+};
 use crate::diag::LayoutDiag;
 use crate::fixed::{RangeExtension, fixed_point, refix};
 use crate::headers::Headers;
@@ -34,6 +36,8 @@ pub struct Link<'t, 'n> {
     pub merge: &'t MergeMap,
     pub commons: &'t [Common],
     pub synthetic: &'t [SynthChunk],
+    /// The holes inside synthetic chunks (`spec/incr.md` IN-34a).
+    pub synth_holes: &'t [SynthHole],
     /// [`crate::stack::notes`].
     pub stack_notes: &'t [(String, StackNote)],
     pub target: &'t Target,
@@ -154,6 +158,9 @@ pub fn place_with_copies(
         relro: options.relro,
         now: options.now,
         copies,
+        slack: options.slack,
+        section_base: Some(&link.resolution.section_base),
+        synth_holes: link.synth_holes,
     };
     let staged = chunk(&inputs, target, &rules, pool).map_err(|e| vec![e])?;
     steps.step("chunk", u64::from(staged.chunks.len()), "chunk");
@@ -196,6 +203,7 @@ pub fn place_with_copies(
         sized: fixed.sized,
         tls: fixed.addressed.tls,
         entry: syms.entry,
+        holes: staged.holes.clone(),
     };
     steps.step("placement", 0, "");
     Ok(Placed { placement, rules, staged, warnings, rounds: fixed.rounds })

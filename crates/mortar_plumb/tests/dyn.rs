@@ -66,6 +66,14 @@ const SMALL: &[(&str, &str)] = &[
     ),
     ("w4.c", "extern char zsym[8], a4sym[4]; int main(void){return zsym[0]+a4sym[0];}\n"),
     ("lib6.c", "int dvar = 42; int fa(void){return 1;}\n"),
+    // P-D11 under -z norelro (WP-088): a copy of a read-only datum (the
+    // library's `.data.rel.ro`, inside its PT_GNU_RELRO) and of a
+    // writable one.
+    ("libro.c", "int rw_v = 3; static int x = 5; int *const ro_p = &x;\n"),
+    (
+        "ro.c",
+        "extern int *const ro_p; extern int rw_v;\nint main(void){return *ro_p + rw_v - 8;}\n",
+    ),
     (
         "w6.c",
         "extern int dvar; extern int fa(void);\nint loc = 5;\nint *const ro_ploc = &loc;\n\
@@ -423,6 +431,20 @@ fn build() -> Option<Corpus> {
             let out = format!("hello{pm}.{z}");
             let zz = format!("-Wl,-z,{z}");
             b.link("hello", arch, &d, &out, &[pm, &zz, "h.o"], [CLEAN; 3]);
+        }
+
+        // P-D11 (WP-088): copies with and without RELRO. Without it
+        // every reference copies the read-only datum into ordinary
+        // writable memory (GNU ld `.data.rel.ro`, lld `.bss.rel.ro`, mold
+        // `.copyrel`), which P-D11 accepts; with it, inside RELRO.
+        let dr = b.dir(arch, "copy-relro");
+        b.so(arch, &dr, "libro.c", "libro.so", "libro.so", &[]);
+        b.obj(arch, &dr, "ro.c", &["-O1", "-fno-pic"], "ro.o");
+        for z in ["relro", "norelro"] {
+            let zz = format!("-Wl,-z,{z}");
+            let out = format!("ro.{z}");
+            let args = ["-no-pie", zz.as_str(), "ro.o", "libro.so"];
+            b.link("copy-relro", arch, &dr, &out, &args, [CLEAN; 3]);
         }
 
         // P-D10 (WP-082): the PLT header reads the wrong word. x86-64:
@@ -1111,6 +1133,13 @@ fn s12_clean_dynamic_links_verify_clean() {
 #[test]
 fn s12_e1_matrix_is_judged_with_only_its_hazards() {
     judge("e1");
+}
+
+// spec/plumb.md §12 P-D11 (WP-088): copies of a read-only and a writable
+// datum, with RELRO and under -z norelro, are clean for every reference.
+#[test]
+fn s12_p_d11_copies_with_and_without_relro() {
+    judge("copy-relro");
 }
 
 #[test]

@@ -124,6 +124,7 @@ a diagnostic is model §8's: 60 for split and merge (unit `FileId`, seq
   | 23 | `.comment` | mortar's identification (S-100) | always | M1 |
   | 24 | `.dynbss` | copy allocations of writable shared data (`spec/dyn.md` D-42); the first chunk of output section `.bss` | some such allocation | M2 |
   | 25 | `.bss.rel.ro` | copy allocations of read-only or RELRO shared data (D-42); output section `.bss.rel.ro` | some such allocation | M2 |
+  | 26 | `.note.mason` | the one-definition-rule table (`spec/odr.md` O-50-O-52): `SHT_NOTE`, `SHF_ALLOC`, alignment 8 | `--odr-table=exported` and a dynamic executable | M6 |
 
   There is no `.hash` chunk: an executable gets `.gnu.hash` only
   (`spec/dyn.md` D-20; `--hash-style` other than `gnu` is refused).
@@ -131,7 +132,7 @@ a diagnostic is model §8's: 60 for split and merge (unit `FileId`, seq
   A chunk that does not exist gets no `ChunkId`. The numbering is a
   name, not an order: `Placement.order` (layout §10) is the order.
   `.comment` was last so the earlier chunks kept their ids (WP-027e); the
-  M2 rows 24-25 follow it for the same reason.
+  M2 rows 24-25 and M6's row 26 (WP-075) follow it for the same reason.
 - **S-4 [C] (division).** Each chunk declares its `Division`
   (`spec/image.md` §13, I-104) through the `SynthChunk` interface
   (`size`, `division`, `write(cx, range, out)`, `sealed`). `Divisible`
@@ -147,6 +148,7 @@ a diagnostic is model §8's: 60 for split and merge (unit `FileId`, seq
   | `.shstrtab` | `1 + Σ (name + 1)` over output sections |
   | `.note.gnu.build-id` | `16 + align_up(n, 4)` |
   | `.note.gnu.property` | `16 + Σ(8 + align_up(datasz, a))` |
+  | `.note.mason` | `40 + 24 × rows` (`spec/odr.md` O-51, O-52) |
 
   `.strtab`'s range start is found through per-file prefix sums and the
   name offset of every 1024th symbol (input local, global id, or demoted
@@ -1553,13 +1555,19 @@ edit changes.
   next `FragId`; its referrers are the edited file's units, refilled
   anyway. An unused fragment keeps its bytes. A full link given these
   tables gives the same bytes (model §7.3): `MergeMap` is stored in
-  identity terms (output section and content hash, model §7.1).
+  identity terms (output section and content hash, model §7.1). An
+  unused piece is a dead range (`spec/incr.md` IN-3a): recorded in the
+  decision tables, never the target of a live reference, and exempt
+  from fill, because a live reference may share its suffix.
 - **S-111 [M7] (an FDE added or removed).** The edited file's records
-  are a contiguous range of `.eh_frame` (S-46), refilled. When it grows
-  past its capacity, `.eh_frame` grows by layout L-144, and the moved
-  records and the hdr table are refilled (moved FDEs carry their CIE
-  pointers). A CIE that becomes unused stays; a CIE needed for the first
-  time is appended in the edited file's range. `.eh_frame_hdr` is one
+  are a contiguous range of `.eh_frame` (S-46), refilled. In
+  incremental mode `.eh_frame` is grouped in per-file ranges in S-46's
+  order, CIEs are deduplicated within a file only, and a range's unused
+  tail is 0 bytes, absorbed `DW_CFA_nop` padding of the range's last
+  record (4, 8 or 12 bytes), or one padding CIE of at least 16 bytes
+  (`spec/incr.md` IN-34a, with its bytes). A range that outgrows its
+  capacity makes the whole section be rewritten in full-link order. The
+  terminator is always the section's last word. `.eh_frame_hdr` is one
   unit, refilled whenever an FDE's address changes (a sort of 10^6
   entries, about 10 ms). Per-file capacity is `spec/incr.md`'s policy;
   the shape allows it because `Slots.eh_records` is a table and a hole

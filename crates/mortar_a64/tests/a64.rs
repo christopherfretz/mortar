@@ -246,18 +246,21 @@ fn s6_1_classify_every_type_number() {
             }
         }
     }
-    // a64.md §1: 61 M1, 41 M2, 16 later, 22 refused.
-    assert_eq!(by_status, [61, 41, 16, 22]);
+    // a64.md §1: 63 M1, 39 M2, 16 later, 22 refused (the traditional
+    // TLSGD pair, 513 and 514, M1 since WP-090: R4's static column).
+    assert_eq!(by_status, [63, 39, 16, 22]);
     // Row 313, M1 since WP-027d (GCC's `-fpie -O0` GOT loads; not in the census).
     assert!(m1.classify(313, site).is_ok());
-    // The census's 34 types: 32 M1, the traditional TLSGD pair M2.
+    // The census's 34 types: all M1 (the traditional TLSGD pair since
+    // WP-090: a static link takes R4's LE form or refuses the sequence).
     let census = [
         257, 258, 260, 261, 264, 266, 268, 269, 273, 274, 275, 277, 278, 280, 282, 283, 284, 285,
         286, 299, 309, 311, 312, 513, 514, 541, 542, 543, 549, 551, 562, 563, 564, 569,
     ];
     let m1_count = census.iter().filter(|&&t| m1.classify(t, site).is_ok()).count();
-    assert_eq!(m1_count, 32);
-    assert!(M2.classify(513, site).is_ok() && m1.classify(513, site).is_err());
+    assert_eq!(m1_count, 34);
+    assert!(M2.classify(513, site).is_ok() && m1.classify(513, site).is_ok());
+    assert!(M2.classify(514, site).is_ok() && m1.classify(514, site).is_ok());
     // Refused and unknown.
     let hex = |t: u32| m1.classify(t, site).unwrap_err().to_string_name();
     assert_eq!(hex(0xE000), "0xe000");

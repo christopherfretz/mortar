@@ -162,6 +162,7 @@ fn statuses() {
                     | "--odr"
                     | "--no-odr-check"
                     | "--odr-stats"
+                    | "--odr-table"
                     | "--detect-odr-violations"
                     | "--incremental"
                     | "--no-incremental"
