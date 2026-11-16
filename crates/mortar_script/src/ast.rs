@@ -153,3 +153,100 @@ pub enum FileForm {
     /// `-l:file`: as `-l :file` on the command line.
     LibraryVerbatim,
 }
+
+// ---- version scripts and dynamic lists (`spec/script.md` §9, M4) -------
+//
+// The AST of §9.1 (WP-116); the parser that builds it is WP-125's
+// (`version.rs`). Plain data: what an entry means (exact name or glob,
+// its escapes) is `spec/resolve.md` §9.7 "Entries", decided from the raw
+// text kept here, never by the parser.
+
+/// A version script (§9.1 `version-script`): every `--version-script`
+/// file of the line read as one script, in order (or the body of a
+/// `VERSION` command). Either named nodes, or one anonymous node alone.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
+pub struct VersionScript {
+    /// The nodes in the order the files and the text give them.
+    pub nodes: Vec<VersionNode>,
+}
+
+impl VersionScript {
+    /// Whether the script is one anonymous node (`{ global: a; local: *;
+    /// };`): its keys are exported unversioned (`spec/dyn.md` D-114).
+    #[must_use]
+    pub fn is_anonymous(&self) -> bool {
+        matches!(self.nodes.as_slice(), [node] if node.name.is_none())
+    }
+}
+
+/// One node: `NAME { body } parents ;`, or the anonymous `{ body } ;`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct VersionNode {
+    /// The version name; `None` for the anonymous node.
+    pub name: Option<Word>,
+    /// The parent nodes, in the order written (GNU ld accepts several,
+    /// §9.1), each an earlier node of the script.
+    pub parents: Vec<VersionParent>,
+    /// The entries of the body, in order, each with its scope.
+    pub entries: Vec<VersionEntry>,
+    /// Which file of the line the node is in: the index among the
+    /// `--version-script` files, in command-line order (0 for a `VERSION`
+    /// command). Spans are offsets into that file.
+    pub file: u32,
+    /// The node, name (or `{`) to its `;`.
+    pub span: Span,
+}
+
+/// A parent named after a node's closing `}`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct VersionParent {
+    /// The name as written.
+    pub name: Word,
+    /// The index in [`VersionScript::nodes`] of the node it names, which
+    /// comes earlier (a forward or missing parent is refused, §9.1).
+    pub node: usize,
+}
+
+/// One entry of a node's body or of a dynamic list.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct VersionEntry {
+    /// `global:` or `local:` in force where it stands (`Global` before the
+    /// first label, §9.1). Always `Global` in a dynamic list.
+    pub scope: Scope,
+    /// The language of the `extern` block it is in, if any.
+    pub language: Language,
+    /// The pattern: for an unquoted name the **raw text** as written,
+    /// backslashes and glob bytes kept; for a quoted string the bytes
+    /// between the quotes (`Word::quoted` set: always an exact name).
+    pub pattern: Word,
+}
+
+/// The scope label an entry is under.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Scope {
+    /// `global:` (or no label yet).
+    Global,
+    /// `local:`.
+    Local,
+}
+
+/// The language of an entry (§9.1 `extern STRING { ... }`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Language {
+    /// Outside any `extern` block: a symbol-table name.
+    Plain,
+    /// `extern "C"`: plain names, as [`Language::Plain`] (`spec/dyn.md`
+    /// D-114).
+    C,
+    /// `extern "C++"`: matched against demangled names (`spec/resolve.md`
+    /// §9.7 rule 6); refused by name until the demangler exists.
+    Cxx,
+}
+
+/// A dynamic list (§9.1 `dynamic-list`): every `--dynamic-list` file of
+/// the line read as one list, in order.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
+pub struct DynamicList {
+    /// The entries, in order; each `scope` is [`Scope::Global`].
+    pub entries: Vec<VersionEntry>,
+}

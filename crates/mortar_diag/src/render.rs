@@ -276,6 +276,16 @@ fn message<'d>(kind: &'d Kind, style: &Style<'_>, out: &mut String) -> Option<&'
             out.push_str(" is overridden by a definition");
             return shown.then_some(name);
         }
+        Kind::CopyOfLocallyBoundDefinition { name, file } => {
+            out.push_str("copy relocation against ");
+            let shown = symbol_into(name, style, out);
+            out.push_str(", which ");
+            escaped(file, out);
+            out.push_str(" binds to itself; the program and ");
+            escaped(file, out);
+            out.push_str(" would use two different objects");
+            return shown.then_some(name);
+        }
         Kind::DiscardedSectionReference { name } => {
             out.push_str("relocation refers to a symbol in a discarded section: ");
             return symbol_into(name, style, out).then_some(name);
@@ -288,6 +298,13 @@ fn message<'d>(kind: &'d Kind, style: &Style<'_>, out: &mut String) -> Option<&'
             symbol_into(name, style, out);
             out.push_str("')");
             return shown.then_some(name);
+        }
+        Kind::DuplicateVersionPattern { pattern, first, second } => {
+            escaped(pattern, out);
+            out.push_str(" is listed as global in version ");
+            escaped(first, out);
+            out.push_str(" and local in version ");
+            escaped(second, out);
         }
         Kind::EntryNotFound { name } => {
             out.push_str("cannot find entry symbol ");
@@ -313,6 +330,12 @@ fn message<'d>(kind: &'d Kind, style: &Style<'_>, out: &mut String) -> Option<&'
         Kind::TlsMismatch { name } => {
             out.push_str("TLS attribute mismatch: ");
             return symbol_into(name, style, out).then_some(name);
+        }
+        Kind::UndefinedInitSymbol { name } => {
+            out.push_str("-init/-fini symbol ");
+            let shown = symbol_into(name, style, out);
+            out.push_str(" is not defined");
+            return shown.then_some(name);
         }
         Kind::UndefinedSymbol { name } => {
             // GNU ld's phrase, verbatim, after lld's head (§8.3).
@@ -340,6 +363,27 @@ fn message<'d>(kind: &'d Kind, style: &Style<'_>, out: &mut String) -> Option<&'
             out.push_str("; ");
             escaped(first, out);
             out.push_str(" is kept");
+            return shown.then_some(name);
+        }
+        Kind::VersionScriptUndefinedName { name, version } => {
+            out.push_str("version script assigns ");
+            let shown = symbol_into(name, style, out);
+            out.push_str(" to ");
+            escaped(version, out);
+            out.push_str(", but no file defines it");
+            return shown.then_some(name);
+        }
+        Kind::VersionedDefinitionHidden { name, version } => {
+            let shown = symbol_into(name, style, out);
+            out.push('@');
+            escaped(version, out);
+            out.push_str(" is made local by version ");
+            escaped(version, out);
+            out.push_str("'s local: entries; executables linked against ");
+            symbol_into(name, style, out);
+            out.push('@');
+            escaped(version, out);
+            out.push_str(" will not load");
             return shown.then_some(name);
         }
         Kind::VersionedExport { name, version } => {
@@ -452,6 +496,18 @@ fn message<'d>(kind: &'d Kind, style: &Style<'_>, out: &mut String) -> Option<&'
         Kind::CopyRelocationOfZeroSize { name } => {
             out.push_str("cannot create a copy relocation for symbol ");
             let shown = symbol_into(name, style, out);
+            return shown.then_some(name);
+        }
+        Kind::NonPicInSharedObject { r_type, name, file: _ } => {
+            // GNU ld's words; the input object is the head line's place.
+            out.push_str("relocation ");
+            escaped(r_type, out);
+            out.push_str(" against symbol `");
+            let shown = symbol_into(name, style, out);
+            out.push_str(
+                "' which may bind externally can not be used when making a shared object; \
+                 recompile with -fPIC",
+            );
             return shown.then_some(name);
         }
         Kind::RelocationIncompatible { r_type, name, reason } => {

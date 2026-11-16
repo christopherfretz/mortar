@@ -31,8 +31,10 @@
 
 pub mod events;
 
+mod bound;
 mod copies;
 mod driver;
+pub mod regflow;
 mod report;
 mod view;
 mod walk;

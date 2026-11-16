@@ -7,12 +7,13 @@ use mortar_core::intern::SymName;
 use mortar_diag::{Diagnostic, RefusalClass};
 use mortar_elf::archive::{self, Archive, Location};
 use mortar_elf::consts::{
-    DF_1_PIE, EI_CLASS, EI_DATA, ELFDATA2MSB, EM_386, EM_AARCH64, EM_X86_64, ET_CORE, ET_DYN,
-    ET_EXEC, ET_REL, SHT_GROUP, STT_SECTION, em_name, et_name,
+    DF_1_PIE, DT_FLAGS, DT_SYMBOLIC, EI_CLASS, EI_DATA, ELFDATA2MSB, EM_386, EM_AARCH64, EM_X86_64,
+    ET_CORE, ET_DYN, ET_EXEC, ET_REL, PF_W, PT_GNU_RELRO, PT_LOAD, PT_NOTE, SHT_GROUP, STT_SECTION,
+    em_name, et_name,
 };
 use mortar_elf::{
-    Class, Error, FileHeader, Machine, Object, Section, SharedObject, SymbolSection, SymbolTable,
-    View,
+    Class, DynamicTable, Error, FileHeader, Machine, Object, ProgramHeaders, Section, SharedObject,
+    SymbolSection, SymbolTable, View,
 };
 use mortar_script::Script;
 
@@ -148,6 +149,88 @@ pub struct SharedFacts<'s> {
     /// What each version index names (`spec/resolve.md` §9.2), for the
     /// keys of the dynamic symbols.
     pub versions: VersionSlots<'s>,
+    // ---- what `spec/dyn.md` D-43a reads (M4, WP-116; read by WP-122):
+    // from the program headers and `.dynamic` only, never the section
+    // headers. A tag or segment the loader reads once is taken as glibc
+    // takes it: the last entry wins.
+    /// `DT_FLAGS` (`DF_*`); 0 without one.
+    pub flags: u64,
+    /// `DT_FLAGS_1` (`DF_1_*`); 0 without one.
+    pub flags_1: u64,
+    /// `DT_SYMBOLIC` is present (its value is ignored, gABI).
+    pub symbolic: bool,
+    /// Every `PT_LOAD`, in table order.
+    pub loads: Box<[LoadSeg]>,
+    /// `PT_GNU_RELRO`'s `(p_vaddr, p_memsz)`; `None` without one.
+    pub relro: Option<(u64, u64)>,
+    /// The descriptor of the first `.note.mason` table note (owner
+    /// `MasonMeta`, type `NT_MASON_ODR`, `spec/odr.md` O-50 to O-52) in
+    /// any `PT_NOTE`, unparsed (WP-122 parses it); `None` without one. A
+    /// `PT_NOTE` whose notes do not parse is passed over, as
+    /// `mortar_meta::table::find` does.
+    pub mason_note: Option<&'s [u8]>,
+}
+
+/// One `PT_LOAD` of a shared object, as `spec/dyn.md` D-43a reads it:
+/// where its memory image starts, how long it is, and whether it is
+/// writable. The values are the header's, unchecked (`p_vaddr +
+/// p_memsz` may overflow in a hostile file: a reader checks it).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct LoadSeg {
+    /// `p_vaddr`.
+    pub vaddr: u64,
+    /// `p_memsz`.
+    pub memsz: u64,
+    /// `PF_W` is set.
+    pub writable: bool,
+}
+
+/// What [`segment_facts`] reads: `SharedFacts`' fields of the same names.
+struct Segments<'s> {
+    loads: Box<[LoadSeg]>,
+    relro: Option<(u64, u64)>,
+    mason_note: Option<&'s [u8]>,
+}
+
+/// The program-header facts of a shared object (D-43a): every `PT_LOAD`,
+/// the last `PT_GNU_RELRO` and the first `.note.mason` table note. Reads
+/// nothing a malformed header could make fail: the table was located by
+/// `SharedObject::parse` (a truncated table is its error), and a note
+/// segment that does not parse is passed over.
+fn segment_facts<'s>(phdrs: &ProgramHeaders<'s>) -> Segments<'s> {
+    use mortar_meta::table::{NT_MASON_ODR, OWNER};
+    let mut loads = Vec::new();
+    let mut relro = None;
+    let mut mason = None;
+    for segment in phdrs {
+        let h = segment.header();
+        match h.p_type {
+            PT_LOAD => loads.push(LoadSeg {
+                vaddr: h.p_vaddr,
+                memsz: h.p_memsz,
+                writable: h.p_flags & PF_W != 0,
+            }),
+            PT_GNU_RELRO => relro = Some((h.p_vaddr, h.p_memsz)),
+            PT_NOTE if mason.is_none() => {
+                let Ok(notes) = segment.notes() else { continue };
+                for note in notes {
+                    let Ok(note) = note else { break };
+                    if note.n_type == NT_MASON_ODR && note.name_bytes() == OWNER {
+                        mason = Some(note.desc());
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Segments { loads: loads.into_boxed_slice(), relro, mason_note: mason }
+}
+
+/// The value of the last `.dynamic` entry with tag `d_tag` (glibc's
+/// reading of a repeated tag), or `None`.
+fn last_value(dynamic: &DynamicTable<'_>, d_tag: i64) -> Option<u64> {
+    dynamic.values(d_tag).last()
 }
 
 /// What a version index of a shared object names: index `i` is slot `i`.
@@ -565,7 +648,7 @@ fn shared_facts(bytes: &[u8]) -> Kind<'_> {
         }
         Err(e) => return malformed(e),
     };
-    match dynamic.flags_1() {
+    let flags_1 = match dynamic.flags_1() {
         Ok(flags) if flags & DF_1_PIE != 0 => {
             return Kind::Bad(Bad::Refused {
                 class: RefusalClass::ObjectType,
@@ -574,9 +657,9 @@ fn shared_facts(bytes: &[u8]) -> Kind<'_> {
                 gnu_phrase: false,
             });
         }
-        Ok(_) => {}
+        Ok(flags) => flags,
         Err(e) => return malformed(e),
-    }
+    };
     let soname = match dynamic.soname() {
         Ok(soname) => soname,
         Err(e) => return malformed(e),
@@ -613,7 +696,24 @@ fn shared_facts(bytes: &[u8]) -> Kind<'_> {
         Ok(v) => v,
         Err(e) => return Kind::Bad(Bad::Malformed(e)),
     };
-    Kind::Shared(Box::new(SharedFacts { dso, soname, needed, runpath, rpath, globals, versions }))
+    let flags = last_value(&dynamic, DT_FLAGS).unwrap_or(0);
+    let symbolic = last_value(&dynamic, DT_SYMBOLIC).is_some();
+    let Segments { loads, relro, mason_note } = segment_facts(&dso.program_headers());
+    Kind::Shared(Box::new(SharedFacts {
+        dso,
+        soname,
+        needed,
+        runpath,
+        rpath,
+        globals,
+        versions,
+        flags,
+        flags_1,
+        symbolic,
+        loads,
+        relro,
+        mason_note,
+    }))
 }
 
 /// Lists an archive's ordinary members (§7.1, §7.2); inline members are

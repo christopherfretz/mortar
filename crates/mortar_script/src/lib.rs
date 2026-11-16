@@ -28,14 +28,20 @@
 //! - [`looks_like_script`]: whether an input file that is no object,
 //!   archive or shared object is to be read as a script (§3).
 //! - [`lex`]: the modal lexer (§1), for the later stages and for tests.
+//! - [`VersionScript`], [`DynamicList`]: the AST of version scripts and
+//!   dynamic lists (§9, M4); [`version`] will parse them (WP-125).
 
 #![forbid(unsafe_code)]
 
 mod ast;
 pub mod lex;
 mod parse;
+pub mod version;
 
-pub use ast::{Command, CommandKind, FileForm, InputFile, InputItem, Script, Span, Word};
+pub use ast::{
+    Command, CommandKind, DynamicList, FileForm, InputFile, InputItem, Language, Scope, Script,
+    Span, VersionEntry, VersionNode, VersionParent, VersionScript, Word,
+};
 pub use parse::{ASSIGNMENT, MAX_AS_NEEDED_DEPTH};
 
 use mortar_diag::Diagnostic;
