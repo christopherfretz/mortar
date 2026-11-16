@@ -193,7 +193,8 @@ pub struct DynTables {
     pub rela: RelaPlan,
     /// D-30.
     pub dynamic: DynamicPlan,
-    pub interp: InterpPlan,
+    /// D-31; `None` in a `StaticPie` (D-1).
+    pub interp: Option<InterpPlan>,
     /// The run path's string (D-30 row 2), and its tag.
     pub runpath: Option<(RunpathTag, Vec<u8>)>,
     pub bind_now: bool,
@@ -288,6 +289,38 @@ fn arrays(t: &PlanIn<'_, '_>) -> [bool; 3] {
     has
 }
 
+/// The `.dynamic` kind of the plan's output and its `.interp` plan (none
+/// in a `StaticPie`, D-1), or the refusal reported through `emit`.
+fn kind_and_interp(
+    plan: &Plan,
+    emit: &dyn Fn(Diagnostic),
+) -> Option<(DynKind, Option<InterpPlan>)> {
+    let kind = match plan.kind {
+        OutputKind::Executable => DynKind::Exec,
+        OutputKind::PieExecutable => DynKind::Pie,
+        OutputKind::StaticPie => DynKind::StaticPie,
+        _ => {
+            emit(refused("this output kind with .dynamic"));
+            return None;
+        }
+    };
+    // D-1: a `StaticPie`'s `.dynsym` is the null entry only; exporting
+    // into it is M4's (`--export-dynamic`; GNU ld, lld and mold export
+    // every global there).
+    if kind == DynKind::StaticPie && plan.dynamic.export_dynamic {
+        emit(refused("--export-dynamic in a static-pie").note(
+            "a static-pie's .dynsym holds the null entry only (spec/dyn.md D-1); exports are M4",
+        ));
+        return None;
+    }
+    // D-1: a `StaticPie` names no interpreter and has no `.interp`.
+    let interp = match kind {
+        DynKind::StaticPie => None,
+        DynKind::Exec | DynKind::Pie => Some(interp(plan).map_err(emit).ok()?),
+    };
+    Some((kind, interp))
+}
+
 /// Phase 80 for an output with `.dynamic`: the copy, `.dynsym`, version,
 /// `.dynstr`, GOT, `.rela.dyn`, `.dynamic` and `.interp` plans, with the
 /// `Slots` fields they fix (`needed`, `copies`, `copy_of`, `dynsym`,
@@ -302,15 +335,7 @@ pub fn plan(
         diag.emit(key, d);
     };
     let facts = t.arch.facts();
-    let kind = match t.plan.kind {
-        OutputKind::Executable => DynKind::Exec,
-        OutputKind::PieExecutable => DynKind::Pie,
-        _ => {
-            emit(refused("this output kind with .dynamic"));
-            return None;
-        }
-    };
-    let interp = interp(t.plan).map_err(emit).ok()?;
+    let (kind, interp) = kind_and_interp(t.plan, &emit)?;
     // D-42: the copy allocations.
     let defs = InputCopyDefs { inputs: t.inputs, resolution: t.resolution };
     let copy =
@@ -337,7 +362,11 @@ pub fn plan(
     slots.verneed = verneed.iter().cloned().collect();
     slots.dynstr = dynstr;
     // D-46, D-48, D-41.
-    let cx = DynGotCx { pie: kind == DynKind::Pie, bind_now: t.output_cx.bind_now };
+    let cx = DynGotCx {
+        pie: matches!(kind, DynKind::Pie | DynKind::StaticPie),
+        bind_now: t.output_cx.bind_now,
+        static_pie: kind == DynKind::StaticPie,
+    };
     let got =
         GotPlan::new_dynamic(t.arch, slots, t.got_output, t.variant, cx, t.kinds, &dynsym, diag)
             .ok()?;

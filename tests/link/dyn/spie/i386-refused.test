@@ -1,0 +1,23 @@
+# dyn.md D-1: static-pie is an M2 output kind on AArch64 and x86-64 only;
+# on i386 (no M2 forms) mortar refuses it by name, "position-independent
+# executable output" (layout.md, Options::from_plan). The references
+# link it.
+#
+#@ spec: dyn.md "D-1"
+#@ arch: i386
+
+cc -O1 -fPIE main.c -o main.o
+link(mortar) gcc -static-pie main.o -o spie
+  exit: fail
+  diag: position-independent executable output
+link(bfd,lld,mold) gcc -static-pie main.o -o spie
+run(bfd,lld,mold) spie
+  stdout: hello
+
+#--- main.c
+#include <stdio.h>
+
+int main(void) {
+  puts("hello");
+  return 0;
+}

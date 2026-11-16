@@ -204,7 +204,8 @@ impl DynLinked {
         let dynsym = DynsymPlan::new(order, 0, 1).expect("dynsym");
         let diag = Collector::new(Policy::default());
         let kinds = Kinds(self);
-        let cx = DynGotCx { pie: self.output == OutputKind::Pie, bind_now: false };
+        let cx =
+            DynGotCx { pie: self.output == OutputKind::Pie, bind_now: false, static_pie: false };
         let got = GotPlan::new_dynamic(
             &arch,
             &slots,
@@ -595,11 +596,11 @@ fn d47_text_relocation() {
     ) || pie.rendered().contains("can not be used when making a PIE object"), "{}", pie.rendered());
     // An absolute word against a local in an `Exec` needs no record.
     assert!(exec.scanned.diagnostics.is_empty(), "{}", exec.rendered());
-    // A static PIE keeps M1's behaviour.
+    // A static PIE refuses it by the same name (D-1's column; WP-052).
     let mut st = dyn_link_static_pie(dir.path(), &["-pie", "t.o", "-o", "out"]);
     st.sort_unstable();
     eprintln!("static pie: {st:?}");
-    assert!(!st.contains(&"text-relocation"), "{st:?}");
+    assert!(!st.is_empty() && st.iter().all(|&i| i == "text-relocation"), "{st:?}");
 }
 
 /// The scan of a static PIE (`dynamic: false`): the ids.

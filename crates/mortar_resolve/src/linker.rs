@@ -17,7 +17,9 @@ pub enum When {
     /// lld (mold defines it absolute 0): the `IRELATIVE` relocations are in
     /// `.rela.dyn`, which the startup code applies.
     StaticExecutable,
-    /// Dynamic links only (M2).
+    /// Outputs with `.dynamic` (M2): the dynamic links and static-pie
+    /// (`spec/dyn.md` D-2, D-32: `_DYNAMIC` is `.dynamic`'s address there
+    /// too; glibc's `_dl_relocate_static_pie` reads it).
     Dynamic,
     /// AArch64 only (GNU ld's AArch64 script).
     AArch64,
@@ -156,7 +158,7 @@ pub fn candidate(
                 && !output.pie
                 && if machine == Machine::I386 { iplt_rel } else { iplt_rela || !iplt_rel }
         }
-        When::Dynamic => output.dynamic,
+        When::Dynamic => output.dynamic || output.pie,
         When::AArch64 => machine == Machine::AArch64,
         When::Conditional => return Some((Provided::Table(n as u8), true)),
         When::X86_64Conditional => {
