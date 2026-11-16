@@ -78,6 +78,7 @@ fn main() -> ExitCode {
             let mut err = std::io::stderr().lock();
             let _ = err.write_all(invocation.removed.as_bytes());
             let _ = err.write_all(report.render(&style).as_bytes());
+            let _ = err.write_all(invocation.incremental.as_bytes());
             let _ = err.write_all(invocation.phases.as_bytes());
             let _ = std::io::stdout().write_all(stdout.as_bytes());
             ExitCode::SUCCESS
@@ -89,6 +90,7 @@ fn main() -> ExitCode {
             let mut err = std::io::stderr().lock();
             let _ = err.write_all(invocation.removed.as_bytes());
             let _ = err.write_all(text.as_bytes());
+            let _ = err.write_all(invocation.incremental.as_bytes());
             let _ = err.write_all(invocation.phases.as_bytes());
             ExitCode::FAILURE
         }

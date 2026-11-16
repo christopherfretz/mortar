@@ -57,6 +57,32 @@ pub struct Plan {
     pub exit: Option<Exit>,
     /// `-v` or `-V`: print the version, then go on (§5).
     pub print_version: Option<VersionStyle>,
+    /// Incremental linking (§3.13; `spec/incr.md` IN-10).
+    pub incremental: Incremental,
+}
+
+/// Incremental linking (`spec/cli.md` §3.13; `spec/incr.md` IN-10). The
+/// default is a plain link, which never looks at a state (IN-11).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Incremental {
+    /// `--incremental[=MODE]`; `None`: `--no-incremental`, the default.
+    pub mode: Option<IncrementalMode>,
+    /// `--incremental-state=PATH`; `None`: `<output>.mortar-state`.
+    pub state: Option<OsString>,
+    /// `--incremental-report[=FILE]`: `Some(None)` reports to standard
+    /// error.
+    pub report: Option<Option<OsString>>,
+}
+
+/// What `--incremental` asks for (`spec/incr.md` IN-10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum IncrementalMode {
+    /// `--incremental`: update if possible, else a full link.
+    Auto,
+    /// `--incremental=full`: a full link in incremental mode.
+    Full,
+    /// `--incremental=update`: update or fail.
+    Update,
 }
 
 /// The kind of the output (`spec/cli.md` §3.2).
