@@ -222,22 +222,7 @@ pub fn start(parsed: &Parsed, cwd: &Path, out_path: &Path, diagnostics: &Collect
     }
     let plan_hash = plan_hash(parsed, cwd);
     // IN-22a: one stamp per device, before any input is read.
-    let mut dirs: Vec<PathBuf> = Vec::new();
-    let parent = |p: &Path| p.parent().map_or_else(|| cwd.to_path_buf(), Path::to_path_buf);
-    dirs.push(parent(out_path));
-    dirs.push(parent(&state_path));
-    dirs.push(std::env::var_os("TMPDIR").map_or_else(|| PathBuf::from("/tmp"), PathBuf::from));
-    dirs.push(cwd.to_path_buf());
-    for input in &plan.inputs {
-        if let InputSpec::Path(p) = &input.spec {
-            dirs.push(parent(&cwd.join(p)));
-        }
-    }
-    for l in &plan.library_paths {
-        dirs.push(cwd.join(&l.path));
-    }
-    let mountinfo = std::fs::read_to_string("/proc/self/mountinfo").unwrap_or_default();
-    let stamps = stamp::stamps(&dirs, &mountinfo);
+    let stamps = take_stamps(parsed, cwd, out_path, &state_path);
     let (reason, recorded_target) = if mode == IncrementalMode::Full {
         // `--incremental=full` links from scratch whatever the state says.
         ("full requested".to_owned(), None)
@@ -251,8 +236,35 @@ pub fn start(parsed: &Parsed, cwd: &Path, out_path: &Path, diagnostics: &Collect
     Start::Full(Session { state_path, report, plan_hash, stamps, reason, recorded_target, start })
 }
 
+/// IN-22a: one stamp per device of the directories a link reads and
+/// writes, before any input is read.
+pub(crate) fn take_stamps(
+    parsed: &Parsed,
+    cwd: &Path,
+    out_path: &Path,
+    state_path: &Path,
+) -> Vec<DeviceStamp> {
+    let plan = &parsed.plan;
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    let parent = |p: &Path| p.parent().map_or_else(|| cwd.to_path_buf(), Path::to_path_buf);
+    dirs.push(parent(out_path));
+    dirs.push(parent(state_path));
+    dirs.push(std::env::var_os("TMPDIR").map_or_else(|| PathBuf::from("/tmp"), PathBuf::from));
+    dirs.push(cwd.to_path_buf());
+    for input in &plan.inputs {
+        if let InputSpec::Path(p) = &input.spec {
+            dirs.push(parent(&cwd.join(p)));
+        }
+    }
+    for l in &plan.library_paths {
+        dirs.push(cwd.join(&l.path));
+    }
+    let mountinfo = std::fs::read_to_string("/proc/self/mountinfo").unwrap_or_default();
+    stamp::stamps(&dirs, &mountinfo)
+}
+
 /// The link's target as `META` records it: `e_machine` and the ELF class.
-fn target_of(f: &Front<'_>) -> (u16, u8) {
+pub(crate) fn target_of(f: &Front<'_>) -> (u16, u8) {
     (f.target.machine.e_machine(), if f.target.class == mortar_elf::Class::Elf64 { 2 } else { 1 })
 }
 
@@ -300,7 +312,7 @@ fn check(state_path: &Path, plan_hash: [u8; 16], out_path: &Path) -> (String, Op
     (check_state(&state, plan_hash, out_path), target)
 }
 
-fn check_state(state: &State, plan_hash: [u8; 16], out_path: &Path) -> String {
+pub(crate) fn check_state(state: &State, plan_hash: [u8; 16], out_path: &Path) -> String {
     if state.plan_hash != plan_hash {
         return "options-changed".to_owned();
     }
@@ -382,7 +394,7 @@ fn leaves_match(state: &State, out_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn hash_bytes(h: mortar_core::inputs::ContentHash) -> [u8; 16] {
+pub(crate) fn hash_bytes(h: mortar_core::inputs::ContentHash) -> [u8; 16] {
     h.0.to_le_bytes()
 }
 
@@ -625,7 +637,7 @@ fn bind(mut state: State, out_path: &Path, written: &Written) -> Result<State, S
 
 /// A temporary file in the state's directory, synced, renamed over the
 /// state, and the directory synced (IN-17).
-fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+pub(crate) fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let dir = match path.parent() {
         Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
         _ => PathBuf::from("."),

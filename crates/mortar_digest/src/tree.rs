@@ -85,6 +85,22 @@ impl Leaf {
     pub fn as_bytes(&self) -> &[u8] {
         &self.digest[..self.f.leaf_len()]
     }
+
+    /// A leaf kept from an earlier hash (`spec/incr.md` IN-18a `LEAVES`,
+    /// I-76): leaf `index` of a file of `file_size` bytes, whose digest is
+    /// the first `f.leaf_len()` bytes of `digest`; `None` when `digest` is
+    /// shorter or `index` is past the file.
+    #[must_use]
+    pub fn kept(f: TreeFn, file_size: u64, index: u64, digest: &[u8]) -> Option<Self> {
+        let n = f.leaf_len();
+        let r = leaf_range(file_size, index);
+        if digest.len() < n || r.start >= r.end {
+            return None;
+        }
+        let mut d = [0u8; MAX_LEN];
+        d[..n].copy_from_slice(&digest[..n]);
+        Some(Self { f, len: r.end - r.start, digest: d })
+    }
 }
 
 #[derive(Clone, Debug)]

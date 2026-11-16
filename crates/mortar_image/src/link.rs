@@ -1881,6 +1881,94 @@ fn write_link(
     on_phase: &mut dyn FnMut(u16, &str),
     checked: &mut bool,
 ) -> Result<Written, Failed> {
+    with_image(link, path, |img, plan, sealed, steps| {
+        let out = Output::create(path, opts).map_err(|kd| Failed { diagnostics: vec![kd] })?;
+        steps.step("create", 0, "");
+        let (filled, checks) = fill::write_checked(img, &out, out.shown(), link.pool);
+        *checked = true;
+        // I-14: the scan's diagnostics of the deferred sections fill found a
+        // fault in, or did not reach; of all of them when a job stopped early.
+        let mut report_on =
+            if checks.complete { checks.flagged.clone() } else { link.records.deferred().to_vec() };
+        report_on.extend(unreached(link, plan));
+        report_on.sort_unstable();
+        report_on.dedup();
+        let mut report = if report_on.is_empty() {
+            Vec::new()
+        } else {
+            link.facts.deferred_report(&report_on, link.pool)
+        };
+        if checks.complete && !checks.flagged.is_empty() && report.is_empty() {
+            let what = format!(
+                "image: fill found a fault in section(s) {:?} that the scan's walk of them does not report (I-14)",
+                checks.flagged.iter().map(|s| s.0).collect::<Vec<_>>()
+            );
+            report.push((Key::new(PHASE_IMAGE, 0, 0), internal(what)));
+        }
+        let filled: Filled = match filled {
+            Ok(f) if report.is_empty() => f,
+            Ok(_) => {
+                out.abort();
+                return Err(Failed { diagnostics: report });
+            }
+            Err(mut e) => {
+                out.abort();
+                e.diagnostics.append(&mut report);
+                return Err(e);
+            }
+        };
+        steps.step("fill", plan.file_size, "byte");
+        // input.md §11.5: the files the store still holds, once more.
+        let mut changed = Vec::new();
+        for (file, _) in link.inputs.files.iter() {
+            if let Err(e) = (link.recheck)(file) {
+                let path = layout_plan::file_ref(link.inputs, file);
+                changed
+                    .push((Key::new(PHASE_IMAGE, file.0, 0), crate::source::copy_error(e, &path)));
+            }
+        }
+        if !changed.is_empty() {
+            out.abort();
+            return Err(Failed { diagnostics: changed });
+        }
+        steps.step("recheck", 0, "");
+        on_phase(PHASE_IMAGE, "image");
+        let written = if link.options.keep_leaves {
+            out.commit_identified()
+        } else {
+            out.commit().map(|()| None)
+        }
+        .map_err(|kd| Failed { diagnostics: vec![kd] })?;
+        on_phase(PHASE_OUTPUT, "output file");
+        Ok(Written {
+            build_id: filled.build_id,
+            leaves: img.leaf_fn.zip(filled.leaves),
+            sealed,
+            file_size: plan.file_size,
+            file: written,
+            rows: plan.rows.len(),
+            jobs: plan.jobs.len(),
+        })
+    })
+}
+
+/// The image of `link` (§5, §13): the tables, the structural units, the
+/// synthetic chunks and the fill plan, given to `go` with the plan, the
+/// build id's sealed range and the phase's steps. [`write`] fills every
+/// job of the plan into the output; the test-only update path
+/// ([`refill`], `spec/incr.md` WP-061 stage B) fills the jobs of the
+/// dirty windows into memory.
+#[allow(clippy::too_many_lines)]
+fn with_image<T>(
+    link: &Link<'_, '_>,
+    path: &Path,
+    go: impl FnOnce(
+        &Image<'_>,
+        &crate::plan::Plan,
+        Option<std::ops::Range<u64>>,
+        &mut mortar_core::wp032b_steps::Steps,
+    ) -> Result<T, Failed>,
+) -> Result<T, Failed> {
     let mut steps = mortar_core::wp032b_steps::Steps::new("image");
     let tables = LinkTables::new(*link);
     steps.step("tables", u64::from(link.inputs.symbols.len()), "symbol");
@@ -2003,71 +2091,90 @@ fn write_link(
         leaf_fn,
         fixups: &fixups,
     };
-    let out = Output::create(path, opts).map_err(|kd| Failed { diagnostics: vec![kd] })?;
-    steps.step("create", 0, "");
-    let (filled, checks) = fill::write_checked(&img, &out, out.shown(), link.pool);
-    *checked = true;
-    // I-14: the scan's diagnostics of the deferred sections fill found a
-    // fault in, or did not reach; of all of them when a job stopped early.
-    let mut report_on =
-        if checks.complete { checks.flagged.clone() } else { link.records.deferred().to_vec() };
-    report_on.extend(unreached(link, &plan));
-    report_on.sort_unstable();
-    report_on.dedup();
-    let mut report = if report_on.is_empty() {
-        Vec::new()
-    } else {
-        link.facts.deferred_report(&report_on, link.pool)
-    };
-    if checks.complete && !checks.flagged.is_empty() && report.is_empty() {
-        let what = format!(
-            "image: fill found a fault in section(s) {:?} that the scan's walk of them does not report (I-14)",
-            checks.flagged.iter().map(|s| s.0).collect::<Vec<_>>()
-        );
-        report.push((Key::new(PHASE_IMAGE, 0, 0), internal(what)));
-    }
-    let filled: Filled = match filled {
-        Ok(f) if report.is_empty() => f,
-        Ok(_) => {
-            out.abort();
-            return Err(Failed { diagnostics: report });
+    go(&img, &plan, sealed, &mut steps)
+}
+
+/// What [`refill`] filled: the jobs of the dirty windows, in memory.
+#[derive(Debug)]
+pub struct Refilled {
+    /// Each job (I-31) that overlaps a dirty window: its file range and
+    /// its bytes, the build id's descriptor as zeros (I-73).
+    pub jobs: Vec<(std::ops::Range<u64>, Vec<u8>)>,
+    /// The leaves of those jobs' windows, by window index, in the
+    /// function [`Refilled::leaf_fn`].
+    pub leaves: Vec<(u64, mortar_digest::Leaf)>,
+    /// The leaves' function: the build id's, else L128 (I-73, IN-21).
+    pub leaf_fn: mortar_digest::TreeFn,
+    /// The build id's style, when the link computes one.
+    pub build_id: Option<TreeStyle>,
+    /// The build id's descriptor in the file.
+    pub sealed: Option<std::ops::Range<u64>>,
+    /// The output file's size.
+    pub file_size: u64,
+    /// The plan's rows and jobs (as [`Written`]'s).
+    pub rows: usize,
+    pub total_jobs: usize,
+}
+
+/// The test-only update path's image phase (`spec/incr.md` §5.2, I-95;
+/// WP-061 stage B): every job of `link`'s plan that overlaps one of the
+/// window indices `windows` (sorted), filled into memory as [`write`]
+/// fills it, and the leaves of its windows. Nothing is written (IN-13).
+/// A job is filled whole: a window inside a whole synthetic chunk brings
+/// the chunk's other windows (I-31).
+///
+/// # Errors
+///
+/// Every diagnostic of the fill; a fault in a section deferred to fill
+/// (I-14) is an internal error here.
+pub fn refill(link: &Link<'_, '_>, path: &Path, windows: &[u64]) -> Result<Refilled, Failed> {
+    with_image(link, path, |img, plan, sealed, steps| {
+        let w = plan.window;
+        let dirty = |j: &std::ops::Range<u64>| {
+            let first =
+                windows.partition_point(|&k| k.saturating_add(1).saturating_mul(w) <= j.start);
+            windows.get(first).is_some_and(|&k| k.saturating_mul(w) < j.end)
+        };
+        let jobs: Vec<std::ops::Range<u64>> =
+            plan.jobs.iter().filter(|j| dirty(j)).cloned().collect();
+        let leaf_fn = img.build_id.map_or(mortar_digest::TreeFn::L128, TreeStyle::tree_fn);
+        let filled = link.pool.map(jobs.len(), |k| {
+            let j = jobs[k].clone();
+            let mut buf = vec![0u8; (j.end - j.start) as usize];
+            let mut errs = Vec::new();
+            let r = fill::fill_range(img, j.start, &mut buf, &mut errs);
+            let leaves: Vec<(u64, mortar_digest::Leaf)> = buf
+                .chunks(w as usize)
+                .enumerate()
+                .map(|(i, win)| (j.start / w + i as u64, mortar_digest::leaf(leaf_fn, win)))
+                .collect();
+            (buf, errs, r, leaves)
+        });
+        let mut diagnostics = Vec::new();
+        let mut out = Vec::with_capacity(jobs.len());
+        let mut leaves = Vec::new();
+        for (j, (buf, errs, r, l)) in jobs.into_iter().zip(filled) {
+            diagnostics.extend(errs);
+            if let Err(kd) = r {
+                diagnostics.push(kd);
+            }
+            leaves.extend(l);
+            out.push((j, buf));
         }
-        Err(mut e) => {
-            out.abort();
-            e.diagnostics.append(&mut report);
-            return Err(e);
+        steps.step("refill", out.iter().map(|j| j.1.len() as u64).sum(), "byte");
+        if !diagnostics.is_empty() {
+            return Err(Failed { diagnostics });
         }
-    };
-    steps.step("fill", plan.file_size, "byte");
-    // input.md §11.5: the files the store still holds, once more.
-    let mut changed = Vec::new();
-    for (file, _) in link.inputs.files.iter() {
-        if let Err(e) = (link.recheck)(file) {
-            let path = layout_plan::file_ref(link.inputs, file);
-            changed.push((Key::new(PHASE_IMAGE, file.0, 0), crate::source::copy_error(e, &path)));
-        }
-    }
-    if !changed.is_empty() {
-        out.abort();
-        return Err(Failed { diagnostics: changed });
-    }
-    steps.step("recheck", 0, "");
-    on_phase(PHASE_IMAGE, "image");
-    let written = if link.options.keep_leaves {
-        out.commit_identified()
-    } else {
-        out.commit().map(|()| None)
-    }
-    .map_err(|kd| Failed { diagnostics: vec![kd] })?;
-    on_phase(PHASE_OUTPUT, "output file");
-    Ok(Written {
-        build_id: filled.build_id,
-        leaves: leaf_fn.zip(filled.leaves),
-        sealed,
-        file_size: plan.file_size,
-        file: written,
-        rows: plan.rows.len(),
-        jobs: plan.jobs.len(),
+        Ok(Refilled {
+            jobs: out,
+            leaves,
+            leaf_fn,
+            build_id: img.build_id,
+            sealed,
+            file_size: plan.file_size,
+            rows: plan.rows.len(),
+            total_jobs: plan.jobs.len(),
+        })
     })
 }
 

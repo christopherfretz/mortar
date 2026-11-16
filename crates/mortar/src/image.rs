@@ -309,3 +309,23 @@ pub fn write(
         }
     }
 }
+
+/// The test-only update path's image phase (`link::refill`): the jobs of
+/// the dirty `windows` of `front`'s output, filled into memory.
+///
+/// # Errors
+///
+/// The image phase's diagnostics.
+pub fn refill(
+    front: &Front<'_>,
+    store: &Store,
+    path: &Path,
+    windows: &[u64],
+) -> Result<link::Refilled, Failed> {
+    match with_link(front, store, &|_| {}, |l| link::refill(l, path, windows)) {
+        Ok(r) => r,
+        Err(e) => {
+            Err(Failed { diagnostics: vec![(mortar_synth::error::key(0), e.into_diagnostic())] })
+        }
+    }
+}
