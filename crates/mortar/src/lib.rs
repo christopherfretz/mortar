@@ -392,7 +392,7 @@ fn write_dependency_file(f: &front::Front<'_>, path: &Path, diagnostics: &Collec
 }
 
 /// The maps a link writes: the text of `-Map`/`-M` (I-121) and
-/// `mortar-map 1` for `--mortar-map` (I-77); each empty when not asked for.
+/// `mortar-map 2` for `--mortar-map` (I-77); each empty when not asked for.
 #[derive(Default)]
 struct Maps {
     text: Vec<u8>,

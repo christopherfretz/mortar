@@ -126,13 +126,13 @@ Every reader produces the same `Map`:
 A section is named by its index in its file (mortar's format) or by its
 name (the foreign formats). §3.3 resolves names.
 
-### 3.2 mortar's format, version 1
+### 3.2 mortar's format, version 2
 
 The format is line-oriented UTF-8 text. Each record is one line of tokens
 separated by single spaces, and the map ends with `end`:
 
 ```text
-mortar-map 1
+mortar-map 2
 file <id> <path> [<member> <member-header-offset>]
 place <file> <section> <addr> <size>
 piece <file> <section> <input-offset> <addr> <size>
@@ -269,13 +269,23 @@ them (§3.4 to §3.6 do not change): GNU ld's and lld's `COMMON` and
 mold's `.common` stay `common` chunks, one per file, and their maps
 state no alignment.
 
-**The version stays 1.** The records are added within version 1, as the
-dynamic records were (WP-040). A reader of version 1 that predates them
-refuses a map that has them with `MapError` "unknown record 'hole'" (or
-`'incremental'`, `'dead'`): it never misreads one, since a record it
-does not know is an error, never skipped. A new version number would
-make every older reader refuse every map, incremental or not, for no
-gain.
+**Versions.** The incremental records were added within version 1, as
+the dynamic records were (WP-040): a reader of version 1 that predates
+them refuses a map that has them with `MapError` "unknown record 'hole'"
+(or `'incremental'`, `'dead'`), since a record it does not know is an
+error, never skipped, and their absence claims nothing (a map without
+them claims no coverage), so no reader misreads either kind of map.
+
+The allocation records make **version 2** (WP-096). They do not only add
+lines: they change what a missing line means. In version 2 a map with
+no `common` record says the link allocated no common, and a `copy`
+record without `<align>` is malformed. A version 1 map, written before
+the records existed, says neither. A reader of version 2 that took a
+version 1 map would judge a correct link by a fact the map never
+stated, as a missing record; a version 2 reader therefore refuses
+version 1 by its number ("Versions" above), and a version 1 reader
+refuses version 2 the same way. Version 2 is version 1 with the
+allocation records; nothing else changes.
 
 The writer emits records in a fixed order: files by id, then places and
 pieces, the non-alloc records, discards, folds, chunks, commons and

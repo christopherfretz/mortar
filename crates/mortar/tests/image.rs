@@ -645,7 +645,7 @@ fn map_dynamic_records_read_by_the_verifier() {
     let mut m = Map::default();
     let pool = Pool::new(1);
     let static_text = mortar_image::map::render(&m, &pool);
-    assert_eq!(static_text, b"mortar-map 1\nend\n", "a static map writes no dynamic record");
+    assert_eq!(static_text, b"mortar-map 2\nend\n", "a static map writes no dynamic record");
     m.dynamic = Some(DynRecords {
         kind: Some(OutputKind::Exec),
         interp: Some(b"/lib64/ld-linux-x86-64.so.2".to_vec()),
@@ -654,7 +654,7 @@ fn map_dynamic_records_read_by_the_verifier() {
         relro: Some(true),
         args: vec![b"--as-needed".to_vec(), b"-lc".to_vec()],
         needed: vec![b"libc.so.6".to_vec()],
-        copies: vec![CopyHint { name: b"environ".to_vec(), addr: 0x40_1000, size: 8 }],
+        copies: vec![CopyHint { name: b"environ".to_vec(), addr: 0x40_1000, size: 8, align: 8 }],
         exports: vec![b"main".to_vec()],
         plt: vec![b"puts".to_vec()],
         iplt: vec![b"f".to_vec()],
@@ -668,7 +668,10 @@ fn map_dynamic_records_read_by_the_verifier() {
     assert_eq!((d.now, d.relro), (Some(false), Some(true)));
     assert_eq!(d.args, ["--as-needed", "-lc"]);
     assert_eq!(d.needed, ["libc.so.6"]);
-    assert_eq!(d.copies, [pm::CopyHint { name: "environ".into(), addr: 0x40_1000, size: 8 }]);
+    assert_eq!(
+        d.copies,
+        [pm::CopyHint { name: "environ".into(), addr: 0x40_1000, size: 8, align: Some(8) }]
+    );
     assert_eq!(
         (d.exports, d.plt, d.iplt),
         (vec!["main".into()], vec!["puts".into()], vec!["f".into()])

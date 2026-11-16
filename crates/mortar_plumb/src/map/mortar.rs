@@ -2,7 +2,7 @@
 //! line-oriented text format with one record per line.
 //!
 //! ```text
-//! mortar-map 1
+//! mortar-map 2
 //! file <id> <path> [<member> <member-header-offset>]
 //! place <file> <section> <addr> <size>
 //! piece <file> <section> <input-offset> <addr> <size>
@@ -46,8 +46,8 @@ use super::{
     RunpathTag, SectionRef, dec, hex,
 };
 
-/// The first line of a version-1 map.
-pub const HEADER: &str = "mortar-map 1";
+/// The first line of a version-2 map.
+pub const HEADER: &str = "mortar-map 2";
 
 /// Encodes a string as a token (§3.2): bytes from `!` to `~` other than
 /// `%` stand for themselves, every other byte is `%XX` (upper-case hex),
@@ -297,11 +297,13 @@ pub fn parse(text: &str) -> Result<Map, MapError> {
     let mut map = Map::new(Format::Mortar);
     let mut lines = text.split('\n').enumerate().map(|(i, l)| ((i + 1) as u32, l));
     match lines.next() {
-        Some((_, HEADER)) => {}
+        // Version 1 is read until the allocation records are required
+        // (WP-096 step 3).
+        Some((_, HEADER | "mortar-map 1")) => {}
         Some((_, l)) if l.starts_with("mortar-map ") => {
             return Err(MapError::new(1, format!("unsupported mortar map version '{}'", &l[11..])));
         }
-        _ => return Err(MapError::new(1, "not a mortar map (no 'mortar-map 1' header)")),
+        _ => return Err(MapError::new(1, "not a mortar map (no 'mortar-map 2' header)")),
     }
     let mut ended = false;
     let last = text.split('\n').count() as u32;
@@ -621,7 +623,7 @@ mod tests {
     fn s3_2_round_trip() {
         let m = sample();
         let text = write(&m);
-        assert!(text.starts_with("mortar-map 1\nfile 0 dir%20with%20space/a.o\n"), "{text}");
+        assert!(text.starts_with("mortar-map 2\nfile 0 dir%20with%20space/a.o\n"), "{text}");
         assert!(text.contains("file 2 100%25%C3%A9.o\n"), "{text}");
         assert!(text.contains("chunk synthetic % - 4\n"), "{text}");
         assert!(text.contains("chunk thunk __veneer%20x 400020 c far -8\n"), "{text}");
@@ -654,7 +656,7 @@ mod tests {
     fn s3_2_malformed_maps_are_errors() {
         let cases: &[(&str, u32)] = &[
             ("", 1),
-            ("mortar-map 2\nend\n", 1),
+            ("mortar-map 3\nend\n", 1),
             ("mortar-map 1\n", 0),
             ("mortar-map 1\nfile 1 a.o\nend\n", 2),
             ("mortar-map 1\nplace 0 1 0 0\nend\n", 2),

@@ -579,7 +579,7 @@ fn time_phases_lists_the_image_and_the_output_file() {
 }
 
 /// `-M` (I-120): the text map goes to standard output, the same text
-/// `-Map` writes; `--mortar-map` still writes `mortar-map 1` beside it.
+/// `-Map` writes; `--mortar-map` still writes `mortar-map 2` beside it.
 #[test]
 fn print_map_writes_the_map_to_standard_output() {
     let Some((_s, built)) = c_program("pipe-print-map", &["-O2"]) else { return };
@@ -594,7 +594,7 @@ fn print_map_writes_the_map_to_standard_output() {
         m.stdout_text()
             .ends_with(&format!("\nOUTPUT({} {GNU_TARGET})\nLOAD linker stubs\n", out.display()))
     );
-    assert!(read(&map_of(&out)).starts_with(b"mortar-map 1\n"));
+    assert!(read(&map_of(&out)).starts_with(b"mortar-map 2\n"));
 }
 
 /// `readelf -p .comment`: the strings, in offset order.
