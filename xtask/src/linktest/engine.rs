@@ -1411,8 +1411,15 @@ impl Unit<'_> {
             Linker::Mortar => mortar_plumb::Format::Mortar,
         };
         let started = Instant::now();
-        let verified =
-            crate::plumb::verify_link_line(output_file, map_file, format, dir, None, fix_843419, line);
+        let verified = crate::plumb::verify_link_line(
+            output_file,
+            map_file,
+            format,
+            dir,
+            None,
+            fix_843419,
+            line,
+        );
         judged.plumb.time += started.elapsed();
         let (bytes, report, _) = verified.map_err(|e| error(&e))?;
         judged.plumb.erratum.entry(linker).or_default().count(fix_843419, &report.coverage);
