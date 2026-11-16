@@ -226,6 +226,15 @@ that is not incremental writes none of them, and its map claims nothing
 | `hole <output-section> <offset> <size>` | any | an allocated range that holds its section's fill (IN-3): room an update left, a dead input section's or a dead constant fragment's bytes |
 | `dead <output-section> <offset> <size> <kind>` | any | a dead range whose bytes are a record of its section's grammar (IN-3a check 2), by `<kind>`: `neutral` (IN-51's block unit or IN-51b's neutral form of a debug section), `contribution` (a whole dead debug contribution as its compiler wrote it, addresses tombstoned, IN-53), `strings` (dead fragments of a merged string section, kept bytes, L-147), `cie` (unused CIEs in `.eh_frame`) |
 
+All slack is listed as holes, and so is the start padding of
+`layout.md` L-118 (the 843419 padding before a synthetic code chunk on
+AArch64: trap fill that no item owns and no alignment explains, from the
+end of the chunk before it in the same section): an incremental-mode
+map lists it as a `hole`, which §6.8 then judges like any other (P-I5's
+fill; P-I1 counts it covered). A plain map is unchanged: it claims no
+coverage, and §6.8 does not run on it (WP-062's finding 8; the
+`incr-e843` program of `crates/mortar/tests/incremental.rs`).
+
 `<output-section>` is a string token naming the output section;
 `<offset>` is from the section's start (`sh_addr`, or 0 for a non-alloc
 section) and `<size>` its length, both hex. A map with `incremental` or
@@ -2088,7 +2097,22 @@ what a reference names (the re-review's N3):
 - P-I3, relocations: a record of a live input section whose symbol's
   input section (its base, whatever the addend; an undefined symbol's
   chosen definition) is placed in a range. So `arr+40` for a 40-byte
-  `arr` and gfortran's `blk_-8` are accepted wherever they point;
+  `arr` and gfortran's `blk_-8` are accepted wherever they point. An
+  input section (or piece) of size 0 covers no byte: it is in a range
+  only when its address is strictly inside it; at a range's start or
+  end it names the boundary, as `arr+40` does (N3), whatever the
+  range's kind (WP-088, WP-062's finding 9). GNU ld, lld and mold all
+  place an empty input section at the address of the next item after
+  its alignment (libgfortran's `.bss.empty_string.0`-`.4`, NOBITS of
+  size 0, 8-aligned: at `unit.o`'s `.bss._gfortrani_c_locale` in all
+  three static links of `lang/fortran-c.test`'s program), so in an
+  incremental-mode layout the last ones of a region sit at its slack
+  hole's start. Only allocated sections are judged here, so the
+  debug-only kinds (`contribution`, `neutral`) never meet the case
+  (P-I4 judges those); a size-0 section at a `contribution` range's start
+  would name the boundary the same way. Tests: `tests/dead.rs
+  in3a_size_zero_section_at_a_range_boundary_is_accepted` (at the hole's
+  start and end: accepted; 8 bytes inside: P-I3);
 - P-I3, tables: a word of `.got`, `.got.plt`, `.igot`, `.igot.plt`
   (outside the ranges) holding an address in a range that is not the
   end of a live item; an allocated relocation record (outside the ranges)

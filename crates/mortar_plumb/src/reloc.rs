@@ -572,7 +572,11 @@ impl<'a, 'b> Engine<'a, 'b> {
         {
             return None;
         }
-        self.image.sections.iter().find(|x| x.name == ".eh_frame" && x.alloc()).map(|x| x.shdr.sh_addr)
+        self.image
+            .sections
+            .iter()
+            .find(|x| x.name == ".eh_frame" && x.alloc())
+            .map(|x| x.shdr.sh_addr)
     }
 
     /// S-50 rule 1 for a section symbol (§4.4): `st_value + A = 0` in an

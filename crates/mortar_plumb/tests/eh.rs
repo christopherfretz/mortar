@@ -121,8 +121,7 @@ mod s50 {
                     let s = &self.output[stroff as usize + n..];
                     s.starts_with(name.as_bytes()) && s.get(name.len()) == Some(&0)
                 })
-                .map(|e| e + val)
-                .unwrap_or_else(|| panic!("no symbol {name}"))
+                .map_or_else(|| panic!("no symbol {name}"), |e| e + val)
         }
         fn read(&self, at: usize) -> u64 {
             self.output[at..at + self.word()].iter().rev().fold(0, |v, &b| v << 8 | u64::from(b))

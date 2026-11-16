@@ -1141,10 +1141,8 @@ fn named_by_relocations(e: &Engine<'_, '_>, set: &DeadSet, out: &mut Vec<Finding
                 continue;
             }
             let hit = match &s.place {
-                Place::Whole(a) => over(image, set, *a, s.shdr.sh_size.max(1), s.tbss()),
-                Place::Pieces(ps) => {
-                    ps.iter().any(|p| over(image, set, p.addr, p.size.max(1), s.tbss()))
-                }
+                Place::Whole(a) => over(image, set, *a, s.shdr.sh_size, s.tbss()),
+                Place::Pieces(ps) => ps.iter().any(|p| over(image, set, p.addr, p.size, s.tbss())),
                 _ => false,
             };
             if hit {
@@ -1210,8 +1208,11 @@ fn over(image: &Image<'_>, set: &DeadSet, a: u64, len: u64, tbss: bool) -> bool 
         let tls_nobits = s.sh_flags & SHF_TLS != 0 && s.sh_type == SHT_NOBITS;
         s.sh_flags & SHF_ALLOC != 0
             && tls_nobits == tbss
-            && r.start < a.saturating_add(len)
             && a < r.end
+            // An empty item (an input section or piece of size 0) covers
+            // no byte: it is in a range only strictly inside it; at the
+            // range's start or end it names the boundary (§6.8 P-I3, N3).
+            && if len == 0 { r.start < a } else { r.start < a.saturating_add(len) }
     })
 }
 

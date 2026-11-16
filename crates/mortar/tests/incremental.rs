@@ -474,12 +474,8 @@ fn replay_judged(prog: &Prog, out: &str, state: &State) -> Replayed {
     let inv = mortar::replay_link("mortar", &prog.args(out, &[&map_arg]), &prog.built.dir, state);
     match inv.outcome {
         mortar::Outcome::Linked { .. } => {
-            let mut findings =
+            let findings =
                 support::plumb::verify(&prog.path(out), &prog.path(&map), &prog.built.dir);
-            findings.retain(|f| {
-                !support::plumb::s50_rule1_verifier_finding(f)
-                    && !support::plumb::p_i3_zero_size_verifier_finding(f, &prog.built.dir)
-            });
             Replayed::Linked(prog.bytes(out), findings.iter().map(|f| format!("{f:?}")).collect())
         }
         mortar::Outcome::Failed(r) => {
@@ -1734,12 +1730,8 @@ fn the_floor_update_is_the_full_link_of_the_edited_inputs() {
                 prog.bytes("o") == prog.bytes(&format!("ref{step}")),
                 "{write:?} step {step}: the update differs from the full link"
             );
-            let mut findings =
+            let findings =
                 support::plumb::verify(&prog.path("o"), &prog.path(&map), &prog.built.dir);
-            findings.retain(|f| {
-                !support::plumb::s50_rule1_verifier_finding(f)
-                    && !support::plumb::p_i3_zero_size_verifier_finding(f, &prog.built.dir)
-            });
             assert!(findings.is_empty(), "{write:?}: the verifier rejects: {findings:?}");
             let (status, out) = prog.run("o");
             assert_eq!(status, Some(0));
