@@ -302,6 +302,23 @@ cflags = -O1
 ldflags = -static
 run =
 
+# The large workload of the incremental floor (spec/incr.md §1.5, "Go/no-go
+# rule"; WP-061 stage B): synthetic-objects compiled with -g, its object
+# count the smallest multiple of 10 whose live input is at least 10x
+# protoc's (164,059,792 bytes, §1.4), from a 40-object sample (mean 201,602
+# bytes). Its 1.6 GB of objects are generated, measured and deleted: built
+# only when named (`--workload synthetic-objects-g10x`, class on-request),
+# into a cache outside the workspace (`--work`).
+[synthetic-objects-g10x]
+class = on-request
+kind = synthetic
+about = synthetic-objects at 8150 objects with -g, linked -static: at least 10x protoc -g's live input.
+shape = objects
+params = 8150 200
+driver = gcc
+cflags = -O1 -g
+ldflags = -static
+
 # A Fortran program and its C callee (tests/link/lang/fortran-c.test):
 # libgfortran from its archive.
 [fortran-static]
