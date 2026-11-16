@@ -2380,7 +2380,8 @@ relocated fields by value (§5.8 tombstones included).
   `.init_array`, `.fini_array`, `.preinit_array`, `.ctors`, `.dtors`
   and their `.`-suffixed names, `.init`, `.fini`, `.tm_clone_table`,
   `.note*`, a C-identifier name), the units of size above 0 in address
-  order are the same sequence of identities; in `.eh_frame`, the FDE
+  order are the same sequence of identities (a `.tbss` unit, whose TLS
+  address overlaps what follows it, is none of them); in `.eh_frame`, the FDE
   pieces in address order are the same sequence (CIEs and padding CIEs
   passed over).
 
@@ -2388,7 +2389,8 @@ relocated fields by value (§5.8 tombstones included).
 (every allocated byte covered once; every range passing IN-3a's three
 checks). Beyond the allocated sections, every byte of `X`'s file is: in
 the file header, the program or section header table, a section's file
-image, or zero (file padding); a non-allocated output section with
+image, or zero (file padding; on x86, inside an executable `PT_LOAD`'s
+file image, also `0xcc` and `0x90`, the code fill and the nop padding); a non-allocated output section with
 `nplace` units is tiled by them, `dead` lines of `X`'s map and zero
 alignment padding; a non-allocated section with no unit and no `merged`
 record, other than `.symtab`, `.strtab` and `.shstrtab` (P-E1, P-E3),

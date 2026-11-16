@@ -166,6 +166,9 @@ struct Side<'a> {
     pmax: Vec<u64>,
     tls: Option<u64>,
     machine: Option<Machine>,
+    /// The `.tbss` input sections, `(path, member, index)`: their TLS
+    /// addresses overlap what follows them.
+    tbss: BTreeSet<(String, Option<String>, u32)>,
 }
 
 fn file_key(map: &Map, file: u32) -> String {
@@ -389,7 +392,13 @@ fn run_side<'a>(
         pmax.push(m);
     }
     let tls = image.phdrs.iter().find(|p| p.p_type == PT_TLS).map(|p| p.p_vaddr);
+    let tbss = units
+        .iter()
+        .filter(|(_, u)| u.tbss)
+        .map(|(((p, m, _), i), _)| (p.clone(), m.clone(), *i))
+        .collect();
     Ok(Side {
+        tbss,
         tag,
         image,
         map,
@@ -542,7 +551,10 @@ fn units(x: &Side<'_>, f: &Side<'_>, out: &mut Vec<Finding>, _eq: &mut Equiv) {
     let set = |s: &Side<'_>, out: &mut Vec<Finding>| -> Set {
         let mut m = Set::new();
         for p in &s.map.placed {
-            let eh = s.image.alloc_section_of(p.addr, 0).is_some_and(|(_, o)| o.name == ".eh_frame");
+            // The section holding the unit's first byte (not one ending there).
+            let eh = s.image.sections.iter().any(|o| {
+                o.alloc() && o.name == ".eh_frame" && o.shdr.sh_addr <= p.addr && p.addr < o.shdr.sh_addr + o.shdr.sh_size
+            });
             let cie = eh
                 && p.input_offset.is_some()
                 && s.image.value(p.addr.saturating_add(4), 4) == Some(0);
@@ -561,9 +573,10 @@ fn units(x: &Side<'_>, f: &Side<'_>, out: &mut Vec<Finding>, _eq: &mut Equiv) {
         m
     };
     let (mx, mf) = (set(x, out), set(f, out));
+    let at = |o: Option<u64>| o.map_or_else(String::new, |o| format!("+{o:#x}"));
     for (k, (zx, eh, _)) in &mx {
         match mf.get(k) {
-            None => out.push(finding(2, format!("{}:{} is placed in the update, not in the full link", k.0, k.1))),
+            None => out.push(finding(2, format!("{}:{}{} is placed in the update, not in the full link", k.0, k.1, at(k.2)))),
             Some((zf, _, _)) if zx != zf && !(*eh && zx > zf && matches!(zx - zf, 4 | 8 | 12)) => {
                 out.push(finding(2, format!("{}:{} has size {zx:#x}, {zf:#x} in the full link", k.0, k.1)));
             }
@@ -572,7 +585,7 @@ fn units(x: &Side<'_>, f: &Side<'_>, out: &mut Vec<Finding>, _eq: &mut Equiv) {
     }
     for k in mf.keys() {
         if !mx.contains_key(k) {
-            out.push(finding(2, format!("{}:{} is placed in the full link, not in the update", k.0, k.1)));
+            out.push(finding(2, format!("{}:{}{} is placed in the full link, not in the update", k.0, k.1, at(k.2))));
         }
     }
     let chunks = |s: &Side<'_>| -> BTreeSet<(String, String, u32)> {
@@ -1174,6 +1187,10 @@ fn packed(x: &Side<'_>, f: &Side<'_>, out: &mut Vec<Finding>) {
             .placed
             .iter()
             .filter(|p| p.size > 0 && lo <= p.addr && p.addr < hi)
+            .filter(|p| {
+                let f = &s.map.files[p.file as usize];
+                !matches!(p.section, SectionRef::Index(i) if s.tbss.contains(&(f.path.clone(), f.member.clone(), i)))
+            })
             .filter(|p| !eh || (p.input_offset.is_some() && s.image.value(p.addr + 4, 4) != Some(0)))
             .map(|p| {
                 (p.addr, format!("{}:{}@{:?}", file_key(s.map, p.file), sec_key(&p.section), p.input_offset))
@@ -1212,14 +1229,27 @@ fn rest(x: &Side<'_>, f: &Side<'_>, out: &mut Vec<Finding>) {
         }
     }
     used.sort_unstable();
+    // In an executable segment's file image, x86 code fill (`int3`, `nop`)
+    // pads too (IN-3); elsewhere zero.
+    let x86 = !matches!(x.machine, Some(Machine::AArch64) | None);
+    let exec: Vec<(u64, u64)> = img
+        .phdrs
+        .iter()
+        .filter(|p| p.p_type == mortar_elf::consts::PT_LOAD && p.p_flags & 1 != 0)
+        .map(|p| (p.p_offset, p.p_offset.saturating_add(p.p_filesz)))
+        .collect();
+    let pad = |o: usize, b: u8| {
+        b == 0 || (x86 && matches!(b, 0xcc | 0x90) && exec.iter().any(|(a, z)| *a <= o as u64 && (o as u64) < *z))
+    };
+    let all_pad = |a: usize, z: usize| img.data[a..z].iter().enumerate().all(|(k, &b)| pad(a + k, b));
     let mut at = 0u64;
     for (o, z) in used {
-        if o > at && !img.data[at as usize..o.min(len) as usize].iter().all(|&b| b == 0) {
+        if o > at && !all_pad(at as usize, o.min(len) as usize) {
             out.push(finding(6, format!("file bytes {at:#x}..{o:#x}, outside every section and header, are not zero")));
         }
         at = at.max(o.saturating_add(z)).min(len);
     }
-    if at < len && !img.data[at as usize..].iter().all(|&b| b == 0) {
+    if at < len && !all_pad(at as usize, len as usize) {
         out.push(finding(6, format!("file bytes from {at:#x}, after every section, are not zero")));
     }
     // Non-alloc sections.
