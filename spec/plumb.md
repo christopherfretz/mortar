@@ -2144,7 +2144,16 @@ else. In the debug sections:
    as `.rela.plt`) take `NONE` records only.
 
 Tests: `tests/dead.rs` (§9.2 (p)), `map::mortar::tests::s3_2_dead_*`.
-Cost (WP-091, measured, §9.5): none for a map that claims nothing.
+Cost (WP-091, measured; release `xtask plumb`, 3 runs each, host load
+about 12; mortar's static AArch64 protoc, 11.7 MB, and protoc `-g`,
+50.3 MB): a map that claims nothing runs none of this (protoc 0.27–0.33 s
+and 175 MiB, protoc `-g` 2.15–2.42 s and 1.30 GiB, against 0.27–0.44 s
+and 1.87–2.12 s at the base commit: noise, same peak RSS). With
+`incremental` added to the map (coverage, the fills, the symbol,
+relocation and table walks): protoc 0.32–0.42 s, `-g` 2.01–2.18 s, RSS
+unchanged, 0 findings: today's protoc maps are complete. With also one
+`dead .debug_str` line (the walk of every live unit): `-g` 2.02–2.76 s,
+RSS unchanged, 0 findings.
 
 ## 7. The report
 
