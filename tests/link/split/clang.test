@@ -1,0 +1,152 @@
+# Split DWARF (WP-080), Clang 22: each form of the census (spec/landed/
+# image/WP-080.md) linked static non-PIE through the GCC driver. Besides
+# GCC's forms: -gpubnames (a per-unit .debug_names, concatenated as an
+# ordinary debug section by all four linkers) and -gsplit-dwarf=single,
+# whose .dwo sections stay in the object with SHF_EXCLUDE (dropped,
+# spec/layout.md L-31; with -fdebug-types-section the type units are
+# .debug_info.dwo sections in COMDAT groups, dropped with the rest): the
+# skeleton then names the object itself as its DW_AT_dwo_name.
+#@ spec: image.md I-49a
+#@ requires: g++ clang llvm-dwarfdump
+
+cxx(clang) -g -gsplit-dwarf -gdwarf-5 -O0 -ffunction-sections main.cc -o main-d5.o
+cxx(clang) -g -gsplit-dwarf -gdwarf-5 -O0 -ffunction-sections b.cc -o b-d5.o
+cxx(clang) -g -gsplit-dwarf -gdwarf-4 -O0 -ffunction-sections main.cc -o main-d4.o
+cxx(clang) -g -gsplit-dwarf -gdwarf-4 -O0 -ffunction-sections b.cc -o b-d4.o
+cxx(clang) -g -gsplit-dwarf -gdwarf-5 -fdebug-types-section -O0 -ffunction-sections main.cc -o main-d5t.o
+cxx(clang) -g -gsplit-dwarf -gdwarf-5 -fdebug-types-section -O0 -ffunction-sections b.cc -o b-d5t.o
+cxx(clang) -g -gsplit-dwarf -gdwarf-5 -gpubnames -O0 -ffunction-sections main.cc -o main-d5n.o
+cxx(clang) -g -gsplit-dwarf -gdwarf-5 -gpubnames -O0 -ffunction-sections b.cc -o b-d5n.o
+cxx(clang) -g -gsplit-dwarf -gdwarf-5 -O2 -ffunction-sections main.cc -o main-d5o.o
+cxx(clang) -g -gsplit-dwarf -gdwarf-5 -O2 -ffunction-sections b.cc -o b-d5o.o
+cxx(clang) -g -gsplit-dwarf=single -gdwarf-5 -O0 -ffunction-sections main.cc -o main-s5.o
+cxx(clang) -g -gsplit-dwarf=single -gdwarf-5 -O0 -ffunction-sections b.cc -o b-s5.o
+cxx(clang) -g -gsplit-dwarf=single -gdwarf-4 -O0 -ffunction-sections main.cc -o main-s4.o
+cxx(clang) -g -gsplit-dwarf=single -gdwarf-4 -O0 -ffunction-sections b.cc -o b-s4.o
+cxx(clang) -g -gsplit-dwarf=single -gdwarf-5 -fdebug-types-section -O0 -ffunction-sections main.cc -o main-s5t.o
+cxx(clang) -g -gsplit-dwarf=single -gdwarf-5 -fdebug-types-section -O0 -ffunction-sections b.cc -o b-s5t.o
+link g++ -static -no-pie -fno-use-linker-plugin main-d5.o b-d5.o -o prog-d5
+run prog-d5
+  stdout: 5 10 8
+check readelf -SW prog-d5
+  has: .debug_addr
+  has: .debug_info
+  not: .dwo
+check readelf --debug-dump=info prog-d5
+  has: DW_UT_skeleton
+  has: DW_AT_dwo_name
+  has: DW_UT_split_compile
+  has: Found separate debug object file: */main-d5.dwo
+  has: Found separate debug object file: */b-d5.dwo
+check llvm-dwarfdump --verify prog-d5
+  has: No errors.
+link g++ -static -no-pie -fno-use-linker-plugin main-d4.o b-d4.o -o prog-d4
+run prog-d4
+  stdout: 5 10 8
+check readelf -SW prog-d4
+  has: .debug_addr
+  has: .debug_info
+  not: .dwo
+check readelf --debug-dump=info prog-d4
+  has: DW_AT_GNU_dwo_name
+  has: Found separate debug object file: */main-d4.dwo
+  has: Found separate debug object file: */b-d4.dwo
+check llvm-dwarfdump --verify prog-d4
+  has: No errors.
+link g++ -static -no-pie -fno-use-linker-plugin main-d5t.o b-d5t.o -o prog-d5t
+run prog-d5t
+  stdout: 5 10 8
+check readelf -SW prog-d5t
+  has: .debug_addr
+  has: .debug_info
+  not: .dwo
+check readelf --debug-dump=info prog-d5t
+  has: DW_UT_skeleton
+  has: DW_AT_dwo_name
+  has: DW_UT_split_compile
+  has: Found separate debug object file: */main-d5t.dwo
+  has: Found separate debug object file: */b-d5t.dwo
+check llvm-dwarfdump --verify prog-d5t
+  has: No errors.
+link g++ -static -no-pie -fno-use-linker-plugin main-d5n.o b-d5n.o -o prog-d5n
+run prog-d5n
+  stdout: 5 10 8
+check readelf -SW prog-d5n
+  has: .debug_addr
+  has: .debug_info
+  not: .dwo
+check readelf --debug-dump=info prog-d5n
+  has: DW_UT_skeleton
+  has: DW_AT_dwo_name
+  has: DW_UT_split_compile
+  has: Found separate debug object file: */main-d5n.dwo
+  has: Found separate debug object file: */b-d5n.dwo
+check llvm-dwarfdump --verify prog-d5n
+  has: No errors.
+link g++ -static -no-pie -fno-use-linker-plugin main-d5o.o b-d5o.o -o prog-d5o
+run prog-d5o
+  stdout: 5 10 8
+check readelf -SW prog-d5o
+  has: .debug_addr
+  has: .debug_info
+  not: .dwo
+check readelf --debug-dump=info prog-d5o
+  has: DW_UT_skeleton
+  has: DW_AT_dwo_name
+  has: DW_UT_split_compile
+  has: Found separate debug object file: */main-d5o.dwo
+  has: Found separate debug object file: */b-d5o.dwo
+check llvm-dwarfdump --verify prog-d5o
+  has: No errors.
+link g++ -static -no-pie -fno-use-linker-plugin main-s5.o b-s5.o -o prog-s5
+run prog-s5
+  stdout: 5 10 8
+check readelf -SW prog-s5
+  has: .debug_addr
+  not: .dwo
+check readelf --debug-dump=info prog-s5
+  has: DW_AT_dwo_name
+  has: Found separate debug object file: */main-s5.o
+check llvm-dwarfdump --verify prog-s5
+  has: No errors.
+link g++ -static -no-pie -fno-use-linker-plugin main-s4.o b-s4.o -o prog-s4
+run prog-s4
+  stdout: 5 10 8
+check readelf -SW prog-s4
+  has: .debug_addr
+  not: .dwo
+check readelf --debug-dump=info prog-s4
+  has: DW_AT_GNU_dwo_name
+  has: Found separate debug object file: */main-s4.o
+check llvm-dwarfdump --verify prog-s4
+  has: No errors.
+link g++ -static -no-pie -fno-use-linker-plugin main-s5t.o b-s5t.o -o prog-s5t
+run prog-s5t
+  stdout: 5 10 8
+check readelf -SW prog-s5t
+  has: .debug_addr
+  not: .dwo
+check readelf --debug-dump=info prog-s5t
+  has: DW_AT_dwo_name
+  has: Found separate debug object file: */main-s5t.o
+check llvm-dwarfdump --verify prog-s5t
+  has: No errors.
+
+#--- main.cc
+#include <cstdio>
+template <class T> __attribute__((noinline)) T twice(T x) { return x + x; }
+struct Point { int x; double y; };
+thread_local int tl_count = 5;
+int g_total = 3;
+int helper(int);
+int main(int argc, char **) {
+  Point p{argc, 2.5};
+  tl_count += argc;
+  std::printf("%d %d %d\n", twice(argc) + g_total, helper(argc), (int)p.y + tl_count);
+  return 0;
+}
+#--- b.cc
+template <class T> __attribute__((noinline)) T twice(T x) { return x + x; }
+extern thread_local int tl_count;
+__attribute__((noinline)) int unused_fn(int x) { return x * 9 + tl_count; }
+__attribute__((noinline)) int helper(int x) { return twice(x + 1) + tl_count; }

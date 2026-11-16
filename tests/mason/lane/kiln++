@@ -1,9 +1,12 @@
 #!/bin/bash
 # The Mason lane's compiler (tests/mason/README.md "libc++"): kiln's
 # libc++ runner calls this as its --compiler. Compiles go to kiln++
-# unchanged. Links, except in mode `dyn`, are made static (libc++ and
-# glibc), drop the runner's -Bstatic/-Bdynamic/--as-needed, and use the
-# `ld` of $MASON_LANE/ld/$MASON_LD (GNU ld, lld, mold or mortar).
+# unchanged. Links, except in mode `dyn` and the `dyn-*` modes, are made
+# static (libc++ and glibc), drop the runner's -Bstatic/-Bdynamic/
+# --as-needed, and use the `ld` of $MASON_LANE/ld/$MASON_LD (GNU ld, lld,
+# mold or mortar). A `dyn-<linker>` mode keeps kiln's dynamic line as the
+# runner wrote it (static libc++, dynamic glibc; the driver's default PIE)
+# and only names the lane's `ld` (-B).
 # With MASON_LIB_FROM/MASON_LIB_TO, -L$MASON_LIB_FROM becomes -L$MASON_LIB_TO.
 # $MASON_CFLAGS (words) is added to every command (`--cflags`, e.g. -O2).
 : "${MASON_KILN:?}" "${MASON_MODE:?}"
@@ -16,6 +19,12 @@ done
 [ $# = 0 ] && link=0
 read -r -a cflags <<< "${MASON_CFLAGS:-}"
 if [ $link = 0 ] || [ "$MASON_MODE" = dyn ]; then exec "$MASON_KILN" "$@" "${cflags[@]}"; fi
+ld="${MASON_LANE:?}/ld/${MASON_LD:?}"
+case "$MASON_MODE" in
+  dyn-*)
+    [ -x "$ld/ld" ] || { echo "kiln++ (Mason lane): $ld/ld is not executable" >&2; exit 125; }
+    exec "$MASON_KILN" "$@" "${cflags[@]}" -B"$ld";;
+esac
 args=()
 for a in "$@"; do
   case "$a" in
@@ -26,6 +35,5 @@ for a in "$@"; do
 done
 # The driver skips a -B directory whose `ld` is not executable and links
 # with the system's: a mode would then silently be GNU ld's.
-ld="${MASON_LANE:?}/ld/${MASON_LD:?}"
 [ -x "$ld/ld" ] || { echo "kiln++ (Mason lane): $ld/ld is not executable" >&2; exit 125; }
 exec "$MASON_KILN" "${args[@]}" "${cflags[@]}" -static -B"$ld"
