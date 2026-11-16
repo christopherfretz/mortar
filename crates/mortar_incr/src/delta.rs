@@ -273,7 +273,7 @@ struct Side<'s> {
     /// lookup per key or per flipped section is not a scan.
     defined_at: HashMap<u32, usize>,
     common_at: HashMap<u32, usize>,
-    globals_of: HashMap<u32, Vec<usize>>,
+    globals_of: std::cell::OnceCell<HashMap<u32, Vec<usize>>>,
 }
 
 impl<'s> Side<'s> {
@@ -292,19 +292,23 @@ impl<'s> Side<'s> {
         for (i, p) in s.sym_place.iter().enumerate() {
             common_at.entry(p.symbol).or_insert(i);
         }
-        let mut globals_of: HashMap<u32, Vec<usize>> = HashMap::new();
-        for (i, m) in s.mentions.iter().enumerate() {
-            if m.kind == def_kind::SECTION {
-                globals_of.entry(m.section).or_default().push(i);
-            }
-        }
-        Self { s, out_start, defined_at, common_at, globals_of }
+        Self { s, out_start, defined_at, common_at, globals_of: std::cell::OnceCell::new() }
     }
 
     /// The `SECTION`-kind mentions of section `sec`, in `MENTIONS` order.
     fn globals_in(&self, sec: u32) -> impl Iterator<Item = &'s MentionRow> + '_ {
         let s = self.s;
-        self.globals_of.get(&sec).into_iter().flatten().map(move |&i| &s.mentions[i])
+        // Built on first use: only a liveness flip asks.
+        let map = self.globals_of.get_or_init(|| {
+            let mut m: HashMap<u32, Vec<usize>> = HashMap::new();
+            for (i, x) in s.mentions.iter().enumerate() {
+                if x.kind == def_kind::SECTION {
+                    m.entry(x.section).or_default().push(i);
+                }
+            }
+            m
+        });
+        map.get(&sec).into_iter().flatten().map(move |&i| &s.mentions[i])
     }
 
     fn chunk(&self, c: u32) -> Option<&'s ChunkRow> {
