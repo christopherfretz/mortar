@@ -9,7 +9,7 @@ use mortar_arch::seq::{field_window, in_section};
 use mortar_arch::{
     Base, Check, ClassOutcome, DeadRef, DemandClass, DemandFlags, DemandSink, EventClass, Field,
     FieldError, FillCx, GlobalFlags, Incompatible, Minus, OutputKind, Refusal, RelocAt, ScanCx,
-    ScanError, SectionOut, SlotKind, SymValue, TargetKind, Terms, TlsAbi, class_outcome,
+    ScanError, SectionOut, SlotKind, SymValue, TargetKind, Terms, class_outcome,
     dead_reference, writes_dtprel,
 };
 use mortar_diag::RefusalClass;
@@ -459,7 +459,7 @@ fn value(
         mortar_arch::PlaceFacts { alloc: out.alloc, writable: false, exec: out.exec },
         sym.tls,
     ) {
-        let x = tls_off(cx, sym, a, TlsAbi::dtp_rel)?;
+        let x = cx.dtp_rel(sym, a)?;
         h.check.verify(x, Class::Elf32)?;
         return Ok(x);
     }
@@ -516,7 +516,7 @@ fn dtpoff(
     if code {
         tls_off(cx, sym, a, |x, tls| TLS.tp_rel(x, tls))
     } else {
-        tls_off(cx, sym, a, TlsAbi::dtp_rel)
+        cx.dtp_rel(sym, a)
     }
 }
 

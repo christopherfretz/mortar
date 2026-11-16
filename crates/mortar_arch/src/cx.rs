@@ -344,6 +344,31 @@ pub struct FillCx<'a> {
     pub tls: Option<TlsBlock>,
 }
 
+impl FillCx<'_> {
+    /// `DtpRel(S + A)` (§3.8) of `sym`, the offset in the output's TLS
+    /// block, for every class that writes one (`TlsDtpRel`, and §4.3's
+    /// `AbsWord`/`AbsNarrow` exception). `A` for a `Weak0` target (§7). A
+    /// target only a shared library defines (`Shlib`, `WeakDyn`; §4.3
+    /// "Non-alloc places", the only places where one is accepted) has
+    /// `S = 0`, and without a `PT_TLS` the block's start is 0 as well, so
+    /// the word is `0 + A` (GNU ld 2.44 and mold 2.37; WP-113). Any other
+    /// target without a `PT_TLS` is `MissingTerm("PT_TLS")`.
+    ///
+    /// # Errors
+    ///
+    /// `FieldError::MissingTerm` when the output has no `PT_TLS` and the
+    /// target is defined in it.
+    pub fn dtp_rel(&self, sym: SymValue, a: i64) -> Result<i64, crate::FieldError> {
+        let x = sym.s.wrapping_add(a as u64);
+        match (sym.kind, self.tls) {
+            (TargetKind::Weak0, _) => Ok(a),
+            (_, Some(tls)) => Ok(crate::TlsAbi::dtp_rel(x, tls)),
+            (TargetKind::Shlib { .. } | TargetKind::WeakDyn, None) => Ok(x as i64),
+            (_, None) => Err(crate::FieldError::MissingTerm("PT_TLS")),
+        }
+    }
+}
+
 impl std::fmt::Debug for FillCx<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FillCx")
