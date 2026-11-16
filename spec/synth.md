@@ -2503,30 +2503,45 @@ records give `--gdb-index`). The chunk is named by its `chunk synthetic
 
 ### 17.8 Where the references differ
 
-| point | lld 22 | mold | mortar |
+| point | lld 19 and 22 | mold 2.37 | mortar |
 |---|---|---|---|
 | a unit with no name set | indexed without names: gdb misses its types and globals | the same | refused, `gdb-index-incomplete` (S-G3) |
 | Clang `-gpubnames` (`.debug_names` only) | empty symbol table | empty symbol table | refused, the note naming `.debug_names` (S-G4a) |
 | duplicate values in a CU vector | written | removed | removed, sorted (S-G4) |
-| table size | `max(1024, next power of two above 4N/3)` | smaller (64 slots for 45 names) | lld's (S-G7) |
+| table size | `max(1024, next power of two above 4N/3)` | smaller (64 slots for 34 and for 37 names) | lld's, which is also `gdb-add-index`'s rule (S-G7) |
 | alignment | 1 | 4 | 4 (S-G1) |
 | type units | TU list | TU list | refused (S-G2) |
 | input pubnames | dropped | dropped | dropped (S-G6) |
+| an empty name (Clang's unnamed variables) | indexed | indexed | indexed (S-G4a) |
 | ranges | from the unit DIE, empty ones left out | from the unit DIE | from the unit DIE, empty and dead ones left out (S-G5) |
 
 ### 17.9 Tests
 
-- unit tests in `mortar_synth::gdbindex`: the hash against gdb's
-  values; the table and the CU vectors against the bytes `gdb-add-index`
-  wrote for a small program (`crates/mortar_synth/tests/data/`); the size
-  rule; each refusal of the readers by name; the output a pure function
-  of its inputs;
-- link tests: `tests/link/split/gdb-index-*.test` (GCC DWARF 4 and 5
-  split, Clang split, Clang `-ggnu-pubnames` and `-gpubnames`, a mixed
-  build refused with the object named, `--gc-sections`, a COMDAT
-  function kept from another unit) and `tests/link/debug/gdb-index.test`
-  (a non-split `-g -ggnu-pubnames` link), each with `readelf
-  --debug-dump=gdb_index` and `llvm-dwarfdump --gdb-index`;
-- `crates/mortar/tests/debuggers.rs`: gdb's transcripts with and
-  without the index are equal, and gdb reports the index in use; stage
-  B's failure case refused.
+- `crates/mortar_synth`: unit tests of `gdbindex` (the hash, the size
+  rule, the probe, sorted and unique vectors) and of `gdbread` (LEB128,
+  every form's size, abbreviations); `tests/gdb_add_index.rs` holds the
+  hash, the probe and the size rule to the bytes `gdb-add-index` (gdb
+  16.3) wrote for 1303 names (`tests/data/gdb-add-index-v9.bin`);
+- link tests, on the three architectures with lld and mold beside
+  mortar: `tests/link/split/gdb-index-gcc.test` (GCC DWARF 5 and 4
+  split, `--gc-sections`, the last of `--gdb-index`/`--no-gdb-index`,
+  `-S`), `gdb-index-clang.test` (Clang 22 split DWARF 5 and 4, non-split
+  `-ggnu-pubnames`, `--gc-sections`), `gdb-index-pubnames.test`
+  (non-split `-g -ggnu-pubnames`: GCC DWARF 5 and 4 at `-O0` and `-O2`,
+  Clang at `-O2`), `gdb-index-refused.test` (each refusal by name: a
+  mixed build at the object without a set, Clang `-gpubnames`, DWARF 4
+  and 5 type units, a malformed set, a partial unit, an orphan set; lld's
+  and mold's index of the mixed build without its names; the
+  incremental warning; `--debug-names` and `--no-debug-names`), each
+  with `readelf --debug-dump=gdb_index` and `llvm-dwarfdump --gdb-index`;
+  their mortar links are rows of the byte-identical lane;
+- `crates/mortar/tests/gdb_index.rs`: mortar's index against lld's and
+  mold's on the three architectures, eight GCC and Clang forms, plain
+  and with `--gc-sections`, by a reader that shares nothing with the
+  writer (§17.8's differences only);
+- `crates/mortar/tests/debuggers.rs`: `gdb_index_is_used_and_answers_the_same`
+  (gdb's and lldb's transcripts with and without the index equal; gdb
+  reports `.gdb_index: version 7`) and
+  `gdb_index_of_a_mixed_build_is_refused` (stage B's failure case: lld's
+  index hides the third unit's type and variable from gdb; mortar
+  refuses the link at that object).
