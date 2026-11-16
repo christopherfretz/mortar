@@ -11,6 +11,9 @@
 #   the mode (`off` under `--no-odr-check`, `warn` by default) and the
 #   findings (none on the legal program main.o a.o).
 # The references know neither option and link the line plainly.
+# It lives in diag/, not odr/: the producers lane (WP-099) re-links the
+# odr/ corpus with hod's objects and compares the standard error, which
+# `--odr-stats` makes differ by its time.
 #@ spec: odr.md "§8.1"
 #@ requires: g++
 

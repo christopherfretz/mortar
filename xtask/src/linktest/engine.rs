@@ -287,6 +287,48 @@ pub fn normalise(text: &[u8], subs: &[(String, &str)]) -> Vec<u8> {
     text.into_bytes()
 }
 
+/// What [`normalise_stderr`] writes for a time.
+pub const TIME_NAME: &str = "<time>";
+
+/// A link's standard error with the times mortar measures replaced
+/// (`spec/harness.md` "static-identical", WP-112): they change from run to
+/// run. In a line holding `: time-phases: ` (`--time-phases`, image.md
+/// I-88), all after its first `: wall ` (wall, cpu, rss and peak); in a
+/// line holding `: odr-stats: ` (`--odr-stats`), all after its last
+/// `; time `; in a line beginning `incremental: ` (`--incremental-report`),
+/// all after its last ` time=`; a line beginning `delta time `, all after
+/// that. Each is replaced by [`TIME_NAME`]. Any other line is left as it is.
+pub fn normalise_stderr(text: &[u8]) -> Vec<u8> {
+    let text = String::from_utf8_lossy(text);
+    let mut out = String::with_capacity(text.len());
+    for line in text.split_inclusive('\n') {
+        let (body, end) = match line.strip_suffix('\n') {
+            Some(body) => (body, "\n"),
+            None => (line, ""),
+        };
+        let keep = if body.contains(": time-phases: ") {
+            body.find(": wall ").map(|i| i + ": wall ".len())
+        } else if body.contains(": odr-stats: ") {
+            body.rfind("; time ").map(|i| i + "; time ".len())
+        } else if body.starts_with("incremental: ") {
+            body.rfind(" time=").map(|i| i + " time=".len())
+        } else if body.starts_with("delta time ") {
+            Some("delta time ".len())
+        } else {
+            None
+        };
+        match keep {
+            Some(n) => {
+                out.push_str(&body[..n]);
+                out.push_str(TIME_NAME);
+                out.push_str(end);
+            }
+            None => out.push_str(line),
+        }
+    }
+    out.into_bytes()
+}
+
 /// The prefix of the map record of gcc's LTO plugin's resolution file
 /// (`spec/plumb.md`, the `arg` record): gcc's driver passes
 /// `-plugin-opt=-fresolution=<TMPDIR>/ccXXXXXX.res` on every link it makes
@@ -1375,7 +1417,7 @@ impl Unit<'_> {
             Err(_) => "-".to_owned(),
         };
         let map = dir.join(format!(".linktest-plumb-{}.map", step.line));
-        let stderr = normalise(&output.stderr, &subs);
+        let stderr = normalise(&normalise_stderr(&output.stderr), &subs);
         let meta_section = std::fs::read(output_file).is_ok_and(|bytes| has_meta_section(&bytes));
         DigestRow {
             test: self.name.to_owned(),
@@ -2221,6 +2263,44 @@ mod tests {
             "sym -plugin-opt=-fresolution=/tmp/ccABC123.res\n",
         ] {
             assert_eq!(normalise_map(kept.as_bytes()), kept.as_bytes(), "{kept}");
+        }
+    }
+
+    // spec/harness.md "static-identical": the times mortar measures are
+    // replaced in its standard error, and nothing else (WP-112).
+    #[test]
+    fn a_standard_error_loses_only_measured_times() {
+        use super::{TIME_NAME, normalise_stderr};
+        let t = TIME_NAME;
+        let cases = [
+            (
+                "mortar: time-phases: 10 command line: wall 0.1 ms, cpu 0 ms, rss 3.1 MiB, peak 3.2 MiB\n",
+                format!("mortar: time-phases: 10 command line: wall {t}\n"),
+            ),
+            (
+                "mortar: time-phases: total: wall 4.0 ms, cpu 1 ms, peak 9.0 MiB",
+                format!("mortar: time-phases: total: wall {t}"),
+            ),
+            (
+                "mortar: odr-stats: mode warn; units 0; findings W1 0; time 0.016 ms\n",
+                format!("mortar: odr-stats: mode warn; units 0; findings W1 0; time {t}\n"),
+            ),
+            (
+                "incremental: full (no-state) changed=1 refilled=0 bytes=600 time=0.412\n",
+                format!("incremental: full (no-state) changed=1 refilled=0 bytes=600 time={t}\n"),
+            ),
+            ("delta time detect=0.010 delta=0.020\n", format!("delta time {t}\n")),
+        ];
+        for (line, want) in cases {
+            assert_eq!(String::from_utf8(normalise_stderr(line.as_bytes())).unwrap(), want);
+        }
+        for kept in [
+            "mortar: error: undefined symbol: time\n",
+            "mortar: warning: wall 0.1 ms\n",
+            "a.o: incremental: full time=1\n",
+            "mortar: odr-stats: mode off\n",
+        ] {
+            assert_eq!(normalise_stderr(kept.as_bytes()), kept.as_bytes(), "{kept}");
         }
     }
 

@@ -1394,6 +1394,19 @@ with its own build of mortar: without this rule 404 map digests moved and
 nothing else; with it, 0 of 806 rows (and 0 of 898 on main `42e7ad3`,
 run with two `TMPDIR`s).
 
+The times mortar measures change from run to run too, and the options
+that print them are tested (WP-112). So, before the paths are replaced,
+the standard error has, in a line holding `: time-phases: `
+(`--time-phases`, image.md I-88), all after its first `: wall `; in a
+line holding `: odr-stats: ` (`--odr-stats`), all after its last
+`; time `; in a line beginning `incremental: ` (`--incremental-report`
+without a file), all after its last ` time=`; and in a line beginning
+`delta time `, all after those words, replaced by `<time>`
+(`normalise_stderr`). The counts on those lines are kept. The map
+digested is always `.linktest-plumb-<line>.map`: a link that names its
+own `--mortar-map` has `-` in the map column, as before WP-112, so that
+no row of the baseline moves.
+
 `--mortar <binary>` runs a binary whose file name is its program name in
 diagnostics (`<name>: error: ...`): one not named `mortar` changes every
 `stderr` digest of a link with a diagnostic. Name it `mortar` (copy it
