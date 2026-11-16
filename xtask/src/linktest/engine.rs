@@ -1438,7 +1438,7 @@ fn meta_step(step: &Step, objcopy: &Path, args: &[String], dir: &Path) -> Result
         .map_err(|e| fail(format!("cannot read '{description}': {e}")))?;
     // A shared object: its `.note.mason` table (`spec/odr.md` O-50 to
     // O-52), from `row` lines (`cargo xtask meta table`).
-    if input.ends_with(".so") {
+    if Path::new(input).extension().is_some_and(|e| e == "so") {
         return crate::meta::fill_table(&text, &dir.join(input), &dir.join(out)).map_err(fail);
     }
     let sections = crate::meta::parse(&text).map_err(fail)?;

@@ -355,8 +355,8 @@ impl Cx<'_, '_> {
         libs.dedup();
         for (i, &e) in libs.iter().enumerate() {
             for &l in &libs[i + 1..] {
-                let of = |p: usize| rows.iter().filter(move |r| r.pos == p);
-                if let Some((a, b, how)) = pair(of(e), of(l)) {
+                let of = |p: usize| rows.iter().filter(|r| r.pos == p).collect::<Vec<_>>();
+                if let Some((a, b, how)) = pair(&of(e), &of(l)) {
                     self.library_finding(a, b, how);
                 }
             }
@@ -430,21 +430,21 @@ enum How {
 /// The first pair of differing rows that O-24 (b) compares, earlier
 /// library first, if any.
 fn pair<'r, 's>(
-    e: impl Iterator<Item = &'r LibRow<'s>> + Clone,
-    l: impl Iterator<Item = &'r LibRow<'s>> + Clone,
+    e: &[&'r LibRow<'s>],
+    l: &[&'r LibRow<'s>],
 ) -> Option<(&'r LibRow<'s>, &'r LibRow<'s>, How)>
 where
     's: 'r,
 {
-    let unversioned = |r: &&LibRow<'_>| matches!(r.ver, Ver::Unversioned);
     fn node<'n>(r: &LibRow<'n>) -> Option<&'n [u8]> {
         match r.ver {
             Ver::Node { name, .. } => Some(name),
             Ver::Unversioned => None,
         }
     }
-    for a in e.clone() {
-        for b in l.clone() {
+    let unversioned = |r: &&&LibRow<'_>| matches!(r.ver, Ver::Unversioned);
+    for &a in e {
+        for &b in l {
             let entity = match (a.ver, b.ver) {
                 (Ver::Unversioned, Ver::Unversioned) => true,
                 (Ver::Node { .. }, Ver::Node { .. }) => node(a) == node(b),
@@ -455,15 +455,15 @@ where
             }
         }
     }
-    let e_unv = e.clone().find(unversioned);
-    let l_unv = l.clone().find(unversioned);
+    let e_unv = e.iter().find(unversioned).copied();
+    let l_unv = l.iter().find(unversioned).copied();
     match (e_unv, l_unv) {
         (Some(u), None) => {
-            let d = l.clone().find(|r| r.ver.is_default())?;
+            let d = l.iter().find(|r| r.ver.is_default()).copied()?;
             (u.hash != d.hash).then_some((u, d, How::UnversionedFirst))
         }
         (None, Some(u)) => {
-            let two = e.clone().find(|r| matches!(r.ver, Ver::Node { index: 2, .. }))?;
+            let two = e.iter().find(|r| matches!(r.ver, Ver::Node { index: 2, .. })).copied()?;
             (two.hash != u.hash).then_some((two, u, How::VersionedFirst))
         }
         _ => None,

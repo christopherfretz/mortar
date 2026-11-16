@@ -811,7 +811,7 @@ pub fn fill_table(text: &str, input: &Path, out: &Path) -> Result<(), String> {
     let (at, room, encoded) = {
         let so = mortar_elf::SharedObject::parse(&bytes).map_err(|e| e.to_string())?;
         let mut place = None;
-        for seg in so.program_headers().iter() {
+        for seg in so.program_headers() {
             if seg.p_type() != mortar_elf::consts::PT_NOTE {
                 continue;
             }

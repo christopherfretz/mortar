@@ -30,7 +30,7 @@ pub const ROW_SIZE: u32 = 24;
 pub const NONPREEMPTIBLE: u16 = 1 << 15;
 
 /// One row (O-51).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Row {
     /// FNV-1a 64 of the `.dynsym` name (MT-13, O-51).
     pub key: u64,
@@ -197,12 +197,6 @@ impl<'a> Table<'a> {
     /// The rows, in key order.
     pub fn iter(&self) -> impl ExactSizeIterator<Item = Row> + '_ {
         (0..self.count).map(|i| self.get(i).unwrap_or_default())
-    }
-}
-
-impl Default for Row {
-    fn default() -> Self {
-        Self { key: 0, hash: [0; 8], dynsym: 0, flags: 0 }
     }
 }
 
