@@ -1206,25 +1206,42 @@ whose tools are missing is an error. Tests: `xtask/src/census.rs`.
 ## static-identical
 
 `cargo xtask static-identical [--update] [-j <n>] [--mortar <binary>]` checks that mortar's
-static links are byte-identical to a checked-in baseline,
-`tests/identical/baseline.on-<host>.tsv`. It is the guard of milestone M2
-(`spec/landed/dyn/WP-040.md`): dynamic output lands behind one refusal
-while a static link's bytes, its `--mortar-map` and its diagnostics stay
-what they were. A package whose change is meant to change them (a fix of
-a static byte) rewrites the baseline with `--update` in the same commit,
-and its hand-back names the links that changed.
+links are byte-identical to a checked-in baseline,
+`tests/identical/baseline.on-<host>.tsv`. It holds the contract that
+mortar's output is deterministic (`docs/ARCHITECTURE.md`, principle 6),
+on which incremental linking rests: a change that moves one byte of any
+output, map or diagnostic of the corpus is seen, and has to be explained
+in a baseline diff. It began as the guard of milestone M2
+(`spec/landed/dyn/WP-040.md`: dynamic output landed behind one refusal
+while static bytes stayed what they were), hence its name; since WP-093
+it covers the dynamic, PIE and static-pie links too. A package whose
+change is meant to change them rewrites the baseline with `--update` in
+the same commit, and its hand-back names the links that changed.
 
-**The corpus** is every test of `tests/link` but its dynamic cases
-(`tests/link/dyn`, milestone M2: none of their links is static; mortar
-refuses them until their packages land, and those refusals would churn
-the baseline at each landing; the static-pie case is one of them, an M2
-output kind of WP-052), and of `tests/identical`
+**The corpus** is every test of `tests/link` (the dynamic, PIE and
+static-pie cases of `tests/link/dyn` among them) and of `tests/identical`
 (larger static C, C++, Fortran and Clang links: `-g`, `--gc-sections`,
 `--threads=1` and the default, `--build-id`), on every architecture whose
 tools are there. `tests/identical` uses the link-test format ("The test
 file"); `cargo xtask linktest` does not run it (its tests have no
 expectations of their own). A test is named relative to `tests/link`, else
-to `tests/`.
+to `tests/`. No directory and no test is left out. What has no mortar
+output has no output digest, and is treated the same way everywhere in the
+corpus: a link step whose scope names only reference linkers
+(`link(bfd,lld,mold)`) is not a mortar link and has no row; a refusal (a link
+step with `exit: fail`, or an `xfail(mortar)` link) is a row like any other, with
+its `end` (`exit status 1`), `-` for the output and the map, and the
+digest of its diagnostics, so a refusal that changes its words or turns
+into a link is seen; a `skip(mortar)` unit has no rows. Shared objects a
+test builds as inputs (`shlib`, by gcc and GNU ld) are inputs, like its
+objects: their bytes are the host's toolchain's, which "One baseline per
+host" absorbs; they are not digested themselves.
+
+Measured by WP-093 on main `42e7ad3` (the same count on both hosts):
+without `tests/link/dyn`, 385 links of 90 tests (142 AArch64, 131 x86-64,
+112 i386); with it, 898 links of 217 tests (399 AArch64, 386 x86-64, 113
+i386), of which `dyn/` is 513 links of 127 tests (257, 255, 1) and 90 of
+those are refusals.
 
 **The digest mode** of the link-test engine runs mortar alone (no
 reference, no self-check, no verifier) and only the build and link steps:
@@ -1262,7 +1279,29 @@ printed.
 The map and the standard error are digested after replacing the link's
 directory by `.`, the unit's directory by `<unit>` and the run's work
 directory by `<work>`, so the baseline does not depend on the checkout it
-was cut in. The baseline is these rows, tab-separated, sorted by test,
+was cut in. One input word changes from run to run and is not mortar's:
+gcc's driver passes every link it makes without `-static`
+`-plugin-opt=-fresolution=<TMPDIR>/ccXXXXXX.res`, the name of its LTO
+plugin's resolution file, a new temporary name each time (libiberty's
+`make_temp_file`: `cc`, six ASCII letters or digits, the suffix), and a
+mortar map records every word of the command line (`arg`,
+`spec/plumb.md`). So, before the paths are replaced, a map line that is
+exactly `arg -plugin-opt=-fresolution=<path>`, with `<path>` free of
+blanks and ending in `/cc`, six ASCII letters or digits and `.res`, has
+its `<path>` replaced by `<gcc-resolution>.res`
+(`xtask/src/linktest/engine.rs` `normalise_map`). Nothing else is
+replaced: not the word in another form, not in the output (mortar does
+not write its command line into the image), not in the standard error.
+WP-093 ran the dynamic cases three times with other `TMPDIR`s and job
+counts (2, the default 8, and 10) and once from a copy of the checkout at another path
+with its own build of mortar: without this rule 404 map digests moved and
+nothing else; with it, 0 of 806 rows (and 0 of 898 on main `42e7ad3`,
+run with two `TMPDIR`s).
+
+`--mortar <binary>` runs a binary whose file name is its program name in
+diagnostics (`<name>: error: ...`): one not named `mortar` changes every
+`stderr` digest of a link with a diagnostic. Name it `mortar` (copy it
+into a directory of its own). The baseline is these rows, tab-separated, sorted by test,
 architecture and line, after `#` comment lines.
 
 **The check**: every row of the run must equal the baseline's row of the
@@ -1281,11 +1320,23 @@ usage error is exit status 2. `--mortar` runs another build of mortar (another
 commit's) against the baseline instead of building the workspace's.
 
 The run is well under two minutes on the reference machine (the debug
-mortar; no program is run).
+mortar; no program is run). Measured by WP-093 on the development
+container (load 8 to 12): 30 s for 301 links without the dynamic cases
+and 22 to 28 s for 806 with them, at the default job count, on main
+`61e806c` (the links are small; the build of the inputs, which both runs
+share, is most of it), 81 s with `-j 2`; 51 to 54 s for 898 on main
+`42e7ad3`, which added `tests/link/split` (`-g` C++ links). Hosted, on
+`61e806c`: 33.5 s (AArch64) and 37.0 s (x86-64) without the dynamic cases,
+about 60 s and 66 s with them.
 
 Tests: `xtask/src/identical.rs` `baseline_and_diff`, `the_command_line`,
-`the_corpus_leaves_out_the_dynamic_cases`;
-the command itself in the gate.
+`the_corpus_is_every_link_test`; `xtask/src/linktest/engine.rs`
+`a_map_loses_only_gccs_resolution_file_name`; the command itself in the
+gate. The lane's own sensitivity (WP-093, a scratch build of mortar with
+`DF_1_NODELETE` added to `DT_FLAGS_1`): in PIEs only, 263 links of 145
+tests differ (262 under `dyn/`); in static-pies only, 38 links of 22
+tests (34 under `dyn/`); without the dynamic cases the same lane saw 1
+and 4.
 
 ## Hosted CI
 
