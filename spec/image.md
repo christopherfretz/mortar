@@ -1060,9 +1060,9 @@ Opening a running executable for writing fails with `ETXTBSY` on Linux
   cannot be created is reported before the work of fill.
 - **I-57 [M1]** If `P` names a directory (following symbolic links),
   the error is `cannot-open-output` with the reason `Is a directory`.
-- **I-58 [M1] [C]** If `P` exists and is neither a regular file nor a
-  directory nor a symbolic link, it is written in place only if it is a
-  character device (`/dev/null`): the image opens it for writing without
+- **I-58 [M1] [C]** If `P` exists and, following symbolic links (WP-087),
+  is neither a regular file nor a directory, it is written in place only
+  if it is a character device (`/dev/null`, a terminal): the image opens it for writing without
   creating or truncating it and writes it directly (§7.3). A FIFO or a
   socket at `P` is `cannot-open-output` with the note `output is a FIFO`
   (or `a socket`): the image writes by position (I-63), which a FIFO
@@ -1070,6 +1070,17 @@ Opening a running executable for writing fails with `ETXTBSY` on Linux
   is a choice: lld and mold write a FIFO (they build the image in memory),
   GNU ld fails with `Illegal seek` (§15). A block device is refused the
   same way (`output is a block device`).
+- **I-58a [M1] [C] A descriptor alias (WP-087).** If `P` is a symbolic
+  link whose chain passes through a directory `/proc/<pid>/fd` or
+  `/proc/<pid>/task/<tid>/fd` (`/dev/stdout`, `/dev/stderr`,
+  `/dev/fd/N`) and ends at a regular file, `P` is opened for writing
+  through the link, truncated, and written in place: `-Map=/dev/stdout >
+  a.map` writes `a.map`. Without this the writer of I-59 would create
+  `/dev/.stdout.mortar-tmp` and rename it over the `/dev/stdout` link
+  (as root in a container, where `/dev` is writable: observed before
+  WP-087), or fail as `cannot-open-output` elsewhere. A FIFO or a socket
+  behind such a link is I-58's case for the output and I-79a's for the
+  other files; a terminal is a character device.
 - **I-59 [M1] [C] Otherwise: a temporary file.** Let `T0 =
   dir(P)/.<base(P)>.mortar-tmp`. The image opens `T0` with `create_new`, or,
   if it exists, opens the existing file, write-only, mode `0o777` for executables and shared
@@ -1188,9 +1199,11 @@ Opening a running executable for writing fails with `ETXTBSY` on Linux
   after a failed link, would run the previous program believing it is
   the new one; a missing file cannot be mistaken. A failure on the
   command line keeps the output, as all three do. An output that is also
-  an input is never removed (it would destroy the input). A symbolic
-  link at `P` is removed, not its target; a non-regular `P` is left
-  alone. Accepted by the coordinator (Q4).
+  an input is never removed (it would destroy the input); since WP-087
+  "an input" is every file the link read (`spec/cli.md` §3.14: the
+  response files included). A symbolic link at `P` is removed, not its
+  target, unless its target is not a regular file or it is a descriptor
+  alias (I-58a: `-o /dev/stdout`); a non-regular `P` is left alone. Accepted by the coordinator (Q4).
 - **I-67 [M1]** A link killed by a signal leaves `T` (and possibly `A`)
   behind: safe Rust installs no handler. On a file system that enforces
   `flock`, the next link to the same `P` reuses `T0` (I-59) and replaces
@@ -1543,6 +1556,16 @@ random input's).
   same writer as the output (temporary file, rename, §7), only for a
   successful link; a failed link removes nothing at `FILE` (not
   compared with the references, E14).
+- **I-79a [M1] [C] Streams (WP-087).** The files written whole (the
+  maps, the dependency file: `mortar_image::output::write_whole`) are
+  written in place, without a temporary name, when `FILE` is, following
+  symbolic links, a character device or a FIFO (`-Map=/dev/stdout` on a
+  terminal or a pipe, `-Map=/dev/null`), or a descriptor alias of a
+  regular file (I-58a, truncated): they are written in order, so a FIFO
+  is no obstacle. A FIFO with no reader blocks the link until one opens
+  it, as it does for every program. Every written path is first checked
+  against the files the link read and the other written paths
+  (`spec/cli.md` §3.14).
 
 ### 9.3 The GNU-style map (WP-027d specified, WP-027e implemented)
 
@@ -1962,6 +1985,9 @@ pub trait SynthChunk {
 | existing output after a failed link | removed | kept | kept | removed, unless it is an input | I-66 |
 | read-only directory, writable output | written in place | error | error (names its temporary) | error naming the output | I-59 |
 | output is an input | refused | accepted | accepted | accepted | I-62 |
+| `-Map` or `--dependency-file` names an input (WP-087) | overwritten (an archive: truncated before it is read, the link fails) | overwritten | `SIGBUS`, overwritten | refused by name | `spec/cli.md` §3.14 |
+| `-Map` names the output | the output overwritten by the map | the same | the same | refused by name | `spec/cli.md` §3.14 |
+| `-Map=/dev/stdout` redirected to a file | written | written | written | written in place | I-58a, I-79a |
 | bare `--build-id` | 20 (hash not reproducible) | 20 | 20 | 20, the `L128` tree | I-69 |
 | `--build-id=fast` | warning, no note | 8 bytes | 32 bytes | 8 bytes (the bare id's prefix) | I-69 |
 | `--build-id=sha256` | warning, no note | error | 32 bytes | 32 bytes | I-69 |

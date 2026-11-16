@@ -1103,13 +1103,17 @@ with each phase fed from the state for unchanged files:
   checks the state's path with and without `--incremental-state`, that
   no temporary file is left after success or a crash at IN-46 step 5,
   and that a plain link creates no state file.
-  `--incremental-state` and `--incremental-report=FILE` naming the output
-  or any input (the same path, or the same `(dev, ino)` as an existing
-  one) are refused by name, `incremental-file-clash`, before anything is
-  written, and checked again before the state and the report are
-  written; image.md I-62 accepts the output as an input because the
-  output is renamed into place, which a state or a report written over
-  an input would not be. *Test:* `the_state_or_report_naming_a_file_of_the_link_is_refused`.
+  `--incremental-state` and `--incremental-report=FILE` naming the output,
+  any file the link reads or another written file (the same path, or the
+  same `(dev, ino)` as an existing one) are refused by name before
+  anything is written: since WP-087 by the one rule of every written
+  path (`spec/cli.md` §3.14, `written-file-clash`; `incremental-file-clash`
+  is no longer emitted), to which the session gives its two files
+  (`Session::written`). image.md I-62 accepts the output as an input
+  because the output is renamed into place, which a state or a report
+  written over an input would not be. *Test:*
+  `the_state_or_report_naming_a_file_of_the_link_is_refused`,
+  `crates/mortar/tests/written.rs`.
 - **IN-18 [v1] Format and version.** Little-endian, fixed-width rows,
   no pointers; a header of magic `MORTARST`, a format version (u32), the
   mortar version string (any difference: `state-version`), the target,

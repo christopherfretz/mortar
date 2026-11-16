@@ -46,6 +46,8 @@ pub struct Written {
     /// The path the writer uses (relative paths under the working
     /// directory).
     pub path: PathBuf,
+    /// The path as given, for diagnostics.
+    pub given: PathBuf,
     /// The output (`-o`): it may replace a file the link read
     /// (`spec/image.md` I-62: it is renamed into place after every input
     /// was read, and GNU's `ld -r -o a.o a.o b.o` idiom keeps working).
@@ -70,12 +72,14 @@ pub fn registry(
             spelling: format!("{} {}", u.spelling, shown(p)),
             role: format!("the output {}", shown(p)),
             path: out_path.to_path_buf(),
+            given: PathBuf::from(p),
             output: true,
         },
         None => Written {
             spelling: "the default output a.out".to_owned(),
             role: "the output a.out".to_owned(),
             path: out_path.to_path_buf(),
+            given: PathBuf::from("a.out"),
             output: true,
         },
     });
@@ -95,6 +99,7 @@ pub fn registry(
             spelling: format!("{}={}", u.spelling, shown(p)),
             role: format!("{role} {}", shown(p)),
             path: cwd.join(p),
+            given: PathBuf::from(p),
             output: false,
         });
     }
@@ -107,6 +112,7 @@ pub fn registry(
             spelling: format!("{option}={}", path.display()),
             role: format!("{role} {}", path.display()),
             path: path.to_path_buf(),
+            given: path.to_path_buf(),
             output: false,
         });
     }
@@ -263,7 +269,7 @@ pub fn clear(
         .collect();
     let mut ok = true;
     for (i, w) in written.iter().enumerate() {
-        let own = names(&w.path);
+        let own = names(&w.given);
         let mut clash = None;
         for (k, id) in idents[i].iter().enumerate() {
             let Ident::File(dev, ino) = *id else { continue };
@@ -285,7 +291,7 @@ pub fn clear(
                             } else {
                                 format!(
                                     "the temporary name {} of {}",
-                                    names(&earlier.path)[l].display(),
+                                    names(&earlier.given)[l].display(),
                                     earlier.role
                                 )
                             };
