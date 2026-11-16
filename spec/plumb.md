@@ -4191,6 +4191,14 @@ per section and field range, the flips and the survivors. It is a
 measuring tool, not a gate: a survivor is either closed by a rule below
 or named as equivalent or as a follow-up row in WP-082's record.
 
+The lane's `gdbindex` case (WP-098; full lane) sweeps `.gdb_index` only,
+of a `-g -ggnu-pubnames` PIE linked `--gdb-index --build-id=none`: 8441
+bytes, no survivor on AArch64. Without a build id because the sweep does
+not reseal one (the mutation tool does, §9.5): in an output with mortar's
+build id every flip is a B1 finding, so the other cases measure B1 first
+(WP-098's record, §4: the `-pie` case without the id leaves 33 survivor
+ranges).
+
 **The field rules** (`dyncheck.rs` `fields`, every format unless marked):
 
 - **P-D5.** No non-zero bucket is below `symoffset`.
