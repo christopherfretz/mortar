@@ -87,6 +87,9 @@ struct Live<'o, 'a> {
     /// or kind 3 rows, so the table rules read none of such a unit's
     /// (measured: mortar's table ignores them; §13.1).
     c: Vec<bool>,
+    /// The kind 2 rows of the units the table rules read, by key, in
+    /// (unit, row) order: (unit index, row).
+    rows: BTreeMap<u64, Vec<(usize, &'a [u8])>>,
     /// Non-local definitions by name: the output address of the
     /// definition when its section is placed whole, `None` otherwise.
     defs: BTreeMap<&'a [u8], Option<u64>>,
@@ -100,23 +103,17 @@ impl<'a> Live<'_, 'a> {
 
     /// The first kind 2 row of this file's units that matches `name`
     /// (§13.1: key, then the name or an anchor this file defines).
-    fn row(&self, name: &[u8]) -> Option<&[u8]> {
+    fn row(&self, name: &[u8]) -> Option<&'a [u8]> {
         let key = fnv1a(name);
-        for u in self.odr_units() {
-            let Some(b) = u.block(2, KIND2_ROW) else { continue };
-            for r in b.rows() {
-                if u64_at(r, 0) != Some(key) {
-                    continue;
-                }
-                let n = u32_at(r, 24).unwrap_or(0);
-                let named =
-                    if n == 0 { self.defs.contains_key(name) } else { u.string(n) == Some(name) };
-                if named {
-                    return Some(r);
-                }
-            }
-        }
-        None
+        self.rows.get(&key)?.iter().find_map(|&(u, r)| {
+            let n = u32_at(r, 24).unwrap_or(0);
+            let named = if n == 0 {
+                self.defs.contains_key(name)
+            } else {
+                self.units[u].string(n) == Some(name)
+            };
+            named.then_some(r)
+        })
     }
 }
 
@@ -124,7 +121,13 @@ fn qualifies(row: &[u8]) -> bool {
     u16_at(row, 30).unwrap_or(0) & (VAGUE | EXPLICIT_SPEC) != 0
 }
 
-fn live_files<'o, 'a>(objs: &'o [Obj<'a>], cov: &mut MetaCoverage) -> Vec<Live<'o, 'a>> {
+/// The live relocatable files; their definitions are read only when
+/// `defs` (an output with no unit and no table pays for no symbol walk).
+fn live_files<'o, 'a>(
+    objs: &'o [Obj<'a>],
+    defs_too: bool,
+    cov: &mut MetaCoverage,
+) -> Vec<Live<'o, 'a>> {
     let mut out = Vec::new();
     for obj in objs {
         if obj.elf.header().e_type != ET_REL {
@@ -138,7 +141,7 @@ fn live_files<'o, 'a>(objs: &'o [Obj<'a>], cov: &mut MetaCoverage) -> Vec<Live<'
         }
         cov.units += units.len() as u64;
         let mut defs = BTreeMap::new();
-        if let Some(t) = &obj.symtab {
+        if let Some(t) = obj.symtab.as_ref().filter(|_| defs_too) {
             for (idx, s) in t.iter() {
                 if s.binding() == STB_LOCAL {
                     continue;
@@ -157,8 +160,14 @@ fn live_files<'o, 'a>(objs: &'o [Obj<'a>], cov: &mut MetaCoverage) -> Vec<Live<'
                 defs.entry(name).or_insert(addr);
             }
         }
-        let c = units.iter().map(is_c).collect();
-        out.push(Live { obj, units, c, defs });
+        let c: Vec<bool> = units.iter().map(is_c).collect();
+        let mut rows: BTreeMap<u64, Vec<(usize, &[u8])>> = BTreeMap::new();
+        for (ui, u) in units.iter().enumerate().filter(|(i, _)| !c[*i]) {
+            for r in u.block(2, KIND2_ROW).into_iter().flat_map(meta::Block::rows) {
+                rows.entry(u64_at(r, 0).unwrap_or(0)).or_default().push((ui, r));
+            }
+        }
+        out.push(Live { obj, units, c, rows, defs });
     }
     out
 }
@@ -178,24 +187,48 @@ fn is_container(name: &str, shdr: &mortar_elf::Shdr) -> bool {
     name == ".mason.meta" && shdr.sh_type == SHT_PROGBITS && shdr.sh_flags == SHF_EXCLUDE
 }
 
-/// The keeper of `name` (§13.1), by the output's value of it when the
-/// output holds it. `Err(())`: not judged.
-fn keeper<'l, 'o, 'a>(
-    live: &'l [Live<'o, 'a>],
-    name: &[u8],
-    value: Option<u64>,
-) -> Result<Option<&'l Live<'o, 'a>>, ()> {
-    let cands: Vec<&Live<'_, '_>> = live.iter().filter(|l| l.defs.contains_key(name)).collect();
-    match cands.len() {
-        0 => Ok(None),
-        1 => Ok(Some(cands[0])),
-        _ => {
-            let Some(v) = value else { return Err(()) };
-            let at: Vec<_> = cands
-                .into_iter()
-                .filter(|l| l.defs.get(name).copied().flatten() == Some(v))
-                .collect();
-            if at.len() == 1 { Ok(Some(at[0])) } else { Err(()) }
+/// The live files and an index of their definitions by name, so that a
+/// keeper is found in time proportional to the name's copies.
+struct Lives<'o, 'a> {
+    files: Vec<Live<'o, 'a>>,
+    by_name: BTreeMap<&'a [u8], Vec<usize>>,
+}
+
+impl<'o, 'a> std::ops::Deref for Lives<'o, 'a> {
+    type Target = [Live<'o, 'a>];
+    fn deref(&self) -> &Self::Target {
+        &self.files
+    }
+}
+
+impl<'o, 'a> Lives<'o, 'a> {
+    fn new(files: Vec<Live<'o, 'a>>) -> Self {
+        let mut by_name: BTreeMap<&'a [u8], Vec<usize>> = BTreeMap::new();
+        for (i, l) in files.iter().enumerate() {
+            for name in l.defs.keys() {
+                by_name.entry(name).or_default().push(i);
+            }
+        }
+        Lives { files, by_name }
+    }
+
+    /// The keeper of `name` (§13.1), by the output's value of it when the
+    /// output holds it. `Err(())`: not judged.
+    fn keeper(&self, name: &[u8], value: Option<u64>) -> Result<Option<&Live<'o, 'a>>, ()> {
+        let cands = self.by_name.get(name).map_or(&[][..], Vec::as_slice);
+        match cands {
+            [] => Ok(None),
+            [one] => Ok(Some(&self.files[*one])),
+            _ => {
+                let Some(v) = value else { return Err(()) };
+                let mut at = cands
+                    .iter()
+                    .filter(|&&i| self.files[i].defs.get(name).copied().flatten() == Some(v));
+                match (at.next(), at.next()) {
+                    (Some(&i), None) => Ok(Some(&self.files[i])),
+                    _ => Err(()),
+                }
+            }
         }
     }
 }
@@ -228,7 +261,9 @@ pub(crate) fn check(
         Some(Opts { table: Table::Off, odr_off: false, keep: false })
     };
     cov.options_known = opts.is_some();
-    let live = live_files(objs, cov);
+    let has_note = image.sections.iter().any(|s| s.name == ".note.mason");
+    let has_container = objs.iter().any(|o| o.secs.iter().any(|s| is_container(&s.name, &s.shdr)));
+    let live = Lives::new(live_files(objs, has_note || has_container, cov));
     let any_unit = live.iter().any(|l| !l.units.is_empty());
     let exec = image.header.e_type != ET_REL;
     if !exec {
@@ -458,7 +493,7 @@ fn table(
     desc: &[u8],
     base: u64,
     dout: Option<&DynOut>,
-    live: &[Live<'_, '_>],
+    live: &Lives<'_, '_>,
     carried: &mut BTreeSet<Vec<u8>>,
     cov: &mut MetaCoverage,
     f: &mut Vec<Finding>,
@@ -553,7 +588,7 @@ fn table(
                 );
             }
         }
-        match keeper(live, s.name.as_bytes(), Some(s.st_value)) {
+        match live.keeper(s.name.as_bytes(), Some(s.st_value)) {
             Err(()) => cov.not_judged += 1,
             Ok(k) => match k.and_then(|k| k.row(s.name.as_bytes())).filter(|r| qualifies(r)) {
                 None => f.push(Finding::new(Rule::Meta(2), format!("row set: a row for '{}', whose keeper has no kind 2 row with VAGUE or EXPLICIT_SPEC (O-50)", s.name)).at(at)),
@@ -575,7 +610,7 @@ fn table(
         if s.st_shndx == 0 || !(vis == 0 || vis == 3) || rows.contains(&(idx as u32)) {
             continue;
         }
-        match keeper(live, s.name.as_bytes(), Some(s.st_value)) {
+        match live.keeper(s.name.as_bytes(), Some(s.st_value)) {
             Err(()) => cov.not_judged += 1,
             Ok(k) => {
                 if k.and_then(|k| k.row(s.name.as_bytes())).is_some_and(qualifies) {
@@ -592,7 +627,7 @@ fn full_note(
     desc: &[u8],
     base: u64,
     image: &Image<'_>,
-    live: &[Live<'_, '_>],
+    live: &Lives<'_, '_>,
     carried: &BTreeSet<Vec<u8>>,
     cov: &mut MetaCoverage,
     f: &mut Vec<Finding>,
@@ -621,17 +656,17 @@ fn full_note(
     // Definitions.
     let mut want: BTreeMap<u64, ([u8; 8], u16, String)> = BTreeMap::new();
     let mut judged_keys: BTreeSet<u64> = BTreeSet::new();
-    let names: BTreeSet<&[u8]> = live.iter().flat_map(|l| l.defs.keys().copied()).collect();
-    for name in names {
+    // The output's value of each name: its first defined `.symtab` entry.
+    let mut values: BTreeMap<&[u8], u64> = BTreeMap::new();
+    for s in image.symbols.iter().filter(|s| s.sym.st_shndx != 0) {
+        values.entry(s.name.as_bytes()).or_insert(s.sym.st_value);
+    }
+    for &name in live.by_name.keys() {
         if carried.contains(name) {
             continue;
         }
-        let value = image
-            .symbols
-            .iter()
-            .find(|s| s.name.as_bytes() == name && s.sym.st_shndx != 0)
-            .map(|s| s.sym.st_value);
-        match keeper(live, name, value) {
+        let value = values.get(name).copied();
+        match live.keeper(name, value) {
             Err(()) => cov.not_judged += 1,
             Ok(k) => {
                 let key = fnv1a(name);
