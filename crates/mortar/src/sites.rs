@@ -11,6 +11,7 @@
 #![allow(clippy::result_large_err, reason = "the error is a phase's diagnostic, made once")]
 
 use std::collections::BTreeMap;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use mortar_arch::{
@@ -20,7 +21,7 @@ use mortar_arch::{
 use mortar_core::assignment::Assignment;
 use mortar_core::demands::DemandFlags;
 use mortar_core::id::{ChunkId, FileId, OutSecId, SectionId, SymEntry, SymKey, SymKind};
-use mortar_core::layout::{ChunkKind, MergeMap, ThunkTarget};
+use mortar_core::layout::{AllocKey, ChunkKind, MergeMap, Placement, ThunkTarget};
 use mortar_core::layout::{SlotIndex, Slots};
 use mortar_core::par::Pool;
 use mortar_core::resolution::{Def, Resolution, SectionKind};
@@ -28,7 +29,7 @@ use mortar_core::split::Split;
 use mortar_core::{Demands, Liveness};
 use mortar_diag::{Diagnostic, Key};
 use mortar_elf::SymbolSection;
-use mortar_elf::consts::{SHF_ALLOC, SHF_EXECINSTR, SHF_TLS};
+use mortar_elf::consts::{SHF_ALLOC, SHF_EXECINSTR, SHF_TLS, STT_SECTION};
 use mortar_layout::fixed::{BranchAt, OwnedCode, Round, Sites};
 use mortar_layout::{Headers, LayoutDiag};
 use mortar_scan::{BranchRec, RecIndex, Walker};
@@ -68,6 +69,9 @@ pub struct SiteInputs<'a, 's> {
     pub slots: &'a Slots,
     pub got: &'a GotPlan,
     pub ids: SynthIds,
+    /// The link's output kind, as fill's (`front::output_kind`): the
+    /// relaxations, and so the words, depend on it (a64.md §8, §11.1).
+    pub output: OutputKind,
 }
 
 /// [`Sites`] of one link.
@@ -142,8 +146,14 @@ impl<'a, 's> LinkSites<'a, 's> {
         Ok(Self { t, arch, walker, code, branches, errata: !arch.errata().is_empty(), slot_index })
     }
 
-    /// The addresses of a round, as fill's tables.
-    fn tables<'r>(&'r self, round: &'r Round<'r>) -> RoundTables<'r, 'a, 's> {
+    /// The addresses of a round, as fill's tables; with `exact`, the final
+    /// placement, whose commons, copies and linker-defined symbols have
+    /// their addresses (stage F's, not known at a round).
+    fn tables<'r>(
+        &'r self,
+        round: &'r Round<'r>,
+        exact: Option<&'r Placement>,
+    ) -> RoundTables<'r, 'a, 's> {
         let mut merged = BTreeMap::new();
         let mut tls: Option<(u64, u64, u64)> = None;
         for (_, c) in round.chunks.iter() {
@@ -172,6 +182,7 @@ impl<'a, 's> LinkSites<'a, 's> {
         RoundTables {
             sites: self,
             round,
+            exact,
             merged,
             got_addrs,
             got_base: at(self.t.ids.got),
@@ -272,7 +283,7 @@ impl Sites for LinkSites<'_, '_> {
     }
 
     fn targets(&self, round: &Round<'_>, pool: &Pool) -> Vec<Option<u64>> {
-        let tables = self.tables(round);
+        let tables = self.tables(round, None);
         pool.unit_cost(40).map(self.branches.len(), |i| match self.branches[i].site.key {
             ThunkTarget::Plt(key) => tables.plt(key),
             ThunkTarget::Sym { key, addend } => {
@@ -288,13 +299,30 @@ impl Sites for LinkSites<'_, '_> {
         round: &Round<'_>,
         pool: &Pool,
     ) -> Result<Option<OwnedCode>, LayoutDiag> {
+        Ok(self.code_words(out, round, None, pool)?.map(|(code, _)| code))
+    }
+}
+
+impl LinkSites<'_, '_> {
+    /// [`Sites::code`], with `exact` the final placement (see
+    /// [`LinkSites::tables`]), and the addresses of the words whose value
+    /// depends on a target address not known here (sorted): a `W1` among
+    /// them reads as an ADRP out of the ADR fix's reach (so the site takes
+    /// a patch at a round), and any other word is not fill's.
+    fn code_words(
+        &self,
+        out: OutSecId,
+        round: &Round<'_>,
+        exact: Option<&Placement>,
+        pool: &Pool,
+    ) -> Result<Option<(OwnedCode, Vec<u64>)>, LayoutDiag> {
         if !self.errata {
             return Ok(None);
         }
         let Some((start, end)) = round.out_extent(out) else { return Ok(None) };
         let size = usize::try_from(end - start)
             .map_err(|_| internal("an output code section larger than memory"))?;
-        let tables = self.tables(round);
+        let tables = self.tables(round, exact);
         // The code sections of `out` at this round, by address. A live
         // code section with no address at this round is not in the image
         // (folded away); it has no words here.
@@ -309,8 +337,8 @@ impl Sites for LinkSites<'_, '_> {
         // Each section's words are a prefix of the bytes from its offset
         // to the next section's: disjoint parts, filled in parallel.
         let mut bytes = vec![0u8; size];
-        let mut results: Vec<Result<Vec<ProofRun>, LayoutDiag>> =
-            secs.iter().map(|_| Ok(Vec::new())).collect();
+        let mut results: Vec<Result<(Vec<ProofRun>, Vec<u64>), LayoutDiag>> =
+            secs.iter().map(|_| Ok((Vec::new(), Vec::new()))).collect();
         let mut parts = Vec::with_capacity(secs.len());
         let mut rest: &mut [u8] = &mut bytes;
         let mut at = 0usize;
@@ -335,32 +363,38 @@ impl Sites for LinkSites<'_, '_> {
             *result = self.section_code(&tables, c, addr, rel_start, mine);
         });
         let mut proof: Vec<ProofRun> = Vec::new();
+        let mut unknown: Vec<u64> = Vec::new();
         for r in results {
-            proof.extend(r?);
+            let (p, u) = r?;
+            proof.extend(p);
+            unknown.extend(u);
         }
         proof.sort_by_key(|r| r.start);
-        Ok(Some(OwnedCode { addr: start, bytes, proof }))
+        unknown.sort_unstable();
+        Ok(Some((OwnedCode { addr: start, bytes, proof }, unknown)))
     }
-}
 
-impl LinkSites<'_, '_> {
     /// The erratum fixes of the final placement (`spec/a64.md` §11.2), as
     /// words written over fill's bytes, by address: for each site the
     /// architecture finds in the words fill writes (before any fix), a
     /// redirected final word `F` becomes `b patch` and its patch holds
     /// `W4'` (the word fill writes at `F`) and `b F + 4`; any other site's
     /// `W1` becomes the ADR. Sorted by address. Empty when no erratum is
-    /// enabled.
+    /// enabled. A word written over one fill writes carries that word as
+    /// this scan computed it (the ADR's `W1`, the `b patch`'s `W4'`): fill
+    /// refuses the link if its own word differs, since the fix would then
+    /// be computed from a word the output does not have (WP-103).
     ///
     /// # Errors
     ///
     /// A failed read of a code section; `internal-error` for a site with
-    /// neither fix (layout's fixed point gives every site one).
+    /// neither fix (layout's fixed point gives every site one), or whose
+    /// final word depends on an address the final placement does not give.
     pub fn erratum_fixes(
         &self,
-        pl: &mortar_core::layout::Placement,
+        pl: &Placement,
         pool: &Pool,
-    ) -> Result<Vec<(u64, [u8; 4])>, LayoutDiag> {
+    ) -> Result<Vec<mortar_image::fill::Fixup>, LayoutDiag> {
         use mortar_core::layout::PatchKind;
         let errata = self.arch.errata();
         if errata.is_empty() {
@@ -393,7 +427,9 @@ impl LinkSites<'_, '_> {
             .collect();
         let mut fixes = Vec::new();
         for out in outs {
-            let Some(code) = self.code(out, &round, pool)? else { continue };
+            let Some((code, unknown)) = self.code_words(out, &round, Some(pl), pool)? else {
+                continue;
+            };
             let view =
                 mortar_arch::Code { bytes: &code.bytes, addr: code.addr, proof: &code.proof };
             for &e in errata {
@@ -406,10 +442,18 @@ impl LinkSites<'_, '_> {
                     let (Some(w1), Some(w4)) = (view.word(s.q), view.word(s.f)) else {
                         return Err(internal("an erratum site outside its code"));
                     };
+                    // The patch copies `W4'`; the ADR is computed from `W1`
+                    // (a64.md §11.2): each must be fill's word.
                     if let Some(&(pe, patch)) = patch_of.get(&f) {
+                        if unknown.binary_search(&f).is_ok() {
+                            return Err(internal(
+                                "an erratum site whose final word depends on an address the \
+                                 final placement does not give",
+                            ));
+                        }
                         let b = mortar_a64::erratum_branch(f, patch)
                             .map_err(|_| internal("an erratum patch out of reach"))?;
-                        fixes.push((f, b.to_le_bytes()));
+                        fixes.push((f, b.to_le_bytes(), Some(w4.to_le_bytes())));
                         let cx = mortar_arch::PatchCx {
                             addr: patch,
                             target: f,
@@ -425,17 +469,29 @@ impl LinkSites<'_, '_> {
                             .write_patch(pe, &cx, &mut words)
                             .map_err(|_| internal("an erratum patch that cannot be written"))?;
                         for (i, w) in words.chunks_exact(4).enumerate() {
-                            fixes.push((patch + 4 * i as u64, [w[0], w[1], w[2], w[3]]));
+                            fixes.push((patch + 4 * i as u64, [w[0], w[1], w[2], w[3]], None));
                         }
                     } else {
+                        if unknown.binary_search(&q).is_ok() {
+                            return Err(internal(
+                                "an erratum site whose page is not known and has no patch",
+                            ));
+                        }
                         let adr = mortar_a64::erratum_adr(q, w1)
                             .ok_or_else(|| internal("an erratum site with neither fix"))?;
-                        fixes.push((q, adr.to_le_bytes()));
+                        fixes.push((q, adr.to_le_bytes(), Some(w1.to_le_bytes())));
                     }
                 }
             }
         }
+        // Two sites can share `W1` (the 3-word and the 4-word form at one
+        // `Q`, a64.md §11.1): one ADR, written once. Two different words
+        // for one place would be a contradiction.
         fixes.sort_by_key(|f| f.0);
+        fixes.dedup();
+        if fixes.windows(2).any(|w| w[0].0 == w[1].0) {
+            return Err(internal("two erratum 843419 fixes of one word"));
+        }
         Ok(fixes)
     }
 
@@ -448,7 +504,7 @@ impl LinkSites<'_, '_> {
         addr: u64,
         rel_start: u64,
         room: &mut [u8],
-    ) -> Result<Vec<ProofRun>, LayoutDiag> {
+    ) -> Result<(Vec<ProofRun>, Vec<u64>), LayoutDiag> {
         // Its bytes: resident, or copied (a `.text` over the staged
         // store's limits is not resident); a failed read fails the link,
         // never "no sites".
@@ -472,7 +528,7 @@ impl LinkSites<'_, '_> {
             proof.push(run);
         }
         if c.rel == 0 {
-            return Ok(proof);
+            return Ok((proof, Vec::new()));
         }
         // The words the erratum scan reads (a64.md §11.1 condition 1: `W1`
         // at an address ≡ 0xFF8 or 0xFFC mod 4096, and the three words
@@ -483,7 +539,7 @@ impl LinkSites<'_, '_> {
         // own words, never wrong).
         let windows = erratum_windows(addr, len);
         if windows.is_empty() {
-            return Ok(proof);
+            return Ok((proof, Vec::new()));
         }
         let in_window = |r: u64| {
             let i = windows.partition_point(|w| w.1 <= r);
@@ -493,45 +549,96 @@ impl LinkSites<'_, '_> {
         let name = self.walker.section_name(c.file, c.index);
         // This section's own view of the round's tables: whether the
         // relocation just applied asked for an address not known yet.
-        let probe = Probe { tables, unknown: AtomicBool::new(false) };
+        let probe = Probe {
+            tables,
+            unknown: AtomicBool::new(false),
+            alt: AtomicBool::new(false),
+            over: Mutex::new(None),
+        };
         let cx = FillCx {
             tables: &probe,
-            output: OutputKind::Static,
+            output: self.t.output,
             got_base: tables.got_base,
             tls: tables.tls,
         };
-        let mut forced: Vec<u64> = Vec::new();
+        // The words (offsets in this section) whose value depends on an
+        // address not known here.
+        let mut unknown: Vec<u64> = Vec::new();
         self.walker
             .walk_where(c.file, c.sid, c.index, c.rel, &in_window, leads, &mut |v| {
-                let mut so =
-                    SectionOut::new(section, 0, addr, true, name.as_bytes()).with_exec(true);
+                let r = v.at.r_offset;
+                // fill's value of a section symbol of a merge section with
+                // an addend: the piece at the target offset (model §4.5,
+                // `spec/synth.md` S-50), not the piece at the symbol's.
+                *probe.over.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
+                    tables.split_value(v.at.key, v.at.rela_addend()).map(|s| (v.at.key, s));
+                // A record applies to `[r, r + 8)` at most (above).
+                let span = usize::try_from(r).ok().and_then(|at| {
+                    let end = at.checked_add(8)?.min(section.len());
+                    (at < end).then_some(at..end)
+                });
+                let before: Option<Vec<u8>> = span.clone().map(|sp| section[sp].to_vec());
                 probe.unknown.store(false, Ordering::Relaxed);
+                probe.alt.store(false, Ordering::Relaxed);
                 // A relocation that does not apply is fill's to report (the
                 // link fails there); the words are those of the
                 // relocations that applied.
+                let mut so =
+                    SectionOut::new(section, 0, addr, true, name.as_bytes()).with_exec(true);
                 let _ = self.arch.apply(&cx, &v.at, &mut so);
-                if probe.unknown.load(Ordering::Relaxed) {
-                    forced.push(v.at.r_offset);
+                if !probe.unknown.load(Ordering::Relaxed) {
+                    return;
                 }
+                // The value asked for is not known: apply again with
+                // another stand-in. A word that comes out the same does not
+                // depend on it (a GOT page, the slot's address, against a
+                // shared library's symbol: a64.md §11.2's `V` is the slot).
+                let (Some(sp), Some(before)) = (span, before) else { return };
+                let first: Vec<u8> = section[sp.clone()].to_vec();
+                section[sp.clone()].copy_from_slice(&before);
+                probe.alt.store(true, Ordering::Relaxed);
+                let mut so =
+                    SectionOut::new(section, 0, addr, true, name.as_bytes()).with_exec(true);
+                let _ = self.arch.apply(&cx, &v.at, &mut so);
+                probe.alt.store(false, Ordering::Relaxed);
+                for (k, (a, b)) in first.chunks(4).zip(section[sp.clone()].chunks(4)).enumerate() {
+                    if a != b {
+                        unknown.push(sp.start as u64 + 4 * k as u64);
+                    }
+                }
+                section[sp].copy_from_slice(&first);
             })
             .map_err(keyed)?;
-        // A word whose target's address is not known at this round (a
-        // linker-defined symbol, a common): when it is an ADRP at a `W1`
-        // position its page is unknown, so the in-place ADR fix is not
-        // asked for; its immediate is set out of the fix's reach, which
-        // makes the site take a patch, always correct (a64.md §11.2).
-        for r in forced {
+        *probe.over.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        // A `W1` whose page depends on an address not known here (a
+        // linker-defined symbol, a common, a copy, at a round): its page is
+        // unknown, so the in-place ADR fix is not asked for. The word stays
+        // an ADRP (conditions 1-4 read no immediate bit, a64.md §11.1) and
+        // its immediate is set to −2^20 pages, out of the ADR's reach,
+        // which makes the site take a patch, always correct (§11.2). (Until
+        // WP-103 this set bit 24, not immhi's top bit 23: the word became
+        // an ADD, and the site was dropped unfixed.)
+        for &r in &unknown {
             let Ok(at) = usize::try_from(r) else { continue };
             let Some(w) = section.get(at..at + 4) else { continue };
             let w = u32::from_le_bytes([w[0], w[1], w[2], w[3]]);
             if mortar_a64::erratum::is_adrp(w) {
-                // immlo (bits 29-30) and immhi (bits 5-23): 2^20 pages.
-                let far = (w & !0x60FF_FFE0) | (0x8_0000 << 5);
+                let far = far_adrp(w);
                 section[at..at + 4].copy_from_slice(&far.to_le_bytes());
             }
         }
-        Ok(proof)
+        unknown.sort_unstable();
+        unknown.dedup();
+        Ok((proof, unknown.into_iter().map(|r| addr + r).collect()))
     }
+}
+
+/// An ADRP of the same register whose page is `Page(Q) − 2^32`: immhi
+/// (bits 5-23) and immlo (bits 29-30) hold −2^20, out of every ADR's reach
+/// (`s(21)` bytes, a64.md §11.2).
+fn far_adrp(w: u32) -> u32 {
+    // immhi's top bit (immhi:immlo's sign bit), the rest zero.
+    (w & !0x60FF_FFE0) | (0x4_0000 << 5)
 }
 
 /// The erratum scan's windows in a section of `len` bytes at `addr`: the
@@ -570,6 +677,8 @@ fn internal(what: &str) -> LayoutDiag {
 struct RoundTables<'r, 'a, 's> {
     sites: &'r LinkSites<'a, 's>,
     round: &'r Round<'r>,
+    /// The final placement, when these are its tables (`erratum_fixes`).
+    exact: Option<&'r Placement>,
     /// The address of each output section's `Merged` chunk.
     merged: BTreeMap<OutSecId, u64>,
     got_addrs: GotAddrs,
@@ -610,7 +719,13 @@ impl RoundTables<'_, '_, '_> {
         let s = table.get(e.index).ok()?;
         match table.section_of(e.index, &s).ok()? {
             SymbolSection::Section(index) => {
-                self.addr_in(t.resolution.section_id(e.file, index)?, s.st_value)
+                let sid = t.resolution.section_id(e.file, index)?;
+                // `.eh_frame` is synthesized (its symbols are fill's
+                // `split_target`): not known here.
+                if t.resolution.sections.get(sid)?.kind == SectionKind::EhFrame {
+                    return None;
+                }
+                self.addr_in(sid, s.st_value)
             }
             SymbolSection::Absolute => Some(s.st_value),
             _ => None,
@@ -618,8 +733,10 @@ impl RoundTables<'_, '_, '_> {
     }
 
     /// `S` of a key at the round (the IPLT entry of an IFUNC), or `None`
-    /// when layout has not given it yet (a linker-defined symbol, a
-    /// common: their values are stage F's).
+    /// when layout has not given it yet: a linker-defined symbol, a
+    /// common, a copy (their values are stage F's: known in the final
+    /// placement only), a shared library's symbol without a copy (no
+    /// address in this output).
     fn value(&self, key: SymKey) -> Option<u64> {
         if self.sites.t.demands.of(key).contains(DemandFlags::IPLT) {
             return self.plt(key);
@@ -629,9 +746,53 @@ impl RoundTables<'_, '_, '_> {
             SymKind::Global(id) => match self.def(id)? {
                 Def::Defined(e) => self.entry_value(e),
                 Def::Undefined { .. } => Some(0),
-                Def::Common(_) | Def::Internal(_) | Def::Shared(_) => None,
+                Def::Common(_) => self.alloc_value(AllocKey::Common(id)),
+                Def::Internal(_) => self.exact?.defined_of(id),
+                Def::Shared(_) => {
+                    let copies = &self.sites.t.slots.copy_of;
+                    let at = copies.binary_search_by_key(&id, |row| row.0).ok()?;
+                    self.alloc_value(AllocKey::Copy(copies[at].1))
+                }
             },
         }
+    }
+
+    /// The address of a symbol-anchored allocation, in the final
+    /// placement.
+    fn alloc_value(&self, key: AllocKey) -> Option<u64> {
+        let pl = self.exact?;
+        let row = pl.sym_place_of(key)?;
+        pl.chunks.get(row.chunk)?.addr?.checked_add(row.offset)
+    }
+
+    /// fill's `S` for a record against a section symbol of a merge
+    /// section, with addend `a` (`mortar_image` `split_target`): the
+    /// piece at the target offset `st_value + a`, less `a`. `None`: the key
+    /// is no such symbol (`S` is [`RoundTables::value`]); `Some(None)`: the
+    /// piece's address is not known here.
+    fn split_value(&self, key: SymKey, a: i64) -> Option<Option<u64>> {
+        let t = &self.sites.t;
+        let e = match key.kind() {
+            SymKind::Local(e) => e,
+            SymKind::Global(id) => match self.def(id)? {
+                Def::Defined(e) => e,
+                _ => return None,
+            },
+        };
+        let table = self.sites.walker.symbols(e.file)?;
+        let s = table.get(e.index).ok()?;
+        if s.sym_type() != STT_SECTION {
+            return None;
+        }
+        let SymbolSection::Section(index) = table.section_of(e.index, &s).ok()? else {
+            return None;
+        };
+        let sid = t.resolution.section_id(e.file, index)?;
+        if t.resolution.sections.get(sid)?.kind != SectionKind::Merge {
+            return None;
+        }
+        let at = u64::try_from((s.st_value as i64).checked_add(a)?).ok();
+        Some(at.and_then(|at| self.addr_in(sid, at)).map(|v| v.wrapping_sub(a as u64)))
     }
 }
 
@@ -642,7 +803,16 @@ struct Probe<'p, 'r, 'a, 's> {
     tables: &'p RoundTables<'r, 'a, 's>,
     /// Set when `sym` was asked for a key whose address is unknown.
     unknown: AtomicBool,
+    /// The second stand-in for an unknown address (whether a word depends
+    /// on it).
+    alt: AtomicBool,
+    /// The record's own `S` of its key ([`RoundTables::split_value`]).
+    over: Mutex<Option<(SymKey, Option<u64>)>>,
 }
+
+/// What the second stand-in adds to the first: another page and other low
+/// bits (16-aligned, for every scaled `lo12` form).
+const ALT: u64 = 0x1010;
 
 impl SymNames for Probe<'_, '_, '_, '_> {
     fn name(&self, key: SymKey) -> &[u8] {
@@ -654,13 +824,15 @@ impl FillTables for Probe<'_, '_, '_, '_> {
     fn sym(&self, key: SymKey) -> SymValue {
         let t = self.tables;
         let facts = t.sites.walker.facts(key);
-        let s = match facts.kind {
-            TargetKind::Weak0 => Some(0),
+        let over = *self.over.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let s = match (facts.kind, over) {
+            (TargetKind::Weak0, _) => Some(0),
+            (_, Some((k, s))) if k == key => s,
             _ => t.value(key),
         };
         let s = s.unwrap_or_else(|| {
             self.unknown.store(true, Ordering::Relaxed);
-            t.fallback
+            if self.alt.load(Ordering::Relaxed) { t.fallback.wrapping_add(ALT) } else { t.fallback }
         });
         SymValue { s, kind: facts.kind, size: 0, live: true, tls: facts.tls }
     }
@@ -706,7 +878,24 @@ impl RoundTables<'_, '_, '_> {
 
 #[cfg(test)]
 mod tests {
-    use super::erratum_windows;
+    use super::{erratum_windows, far_adrp};
+
+    // spec: a64.md §11.2 (WP-103: a round whose `W1` depends on an unknown
+    // address writes it as an ADRP out of every ADR's reach, so the site
+    // stays a site and takes a patch; before, the stand-in set bit 24 and
+    // the word was an ADD, which is no site)
+    #[test]
+    fn far_adrp_is_an_adrp_out_of_adr_reach() {
+        for w in [0xd000_0080_u32, 0x9000_0000, 0xf0ff_ffff, 0xb07f_ffe1] {
+            let f = far_adrp(w);
+            assert_eq!(f & 0x9F00_0000, 0x9000_0000, "{w:#x} -> {f:#x} is an ADRP");
+            assert_eq!(f & 31, w & 31, "the same Rd");
+            let imm = (((f >> 5) & 0x7_FFFF) << 2) | ((f >> 29) & 3);
+            let delta = (i64::from(imm << 11) << 32 >> 43) << 12;
+            assert_eq!(delta, -(1_i64 << 32), "Page(Q) - 2^32");
+            assert!(delta.unsigned_abs() >= 1 << 20, "beyond an ADR's s(21)");
+        }
+    }
 
     // spec: a64.md §11.1 (the words of a site: `W1` at 0xFF8 or 0xFFC, and
     // up to three words after it, which may cross the page and the section)

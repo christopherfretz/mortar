@@ -253,8 +253,9 @@ pub struct Link<'a, 's> {
     pub options: LinkOptions,
     /// Words written over fill's bytes, by address, sorted: the erratum
     /// fixes (`spec/a64.md` §11.2; the front computes them from the words
-    /// fill writes at the final addresses).
-    pub fixups: &'a [(u64, [u8; 4])],
+    /// fill writes at the final addresses), each with the word fill must
+    /// have written under it ([`crate::fill::Fixup`]).
+    pub fixups: &'a [fill::Fixup],
 }
 
 impl std::fmt::Debug for Link<'_, '_> {
@@ -1162,7 +1163,7 @@ fn plt_first_word(link: &Link<'_, '_>, target: u64) -> Option<u32> {
 /// # Errors
 ///
 /// `internal-error` for a word in no such chunk.
-fn file_fixups(link: &Link<'_, '_>) -> Result<Vec<(u64, [u8; 4])>, Diagnostic> {
+fn file_fixups(link: &Link<'_, '_>) -> Result<Vec<fill::Fixup>, Diagnostic> {
     let pl = &link.layout.placement;
     let mut spans: Vec<(u64, u64, u64)> = pl
         .chunks
@@ -1172,7 +1173,7 @@ fn file_fixups(link: &Link<'_, '_>) -> Result<Vec<(u64, [u8; 4])>, Diagnostic> {
         .collect();
     spans.sort_unstable();
     let mut out = Vec::with_capacity(link.fixups.len());
-    for &(addr, word) in link.fixups {
+    for &(addr, word, under) in link.fixups {
         let at = spans.partition_point(|s| s.0 <= addr);
         let off = at
             .checked_sub(1)
@@ -1180,7 +1181,7 @@ fn file_fixups(link: &Link<'_, '_>) -> Result<Vec<(u64, [u8; 4])>, Diagnostic> {
             .filter(|&(a, size, _)| addr + 4 <= a + size)
             .map(|(a, _, off)| off + (addr - a))
             .ok_or_else(|| internal(format!("image: a fixed word at {addr:#x} is in no chunk")))?;
-        out.push((off, word));
+        out.push((off, word, under));
     }
     out.sort_unstable_by_key(|f| f.0);
     Ok(out)
