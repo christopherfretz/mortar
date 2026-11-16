@@ -1436,3 +1436,85 @@ fn a_compiler_driver_link_twice_finds_its_state() {
         line_with(&err, "full (update-not-implemented)");
     }
 }
+
+// spec: incr.md §1.5 ("Go/no-go rule": the measured floor, WP-061 stage
+// B), §5.2 (the update phase by phase), IN-27 (a same-size body edit
+// moves no definition), IN-46 / IN-47 (the two write paths)
+//
+// The C program's `--incremental=full` link, then one function body of
+// its object edited in place (`impl_a`'s `mov w0, #1` becomes `#2`: the
+// same size). The test-only update path (`mortar::floor::update`) on
+// each write path writes the bytes of a plain link of the edited inputs,
+// the verifier accepts them, the program prints the new value, and the
+// rewritten state chains: a second edit updates again, and
+// `--incremental=update` still fails by name.
+#[test]
+fn the_floor_update_is_the_full_link_of_the_edited_inputs() {
+    use mortar::floor::{WritePath, update};
+    for write in [WritePath::Copy, WritePath::InPlace] {
+        let Some(prog) = Prog::c() else { return };
+        let obj = prog.path("c1.c.o");
+        let edit = |from: u32, to: u32| {
+            let mut b = std::fs::read(&obj).unwrap();
+            // `mov w0, #n; ret`: impl_a's body.
+            let body: Vec<u8> = [from, 0xd65f_03c0].iter().flat_map(|w| w.to_le_bytes()).collect();
+            let at: Vec<usize> = (0..b.len().saturating_sub(7))
+                .step_by(4)
+                .filter(|&i| b[i..i + 8] == body[..])
+                .collect();
+            assert_eq!(at.len(), 1, "one `mov w0, #{}; ret` in c1.c.o", (from >> 5) & 0xffff);
+            b[at[0]..at[0] + 4].copy_from_slice(&to.to_le_bytes());
+            // A new file (a new inode, as a compiler writes it).
+            std::fs::write(prog.path("c1.c.o.new"), &b).unwrap();
+            std::fs::rename(prog.path("c1.c.o.new"), &obj).unwrap();
+        };
+        prog.link("o", &["--incremental=full"]);
+        let inode =
+            || std::os::unix::fs::MetadataExt::ino(&std::fs::metadata(prog.path("o")).unwrap());
+        let before = inode();
+        // mov w0, #1 -> #2 -> #3
+        for (step, (from, to)) in
+            [(0x5280_0020_u32, 0x5280_0040_u32), (0x5280_0040, 0x5280_0060)].into_iter().enumerate()
+        {
+            edit(from, to);
+            let u = update(&prog.args("o", &["--incremental"]), &prog.built.dir, write);
+            let s = u.outcome.unwrap_or_else(|why| {
+                let r = u.report.map(|r| r.render(&mortar_diag::Style::plain("mortar")));
+                panic!("{write:?} step {step}: {why}\n{}\n{}", r.unwrap_or_default(), u.phases)
+            });
+            assert_eq!(s.changed, obj.display().to_string(), "{write:?}: the changed file");
+            assert!(s.windows >= 1 && s.jobs >= 1);
+            let map = format!("ref{step}.map");
+            let map_arg = format!("--mortar-map={}", prog.path(&map).display());
+            prog.link(&format!("ref{step}"), &[&map_arg]);
+            assert!(
+                prog.bytes("o") == prog.bytes(&format!("ref{step}")),
+                "{write:?} step {step}: the update differs from the full link"
+            );
+            let findings =
+                support::plumb::verify(&prog.path("o"), &prog.path(&map), &prog.built.dir);
+            assert!(findings.is_empty(), "{write:?}: the verifier rejects: {findings:?}");
+            let (status, out) = prog.run("o");
+            assert_eq!(status, Some(0));
+            let value = (to >> 5) & 0xffff;
+            assert!(
+                String::from_utf8_lossy(&out).contains(&format!(" {value} ")),
+                "{write:?}: {}",
+                String::from_utf8_lossy(&out)
+            );
+            let (_, state) = prog.read_state("o");
+            assert_eq!(state.flags & FLAG_UPDATING, 0, "the flag is cleared");
+        }
+        match write {
+            WritePath::InPlace => assert_eq!(inode(), before, "in place keeps the inode"),
+            WritePath::Copy => assert_ne!(inode(), before, "the copy renames a new file"),
+        }
+        let o = prog.mortar_env("o", &["--incremental=update"], &[]);
+        assert!(!o.success());
+        assert!(
+            o.stderr_text().contains("cannot update: update-not-implemented"),
+            "{}",
+            o.stderr_text()
+        );
+    }
+}
