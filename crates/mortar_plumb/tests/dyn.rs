@@ -1836,3 +1836,91 @@ fn s12_p_d12_tls_record_against_a_function() {
 fn s12_f2_is_p_d9_view_3() {
     judge("F2");
 }
+
+/// `(st_value, st_size, st_shndx)` of `name` in `.dynsym`.
+fn dynsym(b: &[u8], name: &str) -> (u64, u64, usize) {
+    let s = sections(b);
+    let t = section(&s, ".dynsym");
+    let strs = s[t.5].3;
+    (t.3..t.3 + t.4)
+        .step_by(24)
+        .find(|&o| le16(b, o + 6) != 0 && cstr(b, strs + le32(b, o) as usize) == name)
+        .map_or_else(
+            || panic!("no defined .dynsym {name}"),
+            |o| (le64(b, o + 8), le64(b, o + 16), le16(b, o + 6)),
+        )
+}
+
+/// The alignment a copy of `name` from the library `lib` takes (D-42,
+/// P-D11): its section's `sh_addralign`, no more than its value allows.
+fn copy_align(lib: &[u8], name: &str) -> u64 {
+    let (value, _, shndx) = dynsym(lib, name);
+    let (shoff, shentsize) = (le64(lib, 0x28) as usize, le16(lib, 0x3a));
+    let sec = le64(lib, shoff + shndx * shentsize + 0x30).max(1);
+    sec.min(1 << value.trailing_zeros().min(63))
+}
+
+// spec/plumb.md §3.3 M8 (WP-096): lld's copies of `ro_p` and `rw_v`,
+// its map in mortar's format with the `copy` records mortar's states
+// (the place and size of each copy, the alignment D-42 gives it): no M8
+// finding; each field changed, a second record, or a record where no
+// COPY record is, an M8 finding.
+#[test]
+fn s3_3_m8_copy_records_are_the_copies() {
+    use mortar_plumb::Format;
+    use mortar_plumb::map::{CopyHint, DynRecords, Map};
+    type Case = (&'static str, &'static str, fn(&mut CopyHint));
+    let Some(c) = corpus() else { return };
+    let mut n = 0;
+    for o in c.outs.iter().filter(|o| o.case == "copy-relro" && o.link.linker == Linker::Lld) {
+        n += 1;
+        let out = o.link.output_bytes();
+        let lib = std::fs::read(o.link.dir.join("libro.so")).unwrap();
+        let mut base = o.link.parse_map();
+        let files = o.link.inputs(&base);
+        base.format = Format::Mortar;
+        let copies = ["ro_p", "rw_v"]
+            .map(|name| {
+                let (addr, size, _) = dynsym(&out, name);
+                CopyHint { name: name.into(), addr, size, align: Some(copy_align(&lib, name)) }
+            })
+            .to_vec();
+        base.dynamic = Some(DynRecords { copies, ..DynRecords::default() });
+        let line: Vec<String> =
+            std::fs::read_to_string(&o.line).unwrap().lines().map(str::to_string).collect();
+        let m8 = |map: &Map| -> Vec<String> {
+            let text = mortar_plumb::map::mortar::write(map);
+            let map = mortar_plumb::map::parse(Format::Mortar, &text).unwrap();
+            let inputs: Vec<Input<'_>> =
+                files.iter().map(|(p, b)| Input { path: p, bytes: b }).collect();
+            let ctx = Ctx { line: Some(line.clone()), files: &Dir(&o.link.dir) };
+            mortar_plumb::verify_with(&out, &inputs, &map, &ctx)
+                .findings
+                .iter()
+                .filter(|f| f.rule.id() == "M8")
+                .map(|f| f.message.clone())
+                .collect()
+        };
+        assert!(m8(&base).is_empty(), "{}: {:#?}", o.label(), m8(&base));
+        let cases: [Case; 6] = [
+            ("name", "names 'rw_v'", |c| c.name = "rw_v".into()),
+            ("size", "is stated of size", |c| c.size += 1),
+            ("align up", "is stated aligned to", |c| *c.align.as_mut().unwrap() *= 2),
+            ("align down", "is stated aligned to", |c| *c.align.as_mut().unwrap() /= 2),
+            ("addr", "names no COPY record", |c| c.addr += 0x100),
+            ("addr unaligned", "names no COPY record", |c| c.addr += 1),
+        ];
+        for (what, needle, f) in cases {
+            let mut m = base.clone();
+            f(&mut m.dynamic.as_mut().unwrap().copies[0]);
+            let got = m8(&m);
+            assert!(got.iter().any(|g| g.contains(needle)), "{} {what}: {got:#?}", o.label());
+        }
+        let mut m = base.clone();
+        let again = m.dynamic.as_ref().unwrap().copies[1].clone();
+        m.dynamic.as_mut().unwrap().copies.push(again);
+        let got = m8(&m);
+        assert!(got.iter().any(|g| g.contains("second record")), "{} twice: {got:#?}", o.label());
+    }
+    assert!(n > 0 || c.outs.is_empty(), "no lld outputs of copy-relro");
+}

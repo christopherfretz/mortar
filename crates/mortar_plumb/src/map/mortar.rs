@@ -11,6 +11,7 @@
 //! discard <file> <section> gc|comdat|script|unspecified
 //! fold <file> <section> <into-file> <into-section>
 //! chunk thunk|patch|synthetic|common <name> <addr>|- <size> [<target> <addend>]
+//! common <name> <addr> <size> <align>
 //! define <name> <value>
 //! incremental
 //! hole <output-section> <offset> <size>
@@ -22,7 +23,7 @@
 //! relro on|off
 //! arg <word>
 //! needed <name>
-//! copy <name> <addr> <size>
+//! copy <name> <addr> <size> <align>
 //! export <name>
 //! plt <name>
 //! iplt <name>
@@ -30,7 +31,9 @@
 //! ```
 //!
 //! The records from `output` on are the dynamic records (P-D3 of
-//! `spec/dyn.md`): facts of the command line, then order hints.
+//! `spec/dyn.md`): facts of the command line, then order hints. A
+//! `NOBITS` synthetic chunk, `common` and the `<align>` of `copy` are the
+//! allocation records (WP-096), judged by M6-M8 (§3.3).
 //!
 //! A `<section>` is the section's index in its file, in decimal, or `:`
 //! and the section's name as a token (a foreign map converted, §3.2).
@@ -38,9 +41,9 @@
 use std::fmt::Write as _;
 
 use super::{
-    Chunk, ChunkKind, CopyHint, DeadKind, DeadRange, Defined, DiscardReason, Discarded, DynRecords,
-    Fold, Format, Map, MapError, MapFile, NonAlloc, OutputKind, Placed, RunpathTag, SectionRef,
-    dec, hex,
+    Chunk, ChunkKind, CommonAlloc, CopyHint, DeadKind, DeadRange, Defined, DiscardReason,
+    Discarded, DynRecords, Fold, Format, Map, MapError, MapFile, NonAlloc, OutputKind, Placed,
+    RunpathTag, SectionRef, dec, hex,
 };
 
 /// The first line of a version-1 map.
@@ -117,7 +120,7 @@ fn parse_signed_hex(t: &str) -> Option<i64> {
 
 /// Writes `map` in mortar's format (§3.2). The record order is fixed:
 /// files by id, then places, pieces, the non-alloc records, discards,
-/// folds, chunks, defined symbols, `incremental`, holes and dead ranges,
+/// folds, chunks, commons, defined symbols, `incremental`, holes and dead ranges,
 /// each in the order of the map's vectors, then the dynamic records.
 #[allow(clippy::too_many_lines)] // one block per record, in the fixed order
 pub fn write(map: &Map) -> String {
@@ -205,6 +208,11 @@ pub fn write(map: &Map) -> String {
         }
         out.push('\n');
     }
+    for c in &map.commons {
+        out.push_str("common ");
+        encode(&c.name, &mut out);
+        let _ = writeln!(out, " {:x} {:x} {:x}", c.addr, c.size, c.align);
+    }
     for d in &map.defined {
         out.push_str("define ");
         encode(&d.name, &mut out);
@@ -266,7 +274,11 @@ fn write_dynamic(d: &DynRecords, out: &mut String) {
     for c in &d.copies {
         out.push_str("copy ");
         encode(&c.name, out);
-        let _ = writeln!(out, " {:x} {:x}", c.addr, c.size);
+        let _ = write!(out, " {:x} {:x}", c.addr, c.size);
+        if let Some(a) = c.align {
+            let _ = write!(out, " {a:x}");
+        }
+        out.push('\n');
     }
     for e in &d.exports {
         named(out, "export", e);
@@ -322,6 +334,9 @@ pub fn parse(text: &str) -> Result<Map, MapError> {
             Ok(SectionRef::Index(v as u32))
         };
         let num = |s: &str, what: &str| hex(s).ok_or_else(|| bad(what));
+        let align = |s: &str| {
+            hex(s).filter(|a| a.is_power_of_two()).ok_or_else(|| bad("alignment (a power of two)"))
+        };
         match (t[0], t.len()) {
             ("end", 1) => ended = true,
             ("file", 3 | 5) => {
@@ -395,6 +410,13 @@ pub fn parse(text: &str) -> Result<Map, MapError> {
                 } else {
                     None
                 },
+                line: n,
+            }),
+            ("common", 5) => map.commons.push(CommonAlloc {
+                name: decode(t[1]).ok_or_else(|| bad("name"))?,
+                addr: num(t[2], "address")?,
+                size: num(t[3], "size")?,
+                align: align(t[4])?,
                 line: n,
             }),
             ("define", 3) => map.defined.push(Defined {
@@ -474,20 +496,21 @@ pub fn parse(text: &str) -> Result<Map, MapError> {
                     _ => d.iplt.push(v),
                 }
             }
-            ("copy", 4) => {
+            ("copy", 4 | 5) => {
                 let c = CopyHint {
                     name: decode(t[1]).ok_or_else(|| bad("name"))?,
                     addr: num(t[2], "address")?,
                     size: num(t[3], "size")?,
+                    align: if t.len() == 5 { Some(align(t[4])?) } else { None },
                 };
                 map.dynamic.get_or_insert_with(DynRecords::default).copies.push(c);
             }
             ("", 1) => return Err(MapError::new(n, "empty line before 'end'")),
             (
                 "end" | "file" | "place" | "piece" | "nplace" | "merged" | "discard" | "fold"
-                | "chunk" | "define" | "incremental" | "hole" | "dead" | "output" | "interp"
-                | "runpath" | "rpath" | "bind" | "relro" | "arg" | "needed" | "copy" | "export"
-                | "plt" | "iplt",
+                | "chunk" | "common" | "define" | "incremental" | "hole" | "dead" | "output"
+                | "interp" | "runpath" | "rpath" | "bind" | "relro" | "arg" | "needed" | "copy"
+                | "export" | "plt" | "iplt",
                 _,
             ) => {
                 return Err(bad("wrong number of fields"));
@@ -571,6 +594,13 @@ mod tests {
             target: None,
             line: 0,
         });
+        m.commons.push(CommonAlloc {
+            name: "com mon".into(),
+            addr: 0x50_0040,
+            size: 0x30,
+            align: 0x40,
+            line: 0,
+        });
         m.defined.push(Defined { name: "_end".into(), value: 0x50_0000, line: 0 });
         m
     }
@@ -581,6 +611,7 @@ mod tests {
         m.folds.iter_mut().for_each(|p| p.line = 0);
         m.chunks.iter_mut().for_each(|p| p.line = 0);
         m.defined.iter_mut().for_each(|p| p.line = 0);
+        m.commons.iter_mut().for_each(|p| p.line = 0);
         m.dead.iter_mut().for_each(|p| p.line = 0);
         m
     }
@@ -594,6 +625,10 @@ mod tests {
         assert!(text.contains("file 2 100%25%C3%A9.o\n"), "{text}");
         assert!(text.contains("chunk synthetic % - 4\n"), "{text}");
         assert!(text.contains("chunk thunk __veneer%20x 400020 c far -8\n"), "{text}");
+        assert!(
+            text.contains("chunk synthetic % - 4\ncommon com%20mon 500040 30 40\ndefine "),
+            "{text}"
+        );
         let back = parse(&text).unwrap();
         assert_eq!(strip_lines(back), m);
     }
@@ -654,7 +689,10 @@ mod tests {
             relro: Some(false),
             args: vec!["-pie".into(), "--as-needed".into(), "-lc".into(), String::new()],
             needed: vec!["libc.so.6".into(), "libm.so.6".into()],
-            copies: vec![CopyHint { name: "stdout".into(), addr: 0x2_0010, size: 8 }],
+            copies: vec![
+                CopyHint { name: "stdout".into(), addr: 0x2_0010, size: 8, align: Some(8) },
+                CopyHint { name: "environ".into(), addr: 0x2_0018, size: 8, align: None },
+            ],
             exports: vec!["main".into()],
             plt: vec!["puts".into(), "memcpy@GLIBC_2.2.5".into()],
             iplt: vec!["my_ifunc".into()],
@@ -665,7 +703,7 @@ mod tests {
                 "define _end 500000\noutput pie\ninterp /lib/ld-linux-aarch64.so.1\n\
                  runpath $ORIGIN/lib:/opt/x%20y\nbind now\nrelro off\narg -pie\n\
                  arg --as-needed\narg -lc\narg %\nneeded libc.so.6\nneeded libm.so.6\n\
-                 copy stdout 20010 8\nexport main\nplt puts\nplt memcpy@GLIBC_2.2.5\n\
+                 copy stdout 20010 8 8\ncopy environ 20018 8\nexport main\nplt puts\nplt memcpy@GLIBC_2.2.5\n\
                  iplt my_ifunc\nend\n"
             ),
             "{text}"
@@ -698,6 +736,9 @@ mod tests {
             ("mortar-map 1\nneeded\nend\n", 2),
             ("mortar-map 1\nplt a b\nend\n", 2),
             ("mortar-map 1\nexport %4\nend\n", 2),
+            ("mortar-map 1\ncopy x 10 8 3\nend\n", 2),
+            ("mortar-map 1\ncopy x 10 8 0\nend\n", 2),
+            ("mortar-map 1\ncopy x 10 8 4 4\nend\n", 2),
         ];
         for (text, line) in cases {
             let e = parse(text).unwrap_err();
@@ -772,6 +813,26 @@ mod tests {
         // (P-I2, §6.8).
         let m = parse("mortar-map 1\nhole .text 0 0\nhole .text 0 8\nhole .text 4 8\nhole .nowhere ffffffffffffffff ffffffffffffffff\nend\n").unwrap();
         assert_eq!(m.dead.len(), 4);
+    }
+
+    // §3.2 (WP-096): the allocation records, malformed, by line.
+    #[test]
+    fn s3_2_malformed_allocation_records_are_errors() {
+        let cases: &[(&str, u32)] = &[
+            ("mortar-map 1\ncommon x 10 8\nend\n", 2),
+            ("mortar-map 1\ncommon x 10 8 8 8\nend\n", 2),
+            ("mortar-map 1\ncommon x 10 8 c\nend\n", 2),
+            ("mortar-map 1\ncommon x 10 8 0\nend\n", 2),
+            ("mortar-map 1\ncommon x 1g 8 8\nend\n", 2),
+            ("mortar-map 1\ncommon %4 10 8 8\nend\n", 2),
+        ];
+        for (text, line) in cases {
+            let e = parse(text).unwrap_err();
+            assert_eq!(e.line, *line, "{text:?}: {e}");
+        }
+        let m = parse("mortar-map 1\ncommon x 10 8 1\nend\n").unwrap();
+        assert_eq!(m.commons.len(), 1);
+        assert_eq!(m.commons[0].align, 1);
     }
 
     // §3.7: every truncation of a valid map is an error or a map, never a

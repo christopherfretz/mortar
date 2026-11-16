@@ -1568,7 +1568,21 @@ random input's).
     (`Dropped(Excluded)`, `Dropped(Stripped)`). Consumed sections
     (symbol tables, relocations, groups) are not listed;
   - `chunk` per synthetic chunk with bytes (`synthetic`), patch island
-    or thunk (`patch`, `thunk`), and the commons' chunk (`common`);
+    or thunk (`patch`, `thunk`);
+  - the allocation records (`spec/plumb.md` §3.2, WP-096), in every map,
+    plain or incremental-mode, each a fact the layout holds (no layout
+    decision depends on writing it):
+    - `chunk synthetic` per `NOBITS` synthetic chunk of size above 0
+      that holds no allocation of its own: today `.pad.relro` (L-64 of
+      `spec/layout.md`), at its address with its size. The copy chunks
+      (`.dynbss`, `.bss.rel.ro`'s, `spec/dyn.md` D-42) are not listed:
+      their allocations are `copy` records;
+    - `common <name> <addr> <size> <align>` per common symbol the link
+      allocated (`spec/layout.md` L-88: `.bss`, or `.lbss` for an x86-64
+      large common), its address, size and the alignment it was placed
+      at, after the `chunk` records;
+    - `copy <name> <addr> <size> <align>` (P-D3's hint) with the
+      alignment the copy was placed at (`spec/dyn.md` D-42);
   - `define` per symbol of file 0 that layout defined
     (`spec/layout.md` §13), with its value;
   - non-alloc input sections (R-9, applied by WP-028b; written by
@@ -1584,8 +1598,9 @@ random input's).
   - `thunk` and `patch` chunks: one record per `Placement.patches` row,
     named as `.symtab` names it (S-80), a thunk with its target's name
     (`@plt` appended for a PLT target) and addend (WP-027c).
-  - Not yet written: `fold` (M2). `common` is not a
-    chunk of its own in M1 (commons are placed in `.bss`, layout §8).
+  - Not yet written: `fold` (M2). `chunk common` is not written: the
+    commons are placed in `.bss` (layout §12.2) and each is a `common`
+    record.
 - **I-79 [M1]** The map is a function of the tables and the file names,
   written after layout and independent of fill. Each record group is
   formatted in parallel per file (`map_collect`, rule 3) and the buffers

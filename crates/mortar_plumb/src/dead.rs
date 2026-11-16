@@ -370,7 +370,11 @@ fn items(image: &Image<'_>, objs: &[Obj<'_>], map: &Map, set: &DeadSet) -> Vec<V
     // of a name no placed section of an input defines, with the largest
     // alignment its common definitions ask.
     let listed = map.chunks.iter().any(|c| c.kind == crate::map::ChunkKind::Common);
-    for (name, align) in if listed { Vec::new() } else { commons(objs) } {
+    for (name, align) in if listed {
+        std::collections::BTreeMap::default()
+    } else {
+        crate::maprec::common_only(objs)
+    } {
         let Some(sym) = image.global(&name) else { continue };
         let (a, size) = (sym.sym.st_value, sym.sym.st_size.max(1));
         if let Some(i) = owner(image, a, size, false, None) {
@@ -439,35 +443,6 @@ fn items(image: &Image<'_>, objs: &[Obj<'_>], map: &Map, set: &DeadSet) -> Vec<V
         v.sort_by_key(|it| (it.start, it.end));
     }
     per
-}
-
-/// The common symbols of the inputs no placed section defines, with
-/// the largest alignment asked (`st_value` of a common symbol, gABI).
-fn commons(objs: &[Obj<'_>]) -> Vec<(String, u64)> {
-    use mortar_elf::consts::{SHN_X86_64_LCOMMON, STB_GLOBAL, STB_WEAK};
-    let mut common: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
-    let mut defined: BTreeSet<String> = BTreeSet::new();
-    for o in objs {
-        let Some(t) = &o.symtab else { continue };
-        for (i, sym) in t.iter() {
-            if !matches!(sym.binding(), STB_GLOBAL | STB_WEAK) {
-                continue;
-            }
-            let Ok(name) = t.name(&sym) else { continue };
-            let name = String::from_utf8_lossy(name).into_owned();
-            if sym.st_shndx == SHN_COMMON || sym.st_shndx == SHN_X86_64_LCOMMON {
-                let a = common.entry(name).or_insert(1);
-                *a = (*a).max(sym.st_value.max(1));
-            } else if let Ok(SymbolSection::Section(k)) = t.section_of(i, &sym)
-                && o.secs
-                    .get(k.0 as usize)
-                    .is_some_and(|s| matches!(s.place, Place::Whole(_) | Place::Pieces(_)))
-            {
-                defined.insert(name);
-            }
-        }
-    }
-    common.into_iter().filter(|(n, _)| !defined.contains(n)).collect()
 }
 
 /// IN-60's coverage over every allocated output section. Findings

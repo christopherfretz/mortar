@@ -120,6 +120,7 @@ Every reader produces the same `Map`:
 | `discarded` | `file`, `section`, `reason` (`gc`, `comdat`, `script`, `unspecified`) | an input section not in the output |
 | `folds` | `file`, `section`, `into_file`, `into_section` | identical code folding: the section has the place of `into` |
 | `chunks` | `kind` (`thunk`, `patch`, `synthetic`, `common`), `name`, `addr`, `size`, `target` | memory the linker made: veneers, erratum patches, merged strings, COMMON |
+| `commons` | `name`, `addr`, `size`, `align` | one common symbol's allocation (mortar's format only, §3.2's allocation records; a foreign map's COMMON is a `common` chunk) |
 | `defined` | `name`, `value` | a symbol the linker defined |
 
 A section is named by its index in its file (mortar's format) or by its
@@ -140,6 +141,7 @@ merged <file> <section> <output-section>
 discard <file> <section> gc|comdat|script|unspecified
 fold <file> <section> <into-file> <into-section>
 chunk thunk|patch|synthetic|common <name> <addr>|- <size> [<target> <addend>]
+common <name> <addr> <size> <align>
 define <name> <value>
 incremental
 hole <output-section> <offset> <size>
@@ -151,7 +153,7 @@ bind lazy|now
 relro on|off
 arg <word>
 needed <name>
-copy <name> <addr> <size>
+copy <name> <addr> <size> <align>
 export <name>
 plt <name>
 iplt <name>
@@ -203,7 +205,7 @@ string is a string token.
 | `relro on`, `relro off` | at most one | `-z norelro` in force or not |
 | `arg <word>` | any | the link's command line, one word per record, in order, with response files expanded and the program name left out |
 | `needed <name>` | any | **hint**: a `DT_NEEDED` name, in the order written |
-| `copy <name> <addr> <size>` | any | **hint**: a copy allocation, by the name its `COPY` record names |
+| `copy <name> <addr> <size> <align>` | one per `COPY` record | **hint**: a copy allocation, by the name its `COPY` record names; `<align>` is its alignment, stated (the allocation records below, M8) |
 | `export <name>` | any | **hint**: an exported name |
 | `plt <name>` | any | **hint**: the key of a PLT entry, in PLT order (`name` or `name@version`) |
 | `iplt <name>` | any | **hint**: the key of an IPLT entry, in IPLT order |
@@ -245,6 +247,28 @@ unknown kind, a wrong number of fields or a bad number is a `MapError`.
 What only the output can judge (no such section, a range outside it,
 empty, overlapping another line) is read and judged by §6.8 (P-I2).
 
+**The allocation records** (WP-096) state three facts of the layout
+that neither the output nor the other records give, and that §6.8's
+coverage would otherwise have to infer: where a `NOBITS` section the
+linker makes lies, the alignment of each common symbol's allocation and
+the alignment of each copy. Every mortar map writes them, a plain link's
+as an incremental-mode one's, so the verifier has one path, and each is
+checked against the output by a map rule (§3.3, M6–M8) whether or not
+the map claims coverage.
+
+| record | count | meaning |
+|---|---|---|
+| `chunk synthetic <name> <addr> <size>` | one per linker-made `NOBITS` section | the memory of a `NOBITS` synthetic chunk that holds no allocation of its own: today `.pad.relro` (`spec/layout.md` L-64, L-156). The copy chunks (`.dynbss`, `.bss.rel.ro`'s, `spec/dyn.md` D-42) are not listed: their allocations are `copy` records. The record is the existing `chunk` form, so it has no new grammar |
+| `common <name> <addr> <size> <align>` | one per common symbol allocated | a common symbol (gABI `SHN_COMMON`, x86-64 `SHN_X86_64_LCOMMON`) the link allocated (`spec/layout.md` L-88): `<name>` its symbol, `<addr>` and `<size>` its allocation, `<align>` the alignment it was placed at. After the `chunk` records |
+| `copy <name> <addr> <size> <align>` | one per `COPY` record | the copy allocation (above), with `<align>` the alignment it was placed at (`spec/dyn.md` D-42) |
+
+`<align>` is hex as every other number, a power of two (1 included). A
+`common` or `copy` record with an `<align>` that is not a power of two,
+or a wrong number of fields, is a `MapError`. A foreign map never has
+them (§3.4 to §3.6 do not change): GNU ld's and lld's `COMMON` and
+mold's `.common` stay `common` chunks, one per file, and their maps
+state no alignment.
+
 **The version stays 1.** The records are added within version 1, as the
 dynamic records were (WP-040). A reader of version 1 that predates them
 refuses a map that has them with `MapError` "unknown record 'hole'" (or
@@ -254,8 +278,8 @@ make every older reader refuse every map, incremental or not, for no
 gain.
 
 The writer emits records in a fixed order: files by id, then places and
-pieces, the non-alloc records, discards, folds, chunks and defined
-symbols, each group in the order of the map's vectors, then
+pieces, the non-alloc records, discards, folds, chunks, commons and
+defined symbols, each group in the order of the map's vectors, then
 `incremental`, the `hole` and `dead` lines in the order of the map's
 vector, then the dynamic records in the order of the grammar above.
 
@@ -326,6 +350,38 @@ input section:
   occupies no memory and is exempt.
 
 Each rule has a test: `tests/mutation.rs s9_2e_each_map_rule_is_enforced`.
+
+The allocation records (§3.2; WP-096) are mortar's: these rules judge a
+map of mortar's format only, every such map, and each is a finding at
+the record's address naming its map line. What the output must hold for
+each record:
+
+- **M6 (a `NOBITS` chunk).** A `synthetic` chunk whose `<addr>` lies in
+  an allocated `SHT_NOBITS` output section that is not thread-local
+  (`[sh_addr, sh_addr + sh_size)`, size above 0) is that section:
+  `<name>` its name, `<addr>` its `sh_addr`, `<size>` its `sh_size`.
+- **M7 (a common).** `<name>` is a name the inputs give only common
+  definitions (a global or weak symbol of `SHN_COMMON`, or x86-64
+  `SHN_X86_64_LCOMMON`, and no definition in a section the map places),
+  named by one record only. The output's `.symtab` defines it (a global or
+  weak symbol in a section) with `st_value` = `<addr>` and `st_size` =
+  `<size>`, in an allocated `SHT_NOBITS` output section that holds
+  `[<addr>, <addr> + <size>)`. `<align>` is the largest alignment the
+  inputs' common definitions of the name ask (their `st_value`, gABI
+  "Symbol Values"), and `<addr>` is a multiple of it. An output without
+  `.symtab` (stripped) has its records' names and alignments judged and
+  their addresses and sizes not.
+- **M8 (a copy).** `<addr>` is the `r_offset` of one `COPY` record of
+  the output's dynamic relocations, named by one record only; that
+  record's symbol is `<name>`, its `.dynsym` `st_size` is `<size>`, and
+  `<align>` is P-D11's alignment of the copied definition, `min(sh_addralign`
+  of its defining section`, 2^ctz(st_value))` (`spec/dyn.md` D-42), with
+  `<addr>` a multiple of it. A `copy` record in an output that has no
+  dynamic section is M8. A dynamic output stage 3 does not model (P-D1)
+  has its `copy` records not judged.
+
+Tests: `tests/maprec.rs` (§9.2 (e)), `tests/dyn.rs
+s3_3_m8_copy_records_are_the_copies`.
 
 ### 3.4 GNU ld (`-Map`)
 
@@ -2561,7 +2617,7 @@ Tests: `tests/equiv.rs` (§9.2 (q)).
 
 A finding has:
 
-- the rule id: `O1`, `S1`–`S21`, `I1`, `I2`, `M1`–`M5`, `R1`–`R9`, `T1`,
+- the rule id: `O1`, `S1`–`S21`, `I1`, `I2`, `M1`–`M8`, `R1`–`R9`, `T1`,
   `Y1`–`Y5`, `E1`–`E5`, `F1`–`F5` (§4.8), `P1`–`P2` (§6.6), `B1` (§6.7),
   `C1`–`C6` (§5.10), `P-D1`–`P-D13` (§12), `P-I1`–`P-I6` (§6.8) or `P-E1`–`P-E6`
   (§6.9; a side's finding there carries its side, `X:` or `F:`);
@@ -2736,7 +2792,12 @@ produce a finding that is not a recorded anomaly (`tests/mutation.rs`):
 - **(d)** Each of the first 3 words of the veneer is corrupted. All must
   be found.
 - **(e)** Each structure rule (S1–S12) and map rule (M1–M5) is broken.
-  Each must produce its own finding.
+  Each must produce its own finding. The allocation records' rules
+  (M6–M8, WP-096; `tests/maprec.rs`, and `tests/dyn.rs` for M8): on a
+  link with the records stated as the output holds them (ACCEPTED, no M6,
+  M7 or M8 finding), each field of each record changed (`<name>`,
+  `<addr>`, `<size>`, `<align>`, and a record added twice) is REJECTED
+  by its rule.
 - **(f)** Thread-local storage (`tls-types`, every linker): (1) bits 0, 5,
   10, 16, 22 and 31 of every TLS-relocated instruction, relaxed or not,
   are flipped, and all must be found (516/516); (2) `PT_TLS` is moved by

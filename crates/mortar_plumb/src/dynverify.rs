@@ -170,9 +170,7 @@ pub fn verify_with(output: &[u8], inputs: &[Input<'_>], map: &Map, ctx: &Ctx<'_>
         machine: image.header.e_machine,
     };
     let kind = line.kind.unwrap_or(OutputKind::Exec);
-    report
-        .findings
-        .extend(crate::dyncheck::check(&image, &dout, &line, &model, &ld, &objs, map.format));
+    report.findings.extend(crate::dyncheck::check(&image, &dout, &line, &model, &ld, &objs, map));
     // View 1: bias 0.
     let p1 = Params::default();
     let v1 = loader::apply(&image, &dout, &ld, &p1, true);
