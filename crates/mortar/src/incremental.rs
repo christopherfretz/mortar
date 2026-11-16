@@ -214,6 +214,18 @@ pub fn start(parsed: &Parsed, cwd: &Path, out_path: &Path, diagnostics: &Collect
         None => Report::Stderr,
         Some(p) => Report::File(cwd.join(p)),
     });
+    // image.md I-58b, IN-17: the state is a regular file the link may
+    // replace, or absent in a directory where it may create one; the
+    // report is appended where the link may write. Anything else (a link
+    // through a descriptor table, a pipe, a device, a name in /dev) is
+    // refused by name before anything is read or written.
+    if let Some(d) = refuse_own_file(&state_path, true).or_else(|| match &report {
+        Some(Report::File(p)) => refuse_own_file(p, false),
+        _ => None,
+    }) {
+        emit(diagnostics, 3, d);
+        return Start::Failed;
+    }
     // IN-17: neither file is one the link reads or writes: the one rule of
     // cli.md §3.14 (`crate::written`), given them by `Session::written`.
     let plan_hash = plan_hash(parsed, cwd);
@@ -243,6 +255,30 @@ pub fn start(parsed: &Parsed, cwd: &Path, out_path: &Path, diagnostics: &Collect
     })
 }
 
+/// I-58b for incremental mode's own files: `cannot-write-output` naming
+/// `path` when the link may not write it: the state (`replace`) only by
+/// the replace protocol, the report also in place (appended).
+fn refuse_own_file(path: &Path, state: bool) -> Option<Diagnostic> {
+    use mortar_image::output::{Disposition, Use, disposition};
+    let (reason, note) = match disposition(path, Use::Whole) {
+        Disposition::Replace => return None,
+        Disposition::InPlace { .. } if !state => return None,
+        Disposition::InPlace { .. } => ("not a regular file".to_owned(), None),
+        Disposition::Refused { reason, note } | Disposition::Forbidden { reason, note } => {
+            (reason, note)
+        }
+    };
+    let kind = Kind::CannotWriteOutput { path: path.display().to_string(), reason };
+    let mut d = Diagnostic::error(kind);
+    if let Some(n) = note {
+        d = d.note(n);
+    }
+    if state {
+        d = d.note("the incremental state is a regular file, replaced whole (spec/incr.md IN-17)");
+    }
+    Some(d)
+}
+
 /// IN-22a: one stamp per device of the directories a link reads and
 /// writes, before any input is read.
 pub(crate) fn take_stamps(
@@ -266,6 +302,8 @@ pub(crate) fn take_stamps(
     for l in &plan.library_paths {
         dirs.push(cwd.join(&l.path));
     }
+    // I-58b: no stamp file in a directory where the link writes nothing.
+    dirs.retain(|d| !mortar_image::output::system_dir(d));
     let mountinfo = std::fs::read_to_string("/proc/self/mountinfo").unwrap_or_default();
     stamp::stamps(&dirs, &mountinfo)
 }
@@ -296,6 +334,12 @@ fn check(
     plan_hash: [u8; 16],
     out_path: &Path,
 ) -> (String, Option<(u16, u8)>, Option<State>) {
+    // I-58b: a state is a regular file; anything else (a pipe through
+    // /dev/stdout, which this process would read until it writes) is not
+    // read.
+    if std::fs::metadata(state_path).is_ok_and(|m| !m.is_file()) {
+        return ("state-corrupt: not a regular file".to_owned(), None, None);
+    }
     let bytes = match std::fs::read(state_path) {
         Ok(b) => b,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -462,7 +506,7 @@ impl Session {
                     }
                 }
                 Err(why) => {
-                    let _ = std::fs::remove_file(&self.state_path);
+                    let _ = mortar_image::output::remove_if_replaceable(&self.state_path);
                     let _ = writeln!(stderr, "incremental: no state written: {why}");
                 }
             }
@@ -483,11 +527,27 @@ impl Session {
         match &self.report {
             Some(Report::Stderr) => stderr.push_str(&line),
             Some(Report::File(path)) => {
-                let appended = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(path)
-                    .and_then(|mut file| file.write_all(line.as_bytes()));
+                // I-58b: appended in place, never created where the link
+                // may create no file.
+                let refused =
+                    match mortar_image::output::disposition(path, mortar_image::output::Use::Whole)
+                    {
+                        mortar_image::output::Disposition::Refused { reason, .. }
+                        | mortar_image::output::Disposition::Forbidden { reason, .. } => {
+                            Some(reason)
+                        }
+                        _ => None,
+                    };
+                let appended = refused.map_or_else(
+                    || {
+                        std::fs::OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open(path)
+                            .and_then(|mut file| file.write_all(line.as_bytes()))
+                    },
+                    |r| Err(std::io::Error::other(r)),
+                );
                 if let Err(e) = appended {
                     let _ = writeln!(stderr, "incremental: cannot write the report: {e}");
                 }
@@ -514,7 +574,7 @@ impl Session {
         if result.is_err() {
             // No state is left that the next link could accept: an older
             // one describes an output this link has replaced.
-            let _ = std::fs::remove_file(&self.state_path);
+            let _ = mortar_image::output::remove_if_replaceable(&self.state_path);
         }
         result
     }
@@ -724,6 +784,8 @@ pub(crate) fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()>
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(format!(".tmp-{}", std::process::id()));
     let tmp = PathBuf::from(tmp);
+    // I-58b: the state is replaced only where the link may replace a file.
+    mortar_image::output::may_replace(path).map_err(std::io::Error::other)?;
     let result = (|| {
         let mut file = std::fs::File::create(&tmp)?;
         file.write_all(bytes)?;

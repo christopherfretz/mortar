@@ -1117,6 +1117,16 @@ with each phase fed from the state for unchanged files:
   (image.md I-62 since WP-087). *Test:*
   `the_state_or_report_naming_a_file_of_the_link_is_refused`,
   `crates/mortar/tests/written.rs`.
+  Since WP-114 (image.md I-58b) the state path is refused by name
+  (`cannot-write-output`, the link fails) before anything is read or
+  written unless it is absent, or a regular file, in a directory where
+  the link may create files (a link through a descriptor table such as
+  `/dev/stdout`, a device, a pipe, a name in `/dev`: before WP-114 the
+  state's writer renamed over `/dev/stdout`, and read a pipe behind it
+  until the link hung); the report is appended in place, and refused the
+  same way when I-58b refuses its path. The state's own writer and the
+  in-place update's copy (IN-47) check the same rule again before their
+  rename (`mortar_image::output::may_replace`).
 - **IN-18 [v1] Format and version.** Little-endian, fixed-width rows,
   no pointers; a header of magic `MORTARST`, a format version (u32), the
   mortar version string (any difference: `state-version`), the target,

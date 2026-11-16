@@ -248,9 +248,9 @@ fn a_temporary_name_of_a_written_file_is_checked() {
 #[test]
 fn dev_null_and_dev_stdout_keep_working() {
     let Some(fx) = Fixture::new("written-dev") else { return };
-    let stdout_link =
-        || std::fs::symlink_metadata("/dev/stdout").map(|m| m.file_type().is_symlink());
-    let was_link = stdout_link().ok();
+    // image.md I-58b: the guard restores /dev/stdout and fails this test
+    // if the linker replaced or removed it.
+    let guard = mortar_testutil::dev_stdout::Guard::new("dev_null_and_dev_stdout_keep_working");
     let o = fx.mortar(&["a.o", "libb.a", "-o", "/dev/null"]);
     assert!(o.success(), "{}", o.stderr_text());
     let o = fx.mortar(&[
@@ -278,5 +278,5 @@ fn dev_null_and_dev_stdout_keep_working() {
     assert!(o.success(), "{}", o.stderr_text());
     let map = std::fs::read_to_string(fx.path("redirected.map")).unwrap();
     assert!(map.contains("Archive member included"), "{map}");
-    assert_eq!(stdout_link().ok(), was_link, "/dev/stdout was replaced");
+    guard.check();
 }

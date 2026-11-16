@@ -133,30 +133,199 @@ fn enforced(path: &Path) -> bool {
     matches!(other.try_lock(), Err(fs::TryLockError::WouldBlock))
 }
 
-impl Output {
-    /// Creates the output for `path` (I-56..I-59, I-113). `path` is shown
-    /// as given in every diagnostic.
-    pub fn create(path: &Path, opts: &OutputOptions) -> Result<Self, (Key, Diagnostic)> {
-        let shown = path.to_string_lossy().into_owned();
-        let follow = fs::metadata(path).ok();
-        // I-57: a directory, following symbolic links.
-        if follow.as_ref().is_some_and(fs::Metadata::is_dir) {
-            return Err(cannot_open(&shown, "Is a directory".into()));
+/// What a path the link writes is used for: the output, positioned
+/// writes (I-63), or a file written whole, in order (I-79, I-79a).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Use {
+    Output,
+    Whole,
+}
+
+/// What the link may do with a path it writes (I-58b): the one decision,
+/// made by [`disposition`], that every writer, remover and renamer of a
+/// path the command line named obeys.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Disposition {
+    /// No file, a regular file, or an ordinary symbolic link (to a
+    /// regular file, or dangling) in a directory the link may create files
+    /// in: a temporary beside it renamed over it (I-59, I-60); a symbolic
+    /// link is itself replaced, its target untouched.
+    Replace,
+    /// Opened for writing without creating it, and written in place: a
+    /// character device, a FIFO written whole (I-58, I-79a), and a regular
+    /// file reached through a descriptor table, which is truncated (I-58a).
+    /// Never renamed over or removed.
+    InPlace { truncate: bool },
+    /// `cannot-open-output` naming the path (I-57, I-58: a directory, a
+    /// FIFO output, a socket, a block device; a path whose own `lstat`
+    /// fails), with the system's reason and a note; nothing is created,
+    /// renamed or removed.
+    Refused { reason: String, note: Option<&'static str> },
+    /// `cannot-write-output` naming the path (I-58b): a path the link may
+    /// neither write in place nor replace (a descriptor alias that does not
+    /// resolve or resolves to a file of no type, a chain of symbolic links
+    /// that cannot be examined, a name in a system directory), with the
+    /// reason and a note; nothing is created, renamed or removed.
+    Forbidden { reason: String, note: Option<&'static str> },
+}
+
+/// I-58b's note for a symbolic link through a descriptor table whose file
+/// cannot be written in place.
+pub const NOTE_ALIAS: &str = "a symbolic link through a descriptor table (/dev/stdout, /dev/fd/N) \
+     is written in place or refused, never replaced";
+/// I-58b's note for a chain of symbolic links that cannot be examined.
+pub const NOTE_CHAIN: &str =
+    "a symbolic link that cannot be followed to its end is neither written nor replaced";
+/// I-58b's note for a file of no type (an anonymous descriptor).
+pub const NOTE_NO_TYPE: &str =
+    "it is of no file type (an eventfd, epoll, pidfd or other anonymous descriptor)";
+/// I-58b's note for a path in a system directory.
+pub const NOTE_SYSTEM: &str = "mortar creates, renames and removes no file in /dev, /proc or /sys";
+
+fn refused(reason: impl Into<String>, note: Option<&'static str>) -> Disposition {
+    Disposition::Refused { reason: reason.into(), note }
+}
+
+fn forbidden(reason: impl Into<String>, note: Option<&'static str>) -> Disposition {
+    Disposition::Forbidden { reason: reason.into(), note }
+}
+
+/// I-58b: what the link may do with `path`, from its type and, for a
+/// symbolic link, from its chain and its target's type. Every outcome of
+/// resolving it has a row: a link through a descriptor table is written in
+/// place or refused, never replaced; a path that cannot be examined
+/// (`EACCES`, `ELOOP`, `ENOTDIR`, a descriptor that does not resolve) is
+/// refused; a file of no type is refused; nothing in `/dev` (the directory
+/// itself), `/proc` or `/sys` is created, renamed over or removed.
+#[must_use]
+pub fn disposition(path: &Path, used: Use) -> Disposition {
+    let link = match fs::symlink_metadata(path) {
+        Ok(m) => m,
+        Err(e) if e.kind() == ErrorKind::NotFound => return replace_in(path),
+        Err(e) => return refused(open_reason(&e), None),
+    };
+    if !link.file_type().is_symlink() {
+        return by_type(&link, used, path, false);
+    }
+    let alias = match descriptor_chain(path) {
+        Ok(alias) => alias,
+        Err(e) => return forbidden(open_reason(&e), Some(NOTE_CHAIN)),
+    };
+    match fs::metadata(path) {
+        Ok(m) => by_type(&m, used, path, alias),
+        // An ordinary dangling symbolic link: replaced, as lld does.
+        Err(e) if !alias && e.kind() == ErrorKind::NotFound => replace_in(path),
+        Err(e) if alias => forbidden(open_reason(&e), Some(NOTE_ALIAS)),
+        Err(e) => forbidden(open_reason(&e), Some(NOTE_CHAIN)),
+    }
+}
+
+/// `Replace` unless `dir(P)` is a system directory.
+fn replace_in(path: &Path) -> Disposition {
+    if system_dir(&split(path).0) {
+        forbidden("a system directory", Some(NOTE_SYSTEM))
+    } else {
+        Disposition::Replace
+    }
+}
+
+/// The row of a file of type `m` (following symbolic links); `alias`: `P`
+/// reaches it through a descriptor table.
+fn by_type(m: &fs::Metadata, used: Use, path: &Path, alias: bool) -> Disposition {
+    let t = m.file_type();
+    if t.is_dir() {
+        refused("Is a directory", None)
+    } else if t.is_file() {
+        if alias { Disposition::InPlace { truncate: true } } else { replace_in(path) }
+    } else if t.is_char_device() {
+        Disposition::InPlace { truncate: false }
+    } else if t.is_fifo() {
+        match used {
+            Use::Whole => Disposition::InPlace { truncate: false },
+            Use::Output => refused("not a regular file", Some("output is a FIFO")),
         }
-        let link = fs::symlink_metadata(path).ok();
-        // I-58a: a symbolic link through a descriptor table (`/dev/stdout`
-        // redirected to a file) is written in place, truncated: renaming
-        // over it would replace the link, not write the file.
-        let alias = link.as_ref().is_some_and(|l| l.file_type().is_symlink())
-            && follow.as_ref().is_some_and(fs::Metadata::is_file)
-            && through_descriptor(path);
-        // I-58: the type of the file `P` names, following symbolic links.
-        if let Some(m) = follow.as_ref().filter(|_| !alias) {
-            let t = m.file_type();
-            if t.is_char_device() {
-                // I-58: written in place, not created or truncated.
+    } else if t.is_socket() {
+        refused("not a regular file", Some("output is a socket"))
+    } else if t.is_block_device() {
+        refused("not a regular file", Some("output is a block device"))
+    } else {
+        forbidden("not a regular file", Some(NOTE_NO_TYPE))
+    }
+}
+
+/// `/dev` itself, or `/proc` or `/sys` and below, after resolving `dir`'s
+/// symbolic links (`/dev/shm` and other file systems mounted under `/dev`
+/// are ordinary directories). A directory that cannot be resolved is not
+/// one: creating `T` in it fails by name (I-59).
+#[must_use]
+pub fn system_dir(dir: &Path) -> bool {
+    let Ok(c) = fs::canonicalize(dir) else { return false };
+    c == Path::new("/dev") || c.starts_with("/proc") || c.starts_with("/sys")
+}
+
+/// Whether the link may replace or remove `path` (I-58b): `Ok` for
+/// [`Disposition::Replace`], else the reason. For writers of their own
+/// (the incremental state) and removers.
+pub fn may_replace(path: &Path) -> Result<(), String> {
+    match disposition(path, Use::Whole) {
+        Disposition::Replace => Ok(()),
+        Disposition::InPlace { .. } => {
+            Err(format!("{} is not a regular file mortar may replace (I-58b)", path.display()))
+        }
+        Disposition::Refused { reason, note } | Disposition::Forbidden { reason, note } => {
+            Err(match note {
+                Some(n) => format!("{}: {reason} ({n})", path.display()),
+                None => format!("{}: {reason}", path.display()),
+            })
+        }
+    }
+}
+
+/// Removes `path` if the link may (I-58b); otherwise leaves it.
+pub fn remove_if_replaceable(path: &Path) -> bool {
+    may_replace(path).is_ok() && fs::remove_file(path).is_ok()
+}
+
+impl Output {
+    /// Creates the output for `path` (I-56..I-59, I-58b, I-113). `path` is
+    /// shown as given in every diagnostic.
+    pub fn create(path: &Path, opts: &OutputOptions) -> Result<Self, (Key, Diagnostic)> {
+        Self::create_as(path, opts, disposition(path, Use::Output))
+    }
+
+    fn create_as(
+        path: &Path,
+        opts: &OutputOptions,
+        disposition: Disposition,
+    ) -> Result<Self, (Key, Diagnostic)> {
+        let shown = path.to_string_lossy().into_owned();
+        match disposition {
+            Disposition::Refused { reason, note } => {
+                let (key, d) = cannot_open(&shown, reason);
+                return Err((
+                    key,
+                    match note {
+                        Some(n) => d.note(n),
+                        None => d,
+                    },
+                ));
+            }
+            Disposition::Forbidden { reason, note } => {
+                let kind = Kind::CannotWriteOutput { path: shown, reason };
+                let d = Diagnostic::error(kind);
+                return Err((
+                    Key::new(PHASE_OUTPUT, 0, 0),
+                    match note {
+                        Some(n) => d.note(n),
+                        None => d,
+                    },
+                ));
+            }
+            Disposition::InPlace { truncate } => {
+                // I-58, I-58a: opened without creating it; never renamed.
                 let file = OpenOptions::new()
                     .write(true)
+                    .truncate(truncate)
                     .open(path)
                     .map_err(|e| cannot_open(&shown, open_reason(&e)))?;
                 return Ok(Self {
@@ -167,34 +336,9 @@ impl Output {
                     helper: None,
                 });
             }
-            let refused = if t.is_fifo() {
-                Some("output is a FIFO")
-            } else if t.is_socket() {
-                Some("output is a socket")
-            } else if t.is_block_device() {
-                Some("output is a block device")
-            } else {
-                None
-            };
-            if let Some(note) = refused {
-                let (key, d) = cannot_open(&shown, "not a regular file".into());
-                return Err((key, d.note(note)));
-            }
+            Disposition::Replace => {}
         }
-        if alias {
-            let file = OpenOptions::new()
-                .write(true)
-                .truncate(true)
-                .open(path)
-                .map_err(|e| cannot_open(&shown, open_reason(&e)))?;
-            return Ok(Self {
-                path: path.to_path_buf(),
-                shown,
-                target: Some(Target::InPlace(file)),
-                aside: None,
-                helper: None,
-            });
-        }
+        let link = fs::symlink_metadata(path).ok();
         let (file, tmp) =
             Self::temp(path, opts).map_err(|e| cannot_open(&shown, open_reason(&e)))?;
         let mut out = Self {
@@ -401,21 +545,16 @@ impl Sink for Output {
 }
 
 /// I-66: after a failure at a phase after the command line, an existing
-/// regular output (or a symbolic link at `P`, the link itself) is removed
-/// unless it is the same file as an input; a non-regular `P` is left
-/// alone. Returns whether something was removed.
+/// regular output (or an ordinary symbolic link at `P`, the link itself)
+/// is removed unless it is the same file as an input. Only a path the link
+/// may replace is removed (I-58b): a non-regular `P`, a symbolic link to
+/// one or through a descriptor table (`/dev/stdout`), and anything in a
+/// system directory are left alone. Returns whether something was
+/// removed.
 pub fn remove_stale_output(path: &Path, inputs: &[FileIdentity]) -> bool {
     let Ok(m) = fs::symlink_metadata(path) else { return false };
     let t = m.file_type();
-    if !(t.is_file() || t.is_symlink()) {
-        return false;
-    }
-    // A symbolic link to a device, a FIFO or a socket (`/dev/stdout`), or
-    // through a descriptor table, is not an output this link left (I-58,
-    // I-58a).
-    if t.is_symlink()
-        && (fs::metadata(path).is_ok_and(|f| !f.is_file()) || through_descriptor(path))
-    {
+    if !(t.is_file() || t.is_symlink()) || may_replace(path).is_err() {
         return false;
     }
     if identity(path).is_some_and(|id| inputs.contains(&id)) {
@@ -427,23 +566,45 @@ pub fn remove_stale_output(path: &Path, inputs: &[FileIdentity]) -> bool {
 /// Whether `path` reaches its file through a process's descriptor table
 /// (`/dev/stdout`, `/dev/fd/1`, `/proc/self/fd/1`; I-58a): one of the
 /// symbolic links it follows is an entry of a `/proc/<pid>/fd` directory.
+/// `false` when the chain cannot be examined; [`disposition`] refuses such
+/// a path instead.
 #[must_use]
 pub fn through_descriptor(path: &Path) -> bool {
+    descriptor_chain(path).unwrap_or(false)
+}
+
+/// I-58b: walks the chain of symbolic links of `path` without following
+/// the last one's target: `Ok(true)` as soon as a link is an entry of a
+/// descriptor table, `Ok(false)` at the first name that is not a symbolic
+/// link (or does not exist), and the error of any step that cannot be
+/// examined (`EACCES`, `ENOTDIR`; `ELOOP` past the kernel's 40 links).
+fn descriptor_chain(path: &Path) -> io::Result<bool> {
     let mut p = path.to_path_buf();
     // The kernel's limit on nested symbolic links.
     for _ in 0..40 {
-        let Ok(m) = fs::symlink_metadata(&p) else { return false };
-        if !m.file_type().is_symlink() {
-            return false;
-        }
         let dir = split(&p).0;
-        if fs::canonicalize(&dir).is_ok_and(|c| is_descriptor_dir(&c)) {
-            return true;
+        // Each name is judged by its directory before it is examined: an
+        // entry of a descriptor table whose descriptor is closed does not
+        // exist, and is still not an ordinary dangling link.
+        match fs::canonicalize(&dir) {
+            Ok(c) if is_descriptor_dir(&c) => return Ok(true),
+            Ok(_) => {}
+            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(false),
+            Err(e) => return Err(e),
         }
-        let Ok(target) = fs::read_link(&p) else { return false };
+        let m = match fs::symlink_metadata(&p) {
+            Ok(m) => m,
+            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(false),
+            Err(e) => return Err(e),
+        };
+        if !m.file_type().is_symlink() {
+            return Ok(false);
+        }
+        let target = fs::read_link(&p)?;
         p = dir.join(target);
     }
-    false
+    // ELOOP: more symbolic links than the kernel follows.
+    Err(io::Error::from_raw_os_error(40))
 }
 
 /// `/proc/<pid>/fd` or `/proc/<pid>/task/<tid>/fd`.
@@ -467,27 +628,12 @@ fn is_descriptor_dir(dir: &Path) -> bool {
     }
 }
 
-/// I-79a: a file written whole that is a stream is written in order, in
-/// place: a character device or a FIFO (`-Map=/dev/stdout` on a terminal
-/// or a pipe; `/dev/null`), and a regular file reached through a
-/// descriptor table (`-Map=/dev/stdout` redirected to a file), which is
-/// truncated first. `None` for every other path.
-fn stream_target(path: &Path) -> Option<bool> {
-    // One `stat` for a file that is not a symbolic link (the common case).
-    let link = fs::symlink_metadata(path).ok()?;
-    let is_link = link.file_type().is_symlink();
-    let m = if is_link { fs::metadata(path).ok()? } else { link };
-    let t = m.file_type();
-    if t.is_char_device() || t.is_fifo() {
-        return Some(false);
-    }
-    (m.is_file() && is_link && through_descriptor(path)).then_some(true)
-}
-
-/// Writes `bytes` to `path` with the same protocol (I-79: the map file),
-/// or in place for a stream (I-79a).
+/// Writes `bytes` to `path` with the output's protocol (I-79: the map
+/// file), or in order and in place for a stream (I-79a), as
+/// [`disposition`] says (I-58b).
 pub fn write_whole(path: &Path, bytes: &[u8], mode: u32) -> Result<(), (Key, Diagnostic)> {
-    if let Some(truncate) = stream_target(path) {
+    let disposition = disposition(path, Use::Whole);
+    if let Disposition::InPlace { truncate } = disposition {
         use std::io::Write as _;
         let shown = path.to_string_lossy().into_owned();
         let mut file = OpenOptions::new()
@@ -498,7 +644,7 @@ pub fn write_whole(path: &Path, bytes: &[u8], mode: u32) -> Result<(), (Key, Dia
         return file.write_all(bytes).map_err(|e| write_error(&shown, &e));
     }
     let opts = OutputOptions { mode, inputs: Vec::new(), lock: LockMode::Probe };
-    let out = Output::create(path, &opts)?;
+    let out = Output::create_as(path, &opts, disposition)?;
     if let Err(e) = out.write_at(0, bytes) {
         let err = write_error(out.shown(), &e);
         out.abort();

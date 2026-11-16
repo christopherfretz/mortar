@@ -246,7 +246,13 @@ is added before or after it.
 
 - `cannot-open-output` and `cannot-write-output` name the output path as
   the user gave it, never the temporary file (`spec/image.md` §7); key
-  `(105, 0, 0)`. `cannot-write-output` was added by WP-026.
+  `(105, 0, 0)`. `cannot-write-output` was added by WP-026. Since WP-114
+  it is also the refusal of a written path that the link may neither
+  write in place nor replace (`spec/image.md` I-58b: a descriptor alias
+  that does not resolve, a file of no type, a chain of links that cannot
+  be walked, a name in `/dev`, `/proc` or `/sys`), decided before
+  anything is created; I-57's and I-58's refusals stay
+  `cannot-open-output`.
 - `unknown-option` is for an argument that is not an option of GNU ld's
   command line as `spec/cli.md` lists it (a typing error, most likely). An
   option that is listed and not implemented is `refused` with class
