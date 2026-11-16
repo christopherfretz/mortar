@@ -2271,7 +2271,7 @@ Rules that only gdb's reader defines cite it: gdb's manual, appendix
   | `version` | 2 | 2 |
   | `debug_info_offset` | 4 | relocated (below): names the unit |
   | `debug_info_length` | 4 | not read (for a skeleton it is the `.dwo` unit's length) |
-  | entries | | `(u32 die_offset, u8 attributes, name)` until a `die_offset` of 0; the name is NUL-terminated, at least one byte before the NUL |
+  | entries | | `(u32 die_offset, u8 attributes, name)` until a `die_offset` of 0; the name is NUL-terminated and may be empty (Clang 22 names a string literal's unnamed `DW_TAG_variable` with `""`; lld and mold index it as the name `""`, and so does mortar) |
 
   The terminator is the set's last 4 bytes; a set that ends before it,
   bytes after it, a name that runs past the set, or an attribute byte

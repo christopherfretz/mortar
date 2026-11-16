@@ -930,9 +930,6 @@ impl<'t, 'u, 's> FileCx<'t, 'u, 's> {
                 }
                 let start = c.pos;
                 let name = c.cstr().ok_or_else(|| bad("a name that runs past the set"))?;
-                if name.is_empty() {
-                    return Err(bad("an empty name"));
-                }
                 let (Ok(start), Ok(n)) = (u32::try_from(start), u32::try_from(name.len())) else {
                     return Err(self.refuse(TOO_LARGE, Some((index, at)), "a set of 4 GiB".into()));
                 };
