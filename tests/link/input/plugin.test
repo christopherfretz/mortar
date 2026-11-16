@@ -1,0 +1,29 @@
+# `-plugin PLUGIN` (a `noop` row of docs/status/options.md: "mortar loads
+# no linker plugin; an LTO input is refused by name when it is read";
+# spec/input.md "LTO objects"). mortar does not open the plugin: a link
+# that names one that does not exist is the same bytes as the link
+# without it. What the plugin would have done, link-time optimization
+# of a GCC LTO object, is refused by name at the object: a `gcc -flto`
+# line (whose driver passes `-plugin liblto_plugin.so` itself) fails with
+# `GCC LTO object`, never links without the code. GNU ld loads the plugin
+# and links that line, but its map then names the plugin's own
+# `/tmp/cc*.ltrans0.ltrans.o`, an input on no command line, which the
+# verifier reports (I1); so that link is not made here. GNU ld refuses a
+# plugin that does not exist, so the first lines are mortar's alone.
+#@ spec: input.md "LTO objects"
+
+cc -O1 prog.c -o prog.o
+cc -O1 -flto lto.c -o lto.o
+link(mortar) gcc -static prog.o -Wl,-plugin,nosuch-plugin.so -o plugin
+link(mortar) gcc -static prog.o -o plain
+check(mortar) cmp plugin plain
+  has: ^identical$
+link(mortar) gcc -static -flto prog.o lto.o -o lto
+  exit: fail
+  diag: GCC LTO object
+
+#--- prog.c
+#include <stdio.h>
+int main(void) { printf("7\n"); return 0; }
+#--- lto.c
+int lto_fn(void) { return 7; }
