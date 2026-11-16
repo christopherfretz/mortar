@@ -20,7 +20,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::detect::{Changes, FileState};
 use crate::format::{
-    ChunkRow, Hash16, MentionRow, NONE, ResolvedRow, SectionRow, State, def_kind, index_kind,
+    ChunkRow, EhRow, Hash16, MentionRow, NONE, ResolvedRow, SectionRow, State, def_kind, index_kind,
 };
 
 /// The reasons a unit, hole or chunk is in the set: one bit per rule.
@@ -166,6 +166,44 @@ pub struct Extra {
     /// The fragments of the new link's merged sections: `(SECTIONS row,
     /// OUTSECS row, content hash)`.
     pub frags: Vec<(u32, u32, Hash16)>,
+    /// The new link's `.eh_frame` pieces: `(SECTIONS row, first index in
+    /// eh_cie)` sorted by row, and per piece its CIE's position among its
+    /// section's pieces (`u32::MAX` for a CIE, `split.md` S-45).
+    pub eh_sections: Vec<(u32, u32)>,
+    pub eh_cie: Vec<u32>,
+}
+
+/// What an `.eh_frame` piece of the new link is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EhCie {
+    Cie,
+    /// An FDE, with its CIE's position among its section's pieces.
+    Fde(u32),
+}
+
+impl Extra {
+    /// The number of `.eh_frame` pieces of section `section` in the new
+    /// link.
+    #[must_use]
+    pub fn eh_pieces(&self, section: u32) -> Option<u32> {
+        let at = self.eh_sections.binary_search_by_key(&section, |x| x.0).ok()?;
+        let end = self.eh_sections.get(at + 1).map_or(self.eh_cie.len(), |x| x.1 as usize);
+        Some(end as u32 - self.eh_sections[at].1)
+    }
+
+    /// Piece `piece` of section `section`: `None` when the new link has
+    /// no such piece.
+    #[must_use]
+    pub fn eh_cie(&self, section: u32, piece: u32) -> Option<EhCie> {
+        let at = self.eh_sections.binary_search_by_key(&section, |x| x.0).ok()?;
+        let (_, first) = self.eh_sections[at];
+        let end = self.eh_sections.get(at + 1).map_or(self.eh_cie.len(), |x| x.1 as usize);
+        let i = first as usize + piece as usize;
+        if i >= end {
+            return None;
+        }
+        Some(if self.eh_cie[i] == u32::MAX { EhCie::Cie } else { EhCie::Fde(self.eh_cie[i]) })
+    }
 }
 
 /// A refilled unit (a new `SECTIONS` row).
@@ -623,26 +661,86 @@ pub fn compute(
     if !frags_changed {
         frags_changed = fa.iter().any(|(k, v)| v.is_none() || fb.get(k) != Some(v));
     }
-    // .eh_frame: the prefix rule over the records in output order.
-    let eh_chunk_moved = a.chunk_by_name(b".eh_frame").map(|c| c.addr)
-        != b.chunk_by_name(b".eh_frame").map(|c| c.addr);
+    // .eh_frame (IN-34a): the records in output order. S-47 packs them
+    // back to back, each record's size a function of its input bytes. A
+    // record is the same on both sides when its file is unchanged and it
+    // is the same piece of the same section.
+    let (eh_a, eh_b) = (a.chunk_by_name(b".eh_frame"), b.chunk_by_name(b".eh_frame"));
+    let eh_chunk_moved = eh_a.map(|c| c.addr) != eh_b.map(|c| c.addr);
+    let (ro, rn) = (&old.eh_records, &new.eh_records);
+    let same_record = |x: &EhRow, y: &EhRow| {
+        let file = new.sections.get(y.section as usize).map_or(NONE, |s| s.file);
+        sec_o2n.get(x.section as usize) == Some(&y.section)
+            && x.piece == y.piece
+            && unchanged_new(file)
+    };
+    // The prefix: same records from the start are at the same offsets, and
+    // an FDE's CIE precedes it (S-46), so it is in the prefix too.
     let mut k = 0;
     if !eh_chunk_moved {
-        while k < old.eh_records.len() && k < new.eh_records.len() {
-            let (x, y) = (&old.eh_records[k], &new.eh_records[k]);
-            let file = new.sections.get(y.section as usize).map_or(NONE, |s| s.file);
-            if sec_o2n.get(x.section as usize) != Some(&y.section)
-                || x.piece != y.piece
-                || !unchanged_new(file)
-            {
-                break;
-            }
+        while k < ro.len() && k < rn.len() && same_record(&ro[k], &rn[k]) {
             k += 1;
         }
     }
-    let eh_changed = k < old.eh_records.len().max(new.eh_records.len());
+    // The suffix: when the chunk keeps its address and size, same records
+    // from the end are at the same offsets too, whatever changed between
+    // (a same-size edit). What an FDE of the suffix points to must be the
+    // same CIE at the same place on both sides:
+    // - its own CIE, kept in the new link, at or after the suffix's start:
+    //   the suffixes are equal, so the old link kept it at the same place;
+    // - its own CIE not kept (S-44: an equal CIE with a lesser
+    //   `(FileId, sh_index, record)`, earlier in S-46's order), when no
+    //   CIE is kept between the prefix and the suffix in the new link.
+    //   The new link's kept copy is then in the prefix or the suffix. The
+    //   old link's is the same record: one in the prefix is the least on
+    //   both sides; one in the old middle would make the new kept copy,
+    //   being later, a CIE the old link removed and the new one keeps,
+    //   which unequal suffixes or a CIE in the new middle would show.
+    // Anything else (its own CIE kept before the suffix, a piece the new
+    // link's split does not know) starts the suffix after that FDE.
+    let mut tail = 0;
+    if !eh_chunk_moved && eh_a.map(|c| c.size) == eh_b.map(|c| c.size) {
+        while tail < ro.len() - k
+            && tail < rn.len() - k
+            && same_record(&ro[ro.len() - 1 - tail], &rn[rn.len() - 1 - tail])
+        {
+            tail += 1;
+        }
+        let first = rn.len() - tail;
+        let at: HashMap<(u32, u32), usize> =
+            rn.iter().enumerate().map(|(i, y)| ((y.section, y.piece), i)).collect();
+        let suffix_start = |shared_ok: bool| {
+            let mut start = first;
+            for (i, y) in rn.iter().enumerate().skip(first) {
+                let ok = match extra.eh_cie(y.section, y.piece) {
+                    Some(EhCie::Cie) => true,
+                    Some(EhCie::Fde(cie)) => match at.get(&(y.section, cie)) {
+                        Some(&j) => j >= start,
+                        None => shared_ok,
+                    },
+                    None => false,
+                };
+                if !ok {
+                    start = i + 1;
+                }
+            }
+            start
+        };
+        let middle_has_cie = |start: usize| {
+            // A piece the split does not know counts as a CIE.
+            rn[k..start]
+                .iter()
+                .any(|y| !matches!(extra.eh_cie(y.section, y.piece), Some(EhCie::Fde(_))))
+        };
+        let mut start = suffix_start(true);
+        if middle_has_cie(start) {
+            start = suffix_start(false);
+        }
+        tail = rn.len() - start;
+    }
+    let eh_changed = k + tail < ro.len().max(rn.len());
     let mut eh_moved = vec![false; nsec];
-    for y in new.eh_records.iter().skip(k) {
+    for y in &rn[k..rn.len() - tail] {
         if let Some(m) = eh_moved.get_mut(y.section as usize) {
             *m = true;
         }
@@ -680,13 +778,13 @@ pub fn compute(
     let mut by_global: HashMap<u32, Vec<u32>> = HashMap::new();
     let mut by_section: HashMap<u32, Vec<u32>> = HashMap::new();
     let mut slot_users: Vec<u32> = Vec::new();
-    let mut eh_refs: Vec<u32> = Vec::new();
+    let mut eh_refs: Vec<(u32, u32)> = Vec::new();
     for x in &new.index {
         match x.kind {
             index_kind::GLOBAL => by_global.entry(x.target).or_default().push(x.unit),
             index_kind::SECTION => by_section.entry(x.target).or_default().push(x.unit),
             index_kind::SLOT | index_kind::LOCAL_SLOT => slot_users.push(x.unit),
-            index_kind::EH_FRAME => eh_refs.push(x.unit),
+            index_kind::EH_FRAME => eh_refs.push((x.unit, x.target)),
             _ => {}
         }
     }
@@ -911,10 +1009,26 @@ pub fn compute(
             set.add(n as u32, reason::EH);
         }
     }
-    // References into `.eh_frame` (row 10, S-50).
+    // References into `.eh_frame` (row 10, S-50): a reference's value is
+    // its piece's place, the same when every piece of the target section
+    // is kept and none is between the prefix and the suffix. A removed
+    // piece resolves to the next kept record (S-50 case 3), which may be
+    // between them.
     if eh_changed {
-        for &u in &eh_refs {
-            set.add(u, reason::EH_REF);
+        let mut kept: HashMap<u32, u32> = HashMap::new();
+        for y in rn {
+            *kept.entry(y.section).or_default() += 1;
+        }
+        for &(u, t) in &eh_refs {
+            // An empty section: every reference is S-50 case 1, the
+            // output section's start (the chunk did not move: a prefix).
+            let empty = new.sections.get(t as usize).is_some_and(|x| x.size == 0);
+            let whole = extra.eh_pieces(t).is_some_and(|n| kept.get(&t) == Some(&n));
+            let same = (empty && !eh_chunk_moved)
+                || (whole && !eh_moved.get(t as usize).copied().unwrap_or(true));
+            if !same {
+                set.add(u, reason::EH_REF);
+            }
         }
     }
     // Slot tables (rows 5 and 7).

@@ -274,6 +274,7 @@ def run_pair(args):
     ok, npred, lines = oracle.judge(F, R, set())
     res = {
         'ok': ok, 'differing': F.differing(), 'predicted': npred, 'lines': lines,
+        'changed': len(F.changed_units),
         'fallbacks': R.fallbacks or ([R.reason] if R.reason not in (None, 'update-not-implemented') else []), 'policy': R.policy, 'units': len(R.units), 'holes': len(R.holes),
         'chunks': len(R.chunks), 'arch': arch, 'secs': time.time() - t0,
     }
@@ -351,9 +352,13 @@ def main():
             continue
         if not res['ok']:
             fails += 1
-        print('PAIR %s %-22s %s %s differing=%d refill=%s ratio=%s units=%d holes=%d chunks=%d fallbacks=%s policy=%s (%.1fs)'
+        # ratio: refilled units of unchanged files over their differing
+        # units; ratio-all: every refilled unit over the differing units
+        # and the changed files' units (finite when a changed file has one)
+        all_ = oracle.ratio(None if res['predicted'] is None else res['units'], res['differing'] + res['changed'])
+        print('PAIR %s %-22s %s %s differing=%d refill=%s ratio=%s changed=%d ratio-all=%s units=%d holes=%d chunks=%d fallbacks=%s policy=%s (%.1fs)'
               % (cfg, pair, res['arch'], 'PASS' if res['ok'] else 'FAIL', res['differing'], res['predicted'],
-                 oracle.ratio(res['predicted'], res['differing']), res['units'], res['holes'], res['chunks'],
+                 oracle.ratio(res['predicted'], res['differing']), res['changed'], all_, res['units'], res['holes'], res['chunks'],
                  ','.join(res['fallbacks']) or '-', res['policy'] or '-', res['secs']))
         for l in res['lines'][: (0 if res['ok'] else 20)]:
             print('    ' + l)

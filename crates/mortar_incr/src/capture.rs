@@ -214,7 +214,15 @@ pub fn extra(link: &Link<'_, '_>) -> crate::delta::Extra {
         seen.dedup();
         frags.extend(seen.into_iter().map(|h| (row.section.0, out.0, h)));
     }
-    crate::delta::Extra { shndx, frags }
+    let mut eh_sections = Vec::with_capacity(link.split.eh_of.len());
+    let mut eh_cie = Vec::with_capacity(link.split.eh_piece.len());
+    for row in &link.split.eh_of {
+        eh_sections.push((row.section.0, eh_cie.len() as u32));
+        eh_cie.extend(
+            link.split.eh_piece.get(row.pieces.slots()).into_iter().flatten().map(|p| p.cie),
+        );
+    }
+    crate::delta::Extra { shndx, frags, eh_sections, eh_cie }
 }
 
 fn anchor_row(strings: &mut Strings, anchor: Anchor<'_>) -> (u8, Str) {
