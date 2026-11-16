@@ -279,6 +279,16 @@ fn verify_main(args: &[String]) -> u8 {
     1
 }
 
+/// One line of a results file: the name, then a tab and the word, which
+/// is the last field (a name may hold a tab: BusyBox's `sed s with <TAB>
+/// (GNU ext)`). The name's control characters become spaces, so that it
+/// is one field of `tests.tsv`.
+fn test_result(line: &str) -> Option<(String, String)> {
+    let (name, word) = line.rsplit_once('\t')?;
+    let name: String = name.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+    Some((name, word.trim().to_owned()))
+}
+
 /// What the line says of `--fix-cortex-a53-843419`: the last of it (with
 /// or without a value) and `--no-fix-cortex-a53-843419` wins. The verifier
 /// judges erratum 843419 sites only when it knows the option was given
@@ -507,8 +517,8 @@ impl Lane {
         run.queries =
             std::fs::read_to_string(records.join("queries")).map_or(0, |t| t.lines().count());
         for line in std::fs::read_to_string(&results).unwrap_or_default().lines() {
-            if let Some((name, word)) = line.split_once('\t') {
-                run.tests.insert(name.to_owned(), word.trim().to_owned());
+            if let Some((name, word)) = test_result(line) {
+                run.tests.insert(name, word);
             }
         }
         // Evidence that outlives the build tree: the log's tail, the
@@ -829,6 +839,16 @@ mod tests {
 
     fn s(a: &[&str]) -> Vec<String> {
         a.iter().map(|w| (*w).to_owned()).collect()
+    }
+
+    #[test]
+    fn a_test_name_with_a_tab_is_one_field() {
+        assert_eq!(
+            test_result("sed s with \t(GNU ext)\tPASS"),
+            Some(("sed s with  (GNU ext)".to_owned(), "PASS".to_owned()))
+        );
+        assert_eq!(test_result("t\tFAIL"), Some(("t".to_owned(), "FAIL".to_owned())));
+        assert_eq!(test_result("no word"), None);
     }
 
     #[test]

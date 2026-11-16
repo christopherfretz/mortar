@@ -2336,7 +2336,8 @@ project's own build system, and passes no linker: the wrapper is found as
 ctest's `-j`), `RB_RESULTS` (the tests'
 results, `<name> TAB PASS|FAIL|SKIP` per line, written by the library's
 `rb_run`, `rb_ctest` (ctest's JUnit file) and `rb_automake` (automake's
-`.trs` files)), `LC_ALL=C`, `TMPDIR` inside the build's directory, and
+`.trs` files); the word is the line's last field, so a name may hold a
+tab, and a name's control characters are read as spaces), `LC_ALL=C`, `TMPDIR` inside the build's directory, and
 `MAKEFLAGS=-j<n>` in place of the machine's pool: make is the
 jobserver of its own `n` slots for all it starts, and no script passes
 `-j` to it; CMake uses the Unix Makefiles generator. A fixed count rather
@@ -2480,7 +2481,7 @@ next starts) plus the downloads, not the sum.
 
 ### Tests
 
-`xtask/src/realbuild.rs`: `the_erratum_option_is_read_from_the_line`, `arguments_parse`,
+`xtask/src/realbuild.rs`: `the_erratum_option_is_read_from_the_line`, `a_test_name_with_a_tab_is_one_field`, `arguments_parse`,
 `the_manifest_parses_and_names_its_errors`,
 `the_checked_in_manifest_parses_and_each_project_has_a_script`.
 `xtask/src/realbuild/outcome.rs`: `refusals_are_read_by_noun`,

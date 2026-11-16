@@ -220,6 +220,2019 @@ abseil	gcc	absl_variant_exception_safety_test	PASS	PASS
 abseil	gcc	absl_variant_test	PASS	PASS
 abseil	gcc	absl_vlog_is_on_test	PASS	PASS
 abseil	gcc	absl_waiter_test	PASS	PASS
+arpack	clang	bug_1315_double_tst	PASS	PASS
+arpack	clang	bug_1315_single_tst	PASS	PASS
+arpack	clang	bug_1323_tst	PASS	PASS
+arpack	clang	bug_142_gen_tst	PASS	PASS
+arpack	clang	bug_142_tst	PASS	PASS
+arpack	clang	bug_58_double_tst	PASS	PASS
+arpack	clang	bug_79_double_complex_tst	PASS	PASS
+arpack	clang	cnbdr1_ex	PASS	PASS
+arpack	clang	cnbdr2_ex	PASS	PASS
+arpack	clang	cnbdr3_ex	PASS	PASS
+arpack	clang	cnbdr4_ex	PASS	PASS
+arpack	clang	cndrv1_ex	PASS	PASS
+arpack	clang	cndrv2_ex	PASS	PASS
+arpack	clang	cndrv3_ex	PASS	PASS
+arpack	clang	cndrv4_ex	PASS	PASS
+arpack	clang	cnsimp_ex	PASS	PASS
+arpack	clang	dnbdr1_ex	PASS	PASS
+arpack	clang	dnbdr2_ex	PASS	PASS
+arpack	clang	dnbdr3_ex	PASS	PASS
+arpack	clang	dnbdr4_ex	PASS	PASS
+arpack	clang	dnbdr5_ex	PASS	PASS
+arpack	clang	dnbdr6_ex	PASS	PASS
+arpack	clang	dndrv1_ex	PASS	PASS
+arpack	clang	dndrv2_ex	PASS	PASS
+arpack	clang	dndrv3_ex	PASS	PASS
+arpack	clang	dndrv4_ex	PASS	PASS
+arpack	clang	dndrv5_ex	PASS	PASS
+arpack	clang	dndrv6_ex	PASS	PASS
+arpack	clang	dnsimp_ex	PASS	PASS
+arpack	clang	dnsimp_tst	PASS	PASS
+arpack	clang	dsbdr1_ex	PASS	PASS
+arpack	clang	dsbdr2_ex	PASS	PASS
+arpack	clang	dsbdr3_ex	PASS	PASS
+arpack	clang	dsbdr4_ex	PASS	PASS
+arpack	clang	dsbdr5_ex	PASS	PASS
+arpack	clang	dsbdr6_ex	PASS	PASS
+arpack	clang	dsdrv1_ex	PASS	PASS
+arpack	clang	dsdrv2_ex	PASS	PASS
+arpack	clang	dsdrv3_ex	PASS	PASS
+arpack	clang	dsdrv4_ex	PASS	PASS
+arpack	clang	dsdrv5_ex	PASS	PASS
+arpack	clang	dsdrv6_ex	PASS	PASS
+arpack	clang	dssimp_ex	PASS	PASS
+arpack	clang	icb_arpack_c_tst	PASS	PASS
+arpack	clang	icb_arpack_cpp_tst	PASS	PASS
+arpack	clang	snbdr1_ex	PASS	PASS
+arpack	clang	snbdr2_ex	PASS	PASS
+arpack	clang	snbdr3_ex	PASS	PASS
+arpack	clang	snbdr4_ex	PASS	PASS
+arpack	clang	snbdr5_ex	PASS	PASS
+arpack	clang	snbdr6_ex	PASS	PASS
+arpack	clang	sndrv1_ex	PASS	PASS
+arpack	clang	sndrv2_ex	PASS	PASS
+arpack	clang	sndrv3_ex	PASS	PASS
+arpack	clang	sndrv4_ex	PASS	PASS
+arpack	clang	sndrv5_ex	PASS	PASS
+arpack	clang	sndrv6_ex	PASS	PASS
+arpack	clang	snsimp_ex	PASS	PASS
+arpack	clang	ssbdr1_ex	PASS	PASS
+arpack	clang	ssbdr2_ex	PASS	PASS
+arpack	clang	ssbdr3_ex	PASS	PASS
+arpack	clang	ssbdr4_ex	PASS	PASS
+arpack	clang	ssbdr5_ex	PASS	PASS
+arpack	clang	ssbdr6_ex	PASS	PASS
+arpack	clang	ssdrv1_ex	PASS	PASS
+arpack	clang	ssdrv2_ex	PASS	PASS
+arpack	clang	ssdrv3_ex	PASS	PASS
+arpack	clang	ssdrv4_ex	PASS	PASS
+arpack	clang	ssdrv5_ex	PASS	PASS
+arpack	clang	ssdrv6_ex	PASS	PASS
+arpack	clang	sssimp_ex	PASS	PASS
+arpack	clang	ssvd_ex	PASS	PASS
+arpack	clang	znbdr1_ex	PASS	PASS
+arpack	clang	znbdr2_ex	PASS	PASS
+arpack	clang	znbdr3_ex	PASS	PASS
+arpack	clang	znbdr4_ex	PASS	PASS
+arpack	clang	zndrv1_ex	PASS	PASS
+arpack	clang	zndrv2_ex	PASS	PASS
+arpack	clang	zndrv3_ex	PASS	PASS
+arpack	clang	zndrv4_ex	PASS	PASS
+arpack	clang	znsimp_ex	PASS	PASS
+arpack	gcc	bug_1315_double_tst	PASS	PASS
+arpack	gcc	bug_1315_single_tst	PASS	PASS
+arpack	gcc	bug_1323_tst	PASS	PASS
+arpack	gcc	bug_142_gen_tst	PASS	PASS
+arpack	gcc	bug_142_tst	PASS	PASS
+arpack	gcc	bug_58_double_tst	PASS	PASS
+arpack	gcc	bug_79_double_complex_tst	PASS	PASS
+arpack	gcc	cnbdr1_ex	PASS	PASS
+arpack	gcc	cnbdr2_ex	PASS	PASS
+arpack	gcc	cnbdr3_ex	PASS	PASS
+arpack	gcc	cnbdr4_ex	PASS	PASS
+arpack	gcc	cndrv1_ex	PASS	PASS
+arpack	gcc	cndrv2_ex	PASS	PASS
+arpack	gcc	cndrv3_ex	PASS	PASS
+arpack	gcc	cndrv4_ex	PASS	PASS
+arpack	gcc	cnsimp_ex	PASS	PASS
+arpack	gcc	dnbdr1_ex	PASS	PASS
+arpack	gcc	dnbdr2_ex	PASS	PASS
+arpack	gcc	dnbdr3_ex	PASS	PASS
+arpack	gcc	dnbdr4_ex	PASS	PASS
+arpack	gcc	dnbdr5_ex	PASS	PASS
+arpack	gcc	dnbdr6_ex	PASS	PASS
+arpack	gcc	dndrv1_ex	PASS	PASS
+arpack	gcc	dndrv2_ex	PASS	PASS
+arpack	gcc	dndrv3_ex	PASS	PASS
+arpack	gcc	dndrv4_ex	PASS	PASS
+arpack	gcc	dndrv5_ex	PASS	PASS
+arpack	gcc	dndrv6_ex	PASS	PASS
+arpack	gcc	dnsimp_ex	PASS	PASS
+arpack	gcc	dnsimp_tst	PASS	PASS
+arpack	gcc	dsbdr1_ex	PASS	PASS
+arpack	gcc	dsbdr2_ex	PASS	PASS
+arpack	gcc	dsbdr3_ex	PASS	PASS
+arpack	gcc	dsbdr4_ex	PASS	PASS
+arpack	gcc	dsbdr5_ex	PASS	PASS
+arpack	gcc	dsbdr6_ex	PASS	PASS
+arpack	gcc	dsdrv1_ex	PASS	PASS
+arpack	gcc	dsdrv2_ex	PASS	PASS
+arpack	gcc	dsdrv3_ex	PASS	PASS
+arpack	gcc	dsdrv4_ex	PASS	PASS
+arpack	gcc	dsdrv5_ex	PASS	PASS
+arpack	gcc	dsdrv6_ex	PASS	PASS
+arpack	gcc	dssimp_ex	PASS	PASS
+arpack	gcc	icb_arpack_c_tst	PASS	PASS
+arpack	gcc	icb_arpack_cpp_tst	PASS	PASS
+arpack	gcc	snbdr1_ex	PASS	PASS
+arpack	gcc	snbdr2_ex	PASS	PASS
+arpack	gcc	snbdr3_ex	PASS	PASS
+arpack	gcc	snbdr4_ex	PASS	PASS
+arpack	gcc	snbdr5_ex	PASS	PASS
+arpack	gcc	snbdr6_ex	PASS	PASS
+arpack	gcc	sndrv1_ex	PASS	PASS
+arpack	gcc	sndrv2_ex	PASS	PASS
+arpack	gcc	sndrv3_ex	PASS	PASS
+arpack	gcc	sndrv4_ex	PASS	PASS
+arpack	gcc	sndrv5_ex	PASS	PASS
+arpack	gcc	sndrv6_ex	PASS	PASS
+arpack	gcc	snsimp_ex	PASS	PASS
+arpack	gcc	ssbdr1_ex	PASS	PASS
+arpack	gcc	ssbdr2_ex	PASS	PASS
+arpack	gcc	ssbdr3_ex	PASS	PASS
+arpack	gcc	ssbdr4_ex	PASS	PASS
+arpack	gcc	ssbdr5_ex	PASS	PASS
+arpack	gcc	ssbdr6_ex	PASS	PASS
+arpack	gcc	ssdrv1_ex	PASS	PASS
+arpack	gcc	ssdrv2_ex	PASS	PASS
+arpack	gcc	ssdrv3_ex	PASS	PASS
+arpack	gcc	ssdrv4_ex	PASS	PASS
+arpack	gcc	ssdrv5_ex	PASS	PASS
+arpack	gcc	ssdrv6_ex	PASS	PASS
+arpack	gcc	sssimp_ex	PASS	PASS
+arpack	gcc	ssvd_ex	PASS	PASS
+arpack	gcc	znbdr1_ex	PASS	PASS
+arpack	gcc	znbdr2_ex	PASS	PASS
+arpack	gcc	znbdr3_ex	PASS	PASS
+arpack	gcc	znbdr4_ex	PASS	PASS
+arpack	gcc	zndrv1_ex	PASS	PASS
+arpack	gcc	zndrv2_ex	PASS	PASS
+arpack	gcc	zndrv3_ex	PASS	PASS
+arpack	gcc	zndrv4_ex	PASS	PASS
+arpack	gcc	znsimp_ex	PASS	PASS
+busybox	clang	-b encapsulated	PASS	PASS
+busybox	clang	./busybox-suffix	PASS	PASS
+busybox	clang	./busybox-suffix --help	PASS	PASS
+busybox	clang	./busybox-suffix --help cat	PASS	PASS
+busybox	clang	./busybox-suffix --help unknown	PASS	PASS
+busybox	clang	./busybox-suffix cat	PASS	PASS
+busybox	clang	./busybox-suffix unknown	PASS	PASS
+busybox	clang	awk "cmd" | getline	FAIL	FAIL
+busybox	clang	awk $NF is empty	FAIL	FAIL
+busybox	clang	awk 'delete a[v--]' evaluates v-- once	FAIL	FAIL
+busybox	clang	awk 'gcc build bug'	FAIL	FAIL
+busybox	clang	awk 'v (a)' is not a function call, it is a concatenation	FAIL	FAIL
+busybox	clang	awk -F case 0	PASS	PASS
+busybox	clang	awk -F case 1	FAIL	FAIL
+busybox	clang	awk -F case 2	FAIL	FAIL
+busybox	clang	awk -F case 3	FAIL	FAIL
+busybox	clang	awk -F case 4	FAIL	FAIL
+busybox	clang	awk -F case 5	FAIL	FAIL
+busybox	clang	awk -F case 6	FAIL	FAIL
+busybox	clang	awk -F case 7	FAIL	FAIL
+busybox	clang	awk -F handles escapes	FAIL	FAIL
+busybox	clang	awk -e and ARGC	FAIL	FAIL
+busybox	clang	awk -f and ARGC	FAIL	FAIL
+busybox	clang	awk FS assignment	FAIL	FAIL
+busybox	clang	awk FS regex which can match empty string	FAIL	FAIL
+busybox	clang	awk NF in BEGIN	FAIL	FAIL
+busybox	clang	awk assign while test	FAIL	FAIL
+busybox	clang	awk backslash+newline eaten with no trace	FAIL	FAIL
+busybox	clang	awk bitwise op	FAIL	FAIL
+busybox	clang	awk break	FAIL	FAIL
+busybox	clang	awk continue	FAIL	FAIL
+busybox	clang	awk do not allow "str"++	FAIL	FAIL
+busybox	clang	awk errors on missing delete arg	FAIL	FAIL
+busybox	clang	awk exit N propagates through END's exit	FAIL	FAIL
+busybox	clang	awk floating const with leading zeroes	FAIL	FAIL
+busybox	clang	awk func arg parsing 1	FAIL	FAIL
+busybox	clang	awk func arg parsing 2	FAIL	FAIL
+busybox	clang	awk func arg parsing 3	FAIL	FAIL
+busybox	clang	awk func arg parsing 4	FAIL	FAIL
+busybox	clang	awk gsub falls back to non-extended-regex	FAIL	FAIL
+busybox	clang	awk handles colon not preceded by ternary	FAIL	FAIL
+busybox	clang	awk handles empty ()	FAIL	FAIL
+busybox	clang	awk handles empty function f(){}	FAIL	FAIL
+busybox	clang	awk handles empty function f(arg){}	FAIL	FAIL
+busybox	clang	awk handles invalid for loop	FAIL	FAIL
+busybox	clang	awk handles non-existing file correctly	FAIL	FAIL
+busybox	clang	awk handles whitespace before array subscript	FAIL	FAIL
+busybox	clang	awk hex const 1	FAIL	FAIL
+busybox	clang	awk hex const 2	FAIL	FAIL
+busybox	clang	awk if (length == 0)	FAIL	FAIL
+busybox	clang	awk if operator != 	PASS	PASS
+busybox	clang	awk if operator < 	FAIL	FAIL
+busybox	clang	awk if operator == 	FAIL	FAIL
+busybox	clang	awk if operator >= 	FAIL	FAIL
+busybox	clang	awk if string == 	PASS	PASS
+busybox	clang	awk input is never oct	FAIL	FAIL
+busybox	clang	awk large integer	FAIL	FAIL
+busybox	clang	awk length == 0	FAIL	FAIL
+busybox	clang	awk length()	FAIL	FAIL
+busybox	clang	awk length(array)	FAIL	FAIL
+busybox	clang	awk long field sep	FAIL	FAIL
+busybox	clang	awk negative field access	FAIL	FAIL
+busybox	clang	awk nested loops with the same variable	FAIL	FAIL
+busybox	clang	awk oct const	FAIL	FAIL
+busybox	clang	awk print + redirect	FAIL	FAIL
+busybox	clang	awk print length 1	FAIL	FAIL
+busybox	clang	awk print length, 1	FAIL	FAIL
+busybox	clang	awk printf %% prints one %	FAIL	FAIL
+busybox	clang	awk printf('%-10c') can output NUL	FAIL	FAIL
+busybox	clang	awk printf('%c') can output NUL	FAIL	FAIL
+busybox	clang	awk properly handles function from other scope	FAIL	FAIL
+busybox	clang	awk properly handles undefined function	FAIL	FAIL
+busybox	clang	awk string cast (bug 725)	FAIL	FAIL
+busybox	clang	awk unused function args are evaluated	FAIL	FAIL
+busybox	clang	basename-does-not-remove-identical-extension	PASS	PASS
+busybox	clang	basename-works	PASS	PASS
+busybox	clang	bc "string/*" is not a comment	PASS	PASS
+busybox	clang	bc (!a&&b)	PASS	PASS
+busybox	clang	bc -l 'e(0)-2'	PASS	PASS
+busybox	clang	bc -lq bc_add.bc	FAIL	FAIL
+busybox	clang	bc -lq bc_arctangent.bc	FAIL	FAIL
+busybox	clang	bc -lq bc_array.bc	FAIL	FAIL
+busybox	clang	bc -lq bc_arrays.bc	FAIL	FAIL
+busybox	clang	bc -lq bc_bessel.bc	FAIL	FAIL
+busybox	clang	bc -lq bc_boolean.bc	FAIL	FAIL
+busybox	clang	bc -lq bc_cosine.bc	FAIL	FAIL
+busybox	clang	bc -lq bc_decimal.bc	FAIL	FAIL
+busybox	clang	bc -lq bc_divide.bc	FAIL	FAIL
+busybox	clang	bc -lq bc_exponent.bc	FAIL	FAIL
+busybox	clang	bc -lq bc_log.bc	FAIL	FAIL
+busybox	clang	bc -lq bc_misc.bc	FAIL	FAIL
+busybox	clang	bc -lq bc_misc1.bc	FAIL	FAIL
+busybox	clang	bc -lq bc_misc2.bc	FAIL	FAIL
+busybox	clang	bc -lq bc_modulus.bc	FAIL	FAIL
+busybox	clang	bc -lq bc_multiply.bc	FAIL	FAIL
+busybox	clang	bc -lq bc_numbers1.bc	FAIL	FAIL
+busybox	clang	bc -lq bc_numbers2.bc	FAIL	FAIL
+busybox	clang	bc -lq bc_pi.bc	FAIL	FAIL
+busybox	clang	bc -lq bc_power.bc	FAIL	FAIL
+busybox	clang	bc -lq bc_references.bc	FAIL	FAIL
+busybox	clang	bc -lq bc_sine.bc	FAIL	FAIL
+busybox	clang	bc -lq bc_sqrt.bc	FAIL	FAIL
+busybox	clang	bc -lq bc_strings.bc	FAIL	FAIL
+busybox	clang	bc -lq bc_subtract.bc	FAIL	FAIL
+busybox	clang	bc -lq bc_vars.bc	FAIL	FAIL
+busybox	clang	bc /*/ is not a closed comment	PASS	PASS
+busybox	clang	bc backslash 1	PASS	PASS
+busybox	clang	bc comment	PASS	PASS
+busybox	clang	bc comment 3: unterminated #comment	PASS	PASS
+busybox	clang	bc comment with "	PASS	PASS
+busybox	clang	bc comparison 1	PASS	PASS
+busybox	clang	bc continue in for	PASS	PASS
+busybox	clang	bc continue in if	PASS	PASS
+busybox	clang	bc define auto	PASS	PASS
+busybox	clang	bc define auto array same name	PASS	PASS
+busybox	clang	bc define with body on next line	PASS	PASS
+busybox	clang	bc define {return}	PASS	PASS
+busybox	clang	bc for (;;)	PASS	PASS
+busybox	clang	bc for (;;) {break}	PASS	PASS
+busybox	clang	bc for (;cond;)	PASS	PASS
+busybox	clang	bc for (;cond;upd)	PASS	PASS
+busybox	clang	bc for (init;cond;upd)	PASS	PASS
+busybox	clang	bc function named 'void'	PASS	PASS
+busybox	clang	bc ibase	PASS	PASS
+busybox	clang	bc if 0 else	PASS	PASS
+busybox	clang	bc if 0 else if 1	PASS	PASS
+busybox	clang	bc if 1 else	PASS	PASS
+busybox	clang	bc if 1 if 1 else else	PASS	PASS
+busybox	clang	bc if(cond) stmt else<NL>	PASS	PASS
+busybox	clang	bc if(cond)<NL>	PASS	PASS
+busybox	clang	bc ifz does not match if keyword	PASS	PASS
+busybox	clang	bc length	PASS	PASS
+busybox	clang	bc nested loops and breaks	PASS	PASS
+busybox	clang	bc parsing of numbers	PASS	PASS
+busybox	clang	bc print ""	PASS	PASS
+busybox	clang	bc print 1,2,3	PASS	PASS
+busybox	clang	bc printing of numbers	PASS	PASS
+busybox	clang	bc read() 4<EOF>	PASS	PASS
+busybox	clang	bc read()*read()	PASS	PASS
+busybox	clang	bc read()^2	PASS	PASS
+busybox	clang	bc string 1	PASS	PASS
+busybox	clang	bc variable named 'void'	PASS	PASS
+busybox	clang	bc void function	PASS	PASS
+busybox	clang	bc while(cond)<NL>	PASS	PASS
+busybox	clang	bc { print 1 }	PASS	PASS
+busybox	clang	bunzip2-reads-from-standard-input	PASS	PASS
+busybox	clang	bunzip2-removes-compressed-file	PASS	PASS
+busybox	clang	bunzip2: already exists	PASS	PASS
+busybox	clang	bunzip2: bz2_issue_11.bz2 corrupted example	PASS	PASS
+busybox	clang	bunzip2: bz2_issue_12.bz2 corrupted example	PASS	PASS
+busybox	clang	bunzip2: delete src	PASS	PASS
+busybox	clang	bunzip2: doesnt exist	PASS	PASS
+busybox	clang	bunzip2: pbzip_4m_zeros file	PASS	PASS
+busybox	clang	bunzip2: stream unpack	PASS	PASS
+busybox	clang	bunzip2: test_bz2 file	PASS	PASS
+busybox	clang	bunzip2: unknown suffix	PASS	PASS
+busybox	clang	busybox	PASS	PASS
+busybox	clang	busybox --help	PASS	PASS
+busybox	clang	busybox --help busybox	PASS	PASS
+busybox	clang	busybox --help cat	PASS	PASS
+busybox	clang	busybox --help unknown	PASS	PASS
+busybox	clang	busybox as unknown name	PASS	PASS
+busybox	clang	busybox cat	PASS	PASS
+busybox	clang	busybox unknown	PASS	PASS
+busybox	clang	bzcat can handle compressed zero-length bzip2 files	PASS	PASS
+busybox	clang	bzcat can print many files	PASS	PASS
+busybox	clang	bzcat-does-not-remove-compressed-file	PASS	PASS
+busybox	clang	cal 2000	PASS	PASS
+busybox	clang	cat -b	PASS	PASS
+busybox	clang	cat -e	PASS	PASS
+busybox	clang	cat -n	PASS	PASS
+busybox	clang	cat -v	PASS	PASS
+busybox	clang	cat-prints-a-file	PASS	PASS
+busybox	clang	cat-prints-a-file-and-standard-input	PASS	PASS
+busybox	clang	cmp-detects-difference	PASS	PASS
+busybox	clang	comm test 1	PASS	PASS
+busybox	clang	comm test 2	PASS	PASS
+busybox	clang	comm test 3	PASS	PASS
+busybox	clang	comm test 4	PASS	PASS
+busybox	clang	comm test 5	PASS	PASS
+busybox	clang	comm test 6	PASS	PASS
+busybox	clang	comm unterminated line 1	PASS	PASS
+busybox	clang	comm unterminated line 2	PASS	PASS
+busybox	clang	cp	PASS	PASS
+busybox	clang	cp -H	PASS	PASS
+busybox	clang	cp -L	PASS	PASS
+busybox	clang	cp -P	PASS	PASS
+busybox	clang	cp -R	PASS	PASS
+busybox	clang	cp -RH	PASS	PASS
+busybox	clang	cp -RHL	PASS	PASS
+busybox	clang	cp -RHP	PASS	PASS
+busybox	clang	cp -RL	PASS	PASS
+busybox	clang	cp -RLH	PASS	PASS
+busybox	clang	cp -RP	PASS	PASS
+busybox	clang	cp -Rd	PASS	PASS
+busybox	clang	cp -d	PASS	PASS
+busybox	clang	cp-RHL-does_not_preserve-links	PASS	PASS
+busybox	clang	cp-a-files-to-dir	PASS	PASS
+busybox	clang	cp-a-preserves-links	PASS	PASS
+busybox	clang	cp-copies-empty-file	PASS	PASS
+busybox	clang	cp-copies-large-file	PASS	PASS
+busybox	clang	cp-copies-small-file	PASS	PASS
+busybox	clang	cp-d-files-to-dir	PASS	PASS
+busybox	clang	cp-dev-file	PASS	PASS
+busybox	clang	cp-dir-create-dir	PASS	PASS
+busybox	clang	cp-dir-existing-dir	PASS	PASS
+busybox	clang	cp-does-not-copy-unreadable-file	PASS	PASS
+busybox	clang	cp-files-to-dir	PASS	PASS
+busybox	clang	cp-follows-links	PASS	PASS
+busybox	clang	cp-parents	PASS	PASS
+busybox	clang	cp-preserves-hard-links	PASS	PASS
+busybox	clang	cp-preserves-links	PASS	PASS
+busybox	clang	cp-preserves-source-file	PASS	PASS
+busybox	clang	cpio -R with create	FAIL	FAIL
+busybox	clang	cpio -R with extract	FAIL	FAIL
+busybox	clang	cpio -p with absolute paths	PASS	PASS
+busybox	clang	cpio extracts in existing directory	PASS	PASS
+busybox	clang	cpio extracts zero-sized hardlinks	PASS	PASS
+busybox	clang	cpio extracts zero-sized hardlinks 2	PASS	PASS
+busybox	clang	cpio lists hardlinks	FAIL	FAIL
+busybox	clang	cpio restores suid/sgid bits	FAIL	FAIL
+busybox	clang	cpio uses by default uid/gid	FAIL	FAIL
+busybox	clang	cryptpw des 12	PASS	PASS
+busybox	clang	cryptpw des 55	PASS	PASS
+busybox	clang	cryptpw des zz	PASS	PASS
+busybox	clang	cryptpw sha256	PASS	PASS
+busybox	clang	cryptpw sha256 rounds=99999	PASS	PASS
+busybox	clang	cryptpw sha512	PASS	PASS
+busybox	clang	cryptpw sha512 rounds=99999	PASS	PASS
+busybox	clang	cut '-' (stdin) and multi file handling	PASS	PASS
+busybox	clang	cut -DF	PASS	PASS
+busybox	clang	cut -b a,a,a	PASS	PASS
+busybox	clang	cut -b overlaps	PASS	PASS
+busybox	clang	cut -c -b	PASS	PASS
+busybox	clang	cut -c a	PASS	PASS
+busybox	clang	cut -c a,b-c,d	PASS	PASS
+busybox	clang	cut -c a-	PASS	PASS
+busybox	clang	cut -c a-b	PASS	PASS
+busybox	clang	cut -f a-	PASS	PASS
+busybox	clang	cut empty field	PASS	PASS
+busybox	clang	cut empty field 2	PASS	PASS
+busybox	clang	cut high-low error	PASS	PASS
+busybox	clang	cut show whole line with no delim	PASS	PASS
+busybox	clang	cut with -b (a,b,c)	PASS	PASS
+busybox	clang	cut with -c (a,b,c)	PASS	PASS
+busybox	clang	cut with -d -f( ) -s	PASS	PASS
+busybox	clang	cut with -d -f(:) -s	PASS	PASS
+busybox	clang	cut with -d -f(a) -s	PASS	PASS
+busybox	clang	cut with -d -f(a) -s -n	PASS	PASS
+busybox	clang	cut with echo, -c (a)	PASS	PASS
+busybox	clang	cut with echo, -c (a-b)	PASS	PASS
+busybox	clang	cut-cuts-a-character	PASS	PASS
+busybox	clang	cut-cuts-a-closed-range	PASS	PASS
+busybox	clang	cut-cuts-a-field	PASS	PASS
+busybox	clang	cut-cuts-an-open-range	PASS	PASS
+busybox	clang	cut-cuts-an-unclosed-range	PASS	PASS
+busybox	clang	date-@-works	PASS	PASS
+busybox	clang	date-R-works	PASS	PASS
+busybox	clang	date-format-works	PASS	PASS
+busybox	clang	date-timezone	PASS	PASS
+busybox	clang	date-u-works	PASS	PASS
+busybox	clang	date-works	PASS	PASS
+busybox	clang	date-works-1	PASS	PASS
+busybox	clang	dc '>a' (conditional execute string) 1	PASS	PASS
+busybox	clang	dc '>a' (conditional execute string) 2	PASS	PASS
+busybox	clang	dc '>aeb' (conditional execute string with else)	PASS	PASS
+busybox	clang	dc -x dcx_vars.dc	FAIL	FAIL
+busybox	clang	dc Z (length) for numbers	PASS	PASS
+busybox	clang	dc basic syntax (argv, multiple args)	PASS	PASS
+busybox	clang	dc basic syntax (argv, single arg)	PASS	PASS
+busybox	clang	dc basic syntax (stdin, multiple args)	PASS	PASS
+busybox	clang	dc complex with spaces (multiple args)	PASS	PASS
+busybox	clang	dc complex with spaces (single arg)	PASS	PASS
+busybox	clang	dc complex without spaces (multiple args)	PASS	PASS
+busybox	clang	dc complex without spaces (single arg)	PASS	PASS
+busybox	clang	dc dc_add.dc	FAIL	FAIL
+busybox	clang	dc dc_boolean.dc	FAIL	FAIL
+busybox	clang	dc dc_decimal.dc	FAIL	FAIL
+busybox	clang	dc dc_divide.dc	FAIL	FAIL
+busybox	clang	dc dc_divmod.dc	FAIL	FAIL
+busybox	clang	dc dc_misc.dc	FAIL	FAIL
+busybox	clang	dc dc_modexp.dc	FAIL	FAIL
+busybox	clang	dc dc_modulus.dc	FAIL	FAIL
+busybox	clang	dc dc_multiply.dc	FAIL	FAIL
+busybox	clang	dc dc_power.dc	FAIL	FAIL
+busybox	clang	dc dc_sqrt.dc	FAIL	FAIL
+busybox	clang	dc dc_strings.dc	FAIL	FAIL
+busybox	clang	dc dc_subtract.dc	FAIL	FAIL
+busybox	clang	dc newline can be a register	PASS	PASS
+busybox	clang	dc read	PASS	PASS
+busybox	clang	dc read string	PASS	PASS
+busybox	clang	dc space can be a register	PASS	PASS
+busybox	clang	dc: p should parse/print single backslashes	PASS	PASS
+busybox	clang	dc: p should print invalid escapes	PASS	PASS
+busybox	clang	dc: p should print single backslash strings	PASS	PASS
+busybox	clang	dc: p should print trailing backslashes	PASS	PASS
+busybox	clang	dc: x should execute strings	PASS	PASS
+busybox	clang	dc: x should not execute or pop non-strings	PASS	PASS
+busybox	clang	dc: x should work with strings created from a	PASS	PASS
+busybox	clang	dd-accepts-if	PASS	PASS
+busybox	clang	dd-accepts-of	PASS	PASS
+busybox	clang	dd-copies-from-standard-input-to-standard-output	PASS	PASS
+busybox	clang	dd-count-bytes	PASS	PASS
+busybox	clang	dd-prints-count-to-standard-error	PASS	PASS
+busybox	clang	dd-reports-write-errors	PASS	PASS
+busybox	clang	diff -B does not ignore changes whose lines are not all blank	FAIL	FAIL
+busybox	clang	diff -B does not ignore non-blank single line change	FAIL	FAIL
+busybox	clang	diff -B ignores blank single line change	FAIL	FAIL
+busybox	clang	diff -B ignores changes whose lines are all blank	FAIL	FAIL
+busybox	clang	diff -b treats EOF as whitespace	FAIL	FAIL
+busybox	clang	diff -b treats all spaces as equal	FAIL	FAIL
+busybox	clang	diff -rN does not read non-regular files	FAIL	FAIL
+busybox	clang	diff always takes context from old file	FAIL	FAIL
+busybox	clang	diff diff1 diff2/	FAIL	FAIL
+busybox	clang	diff diff1 diff2/subdir	FAIL	FAIL
+busybox	clang	diff dir dir2/file/-	FAIL	FAIL
+busybox	clang	diff of dir and fifo	FAIL	FAIL
+busybox	clang	diff of empty file against nonempty one	FAIL	FAIL
+busybox	clang	diff of empty file against stdin	FAIL	FAIL
+busybox	clang	diff of file and fifo	FAIL	FAIL
+busybox	clang	diff of stdin	FAIL	FAIL
+busybox	clang	diff of stdin, no newline in the file	FAIL	FAIL
+busybox	clang	diff of stdin, twice	FAIL	FAIL
+busybox	clang	dirname-handles-absolute-path	PASS	PASS
+busybox	clang	dirname-handles-empty-path	PASS	PASS
+busybox	clang	dirname-handles-multiple-slashes	PASS	PASS
+busybox	clang	dirname-handles-relative-path	PASS	PASS
+busybox	clang	dirname-handles-root	PASS	PASS
+busybox	clang	dirname-handles-single-component	PASS	PASS
+busybox	clang	dirname-works	PASS	PASS
+busybox	clang	du-h-works	PASS	PASS
+busybox	clang	du-k-works	PASS	PASS
+busybox	clang	du-l-works	PASS	PASS
+busybox	clang	du-m-works	PASS	PASS
+busybox	clang	du-s-works	PASS	PASS
+busybox	clang	du-works	PASS	PASS
+busybox	clang	echo-does-not-print-newline	PASS	PASS
+busybox	clang	echo-prints-argument	PASS	PASS
+busybox	clang	echo-prints-arguments	PASS	PASS
+busybox	clang	echo-prints-dash	PASS	PASS
+busybox	clang	echo-prints-newline	PASS	PASS
+busybox	clang	echo-prints-non-opts	PASS	PASS
+busybox	clang	echo-prints-slash-zero	PASS	PASS
+busybox	clang	echo-prints-slash_00041	PASS	PASS
+busybox	clang	echo-prints-slash_0041	PASS	PASS
+busybox	clang	echo-prints-slash_041	PASS	PASS
+busybox	clang	echo-prints-slash_41	PASS	PASS
+busybox	clang	egrep is not case insensitive	PASS	PASS
+busybox	clang	expand	PASS	PASS
+busybox	clang	expand with unicode characher 0x394	PASS	PASS
+busybox	clang	expr-big	PASS	PASS
+busybox	clang	expr-works	PASS	PASS
+busybox	clang	factor $((2*3*5*7*11*13*17*19*23*29*31*37*41*43*47))	PASS	PASS
+busybox	clang	factor '  0'	PASS	PASS
+busybox	clang	factor ' +2'	PASS	PASS
+busybox	clang	factor +1	PASS	PASS
+busybox	clang	factor 1024	PASS	PASS
+busybox	clang	factor 13^16	PASS	PASS
+busybox	clang	factor 2 * 3037000493 * 3037000493	PASS	PASS
+busybox	clang	factor 2^61-1	PASS	PASS
+busybox	clang	factor 2^62-1	PASS	PASS
+busybox	clang	factor 2^64-1	PASS	PASS
+busybox	clang	factor 3 * 13^16	PASS	PASS
+busybox	clang	factor 3 * 2479700513 * 2479700513	PASS	PASS
+busybox	clang	factor 3 * 37831 * 37831 * 37831 * 37831	PASS	PASS
+busybox	clang	false-is-silent	PASS	PASS
+busybox	clang	false-returns-failure	PASS	PASS
+busybox	clang	find -exec exitcode 1	PASS	PASS
+busybox	clang	find -exec exitcode 2	PASS	PASS
+busybox	clang	find -exec exitcode 3	PASS	PASS
+busybox	clang	find -exec exitcode 4	PASS	PASS
+busybox	clang	find -type f	PASS	PASS
+busybox	clang	find ./// -name .	PASS	PASS
+busybox	clang	find ./// -name .///	PASS	PASS
+busybox	clang	find / -maxdepth 0 -name /	PASS	PASS
+busybox	clang	find / -maxdepth 0 -name //	PASS	PASS
+busybox	clang	find // -maxdepth 0 -name /	PASS	PASS
+busybox	clang	find // -maxdepth 0 -name //	PASS	PASS
+busybox	clang	find-supports-minus-xdev	PASS	PASS
+busybox	clang	fold -s	PASS	PASS
+busybox	clang	fold -sw66 with unicode input	PASS	PASS
+busybox	clang	fold -w1	PASS	PASS
+busybox	clang	fold with NULs	PASS	PASS
+busybox	clang	glibc build sort	PASS	PASS
+busybox	clang	glibc build sort unique	PASS	PASS
+busybox	clang	grep (default to stdin)	PASS	PASS
+busybox	clang	grep (exit success)	PASS	PASS
+busybox	clang	grep (exit with error)	PASS	PASS
+busybox	clang	grep (no newline at EOL)	PASS	PASS
+busybox	clang	grep - (specify stdin)	PASS	PASS
+busybox	clang	grep - infile (specify stdin and file)	PASS	PASS
+busybox	clang	grep - nofile (specify stdin and nonexisting file)	PASS	PASS
+busybox	clang	grep -E -o prints all matches	PASS	PASS
+busybox	clang	grep -E supports extended regexps	PASS	PASS
+busybox	clang	grep -F -w w doesn't match ww	PASS	PASS
+busybox	clang	grep -F handles -i	PASS	PASS
+busybox	clang	grep -F handles multiple expessions	PASS	PASS
+busybox	clang	grep -Fw doesn't stop on 1st mismatch	PASS	PASS
+busybox	clang	grep -Fw matches only words	PASS	PASS
+busybox	clang	grep -L exitcode 0	PASS	PASS
+busybox	clang	grep -L exitcode 0 #2	PASS	PASS
+busybox	clang	grep -L exitcode 1	PASS	PASS
+busybox	clang	grep -e PATTERN can be a newline-delimited list	PASS	PASS
+busybox	clang	grep -f EMPTY_FILE	PASS	PASS
+busybox	clang	grep -o does not loop forever	PASS	PASS
+busybox	clang	grep -o does not loop forever on zero-length match	PASS	PASS
+busybox	clang	grep -q - nofile (specify stdin and nonexisting file, match)	PASS	PASS
+busybox	clang	grep -q - nofile (specify stdin and nonexisting file, no match)	PASS	PASS
+busybox	clang	grep -r on dir/symlink to dir	PASS	PASS
+busybox	clang	grep -r on symlink to dir	PASS	PASS
+busybox	clang	grep -s nofile (nonexisting file, no match)	PASS	PASS
+busybox	clang	grep -s nofile - (stdin and nonexisting file, match)	PASS	PASS
+busybox	clang	grep -v -f EMPTY_FILE	PASS	PASS
+busybox	clang	grep -vxf EMPTY_FILE	PASS	PASS
+busybox	clang	grep -w ^ doesn't hang	PASS	PASS
+busybox	clang	grep -w ^str doesn't match str not at the beginning	PASS	PASS
+busybox	clang	grep -w doesn't stop on 1st mismatch	PASS	PASS
+busybox	clang	grep -w word doesn't match wordword	PASS	PASS
+busybox	clang	grep -w word match second word	PASS	PASS
+busybox	clang	grep -x (full match)	PASS	PASS
+busybox	clang	grep -x (partial match 1)	PASS	PASS
+busybox	clang	grep -x (partial match 2)	PASS	PASS
+busybox	clang	grep -x -F (full match)	PASS	PASS
+busybox	clang	grep -x -F (partial match 1)	PASS	PASS
+busybox	clang	grep -x -F (partial match 2)	PASS	PASS
+busybox	clang	grep -x -v -e EXP1 -e EXP2 finds nothing if either EXP matches	PASS	PASS
+busybox	clang	grep PATTERN can be a newline-delimited list	PASS	PASS
+busybox	clang	grep can read regexps from stdin	PASS	PASS
+busybox	clang	grep handles NUL in files	SKIP	SKIP
+busybox	clang	grep handles NUL on stdin	SKIP	SKIP
+busybox	clang	grep handles multiple regexps	PASS	PASS
+busybox	clang	grep input (specify file)	PASS	PASS
+busybox	clang	grep is also egrep	PASS	PASS
+busybox	clang	grep matches NUL	SKIP	SKIP
+busybox	clang	grep two files	PASS	PASS
+busybox	clang	gunzip-reads-from-standard-input	PASS	PASS
+busybox	clang	gunzip: already exists	PASS	PASS
+busybox	clang	gunzip: delete src	PASS	PASS
+busybox	clang	gunzip: doesnt exist	PASS	PASS
+busybox	clang	gunzip: stream unpack	PASS	PASS
+busybox	clang	gunzip: unknown suffix	PASS	PASS
+busybox	clang	gzip-accepts-multiple-files	PASS	PASS
+busybox	clang	gzip-accepts-single-minus	PASS	PASS
+busybox	clang	gzip-compression-levels	SKIP	SKIP
+busybox	clang	gzip-removes-original-file	PASS	PASS
+busybox	clang	head (without args)	PASS	PASS
+busybox	clang	head -n <negative number>	PASS	PASS
+busybox	clang	head -n <positive number>	PASS	PASS
+busybox	clang	hexdump -C with four NULs	PASS	PASS
+busybox	clang	hexdump does not think last padded block matches any full block	PASS	PASS
+busybox	clang	hexdump thinks last full block can match	PASS	PASS
+busybox	clang	hostid-works	PASS	PASS
+busybox	clang	hostname-d-works	PASS	PASS
+busybox	clang	hostname-i-works	PASS	PASS
+busybox	clang	hostname-s-works	PASS	PASS
+busybox	clang	hostname-works	PASS	PASS
+busybox	clang	id-g-works	PASS	PASS
+busybox	clang	id-u-works	PASS	PASS
+busybox	clang	id-un-works	PASS	PASS
+busybox	clang	id-ur-works	PASS	PASS
+busybox	clang	ln-creates-hard-links	PASS	PASS
+busybox	clang	ln-creates-soft-links	PASS	PASS
+busybox	clang	ln-force-creates-hard-links	PASS	PASS
+busybox	clang	ln-force-creates-soft-links	PASS	PASS
+busybox	clang	ln-preserves-hard-links	PASS	PASS
+busybox	clang	ln-preserves-soft-links	PASS	PASS
+busybox	clang	ls symlink_to_dir	PASS	PASS
+busybox	clang	ls unicode test with codepoints limited to 767	FAIL	FAIL
+busybox	clang	ls-1-works	PASS	PASS
+busybox	clang	ls-h-works	PASS	PASS
+busybox	clang	ls-l-works	PASS	PASS
+busybox	clang	ls-s-works	PASS	PASS
+busybox	clang	makedevs -d ../makedevs.device_table.txt .	FAIL	FAIL
+busybox	clang	md5sum	PASS	PASS
+busybox	clang	md5sum -c EMPTY	PASS	PASS
+busybox	clang	md5sum-verifies-non-binary-file	PASS	PASS
+busybox	clang	mdev #maj,min and no explicit uid	SKIP	SKIP
+busybox	clang	mdev $ENVVAR=regex match	SKIP	SKIP
+busybox	clang	mdev add /block/sda	SKIP	SKIP
+busybox	clang	mdev command	SKIP	SKIP
+busybox	clang	mdev deletes /block/sda	SKIP	SKIP
+busybox	clang	mdev does not stop on dash-rule	SKIP	SKIP
+busybox	clang	mdev move and command	SKIP	SKIP
+busybox	clang	mdev move rule '=bar/baz/fname'	SKIP	SKIP
+busybox	clang	mdev move/symlink rule '>bar/'	SKIP	SKIP
+busybox	clang	mdev move/symlink rule '>bar/baz'	SKIP	SKIP
+busybox	clang	mdev regexp substring match + replace	SKIP	SKIP
+busybox	clang	mdev stops on first rule	SKIP	SKIP
+busybox	clang	mkdir-makes-a-directory	PASS	PASS
+busybox	clang	mkdir-makes-parent-directories	PASS	PASS
+busybox	clang	mkfs.minix	FAIL	FAIL
+busybox	clang	move rule does not delete node with name == device_name	SKIP	SKIP
+busybox	clang	mv-files-to-dir	PASS	PASS
+busybox	clang	mv-files-to-dir-2	PASS	PASS
+busybox	clang	mv-follows-links	PASS	PASS
+busybox	clang	mv-moves-empty-file	PASS	PASS
+busybox	clang	mv-moves-file	PASS	PASS
+busybox	clang	mv-moves-hardlinks	PASS	PASS
+busybox	clang	mv-moves-large-file	PASS	PASS
+busybox	clang	mv-moves-small-file	PASS	PASS
+busybox	clang	mv-moves-symlinks	PASS	PASS
+busybox	clang	mv-moves-unreadable-files	PASS	PASS
+busybox	clang	mv-preserves-hard-links	PASS	PASS
+busybox	clang	mv-preserves-links	PASS	PASS
+busybox	clang	mv-refuses-mv-dir-to-subdir	PASS	PASS
+busybox	clang	mv-removes-source-file	PASS	PASS
+busybox	clang	nl numbers all lines	PASS	PASS
+busybox	clang	nl numbers no lines	PASS	PASS
+busybox	clang	nl numbers non-empty lines	PASS	PASS
+busybox	clang	od -b	PASS	PASS
+busybox	clang	od -b --traditional	PASS	PASS
+busybox	clang	od -b --traditional FILE	PASS	PASS
+busybox	clang	od -f	PASS	PASS
+busybox	clang	paste	PASS	PASS
+busybox	clang	paste-back-cuted-lines	PASS	PASS
+busybox	clang	paste-multi-stdin	PASS	PASS
+busybox	clang	paste-pairs	PASS	PASS
+busybox	clang	paste-separate	PASS	PASS
+busybox	clang	patch -N ignores already applied hunk	PASS	PASS
+busybox	clang	patch -R with nonexistent old_file	PASS	PASS
+busybox	clang	patch FILE PATCH	PASS	PASS
+busybox	clang	patch at the beginning	PASS	PASS
+busybox	clang	patch creates new file	PASS	PASS
+busybox	clang	patch detects already applied hunk	PASS	PASS
+busybox	clang	patch detects already applied hunk at the EOF	PASS	PASS
+busybox	clang	patch internal buffering bug?	PASS	PASS
+busybox	clang	patch understands ...dir///dir...	PASS	PASS
+busybox	clang	patch with nonexistent old_file	PASS	PASS
+busybox	clang	patch with old_file == new_file	PASS	PASS
+busybox	clang	pidof (exit with error)	PASS	PASS
+busybox	clang	pidof (exit with success)	PASS	PASS
+busybox	clang	pidof -o init	PASS	PASS
+busybox	clang	pidof this	PASS	PASS
+busybox	clang	printf aborts on %r	PASS	PASS
+busybox	clang	printf aborts on bare %	PASS	PASS
+busybox	clang	printf handles %d bad_input	PASS	PASS
+busybox	clang	printf handles multiple flags	PASS	PASS
+busybox	clang	printf handles positive numbers for %d	PASS	PASS
+busybox	clang	printf handles positive numbers for %f	PASS	PASS
+busybox	clang	printf handles positive numbers for %i	PASS	PASS
+busybox	clang	printf handles positive numbers for %x	PASS	PASS
+busybox	clang	printf produces no further output 1	PASS	PASS
+busybox	clang	printf produces no further output 2	PASS	PASS
+busybox	clang	printf repeatedly uses pattern for each argv	PASS	PASS
+busybox	clang	printf treats leading 0 as flag	PASS	PASS
+busybox	clang	printf understands %%	PASS	PASS
+busybox	clang	printf understands %*.*f	PASS	PASS
+busybox	clang	printf understands %*.*f with negative width/precision	PASS	PASS
+busybox	clang	printf understands %*f with negative width	PASS	PASS
+busybox	clang	printf understands %.*f with negative precision	PASS	PASS
+busybox	clang	printf understands %23.12f	PASS	PASS
+busybox	clang	printf understands %Ld	PASS	PASS
+busybox	clang	printf understands %b escaped_string	PASS	PASS
+busybox	clang	printf understands %d '"x' "'y" "'zTAIL"	PASS	PASS
+busybox	clang	printf understands %ld	PASS	PASS
+busybox	clang	printf understands %s '"x' "'y" "'zTAIL"	PASS	PASS
+busybox	clang	printf understands %zd	PASS	PASS
+busybox	clang	pwd-prints-working-directory	PASS	PASS
+busybox	clang	readlink -f on a file	PASS	PASS
+busybox	clang	readlink -f on a link	PASS	PASS
+busybox	clang	readlink -f on a weird dir	PASS	PASS
+busybox	clang	readlink -f on an invalid link	PASS	PASS
+busybox	clang	readlink on a file	PASS	PASS
+busybox	clang	readlink on a link	PASS	PASS
+busybox	clang	realpath on link to non-existent file 1	PASS	PASS
+busybox	clang	realpath on link to non-existent file 2	PASS	PASS
+busybox	clang	realpath on link to non-existent file 3	PASS	PASS
+busybox	clang	realpath on link to non-existent file 4	PASS	PASS
+busybox	clang	realpath on non-existent absolute path 1	PASS	PASS
+busybox	clang	realpath on non-existent absolute path 2	PASS	PASS
+busybox	clang	realpath on non-existent absolute path 3	PASS	PASS
+busybox	clang	realpath on non-existent absolute path 4	PASS	PASS
+busybox	clang	realpath on non-existent local file 1	PASS	PASS
+busybox	clang	realpath on non-existent local file 2	PASS	PASS
+busybox	clang	rev file with NUL character	PASS	PASS
+busybox	clang	rev file with long line	PASS	PASS
+busybox	clang	rev file with missing newline	PASS	PASS
+busybox	clang	rev works	PASS	PASS
+busybox	clang	rm-removes-file	PASS	PASS
+busybox	clang	rmdir-removes-parent-directories	PASS	PASS
+busybox	clang	rx	PASS	PASS
+busybox	clang	sed 's///w FILE'	PASS	PASS
+busybox	clang	sed -i finishes ranges correctly	PASS	PASS
+busybox	clang	sed -i with address modifies all files, not only first	PASS	PASS
+busybox	clang	sed -i with no arg [GNUFAIL]	PASS	PASS
+busybox	clang	sed -n	PASS	PASS
+busybox	clang	sed -n s//p	PASS	PASS
+busybox	clang	sed /$_in_regex/ should not match newlines, only end-of-line	PASS	PASS
+busybox	clang	sed /regex/,+0<cmd> -i works	PASS	PASS
+busybox	clang	sed /regex/,+0{...} -i works	PASS	PASS
+busybox	clang	sed /regex/,+N{...} -i works	PASS	PASS
+busybox	clang	sed /regex/,+N{...} addresses work	PASS	PASS
+busybox	clang	sed /regex/,+N{...} addresses work 2	PASS	PASS
+busybox	clang	sed /regex/,N{...} addresses work	PASS	PASS
+busybox	clang	sed 2d;2,1p (gnu compat)	PASS	PASS
+busybox	clang	sed G (append hold space to pattern space)	PASS	PASS
+busybox	clang	sed N (flushes pattern space (GNU behavior))	PASS	PASS
+busybox	clang	sed N (stops at end of input) and P (prints to first newline only)	PASS	PASS
+busybox	clang	sed N test2	PASS	PASS
+busybox	clang	sed N test3	PASS	PASS
+busybox	clang	sed NUL in command	FAIL	FAIL
+busybox	clang	sed T (!test/branch)	PASS	PASS
+busybox	clang	sed ^ OR not^	PASS	PASS
+busybox	clang	sed a cmd ended by double backslash	PASS	PASS
+busybox	clang	sed a cmd understands 	PASS	PASS
+busybox	clang	sed accepts blanks before command	PASS	PASS
+busybox	clang	sed accepts multiple -e	PASS	PASS
+busybox	clang	sed accepts newlines in -e	PASS	PASS
+busybox	clang	sed address match newline	PASS	PASS
+busybox	clang	sed append autoinserts newline	PASS	PASS
+busybox	clang	sed append autoinserts newline 2	PASS	PASS
+busybox	clang	sed append autoinserts newline 3	PASS	PASS
+busybox	clang	sed autoinsert newline	PASS	PASS
+busybox	clang	sed b (branch with no label jumps to end)	PASS	PASS
+busybox	clang	sed b (branch)	PASS	PASS
+busybox	clang	sed backref from empty s uses range regex	PASS	PASS
+busybox	clang	sed backref from empty s uses range regex with newline	PASS	PASS
+busybox	clang	sed beginning (^) matches only once	PASS	PASS
+busybox	clang	sed c	PASS	PASS
+busybox	clang	sed cat plus empty file	PASS	PASS
+busybox	clang	sed clusternewline	PASS	PASS
+busybox	clang	sed d does not break n,m matching	PASS	PASS
+busybox	clang	sed d does not break n,regex matching	PASS	PASS
+busybox	clang	sed d does not break n,regex matching #2	PASS	PASS
+busybox	clang	sed d ends script iteration	PASS	PASS
+busybox	clang	sed d ends script iteration (2)	PASS	PASS
+busybox	clang	sed embedded NUL	FAIL	FAIL
+busybox	clang	sed embedded NUL g	PASS	PASS
+busybox	clang	sed empty file plus cat	PASS	PASS
+busybox	clang	sed escaped newline in command	PASS	PASS
+busybox	clang	sed explicit stdin	PASS	PASS
+busybox	clang	sed handles empty lines	PASS	PASS
+busybox	clang	sed i cmd understands 	PASS	PASS
+busybox	clang	sed insert doesn't autoinsert newline	PASS	PASS
+busybox	clang	sed leave off trailing newline	PASS	PASS
+busybox	clang	sed lie-to-autoconf	PASS	PASS
+busybox	clang	sed match EOF	PASS	PASS
+busybox	clang	sed match EOF inline	PASS	PASS
+busybox	clang	sed match EOF two files	PASS	PASS
+busybox	clang	sed n (flushes pattern space, terminates early)	PASS	PASS
+busybox	clang	sed n command must reset 'substituted' bit	PASS	PASS
+busybox	clang	sed nested {}s	PASS	PASS
+busybox	clang	sed no files (stdin)	PASS	PASS
+busybox	clang	sed nonexistent label	FAIL	FAIL
+busybox	clang	sed noprint, no match, no newline	PASS	PASS
+busybox	clang	sed normal newlines	PASS	PASS
+busybox	clang	sed print autoinsert newlines	PASS	PASS
+busybox	clang	sed print autoinsert newlines two files	PASS	PASS
+busybox	clang	sed s [delimiter]	PASS	PASS
+busybox	clang	sed s arbitrary delimiter	PASS	PASS
+busybox	clang	sed s chains	PASS	PASS
+busybox	clang	sed s chains2	PASS	PASS
+busybox	clang	sed s with  (GNU ext)	PASS	PASS
+busybox	clang	sed s///NUM test	PASS	PASS
+busybox	clang	sed s//g (exhaustive)	PASS	PASS
+busybox	clang	sed s//p	PASS	PASS
+busybox	clang	sed s/xxx/[/	PASS	PASS
+busybox	clang	sed selective matches insert newline	PASS	PASS
+busybox	clang	sed selective matches noinsert newline	PASS	PASS
+busybox	clang	sed selective matches with one nl	PASS	PASS
+busybox	clang	sed special char as s/// delimiter, in pattern	PASS	PASS
+busybox	clang	sed special char as s/// delimiter, in replacement 1	PASS	PASS
+busybox	clang	sed special char as s/// delimiter, in replacement 2	PASS	PASS
+busybox	clang	sed stdin twice	PASS	PASS
+busybox	clang	sed subst+write	PASS	PASS
+busybox	clang	sed t (test/branch clears test bit)	PASS	PASS
+busybox	clang	sed t (test/branch)	PASS	PASS
+busybox	clang	sed trailing NUL	PASS	PASS
+busybox	clang	sed understands  	PASS	PASS
+busybox	clang	sed understands duplicate file name	PASS	PASS
+busybox	clang	sed uses previous regexp	PASS	PASS
+busybox	clang	sed with N skipping lines past ranges on next cmds	PASS	PASS
+busybox	clang	sed with empty match	PASS	PASS
+busybox	clang	sed zero chars match/replace advances correctly 1	PASS	PASS
+busybox	clang	sed zero chars match/replace advances correctly 2	PASS	PASS
+busybox	clang	sed zero chars match/replace logic must not falsely trigger here 1	PASS	PASS
+busybox	clang	sed zero chars match/replace logic must not falsely trigger here 2	PASS	PASS
+busybox	clang	seq (exit with error)	PASS	PASS
+busybox	clang	seq count by -.9	PASS	PASS
+busybox	clang	seq count by .3	PASS	PASS
+busybox	clang	seq count by .3 with padding 1	PASS	PASS
+busybox	clang	seq count by .3 with padding 2	PASS	PASS
+busybox	clang	seq count by .30	PASS	PASS
+busybox	clang	seq count by .30 to 4.000	PASS	PASS
+busybox	clang	seq count by zero	PASS	PASS
+busybox	clang	seq count down by 2	PASS	PASS
+busybox	clang	seq count down by 3 with padding	PASS	PASS
+busybox	clang	seq count up by 2	PASS	PASS
+busybox	clang	seq count wrong way #1	PASS	PASS
+busybox	clang	seq count wrong way #2	PASS	PASS
+busybox	clang	seq one argument	PASS	PASS
+busybox	clang	seq one argument with padding	PASS	PASS
+busybox	clang	seq two arguments	PASS	PASS
+busybox	clang	seq two arguments equal	PASS	PASS
+busybox	clang	seq two arguments equal, arbitrary negative step	PASS	PASS
+busybox	clang	seq two arguments equal, arbitrary positive step	PASS	PASS
+busybox	clang	seq two arguments reversed	PASS	PASS
+busybox	clang	seq two arguments with padding	PASS	PASS
+busybox	clang	sha1sum: one-space separated input for -c	PASS	PASS
+busybox	clang	sort	PASS	PASS
+busybox	clang	sort #2	PASS	PASS
+busybox	clang	sort -h	PASS	PASS
+busybox	clang	sort -k2,2M	PASS	PASS
+busybox	clang	sort -s -u	PASS	PASS
+busybox	clang	sort -sr (stable and reverse) does NOT reverse 'stable' ordering	PASS	PASS
+busybox	clang	sort -u should consider field only when discarding	PASS	PASS
+busybox	clang	sort -z outputs NUL terminated lines	PASS	PASS
+busybox	clang	sort file in place	PASS	PASS
+busybox	clang	sort key doesn't strip leading blanks, disables fallback global sort	PASS	PASS
+busybox	clang	sort key range with multiple options	PASS	PASS
+busybox	clang	sort key range with numeric option	PASS	PASS
+busybox	clang	sort key range with numeric option and global reverse	PASS	PASS
+busybox	clang	sort key range with two -k options	PASS	PASS
+busybox	clang	sort numeric	PASS	PASS
+busybox	clang	sort one key	PASS	PASS
+busybox	clang	sort reverse	PASS	PASS
+busybox	clang	sort stdin	PASS	PASS
+busybox	clang	sort with ENDCHAR	PASS	PASS
+busybox	clang	sort with non-default leading delim 1	PASS	PASS
+busybox	clang	sort with non-default leading delim 2	PASS	PASS
+busybox	clang	sort with non-default leading delim 3	PASS	PASS
+busybox	clang	sort with non-default leading delim 4	PASS	PASS
+busybox	clang	start-stop-daemon -a without -x	PASS	PASS
+busybox	clang	start-stop-daemon -x without -a	PASS	PASS
+busybox	clang	start-stop-daemon with both -x and -a	PASS	PASS
+busybox	clang	start-stop-daemon without -x and -a	PASS	PASS
+busybox	clang	strings-works-like-GNU	PASS	PASS
+busybox	clang	sum -r file doesn't print file's name	PASS	PASS
+busybox	clang	sum -r file file does print both names	PASS	PASS
+busybox	clang	sum -s file does print file's name	PASS	PASS
+busybox	clang	tail-n-works	PASS	PASS
+busybox	clang	tail-works	PASS	PASS
+busybox	clang	tail: +N with N > file length	PASS	PASS
+busybox	clang	tail: -c +N with largish N	PASS	PASS
+busybox	clang	tar --overwrite	PASS	PASS
+busybox	clang	tar -k does not extract into symlinks	PASS	PASS
+busybox	clang	tar Empty file is not a tarball	PASS	PASS
+busybox	clang	tar Empty file is not a tarball.tar.gz	PASS	PASS
+busybox	clang	tar Pax-encoded UTF8 names and symlinks	PASS	PASS
+busybox	clang	tar Symlink attack: create symlink and then write through it	PASS	PASS
+busybox	clang	tar Symlinks and hardlinks coexist	PASS	PASS
+busybox	clang	tar Twenty zeroed blocks is an empty tarball	PASS	PASS
+busybox	clang	tar Two zeroed blocks is a ('truncated') empty tarball	PASS	PASS
+busybox	clang	tar does not extract into symlinks	PASS	PASS
+busybox	clang	tar extract tgz	PASS	PASS
+busybox	clang	tar extract txz	PASS	PASS
+busybox	clang	tar hardlinks and repeated files	PASS	PASS
+busybox	clang	tar hardlinks mode	PASS	PASS
+busybox	clang	tar strips /../ on extract	PASS	PASS
+busybox	clang	tar symlinks mode	FAIL	FAIL
+busybox	clang	tar writing into read-only dir	FAIL	FAIL
+busybox	clang	tar-archives-multiple-files	PASS	PASS
+busybox	clang	tar-complains-about-missing-file	PASS	PASS
+busybox	clang	tar-demands-at-least-one-ctx	PASS	PASS
+busybox	clang	tar-demands-at-most-one-ctx	PASS	PASS
+busybox	clang	tar-extracts-all-subdirs	PASS	PASS
+busybox	clang	tar-extracts-file	PASS	PASS
+busybox	clang	tar-extracts-from-standard-input	PASS	PASS
+busybox	clang	tar-extracts-multiple-files	PASS	PASS
+busybox	clang	tar-extracts-to-standard-output	PASS	PASS
+busybox	clang	tar-handles-cz-options	PASS	PASS
+busybox	clang	tar-handles-empty-include-and-non-empty-exclude-list	PASS	PASS
+busybox	clang	tar-handles-exclude-and-extract-lists	PASS	PASS
+busybox	clang	tar-handles-multiple-X-options	PASS	PASS
+busybox	clang	tar-handles-nested-exclude	PASS	PASS
+busybox	clang	tar_with_link_with_size	PASS	PASS
+busybox	clang	tar_with_prefix_fields	PASS	PASS
+busybox	clang	taskset (get from pid 1)	PASS	PASS
+busybox	clang	taskset (invalid pid)	PASS	PASS
+busybox	clang	taskset (set_aff, needs CAP_SYS_NICE)	PASS	PASS
+busybox	clang	tee-appends-input	PASS	PASS
+busybox	clang	tee-tees-input	PASS	PASS
+busybox	clang	test ! -f: should be false (1)	PASS	PASS
+busybox	clang	test ! a = b -a ! c = c: should be false (1)	PASS	PASS
+busybox	clang	test ! a = b -a ! c = d: should be true (0)	PASS	PASS
+busybox	clang	test !: should be true (0)	PASS	PASS
+busybox	clang	test '!' '!' = '!': should be false (1)	PASS	PASS
+busybox	clang	test '!' '(' = '(': should be false (1)	PASS	PASS
+busybox	clang	test '!' = '!': should be true (0)	PASS	PASS
+busybox	clang	test '': should be false (1)	PASS	PASS
+busybox	clang	test '(' = '(': should be true (0)	PASS	PASS
+busybox	clang	test --help: should be true (0)	PASS	PASS
+busybox	clang	test -f = a -o b: should be true (0)	PASS	PASS
+busybox	clang	test -f: should be true (0)	PASS	PASS
+busybox	clang	test -lt = -gt: should be false (1)	PASS	PASS
+busybox	clang	test a -a !: should be true (0)	PASS	PASS
+busybox	clang	test a = a: should be true (0)	PASS	PASS
+busybox	clang	test a: should be true (0)	PASS	PASS
+busybox	clang	test: should be false (1)	PASS	PASS
+busybox	clang	touch-creates-file	PASS	PASS
+busybox	clang	touch-does-not-create-file	PASS	PASS
+busybox	clang	touch-touches-files-after-non-existent-file	PASS	PASS
+busybox	clang	tr does not stop after [:digit:]	PASS	PASS
+busybox	clang	tr does not treat [] in [a-z] as special	PASS	PASS
+busybox	clang	tr has correct xdigit sequence	PASS	PASS
+busybox	clang	tr understands 0-9A-F	PASS	PASS
+busybox	clang	tr understands [:xdigit:]	PASS	PASS
+busybox	clang	tr-d-alnum-works	PASS	PASS
+busybox	clang	tr-d-works	PASS	PASS
+busybox	clang	tr-non-gnu	PASS	PASS
+busybox	clang	tr-rejects-wrong-class	PASS	PASS
+busybox	clang	tr-works	PASS	PASS
+busybox	clang	tree error opening dir	PASS	PASS
+busybox	clang	tree multiple directories	PASS	PASS
+busybox	clang	tree nested directories and files	PASS	PASS
+busybox	clang	tree single file	PASS	PASS
+busybox	clang	true-is-silent	PASS	PASS
+busybox	clang	true-returns-success	PASS	PASS
+busybox	clang	tsort	PASS	PASS
+busybox	clang	tsort -	PASS	PASS
+busybox	clang	tsort /dev/null	PASS	PASS
+busybox	clang	tsort 1-edge	PASS	PASS
+busybox	clang	tsort 2-edge	PASS	PASS
+busybox	clang	tsort 2singleton	PASS	PASS
+busybox	clang	tsort blank	PASS	PASS
+busybox	clang	tsort blanks	PASS	PASS
+busybox	clang	tsort cycle	PASS	PASS
+busybox	clang	tsort empty	PASS	PASS
+busybox	clang	tsort empty2	PASS	PASS
+busybox	clang	tsort input	PASS	PASS
+busybox	clang	tsort input (w/o eol)	PASS	PASS
+busybox	clang	tsort medium	PASS	PASS
+busybox	clang	tsort odd	PASS	PASS
+busybox	clang	tsort odd2	PASS	PASS
+busybox	clang	tsort prefixes	PASS	PASS
+busybox	clang	tsort simple	PASS	PASS
+busybox	clang	tsort singleton	PASS	PASS
+busybox	clang	tsort std.example	PASS	PASS
+busybox	clang	unexpand case 1	PASS	PASS
+busybox	clang	unexpand case 2	PASS	PASS
+busybox	clang	unexpand case 3	PASS	PASS
+busybox	clang	unexpand case 4	PASS	PASS
+busybox	clang	unexpand case 5	PASS	PASS
+busybox	clang	unexpand case 6	PASS	PASS
+busybox	clang	unexpand case 7	PASS	PASS
+busybox	clang	unexpand case 8	PASS	PASS
+busybox	clang	unexpand flags 	PASS	PASS
+busybox	clang	unexpand flags --first-only -t4	PASS	PASS
+busybox	clang	unexpand flags -a	PASS	PASS
+busybox	clang	unexpand flags -a -t4	PASS	PASS
+busybox	clang	unexpand flags -a -t8	PASS	PASS
+busybox	clang	unexpand flags -f	PASS	PASS
+busybox	clang	unexpand flags -f -t4	PASS	PASS
+busybox	clang	unexpand flags -f -t8	PASS	PASS
+busybox	clang	unexpand flags -t4	PASS	PASS
+busybox	clang	unexpand flags -t4 --first-only	PASS	PASS
+busybox	clang	unexpand flags -t4 -a	PASS	PASS
+busybox	clang	unexpand flags -t4 -f	PASS	PASS
+busybox	clang	unexpand flags -t8	PASS	PASS
+busybox	clang	unexpand flags -t8 --first-only	PASS	PASS
+busybox	clang	unexpand flags -t8 -f	PASS	PASS
+busybox	clang	unexpand with unicode characher 0x394	PASS	PASS
+busybox	clang	uniq (default to stdin)	PASS	PASS
+busybox	clang	uniq (exit success)	PASS	PASS
+busybox	clang	uniq (exit with error)	PASS	PASS
+busybox	clang	uniq (stdin) outfile	PASS	PASS
+busybox	clang	uniq - (specify stdin)	PASS	PASS
+busybox	clang	uniq -c (occurrence count)	PASS	PASS
+busybox	clang	uniq -d (dups only)	PASS	PASS
+busybox	clang	uniq -f -s (skip fields and chars)	PASS	PASS
+busybox	clang	uniq -s -w (skip fields and compare max chars)	PASS	PASS
+busybox	clang	uniq -u and -d produce no output	PASS	PASS
+busybox	clang	uniq -w (compare max characters)	PASS	PASS
+busybox	clang	uniq input (specify file)	PASS	PASS
+busybox	clang	uniq input - (specify stdout)	PASS	PASS
+busybox	clang	uniq input outfile (two files)	PASS	PASS
+busybox	clang	unlzma (bad archive 1)	PASS	PASS
+busybox	clang	unlzma (bad archive 2)	PASS	PASS
+busybox	clang	unlzma (bad archive 3)	PASS	PASS
+busybox	clang	unzip (archive with corrupted lzma 1)	PASS	PASS
+busybox	clang	unzip (archive with corrupted lzma 2)	PASS	PASS
+busybox	clang	unzip (bad archive)	SKIP	SKIP
+busybox	clang	unzip (subdir only)	FAIL	FAIL
+busybox	clang	uptime-works	PASS	PASS
+busybox	clang	uuencode -m empty file	PASS	PASS
+busybox	clang	uuencode -m file 'A'	PASS	PASS
+busybox	clang	uuencode -m file 'A<NUL><0xff>Z'	PASS	PASS
+busybox	clang	uuencode -m file 'AB'	PASS	PASS
+busybox	clang	uuencode -m file 'ABC'	PASS	PASS
+busybox	clang	uuencode -m file 'ABCD'	PASS	PASS
+busybox	clang	uuencode -m file 'ABCDE'	PASS	PASS
+busybox	clang	uuencode -m file 'ABCDEF'	PASS	PASS
+busybox	clang	uuencode correct base64 encoding	PASS	PASS
+busybox	clang	uuencode correct encoding	PASS	PASS
+busybox	clang	uuencode empty file	PASS	PASS
+busybox	clang	uuencode file 'A'	PASS	PASS
+busybox	clang	uuencode file 'A<NUL><0xff>Z'	PASS	PASS
+busybox	clang	uuencode file 'AB'	PASS	PASS
+busybox	clang	uuencode file 'ABC'	PASS	PASS
+busybox	clang	uuencode file 'ABCD'	PASS	PASS
+busybox	clang	uuencode file 'ABCDE'	PASS	PASS
+busybox	clang	uuencode file 'ABCDEF'	PASS	PASS
+busybox	clang	uuencode sets standard input mode correctly	PASS	PASS
+busybox	clang	wc-counts-all	PASS	PASS
+busybox	clang	wc-counts-characters	PASS	PASS
+busybox	clang	wc-counts-lines	PASS	PASS
+busybox	clang	wc-counts-words	PASS	PASS
+busybox	clang	wc-prints-longest-line-length	PASS	PASS
+busybox	clang	wget--O-overrides--P	FAIL	FAIL
+busybox	clang	wget-handles-empty-path	FAIL	FAIL
+busybox	clang	wget-retrieves-google-index	FAIL	FAIL
+busybox	clang	wget-supports--P	FAIL	FAIL
+busybox	clang	which-uses-default-path	PASS	PASS
+busybox	clang	xargs -E ''	PASS	PASS
+busybox	clang	xargs -E _ stops on underscore	PASS	PASS
+busybox	clang	xargs -I skips empty lines and leading whitespace	PASS	PASS
+busybox	clang	xargs -e without param	PASS	PASS
+busybox	clang	xargs -n1	PASS	PASS
+busybox	clang	xargs -n2	PASS	PASS
+busybox	clang	xargs -s7 can take one-char input	PASS	PASS
+busybox	clang	xargs -sNUM test 1	PASS	PASS
+busybox	clang	xargs -sNUM test 2	PASS	PASS
+busybox	clang	xargs argument line too long	PASS	PASS
+busybox	clang	xargs does not stop on underscore ('new' GNU behavior)	PASS	PASS
+busybox	clang	xargs-works	PASS	PASS
+busybox	clang	xxd -p -r	PASS	PASS
+busybox	clang	xxd -p -r ignores the nibble with 2nd char bad	PASS	PASS
+busybox	clang	xxd -p -r skips one bad char, truncates at two bad chars	PASS	PASS
+busybox	clang	xxd -p with 30 NULs	PASS	PASS
+busybox	clang	xxd -p with 31 NULs	PASS	PASS
+busybox	clang	xxd -p with one NUL	PASS	PASS
+busybox	clang	xxd -r skips leading whitespace and truncates at two spaces	PASS	PASS
+busybox	clang	zcat: dont delete bz2 src	PASS	PASS
+busybox	clang	zcat: dont delete gz src	PASS	PASS
+busybox	gcc	-b encapsulated	PASS	PASS
+busybox	gcc	./busybox-suffix	PASS	PASS
+busybox	gcc	./busybox-suffix --help	PASS	PASS
+busybox	gcc	./busybox-suffix --help cat	PASS	PASS
+busybox	gcc	./busybox-suffix --help unknown	PASS	PASS
+busybox	gcc	./busybox-suffix cat	PASS	PASS
+busybox	gcc	./busybox-suffix unknown	PASS	PASS
+busybox	gcc	awk "cmd" | getline	PASS	PASS
+busybox	gcc	awk $NF is empty	PASS	PASS
+busybox	gcc	awk 'delete a[v--]' evaluates v-- once	PASS	PASS
+busybox	gcc	awk 'gcc build bug'	PASS	PASS
+busybox	gcc	awk 'v (a)' is not a function call, it is a concatenation	PASS	PASS
+busybox	gcc	awk -F case 0	PASS	PASS
+busybox	gcc	awk -F case 1	PASS	PASS
+busybox	gcc	awk -F case 2	PASS	PASS
+busybox	gcc	awk -F case 3	PASS	PASS
+busybox	gcc	awk -F case 4	PASS	PASS
+busybox	gcc	awk -F case 5	PASS	PASS
+busybox	gcc	awk -F case 6	PASS	PASS
+busybox	gcc	awk -F case 7	PASS	PASS
+busybox	gcc	awk -F handles escapes	PASS	PASS
+busybox	gcc	awk -e and ARGC	PASS	PASS
+busybox	gcc	awk -f and ARGC	PASS	PASS
+busybox	gcc	awk FS assignment	PASS	PASS
+busybox	gcc	awk FS regex which can match empty string	PASS	PASS
+busybox	gcc	awk NF in BEGIN	PASS	PASS
+busybox	gcc	awk assign while test	PASS	PASS
+busybox	gcc	awk backslash+newline eaten with no trace	PASS	PASS
+busybox	gcc	awk bitwise op	PASS	PASS
+busybox	gcc	awk break	PASS	PASS
+busybox	gcc	awk continue	PASS	PASS
+busybox	gcc	awk do not allow "str"++	PASS	PASS
+busybox	gcc	awk errors on missing delete arg	PASS	PASS
+busybox	gcc	awk exit N propagates through END's exit	PASS	PASS
+busybox	gcc	awk floating const with leading zeroes	PASS	PASS
+busybox	gcc	awk func arg parsing 1	PASS	PASS
+busybox	gcc	awk func arg parsing 2	PASS	PASS
+busybox	gcc	awk func arg parsing 3	PASS	PASS
+busybox	gcc	awk func arg parsing 4	PASS	PASS
+busybox	gcc	awk gsub falls back to non-extended-regex	PASS	PASS
+busybox	gcc	awk handles colon not preceded by ternary	PASS	PASS
+busybox	gcc	awk handles empty ()	PASS	PASS
+busybox	gcc	awk handles empty function f(){}	PASS	PASS
+busybox	gcc	awk handles empty function f(arg){}	PASS	PASS
+busybox	gcc	awk handles invalid for loop	PASS	PASS
+busybox	gcc	awk handles non-existing file correctly	PASS	PASS
+busybox	gcc	awk handles whitespace before array subscript	PASS	PASS
+busybox	gcc	awk hex const 1	PASS	PASS
+busybox	gcc	awk hex const 2	PASS	PASS
+busybox	gcc	awk if (length == 0)	PASS	PASS
+busybox	gcc	awk if operator != 	PASS	PASS
+busybox	gcc	awk if operator < 	PASS	PASS
+busybox	gcc	awk if operator == 	PASS	PASS
+busybox	gcc	awk if operator >= 	PASS	PASS
+busybox	gcc	awk if string == 	PASS	PASS
+busybox	gcc	awk input is never oct	PASS	PASS
+busybox	gcc	awk large integer	PASS	PASS
+busybox	gcc	awk length == 0	PASS	PASS
+busybox	gcc	awk length()	PASS	PASS
+busybox	gcc	awk length(array)	PASS	PASS
+busybox	gcc	awk long field sep	PASS	PASS
+busybox	gcc	awk negative field access	PASS	PASS
+busybox	gcc	awk nested loops with the same variable	PASS	PASS
+busybox	gcc	awk oct const	PASS	PASS
+busybox	gcc	awk print + redirect	PASS	PASS
+busybox	gcc	awk print length 1	PASS	PASS
+busybox	gcc	awk print length, 1	PASS	PASS
+busybox	gcc	awk printf %% prints one %	PASS	PASS
+busybox	gcc	awk printf('%-10c') can output NUL	PASS	PASS
+busybox	gcc	awk printf('%c') can output NUL	PASS	PASS
+busybox	gcc	awk properly handles function from other scope	PASS	PASS
+busybox	gcc	awk properly handles undefined function	PASS	PASS
+busybox	gcc	awk string cast (bug 725)	PASS	PASS
+busybox	gcc	awk unused function args are evaluated	PASS	PASS
+busybox	gcc	basename-does-not-remove-identical-extension	PASS	PASS
+busybox	gcc	basename-works	PASS	PASS
+busybox	gcc	bc "string/*" is not a comment	PASS	PASS
+busybox	gcc	bc (!a&&b)	PASS	PASS
+busybox	gcc	bc -l 'e(0)-2'	PASS	PASS
+busybox	gcc	bc -lq bc_add.bc	PASS	PASS
+busybox	gcc	bc -lq bc_arctangent.bc	PASS	PASS
+busybox	gcc	bc -lq bc_array.bc	PASS	PASS
+busybox	gcc	bc -lq bc_arrays.bc	PASS	PASS
+busybox	gcc	bc -lq bc_bessel.bc	PASS	PASS
+busybox	gcc	bc -lq bc_boolean.bc	PASS	PASS
+busybox	gcc	bc -lq bc_cosine.bc	PASS	PASS
+busybox	gcc	bc -lq bc_decimal.bc	PASS	PASS
+busybox	gcc	bc -lq bc_divide.bc	PASS	PASS
+busybox	gcc	bc -lq bc_exponent.bc	PASS	PASS
+busybox	gcc	bc -lq bc_log.bc	PASS	PASS
+busybox	gcc	bc -lq bc_misc.bc	PASS	PASS
+busybox	gcc	bc -lq bc_misc1.bc	PASS	PASS
+busybox	gcc	bc -lq bc_misc2.bc	PASS	PASS
+busybox	gcc	bc -lq bc_modulus.bc	PASS	PASS
+busybox	gcc	bc -lq bc_multiply.bc	PASS	PASS
+busybox	gcc	bc -lq bc_numbers1.bc	PASS	PASS
+busybox	gcc	bc -lq bc_numbers2.bc	PASS	PASS
+busybox	gcc	bc -lq bc_pi.bc	PASS	PASS
+busybox	gcc	bc -lq bc_power.bc	PASS	PASS
+busybox	gcc	bc -lq bc_references.bc	PASS	PASS
+busybox	gcc	bc -lq bc_sine.bc	PASS	PASS
+busybox	gcc	bc -lq bc_sqrt.bc	PASS	PASS
+busybox	gcc	bc -lq bc_strings.bc	PASS	PASS
+busybox	gcc	bc -lq bc_subtract.bc	PASS	PASS
+busybox	gcc	bc -lq bc_vars.bc	PASS	PASS
+busybox	gcc	bc /*/ is not a closed comment	PASS	PASS
+busybox	gcc	bc backslash 1	PASS	PASS
+busybox	gcc	bc comment	PASS	PASS
+busybox	gcc	bc comment 3: unterminated #comment	PASS	PASS
+busybox	gcc	bc comment with "	PASS	PASS
+busybox	gcc	bc comparison 1	PASS	PASS
+busybox	gcc	bc continue in for	PASS	PASS
+busybox	gcc	bc continue in if	PASS	PASS
+busybox	gcc	bc define auto	PASS	PASS
+busybox	gcc	bc define auto array same name	PASS	PASS
+busybox	gcc	bc define with body on next line	PASS	PASS
+busybox	gcc	bc define {return}	PASS	PASS
+busybox	gcc	bc for (;;)	PASS	PASS
+busybox	gcc	bc for (;;) {break}	PASS	PASS
+busybox	gcc	bc for (;cond;)	PASS	PASS
+busybox	gcc	bc for (;cond;upd)	PASS	PASS
+busybox	gcc	bc for (init;cond;upd)	PASS	PASS
+busybox	gcc	bc function named 'void'	PASS	PASS
+busybox	gcc	bc ibase	PASS	PASS
+busybox	gcc	bc if 0 else	PASS	PASS
+busybox	gcc	bc if 0 else if 1	PASS	PASS
+busybox	gcc	bc if 1 else	PASS	PASS
+busybox	gcc	bc if 1 if 1 else else	PASS	PASS
+busybox	gcc	bc if(cond) stmt else<NL>	PASS	PASS
+busybox	gcc	bc if(cond)<NL>	PASS	PASS
+busybox	gcc	bc ifz does not match if keyword	PASS	PASS
+busybox	gcc	bc length	PASS	PASS
+busybox	gcc	bc nested loops and breaks	PASS	PASS
+busybox	gcc	bc parsing of numbers	PASS	PASS
+busybox	gcc	bc print ""	PASS	PASS
+busybox	gcc	bc print 1,2,3	PASS	PASS
+busybox	gcc	bc printing of numbers	PASS	PASS
+busybox	gcc	bc read() 4<EOF>	PASS	PASS
+busybox	gcc	bc read()*read()	PASS	PASS
+busybox	gcc	bc read()^2	PASS	PASS
+busybox	gcc	bc string 1	PASS	PASS
+busybox	gcc	bc variable named 'void'	PASS	PASS
+busybox	gcc	bc void function	PASS	PASS
+busybox	gcc	bc while(cond)<NL>	PASS	PASS
+busybox	gcc	bc { print 1 }	PASS	PASS
+busybox	gcc	bunzip2-reads-from-standard-input	PASS	PASS
+busybox	gcc	bunzip2-removes-compressed-file	PASS	PASS
+busybox	gcc	bunzip2: already exists	PASS	PASS
+busybox	gcc	bunzip2: bz2_issue_11.bz2 corrupted example	PASS	PASS
+busybox	gcc	bunzip2: bz2_issue_12.bz2 corrupted example	PASS	PASS
+busybox	gcc	bunzip2: delete src	PASS	PASS
+busybox	gcc	bunzip2: doesnt exist	PASS	PASS
+busybox	gcc	bunzip2: pbzip_4m_zeros file	PASS	PASS
+busybox	gcc	bunzip2: stream unpack	PASS	PASS
+busybox	gcc	bunzip2: test_bz2 file	PASS	PASS
+busybox	gcc	bunzip2: unknown suffix	PASS	PASS
+busybox	gcc	busybox	PASS	PASS
+busybox	gcc	busybox --help	PASS	PASS
+busybox	gcc	busybox --help busybox	PASS	PASS
+busybox	gcc	busybox --help cat	PASS	PASS
+busybox	gcc	busybox --help unknown	PASS	PASS
+busybox	gcc	busybox as unknown name	PASS	PASS
+busybox	gcc	busybox cat	PASS	PASS
+busybox	gcc	busybox unknown	PASS	PASS
+busybox	gcc	bzcat can handle compressed zero-length bzip2 files	PASS	PASS
+busybox	gcc	bzcat can print many files	PASS	PASS
+busybox	gcc	bzcat-does-not-remove-compressed-file	PASS	PASS
+busybox	gcc	cal 2000	PASS	PASS
+busybox	gcc	cat -b	PASS	PASS
+busybox	gcc	cat -e	PASS	PASS
+busybox	gcc	cat -n	PASS	PASS
+busybox	gcc	cat -v	PASS	PASS
+busybox	gcc	cat-prints-a-file	PASS	PASS
+busybox	gcc	cat-prints-a-file-and-standard-input	PASS	PASS
+busybox	gcc	cmp-detects-difference	PASS	PASS
+busybox	gcc	comm test 1	PASS	PASS
+busybox	gcc	comm test 2	PASS	PASS
+busybox	gcc	comm test 3	PASS	PASS
+busybox	gcc	comm test 4	PASS	PASS
+busybox	gcc	comm test 5	PASS	PASS
+busybox	gcc	comm test 6	PASS	PASS
+busybox	gcc	comm unterminated line 1	PASS	PASS
+busybox	gcc	comm unterminated line 2	PASS	PASS
+busybox	gcc	cp	PASS	PASS
+busybox	gcc	cp -H	PASS	PASS
+busybox	gcc	cp -L	PASS	PASS
+busybox	gcc	cp -P	PASS	PASS
+busybox	gcc	cp -R	PASS	PASS
+busybox	gcc	cp -RH	PASS	PASS
+busybox	gcc	cp -RHL	PASS	PASS
+busybox	gcc	cp -RHP	PASS	PASS
+busybox	gcc	cp -RL	PASS	PASS
+busybox	gcc	cp -RLH	PASS	PASS
+busybox	gcc	cp -RP	PASS	PASS
+busybox	gcc	cp -Rd	PASS	PASS
+busybox	gcc	cp -d	PASS	PASS
+busybox	gcc	cp-RHL-does_not_preserve-links	PASS	PASS
+busybox	gcc	cp-a-files-to-dir	PASS	PASS
+busybox	gcc	cp-a-preserves-links	PASS	PASS
+busybox	gcc	cp-copies-empty-file	PASS	PASS
+busybox	gcc	cp-copies-large-file	PASS	PASS
+busybox	gcc	cp-copies-small-file	PASS	PASS
+busybox	gcc	cp-d-files-to-dir	PASS	PASS
+busybox	gcc	cp-dev-file	PASS	PASS
+busybox	gcc	cp-dir-create-dir	PASS	PASS
+busybox	gcc	cp-dir-existing-dir	PASS	PASS
+busybox	gcc	cp-does-not-copy-unreadable-file	PASS	PASS
+busybox	gcc	cp-files-to-dir	PASS	PASS
+busybox	gcc	cp-follows-links	PASS	PASS
+busybox	gcc	cp-parents	PASS	PASS
+busybox	gcc	cp-preserves-hard-links	PASS	PASS
+busybox	gcc	cp-preserves-links	PASS	PASS
+busybox	gcc	cp-preserves-source-file	PASS	PASS
+busybox	gcc	cpio -R with create	PASS	PASS
+busybox	gcc	cpio -R with extract	PASS	PASS
+busybox	gcc	cpio -p with absolute paths	PASS	PASS
+busybox	gcc	cpio extracts in existing directory	PASS	PASS
+busybox	gcc	cpio extracts zero-sized hardlinks	PASS	PASS
+busybox	gcc	cpio extracts zero-sized hardlinks 2	PASS	PASS
+busybox	gcc	cpio lists hardlinks	FAIL	FAIL
+busybox	gcc	cpio restores suid/sgid bits	FAIL	FAIL
+busybox	gcc	cpio uses by default uid/gid	PASS	PASS
+busybox	gcc	cryptpw des 12	PASS	PASS
+busybox	gcc	cryptpw des 55	PASS	PASS
+busybox	gcc	cryptpw des zz	PASS	PASS
+busybox	gcc	cryptpw sha256	PASS	PASS
+busybox	gcc	cryptpw sha256 rounds=99999	PASS	PASS
+busybox	gcc	cryptpw sha512	PASS	PASS
+busybox	gcc	cryptpw sha512 rounds=99999	PASS	PASS
+busybox	gcc	cut '-' (stdin) and multi file handling	PASS	PASS
+busybox	gcc	cut -DF	PASS	PASS
+busybox	gcc	cut -b a,a,a	PASS	PASS
+busybox	gcc	cut -b overlaps	PASS	PASS
+busybox	gcc	cut -c -b	PASS	PASS
+busybox	gcc	cut -c a	PASS	PASS
+busybox	gcc	cut -c a,b-c,d	PASS	PASS
+busybox	gcc	cut -c a-	PASS	PASS
+busybox	gcc	cut -c a-b	PASS	PASS
+busybox	gcc	cut -f a-	PASS	PASS
+busybox	gcc	cut empty field	PASS	PASS
+busybox	gcc	cut empty field 2	PASS	PASS
+busybox	gcc	cut high-low error	PASS	PASS
+busybox	gcc	cut show whole line with no delim	PASS	PASS
+busybox	gcc	cut with -b (a,b,c)	PASS	PASS
+busybox	gcc	cut with -c (a,b,c)	PASS	PASS
+busybox	gcc	cut with -d -f( ) -s	PASS	PASS
+busybox	gcc	cut with -d -f(:) -s	PASS	PASS
+busybox	gcc	cut with -d -f(a) -s	PASS	PASS
+busybox	gcc	cut with -d -f(a) -s -n	PASS	PASS
+busybox	gcc	cut with echo, -c (a)	PASS	PASS
+busybox	gcc	cut with echo, -c (a-b)	PASS	PASS
+busybox	gcc	cut-cuts-a-character	PASS	PASS
+busybox	gcc	cut-cuts-a-closed-range	PASS	PASS
+busybox	gcc	cut-cuts-a-field	PASS	PASS
+busybox	gcc	cut-cuts-an-open-range	PASS	PASS
+busybox	gcc	cut-cuts-an-unclosed-range	PASS	PASS
+busybox	gcc	date-@-works	PASS	PASS
+busybox	gcc	date-R-works	PASS	PASS
+busybox	gcc	date-format-works	PASS	PASS
+busybox	gcc	date-timezone	PASS	PASS
+busybox	gcc	date-u-works	PASS	PASS
+busybox	gcc	date-works	PASS	PASS
+busybox	gcc	date-works-1	PASS	PASS
+busybox	gcc	dc '>a' (conditional execute string) 1	PASS	PASS
+busybox	gcc	dc '>a' (conditional execute string) 2	PASS	PASS
+busybox	gcc	dc '>aeb' (conditional execute string with else)	PASS	PASS
+busybox	gcc	dc -x dcx_vars.dc	PASS	PASS
+busybox	gcc	dc Z (length) for numbers	PASS	PASS
+busybox	gcc	dc basic syntax (argv, multiple args)	PASS	PASS
+busybox	gcc	dc basic syntax (argv, single arg)	PASS	PASS
+busybox	gcc	dc basic syntax (stdin, multiple args)	PASS	PASS
+busybox	gcc	dc complex with spaces (multiple args)	PASS	PASS
+busybox	gcc	dc complex with spaces (single arg)	PASS	PASS
+busybox	gcc	dc complex without spaces (multiple args)	PASS	PASS
+busybox	gcc	dc complex without spaces (single arg)	PASS	PASS
+busybox	gcc	dc dc_add.dc	PASS	PASS
+busybox	gcc	dc dc_boolean.dc	PASS	PASS
+busybox	gcc	dc dc_decimal.dc	PASS	PASS
+busybox	gcc	dc dc_divide.dc	PASS	PASS
+busybox	gcc	dc dc_divmod.dc	PASS	PASS
+busybox	gcc	dc dc_misc.dc	PASS	PASS
+busybox	gcc	dc dc_modexp.dc	PASS	PASS
+busybox	gcc	dc dc_modulus.dc	PASS	PASS
+busybox	gcc	dc dc_multiply.dc	PASS	PASS
+busybox	gcc	dc dc_power.dc	PASS	PASS
+busybox	gcc	dc dc_sqrt.dc	PASS	PASS
+busybox	gcc	dc dc_strings.dc	PASS	PASS
+busybox	gcc	dc dc_subtract.dc	PASS	PASS
+busybox	gcc	dc newline can be a register	PASS	PASS
+busybox	gcc	dc read	PASS	PASS
+busybox	gcc	dc read string	PASS	PASS
+busybox	gcc	dc space can be a register	PASS	PASS
+busybox	gcc	dc: p should parse/print single backslashes	PASS	PASS
+busybox	gcc	dc: p should print invalid escapes	PASS	PASS
+busybox	gcc	dc: p should print single backslash strings	PASS	PASS
+busybox	gcc	dc: p should print trailing backslashes	PASS	PASS
+busybox	gcc	dc: x should execute strings	PASS	PASS
+busybox	gcc	dc: x should not execute or pop non-strings	PASS	PASS
+busybox	gcc	dc: x should work with strings created from a	PASS	PASS
+busybox	gcc	dd-accepts-if	PASS	PASS
+busybox	gcc	dd-accepts-of	PASS	PASS
+busybox	gcc	dd-copies-from-standard-input-to-standard-output	PASS	PASS
+busybox	gcc	dd-count-bytes	PASS	PASS
+busybox	gcc	dd-prints-count-to-standard-error	PASS	PASS
+busybox	gcc	dd-reports-write-errors	PASS	PASS
+busybox	gcc	diff -B does not ignore changes whose lines are not all blank	PASS	PASS
+busybox	gcc	diff -B does not ignore non-blank single line change	PASS	PASS
+busybox	gcc	diff -B ignores blank single line change	PASS	PASS
+busybox	gcc	diff -B ignores changes whose lines are all blank	PASS	PASS
+busybox	gcc	diff -b treats EOF as whitespace	PASS	PASS
+busybox	gcc	diff -b treats all spaces as equal	PASS	PASS
+busybox	gcc	diff -rN does not read non-regular files	PASS	PASS
+busybox	gcc	diff always takes context from old file	PASS	PASS
+busybox	gcc	diff diff1 diff2/	PASS	PASS
+busybox	gcc	diff diff1 diff2/subdir	PASS	PASS
+busybox	gcc	diff dir dir2/file/-	PASS	PASS
+busybox	gcc	diff of dir and fifo	PASS	PASS
+busybox	gcc	diff of empty file against nonempty one	PASS	PASS
+busybox	gcc	diff of empty file against stdin	PASS	PASS
+busybox	gcc	diff of file and fifo	PASS	PASS
+busybox	gcc	diff of stdin	PASS	PASS
+busybox	gcc	diff of stdin, no newline in the file	PASS	PASS
+busybox	gcc	diff of stdin, twice	PASS	PASS
+busybox	gcc	dirname-handles-absolute-path	PASS	PASS
+busybox	gcc	dirname-handles-empty-path	PASS	PASS
+busybox	gcc	dirname-handles-multiple-slashes	PASS	PASS
+busybox	gcc	dirname-handles-relative-path	PASS	PASS
+busybox	gcc	dirname-handles-root	PASS	PASS
+busybox	gcc	dirname-handles-single-component	PASS	PASS
+busybox	gcc	dirname-works	PASS	PASS
+busybox	gcc	du-h-works	PASS	PASS
+busybox	gcc	du-k-works	PASS	PASS
+busybox	gcc	du-l-works	PASS	PASS
+busybox	gcc	du-m-works	PASS	PASS
+busybox	gcc	du-s-works	PASS	PASS
+busybox	gcc	du-works	PASS	PASS
+busybox	gcc	echo-does-not-print-newline	PASS	PASS
+busybox	gcc	echo-prints-argument	PASS	PASS
+busybox	gcc	echo-prints-arguments	PASS	PASS
+busybox	gcc	echo-prints-dash	PASS	PASS
+busybox	gcc	echo-prints-newline	PASS	PASS
+busybox	gcc	echo-prints-non-opts	PASS	PASS
+busybox	gcc	echo-prints-slash-zero	PASS	PASS
+busybox	gcc	echo-prints-slash_00041	PASS	PASS
+busybox	gcc	echo-prints-slash_0041	PASS	PASS
+busybox	gcc	echo-prints-slash_041	PASS	PASS
+busybox	gcc	echo-prints-slash_41	PASS	PASS
+busybox	gcc	egrep is not case insensitive	PASS	PASS
+busybox	gcc	expand	PASS	PASS
+busybox	gcc	expand with unicode characher 0x394	PASS	PASS
+busybox	gcc	expr-big	PASS	PASS
+busybox	gcc	expr-works	PASS	PASS
+busybox	gcc	factor $((2*3*5*7*11*13*17*19*23*29*31*37*41*43*47))	PASS	PASS
+busybox	gcc	factor '  0'	PASS	PASS
+busybox	gcc	factor ' +2'	PASS	PASS
+busybox	gcc	factor +1	PASS	PASS
+busybox	gcc	factor 1024	PASS	PASS
+busybox	gcc	factor 13^16	PASS	PASS
+busybox	gcc	factor 2 * 3037000493 * 3037000493	PASS	PASS
+busybox	gcc	factor 2^61-1	PASS	PASS
+busybox	gcc	factor 2^62-1	PASS	PASS
+busybox	gcc	factor 2^64-1	PASS	PASS
+busybox	gcc	factor 3 * 13^16	PASS	PASS
+busybox	gcc	factor 3 * 2479700513 * 2479700513	PASS	PASS
+busybox	gcc	factor 3 * 37831 * 37831 * 37831 * 37831	PASS	PASS
+busybox	gcc	false-is-silent	PASS	PASS
+busybox	gcc	false-returns-failure	PASS	PASS
+busybox	gcc	find -exec exitcode 1	PASS	PASS
+busybox	gcc	find -exec exitcode 2	PASS	PASS
+busybox	gcc	find -exec exitcode 3	PASS	PASS
+busybox	gcc	find -exec exitcode 4	PASS	PASS
+busybox	gcc	find -type f	PASS	PASS
+busybox	gcc	find ./// -name .	PASS	PASS
+busybox	gcc	find ./// -name .///	PASS	PASS
+busybox	gcc	find / -maxdepth 0 -name /	PASS	PASS
+busybox	gcc	find / -maxdepth 0 -name //	PASS	PASS
+busybox	gcc	find // -maxdepth 0 -name /	PASS	PASS
+busybox	gcc	find // -maxdepth 0 -name //	PASS	PASS
+busybox	gcc	find-supports-minus-xdev	PASS	PASS
+busybox	gcc	fold -s	PASS	PASS
+busybox	gcc	fold -sw66 with unicode input	PASS	PASS
+busybox	gcc	fold -w1	PASS	PASS
+busybox	gcc	fold with NULs	PASS	PASS
+busybox	gcc	glibc build sort	PASS	PASS
+busybox	gcc	glibc build sort unique	PASS	PASS
+busybox	gcc	grep (default to stdin)	PASS	PASS
+busybox	gcc	grep (exit success)	PASS	PASS
+busybox	gcc	grep (exit with error)	PASS	PASS
+busybox	gcc	grep (no newline at EOL)	PASS	PASS
+busybox	gcc	grep - (specify stdin)	PASS	PASS
+busybox	gcc	grep - infile (specify stdin and file)	PASS	PASS
+busybox	gcc	grep - nofile (specify stdin and nonexisting file)	PASS	PASS
+busybox	gcc	grep -E -o prints all matches	PASS	PASS
+busybox	gcc	grep -E supports extended regexps	PASS	PASS
+busybox	gcc	grep -F -w w doesn't match ww	PASS	PASS
+busybox	gcc	grep -F handles -i	PASS	PASS
+busybox	gcc	grep -F handles multiple expessions	PASS	PASS
+busybox	gcc	grep -Fw doesn't stop on 1st mismatch	PASS	PASS
+busybox	gcc	grep -Fw matches only words	PASS	PASS
+busybox	gcc	grep -L exitcode 0	PASS	PASS
+busybox	gcc	grep -L exitcode 0 #2	PASS	PASS
+busybox	gcc	grep -L exitcode 1	PASS	PASS
+busybox	gcc	grep -e PATTERN can be a newline-delimited list	PASS	PASS
+busybox	gcc	grep -f EMPTY_FILE	PASS	PASS
+busybox	gcc	grep -o does not loop forever	PASS	PASS
+busybox	gcc	grep -o does not loop forever on zero-length match	PASS	PASS
+busybox	gcc	grep -q - nofile (specify stdin and nonexisting file, match)	PASS	PASS
+busybox	gcc	grep -q - nofile (specify stdin and nonexisting file, no match)	PASS	PASS
+busybox	gcc	grep -r on dir/symlink to dir	PASS	PASS
+busybox	gcc	grep -r on symlink to dir	PASS	PASS
+busybox	gcc	grep -s nofile (nonexisting file, no match)	PASS	PASS
+busybox	gcc	grep -s nofile - (stdin and nonexisting file, match)	PASS	PASS
+busybox	gcc	grep -v -f EMPTY_FILE	PASS	PASS
+busybox	gcc	grep -vxf EMPTY_FILE	PASS	PASS
+busybox	gcc	grep -w ^ doesn't hang	PASS	PASS
+busybox	gcc	grep -w ^str doesn't match str not at the beginning	PASS	PASS
+busybox	gcc	grep -w doesn't stop on 1st mismatch	PASS	PASS
+busybox	gcc	grep -w word doesn't match wordword	PASS	PASS
+busybox	gcc	grep -w word match second word	PASS	PASS
+busybox	gcc	grep -x (full match)	PASS	PASS
+busybox	gcc	grep -x (partial match 1)	PASS	PASS
+busybox	gcc	grep -x (partial match 2)	PASS	PASS
+busybox	gcc	grep -x -F (full match)	PASS	PASS
+busybox	gcc	grep -x -F (partial match 1)	PASS	PASS
+busybox	gcc	grep -x -F (partial match 2)	PASS	PASS
+busybox	gcc	grep -x -v -e EXP1 -e EXP2 finds nothing if either EXP matches	PASS	PASS
+busybox	gcc	grep PATTERN can be a newline-delimited list	PASS	PASS
+busybox	gcc	grep can read regexps from stdin	PASS	PASS
+busybox	gcc	grep handles NUL in files	SKIP	SKIP
+busybox	gcc	grep handles NUL on stdin	SKIP	SKIP
+busybox	gcc	grep handles multiple regexps	PASS	PASS
+busybox	gcc	grep input (specify file)	PASS	PASS
+busybox	gcc	grep is also egrep	PASS	PASS
+busybox	gcc	grep matches NUL	SKIP	SKIP
+busybox	gcc	grep two files	PASS	PASS
+busybox	gcc	gunzip-reads-from-standard-input	PASS	PASS
+busybox	gcc	gunzip: already exists	PASS	PASS
+busybox	gcc	gunzip: delete src	PASS	PASS
+busybox	gcc	gunzip: doesnt exist	PASS	PASS
+busybox	gcc	gunzip: stream unpack	PASS	PASS
+busybox	gcc	gunzip: unknown suffix	PASS	PASS
+busybox	gcc	gzip-accepts-multiple-files	PASS	PASS
+busybox	gcc	gzip-accepts-single-minus	PASS	PASS
+busybox	gcc	gzip-compression-levels	SKIP	SKIP
+busybox	gcc	gzip-removes-original-file	PASS	PASS
+busybox	gcc	head (without args)	PASS	PASS
+busybox	gcc	head -n <negative number>	PASS	PASS
+busybox	gcc	head -n <positive number>	PASS	PASS
+busybox	gcc	hexdump -C with four NULs	PASS	PASS
+busybox	gcc	hexdump does not think last padded block matches any full block	PASS	PASS
+busybox	gcc	hexdump thinks last full block can match	PASS	PASS
+busybox	gcc	hostid-works	PASS	PASS
+busybox	gcc	hostname-d-works	PASS	PASS
+busybox	gcc	hostname-i-works	PASS	PASS
+busybox	gcc	hostname-s-works	PASS	PASS
+busybox	gcc	hostname-works	PASS	PASS
+busybox	gcc	id-g-works	PASS	PASS
+busybox	gcc	id-u-works	PASS	PASS
+busybox	gcc	id-un-works	PASS	PASS
+busybox	gcc	id-ur-works	PASS	PASS
+busybox	gcc	ln-creates-hard-links	PASS	PASS
+busybox	gcc	ln-creates-soft-links	PASS	PASS
+busybox	gcc	ln-force-creates-hard-links	PASS	PASS
+busybox	gcc	ln-force-creates-soft-links	PASS	PASS
+busybox	gcc	ln-preserves-hard-links	PASS	PASS
+busybox	gcc	ln-preserves-soft-links	PASS	PASS
+busybox	gcc	ls symlink_to_dir	PASS	PASS
+busybox	gcc	ls unicode test with codepoints limited to 767	FAIL	FAIL
+busybox	gcc	ls-1-works	PASS	PASS
+busybox	gcc	ls-h-works	PASS	PASS
+busybox	gcc	ls-l-works	PASS	PASS
+busybox	gcc	ls-s-works	PASS	PASS
+busybox	gcc	makedevs -d ../makedevs.device_table.txt .	FAIL	FAIL
+busybox	gcc	md5sum	PASS	PASS
+busybox	gcc	md5sum -c EMPTY	PASS	PASS
+busybox	gcc	md5sum-verifies-non-binary-file	PASS	PASS
+busybox	gcc	mdev #maj,min and no explicit uid	SKIP	SKIP
+busybox	gcc	mdev $ENVVAR=regex match	SKIP	SKIP
+busybox	gcc	mdev add /block/sda	SKIP	SKIP
+busybox	gcc	mdev command	SKIP	SKIP
+busybox	gcc	mdev deletes /block/sda	SKIP	SKIP
+busybox	gcc	mdev does not stop on dash-rule	SKIP	SKIP
+busybox	gcc	mdev move and command	SKIP	SKIP
+busybox	gcc	mdev move rule '=bar/baz/fname'	SKIP	SKIP
+busybox	gcc	mdev move/symlink rule '>bar/'	SKIP	SKIP
+busybox	gcc	mdev move/symlink rule '>bar/baz'	SKIP	SKIP
+busybox	gcc	mdev regexp substring match + replace	SKIP	SKIP
+busybox	gcc	mdev stops on first rule	SKIP	SKIP
+busybox	gcc	mkdir-makes-a-directory	PASS	PASS
+busybox	gcc	mkdir-makes-parent-directories	PASS	PASS
+busybox	gcc	mkfs.minix	PASS	PASS
+busybox	gcc	mount -o remount,mand	FAIL	FAIL
+busybox	gcc	mount RO loop	FAIL	FAIL
+busybox	gcc	mount bind+rshared	FAIL	FAIL
+busybox	gcc	move rule does not delete node with name == device_name	SKIP	SKIP
+busybox	gcc	mv-files-to-dir	PASS	PASS
+busybox	gcc	mv-files-to-dir-2	PASS	PASS
+busybox	gcc	mv-follows-links	PASS	PASS
+busybox	gcc	mv-moves-empty-file	PASS	PASS
+busybox	gcc	mv-moves-file	PASS	PASS
+busybox	gcc	mv-moves-hardlinks	PASS	PASS
+busybox	gcc	mv-moves-large-file	PASS	PASS
+busybox	gcc	mv-moves-small-file	PASS	PASS
+busybox	gcc	mv-moves-symlinks	PASS	PASS
+busybox	gcc	mv-moves-unreadable-files	PASS	PASS
+busybox	gcc	mv-preserves-hard-links	PASS	PASS
+busybox	gcc	mv-preserves-links	PASS	PASS
+busybox	gcc	mv-refuses-mv-dir-to-subdir	PASS	PASS
+busybox	gcc	mv-removes-source-file	PASS	PASS
+busybox	gcc	nl numbers all lines	PASS	PASS
+busybox	gcc	nl numbers no lines	PASS	PASS
+busybox	gcc	nl numbers non-empty lines	PASS	PASS
+busybox	gcc	od -b	PASS	PASS
+busybox	gcc	od -b --traditional	PASS	PASS
+busybox	gcc	od -b --traditional FILE	PASS	PASS
+busybox	gcc	od -f	PASS	PASS
+busybox	gcc	paste	PASS	PASS
+busybox	gcc	paste-back-cuted-lines	PASS	PASS
+busybox	gcc	paste-multi-stdin	PASS	PASS
+busybox	gcc	paste-pairs	PASS	PASS
+busybox	gcc	paste-separate	PASS	PASS
+busybox	gcc	patch -N ignores already applied hunk	PASS	PASS
+busybox	gcc	patch -R with nonexistent old_file	PASS	PASS
+busybox	gcc	patch FILE PATCH	PASS	PASS
+busybox	gcc	patch at the beginning	PASS	PASS
+busybox	gcc	patch creates new file	PASS	PASS
+busybox	gcc	patch detects already applied hunk	PASS	PASS
+busybox	gcc	patch detects already applied hunk at the EOF	PASS	PASS
+busybox	gcc	patch internal buffering bug?	PASS	PASS
+busybox	gcc	patch understands ...dir///dir...	PASS	PASS
+busybox	gcc	patch with nonexistent old_file	PASS	PASS
+busybox	gcc	patch with old_file == new_file	PASS	PASS
+busybox	gcc	pidof (exit with error)	PASS	PASS
+busybox	gcc	pidof (exit with success)	PASS	PASS
+busybox	gcc	pidof -o init	PASS	PASS
+busybox	gcc	pidof this	PASS	PASS
+busybox	gcc	printf aborts on %r	PASS	PASS
+busybox	gcc	printf aborts on bare %	PASS	PASS
+busybox	gcc	printf handles %d bad_input	PASS	PASS
+busybox	gcc	printf handles multiple flags	PASS	PASS
+busybox	gcc	printf handles positive numbers for %d	PASS	PASS
+busybox	gcc	printf handles positive numbers for %f	PASS	PASS
+busybox	gcc	printf handles positive numbers for %i	PASS	PASS
+busybox	gcc	printf handles positive numbers for %x	PASS	PASS
+busybox	gcc	printf produces no further output 1	PASS	PASS
+busybox	gcc	printf produces no further output 2	PASS	PASS
+busybox	gcc	printf repeatedly uses pattern for each argv	PASS	PASS
+busybox	gcc	printf treats leading 0 as flag	PASS	PASS
+busybox	gcc	printf understands %%	PASS	PASS
+busybox	gcc	printf understands %*.*f	PASS	PASS
+busybox	gcc	printf understands %*.*f with negative width/precision	PASS	PASS
+busybox	gcc	printf understands %*f with negative width	PASS	PASS
+busybox	gcc	printf understands %.*f with negative precision	PASS	PASS
+busybox	gcc	printf understands %23.12f	PASS	PASS
+busybox	gcc	printf understands %Ld	PASS	PASS
+busybox	gcc	printf understands %b escaped_string	PASS	PASS
+busybox	gcc	printf understands %d '"x' "'y" "'zTAIL"	PASS	PASS
+busybox	gcc	printf understands %ld	PASS	PASS
+busybox	gcc	printf understands %s '"x' "'y" "'zTAIL"	PASS	PASS
+busybox	gcc	printf understands %zd	PASS	PASS
+busybox	gcc	pwd-prints-working-directory	PASS	PASS
+busybox	gcc	readlink -f on a file	PASS	PASS
+busybox	gcc	readlink -f on a link	PASS	PASS
+busybox	gcc	readlink -f on a weird dir	PASS	PASS
+busybox	gcc	readlink -f on an invalid link	PASS	PASS
+busybox	gcc	readlink on a file	PASS	PASS
+busybox	gcc	readlink on a link	PASS	PASS
+busybox	gcc	realpath on link to non-existent file 1	PASS	PASS
+busybox	gcc	realpath on link to non-existent file 2	PASS	PASS
+busybox	gcc	realpath on link to non-existent file 3	PASS	PASS
+busybox	gcc	realpath on link to non-existent file 4	PASS	PASS
+busybox	gcc	realpath on non-existent absolute path 1	PASS	PASS
+busybox	gcc	realpath on non-existent absolute path 2	PASS	PASS
+busybox	gcc	realpath on non-existent absolute path 3	PASS	PASS
+busybox	gcc	realpath on non-existent absolute path 4	PASS	PASS
+busybox	gcc	realpath on non-existent local file 1	PASS	PASS
+busybox	gcc	realpath on non-existent local file 2	PASS	PASS
+busybox	gcc	rev file with NUL character	PASS	PASS
+busybox	gcc	rev file with long line	PASS	PASS
+busybox	gcc	rev file with missing newline	PASS	PASS
+busybox	gcc	rev works	PASS	PASS
+busybox	gcc	rm-removes-file	PASS	PASS
+busybox	gcc	rmdir-removes-parent-directories	PASS	PASS
+busybox	gcc	rx	PASS	PASS
+busybox	gcc	sed 's///w FILE'	PASS	PASS
+busybox	gcc	sed -i finishes ranges correctly	PASS	PASS
+busybox	gcc	sed -i with address modifies all files, not only first	PASS	PASS
+busybox	gcc	sed -i with no arg [GNUFAIL]	PASS	PASS
+busybox	gcc	sed -n	PASS	PASS
+busybox	gcc	sed -n s//p	PASS	PASS
+busybox	gcc	sed /$_in_regex/ should not match newlines, only end-of-line	PASS	PASS
+busybox	gcc	sed /regex/,+0<cmd> -i works	PASS	PASS
+busybox	gcc	sed /regex/,+0{...} -i works	PASS	PASS
+busybox	gcc	sed /regex/,+N{...} -i works	PASS	PASS
+busybox	gcc	sed /regex/,+N{...} addresses work	PASS	PASS
+busybox	gcc	sed /regex/,+N{...} addresses work 2	PASS	PASS
+busybox	gcc	sed /regex/,N{...} addresses work	PASS	PASS
+busybox	gcc	sed 2d;2,1p (gnu compat)	PASS	PASS
+busybox	gcc	sed G (append hold space to pattern space)	PASS	PASS
+busybox	gcc	sed N (flushes pattern space (GNU behavior))	PASS	PASS
+busybox	gcc	sed N (stops at end of input) and P (prints to first newline only)	PASS	PASS
+busybox	gcc	sed N test2	PASS	PASS
+busybox	gcc	sed N test3	PASS	PASS
+busybox	gcc	sed NUL in command	FAIL	FAIL
+busybox	gcc	sed T (!test/branch)	PASS	PASS
+busybox	gcc	sed ^ OR not^	PASS	PASS
+busybox	gcc	sed a cmd ended by double backslash	PASS	PASS
+busybox	gcc	sed a cmd understands 	PASS	PASS
+busybox	gcc	sed accepts blanks before command	PASS	PASS
+busybox	gcc	sed accepts multiple -e	PASS	PASS
+busybox	gcc	sed accepts newlines in -e	PASS	PASS
+busybox	gcc	sed address match newline	PASS	PASS
+busybox	gcc	sed append autoinserts newline	PASS	PASS
+busybox	gcc	sed append autoinserts newline 2	PASS	PASS
+busybox	gcc	sed append autoinserts newline 3	PASS	PASS
+busybox	gcc	sed autoinsert newline	PASS	PASS
+busybox	gcc	sed b (branch with no label jumps to end)	PASS	PASS
+busybox	gcc	sed b (branch)	PASS	PASS
+busybox	gcc	sed backref from empty s uses range regex	PASS	PASS
+busybox	gcc	sed backref from empty s uses range regex with newline	PASS	PASS
+busybox	gcc	sed beginning (^) matches only once	PASS	PASS
+busybox	gcc	sed c	PASS	PASS
+busybox	gcc	sed cat plus empty file	PASS	PASS
+busybox	gcc	sed clusternewline	PASS	PASS
+busybox	gcc	sed d does not break n,m matching	PASS	PASS
+busybox	gcc	sed d does not break n,regex matching	PASS	PASS
+busybox	gcc	sed d does not break n,regex matching #2	PASS	PASS
+busybox	gcc	sed d ends script iteration	PASS	PASS
+busybox	gcc	sed d ends script iteration (2)	PASS	PASS
+busybox	gcc	sed embedded NUL	FAIL	FAIL
+busybox	gcc	sed embedded NUL g	PASS	PASS
+busybox	gcc	sed empty file plus cat	PASS	PASS
+busybox	gcc	sed escaped newline in command	PASS	PASS
+busybox	gcc	sed explicit stdin	PASS	PASS
+busybox	gcc	sed handles empty lines	PASS	PASS
+busybox	gcc	sed i cmd understands 	PASS	PASS
+busybox	gcc	sed insert doesn't autoinsert newline	PASS	PASS
+busybox	gcc	sed leave off trailing newline	PASS	PASS
+busybox	gcc	sed lie-to-autoconf	PASS	PASS
+busybox	gcc	sed match EOF	PASS	PASS
+busybox	gcc	sed match EOF inline	PASS	PASS
+busybox	gcc	sed match EOF two files	PASS	PASS
+busybox	gcc	sed n (flushes pattern space, terminates early)	PASS	PASS
+busybox	gcc	sed n command must reset 'substituted' bit	PASS	PASS
+busybox	gcc	sed nested {}s	PASS	PASS
+busybox	gcc	sed no files (stdin)	PASS	PASS
+busybox	gcc	sed nonexistent label	FAIL	FAIL
+busybox	gcc	sed noprint, no match, no newline	PASS	PASS
+busybox	gcc	sed normal newlines	PASS	PASS
+busybox	gcc	sed print autoinsert newlines	PASS	PASS
+busybox	gcc	sed print autoinsert newlines two files	PASS	PASS
+busybox	gcc	sed s [delimiter]	PASS	PASS
+busybox	gcc	sed s arbitrary delimiter	PASS	PASS
+busybox	gcc	sed s chains	PASS	PASS
+busybox	gcc	sed s chains2	PASS	PASS
+busybox	gcc	sed s with  (GNU ext)	PASS	PASS
+busybox	gcc	sed s///NUM test	PASS	PASS
+busybox	gcc	sed s//g (exhaustive)	PASS	PASS
+busybox	gcc	sed s//p	PASS	PASS
+busybox	gcc	sed s/xxx/[/	PASS	PASS
+busybox	gcc	sed selective matches insert newline	PASS	PASS
+busybox	gcc	sed selective matches noinsert newline	PASS	PASS
+busybox	gcc	sed selective matches with one nl	PASS	PASS
+busybox	gcc	sed special char as s/// delimiter, in pattern	PASS	PASS
+busybox	gcc	sed special char as s/// delimiter, in replacement 1	PASS	PASS
+busybox	gcc	sed special char as s/// delimiter, in replacement 2	PASS	PASS
+busybox	gcc	sed stdin twice	PASS	PASS
+busybox	gcc	sed subst+write	PASS	PASS
+busybox	gcc	sed t (test/branch clears test bit)	PASS	PASS
+busybox	gcc	sed t (test/branch)	PASS	PASS
+busybox	gcc	sed trailing NUL	PASS	PASS
+busybox	gcc	sed understands  	PASS	PASS
+busybox	gcc	sed understands duplicate file name	PASS	PASS
+busybox	gcc	sed uses previous regexp	PASS	PASS
+busybox	gcc	sed with N skipping lines past ranges on next cmds	PASS	PASS
+busybox	gcc	sed with empty match	PASS	PASS
+busybox	gcc	sed zero chars match/replace advances correctly 1	PASS	PASS
+busybox	gcc	sed zero chars match/replace advances correctly 2	PASS	PASS
+busybox	gcc	sed zero chars match/replace logic must not falsely trigger here 1	PASS	PASS
+busybox	gcc	sed zero chars match/replace logic must not falsely trigger here 2	PASS	PASS
+busybox	gcc	seq (exit with error)	PASS	PASS
+busybox	gcc	seq count by -.9	PASS	PASS
+busybox	gcc	seq count by .3	PASS	PASS
+busybox	gcc	seq count by .3 with padding 1	PASS	PASS
+busybox	gcc	seq count by .3 with padding 2	PASS	PASS
+busybox	gcc	seq count by .30	PASS	PASS
+busybox	gcc	seq count by .30 to 4.000	PASS	PASS
+busybox	gcc	seq count by zero	PASS	PASS
+busybox	gcc	seq count down by 2	PASS	PASS
+busybox	gcc	seq count down by 3 with padding	PASS	PASS
+busybox	gcc	seq count up by 2	PASS	PASS
+busybox	gcc	seq count wrong way #1	PASS	PASS
+busybox	gcc	seq count wrong way #2	PASS	PASS
+busybox	gcc	seq one argument	PASS	PASS
+busybox	gcc	seq one argument with padding	PASS	PASS
+busybox	gcc	seq two arguments	PASS	PASS
+busybox	gcc	seq two arguments equal	PASS	PASS
+busybox	gcc	seq two arguments equal, arbitrary negative step	PASS	PASS
+busybox	gcc	seq two arguments equal, arbitrary positive step	PASS	PASS
+busybox	gcc	seq two arguments reversed	PASS	PASS
+busybox	gcc	seq two arguments with padding	PASS	PASS
+busybox	gcc	sha1sum: one-space separated input for -c	PASS	PASS
+busybox	gcc	sort	PASS	PASS
+busybox	gcc	sort #2	PASS	PASS
+busybox	gcc	sort -h	PASS	PASS
+busybox	gcc	sort -k2,2M	PASS	PASS
+busybox	gcc	sort -s -u	PASS	PASS
+busybox	gcc	sort -sr (stable and reverse) does NOT reverse 'stable' ordering	PASS	PASS
+busybox	gcc	sort -u should consider field only when discarding	PASS	PASS
+busybox	gcc	sort -z outputs NUL terminated lines	PASS	PASS
+busybox	gcc	sort file in place	PASS	PASS
+busybox	gcc	sort key doesn't strip leading blanks, disables fallback global sort	PASS	PASS
+busybox	gcc	sort key range with multiple options	PASS	PASS
+busybox	gcc	sort key range with numeric option	PASS	PASS
+busybox	gcc	sort key range with numeric option and global reverse	PASS	PASS
+busybox	gcc	sort key range with two -k options	PASS	PASS
+busybox	gcc	sort numeric	PASS	PASS
+busybox	gcc	sort one key	PASS	PASS
+busybox	gcc	sort reverse	PASS	PASS
+busybox	gcc	sort stdin	PASS	PASS
+busybox	gcc	sort with ENDCHAR	PASS	PASS
+busybox	gcc	sort with non-default leading delim 1	PASS	PASS
+busybox	gcc	sort with non-default leading delim 2	PASS	PASS
+busybox	gcc	sort with non-default leading delim 3	PASS	PASS
+busybox	gcc	sort with non-default leading delim 4	PASS	PASS
+busybox	gcc	start-stop-daemon -a without -x	PASS	PASS
+busybox	gcc	start-stop-daemon -x without -a	PASS	PASS
+busybox	gcc	start-stop-daemon with both -x and -a	PASS	PASS
+busybox	gcc	start-stop-daemon without -x and -a	PASS	PASS
+busybox	gcc	strings-works-like-GNU	PASS	PASS
+busybox	gcc	sum -r file doesn't print file's name	PASS	PASS
+busybox	gcc	sum -r file file does print both names	PASS	PASS
+busybox	gcc	sum -s file does print file's name	PASS	PASS
+busybox	gcc	tail-n-works	PASS	PASS
+busybox	gcc	tail-works	PASS	PASS
+busybox	gcc	tail: +N with N > file length	PASS	PASS
+busybox	gcc	tail: -c +N with largish N	PASS	PASS
+busybox	gcc	tar --overwrite	PASS	PASS
+busybox	gcc	tar -k does not extract into symlinks	PASS	PASS
+busybox	gcc	tar Empty file is not a tarball	PASS	PASS
+busybox	gcc	tar Empty file is not a tarball.tar.gz	PASS	PASS
+busybox	gcc	tar Pax-encoded UTF8 names and symlinks	PASS	PASS
+busybox	gcc	tar Symlink attack: create symlink and then write through it	PASS	PASS
+busybox	gcc	tar Symlinks and hardlinks coexist	PASS	PASS
+busybox	gcc	tar Twenty zeroed blocks is an empty tarball	PASS	PASS
+busybox	gcc	tar Two zeroed blocks is a ('truncated') empty tarball	PASS	PASS
+busybox	gcc	tar does not extract into symlinks	PASS	PASS
+busybox	gcc	tar extract tgz	PASS	PASS
+busybox	gcc	tar extract txz	PASS	PASS
+busybox	gcc	tar hardlinks and repeated files	PASS	PASS
+busybox	gcc	tar hardlinks mode	PASS	PASS
+busybox	gcc	tar strips /../ on extract	PASS	PASS
+busybox	gcc	tar symlinks mode	FAIL	FAIL
+busybox	gcc	tar writing into read-only dir	FAIL	FAIL
+busybox	gcc	tar-archives-multiple-files	PASS	PASS
+busybox	gcc	tar-complains-about-missing-file	PASS	PASS
+busybox	gcc	tar-demands-at-least-one-ctx	PASS	PASS
+busybox	gcc	tar-demands-at-most-one-ctx	PASS	PASS
+busybox	gcc	tar-extracts-all-subdirs	PASS	PASS
+busybox	gcc	tar-extracts-file	PASS	PASS
+busybox	gcc	tar-extracts-from-standard-input	PASS	PASS
+busybox	gcc	tar-extracts-multiple-files	PASS	PASS
+busybox	gcc	tar-extracts-to-standard-output	PASS	PASS
+busybox	gcc	tar-handles-cz-options	PASS	PASS
+busybox	gcc	tar-handles-empty-include-and-non-empty-exclude-list	PASS	PASS
+busybox	gcc	tar-handles-exclude-and-extract-lists	PASS	PASS
+busybox	gcc	tar-handles-multiple-X-options	PASS	PASS
+busybox	gcc	tar-handles-nested-exclude	PASS	PASS
+busybox	gcc	tar_with_link_with_size	PASS	PASS
+busybox	gcc	tar_with_prefix_fields	PASS	PASS
+busybox	gcc	taskset (get from pid 1)	PASS	PASS
+busybox	gcc	taskset (invalid pid)	PASS	PASS
+busybox	gcc	taskset (set_aff, needs CAP_SYS_NICE)	PASS	PASS
+busybox	gcc	tee-appends-input	PASS	PASS
+busybox	gcc	tee-tees-input	PASS	PASS
+busybox	gcc	test ! -f: should be false (1)	PASS	PASS
+busybox	gcc	test ! a = b -a ! c = c: should be false (1)	PASS	PASS
+busybox	gcc	test ! a = b -a ! c = d: should be true (0)	PASS	PASS
+busybox	gcc	test !: should be true (0)	PASS	PASS
+busybox	gcc	test '!' '!' = '!': should be false (1)	PASS	PASS
+busybox	gcc	test '!' '(' = '(': should be false (1)	PASS	PASS
+busybox	gcc	test '!' = '!': should be true (0)	PASS	PASS
+busybox	gcc	test '': should be false (1)	PASS	PASS
+busybox	gcc	test '(' = '(': should be true (0)	PASS	PASS
+busybox	gcc	test --help: should be true (0)	PASS	PASS
+busybox	gcc	test -f = a -o b: should be true (0)	PASS	PASS
+busybox	gcc	test -f: should be true (0)	PASS	PASS
+busybox	gcc	test -lt = -gt: should be false (1)	PASS	PASS
+busybox	gcc	test a -a !: should be true (0)	PASS	PASS
+busybox	gcc	test a = a: should be true (0)	PASS	PASS
+busybox	gcc	test a: should be true (0)	PASS	PASS
+busybox	gcc	test: should be false (1)	PASS	PASS
+busybox	gcc	touch-creates-file	PASS	PASS
+busybox	gcc	touch-does-not-create-file	PASS	PASS
+busybox	gcc	touch-touches-files-after-non-existent-file	PASS	PASS
+busybox	gcc	tr does not stop after [:digit:]	PASS	PASS
+busybox	gcc	tr does not treat [] in [a-z] as special	PASS	PASS
+busybox	gcc	tr has correct xdigit sequence	PASS	PASS
+busybox	gcc	tr understands 0-9A-F	PASS	PASS
+busybox	gcc	tr understands [:xdigit:]	PASS	PASS
+busybox	gcc	tr-d-alnum-works	PASS	PASS
+busybox	gcc	tr-d-works	PASS	PASS
+busybox	gcc	tr-non-gnu	PASS	PASS
+busybox	gcc	tr-rejects-wrong-class	PASS	PASS
+busybox	gcc	tr-works	PASS	PASS
+busybox	gcc	tree error opening dir	PASS	PASS
+busybox	gcc	tree multiple directories	PASS	PASS
+busybox	gcc	tree nested directories and files	PASS	PASS
+busybox	gcc	tree single file	PASS	PASS
+busybox	gcc	true-is-silent	PASS	PASS
+busybox	gcc	true-returns-success	PASS	PASS
+busybox	gcc	tsort	PASS	PASS
+busybox	gcc	tsort -	PASS	PASS
+busybox	gcc	tsort /dev/null	PASS	PASS
+busybox	gcc	tsort 1-edge	PASS	PASS
+busybox	gcc	tsort 2-edge	PASS	PASS
+busybox	gcc	tsort 2singleton	PASS	PASS
+busybox	gcc	tsort blank	PASS	PASS
+busybox	gcc	tsort blanks	PASS	PASS
+busybox	gcc	tsort cycle	PASS	PASS
+busybox	gcc	tsort empty	PASS	PASS
+busybox	gcc	tsort empty2	PASS	PASS
+busybox	gcc	tsort input	PASS	PASS
+busybox	gcc	tsort input (w/o eol)	PASS	PASS
+busybox	gcc	tsort medium	PASS	PASS
+busybox	gcc	tsort odd	PASS	PASS
+busybox	gcc	tsort odd2	PASS	PASS
+busybox	gcc	tsort prefixes	PASS	PASS
+busybox	gcc	tsort simple	PASS	PASS
+busybox	gcc	tsort singleton	PASS	PASS
+busybox	gcc	tsort std.example	PASS	PASS
+busybox	gcc	unexpand case 1	PASS	PASS
+busybox	gcc	unexpand case 2	PASS	PASS
+busybox	gcc	unexpand case 3	PASS	PASS
+busybox	gcc	unexpand case 4	PASS	PASS
+busybox	gcc	unexpand case 5	PASS	PASS
+busybox	gcc	unexpand case 6	PASS	PASS
+busybox	gcc	unexpand case 7	PASS	PASS
+busybox	gcc	unexpand case 8	PASS	PASS
+busybox	gcc	unexpand flags 	PASS	PASS
+busybox	gcc	unexpand flags --first-only -t4	PASS	PASS
+busybox	gcc	unexpand flags -a	PASS	PASS
+busybox	gcc	unexpand flags -a -t4	PASS	PASS
+busybox	gcc	unexpand flags -a -t8	PASS	PASS
+busybox	gcc	unexpand flags -f	PASS	PASS
+busybox	gcc	unexpand flags -f -t4	PASS	PASS
+busybox	gcc	unexpand flags -f -t8	PASS	PASS
+busybox	gcc	unexpand flags -t4	PASS	PASS
+busybox	gcc	unexpand flags -t4 --first-only	PASS	PASS
+busybox	gcc	unexpand flags -t4 -a	PASS	PASS
+busybox	gcc	unexpand flags -t4 -f	PASS	PASS
+busybox	gcc	unexpand flags -t8	PASS	PASS
+busybox	gcc	unexpand flags -t8 --first-only	PASS	PASS
+busybox	gcc	unexpand flags -t8 -f	PASS	PASS
+busybox	gcc	unexpand with unicode characher 0x394	PASS	PASS
+busybox	gcc	uniq (default to stdin)	PASS	PASS
+busybox	gcc	uniq (exit success)	PASS	PASS
+busybox	gcc	uniq (exit with error)	PASS	PASS
+busybox	gcc	uniq (stdin) outfile	PASS	PASS
+busybox	gcc	uniq - (specify stdin)	PASS	PASS
+busybox	gcc	uniq -c (occurrence count)	PASS	PASS
+busybox	gcc	uniq -d (dups only)	PASS	PASS
+busybox	gcc	uniq -f -s (skip fields and chars)	PASS	PASS
+busybox	gcc	uniq -s -w (skip fields and compare max chars)	PASS	PASS
+busybox	gcc	uniq -u and -d produce no output	PASS	PASS
+busybox	gcc	uniq -w (compare max characters)	PASS	PASS
+busybox	gcc	uniq input (specify file)	PASS	PASS
+busybox	gcc	uniq input - (specify stdout)	PASS	PASS
+busybox	gcc	uniq input outfile (two files)	PASS	PASS
+busybox	gcc	unlzma (bad archive 1)	PASS	PASS
+busybox	gcc	unlzma (bad archive 2)	PASS	PASS
+busybox	gcc	unlzma (bad archive 3)	PASS	PASS
+busybox	gcc	unzip (archive with corrupted lzma 1)	PASS	PASS
+busybox	gcc	unzip (archive with corrupted lzma 2)	PASS	PASS
+busybox	gcc	unzip (bad archive)	SKIP	SKIP
+busybox	gcc	unzip (subdir only)	FAIL	FAIL
+busybox	gcc	uptime-works	PASS	PASS
+busybox	gcc	uuencode -m empty file	PASS	PASS
+busybox	gcc	uuencode -m file 'A'	PASS	PASS
+busybox	gcc	uuencode -m file 'A<NUL><0xff>Z'	PASS	PASS
+busybox	gcc	uuencode -m file 'AB'	PASS	PASS
+busybox	gcc	uuencode -m file 'ABC'	PASS	PASS
+busybox	gcc	uuencode -m file 'ABCD'	PASS	PASS
+busybox	gcc	uuencode -m file 'ABCDE'	PASS	PASS
+busybox	gcc	uuencode -m file 'ABCDEF'	PASS	PASS
+busybox	gcc	uuencode correct base64 encoding	PASS	PASS
+busybox	gcc	uuencode correct encoding	PASS	PASS
+busybox	gcc	uuencode empty file	PASS	PASS
+busybox	gcc	uuencode file 'A'	PASS	PASS
+busybox	gcc	uuencode file 'A<NUL><0xff>Z'	PASS	PASS
+busybox	gcc	uuencode file 'AB'	PASS	PASS
+busybox	gcc	uuencode file 'ABC'	PASS	PASS
+busybox	gcc	uuencode file 'ABCD'	PASS	PASS
+busybox	gcc	uuencode file 'ABCDE'	PASS	PASS
+busybox	gcc	uuencode file 'ABCDEF'	PASS	PASS
+busybox	gcc	uuencode sets standard input mode correctly	PASS	PASS
+busybox	gcc	wc-counts-all	PASS	PASS
+busybox	gcc	wc-counts-characters	PASS	PASS
+busybox	gcc	wc-counts-lines	PASS	PASS
+busybox	gcc	wc-counts-words	PASS	PASS
+busybox	gcc	wc-prints-longest-line-length	PASS	PASS
+busybox	gcc	wget--O-overrides--P	PASS	PASS
+busybox	gcc	wget-handles-empty-path	PASS	PASS
+busybox	gcc	wget-retrieves-google-index	PASS	PASS
+busybox	gcc	wget-supports--P	PASS	PASS
+busybox	gcc	which-uses-default-path	PASS	PASS
+busybox	gcc	xargs -E ''	PASS	PASS
+busybox	gcc	xargs -E _ stops on underscore	PASS	PASS
+busybox	gcc	xargs -I skips empty lines and leading whitespace	PASS	PASS
+busybox	gcc	xargs -e without param	PASS	PASS
+busybox	gcc	xargs -n1	PASS	PASS
+busybox	gcc	xargs -n2	PASS	PASS
+busybox	gcc	xargs -s7 can take one-char input	PASS	PASS
+busybox	gcc	xargs -sNUM test 1	PASS	PASS
+busybox	gcc	xargs -sNUM test 2	PASS	PASS
+busybox	gcc	xargs argument line too long	PASS	PASS
+busybox	gcc	xargs does not stop on underscore ('new' GNU behavior)	PASS	PASS
+busybox	gcc	xargs-works	PASS	PASS
+busybox	gcc	xxd -p -r	PASS	PASS
+busybox	gcc	xxd -p -r ignores the nibble with 2nd char bad	PASS	PASS
+busybox	gcc	xxd -p -r skips one bad char, truncates at two bad chars	PASS	PASS
+busybox	gcc	xxd -p with 30 NULs	PASS	PASS
+busybox	gcc	xxd -p with 31 NULs	PASS	PASS
+busybox	gcc	xxd -p with one NUL	PASS	PASS
+busybox	gcc	xxd -r skips leading whitespace and truncates at two spaces	PASS	PASS
+busybox	gcc	zcat: dont delete bz2 src	PASS	PASS
+busybox	gcc	zcat: dont delete gz src	PASS	PASS
 expat	clang	tests/runtests	PASS	PASS
 expat	clang	tests/runtests_cxx	PASS	PASS
 expat	gcc	tests/runtests	PASS	PASS
@@ -802,6 +2815,16 @@ pcre2	gcc	RunGrepTest	PASS	PASS
 pcre2	gcc	RunTest	PASS	PASS
 pcre2	gcc	pcre2_jit_test	PASS	PASS
 pcre2	gcc	pcre2posix_test	PASS	PASS
+semver	clang	test_autotrait	PASS	PASS
+semver	clang	test_identifier	PASS	PASS
+semver	clang	test_lib	PASS	PASS
+semver	clang	test_version	PASS	PASS
+semver	clang	test_version_req	PASS	PASS
+semver	gcc	test_autotrait	PASS	PASS
+semver	gcc	test_identifier	PASS	PASS
+semver	gcc	test_lib	PASS	PASS
+semver	gcc	test_version	PASS	PASS
+semver	gcc	test_version_req	PASS	PASS
 zlib	clang	test64	PASS	PASS
 zlib	clang	testshared	FAIL	FAIL
 zlib	clang	teststatic	PASS	PASS
