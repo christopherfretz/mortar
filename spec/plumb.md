@@ -4185,8 +4185,10 @@ stage 3 puts outside (P-D1) is still judged here.
   rules that need no option still run.
 - **The output kind.** A table is due (O-50, as implemented: WP-075)
   exactly when the output has a `PT_INTERP` (a dynamic executable, PIE
-  or not), `--odr-table` is not `off`, `--odr` is not `off`, and at
-  least one live unit parses (below). An output with no `PT_INTERP`
+  or not), `--odr-table` is not `off` and `--odr` is not `off`, units
+  or none (with none, every row set is empty: a count-0 table; measured
+  with no `.mason.meta` input at all, with and without shared inputs,
+  with and without tables in them). An output with no `PT_INTERP`
   (static, static-pie) never has one, `=full` included; a shared object
   is M4 and is held to "no table" until then.
 - **The live units.** The map's files in map order (FileId order; §3.2's

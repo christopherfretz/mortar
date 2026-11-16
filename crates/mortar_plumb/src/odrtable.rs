@@ -277,7 +277,6 @@ pub(crate) fn check(
     let has_note = image.sections.iter().any(|s| s.name == ".note.mason");
     let has_container = objs.iter().any(|o| o.secs.iter().any(|s| is_container(&s.name, &s.shdr)));
     let live = Lives::new(live_files(objs, has_note || has_container, cov));
-    let any_unit = live.iter().any(|l| !l.units.is_empty());
     let exec = image.header.e_type != ET_REL;
     if !exec {
         return f;
@@ -380,7 +379,7 @@ pub(crate) fn check(
 
     // P-M2.
     let interp = image.phdrs.iter().any(|p| p.p_type == PT_INTERP);
-    let due = opts.map(|o| interp && o.table != Table::Off && !o.odr_off && any_unit);
+    let due = opts.map(|o| interp && o.table != Table::Off && !o.odr_off);
     let full = opts.map(|o| o.table == Table::Full);
     let note_sec = image.sections.iter().position(|s| s.name == ".note.mason");
     let Some(ni) = note_sec else {
@@ -398,7 +397,7 @@ pub(crate) fn check(
     cov.tables += 1;
     let sh = image.sections[ni].shdr;
     if due == Some(false) {
-        f.push(Finding::new(Rule::Meta(2), "presence: a .note.mason the link does not ask for (O-50: dynamic executables with --odr-table, units, --odr not off)").at(sh.sh_addr));
+        f.push(Finding::new(Rule::Meta(2), "presence: a .note.mason the link does not ask for (O-50: dynamic executables with --odr-table, --odr not off)").at(sh.sh_addr));
     }
     if sh.sh_type != SHT_NOTE || sh.sh_flags & SHF_ALLOC == 0 || sh.sh_addralign != 8 {
         f.push(Finding::new(Rule::Meta(2), format!("place: .note.mason has type {:#x}, flags {:#x}, alignment {}; O-52 is an allocated SHT_NOTE aligned to 8", sh.sh_type, sh.sh_flags, sh.sh_addralign)).at(sh.sh_addr));
