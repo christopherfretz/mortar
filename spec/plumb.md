@@ -2261,8 +2261,9 @@ tables: the same count; at each index the same name, `sh_type`,
 `sh_flags`, `sh_entsize` and, where `sh_link`/`sh_info` name a section,
 that section's name. From the program headers: the same count; at each
 index the same `p_type`, `p_flags` and `p_align`, and the same list of
-allocated section names inside `[p_vaddr, p_vaddr + p_memsz)` (an empty
-`NOBITS` section at a boundary counts in neither). From the file
+allocated section names of size above 0 whose `sh_addr` is inside
+`[p_vaddr, p_vaddr + p_memsz)`, counting the `SHF_TLS` sections in
+`PT_TLS` only and only those there (`.tbss` overlaps what follows it). From the file
 header: the same `e_ident` (class, data, OS ABI), `e_type`, `e_machine`,
 `e_flags`; and `e_entry`s that correspond. Sizes, addresses and offsets
 are not compared.
@@ -2299,7 +2300,9 @@ other is one finding.
   st_other, st_size, section name)` with corresponding values; their
   order and indexes may differ (a moved section's locals are
   renumbered); `STT_SECTION` and `STT_FILE` symbols are compared without
-  their values;
+  their values; the locals of `.eh_frame` are passed over (an input's
+  mapping symbol at its CIE: per-file CIEs are in incremental mode only,
+  IN-34a);
 - `.dynsym`, when there is one: the same entries **in the same order**
   (its indexes are named by relocations and hash tables), each as a
   global above.

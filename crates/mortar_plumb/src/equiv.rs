@@ -185,6 +185,11 @@ fn sec_key(s: &SectionRef) -> String {
 impl<'a> Side<'a> {
     /// Every identity of address `v` (§6.9): `(id, offset)`.
     fn ids(&self, v: u64) -> BTreeSet<(&str, u64)> {
+        self.ids_open(v).into_iter().map(|(i, o, _)| (i, o)).collect()
+    }
+
+    /// [`Side::ids`] with whether the span holds `v` before its end.
+    fn ids_open(&self, v: u64) -> BTreeSet<(&str, u64, bool)> {
         let mut out = BTreeSet::new();
         let mut i = self.spans.partition_point(|s| s.0 <= v);
         while i > 0 {
@@ -194,10 +199,19 @@ impl<'a> Side<'a> {
             }
             let (a, z, id, base) = &self.spans[i];
             if *a <= v && v <= *z {
-                out.insert((id.as_str(), base + (v - a)));
+                out.insert((id.as_str(), base + (v - a), v < *z));
             }
         }
         out
+    }
+
+    /// The first identity of `v` (the least of those whose span holds it
+    /// before its end, else the least): two values with the same one
+    /// correspond, and matching by it first keeps a multiset linear.
+    fn canon(&self, v: u64) -> Option<(String, u64)> {
+        let ids = self.ids_open(v);
+        let mut open = ids.iter().filter(|i| i.2);
+        open.next().or_else(|| ids.iter().next()).map(|(i, o, _)| ((*i).to_string(), *o))
     }
 
     /// The address of input definition `(unit, value)` on this side.
@@ -504,6 +518,7 @@ fn headers(x: &Side<'_>, f: &Side<'_>, out: &mut Vec<Finding>) {
             .filter(|c| {
                 c.alloc()
                     && c.shdr.sh_size > 0
+                    && (c.shdr.sh_flags & mortar_elf::consts::SHF_TLS != 0) == (p.p_type == PT_TLS)
                     && p.p_memsz > 0
                     && p.p_vaddr <= c.shdr.sh_addr
                     && c.shdr.sh_addr < p.p_vaddr.saturating_add(p.p_memsz)
@@ -660,7 +675,8 @@ fn symbols(x: &Side<'_>, f: &Side<'_>, out: &mut Vec<Finding>, eq: &mut Equiv) {
     let locals = |s: &Side<'_>| {
         let mut m: BTreeMap<Key, Vec<u64>> = BTreeMap::new();
         for y in s.image.symbols.iter().skip(1) {
-            if bind_global(y.sym.binding()) {
+            // A per-file CIE's mapping symbol (IN-34a) is in one link only.
+            if bind_global(y.sym.binding()) || shndx_kind(s, y.sym.st_shndx) == ".eh_frame" {
                 continue;
             }
             let k = (y.name.clone(), y.sym.st_info, y.sym.st_other, y.sym.st_size, shndx_kind(s, y.sym.st_shndx));
@@ -683,7 +699,20 @@ fn symbols(x: &Side<'_>, f: &Side<'_>, out: &mut Vec<Finding>, eq: &mut Equiv) {
         }
         let tls = |s: &Side<'_>, v: u64| if ty == STT_TLS { s.tls.map_or(v, |t| t + v) } else { v };
         let mut used = vec![false; vf.len()];
+        // By first identity, then the rest by correspondence.
+        let mut by: BTreeMap<Option<(String, u64)>, Vec<usize>> = BTreeMap::new();
+        for (j, &b) in vf.iter().enumerate() {
+            by.entry(f.canon(tls(f, b)).or(Some((String::new(), tls(f, b))))).or_default().push(j);
+        }
+        let mut rest = Vec::new();
         for &a in vx {
+            let c = x.canon(tls(x, a)).or(Some((String::new(), tls(x, a))));
+            match by.get_mut(&c).and_then(Vec::pop) {
+                Some(j) => used[j] = true,
+                None => rest.push(a),
+            }
+        }
+        for a in rest {
             let hit = (0..vf.len()).find(|&j| !used[j] && corr(x, tls(x, a), f, tls(f, vf[j])));
             match hit {
                 Some(j) => used[j] = true,
@@ -1234,4 +1263,33 @@ fn rest(x: &Side<'_>, f: &Side<'_>, out: &mut Vec<Finding>) {
         }
     }
     let _ = SectionIndex(0);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // §6.9 P-E4 2: the forms that may differ, per output type.
+    #[test]
+    fn p_e4_forms_that_may_differ() {
+        let rw = Form::Rewrite;
+        for (a, b, dyn_out, ok) in [
+            (Form::Plain, rw(Rewrite::AdrpAddToAdr), false, true),
+            (rw(Rewrite::GotToAdrpAdd), rw(Rewrite::GotToAdr), false, true),
+            (Form::Plain, rw(Rewrite::Veneer), false, true),
+            (Form::Plain, rw(Rewrite::Erratum843419Patch), false, true),
+            (Form::Plain, rw(Rewrite::Erratum843419Adr), false, true),
+            (rw(Rewrite::GotToLea), rw(Rewrite::GotToMovImm), true, true),
+            (rw(Rewrite::GotToLea), rw(Rewrite::GotToMovImm), false, false),
+            (Form::Plain, rw(Rewrite::GotToDirect), false, false),
+            (Form::Plain, rw(Rewrite::GotToImm), true, true),
+            (Form::Plain, rw(Rewrite::TlsIeToLe), false, false),
+            (rw(Rewrite::TlsDescToIe), rw(Rewrite::TlsDescToLe), true, false),
+            (Form::Plain, rw(Rewrite::TlsGdToIe), true, false),
+            (Form::Plain, rw(Rewrite::WeakBranchNop), false, false),
+            (Form::Plain, Form::NotChecked(Reason::Tls), false, false),
+        ] {
+            assert_eq!(may_differ(a, b, dyn_out), ok, "{a:?} {b:?} dyn {dyn_out}");
+        }
+    }
 }
