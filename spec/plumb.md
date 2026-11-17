@@ -4115,6 +4115,25 @@ is accepted from its linker only, never from mortar's map.
   `NONPREEMPTIBLE` row): the program and the library use two objects
   (`spec/dyn.md` D-43a, W30), which mortar refuses. P-D24 ending "(D-43a,
   W30)". Reproducer: `tests/link/dyn/shlib/copy-of-symbolic.test`.
+- **A46 (GNU ld, AArch64; WP-144).** In a shared object GNU ld writes
+  one spare `R_AARCH64_NONE` record, every field 0, per local
+  general-dynamic pair (a hidden or static thread-local, traditional
+  dialect: its `DTPMOD64` has `r_sym` 0 and its DTP offset word is a
+  constant): it reserved a `DTPREL64` record and did not need it. They
+  sit in `.rela.dyn` right after the `RELATIVE` records, at index
+  `DT_RELACOUNT` onwards and counted in `DT_RELASZ` (`.rela.got` under
+  `-z nocombreloc`, where no `DT_RELACOUNT` is written); glibc skips
+  type 0. Measured: 1, 2, 3 and 5 locals give 1, 2, 3 and 5 records,
+  the same with `-z now` or two functions using one local; none for
+  the TLSDESC or initial-exec dialects, none from mold or lld (lld
+  takes no traditional dialect), none from any reference on x86-64 or
+  i386. P-D25 with the message "a spare R_AARCH64_NONE record ...
+  (A46)" (P-D25's shape); a type-0 record with a non-zero field, past
+  that count, inside `DT_RELACOUNT`'s prefix or in mortar's output is
+  P-D25's plain finding. Reproducer:
+  `tests/link/dyn/shared/tls-shared-gd.test`. (GNU ld's `-nostdlib`
+  AArch64 PIE that leaves `__tls_get_addr` undefined writes one in
+  `.rela.plt` for the PLT entry it dropped; not this anomaly.)
 
 lld also links a `.hidden` or `.protected` undefined reference that only
 a library defines (writing 0) and drops the library from `DT_NEEDED`:
@@ -5263,6 +5282,17 @@ and what turns P-D9's equality into a check of D-112.
   targets, and lld's x86-64 GD pair under `-Bsymbolic`; WP-121). A
   `DTPOFF` record with `r_sym` 0 is accepted from a reference (P-D26).
   A record whose `r_sym` is past `.dynsym` is reported by name.
+  A type-0 record (`R_AARCH64_NONE`) is reported with its own message
+  when it has A46's shape, from a reference's AArch64 output only: in
+  the `DT_RELA` table (`DT_RELASZ` bytes, not `DT_JMPREL`'s), `r_sym`,
+  `r_offset` and `r_addend` all 0, at an index not below `DT_RELACOUNT`
+  (the count of leading records glibc applies as `RELATIVE` without
+  reading their type: a type-0 record inside it would write the load
+  base at address 0 + base), and no more of them than `TLS_DTPMOD64`
+  records with `r_sym` 0. glibc's loop over the rest skips type 0. Any
+  other type-0 record with `r_sym` 0, and any in mortar's output
+  (D-30), keeps the message above; a type-0 record that names a key is
+  reported too, in every output (WP-144).
 - **P-D26 (TLS in a shared object; request P-R11; replaces P-D12's
   executable forms for `Shared`; D-119).** Per model and binding, the
   records of a live TLS use are:

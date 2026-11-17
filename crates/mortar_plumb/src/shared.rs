@@ -1430,6 +1430,41 @@ pub fn le_type(machine: u16, ty: u32) -> bool {
 
 /// The `r_sym` 0 kinds P-D25 allows, per target; a reference may add a
 /// `DTPOFF` with `r_sym` 0 holding the static offset (P-D26).
+/// P-D25's finding on GNU ld's spare `R_AARCH64_NONE` record, which the
+/// harness accepts as anomaly A46 (§5.8).
+pub const SPARE_NONE: &str = "a spare R_AARCH64_NONE record (r_sym 0, offset 0, addend 0) after DT_RELACOUNT's RELATIVE prefix, at most one per local general-dynamic pair (A46)";
+
+/// The indices in `out.rels` of A46's shape (P-D25, WP-144): in a
+/// reference's AArch64 output, `DT_RELA` records of type 0 with `r_sym`,
+/// `r_offset` and `r_addend` all 0, none inside the `DT_RELACOUNT`
+/// records glibc applies as `RELATIVE` without reading their type, and
+/// no more of them than `R_AARCH64_TLS_DTPMOD64` records with `r_sym` 0
+/// (GNU ld reserves one record per local general-dynamic pair and writes
+/// the DTP offset as a constant instead). Anything else of type 0 stays
+/// the plain finding; mortar's own output never has one (D-30).
+fn spare_none(machine: u16, format: Format, out: &DynOut) -> Vec<usize> {
+    if format == Format::Mortar || machine != mortar_elf::consts::EM_AARCH64 {
+        return Vec::new();
+    }
+    let prefix = out.get(crate::dynout::DT_RELACOUNT).unwrap_or(0);
+    let pairs = out.rels.iter().filter(|r| r.ty == 1028 && r.sym == 0).count();
+    let spare: Vec<usize> = out
+        .rels
+        .iter()
+        .enumerate()
+        .filter(|(i, r)| {
+            !r.plt
+                && *i as u64 >= prefix
+                && r.ty == 0
+                && r.sym == 0
+                && r.offset == 0
+                && r.addend == Some(0)
+        })
+        .map(|(i, _)| i)
+        .collect();
+    if spare.len() > pairs { Vec::new() } else { spare }
+}
+
 fn sym0_allowed(machine: u16, ty: u32, format: Format) -> bool {
     match machine {
         mortar_elf::consts::EM_AARCH64 => {
@@ -1794,7 +1829,8 @@ pub(crate) fn static_checks(
     }
     // P-D25: records name only preemptible keys and imports; the `r_sym` 0
     // kinds per target.
-    for r in &out.rels {
+    let spare = spare_none(m, format, out);
+    for (k, r) in out.rels.iter().enumerate() {
         if r.sym as usize >= out.syms.len() {
             v.push(
                 fd(
@@ -1810,7 +1846,9 @@ pub(crate) fn static_checks(
             continue;
         }
         if r.sym == 0 {
-            if !sym0_allowed(m, r.ty, format) {
+            if spare.contains(&k) {
+                v.push(fd(25, SPARE_NONE).at(r.offset));
+            } else if !sym0_allowed(m, r.ty, format) {
                 v.push(
                     fd(
                         25,
@@ -1822,6 +1860,15 @@ pub(crate) fn static_checks(
             continue;
         }
         let n = name_of(r);
+        // A type-0 record that names a key: no kind of P-D25 (A46's
+        // shape has r_sym 0; WP-144).
+        if r.ty == 0 {
+            let mut f = fd(25, format!("a dynamic record of type 0 names '{n}' (P-D25's kinds)"))
+                .at(r.offset);
+            f.symbol = Some(n);
+            v.push(f);
+            continue;
+        }
         // From a reference, a record naming a protected key, or any bound
         // key of a `-Bsymbolic` library that says so (`DT_SYMBOLIC`/
         // `DF_SYMBOLIC`): glibc binds both to the object's own definition

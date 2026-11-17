@@ -184,6 +184,11 @@ fn dynamic(linker: Format, output: &[u8], f: &Finding) -> Option<&'static str> {
             "A36: lld and mold link a used shared object's strong reference that no member of N ∪ U satisfies and leave the library that defines it out of DT_NEEDED; the program fails at load (dyn.md D-13, W16)",
         );
     }
+    if bfd && d(25) && m == crate::shared::SPARE_NONE {
+        return Some(
+            "A46: GNU ld writes a spare R_AARCH64_NONE record (all fields 0) in .rela.dyn for each local general-dynamic pair of an AArch64 shared object; glibc skips type 0 (spec/plumb.md §5.8)",
+        );
+    }
     if d(24) && m.ends_with("(D-43a, W30)") {
         return Some(
             "A45: GNU ld, lld and mold copy writable data a library binds to itself into the executable: two objects (dyn.md D-43a, W30)",

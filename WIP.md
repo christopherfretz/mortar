@@ -9,5 +9,5 @@ Order: findings 2-4 first (WP-127 part 2 waits), finding 1 (A46) last.
 - [x] 2. x86-64 TLSDESC kept in Shared: R1 "kept" branch (X-61)
 - [x] 3. `_TLS_MODULE_BASE_` Y5 value per output kind
 - [x] 4. mortar x86-64 local GD static DTPOFF word (P-D26 local pair)
-- [ ] 1. GNU ld spare R_AARCH64_NONE (A46)
+- [x] 1. GNU ld spare R_AARCH64_NONE (A46)
 - [ ] record spec/landed/plumb/WP-144.md; lane + gate; delete this file

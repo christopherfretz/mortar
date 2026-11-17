@@ -372,6 +372,7 @@ fn build() -> Option<Corpus> {
     }
     refs(&mut b);
     tls(&mut b);
+    tlsgd(&mut b);
     Some(Corpus { _scratch: scratch, outs: b.outs })
 }
 
@@ -680,6 +681,103 @@ fn tls(b: &mut Builder<'_>) {
 #[test]
 fn p_d26_x64_tls_libraries_verify_clean() {
     judge("tls");
+}
+
+/// WP-144 (A46): `tls.c` in AArch64's traditional dialect (general-
+/// dynamic pairs; three local thread-locals), `-shared` by GNU ld and
+/// mold (lld takes no traditional dialect). GNU ld writes a spare
+/// `R_AARCH64_NONE` per local pair: A46; mold's `_TLS_MODULE_BASE_` is
+/// A3 here too.
+fn tlsgd(b: &mut Builder<'_>) {
+    let a = Arch::A64;
+    let d = b.dir(a, "tlsgd");
+    b.so(a, &d, "tlso.c", "libtlso.so", "libtlso.so");
+    let flags = ["-O1", "-fPIC", "-fno-section-anchors", "-mtls-dialect=trad"];
+    b.obj(a, &d, "tls.c", &flags, "tls.o");
+    for l in [Linker::Bfd, Linker::Mold] {
+        let args = ["-shared", "tls.o", "libtlso.so", "-Wl,-soname,libtg.so"];
+        let want: &'static [&'static str] = if l == Linker::Bfd { &["A46"] } else { MOLD };
+        b.link("tlsgd", a, &d, "libtg.so", &args, l, want);
+    }
+}
+
+// WP-144: GNU ld's spare records are A46 and nothing else; mold's
+// library has only A3.
+#[test]
+fn a46_aarch64_gd_libraries_verify_clean() {
+    judge("tlsgd");
+}
+
+// WP-144 (A46, P-D25): A46 accepts exactly its shape. Every mutation of
+// a spare record (a non-zero `r_offset`, `r_addend` or `r_sym`; the
+// records moved inside `DT_RELACOUNT`'s prefix; one more type-0 record
+// than local pairs) gives a new finding no anomaly names; and the clean
+// library judged as mortar's output keeps P-D25's plain finding (D-30).
+#[test]
+fn a46_accepts_only_its_shape() {
+    let Some(c) = corpus() else { return };
+    let o = c
+        .outs
+        .iter()
+        .find(|o| o.case == "tlsgd" && o.link.linker == Linker::Bfd)
+        .expect("GNU ld's libtg.so");
+    let b = o.link.output_bytes();
+    let a46 = |f: &mortar_plumb::Finding| {
+        known_anomaly(&o.link, f).is_some_and(|a| mortar_plumb::anomaly::id(a) == "A46")
+    };
+    let clean = o.verify_bytes(&b);
+    let key = |f: &mortar_plumb::Finding| format!("{} {}", f.rule.id(), f.message);
+    let clean_keys: BTreeSet<String> = clean.findings.iter().map(key).collect();
+    let spare = clean.findings.iter().filter(|f| a46(f)).count();
+    assert!(spare > 0, "GNU ld's libtg.so has no A46 finding");
+    let (off, size, _) = section_at(&b, ".rela.dyn").unwrap();
+    let recs: Vec<usize> = (off..off + size).step_by(24).collect();
+    let nones: Vec<usize> = recs.iter().copied().filter(|&e| u64at(&b, e + 8) == 0).collect();
+    assert_eq!(nones.len(), 3, "three local pairs, three spare records");
+    let mut ms: Vec<Mutant> = Vec::new();
+    for &e in &nones {
+        for (field, at, v) in
+            [("r_offset", e, 8u64), ("r_sym", e + 8, 1 << 32), ("r_addend", e + 16, 8)]
+        {
+            let mut m = b.clone();
+            m[at..at + 8].copy_from_slice(&v.to_le_bytes());
+            ms.push((format!("the type-0 record at {e:#x}: {field} {v:#x}"), m));
+        }
+    }
+    // One more: the last record (a GLOB_DAT) zeroed.
+    let mut m = b.clone();
+    let last = *recs.last().unwrap();
+    m[last..last + 24].fill(0);
+    ms.push(("the last record zeroed: one type-0 record past the local pairs".into(), m));
+    // DT_RELACOUNT raised past the spare records.
+    let (doff, dsize, _) = section_at(&b, ".dynamic").unwrap();
+    let rc = (doff..doff + dsize)
+        .step_by(16)
+        .find(|&e| u64at(&b, e) == 0x6fff_fff9)
+        .expect("DT_RELACOUNT");
+    let mut m = b.clone();
+    let k = u64at(&b, rc + 8) + nones.len() as u64;
+    m[rc + 8..rc + 16].copy_from_slice(&k.to_le_bytes());
+    ms.push((format!("DT_RELACOUNT {k}: the spare records inside its prefix"), m));
+    for (what, m) in ms {
+        let r = o.verify_bytes(&m);
+        let new = r
+            .findings
+            .iter()
+            .find(|f| known_anomaly(&o.link, f).is_none() && !clean_keys.contains(&key(f)));
+        assert!(new.is_some(), "{what}: no new finding outside A46");
+        if std::env::var("SHARED_DEBUG").is_ok_and(|v| v == "a46") {
+            let n = r.findings.iter().filter(|f| a46(f)).count();
+            eprintln!("{what}: A46 {n}; {:?}", new.map(|f| &f.message));
+        }
+    }
+    let r = o.verify_as_mortar(&b);
+    assert!(!r.findings.iter().any(|f| f.message == mortar_plumb::shared::SPARE_NONE));
+    let plain = r
+        .findings
+        .iter()
+        .filter(|f| f.rule == mortar_plumb::Rule::Dyn(25) && f.message.contains("of type 0"));
+    assert!(plain.count() > 0, "as mortar's output: no P-D25 plain finding");
 }
 
 /// The file offset and address of section `name` (ELF64), if any.
