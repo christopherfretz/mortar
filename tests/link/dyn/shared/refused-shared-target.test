@@ -7,8 +7,9 @@
 # `--dynamic-list` until WP-128; `--incremental` with `-shared` is
 # IN-12a's warning and a plain link writing no state, and
 # `--incremental=update` its error. The references do not link the
-# IFUNC and `.symver` lines here: the verifier's findings on them are
-# WP-123's questions V3 (P-D5, bfd and lld) and V4 (P-D17, mold).
+# IFUNC line: mold binds a preemptible IFUNC locally (`bl sel$pltgot`,
+# design W20; the verifier's P-D17), which a whole test's `xfail(mold)`
+# would hide everywhere else.
 #@ spec: dyn.md "D-100"; incr.md "IN-12a"
 #@ arch: aarch64
 
@@ -23,6 +24,7 @@ link(mortar) gcc -shared tls.o -o libtls.so
 link(mortar) gcc -shared ifunc.o -o libifunc.so
   exit: fail
   diag: unsupported feature: IFUNC in a shared object
+link(bfd,lld,mold) gcc -shared sv.o -Wl,--version-script,sv.map -o libsv.so
 link(mortar) gcc -shared sv.o -o libsv.so
   exit: fail
   diag: versioned definition foo@@V2 cannot be exported
@@ -50,6 +52,9 @@ __asm__(".symver foo_v1, foo@V1");
 __asm__(".symver foo_v2, foo@@V2");
 int foo_v1(void) { return 1; }
 int foo_v2(void) { return 2; }
+#--- sv.map
+V1 { global: foo; local: *; };
+V2 { global: foo; } V1;
 #--- dl.txt
 { lib_get; };
 #--- lib.c

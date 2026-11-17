@@ -7,19 +7,21 @@
 # kept the entry, and a mortar host refused the library).
 #@ spec: dyn.md "D-124"
 #@ arch: aarch64 x86_64
+#@ xfail(mortar,x86_64): M4: WP-127 (x86-64 shared objects; dyn.md D-100)
+#@ xfail(mold): D-111: without -z defs mold keeps an undefined key named only from a collected section in .dynsym, and a GNU ld host refuses the library (mortar host: the verifier anomaly A36)
 
 cc -O1 -fPIC -ffunction-sections -fdata-sections lib.c -o lib.o
 cc -O1 -fPIE main.c -o main.o
 link gcc -shared lib.o -Wl,--gc-sections -Wl,-z,defs -o libgu.so
 check(bfd,lld,mold,mortar) readelf -W --dyn-syms libgu.so
   not: missing_fn
+link gcc -shared lib.o -Wl,--gc-sections -o libgn.so
+check(bfd,lld,mortar) readelf -W --dyn-syms libgn.so
+  not: missing_fn
 host gcc -pie main.o -L. -lgu -o prog
 run prog
   stdout: 7
-link gcc -shared lib.o -Wl,--gc-sections -o libgu.so
-check(bfd,lld,mortar) readelf -W --dyn-syms libgu.so
-  not: missing_fn
-host gcc -pie main.o -L. -lgu -o prog2
+host gcc -pie main.o -L. -lgn -o prog2
 run prog2
   stdout: 7
 

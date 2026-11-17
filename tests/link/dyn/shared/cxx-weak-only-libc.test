@@ -9,8 +9,7 @@
 #@ spec: dyn.md "D-111"
 #@ arch: aarch64 x86_64
 #@ requires: g++
-#@ xfail(bfd,lld): WP-121: the verifier's P-D8 (D-27) judges the unversioned weak import of a definition in a library that is not needed (WP-123 question V5)
-#@ xfail(mortar): M4: WP-123 finding F3 (D-111: a weak import whose only definition is in a library --as-needed drops)
+#@ xfail(mortar): M4: WP-123 finding F3, the follow-up row "weak undefined versioned reference whose library --as-needed drops, in Shared" (D-27)
 
 cxx -O1 -fPIC lib.cc -o lib.o
 cxx -O1 -fPIE main.cc -o main.o
