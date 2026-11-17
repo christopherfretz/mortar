@@ -205,3 +205,30 @@ fn diagnostic(
     }
     d
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_three_values_and_no_other() {
+        for (word, model, local) in
+            [("static", Model::Static, true), ("pie", Model::Pie, true), ("pic", Model::Pic, false)]
+        {
+            assert_eq!(Model::parse(word.as_bytes()), Some(model));
+            assert_eq!(model.word(), word);
+            assert_eq!(model.binds_locally(), local);
+        }
+        // A value MT-26 does not name is no row: D-117's rules alone.
+        for other in [&b"PIC"[..], b"dynamic-no-pic", b"ropi", b"", b"pic\0"] {
+            assert_eq!(Model::parse(other), None);
+        }
+    }
+
+    #[test]
+    fn its_key_is_odr_phase_and_its_own_tag() {
+        let a = key(FileId(3));
+        assert_eq!(a, Key::new(PHASE, 3, seq(tag::RELOC_MODEL, 0)));
+        assert!(key(FileId(2)) < a);
+    }
+}

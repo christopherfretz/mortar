@@ -85,6 +85,9 @@ pub struct Matrix {
     /// WP-134), or why there is none; `None` when nothing of the run
     /// needs one.
     pub kiln: Option<Result<crate::mason::KilnRecords, String>>,
+    /// A hod that writes the `reloc-model` row (`requires: hod`; WP-129),
+    /// or why there is none; `None` when nothing of the run needs one.
+    pub hod: Option<Result<crate::mason::HodRows, String>>,
     /// The digest mode's option variants (WP-099): when not empty, each
     /// mortar link step runs once per variant, the variant's options after
     /// the test's (`-Wl,` before each for a driver link), each recorded
@@ -338,6 +341,12 @@ impl Matrix {
             Feature::Lldb => self.common.lldb.is_some(),
             Feature::Elflint => self.common.elflint.is_some(),
             Feature::Kiln => matches!(self.kiln, Some(Ok(_))),
+            // The IR is clang's.
+            Feature::Hod => {
+                matches!(self.hod, Some(Ok(_)))
+                    && self.common.clang.is_some()
+                    && self.common.clangxx.is_some()
+            }
         }
     }
 }
@@ -843,19 +852,22 @@ impl Unit<'_> {
             requires.iter().copied().filter(|f| !self.matrix.has(self.tools, *f)).collect();
         let missing: Vec<String> = absent
             .iter()
-            .map(|feature| match (feature, &self.matrix.kiln) {
-                (Feature::Kiln, Some(Err(why))) => why.clone(),
+            .map(|feature| match (feature, &self.matrix.kiln, &self.matrix.hod) {
+                (Feature::Kiln, Some(Err(why)), _) | (Feature::Hod, _, Some(Err(why))) => {
+                    why.clone()
+                }
                 _ => super::target::feature_tool_name(*feature, self.arch(), self.matrix.host),
             })
             .collect();
         if !missing.is_empty() {
             let detail = format!("requires {}: not found", missing.join(", "));
             results.records.push(self.record(None, Outcome::Skip, detail));
-            // A kiln with records is the Mason lane's tool: required under
-            // MASON_REQUIRE_TOOLS=1 only (WP-134), so that a gate with an
-            // older kiln skips these tests by name.
+            // A kiln with records and a hod with the row are the Mason
+            // lane's tools: required under MASON_REQUIRE_TOOLS=1 only
+            // (WP-134, WP-129), so that a gate with an older kiln or hod
+            // skips these tests by name.
             let needed = |f: &Feature| {
-                if *f == Feature::Kiln {
+                if f.is_mason() {
                     crate::mason::required()
                 } else {
                     mortar_testutil::tools_required()
@@ -1141,6 +1153,13 @@ impl Unit<'_> {
                 continue;
             }
             let args = expand(build_args(step), vars);
+            // A `(hod)` step is hod's, whatever the producer (WP-129).
+            if let StepKind::Compile(compile) = &step.kind
+                && compile.family == Family::Hod
+            {
+                self.compile_hod(step, compile, &args, dir)?;
+                continue;
+            }
             if let StepKind::Meta(_) = step.kind
                 && self.matrix.producer.is_kiln()
             {
@@ -1349,6 +1368,82 @@ impl Unit<'_> {
         Ok(())
     }
 
+    /// A `cc(hod)` or `cxx(hod)` step (WP-129): the source to `<out>.ll` by
+    /// clang or clang++ (the step's options), then `<out>` by the probed
+    /// hod ([`crate::mason::HodRows`]) with the relocation model those
+    /// options choose, as GCC reads them (`-fno-pic` `static`; `-fpic`,
+    /// `-fPIE` and the default `pic`: hod writes `pie` for IR with a PIE
+    /// level) and the step's last `-O` level (`-O0` without one).
+    fn compile_hod(
+        &self,
+        step: &Step,
+        compile: &super::format::Compile,
+        args: &[String],
+        dir: &Path,
+    ) -> Result<(), Raw> {
+        let fail = |e: String| Raw::Error(format!("{}: {e}", step.describe()));
+        let hod = match &self.matrix.hod {
+            Some(Ok(rows)) => &rows.hod,
+            Some(Err(why)) => return Err(fail(why.clone())),
+            None => return Err(fail("no hod for this run".to_owned())),
+        };
+        let common = &self.matrix.common;
+        let clang = if compile.language == Language::Cxx { &common.clangxx } else { &common.clang };
+        let clang = clang.as_ref().ok_or_else(|| fail("no clang for the IR".to_owned()))?;
+        let Some(out) = output_of(args).map(str::to_owned) else {
+            return Err(fail("a compile step for hod names its output with -o".to_owned()));
+        };
+        let at = args.iter().position(|a| a == "-o").unwrap_or_default();
+        let ll = format!("{out}.ll");
+        let mut full: Vec<OsString> = vec![
+            format!("--target={}", self.arch().triple()).into(),
+            "-S".into(),
+            "-emit-llvm".into(),
+        ];
+        if self.matrix.digest {
+            let mut map = OsString::from("-ffile-prefix-map=");
+            map.push(self.dir.join("inputs").as_os_str());
+            map.push("=.");
+            full.push(map);
+        }
+        for (i, a) in args.iter().enumerate() {
+            full.push(if i == at + 1 { ll.clone().into() } else { a.into() });
+        }
+        let output = spawn(step, clang, &full, dir, &[], TOOL_LIMITS)?;
+        if !output.end.success() {
+            return Err(fail(format!("to IR: {}: {}", output.end, first_error(&output))));
+        }
+        let model = args
+            .iter()
+            .rev()
+            .find_map(|a| match a.as_str() {
+                "-fno-pic" | "-fno-PIC" | "-fno-pie" | "-fno-PIE" => Some("static"),
+                "-fpic" | "-fPIC" | "-fpie" | "-fPIE" => Some("pic"),
+                _ => None,
+            })
+            .unwrap_or("pic");
+        let level = args
+            .iter()
+            .rev()
+            .find(|a| matches!(a.as_str(), "-O0" | "-O1" | "-O2" | "-O3"))
+            .map_or("-O0", String::as_str);
+        let full: Vec<OsString> = vec![
+            "--strict".into(),
+            level.into(),
+            format!("-relocation-model={model}").into(),
+            "-filetype=obj".into(),
+            format!("-mtriple={}", hod_triple(self.arch())).into(),
+            ll.into(),
+            "-o".into(),
+            out.into(),
+        ];
+        let output = spawn(step, hod, &full, dir, &[], TOOL_LIMITS)?;
+        if !output.end.success() {
+            return Err(fail(format!("hod: {}: {}", output.end, first_error(&output))));
+        }
+        Ok(())
+    }
+
     /// `<out>` by hod from `<ll>`, with the relocation model of the object
     /// the IR was made for.
     fn hod(&self, step: &Step, ll: &str, out: &str, dir: &Path) -> Result<(), Raw> {
@@ -1417,6 +1512,8 @@ impl Unit<'_> {
                     (Family::Gcc, Language::Fortran) => self.tools.gfortran.as_ref(),
                     (Family::Clang, Language::Cxx) => common.clangxx.as_ref(),
                     (Family::Clang, _) => common.clang.as_ref(),
+                    // Never run here: `compile_hod` makes the object.
+                    (Family::Hod, _) => None,
                     (Family::Kiln, language) => match &self.matrix.kiln {
                         Some(Ok(k)) if language == Language::Cxx => Some(&k.cxx),
                         Some(Ok(k)) => Some(&k.c),

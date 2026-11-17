@@ -449,7 +449,10 @@ pub enum Kind {
     /// address-level rule `name` is the preemptible definition the address
     /// lies in (a note names the relocation's own symbol and place); for
     /// the analysis a note names the function, the offset and the forming
-    /// relocation. `file` is the input object. GNU ld's words.
+    /// relocation. `file` is the input object. GNU ld's words. With
+    /// `r_type` empty, the object's `reloc-model` row (`spec/meta.md`
+    /// MT-26; WP-129) says `static` or `pie` and `name` is an exported
+    /// preemptible datum it defines; no relocation is named.
     NonPicInSharedObject { r_type: String, name: String, file: String },
     /// `relocation-incompatible`: the relocation `r_type` (its ABI name)
     /// cannot be used against `name` in this output, for `reason`. `name`

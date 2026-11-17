@@ -5,7 +5,11 @@
 # preemptible datum (`g`) is refused, `non-pic-in-shared-object`, naming
 # the object, the datum and the row's value, in every --odr mode
 # (--odr=off included: a refusal, not an ODR check); the note counts its
-# other such data (`k`, the common `c`). `pic` never exempts and no row
+# other such data (`k`, the common `c`). An object of two units, one
+# `pic` and hod's `static` (as GNU ld -r makes of two hod objects,
+# measured), is refused: the row cannot say which definition came from
+# which unit, and one unit that binds locally suffices. `pic` never
+# exempts and no row
 # changes nothing: both link, and the program's `g` (100) is the one the
 # library reads. An object of the row that defines only functions, a
 # hidden datum and a protected datum links (nothing it exports is a
@@ -18,6 +22,7 @@ meta pie.meta lib0.o -o pie.o
 meta static.meta lib0.o -o static.o
 meta pic.meta lib0.o -o pic.o
 meta later.meta lib0.o -o later.o
+meta two.meta lib0.o -o two.o
 cc -O1 -fPIC own.c -o own0.o
 meta pie.meta own0.o -o own.o
 cc -O1 -fPIE main.c -o main.o
@@ -33,6 +38,9 @@ link(mortar) gcc -shared static.o -Wl,-soname,libg.so -Wl,--odr=off -o libstatic
 link(mortar) gcc -shared static.o -Wl,-soname,libg.so -Wl,--odr=strict -o libstatic.so
   exit: fail
   diag: records reloc-model=static
+link(mortar) gcc -shared two.o -Wl,-soname,libg.so -o libtwo.so
+  exit: fail
+  diag: ^>>> the Mason metadata of two.o records reloc-model=static (spec/meta.md MT-26)
 link gcc -shared pic.o -Wl,-soname,libg.so -o libg.so
 link gcc -pie main.o -L. -lg -o prog
 run prog
@@ -79,3 +87,9 @@ summary name=reloc-model value=pic
 #--- later.meta
 summary name=lang value=c
 summary name=reloc-model value=medium
+#--- two.meta
+unit
+summary name=lang value=c
+summary name=reloc-model value=pic
+unit producer=2
+summary name=reloc-model value=static

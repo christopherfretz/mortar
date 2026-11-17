@@ -190,6 +190,10 @@ pub enum Family {
     /// kiln, the Mason toolchain's front end (`cc(kiln)`, `cxx(kiln)`;
     /// WP-134): `kiln` for C, `kiln++` for C++, objects by its LLVM route.
     Kiln,
+    /// hod, the Mason toolchain's code generator (`cc(hod)`, `cxx(hod)`;
+    /// WP-129): the source to LLVM IR by clang or clang++, the object by
+    /// hod with the relocation model the step's options choose.
+    Hod,
 }
 
 impl Family {
@@ -199,12 +203,13 @@ impl Family {
             Self::Gcc => "gcc",
             Self::Clang => "clang",
             Self::Kiln => "kiln",
+            Self::Hod => "hod",
         }
     }
 
     /// The family of that name.
     pub fn parse(name: &str) -> Option<Self> {
-        [Self::Gcc, Self::Clang, Self::Kiln].into_iter().find(|family| family.name() == name)
+        [Self::Gcc, Self::Clang, Self::Kiln, Self::Hod].into_iter().find(|family| family.name() == name)
     }
 }
 
@@ -228,11 +233,14 @@ pub enum Feature {
     /// A `(kiln)` compile step: a kiln build that writes `.mason.meta`
     /// with kinds 1, 3 and 5 (WP-134; `crate::mason::KilnRecords`).
     Kiln,
+    /// A `(hod)` compile step: a hod build that writes MT-26's
+    /// `reloc-model` row (hod H-3; WP-129; `crate::mason::HodRows`).
+    Hod,
 }
 
 impl Feature {
     /// Every feature.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::Gxx,
         Self::Gfortran,
         Self::Clang,
@@ -243,6 +251,7 @@ impl Feature {
         Self::Lldb,
         Self::Elflint,
         Self::Kiln,
+        Self::Hod,
     ];
 
     /// The word of a `requires` directive.
@@ -258,7 +267,15 @@ impl Feature {
             Self::Lldb => "lldb",
             Self::Elflint => "eu-elflint",
             Self::Kiln => "kiln",
+            Self::Hod => "hod",
         }
+    }
+
+    /// Whether the Mason lane's probe finds the tool (`crate::mason`):
+    /// required under `MASON_REQUIRE_TOOLS=1` only, so that a gate with an
+    /// older kiln or hod skips its tests by name (WP-134, WP-129).
+    pub fn is_mason(self) -> bool {
+        matches!(self, Self::Kiln | Self::Hod)
     }
 
     /// The feature of that name.
@@ -417,6 +434,7 @@ pub fn feature_tool_name(feature: Feature, arch: Arch, host: Option<Arch>) -> St
         Feature::Kiln => {
             "kiln with .mason.meta kinds 3 (with enumerations), 4 and 5 (MASON_KILN)".to_owned()
         }
+        Feature::Hod => "hod with the reloc-model row of hod H-3, and clang (MASON_HOD)".to_owned(),
     }
 }
 

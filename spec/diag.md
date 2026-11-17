@@ -233,7 +233,7 @@ is added before or after it.
 | `canonical-plt-in-pie` | `CanonicalPltInPie { r_type, name }` | ``relocation {r_type} against symbol `{name}' cannot be used in a position-independent executable; recompile with -fPIE, or link with -no-pie`` | GNU ld (`spec/dyn.md` D-44) |
 | `copy-relocation-against-protected` | `CopyRelocationAgainstProtected { name, file }` | ``copy relocation against non-copyable protected symbol `{name}' in {file}`` | GNU ld (`spec/dyn.md` D-18) |
 | `copy-relocation-of-zero-size` | `CopyRelocationOfZeroSize { name }` | `cannot create a copy relocation for symbol {name}` | lld (`spec/dyn.md` D-42) |
-| `non-pic-in-shared-object` | `NonPicInSharedObject { r_type, name, file }` | ``relocation {r_type} against symbol `{name}' which may bind externally can not be used when making a shared object; recompile with -fPIC`` | GNU ld (`spec/dyn.md` D-117; M4, WP-117 the table and the address-level rule, WP-119 the analysis) |
+| `non-pic-in-shared-object` | `NonPicInSharedObject { r_type, name, file }` | ``relocation {r_type} against symbol `{name}' which may bind externally can not be used when making a shared object; recompile with -fPIC``; with no `r_type` (the `reloc-model` row, below): ``code not compiled as position-independent defines symbol `{name}' which may bind externally: it can not be used when making a shared object; recompile with -fPIC`` | GNU ld (`spec/dyn.md` D-117; M4, WP-117 the table and the address-level rule, WP-119 the analysis); the second form own, in GNU ld's words (WP-129) |
 | `relocation-incompatible` | `RelocationIncompatible { r_type, name, reason }` | `relocation {r_type} cannot be used against symbol '{name}'; {reason}` | lld's shape, with a reason (§3.2) |
 | `relocation-misaligned` | `RelocationMisaligned { r_type, value, align }` | `improper alignment for relocation {r_type}: {value} is not aligned to {align} bytes` | lld |
 | `relocation-out-of-range` | `RelocationOutOfRange { r_type, value, min, max, name }` | `relocation truncated to fit: {r_type} against '{name}': {value} is not in [{min}, {max}]` | lld's value and bounds; GNU ld's phrase |
@@ -445,8 +445,16 @@ is added before or after it.
   object in its own section), and before the start also `do not form
   an address before an object`. For D-117's analysis the note names the
   function, the instruction's offset and the relocation that formed the
-  address. For hod's `reloc-model` row (`spec/meta.md` MT-26, H-3) the
-  note names the object and the row. `{file}` is the input object, also
+  address. For hod's `reloc-model` row (`spec/meta.md` MT-26, H-3;
+  WP-129) the message is the second form (no relocation is involved),
+  `{name}` the object's first exported preemptible datum in symbol
+  order, and the note `the Mason metadata of {file} records
+  reloc-model={value} (spec/meta.md MT-26): its code reaches its own
+  definitions without the GOT, so the library would bind `{name}' inside
+  itself while exporting it preemptible (spec/dyn.md D-117)`; a second
+  note `{file} defines {n} other exported preemptible data
+  definition(s)` when there are more (one error per object, key (40,
+  file, tag 14)). `{file}` is the input object, also
   the head line's place; it is not in the message. `{name}` goes through
   §5.4. `copy-of-locally-bound-definition` is a warning where D-43a
   says so, with the note `{name} is read-only in {file}: two equal

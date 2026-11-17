@@ -277,6 +277,71 @@ impl KilnRecords {
     }
 }
 
+/// A hod build that writes MT-26's `reloc-model` row in a unit of its own
+/// (hod H-3, b701c7be and later; WP-129): what a `(hod)` compile step
+/// needs. An older hod is not one. The same form as [`KilnRecords`]: the
+/// tool at its `MASON_*` variable or in the build root, probed once.
+#[derive(Clone, Debug)]
+pub struct HodRows {
+    /// hod.
+    pub hod: PathBuf,
+}
+
+impl HodRows {
+    /// hod at `MASON_HOD` or in the build root, probed in `scratch` (a
+    /// directory of the caller's, created here): a module of one global
+    /// with a PIC and a PIE level, compiled `-relocation-model=pic`, must
+    /// hold a unit whose row says `reloc-model` = `pie` (hod H-3). `Err`
+    /// says why not.
+    pub fn find(scratch: &Path) -> Result<Self, String> {
+        let hod = std::env::var_os("MASON_HOD")
+            .filter(|v| !v.is_empty())
+            .map_or_else(|| build_root().join("target-hod/release/hod"), PathBuf::from);
+        if !hod.is_file() {
+            return Err(format!("no hod build at {} (MASON_HOD)", hod.display()));
+        }
+        std::fs::create_dir_all(scratch)
+            .map_err(|e| format!("cannot create '{}': {e}", scratch.display()))?;
+        std::fs::write(
+            scratch.join("probe.ll"),
+            "target triple = \"x86_64-unknown-linux-gnu\"\n@probe_d = global i32 1, align 4\n\
+             !llvm.module.flags = !{!0, !1}\n!0 = !{i32 8, !\"PIC Level\", i32 2}\n\
+             !1 = !{i32 7, !\"PIE Level\", i32 2}\n",
+        )
+        .map_err(|e| format!("cannot write the hod probe: {e}"))?;
+        let args = [
+            "--strict",
+            "-O0",
+            "-relocation-model=pic",
+            "-filetype=obj",
+            "-mtriple=x86_64-unknown-linux-gnu",
+            "probe.ll",
+            "-o",
+            "probe.o",
+        ]
+        .map(str::to_owned);
+        let out = run_in(&hod, &args, scratch, &[], TOOL_LIMITS)?;
+        if !out.end.success() {
+            return Err(format!(
+                "hod at {} cannot compile the probe: {}",
+                hod.display(),
+                String::from_utf8_lossy(&out.stderr).lines().next().unwrap_or("")
+            ));
+        }
+        let bytes = std::fs::read(scratch.join("probe.o"))
+            .map_err(|e| format!("the hod probe's object: {e}"))?;
+        let dump = crate::meta::dump(&bytes)?;
+        if dump.lines().any(|l| l.starts_with("summary name=reloc-model value=pie ")) {
+            Ok(Self { hod })
+        } else {
+            Err(format!(
+                "hod at {} writes no reloc-model row (older than hod H-3, b701c7be)",
+                hod.display()
+            ))
+        }
+    }
+}
+
 /// mortar's release binary: `--mortar <path>`, else built in this checkout.
 pub fn mortar_binary(given: Option<&Path>) -> Result<PathBuf, String> {
     if let Some(p) = given {
