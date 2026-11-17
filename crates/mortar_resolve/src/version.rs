@@ -22,7 +22,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use mortar_core::id::{FileId, SymbolId};
-use mortar_diag::{Diagnostic, Kind, RefusalClass};
+use mortar_diag::{Diagnostic, Kind, Place, RefusalClass};
 pub use mortar_script::version::SourceFile;
 use mortar_script::{Language, Scope, VersionScript as Ast};
 
@@ -83,7 +83,16 @@ impl DynamicList {
     /// The parser's diagnostics, and [`Self::compile`]'s.
     pub fn load(files: &[SourceFile<'_>]) -> Result<Self, Vec<Diagnostic>> {
         let ast = mortar_script::version::parse_dynamic_list(files).map_err(|d| vec![*d])?;
-        Self::compile(&ast)
+        Self::compile(&ast).map_err(|e| {
+            // The refusal at the first `extern "C++"` entry (WP-172): the
+            // list's entries keep no file, so each file is read alone.
+            let at = files.iter().find_map(|f| {
+                let one = mortar_script::version::parse_dynamic_list(std::slice::from_ref(f));
+                let entry = one.ok()?.entries.into_iter().find(|e| e.language == Language::Cxx)?;
+                Some(script_place(f, entry.pattern.span.start))
+            });
+            placed(e, at.as_ref())
+        })
     }
 
     /// Whether the list names `name` (a key's name without its version).
@@ -91,6 +100,24 @@ impl DynamicList {
     pub fn matches(&self, name: &[u8]) -> bool {
         self.patterns.iter().any(|p| p.matches(name))
     }
+}
+
+/// The place of byte `offset` of a script file: its path, line and column.
+fn script_place(file: &SourceFile<'_>, offset: usize) -> Place {
+    let (line, column) = mortar_script::position(file.bytes, offset);
+    Place::script(file.path, line, column)
+}
+
+/// `errors` with the refusal of `extern "C++"` (class `script-command`)
+/// placed at `at`.
+fn placed(errors: Vec<Diagnostic>, at: Option<&Place>) -> Vec<Diagnostic> {
+    errors
+        .into_iter()
+        .map(|d| match at {
+            Some(p) if d.id() == "refused" => d.at(p.clone()),
+            _ => d,
+        })
+        .collect()
 }
 
 /// One glob token: each but `Star` matches one byte.
@@ -455,7 +482,15 @@ impl VersionScript {
     /// The parser's `version-script-syntax`, and [`Self::compile`]'s.
     pub fn load(files: &[SourceFile<'_>]) -> Result<Self, Vec<Diagnostic>> {
         let ast = mortar_script::version::parse_version_script(files).map_err(|d| vec![*d])?;
-        Self::compile(&ast)
+        Self::compile(&ast).map_err(|e| {
+            // The `extern "C++"` refusal at its first entry (WP-172).
+            let at = ast.nodes.iter().find_map(|n| {
+                let entry = n.entries.iter().find(|e| e.language == Language::Cxx)?;
+                let file = files.get(n.file as usize)?;
+                Some(script_place(file, entry.pattern.span.start))
+            });
+            placed(e, at.as_ref())
+        })
     }
 
     /// The nodes in script order.

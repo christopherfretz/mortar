@@ -1114,7 +1114,7 @@ entry that named it, with that position's state), so that I-file holds
 | `kind` | `Internal`, `Object`, `SharedObject` |
 | `name` | the display `FileRef`: the found path, or `archive(member)` (§7.2) |
 | `archive` | `(ArchiveId, member header offset)` for an archive member; for a thin member also the member's own found path |
-| `origin` | the index of the `Plan` input, its argument index, and the script entry that named it, if any (an index into `Inputs.link.script_entries`: `(script file, entry offset, parent entry)`, the chain the `named by` context lines are drawn from); for a closure file, the edge `(needing FileId, DT_NEEDED index)` |
+| `origin` | the index of the `Plan` input, its argument index, and the script entry that named it, if any (an index into `Inputs.link.script_entries`: `(script file, entry offset, parent entry)`, the chain the `named by` context lines are drawn from, and the entry's own mention state, `as_needed` (in force where the script was named, `AS_NEEDED(…)` turning it on) and its outermost `group` ordinal (none when no loaded file is in that group): `spec/dyn.md` D-19a places a shared object mentioned again inside a script by them, WP-172); for a closure file, the edge `(needing FileId, DT_NEEDED index)` |
 | `state` | the mention's own `as_needed`, `whole_archive`, `lazy` (a `--start-lib` object), `link_static`, `copy_dt_needed`, `exclude_libs` (below); for a shared object, its first mention's |
 | `reader` | borrowed from the store's resident parts: `Inputs::object(f)`, `Inputs::shared(f)` (§11.3) |
 | `sections` | `e_shnum` |

@@ -1963,7 +1963,8 @@ impl<'c, 's> Walk<'c, 's> {
                         let dirs = self.search_dirs(&dirs_before);
                         candidates.extend(dirs.iter().map(|d| join(d, name)));
                     }
-                    let entry = self.push_entry(file.opened, c.span.start as u64, m.entry, &m.state);
+                    let entry =
+                        self.push_entry(file.opened, c.span.start as u64, m.entry, &m.state);
                     let sref = SearchRef::ScriptEntry(entry);
                     let mut sub = m.clone();
                     sub.entry = Some(entry);

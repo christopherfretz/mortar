@@ -19,16 +19,17 @@
 # of `libgcc_s`, `-lgcc_s -Wl,--no-as-needed` (an explicit `-lgcc_s`
 # under the default `--as-needed`, then the driver's own `-lgcc_s` after
 # `--no-as-needed`) names `libgcc_s.so.1` again inside the linker script
-# `libgcc_s.so`, a mention whose as-needed state the input tables do not
-# record: refused by name (D-19a's keeping mention). The references
-# differ there: GNU ld needs `libstdc++ libm libgcc_s libc` in that
-# order, lld puts `libgcc_s` before `libm`, mold drops it (measured on
-# AArch64). A version script of mangled
+# `libgcc_s.so`, a mention with the switch off: D-19a keeps it there
+# (WP-172; refused by name before the script entries carried their
+# state). The references differ there: GNU ld and mortar need `libstdc++
+# libm libgcc_s libc` in that order, lld puts `libgcc_s` first, mold
+# drops it (measured on AArch64 and x86-64); a program loads the
+# library and runs. A version script of mangled
 # names (exact and a glob, `_ZN2ns*`) exports them at `V1` and hides the
 # rest (D-114). An `extern "C++"` block, in a version script or a dynamic
 # list, is refused by name (resolve.md §9.7 rule 6: no demangler yet;
 # the references accept it).
-#@ spec: dyn.md "D-118"; dyn.md "D-103"; dyn.md "D-112"; dyn.md "D-124"; dyn.md "D-114"
+#@ spec: dyn.md "D-118"; dyn.md "D-103"; dyn.md "D-112"; dyn.md "D-124"; dyn.md "D-114"; dyn.md "D-19a"
 #@ requires: g++
 #@ arch: aarch64 x86_64
 
@@ -41,6 +42,7 @@ cxx -O1 -fPIC m.cc -o m.o
 cxx -O1 -fPIC plain.cc -o plain.o
 cxx -O1 -fPIE main.cc -o main.o
 cxx -O1 -fPIE inlmain.cc -o inlmain.o
+cxx -O1 -fPIE pmain.cc -o pmain.o
 shlib g++ pre.o -Wl,-soname,libpre.so -o libpre.so
 link g++ -shared lib.o -Wl,-z,defs -Wl,-soname,libopt.so -o libopt.so
 link g++ -shared lib.o -Wl,--no-undefined -Wl,-z,now -Wl,-soname,libnow.so -o libnow.so
@@ -76,9 +78,22 @@ check readelf -dW libnoas.so
   then: [libm.so.6]
   then: [libgcc_s.so.1]
   then: [libc.so.6]
-link(mortar) g++ -shared plain.o -lgcc_s -Wl,--no-as-needed -o libgccs.so
-  exit: fail
-  diag: unsupported feature: DT_NEEDED order of a shared object mentioned again inside a linker script
+link g++ -shared plain.o -lgcc_s -Wl,--no-as-needed -Wl,-soname,libgccs.so -o libgccs.so
+check readelf -dW libgccs.so
+  count(bfd,mortar): 4 (NEEDED)
+  has(bfd,mortar): [libstdc++.so.6]
+  then(bfd,mortar): [libm.so.6]
+  then(bfd,mortar): [libgcc_s.so.1]
+  then(bfd,mortar): [libc.so.6]
+  count(lld): 4 (NEEDED)
+  has(lld): [libgcc_s.so.1]
+  then(lld): [libstdc++.so.6]
+  then(lld): [libm.so.6]
+  then(lld): [libc.so.6]
+  count(mold): 3 (NEEDED)
+  has(mold): [libstdc++.so.6]
+  then(mold): [libm.so.6]
+  then(mold): [libc.so.6]
 link g++ -shared lib.o -Wl,--version-script,v.map -Wl,-soname,libver.so -o libver.so
 check readelf --dyn-syms -W libver.so
   has: _Z9lib_throwi@@V1$
@@ -86,10 +101,10 @@ check readelf --dyn-syms -W libver.so
   not: _Z10lib_secretv
 link(mortar) g++ -shared lib.o -Wl,--version-script,vcxx.map -o libvcxx.so
   exit: fail
-  diag: error: unsupported linker script command: extern "C++" in a version script (spec/resolve.md §9.7 rule 6: it needs the demangler; list the mangled names, or use a glob such as _ZN2ns\*)
+  diag: error: vcxx.map:3:20: unsupported linker script command: extern "C++" in a version script (spec/resolve.md §9.7 rule 6: it needs the demangler; list the mangled names, or use a glob such as _ZN2ns\*)
 link(mortar) g++ -shared lib.o -Wl,--dynamic-list,dl.list -o libdl.so
   exit: fail
-  diag: error: unsupported linker script command: extern "C++" in a dynamic list (spec/resolve.md §9.7 rule 6: it needs the demangler; list the mangled names, or use a glob such as _ZN2ns\*)
+  diag: error: dl.list:2:18: unsupported linker script command: extern "C++" in a dynamic list (spec/resolve.md §9.7 rule 6: it needs the demangler; list the mangled names, or use a glob such as _ZN2ns\*)
 host g++ -pie main.o -L. -lopt -o prog
 run prog
   stdout: caught 3 ns 5
@@ -105,6 +120,9 @@ run prog-ver
 host g++ -pie main.o -L. -lnoas -o prog-noas
 run prog-noas
   stdout: caught 3 ns 5
+host g++ -pie pmain.o -L. -lgccs -o prog-gccs
+run prog-gccs
+  stdout: plain 2
 host g++ -pie inlmain.o -L. -linl -o prog-inl
 run prog-inl
   stdout: 12
@@ -173,6 +191,13 @@ int main() {
 int lib_calc(int);
 int main() {
   std::printf("%d\n", lib_calc(6));
+  return 0;
+}
+#--- pmain.cc
+#include <cstdio>
+extern "C" int plain(int);
+int main() {
+  std::printf("plain %d\n", plain(1));
   return 0;
 }
 #--- v.map
