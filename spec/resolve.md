@@ -498,8 +498,9 @@ record):
   (`resolve/archive-order.test`: `-lone -ltwo` gives `one`, `-ltwo -lone`
   gives `two`, all three).
 - **`--wrap` targets** are not roots: with `--wrap=f`, a member defining
-  only `f` is not extracted unless `__real_f` is referenced (all three,
-  E13).
+  only `f` is not extracted unless `__real_f` is referenced (GNU ld and
+  mold, E13; lld 19 extracts it, the programs run alike: §7.1, §16,
+  WP-153).
 - **COMDAT does not feed back.** Extraction treats a definition in a group
   section as a definition whichever copy is kept: the keeper is chosen
   after the closure (§6.1). A key defined only in copies that end up
@@ -1150,25 +1151,105 @@ of the copies are W1-W3's input.
 
 ## 7. Redirections
 
-### 7.1 `--wrap=SYM` (M4)
+### 7.1 `--wrap=SYM` (M4; WP-153)
 
 GNU ld's manual: "Any undefined reference to SYM will be resolved to
 `__wrap_SYM`. Any undefined reference to `__real_SYM` will be resolved to
-SYM." Exactly that, and no more:
+SYM." Exactly that, and no more (measured by WP-153 against GNU ld 2.44,
+lld 19.1.7 and mold 2.37.1, the lane's lld 22 the same on its cells:
+AArch64 and x86-64 static, `-no-pie`, PIE, static-pie and `-shared`,
+i386 static; every cell below runs and prints which function was called,
+`tests/link/resolve/wrap*.test.pending`,
+`tests/link/dyn/shared/wrap-shared.test.pending`, `.test` once the
+verifier follows this section):
 
 - `redirect[SYM] = __wrap_SYM` and `redirect[__real_SYM] = SYM`, **for
   undefined mentions only**. A reference in the file that defines `SYM`
   goes through the defined mention and is not wrapped: GNU ld and mold
   (E13: `g` calls `f` in `f`'s own object, and the call is not wrapped);
-  lld wraps it as well (E13, exit 87 instead of 111): §16.
+  lld wraps it as well (E13, exit 87 instead of 111; WP-153: `g=1010`
+  for `g=10`): §16.
+- The three names have key rows whether or not a file mentions them
+  (`spec/model.md` §2.3), so that a redirected reference binds to a row
+  and is reported by its target's name.
 - Extraction follows redirection: an undefined `SYM` demands
   `__wrap_SYM` (a member defining it is extracted, E13), an undefined
-  `__real_SYM` demands `SYM`. `SYM` itself is not a root (E13).
-- An undefined `__wrap_SYM` is reported as such (all three, E13).
-- Several `--wrap` options for one symbol are one; `--wrap` of
-  `__wrap_X` or `__real_X` follows the same rule textually (not verified).
+  `__real_SYM` demands `SYM` (all three). `SYM` itself is not demanded
+  by its own undefined mentions: a member defining only `SYM` stays out
+  unless `__real_SYM` (or a root) names it (GNU ld and mold; lld 19
+  extracts it, as it resolves before it wraps, and the programs run
+  alike: §16).
+- An undefined `__wrap_SYM` is reported as such (`undefined-symbol`
+  naming `__wrap_SYM`, all three, E13); a weak undefined `SYM` with no
+  `__wrap_SYM` is 0 (all three). An undefined `__real_SYM` with no
+  `SYM` is reported as `SYM` (GNU ld and mold; lld names `__real_SYM`).
+- Several `--wrap` options for one symbol are one. `--wrap=__wrap_X`
+  with `--wrap=X` chains nothing: an undefined `X` binds to `__wrap_X`'s
+  definition, an undefined `__wrap_X` to `__wrap___wrap_X` (all three,
+  in either order); `--wrap=__real_X` alone wraps `__real_X` (all
+  three).
+- **Roots are not redirected**: `-u SYM`, `--require-defined=SYM` and
+  `-e SYM` name `SYM` itself (the member defining `SYM` is extracted,
+  the entry is `SYM`'s address; GNU ld and mold; lld makes the entry
+  `__wrap_SYM`, `spec/layout.md` L-102). `--export-dynamic-symbol=SYM`
+  exports `SYM` (all three).
+- A shared object's `SYM` (`--wrap=malloc` on a dynamic executable, the
+  common line): the program's undefined `malloc` binds to its
+  `__wrap_malloc`, its `__real_malloc` to the library's `malloc`
+  through the PLT (an undefined `.dynsym` entry `malloc` with the
+  library's version); a library is needed only by the references left
+  after redirection (D-11), so `--wrap=f` with `f` only in an
+  `--as-needed` library and no `__real_f` leaves the library out (all
+  three). The library's own calls are not wrapped (the dynamic loader
+  binds them).
+- `-shared`: the export set is the program's definitions as always
+  (`SYM`, `__wrap_SYM` if defined; never `__real_SYM`, which is a
+  reference); an undefined `SYM` with `__wrap_SYM` undefined too
+  exports two undefined entries `SYM` (for `__real_SYM`) and
+  `__wrap_SYM` (all three). A call to `SYM` from its own object stays
+  a preemptible call to `SYM` (GNU ld and mold; lld calls
+  `__wrap_SYM`).
+- `--gc-sections`: the edges are the redirected ones; `SYM`'s section
+  is kept when only `__real_SYM` reaches it, dropped when only wrapped
+  references named it (all three).
+- `.symtab`: the names are the definitions and the references after
+  redirection (`__wrap_SYM`, `SYM`; never `__real_SYM`); mold writes
+  `__wrap_SYM` and `SYM` as `STB_LOCAL` in an executable (its usual
+  `.symtab` form). The text map's "pulled by" names the key the
+  reference demands (`spec/image.md` I-121).
+- **Refused by name** (WP-153; the three references disagree, the
+  supervisor's ruling of 2026-11-17):
+  1. a versioned `SYM` (`--wrap=f@V1`: GNU ld and lld wrap the
+     reference `f@V1`, mold the reference `f`): the command line's
+     `unsupported option value: --wrap=f@V1` (the row is `partial`,
+     `spec/cli.md` §4.2);
+  2. `--wrap=__real_X` on a line that also has `--wrap=X` (an undefined
+     `__real_X`: GNU ld binds it to `__wrap___real_X`, lld by the last
+     of the two options, mold to `X`): `unsupported option value:
+     --wrap=__real_X`;
+  3. `SYM` with a mention in a **live** object that COMDAT
+     deduplication demotes (§2: the object's copy of `SYM`'s group is
+     dropped, §6.2): GNU ld wraps the references of the files whose
+     copy is dropped and not those of the keeper's file, lld wraps
+     every one, mold none (§16). `Refused{Feature, "--wrap of a symbol
+     with a definition in a dropped COMDAT copy: SYM"}` at the option,
+     `defined in` the kept copy's file and the dropped copy's entry,
+     with the note that a wrapped function must have one definition
+     (make it non-inline, or wrap its callers' own symbol). "Live" is
+     §4's: an archive member holding the second copy and not extracted
+     is no copy (accepted: GNU ld and mold agree); extracted (for any
+     symbol) it is refused. `--gc-sections` changes nothing: COMDAT
+     deduplication precedes it, so a dropped copy whose sections would
+     also be collected is still refused. A COMDAT definition with no
+     second live copy is accepted (GNU ld and mold agree; lld wraps the
+     defining file's calls, E13). The common C++ lines (`--wrap=malloc`,
+     `free`, `open` with libstdc++, static and dynamic) are unaffected
+     (`tests/link/resolve/wrap-cxx.test.pending`).
 - LTO is refused (§1.2), so lld's interaction of `--wrap` with bitcode
   does not arise.
+- `--odr` (`spec/odr.md`): a wrapped key is a key like any other; the
+  one case where wrapping and vague linkage meet (item 3) is refused
+  before the ODR pass.
 
 `redirect` is a column, not a rename of keys, because the key of a
 mention is I-file (`spec/model.md` §3.2: interning before resolution, and
@@ -2096,7 +2177,7 @@ Each states the references' behavior it pins; until M1 each also carries
 | `resolve/comdat-discarded-ref.test` | E9: reference to a local of a dropped copy fails (bfd, lld); mold crashes | `skip(mold)`: mold 2.37.1 segfaults |
 | `resolve/comdat-except-table.test` | E9: `.gcc_except_table` reference into a dropped copy links (bfd, mold) | `xfail(lld)` |
 | `resolve/linkonce.test` | E11: bfd dedups, lld/mold duplicate; mortar refuses | `diag(mortar): unsupported feature: .gnu.linkonce sections` |
-| `resolve/wrap.test` (M4) | E13: same-object reference not wrapped (bfd, mold 111; lld 87), archive extraction through `__wrap_`/`__real_` | per linker |
+| `resolve/wrap.test` (WP-153: `.test.pending` until the verifier follows §7.1) | E13: same-object reference not wrapped (bfd, mold g=10; lld g=1010), archive extraction through `__wrap_`/`__real_` | per linker (`run(lld)`) |
 | `resolve/defsym.test` (M4) | E13: number, alias, alias overriding a definition, `k+4` (mold refuses) | per linker |
 | `resolve/linker-symbols.test` | E14: the §8.1 table, per architecture, with weak references | `has(...)` per linker |
 | `resolve/linker-symbols-user.test` | E14: user definitions of provided names win (bfd, lld); forced names: mortar refuses | per linker |
@@ -2189,6 +2270,11 @@ Every disagreement found; "E" is the experiment in the landed record.
 | slim GCC LTO object | refused | ignored (then `main` undefined) | refused | refused | E18 |
 | `.gnu.warning.<sym>` | warning, dropped | copied, no warning | copied, no warning | warning, dropped | E21 |
 | `--wrap` and a reference in the defining object | not wrapped | wrapped | not wrapped | not wrapped | E13 |
+| `--wrap=f`, a member defining only `f`, no `__real_f` (lld 19) | not extracted | extracted (runs alike) | not extracted | not extracted (§7.1) | WP-153 |
+| `--wrap=f`, `-e f` (lld 19) | entry `f` | entry `__wrap_f` | entry `f` | entry `f` (L-102) | WP-153 |
+| `--wrap=f@V1`, references `f@V1` and `f` (lld 19) | `f@V1` wrapped (`__wrap_f@V1` undefined) | the same | `f` wrapped | refused (§7.1 item 1) | WP-153 |
+| `--wrap=f --wrap=__real_f`, an undefined `__real_f` (lld 19) | `__wrap___real_f` (5) either order | the last option: 5, or 1 with `--wrap=__real_f` first | `f` (1) either order | refused (§7.1 item 2) | WP-153 |
+| `--wrap=_Z1fv`, inline `f` in `a.o` (keeper) and `b.o` (dropped copy), each calling it; `a.o b.o` / `b.o a.o` (lld 19; `--gc-sections` and `b.o` extracted from an archive alike) | `a:f=1 b=50` / `a:f=50 b=1` | 50 50 / 50 50 | 1 1 / 1 1 | refused (§7.1 item 3) | WP-153 |
 | `--defsym a=b+4` | absolute | section-relative | refused | section-relative | E13 |
 | `--require-defined` | supported | not an option | supported | supported | E13 |
 | `--require-defined` of a name only a shared object defines | error | not an option | accepted | error (§4.2) | WP-152 |

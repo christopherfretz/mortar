@@ -369,15 +369,15 @@ fn entry(
         .find(|(_, k)| k.name == name.as_slice() && k.version.is_none())
         .map(|(s, _)| s);
     let value = match key {
-        Some(s) => {
-            let s = cx.resolution.redirect.get(s).copied().unwrap_or(s);
-            match cx.assignment.def(cx.resolution, s) {
-                Some(Def::Internal(_)) => {
-                    defined.binary_search_by_key(&s, |d| d.symbol).ok().map(|i| defined[i].value)
-                }
-                _ => table.symbol(s, entry_def, 0)?,
+        // The entry names its symbol, not an undefined mention: `--wrap`
+        // does not redirect it (`spec/resolve.md` §7.1: GNU ld and mold
+        // take `SYM` itself; WP-153). A `--defsym` alias is its `def`.
+        Some(s) => match cx.assignment.def(cx.resolution, s) {
+            Some(Def::Internal(_)) => {
+                defined.binary_search_by_key(&s, |d| d.symbol).ok().map(|i| defined[i].value)
             }
-        }
+            _ => table.symbol(s, entry_def, 0)?,
+        },
         None => None,
     };
     let Some(value) = value else {

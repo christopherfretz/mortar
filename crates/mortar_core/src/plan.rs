@@ -94,6 +94,36 @@ impl Plan {
     pub fn dynamic_lists(&self) -> impl Iterator<Item = &ScriptArg> {
         self.scripts.iter().filter(|s| s.role == ScriptRole::DynamicList)
     }
+
+    /// The `--wrap` symbols, in command-line order, each once
+    /// (`spec/resolve.md` §7.1: several `--wrap` of one symbol are one).
+    #[must_use]
+    pub fn wraps(&self) -> Vec<&[u8]> {
+        let mut out: Vec<&[u8]> = Vec::new();
+        for s in self.symbols.iter().filter(|s| s.role == SymbolRole::Wrap) {
+            let name = s.value.as_encoded_bytes();
+            if !out.contains(&name) {
+                out.push(name);
+            }
+        }
+        out
+    }
+
+    /// The names options give that need a key row whether or not a file
+    /// mentions them (`spec/model.md` §2.3), in option order: for each
+    /// `--wrap=SYM`, `SYM`, `__wrap_SYM` and `__real_SYM`
+    /// (`spec/resolve.md` §7.1). Unversioned names: the input phase adds
+    /// a row for each one no file mentions, after the mentioned keys.
+    #[must_use]
+    pub fn option_keys(&self) -> Vec<Vec<u8>> {
+        let mut out = Vec::new();
+        for sym in self.wraps() {
+            out.push(sym.to_vec());
+            out.push([b"__wrap_", sym].concat());
+            out.push([b"__real_", sym].concat());
+        }
+        out
+    }
 }
 
 /// Incremental linking (`spec/cli.md` §3.13; `spec/incr.md` IN-10). The

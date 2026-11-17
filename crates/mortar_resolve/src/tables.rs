@@ -29,7 +29,7 @@ use mortar_elf::{SectionIndex, SymbolIndex, SymbolSection, SymbolTable};
 use crate::index::HashIndex;
 use crate::options::{
     Entry, MentionGroup, Named, Options, Output, SharedLink, SharedMention, SharedOutput,
-    ShlibUndefined, glob_match, is_glob,
+    ShlibUndefined, Wrap, glob_match, is_glob,
 };
 use crate::problem::{DefPlace, MalformedSymbol, Problem, What};
 use crate::resolve::{Def, Resolved, flags, resolve_steps};
@@ -650,8 +650,8 @@ fn shared_mention(sym: &mortar_elf::Sym, place: SymbolSection) -> bool {
 
 /// The options resolution reads, from the `Plan` and the input scripts'
 /// `ENTRY` (`spec/resolve.md` §4.2, §5.2, §5.5): `-e` wins over `ENTRY`,
-/// the last `ENTRY` over earlier ones. `--wrap` and `--defsym` (M4) are
-/// refused by the command line (`spec/cli.md` §4.2) and not read.
+/// the last `ENTRY` over earlier ones; `--wrap` (§7.1) by the rows the
+/// input phase gave its three names.
 #[must_use]
 pub fn options(plan: &Plan, inputs: &Inputs<'_>, view: &InputsView<'_, '_>) -> Options {
     let named = |name: &[u8], arg: u32| Named {
@@ -711,7 +711,19 @@ pub fn options(plan: &Plan, inputs: &Inputs<'_>, view: &InputsView<'_, '_>) -> O
             )
             .collect(),
         require_defined: by_role(SymbolRole::RequireDefined),
-        wrap: Vec::new(),
+        wrap: plan
+            .wraps()
+            .into_iter()
+            .filter_map(|sym| {
+                // The input phase gave each of the three a row (model.md §2.3).
+                let row = |name: &[u8]| view.find_key(name);
+                Some(Wrap {
+                    sym: row(sym)?,
+                    wrap: row(&[b"__wrap_", sym].concat())?,
+                    real: row(&[b"__real_", sym].concat())?,
+                })
+            })
+            .collect(),
         allow_multiple_definition: d.allow_multiple_definition,
         warn_common: d.warn_common,
         warn_backrefs: d.warn_backrefs,
@@ -1241,6 +1253,21 @@ impl Ctx<'_, '_, '_> {
                 "the references differ: GNU ld extracts the member, lld leaves the root \
                  unfulfilled; name the archive before the library, or the library under \
                  --no-as-needed",
+            ),
+            What::WrapComdat { key, dropped, kept } => Diagnostic::refused(
+                C::Feature,
+                format!(
+                    "--wrap of a symbol with a definition in a dropped COMDAT copy: {}",
+                    self.name(*key)
+                ),
+            )
+            .at(Place::argument(format!("--wrap={}", self.name(*key))))
+            .with(Relation::DefinedIn, self.file(*kept))
+            .with(Relation::DefinedIn, self.entry(*dropped))
+            .note(
+                "the references differ on the calls in a file whose copy is dropped (GNU ld \
+                 wraps them, lld wraps every call, mold none): a wrapped function must have one \
+                 definition; make it non-inline, or wrap its callers' own symbol",
             ),
             What::NeededOrderUnknown { file } => Diagnostic::refused(
                 C::Feature,

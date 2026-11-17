@@ -121,7 +121,11 @@ impl Parsed {
                     seen[use_.row] = true;
                     out.push(use_);
                 }
-                Status::Partial { refused, .. } if refused_value(use_, refused) => out.push(use_),
+                Status::Partial { refused, .. }
+                    if refused_value(use_, refused) || refused_shape(&self.plan, use_) =>
+                {
+                    out.push(use_);
+                }
                 _ => {}
             }
         }
@@ -158,6 +162,23 @@ impl Parsed {
 /// Whether `use_`'s value is one of a `partial` row's refused values.
 fn refused_value(use_: &Use, refused: &[&str]) -> bool {
     use_.value.as_deref().is_some_and(|v| refused.iter().any(|r| OsStr::new(r) == v))
+}
+
+/// Whether `use_`'s value is of a shape its `partial` row refuses, where
+/// the shape is a fact of the line rather than of one value (the rows'
+/// notes name each).
+fn refused_shape(plan: &Plan, use_: &Use) -> bool {
+    let Some(value) = use_.value.as_deref().map(OsStr::as_bytes) else { return false };
+    match use_.row().lands {
+        // `spec/resolve.md` §7.1: a versioned name, and `--wrap` of the
+        // `__real_` name of another `--wrap`'s symbol (the references
+        // differ on both).
+        Lands::Symbol(crate::plan::SymbolRole::Wrap) => {
+            value.contains(&b'@')
+                || value.strip_prefix(b"__real_").is_some_and(|sym| plan.wraps().contains(&sym))
+        }
+        _ => false,
+    }
 }
 
 /// The diagnostics for the options that do not belong to `target`

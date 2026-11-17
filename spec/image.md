@@ -1797,7 +1797,10 @@ random input's).
      spaces when the member text is 30 columns or longer, else padded
      to column 30 on the same line), `FILE (SYMBOL)`: the file and
      symbol whose reference took it (resolve's first taker,
-     `spec/resolve.md` §4.3, which is not always GNU's), for a root
+     `spec/resolve.md` §4.3, which is not always GNU's; the symbol is
+     the key the reference demands, so under `--wrap=f` an undefined
+     `__real_f` is written `(f)` and an undefined `f` `(__wrap_f)`, as
+     GNU ld writes them, WP-153), for a root
      (`-u`, `--require-defined`, a script's `EXTERN`, the entry) no
      file, so the line is 30 spaces and `(SYMBOL)`, as GNU writes it;
      a `--whole-archive` member is listed too, in the same `FileId`

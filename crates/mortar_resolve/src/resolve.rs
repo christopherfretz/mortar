@@ -439,6 +439,7 @@ pub fn resolve_steps<V: View>(
         }
     }
     root_as_needed(view, opts, &roots, &kinds, &targets, &file_live, &def, &mut problems);
+    wrap_comdat(view, opts, &live_objects, &keepers, &props, &mut problems);
     let entry = entry_point(&opts.entry, &def, view, &mut problems);
 
     let gnu = opts.warn_backrefs.then(|| {
@@ -1184,4 +1185,56 @@ fn shared_definer<V: View>(
     buf.iter()
         .find(|m| m.place != SymbolSection::Undefined && (m.key == k || m.also.get() == Some(k)))
         .map(|m| SymEntry { file, index: m.index })
+}
+
+/// §7.1 (WP-153): `--wrap=SYM` where a live object's mention of `SYM` is
+/// demoted by COMDAT deduplication (its copy of the group is dropped) is
+/// refused by name: GNU ld wraps the references of the dropped copy's
+/// file, lld every reference, mold none. A COMDAT definition with no
+/// dropped copy is accepted. Run only for a wrapped key with a demoted
+/// mention, so a link without one pays nothing.
+fn wrap_comdat<V: View>(
+    view: &V,
+    opts: &Options,
+    live_objects: &[FileId],
+    keepers: &Keepers,
+    props: &[Props],
+    problems: &mut Vec<Problem>,
+) {
+    let demoted: Vec<SymbolId> = opts
+        .wrap
+        .iter()
+        .map(|w| w.sym)
+        .filter(|k| props.get(k.0 as usize).is_some_and(|p| p.flags & flags::DEMOTED != 0))
+        .collect();
+    if demoted.is_empty() {
+        return;
+    }
+    let mut map = SectionMap::default();
+    let mut mentions = Vec::new();
+    let mut scratch = Vec::new();
+    let mut found: Vec<SymbolId> = Vec::new();
+    for &file in live_objects {
+        mentions.clear();
+        view.mentions(file, &mut mentions);
+        if !mentions.iter().any(|m| demoted.contains(&m.key)) {
+            continue;
+        }
+        map.fill(view, file, view.file(file).sections, &keepers.keeper, false, &mut scratch);
+        for m in &mentions {
+            let SymbolSection::Section(sec) = m.place else { continue };
+            if !demoted.contains(&m.key) || found.contains(&m.key) || !map.is_dropped(sec.0) {
+                continue;
+            }
+            let kept = map
+                .group_of(sec.0)
+                .get()
+                .and_then(|g| keepers.keeper.get(g.0 as usize).and_then(|k| k.get()));
+            if let Some(kept) = kept {
+                found.push(m.key);
+                let dropped = SymEntry { file, index: m.index };
+                problems.push(Problem::at(dropped, What::WrapComdat { key: m.key, dropped, kept }));
+            }
+        }
+    }
 }
