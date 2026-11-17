@@ -9,6 +9,7 @@
 # held here).
 #@ spec: dyn.md "D-25"
 #@ arch: aarch64 x86_64
+#@ anomaly(mold): A55
 
 cc -O2 -fPIC m2.c -o m2.o
 cc -O2 -fPIE -ffunction-sections gc.c -o gc.o

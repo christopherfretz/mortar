@@ -305,6 +305,32 @@ fn judge(
         symbolic_flag(&mut checked);
     }
     report.findings.extend(checked);
+    // D-25's class of each undefined weak key (WP-165): the import of a
+    // `WeakDyn` key and of the split key (P-D7, P-D9).
+    let weak = if sets.is_none() && matches!(kind, OutputKind::Exec | OutputKind::Pie) {
+        let nu: BTreeSet<usize> = model.needed.union(&model.used).copied().collect();
+        let order: Vec<usize> = ld.order.iter().copied().filter(|i| nu.contains(i)).collect();
+        let names: HashSet<String> = model
+            .keys
+            .iter()
+            .filter(|(n, k)| {
+                !k.defined
+                    && k.weak_ref
+                    && !k.strong_ref
+                    && model.bind_in(&order, n, k.version.as_deref()).is_none()
+            })
+            .map(|(n, _)| n.clone())
+            .collect();
+        crate::weakclass::derive(image, &objs, &names, kind)
+    } else {
+        crate::weakclass::Classes::default()
+    };
+    report.findings.extend(crate::weakclass::check(
+        &weak,
+        dout,
+        image.header.e_machine,
+        map.format,
+    ));
     // View 1: bias 0.
     // §12.5 view A: a preemptible IFUNC key is what its resolver returns,
     // through the record that names it (P-D18).
@@ -535,7 +561,14 @@ fn judge(
             for k in &names {
                 ok.insert(k.clone(), uses_of(&objs, k));
             }
-            for (k, fs) in bad {
+            for (k, mut fs) in bad {
+                // The split key's unfillable uses hold Weak0's value
+                // whatever is loaded (D-25 ruling (A); view 1 judges the
+                // value, `weakclass::check` the absence of a record).
+                fs.retain(|f| !weak.split_site(&k, f.site.as_ref()));
+                if fs.is_empty() {
+                    continue;
+                }
                 let n = ok.get(&k).copied().unwrap_or(0);
                 // The cause, named: no record names the key (its `.dynsym`
                 // entry is inert; D-25 notes that no reference writes one

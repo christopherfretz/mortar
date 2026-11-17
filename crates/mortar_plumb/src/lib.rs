@@ -51,6 +51,7 @@ mod store;
 mod structure;
 pub mod sweep;
 mod symbols;
+mod weakclass;
 pub mod x64;
 pub mod x86;
 mod x86op;

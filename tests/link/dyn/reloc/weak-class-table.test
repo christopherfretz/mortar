@@ -44,6 +44,7 @@
 #@ requires: clang
 #@ anomaly(lld): A25
 #@ anomaly(lld,x86_64): A29
+#@ anomaly(mold): A55
 
 cc -O2 -fPIE main.c -o main-pie.o
 cc -O2 -fPIE -DEXEC main.c -o main-exec.o
