@@ -37,6 +37,15 @@ licence = MIT
 why = autotools with libtool, C and C++ (its unit tests are built as C and as C++), configured static: libtool's link lines
 rows = gcc clang
 
+[expat-shared]
+version = 2.6.4
+url = https://github.com/libexpat/libexpat/releases/download/R_2_6_4/expat-2.6.4.tar.xz
+sha256 = a695629dae047055b37d50a0ff4776d1d45d0a4c842cf4ccee158441f55ff7ee
+root = expat-2.6.4
+licence = MIT
+why = expat in its default configuration, shared and static (WP-126): libtool's -shared line of a C library, and its programs linked against it
+rows = gcc clang
+
 [pcre2]
 version = 10.44
 url = https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.44/pcre2-10.44.tar.bz2
@@ -55,6 +64,15 @@ licence = LGPL-3.0-or-later OR GPL-2.0-or-later
 why = an old GNU autotools and libtool project with hand-written assembly per CPU and a C++ interface; hundreds of small test programs
 rows = gcc clang
 
+[gmp-shared]
+version = 6.3.0
+url = https://ftp.gnu.org/gnu/gmp/gmp-6.3.0.tar.xz
+sha256 = a3c2b80201b89e68616f4ad30bc66aee4927c3ce50e33929ca819d5c43538898
+root = gmp-6.3.0
+licence = LGPL-3.0-or-later OR GPL-2.0-or-later
+why = gmp in its default configuration, shared, with the C++ interface (WP-126): libtool's -shared lines of libgmp (assembly) and libgmpxx (C++), the tests linked against them
+rows = gcc clang
+
 [googletest]
 version = 1.15.2
 url = https://github.com/google/googletest/releases/download/v1.15.2/googletest-1.15.2.tar.gz
@@ -62,6 +80,15 @@ sha256 = 7b42b4d6ed48810c5362c265a17faebe90dc2373c885e5216439d37927f02926
 root = googletest-1.15.2
 licence = BSD-3-Clause
 why = CMake C++ with its own tests: death tests (fork and exec of the test binary), threads, exceptions, typed and parameterised tests
+rows = gcc clang
+
+[googletest-shared]
+version = 1.15.2
+url = https://github.com/google/googletest/releases/download/v1.15.2/googletest-1.15.2.tar.gz
+sha256 = 7b42b4d6ed48810c5362c265a17faebe90dc2373c885e5216439d37927f02926
+root = googletest-1.15.2
+licence = BSD-3-Clause
+why = googletest again, configured -DBUILD_SHARED_LIBS=ON (WP-126): its four libraries are C++ shared objects (-shared -soname: vague linkage, typeinfo, STB_GNU_UNIQUE, exceptions across the boundary) and every test binary is linked against them
 rows = gcc clang
 
 [fmt]

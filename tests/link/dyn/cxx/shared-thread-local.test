@@ -1,0 +1,125 @@
+# dyn.md D-119, D-110, D-111 (WP-126): C++ thread-local objects and
+# one-time initialisation in a library each linker links, g++ and
+# clang++. The library defines `thread_local Counter tl_counter`, a class
+# with a non-trivial constructor and destructor; the host uses it by
+# name (`extern thread_local`): the host calls the TLS wrapper `_ZTW`
+# (a COMDAT copy in the host), which calls the library's exported init
+# function `_ZTH` (a weak reference) and reaches the variable through the
+# library's TLS (the host's GD or TLSDESC access to an import, D-119).
+# The constructor runs once per thread that touches it; the destructor
+# runs at each thread's exit through `__cxa_thread_atexit` (an import of
+# the library), the main thread's at `exit`. `std::call_once` and a
+# function-local static with a guard (`__cxa_guard_acquire`) run their
+# initialiser once under four threads.
+#@ spec: dyn.md "D-119"; dyn.md "D-110"
+#@ requires: g++ clang
+#@ arch: aarch64 x86_64
+
+cxx -O1 -fPIC -pthread lib.cc -o lib-g.o
+cxx(clang) -O1 -fPIC -pthread lib.cc -o lib-c.o
+cxx -O1 -fPIE -pthread main.cc -o main-g.o
+cxx(clang) -O1 -fPIE -pthread main.cc -o main-c.o
+link g++ -shared -pthread lib-g.o -Wl,-soname,libtlg.so -o libtlg.so
+link clang++ -shared -pthread lib-c.o -Wl,-soname,libtlc.so -o libtlc.so
+check readelf --dyn-syms -W libtlg.so
+  has: TLS * GLOBAL * tl_counter$
+  has: _ZTH10tl_counter$
+  has: UND __cxa_thread_atexit
+check readelf --dyn-syms -W libtlc.so
+  has: TLS * GLOBAL * tl_counter$
+  has: _ZTH10tl_counter$
+host g++ -pie -pthread main-g.o -L. -ltlg -o prog-g
+run prog-g
+  stdout: main 1 2
+  stdout: thread 10 11
+  stdout: thread 10 11
+  stdout: thread 10 11
+  stdout: thread 10 11
+  stdout: once 1 static 1 ctors 5 dtors 4
+  stdout: dtor 2
+host clang++ -pie -pthread main-c.o -L. -ltlc -o prog-c
+run prog-c
+  stdout: main 1 2
+  stdout: thread 10 11
+  stdout: thread 10 11
+  stdout: thread 10 11
+  stdout: thread 10 11
+  stdout: once 1 static 1 ctors 5 dtors 4
+  stdout: dtor 2
+
+#--- tl.h
+#include <atomic>
+struct Counter {
+  int v;
+  Counter();
+  ~Counter();
+};
+extern thread_local Counter tl_counter;
+extern std::atomic<int> ctors, dtors;
+int lib_bump();
+int lib_once();
+int lib_static();
+#--- lib.cc
+#include <cstdio>
+#include <mutex>
+#include "tl.h"
+std::atomic<int> ctors{0}, dtors{0};
+Counter::Counter() : v(0) { ctors++; }
+Counter::~Counter() {
+  dtors++;
+  if (v < 10) {
+    std::printf("dtor %d\n", v);
+    std::fflush(stdout);
+  }
+}
+thread_local Counter tl_counter;
+int lib_bump() { return ++tl_counter.v; }
+static std::once_flag flag;
+static std::atomic<int> once_runs{0};
+int lib_once() {
+  std::call_once(flag, [] { once_runs++; });
+  return once_runs;
+}
+struct Slow {
+  int runs;
+  Slow() : runs(0) {
+    static std::atomic<int> made{0};
+    runs = ++made;
+  }
+};
+int lib_static() {
+  static Slow s;
+  return s.runs;
+}
+#--- main.cc
+#include <cstdio>
+#include <pthread.h>
+#include "tl.h"
+static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
+static void *worker(void *) {
+  tl_counter.v = 9;
+  int a = lib_bump();
+  int b = ++tl_counter.v;
+  lib_once();
+  lib_static();
+  pthread_mutex_lock(&mu);
+  std::printf("thread %d %d\n", a, b);
+  std::fflush(stdout);
+  pthread_mutex_unlock(&mu);
+  return nullptr;
+}
+int main() {
+  int a = lib_bump();
+  int b = ++tl_counter.v;
+  std::printf("main %d %d\n", a, b);
+  std::fflush(stdout);
+  pthread_t t[4];
+  for (auto &x : t)
+    if (pthread_create(&x, nullptr, worker, nullptr)) return 2;
+  for (auto &x : t)
+    if (pthread_join(x, nullptr)) return 3;
+  std::printf("once %d static %d ctors %d dtors %d\n", lib_once(), lib_static(), ctors.load(),
+              dtors.load());
+  std::fflush(stdout);
+  return 0;
+}

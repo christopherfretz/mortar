@@ -1,0 +1,141 @@
+# dyn.md D-110, D-112, D-21 (WP-126): typeinfo and vtables of C++ vague
+# linkage across the boundary of a library each linker links. `Shape`
+# and `Square` have only inline virtual functions, so their vtables,
+# typeinfo objects and typeinfo names are COMDAT copies (`WEAK OBJECT`)
+# in the library AND in the host; the library exports its copies
+# (D-110) and the host exports its own (D-21: a shared input defines
+# them), so at run time each name has ONE definition, the host's, which
+# the library binds to through `.dynsym` (default visibility: D-112's
+# preemptible). The program prints address equalities, not `==` of
+# `type_info`: libstdc++ compares typeinfo NAMES by `strcmp` when the
+# addresses differ (`__GXX_MERGED_TYPEINFO_NAMES` is 0), so `typeid(a) ==
+# typeid(b)` and `dynamic_cast` would pass with two copies; `&typeid`
+# and the address of the name string do not. That the fallback is live
+# is shown too: a class in an anonymous namespace is a type of its own in
+# each object, yet with clang++ `dynamic_cast` to the host's `Local`
+# succeeds on the library's object (`local 1`, every reference: the two
+# typeinfo names are equal strings); g++ marks the name of a type with
+# internal linkage (`*`) so that it is compared by address (`local 0`). Two inline member functions are called from the
+# library through the PLT: `Square::area`, which the host also defines
+# and so exports (D-21): the library binds to the host's copy, ahead of
+# an interposer (the executable is first in the loader's scope); and
+# `Square::perim`, which only the library defines: an interposer
+# (LD_PRELOAD) preempts it in the library (D-112).
+#@ spec: dyn.md "D-110"; dyn.md "D-112"
+#@ requires: g++ clang
+#@ arch: aarch64 x86_64
+
+cxx -O1 -fPIC lib.cc -o lib-g.o
+cxx(clang) -O1 -fPIC lib.cc -o lib-c.o
+cxx -O1 -fPIC pre.cc -o pre.o
+cxx -O1 -fPIE main.cc -o main-g.o
+cxx(clang) -O1 -fPIE main.cc -o main-c.o
+shlib g++ pre.o -Wl,-soname,libpre.so -o libpre.so
+link g++ -shared lib-g.o -Wl,-soname,librtg.so -o librtg.so
+link clang++ -shared lib-c.o -Wl,-soname,librtc.so -o librtc.so
+check readelf --dyn-syms -W librtg.so
+  has: OBJECT * WEAK * DEFAULT * _ZTI6Square$
+  has: OBJECT * WEAK * DEFAULT * _ZTS6Square$
+  has: OBJECT * WEAK * DEFAULT * _ZTV6Square$
+  has: FUNC * WEAK * DEFAULT * _ZN6Square4areaEv$
+  has: FUNC * WEAK * DEFAULT * _ZN6Square5perimEv$
+  not: Local
+host g++ -pie main-g.o -L. -lrtg -o prog-g
+check readelf --dyn-syms -W prog-g
+  has: OBJECT * WEAK * DEFAULT * _ZTI6Square$
+  has: OBJECT * WEAK * DEFAULT * _ZTS6Square$
+  has: FUNC * WEAK * DEFAULT * _ZN6Square4areaEv$
+  not: _ZN6Square5perimEv
+run prog-g
+  stdout: typeid 1 name 1 vtable 1 base 1
+  stdout: dyncast lib->host 1 host->lib 1 eq 1 local 0
+  stdout: area 16 16 16 perim 16
+run prog-g
+  env: LD_PRELOAD=./libpre.so
+  stdout: typeid 1 name 1 vtable 1 base 1
+  stdout: dyncast lib->host 1 host->lib 1 eq 1 local 0
+  stdout: area 16 16 16 perim 99
+host clang++ -pie main-c.o -L. -lrtc -o prog-c
+run prog-c
+  stdout: typeid 1 name 1 vtable 1 base 1
+  stdout: dyncast lib->host 1 host->lib 1 eq 1 local 1
+  stdout: area 16 16 16 perim 16
+run prog-c
+  env: LD_PRELOAD=./libpre.so
+  stdout: typeid 1 name 1 vtable 1 base 1
+  stdout: dyncast lib->host 1 host->lib 1 eq 1 local 1
+  stdout: area 16 16 16 perim 99
+
+#--- shape.h
+#include <typeinfo>
+struct Shape {
+  virtual ~Shape() {}
+  virtual int sides() const { return 0; }
+};
+struct Square : Shape {
+  int s;
+  explicit Square(int x) : s(x) {}
+  int sides() const override { return 4; }
+  __attribute__((noinline)) int area();
+  __attribute__((noinline)) int perim();
+};
+inline int Square::area() { return s * s; }
+inline int Square::perim() { return 4 * s; }
+Shape *lib_make(int);
+const std::type_info *lib_square_type();
+const std::type_info *lib_shape_type();
+const char *lib_square_name();
+void *const *lib_square_vptr();
+bool lib_is_square(Shape *);
+int lib_area(Square *);
+int lib_perim(Square *);
+Shape *lib_local();
+#--- lib.cc
+#include "shape.h"
+namespace {
+struct Local : Shape {};
+}
+Shape *lib_make(int x) { return new Square(x); }
+const std::type_info *lib_square_type() { return &typeid(Square); }
+const std::type_info *lib_shape_type() { return &typeid(Shape); }
+const char *lib_square_name() { return typeid(Square).name(); }
+void *const *lib_square_vptr() {
+  static Square sq(1);
+  return *reinterpret_cast<void *const *const *>(&sq);
+}
+bool lib_is_square(Shape *p) { return dynamic_cast<Square *>(p) != nullptr; }
+int lib_area(Square *p) { return p->area(); }
+int lib_perim(Square *p) { return p->perim(); }
+Shape *lib_local() { return new Local; }
+#--- pre.cc
+struct Square {
+  void *vptr;
+  int s;
+  int area();
+  int perim();
+};
+int Square::area() { return 98; }
+int Square::perim() { return 99; }
+#--- main.cc
+#include <cstdio>
+#include "shape.h"
+namespace {
+struct Local : Shape {};
+}
+int main() {
+  Square mine(4);
+  Shape *theirs = lib_make(4);
+  std::printf("typeid %d name %d vtable %d base %d\n", &typeid(Square) == lib_square_type(),
+              typeid(Square).name() == lib_square_name(),
+              *reinterpret_cast<void *const *const *>(&mine) == lib_square_vptr(),
+              &typeid(Shape) == lib_shape_type());
+  Shape *loc = lib_local();
+  std::printf("dyncast lib->host %d host->lib %d eq %d local %d\n",
+              dynamic_cast<Square *>(theirs) != nullptr, lib_is_square(&mine),
+              typeid(*theirs) == typeid(Square), dynamic_cast<Local *>(loc) != nullptr);
+  std::printf("area %d %d %d perim %d\n", mine.area(), lib_area(&mine),
+              static_cast<Square *>(theirs)->area(), lib_perim(&mine));
+  delete theirs;
+  delete loc;
+  return 0;
+}

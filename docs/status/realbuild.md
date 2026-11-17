@@ -161,3 +161,44 @@ None: every test has the same result with mortar as with the control.
 | zlib | gcc | mortar | 2 | 8 | 10 | yes |
 
 The builds' wall time summed: 74 min; the largest build tree: 4009 MiB.
+
+## 2026-11-17: the survey's shared lines again (WP-126)
+
+Written by hand, not by `--report` (a regenerated report drops this
+section; `baseline.tsv` was not updated). `cargo xtask realbuild
+--project zlib --project lua --project googletest`, both rows, mortar at
+the WP-126 branch (base `int/batch-9`), AArch64 host. Lines and probes
+as the runner counts them; the earlier numbers are this file's tables
+above.
+
+| project | row | lines | linked and clean | refused | neither | probes (linked / refused) | tests: control / mortar / lost | earlier: lines / linked / refused |
+|---|---|---|---|---|---|---|---|---|
+| zlib | gcc | 7 | 7 | 0 | 0 | 3 (3 / 0) | 3 / 3 / 0 | 7 / 6 / 1 |
+| zlib | clang | 7 | 7 | 0 | 0 | 3 (2 / 0, 1 the control cannot) | 2 / 3 / 0 | 6 / 4 / 0 (2 neither) |
+| lua | gcc | 7 | 7 | 0 | 0 | 0 | 2 / 2 / 0 | 7 / 2 / 5 |
+| lua | clang | 7 | 7 | 0 | 0 | 0 | 2 / 2 / 0 | 7 / 2 / 5 |
+| googletest | gcc | 67 | 67 | 0 | 0 | 3 (3 / 0) | 63 / 63 / 0 | 67 / 65 / 2 |
+| googletest | clang | 67 | 67 | 0 | 0 | 5 (5 / 0) | 63 / 63 / 0 | 67 / 65 / 2 |
+
+Against `baseline.tsv`: 17 lines fixed (the `-shared` lines: 18, 17
+newly linked), 0 changed, 6 lost and 7 new (the configure probes'
+random names), and 1 line the runner calls a defect,
+`zlib/clang/configure/src/ztest*.so` `links-control-cannot`. That is
+not a mortar defect: the clang row's control is lld, which refuses the
+configure probe's version script (`zlib.map` names symbols the probe
+does not define; lld's default is `--no-undefined-version`), where GNU
+ld links silently and mortar links with a warning
+(`version-script-undefined-name`, `spec/dyn.md` D-114). The control's
+configure then builds no `libz.so` and its `testshared` fails, while
+mortar's builds and passes it: hence 2 against 3 tests, and the
+control build's 9 lines against mortar's 10.
+
+`googletest-shared` (new row, `-DBUILD_SHARED_LIBS=ON` with the tests):
+
+| row | lines | linked and clean | refused | probes (linked / refused) | tests: control / mortar / lost | `-shared` lines | wall s control / mortar |
+|---|---|---|---|---|---|---|---|
+| gcc | 76 | 76 | 0 | 3 (3 / 0) | 63 / 63 / 0 | 11 | 246 / 302 |
+| clang | 76 | 76 | 0 | 5 (5 / 0) | 63 / 63 / 0 | 11 | 145 / 127 |
+
+The 11 libraries of each row equal the control's in `.dynsym`'s defined
+set, the undefined names, `DT_NEEDED`, `DT_SONAME` and version needs.

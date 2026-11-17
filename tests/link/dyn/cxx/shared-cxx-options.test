@@ -1,0 +1,195 @@
+# dyn.md D-118, D-103, D-112, D-124, D-11, D-114 (WP-126): the options
+# a C++ library's line carries, each linker linking the library, g++.
+# `-z defs`/`--no-undefined` link a library whose only undefined
+# references are the C++ runtime's (the driver's `-lstdc++ -lm -lgcc_s
+# -lc` define them) and refuse one with an undefined C++ function, named
+# mangled (D-118). `-z now` writes `BIND_NOW` (D-103). Under
+# `-Bsymbolic-functions` the library's own calls of an inline function
+# (a COMDAT `WEAK FUNC`) stay in the library while an inline variable
+# stays preemptible: an interposer (LD_PRELOAD) replaces the variable and
+# not the function; without the option it replaces both (D-112's
+# `-Bsymbolic-functions` row). `--gc-sections` with `-ffunction-sections
+# -fdata-sections` keeps the exported functions, their exception tables
+# and vtables (exports are roots, D-124) and collects a hidden function
+# nothing reaches. Debian's g++ passes `--as-needed` first: `libm.so.6`
+# is needed only by a library that calls `cbrt`; with
+# `-Wl,--no-as-needed` before the objects every driver library is needed,
+# `libstdc++.so.6`, `libm.so.6`, `libgcc_s.so.1`, `libc.so.6` in that
+# order (D-11, D-19a; every reference). On a library that uses nothing
+# of `libgcc_s`, `-lgcc_s -Wl,--no-as-needed` (an explicit `-lgcc_s`
+# under the default `--as-needed`, then the driver's own `-lgcc_s` after
+# `--no-as-needed`) names `libgcc_s.so.1` again inside the linker script
+# `libgcc_s.so`, a mention whose as-needed state the input tables do not
+# record: refused by name (D-19a's keeping mention). The references
+# differ there: GNU ld needs `libstdc++ libm libgcc_s libc` in that
+# order, lld puts `libgcc_s` before `libm`, mold drops it (measured on
+# AArch64). A version script of mangled
+# names (exact and a glob, `_ZN2ns*`) exports them at `V1` and hides the
+# rest (D-114). An `extern "C++"` block, in a version script or a dynamic
+# list, is refused by name (resolve.md §9.7 rule 6: no demangler yet;
+# the references accept it).
+#@ spec: dyn.md "D-118"; dyn.md "D-103"; dyn.md "D-112"; dyn.md "D-124"; dyn.md "D-114"
+#@ requires: g++
+#@ arch: aarch64 x86_64
+
+cxx -O1 -fPIC lib.cc -o lib.o
+cxx -O1 -fPIC -ffunction-sections -fdata-sections lib.cc -o lib-fs.o
+cxx -O1 -fPIC und.cc -o und.o
+cxx -O1 -fPIC inl.cc -o inl.o
+cxx -O1 -fPIC pre.cc -o pre.o
+cxx -O1 -fPIC m.cc -o m.o
+cxx -O1 -fPIC plain.cc -o plain.o
+cxx -O1 -fPIE main.cc -o main.o
+cxx -O1 -fPIE inlmain.cc -o inlmain.o
+shlib g++ pre.o -Wl,-soname,libpre.so -o libpre.so
+link g++ -shared lib.o -Wl,-z,defs -Wl,-soname,libopt.so -o libopt.so
+link g++ -shared lib.o -Wl,--no-undefined -Wl,-z,now -Wl,-soname,libnow.so -o libnow.so
+check readelf -dW libnow.so
+  has: (FLAGS) * BIND_NOW
+  has: (FLAGS_1) * NOW
+link(mortar) g++ -shared und.o -Wl,-z,defs -o libund.so
+  exit: fail
+  diag: undefined symbol: _Z7missingv
+link(mortar) g++ -shared und.o -Wl,--no-undefined -o libund.so
+  exit: fail
+  diag: undefined symbol: _Z7missingv
+link g++ -shared lib-fs.o -Wl,--gc-sections -Wl,-soname,libgc.so -o libgc.so
+check nm libgc.so
+  has: T _Z9lib_throwi$
+  has: V _ZTV6LibErr$
+  not: _Z6unusedv
+link g++ -shared inl.o -Wl,-soname,libinl.so -o libinl.so
+link g++ -shared inl.o -Wl,-Bsymbolic-functions -Wl,-soname,libinlb.so -o libinlb.so
+check readelf --dyn-syms -W libinlb.so
+  has: FUNC * WEAK * _Z5twicei$
+  has: OBJECT * bias_v$
+link g++ -shared m.o -Wl,-soname,libm1.so -o libm1.so
+check readelf -dW libm1.so
+  has: [libm.so.6]
+link g++ -shared lib.o -Wl,-soname,libnolm.so -o libnolm.so
+check readelf -dW libnolm.so
+  has: [libstdc++.so.6]
+  not: [libm.so.6]
+link g++ -shared -Wl,--no-as-needed lib.o -Wl,-soname,libnoas.so -o libnoas.so
+check readelf -dW libnoas.so
+  has: [libstdc++.so.6]
+  then: [libm.so.6]
+  then: [libgcc_s.so.1]
+  then: [libc.so.6]
+link(mortar) g++ -shared plain.o -lgcc_s -Wl,--no-as-needed -o libgccs.so
+  exit: fail
+  diag: unsupported feature: DT_NEEDED order of a shared object mentioned again inside a linker script
+link g++ -shared lib.o -Wl,--version-script,v.map -Wl,-soname,libver.so -o libver.so
+check readelf --dyn-syms -W libver.so
+  has: _Z9lib_throwi@@V1$
+  has: _ZN2ns3getEv@@V1$
+  not: _Z10lib_secretv
+link(mortar) g++ -shared lib.o -Wl,--version-script,vcxx.map -o libvcxx.so
+  exit: fail
+  diag: error: unsupported linker script command: extern "C++" in a version script (spec/resolve.md §9.7 rule 6: it needs the demangler; list the mangled names, or use a glob such as _ZN2ns\*)
+link(mortar) g++ -shared lib.o -Wl,--dynamic-list,dl.list -o libdl.so
+  exit: fail
+  diag: error: unsupported linker script command: extern "C++" in a dynamic list (spec/resolve.md §9.7 rule 6: it needs the demangler; list the mangled names, or use a glob such as _ZN2ns\*)
+host g++ -pie main.o -L. -lopt -o prog
+run prog
+  stdout: caught 3 ns 5
+host g++ -pie main.o -L. -lnow -o prog-now
+run prog-now
+  stdout: caught 3 ns 5
+host g++ -pie main.o -L. -lgc -o prog-gc
+run prog-gc
+  stdout: caught 3 ns 5
+host g++ -pie main.o -L. -lver -o prog-ver
+run prog-ver
+  stdout: caught 3 ns 5
+host g++ -pie main.o -L. -lnoas -o prog-noas
+run prog-noas
+  stdout: caught 3 ns 5
+host g++ -pie inlmain.o -L. -linl -o prog-inl
+run prog-inl
+  stdout: 12
+run prog-inl
+  env: LD_PRELOAD=./libpre.so
+  stdout: 206
+host g++ -pie inlmain.o -L. -linlb -o prog-inlb
+run prog-inlb
+  stdout: 12
+run prog-inlb
+  env: LD_PRELOAD=./libpre.so
+  stdout: 112
+
+#--- lib.h
+#include <stdexcept>
+struct LibErr : std::runtime_error {
+  int v;
+  explicit LibErr(int x) : std::runtime_error("lib"), v(x) {}
+  ~LibErr() override;
+};
+int lib_throw(int);
+namespace ns {
+int get();
+}
+#--- lib.cc
+#include "lib.h"
+LibErr::~LibErr() {}
+int lib_throw(int x) {
+  if (x) throw LibErr(x);
+  return 0;
+}
+int ns::get() { return 5; }
+int lib_secret() { return 9; }
+__attribute__((visibility("hidden"))) int unused() { return 1; }
+#--- und.cc
+int missing();
+int use() { return missing() + 1; }
+#--- inl.h
+__attribute__((noinline)) inline int twice(int x) { return 2 * x; }
+inline int bias_v = 0;
+int lib_calc(int);
+#--- inl.cc
+#include "inl.h"
+int lib_calc(int x) { return twice(x) + bias_v; }
+#--- pre.cc
+int twice(int x) { return 100 + x; }
+int bias_v = 100;
+#--- m.cc
+#include <cmath>
+double lib_cbrt(double x) { return std::cbrt(x); }
+#--- plain.cc
+extern "C" int plain(int x) { return x + 1; }
+#--- main.cc
+#include <cstdio>
+#include "lib.h"
+int main() {
+  try {
+    lib_throw(3);
+  } catch (const LibErr &e) {
+    std::printf("caught %d ns %d\n", e.v, ns::get());
+  }
+  return 0;
+}
+#--- inlmain.cc
+#include <cstdio>
+int lib_calc(int);
+int main() {
+  std::printf("%d\n", lib_calc(6));
+  return 0;
+}
+#--- v.map
+V1 {
+  global:
+    _Z9lib_throwi;
+    _ZN2ns*;
+    _ZTI6LibErr; _ZTS6LibErr; _ZTV6LibErr; _ZN6LibErrD*;
+  local: *;
+};
+#--- vcxx.map
+V1 {
+  global:
+    extern "C++" { "ns::get()"; };
+  local: *;
+};
+#--- dl.list
+{
+  extern "C++" { "ns::get()"; };
+};

@@ -1,0 +1,136 @@
+# dyn.md D-110, D-23 (WP-126): one instance at run time of an inline
+# function's static local, an inline variable and a template's static
+# data member defined in several objects, the libraries linked by each
+# linker: g++ writes them `STB_GNU_UNIQUE`, `g++ -fno-gnu-unique` and
+# clang++ `STB_WEAK`. A library exports them with the binding of
+# `.symtab` (D-110: unique kept), and its `EI_OSABI` is `ELFOSABI_GNU`
+# (D-23; GNU ld writes it too, lld and mold write 0, so readelf shows
+# their unique binding as `<OS specific>: 10`). `prog` defines the three
+# itself and links the three libraries: every library binds to the
+# executable's instance. A library opened with `RTLD_DEEPBIND` (which
+# looks in itself first) still gets the executable's instance when its
+# definitions are unique (glibc's unique-symbol table: `deep-u 1`) and
+# keeps its own when they are weak (`deep-w 0`, every reference). `prog2`
+# defines none of them: the first library in the loader's order (the
+# unique one) provides the instance and the weak one binds to it.
+#@ spec: dyn.md "D-110"; dyn.md "D-23"
+#@ requires: g++ clang
+#@ arch: aarch64 x86_64
+
+cxx -O1 -fPIC -DTAG=g lib.cc -o lib-g.o
+cxx -O1 -fPIC -fno-gnu-unique -DTAG=n lib.cc -o lib-n.o
+cxx(clang) -O1 -fPIC -DTAG=c lib.cc -o lib-c.o
+cxx -O1 -fPIC -DTAG=du lib.cc -o deep-u.o
+cxx -O1 -fPIC -fno-gnu-unique -DTAG=dw lib.cc -o deep-w.o
+cxx -O1 -fPIE main.cc -o main.o
+cxx -O1 -fPIE main2.cc -o main2.o
+link g++ -shared lib-g.o -Wl,-soname,libug.so -o libug.so
+link g++ -shared lib-n.o -Wl,-soname,libun.so -o libun.so
+link clang++ -shared lib-c.o -Wl,-soname,libuc.so -o libuc.so
+link g++ -shared deep-u.o -o libdu.so
+link g++ -shared deep-w.o -o libdw.so
+check readelf --dyn-syms -W libug.so
+  has(bfd,mortar): OBJECT * UNIQUE DEFAULT * _ZN1SIiE1cE$
+  has(lld,mold): OBJECT * <OS specific>: 10 * _ZN1SIiE1cE$
+  has(bfd,mortar): OBJECT * UNIQUE DEFAULT * _ZZ7countervE1c$
+  has(lld,mold): OBJECT * <OS specific>: 10 * _ZZ7countervE1c$
+  has(bfd,mortar): OBJECT * UNIQUE DEFAULT * inl_var$
+  has(lld,mold): OBJECT * <OS specific>: 10 * inl_var$
+check readelf -hW libug.so
+  has(bfd,mortar): OS/ABI: * UNIX - GNU
+check readelf --dyn-syms -W libun.so
+  has: OBJECT * WEAK * DEFAULT * _ZN1SIiE1cE$
+  has: OBJECT * WEAK * DEFAULT * _ZZ7countervE1c$
+  has: OBJECT * WEAK * DEFAULT * inl_var$
+check readelf -hW libun.so
+  has: OS/ABI: * UNIX - System V
+check readelf --dyn-syms -W libuc.so
+  has: OBJECT * WEAK * DEFAULT * _ZN1SIiE1cE$
+  has: OBJECT * WEAK * DEFAULT * _ZZ7countervE1c$
+  has: OBJECT * WEAK * DEFAULT * inl_var$
+host g++ -pie main.o -L. -lug -lun -luc -ldl -o prog
+run prog
+  stdout: g S 1 counter 1 inl 1
+  stdout: n S 1 counter 1 inl 1
+  stdout: c S 1 counter 1 inl 1
+  stdout: values 31 302 3005
+  stdout: deep-u 1 deep-w 0
+host g++ -pie main2.o -L. -lug -luc -o prog2
+run prog2
+  stdout: c==g S 1 counter 1 inl 1
+  stdout: values 20 200 2005
+
+#--- uq.h
+template <class T> struct S { static int c; };
+template <class T> int S<T>::c = 0;
+inline int &counter() {
+  static int c = 0;
+  return c;
+}
+inline int inl_var = 5;
+#define CAT2(a, b) a##b
+#define CAT(a, b) CAT2(a, b)
+#--- lib.cc
+#include "uq.h"
+extern "C" int *CAT(TAG, _S)() { return &S<int>::c; }
+extern "C" int *CAT(TAG, _counter)() { return &counter(); }
+extern "C" int *CAT(TAG, _inl)() { return &inl_var; }
+extern "C" void CAT(TAG, _bump)() {
+  S<int>::c += 10;
+  counter() += 100;
+  inl_var += 1000;
+}
+#--- main.cc
+#include <cstdio>
+#include <dlfcn.h>
+#include "uq.h"
+#define DECL(t)                                                                          \
+  extern "C" int *t##_S();                                                               \
+  extern "C" int *t##_counter();                                                         \
+  extern "C" int *t##_inl();                                                             \
+  extern "C" void t##_bump();
+DECL(g)
+DECL(n)
+DECL(c)
+#define SAME(t)                                                                          \
+  std::printf(#t " S %d counter %d inl %d\n", &S<int>::c == t##_S(),                     \
+              &counter() == t##_counter(), &inl_var == t##_inl());                      \
+  t##_bump();
+static int deep(const char *lib, const char *fn) {
+  void *h = dlopen(lib, RTLD_NOW | RTLD_DEEPBIND);
+  if (!h) {
+    std::printf("dlopen: %s\n", dlerror());
+    return -1;
+  }
+  auto f = reinterpret_cast<int *(*)()>(dlsym(h, fn));
+  return f ? &S<int>::c == f() : -2;
+}
+int main() {
+  S<int>::c += 1;
+  counter() += 2;
+  inl_var += 0;
+  SAME(g)
+  SAME(n)
+  SAME(c)
+  std::printf("values %d %d %d\n", S<int>::c, counter(), inl_var);
+  std::printf("deep-u %d deep-w %d\n", deep("./libdu.so", "du_S"), deep("./libdw.so", "dw_S"));
+  return 0;
+}
+#--- main2.cc
+#include <cstdio>
+extern "C" int *g_S();
+extern "C" int *g_counter();
+extern "C" int *g_inl();
+extern "C" void g_bump();
+extern "C" int *c_S();
+extern "C" int *c_counter();
+extern "C" int *c_inl();
+extern "C" void c_bump();
+int main() {
+  std::printf("c==g S %d counter %d inl %d\n", c_S() == g_S(), c_counter() == g_counter(),
+              c_inl() == g_inl());
+  g_bump();
+  c_bump();
+  std::printf("values %d %d %d\n", *g_S(), *g_counter(), *c_inl());
+  return 0;
+}

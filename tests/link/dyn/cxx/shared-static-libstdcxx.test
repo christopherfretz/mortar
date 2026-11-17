@@ -1,0 +1,151 @@
+# dyn.md D-110, D-119, D-118 (WP-126): `-static-libstdc++ -static-libgcc`
+# in `-shared`, g++ and clang++ (D-110's row of WP-110: `libstdc++.a`
+# brings `TLSDESC` and `.tbss`, its exception globals). The library needs
+# neither `libstdc++.so.6` nor `libgcc_s.so.1`. It exports every
+# default-visibility definition of the `libstdc++.a` members it pulls,
+# unversioned (D-110: an extracted member's definitions all export;
+# measured on AArch64 with the same set from each linker: 833 defined
+# names but GNU ld's two section symbols), `__cxa_throw`,
+# `__gxx_personality_v0` and the typeinfo of the standard exceptions
+# among them, while `libgcc_eh.a`'s unwinder is hidden (`_Unwind_*`:
+# none). It throws and catches inside itself, on the main thread and on a
+# second one (each thread's `__cxa_eh_globals` in the library's own
+# TLS), and across the boundary both ways: the host's references to the
+# C++ runtime bind to the library's exported copy, which comes before
+# `libstdc++.so.6` in the loader's order. With `--exclude-libs,ALL`
+# beside it the library exports only its own definitions (and GNU ld its
+# section symbols), and throws and catches inside itself. (Across the
+# boundary that library aborts with every reference: the runtime is then
+# two copies, a measured property of the line, not exercised here.)
+#@ spec: dyn.md "D-110"; dyn.md "D-119"
+#@ requires: g++ clang
+#@ arch: aarch64 x86_64
+#@ skip(mold,x86_64): the verifier's S9 on mold's libslg.so: a PT_TLS of .tbss alone (p_filesz 0) at an address below the RW PT_LOAD and at a file offset inside none, no recorded anomaly (reported by WP-126)
+
+cxx -O1 -fPIC lib.cc -o lib-g.o
+cxx(clang) -O1 -fPIC lib.cc -o lib-c.o
+cxx -O1 -fPIE -pthread main.cc -o main-g.o
+cxx(clang) -O1 -fPIE -pthread main.cc -o main-c.o
+cxx -O1 -fPIE -pthread inside.cc -o inside.o
+link g++ -shared -static-libstdc++ -static-libgcc lib-g.o -Wl,-soname,libslg.so -o libslg.so
+link clang++ -shared -static-libstdc++ -static-libgcc lib-c.o -Wl,-soname,libslc.so -o libslc.so
+link g++ -shared -static-libstdc++ -static-libgcc lib-g.o -Wl,--exclude-libs,ALL -Wl,-soname,libsle.so -o libsle.so
+check readelf -dW libslg.so
+  not: libstdc++
+  not: libgcc_s
+  has: (NEEDED) * [libc.so.6]
+check readelf -dW libslc.so
+  not: libstdc++
+  not: libgcc_s
+check readelf -lW libslg.so
+  has: TLS
+  has: GNU_EH_FRAME
+check readelf --dyn-syms -W libslg.so
+  has: FUNC * GLOBAL DEFAULT * __cxa_throw$
+  has: FUNC * GLOBAL DEFAULT * __gxx_personality_v0$
+  has: OBJECT * WEAK * _ZTISt13runtime_error$
+  not: GLIBCXX
+  not: _Unwind_
+check readelf --dyn-syms -W libslc.so
+  has: FUNC * GLOBAL DEFAULT * __cxa_throw$
+  not: GLIBCXX
+  not: _Unwind_
+check readelf --dyn-syms -W libsle.so
+  has: FUNC * GLOBAL DEFAULT * _Z9lib_throwi$
+  has: OBJECT * WEAK * _ZTI6LibErr$
+  not: __cxa_throw
+  not: _ZTISt13runtime_error
+  not: _Unwind_
+host g++ -pie -pthread main-g.o -L. -lslg -o prog-g
+run prog-g
+  stdout: inside 7 7
+  stdout: host caught lib 3
+  stdout: lib caught host! 105
+  stdout: lib caught int 5
+host clang++ -pie -pthread main-c.o -L. -lslc -o prog-c
+run prog-c
+  stdout: inside 7 7
+  stdout: host caught lib 3
+  stdout: lib caught host! 105
+  stdout: lib caught int 5
+host g++ -pie -pthread inside.o -L. -lsle -o prog-e
+run prog-e
+  stdout: inside 7 7
+
+#--- lib.h
+#include <stdexcept>
+struct LibErr : std::runtime_error {
+  int v;
+  explicit LibErr(int x) : std::runtime_error("lib"), v(x) {}
+  ~LibErr() override;
+};
+int lib_throw(int);
+int lib_catch(int (*)(int), int);
+int lib_inside(int);
+#--- lib.cc
+#include <string>
+#include "lib.h"
+LibErr::~LibErr() {}
+int lib_throw(int x) {
+  if (x) throw LibErr(x);
+  return 0;
+}
+int lib_catch(int (*f)(int), int x) {
+  try {
+    return f(x);
+  } catch (const std::exception &e) {
+    return 100 + static_cast<int>(std::string(e.what()).size());
+  } catch (int v) {
+    return v;
+  }
+}
+int lib_inside(int x) {
+  try {
+    lib_throw(x);
+  } catch (const LibErr &e) {
+    return e.v;
+  }
+  return -1;
+}
+#--- inside.cc
+#include <cstdio>
+#include <pthread.h>
+#include "lib.h"
+static int on_thread;
+static void *worker(void *) {
+  on_thread = lib_inside(7);
+  return nullptr;
+}
+int main() {
+  pthread_t t;
+  if (pthread_create(&t, nullptr, worker, nullptr) || pthread_join(t, nullptr)) return 2;
+  std::printf("inside %d %d\n", lib_inside(7), on_thread);
+  return 0;
+}
+#--- main.cc
+#include <cstdio>
+#include <pthread.h>
+#include <stdexcept>
+#include "lib.h"
+static int on_thread;
+static void *worker(void *) {
+  on_thread = lib_inside(7);
+  return nullptr;
+}
+static int host_throw(int x) {
+  if (x) throw std::logic_error("host!");
+  throw 5;
+}
+int main() {
+  pthread_t t;
+  if (pthread_create(&t, nullptr, worker, nullptr) || pthread_join(t, nullptr)) return 2;
+  std::printf("inside %d %d\n", lib_inside(7), on_thread);
+  try {
+    lib_throw(3);
+  } catch (const std::runtime_error &e) {
+    std::printf("host caught %s %d\n", e.what(), static_cast<const LibErr &>(e).v);
+  }
+  std::printf("lib caught host! %d\n", lib_catch(host_throw, 1));
+  std::printf("lib caught int %d\n", lib_catch(host_throw, 0));
+  return 0;
+}
