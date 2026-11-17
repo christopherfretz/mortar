@@ -1279,7 +1279,11 @@ with each phase fed from the state for unchanged files:
   second `fstat`, with the size kept), which the link's lock (IN-45)
   excludes for cooperating writers and nothing excludes for others, as
   for any file two programs write at once. The state also has the
-  "updating" flag of IN-46: set means `output-torn`. *Test:* `touch`,
+  "updating" flag of IN-46: set means `output-torn`. *(Amended by
+  WP-207: an update makes these checks through the one descriptor U1
+  opened, and checks the path again before its first write to `P`
+  (IN-77a); "the link's lock" is IN-77b's lock on `S`; a full link's
+  unsynced output is checked once after a reboot (IN-77c).)* *Test:* `touch`,
   `strip`, `cp` of another output, `objcopy` in place, each over the
   output: each gives `output-changed`; a killed update gives
   `output-torn`; `stamp_rule.py` case B (an update followed at once by
@@ -1572,57 +1576,123 @@ with each phase fed from the state for unchanged files:
   count and the capacity of the file's range, and a `gone` flag (a file
   removed by an update: its ranges are dead until the next compaction).
   The reader checks that the ranges are in bounds and do not overlap.
-- **IN-18e [v1] Format version 5: the tables an update reads and
-  writes.** Three kinds of table, each with its way of changing:
-  - **Small tables** (`META`, `OUTSECS`, `SEGMENTS`, `LAYOUT`, `SIZES`,
-    `PROBES`, `CHUNKS`, `SLOTS`, `PATCHES`, `REDIRECTS`, `LEAVES`): read
-    whole, patched by block (same row count) or rewritten by the
-    compaction.
-  - **File-keyed tables**, one range per file through `FILE_INDEX`:
-    `SECTIONS`, `MENTIONS`, `INDEX`, `EDGES` (kind 42, IN-71a), `FRAG_AT`,
-    `EH_RECORDS`, `SYMTAB` (kind 43, below). A full link writes each
-    range with **row slack**: capacity = count + max(4, count/8) rows,
-    the unused rows zero (*estimate*: +12.5% of these tables' rows). An
-    update rewrites a changed file's range in place when the new count
-    fits the capacity; otherwise the state is compacted (IN-77).
-  - **Key-keyed tables**: `SYMBOLS` (one row per key, appended; a key no
-    file mentions any more is a tombstone, kind `GONE`), `RESOLVED` (one
-    row per global `SYMBOLS` row, in its order), `GROUPS` (kind 44:
-    COMDAT signature and keeper, the kind-6 rows of `RESOLVED` until
-    now), `KEY_REFS` (kind 45: (key, mentioning file) for every key that
-    more than one file mentions, sorted by key), `FRAGS` (sorted by
-    (output section, merge class, content hash), with a reference count
-    `refs`). The sorted ones have a body and an **append area**: a
-    lookup binary-searches the body (WP-105: RESOLVED by binary search,
-    225 preads on g10x) and scans the append area; a deleted row is a
-    tombstone. The compaction runs when an append area passes max(65,536
-    rows, 1% of its body), when tombstones pass 25% of a table's rows,
-    or when a file's range overflows its capacity; every full link
-    writes the state compact.
+- **IN-18e [v1] Format version 5: every table, its class and its patch
+  rule** (rewritten by WP-207; review-in77 B-5, M-9). Every table of the
+  format is in exactly one of five classes. "Capacity" is rows the body
+  holds; unused rows are zero. A patch (W5, IN-46b) that does not fit a
+  table's capacity, or its class's bound, is the compaction (IN-18f).
+
+  | class | tables (kind) | how an update changes it |
+  |---|---|---|
+  | **whole** (small; capacity = rows + max(64, rows/8)) | `META` (1), `PROBES` (4), `OUTSECS` (5), `CHUNKS` (8), `ORDER` (9), `SEGMENTS` (10), `SLOTS` (12), `SIZES` (15), `SYM_PLACE` (16), `DEFINED` (17), `PATCHES` (18), `REDIRECTS` (19), `SIZED` (20), `LAYOUT` (21), `LEAVES` (22) | the table is written again whole into its capacity when any row differs (its blocks only; the rest of the state is untouched); over capacity: compaction. Together under 2 MB on g10x (WP-105 §3's "the rest" and `CHUNKS`). `LEAVES`' row count follows the output's size (W3 truncates or extends), within its capacity |
+  | **append-only** | `FILES` (3), `STAT` (2), `FILE_INDEX` (41), `STRINGS` (23) | rows (bytes, for `STRINGS`) are only appended, into a reserved append area of max(4,096 rows, rows/64); a row is never moved, so references to it stay valid. `FILES` and `FILE_INDEX` are parallel (one row each per file, members of archives included, `LAZY` when not extracted); `STAT` has one row per file plus the device rows; a file's load-order position is its `FILES.rank` (`u64`): the first link writes `rank = FileId << 20`, an appeared or newly extracted file takes the integer midpoint of its neighbours' ranks (none left: compaction), and `FileId` order is `rank` order. A gone file's row is marked `GONE`. A string is never overwritten or reused; strings no row names any more are dead until compaction. The build id is in `META` (a length and 64 bytes), not in `STRINGS`, so an update appends no string for it |
+  | **file-keyed** (one range per file through `FILE_INDEX`, with row slack: capacity = count + max(4, count/8)) | `SECTIONS` (7), `MENTIONS` (32), `INDEX` (34), `EDGES` (42), `FRAG_AT` (40), `EH_RECORDS` (13), `SYMTAB` (43: per file its local block and `.strtab` region; file 0's range holds the global area's row) | a changed, drawn-in or appeared file's range is rewritten in place when the new count fits its capacity; a file's `SECTIONS` rows are also rewritten when IN-72 moved, killed or revived its sections (IN-78); a gone file's ranges are dead (`FILE_INDEX.gone`); a new file gets new ranges in the table's append area (max(4,096 rows, rows/64)); no room: compaction |
+  | **key-keyed** (sorted body + append area of max(4,096 rows, rows/64) + tombstones) | `KEY_REFS` (45: key, file, attributes), `GROUPS` (44: signature, keeper), `FRAGS` (11: identity, offset, `refs`), `HOLES` (39: by (chunk, offset)), `COMMONS` (46: key, file, size, alignment), `ODR_CLASSES` (47: ODR key, class hash and layout), `ODR_REFS` (48: ODR key, file, row kind, class), `DIAGS` (49: subject, code, text, order) | a lookup binary-searches the body and scans the append area; a new row is appended; a deleted row is a tombstone (its key kept, a flag set); a changed row is changed in place when its key is unchanged, else deleted and appended. Compaction when an append area is full or tombstones pass 25% of a table's rows |
+  | **key-parallel** (one row per `SYMBOLS` row, in its order) | `SYMBOLS` (6), `RESOLVED` (33), `SYMTAB_KEYS` (50: a global's `.symtab` index and `.strtab` offset) | a key's rows are changed in place by its `SYMBOLS` row number; a new key appends a row to each (append area of max(4,096 rows, rows/64)); a key no file mentions any more is a tombstone (`SYMBOLS.kind` `GONE`) |
+
+  Table 14 (`SYMTAB_LOCALS`) is gone (`SYMTAB` and `SYMTAB_KEYS` replace
+  it); `LEAVES` no longer keeps its row count ("patched by block, same row
+  count" is withdrawn); `RESOLVED`'s kind-6 and kind-7 rows are gone:
+  groups are `GROUPS`, and a file's extraction is its `FILES` flags and
+  **round** (IN-71b). A
+  table not in this list is a format defect: the reader refuses an
+  unknown kind (`state-corrupt`).
+
+  **`KEY_REFS`** holds **one row per (key, mentioning file)**: every key,
+  including keys one file mentions (review-in77 B-4), file 0's
+  linker-defined keys (file 0 is the definer of each; every file that
+  mentions one has a row, review-in72 B-2), and the defined and common
+  mentions of archive members not extracted (IN-71b). A row is 12 bytes:
+  key (`u32`, the `SYMBOLS` row), file (`u32`, the `FILES` row), and the
+  attributes resolution reads (definedness, binding, type, visibility,
+  common, section or absolute, `LAZY`). It is `MENTIONS` transposed, so
+  its row count equals `MENTIONS`' (plus nothing: the lazy members'
+  defined mentions are `MENTIONS` rows of their files too).
+  **`at_file`** is maintained by IN-71's rule.
+
   **Shrinking.** `MENTIONS` drops its `file` column (the range gives
   it): 12 bytes a row. `RESOLVED` drops `symbol` (its row is the key's),
-  `file` (the section's row gives it) and `name` (`GROUPS` holds the
-  signatures): 24 bytes a row. `INDEX` is grouped by referring file and
-  packed to 9 bytes a row. On g10x (WP-105 §3's rows), *estimate*:
-  `MENTIONS` 69.0 → 51.7 MB, `RESOLVED` 66.1 → 39.6 MB, `INDEX` 32.3 →
-  24.2 MB, `KEY_REFS` at most 34.5 MB (one row per mention; keys with
-  one mentioning file have none), so at most 150 MB against 167.4 MB.
-  The shrink is small; what the update gains is the ranged read (above).
-  The package that builds the format measures the real sizes, and the
-  format may not exceed format 4's total on g10x and `cxx-large-g` (a
-  gate).
-  **`SYMTAB`** (replaces `SYMTAB_LOCALS`): per file its `.symtab` local
-  block (first entry, count, capacity) and its `.strtab` region (first
-  byte, length, capacity); per global key (a column beside `RESOLVED`)
-  its `.symtab` index and the `.strtab` offset of its name; and one row
-  for the global area (first entry, count) and the `.strtab` globals'
-  region (first byte, length). IN-49a uses them.
+  `file` (the section's row gives it; a common's or an absolute's file is
+  `KEY_REFS`'s definer row) and `name` (`GROUPS` holds the signatures): 24
+  bytes a row. `INDEX` is grouped by referring file and packed to 9 bytes
+  a row.
+
+  **Size, restated** (*estimate* over WP-105 §3's measured rows, the
+  arithmetic in `spec/landed/incr/WP-207.md` §M.6; review-in77 M-9):
+
+  | | g10x | `cxx-large-g` |
+  |---|---|---|
+  | format 4 (measured) | 404.2 MB | 246.6 MB |
+  | `MENTIONS`, `RESOLVED`, `INDEX` shrunk | −51.7 | −7.4 |
+  | `KEY_REFS` (12 B × `MENTIONS` rows) | +51.7 | +3.6 |
+  | `SYMTAB_KEYS` (8 B a key) | +13.2 | +0.9 |
+  | `EDGES` (`--gc-sections` only; 17.5 B a section, from protoc's 0.48 MB) | +3.2 | +9.9 |
+  | row slack (12.5% of the file-keyed tables) | +16.6 | +12.9 |
+  | append areas (1/64 of key-keyed and `STRINGS`; 1% used here) | +2.9 | +1.5 |
+  | block lists (16 B a 4 KiB block) and `FILE_INDEX` | +2.4 | +1.3 |
+  | **format 5** | **442.5 MB (+9.5%)** | **269.3 MB (+9.2%)** |
+
+  `GROUPS` takes `RESOLVED`'s kind-6 rows (no net change); `COMMONS`,
+  the `FILES` round and `DIAGS` are under 1 MB here; `ODR_*` are zero for
+  GCC and Clang objects (IN-71d's estimate applies to kiln's). WP-202's
+  "at most 150 MB against 167.4" compared three tables and left out the
+  slack and the new tables; it is withdrawn. **U-2's gate**: the format-5
+  state measured on g10x and `cxx-large-g` is at most 1.15 × format 4's
+  measured total (465 and 284 MB), and U-2 reports the per-table sizes
+  against this table (`state5_size_report`); a state above it goes to
+  the supervisor with the table, it is not trimmed silently.
+
+- **IN-18f [v1] The compaction** (WP-207; review-in77 B-5). An algorithm,
+  not "the whole new state":
+  1. Read every block of `S` through U1's descriptor and check it against
+     its block-list entry and the list against the directory (IN-18c);
+     any failure is `state-corrupt` (before W1: the update does not run;
+     the full link that follows writes a fresh state). O(state): WP-105
+     measured the whole read and validation at 562 ms on g10x and 201 ms
+     on `cxx-large-g`.
+  2. Apply the update's patch to the rows in memory (what W5 would write).
+  3. Drop: `GONE` files' `FILES`, `STAT`, `FILE_INDEX` rows and their
+     ranges; tombstones of every key-keyed and key-parallel table; slack
+     and append areas; strings no remaining row names.
+  4. Renumber, through one old→new map per referenced table, built in
+     the order the full link's capture numbers rows: `FILES` by `rank`
+     (new `FileId` = position), `SYMBOLS` in the full link's `SymbolId`
+     order (its first-mention order, `at_file`'s rank then `at_index`;
+     keys no file mentions by name), `SECTIONS` by (file, index),
+     `FRAGS` by identity, `CHUNKS` by (output section, ordinal, part),
+     `STRINGS` offsets by the new pool. Every reference (`FRAG_AT` →
+     `FRAGS`; `INDEX`, `MENTIONS`, `SLOTS`, `DEFINED`, `SYM_PLACE`,
+     `KEY_REFS` → `SYMBOLS`; everything → `SECTIONS`, `FILES`, `STRINGS`)
+     goes through its map; a reference with no image in a map is a
+     defect (`state-corrupt` in a test build, a panic never).
+  5. Write the tables in kind order with fresh slack (IN-18e's
+     capacities), sort the key-keyed bodies, rebuild the block lists, the
+     directory and the header (flag clear), to `dir(S)/.<base(S)>.mortar-compact`, then
+     IN-77's rename.
+  The result is, byte for byte, the state the full link of the update's
+  inputs writes when its layout is the update's `Placement` (IN-78's
+  `C(U)`), except `META`'s history fields; every full link writes a state
+  that is compact by construction. *Test (U-2):*
+  `compaction_equals_full_link_capture` (after a series of patches, the
+  compacted state's bytes equal `C(U)`'s); `compaction_reads_every_block`
+  (a flipped byte in a block no patch touches: `state-corrupt`);
+  `rank_midpoint_exhausted_compacts`.
+
 - **IN-46b [v1] The state patched in place.** W5 of IN-77 writes only
   the blocks whose rows changed, their block-list entries, the
   directory entries and the header; rows inserted go into a file's row
   slack or a table's append area (IN-18e); when neither has room the
   whole state is rewritten (the compaction, IN-77), and
   `--incremental-report` says so (`delta state compacted <reason>`).
+  **Verified before re-hashed** (WP-207, review-in77 M-4): every block
+  W5 writes is read and checked against its current block-list entry
+  (IN-18c) before it is modified, in U-steps before W1 (the update reads
+  the blocks it will patch anyway, to modify their rows); a block that
+  fails is `state-corrupt` before W1, and the update does not run. A new
+  hash therefore only ever vouches for bytes an old hash vouched for,
+  plus the update's own rows. The block list and directory entries W5
+  rewrites are those of verified blocks only. *Test (U-2):*
+  `patched_block_is_verified_first`.
   Measured on the prototype (WP-105 §4, same-length patches of one
   file): 21.6 KB written in 191 ms on g10x and 23.4 KB in 154 ms on
   `cxx-large-g`, the three `fdatasync`s under load being the time; a
@@ -2178,7 +2248,12 @@ with each phase fed from the state for unchanged files:
   body-grow and body-shrink steps check that only the region's file and
   its referrers were refilled (`--incremental-report`); R4's three cases
   in L10 with the fixed rule (the update's packed sections equal the full
-  link's order, IN-2 item 5).
+  link's order, IN-2 item 5). *(Amended by WP-207: "laid out again from
+  its region's start" is replaced by IN-72 item 2's keep / place /
+  overflow phases; and the list of hole-tolerant sections is closed:
+  every other allocated section, except the TLS sections and notes, is
+  packed, as `mortar_layout`'s `slack.rs` `class()` does, review-in72
+  m-1.)*
 - **IN-31 [v2] Section-level refill inside a changed file** (the M12
   package, §10). v1's unit of change detection stays the file; this is
   the designed second step, specified now so that v1's state and index
@@ -2227,7 +2302,10 @@ with each phase fed from the state for unchanged files:
   within its capacity, and grows by a growth step (moving what follows
   it) when its capacity is exhausted. A hole is reused only by its own
   file's region (to keep the policy a function of history that is simple
-  to state); [later] a free list with first-fit for any region (debug
+  to state; amended by WP-207: a region that overflowed is not given up,
+  its file keeps it and every later region until compaction, and IN-72
+  item 2 fills them in order; the growth step's size and rounding are
+  IN-72 item 3's); [later] a free list with first-fit for any region (debug
   sections have one in v1, IN-50). *Test:* L10 grows one function step by
   step past its region, its section's tail and its segment's reserve,
   and checks the reasons.
@@ -2496,6 +2574,32 @@ objects.
     enforces it (the probe of image.md I-59); otherwise two concurrent
     updates of one output could interleave their writes. (The
     workspace's virtiofs now enforces `flock`, the reviewer's m2.)
+    *(Amended by WP-207: the lock is IN-77b's, taken by every
+    incremental-mode link on `S`'s descriptor; where it is not enforced
+    no update runs at all, `lock-unavailable`, on either path.)*
+
+  **Who in place does not protect** (WP-207, review-in77 M-2; this list
+  is the text of the `incremental-in-place-unchecked` note, printed once
+  per link that writes in place):
+  - a reader that opened `P` before W2 and reads across W2..W4: `cp`,
+    `install`, `rsync` of the build directory, a test harness copying the
+    binary, a packager; it can copy a runnable mix whose `e_ident` it read
+    before W2 (IN-77's aside name makes a reader that opens `P` after W2
+    fail with `ENOENT` instead);
+  - a process that maps `P` without write denial: a program started
+    through `ld.so` or qemu, lldb with `P` loaded, gdb's lazy reads of
+    debug sections (R7, above); the `/proc` scan sees them only in the
+    link's own pid namespace and, for an unprivileged user, only that
+    user's processes; containers sharing a build directory are invisible
+    to it;
+  - a process that runs `P` where the kernel does not deny writes to a
+    running executable: `ETXTBSY` is measured on kernel 6.8 (overlay,
+    virtiofs) and depends on the kernel and the file system (over NFS it
+    is local to the client; whether a later kernel dropped exec's write
+    denial is not verified: *argued, not run*); where it is absent, the
+    `/proc` scan is the only protection;
+  - a process that opens `P` after the scan and before W2.
+  The copy path protects all of them (they keep the old inode).
   What a debugger holding the old file sees (R7): after copy and rename,
   gdb and lldb keep the old inode and show the old program consistently
   (old symbols, old line table, the running process's old code) until
@@ -2605,7 +2709,9 @@ objects.
   outputs.
 - **IN-48 [v1] The state is written only by a successful link**
   (image.md I-100). A failed update removes the output (image.md I-66)
-  and the state. *Test:* an update that introduces an undefined symbol
+  and the state. *(Amended by WP-207: this covers a failure of the link
+  proper, before U10's first write; a failure of a write, sync or rename
+  is IN-77e's, which keeps a good old pair before W1/C2.)* *Test:* an update that introduces an undefined symbol
   leaves neither file; the next `--incremental` link reports `no-state`.
 - **IN-49 [v1] The map** (`--mortar-map`, plumb.md §3.2) is rewritten
   whole (image.md I-99), with `hole` and `dead` lines (§8.2). *Test:*
@@ -2623,16 +2729,39 @@ objects.
     the global area, fillers included.
   - **The filler has exactly one form**: `st_name` 0, `st_info`
     `STB_LOCAL`/`STT_SECTION` (0x03), `st_other` 0, `st_shndx` **1**,
-    `st_value` 0, `st_size` 0, and 0 in `.symtab_shndx` when there is
-    one. Section 1 is the output's first section header after the null
-    one, whatever its name; every output with a `.symtab` has it. This
-    is the form WP-094 §4 measured: `nm` and `llvm-nm` hide it (shown
-    by `nm -a`), and `readelf`, `eu-readelf`, gdb, lldb, `addr2line`,
-    `llvm-symbolizer`, `objdump` and perf read the output as without it.
-    A filler is in the local area only: there is none after `sh_info`.
-    (S-79's "no `STT_SECTION` symbols" excepts fillers.)
-  - **An update** rewrites a changed file's block from its start; what
-    is left of the capacity becomes fillers. A block that does not fit
+    `st_value` **section 1's `sh_addr`** (amended by WP-207, review-in72
+    M-3: with 0, eu-elflint reports "st_value out of bounds" for every
+    filler), `st_size` 0, and 0 in `.symtab_shndx` when there is one.
+    Section 1 is the output's first section header after the null one,
+    whatever its name (`.note.gnu.build-id`, `.note.gnu.property`,
+    `.interp`); every output with a `.symtab` has it, and it is the first
+    allocated section, so no update moves it (IN-72 moves only what
+    follows a grown section); were its address ever to change, every
+    filler is rewritten with it. **The form is unambiguous**: a mortar
+    output's `.symtab` has no other `STT_SECTION` entry and no other
+    unnamed entry than entry 0 (S-79; measured by WP-207 on an
+    incremental-mode and a plain static link of the same object on
+    AArch64, x86-64 and i386: 0 and 0 in each), so the verifier tells a
+    filler from every legitimate entry by its form alone (V-1's
+    `near_filler_reported`). Measured tools (WP-207,
+    `tests/incr-design/fillers.sh` and `fillcmp.py`, the output rebuilt
+    by `symfill.py` with and without fillers, on AArch64, x86-64 and
+    i386): the record's §M lists each; every tool reads the output as
+    without the fillers, the symbol listings (`readelf -s`, `nm -a`,
+    `objdump -t` and their LLVM and elfutils counterparts) differing only
+    by the filler lines themselves, and eu-elflint has no complaint about
+    a filler. perf is not claimed (not reproducible here, review-in72
+    m-6). A filler is in the local area only: there is none after
+    `sh_info`. (S-79's "no `STT_SECTION` symbols" excepts fillers.)
+  - **An update** rewrites the block of every file whose local entries
+    change (amended by WP-207, review-in72 M-1): a changed file; a
+    drawn-in file (IN-72 item 2a: a section of it revived, killed, newly
+    kept or no longer kept, S-76; one of its globals demoted to a local
+    of its block by the merged visibility, S-74, or promoted back); its
+    block is rewritten from its start from its symbol table as read. A
+    demoted global leaves the global area as a removed one does (the
+    area's last entry takes its index); a promoted one is appended to the
+    area. What is left of the capacity becomes fillers. A block that does not fit
     moves to the local tail reserve, its old place filled with fillers;
     its entries keep S-74's order inside the block (P-E3 compares locals
     as a multiset and does not judge their place; the `STT_FILE` that
@@ -2661,8 +2790,9 @@ objects.
     slack and **old names**. A renamed or removed symbol's old name
     stays in the output's bytes until IN-3b's scrubbing; whoever must
     not ship an old name links in full.
-  - **What an update reads and writes.** The `SYMTAB` rows (IN-18e) of
-    the changed files and of the globals it moves or removes; the
+  - **What an update reads and writes.** The `SYMTAB` and `SYMTAB_KEYS`
+    rows (IN-18e) of the changed and drawn-in files and of the globals it
+    moves, removes, demotes or promotes; the
     previous output's entries it moves (the area's last global) and the
     blocks of unchanged files whose sections moved (a growth step: their
     values remapped through the placement, the rest of each entry as
@@ -2678,7 +2808,12 @@ objects.
   full link modulo values; `readelf -s` warning-free; gdb and lldb
   `info symbol`/`image lookup`, `bt` on an update; an edit that adds a
   local, one that removes a global, one that renames, and a series that
-  exhausts each capacity in turn (`symtab-exhausted`).
+  exhausts each capacity in turn (`symtab-exhausted`); WP-207 adds
+  `n2_visibility_demotes_unchanged_definer` (three hops: hidden, default,
+  hidden), `gc_revived_section_has_its_locals`,
+  `global_removed_twice_last_moved` and `filler_value_is_section_1_addr`
+  (`eu-elflint --gnu-ld` with T-1's four allow patterns, on all three
+  targets).
 
 ### 5.10 The update, end to end (WP-202)
 
@@ -2701,16 +2836,16 @@ a pass over a whole table of the state; **O(output)**.
 
   | step | what | rules | cost class (basis) | failure → §7 reason |
   |---|---|---|---|---|
-  | U1 | IN-11/IN-12; the state opened by range: header, directory, `META`, the flag; the plan hash; the output's binding | IN-18c, IN-18b, IN-21 | O(1) + the directory (WP-105 §4: 2 preads) | no state: `no-state`; a hash or range fails: `state-corrupt`; another format: `state-version`; the plan: `options-changed`; the output: `output-changed`; the flag: `output-torn`; `META`'s size: `small-output` |
+  | U1 | IN-11/IN-12; `S` and `P` opened once (IN-77a), `S` locked (IN-77b); the flag read first (review-in77 m-1); the state opened by range: header, directory, `META`; the plan hash; the output's binding through the descriptor; after a reboot with `output-synced` 0, the leaves (IN-77c) | IN-18c, IN-18b, IN-21, IN-77a-c | O(1) + the directory (WP-105 §4: 2 preads) + the lock (IN-77b: 3.5-352 µs); O(output) once after a reboot | the flag: `output-torn`; the lock: `state-busy`, `lock-unavailable`; no state: `no-state`; a hash or range fails: `state-corrupt`; another format: `state-version`; the plan: `options-changed`; the output: `output-changed`; `META`'s size: `small-output` |
   | U2 | every input `stat`ed (on the pool), the stamps, change detection; archives | IN-22, IN-22a, IN-24 | O(inputs) stats + O(changed bytes) hashed (WP-105 §5: 102 ms for 8,241 inputs on virtiofs, pool) | a changed path that is no file of the link: `options-changed`; two unchanged files reordered: `inputs-reordered` |
   | U3 | the positional set | IN-28a | O(inputs) over `FILES`/`STAT` | none (a file outside the set is translated by identity) |
-  | U4 | the front over the changed files only: parse, split, scan; their descriptors `fstat`ed after the read | IN-14, IN-28a cond. 2 | O(change) (*estimate*: the floor's front over all inputs is what WP-061b measured) | a file the update read is not the file it judged: `input-changed` |
-  | U5 | delta resolution | IN-71 | O(change) (*estimate*; WP-105 §7 (iv): the whole-program resolve is 102.7 ms on g10x, the term this removes) | IN-71's list |
+  | U4 | the front over the changed, drawn-in and newly extracted files only: parse, split, scan; their descriptors `fstat`ed against `STAT` (IN-75); repeated with U5 until no file flips (IN-71) | IN-14, IN-28a cond. 2, IN-71b, IN-72 item 2a | O(change) (*estimate*: the floor's front over all inputs is what WP-061b measured) | a file the update read is not the file it judged: `input-changed` |
+  | U5 | delta resolution and extraction; the ODR-affected keys | IN-71, IN-71b, IN-71d | O(change) (*estimate*; WP-105 §7 (iv): the whole-program resolve is 102.7 ms on g10x, the term this removes) | IN-71's list; `extraction-changed` |
   | U6 | liveness, under `--gc-sections` only | IN-29, IN-71a | O(stored edges) (*estimate*: 0.48 MB of rows on protoc, §5.5) | none |
-  | U7 | the delta layout, `.symtab`/`.strtab` included | IN-72, IN-73, IN-49a | O(change) + the growth steps' moved sections (*estimate*) | IN-72's and IN-73's list |
+  | U7 | the delta layout, `.symtab`/`.strtab` included; then `DEFINED` from the `Placement` (IN-71c) | IN-72, IN-73, IN-49a, IN-71c | O(change) + the growth steps' moved sections (*estimate*) | IN-72's and IN-73's list |
   | U8 | the refill set, against the update's own layout | IN-27, IN-74 | O(change) + the referrers it reaches (WP-063: 46-54 ms on protoc against a full link's layout, an over-approximation) | over IN-16's bound: `too-much-changed` |
   | U9 | refill and image: dirty ranges, windows, the build id | IN-75 | O(dirty windows) + O(leaves) for the build id (WP-094 §4: 0.48 MB written on g10x) | none (a refill error is the link's own diagnostic, IN-5) |
-  | U10 | writes: output, then state; the crash protocol | IN-76, IN-77, IN-45 | in place: 5 `fdatasync`s (IN-46: 2.3-8.2 ms) + the patch's (WP-105 §4: 154-191 ms under load) | IN-77 |
+  | U10 | writes: output, then state; the crash protocol; the diagnostics (IN-75a) | IN-76, IN-77, IN-45, IN-78 | in place: 5 `fdatasync`s and 2 renames with 2 directory `fsync`s (IN-46: 2.3-8.2 ms) + the patch's (WP-105 §4: 154-191 ms under load) | IN-77 |
 
   Debug sections (§6) are handled by the G packages; until they merge,
   U2 ends the update with `update-not-implemented` naming `debug` when
@@ -2721,30 +2856,39 @@ a pass over a whole table of the state; **O(output)**.
   one case per adjacent pair (two reasons at once give the earlier).
 
 - **IN-71 [v1] Delta resolution, O(change)** (narrows the cost of IN-26,
-  not its result). The update re-resolves only the **affected keys**:
-  every global key a changed, appeared, gone, newly extracted or no
-  longer extracted file mentions, in its old version (`MENTIONS`, the
-  file's range) or its new one (its parsed symbol table). For each
-  affected key the resolution is recomputed over **all** its mentions,
-  in load order: the stored mentions of unchanged files (`KEY_REFS`,
-  by key: IN-18e) and the changed files' new ones. COMDAT groups the
-  changed files name are re-elected the same way (`GROUPS`, by
-  signature). Archive extraction is recomputed for the affected keys
-  through the stored armaps (IN-19): a key that becomes undefined and is
-  defined by an archive member extracts it (an appeared file, and its
-  keys become affected: the closure is iterated); a member none of whose
-  definitions is still needed is no longer extracted (a gone file).
+  not its result; amended by WP-207). The update re-resolves only the
+  **affected keys**: every global key a changed, appeared, gone, drawn-in
+  (IN-72 item 2a), newly extracted or no longer extracted file mentions,
+  in its old version (`MENTIONS`, the file's range) or its new one (its
+  parsed symbol table); every linker-defined key IN-71c names; and every
+  key whose common size or alignment changes (IN-72 item 11). For each
+  affected key the resolution is recomputed over **all** its mentions, in
+  load order: the stored mentions of every other file (`KEY_REFS`, by
+  key: one row per (key, mentioning file), single mentioners, archive
+  members not extracted and file 0 included, IN-18e) and the changed
+  files' new ones. COMDAT groups the changed files name are re-elected
+  the same way (`GROUPS`, by signature), and so is every group with a
+  copy in a file whose extraction flips. Archive extraction is IN-71b.
   The result is IN-26's for every key (a key no file of the delta
   mentions has the stored resolution, which IN-26 would recompute
-  equal). The differences are IN-27's causes. A difference in
-  attributes (IN-26's list) for a key that an unchanged file references:
+  equal). For an affected key whose mentioners change, `at_file` becomes
+  the first live mentioner in load order among `KEY_REFS`'s rows and the
+  changed files' (IN-18a3's rule), and `at_index` is that file's entry
+  index among its non-local entries: from its new symbol table when it is
+  a changed file, else from its `MENTIONS` row (which stores the index);
+  `NONE` only when no live file mentions the key (review-in77 B-4). The
+  differences are IN-27's causes. A difference in attributes (IN-26's
+  list) for a key that an unchanged file references:
   - binding (weak ↔ global, `STB_GNU_UNIQUE`), visibility, a common
     becoming a definition in a section or the reverse: in a **static
     executable** these change which definition wins and its value, not
     a relocation's form (no preemption, no copy relocation, no PLT
     choice), so they are IN-27's "a global's definition moved or
     changed" row: the referrers are refilled (WP-064a §3: W1, W1b, n2,
-    n4). Dynamic outputs keep IN-26's rule (WP-066);
+    n4; verified by review-in72 §5 in `mortar_arch`'s class table). A
+    visibility change that demotes a global to a local of its definer's
+    block, or promotes it back (S-74), draws the definer in (IN-72 item
+    2a, IN-49a). Dynamic outputs keep IN-26's rule (WP-066);
   - type to or from `STT_GNU_IFUNC` or `STT_TLS`, a definition becoming
     absolute or the reverse, `st_other` bits other than the visibility:
     `symbol-kind-changed` (an unchanged referrer's relocation types,
@@ -2752,11 +2896,150 @@ a pass over a whole table of the state; **O(output)**.
   A local becoming global (W10) is a key that appears; a global becoming
   local, one that disappears from the file's mentions; both are affected
   keys like any other. Extraction order that changes the relative order
-  of two unchanged files: `inputs-reordered`. *Test:* WP-064a §3's
-  cases, each now an update equivalent to the full link (`w-meaning.sh`
-  W1, W1b, W9, W10, n2, n4; `ifunc-type` stays `symbol-kind-changed`);
-  a key whose only definer becomes a newly extracted member; a member no
-  longer extracted; a COMDAT keeper change both ways.
+  of two unchanged files: `inputs-reordered`. **U4 and U5 iterate**
+  (review-in72 m-3): a file that IN-71b newly extracts, or IN-72 item 2a
+  draws in, is read (U4) and its keys become affected (U5), until no
+  file flips; each round only adds files, so it ends. *Test:* WP-064a
+  §3's cases, each now an update equivalent to the full link
+  (`w-meaning.sh` W1, W1b, W9, W10, n2, n4; `ifunc-type` stays
+  `symbol-kind-changed`); `common_first_referenced_by_changed_file` and
+  `first_mentioner_drops_then_readds_key` (three hops, review-in77 B-4);
+  `key_refs_single_mentioner`; a COMDAT keeper change both ways and
+  `comdat_keeper_flips_twice`.
+
+- **IN-71b [v1] Archive extraction in an update** (WP-207; review-in72
+  B-1). It is resolve.md §4.1's reachability recomputed, never a rule of
+  its own: a member is extracted iff it is reachable from the non-archive
+  files and the root options through §4.1's edges (a non-weak undefined
+  mention of `K` → `first(K)`, the lowest `FileId`, extracted or lazy,
+  with a defined or common mention of `K`; a common mention → `cfirst(K)`;
+  a root option → `first(K)`), computed from the members' own symbol
+  tables, never the armap.
+  - **Stored** (IN-18e): every member of every archive of the link has a
+    `FILES` row, extracted or not (flag `LAZY` when not), at its place in
+    load order; a lazy member's defined and common mentions are its
+    `MENTIONS` range and its `KEY_REFS` rows (with the attributes §4.1
+    reads: definedness, binding, common, section or absolute), and the
+    common's size and alignment are `COMMONS` rows; a lazy member's
+    undefined mentions are not stored. Each extracted member's `FILES`
+    row carries its **round**: a number such that some live file or root
+    with an edge to it has a smaller round (non-archive files and roots
+    0); the first link writes the breadth-first round of §4.1's walk.
+    A full link already parses every member's symbol table (resolve.md
+    §4.1; odr.md O-23), so the capture costs only the rows.
+  - **Edges of a key.** For an affected key `K`, `first(K)` and
+    `cfirst(K)` are read from `KEY_REFS(K)` (lowest rank among the rows
+    with the right attributes, lazy rows included), and its edges are the
+    live mentioners' undefined (common) rows pointing at a lazy
+    `first(K)` (`cfirst(K)`), plus a root's. The update computes each
+    affected key's edge set before and after the changed files' rows are
+    replaced: **lost** and **gained** edges.
+  - **Removal (decremental).** A member that lost an edge keeps its
+    extraction iff some edge from a live file of smaller round still
+    reaches it (its in-edges: the keys it is `first`/`cfirst` of, from its
+    own `MENTIONS` range, and their mentioners, from `KEY_REFS`). The
+    members without such support, and transitively the members they
+    alone supported, form a cone; the cone's members are re-seeded from
+    the live files outside it in round order (a member reached gets the
+    smallest supporting round + 1), and what is not reached is no longer
+    extracted: a gone file for the update. This is the cycle case
+    review-in72 R1b found: two members supporting each other have no
+    smaller-round support once the outside edge is gone.
+  - **Addition (forward).** A gained edge whose target is lazy extracts
+    it (round = source's + 1): it is an appeared file, read from its
+    archive (below), and its undefined mentions add edges, followed
+    breadth-first; an edge to a `first(K)` at a lower position than the
+    key's current definer (review-in72 R1a: a strong member before a weak
+    definition) is an edge like any other.
+  - **Reading a member.** An unchanged archive's newly extracted member
+    is read through the archive's descriptor at the member's stored
+    offset, after the descriptor's `fstat` equals the archive's `STAT`
+    row (IN-28a condition 2); else `input-changed`. A changed archive's
+    members are per-member changed, appeared or gone files (IN-24). No
+    unchanged archive is parsed: its members' rows are the state's.
+  - **Bound** (`extraction-changed`): more than 1,024 members flipping, or
+    a removal cone whose re-seeding reads more than 65,536 `KEY_REFS`
+    rows, ends the update with `extraction-changed` before anything is
+    written (a full link is cheaper there). The bound values are
+    *argued, not run*.
+  - **Modelled** (`tests/incr-design/model_extract.py`, written from this
+    text): R1a and R1b give the full link's member set; 3,000 random
+    programs (members interleaved with objects, weak, common and
+    weak-undefined mentions, root keys) with four edit hops each, 12,000
+    updates with 3,534 extraction flips: 0 differ from §4.1's closure
+    from scratch. Not modelled: `--whole-archive`, `--start-group`
+    semantics beyond §4.1's, shared objects, `--wrap`, file 0's Assign
+    candidates.
+  - **Cost.** State: a lazy member's defined or common mention costs a
+    `MENTIONS` row (12 B) and a `KEY_REFS` row (12 B); measured here,
+    `libstdc++.a` (GCC 14, AArch64) has 7,271 defined globals in 189
+    members (38.5 a member), `libc.a` 4,568 in 2,022. At the operator's
+    1,000-3,000 archives, *estimate* with libstdc++'s density and 50
+    members an archive: 1.9-5.8 M lazy definitions, 46-139 MB if no
+    member were extracted, less by the extracted share (whose rows exist
+    anyway); not measured on the operator's code base. Per update: for
+    each affected key a binary search of `KEY_REFS` (WP-105: 225 preads
+    for `RESOLVED` on g10x), plus the cone's in-edge reads; no archive is
+    opened except to read a newly extracted member.
+  *Test (U-3):* `weak_definition_vs_later_member` (R1a),
+  `member_cycle_dropped_together` (R1b), `newly_extracted_member`,
+  `newly_extracted_member_pulls_another` (review-in72 m-3),
+  `no_longer_extracted_member`, `member_flips_back_on_third_hop`, each
+  judged by IN-79; `extraction_bound_is_extraction_changed`; the model's
+  random series as a property test over hand-made `KEY_REFS`.
+
+- **IN-71c [v1] Linker-defined keys are affected keys** (WP-207;
+  review-in72 B-2, review-in77 B-3 trace 2). Every update recomputes
+  `DEFINED` (the values of the keys of resolve.md §8.1's table, the one
+  table of linker-defined symbols, and of `__start_`/`__stop_` keys) from
+  its `Placement` (O(rows of `DEFINED`): tens to a few hundred), and every
+  key whose value, section or existence differs from the stored row is an
+  affected key, whose referrers (`KEY_REFS`: `libc-start.o` for
+  `__init_array_end`, `dl-minimal-malloc.o` for `_end`, measured by
+  review-in72) are refilled. No list is consulted, so a linker-defined
+  symbol added to §8.1's table later is covered without an edit here.
+  Today that set is: `_GLOBAL_OFFSET_TABLE_`, `__ehdr_start`,
+  `__executable_start`, `_etext`/`etext`/`__etext`, `_edata`/`edata`,
+  `__bss_start`, `_end`/`end`, AArch64's `__data_start`, `__end__`,
+  `__bss_start__`, `__bss_end__`, `_bss_end__`,
+  `__init_array_start`/`_end`, `__preinit_array_start`/`_end`,
+  `__fini_array_start`/`_end`, `__rela_iplt_start`/`_end` (i386
+  `__rel_iplt_*`), `__start_SEC`/`__stop_SEC`, `_TLS_MODULE_BASE_`,
+  `__GNU_EH_FRAME_HDR`; the ones a delta layout can move are all but
+  `__ehdr_start` and `__executable_start`, but the rule does not depend
+  on that judgment. *Test (U-3, U-10):* `init_array_grows`,
+  `init_array_shrinks`, `init_array_grows_then_shrinks`,
+  `start_stop_registry_grows_then_shrinks`,
+  `eh_frame_overflow_then_edit_unchanged_file` (review-in77 B-3),
+  `ifunc_added_moves_rela_iplt_end`, `local_ifunc_slot_dead_and_appended`
+  (IN-28b's IPLT case, review-in72 m-5), `bss_grows_moves_end`, each a
+  first update and a third hop.
+
+- **IN-71d [v1] ODR checks and `.mason.meta` in an update** (WP-207).
+  O-20's findings are a function of the rows of the live units, grouped
+  by key; an update recomputes them for the **ODR-affected keys** only:
+  every key with a row in a unit of a changed, appeared, gone, drawn-in,
+  newly extracted or no longer extracted file (old or new version), and
+  every key whose COMDAT keeper changed (O-21 names the kept file). For
+  each, its classes are recomputed from `ODR_REFS` (one row per (ODR key,
+  file, row kind): the class the row's hash and layout fall in) and the
+  changed files' new rows; findings of other keys are the stored ones
+  (`DIAGS`, IN-75a). O-23's archive rows are stored only under
+  `--odr-check-archives`. The default severity is `--odr=warn` (operator,
+  2026-11-17); a finding the mode makes fatal fails the update as it
+  fails a full link (IN-5). The operator's code base does not mix `-std`
+  levels in one executable, so O-32 needs no update rule beyond being
+  recomputed with its key. *Estimate* (odr.md O-21, O-22's counts): about
+  1,600 rows a heavy TU, 12 B each, 19 MB for 1,000 TUs, plus one 28-byte
+  class row per key; zero when no input has `.mason.meta` or under
+  `--odr=off`. **`.mason.meta` in the output** (`--keep-mason-meta`,
+  MT-32) is a non-allocated per-file contribution like a debug section:
+  until G-1's contributions cover it, an update whose changed files carry
+  units under that option is `update-not-implemented` (detail `meta`).
+  *Argued, not run* (no update code; kiln's kind 2 rows are not yet
+  emitted). *Test (O-1 package):* each K of odr.md §2 introduced by an
+  update, removed by the next, introduced again (three hops): the
+  diagnostics equal the full link's.
 
 - **IN-71a [v1] Liveness from stored edges.** IN-29's stored graph is the
   `EDGES` table (IN-18e: per file a range of rows, each IN-29's row
@@ -2766,33 +3049,118 @@ a pass over a whole table of the state; **O(output)**.
   O(change); it runs only under `--gc-sections`. *Test:* `gc-edge-kinds`
   and `lsda-edges` as updates; the mutation per edge kind (IN-63b).
 
-- **IN-72 [v1] The delta layout.** From the stored layout, never a fresh
-  one. Rows of unchanged files are read only where the delta reaches
-  them (their `SECTIONS` rows by `FILE_INDEX` range; `HOLES` and
-  `CHUNKS` by output section). In order:
+- **IN-72 [v1] The delta layout** (amended by WP-207: items 2, 2a, 3, 6,
+  10, 11 and the growth step). From the stored layout, never a fresh one.
+  Rows of unchanged files are read only where the delta reaches them
+  (their `SECTIONS` rows by `FILE_INDEX` range; `HOLES` and `CHUNKS` by
+  output section). Before item 1, IN-71's COMDAT election and IN-71a's
+  liveness have run: "a file's sections" below means its live, kept
+  sections only (review-in72 M-4 (f)). Sections are matched to their
+  previous version by model.md §7.1's identity (anchor, name, ordinal).
+  In order:
   1. **Gone sections** (of gone files, of sections no longer live, of a
      COMDAT copy no longer kept) become holes (IN-3) of their region;
-     their fragments lose one reference (item 6).
-  2. **Each changed file**, per (hole-tolerant output section,
-     category) region (IN-30): its live sections are laid out again from
-     the region's start in full-link order (L-53, input order). If they
-     fit the region's capacity, nothing outside the region moves; what
-     is left of the capacity is the region's slack (a hole). A section
-     that is new to the file goes into its region like the others; a
-     section the file no longer has leaves a hole.
-  3. **Overflow** (IN-32): a region that does not fit becomes a hole as
-     a whole; the file's sections in it go to the output section's tail
-     reserve, as a new region with a fresh capacity (IN-33). A region of
-     an **appeared or newly extracted** file goes to the tail the same
-     way. When the tail is exhausted, the output section grows by a
-     growth step (L-144) into its segment's reserve, and every output
-     section after it in the segment moves by the step: their sections
-     are "moved sections of unchanged files" (IN-27); when the segment
-     reserve is exhausted: `reserve-exhausted`.
+     their fragments lose one reference (item 6). Their file, when it is
+     not a changed file, is drawn in (item 2a).
+  2. **Each changed or drawn-in file**, per (hole-tolerant output
+     section, category) pair `(O, c)` (IN-30), in three phases; merged
+     input sections (`SHF_MERGE`) are item 6's only and take no space in a
+     region (M-4 (e)); every address is absolute and alignment padding
+     counts against a region's capacity (M-4 (g)).
+     - **Keep.** A section matched to its previous version, previously
+       placed in `(O, c)`, whose new size is at most its old size and
+       whose old address is a multiple of its new alignment keeps its
+       address. (A section that shrank keeps its start; the bytes it no
+       longer uses are a hole.)
+     - **Place.** The other sections of the file in `(O, c)` (grown,
+       realigned, new to the file, or matched to a section previously in
+       no region), in input order, each at the first of: (i) its old
+       address, if it was in `(O, c)` and the bytes from there to its new
+       end are free and inside the same region (it grows in place); (ii)
+       the lowest aligned address in the file's regions of `(O, c)`, in
+       the regions' order (the first link's region, then each overflow
+       region in the order it was opened), where it fits between the
+       sections already kept or placed by this update; a hole of the
+       file's own region is free space like its slack.
+     - **Overflow.** The sections that phase 2 could not place are
+       packed, in input order, into **one new region** of the file at
+       `(O, c)`'s tail reserve, with IN-33's capacity over their packed
+       size. A section in an `(O, c)` where the file had no region
+       (review-in72 M-4 (a): `strutil_addfn.o`'s new `.data.rel.ro`)
+       goes straight to this phase.
+     The file keeps every region it has had in `(O, c)` until the next
+     compaction: an old region a section left is reused by a later
+     version through phase 2 (M-4 (c); IN-32's "reused only by its own
+     file" stands). A section that keeps its address and whose bytes did
+     not change is still refilled when its file is changed (the file is
+     IN-27's unit); its **definitions keep their addresses**, so their
+     referrers in other files are not refilled for this file's sake.
+     Modelled (`tests/incr-design/model_region.py` over review-in72's
+     protobuf 3.21.12 `strutil.cc` builds, 255 globals at `-O0 -g` and 86
+     at `-O2 -ffunction-sections`, the same six hops): definitions whose
+     address moves, this rule against WP-202's "laid out again from the
+     region's start":
+
+     | hop | `-O0 -g` | `-O2 -ffunction-sections` |
+     |---|---|---|
+     | grow1 | 82 against 252 of 255 | 1 against 83 of 86 |
+     | grow2 | 80 against 252 of 255 | 0 against 83 of 86 |
+     | rmfn | 79 against 251 of 254 | 0 against 82 of 85 |
+     | addfn | 0 against 173 of 256 | 0 against 48 of 87 |
+     | base (back) | 0 against 173 of 255 | 0 against 4 of 86 |
+
+     At `-O0` the remaining ~80 are the floor of a one-`.text` object:
+     the functions after the edit inside the grown section (WP-202's 80
+     in-section moves); IN-31 removes them. One overflow region was
+     opened at `-O0` (grow1, `.text`, 0x8e4c bytes of a 0x1795e tail) and
+     one at `-O2` (addfn, `.data.rel.ro`, 0x50 of 0x1000); no growth step
+     was reached.
+  2a. **Drawn-in files** (WP-207; review-in72 B-3, M-1, review-in77 B-3
+     trace 1). An unchanged file is **drawn in** when the update must
+     change its sections or its `.symtab` block for a reason outside it:
+     a section of it becomes live (IN-71a) or kept (IN-71's election), or
+     stops being so; one of its globals is demoted to a local of its
+     block by the merged visibility (S-74) or promoted back. A drawn-in
+     file is processed exactly as a changed file whose bytes are its old
+     bytes: it is opened, `fstat`ed and compared with its `STAT` row
+     (IN-28a condition 2; else `input-changed`; review-in72 M-6) and read
+     and parsed (U4, its relocations included), its sections go through
+     item 2 (its unchanged sections keep their places by the keep phase;
+     a revived section, previously placed nowhere or in a hole, is
+     placed by phases 2-3), its `.symtab` block is rewritten from its
+     symbol table (IN-49a), its definitions that gained or lost an
+     address are IN-27's moved globals, and its rows are recaptured like
+     a changed file's (IN-78). It counts toward IN-16's bound. So "comment
+     a call out and back in" under `--gc-sections` (W8) is an update on
+     the first hop even when the first link never placed the section
+     (review-in72 R6), and a COMDAT keeper that moves to an unchanged
+     file's copy (R8) is one too. Cost: one read and parse of each
+     drawn-in file, O(its size), *argued, not run*.
+  3. **Overflow and the growth step** (IN-32). Several files' new regions
+     in one tail are opened in load order of the files, then in
+     (output section, category) order (M-4 (b)). When `(O, c)`'s tail
+     reserve cannot hold a new region, the output section grows by a
+     **growth step** into its segment's reserve:
+     `step = round_up(need + max(4 KiB, size/16), A)`, where `need` is
+     what the tail could not hold, `size` is the output section's size
+     and `A` is the largest alignment of the output sections that follow
+     it in its `PT_LOAD` (so each moves by a multiple of its alignment);
+     when the step moves the RELRO end (the section is in the RELRO part
+     of its segment or before it), `A` is the maximum page size. The new
+     tail's capacity is the old tail's free bytes plus `step − need`
+     (M-4 (d)). Every output section after it in the segment moves by
+     the step, in address and in file offset (a `NOBITS` section moves
+     in address only): their sections are "moved sections of unchanged
+     files" (IN-27), their files' `.symtab` entries are remapped (IN-49a),
+     and the program and section header tables are rewritten whole
+     (IN-75). The segment reserve exhausted: `reserve-exhausted`.
   4. **Packed sections** (L-142, IN-34's rows) are rewritten whole in
      full-link order within their capacity; past it, a growth step; past
      the reserve: `reserve-exhausted`. A packed section whose order
      follows `SHF_LINK_ORDER` targets that moved: `link-order-moved`.
+     `.rela.plt` is rewritten whole in the full link's order (review-in72
+     m-4: IN-2 item 5 holds for `IRELATIVE`;
+     `two_ifuncs_added_irelative_order`).
   5. **`.eh_frame`** by IN-34a (a range rewritten from its start; on
      overflow the whole section rewritten in full-link order).
   6. **Merged sections** (S-110, L-147): a fragment is identified by
@@ -2802,9 +3170,12 @@ a pass over a whole table of the state; **O(output)**.
      fragment; a new identity is appended at the section's tail; a
      fragment whose reference count (`FRAGS.refs`, IN-18e) falls to 0 is
      a dead range (IN-3a: a string keeps its bytes, a constant is
-     filled). No fragment of an unchanged file ever moves, so the
-     contents edits WP-064a refused (s4, W6) need no refill outside the
-     changed files. Its tail exhausted: `reserve-exhausted`.
+     filled). **A fragment whose count rises from 0 is rewritten from the
+     piece** (a dirty range, IN-75; review-in72 M-8: a constant revived
+     after its fill would otherwise read the fill). No fragment of an
+     unchanged file ever moves, so the contents edits WP-064a refused
+     (s4, W6) need no refill outside the changed files. Its tail
+     exhausted: `reserve-exhausted`.
   7. **Slots** (S-113): new GOT, IPLT and TLS slots appended within the
      slot region's capacity, dead slots written 0;
      `reserve-exhausted` past it. A slot keyed by a local of a changed
@@ -2816,16 +3187,43 @@ a pass over a whole table of the state; **O(output)**.
      `island-exhausted`.
   10. **Sections and segments**: a section that has no output section
       in the stored layout, or an output section or segment left empty:
-      `new-output-section`. `.note.gnu.property` changing size:
-      `property-changed`. An output section's alignment growing past
-      its stored address's: `reserve-exhausted`.
-  11. **Commons** (IN-34's row): the commons chunk's regions, as item 2.
+      `new-output-section`. An allocated note section (`.note.gnu.property`,
+      `.note.ABI-tag`, `.note.stapsdt`, any `SHT_NOTE`) changing size:
+      `property-changed` (review-in72 m-2; the reason keeps its name;
+      `note_abi_tag_size_change`). An
+      output section's alignment growing past its stored address's:
+      `reserve-exhausted`.
+  11. **Commons** (review-in72 M-2, option (a)): in an incremental-mode
+      output each winning common is placed as a section of its winning
+      file (the file of `cfirst(K)`, resolve.md §4.5), of the common's
+      size and alignment (the largest over its mentions, `COMMONS` rows),
+      in that file's `.bss` region; the map's `common` line names the
+      file. A size or alignment change is a section of that file that
+      grew or changed: item 2 places it (the file is drawn in when it is
+      not changed), and its key is affected (IN-71). A plain link keeps
+      the commons chunk as today.
   12. **`.symtab`, `.strtab`, `.symtab_shndx`**: IN-49a.
-  The result is a `Placement` of the same shape as a full link's (a
-  layout that `Layout::check` accepts), with `hole` and `dead` lines for
-  the map, and the list of what moved: the input of IN-74. *Test:*
-  hand-made layouts per item (U-4's tests); L10 grow and shrink steps
-  past each capacity in turn (IN-32's test).
+  **Determinism** (IN-6). The result is a function of the stored layout
+  (the state's `Placement` rows) and the new inputs' sections (identity,
+  size, alignment, order) only: files in load order, regions in their
+  order, sections in input order, no iteration over a hash map's order,
+  no dependence on the thread count. IN-61's replay of the next link
+  reads the update's `Placement` from the state it wrote, so a replay
+  reproduces it. The result is a `Placement` of the same shape as a full
+  link's (a layout that `Layout::check` accepts), with `hole` and `dead`
+  lines for the map, and the list of what moved: the input of IN-74.
+  *Test (U-4):* hand-made layouts per item; `edit_moves_only_changed_sections`
+  (the model's series as a test: the moved-definition counts above);
+  `new_section_without_region_opens_tail_region`;
+  `two_files_overflow_in_load_order`; `old_region_reused_after_overflow`;
+  `growth_step_alignment_and_relro`; `merged_input_not_in_region`;
+  `comdat_election_before_region`; `alignment_padding_counts`;
+  `delta_layout_same_on_1_and_n_threads`; `gc_section_dies_then_revives`
+  (first link without the section, too), `comdat_keeper_moves_to_unchanged_file`,
+  `n2_visibility_demotes_unchanged_definer`, `n4_common_grows`,
+  `common_appears`, `two_commons_one_grows`, `merged_constant_dies_revives`,
+  each three hops; L10 grow and shrink steps past each capacity in turn
+  (IN-32's test).
 
 - **IN-73 [v1] What WP-064a refused, and where it now goes.** Every edit
   of WP-064a §3's list is an update or one named reason:
@@ -2855,30 +3253,75 @@ a pass over a whole table of the state; **O(output)**.
   (IN-72) and resolution (IN-71) as the new side; IN-27's table is the
   rule. The referrers of a target are found without reading an
   unchanged input: by `INDEX` (IN-25), read by the referring file's
-  range for files that `KEY_REFS` lists for a key, and by the target
-  file's own range for its sections (IN-18e). The set's bytes over
-  IN-16's bound: `too-much-changed`. *Test:* the IN-63a oracle on every
-  update (IN-79 (c)); the mutation lane (IN-63b) with the update's
-  layout.
+  range for the files that `KEY_REFS` lists for a key (every mentioning
+  file, single mentioners and file 0's keys included, IN-18e), and by the
+  target file's own range for its sections (IN-18e). The keys whose
+  referrers are looked up are the affected keys of IN-71 whose
+  resolution, value or size changed, the linker-defined keys of IN-71c
+  (known after U7), and the globals defined in moved sections. The set's
+  bytes over IN-16's bound: `too-much-changed`. *Test:* the IN-63a
+  oracle on every update (IN-79 (c)); the mutation lane (IN-63b) with
+  the update's layout. *Bench rows* (IN-64, WP-207): per update, the
+  moved-definition count (definitions of changed and drawn-in files whose
+  address moved) and the refill set's size (units, bytes, referrer
+  files), so that M-5's cost is watched, not only judged.
 
-- **IN-75 [v1] Refill, dirty ranges, build id.** The units of the set
-  are filled (image.md I-95) into windows, and only the **dirty
-  ranges** are written: the refilled units' bytes, the holes they left
-  (their fill, IN-3a), the `.symtab`/`.strtab` entries and names
-  IN-49a changes, the changed `.eh_frame` range and its padding,
-  `.eh_frame_hdr` (rewritten whole when an FDE address changed, S-111),
-  `.debug_aranges` (G packages), the ELF header, the section headers
-  whose `sh_size` changed, and the build-id note. The build id is the
-  tree hash of image.md I-76 over the patched image: the leaves of the
-  blocks the update wrote are recomputed from the new bytes, every other
-  leaf is the state's (`LEAVES`), and the tree is combined; the note's
-  own bytes are hashed as I-76 says (zeroed). The new leaves go to the
-  state's patch. The update's map (`--mortar-map`) is the full link's
-  map grammar with the update's placement, `incremental`, and its
-  `hole`/`dead` lines, written whole (IN-49): the judge reads it
-  (IN-79 (b)). *Test:* the refilled windows of an update with an empty
-  delta equal the old output's bytes; the build id of an update equals
-  the tree over the whole new output (`xtask plumb` recomputes it).
+- **IN-75 [v1] Refill, dirty ranges, build id** (amended by WP-207;
+  review-in72 B-4, M-6, M-7). The units of the set are filled (image.md
+  I-95) into windows, and only the **dirty ranges** are written. The rule
+  is an invariant: **the dirty ranges cover every byte in which the
+  update's output differs from the previous output**, and outside them
+  the previous output's bytes are the update's. They include, and are
+  not limited to: the refilled units' bytes; the holes they left (their
+  fill, IN-3a); the packed sections IN-72 item 4 rewrote; the fragments
+  appended or revived (item 6); the slots appended and the dead slots
+  written 0, and `.rela.plt` (item 7); the `.eh_frame` range and its
+  padding; `.eh_frame_hdr` (rewritten whole when an FDE address changed,
+  S-111); the `.symtab`/`.strtab` entries and names IN-49a changes; the
+  ELF header; **the program header table and the section header table,
+  each whole, whenever the update changed any field of either** (a
+  growth step changes `p_filesz`/`p_memsz` and every later section's
+  `sh_addr`/`sh_offset`; IN-34's "rewritten whole"); every byte a growth
+  step moved; `.debug_aranges` (G packages); and the build-id note. The
+  enumeration is the implementation's; the invariant is the test.
+  **Inputs read here** (review-in72 M-6): every input read for a refill,
+  a placement or a drawn-in file (IN-72 item 2a) is opened, `fstat`ed and
+  compared with its `STAT` row (IN-28a condition 2) before its first byte
+  is used; a difference is `input-changed`. The build id is the tree
+  hash of image.md I-76 over the patched image: the leaves of the blocks
+  the update wrote are recomputed from the new bytes, every other leaf is
+  the state's (`LEAVES`), and the tree is combined; the note's own bytes
+  are hashed as I-76 says (zeroed). The new leaves go to the state's
+  patch. The update's map (`--mortar-map`) is the full link's map grammar
+  with the update's placement, `incremental`, and its `hole`/`dead`
+  lines, written whole (IN-49): the judge reads it (IN-79 (b)). *Test
+  (U-6):* the refilled windows of an update with an empty delta equal the
+  old output's bytes; `dirty_ranges_cover_every_differing_byte` (the
+  update's output against the previous output, byte by byte: every
+  differing byte inside a dirty range); `growth_step_rewrites_headers`
+  (readelf of both header tables against the full link of the same
+  `Placement`, and IN-79 (a)); `input_rewritten_after_u4_is_input_changed`;
+  the build id of an update equals the tree over the whole new output
+  (`xtask plumb` recomputes it).
+
+- **IN-75a [v1] Diagnostics equal to a full link's** (WP-207). An update
+  emits the warnings the full link of the same inputs would emit, in the
+  same order. The state's `DIAGS` table (IN-18e) holds every warning of
+  the link that wrote it, each with its **subject** (a file, a key, an
+  output section, or the link) as `spec/diag.md`'s code table gives it
+  for the code. An update drops the rows whose subject is a changed,
+  appeared, gone, drawn-in, newly extracted or no longer extracted file,
+  an affected or ODR-affected key (IN-71, IN-71d), or an output section
+  or the link (these are recomputed from the update's `Placement` every
+  time), recomputes those subjects' warnings, and emits the union in
+  diag.md's order. A warning code without a subject in diag.md's table is
+  a spec defect that `spec_tables` reports (REQUEST to diag.md, WP-207
+  §R). Errors are not stored: a link with an error writes no state
+  (IN-48). *Test:* `warning_repeated_by_update` (an unchanged file that
+  draws a warning in the full link: the update prints it too),
+  `warning_gone_with_its_file`, and the ODR three-hop series (IN-71d);
+  every IN-79 run compares the update's standard error with the full
+  link's, modulo the `incremental:` report line. *Argued, not run.*
 
 - **IN-76 [v1] The write path.** In place (IN-46) is the default when
   the output the state describes is at least `small-output`'s bound
@@ -2893,104 +3336,348 @@ a pass over a whole table of the state; **O(output)**.
   one link test per IN-45 condition, the inode checked; the default
   above and below the bound with `--incremental=update`.
 
-- **IN-77 [v1] The crash protocol: one order of writes for the output
-  and the state.** Let `S` be the state file (format 5, written in place
-  by blocks, IN-46b) and `P` the output. The **flag** is `S`'s updating
-  word (IN-18c: one aligned 4-byte word in the header, outside every
-  hash; one sector, so a write of it is all or nothing). A state whose
-  flag is set is never trusted: `output-torn`, a full link.
+  *Decided (operator, 2026-11-17, through WP-207): in place by default
+  at or above `SMALL_OUTPUT` is "fine for now"*, on the conditions
+  review-in77 set (IN-77a's descriptor, IN-77b's lock, IN-45's list of
+  unprotected readers, IN-77's aside name), all now in the text. The
+  write path is a **policy constant** (`mortar_incr::WRITE_PATH`: the
+  bound and the default path per side of it), so that **IN-76a** is a
+  switch, not a rewrite.
+- **IN-76a [later: package W-1, after U-10] Copy by clone where the file
+  system clones** (operator's follow-up, 2026-11-17). A probe decides,
+  per output directory, whether the copy path would be a clone; where it
+  is, the copy path (IN-47) becomes the default at every size, since it
+  protects every reader IN-45 lists. **The probe, in safe Rust and `std`
+  only**: the output's `st_dev` (from U1's `fstat`) is looked up in
+  `/proc/self/mountinfo` (field 3, `major:minor`), and the mount's file
+  system type is read from it; `btrfs`, `xfs`, `bcachefs`, `ocfs2` and
+  `zfs` are clone-capable types (XFS only with `reflink=1`, which
+  mountinfo does not show, so XFS is confirmed by a timed trial: below).
+  For a candidate type, the first incremental-mode full link times
+  `std::io::copy` of its own fresh output into a temporary (it copies
+  through `copy_file_range`, which clones first on these file systems,
+  IN-47) and records in `META` (device, type, copy time per MiB); the
+  copy is a clone when it costs under 5% of the byte-copy rate measured
+  on this host (0.6-0.8 ms/MB, IN-47). **Cost per link**: one read of
+  mountinfo (a few KiB, tens of µs, *estimate*) when the device differs
+  from `META`'s, else nothing; the timed trial once per state.
+  **When the probe lies**, nothing is wrong, only slow: a copy that was
+  not a clone is still a correct copy (IN-47 is correct on any file
+  system); `--incremental-report` prints the copy's time, and an update
+  whose copy took more than twice the recorded time clears the record,
+  so the next update goes back to in place. *Test (W-1):* the probe's
+  parse of mountinfo samples (btrfs, xfs, overlay, virtiofs, nfs4); a
+  loop-mounted btrfs or XFS (`reflink=1`) image in the system temp where
+  the container allows it (WP-061), else *argued, not run*.
 
-  In place:
+- **IN-77 [v1] The crash protocol: one order of writes for the output
+  and the state** (amended by WP-207: one descriptor per file, one lock,
+  the output set aside while torn, the boot id, failures). Let `S` be the
+  state file (format 5, written in place by blocks, IN-46b) and `P` the
+  output. The **flag** is `S`'s updating word (IN-18c: one aligned 4-byte
+  word in the header, outside every hash; one sector, so a write of it is
+  all or nothing). A state whose flag is set is never trusted:
+  `output-torn`, a full link.
+
+  **IN-77a [v1] One descriptor per file** (review-in77 B-1). U1 opens `S`
+  read-write and `P` once (read-write for in place, read-only for the
+  copy path) and makes IN-21's checks through those descriptors:
+  `fstat` gives the tuple, and the build id and the racy leaves are read
+  with positioned reads on the descriptor. Every later read and write of
+  `P` (C1's copy, W2..W4) and of `S` (W1, W5, W6, the compaction's read)
+  goes through them; no step reopens either by path. Immediately before
+  W2 (in place) or C3 (copy), `stat(P)` by path must give the
+  descriptor's `(dev, ino)` and size, else `output-changed`, nothing
+  written (`T` removed). W4's and C3's tuple is the descriptor's (in
+  place) or `T`'s descriptor's (copy) `fstat`, taken by IN-21's binding
+  (`fstat`, stamps until one is later, `fstat` again; review-in77 M-8,
+  m-5). In place, the descriptor stays open for writing from W2 to W4, so
+  an `exec` of `P` in that span fails with `ETXTBSY` where the kernel
+  denies it (measured on overlay and virtiofs, kernel 6.8; IN-45 names
+  where it does not).
+
+  **IN-77b [v1] One lock** (review-in77 B-2; replaces "image.md I-59's
+  lock" and IN-45's lock condition). Every link in incremental mode (full,
+  update, `--incremental-report`) that finds a state takes an exclusive
+  `flock` (`File::lock`, `std`) on `S`'s descriptor before it reads any
+  byte of `S` past the header's magic, and holds it to its last write.
+  After acquiring it, `stat(S)` by path must give the locked
+  `(dev, ino)`; else it closes the descriptor and starts again (at most 8
+  times, then `state-busy`, a full link that writes no state). A rename of
+  `S` (the compaction, a full link's state write) happens while the lock
+  is held, so a waiter wakes on the old inode, fails the check and
+  retries on the new one. Where the probe of image.md I-59 says `flock`
+  is not enforced on `S`'s file system, no update is attempted
+  (`lock-unavailable`, a full link), on both write paths: the copy path
+  does not make an unlocked update safe, because `S` is patched in place
+  on both. A link that finds no state (the first link, or after
+  `state-corrupt`) has nothing to lock; two such links racing are IN-21's
+  post-rename check (the loser removes the state it wrote). `S` with
+  `st_nlink` > 1 or reached through a symbolic link is never patched: W5
+  is the compaction (a rename), so a hard-linked snapshot keeps its bytes
+  (review-in77 m-3). **Cost**: a plain link opens no state and takes no
+  lock (IN-11: it touches no state path), so it pays nothing; an
+  incremental-mode link pays one open, `flock`, `fstat`, `stat` and
+  unlock: median 352.5 µs (p90 1.15 ms) on the workspace's virtiofs and
+  3.5 µs (p90 4.4 µs) on overlay, at load ~20 (WP-207
+  `tests/incr-design/fsprobe.py`), against a full link's 0.18 s on
+  protoc.
+
+  **In place** (`A` = `dir(P)/.<base(P)>.mortar-torn`, the **aside name**, in `P`'s
+  directory):
   - **W1** set the flag; `fdatasync(S)`.
-  - **W2** zero `P`'s `e_ident`; `fdatasync(P)`.
-  - **W3** write the dirty ranges; truncate or extend `P` (image.md
-    I-97); `fdatasync(P)`.
-  - **W4** write `P`'s true ELF header; `fdatasync(P)`. `P` is the new
-    output; its stat tuple (IN-21) is taken now.
+  - **W2** `rename(P, A)`; `stat(A)` must give the descriptor's
+    `(dev, ino)`, else `rename(A, P)` and `output-changed` (the flag
+    stays set: a full link); `fsync` the directory; zero `e_ident`
+    through the descriptor; `fdatasync(P)`. From here `P`'s path names no
+    file.
+  - **W3** write the dirty ranges; truncate or extend (image.md I-97);
+    `fdatasync(P)`.
+  - **W4** write the true ELF header; `fsync(P)` (data and metadata, so
+    the mtime the writes set is durable: review-in77 m-6);
+    `rename(A, P)`; `fsync` the directory. `P` is the new output; its
+    tuple is taken now (IN-77a).
   - **W5** write the state's patch: the changed blocks, their block-list
-    entries, the directory entries, the header with the new binding (the
-    tuple of W4, the build id, the new leaves); `fdatasync(S)`.
+    entries, the directory entries, and the header except its flags word
+    (bytes 16 to the end, review-in77 m-2), with the new binding (the
+    tuple of W4, the build id, the new leaves, `output-synced` 1);
+    `fdatasync(S)`.
   - **W6** clear the flag; `fdatasync(S)`.
 
-  By copy (`T` beside `P`, image.md I-59's name):
-  - **C1** create `T`, copy `P` into it (`copy_file_range`, a clone where
-    the file system clones, IN-47), write the dirty ranges and the true
-    header; `fdatasync(T)`.
+  **Why the aside name** (review-in77 M-3, decided by WP-207 against the
+  epoch mtime). A torn output must not look up to date to the build
+  system, or the repairing full link never runs. Measured
+  (`tests/incr-design/bsprobe.sh`, GNU Make 4.4.1, ninja 1.12.1): a torn
+  output with a fresh mtime is relinked by ninja but **not by make**; an
+  epoch-dated or missing one is relinked by both. The epoch mtime of
+  review-in77's fix does not survive the writes: every `pwrite` after
+  `utime(0)` sets the mtime to now (measured on virtiofs and overlay,
+  `fsprobe.py`), so a kill inside W3 leaves a fresh torn file; the crash
+  model with mtimes (`tests/incr-design/crash_model.py`) gives 2 fresh
+  torn outcomes for the epoch variant and for W1..W6 as WP-202 wrote them,
+  and 0 for the aside variant (kill and power loss at every prefix; 0
+  trusted mixes in all three). Removing `P` on failure (I-66) covers
+  failures only, not kills or power loss. With the aside name, after any
+  crash in W2..W4 `P` is missing: make and ninja relink, `exec P` fails
+  with `ENOENT`, and a reader that opens `P` in the window fails instead
+  of copying a mix (it narrows review-in77 M-2 to readers that opened
+  before W2). A debugger holding `P` keeps its descriptor on the same
+  inode, as before (IN-45: unprotected); gdb's `run` in the window finds
+  no file, and after W4 sees the new mtime and re-reads. Cost: two
+  renames and two directory `fsync`s (IN-46 measured a directory sync at
+  0.62 ms on overlay and 0.23 ms on virtiofs; the renames are not
+  measured: *argued, not run*).
+
+  By copy (`T` = image.md I-59's temporary beside `P`, created and
+  `flock`ed by this link):
+  - **C1** create `T`, copy `P`'s descriptor into it
+    (`copy_file_range`, a clone where the file system clones, IN-47),
+    write the dirty ranges and the true header; `fdatasync(T)`.
   - **C2** set the flag; `fdatasync(S)`.
-  - **C3** rename `T` over `P`; `fsync` the directory; take `P`'s tuple.
+  - **C3** check `P` by path (IN-77a); rename `T` over `P`; `fsync` the
+    directory; take `T`'s descriptor's tuple.
   - **C4**, **C5**: W5 and W6.
 
-  When the state's rows do not fit its slack (IN-18e), W5/C4 is the
-  **compaction** instead: the whole new state, flag clear, written to
-  `S`'s temporary name, `fdatasync`ed, renamed over `S`, the directory
-  `fsync`ed; W6/C5 is then nothing (the rename replaced the flag).
+  When the state's rows do not fit its slack (IN-18e), or `S` is
+  hard-linked or a symbolic link (IN-77b), W5/C4 is the **compaction**
+  instead (IN-18f): the whole new state, flag clear, written to `S`'s
+  temporary `dir(S)/.<base(S)>.mortar-compact` (created and `flock`ed by this link),
+  `fdatasync`ed, renamed over `S`, the directory `fsync`ed; W6/C5 is then
+  nothing (the rename replaced the flag).
+
+  **IN-77c [v1] The full link in incremental mode and the boot id**
+  (review-in77 M-1, form (b)). A full link renames `P` unsynced (image.md
+  I-61) and then writes `S` durably, so after a power loss `S` can be
+  durable while `P`'s data is not. `META` carries the **boot id** (the 16
+  bytes of `/proc/sys/kernel/random/boot_id`, read once per link) and an
+  **`output-synced`** bit: a full link writes 0; W5/C4 writes 1 (`P` was
+  synced at W4 or `T` at C1). U1, when the state's bit is 0 and its boot
+  id differs from the current one, compares every leaf of `P` with
+  `LEAVES` before it trusts `P` (IN-21's racy path, O(output), once per
+  reboot: after a reboot the page cache is gone, so what it reads is what
+  is on the disk); a leaf that differs is `output-changed`; when all
+  match, the update proceeds and W5 writes the bit 1. Where the boot id
+  cannot be read, a full link in incremental mode `fdatasync`s `T` before
+  its rename (form (a)) and writes the bit 1. In a container the boot id
+  is the host's (not namespaced); in a virtual machine it is the guest's,
+  which also changes on any host power loss: both are conservative.
+  Modelled (`crash_model.py` variant `full-incremental-bootid`): 0
+  trusted mixes, against 7 (build id) and 15 (`--build-id=none`) for
+  today's full link; the torn outputs it leaves after a power loss are
+  any linker's unsynced output (I-61), out of this rule's scope.
 
   What a kill (or a power loss: each sync orders the writes before it
-  ahead of every write after it) leaves, and what the next link does:
+  ahead of every write after it) leaves, and what the next link does
+  (U1 reads the flag before any hash, review-in77 m-1; the leftover names
+  are removed by the next lock holder, IN-77d):
 
   | killed after | `P` | `S` | next link |
   |---|---|---|---|
   | nothing written | old | old, flag clear | an update from the old pair |
   | W1 | old | old, flag set | `output-torn`: full link |
-  | W2, W3 | not executable (`ENOEXEC`), torn | old, flag set | `output-torn`: full link |
+  | W2, W3 | missing (the torn file is at `A`, `e_ident` zero) | old, flag set | `output-torn`: full link; make and ninja relink |
+  | W4 before the rename | missing (`A` complete) | old, flag set | `output-torn`: full link |
   | W4 | new | old blocks, flag set | `output-torn`: full link |
   | W5 (part or all) | new | some blocks new, flag set | `output-torn`: full link |
   | W6 | new | new, flag clear | an update from the new pair |
-  | C1 (part or all) | old (`T` partial or whole beside it) | old, flag clear | an update from the old pair; `T` removed (below) |
+  | C1 (part or all) | old (`T` beside it) | old, flag clear | an update from the old pair |
   | C2 | old | old, flag set | `output-torn`: full link |
   | C3 | new | old, flag set | `output-torn`: full link |
   | C4, C5 | as W5, W6 | | |
-  | compaction, before the rename | new | old, flag set (and a temporary beside it) | `output-torn`: full link |
+  | compaction, before the rename | new | old, flag set | `output-torn`: full link |
   | compaction, after the rename | new | new, flag clear | an update from the new pair |
 
   **Why never a silent mix.** A link trusts `S` only with the flag
-  clear. The flag is clear in exactly two states of the protocol:
-  before W1/C2, where `S` and `P` are the old pair (C1 writes only `T`),
-  and after W6/C5 (or the compaction's rename), where W5 and every write
-  to `P` were synced first, so they are the new pair. Every other state
-  has the flag set, and the next link is a full link. Independently of
-  the flag, IN-21's binding (the stat tuple and the build id) is checked
-  by U1, so an output replaced by anyone between links is
-  `output-changed`, and a `S` whose blocks are torn is `state-corrupt`
-  (IN-18c's block hashes). A state's block patched by W5 is reached only
-  after the flag is cleared, so a reader never mixes old and new blocks
-  of a state it trusts.
+  clear. The flag is clear in exactly two states of the protocol: before
+  W1/C2, where `S` and `P` are the old pair (C1 writes only `T`), and
+  after W6/C5 (or the compaction's rename), where W5 and every write to
+  `P` were synced first, so they are the new pair. Every other state has
+  the flag set. Independently of the flag, IN-21's binding is checked by
+  U1 through the descriptor (IN-77a), so an output replaced by anyone
+  between links, or between U1 and W2/C3, is `output-changed`; a `S`
+  whose blocks are torn is `state-corrupt`; two links of one state are
+  serialized by IN-77b; and a full link's unsynced output is checked once
+  after a reboot (IN-77c). The power-loss half holds as far as the file
+  system's `fdatasync`/`fsync` does (on a virtiofs mount whose host is
+  macOS, plain `fsync` is not `F_FULLFSYNC`: *argued, not run*).
 
-  **The lock and the leftovers.** The update holds image.md I-59's lock
-  from U1 to the end; a second link of the same output waits or is
-  refused as I-59 says. Temporaries are named `<P>.mortar-update-<pid>`
-  and `<S>.mortar-tmp-<pid>`; the link that holds the lock removes such
-  a file of a process that no longer exists (WP-061 F8.2), by its exact
-  name, before its own writes. A failed update (IN-48) after W1 leaves
-  the flag set: the next link is a full link, never an update over a
-  half-written output.
+  **IN-77d [v1] Leftovers** (review-in77 m-4). The temporaries are `A`,
+  `T` and `dir(S)/.<base(S)>.mortar-compact`; each is `flock`ed by its creator. The
+  link that holds `S`'s lock removes each of them by its exact name before
+  its own writes, after a `try_lock` on it succeeds (a held one belongs
+  to a live link and is left). No pid is in a name, so pid namespaces and
+  pid reuse do not matter. Where the lock is not enforced nothing is
+  removed (and no update runs, IN-77b). Today's `<S>.tmp-<pid>` files
+  (the floor's `write_atomically`) are not matched; U-7 renames the
+  floor's temporary to `dir(S)/.<base(S)>.mortar-compact`.
+
+  **IN-77e [v1] Failures** (review-in77 M-5; IN-48 covers failures of the
+  link proper, before U10). Any error of a write, a sync, a rename or a
+  `set_len` ends the update at once: no further write is issued to `P`
+  or `S`, and **no sync is retried** (after `EIO` Linux marks the pages
+  clean, so a retry can return 0 with the data lost).
+  - Before C2 (copy): `T` is removed; `P` and `S` are left (the old
+    pair); the link fails.
+  - Before W1 (in place): nothing was written; the link fails.
+  - From W1/C2 on: the flag stays set (or is set: a failed W1 leaves it
+    as the disk has it, and the next link reads it); in place, the file at
+    `A` (or at `P` after W4's rename) is removed (I-66: it is torn or
+    unsynced), which frees its blocks for the next full link's `T`; by
+    copy, `P` is the old or the new file and is kept. The link fails, and
+    the next link is a full link.
+  - The compaction's temporary failing: it is removed; the flag stays
+    set.
+
+  **IN-77f [v1] Readers of `S`** (review-in77 m-8). No consumer of `S`
+  uses a row of a state whose flag is set, or whose blocks it has not
+  hashed (IN-18c): mortar's links, `--incremental-report`, `incr_state`,
+  and any later tool (a debugger's helper, Tuck). The verifier reads no
+  state (IN-60).
 
   **Crash hooks.** A test-only environment variable,
-  `MORTAR_INCR_CRASH=<point>` with `<point>` one of `W1`..`W6`, `C1`..
-  `C5`, `compact-written`, `compact-renamed`, aborts the process right
-  after that point's last call (its sync, its rename); a binary built
-  without `cfg(test)` or the `testhooks` feature does not read it. *Test
-  (U-7 alone, then the join):* a kill at every point, then the next
-  link: the reason of the table, an output equivalent to a full link's
-  (IN-79), `exec` of `P` failing with `ENOEXEC` after W2 and W3, and
-  never an update from a flag-set state.
+  `MORTAR_INCR_CRASH=<point>`, aborts the process at `<point>`: after a
+  step's last call (`W1`..`W6`, `C1`..`C5`, `compact-written`,
+  `compact-renamed`), and **between a write and its sync**
+  (`W2-renamed`, `W2-written`, `W3-written`, `W4-written`,
+  `W4-renamed`, `W5-written`, `C1-written`; review-in77 m-7); a binary
+  built without `cfg(test)` or the `testhooks` feature does not read it.
+  Power loss is tested without a device: U-7 routes every write, sync and
+  rename through a `WriteOps` trait whose test implementation records
+  them, and the test replays every prefix with every subset of the
+  unsynced operations onto byte buffers, then runs the real reader and
+  binding (`power_loss_every_prefix_and_subset`: old pair, new pair or a
+  named reason, never a trusted mix). *Test (U-7 alone, then the join):*
+  a kill at every point, then the next link: the reason of the table, an
+  output equivalent to a full link's (IN-79); `P` missing after W2..W4
+  and `make_relinks_after_kill_at_w3`;
+  `output_replaced_between_check_and_write` (in place and copy, same
+  inode and new inode: `output-changed`, nothing written);
+  `two_updates_one_output_serialize`; `state_renamed_while_waiting_retries`;
+  `hard_linked_state_is_compacted`; `failed_sync_is_not_retried`;
+  `enospc_at_each_step_then_full_link`; `torn_state_with_flag_is_output_torn`;
+  `leftovers_removed_only_when_unlocked`; `boot_id_changed_checks_leaves`;
+  `kill_between_write_and_sync_<point>` (each point of the table that
+  follows a write); `output_missing_after_kill_in_window`;
+  `in_place_note_lists_readers` (IN-45); `output_not_racy_after_update`
+  and `touched_input_stat_rewritten` (W4's binding, review-in77 M-8,
+  m-5); `incr_state_refuses_flag_set` (IN-77f);
+  and H-2's `full_link_power_loss_replay` (IN-77c).
 
-- **IN-78 [v1] The state's writer's duty in an update.** W5's patch (or
-  the compaction) writes, for every changed, appeared or newly extracted
-  file, its `FILES` row (hash, stat), its position rows recaptured from
-  the bytes it hashed, or its `POSITIONAL` bit cleared (IN-28a); for a
-  gone or no longer extracted file, its row and ranges marked gone (a
-  tombstone the next compaction drops); for the changed files, their
-  `SECTIONS`, `MENTIONS`, `INDEX`, `EDGES`, `FRAG_AT`, `EH_RECORDS` and
-  `SYMTAB` ranges (IN-18e: in the file's slack, else compaction); for
-  every affected key, its `SYMBOLS` row (appended when new), its
-  `RESOLVED` row and its `KEY_REFS` rows; the layout tables the delta
-  layout changed (`CHUNKS`, `HOLES`, `SLOTS`, `PATCHES`, `REDIRECTS`,
-  `FRAGS`); `LEAVES`; `META` and the binding. Recapture is O(the file's
-  rows); clearing the bit costs the next update one more file translated
-  by identity. A field the update does not recompute is never written
-  from a guess: a row it cannot recompute is the reason that row's rule
-  names, before W1.
+- **IN-78 [v1] The state's writer's duty in an update: an invariant**
+  (rewritten by WP-207; review-in77 B-3, B-4, M-6, M-7, M-8). The duty is
+  not a list of tables; it is this equation, whoever's file a row
+  belongs to:
+
+  > **After W5 (or the compaction), `canon(S')` equals `canon(C(U))`.**
+
+  - `S'` is the state the update wrote. `C(U)` is the state the **full
+    link of the update's inputs writes when its layout is the update's
+    `Placement` `P_U`**: IN-61's replay run with `P_U` read from `S'`
+    (the decision rows: each section's place, `CHUNKS`' addresses,
+    offsets and capacities, `ORDER`, `HOLES`, `SLOTS`, `PATCHES`,
+    `REDIRECTS`, `FRAGS`' offsets, the `.symtab` blocks' places), with
+    every other row computed afresh from the inputs by the full link's
+    own front, resolution, liveness and capture: `FILES`, `STAT`,
+    `MENTIONS`, `KEY_REFS`, `RESOLVED`, `GROUPS`, `COMMONS`, `INDEX`,
+    `EDGES`, `FRAG_AT`, `EH_RECORDS`, `SYMBOLS` (with `at_file`,
+    `at_index`), `SYMTAB`'s entries, `ODR_*`, `DIAGS`, and the derived
+    layout rows (`DEFINED`, `SYM_PLACE`, `SIZES`, `SIZED`, `SEGMENTS`,
+    `LAYOUT`, `OUTSECS`). The replay runs `Layout::check` on `P_U` (no
+    live section in a hole, none overlapping), and a live section that
+    `P_U` does not place, or a dead one it places, is a replay failure.
+  - `canon(X)` is `X`'s rows with: the slack rows of file-keyed ranges,
+    the unused capacity of every table, tombstones (`GONE` symbols,
+    deleted key-keyed rows) and the ranges and rows of gone files
+    removed; each key-keyed table sorted by its key (append order
+    forgotten); every row reference replaced by the referenced row's
+    canonical name: a file by its load-order position (`rank` order), a
+    symbol by its key name (a local by (file, symbol-table index)), a
+    section by (file, section index), a fragment by its identity, a
+    chunk by (output section, ordinal, part), a string offset by the
+    string's bytes.
+  - **Excepted**, and checked otherwise: `LEAVES` and `META`'s binding
+    (tuple, reference stamp, build id), which equal the leaves and the
+    binding of the output the update wrote (the test re-hashes `P`); and
+    `META`'s history fields (boot id, `output-synced`, the compaction
+    count), which no full link computes.
+
+  **The list, derived** (a consequence the test checks, not a second
+  rule): the rows where `canon(S)` and `canon(C(U))` differ are written
+  by W5; the causes and their rows are:
+
+  | cause | rows that change |
+  |---|---|
+  | a changed, appeared, drawn-in or newly extracted file | its `FILES` row (hash, rank, flags, round; `POSITIONAL` recaptured or cleared, IN-28a), its `STAT` row (tuple re-taken), its ranges of `SECTIONS`, `MENTIONS`, `INDEX`, `EDGES`, `FRAG_AT`, `EH_RECORDS`, `SYMTAB`; its `KEY_REFS`, `COMMONS`, `ODR_REFS` and `DIAGS` rows |
+  | a gone or no longer extracted file | its row marked gone (extracted → `LAZY` with its defined rows kept), its ranges gone, its key-keyed rows deleted |
+  | an input `stat`ed again but hashed equal (touched) | its `STAT` row (review-in77 M-8) |
+  | the device stamps (IN-22a) | the device rows of `STAT` |
+  | an affected key | its `SYMBOLS` row (appended when new; `at_file`/`at_index`, IN-71), `RESOLVED`, `KEY_REFS` |
+  | a re-elected group | its `GROUPS` row, and the drawn-in files of IN-72 item 2a (review-in77 M-7) |
+  | a section moved, killed or revived (IN-72 items 1-5, 11), in any file | its `SECTIONS` row, whether or not its file changed (review-in77 B-3) |
+  | a linker-defined key's value or a placed symbol's place | `DEFINED`, `SYM_PLACE` (IN-71c) |
+  | a growth step, a packed rewrite, a TLS template's size, `-e` in a changed file | `CHUNKS`, `SIZES`, `SIZED`, `SEGMENTS`, `ORDER`, `LAYOUT`, `OUTSECS` |
+  | holes, slots, thunks, fragments | `HOLES`, `SLOTS`, `PATCHES`, `REDIRECTS`, `FRAGS` (`refs`) |
+  | a `.symtab` entry moved or a `.strtab` name moved (IN-49a's last global taking a removed one's place, names appended) | that key's `SYMTAB` column row (review-in77 M-6) |
+  | the output | `LEAVES`, `META`'s binding (IN-21's tuple with its reference stamp, the build id), `output-synced` 1 |
+
+  Recapture is O(the file's rows); clearing `POSITIONAL` costs the next
+  update one more file translated by identity. A field the update does
+  not recompute is never written from a guess: a row it cannot recompute
+  is the reason that row's rule names, before W1.
+
+  **The test and why it is cheap.** `state_equals_capture_of_its_placement`
+  runs after every update of every H-1 scenario, L10 step and crash
+  series step (on the update's success): the replay above writes `C(U)`
+  to a scratch path, and `incr_state canon` compares `canon(S')` with
+  `canon(C(U))` table by table, printing the first differing row. IN-79
+  (a) already runs the full link of the same inputs, so the replay is
+  that same full link with `--mortar-replay-placement=<S'>` and no output
+  written: the added cost is the capture (part of every incremental-mode
+  full link) and a linear comparison, O(state), about the cost of reading
+  the state whole (WP-105: 0.56 s on g10x, 0.20 s on `cxx-large-g`), not
+  a second link. `duty_list_covers_differences` checks the table above
+  against the comparison: every differing row's table and cause is a row
+  of the table. *Argued, not run* (no update code yet).
 
 - **IN-79 [v1] How an update is judged** (the test packages' rule).
   Every update of a test, of L10 and of the crash series is judged three
@@ -3000,7 +3687,16 @@ a pass over a whole table of the state; **O(output)**.
   two-full-link oracle (IN-63a) covers every unit that differs. A
   second and a third update follow every first one (the review's
   finding was on the second hop). The targets are AArch64, x86-64 and
-  i386 (qemu for the last two).
+  i386 (qemu for the last two). *(Amended by WP-207: four ways.)* (d)
+  the state the update wrote equals the capture of its `Placement`
+  (IN-78, `state_equals_capture_of_its_placement`), and the update's
+  standard error equals the full link's modulo the `incremental:` line
+  (IN-75a). (b) runs with `check elflint` (harness.md, with the four
+  allow patterns every static glibc output needs, review-in72 T-1). The
+  dirty-range invariant (IN-75) is checked on every update against the
+  previous output. (d) is what catches the stale-row class (a datum an
+  update leaves stale) on the hop where it is written, before a later
+  hop turns it into a wrong program.
 
 ## 6. Debug information
 
@@ -3191,6 +3887,12 @@ file changes or when one of its file's sections moves (IN-25).
   out by size (12–16.5 MB per update on protoc, §6 "Split DWARF"). Neither hod nor the
   bench's GCC and Clang defaults emit them (§8.3). *Test:* R10's objects
   in L10: each edit of one must report `debug-name-index`.
+  *Decided (operator, 2026-11-17, through WP-207): option (A) for v1.*
+  An incremental-mode output leaves `.debug_gnu_pubnames` and
+  `.debug_gnu_pubtypes` out (G-2), so in that mode there is no prebuilt
+  gdb name index and gdb indexes the skeletons at start-up (slower
+  start-up, the same answers); neutralized sets (B) only if that start-up
+  is measured too slow on the reference build.
 - **IN-55a [v1] Detecting unit kinds** (`debug-unit-kind`, IN-51), from
   section names and unit headers alone (R10, g++ and clang++). mortar
   links all of these today: verify clean, gdb and lldb correct.
@@ -3400,9 +4102,12 @@ update), reported as `incremental: full (<reason>)` (IN-10). With
 | `state-version` | the state's format or mortar version differs | permanent |
 | `options-changed` | the normalized plan differs: any option, the target, the emulation, the library search path, the input list's order (adding or removing an input, or an archive's members changing, is not a change of plan). The delta also raises it when a path whose content changed is no file of either link: a linker script, whose content the plan does not hash (WP-063). A thin archive's member file is its member's (IN-24), not such a path: a changed, added or removed member is a changed, appeared or gone file (WP-106) | permanent; [later] options that touch no layout (`-Map`, `--time-phases`, `--threads`, `--incremental-report` are excluded already) |
 | `output-changed` | `P` is missing, or its stat tuple or build id differs from the state's, or it is racy and a build-id leaf differs (IN-21) | permanent |
-| `output-torn` | the state's "updating" flag is set (IN-46) | permanent |
+| `output-torn` | the state's "updating" flag is set (IN-46, IN-77); read before any hash (WP-207) | permanent |
+| `state-busy` | the state's path named another inode after its lock was acquired, 8 times in a row (IN-77b, WP-207): another link keeps replacing it | permanent |
+| `lock-unavailable` | the file system does not enforce `flock` on the state (image.md I-59's probe), so two updates could interleave (IN-77b, WP-207) | permanent |
 | `small-output` | the output the state describes (`META`'s output size) is smaller than 256 MiB (`mortar_incr::SMALL_OUTPUT`), checked after every row above. Not with `--incremental=update`, which updates whatever the size. **A policy constant, not a measured crossover**: an update was measured at 55 MB (0.67-1.15 of a plain link, saving at most 124 ms) and at 583-832 MB (0.70-0.94; 0.19-0.26 with the state read and written by range), and on no workload between (WP-094 §7). 256 MiB is a power of two between them, so that the mode can be told from `ls -l`; WP-105 measures a workload in that range and moves it if the crossover is elsewhere | permanent (the bound a policy constant) |
-| `update-not-implemented` | the state is valid, the plan and the output match it, the output is not small, and the update path does not exist yet (WP-061 stage A: every incremental link is a full one after the checks above, in this order; `--incremental=update` fails with it whatever the size) | stage A only. Amended (WP-202, IN-70): after the update joins (U-10), only a changed, appeared or newly extracted file with debug sections or a split-DWARF skeleton gives it (`update-not-implemented (debug)`); the G packages delete the row |
+| `update-not-implemented` | the state is valid, the plan and the output match it, the output is not small, and the update path does not exist yet (WP-061 stage A: every incremental link is a full one after the checks above, in this order; `--incremental=update` fails with it whatever the size) | stage A only. Amended (WP-202, IN-70): after the update joins (U-10), only a changed, appeared or newly extracted file with debug sections or a split-DWARF skeleton gives it (`update-not-implemented (debug)`), or with `.mason.meta` units under `--keep-mason-meta` (`update-not-implemented (meta)`, IN-71d, WP-207); the G packages delete the row |
+| `extraction-changed` | IN-71b's bound: more than 1,024 archive members flip, or a removal cone's re-seeding reads more than 65,536 `KEY_REFS` rows (WP-207) | v1; [later] the bound measured and moved |
 | `inputs-reordered` | two unchanged inputs' relative order changed. The input list's order is in the plan (`options-changed`, checked first), so the delta meets this only through archive extraction order (WP-063: two unchanged `FILES` rows in a different relative order) | v1; [later] when no COMDAT keeper or placement order depends on it |
 | `too-much-changed` | IN-16's threshold | permanent (it is the compaction rule) |
 | `reserve-exhausted` | a segment reserve, a packed array's, `.eh_frame`'s, a slot region's or a dynamic table's capacity is exhausted (IN-32, IN-34) | permanent |
@@ -3413,12 +4118,12 @@ update), reported as `incremental: full (<reason>)` (IN-10). With
 | `symbol-kind-changed` | a global that an unchanged file references changed type to or from `STT_GNU_IFUNC` or `STT_TLS`, became absolute or the reverse, or changed `st_other` bits other than the visibility (IN-26; in a static executable binding, visibility and common ↔ definition are refills, IN-71) | v1; [later] refill the referrers when their relocation types are stored |
 | `symtab-exhausted` | a `.symtab` local block's move finds the local tail reserve full, or `.symtab`'s or `.strtab`'s file slack is exhausted (IN-49a) | v1; [later] rewrite both whole at the file's end (S-112), an update still |
 | `new-output-section` | an output section or segment appears or disappears | v1; [later] when it can go at the end of its segment's reserve |
-| `property-changed` | `.note.gnu.property` changes size (S-114) | v1 |
+| `property-changed` | an allocated note section (`.note.gnu.property`, S-114, and any other `SHT_NOTE`: `.note.ABI-tag`, `.note.stapsdt`) changes size (IN-72 item 10; widened by WP-207, review-in72 m-2) | v1 |
 | `dynamic-changed` | `DT_NEEDED`'s order changes or `.dynamic`'s spares run out (IN-42) | v1 |
 | `debug-compaction` | IN-57 | v1; [later] the debug-only rewrite |
 | `debug-name-index` | IN-55 | v1; [later] neutralized sets |
 | `debug-unit-kind` | a changed file has type units or split-DWARF skeletons (IN-55a) | v1; [later] after S5's tests |
-| `input-changed` | a file the update read is not the file change detection judged: the descriptor's `fstat` after the read (input.md §11.5) differs from the judged tuple, or the update read an inode it did not judge (IN-28a condition 2; the review's m3) | permanent (WP-064a, on the test path; an update that reads no unchanged input meets it only for the files it reads) |
+| `input-changed` | a file the update read is not the file change detection judged: the descriptor's `fstat` after the read (input.md §11.5) differs from the judged tuple, or the update read an inode it did not judge (IN-28a condition 2; the review's m3); WP-207: every input an update reads for a refill, a placement, a drawn-in file or a newly extracted member is checked so (IN-75, IN-71b) | permanent (WP-064a, on the test path; an update that reads no unchanged input meets it only for the files it reads) |
 | `layout-changed` | test path only (WP-064a): the changed file's section count, a section's type, flags, size or alignment, its group, the positions of its live merged fragments or the `FRAGS` rows they are (as a multiset) differ from the state's rows; or a row of the state does not translate ("a replay that does not fit") | test path only; never an update's reason: the delta layout (IN-72, IN-73) and the rows above replace it |
 | `resolution-changed` | test path only (WP-064a): the global keys the changed file's symbol table names, or one's binding, type, visibility, definedness or section, or the resolution of one of them (kind, definer, section, value, size), differ from the state's `MENTIONS` and `RESOLVED` rows (the review's M4: a weak definition made global); or a `SLOTS` or thunk `PATCHES` row names a local of the changed file whose name the file gives to more than one local (a section symbol: §7.1's local identity is then a position; WP-064a's s3) | test path only; never an update's reason: delta resolution (IN-71), IN-28b and IN-27's refill set replace it |
 
@@ -3428,7 +4133,7 @@ other than `none`, `--gdb-index`, `--debug-names`, `--icf`. In place is
 the default at or above `small-output`'s bound (IN-76); these take the
 copy path instead of a fall-back: `ETXTBSY`, a process that maps or holds
 the output, a hard-linked or symbolic-link output, a shared object, an
-output that is an input, a file system without enforced locks. Racy
+output that is an input, a file system without enforced locks (amended by WP-207: that one is `lock-unavailable`, a full link, IN-77b). Racy
 inputs and a racy output are hashed, never a fall-back (IN-21, IN-22). *Test:* each row has an L10
 scenario (IN-4).
 
@@ -3849,25 +4554,38 @@ reference may share its suffix."
 WP-061-WP-063 landed (S1-S3), with WP-091/WP-092 (the verifier's I and
 E stages), WP-094/WP-105 (the measured floor, the state by range) and
 WP-064a (position-exact rows). The old WP-064 (S4), WP-065 (S5) and the
-rest of the old table are replaced by **WP-202's cut**
-(`spec/landed/incr/WP-202.md` §C: rule ids, dependencies, files owned,
-what each package is tested against alone, sizes). In short:
+rest of the old table are replaced by **WP-207's cut**
+(`spec/landed/incr/WP-207.md` §C, which replaces WP-202 §C after the
+reviews R-C and R-L: rule ids, dependencies, files owned, what each
+package is tested against alone, sizes). In short:
 
 | package | content | after |
 |---|---|---|
-| U-0 | spec step 0: the REQUEST blocks of WP-202 applied (`spec/plumb.md` §6.8-§6.9, `spec/model.md` §7.1, `spec/synth.md` S-79/S-112/Q8, `spec/layout.md`, `spec/harness.md`, `spec/diag.md`'s new reason) | this design |
-| R-C, R-L | adversarial reviews, before code: the crash protocol (IN-77, IN-46b, IN-78); the delta layout and the symbol tables (IN-72, IN-73, IN-49a, IN-28b) | this design (at once) |
-| U-1 | shared types and every later entry point as an empty function | U-0 |
-| U-2 | state format 5 (IN-18c-IN-18e, IN-46b, IN-78's rows), WP-064a item 8's numbers | U-1 |
-| U-3 | delta resolution and liveness (IN-71, IN-71a, IN-74) | U-1 |
-| U-4 | delta layout (IN-72, IN-28b's slots) | U-1, R-L |
-| U-5 | the per-file symbol tables (IN-49a), first link and update | U-1, R-L |
-| U-6 | refill, dirty ranges, build id, the update's map (IN-75) | U-1 |
-| U-7 | writes and the crash protocol (IN-76, IN-77) | U-1, R-C |
-| V-1 | the verifier: fillers, `.symtab`/`.strtab` holes and dead names (plumb.md as U-0 amends it) | U-0 |
-| H-1, H-2, H-3 | harness: the three-way judge (IN-79), crash injection, L10 (IN-63, WP-067) | U-0 (H-3 at once) |
-| U-10 | the join: static executables without debug information | U-2-U-7, V-1, H-1, H-2 |
-| G-1, G-2, G-3 | debug: contributions in place (IN-50-IN-57), split DWARF and the GNU name index (IN-55, IN-55a), the `-g` join | G-1, G-2 beside U-2-U-7; G-3 after U-10 |
+| R-2 | re-review of WP-207's amendments (its §X first) | WP-207 (at once) |
+| H-3 | L10 (IN-63, WP-067) with WP-207 §D's edit shapes | at once |
+| G-1, G-2 | debug contributions in place (IN-50-IN-54, IN-56, IN-57); split DWARF without the GNU name index (IN-55 option (A), decided, IN-55a) | at once (G-1's `.mason.meta` row after R-2) |
+| U-0 | spec step 0: WP-207 §R, and WP-202 §R.1, R.3, R.5 | R-2 |
+| U-1 | shared types, every later entry point as an empty function, `WRITE_PATH` | U-0 |
+| U-2 | state format 5 (IN-18c-IN-18f, IN-46b, IN-77c's fields, IN-78's `canon`); size gate 1.15 × format 4 | U-1 |
+| U-3 | resolution, extraction, linker-defined keys, liveness, refill set (IN-71, IN-71a-c, IN-74, IN-72 item 2a's draw-in) | U-1 |
+| U-4 | delta layout (IN-72, IN-30, IN-32, IN-28b's slots) | U-1 |
+| U-5 | the per-file symbol tables (IN-49a) | U-1 |
+| U-6 | refill, dirty ranges, header tables, input checks (IN-75) | U-1 |
+| U-7 | writes, lock and crash protocol (IN-45, IN-76, IN-77, IN-77a-f) | U-1 |
+| U-8 | ODR in an update (IN-71d; default `--odr=warn`) | U-1 |
+| U-9 | diagnostics equal to a full link's (IN-75a) | U-1, U-0 |
+| V-1 | the verifier: fillers (section 1's address), `.symtab`/`.strtab` holes, dead names | U-0 |
+| H-1, H-2 | the judge (IN-79 (a)-(d)), crash injection | U-0 |
+| U-10 | the join (static, no `-g`); **the go/no-go gate**: an update at most 1/2 of a full link on protoc, at most 1/3 on the large workload; the first real update numbers | U-2-U-9, V-1, H-1, H-2 |
+| B-1, W-1 | bench rows (moved definitions, refill set); the clone probe (IN-76a) | U-10 |
+| G-3 | the `-g` join | U-10, G-1, G-2 |
+
+**Decided by the operator (2026-11-17).** The first incremental-mode
+link costs 1.6-1.8x a plain link; that is accepted on the premise that
+the update ends as a measured win. U-10's gate is therefore hard: if it
+is not met, the update does not ship as designed and the cost goes back
+to the operator. Nothing turns `--incremental` on by default (kiln does
+not pass it) until U-10's measurement is a win.
 
 Not cut yet (each has its condition in its rule): dynamic outputs
 (IN-40-IN-43, the old WP-066), section-level refill (IN-31, the old

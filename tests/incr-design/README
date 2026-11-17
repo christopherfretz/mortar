@@ -1,0 +1,22 @@
+Design experiments for spec/incr.md's update rules (M7). Not part of any
+gate; run by hand. Reviewer scripts copied here are adaptations; the
+reviewers' own directories (.build/review-in72, .build/review-in77) stay
+read-only.
+
+edits.sh          WP-202: real edits to protoc's strutil.cc, objects only, classified by elfdiff.py.
+elfdiff.py        WP-202: classify an object edit by WP-064a §3's refused-edit list; per-object census.
+model_region.py   WP-207: IN-72 item 2's region rule (keep / grow in place / first fit / overflow region) over
+                  the R-L reviewer's protoc builds; moved-definition counts beside WP-202's rule. From
+                  review-in72/model_in72.py.
+model_extract.py  WP-207: IN-71b's incremental archive extraction (KEY_REFS + ROUND, decremental repair,
+                  forward addition) against resolve.md §4.1's closure from scratch; R1a, R1b, random hops.
+crash_model.py    WP-207: IN-77's write protocol under kill / power loss at every step, with mtime and
+                  fsync modelled; variants copy, in place, epoch mtime, rename-aside, boot id. From
+                  review-in77/crash_model.py.
+fsprobe.py        WP-207: does a write after utime(0) bump mtime; cost of the lock round trip.
+bsprobe.sh        WP-207: do make and ninja relink after a torn output that is fresh, epoch-dated or missing.
+symfill.py        WP-207: rebuild a linked file's .symtab the way IN-49a's update does, with or without fillers.
+fillers.sh        WP-207: IN-49a's filler form against ~35 tools on AArch64, x86-64, i386 (uses symfill.py
+                  and the prebuilt mortar). From review-in72/r7-fillers.sh.
+fillcmp.py        WP-207: for the listing tools fillers.sh reports as differing, compare again without the filler
+                  lines, index columns and the table-size lines (run: fillcmp.py SCRATCH/fill-T SECTION1-NAME).
