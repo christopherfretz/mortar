@@ -1639,8 +1639,8 @@ with each phase fed from the state for unchanged files:
   slack and the new tables; it is withdrawn. **U-2's gate**: the format-5
   state measured on g10x and `cxx-large-g` is at most 1.15 × format 4's
   measured total (465 and 284 MB), and U-2 reports the per-table sizes
-  against this table; a state above it goes to the supervisor with the
-  table, it is not trimmed silently.
+  against this table (`state5_size_report`); a state above it goes to
+  the supervisor with the table, it is not trimmed silently.
 
 - **IN-18f [v1] The compaction** (WP-207; review-in77 B-5). An algorithm,
   not "the whole new state":
@@ -1691,7 +1691,8 @@ with each phase fed from the state for unchanged files:
   fails is `state-corrupt` before W1, and the update does not run. A new
   hash therefore only ever vouches for bytes an old hash vouched for,
   plus the update's own rows. The block list and directory entries W5
-  rewrites are those of verified blocks only.
+  rewrites are those of verified blocks only. *Test (U-2):*
+  `patched_block_is_verified_first`.
   Measured on the prototype (WP-105 §4, same-length patches of one
   file): 21.6 KB written in 191 ms on g10x and 23.4 KB in 154 ms on
   `cxx-large-g`, the three `fdatasync`s under load being the time; a
@@ -2982,6 +2983,7 @@ a pass over a whole table of the state; **O(output)**.
     opened except to read a newly extracted member.
   *Test (U-3):* `weak_definition_vs_later_member` (R1a),
   `member_cycle_dropped_together` (R1b), `newly_extracted_member`,
+  `newly_extracted_member_pulls_another` (review-in72 m-3),
   `no_longer_extracted_member`, `member_flips_back_on_third_hop`, each
   judged by IN-79; `extraction_bound_is_extraction_changed`; the model's
   random series as a property test over hand-made `KEY_REFS`.
@@ -3008,6 +3010,7 @@ a pass over a whole table of the state; **O(output)**.
   on that judgment. *Test (U-3, U-10):* `init_array_grows`,
   `init_array_shrinks`, `init_array_grows_then_shrinks`,
   `start_stop_registry_grows_then_shrinks`,
+  `eh_frame_overflow_then_edit_unchanged_file` (review-in77 B-3),
   `ifunc_added_moves_rela_iplt_end`, `local_ifunc_slot_dead_and_appended`
   (IN-28b's IPLT case, review-in72 m-5), `bss_grows_moves_end`, each a
   first update and a third hop.
@@ -3156,7 +3159,8 @@ a pass over a whole table of the state; **O(output)**.
      the reserve: `reserve-exhausted`. A packed section whose order
      follows `SHF_LINK_ORDER` targets that moved: `link-order-moved`.
      `.rela.plt` is rewritten whole in the full link's order (review-in72
-     m-4: IN-2 item 5 holds for `IRELATIVE`).
+     m-4: IN-2 item 5 holds for `IRELATIVE`;
+     `two_ifuncs_added_irelative_order`).
   5. **`.eh_frame`** by IN-34a (a range rewritten from its start; on
      overflow the whole section rewritten in full-link order).
   6. **Merged sections** (S-110, L-147): a fragment is identified by
@@ -3185,7 +3189,8 @@ a pass over a whole table of the state; **O(output)**.
       in the stored layout, or an output section or segment left empty:
       `new-output-section`. An allocated note section (`.note.gnu.property`,
       `.note.ABI-tag`, `.note.stapsdt`, any `SHT_NOTE`) changing size:
-      `property-changed` (review-in72 m-2; the reason keeps its name). An
+      `property-changed` (review-in72 m-2; the reason keeps its name;
+      `note_abi_tag_size_change`). An
       output section's alignment growing past its stored address's:
       `reserve-exhausted`.
   11. **Commons** (review-in72 M-2, option (a)): in an incremental-mode
@@ -3591,6 +3596,11 @@ a pass over a whole table of the state; **O(output)**.
   `hard_linked_state_is_compacted`; `failed_sync_is_not_retried`;
   `enospc_at_each_step_then_full_link`; `torn_state_with_flag_is_output_torn`;
   `leftovers_removed_only_when_unlocked`; `boot_id_changed_checks_leaves`;
+  `kill_between_write_and_sync_<point>` (each point of the table that
+  follows a write); `output_missing_after_kill_in_window`;
+  `in_place_note_lists_readers` (IN-45); `output_not_racy_after_update`
+  and `touched_input_stat_rewritten` (W4's binding, review-in77 M-8,
+  m-5); `incr_state_refuses_flag_set` (IN-77f);
   and H-2's `full_link_power_loss_replay` (IN-77c).
 
 - **IN-78 [v1] The state's writer's duty in an update: an invariant**
