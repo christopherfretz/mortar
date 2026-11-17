@@ -1105,7 +1105,10 @@ fn edit_words(mut words: Vec<String>, add: &[&str], drop: &[&str]) -> Vec<String
             i += 1;
         }
     }
-    let at = words.iter().position(|w| w.ends_with(".o")).unwrap_or(0);
+    let at = words
+        .iter()
+        .position(|w| Path::new(w).extension().is_some_and(|e| e.eq_ignore_ascii_case("o")))
+        .unwrap_or(0);
     for (k, a) in add.iter().enumerate() {
         words.insert(at + k, (*a).to_string());
     }
@@ -1942,6 +1945,7 @@ fn edit_map(map: &str, drop: &[&str], add: &[&str]) -> String {
 // maps, and each mutation of the bytes or of the map's line is a finding
 // of the rule named.
 #[test]
+#[allow(clippy::too_many_lines)] // one mutation per rule, both targets
 fn p_d_mortar_option_tail() {
     let d = fixture_dir("optail");
     let load = |name: &str, ext: &str| {

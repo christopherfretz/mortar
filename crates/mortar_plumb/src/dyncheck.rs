@@ -2136,7 +2136,7 @@ fn fields(
                 diff.push(format!("st_info {:#x} (.symtab {:#x})", s.st_info, o.sym.st_info));
             }
             if m == EM_AARCH64
-                && s.sym_type() != mortar_elf::consts::STT_SECTION
+                && s.sym_type() != STT_SECTION
                 && (s.st_other & 0x80 != 0) != vpcs.contains(&s.name)
             {
                 diff.push(format!(
@@ -2280,7 +2280,7 @@ fn fields(
                 format!("{} is {val:#x}, {name} is at {a:#x} (D-30)", dynout::tag_name(t)),
             ));
         } else if let Some(val) = out.get(t)
-            && !image.load_of(val, 1).is_some_and(|p| p.p_flags & mortar_elf::consts::PF_X != 0)
+            && image.load_of(val, 1).is_none_or(|p| p.p_flags & mortar_elf::consts::PF_X == 0)
         {
             // The loader calls it (D-30 rows 3-4, D-102): `-init`/`-fini`
             // naming a data object is refused by mortar; the references
