@@ -86,10 +86,8 @@ pub static OBJECTS: [Object; 6] = [
 const SUPPORTED: [Machine; 2] = [Machine::AArch64, Machine::X86_64];
 
 /// The objects a link may add, per flavour: the supported machines only.
-static SHARED: [(Machine, &[u8]); 2] =
-    [(Machine::AArch64, A64_SO), (Machine::X86_64, X64_SO)];
-static EXEC: [(Machine, &[u8]); 2] =
-    [(Machine::AArch64, A64_EXE), (Machine::X86_64, X64_EXE)];
+static SHARED: [(Machine, &[u8]); 2] = [(Machine::AArch64, A64_SO), (Machine::X86_64, X64_SO)];
+static EXEC: [(Machine, &[u8]); 2] = [(Machine::AArch64, A64_EXE), (Machine::X86_64, X64_EXE)];
 
 /// The plan a link with the runtime runs (`spec/cli.md` §3.9): the table
 /// is implied (`--odr-table=exported`, an explicit `off` is refused on the
@@ -139,14 +137,13 @@ pub fn refuse_target(plan: &Plan, machine: Machine) -> Option<(Key, Diagnostic)>
     {
         return None;
     }
-    let d = Diagnostic::refused(RefusalClass::Feature, "odr-runtime-unsupported-target").note(
-        format!(
+    let d =
+        Diagnostic::refused(RefusalClass::Feature, "odr-runtime-unsupported-target").note(format!(
             "--odr-runtime={} links the load-time check on AArch64 and x86-64 only; this link is \
              for {}",
             plan.diagnostics.odr.runtime.word(),
             machine.name()
-        ),
-    );
+        ));
     Some((Key::new(mortar_input::problem::PHASE, u32::MAX, 0), d))
 }
 
@@ -184,7 +181,13 @@ mod tests {
     #[test]
     fn digests_are_the_committed_objects() {
         for o in &OBJECTS {
-            assert_eq!(hex(&mortar_digest::sha256(o.bytes)), o.sha256, "{:?} {}", o.machine, o.shared);
+            assert_eq!(
+                hex(&mortar_digest::sha256(o.bytes)),
+                o.sha256,
+                "{:?} {}",
+                o.machine,
+                o.shared
+            );
         }
     }
 

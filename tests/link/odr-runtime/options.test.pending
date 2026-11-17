@@ -11,7 +11,8 @@
 # an executable, 0 and 2 for a shared object); it binds now (DF_BIND_NOW,
 # DF_1_NOW) unless -z lazy is given; -Map names the runtime input
 # <mortar:odr-runtime>; two links are the same bytes, and =off is the
-# plain line's.
+# plain line's. --odr is independent: under --odr=off the table and the
+# runtime's note are written all the same (the runtime reads the table).
 #
 # The rest of the line does not drop the runtime: under --gc-sections its
 # .preinit_array / .init_array.00000 entry is a startup root (spec/live.md,
@@ -39,6 +40,7 @@ link(mortar) gcc -pie dup.o main.o -Wl,--odr-runtime=report -Wl,-Map=prog.map -o
 link(mortar) gcc -pie dup.o main.o -Wl,--odr-runtime=report -o prog2
 link(mortar) gcc -pie dup.o main.o -Wl,--odr-runtime=fatal -o progf
 link(mortar) gcc -pie dup.o main.o -Wl,--odr-runtime=report -Wl,-z,lazy -o lazy
+link(mortar) gcc -pie dup.o main.o -Wl,--odr-runtime=report -Wl,--odr=off -o odroff
 link(mortar) gcc -pie dup.o main.o -Wl,--odr-runtime=off -o off
 link(mortar) gcc -pie dup.o main.o -o plain
 link(mortar) gcc -shared lib.o -Wl,--odr-runtime=fatal -Wl,-z,defs -o libl.so
@@ -49,6 +51,9 @@ link(mortar) gcc -shared lib.o -Wl,--odr-runtime=report -Wl,--version-script=hid
 link(mortar) gcc -pie dup.o main.o -Wl,--odr-runtime=report -Wl,--no-export-dynamic -o noexp
 link(mortar) gcc -pie dup.o main.o -Wl,--no-as-needed -L. -lhide -ll -o libs
 check(mortar) readelf -nW prog
+  has: ^ *MasonMeta *0x00000010 *Unknown note type: (0x4d4f4403) *description data: 01 00 00 00 01 00 00 00 00 00 00 00 0* 00 00 00 *$
+  has: Unknown note type: (0x4d4f4401)
+check(mortar) readelf -nW odroff
   has: ^ *MasonMeta *0x00000010 *Unknown note type: (0x4d4f4403) *description data: 01 00 00 00 01 00 00 00 00 00 00 00 0* 00 00 00 *$
   has: Unknown note type: (0x4d4f4401)
 check(mortar) readelf -nW progf

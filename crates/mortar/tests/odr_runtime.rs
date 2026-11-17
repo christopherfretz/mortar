@@ -88,8 +88,9 @@ fn dynamic_flags(cx: &Cx, out: &str) -> String {
 // spec: cli.md §3.9, odr.md O-53a and §10.2 (WP-198): with
 // `--odr-runtime=report` the output has the table's note and the
 // runtime's (type 0x4d4f4403, {1, 1, 0, runtime id}), binds now, and
-// runs; `=fatal` writes mode 2; `-z lazy` keeps lazy binding; `=off` is
-// the plain link's bytes; two links are the same bytes.
+// runs; `=fatal` writes mode 2; `--odr=off` changes neither note; `-z
+// lazy` keeps lazy binding; `=off` is the plain link's bytes; two links
+// are the same bytes.
 #[test]
 fn runtime_input_note_and_bind_now() {
     let Some(cx) = Cx::new("odr-runtime") else { return };
@@ -111,7 +112,9 @@ fn runtime_input_note_and_bind_now() {
     assert_eq!(cx.bytes("off"), cx.bytes("plain"), "=off is not the plain link");
     assert!(notes(&cx.bytes("plain")).is_empty(), "a note without the option");
     let le = |w: [u32; 4]| w.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>();
-    for (out, mode) in [("r1", 1), ("f", 2)] {
+    let o = cx.link(&["-Wl,--odr-runtime=report", "-Wl,--odr=off"], "rt-odr-off");
+    assert!(o.success(), "--odr=off: {}", o.stderr_text());
+    for (out, mode) in [("r1", 1), ("f", 2), ("rt-odr-off", 1)] {
         let n = notes(&cx.bytes(out));
         let types: Vec<u32> = n.iter().map(|(t, _)| *t).collect();
         assert_eq!(types, [0x4d4f_4401, 0x4d4f_4403], "{out}");
@@ -141,7 +144,11 @@ fn refusals_and_the_no_op() {
     let Some(cx) = Cx::new("odr-runtime-refusals") else { return };
     let o = cx.gcc(&[&cx.b, "-static", "main.o", "-Wl,--odr-runtime=report", "-o", "s"]);
     assert!(!o.success());
-    assert!(o.stderr_text().contains("unsupported feature: odr-runtime-static"), "{}", o.stderr_text());
+    assert!(
+        o.stderr_text().contains("unsupported feature: odr-runtime-static"),
+        "{}",
+        o.stderr_text()
+    );
     let o = cx.link(&["-Wl,--odr-runtime=fatal", "-Wl,--odr-table=off"], "c");
     assert!(!o.success());
     assert!(

@@ -723,7 +723,8 @@ fn non_utf8_arguments() {
 fn odr_runtime_rules() {
     use mortar_cli::OdrRuntime;
     assert_eq!(p(&["a.o"]).plan.diagnostics.odr.runtime, OdrRuntime::Off);
-    let ok = p(&["-dynamic-linker", "/lib/ld.so", "--odr-runtime=fatal", "--odr-runtime=report", "a.o"]);
+    let ok =
+        p(&["-dynamic-linker", "/lib/ld.so", "--odr-runtime=fatal", "--odr-runtime=report", "a.o"]);
     assert!(errors(&ok).is_empty(), "{:?}", errors(&ok));
     assert_eq!(ok.plan.diagnostics.odr.runtime, OdrRuntime::Report);
     let ok = p(&["-shared", "--odr-runtime=fatal", "--odr-table=off", "--odr-table=full", "a.o"]);

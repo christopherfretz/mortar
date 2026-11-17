@@ -539,8 +539,11 @@ impl Store {
     /// it). Never empty in use; an empty `bytes` is an empty blob.
     pub fn embed(&self, bytes: &[u8]) -> Blob {
         let len = bytes.len() as u64;
-        let parts: Box<[Part]> =
-            if len == 0 { Box::new([]) } else { Box::new([Part { offset: 0, bytes: bytes.into() }]) };
+        let parts: Box<[Part]> = if len == 0 {
+            Box::new([])
+        } else {
+            Box::new([Part { offset: 0, bytes: bytes.into() }])
+        };
         self.counters.resident.fetch_add(len, Ordering::Relaxed);
         self.insert(Entry {
             len,
