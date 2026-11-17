@@ -12,6 +12,7 @@
 #@ arch: aarch64 x86_64
 #@ requires: g++
 #@ xfail(mortar,x86_64): M4: WP-127 (x86-64 shared objects; dyn.md D-100)
+#@ xfail(mortar,aarch64): the verifier's stage 3 (P-D7) still binds a weak key to a used object in Shared; dyn.md D-10 setting (WP-137) leaves it unbound: the verifier's follow-up
 
 cxx -O1 -fPIC lib.cc -o lib.o
 cxx -O1 -fPIE main.cc -o main.o

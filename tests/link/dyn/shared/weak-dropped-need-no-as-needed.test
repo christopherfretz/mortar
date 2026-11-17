@@ -2,8 +2,9 @@
 # `weak-dropped-need`. `libv.so` stays needed, so the weak reference binds
 # its versioned definition: `WEAK FUNC UND vfn@V1`, `DT_NEEDED` and a
 # `Verneed` of `libv.so` (all three references alike); the library runs
-# with `vfn` present (7 + 20) and the host's own `vfn` interposes it
-# (100 + 20).
+# with `vfn` present (7 + 20). (No host defining `vfn` here: GNU ld does
+# not export an unversioned program `vfn` for the library's `vfn@V1`, the
+# verifier's D-12 W8 finding on the host.)
 #@ spec: dyn.md "D-27"
 #@ arch: aarch64 x86_64
 #@ xfail(mortar,x86_64): M4: WP-127 (x86-64 shared objects; dyn.md D-100)
@@ -12,7 +13,6 @@ cc -O1 -fPIC v.c -o v.o
 cc -O1 -fPIC m2.c -o m2.o
 cc -O1 -fPIC lib.c -o lib.o
 cc -O1 -fPIE main.c -o main.o
-cc -O1 -fPIE -DHOOK main.c -o hook.o
 shlib gcc v.o -Wl,--version-script=v.map -Wl,-soname,libv.so -o libv.so
 shlib gcc m2.o -Wl,-soname,libm2.so -L. -Wl,--no-as-needed -lv -o libm2.so
 link gcc -shared lib.o -L. -Wl,--no-as-needed -lv -lm2 -Wl,-soname,libwv.so -o libwv.so
@@ -24,11 +24,8 @@ check readelf -W --dyn-syms libwv.so
 check readelf -VW libwv.so
   has: File: libv.so
 host gcc -pie main.o -L. -lwv -lm2 -o prog
-host gcc -pie hook.o -L. -lwv -lm2 -o prog-hook
 run prog
   stdout: 27
-run prog-hook
-  stdout: 120
 
 #--- v.map
 V1 { global: vfn; local: *; };
@@ -43,7 +40,4 @@ int lf(void) { return (vfn ? vfn() : 0) + m2fn(); }
 #--- main.c
 #include <stdio.h>
 int lf(void);
-#ifdef HOOK
-int vfn(void) { return 100; }
-#endif
 int main(void) { printf("%d\n", lf()); return 0; }
