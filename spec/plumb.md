@@ -796,7 +796,9 @@ has no edges. A reference's key is resolve §9.2's: `name@V` when its
 (libstdc++.so's `__udivti3@GCC_3.0` does not reach
 `libgcc.a(_udivdi3.o)`); `name` when it is unversioned (`VER_NDX_LOCAL`,
 `VER_NDX_GLOBAL`, no `.gnu.version`). The rule reads the key the same
-way for both bounds (rules 1 and 2). Tests: `tests/inset_ver.rs`.
+way for both bounds (rules 1 and 2). mold alone extracts by the plain
+name: an M12 that only such a reference explains says so, and is A49 on
+mold's output only (§10.2). Tests: `tests/inset_ver.rs`.
 
 **The roots** (resolve §4.2): the files live from the start (the named
 objects outside `--start-lib`, the `--whole-archive` members, the shared
@@ -4552,6 +4554,20 @@ is accepted from its linker only, never from mortar's map.
   P-D6's plain finding. Reproducers:
   `tests/link/dyn/shared/root-as-needed-unneeded.test` (`umold-*`),
   `tests/shared.rs` case `roots`.
+- **A49 (mold; batch 9).** mold extracts an archive member for a
+  command-line shared object's strong versioned undefined reference
+  (`name@V`) by the member's plain `name`, `--as-needed` or not
+  (D-11's rule aside): libstdc++.so's
+  `__udivti3@GCC_3.0` extracts `libgcc.a(_udivdi3.o)` under
+  `-static-libgcc`. Resolve §9.2 gives the reference the key `name@V`,
+  which a plain `name` does not define: GNU ld, lld and mortar do not
+  extract. M12 (§3.8) with the message "... is in the link and only a
+  shared object's versioned reference reaches it, by its plain name
+  (resolve §9.2: not an edge)"; in mortar's, GNU ld's or lld's output it
+  is the same M12, not accepted, and M11 is never excused by it (mold
+  that does not extract is judged as GNU ld). Reproducers:
+  `tests/link/dyn/cxx/threads-tls.test` (`pie-sgcc`),
+  `tests/inset_ver.rs`.
 
 - **A55 (mold; WP-165).** An undefined weak key reached by branches
   (alone, or beside an unfillable use in `-no-pie`) gets no `.dynsym`
