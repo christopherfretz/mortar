@@ -528,14 +528,14 @@ mod tests {
                 "x",
                 "a.o",
                 "-z",
-                "nodelete",
+                "nodump",
                 "-z",
-                "nodelete",
+                "nodump",
                 "--hash-style"
             ]),
             format!(
                 "ld: error: unknown argument '--frob'\n\
-                 ld: error: unsupported option: -z nodelete\n\
+                 ld: error: unsupported option: -z nodump\n\
                  ld: error: --hash-style: missing argument\n"
             )
         );
