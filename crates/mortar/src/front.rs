@@ -340,17 +340,17 @@ fn layout_diag(
 }
 
 /// The line's `--version-script` files read (relative to `cwd`), parsed
-/// as one script and compiled (`mortar_resolve::version`); `Some(None)`
+/// as one script and compiled (`mortar_resolve::version`); `Ok(None)`
 /// without one or outside a `Shared` output (the command line refuses
-/// the option there, `spec/dyn.md` D-114). `None` (diagnostics emitted)
-/// when a file cannot be read or the script is refused.
+/// the option there, `spec/dyn.md` D-114). `Err(())` (diagnostics
+/// emitted) when a file cannot be read or the script is refused.
 fn version_script(
     plan: &Plan,
     cwd: &Path,
     diag: &Collector,
-) -> Option<Option<std::sync::Arc<mortar_resolve::version::VersionScript>>> {
+) -> Result<Option<std::sync::Arc<mortar_resolve::version::VersionScript>>, ()> {
     if plan.kind != plan::OutputKind::Shared || plan.version_scripts().next().is_none() {
-        return Some(None);
+        return Ok(None);
     }
     let mut texts: Vec<(String, Vec<u8>)> = Vec::new();
     let mut failed = false;
@@ -371,19 +371,19 @@ fn version_script(
         }
     }
     if failed {
-        return None;
+        return Err(());
     }
     let files: Vec<mortar_resolve::version::SourceFile<'_>> = texts
         .iter()
         .map(|(path, bytes)| mortar_resolve::version::SourceFile { path, bytes })
         .collect();
     match mortar_resolve::version::VersionScript::load(&files) {
-        Ok(v) => Some(Some(std::sync::Arc::new(v))),
+        Ok(v) => Ok(Some(std::sync::Arc::new(v))),
         Err(ds) => {
             for (i, d) in ds.into_iter().enumerate() {
                 diag.emit(Key::new(30, 0, i as u64), d);
             }
-            None
+            Err(())
         }
     }
 }
@@ -419,7 +419,7 @@ pub fn front<'s>(
     let machine = inputs.target.machine;
     // 30: the version script (`spec/script.md` §9; resolve.md §9.7,
     // dyn.md D-114; WP-125), then resolve.
-    let versions = version_script(&plan, env.cwd, diag)?;
+    let versions = version_script(&plan, env.cwd, diag).ok()?;
     let outcome = mortar_resolve::resolve_inputs_with(&inputs, &plan, &pool, versions.clone());
     if time_steps {
         print_steps("resolve", &outcome.steps.times, &outcome.steps.counts);

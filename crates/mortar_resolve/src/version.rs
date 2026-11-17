@@ -86,17 +86,16 @@ impl Glob {
                     out.push(Token::Byte(p[i + 1]));
                     i += 2;
                 }
-                b'[' => match class(p, i) {
-                    Some((tok, next)) => {
+                b'[' => {
+                    if let Some((tok, next)) = class(p, i) {
                         out.push(tok);
                         i = next;
-                    }
-                    // No closing `]`: the `[` is itself.
-                    None => {
+                    } else {
+                        // No closing `]`: the `[` is itself.
                         out.push(Token::Byte(b'['));
                         i += 1;
                     }
-                },
+                }
                 c => {
                     out.push(Token::Byte(c));
                     i += 1;
@@ -280,6 +279,9 @@ pub enum Decision {
     Base,
 }
 
+/// A `version-reassigned` name: `(name, first node, second node)`.
+type Reassigned = (Box<[u8]>, usize, usize);
+
 /// A compiled version script.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VersionScript {
@@ -293,7 +295,7 @@ pub struct VersionScript {
     global_names: Box<[(usize, Box<[u8]>)]>,
     /// `version-reassigned`: `(name, first node, second node)`; reported
     /// when a plain key of that name is decided (§9.7 rule 1).
-    reassigned: Box<[(Box<[u8]>, usize, usize)]>,
+    reassigned: Box<[Reassigned]>,
 }
 
 impl VersionScript {
@@ -372,7 +374,7 @@ impl VersionScript {
                             global_names.push((i, x.clone()));
                         }
                         Some(&first) if first != i => {
-                            if !reassigned.iter().any(|r: &(Box<[u8]>, usize, usize)| r.0 == *x) {
+                            if !reassigned.iter().any(|r: &Reassigned| r.0 == *x) {
                                 reassigned.push((x.clone(), first, i));
                             }
                         }
@@ -582,7 +584,23 @@ pub(crate) fn apply<V: View>(
             Decision::Base => {}
         }
     }
-    let Some(s) = script else { return out };
+    if let Some(s) = script {
+        out.extend(script_problems(view, line, s, def, &reassigned_used));
+    }
+    out
+}
+
+/// The script-wide diagnostics of [`apply`]: `version-reassigned` for the
+/// names a plain key has, and rule 9's undefined exact `global:` names.
+fn script_problems<V: View>(
+    view: &V,
+    line: &VersionLine,
+    s: &VersionScript,
+    def: &[Def],
+    reassigned_used: &[Vec<u8>],
+) -> Vec<VersionProblem> {
+    let mut out: Vec<VersionProblem> = Vec::new();
+    let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
     let mut seq = 0u64;
     let mut next = || {
         seq += 1;

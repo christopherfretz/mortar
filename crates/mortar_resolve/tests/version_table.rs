@@ -35,44 +35,41 @@ fn cases() -> Vec<Case> {
     let mut out: Vec<Case> = Vec::new();
     for line in text.lines() {
         let (word, rest) = line.split_once(' ').unwrap_or((line, ""));
+        if word == "case" {
+            let (id, e) = rest.split_once(' ').expect("case <id> <E|->");
+            out.push(Case {
+                id: id.to_owned(),
+                export_dynamic: e == "E",
+                names: Vec::new(),
+                versioned: Vec::new(),
+                files: Vec::new(),
+                expect: String::new(),
+            });
+            continue;
+        }
+        let c = out.last_mut().expect("a case first");
         match word {
-            "case" => {
-                let (id, e) = rest.split_once(' ').expect("case <id> <E|->");
-                out.push(Case {
-                    id: id.to_owned(),
-                    export_dynamic: e == "E",
-                    names: Vec::new(),
-                    versioned: Vec::new(),
-                    files: Vec::new(),
-                    expect: String::new(),
-                });
+            "names" => c.names = rest.split(' ').map(str::to_owned).collect(),
+            "versioned" => {
+                c.versioned = rest
+                    .split(' ')
+                    .filter(|s| !s.is_empty())
+                    .map(|kv| {
+                        let (k, v) = kv.split_once('=').expect("name=V");
+                        (k.to_owned(), v.to_owned())
+                    })
+                    .collect();
             }
-            _ => {
-                let c = out.last_mut().expect("a case first");
-                match word {
-                    "names" => c.names = rest.split(' ').map(str::to_owned).collect(),
-                    "versioned" => {
-                        c.versioned = rest
-                            .split(' ')
-                            .filter(|s| !s.is_empty())
-                            .map(|kv| {
-                                let (k, v) = kv.split_once('=').expect("name=V");
-                                (k.to_owned(), v.to_owned())
-                            })
-                            .collect();
-                    }
-                    "file" => c.files.push(String::new()),
-                    "|" => {
-                        let f = c.files.last_mut().expect("file first");
-                        if !f.is_empty() {
-                            f.push('\n');
-                        }
-                        f.push_str(rest);
-                    }
-                    "expect" => c.expect = rest.to_owned(),
-                    _ => panic!("fixture line {line:?}"),
+            "file" => c.files.push(String::new()),
+            "|" => {
+                let f = c.files.last_mut().expect("file first");
+                if !f.is_empty() {
+                    f.push('\n');
                 }
+                f.push_str(rest);
             }
+            "expect" => rest.clone_into(&mut c.expect),
+            _ => panic!("fixture line {line:?}"),
         }
     }
     out

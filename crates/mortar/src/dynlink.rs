@@ -33,6 +33,7 @@ use mortar_synth::dynamic::{
 use mortar_synth::dynstr::DynNames;
 use mortar_synth::dynsym::{DynSymSource, DynsymInputs, ProgramDef, SharedDef};
 use mortar_synth::symtab::SymDef;
+use mortar_synth::version::VerdefPlan;
 use mortar_synth::{
     DynGotCx, DynamicPlan, GotPlan, InputCopyDefs, InterpPlan, KeyKinds, RelaPlan, SymSource,
     SynthKind,
@@ -227,7 +228,7 @@ pub struct SharedTables {
     pub line: mortar_image::map::SharedLine,
     /// D-115: the version definitions, their `.dynstr` offsets set
     /// (empty without a named version node).
-    pub verdef: mortar_synth::version::VerdefPlan,
+    pub verdef: VerdefPlan,
 }
 
 /// What [`plan`] reads.
@@ -348,9 +349,9 @@ fn arrays(t: &PlanIn<'_, '_>) -> [bool; 3] {
 /// D-115's plan of a shared object: the base (`soname`, else the
 /// output's basename), then the script's named nodes in order with their
 /// parents; empty without one.
-fn verdef_plan(t: &PlanIn<'_, '_>, soname: Option<&[u8]>) -> mortar_synth::version::VerdefPlan {
+fn verdef_plan(t: &PlanIn<'_, '_>, soname: Option<&[u8]>) -> VerdefPlan {
     let Some(script) = t.versions.filter(|s| !s.is_anonymous()) else {
-        return mortar_synth::version::VerdefPlan::default();
+        return VerdefPlan::default();
     };
     let output = t.plan.output.as_deref().unwrap_or("a.out".as_ref());
     let basename = std::path::Path::new(output).file_name().unwrap_or(output);
@@ -360,7 +361,7 @@ fn verdef_plan(t: &PlanIn<'_, '_>, soname: Option<&[u8]>) -> mortar_synth::versi
         .iter()
         .map(|n| (n.name.as_deref().unwrap_or_default(), &*n.parents))
         .collect();
-    mortar_synth::version::VerdefPlan::new(base, &nodes)
+    VerdefPlan::new(base, &nodes)
 }
 
 /// The `.dynamic` kind of the plan's output and its `.interp` plan (none
@@ -462,7 +463,7 @@ pub fn plan(
     // D-115: the version definitions of a shared object, the base named
     // by the soname, else the output's basename.
     let mut verdef =
-        if shared { verdef_plan(t, soname_bytes.as_deref()) } else { Default::default() };
+        if shared { verdef_plan(t, soname_bytes.as_deref()) } else { VerdefPlan::default() };
     let (dynstr, soname_off) = if shared {
         mortar_synth::dynstr::dynstr_plan_versioned(
             &dynsym,
