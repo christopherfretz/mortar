@@ -470,3 +470,103 @@ fn s56_thread_count_is_not_an_input() {
         assert_eq!(parse(&Pool::sequential().with_threads(t), 8, &ins).unwrap(), one);
     }
 }
+
+// WP-177 (`spec/resolve.md` §6.3): the record that owns a field.
+mod owners {
+    use super::*;
+    use mortar_core::split::EhOwner;
+    use mortar_merge::eh::LsdaStarts;
+
+    const TEXT2: SectionId = SectionId(101);
+    const DEAD: SectionId = SectionId(102);
+    const TABLE: SectionId = SectionId(103);
+    const OTHER: SectionId = SectionId(104);
+
+    fn live(s: SectionId) -> bool {
+        s == TEXT || s == TEXT2
+    }
+
+    /// CIE 0 `zPLR` (personality, LSDA and FDE encodings `pcrel sdata4`),
+    /// FDEs 1 (TEXT, LSDA 0x4), 2 (DEAD, LSDA 0x20), 3 (TEXT2, LSDA 0x30)
+    /// and 4 (DEAD, LSDA 0x30); CIE 5 `zR` and FDE 6 (DEAD) of it; then a
+    /// terminator. Returns the bytes, the relocations and the records'
+    /// offsets.
+    fn shape() -> (Vec<u8>, Vec<EhReloc>, Vec<usize>) {
+        let mut b = cie("zPLR", &[0x9b, 0, 0, 0, 0, 0x1b, 0x1b]);
+        let mut at = vec![0];
+        let lsda = [(TEXT, 0x4), (DEAD, 0x20), (TEXT2, 0x30), (DEAD, 0x30)];
+        for _ in lsda {
+            at.push(b.len());
+            b.extend(fde(b.len(), 0, 0, true, Some(0)));
+        }
+        at.push(b.len());
+        b.extend(cie("zR", &[0x1b]));
+        at.push(b.len());
+        b.extend(fde(b.len(), at[5], 0, true, None));
+        b.extend_from_slice(&[0; 4]);
+        // The fields' places, from a parse without the pointers' relocations.
+        let bare: Vec<EhReloc> = (1..5).chain([6]).map(|k| code(at[k] as u64 + 8)).collect();
+        let f = one(&b, &bare).unwrap();
+        let p = f.records[0].cie().unwrap().personality.unwrap().at as usize;
+        let l = f.records[1].fde().unwrap().lsda.unwrap().at as usize;
+        let mut r = vec![pc32(p as u64, Target::Undefined { symbol: SymbolId(7), weak: true })];
+        for (k, &(code, start)) in lsda.iter().enumerate() {
+            let a = at[k + 1];
+            r.push(pc32(a as u64 + 8, Target::Section { section: code, value: 0x10 }));
+            r.push(pc32((a + l) as u64, Target::Section { section: TABLE, value: start }));
+        }
+        r.push(pc32(at[6] as u64 + 8, Target::Section { section: DEAD, value: 0 }));
+        r.sort_by_key(|x| x.offset);
+        (b, r, at)
+    }
+
+    #[test]
+    fn wp177_frame_owner_live_dead_none() {
+        let (b, r, at) = shape();
+        let f = one(&b, &r).unwrap();
+        let s = SectionId(1);
+        let own = |off: usize| f.frame_owner(s, off as u64, live);
+        let p = f.records[0].cie().unwrap().personality.unwrap().at as usize;
+        // A CIE a live FDE uses: live, named by its first live FDE.
+        assert_eq!(own(p), EhOwner::Live { code: Some((TEXT, 0x10)) });
+        // A CIE only a dead FDE uses: dead.
+        assert_eq!(own(at[5] + 9), EhOwner::Dead);
+        // A live FDE's other fields: live; a dead FDE's: dead.
+        let l = f.records[1].fde().unwrap().lsda.unwrap().at as usize;
+        assert_eq!(own(at[1] + l), EhOwner::Live { code: Some((TEXT, 0x10)) });
+        assert_eq!(own(at[3] + l), EhOwner::Live { code: Some((TEXT2, 0x10)) });
+        assert_eq!(own(at[2] + l), EhOwner::Dead);
+        // The initial location decides the FDE: never an error.
+        assert_eq!(own(at[1] + 8), EhOwner::Dead);
+        assert_eq!(own(at[2] + 8), EhOwner::Dead);
+        // The terminator, past the section, another section: no record.
+        assert_eq!(own(b.len() - 2), EhOwner::None);
+        assert_eq!(own(b.len() + 4), EhOwner::None);
+        assert_eq!(f.frame_owner(SectionId(2), 0, live), EhOwner::None);
+    }
+
+    #[test]
+    fn wp177_lsda_owner_by_greatest_start() {
+        let (b, r, _) = shape();
+        let f = one(&b, &r).unwrap();
+        let relocs = [r.clone().into_boxed_slice()];
+        let starts = LsdaStarts::new(&f, &relocs, live, |_, _| true);
+        let own = |off| starts.owner(TABLE, off);
+        let live1 = EhOwner::Live { code: Some((TEXT, 0x10)) };
+        // Before the first start: no owner.
+        assert_eq!(own(0), EhOwner::None);
+        assert_eq!(own(3), EhOwner::None);
+        assert_eq!((own(4), own(0x1f)), (live1, live1));
+        // A dead FDE's LSDA: dead, up to the next start.
+        assert_eq!((own(0x20), own(0x2f)), (EhOwner::Dead, EhOwner::Dead));
+        // Two FDEs with one start, one live: live.
+        assert_eq!(own(0x30), EhOwner::Live { code: Some((TEXT2, 0x10)) });
+        assert_eq!(own(0x1000), EhOwner::Live { code: Some((TEXT2, 0x10)) });
+        // A table no LSDA pointer names; a file whose FDEs are another's.
+        assert_eq!(starts.owner(OTHER, 0x8), EhOwner::None);
+        let none = LsdaStarts::new(&f, &relocs, live, |_, _| false);
+        assert_eq!(none.owner(TABLE, 0x8), EhOwner::None);
+        // Without relocations, no start.
+        assert_eq!(LsdaStarts::new(&f, &[], live, |_, _| true).owner(TABLE, 8), EhOwner::None);
+    }
+}

@@ -261,6 +261,30 @@ fn x86_59_dead_targets_get_the_elfclass32_tombstone() {
     }
 }
 
+/// WP-177: a dead target from `.eh_frame` or `.gcc_except_table` (alloc
+/// or not) is the event `DiscardedSection`, for the scan's driver to judge
+/// by the record that owns the field; from a debug name it is not.
+#[test]
+fn x86_59_dead_targets_from_eh_sections_are_events() {
+    let mut t = tables(TargetKind::Local, S);
+    t.syms.get_mut(&key(1)).unwrap().live = false;
+    t.facts.get_mut(&key(1)).unwrap().dead = true;
+    let input = [0u8; 32];
+    let na = PlaceFacts { alloc: false, writable: false, exec: None };
+    for (place, name, n) in [
+        (TEXT, &b".eh_frame"[..], 1),
+        (TEXT, b".gcc_except_table", 1),
+        (na, b".gcc_except_table", 1),
+        (na, b".debug_info", 0),
+    ] {
+        let mut sink = Sink::default();
+        support::scan_named(X86::M1, &t, OutputKind::Static, place, name, &input, &[rel(8, key(1), 2)], &mut sink)
+            .unwrap();
+        assert!(sink.raised.is_empty() && sink.errors.is_empty());
+        assert_eq!(sink.events.len(), n, "{}", String::from_utf8_lossy(name));
+    }
+}
+
 #[test]
 fn s7_undefined_weak_values() {
     let t = tables(TargetKind::Weak0, 0x1234);

@@ -494,6 +494,23 @@ fn x53_dead_targets() {
     let s = scan(&t, OutputKind::Static, RODATA, 42, -4);
     assert!(s.raised.is_empty());
     assert_eq!(s.events.len(), 1);
+    // WP-177: `.eh_frame` and `.gcc_except_table` (alloc or not) report
+    // it too, for the scan's driver to judge by the owning record; a
+    // debug name does not.
+    let na = PlaceFacts { alloc: false, writable: false, exec: None };
+    for (place, name, n) in [
+        (RODATA, &b".eh_frame"[..], 1),
+        (RODATA, b".gcc_except_table", 1),
+        (na, b".gcc_except_table", 1),
+        (na, b".debug_info", 0),
+    ] {
+        let mut sink = Sink::default();
+        let r = Reloc { r_offset: 8, key: key(1), r_type: 2, addend: 0 };
+        support::scan_named(X64::M1, &t, OutputKind::Static, place, name, &input, &[r], &mut sink)
+            .unwrap();
+        assert!(sink.raised.is_empty() && sink.errors.is_empty());
+        assert_eq!(sink.events.len(), n, "{}", String::from_utf8_lossy(name));
+    }
 }
 
 #[test]
