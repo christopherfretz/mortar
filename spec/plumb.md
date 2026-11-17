@@ -785,8 +785,18 @@ classes), a common (`SHN_COMMON`, `SHN_X86_64_LCOMMON`), a strong or
 weak undefined mention after `--wrap` redirection (resolve §7.1). Keys
 follow resolve §9.4: `foo@@V` is `foo` and also binds `foo@V`; `foo@V`
 is its own key. A shared object's visible dynamic definitions are its
-definitions, and its strong references are edges unless it is
-`--as-needed` (resolve §4.4).
+definitions (a default `foo@@V` is `foo` and `foo@V`, a hidden `foo@V`
+only `foo@V`), and its strong references are edges unless it is
+`--as-needed` at every mention (resolve §4.4; dyn.md "Archive extraction
+by the references of shared objects"). Only the command line's shared
+objects (and those of its scripts) are read: a `DT_NEEDED` closure file
+has no edges. A reference's key is resolve §9.2's: `name@V` when its
+`.gnu.version` entry names a version need `V`, so only a `name@@V` or
+`name@V` definition is its target, never an object's plain `name`
+(libstdc++.so's `__udivti3@GCC_3.0` does not reach
+`libgcc.a(_udivdi3.o)`); `name` when it is unversioned (`VER_NDX_LOCAL`,
+`VER_NDX_GLOBAL`, no `.gnu.version`). The rule reads the key the same
+way for both bounds (rules 1 and 2). Tests: `tests/inset_ver.rs`.
 
 **The roots** (resolve §4.2): the files live from the start (the named
 objects outside `--start-lib`, the `--whole-archive` members, the shared

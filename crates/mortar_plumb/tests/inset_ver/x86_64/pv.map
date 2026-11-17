@@ -1,0 +1,31 @@
+mortar-map 2
+file 0 m.o
+place 0 1 401261 1
+place 0 2 402338 0
+place 0 3 402338 0
+chunk synthetic .interp 400200 1c
+chunk synthetic .gnu.hash 400220 1c
+chunk synthetic .dynsym 400240 18
+chunk synthetic .dynstr 400258 9
+chunk synthetic .dynamic 402268 d0
+chunk synthetic .symtab - 30
+chunk synthetic .strtab - 26
+chunk synthetic .shstrtab - 60
+chunk synthetic .comment - d
+chunk synthetic .pad.relro 402338 cc8
+output exec
+interp /lib64/ld-linux-x86-64.so.2
+bind lazy
+relro on
+arg -dynamic-linker
+arg /lib64/ld-linux-x86-64.so.2
+arg m.o
+arg libu.so
+arg libg.a
+arg -rpath-link
+arg .
+arg -o
+arg pv
+arg --mortar-map=pv.map
+needed libu.so
+end
