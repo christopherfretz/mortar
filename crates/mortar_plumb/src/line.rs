@@ -520,15 +520,14 @@ impl Line {
         files: &dyn Files,
         depth: u32,
     ) {
-        let mut s = String::new();
-        let mut rest = text;
-        while let Some(i) = rest.find("/*") {
-            s.push_str(&rest[..i]);
-            rest = rest[i + 2..].find("*/").map_or("", |j| &rest[i + 2 + j + 2..]);
-        }
-        s.push_str(rest);
-        let spaced = s.replace('(', " ( ").replace(')', " ) ").replace(',', " ");
-        let words: Vec<&str> = spaced.split_whitespace().collect();
+        // A quoted word is never a keyword or a parenthesis (script.md
+        // §1.6) and a comma separates words (§2.1, §5.1): `words` is what
+        // the command match sees (`QUOTED` for a string), `text_of` the word.
+        let toks: Vec<(String, bool)> =
+            tokens(text, &['(', ')', ',']).into_iter().filter(|(t, q)| *q || t != ",").collect();
+        let words: Vec<&str> =
+            toks.iter().map(|(t, q)| if *q { QUOTED } else { t.as_str() }).collect();
+        let text_of = |k: usize| toks[k].0.as_str();
         let mut i = 0;
         let mut depth_paren = 0;
         let mut as_needed_at: Option<usize> = None;
@@ -577,7 +576,7 @@ impl Line {
                         if x == ")" {
                             break;
                         }
-                        names.push(x.to_string());
+                        names.push(text_of(j).to_string());
                         j += 1;
                     }
                     if j >= words.len() {
@@ -604,7 +603,10 @@ impl Line {
                 }
                 _ if in_input => {
                     let sub = State { as_needed: st.as_needed || as_needed_at.is_some(), ..st };
-                    if let Some(n) = w.strip_prefix("-l") {
+                    // A quoted `-l...` is a file name for GNU ld (script.md
+                    // §2.4); mortar refuses it, so no link of it is judged.
+                    let w = text_of(i);
+                    if let Some(n) = words[i].strip_prefix("-l") {
                         self.library(n, sub, grp, files);
                     } else if w.starts_with('/') || files.len(w).is_some() {
                         self.file(w, w, sub, grp, files, depth + 1);
@@ -624,6 +626,7 @@ impl Line {
                     }
                 }
                 _ => {
+                    let w = text_of(i);
                     self.problems.push(format!("{path}: script word '{w}' is not modelled"));
                     return;
                 }
@@ -636,6 +639,52 @@ impl Line {
     pub fn position_of(&self, path: &str) -> Option<usize> {
         self.items.iter().position(|i| matches!(i, Item::Relocatable { path: p, .. } if p == path))
     }
+}
+
+/// The command match's key for a quoted word: no keyword, parenthesis or
+/// `-l` prefix can equal it (script.md §1.6).
+const QUOTED: &str = "\"";
+
+/// A script's tokens, `(text, quoted)`: comments removed, each byte of
+/// `punct` a token of its own, a quoted string (`"` to the next `"`, no
+/// escapes, script.md §1.6) one token without its quotes, quoted. A string
+/// directly followed by a name is two tokens; an unterminated string runs
+/// to the end.
+pub(crate) fn tokens(text: &str, punct: &[char]) -> Vec<(String, bool)> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut chars = text.chars().peekable();
+    let flush = |cur: &mut String, out: &mut Vec<(String, bool)>| {
+        if !cur.is_empty() {
+            out.push((std::mem::take(cur), false));
+        }
+    };
+    while let Some(c) = chars.next() {
+        if c == '/' && chars.peek() == Some(&'*') {
+            flush(&mut cur, &mut out);
+            chars.next();
+            let mut prev = ' ';
+            for d in chars.by_ref() {
+                if prev == '*' && d == '/' {
+                    break;
+                }
+                prev = d;
+            }
+        } else if c == '"' {
+            flush(&mut cur, &mut out);
+            let s: String = chars.by_ref().take_while(|&d| d != '"').collect();
+            out.push((s, true));
+        } else if c.is_whitespace() {
+            flush(&mut cur, &mut out);
+        } else if punct.contains(&c) {
+            flush(&mut cur, &mut out);
+            out.push((c.to_string(), false));
+        } else {
+            cur.push(c);
+        }
+    }
+    flush(&mut cur, &mut out);
+    out
 }
 
 #[cfg(test)]
@@ -971,5 +1020,53 @@ mod tests {
             let l = Line::parse(&words(s), &m);
             assert!(l.items.is_empty() && l.problems.is_empty(), "{s}: {:?}", l.problems);
         }
+    }
+
+    // spec: script.md §1.6, §2.1, §2.4; resolve.md §4.2 (WP-152) — an
+    // implicit script's quoted words are names and files, never keywords
+    // or punctuation; several EXTERN names, with or without commas, are
+    // roots each; `INPUT("a,b")` is one file, `"a.o"b.o` two.
+    #[test]
+    fn s1_6_quoted_words_of_an_implicit_script() {
+        let mut m = HashMap::new();
+        m.insert(
+            "/l/x.ld".to_string(),
+            br#"/* "not a file" */ EXTERN("k_fn") EXTERN(a,b c "INPUT")
+INPUT("/l/a,b.o" "/l/a b.o""/l/c.o"/l/d.o "AS_NEEDED")
+GROUP("/l/libz.a" AS_NEEDED("/l/libq.so"))
+ENTRY("go")
+"#
+            .to_vec(),
+        );
+        for o in ["/l/a,b.o", "/l/a b.o", "/l/c.o", "/l/d.o", "/l/AS_NEEDED"] {
+            m.insert(o.into(), elf(1));
+        }
+        m.insert("/l/libz.a".into(), b"!<arch>\n".to_vec());
+        m.insert("/l/libq.so".into(), elf(3));
+        let l = Line::parse(&words("-pie -dynamic-linker /x -o p /l/x.ld"), &Mem(m));
+        assert!(l.problems.is_empty(), "{:?}", l.problems);
+        let ex: Vec<&str> = l.externs.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(ex, ["k_fn", "a", "b", "c", "INPUT"]);
+        assert_eq!(l.script_entry.as_deref(), Some("go"));
+        let paths: Vec<(&str, bool)> = l
+            .items
+            .iter()
+            .map(|i| match i {
+                Item::Relocatable { path, .. } => (path.as_str(), false),
+                Item::Shared { path, as_needed, .. } => (path.as_str(), *as_needed),
+            })
+            .collect();
+        assert_eq!(
+            paths,
+            [
+                ("/l/a,b.o", false),
+                ("/l/a b.o", false),
+                ("/l/c.o", false),
+                ("/l/d.o", false),
+                ("/l/AS_NEEDED", false),
+                ("/l/libz.a", false),
+                ("/l/libq.so", true),
+            ]
+        );
     }
 }
