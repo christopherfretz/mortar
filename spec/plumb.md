@@ -4534,6 +4534,27 @@ is accepted from its linker only, never from mortar's map.
   `tests/link/dyn/shared/root-as-needed-unneeded.test` (`umold-*`),
   `tests/shared.rs` case `roots`.
 
+- **A55 (mold; WP-165).** An undefined weak key reached by branches
+  (alone, or beside an unfillable use in `-no-pie`) gets no `.dynsym`
+  entry: the call goes to 0 (x86-64) or is skipped (AArch64 `bl .+4`)
+  whatever a later library or `LD_PRELOAD` defines, where GNU ld and lld
+  import it (dyn.md D-25's branch cells, §13.1). P-D7 with the message
+  "... (D-25: WeakDyn)" or "... (D-25 ruling (A): WeakDyn for its
+  branches)" (P-D7's shape); in mortar's output it is P-D7's plain
+  finding. Reproducers: `tests/link/dyn/reloc/weak-branch-*.test`,
+  `weak-class-table.test` (`k_branch`), the `-static-libstdc++` links of
+  `dyn/census/gxx-static-libstdcxx.test` and `dyn/cxx/threads-tls.test`
+  (seven `_ITM_*`/`_ZGTt*` keys).
+- **A56 (GNU ld, x86-64; WP-165).** In `-no-pie`, the split key (a
+  branch and an unfillable use, no GOT use, no writable absolute word)
+  gets no `.dynsym` entry (GNU ld's `-z nodynamic-undefined-weak` form):
+  the call goes to 0 under `LD_PRELOAD` too. dyn.md §13.1's named
+  difference: a program that works under it never executes the call
+  while the key is undefined. P-D7 with the message "... (D-25 ruling
+  (A): WeakDyn for its branches)", on an `EM_X86_64` output of GNU ld
+  only. Reproducers: `tests/link/dyn/reloc/weak-branch-split.test`,
+  `tests/weak.rs` (`split-x64.bfd`).
+
 lld also links a `.hidden` or `.protected` undefined reference that only
 a library defines (writing 0) and drops the library from `DT_NEEDED`:
 that is dyn.md W9, P-D6 (A36's family), declared where a test has it,
@@ -4922,7 +4943,27 @@ own implementation of D-11-D-27 and compared with the output.
   shared objects (hidden `.dynsym` entries ignored, W1), exports the
   program definitions referenced by needed or used objects (W8), every
   copy alias, the `WeakDyn` keys; order per D-22; fields per D-23;
-  `sh_info` 1; `.dynstr` holds each name once. A root (P-D6 above) the
+  `sh_info` 1; `.dynstr` holds each name once. The `WeakDyn` keys come
+  from one derivation (WP-165, `weakclass.rs`): each undefined weak key
+  that no member of N ∪ U defines gets D-25's class of every live
+  relocation naming it (in a placed, allocated section; the writable
+  place from the OUTPUT section; the branch-opcode test of x86 `PC32`;
+  a type the table does not list unfillable), and D-25's verdict in the
+  output's kind. A key D-25 makes `WeakDyn`, or in `Exec` `WeakDyn` for
+  its branches (the split key, ruling (A)), that `.dynsym` lacks is P-D7
+  "'K' is an undefined weak key reached by ... and is not in .dynsym
+  (D-25: WeakDyn)" (the split key: "... (D-25 ruling (A): WeakDyn for
+  its branches)"), and one with a branch whose entry no `JUMP_SLOT`
+  names is P-D9 "... has no JUMP_SLOT record (D-25: every branch through
+  a PLT entry)". mortar's output is held to this for every such key; a
+  reference's for the keys whose uses besides their branches are
+  unfillable or none (a branch alone; the split key: WP-155's cells,
+  where GNU ld and lld import): mold writes no entry (A55), GNU ld on
+  x86-64 none for the split key (A56). A key with a GOT use or a
+  writable absolute word is not held to the import in a reference's
+  output (D-25 records mold's 0 everywhere for it, and mold writes no
+  `__gmon_start__` entry in any AArch64 driver link: measured, WP-165).
+  Whether a key D-25 makes `Weak0` is in `.dynsym` is not judged. A root (P-D6 above) the
   program does not define is imported iff a library of the final needed
   set has a visible definition of it, unversioned or of its default
   version (what a reference without a version binds; D-21 item 1,
@@ -5086,7 +5127,11 @@ Mutation tests (the WP-028d harness) gain one mutation per rule: drop a
 record, swap two `.dynsym` entries, flip a Bloom bit, change an addend,
 shrink a copy to 0, overlap two copies, misorder `IRELATIVE`, drop a
 `DT_NEEDED`, bind a different version, patch a `WeakDyn` call to its
-`Weak0` form.
+`Weak0` form. D-25's branch cells (WP-165, `tests/weak.rs`, mortar's,
+lld's and GNU ld's outputs on both machines): the import removed (a
+branch alone; the split key), the `JUMP_SLOT` removed, the branch
+patched to 0, the split key's unfillable use given a value or a record,
+and `Weak0` written for a branch-only key (mortar's form before WP-155).
 
 ### 12.1 How the verifier reaches them (WP-050)
 
@@ -5157,7 +5202,17 @@ from the file system (`line::Files`).
   `0x6000_0000_0000 + 0x1000·n`). In view 3 every use must reach the
   definition, except a use whose field cannot hold any library address
   (R2: an input's 32-bit absolute use in a no-PIE executable), which
-  fails only when another use does reach it (a split: W12, F2). A use
+  fails only when another use does reach it (a split: W12, F2). A
+  branch is never such a use: it reaches any definition through a PLT
+  entry, so a branch of a `WeakDyn` key to 0, or past its PLT entry, is
+  P-D9 view 3 whatever the field's range (WP-165; before, the fresh
+  address's overflow of the branch's range hid it). Each unfillable use
+  of the split key (D-25 ruling (A), `Exec`) is not a use here: it holds
+  `Weak0`'s value whatever is loaded, which view 1 judges (§4.4: 0, an
+  AArch64 PC-relative instruction `S = P`), and a dynamic record on its
+  field is P-D9 "a dynamic record ... on an unfillable use ... of 'K'
+  (D-25 ruling (A): an unfillable use of the split key keeps Weak0's
+  value and has no record)" (WP-165). A use
   in a section without `SHF_ALLOC` is not a use here: nothing relocates
   it at run time, so view 3 does not judge it (view 1 does, by §5.8:
   WP-104, lld's exported weak key in a PIE). An import
