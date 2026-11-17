@@ -33,9 +33,6 @@ pub const TLS_TO_IE: &str = "TLS relaxation to initial-exec";
 /// or `pie` (every TLS type is unfillable). The generic pre-pass refuses
 /// the key first; a `weakdyn` key never reaches a TLS class.
 pub const TLS_WEAK_DYNAMIC: &str = "thread-local undefined weak symbol in a dynamic executable";
-/// The unrelaxed general-dynamic, local-dynamic and descriptor models
-/// (§6.1's M2 values) in an output that is not an executable.
-pub const DYNAMIC_TLS: &str = "dynamic TLS models in a shared object";
 /// X-46 needs the place's `SHF_EXECINSTR`, which the caller did not give
 /// (`SectionOut.exec`).
 pub const DTPOFF_PLACE: &str = "DTPOFF relocation in an allocated section of unknown kind";
@@ -226,8 +223,8 @@ pub fn scan(m2: bool, cx: &ScanCx<'_>, at: &RelocAt<'_>, out: &mut DemandSink<'_
 /// The TLS-model demands (X-11, §8.2 to §8.5). In an executable a
 /// matched GD or LD sequence and a matched TLSDESC member against a
 /// TLS-local target demand nothing (kind 1); an unmatched one is refused
-/// by name; IE keeps its `GTPREL` slot unless I1/I2 is taken. Outside an
-/// executable only IE is accepted (M2 for the others).
+/// by name; IE keeps its `GTPREL` slot unless I1/I2 is taken. In a
+/// shared object nothing is relaxed ([`shared_tls`], X-61).
 ///
 /// Under M2, against a `shlib` key (`spec/dyn.md` D-48): a matched GD
 /// sequence or `GOTPC32_TLSDESC` relaxes to IE and demands `GOT_TPREL`
@@ -241,14 +238,11 @@ fn tls_scan(
     kind: TargetKind,
 ) -> Result<(DemandFlags, GlobalFlags), Refusal> {
     let none = (DemandFlags::empty(), GlobalFlags::empty());
-    if !cx.output.is_exec() {
-        return match at.r_type {
-            GOTTPOFF => Ok((DemandFlags::GOT_TPREL, GlobalFlags::STATIC_TLS)),
-            _ => Err(feature(DYNAMIC_TLS)),
-        };
-    }
     if !cx.place.alloc && matches!(at.r_type, TLSGD | TLSLD | GOTPC32_TLSDESC | TLSDESC_CALL) {
         return Err(feature(NON_ALLOC_TLS));
+    }
+    if !cx.output.is_exec() {
+        return shared_tls(at.r_type, at.howto.name);
     }
     if kind == TargetKind::WeakDyn {
         return Err(feature(TLS_WEAK_DYNAMIC));
@@ -277,6 +271,25 @@ fn tls_scan(
         // Every TLS-model type of §6.1 that reaches the architecture's
         // table is above; the later types were refused by `classify`.
         _ => Err(Refusal::named(RefusalClass::RelocationType, at.howto.name)),
+    }
+}
+
+/// X-61: the TLS demands of a `Shared` output, where nothing is relaxed
+/// and every model keeps its records (`spec/dyn.md` D-119): GD a
+/// `GTLSIDX` pair (`TLS_GD`), LD the module pair (`TLS_LD`), TLSDESC a
+/// descriptor (`TLS_DESC`; its `TLSDESC_CALL` nothing), IE a `GTPREL`
+/// slot and `DF_STATIC_TLS`. The records and their `r_sym` are the GOT
+/// plan's (`GotPlan::new_shared`). `TlsLe` never reaches here (§4.3's
+/// `LocalExecInShared` cell); a `Pie` is an executable.
+fn shared_tls(r_type: u32, name: &'static str) -> Result<(DemandFlags, GlobalFlags), Refusal> {
+    let none = DemandFlags::empty();
+    match r_type {
+        TLSGD => Ok((DemandFlags::TLS_GD, GlobalFlags::empty())),
+        TLSLD => Ok((none, GlobalFlags::TLS_LD)),
+        GOTPC32_TLSDESC => Ok((DemandFlags::TLS_DESC, GlobalFlags::empty())),
+        TLSDESC_CALL => Ok((none, GlobalFlags::empty())),
+        GOTTPOFF => Ok((DemandFlags::GOT_TPREL, GlobalFlags::STATIC_TLS)),
+        _ => Err(Refusal::named(RefusalClass::RelocationType, name)),
     }
 }
 
@@ -364,12 +377,13 @@ pub fn apply(
     }
     let kind = effective(sym.kind, h.class);
     match at.r_type {
-        TLSGD | TLSLD | GOTPC32_TLSDESC | TLSDESC_CALL if !exec => {
-            return Err(FieldError::Refused(feature(DYNAMIC_TLS)));
-        }
         TLSGD | TLSLD | GOTPC32_TLSDESC | TLSDESC_CALL if !out.alloc => {
             return Err(FieldError::Refused(feature(NON_ALLOC_TLS)));
         }
+        // X-61: in a shared object every model is its §6.1 row against
+        // its slot (`G(GTLSIDX)`, `G(GTLSLD)`, `G(GTLSDESC)` + A − P; the
+        // `TLSDESC_CALL` writes nothing), the call kept.
+        TLSGD | TLSLD | GOTPC32_TLSDESC | TLSDESC_CALL if !exec => {}
         TLSGD | TLSLD => return lead(m2, cx, at, out, sym, kind),
         GOTPC32_TLSDESC | TLSDESC_CALL => return desc(m2, cx, at, out, sym, kind),
         GOTTPOFF => {

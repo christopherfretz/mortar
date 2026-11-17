@@ -1,4 +1,4 @@
-# dyn.md D-121 (WP-124): IFUNCs defined in a shared object. `f_exp` is
+# dyn.md D-121 (WP-124, WP-127 part 2): IFUNCs defined in a shared object. `f_exp` is
 # exported and preemptible: STT_GNU_IFUNC at its resolver in .dynsym, and
 # every use a record against it (JUMP_SLOT, GLOB_DAT, ABS64), so an
 # interposing `-rdynamic` executable or an LD_PRELOAD library takes the
@@ -19,12 +19,17 @@
 # the resolved function in the other (W21); mold binds `f_exp` inside the
 # library, so the interposer does not reach its calls and `&f_exp`
 # differs (W20). lld puts the IRELATIVEs in .rela.dyn, before the
-# JUMP_SLOTs (A20).
+# JUMP_SLOTs (A20). On x86-64 (WP-127 part 2) mortar writes the same
+# records (R_X86_64_JUMP_SLOT, GLOB_DAT, 64 against `f_exp`; three
+# IRELATIVEs) and every host prints the same; GNU ld and mold give the
+# static `g_loc` and the protected `p_prot` one address in code and
+# another in the data words (W21's x86-64 form), and GNU ld writes
+# R_X86_64_NONE records (P-D25).
 #@ spec: dyn.md "D-121"
-#@ arch: aarch64
+#@ arch: aarch64 x86_64
 #@ anomaly(lld): A20
-#@ xfail(bfd): W21: a hidden IFUNC's address differs between translation units (and an assertion under -Bsymbolic-functions)
-#@ xfail(mold): W20, W21: mold binds an exported IFUNC inside the library; a hidden one's address differs between translation units
+#@ xfail(bfd): W21: a non-preemptible IFUNC's address differs between uses (AArch64: a hidden one between translation units, and an assertion under -Bsymbolic-functions; x86-64: a static and a protected one between code and data, and R_X86_64_NONE records)
+#@ xfail(mold): W20, W21: mold binds an exported IFUNC inside the library; a non-preemptible one's address differs between uses (AArch64: a hidden one between translation units; x86-64: a static and a protected one between code and data)
 
 cc -O1 -fPIC lib.c -o lib.o
 cc -O1 -fPIC tu2.c -o tu2.o
@@ -40,15 +45,20 @@ check readelf -W --dyn-syms libif.so
   not: h_hid
   not: g_loc
 check readelf -rW libif.so
-  has: R_AARCH64_JUMP_SLOT * f_exp + 0$
-  has: R_AARCH64_GLOB_DAT * f_exp + 0$
-  has: R_AARCH64_ABS64 * f_exp + 0$
-  count(mortar,lld): 3 R_AARCH64_IRELATIVE
+  has(aarch64): R_AARCH64_JUMP_SLOT * f_exp + 0$
+  has(aarch64): R_AARCH64_GLOB_DAT * f_exp + 0$
+  has(aarch64): R_AARCH64_ABS64 * f_exp + 0$
+  count(mortar,lld,aarch64): 3 R_AARCH64_IRELATIVE
+  has(x86_64): R_X86_64_JUMP_SLOT * f_exp + 0$
+  has(x86_64): R_X86_64_GLOB_DAT * f_exp + 0$
+  has(x86_64): R_X86_64_64 * f_exp + 0$
+  count(mortar,lld,x86_64): 3 R_X86_64_IRELATIVE
 check readelf -hW libif.so
   has(mortar): OS/ABI: * UNIX - GNU$
 link gcc -shared lib.o tu2.o -Wl,-Bsymbolic-functions -Wl,-soname,libifs.so -o libifs.so
 check readelf -rW libifs.so
-  has: R_AARCH64_JUMP_SLOT * f_exp + 0$
+  has(aarch64): R_AARCH64_JUMP_SLOT * f_exp + 0$
+  has(x86_64): R_X86_64_JUMP_SLOT * f_exp + 0$
 link gcc -shared lib.o tu2.o -Wl,-z,now -Wl,-soname,libifn.so -o libifn.so
 check readelf -dW libifn.so
   has: (FLAGS) * BIND_NOW
