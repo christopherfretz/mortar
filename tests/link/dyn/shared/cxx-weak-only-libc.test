@@ -4,8 +4,8 @@
 # `__cxa_finalize` as an unversioned WEAK NOTYPE UND entry. mortar binds
 # it to the C library's versioned definition and refuses the link by
 # name (D-27: a version of a shared object that is not needed). (lld
-# writes the key versioned and mold keeps the C library needed: the
-# checks are GNU ld's.)
+# writes an unversioned WEAK FUNC UND entry and mold keeps the C library
+# needed and binds `__cxa_finalize@GLIBC_2.17`: the checks are GNU ld's.)
 #@ spec: dyn.md "D-111"
 #@ arch: aarch64 x86_64
 #@ requires: g++
