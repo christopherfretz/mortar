@@ -276,6 +276,9 @@ fn judge(
         report
             .findings
             .extend(crate::shared::static_checks(image, dout, &objs, sl, s, &args, map.format));
+        // P-D17's address clause (D-117): a bound use is reported even when
+        // both views agree on its value.
+        report.findings.extend(crate::sharedflow::address_clause(&objs, s).0);
     } else if map.format != crate::Format::Mortar && line.symbolic == Some("-Bsymbolic") {
         // A44 is an executable's: a shared object's DF_SYMBOLIC is P-D22's.
         symbolic_flag(&mut checked);
