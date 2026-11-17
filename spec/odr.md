@@ -1586,10 +1586,13 @@ warning: f(int) violates the one-definition rule
   and `producer` (`>>> a.o: source=a.cc, producer=kiln 0.3; b.o:
   source=b.cc, producer=gcc`), first among the notes (WP-073: a
   developer needs "which TU, built by what").
-- Notes that explain, from kind 1: every key other than `source` and
-  `producer` that differs between the two units (`>>> a.o: abi.short-enums=on; b.o: off`, `>>> a.o: std=c++17;
-  b.o: c++20`). The question in the K1 example is printed only when no
-  kind 1 key differs. A kind 5 finding between rows of C and C++
+- Notes from kind 1, as facts beside the finding and never as its
+  cause: every key other than `source` and `producer` that differs
+  between the two units (`>>> the translation units also differ in
+  abi.short-enums (a.o: on; b.o: off)`, `>>> the translation units also
+  differ in std (a.o: c++17; b.o: c++20)`; WP-174: the definition's
+  difference may lie elsewhere, e.g. in a callee's symbol). The question in the K1 example is
+  printed only when no kind 1 key differs. A kind 5 finding between rows of C and C++
   language linkage (O-35, compared by size only) notes only the keys
   that both units carry with `ENFORCE` (O-30), not `lang`, `std` or any
   other key O-32 does not judge between a C and a C++ unit (WP-151;

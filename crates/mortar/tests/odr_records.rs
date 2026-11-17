@@ -267,10 +267,35 @@ fn system_std_and_schemes() {
     assert!(ok, "{e}");
     assert!(e.contains("warning: _Z3sysv violates the one-definition rule"), "{e}");
     assert!(e.contains("spec/odr.md O-32"), "{e}");
-    assert!(e.contains(">>> a.o: std=c++20; b.o: c++17"), "{e}");
+    assert!(e.contains(">>> the translation units also differ in std (a.o: c++20; b.o: c++17)"), "{e}");
     assert!(!e.contains("_Z3usrv"), "{e}");
     assert!(e.contains("schemes 2, pairs not compared 2,"), "{e}");
     assert!(e.contains("system -std differences 1,"), "{e}");
+}
+
+// spec: odr.md §9.1 (a kind 1 key that differs is noted as a fact beside
+// the finding, never as its cause; WP-174: a USER row whose units also
+// differ in -std is an error, its note says only that the -std differ)
+#[test]
+fn kind2_std_note_is_a_fact() {
+    let Some(cx) = Cx::new("odr-std-fact") else { return };
+    let mut a = cxx("a.cc");
+    a.definitions.push(def("_Z4showi", 1, flags::VAGUE));
+    let mut b = unit(
+        &[("lang", "c++"), ("odr.scheme", "test-1"), ("std", "c++17")].map(|(n, v)| (n, v, 0)),
+    );
+    b.definitions.push(def("_Z4showi", 2, flags::VAGUE));
+    cx.object("a.o", &[], Some(&bytes(&[a])));
+    cx.object("b.o", &[], Some(&bytes(&[b])));
+    let (ok, e) = cx.strict(&["a.o", "b.o"], &[]);
+    assert!(!ok, "{e}");
+    assert!(e.contains("error: _Z4showi violates the one-definition rule"), "{e}");
+    assert!(
+        e.contains(">>> the translation units also differ in std (a.o: c++20; b.o: c++17)\n"),
+        "{e}"
+    );
+    assert!(!e.contains("a.o: std="), "{e}");
+    assert!(!e.contains("O-32"), "{e}");
 }
 
 // spec: odr.md O-11's strict exception, O-17, O-18 (kind 3: layout within

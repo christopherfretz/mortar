@@ -1677,8 +1677,10 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
     }
 
     /// §9.1's notes from kind 1: every key whose value differs between the
-    /// units of `a` and `b` (not `producer` or `source`); with
-    /// `enforced`, only the keys both units carry with `ENFORCE` (O-30).
+    /// units of `a` and `b` (not `producer` or `source`), as a fact beside
+    /// the finding ("the translation units also differ in std (...)");
+    /// with `enforced`, only the keys both units carry with `ENFORCE`
+    /// (O-30), as `a.o: key=value; b.o: value`.
     fn summary_notes(&self, a: &Entry<'_>, b: &Entry<'_>, enforced: bool) -> Vec<String> {
         let (ua, ub) = (self.units[a.unit as usize], self.units[b.unit as usize]);
         let fa = self.file_text(self.file_of(a));
@@ -1707,12 +1709,19 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
                         |v| String::from_utf8_lossy(v).into_owned(),
                     )
                 };
-                out.push(format!(
-                    "{fa}: {}={}; {fb}: {}",
-                    String::from_utf8_lossy(name),
-                    text(va),
-                    text(vb)
-                ));
+                let name = String::from_utf8_lossy(name);
+                // WP-174: a key no rule judges here is a fact beside the
+                // finding, never its cause (a user row whose callee's
+                // symbol differs also has units of two -std values).
+                out.push(if enforced {
+                    format!("{fa}: {name}={}; {fb}: {}", text(va), text(vb))
+                } else {
+                    format!(
+                        "the translation units also differ in {name} ({fa}: {}; {fb}: {})",
+                        text(va),
+                        text(vb)
+                    )
+                });
             }
         }
         out
