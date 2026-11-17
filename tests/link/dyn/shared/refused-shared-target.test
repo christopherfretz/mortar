@@ -1,21 +1,16 @@
 # Record WP-110 §D "Where the refusal stays" (WP-123): what a `-shared`
 # line may ask for outside the first target is refused by name; the
-# references link each line. `.symver` definitions until WP-125
-# (`--version-script`: `refused-shared-later`); `--dynamic-list` until
-# WP-128; `--incremental` with `-shared` is IN-12a's warning and a plain
-# link writing no state, and `--incremental=update` its error. TLS and
+# references link each line. `--dynamic-list` until WP-128 (`.symver`
+# definitions and version scripts link since WP-125, `dyn/version/*`);
+# `--incremental` with `-shared` is IN-12a's warning and a plain link
+# writing no state, and `--incremental=update` its error. TLS and
 # the library's own IFUNC link since WP-124 (`tls-shared-*`,
 # `ifunc-shared-equality`); local-exec TLS stays refused
 # (`tls-shared-le-refused`).
 #@ spec: dyn.md "D-100"; incr.md "IN-12a"
 #@ arch: aarch64
 
-cc -O1 -fPIC sv.c -o sv.o
 cc -O1 -fPIC lib.c -o lib.o
-link(bfd,lld,mold) gcc -shared sv.o -Wl,--version-script,sv.map -o libsv.so
-link(mortar) gcc -shared sv.o -o libsv.so
-  exit: fail
-  diag: versioned definition foo@@V2 cannot be exported
 link(bfd,lld,mold) gcc -shared lib.o -Wl,--dynamic-list,dl.txt -o libdl.so
 link(mortar) gcc -shared lib.o -Wl,--dynamic-list,dl.txt -o libdl.so
   exit: fail
@@ -27,14 +22,6 @@ link(mortar) gcc -shared lib.o -Wl,--incremental=update -o libinc2.so
   exit: fail
   diag: --incremental=update: cannot update: incremental-unsupported (-shared)
 
-#--- sv.c
-__asm__(".symver foo_v1, foo@V1");
-__asm__(".symver foo_v2, foo@@V2");
-int foo_v1(void) { return 1; }
-int foo_v2(void) { return 2; }
-#--- sv.map
-V1 { global: foo; local: *; };
-V2 { global: foo; } V1;
 #--- dl.txt
 { lib_get; };
 #--- lib.c

@@ -1,0 +1,1413 @@
+case A-S1 -
+names foo _Z3fooi _ZN2ns3fooEv
+versioned
+file
+| V1 { local: foo*; }; V2 { global: fo*; };
+expect foo=V2 _Z3fooi=base _ZN2ns3fooEv=base
+case A-S2 -
+names foo _Z3fooi _ZN2ns3fooEv
+versioned
+file
+| V1 { global: fo*; }; V2 { local: foo*; };
+expect foo=V1 _Z3fooi=base _ZN2ns3fooEv=base
+case A-S5 -
+names foo _Z3fooi _ZN2ns3fooEv
+versioned
+file
+| V1 { global: f?o; }; V2 { global: [f]oo; };
+expect foo=V2 _Z3fooi=base _ZN2ns3fooEv=base
+case A-S6 -
+names foo _Z3fooi _ZN2ns3fooEv
+versioned
+file
+| V1 { global: *; }; V2 { global: foo*; };
+expect foo=V2 _Z3fooi=V1 _ZN2ns3fooEv=V1
+case A-S6r -
+names foo _Z3fooi _ZN2ns3fooEv
+versioned
+file
+| V1 { global: foo*; }; V2 { global: *; };
+expect foo=V1 _Z3fooi=V2 _ZN2ns3fooEv=V2
+case A-S7 -
+names foo _Z3fooi _ZN2ns3fooEv
+versioned
+file
+| V1 { global: foo*; local: fo*; };
+expect foo=V1 _Z3fooi=base _ZN2ns3fooEv=base
+case A-S8 -
+names foo _Z3fooi _ZN2ns3fooEv
+versioned
+file
+| V1 { local: foo*; global: fo*; };
+expect foo=V1 _Z3fooi=base _ZN2ns3fooEv=base
+case A-S9 -
+names foo _Z3fooi _ZN2ns3fooEv
+versioned
+file
+| V1 { global: *; local: foo*; };
+expect foo=local _Z3fooi=V1 _ZN2ns3fooEv=V1
+case A-S10 -
+names foo _Z3fooi _ZN2ns3fooEv
+versioned
+file
+| V1 { global: *; }; V2 { local: foo*; };
+expect foo=local _Z3fooi=V1 _ZN2ns3fooEv=V1
+case A-S10r -
+names foo _Z3fooi _ZN2ns3fooEv
+versioned
+file
+| V1 { local: foo*; }; V2 { global: *; };
+expect foo=local _Z3fooi=V2 _ZN2ns3fooEv=V2
+case A-S11 -
+names foo _Z3fooi _ZN2ns3fooEv
+versioned
+file
+| V1 { global: fo*; local: *; }; V2 { local: foo*; };
+expect foo=V1 _Z3fooi=local _ZN2ns3fooEv=local
+case A-S12 -
+names foo _Z3fooi _ZN2ns3fooEv
+versioned
+file
+| V1 { global: foo; }; V2 { local: foo; };
+expect REFUSED
+case A-S13 -
+names foo _Z3fooi _ZN2ns3fooEv
+versioned
+file
+| V1 { local: foo; }; V2 { global: foo; };
+expect REFUSED
+case A-S14 -
+names foo _Z3fooi _ZN2ns3fooEv
+versioned
+file
+| V1 { global: f*; }; V2 { global: fo*; }; V3 { global: foo*; };
+expect foo=V3 _Z3fooi=base _ZN2ns3fooEv=base
+case A-S15 -
+names foo _Z3fooi _ZN2ns3fooEv
+versioned
+file
+| V1 { global: foo*; }; V2 { global: fo*; }; V3 { global: f*; };
+expect foo=V3 _Z3fooi=base _ZN2ns3fooEv=base
+case A-S16 -
+names foo _Z3fooi _ZN2ns3fooEv
+versioned
+file
+| V1 { global: *; local: *; };
+expect foo=V1 _Z3fooi=V1 _ZN2ns3fooEv=V1
+case A-S17 -
+names foo _Z3fooi _ZN2ns3fooEv
+versioned
+file
+| V1 { local: *; }; V2 { global: foo*; };
+expect foo=V2 _Z3fooi=local _ZN2ns3fooEv=local
+case A-S18 -
+names foo _Z3fooi _ZN2ns3fooEv
+versioned
+file
+| V1 { global: *o*; }; V2 { local: *; };
+expect foo=V1 _Z3fooi=V1 _ZN2ns3fooEv=V1
+case A-S19 -
+names foo _Z3fooi _ZN2ns3fooEv
+versioned
+file
+| V1 { global: foo; }; V2 { global: foo; };
+expect foo=V1 _Z3fooi=base _ZN2ns3fooEv=base
+case A-Q1 -
+names foo _Z3fooi _ZN2ns3fooEv
+versioned
+file
+| V1 { global: "foo*"; };
+expect foo=base _Z3fooi=base _ZN2ns3fooEv=base
+case A-Q2 -
+names foo _Z3fooi _ZN2ns3fooEv
+versioned
+file
+| V1 { global: "foo"; local: *; };
+expect foo=V1 _Z3fooi=local _ZN2ns3fooEv=local
+case A-Q3 -
+names foo _Z3fooi _ZN2ns3fooEv
+versioned
+file
+| V1 { global: f*; }; V2 { global: "foo"; };
+expect foo=V2 _Z3fooi=base _ZN2ns3fooEv=base
+case A-Q4 -
+names foo _Z3fooi _ZN2ns3fooEv
+versioned
+file
+| V1 { global: "fo*"; local: *; };
+expect foo=local _Z3fooi=local _ZN2ns3fooEv=local
+case A-D1 -
+names foo _Z3fooi _ZN2ns3fooEv
+versioned
+file
+| V1 { global: foo*; }; V2 { global: foo*; };
+expect foo=V2 _Z3fooi=base _ZN2ns3fooEv=base
+case A-D2 -
+names foo _Z3fooi _ZN2ns3fooEv
+versioned
+file
+| V1 { global: foo*; }; V2 { local: foo*; };
+expect REFUSED
+case A-D3 -
+names foo _Z3fooi _ZN2ns3fooEv
+versioned
+file
+| V1 { local: foo*; }; V2 { global: foo*; };
+expect REFUSED
+case A-D4 -
+names foo _Z3fooi _ZN2ns3fooEv
+versioned
+file
+| V1 { global: *; }; V2 { local: *; };
+expect REFUSED
+case A-D5 -
+names foo _Z3fooi _ZN2ns3fooEv
+versioned
+file
+| V1 { global: foo; local: foo; };
+expect foo=V1 _Z3fooi=base _ZN2ns3fooEv=base
+case A-D6 -
+names foo _Z3fooi _ZN2ns3fooEv
+versioned
+file
+| V1 { global: foo; foo; };
+expect foo=V1 _Z3fooi=base _ZN2ns3fooEv=base
+case A-D7 -
+names foo _Z3fooi _ZN2ns3fooEv
+versioned
+file
+| V1 { local: foo; }; V2 { local: foo; };
+expect foo=local _Z3fooi=base _ZN2ns3fooEv=base
+case A-L1 -
+names foo _Z3fooi _ZN2ns3fooEv
+versioned
+file
+| V1 { local: *; global: foo; };
+expect foo=V1 _Z3fooi=local _ZN2ns3fooEv=local
+case A-L2 -
+names foo _Z3fooi _ZN2ns3fooEv
+versioned
+file
+| V1 { local: foo; global: fo*; };
+expect foo=local _Z3fooi=base _ZN2ns3fooEv=base
+case A-E1 -
+names foo _Z3fooi _ZN2ns3fooEv
+versioned
+file
+| V1 { global: foo; }; V2 { local: fo*; };
+expect foo=V1 _Z3fooi=base _ZN2ns3fooEv=base
+case A-E2 -
+names foo _Z3fooi _ZN2ns3fooEv
+versioned
+file
+| V1 { local: foo; }; V2 { global: fo*; };
+expect foo=local _Z3fooi=base _ZN2ns3fooEv=base
+case A-E3 -
+names foo _Z3fooi _ZN2ns3fooEv
+versioned
+file
+| V1 { global: fo*; }; V2 { global: foo; };
+expect foo=V2 _Z3fooi=base _ZN2ns3fooEv=base
+case A-E4 -
+names foo _Z3fooi _ZN2ns3fooEv
+versioned
+file
+| V1 { global: fo*; }; V2 { local: foo; };
+expect foo=local _Z3fooi=base _ZN2ns3fooEv=base
+case A-E5 -
+names foo _Z3fooi _ZN2ns3fooEv
+versioned
+file
+| V1 { global: foo*; local: *; }; V2 { global: *; };
+expect REFUSED
+case A-E6 -
+names foo _Z3fooi _ZN2ns3fooEv
+versioned
+file
+| V1 { local: f*; }; V2 { local: fo*; global: *; };
+expect foo=local _Z3fooi=V2 _ZN2ns3fooEv=V2
+case A-E7 -
+names foo _Z3fooi _ZN2ns3fooEv
+versioned
+file
+| V1 { global: [fb]oo; local: *; };
+expect foo=V1 _Z3fooi=local _ZN2ns3fooEv=local
+case A-E8 -
+names foo _Z3fooi _ZN2ns3fooEv
+versioned
+file
+| V1 { global: f?o; local: f*; };
+expect foo=V1 _Z3fooi=base _ZN2ns3fooEv=base
+case A-E9 -
+names foo _Z3fooi _ZN2ns3fooEv
+versioned
+file
+| V1 { global: *; local: foo; };
+expect foo=local _Z3fooi=V1 _ZN2ns3fooEv=V1
+case A-E10 -
+names foo _Z3fooi _ZN2ns3fooEv
+versioned
+file
+| { global: fo*; local: *; };
+expect foo=base _Z3fooi=local _ZN2ns3fooEv=local
+case A-X1 -
+names foo _Z3fooi _ZN2ns3fooEv
+versioned
+file
+| V1 { global: extern "C++" { "foo(int)"; }; local: *; };
+expect foo=local _Z3fooi=V1 _ZN2ns3fooEv=local
+case A-X2 -
+names foo _Z3fooi _ZN2ns3fooEv
+versioned
+file
+| V1 { global: extern "C++" { foo*; }; local: *; };
+expect foo=V1 _Z3fooi=V1 _ZN2ns3fooEv=local
+case A-X3 -
+names foo _Z3fooi _ZN2ns3fooEv
+versioned
+file
+| V1 { global: extern "C++" { ns::*; }; local: *; };
+expect foo=local _Z3fooi=local _ZN2ns3fooEv=V1
+case A-X4 -
+names foo _Z3fooi _ZN2ns3fooEv
+versioned
+file
+| V1 { global: _Z3foo*; local: *; };
+expect foo=local _Z3fooi=V1 _ZN2ns3fooEv=local
+case A-X5 -
+names foo _Z3fooi _ZN2ns3fooEv
+versioned
+file
+| V1 { global: extern "C++" { foo*; }; }; V2 { global: _Z3fooi; };
+expect foo=V1 _Z3fooi=V2 _ZN2ns3fooEv=base
+case A-X6 -
+names foo _Z3fooi _ZN2ns3fooEv
+versioned
+file
+| V1 { global: extern "C++" { "foo(int)"; }; }; V2 { global: _Z*; };
+expect foo=base _Z3fooi=V1 _ZN2ns3fooEv=V2
+case A-X7 -
+names foo _Z3fooi _ZN2ns3fooEv
+versioned
+file
+| V1 { global: extern "C++" { *; }; local: *; };
+expect foo=V1 _Z3fooi=V1 _ZN2ns3fooEv=V1
+case A-X8 -
+names foo _Z3fooi _ZN2ns3fooEv
+versioned
+file
+| V1 { global: extern "C++" { "ns::foo()"; }; }; V2 { local: extern "C++" { ns::*; }; };
+expect foo=base _Z3fooi=base _ZN2ns3fooEv=V1
+case A-X9 -
+names foo _Z3fooi _ZN2ns3fooEv
+versioned
+file
+| V1 { global: extern "C++" { fo*; }; local: *; };
+expect foo=V1 _Z3fooi=V1 _ZN2ns3fooEv=local
+case A-X10 -
+names foo _Z3fooi _ZN2ns3fooEv
+versioned
+file
+| V1 { global: extern "C++" { foo; }; local: *; };
+expect foo=V1 _Z3fooi=local _ZN2ns3fooEv=local
+case A-X11 -
+names foo _Z3fooi _ZN2ns3fooEv
+versioned
+file
+| V1 { global: extern "C" { fo*; }; local: *; };
+expect foo=V1 _Z3fooi=local _ZN2ns3fooEv=local
+case R-r01 -
+names foo foo2 fop bar baz fa _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { global: foo; bar; }; V2 { global: foo; baz; }; V3 { global: foo; local: *; };
+expect foo=V1 foo2=local fop=local bar=V1 baz=V2 fa=local _Z3fooi=local _ZN2ns3fooEv=local _ZN2ns3barIiEEiv=local
+case R-r02 -
+names foo foo2 fop bar baz fa _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { global: f*; fo*; }; V2 { global: foo*; };
+expect foo=V2 foo2=V2 fop=V1 bar=base baz=base fa=V1 _Z3fooi=base _ZN2ns3fooEv=base _ZN2ns3barIiEEiv=base
+case R-r03 -
+names foo foo2 fop bar baz fa _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { global: fo?; }; V2 { global: f??2; local: *; };
+expect foo=V1 foo2=V2 fop=V1 bar=local baz=local fa=local _Z3fooi=local _ZN2ns3fooEv=local _ZN2ns3barIiEEiv=local
+case R-r04 -
+names foo foo2 fop bar baz fa _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { global: f[o]o; }; V2 { global: [bf]a*; local: *; };
+expect foo=V1 foo2=local fop=local bar=V2 baz=V2 fa=V2 _Z3fooi=local _ZN2ns3fooEv=local _ZN2ns3barIiEEiv=local
+case R-r05 -
+names foo foo2 fop bar baz fa _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { global: *; }; V2 { global: *; }; V3 { local: *; };
+expect REFUSED
+case R-r06 -
+names foo foo2 fop bar baz fa _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { global: *; }; V2 { global: *; };
+expect foo=V2 foo2=V2 fop=V2 bar=V2 baz=V2 fa=V2 _Z3fooi=V2 _ZN2ns3fooEv=V2 _ZN2ns3barIiEEiv=V2
+case R-r07 -
+names foo foo2 fop bar baz fa _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { local: *; }; V2 { local: *; }; V3 { global: foo; };
+expect foo=V3 foo2=local fop=local bar=local baz=local fa=local _Z3fooi=local _ZN2ns3fooEv=local _ZN2ns3barIiEEiv=local
+case R-r08 -
+names foo foo2 fop bar baz fa _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { global: "foo"; }; V2 { local: foo; };
+expect REFUSED
+case R-r09 -
+names foo foo2 fop bar baz fa _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { global: "fo*"; local: *; };
+expect foo=local foo2=local fop=local bar=local baz=local fa=local _Z3fooi=local _ZN2ns3fooEv=local _ZN2ns3barIiEEiv=local
+case R-r10 -
+names foo foo2 fop bar baz fa _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { global: "f*"; }; V2 { global: f*; };
+expect foo=V2 foo2=V2 fop=V2 bar=base baz=base fa=V2 _Z3fooi=base _ZN2ns3fooEv=base _ZN2ns3barIiEEiv=base
+case R-r11 -
+names foo foo2 fop bar baz fa _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { local: foo; global: *; };
+expect foo=local foo2=V1 fop=V1 bar=V1 baz=V1 fa=V1 _Z3fooi=V1 _ZN2ns3fooEv=V1 _ZN2ns3barIiEEiv=V1
+case R-r12 -
+names foo foo2 fop bar baz fa _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { global: foo; local: foo; };
+expect foo=V1 foo2=base fop=base bar=base baz=base fa=base _Z3fooi=base _ZN2ns3fooEv=base _ZN2ns3barIiEEiv=base
+case R-r13 -
+names foo foo2 fop bar baz fa _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { global: f*; local: foo; };
+expect foo=local foo2=V1 fop=V1 bar=base baz=base fa=V1 _Z3fooi=base _ZN2ns3fooEv=base _ZN2ns3barIiEEiv=base
+case R-r14 -
+names foo foo2 fop bar baz fa _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { global: foo; }; V2 { global: *; local: foo*; };
+expect foo=V1 foo2=local fop=V2 bar=V2 baz=V2 fa=V2 _Z3fooi=V2 _ZN2ns3fooEv=V2 _ZN2ns3barIiEEiv=V2
+case R-r15 -
+names foo foo2 fop bar baz fa _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { global: fo*; }; V2 { global: *; local: f*; };
+expect foo=V1 foo2=V1 fop=V1 bar=V2 baz=V2 fa=local _Z3fooi=V2 _ZN2ns3fooEv=V2 _ZN2ns3barIiEEiv=V2
+case R-r16 -
+names foo foo2 fop bar baz fa _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { local: fo*; }; V2 { global: f*; };
+expect foo=V2 foo2=V2 fop=V2 bar=base baz=base fa=V2 _Z3fooi=base _ZN2ns3fooEv=base _ZN2ns3barIiEEiv=base
+case R-r17 -
+names foo foo2 fop bar baz fa _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { local: f*; }; V2 { global: *; };
+expect foo=local foo2=local fop=local bar=V2 baz=V2 fa=local _Z3fooi=V2 _ZN2ns3fooEv=V2 _ZN2ns3barIiEEiv=V2
+case R-r18 -
+names foo foo2 fop bar baz fa _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| { global: foo; bar; local: *; };
+expect foo=base foo2=local fop=local bar=base baz=local fa=local _Z3fooi=local _ZN2ns3fooEv=local _ZN2ns3barIiEEiv=local
+case R-r19 -
+names foo foo2 fop bar baz fa _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| { global: f*; };
+expect foo=base foo2=base fop=base bar=base baz=base fa=base _Z3fooi=base _ZN2ns3fooEv=base _ZN2ns3barIiEEiv=base
+case R-r20 -
+names foo foo2 fop bar baz fa _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { global: extern "C++" { "foo(int)"; }; local: *; };
+expect foo=local foo2=local fop=local bar=local baz=local fa=local _Z3fooi=V1 _ZN2ns3fooEv=local _ZN2ns3barIiEEiv=local
+case R-r21 -
+names foo foo2 fop bar baz fa _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { global: extern "C++" { ns::*; }; local: *; };
+expect foo=local foo2=local fop=local bar=local baz=local fa=local _Z3fooi=local _ZN2ns3fooEv=V1 _ZN2ns3barIiEEiv=local
+case R-r22 -
+names foo foo2 fop bar baz fa _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { global: extern "C++" { "ns::bar<int>()"; ns::foo*; }; }; V2 { global: _Z*; };
+expect foo=base foo2=base fop=base bar=base baz=base fa=base _Z3fooi=V2 _ZN2ns3fooEv=V2 _ZN2ns3barIiEEiv=V2
+case R-r23 -
+names foo foo2 fop bar baz fa _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { global: extern "C++" { *foo*; }; foo; local: *; };
+expect foo=V1 foo2=V1 fop=local bar=local baz=local fa=local _Z3fooi=V1 _ZN2ns3fooEv=V1 _ZN2ns3barIiEEiv=local
+case R-r24 -
+names foo foo2 fop bar baz fa _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { global: extern "C" { foo; }; extern "C++" { foo*; }; local: *; };
+expect foo=V1 foo2=V1 fop=local bar=local baz=local fa=local _Z3fooi=V1 _ZN2ns3fooEv=local _ZN2ns3barIiEEiv=local
+case R-r25 -
+names foo foo2 fop bar baz fa _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { global: _Z*; }; V2 { global: extern "C++" { "foo(int)"; }; };
+expect foo=base foo2=base fop=base bar=base baz=base fa=base _Z3fooi=V2 _ZN2ns3fooEv=V1 _ZN2ns3barIiEEiv=V1
+case R-r26 -
+names foo foo2 fop bar baz fa _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { global: extern "C++" { "foo(int)"; }; }; V2 { local: _Z3fooi; };
+expect foo=base foo2=base fop=base bar=base baz=base fa=base _Z3fooi=V1 _ZN2ns3fooEv=base _ZN2ns3barIiEEiv=base
+case R-r27 -
+names foo foo2 fop bar baz fa _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { global: foo; }; V2 { global: bar; } V1; V3 { global: baz; } V2 V1;
+expect foo=V1 foo2=base fop=base bar=V2 baz=V3 fa=base _Z3fooi=base _ZN2ns3fooEv=base _ZN2ns3barIiEEiv=base
+case R-r28 -
+names foo foo2 fop bar baz fa _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { global: f?o; local: fo?; };
+expect foo=V1 foo2=base fop=local bar=base baz=base fa=base _Z3fooi=base _ZN2ns3fooEv=base _ZN2ns3barIiEEiv=base
+case R-r29 -
+names foo foo2 fop bar baz fa _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { local: fo?; }; V2 { local: *; }; V3 { global: *; };
+expect REFUSED
+case R-r30 -
+names foo foo2 fop bar baz fa _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { global: *o*; }; V2 { global: *oo; }; V3 { local: foo; };
+expect foo=local foo2=V1 fop=V1 bar=base baz=base fa=base _Z3fooi=V1 _ZN2ns3fooEv=V1 _ZN2ns3barIiEEiv=base
+case R-r31 -
+names foo foo2 fop bar baz fa _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { local: foo; }; V2 { global: f*; };
+expect foo=local foo2=V2 fop=V2 bar=base baz=base fa=V2 _Z3fooi=base _ZN2ns3fooEv=base _ZN2ns3barIiEEiv=base
+case R-r32 -
+names foo foo2 fop bar baz fa _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { global: f*; }; V2 { local: fo*; global: foo2; };
+expect foo=V1 foo2=V2 fop=V1 bar=base baz=base fa=V1 _Z3fooi=base _ZN2ns3fooEv=base _ZN2ns3barIiEEiv=base
+case R-r33 -
+names foo foo2 fop bar baz fa _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { global: [a-c]*; local: *; };
+expect foo=local foo2=local fop=local bar=V1 baz=V1 fa=local _Z3fooi=local _ZN2ns3fooEv=local _ZN2ns3barIiEEiv=local
+case R-r34 -
+names foo foo2 fop bar baz fa _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { global: [!f]*; local: *; };
+expect foo=local foo2=local fop=local bar=V1 baz=V1 fa=local _Z3fooi=V1 _ZN2ns3fooEv=V1 _ZN2ns3barIiEEiv=V1
+case R-r35 -
+names foo foo2 fop bar baz fa _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { global: [^f]*; local: *; };
+expect foo=local foo2=local fop=local bar=V1 baz=V1 fa=local _Z3fooi=V1 _ZN2ns3fooEv=V1 _ZN2ns3barIiEEiv=V1
+case R-r36 -
+names foo foo2 fop bar baz fa _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { global: ?a?; local: *; };
+expect foo=local foo2=local fop=local bar=V1 baz=V1 fa=local _Z3fooi=local _ZN2ns3fooEv=local _ZN2ns3barIiEEiv=local
+case R-r37 -
+names foo foo2 fop bar baz fa _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { global: foo; }; V1b { local: *; };
+expect foo=V1 foo2=local fop=local bar=local baz=local fa=local _Z3fooi=local _ZN2ns3fooEv=local _ZN2ns3barIiEEiv=local
+case R-r38 -
+names foo foo2 fop bar baz fa _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { global: foo; };
+file
+| V2 { global: foo*; local: *; } V1;
+expect foo=V1 foo2=V2 fop=local bar=local baz=local fa=local _Z3fooi=local _ZN2ns3fooEv=local _ZN2ns3barIiEEiv=local
+case R-r39 -
+names foo foo2 fop bar baz fa _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { global: f*; };
+file
+| V2 { local: foo; };
+expect foo=local foo2=V1 fop=V1 bar=base baz=base fa=V1 _Z3fooi=base _ZN2ns3fooEv=base _ZN2ns3barIiEEiv=base
+case R-r40 -
+names foo foo2 fop bar baz fa _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { global: bar; };
+file
+| V2 { local: bar; };
+expect REFUSED
+case R-r41 -
+names foo foo2 fop bar baz fa _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { global: foo; local: *; }; V2 { global: foo2; };
+expect foo=V1 foo2=V2 fop=local bar=local baz=local fa=local _Z3fooi=local _ZN2ns3fooEv=local _ZN2ns3barIiEEiv=local
+case R-r42 -
+names foo foo2 fop bar baz fa _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { global: *; local: *; };
+expect foo=V1 foo2=V1 fop=V1 bar=V1 baz=V1 fa=V1 _Z3fooi=V1 _ZN2ns3fooEv=V1 _ZN2ns3barIiEEiv=V1
+case R-r43 -
+names foo foo2 fop bar baz fa _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { global: f*; local: f*; };
+expect foo=V1 foo2=V1 fop=V1 bar=base baz=base fa=V1 _Z3fooi=base _ZN2ns3fooEv=base _ZN2ns3barIiEEiv=base
+case R-r44 -
+names foo foo2 fop bar baz fa _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { global: fo*; }; V2 { global: fo*; };
+expect foo=V2 foo2=V2 fop=V2 bar=base baz=base fa=base _Z3fooi=base _ZN2ns3fooEv=base _ZN2ns3barIiEEiv=base
+case R-r45 -
+names foo foo2 fop bar baz fa _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { global: foo; }; V2 { global: "foo"; };
+expect foo=V1 foo2=base fop=base bar=base baz=base fa=base _Z3fooi=base _ZN2ns3fooEv=base _ZN2ns3barIiEEiv=base
+case R-r46 -
+names foo foo2 fop bar baz fa _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { local: "foo"; }; V2 { global: foo; };
+expect REFUSED
+case R-r47 -
+names foo foo2 fop bar baz fa _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { global: *; }; V2 { local: f*; global: foo; };
+expect foo=V2 foo2=local fop=local bar=V1 baz=V1 fa=local _Z3fooi=V1 _ZN2ns3fooEv=V1 _ZN2ns3barIiEEiv=V1
+case R-r48 -
+names foo foo2 fop bar baz fa _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { global: extern "C++" { foo*; }; }; V2 { local: *; };
+expect foo=V1 foo2=V1 fop=local bar=local baz=local fa=local _Z3fooi=V1 _ZN2ns3fooEv=local _ZN2ns3barIiEEiv=local
+case R-r49 -
+names foo foo2 fop bar baz fa _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { global: f*; }; V2 { global: foo; local: *; };
+expect foo=V2 foo2=V1 fop=V1 bar=local baz=local fa=V1 _Z3fooi=local _ZN2ns3fooEv=local _ZN2ns3barIiEEiv=local
+case R-r50 -
+names foo foo2 fop bar baz fa _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { global: fo\*; local: *; };
+expect foo=local foo2=local fop=local bar=local baz=local fa=local _Z3fooi=local _ZN2ns3fooEv=local _ZN2ns3barIiEEiv=local
+case R-s01 -
+names old cur bar old_impl
+versioned old=V1
+file
+| V1 { global: bar; local: *; }; V2 { global: cur; } V1;
+expect old=local cur=V2 bar=V1 old_impl=local
+case R-s02 -
+names old cur bar old_impl
+versioned old=V1
+file
+| V1 { global: old; local: *; }; V2 { global: cur; };
+expect old=V1 cur=V2 bar=local old_impl=local
+case R-s03 -
+names old cur bar old_impl
+versioned old=V1
+file
+| V1 { global: o*; local: old; }; V2 { global: cur; };
+expect old=V1 cur=V2 bar=base old_impl=V1
+case R-s04 -
+names old cur bar old_impl
+versioned old=V1
+file
+| V1 { global: *; local: old; }; V2 { global: cur; };
+expect old=V1 cur=V2 bar=V1 old_impl=V1
+case R-s05 -
+names old cur bar old_impl
+versioned old=V1
+file
+| V1 { local: o*; }; V2 { global: cur; };
+expect old=local cur=V2 bar=base old_impl=local
+case R-s06 E
+names old cur bar old_impl
+versioned old=V1
+file
+| V1 { global: bar; local: *; }; V2 { global: cur; } V1;
+expect old=V1 cur=V2 bar=V1 old_impl=local
+case R-s07 -
+names old cur bar old_impl
+versioned old=V1
+file
+| V1 { }; V2 { global: cur; local: *; };
+expect old=V1 cur=V2 bar=local old_impl=local
+case R-s08 -
+names old cur bar old_impl
+versioned old=V1
+file
+| V1 { global: old; }; V2 { global: cur; local: *; };
+expect old=V1 cur=V2 bar=local old_impl=local
+case R-s09 -
+names old cur bar old_impl
+versioned old=V1
+file
+| V1 { global: ol?; local: old; }; V2 { global: cur; };
+expect old=V1 cur=V2 bar=base old_impl=base
+case R-s10 -
+names old cur bar old_impl
+versioned old=V1
+file
+| V1 { local: *; global: old; }; V2 { global: cur; };
+expect old=V1 cur=V2 bar=local old_impl=local
+case G-g00 -
+names foo foo2 fop bar baz fa f.o fo* fo f ]oo [oo -oo ^oo !oo foo\ fo\o eoo goo _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 {
+|   global: f[^o]o;
+|   local: *;
+| };
+expect foo=local foo2=local fop=local bar=local baz=local fa=local f.o=V1 fo*=local fo=local f=local ]oo=local [oo=local -oo=local ^oo=local !oo=local foo\=local fo\o=local eoo=local goo=local _Z3fooi=local _ZN2ns3fooEv=local _ZN2ns3barIiEEiv=local
+case G-g01 -
+names foo foo2 fop bar baz fa f.o fo* fo f ]oo [oo -oo ^oo !oo foo\ fo\o eoo goo _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 {
+|   global: f[!o]o;
+|   local: *;
+| };
+expect foo=local foo2=local fop=local bar=local baz=local fa=local f.o=V1 fo*=local fo=local f=local ]oo=local [oo=local -oo=local ^oo=local !oo=local foo\=local fo\o=local eoo=local goo=local _Z3fooi=local _ZN2ns3fooEv=local _ZN2ns3barIiEEiv=local
+case G-g02 -
+names foo foo2 fop bar baz fa f.o fo* fo f ]oo [oo -oo ^oo !oo foo\ fo\o eoo goo _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 {
+|   global: f[^o]*;
+|   local: *;
+| };
+expect foo=local foo2=local fop=local bar=local baz=local fa=V1 f.o=V1 fo*=local fo=local f=local ]oo=local [oo=local -oo=local ^oo=local !oo=local foo\=local fo\o=local eoo=local goo=local _Z3fooi=local _ZN2ns3fooEv=local _ZN2ns3barIiEEiv=local
+case G-g03 -
+names foo foo2 fop bar baz fa f.o fo* fo f ]oo [oo -oo ^oo !oo foo\ fo\o eoo goo _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 {
+|   global: f[!o]*;
+|   local: *;
+| };
+expect foo=local foo2=local fop=local bar=local baz=local fa=V1 f.o=V1 fo*=local fo=local f=local ]oo=local [oo=local -oo=local ^oo=local !oo=local foo\=local fo\o=local eoo=local goo=local _Z3fooi=local _ZN2ns3fooEv=local _ZN2ns3barIiEEiv=local
+case G-g04 -
+names foo foo2 fop bar baz fa f.o fo* fo f ]oo [oo -oo ^oo !oo foo\ fo\o eoo goo _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 {
+|   global: f[a-o]?;
+|   local: *;
+| };
+expect foo=V1 foo2=local fop=V1 bar=local baz=local fa=local f.o=local fo*=V1 fo=local f=local ]oo=local [oo=local -oo=local ^oo=local !oo=local foo\=local fo\o=local eoo=local goo=local _Z3fooi=local _ZN2ns3fooEv=local _ZN2ns3barIiEEiv=local
+case G-g05 -
+names foo foo2 fop bar baz fa f.o fo* fo f ]oo [oo -oo ^oo !oo foo\ fo\o eoo goo _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 {
+|   global: f[o-a]?;
+|   local: *;
+| };
+expect foo=local foo2=local fop=local bar=local baz=local fa=local f.o=local fo*=local fo=local f=local ]oo=local [oo=local -oo=local ^oo=local !oo=local foo\=local fo\o=local eoo=local goo=local _Z3fooi=local _ZN2ns3fooEv=local _ZN2ns3barIiEEiv=local
+case G-g06 -
+names foo foo2 fop bar baz fa f.o fo* fo f ]oo [oo -oo ^oo !oo foo\ fo\o eoo goo _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 {
+|   global: []]oo;
+|   local: *;
+| };
+expect foo=local foo2=local fop=local bar=local baz=local fa=local f.o=local fo*=local fo=local f=local ]oo=V1 [oo=local -oo=local ^oo=local !oo=local foo\=local fo\o=local eoo=local goo=local _Z3fooi=local _ZN2ns3fooEv=local _ZN2ns3barIiEEiv=local
+case G-g07 -
+names foo foo2 fop bar baz fa f.o fo* fo f ]oo [oo -oo ^oo !oo foo\ fo\o eoo goo _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 {
+|   global: []o]oo;
+|   local: *;
+| };
+expect foo=local foo2=local fop=local bar=local baz=local fa=local f.o=local fo*=local fo=local f=local ]oo=V1 [oo=local -oo=local ^oo=local !oo=local foo\=local fo\o=local eoo=local goo=local _Z3fooi=local _ZN2ns3fooEv=local _ZN2ns3barIiEEiv=local
+case G-g08 -
+names foo foo2 fop bar baz fa f.o fo* fo f ]oo [oo -oo ^oo !oo foo\ fo\o eoo goo _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 {
+|   global: [!]]oo;
+|   local: *;
+| };
+expect foo=V1 foo2=local fop=local bar=local baz=local fa=local f.o=local fo*=local fo=local f=local ]oo=local [oo=V1 -oo=V1 ^oo=V1 !oo=V1 foo\=local fo\o=local eoo=V1 goo=V1 _Z3fooi=local _ZN2ns3fooEv=local _ZN2ns3barIiEEiv=local
+case G-g09 -
+names foo foo2 fop bar baz fa f.o fo* fo f ]oo [oo -oo ^oo !oo foo\ fo\o eoo goo _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 {
+|   global: [^]]oo;
+|   local: *;
+| };
+expect foo=V1 foo2=local fop=local bar=local baz=local fa=local f.o=local fo*=local fo=local f=local ]oo=local [oo=V1 -oo=V1 ^oo=V1 !oo=V1 foo\=local fo\o=local eoo=V1 goo=V1 _Z3fooi=local _ZN2ns3fooEv=local _ZN2ns3barIiEEiv=local
+case G-g10 -
+names foo foo2 fop bar baz fa f.o fo* fo f ]oo [oo -oo ^oo !oo foo\ fo\o eoo goo _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 {
+|   global: f[o;
+|   local: *;
+| };
+expect foo=local foo2=local fop=local bar=local baz=local fa=local f.o=local fo*=local fo=local f=local ]oo=local [oo=local -oo=local ^oo=local !oo=local foo\=local fo\o=local eoo=local goo=local _Z3fooi=local _ZN2ns3fooEv=local _ZN2ns3barIiEEiv=local
+case G-g11 -
+names foo foo2 fop bar baz fa f.o fo* fo f ]oo [oo -oo ^oo !oo foo\ fo\o eoo goo _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 {
+|   global: [oo;
+|   local: *;
+| };
+expect foo=local foo2=local fop=local bar=local baz=local fa=local f.o=local fo*=local fo=local f=local ]oo=local [oo=V1 -oo=local ^oo=local !oo=local foo\=local fo\o=local eoo=local goo=local _Z3fooi=local _ZN2ns3fooEv=local _ZN2ns3barIiEEiv=local
+case G-g12 -
+names foo foo2 fop bar baz fa f.o fo* fo f ]oo [oo -oo ^oo !oo foo\ fo\o eoo goo _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 {
+|   global: fo\*;
+|   local: *;
+| };
+expect foo=local foo2=local fop=local bar=local baz=local fa=local f.o=local fo*=V1 fo=local f=local ]oo=local [oo=local -oo=local ^oo=local !oo=local foo\=local fo\o=local eoo=local goo=local _Z3fooi=local _ZN2ns3fooEv=local _ZN2ns3barIiEEiv=local
+case G-g13 -
+names foo foo2 fop bar baz fa f.o fo* fo f ]oo [oo -oo ^oo !oo foo\ fo\o eoo goo _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 {
+|   global: fo*;
+|   local: *;
+| };
+expect foo=V1 foo2=V1 fop=V1 bar=local baz=local fa=local f.o=local fo*=V1 fo=V1 f=local ]oo=local [oo=local -oo=local ^oo=local !oo=local foo\=V1 fo\o=V1 eoo=local goo=local _Z3fooi=local _ZN2ns3fooEv=local _ZN2ns3barIiEEiv=local
+case G-g14 -
+names foo foo2 fop bar baz fa f.o fo* fo f ]oo [oo -oo ^oo !oo foo\ fo\o eoo goo _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 {
+|   global: "fo*";
+|   local: *;
+| };
+expect foo=local foo2=local fop=local bar=local baz=local fa=local f.o=local fo*=V1 fo=local f=local ]oo=local [oo=local -oo=local ^oo=local !oo=local foo\=local fo\o=local eoo=local goo=local _Z3fooi=local _ZN2ns3fooEv=local _ZN2ns3barIiEEiv=local
+case G-g15 -
+names foo foo2 fop bar baz fa f.o fo* fo f ]oo [oo -oo ^oo !oo foo\ fo\o eoo goo _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 {
+|   global: fo\o;
+|   local: *;
+| };
+expect foo=V1 foo2=local fop=local bar=local baz=local fa=local f.o=local fo*=local fo=local f=local ]oo=local [oo=local -oo=local ^oo=local !oo=local foo\=local fo\o=local eoo=local goo=local _Z3fooi=local _ZN2ns3fooEv=local _ZN2ns3barIiEEiv=local
+case G-g16 -
+names foo foo2 fop bar baz fa f.o fo* fo f ]oo [oo -oo ^oo !oo foo\ fo\o eoo goo _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 {
+|   global: foo\;
+|   local: *;
+| };
+expect foo=local foo2=local fop=local bar=local baz=local fa=local f.o=local fo*=local fo=local f=local ]oo=local [oo=local -oo=local ^oo=local !oo=local foo\=V1 fo\o=local eoo=local goo=local _Z3fooi=local _ZN2ns3fooEv=local _ZN2ns3barIiEEiv=local
+case G-g17 -
+names foo foo2 fop bar baz fa f.o fo* fo f ]oo [oo -oo ^oo !oo foo\ fo\o eoo goo _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 {
+|   global: "foo\\";
+|   local: *;
+| };
+expect foo=local foo2=local fop=local bar=local baz=local fa=local f.o=local fo*=local fo=local f=local ]oo=local [oo=local -oo=local ^oo=local !oo=local foo\=local fo\o=local eoo=local goo=local _Z3fooi=local _ZN2ns3fooEv=local _ZN2ns3barIiEEiv=local
+case G-g18 -
+names foo foo2 fop bar baz fa f.o fo* fo f ]oo [oo -oo ^oo !oo foo\ fo\o eoo goo _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 {
+|   global: foo\\;
+|   local: *;
+| };
+expect foo=local foo2=local fop=local bar=local baz=local fa=local f.o=local fo*=local fo=local f=local ]oo=local [oo=local -oo=local ^oo=local !oo=local foo\=V1 fo\o=local eoo=local goo=local _Z3fooi=local _ZN2ns3fooEv=local _ZN2ns3barIiEEiv=local
+case G-g19 -
+names foo foo2 fop bar baz fa f.o fo* fo f ]oo [oo -oo ^oo !oo foo\ fo\o eoo goo _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 {
+|   global: foo*;
+|   local: *;
+| };
+expect foo=V1 foo2=V1 fop=local bar=local baz=local fa=local f.o=local fo*=local fo=local f=local ]oo=local [oo=local -oo=local ^oo=local !oo=local foo\=V1 fo\o=local eoo=local goo=local _Z3fooi=local _ZN2ns3fooEv=local _ZN2ns3barIiEEiv=local
+case G-g20 -
+names foo foo2 fop bar baz fa f.o fo* fo f ]oo [oo -oo ^oo !oo foo\ fo\o eoo goo _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 {
+|   global: fo[o]*;
+|   local: *;
+| };
+expect foo=V1 foo2=V1 fop=local bar=local baz=local fa=local f.o=local fo*=local fo=local f=local ]oo=local [oo=local -oo=local ^oo=local !oo=local foo\=V1 fo\o=local eoo=local goo=local _Z3fooi=local _ZN2ns3fooEv=local _ZN2ns3barIiEEiv=local
+case G-g21 -
+names foo foo2 fop bar baz fa f.o fo* fo f ]oo [oo -oo ^oo !oo foo\ fo\o eoo goo _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 {
+|   global: f*o;
+|   local: *;
+| };
+expect foo=V1 foo2=local fop=local bar=local baz=local fa=local f.o=V1 fo*=local fo=V1 f=local ]oo=local [oo=local -oo=local ^oo=local !oo=local foo\=local fo\o=V1 eoo=local goo=local _Z3fooi=local _ZN2ns3fooEv=local _ZN2ns3barIiEEiv=local
+case G-g22 -
+names foo foo2 fop bar baz fa f.o fo* fo f ]oo [oo -oo ^oo !oo foo\ fo\o eoo goo _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 {
+|   global: f*;
+|   local: *;
+| };
+expect foo=V1 foo2=V1 fop=V1 bar=local baz=local fa=V1 f.o=V1 fo*=V1 fo=V1 f=V1 ]oo=local [oo=local -oo=local ^oo=local !oo=local foo\=V1 fo\o=V1 eoo=local goo=local _Z3fooi=local _ZN2ns3fooEv=local _ZN2ns3barIiEEiv=local
+case G-g23 -
+names foo foo2 fop bar baz fa f.o fo* fo f ]oo [oo -oo ^oo !oo foo\ fo\o eoo goo _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 {
+|   global: *o;
+|   local: *;
+| };
+expect foo=V1 foo2=local fop=local bar=local baz=local fa=local f.o=V1 fo*=local fo=V1 f=local ]oo=V1 [oo=V1 -oo=V1 ^oo=V1 !oo=V1 foo\=local fo\o=V1 eoo=V1 goo=V1 _Z3fooi=local _ZN2ns3fooEv=local _ZN2ns3barIiEEiv=local
+case G-g24 -
+names foo foo2 fop bar baz fa f.o fo* fo f ]oo [oo -oo ^oo !oo foo\ fo\o eoo goo _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 {
+|   global: [[]oo;
+|   local: *;
+| };
+expect foo=local foo2=local fop=local bar=local baz=local fa=local f.o=local fo*=local fo=local f=local ]oo=local [oo=V1 -oo=local ^oo=local !oo=local foo\=local fo\o=local eoo=local goo=local _Z3fooi=local _ZN2ns3fooEv=local _ZN2ns3barIiEEiv=local
+case G-g25 -
+names foo foo2 fop bar baz fa f.o fo* fo f ]oo [oo -oo ^oo !oo foo\ fo\o eoo goo _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 {
+|   global: [-]oo;
+|   local: *;
+| };
+expect foo=local foo2=local fop=local bar=local baz=local fa=local f.o=local fo*=local fo=local f=local ]oo=local [oo=local -oo=V1 ^oo=local !oo=local foo\=local fo\o=local eoo=local goo=local _Z3fooi=local _ZN2ns3fooEv=local _ZN2ns3barIiEEiv=local
+case G-g26 -
+names foo foo2 fop bar baz fa f.o fo* fo f ]oo [oo -oo ^oo !oo foo\ fo\o eoo goo _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 {
+|   global: [a-]oo;
+|   local: *;
+| };
+expect foo=local foo2=local fop=local bar=local baz=local fa=local f.o=local fo*=local fo=local f=local ]oo=local [oo=local -oo=V1 ^oo=local !oo=local foo\=local fo\o=local eoo=local goo=local _Z3fooi=local _ZN2ns3fooEv=local _ZN2ns3barIiEEiv=local
+case G-g27 -
+names foo foo2 fop bar baz fa f.o fo* fo f ]oo [oo -oo ^oo !oo foo\ fo\o eoo goo _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 {
+|   global: [\]]oo;
+|   local: *;
+| };
+expect foo=local foo2=local fop=local bar=local baz=local fa=local f.o=local fo*=local fo=local f=local ]oo=V1 [oo=local -oo=local ^oo=local !oo=local foo\=local fo\o=local eoo=local goo=local _Z3fooi=local _ZN2ns3fooEv=local _ZN2ns3barIiEEiv=local
+case G-g28 -
+names foo foo2 fop bar baz fa f.o fo* fo f ]oo [oo -oo ^oo !oo foo\ fo\o eoo goo _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 {
+|   global: f[.]o;
+|   local: *;
+| };
+expect foo=local foo2=local fop=local bar=local baz=local fa=local f.o=V1 fo*=local fo=local f=local ]oo=local [oo=local -oo=local ^oo=local !oo=local foo\=local fo\o=local eoo=local goo=local _Z3fooi=local _ZN2ns3fooEv=local _ZN2ns3barIiEEiv=local
+case G-g29 -
+names foo foo2 fop bar baz fa f.o fo* fo f ]oo [oo -oo ^oo !oo foo\ fo\o eoo goo _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 {
+|   global: f?o;
+|   local: *;
+| };
+expect foo=V1 foo2=local fop=local bar=local baz=local fa=local f.o=V1 fo*=local fo=local f=local ]oo=local [oo=local -oo=local ^oo=local !oo=local foo\=local fo\o=local eoo=local goo=local _Z3fooi=local _ZN2ns3fooEv=local _ZN2ns3barIiEEiv=local
+case G-g30 -
+names foo foo2 fop bar baz fa f.o fo* fo f ]oo [oo -oo ^oo !oo foo\ fo\o eoo goo _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 {
+|   global: ???;
+|   local: *;
+| };
+expect foo=V1 foo2=local fop=V1 bar=V1 baz=V1 fa=local f.o=V1 fo*=V1 fo=local f=local ]oo=V1 [oo=V1 -oo=V1 ^oo=V1 !oo=V1 foo\=local fo\o=local eoo=V1 goo=V1 _Z3fooi=local _ZN2ns3fooEv=local _ZN2ns3barIiEEiv=local
+case G-g31 -
+names foo foo2 fop bar baz fa f.o fo* fo f ]oo [oo -oo ^oo !oo foo\ fo\o eoo goo _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 {
+|   global: \fo?;
+|   local: *;
+| };
+expect foo=V1 foo2=local fop=V1 bar=local baz=local fa=local f.o=local fo*=V1 fo=local f=local ]oo=local [oo=local -oo=local ^oo=local !oo=local foo\=local fo\o=local eoo=local goo=local _Z3fooi=local _ZN2ns3fooEv=local _ZN2ns3barIiEEiv=local
+case G-g32 -
+names foo foo2 fop bar baz fa f.o fo* fo f ]oo [oo -oo ^oo !oo foo\ fo\o eoo goo _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 {
+|   global: fo[*];
+|   local: *;
+| };
+expect foo=local foo2=local fop=local bar=local baz=local fa=local f.o=local fo*=V1 fo=local f=local ]oo=local [oo=local -oo=local ^oo=local !oo=local foo\=local fo\o=local eoo=local goo=local _Z3fooi=local _ZN2ns3fooEv=local _ZN2ns3barIiEEiv=local
+case G-g33 -
+names foo foo2 fop bar baz fa f.o fo* fo f ]oo [oo -oo ^oo !oo foo\ fo\o eoo goo _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 {
+|   global: [!a-z]oo;
+|   local: *;
+| };
+expect foo=local foo2=local fop=local bar=local baz=local fa=local f.o=local fo*=local fo=local f=local ]oo=V1 [oo=V1 -oo=V1 ^oo=V1 !oo=V1 foo\=local fo\o=local eoo=local goo=local _Z3fooi=local _ZN2ns3fooEv=local _ZN2ns3barIiEEiv=local
+case G-g34 -
+names foo foo2 fop bar baz fa f.o fo* fo f ]oo [oo -oo ^oo !oo foo\ fo\o eoo goo _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 {
+|   global: [^a-z]oo;
+|   local: *;
+| };
+expect foo=local foo2=local fop=local bar=local baz=local fa=local f.o=local fo*=local fo=local f=local ]oo=V1 [oo=V1 -oo=V1 ^oo=V1 !oo=V1 foo\=local fo\o=local eoo=local goo=local _Z3fooi=local _ZN2ns3fooEv=local _ZN2ns3barIiEEiv=local
+case G-g35 -
+names foo foo2 fop bar baz fa f.o fo* fo f ]oo [oo -oo ^oo !oo foo\ fo\o eoo goo _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 {
+|   global: [o*;
+|   local: *;
+| };
+expect foo=local foo2=local fop=local bar=local baz=local fa=local f.o=local fo*=local fo=local f=local ]oo=local [oo=V1 -oo=local ^oo=local !oo=local foo\=local fo\o=local eoo=local goo=local _Z3fooi=local _ZN2ns3fooEv=local _ZN2ns3barIiEEiv=local
+case G-g36 -
+names foo foo2 fop bar baz fa f.o fo* fo f ]oo [oo -oo ^oo !oo foo\ fo\o eoo goo _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 {
+|   global: f[o*;
+|   local: *;
+| };
+expect foo=local foo2=local fop=local bar=local baz=local fa=local f.o=local fo*=local fo=local f=local ]oo=local [oo=local -oo=local ^oo=local !oo=local foo\=local fo\o=local eoo=local goo=local _Z3fooi=local _ZN2ns3fooEv=local _ZN2ns3barIiEEiv=local
+case G-g37 -
+names foo foo2 fop bar baz fa f.o fo* fo f ]oo [oo -oo ^oo !oo foo\ fo\o eoo goo _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 {
+|   global: f*\;
+|   local: *;
+| };
+expect foo=local foo2=local fop=local bar=local baz=local fa=local f.o=local fo*=local fo=local f=local ]oo=local [oo=local -oo=local ^oo=local !oo=local foo\=local fo\o=local eoo=local goo=local _Z3fooi=local _ZN2ns3fooEv=local _ZN2ns3barIiEEiv=local
+case G-g38 -
+names foo foo2 fop bar baz fa f.o fo* fo f ]oo [oo -oo ^oo !oo foo\ fo\o eoo goo _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 {
+|   global: foo*\;
+|   local: *;
+| };
+expect foo=local foo2=local fop=local bar=local baz=local fa=local f.o=local fo*=local fo=local f=local ]oo=local [oo=local -oo=local ^oo=local !oo=local foo\=local fo\o=local eoo=local goo=local _Z3fooi=local _ZN2ns3fooEv=local _ZN2ns3barIiEEiv=local
+case G-g39 -
+names foo foo2 fop bar baz fa f.o fo* fo f ]oo [oo -oo ^oo !oo foo\ fo\o eoo goo _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 {
+|   global: fo[o-o]\;
+|   local: *;
+| };
+expect foo=local foo2=local fop=local bar=local baz=local fa=local f.o=local fo*=local fo=local f=local ]oo=local [oo=local -oo=local ^oo=local !oo=local foo\=local fo\o=local eoo=local goo=local _Z3fooi=local _ZN2ns3fooEv=local _ZN2ns3barIiEEiv=local
+case G-g40 -
+names foo foo2 fop bar baz fa f.o fo* fo f ]oo [oo -oo ^oo !oo foo\ fo\o eoo goo _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 {
+|   global: *;
+|   local: *;
+| };
+expect foo=V1 foo2=V1 fop=V1 bar=V1 baz=V1 fa=V1 f.o=V1 fo*=V1 fo=V1 f=V1 ]oo=V1 [oo=V1 -oo=V1 ^oo=V1 !oo=V1 foo\=V1 fo\o=V1 eoo=V1 goo=V1 _Z3fooi=V1 _ZN2ns3fooEv=V1 _ZN2ns3barIiEEiv=V1
+case G-g41 -
+names foo foo2 fop bar baz fa f.o fo* fo f ]oo [oo -oo ^oo !oo foo\ fo\o eoo goo _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 {
+|   global: fo[];
+|   local: *;
+| };
+expect foo=local foo2=local fop=local bar=local baz=local fa=local f.o=local fo*=local fo=local f=local ]oo=local [oo=local -oo=local ^oo=local !oo=local foo\=local fo\o=local eoo=local goo=local _Z3fooi=local _ZN2ns3fooEv=local _ZN2ns3barIiEEiv=local
+case G-g42 -
+names foo foo2 fop bar baz fa f.o fo* fo f ]oo [oo -oo ^oo !oo foo\ fo\o eoo goo _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 {
+|   global: fo[!];
+|   local: *;
+| };
+expect foo=local foo2=local fop=local bar=local baz=local fa=local f.o=local fo*=local fo=local f=local ]oo=local [oo=local -oo=local ^oo=local !oo=local foo\=local fo\o=local eoo=local goo=local _Z3fooi=local _ZN2ns3fooEv=local _ZN2ns3barIiEEiv=local
+case D-d01 -
+names foo foo2 fop bar baz fa f.o fo* fo f ]oo [oo -oo ^oo !oo foo\ fo\o eoo goo _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { global: foo; }; V2 { local: "foo"; };
+expect REFUSED
+case D-d02 -
+names foo foo2 fop bar baz fa f.o fo* fo f ]oo [oo -oo ^oo !oo foo\ fo\o eoo goo _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { global: fo\o; }; V2 { local: foo; };
+expect REFUSED
+case D-d03 -
+names foo foo2 fop bar baz fa f.o fo* fo f ]oo [oo -oo ^oo !oo foo\ fo\o eoo goo _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { global: "fo*"; }; V2 { local: fo\*; };
+expect REFUSED
+case D-d04 -
+names foo foo2 fop bar baz fa f.o fo* fo f ]oo [oo -oo ^oo !oo foo\ fo\o eoo goo _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { global: fo*; }; V2 { local: "fo*"; };
+expect foo=V1 foo2=V1 fop=V1 bar=base baz=base fa=base f.o=base fo*=local fo=V1 f=base ]oo=base [oo=base -oo=base ^oo=base !oo=base foo\=V1 fo\o=V1 eoo=base goo=base _Z3fooi=base _ZN2ns3fooEv=base _ZN2ns3barIiEEiv=base
+case D-d05 -
+names foo foo2 fop bar baz fa f.o fo* fo f ]oo [oo -oo ^oo !oo foo\ fo\o eoo goo _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { global: fo*; }; V2 { local: fo*; };
+expect REFUSED
+case D-d06 -
+names foo foo2 fop bar baz fa f.o fo* fo f ]oo [oo -oo ^oo !oo foo\ fo\o eoo goo _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { global: f[o]o; }; V2 { local: foo; };
+expect foo=local foo2=base fop=base bar=base baz=base fa=base f.o=base fo*=base fo=base f=base ]oo=base [oo=base -oo=base ^oo=base !oo=base foo\=base fo\o=base eoo=base goo=base _Z3fooi=base _ZN2ns3fooEv=base _ZN2ns3barIiEEiv=base
+case D-d07 -
+names foo foo2 fop bar baz fa f.o fo* fo f ]oo [oo -oo ^oo !oo foo\ fo\o eoo goo _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { global: fo?; }; V2 { local: fo[?]; };
+expect foo=V1 foo2=base fop=V1 bar=base baz=base fa=base f.o=base fo*=V1 fo=base f=base ]oo=base [oo=base -oo=base ^oo=base !oo=base foo\=base fo\o=base eoo=base goo=base _Z3fooi=base _ZN2ns3fooEv=base _ZN2ns3barIiEEiv=base
+case D-d08 -
+names foo foo2 fop bar baz fa f.o fo* fo f ]oo [oo -oo ^oo !oo foo\ fo\o eoo goo _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { global: fo\*; }; V2 { local: fo\*; };
+expect REFUSED
+case D-d09 -
+names foo foo2 fop bar baz fa f.o fo* fo f ]oo [oo -oo ^oo !oo foo\ fo\o eoo goo _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { global: foo; }; V2 { local: foo; };
+expect REFUSED
+case D-d10 -
+names foo foo2 fop bar baz fa f.o fo* fo f ]oo [oo -oo ^oo !oo foo\ fo\o eoo goo _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { global: foo; }; V2 { local: foo; }; V3 { global: foo; };
+expect REFUSED
+case D-d11 -
+names foo foo2 fop bar baz fa f.o fo* fo f ]oo [oo -oo ^oo !oo foo\ fo\o eoo goo _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { global: foo; local: foo; };
+expect foo=V1 foo2=base fop=base bar=base baz=base fa=base f.o=base fo*=base fo=base f=base ]oo=base [oo=base -oo=base ^oo=base !oo=base foo\=base fo\o=base eoo=base goo=base _Z3fooi=base _ZN2ns3fooEv=base _ZN2ns3barIiEEiv=base
+case D-d12 -
+names foo foo2 fop bar baz fa f.o fo* fo f ]oo [oo -oo ^oo !oo foo\ fo\o eoo goo _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { global: foo; }; V2 { global: foo; };
+expect foo=V1 foo2=base fop=base bar=base baz=base fa=base f.o=base fo*=base fo=base f=base ]oo=base [oo=base -oo=base ^oo=base !oo=base foo\=base fo\o=base eoo=base goo=base _Z3fooi=base _ZN2ns3fooEv=base _ZN2ns3barIiEEiv=base
+case D-d13 -
+names foo foo2 fop bar baz fa f.o fo* fo f ]oo [oo -oo ^oo !oo foo\ fo\o eoo goo _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { local: foo; }; V2 { local: foo; };
+expect foo=local foo2=base fop=base bar=base baz=base fa=base f.o=base fo*=base fo=base f=base ]oo=base [oo=base -oo=base ^oo=base !oo=base foo\=base fo\o=base eoo=base goo=base _Z3fooi=base _ZN2ns3fooEv=base _ZN2ns3barIiEEiv=base
+case D-d14 -
+names foo foo2 fop bar baz fa f.o fo* fo f ]oo [oo -oo ^oo !oo foo\ fo\o eoo goo _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { global: *; }; V2 { local: *; };
+expect REFUSED
+case D-d15 -
+names foo foo2 fop bar baz fa f.o fo* fo f ]oo [oo -oo ^oo !oo foo\ fo\o eoo goo _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { global: fo*; }; V2 { local: fo**; };
+expect foo=V1 foo2=V1 fop=V1 bar=base baz=base fa=base f.o=base fo*=V1 fo=V1 f=base ]oo=base [oo=base -oo=base ^oo=base !oo=base foo\=V1 fo\o=V1 eoo=base goo=base _Z3fooi=base _ZN2ns3fooEv=base _ZN2ns3barIiEEiv=base
+case D-d16 -
+names foo foo2 fop bar baz fa f.o fo* fo f ]oo [oo -oo ^oo !oo foo\ fo\o eoo goo _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { global: extern "C++" { foo; }; }; V2 { local: foo; };
+expect foo=V1 foo2=base fop=base bar=base baz=base fa=base f.o=base fo*=base fo=base f=base ]oo=base [oo=base -oo=base ^oo=base !oo=base foo\=base fo\o=base eoo=base goo=base _Z3fooi=base _ZN2ns3fooEv=base _ZN2ns3barIiEEiv=base
+case D-d17 -
+names foo foo2 fop bar baz fa f.o fo* fo f ]oo [oo -oo ^oo !oo foo\ fo\o eoo goo _Z3fooi _ZN2ns3fooEv _ZN2ns3barIiEEiv
+versioned
+file
+| V1 { global: fo\*; }; V2 { local: "fo*"; };
+expect REFUSED
+case S-e01 -
+names old cur old_impl cur_impl bar foo fop
+versioned cur=V1 old=V1
+file
+| V1 { global: bar; local: foo; };
+expect old=V1 cur=V1 old_impl=base cur_impl=base bar=V1 foo=local fop=base
+case S-e01E E
+names old cur old_impl cur_impl bar foo fop
+versioned cur=V1 old=V1
+file
+| V1 { global: bar; local: foo; };
+expect old=V1 cur=V1 old_impl=base cur_impl=base bar=V1 foo=local fop=base
+case S-e02 -
+names old cur old_impl cur_impl bar foo fop
+versioned cur=V1 old=V1
+file
+| V1 { global: bar; local: f*; };
+expect old=V1 cur=V1 old_impl=base cur_impl=base bar=V1 foo=local fop=local
+case S-e02E E
+names old cur old_impl cur_impl bar foo fop
+versioned cur=V1 old=V1
+file
+| V1 { global: bar; local: f*; };
+expect old=V1 cur=V1 old_impl=base cur_impl=base bar=V1 foo=local fop=local
+case S-e03 -
+names old cur old_impl cur_impl bar foo fop
+versioned cur=V1 old=V1
+file
+| V1 { global: bar; local: *; };
+expect old=local cur=local old_impl=local cur_impl=local bar=V1 foo=local fop=local
+case S-e03E E
+names old cur old_impl cur_impl bar foo fop
+versioned cur=V1 old=V1
+file
+| V1 { global: bar; local: *; };
+expect old=V1 cur=V1 old_impl=local cur_impl=local bar=V1 foo=local fop=local
+case S-e04 -
+names old cur old_impl cur_impl bar foo fop
+versioned cur=V1 old=V1
+file
+| { global: bar; local: *; };
+expect REFUSED
+case S-e04E E
+names old cur old_impl cur_impl bar foo fop
+versioned cur=V1 old=V1
+file
+| { global: bar; local: *; };
+expect REFUSED
+case S-e05 -
+names old cur old_impl cur_impl bar foo fop
+versioned cur=V1 old=V1
+file
+| V1 { global: bar; }; V2 { local: *; };
+expect old=V1 cur=V1 old_impl=local cur_impl=local bar=V1 foo=local fop=local
+case S-e05E E
+names old cur old_impl cur_impl bar foo fop
+versioned cur=V1 old=V1
+file
+| V1 { global: bar; }; V2 { local: *; };
+expect old=V1 cur=V1 old_impl=local cur_impl=local bar=V1 foo=local fop=local
+case S-e06 -
+names old cur old_impl cur_impl bar foo fop
+versioned cur=V1 old=V1
+file
+| V1 { global: bar; local: old; };
+expect old=local cur=V1 old_impl=base cur_impl=base bar=V1 foo=base fop=base
+case S-e06E E
+names old cur old_impl cur_impl bar foo fop
+versioned cur=V1 old=V1
+file
+| V1 { global: bar; local: old; };
+expect old=V1 cur=V1 old_impl=base cur_impl=base bar=V1 foo=base fop=base
+case S-e07 -
+names old cur old_impl cur_impl bar foo fop
+versioned cur=V1 old=V1
+file
+| V1 { global: bar; local: o*; };
+expect old=local cur=V1 old_impl=local cur_impl=base bar=V1 foo=base fop=base
+case S-e07E E
+names old cur old_impl cur_impl bar foo fop
+versioned cur=V1 old=V1
+file
+| V1 { global: bar; local: o*; };
+expect old=V1 cur=V1 old_impl=local cur_impl=base bar=V1 foo=base fop=base
+case S-e08 -
+names old cur old_impl cur_impl bar foo fop
+versioned cur=V1 old=V1
+file
+| V1 { local: *; };
+expect old=local cur=local old_impl=local cur_impl=local bar=local foo=local fop=local
+case S-e08E E
+names old cur old_impl cur_impl bar foo fop
+versioned cur=V1 old=V1
+file
+| V1 { local: *; };
+expect old=V1 cur=V1 old_impl=local cur_impl=local bar=local foo=local fop=local
+case S-e09 -
+names old cur old_impl cur_impl bar foo fop
+versioned cur=V1 old=V1
+file
+| V1 { global: o*; local: old; };
+expect old=V1 cur=V1 old_impl=V1 cur_impl=base bar=base foo=base fop=base
+case S-e09E E
+names old cur old_impl cur_impl bar foo fop
+versioned cur=V1 old=V1
+file
+| V1 { global: o*; local: old; };
+expect old=V1 cur=V1 old_impl=V1 cur_impl=base bar=base foo=base fop=base
+case S-e10 -
+names old cur old_impl cur_impl bar foo fop
+versioned cur=V1 old=V1
+file
+| V1 { global: bar; }; V2 { local: old; };
+expect old=V1 cur=V1 old_impl=base cur_impl=base bar=V1 foo=base fop=base
+case S-e10E E
+names old cur old_impl cur_impl bar foo fop
+versioned cur=V1 old=V1
+file
+| V1 { global: bar; }; V2 { local: old; };
+expect old=V1 cur=V1 old_impl=base cur_impl=base bar=V1 foo=base fop=base
+case S-e11 -
+names old cur old_impl cur_impl bar foo fop
+versioned cur=V1 old=V1
+file
+| V1 { global: bar; local: cur; };
+expect old=V1 cur=local old_impl=base cur_impl=base bar=V1 foo=base fop=base
+case S-e11E E
+names old cur old_impl cur_impl bar foo fop
+versioned cur=V1 old=V1
+file
+| V1 { global: bar; local: cur; };
+expect old=V1 cur=V1 old_impl=base cur_impl=base bar=V1 foo=base fop=base
+case S-e12 -
+names old cur old_impl cur_impl bar foo fop
+versioned cur=V1 old=V1
+file
+| V1 { global: bar; local: *; }; V2 { global: foo; } V1;
+expect old=local cur=local old_impl=local cur_impl=local bar=V1 foo=V2 fop=local
+case S-e12E E
+names old cur old_impl cur_impl bar foo fop
+versioned cur=V1 old=V1
+file
+| V1 { global: bar; local: *; }; V2 { global: foo; } V1;
+expect old=V1 cur=V1 old_impl=local cur_impl=local bar=V1 foo=V2 fop=local
+case S-e13 -
+names old cur old_impl cur_impl bar foo fop
+versioned cur=V1 old=V1
+file
+| V1 { global: bar; local: old_impl; };
+expect old=V1 cur=V1 old_impl=local cur_impl=base bar=V1 foo=base fop=base
+case S-e13E E
+names old cur old_impl cur_impl bar foo fop
+versioned cur=V1 old=V1
+file
+| V1 { global: bar; local: old_impl; };
+expect old=V1 cur=V1 old_impl=local cur_impl=base bar=V1 foo=base fop=base
+case S-a01 -
+names old cur old_impl cur_impl bar foo fop
+versioned cur=V1 old=V1
+file
+| V1 { global: bar; }; V2 { global: cur; };
+expect old=V1 cur=V1 old_impl=base cur_impl=base bar=V1 foo=base fop=base
+case S-a01E E
+names old cur old_impl cur_impl bar foo fop
+versioned cur=V1 old=V1
+file
+| V1 { global: bar; }; V2 { global: cur; };
+expect old=V1 cur=V1 old_impl=base cur_impl=base bar=V1 foo=base fop=base
+case S-a02 -
+names old cur old_impl cur_impl bar foo fop
+versioned cur=V1 old=V1
+file
+| V1 { global: bar; }; V2 { global: c*; };
+expect old=V1 cur=V1 old_impl=base cur_impl=V2 bar=V1 foo=base fop=base
+case S-a02E E
+names old cur old_impl cur_impl bar foo fop
+versioned cur=V1 old=V1
+file
+| V1 { global: bar; }; V2 { global: c*; };
+expect old=V1 cur=V1 old_impl=base cur_impl=V2 bar=V1 foo=base fop=base
+case S-a03 -
+names old cur old_impl cur_impl bar foo fop
+versioned cur=V1 old=V1
+file
+| V1 { global: bar; local: c*; };
+expect old=V1 cur=local old_impl=base cur_impl=local bar=V1 foo=base fop=base
+case S-a03E E
+names old cur old_impl cur_impl bar foo fop
+versioned cur=V1 old=V1
+file
+| V1 { global: bar; local: c*; };
+expect old=V1 cur=V1 old_impl=base cur_impl=local bar=V1 foo=base fop=base
+case S-a04 -
+names old cur old_impl cur_impl bar foo fop
+versioned cur=V1 old=V1
+file
+| V1 { global: c*; local: cur; };
+expect old=V1 cur=V1 old_impl=base cur_impl=V1 bar=base foo=base fop=base
+case S-a04E E
+names old cur old_impl cur_impl bar foo fop
+versioned cur=V1 old=V1
+file
+| V1 { global: c*; local: cur; };
+expect old=V1 cur=V1 old_impl=base cur_impl=V1 bar=base foo=base fop=base
+case S-a05 -
+names old cur old_impl cur_impl bar foo fop
+versioned cur=V1 old=V1
+file
+| V1 { global: bar; }; V2 { global: old; };
+expect old=V1 cur=V1 old_impl=base cur_impl=base bar=V1 foo=base fop=base
+case S-a05E E
+names old cur old_impl cur_impl bar foo fop
+versioned cur=V1 old=V1
+file
+| V1 { global: bar; }; V2 { global: old; };
+expect old=V1 cur=V1 old_impl=base cur_impl=base bar=V1 foo=base fop=base
+case S-a06 -
+names old cur old_impl cur_impl bar foo fop
+versioned cur=V1 old=V1
+file
+| V1 { global: old; local: *; };
+expect old=V1 cur=local old_impl=local cur_impl=local bar=local foo=local fop=local
+case S-a06E E
+names old cur old_impl cur_impl bar foo fop
+versioned cur=V1 old=V1
+file
+| V1 { global: old; local: *; };
+expect old=V1 cur=V1 old_impl=local cur_impl=local bar=local foo=local fop=local
+case S-a07 -
+names old cur old_impl cur_impl bar foo fop
+versioned cur=V1 old=V1
+file
+| V1 { global: bar; }; V2 { global: *; };
+expect old=V1 cur=V1 old_impl=V2 cur_impl=V2 bar=V1 foo=V2 fop=V2
+case S-a07E E
+names old cur old_impl cur_impl bar foo fop
+versioned cur=V1 old=V1
+file
+| V1 { global: bar; }; V2 { global: *; };
+expect old=V1 cur=V1 old_impl=V2 cur_impl=V2 bar=V1 foo=V2 fop=V2

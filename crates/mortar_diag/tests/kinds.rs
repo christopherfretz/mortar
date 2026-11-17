@@ -669,12 +669,12 @@ fn versioned_definition_hidden() {
 // spec: diag.md §3.1 `versioned-export` (dyn.md D-27)
 #[test]
 fn versioned_export() {
-    let kind = Kind::VersionedExport { name: s("foo"), version: s("V2") };
+    let kind = Kind::VersionedExport { name: s("foo"), version: s("@@V2") };
     assert_eq!(kind.id(), "versioned-export");
     assert_eq!(
         symbol_text(kind),
-        "ld: error: versioned definition foo@@V2 cannot be exported (version definitions are \
-         not supported)\n"
+        "ld: error: versioned definition foo@@V2 cannot be exported from an executable (mortar \
+         writes version definitions in a shared object only)\n"
     );
 }
 

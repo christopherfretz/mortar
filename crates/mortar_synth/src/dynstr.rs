@@ -98,8 +98,10 @@ pub fn dynstr_plan_versioned(
 ) -> (DynStr, Option<u32>) {
     // `Strings` borrows its strings: the names are copied out of the plan
     // that gets their offsets.
-    let verdef_names: Vec<Box<[u8]>> =
-        verdef.as_ref().map(|v| v.defs.iter().map(|d| d.name.clone()).collect()).unwrap_or_default();
+    let verdef_names: Vec<Box<[u8]>> = verdef
+        .as_ref()
+        .map(|v| v.defs.iter().map(|d| d.name.clone()).collect())
+        .unwrap_or_default();
     let mut t = Strings { seen: HashMap::with_capacity(dynsym.order().len() + 16), size: 1 };
     let symbols: Box<[u32]> = dynsym.order().iter().map(|&k| t.add(names.symbol(k))).collect();
     let needed_offs: Box<[u32]> = needed.iter().map(|&f| t.add(names.needed(f))).collect();
@@ -134,7 +136,6 @@ struct Strings<'a> {
 }
 
 impl<'a> Strings<'a> {
-
     /// The offset of `s`, appended at the end on its first use. An offset
     /// past `u32` is clamped; `dynsym::chunk_sizes` refuses such a table.
     fn add(&mut self, s: &'a [u8]) -> u32 {

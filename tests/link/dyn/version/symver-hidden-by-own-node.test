@@ -1,0 +1,34 @@
+# resolve.md §9.7 rule 12, dyn.md D-114 (WP-125): a `.symver` definition
+# made local by its own node. `foo@V1`'s node V1 has `local: *` and no
+# `global:` entry matching `foo`, so GNU ld drops `foo@V1` (lld too);
+# mortar drops it with the warning `versioned-definition-hidden`, mold
+# keeps it (17.8). `foo@@V2` stays. With `--export-dynamic` GNU ld and
+# mortar keep `foo@V1` (lld does not).
+#@ spec: resolve.md "9.7"; dyn.md "D-114"
+#@ arch: aarch64 x86_64
+
+cc -O1 -fPIC sv.c -o sv.o
+link gcc -shared sv.o -Wl,--version-script,v.map -o libh.so
+  diag(mortar): warning: foo@V1 is made local by version V1's local: entries; executables linked against foo@V1 will not load
+check readelf --dyn-syms -W libh.so
+  has: FUNC GLOBAL DEFAULT * foo@@V2$
+check(bfd,lld,mortar) readelf --dyn-syms -W libh.so
+  not: foo@V1
+check(mold) readelf --dyn-syms -W libh.so
+  has: FUNC GLOBAL DEFAULT * foo@V1$
+link gcc -shared sv.o -Wl,--version-script,v.map -Wl,--export-dynamic -o libe.so
+check(bfd,mold,mortar) readelf --dyn-syms -W libe.so
+  has: FUNC GLOBAL DEFAULT * foo@V1$
+  has: FUNC GLOBAL DEFAULT * foo@@V2$
+check(lld) readelf --dyn-syms -W libe.so
+  not: foo@V1
+
+#--- sv.c
+#include <stdio.h>
+__asm__(".symver foo_v1, foo@V1");
+__asm__(".symver foo_v2, foo@@V2");
+int foo_v1(void) { return 1; }
+int foo_v2(void) { setvbuf(stdout, 0, _IOLBF, 0); return 2; }
+#--- v.map
+V1 { local: *; };
+V2 { global: foo; } V1;

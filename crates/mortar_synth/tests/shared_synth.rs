@@ -146,8 +146,12 @@ fn d102_d103_each_fact_alone() {
 // slot (`static_tls`), with the other flags.
 #[test]
 fn d119_df_static_tls() {
-    let mut i =
-        inputs(DynKind::Shared(SharedDyn { soname: false, symbolic: false, static_tls: true, verdef: 0 }));
+    let mut i = inputs(DynKind::Shared(SharedDyn {
+        soname: false,
+        symbolic: false,
+        static_tls: true,
+        verdef: 0,
+    }));
     assert_eq!(value(&i, DT_FLAGS), Some(DynValue::Const(DF_STATIC_TLS)));
     i.bind_now = true;
     assert_eq!(value(&i, DT_FLAGS), Some(DynValue::Const(DF_STATIC_TLS | DF_BIND_NOW)));

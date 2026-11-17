@@ -4,7 +4,7 @@ Generated from `crates/mortar_cli/src/rows.rs` by `mortar_cli::status_markdown`;
 do not edit. `MORTAR_BLESS=1 cargo test -p mortar_cli --test table` rewrites it.
 The rules are `spec/cli.md`.
 
-487 rows: 91 supported, 5 partial, 30 noop, 361 refused.
+487 rows: 94 supported, 5 partial, 30 noop, 358 refused.
 
 Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 18 mortar's own.
 
@@ -17,7 +17,7 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 18 mortar'
 | Option | Value | Linkers | Targets | Status | Lands in | Help |
 |---|---|---|---|---|---|---|
 | `-o`, `--output` | FILE | GNU, lld, mold | all | supported | `output` | Write the output to FILE (default a.out) |
-| `-shared`, `--Bshareable` |  | GNU, lld, mold | all | partial: AArch64 and x86-64 (i386 refused, `feature`, until WP-130; TLS and IFUNC in a shared object on x86-64 until WP-127 part 2; local-exec TLS in a shared object refused, dyn.md D-119; version scripts until WP-125). Not caught (with every reference): non-PIC AArch64 code that reaches its own exported data only through a form dyn.md D-117's analysis does not follow (a spilled or reloaded base, a computed index, a 32-bit register, a value passed to a callee, code outside a sized function symbol, hand-written assembly; 3 of 306 measured bound definitions, every object refused for another use). Refused although correct: -fPIC code that forms an address before the start of a static object placed after exported data (`tab - 1`, GCC and Clang AArch64 -O0; dyn.md D-117; remedy -fdata-sections). Not judged on x86-64 (x64.md X-62): a section-relative PC-relative field in code naming exported data (none measured in GCC, Clang or kiln output at any -O) | `kind` | Produce a shared object |
+| `-shared`, `--Bshareable` |  | GNU, lld, mold | all | partial: AArch64 and x86-64 (i386 refused, `feature`, until WP-130; TLS and IFUNC in a shared object on x86-64 until WP-127 part 2; local-exec TLS in a shared object refused, dyn.md D-119; `extern "C++"` version-script entries refused, dyn.md D-114). Not caught (with every reference): non-PIC AArch64 code that reaches its own exported data only through a form dyn.md D-117's analysis does not follow (a spilled or reloaded base, a computed index, a 32-bit register, a value passed to a callee, code outside a sized function symbol, hand-written assembly; 3 of 306 measured bound definitions, every object refused for another use). Refused although correct: -fPIC code that forms an address before the start of a static object placed after exported data (`tab - 1`, GCC and Clang AArch64 -O0; dyn.md D-117; remedy -fdata-sections). Not judged on x86-64 (x64.md X-62): a section-relative PC-relative field in code naming exported data (none measured in GCC, Clang or kiln output at any -O) | `kind` | Produce a shared object |
 | `-pie`, `--pic-executable` |  | GNU, lld, mold | all | supported | `kind` | Produce a position-independent executable |
 | `-no-pie`, `--no-pic-executable` |  | GNU, lld, mold | all | supported | `kind` | Produce a position-dependent executable (default) |
 | `-r`, `-i`, `--relocatable` |  | GNU, lld, mold | all | refused | `kind` | Produce a relocatable object |
@@ -132,7 +132,7 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 18 mortar'
 | `-T`, `--script` | FILE | GNU, lld, mold | all | refused | `scripts` | Read the linker script FILE |
 | `--default-script`, `--dT` | FILE | GNU, lld | all | refused | `scripts` | Use FILE as the default linker script |
 | `-c`, `--mri-script` | FILE | GNU | all | refused | `other` | Read the MRI script FILE |
-| `--version-script` | FILE | GNU, lld, mold | all | refused | `scripts` | Read the version script FILE |
+| `--version-script` | FILE | GNU, lld, mold | all | supported | `scripts` | Read the version script FILE |
 | `--dynamic-list` | FILE | GNU, lld, mold | all | refused | `scripts` | Read the dynamic list FILE |
 | `--export-dynamic-symbol-list` | FILE | GNU, lld, mold | all | refused | `scripts` | Export the symbols FILE lists |
 | `--retain-symbols-file` | FILE | GNU, lld, mold | all | refused | `scripts` | Keep only the symbols FILE lists |
@@ -181,8 +181,8 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 18 mortar'
 | `--no-demangle` |  | GNU, lld, mold | all | refused | `other` | Do not demangle symbol names |
 | `--default-symver` |  | GNU, mold | all | refused | `other` | Give exported symbols the output's version |
 | `--default-imported-symver` |  | GNU | all | refused | `other` | Give imported symbols their library's version |
-| `--undefined-version` |  | GNU, lld, mold | all | refused | `other` | Accept version scripts that name undefined symbols |
-| `--no-undefined-version` |  | GNU, lld, mold | all | refused | `other` | Reject version scripts that name undefined symbols |
+| `--undefined-version` |  | GNU, lld, mold | all | supported | `dynamic.undefined_version` | Accept version scripts that name undefined symbols |
+| `--no-undefined-version` |  | GNU, lld, mold | all | supported | `dynamic.undefined_version` | Reject version scripts that name undefined symbols |
 | `--version-exports-section` | SYMBOL | GNU | all | refused | `other` | Take the exported symbols from .exports |
 | `--disable-multiple-abs-defs` |  | GNU | all | refused | `other` | Reject absolute symbols defined twice through -R |
 | `--gnu-unique` |  | lld | all | refused | `other` | Keep the STB_GNU_UNIQUE binding (default) |

@@ -7,10 +7,11 @@
 //! (`VER_FLG_BASE`, named by the soname, else the output's basename), then
 //! one per node in script order, indices 2…; each `Verdef` (20 bytes)
 //! followed by its `Verdaux` entries (8 bytes each): its own name first,
-//! then its parents' in the order written. An export's `.gnu.version` is
-//! its resolution version (`SymProps.version`: the node's index, with
-//! `VERSYM_HIDDEN` for a non-default `foo@V`; 0 is written 1), and the
-//! `vna_other` numbers continue after the last `Verdef` index.
+//! then its parents', the last written first (GNU ld's order). An
+//! export's `.gnu.version` is its resolution version (`SymProps.version`:
+//! the node's index, with `VERSYM_HIDDEN` for a non-default `foo@V`; 0 is
+//! written 1), and the `vna_other` numbers continue after the last
+//! `Verdef` index.
 //!
 //! **Plan** ([`verneed_plan`]): `Slots.verneed`, one row per needed shared
 //! object that provides a version some `.dynsym` entry with a shared
@@ -18,13 +19,14 @@
 //! increasing definition index (the library's own order).
 //!
 //! **Write**: `.gnu.version` ([`VersymChunk`], divisible) holds one `u16`
-//! per `.dynsym` entry: 0 for the null entry, 1 for exports, `WeakDyn` keys
-//! and unversioned shared definitions, the need's `vna_other` for a
-//! versioned one; bit 15 never set. `.gnu.version_r` ([`VerneedChunk`],
-//! whole) holds each `Verneed` followed directly by its `Vernaux`
-//! entries; `vn_file` the `DT_NEEDED` name's `.dynstr` offset, `vna_hash`
+//! per `.dynsym` entry: 0 for the null entry, 1 for an executable's
+//! exports and a shared object's unversioned ones, `WeakDyn` keys and
+//! unversioned shared definitions, the need's `vna_other` for a versioned
+//! one; bit 15 only for a shared object's non-default `foo@V` export.
+//! `.gnu.version_r` ([`VerneedChunk`], whole) holds each `Verneed`
+//! followed directly by its `Vernaux` entries; `vn_file` the `DT_NEEDED` name's `.dynstr` offset, `vna_hash`
 //! the ELF hash of the version name, `vna_flags` 0, `vna_other` numbered
-//! from 2 in output order.
+//! from 2 (after the last `Verdef` index) in output order.
 
 use std::ops::Range;
 
@@ -153,7 +155,8 @@ pub fn versym_size_with(plan: &DynsymPlan, verneed: &Verneed, verdefs: u16) -> u
 pub struct VerdefEntry {
     /// The version's name (the base's: the soname or the basename).
     pub name: Box<[u8]>,
-    /// The parents' `Verdef` indices (2…), in the order written.
+    /// The parents' `Verdef` indices (2…), in GNU ld's order: the last
+    /// written first.
     pub parents: Box<[u16]>,
     /// The name's `.dynstr` offset (set by
     /// `crate::dynstr::dynstr_plan_versioned`).
@@ -179,7 +182,10 @@ impl VerdefPlan {
         for (name, parents) in nodes {
             defs.push(VerdefEntry {
                 name: (*name).into(),
-                parents: parents.iter().map(|&p| (p + 2).min(0x7fff) as u16).collect(),
+                // GNU ld writes a node's parents last-written first
+                // (`V3 { … } V1 V2;`: `Parent 1: V2`, `Parent 2: V1`;
+                // measured by WP-125, binutils 2.44).
+                parents: parents.iter().rev().map(|&p| (p + 2).min(0x7fff) as u16).collect(),
                 name_off: 0,
             });
         }
@@ -247,9 +253,9 @@ impl VerdefChunk<'_> {
             le32(out, at + 12, 20); // vd_aux
             le32(out, at + 16, if i + 1 == defs.len() { 0 } else { len as u32 });
             let mut aux = at + 20;
-            let names = std::iter::once(d.name_off).chain(d.parents.iter().map(|&p| {
-                defs.get(usize::from(p) - 1).map_or(0, |x| x.name_off)
-            }));
+            let names = std::iter::once(d.name_off).chain(
+                d.parents.iter().map(|&p| defs.get(usize::from(p) - 1).map_or(0, |x| x.name_off)),
+            );
             for (j, off) in names.enumerate() {
                 le32(out, aux, off); // vda_name
                 le32(out, aux + 4, if j + 1 == cnt { 0 } else { 8 });

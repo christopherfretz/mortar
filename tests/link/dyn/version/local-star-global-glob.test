@@ -1,0 +1,36 @@
+# dyn.md D-114 (WP-125), resolve.md §9.7: `local: *` with a `global:`
+# glob. A non-star `global:` glob beats the star `local:`: `api_open` and
+# `api_close` get V1, `internal` and the glob's near miss `apix` stay
+# local (all three references). The library's own calls to a local
+# function stay inside it.
+#@ spec: dyn.md "D-114"; resolve.md "9.7"
+#@ arch: aarch64 x86_64
+
+cc -O1 -fPIC lib.c -o lib.o
+cc -O1 -fPIE main.c -o main.o
+link gcc -shared lib.o -Wl,--version-script,v.map -Wl,-soname,libg.so -o libg.so
+check readelf --dyn-syms -W libg.so
+  has: FUNC GLOBAL DEFAULT * api_open@@V1$
+  has: FUNC GLOBAL DEFAULT * api_close@@V1$
+  not: internal
+  not: apix
+host gcc -pie main.o -L. -lg -o prog
+run prog
+  stdout: 3 4
+
+#--- lib.c
+#include <stdio.h>
+int internal(int x) { return x + 1; }
+int apix(void) { return 9; }
+int api_open(void) { setvbuf(stdout, 0, _IOLBF, 0); return internal(2); }
+int api_close(void) { return internal(3); }
+#--- v.map
+V1 {
+  global: api_*;
+  local: *;
+};
+#--- main.c
+#include <stdio.h>
+int api_open(void);
+int api_close(void);
+int main(void) { printf("%d %d\n", api_open(), api_close()); return 0; }

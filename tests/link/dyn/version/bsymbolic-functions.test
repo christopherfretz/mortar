@@ -1,0 +1,45 @@
+# dyn.md D-114, D-112 (WP-125): a version script with
+# `-Bsymbolic-functions`. The script decides the export set and the
+# versions (`get` V1, `counter` V1, `helper` local); the option binds the
+# library's calls to its exported functions, not its data. An interposer
+# defining `get` and `counter` replaces the host's view of both, the
+# library's own call to `get` stays inside it, and its use of `counter`
+# goes to the interposer's.
+#@ spec: dyn.md "D-114"; dyn.md "D-112"
+#@ arch: aarch64 x86_64
+
+cc -O1 -fPIC -fno-inline lib.c -o lib.o
+cc -O1 -fPIC hook.c -o hook.o
+cc -O1 -fPIE main.c -o main.o
+shlib gcc hook.o -Wl,-soname,libhook.so -o libhook.so
+link gcc -shared lib.o -Wl,--version-script,v.map -Wl,-Bsymbolic-functions -Wl,-soname,libb.so -o libb.so
+check readelf --dyn-syms -W libb.so
+  has: FUNC GLOBAL DEFAULT * get@@V1$
+  has: FUNC GLOBAL DEFAULT * call_get@@V1$
+  has: OBJECT GLOBAL DEFAULT * counter@@V1$
+  not: helper
+host gcc -pie main.o -L. -lb -o prog
+run prog
+  stdout: 1 7 1
+run prog
+  env: LD_PRELOAD=./libhook.so
+  stdout: 100 70 1
+
+#--- lib.c
+#include <stdio.h>
+int counter = 7;
+int helper(void) { return 1; }
+int get(void) { return helper(); }
+int call_get(void) { setvbuf(stdout, 0, _IOLBF, 0); return get(); }
+int read_counter(void) { return counter; }
+#--- v.map
+V1 { global: get; call_get; counter; read_counter; local: *; };
+#--- hook.c
+int counter = 70;
+int get(void) { return 100; }
+#--- main.c
+#include <stdio.h>
+int get(void);
+int call_get(void);
+int read_counter(void);
+int main(void) { printf("%d %d %d\n", get(), read_counter(), call_get()); return 0; }

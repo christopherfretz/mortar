@@ -1,6 +1,6 @@
 # cli.md §4.2 (M4 block): in a `Shared` link, the options whose effect
 # there a later package implements are refused by name, with a note naming
-# the package (WP-125: `--version-script`; WP-128: `-Bsymbolic`,
+# the package (WP-128: `-Bsymbolic`,
 # `--dynamic-list`, `--exclude-libs`, `-init`, `-fini`, `-z nodelete`,
 # `nodlopen`, `initfirst`, `interpose`, `origin`), and keep their status in
 # an executable (`-Bsymbolic` `noop`, `-init`/`-fini` `supported`). Every
@@ -29,11 +29,9 @@ link(mortar) gcc -shared lib.o -Wl,-z,nodelete -Wl,-z,nodlopen -Wl,-z,initfirst 
   diag(mortar): unsupported option: -z initfirst
   diag(mortar): unsupported option: -z interpose
   diag(mortar): unsupported option: -z origin
-link(mortar) gcc -shared lib.o -Wl,--exclude-libs,ALL -Wl,--version-script,v.map -o lib.so
+link(mortar) gcc -shared lib.o -Wl,--exclude-libs,ALL -o lib.so
   exit: fail
   diag(mortar): unsupported option: --exclude-libs
-  diag(mortar): unsupported option: --version-script
-  diag(mortar): version scripts are WP-125's
 link(bfd,mold,mortar) gcc -pie main.o -Wl,-Bsymbolic -o prog
 run(bfd,mold,mortar) prog
   stdout: main
@@ -43,9 +41,6 @@ int lib_value = 41;
 void lib_init(void) {}
 void lib_fini(void) {}
 int lib_get(void) { return lib_value + 1; }
-
-#--- v.map
-V1 { global: lib_get; local: *; };
 
 #--- main.c
 #include <stdio.h>

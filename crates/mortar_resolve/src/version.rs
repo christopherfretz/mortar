@@ -209,7 +209,11 @@ impl Pattern {
             }
         }
         if meta {
-            return if text == b"*" { Self::Star } else { Self::Glob(text.into(), Glob::new(text)) };
+            return if text == b"*" {
+                Self::Star
+            } else {
+                Self::Glob(text.into(), Glob::new(text))
+            };
         }
         let mut name = Vec::with_capacity(text.len());
         let mut i = 0;
@@ -287,7 +291,8 @@ pub struct VersionScript {
     /// The exact `global:` entries in script order, first of each name:
     /// `(node, name)` (rule 9's check).
     global_names: Box<[(usize, Box<[u8]>)]>,
-    /// `version-reassigned`: `(name, first node, second node)`.
+    /// `version-reassigned`: `(name, first node, second node)`; reported
+    /// when a plain key of that name is decided (§9.7 rule 1).
     reassigned: Box<[(Box<[u8]>, usize, usize)]>,
 }
 
@@ -488,10 +493,10 @@ impl VersionScript {
     }
 
     fn display(&self, n: usize) -> String {
-        self.nodes[n].name.as_deref().map_or_else(
-            || "(anonymous)".to_owned(),
-            |s| String::from_utf8_lossy(s).into_owned(),
-        )
+        self.nodes[n]
+            .name
+            .as_deref()
+            .map_or_else(|| "(anonymous)".to_owned(), |s| String::from_utf8_lossy(s).into_owned())
     }
 }
 
@@ -510,6 +515,9 @@ pub(crate) fn apply<V: View>(
 ) -> Vec<VersionProblem> {
     let mut out: Vec<VersionProblem> = Vec::new();
     let script = line.script.as_deref();
+    // The names of `version-reassigned` that a plain key has (a `.symver`
+    // definition is matched by its own node only, rule 12).
+    let mut reassigned_used: Vec<Vec<u8>> = Vec::new();
     let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
     for k in 0..def.len() {
         if !exported[k] {
@@ -539,7 +547,10 @@ pub(crate) fn apply<V: View>(
             match script.and_then(|s| s.symver(name, v, line.export_dynamic)) {
                 None => out.push((
                     at,
-                    Diagnostic::error(Kind::UndefinedVersion { name: text(name), version: text(v) }),
+                    Diagnostic::error(Kind::UndefinedVersion {
+                        name: text(name),
+                        version: text(v),
+                    }),
                     file,
                 )),
                 Some(Decision::Local) => {
@@ -562,6 +573,9 @@ pub(crate) fn apply<V: View>(
             continue;
         }
         let Some(s) = script else { continue };
+        if !s.reassigned.is_empty() && s.reassigned.iter().any(|r| *r.0 == *name) {
+            reassigned_used.push(name.to_vec());
+        }
         match s.decide(name) {
             Decision::Node(i) => versions[k] = s.index(i),
             Decision::Local => exported[k] = false,
@@ -575,6 +589,9 @@ pub(crate) fn apply<V: View>(
         DiagKey::of(FileId(0), seq)
     };
     for (name, first, second) in &*s.reassigned {
+        if !reassigned_used.iter().any(|u| **u == **name) {
+            continue;
+        }
         out.push((
             next(),
             Diagnostic::warning(Kind::VersionReassigned {

@@ -215,7 +215,7 @@ is added before or after it.
 | `version-reassigned` | `VersionReassigned { name, first, second }` | `{name} is assigned to version {first} and {second}; {first} is kept` | own |
 | `version-script-undefined-name` | `VersionScriptUndefinedName { name, version }` | `version script assigns {name} to {version}, but no file defines it` | own (`spec/dyn.md` D-114: GNU ld silent, lld refuses; M4, WP-125) |
 | `versioned-definition-hidden` | `VersionedDefinitionHidden { name, version }` | `{name}@{version} is made local by version {version}'s local: entries; executables linked against {name}@{version} will not load` | own (`spec/resolve.md` §9.7 rule 12; M4, WP-125) |
-| `versioned-export` | `VersionedExport { name, version }` | `versioned definition {name}@@{version} cannot be exported (version definitions are not supported)` | own (`spec/dyn.md` D-27: GNU ld writes a verdef, lld and mold export it unversioned; M4) |
+| `versioned-export` | `VersionedExport { name, version }` | `versioned definition {name}{version} cannot be exported from an executable (mortar writes version definitions in a shared object only)` | own (`spec/dyn.md` D-27: GNU ld writes a verdef, lld and mold export it unversioned; `version` carries its `@` or `@@`, so a hidden `foo@V1` is not shown as `foo@@V1`; M4, WP-125) |
 | `meta-malformed` | `MetaMalformed { reason }` | `malformed Mason metadata: {reason}` | own |
 | `meta-version` | `MetaVersion { major }` | `Mason metadata version {major} is not supported; its records are ignored` | own |
 | `odr-abi-mismatch` | `OdrAbiMismatch { option, first, second }` | `translation units compiled with different {option}: {first} and {second}` | own (WP-073) |

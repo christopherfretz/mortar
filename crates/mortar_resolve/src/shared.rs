@@ -366,8 +366,7 @@ pub(crate) fn link<V: View>(
             .collect();
         // D-110 item 1, D-114 (WP-125): the version script.
         versions = vec![0; keys];
-        version_problems =
-            crate::version::apply(view, &opts.versions, def, &mut e, &mut versions);
+        version_problems = crate::version::apply(view, &opts.versions, def, &mut e, &mut versions);
         e
     } else {
         (0..keys)

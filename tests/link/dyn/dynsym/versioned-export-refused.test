@@ -35,7 +35,7 @@ check(lld,mold) readelf -VW prog
   not: .gnu.version_d
 link(mortar) gcc -pie main.o -L. -lve -o prog-mortar
   exit: fail
-  diag: versioned definition *@@* cannot be exported (version definitions are not supported)
+  diag: versioned definition *@@* cannot be exported from an executable (mortar writes version definitions in a shared object only)
 
 link gcc -pie plain.o -o plain
 run plain

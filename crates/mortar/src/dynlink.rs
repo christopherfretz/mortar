@@ -461,7 +461,8 @@ pub fn plan(
     let soname_bytes = t.plan.dynamic.soname.as_ref().map(|s| s.as_encoded_bytes().to_vec());
     // D-115: the version definitions of a shared object, the base named
     // by the soname, else the output's basename.
-    let mut verdef = if shared { verdef_plan(t, soname_bytes.as_deref()) } else { Default::default() };
+    let mut verdef =
+        if shared { verdef_plan(t, soname_bytes.as_deref()) } else { Default::default() };
     let (dynstr, soname_off) = if shared {
         mortar_synth::dynstr::dynstr_plan_versioned(
             &dynsym,

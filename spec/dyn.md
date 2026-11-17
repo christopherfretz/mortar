@@ -2195,7 +2195,7 @@ the output file's basename (GNU ld and mold; lld writes the path as
 given, [X-F] F3); then one per node in script order, indices 2…,
 `vd_flags` 0, `vd_hash` the ELF hash of the name, `vd_cnt` 1 + the
 number of parents, the node's `Verdaux` first and its parents' after it
-in the order written (GNU ld; lld and mold write no parents; glibc
+last-written first (GNU ld 2.44, measured by WP-125: `V3 { … } V1 V2;` lists V2 then V1; lld and mold write no parents; glibc
 ignores them; resolve §9.7's last paragraph). `Verdef` and its `Verdaux`
 entries are interleaved, each `Verdef` followed by its own. `.gnu.version`
 of an export: the node's index for `foo` or `foo@@V`; for `foo@V`

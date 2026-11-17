@@ -1,0 +1,31 @@
+# dyn.md D-114 (WP-125), resolve.md §9.7 rule 9: an exact `global:` entry
+# that no file defines. Without `--no-undefined-version` mortar links
+# with the warning `version-script-undefined-name` (GNU ld silent, mold
+# warns, lld refuses unless `--undefined-version`); with it the error
+# `undefined-version` (GNU ld and lld refuse, mold warns).
+# `--undefined-version` is a no-op: the warning stays.
+#@ spec: dyn.md "D-114"; resolve.md "9.7"
+#@ arch: aarch64 x86_64
+
+cc -O1 -fPIC u.c -o u.o
+link(bfd,mold,mortar) gcc -shared u.o -Wl,--version-script,u.map -o libu.so
+  diag(mortar): warning: version script assigns nosuch to V1, but no file defines it
+  diag(mold): cannot assign version `V1` to symbol `nosuch`: symbol not found
+link(lld) gcc -shared u.o -Wl,--version-script,u.map -o libu.so
+  exit: fail
+  diag: version script assignment of 'V1' to symbol 'nosuch' failed: symbol not defined
+link(bfd,lld,mortar) gcc -shared u.o -Wl,--version-script,u.map -Wl,--no-undefined-version -o libu2.so
+  exit: fail
+  diag(bfd): nosuch: undefined version: V1
+  diag(lld): version script assignment of 'V1' to symbol 'nosuch' failed: symbol not defined
+  diag(mortar): error: version V1 of nosuch is not defined
+link gcc -shared u.o -Wl,--version-script,u.map -Wl,--undefined-version -o libu3.so
+  diag(mortar): warning: version script assigns nosuch to V1, but no file defines it
+check readelf --dyn-syms -W libu3.so
+  has: FUNC GLOBAL DEFAULT * foo@@V1$
+  not: nosuch
+
+#--- u.c
+int foo(void) { return 1; }
+#--- u.map
+V1 { global: foo; nosuch; local: *; };

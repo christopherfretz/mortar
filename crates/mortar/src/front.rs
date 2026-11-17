@@ -420,8 +420,7 @@ pub fn front<'s>(
     // 30: the version script (`spec/script.md` §9; resolve.md §9.7,
     // dyn.md D-114; WP-125), then resolve.
     let versions = version_script(&plan, env.cwd, diag)?;
-    let outcome =
-        mortar_resolve::resolve_inputs_with(&inputs, &plan, &pool, versions.clone());
+    let outcome = mortar_resolve::resolve_inputs_with(&inputs, &plan, &pool, versions.clone());
     if time_steps {
         print_steps("resolve", &outcome.steps.times, &outcome.steps.counts);
     }

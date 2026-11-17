@@ -71,7 +71,6 @@ fn s4_2_options_a_later_package_implements_are_refused_in_shared() {
         (&["-z", "initfirst"][..], "-z initfirst", "WP-128"),
         (&["-z", "interpose"][..], "-z interpose", "WP-128"),
         (&["-z", "origin"][..], "-z origin", "WP-128"),
-        (&["--version-script", "v.map"][..], "--version-script", "WP-125"),
     ];
     for (words, spelling, package) in later {
         let mut line = vec!["-shared"];
@@ -142,7 +141,8 @@ fn g4_shared_row_text() {
     for part in [
         "AArch64 and x86-64 (i386 refused, `feature`, until WP-130; TLS and IFUNC in a \
          shared object on x86-64 until WP-127 part 2; local-exec TLS in a shared object \
-         refused, dyn.md D-119; version scripts until WP-125)",
+         refused, dyn.md D-119; `extern \"C++\"` version-script entries refused, dyn.md \
+         D-114)",
         "Not judged on x86-64 (x64.md X-62)",
         "3 of 306 measured bound definitions",
         "Refused although correct: -fPIC code that forms an address before the start of a \
@@ -181,6 +181,39 @@ fn d102_soname_only_in_shared() {
     }
 }
 
+// spec: dyn.md D-114 (WP-125): `--version-script` is supported in a
+// shared object and refused by name elsewhere (the references disagree on
+// an executable); `--no-undefined-version` and `--undefined-version` land
+// in `dynamic.undefined_version`, the last wins
+#[test]
+fn d114_version_script_only_in_shared() {
+    let parsed = p(&["-shared", "--version-script", "v.map", "--version-script=w.map", "a.o"]);
+    assert!(refused(&parsed).is_empty());
+    let paths: Vec<_> = parsed.plan.version_scripts().map(|s| s.path.clone()).collect();
+    assert_eq!(paths, ["v.map", "w.map"]);
+    for kind in [&[][..], &["-pie"][..], &["-static"][..]] {
+        let mut line = kind.to_vec();
+        line.extend(["--version-script", "v.map", "a.o"]);
+        let parsed = p(&line);
+        assert_eq!(refused(&parsed), ["--version-script"], "{line:?}");
+        let text = refusals(&parsed).join("\n");
+        assert!(text.contains("unsupported option: --version-script"), "{text}");
+        assert!(text.contains("dyn.md D-114"), "{text}");
+    }
+    let undef = |words: &[&str]| {
+        let mut line = vec!["-shared"];
+        line.extend_from_slice(words);
+        line.push("a.o");
+        let parsed = p(&line);
+        assert!(refused(&parsed).is_empty(), "{line:?}");
+        parsed.plan.dynamic.undefined_version
+    };
+    assert_eq!(undef(&[]), None);
+    assert_eq!(undef(&["--no-undefined-version"]), Some(false));
+    assert_eq!(undef(&["--no-undefined-version", "--undefined-version"]), Some(true));
+    assert_eq!(undef(&["--undefined-version", "--no-undefined-version"]), Some(false));
+}
+
 // spec: cli.md §4.2 (the M4 block's list is the table's): every name of
 // the `Shared` list is a row
 #[test]
@@ -193,7 +226,6 @@ fn s4_2_shared_list_names_rows() {
     assert_eq!(
         later,
         [
-            "--version-script",
             "--dynamic-list",
             "--exclude-libs",
             "-init",

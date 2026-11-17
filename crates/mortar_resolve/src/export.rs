@@ -8,10 +8,11 @@
 //! check (8)); the scan reads it as the target kind `Preemptible`
 //! (D-113). Neither is called for an executable.
 //!
-//! Not here yet: D-110 item 1 (a version script's `local:`, WP-125;
-//! `--exclude-libs`, WP-128) and a `--dynamic-list` (D-112, WP-128): the
-//! command line refuses the three in a `Shared` link (`spec/cli.md` §4.2),
-//! so no such line reaches resolution.
+//! A version script's `local:` (D-110 item 1, D-114) is applied after
+//! [`exported`] by `crate::version::apply`. Not here yet: `--exclude-libs`
+//! (D-110 item 1, WP-128) and a `--dynamic-list` (D-112, WP-128): the
+//! command line refuses both in a `Shared` link (`spec/cli.md` §4.2), so
+//! no such line reaches resolution.
 
 use mortar_core::plan::{Symbolic, SymbolicLine};
 use mortar_elf::consts::{STT_FUNC, STV_DEFAULT, STV_PROTECTED};

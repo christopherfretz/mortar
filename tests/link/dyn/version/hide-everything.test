@@ -1,0 +1,46 @@
+# dyn.md D-114 (WP-125), resolve.md §9.7 rule 11: the script a Python
+# extension module is linked with, one anonymous node that exports the
+# module's init function and hides everything else. The export is
+# unversioned and no version is defined (no `.gnu.version_d`; all
+# three references); the hidden helper is not exported, and the call to
+# it from the exported function is bound inside the library (D-112: a
+# version-local definition is not preemptible): an interposer that
+# defines `helper` does not replace it.
+#@ spec: dyn.md "D-114"; dyn.md "D-112"; resolve.md "9.7"
+#@ arch: aarch64 x86_64
+
+cc -O1 -fPIC -fno-inline spam.c -o spam.o
+cc -O1 -fPIC hook.c -o hook.o
+cc -O1 -fPIE main.c -o main.o
+shlib gcc -shared hook.o -o libhook.so
+link gcc -shared spam.o -Wl,--version-script,spam.map -o spam.so
+check readelf --dyn-syms -W spam.so
+  has: FUNC GLOBAL DEFAULT * PyInit_spam$
+  not: helper
+  not: PyInit_spam@
+check readelf -SW spam.so
+  not: .gnu.version_d
+check readelf -dW spam.so
+  not: (VERDEF)
+host gcc -pie main.o -L. -l:spam.so -o prog
+run prog
+  stdout: 42
+run prog
+  env: LD_PRELOAD=./libhook.so
+  stdout: 42
+
+#--- spam.c
+#include <stdio.h>
+int helper(int x) { return x * 2; }
+int PyInit_spam(void) { setvbuf(stdout, 0, _IOLBF, 0); return helper(21); }
+#--- spam.map
+{
+  global: PyInit_spam;
+  local: *;
+};
+#--- hook.c
+int helper(int x) { return -x; }
+#--- main.c
+#include <stdio.h>
+int PyInit_spam(void);
+int main(void) { printf("%d\n", PyInit_spam()); return 0; }

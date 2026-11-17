@@ -1,0 +1,37 @@
+# dyn.md D-114, D-111 (WP-125): `--gc-sections` in a shared object with a
+# version script. A symbol the script exports is a root, with its
+# version (`keep@@V1`, and `.symver` old `keep_old@V0`); what it calls
+# survives; a function the script makes local and nothing calls is
+# collected.
+#@ spec: dyn.md "D-114"; dyn.md "D-111"
+#@ arch: aarch64 x86_64
+
+cc -O1 -fPIC -fno-inline -ffunction-sections lib.c -o lib.o
+cc -O1 -fPIE main.c -o main.o
+link gcc -shared lib.o -Wl,--gc-sections -Wl,--version-script,v.map -Wl,-soname,libg.so -o libg.so
+check readelf --dyn-syms -W libg.so
+  has: FUNC GLOBAL DEFAULT * keep@@V1$
+  has: FUNC GLOBAL DEFAULT * keep_old@V0$
+  not: dropped
+  not: callee
+check(bfd,mortar) readelf -s -W libg.so
+  has: callee$
+  not: dropped
+host gcc -pie main.o -L. -lg -o prog
+run prog
+  stdout: 42
+
+#--- lib.c
+#include <stdio.h>
+int callee(void) { return 41; }
+int dropped(void) { return 13; }
+int keep(void) { setvbuf(stdout, 0, _IOLBF, 0); return callee() + 1; }
+int keep_old_impl(void) { return 0; }
+__asm__(".symver keep_old_impl, keep_old@V0");
+#--- v.map
+V0 { global: keep_old; };
+V1 { global: keep; local: *; };
+#--- main.c
+#include <stdio.h>
+int keep(void);
+int main(void) { printf("%d\n", keep()); return 0; }

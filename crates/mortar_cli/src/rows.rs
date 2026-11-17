@@ -117,7 +117,10 @@ const DYNAMIC_LIST_CPP: &str =
 /// write it there).
 pub(crate) static SHARED_ONLY: &[(&str, &str)] = &[
     ("-h", "dyn.md D-102: mortar writes DT_SONAME in a shared object (-shared) only"),
-    ("--version-script", "dyn.md D-114: mortar applies a version script in a shared object (-shared) only; for an executable the references disagree (GNU ld exports the node names, lld exports nothing without -E, mold exports the script's global entries)"),
+    (
+        "--version-script",
+        "dyn.md D-114: mortar applies a version script in a shared object (-shared) only; for an executable the references disagree (GNU ld exports the node names, lld exports nothing without -E, mold exports the script's global entries)",
+    ),
 ];
 
 /// The options whose effect in a `Shared` link a later package implements

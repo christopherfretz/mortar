@@ -319,8 +319,8 @@ impl Built {
             names: self,
             class,
         }
-            .write_all(&mut vn)
-            .map_err(|e| format!("{e:?}"))?;
+        .write_all(&mut vn)
+        .map_err(|e| format!("{e:?}"))?;
         Ok(Out { plan, verneed, dynstr, dynsym, gnu_hash: gnu, strtab, versym, verneed_bytes: vn })
     }
 }
@@ -600,7 +600,10 @@ fn refusals_by_name() {
         fx.export("foo", def, (13, 0x1000));
     });
     let e = versioned.plan(&Pool::sequential()).unwrap_err();
-    assert!(e.contains("versioned definition foo@@V1 cannot be exported"), "{e}");
+    assert!(
+        e.contains("versioned definition foo@@V1 cannot be exported from an executable"),
+        "{e}"
+    );
     let hidden = one(&|fx| {
         let def = ProgramDef {
             info: STB_GLOBAL << 4 | STT_FUNC,
