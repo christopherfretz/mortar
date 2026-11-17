@@ -1241,7 +1241,7 @@ warning: f(int) violates the one-definition rule
   alignment 4`, or `the layouts differ (members, offsets, bases or
   vtable) with the same size 8 and alignment 4`) is replaced by the
   first difference below; when the shape flags differ at equal sizes,
-  their note (`a.o: struct; b.o: union`) stays and the first difference
+  their note (`a.o: a class; b.o: a union`) stays and the first difference
   follows it. With one row's `details` only, neither, an entry of a
   block version above 1 (MT-25), or a definition-hash or cross-scheme
   finding, the notes are as before, byte for byte. Kind 4 never decides
