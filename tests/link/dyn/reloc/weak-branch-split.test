@@ -1,0 +1,94 @@
+# dyn.md D-25 (WP-155, the supervisor's ruling (A)): in `-no-pie`, an
+# undefined weak function `vfn` reached by a call (`call.c`, `-fPIE`:
+# AArch64 `CALL26`, x86-64 `PLT32`) and by an unfillable use (`test.c`'s
+# `&vfn`, `-mcmodel=large -fno-pic`: an AArch64 `ABS64` literal in
+# `.text`, an x86-64 `movabs` `R_X86_64_64`), and by nothing else, is
+# `WeakDyn` for its branch: a `WEAK UND` entry and the call through a
+# PLT entry with a `JUMP_SLOT`; the unfillable use keeps `Weak0`'s value,
+# 0. Run plain, the test reads 0 and the call dies (`SIGSEGV`); with
+# `LD_PRELOAD=./libv.so`, or `alt/libm2.so` listing `libv.so`, the test
+# still reads 0 and the call reaches the definition (27). lld on both
+# architectures and GNU ld on AArch64 write this. Before WP-155 mortar
+# made the key `Weak0`: no entry, the AArch64 call skipped, the x86-64
+# call to 0 whatever was loaded.
+#
+# GNU ld on x86-64 writes no entry once an absolute use exists (its
+# `-z nodynamic-undefined-weak` form): the call dies under the preload
+# too. That is dyn.md §13.1's named difference ("undefined weak key
+# reached by a branch and an unfillable use"): a program that works under
+# it never executes the call while the key is undefined, and works under
+# mortar's output. mold makes the key 0 (no entry; on AArch64 the skipped
+# call returns into a trap). Their runs are held to what they print.
+#@ spec: dyn.md "D-25"
+#@ arch: aarch64 x86_64
+
+cc -O2 -fPIC v.c -o v.o
+cc -O2 -fPIC m2.c -o m2.o
+cc -O2 -fPIE main.c -o main.o
+cc -O2 -fPIE call.c -o call.o
+cc -O2 -mcmodel=large -fno-pic test.c -o test.o
+shlib gcc v.o -Wl,-soname,libv.so -o libv.so
+shlib gcc m2.o -Wl,-soname,libm2.so -o libm2.so
+shlib gcc m2.o -Wl,-soname,libm2.so -L. -Wl,--no-as-needed -lv -o alt/libm2.so
+
+link gcc -no-pie main.o test.o call.o -L. -lm2 -o exec
+run(bfd,lld,mortar) exec
+  exit: signal 11
+  stdout: split test 0
+run(lld,mortar) exec
+  env: LD_PRELOAD=./libv.so
+  stdout: split test 0
+  stdout: split call 27 base 20
+run(lld,mortar) exec
+  env: LD_LIBRARY_PATH=alt:.
+  stdout: split test 0
+  stdout: split call 27 base 20
+run(bfd,aarch64) exec
+  env: LD_PRELOAD=./libv.so
+  stdout: split test 0
+  stdout: split call 27 base 20
+run(bfd,x86_64) exec
+  env: LD_PRELOAD=./libv.so
+  exit: signal 11
+  stdout: split test 0
+check(lld,mortar) readelf --dyn-syms -W exec
+  has: NOTYPE WEAK DEFAULT UND vfn$
+check(lld,mortar) readelf -rW exec
+  has: _JUMP_SLOT * vfn + 0
+  not: _GLOB_DAT * vfn
+check(bfd,aarch64) readelf -rW exec
+  has: _JUMP_SLOT * vfn + 0
+check(bfd,x86_64) readelf --dyn-syms -W exec
+  not: vfn
+check(mold) readelf --dyn-syms -W exec
+  not: vfn
+
+link(mortar) gcc -pie main.o test.o call.o -L. -lm2 -o pie
+  exit: fail
+  diag(mortar): relocation * against undefined weak symbol `vfn' cannot be used in a position-independent executable; recompile with -fPIE
+
+#--- alt/README
+alt/libm2.so: libm2.so listing libv.so (DT_NEEDED).
+#--- v.c
+int vfn(void) { return 27; }
+#--- m2.c
+int m2fn(void) { return 20; }
+#--- test.c
+extern int vfn(void) __attribute__((weak));
+void *taddr(void) { return (void *)&vfn; }
+#--- call.c
+extern int vfn(void) __attribute__((weak));
+int ccall(void) { return vfn(); }
+#--- main.c
+#include <stdio.h>
+void *taddr(void);
+int ccall(void);
+int m2fn(void);
+int main(void) {
+  int base = m2fn();
+  setvbuf(stdout, 0, _IONBF, 0);
+  printf("split test %d\n", taddr() ? 1 : 0);
+  int r = ccall();
+  printf("split call %d base %d\n", r, base);
+  return 0;
+}

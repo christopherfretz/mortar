@@ -726,6 +726,9 @@ pub(crate) fn relocate(
         };
         let mut out = SectionOut::new(buf, a - base, c.addr.wrapping_add(base), c.alloc, c.name)
             .with_exec(c.exec);
+        if let Some(w) = img.tables.section_writable(c.section) {
+            out = out.with_writable(w);
+        }
         // A live key's split target first: under `--gc-sections` a live
         // merge section can hold a collected piece (I-7), and a debug
         // reference to one is the tombstone (I-47), as one to a collected

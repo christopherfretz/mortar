@@ -547,6 +547,13 @@ impl LinkSites<'_, '_> {
         };
         let leads = self.t.order.leads(c.sid);
         let name = self.walker.section_name(c.file, c.index);
+        // `spec/dyn.md` D-25: the output section's `SHF_WRITE`, as fill's.
+        let writable = self
+            .t
+            .assignment
+            .outsecs
+            .get(c.out)
+            .is_some_and(|o| o.flags & mortar_elf::consts::SHF_WRITE != 0);
         // This section's own view of the round's tables: whether the
         // relocation just applied asked for an address not known yet.
         let probe = Probe {
@@ -583,8 +590,9 @@ impl LinkSites<'_, '_> {
                 // A relocation that does not apply is fill's to report (the
                 // link fails there); the words are those of the
                 // relocations that applied.
-                let mut so =
-                    SectionOut::new(section, 0, addr, true, name.as_bytes()).with_exec(true);
+                let mut so = SectionOut::new(section, 0, addr, true, name.as_bytes())
+                    .with_exec(true)
+                    .with_writable(writable);
                 let _ = self.arch.apply(&cx, &v.at, &mut so);
                 if !probe.unknown.load(Ordering::Relaxed) {
                     return;
@@ -597,8 +605,9 @@ impl LinkSites<'_, '_> {
                 let first: Vec<u8> = section[sp.clone()].to_vec();
                 section[sp.clone()].copy_from_slice(&before);
                 probe.alt.store(true, Ordering::Relaxed);
-                let mut so =
-                    SectionOut::new(section, 0, addr, true, name.as_bytes()).with_exec(true);
+                let mut so = SectionOut::new(section, 0, addr, true, name.as_bytes())
+                    .with_exec(true)
+                    .with_writable(writable);
                 let _ = self.arch.apply(&cx, &v.at, &mut so);
                 probe.alt.store(false, Ordering::Relaxed);
                 for (k, (a, b)) in first.chunks(4).zip(section[sp.clone()].chunks(4)).enumerate() {

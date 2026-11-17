@@ -915,7 +915,9 @@ the offsets are a prefix sum the verifier can recompute. *Test:*
 settles the circle of arch.md §2.1 L77 and resolve.md §5.4 L819 (requests
 R-A2, R-R2). `target_kind` is a property of the **key**, never of the
 relocation class (arch.md §2.1). For an undefined key that is weak (no
-definition, or one only in a shared object that is not needed, D-11),
+definition in any member of N ∪ U, D-11, D-12: one only in a shared
+object outside N ∪ U, which `--as-needed` dropped and no needed object
+lists; a definition in a used object binds the key, D-27, WP-141),
 classify each live relocation that names it by this table (review N3),
 which covers every type of the M1 and M2 sets of a64.md, x64.md and
 x86.md; **a type not listed is unfillable**:
@@ -952,14 +954,28 @@ x86.md; **a type not listed is unfillable**:
 
 Then:
 
-- the key is **`WeakDyn`** in `Exec` and `Pie` when it has some GOT use or
-  absolute word in a writable place, and no unfillable use. It is in `.dynsym` (`WEAK UND`,
+- the key is **`WeakDyn`** in `Exec` and `Pie` when it has some GOT use,
+  absolute word in a writable place or branch, and no unfillable use (a
+  branch alone included, WP-155: GNU ld and lld). It is in `.dynsym` (`WEAK UND`,
   unhashed, D-22/D-23); its GOT slots get `GLOB_DAT`, its absolute words
   a symbolic record, and **every branch against it goes through a PLT
   entry** with a `JUMP_SLOT` (lld's form; GNU ld uses `.plt.got` on
   x86-64; D-49 has no `.plt.got`). The GOT test and the call then agree
   whether or not a library loaded later (`LD_PRELOAD`, `dlopen` with
   `RTLD_GLOBAL`) defines it;
+- in `Exec`, a key with a branch and an unfillable use but neither a GOT
+  use nor an absolute word in a writable place is **`WeakDyn` for its
+  branches** (WP-155, the supervisor's ruling (A)): it is in `.dynsym`
+  (`WEAK UND`) and every branch goes through a PLT entry with a
+  `JUMP_SLOT`, as above; each unfillable use keeps `Weak0`'s value, written
+  by the architecture's `weak0` table (a64 §7, x64 X-16: `S = 0`, an
+  AArch64 `PC` instruction `S = P`), and demands nothing. `target_kind`
+  stays the key's (`WeakDyn`); only the patching of such a use is per
+  relocation: the architecture's scan and apply see `Weak0` for a
+  relocation at an allocated place whose class by the table above is
+  unfillable (`mortar_arch::weak_use_kind`; fill knows the writable place
+  from the output section, and a caller that does not say is taken as
+  writable). `class_outcome`'s cells (D-43, D-44) are unchanged;
 - in `Exec` and `Pie`, a key with a TLS-class use (a thread-local
   undefined weak) is refused by name at M2, once per key (at its first
   TLS relocation in input order), `Refused{Feature, "thread-local undefined weak symbol in a dynamic executable"}`: every TLS type is
@@ -980,14 +996,47 @@ Then:
   `-fno-pic` and `-mcmodel=tiny` included) and i386 never do. The
   refusal costs no input that any reference links;
 - otherwise the key is **`Weak0`** for every class: in `Exec` when it has
-  an unfillable use (its value `S` is then 0 everywhere, consistently: GNU
+  an unfillable use and a GOT use or an absolute word in a writable place
+  (its value `S` is then 0 everywhere, consistently: GNU
   ld on x86, mold; each relocation is written by the architecture's
   `weak0` table, a64 §7, x64 X-16, so an AArch64 `PC` instruction takes
   `S = P`: an `ADRP` gets `Page(P + A) − Page(P)` and an `ADRP`+`ADD`
   pair gives the instruction's page, not 0, as GNU ld and lld write,
-  WP-051), and in both kinds when it has neither a GOT use nor an
-  absolute word in a writable place (a branch alone: `__gmon_start__`
-  style calls patched per a64 §7 / x64 X-16).
+  WP-051), in `Exec` when its only uses are unfillable, and in both kinds
+  when it has no use at all.
+
+The branch cells (WP-155; GNU ld 2.44, lld 19.1.7, mold 2.37.1; `-pie`
+and `-no-pie`, lazy and `-z now` alike, AArch64 natively, x86-64 under
+qemu; `reloc/weak-branch-*`): a program whose only use of `v` is
+`if (&v == 0) …; v();` compiled so that the call is the only use, or a
+test that is an unfillable use beside it (`-fno-pie`, `-mcmodel=large`),
+linked against a library that does not define `v`, run plain, under
+`LD_PRELOAD` of a library defining it, and against a later version of the
+needed library that defines it:
+
+| cell | GNU ld AArch64 | GNU ld x86-64 | lld (both) | mold (both) |
+|---|---|---|---|---|
+| branch alone | `WEAK UND` + `JUMP_SLOT`; crash plain, the definition called under the preload and the new library | the same | the same | no entry; AArch64 call skipped (`bl .+4`), x86-64 `call 0` `SIGSEGV`, also under the preload |
+| branch + unfillable, `Exec` | `WEAK UND` + `JUMP_SLOT`; the test reads 0, the call goes to the definition under the preload | no entry; the call `SIGSEGV`s, also under the preload | as GNU ld AArch64 | as for a branch alone |
+| branch in a collected section (`--gc-sections`) | no entry | no entry | no entry | an entry (`FUNC`) when the defining library is on the line |
+
+Mortar writes the first two rows as lld does (before WP-155: `Weak0`, a
+call skipped on AArch64 and `call 0` on x86-64 whatever is loaded). Why
+(A), the ruling: (1) it is lld on both architectures and GNU ld on
+AArch64, three of the four reference cells, one rule; (2) compatibility
+is a superset: a program that works under GNU ld x86-64 never executes
+such a call while the key is undefined, and one that works under lld
+keeps working, where making the key `Weak0` would crash it; (3) the
+harmful cell (a non-zero test, a call to 0) cannot arise: a test is
+either a GOT use (`WeakDyn`, the record) or an unfillable use (it reads
+0). GNU ld's x86-64 row (no entry once an absolute use exists, its
+`-z nodynamic-undefined-weak` behaviour) is §13.1's named difference.
+A GOT use beside an unfillable use in `Exec` stays `Weak0` (with or
+without a branch): there GNU ld on AArch64 and lld write `GLOB_DAT` (and
+the `JUMP_SLOT`), and under the preload the GOT test reads non-zero while
+the absolute word reads 0 (a call through that word `SIGSEGV`s in their
+own output), and GNU ld on x86-64 and mold write 0 everywhere; the
+references disagree, and 0 everywhere is the consistent one.
 
 The references: GNU ld and lld make a GOT-used weak key dynamic in `Pie`
 and in `Exec` and run the hook (`review-m2-adv/weaksplit`, reproduced:
@@ -1036,7 +1085,12 @@ second form, `weaksplit2`: `WeakDyn`, a record on the word, `hp==hook`
 under the preload), `weak-class-table` (one object per row and type of
 the table above, the branch-opcode cases `E8`/`E9`/`0F 8x`/other and a
 `PC32` at offset 0 or 1 of its section, `ABS64`/`64`/`32` in `.data`,
-`.data.rel.ro` and `.text`: the class each gets).
+`.data.rel.ro` and `.text`: the class each gets), `weak-branch-call`
+(a branch alone: crash plain, the definition called under the preload
+and through a needed library that gains it; a dropped `--as-needed`
+versioned library gives an unversioned entry and no `Verneed`),
+`weak-branch-split` (a branch and an unfillable use in `-no-pie`),
+`weak-branch-gc` (a branch only in a collected section: no entry).
 
 **D-26 [M2] (`.gnu.hash`).** For `n` hashed entries (D-22), `W` the word
 size in bits:
@@ -1719,7 +1773,8 @@ unchanged. Every `P-D` id this spec cites is that section's.
 | RELRO end on AArch64 | maxpage | mid-page | maxpage | maxpage (D-61) |
 | RELRO padding section | none | `.relro_padding` | `.relro_padding` | `.pad.relro` (layout L-156; eu-elflint takes a `.rel*` name for a relocation section) |
 | an as-needed library reached only by a weak reference | not needed | not needed | needed | not needed (D-11; `as-needed-weak`) |
-| undefined weak key reached by branches only | dynamic, `JUMP_SLOT` | dynamic, `JUMP_SLOT` | 0 | `Weak0`, no entry (D-25; `weak-class-table`) |
+| undefined weak key reached by branches only | dynamic, `JUMP_SLOT` | dynamic, `JUMP_SLOT` | 0 | dynamic, `JUMP_SLOT` (D-25, WP-155; `weak-class-table`, `weak-branch-call`) |
+| undefined weak key reached by a branch and an unfillable use, `-no-pie` | AArch64: dynamic, `JUMP_SLOT`, the test reads 0; x86-64: no entry, the call `SIGSEGV`s under `LD_PRELOAD` too (its `-z nodynamic-undefined-weak` form) | dynamic, `JUMP_SLOT`, the test reads 0 (the preload's definition is called) | 0 | lld's (D-25's ruling (A), WP-155; `weak-branch-split`); GNU ld's x86-64 output is a named difference: a program that works under it never executes the call while the key is undefined, and it works under mortar's |
 | `-no-pie` base | 0x400000 | 0x200000 | 0x200000 | 0x400000 (D-1, layout L-68; `dyn-segments`) |
 | `PT_LOAD`s of a dynamic executable | AArch64 2 (RX, RW); x86-64 4 (R, RX, R, RW) | 4 (R, RX, RW, RW) | 4 | 4, lld's (D-61) |
 | `PT_GNU_PROPERTY` on x86-64 | yes | no | yes | yes (D-61) |
@@ -1886,7 +1941,7 @@ refusal. "W" links to §13.2.
 | shared inputs | `shlib-hidden-dynsym` (refuse; W1), `as-needed-weak`, `as-needed-closure`, `closure-export` (W8), `closure-not-on-command-line` (refuse), `shlib-undefined-missing-closure`, `version-needs-unchecked`, `copy-dt-needed-refused` (refuse), `tls-mismatch-shared` (refuse; W14), `protected-copy`, `protected-canon-plt` (refuse; W5), `needed-twice` (W9), `needed-order`, `shlib-undefined-ldso`, `used-underlinks-refused` (refuse; W16), `needed-order-as-needed-twice`, `needed-order-group`, `needed-order-dup-def` (N1; `shlib/dupdef_needed.sh`, `review-m2-adv/dupdef`), `underlink-after` (in `needed-order`; N5) |
 | `.dynsym` | `dynsym-set`, `dynsym-order`, `dynsym-fields`, `environ-aliases` (W2), `weak-undef-pie`, `gnu-hash-sizes`, `gnu-hash-lookup`, `versions-verneed`, `versioned-export-refused` (refuse), `hash-style-sysv-refused` (refuse) |
 | `.dynamic` | `dynamic-tags`, `init-fini-option`, `variant-pcs-plt`, `got-header`, `dynamic-writable`, `dyn-shdr`, `interp-default` (W10) |
-| relocations | `rela-dyn-order`, `irelative-resolver-calls-plt` (H1), `copy-reloc`, `copy-zero-size` (refuse; W4), `copy-tls-refused` (refuse; W14), `copy-in-pie-x86-64`, `canonical-plt-equality`, `canon-plt-in-pie-refused` (refuse; W11), `ifunc-equality-pie` (W3), `textrel-refused` (refuse; W6), `textrel-ro-copy-pie` (refuse; W7), `tls-shared-ie`, `tls-exe-le`, `tls-gd-unrelaxed` (W15), `tls-desc-large`, `plt-lazy`, `plt-now`, `copy-typeinfo-relro`, `weak-undef-hook-preload`, `weak-undef-pc-pie-refused`, `weak-mixed-exec` (W12), `weak-data-init-exec` (W12), `weak-class-table` (D-25's table), `ifunc-from-dso` (W13), `mixed-mode` (the `corpus/mixed.sh` mixes), `norelro-dynamic` |
+| relocations | `rela-dyn-order`, `irelative-resolver-calls-plt` (H1), `copy-reloc`, `copy-zero-size` (refuse; W4), `copy-tls-refused` (refuse; W14), `copy-in-pie-x86-64`, `canonical-plt-equality`, `canon-plt-in-pie-refused` (refuse; W11), `ifunc-equality-pie` (W3), `textrel-refused` (refuse; W6), `textrel-ro-copy-pie` (refuse; W7), `tls-shared-ie`, `tls-exe-le`, `tls-gd-unrelaxed` (W15), `tls-desc-large`, `plt-lazy`, `plt-now`, `copy-typeinfo-relro`, `weak-undef-hook-preload`, `weak-undef-pc-pie-refused`, `weak-mixed-exec` (W12), `weak-data-init-exec` (W12), `weak-class-table` (D-25's table), `weak-branch-call`, `weak-branch-split`, `weak-branch-gc` (D-25's branch cells), `ifunc-from-dso` (W13), `mixed-mode` (the `corpus/mixed.sh` mixes), `norelro-dynamic` |
 | layout | `dyn-section-order`, `dyn-segments`, `relro-maxpage`, `pure-function` (link twice with a perturbed address input; dynamic sizes equal) |
 | tools | `gdb-break-main`, `lldb-break-main`, `ldd-lists`, `elflint-dynamic` |
 | end to end | the default line of every driver of §2.1 for AArch64 and x86-64 (C, C++, Fortran; PIE and `-no-pie`; `-z now`; `-rdynamic`; `-static-libstdc++`) and kiln's libc++ lane |

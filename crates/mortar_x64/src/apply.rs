@@ -177,7 +177,14 @@ pub fn scan(m2: bool, cx: &ScanCx<'_>, at: &RelocAt<'_>, out: &mut DemandSink<'_
         }
         return;
     }
-    let kind = effective(sym.kind, h.class);
+    // `spec/dyn.md` D-25 (WP-155): an unfillable use of a split key is
+    // written as `Weak0`'s (a TLS class keeps the key's kind: such a key
+    // is refused, the thread-local undefined weak).
+    let kind = mortar_arch::weak_use_kind(cx.output, sym.kind, cx.place.alloc, || {
+        weak_use(at.r_type, at.site.bytes, at.r_offset, cx.place.writable)
+            .filter(|_| !h.class.is_tls())
+    });
+    let kind = effective(kind, h.class);
     let data = matches!(h.field, Field::Data { .. });
     let mut outcome = class_outcome(h.class, data, cx.output, kind, cx.place, sym.tls);
     if m2 && cx.place.alloc {
@@ -359,7 +366,13 @@ pub fn apply(
     if exec && relax::follower_of(at, cx.tables).is_some() {
         return Ok(());
     }
-    let sym = cx.tables.sym(at.key);
+    let mut sym = cx.tables.sym(at.key);
+    // `spec/dyn.md` D-25 (WP-155): an unfillable use of a split key is
+    // written as `Weak0`'s (an unknown place is taken as writable).
+    sym.kind = mortar_arch::weak_use_kind(cx.output, sym.kind, out.alloc, || {
+        weak_use(at.r_type, at.site.bytes, at.r_offset, out.writable.unwrap_or(true))
+            .filter(|_| !h.class.is_tls())
+    });
     // X-53 (arch.md §3.11): against a dead target a debug section gets the
     // tombstone and `.gcc_except_table` 0; scan reported any other section.
     if !sym.live {

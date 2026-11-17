@@ -409,6 +409,13 @@ pub struct SectionOut<'a> {
     /// elsewhere (`spec/x64.md` X-46). `None` (the default of [`Self::new`])
     /// when unknown; an architecture that needs it refuses by name.
     pub exec: Option<bool>,
+    /// The place's OUTPUT section has `SHF_WRITE` (RELRO included), as
+    /// the scan's [`crate::PlaceFacts::writable`], when the caller says:
+    /// `spec/dyn.md` D-25's class of an absolute word against a
+    /// `WeakDyn` key in an `Exec` ([`crate::weak_use_kind`]). `None`
+    /// when unknown: such a word is then taken as writable (an absolute
+    /// word in a writable place).
+    pub writable: Option<bool>,
 }
 
 impl<'a> SectionOut<'a> {
@@ -421,6 +428,7 @@ impl<'a> SectionOut<'a> {
             alloc,
             name,
             exec: None,
+            writable: None,
             resident: None,
             before: &[],
             after: &[],
@@ -449,6 +457,13 @@ impl<'a> SectionOut<'a> {
     #[must_use]
     pub fn with_exec(mut self, exec: bool) -> Self {
         self.exec = Some(exec);
+        self
+    }
+
+    /// The same clip, with its output section's `SHF_WRITE` known.
+    #[must_use]
+    pub fn with_writable(mut self, writable: bool) -> Self {
+        self.writable = Some(writable);
         self
     }
 

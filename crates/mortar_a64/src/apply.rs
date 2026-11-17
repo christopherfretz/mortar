@@ -92,10 +92,16 @@ pub fn scan(m2: bool, cx: &ScanCx<'_>, at: &RelocAt<'_>, out: &mut DemandSink<'_
     }
     // §7: a TLS class treats `weak0` as TLS-local, its TP and DTP offsets
     // being `A` (§12.2).
-    let kind = if h.class.is_tls() && sym.kind == TargetKind::Weak0 {
+    // `spec/dyn.md` D-25 (WP-155): an unfillable use of a split key is
+    // written as `Weak0`'s (a TLS class keeps the key's kind: such a key
+    // is refused, the thread-local undefined weak).
+    let kind = mortar_arch::weak_use_kind(cx.output, sym.kind, cx.place.alloc, || {
+        crate::weak::weak_class(at.r_type, cx.place.writable).filter(|_| !h.class.is_tls())
+    });
+    let kind = if h.class.is_tls() && kind == TargetKind::Weak0 {
         TargetKind::Local
     } else {
-        sym.kind
+        kind
     };
     let data = matches!(h.field, Field::Data { .. });
     let outcome = class_outcome(h.class, data, cx.output, kind, cx.place, sym.tls);
@@ -267,7 +273,13 @@ pub fn apply(
         put_word(at, out, off, MRS_X1_TPIDR)?;
         return put_word(at, out, off + 4, ADD_X0_X1_X0);
     }
-    let sym = cx.tables.sym(at.key);
+    let mut sym = cx.tables.sym(at.key);
+    // `spec/dyn.md` D-25 (WP-155): an unfillable use of a split key is
+    // written as `Weak0`'s (an unknown place is taken as writable).
+    sym.kind = mortar_arch::weak_use_kind(cx.output, sym.kind, out.alloc, || {
+        crate::weak::weak_class(at.r_type, out.writable.unwrap_or(true))
+            .filter(|_| !h.class.is_tls())
+    });
     let weak0 = sym.kind == TargetKind::Weak0;
     if exec {
         match h.class {
