@@ -724,8 +724,12 @@ clause]`). A class or enumeration gets a row only if all hold:
 does not depend on its use, so ANY subset of "the complete, named, not
 TU-local enumerations the unit defines" is sound (it can only miss).
 The rule above ("appears in an emitted definition") needs a usage
-record kiln does not keep; kiln's K-4 writes no enumeration rows, and
-the rule accepted for its first ones is "complete in the unit and named
+record kiln does not keep; kiln's K-4 wrote no enumeration rows; its
+K-4b (d854b23bc) writes them under the preferred rule below, "complete
+and referenced anywhere in the unit" (sema's referenced mark on the
+enumeration or an enumerator; a member enumeration of a class template
+specialization counts when the template's own is marked), so X18a no
+longer applies to kiln's rows. The rule accepted for the first ones was "complete in the unit and named
 in the type of an emitted function or variable", or, if kiln has a
 reference mark on the enumeration or its enumerators, "complete and
 referenced anywhere in the unit" (preferred: the former misses K7's
@@ -809,6 +813,26 @@ against mortar e3f9ed7: a class that differs between two units is
 `odr-type-mismatch`; three real units with libstdc++ (1,020 rows) and
 libc++ (1,331 rows) under `--odr=strict` give 0 record findings; the
 heavy unit has 337 kind 3 rows (18,888 B, names 14,342 B).
+Kiln's K-4b (kiln d854b23bc; accepted 2026-11-17): **an enumeration's
+layout hash** is the token `E`, one byte (bit 0 scoped, bit 1 a fixed
+underlying type), the underlying type's `<type>` string, a `u32` count
+and per enumerator its name and `u64` value: `enum E : int` and `enum
+E` hash differently (different definitions of one key; scoped and
+unscoped enumerations share a `<type>` encoding, so the byte is
+needed), and `ENUM` is set. **A virtual direct base** is hashed twice
+(the direct-base list, then the list of all virtual bases). **A
+member of unnamed class type** is hashed as the member (no type
+string) followed by the nested class's own structure. **A vtable
+slot's index** is the component's index in the group as hashed (RTTI
+slots left out; vcall, vbase and offset-to-top components counted);
+pure and deleted slots are named `__cxa_pure_virtual` and
+`__cxa_deleted_virtual`. Kind 4's items (O-19) follow the same order:
+direct bases, all virtual bases, members, the vptr, vtable slots; a
+slot item's `value` is that index. Measured by kiln on the heavy unit:
+`default` 72,976 B = 6.1 % of the `-O0 -g` object (368 kind 3 rows of
+which 31 enumerations, 800 kind 5 rows); `detail` 125,792 B (kind 4:
+24,704 B, 368 entries, 906 items, 10,231 B of strings); under
+`--odr=strict` 0 findings (libstdc++ 1,113 rows, libc++ 1,430).
 
 **O-19 (kind 4, layout details).** Optional (`-fmason-metadata=detail`):
 per type, the list O-18 hashes, in readable form (member names, offsets,
@@ -1220,7 +1244,14 @@ form (`KF…E`, `F…RE`, `F…OE`); every row of a C unit has `EXTERN_C`;
   or a nested function type), because `int (*)[]` and `int (*)[4]` are
   compatible in C and a hash has only equality; inner dimensions are
   kept, and `[3]` against `[4]` behind a pointer is a miss (X19; ruling
-  of 2026-11-17 on kiln's reading). *Measured by kiln with its own
+  of 2026-11-17 on kiln's reading). A C-linkage declaration whose type
+  contains a **variable** array bound anywhere (`[n]`, `[*]`, at any
+  depth, in a parameter or a nested function-pointer type) gets **no
+  row**: `void f(int n, int b[][n][n])` and `void f(int n, int
+  b[][4][4])` are compatible in C, and erasing bounds in the unit that
+  has the variable one would still leave the other unit's `PA4_A4_i`
+  to differ from it; a unit without a row is never a party (a miss,
+  X19; ruling of 2026-11-17, kiln's K-4b question). *Measured by kiln with its own
   types* (K-5, AArch64, 24 headers, 2,644 functions, before the two
   rulings of 2026-11-17): 13 differences, 11 the asm-labelled
   `extern "C++"` overloads (O-35 "No row") and 2 `getitimer`/`setitimer`
