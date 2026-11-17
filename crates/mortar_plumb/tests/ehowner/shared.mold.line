@@ -1,0 +1,9 @@
+-static
+-z
+max-page-size=4096
+-o
+shared.mold
+start.o
+a.o
+shared.o
+-Map=shared.mold.map

@@ -1,0 +1,9 @@
+-static
+-z
+max-page-size=4096
+-o
+dead.mortar
+start.o
+a.o
+dead.o
+--mortar-map=dead.mortar.map

@@ -1,4 +1,3 @@
-# PENDING (a verifier package, WP-177's record): the lane refuses it. L3 finds R5 `refers to section '.data.rel.local.DW.ref._ZTISt9exception', which is not in the output` on GNU ld's and mold's outputs on every architecture, and is right: they write 0 or a wrong value into a live record. Rename this file to .test when that is a recorded anomaly of bfd and mold (spec/plumb.md §10.2) that the test declares.
 # The WRONG programs of comdat-eh-cie.test and comdat-eh-lsda.test
 # (resolve.md §6.3 case (a), WP-177): GNU ld and mold link the shapes
 # that mortar and lld refuse. GNU ld writes 0 into the live CIE's
@@ -9,6 +8,8 @@
 # catches thrower's int. mold's programs die (signal 11; measured with
 # WP-177: the dynamic lh form on AArch64 dies of signal 7).
 #@ spec: resolve.md §6.3
+#@ anomaly(bfd): A105
+#@ anomaly(mold): A106
 #@ requires: g++
 
 cxx -O1 p1.cc -o p1.o

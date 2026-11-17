@@ -1,0 +1,9 @@
+-static
+-z
+max-page-size=4096
+-o
+cie.bfd
+start.o
+a.o
+cie.o
+-Map=cie.bfd.map

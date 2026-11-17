@@ -1,0 +1,12 @@
+-static
+-z
+max-page-size=4096
+--build-id
+-z
+execstack
+-o
+opts.mortar
+start.o
+a.o
+dead.o
+--mortar-map=opts.mortar.map

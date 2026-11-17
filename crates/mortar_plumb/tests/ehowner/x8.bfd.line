@@ -1,0 +1,10 @@
+-static
+-z
+max-page-size=4096
+-o
+x8.bfd
+start.o
+a.o
+x8.o
+tb.o
+-Map=x8.bfd.map

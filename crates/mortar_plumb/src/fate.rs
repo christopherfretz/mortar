@@ -84,9 +84,10 @@ pub(crate) fn comdat_dropped_in<'o, 'a: 'o>(
 
 /// [`comdat_dropped`] with the keeper taken in the LINE's order (§6.1:
 /// the first copy the link reads; WP-178): `rank` is an object's position
-/// on the command line the verifier reads itself, `None` for one the line
-/// does not name (an archive member, a file of the driver's), which keeps
-/// the rank of the object before it in `FileId` order. A map that lists
+/// on the command line the verifier reads itself (an archive member's is
+/// its archive's: the archive is read there, WP-201), `None` for one the
+/// line does not name (a file of the driver's), which keeps the rank of
+/// the object before it in `FileId` order. A map that lists
 /// files in another order (lld's lists them where their first section is
 /// placed: an object with no `.eh_frame` after one that has one) then
 /// keeps the same copy as the link did.

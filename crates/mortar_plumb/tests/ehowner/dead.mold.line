@@ -1,0 +1,9 @@
+-static
+-z
+max-page-size=4096
+-o
+dead.mold
+start.o
+a.o
+dead.o
+-Map=dead.mold.map

@@ -8,10 +8,10 @@ use std::collections::BTreeMap;
 use crate::hasher::HashMap;
 
 use mortar_elf::consts::{
-    PT_LOAD, SHF_EXECINSTR, SHF_TLS, SHF_WRITE, SHF_X86_64_LARGE, SHN_ABS, SHN_LORESERVE,
-    SHN_UNDEF, SHN_XINDEX, SHT_NOBITS, SHT_REL, SHT_RELA, SHT_STRTAB, SHT_SYMTAB, STB_GLOBAL,
-    STB_GNU_UNIQUE, STB_LOCAL, STB_WEAK, STT_FILE, STT_FUNC, STT_GNU_IFUNC, STT_SECTION, STT_TLS,
-    STV_DEFAULT, STV_HIDDEN, STV_INTERNAL, STV_PROTECTED,
+    PT_LOAD, SHF_EXCLUDE, SHF_EXECINSTR, SHF_TLS, SHF_WRITE, SHF_X86_64_LARGE, SHN_ABS,
+    SHN_LORESERVE, SHN_UNDEF, SHN_XINDEX, SHT_NOBITS, SHT_REL, SHT_RELA, SHT_STRTAB, SHT_SYMTAB,
+    STB_GLOBAL, STB_GNU_UNIQUE, STB_LOCAL, STB_WEAK, STT_FILE, STT_FUNC, STT_GNU_IFUNC,
+    STT_SECTION, STT_TLS, STV_DEFAULT, STV_HIDDEN, STV_INTERNAL, STV_PROTECTED,
 };
 use mortar_elf::{Class, Sym, SymbolIndex, SymbolSection};
 
@@ -672,6 +672,29 @@ fn def_no_place(e: &Engine<'_, '_>, oi: usize, di: u32) -> bool {
         if o.no_place(k.0 as usize, e.output_eh_frame().is_some()))
 }
 
+/// The words Y4 adds when the output local is a mapping symbol `SHN_ABS`
+/// of value 0 and an input local of its name is in a section dropped as
+/// `SHF_EXCLUDE` (A104, `spec/plumb.md` §10.2: mold writes Clang's `$d` of
+/// a dropped `.llvm.call-graph-profile` so).
+pub(crate) const EXCLUDED_MAPPING: &str =
+    " (a mapping symbol of an input section dropped as SHF_EXCLUDE, written SHN_ABS with value 0)";
+
+/// A104's form: `s` is `SHN_ABS` with value 0, and one of the input
+/// locals `ins` of its name is in an `SHF_EXCLUDE` section with no place.
+fn excluded_mapping(e: &Engine<'_, '_>, out: &Sym, ins: &[(usize, u32)]) -> bool {
+    let eh = e.output_eh_frame().is_some();
+    out.st_shndx == SHN_ABS
+        && out.st_value == 0
+        && ins.iter().any(|&(oi, di)| {
+            let obj = &e.objs[oi];
+            let Some(table) = obj.symtab else { return false };
+            let Ok(sym) = table.get(SymbolIndex(di)) else { return false };
+            matches!(table.section_of(SymbolIndex(di), &sym), Ok(SymbolSection::Section(k))
+                if obj.secs.get(k.0 as usize).is_some_and(|x| x.shdr.sh_flags & SHF_EXCLUDE != 0)
+                    && obj.no_place(k.0 as usize, eh))
+        })
+}
+
 /// Y4 (§6.5): every output local whose name an input local has.
 #[allow(clippy::many_single_char_names, clippy::too_many_lines)] // e, s, p, d, f; Y4 in order
 fn locals(e: &mut Engine<'_, '_>, fs: &mut Vec<Finding>) {
@@ -805,8 +828,9 @@ fn locals(e: &mut Engine<'_, '_>, fs: &mut Vec<Finding>) {
             let mut f = y(
                 4,
                 format!(
-                    "local symbol '{}' is not where any input local of its name was placed",
-                    out.name
+                    "local symbol '{}' is not where any input local of its name was placed{}",
+                    out.name,
+                    if mapping && excluded_mapping(e, s, ins) { EXCLUDED_MAPPING } else { "" }
                 ),
             );
             f.expected = p.only;

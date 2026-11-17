@@ -10,8 +10,9 @@
 # reference from .eh_frame, lld a reference into a discarded section from
 # .gcc_except_table); mold and mortar link it (the records are not
 # written; resolve.md §16).
-# lld links the weak form correctly too, writing 0 as GNU ld does, but
-# L3 refuses its output (R5): its link is comdat-eh-dead.test.pending.
+# lld links the weak form correctly too, writing 0 as GNU ld does, and
+# L3 accepts its output (spec/plumb.md §5.7b, WP-201: the field's owner,
+# F's FDE, is dead): its link is in comdat-eh-dead.test.
 #@ spec: resolve.md §6.3
 #@ spec: resolve.md §16
 

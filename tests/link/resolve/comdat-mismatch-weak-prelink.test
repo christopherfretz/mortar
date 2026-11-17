@@ -1,4 +1,3 @@
-# PENDING (WP-178): it runs since WP-177 (the `partial` and `objcopy` steps), and the lane refuses it: L3 finds R5 `refers to section '.data.rel.local.DW.ref._ZTISt9exception', which is not in the output` on GNU ld's and lld's outputs (AArch64, x86-64), the undefined-weak value of resolve/comdat-mismatch-weak*.test.pending: rename this file to .test with them.
 # The pre-link idiom (WP-154's cells prelink-lh-x-*; WP-176): a component
 # made by `ld -r` and passed through `objcopy --localize-hidden` keeps
 # its copies of the COMDAT groups DW.ref.__gxx_personality_v0 and
@@ -8,11 +7,17 @@
 # personality pointer in .eh_frame and its .gcc_except_table type entry
 # name the demoted weak hidden mentions, whose keys nothing live defines
 # (the kept definitions are local). Those references are comdat-mismatch
-# (§6.3 case (b)): the CIE and the LSDA are live. GNU ld and lld write 0
-# into both and the first throw through x2.o's frames aborts
-# ("terminate called after throwing an instance of 'std::runtime_error'",
-# signal 6); mold refuses the .gcc_except_table reference.
+# (§6.3 case (b)): the CIE and the LSDA are live. GNU ld and lld write
+# both as undefined weak references (A103, spec/plumb.md §5.7a): 0 on
+# AArch64 (the place, R_AARCH64_PREL32), and the first throw through
+# x2.o's frames aborts ("terminate called after throwing an instance of
+# 'std::runtime_error'", signal 6); S = 0 on x86-64 (the field is -P),
+# and the throw faults (signal 11). The same holds for the libstdc++.a
+# members' CIEs and vterminate.o's .gcc_except_table.<fn> entry, whose
+# copies are dropped too (each member is read where -lstdc++ is, after
+# the component: WP-201). mold refuses the .gcc_except_table reference.
 #@ spec: resolve.md §6.3
+#@ anomaly(bfd,lld): A103
 #@ arch: aarch64 x86_64
 #@ requires: g++
 
@@ -22,8 +27,10 @@ partial bfd x1.o -o comp.o
 objcopy --localize-hidden comp.o comp.lh.o
 
 link(bfd,lld) g++ -static comp.lh.o x2.o -o prog
-run(bfd,lld) prog
+run(bfd,lld,aarch64) prog
   exit: signal 6
+run(bfd,lld,x86_64) prog
+  exit: signal 11
 link(mold,mortar) g++ -static comp.lh.o x2.o -o prog
   exit: fail
   diag(mold): DW.ref._ZTISt9exception refers to a discarded COMDAT section probably due to an ODR violation

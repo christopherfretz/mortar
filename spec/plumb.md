@@ -355,18 +355,21 @@ was truncated, with no `end`. Tests:
 A mortar map carries its link's command line as `arg` records (§3.2),
 in **every** map: static, static-pie, dynamic, plain or incremental. The
 verifier's rules that hold only when an option was given read the
-option from those words, through one reader (`src/opts.rs`), and from
-nothing else: not from the caller, not from the output, not from a
-chunk that only exists because of the option. A reference linker's map
-has no line; for it the caller supplies the line (`xtask plumb --line`,
-the `--inputs-from` response file, or the link test's `ld` wrapper
-words) wherever a rule reads one, as the table says. A mortar map has
-at least one `arg` record (a link of no word is `no-input-files` and
-writes no map): a map without one, as a static link's map before WP-102,
-is malformed (§3.7), not judged without its options. For mortar's map
-nothing else is read for an option: not the caller's statement
-(`Map.fix_843419`, `Ctx.line`), not a chunk that exists because of the
-option.
+option through one reader (`src/opts.rs`) from **the caller's line**
+when the caller gives one (`Ctx.line`: `xtask plumb --line`, the
+`--inputs-from` response file, or the link test's recorded words), for
+every format, and from a mortar map's `arg` records only when the
+caller gives none (§12.1a's rule, WP-193; WP-201: before it, a mortar
+map's records were the options even when a line was given, so a map
+whose records dropped, added or changed an option moved the verdict).
+Never from the output, nor from a chunk that only exists because of
+the option. A reference linker's map has no line; without the caller's,
+a rule that reads one is judged as the table says. A mortar map has at
+least one `arg` record (a link of no word is `no-input-files` and
+writes no map): a map without one, as a static link's map before
+WP-102, is malformed (§3.7), not judged without its options. The map's
+records are judged whatever the caller gives (M9 below). The caller's
+`Map.fix_843419` statement is a reference map's only (the table).
 
 **Reading the words** is `spec/cli.md` §2's grammar, not restated: one
 or two dashes by §2.2's forms (a long name starting with `l`, `m` or `o`
@@ -397,15 +400,20 @@ abbreviation is read as the one accepted GNU spelling it is a prefix
 of: mortar accepted the line, so it named exactly one GNU spelling
 (§2.4), and the accepted one with that prefix is it.
 
-- **M9 (the line, mortar's map).** A word that starts with `-`, is not
+- **M9 (the line, mortar's map).** A word of the map's `arg` records
+  that starts with `-`, is not
   `-` alone, and that no accepted option spells by the rules above (an
   unknown name, a value given to an option that takes none, a required
   value missing at the end of the line, an unknown `-z` keyword, a word
   that is not UTF-8 where an option's name stands) is a finding, one per
-  word: no link of this mortar wrote that line. The options are read
-  from the other words.
+  word: no link of this mortar wrote that line. It judges the map's
+  records whether or not the caller gives a line. When the records are
+  the options (no caller's line), they are read from the other words.
 
 **The rules and where they read their option:**
+
+Below, "the line" for mortar's map is the caller's line, else its `arg`
+records (WP-201).
 
 | rule | option | mortar's map | a reference's map |
 |---|---|---|---|
@@ -436,7 +444,10 @@ in stage 3 only (P-D4); a static output's entry is held to "some
 symbol's value" (S7, mortar's clause).
 
 Tests: `opts::tests` (the forms, values, last wins, abbreviations, M9's
-words, the table), `map::mortar::tests::s3_2_arg_records_in_every_map`
+words, the table), `tests/optline.rs` (WP-201: mortar's map with its
+`arg` records dropping, adding or changing an option `opts` reads gives
+the caller's line's verdict; M9 on the records with and without a line),
+`map::mortar::tests::s3_2_arg_records_in_every_map`
 (a static map's words, with a space, a newline, `%`, the empty word and
 bytes that are not UTF-8, round-trip and make no dynamic record).
 
@@ -1958,7 +1969,9 @@ empty section without a record that names an address neither in nor at
 the end of an allocated output section (§3.3). Whether the section's
 absence has a reason is M10's (§3.3); R5 holds either way. This does not apply to `.eh_frame`'s own records, which
 §6.4 checks (an FDE whose function is discarded is dropped, not R5), nor
-to non-alloc records (§5.8).
+to non-alloc records (§5.8). A field of `.eh_frame` or `.gcc_except_table`
+is judged by the record that owns it (§5.7b): R5 when the owner is
+written, nothing (or 0 in mortar's output) when it is not.
 
 ### 5.7a A demoted mention whose key nothing live defines (WP-178)
 
@@ -1966,9 +1979,11 @@ A non-local mention defined in a section of a COMDAT copy that is not
 kept (§3.3's keeper, the verifier's own, `spec/resolve.md` §6.1: the
 first copy the link reads keeps the signature; here the order is the
 command line's, the line the verifier reads itself, each object at the
-first word naming its path and an object the line does not name (an
-archive member, a driver's file) at the rank of the one before it in
-`FileId` order; without a line, `FileId` order. A map's order is not
+first word naming its path, an archive member at the first word naming
+its archive (its path, `-l<name>` for `lib<name>.a`, `-l:<file>`: the
+archive is read there, WP-201), and an object the line does not name (a
+driver's file) at the rank of the one before it in `FileId` order;
+without a line, `FileId` order. A map's order is not
 the line's: lld's lists a file where its first section is placed, so an
 object without `.eh_frame` comes after a later one with it) is a
 *demoted mention* (`spec/resolve.md` §6.2): an undefined mention of its
@@ -1996,11 +2011,75 @@ undefined weak reference: resolve.md §6.3 case (b))" (A103 for GNU ld
 and lld; a FAIL for mortar, which refuses such a link and never writes
 it). Anything else in the field (another value, a record not judged)
 leaves R5's plain text; a strong or `STB_GNU_UNIQUE` demoted mention's
-R5 is always plain. Stage 3's model (§12.1) takes a demoted mention as
+R5 is always plain. In the trial, §4.4's step 3 (the one output symbol
+of the name, of any binding) is not taken: no definition of the key has
+a place, so an output symbol of the name is a local the mention never
+binds (an input's local; `objcopy --localize-hidden`'s kept copy of the
+group, WP-201). A personality field of a written CIE (§6.4) has the
+same trial on its output fields: the undefined weak form is the field
+holding `A` (the place, §4.4) or `S = 0` in every output CIE that
+carries it. Stage 3's model (§12.1) takes a demoted mention as
 an undefined mention of its key too: it defines nothing, and a weak one
 is a weak reference (so an import of such a key is no P-D7 "no input
 references it"). Tests: `tests/demoted.rs`; the lane's
 `resolve/comdat-mismatch-weak*.test`.
+
+### 5.7b A field of `.eh_frame` or `.gcc_except_table`: its owner (WP-201)
+
+`spec/resolve.md` §6.3 (WP-177): a field of `.eh_frame` or of a section
+named exactly `.gcc_except_table` that refers to a section not in the
+output is judged by the **record that owns it**, never by the field
+alone. The verifier names the owner itself: its own parse of the
+inputs' `.eh_frame` (§6.4, 32- and 64-bit lengths), its own liveness of
+each FDE (§6.4's dropped, live, unknown), its own keeper (§5.7a). Nothing
+comes from a map beyond the placements every rule reads.
+
+- **`.eh_frame`.** A field's owner is its record; a CIE's personality
+  field is owned through the FDEs that use it: written when one live
+  FDE uses it (§6.4). A dropped FDE's fields and an unused CIE's
+  personality are counted with the records of sections not in the
+  output. A written CIE's personality field that refers to a section
+  not in the output is R5 at the CIE's field, at the first output CIE
+  that carries it (it was `not checked: eh-frame` before WP-201, and
+  E4 went unreported).
+- **`.gcc_except_table`** (alloc, the exact name; `.gcc_except_table.<fn>`
+  is any other alloc section, §5.7). The LSDA starts are the targets of
+  the LSDA pointers of the FDEs of every input `.eh_frame` the link
+  reads (not `SHF_EXCLUDE`, not a member of a COMDAT copy the keeper
+  drops), **over every input file**: an FDE's LSDA may be in another
+  file's table (a global label). A start's life is live if an FDE at
+  it is live, else unknown if one is unknown, else dead. The owner of
+  the field at offset `r` of table `T` is the start of `T` that is the
+  greatest one not above `r`.
+  - Owner **dead**: the field is free on another linker's output (the
+    record is not read: no finding, counted with the records of
+    sections not in the output, whatever it holds); in mortar's output
+    it must be 0 (`spec/resolve.md` §6.3: mortar writes 0), verified
+    `tombstone`, else a Field finding "a field of an LSDA no written FDE
+    reads, …, holds another value than 0".
+  - Owner **live**: R5, with §5.7a's trial for a weak demoted mention;
+    otherwise its text names the field's form: "(a field of a written
+    .eh_frame or .gcc_except_table record, written 0: resolve.md §6.3)"
+    when it holds 0 (A105, GNU ld), "(…, written as if its target were
+    at address 0: …)" when it holds `A` or `A - P` (A106, mold);
+    another value is plain R5. The same words for a written CIE's
+    personality field.
+  - **No owner can be named** (no start at or before the field; an
+    unreadable input `.eh_frame` or its relocations, an LSDA pointer of
+    another type or whose target the verifier cannot place, which may
+    name any table; an FDE at the start whose liveness is unknown): R5,
+    its text saying why the owner is not known. Never taken as dead:
+    the unsafe direction is a live record's field passed unread.
+
+An LSDA pointer without a relocation is no start (it names no input
+section). Tests: `tests/ehowner.rs` (`tests/ehowner/`, AArch64: GNU
+ld's, mold's and mortar's outputs: a dead owner, a live one in the same
+file, at a start shared with a dead FDE, in another file after a dead
+start, in the 64-bit form, a written CIE's personality, no start before
+the field, the only FDE in an `.eh_frame` of a dropped copy; each live
+or unknown case with the field mutated); `ehowner::tests`; the lane's
+`resolve/comdat-eh-dead.test`, `comdat-eh-wrong.test`,
+`comdat-mismatch-weak-prelink.test`, `comdat-eh-unused-cie.test`.
 
 ### 5.8 Non-alloc relocations (stage 2, WP-028b)
 
@@ -2611,7 +2690,10 @@ WP-028b). An input FDE is:
 - **dropped** if its initial location resolves into a discarded or
   absent section, or its address range is 0 (it covers no code: GNU ld
   drops it, synth.md S-59; glibc's i386 `clone3.o` has one, WP-028e). Its records are counted with the records of sections not
-  in the output, and the FDE in `fdes_dropped`;
+  in the output, and the FDE in `fdes_dropped`. An input `.eh_frame`
+  that is a member of a COMDAT copy the keeper drops (§5.7a) is not
+  read by the link: none of its records is judged, all are counted
+  with the records of sections not in the output (WP-201);
 - **unknown** if any of its pointers cannot be resolved (`eh-frame`, or
   the §4.4 reason). Its records are not checked, and E4 is not reported
   for the output (an unknown input could be the FDE it reports);
@@ -2692,6 +2774,7 @@ follows:
 - the initial-location and LSDA records of a matched FDE are verified
   (`eh-frame`);
 - a personality record is verified when one live FDE of its CIE is;
+  one that refers to a section not in the output fails it (R5, §5.7b);
 - E2 and E3 fail the FDE's records;
 - a record at no pointer field of a CIE or FDE is I2;
 - a CIE whose FDEs are all dropped has its personality record counted as
@@ -2713,7 +2796,7 @@ follows:
 - the instructions' meaning (they are compared byte for byte, not
   interpreted);
 - the LSDA's contents (`.gcc_except_table` is checked by S12 and its
-  relocations by §5);
+  relocations by §5, a field into a dropped copy by its owner, §5.7b);
 - the frames of other machines (`machine`).
 
 ### 6.5 The symbol table (stage 2)
@@ -5086,6 +5169,38 @@ is accepted from its linker only, never from mortar's map.
   nothing live defines, written as an undefined weak reference:
   resolve.md §6.3 case (b))". mold refuses (`hx refers to a discarded
   COMDAT section probably due to an ODR violation`), as mortar does.
+  The same trial names the form in a written CIE's personality field
+  and in `.gcc_except_table.<fn>` (§5.7a, §5.7b): GNU ld and lld write
+  the personality and the type entry of `objcopy --localize-hidden`'s
+  pre-link idiom as the undefined weak value, 0 on AArch64 (the place:
+  the first throw aborts, signal 6) and `S = 0` on x86-64 (`-P`: it
+  faults, signal 11) (`resolve/comdat-mismatch-weak-prelink.test`,
+  WP-201).
+- **A104 (mold, AArch64; WP-201).** mold writes the mapping symbols of
+  an input section it drops as `SHF_EXCLUDE` (Clang's `$d` of
+  `.llvm.call-graph-profile`) as `SHN_ABS` locals of value 0; GNU ld,
+  lld and mortar drop them with the section. Y4's text ends "(a mapping
+  symbol of an input section dropped as SHF_EXCLUDE, written SHN_ABS
+  with value 0)" exactly when the output symbol is `SHN_ABS`, value 0,
+  and an input local of the name is in an `SHF_EXCLUDE` section without
+  a place (`resolve/call-graph-profile.test`; it skipped mold on AArch64
+  before).
+- **A105 (GNU ld; WP-201).** A field of a written `.eh_frame` or
+  `.gcc_except_table` record (a live CIE's personality, a live LSDA's
+  type entry) that refers to a dropped COMDAT copy (`spec/resolve.md`
+  §6.3 case (a): a local symbol of the dropped section) is written 0:
+  the first throw through the CIE's frames finds no personality and
+  aborts, and a type entry 0 makes the `catch` a catch-all. R5 ending
+  "(a field of a written .eh_frame or .gcc_except_table record, written
+  0: resolve.md §6.3)" (§5.7b: the field's owner is written and every
+  output field holds 0); another value is plain R5
+  (`resolve/comdat-eh-wrong.test`, every target; `tests/ehowner.rs`).
+- **A106 (mold; WP-201).** The same field written as if its target
+  were at address 0 (`A`, or `A - P` PC-relative): the programs die
+  (signal 11; 7 on AArch64's dynamic form). R5 ending "(a field of a
+  written .eh_frame or .gcc_except_table record, written as if its
+  target were at address 0: resolve.md §6.3)" (`comdat-eh-wrong.test`,
+  every target; `tests/ehowner.rs`). lld and mortar refuse these links.
   Reproducers: `resolve/comdat-mismatch-weak.test`,
   `-dynamic`, `-shared`, `-archive`, `-needed`; `tests/demoted.rs`.
 
@@ -5731,7 +5846,9 @@ This subsection records how WP-050's verifier reaches the rules above.
 A dynamic output (`PT_DYNAMIC`) is judged with the map, the inputs and
 the **line**: the caller's (the linker's words: `--line FILE`, one word
 per line, or `--inputs-from`), for a mortar map its `arg` records
-(§3.2a) only when the caller gives none (§12.1a, WP-193). The line gives D-1's kind, `-dynamic-linker`, `-z
+(§3.2a) only when the caller gives none (§12.1a, WP-193), and the
+options §3.2a's reader gives (P-D4's `-z execstack`, B1's `--build-id`,
+...) from the same line (WP-201). The line gives D-1's kind, `-dynamic-linker`, `-z
 now`, `-z relro`, `-E` and the files of D-11/D-12; the shared objects are read
 from the file system (`line::Files`).
 

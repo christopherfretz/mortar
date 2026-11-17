@@ -1,0 +1,9 @@
+-static
+-z
+max-page-size=4096
+-o
+live.bfd
+start.o
+a.o
+live.o
+-Map=live.bfd.map

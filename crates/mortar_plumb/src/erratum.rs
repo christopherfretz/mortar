@@ -110,7 +110,7 @@ fn both_fix(w2: u32, w3: Option<u32>, n: u32) -> bool {
 pub(crate) fn check(e: &mut Engine<'_, '_>, map: &Map) {
     // The option as read (§3.2a), stated for every mortar output, so that
     // a lane counts what the verifier read whatever the machine.
-    e.cov.erratum_option = crate::opts::of(map).map(|o| o.fix_843419);
+    e.cov.erratum_option = crate::opts::of(map, e.caller_line.as_deref()).map(|o| o.fix_843419);
     if e.image.header.e_machine != EM_AARCH64 {
         return;
     }
@@ -179,7 +179,7 @@ pub(crate) fn check(e: &mut Engine<'_, '_>, map: &Map) {
         }
         pre.insert(a, word);
     }
-    let option = match crate::opts::of(map) {
+    let option = match crate::opts::of(map, e.caller_line.as_deref()) {
         Some(o) => Some(o.fix_843419),
         None => map.fix_843419,
     };

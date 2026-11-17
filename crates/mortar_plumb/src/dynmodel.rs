@@ -700,9 +700,8 @@ impl Model {
         // order) is an undefined
         // mention of its key with its binding: no definition.
         let objs: Vec<&Obj<'a>> = objs.collect();
-        let dropped = crate::fate::comdat_dropped_ranked(&objs, |o| {
-            o.member.is_none().then(|| line.position_of(&o.path)).flatten()
-        });
+        // An archive member is ranked by its archive's word (WP-201).
+        let dropped = crate::fate::comdat_dropped_ranked(&objs, |o| line.position_of(&o.path));
         for (o, dropped) in objs.into_iter().zip(&dropped) {
             let Some(t) = o.symtab else { continue };
             let excluded = o.member.is_some() && line.exclude_libs.excludes(&o.path);

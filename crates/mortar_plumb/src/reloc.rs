@@ -25,6 +25,8 @@ pub(crate) mod debug;
 pub(crate) mod dsoword;
 #[path = "eh.rs"]
 mod eh;
+#[path = "ehowner.rs"]
+mod ehowner;
 #[path = "ifunc.rs"]
 mod ifunc;
 #[path = "x64rec.rs"]
@@ -630,6 +632,13 @@ pub(crate) struct Engine<'a, 'b> {
     /// §5.7a: the R5 of each such record whose GOT group decides the form,
     /// by place and type.
     demoted_pending: BTreeMap<(u64, u32), (Finding, bool)>,
+    /// §5.7b (WP-201): the LSDA starts of the inputs' FDEs, found when a
+    /// `.gcc_except_table` record first refers to a section not in the
+    /// output.
+    lsda_starts: Option<ehowner::LsdaStarts>,
+    /// The caller's command line, when it gives one (§3.2a: the options
+    /// of a mortar output come from it; WP-201).
+    pub(crate) caller_line: Option<Vec<String>>,
 }
 
 /// The words §5.7a adds to R5 when the field holds what the reference
@@ -644,6 +653,43 @@ fn names_path(w: &str, p: &str) -> bool {
 }
 
 pub(crate) const DEMOTED_WEAK: &str = " (a weak mention defined in a dropped COMDAT copy, whose key nothing live defines, written as an undefined weak reference: resolve.md §6.3 case (b))";
+
+/// The words §5.7b adds to R5 when a field of a written `.eh_frame` or
+/// `.gcc_except_table` record that refers to a section not in the output
+/// holds 0 (A105, `spec/plumb.md` §10.2).
+pub(crate) const LIVE_ZERO: &str =
+    " (a field of a written .eh_frame or .gcc_except_table record, written 0: resolve.md §6.3)";
+
+/// The words §5.7b adds to R5 when such a field holds its value with the
+/// target's address taken as 0 (`A`, or `A - P` PC-relative; A106).
+pub(crate) const LIVE_AT_ZERO: &str = " (a field of a written .eh_frame or .gcc_except_table record, written as if its target were at address 0: resolve.md §6.3)";
+
+/// The words §5.7b adds to R5 of a `.gcc_except_table` field before the
+/// first LSDA start of its section.
+pub(crate) const NO_LSDA_OWNER: &str = " (no FDE has an LSDA in this section at or before this place: the field's owner is not known, resolve.md §6.3)";
+
+/// The form of a field of a written record that refers to a section not
+/// in the output (§5.7b): [`LIVE_ZERO`], [`LIVE_AT_ZERO`] or none.
+fn live_form(rec: &Rec) -> Option<&'static str> {
+    let w = u32::from(rec.def.field.width()) * 8;
+    let mask = if w >= 64 { u64::MAX } else { (1u64 << w) - 1 };
+    let got = rec.out_word & mask;
+    let at_zero = match rec.def.op {
+        Op::Abs => rec.addend as u64,
+        Op::Prel => (rec.addend as u64).wrapping_sub(rec.p),
+        _ => return None,
+    } & mask;
+    if !matches!(rec.def.field, Field::Data(_)) {
+        return None;
+    }
+    if got == 0 {
+        Some(LIVE_ZERO)
+    } else if got == at_zero {
+        Some(LIVE_AT_ZERO)
+    } else {
+        None
+    }
+}
 
 impl<'a, 'b> Engine<'a, 'b> {
     /// The sizes of the engine's tables (WP-109), under
@@ -1039,6 +1085,8 @@ impl<'a, 'b> Engine<'a, 'b> {
             comdat: std::cell::OnceCell::new(),
             trial: None,
             demoted_pending: BTreeMap::new(),
+            lsda_starts: None,
+            caller_line: None,
         };
         e.build_iplt();
         e
@@ -1393,8 +1441,11 @@ impl<'a, 'b> Engine<'a, 'b> {
                 };
             }
         }
-        // 3. The one output symbol of the name, of any binding.
-        if let Some(out) = self.image.unique(&name) {
+        // 3. The one output symbol of the name, of any binding. Not in
+        // §5.7a's trial: no definition of the key has a place, and an
+        // output local of the name (an input's local, `objcopy
+        // --localize-hidden`'s kept copy) binds no mention (WP-201).
+        if !in_trial && let Some(out) = self.image.unique(&name) {
             if out.sym.sym_type() == STT_GNU_IFUNC && out.sym.st_shndx != 0 {
                 return Target::Ifunc { resolver: out.sym.st_value, key: IfKey::Global(name) };
             }
@@ -1570,13 +1621,30 @@ impl<'a, 'b> Engine<'a, 'b> {
 
     /// §5.7a's COMDAT keeper in the order of the line's words `line` (the
     /// command line the verifier reads, never a mortar-written record of
-    /// it): an object is ranked by the first word that names its path.
+    /// it): an object is ranked by the first word that names its path, an
+    /// archive member by the first word that names its archive (its path,
+    /// `-l<name>` for `lib<name>.a`, `-l:<file>`).
     /// Without a line the keeper follows `FileId` order.
+    /// The line is also the one the options are read from (§3.2a).
     pub fn set_keeper_line(&mut self, line: Option<&[String]>) {
+        self.caller_line = line.map(<[String]>::to_vec);
         let Some(words) = line else { return };
         let objs: Vec<&Obj<'a>> = self.objs.iter().collect();
         let rank = |o: &Obj<'a>| {
-            o.member.is_none().then(|| words.iter().position(|w| names_path(w, &o.path))).flatten()
+            if o.member.is_none() {
+                return words.iter().position(|w| names_path(w, &o.path));
+            }
+            // An archive member is read where its archive is (WP-201): the
+            // word naming the archive's path, or `-l<name>` / `-l:<file>`
+            // naming its file name.
+            let file = o.path.rsplit('/').next().unwrap_or(&o.path);
+            words.iter().position(|w| {
+                names_path(w, &o.path)
+                    || w.strip_prefix("-l:").is_some_and(|f| f == file)
+                    || w.strip_prefix("-l").is_some_and(|n| {
+                        file.strip_prefix("lib").and_then(|f| f.strip_suffix(".a")) == Some(n)
+                    })
+            })
         };
         self.comdat = crate::fate::comdat_dropped_ranked(&objs, rank).into();
     }
@@ -1806,6 +1874,15 @@ impl<'a, 'b> Engine<'a, 'b> {
         let o = &objs[oi];
         let s = &o.secs[si];
         if s.alloc() && s.is_eh_frame(o.elf.machine()) {
+            // §6.4 (WP-201): an `.eh_frame` that is a member of a COMDAT
+            // copy the keeper drops is not read by the link; its records
+            // are absent.
+            let dropped = self.comdat.get_or_init(|| crate::fate::comdat_dropped(objs));
+            if dropped.get(oi).and_then(|d| d.get(si)).copied().unwrap_or(false) {
+                let n = s.relocs.and_then(|rs| o.records(rs)).map_or(0, |r| r.len() as u64);
+                self.cov.absent_records += n;
+                return;
+            }
             // §6.4: by CIE and FDE, after every other section.
             self.eh_sections.push((oi, si));
             return;
@@ -2007,6 +2084,83 @@ impl<'a, 'b> Engine<'a, 'b> {
     /// [`DEMOTED_WEAK`]); the trial's own outcome is not kept.
     fn record(&mut self, oi: usize, si: usize, recs: &[Rec], sorted: &[(u64, usize)], i: usize) {
         let rec = &recs[i];
+        // §5.7b (WP-201): a field of `.gcc_except_table` that refers to a
+        // section not in the output is judged by the FDE that owns it.
+        let s = &self.objs[oi].secs[si];
+        let mut owner = None;
+        if s.alloc()
+            && s.name == ".gcc_except_table"
+            && let Target::Discarded(sec) = self.resolve_at(oi, rec.sym, rec.addend).0
+        {
+            match self.lsda_owner(oi, si, rec.off) {
+                ehowner::Owner::Dead => return self.dead_lsda_field(oi, si, rec, &sec),
+                o => owner = Some(o),
+            }
+        }
+        let n = self.findings.len();
+        self.record_owned(oi, si, recs, sorted, i);
+        let Some(owner) = owner else { return };
+        let form = live_form(rec);
+        for f in &mut self.findings[n..] {
+            if f.rule != Rule::DiscardedTarget || f.addr != Some(rec.p) {
+                continue;
+            }
+            match &owner {
+                ehowner::Owner::Live if !f.message.ends_with(DEMOTED_WEAK) => {
+                    f.message.push_str(form.unwrap_or(""));
+                }
+                ehowner::Owner::None => f.message.push_str(NO_LSDA_OWNER),
+                ehowner::Owner::Unknown(why) => {
+                    f.message.push_str(" (the field's owner is not known: ");
+                    f.message.push_str(why);
+                    f.message.push(')');
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// §5.7b: a field of an LSDA no written FDE reads (its owner is dead).
+    /// The record is not in the output in effect; under mortar's map the
+    /// field is 0 (`spec/resolve.md` §6.3), which is checked.
+    fn dead_lsda_field(&mut self, oi: usize, si: usize, rec: &Rec, sec: &str) {
+        if self.format != Format::Mortar {
+            self.cov.records -= 1;
+            self.cov.absent_records += 1;
+            return;
+        }
+        let w = u32::from(rec.def.field.width()) * 8;
+        let got = if w >= 64 { rec.out_word } else { rec.out_word & ((1u64 << w) - 1) };
+        if got == 0 {
+            return self.cov.add_verified(Via::Tombstone, rec.def.r_type);
+        }
+        let site = self.objs[oi].site(si, rec.off);
+        let symbol = self.sym_name(oi, rec.sym);
+        let mut f = Self::finding(
+            Rule::Field,
+            rec,
+            &site,
+            &symbol,
+            format!(
+                "a field of an LSDA no written FDE reads, referring to section '{sec}', which is not in the output, holds another value than 0 (resolve.md §6.3)"
+            ),
+        );
+        f.expected = Some(0);
+        f.found = Some(got);
+        self.fail(f);
+    }
+
+    /// §5.1 for one record, with §5.7a's form of R5 at a demoted weak
+    /// mention (see [`Engine::record`]).
+    fn record_owned(
+        &mut self,
+        oi: usize,
+        si: usize,
+        recs: &[Rec],
+        sorted: &[(u64, usize)],
+        i: usize,
+    ) {
+        let rec = &recs[i];
         let Some((name, sec)) = self.demoted_weak(oi, si, rec) else {
             return self.record_judged(oi, si, recs, sorted, i);
         };
@@ -2059,12 +2213,23 @@ impl<'a, 'b> Engine<'a, 'b> {
         if !self.objs[oi].secs.get(si)?.alloc() {
             return None;
         }
+        self.demoted_weak_sym(oi, rec.sym, rec.addend)
+    }
+
+    /// [`Engine::demoted_weak`] for symbol `sym` of object `oi` with addend
+    /// `addend`, wherever the record is.
+    pub(crate) fn demoted_weak_sym(
+        &mut self,
+        oi: usize,
+        sym: u32,
+        addend: i64,
+    ) -> Option<(String, String)> {
         let t = self.objs[oi].symtab?;
-        let s = t.get(SymbolIndex(rec.sym)).ok()?;
+        let s = t.get(SymbolIndex(sym)).ok()?;
         if s.binding() != STB_WEAK {
             return None;
         }
-        let Ok(SymbolSection::Section(k)) = t.section_of(SymbolIndex(rec.sym), &s) else {
+        let Ok(SymbolSection::Section(k)) = t.section_of(SymbolIndex(sym), &s) else {
             return None;
         };
         let k = k.0 as usize;
@@ -2076,7 +2241,7 @@ impl<'a, 'b> Engine<'a, 'b> {
             return None;
         }
         let name = String::from_utf8_lossy(t.name(&s).ok()?).into_owned();
-        match self.resolve_at(oi, rec.sym, rec.addend).0 {
+        match self.resolve_at(oi, sym, addend).0 {
             Target::Discarded(sec) => Some((name, sec)),
             _ => None,
         }

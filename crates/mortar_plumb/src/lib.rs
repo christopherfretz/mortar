@@ -213,14 +213,14 @@ pub(crate) fn verify_static_in(
     };
     prof::mark("image");
     report.findings.extend(structure::check(&image));
-    report.findings.extend(structure::check_layout(&image, map));
+    report.findings.extend(structure::check_layout(&image, map, line));
     prof::mark("structure");
     let located = locate::locate(map, store, m, &image);
     report.findings.extend(located.findings);
     let mut objs = located.objs;
-    let exports = opts::of(map).and_then(|o| fate::static_exports(map, &o));
+    let exports = opts::of(map, line).and_then(|o| fate::static_exports(map, &o));
     // §3.3: the empty sections not in the output (WP-156b).
-    let line_opts = opts::of(map).or_else(|| {
+    let line_opts = opts::of(map, line).or_else(|| {
         line.map(|w| {
             opts::Options::read(&w.iter().map(|x| x.as_bytes().to_vec()).collect::<Vec<_>>())
         })
@@ -243,10 +243,11 @@ pub(crate) fn verify_static_in(
         report.findings.extend(maprec::copies(map, &[]));
     }
     report.coverage = std::mem::take(&mut engine.cov);
-    // The line's options (§3.2a), from a mortar map's `arg` records.
-    let opts = opts::of(map);
+    // The line's options (§3.2a): the caller's line, else a mortar map's
+    // `arg` records; M9 judges those records.
+    let opts = opts::of(map, line);
+    report.findings.extend(opts::unread_findings(map));
     if let Some(o) = &opts {
-        report.findings.extend(opts::unread_findings(o));
         // S10 (§3.2a): a static output's PT_GNU_STACK's PF_X is the
         // line's (L-84); a dynamic output's is P-D4's, in stage 3.
         let dynamic = dynout::DynOut::read(&image).is_some();
@@ -366,7 +367,8 @@ pub(crate) fn run_engine(
     prof::mark("erratum, padding, content symbols");
     symbols::check(engine);
     prof::mark("symbols");
-    let (gdb, line) = gdbindex::check(image, objs, map);
+    let caller = engine.caller_line.clone();
+    let (gdb, line) = gdbindex::check(image, objs, map, caller.as_deref());
     engine.findings.extend(gdb);
     engine.cov.gdb_index = line;
     prof::mark("gdb_index");
@@ -378,15 +380,16 @@ pub(crate) fn run_engine(
         prof::mark("dead ranges");
     }
     if map.format == Format::Mortar {
-        let ids = buildid::check(image, &mut engine.cov, buildid::Style::of(map));
+        let ids =
+            buildid::check(image, &mut engine.cov, buildid::Style::of(map, caller.as_deref()));
         engine.findings.extend(ids);
-        if let Some(o) = opts::of(map) {
+        if let Some(o) = opts::of(map, caller.as_deref()) {
             engine.findings.extend(buildid::line_rules(image, map, &o));
         }
         prof::mark("build id");
         // M10 (§3.3): every section without a place has a reason.
         if only.is_none()
-            && let Some(o) = opts::of(map)
+            && let Some(o) = opts::of(map, caller.as_deref())
         {
             engine.findings.extend(fate::check(objs, map, &o, engine.exports.as_ref()));
         }

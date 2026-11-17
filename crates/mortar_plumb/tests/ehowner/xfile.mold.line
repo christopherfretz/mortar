@@ -1,0 +1,10 @@
+-static
+-z
+max-page-size=4096
+-o
+xfile.mold
+start.o
+a.o
+x.o
+tb.o
+-Map=xfile.mold.map

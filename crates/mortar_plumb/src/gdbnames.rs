@@ -28,8 +28,8 @@ const PUBTYPES: &str = ".debug_gnu_pubtypes";
 /// Whether the link had `--gdb-index` (the last of it and
 /// `--no-gdb-index`) and no strip option (S-G8), from mortar's map's line
 /// (§3.2a); `false` for a reference's map (P-G6 is mortar's rule).
-fn option(map: &Map) -> bool {
-    crate::opts::of(map).is_some_and(|o| o.gdb_index && !o.strip_debug)
+fn option(map: &Map, line: Option<&[String]>) -> bool {
+    crate::opts::of(map, line).is_some_and(|o| o.gdb_index && !o.strip_debug)
 }
 
 /// P-G6: presence, the section's header, the consumed sets.
@@ -37,6 +37,7 @@ pub(crate) fn presence(
     image: &Image<'_>,
     objs: &[Obj<'_>],
     map: &Map,
+    line: Option<&[String]>,
     found: &[usize],
     out: &mut Vec<Finding>,
 ) {
@@ -46,7 +47,7 @@ pub(crate) fn presence(
         .filter(|c| c.kind == ChunkKind::Synthetic && c.name == NAME)
         .map(|c| c.size)
         .collect();
-    let opt = option(map);
+    let opt = option(map, line);
     if found.is_empty() && chunks.is_empty() && !opt {
         return;
     }
