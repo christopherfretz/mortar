@@ -774,9 +774,13 @@ pub(crate) fn relocate(
             let applied = img.arch.apply(&cx, &at, &mut out);
             // `spec/dyn.md` D-46: the place of a record that carries its
             // value (symbolic, `GLOB_DAT`, IE `TPOFF`) holds 0. Only a
-            // `Shlib` or `WeakDyn` target makes one: never in a static link.
+            // `Shlib`, `WeakDyn` or (a shared object's, D-113) `Preemptible`
+            // target makes one: never in a static link.
             if applied.is_ok()
-                && matches!(sym.kind, TargetKind::Shlib { .. } | TargetKind::WeakDyn)
+                && matches!(
+                    sym.kind,
+                    TargetKind::Shlib { .. } | TargetKind::WeakDyn | TargetKind::Preemptible
+                )
                 && let Field::Data { bytes: width } = howto.field
                 && zeroed(img, c, &at, r_sym)
             {

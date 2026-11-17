@@ -6,7 +6,9 @@
 //! `Exec` or `Pie` with `.dynamic` takes [`GotPlan::new_dynamic`], which
 //! adds PLT0 and the PLT entries, the three reserved `.got.plt` words, the
 //! lazy `JUMP_SLOT` words, the `_DYNAMIC` header word, and the GOT's
-//! records for `.rela.dyn` ([`GotPlan::got_records`]).
+//! records for `.rela.dyn` ([`GotPlan::got_records`]). A shared object
+//! takes [`GotPlan::new_shared`] (`spec/dyn.md` D-120): `new_dynamic` as
+//! a `Pie`, a `Preemptible` key's slot a `GLOB_DAT` like an import's.
 //!
 //! **Plan** ([`GotPlan::new`], phase 80): the region of each slot kind in
 //! `.got` (S-63) with the header word (S-65), the `.got.plt` words (S-67),
@@ -364,10 +366,13 @@ impl GotPlan {
                             r_sym: 0,
                         });
                     }
-                    TargetKind::Shlib { .. } | TargetKind::WeakDyn => {
+                    // D-113: `Preemptible` exists only in a shared object,
+                    // whose preemptible definition is reached through a
+                    // record naming it (D-1's column, D-46).
+                    TargetKind::Shlib { .. } | TargetKind::WeakDyn | TargetKind::Preemptible => {
                         plain(off, DynRole::GlobDat, k)?;
                     }
-                    TargetKind::Preemptible | TargetKind::Undefined => {
+                    TargetKind::Undefined => {
                         return Err(internal("a GOT slot whose key has no slot record"));
                     }
                     _ => {}
@@ -458,6 +463,44 @@ impl GotPlan {
                 bind_now: cx.bind_now,
             }),
         })
+    }
+
+    /// The plan for a `Shared` output (`spec/dyn.md` D-100, D-120): as
+    /// [`Self::new_dynamic`] for a `Pie` (`Local` slots `RELATIVE`;
+    /// `Preemptible`, `Shlib` and `WeakDyn` slots `GLOB_DAT` holding 0;
+    /// calls to imports and preemptible keys through PLT entries with
+    /// `JUMP_SLOT`s, lazy unless `bind_now`).
+    ///
+    /// Refused by name (class `feature`) until WP-124: TLS slots (D-119:
+    /// a library's TLS needs `DTPMOD` records the plan does not write) and
+    /// IPLT entries (D-121).
+    ///
+    /// # Errors
+    ///
+    /// [`Failed`] after emitting the refusal or `new_dynamic`'s errors.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_shared(
+        arch: &dyn Arch,
+        slots: &Slots,
+        output: GlobalFlags,
+        variant: PltVariant,
+        bind_now: bool,
+        kinds: &dyn KeyKinds,
+        dynsym: &DynsymPlan,
+        diag: &Collector,
+    ) -> Result<Self, Failed> {
+        let tls = !slots.tls_ie.is_empty()
+            || !slots.tls_gd.is_empty()
+            || slots.tls_ld
+            || !slots.tls_desc.is_empty();
+        if tls {
+            return fail(diag, key(0), feature("thread-local storage in a shared object"));
+        }
+        if !slots.iplt.is_empty() {
+            return fail(diag, key(0), feature("IFUNC (IPLT entries) in a shared object"));
+        }
+        let cx = DynGotCx { pie: true, bind_now, static_pie: false };
+        Self::new_dynamic(arch, slots, output, variant, cx, kinds, dynsym, diag)
     }
 
     /// The `.got` records for `.rela.dyn` (D-40, D-46, D-48): the
@@ -674,14 +717,17 @@ impl GotPlan {
     }
 
     /// D-46, D-48: a dynamic slot whose record carries its value holds 0
-    /// (`GLOB_DAT` of a `Shlib` or `WeakDyn` key; a shared key's TLS
-    /// slots).
+    /// (`GLOB_DAT` of a `Shlib`, `WeakDyn` or `Preemptible` key; a shared
+    /// key's TLS slots).
     fn zero_slot(&self, region: Region, index: u64) -> bool {
         let Some(d) = &self.dynamic else { return false };
         let i = index as usize;
         match region {
             Region::Addr => {
-                matches!(d.got_kinds.get(i), Some(TargetKind::Shlib { .. } | TargetKind::WeakDyn))
+                matches!(
+                    d.got_kinds.get(i),
+                    Some(TargetKind::Shlib { .. } | TargetKind::WeakDyn | TargetKind::Preemptible)
+                )
             }
             Region::TpOff => d.ie_shared.get(i).copied().unwrap_or(false),
             Region::TlsGd => d.gd_shared.get(i).copied().unwrap_or(false),

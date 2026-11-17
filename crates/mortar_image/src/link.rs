@@ -148,6 +148,36 @@ pub struct DynPlans<'a> {
     /// The context `.dynsym`'s exported values are read with, as
     /// `.symtab`'s (D-23 "exactly as `.symtab`").
     pub syms: SymCtx<'a>,
+    /// A shared object's facts (`spec/dyn.md` D-100, D-102, D-116):
+    /// `Some` exactly when `kind` is `DynKind::Shared`.
+    pub shared: Option<SharedPlans<'a>>,
+}
+
+/// What the image of a shared object needs besides an executable's
+/// plans (`spec/dyn.md` D-102, D-116; `spec/plumb.md` §3.2).
+#[derive(Debug, Clone, Copy)]
+pub struct SharedPlans<'a> {
+    /// The `-soname` string and its `.dynstr` offset
+    /// (`mortar_synth::dynstr::dynstr_plan_shared`): `Some` exactly when
+    /// the kind's `SharedDyn::soname`.
+    pub soname: Option<(&'a [u8], u32)>,
+    /// The map's shared-object line records (`map::SharedLine::of(plan)`).
+    pub line: &'a crate::map::SharedLine,
+}
+
+/// The kind and the shared facts agree (an internal error otherwise: the
+/// join builds both from one plan).
+fn check_shared(d: &DynPlans<'_>) -> Result<(), Diagnostic> {
+    let agree = match (d.kind, d.shared) {
+        (DynKind::Shared(k), Some(s)) => k.soname == s.soname.is_some() && d.interp.is_none(),
+        (DynKind::Exec | DynKind::Pie | DynKind::StaticPie, None) => true,
+        _ => false,
+    };
+    if agree {
+        Ok(())
+    } else {
+        Err(internal("image: the shared object's facts do not match its output kind"))
+    }
 }
 
 impl std::fmt::Debug for DynPlans<'_> {
@@ -1279,6 +1309,7 @@ pub fn structure(
                 demands: link.demands,
                 slots: &link.layout.slots,
                 src: d.src,
+                shared: matches!(d.kind, DynKind::Shared(_)),
             };
             mortar_synth::dynsym::gnu_symbols(d.dynsym, &inputs)
         });
@@ -1448,6 +1479,7 @@ impl DynView<'_, '_, '_> {
             demands: l.demands,
             slots: &l.layout.slots,
             src: self.d.src,
+            shared: matches!(self.d.kind, DynKind::Shared(_)),
         }
     }
 }
@@ -1491,6 +1523,10 @@ impl crate::dynamic::DynamicAddrs for DynView<'_, '_, '_> {
 
     fn symbol(&self, key: SymbolId) -> Option<u64> {
         self.t.global.get(key.0 as usize).copied().flatten()
+    }
+
+    fn soname(&self) -> Option<u32> {
+        self.d.shared?.soname.map(|s| s.1)
     }
 }
 
@@ -1589,6 +1625,7 @@ impl<'v> DynChunks<'v> {
                 needed: &slots.needed,
                 verneed: &slots.verneed,
                 rpath: d.runpath.map(|r| r.1),
+                soname: d.shared.and_then(|s| s.soname),
                 dynstr: &slots.dynstr,
                 names: d.src,
             },
@@ -2013,6 +2050,9 @@ fn with_image<T>(
     fixed.append(&mut patches(link, &tables).map_err(failed)?);
     steps.step("structure", 0, "");
     let chunks = Chunks::new(link);
+    if let Some(d) = &link.synth.dynamic {
+        check_shared(d).map_err(failed)?;
+    }
     let view = link.synth.dynamic.map(|d| DynView { t: &tables, d });
     let dyn_chunks = match &view {
         Some(v) => Some(DynChunks::new(v, rela_dyn(v).map_err(failed)?)),
@@ -2546,6 +2586,8 @@ impl LinkTables<'_, '_> {
         let view = DynView { t: self, d };
         let mut r = crate::map::DynRecords::default();
         crate::dynamic::fill_records(&mut r, d.kind, d.interp, d.runpath, d.bind_now, d.relro);
+        // `spec/plumb.md` §3.2: the shared-object line records.
+        r.shared = d.shared.map(|s| s.line.clone());
         r.needed = slots.needed.iter().map(|&f| d.src.needed(f).to_vec()).collect();
         r.copies = slots
             .copies
