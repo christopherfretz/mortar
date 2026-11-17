@@ -102,7 +102,23 @@ pub enum Provided {
     Stop,
 }
 
+/// The names of §8.1 that GNU ld and lld both define in every output
+/// kind, and both export as a program's definition (`spec/dyn.md` D-110
+/// item 2 and D-21, WP-150): `__etext` and GNU ld's AArch64 names are
+/// not among them (lld does not define them).
+pub const EXPORTED_AS_DEFINITIONS: &[&[u8]] =
+    &[b"_etext", b"etext", b"_edata", b"edata", b"__bss_start", b"_end", b"end"];
+
 impl Provided {
+    /// Whether the key is one of [`EXPORTED_AS_DEFINITIONS`].
+    #[must_use]
+    pub fn exported_as_definition(self) -> bool {
+        match self {
+            Self::Table(n) => EXPORTED_AS_DEFINITIONS.contains(&TABLE[n as usize].name),
+            Self::Start | Self::Stop => false,
+        }
+    }
+
     /// `.symtab` binding (local or global) and visibility (§8.1).
     #[must_use]
     pub fn binding(self) -> (bool, u8) {

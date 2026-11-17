@@ -40,9 +40,16 @@ pub fn exported(def: Def, visibility: u8, ref_dynamic: bool) -> bool {
     match def {
         Def::Strong(_) | Def::Weak(_) | Def::Common(_) => visible,
         Def::Provide { sym: Provided::Start | Provided::Stop, .. } => true,
+        // D-110 item 2 (WP-150): `_end`, `__bss_start`, ... that an input
+        // object references are exported as the library's own definitions
+        // (GNU ld and lld); every other linker-defined key only when a
+        // shared object references it.
         Def::Provide { sym, .. } => {
             let (local, row) = sym.binding();
-            visible && ref_dynamic && !local && matches!(row, STV_DEFAULT | STV_PROTECTED)
+            visible
+                && (ref_dynamic || sym.exported_as_definition())
+                && !local
+                && matches!(row, STV_DEFAULT | STV_PROTECTED)
         }
         Def::Undefined { .. } | Def::Shared(_) => false,
     }
@@ -121,11 +128,22 @@ mod tests {
         let stop = Def::Provide { sym: Provided::Stop, conditional: true };
         assert!(exported(start, STV_DEFAULT, false));
         assert!(exported(stop, STV_DEFAULT, false));
-        // Item 2: `_end`, `_edata`, `__bss_start` only when a shared input
-        // references them; the local rows never.
-        for name in [&b"_end"[..], b"_edata", b"__bss_start"] {
+        // Item 2 (WP-150): the seven names GNU ld and lld both define are
+        // exported once an input object references them (the key is then
+        // `Provide`); `__etext` and the AArch64-only names (lld defines
+        // none of them) only when a shared input references them; the
+        // local rows never.
+        for name in [&b"_etext"[..], b"etext", b"_edata", b"edata", b"__bss_start", b"_end", b"end"]
+        {
             let d = Def::Provide { sym: table(name), conditional: false };
-            assert!(!exported(d, STV_DEFAULT, false));
+            assert!(exported(d, STV_DEFAULT, false), "{}", String::from_utf8_lossy(name));
+            assert!(exported(d, STV_DEFAULT, true));
+            assert!(!exported(d, STV_HIDDEN, true), "a hidden reference");
+        }
+        for name in [&b"__etext"[..], b"__data_start", b"__end__", b"__bss_start__", b"_bss_end__"]
+        {
+            let d = Def::Provide { sym: table(name), conditional: false };
+            assert!(!exported(d, STV_DEFAULT, false), "{}", String::from_utf8_lossy(name));
             assert!(exported(d, STV_DEFAULT, true));
         }
         for name in [&b"_DYNAMIC"[..], b"_GLOBAL_OFFSET_TABLE_", b"__ehdr_start"] {
