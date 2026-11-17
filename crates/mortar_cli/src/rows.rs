@@ -110,7 +110,8 @@ const NON_WEAK: &str = "dyn.md D-112: GNU ld does not know it (lld and mold do);
 /// `--dynamic-list-data` (D-112).
 const DYNAMIC_LIST_DATA: &str = "dyn.md D-112: the references disagree (GNU ld binds functions and NOTYPE symbols, mold changes nothing, lld does not know it); use -Bsymbolic-functions, or a --dynamic-list";
 /// `--dynamic-list-cpp-new` and `--dynamic-list-cpp-typeinfo` (D-112).
-const DYNAMIC_LIST_CPP: &str = "dyn.md D-112: GNU ld only (lld and mold refuse it); list the symbols in a --dynamic-list";
+const DYNAMIC_LIST_CPP: &str =
+    "dyn.md D-112: GNU ld only (lld and mold refuse it); list the symbols in a --dynamic-list";
 
 /// The options whose effect in a `Shared` link a later package implements
 /// (`spec/cli.md` §4.2's M4 block): in a link whose output kind is

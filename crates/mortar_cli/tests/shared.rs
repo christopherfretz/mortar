@@ -157,8 +157,11 @@ fn g4_shared_row_text() {
 // the `Shared` list is a row
 #[test]
 fn s4_2_shared_list_names_rows() {
-    let later: Vec<String> =
-        rows().iter().filter(|r| r.shared_later().is_some()).map(|r| r.name()).collect();
+    let later: Vec<String> = rows()
+        .iter()
+        .filter(|r| r.shared_later().is_some())
+        .map(mortar_cli::table::Row::name)
+        .collect();
     assert_eq!(
         later,
         [
