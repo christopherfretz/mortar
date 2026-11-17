@@ -1,0 +1,112 @@
+# --allow-multiple-definition and -z muldefs (resolve.md §3.8, E6): of
+# several strong definitions the first in command-line order is the
+# definition, all three, silently (GNU ld prints nothing; neither does
+# mortar: the user asked for it). References from the losing object bind
+# to the winner (self1 in d1.o calls d2.o's dup). The loser's section
+# stays in the output as dead weight (its code is there, its symbol is
+# not: measured by disassembly, not checked here) and --gc-sections
+# collects it with -ffunction-sections, all three.
+# Of two arrays of different sizes the first is taken with its own size;
+# of a function and an object the first wins whatever its type (the
+# program then calls data and crashes, alike with all three: the user's
+# choice). A TLS definition against a non-TLS one stays an error with
+# GNU ld and mortar (lld accepts one order, mold both: a mislink).
+# --no-allow-multiple-definition after the option restores the error
+# (lld and mortar; GNU ld and mold do not know it).
+#@ spec: resolve.md §3.8
+#@ spec: resolve.md §16
+
+cc -O1 -ffunction-sections d1.c -o d1.o
+cc -O1 -ffunction-sections d2.c -o d2.o
+cc -O1 m.c -o m.o
+cc -O1 v1.c -o v1.o
+cc -O1 v2.c -o v2.o
+cc -O1 mv.c -o mv.o
+cc -O1 fn.c -o fn.o
+cc -O1 obj.c -o obj.o
+cc -O1 mt.c -o mt.o
+cc -O1 t1.c -o t1.o
+cc -O1 t2.c -o t2.o
+cc -O1 mx.c -o mx.o
+link gcc -static -no-pie m.o d1.o d2.o -o clash
+  exit: fail
+  diag(bfd): multiple definition of `dup'
+  diag(lld,mortar): duplicate symbol: dup
+  diag(mold): duplicate symbol: *: dup$
+link gcc -static -no-pie m.o d1.o d2.o -Wl,--allow-multiple-definition -o first12
+  no-diag: dup
+run first12
+  exit: 112
+link gcc -static -no-pie m.o d2.o d1.o -Wl,-z,muldefs -o first21
+run first21
+  exit: 212
+check nm first21
+  count: 1 * dup$
+link gcc -static -no-pie m.o d2.o d1.o -Wl,-zmuldefs -Wl,--gc-sections -o gc
+run gc
+  exit: 212
+check nm gc
+  count: 1 * dup$
+  not: * lose1$
+  not: * lose2$
+link gcc -static -no-pie mv.o v1.o v2.o -Wl,-z,muldefs -o small
+run small
+  exit: 2
+check nm -S small
+  has: 0*8 * V$
+link gcc -static -no-pie mv.o v2.o v1.o -Wl,-z,muldefs -o large
+run large
+  exit: 6
+check nm -S large
+  has: 0*20 * V$
+link gcc -static -no-pie mt.o fn.o obj.o -Wl,-z,muldefs -o func
+run func
+  exit: 3
+link gcc -static -no-pie mt.o obj.o fn.o -Wl,-z,muldefs -o data
+run data
+  exit: signal 11
+link(lld,mortar) gcc -static -no-pie m.o d1.o d2.o -Wl,--allow-multiple-definition,--no-allow-multiple-definition -o restored
+  exit: fail
+  diag(lld,mortar): duplicate symbol: dup
+link(bfd,lld,mortar) gcc -static -no-pie mx.o t1.o t2.o -Wl,-z,muldefs -o tls
+  exit: fail
+  diag(bfd): TLS definition in t1.o section .tdata mismatches non-TLS definition
+  diag(lld,mortar): TLS attribute mismatch: X
+
+#--- d1.c
+int dup(void) { return 1; }
+int self1(void) { return dup(); }
+int lose1(void) { return 100; }
+#--- d2.c
+int dup(void) { return 2; }
+int self2(void) { return dup(); }
+int lose2(void) { return 200; }
+#--- m.c
+int dup(void);
+int self1(void);
+int self2(void);
+int main(void) { return dup() * 100 + self1() * 10 + self2(); }
+#--- v1.c
+int V[2] = {1, 2};
+#--- v2.c
+int V[8] = {5, 6, 7, 8, 9, 10, 11, 12};
+#--- mv.c
+extern int V[];
+int main(void) { return V[1]; }
+#--- fn.c
+int T(void) { return 3; }
+#--- obj.c
+int T = 9;
+#--- mt.c
+int T(void);
+int main(void) { return T(); }
+#--- t1.c
+__thread int X = 4;
+int getx1(void) { return X; }
+#--- t2.c
+int X = 5;
+int getx2(void) { return X; }
+#--- mx.c
+int getx1(void);
+int getx2(void);
+int main(void) { return getx1() * 10 + getx2(); }

@@ -1302,10 +1302,16 @@ impl Ctx<'_, '_, '_> {
                 Diagnostic::error(Kind::LinkerSymbolRedefined { name: self.name(*key) })
                     .at(self.entry(*entry))
             }
-            What::RequiredSymbol { name, arg, .. } => {
+            What::RequiredSymbol { name, arg, shared, .. } => {
                 let name = String::from_utf8_lossy(name).into_owned();
-                Diagnostic::error(Kind::RequiredSymbol { name })
-                    .at(Place::argument(self.root_text(*arg)))
+                let d = Diagnostic::error(Kind::RequiredSymbol { name })
+                    .at(Place::argument(self.root_text(*arg)));
+                match shared {
+                    Some(e) => d.with(Relation::DefinedIn, self.entry(*e)).note(
+                        "only a shared object defines it; --require-defined needs a definition in the output (GNU ld)",
+                    ),
+                    None => d,
+                }
             }
             What::EntryNotFound { name, .. } => {
                 warn(Kind::EntryNotFound { name: String::from_utf8_lossy(name).into_owned() })

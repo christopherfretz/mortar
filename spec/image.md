@@ -1798,8 +1798,12 @@ random input's).
      to column 30 on the same line), `FILE (SYMBOL)`: the file and
      symbol whose reference took it (resolve's first taker,
      `spec/resolve.md` §4.3, which is not always GNU's), for a root
-     (`-u`, the entry) no file, so the line is 30 spaces and
-     `(SYMBOL)`, as GNU writes it; a blank line;
+     (`-u`, `--require-defined`, a script's `EXTERN`, the entry) no
+     file, so the line is 30 spaces and `(SYMBOL)`, as GNU writes it;
+     a `--whole-archive` member is listed too, in the same `FileId`
+     order, with `(--whole-archive)` at column 30 (GNU ld 2.44 writes
+     both so; WP-152 found the member missing and the root's `(` one
+     column late); a blank line;
   2. `Discarded input sections`, a blank line, per dropped section of a
      live object (COMDAT copy, `/DISCARD/`, excluded, gc'd; zero-sized
      ones included, as GNU does) ` NAME`, address 0, size and file,

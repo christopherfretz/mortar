@@ -1,0 +1,50 @@
+# A --whole-archive member is a unit of the program like a named object
+# (resolve.md §4.2; odr.md O-23: "not extracted" is resolution's final
+# answer, and a whole member is live): its kind 2 rows are compared by
+# the record checks, so the member m.o that defines f() differently from
+# a.o is odr-violation without --odr-check-archives (here under
+# --odr=strict, where kind 2 rows are compared and it is an error, the
+# same as for m.o named on the line), where the same member in an archive
+# read lazily is only checked on request (k17-archive-shadow). The
+# references see two COMDAT copies, keep a.o's and run.
+#@ spec: odr.md "O-23"
+#@ spec: resolve.md §4.2
+#@ requires: g++
+#@ diag: odr-violation a.o libk17.a(m.o)
+
+cxx -O0 a.cc -o a0.o
+meta a.meta a0.o -o a.o
+cxx -O0 m.cc -o m0.o
+meta m.meta m0.o -o m.o
+ar rcs libk17.a m.o
+cxx -O0 main.cc -o main.o
+link(bfd,lld,mold) g++ -static -no-pie main.o a.o -Wl,--whole-archive libk17.a -Wl,--no-whole-archive -o prog
+run(bfd,lld,mold) prog
+  stdout: 1
+link(mortar) g++ -static -no-pie main.o a.o -Wl,--whole-archive libk17.a -Wl,--no-whole-archive -Wl,--odr=strict -o prog
+  exit: fail
+  diag: violates the one-definition rule
+  diag: defined differently in libk17.a(m.o)
+
+#--- a.cc
+__attribute__((noinline)) inline int f() { return 1; }
+int fa() { return f(); }
+#--- a.meta
+summary name=lang value=c++
+summary name=odr.scheme value=model-1
+summary name=producer value="hand (WP-076 model)"
+summary name=std value=c++17
+definition anchor=_Z1fv hash=11111111111111111111111111111111 class=1 flags=1 file=h.h line=1
+#--- m.cc
+__attribute__((noinline)) inline int f() { return 2; }
+int fm() { return f(); }
+#--- m.meta
+summary name=lang value=c++
+summary name=odr.scheme value=model-1
+summary name=producer value="hand (WP-076 model)"
+summary name=std value=c++17
+definition anchor=_Z1fv hash=22222222222222222222222222222222 class=1 flags=1 file=h.h line=1
+#--- main.cc
+#include <cstdio>
+int fa();
+int main() { std::printf("%d\n", fa()); }

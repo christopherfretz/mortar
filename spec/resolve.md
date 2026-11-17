@@ -61,7 +61,7 @@ semantics (`spec/arch.md`).
 | `-shared` | (already refused as an option, `spec/cli.md`) | M4 |
 | `-r` | `Refused{Feature, "relocatable output (-r)"}` (§11) | M4 |
 | `--version-script`, `--dynamic-list`, `--export-dynamic-symbol-list`, `-Bsymbolic*`, `--exclude-libs` | option refusals | M4 (`--export-dynamic` and `--export-dynamic-symbol` for executables: M2; the list files `--dynamic-list` and `--export-dynamic-symbol-list`: M4, `spec/dyn.md` §15 Q9, closed) |
-| `--wrap`, `--defsym`, `--start-lib`, `-y` | option refusals | M4 |
+| `--wrap`, `--defsym`, `-y` | option refusals | M4 (`--start-lib` landed with WP-152, §4.8) |
 | `.gnu.linkonce.*` sections | `Refused{Feature, ".gnu.linkonce sections"}` (§6.6) | an input that needs it |
 | a slim GCC LTO object (symbol `__gnu_lto_slim`) | `Refused{FileFormat, "GCC LTO object"}` (§10) | a later decision (`docs/ARCHITECTURE.md`, "Scope") |
 | a weak common symbol (`STB_WEAK` with `SHN_COMMON`) | `Refused{SymbolBinding, "STB_WEAK common"}` | an input that needs it (no tool tested emits one; not verified) |
@@ -390,6 +390,23 @@ absolute definition and a section definition always clash, review finding
   rule the same unit).
 - With either option, no diagnostic: the first by `≺` is the definition
   (all three, E6: `-z muldefs d2.o d1.o` takes `d2.o`'s).
+  `--no-allow-multiple-definition` (lld's; GNU ld and mold do not know
+  it) restores the error; of the two, the last on the line holds.
+
+What the option leaves (WP-152, measured with GNU ld 2.44, lld 22 and
+mold 2.37 on AArch64, x86-64 and i386; `tests/link/resolve/allow-multiple-definition.test`):
+references from the losing object bind to the winner, all four; the
+loser's sections stay in the output as dead weight and `--gc-sections`
+collects them as any unreferenced section (all four); of two objects of
+different sizes the definition is the first with its own `st_size`, and
+of a function and an object the first, whatever its type (all four: the
+program may then call data, the user's choice). The kinds of §3.4 still
+decide before the option: a TLS definition against a non-TLS one stays
+`tls-mismatch` (GNU ld errors in both orders, lld 22 in one, mold
+accepts both: §16). A `--whole-archive` member's definition is a named
+object's: two members clash and the option takes the first member's.
+`--odr` does not report a clash the option allowed (`spec/odr.md`
+names no rule for it: WP-152 reports the gap, it does not invent one).
 
 Wording (supervisor's policy of 2026-11-14, review finding 22): where GNU
 ld has a phrase that build tools match, mortar's message for the same
@@ -520,8 +537,8 @@ reference):
 |---|---|---|
 | none of `-e`, `ENTRY`, `-shared`, `-r` | the default entry `_start` (finding 14: all three extract a `_start` member from an archive with no `-e`, R9) | M1 |
 | `-e SYM` / `ENTRY(SYM)` | `SYM` (all three extract it, E13); undefined afterwards: §5.5 | M1 |
-| `-u SYM` | `SYM` (R4b: all three extract) | M1 |
-| `--require-defined=SYM` | `SYM`; if still undefined after the closure: `required-symbol` (error; GNU: ``required symbol `x' not defined``, mold: `--require-defined: undefined symbol: x`; lld 22 has no such option, E13) | M1 |
+| `-u SYM` | `SYM` (R4b: all three extract; a hidden, weak or IFUNC definition alike; `-u` and `--undefined=` and the joined `-uSYM` alike; WP-152). A name no file defines extracts nothing and is no error (all three; GNU ld writes an undefined `.symtab` entry for it, lld, mold and mortar none). A name only an `--as-needed` shared object defines makes it needed and is imported (D-11 item 2, D-21; GNU ld and lld leave it not needed, mold needed without the import: §16) | M1 |
+| `--require-defined=SYM` | `SYM`; if still undefined after the closure, or defined only by a shared object: `required-symbol` (error, the shared object's definition its place; GNU: ``required symbol `x' not defined``, in both cases, mold: `--require-defined: undefined symbol: x`, and mold accepts the shared definition; lld 22 has no such option, E13; WP-152 follows GNU ld) | M1 |
 | `--defsym A=EXPR` | the symbols `EXPR` names, wherever the option is on the line (finding 17: GNU ld extracts them only when the option precedes the archive, ``undefined symbol `k' referenced in expression`` otherwise; lld and mold in any position, R10: §16) | M4 |
 | `--export-dynamic-symbol=GLOB` | each unversioned key whose name matches the glob, among the keys some file mentions (`*` any run, `?` one byte, `[set]` with ranges and `!`/`^` negation, `\` quotes the next byte; a `[` without `]` is literal, fnmatch(3)); a value without a wildcard names its key. GNU ld, lld and mold agree on `exp_d*` (WP-056, `export-dynamic-symbol`); before WP-056 mortar matched the value as a literal name | M2 |
 | a script's `EXTERN(SYM ...)` | each `SYM`, as `-u` (below) | M4; WP-152 |
@@ -541,6 +558,25 @@ agree). A name no file defines extracts nothing and is no error (GNU ld
 and lld; GNU ld writes an undefined `.symtab` entry for it, lld and
 mortar none, as for `-u`). mold 2.37 refuses the command (`unknown
 linker script token`). Test: `tests/link/resolve/extern-root.test`.
+
+`--whole-archive` (WP-152; measured with GNU ld 2.44, lld 22 and mold
+2.37 on the three targets; `tests/link/resolve/whole-archive*.test`,
+`tests/link/dyn/shared/whole-archive-shared.test`). Every member of an
+archive read under the switch is live from the start, whether the
+archive is named by path, by `-l` (`-Bstatic`), inside a group, by a
+script's `INPUT` or `GROUP`, thin or empty, in member order: the map's
+file order, `.symtab` order and the order of the members' constructors
+in `.init_array` are the member order (all four). The switch is
+positional and `--push-state` saves it (`spec/cli.md` §3.3). A member
+that is not a relocatable object of the link's machine is an error
+(GNU ld, lld, mortar; mold skips a non-ELF member silently); an LTO
+member stays refused (§10). The same archive twice: whole then lazy
+links (the lazy copy is not extracted), lazy then whole extracts the
+lazy copy and clashes with the whole one (GNU ld, lld; mold links),
+whole twice clashes (all four). In `-shared` every default-visibility
+global of every member is exported (all three, D-110); a shared object
+read under the switch is unchanged by it (`--as-needed` alone decides
+whether it is needed, all three).
 
 ### 4.3 What GNU ld users see
 
@@ -789,13 +825,28 @@ member whose sections are later collected still settled its keys (all
 three: a collected member's definition still collides with a later one,
 verified by WP-031, `spec/landed/image/WP-031.md` Q10). `Outcome.roots`
 carries the rooted keys (`Options::roots`: the entry, `-u`,
-`--require-defined`) to `mortar_live`.
+`--require-defined`) to `mortar_live`. A `--whole-archive` member is a
+live file, not a root (WP-152, all four): its unreferenced sections are
+collected, a `SHF_GNU_RETAIN` one kept; `-u SYM` and `--require-defined`
+keep `SYM`'s section (all four).
 
 ### 4.8 `--start-lib` (M4)
 
 The objects of a `--start-lib` … `--end-lib` region are lazy, each a member
 of an archive of its own: exactly the archive rules apply (lld and mold;
-GNU ld 2.44 has no such option, E13).
+GNU ld 2.44 has no such option, E13). Measured by WP-152 (lld 22, mold
+2.37, the three targets; `tests/link/resolve/start-lib.test`): only the
+objects a reference or a root (`-u`) takes are linked, wherever the
+region is on the line; their constructors run, the others' do not.
+`--whole-archive` does not make a lazy object live; an archive inside
+the region is read as anywhere else. A nested `--start-lib` and a stray
+`--end-lib` are `unbalanced-option` (lld errors too, mold accepts). A
+group inside a region and a region inside a group are refused by name
+(`spec/cli.md` §3.3; lld refuses both, mold accepts both): an unclosed
+region before a driver's `--start-group -lgcc -lc --end-group crtend.o
+crtn.o` made the start-up files lazy and the program crash with mortar
+(and mold). An unclosed region at the end of a line is accepted (all
+three).
 
 ## 5. Undefined symbols
 
@@ -2085,6 +2136,14 @@ Every disagreement found; "E" is the experiment in the landed record.
 | `--wrap` and a reference in the defining object | not wrapped | wrapped | not wrapped | not wrapped | E13 |
 | `--defsym a=b+4` | absolute | section-relative | refused | section-relative | E13 |
 | `--require-defined` | supported | not an option | supported | supported | E13 |
+| `--require-defined` of a name only a shared object defines | error | not an option | accepted | error (§4.2) | WP-152 |
+| `-u` of a name no file defines, `.symtab` | undefined entry | none | none | none | WP-152 |
+| `-u` of a name only an `--as-needed` shared object defines | not needed | not needed | needed, no import | needed, imported (D-11 item 2, D-21) | WP-152 |
+| `-z muldefs`, a TLS and a non-TLS definition | error | error in one order | accepted | error (§3.4) | WP-152 |
+| `--whole-archive` member that is not ELF | error | error | skipped | error | WP-152 |
+| an archive lazy, then the same archive whole | duplicate | duplicate | links | duplicate | WP-152 |
+| a nested `--start-lib`, a stray `--end-lib` | (no option) | error | accepted | error | WP-152 |
+| a group inside a lib region, a lib region inside a group | (no option) | error | accepted | refused by name (§4.8) | WP-152 |
 | object defines `_end`, `_edata`, `__bss_start` | linker's value | object's | linker's | refused | E14 |
 | object defines `_GLOBAL_OFFSET_TABLE_` | linker's | error | linker's | refused | E14 |
 | object defines other linker symbols | object's | object's | linker's | object's | E14 |

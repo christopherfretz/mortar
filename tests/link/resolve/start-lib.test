@@ -1,0 +1,84 @@
+# --start-lib ... --end-lib (resolve.md §4.8, input.md §7.6): each object
+# of the region is lazy, a member of an archive of its own: only a.o,
+# which main references, is linked (its constructor runs; b's and c's do
+# not), wherever the region is on the line, and -u extracts one as from
+# an archive. --whole-archive does not make a lazy object live; an
+# archive inside the region is read as anywhere else (lld, mold). A
+# --start-lib inside a region and a stray --end-lib are errors with lld
+# and mortar (spec/cli.md §3.3, unbalanced-option); mold accepts both.
+# A group inside a region (an unclosed --start-lib before the driver's
+# --start-group -lgcc -lc --end-group crtend.o crtn.o, which made the
+# start-up files lazy and the program crash) and a region inside a group
+# are refused by name, as lld refuses them (mold accepts both).
+# GNU ld has no such option.
+#@ spec: resolve.md §4.8
+#@ spec: input.md §7.6
+#@ spec: cli.md §3.3
+#@ skip(bfd): GNU ld 2.44 has no --start-lib
+
+cc -O1 a.c -o a.o
+cc -O1 b.c -o b.o
+cc -O1 c.c -o c.o
+cc -O1 k.c -o k.o
+cc -O1 ma.c -o ma.o
+cc -O1 mk.c -o mk.o
+ar rcs libabc.a b.o a.o c.o
+link gcc -static -no-pie ma.o -Wl,--start-lib b.o a.o c.o -Wl,--end-lib -o after
+run after
+  stdout: ctor a
+  exit: 5
+check nm after
+  not: b_fn$
+link gcc -static -no-pie -Wl,--start-lib b.o a.o c.o -Wl,--end-lib ma.o -o before
+run before
+  stdout: ctor a
+  exit: 5
+link gcc -static -no-pie ma.o -Wl,--whole-archive,--start-lib b.o a.o c.o -Wl,--end-lib,--no-whole-archive -o whole
+run whole
+  stdout: ctor a
+  exit: 5
+link gcc -static -no-pie ma.o -Wl,--start-lib libabc.a -Wl,--end-lib -o archive
+run archive
+  stdout: ctor a
+  exit: 5
+link gcc -static -no-pie mk.o -u b_fn -Wl,--start-lib b.o a.o c.o k.o -Wl,--end-lib -o rooted
+run rooted
+  stdout: ctor b
+  exit: 2
+link(lld,mortar) gcc -static -no-pie ma.o -Wl,--start-lib,--start-lib b.o a.o c.o -Wl,--end-lib -o nested
+  exit: fail
+  diag(lld): nested --start-lib
+  diag(mortar): --start-lib without a matching --end-lib
+link(lld,mortar) gcc -static -no-pie ma.o b.o a.o c.o -Wl,--end-lib -o stray
+  exit: fail
+  diag(lld): stray --end-lib
+  diag(mortar): --end-lib without a matching --start-lib
+link(lld,mortar) gcc -static -no-pie ma.o -Wl,--start-lib b.o a.o c.o -o unclosed
+  exit: fail
+  diag(lld): nested --start-group
+  diag(mortar): unsupported feature: --start-group inside a --start-lib region
+link(lld,mortar) gcc -static -no-pie ma.o -Wl,--start-group,--start-lib b.o a.o c.o -Wl,--end-lib,--end-group -o ingroup
+  exit: fail
+  diag(lld): may not nest --start-lib in --start-group
+  diag(mortar): unsupported feature: --start-lib inside a group
+
+#--- a.c
+#include <stdio.h>
+__attribute__((constructor)) static void ctor_a(void) { puts("ctor a"); }
+int a_fn(void) { return 1; }
+#--- b.c
+#include <stdio.h>
+__attribute__((constructor)) static void ctor_b(void) { puts("ctor b"); }
+int b_fn(void) { return 1; }
+#--- c.c
+#include <stdio.h>
+__attribute__((constructor)) static void ctor_c(void) { puts("ctor c"); }
+int c_fn(void) { return 1; }
+#--- k.c
+int K(void) { return 2; }
+#--- ma.c
+int a_fn(void);
+int main(void) { return a_fn() + 4; }
+#--- mk.c
+int K(void);
+int main(void) { return K(); }

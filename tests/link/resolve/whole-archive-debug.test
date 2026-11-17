@@ -1,0 +1,24 @@
+# Debug information of --whole-archive members (resolve.md §4.2): a
+# member nobody references is linked with its DWARF, and gdb sets a
+# breakpoint on its function at its source line, as with the references.
+#@ spec: resolve.md §4.2
+#@ arch: aarch64
+#@ requires: gdb
+
+cc -O0 -g main.c -o main.o
+cc -O0 -g b.c -o b.o
+ar rcs libb.a b.o
+link gcc -static -no-pie -g main.o -Wl,--whole-archive libb.a -Wl,--no-whole-archive -o prog
+run prog
+  stdout: ctor b
+check gdb prog "break b_fn" "info line b_fn"
+  has: Breakpoint 1 at * file b.c, line 4.
+  has: Line 4 of "b.c" starts at address * <b_fn>
+
+#--- main.c
+int main(void) { return 0; }
+#--- b.c
+#include <stdio.h>
+__attribute__((constructor)) static void ctor_b(void) { puts("ctor b"); }
+int b_var = 1;
+int b_fn(void) { return b_var; }

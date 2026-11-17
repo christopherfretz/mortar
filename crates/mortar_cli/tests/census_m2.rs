@@ -43,12 +43,11 @@ fn written(uses: &[&Use]) -> Vec<String> {
 }
 
 /// What a line's variation asks for that M2 refuses by name
-/// (`spec/dyn.md` §2.7 item 6, D-20): clang's `AddressSanitizer` runtime
-/// under `--whole-archive` (gcc links `libasan.so` and needs none), and
-/// the hash styles other than `gnu`. Every other line refuses nothing.
+/// (`spec/dyn.md` D-20): the hash styles other than `gnu`. Every other
+/// line refuses nothing (clang's `AddressSanitizer` runtime under
+/// `--whole-archive` was refused until WP-152).
 fn refused_outside_m2(id: &str) -> &'static [&'static str] {
     match variation(id) {
-        "asan" if id.starts_with("clang") => &["--whole-archive", "--no-whole-archive"],
         "hash-sysv" => &["--hash-style=sysv"],
         "hash-both" => &["--hash-style=both"],
         _ => &[],
@@ -107,8 +106,8 @@ fn every_census_line_parses_and_none_is_refused() {
             *gates.entry(gate).or_default() += 1;
         }
     }
-    // 426 - 12 clang asan - 22 sysv - 22 both.
-    assert_eq!(default_lines, 370);
+    // 426 - 22 sysv - 22 both (the 12 clang asan lines since WP-152).
+    assert_eq!(default_lines, 382);
     // The ranks of dyn.md §2.7: every line names an interpreter, 404 are
     // PIEs (all but the 22 -no-pie lines), 9 use -Bdynamic
     // (-static-libstdc++ on the gcc and clang C++ drivers).

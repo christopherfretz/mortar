@@ -406,15 +406,25 @@ pub fn resolve_steps<V: View>(
     // allocated nowhere.
     common.retain(|(k, _)| matches!(def[k.0 as usize], Def::Common(_)));
     steps.step("resolve.shared");
-    // Roots that must be defined (§4.2, §5.5).
+    // Roots that must be defined (§4.2, §5.5): in the output, so a
+    // definition only a shared object gives does not satisfy it (GNU ld;
+    // WP-152).
     for named in &opts.require_defined {
-        if named.key.get().is_none_or(|k| def[k.0 as usize].is_undefined()) {
+        if named
+            .key
+            .get()
+            .is_none_or(|k| matches!(def[k.0 as usize], Def::Undefined { .. } | Def::Shared(_)))
+        {
             problems.push(Problem {
                 key: DiagKey::of(FileId::INTERNAL, u64::from(named.arg)),
                 what: What::RequiredSymbol {
                     key: named.key,
                     name: named.name.clone(),
                     arg: named.arg,
+                    shared: named.key.get().and_then(|k| match def[k.0 as usize] {
+                        Def::Shared(e) => Some(e),
+                        _ => None,
+                    }),
                 },
             });
         }

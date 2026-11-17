@@ -4,7 +4,7 @@ Generated from `crates/mortar_cli/src/rows.rs` by `mortar_cli::status_markdown`;
 do not edit. `MORTAR_BLESS=1 cargo test -p mortar_cli --test table` rewrites it.
 The rules are `spec/cli.md`.
 
-487 rows: 94 supported, 5 partial, 30 noop, 358 refused.
+487 rows: 103 supported, 5 partial, 30 noop, 349 refused.
 
 Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 18 mortar's own.
 
@@ -83,12 +83,12 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 18 mortar'
 | `-b`, `--format` | FORMAT | GNU, lld | all | refused | `inputs[].state.format` | Read the following inputs as FORMAT |
 | `-(`, `--start-group` |  | GNU, lld, mold | all | supported | `inputs[].state.group` | Start a group of archives searched repeatedly |
 | `-)`, `--end-group` |  | GNU, lld, mold | all | supported | `inputs[].state.group` | End a group |
-| `--start-lib` |  | lld, mold | all | refused | `inputs[].state.lib` | Read the following objects as members of an archive |
-| `--end-lib` |  | lld, mold | all | refused | `inputs[].state.lib` | End --start-lib |
+| `--start-lib` |  | lld, mold | all | supported | `inputs[].state.lib` | Read the following objects as members of an archive |
+| `--end-lib` |  | lld, mold | all | supported | `inputs[].state.lib` | End --start-lib |
 | `--as-needed` |  | GNU, lld, mold | all | supported | `inputs[].state.as_needed` | Record DT_NEEDED for the following shared objects only if used |
 | `--no-as-needed` |  | GNU, lld, mold | all | supported | `inputs[].state.as_needed` | Record DT_NEEDED for every following shared object (default) |
-| `--whole-archive` |  | GNU, lld, mold | all | refused | `inputs[].state.whole_archive` | Take every member of the following archives |
-| `--no-whole-archive` |  | GNU, lld, mold | all | refused | `inputs[].state.whole_archive` | Take the members of archives that are needed (default) |
+| `--whole-archive` |  | GNU, lld, mold | all | supported | `inputs[].state.whole_archive` | Take every member of the following archives |
+| `--no-whole-archive` |  | GNU, lld, mold | all | supported | `inputs[].state.whole_archive` | Take the members of archives that are needed (default) |
 | `-Bstatic`, `--dn`, `--non_shared`, `--static` |  | GNU, lld, mold | all | supported | `inputs[].state.link_static` | Search -l for archives only |
 | `-Bdynamic`, `--dy`, `--call_shared` |  | GNU, lld, mold | all | supported | `inputs[].state.link_static` | Search -l for shared objects too (default) |
 | `--copy-dt-needed-entries`, `--add-needed` |  | GNU | all | refused | `inputs[].state.copy_dt_needed` | Follow the DT_NEEDED entries of the following shared objects |
@@ -166,8 +166,8 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 18 mortar'
 
 | Option | Value | Linkers | Targets | Status | Lands in | Help |
 |---|---|---|---|---|---|---|
-| `-u`, `--undefined` | SYMBOL | GNU, lld, mold | all | refused | `symbols` | Start with an undefined reference to SYMBOL |
-| `--require-defined` | SYMBOL | GNU, mold | all | refused | `symbols` | Require that SYMBOL is defined |
+| `-u`, `--undefined` | SYMBOL | GNU, lld, mold | all | supported | `symbols` | Start with an undefined reference to SYMBOL |
+| `--require-defined` | SYMBOL | GNU, mold | all | supported | `symbols` | Require that SYMBOL is defined |
 | `--undefined-glob` | PATTERN | lld, mold | all | refused | `other` | Add an undefined reference for each symbol PATTERN matches |
 | `--defsym` | SYMBOL=EXPR | GNU, lld, mold | all | refused | `symbols` | Define SYMBOL as EXPR |
 | `--wrap` | SYMBOL | GNU, lld, mold | all | refused | `symbols` | Send references to SYMBOL to __wrap_SYMBOL |
@@ -265,8 +265,8 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 18 mortar'
 | `--unresolved-symbols` | report-all \| ignore-all \| ignore-in-object-files \| ignore-in-shared-libs | GNU, lld, mold | all | refused | `diagnostics.unresolved_symbols` | How to treat unresolved symbols |
 | `--warn-unresolved-symbols` |  | GNU, lld, mold | all | refused | `diagnostics.warn_unresolved_symbols` | Report unresolved symbols as warnings |
 | `--error-unresolved-symbols` |  | GNU, lld, mold | all | refused | `diagnostics.warn_unresolved_symbols` | Report unresolved symbols as errors (default) |
-| `--allow-multiple-definition` |  | GNU, lld, mold | all | refused | `diagnostics.allow_multiple_definition` | Take the first of several definitions of a symbol |
-| `--no-allow-multiple-definition` |  | lld | all | refused | `diagnostics.allow_multiple_definition` | Report symbols defined more than once (default) |
+| `--allow-multiple-definition` |  | GNU, lld, mold | all | supported | `diagnostics.allow_multiple_definition` | Take the first of several definitions of a symbol |
+| `--no-allow-multiple-definition` |  | lld | all | supported | `diagnostics.allow_multiple_definition` | Report symbols defined more than once (default) |
 | `--noinhibit-exec`, `--noinhibit_exec` |  | GNU, lld, mold | all | refused | `diagnostics.noinhibit_exec` | Write the output even after errors |
 | `--error-handling-script` | SCRIPT | GNU, lld | all | refused | `other` | Run SCRIPT for undefined symbols and missing libraries |
 | `--warn-common` |  | GNU, lld, mold | all | supported | `diagnostics.warn_common` | Warn about common symbols |
@@ -475,7 +475,7 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 18 mortar'
 | `-z nocombreloc` |  | GNU, lld, mold | all | refused | `z.combreloc` | Do not sort dynamic relocations |
 | `-z sectionheader` |  | GNU, lld, mold | all | noop: layout.md L-63: the section header table is always written (the default) | `z.sectionheader` | Write the section header table (default) |
 | `-z nosectionheader` |  | GNU, lld, mold | all | refused | `z.sectionheader` | Write no section header table |
-| `-z muldefs` |  | GNU, lld, mold | all | refused | `diagnostics.allow_multiple_definition` | Take the first of several definitions of a symbol |
+| `-z muldefs` |  | GNU, lld, mold | all | supported | `diagnostics.allow_multiple_definition` | Take the first of several definitions of a symbol |
 | `-z unique-symbol` |  | GNU | all | refused | `other` | Give local symbols unique names |
 | `-z nounique-symbol` |  | GNU | all | refused | `other` | Keep duplicate local symbol names (default) |
 | `-z globalaudit` |  | GNU | all | refused | `other` | Mark the executable for global auditing |

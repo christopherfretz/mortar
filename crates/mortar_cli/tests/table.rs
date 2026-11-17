@@ -71,8 +71,12 @@ const SUPPORTED: &[&str] = &[
     "-l",
     "-(",
     "-)",
+    "--start-lib",
+    "--end-lib",
     "--as-needed",
     "--no-as-needed",
+    "--whole-archive",
+    "--no-whole-archive",
     "-Bstatic",
     "-Bdynamic",
     // WP-027e.
@@ -88,6 +92,8 @@ const SUPPORTED: &[&str] = &[
     "--version-script",
     "--sort-common",
     "--sort-section",
+    "-u",
+    "--require-defined",
     "--export-dynamic-symbol",
     "-init",
     "-fini",
@@ -110,6 +116,8 @@ const SUPPORTED: &[&str] = &[
     "--color-diagnostics",
     "--no-color-diagnostics",
     "--no-undefined",
+    "--allow-multiple-definition",
+    "--no-allow-multiple-definition",
     "--warn-common",
     "--no-warn-common",
     // The one-definition-rule switches (WP-072, odr.md O-41).
@@ -145,6 +153,7 @@ const SUPPORTED: &[&str] = &[
     "-z noseparate-code",
     "-z defs",
     "-z max-page-size",
+    "-z muldefs",
     "-z memory-seal",
     "-z nomemory-seal",
 ];

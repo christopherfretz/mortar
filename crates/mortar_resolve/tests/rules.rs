@@ -921,6 +921,29 @@ fn s4_2_require_defined_errors() {
     assert_eq!(ids(&r), vec!["required-symbol", "required-symbol"]);
 }
 
+// spec: resolve.md §4.2 (WP-152): a definition only a shared object
+// gives does not satisfy --require-defined (GNU ld's error; mold accepts
+// it, lld has no such option): required-symbol, with the shared object's
+// entry as its place. -u of the same name is no error.
+#[test]
+fn s4_2_require_defined_by_a_shared_object_errors() {
+    let mut m = Model::new(A64);
+    m.obj("a.o");
+    let lib = m.shlib("libk.so", false);
+    let k = m.def(lib, "k");
+    let n = named(&mut m, "k", 4);
+    let r = link_with(&m, &Options { require_defined: vec![n.clone()], ..opts() });
+    assert!(matches!(def(&m, &r, "k"), Def::Shared(_)));
+    assert!(
+        r.problems.iter().any(|p| matches!(&p.what,
+            What::RequiredSymbol { arg: 4, shared: Some(s), .. } if *s == e(lib, k))),
+        "{:?}",
+        r.problems
+    );
+    let r = link_with(&m, &Options { undefined: vec![n], ..opts() });
+    assert!(r.problems.is_empty(), "{:?}", r.problems);
+}
+
 #[test]
 fn s4_2_whole_archive_members_are_roots() {
     // R4: mk.o libKS.a --whole-archive libKW.a: ks.o is extracted (first)
