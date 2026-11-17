@@ -128,6 +128,7 @@ const SUPPORTED: &[&str] = &[
     "--odr-stats",
     "--odr-check-archives",
     "--odr-table",
+    "--odr-runtime",
     "--keep-mason-meta",
     "--version",
     "-v",
@@ -199,6 +200,7 @@ fn statuses() {
                     | "--odr-stats"
                     | "--odr-check-archives"
                     | "--odr-table"
+                    | "--odr-runtime"
                     | "--keep-mason-meta"
                     | "--detect-odr-violations"
                     | "--incremental"

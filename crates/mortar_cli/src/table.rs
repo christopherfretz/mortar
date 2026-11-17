@@ -531,6 +531,8 @@ pub enum Lands {
     OdrStats,
     /// `diagnostics.odr.table` (`--odr-table=`).
     OdrTable,
+    /// `diagnostics.odr.runtime` (`--odr-runtime=`).
+    OdrRuntime,
     /// `diagnostics.odr.check_archives` (`--odr-check-archives`).
     OdrCheckArchives,
     /// `diagnostics.odr.keep_meta` (`--keep-mason-meta`).
@@ -665,6 +667,7 @@ impl Lands {
             Self::Odr | Self::NoOdrCheck => "diagnostics.odr.mode",
             Self::OdrStats => "diagnostics.odr.stats",
             Self::OdrTable => "diagnostics.odr.table",
+            Self::OdrRuntime => "diagnostics.odr.runtime",
             Self::OdrCheckArchives => "diagnostics.odr.check_archives",
             Self::KeepMasonMeta => "diagnostics.odr.keep_meta",
             Self::Map => "bookkeeping.map",

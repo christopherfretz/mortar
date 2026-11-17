@@ -53,13 +53,26 @@ pub fn load_steps<'s>(
     diag: &Collector,
     steps: &mut Steps,
 ) -> Option<Inputs<'s>> {
+    load_steps_with(plan, env, store, diag, steps, None)
+}
+
+/// [`load_steps`] with a linker-made input after the line's inputs
+/// ([`walk::Embedded`], WP-198).
+pub fn load_steps_with<'s>(
+    plan: &Plan,
+    env: &LoadEnv,
+    store: &'s Store,
+    diag: &Collector,
+    steps: &mut Steps,
+    embedded: Option<walk::Embedded>,
+) -> Option<Inputs<'s>> {
     steps.restart();
     let loaded = walk::walk(
         plan,
         &WalkEnv { cwd: env.cwd.clone() },
         store,
         &env.pool,
-        Options { closure: true },
+        Options { closure: true, embedded },
     );
     let t = loaded.timing;
     for (name, d) in [

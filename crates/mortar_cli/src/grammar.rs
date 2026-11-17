@@ -285,6 +285,8 @@ pub fn parse(args: &[OsString]) -> Parsed {
         libs: 0,
         kind: None,
         relocatable: None,
+        odr_runtime: None,
+        odr_table: None,
         seq: 0,
     };
     p.run();
@@ -308,6 +310,11 @@ struct Parser<'a> {
     kind: Option<(KindSet, String)>,
     /// `-r`, as written.
     relocatable: Option<String>,
+    /// The last `--odr-runtime=`, as written, with its argument
+    /// (`spec/odr.md` O-53a; WP-198).
+    odr_runtime: Option<(usize, String)>,
+    /// The last `--odr-table=`, as written, and whether it says `off`.
+    odr_table: Option<(String, bool)>,
     seq: u64,
 }
 
@@ -828,7 +835,16 @@ impl Parser<'_> {
             Lands::OdrStats => plan.diagnostics.odr.stats = true,
             Lands::OdrCheckArchives => plan.diagnostics.odr.check_archives = true,
             Lands::KeepMasonMeta => plan.diagnostics.odr.keep_meta = true,
+            Lands::OdrRuntime => {
+                plan.diagnostics.odr.runtime = match word().as_str() {
+                    "report" => crate::plan::OdrRuntime::Report,
+                    "fatal" => crate::plan::OdrRuntime::Fatal,
+                    _ => crate::plan::OdrRuntime::Off,
+                };
+                self.odr_runtime = Some((at, format!("{}={}", m.name, word())));
+            }
             Lands::OdrTable => {
+                self.odr_table = Some((format!("{}={}", m.name, word()), word() == "off"));
                 plan.diagnostics.odr.table = match word().as_str() {
                     "exported" => crate::plan::OdrTable::Exported,
                     "full" => crate::plan::OdrTable::Full,
@@ -998,6 +1014,7 @@ impl Parser<'_> {
             (None, _) => OutputKind::Executable,
         };
         self.out.plan.kind = kind;
+        self.odr_runtime_rules(kind);
         if let Some(emulation) = self.out.plan.emulation {
             let mut found = check_target(&self.out.plan, emulation.target());
             self.out.diagnostics.append(&mut found);
@@ -1015,6 +1032,48 @@ impl Parser<'_> {
             && !plan.bookkeeping.verbose
         {
             self.error(end, Diagnostic::error(Kind::NoInputFiles));
+        }
+    }
+}
+
+impl Parser<'_> {
+    /// `--odr-runtime=report|fatal` against the rest of the line
+    /// (`spec/odr.md` O-53a, `spec/cli.md` §3.9; WP-198), once the output
+    /// kind is known. At `-r` the option is a no-op (no runtime goes into a
+    /// relocatable output), so nothing is checked there.
+    fn odr_runtime_rules(&mut self, kind: OutputKind) {
+        if self.out.plan.diagnostics.odr.runtime == crate::plan::OdrRuntime::Off {
+            return;
+        }
+        let Some((at, spelled)) = self.odr_runtime.clone() else { return };
+        match kind {
+            OutputKind::Relocatable => return,
+            OutputKind::StaticExecutable | OutputKind::StaticPie => {
+                self.error(
+                    at,
+                    Diagnostic::refused(RefusalClass::Feature, "odr-runtime-static").note(
+                        "a static executable has no dynamic loader and no bindings to check: \
+                         link a dynamic executable or a shared object (spec/odr.md O-53a)",
+                    ),
+                );
+            }
+            OutputKind::Executable | OutputKind::PieExecutable | OutputKind::Shared => {}
+        }
+        if let Some((table, true)) = self.odr_table.clone() {
+            self.error(
+                at,
+                Diagnostic::error(Kind::ConflictingOptions { first: spelled.clone(), second: table })
+                    .note("the runtime compares the output's table: --odr-runtime needs --odr-table=exported or full (spec/odr.md O-53a)"),
+            );
+        }
+        if self.out.plan.incremental.mode.is_some() {
+            self.error(
+                at,
+                Diagnostic::refused(RefusalClass::Feature, "odr-runtime-incremental").note(
+                    "the runtime is an input that is not a file, which the incremental \
+                     state cannot record yet: link without --incremental (spec/odr.md O-53a)",
+                ),
+            );
         }
     }
 }

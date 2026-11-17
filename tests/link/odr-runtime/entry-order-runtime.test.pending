@@ -1,0 +1,48 @@
+# PENDING (WP-197): L3: the verifier finds libuc.so: P-M2 place: 2 notes, 1 of type 0x4d4f4401 and 0 of 0x4d4f4402; O-52 is one table note, then at most one =full note at 0x298 (and 62 more)
+# (WP-198) The verifier does not know --odr-runtime yet: it has no input for <mortar:odr-runtime> (I1, M12), does not read the option (M9) or the -z now and the table it implies (P-D3, P-D6, P-M2 presence), nor the runtime note (P-M2 place), so the runtime's sections, references, imports and relocations have no input (P-M3, P-D7, P-D9, E4); every mortar output of this test runs as expected under --no-plumb. WP-197 teaches the verifier the runtime input and renames this file to .test.
+# The runtime's entry runs before every constructor (spec/odr.md O-53a;
+# WP-077 case I, WP-198): with --odr-runtime and MASON_ODR_STATS=1 the
+# runtime says when its entry runs: in libuc.so (.init_array.00000)
+# before the user's constructors (priority 101 first), in the executable
+# (.preinit_array) before them too. The order under every input order:
+# odr-runtime/entry-order. dup.o (a .preinit_array entry, before the
+# runtime's) points standard error at standard output.
+#@ spec: odr.md "O-53a"
+#@ arch: aarch64 x86_64
+
+cc -O1 -fPIC uc.c -o uc.o
+cc -O1 -fPIE um.c -o um.o
+cc -O1 -fPIE dup.c -o dup.o
+link(mortar) gcc -shared uc.o -Wl,--odr-runtime=report -Wl,-soname,libuc.so -o libuc.so
+link(mortar) gcc -pie dup.o um.o -Wl,--no-as-needed -L. -luc -o uc
+link(mortar) gcc -pie dup.o uc.o um.o -Wl,--odr-runtime=report -o uce
+run(mortar) uc
+  env: LD_LIBRARY_PATH=.
+  env: MASON_ODR_STATS=1
+  stdout: mason-entry ./libuc.so
+  stdout: mason-stats ./libuc.so rows=0 relocs=0 own=0 same=0 differ=0 interposed=0 no-table=0 no-row=0 lazy=0 unknown=0 copy=0 system=0
+  stdout: user constructor(101)
+  stdout: user constructor (default)
+run(mortar) uce
+  env: MASON_ODR_STATS=1
+  stdout: mason-preinit (main program)
+  stdout: mason-stats (main program) rows=0 relocs=0 own=0 same=0 differ=0 interposed=0 no-table=0 no-row=0 lazy=0 unknown=0 copy=0 system=0
+  stdout: user constructor(101)
+  stdout: user constructor (default)
+
+#--- uc.c
+#include <unistd.h>
+__attribute__((constructor(101))) static void u101(void) { write(1, "user constructor(101)\n", 22); }
+__attribute__((constructor)) static void udef(void) { write(1, "user constructor (default)\n", 27); }
+#--- um.c
+int main(void) { return 0; }
+#--- dup.c
+#include <signal.h>
+#include <unistd.h>
+static void on_abort(int s) { (void)s; _exit(134); }
+static void to_stdout(int c, char **v, char **e) {
+  (void)c; (void)v; (void)e;
+  dup2(1, 2);
+  signal(SIGABRT, on_abort);
+}
+__attribute__((section(".preinit_array"), used)) static void (*const to_stdout_p)(int, char **, char **) = to_stdout;

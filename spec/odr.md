@@ -1986,7 +1986,21 @@ a second note after the first: the same owner, `n_type`
 **`0x4d4f4402`** (`NT_MASON_ODR_FULL`), descriptor = `=full`'s header
 and rows (O-51) (WP-076). A reader of the first note never sees the
 second (a different type), so `=exported`'s readers read a `=full`
-table unchanged. It lies in a
+table unchanged. With `--odr-runtime=report|fatal` (O-53a, `spec/cli.md`
+C-ODR-RT; WP-198) it holds a third note, last: the same owner,
+`n_type` **`0x4d4f4403`** (`NT_MASON_ODR_RT`), `n_descsz` 16, the
+descriptor four little-endian `u32`: `{version 1, mode, flags 0,
+runtime id}`, mode 1 `report` or 2 `fatal` (the module's default, which
+`MASON_ODR` overrides at load time; a library's entry takes the main
+program's note first, then its own), the runtime id the index of the
+embedded runtime object mortar linked (its table, with each object's
+SHA-256, is `crates/mortar/src/odr_runtime.rs`: 0 AArch64 `so`, 1
+AArch64 `exe`, 2 x86-64 `so`, 3 x86-64 `exe`, 4 and 5 i386, embedded
+and refused). The note is 40 bytes (24 of header and owner, 16 of
+descriptor), a multiple of 8, so the notes before and after it keep
+their alignment. The runtime finds it by its type in any `PT_NOTE` of
+the module (`dl_iterate_phdr`), whatever notes come before it; a reader
+of the first or the second note never sees it. It lies in a
 `PT_NOTE` with `p_align` 8, which it may share with other 8-aligned notes
 (`spec/layout.md` places one `PT_NOTE` per run of notes of one
 alignment); readers walk every note of every `PT_NOTE`. With `n_namesz`

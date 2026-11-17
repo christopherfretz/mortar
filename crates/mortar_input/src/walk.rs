@@ -53,12 +53,31 @@ pub struct WalkEnv {
     pub cwd: PathBuf,
 }
 
+/// A linker-made input (`spec/odr.md` O-53a; WP-198): bytes the driver
+/// embeds, read as an ordinary object after every input of the line. The
+/// target picks the object; a target without one adds nothing (the driver
+/// refuses that line by name).
+#[derive(Clone, Copy, Debug)]
+pub struct Embedded {
+    /// The fixed name the input has in the tables, the maps and the
+    /// diagnostics (it is no path: nothing is opened under it).
+    pub name: &'static [u8],
+    /// The argument index its mention keys on: past the line's last, so
+    /// it comes after every input in the keys' order too.
+    pub arg: u32,
+    /// The object of each machine.
+    pub objects: &'static [(Machine, &'static [u8])],
+}
+
 /// Switches of the stage-A walk.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Options {
     /// Load the `DT_NEEDED` closure (§8.6) where §8.6 says it is loaded.
     /// M2: implemented, off by default (the driver does not ask for it).
     pub closure: bool,
+    /// A linker-made input after the line's inputs (WP-198); `None` in
+    /// every link that does not ask for one (one test of an `Option`).
+    pub embedded: Option<Embedded>,
 }
 
 /// How the target was decided (§3.1).
@@ -357,6 +376,8 @@ struct Caches<'s> {
     reads: HashMap<PathBuf, Result<Blob, ReadError>>,
     facts: HashMap<(Blob, bool), Facts<'s>>,
     canon: HashMap<PathBuf, Option<PathBuf>>,
+    /// The linker-made input's blob, once made ([`Embedded`]).
+    embedded: Option<Blob>,
 }
 
 #[derive(Default)]
@@ -365,6 +386,8 @@ struct Needs {
     read: BTreeSet<(PathBuf, bool)>,
     facts: BTreeSet<(Blob, bool)>,
     canon: BTreeSet<PathBuf>,
+    /// The linker-made input's bytes, to be made a blob.
+    embed: Option<&'static [u8]>,
 }
 
 impl Needs {
@@ -373,6 +396,7 @@ impl Needs {
             && self.read.is_empty()
             && self.facts.is_empty()
             && self.canon.is_empty()
+            && self.embed.is_none()
     }
 }
 
@@ -459,6 +483,12 @@ impl<'s> Caches<'s> {
 
         // Reads, one job per distinct inode (§9.3).
         let mut wanted_facts: BTreeSet<(Blob, bool)> = needs.facts;
+        // The linker-made input: its bytes are a blob of their own, made
+        // once, and analysed with the files of this wave.
+        if let Some(bytes) = needs.embed {
+            let blob = *self.embedded.get_or_insert_with(|| store.embed(bytes));
+            wanted_facts.insert((blob, false));
+        }
         let mut jobs: Vec<ReadJob> = Vec::new();
         let mut job_of: Vec<(PathBuf, usize)> = Vec::new();
         let mut queued: HashSet<PathBuf> = HashSet::new();
@@ -871,10 +901,55 @@ impl<'c, 's> Walk<'c, 's> {
                 InputSpec::JustSymbols(x) => self.just_symbols(&m, x.as_bytes()),
             }
         }
+        if let Some(e) = self.options.embedded {
+            self.embedded(e);
+        }
         if self.options.closure {
             self.closure();
         }
         self.finish_checks();
+    }
+
+    /// The linker-made input (WP-198), after every input of the line: an
+    /// ordinary object of the default positional state (no group, not
+    /// `--whole-archive`, not `--as-needed`), named [`Embedded::name`].
+    /// Nothing while the target is not known (a line without one fails by
+    /// `no-target`), nor for a target without an object.
+    fn embedded(&mut self, e: Embedded) {
+        let Some(t) = &self.target else { return };
+        let machine = t.target.machine;
+        let Some(&(_, bytes)) = e.objects.iter().find(|(m, _)| *m == machine) else { return };
+        let look = self.look;
+        let Some(blob) = look.caches.embedded else {
+            self.needs.embed = Some(bytes);
+            return;
+        };
+        let Some(f) = look.caches.facts.get(&(blob, false)) else {
+            self.needs.facts.insert((blob, false));
+            return;
+        };
+        let m = Mention {
+            input: u32::try_from(self.plan.inputs.len()).unwrap_or(u32::MAX),
+            arg: e.arg,
+            state: MState {
+                as_needed: false,
+                whole_archive: false,
+                link_static: false,
+                copy_dt_needed: false,
+                group: None,
+                lib: false,
+            },
+            chain: Vec::new(),
+            named_by: Vec::new(),
+            entry: None,
+            edge: None,
+            via: Via::Path,
+            seq: 0,
+            place: Place::argument(text(e.name)),
+            require_elf: None,
+        };
+        self.next_k.insert(e.arg, 0);
+        self.visit_open(&m, e.name.into(), blob, f);
     }
 
     // ------------------------------------------------------- the target

@@ -714,3 +714,43 @@ fn non_utf8_arguments() {
     let unknown = parse(&[OsString::from_vec(b"--\xff".to_vec()), "a.o".into()]);
     assert_eq!(errors(&unknown).concat(), "ld: error: unknown argument '--\u{fffd}'\n");
 }
+
+// spec: cli.md §3.9 (WP-198): `--odr-runtime`'s last one wins, `off` by
+// default; refused by name for a static executable or static PIE and
+// under `--incremental`; `--odr-table=off` (the last one) conflicts; at
+// `-r` nothing is checked.
+#[test]
+fn odr_runtime_rules() {
+    use mortar_cli::OdrRuntime;
+    assert_eq!(p(&["a.o"]).plan.diagnostics.odr.runtime, OdrRuntime::Off);
+    let ok = p(&["-dynamic-linker", "/lib/ld.so", "--odr-runtime=fatal", "--odr-runtime=report", "a.o"]);
+    assert!(errors(&ok).is_empty(), "{:?}", errors(&ok));
+    assert_eq!(ok.plan.diagnostics.odr.runtime, OdrRuntime::Report);
+    let ok = p(&["-shared", "--odr-runtime=fatal", "--odr-table=off", "--odr-table=full", "a.o"]);
+    assert!(errors(&ok).is_empty(), "{:?}", errors(&ok));
+    // A line that names no program interpreter is a static executable
+    // (§3.2), with or without -static.
+    for line in [
+        &["--odr-runtime=report", "a.o"][..],
+        &["-static", "--odr-runtime=report", "a.o"],
+        &["-static", "-pie", "--no-dynamic-linker", "--odr-runtime=fatal", "a.o"],
+    ] {
+        let e = errors(&p(line));
+        assert!(e.iter().any(|e| e.contains("unsupported feature: odr-runtime-static")), "{e:?}");
+    }
+    let e = errors(&p(&["-shared", "--odr-runtime=report", "--odr-table=off", "a.o"]));
+    assert!(
+        e.iter().any(|e| e.contains("--odr-runtime=report and --odr-table=off cannot be used together")),
+        "{e:?}"
+    );
+    let e = errors(&p(&["-shared", "--odr-runtime=report", "--incremental", "a.o"]));
+    assert!(e.iter().any(|e| e.contains("unsupported feature: odr-runtime-incremental")), "{e:?}");
+    for line in [
+        &["-r", "--odr-runtime=fatal", "a.o"][..],
+        &["-r", "-static", "--odr-runtime=fatal", "--odr-table=off", "a.o"],
+        &["--odr-runtime=off", "-static", "--odr-table=off", "a.o"],
+    ] {
+        let parsed = p(line);
+        assert!(errors(&parsed).is_empty(), "{line:?}: {:?}", errors(&parsed));
+    }
+}
