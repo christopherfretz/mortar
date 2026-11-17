@@ -19,10 +19,13 @@ use mortar_testutil::{Scratch, run_with};
 use xtask::linktest::target::Arch;
 
 /// A fake linker named `name`, which runs `bfd` unless told otherwise.
+/// With a file `<name>.symbolic` it links `-Bsymbolic`: a library that
+/// binds its own calls, so that an interposer does not preempt them.
 fn fake(name: &str, bfd: &Path) -> String {
     format!(
         "if [ -e {name}.fails ]; then echo '{name}: error: told to fail' >&2; exit 1; fi\n\
          if [ -e {name}.sleeps ]; then sleep 60; fi\n\
+         if [ -e {name}.symbolic ]; then set -- -Bsymbolic \"$@\"; fi\n\
          exec '{}' \"$@\"",
         bfd.display()
     )
@@ -231,4 +234,76 @@ fn every_outcome_is_reachable_and_the_references_go_first() {
     assert!(summary.contains("usage: cargo xtask linktest"), "{summary}");
     let (status, _, summary) = setup.linktest("missing", &[], &[setup.scratch.join("nothing")]);
     assert_eq!(status, 2, "{summary}");
+}
+
+/// A test of a shared library whose own call to `f` an interposer
+/// preempts (spec/dyn.md D-112): the library, a host against it, the host
+/// run plain and with the interposer preloaded, whose run expects
+/// `preloaded` (`stdout: 7 7`, `output: reference`).
+fn shared(arch: Arch, preloaded: &str, marks: &[&str]) -> String {
+    let mut text = format!(
+        "#@ spec: harness.md \"LT-3\"\n#@ arch: {}\n\
+         cc -fPIC lib.c -o lib.o\n\
+         cc -fPIC pre.c -o pre.o\n\
+         cc -fPIE main.c -o main.o\n\
+         shlib gcc pre.o -o libpre.so\n\
+         link gcc -shared lib.o -o libl.so\n\
+         host gcc -pie main.o -L. -ll -o prog\n\
+         run prog\n  stdout: 1 1\n\
+         run prog\n  env: LD_PRELOAD=./libpre.so\n  {preloaded}\n\
+         #--- lib.c\nint f(void) {{ return 1; }}\nint call_f(void) {{ return f(); }}\n\
+         #--- pre.c\nint f(void) {{ return 7; }}\n\
+         #--- main.c\n#include <stdio.h>\nint f(void);\nint call_f(void);\n\
+         int main(void) {{ printf(\"%d %d\\n\", f(), call_f()); return 0; }}\n",
+        arch.name()
+    );
+    for mark in marks {
+        text.push_str("#--- ");
+        text.push_str(mark);
+        text.push('\n');
+    }
+    text
+}
+
+// spec/harness.md LT-3 and LT-5: a library is hosted by each pair and each
+// pair's run is compared with the GNU ld pair's, so a library that binds
+// what the references let an interposer preempt fails, though its own
+// pair prints what the test says of it only when the test is wrong; a
+// test that expects the wrong preemption is ORACLE.
+#[test]
+fn the_pairs_of_a_shared_library_observe_preemption() {
+    let Some(setup) = Setup::new() else { return };
+    let arch = setup.arch;
+    let a = arch.name();
+    let right = setup.write("right.test", &shared(arch, "stdout: 7 7", &[]));
+    let (status, records, summary) = setup.linktest("right", &[], std::slice::from_ref(&right));
+    assert_eq!(status, 0, "{summary}");
+    let want: Vec<_> =
+        ["bfd", "lld", "mold", "mortar"].iter().map(|l| row("PASS", "right.test", a, l)).collect();
+    assert_eq!(records, want, "{summary}");
+
+    // The deliberately wrong expectation: the library's own value under
+    // the interposer. Every reference fails it; the test is wrong.
+    let wrong = setup.write("wrong.test", &shared(arch, "stdout: 7 1", &[]));
+    let (status, records, summary) = setup.linktest("wrong", &[], std::slice::from_ref(&wrong));
+    assert_eq!(status, 3, "{summary}");
+    assert!(records.contains(&row("ORACLE", "wrong.test", a, "-")), "{records:?}");
+    assert!(records.iter().all(|r| r[3] != "mortar"), "mortar is not judged: {records:?}");
+
+    // A mortar that links its library -Bsymbolic, under a test that says
+    // nothing of the preloaded run but that it prints what the references'
+    // print: the comparison with the GNU ld pair observes the binding.
+    let symbolic =
+        setup.write("symbolic.test", &shared(arch, "output: reference", &["mortar.symbolic"]));
+    let (status, records, summary) =
+        setup.linktest("symbolic", &[], std::slice::from_ref(&symbolic));
+    assert_eq!(status, 1, "{summary}");
+    let mut want: Vec<_> =
+        ["bfd", "lld", "mold"].iter().map(|l| row("PASS", "symbolic.test", a, l)).collect();
+    want.push(row("FAIL", "symbolic.test", a, "mortar"));
+    assert_eq!(records, want, "{summary}");
+    assert!(
+        summary.contains("printed \"7 1\\n\", the bfd/bfd pair printed \"7 7\\n\""),
+        "{summary}"
+    );
 }

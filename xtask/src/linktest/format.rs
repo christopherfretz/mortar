@@ -479,6 +479,10 @@ pub enum StepKind {
     Meta(Vec<Template>),
     Shlib(Shlib),
     Link(Link),
+    /// `host <driver> <args>` (WP-120, `spec/harness.md` LT-1): a program
+    /// linked against the libraries of the unit's linkers, once per pair
+    /// (library linker, host linker). Never `exit: fail` or `exit: info`.
+    Host(Link),
     Run(Run),
     Check(Check),
 }
@@ -523,7 +527,7 @@ impl Step {
                 Driver::Gfortran => Some(Feature::Gfortran),
                 _ => None,
             },
-            StepKind::Link(link) => match link.driver {
+            StepKind::Link(link) | StepKind::Host(link) => match link.driver {
                 Driver::Gxx => Some(Feature::Gxx),
                 Driver::Gfortran => Some(Feature::Gfortran),
                 Driver::Clang | Driver::Clangxx => Some(Feature::Clang),
@@ -596,11 +600,30 @@ pub struct Fixture {
     pub files: Vec<Embedded>,
 }
 
+impl Fixture {
+    /// Whether the fixture has `link` steps: a linked fixture
+    /// (`spec/harness.md` LT-4), whose libraries each linker of the run
+    /// links for itself; its name begins `shared-`.
+    pub fn is_linked(&self) -> bool {
+        self.steps.iter().any(|step| matches!(step.kind, StepKind::Link(_)))
+    }
+}
+
+/// The prefix of a linked fixture's name (`spec/harness.md` LT-4).
+pub const LINKED_FIXTURE_PREFIX: &str = "shared-";
+
 impl Test {
     /// The `xfail` or `skip` that applies to `linker` on `arch`. At most
     /// one does.
     pub fn marker(&self, arch: Arch, linker: Linker) -> Option<&Marker> {
         self.markers.iter().find(|marker| marker.scope.applies(arch, linker))
+    }
+
+    /// The index in [`Test::steps`] of the first `host` step: where the
+    /// pair part begins (`spec/harness.md` LT-2). `None`: the test links
+    /// no host, and every linker runs its steps once, in its directory.
+    pub fn pair_start(&self) -> Option<usize> {
+        self.steps.iter().position(|step| matches!(step.kind, StepKind::Host(_)))
     }
 
     /// Whether a run step takes its expected output from the references.
@@ -1083,29 +1106,39 @@ impl Parser {
                 }
                 ("shlib", StepKind::Shlib(Shlib { driver, args }))
             }
-            "link" => {
-                qualifiers.no_family("'link'")?;
+            "link" | "host" => {
+                let keyword = if key == "host" { "host" } else { "link" };
+                qualifiers.no_family(&format!("'{keyword}'"))?;
+                if keyword == "host" && !qualifiers.scope.linkers.is_empty() {
+                    // LT-1: a host is linked by every host linker of its
+                    // pairs; a linker qualifier would say nothing.
+                    return Err("'host' takes no linker qualifier: every pair links its host \
+                                (LT-1)"
+                        .to_owned());
+                }
                 let Some(driver) = Driver::ALL.into_iter().find(|driver| driver.name() == first)
                 else {
                     let known: Vec<&str> = Driver::ALL.iter().map(|driver| driver.name()).collect();
                     return Err(format!(
-                        "'link' is followed by what the link line is handed to ({}), not \
+                        "'{keyword}' is followed by what the link line is handed to ({}), not \
                          '{first}'",
                         known.join(", ")
                     ));
                 };
                 args.remove(0);
-                (
-                    "link",
-                    StepKind::Link(Link {
-                        driver,
-                        args,
-                        fails: false,
-                        informs: false,
-                        diags: Vec::new(),
-                        prints: Vec::new(),
-                    }),
-                )
+                let line = Link {
+                    driver,
+                    args,
+                    fails: false,
+                    informs: false,
+                    diags: Vec::new(),
+                    prints: Vec::new(),
+                };
+                if keyword == "host" {
+                    ("host", StepKind::Host(line))
+                } else {
+                    ("link", StepKind::Link(line))
+                }
             }
             "run" => {
                 qualifiers.no_family("'run'")?;
@@ -1143,14 +1176,30 @@ impl Parser {
             }
             _ => {
                 return Err(format!(
-                    "unknown step '{key}' (cc, cxx, fc, as, yaml2obj, ar, meta, shlib, link, run, check)"
+                    "unknown step '{key}' (cc, cxx, fc, as, yaml2obj, ar, meta, shlib, link, host, \
+                     run, check)"
                 ));
             }
         };
+        // LT-4: a fixture builds inputs, and a linked fixture also links
+        // its libraries (and checks them) with each linker.
         if self.fixture
-            && !matches!(keyword, "cc" | "cxx" | "fc" | "as" | "yaml2obj" | "ar" | "meta" | "shlib")
+            && !matches!(
+                keyword,
+                "cc" | "cxx"
+                    | "fc"
+                    | "as"
+                    | "yaml2obj"
+                    | "ar"
+                    | "meta"
+                    | "shlib"
+                    | "link"
+                    | "check"
+            )
         {
-            return Err(format!("a fixture builds inputs only: '{keyword}' is a step of a test"));
+            return Err(format!(
+                "a fixture builds inputs and links libraries only: '{keyword}' is a step of a test"
+            ));
         }
         self.steps.push(Step { line, keyword, scope: qualifiers.scope, kind });
         Ok(())
@@ -1186,6 +1235,13 @@ impl Parser {
         let Step { line: at, keyword, scope: step_scope, mut kind } = step;
         let result = match (&mut kind, key) {
             _ if keyword.is_empty() => Ok(()),
+            (StepKind::Host(_), "exit") => Err(
+                "a host is to link: 'host' takes no 'exit' (LT-1; its library's 'link' may fail)"
+                    .to_owned(),
+            ),
+            (StepKind::Link(_), "exit") if self.fixture => {
+                Err("a linked fixture's library is to link: no 'exit' (LT-4)".to_owned())
+            }
             (StepKind::Link(linking), "exit") => unqualified("exit").and_then(|()| {
                 match value.trim() {
                     "0" => linking.fails = false,
@@ -1200,7 +1256,10 @@ impl Parser {
                 }
                 Ok(())
             }),
-            (StepKind::Link(linking), "diag" | "no-diag" | "print" | "no-print") => {
+            (
+                StepKind::Link(linking) | StepKind::Host(linking),
+                "diag" | "no-diag" | "print" | "no-print",
+            ) => {
                 if let Some(pattern) = self.pattern(line, value) {
                     let expectation = Expectation {
                         line,
@@ -1294,6 +1353,9 @@ impl Parser {
                 "'{key}' is not an expectation of a link (exit, diag, no-diag, print, \
                      no-print)"
             )),
+            (StepKind::Host(_), _) => Err(format!(
+                "'{key}' is not an expectation of a host (diag, no-diag, print, no-print)"
+            )),
             (StepKind::Run(_), _) => {
                 Err(format!("'{key}' is not an expectation of a run (exit, stdout, output, env)"))
             }
@@ -1317,6 +1379,28 @@ impl Parser {
     fn finish_fixture(mut self) -> Result<Fixture, Vec<Error>> {
         self.steps.retain(|step| !step.keyword.is_empty());
         let steps = std::mem::take(&mut self.steps);
+        // LT-4: the inputs are built once, before any linker links the
+        // libraries; a check checks what a linker linked.
+        let mut linked = false;
+        for step in &steps {
+            linked |= !step.is_build();
+            if linked && step.is_build() {
+                self.error(
+                    step.line,
+                    format!(
+                        "'{}' builds an input after a 'link' or 'check': a fixture's inputs are \
+                         built once, before any linker links its libraries",
+                        step.keyword
+                    ),
+                );
+            }
+        }
+        let links = steps.iter().any(|step| matches!(step.kind, StepKind::Link(_)));
+        if let Some(check) = steps.iter().find(|step| matches!(step.kind, StepKind::Check(_)))
+            && !links
+        {
+            self.error(check.line, "a fixture's 'check' checks a library it links: no 'link' step");
+        }
         self.check_requires(&steps);
         self.check_steps(&steps, &Arch::ALL);
         self.check_file_names();
@@ -1356,7 +1440,9 @@ impl Parser {
         // The placeholders of steps that did not parse have said so.
         self.steps.retain(|step| !step.keyword.is_empty());
         let steps = std::mem::take(&mut self.steps);
-        if !steps.iter().any(|step| matches!(step.kind, StepKind::Link(_))) {
+        // A host linked against a linked fixture's library is the link
+        // of a test without a library part (LT-2, LT-4).
+        if !steps.iter().any(|step| matches!(step.kind, StepKind::Link(_) | StepKind::Host(_))) {
             self.error(1, "no 'link' step: a link test links");
         }
         let mut linked = false;
@@ -1373,6 +1459,7 @@ impl Parser {
                 );
             }
         }
+        self.check_pairs(&steps);
         self.check_scopes(&steps, &arches);
         self.check_requires(&steps);
         self.check_steps(&steps, &arches);
@@ -1397,18 +1484,46 @@ impl Parser {
         })
     }
 
+    /// LT-2: the library part (to the first `host`) has a `link`; the pair
+    /// part (from it) links no library.
+    fn check_pairs(&mut self, steps: &[Step]) {
+        let Some(start) = steps.iter().position(|step| matches!(step.kind, StepKind::Host(_)))
+        else {
+            return;
+        };
+        let linked_fixture = self.fixtures.iter().any(|f| f.starts_with(LINKED_FIXTURE_PREFIX));
+        if !linked_fixture
+            && !steps[..start].iter().any(|step| matches!(step.kind, StepKind::Link(_)))
+        {
+            self.error(
+                steps[start].line,
+                "a 'host' with no 'link' before it and no linked fixture: the library part, or a \
+                 'shared-' fixture, links the library its hosts are linked against (LT-2)",
+            );
+        }
+        for step in &steps[start..] {
+            if matches!(step.kind, StepKind::Link(_)) {
+                self.error(
+                    step.line,
+                    "a 'link' after the first 'host': from there on the steps run once per pair \
+                     (LT-2); link the library before it",
+                );
+            }
+        }
+    }
+
     /// Every scope names only architectures the test is for.
     fn check_scopes(&mut self, steps: &[Step], arches: &[Arch]) {
         let mut scopes: Vec<(usize, &Scope)> = Vec::new();
         for step in steps {
             scopes.push((step.line, &step.scope));
             let expectations = match &step.kind {
-                StepKind::Link(link) => link.diags.as_slice(),
+                StepKind::Link(link) | StepKind::Host(link) => link.diags.as_slice(),
                 StepKind::Check(check) => check.expectations.as_slice(),
                 _ => &[],
             };
             scopes.extend(expectations.iter().map(|expect| (expect.line, &expect.scope)));
-            if let StepKind::Link(link) = &step.kind {
+            if let StepKind::Link(link) | StepKind::Host(link) = &step.kind {
                 scopes.extend(link.prints.iter().map(|expect| (expect.line, &expect.scope)));
             }
         }
@@ -1500,7 +1615,7 @@ impl Parser {
                         );
                     }
                 }
-                StepKind::Link(_) | StepKind::Run(_) | StepKind::Check(_) => {}
+                StepKind::Link(_) | StepKind::Host(_) | StepKind::Run(_) | StepKind::Check(_) => {}
             }
         }
     }
@@ -2305,11 +2420,75 @@ FileHeader:
             assert!(all.iter().any(|e| e.contains(part)), "no '{part}' in {all:#?}");
         };
         has("#@ spec: dyn.md \"D-1\"\ncc a.c\n", "a fixture has no 'spec' directive");
-        has("cc a.c\nlink gcc a.o\n", "a fixture builds inputs only: 'link'");
+        has("cc a.c\nrun prog\n", "a fixture builds inputs and links libraries only: 'run'");
+        has("cc a.c\nhost gcc a.o\n", "a fixture builds inputs and links libraries only: 'host'");
         has("cxx a.cc\n", "g++");
         has("cc a.c\n#--- a.c\n#--- a.c\n", "embedded twice");
         // No spec and no link are needed.
-        assert!(parse_fixture("cc a.c\n#--- a.c\nint a;\n").is_ok());
+        let plain = parse_fixture("cc a.c\n#--- a.c\nint a;\n").unwrap();
+        assert!(!plain.is_linked());
+    }
+
+    // LT-4: a linked fixture links (and checks) its libraries with each
+    // linker, after its inputs are built; its library is to link.
+    #[test]
+    fn linked_fixtures() {
+        let linked = parse_fixture(
+            "cc -fPIC a.c -o a.o\nlink gcc -shared a.o -o liba.so\n\
+             check readelf -dW liba.so\n  has: SONAME\n#--- a.c\nint a;\n",
+        )
+        .unwrap();
+        assert!(linked.is_linked());
+        assert_eq!(linked.steps.len(), 3);
+        let error = |text: &str| -> Vec<String> {
+            parse_fixture(text).unwrap_err().iter().map(ToString::to_string).collect()
+        };
+        let has = |text: &str, line: usize, part: &str| {
+            let all = error(text);
+            let want = format!("line {line}: ");
+            assert!(
+                all.iter().any(|e| e.starts_with(&want) && e.contains(part)),
+                "no '{part}' at line {line} in {all:#?}"
+            );
+        };
+        has("link gcc a.o -o l.so\ncc a.c\n", 2, "builds an input after a 'link'");
+        has("cc a.c\nlink gcc a.o\n  exit: fail\n  diag: x\n", 3, "no 'exit' (LT-4)");
+        has("cc a.c\ncheck nm a.o\n  has: a\n", 2, "no 'link' step");
+    }
+
+    // LT-1, LT-2: `host` links a program in each pair; it needs a library
+    // linked before it and is never expected to fail; from the first
+    // `host` on, no library is linked.
+    #[test]
+    fn host_steps_and_the_pair_part() {
+        let head = "#@ spec: harness.md \"x\"\ncc a.c\n";
+        let test = parse(&format!(
+            "{head}link gcc -shared a.o -o liba.so\nhost gcc m.o liba.so -o m\n  \
+             no-diag: warning\nrun m\n  exit: 3\nhost gcc d.o -o d\nrun d\n"
+        ))
+        .unwrap();
+        assert_eq!(test.pair_start(), Some(2));
+        let StepKind::Host(host) = &test.steps[2].kind else { panic!("{:?}", test.steps[2]) };
+        assert_eq!((host.driver, host.diags.len()), (Driver::Gcc, 1));
+        assert_eq!(test.steps[2].feature(), None);
+        assert!(!test.steps[2].is_build());
+        let plain = parse(&format!("{head}link gcc a.o -o a\nrun a\n")).unwrap();
+        assert_eq!(plain.pair_start(), None);
+        let at = |text: &str, line: usize, part: &str| {
+            assert!(has_error(&format!("{head}{text}"), line, part), "{text}");
+        };
+        at("host gcc m.o -o m\n", 3, "no 'link' before it");
+        at("link gcc a.o\nhost gcc m.o\nlink gcc b.o\n", 5, "a 'link' after the first 'host'");
+        at("link gcc a.o\nhost gcc m.o\n  exit: fail\n", 5, "'host' takes no 'exit'");
+        at("link gcc a.o\nhost(mortar) gcc m.o\n", 4, "'host' takes no linker");
+        at("link gcc a.o\nhost(clang) gcc m.o\n", 4, "'host' takes no");
+        at("link gcc a.o\nhost cc m.o\n", 4, "'host' is followed by what the link line");
+        at("link gcc a.o\nhost gcc m.o\n  has: x\n", 5, "not an expectation of a host");
+        assert!(has_error(
+            &format!("{head}link gcc a.o\nhost g++ m.o\n"),
+            4,
+            "this step needs 'g++'"
+        ));
     }
 
     // "Expectations": a link expected to fail says what mortar reports, on

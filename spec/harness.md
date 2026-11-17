@@ -1175,6 +1175,123 @@ says what mortar does.
 | `-M` with `-Map=FILE` | the map to FILE | no FILE written | the map to FILE | the map to standard output | `input/info-requests` |
 | `--threads` without N | unknown | reads the next word as N | all processors | all processors | `input/bookkeeping` |
 
+### Shared-object outputs
+
+A link test can link a shared object (`-shared`) and observe what it
+does in a process: linked against by hosts that each linker links, run
+plain, under an interposer and through `dlopen` (WP-120). What the
+library binds to its own definitions and what an interposer preempts
+(`spec/dyn.md` D-112) is then observed, not inferred.
+
+**LT-1 (the host step).** `host <driver> <args>` links an executable
+against the libraries before it, as `link` does, with the same driver
+and link-line forms ("Links") and the expectations `diag`, `no-diag`,
+`print` and `no-print`. It takes no linker qualifier and no `exit`: a
+host is to link (it is the library's `link` that may be refused). It is
+not a build step. `cargo xtask spelled` counts its lines as link lines.
+
+**LT-2 (the library part and the pair part).** The steps before a test's
+first `host` are its library part; the steps from there on are its pair
+part, which runs once per pair (LT-3). The pair part has no `link` step;
+a `host` needs a `link` before it, or a linked fixture (LT-4) that links
+the library. A test without a `host` step is all library part and runs
+as before.
+
+**LT-3 (the pairs).** A pair is the linker of the library and the
+linker of the host. A reference's record runs its library part in its
+directory, then its own pair there, then, when GNU ld is in the run and
+the reference is not GNU ld, its library under a GNU ld host. mortar's
+record first hosts, with a mortar host, the library of each reference
+whose record passed (whatever becomes of mortar's own library), then
+runs its library part, its own pair and its library under a GNU ld
+host. A pair `A+H` whose host another linker links runs in
+`<unit>/<A>+<H>`, a copy of `A`'s directory as `A`'s library part left
+it; `A`'s own pair runs in `<unit>/<A>`. Each `host` is linked by the
+pair's host linker and judged by L3 as that linker's link; each `check`
+is the record's. A result of a pair other than the record's own begins
+`[library A, host H]`.
+
+**LT-4 (linked fixtures).** A fixture whose name begins `shared-` may
+link libraries: after its build steps it has `link` steps (no `exit`:
+its library is to link) and `check` steps on them. Its inputs are built
+once per architecture as any fixture's; its links and checks then run
+once per architecture and linker, in a copy of them, the first time a
+unit of the run asks, each link judged by L3 with the run-wide defaults
+(a test's anomalies do not apply; the L3 counts are that unit's). A
+linker's directory starts with what it linked (the harness's
+`.linktest-*` files left behind), then the unit's inputs over it. A
+fixture that links whose name does not begin `shared-` is an `ERROR` of
+each test that names it. A linked fixture's links have no
+static-identical row.
+
+**LT-5 (the comparison with the GNU ld pair).** Every run of the pair
+part is compared with the same run step of the baseline pair: the GNU
+ld pair (its library and host linked by GNU ld), or, when GNU ld's
+record does not pass, the own pair of the first reference whose record
+passes. A run passes only with the baseline's end (exit status or
+signal) and standard output, as well as its own expectations; a run the
+baseline did not make is not compared. Before there is a baseline, a
+reference's pairs are compared with its own pair. The detail names it:
+`printed "7 1\n", the bfd/bfd pair printed "7 7\n"`. The pair part's
+output is not the self-check's ("The self-check" compares the library
+parts').
+
+**LT-6 (run hygiene).** Every program a test runs is one the test built
+(the hosts, a `shlib` interposer). A run step's `env` reaches that
+program alone: natively the program is started as `/usr/bin/env
+NAME=value... <program> <args>` behind the limits' shell, so an
+`LD_PRELOAD` is set on the program's own `exec`, never in the
+environment of the harness, the shell or a compiler; under qemu it is
+qemu's `-E`. Each run has the test's time limit ("Runs"). Everything a
+pair writes is under the unit's directory.
+
+**LT-7 (the census's `-shared` lines).** `cargo xtask census` has three
+`-shared` variations of `-fPIC` objects (`shared`, `shared-soname`,
+`shared-ldshared`: `-Wl,-O1 -Wl,-Bsymbolic-functions -Wl,-z,relro`; not
+in `--quick`, kiln not run). A line's library is loaded by `dlopen` from
+a loader the line's driver links with GNU ld; mortar's library loads as
+the reference's (exit status and output) and the verifier is clean, or
+mortar refuses `-shared` by name (`OUT_OF_M2`, until WP-123). The lane
+prints `census: -shared: N lines, L linked, R refused by name`.
+
+**LT-8 (the real builds' `-shared` lines).** `cargo xtask realbuild`
+prints, after its comparison with the baseline, `against <baseline>:
+-shared: N lines, F newly linked`: the run's lines of the `shared` kind,
+and those linked now that the baseline did not have linked.
+
+**LT-9 (static-identical).** A `.so` output is a row like any other,
+keyed `(test, arch, line, variant)` by the line of its `link` step; a
+host's row is keyed by the line of its `host` step. The digest mode runs
+mortar's own pair alone (no reference library, no GNU ld host), and its
+run and check steps not at all. A linked fixture has no rows (LT-4).
+Existing rows do not move: a test without a `host` step runs as before.
+
+**Measured (WP-120).** The design's D-112 table (`tests/shared-design/
+exp2/bsym2`, run with lld 22.1.8) was run again with lld 19.1.7, Debian
+13's own (the `ld.lld` of `gcc -fuse-ld=lld`): all 17 lines on AArch64
+and on x86-64 (under qemu) print the same with both, and lld 22's equal
+the design's result; both refuse `--dynamic-list-data`, `-cpp-new` and
+`-cpp-typeinfo` as unknown. The lanes have no host with 64 KiB pages
+(the gap WP-118 reports): no shared-object test runs on one.
+
+**Tests.** `xtask/src/linktest/format.rs`: `linked_fixtures`,
+`host_steps_and_the_pair_part`. `xtask/src/linktest/engine.rs`:
+`the_pairs_of_a_record`, `a_pairs_run_against_the_baseline`,
+`a_native_runs_environment_is_the_programs_alone`.
+`xtask/src/census.rs`: `shared_lines_are_counted`.
+`xtask/src/realbuild/outcome.rs`:
+`shared_lines_that_newly_link_are_counted`. `xtask/tests/linktest.rs`
+`the_pairs_of_a_shared_library_observe_preemption`: fake linkers; a
+library whose own call an interposer preempts passes with every pair; a
+deliberately wrong expectation (the library's own value under the
+interposer) fails every reference and the test is `ORACLE`, exit status
+3; a mortar that links its library `-Bsymbolic`, under a test that
+expects only the references' output, fails by the comparison with the
+GNU ld pair. The smoke tests `tests/link/shared/` (`interpose`,
+`dlopen`, with the fixture `shared-hello`) run the three references in
+full and are mortar's expected failures naming WP-123, whose join only
+removes the markers.
+
 ### The corpus
 
 Every case states the spec section (`#@ spec`) and the gABI or psABI
