@@ -16,12 +16,15 @@ pub enum Status {
     /// Runs only with its own switch (`odr-archive-shadow`,
     /// `--odr-check-archives`).
     OptIn,
-    /// Off unless its own switch asks (the `.note.mason` table,
-    /// `--odr-table`); then on in every mode but `--odr=off`.
+    /// Off unless its own switch asks: the `.note.mason` table
+    /// (`--odr-table`; then on in every mode but `--odr=off`) and the
+    /// load-time check (`--odr-runtime=report|fatal`; then in every mode,
+    /// `--odr=off` included, §10.3).
     Off,
     /// Counted by `--odr-stats` only, never reported.
     StatsOnly,
-    /// Never part of a link (the load-time hook).
+    /// Never part of a link (no row since the load-time check became an
+    /// option, WP-198; kept for a row the spec marks `**none**`).
     Never,
 }
 
@@ -161,7 +164,7 @@ pub const REGISTER: [Row; 20] = [
     Row { check: "O-34 kind 5 vs foreign sizes", status: Status::Strict },
     Row { check: "`SYSTEM` `-std` differences (O-32)", status: Status::Strict },
     Row { check: "`odr-archive-shadow`", status: Status::OptIn },
-    Row { check: "load-time hook", status: Status::Never },
+    Row { check: "load-time check", status: Status::Off },
 ];
 
 #[cfg(test)]
