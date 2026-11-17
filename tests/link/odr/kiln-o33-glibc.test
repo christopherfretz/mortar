@@ -1,0 +1,82 @@
+# O-33 (spec/odr.md; WP-134): the glibc C/C++ pair. One C unit and one
+# C++ unit, both compiled by kiln with -fmason-metadata, take the
+# addresses of the same glibc functions and variables (stdio, stdlib,
+# string, wchar, time, unistd, signal, sockets: the transparent-union
+# `__SOCKADDR_ARG`, `getitimer`/`setitimer` whose first parameter is an
+# enumeration in C and `int` in C++, `wchar_t`, `va_list`, arrays of
+# unknown bound such as `tzname`). Every key has a C row and a C++
+# `extern "C"` row, compared under C's rules (the canonical C type):
+# linked under --odr=strict with ZERO findings (the test has no `diag`
+# directive, so any one-definition-rule diagnostic fails it).
+# glibc's asm-labelled `extern "C++"` overloads (strchr, memchr, ...)
+# have no row (O-35 "No row") and are left out.
+#@ spec: odr.md O-33, O-35
+#@ arch: aarch64 x86_64
+#@ requires: kiln g++
+
+cc(kiln) -O0 -D_GNU_SOURCE -fmason-metadata c.c -o c.o
+cxx(kiln) -O0 -D_GNU_SOURCE -fmason-metadata cxx.cc -o cxx.o
+# A dynamic link: GNU ld's x86-64 output of the static one is judged F2
+# by the verifier (an IRELATIVE slot of an IFUNC whose address is taken;
+# GCC's objects give the same, not recorded as an anomaly yet). The rows
+# are anchored to the undefined symbols all the same (O-4).
+link(bfd,lld,mold) g++ c.o cxx.o -o prog
+link(mortar) g++ c.o cxx.o -Wl,--odr=strict -Wl,--odr-stats -o prog
+  diag: ^mortar: odr-stats: mode strict; units 2, * unanchored rows 0, * record findings 0;
+run prog
+  stdout: same
+
+#--- api.h
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <wchar.h>
+#include <time.h>
+#include <unistd.h>
+#include <signal.h>
+#include <ctype.h>
+#include <fcntl.h>
+#include <sys/time.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <stdarg.h>
+#define API(X) \
+  X(printf) X(fprintf) X(sprintf) X(snprintf) X(vsnprintf) X(vfprintf) \
+  X(puts) X(fputs) X(fgets) X(fopen) X(fclose) X(fread) X(fwrite) \
+  X(fseek) X(ftell) X(rewind) X(fflush) X(setvbuf) X(getc) X(putc) \
+  X(ungetc) X(perror) X(remove) X(rename) X(tmpfile) X(sscanf) \
+  X(malloc) X(calloc) X(realloc) X(free) X(qsort) X(bsearch) X(atoi) \
+  X(atol) X(strtol) X(strtoul) X(strtod) X(getenv) X(setenv) X(atexit) \
+  X(exit) X(abort) X(rand) X(srand) X(mkstemp) \
+  X(strlen) X(strcmp) X(strncmp) X(strcpy) X(strncpy) X(strcat) \
+  X(strdup) X(memcpy) X(memmove) X(memset) X(memcmp) X(strtok) \
+  X(strerror) X(strspn) X(strcspn) X(strcoll) X(strsignal) \
+  X(wcslen) X(wcscmp) X(wcscpy) X(mbstowcs) X(wcstombs) X(wcstol) \
+  X(time) X(clock) X(difftime) X(mktime) X(gmtime) X(localtime) \
+  X(strftime) X(nanosleep) X(getitimer) X(setitimer) X(gettimeofday) \
+  X(open) X(close) X(read) X(write) X(lseek) X(getpid) X(getuid) \
+  X(sleep) X(usleep) X(access) X(unlink) X(getcwd) X(chdir) X(pipe) \
+  X(dup) X(dup2) X(fstat) X(stat) \
+  X(signal) X(raise) X(sigaction) X(sigemptyset) X(sigaddset) \
+  X(socket) X(bind) X(connect) X(accept) X(listen) X(send) X(recv) \
+  X(getsockname) X(getpeername) X(sendto) X(recvfrom) \
+  X(isalpha) X(toupper) X(tolower) \
+  X(stdout) X(stderr) X(stdin) X(optind) X(optarg) X(environ) \
+  X(tzname) X(timezone) X(daylight)
+#define COUNT(f) + 1
+enum { API_COUNT = 0 API(COUNT) };
+#--- c.c
+#include "api.h"
+#define ADDR(f) (const void *)&f,
+const void *const c_table[] = { API(ADDR) };
+#--- cxx.cc
+#include "api.h"
+#define ADDR(f) (const void *)&f,
+extern "C" const void *const c_table[];
+const void *const cxx_table[] = { API(ADDR) };
+int main() {
+  for (int i = 0; i < API_COUNT; ++i)
+    if (c_table[i] != cxx_table[i]) { printf("differ at %d\n", i); return 1; }
+  printf("same\n");
+  return 0;
+}

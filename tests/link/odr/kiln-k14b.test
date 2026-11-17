@@ -1,0 +1,60 @@
+# K14b, N28 and O-35's two language linkages (spec/odr.md O-33, O-35;
+# WP-134), units compiled by kiln with -fmason-metadata, under
+# --odr=strict:
+# - K14b: two C++ units disagree about an `extern "C"` function
+#   (`int cf(int, int)` against `int cf(int)`): odr-declaration-mismatch,
+#   a warning (C linkage, O-33);
+# - N28: `enum mode get(void)` defined in a C unit, `unsigned get(void)`
+#   declared in another: one canonical C type, not reported;
+# - `int (*p)[4]` defined in a C unit, `extern int (*p)[]` in another:
+#   compatible in C, the bound erased (O-33), not reported;
+# - a C variable against a C++-linkage declaration of the global
+#   namespace (two encodings of one name, O-35 as amended): `int same`
+#   against `extern unsigned same` is compared by size only, not
+#   reported; `int wide` against `extern long wide` differs in size:
+#   reported, with the note on language linkage.
+#@ spec: odr.md O-33, O-35
+#@ arch: aarch64 x86_64
+#@ requires: kiln g++
+#@ diag: odr-declaration-mismatch a.o b.o
+#@ diag: odr-declaration-mismatch c.o d.o
+
+cxx(kiln) -O0 -fmason-metadata a.cc -o a.o
+cxx(kiln) -O0 -fmason-metadata b.cc -o b.o
+cc(kiln) -O0 -fmason-metadata c.c -o c.o
+cxx(kiln) -O0 -fmason-metadata d.cc -o d.o
+cc(kiln) -O0 -fmason-metadata e.c -o e.o
+link(bfd,lld,mold) g++ a.o b.o c.o d.o e.o -o prog
+link(mortar) g++ a.o b.o c.o d.o e.o -Wl,--odr=strict -o prog
+  diag: ^mortar: warning: cf is declared with a type that does not match its definition$
+  diag: ^>>> a.o: defined as FiiiE; b.o: declared as FiiE$
+  diag: ^mortar: warning: wide is declared with a type that does not match its definition$
+  diag: ^>>> c.o: defined as i with C language linkage, size 4; d.o: declared as l with C++ language linkage, size 8$
+  diag: ^>>> the declarations differ in language linkage: compared by size only (spec/odr.md O-35)$
+  no-diag: get is declared
+  no-diag: same is declared
+  no-diag: ^mortar: * p is declared
+
+#--- a.cc
+extern "C" int cf(int a, int b) { return a + b; }
+#--- b.cc
+extern "C" int cf(int);
+extern "C" int use_c(void);
+int use_cxx();
+int main() { return cf(1) + use_c() + use_cxx() > 0 ? 0 : 1; }
+#--- c.c
+enum mode { M0, M1 };
+enum mode get(void) { return M1; }
+int arr[4];
+int (*p)[4] = &arr;
+int same = 3;
+int wide = 4;
+#--- d.cc
+extern int (*p)[4];
+extern unsigned same;
+extern long wide;
+int use_cxx() { return (*p)[0] + int(same) + int(wide); }
+#--- e.c
+unsigned get(void);
+extern int (*p)[];
+int use_c(void) { return (int)get() + (*p)[1]; }

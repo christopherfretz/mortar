@@ -1102,6 +1102,7 @@ impl Unit<'_> {
     }
 
     /// Writes `files` to `dir` and runs the build steps of `steps` there.
+    #[allow(clippy::too_many_lines)] // one step loop, a branch per producer
     fn build(
         &self,
         files: &[super::format::Embedded],
@@ -1151,8 +1152,10 @@ impl Unit<'_> {
                 }
                 continue;
             }
+            // A `(kiln)` step stays the test's own kiln run, any producer.
             if let StepKind::Compile(compile) = &step.kind
                 && self.matrix.producer.is_kiln()
+                && compile.family != Family::Kiln
                 && matches!(compile.language, Language::C | Language::Cxx)
             {
                 let out = output_of(&args);
@@ -1182,6 +1185,7 @@ impl Unit<'_> {
             }
             if let StepKind::Compile(compile) = &step.kind
                 && self.matrix.producer != Producer::Gcc
+                && compile.family != Family::Kiln
                 && matches!(compile.language, Language::C | Language::Cxx)
             {
                 self.compile_ir(step, compile, &args, dir)?;
@@ -2444,14 +2448,16 @@ fn meta_levels(
 }
 
 /// The `-fmason-metadata` level a test producer's description implies
-/// (WP-134): `detail` when a kind 5 row of a C++-linkage function carries
-/// its type (`spec/odr.md` O-35: only `detail` writes those), else
-/// `default` (kinds 1, 3 and 5).
+/// (WP-134): `detail` when it says `level detail` (kind 4, O-19) or when a
+/// kind 5 row of a C++-linkage function carries its type (`spec/odr.md`
+/// O-35: only `detail` writes those), else `default` (kinds 1, 3 and 5).
 pub fn meta_level(description: &str) -> &'static str {
     for line in description.lines() {
         let mut words = line.split_whitespace();
-        if words.next() != Some("declaration") {
-            continue;
+        match words.next() {
+            Some("declaration") => {}
+            Some("level") if words.next() == Some("detail") => return "detail",
+            _ => continue,
         }
         let mut flags = 0u16;
         let mut typed = false;

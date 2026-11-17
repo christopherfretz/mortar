@@ -794,6 +794,41 @@ fn print_items(out: &mut String, u: &Unit<'_>, offset: u32) -> bool {
     true
 }
 
+/// After a kind 4 block dumped raw (its typed form would not write the
+/// same bytes: another producer's string or entry order, WP-134), each
+/// kind 3 row's entry as comment lines: what the reader reads, or why it
+/// does not read.
+fn comment_items(out: &mut String, u: &Unit<'_>) {
+    for r in u.types().iter() {
+        if r.details == mortar_meta::NO_DETAILS {
+            continue;
+        }
+        let name = quote(u.string(r.name));
+        match u.detail_entry(r.details) {
+            Ok(Some(entry)) => {
+                let mut items = String::new();
+                if print_items(&mut items, u, r.details) {
+                    let _ = writeln!(
+                        out,
+                        "# details {:#x} ({name}): {} items",
+                        r.details,
+                        entry.all_items().len()
+                    );
+                    for line in items.lines() {
+                        let _ = writeln!(out, "#   {line}");
+                    }
+                } else {
+                    let _ = writeln!(out, "# details {:#x} ({name}): reserved set", r.details);
+                }
+            }
+            Ok(None) => {}
+            Err(e) => {
+                let _ = writeln!(out, "# meta-malformed: details {:#x} ({name}): {e}", r.details);
+            }
+        }
+    }
+}
+
 fn print_rows(out: &mut String, u: &Unit<'_>, k: u16, typed: bool) -> bool {
     let name_or_anchor = |out: &mut String, name: u32, key: u64| {
         if name == 0 {
@@ -861,6 +896,9 @@ fn print_rows(out: &mut String, u: &Unit<'_>, k: u16, typed: bool) -> bool {
         kind::DETAILS if typed => {}
         kind::DETAILS => {
             let _ = writeln!(out, "details hex={}", hex(u.details().unwrap_or_default()));
+            if u.version(kind::DETAILS) == Some(1) {
+                comment_items(out, u);
+            }
         }
         kind::DECLARATIONS => {
             for r in u.declarations().iter() {

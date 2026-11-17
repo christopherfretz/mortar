@@ -414,7 +414,9 @@ pub fn feature_tool_name(feature: Feature, arch: Arch, host: Option<Arch>) -> St
         Feature::Gdb => "gdb".to_owned(),
         Feature::Lldb => "lldb of a pinned LLVM major".to_owned(),
         Feature::Elflint => "eu-elflint (Debian package elfutils)".to_owned(),
-        Feature::Kiln => "kiln with .mason.meta kinds 3 and 5 (MASON_KILN)".to_owned(),
+        Feature::Kiln => {
+            "kiln with .mason.meta kinds 3 (with enumerations), 4 and 5 (MASON_KILN)".to_owned()
+        }
     }
 }
 

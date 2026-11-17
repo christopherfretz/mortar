@@ -1132,9 +1132,11 @@ one: one unmangled name, two encodings) are compared by `size` only,
 never by `type`, and the difference of language linkage is not reported
 ([dcl.link]'s rule is not diagnosed: the Itanium ABI gives both the same
 symbol). A finding whose rows carry no `type_name` names the two objects
-and says that `-fmason-metadata=detail` records the types [planned:
-WP-134, both sentences: the code compares `type` whatever the `EXTERN_C`
-bits and prints an empty type]. Status: `--odr=strict` until its corpus
+and says that `-fmason-metadata=detail` records the types (both
+sentences implemented by WP-134: `crates/mortar_odr/src/records.rs`
+`kind5`; each language linkage's rows are compared among themselves
+first, and the rows of both by size only if neither of those reports).
+Status: `--odr=strict` until its corpus
 (O-47).
 
 **No row** (kiln K-5, kiln commit 9744b3649; rulings of 2026-11-17):

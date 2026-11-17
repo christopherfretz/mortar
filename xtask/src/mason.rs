@@ -202,9 +202,10 @@ impl Mason {
     }
 }
 
-/// A kiln build that writes `.mason.meta` records of kinds 1, 3 and 5
-/// (kiln 55b7e0538 and later; WP-134): what a `(kiln)` compile step and
-/// the `kiln` producers need. An older kiln (kind 1 only) is not one.
+/// A kiln build that writes `.mason.meta` records of kinds 1, 3
+/// (enumerations too), 4 and 5 (kiln d854b23bc and later; WP-134): what
+/// a `(kiln)` compile step and the `kiln` producers need. An older kiln
+/// is not one.
 #[derive(Clone, Debug)]
 pub struct KilnRecords {
     /// `kiln++`, for C++.
@@ -219,8 +220,10 @@ pub struct KilnRecords {
 impl KilnRecords {
     /// kiln at `MASON_KILN` or in the build root, probed in `scratch` (a
     /// directory of the caller's, created here): one C++ unit with a
-    /// class, a variable and a function compiled with `-fmason-metadata`
-    /// must hold a unit with kind 3 and kind 5 rows. `Err` says why not.
+    /// class, an enumeration, a variable and a function compiled with
+    /// `-fmason-metadata=detail` must hold a unit with kind 3 rows (the
+    /// enumeration's among them), a kind 4 block and kind 5 rows (kiln
+    /// d854b23bc). `Err` says why not.
     pub fn find(scratch: &Path) -> Result<Self, String> {
         let root = build_root();
         let cxx = std::env::var_os("MASON_KILN")
@@ -243,10 +246,12 @@ impl KilnRecords {
             .map_err(|e| format!("cannot create '{}': {e}", scratch.display()))?;
         std::fs::write(
             scratch.join("probe.cc"),
-            "struct ProbeS { int x; };\nProbeS probe_s;\nint probe_f() { return probe_s.x; }\n",
+            "struct ProbeS { int x; };\nenum ProbeE { PE0 };\nProbeS probe_s;\nProbeE probe_e;\n\
+             int probe_f() { return probe_s.x + probe_e; }\n",
         )
         .map_err(|e| format!("cannot write the kiln probe: {e}"))?;
-        let args = ["-fmason-metadata", "-c", "probe.cc", "-o", "probe.o"].map(str::to_owned);
+        let args =
+            ["-fmason-metadata=detail", "-c", "probe.cc", "-o", "probe.o"].map(str::to_owned);
         let out = run_in(&cxx, &args, scratch, &[], TOOL_LIMITS)?;
         if !out.end.success() {
             return Err(format!(
@@ -259,11 +264,13 @@ impl KilnRecords {
             .map_err(|e| format!("the kiln probe's object: {e}"))?;
         let dump = crate::meta::dump(&bytes)?;
         let has = |row: &str| dump.lines().any(|l| l.starts_with(row));
-        if has("type ") && has("declaration ") {
+        let kind4 = has("level detail") || has("details hex=");
+        if has("type name=6ProbeE ") && kind4 && has("declaration ") {
             Ok(Self { cxx, c, hod })
         } else {
             Err(format!(
-                "kiln at {} writes no .mason.meta kind 3 and 5 rows (older than kiln 55b7e0538)",
+                "kiln at {} writes no .mason.meta enumeration rows, kind 4 or kind 5 \
+                 (older than kiln d854b23bc)",
                 cxx.display()
             ))
         }

@@ -1,0 +1,69 @@
+# MT-31 to MT-33 (spec/meta.md; WP-134) on kiln's units: with
+# --keep-mason-meta a static, a static-pie and a PIE executable keep the
+# live inputs' units (a C++ unit and a C unit, kiln at the level
+# detail: kinds 1, 3, 4 and 5) in a non-allocated .mason.meta
+# (SHT_PROGBITS, no flags, alignment 8) outside every segment; an
+# unextracted archive member's unit is not kept (the output is the
+# same byte for byte as the link without the archive); the program runs
+# and gdb stops at main (on AArch64: gdb runs host programs only).
+# Without the option, no section (MT-31). The links are under
+# --odr=strict: kiln's units have no finding.
+#@ spec: meta.md "MT-31", "MT-32", "MT-33"
+#@ arch: aarch64 x86_64
+#@ requires: kiln g++ gdb
+#@ anomaly(bfd,aarch64): A30
+#@ anomaly(bfd,x86_64): A31
+
+cxx(kiln) -O0 -g -fmason-metadata=detail a.cc -o a.o
+cc(kiln) -O0 -g -fmason-metadata=detail b.c -o b.o
+cc(kiln) -O0 -fmason-metadata=detail u.c -o u.o
+ar rcs libu.a u.o
+link(bfd,lld,mold) g++ -static a.o b.o libu.a -o prog
+link(mortar) g++ -static a.o b.o libu.a -Wl,--odr=strict -Wl,--keep-mason-meta -o prog
+run prog
+  stdout: 5
+check(mortar) readelf -SW prog
+  has: ] .mason.meta * PROGBITS * 0000000000000000 * 00 * 0 * 0 * 8$
+check(mortar) readelf -lW prog
+  not: .mason.meta
+check(mortar,aarch64) gdb prog "break main" run bt kill
+  has: Breakpoint 1, main () at a.cc:
+link(bfd,lld,mold) g++ -static a.o b.o -o prog2
+link(mortar) g++ -static a.o b.o -Wl,--odr=strict -Wl,--keep-mason-meta -o prog2
+check(mortar) cmp prog prog2
+  has: ^identical$
+link(bfd,lld,mold) g++ -static a.o b.o libu.a -o plain
+link(mortar) g++ -static a.o b.o libu.a -Wl,--odr=strict -o plain
+check(mortar) readelf -SW plain
+  not: .mason.meta
+link(bfd,lld,mold) g++ -static-pie -fno-use-linker-plugin a.o b.o libu.a -o spie
+link(mortar) g++ -static-pie -fno-use-linker-plugin a.o b.o libu.a -Wl,--odr=strict -Wl,--keep-mason-meta -o spie
+run spie
+  stdout: 5
+check(mortar) readelf -SW spie
+  has: ] .mason.meta * PROGBITS * 0000000000000000 * 00 * 0 * 0 * 8$
+link(bfd,lld,mold) g++ -pie a.o b.o libu.a -o pie
+link(mortar) g++ -pie a.o b.o libu.a -Wl,--odr=strict -Wl,--keep-mason-meta -o pie
+run pie
+  stdout: 5
+check(mortar) readelf -SW pie
+  has: ] .mason.meta * PROGBITS * 0000000000000000 * 00 * 0 * 0 * 8$
+check(mortar) readelf -lW pie
+  not: .mason.meta
+
+#--- a.cc
+#include <stdio.h>
+struct Point { int x; long y; virtual ~Point() {} };
+extern "C" int b(void);
+int main() {
+  Point p;
+  p.x = b();
+  printf("%d\n", p.x);
+  return 0;
+}
+#--- b.c
+struct node { int v; struct node *next; };
+static struct node n = { 5, 0 };
+int b(void) { return n.v; }
+#--- u.c
+int u(void) { return 4; }

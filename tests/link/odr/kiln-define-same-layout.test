@@ -1,0 +1,64 @@
+# One class, two translation units compiled by kiln with different -D
+# options that do not change its layout (spec/odr.md O-17, O-18, O-19;
+# WP-134): a non-virtual member function present in one unit only, an
+# inline member function's body and a default argument that depend on
+# the macro, a static data member's initializer, and a member's default
+# initializer. Kind 3 hashes the layout, kind 4 describes it: neither
+# differs, so --odr=strict reports nothing, at the level default and at
+# detail (the test has no `diag` directive: any one-definition-rule
+# diagnostic fails it). The program prints what each unit's inline
+# function gave (the one copy the linker kept).
+#@ spec: odr.md O-17, O-19
+#@ arch: aarch64 x86_64
+#@ requires: kiln g++
+
+cxx(kiln) -O0 -DTRACE=1 -fmason-metadata a.cc -o a.o
+cxx(kiln) -O0 -DTRACE=2 -DWITH_NAME -fmason-metadata b.cc -o b.o
+cxx(kiln) -O0 -DTRACE=1 -fmason-metadata=detail a.cc -o ad.o
+cxx(kiln) -O0 -DTRACE=2 -DWITH_NAME -fmason-metadata=detail b.cc -o bd.o
+cxx(kiln) -O0 main.cc -o main.o
+link(bfd,lld,mold) g++ main.o a.o b.o -o prog
+link(mortar) g++ main.o a.o b.o -Wl,--odr=strict -Wl,--odr-stats -o prog
+  diag: ^mortar: odr-stats: mode strict; units 2, rows * kind 3 *, record findings 0;
+run prog
+  stdout: 13 13
+link(bfd,lld,mold) g++ main.o ad.o bd.o -o progd
+link(mortar) g++ main.o ad.o bd.o -Wl,--odr=strict -Wl,--odr-stats -o progd
+  diag: ^mortar: odr-stats: mode strict; units 2, rows * kind 3 *, layout details read 0, record findings 0;
+run progd
+  stdout: 13 13
+
+#--- s.h
+struct S {
+  int a = TRACE;
+  long b;
+  static const int level = TRACE;
+  int get(int k = TRACE) const { return a * 0 + k + 10 + level * 0 + 1; }
+#ifdef WITH_NAME
+  const char* name() const { return "S"; }
+#endif
+};
+struct Base { virtual ~Base() {} virtual int v() const { return TRACE; } int x; };
+struct Derived : Base { int v() const override { return TRACE + 1; } S s; };
+#--- a.cc
+#include "s.h"
+int from_a(S* s, Base* b) { return s->get(2) + (b ? b->x : 0); }
+#--- b.cc
+#include "s.h"
+int from_b(S* s, Base* b) {
+#ifdef WITH_NAME
+  (void)s->name();
+#endif
+  return s->get(2) + (b ? b->x : 0);
+}
+#--- main.cc
+#include <stdio.h>
+struct S;
+struct Base;
+int from_a(S*, Base*);
+int from_b(S*, Base*);
+int main() {
+  alignas(16) static char buf[64] = {};
+  printf("%d %d\n", from_a((S*)buf, nullptr), from_b((S*)buf, nullptr));
+  return 0;
+}

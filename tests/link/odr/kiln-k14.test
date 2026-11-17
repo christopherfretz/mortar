@@ -1,0 +1,35 @@
+# K14 (spec/odr.md §3.1, O-35; WP-134): C++-linkage entities declared
+# with another type in another translation unit, compiled by kiln with
+# -fmason-metadata (level default): the variable `fa` defined `int`,
+# declared `extern long` (the program reads 8 bytes of a 4-byte
+# object), and the function `g` defined returning `int`, declared
+# returning `long` (one mangled name: `_Z1gv`). Both are
+# odr-declaration-mismatch errors under --odr=strict. A C++-linkage
+# function row has no `type_name` below `detail`, so g's finding names
+# the objects and points at -fmason-metadata=detail (O-35 as amended).
+#@ spec: odr.md O-35
+#@ arch: aarch64 x86_64
+#@ requires: kiln g++
+#@ diag: odr-declaration-mismatch a.o b.o
+#@ diag: odr-declaration-mismatch a.o b.o
+
+cxx(kiln) -O0 -fmason-metadata a.cc -o a.o
+cxx(kiln) -O0 -fmason-metadata b.cc -o b.o
+link(bfd,lld,mold) g++ a.o b.o -o prog
+link(mortar) g++ a.o b.o -Wl,--odr=strict -o prog
+  exit: fail
+  diag: ^mortar: error: fa is declared with a type that does not match its definition$
+  diag: ^>>> a.o: defined as i, size 4; b.o: declared as l, size 8$
+  diag: ^mortar: error: _Z1gv is declared with a type that does not match its definition$
+  diag: ^>>> a.o: defined; b.o: declared$
+  diag: ^>>> a.o and b.o do not record the declared type; -fmason-metadata=detail records it (spec/odr.md O-35)$
+
+#--- a.cc
+int fa = 0;
+int g() { return 1; }
+long use();
+int main() { return use() == 1 ? 0 : 1; }
+#--- b.cc
+extern long fa;
+long g();
+long use() { return fa + g(); }
