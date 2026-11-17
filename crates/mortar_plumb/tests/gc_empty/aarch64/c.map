@@ -1,0 +1,38 @@
+mortar-map 2
+file 0 s.o
+file 1 c1.o
+file 2 c2.o
+place 0 1 4100e8 8
+place 0 2 4100f0 0
+place 0 3 4100f0 0
+place 1 2 4100f0 0
+place 1 3 4100f0 0
+place 1 4 4100f0 0
+place 1 5 4100f0 0
+place 2 2 4100f0 0
+place 2 3 4100f0 0
+place 2 4 4100f0 0
+nplace 1 6 .debug_addr 0 8
+nplace 1 8 .debug_rnglists 0 8
+nplace 1 10 .debug_ranges 0 8
+nplace 1 12 .debug_loc 0 8
+nplace 1 14 .debug_info 0 8
+nplace 1 16 .debug_line 0 1d
+nplace 2 6 .debug_addr 8 8
+nplace 2 8 .debug_rnglists 8 8
+nplace 2 10 .debug_ranges 8 8
+nplace 2 12 .debug_loc 8 8
+nplace 2 14 .debug_info 8 8
+nplace 2 16 .debug_line 1d 1d
+chunk synthetic .symtab - 60
+chunk synthetic .strtab - 2c
+chunk synthetic .shstrtab - 77
+chunk synthetic .comment - d
+arg -static
+arg s.o
+arg c1.o
+arg c2.o
+arg -o
+arg c
+arg --mortar-map=c.map
+end

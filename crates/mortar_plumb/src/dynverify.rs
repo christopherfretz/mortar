@@ -119,7 +119,7 @@ fn verify_kind(output: &[u8], store: &Store<'_>, m: usize, map: &Map, ctx: &Ctx<
         // its PLT and its imports wrongly); any other is static.
         let missing = no_dynamic(&image, line_words(map, ctx).as_deref(), ctx.files, map.format);
         if missing.is_empty() {
-            return crate::verify_static_in(output, store, m, map);
+            return crate::verify_static_in(output, store, m, map, ctx.line.as_deref());
         }
         let mut report = Report::default();
         report.findings.extend(structure::check(&image));
@@ -146,7 +146,7 @@ fn judge(
     report.findings.extend(structure::check_layout(image, map));
     let located = locate::locate(map, store, m, image);
     report.findings.extend(located.findings);
-    let objs = located.objs;
+    let mut objs = located.objs;
     let Some(args) = line_words(map, ctx) else {
         report.findings.push(Finding::new(
             Rule::Dyn(2),
@@ -173,6 +173,13 @@ fn judge(
             &args.iter().map(|w| w.as_bytes().to_vec()).collect::<Vec<_>>(),
         ),
     };
+    // §3.3: the empty sections not in the output (WP-156b). The
+    // export set is derived later; an output that exports roots every
+    // global here (plain rule), which can only leave a section unjudged
+    // as collected.
+    let exports =
+        (opts.shared || opts.export_dynamic).then(|| crate::shared::ExportRule::plain(map.format));
+    crate::fate::collect_empty(&mut objs, Some(&opts), exports.as_ref());
     let meta = crate::odrtable::check(image, &objs, map, Some(&opts), Some(&line), &mut meta_cov);
     report.findings.extend(meta);
     report.coverage.meta = meta_cov.clone();

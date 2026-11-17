@@ -1,0 +1,93 @@
+# Debug references to EMPTY sections that are not in the output
+# (WP-156b): collected by `--gc-sections` (`prog`), or a COMDAT copy that
+# is not kept (`prog2`, the shape of the clang `-g` bench link: an empty
+# `.text._ZN…` in a group, without `--gc-sections`).
+# `e.s` has two empty sections with a label each: `.text.empty_live`,
+# kept because `main` takes `empty_live`'s address, and
+# `.text.empty_dead`, which nothing refers to, so it is collected; and a
+# non-empty `.text.full_dead`, collected too. Address words of the three
+# labels are in `.debug_addr`, `.debug_rnglists` (I-47: 0),
+# `.debug_ranges`, `.debug_loc` (1; GNU ld writes 0 in `.debug_loc`) and
+# `.debug_info` (ELFCLASS64 all ones for mortar, 0 for the references;
+# ELFCLASS32 0).
+#
+# Every map lists a live empty section and none lists a collected one
+# outside GNU ld's "Discarded input sections" (mortar: no record, I-78
+# writes `discard` only for a section with bytes). Before WP-156b the
+# verifier took the collected empty section for a live one with no record
+# and asked for an address: R5 "refers to empty section
+# '.text.empty_dead' at 0x0, neither in nor at the end of an allocated
+# output section" on mortar's, lld's and mold's outputs (208 such on the
+# clang `-g` bench link). Now its words are judged as any collected
+# section's, against I-47's tombstone, and the live one's must be its
+# address (spec/plumb.md §3.3).
+#
+# `c.s` (assembled twice: `c1.o`, `c2.o`) has an empty `.text.cd` in the
+# COMDAT group `cd_fn` and words of its section symbol in the same five
+# sections; `c2.o`'s copy is not kept. GNU ld writes the kept copy's
+# address (the sizes are equal, I-47's COMDAT row), lld, mold and mortar
+# the tombstone. Before WP-156b: R5 "refers to empty section '.text.cd'"
+# on mortar's, lld's and mold's outputs.
+#@ spec: plumb.md "WP-156b"
+#@ spec: image.md "I-47"
+
+cc -O1 main.c -o main.o
+as e.s -o e.o
+as c.s -o c1.o
+as c.s -o c2.o
+link gcc -static -Wl,--gc-sections main.o e.o -o prog
+run prog
+  exit: 42
+link gcc -static main.o e.o c1.o c2.o -o prog2
+run prog2
+  exit: 42
+
+#--- main.c
+extern char empty_live[];
+int main(void) { return empty_live != 0 ? 42 : 1; }
+#--- e.s
+	.section .text.empty_live,"ax",%progbits
+	.globl empty_live
+empty_live:
+	.section .text.empty_dead,"ax",%progbits
+	.globl empty_dead
+empty_dead:
+	.section .text.full_dead,"ax",%progbits
+	.globl full_dead
+full_dead:
+	.byte 0, 0, 0, 0
+	.section .debug_addr,"",%progbits
+	.dc.a empty_dead
+	.dc.a empty_live
+	.dc.a full_dead
+	.section .debug_rnglists,"",%progbits
+	.dc.a empty_dead
+	.dc.a empty_live
+	.dc.a full_dead
+	.section .debug_ranges,"",%progbits
+	.dc.a empty_dead
+	.dc.a empty_live
+	.dc.a full_dead
+	.section .debug_loc,"",%progbits
+	.dc.a empty_dead
+	.dc.a empty_live
+	.dc.a full_dead
+	.section .debug_info,"",%progbits
+	.dc.a empty_dead
+	.dc.a empty_live
+	.dc.a full_dead
+#--- c.s
+	.section .text.cd,"axG",%progbits,cd_fn,comdat
+	.weak cd_fn
+cd_fn:
+.Lcd:
+	.section .debug_addr,"",%progbits
+	.dc.a .Lcd
+	.section .debug_rnglists,"",%progbits
+	.dc.a .Lcd
+	.section .debug_ranges,"",%progbits
+	.dc.a .Lcd
+	.section .debug_loc,"",%progbits
+	.dc.a .Lcd
+	.section .debug_info,"",%progbits
+	.dc.a .Lcd

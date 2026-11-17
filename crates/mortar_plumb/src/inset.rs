@@ -1246,26 +1246,13 @@ struct Script {
     assigned: Vec<String>,
 }
 
-#[allow(clippy::many_single_char_names)] // a scanner: s, rest, i, j, ...
+#[allow(clippy::many_single_char_names)] // a scanner: s, w, i, j, k
 fn script(text: &str) -> Result<Script, String> {
-    let mut s = String::new();
-    let mut rest = text;
-    while let Some(i) = rest.find("/*") {
-        s.push_str(&rest[..i]);
-        rest = rest[i + 2..].find("*/").map_or("", |j| &rest[i + 2 + j + 2..]);
-    }
-    s.push_str(rest);
-    let mut spaced = String::new();
-    for c in s.chars() {
-        if matches!(c, '(' | ')' | '{' | '}' | ';' | ',' | '=') {
-            spaced.push(' ');
-            spaced.push(c);
-            spaced.push(' ');
-        } else {
-            spaced.push(c);
-        }
-    }
-    let w: Vec<&str> = spaced.split_whitespace().collect();
+    // A quoted word is never a keyword or punctuation (script.md §1.6):
+    // `w` is the match key (`"` for a string), `text` the word.
+    let toks = crate::line::tokens(text, &['(', ')', '{', '}', ';', ',', '=']);
+    let w: Vec<&str> = toks.iter().map(|(t, q)| if *q { "\"" } else { t.as_str() }).collect();
+    let text_of = |k: usize| toks[k].0.as_str();
     let mut out = Script::default();
     let mut i = 0;
     while i < w.len() {
@@ -1280,7 +1267,9 @@ fn script(text: &str) -> Result<Script, String> {
                     if x == ")" {
                         break;
                     }
-                    names.push(x.to_string());
+                    if x != "," {
+                        names.push(text_of(j).to_string());
+                    }
                     j += 1;
                 }
                 if w[i] == "ENTRY" {
@@ -1296,7 +1285,7 @@ fn script(text: &str) -> Result<Script, String> {
                 if matches!(w[k], "+" | "-" | "*" | "/" | "<<" | ">>" | "&" | "|") && k > 0 {
                     k -= 1;
                 }
-                let n = w[k].trim_end_matches(['+', '-', '*', '/', '&', '|', '<', '>']);
+                let n = text_of(k).trim_end_matches(['+', '-', '*', '/', '&', '|', '<', '>']);
                 if n != "." && !n.is_empty() {
                     out.assigned.push(n.to_string());
                 }
@@ -1773,5 +1762,13 @@ mod tests {
         assert_eq!(s.roots, vec!["a", "b"]);
         assert_eq!(s.assigned, vec!["x", "y", "z"]);
         assert!(script("INPUT(a.o)").is_err());
+        // script.md §1.6: a quoted name is the name, never a keyword; a
+        // comma separates names; a string followed by a name is two.
+        let s =
+            script(r#"ENTRY("EXTERN") EXTERN("k_fn", j_fn "a b""c"d /* "x" */) "q" = 1;"#).unwrap();
+        assert_eq!(s.entry.as_deref(), Some("EXTERN"));
+        assert_eq!(s.roots, vec!["k_fn", "j_fn", "a b", "c", "d"]);
+        assert_eq!(s.assigned, vec!["q"]);
+        assert!(script(r#"EXTERN("INPUT")"#).is_ok());
     }
 }

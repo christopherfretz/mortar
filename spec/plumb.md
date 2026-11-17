@@ -453,7 +453,7 @@ Each input section ends up with one *place*:
 | pieces | `piece` records (mortar's format), or lld's `.eh_frame+0xOFF` rows | checked where a piece covers `r_offset`. A record outside every piece is in a dropped part and is counted as not in the output |
 | merged | an `SHF_MERGE` `SHF_ALLOC` section in a foreign map, placed, absent or ambiguous, except an empty one with a row (WP-143: GNU ld, lld and mold each write one, at the address its labels have; it is whole) | not checked (`in-mergeable`). References *to* it are checked by content (§5.6); to an empty one without a row, as to an empty section below |
 | rewritten | `.eh_frame` placed whole with a size other than its input's (GNU ld) | checked by CIE and FDE (§6.4) |
-| discarded | a `discard` record, or GNU's "Discarded input sections" and `/DISCARD/` | not in the output |
+| discarded | a `discard` record, or GNU's "Discarded input sections" and `/DISCARD/`; or an allocated section with no bytes that no record names, in a COMDAT copy not kept or collected by `--gc-sections` (WP-156b, §3.3) | not in the output |
 | absent | no record | not in the output. An allocated `.eh_frame` is checked by CIE and FDE whatever its place (§6.4): mold lists none. An allocated section **with no bytes** (`sh_size` 0) and no record is not "not in the output" (WP-143): it has no bytes for a record to place (mortar's map lists none for an empty merged section: it has no piece, `spec/image.md` I-78), and its labels are where its bytes would be, which only the output's symbols say (§4.4 step 1 and 3, Y3); a reference whose type names an address (address-sized `S + A`, 4- or 8-byte `S + A - P`) is judged by the address it names: in or at the end of an allocated output section (`[sh_addr, sh_addr + sh_size]`), else R5; other types are `section-not-locatable` |
 | ambiguous | see above | not checked (`section-not-locatable`) |
 
@@ -516,6 +516,35 @@ input section:
   - for an `SHT_NOBITS` section with no record (I-78 lists `discard` only
     for a section with file bytes): `--gc-sections` on the line and not a
     root, as for `discard ... gc`.
+  - **An empty section not in the output (WP-156b).** An allocated
+    section with no bytes (`sh_size` 0) is listed when it is live by
+    every map: mortar writes its `place` (I-78; layout L-159 places it),
+    GNU ld, lld and mold an entry of size 0 in the memory map (measured,
+    the three targets). I-78's `discard` names only a section with bytes,
+    and lld and mold list no section that is not in the output, so such
+    an empty section has no record. One that no record names is
+    *discarded* when it is a member of a COMDAT copy that is not kept
+    (`spec/resolve.md` §6.1; the inputs alone say it), or, under
+    `--gc-sections` (mortar's `arg` records; a reference's line from the
+    caller), when it is not one of I-6's roots above and holds no
+    definition of a key the line roots. A reference to it from a
+    non-allocated section is then judged as one to any section not in the
+    output (§5.8: I-47's tombstone of the referring section; GNU ld also
+    the kept copy's address when the sizes are equal; another value is
+    R1), and its labels are not in the output. Any other empty section
+    with no record stays *absent* (an address is required, the row
+    above). In a dynamic output that exports (`-shared`, `-E`), every
+    global of default or protected visibility counts as an export root
+    for the `--gc-sections` test here (the export set is derived later in
+    stage 3), so such a section is left absent.
+    Tests: `tests/link/resolve/gc-empty-debug.test` (the three targets,
+    the four linkers; `.debug_addr`, `.debug_rnglists`, `.debug_ranges`,
+    `.debug_loc`, `.debug_info`; a collected and a live empty section,
+    and an empty COMDAT copy not kept) and `tests/gc_empty.rs` (mortar's,
+    GNU ld's and lld's links of both shapes, AArch64 and x86-64, clean;
+    the mutations: a collected or dropped empty section's word given an
+    address or the wrong tombstone, a live one's given the tombstone,
+    each R1).
   A `discard ... comdat` record must be the COMDAT row, `... unspecified`
   one of §10's rows, `... gc` and `... script` as above; anything else, and
   a section with bytes no record names and no row explains, is M10.

@@ -179,18 +179,20 @@ pub(crate) fn read_errors(store: &store::Store<'_>, report: &mut Report) {
 pub(crate) fn verify_static(output: &[u8], src: &dyn Source, map: &Map) -> Report {
     let store = store::Store::read(src, &[map]);
     prof::mark("skeletons");
-    let mut report = verify_static_in(output, &store, 0, map);
+    let mut report = verify_static_in(output, &store, 0, map, None);
     read_errors(&store, &mut report);
     report
 }
 
 /// [`verify`] over the inputs of map `m` of `store` (the caller reports
-/// the reads that fail, [`read_errors`]).
+/// the reads that fail, [`read_errors`]). `line`: a reference's command
+/// line, when the caller has one (a mortar map's is its `arg` records).
 pub(crate) fn verify_static_in(
     output: &[u8],
     store: &store::Store<'_>,
     m: usize,
     map: &Map,
+    line: Option<&[String]>,
 ) -> Report {
     let mut report = Report::default();
     let image = match image::Image::read(output) {
@@ -206,14 +208,22 @@ pub(crate) fn verify_static_in(
     prof::mark("structure");
     let located = locate::locate(map, store, m, &image);
     report.findings.extend(located.findings);
-    let objs = located.objs;
+    let mut objs = located.objs;
+    let exports = opts::of(map).and_then(|o| fate::static_exports(map, &o));
+    // §3.3: the empty sections not in the output (WP-156b).
+    let line_opts = opts::of(map).or_else(|| {
+        line.map(|w| {
+            opts::Options::read(&w.iter().map(|x| x.as_bytes().to_vec()).collect::<Vec<_>>())
+        })
+    });
+    fate::collect_empty(&mut objs, line_opts.as_ref(), exports.as_ref());
     prof::mark("locate");
     if prof::enabled() {
         gauges(store, map, &objs);
     }
     let mut engine = reloc::Engine::new(&image, &objs, map.format);
     prof::mark("engine new");
-    engine.exports = opts::of(map).and_then(|o| fate::static_exports(map, &o));
+    engine.exports = exports;
     run_engine(&mut engine, &image, map, None);
     report.findings.append(&mut engine.findings);
     // M8 (§3.3): an output with no dynamic section has no COPY record.

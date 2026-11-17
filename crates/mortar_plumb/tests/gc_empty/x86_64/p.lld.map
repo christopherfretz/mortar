@@ -1,0 +1,26 @@
+             VMA              LMA     Size Align Out     In      Symbol
+          201120           201120        8     1 .text
+          201120           201120        8     1         e.o:(.text)
+          201120           201120        0     1                 _start
+          201128           201128        0     1         e.o:(.text.empty_live)
+          201128           201128        0     1                 empty_live
+               0                0       18     1 .debug_addr
+               0                0       18     1         e.o:(.debug_addr)
+               0                0       18     1 .debug_rnglists
+               0                0       18     1         e.o:(.debug_rnglists)
+               0                0       18     1 .debug_ranges
+               0                0       18     1         e.o:(.debug_ranges)
+               0                0       18     1 .debug_loc
+               0                0       18     1         e.o:(.debug_loc)
+               0                0       18     1 .debug_info
+               0                0       18     1         e.o:(.debug_info)
+               0                0       1d     1 .debug_line
+               0                0       1d     1         e.o:(.debug_line)
+               0                0       1a     1 .comment
+               0                0       1a     1         <internal>:(.comment)
+               0                0       48     8 .symtab
+               0                0       48     8         <internal>:(.symtab)
+               0                0       77     1 .shstrtab
+               0                0       77     1         <internal>:(.shstrtab)
+               0                0       13     1 .strtab
+               0                0       13     1         <internal>:(.strtab)

@@ -1,0 +1,22 @@
+mortar-map 2
+file 0 e.o
+place 0 1 4100e8 8
+place 0 5 4100f0 0
+nplace 0 8 .debug_addr 0 18
+nplace 0 10 .debug_rnglists 0 18
+nplace 0 12 .debug_ranges 0 18
+nplace 0 14 .debug_loc 0 18
+nplace 0 16 .debug_info 0 18
+nplace 0 18 .debug_line 0 1d
+discard 0 7 gc
+chunk synthetic .symtab - 60
+chunk synthetic .strtab - 31
+chunk synthetic .shstrtab - 77
+chunk synthetic .comment - d
+arg -static
+arg --gc-sections
+arg e.o
+arg -o
+arg p
+arg --mortar-map=p.map
+end

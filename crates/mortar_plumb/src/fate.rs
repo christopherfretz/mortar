@@ -335,6 +335,52 @@ fn judge_discard(
     }
 }
 
+/// The empty allocated sections the map lists nowhere that are not in
+/// the output for a reason the inputs and the line give (`spec/plumb.md`
+/// §3.3, WP-156b): every map format lists a live empty section
+/// (`spec/image.md` I-78 and `spec/layout.md` L-159 for mortar's `place`;
+/// GNU ld, lld and mold an entry of size 0, measured), and I-78's
+/// `discard` names only sections with bytes, so an empty section in no
+/// record is not in the output when it is a member of a COMDAT copy
+/// that is not kept (`spec/resolve.md` §6.1), or, under `--gc-sections`,
+/// when it is not an I-6 root and holds no definition of a key the line
+/// roots. Such a section becomes [`Place::Discarded`]: a reference to it
+/// is judged as one to any section not in the output (the tombstone of
+/// I-47, GNU ld's kept-copy redirect). `opts`: the line's options, when
+/// there is a line. Returns how many.
+pub(crate) fn collect_empty(
+    objs: &mut [Obj<'_>],
+    opts: Option<&Options>,
+    exports: Option<&ExportRule>,
+) -> usize {
+    let empty = |s: &Sec<'_>| s.empty_unrecorded() && !s.consumed();
+    if !objs.iter().any(|o| o.secs.iter().skip(1).any(empty)) {
+        return 0;
+    }
+    let comdat = comdat_dropped(objs);
+    let gc = opts
+        .filter(|o| o.gc_sections)
+        .map(|o| (in_alloc_group(objs), start_stop(objs), line_roots(objs, o, exports)));
+    let mut out = Vec::new();
+    for (oi, o) in objs.iter().enumerate() {
+        for (si, s) in o.secs.iter().enumerate() {
+            if si == 0 || !empty(s) {
+                continue;
+            }
+            let collected = gc.as_ref().is_some_and(|(groups, ss, roots)| {
+                gc_root(o, s, groups[oi][si], ss).is_none() && !roots.contains_key(&(oi, si))
+            });
+            if comdat[oi][si] || collected {
+                out.push((oi, si));
+            }
+        }
+    }
+    for &(oi, si) in &out {
+        objs[oi].secs[si].place = Place::Discarded;
+    }
+    out.len()
+}
+
 /// M10 over every section of every live object of mortar's map.
 pub(crate) fn check(
     objs: &[Obj<'_>],
