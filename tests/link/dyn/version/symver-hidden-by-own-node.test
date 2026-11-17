@@ -9,7 +9,7 @@
 
 cc -O1 -fPIC sv.c -o sv.o
 link gcc -shared sv.o -Wl,--version-script,v.map -o libh.so
-  diag(mortar): warning: foo@V1 is made local by version V1's local: entries; executables linked against foo@V1 will not load
+  diag(mortar): warning: sv.o: foo@V1 is made local by version V1's local: entries; executables linked against foo@V1 will not load
 check readelf --dyn-syms -W libh.so
   has: FUNC GLOBAL DEFAULT * foo@@V2$
 check(bfd,lld,mortar) readelf --dyn-syms -W libh.so

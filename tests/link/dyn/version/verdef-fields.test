@@ -35,14 +35,14 @@ check(bfd,mortar) llvm-readelf --elf-output-style=LLVM -V libfields.so
   then: Hash: 95058227$
   then: Name: VERS_C$
   then: Predecessors: [VERS_B, VERS_A]$
-check readelf -SW libfields.so
+check(bfd,mortar) readelf -SW libfields.so
   has: .gnu.version_d VERDEF
   not: .gnu.version_r
 check(mortar) readelf -SW libfields.so
   has: .gnu.version_d VERDEF * A 4 4 4$
-check readelf -VW libfields.so
+check(bfd,mortar) readelf -VW libfields.so
   has: Version definition section '.gnu.version_d' contains 4 entries
-check readelf --dyn-syms -W libfields.so
+check(bfd,mortar) readelf --dyn-syms -W libfields.so
   has: FUNC GLOBAL DEFAULT * a@@VERS_A$
   has: FUNC GLOBAL DEFAULT * b@@VERS_B$
   has: FUNC GLOBAL DEFAULT * c@@VERS_C$

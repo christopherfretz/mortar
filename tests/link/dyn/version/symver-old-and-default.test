@@ -30,8 +30,8 @@ link gcc -shared sv.o -o libnone.so
   diag(bfd): version node not found for symbol foo@V1
   diag(lld): symbol foo@V1 has undefined version V1
   diag(mold): symbol foo has undefined version V1
-  diag(mortar): error: version V1 of foo is not defined
-  diag(mortar): error: version V2 of foo is not defined
+  diag(mortar): error: sv.o: version V1 of foo is not defined
+  diag(mortar): error: sv.o: version V2 of foo is not defined
 host gcc -pie main.o -L. -l:libold.so -o prog1
 check readelf --dyn-syms -W prog1
   has: UND foo@V1
