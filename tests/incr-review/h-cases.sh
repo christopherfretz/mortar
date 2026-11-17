@@ -24,5 +24,6 @@ H6-sections-unplaced-swapped swap-sections 3 7
 H7-sections-text-data-swapped swap-sections 1 2
 H8-frag-at-key-moved frag-at-key 1 7 5
 H9-frag-at-other-file frag-at-key 1 16 0
+H10-place-swapped swap-place 5 6
 CASES
 echo "H-CASES-DONE $n"
