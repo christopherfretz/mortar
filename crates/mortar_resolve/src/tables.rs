@@ -725,7 +725,18 @@ pub fn options(plan: &Plan, inputs: &Inputs<'_>, view: &InputsView<'_, '_>) -> O
             export_dynamic: plan.dynamic.export_dynamic,
             no_undefined_version: plan.dynamic.undefined_version == Some(false),
         },
+        exclude_libs: exclude_libs(inputs),
     }
+}
+
+/// [`Options::exclude_libs`]: the walk's flag of each file, or nothing
+/// when no file has it.
+fn exclude_libs(inputs: &Inputs<'_>) -> Vec<bool> {
+    let flag = |f: &mortar_core::inputs::File<'_>| f.state.contains(InputFlags::EXCLUDE_LIBS);
+    if !inputs.files.iter().any(|(_, f)| flag(f)) {
+        return Vec::new();
+    }
+    inputs.files.iter().map(|(_, f)| flag(f)).collect()
 }
 
 /// [`SharedLink`]: the mentions of shared objects and the positions of the

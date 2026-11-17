@@ -184,7 +184,8 @@ fn d103_z_flags() {
     let origin = with(ZFlags { origin: true, ..ZFlags::default() }, false);
     assert_eq!(value(&origin, DT_FLAGS), Some(DynValue::Const(DF_ORIGIN)));
     assert_eq!(value(&origin, DT_FLAGS_1), Some(DynValue::Const(DF_1_ORIGIN)));
-    let all = ZFlags { nodelete: true, nodlopen: true, initfirst: true, interpose: true, origin: true };
+    let all =
+        ZFlags { nodelete: true, nodlopen: true, initfirst: true, interpose: true, origin: true };
     let mut i = with(all, true);
     i.bind_now = true;
     assert_eq!(value(&i, DT_FLAGS), Some(DynValue::Const(DF_ORIGIN | DF_SYMBOLIC | DF_BIND_NOW)));

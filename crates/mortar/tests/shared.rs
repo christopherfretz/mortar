@@ -213,13 +213,24 @@ fn bsymbolic_binds_every_own_definition() {
     let soname = dynamic.find("(SONAME)").expect("SONAME");
     let symbolic = dynamic.find("(SYMBOLIC)").expect("SYMBOLIC");
     assert!(soname < symbolic, "{dynamic}");
-    assert!(dynamic.lines().any(|l| l.contains("(FLAGS)") && l.ends_with(" SYMBOLIC")), "{dynamic}");
+    assert!(
+        dynamic.lines().any(|l| l.contains("(FLAGS)") && l.ends_with(" SYMBOLIC")),
+        "{dynamic}"
+    );
     let relocs = cx.readelf(&["-rW"], "libs.so");
     for own in [" f + 0", " d + 0", " g + 0"] {
         assert!(!relocs.contains(own), "{own}: {relocs}");
     }
     // The tags, in order, are GNU ld's for the same line.
-    cx.ok(&["-fuse-ld=bfd", "-shared", "lib.o", "-Wl,-Bsymbolic", "-Wl,-soname,libs.so", "-o", "gnu.so"]);
+    cx.ok(&[
+        "-fuse-ld=bfd",
+        "-shared",
+        "lib.o",
+        "-Wl,-Bsymbolic",
+        "-Wl,-soname,libs.so",
+        "-o",
+        "gnu.so",
+    ]);
     assert_eq!(tags(&cx, "libs.so"), tags(&cx, "gnu.so"));
     // A later `-Bno-symbolic` undoes it: preempted, no tag.
     cx.library(&["lib.o"], &["-Wl,-Bsymbolic", "-Wl,-Bno-symbolic"], "libn.so");
@@ -263,6 +274,43 @@ fn z_flags_are_written_in_a_shared_object() {
         assert!(e.contains(&format!("unsupported option: -z {one}")), "{e}");
         assert!(e.contains("dyn.md D-103"), "{e}");
     }
+}
+
+// spec: dyn.md D-110 item 1 (`--exclude-libs`: the definitions of the
+// named archives' members leave the export set; matched by the archive's
+// file name, `ALL` every archive), D-112 (an excluded definition binds
+// locally: an interposer of it does not reach the library's own use)
+#[test]
+fn exclude_libs_hides_archive_definitions() {
+    let Some(cx) = Cx::new("shared-exclude") else { return };
+    let ar = A.tool("ar").expect("ar");
+    let mut c = Command::new(ar);
+    c.args(["rcs", "libundef.a", "undef.o"]).current_dir(cx.scratch.path());
+    assert!(run_with(&mut c, b"", Duration::from_mins(1)).success());
+    // `undef.o`'s `call_u` comes from the archive, which `use.o` needs.
+    cx.scratch.write("use.c", "int call_u(void);\nint use_u(void) { return call_u(); }\n");
+    cx.ok(&["-O1", "-fPIC", "-c", "use.c", "-o", "use.o"]);
+    for (words, exported) in [
+        (&[][..], true),
+        (&["-Wl,--exclude-libs,ALL"][..], false),
+        (&["-Wl,--exclude-libs,libundef.a"][..], false),
+        (&["-Wl,--exclude-libs,libother.a"][..], true),
+    ] {
+        let o = cx.mortar_shared(&["lib.o", "use.o", "libundef.a"], words, "libe.so");
+        assert!(o.success(), "{words:?}: {}", o.stderr_text());
+        verify_but_the_mirror(cx.scratch.path(), "libe.so");
+        let syms = cx.readelf(&["--dyn-syms", "-W"], "libe.so");
+        assert_eq!(syms.lines().any(|l| l.ends_with(" call_u")), exported, "{words:?}: {syms}");
+        assert!(syms.lines().any(|l| l.ends_with(" use_u")), "{syms}");
+    }
+    // `libfoo` names `libfoo.a` in GNU ld only: refused by name.
+    let o = cx.mortar_shared(&["use.o", "libundef.a"], &["-Wl,--exclude-libs,libundef"], "libb.so");
+    assert!(!o.success());
+    assert!(
+        o.stderr_text().contains("--exclude-libs: invalid value 'libundef'"),
+        "{}",
+        o.stderr_text()
+    );
 }
 
 /// [`verify`], but for M9's findings on the line's words: the verifier's

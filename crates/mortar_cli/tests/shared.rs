@@ -106,10 +106,7 @@ fn s4_2_options_wp128_implements_are_accepted_in_shared() {
     assert_eq!(form(&["-Bsymbolic", "-Bno-symbolic"]), Some((Symbolic::None, false)));
     assert_eq!(form(&["-Bno-symbolic", "-Bsymbolic"]), Some((Symbolic::All, true)));
     // With `--dynamic-list` the list decides: no DT_SYMBOLIC.
-    assert_eq!(
-        form(&["-Bsymbolic", "--dynamic-list", "l.list"]).map(|f| f.1),
-        Some(false)
-    );
+    assert_eq!(form(&["-Bsymbolic", "--dynamic-list", "l.list"]).map(|f| f.1), Some(false));
 }
 
 // spec: cli.md §4.2 (M4 block, WP-117's rows): accepted in a `Shared`

@@ -366,13 +366,25 @@ pub(crate) fn link<V: View>(
         }
     }
     let ours = |d: Def| matches!(d, Def::Strong(_) | Def::Weak(_) | Def::Common(_));
+    // D-110 item 1 (WP-128): a definition in a member of an archive
+    // `--exclude-libs` names is never exported, in every kind (all three
+    // drop the exports `-E`, `--export-dynamic-symbol`, a version script's
+    // `global:` and a shared object's definition of the name would give).
+    let excluded = |d: Def| match d {
+        Def::Strong(e) | Def::Weak(e) | Def::Common(e) => {
+            opts.exclude_libs.get(e.file.0 as usize).copied().unwrap_or(false)
+        }
+        _ => false,
+    };
     // WP-117: a shared object's export set is D-110's, and preemption
     // D-112's (`crate::export`).
     let mut versions: Vec<u16> = Vec::new();
     let mut version_problems = Vec::new();
     let exported: Vec<bool> = if opts.shared_output.is_some() {
         let mut e: Vec<bool> = (0..keys)
-            .map(|k| export::exported(def[k], props[k].visibility, ref_dynamic[k]))
+            .map(|k| {
+                !excluded(def[k]) && export::exported(def[k], props[k].visibility, ref_dynamic[k])
+            })
             .collect();
         // D-110 item 1, D-114 (WP-125): the version script.
         versions = vec![0; keys];
@@ -382,7 +394,7 @@ pub(crate) fn link<V: View>(
         (0..keys)
             .map(|k| {
                 let d = def[k];
-                if props[k].visibility == STV_HIDDEN {
+                if props[k].visibility == STV_HIDDEN || excluded(d) {
                     return false;
                 }
                 if matches!(d, Def::Provide { .. }) {
@@ -419,9 +431,15 @@ pub(crate) fn link<V: View>(
     let live_def = |k: SymbolId| -> bool {
         l.defs_of(k).iter().any(|d| in_n[d.file.0 as usize] || in_u[d.file.0 as usize])
     };
+    // An executable's definition excluded by `--exclude-libs` is as a
+    // hidden one here (GNU ld and lld refuse a shared object's reference
+    // to it; mold links a program that fails at load); in a `Shared`
+    // output all three leave the reference to the loader.
+    let as_hidden = |d: Def| opts.shared_output.is_none() && excluded(d);
     let program = |k: SymbolId| -> Option<(Def, u8)> {
         let d = def[k.0 as usize];
-        (ours(d) || matches!(d, Def::Provide { .. })).then_some((d, props[k.0 as usize].visibility))
+        let vis = if as_hidden(d) { STV_HIDDEN } else { props[k.0 as usize].visibility };
+        (ours(d) || matches!(d, Def::Provide { .. })).then_some((d, vis))
     };
     for &x in &live_shared {
         for m in l.mentions_of(x) {

@@ -110,7 +110,8 @@ const DYNAMIC_LIST_CPP: &str =
 const Z_EXEC_DIFFER: &str = "dyn.md D-103: mortar writes this flag in a shared object (-shared) only; in an executable the references disagree (GNU ld writes nothing, lld and mold write the flag)";
 /// `-z interpose`, `-z origin` outside a shared object (`spec/dyn.md`
 /// D-103).
-const Z_EXEC_SHARED_ONLY: &str = "dyn.md D-103: mortar writes this flag in a shared object (-shared) only";
+const Z_EXEC_SHARED_ONLY: &str =
+    "dyn.md D-103: mortar writes this flag in a shared object (-shared) only";
 
 /// `--exclude-libs` (`spec/dyn.md` D-110 item 1, WP-128): what is refused
 /// although a reference links it.
