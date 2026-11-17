@@ -1,0 +1,42 @@
+# The libraries of the O-60 tests (spec/odr.md; WP-129), linked by each
+# linker (spec/harness.md LT-4); mortar's with --odr-table=exported. One
+# row per exported vague definition, sorted by key: d (default data), f
+# and v (default functions), p (protected). `NONPREEMPTIBLE` (0x8000) is
+# set exactly for the exported definitions D-112 binds inside the
+# library: p alone in libl.so (a version script, node V1); p, f and v in
+# libb.so (-Bsymbolic-functions binds the functions; d stays
+# preemptible). A row's version is its `.dynsym` entry's node (O-60
+# statement 1): `@@V1` in libl.so, none in libb.so; the row carries none
+# (O-51).
+
+cc -O1 -fPIC lib.c -o lib0.o
+meta lib.meta lib0.o -o lib.o
+link(bfd,lld,mold) gcc -shared lib.o -Wl,--version-script=lib.map -Wl,-soname,libl.so -o libl.so
+link(mortar) gcc -shared lib.o -Wl,--version-script=lib.map -Wl,-soname,libl.so -Wl,--odr-table=exported -o libl.so
+link(bfd,lld,mold) gcc -shared lib.o -Wl,-Bsymbolic-functions -Wl,-soname,libb.so -o libb.so
+link(mortar) gcc -shared lib.o -Wl,-Bsymbolic-functions -Wl,-soname,libb.so -Wl,--odr-table=exported -o libb.so
+check(mortar) readelf -nW libl.so
+  has: ^ *MasonMeta *0x00000070 *Unknown note type: (0x4d4f4401) *description data: 01 00 00 00 04 00 00 00 18 00 00 00 00 00 00 00 73 e7 01 86 4c d9 63 af 01 01 01 01 01 01 01 01 * 00 00 00 01 00 00 00 d9 ea 01 86 4c db 63 af 03 03 03 03 03 03 03 03 * 00 00 00 01 00 00 00 09 06 02 86 4c eb 63 af 04 04 04 04 04 04 04 04 * 00 00 00 01 00 00 00 6f 09 02 86 4c ed 63 af 02 02 02 02 02 02 02 02 * 00 00 00 01 80 00 00 *$
+check(mortar) readelf -W --dyn-syms libl.so
+  has: FUNC * GLOBAL DEFAULT * f@@V1$
+  has: FUNC * GLOBAL DEFAULT * v@@V1$
+  has: OBJECT * GLOBAL DEFAULT * d@@V1$
+  has: OBJECT * GLOBAL PROTECTED * p@@V1$
+check(mortar) readelf -nW libb.so
+  has: ^ *MasonMeta *0x00000070 *Unknown note type: (0x4d4f4401) *description data: 01 00 00 00 04 00 00 00 18 00 00 00 00 00 00 00 73 e7 01 86 4c d9 63 af 01 01 01 01 01 01 01 01 * 00 00 00 01 00 00 00 d9 ea 01 86 4c db 63 af 03 03 03 03 03 03 03 03 * 00 00 00 01 80 00 00 09 06 02 86 4c eb 63 af 04 04 04 04 04 04 04 04 * 00 00 00 01 80 00 00 6f 09 02 86 4c ed 63 af 02 02 02 02 02 02 02 02 * 00 00 00 01 80 00 00 *$
+check(mortar) readelf -W --dyn-syms libb.so
+  has: OBJECT * GLOBAL DEFAULT * d$
+
+#--- lib.c
+int d = 1;
+__attribute__((visibility("protected"))) int p = 2;
+int f(void) { return 3; }
+int v(void) { return d + p + f(); }
+#--- lib.map
+V1 { global: d; p; f; v; local: *; };
+#--- lib.meta
+summary name=lang value=c++
+definition anchor=d hash=01010101010101010101010101010101 class=1 flags=1
+definition anchor=p hash=02020202020202020202020202020202 class=1 flags=1
+definition anchor=f hash=03030303030303030303030303030303 class=1 flags=1
+definition anchor=v hash=04040404040404040404040404040404 class=1 flags=1

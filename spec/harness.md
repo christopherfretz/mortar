@@ -673,8 +673,9 @@ missing linker is left out of the matrix with a note; a test that
 (`requires X: not found`). Under `MORTAR_REQUIRE_TOOLS=1` each of those is
 an `error:` line in the summary and exit status 3 (the run goes on with
 what there is), but for `kiln` (a kiln that writes the records, found by
-its probe), which is an error under `MASON_REQUIRE_TOOLS=1` only: the
-lane's gate with an older kiln skips those tests by name (WP-134). A run of mortar without any reference notes that nothing
+its probe) and `hod` (a hod that writes the `reloc-model` row, likewise),
+which are errors under `MASON_REQUIRE_TOOLS=1` only: the lane's gate
+with an older kiln or hod skips those tests by name (WP-134, WP-129). A run of mortar without any reference notes that nothing
 is proven.
 
 **Every child** is started through `xtask::process::run` ("Limits"), with
@@ -742,6 +743,10 @@ file with neither architecture nor linker.
   without one the test is `SKIP` naming why, and a missing kiln is
   counted as missing only under `MASON_REQUIRE_TOOLS=1`; such a test runs
   on `aarch64 x86_64` only, kiln's targets: WP-134),
+  `hod` (a `(hod)` compile step: hod writing MT-26's `reloc-model` row,
+  found by a probe compile of a module with a PIE level that must read
+  back `pie`, `MASON_HOD` or the lane's build; missing as for `kiln`,
+  and the step also needs clang: WP-129),
   `yaml2obj`, `llvm-readelf`, `llvm-dwarfdump`, `gdb`, `lldb`, `eu-elflint`
   (a `check` with that tool). A missing word and an unused one are both errors. A
   fixture states its own `requires`, which every test naming it gets.
@@ -791,7 +796,12 @@ file with neither architecture nor linker.
 **Qualifiers** are words in parentheses after a keyword, of three kinds:
 compiler (`gcc`, the default, `clang`, or `kiln` for C and C++: kiln++
 or kiln with `--target`, its hod route through `KILN_HOD` and
-`KILN_HOD_STRICT=1`) on compile steps only; linker
+`KILN_HOD_STRICT=1`; or `hod` for C and C++: the source to IR by clang
+or clang++ with `--target` and the step's options, the object by the
+probed hod `--strict` at the step's last `-O0`..`-O3` (`-O0` without
+one) with `-relocation-model=static` for `-fno-pic`/`-fno-pie` and `pic`
+otherwise, hod writing `pie` for IR with a PIE level; a `(hod)` step is
+hod's under every `--producer`) on compile steps only; linker
 (`bfd lld mold mortar`) and architecture on link, run and check steps, on
 expectations and on markers. Words of one kind are alternatives; kinds
 are conjoined: `cc(clang,i386)` is "with Clang, on i386"; `has(bfd,lld)`
@@ -1556,8 +1566,9 @@ line (links, tests, architectures, how many differ, seconds) and
 `static-identical: ok` with exit status 0, or `static-identical: FAILED`
 with exit status 1. A unit that did not run because a tool is missing is
 not compared (a note says how many) unless `MORTAR_REQUIRE_TOOLS=1`
-requires that tool (a test that `requires: kiln` without
-`MASON_REQUIRE_TOOLS=1`, "Missing tools", is not compared either). An
+requires that tool (a test that `requires: kiln` or `requires: hod`
+without `MASON_REQUIRE_TOOLS=1`, "Missing tools", is not compared
+either). An
 error of the run itself (an input that does not build, mortar not built)
 is a failure whatever the digests. `--update` prints the same difference
 lines, then writes the baseline (it refuses when a unit did not run); a

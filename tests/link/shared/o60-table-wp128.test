@@ -1,0 +1,51 @@
+# O-60 statement 2 (spec/odr.md; WP-129) for the two D-112 cases WP-128
+# opens: -Bsymbolic binds every exported definition inside the library
+# (d, f, p, v: every row NONPREEMPTIBLE), --dynamic-list binds what it
+# does not list (here f and v; d stays preemptible, p protected). The
+# rule is written on `Resolution`'s exported keys outside `preemptible`,
+# so these follow without a change once mortar accepts the options; the
+# checks below are what the tables must then read. The reference
+# linkers' programs show the bindings: v() is d + p + f as the library
+# binds them, 1 + 2 + 3 under -Bsymbolic, 10 + 2 + 3 under the list.
+#@ spec: odr.md "O-60"
+#@ arch: aarch64 x86_64
+#@ skip(mortar): WP-128: -Bsymbolic (of non-weak definitions) and --dynamic-list are refused in a Shared output until WP-128 opens them
+
+cc -O1 -fPIC lib.c -o lib0.o
+meta lib.meta lib0.o -o lib.o
+cc -O1 -fPIE main.c -o main.o
+link(bfd,lld,mold) gcc -shared lib.o -Wl,-Bsymbolic -Wl,-soname,libs.so -o libs.so
+link(mortar) gcc -shared lib.o -Wl,-Bsymbolic -Wl,-soname,libs.so -Wl,--odr-table=exported -o libs.so
+check(mortar) readelf -nW libs.so
+  has: description data: 01 00 00 00 04 00 00 00 18 00 00 00 00 00 00 00 73 e7 01 86 4c d9 63 af 01 01 01 01 01 01 01 01 * 00 00 00 01 80 00 00 d9 ea 01 86 4c db 63 af 03 03 03 03 03 03 03 03 * 00 00 00 01 80 00 00 09 06 02 86 4c eb 63 af 04 04 04 04 04 04 04 04 * 00 00 00 01 80 00 00 6f 09 02 86 4c ed 63 af 02 02 02 02 02 02 02 02 * 00 00 00 01 80 00 00 *$
+link(bfd,lld,mold) gcc -shared lib.o -Wl,--dynamic-list=lib.list -Wl,-soname,libd.so -o libd.so
+link(mortar) gcc -shared lib.o -Wl,--dynamic-list=lib.list -Wl,-soname,libd.so -Wl,--odr-table=exported -o libd.so
+check(mortar) readelf -nW libd.so
+  has: description data: 01 00 00 00 04 00 00 00 18 00 00 00 00 00 00 00 73 e7 01 86 4c d9 63 af 01 01 01 01 01 01 01 01 * 00 00 00 01 00 00 00 d9 ea 01 86 4c db 63 af 03 03 03 03 03 03 03 03 * 00 00 00 01 80 00 00 09 06 02 86 4c eb 63 af 04 04 04 04 04 04 04 04 * 00 00 00 01 80 00 00 6f 09 02 86 4c ed 63 af 02 02 02 02 02 02 02 02 * 00 00 00 01 80 00 00 *$
+link gcc -pie main.o -L. -ls -o progs
+run progs
+  stdout: 10 20 30 6
+link gcc -pie main.o -L. -ld -o progd
+run progd
+  stdout: 10 20 30 15
+
+#--- lib.c
+int d = 1;
+__attribute__((visibility("protected"))) int p = 2;
+int f(void) { return 3; }
+int v(void) { return d + p + f(); }
+#--- lib.list
+{ d; };
+#--- lib.meta
+summary name=lang value=c++
+definition anchor=d hash=01010101010101010101010101010101 class=1 flags=1
+definition anchor=p hash=02020202020202020202020202020202 class=1 flags=1
+definition anchor=f hash=03030303030303030303030303030303 class=1 flags=1
+definition anchor=v hash=04040404040404040404040404040404 class=1 flags=1
+#--- main.c
+#include <stdio.h>
+int d = 10;
+int p = 20;
+int f(void) { return 30; }
+int v(void);
+int main(void) { printf("%d %d %d %d\n", d, p, f(), v()); return 0; }
