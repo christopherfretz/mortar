@@ -280,7 +280,7 @@ pub(crate) fn check(
             if s.name != NAME || s.shdr.sh_type != SHT_NOTE {
                 continue;
             }
-            match notes(s.data, align) {
+            match notes(&o.data(si), align) {
                 Ok(mut v) => ns.append(&mut v),
                 Err(e) => {
                     findings.push(

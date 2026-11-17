@@ -1450,7 +1450,8 @@ pub fn coverage_table(
     map: &Map,
 ) -> Result<(Cover, Vec<Finding>), String> {
     let image = Image::read(output)?;
-    let located = crate::locate::locate(map, inputs, &image);
+    let store = crate::store::Store::read(&inputs, &[map]);
+    let located = crate::locate::locate(map, &store, 0, &image);
     let mut out = Vec::new();
     let set = resolve(&image, &map.dead, &mut out);
     let cover = coverage(&image, &located.objs, map, &set, true, &mut out);
