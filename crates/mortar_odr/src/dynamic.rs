@@ -192,8 +192,7 @@ fn table_rows(resolution: &Resolution, output: Output<'_>, keepers: &[&Keeper]) 
             // that computed no preemptible set.
             let protected =
                 resolution.props.get(k.sym).is_some_and(|p| p.visibility == STV_PROTECTED);
-            let np =
-                output.executable || protected || !resolution.preemptible.contains(k.sym);
+            let np = output.executable || protected || !resolution.preemptible.contains(k.sym);
             let mut hash = [0; 8];
             hash.copy_from_slice(&k.hash[..8]);
             TableRow {

@@ -209,7 +209,9 @@ impl Family {
 
     /// The family of that name.
     pub fn parse(name: &str) -> Option<Self> {
-        [Self::Gcc, Self::Clang, Self::Kiln, Self::Hod].into_iter().find(|family| family.name() == name)
+        [Self::Gcc, Self::Clang, Self::Kiln, Self::Hod]
+            .into_iter()
+            .find(|family| family.name() == name)
     }
 }
 
