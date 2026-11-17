@@ -2200,7 +2200,29 @@ directory is the cache's, the same for every checkout.
   removes it and is an error) and renamed; it is fetched only when the
   downloaded file is missing or its digest is not the pinned one, and
   unpacked with `tar -xf … --no-same-owner` (which reads gzip, xz and
-  bzip2 alike; the code is shared with "realbuild"). Then `cmake -S
+  bzip2 alike; the code is shared with "realbuild"). **Members `tar`
+  is not given**: the archive is listed first (`tar --numeric-owner
+  --quoting-style=literal -tvf`), and two classes of members are
+  excluded by name (`--anchored --no-wildcards --exclude=<member>`).
+  (1) A symbolic link whose target is absolute or has a `..` component:
+  GNU tar writes a mode-000 placeholder file in its place and swaps the
+  link in when the archive is done; on a shared mount a file without
+  owner read permission can be created but never examined, changed or
+  removed again, as root too, so the swap fails and the placeholder
+  stays and breaks whatever walks the tree (LLVM's archive has five such
+  links). The bench makes these links itself after `tar` has run, each
+  only when its name is relative with plain components, every directory
+  above it is a directory of the unpacked tree and not a link, and
+  nothing is at its place; otherwise the log says `not unpacked (a link
+  outside what was unpacked): <member>`. (2) A regular file or a hard
+  link whose mode has no owner read permission, a directory without
+  owner read or search permission (with everything below it), a device
+  and a FIFO: not unpacked, each with a line `not unpacked (unreadable
+  by its owner, or not a file): <member>` in the log. A listing line
+  that is not understood, or more than 4096 such members, is an error
+  and nothing is unpacked. A script that unpacks an archive itself
+  ("Large workloads") excludes the links of class (1) the same way.
+  Then `cmake -S
   <src>/<root> -B <workload>/build -G "Unix Makefiles"
   -DCMAKE_CXX_COMPILER=<driver> -DCMAKE_CXX_FLAGS=<cflags>
   -DCMAKE_C_FLAGS=<cflags> <options>`, `make <prebuild…>`, and the

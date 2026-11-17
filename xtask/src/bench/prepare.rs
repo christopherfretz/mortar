@@ -411,7 +411,8 @@ fn fetch_and_unpack(
 /// component; only when the file is missing or its SHA-256 is not
 /// `sha256`), checks it against `sha256`, and unpacks it once into
 /// `<work>/src/<first 16 digits of sha256>` (`tar -xf`, which reads gzip,
-/// xz and bzip2 alike). Returns the unpacked directory. `what` names the
+/// xz and bzip2 alike), without the members [`members_not_unpacked`]
+/// holds back (the skipped ones are logged, the links are made here). Returns the unpacked directory. `what` names the
 /// workload or project in the messages. Shared by the bench and the
 /// real-builds lane (`spec/harness.md` "The cache", "realbuild").
 pub fn fetch_archive(
@@ -466,16 +467,145 @@ pub fn fetch_archive(
             .map_err(|e| format!("cannot remove {}: {e}", unpacked.display()))?;
     }
     mkdir(&unpacked)?;
-    tool(
-        &format!("{what}: unpacking {file}"),
-        &which("tar")?,
+    let tar = which("tar")?;
+    let listing = tool(
+        &format!("{what}: listing {file}"),
+        &tar,
         |c| {
-            c.args(["-xf"]).arg(&archive).arg("-C").arg(&unpacked).arg("--no-same-owner");
+            c.args(["--numeric-owner", "--quoting-style=literal", "-tvf"]).arg(&archive);
         },
         TOOL_LIMITS,
     )?;
+    let Held { skipped, links } = members_not_unpacked(&String::from_utf8_lossy(&listing.stdout))
+        .map_err(|e| format!("{what}: {file}: {e}"))?;
+    if skipped.len() + links.len() > MAX_SKIPPED {
+        return Err(format!(
+            "{what}: {file} has {} members that tar is not given (limit {MAX_SKIPPED})",
+            skipped.len() + links.len()
+        ));
+    }
+    for member in &skipped {
+        log(&format!("{what}: not unpacked (unreadable by its owner, or not a file): {member}"));
+    }
+    tool(
+        &format!("{what}: unpacking {file}"),
+        &tar,
+        |c| {
+            c.arg("-xf").arg(&archive).arg("-C").arg(&unpacked).arg("--no-same-owner");
+            // The two options must precede the patterns they govern.
+            c.args(["--anchored", "--no-wildcards"]);
+            for member in skipped.iter().chain(links.iter().map(|(name, _)| name)) {
+                c.arg(format!("--exclude={member}"));
+            }
+        },
+        TOOL_LIMITS,
+    )?;
+    for (name, target) in &links {
+        match link_place(&unpacked, name) {
+            Some(place) => std::os::unix::fs::symlink(target, &place)
+                .map_err(|e| format!("{what}: cannot make the link {}: {e}", place.display()))?,
+            None => log(&format!("{what}: not unpacked (a link outside what was unpacked): {name}")),
+        }
+    }
     std::fs::write(&done, b"").map_err(|e| format!("cannot write {}: {e}", done.display()))?;
     Ok(unpacked)
+}
+
+/// The most members [`members_not_unpacked`] may name before the archive
+/// is refused (each becomes one argument of `tar`).
+const MAX_SKIPPED: usize = 4096;
+
+/// The members of an archive that `tar` is not given
+/// ([`members_not_unpacked`]).
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Held {
+    /// Not unpacked at all, by name without a trailing `/`.
+    skipped: Vec<String>,
+    /// Symbolic links made after `tar` has run: name and target.
+    links: Vec<(String, String)>,
+}
+
+/// The members of an archive that `tar` must not create, from the text
+/// of `tar --numeric-owner --quoting-style=literal -tvf`. On a shared
+/// mount a file without owner read permission can be created but never
+/// read, changed or removed again (as root too), and it breaks whatever
+/// walks the tree. Two things make one:
+/// - a symbolic link whose target is absolute or has a `..` component:
+///   GNU tar first writes a mode-000 placeholder file in its place and
+///   swaps the link in when the archive is done, and the swap fails
+///   where the placeholder cannot be examined (LLVM's archive has five
+///   such links; that is what was left behind). These are `links`: the
+///   caller makes them itself, after `tar`;
+/// - a member whose own mode says so: a regular file or a hard link
+///   without owner read permission, a directory without owner read or
+///   search permission (and with it everything below). These, a device
+///   and a FIFO are `skipped`: not unpacked.
+///
+/// Other symbolic links are `tar`'s. A line that does not have the
+/// listing's form is the error.
+fn members_not_unpacked(listing: &str) -> Result<Held, String> {
+    let mut out = Held::default();
+    for line in listing.lines() {
+        let bad = || format!("a line of tar's listing is not understood: {line:?}");
+        let mode = line.get(..10).ok_or_else(bad)?.as_bytes();
+        // owner/group, size, date, time; then one space and the name.
+        let mut rest = line.get(10..).ok_or_else(bad)?;
+        for _ in 0..4 {
+            rest = rest.trim_start_matches(' ');
+            let end = rest.find(' ').filter(|&e| e > 0).ok_or_else(bad)?;
+            rest = &rest[end..];
+        }
+        let name = rest.strip_prefix(' ').ok_or_else(bad)?;
+        let read = mode[1] == b'r';
+        let search = matches!(mode[3], b'x' | b's');
+        let (skip, name) = match mode[0] {
+            b'l' => {
+                let (name, target) = name.split_once(" -> ").ok_or_else(bad)?;
+                if name.is_empty() || target.is_empty() {
+                    return Err(bad());
+                }
+                if target.starts_with('/') || target.split('/').any(|part| part == "..") {
+                    out.links.push((name.to_owned(), target.to_owned()));
+                }
+                continue;
+            }
+            b'-' | b'C' => (!read, name),
+            b'h' => (!read, name.rsplit_once(" link to ").ok_or_else(bad)?.0),
+            b'd' => (!read || !search, name),
+            b'c' | b'b' | b'p' => (true, name),
+            _ => return Err(bad()),
+        };
+        let name = name.trim_end_matches('/');
+        if name.is_empty() {
+            return Err(bad());
+        }
+        if skip {
+            out.skipped.push(name.to_owned());
+        }
+    }
+    Ok(out)
+}
+
+/// Where the link member `name` goes under `root`, when that is a place
+/// inside what `tar` unpacked: the name is relative with plain
+/// components, every directory above it exists and is a directory itself
+/// (not a link to one), and nothing is at the place yet.
+fn link_place(root: &Path, name: &str) -> Option<PathBuf> {
+    let mut place = root.to_path_buf();
+    let mut parts = name.split('/').peekable();
+    while let Some(part) = parts.next() {
+        if part.is_empty() || part == "." || part == ".." {
+            return None;
+        }
+        if !std::fs::symlink_metadata(&place).ok()?.file_type().is_dir() {
+            return None;
+        }
+        place.push(part);
+        if parts.peek().is_none() {
+            return std::fs::symlink_metadata(&place).is_err().then_some(place);
+        }
+    }
+    None
 }
 
 fn build_cmake(
@@ -1005,6 +1135,73 @@ mod tests {
 
     // "Census": the workload's directory and the drivers' temporary names
     // do not reach the hash.
+    #[test]
+    fn members_tar_must_not_create() {
+        // GNU tar 1.35, `--numeric-owner --quoting-style=literal -tvf`.
+        let listing = "\
+drwxr-xr-x 0/0               0 2026-11-17 16:45 top/
+prw-r--r-- 0/0               0 2026-11-17 16:45 top/pipe
+-rw-r--r-- 0/0               2 2026-11-17 16:45 top/ok.txt
+lrwxrwxrwx 0/0               0 2026-11-17 16:45 top/link -> ok.txt
+lrwxrwxrwx 0/0               0 2026-11-17 16:45 top/sub/up -> ../ok.txt
+lrwxrwxrwx 0/0               0 2026-11-17 16:45 top/sub/mid -> a/../b
+lrwxrwxrwx 0/0               0 2026-11-17 16:45 top/sub/abs -> /bin/sh
+lrwxrwxrwx 0/0               0 2026-11-17 16:45 top/sub/dots -> ..x/y..
+drwxr-xr-x 0/0               0 2026-11-17 16:45 top/sub/
+--w------- 0/0               2 2026-11-17 16:45 top/sub/has space.txt
+---------- 0/0               2 2026-11-17 16:45 top/sub/hard
+h--------- 0/0               0 2026-11-17 16:45 top/sub/secret link to top/sub/hard
+d--------- 0/0               0 2026-11-17 16:45 top/locked/
+drw------- 0/0               0 2026-11-17 16:45 top/nosearch/
+-rw-r--r-- 0/0               2 2026-11-17 16:45 top/locked/inner.txt
+crw-rw-rw- 0/0             1,3 2026-11-17 16:45 top/null
+-rw-r--r-- 1000/1000 123456789 2026-11-17 16:45 top/big
+";
+        let held = members_not_unpacked(listing).unwrap();
+        assert_eq!(
+            held.skipped,
+            [
+                "top/pipe",
+                "top/sub/has space.txt",
+                "top/sub/hard",
+                "top/sub/secret",
+                "top/locked",
+                "top/nosearch",
+                "top/null",
+            ]
+        );
+        let links: Vec<(&str, &str)> =
+            held.links.iter().map(|(n, t)| (n.as_str(), t.as_str())).collect();
+        assert_eq!(
+            links,
+            [("top/sub/up", "../ok.txt"), ("top/sub/mid", "a/../b"), ("top/sub/abs", "/bin/sh")]
+        );
+        assert_eq!(members_not_unpacked("").unwrap(), Held::default());
+        for line in [
+            "short",
+            "?rw-r--r-- 0/0 2 2026-11-17 16:45 x",
+            "-rw-r--r-- 0/0 2 2026-11-17",
+            "h--------- 0/0 0 2026-11-17 16:45 a",
+            "lrwxrwxrwx 0/0 0 2026-11-17 16:45 a",
+        ] {
+            assert!(members_not_unpacked(line).is_err(), "{line}");
+        }
+    }
+
+    #[test]
+    fn a_held_link_is_made_only_inside_the_unpacked_tree() {
+        let root = std::env::temp_dir().join(format!("mortar-link-place-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("top/sub")).unwrap();
+        std::os::unix::fs::symlink("sub", root.join("top/alias")).unwrap();
+        std::fs::write(root.join("top/taken"), b"").unwrap();
+        assert_eq!(link_place(&root, "top/sub/up"), Some(root.join("top/sub/up")));
+        for name in ["top/taken", "top/alias/x", "top/gone/x", "../x", "/x", "top//x", "top/./x", ""]
+        {
+            assert_eq!(link_place(&root, name), None, "{name}");
+        }
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
     #[test]
     fn arguments_are_normalized() {
         let dir = Path::new("/c/workloads/hello-c");

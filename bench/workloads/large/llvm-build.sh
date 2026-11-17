@@ -33,11 +33,20 @@ if ! echo "$SHA  $TARBALL" | sha256sum -c --status 2>/dev/null; then
   mv "$TARBALL.part" "$TARBALL"
 fi
 if [ ! -e "$SRC/.unpacked" ]; then
-  # Five test inputs (symlinks under clang/test/Driver/Inputs) cannot be
-  # created on the workspace's file system; they matter to no test run here.
+  # A symbolic link whose target is absolute or has a `..` component is
+  # NOT unpacked (spec/harness.md "The cache"): GNU tar writes a mode-000
+  # placeholder for it and swaps the link in at the end, and on a shared
+  # mount such a file can never be examined or removed again, so the
+  # placeholder stays and breaks whatever walks the tree. This archive
+  # has five (test inputs under clang/test/Driver/Inputs); they matter to
+  # no test run here.
+  tar -tvJf "$TARBALL" --numeric-owner --quoting-style=literal \
+    | sed -n 's/^l.\{9\} .* [0-9-]\{10\} [0-9:]\{5\} \(.*\) -> \(\/.*\|\.\.\|\.\.\/.*\|.*\/\.\.\|.*\/\.\.\/.*\)$/\1/p' \
+    > "$SRC.held"
   (cd "$SRC" && tar -xJf "$TARBALL" --no-same-owner \
+      --anchored --no-wildcards -X "$SRC.held" \
       llvm-project-19.1.7.src/llvm llvm-project-19.1.7.src/clang \
-      llvm-project-19.1.7.src/cmake llvm-project-19.1.7.src/third-party || true)
+      llvm-project-19.1.7.src/cmake llvm-project-19.1.7.src/third-party)
   test -f "$SRC/llvm-project-19.1.7.src/llvm/CMakeLists.txt"
   touch "$SRC/.unpacked"
 fi
