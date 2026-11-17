@@ -1,8 +1,9 @@
 # kiln-k4-details at -fmason-metadata=default (spec/odr.md O-17, O-18,
 # §9.1; WP-134): the same six types, kind 3 without kind 4. Each
 # odr-type-mismatch says what kind 3 alone can say: the sizes, or that
-# the sizes are the same (for the enumerations E and G too, in words
-# written for classes).
+# the sizes are the same (for the enumerations E and G in words of
+# their own since WP-151: "the enumerators or the underlying type
+# differ").
 #@ spec: odr.md O-17, O-18, §9.1
 #@ arch: aarch64 x86_64
 #@ requires: kiln g++
@@ -23,7 +24,7 @@ link(mortar) g++ -static -no-pie main.o a.o b.o -Wl,--odr=strict -o prog
   diag: ^>>> a.o: size 4, alignment 4; b.o: size 8, alignment 8$
   diag: ^>>> the layouts differ (members, offsets, bases or vtable) with the same size 16 and alignment 8$
   diag: ^>>> the layouts differ (members, offsets, bases or vtable) with the same size 8 and alignment 4$
-  diag: ^>>> the layouts differ (members, offsets, bases or vtable) with the same size 4 and alignment 4$
+  diag: ^>>> the enumerators or the underlying type differ, with the same size 4 and alignment 4$
   no-diag: in a.o only
 
 #--- a.cc

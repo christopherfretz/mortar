@@ -1266,11 +1266,12 @@ does not give, takes no part (no finding from it).
    and the data its relocation at offset N refers to".
 4. *`-std`* (WP-151, WP-134 §9). When the record checks read the
    containers (`--odr=strict`), and the first two classes' first copies
-   are in files whose units all carry one `std` each and the two differ,
+   are in files whose units' `std` rows agree within each file (units
+   without one left out) and the two files' differ,
    a second note says so: "the copies' translation units differ in -std
    (std=A and B): the initialization of a static local, constant in one
    and dynamic in the other, may differ legally (spec/odr.md §8.1)". The
-   finding stays a warning; a file without a container, or whose units
+   finding stays a warning; a file without a `std` row, or whose units
    disagree on `std`, adds no note. As O-32 for rows, the note names the
    legal case and does not withdraw the finding
    (`odr_records.rs::w4_notes_a_std_difference`).

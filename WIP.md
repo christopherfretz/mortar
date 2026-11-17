@@ -1,18 +1,13 @@
 # WP-151 WIP
 
-State: reading done; coding part A (records.rs: layout scheme, named rows).
+State: code A+B done and committed; e2e tests in odr_records.rs pass;
+spec odr.md edited (O-11, O-15, O-19, O-23, O-44, §8.1 item 4, §9.1,
+§12.6); diag.md relation rows done.
 
-Plan:
-- A1 Info.layout_scheme; by_scheme per kind; kind3 layout by layout scheme,
-  hash by odr.scheme; shape exception keyed on layout scheme; stats
-  `layout schemes N, layout pairs not compared M` appended after
-  `pairs not compared`.
-- A2 named kind 2 rows: symbol of that name defined in file -> anchored
-  (sym set); else strict only (inlined_only switch), counted unanchored.
-- A3 PARTIAL: records already strict-only + warning; archives (opt-in,
-  any mode): PARTIAL rows compared under strict only.
-- B: details.rs nesting via width, slot help sentence, signed enums,
-  enum default-level note, equal-details enum note; K14 relations
-  DeclaredIn/DeclaredDifferentlyIn (mortar_diag + diag.md); C/C++ pair
-  summary notes only ENFORCE-in-both keys; W4 std note (records gives
-  per-file std, lib.rs runs records before foreign).
+Next:
+- odr link tests: update texts that changed (kiln-k4-*, kiln-mixed,
+  k4-details*); log .build/target-wp-116/wp151/lt-odr.log
+- cost: .build/target-wp-116/wp151/cost (gen.py; named vs anchored,
+  strict/warn/off, /usr/bin/time)
+- clippy, gate, lane (background, uptime <= 12)
+- record spec/landed/meta/WP-151.md; delete this file in final commit

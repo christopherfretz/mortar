@@ -98,8 +98,15 @@ fn file_of(place: &str) -> String {
 }
 
 /// The words of the relations a one-definition-rule diagnostic uses
-/// (`in`: the units of `odr-abi-mismatch`).
-const RELATIONS: [&str; 3] = ["defined differently in ", "defined in ", "in "];
+/// (`in`: the units of `odr-abi-mismatch`; `declared`: kind 5's rows
+/// without a definition, WP-151).
+const RELATIONS: [&str; 5] = [
+    "defined differently in ",
+    "defined in ",
+    "declared differently in ",
+    "declared in ",
+    "in ",
+];
 
 /// The one-definition-rule diagnostics in a link's standard error.
 pub fn reported(stderr: &str) -> Vec<Reported> {
@@ -190,6 +197,12 @@ mod tests {
         assert_eq!(
             reported(record),
             [Reported { id: "odr-type-mismatch", files: vec!["a.o".into(), "b.o".into()] }]
+        );
+        let declared = "ld: error: _Z1fv is declared with a type that does not match its \
+            definition\n>>> declared in a.o:(_Z1fv)\n>>> declared differently in b.o:(_Z1fv)\n";
+        assert_eq!(
+            reported(declared),
+            [Reported { id: "odr-declaration-mismatch", files: vec!["a.o".into(), "b.o".into()] }]
         );
     }
 
