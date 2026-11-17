@@ -1,0 +1,47 @@
+    .text
+    .align 2
+    .type _ZN4absl12lts_2024072212_GLOBAL__N_19Infinite, %function
+_ZN4absl12lts_2024072212_GLOBAL__N_19Infinite:
+    adrp x1, .LANCHOR0
+    add x1, x1, :lo12:.LANCHOR0
+    mov x0, x8
+    add x2, x1, 15
+    b _ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE12_M_construct
+    .size _ZN4absl12lts_2024072212_GLOBAL__N_19Infinite, .-_ZN4absl12lts_2024072212_GLOBAL__N_19Infinite
+    .align 2
+    .global _ZN4absl12lts_2024072210FormatTimeB5cxx11ENS0_4TimeENS0_8TimeZoneE
+    .type _ZN4absl12lts_2024072210FormatTimeB5cxx11ENS0_4TimeENS0_8TimeZoneE, %function
+_ZN4absl12lts_2024072210FormatTimeB5cxx11ENS0_4TimeENS0_8TimeZoneE:
+    stp x29, x30, [sp, -48]!
+    adrp x1, :got:_ZN4absl12lts_2024072212RFC3339_fullE
+    ldr x1, [x1, :got_lo12:_ZN4absl12lts_2024072212RFC3339_fullE]
+    mov x29, sp
+    uxtw x3, w1
+    mov x4, x2
+    mov x2, x0
+    mov x0, 24
+    str x19, [sp, 16]
+    mov x19, x8
+    bl _ZN4absl12lts_2024072210FormatTimeB5cxx11ESt17basic_string_viewIcSt11char_traitsIcEENS0_4TimeENS0_8TimeZoneE
+    mov x0, x19
+    ldr x19, [sp, 16]
+    ldp x29, x30, [sp], 48
+    ret
+    .size _ZN4absl12lts_2024072210FormatTimeB5cxx11ENS0_4TimeENS0_8TimeZoneE, .-_ZN4absl12lts_2024072210FormatTimeB5cxx11ENS0_4TimeENS0_8TimeZoneE
+    .global _ZN4absl12lts_2024072212RFC3339_fullE
+    .section .rodata
+    .align 4
+    .set .LANCHOR0,. + 0
+    .type _ZN4absl12lts_2024072212_GLOBAL__N_1L18kInfiniteFutureStrE, %object
+    .size _ZN4absl12lts_2024072212_GLOBAL__N_1L18kInfiniteFutureStrE, 16
+_ZN4absl12lts_2024072212_GLOBAL__N_1L18kInfiniteFutureStrE:
+    .string "infinite-future"
+    .type _ZN4absl12lts_2024072212_GLOBAL__N_1L16kInfinitePastStrE, %object
+    .size _ZN4absl12lts_2024072212_GLOBAL__N_1L16kInfinitePastStrE, 14
+_ZN4absl12lts_2024072212_GLOBAL__N_1L16kInfinitePastStrE:
+    .string "infinite-past"
+    .zero 2
+    .type _ZN4absl12lts_2024072212RFC3339_fullE, %object
+    .size _ZN4absl12lts_2024072212RFC3339_fullE, 25
+_ZN4absl12lts_2024072212RFC3339_fullE:
+    .string "%Y-%m-%d%ET%H:%M:%E*S%Ez"

@@ -2244,7 +2244,10 @@ rules below judge the rest. Code: `src/symbols.rs`.
     `merged` section, such as GNU ld's `.eh_frame`). A local in a
     non-alloc or discarded section has no address in the output and
     does not count (every object's `$d` in its debug sections; WP-028d:
-    without this, no output `$x` or `$d` was judged);
+    without this, no output `$x` or `$d` was judged); likewise an
+    output local in a non-alloc section (GNU ld keeps Clang's `$d` of
+    `.comment`, an `SHF_MERGE` string section, where the merged empty
+    string lands: `nonpic-analysis-before-start`, WP-121);
   - the symbol is a mapping symbol (`$x…`, `$d…`, AAELF64 "Mapping
     symbols") at an address of an allocated section that no input section
     occupies: the linker's own, marking a veneer or a patch.
@@ -5089,7 +5092,12 @@ never read from the output's `.dynsym`, `.gnu.version_d` or
 
 - **view A**: no interposer; a defined key resolves to the library's
   own definition, an import to its definition in the shared inputs
-  (P-D2), at P-D9's two load biases;
+  (P-D2), at P-D9's two load biases. View A has no host: an unversioned
+  import no shared input defines is the host's to resolve (D-118, legal
+  without `-z defs`/`--no-undefined`), so neither P-D9's "the loader
+  finds no definition" nor P-D7's "no needed or used object defines it"
+  is reported for it, and its places are judged in view B; under `-z
+  defs`, and for a versioned import (W42), both stay findings;
 - **view B**: the interposer first in lookup order.
 
 The loader model resolves every record of the output by the symbol it
@@ -5167,7 +5175,10 @@ and what turns P-D9's equality into a check of D-112.
   defined, live code (D-124); `DT_SONAME` the `-soname` string;
   `DT_VERDEF`/`DT_VERDEFNUM` consistent with `.gnu.version_d` (D-115);
   `GNU_PROPERTY_1_NEEDED_INDIRECT_EXTERN_ACCESS` present iff an input
-  has it (D-112).
+  has it (D-112); `DT_FLAGS_1`'s `DF_1_NODELETE`, `DF_1_NOOPEN`,
+  `DF_1_INITFIRST`, `DF_1_INTERPOSE` and `DF_1_ORIGIN` each present iff
+  the line has its `-z` word (D-103; D-30's executable row does not
+  judge them in a `Shared` output; `DF_1_NOW` stays P-D6's).
 - **P-D23 (mutations; request P-R8).** Each wrong output of `spec/dyn.md`
   §17.7, written into a correct mortar library (or, where it concerns
   the executable, a host), is reported by the rule the table below

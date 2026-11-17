@@ -74,6 +74,11 @@ pub struct SharedLine {
     pub static_pie: bool,
     /// Forms D-112 refuses by name (each a P-D1 finding).
     pub outside: Vec<String>,
+    /// The `-z` keywords of the line, in order (D-103's flags, P-D22).
+    pub z: Vec<String>,
+    /// `-z defs`/`--no-undefined` (D-118: an import nothing defines is
+    /// then refused; without it the host resolves it, P-D17 view A).
+    pub zdefs: bool,
 }
 
 impl SharedLine {
@@ -152,6 +157,12 @@ impl SharedLine {
                 "-E" | "--export-dynamic" | "-export-dynamic" => l.export_dynamic = true,
                 "--no-export-dynamic" => l.export_dynamic = false,
                 "-static-pie" | "--static-pie" => l.static_pie = true,
+                "-z" => {
+                    if let Some(z) = next() {
+                        l.zword(&z);
+                    }
+                }
+                "--no-undefined" | "-no-undefined" => l.zdefs = true,
                 // Options whose next word is a value the loop must skip.
                 "-o"
                 | "-m"
@@ -184,7 +195,6 @@ impl SharedLine {
                 | "-mllvm"
                 | "--chroot"
                 | "--hash-style"
-                | "-z"
                 | "-L"
                 | "--library-path"
                 | "-l"
@@ -220,12 +230,43 @@ impl SharedLine {
                         l.soname = Some(s);
                     } else if let Some(s) = a.strip_prefix("-h").filter(|s| !s.is_empty()) {
                         l.soname = Some(s.to_string());
+                    } else if let Some(z) = a.strip_prefix("-z").filter(|z| !z.is_empty()) {
+                        l.zword(z);
                     }
                 }
             }
             i += 1;
         }
         l
+    }
+
+    fn zword(&mut self, z: &str) {
+        match z {
+            "defs" => self.zdefs = true,
+            "undefs" => self.zdefs = false,
+            _ => {}
+        }
+        self.z.push(z.to_string());
+    }
+
+    /// `DT_FLAGS_1`'s bits the line's `-z` words ask for (D-103):
+    /// `nodelete`, `nodlopen`, `initfirst`, `interpose`, `origin`; `now`
+    /// (the last of `now`/`lazy`).
+    pub fn flags_1(&self) -> u64 {
+        let mut f = 0;
+        for z in &self.z {
+            match z.as_str() {
+                "now" => f |= crate::dynout::DF_1_NOW,
+                "lazy" => f &= !crate::dynout::DF_1_NOW,
+                "nodelete" => f |= DF_1_NODELETE,
+                "nodlopen" => f |= DF_1_NOOPEN,
+                "initfirst" => f |= DF_1_INITFIRST,
+                "interpose" => f |= DF_1_INTERPOSE,
+                "origin" => f |= DF_1_ORIGIN,
+                _ => {}
+            }
+        }
+        f
     }
 
     fn exclude(&mut self, v: &str) {
@@ -1253,6 +1294,12 @@ pub fn pd19(out: &DynOut, sets: &Sets, format: Format) -> Vec<Finding> {
 
 pub const DT_SYMBOLIC: u64 = 16;
 pub const DF_SYMBOLIC: u64 = 2;
+/// `DT_FLAGS_1` bits of D-103's `-z` words.
+pub const DF_1_NODELETE: u64 = 0x8;
+pub const DF_1_INITFIRST: u64 = 0x20;
+pub const DF_1_NOOPEN: u64 = 0x40;
+pub const DF_1_ORIGIN: u64 = 0x80;
+pub const DF_1_INTERPOSE: u64 = 0x400;
 /// `GNU_PROPERTY_1_NEEDED` and its `INDIRECT_EXTERN_ACCESS` bit.
 const GNU_PROPERTY_1_NEEDED: u32 = 0xb000_8000;
 const NEEDED_INDIRECT_EXTERN_ACCESS: u64 = 1;
@@ -1462,6 +1509,21 @@ pub(crate) fn static_checks(
                 "DT_SYMBOLIC {dt_sym}, DF_SYMBOLIC {df_sym}: the line's symbolic form is {} {} --dynamic-list (D-112, W31)",
                 sl.form().name(),
                 if sl.dynamic_lists.is_empty() { "without" } else { "with" }
+            ),
+        ));
+    }
+    // DT_FLAGS_1: D-103's bits, each iff its `-z` word is on the line
+    // (D-30's executable row is not a library's: `filter_dyncheck`).
+    // `DF_1_NOW` stays D-30's (P-D6).
+    let f1 = out.get(DT_FLAGS_1).unwrap_or(0);
+    let asked = sl.flags_1() & !crate::dynout::DF_1_NOW;
+    let extra = f1 & !(asked | crate::dynout::DF_1_NOW | DF_1_PIE);
+    let missing = asked & !f1;
+    if extra != 0 || missing != 0 {
+        v.push(fd(
+            22,
+            format!(
+                "DT_FLAGS_1 {f1:#x}: bits {extra:#x} no -z word of the line asks for, bits {missing:#x} the line asks for are absent (D-103)"
             ),
         ));
     }
@@ -1696,6 +1758,18 @@ const SHARED_TAGS: &[u64] = &[
     0x6fff_fef7, // DT_TLSDESC_GOT (GNU ld)
 ];
 
+/// §12.5 view A, D-118: `name` is an unversioned import of the output,
+/// which the host resolves when nothing the link loads defines it and the
+/// line has no `-z defs` (a versioned one needs its version, W42).
+pub(crate) fn host_import(out: &DynOut, name: &str) -> bool {
+    out.syms.iter().enumerate().any(|(j, s)| {
+        j > 0
+            && s.name == name
+            && !s.defined()
+            && out.versym.as_ref().and_then(|v| v.get(j)).is_none_or(|&x| x & 0x7fff <= 1)
+    })
+}
+
 fn hex_after(m: &str, key: &str) -> Option<u64> {
     let r = m.split_once(key)?.1.trim_start();
     let h = r.strip_prefix("0x")?;
@@ -1712,7 +1786,12 @@ fn hex_after(m: &str, key: &str) -> Option<u64> {
 /// on a defined entry (a `Verdef` index: P-D19), P-D7's "not exported"
 /// (P-D19's export set decides), P-D12 (P-D26), and P-D6's text
 /// relocation (P-D20).
-pub(crate) fn filter_dyncheck(v: &mut Vec<Finding>, image: &Image<'_>, out: &DynOut) {
+pub(crate) fn filter_dyncheck(
+    v: &mut Vec<Finding>,
+    image: &Image<'_>,
+    out: &DynOut,
+    sl: &SharedLine,
+) {
     let entry0 = image.header.e_entry == 0;
     let mask = DF_SYMBOLIC | crate::dynout::DF_STATIC_TLS;
     v.retain(|f| {
@@ -1731,6 +1810,12 @@ pub(crate) fn filter_dyncheck(v: &mut Vec<Finding>, image: &Image<'_>, out: &Dyn
                 if m.starts_with("a tag 0x") {
                     return !hex_after(m, "a tag").is_some_and(|t| SHARED_TAGS.contains(&t));
                 }
+                if m.starts_with("DT_FLAGS_1 0x") {
+                    // P-D22 judges D-103's bits; DF_1_NOW and DF_1_PIE stay.
+                    let lib =
+                        DF_1_NODELETE | DF_1_INITFIRST | DF_1_NOOPEN | DF_1_ORIGIN | DF_1_INTERPOSE;
+                    return hex_after(m, "has bits").is_none_or(|b| b & !lib != 0);
+                }
                 if m.starts_with("DT_FLAGS 0x") {
                     return hex_after(m, "has bits").is_none_or(|b| b & !mask != 0);
                 }
@@ -1741,7 +1826,12 @@ pub(crate) fn filter_dyncheck(v: &mut Vec<Finding>, image: &Image<'_>, out: &Dyn
                 // D-30's order has no library tags: D-102's is P-D22's.
                 m != "a tag D-30 does not write"
             }
-            Rule::Dyn(7) => !m.contains("is not exported (D-12, W8)"),
+            Rule::Dyn(7) => {
+                !m.contains("is not exported (D-12, W8)")
+                    && (!m.contains("is imported and no needed or used object defines it visibly")
+                        || sl.zdefs
+                        || !f.symbol.as_deref().is_some_and(|n| host_import(out, n)))
+            }
             Rule::Dyn(8) => {
                 !(m.contains("names no Vernaux")
                     && f.symbol

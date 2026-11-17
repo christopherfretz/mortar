@@ -25,7 +25,17 @@ macro_rules! src {
     ($($n:literal),* $(,)?) => { &[$(($n, include_str!(concat!("shared/", $n)))),*] };
 }
 
-const SOURCES: &[(&str, &str)] = src!["lib.c", "dep.c", "dl.list", "v.map", "more.c", "ar.c"];
+const SOURCES: &[(&str, &str)] = src![
+    "lib.c",
+    "dep.c",
+    "dl.list",
+    "v.map",
+    "more.c",
+    "ar.c",
+    "before.c",
+    "format-pic.s",
+    "flags.c",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Arch {
@@ -307,6 +317,7 @@ fn build() -> Option<Corpus> {
         let args = ["-shared", "-Wl,-soname,libr.so", "lib.o", "-Wl,-z,max-page-size=0x1000"];
         b.link("relro", Arch::A64, &d, "libr.so", &args, linker, &[]);
     }
+    refs(&mut b);
     Some(Corpus { _scratch: scratch, outs: b.outs })
 }
 
@@ -359,6 +370,92 @@ fn judge(case: &str) {
     }
     assert!(n > 0 || c.outs.is_empty(), "no outputs of case {case}");
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// The reference `-shared` links of the link tests that stage 3 judged
+/// falsely when WP-121 part 1 landed (`tests/link/dyn/shared/`): a library
+/// whose imports no shared input defines, without `-z defs` (D-118: the
+/// host's; `nonpic-analysis-format`); Clang's `.comment` mapping symbol in
+/// a GNU ld library (`nonpic-analysis-before-start`); D-103's `-z` words
+/// (`refused-shared-later`). Every link is the case `refs`.
+fn refs(b: &mut Builder<'_>) {
+    use Linker::Bfd;
+    let a = Arch::A64;
+    let d = b.dir(a, "refs");
+    b.obj(a, &d, "format-pic.s", &[], "format-pic.o");
+    for l in Linker::ALL {
+        let args = ["-shared", "format-pic.o", "-Wl,-soname,libpic.so"];
+        b.link("refs", a, &d, "libpic.so", &args, l, row(l, &[]));
+    }
+    if let Some(clang) = tool("clang") {
+        let src = b.root.join("before.c").display().to_string();
+        must(&d, &clang, &["-O2", "-fPIC", "-c", &src, "-o", "c2.o"]);
+        b.link("refs", a, &d, "libc2.so", &["-shared", "c2.o", "-Wl,-soname,libc2.so"], Bfd, &[]);
+    }
+    for arch in [Arch::A64, Arch::X64] {
+        let d = b.dir(arch, "refs");
+        b.obj(arch, &d, "flags.c", &["-O1", "-fPIC"], "flags.o");
+        let args = [
+            "-shared",
+            "flags.o",
+            "-Wl,-z,nodelete",
+            "-Wl,-z,nodlopen",
+            "-Wl,-z,initfirst",
+            "-Wl,-z,interpose",
+            "-Wl,-z,origin",
+        ];
+        // A10: GNU ld's label of the empty section it removes.
+        for l in Linker::ALL {
+            let want: &'static [&'static str] = if l == Bfd { &["A10"] } else { row(l, &[]) };
+            b.link("refs", arch, &d, "libflags.so", &args, l, want);
+        }
+    }
+}
+
+/// A row's findings, with mold's anomaly A3 (every mold library).
+fn row(l: Linker, want: &'static [&'static str]) -> &'static [&'static str] {
+    if l != Linker::Mold {
+        return want;
+    }
+    let v: Vec<&'static str> = std::iter::once("A3").chain(want.iter().copied()).collect();
+    Vec::leak(v)
+}
+
+// The link tests' reference libraries (WP-121, after part 1): clean.
+#[test]
+fn s12_5_reference_link_tests_verify_clean() {
+    judge("refs");
+}
+
+// P-D22 (D-103): a `DT_FLAGS_1` bit no `-z` word asks for, and one the
+// line asks for that is absent, are findings.
+#[test]
+fn p_d22_flags_1_follows_the_z_words() {
+    let Some(c) = corpus() else { return };
+    let mut n = 0;
+    for o in c
+        .outs
+        .iter()
+        .filter(|o| o.case == "refs" && o.link.output.to_string_lossy().contains("libflags.so"))
+    {
+        n += 1;
+        for (flip, want) in [(0x4u64, "bits 0x4 no -z word"), (0x8, "bits 0x8 the line asks for")] {
+            let mut b = o.link.output_bytes();
+            let h = pt_dynamic(&b);
+            let (off, size) = (u64at(&b, h + 8) as usize, u64at(&b, h + 32) as usize);
+            let e = (off..off + size).step_by(16).find(|&e| u64at(&b, e) == 0x6fff_fffb).unwrap();
+            let v = u64at(&b, e + 8) ^ flip;
+            b[e + 8..e + 16].copy_from_slice(&v.to_le_bytes());
+            let r = o.verify_bytes(&b);
+            assert!(
+                r.findings.iter().any(|f| f.rule.id() == "P-D22" && f.message.contains(want)),
+                "{}: no P-D22 '{want}' in {:#?}",
+                o.label(),
+                r.findings
+            );
+        }
+    }
+    assert!(n == 0 || n == 6, "{n} libflags outputs");
 }
 
 // spec/plumb.md §12.5: a library under each line form of D-112, by each

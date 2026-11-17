@@ -452,6 +452,17 @@ fn locals(e: &mut Engine<'_, '_>, fs: &mut Vec<Finding>) {
             continue;
         }
         let Some(ins) = by_name.get(out.name.as_str()) else { continue };
+        // An output local in a non-alloc section has no address in memory,
+        // as an input local there (Y4): GNU ld keeps Clang's `$d` of
+        // `.comment` where the merged empty string lands (WP-121).
+        if image
+            .sections
+            .get(usize::from(s.st_shndx))
+            .is_some_and(|x| s.st_shndx < SHN_LORESERVE && !x.alloc())
+        {
+            unchecked += 1;
+            continue;
+        }
         // The name's placed input locals by value, computed once per name:
         // every object has its own `$x` and `$d`.
         let p = placed.entry(out.name.as_str()).or_insert_with(|| {
