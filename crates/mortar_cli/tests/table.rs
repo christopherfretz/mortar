@@ -274,7 +274,7 @@ fn status_file_is_current() {
 #[test]
 fn every_row_has_a_class_at_r() {
     let missing: Vec<String> =
-        rows().iter().filter(|r| r.at_r.is_none()).map(|r| r.name()).collect();
+        rows().iter().filter(|r| r.at_r.is_none()).map(mortar_cli::table::Row::name).collect();
     assert!(missing.is_empty(), "rows without a class at -r: {missing:?}");
 }
 
@@ -287,7 +287,7 @@ fn the_rows_that_act_until_a_package() {
         .iter()
         .filter_map(|r| r.at_r.and_then(|a| a.until).map(|u| (r.name(), u.package, u.refusal)))
         .collect();
-    until.sort();
+    until.sort_unstable();
     let mut want = vec![
         ("-r", "RL-7", "relocatable output (-r)"),
         ("-Ur", "RL-7", "relocatable output (-r)"),
@@ -301,7 +301,7 @@ fn the_rows_that_act_until_a_package() {
         ("-b", "RL-10", "-b with -r"),
         ("--force-group-allocation", "RL-8", "--force-group-allocation with -r"),
     ];
-    want.sort();
+    want.sort_unstable();
     let want: Vec<(String, &str, &str)> =
         want.into_iter().map(|(n, p, r)| (n.to_owned(), p, r)).collect();
     assert_eq!(until, want);
@@ -321,9 +321,9 @@ fn the_rows_that_conflict_with_r() {
     let mut have: Vec<String> = rows()
         .iter()
         .filter(|r| r.at_r.is_some_and(|a| a.class == AtRClass::Conflicting))
-        .map(|r| r.name())
+        .map(mortar_cli::table::Row::name)
         .collect();
-    have.sort();
+    have.sort_unstable();
     let mut want = vec![
         "-shared",
         "-pie",

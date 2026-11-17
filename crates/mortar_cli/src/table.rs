@@ -1,6 +1,8 @@
 //! The option table: one row per option, with its grammar and its status
 //! (`spec/cli.md` §4). The rows are in `rows.rs`.
 
+use std::fmt::Write as _;
+
 use crate::plan::{Bsymbolic, Discard, Magic, ScriptRole, Strip, SymbolRole, Target, VersionStyle};
 
 /// One option of the command line (`spec/cli.md` §4.1).
@@ -317,10 +319,10 @@ impl AtR {
             out.push_str(self.note);
         }
         if let Some(u) = self.until {
-            out.push_str(&format!("; refused until {} (`{}`)", u.package, u.refusal));
+            let _ = write!(out, "; refused until {} (`{}`)", u.package, u.refusal);
         }
         if !self.rule.is_empty() {
-            out.push_str(&format!(" ({})", self.rule));
+            let _ = write!(out, " ({})", self.rule);
         }
         out
     }
@@ -678,6 +680,7 @@ pub enum Lands {
 impl Lands {
     /// The `Plan` field the option lands in, for the generated table.
     #[must_use]
+    #[allow(clippy::too_many_lines)] // one arm per variant
     pub const fn field(self) -> &'static str {
         match self {
             Self::Output => "output",

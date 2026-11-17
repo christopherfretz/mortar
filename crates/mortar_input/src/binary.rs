@@ -24,7 +24,7 @@ use mortar_elf::Machine;
 ///
 /// Until RL-10 lands: `unsupported option: -b with -r`
 /// (`spec/diag.md` §4.4).
-pub fn object(path: &[u8], contents: &[u8], machine: Machine) -> Result<Vec<u8>, Diagnostic> {
+pub fn object(path: &[u8], contents: &[u8], machine: Machine) -> Result<Vec<u8>, Box<Diagnostic>> {
     let _ = (path, contents, machine);
-    Err(mortar_diag::relocatable::refused_with_r("-b"))
+    Err(Box::new(mortar_diag::relocatable::refused_with_r("-b")))
 }

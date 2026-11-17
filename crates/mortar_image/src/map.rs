@@ -381,6 +381,10 @@ pub fn token(s: &[u8], out: &mut String) {
 
 /// The text of `map` (I-79): groups formatted in parallel per file and
 /// concatenated in the format's group order.
+///
+/// A `-r` map's records go in `spec/plumb.md` §14.2's writer order:
+/// `rplace` where `place` goes, then `rframe`, `rgroup`, `discard`,
+/// `rcommon`, `output`, `arg`.
 #[must_use]
 pub fn render(map: &Map, pool: &Pool) -> Vec<u8> {
     let mut out = String::from("mortar-map 2\n");
@@ -434,22 +438,15 @@ pub fn render(map: &Map, pool: &Pool) -> Vec<u8> {
         s
     });
     out.extend(placed);
-    // `spec/plumb.md` §14.2's writer order: `rplace` where `place` goes,
-    // then `rframe`, `rgroup`, `discard`, `rcommon`, `output`, `arg`.
+    // A `-r` map has no `nplace`/`merged` record (§14.2).
     if let Some(r) = &map.relocatable {
         render_rplace(r, pool, &mut out);
-    }
-    out.extend(nonalloc);
-    if let Some(r) = &map.relocatable {
         render_rframe_rgroup(r, &mut out);
     }
+    out.extend(nonalloc);
     out.extend(discards);
     if let Some(r) = &map.relocatable {
-        for c in &r.rcommon {
-            out.push_str("rcommon ");
-            token(&c.name, &mut out);
-            let _ = writeln!(out, " {} {:x} {:x} {:x}", c.out, c.offset, c.size, c.align);
-        }
+        render_rcommon(r, &mut out);
     }
     for f in &map.folds {
         let _ = writeln!(out, "fold {} {} {} {}", f.file, f.section, f.into_file, f.into_section);
@@ -501,6 +498,15 @@ fn render_rplace(r: &RelocatableRecords, pool: &Pool, out: &mut String) {
         }
         s
     }));
+}
+
+/// The `rcommon` records of a `-r` map.
+fn render_rcommon(r: &RelocatableRecords, out: &mut String) {
+    for c in &r.rcommon {
+        out.push_str("rcommon ");
+        token(&c.name, out);
+        let _ = writeln!(out, " {} {:x} {:x} {:x}", c.out, c.offset, c.size, c.align);
+    }
 }
 
 /// The `rframe` and `rgroup` records of a `-r` map.
