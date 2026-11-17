@@ -1,0 +1,7 @@
+-z
+max-page-size=4096
+-o
+gc-a64.bfd
+-shared
+vl-a64.o
+-Map=gc-a64.bfd.map

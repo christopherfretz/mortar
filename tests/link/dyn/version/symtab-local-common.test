@@ -6,7 +6,6 @@
 # linker writes here; WP-150 asks the verifier to take a local one.
 #@ spec: synth.md "S-77"; dyn.md "D-114"
 #@ arch: aarch64 x86_64
-#@ xfail(mortar): the verifier's M7 wants the map's common 'cm' a global or weak .symtab symbol; a version script makes it local (WP-150 reported it)
 
 cc -O1 -fPIC -fcommon lib.c -o lib.o
 cc -O1 -fPIE main.c -o main.o

@@ -1,0 +1,48 @@
+mortar-map 2
+file 0 ex-a64.o
+file 1 libx-a64.a exlib-a64.o 5c
+piece 0 7 0 4002f0 14
+piece 0 7 14 400304 1c
+place 0 1 410370 2c
+place 0 3 4304e8 0
+place 0 4 4304f0 0
+piece 1 6 14 400320 14
+place 1 1 41039c 8
+place 1 2 4304e8 8
+place 1 3 4304f0 0
+merged 0 5 .comment
+merged 1 4 .comment
+chunk synthetic .interp 400238 1b
+chunk synthetic .gnu.hash 400258 20
+chunk synthetic .dynsym 400278 48
+chunk synthetic .dynstr 4002c0 16
+chunk synthetic .rela.plt 4002d8 18
+chunk synthetic .eh_frame 4002f0 48
+chunk synthetic .plt 410340 30
+chunk synthetic .got 4204b8 10
+chunk synthetic .got.plt 4304c8 20
+chunk synthetic .dynamic 4203a8 110
+chunk synthetic .symtab - 108
+chunk synthetic .strtab - 3e
+chunk synthetic .shstrtab - 8d
+chunk synthetic .comment - d
+chunk synthetic .pad.relro 4204c8 fb38
+output exec
+interp /lib/ld-linux-aarch64.so.1
+bind lazy
+relro on
+arg -o
+arg exl-nopie-a64
+arg -no-pie
+arg -E
+arg -dynamic-linker
+arg /lib/ld-linux-aarch64.so.1
+arg ex-a64.o
+arg libx-a64.a
+arg libdep-a64.so
+arg --exclude-libs=ALL
+arg --mortar-map=exl-nopie-a64.map
+needed libdep.so
+export _start
+plt dep
+end

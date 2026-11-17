@@ -1,0 +1,43 @@
+mortar-map 2
+file 0 vl-x64.o
+place 0 5 360 8
+place 0 1 1368 4f
+place 0 3 3528 0
+place 0 4 3528 0
+merged 0 6 .comment
+chunk synthetic .gnu.hash 1c8 2c
+chunk synthetic .dynsym 1f8 78
+chunk synthetic .dynstr 270 30
+chunk synthetic .gnu.version 2a0 a
+chunk synthetic .gnu.version_d 2ac 38
+chunk synthetic .rela.dyn 2e8 78
+chunk synthetic .got 24e8 28
+chunk synthetic .got.plt 3510 18
+chunk synthetic .dynamic 23b8 130
+chunk synthetic .symtab - 180
+chunk synthetic .strtab - 9a
+chunk synthetic .shstrtab - 97
+chunk synthetic .comment - d
+chunk synthetic .pad.relro 2510 af0
+common cm 3528 4 4
+define _GLOBAL_OFFSET_TABLE_ 3510
+define __stop_mysec 368
+define __start_mysec 360
+define _end 352c
+define __bss_start 3528
+output shared
+bind lazy
+relro on
+symbolic none
+version-script vl.map
+arg -o
+arg vl-x64
+arg -shared
+arg --version-script=vl.map
+arg vl-x64.o
+arg --mortar-map=vl-x64.map
+export api
+export api_end
+export api_bss
+export api__start_mysec
+end

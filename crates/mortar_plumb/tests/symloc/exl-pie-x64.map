@@ -1,0 +1,43 @@
+mortar-map 2
+file 0 ex-x64.o
+file 1 libx-x64.a exlib-x64.o 5c
+place 0 1 1310 1c
+place 0 3 3478 0
+place 0 4 3480 0
+place 1 1 132c 6
+place 1 2 3478 8
+place 1 3 3480 0
+merged 0 5 .comment
+merged 1 4 .comment
+chunk synthetic .interp 238 1c
+chunk synthetic .gnu.hash 258 20
+chunk synthetic .dynsym 278 48
+chunk synthetic .dynstr 2c0 16
+chunk synthetic .rela.plt 2d8 18
+chunk synthetic .plt 12f0 20
+chunk synthetic .got.plt 3458 20
+chunk synthetic .dynamic 2338 120
+chunk synthetic .symtab - 90
+chunk synthetic .strtab - 3e
+chunk synthetic .shstrtab - 7e
+chunk synthetic .comment - d
+chunk synthetic .pad.relro 2458 ba8
+output pie
+interp /lib64/ld-linux-x86-64.so.2
+bind lazy
+relro on
+arg -o
+arg exl-pie-x64
+arg -pie
+arg -E
+arg -dynamic-linker
+arg /lib64/ld-linux-x86-64.so.2
+arg ex-x64.o
+arg libx-x64.a
+arg libdep-x64.so
+arg --exclude-libs=ALL
+arg --mortar-map=exl-pie-x64.map
+needed libdep.so
+export _start
+plt dep
+end

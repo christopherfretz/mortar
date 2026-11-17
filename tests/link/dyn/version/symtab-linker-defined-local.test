@@ -6,8 +6,7 @@
 # `LOCAL DEFAULT` (all three). The section stays and the library walks it
 # (D-124 item 4).
 #@ spec: dyn.md "D-114"; synth.md "S-77"
-# GNU ld's AArch64 GOT slot of _end is a RELATIVE record one past the last segment's end: a legal address value (P-D9, WP-166).
-#@ xfail(lld): D-114: lld keeps `__start_`/`__stop_` exported under `local: *` (the verifier's P-D19)
+#@ anomaly(lld): A61
 #@ arch: aarch64 x86_64
 
 cc -O1 -fPIC lib.c -o lib.o

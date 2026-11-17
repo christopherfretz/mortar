@@ -1,0 +1,56 @@
+mortar-map 2
+file 0 vl-a64.o
+place 0 5 440 8
+piece 0 8 0 448 14
+piece 0 8 14 45c 14
+piece 0 8 28 470 14
+piece 0 8 3c 484 20
+piece 0 8 5c 4a4 14
+piece 0 8 70 4b8 14
+piece 0 8 84 4cc 14
+place 0 1 10520 74
+place 0 3 30718 0
+place 0 4 30718 0
+merged 0 6 .comment
+chunk synthetic .gnu.hash 1c8 64
+chunk synthetic .dynsym 230 120
+chunk synthetic .dynstr 350 5d
+chunk synthetic .rela.dyn 3b0 78
+chunk synthetic .rela.plt 428 18
+chunk synthetic .eh_frame 448 9c
+chunk synthetic .plt 104f0 30
+chunk synthetic .got 206c8 30
+chunk synthetic .got.plt 306f8 20
+chunk synthetic .dynamic 20598 130
+chunk synthetic .symtab - 1b0
+chunk synthetic .strtab - 84
+chunk synthetic .shstrtab - 94
+chunk synthetic .comment - d
+chunk synthetic .pad.relro 206f8 f908
+common cm 30718 4 4
+define __stop_mysec 448
+define __start_mysec 440
+define _end 3071c
+define __bss_start 30718
+output shared
+bind lazy
+relro on
+symbolic none
+arg -o
+arg gc-a64
+arg -shared
+arg vl-a64.o
+arg --mortar-map=gc-a64.map
+export bar
+export api_bss
+export __bss_start
+export foo
+export api
+export cm
+export __stop_mysec
+export __start_mysec
+export api_end
+export _end
+export api__start_mysec
+plt foo
+end

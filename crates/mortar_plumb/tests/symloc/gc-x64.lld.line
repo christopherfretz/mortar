@@ -1,0 +1,7 @@
+-z
+max-page-size=4096
+-o
+gc-x64.lld
+-shared
+vl-x64.o
+-Map=gc-x64.lld.map

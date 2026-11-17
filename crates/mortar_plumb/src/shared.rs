@@ -1101,7 +1101,7 @@ pub fn line_preempts(
 pub const SEVEN: [&str; 7] = ["_etext", "etext", "_edata", "edata", "__bss_start", "_end", "end"];
 
 /// A C identifier (`__start_`/`__stop_` sections, layout L-96).
-fn c_ident(s: &str) -> bool {
+pub(crate) fn c_ident(s: &str) -> bool {
     !s.is_empty()
         && !s.as_bytes()[0].is_ascii_digit()
         && s.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_')
@@ -2686,21 +2686,25 @@ pub(crate) fn filter_dyncheck(
 }
 
 /// Y3's binding and visibility rows for a key a version script or
-/// `--exclude-libs` made local: the linker makes it `STB_LOCAL`
-/// (D-114), which the inputs' global definition cannot say.
+/// `--exclude-libs` made local, in a reference's output: GNU ld writes
+/// `DEFAULT` on its locals, lld and mold keep the visibility (WP-150); a
+/// mortar output is held to S-77 by Y3 itself (WP-169).
 /// A use of a preemptible IFUNC key that view A finds wrong is P-D18's:
 /// it must reach the resolver's result through the record naming it.
 pub(crate) fn filter_view1(
     v: &mut Vec<Finding>,
     sets: &Sets,
     ifr: &HashMap<String, crate::loader::Interposed>,
+    format: Format,
 ) {
     v.retain(|f| {
-        !(f.rule == Rule::SymbolTable(3)
+        !(format != Format::Mortar
+            && f.rule == Rule::SymbolTable(3)
             && f.symbol
                 .as_ref()
                 .is_some_and(|n| sets.local.contains(n) || sets.local.contains(split_version(n).0))
-            && (f.message.contains("binding") || f.message.contains("visibility")))
+            && (f.message.contains("binding") || f.message.contains("visibility"))
+            && !f.message.contains("which the line makes local"))
     });
     for f in v.iter_mut() {
         if f.reloc.is_some()

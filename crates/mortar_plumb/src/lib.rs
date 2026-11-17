@@ -380,7 +380,7 @@ pub(crate) fn run_engine(
             engine.findings.extend(fate::check(objs, map, &o, engine.exports.as_ref()));
         }
         // M6, M7 (§3.3): the allocation records, in every mortar map.
-        engine.findings.extend(maprec::check(image, objs, map));
+        engine.findings.extend(maprec::check(image, objs, map, &engine.made_local.keys));
         prof::mark("allocation records");
     }
     if image.header.e_machine == mortar_elf::consts::EM_X86_64 {

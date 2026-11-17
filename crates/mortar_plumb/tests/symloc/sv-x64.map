@@ -1,0 +1,31 @@
+mortar-map 2
+file 0 sv-x64.o
+place 0 1 1274 8
+place 0 2 2360 0
+place 0 3 2360 0
+merged 0 4 .comment
+chunk synthetic .gnu.hash 190 24
+chunk synthetic .dynsym 1b8 48
+chunk synthetic .dynstr 200 12
+chunk synthetic .gnu.version 212 6
+chunk synthetic .gnu.version_d 218 5c
+chunk synthetic .dynamic 2280 e0
+chunk synthetic .symtab - 90
+chunk synthetic .strtab - 41
+chunk synthetic .shstrtab - 74
+chunk synthetic .comment - d
+chunk synthetic .pad.relro 2360 ca0
+output shared
+bind lazy
+relro on
+symbolic none
+version-script sv.map
+arg -o
+arg sv-x64
+arg -shared
+arg --version-script=sv.map
+arg sv-x64.o
+arg --mortar-map=sv-x64.map
+export foo
+export foo
+end

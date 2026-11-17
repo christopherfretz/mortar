@@ -487,6 +487,16 @@ enum Seq {
     Bad(String, Option<u64>),
 }
 
+/// The keys the line makes local (`Engine::made_local`).
+#[derive(Default)]
+pub(crate) struct MadeLocal {
+    /// The keys.
+    pub(crate) keys: std::collections::BTreeSet<String>,
+    /// They are an executable's excluded keys (GNU ld's `GLOBAL HIDDEN`
+    /// form is named there, WP-150 item 1).
+    pub(crate) exec: bool,
+}
+
 /// The engine's state over one verification.
 pub(crate) struct Engine<'a, 'b> {
     pub(crate) image: &'b Image<'a>,
@@ -557,6 +567,12 @@ pub(crate) struct Engine<'a, 'b> {
     /// M10's export roots ask it; `None` when the output exports nothing
     /// (WP-147, WP-149).
     pub(crate) exports: Option<crate::shared::ExportRule>,
+    /// The keys the line makes local (a version script's `local:`,
+    /// `--exclude-libs`; synth S-77, S-121; WP-169): stage 3 fills it
+    /// (`Sets::local` for a `Shared` output, the excluded keys of an
+    /// executable); empty for a static output. Hidden and internal
+    /// definitions are read from the inputs where they are asked.
+    pub(crate) made_local: MadeLocal,
     /// Stage 3 (§12.5): the keys a shared object's view takes from the
     /// loader (`dynbind`) although the output defines them: preemptible
     /// keys under an interposer, a preemptible IFUNC's resolved address.
@@ -924,6 +940,7 @@ impl<'a, 'b> Engine<'a, 'b> {
             dynamic: false,
             shared: false,
             exports: None,
+            made_local: MadeLocal::default(),
             loader_keys: std::collections::HashSet::new(),
             dso_words: None,
             plt: BTreeMap::new(),
