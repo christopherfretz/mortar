@@ -103,13 +103,7 @@ pub(crate) fn verify_in(
 }
 
 /// [`verify_in`] without the input set: the rules of the output's kind.
-fn verify_kind(
-    output: &[u8],
-    store: &Store<'_>,
-    m: usize,
-    map: &Map,
-    ctx: &Ctx<'_>,
-) -> Report {
+fn verify_kind(output: &[u8], store: &Store<'_>, m: usize, map: &Map, ctx: &Ctx<'_>) -> Report {
     let image = match Image::read(output) {
         Ok(i) => i,
         Err(e) => {

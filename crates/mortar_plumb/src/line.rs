@@ -40,7 +40,9 @@ pub trait Files: Sync {
         let got = usize::try_from(offset)
             .ok()
             .and_then(|at| b.get(at..at.checked_add(buf.len())?))
-            .ok_or_else(|| format!("{path}: {} bytes at {offset:#x} are past its end", buf.len()))?;
+            .ok_or_else(|| {
+                format!("{path}: {} bytes at {offset:#x} are past its end", buf.len())
+            })?;
         buf.copy_from_slice(got);
         Ok(())
     }
@@ -85,9 +87,8 @@ pub fn host_read_at(path: &std::path::Path, offset: u64, buf: &mut [u8]) -> Resu
     use std::io::{Read as _, Seek as _, SeekFrom};
     let mut f = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
     f.seek(SeekFrom::Start(offset)).map_err(|e| format!("{}: {e}", path.display()))?;
-    f.read_exact(buf).map_err(|e| {
-        format!("{}: {} bytes at {offset:#x}: {e}", path.display(), buf.len())
-    })
+    f.read_exact(buf)
+        .map_err(|e| format!("{}: {} bytes at {offset:#x}: {e}", path.display(), buf.len()))
 }
 
 /// An input of the line, in order.
@@ -276,7 +277,7 @@ impl Line {
             i += used;
             let (id, value) = match w {
                 Word::Input => {
-                    l.file(a, a, &st, group, files, 0);
+                    l.file(a, a, st, group, files, 0);
                     continue;
                 }
                 Word::Z { kw, .. } => {
@@ -359,7 +360,7 @@ impl Line {
                 "-r" => l.relocatable = true,
                 "-T" | "--default-script" => l.scripts.push(v),
                 "--undefined-glob" | "-c" => l.unmodelled.push(format!("{id} {v}")),
-                "-l" => l.library(&v, &st, group, files),
+                "-l" => l.library(&v, st, group, files),
                 "--copy-dt-needed-entries" => {
                     l.outside.push("--copy-dt-needed-entries (dyn.md D-15)".into());
                 }
@@ -420,7 +421,7 @@ impl Line {
         }
     }
 
-    fn library(&mut self, name: &str, st: &State, group: Option<usize>, files: &dyn Files) {
+    fn library(&mut self, name: &str, st: State, group: Option<usize>, files: &dyn Files) {
         let found = if let Some(exact) = name.strip_prefix(':') {
             self.lib_dirs.iter().map(|d| format!("{d}/{exact}")).find(|p| files.len(p).is_some())
         } else {
@@ -456,7 +457,7 @@ impl Line {
         &mut self,
         path: &str,
         named: &str,
-        st: &State,
+        st: State,
         group: Option<usize>,
         files: &dyn Files,
         depth: u32,
@@ -487,7 +488,12 @@ impl Line {
                 });
             }
         } else if bytes.starts_with(b"!<arch>\n") || bytes.starts_with(b"!<thin>\n") {
-            self.items.push(Item::Relocatable { path: path.into(), group, whole: st.whole, lib: false });
+            self.items.push(Item::Relocatable {
+                path: path.into(),
+                group,
+                whole: st.whole,
+                lib: false,
+            });
         } else if bytes.is_empty() {
             // input §2.3: an empty file is ignored.
         } else if depth > 8 {
@@ -504,11 +510,12 @@ impl Line {
     /// The subset of the script language a shared-library script uses:
     /// `INPUT`, `GROUP`, `AS_NEEDED`, `OUTPUT_FORMAT`, comments. Anything
     /// else is a problem (named).
+    #[allow(clippy::too_many_lines)] // one arm per script command
     fn script(
         &mut self,
         path: &str,
         text: &str,
-        st: &State,
+        st: State,
         group: Option<usize>,
         files: &dyn Files,
         depth: u32,
@@ -596,11 +603,11 @@ impl Line {
                     }
                 }
                 _ if in_input => {
-                    let sub = State { as_needed: st.as_needed || as_needed_at.is_some(), ..*st };
+                    let sub = State { as_needed: st.as_needed || as_needed_at.is_some(), ..st };
                     if let Some(n) = w.strip_prefix("-l") {
-                        self.library(n, &sub, grp, files);
+                        self.library(n, sub, grp, files);
                     } else if w.starts_with('/') || files.len(w).is_some() {
-                        self.file(w, w, &sub, grp, files, depth + 1);
+                        self.file(w, w, sub, grp, files, depth + 1);
                     } else {
                         // GNU ld: a relative name is tried in the current
                         // directory, the script's, then the -L path.
@@ -611,7 +618,7 @@ impl Line {
                             .map(|d| format!("{d}/{w}"))
                             .find(|p| files.len(p).is_some());
                         match found {
-                            Some(p) => self.file(&p, w, &sub, grp, files, depth + 1),
+                            Some(p) => self.file(&p, w, sub, grp, files, depth + 1),
                             None => self.problems.push(format!("{w} (in {path}): not found")),
                         }
                     }

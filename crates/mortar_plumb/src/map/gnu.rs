@@ -31,6 +31,7 @@ const DATA_STATEMENTS: [&str; 6] = ["BYTE", "SHORT", "LONG", "QUAD", "SQUAD", "F
 const LINKER_STUBS: &str = "linker stubs";
 
 /// Reads a GNU ld map (§3.4).
+#[allow(clippy::too_many_lines)] // one arm per block and line form of §3.4
 pub fn parse(text: &str) -> Result<Map, MapError> {
     let mut map = Map::new(Format::Gnu);
     let mut files = FileInterner::default();
@@ -53,7 +54,10 @@ pub fn parse(text: &str) -> Result<Map, MapError> {
             if in_members {
                 if let Some((m, at)) = member.take() {
                     if !line.starts_with(' ') || line.trim().is_empty() {
-                        return Err(MapError::new(at, format!("archive member '{m}' has no reason")));
+                        return Err(MapError::new(
+                            at,
+                            format!("archive member '{m}' has no reason"),
+                        ));
                     }
                     map.included.push(included(&m, line.trim(), at)?);
                     continue;
@@ -76,7 +80,10 @@ pub fn parse(text: &str) -> Result<Map, MapError> {
                     // A member and a reason; anything else in the field
                     // ends the list (GNU ld's notes: "discarding zero
                     // address range FDE in ...").
-                    Some((m, why)) if !m.is_empty() && let Ok(inc) = included(m, why.trim(), n) => {
+                    Some((m, why))
+                        if !m.is_empty()
+                            && let Ok(inc) = included(m, why.trim(), n) =>
+                    {
                         map.included.push(inc);
                     }
                     // A long member alone (a thin archive's member is its
@@ -408,12 +415,18 @@ Linker script and memory map
                 ("libk.a(j.o)".into(), IncludedBy::WholeArchive, 4),
                 (
                     "libk.a(i.o)".into(),
-                    IncludedBy::Reference { file: MapFile::member("libk.a", "k.o"), symbol: "i_fn".into() },
+                    IncludedBy::Reference {
+                        file: MapFile::member("libk.a", "k.o"),
+                        symbol: "i_fn".into()
+                    },
                     5
                 ),
                 (
                     "a very long archive name.a(member.o)".into(),
-                    IncludedBy::Reference { file: MapFile::plain("dir (x)/r.o"), symbol: "r_fn".into() },
+                    IncludedBy::Reference {
+                        file: MapFile::plain("dir (x)/r.o"),
+                        symbol: "r_fn".into()
+                    },
                     6
                 ),
             ]
@@ -429,7 +442,14 @@ Linker script and memory map
         // GNU ld's notes in the list (i386) end it.
         let note = "discarding zero address range FDE in libc.a(clone3.o)(.eh_frame).\n";
         let m = parse(&format!("{head}lib/k.o                       (x)\n{note}libk.a(j.o)                   r.o x\n{tail}")).unwrap();
-        assert_eq!(m.included, [Included { file: MapFile::plain("lib/k.o"), by: IncludedBy::Root("x".into()), line: 3 }]);
+        assert_eq!(
+            m.included,
+            [Included {
+                file: MapFile::plain("lib/k.o"),
+                by: IncludedBy::Root("x".into()),
+                line: 3
+            }]
+        );
         let ended = format!("{head}a long archive member name.a(m.o)");
         assert_eq!(parse(&ended).unwrap_err().line, 3);
     }

@@ -469,7 +469,10 @@ impl mortar_plumb::Files for BaseFiles<'_> {
     // By position (the input set reads archives' members, spec/plumb.md
     // §3.8, §8.1).
     fn len(&self, path: &str) -> Option<u64> {
-        std::fs::metadata(self.0.join(path)).ok().filter(std::fs::Metadata::is_file).map(|m| m.len())
+        std::fs::metadata(self.0.join(path))
+            .ok()
+            .filter(std::fs::Metadata::is_file)
+            .map(|m| m.len())
     }
     fn head(&self, path: &str, n: usize) -> Option<Vec<u8>> {
         mortar_plumb::line::host_head(&self.0.join(path), n)

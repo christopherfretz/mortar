@@ -833,11 +833,15 @@ reference's, followed by what was not judged; or `input set: not judged
 (why)`. `m` counts the relocatable files of the line, members one by
 one.
 
-**Cost** (§8.1): each object's symbol table is read once by position (an
-archive's members by their headers; nothing else of a member), its
-mentions kept as 5 bytes per symbol with the names interned once; the
-closure is linear in the mentions. Measured on `cxx-large-g`: see the
-landed record `spec/landed/plumb/WP-156.md`.
+**Cost** (§8.1): each object's symbol table is read once (an archive's
+members by their headers; nothing else of a member); a file of at most
+64 MiB is read whole once and dropped when its item is done, a larger one
+by position. The mentions are kept as 5 bytes per symbol with the names
+interned once; the closure is linear in the mentions. Measured on
+`cxx-large-g` (7,603 files on the line, 2,845 in the link): the rule
+adds 2.9-3.2 s to a 13-14 s pass (5.9 s at a load of 9) and nothing to
+the peak (1,709 MiB by GNU time, the linker's 1,977 MiB); the landed
+record `spec/landed/plumb/WP-156.md` has the runs.
 
 Tests: `inset::tests` (the closure on synthetic archives: a cycle, one
 symbol in two archives, an archive named twice, weak references and

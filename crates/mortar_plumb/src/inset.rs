@@ -15,15 +15,17 @@
 //! defines it and the linker's own rule (GNU ld's walk; lld without
 //! `--fortran-common` ignoring commons) would have extracted it.
 
-use crate::hasher::HashMap;
+use crate::hasher::{HashMap, HashSet};
 use crate::line::{Files, Item, Line};
 use crate::map::{Format, IncludedBy, Map, MapFile};
 use crate::report::{Finding, Rule};
 use crate::store::{At, Loc};
 use mortar_elf::consts::{
-    SHF_ALLOC, SHF_MERGE, SHN_X86_64_LCOMMON, STB_LOCAL, STB_WEAK, STT_FILE, STT_FUNC, STT_GNU_IFUNC, STT_SECTION,
+    SHF_ALLOC, SHF_MERGE, SHN_X86_64_LCOMMON, STB_LOCAL, STB_WEAK, STT_FILE, STT_FUNC,
+    STT_GNU_IFUNC, STT_SECTION,
 };
 use mortar_elf::{Object, SymbolSection};
+use std::fmt::Write as _;
 
 /// The rule ids (§7.1).
 pub(crate) const MISSING: Rule = Rule::Map(11);
@@ -72,6 +74,10 @@ pub(crate) fn judge(map: &Map, words: Option<&[String]>, files: &dyn Files) -> V
     };
     if map.format == Format::Mortar { set.strict(map) } else { set.loose(map, &line, words) }
 }
+
+/// A missing key's demand: the demanding file, its name, the members
+/// that define the key.
+type Demand = (usize, String, Vec<usize>);
 
 fn not_judged(why: &str) -> Verdict {
     Verdict { findings: Vec::new(), coverage: format!("input set: not judged ({why})") }
@@ -174,7 +180,9 @@ impl crate::Source for Positional<'_> {
             let got = usize::try_from(offset)
                 .ok()
                 .and_then(|at| b.get(at..at.checked_add(buf.len())?))
-                .ok_or_else(|| format!("{}: {} bytes at {offset:#x} are past its end", self.path(i), buf.len()))?;
+                .ok_or_else(|| {
+                    format!("{}: {} bytes at {offset:#x} are past its end", self.path(i), buf.len())
+                })?;
             buf.copy_from_slice(got);
             return Ok(());
         }
@@ -214,7 +222,13 @@ fn norm(p: &str) -> String {
         }
     }
     let j = out.join("/");
-    if abs { format!("/{j}") } else if j.is_empty() { ".".into() } else { j }
+    if abs {
+        format!("/{j}")
+    } else if j.is_empty() {
+        ".".into()
+    } else {
+        j
+    }
 }
 
 fn map_ident(f: &MapFile) -> Ident {
@@ -277,7 +291,13 @@ impl Inputs {
         match entry {
             Some(e) => {
                 let k = s.key(e.as_bytes());
-                s.roots.push(Root { key: k, at: 0, by: "the entry".into(), uncertain: false, no_position: false });
+                s.roots.push(Root {
+                    key: k,
+                    at: 0,
+                    by: "the entry".into(),
+                    uncertain: false,
+                    no_position: false,
+                });
             }
             None if !line.shared && !line.relocatable => {
                 let k = s.key(b"_start");
@@ -293,7 +313,13 @@ impl Inputs {
         }
         for u in &line.undefined {
             let k = s.key(u.as_bytes());
-            s.roots.push(Root { key: k, at: 0, by: format!("-u {u}"), uncertain: false, no_position: false });
+            s.roots.push(Root {
+                key: k,
+                at: 0,
+                by: format!("-u {u}"),
+                uncertain: false,
+                no_position: false,
+            });
         }
         for u in &line.require_defined {
             let k = s.key(u.as_bytes());
@@ -307,7 +333,13 @@ impl Inputs {
         }
         for (x, at) in &line.externs {
             let k = s.key(x.as_bytes());
-            s.roots.push(Root { key: k, at: *at, by: format!("EXTERN({x})"), uncertain: false, no_position: false });
+            s.roots.push(Root {
+                key: k,
+                at: *at,
+                by: format!("EXTERN({x})"),
+                uncertain: false,
+                no_position: false,
+            });
         }
         for (d, at) in &line.defsym {
             let (target, names, exact) = defsym(d);
@@ -336,13 +368,25 @@ impl Inputs {
             let sc = script(&String::from_utf8_lossy(&text)).map_err(|e| format!("{t}: {e}"))?;
             for x in sc.roots {
                 let k = s.key(x.as_bytes());
-                s.roots.push(Root { key: k, at: 0, by: format!("{t}"), uncertain: false, no_position: true });
+                s.roots.push(Root {
+                    key: k,
+                    at: 0,
+                    by: t.clone(),
+                    uncertain: false,
+                    no_position: true,
+                });
             }
             if let Some(e) = sc.entry
                 && line.entry.is_none()
             {
                 let k = s.key(e.as_bytes());
-                s.roots.push(Root { key: k, at: 0, by: format!("ENTRY in {t}"), uncertain: false, no_position: true });
+                s.roots.push(Root {
+                    key: k,
+                    at: 0,
+                    by: format!("ENTRY in {t}"),
+                    uncertain: false,
+                    no_position: true,
+                });
             }
             for x in sc.assigned {
                 let k = s.key(x.as_bytes());
@@ -353,7 +397,8 @@ impl Inputs {
         for (item, it) in line.items.iter().enumerate() {
             match it {
                 Item::Shared { path, as_needed, group, .. } => {
-                    let bytes = files.read(path).ok_or_else(|| format!("{path}: cannot be read"))?;
+                    let bytes =
+                        files.read(path).ok_or_else(|| format!("{path}: cannot be read"))?;
                     let d = crate::dynmodel::Dso::read(path, bytes, true)?;
                     let mut mentions = Vec::new();
                     let mut defs: Vec<(&String, &crate::dynmodel::SoDef)> =
@@ -402,7 +447,12 @@ impl Inputs {
                     });
                 }
                 Item::Relocatable { path, group, whole, lib } => {
-                    let mut src = Positional { files, paths: Vec::new(), lens: Vec::new(), whole: Vec::new() };
+                    let mut src = Positional {
+                        files,
+                        paths: Vec::new(),
+                        lens: Vec::new(),
+                        whole: Vec::new(),
+                    };
                     let i = src.add(path)?;
                     let head = files.head(path, 8).unwrap_or_default();
                     if head == b"!<arch>\n" || head == b"!<thin>\n" {
@@ -411,7 +461,9 @@ impl Inputs {
                         for (name, offset, loc) in members {
                             let mut alt = None;
                             let at = match loc {
-                                Loc::Inline { offset, size } => At { file: i, base: offset, len: size },
+                                Loc::Inline { offset, size } => {
+                                    At { file: i, base: offset, len: size }
+                                }
                                 Loc::External(stored) => {
                                     let p = crate::locate::thin_member_path(path, &stored);
                                     let j = src.add(&p)?;
@@ -484,7 +536,9 @@ impl Inputs {
                 && sec.flags() & SHF_MERGE == 0
                 && sec.name().is_ok_and(|n| n != b".eh_frame")
         });
-        let Some(t) = o.symbols().map_err(|e| e.to_string())? else { return Ok((Vec::new(), listed)) };
+        let Some(t) = o.symbols().map_err(|e| e.to_string())? else {
+            return Ok((Vec::new(), listed));
+        };
         let mut out = Vec::new();
         for (idx, sym) in t.iter() {
             if idx.0 == 0 || sym.binding() == STB_LOCAL {
@@ -627,7 +681,9 @@ impl Inputs {
         let (lo, why) = self.closure(false, true);
         let (hi, _) = self.closure(true, true);
         let names = self.names();
-        let name = |k: u32| String::from_utf8_lossy(names.get(k as usize).copied().unwrap_or(b"")).into_owned();
+        let name = |k: u32| {
+            String::from_utf8_lossy(names.get(k as usize).copied().unwrap_or(b"")).into_owned()
+        };
         let index = self.by_ident();
         let mut v = Verdict::default();
         let mut in_map = vec![false; self.files.len()];
@@ -638,14 +694,17 @@ impl Inputs {
                 .map(|c| {
                     c.iter()
                         .copied()
-                        .filter(|&i| mf.member_offset.is_none() || self.files[i].offset == mf.member_offset)
+                        .filter(|&i| {
+                            mf.member_offset.is_none() || self.files[i].offset == mf.member_offset
+                        })
                         .collect()
                 })
                 .unwrap_or_default();
             if cands.is_empty() {
-                v.findings.push(
-                    Finding::new(EXTRA, format!("{mf} is in the link and is not an input of its line")),
-                );
+                v.findings.push(Finding::new(
+                    EXTRA,
+                    format!("{mf} is in the link and is not an input of its line"),
+                ));
                 continue;
             }
             for &i in &cands {
@@ -683,15 +742,21 @@ impl Inputs {
                 let by = self.roots.iter().find(|r| r.key == k).map_or("a root", |r| r.by.as_str());
                 format!("{by} roots `{}` (resolve §4.2) and it is first(`{}`)", name(k), name(k))
             } else {
-                format!("{} refers to `{}` and it is the target (resolve §4.1)", self.label(from as usize), name(k))
+                format!(
+                    "{} refers to `{}` and it is the target (resolve §4.1)",
+                    self.label(from as usize),
+                    name(k)
+                )
             };
-            let mut f = Finding::new(MISSING, format!("{} is not in the link: {reason}", self.label(i)));
+            let mut f =
+                Finding::new(MISSING, format!("{} is not in the link: {reason}", self.label(i)));
             if k != NONE {
                 f.symbol = Some(name(k));
             }
             v.findings.push(f);
         }
-        let total = self.files.iter().filter(|f| matches!(f.kind, Kind::Object | Kind::Member)).count();
+        let total =
+            self.files.iter().filter(|f| matches!(f.kind, Kind::Object | Kind::Member)).count();
         let open = self
             .files
             .iter()
@@ -702,7 +767,10 @@ impl Inputs {
         let mut c = format!(
             "input set: files judged {judged} of {total} (in the link {}, required {})",
             map.files.len(),
-            lo.iter().zip(&self.files).filter(|(l, f)| **l && matches!(f.kind, Kind::Object | Kind::Member)).count()
+            lo.iter()
+                .zip(&self.files)
+                .filter(|(l, f)| **l && matches!(f.kind, Kind::Object | Kind::Member))
+                .count()
         );
         if self.export_globs {
             c.push_str("; extra not judged: --export-dynamic-symbol roots not expanded");
@@ -724,17 +792,19 @@ impl Inputs {
             Format::Mold => !gc && self.files[i].listed,
             _ => true,
         };
-        let name = |k: u32| String::from_utf8_lossy(names.get(k as usize).copied().unwrap_or(b"")).into_owned();
+        let name = |k: u32| {
+            String::from_utf8_lossy(names.get(k as usize).copied().unwrap_or(b"")).into_owned()
+        };
         let index = self.by_ident();
         let mut v = Verdict::default();
         let n = self.files.len();
         // The files the map says are in the link.
         let mut present = vec![false; self.files.len()];
         let mut unmatched = 0usize;
-        let mut seen: HashMap<Ident, ()> = HashMap::default();
+        let mut seen: HashSet<Ident> = HashSet::default();
         let mut listed: Vec<MapFile> = Vec::new();
         for mf in map.files.iter().chain(map.included.iter().map(|i| &i.file)) {
-            if mf.path.starts_with('<') || seen.insert(map_ident(mf), ()).is_some() {
+            if mf.path.starts_with('<') || !seen.insert(map_ident(mf)) {
                 continue;
             }
             listed.push(mf.clone());
@@ -753,7 +823,8 @@ impl Inputs {
         // A file live from the start is in the link whatever the map says
         // (the rest of the rule reads it so); one the map leaves out is
         // missing.
-        let in_link: Vec<bool> = present.iter().zip(&self.files).map(|(p, f)| *p || !f.lazy).collect();
+        let in_link: Vec<bool> =
+            present.iter().zip(&self.files).map(|(p, f)| *p || !f.lazy).collect();
         let mut gone: HashMap<&Ident, usize> = HashMap::default();
         for (i, f) in self.files.iter().enumerate() {
             if matches!(f.kind, Kind::Object | Kind::Member) && !f.lazy {
@@ -772,7 +843,10 @@ impl Inputs {
         for i in gone {
             v.findings.push(Finding::new(
                 MISSING,
-                format!("{} is not in the link: it is live from the start (resolve §4.2)", self.label(i)),
+                format!(
+                    "{} is not in the link: it is live from the start (resolve §4.2)",
+                    self.label(i)
+                ),
             ));
         }
         // Which keys the link defines, and its lazy definers by key.
@@ -817,19 +891,25 @@ impl Inputs {
         }
         while let Some(f) = work.pop() {
             for &(k, b) in &self.files[f].mentions {
-                if b & (UNDEF | COMMON | WUNDEF) != 0 && (b & WUNDEF == 0 || self.files[f].kind == Kind::Shared) {
+                if b & (UNDEF | COMMON | WUNDEF) != 0
+                    && (b & WUNDEF == 0 || self.files[f].kind == Kind::Shared)
+                {
                     reach(k, &mut reached, &mut work);
                 }
             }
         }
-        let mut reported: HashMap<&Ident, ()> = HashMap::default();
+        let mut reported: HashSet<&Ident> = HashSet::default();
         if !self.export_globs {
             for i in 0..n {
                 if self.files[i].lazy
                     && in_link[i]
                     && !reached[i]
-                    && reported.insert(&self.files[i].ident, ()).is_none()
-                    && !self.files.iter().enumerate().any(|(j, g)| reached[j] && g.ident == self.files[i].ident)
+                    && reported.insert(&self.files[i].ident)
+                    && !self
+                        .files
+                        .iter()
+                        .enumerate()
+                        .any(|(j, g)| reached[j] && g.ident == self.files[i].ident)
                 {
                     v.findings.push(Finding::new(
                         EXTRA,
@@ -847,57 +927,58 @@ impl Inputs {
         let lld = map.format == Format::Lld;
         let mut not_judged = 0usize;
         let mut hidden = unlisted;
-        let mut missing: HashMap<u32, (usize, String, Vec<usize>)> = HashMap::default();
-        let mut demand = |k: u32, from: usize, at: usize, common: bool, exempt: bool, by: String| {
-            if common {
-                if strong[k as usize] || (lld && !self.lld_fortran_common) {
+        let mut missing: HashMap<u32, Demand> = HashMap::default();
+        let mut demand =
+            |k: u32, from: usize, at: usize, common: bool, exempt: bool, by: String| {
+                if common {
+                    if strong[k as usize] || (lld && !self.lld_fortran_common) {
+                        return;
+                    }
+                } else if defined[k as usize] {
                     return;
                 }
-            } else if defined[k as usize] {
-                return;
-            }
-            let ls: Vec<usize> = lazy_defs
-                .get(&k)
-                .map_or(&[][..], Vec::as_slice)
-                .iter()
-                .copied()
-                .filter(|&l| !in_link[l])
-                .filter(|&l| {
-                    let b = self.files[l].mentions.iter().find(|m| m.0 == k).map_or(0, |m| m.1);
-                    !common || (b & DEF != 0 && b & (WEAK | COMMON) == 0 && b & DATA != 0)
-                })
-                .collect();
-            if ls.is_empty() {
-                return;
-            }
-            if !ls.iter().all(|&l| reliable(l)) {
-                hidden += 1;
-                return;
-            }
-            let after: Vec<usize> = if !gnu {
-                ls
-            } else if exempt {
-                Vec::new()
-            } else {
-                let fr = &self.files[from];
-                ls.into_iter()
+                let ls: Vec<usize> = lazy_defs
+                    .get(&k)
+                    .map_or(&[][..], Vec::as_slice)
+                    .iter()
+                    .copied()
+                    .filter(|&l| !in_link[l])
                     .filter(|&l| {
-                        let g = &self.files[l];
-                        if from == 0 {
-                            return g.item >= at;
-                        }
-                        g.item > fr.item
-                            || (g.item == fr.item && fr.kind == Kind::Member)
-                            || (g.group.is_some() && g.group == fr.group)
+                        let b = self.files[l].mentions.iter().find(|m| m.0 == k).map_or(0, |m| m.1);
+                        !common || (b & DEF != 0 && b & (WEAK | COMMON) == 0 && b & DATA != 0)
                     })
-                    .collect()
+                    .collect();
+                if ls.is_empty() {
+                    return;
+                }
+                if !ls.iter().all(|&l| reliable(l)) {
+                    hidden += 1;
+                    return;
+                }
+                let after: Vec<usize> = if !gnu {
+                    ls
+                } else if exempt {
+                    Vec::new()
+                } else {
+                    let fr = &self.files[from];
+                    ls.into_iter()
+                        .filter(|&l| {
+                            let g = &self.files[l];
+                            if from == 0 {
+                                return g.item >= at;
+                            }
+                            g.item > fr.item
+                                || (g.item == fr.item && fr.kind == Kind::Member)
+                                || (g.group.is_some() && g.group == fr.group)
+                        })
+                        .collect()
+                };
+                if after.is_empty() {
+                    not_judged += 1;
+                    return;
+                }
+                missing.entry(k).or_insert((from, by, after));
             };
-            if after.is_empty() {
-                not_judged += 1;
-                return;
-            }
-            missing.entry(k).or_insert((from, by, after));
-        };
         for r in &self.roots {
             if !r.uncertain {
                 demand(r.key, 0, r.at, false, r.no_position, r.by.clone());
@@ -916,7 +997,7 @@ impl Inputs {
                 }
             }
         }
-        let mut ms: Vec<(u32, (usize, String, Vec<usize>))> = missing.into_iter().collect();
+        let mut ms: Vec<(u32, Demand)> = missing.into_iter().collect();
         ms.sort_by_key(|m| m.1.2[0]);
         for (k, (_, by, ls)) in ms {
             let mut f = Finding::new(
@@ -933,76 +1014,92 @@ impl Inputs {
         // GNU ld's preamble: each printed reason is true.
         let mut reasons_unjudged = 0usize;
         if gnu {
-            let mut said: HashMap<Ident, ()> = HashMap::default();
+            let mut said: HashSet<Ident> = HashSet::default();
             for inc in &map.included {
-                said.insert(map_ident(&inc.file), ());
+                said.insert(map_ident(&inc.file));
                 let Some(ls) = index.get(&map_ident(&inc.file)) else {
                     reasons_unjudged += 1;
                     continue;
                 };
-                let defines = |k: Option<u32>| {
+                let holds = |k: Option<u32>| {
                     k.is_some_and(|k| {
-                        ls.iter().any(|&l| self.files[l].mentions.iter().any(|m| m.0 == k && m.1 & (DEF | COMMON) != 0))
+                        ls.iter().any(|&l| {
+                            self.files[l]
+                                .mentions
+                                .iter()
+                                .any(|m| m.0 == k && m.1 & (DEF | COMMON) != 0)
+                        })
                     })
                 };
-                let bad = match &inc.by {
-                    // GNU ld prints a C++ name demangled: not judged.
-                    IncludedBy::Root(sym) | IncludedBy::Reference { symbol: sym, .. }
-                        if demangled(sym) =>
-                    {
-                        reasons_unjudged += 1;
-                        None
-                    }
-                    IncludedBy::WholeArchive => {
-                        (!ls.iter().any(|&l| self.files[l].whole)).then(|| "its archive is not under --whole-archive on the line".to_string())
-                    }
-                    IncludedBy::Root(sym) => {
-                        let k = self.find(sym);
-                        if !self.roots.iter().any(|r| Some(r.key) == k) {
-                            Some(format!("`{sym}` is not a root of the line (resolve §4.2)"))
-                        } else if !defines(k) {
-                            Some(format!("it does not define `{sym}`"))
-                        } else {
-                            None
-                        }
-                    }
-                    IncludedBy::Reference { file, symbol } => {
-                        let k = self.find(symbol);
-                        if line.wrap.iter().any(|w| symbol.ends_with(w.as_str())) {
+                let bad =
+                    match &inc.by {
+                        // GNU ld prints a C++ name demangled: not judged.
+                        IncludedBy::Root(sym) | IncludedBy::Reference { symbol: sym, .. }
+                            if demangled(sym) =>
+                        {
                             reasons_unjudged += 1;
                             None
-                        } else {
-                            let refs: Vec<usize> =
-                                index.get(&map_ident(file)).cloned().unwrap_or_default();
-                            if refs.is_empty() {
-                                reasons_unjudged += 1;
-                                None
-                            } else if !refs.iter().any(|&i| in_link[i]) {
-                                Some(format!("{file} is not in the link"))
-                            } else if !refs.iter().any(|&i| {
-                                self.files[i].mentions.iter().any(|m| Some(m.0) == k && m.1 & (UNDEF | WUNDEF | COMMON) != 0)
-                            }) {
-                                Some(format!("{file} has no undefined or common `{symbol}`"))
-                            } else if !defines(k) {
-                                Some(format!("it does not define `{symbol}`"))
+                        }
+                        IncludedBy::WholeArchive => (!ls.iter().any(|&l| self.files[l].whole))
+                            .then(|| {
+                                "its archive is not under --whole-archive on the line".to_string()
+                            }),
+                        IncludedBy::Root(sym) => {
+                            let k = self.find(sym);
+                            if !self.roots.iter().any(|r| Some(r.key) == k) {
+                                Some(format!("`{sym}` is not a root of the line (resolve §4.2)"))
+                            } else if !holds(k) {
+                                Some(format!("it does not define `{sym}`"))
                             } else {
                                 None
                             }
                         }
-                    }
-                };
+                        IncludedBy::Reference { file, symbol } => {
+                            let k = self.find(symbol);
+                            if line.wrap.iter().any(|w| symbol.ends_with(w.as_str())) {
+                                reasons_unjudged += 1;
+                                None
+                            } else {
+                                let refs: Vec<usize> =
+                                    index.get(&map_ident(file)).cloned().unwrap_or_default();
+                                if refs.is_empty() {
+                                    reasons_unjudged += 1;
+                                    None
+                                } else if !refs.iter().any(|&i| in_link[i]) {
+                                    Some(format!("{file} is not in the link"))
+                                } else if !refs.iter().any(|&i| {
+                                    self.files[i].mentions.iter().any(|m| {
+                                        Some(m.0) == k && m.1 & (UNDEF | WUNDEF | COMMON) != 0
+                                    })
+                                }) {
+                                    Some(format!("{file} has no undefined or common `{symbol}`"))
+                                } else if !holds(k) {
+                                    Some(format!("it does not define `{symbol}`"))
+                                } else {
+                                    None
+                                }
+                            }
+                        }
+                    };
                 if let Some(b) = bad {
                     v.findings.push(Finding::new(
                         EXTRA,
-                        format!("GNU ld's map (line {}) says {} was included for {}: {b}", inc.line, inc.file, shown(&inc.by)),
+                        format!(
+                            "GNU ld's map (line {}) says {} was included for {}: {b}",
+                            inc.line,
+                            inc.file,
+                            shown(&inc.by)
+                        ),
                     ));
                 }
             }
             for mf in &map.files {
-                if mf.member.is_some() && !said.contains_key(&map_ident(mf)) {
+                if mf.member.is_some() && !said.contains(&map_ident(mf)) {
                     v.findings.push(Finding::new(
                         EXTRA,
-                        format!("GNU ld's map places {mf} and its preamble does not say it was included"),
+                        format!(
+                            "GNU ld's map places {mf} and its preamble does not say it was included"
+                        ),
                     ));
                 }
             }
@@ -1027,29 +1124,34 @@ impl Inputs {
                 minus += 1;
             }
         }
-        let total = self.files.iter().filter(|f| matches!(f.kind, Kind::Object | Kind::Member)).count();
+        let total =
+            self.files.iter().filter(|f| matches!(f.kind, Kind::Object | Kind::Member)).count();
         let judged = total.saturating_sub(not_judged + unmatched + hidden);
         let mut c = format!(
             "input set: files judged {judged} of {total} (in the link {})",
-            in_link.iter().zip(&self.files).filter(|(l, f)| **l && matches!(f.kind, Kind::Object | Kind::Member)).count()
+            in_link
+                .iter()
+                .zip(&self.files)
+                .filter(|(l, f)| **l && matches!(f.kind, Kind::Object | Kind::Member))
+                .count()
         );
         if plus + minus == 0 && open == 0 {
             c.push_str("; mortar's closure: the same");
         } else {
-            c.push_str(&format!("; mortar's closure: differs (+{plus} -{minus}, {open} open)"));
+            let _ = write!(c, "; mortar's closure: differs (+{plus} -{minus}, {open} open)");
         }
         if not_judged > 0 {
-            c.push_str(&format!("; demands not judged {not_judged} (GNU ld's back-references)"));
+            let _ = write!(c, "; demands not judged {not_judged} (GNU ld's back-references)");
         }
         if hidden > 0 {
             let why = if gc { "--gc-sections" } else { "no section the map lists" };
-            c.push_str(&format!("; not judged {hidden} (files the map may leave out: {why})"));
+            let _ = write!(c, "; not judged {hidden} (files the map may leave out: {why})");
         }
         if unmatched > 0 {
-            c.push_str(&format!("; map members not on the line {unmatched}"));
+            let _ = write!(c, "; map members not on the line {unmatched}");
         }
         if reasons_unjudged > 0 {
-            c.push_str(&format!("; preamble reasons not judged {reasons_unjudged}"));
+            let _ = write!(c, "; preamble reasons not judged {reasons_unjudged}");
         }
         if self.export_globs {
             c.push_str("; extra not judged: --export-dynamic-symbol roots not expanded");
@@ -1144,6 +1246,7 @@ struct Script {
     assigned: Vec<String>,
 }
 
+#[allow(clippy::many_single_char_names)] // a scanner: s, rest, i, j, ...
 fn script(text: &str) -> Result<Script, String> {
     let mut s = String::new();
     let mut rest = text;
@@ -1244,13 +1347,20 @@ mod tests {
         f.extend_from_slice(&shstr);
         let str_off = f.len();
         f.extend_from_slice(&strtab);
-        while f.len() % 8 != 0 {
+        while !f.len().is_multiple_of(8) {
             f.push(0);
         }
         let sym_off = f.len();
         f.extend_from_slice(&symtab);
         let sh_off = f.len();
-        let sh = |name: u32, ty: u32, off: usize, size: usize, link: u32, info: u32, align: u64, es: u64| {
+        let sh = |name: u32,
+                  ty: u32,
+                  off: usize,
+                  size: usize,
+                  link: u32,
+                  info: u32,
+                  align: u64,
+                  es: u64| {
             let mut h = Vec::new();
             h.extend_from_slice(&name.to_le_bytes());
             h.extend_from_slice(&ty.to_le_bytes());
@@ -1288,9 +1398,20 @@ mod tests {
     fn ar(members: &[(&str, Vec<u8>)]) -> Vec<u8> {
         let mut a = b"!<arch>\n".to_vec();
         for (n, b) in members {
-            a.extend_from_slice(format!("{:<16}{:<12}{:<6}{:<6}{:<8}{:<10}`\n", format!("{n}/"), 0, 0, 0, 644, b.len()).as_bytes());
+            a.extend_from_slice(
+                format!(
+                    "{:<16}{:<12}{:<6}{:<6}{:<8}{:<10}`\n",
+                    format!("{n}/"),
+                    0,
+                    0,
+                    0,
+                    644,
+                    b.len()
+                )
+                .as_bytes(),
+            );
             a.extend_from_slice(b);
-            if a.len() % 2 == 1 {
+            if !a.len().is_multiple_of(2) {
                 a.push(b'\n');
             }
         }
@@ -1321,7 +1442,10 @@ mod tests {
         let (lo, _) = s.closure(false, true);
         let (hi, _) = s.closure(true, true);
         assert_eq!(lo, hi);
-        (1..s.files.len()).filter(|&i| lo[i] && s.files[i].kind != Kind::Shared).map(|i| s.label(i)).collect()
+        (1..s.files.len())
+            .filter(|&i| lo[i] && s.files[i].kind != Kind::Shared)
+            .map(|i| s.label(i))
+            .collect()
     }
 
     /// A mortar map naming `files` (`path` or `path(member)`).
@@ -1340,16 +1464,37 @@ mod tests {
         // a.o needs x; x.o (defines x) needs y; y.o (defines y) needs x.
         let f = mem(vec![
             ("m.o", obj(&[("_start", 'D'), ("x", 'U')])),
-            ("lib.a", ar(&[("y.o", obj(&[("y", 'D'), ("x", 'U')])), ("x.o", obj(&[("x", 'D'), ("y", 'U')])), ("z.o", obj(&[("z", 'D')]))])),
+            (
+                "lib.a",
+                ar(&[
+                    ("y.o", obj(&[("y", 'D'), ("x", 'U')])),
+                    ("x.o", obj(&[("x", 'D'), ("y", 'U')])),
+                    ("z.o", obj(&[("z", 'D')])),
+                ]),
+            ),
         ]);
         assert_eq!(live("m.o lib.a", &f), ["m.o", "lib.a(y.o)", "lib.a(x.o)"]);
         let v = judge(&map_of(&["m.o", "lib.a(y.o)", "lib.a(x.o)"]), Some(&words("m.o lib.a")), &f);
         assert!(v.findings.is_empty(), "{:?}", ids(&v));
         assert_eq!(v.coverage, "input set: files judged 4 of 4 (in the link 3, required 3)");
         let v = judge(&map_of(&["m.o", "lib.a(x.o)"]), Some(&words("m.o lib.a")), &f);
-        assert_eq!(ids(&v), ["M11 lib.a(y.o) is not in the link: lib.a(x.o) refers to `y` and it is the target (resolve §4.1)"]);
-        let v = judge(&map_of(&["m.o", "lib.a(y.o)", "lib.a(x.o)", "lib.a(z.o)"]), Some(&words("m.o lib.a")), &f);
-        assert_eq!(ids(&v), ["M12 lib.a(z.o) is in the link and no root or live reference reaches it (resolve §4.1)"]);
+        assert_eq!(
+            ids(&v),
+            [
+                "M11 lib.a(y.o) is not in the link: lib.a(x.o) refers to `y` and it is the target (resolve §4.1)"
+            ]
+        );
+        let v = judge(
+            &map_of(&["m.o", "lib.a(y.o)", "lib.a(x.o)", "lib.a(z.o)"]),
+            Some(&words("m.o lib.a")),
+            &f,
+        );
+        assert_eq!(
+            ids(&v),
+            [
+                "M12 lib.a(z.o) is in the link and no root or live reference reaches it (resolve §4.1)"
+            ]
+        );
     }
 
     #[test]
@@ -1395,23 +1540,42 @@ mod tests {
         let v = judge(&map_of(&["m.o", "lib.a(x.o)", "n.o", "lib.a(y.o)"]), Some(&words(line)), &f);
         assert!(v.findings.is_empty(), "{:?}", ids(&v));
         let v = judge(&map_of(&["m.o", "lib.a(x.o)", "n.o"]), Some(&words(line)), &f);
-        assert_eq!(ids(&v), ["M11 lib.a(y.o) is not in the link: n.o refers to `y` and it is the target (resolve §4.1)"]);
+        assert_eq!(
+            ids(&v),
+            [
+                "M11 lib.a(y.o) is not in the link: n.o refers to `y` and it is the target (resolve §4.1)"
+            ]
+        );
     }
 
     #[test]
     fn s3_8_weak_references_and_commons() {
         let f = mem(vec![
             ("m.o", obj(&[("_start", 'D'), ("w", 'w'), ("c", 'C')])),
-            ("lib.a", ar(&[("w.o", obj(&[("w", 'D')])), ("cf.o", obj(&[("c", 'D')])), ("cd.o", obj(&[("c", 'O')]))])),
+            (
+                "lib.a",
+                ar(&[
+                    ("w.o", obj(&[("w", 'D')])),
+                    ("cf.o", obj(&[("c", 'D')])),
+                    ("cd.o", obj(&[("c", 'O')])),
+                ]),
+            ),
         ]);
         // A weak reference never extracts; a common extracts the first
         // lazy data definition, not a function (resolve §4.5).
         assert_eq!(live("m.o lib.a", &f), ["m.o", "lib.a(cd.o)"]);
-        let v = judge(&map_of(&["m.o", "lib.a(w.o)", "lib.a(cd.o)"]), Some(&words("m.o lib.a")), &f);
-        assert_eq!(ids(&v), ["M12 lib.a(w.o) is in the link and no root or live reference reaches it (resolve §4.1)"]);
+        let v =
+            judge(&map_of(&["m.o", "lib.a(w.o)", "lib.a(cd.o)"]), Some(&words("m.o lib.a")), &f);
+        assert_eq!(
+            ids(&v),
+            [
+                "M12 lib.a(w.o) is in the link and no root or live reference reaches it (resolve §4.1)"
+            ]
+        );
     }
 
     #[test]
+    #[allow(clippy::many_single_char_names)]
     fn s3_8_roots_and_whole_archive() {
         let f = mem(vec![
             ("m.o", obj(&[("_start", 'D')])),
@@ -1422,9 +1586,15 @@ mod tests {
         assert_eq!(live("m.o x.ld lib.a", &f), ["m.o", "lib.a(k.o)"]);
         assert_eq!(live("-u j m.o lib.a", &f), ["m.o", "lib.a(j.o)"]);
         assert_eq!(live("--defsym=q=j+1 m.o lib.a", &f), ["m.o", "lib.a(j.o)"]);
-        assert_eq!(live("m.o --whole-archive lib.a --no-whole-archive", &f), ["m.o", "lib.a(k.o)", "lib.a(j.o)"]);
+        assert_eq!(
+            live("m.o --whole-archive lib.a --no-whole-archive", &f),
+            ["m.o", "lib.a(k.o)", "lib.a(j.o)"]
+        );
         // `-e` replaces `_start` as the root.
-        let g = mem(vec![("lib.a", ar(&[("s.o", obj(&[("_start", 'D')])), ("k.o", obj(&[("k", 'D')]))]))]);
+        let g = mem(vec![(
+            "lib.a",
+            ar(&[("s.o", obj(&[("_start", 'D')])), ("k.o", obj(&[("k", 'D')]))]),
+        )]);
         assert_eq!(live("lib.a", &g), ["lib.a(s.o)"]);
         assert_eq!(live("-e k lib.a", &g), ["lib.a(k.o)"]);
         // A script's assignment may define the key: not judged.
@@ -1437,7 +1607,10 @@ mod tests {
         for files in [&["m.o"][..], &["m.o", "lib.a(k.o)"][..]] {
             let v = judge(&map_of(files), Some(&w), &h);
             assert!(v.findings.is_empty(), "{:?}", ids(&v));
-            assert_eq!(v.coverage, format!("input set: files judged 1 of 2 (in the link {}, required 1)", files.len()));
+            assert_eq!(
+                v.coverage,
+                format!("input set: files judged 1 of 2 (in the link {}, required 1)", files.len())
+            );
         }
     }
 
@@ -1446,7 +1619,10 @@ mod tests {
     fn thin(members: &[(&str, usize)]) -> Vec<u8> {
         let mut a = b"!<thin>\n".to_vec();
         for (n, len) in members {
-            a.extend_from_slice(format!("{:<16}{:<12}{:<6}{:<6}{:<8}{:<10}`\n", format!("{n}/"), 0, 0, 0, 644, len).as_bytes());
+            a.extend_from_slice(
+                format!("{:<16}{:<12}{:<6}{:<6}{:<8}{:<10}`\n", format!("{n}/"), 0, 0, 0, 644, len)
+                    .as_bytes(),
+            );
         }
         a
     }
@@ -1478,22 +1654,55 @@ mod tests {
         };
         let v = judge(&reference(Format::Gnu, &["m.o", "lib/k.o"]), Some(&words(line)), &f);
         assert!(v.findings.is_empty(), "{:?}", ids(&v));
-        assert_eq!(v.coverage, "input set: files judged 2 of 2 (in the link 2); mortar's closure: the same");
+        assert_eq!(
+            v.coverage,
+            "input set: files judged 2 of 2 (in the link 2); mortar's closure: the same"
+        );
         let v = judge(&reference(Format::Gnu, &["m.o"]), Some(&words(line)), &f);
-        assert_eq!(ids(&v), ["M11 `k` (m.o) is defined by no file of the link, and lib/libk.a(k.o) defines it (§3.8)"]);
+        assert_eq!(
+            ids(&v),
+            [
+                "M11 `k` (m.o) is defined by no file of the link, and lib/libk.a(k.o) defines it (§3.8)"
+            ]
+        );
         // lld under --gc-sections: neither m.o's absence nor k.o's.
         let gc = "m.o lib/libk.a --gc-sections";
         let v = judge(&reference(Format::Lld, &[]), Some(&words(gc)), &f);
         assert!(v.findings.is_empty(), "{:?}", ids(&v));
-        assert!(v.coverage.contains("not judged 2 (files the map may leave out: --gc-sections)"), "{}", v.coverage);
+        assert!(
+            v.coverage.contains("not judged 2 (files the map may leave out: --gc-sections)"),
+            "{}",
+            v.coverage
+        );
         let v = judge(&reference(Format::Lld, &["m.o"]), Some(&words(line)), &f);
-        assert_eq!(ids(&v), ["M11 `k` (m.o) is defined by no file of the link, and lib/libk.a(k.o) defines it (§3.8)"]);
+        assert_eq!(
+            ids(&v),
+            [
+                "M11 `k` (m.o) is defined by no file of the link, and lib/libk.a(k.o) defines it (§3.8)"
+            ]
+        );
         // mold: n.o has no section its map lists.
-        let v = judge(&reference(Format::Mold, &["m.o", "lib/libk.a(k.o)"]), Some(&words("m.o n.o lib/libk.a")), &f);
+        let v = judge(
+            &reference(Format::Mold, &["m.o", "lib/libk.a(k.o)"]),
+            Some(&words("m.o n.o lib/libk.a")),
+            &f,
+        );
         assert!(v.findings.is_empty(), "{:?}", ids(&v));
-        assert!(v.coverage.contains("not judged 1 (files the map may leave out: no section the map lists)"), "{}", v.coverage);
-        let v = judge(&reference(Format::Lld, &["m.o", "lib/libk.a(k.o)"]), Some(&words("m.o n.o lib/libk.a")), &f);
-        assert_eq!(ids(&v), ["M11 n.o is not in the link: it is live from the start (resolve §4.2)"]);
+        assert!(
+            v.coverage
+                .contains("not judged 1 (files the map may leave out: no section the map lists)"),
+            "{}",
+            v.coverage
+        );
+        let v = judge(
+            &reference(Format::Lld, &["m.o", "lib/libk.a(k.o)"]),
+            Some(&words("m.o n.o lib/libk.a")),
+            &f,
+        );
+        assert_eq!(
+            ids(&v),
+            ["M11 n.o is not in the link: it is live from the start (resolve §4.2)"]
+        );
     }
 
     #[test]
@@ -1508,7 +1717,10 @@ mod tests {
             m
         };
         let v = judge(&gnu(&["m.o"]), Some(&words("m.o lib.a")), &f);
-        assert_eq!(ids(&v), ["M11 `x` (m.o) is defined by no file of the link, and lib.a(x.o) defines it (§3.8)"]);
+        assert_eq!(
+            ids(&v),
+            ["M11 `x` (m.o) is defined by no file of the link, and lib.a(x.o) defines it (§3.8)"]
+        );
         // A back-reference: GNU ld would not extract it; not judged.
         let v = judge(&gnu(&["m.o"]), Some(&words("lib.a m.o")), &f);
         assert!(v.findings.is_empty(), "{:?}", ids(&v));
@@ -1554,7 +1766,9 @@ mod tests {
 
     #[test]
     fn a_script_s_roots_and_assignments() {
-        let s = script("ENTRY(go) EXTERN(a b) SECTIONS { x = .; y += 4; PROVIDE(z = 1); . = 0x1000; }").unwrap();
+        let s =
+            script("ENTRY(go) EXTERN(a b) SECTIONS { x = .; y += 4; PROVIDE(z = 1); . = 0x1000; }")
+                .unwrap();
         assert_eq!(s.entry.as_deref(), Some("go"));
         assert_eq!(s.roots, vec!["a", "b"]);
         assert_eq!(s.assigned, vec!["x", "y", "z"]);

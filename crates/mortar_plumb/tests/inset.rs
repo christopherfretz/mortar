@@ -35,7 +35,10 @@ fn verify(arch: &str, output: &str, m: &Map, line: Option<&str>) -> Report {
     let inputs: Vec<Input<'_>> = bytes.iter().map(|(p, b)| Input { path: p, bytes: b }).collect();
     let out = std::fs::read(d.join(output)).unwrap();
     let files = Dir(d);
-    let ctx = Ctx { line: line.map(|l| l.split_whitespace().map(str::to_string).collect()), files: &files };
+    let ctx = Ctx {
+        line: line.map(|l| l.split_whitespace().map(str::to_string).collect()),
+        files: &files,
+    };
     verify_with(&out, &inputs, m, &ctx)
 }
 
@@ -81,7 +84,8 @@ fn with_member(mut m: Map, member: &str) -> Map {
 
 const P_GNU: &str = "-static m.o ext.ld libk.a -o p.gnu -Map=p.gnu.map";
 const Q_GNU: &str = "-static r.o libk.a -o q.gnu -Map=q.gnu.map";
-const QA_GNU: &str = "-static r.o --whole-archive libk.a --no-whole-archive -o qa.gnu -Map=qa.gnu.map";
+const QA_GNU: &str =
+    "-static r.o --whole-archive libk.a --no-whole-archive -o qa.gnu -Map=qa.gnu.map";
 const QW_GNU: &str = "-static w.o libk.a -o qw.gnu -Map=qw.gnu.map";
 
 /// The defect: mortar at e1e60cf read `EXTERN(k_fn)` and did not root
@@ -93,14 +97,27 @@ fn s3_8_the_extern_defect_is_found_by_name() {
         let r = verify(arch, "p", &read_map(arch, "p.map"), None);
         assert_eq!(
             set(&r),
-            ["M11 libk.a(k.o) is not in the link: EXTERN(k_fn) roots `k_fn` (resolve §4.2) and it is first(`k_fn`)"],
+            [
+                "M11 libk.a(k.o) is not in the link: EXTERN(k_fn) roots `k_fn` (resolve §4.2) and it is first(`k_fn`)"
+            ],
             "{arch}"
         );
-        assert_eq!(r.findings.iter().find(|f| f.rule == Rule::Map(11)).unwrap().symbol.as_deref(), Some("k_fn"));
-        assert_eq!(coverage(&r), "input set: files judged 3 of 3 (in the link 1, required 2)", "{arch}");
+        assert_eq!(
+            r.findings.iter().find(|f| f.rule == Rule::Map(11)).unwrap().symbol.as_deref(),
+            Some("k_fn")
+        );
+        assert_eq!(
+            coverage(&r),
+            "input set: files judged 3 of 3 (in the link 1, required 2)",
+            "{arch}"
+        );
         let g = verify(arch, "p.gnu", &read_map(arch, "p.gnu.map"), Some(P_GNU));
         assert!(set(&g).is_empty(), "{arch}: {:?}", set(&g));
-        assert_eq!(coverage(&g), "input set: files judged 3 of 3 (in the link 2); mortar's closure: the same", "{arch}");
+        assert_eq!(
+            coverage(&g),
+            "input set: files judged 3 of 3 (in the link 2); mortar's closure: the same",
+            "{arch}"
+        );
     }
 }
 
@@ -119,7 +136,11 @@ fn s3_8_the_unmutated_links_are_clean() {
         ] {
             let r = verify(arch, out, &read_map(arch, m), line);
             assert!(set(&r).is_empty(), "{arch} {out}: {:?}", set(&r));
-            assert!(coverage(&r).starts_with("input set: files judged 3 of 3"), "{arch} {out}: {}", coverage(&r));
+            assert!(
+                coverage(&r).starts_with("input set: files judged 3 of 3"),
+                "{arch} {out}: {}",
+                coverage(&r)
+            );
         }
         let files = |m: &Map| {
             let mut v: Vec<String> = m.files.iter().map(ToString::to_string).collect();
@@ -133,29 +154,68 @@ fn s3_8_the_unmutated_links_are_clean() {
 
 /// §9.2's mutations of the input set, on mortar's and GNU ld's maps.
 #[test]
+#[allow(clippy::too_many_lines)] // one block per mutation of §9.2 (s)
 fn s3_8_mutations() {
     for arch in ARCHES {
         // A required member removed.
         let r = verify(arch, "q", &without_last(read_map(arch, "q.map"), "k.o"), None);
-        assert_eq!(set(&r), ["M11 libk.a(k.o) is not in the link: r.o refers to `k_fn` and it is the target (resolve §4.1)"], "{arch}");
+        assert_eq!(
+            set(&r),
+            [
+                "M11 libk.a(k.o) is not in the link: r.o refers to `k_fn` and it is the target (resolve §4.1)"
+            ],
+            "{arch}"
+        );
         // The other order (the archive first; mortar's rule does not
         // depend on it, resolve §4.3).
         let mut m = without_last(read_map(arch, "q.map"), "k.o");
-        m.args = "-static libk.a r.o -o q --mortar-map=q.map".split(' ').map(|w| w.as_bytes().to_vec()).collect();
+        m.args = "-static libk.a r.o -o q --mortar-map=q.map"
+            .split(' ')
+            .map(|w| w.as_bytes().to_vec())
+            .collect();
         let r = verify(arch, "q", &m, None);
-        assert_eq!(set(&r), ["M11 libk.a(k.o) is not in the link: r.o refers to `k_fn` and it is the target (resolve §4.1)"], "{arch}");
-        let r = verify(arch, "q.gnu", &without_last(read_map(arch, "q.gnu.map"), "k.o"), Some(Q_GNU));
-        assert_eq!(set(&r), ["M11 `k_fn` (r.o) is defined by no file of the link, and libk.a(k.o) defines it (§3.8)"], "{arch}");
+        assert_eq!(
+            set(&r),
+            [
+                "M11 libk.a(k.o) is not in the link: r.o refers to `k_fn` and it is the target (resolve §4.1)"
+            ],
+            "{arch}"
+        );
+        let r =
+            verify(arch, "q.gnu", &without_last(read_map(arch, "q.gnu.map"), "k.o"), Some(Q_GNU));
+        assert_eq!(
+            set(&r),
+            [
+                "M11 `k_fn` (r.o) is defined by no file of the link, and libk.a(k.o) defines it (§3.8)"
+            ],
+            "{arch}"
+        );
         // The same on GNU ld's line with the archive first: a
         // back-reference, which GNU ld does not extract: not judged.
-        let r = verify(arch, "q.gnu", &without_last(read_map(arch, "q.gnu.map"), "k.o"), Some("-static libk.a r.o -o q.gnu"));
+        let r = verify(
+            arch,
+            "q.gnu",
+            &without_last(read_map(arch, "q.gnu.map"), "k.o"),
+            Some("-static libk.a r.o -o q.gnu"),
+        );
         assert!(set(&r).is_empty(), "{arch}: {:?}", set(&r));
-        assert!(coverage(&r).contains("demands not judged 1 (GNU ld's back-references)"), "{arch}: {}", coverage(&r));
+        assert!(
+            coverage(&r).contains("demands not judged 1 (GNU ld's back-references)"),
+            "{arch}: {}",
+            coverage(&r)
+        );
 
         // An unreferenced member added.
         let r = verify(arch, "q", &with_member(read_map(arch, "q.map"), "j.o"), None);
-        assert_eq!(set(&r), ["M12 libk.a(j.o) is in the link and no root or live reference reaches it (resolve §4.1)"], "{arch}");
-        let r = verify(arch, "q.gnu", &with_member(read_map(arch, "q.gnu.map"), "j.o"), Some(Q_GNU));
+        assert_eq!(
+            set(&r),
+            [
+                "M12 libk.a(j.o) is in the link and no root or live reference reaches it (resolve §4.1)"
+            ],
+            "{arch}"
+        );
+        let r =
+            verify(arch, "q.gnu", &with_member(read_map(arch, "q.gnu.map"), "j.o"), Some(Q_GNU));
         assert_eq!(
             set(&r),
             [
@@ -174,14 +234,34 @@ fn s3_8_mutations() {
             .map(|w| w.as_bytes().to_vec())
             .collect();
         let r = verify(arch, "q", &m, None);
-        assert_eq!(set(&r), ["M11 libk.a(j.o) is not in the link: it is live from the start (resolve §4.2)"], "{arch}");
-        let r = verify(arch, "qa.gnu", &without_last(read_map(arch, "qa.gnu.map"), "j.o"), Some(QA_GNU));
-        assert_eq!(set(&r), ["M11 libk.a(j.o) is not in the link: it is live from the start (resolve §4.2)"], "{arch}");
+        assert_eq!(
+            set(&r),
+            ["M11 libk.a(j.o) is not in the link: it is live from the start (resolve §4.2)"],
+            "{arch}"
+        );
+        let r = verify(
+            arch,
+            "qa.gnu",
+            &without_last(read_map(arch, "qa.gnu.map"), "j.o"),
+            Some(QA_GNU),
+        );
+        assert_eq!(
+            set(&r),
+            ["M11 libk.a(j.o) is not in the link: it is live from the start (resolve §4.2)"],
+            "{arch}"
+        );
 
         // A member extracted only for a weak reference.
         let r = verify(arch, "qw", &with_member(read_map(arch, "qw.map"), "k.o"), None);
-        assert_eq!(set(&r), ["M12 libk.a(k.o) is in the link and no root or live reference reaches it (resolve §4.1)"], "{arch}");
-        let r = verify(arch, "qw.gnu", &with_member(read_map(arch, "qw.gnu.map"), "k.o"), Some(QW_GNU));
+        assert_eq!(
+            set(&r),
+            [
+                "M12 libk.a(k.o) is in the link and no root or live reference reaches it (resolve §4.1)"
+            ],
+            "{arch}"
+        );
+        let r =
+            verify(arch, "qw.gnu", &with_member(read_map(arch, "qw.gnu.map"), "k.o"), Some(QW_GNU));
         assert_eq!(
             set(&r),
             [
@@ -200,7 +280,9 @@ fn s3_8_mutations() {
         let r = verify(arch, "q.gnu", &m, Some(Q_GNU));
         assert_eq!(
             set(&r),
-            ["M12 GNU ld's map (line 3) says libk.a(k.o) was included for r.o (j_fn): r.o has no undefined or common `j_fn`"],
+            [
+                "M12 GNU ld's map (line 3) says libk.a(k.o) was included for r.o (j_fn): r.o has no undefined or common `j_fn`"
+            ],
             "{arch}"
         );
     }
