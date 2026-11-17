@@ -786,11 +786,12 @@ weak undefined mention after `--wrap` redirection (resolve §7.1). Keys
 follow resolve §9.4: `foo@@V` is `foo` and also binds `foo@V`; `foo@V`
 is its own key. A shared object's visible dynamic definitions are its
 definitions (a default `foo@@V` is `foo` and `foo@V`, a hidden `foo@V`
-only `foo@V`), and its strong references are edges unless it is
-`--as-needed` at every mention (resolve §4.4; dyn.md "Archive extraction
-by the references of shared objects"). Only the command line's shared
-objects (and those of its scripts) are read: a `DT_NEEDED` closure file
-has no edges.
+only `foo@V`), and its strong references are edges (an object `--as-needed` at every
+mention's only as D-12's stages below say; resolve §4.4; dyn.md
+"Archive extraction by the references of shared objects"). Only the
+command line's shared objects (and those of its scripts) are read: a
+`DT_NEEDED` closure file has no edges.
+
 **D-12's stages (WP-171).** An `--as-needed` command-line shared
 object's strong undefined references are edges exactly when it is a
 *source* of the last stage: a member of N, as the verifier replays D-11
@@ -820,7 +821,9 @@ D-12: not an edge)"): lld extracts for an as-needed object not in N
 P-D6 or P-D7 of what such a member needs ends "(only an object no stage
 of D-12 extracts makes it needed)", A70's too. Rule 2's M11 demands
 include the sources' references. Tests: `tests/inset_stages.rs`, the
-lane's `dyn/shlib/as-needed-extract*.test`. A reference's key is resolve §9.2's: `name@V` when its
+lane's `dyn/shlib/as-needed-extract*.test`.
+
+A reference's key is resolve §9.2's: `name@V` when its
 `.gnu.version` entry names a version need `V`, so only a `name@@V` or
 `name@V` definition is its target, never an object's plain `name`
 (libstdc++.so's `__udivti3@GCC_3.0` does not reach
