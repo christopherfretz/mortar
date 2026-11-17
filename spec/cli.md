@@ -897,14 +897,14 @@ not the whole table. Every row of §4.1 that a final link accepts or
 refuses has an `at_r` class (acts by a rule, no-op, as in a final link,
 `conflicting-options`, refused by name), kept on the row
 (`crates/mortar_cli/src/rows.rs`) and shown in the "at `-r`" column of
-`docs/status/options.md`; until RL-1 generates that column the classes
-are `docs/status/options-at-r.md`'s. A row without a class is a defect
+`docs/status/options.md` (generated since RL-1, WP-181, which deleted
+the hand-written `docs/status/options-at-r.md` it replaced). A row without a class is a defect
 of the table (*Test:* `every_row_has_a_class_at_r`, RL-1). The classes
 of the rows C-R2, C-R2a, C-R3 and C-R4 do not name:
 - **No-op, measured**: every row that GNU ld 2.44 (39 rows) or lld 22
   (11) leaves the `-r` output byte-identical for
   (`tests/relocatable-design/exp/rl0/opts.sh`, `work/rl0-opts.log`; the
-  rows are `options-at-r.md`'s "noop: measured, unlisted"). They join
+  rows were `options-at-r.md`'s "noop: measured, unlisted"). They join
   `r-noop-options`.
 - **No-op, by what the option is**: `--call-graph-profile-sort`, the
   `--bp-*` family, `--lto*`, `--ctf-share-types`,

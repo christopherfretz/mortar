@@ -95,3 +95,104 @@ fn incompatible_reasons_match_the_spec_table() {
         assert_eq!(row[1], reason.text());
     }
 }
+
+// spec: diag.md §4.4 (the refusals and diagnostics of a `-r` link: each
+// a kind of §3.1 or a refusal of a §4.1 class; the names and texts as
+// written there, WP-181)
+#[test]
+fn relocatable_rows_match_the_spec_table() {
+    use mortar_diag::relocatable::{self, Entry, ROWS};
+    use mortar_diag::{Diagnostic, Style};
+    let rows = table("### 4.4 ");
+    let ids: Vec<&str> = rows.iter().map(|row| row[0].as_str()).collect();
+    let code: Vec<&str> = ROWS.iter().map(|row| row.id).collect();
+    assert_eq!(ids, code);
+    let plain = |d: Diagnostic| d.render(&Style::plain("ld"));
+    for (row, entry) in rows.iter().zip(ROWS) {
+        let (kind, text, until) = (&row[1], &row[2], &row[4]);
+        assert_eq!(until, entry.until, "{}", entry.id);
+        match entry.entry {
+            Entry::Refusal { class, names } => {
+                assert_eq!(*kind, format!("refused, {}", class.id()), "{}", entry.id);
+                if text.starts_with("as in a final link") {
+                    continue;
+                }
+                for name in names {
+                    let head = format!("unsupported {}: {name}", class.noun());
+                    // The text spells the first name; the others are in the id.
+                    assert!(
+                        text.starts_with(&head) || (*name != names[0] && entry.id.contains(name)),
+                        "{}: {text} does not start {head}",
+                        entry.id
+                    );
+                    if !name.contains('{') {
+                        let built = plain(Diagnostic::refused(class, *name));
+                        assert_eq!(built, format!("ld: error: {head}\n"));
+                    }
+                }
+            }
+            Entry::Kind(id) | Entry::Warning(id) => {
+                assert!(Kind::IDS.contains(&id), "{id}");
+                if matches!(entry.entry, Entry::Kind(_)) {
+                    assert!(kind.starts_with(id), "{}: {kind}", entry.id);
+                } else {
+                    assert!(kind.contains("warning"), "{}: {kind}", entry.id);
+                }
+            }
+            Entry::AsFinal => {
+                assert!(
+                    kind.starts_with("as ") || kind.starts_with("refused as "),
+                    "{}: {kind}",
+                    entry.id
+                );
+            }
+            Entry::NotBuilt(id) => {
+                // Not a kind of §3.1: when it becomes one, it is built.
+                assert!(!Kind::IDS.contains(&id), "{id} is a kind now: build it");
+                assert!(kind.contains(id), "{}: {kind}", entry.id);
+            }
+        }
+    }
+    // The conflict's text and its `{second}` list.
+    let conflict = &rows[1];
+    assert!(conflict[2].starts_with("-r and {second} cannot be used together"));
+    for second in relocatable::CONFLICTS_WITH_R {
+        assert!(conflict[2].contains(second), "{second}");
+    }
+    assert_eq!(
+        plain(relocatable::conflicting_with_r("-shared")),
+        "ld: error: -r and -shared cannot be used together\n"
+    );
+    // The names built from an option, and their notes.
+    for option in relocatable::OPTIONS_REFUSED_WITH_R {
+        let name = relocatable::with_r(option);
+        assert!(ids.contains(&name.as_str()), "{name}");
+    }
+    let tail = ROWS.iter().find(|row| row.id.starts_with("-d with -r")).expect("C-R3's row");
+    for option in relocatable::OPTIONS_REFUSED_UNTIL {
+        assert!(tail.id.contains(&relocatable::with_r(option)), "{option}");
+    }
+    let z = &rows.iter().find(|row| row[0] == "-z KEYWORD with -r").expect("the -z row")[2];
+    for keyword in relocatable::Z_KEYWORDS_REFUSED_WITH_R {
+        // `x86-64-v2/-v3/-v4` in the spec.
+        let short = keyword.strip_prefix("x86-64").unwrap_or(keyword);
+        assert!(z.contains(keyword.trim_end_matches('=')) || z.contains(short), "{keyword}");
+    }
+    assert_eq!(
+        plain(relocatable::refused_z_with_r("force-bti")),
+        "ld: error: unsupported option: -z force-bti with -r\n"
+    );
+    for (id, note) in [
+        ("-T with -r", relocatable::SCRIPT_NOTE),
+        ("--gc-sections with -r", relocatable::GC_SECTIONS_NOTE),
+        ("--wrap with -r", relocatable::WRAP_NOTE),
+        (relocatable::NO_INPUT_OF_A_KNOWN_MACHINE, relocatable::NO_INPUT_OF_A_KNOWN_MACHINE_NOTE),
+    ] {
+        let text = &rows.iter().find(|row| row[0] == id).expect(id)[2];
+        assert!(text.contains(&format!("(note: {note})")), "{id}: {text}");
+    }
+    assert_eq!(
+        plain(relocatable::refused_relocatable_output()),
+        "ld: error: unsupported feature: relocatable output (-r)\n"
+    );
+}

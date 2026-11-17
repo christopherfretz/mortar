@@ -619,7 +619,7 @@ Kind::Refused { .. })` and `Diagnostic::warning` of a refusal produce an
 error. A refusal that lets the link go on is the silent acceptance
 principle 1 forbids. Consequently `-w` never hides a refusal.
 
-### 4.4 Relocatable output (`-r`; planned: M4-r, RL-1 adds the names, WP-180 lists them)
+### 4.4 Relocatable output (`-r`; M4-r: WP-180 lists them, RL-1 (WP-181) added the names)
 
 The refusals and diagnostics of a `-r` link (`spec/cli.md` §3.16,
 `spec/resolve.md` §11, `spec/layout.md` §24, `spec/image.md` §17,
@@ -630,6 +630,14 @@ are the text after `unsupported <noun>: `; a test of the refusal
 compares the name (§4.2). "Until" names the package that lifts it; a
 name with no "until" is permanent. All are errors, but the two
 warnings marked so.
+
+The names, notes and constructors are `mortar_diag::relocatable`
+(WP-181), and its `ROWS` is this table as data:
+`tests/spec_tables.rs relocatable_rows_match_the_spec_table` checks the
+two say the same (the ids, the kind or class, the texts that are not "as
+in a final link", the "until"), so a `-r` package uses a name and does
+not spell it. The last row, `eh-frame-terminator`, is not a kind of
+§3.1 and is not built (record `spec/landed/core/WP-181.md`).
 
 | id or name | kind or class | text | raised by | until |
 |---|---|---|---|---|
