@@ -1,0 +1,593 @@
+== 1 maps
+--- maps bfd rc=0
+.text           0x0000000000000000       0x24
+ .text          0x0000000000000000        0xc m1.o
+ .text          0x000000000000000c       0x18 m2.o
+.rodata
+.rodata.str1.8  0x0000000000000000        0xe
+ .rodata.str1.8
+ .rodata.str1.8
+.rodata1
+.data           0x0000000000000000        0x8
+ .data          0x0000000000000000        0x4 m1.o
+ .data          0x0000000000000004        0x4 m2.o
+.data.rel.local
+ .data.rel.local
+ .data.rel.local
+--- maps lld rc=0
+               0                0       24     4 .text
+               0                0        c     4         m1.o:(.text)
+               c                c       18     4         m2.o:(.text)
+               0                0        8     4 .data
+               0                0        4     4         m1.o:(.data)
+               4                4        4     4         m2.o:(.data)
+               0                0        4     4 .bss
+               0                0        0     1         m1.o:(.bss)
+               0                0        4     4         m2.o:(.bss)
+               0                0        6     8 .rodata.str1.8
+               0                0        6     8         <internal>:(.rodata.str1.8)
+               0                0       10     8 .data.rel.local
+               0                0        8     8         m1.o:(.data.rel.local)
+               8                8        8     8         m2.o:(.data.rel.local)
+--- maps mold rc=0
+                 0          8     8 .rodata.str1.8
+                 0         36     4 .text
+                 0         12     4         m1.o:(.text)
+               0xc         24     4         m2.o:(.text)
+                 0          8     4 .data
+                 0          4     4         m1.o:(.data)
+               0x4          4     4         m2.o:(.data)
+                 0         16     8 .data.rel.local
+                 0          8     8         m1.o:(.data.rel.local)
+               0x8          8     8         m2.o:(.data.rel.local)
+                 0          4     4 .bss
+                 0          0     1         m1.o:(.bss)
+                 0          4     4         m2.o:(.bss)
+                 0         24     8 .rela.text
+== 2 rel386
+inputs:
+Relocation section '.rel.text' at offset 0xe0 contains 1 entry:
+00000001  00000602 R_386_PC32             00000000   gsym
+Relocation section '.rel.data' at offset 0xe8 contains 4 entries:
+00000008  00000201 R_386_32               00000000   .data
+0000000c  00000101 R_386_32               00000000   .text
+00000010  00000601 R_386_32               00000000   gsym
+00000018  00000214 R_386_16               00000000   .data
+ NOTE: This section has relocations against it, but these have NOT been applied to this dump.
+  0x00000000 02000000 03000000 04000000 01000000 ................
+  0x00000010 04000000 f0ffffff 0400              ..........
+
+  [ 1] .text             PROGBITS        00000000 000034 000003 00  AX  0   0  1
+  [ 2] .data             PROGBITS        00000000 000037 000005 00  WA  0   0  1
+  [ 1] .text             PROGBITS        00000000 000034 00000b 00  AX  0   0  1
+  [ 3] .data             PROGBITS        00000000 000040 00001a 00  WA  0   0  4
+--- rel386 i386 bfd rc=0 
+Relocation section '.rel.text' at offset 0x110 contains 1 entry:
+00000004  00000702 R_386_PC32             00000000   gsym
+Relocation section '.rel.data' at offset 0x118 contains 4 entries:
+00000010  00000201 R_386_32               00000000   .data
+00000014  00000101 R_386_32               00000000   .text
+00000018  00000701 R_386_32               00000000   gsym
+00000020  00000214 R_386_16               00000000   .data
+--- rel386 i386 lld rc=0 
+Relocation section '.rel.text' at offset 0x68 contains 1 entry:
+00000004  00000702 R_386_PC32             00000000   gsym
+Relocation section '.rel.data' at offset 0x70 contains 4 entries:
+00000010  00000401 R_386_32               00000000   .data
+00000014  00000301 R_386_32               00000000   .text
+00000018  00000701 R_386_32               00000000   gsym
+00000020  00000414 R_386_16               00000000   .data
+--- rel386 i386 mold rc=0 
+Relocation section '.rel.text' at offset 0x338 contains 1 entry:
+00000004  00000d02 R_386_PC32             00000000   gsym
+Relocation section '.rel.data' at offset 0x340 contains 4 entries:
+00000010  00000301 R_386_32               00000000   .data
+00000014  00000201 R_386_32               00000000   .text
+00000018  00000d01 R_386_32               00000000   gsym
+00000020  00000314 R_386_16               00000000   .data
+data bfd:
+ NOTE: This section has relocations against it, but these have NOT been applied to this dump.
+  0x00000000 01000000 07000000 02000000 03000000 ................
+  0x00000010 0c000000 04000000 04000000 f0ffffff ................
+  0x00000020 0c00                                ..
+
+data lld:
+ NOTE: This section has relocations against it, but these have NOT been applied to this dump.
+  0x00000000 01000000 07000000 02000000 03000000 ................
+  0x00000010 0c000000 04000000 04000000 f0ffffff ................
+  0x00000020 0c00                                ..
+
+data mold:
+ NOTE: This section has relocations against it, but these have NOT been applied to this dump.
+  0x00000000 01000000 07000000 02000000 03000000 ................
+  0x00000010 0c000000 04000000 04000000 f0ffffff ................
+  0x00000020 0c00                                ..
+
+== 3 groups
+input g3:
+group section [    1] `.group' [plaingrp] contains 2 sections:
+   [Index]    Name
+   [    5]   .text.plain
+   [    6]   .rela.text.plain
+  [ 1] .group            GROUP           0000000000000000 000040 00000c 04      7   7  4
+--- groups aarch64 bfd rc=0 
+group section [    1] `.group' [plaingrp] contains 2 sections:
+   [Index]    Name
+   [    4]   .text.plain
+   [    5]   .rela.text.plain
+group section [    2] `.group' [plaingrp] contains 2 sections:
+   [Index]    Name
+   [    6]   .text.plain
+   [    7]   .rela.text.plain
+  [ 1] .group            GROUP           0000000000000000 000040 00000c 04     14  20  4
+  [ 2] .group            GROUP           0000000000000000 00004c 00000c 04     14  24  4
+--- groups aarch64 lld rc=0 
+group section [    7] `.group' [plaingrp] contains 2 sections:
+   [Index]    Name
+   [    8]   .text.plain
+   [    9]   .rela.text.plain
+group section [   10] `.group' [plaingrp] contains 2 sections:
+   [Index]    Name
+   [   11]   .text.plain
+   [   12]   .rela.text.plain
+  [ 7] .group            GROUP           0000000000000000 000108 00000c 04     14  13  4
+  [10] .group            GROUP           0000000000000000 000130 00000c 04     14  18  4
+--- groups aarch64 mold rc=0 
+There are no section groups in this file.
+rela flags bfd:
+  [ 4] .text.plain       PROGBITS        0000000000000000 00006c 000008 00 AXG  0   0  4
+  [ 5] .rela.text.plain  RELA            0000000000000000 0003f0 000018 18  IG 14   4  8
+  [ 6] .text.plain       PROGBITS        0000000000000000 000074 000008 00 AXG  0   0  4
+  [ 7] .rela.text.plain  RELA            0000000000000000 000408 000018 18  IG 14   6  8
+signature symbols bfd:
+    20: 0000000000000000     0 NOTYPE  LOCAL  DEFAULT    1 plaingrp
+    24: 0000000000000000     0 NOTYPE  LOCAL  DEFAULT    2 plaingrp
+rela flags lld:
+  [ 8] .text.plain       PROGBITS        0000000000000000 0000a8 000008 00 AXG  0   0  4
+  [ 9] .rela.text.plain  RELA            0000000000000000 000118 000018 18  IG 14   8  8
+  [11] .text.plain       PROGBITS        0000000000000000 0000b0 000008 00 AXG  0   0  4
+  [12] .rela.text.plain  RELA            0000000000000000 000140 000018 18  IG 14  11  8
+signature symbols lld:
+    13: 0000000000000000     0 NOTYPE  LOCAL  DEFAULT    7 plaingrp
+    18: 0000000000000000     0 NOTYPE  LOCAL  DEFAULT   10 plaingrp
+rela flags mold:
+  [ 3] .text.plain       PROGBITS        0000000000000000 000094 000008 00 AXG  0   0  4
+  [ 4] .text.plain       PROGBITS        0000000000000000 00009c 000008 00 AXG  0   0  4
+  [13] .rela.text.plain  RELA            0000000000000000 000820 000018 18   I 12   3  8
+  [14] .rela.text.plain  RELA            0000000000000000 000838 000018 18   I 12   4  8
+signature symbols mold:
+    21: 0000000000000000     0 NOTYPE  LOCAL  DEFAULT  ABS plaingrp
+    24: 0000000000000000     0 NOTYPE  LOCAL  DEFAULT  ABS plaingrp
+group words bfd:
+  [1] .group sh_flags=0x0 flag word=0x0 members=[4, 5] link=14 info=20
+  [2] .group sh_flags=0x0 flag word=0x0 members=[6, 7] link=14 info=24
+group words lld:
+  [7] .group sh_flags=0x0 flag word=0x0 members=[8, 9] link=14 info=13
+  [10] .group sh_flags=0x0 flag word=0x0 members=[11, 12] link=14 info=18
+group words mold:
+== 4 empty
+input e1:
+[ 0]                   NULL            0000000000000000 000000 000000 00      0   0  0
+[ 1] .text             PROGBITS        0000000000000000 000040 000008 00  AX  0   0  4
+[ 2] .data             PROGBITS        0000000000000000 000048 000000 00  WA  0   0  1
+[ 3] .bss              NOBITS          0000000000000000 000048 000000 00  WA  0   0  1
+[ 4] .comment          PROGBITS        0000000000000000 000048 000020 01  MS  0   0  1
+[ 5] .note.GNU-stack   PROGBITS        0000000000000000 000068 000000 00      0   0  1
+[ 6] .eh_frame         PROGBITS        0000000000000000 000068 000028 00   A  0   0  8
+[ 7] .rela.eh_frame    RELA            0000000000000000 0001a8 000018 18   I  8   6  8
+[ 8] .symtab           SYMTAB          0000000000000000 000090 000108 18      9  10  8
+[ 9] .strtab           STRTAB          0000000000000000 000198 00000f 00      0   0  1
+[10] .shstrtab         STRTAB          0000000000000000 0001c0 000054 00      0   0  1
+--- empty aarch64 bfd rc=0 
+[ 0]                   NULL            0000000000000000 000000 000000 00      0   0  0
+[ 1] .text             PROGBITS        0000000000000000 000040 00000c 00  AX  0   0  4
+[ 2] .eh_frame         PROGBITS        0000000000000000 000050 000028 00   A  0   0  8
+[ 3] .rela.eh_frame    RELA            0000000000000000 000218 000018 18   I 10   2  8
+[ 4] .note.GNU-stack   PROGBITS        0000000000000028 000078 000000 00      0   0  1
+[ 5] .data             PROGBITS        0000000000000000 000078 000000 00  WA  0   0  1
+[ 6] .data.empty       PROGBITS        0000000000000000 000078 000000 00  WA  0   0  1
+[ 7] .bss              NOBITS          0000000000000000 000078 000000 00  WA  0   0  1
+[ 8] .bss.empty        NOBITS          0000000000000000 000078 000000 00  WA  0   0  1
+[ 9] .comment          PROGBITS        0000000000000000 000078 000020 01  MS  0   0  1
+[10] .symtab           SYMTAB          0000000000000000 000098 000168 18     11  14  8
+[11] .strtab           STRTAB          0000000000000000 000200 000014 00      0   0  1
+[12] .shstrtab         STRTAB          0000000000000000 000230 00006b 00      0   0  1
+--- empty aarch64 lld rc=0 
+[ 0]                   NULL            0000000000000000 000000 000000 00      0   0  0
+[ 1] .text             PROGBITS        0000000000000000 000040 00000c 00  AX  0   0  4
+[ 2] .data             PROGBITS        0000000000000000 00004c 000000 00  WA  0   0  1
+[ 3] .bss              NOBITS          0000000000000000 00004c 000000 00  WA  0   0  1
+[ 4] .comment          PROGBITS        0000000000000000 000078 000020 01  MS  0   0  1
+[ 5] .eh_frame         PROGBITS        0000000000000000 000050 000028 00   A  0   0  8
+[ 6] .rela.eh_frame    RELA            0000000000000000 000098 000018 18   I 10   5  8
+[ 7] .data.empty       PROGBITS        0000000000000000 000078 000000 00  WA  0   0  1
+[ 8] .bss.empty        NOBITS          0000000000000000 000078 000000 00  WA  0   0  1
+[ 9] .note.GNU-stack   PROGBITS        0000000000000000 0000b0 000000 00      0   0  1
+[10] .symtab           SYMTAB          0000000000000000 0000b0 000138 18     12  12  8
+[11] .shstrtab         STRTAB          0000000000000000 0001e8 000075 00      0   0  1
+[12] .strtab           STRTAB          0000000000000000 00025d 000012 00      0   0  1
+--- empty aarch64 mold rc=0 
+[ 0]                   NULL            0000000000000000 000000 000000 00      0   0  0
+[ 1] .eh_frame         PROGBITS        0000000000000000 000040 00002c 00   A  0   0  8
+[ 2] .text             PROGBITS        0000000000000000 00006c 00000c 00  AX  0   0  4
+[ 3] .data             PROGBITS        0000000000000000 000078 000000 00  WA  0   0  1
+[ 4] .data.empty       PROGBITS        0000000000000000 000078 000000 00  WA  0   0  1
+[ 5] .bss              NOBITS          0000000000000000 000078 000000 00  WA  0   0  1
+[ 6] .bss.empty        NOBITS          0000000000000000 000078 000000 00  WA  0   0  1
+[ 7] .comment          PROGBITS        0000000000000000 000078 000020 01  MS  0   0  1
+[ 8] .note.GNU-stack   PROGBITS        0000000000000000 000098 000000 00      0   0  1
+[ 9] .rela.eh_frame    RELA            0000000000000000 000098 000018 18   I 12   1  8
+[10] .shstrtab         STRTAB          0000000000000000 0000b0 000075 00      0   0  1
+[11] .strtab           STRTAB          0000000000000000 000125 00000f 00      0   0  1
+[12] .symtab           SYMTAB          0000000000000000 000138 000198 18     11  16  8
+STT_SECTION bfd:
+     1: 0000000000000000     0 SECTION LOCAL  DEFAULT    1 .text
+     2: 0000000000000000     0 SECTION LOCAL  DEFAULT    2 .eh_frame
+     3: 0000000000000000     0 SECTION LOCAL  DEFAULT    4 .note.GNU-stack
+     4: 0000000000000000     0 SECTION LOCAL  DEFAULT    5 .data
+     5: 0000000000000000     0 SECTION LOCAL  DEFAULT    6 .data.empty
+     6: 0000000000000000     0 SECTION LOCAL  DEFAULT    7 .bss
+     7: 0000000000000000     0 SECTION LOCAL  DEFAULT    8 .bss.empty
+     8: 0000000000000000     0 SECTION LOCAL  DEFAULT    9 .comment
+STT_SECTION lld:
+     4: 0000000000000000     0 SECTION LOCAL  DEFAULT    1 .text
+     5: 0000000000000000     0 SECTION LOCAL  DEFAULT    2 .data
+     6: 0000000000000000     0 SECTION LOCAL  DEFAULT    3 .bss
+     7: 0000000000000000     0 SECTION LOCAL  DEFAULT    5 .eh_frame
+     9: 0000000000000000     0 SECTION LOCAL  DEFAULT    7 .data.empty
+    10: 0000000000000000     0 SECTION LOCAL  DEFAULT    8 .bss.empty
+    11: 0000000000000000     0 SECTION LOCAL  DEFAULT    4 .comment
+STT_SECTION mold:
+     1: 0000000000000000     0 SECTION LOCAL  DEFAULT    1 .eh_frame
+     2: 0000000000000000     0 SECTION LOCAL  DEFAULT    2 .text
+     3: 0000000000000000     0 SECTION LOCAL  DEFAULT    3 .data
+     4: 0000000000000000     0 SECTION LOCAL  DEFAULT    4 .data.empty
+     5: 0000000000000000     0 SECTION LOCAL  DEFAULT    5 .bss
+     6: 0000000000000000     0 SECTION LOCAL  DEFAULT    6 .bss.empty
+     7: 0000000000000000     0 SECTION LOCAL  DEFAULT    7 .comment
+     8: 0000000000000000     0 SECTION LOCAL  DEFAULT    8 .note.GNU-stack
+     9: 0000000000000000     0 SECTION LOCAL  DEFAULT    9 .rela.eh_frame
+    10: 0000000000000000     0 SECTION LOCAL  DEFAULT   10 .shstrtab
+    11: 0000000000000000     0 SECTION LOCAL  DEFAULT   11 .strtab
+    12: 0000000000000000     0 SECTION LOCAL  DEFAULT   12 .symtab
+== 5 noneonly
+input n1:
+Relocation section '.rela.text' at offset 0x100 contains 2 entries:
+    Offset             Info             Type               Symbol's Value  Symbol's Name + Addend
+0000000000000000  0000000500000000 R_AARCH64_NONE         0000000000000000 n1 + 0
+0000000000000000  0000000600000000 R_AARCH64_NONE         0000000000000000 other + 0
+--- noneonly aarch64 bfd rc=0 
+[ 0]                   NULL            0000000000000000 000000 000000 00      0   0  0
+[ 1] .text             PROGBITS        0000000000000000 000040 000008 00  AX  0   0  4
+[ 2] .rela.text        RELA            0000000000000000 000170 000030 18   I  5   1  8
+[ 3] .data             PROGBITS        0000000000000000 000048 000000 00  WA  0   0  1
+[ 4] .bss              NOBITS          0000000000000000 000048 000000 00  WA  0   0  1
+[ 5] .symtab           SYMTAB          0000000000000000 000048 000108 18      6   8  8
+[ 6] .strtab           STRTAB          0000000000000000 000150 00001a 00      0   0  1
+[ 7] .shstrtab         STRTAB          0000000000000000 0001a0 000031 00      0   0  1
+--- noneonly aarch64 lld rc=0 
+[ 0]                   NULL            0000000000000000 000000 000000 00      0   0  0
+[ 1] .text             PROGBITS        0000000000000000 000040 000008 00  AX  0   0  4
+[ 2] .rela.text        RELA            0000000000000000 000048 000030 18   I  6   1  8
+[ 3] .data             PROGBITS        0000000000000000 000048 000000 00  WA  0   0  1
+[ 4] .bss              NOBITS          0000000000000000 000048 000000 00  WA  0   0  1
+[ 5] .note.GNU-stack   PROGBITS        0000000000000000 000078 000000 00      0   0  1
+[ 6] .symtab           SYMTAB          0000000000000000 000078 0000d8 18      8   6  8
+[ 7] .shstrtab         STRTAB          0000000000000000 000150 000047 00      0   0  1
+[ 8] .strtab           STRTAB          0000000000000000 000197 000013 00      0   0  1
+--- noneonly aarch64 mold rc=0 
+[ 0]                   NULL            0000000000000000 000000 000000 00      0   0  0
+[ 1] .eh_frame         PROGBITS        0000000000000000 000040 000004 00   A  0   0  8
+[ 2] .text             PROGBITS        0000000000000000 000044 000008 00  AX  0   0  4
+[ 3] .data             PROGBITS        0000000000000000 00004c 000000 00  WA  0   0  1
+[ 4] .bss              NOBITS          0000000000000000 00004c 000000 00  WA  0   0  1
+[ 5] .shstrtab         STRTAB          0000000000000000 00004c 000041 00      0   0  1
+[ 6] .strtab           STRTAB          0000000000000000 00008d 000013 00      0   0  1
+[ 7] .symtab           SYMTAB          0000000000000000 0000a0 000150 18      6  11  8
+[ 8] .rela.text        RELA            0000000000000000 000430 000030 18   I  7   2  8
+rels bfd:
+Relocation section '.rela.text' at offset 0x170 contains 2 entries:
+    Offset             Info             Type               Symbol's Value  Symbol's Name + Addend
+0000000000000000  0000000a00000000 R_AARCH64_NONE         0000000000000000 n1 + 0
+0000000000000000  0000000900000000 R_AARCH64_NONE         0000000000000000 other + 0
+     9: 0000000000000000     0 NOTYPE  GLOBAL DEFAULT  UND other
+rels lld:
+Relocation section '.rela.text' at offset 0x48 contains 2 entries:
+    Offset             Info             Type               Symbol's Value  Symbol's Name + Addend
+0000000000000000  0000000600000000 R_AARCH64_NONE         0000000000000000 n1 + 0
+0000000000000000  0000000700000000 R_AARCH64_NONE         0000000000000000 other + 0
+     7: 0000000000000000     0 NOTYPE  GLOBAL DEFAULT  UND other
+rels mold:
+Relocation section '.rela.text' at offset 0x430 contains 2 entries:
+    Offset             Info             Type               Symbol's Value  Symbol's Name + Addend
+0000000000000000  0000000b00000000 R_AARCH64_NONE         0000000000000000 n1 + 0
+0000000000000000  0000000c00000000 R_AARCH64_NONE         0000000000000000 other + 0
+    12: 0000000000000000     0 NOTYPE  GLOBAL DEFAULT  UND other
+== 6 property
+input pa:  GNU 0x00000010	NT_GNU_PROPERTY_TYPE_0	 Properties: AArch64 feature: BTI, PAC 
+input pc:  GNU 0x00000010	NT_GNU_PROPERTY_TYPE_0	 Properties: AArch64 feature: PAC 
+input pd: 
+aarch64 [pa.o pb.o] bfd rc=0: 1 section(s);  GNU 0x00000010	NT_GNU_PROPERTY_TYPE_0	 Properties: AArch64 feature: BTI, PAC 
+aarch64 [pa.o pb.o] lld rc=0: 1 section(s);  GNU 0x00000010	NT_GNU_PROPERTY_TYPE_0	 Properties: AArch64 feature: BTI, PAC 
+aarch64 [pa.o pb.o] mold rc=0: 0 section(s); 
+aarch64 [pa.o pc.o] bfd rc=0: 1 section(s);  GNU 0x00000010	NT_GNU_PROPERTY_TYPE_0	 Properties: AArch64 feature: PAC 
+aarch64 [pa.o pc.o] lld rc=0: 1 section(s);  GNU 0x00000010	NT_GNU_PROPERTY_TYPE_0	 Properties: AArch64 feature: PAC 
+aarch64 [pa.o pc.o] mold rc=0: 0 section(s); 
+aarch64 [pa.o pd.o] bfd rc=0: 0 section(s); 
+aarch64 [pa.o pd.o] lld rc=0: 0 section(s); 
+aarch64 [pa.o pd.o] mold rc=0: 0 section(s); 
+aarch64 [pd.o pa.o] bfd rc=0: 0 section(s); 
+aarch64 [pd.o pa.o] lld rc=0: 0 section(s); 
+aarch64 [pd.o pa.o] mold rc=0: 0 section(s); 
+input xa:  GNU 0x00000010	NT_GNU_PROPERTY_TYPE_0	 Properties: x86 feature: IBT, SHSTK 
+input xc: 
+input xd:  GNU 0x00000020	NT_GNU_PROPERTY_TYPE_0	 Properties: x86 ISA used: x86-64-baseline, x86 feature used: x86 
+x86_64 [xa.o xb.o] bfd rc=0: 1 section(s);  GNU 0x00000010	NT_GNU_PROPERTY_TYPE_0	 Properties: x86 feature: IBT, SHSTK 
+x86_64 [xa.o xb.o] lld rc=0: 1 section(s);  GNU 0x00000010	NT_GNU_PROPERTY_TYPE_0	 Properties: x86 feature: IBT, SHSTK 
+x86_64 [xa.o xb.o] mold rc=0: 1 section(s);  GNU 0x00000010	NT_GNU_PROPERTY_TYPE_0	 Properties: x86 feature: IBT, SHSTK 
+x86_64 [xa.o xc.o] bfd rc=0: 0 section(s); 
+x86_64 [xa.o xc.o] lld rc=0: 0 section(s); 
+x86_64 [xa.o xc.o] mold rc=0: 0 section(s); 
+x86_64 [xa.o xd.o] bfd rc=0: 0 section(s); 
+x86_64 [xa.o xd.o] lld rc=0: 0 section(s); 
+x86_64 [xa.o xd.o] mold rc=0: 0 section(s); 
+x86_64 [xd.o xc.o] bfd rc=0: 0 section(s); 
+x86_64 [xd.o xc.o] lld rc=0: 0 section(s); 
+x86_64 [xd.o xc.o] mold rc=0: 0 section(s); 
+== 7 retain
+--- retain aarch64 bfd rc=0 
+[ 0]                   NULL            0000000000000000 000000 000000 00      0   0  0
+[ 1] .text             PROGBITS        0000000000000000 000040 000000 00  AX  0   0  1
+[ 2] .text.k           PROGBITS        0000000000000000 000040 000004 00 AXR  0   0  4
+[ 3] .text.k           PROGBITS        0000000000000000 000044 000004 00  AX  0   0  4
+[ 4] .data             PROGBITS        0000000000000000 000048 000000 00  WA  0   0  1
+[ 5] .bss              NOBITS          0000000000000000 000048 000000 00  WA  0   0  1
+[ 6] .symtab           SYMTAB          0000000000000000 000048 000120 18      7  10  8
+[ 7] .strtab           STRTAB          0000000000000000 000168 000014 00      0   0  1
+[ 8] .shstrtab         STRTAB          0000000000000000 00017c 000034 00      0   0  1
+--- retain aarch64 lld rc=0 
+[ 0]                   NULL            0000000000000000 000000 000000 00      0   0  0
+[ 1] .text             PROGBITS        0000000000000000 000040 000000 00  AX  0   0  1
+[ 2] .data             PROGBITS        0000000000000000 000040 000000 00  WA  0   0  1
+[ 3] .bss              NOBITS          0000000000000000 000040 000000 00  WA  0   0  1
+[ 4] .text.k           PROGBITS        0000000000000000 000040 000008 00 AXR  0   0  4
+[ 5] .note.GNU-stack   PROGBITS        0000000000000000 000048 000000 00      0   0  1
+[ 6] .symtab           SYMTAB          0000000000000000 000048 0000d8 18      8   7  8
+[ 7] .shstrtab         STRTAB          0000000000000000 000120 000044 00      0   0  1
+[ 8] .strtab           STRTAB          0000000000000000 000164 00000d 00      0   0  1
+--- retain aarch64 mold rc=0 
+[ 0]                   NULL            0000000000000000 000000 000000 00      0   0  0
+[ 1] .eh_frame         PROGBITS        0000000000000000 000040 000004 00   A  0   0  8
+[ 2] .text             PROGBITS        0000000000000000 000044 000000 00  AX  0   0  1
+[ 3] .text.k           PROGBITS        0000000000000000 000044 000008 00  AX  0   0  4
+[ 4] .data             PROGBITS        0000000000000000 00004c 000000 00  WA  0   0  1
+[ 5] .bss              NOBITS          0000000000000000 00004c 000000 00  WA  0   0  1
+[ 6] .shstrtab         STRTAB          0000000000000000 00004c 00003e 00      0   0  1
+[ 7] .strtab           STRTAB          0000000000000000 00008a 00000d 00      0   0  1
+[ 8] .symtab           SYMTAB          0000000000000000 000098 000138 18      7  11  8
+== 8 dropdebug
+input d2 records into its own copy (debug_info):
+0000000000000074  0000000500000101 R_AARCH64_ABS64        0000000000000000 .text._Z13shared_inlinei + 0
+--- dropdebug bfd rc=0
+ .rela.debug_info by type and symbol (dropped copy's records):
+     10 R_AARCH64_ABS32 .debug_str
+      4 R_AARCH64_ABS32 .debug_line_str
+      2 R_AARCH64_ABS64 .text._Z13shared_inlinei
+      2 R_AARCH64_ABS64 .text
+      2 R_AARCH64_ABS32 .debug_rnglists
+      2 R_AARCH64_ABS32 .debug_line
+      2 R_AARCH64_ABS32 .debug_abbrev
+      1 Type Value
+ .rela.eh_frame:
+   Offset Type Value Symbol's Name
+   000000000000001c R_AARCH64_PREL32 .text._Z13shared_inlinei + 0
+   0000000000000034 R_AARCH64_PREL32 .text + 0
+   0000000000000050 R_AARCH64_NONE   
+   000000000000006c R_AARCH64_PREL32 .text + 1c
+ .eh_frame size: 000084 (inputs: 000050 + 000050)
+--- dropdebug lld rc=0
+ .rela.debug_info by type and symbol (dropped copy's records):
+     10 R_AARCH64_ABS32 .debug_str
+      4 R_AARCH64_ABS32 .debug_line_str
+      2 R_AARCH64_ABS64 .text
+      2 R_AARCH64_ABS32 .debug_rnglists
+      2 R_AARCH64_ABS32 .debug_line
+      2 R_AARCH64_ABS32 .debug_abbrev
+      1 Type Value
+      1 R_AARCH64_NONE -
+      1 R_AARCH64_ABS64 .text._Z13shared_inlinei
+ .rela.eh_frame:
+   Offset Type Value Symbol's Name
+   000000000000001c R_AARCH64_PREL32 .text._Z13shared_inlinei + 0
+   0000000000000034 R_AARCH64_PREL32 .text + 0
+   000000000000006c R_AARCH64_NONE   
+   0000000000000084 R_AARCH64_PREL32 .text + 1c
+ .eh_frame size: 0000a0 (inputs: 000050 + 000050)
+--- dropdebug mold rc=0
+ .rela.debug_info by type and symbol (dropped copy's records):
+     10 R_AARCH64_ABS32 .debug_str
+      4 R_AARCH64_ABS32 .debug_line_str
+      2 R_AARCH64_ABS64 .text
+      2 R_AARCH64_ABS32 .debug_rnglists
+      2 R_AARCH64_ABS32 .debug_line
+      2 R_AARCH64_ABS32 .debug_abbrev
+      1 Type Value
+      1 R_AARCH64_ABS64 .text._Z13shared_inlinei
+      1 R_AARCH64_ABS64 
+ .rela.eh_frame:
+   Offset Type Value Symbol's Name
+   000000000000001c R_AARCH64_PREL32 .text + 0
+   0000000000000040 R_AARCH64_PREL32 .text._Z13shared_inlinei + 0
+   0000000000000058 R_AARCH64_PREL32 .text + 1c
+ .eh_frame size: 000078 (inputs: 000050 + 000050)
+ lld: the field under each NONE record of .rela.debug_info (offset: 4 bytes of .debug_info there)
+  0x108: 0000000000000000
+== 9 linkorder
+input l1:
+[ 1] .text             PROGBITS        0000000000000000 000040 000000 00  AX  0   0  1
+[ 4] .text.lf          PROGBITS        0000000000000000 000040 000010 00  AX  0   0  4
+[ 5] __patchable_function_entries PROGBITS        0000000000000000 000050 000008 00 WAL  4   0  8
+[ 6] .rela__patchable_function_entries RELA            0000000000000000 000200 000018 18   I 11   5  8
+--- linkorder aarch64 bfd rc=0 
+[ 0]                   NULL            0000000000000000 000000 000000 00      0   0  0
+[ 1] .text             PROGBITS        0000000000000000 000040 000000 00  AX  0   0  1
+[ 2] .text.lf          PROGBITS        0000000000000000 000040 000010 00  AX  0   0  4
+[ 3] .text.lg          PROGBITS        0000000000000000 000050 000010 00  AX  0   0  4
+[ 4] .eh_frame         PROGBITS        0000000000000000 000060 000050 00   A  0   0  8
+[ 5] .rela.eh_frame    RELA            0000000000000000 000310 000030 18   I 14   4  8
+[ 6] .note.GNU-stack   PROGBITS        0000000000000050 0000b0 000000 00      0   0  1
+[ 7] .data             PROGBITS        0000000000000000 0000b0 000000 00  WA  0   0  1
+[ 8] __patchable_function_entries PROGBITS        0000000000000000 0000b0 000008 00 WAL  2   0  8
+[ 9] .rela__patchable_function_entries RELA            0000000000000000 000340 000018 18   I 14   8  8
+[10] __patchable_function_entries PROGBITS        0000000000000000 0000b8 000008 00 WAL  3   0  8
+[11] .rela__patchable_function_entries RELA            0000000000000000 000358 000018 18   I 14  10  8
+[12] .bss              NOBITS          0000000000000000 0000c0 000000 00  WA  0   0  1
+[13] .comment          PROGBITS        0000000000000000 0000c0 000040 01  MS  0   0  1
+[14] .symtab           SYMTAB          0000000000000000 000100 0001f8 18     15  19  8
+[15] .strtab           STRTAB          0000000000000000 0002f8 000011 00      0   0  1
+[16] .shstrtab         STRTAB          0000000000000000 000370 000088 00      0   0  1
+--- linkorder aarch64 lld rc=0 
+[ 0]                   NULL            0000000000000000 000000 000000 00      0   0  0
+[ 1] .text             PROGBITS        0000000000000000 000040 000000 00  AX  0   0  1
+[ 2] .data             PROGBITS        0000000000000000 000040 000000 00  WA  0   0  1
+[ 3] .bss              NOBITS          0000000000000000 000040 000000 00  WA  0   0  1
+[ 4] .text.lf          PROGBITS        0000000000000000 000040 000010 00  AX  0   0  4
+[ 5] __patchable_function_entries PROGBITS        0000000000000000 000050 000008 00 WAL  4   0  8
+[ 6] .rela__patchable_function_entries RELA            0000000000000000 0000c0 000018 18   I 14   5  8
+[ 7] .comment          PROGBITS        0000000000000000 0000d8 000020 01  MS  0   0  1
+[ 8] .eh_frame         PROGBITS        0000000000000000 000058 000050 00   A  0   0  8
+[ 9] .rela.eh_frame    RELA            0000000000000000 0000f8 000030 18   I 14   8  8
+[10] .text.lg          PROGBITS        0000000000000000 0000a8 000010 00  AX  0   0  4
+[11] __patchable_function_entries PROGBITS        0000000000000000 0000b8 000008 00 WAL 10   0  8
+[12] .rela__patchable_function_entries RELA            0000000000000000 000128 000018 18   I 14  11  8
+[13] .note.GNU-stack   PROGBITS        0000000000000000 000140 000000 00      0   0  1
+[14] .symtab           SYMTAB          0000000000000000 000140 0001e0 18     16  18  8
+[15] .shstrtab         STRTAB          0000000000000000 000320 0000af 00      0   0  1
+[16] .strtab           STRTAB          0000000000000000 0003cf 000021 00      0   0  1
+--- linkorder aarch64 mold rc=0 
+[ 0]                   NULL            0000000000000000 000000 000000 00      0   0  0
+[ 1] .eh_frame         PROGBITS        0000000000000000 000040 000040 00   A  0   0  8
+[ 2] .text             PROGBITS        0000000000000000 000080 000000 00  AX  0   0  1
+[ 3] .text.lf          PROGBITS        0000000000000000 000080 000010 00  AX  0   0  4
+[ 4] .text.lg          PROGBITS        0000000000000000 000090 000010 00  AX  0   0  4
+[ 5] .data             PROGBITS        0000000000000000 0000a0 000000 00  WA  0   0  1
+[ 6] __patchable_function_entries PROGBITS        0000000000000000 0000a0 000010 00 WAL  0   0  8
+[ 7] .bss              NOBITS          0000000000000000 0000b0 000000 00  WA  0   0  1
+[ 8] .comment          PROGBITS        0000000000000000 0000b0 000020 01  MS  0   0  1
+[ 9] .note.GNU-stack   PROGBITS        0000000000000000 0000d0 000000 00      0   0  1
+[10] .rela.eh_frame    RELA            0000000000000000 0000d0 000030 18   I 13   1  8
+[11] .shstrtab         STRTAB          0000000000000000 000100 0000af 00      0   0  1
+[12] .strtab           STRTAB          0000000000000000 0001af 00001b 00      0   0  1
+[13] .symtab           SYMTAB          0000000000000000 0001d0 000228 18     12  21  8
+[14] .rela__patchable_function_entries RELA            0000000000000000 0007b8 000030 18   I 13   6  8
+== 10 entsize
+--- entsize aarch64 bfd rc=0 
+[ 0]                   NULL            0000000000000000 000000 000000 00      0   0  0
+[ 1] .text             PROGBITS        0000000000000000 000040 000000 00  AX  0   0  1
+[ 2] .rodata.cst       PROGBITS        0000000000000000 000040 00000c 00   A  0   0  1
+[ 3] .data             PROGBITS        0000000000000000 00004c 000000 00  WA  0   0  1
+[ 4] .bss              NOBITS          0000000000000000 00004c 000000 00  WA  0   0  1
+[ 5] .symtab           SYMTAB          0000000000000000 000050 000078 18      6   5  8
+[ 6] .strtab           STRTAB          0000000000000000 0000c8 000001 00      0   0  1
+[ 7] .shstrtab         STRTAB          0000000000000000 0000c9 000038 00      0   0  1
+--- entsize aarch64 lld rc=0 
+[ 0]                   NULL            0000000000000000 000000 000000 00      0   0  0
+[ 1] .text             PROGBITS        0000000000000000 000040 000000 00  AX  0   0  1
+[ 2] .data             PROGBITS        0000000000000000 000040 000000 00  WA  0   0  1
+[ 3] .bss              NOBITS          0000000000000000 000040 000000 00  WA  0   0  1
+[ 4] .rodata.cst       PROGBITS        0000000000000000 000040 00000c 00  AM  0   0  1
+[ 5] .note.GNU-stack   PROGBITS        0000000000000000 00004c 000000 00      0   0  1
+[ 6] .symtab           SYMTAB          0000000000000000 000050 000078 18      8   5  8
+[ 7] .shstrtab         STRTAB          0000000000000000 0000c8 000048 00      0   0  1
+[ 8] .strtab           STRTAB          0000000000000000 000110 000001 00      0   0  1
+--- entsize aarch64 mold rc=0 
+[ 0]                   NULL            0000000000000000 000000 000000 00      0   0  0
+[ 1] .eh_frame         PROGBITS        0000000000000000 000040 000004 00   A  0   0  8
+[ 2] .rodata.cst       PROGBITS        0000000000000000 000044 000008 08  AM  0   0  1
+[ 3] .rodata.cst       PROGBITS        0000000000000000 00004c 000004 04  AM  0   0  1
+[ 4] .text             PROGBITS        0000000000000000 000050 000000 00  AX  0   0  1
+[ 5] .data             PROGBITS        0000000000000000 000050 000000 00  WA  0   0  1
+[ 6] .bss              NOBITS          0000000000000000 000050 000000 00  WA  0   0  1
+[ 7] .shstrtab         STRTAB          0000000000000000 000050 000032 00      0   0  1
+== 11 nobits
+--- nobits aarch64 bfd rc=0 
+[ 0]                   NULL            0000000000000000 000000 000000 00      0   0  0
+[ 1] .text             PROGBITS        0000000000000000 000040 000000 00  AX  0   0  1
+[ 2] .data             PROGBITS        0000000000000000 000040 000000 00  WA  0   0  1
+[ 3] .foo              PROGBITS        0000000000000000 000040 000004 00  WA  0   0  1
+[ 4] .bss              NOBITS          0000000000000000 000044 000000 00  WA  0   0  1
+[ 5] .foo              NOBITS          0000000000000000 000044 000008 00  WA  0   0  1
+[ 6] .symtab           SYMTAB          0000000000000000 000048 0000c0 18      7   8  8
+[ 7] .strtab           STRTAB          0000000000000000 000108 000009 00      0   0  1
+[ 8] .shstrtab         STRTAB          0000000000000000 000111 000031 00      0   0  1
+--- nobits aarch64 lld rc=0 
+[ 0]                   NULL            0000000000000000 000000 000000 00      0   0  0
+[ 1] .text             PROGBITS        0000000000000000 000040 000000 00  AX  0   0  1
+[ 2] .data             PROGBITS        0000000000000000 000040 000000 00  WA  0   0  1
+[ 3] .bss              NOBITS          0000000000000000 000040 000000 00  WA  0   0  1
+[ 4] .foo              PROGBITS        0000000000000000 000040 00000c 00  WA  0   0  1
+[ 5] .note.GNU-stack   PROGBITS        0000000000000000 00004c 000000 00      0   0  1
+[ 6] .symtab           SYMTAB          0000000000000000 000050 000090 18      8   6  8
+[ 7] .shstrtab         STRTAB          0000000000000000 0000e0 000041 00      0   0  1
+[ 8] .strtab           STRTAB          0000000000000000 000121 000004 00      0   0  1
+--- nobits aarch64 mold rc=0 
+[ 0]                   NULL            0000000000000000 000000 000000 00      0   0  0
+[ 1] .eh_frame         PROGBITS        0000000000000000 000040 000004 00   A  0   0  8
+[ 2] .text             PROGBITS        0000000000000000 000044 000000 00  AX  0   0  1
+[ 3] .data             PROGBITS        0000000000000000 000044 000000 00  WA  0   0  1
+[ 4] .foo              PROGBITS        0000000000000000 000044 000004 00  WA  0   0  1
+[ 5] .bss              NOBITS          0000000000000000 000048 000000 00  WA  0   0  1
+[ 6] .foo              NOBITS          0000000000000000 000048 000008 00  WA  0   0  1
+[ 7] .shstrtab         STRTAB          0000000000000000 000050 00003b 00      0   0  1
+[ 8] .strtab           STRTAB          0000000000000000 00008b 000004 00      0   0  1
+[ 9] .symtab           SYMTAB          0000000000000000 000090 000108 18      8  11  8
+== 12 symsec
+--- STT_SECTION values in maps.bfd.o
+0000000000000000 1 0000000000000000 3 0000000000000000 4 0000000000000000 6 0000000000000000 7 0000000000000000 8 0000000000000000 10 0000000000000000 11 
+--- STT_SECTION values in maps.lld.o
+0000000000000000 1 0000000000000000 2 0000000000000000 3 0000000000000000 5 0000000000000000 8 0000000000000000 4 0000000000000000 7 
+--- STT_SECTION values in maps.mold.o
+0000000000000000 1 0000000000000000 2 0000000000000000 3 0000000000000000 4 0000000000000000 5 0000000000000000 6 0000000000000000 7 0000000000000000 8 0000000000000000 9 0000000000000000 10 0000000000000000 11 0000000000000000 12 0000000000000000 13 0000000000000000 14 
+== 13 cgprofile
+input:
+[ 3] .llvm.call-graph-profile LLVM_CALL_GRAPH_PROFILE 0000000000000000 000048 000008 08   E  5   0  1
+[ 4] .rel.llvm.call-graph-profile REL             0000000000000000 0000c8 000020 10   I  5   3  8
+Relocation section '.rel.llvm.call-graph-profile' at offset 0xc8 contains 2 entries:
+    Offset             Info             Type               Symbol's Value  Symbol's Name
+0000000000000000  0000000300000000 R_AARCH64_NONE         0000000000000000 cga
+0000000000000000  0000000400000000 R_AARCH64_NONE         0000000000000004 cgb
+--- cgprofile bfd rc=0
+[ 2] .llvm.call-graph-profile LLVM_CALL_GRAPH_PROFILE 0000000000000000 000048 000008 00   E  0   0  1
+[ 3] .rel.llvm.call-graph-profile REL             0000000000000000 000128 000020 10   I  4   2  8
+Relocation section '.rel.llvm.call-graph-profile' at offset 0x128 contains 2 entries:
+    Offset             Info             Type               Symbol's Value  Symbol's Name
+0000000000000000  0000000700000000 R_AARCH64_NONE         0000000000000000 cga
+0000000000000000  0000000600000000 R_AARCH64_NONE         0000000000000004 cgb
+--- cgprofile lld rc=0
+[ 2] .llvm.call-graph-profile LLVM_CALL_GRAPH_PROFILE 0000000000000000 000048 000008 08   E  0   0  1
+[ 3] .rel.llvm.call-graph-profile REL             0000000000000000 000050 000020 10   I  5   2  8
+Relocation section '.rel.llvm.call-graph-profile' at offset 0x50 contains 2 entries:
+    Offset             Info             Type               Symbol's Value  Symbol's Name
+0000000000000000  0000000500000000 R_AARCH64_NONE         0000000000000000 cga
+0000000000000000  0000000600000000 R_AARCH64_NONE         0000000000000004 cgb
+--- cgprofile mold rc=0
+[ 3] .llvm.call-graph-profile LLVM_CALL_GRAPH_PROFILE 0000000000000000 00004c 000008 00   E  0   0  1
+== 14 dupmaps
+--- dupmaps bfd rc=0
+[ 2] .text.r           PROGBITS        0000000000000000 000040 000004 00 AXR  0   0  4
+[ 3] .text.r           PROGBITS        0000000000000000 000044 000004 00  AX  0   0  4
+102:.text.r         0x0000000000000000        0x4
+103: .text.r        0x0000000000000000        0x4 dm.o
+105:.text.r         0x0000000000000000        0x4
+106: .text.r        0x0000000000000000        0x4 dm.o
+--- dupmaps lld rc=0
+[ 4] .text.r           PROGBITS        0000000000000000 000040 000008 00 AXR  0   0  4
+8:               0                0        8     4 .text.r
+9:               0                0        4     4         dm.o:(.text.r)
+11:               4                4        4     4         dm.o:(.text.r)
+--- dupmaps mold rc=0
+[ 3] .text.r           PROGBITS        0000000000000000 000044 000008 00  AX  0   0  4
+6:                 0          8     4 .text.r
+7:                 0          4     4         dm.o:(.text.r)
+9:               0x4          4     4         dm.o:(.text.r)
+rl0 done

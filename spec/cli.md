@@ -891,6 +891,64 @@ options.md` gains a column "at `-r`" with `noop(-r: …)`.
 *Test:* `r-noop-options`: each row against the line without it, byte
 identical.
 
+**C-R2b (every row has a class at `-r`; ruled on WP-180's Q-O1 to
+Q-O7).** The list above is the drivers' and the measured rows; it is
+not the whole table. Every row of §4.1 that a final link accepts or
+refuses has an `at_r` class (acts by a rule, no-op, as in a final link,
+`conflicting-options`, refused by name), kept on the row
+(`crates/mortar_cli/src/rows.rs`) and shown in the "at `-r`" column of
+`docs/status/options.md`; until RL-1 generates that column the classes
+are `docs/status/options-at-r.md`'s. A row without a class is a defect
+of the table (*Test:* `every_row_has_a_class_at_r`, RL-1). The classes
+of the rows C-R2, C-R2a, C-R3 and C-R4 do not name:
+- **No-op, measured**: every row that GNU ld 2.44 (39 rows) or lld 22
+  (11) leaves the `-r` output byte-identical for
+  (`tests/relocatable-design/exp/rl0/opts.sh`, `work/rl0-opts.log`; the
+  rows are `options-at-r.md`'s "noop: measured, unlisted"). They join
+  `r-noop-options`.
+- **No-op, by what the option is**: `--call-graph-profile-sort`, the
+  `--bp-*` family, `--lto*`, `--ctf-share-types`,
+  `-z execute-only-report`, `--unresolved-symbols` (nothing is
+  undefined at `-r`, like `--no-undefined`), `--orphan-handling` (there
+  is no script while `-T` is refused; RL-11 measures it with `-T`),
+  `--keep-mason-meta` (MT-30 always writes the container) and
+  `--odr-table` (the table belongs to a loadable output; the units are
+  carried by MT-30 and the final link writes it: a line that carries
+  the option for every link must not fail at its `-r` step, as
+  `--eh-frame-hdr` does not).
+- **`--start-lib`, `--end-lib`**: lazy objects, as in a final link
+  (RV-R2; lld's reading, GNU ld does not know the option).
+- **`--require-defined=SYM`**: a root for extraction like `-u`
+  (RV-R2), nothing written for it (RV-R6 is `-u`'s alone). RL-2
+  measures GNU ld with `SYM` undefined at the end of a `-r` and brings
+  the cell: until then mortar reports it as in a final link.
+- **Dynamic-output options C-R4 does not name**: the "no" forms
+  (`--no-export-dynamic`, `-Bno-symbolic`, `--disable-new-dtags`) are
+  no-ops; `-init`, `-fini`, `--pack-dyn-relocs`,
+  `--android-memtag-mode` are `conflicting-options` with `-r` as
+  `first`, like C-R4's.
+- **`--incremental-state`, `--incremental-report`** (every
+  `--incremental-*` row): IN-12's warning and no effect, as
+  `--incremental`; `--no-incremental` is a no-op.
+- **A row that C-R2 or C-R2a's first row lists and a final link
+  refuses** (29 `-z` keywords, `combreloc` to `noreloc-overflow`;
+  `--emit-relocs`, `-q`; `--no-relax`): a no-op at `-r`. The class at
+  `-r` wins over the final-link status: no byte of an `ET_REL` depends
+  on any of them (measured, C-R2a), and the drivers' lines carry
+  several.
+- **Rows that are about the run, not the output**: `--version`, `-v`,
+  `-V`, `--help`, `--time-phases`, `--rsp-quoting`: as in a final link.
+  The ODR switches `--odr`, `--no-odr-check`, `--odr-stats`,
+  `--odr-check-archives`: as in a final link, by `spec/meta.md` MT-30a
+  (the checks run over the units the `-r` reads).
+  `--detect-odr-violations` (gold's spelling, a no-op in a final link):
+  a no-op.
+- **An option that acts at `-r` "until" a package lands** (`-d`,
+  `-dc`, `-dp`, `-s`, `-S`, `-x`, `-b binary`,
+  `--force-group-allocation`, `--defsym`, `--unique`, `-T`, and
+  `-z unique-symbol`): until then `Refused{Option, "<option> with -r"}`
+  (`-z unique-symbol with -r`), the form of C-R4.
+
 **C-R2a (`-z` keywords at `-r`, by measurement).** Every `-z` keyword
 that GNU ld 2.44 lists in `--help` for each target was run at `-r`
 over two GCC objects, and its output compared with the plain `-r`
@@ -906,7 +964,9 @@ cells over three targets). Each keyword falls in one class:
 | fail on the inputs at `-r` | `cet-report=error`, `lam-report=error`, `lam-u48-report=error`, `lam-u57-report=error` (x86-64: "missing … property") | the same check as in a final link (the report keywords' rows of `spec/x64.md`/`a64.md`); `=none`/`=warning` are no-ops |
 | refused by GNU ld at `-r` | `nosectionheader` (`-r and -z nosectionheader may not be used together`) | `conflicting-options` |
 
-A keyword that mortar refuses in a final link is refused at `-r` too.
+A keyword this table does not list keeps its final-link status at
+`-r` (unknown, or refused by its name); one the first row lists is a
+no-op at `-r` even where a final link refuses it (C-R2b).
 *Test:* `r-z-noop` (the first row, byte-identical), `r-z-refused` (one
 per refused keyword), `r-stack-note`.
 
@@ -990,7 +1050,13 @@ crtend.o crtn.o` and the default libraries, with `-pie` when PIE is the
 default. That line is `conflicting-options` (`-r` and `-pie`), as GNU ld
 says. With `-no-pie` it is a `-r` of the startup files, which has a
 `crtend.o` terminator in the middle of the output's `.eh_frame`. mortar
-links it as written; record §G Q7 asks for a warning.
+links it as written, as GNU ld does, and warns (record §G Q7, ruled;
+RL-11): when an input's `.eh_frame` zero terminator would stand before
+the last record of the output's `.eh_frame`, the warning
+`eh-frame-terminator` names that input and the number of records after
+it ("unwinders stop at the terminator; is this a `-r` of the startup
+files without `-nostdlib`?"). The terminator's place is the only
+trigger: an input that defines `_start` is an ordinary `-r` input.
 *Test:* `r-driver-lines` (the census lines replayed, the plan compared).
 
 ## 4. The table and the status of options

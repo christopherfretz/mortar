@@ -1140,8 +1140,13 @@ each architecture, plain and interposed).
   relocation section of the other type, for example an `SHT_REL` on
   x86-64, is refused at `-r` by name:
   `Refused{SectionType, "SHT_REL"}` on x86-64 and AArch64,
-  `Refused{SectionType, "SHT_RELA"}` on i386. No compiler on the matrix
-  produces one (record §G Q8).
+  `Refused{SectionType, "SHT_RELA"}` on i386. This holds for the
+  relocation sections of PLACED sections. The one such section a
+  compiler on the matrix writes is clang's `SHT_REL` of
+  `.llvm.call-graph-profile` (on AArch64 and x86-64 too), and that
+  section is dropped at `-r` with its target (`spec/layout.md` L-R1), so
+  it is not refused. For placed sections no compiler on the matrix
+  produces the other type (record §G Q8; corrected by WP-180's D1).
 - **A-R5 (tables the architecture owns).** No synthetic section is
   written at `-r`: no GOT, PLT, IPLT, `.eh_frame_hdr` or
   `.note.gnu.property` beyond L-R1's merge, which

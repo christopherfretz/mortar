@@ -1,0 +1,124 @@
+bfd	--strip-discarded	identical
+lld	--strip-discarded	rc=1	ld.lld-22: error: unknown argument '--strip-discarded'
+bfd	--discard-none	identical
+lld	--discard-none	identical
+bfd	--no-gc-sections	identical
+lld	--no-gc-sections	identical
+bfd	--print-gc-sections	identical
+lld	--print-gc-sections	identical
+bfd	--no-print-gc-sections	identical
+lld	--no-print-gc-sections	identical
+bfd	--gc-keep-exported	identical
+lld	--gc-keep-exported	rc=1	ld.lld-22: error: unknown argument '--gc-keep-exported'
+bfd	--no-copy-dt-needed-entries	identical
+lld	--no-copy-dt-needed-entries	identical
+bfd	--no-add-needed	identical
+lld	--no-add-needed	identical
+bfd	--sysroot=/	identical
+lld	--sysroot=/	identical
+bfd	-rpath-link=/nonexistent	identical
+lld	-rpath-link=/nonexistent	identical
+bfd	--require-defined=g1	identical
+lld	--require-defined=g1	rc=1	ld.lld-22: error: unknown argument '--require-defined=g1'
+bfd	-init=g1	identical
+lld	-init=g1	identical
+bfd	-fini=g2	identical
+lld	-fini=g2	identical
+bfd	--no-export-dynamic	identical
+lld	--no-export-dynamic	identical
+bfd	-Bno-symbolic	identical
+lld	-Bno-symbolic	identical
+bfd	--error-limit=5	rc=1	ld.bfd: unrecognized option '--error-limit=5'
+lld	--error-limit=5	identical
+bfd	--fatal-warnings	identical
+lld	--fatal-warnings	identical
+bfd	--no-fatal-warnings	identical
+lld	--no-fatal-warnings	identical
+bfd	-w	identical
+lld	-w	identical
+bfd	--no-warnings	identical
+lld	--no-warnings	identical
+bfd	--color-diagnostics	rc=1	ld.bfd: unrecognized option '--color-diagnostics'
+lld	--color-diagnostics	identical
+bfd	--no-color-diagnostics	rc=1	ld.bfd: unrecognized option '--no-color-diagnostics'
+lld	--no-color-diagnostics	identical
+bfd	--allow-multiple-definition	identical
+lld	--allow-multiple-definition	identical
+bfd	--no-allow-multiple-definition	rc=1	ld.bfd: unrecognized option '--no-allow-multiple-definition'
+lld	--no-allow-multiple-definition	identical
+bfd	--no-warn-common	rc=1	ld.bfd: unrecognized option '--no-warn-common'
+lld	--no-warn-common	identical
+bfd	--warn-execstack	identical
+lld	--warn-execstack	identical
+bfd	--detect-odr-violations	rc=1	ld.bfd: unrecognized option '--detect-odr-violations'
+lld	--detect-odr-violations	rc=1	ld.lld-22: error: unknown argument '--detect-odr-violations'
+bfd	--dependency-file=opts/dep.d	identical
+lld	--dependency-file=opts/dep.d	identical
+bfd	-plugin-save-temps	identical
+lld	-plugin-save-temps	rc=1	ld.lld-22: error: unknown argument '-plugin-save-temps'
+bfd	-flto	identical
+lld	-flto	rc=1	ld.lld-22: error: unknown argument '-flto'
+bfd	-flto-partition=one	identical
+lld	-flto-partition=one	rc=1	ld.lld-22: error: unknown argument '-flto-partition=one'
+bfd	-fuse-ld=bfd	identical
+lld	-fuse-ld=bfd	rc=1	ld.lld-22: error: unknown argument '-fuse-ld=bfd'
+bfd	-g	identical
+lld	-g	identical
+bfd	-Qy	identical
+lld	-Qy	rc=1	ld.lld-22: error: unknown argument '-Qy'
+bfd	-qmagic	identical
+lld	-qmagic	rc=1	ld.lld-22: error: unknown argument '-qmagic', did you mean '-nmagic'
+bfd	-assert definitions	identical
+lld	-assert definitions	rc=1	ld.lld-22: error: unknown argument '-assert'
+bfd	--map-whole-files	identical
+lld	--map-whole-files	rc=1	ld.lld-22: error: unknown argument '--map-whole-files'
+bfd	--no-map-whole-files	identical
+lld	--no-map-whole-files	rc=1	ld.lld-22: error: unknown argument '--no-map-whole-files'
+bfd	--no-keep-memory	identical
+lld	--no-keep-memory	identical
+bfd	--reduce-memory-overheads	DIFFERS
+lld	--reduce-memory-overheads	rc=1	ld.lld-22: error: unknown argument '--reduce-memory-overheads'
+bfd	--hash-size=31	DIFFERS
+lld	--hash-size=31	rc=1	ld.lld-22: error: unknown argument '--hash-size=31'
+bfd	--max-cache-size=1000	identical
+lld	--max-cache-size=1000	rc=1	ld.lld-22: error: unknown argument '--max-cache-size=1000'
+bfd	--no-eh-frame-hdr	identical
+lld	--no-eh-frame-hdr	identical
+bfd	--no-gdb-index	rc=1	ld.bfd: unrecognized option '--no-gdb-index'
+lld	--no-gdb-index	identical
+bfd	--no-debug-names	rc=1	ld.bfd: unrecognized option '--no-debug-names'
+lld	--no-debug-names	identical
+bfd	--undefined-version	identical
+lld	--undefined-version	identical
+bfd	--no-undefined-version	identical
+lld	--no-undefined-version	identical
+bfd	--rosegment	identical
+lld	--rosegment	identical
+bfd	--start-lib	rc=1	ld.bfd: unrecognized option '--start-lib'
+lld	--start-lib	DIFFERS
+bfd	--end-lib	rc=1	ld.bfd: unrecognized option '--end-lib'
+lld	--end-lib	rc=1	ld.lld-22: error: stray --end-lib
+bfd	--warn-backrefs	rc=1	ld.bfd: unrecognized option '--warn-backrefs'
+lld	--warn-backrefs	identical
+bfd	--no-warn-backrefs	rc=1	ld.bfd: unrecognized option '--no-warn-backrefs'
+lld	--no-warn-backrefs	identical
+bfd	--no-dependent-libraries	rc=1	ld.bfd: unrecognized option '--no-dependent-libraries'
+lld	--no-dependent-libraries	identical
+bfd	--time-trace	rc=1	ld.bfd: unrecognized option '--time-trace'
+lld	--time-trace	identical
+bfd	-M	identical	[]
+lld	-M	identical	[             VMA              LMA     Size Align Out     In      Symbol]
+bfd	--verbose	identical	[GNU ld (GNU Binutils for Debian) 2.44]
+lld	--verbose	identical	[ld.lld-22: m1.o]
+bfd	--no-incremental	rc=1	ld.bfd: unrecognized option '--no-incremental'
+lld	--no-incremental	rc=1	ld.lld-22: error: unknown argument '--no-incremental'
+bfd	--gdb-index	rc=1	ld.bfd: unrecognized option '--gdb-index'
+lld	--gdb-index	rc=1	ld.lld-22: error: -r and --gdb-index may not be used together
+bfd	--no-relax	identical
+lld	--no-relax	identical
+bfd	--emit-relocs	identical
+lld	--emit-relocs	identical
+bfd	--build-id	rc=0	1 build-id note(s)
+lld	--build-id	rc=0	1 build-id note(s)
+mold	--build-id	rc=0	0 build-id note(s)
+opts done
