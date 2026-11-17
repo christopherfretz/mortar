@@ -147,6 +147,14 @@ assumed), or if it is one of these exclusions.
   whose encoding has a component numbered per translation unit (an
   unnamed type at namespace scope, a closure with no mangling number
   declared outside the definition): it hashes as one placeholder (O-10).
+- **X24** scheme `kiln-odr-1.d2` only (O-10, "a callee that is a
+  function template specialization"): the caller of a specialization
+  whose template signature holds a dependent name that one unit
+  redeclared with another spelling hashes differently in that unit: a
+  FALSE finding under `--odr=strict` (kind 2 is strict's, O-47; fmt's
+  chrono test, two keys per standard library). Not excluded by mortar
+  (it sees two hashes, not the callee symbols); it ends with kiln's
+  K-3e and its scheme.
 - **X19** C-linkage signature differences that O-33's conservative
   canonical C type maps to one string (record types, `va_list`
   spellings, `noexcept`, reference vs pointer, `restrict`): equal under
@@ -508,6 +516,59 @@ on the scheme's list (among them `likely`, `unlikely`, `deprecated`,
 What it does **not** see: the code generator's choices (the reason K16d
 is kind 1's), and options that change meaning without changing tokens
 (the reason kind 1 exists).
+
+**kiln K-3c, accepted** (2026-11-17; kiln PR #783, scheme
+`kiln-odr-1.d2`: a kind 2 row carries the definition hash). Where the
+paragraphs above leave a choice, kiln's are these, none objected to:
+1. An elidable copy or move is transparent (the source expression
+   hashes in its place: `return T();` is equal at C++14 and C++17), as
+   are temporaries, their materialization and binding, and cleanups.
+2. An initializer list hashes in its semantic form (type, union member,
+   every element in field order, the array filler); a designated
+   initializer is its resolved field; a skipped field hashes as
+   value-initialization, which differs from a written `.x = {}` (other
+   tokens).
+3. A constructor: its initializers in initialization order as (kind,
+   target, initializer), a base by type, a member by owner and name;
+   then the body. A virtual destructor adds the selected deallocation
+   function (a token and its mangled name), in every variant.
+4. An implicit or defaulted special member: one fixed token, then the
+   initializers and body the compiler built; its exception-specification
+   byte is fixed (lazy analysis cannot move the hash).
+5. A default argument and a default member initializer are hashed as
+   their expression AT THE USE, inside the caller. Default arguments on
+   a definition's own parameters keep the row `PARTIAL` until K-3e.
+6. A variable: declared type and initializer as an expression, never
+   its value (K9; N22's C++14 and C++17 forms are equal).
+7. A type trait: the trait, its types and its value (two units in which
+   a trait's value differs with equal tokens are ill-formed already: a
+   finding there is true); `noexcept(e)`: its operand only.
+8. A constructor or destructor callee is named by the hasher's own
+   mangling of the variant called, never by the symbol the code
+   generator emits (a unit that folds C1 into C2 hashes as one that
+   does not).
+`visibility` no longer makes a row `PARTIAL`.
+
+**A callee that is a function template specialization (ruled
+2026-11-17, kiln's Q1 on K-3c).** The mangler spells a dependent name
+in a function template's signature as the unit's first declaration of
+it did (kiln and Clang 22 alike), so one specialization can have two
+symbols in two units of a legal program (fmt's chrono test redeclares
+`fmt::detail::has_tm_gmtoff` fully qualified: `format_utc_offset<tm>`
+has another symbol there, and its callers, of equal tokens, hash
+differently in `kiln-odr-1.d2`). The hash names the ENTITY: such a
+callee is hashed by its template (qualified name, template parameter
+list, and the signature hashed by the hasher with every name by entity,
+so independent of spelling; one computation per template declaration)
+and its template arguments, never by its symbol. Two overloads that
+differ only in a dependent signature (`enable_if_t<A<T>> f(T)` beside
+`enable_if_t<!A<T>> f(T)`) stay different callees: a caller that
+selects another overload in another unit is what kind 2 is for. kiln
+may instead hash the template without its signature and flag the
+caller's row `PARTIAL` whenever an overload of the same name and
+template-parameter count is in scope at the call (the miss is then
+counted, not silent). This is kiln's K-3e, with a scheme bump; until
+then it is X24.
 
 **O-11 (schemes).** Kind 1's `odr.scheme` names the serialization, the
 attribute list of O-10, the provenance form (per-piece or whole-literal
