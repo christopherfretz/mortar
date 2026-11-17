@@ -9,6 +9,7 @@
 #@ spec: dyn.md "D-111"
 #@ arch: aarch64 x86_64
 #@ requires: g++
+#@ xfail(bfd,lld): the verifier's P-D8 (D-27) judges the unversioned weak import of a definition in a library that is not needed (question F3 of WP-123)
 #@ xfail(mortar): M4: WP-123 finding F3 (D-111: a weak import whose only definition is in a library --as-needed drops)
 
 cxx -O1 -fPIC lib.cc -o lib.o

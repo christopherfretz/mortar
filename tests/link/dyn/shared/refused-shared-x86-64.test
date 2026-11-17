@@ -1,0 +1,23 @@
+# dyn.md D-100, D-130 (WP-123): a shared object on x86_64 is refused by
+# name at the front ("shared object output on x86-64", class `feature`) until its
+# package; the references link it and a host runs it.
+#@ spec: dyn.md "D-100"
+#@ arch: x86_64
+
+cc -O1 -fPIC lib.c -o lib.o
+cc -O1 -fPIE main.c -o main.o
+link(mortar) gcc -shared lib.o -o libar.so
+  exit: fail
+  diag: unsupported feature: shared object output on x86-64
+  diag: x86-64 shared objects are WP-127's
+link(bfd,lld,mold) gcc -shared lib.o -o libar.so
+link(bfd,lld,mold) gcc -pie main.o -L. -lar -o prog
+run(bfd,lld,mold) prog
+  stdout: 42
+
+#--- lib.c
+int lib_get(void) { return 42; }
+#--- main.c
+#include <stdio.h>
+int lib_get(void);
+int main(void) { printf("%d\n", lib_get()); return 0; }

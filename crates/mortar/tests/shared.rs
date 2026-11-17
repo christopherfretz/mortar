@@ -116,31 +116,13 @@ impl Cx {
 
 /// The verifier on mortar's library `out` (its map `<out>.mortar-map`):
 /// no finding.
-// TEMPORARY (WP-121): `P-D6` on the `.dynamic` order, which the verifier
-// gives a mortar library whose tags are in D-102's (and GNU ld's) order,
-// is filtered until WP-121's fix of WP-123's V2 is merged; remove the
-// filter then.
 fn verify(dir: &Path, out: &str) {
-    verify_but(dir, out, &[]);
-}
-
-/// [`verify`], and the findings that name one of `known` are not counted
-/// either.
-fn verify_but(dir: &Path, out: &str, known: &[&str]) {
     let findings = support::plumb::verify_staged(
         &dir.join(out),
         &dir.join(format!("{out}.mortar-map")),
         dir,
     );
-    let left: Vec<_> = findings
-        .iter()
-        .filter(|f| {
-            let text = format!("{f:?}");
-            !text.contains("the .dynamic tags are not in D-30's order")
-                && !known.iter().any(|k| text.contains(k))
-        })
-        .collect();
-    assert!(left.is_empty(), "plumb on {out}: {left:#?}");
+    assert!(findings.is_empty(), "plumb on {out}: {findings:#?}");
 }
 
 // spec: dyn.md D-100 (ET_DYN, no PT_INTERP), D-102 (DT_SONAME after
@@ -209,16 +191,7 @@ fn z_defs_refuses_an_undefined_reference() {
         assert!(!o.success(), "{words:?}");
         assert!(o.stderr_text().contains("undefined symbol: u"), "{}", o.stderr_text());
     }
-    // The verifier's P-D9 and P-D7 on `u` are the known false findings
-    // on a library linked without its dependencies (the coordinator's
-    // note to WP-123; the verifier agent fixes them).
-    let o = cx.mortar_shared(&["undef.o"], &[], "libu.so");
-    assert!(o.success(), "{}", o.stderr_text());
-    verify_but(
-        cx.scratch.path(),
-        "libu.so",
-        &["no needed or used object defines it visibly", "the loader finds no definition of 'u'"],
-    );
+    cx.library(&["undef.o"], &[], "libu.so");
     let syms = cx.readelf(&["--dyn-syms", "-W"], "libu.so");
     assert!(
         syms.lines().any(|l| l.ends_with(" u") && l.contains("NOTYPE  GLOBAL DEFAULT  UND")),
