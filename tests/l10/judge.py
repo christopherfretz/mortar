@@ -36,6 +36,7 @@ update) calls the same function with its own links.
 
 import os
 import subprocess
+import time
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -147,9 +148,14 @@ class Verdict:
     def __init__(self):
         self.checks = []          # (name, 'pass' | 'FAIL ...' | 'n/a ...')
         self.reason = None        # 'update' | fall-back name | None
+        self.times = {}           # check -> seconds (the lane's cost table)
+        self._t = time.time()
 
     def add(self, name, result):
         self.checks.append((name, result))
+        now = time.time()
+        self.times[name] = now - self._t
+        self._t = now
 
     @property
     def ok(self):

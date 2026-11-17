@@ -144,6 +144,7 @@ class Cache:
         os.makedirs(self.dir, exist_ok=True)
         self.compiled = 0
         self.hits = 0
+        self.seen = set()        # keys known to be in the cache (a stat costs ~1 ms here)
 
     def path(self, key):
         return os.path.join(self.dir, key[:2], key + '.o')
@@ -155,7 +156,8 @@ class Cache:
         """Compiles one unit into the cache (idempotent; safe in parallel:
         the object is renamed into place)."""
         out = self.path(key)
-        if os.path.exists(out):
+        if key in self.seen or os.path.exists(out):
+            self.seen.add(key)
             self.hits += 1
             return out
         d = os.path.join(self.dir, 'src', key)
@@ -171,6 +173,7 @@ class Cache:
         os.replace(out + '.%d.tmp' % os.getpid(), out)
         shutil.rmtree(d)
         self.compiled += 1
+        self.seen.add(key)
         return out
 
 
@@ -213,17 +216,22 @@ def capture(work, cfg):
     return out[:at], out[at + 1:]
 
 
-def write_if_changed(path, data, inplace=False):
+_UNKNOWN = object()
+
+
+def write_if_changed(path, data, inplace=False, old=_UNKNOWN):
     """Writes `data` at `path` unless it already holds it (an unchanged
     input keeps its stamp, as a build system leaves it). A new file is
     written beside and renamed over (a new inode, as a compiler writes),
     unless `inplace` and the sizes agree: then the same inode is rewritten.
+    `old` is the file's bytes when the caller knows them (None: no file).
     Returns True when the file changed."""
-    try:
-        with open(path, 'rb') as f:
-            old = f.read()
-    except OSError:
-        old = None
+    if old is _UNKNOWN:
+        try:
+            with open(path, 'rb') as f:
+                old = f.read()
+        except OSError:
+            old = None
     if old == data:
         return False
     if inplace and old is not None and len(old) == len(data):

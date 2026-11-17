@@ -186,6 +186,9 @@ class Runner:
         self.W = os.path.join(self.base, 'w')
         self.stage = os.path.join(self.base, 'stage')
         self.links = 0
+        self.archives = {}       # (name, thin, ((member, object path), ...)) -> bytes
+        self.installed = {}      # name in W -> the bytes the lane last wrote there
+        self.objbytes = {}       # cache object path -> bytes
         self.pre, self.post = build.capture(opts['work'], self.cfg)
         sub = seq.subject
         if sub == 'mortar':
@@ -214,7 +217,7 @@ class Runner:
         objs = self.objects(k)
         inputs, options = self.proj.plan(k, self.cfg)
         files, words = [], []
-        read = lambda p: open(p, 'rb').read()
+        read = self.read_object
         for inp in inputs:
             if inp[0] == 'o':
                 files.append((inp[1] + '.o', read(objs[inp[1]])))
@@ -234,16 +237,33 @@ class Runner:
             path = os.path.join(self.W, name)
             if isinstance(data, tuple):
                 members, thin = data
-                data = build.build_archive(self.cfg, self.stage, name, members, objs, thin, self.W)
-            if build.write_if_changed(path, data, inplace):
+                # the cache's objects are content-addressed: their paths name the archive's bytes
+                akey = (name, thin, tuple((m, objs[m]) for m in members))
+                data = self.archives.get(akey)
+                if data is None:
+                    data = build.build_archive(self.cfg, self.stage, name, members, objs, thin, self.W)
+                    if len(self.archives) >= 16:
+                        self.archives.pop(next(iter(self.archives)))
+                    self.archives[akey] = data
+            if build.write_if_changed(path, data, inplace, self.installed.get(name)):
                 changed.append(name)
+            self.installed[name] = data
         return changed
+
+    def read_object(self, path):
+        """A cache object's bytes (content-addressed: never changes)."""
+        data = self.objbytes.get(path)
+        if data is None:
+            with open(path, 'rb') as f:
+                data = self.objbytes[path] = f.read()
+        return data
 
     def remove_stale(self, files):
         keep = {n for n, _d in files}
         for n in os.listdir(self.W):
             if (n.endswith('.o') or n.endswith('.a')) and n not in keep:
                 os.remove(os.path.join(self.W, n))
+                self.installed.pop(n, None)
 
     # links ----------------------------------------------------------------
     def link(self, argv0, words, options, out, extra, env=None):
@@ -310,7 +330,8 @@ class Runner:
         steps = [None] + list(self.seq.steps)
         res = {'steps': len(self.seq.steps), 'reasons': collections.Counter(), 'failed_links': 0,
                'updates': 0, 'failure': None, 'at': None, 'rows': collections.defaultdict(collections.Counter),
-               'lines': []}
+               'lines': [], 'phase': collections.Counter()}
+        ph = res['phase']
         prev = None          # S_{i-1}: the previous successful step's snapshot
         preinstalled = False
         for i, step in enumerate(steps):
@@ -321,6 +342,7 @@ class Runner:
                     res['at'] = sid
                     break
                 k.update(step['set'])
+            t = time.time()
             files, words, options, objs = self.wanted(k)
             if not preinstalled:
                 self.install(files, objs)
@@ -332,6 +354,8 @@ class Runner:
             for n in ('full', 'full.map', 'g', 'g.map', 'rep.txt'):
                 if os.path.exists(os.path.join(self.W, n)):
                     os.remove(os.path.join(self.W, n))
+            ph['inputs'] += time.time() - t
+            t = time.time()
             fs, fo = self.link([self.opts['mortar']], words, options, 'full', ['--mortar-map=full.map'])
             gs, _go = self.link([self.opts['mortar']], words, options, 'g',
                                 ['--incremental=full', '--mortar-map=g.map'])
@@ -339,6 +363,13 @@ class Runner:
             senv['L10_STEP'] = str(sid)
             xs, xo = self.link(self.subject, words, options, 'prog',
                                ['--incremental', '--incremental-report=rep.txt', '--mortar-map=prog.map'], senv)
+            ph['links'] += time.time() - t
+            if step is None and fs != 0 and 'unsupported feature' in fo:
+                # the configuration is refused by name (spec: correct or refused):
+                # nothing of incremental linking to judge
+                res['refused'] = next((l for l in fo.splitlines() if 'unsupported feature' in l), '?')[:160]
+                break
+            t = time.time()
             # the next step's actions that must follow this link at once
             nxt = steps[i + 1] if i + 1 < len(steps) else None
             copy_names = set()
@@ -356,6 +387,10 @@ class Runner:
                     # the snapshot keeps this step's bytes of the files rewritten in place
                     keep = {n: open(os.path.join(self.W, n), 'rb').read() for n, _d in files
                             if os.path.exists(os.path.join(self.W, n))}
+                    # an in-place write reaches every hard link of the file: the
+                    # previous snapshot must own its inputs before it happens
+                    if prev is not None:
+                        unshare(prev.dir)
                     copy_names = set(self.install(files2, objs2, inplace=True))
                     preinstalled = True
             S = os.path.join(self.base, 's%s' % i)
@@ -372,16 +407,25 @@ class Runner:
             new = judge.Link(S, 'prog', 'prog.map', gs, []) if gs == 0 and fs == 0 else None
             if xs != 0 and fs != 0:
                 x.dir = f.dir = self.W   # nothing to read: both failed
+            ph['snapshot'] += time.time() - t
             v = judge.judge_step(tools, x, f, prev, new)
-            reason = v.reason or ('link-failed' if xs != 0 else 'none')
+            for c, dt in v.times.items():
+                ph[c] += dt
+            reason = v.reason or ('link-failed' if xs != 0 else
+                                  'incremental-unsupported' if ('incremental-unsupported' in xo or
+                                                               '--incremental is not supported with' in xo)
+                                  else 'no-report')
             res['reasons'][reason] += 1
             if reason == 'update':
                 res['updates'] += 1
             if xs != 0 and fs != 0:
                 res['failed_links'] += 1
+                res.setdefault('fail_diag', (f.diags[0][:160] if f.diags else 'status %s' % fs))
             row = 'base' if step is None else step['edit']
             res['rows'][row][reason] += 1
-            res['lines'].append('step %s %-22s %s reason=%s' % (sid, row, v.line(), reason))
+            res['lines'].append('step %s %-22s %s reason=%s%s' % (
+                sid, row, v.line(), reason,
+                (' (F: %s)' % (f.diags[0][:160] if f.diags else 'status %s' % fs)) if fs != 0 else ''))
             if not v.ok:
                 res['failure'] = 'step %s (%s) %s' % (sid, row, v.first_failure())
                 res['at'] = sid
@@ -398,7 +442,18 @@ class Runner:
             shutil.rmtree(self.base)
         res['rows'] = {r: dict(c) for r, c in res['rows'].items()}
         res['reasons'] = dict(res['reasons'])
+        res['phase'] = dict(res['phase'])
         return res
+
+
+def unshare(d):
+    """Replaces each hard-linked file in d by a copy of its own."""
+    for n in os.listdir(d):
+        p = os.path.join(d, n)
+        if os.path.isfile(p) and not os.path.islink(p) and os.stat(p).st_nlink > 1:
+            tmp = p + '.unshare'
+            shutil.copy2(p, tmp)
+            os.replace(tmp, p)
 
 
 def run_one(args):
@@ -415,19 +470,25 @@ def run_one(args):
 # ------------------------------------------------------------- reporting --
 def result_line(seq, r):
     v = 'PASS' if r['failure'] is None else 'FAIL at=%s %s' % (r['at'], r.get('check', '?'))
+    if r.get('refused') and r['failure'] is None:
+        v = 'REFUSED (the base link: %s)' % r['refused']
     return 'L10 RESULT %s steps=%d verdict=%s' % (describe(seq), r['steps'], v)
 
 
 def stats_line(seq, r):
     fb = ','.join('%s:%d' % (k, n) for k, n in sorted(r['reasons'].items()) if k != 'update') or '-'
-    flag = ' FLAGGED(only fall-backs)' if r['updates'] == 0 and r['failure'] is None else ''
+    flag = ' FLAGGED(only fall-backs)' if r['updates'] == 0 and r['failure'] is None and not r.get('refused') else ''
+    if r['failure'] is None and r['failed_links'] == r['steps'] + 1:
+        flag = ' FLAGGED(every link failed, F too: %s)' % r.get('fail_diag', '?')
     return 'L10 STATS  %s steps=%d updates=%d fallbacks=%s failed-links=%d%s' % (
         describe(seq), r['steps'], r['updates'], fb, r['failed_links'], flag)
 
 
 def cost_line(seq, r):
-    return 'L10 COST   %s wall=%.1fs links=%d load=%s' % (describe(seq), r['wall'], r['links'],
-                                                          open('/proc/loadavg').read().split()[0])
+    ph = ' '.join('%s=%.1f' % (n, r.get('phase', {}).get(n, 0.0))
+                  for n in ('inputs', 'links', 'snapshot', 'exit', 'verify', 'equiv', 'run', 'oracle'))
+    return 'L10 COST   %s wall=%.1fs links=%d load=%s [%s]' % (describe(seq), r['wall'], r['links'],
+                                                               open('/proc/loadavg').read().split()[0], ph)
 
 
 def write_failure(seq, r, work):
@@ -716,7 +777,7 @@ def main():
     log('L10 COMPILED %d object(s) in %.1fs (cache: %s)' % (ncomp, time.time() - t0, os.path.join(o['work'], 'cache')))
     with concurrent.futures.ProcessPoolExecutor(max_workers=min(o['jobs'], len(seqs))) as ex:
         results = list(ex.map(run_one, [(s, opts) for s in seqs]))
-    fails = flagged = 0
+    fails = flagged = refused = 0
     for seq, r in sorted(results, key=lambda sr: (sr[0].project, sr[0].config, sr[0].seed)):
         log(result_line(seq, r))
         log(stats_line(seq, r))
@@ -730,13 +791,15 @@ def main():
                 log(r['trace'])
             path = write_failure(seq, r, o['work'])
             log('    sequence: %s (cargo xtask l10 --minimize %s)' % (path, path))
+        elif r.get('refused'):
+            refused += 1
         elif r['updates'] == 0:
             flagged += 1
     edit_table(results, log)
-    log('L10 SUMMARY sequences=%d failed=%d flagged=%d%s wall=%.0fs' % (
-        len(results), fails, flagged,
+    log('L10 SUMMARY sequences=%d failed=%d flagged=%d refused=%d%s wall=%.0fs' % (
+        len(results), fails, flagged, refused,
         ' (every passing sequence only fell back: no update on the product path yet)'
-        if flagged == len(results) - fails and flagged else '', time.time() - t0))
+        if flagged == len(results) - fails - refused and flagged else '', time.time() - t0))
     sys.exit(1 if fails else 0)
 
 
