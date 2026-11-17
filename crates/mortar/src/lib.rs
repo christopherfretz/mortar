@@ -522,17 +522,7 @@ mod tests {
     #[test]
     fn errors_come_in_argument_order() {
         assert_eq!(
-            failed(&[
-                "--frob",
-                "-o",
-                "x",
-                "a.o",
-                "-z",
-                "nodump",
-                "-z",
-                "nodump",
-                "--hash-style"
-            ]),
+            failed(&["--frob", "-o", "x", "a.o", "-z", "nodump", "-z", "nodump", "--hash-style"]),
             format!(
                 "ld: error: unknown argument '--frob'\n\
                  ld: error: unsupported option: -z nodump\n\
