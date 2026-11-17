@@ -11,7 +11,7 @@ use mortar_elf::consts::{
 use mortar_elf::{Error, Machine, Object, Rel, Rela, SectionIndex, Shdr, SymbolTable};
 
 use crate::image::Image;
-use crate::map::{Format, Map, MapFile, Placed, SectionRef};
+use crate::map::{DiscardReason, Format, Map, MapFile, Placed, SectionRef};
 use crate::report::{Finding, Rule, Site};
 use crate::store::{At, Bytes, Resolved, Store};
 
@@ -51,6 +51,9 @@ pub(crate) struct Sec<'a> {
     /// section out of bounds.
     body: Body<'a>,
     pub place: Place,
+    /// The reason and line of the map's `discard` record that names it
+    /// (§3.3 M10 reads it).
+    pub discard: Option<(DiscardReason, u32)>,
     /// The relocation section that applies to this one.
     pub relocs: Option<u32>,
 }
@@ -77,6 +80,15 @@ impl Sec<'_> {
     pub fn is_eh_frame(&self, machine: Machine) -> bool {
         self.name == ".eh_frame"
             || (machine == Machine::X86_64 && self.shdr.sh_type == SHT_X86_64_UNWIND)
+    }
+    /// An empty allocated section mortar's map has no record of (I-78:
+    /// a merged one has no piece; WP-143): not "without a place", its
+    /// labels are where its bytes would be, which the map does not say.
+    pub fn empty_unrecorded(&self) -> bool {
+        matches!(self.place, Place::Absent)
+            && self.shdr.sh_size == 0
+            && self.alloc()
+            && self.name != ".eh_frame"
     }
     /// Sections a linker consumes rather than places.
     pub fn consumed(&self) -> bool {
@@ -270,7 +282,7 @@ fn read_obj<'a>(store: &'a Store<'a>, k: usize, file: &MapFile) -> Result<Obj<'a
                 Err(_) => Body::Resident(&[]),
             }
         };
-        secs.push(Sec { name, shdr: *s.header(), body, place: Place::Absent, relocs: None });
+        secs.push(Sec { name, shdr: *s.header(), body, place: Place::Absent, discard: None, relocs: None });
     }
     for i in 0..secs.len() {
         if matches!(secs[i].shdr.sh_type, SHT_RELA | SHT_REL) {
@@ -422,6 +434,7 @@ pub(crate) fn locate<'a>(
         for si in candidates(&out.objs[oi], &names[oi], &d.section) {
             if matches!(out.objs[oi].secs[si].place, Place::Absent) {
                 out.objs[oi].secs[si].place = Place::Discarded;
+                out.objs[oi].secs[si].discard = Some((d.reason, d.line));
             }
         }
     }
@@ -451,7 +464,12 @@ pub(crate) fn locate<'a>(
     if map.format != Format::Mortar {
         for o in &mut out.objs {
             for s in &mut o.secs {
+                // An empty one has no pieces to merge: a row of it is its
+                // place, where its labels are (WP-143; GNU, lld and mold
+                // each write one).
+                let empty_row = s.shdr.sh_size == 0 && matches!(s.place, Place::Whole(_));
                 if s.merge()
+                    && !empty_row
                     && matches!(s.place, Place::Whole(_) | Place::Absent | Place::Ambiguous)
                 {
                     s.place = Place::Merged;
@@ -459,7 +477,7 @@ pub(crate) fn locate<'a>(
             }
         }
     }
-    check_map(&mut out, image);
+    check_map(&mut out, image, map.format);
     out
 }
 
@@ -643,13 +661,34 @@ fn disambiguate(obj: &Obj<'_>, fits: &[usize], p: &Placed, image: &Image<'_>) ->
 
 /// The map rules about places (§3.3): M4 (inside an output section with
 /// compatible flags, aligned) and M5 (no overlap).
-fn check_map(out: &mut Located<'_>, image: &Image<'_>) {
+fn check_map(out: &mut Located<'_>, image: &Image<'_>, format: Format) {
     let mut placed: Vec<(u64, u64, usize, usize)> = Vec::new();
     for (oi, o) in out.objs.iter().enumerate() {
         for (si, s) in o.secs.iter().enumerate() {
             let Place::Whole(addr) = s.place else { continue };
             // A section without bytes has an address only for its symbols;
             // a .tbss section occupies no memory of its segment.
+            if format == Format::Mortar
+                && s.alloc()
+                && s.shdr.sh_size == 0
+                && !image.holds_or_ends(addr)
+            {
+                // An empty section's labels are at its place (WP-143): an
+                // address inside or at the end of an allocated output
+                // section, never 0 or between sections. GNU ld places one
+                // where its dropped empty output section would have been
+                // (§10.2 A10): its row is trusted as the label's address.
+                out.findings.push(
+                    Finding::new(
+                        Rule::Map(4),
+                        format!(
+                            "an empty section placed at {addr:#x}, neither in nor at the end of an allocated output section"
+                        ),
+                    )
+                    .at(addr)
+                    .site(o.site(si, 0)),
+                );
+            }
             if !s.alloc() || s.shdr.sh_size == 0 || s.tbss() {
                 continue;
             }

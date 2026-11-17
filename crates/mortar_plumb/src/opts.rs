@@ -777,6 +777,9 @@ pub struct Options {
     /// The last of `--gc-sections` and `--no-gc-sections` (`spec/image.md`
     /// I-5, I-6): §3.3's M10 reads it (a `discard gc` record, WP-143).
     pub gc_sections: bool,
+    /// `-T`/`--script`/`--default-script` (a `discard script` record's
+    /// reason, M10).
+    pub script: bool,
     /// The last `-z max-page-size=N` (layout.md L-74; `N = 0` means the
     /// default), when its value reads as a number.
     pub max_page: Option<u64>,
@@ -798,6 +801,7 @@ impl Default for Options {
             execstack: None,
             strip_all: false,
             gc_sections: false,
+            script: false,
             max_page: None,
             unread: Vec::new(),
         }
@@ -865,6 +869,7 @@ impl Options {
             "-S" => self.strip_debug = true,
             "--gc-sections" => self.gc_sections = true,
             "--no-gc-sections" => self.gc_sections = false,
+            "-T" | "--default-script" => self.script = true,
             "--keep-mason-meta" => self.keep_mason_meta = true,
             "--odr-table" => {
                 self.odr_table = match value {

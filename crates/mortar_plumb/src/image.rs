@@ -163,6 +163,11 @@ impl<'a> Image<'a> {
         self.names.get(name).and_then(|e| e.global).map(|i| &self.symbols[i as usize])
     }
 
+    /// Whether a symbol of `.symtab` is named `name`, of any binding.
+    pub fn has_name(&self, name: &str) -> bool {
+        self.names.contains_key(name)
+    }
+
     /// The one symbol named `name`, of any binding, when exactly one has it.
     pub fn unique(&self, name: &str) -> Option<&OutSym> {
         self.names
@@ -170,6 +175,14 @@ impl<'a> Image<'a> {
             .filter(|e| e.count == 1)
             .and_then(|e| e.first)
             .map(|i| &self.symbols[i as usize])
+    }
+
+    /// Whether an allocated output section holds `addr` or ends there
+    /// (an empty input section's place, WP-143).
+    pub fn holds_or_ends(&self, addr: u64) -> bool {
+        self.sections.iter().any(|s| {
+            s.alloc() && s.shdr.sh_addr <= addr && addr <= s.shdr.sh_addr.saturating_add(s.shdr.sh_size)
+        })
     }
 
     /// The `PT_LOAD` whose memory holds `[addr, addr + len)`.

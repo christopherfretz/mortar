@@ -193,6 +193,44 @@ fn placed_def(e: &Engine<'_, '_>, oi: usize, di: u32) -> Option<Def> {
     }
 }
 
+/// The input section of a definition of `name` the output holds with an
+/// address: placed whole or as pieces, or (mortar's map) empty without a
+/// record (WP-143), allocated. `None` when every definition is elsewhere.
+fn held_def(e: &Engine<'_, '_>, name: &str) -> Option<String> {
+    e.defs.get(name)?.iter().find_map(|&(oi, di)| {
+        let o = &e.objs[oi];
+        let t = o.symtab?;
+        let d = t.get(SymbolIndex(di)).ok()?;
+        if d.binding() == STB_LOCAL {
+            return None;
+        }
+        let SymbolSection::Section(k) = t.section_of(SymbolIndex(di), &d).ok()? else {
+            return None;
+        };
+        let s = o.secs.get(k.0 as usize)?;
+        // A foreign map's merged section may have lost every piece (lld
+        // under --gc-sections): not known to be held.
+        let held = matches!(s.place, Place::Whole(_) | Place::Pieces(_))
+            || (e.format == Format::Mortar && s.empty_unrecorded());
+        (s.alloc() && held).then(|| format!("section '{}' of {}", s.name, o.path))
+    })
+}
+
+/// The name of the empty section without a record (WP-143) a definition
+/// of `name` is in, when one is.
+fn empty_def(e: &Engine<'_, '_>, name: &str) -> Option<String> {
+    e.defs.get(name)?.iter().find_map(|&(oi, di)| {
+        let o = &e.objs[oi];
+        let t = o.symtab?;
+        let d = t.get(SymbolIndex(di)).ok()?;
+        let SymbolSection::Section(k) = t.section_of(SymbolIndex(di), &d).ok()? else {
+            return None;
+        };
+        let s = o.secs.get(k.0 as usize)?;
+        (s.empty_unrecorded() && s.shdr.sh_flags & SHF_TLS == 0).then(|| s.name.clone())
+    })
+}
+
 /// The output symbol's address: a TLS symbol's value is its offset in the
 /// TLS template (§4.7).
 fn address(e: &Engine<'_, '_>, s: &Sym) -> Option<u64> {
@@ -273,7 +311,22 @@ fn globals(e: &mut Engine<'_, '_>, fs: &mut Vec<Finding>) {
     names.sort();
     let (mut checked, mut unchecked) = (0u64, 0u64);
     for name in names {
-        let Some(out) = image.global(name).or_else(|| image.unique(name)) else { continue };
+        let Some(out) = image.global(name).or_else(|| image.unique(name)) else {
+            // Y3 (WP-143): a name an input defines globally in a section
+            // the output holds is in a `.symtab` the output has.
+            let v = vis.get(name.as_str()).copied().unwrap_or(0);
+            if !image.symbols.is_empty()
+                && !image.has_name(name)
+                && rank(v) < rank(STV_HIDDEN)
+                && let Some(why) = held_def(e, name)
+            {
+                fs.push(named(
+                    y(3, format!("symbol '{name}', defined in {why}, is not in the output's .symtab")),
+                    name,
+                ));
+            }
+            continue;
+        };
         if out.sym.st_shndx == SHN_UNDEF {
             continue;
         }
@@ -287,6 +340,40 @@ fn globals(e: &mut Engine<'_, '_>, fs: &mut Vec<Finding>) {
         // mold form (a function at an IPLT entry) is Y1's (§4.8).
         let canonical_ifunc = defs.iter().any(|(d, _)| d.sym.sym_type() == STT_GNU_IFUNC)
             && out.sym.sym_type() != STT_GNU_IFUNC;
+        if defs.is_empty()
+            && e.format == Format::Mortar
+            && let Some((doi, _, k)) = e.placeless_def(name)
+        {
+            // Y3 (WP-143): every input definition is in a section not in
+            // the output, yet the output defines the name.
+            let sec = &e.objs[doi].secs[k].name;
+            let mut f = y(
+                3,
+                format!(
+                    "symbol '{name}' is defined in the output, but every input definition is in a section not in it ('{sec}')"
+                ),
+            );
+            f.found = Some(out.sym.st_value);
+            fs.push(named(f.at(out.sym.st_value), name));
+            continue;
+        }
+        if defs.is_empty() && let Some(sec) = empty_def(e, name) {
+            // An empty section's label is where its bytes would be: in or
+            // at the end of an allocated output section (WP-143).
+            if image.holds_or_ends(out.sym.st_value) {
+                checked += 1;
+            } else {
+                let mut f = y(
+                    3,
+                    format!(
+                        "symbol '{name}' of empty section '{sec}' is neither in nor at the end of an allocated output section"
+                    ),
+                );
+                f.found = Some(out.sym.st_value);
+                fs.push(named(f.at(out.sym.st_value), name));
+            }
+            continue;
+        }
         if canonical_ifunc || defs.is_empty() {
             unchecked += 1;
             continue;
