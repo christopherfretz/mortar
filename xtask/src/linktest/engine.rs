@@ -815,6 +815,16 @@ impl Unit<'_> {
         }
     }
 
+    /// What a skip names for a missing feature: the probe's reason for a
+    /// kiln without records or a hod without the row (WP-134, WP-129),
+    /// else the tool.
+    fn missing_name(&self, feature: Feature) -> String {
+        match (feature, &self.matrix.kiln, &self.matrix.hod) {
+            (Feature::Kiln, Some(Err(why)), _) | (Feature::Hod, _, Some(Err(why))) => why.clone(),
+            _ => super::target::feature_tool_name(feature, self.arch(), self.matrix.host),
+        }
+    }
+
     /// Runs the unit: every linker of the run that the architecture has,
     /// the references first.
     pub fn run(&self) -> Results {
@@ -850,15 +860,7 @@ impl Unit<'_> {
         requires.dedup();
         let absent: Vec<Feature> =
             requires.iter().copied().filter(|f| !self.matrix.has(self.tools, *f)).collect();
-        let missing: Vec<String> = absent
-            .iter()
-            .map(|feature| match (feature, &self.matrix.kiln, &self.matrix.hod) {
-                (Feature::Kiln, Some(Err(why)), _) | (Feature::Hod, _, Some(Err(why))) => {
-                    why.clone()
-                }
-                _ => super::target::feature_tool_name(*feature, self.arch(), self.matrix.host),
-            })
-            .collect();
+        let missing: Vec<String> = absent.iter().map(|f| self.missing_name(*f)).collect();
         if !missing.is_empty() {
             let detail = format!("requires {}: not found", missing.join(", "));
             results.records.push(self.record(None, Outcome::Skip, detail));
