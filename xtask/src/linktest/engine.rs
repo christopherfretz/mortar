@@ -1560,7 +1560,11 @@ impl Unit<'_> {
                     Linker::Mortar => None,
                 };
                 let program = program.ok_or_else(|| {
-                    Raw::Skip(format!("{}: {} is not there", step.describe(), partial.linker.name()))
+                    Raw::Skip(format!(
+                        "{}: {} is not there",
+                        step.describe(),
+                        partial.linker.name()
+                    ))
                 })?;
                 (program.clone(), vec!["-r".into()])
             }

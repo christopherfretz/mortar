@@ -1125,12 +1125,13 @@ impl Parser {
             "partial" => {
                 qualifiers.no_family("'partial'")?;
                 qualifiers.no_linker("'partial'")?;
-                let linker = Linker::parse(first).filter(|l| l.is_reference()).ok_or_else(|| {
-                    format!(
-                        "'partial' is followed by the reference linker that makes the \
+                let linker =
+                    Linker::parse(first).filter(|l| l.is_reference()).ok_or_else(|| {
+                        format!(
+                            "'partial' is followed by the reference linker that makes the \
                          relocatable output (bfd, lld, mold), not '{first}'"
-                    )
-                })?;
+                        )
+                    })?;
                 args.remove(0);
                 if args.is_empty() {
                     return Err("'partial' has no arguments".to_owned());
