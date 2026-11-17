@@ -398,6 +398,7 @@ a row without it is information. Names defined now [kiln]:
 | `producer` | `kiln 0.1.0 (hod 0.1.0)` | no | diagnostics |
 | `source` | the main file's path after `-ffile-prefix-map` | no | diagnostics |
 | `odr.scheme` | the definition-hash scheme, e.g. `kiln-odr-1` | no | rows of kinds 2, 3 are compared only between equal schemes (`odr.md` O-11). Written by a unit that carries rows of kind 2 or 3 and by no other: a unit without hashed rows has no serialization to name and leaves the row out (kiln K-1/K-2 today) |
+| `odr.layout-scheme` | the layout-hash scheme, e.g. `kiln-odr-1` | no | kind 3's `layout` is compared only between equal layout schemes (`odr.md` O-11). Written by a unit that carries kind 3 rows; a unit without the row uses its `odr.scheme` for layouts. With it, `odr.scheme` names the definition serialization alone and is written by a unit with kind 2 rows or a non-zero kind 3 `hash` |
 | `std` | the language standard, e.g. `c++20` | no | `odr.md` O-32 |
 | `lang` | `c` or `c++` | no | `odr.md` O-33: C units get no kind 3 rows and C-linkage kind 5 rows are compared under C's rules |
 | `abi.rtti` | `on`/`off` | **no** (a note: mixing `-fno-rtti` libraries with RTTI code is common and legal, `odr.md` N24) | K16c: `odr.md` O-25 reads it |
@@ -478,7 +479,8 @@ fields after the ones it knows are skipped by `header_size` and
 `row_size`.
 
 **MT-37 (schemes).** What a hash means is not versioned by the container:
-kind 1's `odr.scheme` names it, and rows of different schemes are never
+kind 1's `odr.scheme` (definition hashes) and `odr.layout-scheme`
+(layout hashes) name it, and rows of different schemes are never
 compared (`odr.md` O-11). A kiln release that changes what its hash
 covers changes the scheme name; old and new objects then link without a
 check between them, and with a note in `--odr-stats` (`odr.md` O-44).
