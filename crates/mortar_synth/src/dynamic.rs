@@ -55,7 +55,7 @@ use mortar_core::id::SymbolId;
 use mortar_diag::{Diagnostic, Kind};
 use mortar_elf::Class;
 use mortar_elf::consts::{
-    DF_1_NOW, DF_1_PIE, DF_BIND_NOW, DF_SYMBOLIC, DT_DEBUG, DT_FINI, DT_FINI_ARRAY,
+    DF_1_NOW, DF_1_PIE, DF_BIND_NOW, DF_STATIC_TLS, DF_SYMBOLIC, DT_DEBUG, DT_FINI, DT_FINI_ARRAY,
     DT_FINI_ARRAYSZ, DT_FLAGS, DT_FLAGS_1, DT_GNU_HASH, DT_INIT, DT_INIT_ARRAY, DT_INIT_ARRAYSZ,
     DT_JMPREL, DT_NEEDED, DT_PLTGOT, DT_PLTREL, DT_PLTRELSZ, DT_PREINIT_ARRAY, DT_PREINIT_ARRAYSZ,
     DT_REL, DT_RELA, DT_RELACOUNT, DT_RELAENT, DT_RELASZ, DT_RELCOUNT, DT_RELENT, DT_RELSZ,
@@ -103,6 +103,9 @@ pub struct SharedDyn {
     /// `SymbolicLine::writes_symbolic_tags()` (D-112: the line's last
     /// `-Bsymbolic` form is `-Bsymbolic`, without `--dynamic-list`).
     pub symbolic: bool,
+    /// `DF_STATIC_TLS` (D-103, D-119): some reference of the library uses
+    /// the initial-exec model (`Demands.output`'s `STATIC_TLS`).
+    pub static_tls: bool,
 }
 
 /// Which tag names the run path (D-30 row 2).
@@ -422,10 +425,13 @@ impl DynamicPlan {
             }
         }
         // Rows 26-27.
-        // D-103: `DF_SYMBOLIC` with `DT_SYMBOLIC`; `DF_BIND_NOW` for `-z now`.
+        // D-103: `DF_SYMBOLIC` with `DT_SYMBOLIC`; `DF_BIND_NOW` for `-z now`;
+        // `DF_STATIC_TLS` in a shared object with an IE slot (D-119).
         let symbolic = shared.is_some_and(|s| s.symbolic);
-        let flags =
-            if symbolic { DF_SYMBOLIC } else { 0 } | if i.bind_now { DF_BIND_NOW } else { 0 };
+        let static_tls = shared.is_some_and(|s| s.static_tls);
+        let flags = if symbolic { DF_SYMBOLIC } else { 0 }
+            | if i.bind_now { DF_BIND_NOW } else { 0 }
+            | if static_tls { DF_STATIC_TLS } else { 0 };
         if flags != 0 {
             put(DT_FLAGS, DynValue::Const(flags));
         }

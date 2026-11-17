@@ -1750,7 +1750,10 @@ fn rela_dyn(view: &DynView<'_, '_, '_>) -> Result<crate::dynrel::RelaDyn, Diagno
                 .ok_or_else(|| internal(".rela.dyn: a GOT RELATIVE record without a value"))?;
             got_relative.push(DynRecord { r_offset, r_sym: 0, r_type: r.r_type, addend: v as i64 });
         } else {
-            other.push(DynRecord { r_offset, r_sym: r.r_sym, r_type: r.r_type, addend: 0 });
+            // D-119: a shared object's `r_sym` 0 TLS record carries the
+            // key's offset in the block; every other one 0.
+            let addend = got.record_addend(r, t).map_err(SynthError::into_diagnostic)?;
+            other.push(DynRecord { r_offset, r_sym: r.r_sym, r_type: r.r_type, addend });
         }
     }
     got_relative.sort_unstable_by_key(|r| r.r_offset);

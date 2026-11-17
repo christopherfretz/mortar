@@ -2676,11 +2676,13 @@ relaxes nothing either; each model keeps its records:
 LE is refused on every architecture with lld's and mold's reason
 (``relocation R_AARCH64_TLSLE_ADD_TPREL_HI12 against s_tls cannot be
 used with -shared``): the library's TLS block is placed by the loader,
-not at a link-time offset. GNU ld refuses it against an exported or
-imported symbol, accepts it on i386 as `R_386_TLS_TPOFF` text
-relocations, and on AArch64 links a library whose TLS is only local with
-the link-time offsets, no record and no diagnostic: it reads the wrong
-thread's storage (W19). AArch64 traditional GD (`-mtls-dialect=trad`)
+not at a link-time offset. GNU ld refuses it against an imported
+symbol, accepts it on i386
+as `R_386_TLS_TPOFF` text relocations, and on AArch64 links a library
+whose local-exec TLS is defined in it, exported or local, with the
+link-time offsets, no record and no diagnostic: it reads the wrong
+thread's storage (W19; the exported case measured by WP-124, GNU ld
+2.44). AArch64 traditional GD (`-mtls-dialect=trad`)
 is accepted (a64 §8.4's sequence; GNU ld and mold accept it, lld 19 and
 22 refuse `unknown relocation (513)`). `DF_STATIC_TLS` is set iff some
 IE slot exists (lld and mold everywhere, GNU ld on x86; D-30's "never"
@@ -2718,8 +2720,10 @@ D-41's. No `.plt.got` (D-49). The i386 PLT of a shared object is the
   library: calls from every translation unit, GOT slots (`RELATIVE`) and
   address words (`RELATIVE`); the IPLT entry's `.got.plt` word holds the
   only `IRELATIVE`, last in `.rela.plt` (D-41, D-45's rule, lld's). Its
-  `.dynsym` entry, when exported, is `STT_FUNC` at the IPLT entry (D-23)
-  [unmeasured: no protected IFUNC was linked]. GNU ld and mold give a
+  `.dynsym` entry, when exported, is `STT_FUNC` at the IPLT entry (D-23;
+  lld's form, measured by WP-124 for a protected IFUNC on AArch64: GNU ld
+  and mold export it `STT_GNU_IFUNC` `PROTECTED` at the resolver, GNU ld
+  with `GLOB_DAT`/`ABS64` records against it; all three run alike). GNU ld and mold give a
   hidden IFUNC a PLT address in one translation unit and the resolved
   function in another (AArch64), and a static or hidden one different
   code and data addresses (x86-64): `&f` is not one value (W21).

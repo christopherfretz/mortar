@@ -1,0 +1,87 @@
+# dyn.md D-119 (WP-124), D-125: C++ thread_local in a shared object. The
+# library has a thread_local object with a non-trivial constructor and
+# destructor (registered through __cxa_thread_atexit, run at each
+# thread's exit), and exports a dynamically initialized thread_local
+# that the host reads through its TLS wrapper. An exception thrown in the
+# library on a second thread carries a thread-local value and is caught
+# in the host. The same library with -static-libstdc++ (libstdc++.a's
+# own TLS, TLSDESC in the C++ runtime) runs alike.
+#@ spec: dyn.md "D-119"
+#@ requires: g++
+#@ arch: aarch64
+
+cxx -O1 -fPIC lib.cc -o lib.o
+cxx -O1 -fPIE -pthread main.cc -o main.o
+link g++ -shared lib.o -Wl,-soname,libtx.so -o libtx.so
+link g++ -shared -static-libstdc++ lib.o -Wl,-soname,libtxs.so -o libtxs.so
+check readelf -dW libtxs.so
+  not: libstdc++
+host g++ -pie -pthread main.o -L. -ltx -o prog
+run prog
+  stdout: ctor 1
+  stdout: thread 6 caught 105
+  stdout: dtor 1 105
+  stdout: main 6 1
+  stdout: dtor 0 1
+host g++ -pie -pthread main.o -L. -ltxs -o prog-s
+run prog-s
+  stdout: ctor 1
+  stdout: thread 6 caught 105
+  stdout: dtor 1 105
+  stdout: main 6 1
+  stdout: dtor 0 1
+
+#--- lib.cc
+#include <cstdio>
+#include <stdexcept>
+struct Tracker {
+  int v;
+  int id;
+  Tracker();
+  ~Tracker() { std::printf("dtor %d %d\n", id, v); std::fflush(stdout); }
+};
+static int next_id;
+Tracker::Tracker() : v(1), id(next_id++) {
+  if (id) { std::printf("ctor %d\n", id); std::fflush(stdout); }
+}
+static thread_local Tracker tracker;
+static int compute() { return 6; }
+thread_local int shared_tl = compute();
+struct Err : std::runtime_error {
+  int v;
+  explicit Err(int x) : std::runtime_error("err"), v(x) {}
+};
+int touch() { return tracker.v; }
+void fail(int x) {
+  tracker.v += x;
+  throw Err(tracker.v);
+}
+int err_value(const std::exception &e) {
+  const Err *p = dynamic_cast<const Err *>(&e);
+  return p ? p->v : -1;
+}
+#--- main.cc
+#include <cstdio>
+#include <exception>
+#include <pthread.h>
+extern thread_local int shared_tl;
+int touch();
+void fail(int);
+int err_value(const std::exception &);
+static void *worker(void *) {
+  try {
+    fail(104);
+  } catch (const std::exception &e) {
+    std::printf("thread %d caught %d\n", shared_tl, err_value(e));
+    std::fflush(stdout);
+  }
+  return nullptr;
+}
+int main() {
+  int t0 = touch();
+  pthread_t t;
+  if (pthread_create(&t, nullptr, worker, nullptr) || pthread_join(t, nullptr)) return 2;
+  std::printf("main %d %d\n", shared_tl, t0);
+  std::fflush(stdout);
+  return 0;
+}

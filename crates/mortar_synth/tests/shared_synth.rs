@@ -21,10 +21,10 @@ use mortar_core::par::Pool;
 use mortar_core::resolution::{Def, RefFlags};
 use mortar_core::{Demands, DynStr, FileId, Resolution, Slots, SymKey, SymbolId, VerIndex};
 use mortar_elf::consts::{
-    DF_1_NOW, DF_1_PIE, DF_BIND_NOW, DF_SYMBOLIC, DT_AARCH64_BTI_PLT, DT_AARCH64_VARIANT_PCS,
-    DT_DEBUG, DT_FINI, DT_FLAGS, DT_FLAGS_1, DT_GNU_HASH, DT_INIT, DT_NEEDED, DT_RUNPATH,
-    DT_SONAME, DT_SYMBOLIC, STB_GLOBAL, STB_WEAK, STT_FUNC, STT_GNU_IFUNC, STT_NOTYPE, STT_OBJECT,
-    STT_TLS, STV_PROTECTED,
+    DF_1_NOW, DF_1_PIE, DF_BIND_NOW, DF_STATIC_TLS, DF_SYMBOLIC, DT_AARCH64_BTI_PLT,
+    DT_AARCH64_VARIANT_PCS, DT_DEBUG, DT_FINI, DT_FLAGS, DT_FLAGS_1, DT_GNU_HASH, DT_INIT,
+    DT_NEEDED, DT_RUNPATH, DT_SONAME, DT_SYMBOLIC, STB_GLOBAL, STB_WEAK, STT_FUNC, STT_GNU_IFUNC,
+    STT_NOTYPE, STT_OBJECT, STT_TLS, STV_PROTECTED,
 };
 use mortar_elf::{Class, Machine, SymbolIndex};
 use mortar_synth::SynthKind as K;
@@ -73,7 +73,7 @@ fn inputs(kind: DynKind) -> DynamicInputs {
 }
 
 fn shared(soname: bool, symbolic: bool) -> DynKind {
-    DynKind::Shared(SharedDyn { soname, symbolic })
+    DynKind::Shared(SharedDyn { soname, symbolic, static_tls: false })
 }
 
 fn tags(i: &DynamicInputs) -> Vec<i64> {
@@ -142,6 +142,18 @@ fn d102_d103_each_fact_alone() {
 }
 
 // D-102 rows 5-6: `.preinit_array` in a shared object is refused by name.
+// D-119 (WP-124): DF_STATIC_TLS in DT_FLAGS iff the library has an IE
+// slot (`static_tls`), with the other flags.
+#[test]
+fn d119_df_static_tls() {
+    let mut i =
+        inputs(DynKind::Shared(SharedDyn { soname: false, symbolic: false, static_tls: true }));
+    assert_eq!(value(&i, DT_FLAGS), Some(DynValue::Const(DF_STATIC_TLS)));
+    i.bind_now = true;
+    assert_eq!(value(&i, DT_FLAGS), Some(DynValue::Const(DF_STATIC_TLS | DF_BIND_NOW)));
+    assert!(!tags(&inputs(shared(false, false))).contains(&DT_FLAGS));
+}
+
 #[test]
 fn d102_preinit_array_refused() {
     let mut i = inputs(shared(false, false));
@@ -508,18 +520,22 @@ fn d111_import() {
     );
 }
 
-// D-121 (until WP-124): an exported IFUNC or TLS definition is refused by
-// name.
+// D-119, D-121 (WP-124): exported TLS and IFUNC definitions.
 #[test]
-fn d111_ifunc_and_tls_exports_refused() {
+fn d111_ifunc_and_tls_exports() {
     let g = STB_GLOBAL << 4;
-    for (typ, what) in
-        [(STT_GNU_IFUNC, "exported IFUNC definition sel"), (STT_TLS, "exported TLS definition sel")]
-    {
-        let fx = Fx::new(&[("sel", d(g | typ, 0, 8, true, true))]);
-        let e = fx.plan().unwrap_err();
-        assert!(e.contains(what) && e.contains("in a shared object"), "{e}");
-    }
+    // D-119 (WP-124): an exported TLS definition is in `.dynsym`, STT_TLS.
+    let fx = Fx::new(&[("sel", d(g | STT_TLS, 0, 8, true, true))]);
+    assert!(fx.plan().is_ok());
+    // D-121: a preemptible IFUNC is exported as STT_GNU_IFUNC (at its
+    // resolver) even when no relocation names it.
+    let fx = Fx::new(&[("sel", d(g | STT_GNU_IFUNC, 0, 8, true, true))]);
+    assert!(fx.plan().is_ok());
+    // A non-preemptible one no relocation names has no IPLT entry to
+    // export (D-23): refused by name.
+    let fx = Fx::new(&[("sel", d(g | STT_GNU_IFUNC, STV_PROTECTED, 8, true, false))]);
+    let e = fx.plan().unwrap_err();
+    assert!(e.contains("IFUNC") && e.contains("sel"), "{e}");
 }
 
 // ---- D-116: .dynstr ------------------------------------------------------------
@@ -674,14 +690,117 @@ fn d120_got_records() {
     assert_eq!(now.rela_plt_size(), p.rela_plt_size());
 }
 
-// D-121, D-122 (until WP-124): TLS slots and IPLT entries in a shared
-// object are refused by name.
+struct TlsValues;
+
+impl SlotValues for TlsValues {
+    fn address(&self, key: SymKey) -> Option<u64> {
+        Values.address(key)
+    }
+    fn tls(&self) -> Option<TlsBlock> {
+        Some(TlsBlock { start: 0x2_0000, size: 0x200, align: 16 })
+    }
+    fn dynamic(&self) -> Option<u64> {
+        Values.dynamic()
+    }
+}
+
+// D-119 (WP-124): the TLS slots of a shared object. Against the
+// preemptible key 1 (`.dynsym` 1) and the imported key 3 (2) the records
+// go by symbol; against the local key 2 they are `r_sym` 0: `TPREL` and
+// `TLSDESC` with its offset in the block (0x100) as addend, one `DTPMOD`
+// for its GD pair whose offset word holds 0x100, one `DTPMOD` for the LD
+// pair. Every module word and every `TPREL`/`TLSDESC` slot holds 0; the
+// `r_sym` 0 records come before the symbolic ones (`.rela.dyn` sorts
+// the rest, D-40).
 #[test]
-fn d120_tls_and_iplt_refused() {
-    let tls = Slots { tls_ie: [kk(1)].into(), ..got_slots() };
-    let e = got_plan(&tls, false).unwrap_err();
-    assert!(e.contains("thread-local storage in a shared object"), "{e}");
+fn d119_tls_records() {
+    let slots = Slots {
+        tls_ie: [kk(1), kk(2)].into(),
+        tls_gd: [kk(2), kk(3)].into(),
+        tls_ld: true,
+        tls_desc: [kk(2), kk(1)].into(),
+        ..got_slots()
+    };
+    let p = got_plan(&slots, false).unwrap();
+    let recs: Vec<(DynRole, u32, i64)> = p
+        .got_records()
+        .iter()
+        .filter(|r| r.role != DynRole::Relative && r.role != DynRole::GlobDat)
+        .map(|r| (r.role, r.r_sym, p.record_addend(r, &TlsValues).unwrap()))
+        .collect();
+    let tp = DynRole::TpOff { negated: false };
+    assert_eq!(
+        recs,
+        [
+            (tp, 0, 0x100),
+            (DynRole::DtpMod, 0, 0),
+            (DynRole::DtpMod, 0, 0),
+            (DynRole::TlsDesc, 0, 0x100),
+            (tp, 1, 0),
+            (DynRole::DtpMod, 2, 0),
+            (DynRole::DtpOff, 2, 0),
+            (DynRole::TlsDesc, 1, 0),
+        ],
+        "{:?}",
+        p.got_records()
+    );
+    // The r_sym 0 records are by offset; each symbolic one names a slot.
+    let module: Vec<u64> =
+        p.got_records().iter().filter(|r| r.r_sym == 0).map(|r| r.offset).collect();
+    assert!(module.windows(2).all(|w| w[0] < w[1]), "{module:?}");
+    let mut got = vec![0xffu8; p.got_size() as usize];
+    p.write_got(&AT, &TlsValues, &mut Window::new(0, &mut got)).unwrap();
+    let w = words(&got);
+    let at = |r: &mortar_synth::got::GotRecord| w[(r.offset / 8) as usize];
+    for r in p.got_records().iter().filter(|r| r.role != DynRole::Relative) {
+        assert_eq!(at(r), 0, "{r:?}");
+    }
+    // The local GD pair's offset word: the static DTPREL value.
+    let gd_local =
+        p.got_records().iter().find(|r| r.role == DynRole::DtpMod && r.key == Some(kk(2))).unwrap();
+    assert_eq!(w[(gd_local.offset / 8 + 1) as usize], 0x100);
+    // The LD pair: module word (its DTPMOD's) and offset word both 0.
+    let ld = p.got_records().iter().find(|r| r.role == DynRole::DtpMod && r.key.is_none()).unwrap();
+    assert_eq!([w[(ld.offset / 8) as usize], w[(ld.offset / 8 + 1) as usize]], [0, 0]);
+}
+
+// D-119: a TLS slot of a key with no TLS block (an undefined weak bound
+// to 0) is refused by name in a shared object.
+#[test]
+fn d119_weak0_tls_refused() {
+    struct Weak;
+    impl KeyKinds for Weak {
+        fn kind(&self, key: SymKey) -> TargetKind {
+            if key == kk(2) { TargetKind::Weak0 } else { Kinds.kind(key) }
+        }
+    }
+    let slots = Slots { tls_ie: [kk(2)].into(), ..got_slots() };
+    let dynsym = DynsymPlan::new([1, 3, 4, 5, 6].map(SymbolId).into(), 0, 1).unwrap();
+    let diag = collector();
+    let p = GotPlan::new_shared(
+        &DynA64::default(),
+        &slots,
+        GlobalFlags::empty(),
+        PltVariant::Plain,
+        false,
+        &Weak,
+        &dynsym,
+        &diag,
+    );
+    assert!(p.is_err());
+    let e = text(&diag.finish());
+    assert!(
+        e.contains("a TLS slot of an undefined weak symbol bound to 0 in a shared object"),
+        "{e}"
+    );
+}
+
+// D-121 (WP-124): a non-preemptible IFUNC's IPLT entry in a shared object
+// is planned (its IRELATIVE last in `.rela.plt`).
+#[test]
+fn d121_iplt_planned() {
     let iplt = Slots { iplt: [kk(2)].into(), ..got_slots() };
-    let e = got_plan(&iplt, false).unwrap_err();
-    assert!(e.contains("IFUNC (IPLT entries) in a shared object"), "{e}");
+    let p = got_plan(&iplt, false).unwrap();
+    let plain = got_plan(&got_slots(), false).unwrap();
+    assert_eq!(p.rela_plt_size(), plain.rela_plt_size() + 24);
 }

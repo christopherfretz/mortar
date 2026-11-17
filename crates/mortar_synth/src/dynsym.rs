@@ -25,7 +25,8 @@
 //! one is [`Form::Undefined`] (`STB_GLOBAL STT_NOTYPE SHN_UNDEF`, D-111
 //! item 2), a weak one [`Form::WeakDyn`] (item 3). No copy alias and no
 //! canonical PLT entry exists (D-122): one is an internal error. An
-//! exported IFUNC or TLS definition is refused by name until WP-124.
+//! exported TLS definition is written as `.symtab` writes it; an exported
+//! preemptible IFUNC `STT_GNU_IFUNC` at its resolver (D-121).
 
 use std::ops::Range;
 
@@ -268,6 +269,12 @@ impl DynsymInputs<'_> {
             .map(|at| at as u32)
     }
 
+    /// Whether `key`, defined with `info`, is a preemptible IFUNC of a
+    /// shared object (`spec/dyn.md` D-112, D-121).
+    fn preemptible_ifunc(&self, key: SymbolId, info: u8) -> bool {
+        self.shared && info & 0xf == STT_GNU_IFUNC && self.resolution.preemptible.contains(key)
+    }
+
     /// The D-23 row of key `k`, and the checks of D-21 and D-23 on it.
     ///
     /// # Errors
@@ -362,17 +369,12 @@ impl DynsymInputs<'_> {
                     })
                     .into());
                 }
-                // D-121 (WP-124): an exported IFUNC or TLS definition of a
-                // shared object is refused by name until its package.
-                if self.shared && matches!(p.info & 0xf, STT_GNU_IFUNC | STT_TLS) {
-                    let what = if p.info & 0xf == STT_TLS { "TLS" } else { "IFUNC" };
-                    return Err(feature(format!(
-                        "exported {what} definition {} in a shared object",
-                        name()
-                    ))
-                    .into());
-                }
-                if p.info & 0xf == STT_GNU_IFUNC && !flags.contains(DemandFlags::IPLT) {
+                // D-121: a preemptible IFUNC of a shared object is exported
+                // `STT_GNU_IFUNC` at its resolver and has no IPLT entry.
+                if p.info & 0xf == STT_GNU_IFUNC
+                    && !self.preemptible_ifunc(key, p.info)
+                    && !flags.contains(DemandFlags::IPLT)
+                {
                     return Err(feature(format!(
                         "exported IFUNC {} that no relocation names (it has no IPLT entry, \
                          spec/dyn.md D-23)",
@@ -460,7 +462,10 @@ impl DynsymInputs<'_> {
             }
             Form::Export => {
                 let p = self.src.program(k).ok_or_else(|| missing("definition"))?;
-                let (typ, (shndx, value)) = if p.info & 0xf == STT_GNU_IFUNC {
+                let (typ, (shndx, value)) = if self.preemptible_ifunc(k, p.info) {
+                    // D-121: the loader resolves every use (its records).
+                    (STT_GNU_IFUNC, addrs.defined(k).ok_or_else(|| missing("value"))?)
+                } else if p.info & 0xf == STT_GNU_IFUNC {
                     (STT_FUNC, addrs.iplt(k).ok_or_else(|| missing("IPLT entry"))?)
                 } else {
                     (p.info & 0xf, addrs.defined(k).ok_or_else(|| missing("value"))?)
@@ -540,8 +545,7 @@ pub fn dynsym_plan(
 ///
 /// # Errors
 ///
-/// [`Failed`] after emitting each failing key's diagnostic (an exported
-/// IFUNC or TLS definition: `refused`, class `feature`).
+/// [`Failed`] after emitting each failing key's diagnostic.
 pub fn dynsym_plan_shared(
     resolution: &Resolution,
     demands: &Demands,

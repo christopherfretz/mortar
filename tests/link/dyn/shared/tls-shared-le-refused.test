@@ -1,0 +1,42 @@
+# dyn.md D-119 (WP-124): local-exec TLS in a shared object is refused by
+# name: the library's TLS block is placed by the loader, not at a
+# link-time offset (mortar, lld and mold, with lld's and mold's reason),
+# against an exported, a static and an imported variable. GNU ld on
+# AArch64 refuses only the imported one
+# and links the other two with the link-time offsets, no record and no
+# diagnostic (W19): such a library reads the wrong thread's storage, so
+# its links are not made here.
+#@ spec: dyn.md "D-119"
+#@ arch: aarch64
+
+cc -O1 -fPIC -ftls-model=local-exec exp.c -o exp.o
+cc -O1 -fPIC -fno-section-anchors -ftls-model=local-exec local.c -o local.o
+cc -O1 -fPIC -ftls-model=local-exec imp.c -o imp.o
+cc -O1 -fPIC other.c -o other.o
+shlib gcc other.o -Wl,-soname,libother.so -o libother.so
+link(lld,mold,mortar) gcc -shared exp.o -o libexp.so
+  exit: fail
+  diag(lld,mold): relocation R_AARCH64_TLSLE_* can* be used
+  diag(mortar): relocation R_AARCH64_TLSLE_ADD_TPREL_HI12 cannot be used against symbol 'e_tls'; local-exec TLS in a shared object
+link(lld,mold,mortar) gcc -shared local.o -o liblocal.so
+  exit: fail
+  diag(lld,mold): relocation R_AARCH64_TLSLE_* can* be used
+  diag(mortar): relocation R_AARCH64_TLSLE_ADD_TPREL_HI12 cannot be used against symbol 's_tls'; local-exec TLS in a shared object
+link gcc -shared imp.o -L. -lother -o libimp.so
+  exit: fail
+  diag(lld,mold): relocation R_AARCH64_TLSLE_* can* be used
+  diag(bfd): TLS relocation R_AARCH64_TLSLE_ADD_TPREL_HI12 against undefined symbol `o_tls'
+  diag(mortar): relocation R_AARCH64_TLSLE_ADD_TPREL_HI12 cannot be used against symbol 'o_tls'; local-exec TLS in a shared object
+
+#--- exp.c
+__thread int e_tls = 1;
+int get_e(void) { return e_tls; }
+#--- local.c
+static __thread int s_tls = 3;
+int get_s(void) { return s_tls; }
+void set_s(int v) { s_tls = v; }
+#--- imp.c
+extern __thread int o_tls;
+int get_o(void) { return o_tls; }
+#--- other.c
+__thread int o_tls = 4;

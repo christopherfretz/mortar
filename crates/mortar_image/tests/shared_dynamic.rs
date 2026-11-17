@@ -338,7 +338,11 @@ fn key(elf: &Elf, name: &[u8]) -> Option<SymbolId> {
 /// mortar's `.dynamic` for GNU ld's library `elf` of variant `var`.
 fn mortar_dynamic(elf: &Elf, var: &Variant) -> (DynamicPlan, Vec<u8>) {
     assert_eq!((elf.e_type, elf.interp), (3, false), "{}: a library", var.name);
-    let kind = DynKind::Shared(SharedDyn { soname: var.soname.is_some(), symbolic: var.symbolic });
+    let kind = DynKind::Shared(SharedDyn {
+        soname: var.soname.is_some(),
+        symbolic: var.symbolic,
+        static_tls: false,
+    });
     let nonempty = |n: &[u8]| elf.sec(n).is_some_and(|s| s.size > 0);
     let gnu = elf.dynamic();
     let needed: Box<[u32]> =
@@ -544,7 +548,7 @@ fn load(arch: target::Arch, name: &str, host: &Path, lib: &Path) {
 #[test]
 fn shared_map_records() {
     let mut r = DynRecords::default();
-    let kind = DynKind::Shared(SharedDyn { soname: true, symbolic: false });
+    let kind = DynKind::Shared(SharedDyn { soname: true, symbolic: false, static_tls: false });
     fill_records(&mut r, kind, None, Some((RunpathTag::Runpath, b"/x")), true, true);
     assert_eq!(r.kind, Some(OutputKind::Shared));
     assert_eq!(r.interp, None);

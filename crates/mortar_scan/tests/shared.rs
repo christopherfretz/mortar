@@ -306,21 +306,23 @@ fn shared_reloc_table() {
     }
 }
 
-// spec: cli.md §4.2, record WP-110 §G.4 ("TLS and IFUNC in a shared
-// object until WP-124"): refused by name, class `feature`
+// spec: dyn.md D-119, D-121 (WP-124): TLS in every model but local-exec
+// and the library's own IFUNC scan in a shared object without a
+// diagnostic; a local-exec reference is refused by name (`class_outcome`).
 #[test]
-fn shared_tls_and_ifunc_are_refused() {
+fn shared_tls_and_ifunc_scan() {
     let dir = Scratch::new("scan-shared-feature");
     let tls = "__thread int t = 1;\nint get(void) { return t; }\n";
     let ifunc = "static int one(void) { return 1; }\nstatic int (*pick(void))(void) { return one; }\nint sel(void) __attribute__((ifunc(\"pick\")));\nint call(void) { return sel(); }\n";
     let Some(_) = compile(dir.path(), "gcc", "tls.o", "c", tls, &["-O2", "-fPIC"]) else { return };
+    compile(dir.path(), "gcc", "ie.o", "c", tls, &["-O2", "-fPIC", "-ftls-model=initial-exec"]);
+    compile(dir.path(), "gcc", "le.o", "c", tls, &["-O2", "-fPIC", "-ftls-model=local-exec"]);
     compile(dir.path(), "gcc", "ifunc.o", "c", ifunc, &["-O2", "-fPIC"]);
-    for (o, name) in [("tls.o", "TLS in a shared object"), ("ifunc.o", "IFUNC in a shared object")]
-    {
+    for o in ["tls.o", "ie.o", "ifunc.o"] {
         let l = shared(dir.path(), &[o], &[]);
-        let text = l.rendered();
-        assert!(!l.ids().is_empty(), "{o}");
-        assert!(l.ids().iter().all(|&i| i == "refused"), "{o}: {text}");
-        assert!(text.contains(name), "{o}: {text}");
+        assert!(l.scanned.diagnostics.is_empty(), "{o}: {}", l.rendered());
     }
+    let l = shared(dir.path(), &["le.o"], &[]);
+    let text = l.rendered();
+    assert!(text.contains("local-exec TLS in a shared object"), "{text}");
 }

@@ -209,14 +209,6 @@ pub const OUT_OF_M2: &[(&str, &str)] = &[
         "unsupported feature: ELFCLASS32 shared object",
         "i386 shared objects are WP-130's (spec/dyn.md D-130)",
     ),
-    (
-        "unsupported feature: TLS in a shared object",
-        "TLS in a shared object is WP-124's (spec/dyn.md D-119)",
-    ),
-    (
-        "unsupported feature: IFUNC in a shared object",
-        "IFUNC in a shared object is WP-124's (spec/dyn.md D-121)",
-    ),
     // WP-123 finding F3: crtbeginS's weak `__cxa_finalize` when the C
     // library is not needed (gfortran's `-shared` lines).
     (

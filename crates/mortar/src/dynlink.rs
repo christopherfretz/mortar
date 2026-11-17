@@ -350,6 +350,8 @@ fn kind_and_interp(
         OutputKind::Shared => DynKind::Shared(SharedDyn {
             soname: plan.dynamic.soname.is_some(),
             symbolic: plan.symbolic().is_some_and(mortar_cli::SymbolicLine::writes_symbolic_tags),
+            // Set from the scan's demands by `plan` (D-119).
+            static_tls: false,
         }),
         _ => {
             emit(refused("this output kind with .dynamic"));
@@ -388,7 +390,11 @@ pub fn plan(
         diag.emit(key, d);
     };
     let facts = t.arch.facts();
-    let (kind, interp) = kind_and_interp(t.plan, &emit)?;
+    let (mut kind, interp) = kind_and_interp(t.plan, &emit)?;
+    // D-103, D-119: `DF_STATIC_TLS` when some reference is initial-exec.
+    if let DynKind::Shared(s) = &mut kind {
+        s.static_tls = t.demands.output.contains(GlobalFlags::STATIC_TLS);
+    }
     let shared = matches!(kind, DynKind::Shared(_));
     // D-42: the copy allocations.
     let defs = InputCopyDefs { inputs: t.inputs, resolution: t.resolution };
