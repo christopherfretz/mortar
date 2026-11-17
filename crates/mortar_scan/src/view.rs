@@ -9,7 +9,9 @@
 use std::cell::RefCell;
 use std::sync::OnceLock;
 
-use mortar_arch::{Arch, Records, Reloc, ScanTables, Site, SymFacts, SymNames, TargetKind};
+use mortar_arch::{
+    Arch, OutputKind, Records, Reloc, ScanTables, Site, SymFacts, SymNames, TargetKind,
+};
 use mortar_core::assignment::Assignment;
 use mortar_core::inputs::{CopyError, Inputs, Reader};
 use mortar_core::resolution::{Def, InternalDef, RefFlags, Resolution, Verdict};
@@ -68,6 +70,10 @@ pub(crate) struct View<'a, 's> {
     /// The undefined weak keys refused by D-25: the walk drops what the
     /// architecture's scan says of their relocations.
     pub weak_refused: IdSet<SymbolId>,
+    /// `spec/dyn.md` D-117's address-level rule (`crate::bound`): per
+    /// file, its facts, built on first use; empty (no cost) unless the
+    /// output is a `Shared` AArch64 object.
+    bound: Vec<OnceLock<Option<crate::bound::FileFacts>>>,
 }
 
 /// The name of the linker-defined TLS symbol (`spec/resolve.md` §8.1).
@@ -105,7 +111,22 @@ impl<'a, 's> View<'a, 's> {
             closure_only: t.closure_only,
             weak_dyn: IdSet::new(),
             weak_refused: IdSet::new(),
+            bound: if opts.output == OutputKind::Shared
+                && arch.facts().machine == mortar_elf::Machine::AArch64
+            {
+                (0..files).map(|_| OnceLock::new()).collect()
+            } else {
+                Vec::new()
+            },
         }
+    }
+
+    /// D-117's facts of object `file` (`crate::bound`): `None` outside a
+    /// `Shared` AArch64 link and for a file without a preemptible data
+    /// definition.
+    pub fn bound_facts(&self, file: FileId) -> Option<&crate::bound::FileFacts> {
+        let cell = self.bound.get(file.0 as usize)?;
+        cell.get_or_init(|| crate::bound::FileFacts::of(self, file)).as_ref()
     }
 
     pub fn prep(&self, file: FileId) -> Option<&Prep<'s>> {
@@ -252,7 +273,11 @@ impl<'a, 's> View<'a, 's> {
             gnu_warning: false,
         };
         let props = self.resolution.props.get(id).copied().unwrap_or_default();
-        let preemptible = props.refs.contains(RefFlags::PREEMPTIBLE);
+        // A shared definition's merged flag (resolution rule 6), or, in a
+        // shared object, the key's D-112 bit (`Resolution.preemptible`,
+        // `spec/dyn.md` D-113: the target kind `Preemptible`).
+        let preemptible =
+            props.refs.contains(RefFlags::PREEMPTIBLE) || self.resolution.preemptible.contains(id);
         match self.def(id) {
             Def::Defined(e) => {
                 let s = self.sym(e.file, e.index);
@@ -280,6 +305,7 @@ impl<'a, 's> View<'a, 's> {
                 };
                 SymFacts { dead, ..of(kind, s) }
             }
+            Def::Common(e) if preemptible => of(TargetKind::Preemptible, self.sym(e.file, e.index)),
             Def::Common(e) => of(TargetKind::Local, self.sym(e.file, e.index)),
             Def::Shared(e) => {
                 let s = self.sym(e.file, e.index);
@@ -296,7 +322,10 @@ impl<'a, 's> View<'a, 's> {
                 let tls = self.inputs.symbols.get(id).is_some_and(|k| k.name == TLS_MODULE_BASE);
                 let sym_type = if tls { STT_TLS } else { 0 };
                 SymFacts {
-                    kind: TargetKind::Local,
+                    // `_end` and its kind, exported because a shared
+                    // input references it (D-110 item 2), stay
+                    // preemptible in a shared object (D-112).
+                    kind: if preemptible { TargetKind::Preemptible } else { TargetKind::Local },
                     sym_type,
                     st_other: 0,
                     tls,
@@ -366,7 +395,19 @@ impl<'a, 's> View<'a, 's> {
     /// zero, or dynamic when D-25 made it so (`weak_dyn`, per key); a
     /// strong one is `Undefined` unless its verdict is "nothing"
     /// (`--unresolved-symbols=ignore-*`), which makes it zero.
+    ///
+    /// In a shared object (`spec/dyn.md` D-113, D-118) a weak one is
+    /// always `WeakDyn`, and a strong one the loader may resolve
+    /// (resolution's verdict is not an error: without `-z defs`, and not
+    /// hidden) an import of unknown type, `Shlib { func: false }`.
     fn undefined_kind(&self, id: SymbolId, weak: bool, verdict: Verdict) -> TargetKind {
+        if self.opts.output == OutputKind::Shared {
+            return match (weak, verdict) {
+                (true, _) => TargetKind::WeakDyn,
+                (false, Verdict::Bound | Verdict::Ignored) => TargetKind::Shlib { func: false },
+                _ => TargetKind::Undefined,
+            };
+        }
         let zero = if weak && self.weak_dyn.contains(id) {
             TargetKind::WeakDyn
         } else {

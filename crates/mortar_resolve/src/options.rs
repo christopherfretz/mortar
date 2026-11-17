@@ -2,7 +2,10 @@
 //! (§7.1), and the switches of §3.3, §3.8, §4.6 and §10. Stage B fills
 //! this from the `Plan`.
 
+use mortar_core::plan::{OutputKind, Plan, SymbolicLine};
 use mortar_core::{FileId, OptId, SymbolId};
+
+use crate::verdict::Unresolved;
 
 /// A key an option names: its row, if the link has one, and its name for
 /// diagnostics.
@@ -69,12 +72,57 @@ pub struct Options {
     pub consume_gnu_pubnames: bool,
     pub output: Output,
     /// `--unresolved-symbols`, `--warn-unresolved-symbols` (§5.2).
-    pub unresolved: crate::verdict::Unresolved,
+    pub unresolved: Unresolved,
     /// `--ignore-unresolved-symbol` keys, sorted (§5.2).
     pub ignore_unresolved: Vec<SymbolId>,
     /// What a link with shared objects reads besides the view
     /// (`spec/dyn.md` D-13, D-19a, D-21). Empty in a static link.
     pub shared: SharedLink,
+    /// The output is a shared object (`spec/dyn.md` D-110 to D-118):
+    /// what its export set, preemption and undefined references read.
+    /// `None` for every other output kind.
+    pub shared_output: Option<SharedOutput>,
+}
+
+/// What a `Shared` output's resolution reads (`spec/dyn.md` D-110, D-112,
+/// D-118).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SharedOutput {
+    /// The line's `-Bsymbolic` form and whether it has a `--dynamic-list`
+    /// (D-112; `Plan::symbolic`).
+    pub symbolic: SymbolicLine,
+    /// `-z defs`/`--no-undefined` (D-118): a strong undefined reference
+    /// is `undefined-symbol`, as in an executable.
+    pub defs: bool,
+}
+
+impl SharedOutput {
+    /// The plan's, when its output kind is `Shared` and its `-Bsymbolic`
+    /// form is one D-112 defines (`Plan::symbolic` is `None` for the two
+    /// `NonWeak` forms, which the command line refuses by name: such a
+    /// plan never reaches resolution, and is read here as `-Bno-symbolic`).
+    #[must_use]
+    pub fn of(plan: &Plan) -> Option<Self> {
+        (plan.kind == OutputKind::Shared).then(|| Self {
+            symbolic: plan.symbolic().unwrap_or_default(),
+            defs: plan.z.defs == Some(true),
+        })
+    }
+
+    /// The `--unresolved-symbols` mode of a link (resolve §5.2) given the
+    /// line's own mode `mode`: in a `Shared` output without `-z defs` a
+    /// strong undefined reference is left to the loader (D-118: D-111
+    /// item 2's undefined `.dynsym` entry), so the mode is `Ignore` (the
+    /// verdict `Ignored`, the target kind `Shlib`, `spec/dyn.md` D-113); a
+    /// hidden one stays an error (resolve §5.2: it cannot be satisfied at
+    /// run time). Otherwise `mode`.
+    #[must_use]
+    pub fn unresolved(this: Option<Self>, mode: Unresolved) -> Unresolved {
+        match this {
+            Some(s) if !s.defs => Unresolved::Ignore,
+            _ => mode,
+        }
+    }
 }
 
 /// The group a shared-object mention is in, for `spec/dyn.md` D-19a.
@@ -149,9 +197,10 @@ impl Default for Options {
             strip_debug: false,
             consume_gnu_pubnames: false,
             output: Output::default(),
-            unresolved: crate::verdict::Unresolved::Error,
+            unresolved: Unresolved::Error,
             ignore_unresolved: Vec::new(),
             shared: SharedLink::default(),
+            shared_output: None,
         }
     }
 }

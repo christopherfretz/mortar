@@ -270,6 +270,18 @@ pub enum ClassOutcome {
     Impossible,
 }
 
+/// §4.5: the classes whose `E` cells are `non-pic-in-shared-object` in a
+/// `Shared` output (`AbsNarrow`, `Pc`, `Lo`, `GotRel`; against `Local`
+/// only `AbsNarrow` has one). `Branch` against `Abs` and `Size` keep
+/// `relocation-incompatible`.
+const fn non_pic_in_shared(class: DemandClass, output: OutputKind) -> bool {
+    matches!(output, OutputKind::Shared)
+        && matches!(
+            class,
+            DemandClass::AbsNarrow | DemandClass::Pc | DemandClass::Lo | DemandClass::GotRel
+        )
+}
+
 const fn pic_reason(output: OutputKind) -> Incompatible {
     match output {
         OutputKind::Pie => Incompatible::RecompilePie,
@@ -372,6 +384,13 @@ pub fn class_outcome(
         }
         Cell::RelativeTx | Cell::SymbolicTx | Cell::IpltRelativeTx => read_only,
         Cell::WritableSymbolicElseCopy | Cell::Copy => d(copy, none, None),
+        // §4.5 "The names of the `E` cells" (`spec/dyn.md` D-117): in a
+        // shared object an `E` of a class that names an address is
+        // `non-pic-in-shared-object`. The `Pie, Shared` row has no `C`
+        // cell, so none is raised there (D-122).
+        Cell::WritableSymbolicElseError | Cell::Error if non_pic_in_shared(class, output) => {
+            ClassOutcome::Refused(DynRefusal::NonPicInSharedObject)
+        }
         Cell::WritableSymbolicElseError | Cell::Error => {
             ClassOutcome::Incompatible(pic_reason(output))
         }
@@ -389,5 +408,87 @@ pub fn class_outcome(
         Cell::LocalExecInShared => ClassOutcome::Incompatible(Incompatible::LocalExecInShared),
         Cell::ArchWeak0 => ClassOutcome::ArchWeak0,
         Cell::Impossible => ClassOutcome::Impossible,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{COLUMNS, ClassOutcome, DemandClass, PlaceFacts, class_outcome};
+    use crate::error::{DynRefusal, Incompatible};
+    use crate::flags::DemandFlags;
+    use crate::vocab::{OutputKind, TargetKind};
+
+    // spec: dyn.md D-122, arch.md §4.5 ("No `C`, no `CANON_PLT`"): no
+    // cell of a `Shared` output raises a copy or a canonical PLT entry
+    #[test]
+    fn d122_no_copy_in_shared() {
+        for class in DemandClass::ALL {
+            for target in COLUMNS {
+                for writable in [false, true] {
+                    for tls in [false, true] {
+                        let place = PlaceFacts::new(true, writable);
+                        let out =
+                            class_outcome(class, true, OutputKind::Shared, target, place, tls);
+                        if let ClassOutcome::Demand(d) = out {
+                            assert!(
+                                !d.flags.intersects(DemandFlags::COPY | DemandFlags::CANON_PLT),
+                                "{class:?} {target:?} {writable}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // spec: arch.md §4.5 ("The names of the `E` cells"), dyn.md D-117's
+    // table (AbsNarrow refused for every kind but `Abs`; Pc and Lo
+    // resolved against `Local`, refused against the dynamic kinds)
+    #[test]
+    fn d117_e_cells_are_non_pic_in_shared() {
+        let non_pic = ClassOutcome::Refused(DynRefusal::NonPicInSharedObject);
+        let place = PlaceFacts::new(true, true);
+        let out =
+            |class, target| class_outcome(class, true, OutputKind::Shared, target, place, false);
+        let dynamic = [
+            TargetKind::Preemptible,
+            TargetKind::Shlib { func: false },
+            TargetKind::Shlib { func: true },
+            TargetKind::WeakDyn,
+        ];
+        for t in dynamic {
+            for class in
+                [DemandClass::AbsNarrow, DemandClass::Pc, DemandClass::Lo, DemandClass::GotRel]
+            {
+                assert_eq!(out(class, t), non_pic, "{class:?} {t:?}");
+            }
+        }
+        assert_eq!(out(DemandClass::AbsNarrow, TargetKind::Local), non_pic);
+        assert_eq!(out(DemandClass::Pc, TargetKind::Abs), non_pic);
+        for class in [DemandClass::Pc, DemandClass::Lo] {
+            assert!(matches!(out(class, TargetKind::Local), ClassOutcome::Demand(_)), "{class:?}");
+        }
+        assert!(matches!(out(DemandClass::AbsNarrow, TargetKind::Abs), ClassOutcome::Demand(_)));
+        // Not address-naming classes: unchanged.
+        assert_eq!(
+            out(DemandClass::Size, TargetKind::Preemptible),
+            ClassOutcome::Incompatible(Incompatible::RecompilePic)
+        );
+        assert_eq!(
+            out(DemandClass::Branch, TargetKind::Abs),
+            ClassOutcome::Incompatible(Incompatible::RecompilePic)
+        );
+        // Only `Shared`: a `Pie` keeps its reasons.
+        assert_eq!(
+            class_outcome(
+                DemandClass::AbsNarrow,
+                true,
+                OutputKind::Pie,
+                TargetKind::Local,
+                place,
+                false
+            ),
+            ClassOutcome::Incompatible(Incompatible::RecompilePie)
+        );
     }
 }

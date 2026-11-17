@@ -377,7 +377,10 @@ pub fn resolve_steps<V: View>(
     }
 
     steps.step("resolve.d2");
-    let dynamic = kinds.contains(&FileKind::Shared).then(|| {
+    // WP-117: a shared object's export set and preemption are the shared
+    // stage's too (`spec/dyn.md` D-110, D-112), with or without shared
+    // inputs.
+    let dynamic = (kinds.contains(&FileKind::Shared) || opts.shared_output.is_some()).then(|| {
         crate::shared::link(
             view,
             opts,

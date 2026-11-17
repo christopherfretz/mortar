@@ -1,5 +1,4 @@
 # The `-Bsymbolic` family (`-Bsymbolic`, `-Bsymbolic-functions`,
-# `--Bsymbolic-non-weak`, `--Bsymbolic-non-weak-functions`,
 # `-Bno-symbolic`): `noop` rows of docs/status/options.md, "it binds a
 # shared object's references to its own definitions; an executable's are
 # bound locally already, and GNU ld writes nothing for it in an
@@ -8,7 +7,8 @@
 # `.dynsym`) and calls one of its own through a global: each option's link
 # is the same bytes as the link without it, and no DT_SYMBOLIC or
 # DF_SYMBOLIC is written. GNU ld does not know the two `--Bsymbolic-non-weak`
-# options, so those lines are lld's, mold's and mortar's.
+# options, so those lines are lld's and mold's; mortar refuses them by name
+# (dyn.md D-112, WP-117: `tests/link/dyn/shared/refused-bsymbolic-non-weak.test`).
 #
 # The references DIFFER: lld writes DF_SYMBOLIC (DT_FLAGS 0x2) for
 # `-Bsymbolic` in an executable; GNU ld and mold write nothing, and mortar
@@ -24,8 +24,8 @@ cc -O1 -fno-pie main.c -o main.o
 link gcc -no-pie main.o -L. -lgreet -o plain
 link gcc -no-pie main.o -L. -lgreet -Wl,-Bsymbolic -o bs
 link gcc -no-pie main.o -L. -lgreet -Wl,-Bsymbolic-functions -o bsf
-link(lld,mold,mortar) gcc -no-pie main.o -L. -lgreet -Wl,--Bsymbolic-non-weak -o bsnw
-link(lld,mold,mortar) gcc -no-pie main.o -L. -lgreet -Wl,--Bsymbolic-non-weak-functions -o bsnwf
+link(lld,mold) gcc -no-pie main.o -L. -lgreet -Wl,--Bsymbolic-non-weak -o bsnw
+link(lld,mold) gcc -no-pie main.o -L. -lgreet -Wl,--Bsymbolic-non-weak-functions -o bsnwf
 link gcc -no-pie main.o -L. -lgreet -Wl,-Bsymbolic -Wl,-Bno-symbolic -o bns
 run plain
   stdout: hello, symbolic
@@ -43,10 +43,6 @@ check(lld) readelf -dW bs
 check(bfd,mortar) cmp bs plain
   has: ^identical$
 check(bfd,mortar) cmp bsf plain
-  has: ^identical$
-check(mortar) cmp bsnw plain
-  has: ^identical$
-check(mortar) cmp bsnwf plain
   has: ^identical$
 check(bfd,mortar) cmp bns plain
   has: ^identical$

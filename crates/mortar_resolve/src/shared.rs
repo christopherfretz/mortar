@@ -23,6 +23,7 @@ use mortar_core::{FileId, SymEntry, SymbolId};
 use mortar_elf::consts::{STB_WEAK, STT_TLS, STV_HIDDEN};
 use mortar_elf::{SymbolIndex, SymbolSection};
 
+use crate::export;
 use crate::linker;
 use crate::live::{NO_FILE, Targets};
 use crate::mention::{Class, classify, is_data};
@@ -43,6 +44,9 @@ pub struct Dynamic {
     pub imported: Vec<bool>,
     pub ref_dynamic: Vec<bool>,
     pub defined_dynamic: Vec<bool>,
+    /// Per key: preemptible in a shared object (`spec/dyn.md` D-112, a
+    /// subset of `exported`); empty (no room) outside `Shared` (WP-117).
+    pub preemptible: Vec<bool>,
     /// Keys a relocatable object or file 0 refers to strongly that stay
     /// undefined while a closure file (W) defines them: the note `defined
     /// in <c>, which is not on the command line` (D-12), with the first
@@ -347,22 +351,43 @@ pub(crate) fn link<V: View>(
         }
     }
     let ours = |d: Def| matches!(d, Def::Strong(_) | Def::Weak(_) | Def::Common(_));
-    let exported: Vec<bool> = (0..keys)
-        .map(|k| {
-            let d = def[k];
-            if props[k].visibility == STV_HIDDEN {
-                return false;
-            }
-            if matches!(d, Def::Provide { .. }) {
-                return ref_dynamic[k];
-            }
-            ours(d)
-                && (ref_dynamic[k]
-                    || defined_dynamic[k]
-                    || opts.shared.export_dynamic
-                    || opts.shared.export_symbols.binary_search(&SymbolId(k as u32)).is_ok())
-        })
-        .collect();
+    // WP-117: a shared object's export set is D-110's, and preemption
+    // D-112's (`crate::export`).
+    let exported: Vec<bool> = if opts.shared_output.is_some() {
+        (0..keys).map(|k| export::exported(def[k], props[k].visibility, ref_dynamic[k])).collect()
+    } else {
+        (0..keys)
+            .map(|k| {
+                let d = def[k];
+                if props[k].visibility == STV_HIDDEN {
+                    return false;
+                }
+                if matches!(d, Def::Provide { .. }) {
+                    return ref_dynamic[k];
+                }
+                ours(d)
+                    && (ref_dynamic[k]
+                        || defined_dynamic[k]
+                        || opts.shared.export_dynamic
+                        || opts.shared.export_symbols.binary_search(&SymbolId(k as u32)).is_ok())
+            })
+            .collect()
+    };
+    let preemptible: Vec<bool> = match opts.shared_output {
+        Some(out) => (0..keys)
+            .map(|k| {
+                let d = def[k];
+                let sym_type = match d {
+                    Def::Strong(e) | Def::Weak(e) | Def::Common(e) => {
+                        view.mention(e.file, e.index).map_or(0, |m| m.sym_type)
+                    }
+                    _ => 0,
+                };
+                export::preemptible(d, props[k].visibility, sym_type, exported[k], out.symbolic)
+            })
+            .collect(),
+        None => Vec::new(),
+    };
     let imported: Vec<bool> = (0..keys)
         .map(|k| matches!(def[k], Def::Shared(_)) && props[k].flags & flags::REF_REGULAR != 0)
         .collect();
@@ -470,7 +495,16 @@ pub(crate) fn link<V: View>(
         }
     }
 
-    Dynamic { needed, used, exported, imported, ref_dynamic, defined_dynamic, closure_only }
+    Dynamic {
+        needed,
+        used,
+        exported,
+        imported,
+        ref_dynamic,
+        defined_dynamic,
+        preemptible,
+        closure_only,
+    }
 }
 
 /// `tls-mismatch` against a shared definition (D-16, resolve §3.4): the

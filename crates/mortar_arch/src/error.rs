@@ -114,12 +114,19 @@ pub enum DynRefusal {
     /// `weak-undefined-pc-in-pie` (D-25): an unfillable use of an
     /// undefined weak key, in a `Pie`.
     WeakUndefinedPcInPie,
+    /// `non-pic-in-shared-object` (D-117, D-122; arch.md §4.5): a use a
+    /// shared object cannot express (WP-117).
+    NonPicInSharedObject,
 }
 
 impl DynRefusal {
     /// Every refusal, in `spec/diag.md` §3.1's order.
-    pub const ALL: [Self; 3] =
-        [Self::CanonicalPltInPie, Self::TextRelocation, Self::WeakUndefinedPcInPie];
+    pub const ALL: [Self; 4] = [
+        Self::CanonicalPltInPie,
+        Self::NonPicInSharedObject,
+        Self::TextRelocation,
+        Self::WeakUndefinedPcInPie,
+    ];
 
     /// The diagnostic kind for relocation `r_type` (its ABI name) against
     /// `name` (as `relocation-incompatible`'s).
@@ -130,6 +137,11 @@ impl DynRefusal {
             Self::TextRelocation => Kind::TextRelocation { r_type, name },
             Self::CanonicalPltInPie => Kind::CanonicalPltInPie { r_type, name },
             Self::WeakUndefinedPcInPie => Kind::WeakUndefinedPcInPie { r_type, name },
+            // The object is the diagnostic's place (its render ignores
+            // `file`).
+            Self::NonPicInSharedObject => {
+                Kind::NonPicInSharedObject { r_type, name, file: String::new() }
+            }
         }
     }
 }

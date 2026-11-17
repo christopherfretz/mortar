@@ -12,7 +12,9 @@ use mortar_core::par::SCAN_BLOCK;
 use mortar_core::resolution::SectionKind;
 use mortar_core::{FileId, LocalSym, SectionId, SymEntry, SymKey, SymKind, SymbolId};
 use mortar_diag::{Diagnostic, FileRef, Key, Kind, Place, RefusalClass};
-use mortar_elf::consts::{SHF_ALLOC, SHF_EXECINSTR, SHF_WRITE, SHT_RELA, STT_SECTION};
+use mortar_elf::consts::{
+    SHF_ALLOC, SHF_EXECINSTR, SHF_WRITE, SHT_RELA, STT_GNU_IFUNC, STT_SECTION,
+};
 use mortar_elf::{SectionIndex, SymbolIndex};
 
 use crate::events::{Acc, Event, EventClass, GroupKey, RefId, UnitEvents, sym_group};
@@ -432,6 +434,37 @@ impl<'v, 'a, 's: 'b, 'b> Sec<'v, 'a, 's, 'b> {
                 };
                 mortar_arch::diag::scan(e, &at, r_type, &target)
             }
+            Fault::Bound(bound) => {
+                let raw = raw.unwrap_or(Raw { r_offset: 0, r_sym: 0, r_type: 0, addend: Some(0) });
+                let key = self.view.key_of(self.file, self.recs.table, raw.r_sym);
+                let site = Site { bytes: self.recs.bytes, offset: raw.r_offset };
+                let h = self.view.arch.classify(raw.r_type, site).ok();
+                let r_type =
+                    h.map_or_else(|| self.r_type_name(raw.r_type), |h| RefName::Named(h.name));
+                let addend = h.map_or(raw.addend.unwrap_or(0), |h| self.recs.addend(&raw, &h));
+                let named = key.map(|k| target_name(self.view, k, addend)).unwrap_or_default();
+                let def = self
+                    .recs
+                    .table
+                    .and_then(|t| t.get(bound.def).ok().and_then(|s| t.name(&s).ok()))
+                    .map(|n| String::from_utf8_lossy(n).into_owned())
+                    .unwrap_or_default();
+                let at = mortar_arch::diag::RelocPlace {
+                    file: self.file,
+                    path: &path,
+                    section_index: self.index,
+                    section: &section,
+                    record: i,
+                    r_offset: off,
+                };
+                let (key, refusal) = mortar_arch::diag::scan(
+                    ScanError::Dynamic(DynRefusal::NonPicInSharedObject),
+                    &at,
+                    r_type,
+                    &def,
+                );
+                (key, crate::bound::notes(refusal, bound, &def, &named))
+            }
             Fault::BadSymbol { r_sym, count } => {
                 let what = format!(
                     "relocation {i} of section {section} names symbol {r_sym}, but the symbol table has {count} entries"
@@ -477,6 +510,9 @@ pub(crate) enum Fault {
     BadSymbol { r_sym: u32, count: u32 },
     /// The record cannot be decoded.
     Unreadable,
+    /// `spec/dyn.md` D-117: a bound use of exported preemptible data
+    /// (`crate::bound`), `non-pic-in-shared-object`.
+    Bound(crate::bound::Bound),
 }
 
 /// What one unit hands the merge (I-15, I-17, I-20, I-29).
@@ -594,13 +630,43 @@ pub(crate) const fn dyn_kind(role: DynRole) -> DynKind {
 /// static one, `output` `Pie` with `dynamic` false, WP-052). A static
 /// non-PIE link has no `TX` cell.
 pub(crate) fn dynamic_error(view: &View<'_, '_>, e: ScanError) -> ScanError {
-    let has_dynamic = view.opts.dynamic || view.opts.output == mortar_arch::OutputKind::Pie;
+    // A shared object always has `.dynamic` (D-100; D-117: "AbsWord in a
+    // read-only place: refused, `text-relocation`").
+    let has_dynamic = view.opts.dynamic
+        || matches!(
+            view.opts.output,
+            mortar_arch::OutputKind::Pie | mortar_arch::OutputKind::Shared
+        );
     match e {
         ScanError::Incompatible(Incompatible::ReadOnly) if has_dynamic => {
             ScanError::Dynamic(DynRefusal::TextRelocation)
         }
         e => e,
     }
+}
+
+/// What a `Shared` output refuses by name before the architecture's scan
+/// (`spec/cli.md` §4.2; until WP-124): a relocation of a TLS class or
+/// against a thread-local target, `TLS in a shared object`; one against
+/// an IFUNC (a preemptible one included), `IFUNC in a shared object`.
+fn shared_feature(
+    view: &View<'_, '_>,
+    key: SymKey,
+    mention: SymEntry,
+    h: &Howto,
+) -> Option<mortar_arch::Refusal> {
+    let named = |name| Some(mortar_arch::Refusal::named(RefusalClass::Feature, name));
+    if h.class.is_tls() {
+        return named("TLS in a shared object");
+    }
+    let f = view.facts(key, Some(mention));
+    if f.tls {
+        return named("TLS in a shared object");
+    }
+    if f.kind == mortar_arch::TargetKind::Ifunc || f.sym_type == STT_GNU_IFUNC {
+        return named("IFUNC in a shared object");
+    }
+    None
 }
 
 /// Whether `key`'s target kind is `Weak0`, from the definitions alone;
@@ -714,6 +780,23 @@ fn walk_unit(view: &View<'_, '_>, u: &Unit, global: &[AtomicU16], bufs: &mut Buf
     let seq_leads = view.arch.facts().seq_leads;
     // The branch candidates (`crate::BranchRec`): only in live code.
     let code = sec.place.alloc && sec.place.exec == Some(true);
+    // D-117 (`crate::bound`): the file's facts in a `Shared` AArch64
+    // link, when it defines preemptible data; `None` otherwise.
+    let facts = view.bound_facts(u.file);
+    // The analysis (WP-119) judges each code section once, on the walk
+    // of its first block: its bound uses join the rule's.
+    let mut analysed = Vec::new();
+    if code
+        && u.lo == 0
+        && let Some(f) = facts
+    {
+        for j in crate::bound::analysis(view, u.file, f, u.index) {
+            if let Some(b) = crate::bound::judge(f, j.section, j.addr, j.access) {
+                let (k, d) = sec.fault(j.record, Fault::Bound(b));
+                analysed.push((k, d.note(j.note)));
+            }
+        }
+    }
     for i in u.lo..u.hi {
         out.records += 1;
         let Some(raw) = sec.recs.records.raw(i) else {
@@ -747,12 +830,27 @@ fn walk_unit(view: &View<'_, '_>, u: &Unit, global: &[AtomicU16], bufs: &mut Buf
         {
             continue;
         }
+        let mention = SymEntry { file: u.file, index: SymbolIndex(raw.r_sym) };
+        if output == mortar_arch::OutputKind::Shared {
+            // Refused by name in a shared object until WP-124 (`spec/cli.md`
+            // §4.2; record WP-110 §G.4): a TLS relocation or target, an
+            // IFUNC target.
+            if let Some(r) = shared_feature(view, key, mention, &h) {
+                faults.push((i, Fault::Scan(ScanError::Refused(r))));
+                continue;
+            }
+            // D-117's address-level rule: a bound use of exported data.
+            if sec.place.alloc
+                && let Some(f) = facts
+                && let Some(b) =
+                    crate::bound::rule(view, f, key, &raw, sec.recs.addend(&raw, &h), sec.name)
+            {
+                faults.push((i, Fault::Bound(b)));
+                continue;
+            }
+        }
         let at = sec.at(i, &raw, key, &h);
-        let tables = RecTables {
-            view,
-            key,
-            mention: SymEntry { file: u.file, index: SymbolIndex(raw.r_sym) },
-        };
+        let tables = RecTables { view, key, mention };
         if code
             && let Some(b) = view.arch.branch(&h)
             && b.veneer
@@ -818,6 +916,7 @@ fn walk_unit(view: &View<'_, '_>, u: &Unit, global: &[AtomicU16], bufs: &mut Buf
         faults.sort_by_key(|f| f.0);
     }
     out.diags = faults.iter().map(|&(i, f)| sec.fault(i, f)).collect();
+    out.diags.extend(analysed);
     out.n_events = events.events();
     out.events = events.finish();
     out.locals = sink.locals;
