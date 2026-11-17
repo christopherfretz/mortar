@@ -7,4 +7,4 @@
 - Measurements: `.build/target-wp-117/measure/run.sh` (s1d.py over kiln+hod,
   clang-19, gcc, gfortran AArch64 objects).
 - Steps: [x] CLI rows+refusals [x] opts.rs [x] resolve export/preemptible/D-118
-  [x] scan class cells, bound.rs, driver hook [ ] tests [ ] record [ ] gate
+  [x] scan class cells, bound.rs, driver hook [x] tests [x] record [ ] merge+gate
