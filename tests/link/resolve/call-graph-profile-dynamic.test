@@ -1,0 +1,61 @@
+# The call-graph profile (call-graph-profile.test) in a shared object and
+# a dynamic executable (resolve.md §10, "Relocations of a dropped
+# section", WP-194): its 64-bit `SHT_REL` section is dropped with its
+# target, the library and the program link and run, and neither output
+# has the sections. `nowhere`, weak and named only by a record, is `UND`
+# in the library's `.symtab`, so it keeps its `.dynsym` entry as a weak
+# undefined key named by no relocation does (dyn.md D-111 item 3: all
+# four, without `--gc-sections`).
+# The program's profile names `get_value`, which the program also calls.
+#@ spec: resolve.md §10
+#@ spec: dyn.md "D-111"
+#@ arch: aarch64 x86_64
+#@ requires: clang
+
+as(clang) lib-%{arch}.s -o lib.o
+as(clang) prof.s -o prof.o
+cc -O1 -fPIE main.c -o main.o
+link gcc -shared lib.o -Wl,-soname,libt.so -o libt.so
+check readelf -SW libt.so
+  not: call-graph
+check readelf --dyn-syms -W libt.so
+  has: WEAK * UND nowhere$
+  has: FUNC * get_value$
+link gcc -pie main.o prof.o -L. -lt -o prog
+check readelf -SW prog
+  not: call-graph
+run prog
+  stdout: 42
+
+#--- lib-aarch64.s
+	.text
+	.globl	get_value
+	.type	get_value, %function
+get_value:
+	b	helper
+	.type	helper, %function
+helper:
+	add	w0, w0, #41
+	ret
+	.cg_profile get_value, helper, 7
+	.weak	nowhere
+	.cg_profile get_value, nowhere, 3
+#--- lib-x86_64.s
+	.text
+	.globl	get_value
+	.type	get_value, @function
+get_value:
+	jmp	helper
+	.type	helper, @function
+helper:
+	leal	41(%rdi), %eax
+	ret
+	.cg_profile get_value, helper, 7
+	.weak	nowhere
+	.cg_profile get_value, nowhere, 3
+#--- prof.s
+	.cg_profile main, get_value, 9
+#--- main.c
+#include <stdio.h>
+int get_value(int);
+int main(void) { printf("%d\n", get_value(1)); return 0; }

@@ -1,7 +1,7 @@
 //! The fate of sections (`spec/resolve.md` §10): `kind` from the file
 //! alone (I-file), `state` from the kind and the COMDAT keepers (§6).
 
-use mortar_core::resolution::{DropReason, SectionKind, SectionState};
+use mortar_core::resolution::{DropReason, SectionKind, SectionRow, SectionState};
 use mortar_elf::Machine;
 use mortar_elf::consts::{
     SHF_ALLOC, SHF_COMPRESSED, SHF_EXCLUDE, SHF_EXECINSTR, SHF_GNU_RETAIN, SHF_GROUP,
@@ -44,7 +44,8 @@ pub enum SectionRefusal {
     /// A relocation section of the form the machine does not use: an
     /// `SHT_RELA` section in an `EM_386` object (x86.md X86-2, §15.2 W12)
     /// or an `SHT_REL` one in an `EM_X86_64` (x64.md X-2) or
-    /// `EM_AARCH64` object. The variant holds its `sh_type`.
+    /// `EM_AARCH64` object, whose target is placed ([`reloc_fate`]). The
+    /// variant holds its `sh_type`.
     RelForm(u32),
 }
 
@@ -135,17 +136,11 @@ pub fn classify(
     match s.sh_type {
         SHT_SYMTAB | SHT_SYMTAB_SHNDX if !alloc => return Ok((K::Symtab, Note::None)),
         SHT_STRTAB if !alloc => return Ok((K::Strtab, Note::None)),
-        SHT_REL | SHT_RELA => {
-            // X86-2, X-2: i386 relocates by REL only, the 64-bit targets by
-            // RELA only; the other form is refused by name, never read
-            // with the wrong addend.
-            let rel = matches!(machine, Machine::I386);
-            return if (s.sh_type == SHT_REL) == rel {
-                Ok((K::Reloc, Note::None))
-            } else {
-                Err(SectionRefusal::RelForm(s.sh_type))
-            };
-        }
+        // X86-2, X-2: i386 relocates by REL only, the 64-bit targets by
+        // RELA only. The other form is refused by name, never read with
+        // the wrong addend, but only for a section whose target is placed
+        // ([`reloc_fate`], WP-194): the caller decides it, by the target.
+        SHT_REL | SHT_RELA => return Ok((K::Reloc, Note::None)),
         SHT_GROUP => return Ok((K::Group, Note::None)),
         _ => {}
     }
@@ -231,6 +226,69 @@ pub fn classify(
         return Err(SectionRefusal::Flags(unknown));
     }
     Ok((kind, retain(s)))
+}
+
+/// Whether a relocation section of type `sh_type` is of the form
+/// `machine` does not use (x86.md X86-2, x64.md X-2, a64.md §1): `SHT_RELA`
+/// on i386, `SHT_REL` on AArch64 and x86-64.
+#[must_use]
+pub const fn other_rel_form(machine: Machine, sh_type: u32) -> bool {
+    (sh_type == SHT_REL) != matches!(machine, Machine::I386)
+}
+
+/// What becomes of a relocation section's records (§10, the `SHT_REL`,
+/// `SHT_RELA` row and its note on dropped targets; WP-194).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelocFate {
+    /// The section is its target's relocation section (`reloc`).
+    Applies,
+    /// Refused by name: a section of the other form whose target is
+    /// placed, or whose records a consumer reads (`SectionRefusal::RelForm`).
+    Refused,
+    /// Dropped with its target, and its records are nothing: no
+    /// liveness edge, no reference, no type check; the target records no
+    /// relocation section.
+    Nothing,
+}
+
+/// The fate of a relocation section whose target's row is `target` (its
+/// kind and state as §10's first pass gave them), `other_form` by
+/// [`other_rel_form`]:
+///
+/// - a placed (`Kept`) target: the section applies; the other form is
+///   refused;
+/// - an `Excluded` kind (`SHF_EXCLUDE`, the consumed `SHT_LLVM_*` types,
+///   `.gnu.lto_*`, an input build id, `.gnu.warning*`, `.ARM.attributes`),
+///   whatever its drop reason: nothing, either form (no phase reads the
+///   records of one: the call-graph profile's `R_*_NONE` records are the
+///   case);
+/// - a `Meta` container: applies, either form, so that MT-2a sees it
+///   relocated (it then takes the `Excluded` row and records nothing);
+/// - `Dropped(Comdat)`, `Dropped(Stripped)`: the other form is nothing;
+///   the native form keeps the rule it had before WP-194 (applies; no
+///   phase applies it, `mortar_scan`'s D-111 walk counts its names as
+///   collected);
+/// - any other consumed target (`.debug_gnu_pubnames`/`pubtypes` under
+///   `--gdb-index`, whose records the index reads; a symbol table, string
+///   table, group, relocation section or `.note.GNU-stack`): the other
+///   form stays refused; the native form applies.
+#[must_use]
+pub fn reloc_fate(target: &SectionRow, other_form: bool) -> RelocFate {
+    use SectionKind as K;
+    let native = if other_form { RelocFate::Refused } else { RelocFate::Applies };
+    match (target.kind, target.state) {
+        (_, SectionState::Kept) => native,
+        (K::Excluded, _) => RelocFate::Nothing,
+        (K::Meta, _) => RelocFate::Applies,
+        (_, SectionState::Dropped(DropReason::Comdat | DropReason::Stripped)) => {
+            if other_form {
+                RelocFate::Nothing
+            } else {
+                RelocFate::Applies
+            }
+        }
+        _ => native,
+    }
 }
 
 fn retain(s: &SectionInfo<'_>) -> Note {

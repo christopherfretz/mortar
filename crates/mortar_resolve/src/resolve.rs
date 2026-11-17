@@ -724,6 +724,9 @@ fn relocated_containers<V: View>(
         }
         let Some(s) = ctx.view.section(file, SectionIndex(i)) else { continue };
         row.kind = SectionKind::Excluded;
+        // An `Excluded` target's records are nothing (§10, WP-194), of
+        // either form: no phase may read them.
+        row.reloc = SectionIndex(0);
         let excluded = sections::excluded_reason(&s, Note::None);
         let strip = ctx.opts.strip_debug && sections::is_debug(&s);
         row.state = sections::state(SectionKind::Excluded, excluded, map.is_dropped(i), strip);
@@ -733,6 +736,67 @@ fn relocated_containers<V: View>(
             out.problems.push(Problem {
                 key: DiagKey::of(file, u64::from(i)),
                 what: What::MetaNotContainer { file, section: SectionIndex(i), relocated: true },
+            });
+        }
+    }
+}
+
+/// §10: each relocation section of one live object to its target, by
+/// `sections::reloc_fate` (WP-194).
+fn reloc_targets<V: View>(
+    ctx: &Ctx<'_, V>,
+    file: FileId,
+    n: u32,
+    rows: &mut [SectionRow],
+    out: &mut Found,
+) {
+    let machine = ctx.view.machine();
+    // A relocation section applies to its target (§6.5: one applying to a
+    // dropped section is dropped with it, as every `Reloc` row is). One
+    // whose target has no place is dropped with it whatever its form, and
+    // its records are nothing (§10, WP-194: `sections::reloc_fate`).
+    for i in 1..n {
+        if rows[i as usize].kind != SectionKind::Reloc {
+            continue;
+        }
+        let Some(s) = ctx.view.section(file, SectionIndex(i)) else { continue };
+        let other_form = sections::other_rel_form(machine, s.sh_type);
+        let refuse_form = |out: &mut Found| {
+            out.problems.push(Problem {
+                key: DiagKey::of(file, u64::from(i)),
+                what: What::Section {
+                    file,
+                    section: SectionIndex(i),
+                    why: SectionRefusal::RelForm(s.sh_type),
+                },
+            });
+        };
+        let Some(target) = rows.get_mut(s.info as usize).filter(|_| s.info != 0) else {
+            // No target: nothing shows the records unread, so the other
+            // form stays refused.
+            if other_form {
+                refuse_form(out);
+            }
+            continue;
+        };
+        match sections::reloc_fate(target, other_form) {
+            sections::RelocFate::Applies => {}
+            sections::RelocFate::Nothing => continue,
+            sections::RelocFate::Refused => {
+                refuse_form(out);
+                continue;
+            }
+        }
+        if target.reloc.0 == 0 {
+            target.reloc = SectionIndex(i);
+        } else if target.is_kept() {
+            out.problems.push(Problem {
+                key: DiagKey::of(file, u64::from(i)),
+                what: What::Section {
+                    file,
+                    section: SectionIndex(i),
+                    why: SectionRefusal::SecondReloc(s.info),
+                },
             });
         }
     }
@@ -823,29 +887,7 @@ fn section_rows<V: View>(
             }
         }
     }
-    // A relocation section applies to its target (§6.5: one applying to a
-    // dropped section is dropped with it, as every `Reloc` row is).
-    for i in 1..n {
-        if rows[i as usize].kind != SectionKind::Reloc {
-            continue;
-        }
-        let Some(s) = ctx.view.section(file, SectionIndex(i)) else { continue };
-        let Some(target) = rows.get_mut(s.info as usize).filter(|_| s.info != 0) else {
-            continue;
-        };
-        if target.reloc.0 == 0 {
-            target.reloc = SectionIndex(i);
-        } else if target.is_kept() {
-            out.problems.push(Problem {
-                key: DiagKey::of(file, u64::from(i)),
-                what: What::Section {
-                    file,
-                    section: SectionIndex(i),
-                    why: SectionRefusal::SecondReloc(s.info),
-                },
-            });
-        }
-    }
+    reloc_targets(ctx, file, n, rows, out);
     relocated_containers(ctx, file, n, rows, map, misnamed, out);
     // synth.md S-6: a `Merge` section that is not certain to merge safely
     // is placed whole, as `Regular` (§10), so every later phase (layout's

@@ -1,0 +1,126 @@
+# A relocation section of the form the machine does not use (`SHT_REL` on
+# AArch64 and x86-64, `SHT_RELA` on i386: a64.md §1, x64.md X-2, x86.md
+# X86-2) whose target is an `SHF_EXCLUDE` section is dropped with its
+# target, and its records are nothing (resolve.md §10, "Relocations of a
+# dropped section", WP-194): an absolute record against `gone`, defined
+# nowhere, is neither applied, nor type-checked, nor a reference (no
+# undefined-symbol diagnostic from any of the four, with or without
+# `--gc-sections`). The mirror of the call-graph profile's `SHT_REL` on
+# the 64-bit targets (call-graph-profile.test), made by yaml2obj since no
+# assembler writes the other form.
+#@ spec: resolve.md §10
+#@ anomaly(mold): A11
+#@ requires: yaml2obj
+
+yaml2obj excl-%{arch}.yaml -o excl.o
+link ld -static excl.o -o prog
+run prog
+  exit: 42
+check readelf -SW prog
+  not: .foo
+link ld -static --gc-sections excl.o -o prog-gc
+run prog-gc
+  exit: 42
+
+#--- excl-aarch64.yaml
+--- !ELF
+FileHeader:
+  Class:   ELFCLASS64
+  Data:    ELFDATA2LSB
+  Type:    ET_REL
+  Machine: EM_AARCH64
+Sections:
+  - Name:         .text
+    Type:         SHT_PROGBITS
+    Flags:        [ SHF_ALLOC, SHF_EXECINSTR ]
+    AddressAlign: 0x4
+    Content:      "400580d2a80b80d2010000d4"
+  - Name:         .foo
+    Type:         SHT_PROGBITS
+    Flags:        [ SHF_EXCLUDE ]
+    AddressAlign: 0x1
+    Content:      "0000000000000000"
+  - Name:         .rel.foo
+    Type:         SHT_REL
+    Info:         .foo
+    Relocations:
+      - Offset: 0x0
+        Symbol: gone
+        Type:   R_AARCH64_ABS64
+      - Offset: 0x0
+        Symbol: _start
+        Type:   R_AARCH64_ABS64
+Symbols:
+  - Name:    _start
+    Section: .text
+    Binding: STB_GLOBAL
+  - Name:    gone
+    Binding: STB_GLOBAL
+#--- excl-x86_64.yaml
+--- !ELF
+FileHeader:
+  Class:   ELFCLASS64
+  Data:    ELFDATA2LSB
+  Type:    ET_REL
+  Machine: EM_X86_64
+Sections:
+  - Name:         .text
+    Type:         SHT_PROGBITS
+    Flags:        [ SHF_ALLOC, SHF_EXECINSTR ]
+    AddressAlign: 0x4
+    Content:      "b83c000000bf2a0000000f05"
+  - Name:         .foo
+    Type:         SHT_PROGBITS
+    Flags:        [ SHF_EXCLUDE ]
+    AddressAlign: 0x1
+    Content:      "0000000000000000"
+  - Name:         .rel.foo
+    Type:         SHT_REL
+    Info:         .foo
+    Relocations:
+      - Offset: 0x0
+        Symbol: gone
+        Type:   R_X86_64_64
+      - Offset: 0x0
+        Symbol: _start
+        Type:   R_X86_64_64
+Symbols:
+  - Name:    _start
+    Section: .text
+    Binding: STB_GLOBAL
+  - Name:    gone
+    Binding: STB_GLOBAL
+#--- excl-i386.yaml
+--- !ELF
+FileHeader:
+  Class:   ELFCLASS32
+  Data:    ELFDATA2LSB
+  Type:    ET_REL
+  Machine: EM_386
+Sections:
+  - Name:         .text
+    Type:         SHT_PROGBITS
+    Flags:        [ SHF_ALLOC, SHF_EXECINSTR ]
+    AddressAlign: 0x4
+    Content:      "b801000000bb2a000000cd80"
+  - Name:         .foo
+    Type:         SHT_PROGBITS
+    Flags:        [ SHF_EXCLUDE ]
+    AddressAlign: 0x1
+    Content:      "0000000000000000"
+  - Name:         .rela.foo
+    Type:         SHT_RELA
+    Info:         .foo
+    Relocations:
+      - Offset: 0x0
+        Symbol: gone
+        Type:   R_386_32
+      - Offset: 0x0
+        Symbol: _start
+        Type:   R_386_32
+Symbols:
+  - Name:    _start
+    Section: .text
+    Binding: STB_GLOBAL
+  - Name:    gone
+    Binding: STB_GLOBAL

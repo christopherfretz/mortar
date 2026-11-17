@@ -1843,7 +1843,7 @@ classification is per file (I-file), the state needs `comdat`:
 | a **file** with the symbol `__gnu_lto_slim` (a common symbol in GCC 14's slim LTO objects; tested before any section row, finding 10: their `.gnu.lto_*` sections are `SHF_EXCLUDE` and would match that row first) | — | the file: `Refused{FileFormat, "GCC LTO object"}` (GNU ld: `plugin needed to handle lto object`; mold refuses; lld silently ignores the file and reports `main` undefined, E18) | |
 | index 0 | `Null` | — | |
 | `SHT_SYMTAB`, `SHT_SYMTAB_SHNDX`, `SHT_STRTAB` without `SHF_ALLOC` | `Symtab` / `Strtab` | `Dropped(Consumed)` | all |
-| `SHT_REL`, `SHT_RELA` | `Reloc` | `Dropped(Consumed)`; the section it applies to records it. A second one for a kept section: `Refused{Feature, "two relocation sections for one section"}`, never a silent drop (GNU ld applies one of two `SHT_RELA` and both of `SHT_REL`+`SHT_RELA`; lld refuses; mold asserts on two `SHT_RELA` and drops one of `SHT_REL`+`SHT_RELA`; WP-022.md) | |
+| `SHT_REL`, `SHT_RELA` | `Reloc` | `Dropped(Consumed)`; the section it applies to records it. A second one for a kept section: `Refused{Feature, "two relocation sections for one section"}`, never a silent drop (GNU ld applies one of two `SHT_RELA` and both of `SHT_REL`+`SHT_RELA`; lld refuses; mold asserts on two `SHT_RELA` and drops one of `SHT_REL`+`SHT_RELA`; WP-022.md). Of the form the machine does not use (`SHT_REL` on AArch64 and x86-64, `SHT_RELA` on i386): `Refused{SectionType, "SHT_REL"/"SHT_RELA"}` when its target is placed, has no target, or is a consumed section whose records a phase reads; **a relocation section whose target has no place is dropped with it, of either form, and its records are nothing** (below, "Relocations of a dropped section", WP-194) | GNU ld 2.44, lld 22, mold 2.37 link a 64-bit `.rel.llvm.call-graph-profile` and drop both sections (WP-194) |
 | `SHT_GROUP` | `Group` | `Dropped(Consumed)` | all |
 | a member of a group not kept (§6) | its kind | `Dropped(Comdat{keeper})` | all |
 | a container: name `.mason.meta`, `SHT_PROGBITS`, flags exactly `SHF_EXCLUDE` (`spec/meta.md` MT-6) | `Meta` | `Dropped(Consumed)`; `mortar_meta` reads it only when a check that needs it is on | GNU ld, lld, mold drop it (`meta.md` §2) |
@@ -1852,7 +1852,7 @@ classification is per file (I-file), the state needs `comdat`:
 | name `.note.gnu.build-id` (any type and flags: an `ld -r --build-id` output carries one, `SHT_NOTE`, `SHF_ALLOC`) | `Excluded` | `Dropped(Excluded)`, in every link whatever the line's `--build-id`: the output's id is the linker's own (`spec/image.md` I-69), never an input's. As any dropped section: a reference to a local or section symbol of it from a kept section is §6.3 (a) (`discarded-section-reference`; from a debug name, the tombstone); a non-local symbol defined in it has no place (§10.1, P-1: referenced from a kept section, `discarded-section-reference`; exported, omitted; WP-136 closed the gap WP-135.md recorded; GNU ld refuses ``defined in discarded section``, lld `relocation refers to a symbol in a discarded section`, mold `undefined symbol`; no `ld -r` output defines one); it is never live, so never a `--gc-sections` root; the map lists it under the discarded input sections, as GNU ld's does; it is a function of the input alone, so `--incremental` state records nothing new (WP-135) | GNU ld 2.44, lld 19, mold 2.37: one id (their own) with `--build-id`, none with `=none`, for inputs of every style (`sha1`, `md5`, `uuid`, `0x…`, lld's), from two inputs, under `--gc-sections`; GNU ld and lld refuse a reference into it, as into any discarded section (WP-135) |
 | name `.note.gnu.property`, `SHT_NOTE` | `Note` | `Kept`; `spec/synth.md` merges the properties into one note | GNU ld, lld, mold merge (not verified here) |
 | `SHT_LLVM_ADDRSIG` (`.llvm_addrsig`) without `SHF_EXCLUDE` | `Excluded` | `Dropped(Consumed)` (a later `--icf=safe` reads it). Clang emits it with `SHF_EXCLUDE`, so the `SHF_EXCLUDE` row above matches first: `Excluded`, `Dropped(Excluded)` | all (E18) |
-| `SHT_LLVM_CALL_GRAPH_PROFILE` | `Excluded` | `Dropped(Consumed)`: a section-order hint; ignoring it is correct | not verified |
+| `SHT_LLVM_CALL_GRAPH_PROFILE` | `Excluded` | `Dropped(Consumed)`: a section-order hint; ignoring it is correct. Clang writes it with `SHF_EXCLUDE` (the row above matches first: `Dropped(Excluded)`) and names each weight's caller and callee by an `SHT_REL` section of `R_*_NONE` records on every target, which is dropped with it ("Relocations of a dropped section") | GNU ld 2.44 and mold 2.37 drop both sections and keep the input order; lld 22 drops both and, by default (`--call-graph-profile-sort=cdsort`), reorders the input sections by the weights (WP-194) |
 | `SHT_LLVM_DEPENDENT_LIBRARIES` (`.deplibs`) | `Excluded` | `Dropped(Consumed)`: the library specifiers are not honoured (below, "Dependent libraries") | GNU ld 2.44 and mold 2.37 ignore them and copy the section; lld 19 and 22 load the libraries (WP-034) |
 | other `SHT_LLVM_*` (`ODRTAB`, `LINKER_OPTIONS`, `SYMPART`, `PART_EHDR`, `PART_PHDR`, `BB_ADDR_MAP`, `OFFLOADING`, `LTO`, `JT_SIZES`) | — | `Refused{SectionType, ..}` | |
 | name `.gnu.lto_*` otherwise (a fat LTO object: GCC marks them `SHF_EXCLUDE`) | `Excluded` | `Dropped(Excluded)`: the object's real code links, as every linker does without a plugin | not verified |
@@ -1883,6 +1883,51 @@ three targets' libc and GCC directories finds no section any refusal
 row matches, kept or dropped: WP-022.md.) A section named `.mason.meta`
 that is not a container takes the existing rows, as any other name would
 (`spec/meta.md` MT-6).
+
+**Relocations of a dropped section** (WP-194). A relocation section
+whose target has no place is dropped with its target, whatever its
+type, and its records are nothing: no liveness edge (`spec/image.md`
+I-7 speaks of the records of a live section), no reference (a symbol
+they name is referenced exactly as far as the object's symbol table
+says: an `UND` entry extracts an archive member and makes a shared
+object needed as it would without the records, and keeps its `.dynsym`
+entry in a shared object as a key named by no relocation does,
+`spec/dyn.md` D-111), no undefined-symbol diagnostic, no type check,
+and no form check. The target's row records no relocation section, so
+no later phase can read them. This is what GNU ld 2.44, lld 22 and
+mold 2.37 do (measured on the three targets: the call-graph profile's
+`SHT_REL` and a hand-made `R_*_64`/`R_386_32` record against a symbol
+defined nowhere in an `SHF_EXCLUDE` section's relocation section of the
+other form link, with and without `--gc-sections`, and the member that
+defines a symbol named only by such a record is extracted, and a shared
+object that defines it stays needed under `--as-needed`). The classes
+of target, by the row the first pass gave it (`sections::reloc_fate`):
+
+- **placed** (`Kept`): the relocation section applies; the other form
+  is `Refused{SectionType, "SHT_REL"}` (AArch64, x86-64) or
+  `"SHT_RELA"` (i386). So is one with no target (`sh_info` 0).
+- **`Excluded` kind**, whatever its reason (`SHF_EXCLUDE`, the consumed
+  `SHT_LLVM_*` types, `.gnu.lto_*`, an input's build id, `.gnu.warning*`,
+  `.ARM.attributes`): nothing, of either form. No phase reads the
+  records of one (`.gnu.warning.<sym>` warns on references from live
+  sections, never on its own records).
+- **a `.mason.meta` container**: the relocation section applies, of
+  either form, so that `spec/meta.md` MT-2a sees the container
+  relocated; it then takes the `Excluded` row, and records nothing.
+- **`Dropped(Comdat)`** (a discarded copy; its relocation section
+  inside or outside the group) and **`Dropped(Stripped)`** (`.debug*`
+  under `-S`/`-s`): the other form is nothing; the native form applies
+  as before (no phase applies it).
+- **any other consumed target**: `.debug_gnu_pubnames` and
+  `.debug_gnu_pubtypes` under `--gdb-index` (the index reads their
+  records by the machine's form: `spec/synth.md` S-G6), a symbol or
+  string table, a group, a relocation section, `.note.GNU-stack`: the
+  other form stays refused, the native form applies.
+
+A section kept at resolve but later discarded (`--gc-sections`, a
+script's `/DISCARD/`) is placed for this rule: its other-form
+relocation section is refused at resolve, before either is decided (no
+producer writes one).
 
 **Dependent libraries** (WP-034; M1 ruling). Clang writes `#pragma
 comment(lib, "name")` as a `.deplibs` section (`SHT_LLVM_DEPENDENT_LIBRARIES`,
