@@ -361,7 +361,10 @@ if want HV; then
   # hidden vague definitions (-fvisibility-inlines-hidden): two private copies, no binding
   for v in 1 2; do
     printf 'namespace fmtlite { inline int version() { return %d; } }\nextern "C" int plugin_entry() { return fmtlite::version(); }\n' $v > "$W/hv$v.cpp"
-    $CXX -O0 -fPIC -fvisibility-inlines-hidden -c "$W/hv$v.cpp" -o "$W/hv$v.0.o" && meta "$W/hv$v.0.o" "$W/hv$v.o" "_ZN7fmtlite7versionEv=$v"
+    # the unit has the row; mortar's =exported writes none for a hidden definition, and
+    # the GNU route's table filler refuses one, so that route gets the unit without it
+    hvrow="_ZN7fmtlite7versionEv=$v"; [ "$PRODUCER" = mortar ] || hvrow=""
+    $CXX -O0 -fPIC -fvisibility-inlines-hidden -c "$W/hv$v.cpp" -o "$W/hv$v.0.o" && meta "$W/hv$v.0.o" "$W/hv$v.o" "$hvrow"
     mlink $CXX -shared "$W/hv$v.o" "$RT" "$W/note-report.o" -Wl,--odr-table=exported -Wl,-z,now -o "$W/hv$v.so"
   done
   echo "== HV hv1 GLOBAL, hv2 LOCAL: each its own hidden version(), nothing binds across"
@@ -419,6 +422,15 @@ if want MT; then
     echo "== MT-$m mt's table patched ($m): named, not believed, no crash"
     r MT-$m MASON_ODR_STATS=1 -- ./mhostf o:$W/mt-$m.so:g o:$P/h2.so: c:$P/h2.so
     ok=1; [[ $LAST == reports=0\ * ]] && [[ $LAST == *exit=0 ]] && [ "$(warned odr-hook-malformed-table)" -ge 1 ] && ok=0
+    if [ $ok = 1 ] && [[ $LAST == *exit=139 ]]; then
+      # the loader itself may fault on the module before any runtime runs: the foreign
+      # host (no runtime anywhere) opening the module alone tells
+      (cd "$W" && xrun -- ./host o:$W/mt-$m.so:g > /dev/null 2>&1); fst=$?
+      if [ $fst = 139 ]; then
+        echo "MATRIX $T $RT_FLAVOR MT-$m required=none,malformed-warning observed: $LAST => loader-faults (the foreign host opening mt-$m.so alone: exit $fst; no runtime code ran)"
+        continue
+      fi
+    fi
     row MT-$m none,malformed-warning $ok "[malformed=$(stv malformed) warning: $(printf '%s\n' "$LASTOUT" | grep -o 'odr-hook-malformed-table.*' | head -1 | sed 's|/[^ ]*/||g')]"
   done
   # the runtime module's own table malformed: it checks nothing, says so
