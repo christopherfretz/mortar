@@ -173,8 +173,15 @@ impl<'a, 's> View<'a, 's> {
         d.or_else(|| self.resolution.def.get(id).copied()).unwrap_or(Def::Undefined { weak: false })
     }
 
-    pub fn is_live(&self, file: FileId, index: SectionIndex) -> bool {
-        self.resolution.section_id(file, index).is_some_and(|s| self.liveness.is_live(s))
+    /// Whether section `index` of `file` has a place (`spec/resolve.md`
+    /// §10.1 P-1: `Kept`, live, assigned an output section): a symbol
+    /// defined in one that has none is `dead` to the scan, whatever the
+    /// reason (WP-136). The image asks the same predicate.
+    pub fn has_place(&self, file: FileId, index: SectionIndex) -> bool {
+        self.resolution.section_id(file, index).is_some_and(|s| {
+            mortar_core::place::section_place(self.resolution, self.assignment, self.liveness, s)
+                .is_ok()
+        })
     }
 
     /// The key record symbol `r_sym` of `file` names (`spec/model.md`
@@ -247,10 +254,11 @@ impl<'a, 's> View<'a, 's> {
             Ok(SymbolSection::Section(_)) => TargetKind::Local,
             _ => TargetKind::Abs,
         };
-        // §6.1: a local of a section of its file that is not live (the
+        // §6.1: a local of a section of its file that has no place
+        // (resolve.md §10.1 P-1: dropped, consumed, or not live; the
         // symbol read once for the kind and for this).
         let dead = e.index.0 != 0
-            && matches!(section, Ok(SymbolSection::Section(sec)) if !self.is_live(e.file, sec));
+            && matches!(section, Ok(SymbolSection::Section(sec)) if !self.has_place(e.file, sec));
         SymFacts {
             kind,
             sym_type: sym.sym_type(),
@@ -289,18 +297,18 @@ impl<'a, 's> View<'a, 's> {
                     _ if preemptible => TargetKind::Preemptible,
                     _ => TargetKind::Local,
                 };
-                // Under `--gc-sections`, a definition in a kept section the
-                // mark did not reach is dead (§6.1, `spec/image.md` I-7):
-                // live code cannot refer to it by construction, a debug
-                // section gets the tombstone (I-47), any other section is
-                // `discarded-section-reference` (I-12). Without it every
-                // kept section is live and this is `false`.
+                // A definition whose section has no place is dead
+                // (resolve.md §10.1 P-1, WP-136): dropped by a named rule
+                // (`SHF_EXCLUDE`, a consumed or stripped kind), kept but
+                // consumed (`.note.gnu.property`), or under
+                // `--gc-sections` kept but not reached by the mark (§6.1,
+                // `spec/image.md` I-7). A debug section's reference to it
+                // gets the tombstone (I-47), any other section's is
+                // `discarded-section-reference` (I-12). A global defined
+                // in a dropped COMDAT copy is demoted (resolve §6.2), so
+                // its `def` is never that copy.
                 let dead = match place {
-                    Some(SymbolSection::Section(i)) => {
-                        self.resolution.section_id(e.file, i).is_some_and(|sid| {
-                            self.resolution.sections[sid].is_kept() && !self.liveness.is_live(sid)
-                        })
-                    }
+                    Some(SymbolSection::Section(i)) => !self.has_place(e.file, i),
                     _ => false,
                 };
                 SymFacts { dead, ..of(kind, s) }

@@ -17,6 +17,7 @@ use mortar_core::assignment::Assignment;
 use mortar_core::demands::{Demands, GlobalFlags};
 use mortar_core::inputs::{Inputs, Origin, Reader};
 use mortar_core::layout::Slots;
+use mortar_core::liveness::Liveness;
 use mortar_core::par::Pool;
 use mortar_core::plan::{DynamicLinker, InputSpec, OutputKind, Plan};
 use mortar_core::resolution::{Def, RefFlags, Resolution};
@@ -74,6 +75,10 @@ struct Shared<'s> {
 pub struct DynSource<'a, 's> {
     inputs: &'a Inputs<'s>,
     syms: CoreSyms<'a, 's>,
+    /// For P-1's place of a definition (`has_place`).
+    resolution: &'a Resolution,
+    assignment: &'a Assignment<'a>,
+    liveness: &'a Liveness,
     /// Per file: the shared object's tables.
     shared: Vec<Option<Shared<'s>>>,
 }
@@ -95,6 +100,7 @@ impl<'a, 's> DynSource<'a, 's> {
         inputs: &'a Inputs<'s>,
         resolution: &'a Resolution,
         assignment: &'a Assignment<'a>,
+        liveness: &'a Liveness,
         plan: &Plan,
     ) -> Self {
         let shared = inputs
@@ -123,7 +129,14 @@ impl<'a, 's> DynSource<'a, 's> {
                 })
             })
             .collect();
-        Self { inputs, syms: CoreSyms::new(inputs, resolution, assignment), shared }
+        Self {
+            inputs,
+            syms: CoreSyms::new(inputs, resolution, assignment),
+            resolution,
+            assignment,
+            liveness,
+            shared,
+        }
     }
 
     fn shared_of(&self, file: FileId) -> Option<&Shared<'s>> {
@@ -175,6 +188,19 @@ impl DynSymSource for DynSource<'_, '_> {
         // entry's `STO_AARCH64_VARIANT_PCS` (kept on AArch64 by `entry`).
         let other = g.other | self.syms.defined_other_flags(key);
         Some(ProgramDef { info: g.binding << 4 | typ, other, size: g.size, version })
+    }
+
+    fn has_place(&self, key: SymbolId) -> bool {
+        match self.syms.global(key).map(|g| g.def) {
+            Some(SymDef::Section { section, .. }) => mortar_core::place::section_place(
+                self.resolution,
+                Some(self.assignment),
+                self.liveness,
+                section,
+            )
+            .is_ok(),
+            _ => true,
+        }
     }
 
     fn bound_version(&self, entry: SymEntry) -> Option<VerIndex> {
@@ -231,7 +257,7 @@ pub struct PlanIn<'a, 's> {
     pub resolution: &'a Resolution,
     pub assignment: &'a Assignment<'s>,
     pub demands: &'a Demands,
-    pub liveness: &'a mortar_core::Liveness,
+    pub liveness: &'a Liveness,
     pub headers: &'a mortar_layout::Headers<'s>,
     pub src: &'a DynSource<'a, 's>,
     pub kinds: &'a dyn KeyKinds,

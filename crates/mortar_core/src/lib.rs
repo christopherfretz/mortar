@@ -35,6 +35,7 @@ pub mod intern;
 pub mod layout;
 pub mod liveness;
 pub mod par;
+pub mod place;
 pub mod plan;
 pub mod records;
 pub mod resolution;

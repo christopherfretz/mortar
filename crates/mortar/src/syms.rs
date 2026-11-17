@@ -241,10 +241,11 @@ impl SymSource for CoreSyms<'_, '_> {
     }
 }
 
-/// [`Sections`] of a link: `CoreSections`, where a section consumed by
-/// the link (no output section, layout §8.1: `.note.gnu.property`,
-/// `.note.GNU-stack`, `.gnu.warning*`, `.ARM.attributes`) counts as not
-/// live, so its locals have no entry (synth.md S-76).
+/// [`Sections`] of a link: `CoreSections`, where a section without a
+/// place (`spec/resolve.md` §10.1 P-1: dropped, consumed by the link with
+/// no output section, layout §8.1: `.note.gnu.property`,
+/// `.note.GNU-stack`, `.gnu.warning*`, `.ARM.attributes`; or collected)
+/// counts as not live, so its symbols have no entry (synth.md S-76).
 #[derive(Debug, Clone, Copy)]
 pub struct LinkSections<'a> {
     pub core: CoreSections<'a>,
@@ -253,7 +254,13 @@ pub struct LinkSections<'a> {
 
 impl Sections for LinkSections<'_> {
     fn live(&self, section: SectionId) -> bool {
-        self.core.live(section) && self.assignment.out(section).is_some()
+        mortar_core::place::section_place(
+            self.core.resolution,
+            Some(self.assignment),
+            self.core.liveness,
+            section,
+        )
+        .is_ok()
     }
 
     fn kind(&self, section: SectionId) -> SecKind {

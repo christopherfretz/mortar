@@ -555,3 +555,42 @@ fn s6_unsafe_merge_sections_are_placed_whole() {
     assert_eq!(kind(".data.m"), Some(mortar_core::resolution::SectionKind::Regular));
     assert_eq!(kind(".rodata.k"), Some(mortar_core::resolution::SectionKind::Merge));
 }
+
+/// synth.md S-6 (empty) and resolve.md §10.1 P-1 (WP-136): an empty
+/// `SHF_MERGE` section is placed whole, as `Regular`, so the global it
+/// defines has a place: the mislink of WP-136 wrote 0 for `.quad gms`.
+// spec: synth.md S-6 (empty: placed whole); resolve.md §10.1 P-1
+#[test]
+fn s6_empty_merge_section_is_placed_whole() {
+    const SOURCES: &[Source] = &[
+        Source {
+            name: "m.s",
+            text: "\t.section .rodata.str1.1,\"aMS\",@progbits,1\n\t.globl gms\ngms:\n\
+                   \t.section .rodata.cst8,\"aM\",@progbits,8\n\
+                   \t.section .rodata.s,\"aMS\",@progbits,1\nmsg:\t.asciz \"s6\"\n\
+                   \t.data\n\t.globl dref\ndref:\t.xword gms\n",
+        },
+        Source { name: "main.c", text: "int main(void) { return 0; }\n" },
+    ];
+    let scratch = Scratch::new("s6-empty");
+    let Some(built) = build(&scratch, Driver::Gcc, &["-O2"], SOURCES) else { return };
+    let store = store();
+    let args = with_output(&built.args, &built.dir.join("out.mortar"));
+    let f = front_of(&args, &built.dir, &store, Pool::new(2))
+        .unwrap_or_else(|r| panic!("{}", r.render(&mortar_diag::Style::plain("mortar"))));
+    let placed = places(&f);
+    let whole = |name: &str| placed.lines().any(|l| l.split(' ').nth(2) == Some(name));
+    let kind = |name: &str| {
+        f.resolution
+            .sections
+            .iter()
+            .filter(|(sid, _)| f.headers[*sid].name == name.as_bytes())
+            .map(|(_, row)| row.kind)
+            .collect::<Vec<_>>()
+    };
+    use mortar_core::resolution::SectionKind;
+    assert_eq!(kind(".rodata.cst8"), vec![SectionKind::Regular], "empty: placed whole");
+    assert!(whole(".rodata.cst8"), "empty: placed whole\n{placed}");
+    assert!(kind(".rodata.str1.1").contains(&SectionKind::Regular), "empty: placed whole");
+    assert_eq!(kind(".rodata.s"), vec![SectionKind::Merge], "non-empty: split");
+}

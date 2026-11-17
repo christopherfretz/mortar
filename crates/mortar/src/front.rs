@@ -600,7 +600,7 @@ pub fn front<'s>(
     let walker = Walker::new(arch, &scan_inputs, scan_options)
         .with_weak_dyn(scanned.demands.weak_dyn.clone());
     let (got, dyn_tables) = if has_dynamic {
-        let src = crate::dynlink::DynSource::new(&inputs, &resolution, &assignment, &plan);
+        let src = crate::dynlink::DynSource::new(&inputs, &resolution, &assignment, &liveness, &plan);
         let kinds = crate::dynlink::ScanKinds(&walker);
         let t = crate::dynlink::PlanIn {
             plan: &plan,
