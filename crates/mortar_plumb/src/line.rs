@@ -251,7 +251,43 @@ struct State {
     lib: bool,
 }
 
+/// A script's name may be quoted (`EXTERN("k")`): the script reader keeps
+/// the quotes, the name is what is inside them.
+fn unquote(n: &str) -> &str {
+    n.strip_prefix('"').and_then(|n| n.strip_suffix('"')).unwrap_or(n)
+}
+
 impl Line {
+    /// The entry symbol's name the line asks for: `-e`, else the
+    /// script's `ENTRY` (None: the default `_start`).
+    pub fn entry_name(&self) -> Option<&str> {
+        self.entry.as_deref().or(self.script_entry.as_deref().map(unquote))
+    }
+
+    /// The names the line roots by an option or an implicit script
+    /// (`spec/resolve.md` §4.2's table: `-e` (else the script's `ENTRY`),
+    /// `-u`, `--require-defined`, `EXTERN`), in that order, once each.
+    /// The one list stage 3's model reads (WP-163: a root never makes an
+    /// `--as-needed` library needed, D-11 item 2, and is imported iff a
+    /// library of the final needed set defines it, D-21 item 1); the
+    /// input set (§3.8, `inset.rs`) reads the same fields with their
+    /// positions.
+    pub fn root_names(&self) -> Vec<&str> {
+        let mut v: Vec<&str> = Vec::new();
+        let entry = self.entry_name();
+        for n in entry
+            .into_iter()
+            .chain(self.undefined.iter().map(String::as_str))
+            .chain(self.require_defined.iter().map(String::as_str))
+            .chain(self.externs.iter().map(|(n, _)| unquote(n)))
+        {
+            if !v.contains(&n) {
+                v.push(n);
+            }
+        }
+        v
+    }
+
     /// Reads `args` (the linker's words, without the program name). Each
     /// word is placed by the options table (`opts::Table::word`, cli.md
     /// §2): its row, its value, or an input file.

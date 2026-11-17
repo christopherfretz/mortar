@@ -184,6 +184,16 @@ fn dynamic(linker: Format, output: &[u8], f: &Finding) -> Option<&'static str> {
             "A36: lld and mold link a used shared object's strong reference that no member of N ∪ U satisfies and leave the library that defines it out of DT_NEEDED; the program fails at load (dyn.md D-13, W16)",
         );
     }
+    if (lld || mold) && d(7) && m.ends_with(crate::dyncheck::ROOT_IMPORT) {
+        return Some(
+            "A47: lld and mold write no .dynsym entry for a root (-u, EXTERN) that only a needed shared library defines; GNU ld and mortar import it (dyn.md D-21 item 1)",
+        );
+    }
+    if mold && d(6) && m.ends_with(crate::dyncheck::ROOT_NEEDED) {
+        return Some(
+            "A48: mold makes an --as-needed library needed when only a root (-u, -e, EXTERN) names a definition of it (dyn.md D-11 item 2)",
+        );
+    }
     if bfd && d(25) && m == crate::shared::SPARE_NONE {
         return Some(
             "A46: GNU ld writes a spare R_AARCH64_NONE record (all fields 0) in .rela.dyn for each local general-dynamic pair of an AArch64 shared object; glibc skips type 0 (spec/plumb.md §5.8)",

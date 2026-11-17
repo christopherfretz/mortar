@@ -1,21 +1,17 @@
 # resolve.md §4.2, dyn.md D-11 item 2 (WP-152): -u K (and -e K) where
 # only an --as-needed library defines K and nothing else needs it: the
 # library is not needed and K is written nowhere (GNU ld, lld, mortar;
-# GNU ld keeps an undefined .symtab entry; mold makes the library needed,
-# not linked here). -e K is then an undefined entry: entry-not-found
-# (GNU ld warns too). mortar's needed set and .dynsym equal GNU ld's.
-# The verifier still reads a root as a strong reference from file 0
-# (P-D6: "DT_NEEDED lacks libks.so"), so the three linkers are xfail
-# until it follows D-11 item 2; mortar's -e executables also meet P-D4
-# (e_entry 0, resolve.md §5.5). lld on root-as-needed's refused line
-# (the library first, nothing needing it, then the member): the library
-# not needed, nothing extracted, k_fn nowhere. mold has no step: it makes the library
-# needed and the verifier's P-D7 judges that.
+# GNU ld keeps an undefined .symtab entry). -e K is then an undefined
+# entry: entry-not-found (GNU ld warns too), and mortar's e_entry is 0
+# (L-103, resolve.md §5.5; P-D4, WP-163). mortar's needed set and
+# .dynsym equal GNU ld's. lld on root-as-needed's refused line (the
+# library first, nothing needing it, then the member): the library not
+# needed, nothing extracted, k_fn nowhere. mold makes the library needed
+# (umold-*): the verifier's P-D6 names it, anomaly A48 (WP-163).
 #@ spec: resolve.md §4.2
 #@ spec: dyn.md "D-11"
 #@ arch: aarch64 x86_64
-#@ xfail(bfd,lld): P-D6 reads a -u root as a reference that makes an --as-needed library needed (WP-152 rule: it does not)
-#@ xfail(mortar): P-D6 reads a -u root as a reference that makes an --as-needed library needed (WP-152 rule: it does not); P-D4 e_entry 0 after entry-not-found (WP-163)
+#@ anomaly(mold): A48
 
 cc -O1 -fPIC ks.c -o ks.o
 cc -O1 -fPIC ka.c -o ka.o
@@ -24,6 +20,7 @@ cc -O1 -fPIC rk.c -o rk.o
 cc -O1 -fPIE m0.c -o m0.o
 ar rcs libka.a ka.o
 shlib gcc ks.o -o libks.so
+link(mold) gcc -pie m0.o -u k_fn -L. -Wl,--as-needed -lks -Wl,--no-as-needed -o umold-pie
 link(bfd,lld,mortar) gcc -pie m0.o -u k_fn -L. -Wl,--as-needed -lks -Wl,--no-as-needed -o u-pie
 run(bfd,lld,mortar) u-pie
 check(bfd,lld,mortar) readelf -dW u-pie
@@ -43,6 +40,7 @@ check(lld) readelf -dW reflld-pie
   not: libks.so
 check(lld) readelf -sW reflld-pie
   not: * k_fn$
+link(mold) gcc -no-pie m0.o -u k_fn -L. -Wl,--as-needed -lks -Wl,--no-as-needed -o umold-nopie
 link(bfd,lld,mortar) gcc -no-pie m0.o -u k_fn -L. -Wl,--as-needed -lks -Wl,--no-as-needed -o u-nopie
 run(bfd,lld,mortar) u-nopie
 check(bfd,lld,mortar) readelf -dW u-nopie
@@ -62,6 +60,7 @@ check(lld) readelf -dW reflld-nopie
   not: libks.so
 check(lld) readelf -sW reflld-nopie
   not: * k_fn$
+link(mold) gcc -shared -u k_fn -L. -Wl,--as-needed -lks -Wl,--no-as-needed -o umold-so.so
 link(bfd,lld,mortar) gcc -shared -u k_fn -L. -Wl,--as-needed -lks -Wl,--no-as-needed -o u-so.so
 check(bfd,lld,mortar) readelf -dW u-so.so
   not: libks.so
