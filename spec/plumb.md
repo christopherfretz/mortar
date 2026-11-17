@@ -4215,7 +4215,12 @@ Static-pie (WP-089, §12.4; each shown by running a program, the cases of
   the program fails at load (`symbol lookup error`, exit 127): P-D6
   ending "(D-13: the link is refused)" (WP-088). Reproducer:
   `tests/link/dyn/shlib/used-underlinks-refused.test`; `tests/dyn.rs`
-  case `W16`.
+  case `W16`. mold's form of the same refusal for `--exclude-libs`
+  (dyn.md D-110 item 1; WP-161): a needed object's strong reference whose
+  only definition is the program's, in an archive member the line
+  excludes, is linked with no export, and the program fails at load
+  (`undefined symbol`); P-D6 names the exclusion and ends the same way.
+  Reproducer: `tests/link/dyn/dynsym/exclude-libs-exe.test` (`bad-mold`).
 - **A35 (mold, x86-64, new).** A `call sym@PLT` (`R_X86_64_PLT32`) to
   an absolute symbol (`SHN_ABS`) in a `-pie` or `-static-pie` output is
   written as a PC-relative `call` to the symbol's value, right at load

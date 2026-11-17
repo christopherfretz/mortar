@@ -71,6 +71,11 @@ pub struct Line {
     /// `--Bsymbolic-non-weak-functions`); `None` with none or after
     /// `-Bno-symbolic` (V2, A44).
     pub symbolic: Option<&'static str>,
+    /// `--dynamic-list` files, in line order (D-112; in an executable the
+    /// listed definitions are exported, resolve §9.6; WP-161).
+    pub dynamic_lists: Vec<String>,
+    /// `--exclude-libs`' archives (D-110 item 1; WP-161).
+    pub exclude_libs: crate::shared::ExcludeLibs,
     /// What the verifier could not read (each a finding of P-D2).
     pub problems: Vec<String>,
     /// What puts the link outside stage 3 (each a P-D1 finding,
@@ -124,6 +129,8 @@ pub(crate) const INTERPRETED: &[&str] = &[
     "--Bsymbolic-non-weak",
     "--Bsymbolic-non-weak-functions",
     "-Bno-symbolic",
+    "--dynamic-list",
+    "--exclude-libs",
 ];
 
 /// The `-z` keywords this reader interprets.
@@ -251,6 +258,8 @@ impl Line {
                 | "--Bsymbolic-non-weak"
                 | "--Bsymbolic-non-weak-functions" => l.symbolic = Some(id),
                 "-Bno-symbolic" => l.symbolic = None,
+                "--dynamic-list" => l.dynamic_lists.push(v),
+                "--exclude-libs" => l.exclude_libs.add(&v),
                 // Every other option leaves the inputs alone.
                 _ => {}
             }

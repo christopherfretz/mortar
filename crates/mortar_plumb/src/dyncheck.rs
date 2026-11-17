@@ -74,7 +74,9 @@ pub(crate) fn check(
             image,
             out,
             line.entry.as_deref(),
-            line.export_dynamic || line.export_symbols,
+            // A reference's `--dynamic-list` exports too (D-1: no effect
+            // in mortar's; WP-161).
+            line.export_dynamic || line.export_symbols || !line.dynamic_lists.is_empty(),
             format,
             &mut v,
         );
@@ -452,7 +454,11 @@ fn pd6_shlib_undefined(model: &Model, line: &Line, v: &mut Vec<Finding>) {
     let mut seen = BTreeSet::new();
     for &i in &set {
         for r in model.dsos[i].refs.iter().filter(|r| !r.weak) {
-            if model.keys.get(&r.name).is_some_and(|k| k.defined && !k.hidden)
+            let key = model.keys.get(&r.name);
+            // An executable's definition `--exclude-libs` takes out of
+            // every export is as a hidden one (D-110 item 1, WP-161).
+            let excluded = !model.shared && key.is_some_and(|k| k.defined && k.excluded);
+            if key.is_some_and(|k| k.defined && !k.hidden) && !excluded
                 || set.iter().any(|&j| model.dsos[j].def(&r.name, r.version.as_deref()).is_some())
                 || !seen.insert(r.name.clone())
             {
@@ -461,10 +467,17 @@ fn pd6_shlib_undefined(model: &Model, line: &Line, v: &mut Vec<Finding>) {
             v.push(sym_finding(
                 6,
                 &r.name,
-                format!(
-                    "'{}', a strong reference of {} (in N ∪ U), is defined by no member of N ∪ U and not by the program (D-13: the link is refused)",
-                    r.name, model.dsos[i].path
-                ),
+                if excluded {
+                    format!(
+                        "'{}', a strong reference of {} (in N ∪ U), is defined by no member of N ∪ U, and the program's definition is in an archive member --exclude-libs names, which no export gives, D-110 item 1 (D-13: the link is refused)",
+                        r.name, model.dsos[i].path
+                    )
+                } else {
+                    format!(
+                        "'{}', a strong reference of {} (in N ∪ U), is defined by no member of N ∪ U and not by the program (D-13: the link is refused)",
+                        r.name, model.dsos[i].path
+                    )
+                },
             ));
         }
     }
@@ -806,21 +819,40 @@ fn pd7(
             _ => {}
         }
     }
-    // Exports: program definitions referenced (or defined) by N ∪ U, or
-    // every one under -E.
+    // Exports: program definitions referenced (or defined) by N ∪ U, and
+    // those the line's `--dynamic-list` lists (resolve §9.6). A definition
+    // `--exclude-libs` excludes is exported by nothing (D-110 item 1; a
+    // shared object's reference to it is P-D6's D-13 finding).
     for (name, k) in &model.keys {
         if !k.defined || k.hidden {
             continue;
         }
-        let want = model.ref_dynamic.contains(name) || model.def_dynamic.contains(name);
-        if !want {
+        // (A `Shared` output's export set is P-D19's.)
+        if k.excluded && !model.shared {
+            if let Some(&j) = by_name.get(name.as_str())
+                && out.syms[j].defined()
+            {
+                v.push(sym_finding(
+                    7,
+                    name,
+                    format!("'{name}' is exported, and its definition is in an archive member --exclude-libs names, which no export gives (D-110 item 1)"),
+                ));
+            }
+            continue;
+        }
+        let dynamic = model.ref_dynamic.contains(name) || model.def_dynamic.contains(name);
+        if !dynamic && !k.listed {
             continue;
         }
         let Some(&j) = by_name.get(name.as_str()) else {
             v.push(sym_finding(
                 7,
                 name,
-                format!("'{name}' is defined by the program and referenced by a needed or used object, and is not exported (D-12, W8)"),
+                if dynamic {
+                    format!("'{name}' is defined by the program and referenced by a needed or used object, and is not exported (D-12, W8)")
+                } else {
+                    format!("'{name}' is defined by the program and listed by the line's --dynamic-list, and is not exported (resolve.md §9.6, D-21)")
+                },
             ));
             continue;
         };

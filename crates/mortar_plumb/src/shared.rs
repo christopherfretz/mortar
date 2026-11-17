@@ -52,6 +52,25 @@ impl ExcludeLibs {
         let file = path.rsplit_once('/').map_or(path, |(_, f)| f);
         self.all || self.names.contains(file)
     }
+
+    /// One `--exclude-libs` value (D-110 item 1): `,` and `:` separate
+    /// entries; `ALL` exactly names every archive; any other entry is a
+    /// file name (an entry with a directory, or `all`, names nothing,
+    /// since no archive's base name is one).
+    pub fn add(&mut self, v: &str) {
+        for n in v.split([',', ':']).filter(|n| !n.is_empty()) {
+            if n == "ALL" {
+                self.all = true;
+            } else {
+                self.names.insert(n.to_string());
+            }
+        }
+    }
+
+    /// Whether the line names any archive.
+    pub fn any(&self) -> bool {
+        self.all || !self.names.is_empty()
+    }
 }
 
 /// What a `-shared` line says about the export and preemption sets, read
@@ -277,13 +296,7 @@ impl SharedLine {
     }
 
     fn exclude(&mut self, v: &str) {
-        for n in v.split([',', ':']).filter(|n| !n.is_empty()) {
-            if n == "ALL" {
-                self.exclude_libs.all = true;
-            } else {
-                self.exclude_libs.names.insert(n.to_string());
-            }
-        }
+        self.exclude_libs.add(v);
     }
 }
 
@@ -909,21 +922,52 @@ pub struct Import {
 /// `foo@V`, `foo@@V`) of default or protected visibility (merged by base
 /// name; the caller asks) is exported, and with which version. P-D19's
 /// export set, P-1's placeless keys and M10's roots (`fate.rs`, WP-147)
-/// all ask it (WP-149). `--exclude-libs` is not in it: mortar refuses the
-/// option, and P-D19 reads it per object.
+/// all ask it (WP-149). `--exclude-libs` enters it as the keys whose
+/// definition it excludes (`excluded`, D-110 item 1: exported by nothing),
+/// and an executable's `--dynamic-list` without `-E` as the keys it lists
+/// (`only`, resolve §9.6; WP-161); P-D19 still reads the exclusion per
+/// object for the chosen definition.
 #[derive(Debug, Clone)]
 pub struct ExportRule {
     pub script: Option<Script>,
     /// `-E` (lld's rule 12 ignores it; GNU ld's and mortar's do not).
     pub export_dynamic: bool,
     pub format: Format,
+    /// Base names whose definition `--exclude-libs` excludes: never
+    /// exported (D-110 item 1; WP-161).
+    pub excluded: BTreeSet<String>,
+    /// An executable's exports when not every definition is one (no
+    /// `-E`): the keys its `--dynamic-list` lists (resolve §9.6; WP-161).
+    pub only: Option<BTreeSet<String>>,
 }
 
 impl ExportRule {
     /// No version script (an executable with `-E`, a library without
     /// one): every key without a version is exported at the base.
     pub fn plain(format: Format) -> ExportRule {
-        ExportRule { script: None, export_dynamic: false, format }
+        ExportRule {
+            script: None,
+            export_dynamic: false,
+            format,
+            excluded: BTreeSet::new(),
+            only: None,
+        }
+    }
+
+    /// An executable's rule (WP-161): `-E` exports every key, else only
+    /// the keys `listed` (its `--dynamic-list`); `None` when it exports
+    /// nothing. `excluded` are never exported (D-110 item 1).
+    pub fn executable(
+        format: Format,
+        export_dynamic: bool,
+        listed: BTreeSet<String>,
+        excluded: BTreeSet<String>,
+    ) -> Option<ExportRule> {
+        if !export_dynamic && listed.is_empty() {
+            return None;
+        }
+        let only = (!export_dynamic).then_some(listed);
+        Some(ExportRule { excluded, only, ..ExportRule::plain(format) })
     }
 
     /// `Ok(None)`: the key is local. `Err`: the link is outside (D-114:
@@ -960,7 +1004,10 @@ impl ExportRule {
 
     /// Whether `key` is exported (an `Err` is not: the link is outside).
     pub fn exports(&self, key: &str) -> bool {
-        matches!(self.version(key), Ok(Some(_)))
+        let base = split_version(key).0;
+        !self.excluded.contains(base)
+            && self.only.as_ref().is_none_or(|o| o.contains(base))
+            && matches!(self.version(key), Ok(Some(_)))
     }
 }
 
@@ -1264,7 +1311,11 @@ pub(crate) fn compute(
     }
     let defined_base: HashSet<String> =
         defs.keys().map(|n| split_version(n).0.to_string()).collect();
-    let rule = ExportRule { script, export_dynamic: sl.export_dynamic, format };
+    let mut rule = ExportRule { script, ..ExportRule::plain(format) };
+    rule.export_dynamic = sl.export_dynamic;
+    // D-110 item 1: the keys whose chosen definition `--exclude-libs`
+    // excludes (below), exported by nothing (WP-161).
+    let mut excluded: BTreeSet<String> = BTreeSet::new();
     // P-1 (WP-147): a key every definition of which is discarded (not a
     // COMDAT copy another object keeps) has no place, when the one
     // derivation of the export set exports it (WP-149).
@@ -1309,6 +1360,7 @@ pub(crate) fn compute(
             .or_else(|| ds.iter().find(|d| !d.common))
             .unwrap_or(&ds[0]);
         if d.excluded {
+            excluded.insert(base.clone());
             sets.local.insert(base);
             continue;
         }
@@ -1422,6 +1474,7 @@ pub(crate) fn compute(
         !(sets.exports.contains_key(n) || sets.local.contains(n) || linker_def)
     });
     sets.local.extend(own);
+    rule.excluded = excluded;
     sets.rule = Some(rule);
     sets
 }
@@ -1865,6 +1918,17 @@ pub(crate) fn static_checks(
             format!(
                 "DT_FLAGS_1 {f1:#x}: bits {extra:#x} no -z word of the line asks for, bits {missing:#x} the line asks for are absent (D-103)"
             ),
+        ));
+    }
+    // DT_FLAGS' `DF_ORIGIN` iff the line has `-z origin` (D-103, all
+    // three; WP-161).
+    let origin =
+        out.get(crate::dynout::DT_FLAGS).is_some_and(|f| f & crate::dynout::DF_ORIGIN != 0);
+    let asked = sl.flags_1() & DF_1_ORIGIN != 0;
+    if origin != asked {
+        v.push(fd(
+            22,
+            format!("DT_FLAGS' DF_ORIGIN {origin}; the line asks for -z origin {asked} (D-103)"),
         ));
     }
     // DT_INIT/DT_FINI at the defined, live function they name (D-124).
@@ -2470,7 +2534,9 @@ pub(crate) fn filter_dyncheck(
     format: Format,
 ) {
     let entry0 = image.header.e_entry == 0;
-    let mask = DF_SYMBOLIC | crate::dynout::DF_STATIC_TLS;
+    // D-103: `DF_ORIGIN` is `-z origin`'s in a `Shared` output, judged by
+    // P-D22 (WP-161), as `DF_SYMBOLIC` and `DF_STATIC_TLS` are.
+    let mask = DF_SYMBOLIC | crate::dynout::DF_STATIC_TLS | crate::dynout::DF_ORIGIN;
     v.retain(|f| {
         let m = f.message.as_str();
         match f.rule {
