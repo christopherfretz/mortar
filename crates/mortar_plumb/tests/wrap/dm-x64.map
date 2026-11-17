@@ -1,0 +1,44 @@
+mortar-map 2
+file 0 dm-x64.o
+place 0 1 1330 36
+place 0 3 34f0 0
+place 0 5 34f0 8
+place 0 4 34f8 10
+merged 0 7 .comment
+chunk synthetic .interp 238 1c
+chunk synthetic .gnu.hash 258 1c
+chunk synthetic .dynsym 278 30
+chunk synthetic .dynstr 2a8 12
+chunk synthetic .rela.dyn 2c0 30
+chunk synthetic .rela.plt 2f0 18
+chunk synthetic .plt 1310 20
+chunk synthetic .got 24c8 8
+chunk synthetic .got.plt 34d0 20
+chunk synthetic .dynamic 2368 160
+chunk synthetic .symtab - d8
+chunk synthetic .strtab - 63
+chunk synthetic .shstrtab - 92
+chunk synthetic .comment - d
+chunk synthetic .pad.relro 24d0 b30
+define _GLOBAL_OFFSET_TABLE_ 34d0
+output pie
+interp /lib64/ld-linux-x86-64.so.2
+bind lazy
+relro on
+arg -m
+arg elf_x86_64
+arg -z
+arg max-page-size=4096
+arg -o
+arg dm-x64
+arg -pie
+arg -dynamic-linker
+arg /lib64/ld-linux-x86-64.so.2
+arg dm-x64.o
+arg libmal-x64.so
+arg --wrap=malloc
+arg --wrap=_start
+arg --mortar-map=dm-x64.map
+needed libmal.so
+plt malloc
+end

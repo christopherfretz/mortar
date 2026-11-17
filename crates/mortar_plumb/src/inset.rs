@@ -815,6 +815,29 @@ impl Inputs {
         v
     }
 
+    /// [`crate::wrap::WRAPPED_ONLY`] when lazy file `i` defines a
+    /// `--wrap` word SYM and a reached file's undefined mention binds to
+    /// `__wrap_SYM`: only wrapped references name it (resolve §7.1; lld
+    /// extracts it, A83). Empty otherwise.
+    fn wrapped_only(&self, i: usize, reached: &[bool], line: &Line) -> &'static str {
+        let defines =
+            |f: usize, k: u32| self.files[f].mentions.iter().any(|&(x, b)| x == k && b & DEF != 0);
+        let wanted = |k: u32| {
+            (0..self.files.len()).any(|j| {
+                reached[j]
+                    && self.files[j]
+                        .mentions
+                        .iter()
+                        .any(|&(x, b)| x == k && b & (UNDEF | WUNDEF) != 0)
+            })
+        };
+        let hit = line.wrap.iter().any(|w| {
+            let key = |n: &str| self.keys.get(n.as_bytes()).copied();
+            key(w).is_some_and(|k| defines(i, k)) && key(&format!("__wrap_{w}")).is_some_and(wanted)
+        });
+        if hit { crate::wrap::WRAPPED_ONLY } else { "" }
+    }
+
     /// A reference's map (§3.8 rule 2).
     #[allow(clippy::too_many_lines)]
     fn loose(&self, map: &Map, line: &Line, words: &[String]) -> Verdict {
@@ -958,8 +981,9 @@ impl Inputs {
                         format!("{} is in the link and {VERSIONED_PLAIN}", self.label(i))
                     } else {
                         format!(
-                            "{} is in the link and no root or reference of the link reaches it (§3.8)",
-                            self.label(i)
+                            "{} is in the link and no root or reference of the link reaches it (§3.8){}",
+                            self.label(i),
+                            self.wrapped_only(i, &reached, line)
                         )
                     };
                     v.findings.push(Finding::new(EXTRA, m));

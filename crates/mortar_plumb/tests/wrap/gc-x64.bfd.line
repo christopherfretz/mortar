@@ -1,0 +1,14 @@
+-m
+elf_x86_64
+-z
+max-page-size=4096
+-o
+gc-x64.bfd
+-static
+-e
+_start
+--gc-sections
+gcm-x64.o
+gcf-x64.o
+--wrap=f
+-Map=gc-x64.bfd.map

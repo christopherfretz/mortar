@@ -428,7 +428,7 @@ fn judge(
     let wrap = crate::wrap::Wrap::of(Some(&opts));
     let mut engine = reloc::Engine::new(&img1, &objs, map.format);
     dyn_engine(&mut engine, &v1, &plt, &depths);
-    engine.wrap = wrap.clone();
+    engine.set_wrap(wrap.clone());
     engine.shared = sets.is_some();
     // M10's export roots (WP-147): the shared set's one derivation, or an
     // executable's `-E` without a script (WP-149) or `--dynamic-list`
@@ -595,7 +595,7 @@ fn judge(
             let names = crate::shared::view_b_names(s);
             let mut eb = reloc::Engine::new(&imgb, &objs, map.format);
             dyn_engine(&mut eb, &vb, &plt, &depths);
-            eb.wrap = wrap.clone();
+            eb.set_wrap(wrap.clone());
             eb.shared = true;
             // The expected `S`: the interposer's for a preemptible key or
             // an import; a bound key's module and offset are the
@@ -637,7 +637,7 @@ fn judge(
             let names: HashSet<String> = fresh.keys().cloned().collect();
             let mut e3 = reloc::Engine::new(&img3, &objs, map.format);
             dyn_engine(&mut e3, &v3, &plt, &depths);
-            e3.wrap = wrap.clone();
+            e3.set_wrap(wrap.clone());
             e3.dso_words = Some(dso_words.clone());
             run_engine(&mut e3, image, map, Some(&names));
             let mut bad: HashMap<String, Vec<Finding>> = HashMap::new();

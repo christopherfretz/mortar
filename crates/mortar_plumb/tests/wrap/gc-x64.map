@@ -1,0 +1,27 @@
+mortar-map 2
+file 0 gcm-x64.o
+file 1 gcf-x64.o
+place 0 1 401120 18
+place 0 4 402138 4
+merged 0 5 .comment
+merged 1 5 .comment
+discard 1 4 gc
+chunk synthetic .symtab - 90
+chunk synthetic .strtab - 3c
+chunk synthetic .shstrtab - 2f
+chunk synthetic .comment - d
+arg -m
+arg elf_x86_64
+arg -z
+arg max-page-size=4096
+arg -o
+arg gc-x64
+arg -static
+arg -e
+arg _start
+arg --gc-sections
+arg gcm-x64.o
+arg gcf-x64.o
+arg --wrap=f
+arg --mortar-map=gc-x64.map
+end

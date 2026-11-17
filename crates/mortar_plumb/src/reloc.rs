@@ -15,7 +15,7 @@ use mortar_elf::consts::{
 };
 use mortar_elf::{Machine, SymbolIndex, SymbolSection};
 
-use crate::a64::{self, Def, Field, Form, Op, Slot};
+use crate::a64::{self, Check, Def, Field, Form, Op, Slot};
 use crate::image::Image;
 use crate::locate::{Obj, Place};
 use crate::map::Format;
@@ -576,6 +576,14 @@ pub(crate) struct Engine<'a, 'b> {
     /// The line's `--wrap` redirection (`wrap.rs`, WP-170): an undefined
     /// mention's key; empty without `--wrap`.
     pub(crate) wrap: crate::wrap::Wrap,
+    /// The `--wrap` words of refused item 3's shape (`spec/resolve.md`
+    /// §7.1): a definition in a dropped COMDAT copy, whose mentions a
+    /// reference's output binds in three ways; not judged by name.
+    pub(crate) wrap_comdat: BTreeMap<String, String>,
+    /// The record being judged when it refers to a defined mention of a
+    /// `--wrap` word (E13), with `__wrap_SYM`'s address: a finding there
+    /// whose field `__wrap_SYM` gives is tagged [`crate::wrap::E13`].
+    e13: Option<Box<(Rec, u64, String)>>,
     /// Stage 3 (§12.5): the keys a shared object's view takes from the
     /// loader (`dynbind`) although the output defines them: preemptible
     /// keys under an interposer, a preemptible IFUNC's resolved address.
@@ -945,6 +953,8 @@ impl<'a, 'b> Engine<'a, 'b> {
             exports: None,
             made_local: MadeLocal::default(),
             wrap: crate::wrap::Wrap::default(),
+            wrap_comdat: BTreeMap::new(),
+            e13: None,
             loader_keys: std::collections::HashSet::new(),
             dso_words: None,
             plt: BTreeMap::new(),
@@ -1165,6 +1175,10 @@ impl<'a, 'b> Engine<'a, 'b> {
             };
         }
         let name = String::from_utf8_lossy(t.name(&sym).unwrap_or(b"")).into_owned();
+        // §4.4a (WP-170): refused item 3's shape in a reference's output.
+        if self.wrap_comdat.contains_key(&name) {
+            return Target::Skip(Reason::Wrap);
+        }
         // §4.4a (WP-170): an undefined mention binds to its `--wrap` key.
         let name = if matches!(where_, Ok(SymbolSection::Undefined)) {
             self.wrap.key(&name).into_owned()
@@ -1419,9 +1433,129 @@ impl<'a, 'b> Engine<'a, 'b> {
         self.cov.add_not_checked(r, n);
     }
 
-    fn fail(&mut self, f: Finding) {
+    fn fail(&mut self, mut f: Finding) {
+        if let Some(b) = &self.e13
+            && f.addr == Some(b.0.p)
+            && matches!(f.rule, Rule::Field | Rule::Overflow | Rule::Misaligned)
+            && self.e13_field(&b.0, b.1, &b.2)
+        {
+            f.message.push_str(crate::wrap::E13);
+        }
         self.cov.failed += 1;
         self.findings.push(f);
+    }
+
+    /// Sets the line's `--wrap` words (§4.4a, WP-170), and finds refused
+    /// item 3's shape in a reference's output: a word with two or more
+    /// input definitions, one of them in a group member (`SHF_GROUP`) the
+    /// output does not place (a dropped COMDAT copy).
+    pub(crate) fn set_wrap(&mut self, wrap: crate::wrap::Wrap) {
+        self.wrap_comdat.clear();
+        if self.format != Format::Mortar {
+            for sym in wrap.syms() {
+                let Some(defs) = self.defs.get(sym) else { continue };
+                if defs.len() < 2 {
+                    continue;
+                }
+                let dropped = defs.iter().find(|&&(doi, di)| {
+                    self.objs[doi]
+                        .symtab
+                        .and_then(|t| t.get(SymbolIndex(di)).ok().map(|d| (t, d)))
+                        .is_some_and(|(t, d)| match t.section_of(SymbolIndex(di), &d) {
+                            Ok(SymbolSection::Section(k)) => {
+                                let k = k.0 as usize;
+                                self.objs[doi].secs.get(k).is_some_and(|x| {
+                                    x.shdr.sh_flags & mortar_elf::consts::SHF_GROUP != 0
+                                }) && self.objs[doi].no_place(k, self.output_eh_frame().is_some())
+                            }
+                            _ => false,
+                        })
+                });
+                if let Some(&(doi, _)) = dropped {
+                    self.wrap_comdat.insert(sym.to_string(), self.objs[doi].label());
+                }
+            }
+        }
+        self.wrap = wrap;
+        self.cov.wrap_not_judged = self.wrap_not_judged();
+    }
+
+    /// The coverage words of the `--wrap` shapes not judged (§4.4a).
+    pub(crate) fn wrap_not_judged(&self) -> Vec<String> {
+        let mut v = self.wrap.unjudged_text();
+        v.extend(self.wrap_comdat.iter().map(|(s, file)| {
+            format!(
+                "--wrap={s}: a definition in a dropped COMDAT copy ({file}); the redirection of this shape is not derived (resolve.md §7.1, refused item 3)"
+            )
+        }));
+        v
+    }
+
+    /// `__wrap_SYM`'s address and name when symbol `idx` of object `oi`
+    /// is a defined global mention of a `--wrap` word SYM (E13: not
+    /// wrapped).
+    fn e13_target(&self, oi: usize, idx: u32) -> Option<(u64, String)> {
+        if self.wrap.is_empty() {
+            return None;
+        }
+        let t = self.objs[oi].symtab?;
+        let sym = t.get(SymbolIndex(idx)).ok()?;
+        if !matches!(sym.binding(), STB_GLOBAL | STB_WEAK | STB_GNU_UNIQUE)
+            || !matches!(t.section_of(SymbolIndex(idx), &sym), Ok(SymbolSection::Section(_)))
+        {
+            return None;
+        }
+        let name = std::str::from_utf8(t.name(&sym).ok()?).ok()?;
+        if !self.wrap.contains(name) {
+            return None;
+        }
+        let n = format!("__wrap_{name}");
+        let w = self.image.global(&n)?;
+        (w.sym.st_shndx != 0).then_some((w.sym.st_value, n))
+    }
+
+    /// Whether `rec`'s field holds what binding it to `__wrap_SYM` at `w`
+    /// gives (E13's lld form: the defining object's reference wrapped),
+    /// directly or, for a branch, through a PLT entry whose word holds
+    /// `__wrap_SYM` (a preemptible `__wrap_SYM` of a shared object).
+    fn e13_field(&self, rec: &Rec, w: u64, name: &str) -> bool {
+        if self.e13_direct(rec, w) {
+            return true;
+        }
+        if rec.def.op != Op::Prel {
+            return false;
+        }
+        let bound = self.dynbind.get(name).copied();
+        let t = if matches!(rec.def.r_type, JUMP26 | CALL26)
+            && self.image.header.e_machine == mortar_elf::consts::EM_AARCH64
+        {
+            match a64::branch(rec.out_word as u32, rec.p) {
+                Some((_, t)) => t,
+                None => return false,
+            }
+        } else if rec.def.field == Field::Data(4) {
+            rec.p.wrapping_sub(rec.addend as u64).wrapping_add(rec.out_word as u32 as i32 as u64)
+        } else {
+            return false;
+        };
+        [Some(w), bound].into_iter().flatten().any(|v| self.plt_hop(t, v))
+    }
+
+    fn e13_direct(&self, rec: &Rec, w: u64) -> bool {
+        let sa = w.wrapping_add(rec.addend as u64);
+        let x = match rec.def.op {
+            Op::Abs => sa as i64,
+            Op::Prel => sa.wrapping_sub(rec.p) as i64,
+            _ => return false,
+        };
+        let x = if self.image.header.e_machine == mortar_elf::consts::EM_386
+            && !matches!(rec.def.check, Check::Signed(32) | Check::Unsigned(32))
+        {
+            i64::from(x as i32)
+        } else {
+            x
+        };
+        matches!(judge(rec, x), Verdict::Ok(_))
     }
 
     fn finding(
@@ -1696,6 +1830,7 @@ impl<'a, 'b> Engine<'a, 'b> {
         let rec = &recs[i];
         let site = self.objs[oi].site(si, rec.off);
         let symbol = self.sym_name(oi, rec.sym);
+        self.e13 = self.e13_target(oi, rec.sym).map(|(w, n)| Box::new((rec.clone(), w, n)));
         // A non-alloc reference to a section not in the output holds the
         // linker's tombstone (§5.8).
         if !self.objs[oi].secs[si].alloc()

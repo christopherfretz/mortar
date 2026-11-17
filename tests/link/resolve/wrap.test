@@ -15,6 +15,9 @@
 #   step per mention;
 # - --gc-sections keeps f only when __real_f reaches it;
 # - -u f still names f (a root is not a mention: §4.2).
+#@ anomaly(lld): A80
+#@ anomaly(lld): A83
+#@ anomaly(lld): A84
 #@ spec: resolve.md §7.1
 #@ arch: aarch64 x86_64 i386
 

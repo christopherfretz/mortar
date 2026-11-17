@@ -6,6 +6,7 @@
 # time. The binding stays preemptible: an interposer of f reaches
 # callreal and, through the f call that is not wrapped (E13: f's own
 # object; lld wraps it, callf=101), callf.
+#@ anomaly(lld): A80
 #@ spec: resolve.md §7.1
 #@ arch: aarch64 x86_64
 

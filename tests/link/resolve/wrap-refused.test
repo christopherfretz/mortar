@@ -12,6 +12,7 @@
 #    not change "live" (the dropped copy's file is live by its other
 #    sections); an archive member extracted for another symbol is live;
 #    a member nothing extracts and a single copy are accepted.
+#@ anomaly(lld): A80
 #@ spec: resolve.md §7.1
 #@ arch: aarch64 x86_64
 #@ requires: g++

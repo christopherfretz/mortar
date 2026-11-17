@@ -1,0 +1,14 @@
+-m
+elf_i386
+-z
+max-page-size=4096
+-o
+gc-x86.bfd
+-static
+-e
+_start
+--gc-sections
+gcm-x86.o
+gcf-x86.o
+--wrap=f
+-Map=gc-x86.bfd.map

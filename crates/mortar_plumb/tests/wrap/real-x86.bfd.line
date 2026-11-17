@@ -1,0 +1,13 @@
+-m
+elf_i386
+-z
+max-page-size=4096
+-o
+real-x86.bfd
+-static
+-e
+_start
+mr-x86.o
+libfo-x86.a
+--wrap=f
+-Map=real-x86.bfd.map

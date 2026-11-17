@@ -81,6 +81,9 @@ pub fn classify(linker: Format, output: &[u8], f: &Finding) -> Option<&'static s
             "A17: mold marks an output IBT and writes its IPLT entries without endbr64 (spec/x64.md W6)",
         );
     }
+    if lld && let Some(a) = wrap_lld(f) {
+        return Some(a);
+    }
     let sym = f.symbol.as_deref().unwrap_or("");
     let y = |n| f.rule == Rule::SymbolTable(n);
     if mold && y(3) && f.message.contains("binding") && f.found == Some(0) {
@@ -580,6 +583,41 @@ fn pie_flag(output: &[u8]) -> bool {
         let val = u64::from_le_bytes(e[8..].try_into().unwrap_or_default());
         tag == crate::dynout::DT_FLAGS_1 && val & crate::dynout::DF_1_PIE != 0
     })
+}
+
+/// lld's forms of `--wrap` (§4.4a, WP-170), by the tags the rules add.
+fn wrap_lld(f: &Finding) -> Option<&'static str> {
+    use crate::wrap::{E13, ENTRY_WRAPPED, REAL_DROPPED, REAL_STRONG, WRAPPED_ONLY};
+    let m = f.message.as_str();
+    if (matches!(f.rule, Rule::Field | Rule::Overflow | Rule::Misaligned)
+        || (f.rule == Rule::Dyn(17) && m.starts_with("view B (an interposer defines '")))
+        && m.ends_with(E13)
+    {
+        return Some(
+            "A80: lld wraps a reference in SYM's defining object under --wrap=SYM: the call binds to __wrap_SYM (resolve.md §7.1 E13)",
+        );
+    }
+    if matches!(f.rule, Rule::Dyn(4 | 14)) && m.ends_with(ENTRY_WRAPPED) {
+        return Some(
+            "A82: lld makes the entry point __wrap_ENTRY under --wrap=ENTRY: it redirects the root -e (resolve.md §7.1, layout.md L-102)",
+        );
+    }
+    if f.rule == Rule::Map(12) && m.ends_with(WRAPPED_ONLY) {
+        return Some(
+            "A83: lld extracts an archive member that defines SYM though only references --wrap=SYM binds to __wrap_SYM name it (resolve.md §7.1)",
+        );
+    }
+    if f.rule == Rule::SymbolTable(3) && m.ends_with(REAL_DROPPED) {
+        return Some(
+            "A84: lld leaves an input's definition of __real_SYM out of .symtab under --wrap=SYM (resolve.md §7.1)",
+        );
+    }
+    if f.rule == Rule::SymbolTable(3) && m.ends_with(REAL_STRONG) {
+        return Some(
+            "A81: lld writes a weak SYM STB_GLOBAL in .symtab when a strong undefined __real_SYM binds to it under --wrap=SYM (resolve.md §7.1)",
+        );
+    }
+    None
 }
 
 /// The id of an anomaly text: `"A9"` of `"A9: ..."`.

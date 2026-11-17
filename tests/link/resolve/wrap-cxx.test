@@ -5,6 +5,7 @@
 # static links libstdc++'s own calls of malloc are wrapped (its members
 # are objects of the link: 150 and more calls); in the dynamic ones only
 # the program's are (libstdc++.so's malloc calls bind at run time).
+#@ anomaly(lld): A81
 #@ spec: resolve.md §7.1
 #@ arch: aarch64 x86_64
 #@ requires: g++

@@ -1,0 +1,14 @@
+-m
+aarch64linux
+-z
+max-page-size=4096
+-o
+dm-a64.bfd
+-pie
+-dynamic-linker
+/lib/ld-linux-aarch64.so.1
+dm-a64.o
+libmal-a64.so
+--wrap=malloc
+--wrap=_start
+-Map=dm-a64.bfd.map

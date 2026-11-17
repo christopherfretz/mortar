@@ -1134,6 +1134,57 @@ Branches keep S = 0 and have W4 and W5.
 Lookups by name go through hash maps. Nothing depends on their iteration
 order (§7.1).
 
+### 4.4a `--wrap=SYM` (WP-170)
+
+`spec/resolve.md` §7.1, derived once (`wrap.rs`) from the line's
+`--wrap` words (mortar's `arg` records, a reference's line): an
+**undefined**, unversioned mention (raw `st_shndx` `SHN_UNDEF`) of `SYM`
+has the key `__wrap_SYM`, one of `__real_SYM` the key `SYM`; one step per
+mention (`--wrap=f --wrap=__wrap_f` maps `f` to `__wrap_f` and
+`__wrap_f` to `__wrap___wrap_f`, never further); a defined mention keeps
+its name (E13), and `f@V` is no mention of `f`. A line without `--wrap`
+has the identity, and no rule pays for it. Every rule that asks which
+definition a reference binds to reads it:
+
+- §4.4's lookup by name of a global (R1, R2, R4, R5, the slot and PLT
+  checks, stage 3's views and S12 at the redirected sites);
+- the input set (§3.8): an undefined `__real_f` is an edge to `f`'s
+  member, an undefined `f` an edge to `__wrap_f`'s and not to `f`'s (M11,
+  M12);
+- stage 3's model (§12): the program's keys (P-D6's `DT_NEEDED` under
+  `--as-needed`: a library only the wrapped mentions would need is not
+  needed; P-D7's imports) and a shared object's export and import sets;
+- `.symtab` (Y3): an entry `__real_SYM` (any binding but an input's own
+  local) is a finding unless an input defines `__real_SYM`.
+
+Roots are not redirected: `-e`, `-u`, `--require-defined`,
+`--export-dynamic-symbol` and §3.3's gc roots name `SYM` itself. An entry
+point at `__wrap_ENTRY` is P-D4 (lld's form, A82). `--gc-sections`'
+edges are not re-derived: a section `SYM`'s references alone kept is not
+judged (§3.3 judges why a section is dropped, never that a kept one is
+live); a dropped one a redirected reference reaches is R5.
+
+The shapes resolve.md §7.1 refuses are not judged, by name, on a
+reference's output (mortar refuses the line, so its output never has
+them, and on mortar's map every record is judged): `--wrap=f@V1`
+("the redirection of a versioned symbol is not derived"),
+`--wrap=__real_X` beside `--wrap=X` ("the redirection of this shape is
+not derived"), and a word with two or more input definitions one of which
+is in a group member (`SHF_GROUP`) the output does not place (a dropped
+COMDAT copy): every
+record against a global of that name is `wrap-shape`, and the coverage
+says `--wrap, not judged: --wrap=SYM: a definition in a dropped COMDAT
+copy (file); ...`.
+
+lld's forms are named (§10.2): A80 (a reference in `SYM`'s defining
+object bound to `__wrap_SYM`, directly or through a PLT entry whose word
+holds it: the finding's text ends "(a reference in SYM's defining object
+bound to __wrap_SYM; resolve.md §7.1 E13: not wrapped)"), A81, A82, A83,
+A84. mold's `.symtab` (`__wrap_SYM` and `SYM` `STB_LOCAL`) is A9. The
+same findings on mortar's output are never named. Tests:
+`tests/wrap.rs` (`tests/wrap/gen.sh`), `tests/link/resolve/wrap*.test`,
+`tests/link/dyn/shared/wrap-shared.test`.
+
 ### 4.5 Other machines and REL
 
 The engine dispatches on `Machine`. Stage 1 has the AArch64 table only,
@@ -3511,8 +3562,9 @@ once:
   `got-to-direct`, `got-to-imm`, `got-to-mov-imm` and the TLS ones);
 - **not checked**, by reason: `tls`, `tls-sequence`, `ifunc`, `non-alloc`, `eh-frame`, `compressed`,
   `type`, `machine`, `section-not-locatable`, `piece-not-locatable`,
-  `in-mergeable`, `symbol-unresolved`, `got-unpaired` or
-  `input-unreadable`;
+  `in-mergeable`, `symbol-unresolved`, `got-unpaired`,
+  `input-unreadable`, `dynamic` (§12) or `wrap-shape` (§4.4a, a
+  reference's output only);
 - **none**, for type 0 and type 256;
 - **failed**, for records with a finding.
 
@@ -4646,6 +4698,43 @@ is accepted from its linker only, never from mortar's map.
   version script or --exclude-libs makes it local)" on lld's output.
   Reproducers: `dyn/version/symtab-linker-defined-local`;
   `tests/symloc.rs` (`vl-*.lld`).
+
+- **A80 (lld; WP-170).** Under `--wrap=SYM` lld binds a reference in
+  `SYM`'s own defining object to `__wrap_SYM` (resolve.md §7.1 E13: a
+  defined mention is not wrapped; GNU ld, mold and mortar call `SYM`).
+  The program differs: `g=1010` for `g=10` in `resolve/wrap.test`; in a
+  shared object the call is to `__wrap_SYM`'s PLT entry, not `SYM`'s
+  (preemptible). R1 (or an overflow, and stage 3's view B P-D17) whose
+  text ends "(a reference in SYM's defining object bound to __wrap_SYM;
+  resolve.md §7.1 E13: not wrapped)": the field is what binding to
+  `__wrap_SYM` gives, directly or through a PLT entry whose word holds
+  it. Reproducers: `resolve/wrap.test`, `resolve/wrap-kinds.test`,
+  `resolve/wrap-refused.test`, `dyn/shared/wrap-shared.test`;
+  `tests/wrap.rs` (`st-*.lld`).
+- **A81 (lld; WP-170).** Under `--wrap=SYM` lld writes a weak `SYM`
+  `STB_GLOBAL` in `.symtab` when a strong undefined `__real_SYM` binds
+  to it (glibc's weak `open` under `--wrap=open`). Harmless in an
+  executable. Y3 "symbol 'SYM' has another binding than its definitions
+  (a --wrap word whose strong __real_ reference binds to its weak
+  definition)". Reproducer: `resolve/wrap-cxx.test`.
+- **A82 (lld; WP-170).** Under `--wrap=ENTRY` lld's entry point is
+  `__wrap_ENTRY` (resolve.md §7.1: a root is not redirected;
+  `spec/layout.md` L-102). P-D4 "the entry point is not 'ENTRY' (it is
+  __wrap_ENTRY: a root is not redirected, resolve.md §7.1)".
+  Reproducers: `resolve/wrap-kinds.test` (`entry`); `tests/wrap.rs`
+  (`dm-*.lld`).
+- **A83 (lld; WP-170).** lld extracts an archive member that defines
+  `SYM` though only references `--wrap=SYM` binds to `__wrap_SYM` name
+  it (it resolves before it wraps; resolve.md §7.1, §16; the programs run
+  alike). M12 "... is in the link and no root or reference of the link
+  reaches it (§3.8) (it defines a --wrap word SYM, and only references
+  bound to __wrap_SYM name SYM)". Reproducers: `resolve/wrap.test`
+  (`wrap-member`); `tests/wrap.rs` (`mem-*.lld`).
+- **A84 (lld; WP-170).** Under `--wrap=SYM` lld leaves an input's
+  definition of `__real_SYM` out of `.symtab` (GNU ld and mold keep
+  it). Y3 "symbol '__real_SYM', defined in ..., is not in the output's
+  .symtab (a definition of __real_SYM under --wrap=SYM)". Reproducer:
+  `resolve/wrap.test` (`chain`).
 
 lld also links a `.hidden` or `.protected` undefined reference that only
 a library defines (writing 0) and drops the library from `DT_NEEDED`:

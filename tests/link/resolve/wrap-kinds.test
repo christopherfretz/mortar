@@ -10,6 +10,10 @@
 # - a versioned reference f@V1 is not a mention of f: it is not wrapped;
 # - -e SYM is not redirected (GNU ld and mold: the entry is _start under
 #   --wrap=_start; lld enters __wrap__start: §16).
+#@ anomaly(lld): A80
+#@ anomaly(lld): A82
+#@ anomaly(bfd,aarch64): A30
+#@ anomaly(bfd,x86_64): A31
 #@ spec: resolve.md §7.1
 #@ arch: aarch64 x86_64
 

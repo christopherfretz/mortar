@@ -383,11 +383,18 @@ fn globals(e: &mut Engine<'_, '_>, fs: &mut Vec<Finding>) {
                 && rank(v) < rank(STV_HIDDEN)
                 && let Some(why) = held_def(e, name)
             {
+                // §4.4a (WP-170): lld leaves a defined `__real_SYM` of a
+                // `--wrap` word SYM out (A84), tagged.
+                let tag = if name.strip_prefix("__real_").is_some_and(|x| e.wrap.contains(x)) {
+                    crate::wrap::REAL_DROPPED
+                } else {
+                    ""
+                };
                 fs.push(named(
                     y(
                         3,
                         format!(
-                            "symbol '{name}', defined in {why}, is not in the output's .symtab"
+                            "symbol '{name}', defined in {why}, is not in the output's .symtab{tag}"
                         ),
                     ),
                     name,
@@ -538,8 +545,15 @@ fn globals(e: &mut Engine<'_, '_>, fs: &mut Vec<Finding>) {
             let want = if strong.is_empty() { STB_WEAK } else { d.sym.binding() };
             let fine = b == want || (want == STB_GNU_UNIQUE && b == STB_GLOBAL);
             if !fine {
+                // §4.4a (WP-170): lld's form of a weak `SYM` a strong
+                // `__real_SYM` binds to (A81), tagged for the anomaly.
+                let tag = if want == STB_WEAK && b == STB_GLOBAL && strong_real(e, name) {
+                    crate::wrap::REAL_STRONG
+                } else {
+                    ""
+                };
                 let mut f =
-                    y(3, format!("symbol '{name}' has another binding than its definitions"));
+                    y(3, format!("symbol '{name}' has another binding than its definitions{tag}"));
                 f.expected = Some(u64::from(want));
                 f.found = Some(u64::from(b));
                 fs.push(named(f.at(value), name));
@@ -1035,10 +1049,70 @@ fn linker_defined(e: &mut Engine<'_, '_>, fs: &mut Vec<Finding>) {
     e.cov.linker_defined_not_judged = unjudged;
 }
 
+/// Whether `name` is a `--wrap` word and an input's undefined mention
+/// `__real_name` is strong (§4.4a).
+fn strong_real(e: &Engine<'_, '_>, name: &str) -> bool {
+    if !e.wrap.contains(name) {
+        return false;
+    }
+    let real = format!("__real_{name}");
+    e.objs.iter().any(|o| {
+        o.symtab.as_ref().is_some_and(|t| {
+            t.iter().any(|(_, s)| {
+                s.st_shndx == SHN_UNDEF
+                    && s.binding() == STB_GLOBAL
+                    && t.name(&s).is_ok_and(|n| n == real.as_bytes())
+            })
+        })
+    })
+}
+
+/// Whether an input has a local symbol `name`.
+fn input_local(e: &Engine<'_, '_>, name: &str) -> bool {
+    e.objs.iter().any(|o| {
+        o.symtab.as_ref().is_some_and(|t| {
+            t.iter().any(|(_, s)| {
+                s.binding() == STB_LOCAL && t.name(&s).is_ok_and(|n| n == name.as_bytes())
+            })
+        })
+    })
+}
+
+/// Y3 (§4.4a, WP-170): `.symtab` names the definitions and the
+/// references after redirection, so an entry `__real_SYM` of a `--wrap`
+/// word SYM is there only when an input defines `__real_SYM`
+/// (`spec/resolve.md` §7.1: an undefined `__real_SYM` binds to `SYM`).
+fn wrap_real(e: &Engine<'_, '_>, fs: &mut Vec<Finding>) {
+    if e.wrap.is_empty() {
+        return;
+    }
+    for out in &e.image.symbols {
+        let Some(sym) = out.name.strip_prefix("__real_") else { continue };
+        if !e.wrap.contains(sym) || e.defs.contains_key(&out.name) {
+            continue;
+        }
+        // A local of the name an input has is that input's (Y4's); mold
+        // writes every global of a static executable `STB_LOCAL` (A9).
+        if out.sym.binding() == STB_LOCAL && input_local(e, &out.name) {
+            continue;
+        }
+        let mut f = y(
+            3,
+            format!(
+                "symbol '{}' is in .symtab and no input defines it (resolve.md §7.1: an undefined __real_{sym} binds to {sym})",
+                out.name
+            ),
+        );
+        f.found = Some(out.sym.st_value);
+        fs.push(named(f.at(out.sym.st_value), &out.name));
+    }
+}
+
 /// Y2 to Y5 (§6.5).
 pub(crate) fn check(e: &mut Engine<'_, '_>) {
     let mut fs = Vec::new();
     tables(e.image, &mut fs);
+    wrap_real(e, &mut fs);
     globals(e, &mut fs);
     locals(e, &mut fs);
     linker_defined(e, &mut fs);

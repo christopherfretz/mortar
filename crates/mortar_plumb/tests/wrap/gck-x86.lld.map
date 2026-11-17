@@ -1,0 +1,22 @@
+     VMA      LMA     Size Align Out     In      Symbol
+  4010d4   4010d4       1c     2 .text
+  4010d4   4010d4       16     2         gcm-x86.o:(.text)
+  4010d4   4010d4        6     1                 __wrap_f
+  4010da   4010da       10     1                 _start
+  4010ea   4010ea        0     1         gcf-x86.o:(.text)
+  4010ea   4010ea        6     1         gcf-x86.o:(.text.f)
+  4020f0   4020f0        0     1 .data
+  4020f0   4020f0        0     1         gcm-x86.o:(.data)
+  4020f0   4020f0        0     1         gcf-x86.o:(.data)
+  4020f0   4020f0        4     4 .bss
+  4020f0   4020f0        4     4         gcm-x86.o:(.bss)
+  4020f0   4020f0        4     1                 r
+  4020f4   4020f4        0     1         gcf-x86.o:(.bss)
+       0        0       3a     1 .comment
+       0        0       3a     1         <internal>:(.comment)
+       0        0       70     4 .symtab
+       0        0       70     4         <internal>:(.symtab)
+       0        0       35     1 .shstrtab
+       0        0       35     1         <internal>:(.shstrtab)
+       0        0       20     1 .strtab
+       0        0       20     1         <internal>:(.strtab)

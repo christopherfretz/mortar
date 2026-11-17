@@ -1,0 +1,43 @@
+mortar-map 2
+file 0 dm-a64.o
+place 0 1 1340 48
+place 0 3 3518 0
+place 0 5 3518 8
+place 0 4 3520 10
+merged 0 7 .comment
+chunk synthetic .interp 238 1b
+chunk synthetic .gnu.hash 258 1c
+chunk synthetic .dynsym 278 30
+chunk synthetic .dynstr 2a8 12
+chunk synthetic .rela.dyn 2c0 30
+chunk synthetic .rela.plt 2f0 18
+chunk synthetic .plt 1310 30
+chunk synthetic .got 24e8 10
+chunk synthetic .got.plt 34f8 20
+chunk synthetic .dynamic 2388 160
+chunk synthetic .symtab - 108
+chunk synthetic .strtab - 4d
+chunk synthetic .shstrtab - 92
+chunk synthetic .comment - d
+chunk synthetic .pad.relro 24f8 b08
+output pie
+interp /lib/ld-linux-aarch64.so.1
+bind lazy
+relro on
+arg -m
+arg aarch64linux
+arg -z
+arg max-page-size=4096
+arg -o
+arg dm-a64
+arg -pie
+arg -dynamic-linker
+arg /lib/ld-linux-aarch64.so.1
+arg dm-a64.o
+arg libmal-a64.so
+arg --wrap=malloc
+arg --wrap=_start
+arg --mortar-map=dm-a64.map
+needed libmal.so
+plt malloc
+end

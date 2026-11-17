@@ -162,7 +162,14 @@ pub(crate) fn entry_point_of(
         && s.sym.st_shndx != 0
         && s.sym.st_value != e
     {
-        let mut f = Finding::new(Rule::Dyn(n), format!("the entry point is not '{name}'")).at(e);
+        // §4.4a (WP-170): lld's `-e` under `--wrap=ENTRY` is `__wrap_ENTRY`
+        // (A82), tagged; a root is not redirected (resolve.md §7.1).
+        let wrapped = image
+            .global(&format!("__wrap_{name}"))
+            .is_some_and(|w| w.sym.st_shndx != 0 && w.sym.st_value == e);
+        let tag = if wrapped { crate::wrap::ENTRY_WRAPPED } else { "" };
+        let mut f =
+            Finding::new(Rule::Dyn(n), format!("the entry point is not '{name}'{tag}")).at(e);
         f.expected = Some(s.sym.st_value);
         f.found = Some(e);
         v.push(f);

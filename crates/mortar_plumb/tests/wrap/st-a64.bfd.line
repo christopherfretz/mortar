@@ -1,0 +1,14 @@
+-m
+aarch64linux
+-z
+max-page-size=4096
+-o
+st-a64.bfd
+-static
+-e
+_start
+m-a64.o
+f-a64.o
+w-a64.o
+--wrap=f
+-Map=st-a64.bfd.map

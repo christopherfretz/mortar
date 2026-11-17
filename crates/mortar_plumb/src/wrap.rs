@@ -12,6 +12,30 @@
 use std::borrow::Cow;
 use std::collections::BTreeSet;
 
+/// The tag of a finding at a reference in `SYM`'s defining object whose
+/// field binds it to `__wrap_SYM` (E13: a defined mention is not
+/// wrapped; lld's form, A80).
+pub const E13: &str =
+    " (a reference in SYM's defining object bound to __wrap_SYM; resolve.md §7.1 E13: not wrapped)";
+
+/// The tag of a Y3 binding finding on a weak `SYM` that a strong
+/// undefined `__real_SYM` binds to (lld writes it `STB_GLOBAL`, A81).
+pub const REAL_STRONG: &str =
+    " (a --wrap word whose strong __real_ reference binds to its weak definition)";
+
+/// The tag of an M12 finding on a member that defines a `--wrap` word
+/// SYM whose only references are wrapped (lld extracts it, A83).
+pub const WRAPPED_ONLY: &str =
+    " (it defines a --wrap word SYM, and only references bound to __wrap_SYM name SYM)";
+
+/// The tag of a P-D4 finding whose entry point is `__wrap_ENTRY` (lld
+/// redirects `-e` under `--wrap=ENTRY`, A82).
+pub const ENTRY_WRAPPED: &str = " (it is __wrap_ENTRY: a root is not redirected, resolve.md §7.1)";
+
+/// The tag of a Y3 finding on a defined `__real_SYM` of a `--wrap` word
+/// SYM missing from `.symtab` (lld leaves it out, A84).
+pub const REAL_DROPPED: &str = " (a definition of __real_SYM under --wrap=SYM)";
+
 /// The line's `--wrap` names, each once.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Wrap {
@@ -45,6 +69,16 @@ impl Wrap {
         self.syms.is_empty()
     }
 
+    /// Whether `name` is one of the line's `--wrap` words.
+    pub(crate) fn contains(&self, name: &str) -> bool {
+        self.syms.contains(name)
+    }
+
+    /// The line's `--wrap` words.
+    pub(crate) fn syms(&self) -> impl Iterator<Item = &str> + '_ {
+        self.syms.iter().map(String::as_str)
+    }
+
     /// The key an undefined, unversioned mention of `name` binds to.
     pub(crate) fn key<'n>(&self, name: &'n str) -> Cow<'n, str> {
         if self.syms.is_empty() || name.contains('@') {
@@ -59,18 +93,6 @@ impl Wrap {
             return Cow::Borrowed(s);
         }
         Cow::Borrowed(name)
-    }
-
-    /// The key of a mention: [`Wrap::key`] for an undefined one, the
-    /// name itself for a defined one.
-    pub(crate) fn mention<'n>(&self, name: &'n str, undefined: bool) -> Cow<'n, str> {
-        if undefined { self.key(name) } else { Cow::Borrowed(name) }
-    }
-
-    /// The names whose undefined mentions bind elsewhere: `SYM` and
-    /// `__real_SYM` of each `--wrap=SYM`.
-    pub(crate) fn redirected(&self) -> impl Iterator<Item = String> + '_ {
-        self.syms.iter().flat_map(|s| [s.clone(), format!("__real_{s}")])
     }
 
     /// The refused shapes of the line (§7.1 items 1 and 2), whose
@@ -123,7 +145,6 @@ mod tests {
         assert_eq!(x.key("__real___wrap_f"), "__wrap_f");
         assert_eq!(x.key("g"), "g");
         assert_eq!(x.key("f@V1"), "f@V1");
-        assert_eq!(x.mention("f", false), "f");
         assert!(x.unjudged().is_empty());
     }
 
