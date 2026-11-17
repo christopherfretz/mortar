@@ -32,7 +32,7 @@ pub fn symtab_entry(def: Def, props: Props, unique: bool) -> SymtabEntry {
             binding: if unique { STB_GNU_UNIQUE } else { STB_GLOBAL },
             visibility,
         },
-        Def::Common(_) => SymtabEntry::Entry { binding: STB_GLOBAL, visibility },
+        Def::Common(_) | Def::Defsym(_) => SymtabEntry::Entry { binding: STB_GLOBAL, visibility },
         Def::Weak(_) => SymtabEntry::Entry { binding: STB_WEAK, visibility },
     }
 }

@@ -1,0 +1,160 @@
+# --defsym=SYM=EXPR on a static executable (resolve.md §7.2, WP-153).
+# A number is absolute; a lone symbol B is an alias with B's address and
+# type, size 0; B+N / B-N is B's address moved by N, in B's section
+# (lld's form; GNU ld writes it SHN_ABS; mold refuses it). The last of
+# two --defsym of one symbol wins (all three). The option beating an
+# object's definition of SYM is defsym-override.test.pending.
+#
+# B is a root wherever the option stands: the member defining B is
+# extracted (its constructor runs) and --gc-sections keeps B (lld, mold,
+# mortar; GNU ld extracts only when the option precedes the archive and
+# fails otherwise: R10, §16). A reference to SYM itself extracts no
+# member that defines SYM (mold, mortar, GNU ld; lld extracts it, its
+# constructor runs, and the option still wins).
+#
+# Aliases of a TLS, a common, a data (&da == &db) and an IFUNC symbol (lld 22 crashes on the
+# IFUNC alias: it is not linked there).
+#@ spec: resolve.md §7.2
+#@ arch: aarch64 x86_64 i386
+#@ skip(mold): mold 2.37.1 aborts (signal 6) writing the -Map the lane asks for when a --defsym names a symbol
+#@ skip(lld): the verifier cannot read lld's map of a --defsym ("row has no name": lld lists the assignment): the verifier package for --defsym
+
+cc -O0 -fno-inline m.c -o m.o
+cc -O0 -fno-inline b.c -o b.o
+cc -O0 bm.c -o bm.o
+cc -O0 am.c -o am.o
+cc -O0 mt.c -o mt.o
+cc -O0 tl.c -o tl.o
+cc -O0 md.c -o md.o
+cc -O0 cm.c -o cm.o
+cc -O0 dt.c -o dt.o
+cc -O0 mi.c -o mi.o
+cc -O0 if.c -o if.o
+cc -O0 -ffunction-sections mg.c -o mg.o
+cc -O0 -ffunction-sections bg.c -o bg.o
+ar rcs libbm.a bm.o
+ar rcs libam.a am.o
+
+link(bfd,lld,mortar) gcc -static -no-pie m.o b.o -Wl,--defsym=k=0x1234 -Wl,--defsym=a=b -Wl,--defsym=c=b+4 -o forms
+run(bfd,lld,mortar) forms
+  stdout: k=0x1234 a=7 b=7 c-b=4
+check(bfd,lld,mortar) readelf -sW forms
+  has: : * 0 FUNC * GLOBAL DEFAULT * a$
+  has: : * 0 NOTYPE * GLOBAL DEFAULT * ABS k$
+check(lld,mortar) readelf -sW forms
+  has: : * 0 NOTYPE * GLOBAL DEFAULT * c$
+  not: ABS c$
+check(bfd) readelf -sW forms
+  has: : * 0 FUNC * GLOBAL DEFAULT * ABS c$
+
+link(mold) gcc -static -no-pie m.o b.o -Wl,--defsym=k=0x1234 -Wl,--defsym=a=b -Wl,--defsym=c=b+4 -o forms
+  exit: fail
+  diag(mold): --defsym: undefined symbol: b+4
+
+link gcc -static -no-pie m.o b.o -Wl,--defsym=k=b -Wl,--defsym=k=0x10 -Wl,--defsym=a=b -Wl,--defsym=c=b -o last
+run last
+  stdout: k=0x10 a=7 b=7 c-b=0
+
+link gcc -static -no-pie mi.o -Wl,--defsym=a=b libbm.a -o root-before
+run root-before
+  stdout: b ctor
+  stdout: a=7
+link(lld,mortar) gcc -static -no-pie mi.o libbm.a -Wl,--defsym=a=b -o root-after
+run(lld,mortar) root-after
+  stdout: b ctor
+  stdout: a=7
+link(bfd) gcc -static -no-pie mi.o libbm.a -Wl,--defsym=a=b -o root-after
+  exit: fail
+  diag(bfd): undefined symbol `b' referenced in expression
+
+link gcc -static -no-pie m.o b.o -Wl,--defsym=k=0x10 -Wl,--defsym=a=b -Wl,--defsym=c=b libam.a -o sym-member
+run(bfd,mold,mortar) sym-member
+  stdout: k=0x10 a=7 b=7 c-b=0
+run(lld) sym-member
+  stdout: am ctor
+  stdout: k=0x10 a=7 b=7 c-b=0
+
+link gcc -static -no-pie mg.o bg.o -Wl,--gc-sections -Wl,--defsym=z=keep -o gc
+run gc
+  stdout: 0
+check(lld,mold,mortar) nm gc
+  has: * keep$
+check(bfd) nm gc
+  not: T keep$
+
+link gcc -static mt.o tl.o -Wl,--defsym=ta=tb -o tls
+run tls
+  stdout: ta=5
+check(bfd,lld,mortar) readelf -sW tls
+  has: : * 0 TLS * GLOBAL DEFAULT * ta$
+
+link gcc -static md.o cm.o -Wl,--defsym=ca=cb -o common
+run common
+  stdout: ca=3 cb=3
+check(bfd,lld,mortar) readelf -sW common
+  has: : * 0 OBJECT * GLOBAL DEFAULT * ca$
+
+link gcc -static dt.o -Wl,--defsym=da=db -o data
+run data
+  stdout: da=4 same=1
+check(bfd,lld,mortar) readelf -sW data
+  has: : * 0 OBJECT * GLOBAL DEFAULT * da$
+
+link(bfd,mold,mortar) gcc -static mi.o if.o -Wl,--defsym=a=bi -o ifunc
+run(bfd,mold,mortar) ifunc
+  stdout: a=9
+check(bfd,mortar) readelf -sW ifunc
+  has: : * 0 IFUNC * GLOBAL DEFAULT * a$
+
+#--- m.c
+#include <stdio.h>
+extern char k[], c[];
+int b(void); int a(void);
+int main(void) {
+  printf("k=%p a=%d b=%d c-b=%d\n", (void *)k, a(), b(), (int)(c - (char *)b));
+  return 0;
+}
+#--- b.c
+int b(void) { return 7; }
+#--- bm.c
+#include <stdio.h>
+__attribute__((constructor)) static void ctor(void) { puts("b ctor"); }
+int b(void) { return 7; }
+#--- am.c
+#include <stdio.h>
+__attribute__((constructor)) static void ctor(void) { puts("am ctor"); }
+int a(void) { return 1; }
+#--- mt.c
+#include <stdio.h>
+extern __thread int ta;
+int main(void) { printf("ta=%d\n", ta); return 0; }
+#--- tl.c
+__thread int tb = 5;
+#--- md.c
+#include <stdio.h>
+extern int ca, cb;
+int main(void) { ca = 3; printf("ca=%d cb=%d\n", ca, cb); return 0; }
+#--- cm.c
+int cb;
+#--- dt.c
+#include <stdio.h>
+extern int da; int db = 4;
+int main(void) {
+  /* volatile: a compiler may take two symbols' addresses to differ */
+  int *volatile pa = &da, *volatile pb = &db;
+  printf("da=%d same=%d\n", da, pa == pb);
+  return 0;
+}
+#--- mi.c
+#include <stdio.h>
+int a(void);
+int main(void) { printf("a=%d\n", a()); return 0; }
+#--- if.c
+static int one(void) { return 9; }
+static void *res(void) { return (void *)one; }
+int bi(void) __attribute__((ifunc("res")));
+#--- mg.c
+#include <stdio.h>
+int main(void) { puts("0"); return 0; }
+#--- bg.c
+int keep(void) { return 1; }

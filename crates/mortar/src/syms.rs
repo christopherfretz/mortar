@@ -228,7 +228,30 @@ impl SymSource for CoreSyms<'_, '_> {
                 g.other = (g.other & !3) | stricter(other, table);
                 g
             }
-            Def::Internal(_) => row(STT_NOTYPE, 0, SymDef::Internal, FileId::INTERNAL, STB_GLOBAL),
+            // resolve.md §7.2 (WP-153): `--defsym SYM=B` has `B`'s type,
+            // size 0 (all three references) and the bits above the
+            // visibility of `B`'s entry; a number and `B+N` are
+            // `STT_NOTYPE`, size 0. A version script's `local:` makes it
+            // `STB_LOCAL`.
+            Def::Internal(InternalDef::Alias(to)) => {
+                let (typ, high) = match self.resolution.def.get(to).copied() {
+                    Some(Def::Defined(e)) => self
+                        .sym(e)
+                        .map_or((STT_NOTYPE, 0), |(s, _)| (s.sym_type(), s.st_other & !3)),
+                    Some(Def::Common(e)) => {
+                        (STT_OBJECT, self.sym(e).map_or(0, |(s, _)| s.st_other & !3))
+                    }
+                    _ => (STT_NOTYPE, 0),
+                };
+                let binding = if props.binding == STB_LOCAL { STB_LOCAL } else { STB_GLOBAL };
+                let mut g = row(typ, 0, SymDef::Internal, FileId::INTERNAL, binding);
+                g.other |= high;
+                g
+            }
+            Def::Internal(InternalDef::Assign(_)) => {
+                let binding = if props.binding == STB_LOCAL { STB_LOCAL } else { STB_GLOBAL };
+                row(STT_NOTYPE, 0, SymDef::Internal, FileId::INTERNAL, binding)
+            }
             // gABI "Symbol Visibility": a hidden or internal symbol must
             // be removed or made local in an executable; an undefined one
             // has no file block to be local in, so it is removed (GNU's

@@ -12,7 +12,7 @@ use mortar_core::inputs::SymbolKey;
 use mortar_core::layout::{
     AllocKey, Chunk, ChunkKind, DefValue, Defined, EntryDef, Place, SymPlace,
 };
-use mortar_core::resolution::{Def, InternalDef, Resolution, SectionKind};
+use mortar_core::resolution::{Assigned, Def, InternalDef, Resolution, SectionKind};
 use mortar_elf::Machine;
 use mortar_elf::consts::{SHF_EXECINSTR, SHT_NOBITS};
 
@@ -298,7 +298,23 @@ impl Table<'_, '_> {
                 }
                 self.symbol(to, entry_def, depth + 1)
             }
-            Def::Internal(InternalDef::Assign(_)) => Err(feature("--defsym expression")),
+            // `spec/resolve.md` §7.2: a number is absolute in every output
+            // kind; `B±N` is `B`'s place moved by `N`.
+            Def::Internal(InternalDef::Assign(i)) => match res.assigned(i) {
+                Some(Assigned::Number(n)) => Ok(Some(DefValue::Absolute(n))),
+                Some(Assigned::Offset { to, addend }) => {
+                    if depth > 64 {
+                        return Err(internal("a cycle of --defsym aliases"));
+                    }
+                    Ok(self.symbol(to, entry_def, depth + 1)?.map(|v| match v {
+                        DefValue::Absolute(a) => DefValue::Absolute(a.wrapping_add_signed(addend)),
+                        DefValue::At { chunk, offset } => {
+                            DefValue::At { chunk, offset: offset.wrapping_add_signed(addend) }
+                        }
+                    }))
+                }
+                None => Err(internal("a --defsym row out of range")),
+            },
         }
     }
 

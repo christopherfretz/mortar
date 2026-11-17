@@ -575,6 +575,19 @@ The dynamic outputs (M2) added these, without a kind of their own
 | `root of an unneeded --as-needed shared object and an archive member: {name}` | resolution, after the needed set (`.at` the option, `-u`/`EXTERN`/`-e`; `defined in` the library, then the member; the note names the references' two results and the two ways out) | `spec/resolve.md` §4.2 (WP-152) |
 | `--wrap of a symbol with a definition in a dropped COMDAT copy: {name}` | resolution, after the COMDAT keepers (`.at` the option `--wrap={name}`; `defined in` the file of the kept copy, then the dropped copy's entry; the note names the three references' results and says a wrapped function must have one definition: make it non-inline, or wrap its callers' own symbol) | `spec/resolve.md` §7.1 (WP-153) |
 
+| `--defsym of an undefined symbol: {name}` | resolution, after the shared stage (`.at` the option `--defsym={value}`; the note says the symbol must be defined in the output) | `spec/resolve.md` §7.2 (WP-153) |
+| `--defsym of a symbol a shared object defines: {name}` | the same (alias and `B±N` alike; the note names GNU ld's and lld's refusal and mold's crash) | `spec/resolve.md` §7.2 |
+| `--defsym of a symbol another --defsym defines: {name}` | the same (a chain, a cycle, `a=a`; the note says to name the final symbol) | `spec/resolve.md` §7.2 |
+| `--defsym value wider than the target's address: {value}` | the same, i386 (the note says the three references truncate it) | `spec/resolve.md` §7.2 |
+
+A `--defsym` value outside §7.2's grammar is refused at the command line
+as `unsupported option value: --defsym={value}` (class `option-value`;
+`spec/resolve.md` §7.2, WP-153), with the note of its kind: a number
+with a leading `0` ("GNU ld reads a number with a leading 0 as octal,
+lld and mold as decimal: write it in hexadecimal"), any other expression
+("mortar accepts a number (0x... or decimal), a symbol, or a symbol + or
+- a number"), or a value that is not `SYMBOL=EXPRESSION`.
+
 Two shapes of `--wrap`'s value are refused at the command line as
 `unsupported option value: --wrap={value}` (class `option-value`, the
 row's note naming both; `spec/resolve.md` §7.1, WP-153): a versioned

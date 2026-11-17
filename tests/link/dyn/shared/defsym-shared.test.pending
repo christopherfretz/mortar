@@ -1,0 +1,62 @@
+# PENDING (WP-153): every reference's output draws a finding or an error because the verifier does not follow --defsym yet (GNU ld: P-D25, the alias's own preemptible name; lld: its map's assignment row; mold aborts writing the map); the verifier package for --defsym renames this file to .test.
+# --defsym in a shared object (resolve.md §7.2, WP-153): the alias
+# calla=b is a definition of its own, exported (FUNC at b's address,
+# size 0) and preemptible by its own name; k=0x10 is exported SHN_ABS.
+# With libpre.so preloaded (it defines b and calla), the library's call
+# to b reaches the preloaded b and its call to calla the preloaded calla
+# (GNU ld, lld, mortar); mold binds calla inside the library (via=7:
+# §16). A data alias exported from a shared object has size 0 in every
+# linker, so a non-PIC executable cannot copy it: lld and mortar refuse
+# the copy relocation (GNU ld writes a 0-byte copy, mold's program
+# faults: not linked).
+#@ spec: resolve.md §7.2
+#@ arch: aarch64 x86_64
+
+cc -O0 -fPIC -fno-inline ls.c -o ls.o
+cc -O0 -fPIC pre.c -o pre.o
+cc -O0 -fPIE lsm.c -o lsm.o
+cc -O0 -fPIC od.c -o od.o
+cc -O0 -fno-pic om.c -o om.o
+shlib gcc -shared pre.o -o libpre.so
+link gcc -shared ls.o -Wl,--defsym=calla=b -Wl,--defsym=k=0x10 -o libls.so
+check readelf --dyn-syms -W libls.so
+  has: : * 0 FUNC * GLOBAL DEFAULT * calla$
+  has: : * 0 NOTYPE * GLOBAL DEFAULT * ABS k$
+link gcc -pie lsm.o -L. -lls -Wl,-rpath,. -o prog
+run prog
+  stdout: callb=7 via=7 calla=7
+run(bfd,lld,mortar) prog
+  env: LD_PRELOAD=./libpre.so
+  stdout: callb=99 via=55 calla=55
+run(mold) prog
+  env: LD_PRELOAD=./libpre.so
+  stdout: callb=99 via=7 calla=55
+
+link gcc -shared od.o -Wl,--defsym=a=b -o libod.so
+check readelf --dyn-syms -W libod.so
+  has: : * 0 OBJECT * GLOBAL DEFAULT * a$
+  has: 8 OBJECT * GLOBAL DEFAULT * b$
+link(lld,mortar) gcc -no-pie om.o -L. -lod -Wl,-rpath,. -o copy
+  exit: fail
+  diag(lld): cannot create a copy relocation for symbol a
+  diag(mortar): cannot create a copy relocation for symbol a
+
+#--- ls.c
+int b(void) { return 7; }
+int callb(void) { return b(); }
+int calla(void);
+int via(void) { return calla(); }
+#--- pre.c
+int b(void) { return 99; }
+int calla(void) { return 55; }
+#--- lsm.c
+#include <stdio.h>
+int callb(void); int via(void); int calla(void);
+int main(void) { printf("callb=%d via=%d calla=%d\n", callb(), via(), calla()); return 0; }
+#--- od.c
+long b[1] = { 0x1122334455667788 };
+long getb(void) { return b[0]; }
+#--- om.c
+#include <stdio.h>
+extern long a[]; long getb(void);
+int main(void) { a[0] = 5; printf("a=%lx getb=%lx\n", a[0], getb()); return 0; }

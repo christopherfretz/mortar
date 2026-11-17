@@ -14,7 +14,7 @@ use mortar_arch::{
 };
 use mortar_core::assignment::Assignment;
 use mortar_core::inputs::{CopyError, Inputs, Reader};
-use mortar_core::resolution::{Def, InternalDef, RefFlags, Resolution, Verdict};
+use mortar_core::resolution::{Assigned, Def, InternalDef, RefFlags, Resolution, Verdict};
 use mortar_core::{FileId, IdSet, Liveness, SectionId, SymEntry, SymKey, SymKind, SymbolId};
 use mortar_diag::{Diagnostic, FileRef, Kind};
 use mortar_elf::consts::{SHT_REL, SHT_RELA, STT_FUNC, STT_GNU_IFUNC, STT_SECTION, STT_TLS};
@@ -321,12 +321,40 @@ impl<'a, 's> View<'a, 's> {
                 let func = s.is_some_and(|s| matches!(s.sym_type(), STT_FUNC | STT_GNU_IFUNC));
                 of(TargetKind::Shlib { func }, s)
             }
+            // `--defsym SYM=B` (`spec/resolve.md` §7.2): `B`'s address and
+            // type under `SYM`'s own name. A preemptible `SYM` (a
+            // `-shared` export) is bound through its own dynamic symbol;
+            // otherwise a reference reaches `B`'s definition in this
+            // output, even when `B` itself is preemptible (GNU ld, lld).
+            // resolve refuses an alias of an undefined, a shared or a
+            // `--defsym` symbol, so `B` is a definition of this output.
             Def::Internal(InternalDef::Alias(to)) if to != id && depth < 8 => {
-                self.global_facts(to, None, depth + 1)
+                let b = self.global_facts(to, None, depth + 1);
+                let kind = match b.kind {
+                    TargetKind::Abs => TargetKind::Abs,
+                    _ if preemptible => TargetKind::Preemptible,
+                    TargetKind::Preemptible => TargetKind::Local,
+                    k => k,
+                };
+                SymFacts { kind, ..b }
             }
-            Def::Internal(InternalDef::Assign(_) | InternalDef::Alias(_)) => {
-                of(TargetKind::Abs, None)
-            }
+            // `SYM=B+N` (§7.2): section-relative, `STT_NOTYPE`; a number
+            // is absolute in every output kind (GNU ld relocates it in a
+            // PIE, lld and mold do not: resolve.md §16).
+            Def::Internal(InternalDef::Assign(i)) => match self.resolution.assigned(i) {
+                Some(Assigned::Offset { to, .. }) if to != id && depth < 8 => {
+                    let b = self.global_facts(to, None, depth + 1);
+                    let kind = match b.kind {
+                        TargetKind::Abs => TargetKind::Abs,
+                        _ if preemptible => TargetKind::Preemptible,
+                        TargetKind::Undefined => TargetKind::Undefined,
+                        _ => TargetKind::Local,
+                    };
+                    SymFacts { kind, sym_type: 0, st_other: 0, tls: false, ..b }
+                }
+                _ => of(TargetKind::Abs, None),
+            },
+            Def::Internal(InternalDef::Alias(_)) => of(TargetKind::Abs, None),
             Def::Internal(InternalDef::Provide { .. }) => {
                 let tls = self.inputs.symbols.get(id).is_some_and(|k| k.name == TLS_MODULE_BASE);
                 let sym_type = if tls { STT_TLS } else { 0 };

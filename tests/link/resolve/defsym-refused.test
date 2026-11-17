@@ -1,0 +1,83 @@
+# --defsym refusals (resolve.md §7.2, WP-153), each by name with the
+# option's text:
+# - on the command line: a number with a leading 0 (GNU ld reads 011064
+#   as octal, lld and mold as decimal), and every expression beyond a
+#   number, a symbol and B+N (k suffixes, arithmetic, ALIGN, two
+#   symbols), which GNU ld and lld evaluate and mold refuses;
+# - in resolution: B defined nowhere (all three fail), B defined only by
+#   a shared object (GNU ld and lld fail; mold 2.37 crashes on the alias,
+#   not linked here), and a chain or a cycle of --defsym (GNU ld and lld
+#   link the chain, mold crashes; a symbol aliasing itself fails in GNU
+#   ld and lld);
+# The i386 cell (a number wider than 32 bits) is defsym-wide.test.
+#@ spec: resolve.md §7.2
+#@ arch: aarch64 x86_64
+#@ skip(mold): mold 2.37.1 crashes on --defsym=k=0x1000+4 (signal 11) and aborts (signal 6) writing the -Map the lane asks for when a --defsym names a symbol
+#@ skip(lld): the verifier cannot read lld's map of a --defsym ("row has no name": lld lists the assignment): the verifier package for --defsym
+
+cc -O0 m.c -o m.o
+cc -O0 b.c -o b.o
+cc -O0 -fPIC sb.c -o sb.o
+shlib gcc -shared sb.o -o libsb.so
+
+link(mortar) gcc -static m.o b.o -Wl,--defsym=k=011064 -o leading-zero
+  exit: fail
+  diag(mortar): unsupported option value: --defsym=k=011064
+  diag(mortar): write it in hexadecimal
+link(bfd,lld) gcc -static m.o b.o -Wl,--defsym=k=011064 -o octal
+run(bfd) octal
+  stdout: k=0x1234
+run(lld) octal
+  stdout: k=0x2b38
+link(mortar) gcc -static m.o b.o -Wl,--defsym=k=1k -o suffix
+  exit: fail
+  diag(mortar): unsupported option value: --defsym=k=1k
+link(mortar) gcc -static m.o b.o -Wl,--defsym=k=0x1000+4 -o arith
+  exit: fail
+  diag(mortar): unsupported option value: --defsym=k=0x1000+4
+link(bfd,lld) gcc -static m.o b.o -Wl,--defsym=k=0x1000+4 -o arith
+run(bfd,lld) arith
+  stdout: k=0x1004
+link(mortar) gcc -static m.o b.o -Wl,--defsym=k=ALIGN(16) -o align
+  exit: fail
+  diag(mortar): unsupported option value: --defsym=k=ALIGN(16)
+link(mortar) gcc -static m.o b.o -Wl,--defsym=k=b+b -o two-symbols
+  exit: fail
+  diag(mortar): unsupported option value: --defsym=k=b+b
+
+link gcc -static m.o b.o -Wl,--defsym=k=nosuch -o undefined
+  exit: fail
+  diag(bfd): undefined symbol `nosuch' referenced in expression
+  diag(lld): symbol not found: nosuch
+  diag(mold): undefined symbol: nosuch
+  diag(mortar): --defsym of an undefined symbol: nosuch
+link(bfd,lld,mortar) gcc m.o -L. -lsb -Wl,-rpath,. -Wl,--defsym=k=sb -o shared
+  exit: fail
+  diag(mortar): --defsym of a symbol a shared object defines: sb
+link(bfd,lld,mortar) gcc m.o -L. -lsb -Wl,-rpath,. -Wl,--defsym=k=sb+4 -o shared-offset
+  exit: fail
+  diag(mortar): --defsym of a symbol a shared object defines: sb
+link(mortar) gcc -static m.o b.o -Wl,--defsym=k=c -Wl,--defsym=c=b -o chain
+  exit: fail
+  diag(mortar): --defsym of a symbol another --defsym defines: c
+link(bfd,lld) gcc -static m.o b.o -Wl,--defsym=k=c -Wl,--defsym=c=b -o chain
+run(bfd,lld) chain
+  stdout: k=b
+link(mortar) gcc -static m.o b.o -Wl,--defsym=k=k -o self
+  exit: fail
+  diag(mortar): --defsym of a symbol another --defsym defines: k
+
+#--- m.c
+#include <stdio.h>
+extern char k[];
+int b(void);
+int main(void) {
+  /* volatile: a compiler may take two symbols' addresses to differ */
+  char *volatile pk = k, *volatile pb = (char *)b;
+  if (pk == pb) puts("k=b"); else printf("k=%p\n", (void *)pk);
+  return 0;
+}
+#--- b.c
+int b(void) { return 7; }
+#--- sb.c
+int sb(void) { return 8; }

@@ -64,6 +64,19 @@ pub struct DefPlace {
     pub value: u64,
 }
 
+/// Why a `--defsym` is refused (§7.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DefsymWhy {
+    /// The symbol it names is defined nowhere.
+    Undefined(SymbolId),
+    /// The symbol it names is defined only by a shared object.
+    Shared(SymbolId),
+    /// The symbol it names is itself a `--defsym`'s.
+    Chain(SymbolId),
+    /// The number does not fit the target's address.
+    TooWide(u64),
+}
+
 /// What went wrong, with the data its message needs.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum What {
@@ -133,6 +146,9 @@ pub enum What {
     /// deduplication, the group's copy kept in `kept` (GNU ld wraps that
     /// file's references, lld every one, mold none).
     WrapComdat { key: SymbolId, dropped: SymEntry, kept: FileId },
+    /// `Refused{Feature, ...}` of a `--defsym` (§7.2, WP-153): its
+    /// symbol `key`, its argument index, and why.
+    Defsym { key: SymbolId, arg: u32, why: DefsymWhy },
     /// `entry-not-found` (§5.5), a warning.
     EntryNotFound { key: OptId<SymbolId>, name: Box<[u8]>, arg: u32 },
     /// `common-larger-than-definition` (§3.3), a warning.
@@ -205,6 +221,7 @@ impl Problem {
             What::AsNeededExtraction { .. }
             | What::RootAsNeeded { .. }
             | What::WrapComdat { .. }
+            | What::Defsym { .. }
             | What::NeededOrderUnknown { .. }
             | What::LtoSlim { .. }
             | What::SymbolBinding { .. }

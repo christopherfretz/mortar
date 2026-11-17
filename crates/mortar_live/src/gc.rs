@@ -47,7 +47,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use mortar_core::assignment::{Assignment, OutOf};
 use mortar_core::inputs::{Inputs, Reader};
 use mortar_core::par::{Pool, SCAN_BLOCK};
-use mortar_core::resolution::{Def, InternalDef, RefFlags, Resolution, SectionKind};
+use mortar_core::resolution::{Assigned, Def, InternalDef, RefFlags, Resolution, SectionKind};
 use mortar_core::split::Split;
 use mortar_core::{Column, FileId, Liveness, SectionId, SymbolId};
 use mortar_diag::{Diagnostic, Key, Kind, Place};
@@ -628,6 +628,17 @@ fn def_target(
                 _ => Target::None,
             }
         }
+        // `spec/resolve.md` §7.2: a `--defsym` alias or `B±N` reaches `B`'s
+        // definition (resolve refuses a chain, so one step).
+        Some(Def::Internal(InternalDef::Alias(to))) if to != id => {
+            def_target(inputs, r, assignment, tables, named, to)
+        }
+        Some(Def::Internal(InternalDef::Assign(i))) => match r.assigned(i) {
+            Some(Assigned::Offset { to, .. }) if to != id => {
+                def_target(inputs, r, assignment, tables, named, to)
+            }
+            _ => Target::None,
+        },
         Some(Def::Internal(InternalDef::Provide { conditional: true })) => {
             let name = inputs.symbols.get(id).map_or(&[][..], |k| k.name);
             let sec = name.strip_prefix(b"__start_").or_else(|| name.strip_prefix(b"__stop_"));

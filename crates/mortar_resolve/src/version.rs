@@ -697,7 +697,11 @@ fn script_problems<V: View>(
         let defined = view.find_key(name).is_some_and(|k| {
             matches!(
                 def[k.0 as usize],
-                Def::Strong(_) | Def::Weak(_) | Def::Common(_) | Def::Provide { .. }
+                Def::Strong(_)
+                    | Def::Weak(_)
+                    | Def::Common(_)
+                    | Def::Provide { .. }
+                    | Def::Defsym(_)
             )
         });
         if defined {

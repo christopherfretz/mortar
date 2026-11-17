@@ -24,7 +24,7 @@ use mortar_core::id::{ChunkId, FileId, OutSecId, SectionId, SymEntry, SymKey, Sy
 use mortar_core::layout::{AllocKey, ChunkKind, MergeMap, Placement, ThunkTarget};
 use mortar_core::layout::{SlotIndex, Slots};
 use mortar_core::par::Pool;
-use mortar_core::resolution::{Def, Resolution, SectionKind};
+use mortar_core::resolution::{Assigned, Def, InternalDef, Resolution, SectionKind};
 use mortar_core::split::Split;
 use mortar_core::{Demands, Liveness};
 use mortar_diag::{Diagnostic, Key};
@@ -760,6 +760,19 @@ impl RoundTables<'_, '_, '_> {
                 Def::Defined(e) => self.entry_value(e),
                 Def::Undefined { .. } => Some(0),
                 Def::Common(_) => self.alloc_value(AllocKey::Common(id)),
+                // `spec/resolve.md` §7.2: a `--defsym` is `B`'s value (moved
+                // by `N`) or a number, known at every round; resolution
+                // refuses a chain, so one step.
+                Def::Internal(InternalDef::Alias(to)) if to != id => self.value(SymKey::global(to)),
+                Def::Internal(InternalDef::Assign(i)) => {
+                    match self.sites.t.resolution.assigned(i)? {
+                        Assigned::Number(n) => Some(n),
+                        Assigned::Offset { to, addend } if to != id => {
+                            self.value(SymKey::global(to)).map(|v| v.wrapping_add_signed(addend))
+                        }
+                        Assigned::Offset { .. } => None,
+                    }
+                }
                 Def::Internal(_) => self.exact?.defined_of(id),
                 Def::Shared(_) => {
                     let copies = &self.sites.t.slots.copy_of;
