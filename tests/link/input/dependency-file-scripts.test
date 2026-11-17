@@ -1,0 +1,29 @@
+# `--dependency-file` (spec/input.md §10.4; WP-150 item 4) lists the
+# files `--version-script` and `--dynamic-list` name, as it lists the
+# inputs: a change to the script must relink. GNU ld, lld and mold all
+# list both; GNU ld and lld before the inputs (GNU ld in command-line
+# order, lld its own), mold sorted on the target's line. mortar lists
+# them in command-line order before the inputs, each once.
+#@ spec: input.md "§10.4"
+#@ arch: aarch64 x86_64
+
+cc -O1 -fPIC a.c -o a.o
+link gcc -shared a.o -Wl,--version-script=v.map -Wl,--dynamic-list=d.list -Wl,--dependency-file=lib.d -o liba.so
+check text lib.d
+  has: ^v.map:$
+  has: ^d.list:$
+  has: ^a.o:$
+  count: 1 ^v.map:$
+check(bfd,mortar) text lib.d
+  has: ^liba.so: \\$
+  then: v.map \\$
+  then: d.list \\$
+  then: a.o \\$
+
+#--- a.c
+int f(void) { return 1; }
+int g(void) { return 2; }
+#--- v.map
+V1 { global: f; local: *; };
+#--- d.list
+{ f; };

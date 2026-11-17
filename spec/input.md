@@ -1157,8 +1157,11 @@ pub struct SonameUnit {
 
 `opened`: found path, kind (including scripts, ignored members' archives,
 shared objects not loaded, closure files), origin. `--dependency-file`
-lists the distinct found paths of this list in its order (GNU ld lists a
-script twice, lld and mold once [E21]); `-t` prints it. The file is
+lists the files `--version-script` and `--dynamic-list` name, in
+command-line order, then the distinct found paths of this list in its
+order, each path once (GNU ld lists a script twice, lld and mold once
+[E21]; all three list the version script and the dynamic list, GNU ld and
+lld before the inputs, mold sorted; WP-150); `-t` prints the found paths. The file is
 lld's layout, `OUT: \`, then ` PATH \` per path (the last without the
 `\`), then an empty rule `PATH:` per path after a blank line, so make
 does not stop on a deleted input. Every word, the output included, is
