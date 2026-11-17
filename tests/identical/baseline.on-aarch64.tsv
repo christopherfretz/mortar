@@ -2332,9 +2332,6 @@ resolve/comdat-mismatch-strong-needed.test	aarch64	42	exit status 0	5e93676abd2c
 resolve/comdat-mismatch-strong-needed.test	x86_64	32	exit status 0	38dc78748966b30c5aa7631cd0ea899db7e69c61fd8aed559a3715e9fa377a3c	a3e5a5e629be4f7e755eaa1b50249db1c19046fbeb8981a53bdbbb06923f0ca2	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
 resolve/comdat-mismatch-strong-needed.test	x86_64	37	exit status 0	c799ffb3994ec918f0eceeb1d2be2d3477a7573e39be4414bf511e88ff07c1a1	36c10b39f1b5779df338913071d0ddedbe2afbc80fb7fd167760826e6e9622ef	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
 resolve/comdat-mismatch-strong-needed.test	x86_64	42	exit status 0	7ded84f9f1109f66ad25dc9fa7006409e9de461ad06efeb0b37333491fddf861	9d20d6f65085a8cceba7f7399413d753fe983b0fc4eeecead4f9edb807d82147	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
-resolve/comdat-mismatch-weak-archive-extract.test	aarch64	29	exit status 1	-	-	d74a51950db07ede92405ac375add04e7410fd4a5c677b95f3cd17d308a927d1
-resolve/comdat-mismatch-weak-archive-extract.test	x86_64	29	exit status 1	-	-	93aa24d4ee042930b04008bb90278ceb6dcaf1c96992c808e77817f93d8b92df
-resolve/comdat-mismatch-weak-archive-extract.test	i386	29	exit status 1	-	-	060d0e640fe69fc53128dda4603a22b6879ec5d1f99e5066edcd585726a3fbd7
 resolve/comdat-mismatch-weak-archive.test	aarch64	27	exit status 1	-	-	739b33b4d8da40fb592d2af07e17e066eff2c918440105a77224fd819a8ec656
 resolve/comdat-mismatch-weak-archive.test	x86_64	27	exit status 1	-	-	82e857410ef2bba3fa461c45fd4144712062d28e2c3171d550a90439acef186d
 resolve/comdat-mismatch-weak-archive.test	i386	27	exit status 1	-	-	9d543fd23e41f8b4f684d1175bf28eca4f75f8c86353d7166626efb2d6c9cac3
