@@ -1157,6 +1157,12 @@ says what mortar does.
 | merged common symbols of different sizes | largest | largest | **first** (a bug) | largest | `resolve/common` (`xfail(mold)`) |
 | IFUNC address equality with `-fpie` objects in a `-no-pie` link, x86-64 | **broken** | kept | kept | kept | `ifunc/irelative` uses `-fno-pie` |
 | IRELATIVE relocations of a static executable | `.rela.plt` | `.rela.dyn` | `.rela.dyn` | not checked | `ifunc/irelative` |
+| `--require-defined` of a name only a shared object defines | error | (no option) | accepted | error (`spec/resolve.md` §4.2) | `resolve/require-defined` |
+| `-u` of a name only an `--as-needed` shared object defines | not needed (verifier: P-D6) | not needed (P-D6) | needed, no import (P-D7) | needed, imported | `dyn/shared/whole-archive-shared` (mortar only) |
+| `-z muldefs`, a TLS and a non-TLS definition | error | error in one order | accepted | error | `resolve/allow-multiple-definition` |
+| a `--whole-archive` member that is not ELF | error | error | skipped | error | `resolve/whole-archive-members` |
+| an archive lazy, then the same archive whole | duplicate | duplicate | links | duplicate | `resolve/whole-archive-defs` |
+| a nested `--start-lib`, a stray `--end-lib` | (no option) | error | accepted | error | `resolve/start-lib` |
 | `.text` not placed while another section is (`--section-start`) | at its default | next to it | next to it | not checked | `reloc/aarch64-veneer` places both |
 | `--dependency-file`: a prerequisite's indent; a file named twice | two blanks; listed per mention | one blank; once | on the target's line; once | lld's form, once | `input/dependency-file` |
 | `-call_shared` | known | known | unknown option | known | `dyn/shlib/bdynamic` |

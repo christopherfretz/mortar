@@ -197,10 +197,6 @@ pub const OUT_OF_M2: &[(&str, &str)] = &[
     ),
     ("unsupported file format: GCC LTO object", "LTO is out of M2 (dyn.md §2.7, item 6)"),
     ("unsupported file format: LLVM bitcode", "LTO is out of M2 (dyn.md §2.7, item 6)"),
-    (
-        "unsupported option: --whole-archive",
-        "asan's runtime: --whole-archive is out of M2 (dyn.md §2.7, item 6)",
-    ),
     ("unsupported feature: dynamically linked output on i386", "i386 dynamic output is M4"),
     ("unsupported feature: position-independent executable output", "i386 PIE output is M4"),
     // The `-shared` lines (LT-7) since WP-123: what "Where the refusal

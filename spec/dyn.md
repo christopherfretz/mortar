@@ -144,7 +144,7 @@ and x86-64 linked, run and verified; `spec/landed/dyn/WP-056.md`).
 | `-Bstatic` | 9 | supported | supported; a shared object found under it is never chosen |
 | `-init`, `-fini` | 0 | refused | supported (D-30) |
 | `--no-copy-dt-needed-entries` | 0 | — | noop; the positive form refused (D-15) |
-| `--whole-archive` | 12 (asan) | refused | refused: out of M2 |
+| `--whole-archive` | 12 (asan) | refused | refused in M2; supported since WP-152 (resolve.md §4.2). On this host the Clang asan lines that carry it fail with GNU ld too (no `libclang_rt.asan_static.a`), so the census does not link them |
 | `-plugin`, `-plugin-opt`, `-X`, `-EL`, `-m`, `--sysroot=/`, `--fix-cortex-a53-843419` | | supported / noop | unchanged |
 
 No driver on this host passes `-z relro`, `-z now`, `-z text`,
@@ -291,7 +291,9 @@ are refused by name, each by a rule that puts it out of M2:
 1. `--hash-style=sysv`, `--hash-style=both`: 30 (D-20).
 2. LTO objects (`GCC LTO object`, `LLVM bitcode`): 14.
 3. `--whole-archive` (Clang's asan runtime): 8; GNU ld cannot link these
-   lines either on this host.
+   lines either on this host. Since WP-152 `--whole-archive` is
+   supported; these lines now stop at the same missing
+   `libclang_rt.asan_static.a` as GNU ld's.
 
 The 137 i686 lines stay refused (`dynamically linked output on i386`;
 M4). The variations a real build adds (`x-` in the census lane) all

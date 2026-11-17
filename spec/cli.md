@@ -366,6 +366,12 @@ Groups:
 - Groups nest. An inner group is part of the outermost one, whose
   ordinal is the one recorded (counted from 1).
 - A `--start-lib` inside a lib region is `unbalanced-option`.
+- A group and a lib region do not nest (WP-152): `--start-group` inside a
+  lib region and `--start-lib` inside a group are refused by name
+  (`unsupported feature: --start-group inside a --start-lib region`,
+  `unsupported feature: --start-lib inside a group`), as lld 22 refuses
+  both (mold accepts both; GNU ld has no lib regions). An unclosed region
+  at the end of the line is accepted (all three).
 
 `--push-state` and `--pop-state`:
 - `--push-state` saves the four switches: `as_needed`, `whole_archive`,
@@ -990,6 +996,17 @@ until the phase that honors them lands with its test:
   `--fortran-common`, whose help says "mortar's behavior, always on":
   mortar always takes an archive member for a common symbol
   (`spec/resolve.md` §3.3). `--no-fortran-common` stays `refused`.
+  WP-152 made `-u`/`--undefined`, `--require-defined`,
+  `--allow-multiple-definition`, `--no-allow-multiple-definition`,
+  `-z muldefs`, `--whole-archive`, `--no-whole-archive`, `--start-lib`
+  and `--end-lib` `supported` (`spec/resolve.md` §3.8, §4.2, §4.8; the
+  evidence in `crates/mortar/tests/options.rs` and `tests/link/resolve`).
+  `--unresolved-symbols`, `--warn-unresolved-symbols`,
+  `--error-unresolved-symbols` and `--ignore-unresolved-symbol` stay
+  `refused`: resolution decides them, but WP-152 found more than the
+  status missing (opened for a probe, `ignore-all` gave an ignored
+  function a nonzero address in a static executable where GNU ld gives
+  0, and `-pie --warn-unresolved-symbols` failed to link).
   `--warn-backrefs` and `--no-warn-backrefs` became `supported` in
   WP-027d (resolve.md §4.6's simulation had landed; the evidence is in
   `crates/mortar/tests/options.rs`); `--warn-backrefs-exclude` stays

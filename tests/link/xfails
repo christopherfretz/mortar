@@ -16,3 +16,18 @@
 
 # M2 (dynamic executables, spec/dyn.md section 16): none; every M2
 # package has landed (the last, WP-052 static-pie).
+
+# WP-152: the verifier's mirror of the option table (mortar_plumb
+# opts.rs) does not know the rows WP-152 opened, so every mortar link
+# that spells one is judged M9 (and only M9: every other rule passes,
+# all links checked by the package). The supervisor regenerates the
+# mirror at the merge and deletes these lines with it.
+mortar resolve/whole-archive.test: M9 until the WP-152 rows are mirrored
+mortar resolve/whole-archive-defs.test: M9 until the WP-152 rows are mirrored
+mortar,aarch64 resolve/whole-archive-debug.test: M9 until the WP-152 rows are mirrored
+mortar resolve/undefined-root.test: M9 until the WP-152 rows are mirrored
+mortar resolve/require-defined.test: M9 until the WP-152 rows are mirrored
+mortar resolve/allow-multiple-definition.test: M9 until the WP-152 rows are mirrored
+mortar resolve/start-lib.test: M9 until the WP-152 rows are mirrored
+mortar,aarch64,x86_64 dyn/shared/whole-archive-shared.test: M9 until the WP-152 rows are mirrored
+mortar resolve/whole-archive-members.test: M9 until the WP-152 rows are mirrored

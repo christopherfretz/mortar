@@ -180,7 +180,7 @@ fn has_symbol(table: &str, name: &str) -> bool {
 /// I-6, I-7: the entry is a root, a relocation is an edge whatever its
 /// type (a call, an address, `R_AARCH64_NONE` from `.reloc`); a chain
 /// reachable only from a collected section is collected; `-e` names the
-/// root (`-u` and `--require-defined` are refused today, cli.md). `.symtab` loses the
+/// root (`-u` and `--require-defined` roots: tests/link/resolve). `.symtab` loses the
 /// symbols of collected sections (S-76); the program runs.
 #[test]
 fn i6_i7_roots_and_relocation_edges() {

@@ -1,0 +1,36 @@
+# --whole-archive and the members themselves (resolve.md §4.2, §4.7):
+# under --gc-sections a whole member is a live FILE, not a root: its
+# unreferenced function (g_dead, -ffunction-sections) is collected, a
+# retained one (g_kept, SHF_GNU_RETAIN) is kept, all four. A member
+# that is not a relocatable object is an error with GNU ld, lld and
+# mortar (input.md §7.5); mold 2.37 skips it silently (not linked here).
+#@ spec: resolve.md §4.2
+#@ spec: resolve.md §4.7
+#@ spec: input.md §7.5
+
+cc -O1 -ffunction-sections g.c -o g.o
+cc -O1 m.c -o m.o
+ar rcs libg.a g.o
+ar rcs libj.a g.o junk.txt
+link gcc -static -no-pie m.o -Wl,--gc-sections,--whole-archive libg.a -Wl,--no-whole-archive -o gc
+run gc
+  exit: 1
+check nm gc
+  has: * g_kept$
+  has: * g_used$
+  not: g_dead
+link(bfd,lld,mortar) gcc -static -no-pie m.o -Wl,--whole-archive libj.a -Wl,--no-whole-archive -o junk
+  exit: fail
+  diag(bfd): member libj.a(junk.txt) in archive is not an object
+  diag(lld): libj.a(junk.txt): not an ELF file
+  diag(mortar): libj.a(junk.txt): archive member is not a relocatable object
+
+#--- g.c
+int g_dead(void) { return 7; }
+__attribute__((retain, used)) int g_kept(void) { return 8; }
+int g_used(void) { return 1; }
+#--- m.c
+int g_used(void);
+int main(void) { return g_used(); }
+#--- junk.txt
+not an object
