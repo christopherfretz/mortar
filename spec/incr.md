@@ -1518,6 +1518,23 @@ with each phase fed from the state for unchanged files:
   *Test:* `mortar_incr`'s round trip and validation tests; the
   incremental tests' replay; `the_floor_update_is_the_full_link_of_the_edited_inputs`
   (the update maps by position).
+- **IN-18a4 [v1] Format version 4: position-exact rows** (WP-064a,
+  for IN-28a as amended). Version 4 is version 3 with these changes:
+  - The format version is 4.
+  - A `FILES` row has the `POSITIONAL` bit (in its flags; the bit and
+    its place are WP-064a's to fix here when it lands): set exactly
+    when the row's position rows are position-exact (IN-28a). A full
+    link sets it on every row.
+  - `FRAG_AT`'s third field is the `FRAGS` row (`u64`), as IN-18a3
+    always said; the version-3 writer stored the fragment's offset in
+    its output section instead, and the reader did not check it. The
+    reader checks it in range.
+  - A file's `SECTIONS` rows are one contiguous range in section-index
+    order.
+
+  A state of version 3 is refused by name (`state-version`) and gives a
+  full link that writes a version-4 state. The ranged state of WP-105
+  (block hashes, the per-file index) is a later version, 5.
 - **IN-18b [v1] The normalized plan.** The plan hash is `L128` of a
   sequence of items, each a tag byte followed by fields that are each a
   `u32` length and that many bytes: first `C` with the working
@@ -1827,51 +1844,102 @@ with each phase fed from the state for unchanged files:
   appended (S-113) and recorded in the decision tables, which (B)
   replays. A plain link pays nothing. *Test:* (B) after an edit that
   adds a file in the middle of the command line.
-- **IN-28a [v1] Unchanged files translate by position** (WP-094). The
-  translation of IN-28 reads every input's symbol table and section names
-  to build identities (model §7.1); measured, it was the largest term of
-  an update (WP-061b: 74 ms on protoc `-g`, 2.3-2.7 s on
-  `synthetic-objects-g10x`). An update translates instead:
-  - **by position**, every `FILES` row whose file is unchanged (its
-    content hash equals the row's, IN-24) and whose new `FILES` entry
-    has the same path, base and length. Its `SECTIONS` rows map to
-    `section_base[file] + index` by arithmetic; a local `SYMBOLS` row to
-    `(file, at_index)`; a global row to `sym_map(at_file)[at_index]`,
-    accepted only when that key's name and version equal the row's;
-    a fragment of a split section through `FRAG_AT` (its section and
-    offset), accepted only when the fragment found there has the
-    stored `FRAGS` hash;
-  - **by identity** (model §7.1, as before), every row of a changed
-    file and every row the positional rules do not accept. The
-    identities are built only from the symbol tables and section names
-    of the files not translated by position (the update decides that set
-    from `FILES` and the stamps before it builds them); a global the
-    partial lookup does not hold builds the whole lookup once, and the
-    update goes on.
+- **IN-28a [v1] Unchanged files translate by position** (WP-094;
+  amended after the adversarial review of 2026-11-17,
+  `spec/landed/incr/WP-064a.md`: the first text let a STALE state
+  through, a silent mislink on the second update). The translation of
+  IN-28 reads every input's symbol table and section names to build
+  identities (model §7.1); measured, it was the largest term of an
+  update (WP-061b: 74 ms on protoc `-g`, 2.3-2.7 s on
+  `synthetic-objects-g10x`). An update translates the rows of some
+  files by position instead, under the rules below. Position is only
+  ever position inside one file: `FILES` rows are matched to the new
+  files by file identity, never by row number.
 
-  The positional rules are **conditions, each checked**: the file is
-  unchanged (IN-22: clean by its stamp, or hashed equal); its new entry
-  is the same range of the same file (a member that moved inside a
-  regular archive, or whose archive was rewritten around it, is
-  translated by identity); its section count is the stored one; the
-  `SECTIONS` rows of each file are contiguous and in file order (else no
-  file is positional); a global's name and version at its position
-  match; a fragment's hash at its position matches. A file that moved on
-  the command line is `options-changed` (IN-18b) before any of this; a
-  changed extraction order of unchanged members is `inputs-reordered`
-  (§7) as before: `FILES` rows are matched to the new files by file
-  identity, never by row number, so position is only ever position
-  inside one file. A condition that fails does not fall
-  back: the row goes through identities, which either translate it or
-  fail as IN-28 does (the replay's `internal-error` in the test path,
-  the fall-backs of §7 in the update). So the result is IN-28's by
-  construction, and IN-2 is untouched. Measured on the test path
-  (WP-094): the translation falls from 103.5 to 6.9 ms on protoc `-g`
-  and from 7.4 s to 0.15 s on `synthetic-objects-g10x` (replay keys
-  included). *Test:* the floor test (each update is the
-  incremental-mode full link's bytes) translates by position; with
-  `MORTAR_FLOOR_IDENTITY` set the test path translates by identity only,
-  for comparison (WP-094's measurements, `scripts/incr-floor.py`).
+  **Position rows.** A `FILES` row's position rows are its `SECTIONS`
+  rows, the `at_index` of its local `SYMBOLS` rows and of the global
+  rows whose `at_file` it is, and its `FRAG_AT` rows.
+
+  **Position-exact (the writer's duty).** A `FILES` row carries the
+  `POSITIONAL` bit (IN-18a4) exactly when ALL its position rows were
+  captured from the bytes whose content hash the row holds, by the link
+  that wrote that hash. EVERY writer of a state (a full link, an
+  update, a patch of the state by range) that writes a file's hash
+  either recaptures all of that file's position rows from the same
+  bytes, in the same write, or clears the bit. There is no third case:
+  a writer that changes a hash and leaves a position row is the defect
+  the review found (the next update saw the file as unchanged and
+  mapped its stale rows). A file's `SECTIONS` rows are written as one
+  contiguous range in section-index order, one row per section header
+  (index 0 included or excluded as the writer does today, but the same
+  for every file: the count the reader compares is the writer's count
+  for `e_shnum`).
+
+  **The positional set (the reader's decision).** An update decides the
+  set from `FILES`, `STAT` and the stamps BEFORE it builds any
+  identity. A `FILES` row is in the set iff all of these hold:
+  1. its `POSITIONAL` bit is set;
+  2. the file it maps to by file identity is unchanged by IN-22 (clean
+     by its stamp, or hashed equal), and the update uses no bytes of
+     that file other than the bytes so judged (it does not read the
+     file again after judging it, or it verifies what it read: the
+     descriptor's `fstat` after the read equals the judged tuple);
+  3. the new entry's path, base and length equal the row's (a member
+     that moved inside a regular archive, or whose archive was
+     rewritten around it, is translated by identity);
+  4. its `SECTIONS` rows are one contiguous range of exactly the
+     count the writer stores for the file's `e_shnum` (no rows only
+     when the file has no sections: zero stored and non-zero new, or
+     the reverse, is not positional).
+
+  Identities are built for EVERY file outside the set (model §7.1, from
+  those files' symbol tables and section names; a global the partial
+  lookup does not hold builds the whole lookup once, and the update
+  goes on).
+
+  **A row of a file in the set** translates:
+  - `SECTIONS` row `first + k` to section `k` of the file;
+  - a local `SYMBOLS` row to the entry `(file, at_index)`, accepted
+    when `at_index` is below the file's `sh_info` (its count of
+    locals);
+  - a global row to `sym_map(at_file)[at_index]`, accepted when that
+    key's name and version equal the row's;
+  - a fragment of a split section, found in `FRAG_AT` by (section,
+    offset), to the offset of the `FRAGS` row `FRAG_AT` names, accepted
+    when that row's ordinal is `NONE` (a content that is in two merge
+    classes of one output section has ordinals, and its copies are
+    ranked again by an update: never positional).
+
+  A row that is not accepted does not fall back: it is translated by
+  identity, which either translates it or fails as IN-28 does (the
+  fall-backs of §7). Under these rules an accepted position names the
+  row identity would find, and IN-2 holds. No check reads an unchanged
+  input: each is made against the state and the new link's tables, so
+  its cost is that of the rows used.
+
+  **What the state is protected against.** The state's hashes detect
+  corruption (a torn, truncated or flipped file: `state-corrupt`, a
+  full link), not forgery: whoever can write the state file can choose
+  the output, in either translation, as whoever can write the output's
+  directory can. The state is therefore written with the output's
+  permissions beside it and never taken from another place. A reader
+  never panics, loops or indexes out of range on ANY state. Against a
+  STALE state (one a correct mortar wrote, for inputs that have since
+  changed in any way) the update is exact: that is IN-2, and the
+  position-exact rule is what keeps the positional path inside it.
+
+  Measured on the test path before the amendment (WP-094): the
+  translation fell from 103.5 to 6.9 ms on protoc `-g` and from 7.4 s
+  to 0.15 s on `synthetic-objects-g10x` (replay keys included); the
+  figures after it are WP-064a's to record. *Test:* the review's cases
+  as permanent tests (`tests/incr-review/`: sections, strings and
+  locals of a file permuted and then ANOTHER file updated, on the three
+  targets; a string in two merge classes; a state with two `SECTIONS`
+  rows swapped and one with `FRAG_AT` rows swapped give the identity
+  translation's output or a fall-back by name, never another program);
+  every update of those tests is judged against the full link of the
+  same inputs by `xtask plumb --equiv`; the floor test translates by
+  position and, with `MORTAR_FLOOR_IDENTITY` set, by identity only.
 - **IN-29 [v1] Liveness** under `--gc-sections` is recomputed in full
   from the roots, without reading unchanged files, by walking a **stored
   graph that is, by construction, the edge set the full link's liveness
