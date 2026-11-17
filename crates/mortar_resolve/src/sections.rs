@@ -158,6 +158,12 @@ pub fn classify(
     if name == b".note.GNU-stack" {
         return Ok((K::Stack, Note::None));
     }
+    // WP-135: an input's build id (an `ld -r --build-id` object's) is
+    // discarded in every link; the output's id is the linker's own
+    // (image.md I-69), never an input's.
+    if name == b".note.gnu.build-id" {
+        return Ok((K::Excluded, Note::None));
+    }
     if name == b".note.gnu.property" && s.sh_type == SHT_NOTE {
         return Ok((K::Note, retain(s)));
     }
@@ -255,7 +261,7 @@ pub fn state(
 /// The reason an `Excluded` kind is dropped: `Consumed` for the kinds
 /// §10 says the linker consumes (`.llvm_addrsig`, the call-graph profile,
 /// `.deplibs`, `.gnu.warning*`, AArch64's `.ARM.attributes`), `Excluded` for
-/// `SHF_EXCLUDE` and `.gnu.lto_*`.
+/// `SHF_EXCLUDE`, `.gnu.lto_*` and an input's `.note.gnu.build-id`.
 pub fn excluded_reason(s: &SectionInfo<'_>, note: Note) -> DropReason {
     let consumed = matches!(note, Note::GnuWarning | Note::GnuWarningSym)
         || (s.flags & SHF_EXCLUDE == 0

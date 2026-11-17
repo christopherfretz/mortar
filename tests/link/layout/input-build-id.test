@@ -1,0 +1,95 @@
+# An input's `.note.gnu.build-id` (an object made by another linker's
+# `ld -r --build-id`, as BusyBox's `applets/built-in.o`) is discarded in
+# every link: with `--build-id` the output has exactly one id, the
+# linker's own, never the input's; with `--build-id=none`, or no option,
+# no id and no `.note.gnu.build-id` section. GNU ld 2.44, lld 19 and mold
+# 2.37 do so for every style of input id, from two inputs and under
+# `--gc-sections` (WP-135). The `ld -r` outputs are written here as the
+# section GNU ld's `-r --build-id=0x...` writes (`SHT_NOTE`, `SHF_ALLOC`,
+# aligned to 4): mortar refuses `-r`, and the harness has no reference
+# `ld -r` step. GNU ld's map lists the input's note among the discarded
+# input sections, and so does mortar's.
+#@ spec: resolve.md "The fate of sections"
+#@ spec: image.md "I-69"
+#@ anomaly(mold): A11
+
+as start-%{arch}.s -o start.o
+as rid16.s -o rid16.o
+as rid20.s -o rid20.o
+link ld --build-id=sha1 start.o rid16.o -o one
+link ld --build-id=sha1 start.o rid16.o rid20.o -o two
+link ld --build-id=sha1 --gc-sections start.o rid16.o -o gc
+link ld --build-id=none start.o rid16.o -o none
+link ld start.o rid16.o -o plain
+link ld --build-id=sha1 -Map=one.map start.o rid16.o -o mapped
+run one
+  exit: 42
+run two
+  exit: 42
+run gc
+  exit: 42
+run none
+  exit: 42
+check readelf -nW one
+  count: 1 NT_GNU_BUILD_ID
+  has: GNU 0x00000014 NT_GNU_BUILD_ID
+  not: 00112233445566778899aabbccddeeff
+check readelf -nW two
+  count: 1 NT_GNU_BUILD_ID
+  has: GNU 0x00000014 NT_GNU_BUILD_ID
+  not: 00112233445566778899aabbccddeeff
+  not: a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4
+check readelf -nW gc
+  count: 1 NT_GNU_BUILD_ID
+  not: 00112233445566778899aabbccddeeff
+check readelf -nW none
+  not: NT_GNU_BUILD_ID
+check readelf -SW none
+  not: .note.gnu.build-id
+check readelf -nW plain
+  not: NT_GNU_BUILD_ID
+check readelf -SW plain
+  not: .note.gnu.build-id
+check(bfd,mortar) text one.map
+  has: ^Discarded input sections$
+  then: ^ .note.gnu.build-id$
+  then: rid16.o$
+
+#--- rid16.s
+	.section .note.gnu.build-id,"a",%note
+	.p2align 2
+	.long	4, 16, 3
+	.asciz	"GNU"
+	.byte	0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77
+	.byte	0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff
+#--- rid20.s
+	.section .note.gnu.build-id,"a",%note
+	.p2align 2
+	.long	4, 20, 3
+	.asciz	"GNU"
+	.byte	0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7, 0xa8, 0xa9, 0xaa
+	.byte	0xab, 0xac, 0xad, 0xae, 0xaf, 0xb0, 0xb1, 0xb2, 0xb3, 0xb4
+#--- start-aarch64.s
+	.text
+	.globl	_start
+_start:
+	mov	x0, #42
+	mov	x8, #93		// exit
+	svc	#0
+	.section .note.GNU-stack,"",%progbits
+#--- start-x86_64.s
+	.text
+	.globl	_start
+_start:
+	movl	$60, %eax	# exit
+	movl	$42, %edi
+	syscall
+	.section .note.GNU-stack,"",%progbits
+#--- start-i386.s
+	.text
+	.globl	_start
+_start:
+	movl	$1, %eax	# exit
+	movl	$42, %ebx
+	int	$0x80
+	.section .note.GNU-stack,"",%progbits

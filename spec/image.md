@@ -1430,6 +1430,10 @@ Opening a running executable for writing fails with `ETXTBSY` on Linux
   | any other | `invalid-option-value` | — | M1 |
 
   The last of these options on the line wins (`spec/cli.md` §2.10).
+  The note is the only `.note.gnu.build-id` of the output: an input's
+  (an `ld -r --build-id` object's) is discarded in every link, with or
+  without the option (`spec/resolve.md` §10, row `.note.gnu.build-id`;
+  WP-135).
   Bare `--build-id` is what every driver passes, so it gets the function
   that is cheapest at the length every tool expects (20, `sha1`-sized).
   `md5` is refused because no producer on the host asks for it, and it
