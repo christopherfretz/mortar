@@ -577,6 +577,15 @@ The dynamic outputs (M2) added these, without a kind of their own
 A dynamic link's notes are the refusing spec's as well: the D-12 note
 `defined in {path}, which is not on the command line`
 (`spec/resolve.md`, `spec/dyn.md` D-12) is one, on `undefined-symbol`.
+So are D-12's two notes on D-13's `undefined-symbol` when an archive
+member the line names would define the key but a used object's or a
+closure file's reference extracts nothing (WP-167): `defined in` the
+member, then the note `the library is not needed (--as-needed): link it
+with --no-as-needed, or name the member's definition earlier (an object
+or -u)` (a used object) or `the library is not on the command line, so
+its references extract nothing: name it on the line with --no-as-needed,
+or name the member's definition earlier (an object or -u)` (a closure
+file).
 
 A refusal SHOULD carry the place of the construct: `.at` the section and
 offset for a relocation, the file for a section or a header field, the

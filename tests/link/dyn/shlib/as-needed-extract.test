@@ -1,0 +1,136 @@
+# dyn.md D-12's stages (WP-167; resolve.md §4.4): a needed `--as-needed`
+# shared object's strong references extract archive members. Row 1 of
+# the measurement, `m1.o --as-needed libu.so libg.a`: m1.o calls u
+# (libu.so gives it: needed, D-11 item 2); libu.so calls g, which only
+# libg.a(g.o) defines. Stage 1 extracts nothing (an as-needed object is
+# no edge source); libu.so is needed, so stage 2 makes its reference an
+# edge and g.o is extracted: g is defined in the program, exported
+# (D-21, a shared object references it), g.o's constructor runs, u=11.
+# GNU ld 2.44, lld 22 and mold 2.37.1 do the same; the link is silent
+# (the supervisor's condition 1: diagnostics come from the final stage
+# only). Before WP-167 mortar refused it (`archive member needed by an
+# --as-needed shared object`), on an ordinary driver line.
+#
+# The map names the reason as GNU ld does: `libg.a(g.o)`, then
+# `libu.so (g)` (mortar_image names a shared object's key from its
+# `.dynsym`). The other lines of this file: the archive first (GNU ld
+# refuses: it reads archives once, in order; lld, mold and mortar
+# extract, as the archive's symbols are still lazy at stage 2), an
+# unneeded libu.so (m0.o; nothing extracts, but lld extracts g.o: the
+# references of an unneeded as-needed object are edges in lld, D-12's
+# table), a definition in a live object (m1g.o: no candidate, one stage,
+# u=4), `--start-lib g.o --end-lib` in place of the archive (lld, mold,
+# mortar; GNU ld has no such option), and the `--no-as-needed` control.
+#
+# The verifier's input-set rule (M11/M12) does not have D-12's stages yet:
+# it finds mortar's later-stage members unreached. The bytes and the runs
+# were checked (every expectation passes with the verifier off); the
+# verifier package after WP-167 lifts the mark.
+#@ xfail(mortar): M12: libg.a(g.o) (g.o under --start-lib) is in the link and no root or live reference reaches it (resolve §4.1), until the verifier package
+#@ spec: dyn.md "D-12"
+#@ spec: dyn.md "D-11"
+#@ spec: resolve.md "4.4"
+#@ arch: aarch64 x86_64
+
+cc -O1 -fPIC u.c -o u.o
+shlib gcc u.o -Wl,-soname,libu.so -o libu.so
+cc -O1 -fPIC g.c -o g.o
+ar rcs libg.a g.o
+cc -O1 -fPIC m1.c -o m1.o
+cc -O1 -fPIC m0.c -o m0.o
+cc -O1 -fPIC m1g.c -o m1g.o
+cc -O1 -fPIC s1.c -o s1.o
+
+# row 1, PIE: silent, g.o extracted, g exported, libu.so needed.
+link gcc -pie m1.o -Wl,--as-needed libu.so libg.a -Wl,-Map=row1.map -o row1
+  no-diag: *
+run row1
+  stdout: g-ctor
+  stdout: u=11
+check readelf -dW row1
+  count: 2 (NEEDED)
+  has: [libu.so]
+  then: [libc.so.6]
+check nm -D --defined-only row1
+  has: T g$
+check(bfd,mortar) text row1.map
+  has: ^libg.a(g.o) libu.so (g)$
+
+# row 1, a non-PIE.
+link gcc -no-pie m1.o -Wl,--as-needed libu.so libg.a -o row1-exec
+  no-diag: *
+run row1-exec
+  stdout: g-ctor
+  stdout: u=11
+
+# row 1, a shared object (s1.o calls u): g.o extracted, g exported.
+link gcc -shared s1.o -Wl,--as-needed libu.so libg.a -o librow1.so
+  no-diag: *
+check readelf -dW librow1.so
+  has: [libu.so]
+check nm -D --defined-only librow1.so
+  has: T g$
+
+# The archive before the library: GNU ld refuses (g is undefined when it
+# reads libg.a); lld, mold and mortar extract at stage 2.
+link(bfd) gcc -pie m1.o -Wl,--as-needed libg.a libu.so -o archive-first
+  exit: fail
+  diag: libu.so: undefined reference to `g'
+link(lld,mold,mortar) gcc -pie m1.o -Wl,--as-needed libg.a libu.so -o archive-first
+run(lld,mold,mortar) archive-first
+  stdout: g-ctor
+  stdout: u=11
+
+# libu.so unneeded (m0.o calls nothing): its references are no edges, g.o
+# stays in the archive (GNU ld, mold); lld extracts it.
+link gcc -pie m0.o -Wl,--as-needed libu.so libg.a -o unneeded
+check readelf -dW unneeded
+  not: [libu.so]
+run(bfd,mold,mortar) unneeded
+  stdout: m0
+run(lld) unneeded
+  stdout: g-ctor
+  stdout: m0
+
+# g defined by a live object (m1g.o): no candidate, nothing extracted.
+link gcc -pie m1g.o -Wl,--as-needed libu.so libg.a -o live-def
+  no-diag: *
+run live-def
+  stdout: u=4
+
+# --start-lib (4e): a lazy object is a member like any other; GNU ld has
+# no such option.
+link(lld,mold,mortar) gcc -pie m1.o -Wl,--as-needed libu.so -Wl,--start-lib g.o -Wl,--end-lib -o start-lib
+  no-diag: *
+run(lld,mold,mortar) start-lib
+  stdout: g-ctor
+  stdout: u=11
+
+# The control: --no-as-needed, extraction at stage 1, the same program.
+link gcc -pie m1.o -Wl,--no-as-needed libu.so libg.a -o control
+run control
+  stdout: g-ctor
+  stdout: u=11
+
+#--- u.c
+int g(void);
+int u(void) { return g() + 1; }
+#--- g.c
+#include <stdio.h>
+__attribute__((constructor)) static void gc(void) { puts("g-ctor"); }
+int g(void) { return 10; }
+#--- m1.c
+#include <stdio.h>
+int u(void);
+int main(void) { printf("u=%d\n", u()); return 0; }
+#--- m0.c
+#include <stdio.h>
+int main(void) { puts("m0"); return 0; }
+#--- m1g.c
+#include <stdio.h>
+int u(void);
+int g(void) { return 3; }
+int main(void) { printf("u=%d\n", u()); return 0; }
+#--- s1.c
+int u(void);
+int f(void) { return u(); }

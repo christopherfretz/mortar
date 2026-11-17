@@ -30,7 +30,7 @@ use crate::mention::{Class, classify, is_data};
 use crate::options::{MentionGroup, Options, ShlibUndefined};
 use crate::problem::{Problem, What};
 use crate::resolve::{Def, Props, flags};
-use crate::view::{FileKind, Mention, SharedInfo, View};
+use crate::view::{FileKind, Mention, View};
 
 /// What the shared stage adds to a resolution.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -61,6 +61,23 @@ pub struct Dynamic {
     pub script_local: Vec<bool>,
     /// The version stage's diagnostics (WP-125).
     pub version_problems: Vec<crate::version::VersionProblem>,
+}
+
+/// What one stage of resolution hands the next (`spec/dyn.md` D-12, the
+/// stages; WP-167). Empty at stage 1.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Stage {
+    /// Per `FileId`: the members of the last stage's N whose merged
+    /// `as_needed` is on; their strong undefined references are edges of
+    /// resolve §4.1 in the next stage.
+    pub sources: Vec<bool>,
+    /// Per `FileId`: needed at an earlier stage (kept in N: N only grows).
+    pub needed: Vec<bool>,
+    /// Per key: the earlier stages' D-11 item 2 giver (D-19a's reasons of
+    /// an object kept needed).
+    pub item2: Vec<Option<FileId>>,
+    /// The earlier stages' D-11 item 3 pairs `(x, s)`.
+    pub reasons3: Vec<(FileId, FileId)>,
 }
 
 /// One visible definition in a loaded shared object.
@@ -190,12 +207,13 @@ pub(crate) fn link<V: View>(
     kinds: &[FileKind],
     targets: &Targets,
     redirect: &[SymbolId],
+    stage: &Stage,
     file_live: &mut [FileLive],
     def: &mut [Def],
     props: &mut [Props],
     problems: &mut Vec<Problem>,
     pool: &Pool,
-) -> Dynamic {
+) -> (Dynamic, Option<Stage>) {
     let keys = def.len();
     let l = Loaded::read(view, kinds, pool);
     let n_files = kinds.len();
@@ -224,13 +242,20 @@ pub(crate) fn link<V: View>(
         if l.in_c[f.0 as usize] && view.shared(f).is_some_and(|s| !s.as_needed) {
             in_n[f.0 as usize] = true;
         }
+        // WP-167: an object needed at an earlier stage stays needed.
+        if stage.needed.get(f.0 as usize).copied().unwrap_or(false) {
+            in_n[f.0 as usize] = true;
+        }
     }
     // Item 2: keys with a strong reference from a live relocatable object,
     // or a common that yields (rule 2). A root of resolve §4.2 (`-u`,
     // `EXTERN`, `-e`, `--require-defined`) is not one (WP-152, R2).
     let item2: Vec<Option<FileId>> = pool.unit_cost(4).map(keys, |k| {
         let strong = props[k].flags & flags::OBJ_STRONG != 0 || rule2(k);
-        if strong { giver(k, def) } else { None }
+        let now = if strong { giver(k, def) } else { None };
+        // WP-167: an earlier stage's giver stays a reason (its object stays
+        // needed; D-19a places it by that reason).
+        now.or_else(|| stage.item2.get(k).copied().flatten())
     });
     for g in item2.iter().flatten() {
         in_n[g.0 as usize] = true;
@@ -245,6 +270,15 @@ pub(crate) fn link<V: View>(
         let mut reach_x: Option<Vec<bool>> = None;
         for m in l.mentions_of(x) {
             if m.place != SymbolSection::Undefined || m.binding == STB_WEAK {
+                continue;
+            }
+            // D-12's stages (WP-167): a key whose edge out of `x` targets a
+            // lazy file that is not live is the next stage's extraction
+            // (`x` is needed, so its references become edges): the member
+            // will define it, and `giver(k)` is no reason (GNU ld, lld and
+            // mold, `libu.so libg.a libg2.so`).
+            let t = targets.first[redirect[m.key.0 as usize].0 as usize];
+            if t != NO_FILE && kinds[t as usize].is_lazy() && !file_live[t as usize].is_live() {
                 continue;
             }
             let Some(s) = giver(m.key.0 as usize, def) else { continue };
@@ -262,6 +296,7 @@ pub(crate) fn link<V: View>(
             }
         }
     }
+    reasons3.extend_from_slice(&stage.reasons3);
     reasons3.sort_unstable();
     reasons3.dedup();
 
@@ -550,32 +585,46 @@ pub(crate) fn link<V: View>(
                 ShlibUndefined::Error => false,
                 ShlibUndefined::Warn => true,
             };
+            // D-12 (WP-167): a lazy member that is not live and would be
+            // the edge's target, were `x`'s references edges (`x` is a used
+            // object or a closure file: a needed one's would have been
+            // followed by a later stage).
+            let t = targets.first[redirect[m.key.0 as usize].0 as usize];
+            let member =
+                (t != NO_FILE && kinds[t as usize].is_lazy() && !file_live[t as usize].is_live())
+                    .then(|| (FileId(t), !l.in_c[x.0 as usize]));
             problems.push(Problem::at(
                 entry,
-                What::ShlibUndefined { file: x, index: m.index, key: m.key, warn },
+                What::ShlibUndefined { file: x, index: m.index, key: m.key, warn, member },
             ));
         }
     }
 
-    // ---- Q1's refusal (D-12) ----------------------------------------------
-    for &x in &l.files {
-        if !in_n[x.0 as usize] || view.shared(x).is_none_or(SharedInfo::extracts) {
-            continue;
-        }
-        for m in l.mentions_of(x) {
-            if m.place != SymbolSection::Undefined || m.binding == STB_WEAK {
-                continue;
-            }
-            let t = targets.first[redirect[m.key.0 as usize].0 as usize];
-            if t != NO_FILE && kinds[t as usize].is_lazy() && !file_live[t as usize].is_live() {
-                let entry = SymEntry { file: x, index: m.index };
-                problems.push(Problem::at(
-                    entry,
-                    What::AsNeededExtraction { key: m.key, entry, member: FileId(t) },
-                ));
-            }
-        }
-    }
+    // ---- the stages (D-12, WP-167) -----------------------------------------
+    // A candidate: a member of N under --as-needed, not yet a source, with
+    // a strong undefined reference whose edge (resolve §4.1 `first(k)`)
+    // targets a lazy file that is not live. With one, the next stage takes
+    // every member of N under --as-needed as a source of edges.
+    let source = |x: FileId| stage.sources.get(x.0 as usize).copied().unwrap_or(false);
+    let as_needed_in_n =
+        |x: FileId| in_n[x.0 as usize] && view.shared(x).is_some_and(|s| !s.closure && s.as_needed);
+    let candidate = l.files.iter().any(|&x| {
+        as_needed_in_n(x)
+            && !source(x)
+            && l.mentions_of(x).iter().any(|m| {
+                if m.place != SymbolSection::Undefined || m.binding == STB_WEAK {
+                    return false;
+                }
+                let t = targets.first[redirect[m.key.0 as usize].0 as usize];
+                t != NO_FILE && kinds[t as usize].is_lazy() && !file_live[t as usize].is_live()
+            })
+    });
+    let next = candidate.then(|| Stage {
+        sources: (0..n_files).map(|f| as_needed_in_n(FileId(f as u32))).collect(),
+        needed: in_n.clone(),
+        item2: item2.clone(),
+        reasons3: reasons3.clone(),
+    });
 
     // ---- D-16: TLS against a shared definition ----------------------------
     let mut tls_keys: Vec<(SymbolId, SymEntry, bool)> = Vec::new();
@@ -609,7 +658,7 @@ pub(crate) fn link<V: View>(
         }
     }
 
-    Dynamic {
+    let dynamic = Dynamic {
         needed,
         used,
         exported,
@@ -621,7 +670,8 @@ pub(crate) fn link<V: View>(
         versions,
         script_local,
         version_problems,
-    }
+    };
+    (dynamic, next)
 }
 
 /// `tls-mismatch` against a shared definition (D-16, resolve §3.4): the

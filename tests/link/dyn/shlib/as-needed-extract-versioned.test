@@ -1,0 +1,45 @@
+# dyn.md D-12's stages (WP-167), cell 4b: a needed `--as-needed`
+# library's versioned reference is no edge. libuv.so (needed: m1.o calls
+# u) references g@V, which libgver.so defines (version V); libg.a(g.o)
+# defines an unversioned g. An archive member defines no version before
+# the output's own script, so no member is a candidate: GNU ld, lld and
+# mortar extract nothing and the program runs libgver.so's g (u=51).
+#
+# mold differs: it extracts g.o and the loader binds g@V to the
+# program's unversioned g (u=11); the verifier finds g.o unreached (M12).
+#@ xfail(mold): M12: mold 2.37.1 extracts a member for a needed --as-needed library's versioned reference (g@V), which D-12 makes no edge
+#@ spec: dyn.md "D-12"
+#@ arch: aarch64 x86_64
+
+cc -O1 -fPIC u.c -o u.o
+cc -O1 -fPIC gver.c -o gver.o
+shlib gcc gver.o -Wl,--version-script=gver.map -Wl,-soname,libgver.so -o libgver.so
+shlib gcc u.o -L. -lgver -Wl,-soname,libuv.so -o libuv.so
+cc -O1 -fPIC g.c -o g.o
+ar rcs libg.a g.o
+cc -O1 -fPIC m1.c -o m1.o
+
+link gcc -pie m1.o -Wl,--as-needed libuv.so libg.a libgver.so -o versioned
+  no-diag: *
+check readelf -dW versioned
+  has: [libuv.so]
+check nm versioned
+  not: T g$
+run versioned
+  stdout: u=51
+
+#--- u.c
+int g(void);
+int u(void) { return g() + 1; }
+#--- gver.c
+int g(void) { return 50; }
+#--- gver.map
+V { global: g; local: *; };
+#--- g.c
+#include <stdio.h>
+__attribute__((constructor)) static void gc(void) { puts("g-ctor"); }
+int g(void) { return 10; }
+#--- m1.c
+#include <stdio.h>
+int u(void);
+int main(void) { printf("u=%d\n", u()); return 0; }

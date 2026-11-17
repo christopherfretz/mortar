@@ -181,33 +181,204 @@ fn d12_closure_definition_stays_undefined_with_note() {
     assert_eq!(dynamic(&r).closure_only, vec![(m.id("h"), w)]);
 }
 
+/// `m1.o --as-needed libu.so libg.a` and its variants (`spec/dyn.md` D-12,
+/// the stages; WP-167): `a.o` calls `u` of `libu.so`, which refers to `g`,
+/// which only `libg.a(g.o)` defines.
+fn row1(as_needed: bool) -> (Model, FileId, FileId, FileId) {
+    let mut m = Model::new(A64);
+    let a = m.obj("m1.o");
+    m.undef(a, "u");
+    let u = m.shlib("libu.so", as_needed);
+    m.def(u, "u");
+    m.undef(u, "g");
+    let ar = m.archive();
+    let g = m.member(ar, "g.o");
+    m.def(g, "g");
+    (m, a, u, g)
+}
+
 #[test]
-fn d12_references_of_as_needed_objects_do_not_extract() {
-    // Q1: `m1.o --as-needed libu.so libg.a` (needed) is refused by name;
-    // without --as-needed the member is extracted.
+fn d12_needed_as_needed_object_extracts_in_a_second_stage() {
     for as_needed in [false, true] {
+        let (m, _, u, g) = row1(as_needed);
+        let mut o = opts();
+        o.shared.shlib_undefined = ShlibUndefined::Error;
+        let r = link_with(&m, &o);
+        assert_eq!(row(&r, u), NEEDED);
+        assert!(row(&r, g).is_live());
+        // Only the last stage's diagnostics: stage 1's undefined `g` of
+        // libu.so is not reported.
+        assert!(r.problems.is_empty(), "{:?}", r.problems);
+        assert!(dynamic(&r).exported[m.id("g").0 as usize]);
+        assert!(matches!(def(&m, &r, "g"), Def::Strong(e) if e.file == g));
+        // The member's pulling reference is libu.so's.
+        assert!(matches!(row(&r, g), FileLive::Extracted(e) if e.file == u));
+        assert_eq!(r.stages, if as_needed { 2 } else { 1 });
+    }
+}
+
+#[test]
+fn d12_unneeded_as_needed_object_extracts_nothing() {
+    // `m0.o --as-needed libu.so libg.a`: libu.so is not needed (GNU ld, mold).
+    let mut m = Model::new(A64);
+    m.obj("m0.o");
+    let u = m.shlib("libu.so", true);
+    m.def(u, "u");
+    m.undef(u, "g");
+    let ar = m.archive();
+    let g = m.member(ar, "g.o");
+    m.def(g, "g");
+    let r = link(&m);
+    assert_eq!(row(&r, u), FileLive::Dead);
+    assert!(!row(&r, g).is_live());
+    assert_eq!(r.stages, 1);
+    assert!(r.problems.is_empty(), "{:?}", r.problems);
+}
+
+#[test]
+fn d12_weak_reference_and_live_definition_start_no_stage() {
+    // A weak reference of libu.so extracts nothing; a key an object already
+    // defines is no candidate (7b): one stage each.
+    let mut m = Model::new(A64);
+    let a = m.obj("m1.o");
+    m.undef(a, "u");
+    let u = m.shlib("libu.so", true);
+    m.def(u, "u");
+    m.weak_undef(u, "g");
+    m.undef(u, "h");
+    m.def(a, "h");
+    let ar = m.archive();
+    let g = m.member(ar, "g.o");
+    m.def(g, "g");
+    m.def(g, "h");
+    let r = link(&m);
+    assert_eq!(row(&r, u), NEEDED);
+    assert!(!row(&r, g).is_live());
+    assert_eq!(r.stages, 1);
+    assert!(r.problems.is_empty(), "{:?}", r.problems);
+}
+
+#[test]
+fn d12_object_needed_at_an_earlier_stage_stays_needed() {
+    // 2a: `m1y.o --as-needed libuy.so libgy.a`, gy.o defines `g` and `y`:
+    // libuy.so was needed for `y`; with gy.o live the program defines `y`,
+    // and libuy.so stays needed (GNU ld and mold).
+    let mut m = Model::new(A64);
+    let a = m.obj("m1y.o");
+    m.undef(a, "y");
+    let u = m.shlib("libuy.so", true);
+    m.def(u, "y");
+    m.undef(u, "g");
+    let ar = m.archive();
+    let g = m.member(ar, "gy.o");
+    m.def(g, "g");
+    m.def(g, "y");
+    let r = link(&m);
+    assert_eq!(row(&r, u), NEEDED);
+    assert_eq!(dynamic(&r).needed, vec![u]);
+    assert!(matches!(def(&m, &r, "y"), Def::Strong(e) if e.file == g));
+    assert_eq!(r.stages, 2);
+    assert!(r.problems.is_empty(), "{:?}", r.problems);
+}
+
+#[test]
+fn d12_stages_run_to_their_fixed_point() {
+    // 2d: libu.so -> gv.o -> libvw.so (as-needed, needed only by gv.o) ->
+    // libw.a(w.o): three stages.
+    let mut m = Model::new(A64);
+    let a = m.obj("m1.o");
+    m.undef(a, "u");
+    let u = m.shlib("libu.so", true);
+    m.def(u, "u");
+    m.undef(u, "g");
+    let ar = m.archive();
+    let gv = m.member(ar, "gv.o");
+    m.def(gv, "g");
+    m.undef(gv, "v");
+    let v = m.shlib("libvw.so", true);
+    m.def(v, "v");
+    m.undef(v, "w");
+    let ar2 = m.archive();
+    let w = m.member(ar2, "w.o");
+    m.def(w, "w");
+    let r = link(&m);
+    assert_eq!(row(&r, u), NEEDED);
+    assert_eq!(row(&r, v), NEEDED);
+    assert!(row(&r, gv).is_live());
+    assert!(matches!(row(&r, w), FileLive::Extracted(e) if e.file == v));
+    assert_eq!(dynamic(&r).needed, vec![u, v]);
+    assert_eq!(r.stages, 3);
+    assert!(r.problems.is_empty(), "{:?}", r.problems);
+    let d = dynamic(&r);
+    assert!(d.exported[m.id("g").0 as usize] && d.exported[m.id("w").0 as usize]);
+}
+
+#[test]
+fn d12_a_member_the_next_stage_extracts_is_no_item3_reason() {
+    // 7a: `m1.o --as-needed libu.so libg.a libg2.so`: libg2.so also defines
+    // `g`, after the member: the member is extracted and libg2.so is not
+    // needed (all three). With libg2.so before the archive, `first(g)` is
+    // libg2.so: nothing is extracted and D-11 item 3 makes it needed (GNU ld).
+    for g2_first in [false, true] {
         let mut m = Model::new(A64);
         let a = m.obj("m1.o");
-        m.undef(a, "f");
-        let u = m.shlib("libu.so", as_needed);
-        m.def(u, "f");
+        m.undef(a, "u");
+        let u = m.shlib("libu.so", true);
+        m.def(u, "u");
         m.undef(u, "g");
+        let g2 = if g2_first { Some(m.shlib("libg2.so", true)) } else { None };
         let ar = m.archive();
         let g = m.member(ar, "g.o");
         m.def(g, "g");
+        let g2 = g2.unwrap_or_else(|| m.shlib("libg2.so", true));
+        m.def(g2, "g");
         let r = link(&m);
         assert_eq!(row(&r, u), NEEDED);
-        if as_needed {
+        if g2_first {
             assert!(!row(&r, g).is_live());
-            assert_eq!(ids(&r), vec!["refused"]);
-            assert!(
-                matches!(r.problems[0].what, What::AsNeededExtraction { member, .. } if member == g)
-            );
+            assert_eq!(row(&r, g2), NEEDED);
+            assert_eq!(r.stages, 1);
         } else {
             assert!(row(&r, g).is_live());
-            assert!(ids(&r).is_empty(), "{:?}", ids(&r));
-            assert!(dynamic(&r).exported[m.id("g").0 as usize]);
+            assert_eq!(row(&r, g2), FileLive::Dead);
+            assert_eq!(dynamic(&r).needed, vec![u]);
+            assert_eq!(r.stages, 2);
         }
+        assert!(r.problems.is_empty(), "{:?}", r.problems);
+    }
+}
+
+#[test]
+fn d12_used_and_closure_references_extract_nothing_and_name_the_member() {
+    // 5: libtop.so (needed) lists libuc.so, which refers to `g` of
+    // libg.a(g.o). libuc.so used (on the line, --as-needed) or a closure
+    // file: no edge; D-13's undefined-symbol carries the member.
+    for closure in [false, true] {
+        let mut m = Model::new(A64);
+        let a = m.obj("m1t.o");
+        m.undef(a, "t");
+        let top = m.shlib("libtop.so", true);
+        m.def(top, "t");
+        let uc = if closure { m.closure_lib("libuc.so") } else { m.shlib("libuc.so", true) };
+        m.def(uc, "u");
+        m.undef(uc, "g");
+        m.needs(top, Some(uc));
+        let ar = m.archive();
+        let g = m.member(ar, "g.o");
+        m.def(g, "g");
+        let mut o = opts();
+        o.shared.shlib_undefined = ShlibUndefined::Error;
+        let r = link_with(&m, &o);
+        assert_eq!(row(&r, uc), USED);
+        assert!(!row(&r, g).is_live());
+        assert_eq!(r.stages, 1);
+        assert_eq!(ids(&r), vec!["undefined-symbol"]);
+        assert!(
+            matches!(r.problems[0].what, What::ShlibUndefined { member: Some((f, c)), .. }
+                if f == g && c == closure),
+            "{:?}",
+            r.problems
+        );
     }
 }
 

@@ -1,0 +1,77 @@
+# dyn.md D-12's stages (WP-167), cell 2a, and D-19a (the supervisor's
+# conditions 3 and 6): N only grows, so a library needed at stage 1 stays
+# needed when a later stage's member defines what it gave.
+#
+# m1y.o calls y; libuy.so gives it at stage 1 (needed, D-11 item 2) and
+# references g; libgy.a(gy.o) defines g and y. Stage 2 extracts gy.o for
+# libuy.so's g, and y is then the member's. GNU ld, mold and mortar keep
+# libuy.so DT_NEEDED (`libuy.so libc.so.6`); lld drops it. The run is the
+# same (gy-ctor, y=2). With a plain libv.so after it, libuy.so keeps its
+# place (its stage-1 reason, m1.o's reference, is before the mention):
+# `libuy.so libv.so` (GNU ld, mold, mortar; lld `libv.so`).
+#
+# The verifier (D-11 without the stages) finds libuy.so not needed
+# (P-D6) on GNU ld's, mold's and mortar's outputs; the verifier package
+# after WP-167 justifies it from the inputs: libuy.so gives y to m1.o
+# while every member is lazy (stage 1).
+#
+# The verifier's input-set rule (M11/M12) does not have D-12's stages yet:
+# it finds mortar's later-stage members unreached. The bytes and the runs
+# were checked (every expectation passes with the verifier off); the
+# verifier package after WP-167 lifts the mark.
+#@ xfail(mortar): M12: libgy.a(gy.o) is in the link and no root or live reference reaches it (resolve §4.1); P-D6: DT_NEEDED names 'libuy.so', which D-11 does not make needed; until the verifier package
+#@ xfail(bfd,mold): P-D6: DT_NEEDED names 'libuy.so', kept needed by D-12's stages (2a), which the verifier's D-11 does not model
+#@ spec: dyn.md "D-12"
+#@ spec: dyn.md "D-19a"
+#@ arch: aarch64 x86_64
+
+cc -O1 -fPIC uy.c -o uy.o
+shlib gcc uy.o -Wl,-soname,libuy.so -o libuy.so
+cc -O1 -fPIC v.c -o v.o
+shlib gcc v.o -Wl,-soname,libv.so -o libv.so
+cc -O1 -fPIC gy.c -o gy.o
+ar rcs libgy.a gy.o
+cc -O1 -fPIC m1y.c -o m1y.o
+
+link gcc -pie m1y.o -Wl,--as-needed libuy.so libgy.a -o kept
+  no-diag: *
+check(bfd,mold,mortar) readelf -dW kept
+  count: 2 (NEEDED)
+  has: [libuy.so]
+  then: [libc.so.6]
+check(lld) readelf -dW kept
+  count: 1 (NEEDED)
+  has: [libc.so.6]
+run kept
+  stdout: gy-ctor
+  stdout: y=2
+
+link gcc -pie m1y.o -Wl,--as-needed libuy.so -Wl,--no-as-needed libv.so -Wl,--as-needed libgy.a -o kept-first
+check(bfd,mold,mortar) readelf -dW kept-first
+  count: 3 (NEEDED)
+  has: [libuy.so]
+  then: [libv.so]
+  then: [libc.so.6]
+check(lld) readelf -dW kept-first
+  count: 2 (NEEDED)
+  has: [libv.so]
+  then: [libc.so.6]
+run kept-first
+  stdout: gy-ctor
+  stdout: y=2
+
+#--- uy.c
+int g(void);
+int u(void) { return g() + 1; }
+int y(void) { return 1; }
+#--- v.c
+int v(void) { return 20; }
+#--- gy.c
+#include <stdio.h>
+__attribute__((constructor)) static void gc(void) { puts("gy-ctor"); }
+int g(void) { return 10; }
+int y(void) { return 2; }
+#--- m1y.c
+#include <stdio.h>
+int y(void);
+int main(void) { printf("y=%d\n", y()); return 0; }
