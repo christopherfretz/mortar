@@ -6,6 +6,8 @@
 # mortar keep `foo@V1` (lld does not).
 #@ spec: resolve.md "9.7"; dyn.md "D-114"
 #@ arch: aarch64 x86_64
+#@ xfail(lld): the verifier's Y3 on lld's libe.so ('foo@V1' has another binding than its definitions), a library that links and loads; reported with WP-125 part 2
+#@ xfail(mold): the verifier's P-D7 on mold's libh.so ('foo' exported with another size than .symtab's), mold keeping foo@V1; reported with WP-125 part 2
 
 cc -O1 -fPIC sv.c -o sv.o
 link gcc -shared sv.o -Wl,--version-script,v.map -o libh.so

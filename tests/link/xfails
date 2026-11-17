@@ -16,3 +16,19 @@
 
 # M2 (dynamic executables, spec/dyn.md section 16): none; every M2
 # package has landed (the last, WP-052 static-pie).
+
+# M4: WP-125 part 2's version-script links are judged by the verifier once
+# its accepted options (crates/mortar_plumb opts.rs, s3_2a) spell
+# --version-script, --undefined-version and --no-undefined-version: until
+# then every such mortar link is L3's M9 ("no option mortar accepts spells
+# it"). The verifier agents' package removes these lines.
+mortar dyn/version/bsymbolic-functions.test: M4: verifier options for WP-125 (--version-script)
+mortar dyn/version/gc-root.test: M4: verifier options for WP-125 (--version-script)
+mortar dyn/version/hide-everything.test: M4: verifier options for WP-125 (--version-script)
+mortar dyn/version/interpose-default.test: M4: verifier options for WP-125 (--version-script)
+mortar dyn/version/local-star-global-glob.test: M4: verifier options for WP-125 (--version-script)
+mortar dyn/version/parents.test: M4: verifier options for WP-125 (--version-script)
+mortar dyn/version/symver-hidden-by-own-node.test: M4: verifier options for WP-125 (--version-script)
+mortar dyn/version/symver-old-and-default.test: M4: verifier options for WP-125 (--version-script)
+mortar dyn/version/undefined-name.test: M4: verifier options for WP-125 (--version-script)
+mortar dyn/version/verdef-fields.test: M4: verifier options for WP-125 (--version-script)

@@ -6,6 +6,7 @@
 # preemptible, D-112), while `foo@V1` stays the library's.
 #@ spec: dyn.md "D-114"; dyn.md "D-112"
 #@ arch: aarch64 x86_64
+#@ xfail(bfd): the verifier's R1 on GNU ld's call to foo@plt (bound to foo@@V2), a library that runs right plain and interposed (--no-plumb); reported with WP-125 part 2
 
 cc -O1 -fPIC lib.c -o lib.o
 cc -O1 -fPIC pre.c -o pre.o
