@@ -8,12 +8,12 @@ use mortar_elf::consts::{
     SHF_ALLOC, SHF_EXECINSTR, SHF_MERGE, SHF_WRITE, SHT_GROUP, SHT_NOBITS, SHT_NULL, SHT_REL,
     SHT_RELA, SHT_STRTAB, SHT_SYMTAB, SHT_SYMTAB_SHNDX, SHT_X86_64_UNWIND,
 };
-use mortar_elf::{Machine, Object, Rel, Rela, SectionIndex, Shdr, SymbolTable};
+use mortar_elf::{Error, Machine, Object, Rel, Rela, SectionIndex, Shdr, SymbolTable};
 
-use crate::Input;
 use crate::image::Image;
 use crate::map::{Format, Map, MapFile, Placed, SectionRef};
 use crate::report::{Finding, Rule, Site};
+use crate::store::{At, Bytes, Resolved, Store};
 
 /// A piece of an input section placed on its own (§3.1).
 #[derive(Debug, Clone, Copy)]
@@ -47,11 +47,21 @@ pub(crate) enum Place {
 pub(crate) struct Sec<'a> {
     pub name: String,
     pub shdr: Shdr,
-    /// The contents; empty for `SHT_NOBITS` and for a section out of bounds.
-    pub data: &'a [u8],
+    /// The contents ([`Obj::data`]); empty for `SHT_NOBITS` and for a
+    /// section out of bounds.
+    body: Body<'a>,
     pub place: Place,
     /// The relocation section that applies to this one.
     pub relocs: Option<u32>,
+}
+
+/// Where a section's contents are (§8.1): resident (the skeleton, or a
+/// file held whole), or `size` bytes at `offset` of the object, read when
+/// a rule asks for them.
+#[derive(Debug, Clone, Copy)]
+enum Body<'a> {
+    Resident(&'a [u8]),
+    Read { offset: u64, size: u64 },
 }
 
 impl Sec<'_> {
@@ -77,7 +87,8 @@ impl Sec<'_> {
     }
 }
 
-/// An input object the map names, read.
+/// An input object the map names, read: its skeleton resident, its
+/// sections' contents read by position when asked for (§8.1).
 #[derive(Debug)]
 pub(crate) struct Obj<'a> {
     pub path: String,
@@ -85,9 +96,51 @@ pub(crate) struct Obj<'a> {
     pub elf: Object<'a>,
     pub symtab: Option<SymbolTable<'a>>,
     pub secs: Vec<Sec<'a>>,
+    store: &'a Store<'a>,
+    at: At,
+    /// Whether a section's contents are not resident.
+    lazy: bool,
 }
 
-impl Obj<'_> {
+impl<'a> Obj<'a> {
+    /// The contents of section `si`: empty for `SHT_NOBITS`, for a
+    /// section out of bounds, for an index past the table, and for one
+    /// whose read failed (an I2 finding, [`Store::take_errors`]).
+    pub fn data(&self, si: usize) -> Bytes<'a> {
+        match self.secs.get(si).map(|s| s.body) {
+            Some(Body::Resident(b)) => Bytes::Ref(b),
+            Some(Body::Read { offset, size }) => self.store.body(self.at, offset, size),
+            None => Bytes::Ref(&[]),
+        }
+    }
+
+    /// The contents of section `si` when they are resident for the
+    /// object's life (the skeleton's sections, an object read whole).
+    pub fn resident(&self, si: usize) -> Option<&'a [u8]> {
+        match self.secs.get(si).map(|s| s.body) {
+            Some(Body::Resident(b)) => Some(b),
+            _ => None,
+        }
+    }
+
+    /// The length of [`Obj::data`] of section `si`, without reading it
+    /// (the read can still fail and give no bytes).
+    pub fn data_len(&self, si: usize) -> u64 {
+        match self.secs.get(si).map(|s| s.body) {
+            Some(Body::Resident(b)) => b.len() as u64,
+            Some(Body::Read { size, .. }) => size,
+            None => 0,
+        }
+    }
+
+    /// Reads the whole object for a phase that reads most of its sections:
+    /// one read, kept while the next object is judged (§8.1).
+    pub fn load(&self) {
+        if self.lazy {
+            self.store.load(self.at);
+        }
+    }
+
     pub fn site(&self, sec: usize, offset: u64) -> Site {
         Site {
             file: self.path.clone(),
@@ -108,13 +161,28 @@ impl Obj<'_> {
     /// RELA (`None` addend for REL), or `None` if it cannot be read.
     pub fn records(&self, reloc_sec: u32) -> Option<Vec<RawRecord>> {
         let s = self.elf.section(SectionIndex(reloc_sec)).ok()?;
+        // Contents not resident are read and checked as resident ones
+        // (`Section::rela_in`: the same checks in the same order).
+        let body: Bytes<'_>;
         if s.sh_type() == SHT_RELA {
-            let r = s.rela().ok()?;
+            let r = match s.rela() {
+                Err(Error::NotResident { .. }) => {
+                    body = self.data(reloc_sec as usize);
+                    s.rela_in(&body).ok()?
+                }
+                r => r.ok()?,
+            };
             Some(
                 r.iter().map(|x: Rela| (x.r_offset, x.r_sym, x.r_type, Some(x.r_addend))).collect(),
             )
         } else {
-            let r = s.rel().ok()?;
+            let r = match s.rel() {
+                Err(Error::NotResident { .. }) => {
+                    body = self.data(reloc_sec as usize);
+                    s.rel_in(&body).ok()?
+                }
+                r => r.ok()?,
+            };
             Some(r.iter().map(|x: Rel| (x.r_offset, x.r_sym, x.r_type, None)).collect())
         }
     }
@@ -181,89 +249,28 @@ pub fn thin_members(archive_path: &str, bytes: &[u8]) -> Vec<String> {
         .collect()
 }
 
-/// An archive's members by name: `(header offset, content)` in file
-/// order, read once per archive (WP-028d: a scan per member was a quarter
-/// of the verifier's time on protoc).
-type Members<'a> = HashMap<&'a [u8], Vec<(u64, Content<'a>)>>;
-
-fn members_of(bytes: &[u8]) -> Result<Members<'_>, String> {
-    let archive = Archive::parse(bytes).map_err(|e| e.to_string())?;
-    let mut by_name: Members<'_> = HashMap::default();
-    for m in archive.members() {
-        let m = m.map_err(|e| e.to_string())?;
-        by_name.entry(m.name()).or_default().push((m.header_offset(), m.content()));
-    }
-    Ok(by_name)
-}
-
-fn find_member<'a>(
-    file: &MapFile,
-    members: &Members<'a>,
-    by_path: &HashMap<&str, &'a [u8]>,
-) -> Result<&'a [u8], String> {
-    let name = file.member.as_deref().unwrap_or("").as_bytes();
-    let mut found: Option<&'a [u8]> = None;
-    let mut count = 0;
-    for &(offset, content) in members.get(name).map_or(&[][..], Vec::as_slice) {
-        if file.member_offset.is_some_and(|o| o != offset) {
-            continue;
-        }
-        count += 1;
-        match content {
-            Content::Inline { data, .. } => found = found.or(Some(data)),
-            Content::External { path } => {
-                let at = thin_member_path(&file.path, path);
-                match by_path.get(at.as_str()) {
-                    Some(data) => found = found.or(Some(*data)),
-                    None => {
-                        return Err(format!(
-                            "a member of a thin archive, '{at}', which is not among the inputs"
-                        ));
-                    }
-                }
-            }
-            Content::ExternalMember { .. } => {
-                return Err(
-                    "a thin archive's member that is a member of another archive (not read)".into(),
-                );
-            }
-        }
-    }
-    match (found, count) {
-        (Some(d), 1) => Ok(d),
-        (None, _) => {
-            Err(format!("the archive has no member named '{}'", String::from_utf8_lossy(name)))
-        }
-        _ => Err(format!(
-            "the archive has {count} members named '{}' and the map does not say which",
-            String::from_utf8_lossy(name)
-        )),
-    }
-}
-
-fn read_obj<'a>(
-    bytes: &'a [u8],
-    file: &MapFile,
-    by_path: &HashMap<&str, &'a [u8]>,
-    archives: &mut HashMap<String, Result<Members<'a>, String>>,
-) -> Result<Obj<'a>, String> {
-    let data = if file.member.is_some() {
-        let members = archives
-            .entry(file.path.clone())
-            .or_insert_with(|| members_of(bytes))
-            .as_ref()
-            .map_err(Clone::clone)?;
-        find_member(file, members, by_path)?
-    } else {
-        bytes
-    };
-    let elf = Object::parse(data).map_err(|e| e.to_string())?;
+/// Object `k` of the store, as the map's file `file` names it.
+fn read_obj<'a>(store: &'a Store<'a>, k: usize, file: &MapFile) -> Result<Obj<'a>, String> {
+    let (at, view) = store.object(k);
+    let elf = Object::parse_view(view).map_err(|e| e.to_string())?;
     let symtab = elf.symbols().map_err(|e| e.to_string())?;
     let mut secs: Vec<Sec<'a>> = Vec::with_capacity(elf.section_count() as usize);
+    let mut lazy = false;
     for s in elf.sections() {
         let name = String::from_utf8_lossy(s.name().unwrap_or(b"")).into_owned();
-        let data = if s.sh_type() == SHT_NOBITS { &[][..] } else { s.data().unwrap_or(&[]) };
-        secs.push(Sec { name, shdr: *s.header(), data, place: Place::Absent, relocs: None });
+        let body = if s.sh_type() == SHT_NOBITS {
+            Body::Resident(&[])
+        } else {
+            match s.data() {
+                Ok(d) => Body::Resident(d),
+                Err(Error::NotResident { .. }) => {
+                    lazy = true;
+                    Body::Read { offset: s.header().sh_offset, size: s.header().sh_size }
+                }
+                Err(_) => Body::Resident(&[]),
+            }
+        };
+        secs.push(Sec { name, shdr: *s.header(), body, place: Place::Absent, relocs: None });
     }
     for i in 0..secs.len() {
         if matches!(secs[i].shdr.sh_type, SHT_RELA | SHT_REL) {
@@ -273,31 +280,50 @@ fn read_obj<'a>(
             }
         }
     }
-    Ok(Obj { path: file.path.clone(), member: file.member.clone(), elf, symtab, secs })
+    Ok(Obj {
+        path: file.path.clone(),
+        member: file.member.clone(),
+        elf,
+        symtab,
+        secs,
+        store,
+        at,
+        lazy,
+    })
 }
 
 /// Reads the inputs a map names and decides the place of every section
 /// (§3.3).
 #[allow(clippy::too_many_lines)] // the map's records, kind by kind
-pub(crate) fn locate<'a>(map: &Map, inputs: &[Input<'a>], image: &Image<'_>) -> Located<'a> {
+///
+/// `store` holds the inputs (§8.1), `m` the map's index among the maps it
+/// was read for.
+pub(crate) fn locate<'a>(
+    map: &Map,
+    store: &'a Store<'a>,
+    m: usize,
+    image: &Image<'_>,
+) -> Located<'a> {
     let mut out = Located::default();
-    let by_path: HashMap<&str, &[u8]> = inputs.iter().map(|i| (i.path, i.bytes)).collect();
     // Map file index -> object index.
     let mut obj_of: Vec<Option<usize>> = vec![None; map.files.len()];
     let out_machine = image.header.e_machine;
     let mut missing_said: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
-    let mut archives = HashMap::default();
     for (i, f) in map.files.iter().enumerate() {
-        let Some(bytes) = by_path.get(f.path.as_str()) else {
-            if missing_said.insert(&f.path) {
-                out.findings.push(Finding::new(
-                    Rule::InputMissing,
-                    format!("the map names '{}', which is not among the inputs", f.path),
-                ));
+        let read = match store.resolved(m, i) {
+            Resolved::Missing => {
+                if missing_said.insert(&f.path) {
+                    out.findings.push(Finding::new(
+                        Rule::InputMissing,
+                        format!("the map names '{}', which is not among the inputs", f.path),
+                    ));
+                }
+                continue;
             }
-            continue;
+            Resolved::Error(e) => Err(e.clone()),
+            Resolved::Object(k) => read_obj(store, *k, f),
         };
-        match read_obj(bytes, f, &by_path, &mut archives) {
+        match read {
             Ok(obj) if obj.elf.header().e_machine == out_machine => {
                 obj_of[i] = Some(out.objs.len());
                 out.objs.push(obj);
@@ -599,7 +625,7 @@ fn disambiguate(obj: &Obj<'_>, fits: &[usize], p: &Placed, image: &Image<'_>) ->
         let matching: Vec<usize> = fits
             .iter()
             .copied()
-            .filter(|&i| equal_outside(obj.secs[i].data, &covered(obj, i), outb))
+            .filter(|&i| equal_outside(&obj.data(i), &covered(obj, i), outb))
             .collect();
         if let [one] = matching.as_slice() {
             return Some(*one);
@@ -607,11 +633,10 @@ fn disambiguate(obj: &Obj<'_>, fits: &[usize], p: &Placed, image: &Image<'_>) ->
     }
     let recs = |i: usize| obj.secs[i].relocs.and_then(|r| obj.records(r)).unwrap_or_default();
     let r0 = recs(fits[0]);
+    let d0 = obj.data(fits[0]);
     fits.iter()
         .all(|&i| {
-            obj.secs[i].data == first.data
-                && obj.secs[i].shdr.sh_type == first.shdr.sh_type
-                && recs(i) == r0
+            *obj.data(i) == *d0 && obj.secs[i].shdr.sh_type == first.shdr.sh_type && recs(i) == r0
         })
         .then_some(fits[0])
 }

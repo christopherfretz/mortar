@@ -5,6 +5,7 @@
 //! section). Three exceptions sort, each by a key that ends in
 //! `SectionId`: `.text` categories (L-53), `.init_array`/`.fini_array`
 //! priorities (L-54), and `SHF_LINK_ORDER` inputs (L-57).
+//! `--sort-section` (L-53a) adds a key inside each of those groups.
 
 use mortar_core::assignment::Assignment;
 use mortar_core::column::Column;
@@ -12,6 +13,7 @@ use mortar_core::id::{OutSecId, SectionId};
 use mortar_core::layout::Folds;
 use mortar_core::liveness::Liveness;
 use mortar_core::par::Pool;
+use mortar_core::plan::SortSection;
 use mortar_core::resolution::Resolution;
 use mortar_elf::consts::SHF_LINK_ORDER;
 
@@ -94,6 +96,7 @@ pub fn order(
     liveness: &Liveness,
     folds: &Folds,
     ranks: &Column<OutSecId, Rank>,
+    sort_section: Option<SortSection>,
     pool: &Pool,
 ) -> Result<Ordered, Vec<LayoutDiag>> {
     let files = resolution.section_base.len() as usize;
@@ -125,7 +128,7 @@ pub fn order(
         .map(|(o, m)| (assignment.outsecs[OutSecId(o as u32)].name, m, Ok(())))
         .collect();
     pool.unit_cost(60000)
-        .for_each_mut(&mut work, |_, (name, m, r)| *r = sort_named(name, m, headers));
+        .for_each_mut(&mut work, |_, (name, m, r)| *r = sort_named(name, m, headers, sort_section));
     let mut members = Vec::with_capacity(work.len());
     let mut results = Vec::with_capacity(work.len());
     for (_, m, r) in work {
@@ -140,16 +143,82 @@ pub fn order(
     Ok(Ordered { members: Column::from_vec(members).unwrap_or_default() })
 }
 
-/// L-53 and L-54 for one output section.
-fn sort_named(name: &[u8], m: &mut [SectionId], headers: &Headers<'_>) -> Result<(), LayoutDiag> {
+/// The output sections GNU ld's default scripts name, whose statements
+/// `--sort-section` sorts (L-53a): every one but `.init` and `.fini`
+/// (`SORT_NONE`). Any other output section is an orphan there and is not
+/// sorted. `.lrodata`, `.ldata` and `.lbss` are in the x86-64 scripts
+/// only; they are listed for every target.
+const SCRIPT_SECTIONS: [&[u8]; 28] = [
+    b".text",
+    b".rodata",
+    b".rodata1",
+    b".data",
+    b".data1",
+    b".data.rel.ro",
+    b".bss",
+    b".tdata",
+    b".tbss",
+    b".preinit_array",
+    b".init_array",
+    b".fini_array",
+    b".ctors",
+    b".dtors",
+    b".jcr",
+    b".eh_frame",
+    b".gcc_except_table",
+    b".gnu_extab",
+    b".exception_ranges",
+    b".sframe",
+    b".interp",
+    b".comment",
+    b".note.gnu.build-id",
+    b".note.ABI-tag",
+    b".note.package",
+    b".lrodata",
+    b".ldata",
+    b".lbss",
+];
+
+/// Whether `--sort-section` sorts the inputs of output section `name`
+/// (L-53a).
+#[must_use]
+pub fn sorted_by_sort_section(name: &[u8]) -> bool {
+    SCRIPT_SECTIONS.contains(&name)
+}
+
+/// L-53a's key between two inputs of one group: name (bytewise) or
+/// alignment (descending). `Equal` without `--sort-section`.
+fn section_key(
+    a: SectionId,
+    b: SectionId,
+    headers: &Headers<'_>,
+    by: Option<SortSection>,
+) -> std::cmp::Ordering {
+    match by {
+        None => std::cmp::Ordering::Equal,
+        Some(SortSection::Name) => headers[a].name.cmp(headers[b].name),
+        Some(SortSection::Alignment) => headers[b].align.cmp(&headers[a].align),
+    }
+}
+
+/// L-53, L-54 and L-53a for one output section.
+fn sort_named(
+    name: &[u8],
+    m: &mut [SectionId],
+    headers: &Headers<'_>,
+    sort_section: Option<SortSection>,
+) -> Result<(), LayoutDiag> {
+    let by = sort_section.filter(|_| sorted_by_sort_section(name));
     if name == b".text" {
         m.sort_by(|&a, &b| {
-            let key = |s: SectionId| {
-                let n = headers[s].name;
-                let c = text_category(n);
-                (c, if c == 4 { n } else { &b""[..] }, s)
-            };
-            key(a).cmp(&key(b))
+            let (na, nb) = (headers[a].name, headers[b].name);
+            let (ca, cb) = (text_category(na), text_category(nb));
+            ca.cmp(&cb)
+                .then_with(
+                    || if ca == 4 && cb == 4 { na.cmp(nb) } else { std::cmp::Ordering::Equal },
+                )
+                .then_with(|| section_key(a, b, headers, by))
+                .then(a.cmp(&b))
         });
     } else if name == b".init_array" || name == b".fini_array" {
         let mut keyed = Vec::with_capacity(m.len());
@@ -158,10 +227,24 @@ fn sort_named(name: &[u8], m: &mut [SectionId], headers: &Headers<'_>) -> Result
             // Numbered before unnumbered; ties in SectionId order.
             keyed.push((p.map_or((1, 0), |n| (0, n)), s));
         }
-        keyed.sort_unstable();
+        // The numbered have their own sort (SORT_BY_INIT_PRIORITY), which
+        // `--sort-section` does not replace; the unnumbered take its key.
+        keyed.sort_by(|&(ka, a), &(kb, b)| {
+            ka.cmp(&kb)
+                .then_with(|| {
+                    if ka.0 == 1 {
+                        section_key(a, b, headers, by)
+                    } else {
+                        std::cmp::Ordering::Equal
+                    }
+                })
+                .then(a.cmp(&b))
+        });
         for (slot, (_, s)) in m.iter_mut().zip(keyed) {
             *slot = s;
         }
+    } else if by.is_some() {
+        m.sort_by(|&a, &b| section_key(a, b, headers, by).then(a.cmp(&b)));
     }
     Ok(())
 }
@@ -230,6 +313,18 @@ mod tests {
         assert_eq!(text_category(b".text"), 5);
         assert_eq!(text_category(b".text.f"), 5);
         assert_eq!(text_category(b".text.hotter"), 5);
+    }
+
+    // spec: layout.md §9 L-53a (the output sections --sort-section sorts)
+    #[test]
+    fn l53a_script_sections() {
+        for n in [&b".text"[..], b".rodata", b".data", b".bss", b".tdata", b".tbss", b".init_array"]
+        {
+            assert!(sorted_by_sort_section(n), "{n:?}");
+        }
+        for n in [&b".init"[..], b".fini", b".text.f", b"my_section", b".got", b".debug_info"] {
+            assert!(!sorted_by_sort_section(n), "{n:?}");
+        }
     }
 
     // spec: layout.md §9.1 L-54 (init priorities: decimal 0..65535, else refused)

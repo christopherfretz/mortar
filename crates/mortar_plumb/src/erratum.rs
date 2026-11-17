@@ -124,11 +124,13 @@ pub(crate) fn check(e: &mut Engine<'_, '_>, map: &Map) {
             let Place::Whole(addr) = s.place else { continue };
             if s.shdr.sh_flags & (SHF_ALLOC | SHF_EXECINSTR) != SHF_ALLOC | SHF_EXECINSTR
                 || s.shdr.sh_type == SHT_NOBITS
-                || s.data.is_empty()
+                || o.data_len(si) == 0
             {
                 continue;
             }
-            let len = s.data.len() as u64;
+            let len = o.data_len(si);
+            // Read only when a word near a page's end is in it (§8.1).
+            let mut data = None;
             let mut ranges: Option<Vec<(u64, bool)>> = None;
             let mut page = (addr & !0xFFF).saturating_sub(0x1000);
             while page.saturating_add(0xFF8) < addr.saturating_add(len) {
@@ -140,7 +142,8 @@ pub(crate) fn check(e: &mut Engine<'_, '_>, map: &Map) {
                 while a + 4 <= hi.min(addr + len) {
                     let off = a - addr;
                     let r = ranges.get_or_insert_with(|| mapping(e, oi, si));
-                    let b = &s.data[off as usize..off as usize + 4];
+                    let held = data.get_or_insert_with(|| o.data(si));
+                    let Some(b) = held.get(off as usize..off as usize + 4) else { break };
                     let input = u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
                     words.insert(
                         a,

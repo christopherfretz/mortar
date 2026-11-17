@@ -84,6 +84,8 @@ const SUPPORTED: &[&str] = &[
     "--sysroot",
     // The dynamic executable (WP-053).
     "-rpath-link",
+    "--sort-common",
+    "--sort-section",
     "--export-dynamic-symbol",
     "-init",
     "-fini",
@@ -100,6 +102,8 @@ const SUPPORTED: &[&str] = &[
     "-w",
     "--color-diagnostics",
     "--no-color-diagnostics",
+    "--warn-common",
+    "--no-warn-common",
     // The one-definition-rule switches (WP-072, odr.md O-41).
     "--odr",
     "--no-odr-check",
@@ -113,6 +117,7 @@ const SUPPORTED: &[&str] = &[
     "--help",
     "-Map",
     "-M",
+    "--verbose",
     "--dependency-file",
     "--threads",
     "--mortar-map",

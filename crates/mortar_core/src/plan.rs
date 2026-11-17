@@ -577,6 +577,30 @@ pub struct Shaping {
     pub emit_relocs: bool,
     /// `--gdb-index` (`true`), `--no-gdb-index` (`false`).
     pub gdb_index: Option<bool>,
+    /// `--sort-common[=ascending|descending]` (`spec/layout.md` L-88a);
+    /// the last use wins.
+    pub sort_common: Option<SortCommon>,
+    /// `--sort-section=name|alignment` (`spec/layout.md` L-53a); the last
+    /// use wins.
+    pub sort_section: Option<SortSection>,
+}
+
+/// `--sort-common`: the direction of the commons' order by alignment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SortCommon {
+    /// `--sort-common` alone, or `=descending`: the most aligned first.
+    Descending,
+    /// `=ascending`: the least aligned first.
+    Ascending,
+}
+
+/// `--sort-section`: the key of the input sections' order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SortSection {
+    /// `name`: by section name, byte order.
+    Name,
+    /// `alignment`: by `sh_addralign`, the largest first.
+    Alignment,
 }
 
 /// `--icf`.

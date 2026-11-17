@@ -1277,7 +1277,7 @@ impl<'a, 'b> Engine<'a, 'b> {
             self.x86_rel_overlaps(oi, si, &raw);
         }
         let place = s.place.clone();
-        let data = s.data;
+        let data = o.data(si);
         let nobits = s.shdr.sh_type == SHT_NOBITS;
         // Records with their places; the pieces of a dropped part are not
         // in the output.
@@ -1951,7 +1951,7 @@ impl<'a, 'b> Engine<'a, 'b> {
         }) else {
             return Seq::Kept;
         };
-        let data = self.objs[oi].secs[si].data;
+        let data = self.objs[oi].data(si);
         let in12 = usize::try_from(head.off + 12)
             .ok()
             .and_then(|k| data.get(k..k + 4))
@@ -2504,8 +2504,9 @@ impl<'a, 'b> Engine<'a, 'b> {
             }
         };
         let s = &self.objs[oi].secs[sec];
+        let data = self.objs[oi].data(sec);
         let Ok(r) = usize::try_from(r) else { return false };
-        if r >= s.data.len() {
+        if r >= data.len() {
             return false;
         }
         let end = if s.shdr.sh_flags & SHF_STRINGS != 0 {
@@ -2514,7 +2515,7 @@ impl<'a, 'b> Engine<'a, 'b> {
             let start = r - (r % es);
             let mut e = start;
             loop {
-                let Some(ch) = s.data.get(e..e + es) else { return false };
+                let Some(ch) = data.get(e..e + es) else { return false };
                 e += es;
                 if ch.iter().all(|&b| b == 0) {
                     break e;
@@ -2522,9 +2523,9 @@ impl<'a, 'b> Engine<'a, 'b> {
             }
         } else {
             let es = usize::try_from(s.shdr.sh_entsize.max(1)).unwrap_or(1);
-            (r - (r % es) + es).min(s.data.len())
+            (r - (r % es) + es).min(data.len())
         };
-        let want = &s.data[r..end];
+        let want = &data[r..end];
         read(t, want.len() as u64).is_some_and(|b| b == want)
     }
 }

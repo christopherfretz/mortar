@@ -517,6 +517,10 @@ pub enum Lands {
     WarnBackrefs(bool),
     /// `diagnostics.warn_common`.
     WarnCommon(bool),
+    /// `shaping.sort_common` (`--sort-common[=ORDER]`).
+    SortCommon,
+    /// `shaping.sort_section` (`--sort-section KEY`).
+    SortSection,
     /// `diagnostics.odr.mode` (`--odr=`).
     Odr,
     /// `diagnostics.odr.mode`, `off` (`--no-odr-check`).
@@ -653,6 +657,8 @@ impl Lands {
             Self::AllowShlibUndefined(_) => "dynamic.allow_shlib_undefined",
             Self::WarnBackrefs(_) => "diagnostics.warn_backrefs",
             Self::WarnCommon(_) => "diagnostics.warn_common",
+            Self::SortCommon => "shaping.sort_common",
+            Self::SortSection => "shaping.sort_section",
             Self::Odr | Self::NoOdrCheck => "diagnostics.odr.mode",
             Self::OdrStats => "diagnostics.odr.stats",
             Self::OdrTable => "diagnostics.odr.table",
@@ -702,6 +708,8 @@ impl Lands {
                 | Self::AllowShlibUndefined(_)
                 | Self::WarnBackrefs(_)
                 | Self::WarnCommon(_)
+                | Self::SortCommon
+                | Self::SortSection
                 | Self::Odr
                 | Self::NoOdrCheck
                 | Self::Icf
