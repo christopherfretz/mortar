@@ -3,10 +3,13 @@
 
 use mortar_elf::Machine;
 use mortar_elf::consts::{
-    EM_386, EM_X86_64, ET_EXEC, PF_R, PF_W, PF_X, PT_GNU_EH_FRAME, PT_GNU_PROPERTY, PT_GNU_RELRO,
-    PT_GNU_STACK, PT_INTERP, PT_LOAD, PT_NOTE, PT_PHDR, PT_TLS, SHF_ALLOC, SHF_EXECINSTR, SHF_TLS,
-    SHF_WRITE, SHN_ABS, SHN_COMMON, SHN_LORESERVE, SHN_UNDEF, SHN_XINDEX, SHT_DYNSYM, SHT_NOBITS,
-    SHT_NOTE, SHT_REL, SHT_RELA, STB_GNU_UNIQUE, STT_FILE, STT_GNU_IFUNC, STT_SECTION, STT_TLS,
+    EM_386, EM_AARCH64, EM_X86_64, ET_EXEC, PF_R, PF_W, PF_X, PT_GNU_EH_FRAME, PT_GNU_PROPERTY,
+    PT_GNU_RELRO, PT_GNU_STACK, PT_INTERP, PT_LOAD, PT_NOTE, PT_PHDR, PT_TLS, SHF_ALLOC,
+    SHF_COMPRESSED, SHF_EXECINSTR, SHF_TLS, SHF_WRITE, SHN_ABS, SHN_COMMON, SHN_LORESERVE,
+    SHN_UNDEF, SHN_XINDEX, SHT_DYNAMIC, SHT_DYNSYM, SHT_FINI_ARRAY, SHT_GNU_HASH, SHT_GNU_VERDEF,
+    SHT_GNU_VERNEED, SHT_GNU_VERSYM, SHT_HASH, SHT_INIT_ARRAY, SHT_NOBITS, SHT_NOTE,
+    SHT_PREINIT_ARRAY, SHT_PROGBITS, SHT_REL, SHT_RELA, SHT_STRTAB, SHT_SYMTAB, SHT_X86_64_UNWIND,
+    STB_GNU_UNIQUE, STT_FILE, STT_GNU_IFUNC, STT_SECTION, STT_TLS,
 };
 
 use crate::image::{Image, Phdr};
@@ -645,7 +648,8 @@ fn notes_ok(b: &[u8], align: usize) -> bool {
 /// S13 to S18 and mortar's S2 clause (§6.2, from `spec/layout.md` §20.3):
 /// the layout rules a loader, strip and glibc's start-up rely on.
 #[allow(clippy::too_many_lines)] // one block per rule, in the spec's order
-pub(crate) fn check_layout(image: &Image<'_>, format: Format) -> Vec<Finding> {
+pub(crate) fn check_layout(image: &Image<'_>, map: &crate::Map) -> Vec<Finding> {
+    let format = map.format;
     let mut out = Vec::new();
     let h = &image.header;
     let loads: Vec<&Phdr> = image.phdrs.iter().filter(|p| p.p_type == PT_LOAD).collect();
@@ -671,24 +675,61 @@ pub(crate) fn check_layout(image: &Image<'_>, format: Format) -> Vec<Finding> {
             ));
         }
     }
-    // S2 (mortar, i386): every PT_LOAD has p_align 0x1000 and a static
-    // executable starts at 0x08048000 (x86.md X86-65); PT_GNU_STACK has
-    // p_align 16 (X86-66).
-    if format == Format::Mortar && h.e_machine == EM_386 {
-        for p in loads.iter().filter(|p| p.p_align != 0x1000) {
-            out.push(
-                s(2, format!("PT_LOAD at {:#x}: p_align {:#x}, not 0x1000", p.p_vaddr, p.p_align))
+    let opts = crate::opts::of(map);
+    // S2 (mortar): every PT_LOAD has p_align P = max(maxpage, the largest
+    // alignment of a section in it), maxpage being the line's last
+    // `-z max-page-size` (0: the default, 64 KiB on AArch64, 4 KiB on
+    // x86-64 and i386); a non-PIE executable starts at
+    // align_down(image base, P1) on i386, 0x08048000 (layout.md L-67, L-68,
+    // L-74, x86.md X86-65).
+    // `-z common-page-size` changes nothing (L-75). PT_GNU_STACK has
+    // p_align 16 on i386 (X86-66).
+    if let Some(o) = &opts {
+        let default = if h.e_machine == EM_AARCH64 { 0x1_0000 } else { 0x1000 };
+        let maxpage = o.max_page.filter(|&n| n != 0).unwrap_or(default);
+        let want = |p: &Phdr| {
+            sections_in(image, p).iter().map(|sh| sh.sh_addralign).max().unwrap_or(1).max(maxpage)
+        };
+        for p in &loads {
+            let w = want(p);
+            if p.p_align != w {
+                out.push(
+                    s(
+                        2,
+                        format!(
+                            "PT_LOAD at {:#x}: p_align {:#x}, not {w:#x} (maxpage {maxpage:#x} \
+                             and its sections' alignment, L-67, L-74)",
+                            p.p_vaddr, p.p_align
+                        ),
+                    )
                     .at(p.p_vaddr),
-            );
+                );
+            }
         }
+        // The base on i386 only: the corpus tests read lld's 64-bit
+        // outputs (base 0x200000) under mortar's map (WP-131).
         if h.e_type == ET_EXEC
-            && let Some(first) = loads.iter().map(|p| p.p_vaddr).min()
-            && first & !0xfff != 0x0804_8000
+            && h.e_machine == EM_386
+            && let Some(first) = loads.iter().min_by_key(|p| p.p_vaddr)
         {
-            out.push(s(2, format!("the first PT_LOAD is at {first:#x}, not 0x08048000")));
+            let image_base: u64 = 0x0804_8000;
+            let base = image_base & !(want(first) - 1);
+            if first.p_vaddr != base {
+                out.push(s(
+                    2,
+                    format!(
+                        "the first PT_LOAD is at {:#x}, not align_down({image_base:#x}, {:#x}) = \
+                         {base:#x} (L-68)",
+                        first.p_vaddr,
+                        want(first)
+                    ),
+                ));
+            }
         }
-        for p in image.phdrs.iter().filter(|p| p.p_type == PT_GNU_STACK && p.p_align != 16) {
-            out.push(s(10, format!("PT_GNU_STACK has p_align {:#x}, not 16", p.p_align)));
+        if h.e_machine == EM_386 {
+            for p in image.phdrs.iter().filter(|p| p.p_type == PT_GNU_STACK && p.p_align != 16) {
+                out.push(s(10, format!("PT_GNU_STACK has p_align {:#x}, not 16", p.p_align)));
+            }
         }
     }
     // S2 (mortar): p_align is at least 4 KiB (L-1).
@@ -702,6 +743,9 @@ pub(crate) fn check_layout(image: &Image<'_>, format: Format) -> Vec<Finding> {
                 .at(p.p_vaddr),
             );
         }
+    }
+    if format == Format::Mortar {
+        out.extend(present(image, opts.as_ref()));
     }
     // S13: PT_PHDR and PT_INTERP, at most one each, before every PT_LOAD;
     // PT_PHDR and the program header table in a PT_LOAD's file image
@@ -979,6 +1023,113 @@ pub(crate) fn check_layout(image: &Image<'_>, format: Format) -> Vec<Finding> {
                     .at(p.p_vaddr),
                 );
             }
+        }
+    }
+    out
+}
+
+/// The headers and tables mortar always writes, absent (WP-131 V5; §6.2):
+/// S10 one `PT_GNU_STACK` (L-84); S11 every allocated note in a `PT_NOTE`
+/// (L-67); S20 a `PT_GNU_RELRO` when there is a `.pad.relro`, ending
+/// where it ends (L-64, L-67); Y2 a `.symtab` exactly when the
+/// line has no `-s` (synth.md S-84); S1 the special sections have their
+/// gABI types (a reader finds them by type), and none is `SHF_COMPRESSED`
+/// (mortar writes `--compress-debug-sections=none` only; WP-131 V4).
+fn present(image: &Image<'_>, opts: Option<&crate::opts::Options>) -> Vec<Finding> {
+    let mut out = Vec::new();
+    let stacks = image.phdrs.iter().filter(|p| p.p_type == PT_GNU_STACK).count();
+    if stacks == 0 {
+        out.push(s(10, "no PT_GNU_STACK, which mortar always writes (L-84)"));
+    }
+    let notes: Vec<&Phdr> = image.phdrs.iter().filter(|p| p.p_type == PT_NOTE).collect();
+    for x in image.sections.iter().skip(1) {
+        let sh = &x.shdr;
+        if sh.sh_type != SHT_NOTE || sh.sh_flags & SHF_ALLOC == 0 || sh.sh_size == 0 {
+            continue;
+        }
+        let end = sh.sh_addr.saturating_add(sh.sh_size);
+        if !notes
+            .iter()
+            .any(|p| sh.sh_addr >= p.p_vaddr && end <= p.p_vaddr.saturating_add(p.p_memsz))
+        {
+            out.push(
+                s(11, format!("no PT_NOTE covers {}, an allocated note (L-67)", x.name))
+                    .at(sh.sh_addr),
+            );
+        }
+    }
+    let relro: Vec<&Phdr> = image.phdrs.iter().filter(|p| p.p_type == PT_GNU_RELRO).collect();
+    match (image.sections.iter().find(|x| x.name == ".pad.relro"), relro.as_slice()) {
+        (Some(pad), []) => out.push(
+            s(20, "a .pad.relro and no PT_GNU_RELRO: rank 7 stays writable (L-64, L-67)")
+                .at(pad.shdr.sh_addr),
+        ),
+        (Some(pad), [r]) => {
+            let end = pad.shdr.sh_addr.saturating_add(pad.shdr.sh_size);
+            if r.p_vaddr.saturating_add(r.p_memsz) != end {
+                out.push(
+                    s(
+                        20,
+                        format!(
+                            "PT_GNU_RELRO ends at {:#x}, not at the end of .pad.relro {end:#x} (L-67)",
+                            r.p_vaddr.saturating_add(r.p_memsz)
+                        ),
+                    )
+                    .at(r.p_vaddr),
+                );
+            }
+        }
+        _ => {}
+    }
+    if let Some(o) = opts {
+        let symtab = image.sections.iter().any(|x| x.shdr.sh_type == SHT_SYMTAB);
+        if symtab == o.strip_all {
+            let msg = if o.strip_all {
+                "a .symtab, and the line says -s (synth.md S-84)"
+            } else {
+                "no .symtab (SHT_SYMTAB), and the line does not say -s (synth.md S-84)"
+            };
+            out.push(Finding::new(Rule::SymbolTable(2), msg));
+        }
+    }
+    for x in image.sections.iter().skip(1).filter(|x| x.shdr.sh_flags & SHF_COMPRESSED != 0) {
+        out.push(
+            s(1, format!("{} is SHF_COMPRESSED, which mortar does not write (image.md)", x.name))
+                .at(x.shdr.sh_addr),
+        );
+    }
+    for x in image.sections.iter().skip(1) {
+        let want: &[u32] = match x.name.as_str() {
+            ".eh_frame" if image.header.e_machine == EM_X86_64 => {
+                &[SHT_PROGBITS, SHT_X86_64_UNWIND]
+            }
+            ".interp" | ".eh_frame_hdr" | ".eh_frame" => &[SHT_PROGBITS],
+            ".dynamic" => &[SHT_DYNAMIC],
+            ".dynsym" => &[SHT_DYNSYM],
+            ".symtab" => &[SHT_SYMTAB],
+            ".dynstr" | ".strtab" | ".shstrtab" => &[SHT_STRTAB],
+            ".gnu.hash" => &[SHT_GNU_HASH],
+            ".hash" => &[SHT_HASH],
+            ".init_array" => &[SHT_INIT_ARRAY],
+            ".fini_array" => &[SHT_FINI_ARRAY],
+            ".preinit_array" => &[SHT_PREINIT_ARRAY],
+            ".gnu.version" => &[SHT_GNU_VERSYM],
+            ".gnu.version_r" => &[SHT_GNU_VERNEED],
+            ".gnu.version_d" => &[SHT_GNU_VERDEF],
+            n if n.starts_with(".note") => &[SHT_NOTE],
+            _ => continue,
+        };
+        if !want.contains(&x.shdr.sh_type) {
+            out.push(
+                s(
+                    1,
+                    format!(
+                        "{} has sh_type {:#x}, not its gABI type {:#x}",
+                        x.name, x.shdr.sh_type, want[0]
+                    ),
+                )
+                .at(x.shdr.sh_addr),
+            );
         }
     }
     out

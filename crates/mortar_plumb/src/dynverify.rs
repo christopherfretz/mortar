@@ -77,13 +77,13 @@ pub fn verify_with(output: &[u8], inputs: &[Input<'_>], map: &Map, ctx: &Ctx<'_>
             return crate::verify(output, inputs, map);
         }
         report.findings.extend(structure::check(&image));
-        report.findings.extend(structure::check_layout(&image, map.format));
+        report.findings.extend(structure::check_layout(&image, map));
         report.findings.extend(missing);
         report.sort();
         return report;
     };
     report.findings.extend(structure::check(&image));
-    report.findings.extend(structure::check_layout(&image, map.format));
+    report.findings.extend(structure::check_layout(&image, map));
     let located = locate::locate(map, inputs, &image);
     report.findings.extend(located.findings);
     let objs = located.objs;
@@ -200,7 +200,11 @@ pub fn verify_with(output: &[u8], inputs: &[Input<'_>], map: &Map, ctx: &Ctx<'_>
         machine: image.header.e_machine,
     };
     let kind = line.kind.unwrap_or(OutputKind::Exec);
-    report.findings.extend(crate::dyncheck::check(&image, &dout, &line, &model, &ld, &objs, map));
+    let mut checked = crate::dyncheck::check(&image, &dout, &line, &model, &ld, &objs, map);
+    if map.format != crate::Format::Mortar && line.symbolic == Some("-Bsymbolic") {
+        symbolic_flag(&mut checked);
+    }
+    report.findings.extend(checked);
     // View 1: bias 0.
     let p1 = Params::default();
     let v1 = loader::apply(&image, &dout, &ld, &p1, true);
@@ -396,6 +400,42 @@ fn line_words(map: &Map, ctx: &Ctx<'_>) -> Option<Vec<String>> {
     }
 }
 
+/// `DF_SYMBOLIC` (0x2) in a reference's `DT_FLAGS` under `-Bsymbolic`:
+/// D-30's P-D6 finding split, so that its own message names it (§10.2
+/// A44, WP-131 V2); other bits keep D-30's message.
+fn symbolic_flag(findings: &mut Vec<Finding>) {
+    const DF_SYMBOLIC: u64 = 0x2;
+    let mut extra = Vec::new();
+    for f in findings.iter_mut() {
+        if f.rule != Rule::Dyn(6) {
+            continue;
+        }
+        let Some(rest) = f.message.strip_prefix("DT_FLAGS 0x") else { continue };
+        let Some((fl, rest)) = rest.split_once(" has bits 0x") else { continue };
+        let Some(bad) = rest.strip_suffix(" (D-30)") else { continue };
+        let (Ok(fl), Ok(bad)) = (u64::from_str_radix(fl, 16), u64::from_str_radix(bad, 16)) else {
+            continue;
+        };
+        if bad & DF_SYMBOLIC == 0 {
+            continue;
+        }
+        let mut g = f.clone();
+        g.message = SYMBOLIC.into();
+        extra.push(g);
+        let left = bad & !DF_SYMBOLIC;
+        f.message = format!("DT_FLAGS {fl:#x} has bits {left:#x} (D-30)");
+        if left == 0 {
+            f.message.clear();
+        }
+    }
+    findings.retain(|f| !f.message.is_empty());
+    findings.extend(extra);
+}
+
+/// The message of a reference's `DF_SYMBOLIC` under `-Bsymbolic` (A44).
+pub const SYMBOLIC: &str =
+    "DT_FLAGS has DF_SYMBOLIC under -Bsymbolic in an executable, where D-30 writes none";
+
 /// §12 (WP-131, V5): an output without `PT_DYNAMIC` is dynamic all the
 /// same when its line asks for a dynamic kind (D-1: `-dynamic-linker`,
 /// `-pie`, a shared object loaded; never decided from what the output
@@ -407,13 +447,14 @@ fn line_words(map: &Map, ctx: &Ctx<'_>) -> Option<Vec<String>> {
 /// each shared object the line loads but not `--as-needed` is P-D6 (no
 /// `DT_NEEDED` can name it).
 fn no_dynamic(image: &Image<'_>, words: Option<&[String]>, files: &dyn Files) -> Vec<Finding> {
-    use mortar_elf::consts::{EM_386, EM_AARCH64, EM_X86_64, PT_INTERP, SHT_DYNSYM, SHT_REL, SHT_RELA};
+    use mortar_elf::consts::{
+        EM_386, EM_AARCH64, EM_X86_64, PT_INTERP, SHT_DYNSYM, SHT_REL, SHT_RELA,
+    };
     let mut v = Vec::new();
     let mut why = Vec::new();
     if let Some(w) = words {
         let line = Line::parse(w, files);
-        if let Some(k @ (OutputKind::Exec | OutputKind::Pie | OutputKind::StaticPie)) = line.kind
-        {
+        if let Some(k @ (OutputKind::Exec | OutputKind::Pie | OutputKind::StaticPie)) = line.kind {
             why.push(format!("the line's kind is '{}' (D-1)", k.name()));
         }
         for i in &line.items {

@@ -368,8 +368,18 @@ the last of an option and its negation winning (§2.10; image.md I-69 for
 GNU's (and so abbreviate) are the rows of `docs/status/options.md` that
 mortar does not refuse: an accepted line has no other word (a refused
 option fails the link, and a failed link writes no map, image.md I-77).
-The reader holds a copy of those rows, and a test holds it equal to the
-table (`opts::tests::s3_2a_accepted_is_the_options_table`). An
+The reader holds a copy of every row, accepted and refused, and a test
+holds it equal to the table (`opts::tests::s3_2a_accepted_is_the_options_table`).
+One lookup, `opts::Table::word`, reads a word and the value it takes for
+every reader of the line (`opts.rs` and stage 3's `line.rs`, WP-131 V1,
+V6): whether an option takes the next word is its row's, so a refused
+option's value (`--sort-section alignment`) is consumed with it, and
+`line.rs` names the rows it interprets by their first spelling
+(`line::INTERPRETED`). A test over the whole table
+(`line::tests::s12_1_every_spelling_of_a_row_reads_alike`) reads every
+spelling of every row, abbreviations and `-z` keywords included, in
+both value forms: an interpreted row changes the line, every other row
+leaves it as it was. An
 abbreviation is read as the one accepted GNU spelling it is a prefix
 of: mortar accepted the line, so it named exactly one GNU spelling
 (§2.4), and the accepted one with that prefix is it.
@@ -1441,6 +1451,13 @@ a *merged* section:
    - **R1, R2 or R3** otherwise;
    - **`piece-not-locatable`** if there are no candidates at all.
 
+   A group whose section's output section is `SHF_COMPRESSED` is not
+   decided: its members are counted not judged, `compressed`, at R6's
+   entry (WP-131 V4; there is no inflate). GNU ld's and lld's
+   `--compress-debug-sections=zlib` outputs were R6 before, read raw. In
+   mortar's output a compressed section is S1 (mortar writes `=none`
+   only).
+
 When a group is decided does not change its verdict, only how long its
 members are held (WP-109). A group whose section no other object can
 name (the section defines no symbol that is not `STB_LOCAL`) has all its
@@ -1843,9 +1860,10 @@ that breaks it (`tests/mutation.rs s9_2e_each_structure_rule_is_enforced`).
   - its memory does not wrap (in an `ELFCLASS32` output, it ends at or
     below 2^32);
   - in mortar's output (by map format), `p_align` is at least 4 KiB
-    (`spec/layout.md` L-1; layout.md §20.3, WP-028b); on i386 it is
-    0x1000, and a static executable's first `PT_LOAD` is at 0x08048000
-    (x86.md X86-65, WP-028e).
+    (`spec/layout.md` L-1; layout.md §20.3, WP-028b), and it is the
+    line's maxpage or a section's larger alignment, with the base
+    rounded to it (S2 (mortar) below, WP-131 V3; it replaces WP-028e's
+    fixed i386 0x1000 and 0x08048000).
 - **S3.** The `PT_LOAD`s are in ascending `p_vaddr` order and do not
   overlap (gABI "Program Header").
 - **S4.** Every allocated section with a size, other than `.tbss`, lies
@@ -1970,6 +1988,36 @@ S18 is S17 here; its T1 is S18):
 - **S21 (WP-028d).** `PT_GNU_EH_FRAME` is exactly `.eh_frame_hdr`
   (address, offset, size, `p_memsz` = `p_filesz`): the unwinder finds the
   search table through it (LSB "Exception Frames").
+
+**mortar's pages and its always-present headers (mortar's map; WP-131 V3,
+V5).** These clauses read the line (§3.2a):
+
+- **S2 (mortar).** maxpage is the line's last `-z max-page-size` (0 or
+  none: 64 KiB on AArch64, 4 KiB on x86-64 and i386; L-74). Every
+  `PT_LOAD` has `p_align` = max(maxpage, the largest `sh_addralign` of
+  a section in it) (L-67), and an i386 `ET_EXEC` output's lowest
+  `PT_LOAD` is at align_down(0x08048000, that `p_align`) (L-68, X86-65).
+  The 64-bit base (0x400000) is not judged: the corpus tests read lld's
+  outputs, whose base is 0x200000, under mortar's map. `-z common-page-size`
+  changes nothing (L-75). Before WP-131 the clause held i386 at 0x1000
+  and 0x08048000 whatever the line said.
+- **S10 (mortar).** There is a `PT_GNU_STACK` (L-84: always).
+- **S11 (mortar).** Every allocated `SHT_NOTE` section with a size lies
+  in a `PT_NOTE` (L-67).
+- **S20 (mortar).** With a `.pad.relro` (rank 7 non-empty, L-64) there
+  is a `PT_GNU_RELRO`, and its memory ends where `.pad.relro` ends.
+- **Y2 (mortar).** There is a `.symtab` exactly when the line has no
+  `-s`/`--strip-all` (synth.md S-84).
+- **S1 (mortar).** No section is `SHF_COMPRESSED` (V4); `.interp`,
+  `.eh_frame_hdr`, `.eh_frame` (on x86-64 also `SHT_X86_64_UNWIND`),
+  `.dynamic`, `.dynsym`, `.symtab`, `.dynstr`, `.strtab`, `.shstrtab`,
+  `.gnu.hash`, `.hash`, the init, fini and preinit arrays, the three
+  `.gnu.version*` sections and `.note*` have their gABI `sh_type`: tools
+  (gdb, readelf, strip) find them by type.
+
+Each was found by a mutation that left a correct mortar output's header
+or table out and drew no finding (WP-131's walk of P-D1 to P-D15 and
+§6.2; `spec/landed/plumb/WP-131.md`).
 
 Not taken from layout.md §20.3: its S19 (`ET_DYN` alignment) is stage
 3's (S1 accepts `ET_DYN` only through P-D1, §12); its
@@ -4023,6 +4071,16 @@ is accepted from its linker only, never from mortar's map.
   S the place on AArch64 (X = A, as GNU ld and mortar write): R1 ending
   "; it holds A − P, S = 0 for an undefined weak (spec/plumb.md §4.4,
   §5.8)". On x86 all four write A − P (S = 0 there).
+- **A44 (lld; WP-131 V2).** Under `-Bsymbolic` lld sets `DF_SYMBOLIC`
+  in an executable's `DT_FLAGS`; GNU ld and mold write nothing, and
+  D-30 gives mortar no such bit. The loader ignores the flag in an
+  executable (its references bind locally already), so the program is
+  the same. P-D6 with the message "DT_FLAGS has DF_SYMBOLIC under
+  -Bsymbolic in an executable, where D-30 writes none", which stage 3
+  splits from D-30's "DT_FLAGS … has bits …" for a reference whose line
+  says `-Bsymbolic` last of its family (other bits keep D-30's
+  message). Accepted from lld only; mortar's rule stays D-30's. A
+  shared object's `DF_SYMBOLIC` (WP-117, WP-121) is not this anomaly.
 
 lld also links a `.hidden` or `.protected` undefined reference that only
 a library defines (writing 0) and drops the library from `DT_NEEDED`:
@@ -4315,7 +4373,8 @@ own implementation of D-11-D-27 and compared with the output.
   a missing note gives no `PF_X` from any (GNU ld 2.44's default). An executable stack the link did not ask
   for is a permission the program does not need; one it asked for and
   did not get faults in the code that needed it (a nested function's
-  trampoline). No `PT_GNU_STACK`: not judged here (S10). Test:
+  trampoline). No `PT_GNU_STACK`: not judged here (S10; for mortar's
+  map S10 makes it a finding, WP-131). Test:
   `tests/dyn.rs` `s12_p_d4_gnu_stack_execute` (case `stack`: the three
   linkers' `-z execstack` and `-z noexecstack` PIEs and GNU ld's and
   mold's executable-note PIEs clean, each `-z` output and the lazy hello PIE with `PF_X` flipped
@@ -4328,6 +4387,24 @@ own implementation of D-11-D-27 and compared with the output.
   `s12_pie_entry_and_non_address_relative` (case `pie-rules`: each
   linker's `-pie` output of `relx.c` with `e_entry` + 4 is P-D4 on both
   machines, missed with the rule dropped).
+  **No `PT_DYNAMIC` (WP-131 V5).** The output kind comes from the line
+  and the inputs (D-1), never from what the output holds: an output
+  without `PT_DYNAMIC` is judged as static only when nothing says it is
+  dynamic. When the line's kind (§12.1, `line.rs`) is `Exec`, `Pie` or
+  `StaticPie`, or the output has `PT_INTERP`, an `SHT_DYNSYM` section, a
+  `.dynamic` section, or an allocated relocation section with a record
+  other than `IRELATIVE`, then a missing `PT_DYNAMIC` is P-D4 ("no
+  PT_DYNAMIC, and ...", naming each reason): the loader finds no
+  `.dynamic`, so no `DT_NEEDED` and no relocation table. Each shared
+  object the line loads (not under `--as-needed`) is also P-D6 ("no
+  PT_DYNAMIC, so no DT_NEEDED names ..."). Such an output gets the
+  structure rules (§6.2) and these findings, not the static rules,
+  whose model of it would be wrong. mold 2.37 writes such a file after
+  `--push-state -Bstatic --pop-state -l<lib>` (PT_INTERP, `.dynsym`, a
+  PLT and a JUMP_SLOT, no `.dynamic`); it crashes at start-up
+  (`tests/link/dyn/shlib/push-state.test`, `xfail(mold)`). Before, the
+  verifier took "dynamic" from `PT_DYNAMIC` itself and passed it. Test:
+  `tests/dyn.rs` `s12_p_d4_no_pt_dynamic`.
 - **P-D5 (`.gnu.hash`).** Recompute the table from `.dynsym` with D-26's
   formulas and compare word for word; then look up every exported and
   every canonical-PLT name with the loader's algorithm (it is found at

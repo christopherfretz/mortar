@@ -1511,7 +1511,8 @@ fn data_executable(b: &mut [u8]) {
 /// P-D4 (V5): `PT_DYNAMIC`'s header made `PT_NULL`.
 fn no_pt_dynamic(b: &mut [u8]) {
     let (phoff, phentsize, phnum) = (le64(b, 0x20) as usize, le16(b, 0x36), le16(b, 0x38));
-    let o = (0..phnum).map(|i| phoff + i * phentsize).find(|&o| le32(b, o) == 2).expect("PT_DYNAMIC");
+    let o =
+        (0..phnum).map(|i| phoff + i * phentsize).find(|&o| le32(b, o) == 2).expect("PT_DYNAMIC");
     b[o..o + 4].copy_from_slice(&[0; 4]);
 }
 
@@ -1709,7 +1710,11 @@ fn judge(case: &str) {
         }
         // P-D2 stops stage 3 before any record is judged, and so does
         // P-D4 without PT_DYNAMIC (V5).
-        assert!(r.coverage.records > 0 || ["PD2", "nodyn"].contains(&o.case), "{}: no records", o.label());
+        assert!(
+            r.coverage.records > 0 || ["PD2", "nodyn"].contains(&o.case),
+            "{}: no records",
+            o.label()
+        );
     }
     assert!(n > 0 || c.outs.is_empty(), "no outputs of case {case}");
     assert!(failures.is_empty(), "{}", failures.join("\n"));

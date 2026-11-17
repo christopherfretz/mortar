@@ -350,7 +350,7 @@ fn run_side<'a>(
     } else {
         let mut r = Report::default();
         r.findings.extend(crate::structure::check(&image));
-        r.findings.extend(crate::structure::check_layout(&image, map.format));
+        r.findings.extend(crate::structure::check_layout(&image, map));
         r.findings.extend(located.findings);
         r.findings.append(&mut engine.findings);
         r.coverage = std::mem::take(&mut engine.cov);

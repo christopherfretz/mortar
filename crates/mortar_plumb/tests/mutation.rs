@@ -424,7 +424,8 @@ fn s9_2e_each_structure_rule_is_enforced() {
     let (ctx, map) = mortar_map(c);
     let check = |m: &[u8]| verify_with(m, &ctx.files, &map);
     let r = check(&ctx.output);
-    assert!(r.with_rule("S2").next().is_none() && r.with_rule("S18").next().is_none());
+    let s2 = |r: &Report| r.with_rule("S2").count();
+    assert!(s2(&r) == 0 && r.with_rule("S18").next().is_none(), "{}", r.render("out"));
     let ph = phdrs(&ctx.output);
     let load = ph.iter().rfind(|p| p.1 == PT_LOAD).unwrap();
     let mut m = ctx.output.clone();
@@ -434,6 +435,45 @@ fn s9_2e_each_structure_rule_is_enforced() {
     let v = le64(&m, load.0 + 40);
     put64(&mut m, load.0 + 40, v + 0x100);
     expect_rule(&check(&m), "S18", "mortar: a PT_LOAD past its last section");
+
+    // WP-131 V3: S2 reads the line's -z max-page-size (L-74), and
+    // -z common-page-size changes nothing (L-75).
+    let paged = |words: &[&str]| {
+        let mut words: Vec<&str> = words.to_vec();
+        words.push("--build-id");
+        let text = mortar_plumb::map::mortar::write(&with_words(&ctx.map, &words));
+        mortar_plumb::map::parse(Format::Mortar, &text).unwrap()
+    };
+    let loads = ph.iter().filter(|p| p.1 == PT_LOAD).count();
+    let big = paged(&["-z", "max-page-size=0x200000"]);
+    let r = verify_with(&ctx.output, &ctx.files, &big);
+    assert_eq!(s2(&r), loads, "maxpage 2 MiB: every PT_LOAD\n{}", r.render("out"));
+    for line in [&["-z", "common-page-size=0x1000"][..], &["-z", "max-page-size=0"]] {
+        let r = verify_with(&ctx.output, &ctx.files, &paged(line));
+        assert_eq!(s2(&r), 0, "{line:?}\n{}", r.render("out"));
+    }
+
+    // WP-131 V5: what mortar always writes, left out (§6.2).
+    let null_phdr = |ty: u32| {
+        let mut m = ctx.output.clone();
+        let p = ph.iter().find(|p| p.1 == ty).unwrap();
+        put32(&mut m, p.0, 0);
+        m
+    };
+    expect_rule(&check(&null_phdr(PT_GNU_STACK)), "S10", "mortar: no PT_GNU_STACK");
+    expect_rule(&check(&null_phdr(PT_NOTE)), "S11", "mortar: no PT_NOTE");
+    let sh = shdrs(&ctx.output);
+    let symtab = sh.iter().find(|x| x.2 == SHT_SYMTAB).unwrap();
+    let mut m = ctx.output.clone();
+    put32(&mut m, symtab.0 + 4, 0);
+    let r = check(&m);
+    expect_rule(&r, "Y2", "mortar: no .symtab");
+    expect_rule(&r, "S1", "mortar: .symtab not SHT_SYMTAB");
+    // WP-131 V4: a compressed section is not mortar's.
+    let comment = sh.iter().find(|x| x.1 == ".comment").unwrap();
+    let mut m = ctx.output.clone();
+    put64(&mut m, comment.0 + 8, comment.3 | 0x800);
+    expect_rule(&check(&m), "S1", "mortar: SHF_COMPRESSED");
 }
 
 /// The lld map of the start link, in mortar's format: the base of the map

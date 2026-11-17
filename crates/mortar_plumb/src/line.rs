@@ -781,7 +781,8 @@ mod tests {
         for on in ["-dy", "--dy", "-call_shared", "--call_shared", "-Bdynamic", "--Bdynamic"] {
             assert!(shared(&format!("-L/l -Bstatic {on} -lg")), "{on}");
         }
-        for off in ["-dn", "--dn", "-non_shared", "--non_shared", "-static", "--static", "--Bstatic"]
+        for off in
+            ["-dn", "--dn", "-non_shared", "--non_shared", "-static", "--static", "--Bstatic"]
         {
             assert!(!shared(&format!("-L/l {off} -lg")), "{off}");
         }

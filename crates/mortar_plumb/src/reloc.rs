@@ -2412,6 +2412,17 @@ impl<'a, 'b> Engine<'a, 'b> {
     /// Decides one piece group: the references to offset `r` of mergeable
     /// section `sec` of object `oi` (§5.6).
     fn decide_pieces(&mut self, (oi, sec, r, extra): (usize, usize, u64, i64), g: &PieceGroup) {
+        // §5.6 (WP-131 V4): a piece in an SHF_COMPRESSED output section is
+        // not judged (no inflate); it is counted as such.
+        let target = &self.objs[oi].secs[sec];
+        if !target.alloc()
+            && self
+                .image
+                .nonalloc_section(&target.name)
+                .is_some_and(|i| self.image.sections[i].shdr.sh_flags & SHF_COMPRESSED != 0)
+        {
+            return self.not_checked(Reason::Compressed, g.members.len() as u64);
+        }
         let cands = candidates_of(g.members.iter().map(|m| &m.ev), None);
         if cands.is_empty() {
             self.not_checked(Reason::PieceNotLocatable, g.members.len() as u64);

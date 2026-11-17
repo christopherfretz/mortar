@@ -12,16 +12,17 @@
 #
 # The references DIFFER: lld writes DF_SYMBOLIC (DT_FLAGS 0x2) for
 # `-Bsymbolic` in an executable; GNU ld and mold write nothing, and mortar
-# follows them. The verifier judges lld's DF_SYMBOLIC P-D6 ("DT_FLAGS 0x2
-# has bits 0x2 (D-30)") though the option line asks for it (WP-112
-# finding V2), so lld's `-Bsymbolic` link is left out here.
+# follows them (D-30). lld's flag is anomaly A44, accepted from lld only
+# (spec/plumb.md §10.2; WP-131 V2): the loader ignores DF_SYMBOLIC in an
+# executable, whose references bind locally already.
+#@ anomaly(lld): A44
 #@ spec: cli.md "§3.6"
 #@ arch: aarch64 x86_64
 #@ fixture: greet
 
 cc -O1 -fno-pie main.c -o main.o
 link gcc -no-pie main.o -L. -lgreet -o plain
-link(bfd,mold,mortar) gcc -no-pie main.o -L. -lgreet -Wl,-Bsymbolic -o bs
+link gcc -no-pie main.o -L. -lgreet -Wl,-Bsymbolic -o bs
 link gcc -no-pie main.o -L. -lgreet -Wl,-Bsymbolic-functions -o bsf
 link(lld,mold,mortar) gcc -no-pie main.o -L. -lgreet -Wl,--Bsymbolic-non-weak -o bsnw
 link(lld,mold,mortar) gcc -no-pie main.o -L. -lgreet -Wl,--Bsymbolic-non-weak-functions -o bsnwf
@@ -29,7 +30,7 @@ link gcc -no-pie main.o -L. -lgreet -Wl,-Bsymbolic -Wl,-Bno-symbolic -o bns
 run plain
   stdout: hello, symbolic
   stdout: hook own 41
-run(bfd,mold,mortar) bs
+run bs
   stdout: hello, symbolic
   stdout: hook own 41
 check readelf -dsW plain
@@ -37,6 +38,8 @@ check readelf -dsW plain
   not: SYMBOLIC
 check(bfd,mold,mortar) readelf -dW bs
   not: SYMBOLIC
+check(lld) readelf -dW bs
+  has: FLAGS * SYMBOLIC
 check(bfd,mortar) cmp bs plain
   has: ^identical$
 check(bfd,mortar) cmp bsf plain

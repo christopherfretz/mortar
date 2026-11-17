@@ -695,7 +695,8 @@ impl Table {
             Some(first)
         };
         if let Some((_, row)) = exact.or_else(abbrev) {
-            let opt = |value: Option<String>| Word::Opt { id: row.id, value, accepted: row.accepted };
+            let opt =
+                |value: Option<String>| Word::Opt { id: row.id, value, accepted: row.accepted };
             return match (row.value, joined) {
                 (Val::No, Some(_)) => (Word::Unknown, 1),
                 (Val::No | Val::Eq, None) => (opt(None), 1),
@@ -708,7 +709,9 @@ impl Table {
         }
         // Step 5: one dash, a short option, its value joined.
         let short = (dashes == 1).then(|| body.chars().next()).flatten().and_then(|c| {
-            self.names.iter().find(|(n, r)| r.value == Val::Next && n.chars().eq(std::iter::once(c)))
+            self.names
+                .iter()
+                .find(|(n, r)| r.value == Val::Next && n.chars().eq(std::iter::once(c)))
         });
         match short {
             Some((n, row)) if body.len() > n.len() => (
@@ -769,6 +772,11 @@ pub struct Options {
     pub build_id: BuildId,
     /// The last of `-z execstack` (true) and `-z noexecstack` (false).
     pub execstack: Option<bool>,
+    /// `-s`/`--strip-all` (synth.md S-84: no `.symtab`).
+    pub strip_all: bool,
+    /// The last `-z max-page-size=N` (layout.md L-74; `N = 0` means the
+    /// default), when its value reads as a number.
+    pub max_page: Option<u64>,
     /// Words that no accepted option spells, in order, with their index
     /// in the line (M9).
     pub unread: Vec<(usize, String)>,
@@ -785,6 +793,8 @@ impl Default for Options {
             odr_off: false,
             build_id: BuildId::None,
             execstack: None,
+            strip_all: false,
+            max_page: None,
             unread: Vec::new(),
         }
     }
@@ -819,7 +829,7 @@ impl Options {
             match w {
                 Word::Input => {}
                 Word::Opt { id, value, accepted: true } => o.apply(id, value.as_deref()),
-                Word::Z { kw, accepted: true, .. } => o.z(kw),
+                Word::Z { kw, value, accepted: true } => o.z(kw, value.as_deref()),
                 Word::Opt { accepted: false, .. } | Word::Z { .. } | Word::Unknown => {
                     unread(&mut o, i, &words[i]);
                 }
@@ -829,10 +839,11 @@ impl Options {
         o
     }
 
-    fn z(&mut self, kw: &str) {
+    fn z(&mut self, kw: &str, value: Option<&str>) {
         match kw {
             "execstack" => self.execstack = Some(true),
             "noexecstack" => self.execstack = Some(false),
+            "max-page-size" => self.max_page = value.and_then(number),
             _ => {}
         }
     }
@@ -843,7 +854,11 @@ impl Options {
             "--fix-cortex-a53-843419" => self.fix_843419 = true,
             "--gdb-index" => self.gdb_index = true,
             "--no-gdb-index" => self.gdb_index = false,
-            "-s" | "-S" => self.strip_debug = true,
+            "-s" => {
+                self.strip_debug = true;
+                self.strip_all = true;
+            }
+            "-S" => self.strip_debug = true,
             "--keep-mason-meta" => self.keep_mason_meta = true,
             "--odr-table" => {
                 self.odr_table = match value {
@@ -865,6 +880,18 @@ impl Options {
             "--no-build-id" => self.build_id = BuildId::None,
             _ => {}
         }
+    }
+}
+
+/// A number as GNU's `-z` values spell it: `0x` hex, a leading `0`
+/// octal, else decimal.
+fn number(v: &str) -> Option<u64> {
+    if let Some(h) = v.strip_prefix("0x").or_else(|| v.strip_prefix("0X")) {
+        u64::from_str_radix(h, 16).ok()
+    } else if v.len() > 1 && v.starts_with('0') {
+        u64::from_str_radix(&v[1..], 8).ok()
+    } else {
+        v.parse().ok()
     }
 }
 

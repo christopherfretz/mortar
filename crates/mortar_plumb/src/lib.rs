@@ -194,7 +194,7 @@ pub fn verify(output: &[u8], inputs: &[Input<'_>], map: &Map) -> Report {
     };
     prof::mark("image");
     report.findings.extend(structure::check(&image));
-    report.findings.extend(structure::check_layout(&image, map.format));
+    report.findings.extend(structure::check_layout(&image, map));
     prof::mark("structure");
     let located = locate::locate(map, inputs, &image);
     report.findings.extend(located.findings);

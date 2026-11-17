@@ -173,6 +173,11 @@ fn dynamic(linker: Format, output: &[u8], f: &Finding) -> Option<&'static str> {
             );
         }
     }
+    if lld && d(6) && m == crate::dynverify::SYMBOLIC {
+        return Some(
+            "A44: lld sets DF_SYMBOLIC in an executable's DT_FLAGS under -Bsymbolic, a flag the loader ignores there (dyn.md D-30)",
+        );
+    }
     if (lld || mold) && f.rule == Rule::Dyn(6) && f.message.ends_with("(D-13: the link is refused)")
     {
         return Some(
