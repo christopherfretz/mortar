@@ -100,13 +100,8 @@ fn file_of(place: &str) -> String {
 /// The words of the relations a one-definition-rule diagnostic uses
 /// (`in`: the units of `odr-abi-mismatch`; `declared`: kind 5's rows
 /// without a definition, WP-151).
-const RELATIONS: [&str; 5] = [
-    "defined differently in ",
-    "defined in ",
-    "declared differently in ",
-    "declared in ",
-    "in ",
-];
+const RELATIONS: [&str; 5] =
+    ["defined differently in ", "defined in ", "declared differently in ", "declared in ", "in "];
 
 /// The one-definition-rule diagnostics in a link's standard error.
 pub fn reported(stderr: &str) -> Vec<Reported> {

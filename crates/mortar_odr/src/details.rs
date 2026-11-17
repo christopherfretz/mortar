@@ -543,14 +543,14 @@ mod tests {
     // scoped against unscoped)
     #[test]
     fn equal_enumerations() {
-        let e = vec![underlying("j"), enumerator("H0", 0), enumerator("H1", 1)];
-        let (ba, bb) = (unit_bytes(e.clone()), unit_bytes(e));
-        let (ua, _) = read_section(SectionAttrs::conforming(1), &ba);
-        let (ub, _) = read_section(SectionAttrs::conforming(1), &bb);
         fn entry<'l>(u: &Unit<'l>) -> Entry<'l> {
             let r = u.types().iter().find(|r| u.string(r.name) == b"1S").unwrap();
             u.detail_entry(r.details).unwrap().unwrap()
         }
+        let e = vec![underlying("j"), enumerator("H0", 0), enumerator("H1", 1)];
+        let (ba, bb) = (unit_bytes(e.clone()), unit_bytes(e));
+        let (ua, _) = read_section(SectionAttrs::conforming(1), &ba);
+        let (ub, _) = read_section(SectionAttrs::conforming(1), &bb);
         let a = Side { unit: &ua[0], entry: entry(&ua[0]), file: "a.o" };
         let b = Side { unit: &ub[0], entry: entry(&ub[0]), file: "b.o" };
         assert_eq!(

@@ -1672,7 +1672,8 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
                 continue;
             }
             let (ra, rb) = (ua.summary_value(name), ub.summary_value(name));
-            let both_enforced = |r: Option<(&[u8], u32)>| r.is_some_and(|(_, f)| f & flags::ENFORCE != 0);
+            let both_enforced =
+                |r: Option<(&[u8], u32)>| r.is_some_and(|(_, f)| f & flags::ENFORCE != 0);
             if enforced && !(both_enforced(ra) && both_enforced(rb)) {
                 continue;
             }

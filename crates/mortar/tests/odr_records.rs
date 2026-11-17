@@ -1432,6 +1432,7 @@ fn named_rows_with_and_without_symbols() {
 // a full one are compared, a warning; equal rows silent), O-23 (WP-151:
 // an archive member's PARTIAL row is compared under strict only)
 #[test]
+#[allow(clippy::many_single_char_names)] // the units are a.o .. m.o
 fn partial_rows() {
     let Some(cx) = Cx::new("odr-partial") else { return };
     let p = flags::PARTIAL | flags::VAGUE;
@@ -1477,6 +1478,7 @@ fn partial_rows() {
 // "declared"; a pair of C and C++ linkage notes only the summary keys
 // O-32 judges (ENFORCE in both units), not lang or std
 #[test]
+#[allow(clippy::many_single_char_names)] // the units are a.o .. m.o
 fn declared_place_lines_and_linkage_pair_notes() {
     let Some(cx) = Cx::new("odr-k5-places") else { return };
     let mut a = cxx("a.cc");
