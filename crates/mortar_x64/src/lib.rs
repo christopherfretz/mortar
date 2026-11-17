@@ -29,8 +29,8 @@ use mortar_diag::RefusalClass;
 use mortar_elf::{Class, Machine};
 
 pub use apply::{
-    DTPOFF_PLACE, DYNAMIC_TLS, LD12, LD13, LD22, NON_ALLOC_TLS, TLS_TO_IE, TLS_WEAK_DYNAMIC,
-    UNRECOGNIZED_DESC, UNRECOGNIZED_GD, UNRECOGNIZED_LD, on_branch, scan_checks,
+    DTPOFF_PLACE, LD12, LD13, LD22, NON_ALLOC_TLS, TLS_TO_IE, TLS_WEAK_DYNAMIC, UNRECOGNIZED_DESC,
+    UNRECOGNIZED_GD, UNRECOGNIZED_LD, on_branch, scan_checks,
 };
 
 /// The x86-64 architecture. Every type of §6.1 is M1 or later; `max`

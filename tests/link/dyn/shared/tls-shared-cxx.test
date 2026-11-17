@@ -5,17 +5,27 @@
 # that the host reads through its TLS wrapper. An exception thrown in the
 # library on a second thread carries a thread-local value and is caught
 # in the host. The same library with -static-libstdc++ (libstdc++.a's
-# own TLS, TLSDESC in the C++ runtime) runs alike.
-#@ spec: dyn.md "D-119"
+# own TLS: TLSDESC in the C++ runtime on AArch64) runs alike. A library
+# with no thread-local of its own (`eh.cc`), with -static-libstdc++, has
+# only libstdc++.a's TLS (the exception globals), and throws and catches
+# on two threads. x86-64 alike (x64.md X-61, WP-127 part 2).
+#@ spec: dyn.md "D-119"; x64.md "X-61"
 #@ requires: g++
-#@ arch: aarch64
+#@ arch: aarch64 x86_64
 
 cxx -O1 -fPIC lib.cc -o lib.o
 cxx -O1 -fPIE -pthread main.cc -o main.o
+cxx -O1 -fPIC eh.cc -o eh.o
+cxx -O1 -fPIE -pthread ehmain.cc -o ehmain.o
 link g++ -shared lib.o -Wl,-soname,libtx.so -o libtx.so
 link g++ -shared -static-libstdc++ lib.o -Wl,-soname,libtxs.so -o libtxs.so
 check readelf -dW libtxs.so
   not: libstdc++
+link g++ -shared -static-libstdc++ eh.o -Wl,-soname,libeh.so -o libeh.so
+check readelf -dW libeh.so
+  not: libstdc++
+check readelf -lW libeh.so
+  has: TLS
 host g++ -pie -pthread main.o -L. -ltx -o prog
 run prog
   stdout: ctor 1
@@ -30,6 +40,11 @@ run prog-s
   stdout: dtor 1 105
   stdout: main 6 1
   stdout: dtor 0 1
+host g++ -pie -pthread ehmain.o -L. -leh -o prog-eh
+run prog-eh
+  stdout: caught 7
+  stdout: caught 8
+  stdout: done
 
 #--- lib.cc
 #include <cstdio>
@@ -83,5 +98,32 @@ int main() {
   if (pthread_create(&t, nullptr, worker, nullptr) || pthread_join(t, nullptr)) return 2;
   std::printf("main %d %d\n", shared_tl, t0);
   std::fflush(stdout);
+  return 0;
+}
+#--- eh.cc
+#include <stdexcept>
+int check(int x) {
+  try {
+    if (x > 0) throw std::runtime_error("x");
+  } catch (const std::exception &) {
+    return x;
+  }
+  return -1;
+}
+#--- ehmain.cc
+#include <cstdio>
+#include <pthread.h>
+int check(int);
+static void *worker(void *) {
+  std::printf("caught %d\n", check(8));
+  std::fflush(stdout);
+  return nullptr;
+}
+int main() {
+  std::printf("caught %d\n", check(7));
+  std::fflush(stdout);
+  pthread_t t;
+  if (pthread_create(&t, nullptr, worker, nullptr) || pthread_join(t, nullptr)) return 2;
+  std::printf("done\n");
   return 0;
 }

@@ -3,7 +3,7 @@ Results are cited by spec/dyn.md §17-18 and the record spec/landed/dyn/WP-110.m
 Each runner cd's to its own directory, sets ulimit -c 0, writes fresh outputs, links mold to fresh paths.
 
 elf.py            minimal ELF/archive reader (objects, archive members, sections, symbols, RELA/REL) used by the scripts below
-s1d.py            THE ORACLE: D-117's relocation-level address rule (with the m-1 boundary rule; --x86 = the exact x86 scope) and the AArch64 analysis (items 1-9; --mode, --calls, --boundary, --anabnd variants; --hits lists uses)
+s1d.py            THE ORACLE: D-117's relocation-level address rule (with the m-1 boundary rule; --x86 = the exact x86 scope, no TLS form judged: X-62, WP-127 part 2) and the AArch64 analysis (items 1-9; --mode, --calls, --boundary, --anabnd variants; --hits lists uses)
 gt3.py            detection table on -fPIE/-fPIC twins: bound definitions by symbol / rule / analysis / unseen; objects refused or escaping
 x86gt.py          how x86 non-PIC code reaches own exported data: SYMBOL / EXACT / CODEPC / UNSEEN (the M-1 ruling's measurement; S5 repeats it)
 i386how.py        counts per compiler the i386 -fPIE relocation forms against own exported data (i386/*.o)

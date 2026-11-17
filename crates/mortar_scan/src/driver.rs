@@ -12,9 +12,7 @@ use mortar_core::par::SCAN_BLOCK;
 use mortar_core::resolution::SectionKind;
 use mortar_core::{FileId, LocalSym, SectionId, SymEntry, SymKey, SymKind, SymbolId};
 use mortar_diag::{Diagnostic, FileRef, Key, Kind, Place, RefusalClass};
-use mortar_elf::consts::{
-    SHF_ALLOC, SHF_EXECINSTR, SHF_WRITE, SHT_RELA, STT_GNU_IFUNC, STT_SECTION,
-};
+use mortar_elf::consts::{SHF_ALLOC, SHF_EXECINSTR, SHF_WRITE, SHT_RELA};
 use mortar_elf::{SectionIndex, SymbolIndex};
 
 use crate::events::{Acc, Event, EventClass, GroupKey, RefId, UnitEvents, sym_group};
@@ -424,6 +422,17 @@ impl<'v, 'a, 's: 'b, 'b> Sec<'v, 'a, 's, 'b> {
                     h.map_or_else(|| self.r_type_name(raw.r_type), |h| RefName::Named(h.name));
                 let addend = h.map_or(raw.addend.unwrap_or(0), |h| self.recs.addend(&raw, &h));
                 let target = key.map(|k| target_name(self.view, k, addend)).unwrap_or_default();
+                // arch.md §10, x64.md X-61: a TLS type against a section
+                // symbol says so (the references disagree on what it
+                // names; mortar refuses it on every architecture).
+                let e = match e {
+                    ScanError::Incompatible(Incompatible::NotThreadLocal)
+                        if key.is_some_and(|k| self.view.is_section_symbol(k)) =>
+                    {
+                        ScanError::Incompatible(Incompatible::TlsSectionSymbol)
+                    }
+                    e => e,
+                };
                 let at = mortar_arch::diag::RelocPlace {
                     file: self.file,
                     path: &path,
@@ -489,9 +498,7 @@ fn records_all_null(r: &RecTable<'_>) -> bool {
 /// symbol's name, or `section+0xoff` for a section symbol.
 pub(crate) fn target_name(view: &View<'_, '_>, key: SymKey, addend: i64) -> String {
     let name = view.shown_name(key);
-    if let SymKind::Local(e) = key.kind()
-        && view.sym(e.file, e.index).is_some_and(|s| s.sym_type() == STT_SECTION)
-    {
+    if view.is_section_symbol(key) {
         return if addend < 0 {
             format!("{name}-{:#x}", addend.unsigned_abs())
         } else {
@@ -643,41 +650,6 @@ pub(crate) fn dynamic_error(view: &View<'_, '_>, e: ScanError) -> ScanError {
         }
         e => e,
     }
-}
-
-/// What a `Shared` output refuses by name before the architecture's scan
-/// on a target whose TLS and IFUNC in a shared object have not landed
-/// (`spec/x64.md` §5.1: x86-64 until WP-127 part 2; AArch64 landed with
-/// WP-124, `spec/dyn.md` D-119, D-121): a relocation of a TLS class or
-/// against a thread-local target, `TLS in a shared object`; one against
-/// an IFUNC this output defines (a preemptible one included), `IFUNC in a
-/// shared object`; an imported IFUNC is an import.
-fn shared_feature(
-    view: &View<'_, '_>,
-    key: SymKey,
-    mention: SymEntry,
-    h: &Howto,
-) -> Option<mortar_arch::Refusal> {
-    if view.arch.facts().machine == mortar_elf::Machine::AArch64 {
-        return None;
-    }
-    let named = |name| Some(mortar_arch::Refusal::named(RefusalClass::Feature, name));
-    if h.class.is_tls() {
-        return named("TLS in a shared object");
-    }
-    let f = view.facts(key, Some(mention));
-    if f.tls {
-        return named("TLS in a shared object");
-    }
-    // An IFUNC another shared object defines (glibc's `strlen`, `memcpy`)
-    // is an import like any function: its `JUMP_SLOT`/`GLOB_DAT` is
-    // resolved by the loader (WP-123: the refusal is the library's own
-    // IFUNC, D-121).
-    let imported = matches!(f.kind, mortar_arch::TargetKind::Shlib { .. });
-    if f.kind == mortar_arch::TargetKind::Ifunc || (f.sym_type == STT_GNU_IFUNC && !imported) {
-        return named("IFUNC in a shared object");
-    }
-    None
 }
 
 /// Whether `key`'s target kind is `Weak0`, from the definitions alone;
@@ -839,13 +811,7 @@ fn walk_unit(view: &View<'_, '_>, u: &Unit, global: &[AtomicU16], bufs: &mut Buf
         let mention = SymEntry { file: u.file, index: SymbolIndex(raw.r_sym) };
         if output == mortar_arch::OutputKind::Shared {
             // TLS (`spec/dyn.md` D-119) and IFUNC targets (D-121) take
-            // the architecture's scan as in any output (WP-124), on the
-            // targets where they have landed; elsewhere refused by name
-            // (`spec/x64.md` §5.1, until WP-127 part 2).
-            if let Some(r) = shared_feature(view, key, mention, &h) {
-                faults.push((i, Fault::Scan(ScanError::Refused(r))));
-                continue;
-            }
+            // the architecture's scan as in any output (WP-124).
             // D-117's address-level rule: a bound use of exported data.
             if sec.place.alloc
                 && let Some(f) = facts

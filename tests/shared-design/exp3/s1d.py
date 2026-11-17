@@ -24,6 +24,7 @@ from elf import load_any, SHF_ALLOC, SHF_EXEC, EM_AARCH64
 STB_LOCAL = 0
 STT_FUNC, STT_SECTION = 2, 3
 SHN_LORESERVE = 0xff00
+SHF_TLS = 0x400
 
 # relocation kinds (AArch64 ELF ABI)
 R_ABS64 = 257
@@ -158,7 +159,7 @@ class Ctx:
 def analyse(o, mode='flow', calls='keep', boundary='refined', hits=None, anabnd='ruled'):
     c = Ctx()
     pd = preemptible_data(o)
-    res = dict(pre=0, rule=0, ana=0, words=0, funcs=0, selfgot=0, undec=0, x86_code_pc=0)
+    res = dict(pre=0, rule=0, ana=0, words=0, funcs=0, selfgot=0, undec=0, x86_code_pc=0, x86_tls=0)
     own = {y.name for v in pd.values() for y in v}
     if not pd:
         return res
@@ -216,6 +217,9 @@ def analyse(o, mode='flow', calls='keep', boundary='refined', hits=None, anabnd=
                 continue
             y = local_in_T(r.sym)
             if not y:
+                continue
+            if o.mach != EM_AARCH64 and o.secs[y.shndx].flags & SHF_TLS:
+                res['x86_tls'] += 1          # a TLS form names a module and offset, not an address (X-62)
                 continue
             if o.mach != EM_AARCH64 and (tgt.flags & SHF_EXEC) and r.type in X86_PC.get(o.mach, ()):
                 res['x86_code_pc'] += 1      # outside the rule on x86 (M-1 ruling): not judged

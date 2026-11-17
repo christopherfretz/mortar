@@ -1,0 +1,125 @@
+# dyn.md D-119, x64.md X-61 (WP-127 part 2): an x86-64 library's
+# initial-exec TLS (`GOTTPOFF`), not relaxed. The exported and imported
+# variables are R_X86_64_TPOFF64 records by symbol, the hidden and
+# static ones records with r_sym 0 and their offset in the block as
+# addend (0, 4; every reference), and the library is DF_STATIC_TLS
+# (every reference on x86-64, `-z now` too). It runs loaded at start, in two threads and
+# under an interposer. glibc's behaviour for an IE library loaded by
+# `dlopen`, pinned as on AArch64: a small one is placed in the static
+# TLS surplus and runs; one of 4096 bytes is refused ("cannot allocate
+# memory in static TLS block").
+#@ spec: x64.md "X-61"; dyn.md "D-119"
+#@ arch: x86_64
+
+cc -O1 -fPIC -ftls-model=initial-exec tls.c -o tls.o
+cc -O1 -fPIC -ftls-model=initial-exec big.c -o big.o
+cc -O1 -fPIC other.c -o other.o
+cc -O1 -fPIC pre.c -o pre.o
+cc -O1 -fPIE -pthread main.c -o main.o
+cc -O1 -fPIE -pthread load.c -o load.o
+shlib gcc other.o -Wl,-soname,libother.so -o libother.so
+shlib gcc pre.o -Wl,-soname,libpre.so -o libpre.so
+link gcc -shared tls.o -L. -lother -Wl,-soname,libti.so -o libti.so
+check readelf -rW libti.so
+  has: R_X86_64_TPOFF64 * e_tls + 0$
+  has: R_X86_64_TPOFF64 * o_tls + 0$
+  has: R_X86_64_TPOFF64 0$
+  has: R_X86_64_TPOFF64 4$
+  count: 4 R_X86_64_TPOFF64
+  not: R_X86_64_TLSDESC
+  not: R_X86_64_DTPMOD64
+check readelf -dW libti.so
+  has: (FLAGS) * STATIC_TLS
+link gcc -shared big.o -Wl,-soname,libbig.so -o libbig.so
+check readelf -dW libbig.so
+  has: (FLAGS) * STATIC_TLS
+link gcc -shared tls.o -L. -lother -Wl,-z,now -Wl,-soname,libtin.so -o libtin.so
+check readelf -dW libtin.so
+  has: (FLAGS) * BIND_NOW STATIC_TLS
+host gcc -pie -pthread main.o -L. -lti -lother -o prog
+run prog
+  stdout: thread 51 12 13 14
+  stdout: main 1 2 3 4
+run prog
+  env: LD_PRELOAD=./libpre.so
+  stdout: thread 127 12 13 14
+  stdout: main 77 2 3 4
+host gcc -pie -pthread main.o -L. -ltin -lother -o prog-n
+run prog-n
+  stdout: thread 51 12 13 14
+  stdout: main 1 2 3 4
+host gcc -pie -pthread load.o -ldl -o load
+run load
+  stdout: thread 51 12 13 14
+  stdout: main 1 2 3 4
+  stdout: big refused static-tls
+
+#--- tls.c
+#include <stdio.h>
+__thread int e_tls = 1;
+__attribute__((visibility("hidden"))) __thread int h_tls = 2;
+static __thread int s_tls = 3;
+extern __thread int o_tls;
+void bump(int k) {
+  e_tls += 50 * k;
+  h_tls += 10 * k;
+  s_tls += 10 * k;
+  o_tls += 10 * k;
+}
+void show(const char *who) { printf("%s %d %d %d %d\n", who, e_tls, h_tls, s_tls, o_tls); }
+#--- big.c
+__thread char big[4096];
+int big_get(int i) { return big[i]; }
+#--- other.c
+__thread int o_tls = 4;
+#--- pre.c
+__thread int e_tls = 77;
+#--- main.c
+#include <pthread.h>
+#include <stdio.h>
+void bump(int);
+void show(const char *);
+static void *worker(void *arg) {
+  (void)arg;
+  bump(1);
+  show("thread");
+  fflush(stdout);
+  return 0;
+}
+int main(void) {
+  pthread_t t;
+  if (pthread_create(&t, 0, worker, 0) || pthread_join(t, 0)) return 2;
+  show("main");
+  fflush(stdout);
+  return 0;
+}
+#--- load.c
+#include <dlfcn.h>
+#include <pthread.h>
+#include <stdio.h>
+#include <string.h>
+static void (*bump)(int);
+static void (*show)(const char *);
+static void *worker(void *arg) {
+  (void)arg;
+  bump(1);
+  show("thread");
+  fflush(stdout);
+  return 0;
+}
+int main(void) {
+  void *h = dlopen("libti.so", RTLD_NOW);
+  if (!h) { printf("%s\n", dlerror()); return 3; }
+  bump = (void (*)(int))dlsym(h, "bump");
+  show = (void (*)(const char *))dlsym(h, "show");
+  if (!bump || !show) return 4;
+  pthread_t t;
+  if (pthread_create(&t, 0, worker, 0) || pthread_join(t, 0)) return 2;
+  show("main");
+  void *b = dlopen("libbig.so", RTLD_NOW);
+  const char *e = b ? "" : dlerror();
+  printf("big %s %s\n", b ? "loaded" : "refused",
+         strstr(e, "cannot allocate memory in static TLS block") ? "static-tls" : "other");
+  fflush(stdout);
+  return 0;
+}

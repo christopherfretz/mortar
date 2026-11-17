@@ -44,6 +44,7 @@ impl Incompatible {
             Self::ReadOnly => IncompatibleReason::ReadOnlySection,
             Self::AddendMustBeZero => IncompatibleReason::AddendMustBeZero,
             Self::NotThreadLocal => IncompatibleReason::NotThreadLocal,
+            Self::TlsSectionSymbol => IncompatibleReason::TlsSectionSymbol,
             Self::ThreadLocal => IncompatibleReason::ThreadLocal,
             Self::LocalExecInShared => IncompatibleReason::LocalExecInShared,
             Self::InstructionMismatch => IncompatibleReason::InstructionMismatch,

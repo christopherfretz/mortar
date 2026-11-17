@@ -439,6 +439,12 @@ impl<'a, 's> View<'a, 's> {
         }
     }
 
+    /// Whether `key` is a local section symbol (`STT_SECTION`).
+    pub fn is_section_symbol(&self, key: SymKey) -> bool {
+        matches!(key.kind(), SymKind::Local(e)
+            if self.sym(e.file, e.index).is_some_and(|s| s.sym_type() == STT_SECTION))
+    }
+
     /// The name a diagnostic shows for `key`: the symbol's name with its
     /// version, or a section symbol's section name.
     pub fn shown_name(&self, key: SymKey) -> String {

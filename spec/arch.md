@@ -1329,7 +1329,9 @@ phase 70 (§3.4).
 
 `{reason}` is one of: `recompile with -fPIC`; `recompile with -fPIE`;
 `it is in a read-only section` (a text relocation); `the addend must be
-0`; `it is not thread-local`; `it is thread-local`; `local-exec TLS in a
+0`; `it is not thread-local`; `a TLS relocation against a section symbol` (the generic scan's
+name for `it is not thread-local` when the symbol is a section symbol,
+`STT_SECTION`, on every architecture; `spec/x64.md` X-61); `it is thread-local`; `local-exec TLS in a
 shared object`; `the instruction does not match the relocation`; `not
 allowed in a non-allocated section`. Wording after lld (the alignment text is lld's; the
 out-of-range text is GNU ld's phrase with lld's value and bounds, `spec/x64.md` X-34; the

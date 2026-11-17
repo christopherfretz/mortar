@@ -1,0 +1,157 @@
+# dyn.md D-119, x64.md X-61 (WP-127 part 2): an x86-64 library's
+# general- and local-dynamic TLS (`__tls_get_addr`), not relaxed. GCC's
+# `-fPIC` default reads the exported and imported variables by GD
+# (`TLSGD`): R_X86_64_DTPMOD64 and R_X86_64_DTPOFF64 by symbol; and the
+# hidden and static ones by LD (`TLSLD`, `DTPOFF32`): one
+# R_X86_64_DTPMOD64 with r_sym 0 for the module (every reference
+# agrees). With `-fno-plt` the calls are `call *__tls_get_addr@GOTPCREL`
+# (a GLOB_DAT). Nothing is relaxed: the 6 calls of the input are the
+# output's. It runs loaded at start in two threads, under an interposer
+# that preempts `e_tls`, and by `dlopen` with a thread started before
+# it; `-z now` alike. `-ftls-model=local-dynamic` on a source that reads
+# an imported variable gives a `DTPOFF32` against it, which no link can
+# resolve: mortar and GNU ld refuse it (lld links it and reads another
+# variable; mold's library crashes: their lines are not made here).
+#@ spec: x64.md "X-61"; dyn.md "D-119"
+#@ arch: x86_64
+
+cc -O1 -fPIC tls.c -o tls.o
+cc -O1 -fPIC -fno-plt tls.c -o np.o
+cc -O1 -fPIC -ftls-model=local-dynamic tls.c -o ldimp.o
+cc -O1 -fPIC other.c -o other.o
+cc -O1 -fPIC pre.c -o pre.o
+cc -O1 -fPIE -pthread main.c -o main.o
+cc -O1 -fPIE -pthread load.c -o load.o
+shlib gcc other.o -Wl,-soname,libother.so -o libother.so
+shlib gcc pre.o -Wl,-soname,libpre.so -o libpre.so
+link gcc -shared tls.o -L. -lother -Wl,-soname,libtg.so -o libtg.so
+check readelf -rW libtg.so
+  has: R_X86_64_DTPMOD64 * e_tls + 0$
+  has: R_X86_64_DTPOFF64 * e_tls + 0$
+  has: R_X86_64_DTPMOD64 * o_tls + 0$
+  has: R_X86_64_DTPOFF64 * o_tls + 0$
+  count: 3 R_X86_64_DTPMOD64
+  count: 2 R_X86_64_DTPOFF64
+  not: R_X86_64_TPOFF64
+  not: R_X86_64_TLSDESC
+check readelf -dW libtg.so
+  not: STATIC_TLS
+check objdump -d libtg.so
+  count: 6 call * <__tls_get_addr
+  not: call * <__tls_get_addr@GLIBC
+link gcc -shared np.o -L. -lother -Wl,-z,now -Wl,-soname,libtl.so -o libtl.so
+check readelf -rW libtl.so
+  has: R_X86_64_GLOB_DAT * __tls_get_addr@GLIBC_2.3 + 0$
+  count: 3 R_X86_64_DTPMOD64
+check objdump -d libtl.so
+  count: 6 call * <__tls_get_addr@GLIBC_2.3>$
+link(mortar,bfd) gcc -shared ldimp.o -L. -lother -o libldimp.so
+  exit: fail
+  diag(mortar): relocation R_X86_64_DTPOFF32 cannot be used against symbol 'o_tls'
+  diag(bfd): unresolvable R_X86_64_DTPOFF32 relocation against symbol `o_tls'
+host gcc -pie -pthread main.o -L. -ltg -lother -o prog
+run prog
+  stdout: thread 51 12 13 14
+  stdout: main 1 2 3 4
+run prog
+  env: LD_PRELOAD=./libpre.so
+  stdout: thread 127 12 13 14
+  stdout: main 77 2 3 4
+host gcc -pie -pthread load.o -ldl -o load
+run load
+  stdout: libtg.so main 1 2 3 4
+  stdout: libtg.so thread 51 12 13 14
+  stdout: libtl.so main 1 2 3 4
+  stdout: libtl.so thread 51 12 13 24
+
+#--- tls.c
+#include <stdio.h>
+__thread int e_tls = 1;
+__attribute__((visibility("hidden"))) __thread int h_tls = 2;
+static __thread int s_tls = 3;
+extern __thread int o_tls;
+void bump(int k) {
+  e_tls += 50 * k;
+  h_tls += 10 * k;
+  s_tls += 10 * k;
+  o_tls += 10 * k;
+}
+void show(const char *who) { printf("%s %d %d %d %d\n", who, e_tls, h_tls, s_tls, o_tls); }
+#--- other.c
+__thread int o_tls = 4;
+#--- pre.c
+__thread int e_tls = 77;
+#--- main.c
+#include <pthread.h>
+#include <stdio.h>
+void bump(int);
+void show(const char *);
+static void *worker(void *arg) {
+  (void)arg;
+  bump(1);
+  show("thread");
+  fflush(stdout);
+  return 0;
+}
+int main(void) {
+  pthread_t t;
+  if (pthread_create(&t, 0, worker, 0) || pthread_join(t, 0)) return 2;
+  show("main");
+  fflush(stdout);
+  return 0;
+}
+#--- load.c
+#include <dlfcn.h>
+#include <pthread.h>
+#include <stdio.h>
+static pthread_mutex_t m = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t c = PTHREAD_COND_INITIALIZER;
+static void (*bump)(int);
+static void (*show)(const char *);
+static int stage;
+static void *worker(void *arg) {
+  (void)arg;
+  for (;;) {
+    pthread_mutex_lock(&m);
+    while (stage % 2 == 0 && stage < 4) pthread_cond_wait(&c, &m);
+    int s = stage;
+    pthread_mutex_unlock(&m);
+    if (s >= 4) return 0;
+    /* A thread that existed before the dlopen: its block of the library
+       is allocated on its first use. */
+    bump(1);
+    printf("%s ", s == 1 ? "libtg.so" : "libtl.so");
+    show("thread");
+    fflush(stdout);
+    pthread_mutex_lock(&m);
+    stage++;
+    pthread_cond_signal(&c);
+    pthread_mutex_unlock(&m);
+  }
+}
+static int run(const char *name) {
+  void *h = dlopen(name, RTLD_NOW | RTLD_LOCAL);
+  if (!h) { printf("%s\n", dlerror()); return 1; }
+  bump = (void (*)(int))dlsym(h, "bump");
+  show = (void (*)(const char *))dlsym(h, "show");
+  if (!bump || !show) return 1;
+  printf("%s ", name);
+  show("main");
+  fflush(stdout);
+  pthread_mutex_lock(&m);
+  stage++;
+  pthread_cond_signal(&c);
+  while (stage % 2 == 1) pthread_cond_wait(&c, &m);
+  pthread_mutex_unlock(&m);
+  return 0;
+}
+int main(void) {
+  pthread_t t;
+  if (pthread_create(&t, 0, worker, 0)) return 2;
+  if (run("libtg.so") || run("libtl.so")) return 3;
+  pthread_mutex_lock(&m);
+  stage = 4;
+  pthread_cond_signal(&c);
+  pthread_mutex_unlock(&m);
+  return pthread_join(t, 0) ? 4 : 0;
+}

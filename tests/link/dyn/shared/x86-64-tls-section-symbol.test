@@ -1,0 +1,79 @@
+# x64.md X-61, X-62 (WP-127 part 2): what a TLS access names. GCC at
+# `-O0` reads a static thread-local by general-dynamic against its own
+# LOCAL `STT_TLS` symbol (`TLSGD tls_static-4`): every reference writes
+# one R_X86_64_DTPMOD64 with r_sym 0 and the variable's static offset in
+# the GOT pair's second word (no DTPOFF64 record for it), and the library
+# reads both variables. The same access written against the SECTION
+# symbol (`.reloc ., R_X86_64_TLSGD, .tdata+ADD`, by hand: no producer
+# measured writes it) names no thread-local variable: GNU ld keys the
+# pair on the section's start and takes the addend for the instruction's
+# tail only, so the library reads `s0` at ADD=-4 and crashes at ADD=0
+# (its lines are not made here); lld refuses it ("cannot be used against
+# local symbol"); mold stops on an internal assertion. mortar refuses it
+# by name, in a shared object and in an executable alike.
+#@ spec: x64.md "X-61"; x64.md "X-62"
+#@ arch: x86_64
+
+cc -O0 -fPIC b.c -o b.o
+cc -O1 -fPIE bm.c -o bm.o
+cc -DADD=0 sec.S -o sec0.o
+cc -DADD=-4 sec.S -o sec4.o
+cc -O1 -fPIE main.c -o main.o
+link gcc -shared b.o -Wl,-soname,libb.so -o libb.so
+check readelf -rW libb.so
+  has: R_X86_64_DTPMOD64 * 0$
+  has: R_X86_64_DTPMOD64 * tls_exported + 0$
+  has: R_X86_64_DTPOFF64 * tls_exported + 0$
+  count: 2 R_X86_64_DTPMOD64
+  count: 1 R_X86_64_DTPOFF64
+link(lld,mortar) gcc -shared sec0.o -o libsec0.so
+  exit: fail
+  diag(lld): relocation R_X86_64_TLSGD cannot be used against local symbol
+  diag(mortar): relocation R_X86_64_TLSGD cannot be used against symbol '.tdata+0x0'; a TLS relocation against a section symbol
+link(lld,mortar) gcc -shared sec4.o -o libsec4.so
+  exit: fail
+  diag(lld): relocation R_X86_64_TLSGD cannot be used against local symbol
+  diag(mortar): relocation R_X86_64_TLSGD cannot be used against symbol '.tdata-0x4'; a TLS relocation against a section symbol
+link(mortar) gcc -no-pie main.o sec4.o -o exe
+  exit: fail
+  diag: relocation R_X86_64_TLSGD cannot be used against symbol '.tdata-0x4'; a TLS relocation against a section symbol
+host gcc -pie bm.o -L. -lb -o prog
+run prog
+  stdout: 10
+
+#--- b.c
+__thread int tls_exported = 4;
+static __thread int tls_static = 5;
+int get_tls(void) { return tls_exported + tls_static; }
+void bump(void) { tls_static++; }
+#--- bm.c
+#include <stdio.h>
+int get_tls(void); void bump(void);
+int main(void){ bump(); printf("%d\n", get_tls()); return 0; }
+#--- main.c
+#include <stdio.h>
+int get(void);
+int main(void){ printf("%d\n", get()); return 0; }
+#--- sec.S
+	.section .tdata,"awT",@progbits
+	.p2align 2
+s0:	.long 7
+	.globl e
+	.type e,@object
+	.size e,4
+e:	.long 8
+	.text
+	.globl get
+	.type get,@function
+get:
+	subq $8, %rsp
+	.byte 0x66, 0x48, 0x8d, 0x3d
+	.reloc ., R_X86_64_TLSGD, .tdata+ADD
+	.long 0
+	.byte 0x66, 0x66, 0x48, 0xe8
+	.reloc ., R_X86_64_PLT32, __tls_get_addr-4
+	.long 0
+	movl (%rax), %eax
+	addq $8, %rsp
+	ret
+	.section .note.GNU-stack,"",@progbits

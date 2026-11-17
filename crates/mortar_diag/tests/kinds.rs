@@ -907,6 +907,7 @@ fn relocation_incompatible() {
         "it is in a read-only section",
         "the addend must be 0",
         "it is not thread-local",
+        "a TLS relocation against a section symbol",
         "it is thread-local",
         "local-exec TLS in a shared object",
         "the instruction does not match the relocation",
