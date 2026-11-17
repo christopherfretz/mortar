@@ -709,8 +709,11 @@ fn d25_weak_classes() {
     a.extend(["-o", "out"]);
     let pie = dyn_link(dir.path(), &a, OutputKind::Pie);
     assert!(pie.scanned.diagnostics.is_empty(), "{}", pie.rendered());
-    let want: BTreeSet<String> =
-        ["k_got", "k_word", "k_relro", "k_gotcall"].iter().map(|s| (*s).to_owned()).collect();
+    // A branch alone is `WeakDyn` too (WP-155: GNU ld and lld).
+    let want: BTreeSet<String> = ["k_got", "k_word", "k_relro", "k_branch", "k_gotcall"]
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect();
     assert_eq!(pie.weak_dyn(), want);
     let m = pie.records();
     eprintln!("mortar pie: {m:?}");
@@ -718,10 +721,12 @@ fn d25_weak_classes() {
         m.names("GLOB_DAT"),
         ["k_got", "k_gotcall"].iter().map(|s| (*s).to_owned()).collect()
     );
-    assert_eq!(m.names("JUMP_SLOT"), ["k_gotcall"].iter().map(|s| (*s).to_owned()).collect());
+    assert_eq!(
+        m.names("JUMP_SLOT"),
+        ["k_branch", "k_gotcall"].iter().map(|s| (*s).to_owned()).collect()
+    );
     assert_eq!(m.count("ABS64"), 2);
-    // lld agrees on every row but the branch-only key (§13.1: GNU ld and
-    // lld make it dynamic with a JUMP_SLOT; mortar Weak0).
+    // lld agrees on every row, the branch-only key included (WP-155).
     let refs = references(dir.path(), &a[..a.len() - 2], "out");
     for (ld, r) in &refs {
         let r = r.as_ref().unwrap_or_else(|e| panic!("{ld}: {e}"));
@@ -729,9 +734,7 @@ fn d25_weak_classes() {
         if *ld == "ld.lld" {
             assert_eq!(m.names("GLOB_DAT"), r.names("GLOB_DAT"));
             assert_eq!(m.count("ABS64"), r.count("ABS64"));
-            let mut jl = r.names("JUMP_SLOT");
-            jl.remove("k_branch");
-            assert_eq!(m.names("JUMP_SLOT"), jl);
+            assert_eq!(m.names("JUMP_SLOT"), r.names("JUMP_SLOT"));
         }
     }
     // Exec: the unfillable rows are Weak0, no refusal.
@@ -741,6 +744,41 @@ fn d25_weak_classes() {
     let exec = dyn_link(dir.path(), &a, OutputKind::Exec);
     assert!(exec.scanned.diagnostics.is_empty(), "{}", exec.rendered());
     assert_eq!(exec.weak_dyn(), want);
+    // WP-155's ruling (A): in `Exec` a branch beside an unfillable use
+    // (here both in one `-mcmodel=large -fno-pic` object: an `ABS64`
+    // literal in `.text` and a `CALL26`) is `WeakDyn` for its branch: a
+    // `JUMP_SLOT` and no record on the literal. Beside a GOT use too
+    // (`gs`: `-fPIE` GOT + branch, and the literal) the key stays
+    // `Weak0` (the references disagree there, D-25).
+    let split = "extern void k_split(void) __attribute__((weak));
+void *row_st(void) { return (void *)&k_split; }
+void row_sc(void) { k_split(); }
+";
+    cc(dir.path(), "split.o", split, &["-fno-pic", "-mcmodel=large"]).unwrap();
+    let gs_pic = "extern void k_gs(void) __attribute__((weak));
+int row_gs(void) { if (k_gs) { k_gs(); return 1; } return 0; }
+";
+    let gs_abs = "extern void k_gs(void) __attribute__((weak));
+void *row_gsa(void) { return (void *)&k_gs; }
+";
+    cc(dir.path(), "gs-pic.o", gs_pic, &["-fPIE"]).unwrap();
+    cc(dir.path(), "gs-abs.o", gs_abs, &["-fno-pic", "-mcmodel=large"]).unwrap();
+    let a = ["-no-pie", "split.o", "gs-pic.o", "gs-abs.o", "libL.so", "-o", "out"];
+    let exec = dyn_link(dir.path(), &a, OutputKind::Exec);
+    assert!(exec.scanned.diagnostics.is_empty(), "{}", exec.rendered());
+    assert_eq!(exec.weak_dyn(), ["k_split"].iter().map(|s| (*s).to_owned()).collect());
+    let m = exec.records();
+    eprintln!("mortar split exec: {m:?}");
+    assert_eq!(m.names("JUMP_SLOT"), ["k_split"].iter().map(|s| (*s).to_owned()).collect());
+    assert_eq!(m.count("ABS64"), 0);
+    assert!(m.names("GLOB_DAT").is_empty());
+    for (ld, r) in &references(dir.path(), &a[..a.len() - 2], "out") {
+        let r = r.as_ref().unwrap_or_else(|e| panic!("{ld}: {e}"));
+        eprintln!("{ld} split exec: {r:?}");
+        if *ld == "ld.lld" {
+            assert!(r.names("JUMP_SLOT").contains("k_split"), "{r:?}");
+        }
+    }
     // PIE with an unfillable use: refused by name, once per key.
     for row in ["rodata", "text"] {
         let o = format!("{row}.o");

@@ -82,18 +82,27 @@ impl WeakUses {
         }
     }
 
-    /// D-25: `WeakDyn` in `Exec` and `Pie` with a GOT use or an absolute
-    /// word in a writable place and no unfillable use; in `Pie` an
-    /// unfillable use is refused, once per key; `Weak0` otherwise (every
-    /// output without `.dynamic`, static PIE included, and an `Exec` key
-    /// with an unfillable use). `dynamic`: the output has `.dynamic`
+    /// D-25: `WeakDyn` in `Exec` and `Pie` with a GOT use, an absolute
+    /// word in a writable place or a branch, and no unfillable use (a
+    /// branch alone included: GNU ld and lld, WP-155); in `Pie` an
+    /// unfillable use is refused, once per key. In `Exec` a key with a
+    /// branch and unfillable uses but no GOT use and no absolute word is
+    /// `WeakDyn` too (WP-155's ruling (A)): its branches go through its
+    /// PLT entry, its unfillable uses are written as `Weak0`'s
+    /// (`mortar_arch::weak_use_kind`). `Weak0` otherwise (every output
+    /// without `.dynamic`, static PIE included, an `Exec` key with an
+    /// unfillable use and a GOT use or an absolute word, and a key with
+    /// no use at all). `dynamic`: the output has `.dynamic`
     /// ([`ScanOptions::dynamic`]).
     #[must_use]
     pub fn verdict(&self, output: OutputKind, dynamic: bool) -> WeakVerdict {
         let dynamic = dynamic && matches!(output, OutputKind::Exec | OutputKind::Pie);
         match self.unfillable {
             Some(at) if dynamic && output == OutputKind::Pie => WeakVerdict::Refused(at),
-            None if dynamic && (self.got || self.abs_word) => WeakVerdict::WeakDyn,
+            Some(_) if dynamic && self.branch && !self.got && !self.abs_word => {
+                WeakVerdict::WeakDyn
+            }
+            None if dynamic && (self.got || self.abs_word || self.branch) => WeakVerdict::WeakDyn,
             _ => WeakVerdict::Weak0,
         }
     }
@@ -406,9 +415,35 @@ mod tests {
         assert_eq!(got.verdict(OutputKind::Pie, true), WeakVerdict::WeakDyn);
         assert_eq!(got.verdict(OutputKind::Static, false), WeakVerdict::Weak0);
         assert_eq!(got.verdict(OutputKind::Pie, false), WeakVerdict::Weak0, "static PIE");
+        // A branch alone is `WeakDyn` (WP-155): a PLT entry with a
+        // `JUMP_SLOT`, as GNU ld and lld; `Weak0` in a static link.
         let mut branch = WeakUses::default();
         branch.add(Some(WeakClass::Branch), k1);
-        assert_eq!(branch.verdict(OutputKind::Exec, true), WeakVerdict::Weak0, "no GOT, no word");
+        assert_eq!(branch.verdict(OutputKind::Exec, true), WeakVerdict::WeakDyn, "a branch alone");
+        assert_eq!(branch.verdict(OutputKind::Pie, true), WeakVerdict::WeakDyn, "a branch alone");
+        assert_eq!(branch.verdict(OutputKind::Static, false), WeakVerdict::Weak0);
+        assert_eq!(branch.verdict(OutputKind::Pie, false), WeakVerdict::Weak0, "static PIE");
+        // A branch beside an unfillable use (WP-155's ruling (A)):
+        // `WeakDyn` in `Exec` (the unfillable uses written as `Weak0`'s),
+        // refused in `Pie`, `Weak0` without `.dynamic`.
+        let mut mixed = branch;
+        mixed.add(Some(WeakClass::Unfillable), k2);
+        assert_eq!(mixed.verdict(OutputKind::Exec, true), WeakVerdict::WeakDyn, "split");
+        assert_eq!(mixed.verdict(OutputKind::Pie, true), WeakVerdict::Refused(k2));
+        assert_eq!(mixed.verdict(OutputKind::Static, false), WeakVerdict::Weak0);
+        assert_eq!(mixed.verdict(OutputKind::Pie, false), WeakVerdict::Weak0, "static PIE");
+        // ... but not beside a GOT use or an absolute word (the
+        // references disagree there; D-25 keeps `Weak0`).
+        let mut got_branch = mixed;
+        got_branch.add(Some(WeakClass::Got), k1);
+        assert_eq!(got_branch.verdict(OutputKind::Exec, true), WeakVerdict::Weak0, "GOT");
+        let mut abs_branch = mixed;
+        abs_branch.add(Some(WeakClass::AbsWord), k1);
+        assert_eq!(abs_branch.verdict(OutputKind::Exec, true), WeakVerdict::Weak0, "abs word");
+        // No use of the key (only `NONE`-class records): `Weak0`.
+        let mut none = WeakUses::default();
+        none.add(None, k1);
+        assert_eq!(none.verdict(OutputKind::Exec, true), WeakVerdict::Weak0, "no use");
         let mut pc = got;
         pc.add(Some(WeakClass::Unfillable), k2);
         pc.add(Some(WeakClass::Unfillable), k1);

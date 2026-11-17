@@ -16,12 +16,13 @@
 # | text    | `&k`, `-mcmodel=large -fno-pic` (GCC) | ABS64 in `.text` (literal) | 64 in `.text` (movabs) | unfillable |
 # | movw    | `&k`, `-mcmodel=large -fno-pic` (Clang) | MOVW_UABS_G0_NC..G3   | 64 in `.text`           | unfillable |
 #
-# Expected (D-25): a key with a GOT use or an absolute word in a writable
-# place and no unfillable use is `WeakDyn` in `Pie` and `Exec`: a `WEAK
-# UND` `.dynsym` entry, its uses see a definition preloaded with
-# `LD_PRELOAD=./libhook.so`, and its branches go through a PLT entry. A
-# branch alone is `Weak0` (no `.dynsym` entry, no `JUMP_SLOT`; the row is
-# never called, a `Weak0` call has no target). An unfillable use makes the
+# Expected (D-25): a key with a GOT use, an absolute word in a writable
+# place or a branch and no unfillable use is `WeakDyn` in `Pie` and
+# `Exec`: a `WEAK UND` `.dynsym` entry, its uses see a definition
+# preloaded with `LD_PRELOAD=./libhook.so`, and its branches go through a
+# PLT entry. A branch alone is `WeakDyn` too (WP-155, as GNU ld and lld:
+# an entry and a `JUMP_SLOT`; the row is never called here, its runs are
+# `weak-branch-call`). An unfillable use makes the
 # key `Weak0` in `Exec` (null with and without the preload) and is refused
 # by name in `Pie`, `weak-undefined-pc-in-pie`.
 #
@@ -29,8 +30,7 @@
 # every undefined weak key 0 (nothing dynamic, the preload is never seen);
 # GNU ld and lld write no record for an absolute word in a writable place
 # of a `-no-pie` output (D-25: "this behaviour is new to mortar"), and
-# GNU ld on x86-64 gives such a word 0 in a PIE too; GNU ld and lld make a
-# branch-only key dynamic with a `JUMP_SLOT`. Each reference's runs are
+# GNU ld on x86-64 gives such a word 0 in a PIE too. Each reference's runs are
 # held to what it prints; the `.dynsym` and relocation checks are mortar's.
 # The references refuse the unfillable rows in a PIE with their own
 # wording. mold does not know AArch64 `GOT_LD_PREL19` ("unknown
@@ -106,7 +106,7 @@ check readelf --dyn-syms -W pie
   has(mortar): WEAK DEFAULT UND k_got$
   has(mortar): WEAK DEFAULT UND k_word$
   has(mortar): WEAK DEFAULT UND k_relro$
-  not(mortar): k_branch
+  has(mortar): WEAK DEFAULT UND k_branch$
   has(mortar): WEAK DEFAULT UND k_gotcall$
   has(mortar): WEAK DEFAULT UND k_noplt$
 check readelf -rW pie
@@ -120,7 +120,8 @@ check readelf -rW pie
   has(x86_64,mortar): R_X86_64_64 * k_relro + 0
   has(x86_64,mortar): R_X86_64_GLOB_DAT * k_gotcall + 0
   has(x86_64,mortar): R_X86_64_JUMP_SLOT * k_gotcall + 0
-  not(mortar): k_branch
+  has(aarch64,mortar): R_AARCH64_JUMP_SLOT * k_branch + 0
+  has(x86_64,mortar): R_X86_64_JUMP_SLOT * k_branch + 0
 
 link gcc -no-pie main-exec.o got.o word.o relro.o branch.o gotcall.o noplt.o rodata.o text.o movw.o -o exec
 run exec
@@ -164,7 +165,7 @@ check readelf --dyn-syms -W exec
   has(mortar): WEAK DEFAULT UND k_relro$
   has(mortar): WEAK DEFAULT UND k_gotcall$
   has(mortar): WEAK DEFAULT UND k_noplt$
-  not(mortar): k_branch
+  has(mortar): WEAK DEFAULT UND k_branch$
   not(mortar): k_rodata
   not(mortar): k_text
   not(mortar): k_movw
@@ -173,6 +174,8 @@ check readelf -rW exec
   has(aarch64,mortar): R_AARCH64_ABS64 * k_relro + 0
   has(x86_64,mortar): R_X86_64_64 * k_word + 0
   has(x86_64,mortar): R_X86_64_64 * k_relro + 0
+  has(aarch64,mortar): R_AARCH64_JUMP_SLOT * k_branch + 0
+  has(x86_64,mortar): R_X86_64_JUMP_SLOT * k_branch + 0
 
 link(x86_64) gcc -pie archmain.o arch.o -o pie-arch
 link(aarch64,bfd,lld,mortar) gcc -pie archmain.o arch.o -o pie-arch

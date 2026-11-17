@@ -1,0 +1,107 @@
+# dyn.md D-25 (WP-155), the branch cell: an undefined weak function `vfn`
+# reached by a call only (`vfn()`, no test), defined in no library on
+# the line, is `WeakDyn` in `Pie` and `Exec`: a `WEAK UND` `.dynsym`
+# entry (`NOTYPE`, D-23) and the call through a PLT entry with a
+# `JUMP_SLOT`, as GNU ld and lld write. Run plain, the call dies
+# (`SIGSEGV`, lazy binding and `-z now` alike); with `LD_PRELOAD=./libv.so`
+# or with `alt/libm2.so`, a later `libm2.so` that lists `libv.so`, the
+# definition is called (27). Before WP-155 mortar made the key `Weak0`:
+# no entry, the AArch64 call skipped (`bl .+4`) and the x86-64 call to 0,
+# whatever was loaded.
+#
+# `--as-needed` with `ver/libv.so`, which defines `vfn@@V1` and which no
+# needed library lists, is dropped (D-11): the key is undefined weak, its
+# entry unversioned (index 1), no `Verneed` and no `DT_NEEDED` of it
+# (GNU ld and lld; lld writes the entry `FUNC`, mortar and GNU ld
+# `NOTYPE`).
+#
+# Where the references differ (dyn.md §13.1): mold makes the key 0 (no
+# entry: AArch64 skips the call and prints the register it finds, x86-64
+# dies even under the preload); with `libv.so` on the line it keeps the
+# library needed. Its runs are not held here.
+#@ spec: dyn.md "D-25"
+#@ arch: aarch64 x86_64
+
+cc -O2 -fPIC v.c -o v.o
+cc -O2 -fPIC m2.c -o m2.o
+cc -O2 -fPIE call.c -o call-pie.o
+cc -O2 -fno-pie call.c -o call-nopie.o
+shlib gcc v.o -Wl,-soname,libv.so -o libv.so
+shlib gcc v.o -Wl,--version-script=v.map -Wl,-soname,libv.so -o ver/libv.so
+shlib gcc m2.o -Wl,-soname,libm2.so -o libm2.so
+shlib gcc m2.o -Wl,-soname,libm2.so -L. -Wl,--no-as-needed -lv -o alt/libm2.so
+
+link gcc -pie call-pie.o -L. -lm2 -o pie
+run(bfd,lld,mortar) pie
+  exit: signal 11
+  stdout: start
+run(bfd,lld,mortar) pie
+  env: LD_PRELOAD=./libv.so
+  stdout: start
+  stdout: call 27 base 20
+run(bfd,lld,mortar) pie
+  env: LD_LIBRARY_PATH=alt:.
+  stdout: start
+  stdout: call 27 base 20
+check(bfd,lld,mortar) readelf --dyn-syms -W pie
+  has: NOTYPE WEAK DEFAULT UND vfn$
+check(bfd,lld,mortar) readelf -rW pie
+  has: _JUMP_SLOT * vfn + 0
+
+link gcc -no-pie -Wl,-z,now call-nopie.o -L. -lm2 -o exec
+run(bfd,lld,mortar) exec
+  exit: signal 11
+  stdout: start
+run(bfd,lld,mortar) exec
+  env: LD_PRELOAD=./libv.so
+  stdout: start
+  stdout: call 27 base 20
+run(bfd,lld,mortar) exec
+  env: LD_LIBRARY_PATH=alt:.
+  stdout: start
+  stdout: call 27 base 20
+check(bfd,lld,mortar) readelf --dyn-syms -W exec
+  has: NOTYPE WEAK DEFAULT UND vfn$
+check(bfd,lld,mortar) readelf -rW exec
+  has: _JUMP_SLOT * vfn + 0
+
+link gcc -no-pie call-nopie.o -L. -lm2 -Wl,--as-needed -Lver -lv -Wl,--no-as-needed -o exec-ver
+run(bfd,lld,mortar) exec-ver
+  exit: signal 11
+  stdout: start
+run(bfd,lld,mortar) exec-ver
+  env: LD_PRELOAD=./ver/libv.so
+  stdout: start
+  stdout: call 27 base 20
+check(bfd,lld,mortar) readelf --dyn-syms -W exec-ver
+  has: WEAK DEFAULT UND vfn$
+  not: vfn@
+check(bfd,lld,mortar) readelf -dW exec-ver
+  not: [libv.so]
+check(bfd,lld,mortar) readelf -VW exec-ver
+  not: File: libv.so
+check(bfd,lld,mortar) readelf -rW exec-ver
+  has: _JUMP_SLOT * vfn + 0
+
+#--- ver/README
+ver/libv.so: libv.so with vfn at version V1.
+#--- alt/README
+alt/libm2.so: libm2.so listing libv.so (DT_NEEDED).
+#--- v.map
+V1 { global: vfn; local: *; };
+#--- v.c
+int vfn(void) { return 27; }
+#--- m2.c
+int m2fn(void) { return 20; }
+#--- call.c
+#include <stdio.h>
+extern int vfn(void) __attribute__((weak));
+int m2fn(void);
+int main(void) {
+  int base = m2fn();
+  setvbuf(stdout, 0, _IONBF, 0);
+  puts("start");
+  int r = vfn();
+  printf("call %d base %d\n", r, base);
+  return 0;
+}

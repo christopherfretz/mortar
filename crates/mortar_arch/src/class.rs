@@ -217,6 +217,38 @@ pub fn cell(class: DemandClass, output: OutputKind, target: TargetKind) -> Cell 
     if second { row.2[column(target)] } else { row.1[column(target)] }
 }
 
+/// `spec/dyn.md` D-25 (WP-155): the target kind ONE relocation against a
+/// key of kind `kind` is written with. In a dynamic `Exec` a `WeakDyn` key
+/// reached by a branch may also have unfillable uses (D-25's split cell:
+/// the key is in `.dynsym` and its branches go through a PLT entry with a
+/// `JUMP_SLOT`); each such use at an allocated place (`class`: the
+/// architecture's `weak_use` of the relocation, D-25's table; the caller
+/// gives `None` for a TLS class, whose key is refused) is written
+/// as `Weak0`'s, its value 0 by the architecture's §7 rule, and demands
+/// nothing. Every other relocation sees `kind`: `target_kind` stays a
+/// property of the key (arch.md §2.1), and only the patching of the
+/// unfillable uses of a split key is per relocation. A key with no
+/// unfillable use is unchanged (none of its relocations is unfillable),
+/// and outside `Exec` nothing changes (in `Pie` such a use is refused,
+/// `weak-undefined-pc-in-pie`; in `Shared` a key is never split).
+#[must_use]
+pub fn weak_use_kind(
+    output: OutputKind,
+    kind: TargetKind,
+    alloc: bool,
+    class: impl FnOnce() -> Option<crate::WeakClass>,
+) -> TargetKind {
+    if output == OutputKind::Exec
+        && kind == TargetKind::WeakDyn
+        && alloc
+        && class() == Some(crate::WeakClass::Unfillable)
+    {
+        TargetKind::Weak0
+    } else {
+        kind
+    }
+}
+
 /// What the place is, for the rules that depend on it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PlaceFacts {
@@ -413,13 +445,35 @@ pub fn class_outcome(
 
 #[cfg(test)]
 mod tests {
-    use super::{COLUMNS, ClassOutcome, DemandClass, PlaceFacts, class_outcome};
+    use super::{COLUMNS, ClassOutcome, DemandClass, PlaceFacts, class_outcome, weak_use_kind};
     use crate::error::{DynRefusal, Incompatible};
     use crate::flags::DemandFlags;
     use crate::vocab::{OutputKind, TargetKind};
 
     // spec: dyn.md D-122, arch.md §4.5 ("No `C`, no `CANON_PLT`"): no
     // cell of a `Shared` output raises a copy or a canonical PLT entry
+    #[test]
+    fn d25_split_key_uses() {
+        use crate::WeakClass::{AbsWord, Branch, Got, Unfillable};
+        let (exec, weak_dyn, weak0) = (OutputKind::Exec, TargetKind::WeakDyn, TargetKind::Weak0);
+        // `Exec`: an unfillable use at an allocated place of a `WeakDyn`
+        // key is written as `Weak0`'s; every other use keeps the key's kind.
+        assert_eq!(weak_use_kind(exec, weak_dyn, true, || Some(Unfillable)), weak0);
+        for c in [Some(Branch), Some(Got), Some(AbsWord), None] {
+            assert_eq!(weak_use_kind(exec, weak_dyn, true, || c), weak_dyn, "{c:?}");
+        }
+        // A non-allocated place, another kind, another output: unchanged
+        // (the class is not asked).
+        let never = || -> Option<crate::WeakClass> { unreachable!() };
+        assert_eq!(weak_use_kind(exec, weak_dyn, false, never), weak_dyn);
+        for k in [TargetKind::Local, TargetKind::Preemptible, weak0] {
+            assert_eq!(weak_use_kind(exec, k, true, never), k);
+        }
+        for o in [OutputKind::Pie, OutputKind::Shared, OutputKind::Static] {
+            assert_eq!(weak_use_kind(o, weak_dyn, true, never), weak_dyn);
+        }
+    }
+
     #[test]
     fn d122_no_copy_in_shared() {
         for class in DemandClass::ALL {

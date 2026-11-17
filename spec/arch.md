@@ -813,10 +813,17 @@ last row: `NONE`, x86 `SIZE*`, `GOTPC*`). A type absent from the
 architecture's column is `Unfillable`, never `None`. Each architecture
 spec carries its column of D-25's table (`spec/a64.md` §7, `spec/x64.md`
 X-16, `spec/x86.md` §5). The decision is generic: in `Exec` and `Pie`
-the key is `WeakDyn` when some use is `Got` or `AbsWord` and none is
-`Unfillable`; in `Pie` a key with an `Unfillable` use is refused once,
+the key is `WeakDyn` when some use is `Got`, `AbsWord` or `Branch` and none is
+`Unfillable`; in `Exec` also when some use is `Branch` and none is `Got`
+or `AbsWord` (WP-155), its `Unfillable` uses then written as against
+`Weak0` (`weak_use_kind`, below); in `Pie` a key with an `Unfillable` use is refused once,
 `weak-undefined-pc-in-pie`; otherwise `Weak0`. Against a `WeakDyn` key
 every `Branch` demands `PLT` (§4.3), and the GOT relaxations are off.
+`weak_use_kind(output, kind, alloc, class)` is the kind one relocation
+is scanned and applied with: `Weak0` for a relocation at an allocated
+place of `Exec` whose class is `Unfillable` (a TLS class excepted: its
+key is refused, D-25) against a `WeakDyn` key,
+`kind` otherwise; `target_kind` stays the key's.
 
 ### 3.13 GNU properties
 
@@ -1010,7 +1017,8 @@ its types belong to which class (a64.md §5).
 
 The `WeakDyn` column's `E` cells are unreachable in `Exec` and `Pie`
 [M2]: `spec/dyn.md` D-25 makes a key with a use of D-25's `unfillable`
-class `Weak0` in `Exec`, and refuses it per key in `Pie`
+class `Weak0` in `Exec` (or, beside a branch, has each such use read
+the `Weak0` column, `weak_use_kind`, §3.12), and refuses it per key in `Pie`
 (`weak-undefined-pc-in-pie`, §3.12) before any cell is read; a
 `WeakDyn` key therefore meets only `AbsWord` in a writable place, `Got`
 and `Branch` (which demands `PLT`, with a `JUMP_SLOT`, in both kinds).

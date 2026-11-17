@@ -34,7 +34,9 @@ pub mod seq;
 pub mod shapes;
 pub mod vocab;
 
-pub use class::{ClassOutcome, Demand, DemandClass, PlaceFacts, class_outcome, writes_dtprel};
+pub use class::{
+    ClassOutcome, Demand, DemandClass, PlaceFacts, class_outcome, weak_use_kind, writes_dtprel,
+};
 pub use cx::{
     DemandOut, DemandSink, EventClass, FillCx, FillTables, OutputCx, PatchCx, Records, Reloc,
     RelocAt, ScanCx, ScanError, ScanTables, SectionOut, SymFacts, SymNames, SymValue, SynthCx,

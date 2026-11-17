@@ -1,0 +1,40 @@
+# dyn.md D-25 (WP-155): D-25 classifies the LIVE relocations naming an
+# undefined weak key. `vfn` is called only from `unused_caller`, in its own
+# section (`-ffunction-sections`). Without `--gc-sections` the call makes
+# the key `WeakDyn` (a `WEAK UND` entry, a `JUMP_SLOT`); with
+# `--gc-sections` the section is collected and the key has no use: no
+# entry, no `JUMP_SLOT` (GNU ld, lld and mortar). mold has no entry
+# either way here (it makes such a key 0); with the defining library on
+# the line it writes a `FUNC` entry even after the collection (not
+# held here).
+#@ spec: dyn.md "D-25"
+#@ arch: aarch64 x86_64
+
+cc -O2 -fPIC m2.c -o m2.o
+cc -O2 -fPIE -ffunction-sections gc.c -o gc.o
+shlib gcc m2.o -Wl,-soname,libm2.so -o libm2.so
+
+link gcc -pie gc.o -L. -lm2 -o kept
+run kept
+  stdout: gc 20
+check(bfd,lld,mortar) readelf --dyn-syms -W kept
+  has: NOTYPE WEAK DEFAULT UND vfn$
+check(bfd,lld,mortar) readelf -rW kept
+  has: _JUMP_SLOT * vfn + 0
+
+link gcc -pie -Wl,--gc-sections gc.o -L. -lm2 -o collected
+run collected
+  stdout: gc 20
+check readelf --dyn-syms -W collected
+  not: vfn
+check readelf -rW collected
+  not: vfn
+
+#--- m2.c
+int m2fn(void) { return 20; }
+#--- gc.c
+#include <stdio.h>
+extern int vfn(void) __attribute__((weak));
+int m2fn(void);
+int unused_caller(void) { return vfn(); }
+int main(void) { printf("gc %d\n", m2fn()); return 0; }

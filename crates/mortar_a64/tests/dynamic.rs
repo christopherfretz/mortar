@@ -357,7 +357,13 @@ fn s5_demand_cells_exec_and_pie() {
                     let place = PlaceFacts { alloc: true, writable, exec: Some(!writable) };
                     let r = Reloc { r_offset: 0, key: key(1), r_type: t, addend: 0 };
                     let s = scan_one(M2, &tables, out, place, &input, r).unwrap();
-                    let w = want(h.class, out, kind, writable);
+                    // `spec/dyn.md` D-25 (WP-155): in `Exec` an unfillable
+                    // use of a `WeakDyn` key (a split key) is `Weak0`'s cell.
+                    let split = out == OutputKind::Exec
+                        && kind == TargetKind::WeakDyn
+                        && mortar_a64::weak::weak_class(t, writable) == Some(WeakClass::Unfillable);
+                    let w =
+                        want(h.class, out, if split { TargetKind::Weak0 } else { kind }, writable);
                     assert_eq!(got(&s), w, "{} {out:?} {kind:?} writable={writable}", h.name);
                     *by.entry(format!("{w:?}")).or_default() += 1;
                     cells += 1;
