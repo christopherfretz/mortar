@@ -1,5 +1,5 @@
-# PENDING (WP-197): L3: the verifier finds libs1.so: P-M2 place: 2 notes, 1 of type 0x4d4f4401 and 0 of 0x4d4f4402; O-52 is one table note, then at most one =full note at 0x298 (and 65 more)
-# (WP-198) The verifier does not know --odr-runtime yet: it has no input for <mortar:odr-runtime> (I1, M12), does not read the option (M9) or the -z now and the table it implies (P-D3, P-D6, P-M2 presence), nor the runtime note (P-M2 place), so the runtime's sections, references, imports and relocations have no input (P-M3, P-D7, P-D9, E4); every mortar output of this test runs as expected under --no-plumb. WP-197 teaches the verifier the runtime input and renames this file to .test.
+# Judged by the verifier (WP-197): the runtime input, its note, its entry and -z now are spec/plumb.md §13's rules.
+# (WP-198) Every mortar output of this test is held to the verifier's rules (L3) and runs as expected.
 # --odr-runtime on the initial set (spec/odr.md O-53a; WP-077 cases
 # S-fatal, S-report, S-env, S-off): libs2 binds libs1's fmtlite::version()
 # (a different body: kind 2 rows 01.. and 02..). Under =fatal the
