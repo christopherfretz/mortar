@@ -760,6 +760,29 @@ O-18 hashes that has an item kind, so the first item that differs
 between two entries is the first difference. A reader ignores an item
 kind it does not know and a set `reserved`.
 
+*What a writer may do, and what a reader does* (WP-145; the lenient
+reader-side answers, for kiln to confirm). The body starts right after
+the block's 16-byte header; a kind 4 block's `row_size` and `row_count`
+are 0 (MT §7) and a reader does not use them. Entries may stand in any
+order, leave gaps (zero or not) between them, overlap, and be shared by
+several rows (two rows whose `details` are equal name one entry). An
+entry with `count` 0 is legal (a class without members, bases or
+vptr). `count` has no maximum but the block: a reader checks `offset +
+8 + 24 × count` against the body's end in 64 bits. Bits 6-31 of an
+item's `flags` are ignored, as are `BITFIELD` and `VIRTUAL` on an item
+kind they do not belong to (they still take part in comparing two
+items); an item of an unknown kind is skipped whole, its string fields
+unchecked. A block of version above 1 is skipped (MT-25: O-19 does not
+say later versions only append). *Validity* (MT-14's rules, applied when
+the entry is read): a row's `details` that is not a multiple of 8, an
+entry header or items that run past the body, a string field of an item
+of a known kind past the string table or without NUL, or `details` in a
+unit with no kind 4 block, is `meta-malformed` (§9.1). A reader reads
+and validates kind 4 only on a finding (MT-42): an entry no finding
+needs is never read, so its malformations are not reported, and a
+malformed entry never takes the unit's other rows out of the
+comparison.
+
 ## 7. Comparison points
 
 **O-20 (what is compared; normative).** The rows of every unit of every
@@ -1209,7 +1232,64 @@ warning: f(int) violates the one-definition rule
   b.o: c++20`). The question in the K1 example is printed only when no
   kind 1 key differs.
 - Types: with kind 4, the first difference (`>>> member 'y' at offset 8
-  in a.o only`); without, the sizes and alignments.
+  in a.o only`); without, the sizes and alignments. Exactly (WP-145):
+  when `odr-type-mismatch` compared layouts within one scheme (O-17,
+  O-18) and found two classes, the first rows of the first two classes
+  (A of file `a.o`, B of `b.o`, as the context lines name them) both
+  have `details`, and both entries read (O-19), the note that would give
+  the sizes and alignments (`a.o: size 8, alignment 4; b.o: size 12,
+  alignment 4`, or `the layouts differ (members, offsets, bases or
+  vtable) with the same size 8 and alignment 4`) is replaced by the
+  first difference below; when the shape flags differ at equal sizes,
+  their note (`a.o: struct; b.o: union`) stays and the first difference
+  follows it. With one row's `details` only, neither, an entry of a
+  block version above 1 (MT-25), or a definition-hash or cross-scheme
+  finding, the notes are as before, byte for byte. Kind 4 never decides
+  a finding and is not read when kind 3 found none.
+
+  *An item as a note writes it* (`D`): a member `member 'y' (i) at
+  offset 8`, a bit-field `member 'y' (i) at offset 70 bits, bit-field of
+  3 bits` (a member without a name: `unnamed member (i) ...`; without a
+  type string the `(i)` is left out); a base `base 1B at offset 0`, a
+  virtual one `base 1B at offset 0 (virtual)`; `vptr at offset 0`;
+  `vtable slot 2: _ZN1S1gEv`; `enumerator 'B' = 1` (a value with bit 63
+  set in hex, `0xffffffffffffffff`: O-19 does not say whether `value` is
+  signed); `underlying type j`. Offsets: O-19's bits divided by 8,
+  without a unit, when the item is not a bit-field and the bit offset is
+  a multiple of 8; otherwise the bits, followed by `bits`. Type strings
+  and names as the unit writes them (no demangling). `D'` is `D` without
+  its leading kind words (`member `, `base `, `vptr `, `vtable slot `,
+  `enumerator `, `underlying type `).
+
+  *The first difference.* Items of kinds O-19 does not define are left
+  out. Two items are equal when their kinds, name strings, type strings
+  (by content), `value`, `width` and flag bits 0-5 are. An item's
+  *identity* is its kind and name (member, vtable slot, enumerator), its
+  kind and type (base), its kind (vptr, underlying type). Let `i` be the
+  first position where A's and B's items differ:
+
+  | case | note |
+  |---|---|
+  | none (same items, same count) | `the layout details are equal: the difference is in something kind 4 does not describe` |
+  | B ends at `i` (B is a prefix of A) | `D(A[i]) in a.o only`, then `, and N more items` when A has N > 0 items after it (`, and 1 more item`) |
+  | A ends at `i` | `D(B[i]) in b.o only`, the same way |
+  | A[i], B[i] of one identity | `D(A[i]) in a.o; D'(B[i]) in b.o` |
+  | A[i]'s identity not in B, B[i]'s in A | `D(A[i]) in a.o only` |
+  | B[i]'s identity not in A, A[i]'s in B | `D(B[i]) in b.o only` |
+  | neither identity in the other | `D(A[i]) in a.o; D(B[i]) in b.o` |
+  | both in the other (same items, different order) | `the items stand in a different order: D(A[i]) in a.o; D(B[i]) in b.o` |
+
+  E.g. `member 'extra' (i) at offset 4 in a.o only`; `member 'y' (i) at
+  offset 70 bits, bit-field of 3 bits in a.o; 'y' (l) at offset 8 in
+  b.o`; `vtable slot 1: _ZN1S1gEv in b.o only`.
+
+  An entry that does not read (O-19's malformations) gives
+  `meta-malformed` (an error, `strict` only, as MT-14's) naming the file,
+  `.mason.meta` and the unit's offset, with the reason `unit at offset
+  U: kind 4 block at offset K: entry at offset E: ...` (or `a kind 3 row
+  names the kind 4 entry at offset E, and the unit has no kind 4 block`),
+  once per (file, unit, entry); the type's note is then the sizes and
+  alignments.
 - Key (`spec/model.md` §8): phase 40, unit = the `FileId` of the first
   file of the second class, seq = its symbol-table index; for a row
   without a symbol (types, unanchored rows) `2^40 + ` the row's index in
@@ -1285,7 +1365,9 @@ each one's read counter is tested off (WP-076).
 kind, schemes seen and the unit pairs not compared because of them,
 the kind 3 groups compared across schemes (O-11's exception), ambiguous
 anchors (O-4), unanchored rows, `SYSTEM` differences between
-units of different `-std` (O-32), time spent and container bytes read.
+units of different `-std` (O-32), time spent and container bytes read,
+and the kind 4 entries read for notes (`layout details read N`, before
+`record findings`; WP-145: non-zero only on a kind 3 layout finding).
 For tuning and for the oracle of §12.3.
 
 **O-45 (cost budget).** With the checks O-47 lists as on, the

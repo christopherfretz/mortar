@@ -1482,7 +1482,7 @@ definition name=f
         }
     }
 
-    const DETAILED: &str = r#"
+    const DETAILED: &str = r"
 unit producer=4
 level detail
 summary name=odr.scheme value=test-1
@@ -1500,7 +1500,7 @@ base type=1S offset=0 virtual=1
 base type=1B offset=128
 item flags=0x7 name=future type=x value=9 width=1
 type name=1N size=1 align=1
-"#;
+";
 
     /// The description's single unit.
     fn only_unit(text: &str) -> UnitBuilder {

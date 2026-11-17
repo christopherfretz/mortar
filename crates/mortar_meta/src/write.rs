@@ -223,8 +223,8 @@ impl UnitBuilder {
         });
         // Kind 4 (O-19): one entry per row with items, in row order, each
         // right after the one before (entries are multiples of 8 bytes).
-        let typed = types.iter().any(|t| t.items.is_some());
-        if typed && self.details.is_some() {
+        let has_items = types.iter().any(|t| t.items.is_some());
+        if has_items && self.details.is_some() {
             return Err(WriteError::DuplicateKind(kind::DETAILS));
         }
         let mut entry_at = 0usize;
@@ -305,7 +305,7 @@ impl UnitBuilder {
         }
         if let Some(details) = &self.details {
             header(kind::DETAILS, 1, 0, 0, details.clone())?;
-        } else if typed {
+        } else if has_items {
             let mut body = Vec::with_capacity(entry_at);
             for items in types.iter().filter_map(|t| t.items.as_ref()) {
                 put32(&mut body, u32::try_from(items.len()).map_err(|_| WriteError::TooLarge)?);

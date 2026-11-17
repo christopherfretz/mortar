@@ -4,6 +4,8 @@
 //! kinds, a set `reserved`, a later block version), and a deterministic
 //! fuzz over every truncation and every single byte set to 0xff.
 
+#![allow(clippy::many_single_char_names)]
+
 use mortar_meta::details::{self, Fault, item};
 use mortar_meta::read::{Malformation, SectionAttrs, Unit};
 use mortar_meta::write::{Detail, RawBlock, Type};
@@ -259,7 +261,7 @@ fn truncations_and_bit_flips() {
             match details::entry(body, &strtab, o) {
                 Ok(e) => {
                     outcomes[0] += 1;
-                    let _ = e.items().map(|i| (i.name, i.ty, i.value)).count();
+                    assert!(e.items().count() <= e.count as usize);
                 }
                 Err(_) => outcomes[1] += 1,
             }
