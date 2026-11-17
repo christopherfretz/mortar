@@ -170,7 +170,7 @@ pub fn link_lines(dir: &Path) -> Result<Vec<Vec<String>>, String> {
             format!("'{}' does not parse ({} errors)", file.name, errors.len())
         })?;
         for step in &parsed.steps {
-            if let StepKind::Link(link) = &step.kind {
+            if let StepKind::Link(link) | StepKind::Host(link) = &step.kind {
                 let args: Vec<String> = link
                     .args
                     .iter()

@@ -793,6 +793,7 @@ fn run(a: &Args, workspace: &Path) -> Result<bool, String> {
         cmp.new.len(),
         cmp.lost.len()
     );
+    say!("against {BASELINE}: -shared: {} lines, {} newly linked", cmp.shared, cmp.shared_fixed);
     for r in cmp.regressed.iter().take(40) {
         say!("  regressed: {r}");
     }
