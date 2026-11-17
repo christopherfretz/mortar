@@ -1986,6 +1986,17 @@ Besides the exports, `.dynsym` holds:
    that would need the value 0 at link time (a PC-relative form) is
    refused by D-117.
 
+A key that a live relocatable object's symbol table references counts
+for items 2 and 3 unless every relocation naming it is in a section
+`--gc-sections` collected (D-124): such a key has no entry (GNU ld and
+lld; mold keeps it, except under `-z defs`, and a host linked with the
+default `--no-allow-shlib-undefined` of an executable then refuses the
+library). A key named by no relocation, or only from a kept
+non-allocated section, keeps its entry (mold; without the collection,
+all three; under it GNU ld drops the first and keeps a `.debug_*`
+reference, lld drops both: either is valid, no relocation uses the
+entry). *Test:* `shared-gc-undefined` (WP-123 finding F2).
+
 No copy aliases and no canonical PLT entries (D-122). Order: D-22
 (unhashed undefined entries by `SymbolId`, then the hashed entries by
 (bucket, `SymbolId`); `sh_info` 1); `.gnu.hash`: D-26 (lld's geometry;

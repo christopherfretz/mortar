@@ -129,7 +129,10 @@ pub struct Demands {
     /// dynamic executable that get a `.dynsym` entry and a dynamic
     /// relocation, decided per key by the scan (`mortar_scan::weak`,
     /// WP-M2-RELOC) and read by `.dynsym` (D-21 item 4). Empty (no room)
-    /// in a static link.
+    /// in a static link. In a shared object, the undefined keys of
+    /// `.dynsym`, strong and weak (D-111 items 2 and 3): every undefined
+    /// key a live relocatable object references and not only from
+    /// sections `--gc-sections` collected.
     pub weak_dyn: IdSet<SymbolId>,
 }
 

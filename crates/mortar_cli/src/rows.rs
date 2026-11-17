@@ -115,10 +115,8 @@ const DYNAMIC_LIST_CPP: &str =
 /// elsewhere each is refused by name (`Refused{Option, spelling}`) with
 /// this note (GNU ld writes `DT_SONAME` into an executable, mortar does not
 /// write it there).
-pub(crate) static SHARED_ONLY: &[(&str, &str)] = &[(
-    "-h",
-    "dyn.md D-102: mortar writes DT_SONAME in a shared object (-shared) only",
-)];
+pub(crate) static SHARED_ONLY: &[(&str, &str)] =
+    &[("-h", "dyn.md D-102: mortar writes DT_SONAME in a shared object (-shared) only")];
 
 /// The options whose effect in a `Shared` link a later package implements
 /// (`spec/cli.md` §4.2's M4 block): in a link whose output kind is

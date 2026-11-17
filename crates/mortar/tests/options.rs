@@ -112,7 +112,10 @@ const AUDIT: &[(&str, Proof)] = &[
         "-Bsymbolic-functions",
         Test("crates/mortar/tests/shared.rs", "bsymbolic_functions_binds_functions_not_data"),
     ),
-    ("-Bno-symbolic", Test("crates/mortar/tests/shared.rs", "bsymbolic_functions_binds_functions_not_data")),
+    (
+        "-Bno-symbolic",
+        Test("crates/mortar/tests/shared.rs", "bsymbolic_functions_binds_functions_not_data"),
+    ),
     ("-h", Test("crates/mortar/tests/shared.rs", "shared_with_soname_links_loads_and_runs")),
     ("-rpath", Check(dynamic_options)),
     ("-I", Check(dynamic_options)),
@@ -127,7 +130,10 @@ const AUDIT: &[(&str, Proof)] = &[
     ("-w", Check(warning_switches)),
     ("--color-diagnostics", Check(color)),
     ("--no-color-diagnostics", Check(color)),
-    ("--no-undefined", Test("crates/mortar/tests/shared.rs", "z_defs_refuses_an_undefined_reference")),
+    (
+        "--no-undefined",
+        Test("crates/mortar/tests/shared.rs", "z_defs_refuses_an_undefined_reference"),
+    ),
     ("--warn-common", Check(warn_common)),
     ("--no-warn-common", Check(warn_common)),
     ("--warn-execstack", Same(&["--warn-execstack"], Some(execstack_warns_by_default))),

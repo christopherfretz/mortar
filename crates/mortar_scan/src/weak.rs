@@ -14,6 +14,12 @@
 //! weak key in a dynamic executable (D-25, supervisor's ruling after
 //! WP-040r). A static link, a static PIE included, does no walk: every
 //! undefined weak key is `Weak0` there.
+//!
+//! In a shared object ([`shared_undefined`], `spec/dyn.md` D-111 items 2
+//! and 3) the same set names the undefined keys of `.dynsym`, strong and
+//! weak: every undefined key a live relocatable object references, less
+//! those whose every relocation is in a section `--gc-sections`
+//! collected.
 
 use mortar_arch::{Arch, DynRefusal, OutputKind, Refusal, ScanError, WeakClass};
 use mortar_core::par::Pool;
@@ -165,6 +171,13 @@ struct Acc {
 /// (one unit per file that mentions an undefined weak key).
 pub(crate) fn classes(view: &View<'_, '_>, pool: &Pool) -> WeakKeys {
     let output = view.opts.output;
+    if output == OutputKind::Shared {
+        return WeakKeys {
+            weak_dyn: shared_undefined(view, pool),
+            refused: Vec::new(),
+            refused_keys: IdSet::with_len(view.inputs.symbols.len()),
+        };
+    }
     if !(view.opts.dynamic && matches!(output, OutputKind::Exec | OutputKind::Pie)) {
         return WeakKeys::default();
     }
@@ -236,6 +249,96 @@ pub(crate) fn classes(view: &View<'_, '_>, pool: &Pool) -> WeakKeys {
         }
     }
     keys
+}
+
+/// D-111 items 2 and 3: the undefined keys of a shared object's
+/// `.dynsym`. A key is in the set when a live relocatable object
+/// references it (`RefFlags::FROM_OBJECT`) and it is not named only by
+/// relocations of sections that are not live: a reference only from a
+/// section `--gc-sections` collected gives no entry (GNU ld and lld; a
+/// key with no relocation, or named from a kept non-allocated section,
+/// keeps its entry as without the collection). Without the collection
+/// every section of a live object is live and the set is the
+/// references'. The relocations are walked only in the files that
+/// mention such a key (one unit per file on `pool`).
+fn shared_undefined(view: &View<'_, '_>, pool: &Pool) -> IdSet<SymbolId> {
+    use mortar_core::resolution::RefFlags;
+    let n = view.inputs.symbols.len();
+    let r = view.resolution;
+    let mut set = IdSet::with_len(n);
+    let mut any = false;
+    for i in 0..n {
+        let id = SymbolId(i);
+        let referenced = r.props.get(id).is_some_and(|p| p.refs.contains(RefFlags::FROM_OBJECT));
+        if referenced && matches!(view.def(id), Def::Undefined { .. }) {
+            set.insert(id);
+            any = true;
+        }
+    }
+    if !any {
+        return set;
+    }
+    let files: Vec<FileId> = r
+        .section_base
+        .iter()
+        .map(|(f, _)| f)
+        .filter(|&f| {
+            r.file_live.get(f).is_some_and(|l| l.is_live())
+                && view.prep(f).is_some_and(|p| p.obj.is_some())
+                && view.inputs.sym_map_of(f).iter().any(|&id| {
+                    set.contains(id) || r.redirect.get(id).is_some_and(|&to| set.contains(to))
+                })
+        })
+        .collect();
+    let named: Vec<Vec<(SymbolId, bool)>> =
+        pool.map(files.len(), |k| file_names(view, files[k], &set));
+    let mut live = IdSet::with_len(n);
+    let mut dead = IdSet::with_len(n);
+    for &(id, is_live) in named.iter().flatten() {
+        if is_live {
+            live.insert(id);
+        } else {
+            dead.insert(id);
+        }
+    }
+    for i in 0..n {
+        let id = SymbolId(i);
+        if dead.contains(id) && !live.contains(id) {
+            set.remove(id);
+        }
+    }
+    set
+}
+
+/// The keys of `keys` the relocations of `file` name, each with whether
+/// the relocated section is live, every relocated section included.
+fn file_names(view: &View<'_, '_>, file: FileId, keys: &IdSet<SymbolId>) -> Vec<(SymbolId, bool)> {
+    let r = view.resolution;
+    let mut out = Vec::new();
+    let mut bufs = Bufs::default();
+    let Some(range) = r.section_base.get(file).copied() else { return out };
+    for (k, sid) in range.iter().enumerate() {
+        let Some(row) = r.sections.get(sid) else { continue };
+        if row.reloc.0 == 0 {
+            continue;
+        }
+        let live = view.liveness.is_live(sid);
+        // A live section that cannot be read is the walk's diagnostic; a
+        // dead one names nothing.
+        let Ok(sec) = Sec::open(view, file, sid, k as u32, row.reloc.0, &mut bufs) else {
+            continue;
+        };
+        let n = u32::try_from(sec.recs.records.len()).unwrap_or(u32::MAX);
+        for i in 0..n {
+            let Some(raw) = sec.recs.records.raw(i) else { continue };
+            let Some(key) = view.key_of(file, sec.recs.table, raw.r_sym) else { continue };
+            let SymKind::Global(id) = key.kind() else { continue };
+            if keys.contains(id) {
+                out.push((id, live));
+            }
+        }
+    }
+    out
 }
 
 /// The uses of undefined weak keys (`weak`) in the live allocated

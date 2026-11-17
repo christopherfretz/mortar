@@ -117,11 +117,8 @@ impl Cx {
 /// The verifier on mortar's library `out` (its map `<out>.mortar-map`):
 /// no finding.
 fn verify(dir: &Path, out: &str) {
-    let findings = support::plumb::verify_staged(
-        &dir.join(out),
-        &dir.join(format!("{out}.mortar-map")),
-        dir,
-    );
+    let findings =
+        support::plumb::verify_staged(&dir.join(out), &dir.join(format!("{out}.mortar-map")), dir);
     assert!(findings.is_empty(), "plumb on {out}: {findings:#?}");
 }
 

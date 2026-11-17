@@ -1,22 +1,26 @@
 # dyn.md D-124, D-118, D-111 (WP-123): under --gc-sections an undefined
 # reference only from a collected section is not reported by `-z defs`
-# (all three references) and is not in .dynsym (GNU ld and mold); a
-# host links against the library and runs. mortar links the library
-# under `-z defs` but keeps the key in .dynsym as a GLOBAL UND entry no
-# relocation uses (synth's D-111 item 2 reads "a live relocatable object"
-# as `RefFlags::FROM_OBJECT`, which is set before the collection); a
-# mortar host then refuses the library's undefined symbol.
+# (all three references) and gives no .dynsym entry (D-111: GNU ld, lld,
+# and mold under `-z defs`; mold without it keeps the entry, whatever the
+# collection); a host links against the library and runs. The second
+# library is the same line without `-z defs` (WP-123 finding F2: mortar
+# kept the entry, and a mortar host refused the library).
 #@ spec: dyn.md "D-124"
 #@ arch: aarch64 x86_64
-#@ xfail(mortar): M4: WP-123 finding F2 (D-111 item 2 after --gc-sections: the live references are the scan's, not RefFlags::FROM_OBJECT)
 
 cc -O1 -fPIC -ffunction-sections -fdata-sections lib.c -o lib.o
 cc -O1 -fPIE main.c -o main.o
 link gcc -shared lib.o -Wl,--gc-sections -Wl,-z,defs -o libgu.so
-check(bfd,mold,mortar) readelf -W --dyn-syms libgu.so
+check(bfd,lld,mold,mortar) readelf -W --dyn-syms libgu.so
   not: missing_fn
 host gcc -pie main.o -L. -lgu -o prog
 run prog
+  stdout: 7
+link gcc -shared lib.o -Wl,--gc-sections -o libgu.so
+check(bfd,lld,mortar) readelf -W --dyn-syms libgu.so
+  not: missing_fn
+host gcc -pie main.o -L. -lgu -o prog2
+run prog2
   stdout: 7
 
 #--- lib.c

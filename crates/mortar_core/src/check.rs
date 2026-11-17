@@ -30,7 +30,7 @@ use crate::layout::{
     ThunkTarget, derive_segments,
 };
 use crate::liveness::Liveness;
-use crate::resolution::{Def, RefFlags, Resolution};
+use crate::resolution::{Def, Resolution};
 use crate::split::Split;
 
 /// The rule a layout breaks.
@@ -817,24 +817,17 @@ impl<'a, 't, 'n> Checker<'a, 't, 'n> {
         let res = cx.resolution;
         let export = |k: SymbolId| cx.demands.of(SymKey::global(k)).contains(DemandFlags::EXPORT);
         let copied = |k: SymbolId| slots.copy_of.binary_search_by_key(&k, |row| row.0).is_ok();
-        // D-111 items 2 and 3: in a shared object, every undefined key a
-        // live relocatable object references (strong or weak).
-        let undefined = |k: SymbolId| {
-            cx.shared
-                && matches!(res.def.get(k), Some(Def::Undefined { .. }))
-                && res.props.get(k).is_some_and(|p| p.refs.contains(RefFlags::FROM_OBJECT))
-        };
+        // D-111 items 2 and 3: in a shared object `weak_dyn` is the scan's
+        // set of undefined keys (strong or weak) a live section names.
         let required = |k: SymbolId| {
             res.imported.contains(k)
                 || res.exported.contains(k)
                 || cx.demands.weak_dyn.contains(k)
                 || export(k)
                 || copied(k)
-                || undefined(k)
         };
         let alias = |k: SymbolId| {
-            !cx.shared
-                && res.bind(k).is_some_and(|e| slots.copies.iter().any(|c| c.file == e.file))
+            !cx.shared && res.bind(k).is_some_and(|e| slots.copies.iter().any(|c| c.file == e.file))
         };
         for &k in dynsym {
             need(

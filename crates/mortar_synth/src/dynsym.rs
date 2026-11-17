@@ -20,7 +20,8 @@
 //! **A shared object** (`spec/dyn.md` D-111; [`dynsym_plan_shared`],
 //! [`DynsymInputs::shared`]): the export set (`Resolution::exported`,
 //! preemptible or bound alike), the imports, and every undefined key a
-//! live relocatable object references (`RefFlags::FROM_OBJECT`): a strong
+//! live relocatable object references and no collected section alone
+//! names (the scan's `Demands::weak_dyn` in a shared object): a strong
 //! one is [`Form::Undefined`] (`STB_GLOBAL STT_NOTYPE SHN_UNDEF`, D-111
 //! item 2), a weak one [`Form::WeakDyn`] (item 3). No copy alias and no
 //! canonical PLT entry exists (D-122): one is an internal error. An
@@ -382,10 +383,9 @@ impl DynsymInputs<'_> {
                 Ok(Form::Export)
             }
             Some(Def::Undefined { weak }) if self.shared => {
-                // D-111 items 2 and 3: a live reference makes the entry.
-                let live =
-                    res.props.get(key).is_some_and(|p| p.refs.contains(RefFlags::FROM_OBJECT));
-                if !live && !weak_dyn {
+                // D-111 items 2 and 3: the scan's set (`Demands::weak_dyn`
+                // in a shared object) makes the entry.
+                if !weak_dyn {
                     return Err(internal(format!(
                         "undefined {} in .dynsym has no live reference (spec/dyn.md D-111)",
                         name()
@@ -530,9 +530,11 @@ pub fn dynsym_plan(
 
 /// D-111: the `.dynsym` of a shared object, as [`dynsym_plan`] with
 /// [`DynsymInputs::shared`]: the exports (`Resolution::exported`), the
-/// imports, the `EXPORT` demands, and every undefined key with
-/// `RefFlags::FROM_OBJECT` (a live relocatable object references it;
-/// strong: [`Form::Undefined`], weak: [`Form::WeakDyn`]). The order is
+/// imports, the `EXPORT` demands, and the undefined keys of
+/// `Demands::weak_dyn`, which in a shared object is the scan's D-111 set
+/// (a live relocatable object references the key and not only from
+/// sections `--gc-sections` collected; strong: [`Form::Undefined`], weak:
+/// [`Form::WeakDyn`]). The order is
 /// D-22's (unhashed by `SymbolId`, then hashed by bucket and `SymbolId`),
 /// `.gnu.hash`'s geometry D-26's: the same functions as an executable's.
 ///
@@ -552,19 +554,9 @@ pub fn dynsym_plan_shared(
     plan_of(&t, pool, diag)
 }
 
-/// The undefined keys a live relocatable object references (D-111 items
-/// 2 and 3), in `SymbolId` order.
-fn live_undefined(resolution: &Resolution) -> impl Iterator<Item = SymbolId> + '_ {
-    resolution.def.iter().filter_map(|(k, d)| {
-        let live = resolution.props.get(k).is_some_and(|p| p.refs.contains(RefFlags::FROM_OBJECT));
-        (matches!(d, Def::Undefined { .. }) && live).then_some(k)
-    })
-}
-
 /// The plan of [`dynsym_plan`] and [`dynsym_plan_shared`].
 fn plan_of(t: &DynsymInputs<'_>, pool: &Pool, diag: &Collector) -> Result<DynsymPlan, Failed> {
     let (resolution, demands, slots, src) = (t.resolution, t.demands, t.slots, t.src);
-    let undefined = t.shared.then(|| live_undefined(resolution)).into_iter().flatten();
     let mut keys: Vec<SymbolId> = resolution
         .imported
         .iter()
@@ -572,7 +564,6 @@ fn plan_of(t: &DynsymInputs<'_>, pool: &Pool, diag: &Collector) -> Result<Dynsym
         .chain(demands.weak_dyn.iter())
         .chain(demands.keys_with(DemandFlags::EXPORT).filter_map(SymKey::as_global))
         .chain(slots.copy_of.iter().map(|row| row.0))
-        .chain(undefined)
         .collect();
     pool.unit_cost(20).sort_by(&mut keys, Ord::cmp);
     keys.dedup();

@@ -349,7 +349,7 @@ fn kind_and_interp(
         // for a last `-Bsymbolic` without `--dynamic-list` (D-112).
         OutputKind::Shared => DynKind::Shared(SharedDyn {
             soname: plan.dynamic.soname.is_some(),
-            symbolic: plan.symbolic().is_some_and(|l| l.writes_symbolic_tags()),
+            symbolic: plan.symbolic().is_some_and(mortar_cli::SymbolicLine::writes_symbolic_tags),
         }),
         _ => {
             emit(refused("this output kind with .dynamic"));
@@ -374,6 +374,10 @@ fn kind_and_interp(
 /// `.dynstr`, GOT, `.rela.dyn`, `.dynamic` and `.interp` plans, with the
 /// `Slots` fields they fix (`needed`, `copies`, `copy_of`, `dynsym`,
 /// `verneed`, `dynstr`). Each failure is reported into `diag`.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one step per plan, the shared object's beside the executable's"
+)]
 pub fn plan(
     t: &PlanIn<'_, '_>,
     slots: &mut Slots,
@@ -411,13 +415,8 @@ pub fn plan(
     slots.dynsym_unhashed = dynsym.unhashed();
     slots.gnu_hash_buckets = dynsym.nbuckets();
     // D-27.
-    let inputs = DynsymInputs {
-        resolution: t.resolution,
-        demands: t.demands,
-        slots,
-        src: t.src,
-        shared,
-    };
+    let inputs =
+        DynsymInputs { resolution: t.resolution, demands: t.demands, slots, src: t.src, shared };
     let verneed = mortar_synth::version::verneed_plan(&dynsym, &inputs, t.needed, diag).ok()?;
     // D-24.
     let rpath =
@@ -471,11 +470,7 @@ pub fn plan(
     // records are ordered by address at write time, D-40).
     slots.dyn_relocs = rela.sections().collect();
     // D-30; D-102 in a shared object.
-    let (init, fini) = if shared {
-        shared_init_fini(t).map_err(emit).ok()?
-    } else {
-        init_fini(t)
-    };
+    let (init, fini) = if shared { shared_init_fini(t).map_err(emit).ok()? } else { init_fini(t) };
     let [preinit_array, init_array, fini_array] = arrays(t);
     let runpath = rpath.map(|r| (RunpathTag::of(t.plan.dynamic.new_dtags), r));
     let variant_pcs_jump_slot = slots.plt.iter().any(|&k| {

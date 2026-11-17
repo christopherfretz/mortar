@@ -159,7 +159,9 @@ fn g4_shared_row_text() {
 // shared object)
 #[test]
 fn d102_soname_only_in_shared() {
-    for line in [&["-shared", "-soname", "libx.so.1", "a.o"][..], &["-shared", "-h", "libx.so.1", "a.o"]] {
+    for line in
+        [&["-shared", "-soname", "libx.so.1", "a.o"][..], &["-shared", "-h", "libx.so.1", "a.o"]]
+    {
         let parsed = p(line);
         assert!(refused(&parsed).is_empty(), "{line:?}");
         assert_eq!(parsed.plan.dynamic.soname.as_deref(), Some(std::ffi::OsStr::new("libx.so.1")));

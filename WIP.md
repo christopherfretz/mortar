@@ -1,32 +1,25 @@
 # WIP: WP-123 (the join for -shared), branch wp/123-shared-join
 
 Briefs: /Volumes/AgentWork/mortar-helper/briefs/{m4-shared-common,wp-123}.md
-Scratch: /Volumes/AgentWork/mortar-helper/.build/target-wp-123/scratch/
+Scratch: /Volumes/AgentWork/mortar-helper/.build/target-wp-123/scratch/ (keep s1/, v3/, v4/)
 
 ## Done
-- read the records (WP-110 §D/§G.4, 116-122, 120 harness, 121 plumb)
-- wired Shared: dynlink.rs (kind_and_interp, plan, SharedTables, shared_init_fini),
-  image.rs (SharedPlans), dynamic.rs (arch_status: AArch64 only), front.rs (CheckContext.shared)
-- minimal fixes outside the list: mortar_core/src/check.rs (CheckContext.shared, D-111
-  undefined set, no copy alias in Shared); mortar_input/src/walk.rs (closure: Shared roots'
-  DT_NEEDED edges recorded without search, D-11 item 3); mortar_scan/src/bound.rs + driver.rs
-  (regflow at WP-117's hook)
-- CLI: -shared partial, -h supported (SHARED_ONLY refusal outside Shared), -Bsymbolic-functions,
-  -Bno-symbolic, --no-undefined, -z defs supported; mortar_cli tests updated; options.md blessed
-- first library links, runs under GNU host / mortar host
-
-## BLOCKED (asked the coordinator)
-- V1: verifier's ACCEPTED (crates/mortar_plumb/src/opts.rs) lacks -shared and -h/-soname:
-  M9 on every mortar library's map; its test s3_2a fails. Right side:
-  scratch/accepted-right.txt (two added lines). V2 P-D6 likely follows from V1.
+- Shared wired (dynlink, image, dynamic arch_status AArch64 only, front); CLI rows; audit proofs
+  in crates/mortar/tests/shared.rs; opts.rs mirror (1e41bd2); int/batch-5 merged (6dbd54c)
+- link tests tests/link/dyn/shared/* incl. refusal tests (target, x86-64, i386)
+- minimal fixes outside the list: check.rs, walk.rs, bound.rs/driver.rs (regflow hook, imported
+  IFUNC), census.rs OUT_OF_M2, mortar_scan/tests/shared.rs (Clang row now refused)
+- F2 fix (coordinator: mine): scan weak.rs `shared_undefined` fills Demands.weak_dyn in Shared;
+  synth dynsym.rs and check.rs read it instead of FROM_OBJECT; dyn.md D-111 sentence
 
 ## Next
-1. crates/mortar/tests/options.rs AUDIT: -shared, -h, -Bsymbolic-functions, -Bno-symbolic,
-   --no-undefined, -z defs -> Test(crates/mortar/tests/shared.rs, ..); bsymbolic_is_for_shared_objects
-   -> -Bsymbolic refused in Shared
-2. interposer pairs; first-target link tests in tests/link/dyn/shared/
-3. remove WP-123 xfail markers; refusal tests; census; D-124/D-125; Lua; static-identical; record
+1. run crate tests + linktest shared/; commit F2
+2. executable side of F2: -pie --gc-sections, only ref to a shared fn in a collected section;
+   if an existing output would change: report, do not change
+3. census (-shared line), Lua by hand, static-identical --update, bench guard (load < 10)
+4. record spec/landed/dyn/WP-123.md (F3: GNU/lld/mold exact outputs), delete WIP.md, gate
 
-## Open
-- spec edits to make: input.md §8.6 (Shared edges), model.md §4.3 (.dynsym set in Shared)
-- odr_output None for Shared (WP-129); --allow-shlib-undefined stays refused
+## Findings to record
+V1 (opts mirror), V2 (P-D6, fixed in batch 5), V3/V4/V5 (verifier on references), F2 (fixed),
+F3 (refusal stays; census entry), .symver message nit, harness.md:1254 "until WP-123",
+odr_output None for Shared (WP-129)

@@ -80,7 +80,7 @@ pub(crate) struct FileFacts {
     /// could not run, the diagnostic of why (reported for each code
     /// section of the file the scan walks: a file whose code is all dead
     /// puts no use in the output).
-    analysed: Result<Vec<(u32, Key, Diagnostic)>, Diagnostic>,
+    analysed: Result<Vec<(u32, Key, Diagnostic)>, Box<Diagnostic>>,
 }
 
 /// A bound use: the rule's (or the analysis's) verdict on one named
@@ -238,7 +238,7 @@ fn analyse<'s>(
     file: FileId,
     obj: &Object<'s>,
     defs: &[PreDef],
-) -> Result<Vec<(u32, Key, Diagnostic)>, Diagnostic> {
+) -> Result<Vec<(u32, Key, Diagnostic)>, Box<Diagnostic>> {
     let fref = view.inputs.files[file].display();
     let preemptible: Vec<SymbolIndex> = defs.iter().map(|d| d.index).collect();
     let mut buf = Vec::new();
@@ -252,11 +252,11 @@ fn analyse<'s>(
     let analysis = match crate::regflow::analyse(obj, &preemptible, &mut bytes) {
         Ok(a) => a,
         Err(crate::regflow::Fault::Malformed(what)) => {
-            return Err(ReadFail::Malformed(what).diagnostic(&fref));
+            return Err(Box::new(ReadFail::Malformed(what).diagnostic(&fref)));
         }
         Err(crate::regflow::Fault::Contents(i, fail)) => {
             let name = view.section_name(file, i.0);
-            return Err(fail.diagnostic(&fref).at(Place::section(fref.clone(), name, 0)));
+            return Err(Box::new(fail.diagnostic(&fref).at(Place::section(fref.clone(), name, 0))));
         }
     };
     let mut out = Vec::with_capacity(analysis.uses.len());
@@ -309,12 +309,10 @@ pub(crate) fn analysis(
     section: u32,
 ) -> Vec<(Key, Diagnostic)> {
     match &facts.analysed {
-        Ok(uses) => uses
-            .iter()
-            .filter(|(s, _, _)| *s == section)
-            .map(|(_, k, d)| (*k, d.clone()))
-            .collect(),
-        Err(d) => vec![(mortar_arch::cx::scan_key(file, section, 0), d.clone())],
+        Ok(uses) => {
+            uses.iter().filter(|(s, _, _)| *s == section).map(|(_, k, d)| (*k, d.clone())).collect()
+        }
+        Err(d) => vec![(mortar_arch::cx::scan_key(file, section, 0), (**d).clone())],
     }
 }
 
