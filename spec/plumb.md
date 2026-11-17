@@ -6774,7 +6774,17 @@ two output sections of one `-r` output may have the same name
 
 **The inputs** are the files the map names (§2.2), each `ET_REL` of the
 output's machine (I2). They are numbered in map order: the `FileId`
-order of the rules.
+order of the rules. A file the line marks binary (`-b binary` or
+`--format=binary` before it, until `-b default`/`--format=default`;
+`spec/layout.md` L-R9) is not read as ELF: it is a **binary input**
+with one section, index 1, `.data` (`SHT_PROGBITS`, `SHF_ALLOC |
+SHF_WRITE`, alignment 1, the file's bytes), and three globals, L-R9's
+`_binary_M_size` (`SHN_ABS`, the size), `_binary_M_end` (`.data`, the
+size) and `_binary_M_start` (`.data`, 0), `M` the path as the line
+writes it with every byte outside `[A-Za-z0-9]` replaced by `_`. P-P2
+and P-P4 judge it as an ELF input of that one section and those three
+symbols; I2 does not apply to it. A foreign map's row for it is read as
+any `.data` row of that file.
 
 **The line.** mortar's map: its `arg` records (§3.2a). A reference's:
 the caller's line, as stage 3 reads it (`--line`, the link-test lane's
@@ -7008,6 +7018,9 @@ are the text of each finding (`{…}` a field).
     member that §3.8's closure of the `-r` line extracts.
   Not judged: anything only a run shows (the lane runs both programs,
   `spec/harness.md`); `D` and `V` by different linkers.
+  Linker rules judged: the composition every `-r` rule exists for
+  (record §D.1's V-R1); directly RV-R2 (exclusion (a)), RV-R7 (t4),
+  L-R1 (exclusion (b)), L-R4 (t1).
   *Passes:* the D.3 corpus's GNU ld and lld `-r` outputs, final-linked
   by GNU ld and by mortar, static and PIE (the cells marked `=`).
   *Catches:* mold's `-r` of the C component (COMMON→`SHN_ABS`: item 4
@@ -7060,8 +7073,10 @@ are the text of each finding (`{…}` a field).
   - a `PROGBITS` and a `NOBITS` piece of one key share one `PROGBITS`
     output section (L-R1a, L-49; lld's form; GNU ld and mold write two
     sections, accepted from them).
-  Linker rules judged: L-R1, L-R1a, L-R2, L-R4, L-R5, L-R11, I-R7,
-  I-R9 (what `-S`/`-s` drop), A-R2 (the field).
+  Linker rules judged: L-R1, L-R1a, L-R2, L-R4, L-R5, L-R9 (a binary
+  input's `.data`), L-R11, I-R7, I-R9 (what `-S`/`-s` drop), A-R2 (the
+  field), MT-16 (mortar's L-R4 order keeps same-named sections of one
+  input in input order).
   Not judged: a merged piece's bytes (the final link merges again);
   references' piece order and offsets beyond alignment and bounds
   (theirs differ, record B.1).
@@ -7186,8 +7201,9 @@ are the text of each finding (`{…}` a field).
   `SHN_UNDEF` (RV-R3); an `.eh_frame` local through the record map and
   one in a removed record dropped; `.symtab_shndx` exactly when some
   index is `SHN_LORESERVE` or more.
-  Linker rules judged: I-R4, RV-R3, RV-R4, RV-R5, RV-R6, RV-R8, MD-R2,
-  L-R3 (the signature), I-R9 (`-s`/`-x`: the locals dropped).
+  Linker rules judged: I-R4, RV-R1, RV-R3, RV-R4, RV-R5, RV-R6, RV-R8,
+  MD-R2, L-R3 (the signature), L-R9 (a binary input's symbols), I-R9
+  (`-s`/`-x`: the locals dropped), C-R3 (`-u`, `-d`).
   Not judged: `.strtab`'s layout (S-86 at `-r`) beyond each name
   reading back; the order of a reference's locals.
   *Passes:* GNU ld's and lld's outputs of the corpus (both keep hidden
@@ -7408,7 +7424,14 @@ are the text of each finding (`{…}` a field).
   - `sh_entsize`: 24/16 (`.symtab`), 24/12 (`SHT_RELA`), 16/8
     (`SHT_REL`), 4 (`SHT_GROUP`, `.symtab_shndx`), the merge class's
     entsize, otherwise the pieces' common value or 0;
-  - `sh_name` reads back, in `.shstrtab`, as the pieces' name.
+  - `sh_name` reads back, in `.shstrtab`, as the pieces' name;
+  - every output section holds a piece of a live input or is one the
+    `-r` makes (§14.1's consumed sections: a group, a relocation
+    section, `.symtab`, `.symtab_shndx`, `.strtab`, `.shstrtab`, the
+    merged notes, the build-id note, the container): "P-P11 section
+    {index} {name} comes from no input section" (A-R5: no GOT, PLT,
+    IPLT or `.eh_frame_hdr` at `-r`). mold's 4-byte `.eh_frame` when no
+    input has one is its per-linker form.
   **(mortar)** L-R1a exactly: `SHF_GNU_RETAIN` is part of the key, so a
   section with it holds only retained pieces (GNU ld's form; lld merges
   and keeps `R`, accepted from it); `sh_size` exactly the last piece's
@@ -7418,7 +7441,7 @@ are the text of each finding (`{…}` a field).
   compressed (L-R1a).
   Linker rules judged: L-R1, L-R1a, L-R2, L-R3, L-R10 (one relocation
   section per output section with records, none for a group or a
-  relocation section), I-R5's section form, A-R4.
+  relocation section), I-R5's section form, A-R4, A-R5.
   Not judged: `sh_offset` beyond P-P7; a reference's non-allocated
   `sh_addr`.
   *Catches:* mold's `sh_link` 0 on `__patchable_function_entries`
