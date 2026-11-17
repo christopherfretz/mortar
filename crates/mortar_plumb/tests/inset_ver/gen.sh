@@ -10,9 +10,11 @@
 #   pv, pv.map / pv.gnu, pv.gnu.map / pv.lld, pv.lld.map:
 #       m.o libu.so libg.a -rpath-link .   (g.o not extracted: g@V1 is
 #       libv.so's, a closure file)
-#   pw, pw.map / pw.gnu, pw.gnu.map / pw.lld, pw.lld.map:
+#   pv.mold, pv.mold.map: the same (mold extracts g.o by the plain name:
+#       spec/plumb.md §10.2 A49)
+#   pw, pw.map / pw.gnu, pw.gnu.map / pw.lld, pw.lld.map, pw.mold, pw.mold.map:
 #       m.o libw.so libg.a                 (g.o extracted)
-#   sh gen.sh <mortar>
+#   sh gen.sh <mortar>   (GNU ld, ld.lld and mold 2.37.1 from PATH)
 # Run from this directory.
 set -e
 mortar=$1
@@ -28,8 +30,8 @@ for arch in aarch64 x86_64; do
   "$ld" -shared -soname libw.so w.o -o libw.so
   rm -f libg.a
   "$arch-linux-gnu-ar" rcsD libg.a g.o
-  dl=/lib/ld-linux-aarch64.so.1
-  [ "$arch" = x86_64 ] && dl=/lib64/ld-linux-x86-64.so.2
+  dl=/lib/ld-linux-aarch64.so.1 emu=aarch64linux
+  [ "$arch" = x86_64 ] && dl=/lib64/ld-linux-x86-64.so.2 emu=elf_x86_64
   for p in v w; do
     lib=libu.so
     [ $p = w ] && lib=libw.so
@@ -37,6 +39,7 @@ for arch in aarch64 x86_64; do
     "$mortar" $line -o p$p --mortar-map=p$p.map
     "$ld" $line -o p$p.gnu -Map=p$p.gnu.map
     ld.lld $line -o p$p.lld -Map=p$p.lld.map
+    mold -m $emu $line -o p$p.mold -Map=p$p.mold.map
   done
   rm -f v.o u.o w.o
   cd ..

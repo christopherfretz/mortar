@@ -24,7 +24,7 @@
 #@ arch: aarch64
 #@ requires: g++
 #@ anomaly(lld): A25
-#@ anomaly(mold): A55
+#@ anomaly(mold): A49 A55
 
 cxx -O1 -fPIE main.cc -o main-pie.o
 cxx -O1 -fno-pic main.cc -o main-exec.o
