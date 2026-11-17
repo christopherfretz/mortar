@@ -438,17 +438,17 @@ busybox	clang	src/applets/usage_pod	pie	linked
 busybox	clang	src/applets/built-in.o	relocatable	refused option: -r
 busybox	clang	/dev/null#3	pie	linked
 busybox	clang	/dev/null#4	pie	linked
-busybox	clang	src/tmp.*	pie	refused option: --sort-section
-busybox	clang	src/tmp.*#2	pie	refused option: --sort-common
+busybox	clang	src/tmp.*	pie	finding plumb: 1 findings: P-D2 x1
+busybox	clang	src/tmp.*#2	pie	linked
 busybox	clang	src/tmp.*#3	pie	linked
-busybox	clang	src/busybox_unstripped	pie	refused option: --sort-common; option: --sort-section
-busybox	clang	src/busybox_unstripped#2	pie	refused option: --sort-common; option: --sort-section
+busybox	clang	src/busybox_unstripped	pie	finding plumb: 1 findings: P-D2 x1
+busybox	clang	src/busybox_unstripped#2	pie	finding plumb: 1 findings: P-D2 x1
 busybox	clang	src/busybox_unstripped#3	pie	both-fail
 busybox	clang	src/busybox_unstripped#4	pie	both-fail
-busybox	clang	src/busybox_unstripped#5	pie	refused option: --sort-common; option: --sort-section
+busybox	clang	src/busybox_unstripped#5	pie	finding plumb: 1 findings: P-D2 x1
 busybox	clang	src/busybox_unstripped#6	pie	both-fail
 busybox	clang	src/busybox_unstripped#7	pie	both-fail
-busybox	clang	src/busybox_unstripped#8	pie	refused option: --sort-common; option: --sort-section; option: --warn-common; option: --verbose
+busybox	clang	src/busybox_unstripped#8	pie	finding plumb: 1 findings: P-D2 x1
 busybox	clang	/dev/null#5	pie	linked
 busybox	clang	/dev/null#6	pie	linked
 busybox	clang	/dev/null#7	pie	linked
@@ -486,17 +486,17 @@ busybox	gcc	src/applets/usage_pod	pie	linked
 busybox	gcc	src/applets/built-in.o	relocatable	refused option: -r
 busybox	gcc	/dev/null#3	pie	linked
 busybox	gcc	/dev/null#4	pie	linked
-busybox	gcc	src/tmp.*	pie	refused option: --sort-section
-busybox	gcc	src/tmp.*#2	pie	refused option: --sort-common
+busybox	gcc	src/tmp.*	pie	finding plumb: 1 findings: P-D2 x1
+busybox	gcc	src/tmp.*#2	pie	linked
 busybox	gcc	src/tmp.*#3	pie	linked
-busybox	gcc	src/busybox_unstripped	pie	refused option: --sort-common; option: --sort-section
-busybox	gcc	src/busybox_unstripped#2	pie	refused option: --sort-common; option: --sort-section
+busybox	gcc	src/busybox_unstripped	pie	finding plumb: 1 findings: P-D2 x1
+busybox	gcc	src/busybox_unstripped#2	pie	finding plumb: 1 findings: P-D2 x1
 busybox	gcc	src/busybox_unstripped#3	pie	both-fail
 busybox	gcc	src/busybox_unstripped#4	pie	both-fail
-busybox	gcc	src/busybox_unstripped#5	pie	refused option: --sort-common; option: --sort-section
+busybox	gcc	src/busybox_unstripped#5	pie	finding plumb: 1 findings: P-D2 x1
 busybox	gcc	src/busybox_unstripped#6	pie	both-fail
 busybox	gcc	src/busybox_unstripped#7	pie	both-fail
-busybox	gcc	src/busybox_unstripped#8	pie	refused option: --sort-common; option: --sort-section; option: --warn-common; option: --verbose
+busybox	gcc	src/busybox_unstripped#8	pie	finding plumb: 1 findings: P-D2 x1
 busybox	gcc	/dev/null#5	pie	linked
 busybox	gcc	/dev/null#6	pie	linked
 busybox	gcc	/dev/null#7	pie	linked

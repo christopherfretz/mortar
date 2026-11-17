@@ -854,7 +854,7 @@ busybox	clang	ls-1-works	PASS	PASS
 busybox	clang	ls-h-works	PASS	PASS
 busybox	clang	ls-l-works	PASS	PASS
 busybox	clang	ls-s-works	PASS	PASS
-busybox	clang	makedevs -d ../makedevs.device_table.txt .	FAIL	FAIL
+busybox	clang	makedevs -d ../makedevs.device_table.txt .	SKIP	SKIP
 busybox	clang	md5sum	PASS	PASS
 busybox	clang	md5sum -c EMPTY	PASS	PASS
 busybox	clang	md5sum-verifies-non-binary-file	PASS	PASS
@@ -873,6 +873,9 @@ busybox	clang	mdev stops on first rule	SKIP	SKIP
 busybox	clang	mkdir-makes-a-directory	PASS	PASS
 busybox	clang	mkdir-makes-parent-directories	PASS	PASS
 busybox	clang	mkfs.minix	FAIL	FAIL
+busybox	clang	mount -o remount,mand	SKIP	SKIP
+busybox	clang	mount RO loop	SKIP	SKIP
+busybox	clang	mount bind+rshared	SKIP	SKIP
 busybox	clang	move rule does not delete node with name == device_name	SKIP	SKIP
 busybox	clang	mv-files-to-dir	PASS	PASS
 busybox	clang	mv-files-to-dir-2	PASS	PASS
@@ -1778,7 +1781,7 @@ busybox	gcc	ls-1-works	PASS	PASS
 busybox	gcc	ls-h-works	PASS	PASS
 busybox	gcc	ls-l-works	PASS	PASS
 busybox	gcc	ls-s-works	PASS	PASS
-busybox	gcc	makedevs -d ../makedevs.device_table.txt .	FAIL	FAIL
+busybox	gcc	makedevs -d ../makedevs.device_table.txt .	SKIP	SKIP
 busybox	gcc	md5sum	PASS	PASS
 busybox	gcc	md5sum -c EMPTY	PASS	PASS
 busybox	gcc	md5sum-verifies-non-binary-file	PASS	PASS
@@ -1797,9 +1800,9 @@ busybox	gcc	mdev stops on first rule	SKIP	SKIP
 busybox	gcc	mkdir-makes-a-directory	PASS	PASS
 busybox	gcc	mkdir-makes-parent-directories	PASS	PASS
 busybox	gcc	mkfs.minix	PASS	PASS
-busybox	gcc	mount -o remount,mand	FAIL	FAIL
-busybox	gcc	mount RO loop	FAIL	FAIL
-busybox	gcc	mount bind+rshared	FAIL	FAIL
+busybox	gcc	mount -o remount,mand	SKIP	SKIP
+busybox	gcc	mount RO loop	SKIP	SKIP
+busybox	gcc	mount bind+rshared	SKIP	SKIP
 busybox	gcc	move rule does not delete node with name == device_name	SKIP	SKIP
 busybox	gcc	mv-files-to-dir	PASS	PASS
 busybox	gcc	mv-files-to-dir-2	PASS	PASS

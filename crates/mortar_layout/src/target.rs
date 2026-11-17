@@ -7,7 +7,7 @@
 //! it and nothing else changes.
 
 use mortar_core::layout::SegmentRules;
-use mortar_core::plan::{OutputKind, Plan};
+use mortar_core::plan::{OutputKind, Plan, SortCommon, SortSection};
 use mortar_elf::consts::{PF_R, PF_W, PF_X};
 use mortar_elf::{Class, Machine};
 
@@ -130,6 +130,10 @@ pub struct Options {
     /// The slack policy (`spec/incr.md` IN-33): [`Slack::NONE`] but in an
     /// incremental-mode link.
     pub slack: Slack,
+    /// `--sort-common` (L-88a): the commons' order by alignment.
+    pub sort_common: Option<SortCommon>,
+    /// `--sort-section` (L-53a): the input sections' order key.
+    pub sort_section: Option<SortSection>,
 }
 
 impl Options {
@@ -148,6 +152,8 @@ impl Options {
             pie: false,
             entry: EntryName::Symbol(b"_start".to_vec()),
             slack: Slack::NONE,
+            sort_common: None,
+            sort_section: None,
         }
     }
 
@@ -200,6 +206,8 @@ impl Options {
         o.relro = plan.z.relro.unwrap_or(true);
         o.now = plan.z.now.unwrap_or(false);
         o.eh_frame_hdr = plan.shaping.eh_frame_hdr.unwrap_or(false);
+        o.sort_common = plan.shaping.sort_common;
+        o.sort_section = plan.shaping.sort_section;
         o.fix_843419 = target.machine == Machine::AArch64
             && plan.target_options.iter().any(|t| t.option.starts_with("--fix-cortex-a53-843419"));
         // `full` (the default) is spec/a64.md §11.2's choice per site; GNU
