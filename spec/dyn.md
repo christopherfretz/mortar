@@ -633,6 +633,13 @@ their tests are `spec/landed/dyn/WP-167.md` §2):
   fixed point, `def`, the keepers and the columns are computed again,
   and D-11 again with every object needed at an earlier stage kept in N
   (its item-2 givers and item-3 pairs kept as its reasons for D-19a).
+  In D-11 item 3, a strong reference of `x` whose edge, were `x`'s
+  references edges, targets a lazy file that is not live gives no
+  reason: the next stage extracts that file, which defines the key
+  (`m1.o --as-needed libu.so libg.a libg2.so`, `libg2.so` defining `g`
+  too: GNU ld, lld and mold extract `g.o` and leave `libg2.so` not
+  needed; with `libg2.so` before the archive `first(g)` is `libg2.so`,
+  nothing is extracted, and item 3 makes it needed, GNU ld's image).
   Stages repeat until one has no candidate; only its diagnostics are
   reported (a stage-1 `undefined-symbol` of the library's `g` is not).
   N only grows, so the sources only grow and there are at most |C| + 1

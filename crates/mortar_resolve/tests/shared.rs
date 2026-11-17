@@ -314,6 +314,41 @@ fn d12_stages_run_to_their_fixed_point() {
 }
 
 #[test]
+fn d12_a_member_the_next_stage_extracts_is_no_item3_reason() {
+    // 7a: `m1.o --as-needed libu.so libg.a libg2.so`: libg2.so also defines
+    // `g`, after the member: the member is extracted and libg2.so is not
+    // needed (all three). With libg2.so before the archive, `first(g)` is
+    // libg2.so: nothing is extracted and D-11 item 3 makes it needed (GNU ld).
+    for g2_first in [false, true] {
+        let mut m = Model::new(A64);
+        let a = m.obj("m1.o");
+        m.undef(a, "u");
+        let u = m.shlib("libu.so", true);
+        m.def(u, "u");
+        m.undef(u, "g");
+        let g2 = if g2_first { Some(m.shlib("libg2.so", true)) } else { None };
+        let ar = m.archive();
+        let g = m.member(ar, "g.o");
+        m.def(g, "g");
+        let g2 = g2.unwrap_or_else(|| m.shlib("libg2.so", true));
+        m.def(g2, "g");
+        let r = link(&m);
+        assert_eq!(row(&r, u), NEEDED);
+        if g2_first {
+            assert!(!row(&r, g).is_live());
+            assert_eq!(row(&r, g2), NEEDED);
+            assert_eq!(r.stages, 1);
+        } else {
+            assert!(row(&r, g).is_live());
+            assert_eq!(row(&r, g2), FileLive::Dead);
+            assert_eq!(dynamic(&r).needed, vec![u]);
+            assert_eq!(r.stages, 2);
+        }
+        assert!(r.problems.is_empty(), "{:?}", r.problems);
+    }
+}
+
+#[test]
 fn d12_used_and_closure_references_extract_nothing_and_name_the_member() {
     // 5: libtop.so (needed) lists libuc.so, which refers to `g` of
     // libg.a(g.o). libuc.so used (on the line, --as-needed) or a closure

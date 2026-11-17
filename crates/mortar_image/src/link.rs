@@ -2870,9 +2870,22 @@ impl LinkTables<'_, '_> {
 
     /// The name of entry `e` in its file's symbol table.
     fn entry_name(&self, e: SymEntry) -> Vec<u8> {
-        self.sym_of(e)
-            .and_then(|(t, s)| t.strings().get(s.st_name).ok())
-            .map(<[u8]>::to_vec)
+        if let Some((t, s)) = self.sym_of(e) {
+            return t.strings().get(s.st_name).ok().map(<[u8]>::to_vec).unwrap_or_default();
+        }
+        // A shared object's `.dynsym` entry: the reference that pulled a
+        // member (`spec/dyn.md` D-12; WP-167: the map names the key, as
+        // GNU ld's `libu.so (g)`).
+        let Some(Reader::Shared(so)) = self.link.inputs.files.get(e.file).map(|f| &f.reader) else {
+            return Vec::new();
+        };
+        so.symbols()
+            .ok()
+            .flatten()
+            .and_then(|t| {
+                let s = t.get(e.index).ok()?;
+                t.strings().get(s.st_name).ok().map(<[u8]>::to_vec)
+            })
             .unwrap_or_default()
     }
 

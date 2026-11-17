@@ -268,6 +268,15 @@ pub(crate) fn link<V: View>(
             if m.place != SymbolSection::Undefined || m.binding == STB_WEAK {
                 continue;
             }
+            // D-12's stages (WP-167): a key whose edge out of `x` targets a
+            // lazy file that is not live is the next stage's extraction
+            // (`x` is needed, so its references become edges): the member
+            // will define it, and `giver(k)` is no reason (GNU ld, lld and
+            // mold, `libu.so libg.a libg2.so`).
+            let t = targets.first[redirect[m.key.0 as usize].0 as usize];
+            if t != NO_FILE && kinds[t as usize].is_lazy() && !file_live[t as usize].is_live() {
+                continue;
+            }
             let Some(s) = giver(m.key.0 as usize, def) else { continue };
             if reach_n0[s.0 as usize] {
                 continue;
