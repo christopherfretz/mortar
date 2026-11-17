@@ -1,0 +1,86 @@
+tests/relocatable-design: what the `-r` design (WP-154) measured
+===============================================================
+
+This is reference material, not tests. Nothing here is run by `cargo test`,
+by `cargo xtask linktest` (which reads only `*.test` files under tests/link)
+or by the gate. The record `spec/landed/layout/WP-154.md` and the M4-r rules
+in spec/ cite these paths relative to this directory (`exp/tools/rcheck.py`,
+`work/final.log`, ...).
+
+The scripts are copied unchanged from the design's scratch tree, so they
+still name the absolute paths they were run from:
+- `/Volumes/AgentWork/mortar-helper/.build/target-wp-154/...`;
+- the mortar binary `mortar-3ad9867a`, a debug build of main at 3ad9867a;
+- kiln++ in `.build/target-kiln-next/release`, and hod in
+  `.build/target-hod/release`;
+- the BusyBox tarball in `.build/real-builds/downloads`;
+- the cxx-large-g build tree of `.build/bench-work`, read-only.
+
+To re-run, copy `exp/` into a scratch tree, point those paths at it, and run
+`exp/run-all.sh WORK`. It takes about 25 minutes on the aarch64 host, one
+link at a time. BusyBox builds with make -j4.
+
+Tools: GCC/G++/gfortran 14.2.0 (Debian 14.2.0-19, native and cross
+x86_64/i686), clang 19.1.7 and 22.1.8, GNU ld 2.44 (and binutils 2.44
+objcopy), ld.lld 22.1.8, mold 2.37.1, qemu-user 10.0.13, glibc 2.41, gdb 16,
+lldb 19, Python 3.13. Host: AArch64, 4 KiB pages.
+
+Layout
+------
+
+exp/run-all.sh WORK  every area below, in order, one log per area.
+exp/tools/relf.py    a small ELF reader for ELF32 and ELF64 (sections, groups,
+                     symbols, relocations; REL addends are read from the bytes
+                     by the i386 width table). It shares nothing with mortar.
+exp/tools/rcheck.py  OUT IN...: the prototype of the structural rules that the
+                     record's verifier requests ask for (V-R2..V-R6). It places
+                     each input section in the output by masked bytes, then
+                     checks every input relocation: once, with the same type
+                     and an equivalent target (name and addend for globals,
+                     output section and offset for local and section targets,
+                     the same string for merged strings). Its known limit: it
+                     places a rewritten `.eh_frame` by bytes, so GNU ld's and
+                     mold's `.eh_frame` show "unexplained" records. A
+                     verifier must parse CIEs and FDEs (V-R5).
+exp/tools/secs.py    FILE [REGEX]: prints name(type,flags,align,size).
+exp/census/          A: the ld line that each driver writes for -r and its
+                     variants (gcc/g++/gfortran native and cross, clang-19/22
+                     for three targets). The lines are in
+                     work/census-lines.txt (399 lines).
+exp/busybox/         A: BusyBox 1.36.1's -r lines (Kbuild) captured from a
+                     real build. applets/built-in.o is redone by each
+                     reference and by mortar, the final trylink line is
+                     replayed with GNU ld and with mortar, and the program
+                     runs.
+exp/corpus/          the C (c1-c4, mainc) and C++ (x1, x2, mainx) components
+                     of item D.
+exp/final/           D: every target x compiler x component x {static, PIE},
+                     -r by each reference, the final link by GNU ld and by
+                     mortar, run and compared with the direct link. The log
+                     is work/final.log; the record's table summarises it.
+exp/facts/run.sh     B: the mini-cases of items 1-8, one line per reference
+                     (work/facts.log). Its row 4-addrsig-comment is wrong: its
+                     inputs define a symbol twice. supp.sh replaces that row
+                     with 4b and adds CREL, GOTPCRELX, nested -r, EI_OSABI and
+                     build-id (work/facts-supp.log).
+exp/options/         A/B: about 60 options with -r and the input cases
+                     (archives, groups, a DSO, /dev/null, -b binary), per
+                     reference (work/options.log).
+exp/moldbug/         mold 2.37.1 -r: COMMON becomes SHN_ABS, and the IFUNC
+                     crash.
+exp/debug/           B.5: -O0 -g C++, with gdb and lldb at x1.cc:10 and
+                     x2.cc:8 and backtraces, comparing each route with the
+                     direct link (work/debug.log).
+exp/none-overlap/    D finding 1: GNU ld -r's R_*_NONE at the r_offset of a
+                     live .eh_frame record, which mortar refuses on AArch64.
+exp/meta/            B.8: kiln++ units through each reference's -r, with
+                     --odr=strict on the direct route and through -r; a legal
+                     pair; hod objects (work/meta.log).
+exp/more/run.sh      the pre-link idiom, -gsplit-dwarf, Fortran, -i, LTO
+                     objects, --gdb-index and -T with -r (work/more.log).
+exp/more/prelink.sh  the pre-link idiom with C++, with EH and gdb: plain -r
+                     against --force-group-allocation, then objcopy
+                     --localize-hidden (work/prelink.log).
+exp/bench/           E: time and peak RSS of each reference's ld -r over 400
+                     objects of cxx-large-g, and the output's tables
+                     (work/bench.log).

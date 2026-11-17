@@ -1,0 +1,75 @@
+1-flags-conflict | bfd | .foo(PROGBITS,WA,8,12) .bar(PROGBITS,WA,16,8) 
+1-flags-conflict | lld | .foo(PROGBITS,WA,8,12) .bar(PROGBITS,WA,16,8) 
+1-flags-conflict | mold | .bar(PROGBITS,WA,16,8) .foo(PROGBITS,WA,8,12) 
+1-order-align | bfd | .foo(PROGBITS,WA,8,12) .bar(PROGBITS,WA,16,8)| .bar bytes:  00000011 00000022 
+1-order-align | lld | .foo(PROGBITS,WA,8,12) .bar(PROGBITS,WA,16,8)| .bar bytes:  00000011 00000022 
+1-order-align | mold | .bar(PROGBITS,WA,16,8) .foo(PROGBITS,WA,8,12)| .bar bytes:  00000011 00000022 
+2-init-array | bfd | .init_array.00200(INIT_ARRAY,WA,8,8) .rela.init_array.00200(RELA,I,8,24) .init_array(INIT_ARRAY,WA,8,8) .rela.init_array(RELA,I,8,24) .init_array.00101(INIT_ARRAY,WA,8,8) .rela.init_array.00101(RELA,I,8,24) 
+2-init-array | lld | .init_array.00200(INIT_ARRAY,WA,8,8) .rela.init_array.00200(RELA,I,8,24) .init_array(INIT_ARRAY,WA,8,8) .rela.init_array(RELA,I,8,24) .init_array.00101(INIT_ARRAY,WA,8,8) .rela.init_array.00101(RELA,I,8,24) 
+2-init-array | mold | .init_array(INIT_ARRAY,WA,8,8) .init_array.00101(INIT_ARRAY,WA,8,8) .init_array.00200(INIT_ARRAY,WA,8,8) .rela.init_array(RELA,I,8,24) .rela.init_array.00101(RELA,I,8,24) .rela.init_array.00200(RELA,I,8,24) 
+2-Ur | bfd | .init_array.00200(INIT_ARRAY,WA,8,8) .rela.init_array.00200(RELA,I,8,24) .init_array(INIT_ARRAY,WA,8,8) .rela.init_array(RELA,I,8,24) .init_array.00101(INIT_ARRAY,WA,8,8) .rela.init_array.00101(RELA,I,8,24)
+ld.lld-22: error: unknown argument '-Ur'
+2-Ur | lld | 
+mold: fatal: unknown command line option: -Ur
+2-Ur | mold | 
+3-comdat | bfd | groups: sections: sections:  sigsym: .bss._ZZ1fiE1k:SECTION/LOCAL/DEFAULT/12/0 _ZZ1fiE1k:OBJECT/UNIQUE/DEFAULT/12/4 _Z1fi:FUNC/WEAK/DEFAULT/5/60  
+3-comdat | lld | groups: sections: sections:  sigsym: .bss._ZZ1fiE1k:SECTION/LOCAL/DEFAULT/7/0 _ZZ1fiE1k:OBJECT/UNIQUE/DEFAULT/7/4 _Z1fi:FUNC/WEAK/DEFAULT/8/60  
+3-comdat | mold | groups: sections: sections:  sigsym: .bss._ZZ1fiE1k:SECTION/LOCAL/DEFAULT/6/0 _Z1fi:FUNC/WEAK/DEFAULT/3/60  
+3-nocomdat-group | bfd | group section [ 1] `.group' [gx_sig] contains 1 sections:  [Index] Name  [ 6] .text.gx group section [ 2] `.group' [ng_sig] contains 1 sections:  [Index] Name  [ 9] .data.ng group section [ 3] `.group' [gx_sig] contains 1 sections:  [Index] Name  [ 7] .text.gx group section [ 4] `.group' [ng_sig] contains 1 sections:  [Index] Name  [ 10] .data.ng  
+3-nocomdat-group | lld | group section [ 1] `.group' [gx_sig] contains 1 sections:  [Index] Name  [ 6] .text.gx group section [ 2] `.group' [ng_sig] contains 1 sections:  [Index] Name  [ 7] .data.ng group section [ 8] `.group' [gx_sig] contains 1 sections:  [Index] Name  [ 10] .text.gx group section [ 9] `.group' [ng_sig] contains 1 sections:  [Index] Name  [ 11] .data.ng  
+3-nocomdat-group | mold |  
+4-retain-linkorder-exclude-warning-linkonce | bfd | .text(PROGBITS,AX,4,8) .rt(PROGBITS,AXR,1,8) .gnu.linkonce.t.lk(PROGBITS,AX,4,4) .gnu.linkonce.t.lk2(PROGBITS,AX,4,4) .lo(PROGBITS,AL,1,8) .note.GNU-stack(PROGBITS,,1,0) .ex(PROGBITS,E,1,8) .gnu.warning.wsym(PROGBITS,,1,19) .gnu.warning.wsym2(PROGBITS,,1,20) .strtab(STRTAB,,1,35) .shstrtab(STRTAB,,1,148) 
+4-retain-linkorder-exclude-warning-linkonce | lld | .text(PROGBITS,AX,4,8) .rt(PROGBITS,AXR,1,8) .lo(PROGBITS,AL,1,8) .ex(PROGBITS,E,1,8) .gnu.warning.wsym(PROGBITS,,1,19) .gnu.linkonce.t.lk(PROGBITS,AX,4,4) .gnu.warning.wsym2(PROGBITS,,1,20) .gnu.linkonce.t.lk2(PROGBITS,AX,4,4) .note.GNU-stack(PROGBITS,,1,0) .shstrtab(STRTAB,,1,148) .strtab(STRTAB,,1,37) 
+4-retain-linkorder-exclude-warning-linkonce | mold | .lo(PROGBITS,AL,1,8) .gnu.linkonce.t.lk(PROGBITS,AX,4,4) .gnu.linkonce.t.lk2(PROGBITS,AX,4,4) .rt(PROGBITS,AX,1,8) .text(PROGBITS,AX,4,8) .ex(PROGBITS,E,1,8) .gnu.warning.wsym(PROGBITS,,1,19) .gnu.warning.wsym2(PROGBITS,,1,20) .note.GNU-stack(PROGBITS,,1,0) .shstrtab(STRTAB,,1,158) .strtab(STRTAB,,1,37) 
+4-gnu-property-both-bti | bfd | .note.gnu.property(NOTE,A,8,32)  GNU 0x00000010	NT_GNU_PROPERTY_TYPE_0	 Properties: AArch64 feature: BTI, PAC  
+4-gnu-property-both-bti | lld | .note.gnu.property(NOTE,A,8,32)  GNU 0x00000010	NT_GNU_PROPERTY_TYPE_0	 Properties: AArch64 feature: BTI, PAC  
+4-gnu-property-both-bti | mold |   
+4-gnu-property-one-bti | bfd |   
+4-gnu-property-one-bti | lld |   
+4-gnu-property-one-bti | mold |   
+4-gnu-property-x86-both | bfd | .note.gnu.property(NOTE,A,8,32)  GNU 0x00000010	NT_GNU_PROPERTY_TYPE_0	 Properties: x86 feature: IBT, SHSTK  
+4-gnu-property-x86-both | lld | .note.gnu.property(NOTE,A,8,32)  GNU 0x00000010	NT_GNU_PROPERTY_TYPE_0	 Properties: x86 feature: IBT, SHSTK  
+4-gnu-property-x86-both | mold | .note.gnu.property(NOTE,A,8,32)  GNU 0x00000010	NT_GNU_PROPERTY_TYPE_0	 Properties: x86 feature: IBT, SHSTK  
+4-gnu-property-x86-one | bfd |   
+4-gnu-property-x86-one | lld |   
+4-gnu-property-x86-one | mold |   
+4-addrsig-comment | bfd | rc=1 ld.bfd: cb2.o: in function `bti2': b2.c:(.text+0x0): multiple definition of `bti2'; b0.o:b2.c:(.text+0x0): first defined here 
+4-addrsig-comment | lld | rc=1 ld.lld-22: error: duplicate symbol: bti2 >>> defined at b2.c 
+4-addrsig-comment | mold | .comment(PROGBITS,MS,1,72) .llvm_addrsig(0x6fff4c03,E,1,0) comment:  [ 0] Debian clang version 22.1.8 (1~deb13u4)| [ 28] GCC: (Debian 14.2.0-19) 14.2.0| 
+5-symbols | bfd | y1.c:FILE/LOCAL/DEFAULT/ABS/0 loc1:FUNC/LOCAL/DEFAULT/1/8 y2.c:FILE/LOCAL/DEFAULT/ABS/0 loc1:FUNC/LOCAL/DEFAULT/1/8 tls1:TLS/GLOBAL/DEFAULT/6/4 __ehdr_start:NOTYPE/GLOBAL/DEFAULT/UND/0 vfoo1:FUNC/GLOBAL/DEFAULT/1/8 glob1:FUNC/GLOBAL/DEFAULT/1/20 vfoo@V1:FUNC/GLOBAL/DEFAULT/1/8 wdef:FUNC/WEAK/DEFAULT/1/8 vfoo@@V2:FUNC/GLOBAL/DEFAULT/1/8 uw:NOTYPE/WEAK/DEFAULT/UND/0 comm1:OBJECT/GLOBAL/DEFAULT/COM/4 vfoo2:FUNC/GLOBAL/DEFAULT/1/8 ext_ref:NOTYPE/GLOBAL/DEFAULT/UND/0 comm2:OBJECT/GLOBAL/DEFAULT/COM/32 _end:NOTYPE/GLOBAL/DEFAULT/UND/0 hidden_def:FUNC/GLOBAL/HIDDEN/1/8 hidden_ref:FUNC/GLOBAL/HIDDEN/1/8 __start_mysec:NOTYPE/GLOBAL/DEFAULT/UND/0 __stop_mysec:NOTYPE/GLOBAL/DEFAULT/UND/0 prot_def:FUNC/GLOBAL/PROTECTED/1/8  | locals-first sh_info=21 nsyms=46 nsect=9 nfile=2 firstglobal=21 
+5-symbols | lld | y1.c:FILE/LOCAL/DEFAULT/ABS/0 loc1:FUNC/LOCAL/DEFAULT/2/8 y2.c:FILE/LOCAL/DEFAULT/ABS/0 loc1:FUNC/LOCAL/DEFAULT/2/8 glob1:FUNC/GLOBAL/DEFAULT/2/20 hidden_def:FUNC/GLOBAL/HIDDEN/2/8 prot_def:FUNC/GLOBAL/PROTECTED/2/8 hidden_ref:FUNC/GLOBAL/HIDDEN/2/8 ext_ref:NOTYPE/GLOBAL/DEFAULT/UND/0 uw:NOTYPE/WEAK/DEFAULT/UND/0 wdef:FUNC/WEAK/DEFAULT/2/8 tls1:TLS/GLOBAL/DEFAULT/6/4 comm1:OBJECT/GLOBAL/DEFAULT/COM/4 vfoo1:FUNC/GLOBAL/DEFAULT/2/8 vfoo2:FUNC/GLOBAL/DEFAULT/2/8 __start_mysec:NOTYPE/GLOBAL/DEFAULT/UND/0 __stop_mysec:NOTYPE/GLOBAL/DEFAULT/UND/0 _end:NOTYPE/GLOBAL/DEFAULT/UND/0 __ehdr_start:NOTYPE/GLOBAL/DEFAULT/UND/0 vfoo@V1:FUNC/GLOBAL/DEFAULT/2/8 vfoo@@V2:FUNC/GLOBAL/DEFAULT/2/8 comm2:OBJECT/GLOBAL/DEFAULT/COM/32  | locals-first sh_info=20 nsyms=45 nsect=8 nfile=2 firstglobal=20 
+5-symbols | mold | y1.c:FILE/LOCAL/DEFAULT/ABS/0 loc1:FUNC/LOCAL/DEFAULT/2/8 y2.c:FILE/LOCAL/DEFAULT/ABS/0 loc1:FUNC/LOCAL/DEFAULT/2/8 glob1:FUNC/GLOBAL/DEFAULT/2/20 hidden_def:FUNC/GLOBAL/HIDDEN/2/8 prot_def:FUNC/GLOBAL/PROTECTED/2/8 ext_ref:NOTYPE/GLOBAL/DEFAULT/UND/0 uw:NOTYPE/WEAK/DEFAULT/UND/0 wdef:FUNC/WEAK/DEFAULT/2/8 tls1:TLS/GLOBAL/DEFAULT/3/4 comm1:OBJECT/GLOBAL/DEFAULT/ABS/4 vfoo1:FUNC/GLOBAL/DEFAULT/2/8 vfoo2:FUNC/GLOBAL/DEFAULT/2/8 __start_mysec:NOTYPE/GLOBAL/DEFAULT/UND/0 __stop_mysec:NOTYPE/GLOBAL/DEFAULT/UND/0 _end:NOTYPE/GLOBAL/DEFAULT/UND/0 __ehdr_start:NOTYPE/GLOBAL/DEFAULT/UND/0 vfoo:FUNC/GLOBAL/DEFAULT/2/8 vfoo:FUNC/GLOBAL/DEFAULT/2/8 hidden_ref:FUNC/GLOBAL/HIDDEN/2/8 comm2:OBJECT/GLOBAL/DEFAULT/ABS/32  | locals-first sh_info=25 nsyms=50 nsect=15 nfile=2 firstglobal=25 
+5-duplicate-strong | bfd | rc=1 ld.bfd: y3.o: in function `dup_strong': y3.c:(.text+0x0): multiple definition of `dup_strong'; y1.o:y1.c:(.text+0x7c): first defined here 
+5-duplicate-strong | lld | rc=1 ld.lld-22: error: duplicate symbol: dup_strong >>> defined at y1.c 
+5-duplicate-strong | mold | dup_strong:FUNC/GLOBAL/DEFAULT/2/8  
+5-ifunc-unique | bfd | .bss._ZZN1S3getEvE1v:SECTION/LOCAL/DEFAULT/12/0 _ZZN1S3getEvE1v:OBJECT/UNIQUE/DEFAULT/12/4 ifn_impl:FUNC/GLOBAL/DEFAULT/3/8 ifn:IFUNC/GLOBAL/DEFAULT/3/12  
+5-ifunc-unique | lld | .bss._ZZN1S3getEvE1v:SECTION/LOCAL/DEFAULT/10/0 ifn_impl:FUNC/GLOBAL/DEFAULT/1/8 ifn:IFUNC/GLOBAL/DEFAULT/1/12 _ZZN1S3getEvE1v:OBJECT/UNIQUE/DEFAULT/10/4  
+5-ifunc-unique | mold | rc=139  
+5-u-e | bfd | forced_undef:NOTYPE/GLOBAL/DEFAULT/UND/0  entry=0x8
+5-u-e | lld |  entry=0x8
+5-u-e | mold |  entry=0x0
+6-reloc-types-input-x86_64 | - | R_X86_64_GOTTPOFF:1 R_X86_64_PC32:2 R_X86_64_PLT32:1 
+6-reloc-types-x86_64 | bfd | R_X86_64_GOTTPOFF:1 R_X86_64_PC32:2 R_X86_64_PLT32:1  
+6-reloc-types-x86_64 | lld | R_X86_64_GOTTPOFF:1 R_X86_64_PC32:2 R_X86_64_PLT32:1  
+6-reloc-types-x86_64 | mold | R_X86_64_GOTTPOFF:1 R_X86_64_PC32:2 R_X86_64_PLT32:1  
+6-reloc-types-input-aarch64 | - | R_AARCH64_ADR_GOT_PAGE:1 R_AARCH64_CALL26:1 R_AARCH64_LD64_GOT_LO12_NC:1 R_AARCH64_PREL32:1 R_AARCH64_TLSDESC_ADD_LO12:1 R_AARCH64_TLSDESC_ADR_PAGE21:1 R_AARCH64_TLSDESC_CALL:1 R_AARCH64_TLSDESC_LD64_LO12:1 
+6-reloc-types-aarch64 | bfd | R_AARCH64_ADR_GOT_PAGE:1 R_AARCH64_CALL26:1 R_AARCH64_LD64_GOT_LO12_NC:1 R_AARCH64_PREL32:1 R_AARCH64_TLSDESC_ADD_LO12:1 R_AARCH64_TLSDESC_ADR_PAGE21:1 R_AARCH64_TLSDESC_CALL:1 R_AARCH64_TLSDESC_LD64_LO12:1  
+6-reloc-types-aarch64 | lld | R_AARCH64_ADR_GOT_PAGE:1 R_AARCH64_CALL26:1 R_AARCH64_LD64_GOT_LO12_NC:1 R_AARCH64_PREL32:1 R_AARCH64_TLSDESC_ADD_LO12:1 R_AARCH64_TLSDESC_ADR_PAGE21:1 R_AARCH64_TLSDESC_CALL:1 R_AARCH64_TLSDESC_LD64_LO12:1  
+6-reloc-types-aarch64 | mold | R_AARCH64_ADR_GOT_PAGE:1 R_AARCH64_CALL26:1 R_AARCH64_LD64_GOT_LO12_NC:1 R_AARCH64_PREL32:1 R_AARCH64_TLSDESC_ADD_LO12:1 R_AARCH64_TLSDESC_ADR_PAGE21:1 R_AARCH64_TLSDESC_CALL:1 R_AARCH64_TLSDESC_LD64_LO12:1  
+6-reloc-types-input-i686 | - | R_386_GOT32X:1 R_386_GOTPC:1 R_386_PC32:3 R_386_PLT32:1 R_386_TLS_GOTIE:1 
+6-reloc-types-i686 | bfd | R_386_GOT32X:1 R_386_GOTPC:1 R_386_PC32:3 R_386_PLT32:1 R_386_TLS_GOTIE:1  
+6-reloc-types-i686 | lld | R_386_GOT32X:1 R_386_GOTPC:1 R_386_PC32:3 R_386_PLT32:1 R_386_TLS_GOTIE:1  
+6-reloc-types-i686 | mold | R_386_GOT32X:1 R_386_GOTPC:1 R_386_PC32:3 R_386_PLT32:1 R_386_TLS_GOTIE:1  
+7-header | bfd | type=REL phnum=0 entry=0x0 flags=0x0 mode=644 shstrndx=15/16 
+7-header | lld | type=REL phnum=0 entry=0x0 flags=0x0 mode=644 shstrndx=15/17 
+7-header | mold | type=REL phnum=0 entry=0x0 flags=0x0 mode=644 shstrndx=11/16 
+7-determinism | bfd | identical
+7-determinism | lld | identical
+7-determinism | mold | identical
+8-rel-addend-input | - | ia2: 00000000 R_386_32 .data;  .data:  00000016
+8-rel-addend | bfd | 00000000 R_386_32 .data; 00000004 R_386_32 .data;  .data:  0000000b 00000016 
+8-rel-addend | lld | 00000000 R_386_32 .data; 00000004 R_386_32 .data;  .data:  0000000b 00000016 
+8-rel-addend | mold | 00000000 R_386_32 .data; 00000004 R_386_32 .data;  .data:  0000000b 00000016 
+8-rcheck | bfd |  local targets written against a section symbol 2; input records 2; output records unexplained 0; records equal 2; sections placed 12;
+8-rcheck | lld |  local targets written against a section symbol 2; input records 2; output records unexplained 0; records equal 2; sections not found (merged or rewritten) 2; sections placed 10; [not found] ia1.o:.comment (32 bytes, flags 0x30); [not found] ia2.o:.comment (32 bytes, flags 0x30);
+8-rcheck | mold |  local targets written against a section symbol 2; input records 2; output records unexplained 0; records equal 2; sections not found (merged or rewritten) 2; sections placed 10; [not found] ia1.o:.comment (32 bytes, flags 0x30); [not found] ia2.o:.comment (32 bytes, flags 0x30);

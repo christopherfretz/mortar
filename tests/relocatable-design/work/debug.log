@@ -1,0 +1,18 @@
+ld: error: r.bfd.o:(.eh_frame+0x280): unsupported feature: overlapping relocations
+collect2: error: ld returned 1 exit status
+direct gdb: 10 lines; lldb: 15 lines
+Breakpoint 1 at : file /Volumes/AgentWork/mortar-helper/.build/target-wp-154/exp/debug/../corpus/x1.cc, line 10.
+Breakpoint 2 at : file /Volumes/AgentWork/mortar-helper/.build/target-wp-154/exp/debug/../corpus/x2.cc, line 8.
+Breakpoint 2, x2_catch (code=7) at /Volumes/AgentWork/mortar-helper/.build/target-wp-154/exp/debug/../corpus/x2.cc:8
+#0  x2_catch (code=7) at /Volumes/AgentWork/mortar-helper/.build/target-wp-154/exp/debug/../corpus/x2.cc:8
+Breakpoint 1: where = BIN x1_throw(int) + 16 x1.cc:10:3, address =
+Breakpoint 2: 2 locations.
+frame #0: BIN x2_catch(code=7) x2.cc:8:17
+* frame #0: BIN x2_catch(code=7) x2.cc:8:17
+direct.mortar: gdb same lldb DIFFERS
+p.bfd.bfd: gdb same lldb same
+p.bfd.mortar: gdb DIFFERS lldb DIFFERS
+p.lld.bfd: gdb same lldb same
+p.lld.mortar: gdb same lldb DIFFERS
+p.mold.bfd: gdb same lldb same
+p.mold.mortar: gdb same lldb DIFFERS

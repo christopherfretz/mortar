@@ -1,0 +1,20 @@
+4b-addrsig-comment | bfd | .comment(PROGBITS,MS,1,73) .llvm_addrsig(0x6fff4c03,E,1,0) comment:  [ 1] Debian clang version 22.1.8 (1~deb13u4)| [ 2a] GCC: (Debian 14.2.0-19) 14.2.0| 
+4b-addrsig-comment | lld | .comment(PROGBITS,MS,1,72) .llvm_addrsig(0x6fff4c03,E,1,0) comment:  [ 0] GCC: (Debian 14.2.0-19) 14.2.0| [ 20] Debian clang version 22.1.8 (1~deb13u4)| 
+4b-addrsig-comment | mold | .comment(PROGBITS,MS,1,72) .llvm_addrsig(0x6fff4c03,E,1,0) comment:  [ 0] Debian clang version 22.1.8 (1~deb13u4)| [ 28] GCC: (Debian 14.2.0-19) 14.2.0| 
+9-crel-input | - | 2 .crel sections
+9-crel | bfd | rc=1 ld.bfd: unknown architecture of input file `crel.o' is incompatible with aarch64 output ld.bfd: error in crel.o(.eh_frame); no .eh_frame_hdr table will be created 
+9-crel | lld | 2](.crel.text) 5](.crel.eh_frame)  
+9-crel | mold | rc=1 mold: fatal: crel.o: .crel.text: unsupported section type: 0x40000014 
+9-gotpcrelx-input | - | R_X86_64_PC32:1 R_X86_64_PLT32:2 R_X86_64_REX_GOTPCRELX:1 R_X86_64_TLSGD:1 
+9-gotpcrelx | bfd | R_X86_64_PC32:1 R_X86_64_PLT32:2 R_X86_64_REX_GOTPCRELX:1 R_X86_64_TLSGD:1  
+9-gotpcrelx | lld | R_X86_64_PC32:1 R_X86_64_PLT32:2 R_X86_64_REX_GOTPCRELX:1 R_X86_64_TLSGD:1  
+9-gotpcrelx | mold | R_X86_64_PC32:1 R_X86_64_PLT32:2 R_X86_64_REX_GOTPCRELX:1 R_X86_64_TLSGD:1  
+9-nested | bfd | groups nested 2 flat 2; secs nested 22 flat 22; rcheck:  output records unexplained 15; records equal 20;
+9-nested | lld | groups nested 2 flat 2; secs nested 23 flat 23; rcheck:  MISSING output record 1; output records unexplained 1; records equal 34;
+9-nested | mold | groups nested 2 flat 2; secs nested 22 flat 22; rcheck:  output records unexplained 18; records equal 16;
+9-osabi | yu.o |  UNIX - GNU
+9-osabi | 5-ifunc-unique.bfd.o |  UNIX - GNU
+9-osabi | 5-ifunc-unique.lld.o |  UNIX - GNU
+9-buildid-final | bfd | rc=0 notes: 1 
+9-buildid-final | mortar | rc=0 notes: 1 
+supp done

@@ -1,0 +1,14 @@
+objects: 400; bytes: 326054984
+bfd run1: 11.52 s, 225188 KB
+bfd run2: 10.00 s, 225004 KB
+bfd run3: 8.54 s, 224988 KB
+  r.bfd.o: file 322376656 B, sections 48879, symbols 86048; group 114528, group# 10434, other 245564703, other# 22119, rela 67055520, rela# 16323, strtab 4654219, strtab# 2, symtab 2065152, symtab# 1
+lld run1: 0.89 s, 769700 KB
+lld run2: 0.90 s, 769588 KB
+lld run3: 1.16 s, 769328 KB
+  r.lld.o: file 245232624 B, sections 48879, symbols 86047; group 114528, group# 10434, other 166553213, other# 22119, rela 67063032, rela# 16323, strtab 6482585, strtab# 2, symtab 2065128, symtab# 1
+mold run1: 1.22 s, 933164 KB
+mold run2: 1.31 s, 931392 KB
+mold run3: 1.17 s, 931692 KB
+  r.mold.o: file 245452320 B, sections 48879, symbols 101978; group 114528, group# 10434, other 166336533, other# 22119, rela 66943488, rela# 16323, strtab 6481397, strtab# 2, symtab 2447472, symtab# 1
+bench done
