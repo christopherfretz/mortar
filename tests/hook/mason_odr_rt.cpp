@@ -53,14 +53,17 @@
 #define R_ABS 257u
 #define R_GLOB 1025u
 #define R_SLOT 1026u
+#define R_COPYREL 1024u
 #elif defined(__x86_64__)
 #define R_ABS 1u
 #define R_GLOB 6u
 #define R_SLOT 7u
+#define R_COPYREL 5u
 #elif defined(__i386__)
 #define R_ABS 1u
 #define R_GLOB 6u
 #define R_SLOT 7u
+#define R_COPYREL 5u
 #else
 #error "no relocation numbers for this target"
 #endif
@@ -86,6 +89,7 @@ struct Mod {
   const ElfW(Sym)* symtab;
   const char* strtab;
   uint32_t nsyms;
+  const uint32_t* gnuhash;
   uint32_t hasrt;
   uint32_t rtmode;
   uint32_t rtflags;
@@ -103,6 +107,7 @@ struct Counts {
   uint32_t lazy;
   uint32_t unknown;
   uint32_t system;
+  uint32_t copy;
   uint32_t slow;
 };
 
@@ -298,6 +303,7 @@ static void fill_from(Mod* m, uintptr_t base, const ElfW(Phdr)* ph, int phnum, c
   m->symtab = 0;
   m->strtab = 0;
   m->nsyms = 0;
+  m->gnuhash = 0;
   m->hasrt = 0;
   m->rtmode = 0;
   m->rtflags = 0;
@@ -324,6 +330,7 @@ static void fill_from(Mod* m, uintptr_t base, const ElfW(Phdr)* ph, int phnum, c
     if (d->d_tag == DT_GNU_HASH) gnuhash = (const uint32_t*)dptr(m->base, d->d_un.d_ptr);
     if (d->d_tag == DT_HASH) hash = (const uint32_t*)dptr(m->base, d->d_un.d_ptr);
   }
+  m->gnuhash = gnuhash;
   if (hash) m->nsyms = hash[1];
   else if (gnuhash) m->nsyms = gnu_hash_count(gnuhash);
   if (m->rows && (!m->symtab || !m->strtab)) m->malformed = 1;
@@ -507,6 +514,96 @@ static int slow_done(Pass* p, uint32_t sym) {
   return 0;
 }
 
+// ---- copy relocations ----
+// A non-PIE executable that reads a library's data gets an R_*_COPY: the
+// loader copies the first definition after the executable (in the initial
+// set's load order) into the executable, and every reference, the
+// library's own included, binds the copy. The copy has no row; its source
+// is found the way the loader found it.
+
+static int has_copy_at(const Mod* m, uintptr_t addr) {
+  if (!m->dyn) return 0;
+  uintptr_t t = 0;
+  uintptr_t sz = 0;
+  int rela = 0;
+  for (const ElfW(Dyn)* d = m->dyn; d->d_tag != DT_NULL; d++) {
+    if (d->d_tag == DT_RELA) {
+      t = dptr(m->base, d->d_un.d_ptr);
+      rela = 1;
+    }
+    if (d->d_tag == DT_RELASZ) sz = d->d_un.d_val;
+    if (d->d_tag == DT_REL) t = dptr(m->base, d->d_un.d_ptr);
+    if (d->d_tag == DT_RELSZ) sz = d->d_un.d_val;
+  }
+  if (!t) return 0;
+  uintptr_t ent = rela ? sizeof(ElfW(Rela)) : sizeof(ElfW(Rel));
+  for (uintptr_t off = 0; off + ent <= sz; off += ent) {
+    const ElfW(Rel)* r = (const ElfW(Rel)*)(t + off);  // r_offset, r_info lead both layouts
+    if (RTYPE(r->r_info) == R_COPYREL && m->base + r->r_offset == addr) return 1;
+  }
+  return 0;
+}
+
+// The number of defined, global or weak dynamic symbols of `m` named
+// `name` (several are versions of one name); `*idx` the last one.
+static uint32_t defines(const Mod* m, const char* name, uint32_t* idx) {
+  if (!m->symtab || !m->strtab) return 0;
+  uint32_t found = 0;
+  if (m->gnuhash) {
+    const uint32_t* h = m->gnuhash;
+    uint32_t nb = h[0];
+    uint32_t symoff = h[1];
+    const uint32_t* buckets = (const uint32_t*)((const char*)(h + 4) + h[2] * sizeof(ElfW(Addr)));
+    const uint32_t* chain = buckets + nb;
+    uint32_t hv = 5381;
+    for (const char* q = name; *q; q++) hv = hv * 33u + (uint32_t)(unsigned char)*q;
+    if (!nb) return 0;
+    uint32_t i = buckets[hv % nb];
+    if (i < symoff) return 0;
+    for (;; i++) {
+      uint32_t ch = chain[i - symoff];
+      if ((ch | 1u) == (hv | 1u)) {
+        const ElfW(Sym)* s = &m->symtab[i];
+        if (s->st_shndx != SHN_UNDEF && str_eq(m->strtab + s->st_name, name)) {
+          found++;
+          *idx = i;
+        }
+      }
+      if (ch & 1u) break;
+    }
+    return found;
+  }
+  for (uint32_t i = 1; i < m->nsyms; i++) {
+    const ElfW(Sym)* s = &m->symtab[i];
+    if (s->st_shndx != SHN_UNDEF && (s->st_info >> 4) != STB_LOCAL &&
+        str_eq(m->strtab + s->st_name, name)) {
+      found++;
+      *idx = i;
+    }
+  }
+  return found;
+}
+
+struct FindSrc {
+  const char* name;
+  Mod* out;
+  uint32_t idx;
+  uint32_t n;  // 0: not found yet
+};
+
+static int find_src_cb(struct dl_phdr_info* info, size_t sz, void* data) {
+  (void)sz;
+  FindSrc* f = (FindSrc*)data;
+  if (!(info->dlpi_name && info->dlpi_name[0])) return 0;  // the executable itself
+  fill(f->out, info);
+  uint32_t idx = 0;
+  uint32_t n = defines(f->out, f->name, &idx);
+  if (!n) return 0;
+  f->n = n;
+  f->idx = idx;
+  return 1;
+}
+
 static void judge(Pass* p, uint32_t sym, uint32_t type, uintptr_t value) {
   const Mod* x = p->x;
   Ctx* c = p->c;
@@ -535,27 +632,47 @@ static void judge(Pass* p, uint32_t sym, uint32_t type, uintptr_t value) {
     }
   } else {
     const Mod* y = module_of(c, value);
-    if (!y) {
+    const Row* ry = 0;
+    Mod src;
+    int own_copy = 0;
+    if (y && y->main && (!y->rows || !(ry = row_by_addr(y, key, value))) && has_copy_at(y, value)) {
+      // the executable's copy: judge against the copy's source
+      FindSrc f;
+      f.name = name;
+      f.out = &src;
+      f.idx = 0;
+      f.n = 0;
+      dl_iterate_phdr(find_src_cb, &f);
+      p->n.copy++;
+      y = 0;
+      if (f.n == 1) {  // several versions of the name: which one the copy took is not known here
+        y = &src;
+        if (src.base == x->base) own_copy = 1;
+        else if (src.rows) ry = row_by_sym(&src, key, f.idx);
+      }
+    } else if (y && y->rows) {
+      ry = row_by_addr(y, key, value);
+    }
+    if (own_copy) {
+      p->n.own++;
+    } else if (!y) {
       p->n.unknown++;
     } else if (!y->rows) {
       p->n.notable++;
+    } else if (!ry) {
+      p->n.norow++;
+    } else if (((rx->flags | ry->flags) & ROW_SYSTEM) && !c->strict) {
+      p->n.system++;
+    } else if (rx->hash == ry->hash) {
+      p->n.same++;
     } else {
-      const Row* ry = row_by_addr(y, key, value);
-      if (!ry) {
-        p->n.norow++;
-      } else if (((rx->flags | ry->flags) & ROW_SYSTEM) && !c->strict) {
-        p->n.system++;
-      } else if (rx->hash == ry->hash) {
-        p->n.same++;
+      int pre = is_preloaded(c, y) && !c->strict;
+      report(c, x, y, name, rx, ry, pre);
+      if (pre) {
+        p->n.interposed++;
       } else {
-        int pre = is_preloaded(c, y) && !c->strict;
-        report(c, x, y, name, rx, ry, pre);
-        if (pre) {
-          p->n.interposed++;
-        } else {
-          p->n.differ++;
-          c->mismatches++;
-        }
+        p->n.differ++;
+        c->mismatches++;
       }
     }
   }
@@ -611,6 +728,7 @@ static void add_counts(Counts* t, const Counts* n) {
   t->lazy += n->lazy;
   t->unknown += n->unknown;
   t->system += n->system;
+  t->copy += n->copy;
   t->slow += n->slow;
 }
 
@@ -716,6 +834,8 @@ static void check_module(Ctx* c, const Mod* x) {
     out_dec(&o, p.n.lazy);
     out_str(&o, " unknown=");
     out_dec(&o, p.n.unknown);
+    out_str(&o, " copy=");
+    out_dec(&o, p.n.copy);
     out_str(&o, " system=");
     out_dec(&o, p.n.system);
     out_str(&o, p.n.slow ? " path=slow\n" : "\n");

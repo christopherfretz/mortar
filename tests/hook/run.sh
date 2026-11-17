@@ -151,6 +151,32 @@ if want VER; then
   echo "== VER-b the same with libp22 (f 22): binds f@V1 (21), while the default f@@V2 is 22: report"
   r VER-b -- ./vm22; verdict VER-b report
 fi
+if want CR; then
+  # a copy relocation: a non-PIE executable reads the library's vague variable, so the
+  # library's own GLOB_DAT binds the executable's copy (which has no row)
+  printf 'namespace fmtlite { inline int level = 5; }\nextern "C" int lib_level() { return fmtlite::level; }\n' > "$W/cr.cpp"
+  $CXX -O0 -fPIC -c "$W/cr.cpp" -o "$W/cr.0.o" && meta "$W/cr.0.o" "$W/cr.o" "_ZN7fmtlite5levelE=5"
+  mlink $CXX -shared "$W/cr.o" "$RT" "$W/note-report.o" -Wl,--odr-table=exported -Wl,-z,now -Wl,-soname,libcr.so -o "$W/libcr.so"
+  printf '#include <stdio.h>\nextern int lvl __asm__("_ZN7fmtlite5levelE");\nint lib_level(void);\nint main(void) { lvl = 7; printf("exe %%d lib %%d\\n", lvl, lib_level()); return lib_level() != 7; }\n' > "$W/crm.c"
+  $CC -O0 -fno-pic -c "$W/crm.c" -o "$W/crm.o"
+  $CC -no-pie "$W/crm.o" -Wl,--no-as-needed -L"$W" -lcr -Wl,-rpath,'$ORIGIN' -o "$W/crmain-foreign"
+  mlink $CC -no-pie "$W/crm.o" "$RTEXE" "$W/note-fatal.o" -Wl,--odr-table=exported -Wl,-z,now -Wl,--no-as-needed -L"$W" -lcr -Wl,-rpath,'$ORIGIN' -o "$W/crmain"
+  echo "== CR copy relocation, foreign non-PIE executable: libcr binds the executable's copy"
+  r CR-foreign MASON_ODR_STATS=1 -- ./crmain-foreign; verdict CR-foreign none
+  echo "== CR the same, Mason non-PIE executable (fatal)"
+  r CR-mason MASON_ODR_STATS=1 -- ./crmain; verdict CR-mason none
+  # CR-b: a second library defines level differently (9); its reference also binds the
+  # executable's copy, which holds libcr's definition (5): a violation the copy hides
+  printf 'namespace fmtlite { inline int level = 9; }\nextern "C" int lib2_level() { return fmtlite::level; }\n' > "$W/cr2.cpp"
+  $CXX -O0 -fPIC -c "$W/cr2.cpp" -o "$W/cr2.0.o" && meta "$W/cr2.0.o" "$W/cr2.o" "_ZN7fmtlite5levelE=9"
+  mlink $CXX -shared "$W/cr2.o" "$RT" "$W/note-report.o" -Wl,--odr-table=exported -Wl,-z,now -Wl,-soname,libcr2.so -o "$W/libcr2.so"
+  printf '#include <stdio.h>\nextern int lvl __asm__("_ZN7fmtlite5levelE");\nint lib2_level(void);\nint main(void) { printf("exe %%d lib2 %%d (lib2 expects 9)\\n", lvl, lib2_level()); return 0; }\n' > "$W/crm2.c"
+  $CC -O0 -fno-pic -c "$W/crm2.c" -o "$W/crm2.o"
+  mlink $CC -no-pie "$W/crm2.o" "$RTEXE" "$W/note-report.o" -Wl,--odr-table=exported -Wl,-z,now -Wl,--no-as-needed -L"$W" -lcr -lcr2 -Wl,-rpath,'$ORIGIN' -o "$W/crmain2"
+  echo "== CR-b libcr (5) then libcr2 (9), Mason non-PIE executable: libcr2 binds the copy of libcr's level"
+  r CR-b MASON_ODR_STATS=1 -- ./crmain2
+  echo "MATRIX $T $RT_FLAVOR CR-b required=report-or-exclusion observed: $LAST => $(echo "$LAST" | grep -q 'reports=[1-9]' && echo pass || echo 'excluded (copy: the executable'"'"'s copy has no row; named exclusion odr-copy-unchecked proposed)')"
+fi
 if want P; then
   plug pre 1 table
   plug prel 1 plain
