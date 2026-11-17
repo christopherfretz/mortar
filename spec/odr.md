@@ -932,6 +932,13 @@ entity, 2 in two or more files (a `std::variant` visitation table and
 `__clang_call_terminate`). The standard library itself sets the flag, so
 the check stays strict unless kiln's analysis and a corpus show zero on
 user rows with `SYSTEM` rows exempt (Q5).
+**`SYSTEM` rows are exempt** (WP-204): a row with `SYSTEM`, or of a
+unit whose kind 1 says `unit.system` = `yes` (`meta.md` MT-26), takes
+no part in the check; the finding needs two files whose USER rows set
+`USES_INTERNAL`. Its places follow §9.1 by hash: rows of equal hashes
+are each `defined in` (the usual case: equal tokens, two entities), and
+`defined differently in` only where a hash differs. Measured with kiln
+`.d5` on the libc++ sample (WP-204, `spec/landed/meta/WP-204.md`).
 
 ## 6. Layout records
 
@@ -1107,7 +1114,10 @@ offset in bits, `width` and `BITFIELD` for a bit-field); 1 a base
 the slot's index over the whole group); 4 an enumerator (`name`,
 `value`: the enumerator's value as a 64-bit two's complement number,
 sign-extended when the underlying type is signed, zero-extended
-otherwise; ruling of 2026-11-17); 5 an enumeration's underlying type (`type`). **A member of
+otherwise; ruling of 2026-11-17); 5 an enumeration's underlying type
+(`type`; `value`: from kiln's `.d5` on, O-18's byte, bit 0 scoped and
+bit 1 a fixed underlying type, the other bits reserved and ignored by
+a reader; 0 from older producers, WP-204). **A member of
 unnamed class type** (K-4b: a kind 0 item with `name` 0 and `type` 0,
 followed by the nested class's own items) carries in `width` the
 number of items that follow it and describe it, counted through every
@@ -1515,6 +1525,20 @@ and says that `-fmason-metadata=detail` records the types (both
 sentences implemented by WP-134: `crates/mortar_odr/src/records.rs`
 `kind5`; each language linkage's rows are compared among themselves
 first, and the rows of both by size only if neither of those reports).
+**The implementation's own definition** (WP-204). When every
+definition among a group's rows lies in a unit whose kind 1 says
+`unit.system` = `yes` (or every row of the group does), a disagreement
+is counted as O-32's (`system -std differences`) and reported, under
+`--odr=strict` only, as a **warning** with the note `the translation
+unit that defines it is the implementation's own (kind 1
+unit.system=yes): a warning (spec/odr.md O-35)` (`every translation
+unit that declares or defines it is` when no row is the user's).
+Measured: libc++ defines `std::cout` as an object of a
+`stream<ostream>`-like type its header declares `ostream`
+(`_ZNSt3__14coutE`), and under c++17 its `basic_stringbuf::swap`
+declarations differ from the definitions in `noexcept`; both were
+errors (k14impl) before. A user's declaration that disagrees with a
+user's definition is unchanged.
 Status: `--odr=strict` until its corpus
 (O-47).
 
@@ -1746,7 +1770,8 @@ warning: f(int) violates the one-definition rule
   `unsigned`), and otherwise (no item, `w`, another type) as before: a
   value with bit 63 set in hex, `0xffffffffffffffff` (WP-151); `meta
   dump` and the test producer print values the same way; `underlying
-  type j`. An item nested in unnamed class-type members (O-19's `width`)
+  type j`, followed by ` (scoped, fixed)`, ` (unscoped, fixed)` or
+  ` (scoped, not fixed)` when the item's value sets a bit (WP-204). An item nested in unnamed class-type members (O-19's `width`)
   has ` of the unnamed member at offset N` appended for each enclosing
   one, innermost first, and an unnamed member with a count reads
   `unnamed member at offset 0 with 2 nested items` (WP-151). Offsets: O-19's bits divided by 8,
@@ -1768,7 +1793,7 @@ warning: f(int) violates the one-definition rule
   | none (same items, same count) | `the layout details are equal: the difference is in something kind 4 does not describe`; for two rows flagged `ENUM`, `the layout details are equal: the enumerations differ in something kind 4 does not describe (whether the underlying type is fixed, or whether the enumeration is scoped)` (WP-151) |
   | B ends at `i` (B is a prefix of A) | `D(A[i]) in a.o only`, then `, and N more items` when A has N > 0 items after it (`, and 1 more item`) |
   | A ends at `i` | `D(B[i]) in b.o only`, the same way |
-  | A[i], B[i] of one identity | `D(A[i]) in a.o; D'(B[i]) in b.o` |
+  | A[i], B[i] of one identity | `D(A[i]) in a.o; D'(B[i]) in b.o`; for two underlying-type items of one type, whose value alone differs, both bits in words: `underlying type i (unscoped, fixed) in a.o; i (scoped, fixed) in b.o` (WP-204: `enum E : int` against `enum class E : int`, whose items before `.d5` were equal) |
   | A[i]'s identity not in B, B[i]'s in A | `D(A[i]) in a.o only` |
   | B[i]'s identity not in A, A[i]'s in B | `D(B[i]) in b.o only` |
   | neither identity in the other | `D(A[i]) in a.o; D(B[i]) in b.o` |
@@ -1878,7 +1903,10 @@ kind, schemes seen and the unit pairs not compared because of them
 schemes N, layout pairs not compared M`, of the layout schemes, WP-151),
 the kind 3 groups compared across schemes (O-11's exception), ambiguous
 anchors (O-4), unanchored rows, `SYSTEM` differences between
-units of different `-std` (O-32), time spent and container bytes read,
+units of different `-std` (O-32, and O-35's implementation's own
+definitions, WP-204), the rows whose flag words set a reserved bit
+(`rows with reserved flag bits N`, after `rows set aside`; `meta.md`
+MT-25, WP-204), time spent and container bytes read,
 and the kind 4 entries read for notes (`layout details read N`, before
 `record findings`; WP-145: non-zero only on a kind 3 layout finding).
 For tuning and for the oracle of §12.3.
@@ -1967,7 +1995,13 @@ libc++ TUs, and 29 + 53 definitions present under one standard only).
 rows (no `SYSTEM` flag) of units of different `std` stays a finding
 (model `mixed-std-user-body`: `#if __cplusplus` in user code changes the
 tokens); whether mixed `-std` should also be exempt for user rows is the
-operator's Q6.
+operator's Q6 (ruling of 2026-11-17: nothing new is designed for mixed
+`-std`, only measured). A row of a unit whose kind 1 says `unit.system`
+= `yes` carries `SYSTEM` for this rule whatever its own bit (MT-26,
+WP-204: the standard library's own sources, compiled with
+`-fmason-metadata-system-unit`); the note reads `every definition is
+SYSTEM (in a system header, or in a unit.system unit), and the
+translation units' -std differ: a warning (spec/odr.md O-32)`.
 
 ## 10. The dynamic side
 

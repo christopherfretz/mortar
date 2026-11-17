@@ -35,7 +35,13 @@ impl<'l> Resolved<'l> {
             kind: it.kind(),
             name: unit.string(it.name),
             ty: unit.string(it.ty),
-            value: it.value,
+            // O-19 (WP-204): an underlying type's value holds two bits;
+            // the others are reserved and ignored.
+            value: if it.kind() == item::UNDERLYING {
+                it.value & (item::SCOPED | item::FIXED)
+            } else {
+                it.value
+            },
             width: it.width,
             flags: it.flags & item::KNOWN_FLAGS,
             outer,
@@ -101,7 +107,7 @@ impl<'l> Resolved<'l> {
                 };
                 ("enumerator ", format!("'{}' = {v}", lossy(self.name)))
             }
-            _ => ("underlying type ", lossy(self.ty)),
+            _ => ("underlying type ", format!("{}{}", lossy(self.ty), enum_bits(self.value, false))),
         };
         for at in &self.outer {
             let _ = write!(rest, " of the unnamed member at offset {}", offset_text(*at, false));
@@ -113,6 +119,18 @@ impl<'l> Resolved<'l> {
         let (k, rest) = self.text(signed);
         format!("{k}{rest}")
     }
+}
+
+/// An underlying-type item's bits as words (O-19, WP-204): nothing for 0
+/// unless `explicit` (both sides of a difference in the bits alone, where
+/// 0 says "unscoped, not fixed").
+fn enum_bits(value: u64, explicit: bool) -> String {
+    if value == 0 && !explicit {
+        return String::new();
+    }
+    let scoped = if value & item::SCOPED != 0 { "scoped" } else { "unscoped" };
+    let fixed = if value & item::FIXED != 0 { "fixed" } else { "not fixed" };
+    format!(" ({scoped}, {fixed})")
 }
 
 /// An offset in bits as a developer reads it (§9.1): bytes, without a
@@ -172,7 +190,9 @@ pub(crate) fn first_difference(
     let Some(i) = (0..xa.len().max(xb.len())).find(|&i| xa.get(i) != xb.get(i)) else {
         let note = if enumeration {
             // O-18 hashes whether the underlying type is fixed and whether
-            // the enumeration is scoped; kind 4 has no item for either.
+            // the enumeration is scoped; kind 4 says it from kiln's `.d5`
+            // on (the underlying type's value, WP-204), so equal details
+            // come from an older producer.
             "the layout details are equal: the enumerations differ in something kind 4 does not \
              describe (whether the underlying type is fixed, or whether the enumeration is \
              scoped)"
@@ -195,6 +215,17 @@ pub(crate) fn first_difference(
     let note = match (xa.get(i), xb.get(i)) {
         (Some(_), None) => only(&xa, sa, fa),
         (None, _) => only(&xb, sb, fb),
+        (Some(ia), Some(ib))
+            if ia.kind == item::UNDERLYING && ib.kind == item::UNDERLYING && ia.ty == ib.ty =>
+        {
+            // The bits alone differ (WP-204): both sides in words.
+            let ty = String::from_utf8_lossy(ia.ty);
+            format!(
+                "underlying type {ty}{} in {fa}; {ty}{} in {fb}",
+                enum_bits(ia.value, true),
+                enum_bits(ib.value, true)
+            )
+        }
         (Some(ia), Some(ib)) if ia.identity() == ib.identity() => {
             format!("{} in {fa}; {} in {fb}", ia.whole(sa), ib.text(sb).1)
         }
@@ -458,6 +489,41 @@ mod tests {
             "enumerator 'C' = 1 in b.o only, and 1 more item",
             "enumerator 'C' = 1 in a.o only, and 1 more item",
         );
+    }
+
+    fn underlying_bits(ty: &str, value: u64) -> Detail {
+        Detail { value, ..underlying(ty) }
+    }
+
+    // spec: odr.md O-19 (WP-204: kiln `.d5`'s underlying-type bits, scoped
+    // and fixed, rendered; a difference in the bits alone in words on both
+    // sides; the reserved bits above them ignored)
+    #[test]
+    fn enumeration_bits() {
+        let (scoped, fixed) = (item::SCOPED, item::FIXED);
+        both(
+            &[underlying_bits("i", fixed), enumerator("A", 0)],
+            &[underlying_bits("i", scoped | fixed), enumerator("A", 0)],
+            "underlying type i (unscoped, fixed) in a.o; i (scoped, fixed) in b.o",
+            "underlying type i (scoped, fixed) in a.o; i (unscoped, fixed) in b.o",
+        );
+        both(
+            &[underlying_bits("i", 0), enumerator("A", 0)],
+            &[underlying_bits("i", fixed), enumerator("A", 0)],
+            "underlying type i (unscoped, not fixed) in a.o; i (unscoped, fixed) in b.o",
+            "underlying type i (unscoped, fixed) in a.o; i (unscoped, not fixed) in b.o",
+        );
+        // Another type: the bits only where they are set.
+        both(
+            &[underlying_bits("j", 0)],
+            &[underlying_bits("i", fixed)],
+            "underlying type j in a.o; i (unscoped, fixed) in b.o",
+            "underlying type i (unscoped, fixed) in a.o; j in b.o",
+        );
+        // Reserved bits: ignored, so these entries are equal.
+        let a = [underlying_bits("i", fixed | 0x40), enumerator("A", 0)];
+        let b = [underlying_bits("i", fixed), enumerator("A", 0)];
+        assert_eq!(note(a.to_vec(), b.to_vec()), EQUAL);
     }
 
     /// An unnamed class-type member whose `width` counts `n` nested items.

@@ -1688,3 +1688,170 @@ fn kind4_reader_notes() {
     );
     assert_eq!(count(&e, "error: type "), 5, "{e}");
 }
+
+/// A C++ unit of `source` compiled at `std`, with `unit.system` = `system`
+/// when given (MT-26, WP-204).
+fn sys_unit(source: &str, std: &str, system: Option<&str>) -> UnitBuilder {
+    let mut rows = vec![
+        ("lang", "c++", 0),
+        ("odr.scheme", "test-1", 0),
+        ("source", source, 0),
+        ("std", std, 0),
+    ];
+    if let Some(v) = system {
+        rows.push(("unit.system", v, 0));
+    }
+    unit(&rows)
+}
+
+// spec: meta.md MT-26 (`unit.system`), odr.md O-32 (WP-204): a unit whose
+// kind 1 says unit.system=yes has every row SYSTEM, whatever the rows'
+// own bit; the per-row bit alone still counts; any other value is no row.
+#[test]
+fn unit_system_marks_every_row() {
+    let Some(cx) = Cx::new("odr-unit-system") else { return };
+    // The key present, the rows' SYSTEM absent; the other side's rows
+    // carry the bit and no key (the reverse).
+    let mut a = sys_unit("a.cc", "c++20", Some("yes"));
+    a.definitions.push(def("_Z3sysv", 1, flags::VAGUE));
+    a.types.push(ty("1S", 0x11, 8, 4, 0));
+    let mut b = sys_unit("b.cc", "c++17", None);
+    b.definitions.push(def("_Z3sysv", 2, flags::SYSTEM | flags::VAGUE));
+    b.types.push(ty("1S", 0x12, 8, 4, flags::TYPE_SYSTEM));
+    cx.object("a.o", &[], Some(&bytes(&[a])));
+    cx.object("b.o", &[], Some(&bytes(&[b])));
+    let (ok, e) = cx.strict(&["a.o", "b.o"], &[]);
+    assert!(ok, "{e}");
+    assert!(e.contains("warning: _Z3sysv violates the one-definition rule"), "{e}");
+    assert!(e.contains("warning: type 1S violates the one-definition rule"), "{e}");
+    assert_eq!(count(&e, "every definition is SYSTEM (in a system header, or in a unit.system"), 2);
+    assert!(e.contains("system -std differences 2,"), "{e}");
+    // The default mode runs no record check: counted nowhere, silent.
+    let out = cx.link(&["a.o", "b.o"], &["--odr-stats"], "out-d");
+    assert!(out.success(), "{}", out.stderr_text());
+    assert!(!out.stderr_text().contains("_Z3sysv"), "{}", out.stderr_text());
+
+    // A value other than `yes` is no row: the user's rows, an error.
+    for v in ["no", "YES", ""] {
+        let mut c = sys_unit("c.cc", "c++20", Some(v));
+        c.definitions.push(def("_Z3sysv", 3, flags::VAGUE));
+        cx.object("c.o", &[], Some(&bytes(&[c])));
+        let (ok, e) = cx.strict(&["c.o", "b.o"], &[]);
+        assert!(!ok, "{v}: {e}");
+        assert!(e.contains("error: _Z3sysv violates the one-definition rule"), "{v}: {e}");
+        assert!(!e.contains("O-32"), "{v}: {e}");
+    }
+}
+
+// spec: odr.md O-35 (WP-204): a declaration that disagrees with the
+// implementation's own definition (libc++ defines `cout` as a
+// `stream<ostream>` its header declares `ostream`) is a warning when the
+// defining unit says unit.system=yes, and the O-35 error without the key
+#[test]
+fn unit_system_kind5_definition() {
+    let Some(cx) = Cx::new("odr-unit-system-k5") else { return };
+    let mut lib = sys_unit("ios.cpp", "c++23", Some("yes"));
+    lib.declarations.push(var("_ZNSt3__14coutE", 1, 160, flags::DECL_DEFINITION));
+    let mut user = sys_unit("main.cc", "c++23", None);
+    user.declarations.push(var("_ZNSt3__14coutE", 2, 272, 0));
+    cx.object("lib.o", &[], Some(&bytes(&[lib])));
+    cx.object("main.o", &[], Some(&bytes(&[user])));
+    let (ok, e) = cx.strict(&["main.o", "lib.o"], &[]);
+    assert!(ok, "{e}");
+    assert!(e.contains("warning: _ZNSt3__14coutE is declared with a type that does not"), "{e}");
+    assert!(
+        e.contains(
+            ">>> the translation unit that defines it is the implementation's own (kind 1 \
+             unit.system=yes): a warning (spec/odr.md O-35)\n"
+        ),
+        "{e}"
+    );
+    assert!(e.contains("system -std differences 1,"), "{e}");
+
+    let mut plain = sys_unit("ios.cpp", "c++23", None);
+    plain.declarations.push(var("_ZNSt3__14coutE", 1, 160, flags::DECL_DEFINITION));
+    cx.object("plain.o", &[], Some(&bytes(&[plain])));
+    let (ok, e) = cx.strict(&["main.o", "plain.o"], &[]);
+    assert!(!ok, "{e}");
+    assert!(e.contains("error: _ZNSt3__14coutE is declared"), "{e}");
+    assert!(!e.contains("implementation's own"), "{e}");
+}
+
+// spec: odr.md O-16 (Q5, WP-204): a SYSTEM row (by its bit or by its
+// unit's unit.system) never takes part in odr-internal-reference; equal
+// definitions are each "defined in", never "defined differently in"
+#[test]
+fn internal_reference_system_and_equal_hashes() {
+    let Some(cx) = Cx::new("odr-internal-sys") else { return };
+    let uses = flags::USES_INTERNAL | flags::VAGUE;
+    let mut a = sys_unit("a.cc", "c++20", None);
+    a.definitions.push(def("_Z1uv", 1, uses));
+    a.definitions.push(def("_Z1sv", 1, uses | flags::SYSTEM));
+    a.definitions.push(def("_Z1yv", 1, uses));
+    let mut b = sys_unit("b.cc", "c++20", None);
+    b.definitions.push(def("_Z1uv", 1, uses));
+    b.definitions.push(def("_Z1sv", 1, uses | flags::SYSTEM));
+    let mut c = sys_unit("c.cc", "c++20", Some("yes"));
+    c.definitions.push(def("_Z1yv", 1, uses));
+    cx.object("a.o", &[], Some(&bytes(&[a])));
+    cx.object("b.o", &[], Some(&bytes(&[b])));
+    cx.object("c.o", &[], Some(&bytes(&[c])));
+    let (ok, e) = cx.strict(&["a.o", "b.o", "c.o"], &[]);
+    assert!(ok, "{e}");
+    assert!(e.contains("warning: _Z1uv refers to an entity with internal linkage"), "{e}");
+    assert!(e.contains(">>> defined in a.o:(_Z1uv), at h.h:3\n"), "{e}");
+    assert!(e.contains(">>> defined in b.o:(_Z1uv), at h.h:3\n"), "{e}");
+    assert!(!e.contains("defined differently in"), "{e}");
+    assert!(!e.contains("_Z1sv"), "{e}");
+    assert!(!e.contains("_Z1yv"), "{e}");
+    assert_eq!(count(&e, "refers to an entity with internal linkage"), 1, "{e}");
+}
+
+// spec: meta.md MT-25 (WP-204): a reserved flag bit is ignored, the row
+// read as if it were clear, and counted on the stats line
+#[test]
+fn reserved_flag_bits_are_ignored_and_counted() {
+    let Some(cx) = Cx::new("odr-reserved") else { return };
+    let mut a = cxx("a.cc");
+    a.summary.push(Summary { name: b"x.note".to_vec(), value: b"1".to_vec(), flags: 1 << 7 });
+    a.definitions.push(def("_Z1rv", 1, flags::VAGUE | 1 << 9 | 1 << 15));
+    a.types.push(ty("1R", 0x11, 8, 4, 1 << 6));
+    a.declarations.push(decl("_Z1dv", 1, "FvvE", flags::DECL_DEFINITION | 1 << 4));
+    let mut b = cxx("b.cc");
+    b.definitions.push(def("_Z1rv", 1, flags::VAGUE));
+    b.types.push(ty("1R", 0x11, 8, 4, 0));
+    b.declarations.push(decl("_Z1dv", 1, "FvvE", 0));
+    // Another scheme: kind 3 compared on size, alignment and shape flags,
+    // a reserved bit not among them.
+    let mut c = unit(&[("lang", "c++"), ("odr.scheme", "other-9")].map(|(n, v)| (n, v, 0)));
+    c.types.push(ty("1R", 0x99, 8, 4, 1 << 15));
+    cx.object("a.o", &[], Some(&bytes(&[a])));
+    cx.object("b.o", &[], Some(&bytes(&[b])));
+    cx.object("c.o", &[], Some(&bytes(&[c])));
+    let (ok, e) = cx.strict(&["a.o", "b.o", "c.o"], &[]);
+    assert!(ok, "{e}");
+    assert_eq!(stat(&e, "record findings "), 0, "{e}");
+    assert_eq!(stat(&e, "rows with reserved flag bits "), 5, "{e}");
+}
+
+// spec: meta.md MT-26, odr.md O-30 (WP-204): abi.wchar-sign is an ENFORCE
+// key like abi.char; a unit without the key is no party
+#[test]
+fn enforce_wchar_sign() {
+    let Some(cx) = Cx::new("odr-wchar") else { return };
+    let k = |v: &str| unit(&[("lang", "c++", 0), ("abi.wchar-sign", v, flags::ENFORCE)]);
+    cx.object("a.o", &[], Some(&bytes(&[k("unsigned")])));
+    cx.object("b.o", &[], Some(&bytes(&[k("signed")])));
+    cx.object("c.o", &[], Some(&bytes(&[unit(&[("lang", "c++", 0)])])));
+    let (ok, e) = cx.strict(&["a.o", "c.o", "b.o"], &[]);
+    assert!(ok, "{e}");
+    assert!(
+        e.contains(
+            "warning: translation units compiled with different abi.wchar-sign: unsigned and \
+             signed\n>>> in a.o\n>>> in b.o\n"
+        ),
+        "{e}"
+    );
+    let (_, e) = cx.strict(&["a.o", "c.o"], &[]);
+    assert!(!e.contains("abi.wchar-sign"), "{e}");
+}

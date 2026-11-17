@@ -41,8 +41,15 @@ pub mod item {
     pub const SLOT: u32 = 3;
     /// An enumerator: `name`, `value`.
     pub const ENUMERATOR: u32 = 4;
-    /// An enumeration's underlying type: `type`.
+    /// An enumeration's underlying type: `type`, and in `value` (from kiln's
+    /// `kiln-odr-1.d5`; 0 before) [`SCOPED`] and [`FIXED`], the bits O-18
+    /// already hashes; a reader ignores the others (WP-204).
     pub const UNDERLYING: u32 = 5;
+    /// An underlying-type item's `value`: the enumeration is scoped.
+    pub const SCOPED: u64 = 1 << 0;
+    /// An underlying-type item's `value`: the underlying type is fixed
+    /// (written, or implied by `enum class`).
+    pub const FIXED: u64 = 1 << 1;
     /// The bits of `flags` that hold the kind.
     pub const KIND_MASK: u32 = 0xf;
     pub const BITFIELD: u32 = 1 << 4;

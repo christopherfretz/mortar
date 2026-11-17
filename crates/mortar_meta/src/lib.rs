@@ -119,6 +119,15 @@ pub mod flags {
     pub const DECL_VARIABLE: u16 = 1 << 1;
     pub const DECL_EXTERN_C: u16 = 1 << 2;
     pub const DECL_NOEXCEPT: u16 = 1 << 3;
+
+    /// The bits each kind assigns; every other bit of a row's flag word is
+    /// reserved (MT-25: a reader ignores a reserved bit and counts the row;
+    /// WP-204). Kind 2's bit 15 is `.note.mason`'s `NONPREEMPTIBLE`
+    /// (O-51), 0 in a kind 2 row: reserved there too.
+    pub const SUMMARY_KNOWN: u32 = ENFORCE;
+    pub const DEF_KNOWN: u16 = (1 << 9) - 1;
+    pub const TYPE_KNOWN: u16 = (1 << 6) - 1;
+    pub const DECL_KNOWN: u16 = (1 << 4) - 1;
 }
 
 /// Kind 2's `class` (`spec/odr.md` O-15).

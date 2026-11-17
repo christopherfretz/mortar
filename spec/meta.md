@@ -433,6 +433,16 @@ starts with the earlier row, and `row_size` grows); otherwise skipped.
 A reader never reads past `row_size` of a row. Kind 0x7f00-0x7fff is
 skipped by every release reader.
 
+*Reserved flag bits* (WP-204). A bit of a row's `flags` that its kind
+does not assign (kind 1: every bit but 0; kind 2: bits 9-15, bit 15
+being `.note.mason`'s `NONPREEMPTIBLE`, O-51; kind 3: bits 6-15; kind 5:
+bits 4-15) is reserved: a producer writes it 0, and a reader ignores it,
+reading the row as if the bit were clear. It never refuses the row nor
+reports it; `--odr-stats` counts such rows (`rows with reserved flag
+bits`, `odr.md` O-44), so that a producer ahead of the reader shows.
+This is the same choice as for an unknown kind: a later minor version
+may assign the bit, and an older reader must read its rows as before.
+
 **MT-26 (kind 1, TU summary).** Rows `{u32 name; u32 value; u32 flags;
 u32 reserved}`, both strings, sorted by name bytes, names unique. Flag
 bit 0 `ENFORCE`: two units whose rows for the same name both carry
@@ -460,7 +470,18 @@ a row without it is information. Names defined now [kiln]:
 | `abi.wchar-sign` [kiln, from scheme `kiln-odr-1.d5` on; ruling of 2026-11-17] | `signed`/`unsigned` | yes, as `abi.char` | `wchar_t`'s signedness, which `abi.wchar` (the size) does not say: signed on x86-64 and i386, unsigned on AArch64 Linux. A unit without the row (kiln before `.d5`, other producers) is never a party to an O-30 mismatch on it |
 | `abi.long-double` | size in bits | yes | |
 | `isa` | the target feature string the TU was compiled for | no | K16d: `odr.md` O-31 |
+| `unit.system` [kiln, `-fmason-metadata-system-unit`, from `.d5`; WP-204] | `yes` | no | the unit is part of the implementation (a standard library built from its own sources, which are not in a system header for it): every row of the unit is `SYSTEM` wherever a rule reads the bit (kinds 2 and 3: O-16, O-32), and its kind 5 definitions are the implementation's own (O-35). Hashes, keys and every other row are those of the same unit without the option (measured, WP-204) |
 | `reloc-model` [hod; M4; landed: hod H-3, mortar's reader WP-129; request R-MT11] | `static`, `pie` or `pic`: the relocation model hod's code generation used (`-fno-pic` and `dynamic-no-pic`; `-fPIE`; `-fPIC`) | no | `dyn.md` D-117: exact refusal of non-PIC code in a shared object (`static` or `pie` in an object defining an exported preemptible datum refuses it, `non-pic-in-shared-object`; `pic` never exempts) |
+
+*Keys and values outside the table* (WP-204). A row whose name the
+reader does not know is information when it lacks `ENFORCE`: noted
+nowhere, compared by no rule. With `ENFORCE` it is compared by O-30
+like any ABI key, by name and value bytes alone, so a producer's new
+ABI key is enforced by a reader that predates it. A known key whose
+value is outside its vocabulary is read as no row (`reloc-model`
+below; a `unit.system` of any value but `yes`, `no`, `YES` and the
+empty string among them): it never makes a unit a party to the rule the key
+feeds. An ENFORCE row is compared on its bytes whatever they are.
 
 The `reloc-model` row (WP-129) is read in a `Shared` link only, from any
 producer's unit (kiln's llc route writes none; a test producer may), and

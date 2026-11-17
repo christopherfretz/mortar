@@ -201,7 +201,7 @@ fn compare<'s: 'l, 'l>(
                 out.push(Found::Compared);
                 continue;
             }
-            let system = system_std(&k, r, &info, &kinfo);
+            let system = system_std(&k, &r, &info, &kinfo);
             if system && !cx.switches.system_std_reported {
                 out.push(Found::SystemStd);
                 continue;
@@ -224,9 +224,11 @@ fn compare<'s: 'l, 'l>(
     }
 }
 
-/// O-32: both rows `SYSTEM` and the units' `-std` differ.
-fn system_std(k: &DefinitionRow, r: DefinitionRow, a: &Info<'_>, b: &Info<'_>) -> bool {
-    k.flags & r.flags & flags::SYSTEM != 0 && a.std != b.std
+/// O-32: both rows `SYSTEM` and the units' `-std` differ. `k` is the
+/// keeper's row as [`Cx::definition`] reads it (of unit `b`); `r` the
+/// member's (of unit `a`), read here the same way (`unit.system`, MT-26).
+fn system_std(k: &DefinitionRow, r: &DefinitionRow, a: &Info<'_>, b: &Info<'_>) -> bool {
+    k.flags & a.def_flags(r.flags) & flags::SYSTEM != 0 && a.std != b.std
 }
 
 /// The warning of one shadow: the member's row "defined differently in",
@@ -257,8 +259,8 @@ fn diagnostic<'l>(
     };
     if s.system {
         d = d.note(
-            "every definition is in a system header, and the translation units' -std differ \
-             (spec/odr.md O-32)",
+            "every definition is SYSTEM (in a system header, or in a unit.system unit), and the \
+             translation units' -std differ (spec/odr.md O-32)",
         );
     }
     if flagged(flags::PARTIAL) {
