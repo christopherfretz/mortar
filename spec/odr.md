@@ -2801,9 +2801,12 @@ decisions"); their recommendations are repeated here.
   runtime of experiment 5 compiles for AArch64 and x86-64, byte-identical
   on a repeat), the object bytes per target embedded in mortar, CI
   rebuilding them with the pinned kiln and hod and requiring identical
-  bytes (O-53). hod has no i386 back end: i386 has no runtime in the
-  first version (refused by name) unless WP-077 shows a reason to do
-  otherwise. Mortar stays `forbid(unsafe_code)`: the runtime is bytes it
+  bytes (O-53). i386: hod has an i386 back end too (`hod_x86` on its
+  main; the route to it for this source is being settled with hod's
+  agent), so the runtime is built for the three targets; a target
+  whose bytes cannot be built by the toolchain has no runtime (the
+  option refused by name there), never bytes from a foreign compiler
+  shipped silently. Mortar stays `forbid(unsafe_code)`: the runtime is bytes it
   links.
 - **Q4. Anchored rows vs own strings.** *Recommend:* anchored (MT-12):
   kinds 1 and 2 cost 3-6 % of an object anchored, ~20 % named (`size`,
