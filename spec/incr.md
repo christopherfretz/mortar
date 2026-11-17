@@ -3331,6 +3331,40 @@ a pass over a whole table of the state; **O(output)**.
   one link test per IN-45 condition, the inode checked; the default
   above and below the bound with `--incremental=update`.
 
+  *Decided (operator, 2026-11-17, through WP-207): in place by default
+  at or above `SMALL_OUTPUT` is "fine for now"*, on the conditions
+  review-in77 set (IN-77a's descriptor, IN-77b's lock, IN-45's list of
+  unprotected readers, IN-77's aside name), all now in the text. The
+  write path is a **policy constant** (`mortar_incr::WRITE_PATH`: the
+  bound and the default path per side of it), so that **IN-76a** is a
+  switch, not a rewrite.
+- **IN-76a [later: package W-1, after U-10] Copy by clone where the file
+  system clones** (operator's follow-up, 2026-11-17). A probe decides,
+  per output directory, whether the copy path would be a clone; where it
+  is, the copy path (IN-47) becomes the default at every size, since it
+  protects every reader IN-45 lists. **The probe, in safe Rust and `std`
+  only**: the output's `st_dev` (from U1's `fstat`) is looked up in
+  `/proc/self/mountinfo` (field 3, `major:minor`), and the mount's file
+  system type is read from it; `btrfs`, `xfs`, `bcachefs`, `ocfs2` and
+  `zfs` are clone-capable types (XFS only with `reflink=1`, which
+  mountinfo does not show, so XFS is confirmed by a timed trial: below).
+  For a candidate type, the first incremental-mode full link times
+  `std::io::copy` of its own fresh output into a temporary (it copies
+  through `copy_file_range`, which clones first on these file systems,
+  IN-47) and records in `META` (device, type, copy time per MiB); the
+  copy is a clone when it costs under 5% of the byte-copy rate measured
+  on this host (0.6-0.8 ms/MB, IN-47). **Cost per link**: one read of
+  mountinfo (a few KiB, tens of µs, *estimate*) when the device differs
+  from `META`'s, else nothing; the timed trial once per state.
+  **When the probe lies**, nothing is wrong, only slow: a copy that was
+  not a clone is still a correct copy (IN-47 is correct on any file
+  system); `--incremental-report` prints the copy's time, and an update
+  whose copy took more than twice the recorded time clears the record,
+  so the next update goes back to in place. *Test (W-1):* the probe's
+  parse of mountinfo samples (btrfs, xfs, overlay, virtiofs, nfs4); a
+  loop-mounted btrfs or XFS (`reflink=1`) image in the system temp where
+  the container allows it (WP-061), else *argued, not run*.
+
 - **IN-77 [v1] The crash protocol: one order of writes for the output
   and the state** (amended by WP-207: one descriptor per file, one lock,
   the output set aside while torn, the boot id, failures). Let `S` be the
@@ -3843,6 +3877,12 @@ file changes or when one of its file's sections moves (IN-25).
   out by size (12–16.5 MB per update on protoc, §6 "Split DWARF"). Neither hod nor the
   bench's GCC and Clang defaults emit them (§8.3). *Test:* R10's objects
   in L10: each edit of one must report `debug-name-index`.
+  *Decided (operator, 2026-11-17, through WP-207): option (A) for v1.*
+  An incremental-mode output leaves `.debug_gnu_pubnames` and
+  `.debug_gnu_pubtypes` out (G-2), so in that mode there is no prebuilt
+  gdb name index and gdb indexes the skeletons at start-up (slower
+  start-up, the same answers); neutralized sets (B) only if that start-up
+  is measured too slow on the reference build.
 - **IN-55a [v1] Detecting unit kinds** (`debug-unit-kind`, IN-51), from
   section names and unit headers alone (R10, g++ and clang++). mortar
   links all of these today: verify clean, gdb and lldb correct.
