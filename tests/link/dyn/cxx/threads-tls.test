@@ -15,8 +15,7 @@
 # The difference from GNU ld's dynamic tables: in `-no-pie`, GNU ld
 # gives `memcpy` a canonical PLT (the address in `pmemcpy` is the PLT
 # entry's); mortar a symbolic `ABS64` record for the word in `.data`
-# (D-46: D-44's canonical PLT is for read-only places), so both uses see
-# libc's resolved `memcpy`.
+# (D-46: D-44's canonical PLT is for read-only places): both see libc's.
 #
 #@ spec: dyn.md "D-48"
 #@ spec: dyn.md "D-46"

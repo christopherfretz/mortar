@@ -4570,7 +4570,7 @@ is accepted from its linker only, never from mortar's map.
   (resolve §9.2: not an edge)"; in mortar's, GNU ld's or lld's output it
   is the same M12, not accepted, and M11 is never excused by it (mold
   that does not extract is judged as GNU ld). Reproducers:
-  `tests/link/dyn/cxx/threads-tls.test` (`pie-sgcc`, `exec-sgcc`),
+  `tests/link/dyn/cxx/threads-tls.test` (`pie-sgcc`),
   `tests/inset_ver.rs`.
 
 - **A55 (mold; WP-165).** An undefined weak key reached by branches
