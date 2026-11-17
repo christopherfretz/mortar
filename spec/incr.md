@@ -2720,16 +2720,39 @@ objects.
     the global area, fillers included.
   - **The filler has exactly one form**: `st_name` 0, `st_info`
     `STB_LOCAL`/`STT_SECTION` (0x03), `st_other` 0, `st_shndx` **1**,
-    `st_value` 0, `st_size` 0, and 0 in `.symtab_shndx` when there is
-    one. Section 1 is the output's first section header after the null
-    one, whatever its name; every output with a `.symtab` has it. This
-    is the form WP-094 §4 measured: `nm` and `llvm-nm` hide it (shown
-    by `nm -a`), and `readelf`, `eu-readelf`, gdb, lldb, `addr2line`,
-    `llvm-symbolizer`, `objdump` and perf read the output as without it.
-    A filler is in the local area only: there is none after `sh_info`.
-    (S-79's "no `STT_SECTION` symbols" excepts fillers.)
-  - **An update** rewrites a changed file's block from its start; what
-    is left of the capacity becomes fillers. A block that does not fit
+    `st_value` **section 1's `sh_addr`** (amended by WP-207, review-in72
+    M-3: with 0, eu-elflint reports "st_value out of bounds" for every
+    filler), `st_size` 0, and 0 in `.symtab_shndx` when there is one.
+    Section 1 is the output's first section header after the null one,
+    whatever its name (`.note.gnu.build-id`, `.note.gnu.property`,
+    `.interp`); every output with a `.symtab` has it, and it is the first
+    allocated section, so no update moves it (IN-72 moves only what
+    follows a grown section); were its address ever to change, every
+    filler is rewritten with it. **The form is unambiguous**: a mortar
+    output's `.symtab` has no other `STT_SECTION` entry and no other
+    unnamed entry than entry 0 (S-79; measured by WP-207 on an
+    incremental-mode and a plain static link of the same object on
+    AArch64, x86-64 and i386: 0 and 0 in each), so the verifier tells a
+    filler from every legitimate entry by its form alone (V-1's
+    `near_filler_reported`). Measured tools (WP-207,
+    `tests/incr-design/fillers.sh` and `fillcmp.py`, the output rebuilt
+    by `symfill.py` with and without fillers, on AArch64, x86-64 and
+    i386): the record's §M lists each; every tool reads the output as
+    without the fillers, the symbol listings (`readelf -s`, `nm -a`,
+    `objdump -t` and their LLVM and elfutils counterparts) differing only
+    by the filler lines themselves, and eu-elflint has no complaint about
+    a filler. perf is not claimed (not reproducible here, review-in72
+    m-6). A filler is in the local area only: there is none after
+    `sh_info`. (S-79's "no `STT_SECTION` symbols" excepts fillers.)
+  - **An update** rewrites the block of every file whose local entries
+    change (amended by WP-207, review-in72 M-1): a changed file; a
+    drawn-in file (IN-72 item 2a: a section of it revived, killed, newly
+    kept or no longer kept, S-76; one of its globals demoted to a local
+    of its block by the merged visibility, S-74, or promoted back); its
+    block is rewritten from its start from its symbol table as read. A
+    demoted global leaves the global area as a removed one does (the
+    area's last entry takes its index); a promoted one is appended to the
+    area. What is left of the capacity becomes fillers. A block that does not fit
     moves to the local tail reserve, its old place filled with fillers;
     its entries keep S-74's order inside the block (P-E3 compares locals
     as a multiset and does not judge their place; the `STT_FILE` that
@@ -2758,8 +2781,9 @@ objects.
     slack and **old names**. A renamed or removed symbol's old name
     stays in the output's bytes until IN-3b's scrubbing; whoever must
     not ship an old name links in full.
-  - **What an update reads and writes.** The `SYMTAB` rows (IN-18e) of
-    the changed files and of the globals it moves or removes; the
+  - **What an update reads and writes.** The `SYMTAB` and `SYMTAB_KEYS`
+    rows (IN-18e) of the changed and drawn-in files and of the globals it
+    moves, removes, demotes or promotes; the
     previous output's entries it moves (the area's last global) and the
     blocks of unchanged files whose sections moved (a growth step: their
     values remapped through the placement, the rest of each entry as
@@ -2775,7 +2799,12 @@ objects.
   full link modulo values; `readelf -s` warning-free; gdb and lldb
   `info symbol`/`image lookup`, `bt` on an update; an edit that adds a
   local, one that removes a global, one that renames, and a series that
-  exhausts each capacity in turn (`symtab-exhausted`).
+  exhausts each capacity in turn (`symtab-exhausted`); WP-207 adds
+  `n2_visibility_demotes_unchanged_definer` (three hops: hidden, default,
+  hidden), `gc_revived_section_has_its_locals`,
+  `global_removed_twice_last_moved` and `filler_value_is_section_1_addr`
+  (`eu-elflint --gnu-ld` with T-1's four allow patterns, on all three
+  targets).
 
 ### 5.10 The update, end to end (WP-202)
 
