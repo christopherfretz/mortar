@@ -1,0 +1,158 @@
+# dyn.md D-19a (WP-172): the system's linker scripts (Debian, glibc) on
+# real driver lines that name a library again with the as-needed switch
+# changed between: libgcc_s.so, libm.so and libc.so are scripts whose
+# entries are mentions again of objects met before. mortar writes GNU
+# ld's list on every line (measured with GNU ld 2.44, lld 19, mold 2.37.1,
+# AArch64 and x86-64: identical lists; spec/landed/dyn/WP-172.md section
+# 2). lld writes each soname at its first mention, mold drops a library
+# first mentioned as-needed and unreferenced (W9): each has its own list.
+# The programs run (exit 0).
+#@ spec: dyn.md "D-19a"
+#@ xfail(mold): W9: an unreferenced library first named --as-needed and later plainly is dropped from DT_NEEDED
+#@ requires: g++
+#@ arch: aarch64 x86_64
+
+cc -O1 -fPIE m_plain.c -o m_plain.o
+cc -O1 -fPIE m_cbrt.c -o m_cbrt.o
+cxx -O1 -fPIE m_eh.cc -o m_eh.o
+cxx -O1 -fPIC plain.cc -o plain.o
+cc -O1 -fPIE pm.c -o pm.o
+
+# g++ with -lgcc_s, then --no-as-needed: the driver's own -lgcc_s opens
+# libgcc_s.so = GROUP ( libgcc_s.so.1 -lgcc ) again with the switch off.
+# The program throws and catches (libgcc_s's unwinder).
+link g++ m_eh.o -lgcc_s -Wl,--no-as-needed -o gxx-exe-gccs
+check readelf -dW gxx-exe-gccs
+  count: 4 (NEEDED)
+  has: [libgcc_s.so.1]
+  then: [libstdc++.so.6]
+  then: [libm.so.6]
+  then: [libc.so.6]
+run gxx-exe-gccs
+
+# The same switches the other way round.
+link g++ -Wl,--no-as-needed m_eh.o -Wl,--as-needed -lgcc_s -o gxx-exe-gccs-on
+check readelf -dW gxx-exe-gccs-on
+  count: 3 (NEEDED)
+  has: [libgcc_s.so.1]
+  then: [libstdc++.so.6]
+  then: [libc.so.6]
+run gxx-exe-gccs-on
+
+# glibc's libm.so = GROUP ( libm.so.6 AS_NEEDED ( libmvec.so.1 ) ),
+# named --as-needed then plainly, by a program that uses nothing of it:
+# needed at the second mention (GNU ld, lld; mold drops it, W9).
+link gcc m_plain.o -lm -Wl,--no-as-needed -lm -o gcc-lm-lm-plain
+check readelf -dW gcc-lm-lm-plain
+  count(bfd,lld,mortar): 2 (NEEDED)
+  has(bfd,lld,mortar): [libm.so.6]
+  then(bfd,lld,mortar): [libc.so.6]
+  count(mold): 1 (NEEDED)
+  has(mold): [libc.so.6]
+run gcc-lm-lm-plain
+
+# The same with cbrt referenced: needed at the first mention.
+link gcc m_cbrt.o -lm -Wl,--no-as-needed -lm -o gcc-lm-lm-cbrt
+check readelf -dW gcc-lm-lm-cbrt
+  count: 2 (NEEDED)
+  has: [libm.so.6]
+  then: [libc.so.6]
+run gcc-lm-lm-cbrt
+
+# libm.so plainly, then --as-needed.
+link gcc -Wl,--no-as-needed m_plain.o -lm -Wl,--as-needed -lm -o gcc-lm-off-on
+check readelf -dW gcc-lm-off-on
+  count: 2 (NEEDED)
+  has: [libm.so.6]
+  then: [libc.so.6]
+run gcc-lm-off-on
+
+# libc.so = GROUP ( libc.so.6 libc_nonshared.a AS_NEEDED ( ld-linux ) )
+# named --as-needed, then plainly, and libm.so plainly: ld-linux stays
+# as-needed at every mention.
+link gcc m_plain.o -lc -Wl,--no-as-needed -lc -lm -o gcc-lc-lc
+check readelf -dW gcc-lc-lc
+  count: 2 (NEEDED)
+  has: [libc.so.6]
+  then: [libm.so.6]
+run gcc-lc-lc
+
+# -lm -lc --as-needed, then -lm -lc plainly: libc.so.6 is referenced
+# (crt1.o) before its first mention, kept there; libm.so.6 at its plain
+# mention, after it (GNU ld; lld at first mentions; mold drops libm, W9).
+link gcc m_plain.o -Wl,--as-needed -lm -lc -Wl,--no-as-needed -lm -lc -o gcc-lm-before-lc
+check readelf -dW gcc-lm-before-lc
+  count(bfd,mortar): 2 (NEEDED)
+  has(bfd,mortar): [libc.so.6]
+  then(bfd,mortar): [libm.so.6]
+  count(lld): 2 (NEEDED)
+  has(lld): [libm.so.6]
+  then(lld): [libc.so.6]
+  count(mold): 1 (NEEDED)
+  has(mold): [libc.so.6]
+run gcc-lm-before-lc
+
+# g++ -shared with -lm --as-needed then plainly.
+link g++ -shared plain.o -lm -Wl,--no-as-needed -lm -lgcc_s -Wl,-soname,libgxxlm.so -o libgxxlm.so
+check readelf -dW libgxxlm.so
+  count: 4 (NEEDED)
+  has: [libm.so.6]
+  then: [libgcc_s.so.1]
+  then: [libstdc++.so.6]
+  then: [libc.so.6]
+
+# g++ -shared with -lgcc_s, then --no-as-needed, on a library that uses
+# nothing of libgcc_s: the driver's own -lgcc_s names libgcc_s.so.1
+# again inside the script libgcc_s.so with the switch off; D-19a keeps
+# it there (refused by name before WP-172; was in
+# dyn/cxx/shared-cxx-options.test).
+link g++ -shared plain.o -lgcc_s -Wl,--no-as-needed -Wl,-soname,libgccs.so -o libgccs.so
+check readelf -dW libgccs.so
+  count(bfd,mortar): 4 (NEEDED)
+  has(bfd,mortar): [libstdc++.so.6]
+  then(bfd,mortar): [libm.so.6]
+  then(bfd,mortar): [libgcc_s.so.1]
+  then(bfd,mortar): [libc.so.6]
+  count(lld): 4 (NEEDED)
+  has(lld): [libgcc_s.so.1]
+  then(lld): [libstdc++.so.6]
+  then(lld): [libm.so.6]
+  then(lld): [libc.so.6]
+  count(mold): 3 (NEEDED)
+  has(mold): [libstdc++.so.6]
+  then(mold): [libm.so.6]
+  then(mold): [libc.so.6]
+host gcc -pie pm.o -L. -lgxxlm -o prog-gxxlm
+run prog-gxxlm
+  stdout: 2
+host gcc -pie pm.o -L. -lgccs -o prog-gccs
+run prog-gccs
+  stdout: 2
+
+#--- m_plain.c
+int main(void) { return 0; }
+#--- m_cbrt.c
+double cbrt(double);
+int main(int c, char **v) {
+  (void)v;
+  return (int)cbrt(c) - 1;
+}
+#--- m_eh.cc
+int x() {
+  try {
+    throw 1;
+  } catch (int) {
+    return 0;
+  }
+  return 1;
+}
+int main() { return x(); }
+#--- plain.cc
+extern "C" int plain(int x) { return x + 1; }
+#--- pm.c
+#include <stdio.h>
+int plain(int);
+int main(void) {
+  printf("%d\n", plain(1));
+  return 0;
+}

@@ -315,7 +315,7 @@ pub(crate) fn link<V: View>(
     }
 
     // ---- D-19a: keeping mentions and the DT_NEEDED order ------------------
-    let needed = needed_order(view, opts, &l, file_live, &in_n, &item2, &reasons3, problems, pool);
+    let needed = needed_order(view, opts, &l, file_live, &in_n, &item2, &reasons3, pool);
 
     // ---- loader order and bind(k) -----------------------------------------
     let mut rank = vec![u32::MAX; n_files];
@@ -727,8 +727,6 @@ struct Reasons {
     least: u32,
     /// The groups such objects are in.
     groups: BTreeSet<u32>,
-    /// Object reasons after their mention whose group is unknown to us.
-    any: bool,
 }
 
 /// The `DT_NEEDED` order (D-19a): each needed object at its keeping
@@ -743,7 +741,6 @@ fn needed_order<V: View>(
     in_n: &[bool],
     item2: &[Option<FileId>],
     reasons3: &[(FileId, FileId)],
-    problems: &mut Vec<Problem>,
     pool: &Pool,
 ) -> Vec<FileId> {
     let link = &opts.shared;
@@ -757,7 +754,6 @@ fn needed_order<V: View>(
         if let Some(g) = item2[root.key.0 as usize] {
             let r = reasons.entry(g).or_insert(Reasons { least: u32::MAX, ..Reasons::default() });
             r.least = 0;
-            r.any = true;
         }
     }
     let files = view.files() as usize;
@@ -790,7 +786,6 @@ fn needed_order<V: View>(
         for (g, pos, group) in rows {
             let r = reasons.entry(g).or_insert(Reasons { least: u32::MAX, ..Reasons::default() });
             r.least = r.least.min(pos);
-            r.any = true;
             if let Some(group) = group {
                 r.groups.insert(group);
             }
@@ -798,7 +793,6 @@ fn needed_order<V: View>(
     }
     let mut keeping: HashMap<FileId, u32> = HashMap::new();
     let mut first: HashMap<FileId, u32> = HashMap::new();
-    let mut unknown: BTreeSet<FileId> = BTreeSet::new();
     for m in &link.mentions {
         let d = m.file;
         if !in_n[d.0 as usize] {
@@ -816,29 +810,9 @@ fn needed_order<V: View>(
             .iter()
             .filter(|(_, s)| *s == d)
             .any(|(x, _)| keeping.get(x).is_some_and(|&p| p < m.position));
-        let group_unknown = m.group == MentionGroup::Unknown && r.is_some_and(|r| r.any);
-        match m.as_needed {
-            Some(false) => {
-                keeping.insert(d, m.position);
-            }
-            _ if by_object || by_shared => {
-                keeping.insert(d, m.position);
-            }
-            None => {
-                unknown.insert(d);
-                keeping.insert(d, m.position);
-            }
-            Some(true) if group_unknown => {
-                unknown.insert(d);
-            }
-            Some(true) => {}
+        if !m.as_needed || by_object || by_shared {
+            keeping.insert(d, m.position);
         }
-    }
-    for d in unknown {
-        problems.push(Problem {
-            key: crate::problem::DiagKey::of(d, 0),
-            what: What::NeededOrderUnknown { file: d },
-        });
     }
     let mut needed: Vec<(u32, FileId)> = l
         .files

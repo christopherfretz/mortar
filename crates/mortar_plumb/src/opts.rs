@@ -795,6 +795,9 @@ pub struct Options {
     /// The `--wrap=SYM` names, in order (`spec/resolve.md` §7.1; the
     /// derivation is `wrap.rs`'s, WP-170).
     pub wrap: Vec<String>,
+    /// The `--defsym=SYM=EXPR` operands, in order (`spec/resolve.md`
+    /// §7.2; the derivation is `defsym.rs`'s, WP-170 part 2).
+    pub defsym: Vec<String>,
     /// Words that no accepted option spells, in order, with their index
     /// in the line (M9).
     pub unread: Vec<(usize, String)>,
@@ -820,6 +823,7 @@ impl Default for Options {
             named_roots: Vec::new(),
             max_page: None,
             wrap: Vec::new(),
+            defsym: Vec::new(),
             unread: Vec::new(),
         }
     }
@@ -896,6 +900,7 @@ impl Options {
             }
             "--keep-mason-meta" => self.keep_mason_meta = true,
             "--wrap" => self.wrap.extend(value.map(str::to_string)),
+            "--defsym" => self.defsym.extend(value.map(str::to_string)),
             "--odr-table" => {
                 self.odr_table = match value {
                     Some("exported") => OdrTable::Exported,

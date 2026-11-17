@@ -1,0 +1,14 @@
+-m
+elf_x86_64
+-z
+max-page-size=4096
+-o
+ov-x64.lld
+-static
+-e
+_start
+om-x64.o
+b-x64.o
+ov-x64.o
+--defsym=a=b
+-Map=ov-x64.lld.map

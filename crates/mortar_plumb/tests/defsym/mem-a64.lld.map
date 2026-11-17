@@ -1,0 +1,35 @@
+             VMA              LMA     Size Align Out     In      Symbol
+          201158           201158       38     4 .text
+          201158           201158       28     4         m-a64.o:(.text)
+          201158           201158        0     1                 $x
+          201158           201158        8     1                 g
+          201160           201160        c     1                 rk
+          20116c           20116c       14     1                 _start
+          201180           201180        8     4         b-a64.o:(.text)
+          201180           201180        0     1                 $x
+          201180           201180        8     1                 b
+          201188           201188        8     4         libam-a64.a(am-a64.o):(.text)
+          201188           201188        0     1                 $x
+          202190           202190       18     8 .data
+          202190           202190       18     8         m-a64.o:(.data)
+          202190           202190        0     1                 $d
+          202190           202190        8     1                 pa
+          202198           202198        8     1                 pc
+          2021a0           2021a0        8     1                 pk
+          2021a8           2021a8        0     1         b-a64.o:(.data)
+          2021a8           2021a8        0     1         libam-a64.a(am-a64.o):(.data)
+          2021a8           2021a8        0     1 .bss
+          2021a8           2021a8        0     1         m-a64.o:(.bss)
+          2021a8           2021a8        0     1         b-a64.o:(.bss)
+          2021a8           2021a8        0     1         libam-a64.a(am-a64.o):(.bss)
+               0                0       3a     1 .comment
+               0                0       3a     1         <internal>:(.comment)
+               0                0      1b0     8 .symtab
+               0                0      1b0     8         <internal>:(.symtab)
+               0                0       35     1 .shstrtab
+               0                0       35     1         <internal>:(.shstrtab)
+               0                0       37     1 .strtab
+               0                0       37     1         <internal>:(.strtab)
+          2021a8           2021a8        0     1 
+          2021a8           2021a8        0     1 
+          2021a8           2021a8        0     1 

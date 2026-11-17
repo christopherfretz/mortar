@@ -484,13 +484,23 @@ pub struct Probe<'s> {
 
 /// An entry of a script's `INPUT`, `GROUP`, `AS_NEEDED` or `INCLUDE`
 /// (`spec/input.md` §10.3): the script (an index in
-/// [`LinkInputs::opened`]), the entry's byte offset in it, and the entry
-/// that named the script, if a script did.
+/// [`LinkInputs::opened`]), the entry's byte offset in it, the entry
+/// that named the script, if a script did, and the state of the entry's
+/// own mention (`spec/dyn.md` D-19a: a shared object mentioned again
+/// inside a script is placed by it).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ScriptEntry {
     pub script: u32,
     pub offset: u64,
     pub parent: Option<u32>,
+    /// The as-needed state in force where the script was named,
+    /// `AS_NEEDED(…)` turning it on (`--push-state`/`--pop-state` already
+    /// applied).
+    pub as_needed: bool,
+    /// The outermost group the entry is in (the numbering of
+    /// [`LinkInputs::group`]), or `None`: in none, or in one that holds no
+    /// loaded file.
+    pub group: Option<GroupOrdinal>,
 }
 
 /// Which script command a directive is.

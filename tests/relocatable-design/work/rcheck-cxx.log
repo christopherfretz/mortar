@@ -1,0 +1,85 @@
+== aarch64.gcc bfd
+    local targets written against a section symbol        2204
+  input records                                           2264
+  output records unexplained                              0
+  records equal                                           2264
+  sections discarded (group)                              3
+  sections placed                                         43
+== aarch64.gcc lld
+    local targets written against a section symbol        564
+  input records                                           2264
+  output records unexplained                              0
+  records equal                                           624
+  records into merged strings: same string                1640
+  sections discarded (group)                              3
+  sections not found (merged or rewritten)                7
+  sections placed                                         36
+== aarch64.gcc mold
+    local targets written against a section symbol        557
+  input records                                           2255
+  output records unexplained                              8
+  records equal                                           615
+  records into merged strings: same string                1640
+  sections discarded (group)                              3
+  sections not found (merged or rewritten)                9
+  sections placed                                         34
+== x86_64.gcc bfd
+    local targets written against a local symbol          3
+    local targets written against a section symbol        2182
+  input records                                           2230
+  output records unexplained                              4
+  records equal                                           2230
+  sections discarded (group)                              3
+  sections not found (merged or rewritten)                1
+  sections placed                                         43
+== x86_64.gcc lld
+    local targets written against a local symbol          3
+    local targets written against a section symbol        568
+  input records                                           2234
+  output records unexplained                              0
+  records equal                                           617
+  records into merged strings: same string                1617
+  sections discarded (group)                              3
+  sections not found (merged or rewritten)                6
+  sections placed                                         38
+== x86_64.gcc mold
+    local targets written against a local symbol          3
+    local targets written against a section symbol        561
+  input records                                           2225
+  output records unexplained                              8
+  records equal                                           608
+  records into merged strings: same string                1617
+  sections discarded (group)                              3
+  sections not found (merged or rewritten)                8
+  sections placed                                         36
+== i686.gcc bfd
+    local targets written against a local symbol          3
+    local targets written against a section symbol        1990
+  input records                                           2044
+  output records unexplained                              6
+  records equal                                           2044
+  sections discarded (group)                              4
+  sections not found (merged or rewritten)                1
+  sections placed                                         46
+== i686.gcc lld
+    local targets written against a local symbol          3
+    local targets written against a section symbol        381
+  MISSING output record                                   1
+  input records                                           2050
+  output records unexplained                              1
+  records equal                                           436
+  records into merged strings: same string                1613
+  sections discarded (group)                              4
+  sections not found (merged or rewritten)                6
+  sections placed                                         41
+== i686.gcc mold
+    local targets written against a local symbol          3
+    local targets written against a section symbol        371
+  input records                                           2037
+  output records unexplained                              11
+  records equal                                           424
+  records into merged strings: same string                1613
+  sections discarded (group)                              4
+  sections not found (merged or rewritten)                8
+  sections placed                                         39
+rcheck-cxx done

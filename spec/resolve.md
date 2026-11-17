@@ -59,7 +59,7 @@ semantics (`spec/arch.md`).
 |---|---|---|
 | a shared object among the inputs | `Refused{Feature, "shared objects as input"}` | M2 |
 | `-shared` | (already refused as an option, `spec/cli.md`) | M4 |
-| `-r` | `Refused{Feature, "relocatable output (-r)"}` (§11) | M4 |
+| `-r` | `Refused{Feature, "relocatable output (-r)"}` (§11) | M4-r: the join of the first `-r` package (§11, WP-154's cut) |
 | `--version-script`, `--dynamic-list`, `--export-dynamic-symbol-list`, `-Bsymbolic*`, `--exclude-libs` | option refusals | M4 (`--export-dynamic` and `--export-dynamic-symbol` for executables: M2; the list files `--dynamic-list` and `--export-dynamic-symbol-list`: M4, `spec/dyn.md` §15 Q9, closed) |
 | `--wrap`, `--defsym`, `-y` | option refusals | M4 (`--start-lib` landed with WP-152, §4.8) |
 | `.gnu.linkonce.*` sections | `Refused{Feature, ".gnu.linkonce sections"}` (§6.6) | an input that needs it |
@@ -2018,16 +2018,191 @@ The references disagree on every dropped kind; P-1 takes the strictest
 reading, the one that cannot produce a wrong word: a symbol of a section
 that has no bytes in the output has no address.
 
-## 11. `-r` (M4)
+## 11. `-r` [M4-r; planned: WP-154's cut, record `spec/landed/layout/WP-154.md`]
 
-Refused until M4 (`Refused{Feature, "relocatable output (-r)"}`, already in
-`spec/cli.md` as an option refusal). What changes then, so that this spec's
-tables are ready for it: no undefined-symbol verdict (every undefined key
-stays undefined); commons stay common unless `-d`/`-dc`/`-dp`; COMDAT
-groups are kept per signature and written as groups (the keeper rule
-still applies to duplicates); no linker-defined symbols (§8) except those
-a script assigns; `--gc-sections` roots differ; versions are copied as
-names. The rows of §3 are unchanged.
+Until the join of the first `-r` package this is refused: `-r` is an
+option refusal (`spec/cli.md` §3.16) and this spec's
+`Refused{Feature, "relocatable output (-r)"}`. The rules below were
+measured with GNU ld 2.44, lld 22 and mold 2.37.1 (record §B.3;
+`tests/relocatable-design/work/facts.log`, `options.log`). §3's rows are
+unchanged. What a partial link changes is which questions resolution
+does not ask.
+
+**RV-R1 (what resolution decides at `-r`).** It decides the same things
+as a final link (§1.1): which files are live, `def` of every key, the
+COMDAT keepers, the fate of every section (§10), and the merged
+visibility. It decides no verdict for a surviving reference (§5.2),
+because nothing is undefined at `-r`. It defines no linker-defined
+symbol (RV-R8), and it computes no export or preemption (§9.6 does not
+run). `Resolution` has the same shape. `verdict` is not computed.
+*Test:* `crates/mortar_resolve/tests/rules.rs` `r_no_verdict`.
+
+**RV-R2 (archives).** Extraction is the rule of §4.1, unchanged:
+- an archive member is extracted when it defines a key that is undefined
+  at that point, or that a `-u` root names;
+- `--whole-archive`, `--start-group` and thin archives act as in a final
+  link.
+All three references extract by this rule at `-r` (record B.3, the
+`input:` rows): an archive alone on the line extracts nothing, so the
+output is an `ET_REL` with no section from the archive; `-u keep_me`
+extracts the member that defines it; `o2.o libo.a` extracts the member
+that `o2.o` needs. No root is implied by `-r`. In particular `-e` is
+not a root at `-r` (L-R7).
+*Test:* `r-archive-alone`, `r-archive-u`, `r-archive-after-ref`,
+`r-thin-whole-archive`, `r-start-group`.
+
+**RV-R3 (undefined keys).** A key with no definition stays undefined
+and is written to the output's `.symtab` as `SHN_UNDEF`. Its binding is
+`STB_WEAK` when every live reference is weak, and `STB_GLOBAL`
+otherwise, the same rule as `ref_strong` (§3.6). It keeps its merged
+visibility and its type (`STT_NOTYPE` unless every mention says more).
+All three references keep undefined weak symbols weak (B.3). `-u SYM`
+with no definition writes `SYM` as a `STB_GLOBAL` `SHN_UNDEF` entry, as
+GNU ld does (lld and mold write nothing; mortar follows GNU ld because
+the final link's extraction then sees the root the `-r` line asked
+for).
+*Test:* `r-undefined-kept`, `r-undefined-weak-kept`, `r-u-written`.
+
+**RV-R4 (duplicates).** Two strong definitions of one key are
+`duplicate-symbol`, as in a final link (§3.8). GNU ld and lld refuse
+them at `-r`; mold accepts them silently and keeps both, which makes
+the final link fail or mislink later. `--allow-multiple-definition`
+applies as in §3.8. A weak definition against a strong one is resolved
+by §3.2, and the loser is dropped from the output's `.symtab`. Its
+section stays where it is: sections are not removed because of
+symbols.
+*Test:* `r-duplicate-strong`, `r-weak-strong`.
+
+**RV-R5 (commons).** Without `-d`, a key whose `def` is `Common` stays
+common in the output: `SHN_COMMON`, `st_size` = `common[K].size`,
+`st_value` = `common[K].align` (§3.3's maxima). GNU ld and lld do this
+(record B.3, `comm2` 32). mold 2.37.1 writes every common as `SHN_ABS`
+with value = its alignment. That is a mislink: the final program reads
+address 4, which crashes static and PIE links on three targets
+(record §D). A common mention that loses to a definition is dropped, as
+in a final link. With `-d`, `-dc` or `-dp` (GNU ld), each common is
+allocated as a final link allocates it (`spec/layout.md` §12.2):
+- the space is in a `.bss` output section of the `-r` output (a NOBITS
+  output section named `COMMON` is lld's form, which mortar does not
+  take);
+- the symbol becomes a definition there (`STT_OBJECT`, its size).
+§3.3's warnings apply.
+*Test:* `r-common-kept`, `r-common-merged-max`, `r-common-d`.
+
+**RV-R6 (the output's global symbols).** Every key that a live file
+mentions appears once in the output's `.symtab`:
+- a defined key at its place in the output (I-R4);
+- a common key as RV-R5 says;
+- an undefined key as RV-R3 says.
+Its name, binding, type and visibility follow these rules:
+- **Visibility** is the merged visibility (§3.5, the most constraining).
+  A key whose merged visibility is `STV_HIDDEN` or `STV_INTERNAL`
+  stays `STB_GLOBAL` (or `STB_WEAK`) in an `ET_REL`. It is not demoted
+  to local (§3.7's demotion is a property of an executable or a shared
+  output). The final link must still bind other objects to it, and the
+  pre-link idiom relies on it (`objcopy --localize-hidden` after `-r`,
+  record §A.4). All three references keep it `GLOBAL HIDDEN` (B.3).
+  `STV_PROTECTED` is kept.
+- **Binding**: `STB_GNU_UNIQUE` is kept when the definition has it (all
+  three). Otherwise the definition's binding, weak or global.
+- **Type**: the definition's, kept (`STT_FUNC`, `STT_OBJECT`,
+  `STT_TLS`, `STT_GNU_IFUNC`, `STT_NOTYPE`). `EI_OSABI` follows I-R2.
+- **Versioned names** from `.symver` (`foo@V`, `foo@@V`) are written
+  under their full names, unchanged. A plain `foo` reference is NOT
+  bound to the `foo@@V` definition at `-r`. It stays the undefined
+  global `foo`, and its records name `foo`. The final link binds it by
+  §9.4, as it would have bound the input's reference. This is GNU ld's
+  form. lld binds the reference to `foo@@V2` at `-r`: its record names
+  `vfoo@@V2`, and its output has no `UND vfoo`. Both forms' final links
+  run (the review's x09, rerun in `work/review-x.log`: GNU ld writes
+  `UND vfoo` and `R_AARCH64_CALL26 vfoo`). mortar takes GNU ld's
+  because a partial link decides less, and the record keeps the name
+  its input wrote. The first version described lld's form. mold strips
+  the names to two plain `foo` globals (B.3), which is a mislink of
+  the version information.
+- **The order** of these entries is the `.symtab` order of
+  `spec/model.md` §4.3 (I-R4).
+*Test:* `r-hidden-stays-global`, `r-unique-kept`, `r-ifunc-tls-types`,
+`r-symver-names`.
+
+**RV-R7 (COMDAT groups at `-r`).** The keeper of §6.1 is elected among
+the inputs of the partial link alone. The kept copy's members are
+written as one group of the output (L-R3), with the same signature and
+`GRP_COMDAT`. The other copies are dropped (§6.2) and are not written.
+The final link then elects again between this output's group and the
+other objects' groups (all three references, B.2). Groups that are not
+COMDAT (§6.4, flag 0) are never deduplicated: each is written as a group
+of its own, as GNU ld and lld do. mold drops the group and keeps its
+members as plain sections. References into a dropped copy (§6.3), by
+referring section:
+- `.eh_frame`: the FDE is dropped with its records (L-R6, I-R6). No
+  `R_*_NONE` record is written.
+- **GNU ld's debug names** (§6.3's first row): the record is not
+  written. Its field holds I-47's tombstone, with I-112's aranges
+  length 0 (`spec/image.md` I-R7), so the final link reads a resolved
+  field. The references do otherwise: GNU ld retargets the record to
+  the kept copy (`_bfd_elf_check_kept_section`), lld writes
+  `R_*_NONE`, and mold writes it against symbol 0. mortar follows none
+  of them; the review's x02 measured them, and its x01 verified this
+  form by execution. Record §G Q5 is closed.
+- `.gcc_except_table` and `.eh_frame` fields: judged by the record that
+  owns them (WP-177's rule in §6.3). A field of a dead record is not
+  written (0 in `.gcc_except_table`). A field of a LIVE CIE, FDE or
+  LSDA that points into a dropped copy is `discarded-section-reference`
+  (case a) or `comdat-mismatch` (case b), never 0. That case arises
+  after `objcopy --localize-hidden` of a plain `-r` output (record
+  §A.4).
+- Every other referring section: `discarded-section-reference` or
+  `comdat-mismatch`, as §6.3 says. WP-176's ruling applies at `-r`
+  unchanged: a reference through a demoted mention whose key ends with
+  no definition is `comdat-mismatch` whatever the mention's binding.
+  §6.3 is edited on WP-176's and WP-177's branches, not here.
+With `--force-group-allocation` (GNU ld, lld; spec/cli.md C-R3), every
+COMDAT group is dissolved after the election: the kept copy's members
+become ordinary sections merged by name (L-R1), its signature symbol
+stays the global it was, and no `SHT_GROUP` is written. This is the
+sound form of the pre-link idiom with C++:
+`ld -r --force-group-allocation`, then `objcopy --localize-hidden`.
+Record §A.4: with EH and `-g`, that form links and runs under GNU ld,
+lld and mortar. The plain `-r` form aborts at the first throw, and
+after WP-176/WP-177 mortar refuses it by name.
+*Test:* `r-comdat-one-copy`, `r-comdat-nested`,
+`r-group-flag0-kept`, `r-force-group-allocation`.
+
+**RV-R8 (linker-defined symbols).** At `-r` none of §8.1 is defined.
+`__start_SEC`, `__stop_SEC`, `_end`, `_etext`, `__ehdr_start`,
+`_GLOBAL_OFFSET_TABLE_`, `__bss_start` and the TLS and init-array
+bounds stay undefined if referenced (all three, B.3). The final link
+defines them. A script assignment (RL-11, `-T` at `-r`) is the
+exception and is defined as the script says.
+*Test:* `r-no-linker-symbols`.
+
+**RV-R9 (LTO and foreign inputs).**
+- An LLVM bitcode file is refused as in a final link
+  (`Refused{FileFormat, "LLVM bitcode"}`). lld compiles it at `-r` and
+  writes code; GNU ld without the plugin says `file format not
+  recognized`; mold asks for `-m`.
+- A slim GCC LTO object is refused (§1.2), as in a final link. GNU ld
+  without the plugin copies its 13 `.gnu.lto_*` sections through at
+  `-r`, which makes a slim LTO object again. lld copies them as plain
+  sections. mold asks for the plugin. (`more.log`, rows `lto`.)
+- A **fat** GCC LTO object (`-ffat-lto-objects`: code plus `.gnu.lto_*`)
+  is not measured. A final link uses its code. At `-r`, copying its
+  `.gnu.lto_*` sections would let a later LTO link use IR that no longer
+  matches the partial link's resolution. Dropping them is the safe
+  direction, but it changes what a GCC LTO build gets. mortar refuses
+  `.gnu.lto_*` sections at `-r` by name (`Refused{Feature, "GCC LTO
+  sections with -r"}`) until a line needs it (record §G Q9).
+- A CREL relocation section (`SHT_CREL`, `0x40000014`, clang
+  `-Wa,--crel,--allow-experimental-crel`) is refused by `section-type`,
+  as in a final link. lld 22 keeps it at `-r`; GNU ld and mold reject
+  the object.
+*Test:* `r-bitcode-refused`, `r-gcc-lto-refused`, `r-crel-refused`.
+
+**RV-R10 (what stays refused at `-r` until its package).** `--defsym`,
+`--wrap` and `-T` at `-r`, by option name (`spec/cli.md` C-R3, C-R4).
+The ODR checks are as `spec/odr.md` says for a final link, with the
+`-r` additions of `spec/meta.md` MT-30a.
 
 ## 12. Determinism and the parallel formulation
 

@@ -1,0 +1,14 @@
+-m
+aarch64linux
+-z
+max-page-size=4096
+-o
+ov-a64.lld
+-static
+-e
+_start
+om-a64.o
+b-a64.o
+ov-a64.o
+--defsym=a=b
+-Map=ov-a64.lld.map

@@ -2784,14 +2784,30 @@ decisions"); their recommendations are repeated here.
 - **Q1. Default severity.** *Recommend:* `--odr=warn` until each check
   has been on at zero for a release, then the operator decides the move
   to error per check (O-40, O-46).
-- **Q2. The table and the hook.** The hook is a prototype package
-  (WP-077); nothing ships in M6 without a further decision. *Recommend:*
-  the table (data only) off by default, opt-in with `--odr-table`; decide
-  a runtime only after WP-077's matrix is green, and then only reporting
-  (`MASON_ODR=abort` later still).
-- **Q3. How the runtime's bytes would be made, if one ships.**
-  *Recommend:* C source and generated object bytes checked in, embedded
-  in mortar, byte-identical rebuild check in CI (O-53).
+- **Q2. The table and the hook.** **DECIDED (operator, 2026-11-17): a
+  load-time check is wanted, with modes chosen by options: at least
+  reporting, and a fatal mode (the load fails or the process aborts on a
+  mismatch); fatal is not the only mode.** The table stays opt-in
+  (`--odr-table`). What ships and when is still gated by O-58: no mode
+  that kills a process before every must-not-report case of §10.3's
+  matrix is green. WP-077 (the prototype) proposes the mechanism, the
+  modes and their options as rules.
+- **Q3. How the runtime's bytes are made.** **DECIDED (operator,
+  2026-11-17): the runtime's object code comes from hod, through kiln**
+  (the toolchain's own code generator, not a foreign compiler). The
+  check code is the same for every program, so it is generated when
+  mortar is built, not at each link: source in mortar's tree (C++ in
+  the freestanding subset kiln and hod compile at `-O0`; the prototype
+  runtime of experiment 5 compiles for AArch64 and x86-64, byte-identical
+  on a repeat), the object bytes per target embedded in mortar, CI
+  rebuilding them with the pinned kiln and hod and requiring identical
+  bytes (O-53). i386: hod has an i386 back end too (`hod_x86` on its
+  main; the route to it for this source is being settled with hod's
+  agent), so the runtime is built for the three targets; a target
+  whose bytes cannot be built by the toolchain has no runtime (the
+  option refused by name there), never bytes from a foreign compiler
+  shipped silently. Mortar stays `forbid(unsafe_code)`: the runtime is bytes it
+  links.
 - **Q4. Anchored rows vs own strings.** *Recommend:* anchored (MT-12):
   kinds 1 and 2 cost 3-6 % of an object anchored, ~20 % named (`size`,
   kind 2 only, measured counts; percentages [estimate]); the cost is that

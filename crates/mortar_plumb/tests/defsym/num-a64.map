@@ -1,0 +1,24 @@
+mortar-map 2
+file 0 n-a64.o
+place 0 1 401120 4
+place 0 2 402128 8
+place 0 4 402130 0
+merged 0 5 .comment
+chunk synthetic .symtab - a8
+chunk synthetic .strtab - 2f
+chunk synthetic .shstrtab - 30
+chunk synthetic .comment - d
+define k 1234
+arg -m
+arg aarch64linux
+arg -z
+arg max-page-size=4096
+arg -o
+arg num-a64
+arg -static
+arg -e
+arg _start
+arg n-a64.o
+arg --defsym=k=0x1234
+arg --mortar-map=num-a64.map
+end

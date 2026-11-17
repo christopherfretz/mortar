@@ -316,7 +316,13 @@ contents.
   `-no-pie`: the last one written wins. GNU ld does the same.
 - `-r` (also `-i`, `--relocatable`) with `-shared` or `-pie` is
   `conflicting-options`, in whichever order they are written. GNU ld
-  rejects both orders as well. `-r` with `-no-pie` is relocatable.
+  rejects both orders as well. With `-no-pie`, GNU ld 2.44 is not
+  consistent: `-no-pie -r` links an `ET_REL`, while `-r -no-pie` links an
+  `ET_EXEC` with two program headers and the warning `cannot find entry
+  symbol _start` (WP-154, `tests/relocatable-design/work/options.log`,
+  row `-no-pie`). lld 22 and mold 2.37.1 give `ET_REL` in both orders.
+  mortar: `-r` with `-no-pie` is `Relocatable` in both orders, and
+  `-no-pie` has no effect on it (C-R2) [M4-r].
 - The interpreter decides between dynamic and static. An executable is
   dynamic when the line names a program interpreter
   (`-dynamic-linker PATH`) and no later `--no-dynamic-linker` cancels it.
@@ -838,6 +844,220 @@ an empty output file behind); lld 19 exits 74. With `SIGPIPE` ignored,
 and on `/dev/full`, all three keep the link's status for their
 messages; for the map on standard output lld fails the link (exit 1),
 GNU ld and mold exit 0.
+
+### 3.16 Relocatable output (`-r`) [M4-r; planned: WP-154's cut, record `spec/landed/layout/WP-154.md` §F]
+
+Until the join of the first `-r` package, `-r` stays `refused`
+(`unsupported option: -r`, as today). The rules below are those the
+packages implement. "At `-r`" means `Plan.kind == Relocatable`. The
+evidence for each row is in `tests/relocatable-design/work/options.log`
+and `census-lines.txt` (record §A, §B).
+
+**C-R1 (the kind).** `-r`, `-i` and `--relocatable` set
+`kind = Relocatable`. `-Ur` (GNU ld: "-r, and resolve C++ constructors")
+is also `Relocatable`, with `plan.ur = true` recorded for the map. GNU
+ld 2.44 writes the same sections for `-Ur` as for `-r` (record B.1). lld
+22 and mold reject `-Ur` as unknown, and lld and mold also reject `-i`.
+mortar accepts all four spellings, because a line that GNU ld links must
+link. `-r` with `-shared`, `-pie` (`--pic-executable`) or `-static-pie`
+is `conflicting-options` in either order (GNU ld and lld refuse both;
+mold accepts `-pie` and `-shared` and writes an `ET_REL` anyway).
+*Test:* `r-kind-spellings`, `r-conflicting-pie-shared`.
+
+**C-R2 (options that do nothing at `-r`).** These options are accepted
+at `-r` and change no byte of the output. In each case the three
+references were measured to leave the output unchanged, or the option
+acts only on an executable or shared output. `-no-pie`; `-static`,
+`-Bstatic`, `-Bdynamic` (they still pick `.a` or `.so` for `-l`, and a
+`.so` is refused, C-R5); `-dynamic-linker`, `--no-dynamic-linker`;
+`--eh-frame-hdr`; `--hash-style`; `--as-needed`, `--no-as-needed`;
+`--no-build-id`, `--build-id=none`; `-X`,
+`--discard-locals` (no visible change in any reference, B.3); `-EL`;
+`-m <emulation>` (checked as today: a wrong emulation is still refused
+by `emulation`); `--fix-cortex-a53-843419` (patches need addresses);
+`--emit-relocs`, `-q`; the `-z` keywords that C-R2a marks no-op;
+`--no-undefined`, `-z defs` (nothing is undefined at `-r`, as all
+three references do); `--warn-common`; `--sort-common`,
+`--sort-section` (a final link's order; GNU ld does not change the
+`-r` output); `-O<n>`; `-Map`, `--mortar-map` (they are written as in
+any link); `--threads`; `--no-relax`; `-plugin`, `-plugin-opt` (GCC's
+`-r` line carries them; an LTO object is still refused by name,
+RV-R9); `--push-state`, `--pop-state`; `--start-group`, `--end-group`;
+`--whole-archive`, `--no-whole-archive` (they act on extraction,
+RV-R2); `-L`, `-l`; `--version-script`, `--exclude-libs` (no reference
+changes the `-r` output: record B.3).
+Status: each row keeps its final-link status, and `docs/status/
+options.md` gains a column "at `-r`" with `noop(-r: …)`.
+*Test:* `r-noop-options`: each row against the line without it, byte
+identical.
+
+**C-R2b (every row has a class at `-r`; ruled on WP-180's Q-O1 to
+Q-O7).** The list above is the drivers' and the measured rows; it is
+not the whole table. Every row of §4.1 that a final link accepts or
+refuses has an `at_r` class (acts by a rule, no-op, as in a final link,
+`conflicting-options`, refused by name), kept on the row
+(`crates/mortar_cli/src/rows.rs`) and shown in the "at `-r`" column of
+`docs/status/options.md`; until RL-1 generates that column the classes
+are `docs/status/options-at-r.md`'s. A row without a class is a defect
+of the table (*Test:* `every_row_has_a_class_at_r`, RL-1). The classes
+of the rows C-R2, C-R2a, C-R3 and C-R4 do not name:
+- **No-op, measured**: every row that GNU ld 2.44 (39 rows) or lld 22
+  (11) leaves the `-r` output byte-identical for
+  (`tests/relocatable-design/exp/rl0/opts.sh`, `work/rl0-opts.log`; the
+  rows are `options-at-r.md`'s "noop: measured, unlisted"). They join
+  `r-noop-options`.
+- **No-op, by what the option is**: `--call-graph-profile-sort`, the
+  `--bp-*` family, `--lto*`, `--ctf-share-types`,
+  `-z execute-only-report`, `--unresolved-symbols` (nothing is
+  undefined at `-r`, like `--no-undefined`), `--orphan-handling` (there
+  is no script while `-T` is refused; RL-11 measures it with `-T`),
+  `--keep-mason-meta` (MT-30 always writes the container) and
+  `--odr-table` (the table belongs to a loadable output; the units are
+  carried by MT-30 and the final link writes it: a line that carries
+  the option for every link must not fail at its `-r` step, as
+  `--eh-frame-hdr` does not).
+- **`--start-lib`, `--end-lib`**: lazy objects, as in a final link
+  (RV-R2; lld's reading, GNU ld does not know the option).
+- **`--require-defined=SYM`**: a root for extraction like `-u`
+  (RV-R2), nothing written for it (RV-R6 is `-u`'s alone). RL-2
+  measures GNU ld with `SYM` undefined at the end of a `-r` and brings
+  the cell: until then mortar reports it as in a final link.
+- **Dynamic-output options C-R4 does not name**: the "no" forms
+  (`--no-export-dynamic`, `-Bno-symbolic`, `--disable-new-dtags`) are
+  no-ops; `-init`, `-fini`, `--pack-dyn-relocs`,
+  `--android-memtag-mode` are `conflicting-options` with `-r` as
+  `first`, like C-R4's.
+- **`--incremental-state`, `--incremental-report`** (every
+  `--incremental-*` row): IN-12's warning and no effect, as
+  `--incremental`; `--no-incremental` is a no-op.
+- **A row that C-R2 or C-R2a's first row lists and a final link
+  refuses** (29 `-z` keywords, `combreloc` to `noreloc-overflow`;
+  `--emit-relocs`, `-q`; `--no-relax`): a no-op at `-r`. The class at
+  `-r` wins over the final-link status: no byte of an `ET_REL` depends
+  on any of them (measured, C-R2a), and the drivers' lines carry
+  several.
+- **Rows that are about the run, not the output**: `--version`, `-v`,
+  `-V`, `--help`, `--time-phases`, `--rsp-quoting`: as in a final link.
+  The ODR switches `--odr`, `--no-odr-check`, `--odr-stats`,
+  `--odr-check-archives`: as in a final link, by `spec/meta.md` MT-30a
+  (the checks run over the units the `-r` reads).
+  `--detect-odr-violations` (gold's spelling, a no-op in a final link):
+  a no-op.
+- **An option that acts at `-r` "until" a package lands** (`-d`,
+  `-dc`, `-dp`, `-s`, `-S`, `-x`, `-b binary`,
+  `--force-group-allocation`, `--defsym`, `--unique`, `-T`, and
+  `-z unique-symbol`): until then `Refused{Option, "<option> with -r"}`
+  (`-z unique-symbol with -r`), the form of C-R4.
+
+**C-R2a (`-z` keywords at `-r`, by measurement).** Every `-z` keyword
+that GNU ld 2.44 lists in `--help` for each target was run at `-r`
+over two GCC objects, and its output compared with the plain `-r`
+(`tests/relocatable-design/exp/review/zkw.sh`, `work/zkw.log`, 259
+cells over three targets). Each keyword falls in one class:
+
+| class | keywords | at `-r` in mortar |
+|---|---|---|
+| byte-identical on every target where GNU ld knows them | `combreloc`, `nocombreloc`, `common`, `nocommon`, `common-page-size=`, `max-page-size=`, `defs`, `undefs`, `muldefs`, `global`, `globalaudit`, `initfirst`, `interpose`, `lazy`, `now`, `loadfltr`, `nocopyreloc`, `nodefaultlib`, `nodelete`, `nodlopen`, `nodump`, `origin`, `relro`, `norelro`, `separate-code`, `noseparate-code`, `text`, `notext`, `textoff`, `start-stop-gc`, `nostart-stop-gc`, `start-stop-visibility=`, `sectionheader`, `unique`, `nounique`, `nounique-symbol`, `nomemory-seal`; AArch64 `bti-report[=…]`, `gcs-report[=…]`, `gcs-report-dynamic=`, `gcs=never`, `pac-plt`; x86 `call-nop=`, `ibtplt`, `isa-level-report=`, `dynamic-undefined-weak`, `nodynamic-undefined-weak`, `noextern-protected-data`, `noindirect-extern-access`, `pack-relative-relocs`, `nopack-relative-relocs`, `report-relative-reloc`, `mark-plt`, `nomark-plt`, `noreloc-overflow`, `lam-u48`/`lam-u57` and their `-report` forms on i386 (GNU ld warns `ignored`) | no-op (C-R2) |
+| the stack note | `execstack`, `noexecstack` | act: `spec/layout.md` L-R6a's table. On x86-64 and i386 `execstack` changes nothing when an input has a note, so the plain comparison showed it identical there |
+| add a `.note.gnu.property` (and its section symbol) | AArch64 `force-bti`, `gcs=always`, `stack-size=`; `memory-seal` (all three targets); x86 `ibt`, `shstk`, `indirect-extern-access`, `x86-64-v2/v3/v4` (`x86-64-baseline` makes GNU ld 2.44 abort with an internal error in `_bfd_x86_elf_merge_gnu_properties`); x86-64 `lam-u48`, `lam-u57`; `stack-size=` adds nothing on x86 | refused by name, `Refused{Option, "-z KEYWORD with -r"}`, until a line needs one. Then GNU ld's form: the property merged into L-R1's note |
+| renames locals | `unique-symbol`: GNU ld appends `.N` to every duplicated local name, mapping symbols included (`$x` becomes `$x.0`, a static `h` becomes `h.0` and `h.1`); lld and mold do not know it | refused by name until a line needs it |
+| fail on the inputs at `-r` | `cet-report=error`, `lam-report=error`, `lam-u48-report=error`, `lam-u57-report=error` (x86-64: "missing … property") | the same check as in a final link (the report keywords' rows of `spec/x64.md`/`a64.md`); `=none`/`=warning` are no-ops |
+| refused by GNU ld at `-r` | `nosectionheader` (`-r and -z nosectionheader may not be used together`) | `conflicting-options` |
+
+A keyword this table does not list keeps its final-link status at
+`-r` (unknown, or refused by its name); one the first row lists is a
+no-op at `-r` even where a final link refuses it (C-R2b).
+*Test:* `r-z-noop` (the first row, byte-identical), `r-z-refused` (one
+per refused keyword), `r-stack-note`.
+
+**C-R3 (options that act at `-r`).**
+
+| option | at `-r` | rule | package |
+|---|---|---|---|
+| `-o` | the output | I-R1 | RL-4 |
+| `-u SYM` | an undefined global `SYM` is written to `.symtab` when nothing defines it, and it is a root for archive extraction (GNU ld; lld and mold extract but write nothing) | RV-R2, RV-R6 | RL-2 |
+| `-e SYM` | accepted. `e_entry` is 0 (mold); GNU ld and lld write `SYM`'s section offset, which means nothing in an `ET_REL` (L-R7) | L-R7 | RL-3 |
+| `-d`, `-dc`, `-dp` | commons are allocated: each becomes a definition in `.bss` (in `COMMON` order, L-R4), as GNU ld does; lld accepts `-d` and does nothing, rejects `-dc`/`-dp`; mold rejects `-d` | RV-R5 | RL-11 |
+| `-s`, `--strip-all` | GNU ld and mold: debug sections and their relocation sections are dropped, and so is every local symbol that no relocation names. lld ignores the option. mortar does what GNU ld does | I-R9 | RL-11 |
+| `-S`, `--strip-debug` | debug sections and their relocation sections dropped (GNU ld, mold; lld ignores) | I-R9 | RL-11 |
+| `-x`, `--discard-all` | local symbols that no relocation names are dropped, except `STT_SECTION` and `STT_FILE` (all three) | I-R9 | RL-11 |
+| `-T script` | GNU ld and lld honour a `SECTIONS` script at `-r` (record B.1: `.text.*` into `.text`). mold refuses it. The main user is Kbuild's module line (`-T module.lds`). Kernel modules are out of scope for now (`spec/layout.md` L-R1), and the refusal is lifted when a real line of the target needs it | refused by name (`Refused{Option, "-T with -r"}`) until RL-11 | RL-11 |
+| `-b binary`, `--format=binary`, `-b default` | the input file becomes a data section (L-R9) | L-R9 | RL-10 |
+| `--defsym SYM=EXPR` | GNU ld and lld define `SYM` in the output: absolute, or relative to a section. mold does nothing. | refused until RL-11, then GNU ld's | RL-11 |
+| `--force-group-allocation` | every group is dissolved: its members become ordinary sections merged by name, and no `SHT_GROUP` is written (GNU ld and lld). This is the sound form of the pre-link idiom (record §A.4): `--force-group-allocation` before `objcopy --localize-hidden` | L-R3 | RL-8 |
+| `--build-id[=STYLE]` | the note is written over the `-r` output (I-69's styles; GNU ld and lld write one, mold none) | I-R8 | RL-4 |
+| `-z execstack`, `-z noexecstack` | GNU ld's stack-note table, per target | L-R6a | RL-7 |
+| `--unique`, `--unique=PATTERN` | one output section per selected input section (GNU ld's form; lld has only the bare form, mold misparses it) | L-R11 | RL-11 |
+
+**C-R4 (options refused at `-r`, by name).** Each is
+`Refused{Option, "<option> with -r"}` with a note naming the reason:
+- `--gc-sections`. GNU ld refuses it without a root. With `-e`/`-u`
+  roots it fails on `.debug_info` (`relocation references symbol
+  ucommon which was removed by garbage collection`). lld collects; mold
+  barely changes anything (record B.3). A partial link cannot know what
+  the final link will need. image.md I-11 becomes permanent (I-R10).
+- `--icf`. GNU ld does not know it, lld refuses it at `-r`, mold accepts
+  it.
+- `--unique[=pat]` until RL-11, which accepts it (C-R3, L-R11). The
+  first version refused it for good, on two wrong readings:
+  - "GNU ld's output does not change". It does not change on inputs
+    whose section names are already distinct. On duplicate names GNU
+    ld splits them (the review's x06 case and `work/unique-buildid.log`).
+  - "mold drops definitions". That was mold's option parse taking the
+    next input as its pattern.
+- `--relax` (GNU ld refuses it at `-r`).
+- `--wrap=SYM`. lld adds an undefined `__wrap_SYM`, GNU ld and mold do
+  nothing. The final link is the place for it.
+- `--compress-debug-sections=zlib|zstd` (GNU ld and lld compress; mold
+  ignores). Accepted later if a line needs it; `=none` is a no-op.
+- `--gdb-index` (lld refuses it at `-r`; mold accepts it and writes
+  nothing). synth.md S-G8 already says that a relocatable output has no
+  index.
+- `-Bsymbolic*`, `--dynamic-list*`, `--export-dynamic*`, `-soname`,
+  `-rpath*`, `--enable-new-dtags` (dynamic-output options): with `-r`
+  these are `conflicting-options` with `-r` as `first`.
+- `--incremental` with `-r`: IN-12's warning and a plain link (as
+  today).
+- the `-z` keywords that C-R2a refuses.
+- A kernel module line is refused by name, through L-37
+  (`.gnu.linkonce.this_module`) and `-T`: kernel modules are out of
+  scope for now (`spec/layout.md` L-R1).
+*Test:* `r-refused-options` (one link per row; the name checked).
+
+**C-R5 (inputs at `-r`).**
+- A shared object, given directly or by `-l`, is refused:
+  `Refused{Feature, "shared object input with -r"}`. GNU ld and lld
+  refuse it (`attempted static link of dynamic object`); mold drops it
+  silently.
+- `/dev/null` or an empty input list with `-m` is an empty `ET_REL` of
+  the emulation's machine, which is what GNU ld writes. Without `-m` and
+  with no object to take the machine from, it is `Refused{Feature,
+  "relocatable output with no input of a known machine"}` (lld: `target
+  emulation unknown`; mold: `-m option is missing`).
+- An archive is read by RV-R2's extraction rule.
+*Test:* `r-shared-input-refused`, `r-dev-null-m`, `r-dev-null-no-m`.
+
+**C-R6 (the drivers' lines, record §A).** Every `gcc -r`, `g++ -r`,
+`gfortran -r` and `clang -r` line of the census (three targets,
+`-nostdlib` or not) consists of rows of C-R2 and C-R3 only. GCC
+writes `-plugin … --eh-frame-hdr --hash-style=gnu --as-needed
+-dynamic-linker P [-X -EL -maarch64linux --fix-cortex-a53-843419 | -m
+elf_x86_64 | -m elf_i386] -o OUT -r OBJ…`; clang writes `[-EL]
+--hash-style=gnu --build-id --eh-frame-hdr -m EMUL -o OUT -r OBJ…`.
+Neither adds crt files or libraries. Without `-nostdlib`, a driver line
+with `-Wl,-r` (or `-no-pie -Wl,-r`) does add `crt1.o crti.o crtbegin.o …
+crtend.o crtn.o` and the default libraries, with `-pie` when PIE is the
+default. That line is `conflicting-options` (`-r` and `-pie`), as GNU ld
+says. With `-no-pie` it is a `-r` of the startup files, which has a
+`crtend.o` terminator in the middle of the output's `.eh_frame`. mortar
+links it as written, as GNU ld does, and warns (record §G Q7, ruled;
+RL-11): when an input's `.eh_frame` zero terminator would stand before
+the last record of the output's `.eh_frame`, the warning
+`eh-frame-terminator` names that input and the number of records after
+it ("unwinders stop at the terminator; is this a `-r` of the startup
+files without `-nostdlib`?"). The terminator's place is the only
+trigger: an input that defines `_start` is an ordinary `-r` input.
+*Test:* `r-driver-lines` (the census lines replayed, the plan compared).
 
 ## 4. The table and the status of options
 

@@ -847,46 +847,23 @@ fn shared_link(
             OpenedKind::Shared(f) => mentions.push(SharedMention {
                 file: f,
                 position: i,
-                as_needed: Some(files[f.0 as usize].state.contains(InputFlags::AS_NEEDED)),
+                as_needed: files[f.0 as usize].state.contains(InputFlags::AS_NEEDED),
                 group: view.file(f).group.map_or(MentionGroup::None, MentionGroup::In),
             }),
             OpenedKind::SharedNotLoaded(f) => {
+                // A script entry carries its mention's state (D-19a); a
+                // command-line mention has its `Plan` input's.
                 let Origin::Input { input, entry, .. } = o.origin else { continue };
-                let Some(state) = plan.inputs.get(input as usize).map(|i| &i.state) else {
-                    continue;
+                let (as_needed, group) = if let Some(e) = entry {
+                    let Some(s) = script_of(e) else { continue };
+                    (s.as_needed, s.group.map(|g| g.0))
+                } else {
+                    let Some(state) = plan.inputs.get(input as usize).map(|i| &i.state) else {
+                        continue;
+                    };
+                    (state.as_needed, state.group.and_then(|g| plan_group.get(&g).copied()))
                 };
-                let as_needed = match entry {
-                    None => Some(state.as_needed),
-                    // `AS_NEEDED(…)` can only turn it on.
-                    Some(_) if state.as_needed => Some(true),
-                    Some(_) => None,
-                };
-                let group = match (state.group, entry) {
-                    (Some(g), _) => {
-                        plan_group.get(&g).map_or(MentionGroup::None, |&o| MentionGroup::In(o))
-                    }
-                    (None, None) => MentionGroup::None,
-                    (None, Some(e)) => {
-                        // The script's own GROUP, as its other entries got it.
-                        let here = script_of(e).map(|s| (s.script, s.parent));
-                        match here {
-                            Some((script, None)) => {
-                                let mut found = MentionGroup::None;
-                                for (g, file) in files.iter().enumerate() {
-                                    if let Origin::Input { entry: Some(e2), .. } = file.origin
-                                        && script_of(e2).is_some_and(|s| s.script == script)
-                                        && let Some(o) = view.file(FileId(g as u32)).group
-                                    {
-                                        found = MentionGroup::In(o);
-                                        break;
-                                    }
-                                }
-                                found
-                            }
-                            _ => MentionGroup::Unknown,
-                        }
-                    }
-                };
+                let group = group.map_or(MentionGroup::None, MentionGroup::In);
                 mentions.push(SharedMention { file: f, position: i, as_needed, group });
             }
             _ => {}
@@ -897,27 +874,6 @@ fn shared_link(
             && let Some(&at) = archive_at.get(&m.archive.0)
         {
             position[f] = at;
-        }
-    }
-    // A merged `as_needed` (on only if on at every mention) decides the
-    // mentions the tables do not record when it can.
-    let mut by_file: HashMap<FileId, Vec<usize>> = HashMap::new();
-    for (i, m) in mentions.iter().enumerate() {
-        by_file.entry(m.file).or_default().push(i);
-    }
-    for (file, at) in by_file {
-        let merged = inputs.soname_unit(file).map(|u| u.as_needed);
-        if merged == Some(true) {
-            for &i in &at {
-                mentions[i].as_needed = Some(true);
-            }
-        } else if merged == Some(false) {
-            let unknown: Vec<usize> =
-                at.iter().copied().filter(|&i| mentions[i].as_needed.is_none()).collect();
-            let known_off = at.iter().any(|&i| mentions[i].as_needed == Some(false));
-            if unknown.len() == 1 && !known_off {
-                mentions[unknown[0]].as_needed = Some(false);
-            }
         }
     }
     let d = &plan.diagnostics;
@@ -1364,11 +1320,6 @@ impl Ctx<'_, '_, '_> {
                     .at(Place::argument(self.root_text(*arg)))
                     .note(note)
             }
-            What::NeededOrderUnknown { file } => Diagnostic::refused(
-                C::Feature,
-                "DT_NEEDED order of a shared object mentioned again inside a linker script",
-            )
-            .at(self.file(*file)),
             What::LtoSlim { file } => {
                 Diagnostic::refused(C::FileFormat, "GCC LTO object").at(self.file(*file))
             }

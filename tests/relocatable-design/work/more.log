@@ -1,0 +1,58 @@
+prelink-bfd | hid in comp: GLOBAL/HIDDEN after --localize-hidden: LOCAL/HIDDEN
+prelink-lh-bfd | bfd | run rc=0 same
+prelink-lh-bfd | mortar | run rc=0 same
+./run.sh: line 16: 3379956 Aborted                 ./$n.$L > $n.$L.out 2>&1
+prelink-lh-x-bfd | bfd | run rc=134 DIFFERS
+./run.sh: line 16: 3380279 Aborted                 ./$n.$L > $n.$L.out 2>&1
+prelink-lh-x-bfd | mortar | run rc=134 DIFFERS
+prelink-lld | hid in comp: GLOBAL/HIDDEN after --localize-hidden: LOCAL/HIDDEN
+prelink-lh-lld | bfd | run rc=0 same
+prelink-lh-lld | mortar | run rc=0 same
+./run.sh: line 16: 3382007 Aborted                 ./$n.$L > $n.$L.out 2>&1
+prelink-lh-x-lld | bfd | run rc=134 DIFFERS
+./run.sh: line 16: 3382479 Aborted                 ./$n.$L > $n.$L.out 2>&1
+prelink-lh-x-lld | mortar | run rc=134 DIFFERS
+prelink-mold | hid in comp: GLOBAL/HIDDEN after --localize-hidden: LOCAL/HIDDEN
+./run.sh: line 16: 3383045 Segmentation fault      ./$n.$L > $n.$L.out 2>&1
+prelink-lh-mold | bfd | run rc=139 DIFFERS
+./run.sh: line 16: 3383562 Segmentation fault      ./$n.$L > $n.$L.out 2>&1
+prelink-lh-mold | mortar | run rc=139 DIFFERS
+./run.sh: line 16: 3384868 Aborted                 ./$n.$L > $n.$L.out 2>&1
+prelink-lh-x-mold | bfd | run rc=134 DIFFERS
+./run.sh: line 16: 3385110 Aborted                 ./$n.$L > $n.$L.out 2>&1
+prelink-lh-x-mold | mortar | run rc=134 DIFFERS
+splitdwarf-bfd | skeleton CUs: 0 dwo names: 
+splitdwarf-bfd | bfd | run rc=0 same
+splitdwarf-bfd | mortar | run rc=0 same
+splitdwarf-lld | skeleton CUs: 0 dwo names: 
+splitdwarf-lld | bfd | run rc=0 same
+splitdwarf-lld | mortar | run rc=0 same
+splitdwarf-mold | skeleton CUs: 0 dwo names: 
+splitdwarf-mold | bfd | run rc=0 same
+splitdwarf-mold | mortar | run rc=0 same
+fortran-bfd | bfd | same
+fortran-bfd | mortar | same
+fortran-lld | bfd | same
+fortran-lld | mortar | same
+fortran-mold | bfd | same
+fortran-mold | mortar | same
+dash-i | bfd | identical to -r
+dash-i | lld | rc=1 ld.lld-22: error: unknown argument '-i'
+dash-i | mold | rc=1 mold: fatal: unknown command line option: -i
+lto lto.gcc.o | bfd (no plugin) | rc=0  secs: 13
+lto lto.gcc.o | lld | rc=0  type: ELF 64-bit LSB relocatable, ARM aarch64,
+lto lto.gcc.o | mold | rc=1 mold: fatal: lto.gcc.o: don't know how to handle this LTO object file because no -plugin option was given. Please make sure you added -flto not only f
+lto lto.gcc.o | mortar | rc=1 mortar-3ad9867a: error: unsupported option: -r
+lto lto.clang.o | bfd (no plugin) | rc=1 lto.clang.o: file not recognized: file format not recognized secs: 0
+lto lto.clang.o | lld | rc=0  type: ELF 64-bit LSB relocatable, ARM aarch64,
+lto lto.clang.o | mold | rc=1 mold: fatal: -m option is missing
+lto lto.clang.o | mortar | rc=1 mortar-3ad9867a: error: unsupported option: -r
+gdb-index | lld | rc=1 ld.lld-22: error: -r and --gdb-index may not be used together
+gdb-index | mold | rc=0  0
+script-bfd | .text.* left: 0 rela.text records: 17
+script-bfd | bfd | run rc=0 same
+script-bfd | mortar | run rc=0 same
+script-lld | .text.* left: 0 rela.text records: 17
+script-lld | bfd | run rc=0 same
+script-lld | mortar | run rc=0 same
+more done

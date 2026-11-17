@@ -158,6 +158,17 @@ pub fn parse(text: &str) -> Result<Map, MapError> {
         if line.trim().is_empty() {
             continue;
         }
+        // An assignment row whose text lld 19 leaves empty (a `--defsym`,
+        // `spec/plumb.md` §4.4b, WP-170): four numbers, size 0, no text.
+        // It places nothing.
+        let words: Vec<&str> = line.split_whitespace().collect();
+        if words.len() == columns.numbers
+            && hex(words[2]) == Some(0)
+            && words.iter().take(2).all(|w| hex(w).is_some())
+            && dec(words[3]).is_some()
+        {
+            continue;
+        }
         let r = row(line, &columns, n)?;
         let addr = hex(r.numbers[0]).ok_or_else(|| MapError::new(n, "bad VMA"))?;
         hex(r.numbers[1]).ok_or_else(|| MapError::new(n, "bad LMA"))?;
@@ -257,5 +268,16 @@ mod tests {
         assert_eq!(parse(&format!("{h}  0 0 0 1   .text\n")).unwrap_err().line, 2);
         assert_eq!(parse(&format!("{h}  0 0 0 x .text\n")).unwrap_err().line, 2);
         assert!(parse(h).unwrap().placed.is_empty());
+        // A sized row without text is not an assignment.
+        assert_eq!(parse(&format!("{h}  0 0 8 1 \n")).unwrap_err().line, 2);
+    }
+
+    // §4.4b (WP-170): lld 19's row of a `--defsym` (no text, size 0)
+    // places nothing.
+    #[test]
+    fn s4_4b_lld_defsym_row_is_an_assignment() {
+        let h = "             VMA              LMA     Size Align Out     In      Symbol\n";
+        let m = parse(&format!("{h}           30be1            30be1        0     1 \n")).unwrap();
+        assert!(m.placed.is_empty() && m.chunks.is_empty());
     }
 }

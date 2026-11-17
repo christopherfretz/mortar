@@ -1,0 +1,8 @@
+wrap | bfd direct: callfoo=101  | bfd via: callfoo=1  | mortar direct: LINK FAILS: ld: error: unsupported option: --wrap | mortar via: LINK FAILS: ld: error: unsupported option: --wrap
+exclibs | bfd direct: dynsym: api  | bfd via: dynsym: api lib_fn  | mortar direct: dynsym: api  | mortar via: dynsym: api lib_fn 
+keeper-in | bfd direct: v=1,1  | bfd via: v=1,1  | mortar direct: v=1,1  | mortar via: v=1,1 
+keeper-out-first | bfd direct: v=3,3  | bfd via: v=3,3  | mortar direct: v=3,3  | mortar via: v=3,3 
+initorder | bfd direct: b200 c a d  | bfd via: b200 c a d  | mortar direct: b200 c a d  | mortar via: b200 c a d 
+common | bfd direct: cx%32=0  | bfd via: cx%32=0  | mortar direct: cx%32=0  | mortar via: cx%32=0 
+visibility | bfd direct: dynsym: api  | bfd via: dynsym: api  | mortar direct: dynsym: api  | mortar via: dynsym: api 
+equiv done

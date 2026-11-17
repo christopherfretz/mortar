@@ -1,0 +1,12 @@
+-m
+elf_i386
+-z
+max-page-size=4096
+-o
+num-x86.bfd
+-static
+-e
+_start
+n-x86.o
+--defsym=k=0x1234
+-Map=num-x86.bfd.map

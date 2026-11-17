@@ -133,3 +133,30 @@ fn s9_7_the_213_scripts() {
         assert_eq!(mortar(c), "REFUSED", "{id}");
     }
 }
+
+/// WP-172 (WP-126's follow-up): the `extern "C++"` refusal names the file
+/// and line of its first such entry, in a version script of several
+/// files and in a dynamic list.
+#[test]
+fn s9_7_extern_cxx_refusal_names_its_place() {
+    use mortar_diag::Style;
+    use mortar_resolve::version::DynamicList;
+    let one = "V1 { global: a; };\n";
+    let two = "V2 {\n  global:\n    extern \"C++\" { \"ns::get()\"; };\n} V1;\n";
+    let files = [
+        SourceFile { path: "one.map", bytes: one.as_bytes() },
+        SourceFile { path: "two.map", bytes: two.as_bytes() },
+    ];
+    let Err(e) = VersionScript::load(&files) else { panic!("refused") };
+    let text = e[0].render(&Style::plain("ld"));
+    assert!(text.starts_with("ld: error: two.map:3:20: unsupported linker script command: extern \"C++\" in a version script"), "{text}");
+    let list = "{\n  f;\n};\n";
+    let cxx = "{\n  extern \"C++\" {\n    \"ns::get()\";\n  };\n};\n";
+    let files = [
+        SourceFile { path: "a.list", bytes: list.as_bytes() },
+        SourceFile { path: "b.list", bytes: cxx.as_bytes() },
+    ];
+    let Err(e) = DynamicList::load(&files) else { panic!("refused") };
+    let text = e[0].render(&Style::plain("ld"));
+    assert!(text.starts_with("ld: error: b.list:3:5: unsupported linker script command: extern \"C++\" in a dynamic list"), "{text}");
+}

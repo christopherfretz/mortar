@@ -1,0 +1,39 @@
+bfd (none): 4 .text*, 3 .data*: 1] 2] 4] 6] .data .data.d1 .data.d2 | UND f1/f2/d1: 0; final --gc-sections: GNU ld fails, mortar fails
+lld (none): 4 .text*, 3 .data*: 1] 2] 4] 5] 6] .data.d2 .text.f2 | UND f1/f2/d1: 0; final --gc-sections: GNU ld fails, mortar fails
+mold (none): 4 .text*, 3 .data*: 2] 3] 4] 5] 6] 7] 8] | UND f1/f2/d1: 0; final --gc-sections: GNU ld fails, mortar fails
+bfd --unique: 5 .text*, 3 .data*: 1] 2] 3] 5] 7] .data .data.d1 .data.d2 | UND f1/f2/d1: 0; final --gc-sections: GNU ld runs, mortar runs
+lld --unique: 6 .text*, 4 .data*: 1] 2] 4] 5] 6] .text .data .text.helper .data.d2 .text.f2 | UND f1/f2/d1: 0; final --gc-sections: GNU ld fails, mortar runs
+mold --unique: error: mold: fatal: cannot open u.mold.xunique.o: No such file or directory
+bfd --unique=.text.helper: 5 .text*, 3 .data*: 1] 2] 3] 5] 7] .data .data.d1 .data.d2 | UND f1/f2/d1: 0; final --gc-sections: GNU ld runs, mortar runs
+lld --unique=.text.helper: error: ld.lld: error: unknown argument '--unique=.text.helper'
+mold --unique=.text.helper: 4 .text*, 3 .data*: 2] 3] 4] 5] 6] 7] 8] | UND f1/f2/d1: 0; final --gc-sections: GNU ld fails, mortar fails
+bfd --unique=.text*: 6 .text*, 3 .data*: 1] 2] 3] 5] 6] 8] .data .data.d1 .data.d2 | UND f1/f2/d1: 0; final --gc-sections: GNU ld runs, mortar runs
+lld --unique=.text*: error: ld.lld: error: unknown argument '--unique=.text*'
+mold --unique=.text*: 4 .text*, 3 .data*: 2] 3] 4] 5] 6] 7] 8] | UND f1/f2/d1: 0; final --gc-sections: GNU ld fails, mortar fails
+-- the same, with -ffunction-sections off (both inputs' functions in .text)
+bfd --unique: 1 .text*, 1 .data*: 1] 6] | UND f1/f2/d1: 0; final --gc-sections: GNU ld fails, mortar fails
+lld --unique: 2 .text*, 2 .data*: 1] 2] 7] 9] | UND f1/f2/d1: 0; final --gc-sections: GNU ld fails, mortar runs
+-- build-id at -r
+bfd --build-id: 20 bytes, not a whole-file hash
+lld --build-id: 20 bytes, not a whole-file hash
+mold --build-id: no note
+bfd --build-id=sha1: 20 bytes, not a whole-file hash
+lld --build-id=sha1: 20 bytes, not a whole-file hash
+mold --build-id=sha1: no note
+bfd --build-id=md5: 16 bytes, not a whole-file hash
+lld --build-id=md5: 16 bytes, not a whole-file hash
+mold --build-id=md5: no note
+bfd --build-id=uuid: 16 bytes, not a whole-file hash
+lld --build-id=uuid: 16 bytes, not a whole-file hash
+mold --build-id=uuid: no note
+bfd --build-id=0x0102: 2 bytes, not a whole-file hash
+lld --build-id=0x0102: 2 bytes, not a whole-file hash
+mold --build-id=0x0102: no note
+bfd --build-id=fast: no note
+lld --build-id=fast: 8 bytes, not a whole-file hash
+mold --build-id=fast: no note
+-- the output section names of GNU ld 2.44's -r script per emulation (bare --unique splits every other name)
+ld.bfd (84 names): .ARM.attributes .bss .data .data1 .debug .debug_abbrev .debug_addr .debug_aranges .debug_frame .debug_funcnames .debug_info .debug_line .debug_line_str .debug_loc .debug_loclists .debug_macinfo .debug_macro .debug_names .debug_pubnames .debug_pubtypes .debug_ranges .debug_rnglists .debug_sfnames .debug_srcinfo .debug_str .debug_str_offsets .debug_sup .debug_typenames .debug_varnames .debug_weaknames .dynamic .dynstr .dynsym .eh_frame .eh_frame_hdr .exception_ranges .fini .gcc_except_table .gnu.build.attributes .gnu.hash .gnu.version .gnu.version_d .gnu.version_r .gnu_extab .got .got.plt .hash .init .interp .jcr .line .note.dlopen .note.gnu.arm.ident .note.netbsd.ident .note.openbsd.ident .note.package .plt .rela.bss .rela.ctors .rela.data .rela.data.rel.ro .rela.dtors .rela.fini .rela.got .rela.ifunc .rela.init .rela.plt .rela.rodata .rela.tbss .rela.tdata .rela.text .relr.dyn .rodata .rodata1 .sframe .stab .stab.excl .stab.exclstr .stab.index .stab.indexstr .stabstr .tbss .tdata .text
+x86_64-linux-gnu-ld (91 names): .bss .data .data1 .debug .debug_abbrev .debug_addr .debug_aranges .debug_frame .debug_funcnames .debug_info .debug_line .debug_line_str .debug_loc .debug_loclists .debug_macinfo .debug_macro .debug_names .debug_pubnames .debug_pubtypes .debug_ranges .debug_rnglists .debug_sfnames .debug_srcinfo .debug_str .debug_str_offsets .debug_sup .debug_typenames .debug_varnames .debug_weaknames .dynamic .dynstr .dynsym .eh_frame .eh_frame_hdr .exception_ranges .fini .gcc_except_table .gnu.attributes .gnu.build.attributes .gnu.hash .gnu.version .gnu.version_d .gnu.version_r .gnu_extab .got .got.plt .hash .init .interp .jcr .lbss .ldata .line .lrodata .note.dlopen .note.netbsd.ident .note.openbsd.ident .note.package .plt .plt.got .plt.sec .rela.bss .rela.ctors .rela.data .rela.data.rel.ro .rela.dtors .rela.fini .rela.got .rela.ifunc .rela.init .rela.lbss .rela.ldata .rela.lrodata .rela.plt .rela.rodata .rela.tbss .rela.tdata .rela.text .relr.dyn .rodata .rodata1 .sframe .stab .stab.excl .stab.exclstr .stab.index .stab.indexstr .stabstr .tbss .tdata .text
+i686-linux-gnu-ld (85 names): .bss .data .data1 .debug .debug_abbrev .debug_addr .debug_aranges .debug_frame .debug_funcnames .debug_info .debug_line .debug_line_str .debug_loc .debug_loclists .debug_macinfo .debug_macro .debug_names .debug_pubnames .debug_pubtypes .debug_ranges .debug_rnglists .debug_sfnames .debug_srcinfo .debug_str .debug_str_offsets .debug_sup .debug_typenames .debug_varnames .debug_weaknames .dynamic .dynstr .dynsym .eh_frame .eh_frame_hdr .exception_ranges .fini .gcc_except_table .gnu.attributes .gnu.build.attributes .gnu.hash .gnu.version .gnu.version_d .gnu.version_r .gnu_extab .got .got.plt .hash .init .interp .jcr .line .note.dlopen .note.netbsd.ident .note.openbsd.ident .note.package .plt .plt.got .plt.sec .rel.bss .rel.ctors .rel.data .rel.data.rel.ro .rel.dtors .rel.fini .rel.got .rel.ifunc .rel.init .rel.plt .rel.rodata .rel.tbss .rel.tdata .rel.text .relr.dyn .rodata .rodata1 .sframe .stab .stab.excl .stab.exclstr .stab.index .stab.indexstr .stabstr .tbss .tdata .text
+unique-buildid done

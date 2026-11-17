@@ -1,0 +1,12 @@
+-m
+aarch64linux
+-z
+max-page-size=4096
+-o
+num-a64.lld
+-static
+-e
+_start
+n-a64.o
+--defsym=k=0x1234
+-Map=num-a64.lld.map

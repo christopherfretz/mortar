@@ -135,7 +135,13 @@ fn world() -> Inputs<'static> {
         opened(b"/l/x.so", OpenedKind::Shared(FileId(4)), 2),
         opened(b"s.ld", OpenedKind::Script, 3),
     ]);
-    link.script_entries = Box::new([ScriptEntry { script: 3, offset: 6, parent: None }]);
+    link.script_entries = Box::new([ScriptEntry {
+        script: 3,
+        offset: 6,
+        parent: None,
+        as_needed: false,
+        group: None,
+    }]);
     link.probes = Box::new([
         Probe { path: b"/k/x.so", search: SearchRef::Input(2), outcome: ProbeOutcome::Absent },
         Probe { path: b"/l/x.so", search: SearchRef::Input(2), outcome: ProbeOutcome::Found(2) },

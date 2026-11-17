@@ -1,0 +1,15 @@
+-m
+elf_x86_64
+-z
+max-page-size=4096
+-o
+st-x64.bfd
+-static
+-e
+_start
+m-x64.o
+b-x64.o
+--defsym=k=0x1234
+--defsym=a=b
+--defsym=c=b+4
+-Map=st-x64.bfd.map

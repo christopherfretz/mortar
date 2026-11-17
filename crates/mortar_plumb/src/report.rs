@@ -236,6 +236,10 @@ pub enum Reason {
     /// A mention of a `--wrap` word in a shape `spec/resolve.md` §7.1
     /// refuses by name, in a reference's output (§4.4a, WP-170).
     Wrap,
+    /// A reference to a `--defsym` symbol whose expression is a form
+    /// `spec/resolve.md` §7.2 refuses, in a reference's output (§4.4b,
+    /// WP-170 part 2).
+    Defsym,
 }
 
 impl Reason {
@@ -257,6 +261,7 @@ impl Reason {
             Reason::InputUnreadable => "input-unreadable",
             Reason::Dynamic => "dynamic",
             Reason::Wrap => "wrap-shape",
+            Reason::Defsym => "defsym-shape",
         }
     }
 
@@ -467,6 +472,9 @@ pub struct Coverage {
     /// The `--wrap` shapes `spec/resolve.md` §7.1 refuses by name whose
     /// redirection the verifier does not derive (§4.4a, WP-170).
     pub wrap_not_judged: Vec<String>,
+    /// The `--defsym` forms `spec/resolve.md` §7.2 refuses whose value
+    /// the verifier does not derive (§4.4b, WP-170 part 2).
+    pub defsym_not_judged: Vec<String>,
     /// Erratum 843419 sites found with their fix (C1), and sites not
     /// judged: the option unknown, beyond what both references fix, or
     /// unproved code in a reference's output (§5.10).
@@ -703,6 +711,9 @@ impl Report {
         }
         if !c.wrap_not_judged.is_empty() {
             let _ = writeln!(s, "--wrap, not judged: {}", c.wrap_not_judged.join("; "));
+        }
+        if !c.defsym_not_judged.is_empty() {
+            let _ = writeln!(s, "--defsym, not judged: {}", c.defsym_not_judged.join("; "));
         }
         if !c.stripped_not_judged.is_empty() {
             let _ = writeln!(

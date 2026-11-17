@@ -1,0 +1,12 @@
+aarch64: NONE records in .eh_frame: 1; shared offsets: 000000000000006c 
+  final GNU ld: 5
+  final mortar: ld: error: aarch64.r.o:(.eh_frame+0x6c): unsupported feature: overlapping relocations
+  direct mortar: 5
+x86_64: NONE records in .eh_frame: 1; shared offsets: 0000000000000078 
+  final GNU ld: 5
+  final mortar: 5
+  direct mortar: 5
+i686: NONE records in .eh_frame: 2; shared offsets: 0000008c 000000ac 
+  final GNU ld: 5
+  final mortar: 5
+  direct mortar: 5

@@ -1,0 +1,51 @@
+mortar-map 2
+file 0 mp-x64.o
+file 1 bp-x64.o
+place 0 1 12c8 28
+place 0 3 3438 0
+place 0 5 3438 18
+place 0 4 3450 0
+place 1 1 12f0 6
+place 1 2 3450 0
+place 1 3 3450 0
+merged 0 7 .comment
+merged 1 4 .comment
+chunk synthetic .interp 238 1c
+chunk synthetic .gnu.hash 258 1c
+chunk synthetic .dynsym 278 18
+chunk synthetic .dynstr 290 1
+chunk synthetic .rela.dyn 298 30
+chunk synthetic .got 2418 8
+chunk synthetic .got.plt 3420 18
+chunk synthetic .dynamic 22f8 120
+chunk synthetic .symtab - 150
+chunk synthetic .strtab - 5a
+chunk synthetic .shstrtab - 7e
+chunk synthetic .comment - d
+chunk synthetic .pad.relro 2420 be0
+define _GLOBAL_OFFSET_TABLE_ 3420
+define k 1234
+define a 12f0
+define c 12f4
+output pie
+interp /lib64/ld-linux-x86-64.so.2
+bind lazy
+relro on
+arg -m
+arg elf_x86_64
+arg -z
+arg max-page-size=4096
+arg -o
+arg pie-x64
+arg -pie
+arg -dynamic-linker
+arg /lib64/ld-linux-x86-64.so.2
+arg -e
+arg _start
+arg mp-x64.o
+arg bp-x64.o
+arg --defsym=k=0x1234
+arg --defsym=a=b
+arg --defsym=c=b+4
+arg --mortar-map=pie-x64.map
+end

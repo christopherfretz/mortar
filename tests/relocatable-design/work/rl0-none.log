@@ -1,0 +1,47 @@
+== aarch64 input NONE records: 1
+direct aarch64 final=bfd keepme: 1
+no-record aarch64 final=bfd keepme: 0
+direct aarch64 final=lld keepme: 1
+no-record aarch64 final=lld keepme: 0
+-r by bfd rc=0 NONE records: 1
+  via bfd -r, final=bfd keepme: 1
+  via bfd -r, final=lld keepme: 1
+-r by lld rc=0 NONE records: 1
+  via lld -r, final=bfd keepme: 1
+  via lld -r, final=lld keepme: 1
+-r by mold rc=0 NONE records: 1
+  via mold -r, final=bfd keepme: 1
+  via mold -r, final=lld keepme: 1
+== x86_64 input NONE records: 1
+direct x86_64 final=bfd keepme: 1
+no-record x86_64 final=bfd keepme: 0
+direct x86_64 final=lld keepme: 1
+no-record x86_64 final=lld keepme: 0
+-r by bfd rc=0 NONE records: 1
+  via bfd -r, final=bfd keepme: 1
+  via bfd -r, final=lld keepme: 1
+-r by lld rc=0 NONE records: 1
+  via lld -r, final=bfd keepme: 1
+  via lld -r, final=lld keepme: 1
+-r by mold rc=0 NONE records: 1
+  via mold -r, final=bfd keepme: 1
+  via mold -r, final=lld keepme: 1
+== i386 input NONE records: 1
+direct i386 final=bfd keepme: 1
+no-record i386 final=bfd keepme: 0
+direct i386 final=lld keepme: 1
+no-record i386 final=lld keepme: 0
+-r by bfd rc=0 NONE records: 1
+  via bfd -r, final=bfd keepme: 1
+  via bfd -r, final=lld keepme: 1
+-r by lld rc=0 NONE records: 1
+  via lld -r, final=bfd keepme: 1
+  via lld -r, final=lld keepme: 1
+-r by mold rc=0 NONE records: 1
+  via mold -r, final=bfd keepme: 1
+  via mold -r, final=lld keepme: 1
+== cg_profile relocation section type
+aarch64-linux-gnu: rel.llvm.call-graph-profile REL
+x86_64-linux-gnu: rel.llvm.call-graph-profile REL
+i686-linux-gnu: rel.llvm.call-graph-profile REL
+none done

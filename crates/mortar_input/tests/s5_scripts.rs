@@ -168,6 +168,70 @@ fn s5_2_state_table() {
     assert_eq!(out.link.group, [Some(1), Some(1), Some(2), Some(2), Some(3), Some(3)]);
 }
 
+/// WP-172 (`spec/dyn.md` D-19a): every script entry carries its own
+/// mention's as-needed state (the one in force where its script was
+/// named, `AS_NEEDED(…)` forcing it on, `--push-state`/`--pop-state`
+/// applied) and its group, for a shared object mentioned again inside a
+/// script, which gets no row of its own.
+#[test]
+fn s5_2_entry_state_of_a_shared_mention_again() {
+    let s = Scratch::new("s5again");
+    if !objs(&s, &["a.o", "b.o", "c.o"]) {
+        return;
+    }
+    common::cc(s.path(), "native", "libd.so", C, &["-shared", "-fPIC", "-Wl,-soname,libd.so"]);
+    s.write("s1.ld", "INPUT(libd.so)\n");
+    s.write("s3.ld", "GROUP(libd.so a.o)\n");
+    s.write("n.ld", "GROUP(AS_NEEDED(s1.ld) c.o)\n");
+    let out = common::run(
+        s.path(),
+        &[
+            "-shared",
+            "-maarch64linux",
+            "--as-needed",
+            "libd.so",
+            "--no-as-needed",
+            "s1.ld",
+            "--as-needed",
+            "s1.ld",
+            "--push-state",
+            "--no-as-needed",
+            "s3.ld",
+            "--pop-state",
+            "s1.ld",
+            "--no-as-needed",
+            "--start-group",
+            "s1.ld",
+            "b.o",
+            "--end-group",
+            "n.ld",
+        ],
+    );
+    assert!(out.problems.is_empty(), "{:?}", common::report(&out));
+    let again: Vec<_> = out
+        .link
+        .opened
+        .iter()
+        .filter(|o| o.kind == OpenedKind::Shared { loaded: false })
+        .map(|o| {
+            let e = out.link.script_entries[o.origin.entry.unwrap() as usize];
+            (e.as_needed, e.group)
+        })
+        .collect();
+    assert_eq!(
+        again,
+        [
+            (false, None),
+            (true, None),
+            (false, Some(1)),
+            (true, None),
+            (false, Some(2)),
+            (true, Some(3)),
+        ]
+    );
+    assert_eq!(out.link.group, [None, Some(1), Some(2), Some(3)]);
+}
+
 #[test]
 fn s5_3_nesting() {
     let s = Scratch::new("s5nest");

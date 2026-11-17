@@ -1,0 +1,13 @@
+-m
+aarch64linux
+-z
+max-page-size=4096
+-o
+sh-a64.lld
+-shared
+-soname
+libls.so
+ls-a64.o
+--defsym=calla=b
+--defsym=k=0x10
+-Map=sh-a64.lld.map
