@@ -6,9 +6,10 @@
 # enumerator, and `enum H : unsigned` against `enum H` (one underlying
 # type, hashed differently on purpose). Each odr-type-mismatch's note
 # names the first differing item as mortar prints it: the member of the
-# unnamed union without saying it is one while kiln writes `width` 0
-# (O-19; "of the unnamed member at offset 0" once kiln writes the count),
-# the negative enumerator in signed decimal (WP-151), and for H no item
+# unnamed union "of the unnamed member at offset 0" (kiln 4b017b227 writes
+# the unnamed member's `width`, O-19: here 2, the union's two members, so
+# `k` after them is U's own), the negative enumerator in signed decimal
+# (WP-151), and for H no item
 # but what kind 4 does not describe (whether the underlying type is
 # fixed). kiln's slot index is the component's index in the vtable group
 # with the RTTI slot left out (offset-to-top is 0): the first virtual
@@ -29,7 +30,7 @@ link(bfd,lld,mold) g++ -static -no-pie main.o a.o b.o -o prog
 link(mortar) g++ -static -no-pie main.o a.o b.o -Wl,--odr=strict -o prog
   exit: fail
   diag: ^>>> base 3VB1 at offset 12 (virtual) in a.o; base 3VB2 at offset 16 (virtual) in b.o$
-  diag: ^>>> member 'f' (f) at offset 0 in a.o; member 'l' (l) at offset 0 in b.o$
+  diag: ^>>> member 'f' (f) at offset 0 of the unnamed member at offset 0 in a.o; member 'l' (l) at offset 0 of the unnamed member at offset 0 in b.o$
   diag: ^>>> vtable slot 1: __cxa_pure_virtual in a.o; vtable slot 1: _ZN1P1fEv in b.o$
   diag: ^>>> vtable slots are numbered over the whole vtable group from 0, its offset-to-top, vcall and vbase entries counted and its RTTI entries not (spec/odr.md O-18, O-19)$
   diag: ^>>> enumerator 'N0' = -2 in a.o; 'N0' = -3 in b.o$

@@ -1,0 +1,79 @@
+# kiln-k2-differ's link (kiln's kind 2 rows, spec/odr.md O-15; WP-174)
+# at the default mode and at --odr=warn: kind 2 is compared under
+# --odr=strict only (O-47), and nothing else differs, so nothing is
+# reported and no container byte is read (the stats' `units 0`). The
+# program runs with the copies the linker kept (a.o's: V=1).
+#@ spec: odr.md O-15, O-47
+#@ arch: aarch64 x86_64
+#@ requires: kiln g++
+
+cxx(kiln) -O0 -DV=1 -DUNIT=fa -fmason-metadata u.cc -o a.o
+cxx(kiln) -O0 -DV=2 -DUNIT=fb -DSPEC_DEF -DUSE_DROPPED -fmason-metadata u.cc -o b.o
+cxx(kiln) -O2 -DV=1 -fmason-metadata d.cc -o d.o
+cxx(kiln) -O0 main.cc -o main.o
+link(bfd,lld,mold) g++ -static -no-pie main.o a.o b.o d.o -o prog
+link(mortar) g++ -static -no-pie main.o a.o b.o d.o -Wl,--odr-stats -o prog
+  diag: ^mortar: odr-stats: mode warn; units 0,* record findings 0;* findings W1 0, W2 0, W3 0, W4 0;
+run prog
+  stdout: 32 35 1
+link(bfd,lld,mold) g++ -static -no-pie main.o a.o b.o d.o -o progw
+link(mortar) g++ -static -no-pie main.o a.o b.o d.o -Wl,--odr=warn -Wl,--odr-stats -o progw
+  diag: ^mortar: odr-stats: mode warn; units 0,* record findings 0;
+run progw
+  stdout: 32 35 1
+
+#--- h.h
+// V: 1 or 2. Each definition below depends on V in one place.
+__attribute__((noinline)) inline int body() { return V; }
+template <class T> struct Box {
+  T v;
+  __attribute__((noinline)) T get() const { return v + V; }
+};
+inline int ivar = V * 10;
+constexpr int cexpr(int x) { return x + V; }
+__attribute__((noinline)) inline int with_lambda(int x) {
+  auto l = [x](int y) { return x + y + V; };
+  return l(1);
+}
+__attribute__((noinline)) inline int own_default(int k = V) { return k; }
+__attribute__((noinline)) inline int uses_default() { return own_default(); }
+__attribute__((noinline)) inline int partial_body(int k = 3) { return k + V; }
+__attribute__((noinline)) inline int x15(int k = [] { return V; }()) { return k; }
+inline int over(long) { return 1; }
+#if V == 2
+inline int over(int) { return 2; }
+#endif
+__attribute__((noinline)) inline int resolves() { return over(0); }
+template <class T> __attribute__((noinline)) int tf(T) { return 1; }
+#if V == 2
+template <class T> __attribute__((noinline)) int tf(T*) { return 2; }
+#endif
+template <class T> __attribute__((noinline)) int calls_tf(T t) { return tf(&t); }
+template <class T> __attribute__((noinline)) int spec(T) { return 1; }
+#ifdef SPEC_DECL
+template <> int spec<int>(int);
+#endif
+inline int dropped() { return V; }
+#--- u.cc
+#include "h.h"
+#ifdef SPEC_DEF
+template <> int spec<int>(int) { return 2; }
+#endif
+int UNIT() {
+  volatile int z = 0;
+  return body() + Box<int>{1}.get() + ivar + cexpr(z) + with_lambda(1) + own_default(5) +
+         uses_default() + partial_body() + x15() + resolves() + calls_tf(1) + spec(1)
+#ifdef USE_DROPPED
+         + dropped()
+#endif
+      ;
+}
+#--- d.cc
+#include "h.h"
+int fd() { return dropped(); }
+#--- main.cc
+#include <cstdio>
+int fa();
+int fb();
+int fd();
+int main() { std::printf("%d %d %d\n", fa(), fb(), fd()); }

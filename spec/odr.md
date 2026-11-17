@@ -154,7 +154,8 @@ assumed), or if it is one of these exclusions.
   FALSE finding under `--odr=strict` (kind 2 is strict's, O-47; fmt's
   chrono test, two keys per standard library). Not excluded by mortar
   (it sees two hashes, not the callee symbols); it ends with kiln's
-  K-3e and its scheme.
+  K-3e and its scheme (`.d4`: measured gone, O-10 "kiln K-3e, measured"
+  item 1; units of `.d2` or `.d3` still have it among themselves).
 - **X19** C-linkage signature differences that O-33's conservative
   canonical C type maps to one string (record types, `va_list`
   spellings, `noexcept`, reference vs pointer, `restrict`): equal under
@@ -571,6 +572,116 @@ template-parameter count is in scope at the call (the miss is then
 counted, not silent). This is kiln's K-3e, with a scheme bump; until
 then it is X24.
 
+**kiln K-3d, measured** (scheme `kiln-odr-1.d3`, kiln b632861e3 and
+kiln's `spec/abi.md` "Closures", "Closure member rows", "Misc area";
+WP-174's probe, WP-199). Where the paragraphs above leave a choice:
+1. A closure is hashed inside its enclosing definition as a stream of
+   its own: the lambda-expression is a token, the closure's index in the
+   definition (numbered at its first appearance like a local, never by
+   mangling number), then the closure's digest: the captures in sema's
+   order (kind, init-capture and pack flags, the captured entity as the
+   enclosing scope names it), the capture initializers, the call
+   operator's declarator (`constexpr` never), `mutable`, a generic
+   lambda's template parameters and requires-clause, the body. The
+   capture-default is not hashed. A difference inside a lambda's body
+   makes the enclosing definition differ (`kiln-k2-differ`:
+   `with_lambda`), and so does a lambda's difference in a caller that
+   inlines it: the 14-unit program's `shared::show`, whose generic
+   lambda calls `str()` (Q6), is now a fourth q6 error beside the
+   lambda's three call-operator specializations (WP-199 §5.2).
+2. The call operator's row, and each emitted specialization of a
+   generic one, hashes a fixed token and the closure's digest as its
+   enclosing definition's walk computed it (then the specialization's
+   function type and template arguments): O-14's closure member row.
+   The static invoker, the conversion function and the member functions
+   of a local class have no row (the local class is hashed where it is
+   declared, inside the enclosing function).
+3. `_Generic` hashes the controlling type and the SELECTED association
+   only: a difference in an association that is not selected is equal
+   (measured: `_Generic(x, int: 1, long: 2)` against `long: 4` with an
+   `int` operand, equal hashes; the selected arm changed, different).
+   The other GNU forms (statement expressions, `__builtin_choose_expr`
+   by its selected operand, `asm`, label addresses, vector and atomic
+   builtins, `offsetof`) and coroutines are hashed (kiln's table).
+4. Three references hash as the per-TU placeholder (`0xA4`), so a
+   difference reached only through them is a miss: an entity or type
+   whose encoding holds a component numbered per unit (X23: an unnamed
+   class or enumeration at namespace scope, a closure declared outside
+   the definition; measured: a namespace-scope `inline auto nsl =
+   [](int){...}` called from an inline function, whose lambda differs
+   between two units, leaves the caller's rows EQUAL, while `nsl`'s own
+   row and its call operator's row report the difference); an inline
+   variable of closure type (kiln K-3a item 8); and, inside an emitted
+   specialization of a generic call operator, a reference to the
+   enclosing scope's captures (kiln's "Closure member rows").
+
+**kiln K-3e, measured** (scheme `kiln-odr-1.d4`, kiln 3b77b13c7 and
+kiln's `spec/abi.md` "Signature area", "Attributes", "Default
+arguments", "`USES_INTERNAL`"; WP-199):
+1. **Callee by entity.** A function template specialization named in a
+   definition is hashed as its template (kind, scope path, name, a
+   digest of its signature with every dependent name by structure) and
+   its canonical template arguments, never by its symbol; names carry no
+   abi tag (own, implicit or inherited), visibility or
+   `exclude_from_explicit_instantiation`. The short form (the template
+   without its signature digest) is used when the signature holds a node
+   the signature area does not cover, and makes the row `PARTIAL` only
+   when the template's scope has another function template of the same
+   name and template parameter count. Measured: the libbuild class of
+   WP-174 (a libc++ built with `_LIBCPP_BUILDING_LIBRARY` names the
+   untagged symbol where its users name the `B9nqe220108`-tagged one) is
+   gone: 0 findings in the 304-test libc++ sample at c++23, c++20 and
+   c++17, with and without `-fmason-metadata-system-unit` on the
+   library (WP-199 §5.4), where `.d2` had 17, 16 and 11; X24 ends with
+   it. Q6 is not changed by it: `str() const` and `str() const &` are
+   two member functions.
+2. **Attributes as a set.** O-10's list as written on the declaration
+   chain, each record (kind, arguments) sorted and deduplicated:
+   `__attribute__((noinline, aligned(16)))` and two separate
+   `__attribute__` lists in the other order hash equal (measured).
+   `target_clones` sets `PARTIAL` (its arguments are not kept;
+   measured, flags 0x21).
+   kiln's table says `[[noreturn]]` and `[[gnu::noreturn]]` are equal;
+   measured with 3b77b13c7 they are not (`[[noreturn]]` hashes apart
+   from `[[gnu::noreturn]]` and `__attribute__((noreturn))`): a kiln
+   defect sent to kiln (WP-199 §7), a possible FALSE finding under
+   strict for a header whose noreturn spelling depends on a macro.
+   A second kiln defect, measured at `-O0`: an inline definition's rows
+   change when the unit declared an ALIGNED type before it (`struct
+   alignas(8) S {...};`, or `<stddef.h>`'s `max_align_t`), although the
+   definition does not name it: `inline void fr() {}` from one header
+   hashes apart in a unit that includes `<stddef.h>` first. kiln
+   d854b23bc does not do it. A FALSE finding under strict whenever two
+   units differ in whether such a type precedes the header (the Mason
+   lane's `ctors` program on kiln's libc++, whose `<cstdio>` does not
+   include `<stddef.h>`: `Rec::Rec` and `Rec::~Rec`); default and warn
+   modes link (WP-199 §7).
+3. **Default arguments at the end of the unit.** Each parameter hashes
+   the default its namespace- or class-scope declarations give it, as
+   accumulated at the end of the unit (an instantiation: the pattern's
+   non-dependent default, a dependent one the fixed token `2`). A
+   definition's own default arguments no longer make its row `PARTIAL`
+   (K-3c item 5): `kiln-k2-differ`'s `own_default` (only its default
+   differs) and `partial_body` are errors, `kiln-define-same-layout`'s
+   `S::get(int k = TRACE)` is a true finding (K8) where `.d3` was
+   silent; a default added by a later redeclaration is hashed
+   (measured: `int late(int k = 5);` after the definition, in one unit
+   only, makes the rows differ: kiln's documented hazard).
+4. **`USES_INTERNAL`** (O-16, flag 16) is written from `.d4` on: set
+   when the definition odr-uses a function or variable with internal
+   linkage, or names a TU-local type, other than its own locals; not by
+   a constant read by value (N17: measured, `return lim;` with a
+   namespace-scope `static const int lim`, no flag). mortar reads it as
+   O-16 says (`kiln-k12-internal`). kiln counts a type that hashes as
+   the per-TU placeholder as TU-local, so a closure type of a lambda in
+   an inline function, nested in a function type or a template argument
+   (`run<lambda>`, `Arr<int (*)(Wrap<lambda>&&), 1>::operator[]`, and
+   libc++'s `std::visit` tables, `__farray::operator[]` and
+   `__base::__at`), sets the flag although that closure type is the
+   same entity in every unit: `odr-internal-reference` then warns
+   under strict (6 warnings in the 14-unit program on libc++; a kiln
+   finding, WP-199 §7).
+
 **O-11 (schemes).** Kind 1's `odr.scheme` names the serialization, the
 attribute list of O-10, the provenance form (per-piece or whole-literal
 placeholders) and the hash function. **Two rows** (ruling of
@@ -695,7 +806,12 @@ already contains, under the same rules (`constexpr` never hashed on a
 closure call operator), so identical source cannot make it differ where
 the enclosing hash agrees; it adds detection where the enclosing
 function was inlined everywhere and the closure's operator was emitted
-(K11 at `-O2`, X1's shape). A definition whose declarator contains a
+(K11 at `-O2`, X1's shape). kiln writes these rows from K-3d (`.d3`)
+on as a fixed token and the closure's digest computed in its enclosing
+definition (O-10 "kiln K-3d, measured" item 2); under `.d2` the lambda
+was one fixed token and the call operator's row `PARTIAL`
+(`kiln-k2-differ`: `with_lambda`'s operator() an error from `.d3` on).
+A definition whose declarator contains a
 lambda gets no row (X15). **One definition, several symbols** (ruling
 of 2026-11-17): every symbol the object defines that names the
 definition gets its own row, with the same hash and flags: the
@@ -1564,6 +1680,11 @@ warning: f(int) violates the one-definition rule
 >>> the definitions differ; a.o and b.o were compiled with different -D options? (compare their command lines)
 ```
 
+- The `-D` note is a guess for one header compiled twice: when the two
+  kind 2 rows' `file` strings name files of different base names
+  (kiln's rows name each definition's own file), it reads instead `the
+  definitions differ and are written in different files (a.cc in a.o,
+  b.cc in b.o)` (WP-174).
 - Places are `spec/diag.md` §2.4's `file:(symbol)`. A kind 5 finding's
   place says what each row is (WP-151): a row with `DEFINITION`
   "defined in", without it "declared in" (as the first class) or
@@ -1582,10 +1703,13 @@ warning: f(int) violates the one-definition rule
   and `producer` (`>>> a.o: source=a.cc, producer=kiln 0.3; b.o:
   source=b.cc, producer=gcc`), first among the notes (WP-073: a
   developer needs "which TU, built by what").
-- Notes that explain, from kind 1: every key other than `source` and
-  `producer` that differs between the two units (`>>> a.o: abi.short-enums=on; b.o: off`, `>>> a.o: std=c++17;
-  b.o: c++20`). The question in the K1 example is printed only when no
-  kind 1 key differs. A kind 5 finding between rows of C and C++
+- Notes from kind 1, as facts beside the finding and never as its
+  cause: every key other than `source` and `producer` that differs
+  between the two units (`>>> the translation units also differ in
+  abi.short-enums (a.o: on; b.o: off)`, `>>> the translation units also
+  differ in std (a.o: c++17; b.o: c++20)`; WP-174: the definition's
+  difference may lie elsewhere, e.g. in a callee's symbol). The question in the K1 example is
+  printed only when no kind 1 key differs. A kind 5 finding between rows of C and C++
   language linkage (O-35, compared by size only) notes only the keys
   that both units carry with `ENFORCE` (O-30), not `lang`, `std` or any
   other key O-32 does not judge between a C and a C++ unit (WP-151;

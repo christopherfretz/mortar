@@ -457,6 +457,7 @@ a row without it is information. Names defined now [kiln]:
 | `abi.struct-return` | `reg`/`mem` (i386 only) | yes | K16e |
 | `abi.char` | `signed`/`unsigned` | yes | |
 | `abi.wchar` | size in bytes | yes | |
+| `abi.wchar-sign` [kiln, from scheme `kiln-odr-1.d5` on; ruling of 2026-11-17] | `signed`/`unsigned` | yes, as `abi.char` | `wchar_t`'s signedness, which `abi.wchar` (the size) does not say: signed on x86-64 and i386, unsigned on AArch64 Linux. A unit without the row (kiln before `.d5`, other producers) is never a party to an O-30 mismatch on it |
 | `abi.long-double` | size in bits | yes | |
 | `isa` | the target feature string the TU was compiled for | no | K16d: `odr.md` O-31 |
 | `reloc-model` [hod; M4; landed: hod H-3, mortar's reader WP-129; request R-MT11] | `static`, `pie` or `pic`: the relocation model hod's code generation used (`-fno-pic` and `dynamic-no-pic`; `-fPIE`; `-fPIC`) | no | `dyn.md` D-117: exact refusal of non-PIC code in a shared object (`static` or `pie` in an object defining an exported preemptible datum refuses it, `non-pic-in-shared-object`; `pic` never exempts) |
