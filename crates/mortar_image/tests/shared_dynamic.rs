@@ -34,14 +34,14 @@ use mortar_synth::dynamic::{
 use mortar_synth::image::{SizeCx, SynthChunk};
 use mortar_testutil::{Scratch, run, target, tool, tools_required};
 
-const LIBRARY: &str = r#"#include <stdio.h>
+const LIBRARY: &str = r"#include <stdio.h>
 int counter = 3;
 __attribute__((constructor)) static void ctor(void) { counter += 1; }
 void myinit(void) { }
 void myfini(void) { }
 int get(void) { return counter; }
 int call_get(void) { return get() + (puts != 0); }
-"#;
+";
 
 /// Loads the library named by its argument and prints `call_get()`.
 const HOST: &str = r#"#include <dlfcn.h>
