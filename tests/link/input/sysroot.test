@@ -1,0 +1,53 @@
+# `--sysroot=DIR` (spec/input.md; GNU ld manual "--sysroot"): a `-L`
+# directory written with a leading `=` is searched under DIR, so
+# `--sysroot=root -L=/lib -la` finds `root/lib/liba.a`. Without the
+# option `-L=/lib` names the system's /lib, which has no liba.a, and the
+# link fails naming `-la`.
+#@ spec: cli.md "§3.3"
+
+as start-%{arch}.s -o start.o
+as helper.s -o helper.o
+ar rcs root/lib/liba.a helper.o
+link ld start.o --sysroot=root -L=/lib -la -o prog
+run prog
+  exit: 42
+link ld start.o -L=/lib -la -o none
+  exit: fail
+  diag(bfd,lld,mortar): -la
+  diag(mold): library not found: a
+
+#--- root/lib/README
+The sysroot's library directory; `ar` writes liba.a here.
+#--- start-aarch64.s
+	.text
+	.globl	_start
+_start:
+	bl	helper
+	mov	x0, #42
+	mov	x8, #93
+	svc	#0
+	.section .note.GNU-stack,"",%progbits
+#--- start-x86_64.s
+	.text
+	.globl	_start
+_start:
+	call	helper
+	movl	$60, %eax
+	movl	$42, %edi
+	syscall
+	.section .note.GNU-stack,"",%progbits
+#--- start-i386.s
+	.text
+	.globl	_start
+_start:
+	call	helper
+	movl	$1, %eax
+	movl	$42, %ebx
+	int	$0x80
+	.section .note.GNU-stack,"",%progbits
+#--- helper.s
+	.text
+	.globl	helper
+helper:
+	ret
+	.section .note.GNU-stack,"",%progbits

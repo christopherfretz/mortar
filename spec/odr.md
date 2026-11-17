@@ -1836,8 +1836,7 @@ Estimates are the receiving agents' own (kiln's and hod's review,
   objects do not exist.
 - **H-3 — the relocation model, in a unit of hod's own** [M4; requested
   by WP-115 (`spec/landed/dyn/WP-110.md` §G.5); mortar's reader WP-129;
-  not yet sent: hod is open to requests since its 1.0.0, and the
-  supervisor sends it once this text is on `main`]. *Context:* mortar
+  sent to hod 2026-11-16]. *Context:* mortar
   refuses, in a shared object, non-PIC code that binds the library's own
   exported data (`spec/dyn.md` D-117). For GCC and Clang objects it
   infers this from relocations and an AArch64 register analysis, which

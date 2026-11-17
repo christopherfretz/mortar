@@ -1,0 +1,48 @@
+# `--no-dynamic-linker` (spec/cli.md §3.2: "an executable is dynamic when
+# the line names a program interpreter (`-dynamic-linker PATH`) and no
+# later `--no-dynamic-linker` cancels it"; dyn.md §4): after
+# `-pie -dynamic-linker PATH` it cancels the interpreter, so the output
+# is a static PIE, with no PT_INTERP, no `.interp` and no PT_PHDR (GNU
+# ld; lld and mold write PT_PHDR, dyn.md §4), and the kernel starts it
+# itself. Without it the same line writes PT_INTERP naming PATH.
+#
+# mortar writes neither dynamic nor PIE output for i386 yet (both are
+# refused by name, dyn/spie/i386-refused.test), so the test runs on the
+# two 64-bit targets.
+# mold's AArch64 static PIE leaves the word at `_GLOBAL_OFFSET_TABLE_`
+# (an 8-byte `.got` of its own) 0, not `_DYNAMIC` as GNU ld and lld write
+# (P-D14, D-32): a reference difference with no anomaly id of plumb.md
+# §10.2, so mold is skipped there (this test's program reads no GOT).
+#@ spec: cli.md "§3.2"
+#@ arch: aarch64 x86_64
+#@ skip(mold,aarch64): mold's GOT word is 0, not _DYNAMIC (P-D14); no anomaly id records it
+
+as start-%{arch}.s -o start.o
+link ld -pie start.o -dynamic-linker /lib/nosuch-ld.so -o interp
+link ld -pie start.o -dynamic-linker /lib/nosuch-ld.so --no-dynamic-linker -o nointerp
+check readelf -lW interp
+  has: INTERP
+  has: Requesting program interpreter: /lib/nosuch-ld.so
+check readelf -lSW nointerp
+  has: DYN
+  not: INTERP
+  not: .interp
+check(bfd,mortar) readelf -lW nointerp
+  not: PHDR
+run nointerp
+  exit: 42
+
+#--- start-aarch64.s
+	.globl	_start
+_start:
+	mov	x0, #42
+	mov	x8, #93
+	svc	#0
+	.section .note.GNU-stack,"",%progbits
+#--- start-x86_64.s
+	.globl	_start
+_start:
+	movl	$60, %eax
+	movl	$42, %edi
+	syscall
+	.section .note.GNU-stack,"",%progbits

@@ -135,14 +135,23 @@ pub fn place_with_copies(
     let info = finish(assignment, link.headers, link.liveness, target)?;
     steps.step("finish", 0, "");
     let ranks = out_ranks_in(assignment, Z { now: options.now, relro: options.relro });
-    let ordered =
-        order(assignment, link.headers, link.resolution, link.liveness, link.folds, &ranks, pool)?;
+    let ordered = order(
+        assignment,
+        link.headers,
+        link.resolution,
+        link.liveness,
+        link.folds,
+        &ranks,
+        options.sort_section,
+        pool,
+    )?;
     steps.step("order", 0, "");
     let keep_empty = start_stop_outputs(assignment, link.resolution, link.symbols);
     let mut warnings = Vec::new();
     let (exec, warn) = executable_stack(link.stack_notes, options.execstack);
     warnings.extend(warn);
     let rules = options.segment_rules(target, exec);
+    let sorted_commons = options.sort_common.map(|d| sort_commons(link.commons, d));
     let inputs = ChunkInputs {
         assignment,
         info: &info,
@@ -152,7 +161,7 @@ pub fn place_with_copies(
         split: link.split,
         merge: link.merge,
         liveness: link.liveness,
-        commons: link.commons,
+        commons: sorted_commons.as_deref().unwrap_or(link.commons),
         synthetic: link.synthetic,
         keep_empty: &keep_empty,
         relro: options.relro,
@@ -207,4 +216,43 @@ pub fn place_with_copies(
     };
     steps.step("placement", 0, "");
     Ok(Placed { placement, rules, staged, warnings, rounds: fixed.rounds })
+}
+
+/// L-88a: `--sort-common`'s order of the commons, by alignment (descending,
+/// or ascending with `=ascending`), ties in `SymbolId` order (the order
+/// [`crate::chunk::commons`] gives).
+#[must_use]
+pub fn sort_commons(commons: &[Common], dir: mortar_core::plan::SortCommon) -> Vec<Common> {
+    let mut v = commons.to_vec();
+    match dir {
+        mortar_core::plan::SortCommon::Descending => {
+            v.sort_by(|a, b| b.align.cmp(&a.align).then(a.symbol.cmp(&b.symbol)));
+        }
+        mortar_core::plan::SortCommon::Ascending => {
+            v.sort_by(|a, b| a.align.cmp(&b.align).then(a.symbol.cmp(&b.symbol)));
+        }
+    }
+    v
+}
+
+#[cfg(test)]
+mod sort_tests {
+    use super::*;
+    use mortar_core::plan::SortCommon;
+
+    // spec: layout.md §12.2 L-88a (by alignment, then SymbolId)
+    #[test]
+    fn l88a_sort_commons() {
+        let c = |symbol: u32, align: u8| Common {
+            symbol: SymbolId(symbol),
+            size: 1,
+            align,
+            tls: false,
+            large: false,
+        };
+        let commons = [c(1, 2), c(2, 6), c(3, 0), c(4, 3), c(5, 6), c(6, 3)];
+        let ids = |v: Vec<Common>| v.iter().map(|c| c.symbol.0).collect::<Vec<_>>();
+        assert_eq!(ids(sort_commons(&commons, SortCommon::Descending)), [2, 5, 4, 6, 1, 3]);
+        assert_eq!(ids(sort_commons(&commons, SortCommon::Ascending)), [3, 1, 4, 6, 2, 5]);
+    }
 }

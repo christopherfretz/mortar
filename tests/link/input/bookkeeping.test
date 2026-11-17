@@ -1,0 +1,79 @@
+# The bookkeeping options (spec/cli.md §3.10, §3.13): none changes the
+# output's bytes but `--incremental` itself.
+# - `--threads=N`, `--threads` (lld's and mold's): the same bytes. lld
+#   takes no `--threads` without N (it reads the next word as N).
+# - `--time-phases` (mortar's): a line per phase on standard error,
+#   `time-phases: 10 command line: wall ...`; the same bytes.
+# - `--mortar-map FILE` (mortar's): the machine-readable map, whose first
+#   line is `mortar-map 2` (image.md I-120). The harness reads that file
+#   for L3 instead of adding its own.
+# - `--incremental-state PATH` and `--incremental-report[=FILE]`: under
+#   `--incremental` the state is kept at PATH and the report (spec/cli.md
+#   §3.13, IN-10's first line `incremental: full (<reason>) ...`) goes to
+#   FILE, or to standard error when no FILE is given; a second link finds
+#   the state (its reason is no longer `no-state`). That second report
+#   goes to a file: its `delta inputs` line says `clean` or `hashed-same`
+#   by the input's stamp, which differs between hosts, and the
+#   byte-identical lane digests standard error (WP-112).
+# - `--no-incremental` (the default) after `--incremental`: a plain link,
+#   the same bytes as no option, and no report.
+#@ spec: cli.md "§3.13"
+
+as start-%{arch}.s -o start.o
+link ld start.o -o plain
+link(lld,mold,mortar) ld start.o --threads=2 -o t2
+link(mold,mortar) ld start.o --threads -o tall
+check(lld,mold,mortar) cmp t2 plain
+  has: ^identical$
+check(mold,mortar) cmp tall plain
+  has: ^identical$
+link(mortar) ld start.o --time-phases -o timed
+  diag: ^*: time-phases: 10 command line: wall 
+check(mortar) cmp timed plain
+  has: ^identical$
+link(mortar) ld start.o --mortar-map my.map -o mapped
+check(mortar) text my.map
+  has: ^mortar-map 2$
+  has: start.o
+check(mortar) cmp mapped plain
+  has: ^identical$
+
+link(mortar) ld start.o --incremental --incremental-state=inc.state --incremental-report=inc.report -o inc
+run(mortar) inc
+  exit: 42
+check(mortar) text inc.report
+  has: ^incremental: full (no-state) 
+check(mortar) cmp inc.state inc.state
+  has: ^identical$
+link(mortar) ld start.o --incremental --incremental-state=inc.state --incremental-report=again.report -o inc
+check(mortar) text again.report
+  has: ^incremental: full (
+  not: no-state
+link(mortar) ld start.o --incremental --incremental-state=fresh.state --incremental-report -o fresh
+  diag: ^incremental: full (no-state) 
+link(mortar) ld start.o --incremental --incremental-report --no-incremental -o noinc
+  no-diag: incremental:
+check(mortar) cmp noinc plain
+  has: ^identical$
+
+#--- start-aarch64.s
+	.globl	_start
+_start:
+	mov	x0, #42
+	mov	x8, #93
+	svc	#0
+	.section .note.GNU-stack,"",%progbits
+#--- start-x86_64.s
+	.globl	_start
+_start:
+	movl	$60, %eax
+	movl	$42, %edi
+	syscall
+	.section .note.GNU-stack,"",%progbits
+#--- start-i386.s
+	.globl	_start
+_start:
+	movl	$1, %eax
+	movl	$42, %ebx
+	int	$0x80
+	.section .note.GNU-stack,"",%progbits

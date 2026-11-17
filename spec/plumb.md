@@ -147,11 +147,14 @@ define <name> <value>
 incremental
 hole <output-section> <offset> <size>
 dead <output-section> <offset> <size> neutral|contribution|strings|cie
-output static|exec|pie|static-pie
+output static|exec|pie|static-pie|shared
 interp <path>
 runpath|rpath <paths>
 bind lazy|now
 relro on|off
+symbolic none|all|functions
+dynamic-list <path>
+version-script <path>
 arg <word>
 needed <name>
 copy <name> <addr> <size> <align>
@@ -205,7 +208,7 @@ the incremental records and end the map.
 
 | record | count | meaning |
 |---|---|---|
-| `output <kind>` | at most one | the output kind of `dyn.md` D-1: `static`, `exec`, `pie`, `static-pie` |
+| `output <kind>` | at most one | the output kind of `dyn.md` D-1: `static`, `exec`, `pie`, `static-pie`; `shared` (planned, WP-116) |
 | `interp <path>` | at most one | the `-dynamic-linker` path |
 | `runpath <paths>`, `rpath <paths>` | at most one of the two | the `-rpath` list joined by `:` as written (`$ORIGIN` kept); `rpath` under `--disable-new-dtags` (`DT_RPATH`) |
 | `bind lazy`, `bind now` | at most one | `-z now` in force or not |
@@ -226,6 +229,27 @@ order, the copies, the export set, PLT order) is recomputed from the
 inputs (§12), and a hint only names what is compared. A
 second `output`, `interp`, `runpath`/`rpath`, `bind` or `relro` record
 is a `MapError`.
+
+**The shared-object line records** (planned, WP-116; read by WP-121
+for §12.5). A `-shared` link (`dyn.md` D-1's `Shared`, `output shared`)
+writes three more facts of its line, after `relro` and before `arg`;
+every other map writes none of them, so no existing map changes. They
+are facts of the command line like the first five dynamic records: the
+verifier recomputes each from the `arg` words and reports a record that
+disagrees. Today no link writes them (`-shared` is refused, `cli.md`
+§4.2): the writer is `mortar_image::map::{DynRecords::shared,
+SharedLine}` with its tests (`map::tests::s3_2_shared_line_records`,
+`s3_2_no_shared_line_records_outside_shared`); the reader is WP-121's.
+
+| record | count | meaning |
+|---|---|---|
+| `symbolic none\|all\|functions` | exactly one in a `Shared` map, none in any other | the line's symbolic form as `dyn.md` D-112 resolves it: the last of `-Bsymbolic` (`all`), `-Bsymbolic-functions` (`functions`) and `-Bno-symbolic` (`none`), `none` without any. `all` with a `dynamic-list` record does not write `DF_SYMBOLIC` (D-112); the reader derives that from the two records, nothing more is written. A line whose last form is `-Bsymbolic-non-weak` or `-Bsymbolic-non-weak-functions` is refused (D-112) and writes no map |
+| `dynamic-list <path>` | one per `--dynamic-list` file, in line order | the path as the line names it (response files expanded, not searched); a `Shared` map only |
+| `version-script <path>` | one per `--version-script`/`-version-script` file, in line order | as `dynamic-list`; a `Shared` map only |
+
+A second `symbolic` record, an unknown form, a wrong number of fields,
+or any of the three in a map whose `output` is not `shared` is a
+`MapError`.
 
 **The incremental records** (§6.8; `spec/incr.md` IN-3a, IN-60;
 WP-091) follow `define` and come before the dynamic records. A link

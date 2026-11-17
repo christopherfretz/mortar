@@ -1,0 +1,46 @@
+# `-v` and `-V` (spec/cli.md §5.1: "`-v` prints the same line and
+# parsing goes on"; "`-V` prints the line, then `  Supported emulations:`
+# and the four names"): on a line with inputs the version is printed
+# and the link is made, the same bytes as without the option. GNU ld,
+# lld and mold all print it and link.
+# (WP-112's finding F1, mortar printing nothing on a line with inputs,
+# was fixed by WP-111.)
+#@ spec: cli.md "§5.1"
+
+as start-%{arch}.s -o start.o
+link ld start.o -o plain
+link ld start.o -v -o v
+  print(bfd): ^GNU ld 
+  print(lld,mold,mortar): (compatible with GNU *)$
+link ld -V start.o -o vv
+  print(bfd): ^GNU ld 
+  print(lld,mold,mortar): (compatible with GNU *)$
+  print(bfd,mold,mortar): ^  Supported emulations:$
+run v
+  exit: 42
+check cmp v plain
+  has: ^identical$
+check cmp vv plain
+  has: ^identical$
+
+#--- start-aarch64.s
+	.globl	_start
+_start:
+	mov	x0, #42
+	mov	x8, #93
+	svc	#0
+	.section .note.GNU-stack,"",%progbits
+#--- start-x86_64.s
+	.globl	_start
+_start:
+	movl	$60, %eax
+	movl	$42, %edi
+	syscall
+	.section .note.GNU-stack,"",%progbits
+#--- start-i386.s
+	.globl	_start
+_start:
+	movl	$1, %eax
+	movl	$42, %ebx
+	int	$0x80
+	.section .note.GNU-stack,"",%progbits

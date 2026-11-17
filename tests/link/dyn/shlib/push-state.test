@@ -1,0 +1,40 @@
+# `--push-state` and `--pop-state` (spec/cli.md §3.3, the positional
+# state; GNU ld manual "--push-state"): `--pop-state` restores the state
+# (`-Bstatic`/`-Bdynamic`, `--as-needed`, `--whole-archive`) that the
+# last `--push-state` saved. After `--push-state -Bstatic --pop-state`,
+# `-lgreet` finds `libgreet.so` again and the program needs it, the same
+# bytes as the line with neither; after `--push-state -Bstatic` alone it
+# takes `libgreet.a`.
+#
+# mold 2.37 MISLINKS both lines with `--push-state`: after
+# `--push-state -Bstatic --pop-state -lgreet` it writes PT_INTERP,
+# `.dynsym`, a PLT and a JUMP_SLOT record for `greet`, but no `.dynamic`
+# and no DT_NEEDED, and the program crashes at start (SIGSEGV, both
+# architectures); the line with `-lgreet` inside the pair crashes too.
+# The verifier passes those outputs (WP-112 finding V5: an output with
+# PT_INTERP and dynamic records but no PT_DYNAMIC is not reported), so
+# mold is skipped.
+#@ spec: cli.md "§3.3"
+#@ arch: aarch64 x86_64
+#@ fixture: greet
+#@ skip(mold): mold 2.37 writes a dynamic program without .dynamic after --push-state/--pop-state, which crashes (WP-112 V5)
+
+cc -O1 -fno-pie main.c -o main.o
+ar rcs libgreet.a greet.o
+link gcc -no-pie main.o -L. -lgreet -o plain
+link gcc -no-pie main.o -L. -Wl,--push-state,-Bstatic -Wl,--pop-state -lgreet -o popped
+link gcc -no-pie main.o -L. -Wl,--push-state,-Bstatic -lgreet -Wl,--pop-state -o pushed
+run popped
+  stdout: hello, state
+run pushed
+  stdout: hello, state
+check readelf -dW popped
+  has: (NEEDED) * Shared library: [libgreet.so]
+check readelf -dW pushed
+  not: libgreet.so
+check(bfd,mortar) cmp popped plain
+  has: ^identical$
+
+#--- main.c
+#include "greet.h"
+int main(void) { greet("state"); return 0; }

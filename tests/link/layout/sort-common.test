@@ -1,0 +1,112 @@
+# `--sort-common` allocates the common symbols of `.bss` by alignment,
+# largest first (`=descending`, the default) or smallest first
+# (`=ascending`); ties by `SymbolId` (layout.md L-88a). GNU ld 2.44 sorts
+# by the classes 16 and over, 8, 4, 2, 1 (descending) or 1, 2, 4, 8, 16
+# and over (ascending) and leaves ties in its hash table's order, so the
+# order of commons of distinct classes is checked against GNU ld, and
+# mortar's order of ties and inside the class 16 and over on its own.
+# lld and mold accept `--sort-common` and ignore it (they reject a
+# value): their order is not checked. The program checks each common's
+# alignment and that the commons do not overlap.
+#@ spec: layout.md L-88a
+
+as commons.s -o commons.o
+cc -O1 main.c -o main.o
+link gcc -static -no-pie main.o commons.o -Wl,--sort-common -o desc
+run desc
+  stdout: ok
+check nm -n desc
+  has: c1$
+  has(bfd,mortar): B c16$
+  then(bfd,mortar): B c8a$
+  then(bfd,mortar): B c4$
+  then(bfd,mortar): B c2$
+  then(bfd,mortar): B c1$
+  has(mortar): B c64$
+  then(mortar): B c32$
+  then(mortar): B c16$
+  then(mortar): B c8a$
+  then(mortar): B c8b$
+  then(mortar): B c8c$
+  then(mortar): B c4$
+link(bfd,mortar) gcc -static -no-pie main.o commons.o -Wl,--sort-common=descending -o desc2
+run(bfd,mortar) desc2
+  stdout: ok
+check(bfd,mortar) nm -n desc2
+  has: B c16$
+  then: B c8a$
+  then: B c4$
+  then: B c2$
+  then: B c1$
+link(bfd,mortar) gcc -static -no-pie main.o commons.o -Wl,--sort-common=ascending -o asc
+run(bfd,mortar) asc
+  stdout: ok
+check(bfd,mortar) nm -n asc
+  has: B c1$
+  then: B c2$
+  then: B c4$
+  then: B c8a$
+  then: B c16$
+  has(mortar): B c1$
+  then(mortar): B c4$
+  then(mortar): B c8a$
+  then(mortar): B c8b$
+  then(mortar): B c8c$
+  then(mortar): B c16$
+  then(mortar): B c32$
+  then(mortar): B c64$
+
+#--- commons.s
+	.comm	c4,5,4
+	.comm	c64,3,64
+	.comm	c8b,3,8
+	.comm	c1,3,1
+	.comm	c32,7,32
+	.comm	c8a,9,8
+	.comm	c16,5,16
+	.comm	c2,3,2
+	.comm	c8c,1,8
+#--- main.c
+#include <stdint.h>
+#include <stdio.h>
+
+extern char c1[3], c2[3], c4[5], c8a[9], c8b[3], c8c[1], c16[5], c32[7], c64[3];
+
+struct c { char *p; unsigned size, align; };
+
+int main(void) {
+  struct c cs[] = {
+    {c1, 3, 1}, {c2, 3, 2}, {c4, 5, 4}, {c8a, 9, 8}, {c8b, 3, 8},
+    {c8c, 1, 8}, {c16, 5, 16}, {c32, 7, 32}, {c64, 3, 64},
+  };
+  unsigned n = sizeof cs / sizeof cs[0];
+  for (unsigned i = 0; i < n; i++) {
+    if ((uintptr_t)cs[i].p % cs[i].align != 0) {
+      printf("misaligned %u\n", i);
+      return 1;
+    }
+    for (unsigned j = 0; j < n; j++) {
+      if (i != j && cs[i].p <= cs[j].p && cs[j].p < cs[i].p + cs[i].size) {
+        printf("overlap %u %u\n", i, j);
+        return 1;
+      }
+    }
+    for (unsigned k = 0; k < cs[i].size; k++) {
+      if (cs[i].p[k] != 0) {
+        printf("not zero %u\n", i);
+        return 1;
+      }
+      cs[i].p[k] = (char)i;
+    }
+  }
+  for (unsigned i = 0; i < n; i++) {
+    for (unsigned k = 0; k < cs[i].size; k++) {
+      if (cs[i].p[k] != (char)i) {
+        printf("clobbered %u\n", i);
+        return 1;
+      }
+    }
+  }
+  printf("ok\n");
+  return 0;
+}

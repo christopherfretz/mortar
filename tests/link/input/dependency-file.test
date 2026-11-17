@@ -1,0 +1,75 @@
+# `--dependency-file=FILE` (spec/input.md §10.4; GNU ld manual
+# "--dependency-file"): the link also writes FILE, a Make rule whose
+# target is the output and whose prerequisites are the files the link
+# read, each followed by an empty rule of its own, so that Make neither
+# fails nor rebuilds when one is removed. CMake (3.31) passes it to every
+# link it makes. It changes nothing in the output: the program is the
+# same bytes as the link's without the option.
+#
+# The references DIFFER in two ways (spec/harness.md "Where the
+# references differ"): GNU ld indents a prerequisite by two blanks, lld by
+# one, mold writes them on the target's line; and GNU ld lists a file once
+# per mention (`-la lib/liba.a` lists lib/liba.a twice), lld and mold once.
+# mortar writes lld's form, each file once.
+#@ spec: input.md "§10.4"
+
+as start-%{arch}.s -o start.o
+as helper.s -o helper.o
+ar rcs lib/liba.a helper.o
+link ld start.o -Llib -la --dependency-file=start.d -o prog
+link ld start.o -Llib -la -o plain
+link ld start.o -Llib -la lib/liba.a --dependency-file start2.d -o twice
+run prog
+  exit: 42
+check cmp prog plain
+  has: ^identical$
+check text start.d
+  has(bfd): ^prog: \\$
+  then(bfd): ^  start.o \\$
+  then(bfd): ^  lib/liba.a$
+  has(lld,mortar): ^prog: \\$
+  then(lld,mortar): ^ start.o \\$
+  then(lld,mortar): ^ lib/liba.a$
+  has(mold): ^prog: start.o lib/liba.a$
+  has: ^start.o:$
+  then: ^lib/liba.a:$
+check text start2.d
+  has: ^twice:
+  count(bfd): 2 ^lib/liba.a:$
+  count(lld,mold,mortar): 1 ^lib/liba.a:$
+
+#--- start-aarch64.s
+	.text
+	.globl	_start
+_start:
+	bl	helper
+	mov	x0, #42
+	mov	x8, #93		// exit
+	svc	#0
+	.section .note.GNU-stack,"",%progbits
+#--- start-x86_64.s
+	.text
+	.globl	_start
+_start:
+	call	helper
+	movl	$60, %eax	# exit
+	movl	$42, %edi
+	syscall
+	.section .note.GNU-stack,"",%progbits
+#--- start-i386.s
+	.text
+	.globl	_start
+_start:
+	call	helper
+	movl	$1, %eax	# exit
+	movl	$42, %ebx
+	int	$0x80
+	.section .note.GNU-stack,"",%progbits
+#--- helper.s
+	.text
+	.globl	helper
+helper:
+	ret
+	.section .note.GNU-stack,"",%progbits
+#--- lib/README
+The directory -Llib searches; `ar` writes lib/liba.a here.

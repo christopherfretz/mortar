@@ -1,0 +1,54 @@
+# `--no-build-id` (mold's; spec/synth.md S-91): no `.note.gnu.build-id`.
+# It undoes an earlier `--build-id` (the last one wins), as a compiler
+# driver's `--build-id` is undone by a later `-Wl,--no-build-id`: the
+# output is then the same bytes as the link's without either option, and
+# the same as with `--build-id=none`, the spelling GNU ld and lld take for
+# it (neither knows `--no-build-id`: "unrecognized option", "unknown
+# argument"; so those lines are mold's and mortar's).
+#@ spec: synth.md "S-91"
+
+as start-%{arch}.s -o start.o
+link ld start.o -o plain
+link ld --build-id start.o -o with
+link ld --build-id --build-id=none start.o -o none
+link(mold,mortar) ld --build-id --no-build-id start.o -o undone
+link(mold,mortar) ld --no-build-id start.o -o alone
+run with
+  exit: 42
+check readelf -nW with
+  has: NT_GNU_BUILD_ID
+check readelf -nW none
+  not: NT_GNU_BUILD_ID
+check cmp none plain
+  has: ^identical$
+check(mold,mortar) cmp undone plain
+  has: ^identical$
+check(mold,mortar) cmp alone plain
+  has: ^identical$
+check(mold,mortar) readelf -SW undone
+  not: .note.gnu.build-id
+
+#--- start-aarch64.s
+	.text
+	.globl	_start
+_start:
+	mov	x0, #42
+	mov	x8, #93		// exit
+	svc	#0
+	.section .note.GNU-stack,"",%progbits
+#--- start-x86_64.s
+	.text
+	.globl	_start
+_start:
+	movl	$60, %eax	# exit
+	movl	$42, %edi
+	syscall
+	.section .note.GNU-stack,"",%progbits
+#--- start-i386.s
+	.text
+	.globl	_start
+_start:
+	movl	$1, %eax	# exit
+	movl	$42, %ebx
+	int	$0x80
+	.section .note.GNU-stack,"",%progbits

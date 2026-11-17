@@ -1283,7 +1283,7 @@ locally": the library has `DT_SYMBOLIC` or `DF_SYMBOLIC`, or a
 never its section headers; where the definition's `st_value` lies:
 
 - in a `PT_LOAD` with `PF_W` and outside every `PT_GNU_RELRO`: refused,
-  `copy-of-locally-bound-definition` (diag.md §3.4, planned), naming the
+  `copy-of-locally-bound-definition` (diag.md §3.1, WP-116), naming the
   symbol and the library;
 - in a read-only `PT_LOAD` or inside a `PT_GNU_RELRO`: the same kind as
   a warning, with the note `{name} is read-only in {file}: two equal

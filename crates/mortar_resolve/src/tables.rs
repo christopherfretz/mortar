@@ -918,6 +918,8 @@ pub fn resolution<V: View>(
         imported: set(dynamic.map(|d| &d.imported)),
         ref_dynamic: set(dynamic.map(|d| &d.ref_dynamic)),
         defined_dynamic: set(dynamic.map(|d| &d.defined_dynamic)),
+        // `spec/model.md` §3.3 (R-M10): empty outside `Shared`; WP-117 fills it.
+        preemptible: IdSet::new(),
     })
 }
 

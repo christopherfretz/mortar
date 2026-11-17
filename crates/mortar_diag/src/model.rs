@@ -307,12 +307,21 @@ pub enum Kind {
     /// `common-overridden`: under `--warn-common`, a definition overrides
     /// a common symbol (`spec/resolve.md` §3.3).
     CommonOverridden { name: String },
+    /// `copy-of-locally-bound-definition` (`spec/dyn.md` D-43a, M4): a
+    /// `COPY` demand on `name`, which the shared object `file` binds to
+    /// itself, so the program and `file` would use two objects. An error;
+    /// a warning where D-43a says so (read-only data).
+    CopyOfLocallyBoundDefinition { name: String, file: String },
     /// `discarded-section-reference`: a relocation refers to a symbol of
     /// a section of a discarded COMDAT copy (`spec/resolve.md` §6.3).
     DiscardedSectionReference { name: String },
     /// `duplicate-symbol`: two definitions that may not coexist. `name` is
     /// the name as the symbol table has it (mangled).
     DuplicateSymbol { name: String },
+    /// `duplicate-version-pattern` (`spec/resolve.md` §9.7, `spec/dyn.md`
+    /// D-114, M4): one entry, `pattern`, is listed as `global:` in the
+    /// version node `first` and as `local:` in `second`.
+    DuplicateVersionPattern { pattern: String, first: String, second: String },
     /// `entry-not-found`: the entry symbol is not defined
     /// (`spec/resolve.md` §5.5).
     EntryNotFound { name: String },
@@ -333,6 +342,9 @@ pub enum Kind {
     /// `tls-mismatch`: a TLS and a non-TLS mention of one key
     /// (`spec/resolve.md` §3.4).
     TlsMismatch { name: String },
+    /// `undefined-init-symbol` (`spec/dyn.md` D-102 rows 3-4, M4): an
+    /// explicit `-init` or `-fini` names `name`, which is not defined.
+    UndefinedInitSymbol { name: String },
     /// `undefined-symbol`: a key with surviving references and no
     /// definition, one diagnostic per key (`spec/resolve.md` §5.3).
     /// `name` is the name as the symbol table has it (mangled).
@@ -343,6 +355,14 @@ pub enum Kind {
     /// `version-reassigned`: a version script assigns `name` to two
     /// versions; `first` is kept (`spec/resolve.md` §9.7).
     VersionReassigned { name: String, first: String, second: String },
+    /// `version-script-undefined-name` (a warning, `spec/dyn.md` D-114,
+    /// M4): the version script assigns the exact name `name` to `version`
+    /// and no file defines it.
+    VersionScriptUndefinedName { name: String, version: String },
+    /// `versioned-definition-hidden` (a warning, `spec/resolve.md` §9.7
+    /// rule 12, M4): the `.symver` definition `name@version` is made local
+    /// by node `version`'s `local:` entries.
+    VersionedDefinitionHidden { name: String, version: String },
     /// `versioned-export` (`spec/dyn.md` D-27): an exported definition
     /// `name@@version` of an executable, which would need a version
     /// definition (`.gnu.version_d`, M4).
@@ -411,6 +431,14 @@ pub enum Kind {
     /// demand on `name`, whose shared definition has `st_size` 0. lld's
     /// words.
     CopyRelocationOfZeroSize { name: String },
+    /// `non-pic-in-shared-object` (`spec/dyn.md` D-117, M4): the
+    /// relocation `r_type` binds a use of `name` inside a shared object
+    /// although `name` may bind elsewhere at run time. For the
+    /// address-level rule `name` is the preemptible definition the address
+    /// lies in (a note names the relocation's own symbol and place); for
+    /// the analysis a note names the function, the offset and the forming
+    /// relocation. `file` is the input object. GNU ld's words.
+    NonPicInSharedObject { r_type: String, name: String, file: String },
     /// `relocation-incompatible`: the relocation `r_type` (its ABI name)
     /// cannot be used against `name` in this output, for `reason`. `name`
     /// is the symbol-table name, or the section and offset of a section
@@ -481,7 +509,7 @@ pub enum Kind {
 
 impl Kind {
     /// Every stable id, in the order of `spec/diag.md` §3.1.
-    pub const IDS: [&'static str; 76] = [
+    pub const IDS: [&'static str; 82] = [
         "conflicting-options",
         "invalid-option-value",
         "missing-argument",
@@ -514,8 +542,10 @@ impl Kind {
         "common-alignment",
         "common-larger-than-definition",
         "common-overridden",
+        "copy-of-locally-bound-definition",
         "discarded-section-reference",
         "duplicate-symbol",
+        "duplicate-version-pattern",
         "entry-not-found",
         "gnu-warning",
         "linker-symbol-redefined",
@@ -523,9 +553,12 @@ impl Kind {
         "non-exported-symbol",
         "required-symbol",
         "tls-mismatch",
+        "undefined-init-symbol",
         "undefined-symbol",
         "undefined-version",
         "version-reassigned",
+        "version-script-undefined-name",
+        "versioned-definition-hidden",
         "versioned-export",
         "meta-malformed",
         "meta-version",
@@ -544,6 +577,7 @@ impl Kind {
         "canonical-plt-in-pie",
         "copy-relocation-against-protected",
         "copy-relocation-of-zero-size",
+        "non-pic-in-shared-object",
         "relocation-incompatible",
         "relocation-misaligned",
         "relocation-out-of-range",
@@ -597,8 +631,10 @@ impl Kind {
             Self::CommonAlignment { .. } => "common-alignment",
             Self::CommonLargerThanDefinition { .. } => "common-larger-than-definition",
             Self::CommonOverridden { .. } => "common-overridden",
+            Self::CopyOfLocallyBoundDefinition { .. } => "copy-of-locally-bound-definition",
             Self::DiscardedSectionReference { .. } => "discarded-section-reference",
             Self::DuplicateSymbol { .. } => "duplicate-symbol",
+            Self::DuplicateVersionPattern { .. } => "duplicate-version-pattern",
             Self::EntryNotFound { .. } => "entry-not-found",
             Self::GnuWarning { .. } => "gnu-warning",
             Self::LinkerSymbolRedefined { .. } => "linker-symbol-redefined",
@@ -606,9 +642,12 @@ impl Kind {
             Self::NonExportedSymbol { .. } => "non-exported-symbol",
             Self::RequiredSymbol { .. } => "required-symbol",
             Self::TlsMismatch { .. } => "tls-mismatch",
+            Self::UndefinedInitSymbol { .. } => "undefined-init-symbol",
             Self::UndefinedSymbol { .. } => "undefined-symbol",
             Self::UndefinedVersion { .. } => "undefined-version",
             Self::VersionReassigned { .. } => "version-reassigned",
+            Self::VersionScriptUndefinedName { .. } => "version-script-undefined-name",
+            Self::VersionedDefinitionHidden { .. } => "versioned-definition-hidden",
             Self::VersionedExport { .. } => "versioned-export",
             Self::MetaMalformed { .. } => "meta-malformed",
             Self::MetaVersion { .. } => "meta-version",
@@ -627,6 +666,7 @@ impl Kind {
             Self::CanonicalPltInPie { .. } => "canonical-plt-in-pie",
             Self::CopyRelocationAgainstProtected { .. } => "copy-relocation-against-protected",
             Self::CopyRelocationOfZeroSize { .. } => "copy-relocation-of-zero-size",
+            Self::NonPicInSharedObject { .. } => "non-pic-in-shared-object",
             Self::RelocationIncompatible { .. } => "relocation-incompatible",
             Self::RelocationMisaligned { .. } => "relocation-misaligned",
             Self::RelocationOutOfRange { .. } => "relocation-out-of-range",
@@ -655,6 +695,7 @@ impl Kind {
             | Self::CommonAlignment { name }
             | Self::CommonLargerThanDefinition { name }
             | Self::CommonOverridden { name }
+            | Self::CopyOfLocallyBoundDefinition { name, .. }
             | Self::DiscardedSectionReference { name }
             | Self::DuplicateSymbol { name }
             | Self::EntryNotFound { name }
@@ -663,9 +704,12 @@ impl Kind {
             | Self::NonExportedSymbol { name }
             | Self::RequiredSymbol { name }
             | Self::TlsMismatch { name }
+            | Self::UndefinedInitSymbol { name }
             | Self::UndefinedSymbol { name }
             | Self::UndefinedVersion { name, .. }
             | Self::VersionReassigned { name, .. }
+            | Self::VersionScriptUndefinedName { name, .. }
+            | Self::VersionedDefinitionHidden { name, .. }
             | Self::VersionedExport { name, .. }
             | Self::OdrContentsMismatch { name }
             | Self::OdrDeclarationMismatch { name }
@@ -681,6 +725,7 @@ impl Kind {
             | Self::CanonicalPltInPie { name, .. }
             | Self::CopyRelocationAgainstProtected { name, .. }
             | Self::CopyRelocationOfZeroSize { name }
+            | Self::NonPicInSharedObject { name, .. }
             | Self::RelocationIncompatible { name, .. }
             | Self::RelocationOutOfRange { name, .. }
             | Self::TextRelocation { name, .. }
@@ -1016,50 +1061,56 @@ mod tests {
             Kind::CommonAlignment { .. } => 29,
             Kind::CommonLargerThanDefinition { .. } => 30,
             Kind::CommonOverridden { .. } => 31,
-            Kind::DiscardedSectionReference { .. } => 32,
-            Kind::DuplicateSymbol { .. } => 33,
-            Kind::EntryNotFound { .. } => 34,
-            Kind::GnuWarning { .. } => 35,
-            Kind::LinkerSymbolRedefined { .. } => 36,
-            Kind::MultipleCommon { .. } => 37,
-            Kind::NonExportedSymbol { .. } => 38,
-            Kind::RequiredSymbol { .. } => 39,
-            Kind::TlsMismatch { .. } => 40,
-            Kind::UndefinedSymbol { .. } => 41,
-            Kind::UndefinedVersion { .. } => 42,
-            Kind::VersionReassigned { .. } => 43,
-            Kind::VersionedExport { .. } => 44,
-            Kind::MetaMalformed { .. } => 45,
-            Kind::MetaVersion { .. } => 46,
-            Kind::OdrAbiMismatch { .. } => 47,
-            Kind::OdrArchiveShadow { .. } => 48,
-            Kind::OdrContentsMismatch { .. } => 49,
-            Kind::OdrDeclarationMismatch { .. } => 50,
-            Kind::OdrInternalReference { .. } => 51,
-            Kind::OdrIsaMismatch { .. } => 52,
-            Kind::OdrSizeMismatch { .. } => 53,
-            Kind::OdrStrongAndComdat { .. } => 54,
-            Kind::OdrSymbolTypeMismatch { .. } => 55,
-            Kind::OdrTypeMismatch { .. } => 56,
-            Kind::OdrViolation { .. } => 57,
-            Kind::OdrVtableRttiMismatch { .. } => 58,
-            Kind::CanonicalPltInPie { .. } => 59,
-            Kind::CopyRelocationAgainstProtected { .. } => 60,
-            Kind::CopyRelocationOfZeroSize { .. } => 61,
-            Kind::RelocationIncompatible { .. } => 62,
-            Kind::RelocationMisaligned { .. } => 63,
-            Kind::RelocationOutOfRange { .. } => 64,
-            Kind::TextRelocation { .. } => 65,
-            Kind::WeakUndefinedPcInPie { .. } => 66,
-            Kind::ExecutableStack { .. } => 67,
-            Kind::OutputTooLarge { .. } => 68,
-            Kind::SectionConflict { .. } => 69,
-            Kind::IncrementalNotReproducible => 70,
-            Kind::IncrementalUnsupported { .. } => 71,
-            Kind::IncrementalUpdateFailed { .. } => 72,
-            Kind::IncrementalFileClash { .. } => 73,
-            Kind::Refused { .. } => 74,
-            Kind::InternalError { .. } => 75,
+            Kind::CopyOfLocallyBoundDefinition { .. } => 32,
+            Kind::DiscardedSectionReference { .. } => 33,
+            Kind::DuplicateSymbol { .. } => 34,
+            Kind::DuplicateVersionPattern { .. } => 35,
+            Kind::EntryNotFound { .. } => 36,
+            Kind::GnuWarning { .. } => 37,
+            Kind::LinkerSymbolRedefined { .. } => 38,
+            Kind::MultipleCommon { .. } => 39,
+            Kind::NonExportedSymbol { .. } => 40,
+            Kind::RequiredSymbol { .. } => 41,
+            Kind::TlsMismatch { .. } => 42,
+            Kind::UndefinedInitSymbol { .. } => 43,
+            Kind::UndefinedSymbol { .. } => 44,
+            Kind::UndefinedVersion { .. } => 45,
+            Kind::VersionReassigned { .. } => 46,
+            Kind::VersionScriptUndefinedName { .. } => 47,
+            Kind::VersionedDefinitionHidden { .. } => 48,
+            Kind::VersionedExport { .. } => 49,
+            Kind::MetaMalformed { .. } => 50,
+            Kind::MetaVersion { .. } => 51,
+            Kind::OdrAbiMismatch { .. } => 52,
+            Kind::OdrArchiveShadow { .. } => 53,
+            Kind::OdrContentsMismatch { .. } => 54,
+            Kind::OdrDeclarationMismatch { .. } => 55,
+            Kind::OdrInternalReference { .. } => 56,
+            Kind::OdrIsaMismatch { .. } => 57,
+            Kind::OdrSizeMismatch { .. } => 58,
+            Kind::OdrStrongAndComdat { .. } => 59,
+            Kind::OdrSymbolTypeMismatch { .. } => 60,
+            Kind::OdrTypeMismatch { .. } => 61,
+            Kind::OdrViolation { .. } => 62,
+            Kind::OdrVtableRttiMismatch { .. } => 63,
+            Kind::CanonicalPltInPie { .. } => 64,
+            Kind::CopyRelocationAgainstProtected { .. } => 65,
+            Kind::CopyRelocationOfZeroSize { .. } => 66,
+            Kind::NonPicInSharedObject { .. } => 67,
+            Kind::RelocationIncompatible { .. } => 68,
+            Kind::RelocationMisaligned { .. } => 69,
+            Kind::RelocationOutOfRange { .. } => 70,
+            Kind::TextRelocation { .. } => 71,
+            Kind::WeakUndefinedPcInPie { .. } => 72,
+            Kind::ExecutableStack { .. } => 73,
+            Kind::OutputTooLarge { .. } => 74,
+            Kind::SectionConflict { .. } => 75,
+            Kind::IncrementalNotReproducible => 76,
+            Kind::IncrementalUnsupported { .. } => 77,
+            Kind::IncrementalUpdateFailed { .. } => 78,
+            Kind::IncrementalFileClash { .. } => 79,
+            Kind::Refused { .. } => 80,
+            Kind::InternalError { .. } => 81,
         }
     }
 
@@ -1101,8 +1152,10 @@ mod tests {
             Kind::CommonAlignment { name: s() },
             Kind::CommonLargerThanDefinition { name: s() },
             Kind::CommonOverridden { name: s() },
+            Kind::CopyOfLocallyBoundDefinition { name: s(), file: s() },
             Kind::DiscardedSectionReference { name: s() },
             Kind::DuplicateSymbol { name: s() },
+            Kind::DuplicateVersionPattern { pattern: s(), first: s(), second: s() },
             Kind::EntryNotFound { name: s() },
             Kind::GnuWarning { text: s() },
             Kind::LinkerSymbolRedefined { name: s() },
@@ -1110,9 +1163,12 @@ mod tests {
             Kind::NonExportedSymbol { name: s() },
             Kind::RequiredSymbol { name: s() },
             Kind::TlsMismatch { name: s() },
+            Kind::UndefinedInitSymbol { name: s() },
             Kind::UndefinedSymbol { name: s() },
             Kind::UndefinedVersion { name: s(), version: s() },
             Kind::VersionReassigned { name: s(), first: s(), second: s() },
+            Kind::VersionScriptUndefinedName { name: s(), version: s() },
+            Kind::VersionedDefinitionHidden { name: s(), version: s() },
             Kind::VersionedExport { name: s(), version: s() },
             Kind::MetaMalformed { reason: s() },
             Kind::MetaVersion { major: 2 },
@@ -1131,6 +1187,7 @@ mod tests {
             Kind::CanonicalPltInPie { r_type: s(), name: s() },
             Kind::CopyRelocationAgainstProtected { name: s(), file: s() },
             Kind::CopyRelocationOfZeroSize { name: s() },
+            Kind::NonPicInSharedObject { r_type: s(), name: s(), file: s() },
             Kind::RelocationIncompatible {
                 r_type: s(),
                 name: s(),

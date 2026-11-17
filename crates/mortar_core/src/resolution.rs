@@ -344,6 +344,12 @@ pub struct Resolution {
     pub ref_dynamic: IdSet<SymbolId>,
     /// `defined_dynamic` (D-12): some member of N ∪ U defines the key.
     pub defined_dynamic: IdSet<SymbolId>,
+    /// `preemptible` (`spec/model.md` §3.3, request R-M10; `spec/dyn.md`
+    /// D-112, D-113) [M4]: the exported definitions of a `Shared` output
+    /// that stay preemptible, a subset of `exported`. Empty (no room) in
+    /// every other output kind; nothing fills it yet (WP-117 does). Not
+    /// the merged property `RefFlags::PREEMPTIBLE` (rule 6).
+    pub preemptible: IdSet<SymbolId>,
 }
 
 impl Resolution {
@@ -367,6 +373,7 @@ impl Resolution {
             imported: IdSet::new(),
             ref_dynamic: IdSet::new(),
             defined_dynamic: IdSet::new(),
+            preemptible: IdSet::new(),
         }
     }
 
@@ -381,14 +388,15 @@ impl Resolution {
         }
     }
 
-    /// The four dynamic columns by name, for checks and dumps.
+    /// The five dynamic columns by name, for checks and dumps.
     #[must_use]
-    pub fn dynamic_columns(&self) -> [(&'static str, &IdSet<SymbolId>); 4] {
+    pub fn dynamic_columns(&self) -> [(&'static str, &IdSet<SymbolId>); 5] {
         [
             ("exported", &self.exported),
             ("imported", &self.imported),
             ("ref_dynamic", &self.ref_dynamic),
             ("defined_dynamic", &self.defined_dynamic),
+            ("preemptible", &self.preemptible),
         ]
     }
 
@@ -445,9 +453,12 @@ impl Resolution {
     /// 6. an undefined key with a strong reference is not weak; a `Shared`
     ///    definition is preemptible;
     /// 7. each dynamic column (`exported`, `imported`, `ref_dynamic`,
-    ///    `defined_dynamic`) is empty or has one bit per key; an import's
-    ///    `def` is `Shared`; an export's is the program's (`Defined`,
-    ///    `Common` or `Internal`);
+    ///    `defined_dynamic`, `preemptible`) is empty or has one bit per
+    ///    key; an import's `def` is `Shared`; an export's is the program's
+    ///    (`Defined`, `Common` or `Internal`); and (§3.3 check (8), the half
+    ///    the table shows) every `preemptible` key is exported. That
+    ///    `preemptible` is empty outside `Shared` needs the output kind:
+    ///    [`Resolution::check_preemptible`];
     /// 8. `meta` is strictly sorted and lists exactly the sections of kind
     ///    `Meta`.
     ///
@@ -598,7 +609,22 @@ impl Resolution {
                 format!("rule 7: symbol {}: exported without a program definition", k.0)
             })?;
         }
+        for k in self.preemptible.iter() {
+            ensure(self.exported.contains(k), t, || {
+                format!("check 8: symbol {}: preemptible but not exported", k.0)
+            })?;
+        }
         Ok(())
+    }
+
+    /// `spec/model.md` §3.3 check (8), the half that needs the output kind:
+    /// `preemptible` is empty unless the output is a shared object
+    /// (`shared`). The other half (a subset of `exported`) is in
+    /// [`Resolution::check`].
+    pub fn check_preemptible(&self, shared: bool) -> Result<(), Broken> {
+        ensure(shared || self.preemptible.is_empty(), "Resolution", || {
+            "check 8: preemptible keys outside a shared output".to_owned()
+        })
     }
 
     /// The invariants of §3.3 that need `Inputs` beside the table:

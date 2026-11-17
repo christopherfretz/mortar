@@ -287,6 +287,48 @@ pub fn normalise(text: &[u8], subs: &[(String, &str)]) -> Vec<u8> {
     text.into_bytes()
 }
 
+/// What [`normalise_stderr`] writes for a time.
+pub const TIME_NAME: &str = "<time>";
+
+/// A link's standard error with the times mortar measures replaced
+/// (`spec/harness.md` "static-identical", WP-112): they change from run to
+/// run. In a line holding `: time-phases: ` (`--time-phases`, image.md
+/// I-88), all after its first `: wall ` (wall, cpu, rss and peak); in a
+/// line holding `: odr-stats: ` (`--odr-stats`), all after its last
+/// `; time `; in a line beginning `incremental: ` (`--incremental-report`),
+/// all after its last ` time=`; a line beginning `delta time `, all after
+/// that. Each is replaced by [`TIME_NAME`]. Any other line is left as it is.
+pub fn normalise_stderr(text: &[u8]) -> Vec<u8> {
+    let text = String::from_utf8_lossy(text);
+    let mut out = String::with_capacity(text.len());
+    for line in text.split_inclusive('\n') {
+        let (body, end) = match line.strip_suffix('\n') {
+            Some(body) => (body, "\n"),
+            None => (line, ""),
+        };
+        let keep = if body.contains(": time-phases: ") {
+            body.find(": wall ").map(|i| i + ": wall ".len())
+        } else if body.contains(": odr-stats: ") {
+            body.rfind("; time ").map(|i| i + "; time ".len())
+        } else if body.starts_with("incremental: ") {
+            body.rfind(" time=").map(|i| i + " time=".len())
+        } else if body.starts_with("delta time ") {
+            Some("delta time ".len())
+        } else {
+            None
+        };
+        match keep {
+            Some(n) => {
+                out.push_str(&body[..n]);
+                out.push_str(TIME_NAME);
+                out.push_str(end);
+            }
+            None => out.push_str(line),
+        }
+    }
+    out.into_bytes()
+}
+
 /// The prefix of the map record of gcc's LTO plugin's resolution file
 /// (`spec/plumb.md`, the `arg` record): gcc's driver passes
 /// `-plugin-opt=-fresolution=<TMPDIR>/ccXXXXXX.res` on every link it makes
@@ -522,6 +564,14 @@ pub fn not_judged(bytes: &[u8]) -> Option<&'static str> {
 /// The map file a link line writes already (`-Map=X`, `-Map X`,
 /// `-Wl,-Map=X`, `-Wl,-Map,X`, and the same with `--Map`).
 pub fn map_option(args: &[String]) -> Option<String> {
+    map_option_named(args, "Map")
+}
+
+/// The file a link line gives the map option `name` (`Map`, or mortar's
+/// `mortar-map`), in the forms of [`map_option`] (WP-112: a test that
+/// writes `--mortar-map` keeps its file, and L3 reads that one).
+pub fn map_option_named(args: &[String], name: &str) -> Option<String> {
+    let (dashed, eq_dashed, eq) = (format!("-{name}"), format!("-{name}="), format!("{name}="));
     let mut found = None;
     let mut next_is_map = false;
     for arg in args {
@@ -537,9 +587,11 @@ pub fn map_option(args: &[String]) -> Option<String> {
         let mut words = words.into_iter();
         while let Some(word) = words.next() {
             let word = word.strip_prefix('-').unwrap_or(word);
-            if let Some(file) = word.strip_prefix("-Map=").or_else(|| word.strip_prefix("Map=")) {
+            if let Some(file) =
+                word.strip_prefix(eq_dashed.as_str()).or_else(|| word.strip_prefix(eq.as_str()))
+            {
                 found = Some(file.to_owned());
-            } else if word == "-Map" || word == "Map" {
+            } else if word == dashed || word == name {
                 match words.next() {
                     Some(file) => found = Some(file.to_owned()),
                     None => next_is_map = !arg.starts_with("-Wl,"),
@@ -1121,9 +1173,12 @@ impl Unit<'_> {
         // L3: a link that is to succeed writes a map, for the verifier:
         // mortar's machine map is `--mortar-map` (image.md I-120), whatever
         // `-Map` the test asks for; a reference's is its `-Map`.
-        let map_file = if link.fails || !(self.matrix.plumb || self.matrix.digest) {
+        let map_file = if link.fails || link.informs || !(self.matrix.plumb || self.matrix.digest) {
             None
-        } else if let Some(map) = map_option(&args).filter(|_| linker != Linker::Mortar) {
+        } else if let Some(map) = match linker {
+            Linker::Mortar => map_option_named(&args, "mortar-map"),
+            _ => map_option(&args),
+        } {
             Some(dir.join(map))
         } else {
             let name = format!(".linktest-plumb-{}.map", step.line);
@@ -1135,7 +1190,7 @@ impl Unit<'_> {
             });
             Some(dir.join(name))
         };
-        if link.fails && output_file.symlink_metadata().is_ok() {
+        if (link.fails || link.informs) && output_file.symlink_metadata().is_ok() {
             std::fs::remove_file(&output_file).map_err(|e| {
                 Raw::Error(format!("cannot remove '{}': {e}", output_file.display()))
             })?;
@@ -1299,8 +1354,17 @@ impl Unit<'_> {
             let end = if linker_end.success() { output.end } else { linker_end };
             return Err(fail(&format_args!("{end}: {}", first_error(output))));
         }
+        if link.informs && output_file.symlink_metadata().is_ok() {
+            return Err(fail(&format_args!(
+                "the link wrote '{}'; the test expects it only to inform",
+                output_name_of(output_file)
+            )));
+        }
         let stderr = String::from_utf8_lossy(&output.stderr);
         self.expect(&link.diags, linker, &stderr, "the link's standard error")
+            .map_err(|what| Raw::Fail(format!("{}: {what}", step.describe())))?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        self.expect(&link.prints, linker, &stdout, "the link's standard output")
             .map_err(|what| Raw::Fail(format!("{}: {what}", step.describe())))?;
         // spec/harness.md "Directives" (`diag`): the one-definition-rule
         // diagnostics of a mortar link are exactly those the test names.
@@ -1353,7 +1417,7 @@ impl Unit<'_> {
             Err(_) => "-".to_owned(),
         };
         let map = dir.join(format!(".linktest-plumb-{}.map", step.line));
-        let stderr = normalise(&output.stderr, &subs);
+        let stderr = normalise(&normalise_stderr(&output.stderr), &subs);
         let meta_section = std::fs::read(output_file).is_ok_and(|bytes| has_meta_section(&bytes));
         DigestRow {
             test: self.name.to_owned(),
@@ -1645,6 +1709,13 @@ impl Unit<'_> {
                     Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
                     Err(e) => return Err(fail(&format_args!("cannot read '{}': {e}", args[0]))),
                 }
+            }
+            CheckTool::Cmp => {
+                let read = |name: &String| {
+                    std::fs::read(dir.join(name))
+                        .map_err(|e| fail(&format_args!("cannot read '{name}': {e}")))
+                };
+                compare(&read(&args[0])?, &read(&args[1])?)
             }
             CheckTool::Gdb | CheckTool::Lldb if self.tools.runner != Runner::Native => {
                 return Err(Raw::Skip(format!(
@@ -2112,8 +2183,37 @@ fn mortar_xfail<'a>(
         .or_else(|| marker.filter(|m| m.kind == MarkerKind::Xfail).map(|m| m.reason.as_str()))
 }
 
+/// `check cmp`: `identical`, or `differ: ` with the sizes and the first
+/// byte that differs (`spec/harness.md` "Checks").
+pub fn compare(a: &[u8], b: &[u8]) -> String {
+    match a.iter().zip(b).position(|(x, y)| x != y) {
+        None if a.len() == b.len() => "identical".to_owned(),
+        None => format!("differ: sizes {} and {}, equal up to the shorter", a.len(), b.len()),
+        Some(at) => format!(
+            "differ: sizes {} and {}, first at byte {at:#x} ({:#04x}, {:#04x})",
+            a.len(),
+            b.len(),
+            a[at],
+            b[at]
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    // spec/harness.md "Checks" (WP-112): `check cmp` says whether two
+    // files are the same bytes, and where they first differ.
+    #[test]
+    fn two_files_compared() {
+        assert_eq!(super::compare(b"abc", b"abc"), "identical");
+        assert_eq!(super::compare(b"", b""), "identical");
+        assert_eq!(
+            super::compare(b"abc", b"abd"),
+            "differ: sizes 3 and 3, first at byte 0x2 (0x63, 0x64)"
+        );
+        assert_eq!(super::compare(b"ab", b"abc"), "differ: sizes 2 and 3, equal up to the shorter");
+    }
+
     // WP-103: the sites of an output whose line has the option are counted
     // apart from those of an output whose line has not.
     #[test]
@@ -2163,6 +2263,44 @@ mod tests {
             "sym -plugin-opt=-fresolution=/tmp/ccABC123.res\n",
         ] {
             assert_eq!(normalise_map(kept.as_bytes()), kept.as_bytes(), "{kept}");
+        }
+    }
+
+    // spec/harness.md "static-identical": the times mortar measures are
+    // replaced in its standard error, and nothing else (WP-112).
+    #[test]
+    fn a_standard_error_loses_only_measured_times() {
+        use super::{TIME_NAME, normalise_stderr};
+        let t = TIME_NAME;
+        let cases = [
+            (
+                "mortar: time-phases: 10 command line: wall 0.1 ms, cpu 0 ms, rss 3.1 MiB, peak 3.2 MiB\n",
+                format!("mortar: time-phases: 10 command line: wall {t}\n"),
+            ),
+            (
+                "mortar: time-phases: total: wall 4.0 ms, cpu 1 ms, peak 9.0 MiB",
+                format!("mortar: time-phases: total: wall {t}"),
+            ),
+            (
+                "mortar: odr-stats: mode warn; units 0; findings W1 0; time 0.016 ms\n",
+                format!("mortar: odr-stats: mode warn; units 0; findings W1 0; time {t}\n"),
+            ),
+            (
+                "incremental: full (no-state) changed=1 refilled=0 bytes=600 time=0.412\n",
+                format!("incremental: full (no-state) changed=1 refilled=0 bytes=600 time={t}\n"),
+            ),
+            ("delta time detect=0.010 delta=0.020\n", format!("delta time {t}\n")),
+        ];
+        for (line, want) in cases {
+            assert_eq!(String::from_utf8(normalise_stderr(line.as_bytes())).unwrap(), want);
+        }
+        for kept in [
+            "mortar: error: undefined symbol: time\n",
+            "mortar: warning: wall 0.1 ms\n",
+            "a.o: incremental: full time=1\n",
+            "mortar: odr-stats: mode off\n",
+        ] {
+            assert_eq!(normalise_stderr(kept.as_bytes()), kept.as_bytes(), "{kept}");
         }
     }
 
@@ -2238,6 +2376,11 @@ mod tests {
     #[test]
     fn the_map_of_a_link_line() {
         let map = |args: &[&str]| map_option(&strings(args));
+        let mortar = |args: &[&str]| super::map_option_named(&strings(args), "mortar-map");
+        assert_eq!(mortar(&["a.o", "--mortar-map=m.map"]), Some("m.map".to_owned()));
+        assert_eq!(mortar(&["-Wl,--mortar-map,m.map"]), Some("m.map".to_owned()));
+        assert_eq!(mortar(&["--mortar-map", "m.map", "-Map=x.map"]), Some("m.map".to_owned()));
+        assert_eq!(mortar(&["-Map=x.map"]), None);
         assert_eq!(map(&["a.o", "-o", "p"]), None);
         assert_eq!(map(&["-Map=p.map", "a.o"]).as_deref(), Some("p.map"));
         assert_eq!(map(&["-Map", "p.map"]).as_deref(), Some("p.map"));

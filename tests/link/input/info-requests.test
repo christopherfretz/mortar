@@ -1,0 +1,58 @@
+# The requests that inform (spec/cli.md §5.1, §5.2, §3.10):
+# - `--version` stops the parse, prints one line and links nothing:
+#   mortar's is `mortar <version> (compatible with GNU ld)`, the words
+#   build systems look for, which lld and mold print too.
+# - `--help` stops the parse and prints the table; libtool looks for
+#   `no-whole-archive` and `: supported targets:* elf` in it (GNU ld, lld
+#   and mortar print both; mold prints neither).
+# - `-M`, `--print-map`: the link goes on and its map goes to standard
+#   output, in GNU ld's form for GNU ld and mortar (`Memory
+#   Configuration` first), in their own for lld and mold. The harness
+#   adds `-Map=FILE` to every reference link (L3), and GNU ld and mold
+#   then write the map there instead (the last of `-M` and `-Map` wins),
+#   so their standard output is not checked. lld given `-M` (or
+#   `--print-map`) writes no `-Map` file at all, which L3 needs, so those
+#   lines are not lld's.
+#@ spec: cli.md "§5.1"
+
+as start-%{arch}.s -o start.o
+link ld start.o --version -o v
+  exit: info
+  print(bfd): ^GNU ld 
+  print(lld,mold,mortar): (compatible with GNU *)$
+link ld --help
+  exit: info
+  print: --help
+  print(bfd,lld,mortar): no-whole-archive
+  print(bfd,lld,mortar): : supported targets:* elf
+link(bfd,mold,mortar) ld start.o -M -o mapped
+  print(mortar): ^Memory Configuration$
+link(bfd,mold,mortar) ld start.o --print-map -o mapped2
+  print(mortar): ^Memory Configuration$
+link ld start.o -o plain
+run(bfd,mold,mortar) mapped
+  exit: 42
+check(bfd,mold,mortar) cmp mapped plain
+  has: ^identical$
+
+#--- start-aarch64.s
+	.globl	_start
+_start:
+	mov	x0, #42
+	mov	x8, #93
+	svc	#0
+	.section .note.GNU-stack,"",%progbits
+#--- start-x86_64.s
+	.globl	_start
+_start:
+	movl	$60, %eax
+	movl	$42, %edi
+	syscall
+	.section .note.GNU-stack,"",%progbits
+#--- start-i386.s
+	.globl	_start
+_start:
+	movl	$1, %eax
+	movl	$42, %ebx
+	int	$0x80
+	.section .note.GNU-stack,"",%progbits

@@ -1,0 +1,105 @@
+# `-x` (`--discard-all`), `-X` (`--discard-locals`) and `--discard-none`
+# (spec/synth.md S-78; GNU ld manual "-x", "-X", "--discard-none"): which
+# local symbols of the input files reach the output's `.symtab`.
+# `-x` drops every one (the local function `sfn`, the local datum `msg`,
+# the assembler's temporary `.Ltemp`, kept in the object by `as -L`); `-X`
+# drops only the temporaries (`.L` names); `--discard-none` keeps all of
+# them and undoes an earlier `-X` (the last one wins). Without an option
+# every local is kept, as with `--discard-none`. The global `_start` is
+# kept by all. The program is the same: only `.symtab` changes.
+#
+# mold 2.37 does not know `--discard-none` ("unknown command line
+# option"), so those lines are GNU ld's, lld's and mortar's.
+# mold makes the executable's globals local in `.symtab` (`_start` is `t`;
+# spec/harness.md "Where the references differ").
+#@ spec: synth.md "S-78"
+
+as -Wa,-L start-%{arch}.s -o start.o
+link ld start.o -o plain
+link ld start.o -x -o x
+link ld start.o --discard-all -o discard-all
+link ld start.o -X -o xx
+link ld start.o --discard-locals -o discard-locals
+link(bfd,lld,mortar) ld start.o --discard-none -o none
+link(bfd,lld,mortar) ld start.o -X --discard-none -o xx-none
+run x
+  exit: 42
+run xx
+  exit: 42
+check nm plain
+  has: t .Ltemp$
+  has: t sfn$
+  has: r msg$
+  has(bfd,lld,mortar): T _start$
+  has(mold): t _start$
+check nm x
+  has(bfd,lld,mortar): T _start$
+  has(mold): t _start$
+  not: sfn
+  not: msg
+  not: .Ltemp
+check cmp x discard-all
+  has: ^identical$
+check nm xx
+  has: t sfn$
+  has: r msg$
+  not: .Ltemp
+check cmp xx discard-locals
+  has: ^identical$
+check(bfd,lld,mortar) cmp none plain
+  has: ^identical$
+check(bfd,lld,mortar) cmp xx-none plain
+  has: ^identical$
+check objdump -d x
+  has: <_start>:
+
+#--- start-aarch64.s
+	.text
+	.globl	_start
+	.type	_start, %function
+_start:
+	bl	sfn
+	mov	x8, #93		// exit
+	svc	#0
+	.type	sfn, %function
+sfn:
+.Ltemp:
+	mov	x0, #42
+	ret
+	.section .rodata
+msg:	.asciz "hello"
+	.section .note.GNU-stack,"",%progbits
+#--- start-x86_64.s
+	.text
+	.globl	_start
+	.type	_start, @function
+_start:
+	call	sfn
+	movl	%eax, %edi
+	movl	$60, %eax	# exit
+	syscall
+	.type	sfn, @function
+sfn:
+.Ltemp:
+	movl	$42, %eax
+	ret
+	.section .rodata
+msg:	.asciz "hello"
+	.section .note.GNU-stack,"",%progbits
+#--- start-i386.s
+	.text
+	.globl	_start
+	.type	_start, @function
+_start:
+	call	sfn
+	movl	%eax, %ebx
+	movl	$1, %eax	# exit
+	int	$0x80
+	.type	sfn, @function
+sfn:
+.Ltemp:
+	movl	$42, %eax
+	ret
+	.section .rodata
+msg:	.asciz "hello"
+	.section .note.GNU-stack,"",%progbits

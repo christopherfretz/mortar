@@ -1,0 +1,43 @@
+# `--no-warn-backrefs` (lld's; resolve.md §4.6): it undoes an earlier
+# `--warn-backrefs`, so the backward reference of archive-backref.test
+# (a member of a later archive needing one of an earlier archive, which
+# GNU ld would not find) links without the warning, to the same bytes as
+# the link with neither option. With `--warn-backrefs` alone lld and
+# mortar warn (each in its own words: lld `backward reference detected`,
+# mortar `backward reference to an archive member`). GNU ld and mold do
+# not know the options; GNU ld does not link the line at all.
+#@ spec: resolve.md "§4.6"
+
+cc -O1 main.c -o main.o
+cc -O1 helper.c -o helper.o
+cc -O1 user.c -o user.o
+ar rcs libhelper.a helper.o
+ar rcs libuser.a user.o
+link(lld,mold,mortar) gcc -static main.o -L. -lhelper -luser -o plain
+link(lld,mortar) gcc -static main.o -L. -lhelper -luser -Wl,--warn-backrefs -o warns
+  diag(lld): backward reference detected
+  diag(mortar): backward reference to an archive member: helper
+link(lld,mortar) gcc -static main.o -L. -lhelper -luser -Wl,--warn-backrefs -Wl,--no-warn-backrefs -o quiet
+  no-diag: backward reference
+link(lld,mortar) gcc -static main.o -L. -lhelper -luser -Wl,--no-warn-backrefs -o quiet2
+  no-diag: backward reference
+run(lld,mold,mortar) plain
+  exit: 7
+check(lld,mortar) cmp quiet plain
+  has: ^identical$
+check(lld,mortar) cmp quiet2 plain
+  has: ^identical$
+link(bfd) gcc -static main.o -L. -lhelper -luser -o plain
+  exit: fail
+  diag(bfd): undefined reference to `helper'
+
+#--- main.c
+int user(void);
+
+int main(void) { return user(); }
+#--- user.c
+int helper(void);
+
+int user(void) { return helper(); }
+#--- helper.c
+int helper(void) { return 7; }
