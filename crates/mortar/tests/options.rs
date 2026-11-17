@@ -41,6 +41,7 @@ use Proof::{Check, Same, Test};
 /// Every row that is not `refused`, in table order.
 const AUDIT: &[(&str, Proof)] = &[
     ("-o", Check(output_is_named)),
+    ("-shared", Test("crates/mortar/tests/shared.rs", "shared_with_soname_links_loads_and_runs")),
     ("-pie", Check(dynamic_options)),
     ("-no-pie", Check(no_pie)),
     ("-m", Check(emulation_sets_the_target)),
@@ -109,9 +110,10 @@ const AUDIT: &[(&str, Proof)] = &[
     ("-Bsymbolic", Same(&["-Bsymbolic"], Some(bsymbolic_is_for_shared_objects))),
     (
         "-Bsymbolic-functions",
-        Same(&["-Bsymbolic-functions"], Some(bsymbolic_is_for_shared_objects)),
+        Test("crates/mortar/tests/shared.rs", "bsymbolic_functions_binds_functions_not_data"),
     ),
-    ("-Bno-symbolic", Same(&["-Bno-symbolic"], Some(bsymbolic_is_for_shared_objects))),
+    ("-Bno-symbolic", Test("crates/mortar/tests/shared.rs", "bsymbolic_functions_binds_functions_not_data")),
+    ("-h", Test("crates/mortar/tests/shared.rs", "shared_with_soname_links_loads_and_runs")),
     ("-rpath", Check(dynamic_options)),
     ("-I", Check(dynamic_options)),
     ("--no-dynamic-linker", Check(dynamic_options)),
@@ -125,7 +127,7 @@ const AUDIT: &[(&str, Proof)] = &[
     ("-w", Check(warning_switches)),
     ("--color-diagnostics", Check(color)),
     ("--no-color-diagnostics", Check(color)),
-    ("--no-undefined", Same(&["--no-undefined"], Some(undefined_is_an_error))),
+    ("--no-undefined", Test("crates/mortar/tests/shared.rs", "z_defs_refuses_an_undefined_reference")),
     ("--warn-common", Check(warn_common)),
     ("--no-warn-common", Check(warn_common)),
     ("--warn-execstack", Same(&["--warn-execstack"], Some(execstack_warns_by_default))),
@@ -203,7 +205,7 @@ const AUDIT: &[(&str, Proof)] = &[
     ("-z text", Check(dynamic_options)),
     ("-z separate-code", Check(separate_code)),
     ("-z noseparate-code", Check(separate_code)),
-    ("-z defs", Same(&["-z", "defs"], Some(undefined_is_an_error))),
+    ("-z defs", Test("crates/mortar/tests/shared.rs", "z_defs_refuses_an_undefined_reference")),
     ("-z max-page-size", Check(max_page_size)),
     (
         "-z common-page-size",
@@ -791,14 +793,6 @@ fn dependency_file(cx: &Cx) {
     assert!(!cx.scratch.join("u.d").exists(), "a failed link writes no dependency file");
 }
 
-// The reason of `--no-undefined` and `-z defs`: an executable's undefined
-// symbol is an error without them (resolve.md §5).
-fn undefined_is_an_error(cx: &Cx) {
-    let o = cx.mortar(&["undef.o", "-o", "ud.out"]);
-    assert!(!o.success());
-    assert!(o.stderr_text().contains("undefined symbol: u1"), "{}", o.stderr_text());
-}
-
 // spec: diag.md §3.9 / cli.md §3.9 (`--error-limit`)
 fn error_limit(cx: &Cx) {
     let o = cx.mortar(&["undef.o", "-o", "el.out", "--error-limit=2"]);
@@ -1328,12 +1322,15 @@ fn copy_dt_needed_is_refused(cx: &Cx) {
     assert!(text.contains("unsupported option: --copy-dt-needed-entries"), "{text}");
 }
 
-// The reason of the `-Bsymbolic` family: shared objects as output are
-// refused by name (M4).
+// The reason of `-Bsymbolic`: it binds a shared object's references, and
+// in a shared object it is refused by name until WP-128 (dyn.md D-112;
+// the effect of a shared object's link is `crates/mortar/tests/shared.rs`).
 fn bsymbolic_is_for_shared_objects(cx: &Cx) {
-    let o = cx.mortar(&["start.o", "-shared", "-o", "dyn.out"]);
+    let o = cx.mortar(&["start.o", "-shared", "-Bsymbolic", "-o", "dyn.out"]);
     assert!(!o.success());
-    assert!(o.stderr_text().contains("unsupported option: -shared"), "{}", o.stderr_text());
+    let e = o.stderr_text();
+    assert!(e.contains("unsupported option: -Bsymbolic"), "{e}");
+    assert!(e.contains("WP-128"), "{e}");
 }
 
 // The reason of `--rosegment` (layout.md L-65).
