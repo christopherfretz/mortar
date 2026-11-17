@@ -150,8 +150,15 @@ pub fn with_link<T>(
     if dyn_tables.is_some() {
         walker = walker.with_weak_dyn(f.scanned.demands.weak_dyn.clone());
     }
-    let dyn_src = dyn_tables
-        .map(|_| crate::dynlink::DynSource::new(&f.inputs, &f.resolution, &f.assignment, &f.liveness, &f.plan));
+    let dyn_src = dyn_tables.map(|_| {
+        crate::dynlink::DynSource::new(
+            &f.inputs,
+            &f.resolution,
+            &f.assignment,
+            &f.liveness,
+            &f.plan,
+        )
+    });
     let facts = WalkFacts(&walker);
     let proof = |file: FileId, index: SectionIndex, len: u64| -> Vec<ProofRun> {
         let exec = f

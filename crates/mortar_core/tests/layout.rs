@@ -354,6 +354,7 @@ impl World {
             demands: &self.demands,
             shapes: &self.shapes,
             shared: false,
+            placeless: &[],
         }
     }
 

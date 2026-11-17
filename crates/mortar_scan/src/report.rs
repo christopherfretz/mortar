@@ -128,12 +128,11 @@ fn discarded(view: &View<'_, '_>, file: FileId, group: u64, acc: &Acc) -> Diagno
     {
         let path = view.inputs.files[e.file].display();
         let dtable = view.prep(e.file).and_then(|p| p.table().copied());
-        let section = view.sym(e.file, e.index).and_then(|s| {
-            match dtable?.section_of(e.index, &s).ok()? {
+        let section =
+            view.sym(e.file, e.index).and_then(|s| match dtable?.section_of(e.index, &s).ok()? {
                 SymbolSection::Section(i) => Some(view.section_name(e.file, i.0)),
                 _ => None,
-            }
-        });
+            });
         let name = view.shown_name(key);
         let d = Diagnostic::error(Kind::DiscardedSectionReference { name })
             .with(Relation::DefinedIn, Place::symbol(path, section.unwrap_or_default()));

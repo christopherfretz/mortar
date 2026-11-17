@@ -1,0 +1,99 @@
+# A symbol defined in an EMPTY `SHF_MERGE` section has a place (WP-136,
+# resolve.md §10.1 P-1, synth.md S-6): the section is placed whole, as an
+# ordinary empty section. Before WP-136 mortar wrote 0 for every
+# reference to such a global (`p == 0`: the program exited 1 with no
+# diagnostic), left it out of `.symtab`, refused a local or section
+# symbol's address word ("offset is outside the section") and stopped
+# with an internal error under `-shared`. GNU ld, lld and mold write its
+# address.
+#
+# `progg` is WP-136's first mislink: globals only (mortar before WP-136:
+# exit 1). `em.o` defines, in an empty `.rodata.str1.1`, the global `gms` and the
+# local `lms`, and in an empty `.rodata.cst8` the weak `wcs`; `ew.o`'s
+# `.data.rel.ro` holds address words of `lms` and of the section symbol.
+# The programs check that every word, the PC-relative (static) or GOT
+# (PIE) address the compiler makes, and the address words of the C file
+# agree and are not 0: exit 42. `.symtab` names `gms` and `wcs`; a shared
+# object of `em.o` exports `gms` with its address, not 0 (mortar makes
+# shared objects on AArch64 only, and PIEs on the 64-bit targets).
+#
+# mold gives an empty merge section an output section of its own, at the
+# address of the next section's first byte, which the verifier's R6
+# reads as a reference reaching other bytes. GNU ld does not relocate
+# `ew.o`'s section-symbol word in a PIE (no RELATIVE record), so the PIE
+# here makes no such word.
+#@ spec: resolve.md §10.1
+#@ spec: synth.md "S-6"
+#@ spec: image.md "I-124"
+#@ skip(mold): mold places an empty merge section in an output section of its own at the next section's address (the verifier's R6)
+
+cc -O1 main.c -o main.o
+cc -O1 -fPIE mainp.c -o mainp.o
+as em.s -o em.o
+as ew.s -o ew.o
+link gcc -static -no-pie mainp.o em.o -o progg
+run progg
+  exit: 42
+link gcc -static -no-pie main.o em.o ew.o -o prog
+run prog
+  exit: 42
+check readelf -sW prog
+  has: GLOBAL DEFAULT * gms$
+  has: WEAK DEFAULT * wcs$
+  not: UND gms$
+link(aarch64,x86_64) gcc -pie mainp.o em.o -o piep
+run(aarch64,x86_64) piep
+  exit: 42
+link(aarch64) ld -shared em.o -o libem.so
+check(aarch64) readelf --dyn-syms -W libem.so
+  has: GLOBAL DEFAULT * gms$
+  not: : 0000000000000000 * gms$
+
+#--- main.c
+extern char gms[];
+extern char wcs[] __attribute__((weak));
+extern char *const lp, *const sp;
+char *volatile p = gms;
+char *volatile w = wcs;
+
+int main(void) {
+    char *q = gms;
+    if (p == 0 || p != q || lp != q || sp != q)
+        return 1;
+    if (w == 0 || w != wcs)
+        return 2;
+    return 42;
+}
+#--- mainp.c
+extern char gms[];
+extern char wcs[] __attribute__((weak));
+char *volatile p = gms;
+char *volatile w = wcs;
+
+int main(void) {
+    char *q = gms;
+    if (p == 0 || p != q)
+        return 1;
+    if (w == 0 || w != wcs)
+        return 2;
+    return 42;
+}
+#--- em.s
+	.section .rodata.str1.1,"aMS",%progbits,1
+	.globl	gms
+gms:
+lms:
+	.section .rodata.cst8,"aM",%progbits,8
+	.weak	wcs
+wcs:
+	.section .note.GNU-stack,"",%progbits
+#--- ew.s
+	.section .rodata.str1.1,"aMS",%progbits,1
+lms:
+	.section .data.rel.ro,"aw",%progbits
+	.p2align 3
+	.globl	lp
+lp:	.dc.a	lms
+	.globl	sp
+sp:	.dc.a	.rodata.str1.1
+	.section .note.GNU-stack,"",%progbits
