@@ -28,8 +28,8 @@ use mortar_elf::{SectionIndex, SymbolIndex, SymbolSection, SymbolTable};
 
 use crate::index::HashIndex;
 use crate::options::{
-    Entry, MentionGroup, Named, Options, Output, SharedLink, SharedMention, ShlibUndefined,
-    glob_match, is_glob,
+    Entry, MentionGroup, Named, Options, Output, SharedLink, SharedMention, SharedOutput,
+    ShlibUndefined, glob_match, is_glob,
 };
 use crate::problem::{DefPlace, MalformedSymbol, Problem, What};
 use crate::resolve::{Def, Resolved, flags, resolve_steps};
@@ -699,11 +699,17 @@ pub fn options(plan: &Plan, inputs: &Inputs<'_>, view: &InputsView<'_, '_>) -> O
             && !matches!(plan.shaping.strip, Some(Strip::Debug | Strip::All)),
         output: Output {
             pie: matches!(plan.kind, OutputKind::PieExecutable | OutputKind::StaticPie),
-            dynamic: matches!(plan.kind, OutputKind::Executable | OutputKind::PieExecutable),
+            // WP-117: a shared object is a dynamic link (`_DYNAMIC`; no
+            // static IPLT bounds, resolve §8.1).
+            dynamic: matches!(
+                plan.kind,
+                OutputKind::Executable | OutputKind::PieExecutable | OutputKind::Shared
+            ),
         },
-        unresolved,
+        unresolved: SharedOutput::unresolved(SharedOutput::of(plan), unresolved),
         ignore_unresolved: ignored,
         shared: shared_link(plan, inputs, view, &by_role(SymbolRole::ExportDynamicSymbol)),
+        shared_output: SharedOutput::of(plan),
     }
 }
 
@@ -823,12 +829,18 @@ fn shared_link(
         }
     }
     let d = &plan.diagnostics;
-    let allow = plan.dynamic.allow_shlib_undefined == Some(true)
-        || !matches!(plan.kind, OutputKind::Executable | OutputKind::PieExecutable)
-        || matches!(
-            d.unresolved_symbols,
-            Some(UnresolvedSymbols::IgnoreAll | UnresolvedSymbols::IgnoreInSharedLibs)
-        );
+    // An executable checks by default (D-13); a shared object only under
+    // `--no-allow-shlib-undefined` (D-118, WP-117); other kinds never.
+    let allow = match plan.kind {
+        OutputKind::Executable | OutputKind::PieExecutable => {
+            plan.dynamic.allow_shlib_undefined == Some(true)
+        }
+        OutputKind::Shared => plan.dynamic.allow_shlib_undefined != Some(false),
+        _ => true,
+    } || matches!(
+        d.unresolved_symbols,
+        Some(UnresolvedSymbols::IgnoreAll | UnresolvedSymbols::IgnoreInSharedLibs)
+    );
     let shlib_undefined = if allow {
         ShlibUndefined::Allow
     } else if d.warn_unresolved_symbols == Some(true) {
@@ -918,8 +930,9 @@ pub fn resolution<V: View>(
         imported: set(dynamic.map(|d| &d.imported)),
         ref_dynamic: set(dynamic.map(|d| &d.ref_dynamic)),
         defined_dynamic: set(dynamic.map(|d| &d.defined_dynamic)),
-        // `spec/model.md` §3.3 (R-M10): empty outside `Shared`; WP-117 fills it.
-        preemptible: IdSet::new(),
+        // `spec/model.md` §3.3 (R-M10): empty outside `Shared` (WP-117,
+        // `spec/dyn.md` D-112).
+        preemptible: set(dynamic.map(|d| &d.preemptible)),
     })
 }
 
@@ -1377,7 +1390,11 @@ pub fn resolve_inputs(inputs: &Inputs<'_>, plan: &Plan, pool: &Pool) -> Outcome 
     steps.step("table");
     let resolution = match table {
         Ok(t) => {
-            if let Err(e) = t.check().and_then(|()| t.check_against(inputs)) {
+            if let Err(e) = t
+                .check()
+                .and_then(|()| t.check_against(inputs))
+                .and_then(|()| t.check_preemptible(plan.kind == OutputKind::Shared))
+            {
                 diagnostics.push(internal(e.to_string()));
             }
             t

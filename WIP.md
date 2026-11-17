@@ -6,5 +6,5 @@
   note; Shared-only refusals (cli §4.2) in `Parsed::refused_uses`.
 - Measurements: `.build/target-wp-117/measure/run.sh` (s1d.py over kiln+hod,
   clang-19, gcc, gfortran AArch64 objects).
-- Steps: [ ] CLI rows+refusals [ ] opts.rs [ ] resolve export/preemptible/D-118
+- Steps: [ ] CLI rows+refusals [ ] opts.rs [x] resolve export/preemptible/D-118
   [ ] scan class cells, bound.rs, driver hook [ ] tests [ ] record [ ] gate
