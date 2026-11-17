@@ -591,7 +591,7 @@ pub fn finish(
 }
 
 /// L-49's compatible mixtures, or `None`.
-fn combine(a: u32, b: u32, machine: Machine) -> Option<u32> {
+pub(crate) fn combine(a: u32, b: u32, machine: Machine) -> Option<u32> {
     let special = |t| matches!(t, SHT_INIT_ARRAY | SHT_FINI_ARRAY | SHT_PREINIT_ARRAY);
     let progbits_like = |t| matches!(t, SHT_PROGBITS | SHT_NOBITS);
     if a == b {
@@ -617,7 +617,7 @@ fn combine(a: u32, b: u32, machine: Machine) -> Option<u32> {
     None
 }
 
-fn type_name(t: u32, target: &Target) -> String {
+pub(crate) fn type_name(t: u32, target: &Target) -> String {
     let em = match target.machine {
         Machine::AArch64 => mortar_elf::consts::EM_AARCH64,
         Machine::X86_64 => mortar_elf::consts::EM_X86_64,
