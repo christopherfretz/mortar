@@ -1,4 +1,3 @@
-# PENDING (WP-153): every reference's and mortar's output draws L3 findings because the verifier does not follow --wrap yet; the verifier package for --wrap renames this file to .test.
 # --wrap=SYM (resolve.md §7.1, WP-153) in the other executable kinds and
 # against shared objects: the same rule as a static link (an undefined
 # mention binds to __wrap_SYM, __real_SYM to SYM).

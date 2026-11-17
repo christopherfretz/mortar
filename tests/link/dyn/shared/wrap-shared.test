@@ -1,4 +1,3 @@
-# PENDING (WP-153): every reference's and mortar's output draws L3 findings because the verifier does not follow --wrap yet; the verifier package for --wrap renames this file to .test.
 # --wrap=SYM in a shared object (resolve.md §7.1, WP-153): definitions
 # keep their names, so the export set holds f and __wrap_f as defined,
 # and __real_f is no symbol of its own (its mentions bind to f). An

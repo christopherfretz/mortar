@@ -1,4 +1,3 @@
-# PENDING (WP-153): every reference's and mortar's output draws L3 findings because the verifier does not follow --wrap yet; the verifier package for --wrap renames this file to .test.
 # The three --wrap shapes mortar refuses by name (resolve.md §7.1
 # "Refused by name", WP-153), where the references link different
 # programs:

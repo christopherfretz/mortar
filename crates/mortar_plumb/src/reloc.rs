@@ -573,6 +573,9 @@ pub(crate) struct Engine<'a, 'b> {
     /// executable); empty for a static output. Hidden and internal
     /// definitions are read from the inputs where they are asked.
     pub(crate) made_local: MadeLocal,
+    /// The line's `--wrap` redirection (`wrap.rs`, WP-170): an undefined
+    /// mention's key; empty without `--wrap`.
+    pub(crate) wrap: crate::wrap::Wrap,
     /// Stage 3 (§12.5): the keys a shared object's view takes from the
     /// loader (`dynbind`) although the output defines them: preemptible
     /// keys under an interposer, a preemptible IFUNC's resolved address.
@@ -941,6 +944,7 @@ impl<'a, 'b> Engine<'a, 'b> {
             shared: false,
             exports: None,
             made_local: MadeLocal::default(),
+            wrap: crate::wrap::Wrap::default(),
             loader_keys: std::collections::HashSet::new(),
             dso_words: None,
             plt: BTreeMap::new(),
@@ -1161,6 +1165,12 @@ impl<'a, 'b> Engine<'a, 'b> {
             };
         }
         let name = String::from_utf8_lossy(t.name(&sym).unwrap_or(b"")).into_owned();
+        // §4.4a (WP-170): an undefined mention binds to its `--wrap` key.
+        let name = if matches!(where_, Ok(SymbolSection::Undefined)) {
+            self.wrap.key(&name).into_owned()
+        } else {
+            name
+        };
         // §4.7: `_TLS_MODULE_BASE_` is, by its definition in the TLS
         // descriptor ABI, the start of the module's TLS block, whatever
         // value the linker gives its symbol (A3).

@@ -1,4 +1,3 @@
-# PENDING (WP-153): every reference's and mortar's output draws L3 findings because the verifier does not follow --wrap yet; the verifier package for --wrap renames this file to .test.
 # The common line (resolve.md §7.1, WP-153): --wrap=malloc, --wrap=free
 # and --wrap=open as test doubles on a g++ link with libstdc++, whose
 # templates and inline functions are COMDAT groups in every file, none of

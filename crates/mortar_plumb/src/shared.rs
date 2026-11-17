@@ -101,6 +101,9 @@ pub struct SharedLine {
     /// `-z defs`/`--no-undefined` (D-118: an import nothing defines is
     /// then refused; without it the host resolves it, P-D17 view A).
     pub zdefs: bool,
+    /// The line's `--wrap` redirection (resolve §7.1, `wrap.rs`; WP-170),
+    /// from [`Line::wrap`].
+    pub(crate) wrap: crate::wrap::Wrap,
 }
 
 impl SharedLine {
@@ -317,7 +320,8 @@ pub fn accept(image: &Image<'_>, out: &DynOut, line: &mut Line, args: &[String])
     if !line.outside.iter().any(|o| o == SHARED_OUTSIDE) {
         return acc;
     }
-    let sl = SharedLine::read(args, line.symbolic);
+    let mut sl = SharedLine::read(args, line.symbolic);
+    sl.wrap = crate::wrap::Wrap::new(line.wrap.iter().cloned());
     if sl.static_pie {
         // gcc drops `-shared` before `-static-pie`; a line with both stays
         // outside stage 3, as before.
@@ -1276,6 +1280,8 @@ pub(crate) fn compute(
             let live = match t.section_of(i, &s) {
                 Ok(SymbolSection::Undefined) => {
                     let versioned = split_version(&name).1.is_some();
+                    // resolve §7.1: the reference is its `--wrap` key's.
+                    let name = sl.wrap.key(&name).into_owned();
                     let r = refs.entry(name).or_insert(Import {
                         weak: true,
                         ty: STT_NOTYPE,

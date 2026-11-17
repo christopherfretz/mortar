@@ -361,6 +361,7 @@ impl Model {
     /// output's `.symtab` definitions (file 0's).
     #[allow(clippy::too_many_lines)] // D-11, D-12, D-19a in order
     pub fn build(line: &Line, objs: &[Obj<'_>], file0: &[String], files: &dyn Files) -> Model {
+        let wrap = crate::wrap::Wrap::new(line.wrap.iter().cloned());
         let mut m = Model { shared: line.kind == Some(OutputKind::Shared), ..Model::default() };
         // C: one object per soname, in mention order. A file without a
         // soname is named as the line names it, so two spellings are two
@@ -458,11 +459,15 @@ impl Model {
                 let Ok(raw) = t.name(&s) else { continue };
                 let full = String::from_utf8_lossy(raw).into_owned();
                 let (name, ver) = split_version(&full);
+                let defined = s.st_shndx != SHN_UNDEF;
+                // resolve §7.1 (WP-170): an undefined, unversioned mention
+                // is its `--wrap` key's reference.
+                let name = if defined || ver.is_some() { name.into() } else { wrap.key(name) };
+                let name: &str = &name;
                 let k = m.keys.entry(name.to_string()).or_default();
                 if matches!(s.st_other & 3, STV_HIDDEN | STV_INTERNAL) {
                     k.hidden = true;
                 }
-                let defined = s.st_shndx != SHN_UNDEF;
                 if defined {
                     // A versioned definition `foo@@V` defines `foo`.
                     let _ = (SHN_ABS, SHN_COMMON);
