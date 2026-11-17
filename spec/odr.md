@@ -395,14 +395,23 @@ false positive).
   attribute not on it is **not hashed** (kiln does not store unknown or
   accepted-but-unimplemented attributes). Scheme 1's list, for kind 2:
   `alignas` and `gnu::aligned`, `packed`, `no_unique_address`,
-  calling-convention attributes, `visibility`, `[[noreturn]]`
+  calling-convention attributes, `[[noreturn]]`
   ([dcl.attr.noreturn] requires it in every TU's first declaration,
   `[std, unverified clause]`), `gnu::target` / `target_clones`
   (multiversioning changes which body runs), `[[assume(e)]]` (hashes `e`:
   it changes what is undefined), `[[indeterminate]]` (C++26, a
-  cross-TU declaration rule). Considered and **not** hashed: `weak` and
-  `section` (they change the symbol, which the linker sees directly, not
-  the meaning); `trivial_abi`, `ms_struct` and `gcc_struct` are
+  cross-TU declaration rule). Considered and **not** hashed: `weak`,
+  `section` and `visibility` (they change the symbol, which the linker
+  sees directly, not the meaning: a symbol's visibility is in its
+  `st_other`, and the copies' visibilities are merged by
+  `spec/resolve.md`), `exclude_from_explicit_instantiation` (which
+  symbols an explicit instantiation emits, not what the definition
+  means) and `abi_tag` (it is part of the mangled name: two definitions
+  that differ in it are two keys and are never compared). Ruling of
+  2026-11-17 on kiln's question (K-3b): `visibility` was on the first
+  list; libc++ marks nearly every inline function with all three
+  (`_LIBCPP_HIDE_FROM_ABI`), 44 % of its definitions, and hashing them
+  bought nothing the symbol table does not already say; `trivial_abi`, `ms_struct` and `gcc_struct` are
   properties of a class and belong to kind 3 (O-17's definition hash and
   O-18's layout), not to every user. C++26 contracts (`pre`, `post`,
   `contract_assert`) are **not hashed in scheme 1** (X16).
