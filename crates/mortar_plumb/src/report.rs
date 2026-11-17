@@ -457,6 +457,9 @@ pub struct Coverage {
     /// large sections (`SHF_X86_64_LARGE`), whose order differs by linker
     /// (spec/x64.md X-54; Y5 leaves them out of `_edata`/`_end`).
     pub placement_not_judged: Vec<String>,
+    /// What a stripped output (no `.symtab`) leaves a rule unable to
+    /// judge, by name (WP-164: P-D6, P-D22's `DT_INIT`/`DT_FINI`).
+    pub stripped_not_judged: Vec<String>,
     /// Erratum 843419 sites found with their fix (C1), and sites not
     /// judged: the option unknown, beyond what both references fix, or
     /// unproved code in a reference's output (§5.10).
@@ -689,6 +692,13 @@ impl Report {
                 s,
                 "placement not judged (large sections, X-54): {}",
                 c.placement_not_judged.join(", ")
+            );
+        }
+        if !c.stripped_not_judged.is_empty() {
+            let _ = writeln!(
+                s,
+                "stripped output (no .symtab), not judged: {}",
+                c.stripped_not_judged.join("; ")
             );
         }
         if let Some(i) = &c.input_set {

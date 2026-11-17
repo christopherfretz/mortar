@@ -485,6 +485,10 @@ fn places(image: &Image<'_>, out: &DynOut, v: &mut Vec<Finding>) {
     }
 }
 
+/// The words of [`linker_word`]'s "no demand" verdict.
+pub(crate) const UNDEMANDED: &str =
+    "which no GOT-indirect reference of the inputs asks a slot to hold";
+
 /// P-D9 (WP-101), every format: a `RELATIVE` record on a word outside the
 /// placed sections that no input's absolute use makes an address is
 /// derived from a GOT slot an input demands (D-40, D-46): its place is a
@@ -520,7 +524,7 @@ pub(crate) fn linker_word(
         None
     } else {
         Some(format!(
-            "a RELATIVE record on a .got slot with addend {addend:#x}, which no GOT-indirect reference of the inputs asks a slot to hold (D-46)"
+            "a RELATIVE record on a .got slot with addend {addend:#x}, {UNDEMANDED} (D-46)"
         ))
     }
 }

@@ -283,13 +283,22 @@ fn judge(
         machine: image.header.e_machine,
     };
     let kind = line.kind.unwrap_or(OutputKind::Exec);
-    let mut checked = crate::dyncheck::check(image, dout, &line, &model, &ld, &objs, map);
+    let mut unjudged = Vec::new();
+    let mut checked =
+        crate::dyncheck::check(image, dout, &line, &model, &ld, &objs, map, &mut unjudged);
     if let (Some(sl), Some(s)) = (&shared.line, &sets) {
         // §12.5: P-D16's changes to the executable rules, then P-D19-P-D26.
         crate::shared::filter_dyncheck(&mut checked, image, dout, sl, s, map.format);
-        report
-            .findings
-            .extend(crate::shared::static_checks(image, dout, &objs, sl, s, &args, map.format));
+        report.findings.extend(crate::shared::static_checks(
+            image,
+            dout,
+            &objs,
+            sl,
+            s,
+            &args,
+            map.format,
+            &mut unjudged,
+        ));
         // P-D17's address clause (D-117): a bound use is reported even when
         // both views agree on its value.
         report.findings.extend(crate::sharedflow::address_clause(&objs, s).0);
@@ -298,6 +307,7 @@ fn judge(
         symbolic_flag(&mut checked);
     }
     report.findings.extend(checked);
+    report.coverage.stripped_not_judged = unjudged;
     // View 1: bias 0.
     // §12.5 view A: a preemptible IFUNC key is what its resolver returns,
     // through the record that names it (P-D18).
@@ -377,6 +387,14 @@ fn judge(
         // when the word is not an
         // input's absolute use).
         let known: BTreeSet<u64> = abs.iter().filter(|w| w.3).map(|w| w.0).collect();
+        // A stripped output (no `.symtab`, WP-164): a reference to a name
+        // only the linker defines (`__start_X`, measured: mold's GOT slots
+        // of them) resolves to nothing (`symbol-unresolved`), so the GOT
+        // slots the inputs demand are not all known: a slot's addend no
+        // known demand gives is not judged.
+        let demands_known = crate::dyncheck::has_symtab(image)
+            || engine.cov.not_checked_of(crate::report::Reason::SymbolUnresolved) == 0;
+        let mut slots_unjudged = 0u64;
         for r in &dout.rels {
             if loader::kind(image.header.e_machine, r.ty) == loader::Kind::Relative
                 && !known.contains(&r.offset)
@@ -392,8 +410,17 @@ fn judge(
                     crate::dynfields::linker_word(image, r.offset, a, &engine.got_demands)
                 };
                 let Some(why) = why else { continue };
+                if !demands_known && why.contains(crate::dynfields::UNDEMANDED) {
+                    slots_unjudged += 1;
+                    continue;
+                }
                 report.findings.push(Finding::new(Rule::Dyn(9), why).at(r.offset));
             }
+        }
+        if slots_unjudged > 0 {
+            report.coverage.stripped_not_judged.push(format!(
+                "P-D9: {slots_unjudged} .got slot addends (a GOT-indirect reference to a name only the linker defines is unresolved)"
+            ));
         }
     }
     if map.format == crate::Format::Mortar {

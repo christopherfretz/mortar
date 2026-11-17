@@ -1,0 +1,67 @@
+# A stripped executable, PIE and not (spec/plumb.md §12, P-D6; WP-164):
+# the twin of shared/shared-stripped.test. -s removes .symtab, -S and
+# --strip-debug the debug sections only; every rule that reads the
+# OUTPUT's .symtab judges what the file still shows, and the programs
+# run (crti's _init/_fini by DT_INIT/DT_FINI, the -init/-fini functions
+# when named; a COPY, a common, a weak undefined, TLS and __start_/__stop_
+# references resolved without the output's symbols).
+#@ spec: plumb.md "P-D6"; dyn.md "D-30"
+#@ arch: aarch64 x86_64
+
+cc -O1 -fPIC sub/lib.c -o sub/lib.o
+shlib gcc sub/lib.o -Wl,-soname,libio.so -o sub/libio.so
+cc -g -O1 -fPIE main.c -o pie.o
+cc -g -O1 -fno-pie main.c -o exec.o
+link gcc -pie pie.o -Lsub -lio -s -o pie-s
+run pie-s
+  env: LD_LIBRARY_PATH=sub
+  stdout: main 1
+check readelf -SW pie-s
+  not: .symtab
+link gcc -no-pie exec.o -Lsub -lio -s -o exec-s
+run exec-s
+  env: LD_LIBRARY_PATH=sub
+  stdout: main 1
+link gcc -pie pie.o -Lsub -lio -Wl,-S -o pie-S
+run pie-S
+  env: LD_LIBRARY_PATH=sub
+  stdout: main 1
+link gcc -no-pie exec.o -Lsub -lio -Wl,--strip-debug -o exec-S
+run exec-S
+  env: LD_LIBRARY_PATH=sub
+  stdout: main 1
+link gcc -pie pie.o -Lsub -lio -s -Wl,-init=my_init,-fini=my_fini -o pie-if
+run pie-if
+  env: LD_LIBRARY_PATH=sub
+  stdout: my_init
+  stdout: main 1
+  stdout: my_fini
+link gcc -no-pie exec.o -Lsub -lio -Wl,--strip-all -Wl,-init=my_init,-fini=my_fini -o exec-if
+run exec-if
+  env: LD_LIBRARY_PATH=sub
+  stdout: my_init
+  stdout: main 1
+  stdout: my_fini
+
+#--- sub/lib.c
+int lib_fn(void) { return 1; }
+int lib_data = 0;
+#--- main.c
+#include <stdio.h>
+int lib_fn(void);
+void my_init(void) { puts("my_init"); }
+void my_fini(void) { puts("my_fini"); }
+/* The forms the relocation rules resolve by name: a library's datum (a
+   COPY in the non-PIE), a common, a weak undefined, a TLS variable, the
+   linker's __start_/__stop_ of a C-identifier section. */
+extern int lib_data;
+int com;
+__thread int tv = 1;
+__attribute__((weak)) extern int missing;
+__attribute__((section("tbl"), used)) static int t1 = 1;
+extern int __start_tbl[], __stop_tbl[];
+int main(void) {
+  int z = lib_data + com + tv + (&missing ? 1 : 0) + (int)(__stop_tbl - __start_tbl) - 2;
+  printf("main %d\n", lib_fn() + z);
+  return 0;
+}

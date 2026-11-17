@@ -1,0 +1,20 @@
+# A stripped x86-64 large-model PIE (spec/plumb.md §4.4; WP-164): the
+# GOT base of R_X86_64_GOTOFF64 and GOTPC64 is `_GLOBAL_OFFSET_TABLE_`,
+# which -s removes from .symtab; the verifier takes it where Y5 puts it,
+# the start of `.got.plt` (synth.md R-P5). Measured before WP-164: mold's
+# stripped output was an R1 finding (the base taken at `.got`).
+#@ spec: plumb.md "§4.4"
+#@ arch: x86_64
+
+cc -O1 -fPIE -mcmodel=large m.c -o m.o
+link gcc -pie m.o -s -o m-s
+run m-s
+  stdout: x 3
+link gcc -pie m.o -o m
+run m
+  stdout: x 3
+
+#--- m.c
+#include <stdio.h>
+int x = 3;
+int main(void) { printf("x %d\n", x); return 0; }

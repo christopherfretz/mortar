@@ -800,7 +800,18 @@ impl<'a, 'b> Engine<'a, 'b> {
             .unique("_GLOBAL_OFFSET_TABLE_")
             .or_else(|| image.global("_GLOBAL_OFFSET_TABLE_"))
             .map(|s| s.sym.st_value)
-            .or_else(|| image.sections.iter().find(|s| s.name == ".got").map(|s| s.shdr.sh_addr));
+            .or_else(|| {
+                // A stripped output (WP-164): where Y5 puts the symbol, the
+                // start of `.got.plt` on x86-64 (synth.md R-P5; measured:
+                // mold's large-model GOTOFF64), of `.got` on AArch64.
+                let x64 = image.header.e_machine == mortar_elf::consts::EM_X86_64;
+                image
+                    .sections
+                    .iter()
+                    .find(|s| x64 && s.name == ".got.plt")
+                    .or_else(|| image.sections.iter().find(|s| s.name == ".got"))
+                    .map(|s| s.shdr.sh_addr)
+            });
         // spec/x86.md X86-47: mold computes the i386 GOT base (GOTPC,
         // GOTOFF, GOT32) against the start of `.got`, not
         // `_GLOBAL_OFFSET_TABLE_` (§5.11; its no-base GOT32 is W3).
@@ -1121,8 +1132,15 @@ impl<'a, 'b> Engine<'a, 'b> {
             return self.ifunc_target(oi, idx, IfKey::Global(name));
         }
         // Stage 3: a name the output imports is where the loader binds it.
-        let undefined_out =
-            bound_by_loader || self.image.global(&name).is_none_or(|o| o.sym.st_shndx == 0);
+        // A stripped output (no `.symtab`, WP-164) defines the name when
+        // an input's placed definition or a common is chosen: its `.dynsym`
+        // export is the loader's only for a key the loader binds.
+        let undefined_out = bound_by_loader
+            || if self.image.symbols.is_empty() {
+                chosen.is_none() && !self.commons.contains_key(&name)
+            } else {
+                self.image.global(&name).is_none_or(|o| o.sym.st_shndx == 0)
+            };
         if undefined_out && let Some(&a) = self.dynbind.get(&name) {
             if self.dyn_tls.contains(&name) {
                 // Where the loader model puts the library's TLS byte.

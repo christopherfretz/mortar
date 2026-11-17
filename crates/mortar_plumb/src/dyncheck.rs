@@ -44,6 +44,58 @@ fn sec(image: &Image<'_>, name: &str) -> Option<(u64, u64)> {
     image.sections.iter().find(|s| s.name == name).map(|s| (s.shdr.sh_addr, s.shdr.sh_size))
 }
 
+/// Whether the output has a `.symtab` (`-s`/`--strip-all` removes it).
+pub(crate) fn has_symtab(image: &Image<'_>) -> bool {
+    image.sections.iter().any(|s| s.shdr.sh_type == mortar_elf::consts::SHT_SYMTAB)
+}
+
+/// What a stripped output (no `.symtab`) still shows of a function a
+/// `.dynamic` tag names (`DT_INIT`/`DT_FINI`: P-D6, P-D22; WP-164).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Stripped {
+    /// `.dynsym` defines it (exported): its value.
+    Dynsym(u64),
+    /// Relocatable inputs define it (non-local) in sections the map
+    /// places whole: the output addresses of those definitions (the
+    /// tag's value is one of them; which one is resolution's).
+    Inputs(Vec<u64>),
+    /// Inputs define it, and the map places none of those sections
+    /// whole: the value is judged by its segment only.
+    Unplaced,
+    /// No live input and no `.dynsym` entry defines it.
+    Undefined,
+}
+
+/// [`Stripped`] for `name`: `.dynsym` first, then the inputs' symbol
+/// tables and the map's placements (§3.3), which `-s` does not touch.
+pub(crate) fn stripped_def(out: &DynOut, objs: &[Obj<'_>], name: &str) -> Stripped {
+    if let Some(s) = out.syms.iter().skip(1).find(|s| s.name == name && s.st_shndx != 0) {
+        return Stripped::Dynsym(s.st_value);
+    }
+    let mut addrs = Vec::new();
+    let mut seen = false;
+    for o in objs.iter().filter(|o| o.elf.header().e_type == mortar_elf::consts::ET_REL) {
+        let Some(t) = &o.symtab else { continue };
+        for (idx, s) in t.globals() {
+            if s.st_shndx == 0 || t.name(&s).ok() != Some(name.as_bytes()) {
+                continue;
+            }
+            seen = true;
+            if let Ok(mortar_elf::SymbolSection::Section(i)) = t.section_of(idx, &s)
+                && let Some(crate::locate::Place::Whole(a)) =
+                    o.secs.get(i.0 as usize).map(|x| &x.place)
+            {
+                addrs.push(a.wrapping_add(s.st_value));
+            }
+        }
+    }
+    match (addrs.is_empty(), seen) {
+        (false, _) => Stripped::Inputs(addrs),
+        (true, true) => Stripped::Unplaced,
+        (true, false) => Stripped::Undefined,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn check(
     image: &Image<'_>,
@@ -53,6 +105,7 @@ pub(crate) fn check(
     ld: &Loader<'_>,
     objs: &[Obj<'_>],
     map: &Map,
+    unjudged: &mut Vec<String>,
 ) -> Vec<Finding> {
     let format = map.format;
     let mut v = Vec::new();
@@ -100,7 +153,7 @@ pub(crate) fn check(
         v.extend(crate::maprec::copies(map, &copies));
     }
     pd12(image, out, ld, objs, format, &mut v);
-    fields(image, out, model, line, objs, format, &mut v);
+    fields(image, out, model, line, objs, format, &mut v, unjudged);
     crate::dynfields::check(image, out, line, model, ld, objs, format, &mut v);
     v
 }
@@ -1930,7 +1983,7 @@ fn pd12_tls_definition(
 /// The fields WP-082's byte sweep found judged by no rule (`spec/plumb.md`
 /// §12.3): each is something glibc reads, or a value every reference
 /// writes one way that a loader would misread otherwise.
-#[allow(clippy::too_many_lines)] // one block per table
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)] // one block per table
 fn fields(
     image: &Image<'_>,
     out: &DynOut,
@@ -1939,6 +1992,7 @@ fn fields(
     objs: &[Obj<'_>],
     format: Format,
     v: &mut Vec<Finding>,
+    unjudged: &mut Vec<String>,
 ) {
     use mortar_elf::consts::{STB_GLOBAL, STV_DEFAULT};
     const STB_GNU_UNIQUE: u8 = 10;
@@ -2280,8 +2334,21 @@ fn fields(
     let present = |name: &str| sec(image, name).is_some();
     // -init/-fini name the functions DT_INIT/DT_FINI hold instead of the
     // sections' starts (D-30 rows 3-4).
+    // A stripped output (no `.symtab`, WP-164): `.dynsym`, else the one
+    // address the inputs' placed definitions agree on; several, or none
+    // placed, leave the value to the segment clause.
+    let symtab = has_symtab(image);
     let named = |opt: &Option<String>| {
-        opt.as_ref().map(|n| image.global(n).or_else(|| image.unique(n)).map(|x| x.sym.st_value))
+        opt.as_ref().map(|n| {
+            if symtab {
+                return image.global(n).or_else(|| image.unique(n)).map(|x| x.sym.st_value);
+            }
+            match stripped_def(out, objs, n) {
+                Stripped::Dynsym(a) => Some(a),
+                Stripped::Inputs(a) if a.iter().all(|x| *x == a[0]) => Some(a[0]),
+                _ => None,
+            }
+        })
     };
     let (init, fini) = (named(&line.init), named(&line.fini));
     let mut rows: Vec<(&[u64], &str)> = Vec::new();
@@ -2321,7 +2388,17 @@ fn fields(
         // it (an absent function leaves the tag out, GNU ld; not judged).
         let want = match opt {
             Some(Some(f)) => Some(f),
-            Some(None) => continue,
+            Some(None) if symtab => continue,
+            // Stripped (WP-164): the value by its segment only.
+            Some(None) => {
+                if out.has(t) {
+                    unjudged.push(format!(
+                        "{}: the function is not in the output, value judged by segment only",
+                        dynout::tag_name(t)
+                    ));
+                }
+                None
+            }
             None => sec(image, name).map(|(a, _)| a),
         };
         if let (Some(val), Some(a)) = (out.get(t), want)

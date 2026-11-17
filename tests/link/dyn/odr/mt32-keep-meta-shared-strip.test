@@ -3,7 +3,6 @@
 # mt32-keep-meta-shared.test; the symbol table is gone.
 #@ spec: meta.md "MT-32"
 #@ arch: aarch64 x86_64
-#@ xfail(mortar): the verifier's P-D22 reads `_fini` from .symtab, which -s removes: it reports "DT_FINI ... the output defines no '_fini'" on every linker's -shared -s output, without --keep-mason-meta too (WP-129 hand-back; owner: the verifier package)
 
 cc -O0 -fPIC a.c -o a0.o
 meta a.meta a0.o -o a.o
