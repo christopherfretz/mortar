@@ -391,9 +391,9 @@ fn lib(arch: &str) -> Fx {
 }
 
 /// Adds `d` to the `n`-byte field at `o`.
-fn add(b: &mut [u8], o: usize, n: usize, d: i64) {
-    let v = rd(b, o, n).wrapping_add_signed(d);
-    wr(b, o, n, v);
+fn add(b: &mut [u8], at: usize, n: usize, delta: i64) {
+    let v = rd(b, at, n).wrapping_add_signed(delta);
+    wr(b, at, n, v);
 }
 
 /// Row `i` of the first note removed: the rest of the section moves up,
@@ -560,7 +560,7 @@ fn units(p: &[u8]) -> Vec<(usize, usize)> {
 /// The kept section given new contents, at the end of the file.
 fn reseat(p: &mut Vec<u8>, bytes: &[u8]) {
     let (h, _, _) = section(p, ".mason.meta");
-    while p.len() % 8 != 0 {
+    while !p.len().is_multiple_of(8) {
         p.push(0);
     }
     let n = p.len() as u64;

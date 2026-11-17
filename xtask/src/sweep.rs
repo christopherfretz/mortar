@@ -256,8 +256,7 @@ const CASES: &[Case] = &[
 
 /// The cases of `--quick` (WP-161 added the two `Shared` ones: about 20 s
 /// each on one architecture, measured at a load of 20).
-pub const QUICK_CASES: &[&str] =
-    &["pie.lazy", "nopie", "shared", "shared.tail", "shared.table"];
+pub const QUICK_CASES: &[&str] = &["pie.lazy", "nopie", "shared", "shared.tail", "shared.table"];
 
 /// What `cargo xtask sweep` was asked.
 #[derive(Debug, Default)]

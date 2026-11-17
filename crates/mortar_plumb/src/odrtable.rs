@@ -527,7 +527,7 @@ fn notes(data: &[u8]) -> Result<Vec<Note<'_>>, String> {
 }
 
 /// The first note: O-51's header and rows, against O-50's row set.
-#[allow(clippy::too_many_lines, clippy::many_single_char_names)]
+#[allow(clippy::too_many_lines, clippy::many_single_char_names, clippy::too_many_arguments)]
 fn table(
     desc: &[u8],
     base: u64,
