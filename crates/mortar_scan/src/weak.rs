@@ -24,9 +24,9 @@
 use mortar_arch::{Arch, DynRefusal, OutputKind, Refusal, ScanError, WeakClass};
 use mortar_core::par::Pool;
 use mortar_core::resolution::Def;
-use mortar_core::{FileId, IdSet, SectionId, SymKind, SymbolId};
+use mortar_core::{FileId, IdSet, SectionId, SymEntry, SymKind, SymbolId};
 use mortar_diag::{Diagnostic, Key, RefusalClass};
-use mortar_elf::SectionIndex;
+use mortar_elf::{SectionIndex, SymbolIndex};
 use mortar_elf::consts::SHF_ALLOC;
 
 use crate::driver::{Fault, Sec, key_at};
@@ -380,6 +380,12 @@ fn file_uses(view: &View<'_, '_>, file: FileId, weak: &IdSet<SymbolId>) -> Vec<U
             let Some(key) = view.key_of(file, sec.recs.table, raw.r_sym) else { continue };
             let SymKind::Global(id) = key.kind() else { continue };
             if !weak.contains(id) {
+                continue;
+            }
+            // A reference through a demoted mention is `comdat-mismatch`
+            // (WP-176), not a use of an undefined weak key: it neither
+            // makes the key `WeakDyn` nor refuses it.
+            if view.is_demoted_mismatch(id, SymEntry { file, index: SymbolIndex(raw.r_sym) }) {
                 continue;
             }
             let site = mortar_arch::Site { bytes: sec.recs.bytes, offset: raw.r_offset };

@@ -1,0 +1,44 @@
+# comdat-mismatch-weak-dynamic.test's shape in a shared object (WP-176):
+# the library holds wa.o's and wb.o's copies of group g; mortar keeps
+# wa.o's (resolve.md §6.1), and wb.o's Y reads hx through its demoted
+# mention, whose key nothing in the link defines. In a shared object
+# that is still comdat-mismatch (§6.3 case (b)), never an import left to
+# the loader (§5.2): the output would import a symbol its own inputs
+# defined. GNU ld and lld write hx as an undefined weak dynamic symbol
+# (Y then returns 0 in every process: comdat-mismatch-weak-dynamic.test
+# runs that shape); mold refuses it. With wb.o first all four keep its
+# copy and export hx. No host: a refused library has no pair (harness.md
+# LT-2).
+#@ spec: resolve.md §6.3
+#@ spec: resolve.md §5.2
+#@ arch: aarch64 x86_64
+
+cc -O1 -fPIC wa.c -o wa.o
+cc -O1 -fPIC wb.c -o wb.o
+
+link(bfd,lld) gcc -shared wa.o wb.o -Wl,-soname,libw.so -o libw.so
+check(bfd,lld) readelf -W --dyn-syms libw.so
+  has: WEAK * DEFAULT * UND hx$
+link(mold,mortar) gcc -shared wa.o wb.o -Wl,-soname,libw.so -o libw.so
+  exit: fail
+  diag(mold): hx refers to a discarded COMDAT section probably due to an ODR violation
+  diag(mortar): symbol hx is defined only in a discarded copy of COMDAT group g
+link(mold,mortar) gcc -shared -Wl,-z,defs wa.o wb.o -Wl,-soname,libw.so -o libw.so
+  exit: fail
+  diag(mold): hx refers to a discarded COMDAT section probably due to an ODR violation
+  diag(mortar): symbol hx is defined only in a discarded copy of COMDAT group g
+
+link gcc -shared wb.o wa.o -Wl,-soname,libw.so -o libk.so
+check readelf -W --dyn-syms libk.so
+  has: OBJECT * WEAK * DEFAULT * hx$
+  not: UND hx$
+
+#--- wa.c
+__asm__(".section .data.g,\"awG\",%progbits,g,comdat\n"
+        ".weak g\n.type g,%object\n.size g,4\ng: .long 1\n.previous\n");
+#--- wb.c
+__asm__(".section .data.g,\"awG\",%progbits,g,comdat\n"
+        ".weak g\n.type g,%object\n.size g,4\ng: .long 2\n"
+        ".weak hx\n.type hx,%object\n.size hx,4\nhx: .long 40\n.previous\n");
+extern int hx __attribute__((weak));
+int Y(void) { return &hx ? hx : 0; }

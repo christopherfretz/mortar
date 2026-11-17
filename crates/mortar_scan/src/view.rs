@@ -14,7 +14,9 @@ use mortar_arch::{
 };
 use mortar_core::assignment::Assignment;
 use mortar_core::inputs::{CopyError, Inputs, Reader};
-use mortar_core::resolution::{Assigned, Def, InternalDef, RefFlags, Resolution, Verdict};
+use mortar_core::resolution::{
+    Assigned, Def, DropReason, InternalDef, RefFlags, Resolution, SectionState, Verdict,
+};
 use mortar_core::{FileId, IdSet, Liveness, SectionId, SymEntry, SymKey, SymKind, SymbolId};
 use mortar_diag::{Diagnostic, FileRef, Kind};
 use mortar_elf::consts::{SHT_REL, SHT_RELA, STT_FUNC, STT_GNU_IFUNC, STT_SECTION, STT_TLS};
@@ -162,7 +164,31 @@ impl<'a, 's> View<'a, 's> {
     }
 
     pub fn is_mismatch(&self, id: SymbolId) -> bool {
-        self.mismatch.binary_search(&id).is_ok()
+        !self.mismatch.is_empty() && self.mismatch.binary_search(&id).is_ok()
+    }
+
+    /// Whether a record whose symbol is `mention` refers to `id` through
+    /// a mention COMDAT deduplication demoted (`spec/resolve.md` §6.2:
+    /// defined in a dropped copy of its group) while nothing live
+    /// defines `id` (a `comdat-mismatch` key, §6.3 case (b)). Such a
+    /// reference is `comdat-mismatch` whatever the mention's binding
+    /// (WP-176): the file had a definition, so its reference is not a
+    /// weak reference, and the undefined-weak zero would be a wrong
+    /// program. Another file's genuine undefined mention of `id` is not
+    /// one.
+    pub fn is_demoted_mismatch(&self, id: SymbolId, mention: SymEntry) -> bool {
+        if !self.is_mismatch(id) || !matches!(self.def(id), Def::Undefined { .. }) {
+            return false;
+        }
+        let Some(table) = self.prep(mention.file).and_then(Prep::table) else { return false };
+        let Ok(sym) = table.get(mention.index) else { return false };
+        let Ok(SymbolSection::Section(sec)) = table.section_of(mention.index, &sym) else {
+            return false;
+        };
+        self.resolution
+            .section_id(mention.file, sec)
+            .and_then(|s| self.resolution.sections.get(s))
+            .is_some_and(|row| row.state == SectionState::Dropped(DropReason::Comdat))
     }
 
     pub fn is_warned(&self, id: SymbolId) -> bool {
@@ -231,6 +257,13 @@ impl<'a, 's> View<'a, 's> {
                 let mut f = self.global_facts(id, mention, 0);
                 f.comdat_only = self.is_mismatch(id);
                 f.gnu_warning = self.is_warned(id);
+                // WP-176: a reference through a demoted mention of a key
+                // nothing live defines is `comdat-mismatch` in every
+                // output kind, never the undefined-weak zero nor (in a
+                // shared object) an import ([`Self::is_demoted_mismatch`]).
+                if mention.is_some_and(|m| self.is_demoted_mismatch(id, m)) {
+                    f.kind = TargetKind::Undefined;
+                }
                 f
             }
         }
@@ -408,11 +441,15 @@ impl<'a, 's> View<'a, 's> {
         v
     }
 
-    /// Whether `facts(key, _).kind` is `TargetKind::Weak0`, found from
-    /// the definitions alone (no symbol is read: the mention never
-    /// changes the kind, and a local is never `Weak0`).
-    pub fn is_weak0(&self, key: SymKey) -> bool {
+    /// Whether `facts(key, mention).kind` is `TargetKind::Weak0`, found
+    /// from the definitions alone (a local is never `Weak0`); the
+    /// mention is read only for a `comdat-mismatch` key, whose demoted
+    /// mention makes it `Undefined` (WP-176).
+    pub fn is_weak0(&self, key: SymKey, mention: Option<SymEntry>) -> bool {
         let SymKind::Global(mut id) = key.kind() else { return false };
+        if mention.is_some_and(|m| self.is_demoted_mismatch(id, m)) {
+            return false;
+        }
         // As `global_facts`: an alias is followed to depth 8.
         for depth in 0..=8 {
             match self.def(id) {

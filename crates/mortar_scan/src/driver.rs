@@ -655,7 +655,7 @@ pub(crate) fn dynamic_error(view: &View<'_, '_>, e: ScanError) -> ScanError {
 /// Whether `key`'s target kind is `Weak0`, from the definitions alone;
 /// checked against the full facts in debug builds.
 fn weak0(view: &View<'_, '_>, tables: &RecTables<'_, '_, '_>, key: SymKey) -> bool {
-    let w = view.is_weak0(key);
+    let w = view.is_weak0(key, Some(tables.mention));
     debug_assert_eq!(w, ScanTables::sym(tables, key).kind == mortar_arch::TargetKind::Weak0);
     #[cfg(not(debug_assertions))]
     let _ = tables;

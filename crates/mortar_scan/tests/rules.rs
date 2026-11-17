@@ -182,6 +182,73 @@ fn i18_comdat_mismatch_one_per_key() {
     );
 }
 
+/// Group `g` as C++ writes it (`g` weak) in two copies, the second also
+/// defining a WEAK `hx`, referenced from the second file's `.text`
+/// (`spec/resolve.md` §6.3 case (b), WP-176).
+const WG1: &str = ".section .text.g,\"axG\",@progbits,g,comdat\n.weak g\ng:\n  ret\n";
+const WG2: &str = ".section .text.g,\"axG\",@progbits,g,comdat\n.weak g\n.weak hx\ng:\n  ret\n\
+                   hx:\n  ret\n.text\n.globl fy\nfy:\n  bl hx\n  ret\n";
+
+#[test]
+fn i18_comdat_mismatch_weak_demoted_mention() {
+    // WP-176: the demoted mention is weak, so the key is an undefined
+    // weak one; the reference through it is still `comdat-mismatch`,
+    // never the undefined-weak zero (a branch to the next instruction).
+    let m = ".text\n.globl _start\n_start:\n  bl fy\n  ret\n";
+    let Some((_d, l)) =
+        build("scan-i18-weak", &[("m.o", m), ("g1.o", WG1), ("g2.o", WG2)], &[])
+    else {
+        return;
+    };
+    assert_eq!(l.ids(), ["comdat-mismatch"], "{}", l.rendered());
+    assert_eq!(keys(&l), [key(3, 2, 0)]);
+    assert_eq!(
+        l.rendered(),
+        "ld: error: symbol hx is defined only in a discarded copy of COMDAT group g\n\
+         >>> kept copy: g1.o\n\
+         >>> discarded copy defining it: g2.o\n\
+         >>> referenced by g2.o:(.text+0x0)\n\
+         >>> the copies of g differ: a one-definition-rule violation, or objects compiled with different options\n"
+    );
+}
+
+#[test]
+fn i18_weak_demoted_mention_binds_to_a_live_definition() {
+    // A live file defines hx: the demoted mention binds there.
+    let m = ".text\n.globl _start\n_start:\n  bl fy\n  ret\n";
+    let h = ".text\n.globl hx\nhx:\n  ret\n";
+    let Some((_d, l)) =
+        build("scan-i18-weak-def", &[("m.o", m), ("g1.o", WG1), ("g2.o", WG2), ("h.o", h)], &[])
+    else {
+        return;
+    };
+    assert!(l.scanned.diagnostics.is_empty(), "{}", l.rendered());
+}
+
+#[test]
+fn i18_another_files_undefined_weak_reference_stays_zero() {
+    // m.o's own undefined weak reference to hx is the undefined-weak
+    // zero; only g2.o's reference through its demoted mention is the
+    // error, and the diagnostic names only it.
+    let m = ".text\n.globl _start\n.weak hx\n_start:\n  bl hx\n  ret\n";
+    let g2 = ".section .text.g,\"axG\",@progbits,g,comdat\n.weak g\n.weak hx\ng:\n  ret\nhx:\n  ret\n";
+    let Some((_d, l)) =
+        build("scan-i18-weak-other", &[("m.o", m), ("g1.o", WG1), ("g2.o", g2)], &[])
+    else {
+        return;
+    };
+    assert!(l.scanned.diagnostics.is_empty(), "{}", l.rendered());
+    let m2 = ".text\n.globl _start\n.weak hx\n_start:\n  bl hx\n  bl fy\n  ret\n";
+    let Some((_d, l)) =
+        build("scan-i18-weak-both", &[("m.o", m2), ("g1.o", WG1), ("g2.o", WG2)], &[])
+    else {
+        return;
+    };
+    assert_eq!(l.ids(), ["comdat-mismatch"], "{}", l.rendered());
+    assert_eq!(keys(&l), [key(3, 2, 0)], "{}", l.rendered());
+    assert!(!l.rendered().contains("m.o:(.text"), "{}", l.rendered());
+}
+
 /// A copy of group `g` with a local `lg` referenced from `.text` and
 /// from `{from}`.
 fn dropped_ref(from: &str) -> String {
