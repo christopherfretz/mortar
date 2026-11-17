@@ -855,7 +855,8 @@ and `census-lines.txt` (record §A, §B).
 
 **C-R1 (the kind).** `-r`, `-i` and `--relocatable` set
 `kind = Relocatable`. `-Ur` (GNU ld: "-r, and resolve C++ constructors")
-is also `Relocatable`, with `plan.ur = true` recorded for the map. GNU
+is also `Relocatable`, with `plan.ur = true` recorded for the map, and
+it conflicts as `-r` does (its spelling is the conflict's `first`). GNU
 ld 2.44 writes the same sections for `-Ur` as for `-r` (record B.1). lld
 22 and mold reject `-Ur` as unknown, and lld and mold also reject `-i`.
 mortar accepts all four spellings, because a line that GNU ld links must
@@ -901,11 +902,13 @@ refuses has an `at_r` class (acts by a rule, no-op, as in a final link,
 the hand-written `docs/status/options-at-r.md` it replaced). A row without a class is a defect
 of the table (*Test:* `every_row_has_a_class_at_r`, RL-1). The classes
 of the rows C-R2, C-R2a, C-R3 and C-R4 do not name:
-- **No-op, measured**: every row that GNU ld 2.44 (39 rows) or lld 22
-  (11) leaves the `-r` output byte-identical for
+- **No-op, measured**: every row that GNU ld 2.44 or lld 22 leaves the
+  `-r` output byte-identical for
   (`tests/relocatable-design/exp/rl0/opts.sh`, `work/rl0-opts.log`; the
   rows were `options-at-r.md`'s "noop: measured, unlisted"). They join
-  `r-noop-options`.
+  `r-noop-options`. How many rows each class has is what the generated
+  column of `docs/status/options.md` counts; this text gives no number
+  (WP-182, ruling (a) of WP-181's record §B).
 - **No-op, by what the option is**: `--call-graph-profile-sort`, the
   `--bp-*` family, `--lto*`, `--ctf-share-types`,
   `-z execute-only-report`, `--unresolved-symbols` (nothing is
@@ -919,9 +922,12 @@ of the rows C-R2, C-R2a, C-R3 and C-R4 do not name:
 - **`--start-lib`, `--end-lib`**: lazy objects, as in a final link
   (RV-R2; lld's reading, GNU ld does not know the option).
 - **`--require-defined=SYM`**: a root for extraction like `-u`
-  (RV-R2), nothing written for it (RV-R6 is `-u`'s alone). RL-2
-  measures GNU ld with `SYM` undefined at the end of a `-r` and brings
-  the cell: until then mortar reports it as in a final link.
+  (RV-R2), nothing written for it (RV-R6 is `-u`'s alone). With `SYM`
+  undefined at the end of a `-r` it is `required-symbol`, as in a final
+  link: GNU ld 2.44 refuses the `-r` the same way (`required symbol
+  `SYM' not defined`, exit 1); lld 22 does not know the option and
+  mold 2.37.1 accepts it and writes nothing (WP-182, record
+  `spec/landed/resolve/WP-182.md` §B).
 - **Dynamic-output options C-R4 does not name**: the "no" forms
   (`--no-export-dynamic`, `-Bno-symbolic`, `--disable-new-dtags`) are
   no-ops; `-init`, `-fini`, `--pack-dyn-relocs`,
@@ -931,7 +937,7 @@ of the rows C-R2, C-R2a, C-R3 and C-R4 do not name:
   `--incremental-*` row): IN-12's warning and no effect, as
   `--incremental`; `--no-incremental` is a no-op.
 - **A row that C-R2 or C-R2a's first row lists and a final link
-  refuses** (29 `-z` keywords, `combreloc` to `noreloc-overflow`;
+  refuses** (the `-z` keywords `combreloc` to `noreloc-overflow`;
   `--emit-relocs`, `-q`; `--no-relax`): a no-op at `-r`. The class at
   `-r` wins over the final-link status: no byte of an `ET_REL` depends
   on any of them (measured, C-R2a), and the drivers' lines carry
@@ -947,7 +953,13 @@ of the rows C-R2, C-R2a, C-R3 and C-R4 do not name:
   `-dc`, `-dp`, `-s`, `-S`, `-x`, `-b binary`,
   `--force-group-allocation`, `--defsym`, `--unique`, `-T`, and
   `-z unique-symbol`): until then `Refused{Option, "<option> with -r"}`
-  (`-z unique-symbol with -r`), the form of C-R4.
+  (`-z unique-symbol with -r`), the form of C-R4. `<option>` is the
+  option as the parse completes its spelling (`Use::spelling`: `-s`,
+  `--strip-all`, `--script` for `--script=x`); a `-z` keyword with its
+  value (`-z stack-size=4096`, `-z gcs=always`) and `--format` with its
+  value (`--format=binary`) (WP-182). `-r` and `-Ur` are the exception:
+  until the join they keep their final-link refusal,
+  `unsupported option: -r`.
 
 **C-R2a (`-z` keywords at `-r`, by measurement).** Every `-z` keyword
 that GNU ld 2.44 lists in `--help` for each target was run at `-r`
@@ -966,7 +978,13 @@ cells over three targets). Each keyword falls in one class:
 
 A keyword this table does not list keeps its final-link status at
 `-r` (unknown, or refused by its name); one the first row lists is a
-no-op at `-r` even where a final link refuses it (C-R2b).
+no-op at `-r` even where a final link refuses it (C-R2b). This table
+governs the report keywords (`-z bti-report`, `gcs-report`,
+`gcs-report-dynamic`, `isa-level-report`, `start-stop-visibility`):
+whatever their final-link status, they are no-ops at `-r` (WP-182,
+ruling (a) of WP-181's record §B). `-z gcs` is a no-op with `=never`,
+refused by name with `=always`, and keeps its final-link status with
+`=implicit`.
 *Test:* `r-z-noop` (the first row, byte-identical), `r-z-refused` (one
 per refused keyword), `r-stack-note`.
 
@@ -1014,8 +1032,14 @@ per refused keyword), `r-stack-note`.
   nothing). synth.md S-G8 already says that a relocatable output has no
   index.
 - `-Bsymbolic*`, `--dynamic-list*`, `--export-dynamic*`, `-soname`,
-  `-rpath*`, `--enable-new-dtags` (dynamic-output options): with `-r`
-  these are `conflicting-options` with `-r` as `first`.
+  `--enable-new-dtags` (dynamic-output options): with `-r` these are
+  `conflicting-options` with `-r` as `first`.
+  `-rpath` (`--rpath`) and `-rpath-link` are not of this family: they
+  are no-ops at `-r` (class `Noop`). Measured (WP-182, record §B): GNU
+  ld 2.44, lld 22 and mold 2.37.1 accept `-rpath DIR`, `--rpath=DIR`,
+  `-rpath-link DIR` and `-rpath-link=DIR` at `-r`, and each writes the
+  same bytes as without the option (no `.dynamic`, no `DT_RPATH`). A
+  build that passes its LDFLAGS to `ld -r` is not refused.
 - `--incremental` with `-r`: IN-12's warning and a plain link (as
   today).
 - the `-z` keywords that C-R2a refuses.

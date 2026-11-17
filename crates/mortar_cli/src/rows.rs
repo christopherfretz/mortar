@@ -346,7 +346,7 @@ pub(crate) static ROWS: &[Row] = &[
     r(&[x("Bsymbolic-non-weak-functions")], Arg::None, "", LM, &[], Group::Dynamic, Refused, Lands::Bsymbolic(Some(Bsymbolic::NonWeakFunctions)), "Bind references to non-weak global functions locally").at(conflicting_r("C-R4")),
     r(&[g1("Bno-symbolic")], Arg::None, "", GLM, &[], Group::Dynamic, Supported, Lands::Bsymbolic(None), "Undo -Bsymbolic (default)").at(noop_r("by what the option is", "C-R2b")),
     r(&[s("h"), g1("soname")], Arg::Required(Values::Any), "NAME", GLM, &[], Group::Dynamic, Supported, Lands::Soname, "Record NAME as DT_SONAME").at(conflicting_r("C-R4")),
-    r(&[g1("rpath")], Arg::Required(Values::Any), "DIR", GLM, &[], Group::Dynamic, Supported, Lands::Rpath, "Add DIR to the run-time search path").at(conflicting_r("C-R4")),
+    r(&[g1("rpath")], Arg::Required(Values::Any), "DIR", GLM, &[], Group::Dynamic, Supported, Lands::Rpath, "Add DIR to the run-time search path").at(noop_r("measured", "C-R4")),
     r(&[s("I"), g("dynamic-linker")], Arg::Required(Values::Any), "FILE", GLM, &[], Group::Dynamic, Supported, Lands::DynamicLinker, "Use FILE as the program interpreter").at(noop_r("", "C-R2")),
     r(&[g("no-dynamic-linker")], Arg::None, "", GLM, &[], Group::Dynamic, Supported, Lands::NoDynamicLinker, "Write no program interpreter").at(noop_r("", "C-R2")),
     r(&[g("enable-new-dtags")], Arg::None, "", GLM, &[], Group::Dynamic, Supported, Lands::NewDtags(true), "Write DT_RUNPATH for -rpath").at(conflicting_r("C-R4")),

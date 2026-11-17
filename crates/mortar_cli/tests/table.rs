@@ -340,7 +340,6 @@ fn the_rows_that_conflict_with_r() {
         "--export-dynamic-symbol",
         "--export-dynamic-symbol-list",
         "-h",
-        "-rpath",
         "--enable-new-dtags",
         "-init",
         "-fini",

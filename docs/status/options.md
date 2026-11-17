@@ -6,7 +6,7 @@ The rules are `spec/cli.md`.
 
 487 rows: 110 supported, 8 partial, 29 noop, 340 refused.
 
-At `-r` (`spec/cli.md` C-R2b): 25 act (11 of them refused until their package lands), 151 noop, 271 as in a final link, 21 conflicting-options with -r, 19 refused.
+At `-r` (`spec/cli.md` C-R2b): 25 act (11 of them refused until their package lands), 152 noop, 271 as in a final link, 20 conflicting-options with -r, 19 refused.
 
 Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 18 mortar's own.
 
@@ -203,7 +203,7 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 18 mortar'
 | `--Bsymbolic-non-weak-functions` |  | lld, mold | all | refused: dyn.md D-112: GNU ld does not know it (lld and mold do); use -Bsymbolic-functions, or a --dynamic-list | conflicting-options with -r (C-R4) | `dynamic.bsymbolic` | Bind references to non-weak global functions locally |
 | `-Bno-symbolic` |  | GNU, lld, mold | all | supported | noop: by what the option is (C-R2b) | `dynamic.bsymbolic` | Undo -Bsymbolic (default) |
 | `-h`, `-soname` | NAME | GNU, lld, mold | all | supported | conflicting-options with -r (C-R4) | `dynamic.soname` | Record NAME as DT_SONAME |
-| `-rpath` | DIR | GNU, lld, mold | all | supported | conflicting-options with -r (C-R4) | `dynamic.rpath` | Add DIR to the run-time search path |
+| `-rpath` | DIR | GNU, lld, mold | all | supported | noop: measured (C-R4) | `dynamic.rpath` | Add DIR to the run-time search path |
 | `-I`, `--dynamic-linker` | FILE | GNU, lld, mold | all | supported | noop (C-R2) | `dynamic.dynamic_linker` | Use FILE as the program interpreter |
 | `--no-dynamic-linker` |  | GNU, lld, mold | all | supported | noop (C-R2) | `dynamic.dynamic_linker` | Write no program interpreter |
 | `--enable-new-dtags` |  | GNU, lld, mold | all | supported | conflicting-options with -r (C-R4) | `dynamic.new_dtags` | Write DT_RUNPATH for -rpath |

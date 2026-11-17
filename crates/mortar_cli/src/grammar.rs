@@ -16,7 +16,8 @@ use crate::plan::{
 };
 use crate::response;
 use crate::table::{
-    Arg, Form, KindSet, Lands, Row, Spelling, StartKind, StateOp, Status, Values, ZField, rows,
+    Arg, AtRClass, Form, KindSet, Lands, Row, Spelling, StartKind, StateOp, Status, Values, ZField,
+    rows,
 };
 
 /// The result of parsing a command line (`spec/cli.md` §3).
@@ -103,37 +104,57 @@ impl Parsed {
     /// of `rows::SHARED_LATER` is refused too, whatever its status
     /// (`spec/cli.md` §4.2's M4 block: an option whose `Shared` effect a
     /// later package implements).
+    ///
+    /// At `-r` (`spec/cli.md` §3.16, C-R2b) the row's class there decides
+    /// first: a no-op, a conflict (a parse error already) or an `acts` row
+    /// is not refused by its final-link status; a row refused at `-r`, or
+    /// an `acts` row whose package has not landed, is (its refusal is
+    /// `<option> with -r`, [`Parsed::refusals`]). `-r` itself keeps its
+    /// final-link refusal until the join (RL-7).
     #[must_use]
     pub fn refused_uses(&self) -> Vec<&Use> {
+        self.refused_landed(&[]).into_iter().map(|(u, _)| u).collect()
+    }
+
+    /// [`Parsed::refused_uses`], each with its `-r` refusal when it has
+    /// one; `landed` is the test seam's ([`Parsed::refusals_landed`]).
+    fn refused_landed(&self, landed: &[&str]) -> Vec<(&Use, Option<Diagnostic>)> {
         let mut seen = vec![false; rows().len()];
         let mut out = Vec::new();
-        let mut last: HashMap<&str, usize> = HashMap::new();
-        for (i, u) in self.uses.iter().enumerate() {
-            if u.row().lands.last_wins() {
-                last.insert(u.row().lands.field(), i);
-            }
-        }
+        let relocatable = self.plan.kind == OutputKind::Relocatable;
         for (i, use_) in self.uses.iter().enumerate() {
-            let lands = use_.row().lands;
-            if lands.last_wins() && last.get(lands.field()) != Some(&i) {
+            if overridden(&self.uses, i) {
                 continue;
+            }
+            if relocatable {
+                match at_r(use_, landed) {
+                    AtRUse::Accepted => continue,
+                    AtRUse::WithR(d) => {
+                        if !seen[use_.row] {
+                            seen[use_.row] = true;
+                            out.push((use_, Some(*d)));
+                        }
+                        continue;
+                    }
+                    AtRUse::Final => {}
+                }
             }
             let shared = self.plan.kind == OutputKind::Shared;
             let shared_later = shared && use_.row().shared_later().is_some();
-            let shared_only = !shared && use_.row().shared_only().is_some();
+            let shared_only = !shared && !relocatable && use_.row().shared_only().is_some();
             match use_.row().status {
                 _ if (shared_later || shared_only) && !seen[use_.row] => {
                     seen[use_.row] = true;
-                    out.push(use_);
+                    out.push((use_, None));
                 }
                 Status::Refused if !seen[use_.row] => {
                     seen[use_.row] = true;
-                    out.push(use_);
+                    out.push((use_, None));
                 }
                 Status::Partial { refused, .. }
                     if refused_value(use_, refused) || refused_shape(&self.plan, use_) =>
                 {
-                    out.push(use_);
+                    out.push((use_, None));
                 }
                 _ => {}
             }
@@ -144,13 +165,31 @@ impl Parsed {
     /// The refusals of [`Parsed::refused_uses`] as diagnostics, keyed on
     /// their arguments: `unsupported option: -o`, or for a refused value of
     /// a `partial` row `unsupported option value: --build-id=md5` with the
-    /// row's note.
+    /// row's note; at `-r`, `unsupported option: --gc-sections with -r`
+    /// (`spec/diag.md` §4.4).
     #[must_use]
     pub fn refusals(&self) -> Vec<(Key, Diagnostic)> {
+        self.refusals_landed(&[])
+    }
+
+    /// TEST-ONLY SEAM (WP-182): [`Parsed::refusals`] as they will be once
+    /// the packages `landed` names (`"RL-7"`, `"RL-8"`, `"RL-10"`,
+    /// `"RL-11"`) have landed: an `acts` row of `spec/cli.md` §3.16 whose
+    /// `until` package is listed acts instead of being refused. With
+    /// `["RL-7"]` a `-r` line is checked as it will be after the join,
+    /// which lifts `unsupported option: -r`. The link never calls it with
+    /// a package that has not landed; `refusals()` is
+    /// `refusals_landed(&[])`.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn refusals_landed(&self, landed: &[&str]) -> Vec<(Key, Diagnostic)> {
         let shared = self.plan.kind == OutputKind::Shared;
-        self.refused_uses()
+        self.refused_landed(landed)
             .into_iter()
-            .map(|use_| {
+            .map(|(use_, at_r)| {
+                if let Some(d) = at_r {
+                    return (Key::new(PHASE, use_.arg, u64::MAX), d);
+                }
                 let (key, d) = use_.refusal();
                 // In a `Shared` link a row of `rows::SHARED_LATER` names
                 // the later package (`spec/cli.md` §4.2's M4 block); every
@@ -881,7 +920,11 @@ impl Parser<'_> {
             Lands::DependencyFile => plan.bookkeeping.dependency_file = Some(text()),
             Lands::Plugin => plan.plugin.path = Some(text()),
             Lands::PluginOpt => plan.plugin.options.push(text()),
-            Lands::Ur => plan.ur = true,
+            // C-R1: `-Ur` is `-r` with `plan.ur` recorded for the map.
+            Lands::Ur => {
+                plan.ur = true;
+                self.relocatable = Some(m.name);
+            }
             Lands::ForceGroupAllocation => plan.force_group_allocation = true,
             Lands::DefineCommon => plan.define_common = true,
             Lands::Unique => plan.unique.push(value),
@@ -1002,6 +1045,9 @@ impl Parser<'_> {
             (None, _) => OutputKind::Executable,
         };
         self.out.plan.kind = kind;
+        if kind == OutputKind::Relocatable {
+            self.conflicts_with_r();
+        }
         if let Some(emulation) = self.out.plan.emulation {
             let mut found = check_target(&self.out.plan, emulation.target());
             self.out.diagnostics.append(&mut found);
@@ -1019,6 +1065,122 @@ impl Parser<'_> {
             && !plan.bookkeeping.verbose
         {
             self.error(end, Diagnostic::error(Kind::NoInputFiles));
+        }
+    }
+
+    /// `spec/cli.md` C-R1, C-R2a, C-R4, C-R2b: at `-r`, the first use of
+    /// each row whose class is `Conflicting` is `conflicting-options` with
+    /// `-r` as `first` and the option as spelled on the line as `second`
+    /// (`spec/diag.md` §4.4), keyed on its argument. The kind rows
+    /// (`-shared`, `-pie`) are the kind's own conflict ([`Self::finish`]).
+    /// A use a later use of the same last-wins field overrides is not one.
+    fn conflicts_with_r(&mut self) {
+        let mut seen = vec![false; rows().len()];
+        let mut found = Vec::new();
+        let uses = &self.out.uses;
+        for (i, use_) in uses.iter().enumerate() {
+            let row = use_.row();
+            if seen[use_.row]
+                || matches!(row.lands, Lands::Kind(_))
+                || row.at_r.map(|a| a.class) != Some(AtRClass::Conflicting)
+                || overridden(uses, i)
+            {
+                continue;
+            }
+            seen[use_.row] = true;
+            found.push((use_.arg as usize, use_.spelling.clone()));
+        }
+        for (at, second) in found {
+            self.error(at, mortar_diag::relocatable::conflicting_with_r(second));
+        }
+    }
+}
+
+/// Whether `uses[i]` sets a [`Lands::last_wins`] field that a later use
+/// sets again (`spec/cli.md` §4.4): the plan is the one the line gives
+/// without it.
+fn overridden(uses: &[Use], i: usize) -> bool {
+    let lands = uses[i].row().lands;
+    lands.last_wins()
+        && uses[i + 1..].iter().any(|u| {
+            let l = u.row().lands;
+            l.last_wins() && l.field() == lands.field()
+        })
+}
+
+/// What a use is at `-r` (`spec/cli.md` C-R2b), before its final-link
+/// status is consulted.
+enum AtRUse {
+    /// The row's final-link status decides (`AsFinal`; an `acts` row with
+    /// no package to wait for; a row without a class).
+    Final,
+    /// Accepted whatever its final-link status: a no-op, a conflict
+    /// (reported by the parse), or an `acts` row whose package landed.
+    Accepted,
+    /// Refused by name: `Refused{Option, "<option> with -r"}`.
+    WithR(Box<Diagnostic>),
+}
+
+/// The option of `use_` as `spec/diag.md` §4.4's `<option> with -r`
+/// names it: as spelled on the line, a `-z` keyword with its value
+/// (`-z stack-size=4096`, `-z gcs=always`), `--format` with its value
+/// (`--format=binary`).
+fn name_at_r(use_: &Use) -> String {
+    let value = use_.value.as_deref().map(OsStr::to_string_lossy);
+    match value {
+        Some(v) if use_.row().is_z() || use_.spelling == "--format" => {
+            format!("{}={v}", use_.spelling)
+        }
+        _ => use_.spelling.clone(),
+    }
+}
+
+/// `use_`'s class at `-r` (`spec/cli.md` C-R2b) as the refusals act on
+/// it; `landed` names the packages taken as landed (RL-7..RL-11; empty
+/// outside the test seam [`Parsed::refusals_landed`]).
+fn at_r(use_: &Use, landed: &[&str]) -> AtRUse {
+    use mortar_diag::relocatable as r;
+    let Some(at) = use_.row().at_r else { return AtRUse::Final };
+    let value = use_.value.as_deref().map(OsStr::as_bytes);
+    match at.class {
+        AtRClass::Noop | AtRClass::Conflicting => AtRUse::Accepted,
+        AtRClass::AsFinal => AtRUse::Final,
+        AtRClass::Acts => match at.until {
+            None => AtRUse::Final,
+            Some(u) if landed.contains(&u.package) => AtRUse::Accepted,
+            // `-r` and `-Ur` themselves: their final-link refusal
+            // (`unsupported option: -r`) until the join (RL-7).
+            Some(u) if u.refusal == r::RELOCATABLE_OUTPUT => AtRUse::Final,
+            _ => {
+                let d = r::refused_with_r(&name_at_r(use_));
+                let d = if matches!(use_.row().lands, Lands::Script(ScriptRole::Script)) {
+                    d.note(r::SCRIPT_NOTE)
+                } else {
+                    d
+                };
+                AtRUse::WithR(Box::new(d))
+            }
+        },
+        AtRClass::Refused => {
+            let name = use_.row().name();
+            match (name.as_str(), value) {
+                // C-R4: `=none` is a no-op; C-R2a's first row: `gcs=never`.
+                ("--compress-debug-sections", Some(b"none")) | ("-z gcs", Some(b"never")) => {
+                    AtRUse::Accepted
+                }
+                // C-R2a: only `gcs=always` adds a property; `implicit`
+                // keeps its final-link status.
+                ("-z gcs", v) if v != Some(b"always") => AtRUse::Final,
+                _ => {
+                    let d = r::refused_with_r(&name_at_r(use_));
+                    let d = match use_.row().lands {
+                        Lands::Symbol(crate::plan::SymbolRole::Wrap) => d.note(r::WRAP_NOTE),
+                        _ if name == "--gc-sections" => d.note(r::GC_SECTIONS_NOTE),
+                        _ => d,
+                    };
+                    AtRUse::WithR(Box::new(d))
+                }
+            }
         }
     }
 }

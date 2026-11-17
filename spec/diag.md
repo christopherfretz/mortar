@@ -625,7 +625,11 @@ The refusals and diagnostics of a `-r` link (`spec/cli.md` §3.16,
 `spec/resolve.md` §11, `spec/layout.md` §24, `spec/image.md` §17,
 `spec/arch.md` §4.6, `spec/meta.md` MT-30a), each with the place that
 raises it. No new kind and no new class: every one is a kind of §3.1 or
-a refusal of a §4.1 class, so §3.1 and §4.1 do not change. The names
+a refusal of a §4.1 class, so §3.1 and §4.1 do not change, with one
+exception: `eh-frame-terminator` (the last row) is a new warning kind
+of §3.1, whose fields are the input and the number of records after
+its terminator. RL-11 builds it, and adds it to §3.1 when it does
+(ruling (e) of WP-181's record §B, written by WP-182). The names
 are the text after `unsupported <noun>: `; a test of the refusal
 compares the name (§4.2). "Until" names the package that lifts it; a
 name with no "until" is permanent. All are errors, but the two
@@ -636,13 +640,13 @@ The names, notes and constructors are `mortar_diag::relocatable`
 `tests/spec_tables.rs relocatable_rows_match_the_spec_table` checks the
 two say the same (the ids, the kind or class, the texts that are not "as
 in a final link", the "until"), so a `-r` package uses a name and does
-not spell it. The last row, `eh-frame-terminator`, is not a kind of
-§3.1 and is not built (record `spec/landed/core/WP-181.md`).
+not spell it. The last row, `eh-frame-terminator`, is not yet a kind of
+§3.1 and is not built until RL-11 (record `spec/landed/core/WP-181.md`).
 
 | id or name | kind or class | text | raised by | until |
 |---|---|---|---|---|
 | `relocatable output (-r)` | `refused`, `feature` | `unsupported feature: relocatable output (-r)` | `spec/resolve.md` §1 (`-r` row), §11 | RL-7 (the join) |
-| `conflicting-options`, `first` = `-r` | `conflicting-options` | `-r and {second} cannot be used together`, `{second}` one of `-shared`, `-pie` (also as `--pic-executable`), `-static-pie`, `-z nosectionheader`, `-Bsymbolic`, `-Bsymbolic-functions`, `--dynamic-list`, `--export-dynamic`, `-E`, `-soname`, `-rpath`, `--enable-new-dtags`, `--export-dynamic-symbol`, `-init`, `-fini`, `--pack-dyn-relocs`, `--android-memtag-mode` (as spelled on the line) | `spec/cli.md` C-R1, C-R2a (last row), C-R4 (dynamic-output options), C-R2b (the ones C-R4 does not name) | — |
+| `conflicting-options`, `first` = `-r` | `conflicting-options` | `-r and {second} cannot be used together`, `{second}` the option as spelled on the line, of exactly the rows whose class at `-r` is `Conflicting` (the generated column of `docs/status/options.md`; `mortar_cli`'s `r_conflicting_rows` compares): `-shared` (also `-Bshareable`), `-pie` (also as `--pic-executable`; `-static-pie`, which the drivers pass as `-static -pie`), `-z nosectionheader`, `-Bsymbolic`, `-Bsymbolic-functions`, `--Bsymbolic-non-weak`, `--Bsymbolic-non-weak-functions`, `--dynamic-list`, `--dynamic-list-data`, `--dynamic-list-cpp-new`, `--dynamic-list-cpp-typeinfo`, `-E` (also `--export-dynamic`), `--export-dynamic-symbol`, `--export-dynamic-symbol-list`, `-h` (also `-soname`), `--enable-new-dtags`, `-init`, `-fini`, `--pack-dyn-relocs`, `--android-memtag-mode`. For `-shared` and `-pie` the `first` is the kind's spelling on the line (`-i`, `-Ur`) | `spec/cli.md` C-R1, C-R2a (last row), C-R4 (dynamic-output options), C-R2b (the ones C-R4 does not name) | — |
 | `-T with -r` | `refused`, `option` | `unsupported option: -T with -r` (note: kernel modules and scripts at `-r` are not supported yet) | `spec/cli.md` C-R3 (`-T`), `spec/resolve.md` RV-R10 | RL-11 |
 | `--defsym with -r` | `refused`, `option` | `unsupported option: --defsym with -r` | C-R3 (`--defsym`), RV-R10 | RL-11 |
 | `--gc-sections with -r` | `refused`, `option` | `unsupported option: --gc-sections with -r` (note: a partial link cannot know what the final link needs; collect in the final link) | C-R4, `spec/image.md` I-R10, I-11 | — |
@@ -653,7 +657,7 @@ not spell it. The last row, `eh-frame-terminator`, is not a kind of
 | `--compress-debug-sections with -r` | `refused`, `option` | `unsupported option: --compress-debug-sections with -r` (`=zlib`, `=zstd`; `=none` is a no-op) | C-R4, `spec/layout.md` L-R1a | — |
 | `--gdb-index with -r` | `refused`, `option` | `unsupported option: --gdb-index with -r` | C-R4 (`spec/synth.md` S-G8) | — |
 | `-z KEYWORD with -r` | `refused`, `option` | `unsupported option: -z {keyword} with -r`, `{keyword}` as spelled (`force-bti`, `gcs=always`, `stack-size=…`, `memory-seal`, `ibt`, `shstk`, `indirect-extern-access`, `x86-64-v2`/`-v3`/`-v4`, `lam-u48`, `lam-u57`, `unique-symbol`) | C-R2a (the property row and the `unique-symbol` row), C-R2b (the interim name, last bullet) | a line that needs one |
-| `-d with -r`, `-dc with -r`, `-dp with -r`; `-s with -r`, `--strip-all with -r`, `-S with -r`, `--strip-debug with -r`, `-x with -r`, `--discard-all with -r`; `-b with -r`, `--format=binary with -r`; `--force-group-allocation with -r` | `refused`, `option` | `unsupported option: {option} with -r` | C-R3 (each row's package), until the package lands; the name is C-R2b's last bullet, `Refused{Option, "<option> with -r"}` | RL-11 (`-d`, `-s`, `-S`, `-x`), RL-10 (`-b`), RL-8 (`--force-group-allocation`) |
+| `-d with -r`, `-dc with -r`, `-dp with -r`; `-s with -r`, `--strip-all with -r`, `-S with -r`, `--strip-debug with -r`, `-x with -r`, `--discard-all with -r`; `-b with -r`, `--format=binary with -r`; `--force-group-allocation with -r` | `refused`, `option` | `unsupported option: {option} with -r`, `{option}` the spelling as the parse completes it (`spec/cli.md` C-R2b's last bullet). The rows' canonical names are `-d` (one row: `-d`, `--dc`, `--dp`, which GNU ld also reads as `-dc`, `-dp`, the form drivers write and the name then has), `-s` (`--strip-all`), `-S` (`--strip-debug`), `-x` (`--discard-all`), `-b` (`--format`, named with its value), `--force-group-allocation` | C-R3 (each row's package), until the package lands; the name is C-R2b's last bullet, `Refused{Option, "<option> with -r"}` | RL-11 (`-d`, `-s`, `-S`, `-x`), RL-10 (`-b`), RL-8 (`--force-group-allocation`) |
 | `shared object input with -r` | `refused`, `feature` | `unsupported feature: shared object input with -r` (`.at` the file) | C-R5 | — |
 | `relocatable output with no input of a known machine` | `refused`, `feature` | `unsupported feature: relocatable output with no input of a known machine` (note: give `-m EMULATION`) | C-R5 | — |
 | `LLVM bitcode` | `refused`, `file-format` | as in a final link | `spec/resolve.md` RV-R9 | — |

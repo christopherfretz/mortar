@@ -80,7 +80,7 @@ pub const Z_KEYWORDS_REFUSED_WITH_R: [&str; 13] = [
 /// The `{second}` of `-r and {second} cannot be used together`, as §4.4
 /// lists them (the spelling on the line is what is reported;
 /// `--pic-executable` is `-pie`'s other spelling).
-pub const CONFLICTS_WITH_R: [&str; 18] = [
+pub const CONFLICTS_WITH_R: [&str; 17] = [
     "-shared",
     "-pie",
     "--pic-executable",
@@ -92,7 +92,6 @@ pub const CONFLICTS_WITH_R: [&str; 18] = [
     "--export-dynamic",
     "-E",
     "-soname",
-    "-rpath",
     "--enable-new-dtags",
     "--export-dynamic-symbol",
     "-init",

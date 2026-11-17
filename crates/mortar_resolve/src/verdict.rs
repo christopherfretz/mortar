@@ -37,6 +37,22 @@ pub fn symtab_entry(def: Def, props: Props, unique: bool) -> SymtabEntry {
     }
 }
 
+/// The binding of a key's `.symtab` entry in a `-r` output
+/// (`spec/resolve.md` RV-R3, RV-R6): the definition's, weak or global,
+/// whatever the merged visibility (a hidden key is not demoted to local in
+/// an `ET_REL`); an undefined key's is weak when every reference is.
+/// `None` for the definitions a `-r` does not write as a key of its own
+/// (a shared object's, refused at `-r`; a linker-defined or `--defsym`
+/// symbol, which RV-R8 and RL-11 decide).
+#[must_use]
+pub fn binding_at_r(def: Def) -> Option<u8> {
+    match def {
+        Def::Undefined { weak: true } | Def::Weak(_) => Some(STB_WEAK),
+        Def::Undefined { weak: false } | Def::Strong(_) | Def::Common(_) => Some(STB_GLOBAL),
+        Def::Provide { .. } | Def::Shared(_) | Def::Defsym(_) => None,
+    }
+}
+
 /// `--unresolved-symbols` and `--warn-unresolved-symbols` (§5.2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Unresolved {
