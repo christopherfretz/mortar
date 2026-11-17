@@ -936,6 +936,13 @@ of the rows C-R2, C-R2a, C-R3 and C-R4 do not name:
   `-r` wins over the final-link status: no byte of an `ET_REL` depends
   on any of them (measured, C-R2a), and the drivers' lines carry
   several.
+- **Rows that are about the run, not the output**: `--version`, `-v`,
+  `-V`, `--help`, `--time-phases`, `--rsp-quoting`: as in a final link.
+  The ODR switches `--odr`, `--no-odr-check`, `--odr-stats`,
+  `--odr-check-archives`: as in a final link, by `spec/meta.md` MT-30a
+  (the checks run over the units the `-r` reads).
+  `--detect-odr-violations` (gold's spelling, a no-op in a final link):
+  a no-op.
 - **An option that acts at `-r` "until" a package lands** (`-d`,
   `-dc`, `-dp`, `-s`, `-S`, `-x`, `-b binary`,
   `--force-group-allocation`, `--defsym`, `--unique`, `-T`, and
@@ -1043,7 +1050,13 @@ crtend.o crtn.o` and the default libraries, with `-pie` when PIE is the
 default. That line is `conflicting-options` (`-r` and `-pie`), as GNU ld
 says. With `-no-pie` it is a `-r` of the startup files, which has a
 `crtend.o` terminator in the middle of the output's `.eh_frame`. mortar
-links it as written; record §G Q7 asks for a warning.
+links it as written, as GNU ld does, and warns (record §G Q7, ruled;
+RL-11): when an input's `.eh_frame` zero terminator would stand before
+the last record of the output's `.eh_frame`, the warning
+`eh-frame-terminator` names that input and the number of records after
+it ("unwinders stop at the terminator; is this a `-r` of the startup
+files without `-nostdlib`?"). The terminator's place is the only
+trigger: an input that defines `_start` is an ordinary `-r` input.
 *Test:* `r-driver-lines` (the census lines replayed, the plan compared).
 
 ## 4. The table and the status of options

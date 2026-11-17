@@ -664,7 +664,7 @@ warnings marked so.
 | `--build-id=STYLE` | as in a final link (I-69's styles; an unknown style is `invalid-option-value`) | as in a final link | `spec/image.md` I-R8 | — |
 | `--incremental` and every `--incremental-*` option with `-r` | IN-12's warning (**warning**) | as IN-12 says; the link is a plain `-r` (`--no-incremental` is a no-op) | C-R4, C-R2b, `spec/incr.md` IN-12 | — |
 | the ODR diagnostics | as `spec/odr.md` says | as in a final link, over the `-r`'s units | `spec/meta.md` MT-30a | — |
-| a `-r` of the startup files (`crt1.o … crtend.o` in the middle) | **warning** (open: record §G Q7 asks for one; no kind, text or rule is decided) | — | `spec/cli.md` C-R6 | RL-11 if ruled |
+| a `-r` of the startup files (`crt1.o … crtend.o` in the middle) | **warning** `eh-frame-terminator` (ruled, record §G Q7): an input's `.eh_frame` zero terminator stands before the last record of the output's `.eh_frame`; names the input and the number of records after it | — | `spec/cli.md` C-R6 | RL-11 |
 
 
 ## 5. Text
