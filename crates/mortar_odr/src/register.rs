@@ -3,7 +3,7 @@
 //! against it (`tests` below), so that moving a check (O-46) is one line
 //! here and one row there.
 
-use mortar_core::plan::{Odr, OdrMode, OdrTable};
+use mortar_core::plan::{Odr, OdrMode, OdrRuntime, OdrTable};
 
 /// A check's status in O-47's register.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,6 +120,11 @@ impl Status {
     #[must_use]
     pub const fn runs(self, odr: &Odr) -> bool {
         match (self, odr.mode) {
+            // `--odr-runtime` (WP-198): the runtime reads the table, which
+            // is written whatever `--odr` says (the two are independent).
+            (Self::Off, _) if !matches!(odr.runtime, OdrRuntime::Off) => {
+                !matches!(odr.table, OdrTable::Off)
+            }
             (_, OdrMode::Off) => false,
             (Self::On, _) | (Self::Strict, OdrMode::Strict) => true,
             (Self::OptIn, _) => odr.check_archives,
@@ -252,6 +257,13 @@ mod tests {
         assert!(Check::Table.runs(&table(OdrMode::Strict)));
         assert!(!Check::Table.runs(&table(OdrMode::Off)));
         assert!(!Check::Table.runs(&at(OdrMode::Strict)));
+        // WP-198: with --odr-runtime the table is written under --odr=off
+        // too (the runtime reads it); nothing else runs there.
+        let rt = |mode| Odr { runtime: OdrRuntime::Report, ..table(mode) };
+        for mode in [OdrMode::Off, OdrMode::Warn, OdrMode::Error, OdrMode::Strict] {
+            assert!(Check::Table.runs(&rt(mode)));
+            assert_eq!(Check::W1.runs(&rt(mode)), mode != OdrMode::Off);
+        }
         // O-24: strict only.
         for mode in [OdrMode::Off, OdrMode::Warn, OdrMode::Error, OdrMode::Strict] {
             assert_eq!(Check::SharedInputs.runs(&at(mode)), mode == OdrMode::Strict);

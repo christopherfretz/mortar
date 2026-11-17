@@ -288,14 +288,14 @@ fn s12_determinism() {
     ];
     let plan = common::plan(&args);
     let reference = check_schedules(|pool| {
-        summary(&common::run_plan(s.path(), &plan, Options { closure: true }, pool))
+        summary(&common::run_plan(s.path(), &plan, Options { closure: true, embedded: None }, pool))
     });
     // §16: thread counts 1, 2, 7, 64.
     for threads in [1, 2, 7, 64] {
         let got = summary(&common::run_plan(
             s.path(),
             &plan,
-            Options { closure: true },
+            Options { closure: true, embedded: None },
             &Pool::new(threads),
         ));
         assert_eq!(got, reference, "{threads} threads");

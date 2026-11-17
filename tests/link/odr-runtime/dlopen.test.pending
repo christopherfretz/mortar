@@ -1,0 +1,173 @@
+# PENDING (WP-197): L3: the verifier finds h1.so: P-M2 place: 2 notes, 1 of type 0x4d4f4401 and 0 of 0x4d4f4402; O-52 is one table note, then at most one =full note at 0x298 (and 65 more)
+# (WP-198) The verifier does not know --odr-runtime yet: it has no input for <mortar:odr-runtime> (I1, M12), does not read the option (M9) or the -z now and the table it implies (P-D3, P-D6, P-M2 presence), nor the runtime note (P-M2 place), so the runtime's sections, references, imports and relocations have no input (P-M3, P-D7, P-D9, E4); every mortar output of this test runs as expected under --no-plumb. WP-197 teaches the verifier the runtime input and renames this file to .test.
+# --odr-runtime on modules loaded by dlopen (spec/odr.md O-53a; WP-077
+# cases C1, C1-fatal, R1m, R2m, B1, T1, P1), every module linked by
+# mortar with the option (or with the table only: t1, pre). h1 and h1b
+# define fmtlite::version() with body 1 (kind 2 rows 01..), h2 with body
+# 2 (02..). mhost is a Mason host linked =report, mhostf =fatal; mhostvf
+# (=fatal) defines and exports version() body 1 itself.
+#
+# C1: h1 GLOBAL, then h2 LOCAL binds h1's: a report, the process goes on.
+# C1-fatal: the same under the fatal host: the report, then the stop.
+# R1m: h2 LOCAL and NOW binds its own, then h1 GLOBAL, h1b LOCAL binds
+# h1's (the same body): nothing to report. R2m: promotion by
+# NOLOAD|GLOBAL: nothing to report. B1: h2 binds the host's version():
+# a report, the stop. T1: h2 binds t1's (a table-only module, no
+# runtime): a report. P1: pre.so (table only, body 1) preloaded, h2
+# binds it: a warning (interposition), the process goes on under the
+# fatal host.
+#
+# dup.o's .preinit_array entry, before the runtime's (the runtime is the
+# last input; .preinit_array is in input order), points standard error
+# at standard output, so the run checks what the runtime writes, and
+# turns SIGABRT into exit status 134: under qemu-user a guest killed by a
+# signal makes qemu print its own line on the guest's (redirected)
+# standard error; status 134 says the same thing (only SIGABRT gives it).
+# The modules are opened as ./NAME.so, the names the reports print.
+#@ spec: odr.md "O-53a"
+#@ arch: aarch64 x86_64
+#@ requires: g++
+
+cxx -O0 -fPIC h1.cpp -o h1.0.o
+meta v1.meta h1.0.o -o h1.o
+cxx -O0 -fPIC h2.cpp -o h2.0.o
+meta v2.meta h2.0.o -o h2.o
+cxx -O0 -fPIE hx.cpp -o hx.0.o
+meta v1.meta hx.0.o -o hx.o
+cc -O2 -fPIE host.c -o host.o
+cc -O1 -fPIE dup.c -o dup.o
+link(mortar) g++ -shared h1.o -Wl,--odr-runtime=report -o h1.so
+link(mortar) g++ -shared h1.o -Wl,--odr-runtime=report -o h1b.so
+link(mortar) g++ -shared h2.o -Wl,--odr-runtime=report -o h2.so
+link(mortar) g++ -shared h1.o -Wl,--odr-table=exported -o t1.so
+link(mortar) g++ -shared h1.o -Wl,--odr-table=exported -o pre.so
+link(mortar) gcc -pie dup.o host.o -Wl,--odr-runtime=report -ldl -o mhost
+link(mortar) gcc -pie dup.o host.o -Wl,--odr-runtime=fatal -ldl -o mhostf
+link(mortar) g++ -pie dup.o host.o hx.o -Wl,--export-dynamic -Wl,--odr-runtime=fatal -ldl -o mhostvf
+# C1
+run(mortar) mhost o:./h1.so:g o:./h2.so: c:./h2.so
+  stdout: opened h1.so [g]
+  stdout: mason: warning: odr-violation-at-load: _ZN7fmtlite7versionEv: ./h2.so binds the definition in ./h1.so, which differs from its own (hash 0202020202020202 here, 0101010101010101 there)
+  stdout: opened h2.so []
+  stdout: call h2.so -> 1
+# C1-fatal
+run(mortar) mhostf o:./h1.so:g o:./h2.so: c:./h2.so
+  exit: 134
+  stdout: opened h1.so [g]
+  stdout: mason: error: odr-violation-at-load: _ZN7fmtlite7versionEv: ./h2.so binds the definition in ./h1.so, which differs from its own (hash 0202020202020202 here, 0101010101010101 there)
+  stdout: mason: fatal: odr-violation-at-load: 1 mismatch(es); the process stops (MASON_ODR=report continues)
+# R1m
+run(mortar) mhostf o:./h2.so: c:./h2.so o:./h1.so:g o:./h1b.so: c:./h1b.so c:./h2.so
+  stdout: opened h2.so []
+  stdout: call h2.so -> 2
+  stdout: opened h1.so [g]
+  stdout: opened h1b.so []
+  stdout: call h1b.so -> 1
+  stdout: call h2.so -> 2
+# R2m
+run(mortar) mhostf o:./h2.so: o:./h1.so: o:./h1.so:gn o:./h1b.so: c:./h2.so c:./h1.so c:./h1b.so
+  stdout: opened h2.so []
+  stdout: opened h1.so []
+  stdout: opened h1.so [gn]
+  stdout: opened h1b.so []
+  stdout: call h2.so -> 2
+  stdout: call h1.so -> 1
+  stdout: call h1b.so -> 1
+# B1
+run(mortar) mhostvf o:./h2.so: c:./h2.so
+  exit: 134
+  stdout: mason: error: odr-violation-at-load: _ZN7fmtlite7versionEv: ./h2.so binds the definition in (main program), which differs from its own (hash 0202020202020202 here, 0101010101010101 there)
+  stdout: mason: fatal: odr-violation-at-load: 1 mismatch(es); the process stops (MASON_ODR=report continues)
+# T1
+run(mortar) mhost o:./t1.so:g o:./h2.so: c:./h2.so
+  stdout: opened t1.so [g]
+  stdout: mason: warning: odr-violation-at-load: _ZN7fmtlite7versionEv: ./h2.so binds the definition in ./t1.so, which differs from its own (hash 0202020202020202 here, 0101010101010101 there)
+  stdout: opened h2.so []
+  stdout: call h2.so -> 1
+# P1
+run(mortar) mhostf o:./h2.so: c:./h2.so
+  env: LD_PRELOAD=./pre.so
+  stdout: mason: warning: odr-hook-lazy: ./pre.so: 1 reference(s) with rows are bound lazily and NOT checked (link the module with -z now)
+  stdout: mason: warning: odr-interposed-at-load: _ZN7fmtlite7versionEv: ./h2.so binds the preloaded definition in ./pre.so, which differs from its own (hash 0202020202020202 here, 0101010101010101 there)
+  stdout: opened h2.so []
+  stdout: call h2.so -> 1
+
+#--- h1.cpp
+namespace fmtlite { inline int version() { return 1; } }
+extern "C" int entry_h1() { return fmtlite::version(); }
+extern "C" int plugin_entry() { return fmtlite::version(); }
+#--- h2.cpp
+namespace fmtlite { inline int version() { return 2; } }
+extern "C" int entry_h2() { return fmtlite::version(); }
+extern "C" int plugin_entry() { return fmtlite::version(); }
+#--- hx.cpp
+namespace fmtlite { inline int version() { return 1; } }
+extern "C" int keep() { return fmtlite::version(); }
+#--- v1.meta
+summary name=lang value=c++
+definition anchor=_ZN7fmtlite7versionEv hash=01010101010101010101010101010101 class=1 flags=1
+#--- v2.meta
+summary name=lang value=c++
+definition anchor=_ZN7fmtlite7versionEv hash=02020202020202020202020202020202 class=1 flags=1
+#--- dup.c
+#include <signal.h>
+#include <unistd.h>
+static void on_abort(int s) { (void)s; _exit(134); }
+static void to_stdout(int c, char **v, char **e) {
+  (void)c; (void)v; (void)e;
+  dup2(1, 2);
+  signal(SIGABRT, on_abort);
+}
+__attribute__((section(".preinit_array"), used)) static void (*const to_stdout_p)(int, char **, char **) = to_stdout;
+#--- host.c
+/* WP-077's matrix driver (tests/hook/host.c), the standard error on the
+ * standard output. ops: o:PATH:FLAGS dlopen (g GLOBAL, l LAZY, d DEEPBIND,
+ * n NOLOAD), c:PATH call plugin_entry, x:PATH dlclose. */
+#define _GNU_SOURCE
+#include <dlfcn.h>
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+static struct { char p[512]; void* h; } hs[1024];
+static int nh;
+int main(int argc, char** argv) {
+  setvbuf(stdout, 0, _IONBF, 0);
+  dup2(1, 2);
+  for (int i = 1; i < argc; i++) {
+    char op = argv[i][0];
+    char p[512];
+    strncpy(p, argv[i] + 2, 511);
+    p[511] = 0;
+    char* fl = strchr(p, ':');
+    if (fl) *fl++ = 0; else fl = "";
+    if (op == 'o') {
+      int m = strchr(fl, 'l') ? RTLD_LAZY : RTLD_NOW;
+      m |= strchr(fl, 'g') ? RTLD_GLOBAL : RTLD_LOCAL;
+      if (strchr(fl, 'd')) m |= RTLD_DEEPBIND;
+      if (strchr(fl, 'n')) m |= RTLD_NOLOAD;
+      void* h = dlopen(p, m);
+      if (!h) { printf("dlopen %s: %s\n", p, dlerror()); return 1; }
+      printf("opened %s [%s]\n", strrchr(p, '/') ? strrchr(p, '/') + 1 : p, fl);
+      strcpy(hs[nh].p, p); hs[nh++].h = h;
+    } else if (op == 'c' || op == 'x') {
+      int k;
+      for (k = nh - 1; k >= 0; k--) if (hs[k].h && !strcmp(hs[k].p, p)) break;
+      if (k < 0) { printf("no handle for %s\n", p); return 1; }
+      if (op == 'c') {
+        int (*f)(void) = (int (*)(void))dlsym(hs[k].h, "plugin_entry");
+        printf("call %s -> %d\n", strrchr(p, '/') ? strrchr(p, '/') + 1 : p, f());
+      } else {
+        dlclose(hs[k].h); hs[k].h = 0; printf("closed %s\n", strrchr(p, '/') ? strrchr(p, '/') + 1 : p);
+      }
+    } else if (op == 'm') {
+      void* h = dlmopen(LM_ID_NEWLM, p, RTLD_NOW);
+      if (!h) { printf("dlmopen %s: %s\n", p, dlerror()); return 1; }
+      int (*f)(void) = (int (*)(void))dlsym(h, "plugin_entry");
+      printf("new namespace %s -> %d\n", strrchr(p, '/') ? strrchr(p, '/') + 1 : p, f());
+    } else if (op == 'k') {
+      int (*f)(void) = (int (*)(void))dlsym(RTLD_DEFAULT, p);
+      printf("%s -> %d\n", p, f ? f() : -1);
+    }
+  }
+  return 0;
+}

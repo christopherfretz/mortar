@@ -1,0 +1,97 @@
+# PENDING (WP-197): L3: the verifier finds libcr.so: P-M2 place: 2 notes, 1 of type 0x4d4f4401 and 0 of 0x4d4f4402; O-52 is one table note, then at most one =full note at 0x298 (and 65 more)
+# (WP-198) The verifier does not know --odr-runtime yet: it has no input for <mortar:odr-runtime> (I1, M12), does not read the option (M9) or the -z now and the table it implies (P-D3, P-D6, P-M2 presence), nor the runtime note (P-M2 place), so the runtime's sections, references, imports and relocations have no input (P-M3, P-D7, P-D9, E4); every mortar output of this test runs as expected under --no-plumb. WP-197 teaches the verifier the runtime input and renames this file to .test.
+# --odr-runtime on the initial set (spec/odr.md O-53a; WP-077 cases
+# CR-b and R6). CR-b: libcr (level 5) and libcr2 (level 9) both define
+# fmtlite::level; the non-PIE executable (=report) reads it, so the
+# loader copies libcr's definition into it (R_*_COPY) and libcr2's
+# reference binds the copy: libcr2's entry reports it (the copy's
+# source found as the loader found it), and the program runs. R6:
+# libv1 and libv2 each define version() (different bodies) under their
+# own version node (LIB1_1, LIB2_1), each binding its own: nothing to
+# report under a fatal executable, which runs.
+#
+# dup.o's .preinit_array entry, before the runtime's (the runtime is the
+# last input; .preinit_array is in input order), points standard error
+# at standard output, so the run checks what the runtime writes, and
+# turns SIGABRT into exit status 134: under qemu-user a guest killed by a
+# signal makes qemu print its own line on the guest's (redirected)
+# standard error; status 134 says the same thing (only SIGABRT gives it).
+#@ spec: odr.md "O-53a"
+#@ arch: aarch64 x86_64
+#@ requires: g++
+
+cxx -O0 -fPIC cr.cpp -o cr.0.o
+meta l5.meta cr.0.o -o cr.o
+cxx -O0 -fPIC cr2.cpp -o cr2.0.o
+meta l9.meta cr2.0.o -o cr2.o
+cc -O0 -fno-pic crm2.c -o crm2.o
+cc -O1 -fPIE dup.c -o dup.o
+cxx -O0 -fPIC v1.cpp -o v1.0.o
+meta v1.meta v1.0.o -o v1.o
+cxx -O0 -fPIC v2.cpp -o v2.0.o
+meta v2.meta v2.0.o -o v2.o
+cxx -O0 -fPIE v.cpp -o v.o
+link(mortar) g++ -shared cr.o -Wl,--odr-runtime=report -Wl,-soname,libcr.so -o libcr.so
+link(mortar) g++ -shared cr2.o -Wl,--odr-runtime=report -Wl,-soname,libcr2.so -o libcr2.so
+link(mortar) gcc -no-pie dup.o crm2.o -Wl,--odr-runtime=report -Wl,--no-as-needed -L. -lcr -lcr2 -o crmain2
+link(mortar) g++ -shared v1.o -Wl,--odr-runtime=report -Wl,--version-script=v1.map -Wl,-soname,libv1.so -o libv1.so
+link(mortar) g++ -shared v2.o -Wl,--odr-runtime=report -Wl,--version-script=v2.map -Wl,-soname,libv2.so -o libv2.so
+link(mortar) g++ -pie dup.o v.o -Wl,--odr-runtime=fatal -Wl,--no-as-needed -L. -lv1 -lv2 -o vmhook
+# CR-b
+run(mortar) crmain2
+  env: LD_LIBRARY_PATH=.
+  stdout: mason: warning: odr-violation-at-load: _ZN7fmtlite5levelE: ./libcr2.so binds the definition in ./libcr.so, which differs from its own (hash 0909090909090909 here, 0505050505050505 there)
+  stdout: exe 5 lib2 5
+# R6
+run(mortar) vmhook
+  env: LD_LIBRARY_PATH=.
+  stdout: e1=1 e2=2
+
+#--- cr.cpp
+namespace fmtlite { inline int level = 5; }
+extern "C" int lib_level() { return fmtlite::level; }
+#--- cr2.cpp
+namespace fmtlite { inline int level = 9; }
+extern "C" int lib2_level() { return fmtlite::level; }
+#--- crm2.c
+#include <stdio.h>
+extern int lvl __asm__("_ZN7fmtlite5levelE");
+int lib2_level(void);
+int main(void) { setvbuf(stdout, 0, _IONBF, 0); printf("exe %d lib2 %d\n", lvl, lib2_level()); return 0; }
+#--- v1.cpp
+namespace fmtlite { inline int version() { return 1; } }
+extern "C" int e1() { return fmtlite::version(); }
+#--- v2.cpp
+namespace fmtlite { inline int version() { return 2; } }
+extern "C" int e2() { return fmtlite::version(); }
+#--- v.cpp
+#include <stdio.h>
+extern "C" int e1();
+extern "C" int e2();
+int main() { printf("e1=%d e2=%d\n", e1(), e2()); }
+#--- v1.map
+LIB1_1 { global: *; };
+#--- v2.map
+LIB2_1 { global: *; };
+#--- dup.c
+#include <signal.h>
+#include <unistd.h>
+static void on_abort(int s) { (void)s; _exit(134); }
+static void to_stdout(int c, char **v, char **e) {
+  (void)c; (void)v; (void)e;
+  dup2(1, 2);
+  signal(SIGABRT, on_abort);
+}
+__attribute__((section(".preinit_array"), used)) static void (*const to_stdout_p)(int, char **, char **) = to_stdout;
+#--- l5.meta
+summary name=lang value=c++
+definition anchor=_ZN7fmtlite5levelE hash=05050505050505050505050505050505 class=2 flags=1
+#--- l9.meta
+summary name=lang value=c++
+definition anchor=_ZN7fmtlite5levelE hash=09090909090909090909090909090909 class=2 flags=1
+#--- v1.meta
+summary name=lang value=c++
+definition anchor=_ZN7fmtlite7versionEv hash=01010101010101010101010101010101 class=1 flags=1
+#--- v2.meta
+summary name=lang value=c++
+definition anchor=_ZN7fmtlite7versionEv hash=02020202020202020202020202020202 class=1 flags=1

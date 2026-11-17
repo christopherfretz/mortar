@@ -942,6 +942,35 @@ pub struct Odr {
     /// `--keep-mason-meta` (`spec/meta.md` MT-32): keep the inputs' Mason
     /// metadata in the output, as a non-allocated `.mason.meta` (WP-076).
     pub keep_meta: bool,
+    /// `--odr-runtime=` (`spec/odr.md` O-53a, `spec/cli.md` §3.9; WP-198):
+    /// link the load-time check's runtime into a dynamic output; the last
+    /// one given wins.
+    pub runtime: OdrRuntime,
+}
+
+/// `--odr-runtime=` (`spec/odr.md` O-53a; WP-198): the mode the output's
+/// runtime note (`NT_MASON_ODR_RT`) records.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum OdrRuntime {
+    /// `off`, the default: no runtime, nothing changes.
+    #[default]
+    Off,
+    /// `report`: mode 1 of the note.
+    Report,
+    /// `fatal`: mode 2 of the note.
+    Fatal,
+}
+
+impl OdrRuntime {
+    /// The word of `--odr-runtime=`.
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Report => "report",
+            Self::Fatal => "fatal",
+        }
+    }
 }
 
 /// `--odr-table=` (`spec/odr.md` O-50, `spec/cli.md` §3.9).

@@ -110,6 +110,7 @@ R No - --no-odr-check
 R No - --odr-stats
 R No - --odr-check-archives
 R Next - --odr-table
+R Next - --odr-runtime
 R No - --keep-mason-meta
 R No - --detect-odr-violations
 R No gnu --version

@@ -169,6 +169,10 @@ const AUDIT: &[(&str, Proof)] = &[
         "--odr-table",
         Test("crates/mortar/tests/odr_dynamic.rs", "full_table_in_a_dynamic_executable"),
     ),
+    (
+        "--odr-runtime",
+        Test("crates/mortar/tests/odr_runtime.rs", "runtime_input_note_and_bind_now"),
+    ),
     ("--keep-mason-meta", Test("crates/mortar/tests/keep_meta.rs", "kept_in_every_output_kind")),
     ("--detect-odr-violations", Same(&["--detect-odr-violations"], None)),
     ("--version", Test("crates/mortar/tests/cli.rs", "version_goes_to_stdout")),

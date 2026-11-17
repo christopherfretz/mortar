@@ -4,8 +4,10 @@
 and re-review, `briefs/reviews/review-070-meta-odr.md` and
 `review-070-meta-odr-re.md`, and the coordinator's rulings). The
 container and the static checks (§1-§9, §10.1-§10.2, O-24) are accepted
-for implementation; the load-time hook (§10.3) is a design direction for
-a prototype package, not a rule; the operator's decisions are §15.** Rules are `O-n`. The
+for implementation; the load-time check (§10.3) is a built runtime
+(WP-196: rules O-53..O-59, objects under `runtime/odr/obj/`) linked by
+an option (`--odr-runtime`, WP-198), off by default; the operator's
+decisions are §15.** Rules are `O-n`. The
 container they read is `spec/meta.md` (`MT-n`). Every statement about
 what a compiler, linker or loader does names its experiment (Appendix A;
 scripts in the WP-070 review directory, record in
@@ -111,8 +113,9 @@ assumed), or if it is one of these exclusions.
   reported only with `--odr-check-archives` (O-23); K18 that only load
   time sees (a different build of a library at run time, `dlopen`ed
   libraries, libraries the link never named, indirect dependencies, and
-  libraries without a table) is not reported: the load-time hook is a
-  prototype direction, not a rule (§10.3).
+  libraries without a table) is not reported by the static checks: it
+  is the load-time check's (§10.3, `--odr-runtime=report|fatal`, off by
+  default).
 - **X13** two units with different `odr.scheme` strings (typically
   different kiln versions): their kind 2 and 3 rows are incomparable, an
   `--odr-stats` count only (O-11).
@@ -1802,8 +1805,8 @@ warning: f(int) violates the one-definition rule
   kind 2, 5 `odr-internal-reference`, 6 `isa` (O-31), 7 O-25, 8 the
   container findings; the W checks have tag 0 (WP-073).
 
-The load-time hook's prototype messages (§10.3) would be the runtime's,
-not mortar diagnostics: `odr-violation-at-load`,
+The load-time check's messages (§10.3) are the runtime's, not mortar
+diagnostics: `odr-violation-at-load`,
 `odr-hook-out-of-memory`, `odr-hook-stopped`.
 
 ### 9.2 Severity and switches
@@ -1838,9 +1841,14 @@ every warning (`spec/diag.md` §6.3).
   container byte is read (O-42), the W checks do not run, and no
   loadable table is written (§10). The output is byte-identical to the
   default link's when that link succeeds and the table is off (T-O-41).
+  One exception (WP-198): with `--odr-runtime=report|fatal` the
+  loadable table IS written under `--odr=off` (the table's pass runs,
+  and reads what the table needs; nothing is reported at link time):
+  the runtime compares tables, and a module linked with the runtime and
+  without a table would be checked against nothing.
 - `--odr-check-archives` (O-23), `--odr-table=off|exported|full` (O-50),
   `--odr-stats` (O-44). With `--odr=off` the first two do nothing (no
-  check runs, no table is written); in `warn`, `error` and `strict` each
+  check runs, no table is written, but for the exception above); in `warn`, `error` and `strict` each
   does the same thing, except that the record checks O-24 and O-32 make
   strict-only decisions inside them (WP-076). `--keep-mason-meta`
   (`meta.md` MT-32) is not an ODR switch: it keeps the containers in
@@ -1916,7 +1924,7 @@ O-47's table, by amendment.
 | O-34 kind 5 vs foreign sizes | K-5 | strict | cannot run yet | WP-074's oracle at zero |
 | `SYSTEM` `-std` differences (O-32) | K-3 | strict (warnings, O-32); an `--odr-stats` count in any other mode that compares | `std-mix`: 210 in one pair of TUs | Q6 |
 | `odr-archive-shadow` | K-3 | opt-in flag | — | never by default |
-| load-time hook | a runtime | **none**: a prototype direction (§10.3), never in M6 | the matrix of O-58 not yet green | O-58, then Q2 and Q3 |
+| load-time check | a runtime (WP-196) linked by `--odr-runtime` (WP-198) | off by default; `report` or `fatal` by option (the operator's ruling of 2026-11-17: fatal is never the only mode) | O-58's matrix is the gate of every change to the runtime | the verifier's rules for the runtime's outputs (WP-197); Q2's default |
 
 Outside the table: `meta-malformed` for a section named `.mason.meta`
 that is not a container (`spec/meta.md` MT-6) is resolution's
@@ -2108,10 +2116,23 @@ binutils `readelf -n` prints type 1 under an unknown owner as
 `NT_VERSION`), descriptor = O-51's header and rows. With `=full` it holds
 a second note after the first: the same owner, `n_type`
 **`0x4d4f4402`** (`NT_MASON_ODR_FULL`), descriptor = `=full`'s header
-and rows (O-51) (WP-076). With `--odr-runtime` it also holds the
-runtime note, `n_type` **`0x4d4f4403`** (`NT_MASON_ODR_RT`, O-53a). A
-reader of one note type never sees the others, so `=exported`'s readers
-read a `=full` table or a runtime's output unchanged. It lies in a
+and rows (O-51) (WP-076). A reader of the first note never sees the
+second (a different type), so `=exported`'s readers read a `=full`
+table unchanged. With `--odr-runtime=report|fatal` (O-53a, `spec/cli.md`
+C-ODR-RT; WP-198) it holds a third note, last: the same owner,
+`n_type` **`0x4d4f4403`** (`NT_MASON_ODR_RT`), `n_descsz` 16, the
+descriptor four little-endian `u32`: `{version 1, mode, flags 0,
+runtime id}`, mode 1 `report` or 2 `fatal` (the module's default, which
+`MASON_ODR` overrides at load time; a library's entry takes the main
+program's note first, then its own), the runtime id the index of the
+embedded runtime object mortar linked (its table, with each object's
+SHA-256, is `crates/mortar/src/odr_runtime.rs`: 0 AArch64 `so`, 1
+AArch64 `exe`, 2 x86-64 `so`, 3 x86-64 `exe`, 4 and 5 i386, embedded
+and refused). The note is 40 bytes (24 of header and owner, 16 of
+descriptor), a multiple of 8, so the notes before and after it keep
+their alignment. The runtime finds it by its type in any `PT_NOTE` of
+the module (`dl_iterate_phdr`), whatever notes come before it; a reader
+of the first or the second note never sees it. It lies in a
 `PT_NOTE` with `p_align` 8, which it may share with other 8-aligned notes
 (`spec/layout.md` places one `PT_NOTE` per run of notes of one
 alignment); readers walk every note of every `PT_NOTE`. With `n_namesz`
@@ -2951,7 +2972,7 @@ implementation of the verdict) is Q11.
 | O-45 | T-O-45 | the bench lane's comparison |
 | O-50, O-51 | T-O-50 | `=full` (WP-076, `tests/link/dyn/odr/o50-full{,-input}.test`, `odr_dynamic.rs::full_table_in_a_dynamic_executable`, `mortar_meta::table`'s mutation test of the second note): hidden vague definitions and types in the second note, the first note unchanged; a `.so` input with a `=full` table read by O-24 as with `=exported`. The row set: default, protected, `-Bsymbolic` and `-Bsymbolic-functions` definitions have rows (the last three `NONPREEMPTIBLE`), hidden and version-script `local:` ones do not; versioned names; the keeper's hash after a warned link. In an executable (WP-075, `tests/link/dyn/odr/o50-table.test`, `crates/mortar/tests/odr_dynamic.rs`): default and protected rows, every one `NONPREEMPTIBLE`, none for hidden; identical bytes on two links; none without the option |
 | O-52 | T-O-52 | `note-final`'s tolerance matrix |
-| O-53, O-54, O-56 | T-O-54 | WP-077's prototype matrix (O-58) on three targets; not a release test until a runtime ships |
+| O-53, O-54, O-56 | T-O-54 | the matrix (O-58, `tests/hook/run.sh`) on three targets with the shipped objects (WP-196); `cargo xtask odr-runtime --check` |
 | O-55, O-57 | T-O-57 | K18c's two outcomes unchanged by the table |
 | O-58 | T-O-58 | no output carries a runtime in M6; no table without `--odr-table` |
 | O-59 | T-O-59 | §12.5's rules on good and mutated outputs |

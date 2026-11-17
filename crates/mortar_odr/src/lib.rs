@@ -35,7 +35,10 @@ pub use crate::kept::kept_units;
 use crate::records::Switches;
 use crate::register::Check;
 /// O-51's row and O-52's note encoder, for the front that writes the table.
-pub use mortar_meta::table::{FullRow, Row as NoteRow, full_note, note as table_note};
+pub use mortar_meta::table::{
+    FullRow, RT_MODE_FATAL, RT_MODE_REPORT, Row as NoteRow, full_note, note as table_note,
+    runtime_note,
+};
 
 /// What the checks of a link found.
 #[derive(Debug, Default)]

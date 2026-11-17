@@ -1,0 +1,90 @@
+# PENDING (WP-197): L3: the verifier finds libs1.so: P-M2 place: 2 notes, 1 of type 0x4d4f4401 and 0 of 0x4d4f4402; O-52 is one table note, then at most one =full note at 0x298 (and 65 more)
+# (WP-198) The verifier does not know --odr-runtime yet: it has no input for <mortar:odr-runtime> (I1, M12), does not read the option (M9) or the -z now and the table it implies (P-D3, P-D6, P-M2 presence), nor the runtime note (P-M2 place), so the runtime's sections, references, imports and relocations have no input (P-M3, P-D7, P-D9, E4); every mortar output of this test runs as expected under --no-plumb. WP-197 teaches the verifier the runtime input and renames this file to .test.
+# --odr-runtime on the initial set (spec/odr.md O-53a; WP-077 cases
+# S-fatal, S-report, S-env, S-off): libs2 binds libs1's fmtlite::version()
+# (a different body: kind 2 rows 01.. and 02..). Under =fatal the
+# executable's .preinit_array entry finds the mismatch before any
+# constructor runs ("ctor s2" never prints) and stops the process
+# (abort: SIGABRT, status 134 below); under =report libs2's own entry reports it at libs2's
+# init, before libs2's constructor, and the program runs. MASON_ODR wins
+# over the executable's note: =fatal stops a report executable, =off runs
+# a fatal one with no report. The mode a library's entry uses is the
+# executable's note's, found by its type (0x4d4f4403) in .note.mason: the
+# libraries are linked =report, and S-fatal's report says "error".
+#
+# dup.o's .preinit_array entry, before the runtime's (the runtime is the
+# last input; .preinit_array is in input order), points standard error
+# at standard output, so the run checks what the runtime writes, and
+# turns SIGABRT into exit status 134: under qemu-user a guest killed by a
+# signal makes qemu print its own line on the guest's (redirected)
+# standard error; status 134 says the same thing (only SIGABRT gives it).
+# LD_LIBRARY_PATH=. names the libraries ./libs1.so and ./libs2.so.
+#@ spec: odr.md "O-53a"
+#@ arch: aarch64 x86_64
+#@ requires: g++
+
+cxx -O0 -fPIC s1.cpp -o s1.0.o
+meta v1.meta s1.0.o -o s1.o
+cxx -O0 -fPIC s2.cpp -o s2.0.o
+meta v2.meta s2.0.o -o s2.o
+cxx -O0 -fPIE sm.cpp -o sm.o
+cc -O1 -fPIE dup.c -o dup.o
+link(mortar) g++ -shared s1.o -Wl,--odr-runtime=report -Wl,-soname,libs1.so -o libs1.so
+link(mortar) g++ -shared s2.o -Wl,--odr-runtime=report -Wl,-soname,libs2.so -o libs2.so
+link(mortar) g++ -pie dup.o sm.o -Wl,--odr-runtime=report -Wl,--no-as-needed -L. -ls1 -ls2 -o smain-report
+link(mortar) g++ -pie dup.o sm.o -Wl,--odr-runtime=fatal -Wl,--no-as-needed -L. -ls1 -ls2 -o smain-fatal
+# S-fatal
+run(mortar) smain-fatal
+  env: LD_LIBRARY_PATH=.
+  exit: 134
+  stdout: mason: error: odr-violation-at-load: _ZN7fmtlite7versionEv: ./libs2.so binds the definition in ./libs1.so, which differs from its own (hash 0202020202020202 here, 0101010101010101 there)
+  stdout: mason: fatal: odr-violation-at-load: 1 mismatch(es); the process stops (MASON_ODR=report continues)
+# S-report
+run(mortar) smain-report
+  env: LD_LIBRARY_PATH=.
+  stdout: mason: warning: odr-violation-at-load: _ZN7fmtlite7versionEv: ./libs2.so binds the definition in ./libs1.so, which differs from its own (hash 0202020202020202 here, 0101010101010101 there)
+  stdout: ctor s2
+  stdout: main s1=1 s2=1
+# S-env
+run(mortar) smain-report
+  env: LD_LIBRARY_PATH=.
+  env: MASON_ODR=fatal
+  exit: 134
+  stdout: mason: error: odr-violation-at-load: _ZN7fmtlite7versionEv: ./libs2.so binds the definition in ./libs1.so, which differs from its own (hash 0202020202020202 here, 0101010101010101 there)
+  stdout: mason: fatal: odr-violation-at-load: 1 mismatch(es); the process stops (MASON_ODR=report continues)
+# S-off
+run(mortar) smain-fatal
+  env: LD_LIBRARY_PATH=.
+  env: MASON_ODR=off
+  stdout: ctor s2
+  stdout: main s1=1 s2=1
+
+#--- s1.cpp
+namespace fmtlite { inline int version() { return 1; } }
+extern "C" int entry_s1() { return fmtlite::version(); }
+#--- s2.cpp
+#include <unistd.h>
+namespace fmtlite { inline int version() { return 2; } }
+__attribute__((constructor)) static void c() { write(1, "ctor s2\n", 8); }
+extern "C" int entry_s2() { return fmtlite::version(); }
+#--- sm.cpp
+#include <stdio.h>
+extern "C" int entry_s1();
+extern "C" int entry_s2();
+int main() { setvbuf(stdout, 0, _IONBF, 0); printf("main s1=%d s2=%d\n", entry_s1(), entry_s2()); }
+#--- dup.c
+#include <signal.h>
+#include <unistd.h>
+static void on_abort(int s) { (void)s; _exit(134); }
+static void to_stdout(int c, char **v, char **e) {
+  (void)c; (void)v; (void)e;
+  dup2(1, 2);
+  signal(SIGABRT, on_abort);
+}
+__attribute__((section(".preinit_array"), used)) static void (*const to_stdout_p)(int, char **, char **) = to_stdout;
+#--- v1.meta
+summary name=lang value=c++
+definition anchor=_ZN7fmtlite7versionEv hash=01010101010101010101010101010101 class=1 flags=1
+#--- v2.meta
+summary name=lang value=c++
+definition anchor=_ZN7fmtlite7versionEv hash=02020202020202020202020202020202 class=1 flags=1

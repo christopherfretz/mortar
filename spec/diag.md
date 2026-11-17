@@ -675,6 +675,26 @@ not spell it. The last row, `eh-frame-terminator`, is not a kind of
 | a `-r` of the startup files (`crt1.o … crtend.o` in the middle) | **warning** `eh-frame-terminator` (ruled, record §G Q7): an input's `.eh_frame` zero terminator stands before the last record of the output's `.eh_frame`; names the input and the number of records after it | — | `spec/cli.md` C-R6 | RL-11 |
 
 
+### 4.5 The load-time check (`--odr-runtime`; WP-198)
+
+The refusals of `--odr-runtime=report|fatal` (`spec/cli.md` C-ODR-RT,
+`spec/odr.md` O-53a). No new kind and no new class. The first three
+are keyed at the option's argument (phase 10), the target's after the
+input phase (key `(20, 2^32-1, 0)`). Each has its test.
+
+| id or name | kind or class | text | raised by | test |
+|---|---|---|---|---|
+| `odr-runtime-static` | `refused`, `feature` | `unsupported feature: odr-runtime-static` (note: a static executable has no dynamic loader and no bindings to check: link a dynamic executable or a shared object) | `-static`, `-static-pie` (a `StaticExecutable` or `StaticPie` output) | `tests/link/odr-runtime/refusals.test`; `mortar_cli` `odr_runtime_rules`; `mortar` `refusals_and_the_no_op` |
+| `odr-runtime-unsupported-target` | `refused`, `feature` | `unsupported feature: odr-runtime-unsupported-target` (note: `--odr-runtime=MODE links the load-time check on AArch64 and x86-64 only; this link is for i386`) | a link whose target is not AArch64 or x86-64: i386, whose runtime objects are embedded but not validated (`spec/dyn.md` D-130) | `refusals.test` (i386) |
+| `odr-runtime-incremental` | `refused`, `feature` | `unsupported feature: odr-runtime-incremental` (note: the runtime is an input that is not a file, which the incremental state cannot record yet) | `--incremental` on the line | `refusals.test`; `odr_runtime_rules`; `refusals_and_the_no_op` |
+| `conflicting-options`, `first` = `--odr-runtime=MODE` | `conflicting-options` | `--odr-runtime=MODE and --odr-table=off cannot be used together` (as spelled; the last `--odr-table` of the line decides; note: the runtime compares the output's table) | an explicit `--odr-table=off` | `refusals.test`; `odr_runtime_rules`; `refusals_and_the_no_op` |
+
+Not refusals: at `-r` the option is a no-op (the line ends as it would
+without it, `spec/cli.md` C-R2b); under `-nostdlib` the runtime's
+references to libc are undefined like any input's: `undefined-symbol`
+(§3.1), whose `referenced by` place is `<mortar:odr-runtime>`
+(`refusals.test`).
+
 ## 5. Text
 
 ### 5.1 Style

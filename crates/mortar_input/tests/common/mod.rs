@@ -139,7 +139,7 @@ pub fn run<S: AsRef<OsStr>>(cwd: &Path, args: &[S]) -> Loaded<'static> {
 
 /// [`run`] with the closure.
 pub fn run_closure<S: AsRef<OsStr>>(cwd: &Path, args: &[S]) -> Loaded<'static> {
-    run_plan(cwd, &plan(args), Options { closure: true }, &Pool::sequential())
+    run_plan(cwd, &plan(args), Options { closure: true, embedded: None }, &Pool::sequential())
 }
 
 /// Each problem rendered.

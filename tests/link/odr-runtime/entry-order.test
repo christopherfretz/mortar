@@ -1,0 +1,99 @@
+# The order of the startup entries the runtime of --odr-runtime relies
+# on (spec/odr.md O-53a; WP-077 case I, WP-198), under every input
+# order, measured on the references and required of mortar (output:
+# reference): mortar adds the runtime object as the last input of the
+# line, and its entry is a .preinit_array entry in an executable, an
+# .init_array.00000 entry in a shared object; rt.o and srt.o stand in for
+# it here, last on the line.
+#
+# The rule (GNU ld 2.44, lld, mold and mortar alike, both input orders):
+# .preinit_array entries run in input order, all of them before any
+# constructor: a user's own .preinit_array entries (a.o, b.o) come
+# before the runtime's, and the runtime's still comes before every
+# constructor. .init_array.NNNNN sorts by priority, ties in input order:
+# priority 0 (00000) comes before every priority 1..65535 and before the
+# default .init_array, so in a shared object the runtime's entry is first
+# unless a user object has its own .init_array.00000 (the range reserved
+# to the implementation), whose entry then runs before the runtime's.
+# The runtime of a running link: odr-runtime/entry-order-runtime.
+#@ spec: odr.md "O-53a"
+#@ arch: aarch64 x86_64
+
+cc -O1 -fPIE a.c -o a.o
+cc -O1 -fPIE b.c -o b.o
+cc -O1 -fPIE rt.c -o rt.o
+cc -O1 -fPIC sa.c -o sa.o
+cc -O1 -fPIC sb.c -o sb.o
+cc -O1 -fPIC srt.c -o srt.o
+cc -O1 -fPIE um.c -o um.o
+link gcc -pie b.o a.o rt.o -o order-ba
+link gcc -pie a.o b.o rt.o -o order-ab
+link gcc -shared sb.o sa.o srt.o -Wl,-soname,liborder.so -o liborder.so
+link gcc -pie um.o -Wl,--no-as-needed -L. -lorder -o order-so
+run order-ba
+  stdout: b preinit
+  stdout: a preinit
+  stdout: rt preinit
+  stdout: b init_array.00000
+  stdout: a init_array.00000
+  stdout: b constructor(101)
+  stdout: a constructor(101)
+  stdout: b constructor
+  stdout: a constructor
+  stdout: main
+run order-ab
+  output: reference
+run order-so
+  env: LD_LIBRARY_PATH=.
+  stdout: sb init_array.00000
+  stdout: sa init_array.00000
+  stdout: srt init_array.00000
+  stdout: sb constructor(101)
+  stdout: sa constructor(101)
+  stdout: sb constructor
+  stdout: sa constructor
+
+#--- a.c
+#include <unistd.h>
+static void say(const char *s) { write(1, s, __builtin_strlen(s)); }
+static void pre(void) { say("a preinit\n"); }
+static void p0(void) { say("a init_array.00000\n"); }
+__attribute__((section(".preinit_array"), used)) static void (*const pre_p)(void) = pre;
+__attribute__((section(".init_array.00000"), used)) static void (*const p0_p)(void) = p0;
+__attribute__((constructor(101))) static void c101(void) { say("a constructor(101)\n"); }
+__attribute__((constructor)) static void cdef(void) { say("a constructor\n"); }
+int main(void) { say("main\n"); return 0; }
+#--- b.c
+#include <unistd.h>
+static void say(const char *s) { write(1, s, __builtin_strlen(s)); }
+static void pre(void) { say("b preinit\n"); }
+static void p0(void) { say("b init_array.00000\n"); }
+__attribute__((section(".preinit_array"), used)) static void (*const pre_p)(void) = pre;
+__attribute__((section(".init_array.00000"), used)) static void (*const p0_p)(void) = p0;
+__attribute__((constructor(101))) static void c101(void) { say("b constructor(101)\n"); }
+__attribute__((constructor)) static void cdef(void) { say("b constructor\n"); }
+#--- rt.c
+#include <unistd.h>
+static void say(const char *s) { write(1, s, __builtin_strlen(s)); }
+static void pre(void) { say("rt preinit\n"); }
+__attribute__((section(".preinit_array"), used)) static void (*const pre_p)(void) = pre;
+#--- sa.c
+#include <unistd.h>
+static void say(const char *s) { write(1, s, __builtin_strlen(s)); }
+static void p0(void) { say("sa init_array.00000\n"); }
+__attribute__((section(".init_array.00000"), used)) static void (*const p0_p)(void) = p0;
+__attribute__((constructor(101))) static void c101(void) { say("sa constructor(101)\n"); }
+__attribute__((constructor)) static void cdef(void) { say("sa constructor\n"); }
+#--- sb.c
+#include <unistd.h>
+static void say(const char *s) { write(1, s, __builtin_strlen(s)); }
+static void p0(void) { say("sb init_array.00000\n"); }
+__attribute__((section(".init_array.00000"), used)) static void (*const p0_p)(void) = p0;
+__attribute__((constructor(101))) static void c101(void) { say("sb constructor(101)\n"); }
+__attribute__((constructor)) static void cdef(void) { say("sb constructor\n"); }
+#--- srt.c
+#include <unistd.h>
+static void p0(void) { write(1, "srt init_array.00000\n", 21); }
+__attribute__((section(".init_array.00000"), used)) static void (*const p0_p)(void) = p0;
+#--- um.c
+int main(void) { return 0; }

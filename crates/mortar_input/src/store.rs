@@ -532,6 +532,30 @@ impl Store {
         segment[slot].get_or_init(|| bytes.into())
     }
 
+    /// Bytes that are no file's, as a blob of their own (a linker-made
+    /// input: `spec/odr.md` O-53a, WP-198): one resident part holds them
+    /// whole, so nothing is ever read again or re-checked; the blob has no
+    /// inode (it is not in [`Store::inodes`], and no file is found to be
+    /// it). Never empty in use; an empty `bytes` is an empty blob.
+    pub fn embed(&self, bytes: &[u8]) -> Blob {
+        let len = bytes.len() as u64;
+        let parts: Box<[Part]> = if len == 0 {
+            Box::new([])
+        } else {
+            Box::new([Part { offset: 0, bytes: bytes.into() }])
+        };
+        self.counters.resident.fetch_add(len, Ordering::Relaxed);
+        self.insert(Entry {
+            len,
+            parts,
+            whole: true,
+            meta: FileMeta { size: len, dev: 0, ino: 0, mtime: (0, 0), ctime: (0, 0), nlink: 1 },
+            hash: OnceLock::from(Ok(content_hash(bytes))),
+            file: Mutex::new(None),
+            full: OnceLock::new(),
+        })
+    }
+
     /// The size of the blob's file.
     #[must_use]
     pub fn len(&self, b: Blob) -> u64 {

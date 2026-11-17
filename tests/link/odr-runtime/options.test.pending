@@ -1,0 +1,132 @@
+# PENDING (WP-197): L3: the verifier finds prog: P-M2 place: 2 notes, 1 of type 0x4d4f4401 and 0 of 0x4d4f4402; O-52 is one table note, then at most one =full note at 0x340 (and 60 more)
+# (on x86-64: L3: the verifier finds prog: P-M2 place: 2 notes, 1 of type 0x4d4f4401 and 0 of 0x4d4f4402; O-52 is one table note, then at most one =full note at 0x448 (and 61 more))
+# (WP-198) The verifier does not know --odr-runtime yet: it has no input for <mortar:odr-runtime> (I1, M12), does not read the option (M9) or the -z now and the table it implies (P-D3, P-D6, P-M2 presence), nor the runtime note (P-M2 place), so the runtime's sections, references, imports and relocations have no input (P-M3, P-D7, P-D9, E4); every mortar output of this test runs as expected under --no-plumb. WP-197 teaches the verifier the runtime input and renames this file to .test.
+# What --odr-runtime does to the output and what the rest of the line
+# does to it (spec/cli.md --odr-runtime, spec/odr.md O-53a and §10.2;
+# WP-198).
+#
+# The output: .note.mason holds the table's note (0x4d4f4401, implied
+# --odr-table=exported) and then the runtime's (0x4d4f4403, descriptor
+# {1, mode, 0, runtime id}; the id is 1 on AArch64 and 3 on x86-64 for
+# an executable, 0 and 2 for a shared object); it binds now (DF_BIND_NOW,
+# DF_1_NOW) unless -z lazy is given; -Map names the runtime input
+# <mortar:odr-runtime>; two links are the same bytes, and =off is the
+# plain line's. --odr is independent: under --odr=off the table and the
+# runtime's note are written all the same (the runtime reads the table).
+#
+# The rest of the line does not drop the runtime: under --gc-sections its
+# .preinit_array / .init_array.00000 entry is a startup root (spec/live.md,
+# E14 Q5); -s, --exclude-libs=ALL, a version script that
+# hides everything and --no-export-dynamic leave it working
+# (MASON_ODR_STATS=1: the runtime's entry says it ran, and the program
+# runs); a shared object under -z defs with libc links (the runtime's
+# references are libc's).
+#
+# dup.o's .preinit_array entry, before the runtime's (the runtime is the
+# last input; .preinit_array is in input order), points standard error
+# at standard output, so the run checks what the runtime writes, and
+# turns SIGABRT into exit status 134: under qemu-user a guest killed by a
+# signal makes qemu print its own line on the guest's (redirected)
+# standard error; status 134 says the same thing (only SIGABRT gives it).
+#@ spec: cli.md "--odr-runtime"
+#@ spec: odr.md "O-53a"
+#@ arch: aarch64 x86_64
+
+cc -O1 -fPIE main.c -o main.o
+cc -O1 -fPIC lib.c -o lib.o
+cc -O1 -fPIE dup.c -o dup.o
+ar rcs libz.a lib.o
+link(mortar) gcc -pie dup.o main.o -Wl,--odr-runtime=report -Wl,-Map=prog.map -o prog
+link(mortar) gcc -pie dup.o main.o -Wl,--odr-runtime=report -o prog2
+link(mortar) gcc -pie dup.o main.o -Wl,--odr-runtime=fatal -o progf
+link(mortar) gcc -pie dup.o main.o -Wl,--odr-runtime=report -Wl,-z,lazy -o lazy
+link(mortar) gcc -pie dup.o main.o -Wl,--odr-runtime=report -Wl,--odr=off -o odroff
+link(mortar) gcc -pie dup.o main.o -Wl,--odr-runtime=off -o off
+link(mortar) gcc -pie dup.o main.o -o plain
+link(mortar) gcc -shared lib.o -Wl,--odr-runtime=fatal -Wl,-z,defs -o libl.so
+link(mortar) gcc -pie dup.o main.o -Wl,--odr-runtime=report -Wl,--gc-sections -o gc
+link(mortar) gcc -pie dup.o main.o -Wl,--odr-runtime=report -s -o stripped
+link(mortar) gcc -pie dup.o main.o -L. -lz -Wl,--odr-runtime=report -Wl,--exclude-libs=ALL -o excl
+link(mortar) gcc -shared lib.o -Wl,--odr-runtime=report -Wl,--version-script=hide.map -o libhide.so
+link(mortar) gcc -pie dup.o main.o -Wl,--odr-runtime=report -Wl,--no-export-dynamic -o noexp
+link(mortar) gcc -pie dup.o main.o -Wl,--no-as-needed -L. -lhide -ll -o libs
+check(mortar) readelf -nW prog
+  has: ^ *MasonMeta *0x00000010 *Unknown note type: (0x4d4f4403) *description data: 01 00 00 00 01 00 00 00 00 00 00 00 0* 00 00 00 *$
+  has: Unknown note type: (0x4d4f4401)
+check(mortar) readelf -nW odroff
+  has: ^ *MasonMeta *0x00000010 *Unknown note type: (0x4d4f4403) *description data: 01 00 00 00 01 00 00 00 00 00 00 00 0* 00 00 00 *$
+  has: Unknown note type: (0x4d4f4401)
+check(mortar) readelf -nW progf
+  has: ^ *MasonMeta *0x00000010 *Unknown note type: (0x4d4f4403) *description data: 01 00 00 00 02 00 00 00 00 00 00 00 0* 00 00 00 *$
+check(mortar) readelf -nW libl.so
+  has: ^ *MasonMeta *0x00000010 *Unknown note type: (0x4d4f4403) *description data: 01 00 00 00 02 00 00 00 00 00 00 00 0* 00 00 00 *$
+check(mortar) readelf -dW prog
+  has: (FLAGS) *BIND_NOW
+  has: (FLAGS_1) *Flags: NOW
+check(mortar) readelf -dW libl.so
+  has: (FLAGS) *BIND_NOW
+check(mortar) readelf -dW lazy
+  not: BIND_NOW
+  not: (FLAGS_1) *Flags: NOW
+check(mortar) readelf -SW plain
+  not: .note.mason
+check(mortar) cmp prog prog2
+  has: ^identical$
+check(mortar) cmp off plain
+  has: ^identical$
+check(mortar) text prog.map
+  has: <mortar:odr-runtime>
+run(mortar) prog
+  env: MASON_ODR_STATS=1
+  stdout: mason-preinit (main program)
+  stdout: mason-stats (main program) rows=0 relocs=0 own=0 same=0 differ=0 interposed=0 no-table=0 no-row=0 lazy=0 unknown=0 copy=0 system=0
+  stdout: 7
+run(mortar) gc
+  env: MASON_ODR_STATS=1
+  stdout: mason-preinit (main program)
+  stdout: mason-stats (main program) rows=0 relocs=0 own=0 same=0 differ=0 interposed=0 no-table=0 no-row=0 lazy=0 unknown=0 copy=0 system=0
+  stdout: 7
+run(mortar) stripped
+  env: MASON_ODR_STATS=1
+  stdout: mason-preinit (main program)
+  stdout: mason-stats (main program) rows=0 relocs=0 own=0 same=0 differ=0 interposed=0 no-table=0 no-row=0 lazy=0 unknown=0 copy=0 system=0
+  stdout: 7
+run(mortar) excl
+  env: MASON_ODR_STATS=1
+  stdout: mason-preinit (main program)
+  stdout: mason-stats (main program) rows=0 relocs=0 own=0 same=0 differ=0 interposed=0 no-table=0 no-row=0 lazy=0 unknown=0 copy=0 system=0
+  stdout: 7
+run(mortar) noexp
+  env: MASON_ODR_STATS=1
+  stdout: mason-preinit (main program)
+  stdout: mason-stats (main program) rows=0 relocs=0 own=0 same=0 differ=0 interposed=0 no-table=0 no-row=0 lazy=0 unknown=0 copy=0 system=0
+  stdout: 7
+run(mortar) libs
+  env: LD_LIBRARY_PATH=.
+  env: MASON_ODR_STATS=1
+  stdout: mason-entry ./libl.so
+  stdout: mason-stats ./libl.so rows=0 relocs=0 own=0 same=0 differ=0 interposed=0 no-table=0 no-row=0 lazy=0 unknown=0 copy=0 system=0
+  stdout: mason-entry ./libhide.so
+  stdout: mason-stats ./libhide.so rows=0 relocs=0 own=0 same=0 differ=0 interposed=0 no-table=0 no-row=0 lazy=0 unknown=0 copy=0 system=0
+  stdout: 7
+run(mortar) lazy
+  stdout: 7
+
+#--- main.c
+#include <stdio.h>
+int z(void) __attribute__((weak));
+int main(void) { printf("%d\n", z ? z() : 7); return 0; }
+#--- lib.c
+int z(void) { return 7; }
+#--- hide.map
+{ local: *; };
+#--- dup.c
+#include <signal.h>
+#include <unistd.h>
+static void on_abort(int s) { (void)s; _exit(134); }
+static void to_stdout(int c, char **v, char **e) {
+  (void)c; (void)v; (void)e;
+  dup2(1, 2);
+  signal(SIGABRT, on_abort);
+}
+__attribute__((section(".preinit_array"), used)) static void (*const to_stdout_p)(int, char **, char **) = to_stdout;
