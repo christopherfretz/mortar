@@ -1283,15 +1283,7 @@ impl<'a, 'b> Engine<'a, 'b> {
         // in the output.
         let mut recs: Vec<Rec> = Vec::with_capacity(raw.len());
         for (off, sym, ty, addend) in raw {
-            let p = match &place {
-                Place::Whole(a) => Some(a.wrapping_add(off)),
-                Place::Pieces(ps) => ps
-                    .iter()
-                    .find(|q| q.input_offset <= off && off < q.input_offset + q.size)
-                    .map(|q| q.addr + (off - q.input_offset)),
-                _ => None,
-            };
-            let Some(p) = p else {
+            let Some(p) = place_at(&place, off) else {
                 self.cov.records -= 1;
                 self.cov.absent_records += 1;
                 continue;
@@ -1397,7 +1389,7 @@ impl<'a, 'b> Engine<'a, 'b> {
             let before = self.trace.is_some().then(|| crate::equiv::tally(self));
             self.record(oi, si, &recs, &sorted, i);
             if let Some(b) = before {
-                crate::equiv::traced(self, (oi, si, recs[i].off), recs[i].p, &b);
+                crate::equiv::traced(self, (oi, si, recs[i].off), &b);
             }
         }
     }
@@ -2296,6 +2288,11 @@ impl<'a, 'b> Engine<'a, 'b> {
     /// Decides the GOT groups (§5.5).
     pub fn finish_got(&mut self) {
         let groups = std::mem::take(&mut self.got_groups);
+        if self.trace.is_some() {
+            let wanted =
+                groups.values().flat_map(|g| g.members.iter().map(|m| m.0.rec.p)).collect();
+            crate::equiv::index_places(self, &wanted);
+        }
         for ((_, goi, gsym, _), g) in groups {
             if g.unpaired() {
                 self.not_checked(Reason::GotUnpaired, g.members.len() as u64);
@@ -2527,6 +2524,19 @@ impl<'a, 'b> Engine<'a, 'b> {
         };
         let want = &data[r..end];
         read(t, want.len() as u64).is_some_and(|b| b == want)
+    }
+}
+
+/// The output place of input offset `off` of a section placed at
+/// `place`: `None` when the offset is in no placed piece (§5.1 step 1).
+pub(crate) fn place_at(place: &Place, off: u64) -> Option<u64> {
+    match place {
+        Place::Whole(a) => Some(a.wrapping_add(off)),
+        Place::Pieces(ps) => ps
+            .iter()
+            .find(|q| q.input_offset <= off && off < q.input_offset + q.size)
+            .map(|q| q.addr + (off - q.input_offset)),
+        _ => None,
     }
 }
 

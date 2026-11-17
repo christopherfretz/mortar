@@ -129,23 +129,51 @@ fn form_since(e: &Engine<'_, '_>, b: &Tally) -> Form {
     }
 }
 
-/// The records traced in one side's engine, in the order judged, with
-/// the last one traced at each output place (WP-109: [`reform`] found it
-/// by a backward scan of the whole trace, once per GOT group member, the
-/// quadratic term of `--equiv` on a large link).
+/// The records traced in one side's engine, in the order judged, and the
+/// last one traced at each output place a GOT group's member has, by which
+/// the member is found again (WP-109: [`reform`] found it by a backward
+/// scan of the whole trace, once per member, the quadratic term of
+/// `--equiv` on a large link; WP-109b: the places of the members only,
+/// found when the groups are decided, not a map of every record's place,
+/// 0.5 GB a side on clang `-g`).
 #[derive(Debug, Default)]
 pub(crate) struct Trace {
     pub records: Vec<Traced>,
-    /// The output place -> the last record traced there, by which a GOT
-    /// group's member is found again.
+    /// A member's output place -> the last record traced there.
     last: HashMap<u64, usize>,
 }
 
-pub(crate) fn traced(e: &mut Engine<'_, '_>, at: (usize, usize, u64), p: u64, b: &Tally) {
+impl Trace {
+    /// A trace with room for `n` records (the relocation records of the
+    /// inputs: one growth fewer than doubling, WP-109b).
+    pub(crate) fn with_capacity(n: usize) -> Trace {
+        Trace { records: Vec::with_capacity(n), last: HashMap::default() }
+    }
+}
+
+pub(crate) fn traced(e: &mut Engine<'_, '_>, at: (usize, usize, u64), b: &Tally) {
     let form = form_since(e, b);
     if let Some(t) = e.trace.as_mut() {
-        t.last.insert(p, t.records.len());
         t.records.push(Traced { oi: at.0 as u32, si: at.1 as u32, off: at.2, form });
+    }
+}
+
+/// Finds the last record traced at each place of `wanted` (the GOT groups'
+/// members, before they are decided): a record's place is its section's
+/// place at its offset, as the engine computed it when it traced it.
+pub(crate) fn index_places(e: &mut Engine<'_, '_>, wanted: &std::collections::HashSet<u64>) {
+    let objs = e.objs;
+    let Some(t) = e.trace.as_mut() else { return };
+    t.last.clear();
+    for (i, r) in t.records.iter().enumerate() {
+        let Some(s) = objs.get(r.oi as usize).and_then(|o| o.secs.get(r.si as usize)) else {
+            continue;
+        };
+        if let Some(p) = crate::reloc::place_at(&s.place, r.off)
+            && wanted.contains(&p)
+        {
+            t.last.insert(p, i);
+        }
     }
 }
 
@@ -187,14 +215,81 @@ struct Unit {
     /// `(input offset, address, size)`: one for a whole section.
     pieces: Vec<(u64, u64, u64)>,
     size: u64,
-    /// The relocated ranges `(offset, width)`.
-    relocs: Vec<(u64, u64)>,
+    /// The relocated ranges `(offset, width)`; the update's side only
+    /// (the comparison of the bytes outside them reads X's, WP-109b).
+    relocs: ByOffset<u64>,
     /// The input record lengths of `.eh_frame` pieces, by input offset.
     eh_len: BTreeMap<u64, u64>,
 }
 
 /// An address range with its identity: `(start, end, id, base)`.
 type Span = (u64, u64, String, u64);
+
+/// Pairs `(offset, value)` sorted by offset, the offsets held in 32 bits
+/// when every one fits (a unit's records: WP-109b, half the memory of a
+/// side on clang `-g`), in 64 otherwise.
+#[derive(Debug, Clone)]
+enum ByOffset<T> {
+    Narrow(Vec<(u32, T)>),
+    Wide(Vec<(u64, T)>),
+}
+
+impl<T: Copy> ByOffset<T> {
+    fn new(v: Vec<(u64, T)>) -> Self {
+        if v.iter().all(|e| u32::try_from(e.0).is_ok()) {
+            // A new allocation of the exact size (collecting in place
+            // would keep the wide one).
+            let mut n = Vec::with_capacity(v.len());
+            n.extend(v.iter().map(|&(o, t)| (o as u32, t)));
+            ByOffset::Narrow(n)
+        } else {
+            let mut v = v;
+            v.shrink_to_fit();
+            ByOffset::Wide(v)
+        }
+    }
+
+    fn bytes(&self) -> usize {
+        match self {
+            ByOffset::Narrow(v) => v.capacity() * size_of::<(u32, T)>(),
+            ByOffset::Wide(v) => v.capacity() * size_of::<(u64, T)>(),
+        }
+    }
+
+    fn iter(&self) -> Box<dyn Iterator<Item = (u64, T)> + '_> {
+        match self {
+            ByOffset::Narrow(v) => Box::new(v.iter().map(|&(o, t)| (u64::from(o), t))),
+            ByOffset::Wide(v) => Box::new(v.iter().copied()),
+        }
+    }
+
+    /// The value at `off`.
+    fn get(&self, off: u64) -> Option<T> {
+        match self {
+            ByOffset::Narrow(v) => {
+                let o = u32::try_from(off).ok()?;
+                v.binary_search_by_key(&o, |e| e.0).ok().map(|j| v[j].1)
+            }
+            ByOffset::Wide(v) => v.binary_search_by_key(&off, |e| e.0).ok().map(|j| v[j].1),
+        }
+    }
+
+    /// The number of pairs with an offset at or before `at`.
+    fn at_or_before(&self, at: u64) -> usize {
+        match self {
+            ByOffset::Narrow(v) => v.partition_point(|e| u64::from(e.0) <= at),
+            ByOffset::Wide(v) => v.partition_point(|e| e.0 <= at),
+        }
+    }
+
+    /// Pair `i`.
+    fn nth(&self, i: usize) -> (u64, T) {
+        match self {
+            ByOffset::Narrow(v) => (u64::from(v[i].0), v[i].1),
+            ByOffset::Wide(v) => v[i],
+        }
+    }
+}
 
 /// One side, read and verified.
 struct Side<'a> {
@@ -205,7 +300,7 @@ struct Side<'a> {
     /// Each unit's traced records: `(offset, form)` sorted by offset,
     /// the last traced at an offset (WP-109: one key per unit, not one
     /// with its path per record: 1.3 GB a side on opt `-g`).
-    forms: BTreeMap<UKey, Vec<(u64, Form)>>,
+    forms: BTreeMap<UKey, ByOffset<Form>>,
     units: BTreeMap<UKey, Unit>,
     /// Global definitions of the inputs: `(unit, value)`, or `None` for an
     /// absolute one with its value.
@@ -332,23 +427,38 @@ fn le(b: &[u8], o: usize, w: usize) -> Option<u64> {
 fn run_side<'a>(
     tag: &'static str,
     output: &'a [u8],
-    src: &dyn Source,
+    store: &Store<'_>,
+    m: usize,
     map: &'a Map,
 ) -> Result<Side<'a>, Report> {
     let Ok(image) = Image::read(output) else {
-        return Err(crate::verify_static(output, src, map));
+        let mut r = crate::verify_static_in(output, store, m, map);
+        crate::read_errors(store, &mut r);
+        return Err(r);
     };
-    let store = Store::read(src, &[map]);
-    let located = crate::locate::locate(map, &store, 0, &image);
+    let located = crate::locate::locate(map, store, m, &image);
     let objs: Vec<Obj<'_>> = located.objs;
     let mut engine = Engine::new(&image, &objs, map.format);
-    engine.trace = Some(Trace::default());
+    // Room for every relocation record of the inputs (at most one per 8
+    // bytes of their relocation sections): the trace is the side's
+    // largest structure.
+    let n: u64 = objs
+        .iter()
+        .flat_map(|o| o.secs.iter().filter_map(|s| s.relocs).map(move |rs| (o, rs as usize)))
+        .map(|(o, rs)| match o.secs[rs].shdr.sh_entsize {
+            e if e >= 8 => o.data_len(rs) / e,
+            _ => 0,
+        })
+        .sum();
+    engine.trace = Some(Trace::with_capacity(usize::try_from(n).unwrap_or(0)));
     crate::run_engine(&mut engine, &image, map, None);
     crate::prof::mark("side: engine");
     let dynamic = crate::is_dynamic(output);
     let report = if dynamic {
         let ctx = crate::Ctx { line: None, files: &crate::HostFiles };
-        crate::dynverify::verify_src(output, src, map, &ctx)
+        let mut r = crate::dynverify::verify_in(output, store, m, map, &ctx);
+        crate::read_errors(store, &mut r);
+        r
     } else {
         let mut r = Report::default();
         r.findings.extend(crate::structure::check(&image));
@@ -357,7 +467,7 @@ fn run_side<'a>(
         r.findings.append(&mut engine.findings);
         r.coverage = std::mem::take(&mut engine.cov);
         r.sort();
-        crate::read_errors(&store, &mut r);
+        crate::read_errors(store, &mut r);
         r
     };
     let mut seen: BTreeMap<(String, Option<String>), u32> = BTreeMap::new();
@@ -372,13 +482,16 @@ fn run_side<'a>(
     let mut recs = engine.trace.take().unwrap_or_default().records;
     // Stable: of the records at one place, the last traced is kept.
     recs.sort_by_key(|t| (t.oi, t.si, t.off));
-    let mut forms: BTreeMap<UKey, Vec<(u64, Form)>> = BTreeMap::new();
+    let mut forms: BTreeMap<UKey, ByOffset<Form>> = BTreeMap::new();
     let mut at: Option<(u32, u32)> = None;
     let mut cur: Vec<(u64, Form)> = Vec::new();
     for t in recs {
         if at != Some((t.oi, t.si)) {
             if let Some((oi, si)) = at {
-                forms.insert((keys[oi as usize].clone(), si), std::mem::take(&mut cur));
+                forms.insert(
+                    (keys[oi as usize].clone(), si),
+                    ByOffset::new(std::mem::take(&mut cur)),
+                );
             }
             at = Some((t.oi, t.si));
         }
@@ -388,7 +501,7 @@ fn run_side<'a>(
         }
     }
     if let Some((oi, si)) = at {
-        forms.insert((keys[oi as usize].clone(), si), cur);
+        forms.insert((keys[oi as usize].clone(), si), ByOffset::new(cur));
     }
     crate::prof::mark("side: report, forms");
     let mut units = BTreeMap::new();
@@ -401,7 +514,8 @@ fn run_side<'a>(
                 _ => continue,
             };
             let mut relocs = Vec::new();
-            if let Some(rs) = s.relocs
+            if tag == "X"
+                && let Some(rs) = s.relocs
                 && let Some(raw) = o.records(rs)
             {
                 for (off, _, ty, _) in raw {
@@ -412,6 +526,7 @@ fn run_side<'a>(
                 }
             }
             relocs.sort_unstable();
+            let relocs = ByOffset::new(relocs);
             let eh = s.alloc() && s.is_eh_frame(machine);
             let mut eh_len = BTreeMap::new();
             if eh {
@@ -502,6 +617,9 @@ fn run_side<'a>(
         .filter(|(_, u)| u.tbss)
         .map(|(((p, m, _), i), _)| (p.clone(), m.clone(), *i))
         .collect();
+    if crate::prof::enabled() {
+        side_gauges(tag, &forms, &units, &defs, &spans, &image);
+    }
     Ok(Side {
         tag,
         image,
@@ -517,6 +635,54 @@ fn run_side<'a>(
         machine,
         tbss,
     })
+}
+
+/// The sizes of what a side keeps for the comparison (§8.1's profile).
+fn side_gauges(
+    tag: &str,
+    forms: &BTreeMap<UKey, ByOffset<Form>>,
+    units: &BTreeMap<UKey, Unit>,
+    defs: &BTreeMap<String, Vec<(Option<UKey>, u64)>>,
+    spans: &[Span],
+    image: &Image<'_>,
+) {
+    use std::mem::size_of;
+    let key =
+        |k: &UKey| (k.0.0.capacity() + k.0.1.as_ref().map_or(0, String::capacity)) as u64 + 64;
+    let g = |what: &str, n: u64| crate::prof::gauge(&format!("side {tag} {what}"), n);
+    g(
+        &format!("forms ({} units)", forms.len()),
+        forms.iter().map(|(k, v)| key(k) + v.bytes() as u64).sum(),
+    );
+    g(
+        &format!("units ({})", units.len()),
+        units
+            .iter()
+            .map(|(k, u)| {
+                key(k)
+                    + size_of::<Unit>() as u64
+                    + (u.relocs.bytes() + u.pieces.capacity() * 24 + u.eh_len.len() * 40) as u64
+            })
+            .sum(),
+    );
+    g(
+        &format!("defs ({})", defs.len()),
+        defs.iter()
+            .map(|(n, v)| {
+                n.capacity() as u64
+                    + 64
+                    + v.iter().map(|d| d.0.as_ref().map_or(0, key) + 32).sum::<u64>()
+            })
+            .sum(),
+    );
+    g(
+        &format!("spans ({})", spans.len()),
+        spans.iter().map(|s| s.2.capacity() as u64 + size_of::<Span>() as u64).sum(),
+    );
+    g(
+        &format!("image symbols ({})", image.symbols.len()),
+        image.symbols.iter().map(|s| s.name.capacity() as u64 + 64).sum(),
+    );
 }
 
 /// Whether `v` is inside a range thunk or an erratum patch of the side's
@@ -545,12 +711,16 @@ fn finding(n: u8, msg: impl Into<String>) -> Finding {
 
 /// [`check`] with the inputs read through `src` (§8.1), which holds the
 /// files both maps name; both sides share it. A file that cannot be read
-/// whole is an I2 finding of each side.
+/// is an I2 finding of each side that reads it.
 pub fn check_from(x_out: &[u8], x_map: &Map, f_out: &[u8], f_map: &Map, src: &dyn Source) -> Equiv {
     let mut eq = Equiv::default();
-    let x = run_side("X", x_out, src, x_map);
+    // One store for both sides: each object's skeleton is read once, and
+    // a file both maps name is one object (§8.1).
+    let store = Store::read(src, &[x_map, f_map]);
+    crate::prof::mark("equiv skeletons");
+    let x = run_side("X", x_out, &store, 0, x_map);
     crate::prof::mark("equiv side X");
-    let f = run_side("F", f_out, src, f_map);
+    let f = run_side("F", f_out, &store, 1, f_map);
     crate::prof::mark("equiv side F");
     compare(&mut eq, x, f);
     eq
@@ -1106,12 +1276,10 @@ fn records(x: &Side<'_>, f: &Side<'_>, out: &mut Vec<Finding>, eq: &mut Equiv) {
     let mut windows: BTreeMap<&UKey, Vec<u64>> = BTreeMap::new();
     let pairs =
         x.forms.iter().filter_map(|(u, v)| Some((u, v, f.forms.get(u)?))).flat_map(|(u, v, w)| {
-            v.iter().filter_map(move |(off, a)| {
-                let j = w.binary_search_by_key(off, |e| e.0).ok()?;
-                Some((u, off, a, &w[j].1))
-            })
+            v.iter().filter_map(move |(off, a)| Some((u, off, a, w.get(off)?)))
         });
     for (u, off, a, b) in pairs {
+        let (off, a, b) = (&off, &a, &b);
         eq.records += 1;
         if *a == Form::Failed || *b == Form::Failed {
             continue; // the side's own finding says it
@@ -1175,8 +1343,9 @@ fn records(x: &Side<'_>, f: &Side<'_>, out: &mut Vec<Finding>, eq: &mut Equiv) {
                     return true;
                 }
                 // The relocated ranges (sorted by offset).
-                let i = ux.relocs.partition_point(|r| r.0 <= at);
-                if ux.relocs[..i].iter().rev().take(4).any(|(o, w)| at < o + w) {
+                let i = ux.relocs.at_or_before(at);
+                if (i.saturating_sub(4)..i).rev().map(|j| ux.relocs.nth(j)).any(|(o, w)| at < o + w)
+                {
                     return true;
                 }
                 if x86 && win.is_some_and(|w| w.iter().any(|o| *o <= at + 3 && at < o + 4)) {
