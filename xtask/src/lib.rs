@@ -23,6 +23,8 @@ pub mod linktest;
 pub mod mason;
 #[cfg(unix)]
 pub mod meta;
+#[cfg(unix)]
+pub mod odr_runtime;
 pub mod plumb;
 #[cfg(unix)]
 pub mod process;
