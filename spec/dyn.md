@@ -476,7 +476,8 @@ every default line links. Notation:
   `bind(k)` ∈ N, but not always `bind(k) = giver(k)`. A definition that
   lives only in a used object (U, not N) is bound at that object's place
   in the breadth-first part of the order: by a weak program reference
-  (D-25 then does not apply: the key is defined) and by the shared
+  (D-25 then does not apply: the key is defined; its entry is
+  unversioned, D-27, WP-141) and by the shared
   objects' own references (D-13 asks existence there, and the loader
   binds them in the same order at run time). In `Shared` `bind(k)` ranges
   over N alone (WP-137): a shared object's link searches no `DT_NEEDED`
@@ -1053,12 +1054,43 @@ versioned import (resolve §9.3); bit 15 never set. `.gnu.version_r`:
   ELF hash of the version name (the `vd_hash` the library wrote, D-14);
   `vna_flags` 0 (all three, a weak-only reference included);
   `vna_other` numbered from 2 in output order (mold);
-- an object that is not needed has no `Verneed`: an entry bound to a
-  version of a used object is refused by name in `Exec` and `Pie`
-  (`versioned reference to <k> bound in a shared object that is not
-  needed`, class `feature`; GNU ld and lld write it unversioned, 1, and
-  mold makes the object needed), and cannot arise in
-  `Shared`, where such a key is unbound (D-10 setting, WP-137);
+- an object that is not needed has no `Verneed`. In `Exec` and `Pie` a
+  weak-only key whose only definition is in a **used** object (U, reached
+  through a needed object's own `DT_NEEDED`, D-12) stays bound there
+  (D-10 setting), and its entry is written **unversioned, index 1**, with
+  no `Verneed` for that object (WP-141; before it, a versioned
+  definition was refused by name). Everything else follows the binding
+  exactly as for an unversioned definition in such an object: the
+  definition's type (D-23), the PLT/GOT form, and on x86-64 non-PIC
+  `-no-pie` the canonical PLT and the `COPY` (D-42, D-44): GNU ld's image.
+  It cannot arise in `Shared`, where such a key is unbound (D-10 setting,
+  WP-137). The contract of every dynamic link holds: the libraries at
+  run time are the ones the link saw, and a used object is loaded through
+  the needed one. With another library at run time that lacks the symbol,
+  a canonical PLT makes `if (f)` true and the call crashes, and a `COPY`
+  stops the load (`symbol lookup error`). That is the known hazard of a
+  weak reference from non-PIC code, and it is the same for a NEEDED
+  library (row (c) below). Measured (WP-141, GNU ld 2.44, lld 19.1.7,
+  mold 2.37.1; AArch64 natively, x86-64 under qemu; `-pie` with `-fPIE`
+  objects, `-no-pie` with `-fno-pie` objects, each with and without
+  `-z now`, which changes nothing). `libv.so` defines `vfn@@V1`,
+  `vdat@@V1`, `vfn2@@V1`; `libm2.so` lists `libv.so`; the program calls
+  `m2fn` (20), refers to `vfn` or `vdat` weakly (`call`: `vfn()`;
+  `addr`: `hp = vfn` in data; `cmp`: `if (vfn) vfn()`; `dat`: `&vdat ?
+  vdat : -1`), `--as-needed -lv -lm2`. "alt" runs with a `libv.so`
+  whose `V1` lacks `vfn` and `vdat`:
+
+  | line | GNU ld (= mortar) | lld | mold |
+  |---|---|---|---|
+  | (b) `libv` in U, AArch64, every form | `FUNC`/`OBJECT WEAK`, version 1, no `Verneed`, `libv` not `DT_NEEDED`; `JUMP_SLOT`/`GLOB_DAT`/`ABS64`; 27/25, alt 20/19 (`call`: crashes) | the same, but `-no-pie` `addr`: no record, 0 (20 even with `libv`) | `vfn@V1`, `libv` needed |
+  | (b) x86-64 `-pie` | the same | the same | the same |
+  | (b) x86-64 `-no-pie` `cmp` / `dat` | canonical PLT (27; alt SIGSEGV) / `COPY` from `libv` (25; alt `symbol lookup error`) | the key unbound: no record, 20/19 even with `libv` loaded | `libv` needed, the same PLT and `COPY` |
+  | (c) a strong `vfn2` as well (`libv` needed) | `vfn@V1`, `Verneed`; x86-64 `-no-pie` `cmp`/`dat`: canonical PLT / `COPY`, alt SIGSEGV / `symbol lookup error` | the same (its `COPY` is `WEAK`: alt prints 320) | the same |
+
+  mortar's relocation forms are its own forms for a needed library: on
+  AArch64 `-no-pie`, `addr` gets an `ABS64` record where GNU ld uses a
+  canonical PLT, and on x86-64 `-pie`, `cmp` gets a `JUMP_SLOT` where GNU
+  ld uses `.plt.got`, D-49;
 - no `.gnu.version_d` in an executable (no reference writes one without a
   version script, which is M4; a `.symver` `foo@@V` definition that is
   exported is refused, `versioned-export (M4)`: GNU ld writes a verdef
