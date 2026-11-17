@@ -521,8 +521,16 @@ layouts (the units kiln wrote before the row existed). Wherever this
 spec says "equal schemes" for kind 3's `layout`, `size`, `align` and
 flags, the layout scheme is meant; for a `hash`, `odr.scheme`. Each of
 the two has the bump rule below for what it names. [Mortar reads
-`odr.layout-scheme` from WP-151 on; before it, kind 3 rows are compared
-between equal `odr.scheme` strings only: a miss, never a finding.] **Bump rule**: any change to what
+`odr.layout-scheme` from WP-151 on: kind 3's layout classes are formed
+between units of equal layout scheme, its definition hashes between
+units of equal `odr.scheme`; a unit without `odr.scheme` (kiln writes
+it only with kind 2 rows) has no hash compared, no diagnostic, and is
+counted among the pairs not compared. A layout difference across units
+of different `odr.scheme` but equal layout scheme is reported as any
+layout difference; a hash difference across layout schemes has the
+note "the definitions differ (members, initializers or member
+declarations)", without "the layouts agree", since the layouts were
+not compared.] **Bump rule**: any change to what
 is serialized or how changes the scheme string; kiln guards it with a
 golden-hash test (a fixed corpus whose hashes are checked in, so that an
 unannounced serialization change fails kiln's tests). Rows of kinds 2
@@ -531,11 +539,13 @@ Two different scheme strings are **incomparable**: never a diagnostic,
 only an `--odr-stats` count of the unit pairs not compared (X13).
 **One exception, under `--odr=strict` only** (WP-073, a check of its own
 in O-47 that never moves to on by default): kind 3 rows of one key are
-compared across schemes, and across units without a scheme, on `size`,
+compared across LAYOUT schemes, and across units without one, on `size`,
 `align` and the flags `ENUM`, `UNION`, `POLYMORPHIC` and `HAS_VBASES`,
 never on `hash` or `layout`; a difference is `odr-type-mismatch` with a
-note that the schemes differ, and `--odr-stats` counts the groups so
-compared. The reason: none of these depends on the scheme. The key is
+note that the layout schemes differ ("the translation units use
+different layout schemes (odr.layout-scheme, or odr.scheme without it):
+compared on size, alignment and kind only (spec/odr.md O-11, strict)";
+WP-151), and `--odr-stats` counts the groups so compared. The reason: none of these depends on the scheme. The key is
 FNV-1a 64 of the `<type>` encoding (O-4, MT-13), which is the Itanium
 mangling, not the scheme's serialization; size and alignment are the
 type's `sizeof` and `alignof` in bytes; the four flags are fixed bits of
@@ -715,9 +725,14 @@ describes a definition without a symbol and is compared **under
 `--odr=strict` only**, as a row flagged `INLINED_ONLY` is. The price is
 N12's: a symbol renamed with `objcopy` keeps its row's name, so its
 definition is compared under the old name in such a link (the units
-were compiled at `all` and the link asked for `strict`). [Mortar
-implements the named-row rule with WP-151; today it compares a named
-row whatever the symbols.]
+were compiled at `all` and the link asked for `strict`). [Implemented
+by WP-151: "defines a symbol" is a defined global of the row's name in
+the row's file, the first in symbol order; such a row is anchored on
+it (its place line names the symbol, and it can be the keeper). A named
+row without one is counted among the unanchored rows when strict does
+not run, and compared beside the `INLINED_ONLY` rows under strict. While
+kind 2 runs under strict only (O-47), the first half changes the place
+lines and the keeper of strict's findings, not which links report.]
 
 **O-16 (`USES_INTERNAL`) [kiln].** Set when the definition odr-uses an
 entity with internal linkage that is not one of [basic.def.odr]'s
@@ -923,7 +938,9 @@ finding: without the count an unnamed member followed by a named one
 reads the same as an unnamed member with two members); kiln writes 0
 there until its next metadata package, and a reader that sees 0 on
 such an item treats every following item as the class's own, as before
-(mortar's reader: WP-151). The items stand
+(mortar's reader: WP-151; a count is of raw items, kinds the reader
+does not know included, and a count that runs past the enclosing
+class's items or the entry is cut at their end). The items stand
 in exactly the order O-18 hashes what they describe, one for everything
 O-18 hashes that has an item kind, so the first item that differs
 between two entries is the first difference. A reader ignores an item
@@ -1006,7 +1023,11 @@ Implemented (WP-076, `mortar_odr::archives`;
   global (O-4) and compared with the first kind 2 row of the same class
   in the keeper's unit (the unit of the definition resolution kept). Only
   the hash is compared: K13's flags are not (O-15 compares them under
-  strict, for live units). Units of different schemes, or without one,
+  strict, for live units). A row of a member or of the keeper flagged
+  `PARTIAL` is compared under `--odr=strict` only; below strict it is
+  set aside and counted in `--odr-stats`' "rows set aside" (WP-151: the
+  option is opt-in in every mode, and O-15 compares `PARTIAL` rows under
+  strict only). Units of different schemes, or without one,
   are counted as pairs not compared (O-11); C units are not compared
   (O-14); O-32's `SYSTEM`/`-std` case is reported under strict only, as
   for live units. At most one warning per (member, symbol).
@@ -1243,6 +1264,16 @@ does not give, takes no part (no finding from it).
    whose targets are both strings or both entries and do not agree);
    when the bytes differ too, "its bytes and relocations" or "its bytes
    and the data its relocation at offset N refers to".
+4. *`-std`* (WP-151, WP-134 §9). When the record checks read the
+   containers (`--odr=strict`), and the first two classes' first copies
+   are in files whose units all carry one `std` each and the two differ,
+   a second note says so: "the copies' translation units differ in -std
+   (std=A and B): the initialization of a static local, constant in one
+   and dynamic in the other, may differ legally (spec/odr.md §8.1)". The
+   finding stays a warning; a file without a container, or whose units
+   disagree on `std`, adds no note. As O-32 for rows, the note names the
+   legal case and does not withdraw the finding
+   (`odr_records.rs::w4_notes_a_std_difference`).
 
 Why by content: the address of a unit-local target is its place in the
 unit, which differs whenever the units' other contents do. Measured
@@ -1470,7 +1501,11 @@ warning: f(int) violates the one-definition rule
 >>> the definitions differ; a.o and b.o were compiled with different -D options? (compare their command lines)
 ```
 
-- Places are `spec/diag.md` §2.4's `file:(symbol)`. The W checks
+- Places are `spec/diag.md` §2.4's `file:(symbol)`. A kind 5 finding's
+  place says what each row is (WP-151): a row with `DEFINITION`
+  "defined in", without it "declared in" (as the first class) or
+  "declared differently in" (`>>> defined in a.o:(_Z1xv)`,
+  `>>> declared differently in b.o:(_Z1xv)`). The W checks
   (no record, no source position) print `>>> defined in a.o:(f)` and
   `>>> defined differently in b.o:(f)`, and say in a note which class is
   kept (`the first is kept`) or used; the `(kept)` marker and `at h.h:3`
@@ -1487,7 +1522,11 @@ warning: f(int) violates the one-definition rule
 - Notes that explain, from kind 1: every key other than `source` and
   `producer` that differs between the two units (`>>> a.o: abi.short-enums=on; b.o: off`, `>>> a.o: std=c++17;
   b.o: c++20`). The question in the K1 example is printed only when no
-  kind 1 key differs.
+  kind 1 key differs. A kind 5 finding between rows of C and C++
+  language linkage (O-35, compared by size only) notes only the keys
+  that both units carry with `ENFORCE` (O-30), not `lang`, `std` or any
+  other key O-32 does not judge between a C and a C++ unit (WP-151;
+  WP-134 §9).
 - Types: with kind 4, the first difference (`>>> member 'y' at offset 8
   in a.o only`); without, the sizes and alignments. Exactly (WP-145):
   when `odr-type-mismatch` compared layouts within one scheme (O-17,
@@ -1509,9 +1548,18 @@ warning: f(int) violates the one-definition rule
   3 bits` (a member without a name: `unnamed member (i) ...`; without a
   type string the `(i)` is left out); a base `base 1B at offset 0`, a
   virtual one `base 1B at offset 0 (virtual)`; `vptr at offset 0`;
-  `vtable slot 2: _ZN1S1gEv`; `enumerator 'B' = 1` (a value with bit 63
-  set in hex, `0xffffffffffffffff`: the reader does not yet take the
-  sign from the underlying type item, O-19); `underlying type j`. Offsets: O-19's bits divided by 8,
+  `vtable slot 2: _ZN1S1gEv`; `enumerator 'B' = 1`, in signed decimal
+  (`-1`) when the entry's underlying type item names a signed type
+  (`a`, `s`, `i`, `l`, `x`, `n`; `c` when kind 1's `abi.char` is
+  `signed`), in unsigned decimal when it names an unsigned one (`h`,
+  `t`, `j`, `m`, `y`, `o`, `b`, `Ds`, `Di`, `Du`; `c` with `abi.char`
+  `unsigned`), and otherwise (no item, `w`, another type) as before: a
+  value with bit 63 set in hex, `0xffffffffffffffff` (WP-151); `meta
+  dump` and the test producer print values the same way; `underlying
+  type j`. An item nested in unnamed class-type members (O-19's `width`)
+  has ` of the unnamed member at offset N` appended for each enclosing
+  one, innermost first, and an unnamed member with a count reads
+  `unnamed member at offset 0 with 2 nested items` (WP-151). Offsets: O-19's bits divided by 8,
   without a unit, when the item is not a bit-field and the bit offset is
   a multiple of 8; otherwise the bits, followed by `bits`. Type strings
   and names as the unit writes them (no demangling). `D'` is `D` without
@@ -1527,7 +1575,7 @@ warning: f(int) violates the one-definition rule
 
   | case | note |
   |---|---|
-  | none (same items, same count) | `the layout details are equal: the difference is in something kind 4 does not describe` |
+  | none (same items, same count) | `the layout details are equal: the difference is in something kind 4 does not describe`; for two rows flagged `ENUM`, `the layout details are equal: the enumerations differ in something kind 4 does not describe (whether the underlying type is fixed, or whether the enumeration is scoped)` (WP-151) |
   | B ends at `i` (B is a prefix of A) | `D(A[i]) in a.o only`, then `, and N more items` when A has N > 0 items after it (`, and 1 more item`) |
   | A ends at `i` | `D(B[i]) in b.o only`, the same way |
   | A[i], B[i] of one identity | `D(A[i]) in a.o; D'(B[i]) in b.o` |
@@ -1538,7 +1586,17 @@ warning: f(int) violates the one-definition rule
 
   E.g. `member 'extra' (i) at offset 4 in a.o only`; `member 'y' (i) at
   offset 70 bits, bit-field of 3 bits in a.o; 'y' (l) at offset 8 in
-  b.o`; `vtable slot 1: _ZN1S1gEv in b.o only`.
+  b.o`; `vtable slot 1: _ZN1S1gEv in b.o only`. When the item at `i`
+  is a vtable slot, a second note follows (WP-151): `vtable slots are
+  numbered over the whole vtable group from 0, its offset-to-top, vcall
+  and vbase entries counted and its RTTI entries not (spec/odr.md O-18,
+  O-19)`.
+
+  Without both entries, for two rows flagged `ENUM` of equal size and
+  alignment, the note that would say `the layouts differ (members,
+  offsets, bases or vtable) with the same size 4 and alignment 4` says
+  `the enumerators or the underlying type differ, with the same size 4
+  and alignment 4` (WP-151).
 
   An entry that does not read (O-19's malformations) gives
   `meta-malformed` (an error, `strict` only, as MT-14's) naming the file,
@@ -1620,7 +1678,9 @@ containers read them only when asked: `--odr-check-archives` (O-23),
 each one's read counter is tested off (WP-076).
 
 **O-44 (`--odr-stats`).** One line to standard error: units read, rows by
-kind, schemes seen and the unit pairs not compared because of them,
+kind, schemes seen and the unit pairs not compared because of them
+(`schemes N, pairs not compared M`, of `odr.scheme`; then `layout
+schemes N, layout pairs not compared M`, of the layout schemes, WP-151),
 the kind 3 groups compared across schemes (O-11's exception), ambiguous
 anchors (O-4), unanchored rows, `SYSTEM` differences between
 units of different `-std` (O-32), time spent and container bytes read,
@@ -2510,21 +2570,21 @@ implementation of the verdict) is Q11.
 | O-1, O-3, O-46, O-47 | T-O-1 | a CI check that every check O-47 lists as on has a recorded zero-finding oracle run in the landed record of the package that moved it; the legal corpus has no finding of a default-on check |
 | O-2 | T-O-2 | `static` functions of one name in two TUs, with rows forced by the test producer: no comparison; extended to types: N31's unnamed-namespace type, `std::optional` of it, local class and closure write no kind 3 row and are never compared (model case and, with K-4, a kiln test) |
 | O-4 | T-O-4 | anchored, unanchored (`--redefine-sym`), ambiguous (two names, one FNV-1a 64, constructed) and versioned (N6) rows |
-| O-10..O-13 | T-O-10 (kiln) | the corpora of O-13, as kiln tests and as L11 links; the golden-hash test of O-11; two units with different schemes give only an `--odr-stats` count (X13) |
-| O-14, O-15 | T-O-14 | rows per definition kind; K13's flags; N9; N22 (strong + `VAGUE`, equal); a closure's `operator()` and a generic lambda's specializations get rows, the static invoker none; a lambda in a declarator gives no row (X15) |
+| O-10..O-13 | T-O-10 (kiln) | the corpora of O-13, as kiln tests and as L11 links; the golden-hash test of O-11; two units with different schemes give only an `--odr-stats` count (X13); mortar's side of the two schemes (WP-151, `odr_records.rs::layout_schemes`): a layout difference between equal layout schemes and different `odr.scheme`, a hash difference not compared there, a unit without `odr.scheme` silent and counted, a unit without `odr.layout-scheme` compared on its `odr.scheme`, the shape exception across layout schemes, the definition note across them, both stats counts, and the legal pairs silent |
+| O-14, O-15 | T-O-14 | rows per definition kind; K13's flags; N9; N22 (strong + `VAGUE`, equal); a closure's `operator()` and a generic lambda's specializations get rows, the static invoker none; a lambda in a declarator gives no row (X15); mortar's side (WP-151, `odr_records.rs`): `named_rows_with_and_without_symbols` (a named row anchored on its symbol, one without a symbol compared under strict only, N12 at `all` + strict reported and silent by default), `partial_rows` (two `PARTIAL` rows and a `PARTIAL` against a full row: warnings; equal: silent) |
 | O-16 | T-O-16 | K12 under strict; nothing by default |
 | O-17, O-18 | T-O-17 | K4 (also pointer-only, layout computed in both TUs), K7, K16a, N24 (no RTTI bit); the syntactic test: `std::optional<int>` and `ns::Widget<ns::Gadget*>` get rows, `std::optional<(anonymous)::S>`, a local class, a closure and an anonymous struct none (N31); a zero `hash` compares layout only |
-| O-19 | T-O-19 | a kind 4 entry renders the first difference: per item kind (member, bit-field, base, vptr, vtable slot, enumerator, underlying type), both directions, an item in one entry only, one entry a prefix of the other, the same items in another order, equal entries (`crates/mortar_odr/src/details.rs`); end to end, malformed entries and the cost counter (`crates/mortar/tests/odr_records.rs` `kind4_first_difference`); the reader (`crates/mortar_meta/tests/details.rs`); `tests/link/odr/k4-details.test` and `k4-details-default.test` (WP-145) |
+| O-19 | T-O-19 | a kind 4 entry renders the first difference: per item kind (member, bit-field, base, vptr, vtable slot, enumerator, underlying type), both directions, an item in one entry only, one entry a prefix of the other, the same items in another order, equal entries, nested unnamed members by `width`, signed and unsigned enumerators, the slot help note, equal enumerations (`crates/mortar_odr/src/details.rs`; end to end `odr_records.rs::kind4_reader_notes`, WP-151); end to end, malformed entries and the cost counter (`crates/mortar/tests/odr_records.rs` `kind4_first_difference`); the reader (`crates/mortar_meta/tests/details.rs`); `tests/link/odr/k4-details.test` and `k4-details-default.test` (WP-145) |
 | O-20, O-21 | T-O-21 | the optimisation and the normative rule report the same findings over the whole corpus, K13 included |
 | O-22 | T-O-22 | kind 3 and 5 rows from 3 units grouped in `FileId` order |
-| O-23 | T-O-23 | K17 with and without `--odr-check-archives` (WP-076: `tests/link/odr/k17-archive-{shadow,silent,thin}.test`: a differing member warns, an equal one and one without a container say nothing, thin archives, the option off; `crates/mortar/tests/odr_records.rs::archive_members_are_read_only_on_request`: the read counter in each mode with the option on and off, a member extracted by a later reference compared as a live unit, a non-ELF member) |
+| O-23 | T-O-23 | K17 with and without `--odr-check-archives` (WP-076: `tests/link/odr/k17-archive-{shadow,silent,thin}.test`: a differing member warns, an equal one and one without a container say nothing, thin archives, the option off; `crates/mortar/tests/odr_records.rs::archive_members_are_read_only_on_request`: the read counter in each mode with the option on and off, a member extracted by a later reference compared as a live unit, a non-ELF member; `partial_rows`: a member's `PARTIAL` row set aside below strict, compared under it, WP-151) |
 | O-24 | T-O-24 | the shapes listed in O-24: (a) exported and hidden; (b) two libraries; `-Bsymbolic`, `-Bsymbolic-functions` and `protected` libraries (R4/R5, findings); an `--as-needed`-dropped library (none); one version node per library (R6, none) and a shared node (a finding); unversioned against versioned, both orders; (c) K18b; a malformed table; libraries without tables and the default mode (none). `tests/link/dyn/odr/o24-*.test` (WP-075) |
 | O-25 | T-O-25 | K16c with two vtable copies; F5 silent |
 | O-30, O-31 | T-O-30 | K16a/K16e/K16d notes under strict; `abi.rtti` never a finding |
 | O-32 | T-O-32 | `mixed-std-system-row` → a stats count; `mixed-std-user-body` → a finding |
 | O-33 | T-O-33 | N27, N28 (strict only), K14b; the canonical C type: glibc's declarations as C and as C++ `extern "C"` give zero differences (`peer/run3.sh`), and a real parameter-type difference (`int` vs `long`) still differs |
 | O-34 | T-O-34 | kind 5 against a foreign definition's size |
-| O-35 | T-O-35 | K14, N15 |
+| O-35 | T-O-35 | K14, N15; the place lines "declared in" / "declared differently in" and a C/C++ pair's notes without `lang`/`std` (WP-151, `odr_records.rs::declared_place_lines_and_linkage_pair_notes`) |
 | O-40, O-41 | T-O-41 | each mode's severities; `--odr=off` output byte-identical; `--detect-odr-violations` a no-op that prints nothing |
 | O-42 | T-O-42 | `meta.md` T-MT-42: bytes read counted |
 | O-44 | T-O-44 | the stats line's fields on a corpus link |
