@@ -433,13 +433,26 @@ pub fn front<'s>(
     }
     // 40: the one-definition rule (`spec/odr.md` §8.1, O-41); nothing is
     // read under `--odr=off` (O-42).
-    // A dynamic output's scope (O-24: its `DT_NEEDED`) and kind; the only
-    // dynamic outputs are executables (shared objects are M4).
-    let odr_output =
-        matches!(plan.kind, plan::OutputKind::Executable | plan::OutputKind::PieExecutable)
-            .then_some(mortar_odr::Output { needed: &outcome.needed, executable: true });
+    // A dynamic output's scope (O-24: its `DT_NEEDED`) and kind: an
+    // executable, or a shared object (O-60, WP-129).
+    let odr_output = match plan.kind {
+        plan::OutputKind::Executable | plan::OutputKind::PieExecutable => {
+            Some(mortar_odr::Output { needed: &outcome.needed, executable: true })
+        }
+        plan::OutputKind::Shared => {
+            Some(mortar_odr::Output { needed: &outcome.needed, executable: false })
+        }
+        _ => None,
+    };
     let odr =
         mortar_odr::check(&inputs, &outcome.resolution, &plan.diagnostics.odr, odr_output, &pool);
+    // `spec/dyn.md` D-117 with hod's `reloc-model` row (`spec/meta.md`
+    // MT-26; WP-129): in every `--odr` mode, a refusal, not an ODR check.
+    if plan.kind == plan::OutputKind::Shared {
+        for (k, d) in mortar_odr::reloc_model::check(&inputs, &outcome.resolution) {
+            diag.emit(k, d);
+        }
+    }
     let odr_table = odr.table;
     let odr_full = odr.full;
     // meta.md MT-32 (WP-076): the live inputs' units, kept for tools.

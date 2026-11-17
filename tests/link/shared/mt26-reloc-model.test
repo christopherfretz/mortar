@@ -1,0 +1,81 @@
+# MT-26's row `reloc-model` (spec/meta.md; hod's H-3) in a `Shared`
+# link (spec/dyn.md D-117, WP-129), with the test producer writing the
+# row on GCC -fPIC objects: the rule reads the row, not the code. An
+# object whose unit says `static` or `pie` and that defines an exported
+# preemptible datum (`g`) is refused, `non-pic-in-shared-object`, naming
+# the object, the datum and the row's value, in every --odr mode
+# (--odr=off included: a refusal, not an ODR check); the note counts its
+# other such data (`k`, the common `c`). `pic` never exempts and no row
+# changes nothing: both link, and the program's `g` (100) is the one the
+# library reads. An object of the row that defines only functions, a
+# hidden datum and a protected datum links (nothing it exports is a
+# preemptible datum). The reference linkers ignore the row.
+#@ spec: meta.md "MT-26", dyn.md "D-117"
+#@ arch: aarch64 x86_64
+
+cc -O1 -fPIC -fcommon lib.c -o lib0.o
+meta pie.meta lib0.o -o pie.o
+meta static.meta lib0.o -o static.o
+meta pic.meta lib0.o -o pic.o
+meta later.meta lib0.o -o later.o
+cc -O1 -fPIC own.c -o own0.o
+meta pie.meta own0.o -o own.o
+cc -O1 -fPIE main.c -o main.o
+link(mortar) gcc -shared pie.o -Wl,-soname,libg.so -o libpie.so
+  exit: fail
+  diag: pie.o:(g): code not compiled as position-independent defines symbol `g' which may bind externally: it can not be used when making a shared object; recompile with -fPIC$
+  diag: ^>>> the Mason metadata of pie.o records reloc-model=pie (spec/meta.md MT-26): its code reaches its own definitions without the GOT, so the library would bind `g' inside itself while exporting it preemptible (spec/dyn.md D-117)$
+  diag: ^>>> pie.o defines 2 other exported preemptible data definitions$
+link(mortar) gcc -shared static.o -Wl,-soname,libg.so -Wl,--odr=off -o libstatic.so
+  exit: fail
+  diag: static.o:(g): code not compiled as position-independent defines symbol `g'
+  diag: records reloc-model=static
+link(mortar) gcc -shared static.o -Wl,-soname,libg.so -Wl,--odr=strict -o libstatic.so
+  exit: fail
+  diag: records reloc-model=static
+link gcc -shared pic.o -Wl,-soname,libg.so -o libg.so
+link gcc -pie main.o -L. -lg -o prog
+run prog
+  stdout: 100 100 3
+link gcc -shared later.o -Wl,-soname,libg.so -o libg.so
+link gcc -pie main.o -L. -lg -o prog2
+run prog2
+  stdout: 100 100 3
+link gcc -shared lib0.o -Wl,-soname,libg.so -o libg.so
+link gcc -pie main.o -L. -lg -o prog3
+run prog3
+  stdout: 100 100 3
+link gcc -shared own.o -Wl,-soname,libown.so -o libown.so
+check readelf -W --dyn-syms libown.so
+  has: OBJECT * PROTECTED * p$
+  has: FUNC * DEFAULT * own$
+  not: hid$
+
+#--- lib.c
+int g = 3;
+int k = 4;
+int c;
+int get_g(void) { return g; }
+int get_k(void) { return k + c; }
+#--- own.c
+__attribute__((visibility("hidden"))) int hid = 1;
+__attribute__((visibility("protected"))) int p = 2;
+int own(void) { return hid + p; }
+#--- main.c
+#include <stdio.h>
+int g = 100;
+int get_g(void);
+int get_k(void);
+int main(void) { printf("%d %d %d\n", g, get_g(), get_k() - 1); return 0; }
+#--- pie.meta
+summary name=lang value=c
+summary name=reloc-model value=pie
+#--- static.meta
+summary name=lang value=c
+summary name=reloc-model value=static
+#--- pic.meta
+summary name=lang value=c
+summary name=reloc-model value=pic
+#--- later.meta
+summary name=lang value=c
+summary name=reloc-model value=medium

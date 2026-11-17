@@ -71,6 +71,9 @@ pub(crate) mod tag {
     /// A malformed kind 4 entry, found when a kind 3 finding read it
     /// (O-19, WP-145).
     pub const DETAILS: u64 = 13;
+    /// `spec/dyn.md` D-117's `reloc-model` row (`crate::reloc_model`,
+    /// WP-129): not an ODR finding, keyed beside them.
+    pub const RELOC_MODEL: u64 = 14;
 }
 
 /// A record check's `seq`: its tag above `base`.
