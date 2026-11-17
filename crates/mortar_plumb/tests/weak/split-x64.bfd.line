@@ -1,0 +1,11 @@
+-z
+max-page-size=4096
+-o
+split-x64.bfd
+-dynamic-linker
+/lib64/ld-linux-x86-64.so.2
+start-split-x64.o
+test-x64.o
+call-x64.o
+libm2-x64.so
+-Map=split-x64.bfd.map

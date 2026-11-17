@@ -56,6 +56,10 @@ pub(crate) enum Verdict {
     Refused,
 }
 
+/// An unfillable use: its input site, its type, and its output place
+/// with the field's width (when the map places it).
+pub(crate) type UnfillableUse = (Site, u32, Option<(u64, u64)>);
+
 /// The uses of one key.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Uses {
@@ -66,7 +70,9 @@ pub(crate) struct Uses {
     pub tls: u32,
     /// Each unfillable use: its input site, its type and its output place
     /// with the field's width (when the map places it).
-    pub unfillable_at: Vec<(Site, u32, Option<(u64, u64)>)>,
+    pub unfillable_at: Vec<UnfillableUse>,
+    /// Each branch's input site.
+    pub branch_at: Vec<Site>,
 }
 
 impl Uses {
@@ -122,6 +128,13 @@ impl Classes {
         self.keys.get(key).is_some_and(|u| {
             u.verdict(kind) == Verdict::Split && u.unfillable_at.iter().any(|(s, _, _)| s == site)
         })
+    }
+
+    /// Whether `site` is a branch of `key`: a field that reaches any
+    /// definition through a PLT entry, so view 3's exemption of a field
+    /// too narrow for a library address (§12.1) never covers it.
+    pub fn branch_site(&self, key: &str, site: Option<&Site>) -> bool {
+        site.is_some_and(|site| self.keys.get(key).is_some_and(|u| u.branch_at.contains(site)))
     }
 }
 
@@ -245,7 +258,10 @@ pub(crate) fn derive(
                 match class(machine, ty, writable, branch_op) {
                     Class::Got => u.got += 1,
                     Class::AbsWritable => u.abs_writable += 1,
-                    Class::Branch => u.branch += 1,
+                    Class::Branch => {
+                        u.branch += 1;
+                        u.branch_at.push(o.site(si, off));
+                    }
                     Class::Unfillable => {
                         u.unfillable += 1;
                         u.unfillable_at.push((
@@ -306,15 +322,19 @@ pub(crate) fn check(c: &Classes, out: &DynOut, machine: u16, format: Format) -> 
             Some((j, s)) if !s.defined() && u.branch > 0 && held => {
                 let slotted = out.rels.iter().any(|r| r.ty == slot && r.sym as usize == j);
                 if !slotted {
-                    push(9, format!("'{k}', an undefined weak key reached by {uses}, {NO_SLOT}"), None);
+                    push(
+                        9,
+                        format!("'{k}', an undefined weak key reached by {uses} {NO_SLOT}"),
+                        None,
+                    );
                 }
             }
             _ => {}
         }
         if verdict == Verdict::Split {
             for (site, ty, at) in &u.unfillable_at {
-                let Some((p, w)) = *at else { continue };
-                for r in out.rels.iter().filter(|r| p <= r.offset && r.offset < p + w) {
+                let Some((place, len)) = *at else { continue };
+                for r in out.rels.iter().filter(|r| place <= r.offset && r.offset < place + len) {
                     let name = mortar_elf::reloc::name(machine, *ty)
                         .map_or_else(|| ty.to_string(), str::to_string);
                     let mut f = Finding::new(
@@ -324,7 +344,7 @@ pub(crate) fn check(c: &Classes, out: &DynOut, machine: u16, format: Format) -> 
                             r.ty, r.offset
                         ),
                     );
-                    f.addr = Some(p);
+                    f.addr = Some(place);
                     f.site = Some(site.clone());
                     f.reloc = Some(name);
                     f.symbol = Some(k.clone());

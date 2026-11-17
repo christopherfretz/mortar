@@ -248,7 +248,8 @@ fn dynamic(linker: Format, output: &[u8], f: &Finding) -> Option<&'static str> {
     // WP-165: D-25's branch cells (WP-155's measurement).
     if mold
         && d(7)
-        && (m.ends_with(crate::weakclass::STRICT_DYN) || m.ends_with(crate::weakclass::STRICT_SPLIT))
+        && (m.ends_with(crate::weakclass::STRICT_DYN)
+            || m.ends_with(crate::weakclass::STRICT_SPLIT))
     {
         return Some(
             "A55: mold writes no .dynsym entry for an undefined weak key reached by branches (alone, or beside an unfillable use): the call goes to 0 or is skipped whatever a later library defines (dyn.md D-25, §13.1)",

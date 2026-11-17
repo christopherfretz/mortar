@@ -1,0 +1,45 @@
+mortar-map 2
+file 0 start-bo-a64.o
+file 1 call-a64.o
+piece 0 7 0 400308 14
+piece 0 7 14 40031c 1c
+place 0 1 4103a0 2c
+place 0 3 430528 0
+place 0 4 430528 8
+piece 1 7 14 400338 14
+place 1 1 4103e0 4
+place 1 3 430528 0
+place 1 4 430530 0
+merged 0 5 .comment
+merged 1 5 .comment
+chunk synthetic .interp 400238 1b
+chunk synthetic .gnu.hash 400258 1c
+chunk synthetic .dynsym 400278 48
+chunk synthetic .dynstr 4002c0 13
+chunk synthetic .rela.plt 4002d8 30
+chunk synthetic .eh_frame 400308 48
+chunk synthetic .plt 410350 40
+chunk synthetic .got 4204f8 8
+chunk synthetic .got.plt 430500 28
+chunk synthetic .dynamic 4203e8 110
+chunk synthetic .symtab - 120
+chunk synthetic .strtab - 44
+chunk synthetic .shstrtab - 8c
+chunk synthetic .comment - d
+chunk synthetic .pad.relro 420500 fb00
+output exec
+interp /lib/ld-linux-aarch64.so.1
+bind lazy
+relro on
+arg -o
+arg bo-exec-a64
+arg -dynamic-linker
+arg /lib/ld-linux-aarch64.so.1
+arg start-bo-a64.o
+arg call-a64.o
+arg libm2-a64.so
+arg --mortar-map=bo-exec-a64.map
+needed libm2.so
+plt m2fn
+plt vfn
+end

@@ -1,0 +1,11 @@
+-z
+max-page-size=4096
+-o
+split-a64.lld
+-dynamic-linker
+/lib/ld-linux-aarch64.so.1
+start-split-a64.o
+test-a64.o
+call-a64.o
+libm2-a64.so
+-Map=split-a64.lld.map

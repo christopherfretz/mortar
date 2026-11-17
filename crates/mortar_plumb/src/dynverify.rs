@@ -582,7 +582,12 @@ fn judge(
                 // no-PIE executable) cannot whatever the linker writes, and
                 // fails only when other uses do reach it (a split: W12, F2).
                 let split = (fs.len() as u64) < n;
-                for f in fs.into_iter().filter(|f| split || f.rule != Rule::Overflow) {
+                // A branch is never such a use: it reaches any definition
+                // through a PLT entry (WP-165: a branch to 0 or past the
+                // PLT was hidden as an overflow of the fresh address).
+                for f in fs.into_iter().filter(|f| {
+                    split || f.rule != Rule::Overflow || weak.branch_site(&k, f.site.as_ref())
+                }) {
                     {
                         let mut g = Finding::new(
                             Rule::Dyn(9),
