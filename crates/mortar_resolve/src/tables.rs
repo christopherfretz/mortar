@@ -1176,16 +1176,34 @@ impl Ctx<'_, '_, '_> {
         use RefusalClass as C;
         let warn = |kind| Diagnostic::warning(kind);
         match &p.what {
-            What::ShlibUndefined { file, key, .. } => {
+            What::ShlibUndefined { file, key, member, .. } => {
                 let kind = Kind::UndefinedSymbol { name: self.name(*key) };
                 let d = if p.severity() == crate::Severity::Warning {
                     Diagnostic::warning(kind)
                 } else {
                     Diagnostic::error(kind)
                 };
-                d.at(self.file(*file))
+                let d = d
+                    .at(self.file(*file))
                     .with(Relation::ReferencedBy, self.file(*file))
-                    .note("a shared object's undefined symbol; --allow-shlib-undefined accepts it")
+                    .note("a shared object's undefined symbol; --allow-shlib-undefined accepts it");
+                // `spec/dyn.md` D-12 (WP-167): only a needed object's
+                // references extract.
+                match member {
+                    Some((member, false)) => d
+                        .with(Relation::DefinedIn, self.file(*member))
+                        .note(
+                            "the library is not needed (--as-needed): link it with \
+                             --no-as-needed, or name the member's definition earlier (an \
+                             object or -u)",
+                        ),
+                    Some((member, true)) => d.with(Relation::DefinedIn, self.file(*member)).note(
+                        "the library is not on the command line, so its references extract \
+                         nothing: name it on the line with --no-as-needed, or name the \
+                         member's definition earlier (an object or -u)",
+                    ),
+                    None => d,
+                }
             }
             What::NonExported { key, def, entry } => {
                 Diagnostic::error(Kind::NonExportedSymbol { name: self.name(*key) })
@@ -1193,19 +1211,6 @@ impl Ctx<'_, '_, '_> {
                     .with(Relation::DefinedIn, self.entry(*def))
                     .with(Relation::ReferencedBy, self.file(entry.file))
             }
-            What::AsNeededExtraction { key, entry, member } => Diagnostic::refused(
-                C::Feature,
-                format!(
-                    "archive member needed by an --as-needed shared object: {}",
-                    self.name(*key)
-                ),
-            )
-            .at(self.file(entry.file))
-            .with(Relation::DefinedIn, self.file(*member))
-            .note(
-                "link the library with --no-as-needed, or name the member's definition \
-                 earlier (an object or -u)",
-            ),
             What::RootAsNeeded { key, arg, lib, member } => Diagnostic::refused(
                 C::Feature,
                 format!(

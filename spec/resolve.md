@@ -731,13 +731,13 @@ With the reference **after** both (E4, R11), the three disagree:
 A shared object's undefined mentions are edges like an object's when it
 is a command-line shared object whose merged `as_needed` is off (an
 archive member defining a symbol such an object needs is extracted and
-exported: all three, E4). Those of an `--as-needed` shared object and of
-a closure file are never edges; an as-needed object that ends up needed
-with a strong reference only an unextracted member would define is
-refused by name (`spec/dyn.md` D-12, Q1, measured by WP-043). The rule is
-decided at load time and is the same for needed and unneeded objects, and
-neededness is computed after `def` (`spec/dyn.md` D-11), so it is not
-circular.
+exported: all three, E4). Those of an `--as-needed` shared object are
+edges from the stage after the one that finds it needed (`spec/dyn.md`
+D-12's stages, WP-167: all three extract for a needed one; the M2
+refusal `archive member needed by an --as-needed shared object` is
+withdrawn); those of an unneeded or used one and of a closure file are
+never edges. N only grows from stage to stage, so the stages end, and
+the result is the closure over the union of their edges.
 
 ### 4.5 Commons and archives
 
@@ -1918,7 +1918,10 @@ honest ones).
   section kinds. It is I-file. A file's units (its `.mason.meta`
   containers, `spec/meta.md`) are part of its summary (I-file).
 - **The graph** (`first`, `cfirst`, the edges) depends on every file's
-  summary and on `FileId` order. Replacing file `F` changes it only
+  summary and on `FileId` order; the edges out of an `--as-needed`
+  shared object depend on N too (`spec/dyn.md` D-12's stages, WP-167),
+  a function of the same summaries and the line, so a change that
+  changes N runs the stages again. Replacing file `F` changes it only
   through `F`'s own entries: the targets `first(K)` and `cfirst(K)` for
   the keys `F` defines (before or after), and the edges out of `F`. A
   change of a definition's **type** between function and data, or of its

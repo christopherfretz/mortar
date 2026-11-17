@@ -602,42 +602,77 @@ WP-043; resolve §4.4). Measured with GNU ld 2.44, lld 22 and mold 2.37.1,
 AArch64 and x86-64 alike (`libu.so` refers to `g`; `libg.a(g.o)` defines
 `g` and has a constructor; `m1.o` calls `libu.so`, `m0.o` does not):
 
-| line | GNU ld | lld | mold |
-|---|---|---|---|
-| `m0.o libu.so libg.a`, `m1.o libu.so libg.a`, `m1.o --as-needed libu.so libg.a` | `g.o` extracted, exported | the same | the same |
-| `m0.o libg.a libu.so`, `m1.o libg.a libu.so`, `m1.o --as-needed libg.a libu.so` | ``./libu.so: undefined reference to `g'`` | `g.o` extracted | `g.o` extracted |
-| `m0.o --as-needed libu.so libg.a`, `m0.o --as-needed libg.a libu.so` (`libu.so` not needed) | not extracted, `libu.so` not needed | `g.o` extracted (its constructor runs, `g` exported) | not extracted |
-| the same with `g.o` calling `u2` of `libu.so` | not extracted, not needed | extracted, `libu.so` needed | not extracted |
+| line | GNU ld | lld | mold | mortar |
+|---|---|---|---|---|
+| `m0.o libu.so libg.a`, `m1.o libu.so libg.a`, `m1.o --as-needed libu.so libg.a` | `g.o` extracted, exported | the same | the same | the same (`m1.o --as-needed`: in a second stage, WP-167) |
+| `m0.o libg.a libu.so`, `m1.o libg.a libu.so`, `m1.o --as-needed libg.a libu.so` | ``./libu.so: undefined reference to `g'`` | `g.o` extracted | `g.o` extracted | `g.o` extracted |
+| `m0.o --as-needed libu.so libg.a`, `m0.o --as-needed libg.a libu.so` (`libu.so` not needed) | not extracted, `libu.so` not needed | `g.o` extracted (its constructor runs, `g` exported) | not extracted | not extracted |
+| the same with `g.o` calling `u2` of `libu.so` | not extracted, not needed | extracted, `libu.so` needed | not extracted | not extracted |
 
-GNU ld and mold do not let an unneeded as-needed object extract; whether
-a needed one extracts depends on its neededness, which is known only
-after `def` (D-11). The rule, decided at load time:
+GNU ld and mold do not let an unneeded as-needed object extract; all
+three let a needed one extract, and its neededness is known only after
+`def` (D-11). The rule, in **stages** (WP-167; the measured cells and
+their tests are `spec/landed/dyn/WP-167.md` §2):
 
 - the undefined references of a member of C whose merged `as_needed`
   (D-11 item 1) is off are edges of resolve §4.1 like an object's (such
   an object is always needed, so its references are the program's);
   where the archive precedes the object, mortar extracts as lld and mold
   do (resolve §4.3; GNU ld refuses the line);
-- the undefined references of a member of C whose merged `as_needed` is
-  on, and of every closure file (W), are never edges: they extract
-  nothing (GNU ld and mold when the object is not needed; lld differs);
-- **`as-needed extraction`, refused by name**: after D-11, a member `s`
-  of N whose merged `as_needed` is on and that has a strong undefined
-  reference to a key `k` whose edge, were `s`'s references edges, would
-  target a lazy file that is not live (resolve §4.1 `first(k)`, counting
-  `s` as a live file), stops the link: `refused` (class `feature`, name
-  ``archive member needed by an --as-needed shared object: `k' ``),
-  phase 30, the unit and place of D-13, with the note `link the library
-  with --no-as-needed, or name the member's definition earlier (an object
-  or -u)`. All three references link such a line (`m1.o --as-needed libu.so
-  libg.a`) and extract the member; mortar refuses it rather than decide
-  extraction from a neededness that depends on it. An extension that
-  lifts the refusal (extract in a second stage and refuse only when that
-  changes N) is a follow-up, not M2.
+- **stage 1** is resolution with no other shared object's reference as an
+  edge, then D-11 and D-12. A **candidate** is a member `s` of N whose
+  merged `as_needed` is on, not a source of the stage, with a strong
+  undefined reference to a key `k` whose edge, were `s`'s references
+  edges, would target a lazy file that is not live (resolve §4.1
+  `first(k)`, counting `s` as a live file). Without a candidate the
+  link has one stage, as before WP-167 (the test is the loop the M2
+  refusal ran, on every link with a shared object). With one, **the
+  next stage** resolves again with the strong undefined references of
+  every member of the stage's N whose merged `as_needed` is on (the
+  stage's **sources**) as edges of resolve §4.1: the closure runs to its
+  fixed point, `def`, the keepers and the columns are computed again,
+  and D-11 again with every object needed at an earlier stage kept in N
+  (its item-2 givers and item-3 pairs kept as its reasons for D-19a).
+  Stages repeat until one has no candidate; only its diagnostics are
+  reported (a stage-1 `undefined-symbol` of the library's `g` is not).
+  N only grows, so the sources only grow and there are at most |C| + 1
+  stages, and the result is the least fixed point of resolve §4.1 over
+  the union of every stage's edges: an implementation may continue the
+  closure instead of resolving again (mortar resolves again: a link
+  with a candidate pays one resolution per stage, no section is read).
+  Each stage is order-independent (resolve §12), so the result does not
+  depend on hash or thread order;
+- **N only grows** (row 2a of the record): when a member extracted at a
+  later stage defines the key an as-needed object was needed for, that
+  object stays needed (GNU ld and mold, which decided its neededness
+  when they read it; lld drops it; the program runs alike, from the
+  member's definition);
+- the undefined references of a member of C that is not in N (an
+  unneeded as-needed object; a used object of U) and of every closure
+  file (W) are never edges: they extract nothing (GNU ld and mold for
+  an unneeded one, lld extracts; GNU ld refuses a used or closure
+  object's reference, and lld and mold link programs that fail at load,
+  except lld for a used member of C). Such a reference that a lazy
+  member would satisfy is D-13's `undefined-symbol`, with the member
+  (`defined in`) and the note `the library is not needed (--as-needed):
+  link it with --no-as-needed, or name the member's definition earlier
+  (an object or -u)` (a used member of C) or `the library is not on the
+  command line, so its references extract nothing: name it on the line
+  with --no-as-needed, or name the member's definition earlier (an
+  object or -u)` (a closure file);
+- a weak reference extracts nothing (resolve §4.1), and a versioned
+  reference `g@V` has no edge to a plain `g` (resolve §9.2: GNU ld and
+  lld; mold extracts and the program binds `g` in the executable); a
+  member extracted for a library's reference exports its definition
+  (`ref_dynamic`, D-21), and a hidden or `--exclude-libs` one is D-13's
+  `non-exported-symbol` in `Exec` and `Pie` (GNU ld and lld refuse;
+  mold's program fails at load) and a local definition in `Shared` (all
+  three).
 
-The rule is the same for needed and unneeded objects at load time (the
-references of an as-needed object never extract), so it is not
-circular; neededness is computed after `def` (D-11).
+The M2 refusal `archive member needed by an --as-needed shared object`
+(WP-043), which stood where a candidate now starts a stage, is
+withdrawn by WP-167: no measured cell needs it.
+
 *Tests:* `closure-export` (runs), `closure-not-on-command-line` (the
 note), `closure-unused`, `shlib-undefined-ldso` (the default hello with
 D-13 on: links, `ld-linux` used, not needed).
@@ -1882,11 +1917,11 @@ WP-040r; Q1 measured and written by WP-043).
   GNU ld and mold do not extract for an unneeded as-needed object, lld
   does; all three extract for a needed one when the archive follows it.
   *Rule* (D-12): the references of a command-line shared object whose
-  merged `as_needed` is off are edges; those of an as-needed one (and of
-  every closure file) are not, and an as-needed object found needed with
-  a strong reference that only an unextracted member would define is
-  refused by name (`archive member needed by an --as-needed shared
-  object`). Decided at load time, not circular.
+  merged `as_needed` is off are edges; those of an as-needed one become
+  edges in a later stage once it is needed (WP-167, which lifted the M2
+  refusal `archive member needed by an --as-needed shared object`);
+  those of an unneeded or used one and of every closure file never are.
+  N only grows, so the stages reach a fixed point.
 - **Q2.** Withdrawn by the review (F2): `WeakDyn` is decided per symbol
   (D-25); there is no per-class split.
 - **Q3. Closed: off.** `--eh-frame-hdr` off by default (GNU ld, lld) or on (mold)?
@@ -3441,9 +3476,9 @@ eu-elflint 0.192, Python 3.13.5, glibc 2.41 (Debian 13).
 - A 64 KiB-page AArch64 kernel (D-61's RELRO end): none available.
 - An input section named `.interp` (D-31) and a canonical PLT in a PIE
   (D-44): no corpus input produces them.
-- Q1's refusal (`archive member needed by an --as-needed shared
-  object`): measured on the six-line experiment of D-12 only; no census
-  line was found that reaches it.
+- D-12's stages (WP-167): measured on GNU ld, lld and mold, AArch64
+  and x86-64, `Exec`, `Pie` and `Shared` (`Shared` cells linked, not
+  run); i386 not measured.
 - Large-model TLSDESC kept eager (D-48): no compiler writes it, so
   `tls-desc-large` writes it by hand; mortar's eager `TLSDESC` record runs
   under glibc (a64 Q10 closed), but no reference runs that form (GNU ld

@@ -140,12 +140,17 @@ impl Closure {
 const INLINE_FRONTIER: usize = 16;
 
 /// The closure of §4.1 from the roots of §4.2, in parallel rounds.
+/// `sources` (per `FileId`, may be short) are the shared objects whose
+/// references are edges in this stage although [`extracts`] says no: the
+/// members of N under `--as-needed` of an earlier stage (`spec/dyn.md`
+/// D-12, WP-167).
 pub(crate) fn closure<V: View>(
     view: &V,
     kinds: &[FileKind],
     targets: &Targets,
     redirect: &[SymbolId],
     roots: &[Root],
+    sources: &[bool],
     pool: &Pool,
 ) -> Closure {
     let n = kinds.len();
@@ -153,7 +158,8 @@ pub(crate) fn closure<V: View>(
     let pull = atomics_u64(n, u64::MAX);
     let mut frontier: Vec<u32> = Vec::new();
     for (f, kind) in kinds.iter().enumerate() {
-        if extracts(view, *kind, FileId(f as u32)) && !kind.is_lazy() {
+        let source = sources.get(f).copied().unwrap_or(false);
+        if (source || extracts(view, *kind, FileId(f as u32))) && !kind.is_lazy() {
             live.set(f);
             if *kind != FileKind::Internal {
                 frontier.push(f as u32);
@@ -227,13 +233,27 @@ pub fn oracle<V: View>(
     redirect: &[SymbolId],
     roots: &[(SymbolId, u32)],
 ) -> Vec<FileLive> {
+    oracle_with(view, targets, redirect, roots, &[])
+}
+
+/// [`oracle`] with the shared objects `sources` (per `FileId`) as sources
+/// of edges, as [`crate::resolve`]'s later stages have them (`spec/dyn.md`
+/// D-12, WP-167).
+pub fn oracle_with<V: View>(
+    view: &V,
+    targets: &Targets,
+    redirect: &[SymbolId],
+    roots: &[(SymbolId, u32)],
+    sources: &[bool],
+) -> Vec<FileLive> {
     let kinds = kinds(view);
     let n = kinds.len();
     let mut live = vec![false; n];
     let mut pull = vec![u64::MAX; n];
     let mut work = std::collections::BTreeSet::new();
     for (f, kind) in kinds.iter().enumerate() {
-        if extracts(view, *kind, FileId(f as u32)) && !kind.is_lazy() {
+        let source = sources.get(f).copied().unwrap_or(false);
+        if (source || extracts(view, *kind, FileId(f as u32))) && !kind.is_lazy() {
             live[f] = true;
             work.insert(f as u32);
         }

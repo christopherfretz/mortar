@@ -131,8 +131,15 @@ pub enum EntryPoint {
 pub struct Resolved {
     /// `file_live` (§4.1).
     pub file_live: Vec<FileLive>,
-    /// The closure's rounds after round 0.
+    /// The closure's rounds after round 0 (of the last stage).
     pub rounds: u32,
+    /// The stages resolution ran (`spec/dyn.md` D-12, WP-167): 1 unless a
+    /// needed `--as-needed` shared object's reference extracts a member.
+    pub stages: u32,
+    /// Per `FileId` (empty after one stage): the shared objects whose
+    /// references were edges of the last stage's closure although
+    /// `--as-needed` (the members of N of the stage before it).
+    pub sources: Vec<bool>,
     /// `first`/`cfirst` (§4.1).
     pub targets: Targets,
     /// `def` (§3.2).
@@ -243,16 +250,52 @@ pub fn resolve_steps<V: View>(
     steps: &mut Steps,
 ) -> Resolved {
     steps.restart();
-    let keys = view.keys() as usize;
     let kinds = kinds(view);
-    let redirect = opts.redirect(view.keys());
-    let roots = opts.roots();
-    let mut problems = Vec::new();
     steps.step("resolve.kinds");
     let targets = targets_with(view, &kinds, pool);
     steps.step("resolve.targets");
+    // `spec/dyn.md` D-12 (WP-167): a stage that finds a needed
+    // `--as-needed` shared object whose reference would extract a member
+    // hands the next stage those objects as sources of edges and its N;
+    // a link without such a reference runs one stage.
+    let mut stage = crate::shared::Stage::default();
+    let mut stages = 1;
+    loop {
+        let (mut resolved, next) = resolve_stage(view, opts, pool, steps, &kinds, &targets, &stage);
+        match next {
+            Some(next) => {
+                stage = next;
+                stages += 1;
+            }
+            None => {
+                resolved.stages = stages;
+                resolved.sources = stage.sources;
+                return resolved;
+            }
+        }
+    }
+}
+
+/// One stage of [`resolve`]: the closure with `stage`'s sources, then
+/// everything after it; the next stage when the shared stage asks for one.
+#[allow(clippy::too_many_lines, reason = "the steps of the crate docs, in order")]
+fn resolve_stage<V: View>(
+    view: &V,
+    opts: &Options,
+    pool: &Pool,
+    steps: &mut Steps,
+    kinds: &[FileKind],
+    targets: &Targets,
+    stage: &crate::shared::Stage,
+) -> (Resolved, Option<crate::shared::Stage>) {
+    let keys = view.keys() as usize;
+    let kinds = kinds.to_vec();
+    let targets = targets.clone();
+    let redirect = opts.redirect(view.keys());
+    let roots = opts.roots();
+    let mut problems = Vec::new();
     let Closure { live: mut file_live, rounds } =
-        closure(view, &kinds, &targets, &redirect, &roots, pool);
+        closure(view, &kinds, &targets, &redirect, &roots, &stage.sources, pool);
     steps.step("resolve.closure");
     let live_objects: Vec<FileId> = (0..kinds.len())
         .filter(|&f| file_live[f].is_live() && kinds[f].is_object())
@@ -393,20 +436,24 @@ pub fn resolve_steps<V: View>(
     // as before.
     let exports = opts.output.dynamic
         && (opts.shared.export_dynamic || !opts.shared.export_symbols.is_empty());
+    let mut next = None;
     let dynamic = (kinds.contains(&FileKind::Shared) || opts.shared_output.is_some() || exports)
         .then(|| {
-            crate::shared::link(
+            let (dynamic, n) = crate::shared::link(
                 view,
                 opts,
                 &kinds,
                 &targets,
                 &redirect,
+                stage,
                 &mut file_live,
                 &mut def,
                 &mut props,
                 &mut problems,
                 pool,
-            )
+            );
+            next = n;
+            dynamic
         });
     // A common that yields to a shared data definition (§3.2 rule 2) is
     // allocated nowhere.
@@ -450,9 +497,11 @@ pub fn resolve_steps<V: View>(
     problems.sort();
     problems.dedup();
     steps.step("resolve.finish");
-    Resolved {
+    let resolved = Resolved {
         file_live,
         rounds,
+        stages: 1,
+        sources: Vec::new(),
         targets,
         def,
         props,
@@ -470,7 +519,8 @@ pub fn resolve_steps<V: View>(
         problems,
         gnu,
         dynamic,
-    }
+    };
+    (resolved, next)
 }
 
 fn def_of(acc: &Acc, k: usize) -> Def {
