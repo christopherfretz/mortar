@@ -388,6 +388,7 @@ is added before or after it.
   | `ReadOnlySection` | `it is in a read-only section` |
   | `AddendMustBeZero` | `the addend must be 0` |
   | `NotThreadLocal` | `it is not thread-local` |
+  | `TlsSectionSymbol` | `a TLS relocation against a section symbol` |
   | `ThreadLocal` | `it is thread-local` |
   | `LocalExecInShared` | `local-exec TLS in a shared object` |
   | `InstructionMismatch` | `the instruction does not match the relocation` |

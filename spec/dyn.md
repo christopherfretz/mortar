@@ -2727,6 +2727,12 @@ D-41's. No `.plt.got` (D-49). The i386 PLT of a shared object is the
   hidden IFUNC a PLT address in one translation unit and the resolved
   function in another (AArch64), and a static or hidden one different
   code and data addresses (x86-64): `&f` is not one value (W21).
+- x86-64 (WP-127 part 2, measured): the same rows; mortar writes lld's
+  records (`JUMP_SLOT`, `GLOB_DAT` and `R_X86_64_64` against the
+  preemptible IFUNC; one `R_X86_64_IRELATIVE` for each of the static,
+  hidden and protected ones, 3 in all), and every host (GNU ld's and
+  mortar's, PIE, `-no-pie`, interposing) prints lld's output. GNU ld
+  also writes spare `R_X86_64_NONE` records (the verifier's P-D25).
 - `EI_OSABI` is D-23's rule.
 - i386: D-130.
 

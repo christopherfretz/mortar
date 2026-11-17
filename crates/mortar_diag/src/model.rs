@@ -144,6 +144,9 @@ pub enum IncompatibleReason {
     AddendMustBeZero,
     /// A TLS relocation against a symbol that is not thread-local.
     NotThreadLocal,
+    /// A TLS relocation against a section symbol (`spec/arch.md` §10;
+    /// `spec/x64.md` X-61): the references disagree on what it names.
+    TlsSectionSymbol,
     /// A relocation that is not TLS against a thread-local symbol.
     ThreadLocal,
     /// A local-exec TLS relocation in a shared object.
@@ -157,12 +160,13 @@ pub enum IncompatibleReason {
 
 impl IncompatibleReason {
     /// Every reason, in the order of `spec/diag.md` §3.2.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::RecompileFpic,
         Self::RecompileFpie,
         Self::ReadOnlySection,
         Self::AddendMustBeZero,
         Self::NotThreadLocal,
+        Self::TlsSectionSymbol,
         Self::ThreadLocal,
         Self::LocalExecInShared,
         Self::InstructionMismatch,
@@ -178,6 +182,7 @@ impl IncompatibleReason {
             Self::ReadOnlySection => "it is in a read-only section",
             Self::AddendMustBeZero => "the addend must be 0",
             Self::NotThreadLocal => "it is not thread-local",
+            Self::TlsSectionSymbol => "a TLS relocation against a section symbol",
             Self::ThreadLocal => "it is thread-local",
             Self::LocalExecInShared => "local-exec TLS in a shared object",
             Self::InstructionMismatch => "the instruction does not match the relocation",

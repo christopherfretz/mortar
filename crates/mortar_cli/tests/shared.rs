@@ -140,9 +140,8 @@ fn g4_shared_row_text() {
     };
     assert!(values.is_empty(), "no refused value: its refusals are by name, in the link");
     for part in [
-        "AArch64 and x86-64 (i386 refused, `feature`, until WP-130; TLS and IFUNC in a \
-         shared object on x86-64 until WP-127 part 2; local-exec TLS in a shared object \
-         refused, dyn.md D-119; version scripts until WP-125)",
+        "AArch64 and x86-64 (i386 refused, `feature`, until WP-130; local-exec TLS in a \
+         shared object refused, dyn.md D-119; version scripts until WP-125)",
         "Not judged on x86-64 (x64.md X-62)",
         "3 of 306 measured bound definitions",
         "Refused although correct: -fPIC code that forms an address before the start of a \

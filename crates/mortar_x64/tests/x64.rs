@@ -312,11 +312,28 @@ fn x11_ie_in_a_shared_object_needs_static_tls() {
     let s = scan(&t, OutputKind::Shared, RODATA, 22, -4);
     assert_eq!(raised(&s, key(1)), DemandFlags::GOT_TPREL);
     assert!(s.global.contains(GlobalFlags::STATIC_TLS));
-    for r_type in [19, 20, 34, 35] {
+}
+
+#[test]
+fn x61_shared_tls_keeps_every_model() {
+    // X-61 (WP-127 part 2): nothing is relaxed in a shared object; GD a
+    // GTLSIDX pair, LD the module pair, TLSDESC a descriptor, the call
+    // nothing; local-exec refused by name.
+    let t = tls_tables(TargetKind::Local, 0x40_4008);
+    for (r_type, flags, global) in [
+        (19, DemandFlags::TLS_GD, GlobalFlags::empty()),
+        (20, DemandFlags::empty(), GlobalFlags::TLS_LD),
+        (34, DemandFlags::TLS_DESC, GlobalFlags::empty()),
+        (35, DemandFlags::empty(), GlobalFlags::empty()),
+    ] {
         let s = scan(&t, OutputKind::Shared, RODATA, r_type, -4);
-        let ScanError::Refused(r) = s.errors[0].1 else { panic!("{r_type}: {s:?}") };
-        assert_eq!(r.class, RefusalClass::Feature);
+        assert!(s.errors.is_empty(), "{r_type}: {s:?}");
+        assert_eq!(raised(&s, key(1)), flags, "{r_type}");
+        assert!(s.global.contains(global), "{r_type}");
+        assert!(!s.global.contains(GlobalFlags::STATIC_TLS), "{r_type}");
     }
+    let s = scan(&t, OutputKind::Shared, RODATA, 23, 0);
+    assert_eq!(s.errors[0].1, ScanError::Incompatible(Incompatible::LocalExecInShared));
 }
 
 #[test]

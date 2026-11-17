@@ -154,6 +154,7 @@ pub enum Incompatible {
     ReadOnly,
     AddendMustBeZero,
     NotThreadLocal,
+    TlsSectionSymbol,
     ThreadLocal,
     LocalExecInShared,
     InstructionMismatch,
@@ -162,12 +163,13 @@ pub enum Incompatible {
 
 impl Incompatible {
     /// Every reason, in §10's order.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::RecompilePic,
         Self::RecompilePie,
         Self::ReadOnly,
         Self::AddendMustBeZero,
         Self::NotThreadLocal,
+        Self::TlsSectionSymbol,
         Self::ThreadLocal,
         Self::LocalExecInShared,
         Self::InstructionMismatch,
@@ -183,6 +185,7 @@ impl Incompatible {
             Self::ReadOnly => "it is in a read-only section",
             Self::AddendMustBeZero => "the addend must be 0",
             Self::NotThreadLocal => "it is not thread-local",
+            Self::TlsSectionSymbol => "a TLS relocation against a section symbol",
             Self::ThreadLocal => "it is thread-local",
             Self::LocalExecInShared => "local-exec TLS in a shared object",
             Self::InstructionMismatch => "the instruction does not match the relocation",

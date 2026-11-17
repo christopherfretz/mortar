@@ -12,7 +12,7 @@ use mortar_core::par::SCAN_BLOCK;
 use mortar_core::resolution::SectionKind;
 use mortar_core::{FileId, LocalSym, SectionId, SymEntry, SymKey, SymKind, SymbolId};
 use mortar_diag::{Diagnostic, FileRef, Key, Kind, Place, RefusalClass};
-use mortar_elf::consts::{SHF_ALLOC, SHF_EXECINSTR, SHF_WRITE, SHT_RELA, STT_SECTION};
+use mortar_elf::consts::{SHF_ALLOC, SHF_EXECINSTR, SHF_WRITE, SHT_RELA};
 use mortar_elf::{SectionIndex, SymbolIndex};
 
 use crate::events::{Acc, Event, EventClass, GroupKey, RefId, UnitEvents, sym_group};
@@ -422,6 +422,17 @@ impl<'v, 'a, 's: 'b, 'b> Sec<'v, 'a, 's, 'b> {
                     h.map_or_else(|| self.r_type_name(raw.r_type), |h| RefName::Named(h.name));
                 let addend = h.map_or(raw.addend.unwrap_or(0), |h| self.recs.addend(&raw, &h));
                 let target = key.map(|k| target_name(self.view, k, addend)).unwrap_or_default();
+                // arch.md §10, x64.md X-61: a TLS type against a section
+                // symbol says so (the references disagree on what it
+                // names; mortar refuses it on every architecture).
+                let e = match e {
+                    ScanError::Incompatible(Incompatible::NotThreadLocal)
+                        if key.is_some_and(|k| self.view.is_section_symbol(k)) =>
+                    {
+                        ScanError::Incompatible(Incompatible::TlsSectionSymbol)
+                    }
+                    e => e,
+                };
                 let at = mortar_arch::diag::RelocPlace {
                     file: self.file,
                     path: &path,
@@ -487,9 +498,7 @@ fn records_all_null(r: &RecTable<'_>) -> bool {
 /// symbol's name, or `section+0xoff` for a section symbol.
 pub(crate) fn target_name(view: &View<'_, '_>, key: SymKey, addend: i64) -> String {
     let name = view.shown_name(key);
-    if let SymKind::Local(e) = key.kind()
-        && view.sym(e.file, e.index).is_some_and(|s| s.sym_type() == STT_SECTION)
-    {
+    if view.is_section_symbol(key) {
         return if addend < 0 {
             format!("{name}-{:#x}", addend.unsigned_abs())
         } else {
