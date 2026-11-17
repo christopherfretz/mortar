@@ -942,6 +942,20 @@ fn s4_2_require_defined_by_a_shared_object_errors() {
     );
     let r = link_with(&m, &Options { undefined: vec![n], ..opts() });
     assert!(r.problems.is_empty(), "{:?}", r.problems);
+    // An --as-needed library the root leaves out (WP-152): the same note.
+    let mut m = Model::new(A64);
+    m.obj("a.o");
+    let lib = m.shlib("libk.so", true);
+    let k = m.def(lib, "k");
+    let n = named(&mut m, "k", 4);
+    let r = link_with(&m, &Options { require_defined: vec![n], ..opts() });
+    assert_eq!(def(&m, &r, "k"), Def::Undefined { weak: false });
+    assert!(
+        r.problems.iter().any(|p| matches!(&p.what,
+            What::RequiredSymbol { arg: 4, shared: Some(s), .. } if *s == e(lib, k))),
+        "{:?}",
+        r.problems
+    );
 }
 
 /// §4.2, "A root and a shared object" (WP-152): `-u k`, `k` in the

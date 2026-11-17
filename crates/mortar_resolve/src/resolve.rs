@@ -421,6 +421,9 @@ pub fn resolve_steps<V: View>(
                     arg: named.arg,
                     shared: named.key.get().and_then(|k| match def[k.0 as usize] {
                         Def::Shared(e) => Some(e),
+                        // A root makes no library needed (WP-152): the
+                        // definition of an --as-needed one left out.
+                        Def::Undefined { .. } => shared_definer(view, &kinds, &targets, k),
                         _ => None,
                     }),
                 },
@@ -1153,4 +1156,24 @@ fn root_as_needed<V: View>(
             });
         }
     }
+}
+
+/// `first(k)`'s definition of `k` when `first(k)` is a shared object
+/// (the place of `required-symbol`'s note).
+fn shared_definer<V: View>(
+    view: &V,
+    kinds: &[FileKind],
+    targets: &Targets,
+    k: SymbolId,
+) -> Option<SymEntry> {
+    let t = targets.first[k.0 as usize];
+    if t == crate::live::NO_FILE || kinds[t as usize] != FileKind::Shared {
+        return None;
+    }
+    let file = FileId(t);
+    let mut buf = Vec::new();
+    view.mentions(file, &mut buf);
+    buf.iter()
+        .find(|m| m.place != SymbolSection::Undefined && (m.key == k || m.also.get() == Some(k)))
+        .map(|m| SymEntry { file, index: m.index })
 }
