@@ -1,0 +1,149 @@
+# dyn.md D-121 (WP-124): IFUNCs defined in a shared object. `f_exp` is
+# exported and preemptible: STT_GNU_IFUNC at its resolver in .dynsym, and
+# every use a record against it (JUMP_SLOT, GLOB_DAT, ABS64), so an
+# interposing `-rdynamic` executable or an LD_PRELOAD library takes the
+# library's own calls and addresses too. `g_loc` (static), `h_hid`
+# (hidden, used from a second translation unit) and `p_prot` (protected)
+# are not preemptible: each has one IPLT entry, its address everywhere in
+# the library, and one IRELATIVE, last in .rela.plt; `p_prot` is exported
+# STT_FUNC at that entry (lld's form; GNU ld and mold export it
+# STT_GNU_IFUNC at the resolver with records, measured by WP-124).
+# Addresses are compared inside the library (two translation units, the
+# data words and the code) and between it and the host: PIE, `-no-pie`
+# (a canonical PLT of `f_exp` in the host; the protected `p_prot`'s
+# address is not taken there: GNU ld refuses that copy) and an
+# interposing `-rdynamic` PIE. The same with `-Bsymbolic-functions`
+# (an IFUNC is not a function for it: `f_exp` stays preemptible, lld's
+# rule, D-112's table; GNU ld 2.44 fails an assertion) and with `-z now`.
+# GNU ld and mold give `h_hid` a PLT address in one translation unit and
+# the resolved function in the other (W21); mold binds `f_exp` inside the
+# library, so the interposer does not reach its calls and `&f_exp`
+# differs (W20). lld puts the IRELATIVEs in .rela.dyn, before the
+# JUMP_SLOTs (A20).
+#@ spec: dyn.md "D-121"
+#@ arch: aarch64
+#@ anomaly(lld): A20
+#@ xfail(bfd): W21: a hidden IFUNC's address differs between translation units (and an assertion under -Bsymbolic-functions)
+#@ xfail(mold): W20, W21: mold binds an exported IFUNC inside the library; a hidden one's address differs between translation units
+
+cc -O1 -fPIC lib.c -o lib.o
+cc -O1 -fPIC tu2.c -o tu2.o
+cc -O1 -fPIC pre.c -o pre.o
+cc -O1 -fPIE main.c -o pie.o
+cc -O1 -fno-pie -DNOPIE main.c -o exec.o
+cc -O1 -fPIE -DINTERPOSE main.c -o ipos.o
+shlib gcc pre.o -Wl,-soname,libpre.so -o libpre.so
+link gcc -shared lib.o tu2.o -Wl,-soname,libif.so -o libif.so
+check readelf -W --dyn-syms libif.so
+  has(mortar,bfd): IFUNC * GLOBAL DEFAULT * f_exp$
+  has(mortar,lld): FUNC * GLOBAL PROTECTED * p_prot$
+  not: h_hid
+  not: g_loc
+check readelf -rW libif.so
+  has: R_AARCH64_JUMP_SLOT * f_exp + 0$
+  has: R_AARCH64_GLOB_DAT * f_exp + 0$
+  has: R_AARCH64_ABS64 * f_exp + 0$
+  count(mortar,lld): 3 R_AARCH64_IRELATIVE
+check readelf -hW libif.so
+  has(mortar): OS/ABI: * UNIX - GNU$
+link gcc -shared lib.o tu2.o -Wl,-Bsymbolic-functions -Wl,-soname,libifs.so -o libifs.so
+check readelf -rW libifs.so
+  has: R_AARCH64_JUMP_SLOT * f_exp + 0$
+link gcc -shared lib.o tu2.o -Wl,-z,now -Wl,-soname,libifn.so -o libifn.so
+check readelf -dW libifn.so
+  has: (FLAGS) * BIND_NOW
+host gcc -pie pie.o -L. -lif -o pie
+run pie
+  stdout: calls 1 4 4321 3
+  stdout: lib 1 1 1 1
+  stdout: host 1 1 1 1
+run pie
+  env: LD_PRELOAD=./libpre.so
+  stdout: calls 9 4 4329 3
+  stdout: lib 1 1 1 1
+  stdout: host 1 1 1 1
+host gcc -no-pie exec.o -L. -lif -o exec
+run exec
+  stdout: calls 1 4 4321 3
+  stdout: lib 1 1 1 1
+  stdout: host 1 1
+host gcc -pie -rdynamic ipos.o -L. -lif -o ipos
+run ipos
+  stdout: calls 7 4 4327 3
+  stdout: lib 1 1 1 1
+  stdout: host 1 1 1 1
+host gcc -pie pie.o -L. -lifs -o pie-s
+run pie-s
+  stdout: calls 1 4 4321 3
+  stdout: lib 1 1 1 1
+  stdout: host 1 1 1 1
+host gcc -pie -rdynamic ipos.o -L. -lifs -o ipos-s
+run ipos-s
+  stdout: calls 7 4 4327 3
+  stdout: lib 1 1 1 1
+  stdout: host 1 1 1 1
+host gcc -no-pie exec.o -L. -lifn -o exec-n
+run exec-n
+  stdout: calls 1 4 4321 3
+  stdout: lib 1 1 1 1
+  stdout: host 1 1
+host gcc -pie -rdynamic ipos.o -L. -lifn -o ipos-n
+run ipos-n
+  stdout: calls 7 4 4327 3
+  stdout: lib 1 1 1 1
+  stdout: host 1 1 1 1
+
+#--- lib.c
+static int one(void) { return 1; }
+static int two(void) { return 2; }
+static int three(void) { return 3; }
+static int four(void) { return 4; }
+static int (*r1(void))(void) { return one; }
+static int (*r2(void))(void) { return two; }
+static int (*r3(void))(void) { return three; }
+static int (*r4(void))(void) { return four; }
+int f_exp(void) __attribute__((ifunc("r1")));
+static int g_loc(void) __attribute__((ifunc("r2")));
+__attribute__((visibility("hidden"))) int h_hid(void) __attribute__((ifunc("r3")));
+__attribute__((visibility("protected"))) int p_prot(void) __attribute__((ifunc("r4")));
+int (*ptr_f)(void) = f_exp;
+int (*ptr_g)(void) = g_loc;
+int (*ptr_h)(void) = h_hid;
+int (*ptr_p)(void) = p_prot;
+void *addr_f(void) { return (void *)f_exp; }
+void *addr_g(void) { return (void *)g_loc; }
+void *addr_h(void) { return (void *)h_hid; }
+void *addr_p(void) { return (void *)p_prot; }
+int call_all(void) { return f_exp() + 10 * g_loc() + 100 * h_hid() + 1000 * p_prot(); }
+#--- tu2.c
+__attribute__((visibility("hidden"))) int h_hid(void);
+void *addr_h2(void) { return (void *)h_hid; }
+int call_h2(void) { return h_hid(); }
+#--- pre.c
+int f_exp(void) { return 9; }
+#--- main.c
+#include <stdio.h>
+int f_exp(void);
+int p_prot(void);
+int call_all(void);
+int call_h2(void);
+void *addr_f(void), *addr_g(void), *addr_h(void), *addr_h2(void), *addr_p(void);
+extern int (*ptr_f)(void), (*ptr_g)(void), (*ptr_h)(void), (*ptr_p)(void);
+#ifdef INTERPOSE
+int f_exp(void) { return 7; }
+#endif
+int main(void) {
+  printf("calls %d %d %d %d\n", f_exp(), p_prot(), call_all(), call_h2());
+  printf("lib %d %d %d %d\n", addr_g() == (void *)ptr_g, addr_h() == (void *)ptr_h,
+         addr_h() == addr_h2(), addr_p() == (void *)ptr_p);
+#ifdef NOPIE
+  /* Not the protected p_prot's address: GNU ld refuses a non-PIC
+     executable's use of it ("copy relocation against non-copyable
+     protected symbol"). */
+  printf("host %d %d\n", (void *)f_exp == addr_f(), (void *)f_exp == (void *)ptr_f);
+#else
+  printf("host %d %d %d %d\n", (void *)f_exp == addr_f(), (void *)f_exp == (void *)ptr_f,
+         (void *)p_prot == addr_p(), (void *)p_prot == (void *)ptr_p);
+#endif
+  return 0;
+}

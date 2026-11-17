@@ -1,0 +1,136 @@
+# dyn.md D-119 (WP-124): a library's TLS through TLS descriptors (GCC's
+# AArch64 default): an exported variable, a hidden one, a static one and
+# one imported from another library. The exported and imported ones are
+# R_AARCH64_TLSDESC records by symbol, the hidden and static ones records
+# with r_sym 0 and their offset in the block as addend (0, 4: no section
+# anchor; every reference agrees), all eager in .rela.dyn (mortar, lld and mold; GNU ld puts them
+# in .rela.plt with DT_TLSDESC_PLT). The library runs loaded at start in
+# two threads (each its own copies), under an interposer that preempts
+# the exported variable, and by `dlopen` with a thread started before it.
+#@ spec: dyn.md "D-119"
+#@ arch: aarch64
+
+cc -O1 -fPIC -fno-section-anchors -mtls-dialect=desc tls.c -o tls.o
+cc -O1 -fPIC other.c -o other.o
+cc -O1 -fPIC pre.c -o pre.o
+cc -O1 -fPIE -pthread main.c -o main.o
+cc -O1 -fPIE -pthread load.c -o load.o
+shlib gcc other.o -Wl,-soname,libother.so -o libother.so
+shlib gcc pre.o -Wl,-soname,libpre.so -o libpre.so
+link gcc -shared tls.o -L. -lother -Wl,-soname,libtd.so -o libtd.so
+check readelf -rW libtd.so
+  has: R_AARCH64_TLSDESC * e_tls + 0$
+  has: R_AARCH64_TLSDESC * o_tls + 0$
+  has: R_AARCH64_TLSDESC 0$
+  has: R_AARCH64_TLSDESC 4$
+  count: 4 R_AARCH64_TLSDESC
+  not: R_AARCH64_TLS_TPREL64
+check readelf -dW libtd.so
+  not: STATIC_TLS
+  not(mortar,lld,mold): TLSDESC
+host gcc -pie -pthread main.o -L. -ltd -lother -o prog
+run prog
+  stdout: thread 51 12 13 14 0
+  stdout: main 1 2 3 4 1
+run prog
+  env: LD_PRELOAD=./libpre.so
+  stdout: thread 127 12 13 14 0
+  stdout: main 77 2 3 4 1
+  stdout: pre 77
+host gcc -pie -pthread load.o -ldl -o load
+run load
+  stdout: early 1
+  stdout: thread 51 12 13 14 0
+  stdout: main 1 2 3 4 1
+
+#--- tls.c
+#include <stdio.h>
+__thread int e_tls = 1;
+__attribute__((visibility("hidden"))) __thread int h_tls = 2;
+static __thread int s_tls = 3;
+extern __thread int o_tls;
+int get_e(void) { return e_tls; }
+int get_h(void) { return h_tls; }
+int get_s(void) { return s_tls; }
+int get_o(void) { return o_tls; }
+/* Sets this thread's copies; 1 when the addresses are the caller's. */
+int bump(int k, int *seen) {
+  e_tls += 50 * k;
+  h_tls += 10 * k;
+  s_tls += 10 * k;
+  o_tls += 10 * k;
+  return seen == &e_tls;
+}
+void show(const char *who, int same) {
+  printf("%s %d %d %d %d %d\n", who, get_e(), get_h(), get_s(), get_o(), same);
+}
+#--- other.c
+__thread int o_tls = 4;
+#--- pre.c
+#include <stdio.h>
+__thread int e_tls = 77;
+__attribute__((destructor)) static void at_end(void) { printf("pre %d\n", e_tls); }
+#--- main.c
+#include <pthread.h>
+#include <stdio.h>
+extern __thread int e_tls;
+int bump(int, int *);
+void show(const char *, int);
+static void *worker(void *arg) {
+  (void)arg;
+  /* e_tls is the interposer's under LD_PRELOAD: the library's own use
+     of it reaches the same object, so the count goes there. */
+  int same = bump(1, &e_tls);
+  show("thread", !same);
+  fflush(stdout);
+  return 0;
+}
+int main(void) {
+  pthread_t t;
+  if (pthread_create(&t, 0, worker, 0) || pthread_join(t, 0)) return 2;
+  show("main", 1);
+  fflush(stdout);
+  return 0;
+}
+#--- load.c
+#include <dlfcn.h>
+#include <pthread.h>
+#include <stdio.h>
+static pthread_mutex_t m = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t c = PTHREAD_COND_INITIALIZER;
+static int (*bump)(int, int *);
+static void (*show)(const char *, int);
+static int stage;
+static void *worker(void *arg) {
+  (void)arg;
+  printf("early 1\n");
+  fflush(stdout);
+  pthread_mutex_lock(&m);
+  while (stage == 0) pthread_cond_wait(&c, &m);
+  pthread_mutex_unlock(&m);
+  /* A thread that existed before the dlopen: its blocks are allocated
+     on first use. */
+  int *e = 0;
+  bump(1, e);
+  show("thread", 0);
+  fflush(stdout);
+  return 0;
+}
+int main(void) {
+  pthread_t t;
+  if (pthread_create(&t, 0, worker, 0)) return 2;
+  void *h = dlopen("libtd.so", RTLD_NOW);
+  if (!h) { printf("%s\n", dlerror()); return 3; }
+  bump = (int (*)(int, int *))dlsym(h, "bump");
+  show = (void (*)(const char *, int))dlsym(h, "show");
+  if (!bump || !show) return 4;
+  pthread_mutex_lock(&m);
+  stage = 1;
+  pthread_cond_signal(&c);
+  pthread_mutex_unlock(&m);
+  if (pthread_join(t, 0)) return 5;
+  int *e = (int *)dlsym(h, "e_tls");
+  show("main", e != 0);
+  fflush(stdout);
+  return 0;
+}

@@ -1,8 +1,8 @@
 # dyn.md D-103 (WP-123): `-z now` in a shared object writes DT_FLAGS
 # BIND_NOW and DT_FLAGS_1 NOW (no PIE bit), and the library's PLT calls
 # still run; `strlen` is an IFUNC of the C library, which the library
-# imports like any function (the refusal of IFUNC in a shared object is
-# of the library's own, D-121, WP-124).
+# imports like any function (the library's own IFUNC is D-121's:
+# `ifunc-shared-equality`).
 #@ spec: dyn.md "D-103"
 #@ arch: aarch64 x86_64
 #@ xfail(mortar,x86_64): M4: WP-127 (x86-64 shared objects; dyn.md D-100)
