@@ -113,6 +113,8 @@ const SHSTRTAB: &[u8] = b".shstrtab";
 const EH_FRAME: &[u8] = b".eh_frame";
 const BUILD_ID: &[u8] = b".note.gnu.build-id";
 const PROPERTY: &[u8] = b".note.gnu.property";
+/// The note I-R4 keeps no local of.
+const STACK_NOTE: &[u8] = b".note.GNU-stack";
 
 /// `spec/synth.md` S-86's fixed table after the zero byte, and the
 /// offsets of its names: the table `mortar_synth` writes
@@ -142,10 +144,6 @@ fn one(key: Key, d: Diagnostic) -> Failed {
 /// The `-r` refusal of a feature a later package lifts.
 fn later(name: &str, package: &str) -> Diagnostic {
     Diagnostic::refused(RefusalClass::Feature, name).note(format!("{package} lifts this at -r"))
-}
-
-fn align_up(x: u64, a: u64) -> u64 {
-    if a <= 1 { x } else { x.div_ceil(a) * a }
 }
 
 /// The class-dependent sizes of the output.
@@ -253,16 +251,85 @@ fn section_bytes<'s>(
 
 // ---- the frame: chunks, indexes, pieces, the .eh_frame record map --------
 
-/// One kept or removed `.eh_frame` record (L-R6's record map, ruling S1).
+/// One unit of an input `.eh_frame`: a record (CIE, FDE) of `Split`, a
+/// zero terminator, or bytes that are neither (kept as they are). The
+/// units of a section tile it (ruling S12).
 #[derive(Debug, Clone, Copy)]
 struct EhRec {
-    /// The record's offset and size in its input section.
+    /// The unit's offset and size in its input section.
     input: u64,
     size: u64,
-    /// For an FDE, the ordinal of its CIE among its section's pieces.
-    cie: Option<u32>,
-    /// `None` for a removed record.
+    /// For an FDE, the input offset of its CIE.
+    cie: Option<u64>,
+    /// Its output offset; `None` for a removed record.
     out: Option<u64>,
+}
+
+/// The units of `.eh_frame` input `s` (ruling S12): its `Split` records
+/// (size 4 + the length word), with the bytes between and after them as
+/// zero terminators (4 bytes each) or, when not one, a unit of their own.
+/// `at` is the number of kept bytes before the section, advanced past it.
+fn eh_records(
+    link: &RelocatableLink<'_, '_>,
+    s: SectionId,
+    at: &mut u64,
+) -> Result<Vec<EhRec>, Diagnostic> {
+    let h = input_shdr(link, s)?;
+    let size = h.sh_size;
+    let bytes = section_bytes(link, s, &h)?;
+    let (offs, pieces) = match link.split.eh_pieces(s) {
+        Some(span) => (&link.split.eh_off[span.slots()], &link.split.eh_piece[span.slots()]),
+        None => (&[][..], &[][..]),
+    };
+    let word = |pos: u64| -> Option<u32> {
+        let p = usize::try_from(pos).ok()?;
+        let w = bytes.get(p..p.checked_add(4)?)?;
+        Some(u32::from_le_bytes([w[0], w[1], w[2], w[3]]))
+    };
+    let bad = |what: &str| internal(format!(".eh_frame section {}: {what}", s.0));
+    let mut out = Vec::with_capacity(offs.len() + 1);
+    let mut pos = 0u64;
+    let mut k = 0usize;
+    while pos < size {
+        let next = offs.get(k).map_or(size, |&o| u64::from(o));
+        let (len, cie, record) = if next == pos {
+            let w = word(pos).ok_or_else(|| bad("a record past the section's end"))?;
+            if w == u32::MAX {
+                return Err(bad("a 64-bit record length"));
+            }
+            let piece = pieces[k];
+            let cie = if piece.is_cie() {
+                None
+            } else {
+                Some(u64::from(
+                    *offs
+                        .get(piece.cie as usize)
+                        .ok_or_else(|| bad("an FDE whose CIE is not one"))?,
+                ))
+            };
+            k += 1;
+            (4 + u64::from(w), cie, true)
+        } else if next < pos {
+            return Err(bad("records that overlap"));
+        } else if word(pos) == Some(0) && pos + 4 <= next {
+            (4, None, false)
+        } else {
+            (next - pos, None, false)
+        };
+        if pos + len > size {
+            return Err(bad("a record past the section's end"));
+        }
+        let removed = record && link.layout.eh_removed.binary_search(&(s, pos)).is_ok();
+        out.push(EhRec { input: pos, size: len, cie, out: (!removed).then_some(*at) });
+        if !removed {
+            *at += len;
+        }
+        pos += len;
+    }
+    if k != offs.len() {
+        return Err(bad("a record that does not start where the one before ends"));
+    }
+    Ok(out)
 }
 
 /// The layout's chunks as the image reads them.
@@ -290,7 +357,8 @@ struct Frame {
     /// The `.eh_frame` records in output order (removed ones included).
     eh_recs: Vec<EhRec>,
     /// Per live `EhFrame` section in `(FileId, index)` order: its records.
-    eh_sections: Vec<(SectionId, Range<usize>)>,
+    /// and the number of kept bytes before it.
+    eh_sections: Vec<(SectionId, Range<usize>, u64)>,
     /// Per header index: the `STT_SECTION` symbol's index (0: none).
     secsym: Vec<u32>,
     /// The number of section symbols.
@@ -439,39 +507,10 @@ impl Frame {
                     )));
                 }
                 eh_out = Some(o);
-                let size = input_shdr(link, s).map_err(fail)?.sh_size;
                 let first = eh_recs.len();
-                if let Some(span) = link.split.eh_pieces(s) {
-                    let offs = &link.split.eh_off[span.slots()];
-                    for (k, &off) in offs.iter().enumerate() {
-                        let end = offs.get(k + 1).map_or(size, |&e| u64::from(e));
-                        let piece = link.split.eh_piece[span.start as usize + k];
-                        let removed =
-                            link.layout.eh_removed.binary_search(&(s, u64::from(off))).is_ok();
-                        let out = (!removed).then_some(at);
-                        if !removed {
-                            at += end - u64::from(off);
-                        }
-                        eh_recs.push(EhRec {
-                            input: u64::from(off),
-                            size: end - u64::from(off),
-                            cie: (!piece.is_cie()).then_some(piece.cie),
-                            out,
-                        });
-                    }
-                    if offs.first().is_some_and(|&f| f != 0) {
-                        return Err(fail(internal(format!(
-                            "the .eh_frame pieces of section {} do not start at 0",
-                            s.0
-                        ))));
-                    }
-                } else if size != 0 {
-                    return Err(fail(internal(format!(
-                        "the .eh_frame section {} is not split",
-                        s.0
-                    ))));
-                }
-                eh_sections.push((s, first..eh_recs.len()));
+                let start = at;
+                eh_recs.extend(eh_records(link, s, &mut at).map_err(fail)?);
+                eh_sections.push((s, first..eh_recs.len(), start));
             }
         }
         let eh_chunk = find(EH_FRAME);
@@ -567,22 +606,27 @@ impl Frame {
         self.eh_recs.get(self.eh_sections[at].1.clone())
     }
 
-    /// L-R6's record map: offset `off` of `.eh_frame` input `s` in the
-    /// output `.eh_frame`; the end of the section maps to the end of its
-    /// last kept record. `None` in a removed record.
+    /// L-R6's record map (ruling S12): the output offset of byte `off` of
+    /// `.eh_frame` input `s`, the number of kept bytes before it; the end
+    /// of the section maps to the number of kept bytes up to it. `None`
+    /// in a removed record.
     fn eh_map(&self, s: SectionId, off: u64) -> Option<u64> {
-        let recs = self.eh_of(s)?;
-        let at = recs.partition_point(|r| r.input <= off);
-        if at == 0 {
-            return None;
+        let at = self.eh_sections.binary_search_by_key(&s, |e| e.0).ok()?;
+        let (_, range, start) = self.eh_sections[at].clone();
+        let recs = &self.eh_recs[range];
+        let i = recs.partition_point(|r| r.input <= off);
+        if i == 0 {
+            // An empty section: its start (= its end).
+            return (off == 0).then_some(start);
         }
-        let r = recs[at - 1];
+        let r = recs[i - 1];
         if off < r.input + r.size {
             return Some(r.out? + (off - r.input));
         }
-        // At or past the end: only the section's end maps.
-        if off == r.input + r.size && at == recs.len() {
-            return recs.iter().rev().find_map(|r| r.out.map(|o| o + r.size)).or(Some(0));
+        if off == r.input + r.size && i == recs.len() {
+            return Some(
+                recs.iter().rev().find_map(|r| r.out.map(|o| o + r.size)).unwrap_or(start),
+            );
         }
         None
     }
@@ -726,6 +770,11 @@ fn kept_locals<'s>(
                     {
                         group_index(link, frame, g).map(|ix| place(ix, 0))
                     }
+                    // I-R4: not in a section the `-r` itself makes from
+                    // its inputs (the merged `.note.GNU-stack`; the
+                    // property note and the Mason container are not
+                    // placed, so `where_is` has none).
+                    Some(sid) if input_name(link, sid) == STACK_NOTE => None,
                     Some(sid) => frame.where_is(link, sid, s.st_value).map(|(ix, v)| place(ix, v)),
                     None => None,
                 }
@@ -1011,7 +1060,8 @@ pub fn sizes(link: &RelocatableLink<'_, '_>) -> Result<Sizes, Failed> {
     let syms = Symbols::new(link, &frame)?;
     let groups = Groups::new(link, &frame)?;
     let property = property_plan(link)?;
-    computed_sizes(link, &frame, &syms, &groups, property.as_ref())
+    let build_id = build_id_plan(link)?;
+    computed_sizes(link, &frame, &syms, &groups, property.as_ref(), build_id.as_ref())
 }
 
 fn computed_sizes(
@@ -1020,6 +1070,7 @@ fn computed_sizes(
     syms: &Symbols<'_>,
     groups: &Groups,
     property: Option<&mortar_synth::PropertyPlan>,
+    build_id: Option<&mortar_synth::notes::BuildIdPlan>,
 ) -> Result<Sizes, Failed> {
     let pl = &link.layout.layout.placement;
     let shape = frame.shape;
@@ -1039,7 +1090,7 @@ fn computed_sizes(
                 STRTAB => syms.strtab_size(),
                 SHSTRTAB => shstrtab(link, frame).0.len() as u64,
                 EH_FRAME => frame.eh_recs.iter().filter(|r| r.out.is_some()).map(|r| r.size).sum(),
-                BUILD_ID => build_id_shape(link)?.map_or(0, |(n, _)| 16 + align_up(n, 4)),
+                BUILD_ID => build_id.map_or(0, mortar_synth::notes::BuildIdPlan::size),
                 PROPERTY => property.map_or(0, mortar_synth::PropertyPlan::size),
                 _ => 0,
             },
@@ -1081,7 +1132,7 @@ fn reloc_counts(link: &RelocatableLink<'_, '_>, frame: &Frame) -> Result<Vec<u64
         }
     }
     if let Some((_, o)) = frame.eh {
-        for (s, _) in &frame.eh_sections {
+        for (s, ..) in &frame.eh_sections {
             let Some(h) = reloc_shdr(link, *s).map_err(|d| fail(*s, d))? else { continue };
             if frame.eh_recs.iter().all(|r| r.out.is_some()) {
                 counts[o.0 as usize] += h.sh_size / record_size(frame.shape, h.sh_type);
@@ -1278,8 +1329,17 @@ fn sym_index(
         .map_err(|e| internal(format!("file {}: symbol {r_sym}: {e:?}", file.0)))?;
     if s.sym_type() != STT_SECTION {
         let ix = syms.local_out.get(file.0 as usize).and_then(|m| m.get(r_sym as usize)).copied();
+        let dropped_copy = || {
+            matches!(t.section_of(SymbolIndex(r_sym), &s), Ok(SymbolSection::Section(i))
+                if link.resolution.section_id(file, i).and_then(|t| link.resolution.sections.get(t))
+                    .is_some_and(|r| r.state == SectionState::Dropped(DropReason::Comdat)))
+        };
         return match ix {
             Some(ix) if ix != 0 => Ok((ix, 0)),
+            _ if dropped_copy() => Err(later(
+                "relocations against a dropped COMDAT copy at -r",
+                "RL-8 (spec/image.md I-R7)",
+            )),
             _ => Err(internal(format!(
                 "file {}: a record names local symbol {r_sym}, which the -r output does not keep",
                 file.0
@@ -1355,41 +1415,40 @@ fn shstrtab(link: &RelocatableLink<'_, '_>, frame: &Frame) -> (Vec<u8>, Vec<u32>
 
 // ---- the build id and the property note ------------------------------------------
 
-/// The build-id note's descriptor size and given bytes (I-R8, I-69):
-/// `None` without `--build-id`.
-#[allow(clippy::type_complexity)]
-fn build_id_shape(
+/// The errors a `mortar_synth` plan reported into `diag`, keyed in phase
+/// 100; `what` when it reported none.
+fn collected(diag: mortar_diag::Collector, what: &str) -> Failed {
+    let report = diag.finish();
+    let diagnostics: Vec<(Key, Diagnostic)> = report
+        .diagnostics()
+        .iter()
+        .filter(|d| d.severity() == mortar_diag::Severity::Error)
+        .map(|d| (key0(0), d.clone()))
+        .collect();
+    Failed {
+        diagnostics: if diagnostics.is_empty() {
+            vec![(key0(0), internal(what))]
+        } else {
+            diagnostics
+        },
+    }
+}
+
+/// The build-id note of `link` (I-R8): the final link's plan
+/// (`mortar_synth::notes::BuildIdPlan`, the single source of its size,
+/// ruling S16). `None` without `--build-id`.
+///
+/// # Errors
+///
+/// A style the final link refuses, refused the same way (I-R8).
+pub fn build_id_plan(
     link: &RelocatableLink<'_, '_>,
-) -> Result<Option<(u64, Option<Vec<u8>>)>, Failed> {
-    use mortar_core::plan::BuildId;
-    let Some(style) = &link.plan.shaping.build_id else { return Ok(None) };
-    let f = |d| one(key0(0), d);
-    Ok(Some(match style {
-        BuildId::Default | BuildId::Sha1 => (20, None),
-        BuildId::Fast => (8, None),
-        BuildId::Sha256 => (32, None),
-        BuildId::Hex(text) => {
-            let b = mortar_digest::parse_hex(text).map_err(|_| {
-                f(Diagnostic::error(Kind::InvalidOptionValue {
-                    option: "--build-id".to_owned(),
-                    value: text.clone(),
-                })
-                .note(mortar_synth::notes::HEX_NOTE))
-            })?;
-            (b.len() as u64, Some(b))
-        }
-        BuildId::Md5 => {
-            return Err(f(
-                Diagnostic::refused(RefusalClass::OptionValue, "--build-id=md5").note("use sha1")
-            ));
-        }
-        BuildId::Uuid => {
-            return Err(f(Diagnostic::refused(
-                RefusalClass::OptionValue,
-                mortar_synth::notes::UUID,
-            )));
-        }
-    }))
+) -> Result<Option<mortar_synth::notes::BuildIdPlan>, Failed> {
+    let diag = mortar_diag::Collector::new(mortar_diag::Policy::default());
+    match mortar_synth::notes::BuildIdPlan::new(link.plan.shaping.build_id.as_ref(), &diag) {
+        Ok(p) => Ok(p),
+        Err(_) => Err(collected(diag, "the build-id plan failed")),
+    }
 }
 
 /// S-94/S-95 over the live inputs' `.note.gnu.property` sections (L-R1,
@@ -1433,27 +1492,15 @@ pub fn property_plan(
     let diag = mortar_diag::Collector::new(mortar_diag::Policy::default());
     let arch = link.arch;
     let processor = |t: u32| arch.property_merge(t);
-    if let Ok(p) =
-        mortar_synth::PropertyPlan::new(&objects, link.arch.facts().class, &processor, false, &diag)
-    {
-        Ok(p.exists().then_some(p))
-    } else {
-        {
-            let report = diag.finish();
-            let diagnostics: Vec<(Key, Diagnostic)> = report
-                .diagnostics()
-                .iter()
-                .filter(|d| d.severity() == mortar_diag::Severity::Error)
-                .map(|d| (key0(0), d.clone()))
-                .collect();
-            Err(Failed {
-                diagnostics: if diagnostics.is_empty() {
-                    vec![(key0(0), internal("the property note merge failed"))]
-                } else {
-                    diagnostics
-                },
-            })
-        }
+    match mortar_synth::PropertyPlan::new(
+        &objects,
+        link.arch.facts().class,
+        &processor,
+        false,
+        &diag,
+    ) {
+        Ok(p) => Ok(p.exists().then_some(p)),
+        Err(_) => Err(collected(diag, "the property note merge failed")),
     }
 }
 
@@ -1491,7 +1538,7 @@ struct Image<'l, 'a, 's> {
     syms: Symbols<'s>,
     groups: Groups,
     property: Option<mortar_synth::PropertyPlan>,
-    build_id: Option<(u64, Option<Vec<u8>>)>,
+    build_id: Option<mortar_synth::notes::BuildIdPlan>,
     names: (Vec<u8>, Vec<u32>),
 }
 
@@ -1524,14 +1571,17 @@ pub fn write(
     let mut bytes = bytes;
     let mut sealed = None;
     let mut id = None;
-    if let (Some(c), Some((n, None))) = (img.frame.build_id, &img.build_id) {
+    if let (Some(c), Some(plan)) = (img.frame.build_id, &img.build_id)
+        && plan.hashed()
+    {
+        let n = u64::from(plan.desc_size());
         let style = link.build_id.ok_or_else(|| {
             one(
                 key0(0),
                 internal("a hashed --build-id style with no tree (RelocatableLink::build_id)"),
             )
         })?;
-        let at = chunk(link, c).map_err(|d| one(key0(0), d))?.offset + 16;
+        let at = chunk(link, c).map_err(|d| one(key0(0), d))?.offset + plan.desc_range().start;
         let range = at..at + n;
         let leaf_fn = style.tree_fn();
         let block = mortar_digest::IMAGE_BLOCK as usize;
@@ -1543,9 +1593,9 @@ pub fn write(
         });
         let v = crate::digest::build_id(style, bytes.len() as u64, &leaves)
             .map_err(|e| one(key0(0), internal(format!("the build id's tree: {e:?}"))))?;
-        bytes[range.start as usize..range.end as usize].copy_from_slice(&v[..*n as usize]);
+        bytes[range.start as usize..range.end as usize].copy_from_slice(&v[..n as usize]);
         sealed = Some(range);
-        id = Some(v[..*n as usize].to_vec());
+        id = Some(v[..n as usize].to_vec());
     }
     let out = Output::create(path, opts).map_err(|kd| Failed { diagnostics: vec![kd] })?;
     for (k, piece) in bytes.chunks(STEP).enumerate() {
@@ -1593,8 +1643,8 @@ fn prepare<'l, 'a, 's>(link: &'l RelocatableLink<'a, 's>) -> Result<Image<'l, 'a
     let syms = Symbols::new(link, &frame)?;
     let groups = Groups::new(link, &frame)?;
     let property = property_plan(link)?;
-    let build_id = build_id_shape(link)?;
-    let sizes = computed_sizes(link, &frame, &syms, &groups, property.as_ref())?;
+    let build_id = build_id_plan(link)?;
+    let sizes = computed_sizes(link, &frame, &syms, &groups, property.as_ref(), build_id.as_ref())?;
     let pl = &link.layout.layout.placement;
     let mut errors = Vec::new();
     for &(id, size) in &sizes.chunks {
@@ -1756,13 +1806,9 @@ impl Image<'_, '_, '_> {
                 }
                 EH_FRAME => self.write_eh(out),
                 BUILD_ID => {
-                    let Some((n, given)) = &self.build_id else { return Ok(()) };
-                    out[0..4].copy_from_slice(&4u32.to_le_bytes());
-                    out[4..8].copy_from_slice(&(*n as u32).to_le_bytes());
-                    out[8..12].copy_from_slice(&mortar_elf::consts::NT_GNU_BUILD_ID.to_le_bytes());
-                    out[12..16].copy_from_slice(b"GNU\0");
-                    if let Some(b) = given {
-                        out[16..16 + b.len()].copy_from_slice(b);
+                    if let Some(p) = &self.build_id {
+                        let mut w = mortar_synth::Window::new(0, out);
+                        p.write(&mut w);
                     }
                     Ok(())
                 }
@@ -1961,7 +2007,7 @@ impl Image<'_, '_, '_> {
     /// pointer recomputed.
     fn write_eh(&self, out: &mut [u8]) -> Result<(), (Key, Diagnostic)> {
         let link = self.link;
-        for (s, range) in &self.frame.eh_sections {
+        for (s, range, _) in &self.frame.eh_sections {
             let key = key0(u64::from(s.0));
             let h = input_shdr(link, *s).map_err(|d| (key, d))?;
             let bytes = section_bytes(link, *s, &h).map_err(|d| (key, d))?;
@@ -1976,9 +2022,9 @@ impl Image<'_, '_, '_> {
                     .ok_or_else(|| (key, internal("an .eh_frame record outside the chunk")))?;
                 dst.copy_from_slice(src);
                 if let Some(cie) = r.cie {
-                    let c = recs
-                        .get(cie as usize)
-                        .and_then(|c| c.out)
+                    let c = self
+                        .frame
+                        .eh_map(*s, cie)
                         .ok_or_else(|| (key, internal("an FDE whose CIE is not written")))?;
                     // The pointer is the distance from its own field back
                     // to the CIE (the `.eh_frame` form of the CIE pointer).
