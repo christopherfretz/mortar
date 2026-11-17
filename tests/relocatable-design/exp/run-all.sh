@@ -1,7 +1,8 @@
 #!/bin/bash
-# run-all.sh WORK: every experiment of WP-154 into a fresh directory WORK, one
+# run-all.sh WORK [review]: every experiment of WP-154 into a fresh directory WORK, one
 # subdirectory and one log per area. Serial (one link at a time); BusyBox's
-# build is make -j4. About 25 minutes on the aarch64 host; WORK needs ~1.2 GB
+# build is make -j4. About 3.5 minutes on the aarch64 host, plus about 2 for
+# prelink and bench (the review's timing); WORK needs ~1.2 GB
 # while bench/ runs (its three 250-300 MB outputs: delete them afterwards).
 # Paths: mortar is /Volumes/AgentWork/mortar-helper/.build/target-wp-154/mortar-3ad9867a
 # (final/, busybox/, debug/, none-overlap/, meta/, more/ use it), kiln++ the
@@ -24,4 +25,9 @@ run meta         "$H/meta/run.sh" "$W/meta"
 run more         "$H/more/run.sh" "$W/more"
 run prelink      "$H/more/prelink.sh" "$W/prelink"
 run bench        "$H/bench/run.sh" "$W/bench" 400
+if [ "${2:-}" = review ]; then   # the fix pass's scripts (record §H)
+  run rcheck-cxx     "$H/review/rcheck-cxx.sh" "$W/final"
+  for x in zkw stack unique-buildid equiv gap anchors fuse mapsym; do
+    run $x "$H/review/$x.sh" "$W/review-$x"; done
+fi
 echo "run-all done"

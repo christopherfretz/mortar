@@ -2739,7 +2739,7 @@ B.7; `tests/relocatable-design/work/facts.log`,
     local in the interior of a removed record. That is `spec/synth.md`
     S-76's `.eh_frame` clause, applied to the `-r` record map instead
     of S-50's. GCC on AArch64 puts `$d` in `.eh_frame` (at 0x14 in the
-    corpus). GNU ld instead moves a removed record's `$d` to the next
+    corpus, built with `-mbranch-protection=standard`). GNU ld instead moves a removed record's `$d` to the next
     kept record (`work/mapsym.log`, `exp/review/mapsym.sh`). In a
     non-executable section a mapping symbol is optional either way;
     mortar drops it, by S-76;
@@ -2747,7 +2747,8 @@ B.7; `tests/relocatable-design/work/facts.log`,
     - the merged `.note.gnu.property` (its bytes belong to no input);
     - the merged `.note.GNU-stack`;
     - the Mason container (MT-30).
-    So the `$d` that GCC writes at offset 0 of `.note.gnu.property` is
+    So the `$d` that GCC writes at offset 0 of `.note.gnu.property` (an
+    object with `-mbranch-protection`, which writes the note) is
     dropped. GNU ld keeps one `$d` at offset 0 of the merged note, lld
     drops it, and mold writes it `SHN_ABS`. The note is data in a
     non-executable section, so the marker carries nothing;
@@ -2849,9 +2850,8 @@ B.7; `tests/relocatable-design/work/facts.log`,
   accepts (I-69's table: bare, `sha1`, `sha256`, `fast`, `0xHEX`,
   `uuid` from M2, and `none`/`--no-build-id` for no note; `uuid` is the
   one nondeterministic form, as in a final link, an exception to
-  I-R11), the
-  `-r` output gets a `.note.gnu.build-id`, as GNU ld and lld write
-  one. Without the option it gets none.
+  I-R11), the `-r` output gets a `.note.gnu.build-id`, as GNU ld and
+  lld write one. Without the option it gets none.
   - Its bytes are computed as I-69 and I-72 say for any output: over
     the whole `-r` output file's bytes `F`, with the descriptor
     replaced by zeros, by the style's tree. The bare form is mortar's

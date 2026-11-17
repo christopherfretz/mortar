@@ -17,8 +17,12 @@ still name the absolute paths they were run from:
 - the cxx-large-g build tree of `.build/bench-work`, read-only.
 
 To re-run, copy `exp/` into a scratch tree, point those paths at it, and run
-`exp/run-all.sh WORK`. It takes about 25 minutes on the aarch64 host, one
-link at a time. BusyBox builds with make -j4.
+`exp/run-all.sh WORK`. The review timed it at about 3.5 minutes on the
+aarch64 host, one link at a time, plus about 2 minutes for prelink and
+bench (the first version said 25 minutes). BusyBox builds with make -j4.
+`exp/run-all.sh WORK review` also runs the fix pass's scripts (below),
+which add a few minutes; gap.sh writes two outputs of about 570 MB in
+all and deletes them.
 
 Tools: GCC/G++/gfortran 14.2.0 (Debian 14.2.0-19, native and cross
 x86_64/i686), clang 19.1.7 and 22.1.8, GNU ld 2.44 (and binutils 2.44
@@ -84,3 +88,15 @@ exp/more/prelink.sh  the pre-link idiom with C++, with EH and gdb: plain -r
 exp/bench/           E: time and peak RSS of each reference's ld -r over 400
                      objects of cxx-large-g, and the output's tables
                      (work/bench.log).
+exp/review/          the fix pass after the adversarial review (record §H):
+                     rcheck-cxx.sh FINALWORK (work/rcheck-cxx.log, from
+                     final/'s work directory), zkw.sh + secdiff.py (-z
+                     keywords), stack.sh (.note.GNU-stack), unique-buildid.sh
+                     (--unique, --build-id styles), equiv.sh (V-R1
+                     candidates), gap.sh (the 77 MB gap by section),
+                     anchors.sh + anchors.py (MT-16 anchors, Q10), fuse.sh
+                     (-fuse-ld lines), mapsym.sh (AArch64 $d). Each takes
+                     WORK and writes work/<name>.log's content to stdout.
+                     work/review-x.log is the review's own x02-x09 rerun
+                     from its read-only directory; those scripts are not
+                     copied here.
