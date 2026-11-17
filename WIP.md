@@ -16,8 +16,10 @@ producers.tsv, the 48-unit read-back — to re-measure).
 - learned: O-34 not implemented (register "cannot run yet"): kiln-mixed
   records the miss. bfd x86-64 static IFUNC address: verifier F2 (GCC
   objects too): kiln-o33-glibc links dynamically.
-- next: re-record producers.tsv with d854b23bc (kiln-why for WP-145's 2
-  new tests); re-run read-back (48 units + kind 4 counts on kiln's
-  bench/frontend/format-like-g.cpp: 368 rows, 31 enums, 906 items);
-  legal corpus (mason programs, -fmason-metadata, --odr=strict); record
-  spec/landed/meta/WP-134.md; gates x2.
+- done: producers.tsv on d854b23bc after the 2nd merge (620 links; kiln=gcc 518;
+  102 differ = 10 tests x 10 + records-legal 2, all classified).
+- done: static-identical skips kiln units not required (optional_skip).
+- done: corpus re-run post-merge (same findings; examined in the record §7),
+  cost (§8), static-identical aarch64 baseline + 28 kiln rows, record filled.
+- next: gates (linktest; ci --quick with and without MASON_KILN) via
+  /tmp/mortar-wp134-1/gates.sh -> gates.log; then delete WIP.md, rm /tmp.
