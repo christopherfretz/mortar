@@ -132,7 +132,7 @@ impl Parsed {
                     AtRUse::WithR(d) => {
                         if !seen[use_.row] {
                             seen[use_.row] = true;
-                            out.push((use_, Some(d)));
+                            out.push((use_, Some(*d)));
                         }
                         continue;
                     }
@@ -1101,10 +1101,11 @@ impl Parser<'_> {
 /// without it.
 fn overridden(uses: &[Use], i: usize) -> bool {
     let lands = uses[i].row().lands;
-    lands.last_wins() && uses[i + 1..].iter().any(|u| {
-        let l = u.row().lands;
-        l.last_wins() && l.field() == lands.field()
-    })
+    lands.last_wins()
+        && uses[i + 1..].iter().any(|u| {
+            let l = u.row().lands;
+            l.last_wins() && l.field() == lands.field()
+        })
 }
 
 /// What a use is at `-r` (`spec/cli.md` C-R2b), before its final-link
@@ -1117,7 +1118,7 @@ enum AtRUse {
     /// (reported by the parse), or an `acts` row whose package landed.
     Accepted,
     /// Refused by name: `Refused{Option, "<option> with -r"}`.
-    WithR(Diagnostic),
+    WithR(Box<Diagnostic>),
 }
 
 /// The option of `use_` as `spec/diag.md` §4.4's `<option> with -r`
@@ -1157,7 +1158,7 @@ fn at_r(use_: &Use, landed: &[&str]) -> AtRUse {
                 } else {
                     d
                 };
-                AtRUse::WithR(d)
+                AtRUse::WithR(Box::new(d))
             }
         },
         AtRClass::Refused => {
@@ -1177,7 +1178,7 @@ fn at_r(use_: &Use, landed: &[&str]) -> AtRUse {
                         _ if name == "--gc-sections" => d.note(r::GC_SECTIONS_NOTE),
                         _ => d,
                     };
-                    AtRUse::WithR(d)
+                    AtRUse::WithR(Box::new(d))
                 }
             }
         }

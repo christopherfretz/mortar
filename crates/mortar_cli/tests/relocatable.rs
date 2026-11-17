@@ -9,6 +9,7 @@
 
 use std::collections::BTreeSet;
 use std::ffi::OsString;
+use std::fmt::Write as _;
 
 use mortar_cli::table::{AtRClass, Lands, rows};
 use mortar_cli::{OutputKind, Parsed, parse};
@@ -212,7 +213,7 @@ fn r_refused_options() {
         let got = refused_at_r(extra);
         let mut want = format!("ld: error: unsupported option: {option} with -r");
         if let Some(note) = note {
-            want.push_str(&format!("\n>>> {note}"));
+            let _ = write!(want, "\n>>> {note}");
         }
         assert_eq!(got, [want], "{extra:?}");
         named.insert(*option);
@@ -333,11 +334,9 @@ fn r_as_final_and_acting_rows() {
 // its package lands), the seam
 #[test]
 fn r_until_lifted_by_the_package() {
-    for (extra, package) in [
-        (&["-s"][..], "RL-11"),
-        (&["-x"], "RL-11"),
-        (&["--force-group-allocation"], "RL-8"),
-    ] {
+    for (extra, package) in
+        [(&["-s"][..], "RL-11"), (&["-x"], "RL-11"), (&["--force-group-allocation"], "RL-8")]
+    {
         let mut line = vec!["-r"];
         line.extend_from_slice(extra);
         line.push("a.o");
@@ -349,9 +348,7 @@ fn r_until_lifted_by_the_package() {
     assert_eq!(render(&p(&["-s", "a.o"]).refusals()), Vec::<String>::new());
     assert_eq!(render(&p(&["--gc-sections", "a.o"]).refusals()), Vec::<String>::new());
     assert!(
-        render(&p(&["-z", "nodelete", "a.o"]).refusals())
-            .iter()
-            .any(|r| r.contains("-z nodelete")),
+        render(&p(&["-z", "nodelete", "a.o"]).refusals()).iter().any(|r| r.contains("-z nodelete")),
         "SHARED_ONLY outside a Shared or -r link"
     );
     let _ = Lands::Output;
@@ -360,7 +357,8 @@ fn r_until_lifted_by_the_package() {
 /// What a census variant gives at the plan (C-R6): the conflicts and the
 /// refusals after the join.
 fn census_expectation(variant: &str) -> (Vec<String>, Vec<String>) {
-    let conflict = |second: &str| vec![format!("ld: error: -r and {second} cannot be used together")];
+    let conflict =
+        |second: &str| vec![format!("ld: error: -r and {second} cannot be used together")];
     match variant {
         "-r -shared" => (conflict("-shared"), vec![]),
         "-r -static-pie" | "-Wl,-r" | "-nostdlib -Wl,-r" => (conflict("-pie"), vec![]),
