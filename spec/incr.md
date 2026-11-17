@@ -2952,33 +2952,117 @@ a pass over a whole table of the state; **O(output)**.
   O(change); it runs only under `--gc-sections`. *Test:* `gc-edge-kinds`
   and `lsda-edges` as updates; the mutation per edge kind (IN-63b).
 
-- **IN-72 [v1] The delta layout.** From the stored layout, never a fresh
-  one. Rows of unchanged files are read only where the delta reaches
-  them (their `SECTIONS` rows by `FILE_INDEX` range; `HOLES` and
-  `CHUNKS` by output section). In order:
+- **IN-72 [v1] The delta layout** (amended by WP-207: items 2, 2a, 3, 6,
+  10, 11 and the growth step). From the stored layout, never a fresh one.
+  Rows of unchanged files are read only where the delta reaches them
+  (their `SECTIONS` rows by `FILE_INDEX` range; `HOLES` and `CHUNKS` by
+  output section). Before item 1, IN-71's COMDAT election and IN-71a's
+  liveness have run: "a file's sections" below means its live, kept
+  sections only (review-in72 M-4 (f)). Sections are matched to their
+  previous version by model.md §7.1's identity (anchor, name, ordinal).
+  In order:
   1. **Gone sections** (of gone files, of sections no longer live, of a
      COMDAT copy no longer kept) become holes (IN-3) of their region;
-     their fragments lose one reference (item 6).
-  2. **Each changed file**, per (hole-tolerant output section,
-     category) region (IN-30): its live sections are laid out again from
-     the region's start in full-link order (L-53, input order). If they
-     fit the region's capacity, nothing outside the region moves; what
-     is left of the capacity is the region's slack (a hole). A section
-     that is new to the file goes into its region like the others; a
-     section the file no longer has leaves a hole.
-  3. **Overflow** (IN-32): a region that does not fit becomes a hole as
-     a whole; the file's sections in it go to the output section's tail
-     reserve, as a new region with a fresh capacity (IN-33). A region of
-     an **appeared or newly extracted** file goes to the tail the same
-     way. When the tail is exhausted, the output section grows by a
-     growth step (L-144) into its segment's reserve, and every output
-     section after it in the segment moves by the step: their sections
-     are "moved sections of unchanged files" (IN-27); when the segment
-     reserve is exhausted: `reserve-exhausted`.
+     their fragments lose one reference (item 6). Their file, when it is
+     not a changed file, is drawn in (item 2a).
+  2. **Each changed or drawn-in file**, per (hole-tolerant output
+     section, category) pair `(O, c)` (IN-30), in three phases; merged
+     input sections (`SHF_MERGE`) are item 6's only and take no space in a
+     region (M-4 (e)); every address is absolute and alignment padding
+     counts against a region's capacity (M-4 (g)).
+     - **Keep.** A section matched to its previous version, previously
+       placed in `(O, c)`, whose new size is at most its old size and
+       whose old address is a multiple of its new alignment keeps its
+       address. (A section that shrank keeps its start; the bytes it no
+       longer uses are a hole.)
+     - **Place.** The other sections of the file in `(O, c)` (grown,
+       realigned, new to the file, or matched to a section previously in
+       no region), in input order, each at the first of: (i) its old
+       address, if it was in `(O, c)` and the bytes from there to its new
+       end are free and inside the same region (it grows in place); (ii)
+       the lowest aligned address in the file's regions of `(O, c)`, in
+       the regions' order (the first link's region, then each overflow
+       region in the order it was opened), where it fits between the
+       sections already kept or placed by this update; a hole of the
+       file's own region is free space like its slack.
+     - **Overflow.** The sections that phase 2 could not place are
+       packed, in input order, into **one new region** of the file at
+       `(O, c)`'s tail reserve, with IN-33's capacity over their packed
+       size. A section in an `(O, c)` where the file had no region
+       (review-in72 M-4 (a): `strutil_addfn.o`'s new `.data.rel.ro`)
+       goes straight to this phase.
+     The file keeps every region it has had in `(O, c)` until the next
+     compaction: an old region a section left is reused by a later
+     version through phase 2 (M-4 (c); IN-32's "reused only by its own
+     file" stands). A section that keeps its address and whose bytes did
+     not change is still refilled when its file is changed (the file is
+     IN-27's unit); its **definitions keep their addresses**, so their
+     referrers in other files are not refilled for this file's sake.
+     Modelled (`tests/incr-design/model_region.py` over review-in72's
+     protobuf 3.21.12 `strutil.cc` builds, 255 globals at `-O0 -g` and 86
+     at `-O2 -ffunction-sections`, the same six hops): definitions whose
+     address moves, this rule against WP-202's "laid out again from the
+     region's start":
+
+     | hop | `-O0 -g` | `-O2 -ffunction-sections` |
+     |---|---|---|
+     | grow1 | 82 against 252 of 255 | 1 against 83 of 86 |
+     | grow2 | 80 against 252 of 255 | 0 against 83 of 86 |
+     | rmfn | 79 against 251 of 254 | 0 against 82 of 85 |
+     | addfn | 0 against 173 of 256 | 0 against 48 of 87 |
+     | base (back) | 0 against 173 of 255 | 0 against 4 of 86 |
+
+     At `-O0` the remaining ~80 are the floor of a one-`.text` object:
+     the functions after the edit inside the grown section (WP-202's 80
+     in-section moves); IN-31 removes them. One overflow region was
+     opened at `-O0` (grow1, `.text`, 0x8e4c bytes of a 0x1795e tail) and
+     one at `-O2` (addfn, `.data.rel.ro`, 0x50 of 0x1000); no growth step
+     was reached.
+  2a. **Drawn-in files** (WP-207; review-in72 B-3, M-1, review-in77 B-3
+     trace 1). An unchanged file is **drawn in** when the update must
+     change its sections or its `.symtab` block for a reason outside it:
+     a section of it becomes live (IN-71a) or kept (IN-71's election), or
+     stops being so; one of its globals is demoted to a local of its
+     block by the merged visibility (S-74) or promoted back. A drawn-in
+     file is processed exactly as a changed file whose bytes are its old
+     bytes: it is opened, `fstat`ed and compared with its `STAT` row
+     (IN-28a condition 2; else `input-changed`; review-in72 M-6) and read
+     and parsed (U4, its relocations included), its sections go through
+     item 2 (its unchanged sections keep their places by the keep phase;
+     a revived section, previously placed nowhere or in a hole, is
+     placed by phases 2-3), its `.symtab` block is rewritten from its
+     symbol table (IN-49a), its definitions that gained or lost an
+     address are IN-27's moved globals, and its rows are recaptured like
+     a changed file's (IN-78). It counts toward IN-16's bound. So "comment
+     a call out and back in" under `--gc-sections` (W8) is an update on
+     the first hop even when the first link never placed the section
+     (review-in72 R6), and a COMDAT keeper that moves to an unchanged
+     file's copy (R8) is one too. Cost: one read and parse of each
+     drawn-in file, O(its size), *argued, not run*.
+  3. **Overflow and the growth step** (IN-32). Several files' new regions
+     in one tail are opened in load order of the files, then in
+     (output section, category) order (M-4 (b)). When `(O, c)`'s tail
+     reserve cannot hold a new region, the output section grows by a
+     **growth step** into its segment's reserve:
+     `step = round_up(need + max(4 KiB, size/16), A)`, where `need` is
+     what the tail could not hold, `size` is the output section's size
+     and `A` is the largest alignment of the output sections that follow
+     it in its `PT_LOAD` (so each moves by a multiple of its alignment);
+     when the step moves the RELRO end (the section is in the RELRO part
+     of its segment or before it), `A` is the maximum page size. The new
+     tail's capacity is the old tail's free bytes plus `step − need`
+     (M-4 (d)). Every output section after it in the segment moves by
+     the step, in address and in file offset (a `NOBITS` section moves
+     in address only): their sections are "moved sections of unchanged
+     files" (IN-27), their files' `.symtab` entries are remapped (IN-49a),
+     and the program and section header tables are rewritten whole
+     (IN-75). The segment reserve exhausted: `reserve-exhausted`.
   4. **Packed sections** (L-142, IN-34's rows) are rewritten whole in
      full-link order within their capacity; past it, a growth step; past
      the reserve: `reserve-exhausted`. A packed section whose order
      follows `SHF_LINK_ORDER` targets that moved: `link-order-moved`.
+     `.rela.plt` is rewritten whole in the full link's order (review-in72
+     m-4: IN-2 item 5 holds for `IRELATIVE`).
   5. **`.eh_frame`** by IN-34a (a range rewritten from its start; on
      overflow the whole section rewritten in full-link order).
   6. **Merged sections** (S-110, L-147): a fragment is identified by
@@ -2988,9 +3072,12 @@ a pass over a whole table of the state; **O(output)**.
      fragment; a new identity is appended at the section's tail; a
      fragment whose reference count (`FRAGS.refs`, IN-18e) falls to 0 is
      a dead range (IN-3a: a string keeps its bytes, a constant is
-     filled). No fragment of an unchanged file ever moves, so the
-     contents edits WP-064a refused (s4, W6) need no refill outside the
-     changed files. Its tail exhausted: `reserve-exhausted`.
+     filled). **A fragment whose count rises from 0 is rewritten from the
+     piece** (a dirty range, IN-75; review-in72 M-8: a constant revived
+     after its fill would otherwise read the fill). No fragment of an
+     unchanged file ever moves, so the contents edits WP-064a refused
+     (s4, W6) need no refill outside the changed files. Its tail
+     exhausted: `reserve-exhausted`.
   7. **Slots** (S-113): new GOT, IPLT and TLS slots appended within the
      slot region's capacity, dead slots written 0;
      `reserve-exhausted` past it. A slot keyed by a local of a changed
@@ -3002,16 +3089,42 @@ a pass over a whole table of the state; **O(output)**.
      `island-exhausted`.
   10. **Sections and segments**: a section that has no output section
       in the stored layout, or an output section or segment left empty:
-      `new-output-section`. `.note.gnu.property` changing size:
-      `property-changed`. An output section's alignment growing past
-      its stored address's: `reserve-exhausted`.
-  11. **Commons** (IN-34's row): the commons chunk's regions, as item 2.
+      `new-output-section`. An allocated note section (`.note.gnu.property`,
+      `.note.ABI-tag`, `.note.stapsdt`, any `SHT_NOTE`) changing size:
+      `property-changed` (review-in72 m-2; the reason keeps its name). An
+      output section's alignment growing past its stored address's:
+      `reserve-exhausted`.
+  11. **Commons** (review-in72 M-2, option (a)): in an incremental-mode
+      output each winning common is placed as a section of its winning
+      file (the file of `cfirst(K)`, resolve.md §4.5), of the common's
+      size and alignment (the largest over its mentions, `COMMONS` rows),
+      in that file's `.bss` region; the map's `common` line names the
+      file. A size or alignment change is a section of that file that
+      grew or changed: item 2 places it (the file is drawn in when it is
+      not changed), and its key is affected (IN-71). A plain link keeps
+      the commons chunk as today.
   12. **`.symtab`, `.strtab`, `.symtab_shndx`**: IN-49a.
-  The result is a `Placement` of the same shape as a full link's (a
-  layout that `Layout::check` accepts), with `hole` and `dead` lines for
-  the map, and the list of what moved: the input of IN-74. *Test:*
-  hand-made layouts per item (U-4's tests); L10 grow and shrink steps
-  past each capacity in turn (IN-32's test).
+  **Determinism** (IN-6). The result is a function of the stored layout
+  (the state's `Placement` rows) and the new inputs' sections (identity,
+  size, alignment, order) only: files in load order, regions in their
+  order, sections in input order, no iteration over a hash map's order,
+  no dependence on the thread count. IN-61's replay of the next link
+  reads the update's `Placement` from the state it wrote, so a replay
+  reproduces it. The result is a `Placement` of the same shape as a full
+  link's (a layout that `Layout::check` accepts), with `hole` and `dead`
+  lines for the map, and the list of what moved: the input of IN-74.
+  *Test (U-4):* hand-made layouts per item; `edit_moves_only_changed_sections`
+  (the model's series as a test: the moved-definition counts above);
+  `new_section_without_region_opens_tail_region`;
+  `two_files_overflow_in_load_order`; `old_region_reused_after_overflow`;
+  `growth_step_alignment_and_relro`; `merged_input_not_in_region`;
+  `comdat_election_before_region`; `alignment_padding_counts`;
+  `delta_layout_same_on_1_and_n_threads`; `gc_section_dies_then_revives`
+  (first link without the section, too), `comdat_keeper_moves_to_unchanged_file`,
+  `n2_visibility_demotes_unchanged_definer`, `n4_common_grows`,
+  `common_appears`, `two_commons_one_grows`, `merged_constant_dies_revives`,
+  each three hops; L10 grow and shrink steps past each capacity in turn
+  (IN-32's test).
 
 - **IN-73 [v1] What WP-064a refused, and where it now goes.** Every edit
   of WP-064a §3's list is an update or one named reason:
