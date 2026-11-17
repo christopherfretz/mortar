@@ -349,6 +349,20 @@ pub(crate) fn check(
                         format!("kept section: type {:#x}, flags {:#x}, alignment {}; MT-32 is SHT_PROGBITS, no flags, 8", s.sh_type, s.sh_flags, s.sh_addralign),
                     ));
                 }
+                // In no segment, at no address (MT-32; D-126 item 3; WP-164).
+                let end = s.sh_offset.saturating_add(s.sh_size);
+                let covered = image.phdrs.iter().any(|p| {
+                    p.p_filesz > 0
+                        && s.sh_size > 0
+                        && p.p_offset < end
+                        && s.sh_offset < p.p_offset.saturating_add(p.p_filesz)
+                });
+                if s.sh_addr != 0 || covered {
+                    f.push(Finding::new(
+                        Rule::Meta(1),
+                        format!("kept section: at address {:#x}{}; MT-32's section takes no address and lies in no segment", s.sh_addr, if covered { ", inside a segment's file bytes" } else { "" }),
+                    ));
+                }
                 let got = image
                     .data
                     .get(s.sh_offset as usize..(s.sh_offset.saturating_add(s.sh_size)) as usize);
@@ -876,7 +890,9 @@ pub(crate) fn shared_rows(
     }
     // The export set's side of the row set.
     let dynsym: BTreeSet<String> = DynOut::read(image)
-        .map(|d| d.syms.iter().skip(1).filter(|s| s.st_shndx != 0).map(|s| s.name.clone()).collect())
+        .map(|d| {
+            d.syms.iter().skip(1).filter(|s| s.st_shndx != 0).map(|s| s.name.clone()).collect()
+        })
         .unwrap_or_default();
     let mut scratch = MetaCoverage::default();
     let live = Lives::new(live_files(objs, true, &mut scratch));

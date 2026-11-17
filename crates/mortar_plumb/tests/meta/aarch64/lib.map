@@ -1,0 +1,73 @@
+mortar-map 2
+file 0 a.o
+file 1 b.o
+piece 0 13 0 4e8 14
+piece 0 13 14 4fc 14
+piece 0 13 28 510 14
+piece 0 13 3c 524 14
+piece 0 13 50 538 14
+piece 0 13 64 54c 14
+piece 0 13 78 560 24
+piece 0 13 9c 584 14
+piece 0 13 b0 598 20
+piece 0 13 d0 5b8 20
+place 0 3 10690 a4
+place 0 7 10734 8
+place 0 8 1073c 8
+place 0 9 20790 8
+place 0 5 30938 0
+place 0 6 30938 4
+piece 1 11 3c 5d8 14
+piece 1 11 50 5ec 24
+piece 1 11 74 610 1c
+place 1 3 10744 48
+place 1 5 30938 0
+place 1 6 3093c 0
+merged 0 11 .comment
+merged 1 9 .comment
+discard 1 7 comdat
+discard 1 8 comdat
+chunk synthetic .gnu.hash 2f8 48
+chunk synthetic .dynsym 340 d8
+chunk synthetic .dynstr 418 51
+chunk synthetic .rela.dyn 470 18
+chunk synthetic .rela.plt 488 60
+chunk synthetic .eh_frame 4e8 148
+chunk synthetic .plt 10630 60
+chunk synthetic .got 208f8 8
+chunk synthetic .got.plt 30900 38
+chunk synthetic .dynamic 20798 160
+chunk synthetic .symtab - 210
+chunk synthetic .strtab - c7
+chunk synthetic .shstrtab - b2
+chunk synthetic .comment - d
+chunk synthetic .note.mason 200 f8
+chunk synthetic .mason.meta - 378
+chunk synthetic .pad.relro 20900 f700
+output shared
+bind lazy
+relro on
+symbolic none
+arg -shared
+arg -o
+arg lib.so
+arg a.o
+arg b.o
+arg libs.so
+arg --odr-table=full
+arg --keep-mason-meta
+arg --mortar-map=lib.map
+needed libs.so
+export _Z2prv
+export _Z5use_av
+export _start
+export _Z2viv
+export _Z2wdv
+export _Z6strongv
+export _Z8get_initv
+export _Z5use_bv
+plt _Z2viv
+plt _Z2wdv
+plt _Z6strongv
+plt _Z5use_bv
+end
