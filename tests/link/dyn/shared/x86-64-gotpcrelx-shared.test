@@ -1,0 +1,107 @@
+# x64.md X-60 (WP-127): in a shared object a `GOTPCRELX` load is relaxed
+# to `lea` (G1) only against a `local` target. Against the preemptible
+# `pre_v` it stays a GOT load: a host that defines `pre_v` interposes it
+# and the library reads the host's (100, then 101 after the library's
+# own store); against the hidden `hid_v` it becomes `lea` (the library's
+# own, 2). Both through `REX_GOTPCRELX`; the `call *f@GOTPCREL(%rip)`
+# (`GOTPCRELX`, G3) to the preemptible `pre_f` is kept too, so the
+# host's `pre_f` is called (7), and to the hidden `hid_f` it becomes a
+# direct call (3). (mold writes the direct call as `call` plus a `nop`
+# rather than `addr32 call`.)
+#@ spec: x64.md "X-60"
+#@ arch: x86_64
+
+as lib.S -o lib.o
+cc -O1 -fPIE main.c -o main.o
+link gcc -shared lib.o -o libgx.so
+check objdump -d --disassemble=get_hid libgx.so
+  has: lea
+  not: mov    0x
+check objdump -d --disassemble=get_pre libgx.so
+  has: mov    0x
+  not: lea
+check(mortar,bfd,lld) objdump -d --disassemble=call_hid libgx.so
+  has: addr32 call
+check(mold) objdump -d --disassemble=call_hid libgx.so
+  not: call   *0x
+check objdump -d --disassemble=call_pre libgx.so
+  has: call   *0x
+host gcc -pie main.o -L. -lgx -o prog
+run prog
+  stdout: 100 2 7 3
+  stdout: 101
+
+#--- lib.S
+	.text
+	.globl	get_pre
+	.type	get_pre,@function
+get_pre:
+	.cfi_startproc
+	movq	pre_v@GOTPCREL(%rip), %rax
+	movl	(%rax), %eax
+	ret
+	.cfi_endproc
+	.globl	get_hid
+	.type	get_hid,@function
+get_hid:
+	movq	hid_v@GOTPCREL(%rip), %rax
+	movl	(%rax), %eax
+	ret
+	.globl	bump_pre
+	.type	bump_pre,@function
+bump_pre:
+	movq	pre_v@GOTPCREL(%rip), %rax
+	addl	$1, (%rax)
+	ret
+	.globl	call_pre
+	.type	call_pre,@function
+call_pre:
+	subq	$8, %rsp
+	call	*pre_f@GOTPCREL(%rip)
+	addq	$8, %rsp
+	ret
+	.globl	call_hid
+	.type	call_hid,@function
+call_hid:
+	subq	$8, %rsp
+	call	*hid_f@GOTPCREL(%rip)
+	addq	$8, %rsp
+	ret
+	.globl	pre_f
+	.type	pre_f,@function
+pre_f:
+	movl	$1, %eax
+	ret
+	.globl	hid_f
+	.hidden	hid_f
+	.type	hid_f,@function
+hid_f:
+	movl	$3, %eax
+	ret
+	.data
+	.globl	pre_v
+	.type	pre_v,@object
+	.size	pre_v,4
+pre_v:	.long	1
+	.globl	hid_v
+	.hidden	hid_v
+	.type	hid_v,@object
+	.size	hid_v,4
+hid_v:	.long	2
+	.section .note.GNU-stack,"",@progbits
+
+#--- main.c
+#include <stdio.h>
+int pre_v = 100;
+int pre_f(void) { return 7; }
+int get_pre(void);
+int get_hid(void);
+int call_pre(void);
+int call_hid(void);
+void bump_pre(void);
+int main(void) {
+  printf("%d %d %d %d\n", get_pre(), get_hid(), call_pre(), call_hid());
+  bump_pre();
+  printf("%d\n", pre_v);
+  return 0;
+}

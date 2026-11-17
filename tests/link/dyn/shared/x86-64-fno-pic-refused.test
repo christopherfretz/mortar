@@ -1,0 +1,36 @@
+# dyn.md D-117, D-122, x64.md X-59 (WP-127): a `gcc -fno-pic` object in
+# a shared object. Its read of its own exported `counter` is
+# `R_X86_64_PC32 counter` (and its `-fPIE` twin's the same): refused by
+# every linker, mortar with GNU ld's words ("recompile with -fPIC"). The
+# `-fPIC` object reaches `counter` through the GOT and links; a host's
+# own `counter` then preempts the library's (42).
+#@ spec: dyn.md "D-122"
+#@ arch: x86_64
+
+cc -O1 -fno-pic lib.c -o nopic.o
+cc -O1 -fPIE lib.c -o pie.o
+cc -O1 -fPIC lib.c -o pic.o
+cc -O1 -fPIE main.c -o main.o
+link(mortar,bfd,lld,mold) gcc -shared nopic.o -o libnopic.so
+  exit: fail
+  diag(mortar): nopic.o:(.text+0x*): relocation R_X86_64_PC32 against symbol `counter' which may bind externally can not be used when making a shared object; recompile with -fPIC
+  diag(bfd): relocation R_X86_64_PC32 against symbol `counter' can not be used when making a shared object; recompile with -fPIC
+link(mortar,bfd,lld,mold) gcc -shared pie.o -o libpie.so
+  exit: fail
+  diag(mortar): relocation R_X86_64_PC32 against symbol `counter' which may bind externally can not be used when making a shared object; recompile with -fPIC
+link gcc -shared pic.o -o libpic.so
+host gcc -pie main.o -L. -lpic -o prog
+run prog
+  stdout: 42
+
+#--- lib.c
+int counter = 1;
+int get_counter(void) { return counter; }
+#--- main.c
+#include <stdio.h>
+int counter = 42;
+int get_counter(void);
+int main(void) {
+  printf("%d\n", get_counter());
+  return 0;
+}

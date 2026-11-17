@@ -1,0 +1,130 @@
+# x64.md X-59 (WP-127): the `E` cells of x86-64's `shared` row, each
+# `non-pic-in-shared-object` with GNU ld's words. `PC32` against a
+# non-`local` key, in code (a load, a `call` written with `PC32`, a
+# `call` of a weak undefined key: X-57's branch is an executable's rule
+# only) and in data; `32`/`32S` against a preemptible key and `32`
+# against a section (a `local` target: `AbsNarrow` is `E` for every kind
+# but `abs`); `GOTOFF64` against a non-`local` key. lld refuses every
+# line with its own words. GNU ld links the data `PC32` (a record the
+# loader truncates, W34) and `GOTOFF64` (bound to the library's own `g`,
+# W37's kin); mold links the `PC32` call (a PLT entry) and `GOTOFF64`.
+# The library of the `local` forms links (a `PC32` and a `GOTOFF64`
+# against a hidden key are resolved) and runs.
+#@ spec: x64.md "X-59"
+#@ arch: x86_64
+
+as -DPCCODE cells.S -o pccode.o
+as -DPCCALL cells.S -o pccall.o
+as -DWEAKCALL cells.S -o weakcall.o
+as -DPCDATA cells.S -o pcdata.o
+as -DABS32 cells.S -o abs32.o
+as -DABS32S cells.S -o abs32s.o
+as -DABS32LOC cells.S -o abs32loc.o
+as -DGOFF cells.S -o goff.o
+as -DLOCAL cells.S -o local.o
+cc -O1 -fPIE main.c -o main.o
+link(mortar,lld) gcc -shared -nostdlib pccode.o -o pccode.so
+  exit: fail
+  diag(mortar): pccode.o:(.text+0x*): relocation R_X86_64_PC32 against symbol `g' which may bind externally can not be used when making a shared object; recompile with -fPIC
+link(mortar,lld) gcc -shared -nostdlib pccall.o -o pccall.so
+  exit: fail
+  diag(mortar): relocation R_X86_64_PC32 against symbol `f' which may bind externally can not be used when making a shared object; recompile with -fPIC
+link(mortar,lld) gcc -shared -nostdlib weakcall.o -o weakcall.so
+  exit: fail
+  diag(mortar): relocation R_X86_64_PC32 against symbol `wk' which may bind externally can not be used when making a shared object; recompile with -fPIC
+link(mortar,lld) gcc -shared -nostdlib pcdata.o -o pcdata.so
+  exit: fail
+  diag(mortar): pcdata.o:(.data.rel.ro+0x0): relocation R_X86_64_PC32 against symbol `g' which may bind externally can not be used when making a shared object; recompile with -fPIC
+link(mortar,lld) gcc -shared -nostdlib abs32.o -o abs32.so
+  exit: fail
+  diag(mortar): relocation R_X86_64_32 against symbol `g' which may bind externally can not be used when making a shared object; recompile with -fPIC
+link(mortar,lld) gcc -shared -nostdlib abs32s.o -o abs32s.so
+  exit: fail
+  diag(mortar): relocation R_X86_64_32S against symbol `g' which may bind externally can not be used when making a shared object; recompile with -fPIC
+link(mortar,lld) gcc -shared -nostdlib abs32loc.o -o abs32loc.so
+  exit: fail
+  diag(mortar): relocation R_X86_64_32 against symbol `.data+0x4'
+link(mortar,lld) gcc -shared -nostdlib goff.o -o goff.so
+  exit: fail
+  diag(mortar): relocation R_X86_64_GOTOFF64 against symbol `g' which may bind externally can not be used when making a shared object; recompile with -fPIC
+link gcc -shared local.o -o liblocal.so
+host gcc -pie main.o -L. -llocal -o prog
+run prog
+  stdout: 8 8
+
+#--- cells.S
+	.text
+	.globl	f
+	.type	f,@function
+f:	ret
+	.globl	use
+	.type	use,@function
+use:
+#ifdef PCCODE
+	movl	g(%rip), %eax
+#endif
+#ifdef PCCALL
+	.byte	0xe8
+	.reloc	., R_X86_64_PC32, f-4
+	.long	0
+#endif
+#ifdef WEAKCALL
+	.byte	0xe8
+	.reloc	., R_X86_64_PC32, wk-4
+	.long	0
+#endif
+#ifdef ABS32
+	movl	$g, %eax
+#endif
+#ifdef ABS32S
+	movq	$g, %rax
+#endif
+#ifdef ABS32LOC
+	movl	$.Lloc, %eax
+#endif
+#ifdef GOFF
+	movabsq	$g@GOTOFF, %rax
+#endif
+	ret
+#ifdef LOCAL
+	.globl	get_pc
+	.type	get_pc,@function
+get_pc:
+	.cfi_startproc
+	movl	h(%rip), %eax
+	ret
+	.cfi_endproc
+	.globl	get_gotoff
+	.type	get_gotoff,@function
+get_gotoff:
+	leaq	_GLOBAL_OFFSET_TABLE_(%rip), %rcx
+	movabsq	$h@GOTOFF, %rax
+	movl	(%rcx,%rax), %eax
+	ret
+#endif
+	.weak	wk
+	.data
+	.globl	g
+	.type	g,@object
+	.size	g,4
+g:	.long	7
+.Lloc:	.long	8
+	.globl	h
+	.hidden	h
+	.type	h,@object
+	.size	h,4
+h:	.long	8
+#ifdef PCDATA
+	.section .data.rel.ro,"aw"
+	.long	g - .
+#endif
+	.section .note.GNU-stack,"",@progbits
+
+#--- main.c
+#include <stdio.h>
+int get_pc(void);
+int get_gotoff(void);
+int main(void) {
+  printf("%d %d\n", get_pc(), get_gotoff());
+  return 0;
+}
