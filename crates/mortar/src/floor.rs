@@ -16,23 +16,46 @@
 //!    of WP-063, which replaces it;
 //! 4. re-resolution and the rest of the front over the edited inputs, with
 //!    the layout taken from the state (the replay hook, IN-61; phases
-//!    20-90). The front of today parses, splits and scans every input:
-//!    the design restricts those to the changed file (§5.2), which needs
-//!    per-file summaries the format-1 state does not hold (WP-064);
+//!    20-90). The replay translates the files of IN-28a's positional set
+//!    by position (decided first: the `POSITIONAL` bit, unchanged, the
+//!    same range, the section rows; identities are built for every other
+//!    file), or every file by identity with `MORTAR_FLOOR_IDENTITY`. The
+//!    front of today parses, splits and scans every input: the design
+//!    restricts those to the changed file (§5.2, WP-064). After it, every
+//!    file the front read is checked to be the file change detection
+//!    judged (its descriptor's `fstat` after the read against the judged
+//!    tuple: `input-changed`), and the changed file's contribution is
+//!    compared with the state's rows (`mortar_incr::contribution`: a
+//!    different section count, section header, merged-fragment position,
+//!    global key, binding, type, visibility, definedness, section or
+//!    resolution is `layout-changed` or `resolution-changed`);
 //! 5. the dirty windows (image.md I-95) filled into memory through the
 //!    image phase (phase 100): the windows of the changed file's placed
 //!    sections, of the sections an update rewrites whole (`.symtab`,
 //!    `.strtab`, `.symtab_shndx`, S-112; `.eh_frame_hdr`; `.debug_aranges`,
 //!    IN-54), of `.eh_frame` (whole: per-file `.eh_frame` ranges are
 //!    IN-34a's), the ELF header and the build id; the build id from the
-//!    refilled leaves and the state's others (I-76);
-//! 6. the writes of IN-46 (in place) or IN-47 (copy; phase 105);
+//!    refilled leaves and the state's others (I-76); the update's map when
+//!    `--mortar-map` is on its line (the records a full link writes);
+//! 6. the writes of IN-46 (in place) or IN-47 (copy; phase 105), then the
+//!    map;
 //! 7. the state rewritten whole, bound to the output (IN-17, IN-21;
-//!    phase 106).
+//!    phase 106), with the changed file's position rows recaptured from
+//!    the bytes it hashed, or its `POSITIONAL` bit cleared (IN-28a, the
+//!    writer's duty).
 //!
-//! A same-size edit moves no definition, so IN-27 refills no other file's
-//! units; a change of size or of anything the layout depends on makes the
-//! replay or the layout's checks fail, and the path says so by name.
+//! What this path does NOT do (WP-064's): it refills the changed file's
+//! own units only. A same-size edit CAN move a definition or change a
+//! binding (a weak definition made global, the review's M4), change what
+//! is merged where, or change the layout; step 4's comparison refuses
+//! every such edit by name before anything is written, and the update
+//! proper must handle them (delta resolution, IN-27's refill set). What
+//! the comparison lets through keeps the changed file's sections, globals
+//! and resolution as stored: its output is equivalent to the full link of
+//! the edited inputs (`xtask plumb --equiv`), and byte-equal to it when
+//! the edit leaves the file's merged contents and section order alone
+//! (a permutation keeps the stored places; a merged string that changes
+//! keeps its stored offset and leaves a dead fragment, the review's m2).
 
 use std::ffi::{OsStr, OsString};
 use std::fs::{File, OpenOptions};
@@ -45,6 +68,7 @@ use std::path::{Path, PathBuf};
 use mortar_core::layout::ChunkKind;
 use mortar_diag::Collector;
 use mortar_digest::{Leaf, LeafColumn, TreeFn};
+use mortar_incr::capture::{Keys, Positional, Translation};
 use mortar_incr::format::{self, State, Str, stat_tag};
 use mortar_incr::stamp::{self, Cleanliness, Tuple};
 use mortar_input::store::{Store, StoreConfig, StorePolicy};
@@ -108,6 +132,10 @@ pub fn update(args: &[OsString], cwd: &Path, write: WritePath) -> Update {
     Update { outcome, report, phases: timer.finish() }
 }
 
+fn ms(d: std::time::Duration) -> f64 {
+    d.as_secs_f64() * 1000.0
+}
+
 fn path_of(bytes: &[u8]) -> PathBuf {
     PathBuf::from(OsStr::from_bytes(bytes))
 }
@@ -163,6 +191,8 @@ fn run(
         .map(|r| (r.dev, r.stamp_ns))
         .collect();
     let mut suspects: Vec<(usize, PathBuf, Tuple)> = Vec::new();
+    // m3 (WP-064a): every input as change detection judged it.
+    let mut judged: Vec<Tuple> = Vec::new();
     let mut inputs = 0;
     // WP-105: the `stat`s on the link's pool (8,241 of them cost 0.83 s
     // serially on virtiofs); the rows are judged in order below.
@@ -180,6 +210,7 @@ fn run(
         let Some((path, meta)) = m else { continue };
         inputs += 1;
         let now = Tuple::of(&meta?);
+        judged.push(now);
         let recorded = Tuple {
             dev: row.dev,
             ino: row.ino,
@@ -226,48 +257,68 @@ fn run(
         Store::with_config(StorePolicy::from_env(), config, mortar_input::store::Hooks::default());
     // The replay's two parts, timed apart (inside phase 90's wall time).
     let replay_ms = std::cell::Cell::new((0.0_f64, 0.0_f64));
-    // WP-094 (a): the replay by position unless MORTAR_FLOOR_IDENTITY is set.
+    // IN-28a: by position unless MORTAR_FLOOR_IDENTITY is set.
     let by_position = std::env::var_os("MORTAR_FLOOR_IDENTITY").is_none();
     let laps = std::cell::RefCell::new(mortar_incr::capture::Laps::new());
+    // What the replay translated (for the guard and the recapture), and
+    // why it failed.
+    let translated: std::cell::RefCell<Option<(Translation, Positional)>> =
+        std::cell::RefCell::new(None);
+    let failed: std::cell::RefCell<Option<String>> = std::cell::RefCell::new(None);
     let hook = |link: &mortar_incr::capture::Link<'_, '_>,
                 computed: &mortar_core::layout::Layout| {
         let t0 = std::time::Instant::now();
-        let t1;
-        let r = if by_position {
-            // WP-094 (a): every file but the changed one has the bytes
-            // its FILES row was captured from (IN-22: clean or hashed
-            // equal, step 3).
-            let changed_id = link.inputs.link.opened.iter().find_map(|o| match o.kind {
-                mortar_core::inputs::OpenedKind::Object(id) if o.path == &changed_path[..] => {
-                    Some(id)
-                }
-                _ => None,
-            });
-            let changed_id = changed_id.ok_or("the changed file is not an object of this link")?;
-            let changed = move |f: mortar_core::id::FileId| f == changed_id;
-            let keys = mortar_incr::capture::Keys::partial(link, &changed)?;
-            t1 = std::time::Instant::now();
-            mortar_incr::capture::replay_by_position(
-                link,
-                &keys,
-                &state,
-                computed,
-                &changed,
-                &mut laps.borrow_mut(),
-            )
-        } else {
-            let keys = mortar_incr::capture::Keys::new(link)?;
-            t1 = std::time::Instant::now();
-            mortar_incr::capture::replay_timed(
-                link,
-                &keys,
-                &state,
-                computed,
-                &mut laps.borrow_mut(),
-            )
-        };
-        let ms = |d: std::time::Duration| d.as_secs_f64() * 1000.0;
-        replay_ms.set((ms(t1 - t0), ms(t1.elapsed())));
+        let r = (|| {
+            let changed_id = link
+                .inputs
+                .link
+                .opened
+                .iter()
+                .find_map(|o| match o.kind {
+                    mortar_core::inputs::OpenedKind::Object(id) if o.path == &changed_path[..] => {
+                        Some(id)
+                    }
+                    _ => None,
+                })
+                .ok_or("the changed file is not an object of this link")?;
+            // IN-28a: the positional set first, from FILES, the new
+            // link's files and change detection (step 3: every other file
+            // is clean or hashed equal; m3 is checked after the front).
+            let unchanged = |f: mortar_core::id::FileId| f != changed_id;
+            let pos = mortar_incr::capture::positional_set(link, &state, &unchanged);
+            let (layout, tr) = if by_position {
+                // Identities for every file outside the set.
+                let keys = Keys::partial(link, &|f| !pos.covers(f))?;
+                let t1 = std::time::Instant::now();
+                let r = mortar_incr::capture::replay_by_position(
+                    link,
+                    &keys,
+                    &state,
+                    computed,
+                    &pos,
+                    &mut laps.borrow_mut(),
+                )?;
+                replay_ms.set((ms(t1 - t0), ms(t1.elapsed())));
+                r
+            } else {
+                let keys = Keys::new(link)?;
+                let t1 = std::time::Instant::now();
+                let r = mortar_incr::capture::replay_translated(
+                    link,
+                    &keys,
+                    &state,
+                    computed,
+                    &mut laps.borrow_mut(),
+                )?;
+                replay_ms.set((ms(t1 - t0), ms(t1.elapsed())));
+                r
+            };
+            *translated.borrow_mut() = Some((tr, pos));
+            Ok::<_, String>(layout)
+        })();
+        if let Err(e) = &r {
+            *failed.borrow_mut() = Some(e.clone());
+        }
         r
     };
     // The state is an incremental-mode link's: its layout has IN-33's slack
@@ -276,15 +327,26 @@ fn run(
     let front = crate::front::front(plan.clone(), env, &store, &diagnostics, timer);
     let Some(mut f) = front else {
         *report = Some(diagnostics.finish());
-        return Err("the front failed (a replay that does not fit is a changed layout)".to_owned());
+        return Err(match failed.borrow_mut().take() {
+            Some(e) => format!("the replay failed: {e}"),
+            None => "the front failed (a replay that does not fit is a changed layout)".to_owned(),
+        });
     };
     f.keep_leaves = true;
+    // The map's `arg` records (`spec/plumb.md` §3.2a), as a full link's.
+    f.args = parsed.args.iter().map(|a| a.as_encoded_bytes().to_vec()).collect();
     let (keys_ms, replay_ms) = replay_ms.get();
     timer.line(format!("mortar: floor: replay keys: {keys_ms:.1} ms"));
     timer.line(format!("mortar: floor: replay translate: {replay_ms:.1} ms"));
     for (name, ms) in laps.borrow().iter() {
         timer.line(format!("mortar: floor: replay {name}: {ms:.1} ms"));
     }
+    let (tr, pos) = translated.borrow_mut().take().ok_or("the replay did not run")?;
+    timer.line(format!(
+        "mortar: floor: positional files: {} of {}",
+        if by_position { pos.len() } else { 0 },
+        state.files.len()
+    ));
     if f.dyn_tables.is_some() {
         return Err("incremental-unsupported (a dynamic executable)".to_owned());
     }
@@ -298,6 +360,39 @@ fn run(
             _ => None,
         })
         .ok_or("the changed file is not an object of this link")?;
+    // m3 (IN-28a condition 2): every file the front read is the file
+    // change detection judged; the store's `fstat` after its read (§11.5)
+    // equals the judged tuple.
+    judged.sort_unstable_by_key(|t| (t.dev, t.ino));
+    for (dev, ino) in store.inodes() {
+        let Some(b) = store.blob_of_inode(dev, ino) else { continue };
+        let m = store.meta(b);
+        let at = judged.partition_point(|t| (t.dev, t.ino) < (dev, ino));
+        let same = judged.get(at).is_some_and(|t| {
+            (t.dev, t.ino, t.size) == (dev, ino, m.size)
+                && t.mtime_ns == stamp::ns(m.mtime.0, m.mtime.1)
+                && t.ctime_ns == stamp::ns(m.ctime.0, m.ctime.1)
+        });
+        if !same {
+            return Err(format!(
+                "input-changed: a file the update read (device {dev}, inode {ino}) is not the file change detection judged"
+            ));
+        }
+    }
+    let link = mortar_incr::capture::Link {
+        inputs: &f.inputs,
+        resolution: &f.resolution,
+        assignment: &f.assignment,
+        split: &f.merge.split,
+    };
+    let row = pos.row_of(file).ok_or("the changed file has no FILES row")?;
+    // M4, m2 (WP-064a): the test path refills the changed file's units
+    // only; anything it contributes that other units or the layout depend
+    // on must be as the state stored it, decided before anything is
+    // written.
+    mortar_incr::contribution::compare(&link, &state, &pos, &tr, &f.layout, file, row)
+        .map_err(|(reason, detail)| format!("{reason}: {detail}"))?;
+    timer.phase(95, "changed file compared");
 
     // 5. The dirty windows, filled into memory.
     let pl = &f.layout.placement;
@@ -435,6 +530,16 @@ fn run(
         _ => Vec::new(),
     };
     let summary_refilled: u64 = refilled.jobs.iter().map(|j| j.1.len() as u64).sum();
+    // m4: the update's map, when its line asks for one: the records a full
+    // link writes for the same output (made before anything is written).
+    let machine_map = match plan.bookkeeping.mortar_map.as_deref() {
+        Some(m) => {
+            let map = crate::image::map_of(&f, &store)
+                .map_err(|e| format!("the map: {e:?}"))?;
+            Some((cwd.join(m), mortar_image::map::render(&map, &f.pool)))
+        }
+        None => None,
+    };
     timer.phase(100, "image (dirty windows)");
 
     // 6. The writes (IN-46, IN-47), after everything was filled (IN-13).
@@ -471,6 +576,10 @@ fn run(
         WritePath::Copy => by_copy(&out_path, &writes, size),
     }
     .map_err(|e| format!("cannot write {}: {e}", out_path.display()))?;
+    if let Some((path, text)) = &machine_map {
+        mortar_image::output::write_whole(path, text, 0o666)
+            .map_err(|_| format!("cannot write {}", path.display()))?;
+    }
     timer.phase(105, "writes");
 
     // 7. The state, rewritten whole and bound to the output.
@@ -486,7 +595,17 @@ fn run(
     if state.files.len() != f.inputs.files.len() as usize {
         return Err("FILES does not have a row per file of this link".to_owned());
     }
+    // IN-28a, the writer's duty: the changed file's position rows
+    // recaptured from the bytes just hashed, or its bit cleared.
+    if row != file.0 {
+        return Err("FILES' row of the changed file is not its id's".to_owned());
+    }
     state.files[file.0 as usize].hash = new_hash;
+    let recaptured = mortar_incr::capture::recapture(&mut state, &link, &pos, &tr, file, row);
+    timer.line(format!(
+        "mortar: floor: the changed file's position rows {}",
+        if recaptured { "recaptured" } else { "not recaptured: its POSITIONAL bit cleared" }
+    ));
     // WP-105: the state's strings do not grow at every update. The build
     // id is overwritten in place when it is the pool's last string and of
     // the same length (no later string can share its bytes); a stamp's

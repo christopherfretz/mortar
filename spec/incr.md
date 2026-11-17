@@ -1521,10 +1521,14 @@ with each phase fed from the state for unchanged files:
 - **IN-18a4 [v1] Format version 4: position-exact rows** (WP-064a,
   for IN-28a as amended). Version 4 is version 3 with these changes:
   - The format version is 4.
-  - A `FILES` row has the `POSITIONAL` bit (in its flags; the bit and
-    its place are WP-064a's to fix here when it lands): set exactly
-    when the row's position rows are position-exact (IN-28a). A full
-    link sets it on every row.
+  - A `FILES` row has flags: its byte 2 (version 3's first pad byte) is
+    `flags u8`, byte 3 stays pad; the row is still 60 bytes. Bit 0 is
+    `POSITIONAL` (`mortar_incr::format::file_flags`): set exactly when
+    the row's position rows are position-exact (IN-28a). A full link
+    sets it on every row; the test path's update (WP-064a) recaptures
+    the changed file's rows and keeps it, or clears it when the file's
+    sections were permuted. The reader refuses a row with any other bit
+    set (`state-corrupt`).
   - `FRAG_AT`'s third field is the `FRAGS` row (`u64`), as IN-18a3
     always said; the version-3 writer stored the fragment's offset in
     its output section instead, and the reader did not check it. The
@@ -1532,9 +1536,13 @@ with each phase fed from the state for unchanged files:
   - A file's `SECTIONS` rows are one contiguous range in section-index
     order.
 
-  A state of version 3 is refused by name (`state-version`) and gives a
-  full link that writes a version-4 state. The ranged state of WP-105
-  (block hashes, the per-file index) is a later version, 5.
+  A state of version 3 is refused by name (`state-version`, `format
+  version 3, this mortar reads 4`) and gives a full link that writes a
+  version-4 state. The ranged state of WP-105 (block hashes, the
+  per-file index) is a later version, 5. *Test:* `mortar_incr`'s round
+  trip and validation tests (a flag other than `POSITIONAL`, a `FRAG_AT`
+  row naming no `FRAGS` row: `state-corrupt`);
+  `a_version_3_state_is_refused_by_name`.
 - **IN-18b [v1] The normalized plan.** The plan hash is `L128` of a
   sequence of items, each a tag byte followed by fields that are each a
   `u32` length and that many bytes: first `C` with the working
@@ -2894,6 +2902,9 @@ update), reported as `incremental: full (<reason>)` (IN-10). With
 | `debug-compaction` | IN-57 | v1; [later] the debug-only rewrite |
 | `debug-name-index` | IN-55 | v1; [later] neutralized sets |
 | `debug-unit-kind` | a changed file has type units or split-DWARF skeletons (IN-55a) | v1; [later] after S5's tests |
+| `input-changed` | a file the update read is not the file change detection judged: the descriptor's `fstat` after the read (input.md §11.5) differs from the judged tuple, or the update read an inode it did not judge (IN-28a condition 2; the review's m3) | permanent (WP-064a, on the test path; an update that reads no unchanged input meets it only for the files it reads) |
+| `layout-changed` | test path only (WP-064a): the changed file's section count, a section's type, flags, size or alignment, its group, or the positions of its live merged fragments differ from the state's rows | test path only; WP-064 replaces it with its delta layout (IN-31) and the rows above |
+| `resolution-changed` | test path only (WP-064a): the global keys the changed file's symbol table names, or one's binding, type, visibility, definedness or section, or the resolution of one of them (kind, definer, section, value, size), differ from the state's `MENTIONS` and `RESOLVED` rows (the review's M4: a weak definition made global) | test path only; WP-064 replaces it with delta resolution (IN-26) and IN-27's refill set |
 
 Not fall-backs but plain links (IN-12; a warning, no state written):
 `-r`, `--emit-relocs`, a `SECTIONS` script, `--compress-debug-sections`
