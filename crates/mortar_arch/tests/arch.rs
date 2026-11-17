@@ -130,6 +130,8 @@ fn s4_3_class_table() {
     let sym = Some(DynRole::Symbolic);
     let ex = DemandFlags::EXPORT;
     let no = GlobalFlags::empty();
+    // §4.5 "The names of the `E` cells" (WP-117).
+    let non_pic = ClassOutcome::Refused(mortar_arch::DynRefusal::NonPicInSharedObject);
 
     // AbsWord, Static/Exec.
     for o in [Static, Exec] {
@@ -161,7 +163,7 @@ fn s4_3_class_table() {
     assert_eq!(out(K::AbsNarrow, Exec, Ifunc, RO), fl(DemandFlags::IPLT));
     assert_eq!(out(K::AbsNarrow, Exec, WeakDyn, W), inc(Incompatible::RecompilePic));
     assert_eq!(out(K::AbsNarrow, Pie, Local, W), inc(Incompatible::RecompilePie));
-    assert_eq!(out(K::AbsNarrow, Shared, Local, W), inc(Incompatible::RecompilePic));
+    assert_eq!(out(K::AbsNarrow, Shared, Local, W), non_pic);
     assert_eq!(out(K::AbsNarrow, Pie, Abs, W), nothing());
     assert_eq!(out(K::AbsNarrow, Pie, Ifunc, W), inc(Incompatible::RecompilePie));
     assert_eq!(out(K::AbsNarrow, Pie, Weak0, W), nothing());
@@ -172,7 +174,7 @@ fn s4_3_class_table() {
     assert_eq!(out(K::Pc, Exec, WeakDyn, RO), inc(Incompatible::RecompilePic));
     assert_eq!(out(K::Pc, Pie, Local, RO), nothing());
     assert_eq!(out(K::Pc, Pie, Abs, RO), inc(Incompatible::RecompilePie));
-    assert_eq!(out(K::Pc, Shared, Preemptible, RO), inc(Incompatible::RecompilePic));
+    assert_eq!(out(K::Pc, Shared, Preemptible, RO), non_pic);
     assert_eq!(out(K::Pc, Pie, Ifunc, RO), fl(DemandFlags::IPLT));
     // R-6 (spec/x64.md): the architecture spec's §7 decides.
     assert_eq!(out(K::Pc, Pie, Weak0, RO), ClassOutcome::ArchWeak0);
@@ -183,7 +185,7 @@ fn s4_3_class_table() {
     // Lo: as Pc, except Abs is always nothing.
     assert_eq!(out(K::Lo, Pie, Abs, RO), nothing());
     assert_eq!(out(K::Lo, Exec, SHLIB_DATA, RO), fl(DemandFlags::COPY));
-    assert_eq!(out(K::Lo, Shared, Preemptible, RO), inc(Incompatible::RecompilePic));
+    assert_eq!(out(K::Lo, Shared, Preemptible, RO), non_pic);
     // D-43 with WP-046's finding: the `Lo` half of AArch64's `-fno-pic`
     // read of shared data copies in a PIE as its `Pc` half does.
     assert_eq!(out(K::Lo, Pie, SHLIB_DATA, RO), fl(DemandFlags::COPY));
@@ -215,7 +217,7 @@ fn s4_3_class_table() {
     assert_eq!(out(K::GotRel, Static, Abs, RO), gb(DemandFlags::empty()));
     assert_eq!(out(K::GotRel, Exec, Abs, RO), gb(DemandFlags::empty()));
     assert_eq!(out(K::GotRel, Pie, Abs, RO), inc(Incompatible::RecompilePie));
-    assert_eq!(out(K::GotRel, Shared, Preemptible, RO), inc(Incompatible::RecompilePic));
+    assert_eq!(out(K::GotRel, Shared, Preemptible, RO), non_pic);
     assert_eq!(out(K::GotRel, Exec, SHLIB_DATA, RO), inc(Incompatible::RecompilePic));
     assert_eq!(out(K::GotRel, Shared, Ifunc, RO), gb(DemandFlags::IPLT));
     assert_eq!(out(K::GotRel, Static, Weak0, RO), inc(Incompatible::RecompilePic));
@@ -819,7 +821,15 @@ fn s7_s10_diagnostic_texts_and_keys() {
     // The M2 names a dynamic output refuses by (dyn.md D-25, D-44, D-47).
     let names: Vec<_> =
         mortar_arch::DynRefusal::ALL.iter().map(|&r| id(ScanError::Dynamic(r))).collect();
-    assert_eq!(names, ["canonical-plt-in-pie", "text-relocation", "weak-undefined-pc-in-pie"]);
+    assert_eq!(
+        names,
+        [
+            "canonical-plt-in-pie",
+            "non-pic-in-shared-object",
+            "text-relocation",
+            "weak-undefined-pc-in-pie"
+        ]
+    );
     let (_, d) = diag::scan(
         ScanError::Dynamic(mortar_arch::DynRefusal::WeakUndefinedPcInPie),
         &at,
