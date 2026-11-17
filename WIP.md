@@ -50,57 +50,22 @@ expect it absent on int/batch-5.
      the x86 author corpora (not rebuilt); census objects (sources gone).
      Scratch with build.sh, corp/, lists, oracle.*.txt, mine.*.txt, cmp.py:
      `.build/target-wp-121/s1d/` (81 MB).
-4. **P-D23's mutation table**: IN PROGRESS (this commit). The coordinator
-   called it a `dynmutate.rs` table; what exists is link-built rows in
-   `tests/shared.rs`, which are case `rows`, built by `fn rows()`. The test
-   `p_d23_rows` currently FAILS: the `ROW_W19..ROW_W42` constants are
-   still `&[]` placeholders.
-   - Rows built (AArch64 unless said; linker): W19 bfd (`w19.c`
-     `-ftls-model=local-exec`), W21 bfd+mold (`w21a.c`, `w21b.c`), W23 lld
-     (`w23.c`, `w23.map`, `--gc-sections`), W24 lld, W32 mold (`w32.s`),
-     W33 bfd (`w33.s`), W38 mold (`w38.c` `-fno-pic`, libdep.so), W40 mold
-     (`w40.cc`, `w40.map`), W42 mold (`w42.c`, libvdep.so from
-     `vdep.c`/`vdep.map`), x86-64: W34 bfd (`w34.s`), W41 lld+mold
-     (`w41.c` `-mno-direct-extern-access`). Address clause, all three:
-     gap-pie.so (expect ROW_ANALYSIS), gap-pic.so and gap-bsym.so (clean),
-     before-O0.so (ROW_RULE), before-O2.so (clean), hole.so (clean: the
-     residual hole asserted NOT caught).
-   - Observed on the first run (before the source fixes below): W21 bfd
-     P-D10, mold none; W23 lld P-D9 + P-D7; W24 lld P-D20; W32 mold P-D17
-     view B x3; W38 mold R1, R2, P-D17; W40 mold P-D1 (extern "C++"
-     refused by name); W41 P-D22; W42 mold P-D6, P-D7, P-D9 (check: since
-     cede841 the unversioned-import rules changed; re-observe);
-     gap-pie the analysis; before-O0 the rule; gap-pic, gap-bsym,
-     before-O2, hole clean.
-   - **Three row sources were wrong, fixed in this commit** (not verifier
-     holes): `w19.c` (GCC folded the never-written static TLS to a
-     constant: no TLS access; added a setter), `w33.s` and `w34.s` (gas
-     resolved `g - .` within one section: no relocation at all; `w*_g`
-     moved to its own section `.data.g`; w34 also gains an imported
-     `w34_ext`). Re-run and re-observe W19, W33, W34 (W19 must give
-     P-D20; W33 P-D17 view B for w33_g and w33_wu; W34 per the table).
-     Open: W21 with mold gives no P-D18 (only S8 seen): check whether mold
-     writes W21 at all (if not, the row is bfd's only).
-   - Next for rows: run `SHARED_DEBUG=rows` (below), set each `ROW_*`
-     to the rules the P-D23 table names (`spec/plumb.md` §12.5, the table
-     after P-D26) and what is observed; a row that disagrees with the
-     table is decided from the spec and reported.
-   - Missing rows: W22 (`DT_INIT` = 0 on libmore.so: a byte mutation in
-     the style of `hostile()` in tests/shared.rs, expect P-D22); W28 NOT
-     caught (PT_GNU_EH_FRAME made PT_NULL and `--eh-frame-hdr` dropped
-     from the line: assert no finding); i386 rows (W25-W27, W35-W37, W39)
-     are P-D1 "outside stage 3" (i386 Shared is not judged): document,
-     maybe one test that i386 is refused by name; W29 has no reproduction
-     (WP-130); W30 is WP-122's (P-D24, anomaly A45). Decide whether the
-     P-D23 sentence ("each row is a test (`dynmutate.rs`)") should name
-     `tests/shared.rs` instead, a spec edit to list.
-5. **§8.1 sizing**: NOT STARTED. The analysis's peak and time on the
-   largest AArch64 bench link as if `-shared`; inputs under
-   `.build/bench-work/` (never delete or rebuild there; one large run at a
-   time, load under 10, `prlimit --as=8589934592`, `nice -n 10`). The
-   `oracle_lists` test or a small driver over the link's object list is
-   the way (scan() reads through `Unit`).
-6. **P-D17 "non-alloc not checked" vs §5.8** (brief item): not re-read yet.
+4. **P-D23's mutation table**: DONE (6d59174). Rows in `tests/shared.rs`
+   (`p_d23_rows`, `p_d23_w28_is_not_caught`, `p_d23_i386_is_outside_stage_3`).
+   HOLE found and fixed in the same commit: `host_import` read the output's
+   .dynsym/.gnu.version (40454ce, merged in int/batch-5), so W23 (lld) and
+   W42 (mold) passed; now from `Sets.imports` (+`versioned`) and L-96's
+   `start_stop()` in shared.rs; `Sets.dropped` -> P-D17 finding. P-D8 small
+   edit in dyncheck.rs (strong .symver ref unversioned, no definer in order).
+   W21 sources fixed (address in code); W22 new (mold link); spec edits
+   P-D17, P-D18, P-D23 sentence + rows W19 W21 W22 W23 W34 W38 W40 W42.
+5. **§8.1 sizing**: DONE (record §8): cxx-large-g as if -shared, 3,499
+   objects, 2.49 s, 308 MiB peak, pre 0 (bench built -fdata-sections).
+   Oracle also compared on abseil, arpack, busybox, x86 author corpora:
+   all agree (record §6 table). Next: commit, merge int/batch-5, gate.
+6. **P-D17 "non-alloc not checked" vs §5.8**: re-read; they agree (§5.8 gives
+   0 for Shared: no copy, canonical PLT only ET_EXEC; P-D17 says so since
+   part 1). Host imports (no shared definer) fall to §4.4: no edit.
 
 ## Tonight's priority fixes (all merged into int/batch-5; NOT yet in the record)
 

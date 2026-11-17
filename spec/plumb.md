@@ -5318,9 +5318,10 @@ by WP-110's third pass against the interposer above, P-D25 and P-D26):
 | a wrong version index on a defined entry or an import | P-D19 (a defined entry's version, D-115); P-D8 (an import's `.gnu.version` index against its Verneed and the shared definition's version, through P-D16) |
 | a `JUMP_SLOT` naming the wrong symbol index | P-D10 (the slot's record is against another key than its PLT entry's); P-D17, view B (the interposer defines both keys at distinct addresses, the call place reaches the wrong one); P-D25 too when the named key is bound |
 
-`[unmeasured]` for WP-121: its own implementation of D-117 against the
-oracle on every corpus of `spec/landed/dyn/WP-110.md` §G.1 (same
-verdicts); each row above as a mutation of a mortar library.
+Measured for WP-121: its own implementation of D-117 against the
+oracle on every corpus of `spec/landed/dyn/WP-110.md` §G.1 still built
+(same verdicts, `spec/landed/plumb/WP-121.md` §6). `[unmeasured]`: each
+row above as a mutation of a mortar library.
 
 ## 13. Stage 4: Mason metadata and the ODR table (M6)
 
