@@ -101,6 +101,7 @@ pub(crate) fn check(
     image: &Image<'_>,
     out: &DynOut,
     line: &Line,
+    opts: &crate::opts::Options,
     model: &Model,
     ld: &Loader<'_>,
     objs: &[Obj<'_>],
@@ -113,7 +114,7 @@ pub(crate) fn check(
         v.push(fd(6, p.clone()));
     }
     pd1(image, out, line, &mut v);
-    pd4(image, out, line, map, &mut v);
+    pd4(image, out, line, opts, map, &mut v);
     if let Some((m, at)) = stack(image, line.execstack, objs, format) {
         v.push(fd(4, m).at(at));
     }
@@ -232,7 +233,14 @@ pub(crate) fn stack(
 }
 
 #[allow(clippy::too_many_lines)] // one block per segment
-fn pd4(image: &Image<'_>, out: &DynOut, line: &Line, map: &Map, v: &mut Vec<Finding>) {
+fn pd4(
+    image: &Image<'_>,
+    out: &DynOut,
+    line: &Line,
+    opts: &crate::opts::Options,
+    map: &Map,
+    v: &mut Vec<Finding>,
+) {
     let format = map.format;
     let h = &image.header;
     let okind = line.kind.unwrap_or(OutputKind::Exec);
@@ -340,7 +348,7 @@ fn pd4(image: &Image<'_>, out: &DynOut, line: &Line, map: &Map, v: &mut Vec<Find
         }
         // maxpage is S2's: the line's last `-z max-page-size` (0: the
         // default); `-z common-page-size` changes nothing (L-74, L-75).
-        if let Some(o) = crate::opts::of(map) {
+        if let Some(o) = (map.format == Format::Mortar).then_some(opts) {
             let default = if h.e_machine == EM_AARCH64 { 0x1_0000 } else { 0x1000 };
             let maxpage = o.max_page.filter(|&n| n != 0).unwrap_or(default);
             for &(_, hi) in &relro {

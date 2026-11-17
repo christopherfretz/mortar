@@ -439,7 +439,7 @@ fn run_side<'a>(
     let located = crate::locate::locate(map, store, m, &image);
     let mut objs: Vec<Obj<'_>> = located.objs;
     // §3.3: the empty sections not in the output (WP-156b).
-    let o = crate::opts::of(map);
+    let o = crate::opts::of(map, None);
     let exports = o.as_ref().and_then(|o| crate::fate::static_exports(map, o));
     crate::fate::collect_empty(&mut objs, o.as_ref(), exports.as_ref());
     let mut engine = Engine::new(&image, &objs, map.format);
@@ -469,7 +469,7 @@ fn run_side<'a>(
     } else {
         let mut r = Report::default();
         r.findings.extend(crate::structure::check(&image));
-        r.findings.extend(crate::structure::check_layout(&image, map));
+        r.findings.extend(crate::structure::check_layout(&image, map, None));
         r.findings.extend(located.findings);
         r.findings.append(&mut engine.findings);
         r.coverage = std::mem::take(&mut engine.cov);

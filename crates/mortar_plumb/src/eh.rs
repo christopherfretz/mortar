@@ -103,10 +103,10 @@ impl<'a> Rd<'a> {
 
 /// A pointer field: where it is in its section and its raw value.
 #[derive(Debug, Clone, Copy)]
-struct Field {
-    off: usize,
-    raw: u64,
-    enc: u8,
+pub(super) struct Field {
+    pub(super) off: usize,
+    pub(super) raw: u64,
+    pub(super) enc: u8,
 }
 
 #[derive(Debug, Clone)]
@@ -123,21 +123,21 @@ struct Cie {
 }
 
 #[derive(Debug, Clone)]
-struct Fde {
+pub(super) struct Fde {
     off: usize,
     cie: usize,
-    pc: Field,
-    range: u64,
+    pub(super) pc: Field,
+    pub(super) range: u64,
     /// The length of the augmentation data, for a `z` CIE.
     aug_len: Option<u64>,
-    lsda: Option<Field>,
+    pub(super) lsda: Option<Field>,
     insns: Vec<u8>,
 }
 
 #[derive(Debug, Default)]
-struct Frames {
+pub(super) struct Frames {
     cies: Vec<Cie>,
-    fdes: Vec<Fde>,
+    pub(super) fdes: Vec<Fde>,
     /// Offset of a zero terminator, if any.
     terminator: Option<usize>,
 }
@@ -157,7 +157,7 @@ fn parse(b: &[u8]) -> Result<Frames, String> {
 
 /// As [`parse`], with `addr`-byte absolute pointers (4 on ELFCLASS32).
 #[allow(clippy::too_many_lines)] // the record format, field by field
-fn parse_as(b: &[u8], addr: usize) -> Result<Frames, String> {
+pub(super) fn parse_as(b: &[u8], addr: usize) -> Result<Frames, String> {
     let mut f = Frames::default();
     let mut cie_at: BTreeMap<usize, usize> = BTreeMap::new();
     let mut pos = 0usize;
@@ -307,8 +307,9 @@ fn decode(enc: u8, raw: u64, at: u64) -> Option<u64> {
 /// What an input pointer field resolves to.
 enum In {
     Value(u64),
-    /// The target's section is not in the output: the FDE is dropped.
-    Dead,
+    /// The target's section is not in the output (named, when a symbol
+    /// gives it): the FDE is dropped; a live CIE's personality is R5.
+    Dead(Option<String>),
     Unknown(Reason),
 }
 
@@ -320,6 +321,8 @@ struct OutFde {
     aug_len: Option<u64>,
     lsda: Option<u64>,
     personality: Option<u64>,
+    /// The personality field's raw value and address (§5.7b's form).
+    pers_field: Option<(u64, u64)>,
     cie: CieKey,
     insns: Vec<u8>,
 }
@@ -402,6 +405,7 @@ impl Engine<'_, '_> {
                     aug_len: d.aug_len,
                     lsda: d.lsda.and_then(|l| decode(l.enc, l.raw, at(l))),
                     personality: c.personality.and_then(|p| decode(p.enc, p.raw, at(p))),
+                    pers_field: c.personality.map(|p| (p.raw, at(p))),
                     cie: CieKey::of(c),
                     insns: d.insns.clone(),
                 });
@@ -490,7 +494,7 @@ impl Engine<'_, '_> {
                 match t {
                     Target::Addr(v) => In::Value(v.wrapping_add(a as u64)),
                     Target::UndefWeak => In::Value(a as u64),
-                    Target::Discarded(_) => In::Dead,
+                    Target::Discarded(sec) => In::Dead(Some(sec)),
                     Target::Empty(_) => In::Unknown(Reason::SectionNotLocatable),
                     Target::Skip(r) => In::Unknown(r),
                     Target::Tls(_) => In::Unknown(Reason::Tls),
@@ -512,6 +516,10 @@ impl Engine<'_, '_> {
                     .count() as u64
             };
             let mut cie_live = vec![false; frames.cies.len()];
+            // §5.7b: the output personality fields of the FDEs matched for
+            // each CIE whose personality refers to a section not in the
+            // output (the field's form).
+            let mut pers_out: Vec<Vec<(u64, u64)>> = vec![Vec::new(); frames.cies.len()];
             for d in &frames.fdes {
                 let k = fde_records(d);
                 // R-P7: an initial location of 0 with no relocation
@@ -519,15 +527,15 @@ impl Engine<'_, '_> {
                 // address range of 0 (synth.md S-59: GNU ld drops it;
                 // glibc's i386 clone3.o has one).
                 let pc = if d.pc.raw == 0 && !relocs.contains_key(&(d.pc.off as u64)) {
-                    In::Dead
+                    In::Dead(None)
                 } else {
                     resolve(self, d.pc)
                 };
                 let lsda = d.lsda.map(|l| resolve(self, l));
-                let pc = if d.range == 0 { In::Dead } else { pc };
+                let pc = if d.range == 0 { In::Dead(None) } else { pc };
                 let site = o.site(si, d.off as u64);
                 let want_pc = match pc {
-                    In::Dead => {
+                    In::Dead(_) => {
                         // Dropped with its function: absent from the output.
                         self.cov.records -= k;
                         self.cov.absent_records += k;
@@ -545,7 +553,7 @@ impl Engine<'_, '_> {
                 let want_lsda = match lsda {
                     None => None,
                     Some(In::Value(v)) => Some(v),
-                    Some(In::Dead) => {
+                    Some(In::Dead(_)) => {
                         self.fail_n(
                             e(3, "the FDE's LSDA is in a section that is not in the output")
                                 .at(want_pc)
@@ -560,9 +568,13 @@ impl Engine<'_, '_> {
                         continue;
                     }
                 };
-                let want_pers = match &pers[d.cie] {
-                    None => None,
-                    Some(In::Value(v)) => Some(*v),
+                // §5.7b (WP-201): a live CIE's personality into a section
+                // not in the output is R5 at the CIE (below); the FDE is
+                // judged without it.
+                let (want_pers, pers_any) = match &pers[d.cie] {
+                    None => (None, false),
+                    Some(In::Value(v)) => (Some(*v), false),
+                    Some(In::Dead(Some(_))) => (None, true),
                     Some(_) => {
                         unknown_inputs = true;
                         self.not_checked(Reason::EhFrame, k);
@@ -577,10 +589,13 @@ impl Engine<'_, '_> {
                         && x.insns == d.insns
                         && x.cie == key
                         && x.lsda == want_lsda
-                        && x.personality == want_pers
+                        && (pers_any || x.personality == want_pers)
                 };
                 if let Some(&i) = cands.iter().find(|&&i| !used[i] && same(&outs[i])) {
                     used[i] = true;
+                    if pers_any {
+                        pers_out[d.cie].extend(outs[i].pers_field);
+                    }
                     self.cov.fdes_checked += 1;
                     for _ in 0..k {
                         self.cov.add_verified(Via::EhFrame, 261);
@@ -633,6 +648,10 @@ impl Engine<'_, '_> {
                         self.cov.absent_records += 1;
                     }
                     (Some(In::Value(_)), true) => self.cov.add_verified(Via::EhFrame, 261),
+                    (Some(In::Dead(Some(sec))), true) => {
+                        let f = self.dead_personality(oi, si, p, &relocs, sec, &pers_out[ci]);
+                        self.fail(f);
+                    }
                     (Some(In::Unknown(r)), true) => self.not_checked(*r, 1),
                     _ => self.not_checked(Reason::EhFrame, 1),
                 }
@@ -772,6 +791,63 @@ impl Engine<'_, '_> {
             f.found = Some(pc);
             self.findings.push(f);
         }
+    }
+
+    /// §5.7b (WP-201): R5 at the personality field `p` of a live CIE of
+    /// input `.eh_frame` section `si` of object `oi`, whose target `sec` is
+    /// not in the output; its text names the form the output fields
+    /// `outs` (raw value, address) hold: [`super::DEMOTED_WEAK`] (a weak
+    /// demoted mention written as the undefined weak value),
+    /// [`super::LIVE_ZERO`], [`super::LIVE_AT_ZERO`], or none.
+    fn dead_personality(
+        &mut self,
+        oi: usize,
+        si: usize,
+        p: Field,
+        relocs: &BTreeMap<u64, (u32, u32, Option<i64>)>,
+        sec: &str,
+        outs: &[(u64, u64)],
+    ) -> Finding {
+        let objs = self.objs;
+        let o = &objs[oi];
+        let mut f = Finding::new(
+            Rule::DiscardedTarget,
+            format!("refers to section '{sec}', which is not in the output"),
+        )
+        .site(o.site(si, p.off as u64));
+        let Some(&(sym, ty, a)) = relocs.get(&(p.off as u64)) else { return f };
+        let machine = o.elf.machine();
+        f.reloc = match machine {
+            Machine::AArch64 => crate::a64::def(ty).map(|d| d.name.to_string()),
+            Machine::X86_64 => crate::x64::def(ty).map(|d| d.name.to_string()),
+            Machine::I386 => crate::x86::def(ty).map(|d| d.name.to_string()),
+        };
+        let symbol = self.sym_name(oi, sym);
+        f.symbol = (!symbol.is_empty()).then_some(symbol);
+        let a = a.unwrap_or_else(|| i64::from(p.raw as u32 as i32));
+        let Some(&(raw, at)) = outs.first() else { return f };
+        f = f.at(at);
+        let mask = if self.word() == 4 { 0xffff_ffff } else { u64::MAX };
+        let fmask = match p.enc & 0x0f {
+            0x02 | 0x0a => 0xffff,
+            0x03 | 0x0b => 0xffff_ffff,
+            _ => u64::MAX,
+        };
+        f.found = Some(raw & fmask);
+        let value = |&(raw, at): &(u64, u64)| decode(p.enc, raw, at).map(|v| v & mask);
+        let zero = outs.iter().all(|&(raw, _)| raw & fmask == 0);
+        let at_zero = outs.iter().all(|x| value(x) == Some(a as u64 & mask));
+        let demoted = at_zero && self.demoted_weak_sym(oi, sym, a).is_some();
+        f.message.push_str(if demoted {
+            super::DEMOTED_WEAK
+        } else if zero {
+            super::LIVE_ZERO
+        } else if at_zero {
+            super::LIVE_AT_ZERO
+        } else {
+            ""
+        });
+        f
     }
 
     fn fail_n(&mut self, f: Finding, n: u64) {

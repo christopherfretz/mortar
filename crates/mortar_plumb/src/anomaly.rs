@@ -13,6 +13,7 @@ use crate::report::{Finding, Rule};
 /// The anomaly of §10.2 that `f`, a finding on `output` linked by the
 /// linker that writes maps in `linker`'s format, is: its id and a line of
 /// text, as in `"A9: ..."`. `None` for anything else.
+#[allow(clippy::too_many_lines)] // one block per anomaly
 pub fn classify(linker: Format, output: &[u8], f: &Finding) -> Option<&'static str> {
     let (bfd, mold) = (linker == Format::Gnu, linker == Format::Mold);
     if linker == Format::Mortar {
@@ -108,7 +109,18 @@ pub fn classify(linker: Format, output: &[u8], f: &Finding) -> Option<&'static s
             "A19: mold gives an FDE with address range 0 an entry in .eh_frame_hdr's table (spec/synth.md S-59)",
         );
     }
-    if let Some(a) = demoted_weak(linker, f).or_else(|| dynamic(linker, output, f)) {
+    if let Some(a) = demoted_weak(linker, f).or_else(|| live_eh_field(linker, f)) {
+        return Some(a);
+    }
+    if mold
+        && f.rule == Rule::SymbolTable(4)
+        && f.message.ends_with(crate::symbols::EXCLUDED_MAPPING)
+    {
+        return Some(
+            "A104: mold writes the mapping symbols of an input section it drops as SHF_EXCLUDE (Clang's $d of .llvm.call-graph-profile) as SHN_ABS locals of value 0",
+        );
+    }
+    if let Some(a) = dynamic(linker, output, f) {
         return Some(a);
     }
     if mold { ifunc_alias(output, f) } else { None }
@@ -119,6 +131,23 @@ fn demoted_weak(linker: Format, f: &Finding) -> Option<&'static str> {
     (matches!(linker, Format::Gnu | Format::Lld)
         && f.rule == Rule::DiscardedTarget && f.message.ends_with(crate::reloc::DEMOTED_WEAK)).then_some(
         "A103: GNU ld and lld write a reference through a weak mention defined only in a dropped COMDAT copy, whose key nothing live defines, as an undefined weak reference (resolve.md §6.3 case (b): comdat-mismatch)",
+    )
+}
+
+/// A105 (GNU ld) and A106 (mold): a field of a written `.eh_frame` or
+/// `.gcc_except_table` record that refers to a section not in the output
+/// (`spec/resolve.md` §6.3; `spec/plumb.md` §5.7b), in each linker's form.
+fn live_eh_field(linker: Format, f: &Finding) -> Option<&'static str> {
+    if f.rule != Rule::DiscardedTarget {
+        return None;
+    }
+    if linker == Format::Gnu && f.message.ends_with(crate::reloc::LIVE_ZERO) {
+        return Some(
+            "A105: GNU ld writes 0 into a field of a written .eh_frame or .gcc_except_table record (a CIE's personality, an LSDA's type entry) that refers to a dropped COMDAT copy (resolve.md §6.3)",
+        );
+    }
+    (linker == Format::Mold && f.message.ends_with(crate::reloc::LIVE_AT_ZERO)).then_some(
+        "A106: mold writes a field of a written .eh_frame or .gcc_except_table record that refers to a dropped COMDAT copy as if its target were at address 0 (resolve.md §6.3)",
     )
 }
 

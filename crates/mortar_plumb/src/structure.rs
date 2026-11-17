@@ -648,7 +648,11 @@ fn notes_ok(b: &[u8], align: usize) -> bool {
 /// S13 to S18 and mortar's S2 clause (§6.2, from `spec/layout.md` §20.3):
 /// the layout rules a loader, strip and glibc's start-up rely on.
 #[allow(clippy::too_many_lines)] // one block per rule, in the spec's order
-pub(crate) fn check_layout(image: &Image<'_>, map: &crate::Map) -> Vec<Finding> {
+pub(crate) fn check_layout(
+    image: &Image<'_>,
+    map: &crate::Map,
+    line: Option<&[String]>,
+) -> Vec<Finding> {
     let format = map.format;
     let mut out = Vec::new();
     let h = &image.header;
@@ -675,7 +679,7 @@ pub(crate) fn check_layout(image: &Image<'_>, map: &crate::Map) -> Vec<Finding> 
             ));
         }
     }
-    let opts = crate::opts::of(map);
+    let opts = crate::opts::of(map, line);
     // S2 (mortar): every PT_LOAD has p_align P = max(maxpage, the largest
     // alignment of a section in it), maxpage being the line's last
     // `-z max-page-size` (0: the default, 64 KiB on AArch64, 4 KiB on

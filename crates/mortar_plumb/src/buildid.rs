@@ -396,7 +396,7 @@ pub fn reseal(file: &mut [u8], map: &crate::Map) -> usize {
     if map.format != crate::Format::Mortar {
         return 0;
     }
-    match Style::of(map) {
+    match Style::of(map, None) {
         Style::Tree(t, _) => seal(file, t),
         Style::Unstated => seal(file, Tree::L128),
         Style::Given | Style::Unknown => 0,
@@ -424,8 +424,8 @@ impl Style {
     /// `--build-id[=STYLE]` and `--no-build-id`). A line that asks for no
     /// note, or a map that is not mortar's, gives [`Style::Unstated`]:
     /// [`line_rules`] judges the presence.
-    pub fn of(map: &crate::Map) -> Style {
-        crate::opts::of(map).and_then(|o| Self::asked(&o.build_id)).unwrap_or(Style::Unstated)
+    pub fn of(map: &crate::Map, line: Option<&[String]>) -> Style {
+        crate::opts::of(map, line).and_then(|o| Self::asked(&o.build_id)).unwrap_or(Style::Unstated)
     }
 
     /// The style a line asks for; `None`: no note (I-69).

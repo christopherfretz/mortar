@@ -198,13 +198,14 @@ pub(crate) fn check(
     image: &Image<'_>,
     objs: &[Obj<'_>],
     map: &Map,
+    line: Option<&[String]>,
 ) -> (Vec<Finding>, Option<String>) {
     let mut out = Vec::new();
     let found: Vec<usize> =
         image.sections.iter().enumerate().filter(|(_, s)| s.name == NAME).map(|(i, _)| i).collect();
     let mortar = map.format == Format::Mortar;
     if mortar {
-        crate::gdbnames::presence(image, objs, map, &found, &mut out);
+        crate::gdbnames::presence(image, objs, map, line, &found, &mut out);
     }
     let Some(&si) = found.first() else { return (out, None) };
     let s = &image.sections[si];

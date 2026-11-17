@@ -136,7 +136,7 @@ fn verify_kind(
         }
         let mut report = Report::default();
         report.findings.extend(structure::check(&image));
-        report.findings.extend(structure::check_layout(&image, map));
+        report.findings.extend(structure::check_layout(&image, map, ctx.line.as_deref()));
         report.findings.extend(missing);
         report.sort();
         return (report, staged);
@@ -159,7 +159,7 @@ fn judge(
 ) -> Report {
     let mut report = Report::default();
     report.findings.extend(structure::check(image));
-    report.findings.extend(structure::check_layout(image, map));
+    report.findings.extend(structure::check_layout(image, map, ctx.line.as_deref()));
     let located = locate::locate(map, store, m, image);
     report.findings.extend(located.findings);
     let mut objs = located.objs;
@@ -179,9 +179,10 @@ fn judge(
     let mut meta_cov = crate::report::MetaCoverage::default();
     // The options of §3.2a's table: for a mortar map, from its words by
     // the one reader (P-D4's `-z execstack` included).
-    let opts = match crate::opts::of(map) {
+    // WP-201: the caller's line when it gives one, else the records.
+    report.findings.extend(crate::opts::unread_findings(map));
+    let opts = match crate::opts::of(map, ctx.line.as_deref()) {
         Some(o) => {
-            report.findings.extend(crate::opts::unread_findings(&o));
             line.execstack = o.execstack;
             o
         }
@@ -377,7 +378,7 @@ fn judge(
     let kind = line.kind.unwrap_or(OutputKind::Exec);
     let mut unjudged = Vec::new();
     let mut checked =
-        crate::dyncheck::check(image, dout, &line, &model, &ld, &objs, map, &mut unjudged);
+        crate::dyncheck::check(image, dout, &line, &opts, &model, &ld, &objs, map, &mut unjudged);
     if let (Some(sl), Some(s)) = (&shared.line, &sets) {
         // §12.5: P-D16's changes to the executable rules, then P-D19-P-D26.
         crate::shared::filter_dyncheck(&mut checked, image, dout, sl, s, map.format);

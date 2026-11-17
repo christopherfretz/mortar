@@ -936,16 +936,26 @@ fn number(v: &str) -> Option<u64> {
     }
 }
 
-/// The options of a mortar map's line (§3.2a), when it has `arg`
-/// records.
-pub(crate) fn of(map: &crate::Map) -> Option<Options> {
-    (map.format == crate::Format::Mortar).then(|| Options::read(&map.args))
+/// The options of a mortar output's line (§3.2a): the caller's `line`
+/// when it gives one (WP-201: the same rule as §12.1a's), else the map's
+/// `arg` records. `None` for a reference's map, whose rules read the
+/// caller's line where they read one.
+pub(crate) fn of(map: &crate::Map, line: Option<&[String]>) -> Option<Options> {
+    (map.format == crate::Format::Mortar).then(|| match line {
+        Some(w) => Options::read(&w.iter().map(|x| x.as_bytes().to_vec()).collect::<Vec<_>>()),
+        None => Options::read(&map.args),
+    })
 }
 
-/// M9 (§3.2a): each word of a mortar map's line that no option mortar
-/// accepts spells.
-pub(crate) fn unread_findings(opts: &Options) -> Vec<crate::Finding> {
-    opts.unread
+/// M9 (§3.2a): each word of a mortar map's `arg` records that no option
+/// mortar accepts spells (the map's own record of its line, whoever gives
+/// the options).
+pub(crate) fn unread_findings(map: &crate::Map) -> Vec<crate::Finding> {
+    if map.format != crate::Format::Mortar {
+        return Vec::new();
+    }
+    Options::read(&map.args)
+        .unread
         .iter()
         .map(|(i, w)| {
             crate::Finding::new(
