@@ -1,0 +1,9 @@
+-static
+-z
+max-page-size=4096
+-o
+st-x64.lld
+wm-x64.o
+wa-x64.o
+wb-x64.o
+-Map=st-x64.lld.map

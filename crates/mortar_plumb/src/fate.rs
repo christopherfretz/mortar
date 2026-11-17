@@ -70,10 +70,44 @@ fn dropped_by_row(o: &Obj<'_>, s: &Sec<'_>, opts: &Options) -> Option<&'static s
 /// `FileId`, the first by section index there; the map lists files in
 /// `FileId` order, I-78): per object, the sections of its dropped
 /// copies.
-fn comdat_dropped(objs: &[Obj<'_>]) -> Vec<Vec<bool>> {
+pub(crate) fn comdat_dropped(objs: &[Obj<'_>]) -> Vec<Vec<bool>> {
+    comdat_dropped_in(objs.iter())
+}
+
+/// [`comdat_dropped`] over the objects `objs` gives, in `FileId` order (a
+/// stage's live objects, WP-178).
+pub(crate) fn comdat_dropped_in<'o, 'a: 'o>(
+    objs: impl Iterator<Item = &'o Obj<'a>>,
+) -> Vec<Vec<bool>> {
+    comdat_dropped_ranked(&objs.collect::<Vec<_>>(), |_| None)
+}
+
+/// [`comdat_dropped`] with the keeper taken in the LINE's order (§6.1:
+/// the first copy the link reads; WP-178): `rank` is an object's position
+/// on the command line the verifier reads itself, `None` for one the line
+/// does not name (an archive member, a file of the driver's), which keeps
+/// the rank of the object before it in `FileId` order. A map that lists
+/// files in another order (lld's lists them where their first section is
+/// placed: an object with no `.eh_frame` after one that has one) then
+/// keeps the same copy as the link did.
+pub(crate) fn comdat_dropped_ranked<'o, 'a: 'o>(
+    objs: &[&'o Obj<'a>],
+    rank: impl Fn(&Obj<'a>) -> Option<usize>,
+) -> Vec<Vec<bool>> {
+    let mut last = 0;
+    let ranks: Vec<usize> = objs
+        .iter()
+        .map(|o| {
+            last = rank(o).unwrap_or(last);
+            last
+        })
+        .collect();
+    let mut order: Vec<usize> = (0..objs.len()).collect();
+    order.sort_by_key(|&i| ranks[i]);
     let mut kept: BTreeSet<Vec<u8>> = BTreeSet::new();
     let mut out: Vec<Vec<bool>> = objs.iter().map(|o| vec![false; o.secs.len()]).collect();
-    for (oi, o) in objs.iter().enumerate() {
+    for oi in order {
+        let o = objs[oi];
         for (gi, g) in o.secs.iter().enumerate() {
             if g.shdr.sh_type != SHT_GROUP {
                 continue;

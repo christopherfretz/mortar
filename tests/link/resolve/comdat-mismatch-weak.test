@@ -1,4 +1,4 @@
-# PENDING (WP-176): no reference passes: the verifier finds the references' outputs wrong (R5 "refers to section '.text.g'/'.data.g', which is not in the output": the undefined-weak value of a reference through a demoted mention), which is right; the verifier package that follows WP-176 records it as a reference anomaly (an anomaly(bfd,lld) directive) and renames this file to .test.
+# Not the obvious answer: GNU ld's and lld's outputs are wrong and the verifier says so (plumb.md §10.2 A103, WP-178: R5 at the reference, its field the undefined-weak value).
 # A WEAK definition only a dropped copy of a COMDAT group has (WP-176):
 # wa.o's and wb.o's copies of group g define g (weak, as C++ writes
 # every vague-linkage symbol), and wb.o's also defines a WEAK hx, which
@@ -9,13 +9,13 @@
 # so its call is not a weak reference. GNU ld and lld take it as one and
 # write the undefined-weak call: on AArch64 a branch to the next
 # instruction (Y returns what w0 held, main's argc, 1: the exit status is
-# 1 + g's 1), on x86-64 and i386 a call to address 0 (SIGSEGV). mold refuses it ("hx refers to a
-# discarded COMDAT section probably due to an ODR violation").
+# 1 + g's 1), on x86-64 and i386 a call to address 0 (SIGSEGV). mold refuses it ("hx refers to a discarded COMDAT section probably due to an ODR violation").
 # With wb.o first its copy is kept by all four, hx is defined: 42.
 # A reference only from a section --gc-sections collects is no error
 # (§5.1), as for an undefined symbol.
 #@ spec: resolve.md §6.3
 #@ spec: resolve.md §6.2
+#@ anomaly(bfd,lld): A103
 #@ arch: aarch64 x86_64 i386
 
 cc -O1 wm.c -o wm.o

@@ -1,0 +1,10 @@
+-pie
+-z
+max-page-size=4096
+-o
+pie-a64.bfd
+-dynamic-linker
+/lib/ld-linux-aarch64.so.1
+wad-a64.o
+wd-a64.o
+-Map=pie-a64.bfd.map

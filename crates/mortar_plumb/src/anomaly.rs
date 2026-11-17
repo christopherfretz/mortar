@@ -108,6 +108,14 @@ pub fn classify(linker: Format, output: &[u8], f: &Finding) -> Option<&'static s
             "A19: mold gives an FDE with address range 0 an entry in .eh_frame_hdr's table (spec/synth.md S-59)",
         );
     }
+    if (bfd || lld)
+        && f.rule == Rule::DiscardedTarget
+        && f.message.ends_with(crate::reloc::DEMOTED_WEAK)
+    {
+        return Some(
+            "A103: GNU ld and lld write a reference through a weak mention defined only in a dropped COMDAT copy, whose key nothing live defines, as an undefined weak reference (resolve.md §6.3 case (b): comdat-mismatch)",
+        );
+    }
     if let Some(a) = dynamic(linker, output, f) {
         return Some(a);
     }

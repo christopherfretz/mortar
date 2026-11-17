@@ -1,0 +1,31 @@
+mortar-map 2
+file 0 wm-a64.o
+file 1 wa-a64.o
+file 2 wbu-a64.o
+piece 0 7 0 4000e8 14
+piece 0 7 14 4000fc 1c
+place 0 1 41011c 14
+place 0 3 410148 0
+place 0 4 410148 0
+place 1 2 410130 0
+place 1 6 410130 8
+place 1 3 410148 0
+place 1 4 410148 0
+place 2 2 410138 10
+place 2 4 410148 0
+place 2 5 410148 0
+merged 0 5 .comment
+discard 2 6 comdat
+chunk synthetic .eh_frame 4000e8 34
+chunk synthetic .symtab - f0
+chunk synthetic .strtab - 32
+chunk synthetic .shstrtab - 34
+chunk synthetic .comment - d
+arg -static
+arg -o
+arg mo-a64
+arg wm-a64.o
+arg wa-a64.o
+arg wbu-a64.o
+arg --mortar-map=mo-a64.map
+end

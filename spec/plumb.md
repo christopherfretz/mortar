@@ -1136,7 +1136,10 @@ offset; through the output's `.symtab` that address is `PT_TLS` `p_vaddr`
      that is discarded or absent (not one without bytes, above; nor an
      input `.eh_frame` while the output has an allocated `.eh_frame`,
      whose labels have `synth.md` S-50's values, WP-143b), and the
-     loader does not bind the name (§12.5). This predicate, "the section
+     loader does not bind the name (§12.5; in an executable, WP-178: the
+     output imports the name and the loader model binds it to a
+     definition, a needed library's: `spec/resolve.md` §6.2, a shared
+     object's definition binds a demoted mention's key). This predicate, "the section
      has no place" (`spec/resolve.md` §10.1 P-1 as the map shows it), is
      the one derivation every rule that lists the expected symbols asks:
      this step, Y3, Y4 and P-D19's export set (WP-147; P-D19 asks it of
@@ -1945,6 +1948,48 @@ the end of an allocated output section (§3.3). Whether the section's
 absence has a reason is M10's (§3.3); R5 holds either way. This does not apply to `.eh_frame`'s own records, which
 §6.4 checks (an FDE whose function is discarded is dropped, not R5), nor
 to non-alloc records (§5.8).
+
+### 5.7a A demoted mention whose key nothing live defines (WP-178)
+
+A non-local mention defined in a section of a COMDAT copy that is not
+kept (§3.3's keeper, the verifier's own, `spec/resolve.md` §6.1: the
+first copy the link reads keeps the signature; here the order is the
+command line's, the line the verifier reads itself, each object at the
+first word naming its path and an object the line does not name (an
+archive member, a driver's file) at the rank of the one before it in
+`FileId` order; without a line, `FileId` order. A map's order is not
+the line's: lld's lists a file where its first section is placed, so an
+object without `.eh_frame` comes after a later one with it) is a
+*demoted mention* (`spec/resolve.md` §6.2): an undefined mention of its
+key with its binding. When no definition of the key has a place and the
+loader does not bind it (a needed library's definition, or its `COPY`
+into the output, binds it), §4.4 step 0 gives a relocation against the mention the
+dropped section, and the record is R5 ("refers to section '…', which is
+not in the output"). That is the rule, not an accident of the order of
+checks: the model follows `spec/resolve.md` §6.3 case (b), **no value
+exists for such a reference in any output kind, weak or strong** (not
+0, not an import, not the next instruction), and a linker that writes
+one has a defect. The mention's binding decides resolution (precedence,
+extraction: a weak one extracts no archive member and makes no
+`--as-needed` library needed, D-11) but never gives the reference a
+value.
+
+To name the defect, a record in an allocated section against a
+**weak** demoted mention that step 0 makes R5 is judged a second time as
+an undefined weak reference (§4.4's undefined weak, stage 3's import
+bound to nothing in view 1), whose outcome is not kept: when that
+judgement verifies or accepts the field (W4, W5, the GOT slot 0 or its
+dynamic record), the R5's text ends "(a weak mention defined in a
+dropped COMDAT copy, whose key nothing live defines, written as an
+undefined weak reference: resolve.md §6.3 case (b))" (A103 for GNU ld
+and lld; a FAIL for mortar, which refuses such a link and never writes
+it). Anything else in the field (another value, a record not judged)
+leaves R5's plain text; a strong or `STB_GNU_UNIQUE` demoted mention's
+R5 is always plain. Stage 3's model (§12.1) takes a demoted mention as
+an undefined mention of its key too: it defines nothing, and a weak one
+is a weak reference (so an import of such a key is no P-D7 "no input
+references it"). Tests: `tests/demoted.rs`; the lane's
+`resolve/comdat-mismatch-weak*.test`.
 
 ### 5.8 Non-alloc relocations (stage 2, WP-028b)
 
@@ -5014,6 +5059,24 @@ is accepted from its linker only, never from mortar's map.
   `R_*_NONE` records (references) are lost. P-P3 "... R_AARCH64_NONE
   against cga has no output record ...". mortar drops both sections
   (`spec/layout.md` L-R1); GNU ld and lld keep both.
+- **A103 (GNU ld, lld; WP-178).** A reference through a weak mention
+  defined only in a dropped COMDAT copy, whose key nothing live defines
+  (`spec/resolve.md` §6.3 case (b): `comdat-mismatch`, the supervisor's
+  ruling of 2026-11-17), is written as an undefined weak reference: a
+  call to the next instruction (AArch64) or to 0 (x86-64, i386), the GOT
+  word 0, or a `WEAK UND` import in a dynamic executable or a `-shared`
+  library (with an archive member or an `--as-needed` library that
+  defines the key left out). One id for every form: what is written is
+  in each output kind exactly the undefined-weak reading of the
+  reference, and the verifier judges each form by the same trial (§5.7a).
+  R5 ending "(a weak mention defined in a dropped COMDAT copy, whose key
+  nothing live defines, written as an undefined weak reference:
+  resolve.md §6.3 case (b))". mold refuses (`hx refers to a discarded
+  COMDAT section probably due to an ODR violation`), as mortar does.
+  On x86-64 lld's `-no-pie` output also shows A25 for the key (its
+  absolute uses have no dynamic record, so view 3's preloaded definition
+  never reaches them). Reproducers: `resolve/comdat-mismatch-weak.test`,
+  `-dynamic`, `-shared`, `-archive`, `-needed`; `tests/demoted.rs`.
 
 lld also links a `.hidden` or `.protected` undefined reference that only
 a library defines (writing 0) and drops the library from `DT_NEEDED`:
@@ -5664,7 +5727,9 @@ from the file system (`line::Files`).
 - **The model** (`dynmodel.rs`): D-11's needed set, D-12's used set and
   closure, D-19a's order (GNU ld's and mortar's keeping mention; lld's and
   mold's first mention, `spec/dyn.md` §13.1), every key's view from the
-  placed objects. Map records are order hints only; nothing is taken from
+  placed objects (a mention defined in a COMDAT copy the verifier's
+  keeper drops is an undefined mention of its binding, §5.7a, WP-178).
+  Map records are order hints only; nothing is taken from
   the output that the model can compute.
 - **Static checks** (`dyncheck.rs`): P-D1, P-D4..P-D8, P-D10..P-D13 and
   P-D9's record order. `Format::Mortar` is held to the D rules exactly

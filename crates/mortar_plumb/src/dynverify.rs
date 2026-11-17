@@ -469,6 +469,7 @@ fn judge(
     dyn_engine(&mut engine, &v1, &plt, &depths);
     engine.set_wrap(wrap.clone());
     engine.set_defsym(defsym.clone());
+    engine.set_keeper_line(ctx.line.as_deref());
     engine.shared = sets.is_some();
     // M10's export roots (WP-147): the shared set's one derivation, or an
     // executable's `-E` without a script (WP-149) or `--dynamic-list`
@@ -662,6 +663,7 @@ fn judge(
             dyn_engine(&mut eb, &vb, &plt, &depths);
             eb.set_wrap(wrap.clone());
             eb.set_defsym(defsym.clone());
+            eb.set_keeper_line(ctx.line.as_deref());
             eb.shared = true;
             // The expected `S`: the interposer's for a preemptible key or
             // an import; a bound key's module and offset are the
@@ -705,6 +707,7 @@ fn judge(
             dyn_engine(&mut e3, &v3, &plt, &depths);
             e3.set_wrap(wrap.clone());
             e3.set_defsym(defsym.clone());
+            e3.set_keeper_line(ctx.line.as_deref());
             e3.dso_words = Some(dso_words.clone());
             run_engine(&mut e3, image, map, Some(&names));
             let mut bad: HashMap<String, Vec<Finding>> = HashMap::new();
@@ -1158,6 +1161,7 @@ fn dyn_engine(
     e.plt_depths = Some(depths.clone());
     e.dynbind = v.dynbind.iter().map(|(k, x)| (k.clone(), *x)).collect();
     e.dyn_tls.clone_from(&v.dyn_tls);
+    e.copied.clone_from(&v.copied);
     e.dyn_tls_mod = v.dyn_tls_mod.iter().map(|(k, x)| (k.clone(), *x)).collect();
     e.plt = plt.clone();
     e.dynamic = true;

@@ -1,0 +1,87 @@
+# comdat-mismatch-weak.test's shape with the key also defined by an
+# archive member (WP-176 record §2, a cell it measured but did not
+# commit; WP-178): wb.o's demoted weak mention of hx extracts nothing
+# (resolve.md §4: a weak undefined mention never extracts, and §6.2 keeps
+# the mention's binding for extraction), so libhx.a's member stays out and
+# the key ends with no live definition: the reference through the
+# mention is comdat-mismatch (§6.3 case (b), the supervisor's ruling
+# 2026-11-17). GNU ld and lld leave the member out too and write the
+# undefined-weak call (AArch64: a branch to the next instruction, exit
+# 1 + 1; x86-64 and i386: a call to 0), the verifier's A103; mold refuses.
+#@ spec: resolve.md §6.3
+#@ spec: resolve.md §4
+#@ anomaly(bfd,lld): A103
+#@ arch: aarch64 x86_64 i386
+
+cc -O1 wm.c -o wm.o
+as wa.S -o wa.o
+as wb.S -o wb.o
+cc -O1 hx.c -o hx.o
+ar rcs libhx.a hx.o
+
+link(bfd,lld) gcc -static -no-pie wm.o wa.o wb.o libhx.a -o arc
+run(bfd,lld,aarch64) arc
+  exit: 2
+run(bfd,lld,x86_64,i386) arc
+  exit: signal 11
+link(mold,mortar) gcc -static -no-pie wm.o wa.o wb.o libhx.a -o arc
+  exit: fail
+  diag(mold): hx refers to a discarded COMDAT section probably due to an ODR violation
+  diag(mortar): symbol hx is defined only in a discarded copy of COMDAT group g
+  diag(mortar): >>> referenced by wb.o:(.text+0x
+
+#--- wm.c
+int Y(void);
+int g(void);
+int main(void) { return Y() + g(); }
+#--- wa.S
+	.section .note.GNU-stack,"",%progbits
+	.section .text.g,"axG",%progbits,g,comdat
+	.weak g
+	.type g,%function
+g:
+#if defined(__aarch64__)
+	mov w0, #1
+#else
+	movl $1, %eax
+#endif
+	ret
+#--- wb.S
+	.section .text.g,"axG",%progbits,g,comdat
+	.weak g
+	.type g,%function
+g:
+#if defined(__aarch64__)
+	mov w0, #2
+#else
+	movl $2, %eax
+#endif
+	ret
+	.weak hx
+	.type hx,%function
+hx:
+#if defined(__aarch64__)
+	mov w0, #40
+#else
+	movl $40, %eax
+#endif
+	ret
+	.text
+	.globl Y
+	.type Y,%function
+Y:
+#if defined(__aarch64__)
+	stp x29, x30, [sp, -16]!
+	bl hx
+	ldp x29, x30, [sp], 16
+#elif defined(__x86_64__)
+	subq $8, %rsp
+	call hx
+	addq $8, %rsp
+#else
+	call hx
+#endif
+	ret
+	.section .note.GNU-stack,"",%progbits
+#--- hx.c
+int hx(void) { return 7; }

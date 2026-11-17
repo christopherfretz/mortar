@@ -1,4 +1,4 @@
-# PENDING (WP-176): no reference passes: the verifier finds the references' outputs wrong (R5 "refers to section '.text.g'/'.data.g', which is not in the output": the undefined-weak value of a reference through a demoted mention), which is right; the verifier package that follows WP-176 records it as a reference anomaly (an anomaly(bfd,lld) directive) and renames this file to .test.
+# Not the obvious answer: GNU ld's and lld's outputs are wrong and the verifier says so (plumb.md §10.2 A103, WP-178: R5 at the GOT reference, the slot the undefined-weak import's).
 # comdat-mismatch-weak.test's shape in dynamic executables (WP-176), with
 # data so the wrong program is an exit status on every target: wa.o's and
 # wb.o's copies of group g define the weak object g; wb.o's also a weak
@@ -7,10 +7,10 @@
 # wb.o's demoted hx is comdat-mismatch (§6.3 case (b)), never the
 # undefined-weak 0 nor a weak undefined dynamic symbol (spec/dyn.md
 # D-25). GNU ld and lld write hx as an undefined weak dynamic symbol: Y
-# returns 0 and the program 1 instead of 40 + 1; mold refuses it. With
-# wb.o first all four keep its copy: 42.
+# returns 0 and the program 1 instead of 40 + 1; mold refuses it. With wb.o first all four keep its copy: 42.
 #@ spec: resolve.md §6.3
 #@ spec: dyn.md D-25
+#@ anomaly(bfd,lld): A103
 #@ arch: aarch64 x86_64
 
 cc -O1 -fno-pie wm.c -o wm.o

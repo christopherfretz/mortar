@@ -1,0 +1,86 @@
+# comdat-mismatch-weak-archive.test with a STRONG reference to hx from
+# another file, first on the line (WP-178): resolve.md §6.2 counts wb.o's
+# demoted weak mention as an undefined weak mention for extraction, so
+# wu.o's strong undefined hx extracts libhx.a's member and hx is defined:
+# both calls bind to it, 7 + 7 + 1 = 15 (mortar). The references differ:
+# GNU ld and mold take wb.o's dropped copy as a definition when they scan
+# the archive, extract nothing and then refuse the strong reference
+# (undefined reference); lld extracts nothing either and writes BOTH
+# calls as an undefined weak value (call 0 / branch to the next
+# instruction), the strong reference of wu.o included: a wrong output,
+# the verifier's R5 at wu.o's call (every definition of hx is placeless).
+#@ spec: resolve.md §6.2
+#@ spec: resolve.md §4
+#@ xfail(lld): lld leaves libhx.a's member out although wu.o's strong reference needs hx, and writes wu.o's call as an undefined weak value (R5 at wu.o's call: every definition of hx it read is in a dropped COMDAT copy)
+#@ arch: aarch64 x86_64 i386
+
+as wa.S -o wa.o
+as wb.S -o wb.o
+cc -O1 hx.c -o hx.o
+cc -O1 wu.c -o wu.o
+ar rcs libhx.a hx.o
+
+link(bfd,mold) gcc -static -no-pie wu.o wa.o wb.o libhx.a -o ext
+  exit: fail
+  diag(bfd): undefined reference to `hx'
+  diag(mold): undefined symbol: hx
+link(lld,mortar) gcc -static -no-pie wu.o wa.o wb.o libhx.a -o ext
+run(mortar) ext
+  exit: 15
+
+#--- wa.S
+	.section .note.GNU-stack,"",%progbits
+	.section .text.g,"axG",%progbits,g,comdat
+	.weak g
+	.type g,%function
+g:
+#if defined(__aarch64__)
+	mov w0, #1
+#else
+	movl $1, %eax
+#endif
+	ret
+#--- wb.S
+	.section .text.g,"axG",%progbits,g,comdat
+	.weak g
+	.type g,%function
+g:
+#if defined(__aarch64__)
+	mov w0, #2
+#else
+	movl $2, %eax
+#endif
+	ret
+	.weak hx
+	.type hx,%function
+hx:
+#if defined(__aarch64__)
+	mov w0, #40
+#else
+	movl $40, %eax
+#endif
+	ret
+	.text
+	.globl Y
+	.type Y,%function
+Y:
+#if defined(__aarch64__)
+	stp x29, x30, [sp, -16]!
+	bl hx
+	ldp x29, x30, [sp], 16
+#elif defined(__x86_64__)
+	subq $8, %rsp
+	call hx
+	addq $8, %rsp
+#else
+	call hx
+#endif
+	ret
+	.section .note.GNU-stack,"",%progbits
+#--- hx.c
+int hx(void) { return 7; }
+#--- wu.c
+int Y(void);
+int g(void);
+int hx(void);
+int main(void) { return Y() + hx() + g(); }
