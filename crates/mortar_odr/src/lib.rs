@@ -11,6 +11,7 @@
 #![forbid(unsafe_code)]
 
 pub mod archives;
+mod contents;
 mod details;
 pub mod dynamic;
 pub mod foreign;

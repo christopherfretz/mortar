@@ -1,0 +1,63 @@
+# W4 under --odr=strict on libc++'s `__formatter::__bool_strings<char>`
+# shape (spec/odr.md §8.1, W4's rule; WP-146): COMDAT copies of inline
+# static data members that point at string literals, in two units whose
+# string pools differ (a.cc has other strings first), so the relocation's
+# addend into the unit's own `.rodata.str*` differs while the string it
+# refers to is the same. Also a pointer to a unit-local array and to a
+# function in an unnamed namespace (the conservative path, X21). GCC -O2
+# and Clang -O0 both refer to the strings by a section symbol and an
+# addend. No directive: a finding fails the test (w4-local-refs-mutated
+# is the twin with a different string).
+#@ spec: odr.md §8.1
+#@ requires: g++ clang
+
+cxx -O2 -std=c++17 a.cc -o a.o
+cxx -O2 -std=c++17 b.cc -o b.o
+cxx -O2 -std=c++17 main.cc -o main.o
+cxx(clang) -O0 -std=c++17 a.cc -o ca.o
+cxx(clang) -O0 -std=c++17 b.cc -o cb.o
+link(bfd,lld,mold) g++ -static -no-pie main.o a.o b.o -o prog
+link(mortar) g++ -static -no-pie main.o a.o b.o -Wl,--odr=strict -o prog
+link(bfd,lld,mold) g++ -static -no-pie main.o ca.o cb.o -o cprog
+link(mortar) g++ -static -no-pie main.o ca.o cb.o -Wl,--odr=strict -o cprog
+run prog
+  stdout: true false 4 5 3 7
+run cprog
+  stdout: true false 4 5 3 7
+
+#--- s.h
+struct sv { const char* p; unsigned long n; };
+template <class C> struct bool_strings;
+template <> struct bool_strings<char> {
+  static constexpr sv t{"true", 4};
+  static constexpr sv f{"false", 5};
+};
+namespace { int seven() { return 7; } }
+static const int three[] = {1, 2, 3};
+inline const int* const p_three = three;
+inline int (*const p_seven)() = seven;
+#--- a.cc
+const char* other_a(int i) {
+  static const char* const xs[] = {"alpha", "beta", "gamma", "delta"};
+  return xs[i];
+}
+static const int pad[] = {9, 9, 9, 9};
+const int* keep_pad = pad;
+#include "s.h"
+const sv* from_a(int i) { return i ? &bool_strings<char>::f : &bool_strings<char>::t; }
+int seven_a() { return p_seven() + p_three[0] - 1; }
+#--- b.cc
+#include "s.h"
+const sv* from_b(int i) { return i ? &bool_strings<char>::f : &bool_strings<char>::t; }
+int three_b() { return p_three[2]; }
+#--- main.cc
+#include <cstdio>
+struct sv { const char* p; unsigned long n; };
+const sv* from_a(int);
+const sv* from_b(int);
+int seven_a();
+int three_b();
+int main() {
+  std::printf("%s %s %lu %lu %d %d\n", from_a(0)->p, from_b(1)->p, from_b(0)->n,
+              from_a(1)->n, three_b(), seven_a());
+}
