@@ -1250,7 +1250,7 @@ form**: the final step with the `-r` output replaced, at its place in the
 line, by the `-r` step's inputs, in their order (an archive of the `-r`
 line stays an archive). For each of the two final linkers, the direct
 link `D` and the link through `-r` `V` are compared by `spec/plumb.md`
-§14.5 P-P1 (`mortar_plumb::compose`, as §14.8 Q-R2 settles), with the
+§14.5 P-P1 (`mortar_plumb::compose`, RL-6's, §14.8 Q-R2), with the
 `-r` output's own map: GNU ld's `D` with GNU ld's `V`, mortar's with
 mortar's. A finding fails the unit. P-P1's exclusions (a)-(d) are
 **named skips of the comparison only** (the two links still run and are
@@ -1289,6 +1289,20 @@ files byte for byte (I-R11). Neither is a verifier rule (§14.7 of
 **LT-R5 (no-ops).** A test of a C-R2 option (`spec/cli.md`: accepted at
 `-r`, no byte changed) links the `-r` line with and without it and
 `check cmp`s the two (`r-noop-options`).
+
+**LT-R6 (a `NONE` record keeps a section).** Per target,
+`relocatable/none-record-kept` (`spec/image.md` I-R5's `r-none-record-kept`;
+`tests/relocatable-design/exp/rl0/none.sh`): `_start` with `.reloc .,
+R_*_NONE, keepme` (`R_AARCH64_NONE`, `R_X86_64_NONE`, `R_386_NONE`),
+`keepme` in its own section `.text.keepme` of a second object; the two
+partially linked by `partial bfd`, `partial lld` and (after RL-7)
+`partial mortar`; each `-r` output final-linked with `--gc-sections
+-e _start` by GNU ld and by mortar (LT-R1), `check nm` finding `keepme`
+in every final output, and the direct link's the same. Measured
+(WP-180): GNU ld's, lld's and mold's `-r` each carry the one record, and
+`keepme` survives every final link through them; without the record
+both GNU ld and lld collect it. Stage R's P-P3 requires the record in
+every `-r` output.
 
 **The census at `-r`.** `VARIATIONS` gains the driver `-r` lines of
 record §A.2 that a reference links (`r-plain` `-r`, `r-nostdlib`, `r-g`,

@@ -634,7 +634,7 @@ warnings marked so.
 | id or name | kind or class | text | raised by | until |
 |---|---|---|---|---|
 | `relocatable output (-r)` | `refused`, `feature` | `unsupported feature: relocatable output (-r)` | `spec/resolve.md` §1 (`-r` row), §11 | RL-7 (the join) |
-| `conflicting-options`, `first` = `-r` | `conflicting-options` | `-r and {second} cannot be used together`, `{second}` one of `-shared`, `-pie` (also as `--pic-executable`), `-static-pie`, `-z nosectionheader`, `-Bsymbolic`, `-Bsymbolic-functions`, `--dynamic-list`, `--export-dynamic`, `-E`, `-soname`, `-rpath`, `--enable-new-dtags` (as spelled on the line) | `spec/cli.md` C-R1, C-R2a (last row), C-R4 (dynamic-output options) | — |
+| `conflicting-options`, `first` = `-r` | `conflicting-options` | `-r and {second} cannot be used together`, `{second}` one of `-shared`, `-pie` (also as `--pic-executable`), `-static-pie`, `-z nosectionheader`, `-Bsymbolic`, `-Bsymbolic-functions`, `--dynamic-list`, `--export-dynamic`, `-E`, `-soname`, `-rpath`, `--enable-new-dtags`, `--export-dynamic-symbol`, `-init`, `-fini`, `--pack-dyn-relocs`, `--android-memtag-mode` (as spelled on the line) | `spec/cli.md` C-R1, C-R2a (last row), C-R4 (dynamic-output options), C-R2b (the ones C-R4 does not name) | — |
 | `-T with -r` | `refused`, `option` | `unsupported option: -T with -r` (note: kernel modules and scripts at `-r` are not supported yet) | `spec/cli.md` C-R3 (`-T`), `spec/resolve.md` RV-R10 | RL-11 |
 | `--defsym with -r` | `refused`, `option` | `unsupported option: --defsym with -r` | C-R3 (`--defsym`), RV-R10 | RL-11 |
 | `--gc-sections with -r` | `refused`, `option` | `unsupported option: --gc-sections with -r` (note: a partial link cannot know what the final link needs; collect in the final link) | C-R4, `spec/image.md` I-R10, I-11 | — |
@@ -644,15 +644,15 @@ warnings marked so.
 | `--wrap with -r` | `refused`, `option` | `unsupported option: --wrap with -r` (note: wrap in the final link) | C-R4, RV-R10 | — |
 | `--compress-debug-sections with -r` | `refused`, `option` | `unsupported option: --compress-debug-sections with -r` (`=zlib`, `=zstd`; `=none` is a no-op) | C-R4, `spec/layout.md` L-R1a | — |
 | `--gdb-index with -r` | `refused`, `option` | `unsupported option: --gdb-index with -r` | C-R4 (`spec/synth.md` S-G8) | — |
-| `-z KEYWORD with -r` | `refused`, `option` | `unsupported option: -z {keyword} with -r`, `{keyword}` as spelled (`force-bti`, `gcs=always`, `stack-size=…`, `memory-seal`, `ibt`, `shstk`, `indirect-extern-access`, `x86-64-v2`/`-v3`/`-v4`, `lam-u48`, `lam-u57`, `unique-symbol`) | C-R2a (the property row and the `unique-symbol` row; open: the second row's name is not spelled in C-R2a, WP-180 reads it so) | a line that needs one |
-| `-d with -r`, `-dc with -r`, `-dp with -r`; `-s with -r`, `--strip-all with -r`, `-S with -r`, `--strip-debug with -r`, `-x with -r`, `--discard-all with -r`; `-b with -r`, `--format=binary with -r`; `--force-group-allocation with -r` | `refused`, `option` | `unsupported option: {option} with -r` | C-R3 (each row's package), until the package lands (open: C-R3 names no interim refusal; WP-180 reads one in this form) | RL-11 (`-d`, `-s`, `-S`, `-x`), RL-10 (`-b`), RL-8 (`--force-group-allocation`) |
+| `-z KEYWORD with -r` | `refused`, `option` | `unsupported option: -z {keyword} with -r`, `{keyword}` as spelled (`force-bti`, `gcs=always`, `stack-size=…`, `memory-seal`, `ibt`, `shstk`, `indirect-extern-access`, `x86-64-v2`/`-v3`/`-v4`, `lam-u48`, `lam-u57`, `unique-symbol`) | C-R2a (the property row and the `unique-symbol` row), C-R2b (the interim name, last bullet) | a line that needs one |
+| `-d with -r`, `-dc with -r`, `-dp with -r`; `-s with -r`, `--strip-all with -r`, `-S with -r`, `--strip-debug with -r`, `-x with -r`, `--discard-all with -r`; `-b with -r`, `--format=binary with -r`; `--force-group-allocation with -r` | `refused`, `option` | `unsupported option: {option} with -r` | C-R3 (each row's package), until the package lands; the name is C-R2b's last bullet, `Refused{Option, "<option> with -r"}` | RL-11 (`-d`, `-s`, `-S`, `-x`), RL-10 (`-b`), RL-8 (`--force-group-allocation`) |
 | `shared object input with -r` | `refused`, `feature` | `unsupported feature: shared object input with -r` (`.at` the file) | C-R5 | — |
 | `relocatable output with no input of a known machine` | `refused`, `feature` | `unsupported feature: relocatable output with no input of a known machine` (note: give `-m EMULATION`) | C-R5 | — |
 | `LLVM bitcode` | `refused`, `file-format` | as in a final link | `spec/resolve.md` RV-R9 | — |
 | the slim GCC LTO object | as in a final link (`spec/resolve.md` §1.2) | as in a final link | RV-R9 | — |
 | `GCC LTO sections with -r` | `refused`, `feature` | `unsupported feature: GCC LTO sections with -r` (`.at` the file; a fat LTO object) | RV-R9 (record Q9) | a line that needs it |
 | `SHT_CREL` | `refused`, `section-type` | as in a final link | RV-R9 | — |
-| `SHT_REL` (AArch64, x86-64), `SHT_RELA` (i386) | `refused`, `section-type` | `unsupported section type: SHT_REL` (`.at` the section) | `spec/arch.md` A-R4 | — |
+| `SHT_REL` (AArch64, x86-64), `SHT_RELA` (i386) | `refused`, `section-type` | `unsupported section type: SHT_REL` (`.at` the section), for the relocation section of a placed section only (clang's `.rel.llvm.call-graph-profile` is dropped with its target, `spec/layout.md` L-R1, and not refused) | `spec/arch.md` A-R4 | — |
 | `section-conflict` | `section-conflict` | as §3.1: `SHF_LINK_ORDER` or `SHF_EXCLUDE` on some pieces of an output section and not on others; L-47's alloc with non-alloc, TLS with non-TLS | `spec/layout.md` L-R1a | — |
 | `.gnu.linkonce` | `refused` as L-37 says | as in a final link (a kernel module's `.gnu.linkonce.this_module`) | `spec/layout.md` L-R1, L-37 | — |
 | `relocation-out-of-range` | `relocation-out-of-range` | as §3.1, for a REL field whose `A + delta` does not fit the `Implicit` width | `spec/arch.md` A-R2, `spec/image.md` I-R5 | — |
@@ -662,7 +662,7 @@ warnings marked so.
 | `discarded-section-reference` | `discarded-section-reference` | as §3.1: a relocation in a live, non-debug section, or a live `.eh_frame` record, against a symbol of a dropped COMDAT copy | `spec/resolve.md` RV-R7, `spec/layout.md` L-R6 | — |
 | `comdat-mismatch` | `comdat-mismatch` | as §3.1 | RV-R7 | — |
 | `--build-id=STYLE` | as in a final link (I-69's styles; an unknown style is `invalid-option-value`) | as in a final link | `spec/image.md` I-R8 | — |
-| `--incremental` with `-r` | IN-12's warning (**warning**) | as IN-12 says; the link is a plain `-r` | C-R4, `spec/incr.md` IN-12 | — |
+| `--incremental` and every `--incremental-*` option with `-r` | IN-12's warning (**warning**) | as IN-12 says; the link is a plain `-r` (`--no-incremental` is a no-op) | C-R4, C-R2b, `spec/incr.md` IN-12 | — |
 | the ODR diagnostics | as `spec/odr.md` says | as in a final link, over the `-r`'s units | `spec/meta.md` MT-30a | — |
 | a `-r` of the startup files (`crt1.o … crtend.o` in the middle) | **warning** (open: record §G Q7 asks for one; no kind, text or rule is decided) | — | `spec/cli.md` C-R6 | RL-11 if ruled |
 

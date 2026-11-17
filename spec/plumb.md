@@ -3824,7 +3824,8 @@ way, by the linkers that accept it, and its glibc programs are run:
 
 The relocatable corpus (stage R, planned: RL-5) is §14.9's: GNU ld's
 and lld's `-r` outputs verify clean but for the per-linker forms of
-§14.5, mold's show only their anomalies (A90-A101 as they apply), and
+§14.5 (and lld's A91, A93, A100), mold's show only their anomalies
+(A90-A102 as they apply), and
 P-P1 judges the D.3 components' final links through `-r` by GNU ld and
 by mortar against the direct links, static and PIE.
 
@@ -4119,6 +4120,8 @@ produce a finding that is not a recorded anomaly (`tests/mutation.rs`):
   4: item 4; two pieces of `V`'s `.text` swapped (their bytes and
   records): item 2. (`V` is also wrong for stages 1-3; P-P1 must name
   the composition all the same.)
+  (22) an input `R_*_NONE` record dropped from the `-r` output (and its
+  relocation section removed when it held only that record): P-P3.
   Each mutation's finding names its rule; (11), (12) and (17) are the
   review's x-cases (record §H).
 
@@ -4905,6 +4908,12 @@ is accepted from its linker only, never from mortar's map.
   `SHF_LINK_ORDER` section (`__patchable_function_entries`; the review's
   `w/lo`, `rl0` case 9): the final link cannot order it. P-P11 "section
   {name}: sh_link is 0".
+- **A102 (mold; WP-180).** At `-r` mold copies clang's
+  `.llvm.call-graph-profile` and drops its `SHT_REL` section (`rl0`
+  case 13), so the profile's weights name no function and their
+  `R_*_NONE` records (references) are lost. P-P3 "... R_AARCH64_NONE
+  against cga has no output record ...". mortar drops both sections
+  (`spec/layout.md` L-R1); GNU ld and lld keep both.
 
 lld also links a `.hidden` or `.protected` undefined reference that only
 a library defines (writing 0) and drops the library from `DT_NEEDED`:
@@ -6759,7 +6768,7 @@ Measured for this section on GNU ld 2.44, lld 22 and mold 2.37.1
 options in `exp/rl0/opts.sh`, `work/rl0-opts.log`), on top of the
 design's experiments. "The references" in this section means GNU ld and
 lld: their `-r` outputs of the corpus (§14.9) pass, but for lld's three
-anomalies (A91, A93, A100). mold's fail by name (§10.2 A90-A101); a mold
+anomalies (A91, A93, A100). mold's fail by name (§10.2 A90-A102); a mold
 `-r` output is judged like any other.
 
 ### 14.1 What stage R reads
@@ -6894,13 +6903,21 @@ The verifier derives each from the inputs and the line:
 - **(mortar)** `.llvm_addrsig` (`SHT_LLVM_ADDRSIG`) with its relocation
   section, if any (L-R1); the references copy it (all three, with
   `sh_link` 0), which is accepted from them;
+- **(mortar)** `.llvm.call-graph-profile` (`SHT_LLVM_CALL_GRAPH_PROFILE`)
+  with its relocation section (an `SHT_REL` of `R_*_NONE` records on
+  every target, `exp/rl0/none.sh`; L-R1, A-R4). GNU ld and lld copy both
+  sections, which is accepted from them (per-linker: the section is then
+  placed, P-P2 judges its bytes and P-P3 its records; P-P11 judges
+  neither its `sh_link` nor its `sh_entsize`, which GNU ld and mold
+  write 0 and lld 8); mold copies the section and drops its relocation
+  section, A102;
 - the input relocation records RV-R7 drops: the records of a removed FDE
   (P-P5) and the debug and `.gcc_except_table` records whose target is a
   dropped copy (I-R7);
-- every `R_*_NONE` input record (**mortar**, I-R5; the references keep
-  them, P-P3).
-
-Nothing else is dropped: `--gc-sections` is refused at `-r` (I-R10),
+Input `R_*_NONE` records are **not** dropped: a `NONE` record is a
+reference (a `--gc-sections` edge, `spec/image.md` I-7), and every
+linker carries it (I-R5; `rl0` case 5, `exp/rl0/none.sh`). Nothing else
+is dropped: `--gc-sections` is refused at `-r` (I-R10),
 and `SHF_EXCLUDE` sections are copied (L-R1). Every other section of a
 live input that is not consumed must have a place.
 
@@ -6952,14 +6969,14 @@ Each finding is at the output section and offset it names, sited at the
 input file, section and offset when there is one. The messages below
 are the text of each finding (`{…}` a field).
 
-- **P-P1 (the final program; V-R1; open: Q-R2).** Judged on two final links, not
+- **P-P1 (the final program; V-R1).** Judged on two final links, not
   on the `-r` output: the **direct** link `D` of a line `L`, and the
   link `V` of the same line with the component's inputs (contiguous in
   `L`) replaced, at the place of the first of them, by the `-r` output of
   those inputs; the same linker. Each is also verified by stages 1-3;
   P-P1 runs whatever they find, and reports only its own comparisons. The entry point is
   `mortar_plumb::compose::compose(direct, via, rmap) -> Report`
-  (open, §14.8 Q-R2: who writes it):
+  (`crates/mortar_plumb/src/compose.rs`, RL-6's; §14.8 Q-R2):
   `direct` and `via` are each an output with its inputs and map, `rmap`
   the `-r` output's own inputs and map. `φ` maps a place of `D` to a
   place of `V`: an input piece's bytes by the piece (in `V` through the
@@ -7088,8 +7105,9 @@ are the text of each finding (`{…}` a field).
 
 - **P-P3 (every input relocation once; V-R3).** For each record of a
   placed input section (whole or merged; a framed `.eh_frame`'s records
-  are P-P5's, which uses this rule's matching) that is not `R_*_NONE`
-  and that §14.3 does not drop, there is exactly one output record:
+  are P-P5's, which uses this rule's matching), `R_*_NONE` included,
+  that §14.3 does not drop, there is exactly one output record, for
+  every linker:
   - in the relocation section whose `sh_info` is `out(S)` (on AArch64
     and x86-64 `SHT_RELA`, on i386 `SHT_REL`, A-R4); never matched by
     the target section's name, so two output sections of one name are
@@ -7098,14 +7116,13 @@ are the text of each finding (`{…}` a field).
   - with the same `r_type` (nothing is relaxed, A-R1);
   - with an equivalent target (§14.4).
   "P-P3 {file}:({section})+{offset} {type} against {target} has no
-  output record at {out}+{offset'}"; "... has an output record against
+  output record at {out}+{offset'}" (for an input `NONE` record the text
+  adds "(an R_*_NONE record is a reference: a --gc-sections edge the
+  final link needs)"); "... has an output record against
   {target'}, not {target}"; "... has an output record of type {type'}".
   **No other records**: an output record that no input record gives is
   "P-P3 output record {type} at {out}+{offset} comes from no input
   record", except:
-  - an `R_*_NONE` record at the place of an input `R_*_NONE` record,
-    from a reference (all three keep the inputs' `NONE` records, and the
-    relocation section that holds only them: `rl0` case 5);
   - GNU ld: an `R_*_NONE` record in `.rela.eh_frame`/`.rel.eh_frame`
     where it removed an FDE (L-R6; record §D finding 1);
   - GNU ld: a debug-section record retargeted from a dropped copy to
@@ -7119,10 +7136,13 @@ are the text of each finding (`{…}` a field).
     output record naming `foo@@V` (RV-R6's lld form; both final links
     run, the review's x09).
   These are per-linker rules (§10.6), accepted only from their linker.
-  **(mortar)** I-R5 exactly: no `R_*_NONE` record at all, and records in
+  **(mortar)** I-R5 exactly: no `R_*_NONE` record but the inputs'
+  (none of its own: P-P5's removed FDE leaves nothing), and records in
   the order of `S`'s pieces, then the input order; the target in §14.4's
   mortar form; a relocation section exists exactly for an output section
-  with at least one output record (L-R10; open, §14.8 Q-R1: written for its option (a)), and is
+  with at least one output record, a `NONE` record included, and an
+  input relocation section whose records RV-R7 all drops gives none
+  (L-R10, §14.8 Q-R1); it is
   named `.rela<name>`/`.rel<name>` of its target, `SHF_INFO_LINK`, plus
   `SHF_GROUP` iff its target is a group member (P-P11).
   Linker rules judged: I-R5, I-R7 (no record), A-R1, A-R2 (the addend
@@ -7133,7 +7153,8 @@ are the text of each finding (`{…}` a field).
   the same with "the same string" for merged strings.
   *Catches:* a record moved by 4 bytes; a section-symbol addend without
   the piece offset, on RELA and on REL in the field; a `NONE` record left
-  at a live record's offset (mortar); a record moved into the other
+  at a live record's offset (mortar); an input `NONE` record dropped
+  (every linker); mold's dropped `.rel.llvm.call-graph-profile` (A102); a record moved into the other
   `.rela.text` of a `--unique` output; a global's record matched by name
   but at the wrong place; mold's debug records against symbol 0 (A97).
 
@@ -7424,6 +7445,9 @@ are the text of each finding (`{…}` a field).
   - `sh_entsize`: 24/16 (`.symtab`), 24/12 (`SHT_RELA`), 16/8
     (`SHT_REL`), 4 (`SHT_GROUP`, `.symtab_shndx`), the merge class's
     entsize, otherwise the pieces' common value or 0;
+  - a reference's copy of `.llvm_addrsig` or `.llvm.call-graph-profile`
+    (§14.3) has neither its `sh_link` nor its `sh_entsize` judged; its
+    relocation section is judged as any other;
   - `sh_name` reads back, in `.shstrtab`, as the pieces' name;
   - every output section holds a piece of a live input or is one the
     `-r` makes (§14.1's consumed sections: a group, a relocation
@@ -7458,8 +7482,9 @@ section: **verified** by `place` (P-P3's match by place and target),
 pointer field of a matched CIE or FDE) or `tombstone` (a field of a
 dropped record, P-P2); **accepted** by `per-linker` (P-P3's list, by
 linker); **not checked** by `in-mergeable` (a record inside a merged
-foreign section: its place is not listed) or `options-unknown`; **none**
-for the inputs' `R_*_NONE` records. The summary adds `relocatable:
+foreign section: its place is not listed) or `options-unknown`. An input
+`R_*_NONE` record is verified by `place` like any other (§7.2's **none**
+does not apply at `-r`: the record must be carried). The summary adds `relocatable:
 pieces {n}, merged {m}, framed {f}; groups {g}; FDEs {k} live, {r}
 removed; symbols {s}; sections {h}` and, under P-P1, `composition: {x}
 judged, {y} not judged ({letters})`.
@@ -7474,42 +7499,31 @@ judged, {y} not judged ({letters})`.
 - The references' build-id descriptors (§6.7), section order, piece
   order and offsets, kept-local sets and mapping symbols in
   non-executable sections.
-- A reference's `.llvm_addrsig` and `.llvm.call-graph-profile` contents
-  (copied with `sh_link` 0 by all three; see the record's defect list
-  for the call-graph profile).
-- `-T` at `-r` (refused until RL-11; a script's placement is then
-  judged as `spec/script.md` says, which this section does not yet
-  cover).
+- A reference's `.llvm_addrsig` contents, and its and
+  `.llvm.call-graph-profile`'s `sh_link` and `sh_entsize` (§14.3); the
+  call-graph profile's bytes and records are judged.
+- `-T` at `-r`: not judged. RL-11 keeps `-T` refused at `-r` unless a
+  verifier rule for placement by a script at `-r` is written first, in a
+  verifier package before it (the supervisor's ruling on WP-180).
 
-### 14.8 Open questions (marked in the rules; the supervisor's)
+### 14.8 Rulings (the supervisor's, on WP-180's questions)
 
-- **Q-R1 (a relocation section with no output record).** A placed
-  section whose input records are all `R_*_NONE` (or all dropped) has no
-  output record under I-R5. The references keep the `NONE` records and
-  their section (`rl0` case 5). L-R10 says "every output section with a
-  relocated piece has exactly one relocation chunk" and does not define
-  "relocated". *Options:* (a) a relocation section exactly when it holds
-  at least one output record (no empty relocation section); (b) one for
-  every output section that has a piece with an input relocation
-  section, possibly empty; (c) as (b), and write the `NONE` records
-  after all. *Recommendation:* (a); P-P3's mortar clause and P-P11 are
-  written for (a) and say so.
-- **Q-R2 (who writes P-P1 and P-P9).** The cut (record §F) gives RL-5
-  "V-R2-V-R8, V-R10, V-R11 and V-R12" in `crates/mortar_plumb`, and RL-6
-  "V-R1's comparison" and "S1 on `ET_REL` (V-R9)", with RL-6's files
-  all under `xtask/` and `tests/link/relocatable/`. P-P1 and P-P9 are
-  verifier rules of this file, and RL-5 and RL-6 run in parallel.
-  *Options:* (a) RL-6 writes P-P1 in a new
-  `crates/mortar_plumb/src/compose.rs` (`mortar_plumb::compose::compose`,
-  its `mod` line by RL-1 with the others), and RL-5 writes P-P9 (S1's
-  widening and the dispatch to stage R are the entry of
-  `relocatable.rs`); RL-6 calls both from `linktest`. No file is shared,
-  and the rule stays in the independent verifier (`cargo xtask plumb`
-  can run it); (b) as the cut reads: both in `xtask/src/linktest`
-  (a plumb rule outside `mortar_plumb`; `S1` would have to be bypassed
-  in the lane); (c) RL-5 writes both (RL-5 grows by about 1k lines).
-  *Recommendation:* (a). The entry point named in P-P1 follows the
-  answer.
+- **Q-R1 (a relocation section with no output record): ruled (a), and
+  input `R_*_NONE` records are carried.** A relocation section exists
+  exactly when it holds at least one output record, a `NONE` record
+  included; an input relocation section whose records RV-R7 all drops
+  gives none (`spec/layout.md` L-R10, `spec/image.md` I-R5). The
+  question showed that I-R5 as designed dropped the inputs' `NONE`
+  records, which are `--gc-sections` edges: `exp/rl0/none.sh` (every
+  target) keeps `keepme` through GNU ld's, lld's and mold's `-r` into a
+  `--gc-sections` final link by GNU ld and lld, and collects it without
+  the record. P-P3 and P-P11 are written for the ruling.
+- **Q-R2 (who writes P-P1 and P-P9): ruled (a).** RL-6 (WP-186) writes
+  P-P1 in `crates/mortar_plumb/src/compose.rs`
+  (`mortar_plumb::compose::compose`; RL-1 adds the `mod` line), as a
+  verifier-side package that reads no linker crate; RL-5 (WP-185)
+  writes P-P9 (S1's widening and the dispatch to stage R, the entry of
+  `relocatable.rs`). RL-6 calls both from `linktest`.
 
 ### 14.9 The corpus
 
@@ -7520,7 +7534,13 @@ component with exceptions; gcc and clang-22, `-O1 -g -fcommon
 -ffunction-sections -fdata-sections`, three targets), the `-O0 -g`
 debug corpus (`exp/debug/`), `exp/none-overlap/`, and
 `exp/rl0/run.sh`'s fourteen cases, each partially linked by GNU ld, lld
-and mold with `-Map`. RL-5's fixtures are built from them at test time
+and mold with `-Map`, and `exp/rl0/none.sh`'s `NONE` case per target:
+`_start` with `.reloc ., R_*_NONE, keepme`, `keepme` in its own section
+of a second object, partially linked by GNU ld, lld and (after the
+join, RL-7) mortar, then final-linked with `--gc-sections` by GNU ld and
+by mortar: `keepme` is in the final output (`nm`), as in the direct
+link, and P-P3 finds the record in every `-r` output. RL-5's fixtures are built from them at test time
 (§9.1: nothing binary is checked in). For each GNU ld and lld output:
-no finding but the per-linker forms; every mold output: its anomalies by
-name (A90-A101 as they apply), and nothing else.
+no finding but the per-linker forms (and lld's A91, A93, A100); every
+mold output: its anomalies by name (A90-A102 as they apply), and nothing
+else.
