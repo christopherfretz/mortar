@@ -1,0 +1,25 @@
+# The tools that built runtime/odr/obj/ (spec/odr.md O-53b). Written by
+# `cargo xtask odr-runtime --update`; `cargo xtask odr-runtime --check`
+# rebuilds the objects with these tools and fails unless every byte is
+# identical. kiln and hod: their source checkouts' commits; clang: its
+# `--version` line (i386's IR, which the pinned kiln does not target).
+kiln d854b23bc70e21a41a8e9a83eefeef19363c1052
+hod b701c7be7505bd0d2038da142f26afc44d1fc069
+hod-i386 a68a0d5d5f2e7369fbb9b302548ad66f30f352e9
+clang-i386 Debian clang version 22.1.8 (1~deb13u4)
+# The commands, run in a directory holding a copy of runtime/odr/mason_odr_rt.cpp
+# (<kiln> = MASON_KILN, <hod> = MASON_HOD, <hod-i386> = MASON_HOD_I386,
+# <clang-i386> = MASON_CLANG_I386):
+command aarch64-so KILN_BACKEND=hod KILN_HOD=<hod> KILN_HOD_STRICT=1 <kiln> -c -O0 -fPIC -fno-exceptions -fno-rtti mason_odr_rt.cpp -o <object>
+command aarch64-exe KILN_BACKEND=hod KILN_HOD=<hod> KILN_HOD_STRICT=1 <kiln> -c -O0 -fPIC -fno-exceptions -fno-rtti -DMASON_RT_EXE mason_odr_rt.cpp -o <object>
+command x86_64-so KILN_BACKEND=hod KILN_HOD=<hod> KILN_HOD_STRICT=1 <kiln> --target=x86_64-linux-gnu -c -O0 -fPIC -fno-exceptions -fno-rtti mason_odr_rt.cpp -o <object>
+command x86_64-exe KILN_BACKEND=hod KILN_HOD=<hod> KILN_HOD_STRICT=1 <kiln> --target=x86_64-linux-gnu -c -O0 -fPIC -fno-exceptions -fno-rtti -DMASON_RT_EXE mason_odr_rt.cpp -o <object>
+command i386-so <clang-i386> --target=i686-linux-gnu -O0 -fPIC -fno-exceptions -fno-rtti -S -emit-llvm -o <object>.ll mason_odr_rt.cpp && <hod-i386> -O0 -filetype=obj -mtriple=i686-linux-gnu -relocation-model=pic --strict <object>.ll -o <object>
+command i386-exe <clang-i386> --target=i686-linux-gnu -O0 -fPIC -fno-exceptions -fno-rtti -DMASON_RT_EXE -S -emit-llvm -o <object>.ll mason_odr_rt.cpp && <hod-i386> -O0 -filetype=obj -mtriple=i686-linux-gnu -relocation-model=pic --strict <object>.ll -o <object>
+# The objects: name, SHA-256, size in bytes.
+object mason_odr_rt-aarch64-so.o 64d8027ddb0bbca5387772b22a9f22e9d645420edb539f45e5974651feeb836f 44512
+object mason_odr_rt-aarch64-exe.o 4e560637f5686b5e0e3be812130c5209c0ecac2cad9b5e7326a0b2ae8b0f8965 43912
+object mason_odr_rt-x86_64-so.o 183aac908ca932cea8b726731ee917ef27e7628de79dd40ebbb9ae4114bc330a 47392
+object mason_odr_rt-x86_64-exe.o 9d81cb9c394ee8f3f775cf3daaed52033b779f04db2a859f11f121bc0ea74f34 46752
+object mason_odr_rt-i386-so.o 4b08704c1cdf5914e7d7b7b43811d21092c434739b4a0846fe3256875637e7d5 54116
+object mason_odr_rt-i386-exe.o a831f3ffbfa4e6c8c3d7e76a0e6f5461a4bfa51815ec76e4b0e10eda9c14cbc3 53440
