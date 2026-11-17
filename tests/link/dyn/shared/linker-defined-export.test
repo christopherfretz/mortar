@@ -6,11 +6,12 @@
 # the library's own; a version script's `local: *` makes them local and
 # unexported, so the library sees its own end too (`0 0 0`). mold
 # exports none of them (§17.6): its library always sees its own.
-# The hosts are `-no-pie`: a GNU ld PIE host's GOT slot of `_end` (one
-# past `.bss`) draws the verifier's P-D9 (WP-150 reported it).
+# The hosts are `-no-pie`. The verifier (WP-166) holds every library
+# to D-110 item 2: mold's missing exports are A57 (§17.6), its record
+# the named difference.
 #@ spec: dyn.md "D-110"; dyn.md "D-21"; dyn.md "D-112"
 #@ arch: aarch64 x86_64
-#@ xfail(bfd,lld,mortar): the verifier follows D-110 item 2 before WP-150: P-D19 "'_end' (Base) is in .dynsym and not in the export set", P-D25 "a dynamic record names '_end', which the line binds (D-112)", P-D9 view 2 on the GOT slot of each of the three
+#@ xfail(mold): §13.1, §17.6: mold exports no linker-defined key, so its library binds a referenced _end to its own (mortar then hosts no mold library): A57
 
 cc -O1 -fPIC lib.c -o lib.o
 cc -O1 -fPIE main.c -o main.o

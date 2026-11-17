@@ -5,12 +5,13 @@
 # exports `_end`, `_edata`, `__bss_start`: a difference, §13.1). mold
 # exports none in any cell. The cells with a needed library that
 # references or defines the names (exported too) are proven by
-# `mortar_resolve`'s `d21_linker_defined_exports_of_an_executable`: the
-# verifier's P-D11 and P-D7 reject every reference's output there today
-# (WP-150's record).
+# `mortar_resolve`'s `d21_linker_defined_exports_of_an_executable` and
+# by `linker-defined-def-exec` (WP-166). mold's missing exports are A57,
+# GNU ld's `-E` exports with no reference A60 (§13.1).
 #@ spec: dyn.md "D-21"
 #@ arch: aarch64 x86_64
-#@ xfail(bfd,aarch64): the verifier's P-D9 view 2 on the PIE's GOT slot of _end, a RELATIVE record whose value is one past the last segment's end (a legal address value; WP-150 reported it)
+#@ anomaly(mold): A57
+#@ anomaly(bfd): A60
 
 cc -O1 -fPIE refs.c -o refs.o
 cc -O1 -fPIE plain.c -o plain.o
