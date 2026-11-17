@@ -71,11 +71,19 @@ pub use dynverify::{Ctx, is_dynamic, verify_with};
 /// know whether a dynamic output is judged (the link-test harness's
 /// probe, `spec/harness.md` "L3") reads this instead of probing.
 pub const STAGE: u8 = 3;
+
+/// Whether stage R judges relocatable (`ET_REL`) outputs
+/// (`spec/plumb.md` §14; `spec/harness.md`): true since WP-185 (RL-5).
+/// [`verify_with`] and [`verify_from`] dispatch an `ET_REL` output, or a
+/// map or line that says `-r`, to [`relocatable::verify`].
+pub const STAGE_R: bool = true;
 pub use line::{Files, HostFiles};
 pub use locate::thin_members;
 pub use map::{Format, Map, MapError, MapFile};
+/// P-P1's coverage (RL-6, `compose`).
+pub use report::CompCoverage;
 pub use report::{
-    Coverage, Finding, MetaCoverage, OUTSIDE, Reason, Report, Rewrite, Rule, Site, Via,
+    Coverage, Finding, MetaCoverage, OUTSIDE, Reason, RelCoverage, Report, Rewrite, Rule, Site, Via,
 };
 
 /// An input file of the link, by the path the map names it with (§2.1).
@@ -203,6 +211,9 @@ pub(crate) fn verify_static_in(
     map: &Map,
     line: Option<&[String]>,
 ) -> Report {
+    if relocatable::applies(output, map, line) {
+        return relocatable::verify_in(output, store, m, map, line);
+    }
     let mut report = Report::default();
     let image = match image::Image::read(output) {
         Ok(i) => i,

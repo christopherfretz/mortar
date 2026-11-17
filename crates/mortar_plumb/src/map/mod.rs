@@ -441,6 +441,81 @@ pub struct Map {
     /// GNU ld's preamble (§3.4): each archive member it included, with
     /// the reason it prints, in map order. Empty for every other format.
     pub included: Vec<Included>,
+    /// mortar's relocatable records (§14.2): `Some` exactly when the map
+    /// has `output relocatable`.
+    pub rel: Option<RelRecords>,
+    /// A foreign map's output section blocks, in map order (§14.2: at
+    /// `-r` a row's place is read against its block). Empty for mortar's.
+    pub blocks: Vec<OutBlock>,
+    /// GNU ld's `LOAD` lines, in order (§14.1: the inputs' order when the
+    /// map names a file first in its discarded list).
+    pub loads: Vec<String>,
+}
+
+/// An output section block of a foreign map (§14.2): its name, its
+/// address and size when the map gives them, and the first row of
+/// [`Map::placed`] and [`Map::chunks`] under it (the rows up to the next
+/// block's are its own).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutBlock {
+    pub name: String,
+    pub addr: Option<u64>,
+    pub size: Option<u64>,
+    pub line: u32,
+    pub first_placed: usize,
+    pub first_chunk: usize,
+}
+
+/// mortar's records of a relocatable map (§14.2).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RelRecords {
+    pub places: Vec<RPlace>,
+    pub frames: Vec<RFrame>,
+    pub groups: Vec<RGroup>,
+    pub commons: Vec<RCommon>,
+    /// The line of `output relocatable`.
+    pub line: u32,
+}
+
+/// `rplace <file> <section> <out> <offset> <size>`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RPlace {
+    pub file: u32,
+    pub section: SectionRef,
+    pub out: u32,
+    pub offset: u64,
+    pub size: u64,
+    pub line: u32,
+}
+
+/// `rframe <file> <section> <input-offset> <output-offset>|-`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RFrame {
+    pub file: u32,
+    pub section: SectionRef,
+    pub input_offset: u64,
+    pub output_offset: Option<u64>,
+    pub line: u32,
+}
+
+/// `rgroup <out> <file> <section>` (a hint).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RGroup {
+    pub out: u32,
+    pub file: u32,
+    pub section: SectionRef,
+    pub line: u32,
+}
+
+/// `rcommon <name> <out> <offset> <size> <align>`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RCommon {
+    pub name: String,
+    pub out: u32,
+    pub offset: u64,
+    pub size: u64,
+    pub align: u64,
+    pub line: u32,
 }
 
 /// An archive member GNU ld's map says it included, and why (§3.4; the
@@ -483,6 +558,9 @@ impl Map {
             dead: Vec::new(),
             incremental: false,
             included: Vec::new(),
+            rel: None,
+            blocks: Vec::new(),
+            loads: Vec::new(),
         }
     }
 
@@ -511,6 +589,22 @@ impl Map {
         }
         out
     }
+}
+
+/// Records an output section block of a table-shaped map (§14.2): mold's
+/// pseudo blocks of the headers (`EHDR`, `PHDR`, `SHDR`) are none.
+pub(crate) fn push_block(map: &mut Map, name: &str, addr: u64, size: u64, line: u32) {
+    if matches!(name, "EHDR" | "PHDR" | "SHDR") {
+        return;
+    }
+    map.blocks.push(OutBlock {
+        name: name.to_string(),
+        addr: Some(addr),
+        size: Some(size),
+        line,
+        first_placed: map.placed.len(),
+        first_chunk: map.chunks.len(),
+    });
 }
 
 /// Builds [`Map::files`] without a linear search per line.

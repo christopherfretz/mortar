@@ -67,6 +67,8 @@ pub enum Rule {
     Meta(u8),
     /// P-G1 .. P-G9: `.gdb_index` (§6.10; `spec/synth.md` §17).
     GdbIndex(u8),
+    /// P-P2 .. P-P11: stage R, a relocatable (`-r`) output (§14).
+    Rel(u8),
 }
 
 impl Rule {
@@ -100,6 +102,7 @@ impl Rule {
             Rule::Equiv(n) => format!("P-E{n}"),
             Rule::Meta(n) => format!("P-M{n}"),
             Rule::GdbIndex(n) => format!("P-G{n}"),
+            Rule::Rel(n) => format!("P-P{n}"),
         }
     }
 }
@@ -144,10 +147,12 @@ pub enum Rewrite {
     GotToImm,
     /// X4 (x86-64): a GOT load made `mov $S` (GNU ld).
     GotToMovImm,
+    /// Stage R: one of P-P3's per-linker forms, from its linker (§14.5).
+    PerLinker,
 }
 
 impl Rewrite {
-    pub const ALL: [Rewrite; 18] = [
+    pub const ALL: [Rewrite; 19] = [
         Rewrite::AdrpAddToAdr,
         Rewrite::GotToAdrpAdd,
         Rewrite::GotToAdr,
@@ -166,6 +171,7 @@ impl Rewrite {
         Rewrite::GotToDirect,
         Rewrite::GotToImm,
         Rewrite::GotToMovImm,
+        Rewrite::PerLinker,
     ];
 
     pub const fn id(self) -> &'static str {
@@ -188,6 +194,7 @@ impl Rewrite {
             Rewrite::GotToDirect => "got-to-direct",
             Rewrite::GotToImm => "got-to-imm",
             Rewrite::GotToMovImm => "got-to-mov-imm",
+            Rewrite::PerLinker => "per-linker",
         }
     }
 }
@@ -240,6 +247,9 @@ pub enum Reason {
     /// `spec/resolve.md` §7.2 refuses, in a reference's output (§4.4b,
     /// WP-170 part 2).
     Defsym,
+    /// Stage R: the clause needs an option of the line and there is no
+    /// line (§14.1, §14.6).
+    OptionsUnknown,
 }
 
 impl Reason {
@@ -262,6 +272,7 @@ impl Reason {
             Reason::Dynamic => "dynamic",
             Reason::Wrap => "wrap-shape",
             Reason::Defsym => "defsym-shape",
+            Reason::OptionsUnknown => "options-unknown",
         }
     }
 
@@ -291,6 +302,10 @@ pub enum Via {
     /// Stage 3: a branch to a PLT entry whose `.got.plt` word holds S
     /// after the loader's work (§12, P-D9).
     Plt,
+    /// Stage R: matched by place and target (P-P3, §14.6).
+    Place,
+    /// Stage R: matched by content into a merged section (§14.4).
+    String,
 }
 
 impl Via {
@@ -303,6 +318,8 @@ impl Via {
             Via::Iplt => "iplt",
             Via::Tombstone => "tombstone",
             Via::Plt => "plt",
+            Via::Place => "place",
+            Via::String => "string",
         }
     }
 }
@@ -489,6 +506,52 @@ pub struct Coverage {
     pub meta: MetaCoverage,
     /// What the input set made of the link (§3.8): its coverage line.
     pub input_set: Option<String>,
+    /// Stage R (§14.6), when the output is relocatable.
+    pub relocatable: Option<RelCoverage>,
+    /// P-P1 (§14.5, §14.6), on a composition's report.
+    pub composition: Option<CompCoverage>,
+}
+
+/// What P-P1 compared (§14.6: `composition: {x} judged, {y} not judged
+/// ({letters})`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CompCoverage {
+    /// Compositions judged (0 or 1 per report).
+    pub judged: u64,
+    /// The exclusions that applied, `(letter, reason)` (P-P1 (a)-(d)).
+    pub not_judged: Vec<(char, String)>,
+    /// Input sections compared by place (item 2), records by target
+    /// (item 3), bytes outside the relocated fields (item 3), globals
+    /// (item 4).
+    pub pieces: u64,
+    pub records: u64,
+    pub bytes: u64,
+    pub symbols: u64,
+    /// Records whose target has no input piece to map (a linker-made
+    /// place, a slot, a TLS offset): judged by their form only.
+    pub records_by_form: u64,
+    /// What P-P1 leaves to other rules, by name (`.eh_frame` pieces).
+    pub not_compared: BTreeMap<String, u64>,
+    /// The tolerances used: (t1)-(t4) and how often.
+    pub tolerances: BTreeMap<String, u64>,
+}
+
+/// What stage R judged (§14.6).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RelCoverage {
+    /// Input sections placed whole, merged (a foreign map's), framed.
+    pub pieces: u64,
+    pub merged: u64,
+    pub framed: u64,
+    /// Output `SHT_GROUP` sections judged.
+    pub groups: u64,
+    /// Input FDEs live and removed.
+    pub fdes_live: u64,
+    pub fdes_removed: u64,
+    /// Output symbols judged.
+    pub symbols: u64,
+    /// Output section headers judged.
+    pub sections: u64,
 }
 
 /// What stage 4 judged (§13.2).
@@ -733,6 +796,50 @@ impl Report {
                 "stripped output (no .symtab), not judged: {}",
                 c.stripped_not_judged.join("; ")
             );
+        }
+        if let Some(r) = &c.relocatable {
+            let _ = writeln!(
+                s,
+                "relocatable: pieces {}, merged {}, framed {}; groups {}; FDEs {} live, {} removed; symbols {}; sections {}",
+                r.pieces,
+                r.merged,
+                r.framed,
+                r.groups,
+                r.fdes_live,
+                r.fdes_removed,
+                r.symbols,
+                r.sections
+            );
+        }
+        if let Some(p) = &c.composition {
+            let letters: Vec<String> = p.not_judged.iter().map(|(l, _)| l.to_string()).collect();
+            let _ = writeln!(
+                s,
+                "composition: {} judged, {} not judged ({})",
+                p.judged,
+                p.not_judged.len(),
+                letters.join(", ")
+            );
+            let _ = writeln!(
+                s,
+                "composition compared: pieces {}, records {} ({} by form), bytes {}, globals {}",
+                p.pieces, p.records, p.records_by_form, p.bytes, p.symbols
+            );
+            for (l, why) in &p.not_judged {
+                let _ = writeln!(s, "not judged: relocatable composition ({l}): {why}");
+            }
+            if !p.tolerances.is_empty() || !p.not_compared.is_empty() {
+                let t: Vec<String> =
+                    p.tolerances.iter().map(|(k, n)| format!("({k}) {n}")).collect();
+                let nc: Vec<String> =
+                    p.not_compared.iter().map(|(k, n)| format!("{k} {n}")).collect();
+                let _ = writeln!(
+                    s,
+                    "composition tolerances: {}; not compared: {}",
+                    t.join(", "),
+                    nc.join(", ")
+                );
+            }
         }
         if let Some(i) = &c.input_set {
             let _ = writeln!(s, "{i}");

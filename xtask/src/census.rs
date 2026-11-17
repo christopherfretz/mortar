@@ -159,6 +159,24 @@ pub const VARIATIONS: &[Variation] = &[
         &["-shared", "-Wl,-O1", "-Wl,-Bsymbolic-functions", "-Wl,-z,relro"],
         Flavour::Pic,
     ),
+    // The `-r` lines (spec/harness.md "The census at `-r`"; record
+    // spec/landed/layout/WP-154.md §A.2): the driver lines a reference
+    // links. `-r -shared`, `-r -static-pie`, `-r -Wl,--gc-sections` and
+    // `-Wl,-r` with the default PIE are refused by every driver: not
+    // variations.
+    v("r-plain", &["-r"], Flavour::Plain),
+    v("r-nostdlib", &["-r", "-nostdlib"], Flavour::Plain),
+    v("r-g", &["-r", "-g"], Flavour::Plain),
+    v("r-pthread", &["-r", "-pthread"], Flavour::Plain),
+    v("r-pie", &["-r", "-pie"], Flavour::Plain),
+    v("r-no-pie", &["-r", "-no-pie"], Flavour::Plain),
+    v("r-static", &["-r", "-static"], Flavour::Plain),
+    v("r-s", &["-r", "-s"], Flavour::Plain),
+    v("r-flto", &["-r"], Flavour::Lto),
+    v("r-no-pie-nostdlib", &["-no-pie", "-nostdlib", "-Wl,-r"], Flavour::Plain),
+    v("r-gc-e", &["-r", "-Wl,--gc-sections,-e,a"], Flavour::Plain),
+    v("r-fuse-lld", &["-r", "-fuse-ld=lld"], Flavour::Plain),
+    v("r-fuse-mold", &["-r", "-fuse-ld=mold"], Flavour::Plain),
 ];
 
 /// The source of the loader of a `-shared` line's library (LT-7): it
@@ -176,13 +194,24 @@ impl Variation {
     pub fn is_shared(&self) -> bool {
         self.args.contains(&"-shared")
     }
+
+    /// Whether the line is a `-r` line (its output is `ET_REL`).
+    pub fn is_relocatable(&self) -> bool {
+        self.args.iter().any(|a| *a == "-r" || *a == "-Wl,-r")
+    }
 }
 
 /// The drivers of `--quick` (by [`Driver::name`]'s family and language).
 pub const QUICK_DRIVERS: &[&str] = &["gcc/c", "gcc/c++", "gcc/fortran", "clang22/c++"];
 /// The variations of `--quick`.
 pub const QUICK_VARIATIONS: &[&str] =
-    &["default", "no-pie", "rdynamic", "x-no-pie-now", "x-static-pie"];
+    &["default", "no-pie", "rdynamic", "x-no-pie-now", "x-static-pie", "r-plain"];
+
+/// The refusals of a `-r` line that are out of M4-r for now: a key
+/// mortar's diagnostic carries, and why (`spec/diag.md` §4.4). `-r`
+/// itself until RL-7 lifts the refusal.
+pub const OUT_OF_M4R: &[(&str, &str)] =
+    &[("unsupported option: -r", "-r is refused until RL-7 (docs/ROADMAP.md M4-r)")];
 
 /// The refusals a rule puts out of M2: a key mortar's diagnostic carries,
 /// and the rule.
@@ -299,6 +328,8 @@ pub enum Outcome {
     NoLine(String),
     /// Refused by a name of [`OUT_OF_M2`]: the key, the rule.
     OutOfM2(&'static str, &'static str),
+    /// A `-r` line refused by a name of [`OUT_OF_M4R`]: the key, why.
+    OutOfM4r(&'static str, &'static str),
     /// Refused; GNU ld cannot link the line either.
     RefusedWithReference(String),
     /// A finding of [`KNOWN_FINDINGS`]: the rule, the reason.
@@ -314,6 +345,7 @@ impl Outcome {
             Self::OkSameFailure => "ok (the reference's program fails alike)",
             Self::NoLine(_) => "no line (the driver fails)",
             Self::OutOfM2(..) => "refused by name, out of M2",
+            Self::OutOfM4r(..) => "refused by name, out of M4-r",
             Self::RefusedWithReference(_) => "refused (GNU ld cannot link it either)",
             Self::KnownFinding(..) => "known verifier finding",
             Self::Fail(_) => "FAIL",
@@ -324,7 +356,9 @@ impl Outcome {
         match self {
             Self::Ok | Self::OkSameFailure => String::new(),
             Self::NoLine(k) | Self::RefusedWithReference(k) | Self::Fail(k) => k.clone(),
-            Self::OutOfM2(k, why) | Self::KnownFinding(k, why) => format!("{k} ({why})"),
+            Self::OutOfM2(k, why) | Self::OutOfM4r(k, why) | Self::KnownFinding(k, why) => {
+                format!("{k} ({why})")
+            }
         }
     }
 
@@ -574,7 +608,10 @@ impl Lane {
             .filter(|w| !(w.starts_with("-L") && w[2..].trim_end_matches('/') == wrap_s))
             .map(str::to_owned)
             .collect();
-        let ref_run = if linked.end.success() && reference.is_file() {
+        let ref_run = if var.is_relocatable() {
+            // A `-r` line's output runs only through a final link (below).
+            (linked.end.success() && reference.is_file()).then(|| (linked.end, String::new()))
+        } else if linked.end.success() && reference.is_file() {
             match self.try_output(d, var, &reference) {
                 Ok(r) => Some(r),
                 Err(e) => return Outcome::Fail(format!("the reference's program: {e}")),
@@ -620,6 +657,11 @@ impl Lane {
             if let Some((key, why)) = OUT_OF_M2.iter().find(|(k, _)| text.contains(k)) {
                 return Outcome::OutOfM2(key, why);
             }
+            if var.is_relocatable()
+                && let Some((key, why)) = OUT_OF_M4R.iter().find(|(k, _)| text.contains(k))
+            {
+                return Outcome::OutOfM4r(key, why);
+            }
             let first = text.lines().find(|l| l.contains("error")).unwrap_or_else(|| text.trim());
             let first = first.to_owned();
             return if ref_run.is_none() {
@@ -627,6 +669,9 @@ impl Lane {
             } else {
                 Outcome::Fail(format!("refused, no rule puts it out of M2: {first}"))
             };
+        }
+        if var.is_relocatable() {
+            return self.relocatable(d, &dir, &reference, &out, &map, ref_run.is_some());
         }
         let ours = match self.try_output(d, var, &out) {
             Ok(r) => r,
@@ -679,6 +724,76 @@ impl Lane {
             return Outcome::Fail(format!("{} verifier finding(s): {first}", rules.len()));
         }
         if theirs.0.success() { Outcome::Ok } else { Outcome::OkSameFailure }
+    }
+}
+
+impl Lane {
+    /// A `-r` line mortar linked (spec/harness.md "The census at `-r`"):
+    /// stage R on its output, then each `-r` output, mortar's and the
+    /// reference's, final-linked by the driver (GNU ld) and run: the two
+    /// programs must end and print alike. LT-R1's final link by mortar
+    /// and P-P1 are the link tests' (RL-7 adds them here).
+    fn relocatable(
+        &self,
+        d: &Driver,
+        dir: &Path,
+        reference: &Path,
+        out: &Path,
+        map: &Path,
+        reference_linked: bool,
+    ) -> Outcome {
+        if !reference_linked {
+            return Outcome::Fail("mortar links a -r line GNU ld cannot".to_owned());
+        }
+        let report = match crate::plumb::verify_link_line(
+            out,
+            map,
+            mortar_plumb::Format::Mortar,
+            dir,
+            None,
+            None,
+            None,
+        ) {
+            Ok((_, report, _)) => report,
+            Err(e) => return Outcome::Fail(format!("the verifier: {e}")),
+        };
+        if let Some(f) = report.findings.first() {
+            return Outcome::Fail(format!(
+                "stage R: {} finding(s): {} {}",
+                report.findings.len(),
+                f.rule.id(),
+                f.message
+            ));
+        }
+        let env: Vec<(&str, &str)> = d.env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let mut runs = Vec::new();
+        for (name, rout) in [("ref", reference), ("mortar", out)] {
+            let exe = dir.join(format!("{name}.final"));
+            let mut argv = d.args.clone();
+            argv.push(format!("-B{}/", self.wrap_dir(d.arch).display()));
+            argv.extend([rout.display().to_string(), "-o".to_owned(), exe.display().to_string()]);
+            match run(&d.program, &argv, dir, &env, TOOL_LIMITS) {
+                Ok(o) if o.end.success() => {}
+                Ok(o) => {
+                    return Outcome::Fail(format!(
+                        "the final link of {name}'s -r output: {}",
+                        o.first_error_line()
+                    ));
+                }
+                Err(e) => return Outcome::Fail(format!("the final link: {e}")),
+            }
+            match self.run_program(d.arch, &exe) {
+                Ok(r) => runs.push(r),
+                Err(e) => return Outcome::Fail(format!("{name}'s final program: {e}")),
+            }
+        }
+        if runs[0] != runs[1] {
+            return Outcome::Fail(format!(
+                "runs differently through -r: GNU ld's {:?}, mortar's {:?}",
+                runs[0], runs[1]
+            ));
+        }
+        Outcome::Ok
     }
 }
 
@@ -859,13 +974,7 @@ pub fn run_lane(args: &Args) -> Result<bool, String> {
     print!("{}", report(&results, &notes, &compile_failures));
     let failed = results.iter().filter(|l| !l.outcome.passes()).count() + compile_failures.len();
     eprintln!("{}", shared_count(&results));
-    eprintln!(
-        "census: {} lines, {} drivers, {} pass, {failed} fail, in {:.1} s",
-        results.len(),
-        all.len(),
-        results.len() - results.iter().filter(|l| !l.outcome.passes()).count(),
-        started.elapsed().as_secs_f64()
-    );
+    eprintln!("{}", summary(&results, all.len(), failed, started.elapsed().as_secs_f64()));
     let e = *lane.erratum.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     eprintln!(
         "census: erratum 843419: {} outputs judged with the option ({} sites fixed, {} not \
@@ -890,6 +999,22 @@ fn set_executable(p: &Path) -> Result<(), String> {
 /// The `-shared` lines' count (LT-7): how many, how many mortar linked
 /// (its library loaded as the reference's and the verifier passed it, or
 /// its finding is known), how many it refused by name.
+/// The census's last line but one: the counts, the `-r` lines' in
+/// brackets (spec/harness.md "The census at `-r`"). `failed` counts the
+/// compile failures too.
+pub fn summary(lines: &[Line], drivers: usize, failed: usize, secs: f64) -> String {
+    let is_r = |l: &&Line| VARIATIONS.iter().any(|v| v.name == l.variation && v.is_relocatable());
+    let r = lines.iter().filter(is_r).count();
+    let rf = lines.iter().filter(is_r).filter(|l| !l.outcome.passes()).count();
+    let passed = lines.len() - lines.iter().filter(|l| !l.outcome.passes()).count();
+    format!(
+        "census: {} lines ({r} -r), {drivers} drivers, {passed} pass ({} -r), {failed} fail \
+         ({rf} -r), in {secs:.1} s",
+        lines.len(),
+        r - rf
+    )
+}
+
 pub fn shared_count(lines: &[Line]) -> String {
     let shared: Vec<&Line> = lines
         .iter()
@@ -1013,6 +1138,38 @@ mod tests {
         assert_eq!(shared_count(&lines), "census: -shared: 3 lines, 1 linked, 1 refused by name");
         assert!(VARIATIONS.iter().filter(|v| v.is_shared()).all(|v| v.flavour == Flavour::Pic));
         assert!(!QUICK_VARIATIONS.iter().any(|q| q.starts_with("shared-") || *q == "shared"));
+    }
+
+    // "The census at `-r`" (RL-6): the `-r` lines are a class of the
+    // summary line, refused by name until RL-7.
+    #[test]
+    fn relocatable_lines_are_counted() {
+        let line = |variation, outcome| Line {
+            driver: "gcc/aarch64/c".into(),
+            short: "gcc/c".into(),
+            arch: Arch::Aarch64,
+            variation,
+            outcome,
+        };
+        let r = OUT_OF_M4R[0];
+        let lines = [
+            line("default", Outcome::Ok),
+            line("r-plain", Outcome::OutOfM4r(r.0, r.1)),
+            line("r-g", Outcome::Fail("x".into())),
+            line("no-pie", Outcome::Fail("y".into())),
+        ];
+        assert_eq!(
+            summary(&lines, 3, 2, 1.0),
+            "census: 4 lines (2 -r), 3 drivers, 2 pass (1 -r), 2 fail (1 -r), in 1.0 s"
+        );
+        let names: Vec<&str> =
+            VARIATIONS.iter().filter(|v| v.is_relocatable()).map(|v| v.name).collect();
+        assert_eq!(names.len(), 13, "{names:?}");
+        assert!(names.iter().all(|n| n.starts_with("r-")));
+        assert!(
+            VARIATIONS.iter().filter(|v| v.name.starts_with("r-")).all(Variation::is_relocatable)
+        );
+        assert!(Outcome::OutOfM4r(r.0, r.1).passes());
     }
 
     #[test]

@@ -120,6 +120,11 @@ pub(crate) enum Loc {
 }
 
 impl<'s> Store<'s> {
+    /// The source the store reads (stage R reads whole inputs from it).
+    pub(crate) fn src(&self) -> &'s dyn Source {
+        self.src
+    }
+
     /// Resolves every file of `maps` against `src` and reads the skeleton
     /// of every object they name (§3.3).
     pub(crate) fn read(src: &'s dyn Source, maps: &[&Map]) -> Store<'s> {

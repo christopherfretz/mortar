@@ -7,6 +7,13 @@
 //!                     [--mutate [--per-class N] [--seed S] [--threads T]]
 //!                     [--sweep [--window W] [--threads T] [--no-reseal]]
 //!
+//!   cargo xtask plumb --compose <D> <D.map> <V> <V.map> <R> <R.map>
+//!                     --map-format F [--r-format F] [--line-d|-v|-r <file>]
+//!
+//! A `-r` output (`ET_REL`) is judged by stage R (spec/plumb.md §14);
+//! `--compose` runs P-P1 on a direct link `D`, the link `V` through the
+//! `-r` output `R`, and `R`'s own map (§14.5).
+//!
 //! With `--mutate`, the link is not judged but mutated (§9.5): the table
 //! of mutants applied, caught and missed per class, then every missed one.
 //!
@@ -24,7 +31,8 @@ use mortar_plumb::{Format, Input};
 pub const USAGE: &str = "usage: cargo xtask plumb <output> --map <file> --map-format gnu|lld|mold|mortar \
                          [--inputs-from <response file>|map] [--line <file>] \
                          [--fix-cortex-a53-843419|--no-fix-cortex-a53-843419] \
-                         [--mutate [--per-class N] [--seed S] [--threads T]] [--sweep [--window W] [--no-reseal]] [--coverage]\n";
+                         [--mutate [--per-class N] [--seed S] [--threads T]] [--sweep [--window W] [--no-reseal]] [--coverage]\n\
+                         (an ET_REL output is judged by stage R, spec/plumb.md §14; P-P1: --compose)\n";
 
 /// The command line of `xtask plumb`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -801,6 +809,16 @@ fn print_profile() {
 /// a usage or read error.
 pub fn main(args: &[String]) -> std::process::ExitCode {
     use std::process::ExitCode;
+    if args.first().is_some_and(|a| a == "--compose") {
+        return match ComposeArgs::parse(&args[1..]).and_then(|a| run_compose(&a)) {
+            Ok(true) => ExitCode::SUCCESS,
+            Ok(false) => ExitCode::FAILURE,
+            Err(message) => {
+                eprint!("xtask plumb --compose: {message}\n{COMPOSE_USAGE}");
+                ExitCode::from(2)
+            }
+        };
+    }
     if args.first().is_some_and(|a| a == "--equiv") {
         return match EquivArgs::parse(args).and_then(|a| run_equiv(&a)) {
             Ok(true) => ExitCode::SUCCESS,
@@ -819,6 +837,113 @@ pub fn main(args: &[String]) -> std::process::ExitCode {
             ExitCode::from(2)
         }
     }
+}
+
+pub const COMPOSE_USAGE: &str = "usage: cargo xtask plumb --compose <D> <D.map> <V> <V.map> \
+                                 <R> <R.map> --map-format gnu|lld|mold|mortar \
+                                 [--r-format gnu|lld|mold|mortar] [--line-d <file>] \
+                                 [--line-v <file>] [--line-r <file>]\n";
+
+/// The command line of `xtask plumb --compose` (spec/plumb.md §14.5 P-P1;
+/// spec/harness.md LT-R2): the direct link `D`, the link `V` through the
+/// `-r` output `R`, each with its map. `D` and `V` are one linker's
+/// (`--map-format`); `R` may be another's (`--r-format`, LT-R3's mixed
+/// toolchain). A reference's line is a file of words, one per line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ComposeArgs {
+    /// (output, map) of `D`, `V` and `R`.
+    pub links: [(PathBuf, PathBuf); 3],
+    pub format: Format,
+    pub r_format: Format,
+    pub lines: [Option<PathBuf>; 3],
+}
+
+impl ComposeArgs {
+    /// Parses the arguments after `--compose`.
+    pub fn parse(args: &[String]) -> Result<ComposeArgs, String> {
+        let mut paths = Vec::new();
+        let mut format = None;
+        let mut r_format = None;
+        let mut lines: [Option<PathBuf>; 3] = [None, None, None];
+        let mut it = args.iter();
+        while let Some(a) = it.next() {
+            let mut value =
+                |name: &str| it.next().cloned().ok_or_else(|| format!("{name} needs a value"));
+            let fmt = |v: String| {
+                Format::from_name(&v).ok_or_else(|| format!("unknown map format '{v}'"))
+            };
+            match a.as_str() {
+                "--map-format" => format = Some(fmt(value(a)?)?),
+                "--r-format" => r_format = Some(fmt(value(a)?)?),
+                "--line-d" => lines[0] = Some(PathBuf::from(value(a)?)),
+                "--line-v" => lines[1] = Some(PathBuf::from(value(a)?)),
+                "--line-r" => lines[2] = Some(PathBuf::from(value(a)?)),
+                s if s.starts_with('-') => return Err(format!("unknown option '{s}'")),
+                s => paths.push(PathBuf::from(s)),
+            }
+        }
+        let [d, dm, v, vm, r, rm]: [PathBuf; 6] = paths
+            .try_into()
+            .map_err(|p: Vec<PathBuf>| format!("six paths are needed, not {}", p.len()))?;
+        let format = format.ok_or("no --map-format")?;
+        Ok(ComposeArgs {
+            links: [(d, dm), (v, vm), (r, rm)],
+            format,
+            r_format: r_format.unwrap_or(format),
+            lines,
+        })
+    }
+}
+
+/// Runs P-P1 on the three links: prints the findings, the composition's
+/// coverage and the exclusions by letter; `Ok(true)` when it is clean.
+///
+/// # Errors
+/// A file cannot be read, or a map does not parse.
+pub fn run_compose(args: &ComposeArgs) -> Result<bool, String> {
+    let read = |p: &Path| std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()));
+    let mut outputs = Vec::new();
+    let mut maps = Vec::new();
+    let mut lines = Vec::new();
+    for (k, (out, map)) in args.links.iter().enumerate() {
+        let format = if k == 2 { args.r_format } else { args.format };
+        outputs.push(read(out)?);
+        let text = String::from_utf8_lossy(&read(map)?).into_owned();
+        maps.push(
+            mortar_plumb::map::parse(format, &text)
+                .map_err(|e| format!("{}:{}: {}", map.display(), e.line, e.message))?,
+        );
+        lines.push(match &args.lines[k] {
+            Some(l) => {
+                Some(String::from_utf8_lossy(&read(l)?).lines().map(str::to_string).collect())
+            }
+            None => None,
+        });
+    }
+    let mut files = Vec::new();
+    for map in &maps {
+        files.push(link_files(map, Path::new(""), None)?);
+    }
+    let mut lines = lines.into_iter();
+    let mut link = |k: usize| mortar_plumb::compose::Link {
+        output: &outputs[k],
+        src: &files[k],
+        map: &maps[k],
+        line: lines.next().flatten(),
+    };
+    let (d, v, r) = (link(0), link(1), link(2));
+    let path = args.links[2].0.display().to_string();
+    let report = mortar_plumb::compose::compose(
+        &d,
+        &v,
+        &mortar_plumb::compose::Partial { link: r, path: &path },
+    );
+    print!("{}", report.render(&args.links[1].0.display().to_string()));
+    for n in mortar_plumb::compose::not_judged(&report) {
+        println!("composition not judged: {n}");
+    }
+    print!("{}", report.summary());
+    Ok(report.clean())
 }
 
 pub const EQUIV_USAGE: &str = "usage: cargo xtask plumb --equiv <X.map> <F.map> <X> <F>\n";

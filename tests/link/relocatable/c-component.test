@@ -1,0 +1,62 @@
+# RL-6 (WP-186) smoke test: the D.3 C component (record
+# spec/landed/layout/WP-154.md §D.3) through a reference's `-r` into a
+# final link by every linker of the matrix (spec/harness.md LT-R1, LT-R3:
+# GNU ld's and lld's `-r` fed to mortar's final link and GNU ld's). The
+# component has a common (`-fcommon`), a merged string, a hidden, a weak
+# and an undefined weak symbol, and constructors at two priorities. The
+# program through `-r` prints what the direct link prints. mold's `-r` is
+# not used: it makes the common `SHN_ABS` (plumb.md A90; LT-R3's
+# `commons`).
+#@ spec: harness.md "Relocatable outputs"
+#@ spec: plumb.md "14.5"
+
+cc -O1 -fcommon -ffunction-sections -fdata-sections c1.c -o c1.o
+cc -O1 -fcommon -ffunction-sections -fdata-sections c2.c -o c2.o
+cc -O1 main.c -o main.o
+partial bfd c1.o c2.o -o comp.bfd.o
+partial lld c1.o c2.o -o comp.lld.o
+check readelf -sW comp.bfd.o
+  has: g_common
+
+link gcc -static main.o c1.o c2.o -o direct
+run direct
+  stdout: 101 7 hidden 42 0 abc
+
+link gcc -static main.o comp.bfd.o -o via.bfd
+run via.bfd
+  stdout: 101 7 hidden 42 0 abc
+link gcc -static main.o comp.lld.o -o via.lld
+run via.lld
+  stdout: 101 7 hidden 42 0 abc
+
+#--- c1.c
+int g_common;
+int g_init = 7;
+__attribute__((visibility("hidden"))) const char *hid(void) { return "hidden"; }
+__attribute__((weak)) int wk(void) { return 42; }
+extern int maybe(void) __attribute__((weak));
+int has_maybe(void) { return maybe ? 1 : 0; }
+const char *str(void) { return "abc"; }
+__attribute__((constructor(200))) static void early(void) { g_common = 100; }
+#--- c2.c
+extern int g_common;
+const char *hid(void);
+const char *str(void);
+int wk(void);
+int has_maybe(void);
+const char *(*get_hid(void))(void) { return hid; }
+__attribute__((constructor(300))) static void late(void) { g_common += 1; }
+int c2_wk(void) { return wk(); }
+int c2_maybe(void) { return has_maybe(); }
+const char *c2_str(void) { return str(); }
+#--- main.c
+#include <stdio.h>
+extern int g_common, g_init;
+const char *(*get_hid(void))(void);
+int c2_wk(void);
+int c2_maybe(void);
+const char *c2_str(void);
+int main(void) {
+  printf("%d %d %s %d %d %s\n", g_common, g_init, get_hid()(), c2_wk(), c2_maybe(), c2_str());
+  return 0;
+}

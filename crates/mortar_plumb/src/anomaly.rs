@@ -19,6 +19,9 @@ pub fn classify(linker: Format, output: &[u8], f: &Finding) -> Option<&'static s
     if linker == Format::Mortar {
         return None;
     }
+    if let Rule::Rel(n) = f.rule {
+        return relocatable(linker, n, &f.message);
+    }
     if f.rule == Rule::GotSlot
         && f.symbol.as_deref().is_some_and(|s| s.starts_with('.'))
         && f.found.zip(f.expected).is_some_and(|(found, want)| found < want)
@@ -703,4 +706,114 @@ fn defsym_bfd(f: &Finding) -> Option<&'static str> {
 /// The id of an anomaly text: `"A9"` of `"A9: ..."`.
 pub fn id(text: &str) -> &str {
     text.split_once(':').map_or(text, |(id, _)| id)
+}
+
+/// The anomalies of the references' `-r` outputs (stage R, §14; §10.2
+/// A90-A102, A120-A122), by the rule and the message's form.
+/// A127 (RL-6): what lld's debug sections kept under `-r -s` show.
+fn a127(n: u8, m: &str) -> bool {
+    match n {
+        2 => {
+            m.contains("§14.3 drops it: a debug section under -S or -s")
+                || (m.contains(":(.debug_") && m.contains(", not the tombstone "))
+        }
+        3 => {
+            m.contains(":(.debug_") && m.contains("(a record into a dropped copy has no equivalent")
+        }
+        _ => m.contains(" .debug_") && m.ends_with(" comes from no input section"),
+    }
+}
+
+fn relocatable(linker: Format, n: u8, m: &str) -> Option<&'static str> {
+    let (lld, mold) = (linker == Format::Lld, linker == Format::Mold);
+    let a = match n {
+        3 if mold && m.contains(" has an output record against symbol 0, not ") => {
+            "A97: at -r mold writes a debug record whose target is a dropped copy against symbol 0"
+        }
+        3 if mold && m.contains("_NONE against ") && m.contains(".llvm.call-graph-profile") => {
+            "A102: at -r mold copies .llvm.call-graph-profile and drops its relocation section"
+        }
+        4 if mold && m.starts_with("common ") && m.contains(" is SHN_ABS, not SHN_COMMON") => {
+            "A90: at -r mold turns a common into an SHN_ABS definition of its alignment"
+        }
+        4 if mold && m.ends_with(" is not in .symtab") && m.contains('@') => {
+            "A95: at -r mold strips .symver names to their base"
+        }
+        4 if mold && m.contains(" is defined in ") && m.ends_with("; no live input defines it") => {
+            "A95: at -r mold strips .symver names to their base"
+        }
+        4 if lld
+            && (m.starts_with("local wi.") || m.starts_with("local wt."))
+            && m.contains(" at 65521+") =>
+        {
+            "A126: at -r lld keeps a dropped COMDAT copy's local group signature as an SHN_ABS local"
+        }
+        4 if mold && m.ends_with(" is not in .symtab") => {
+            "A94: at -r mold drops an STB_GNU_UNIQUE member symbol"
+        }
+        4 if mold && m.contains(" is in .symtab 2 times") => {
+            "A96: at -r mold writes two strong definitions of one name"
+        }
+        5 if lld
+            && m.starts_with("output FDE at ")
+            && m.contains(" comes from a removed FDE of ") =>
+        {
+            "A91: at -r lld keeps the FDE of a dropped COMDAT copy"
+        }
+        6 if mold
+            && ((m.starts_with("group ") && m.ends_with(" is not in the output"))
+                || m.ends_with(" has SHF_GROUP and no group lists it")) =>
+        {
+            "A92: at -r mold drops non-COMDAT groups"
+        }
+        6 if mold && m.contains(" .rel") && m.ends_with(" is a group member without SHF_GROUP") => {
+            "A121: at -r mold lists a member's relocation section in its group without SHF_GROUP"
+        }
+        7 if (lld || mold) && m.starts_with("EI_OSABI is 0, not 3") => {
+            "A122: at -r lld and mold write STB_GNU_UNIQUE or STT_GNU_IFUNC symbols with EI_OSABI ELFOSABI_NONE"
+        }
+        2 if mold && m.contains(":(.ctors") && m.contains(" .init_array, of another name") => {
+            "A123: at -r mold moves .ctors pieces into .init_array, dropping their priority suffix"
+        }
+        11 if mold && m.contains(" .init_array: its name is not its pieces' name") => {
+            "A123: at -r mold moves .ctors pieces into .init_array, dropping their priority suffix"
+        }
+        4 if mold && m.starts_with("local ") && m.contains(" at 65521+") => {
+            "A124: at -r mold makes the local signature symbols of groups SHN_ABS"
+        }
+        3 if lld
+            && m.starts_with("output record R_")
+            && m.contains("_NONE at ")
+            && m.contains(" .eh_frame+") =>
+        {
+            "A125: at -r lld leaves an R_*_NONE record in .rela.eh_frame where it removed an FDE"
+        }
+        2 | 3 | 11 if lld && a127(n, m) => "A127: at -r lld keeps the debug sections under -s",
+        10 if lld
+            && m.starts_with("an input asks for an executable stack (")
+            && m.ends_with(" is N") =>
+        {
+            "A93: at -r lld writes .note.GNU-stack without SHF_EXECINSTR over an input that has it"
+        }
+        10 if mold && m.starts_with("the line asks for a build id (") => {
+            "A98: at -r mold writes no .note.gnu.build-id under --build-id"
+        }
+        11 if mold && m.contains(" holds the SHF_GNU_RETAIN piece ") => {
+            "A99: at -r mold merges an SHF_GNU_RETAIN piece into a section without SHF_GNU_RETAIN"
+        }
+        11 if lld && m.ends_with(": SHF_MERGE with sh_entsize 0") => {
+            "A100: at -r lld merges SHF_MERGE pieces of different sh_entsize with sh_entsize 0"
+        }
+        11 if mold
+            && (m.ends_with(": sh_link is 0")
+                || m.contains(": SHF_LINK_ORDER pieces link to ")) =>
+        {
+            "A101: at -r mold writes sh_link 0 on an SHF_LINK_ORDER section"
+        }
+        11 if lld && m.ends_with(" COMMON comes from no input section") => {
+            "A120: at -r lld writes an empty NOBITS COMMON section that holds no symbol"
+        }
+        _ => return None,
+    };
+    Some(a)
 }

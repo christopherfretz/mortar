@@ -1,0 +1,36 @@
+# PENDING (RL-7): `partial mortar` is refused until RL-7 lifts the `-r` refusal ("unsupported option: -r"); rename this file to .test with it.
+# RL-6 (WP-186): mortar's own `-r` of the D.3 C shape (spec/harness.md
+# "partial mortar"): the lane links it with `--mortar-map` and judges it
+# by stage R (spec/plumb.md §14), checks its mode (0644, I-R3) and links
+# it a second time to compare the bytes (I-R11, LT-R4); then every
+# linker of the matrix final-links it (LT-R1, LT-R3) and the program
+# prints what the direct link prints.
+#@ spec: harness.md "Relocatable outputs"
+
+cc -O1 -fcommon -ffunction-sections -fdata-sections c1.c -o c1.o
+cc -O1 -fcommon -ffunction-sections -fdata-sections c2.c -o c2.o
+cc -O1 main.c -o main.o
+partial mortar c1.o c2.o -o comp.mortar.o
+
+link gcc -static main.o c1.o c2.o -o direct
+run direct
+  stdout: 101 7 hidden
+link gcc -static main.o comp.mortar.o -o via
+run via
+  stdout: 101 7 hidden
+
+#--- c1.c
+int g_common;
+int g_init = 7;
+__attribute__((visibility("hidden"))) const char *hid(void) { return "hidden"; }
+__attribute__((constructor(200))) static void early(void) { g_common = 100; }
+#--- c2.c
+extern int g_common;
+const char *hid(void);
+const char *(*get_hid(void))(void) { return hid; }
+__attribute__((constructor(300))) static void late(void) { g_common += 1; }
+#--- main.c
+#include <stdio.h>
+extern int g_common, g_init;
+const char *(*get_hid(void))(void);
+int main(void) { printf("%d %d %s\n", g_common, g_init, get_hid()()); return 0; }

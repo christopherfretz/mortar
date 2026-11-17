@@ -411,3 +411,95 @@ pub(crate) fn check(
     }
     findings
 }
+
+/// P-P10's property clause at `-r` (§14.5): P1's merge by the writer's
+/// column over the inputs' notes (one list of section bytes per input)
+/// and the output's note. Returns the messages, the types judged and the
+/// types not judged.
+pub(crate) fn check_rel(
+    format: Format,
+    machine: u16,
+    align: usize,
+    inputs: &[Vec<&[u8]>],
+    output: Option<&[u8]>,
+) -> (Vec<String>, u64, u64) {
+    let mut msgs = Vec::new();
+    let (mut judged, mut not_judged) = (0u64, 0u64);
+    let mut per_obj: Vec<Option<Props>> = Vec::new();
+    let mut judged_and = true;
+    for secs in inputs {
+        let mut ns = Vec::new();
+        for d in secs {
+            match notes(d, align) {
+                Ok(mut v) => ns.append(&mut v),
+                Err(e) => {
+                    msgs.push(format!("an input's {NAME} cannot be read: {e}"));
+                    return (msgs, judged, not_judged + 1);
+                }
+            }
+        }
+        let combined =
+            if ns.is_empty() { Some(Props::new()) } else { combine(format, machine, &ns) };
+        judged_and &= combined.is_some();
+        per_obj.push(combined);
+    }
+    let found = match output.map(|d| notes(d, align)) {
+        None => Props::new(),
+        Some(Ok(ns)) if ns.len() == 1 => ns.into_iter().next().unwrap_or_default(),
+        Some(Ok(ns)) => {
+            msgs.push(format!("{NAME} holds {} property notes, not one", ns.len()));
+            return (msgs, judged, not_judged);
+        }
+        Some(Err(e)) => {
+            msgs.push(format!("{NAME}: {e}"));
+            return (msgs, judged, not_judged);
+        }
+    };
+    let mut types: std::collections::BTreeSet<u32> = found.keys().copied().collect();
+    for p in per_obj.iter().flatten() {
+        types.extend(p.keys().copied());
+    }
+    for t in types {
+        let got = found.get(&t);
+        let want = match treat(format, machine, t) {
+            Treat::NotJudged => {
+                not_judged += 1;
+                continue;
+            }
+            Treat::Dropped => None,
+            Treat::Merge(m) => {
+                if m == Merge::And && !judged_and {
+                    not_judged += 1;
+                    continue;
+                }
+                let vals: Vec<Option<&Vec<u8>>> =
+                    per_obj.iter().map(|p| p.as_ref().and_then(|p| p.get(&t))).collect();
+                if let Ok(v) = merge(m, &vals) {
+                    v
+                } else {
+                    msgs.push(format!(
+                        "the inputs' property {t:#x} differ, and the -r is not refused"
+                    ));
+                    continue;
+                }
+            }
+        };
+        judged += 1;
+        if got != want.as_ref() {
+            msgs.push(match (&want, got) {
+                (None, _) => {
+                    format!("the output has property {t:#x}, which the inputs' merge does not give")
+                }
+                (Some(_), None) => {
+                    format!("the output lacks property {t:#x}, which the inputs' merge gives")
+                }
+                _ => format!(
+                    "property {t:#x} is {:#x}, not the merge of the inputs' {:#x}",
+                    got.map_or(0, |d| word(d)),
+                    want.as_deref().map_or(0, word)
+                ),
+            });
+        }
+    }
+    (msgs, judged, not_judged)
+}

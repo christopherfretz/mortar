@@ -824,7 +824,7 @@ keeps blanks (with `\"` and `\\`).
 | `link <driver> <args>` | a link; `<driver>` is `ld` (the linker itself) or `gcc`, `g++`, `gfortran`, `clang`, `clang++` |
 | `run <program> [<args>]` | runs a linked program |
 | `check <tool> <args>` | `readelf`, `nm`, `objdump` (the architecture's), `llvm-readelf`, `llvm-dwarfdump` (WP-080: `--verify`, the DWARF of a split-DWARF output), `text` (the file named by the one argument, read), `cmp` (two files, compared byte for byte), `elflint`, `ldd`, `gdb`, `lldb` ("Checks") |
-| `partial mortar <args>` | (planned: RL-6, WP-186, usable once RL-7 lifts the `-r` refusal) the same as `partial <reference>` with mortar as the linker: `mortar -r <args>`, with `--mortar-map=` a map of its own (`.linktest-partial-<line>.map`), judged by L3's stage R like a link step's output; the same file for every linker of the matrix. A refused `partial mortar` fails the unit (mortar must link what GNU ld links), unless the unit says `exit: fail` |
+| `partial mortar <args>` | (RL-6, WP-186; usable once RL-7 lifts the `-r` refusal, its tests are `.test.pending` until then) the same as `partial <reference>` with mortar as the linker: `mortar -m <emulation> -r --mortar-map=.linktest-partial-<line>.map <args>`, judged by L3's stage R (a finding fails the unit), with LT-R4's mode and determinism checks; the same file for every linker of the matrix. A refused `partial mortar` fails the unit (mortar must link what GNU ld links; a `partial` step takes no `exit:`). Without a mortar binary in the run the unit is skipped by name |
 
 The build steps come before every link, run and check step. Expectations
 are the indented lines under a step:
@@ -966,7 +966,7 @@ mortar included (`docs/VALIDATION.md` layer L3).
   (`ET_DYN`: PIE, static PIE and shared objects, stage 3), `dynamic`
   (`ET_EXEC` with `PT_INTERP` or `PT_DYNAMIC`, stage 3) and `relocatable`
   (`-r`; `ET_REL`). A file that is not ELF is judged, and fails S1.
-- **Stage R** (planned: RL-5 and RL-6). A `relocatable` output is judged
+- **Stage R** (RL-5 and RL-6). A `relocatable` output is judged
   when the verifier has stage R (`mortar_plumb::STAGE_R`, a constant RL-5
   sets to `true`), read once at the run's start like stage 3's: S1 accepts
   `ET_REL` (`spec/plumb.md` §14.5 P-P9) and stage R's rules run on the
@@ -975,7 +975,8 @@ mortar included (`docs/VALIDATION.md` layer L3).
   records). Without it, the output is counted as not judged,
   `relocatable`, as now. Every step that makes a `-r` output is judged
   so: a `link` step with `-r`, `-i`, `--relocatable` or `-Ur` (or a
-  driver's `-r`), and every `partial` step ("Relocatable outputs").
+  driver's `-r`), and every `partial` step ("Relocatable outputs"; at
+  RL-6 a `partial mortar` step's, not yet a reference's).
 - **Stage 3.** Dynamic outputs (`pie-or-shared`, `dynamic`) are judged
   when the verifier has stage 3, which the run reads once at its start
   (`engine::stage3_present`: the verifier's constant
@@ -1214,8 +1215,8 @@ says what mortar does.
 | `--fatal-warnings`: the severity word | `warning:` | `error:` | `error:` | `error:` | `diag/diagnostic-switches` |
 | `-M` with `-Map=FILE` | the map to FILE | no FILE written | the map to FILE | the map to standard output | `input/info-requests` |
 | `--threads` without N | unknown | reads the next word as N | all processors | all processors | `input/bookkeeping` |
-| `-r`: a common symbol | `COM`, largest size and alignment | the same | **`SHN_ABS`, value its alignment** (a mislink, `plumb.md` A90) | `COM` (`spec/resolve.md` RV-R5) | planned (RL-6, `skip(mold)` `commons`) |
-| `-r`: an IFUNC definition | kept | kept | **crashes** | kept | planned (RL-6, `skip(mold)` `ifunc`) |
+| `-r`: a common symbol | `COM`, largest size and alignment | the same | **`SHN_ABS`, value its alignment** (a mislink, `plumb.md` A90) | `COM` (`spec/resolve.md` RV-R5) | planned (`skip(mold)` `commons`; not reached by RL-6) |
+| `-r`: an IFUNC definition | kept | kept | **crashes** | kept | planned (`skip(mold)` `ifunc`; not reached by RL-6) |
 | `-r`: `.symver` names; a plain reference to the default version | kept; stays `UND vfoo` | kept; bound to `vfoo@@V2` | **stripped** (A95) | GNU ld's (RV-R6) | planned (RL-8) |
 | `-r`: two strong definitions | `multiple definition` | `duplicate symbol` | linked silently (A96) | `duplicate-symbol` (RV-R4) | planned (RL-2) |
 | `-r -u NAME`, no definition | `UND NAME` written | not written | not written | written (RV-R3) | planned (RL-2) |
@@ -1228,7 +1229,22 @@ says what mortar does.
 | `-r`: `SHF_LINK_ORDER` pieces | `sh_link` kept | kept | **0** (A101) | kept (L-R1) | planned (RL-8) |
 | `-r`: `SHF_MERGE` pieces of two entry sizes | one section, `SHF_MERGE` dropped | **`AM`, entsize 0** (A100) | two sections | GNU ld's (L-R1a) | planned (RL-8) |
 
-### Relocatable outputs (M4-r; planned: RL-6, WP-186)
+### Relocatable outputs (M4-r; RL-6, WP-186)
+
+**What RL-6 landed** (record `spec/landed/harness/WP-186.md`): L3
+judges a `link` step's `-r` output by stage R (`mortar_plumb::STAGE_R`);
+`partial mortar` (below, LT-R4 included); `cargo xtask plumb --compose`
+runs P-P1 on a direct link, the link through `-r` and the `-r` output's
+map (LT-R2 by hand: `<D> <D.map> <V> <V.map> <R> <R.map> --map-format F
+[--r-format F]`, `R` named as `V`'s map names it); the census's `-r`
+class; the smoke tests `tests/link/relocatable/`, whose final links are
+written in the test, so the matrix links each `-r` output with every
+linker (LT-R1 and LT-R3 for those tests). **Not yet:** the lane adding
+the two final links and the direct form itself (LT-R1's automatic form,
+LT-R2 in the lane), the `skip(mold)` reasons' check (LT-R3), LT-R5, and
+stage R on a reference's `partial` output (it needs the tests' mold
+anomalies declared first); P-P1's own tests are
+`crates/mortar_plumb/tests/compose.rs`.
 
 Record `spec/landed/layout/WP-154.md` §D.2, as rules. A `-r` output is
 judged twice: by stage R on its own (L3), and by what it does in a final
@@ -1320,7 +1336,11 @@ refusals `spec/diag.md` §4.4 lists, each printed). The census's last
 line adds the `-r` counts: `census: <n> lines (<r> -r), ... <p> pass
 (<rp> -r), <f> fail (<rf> -r)`; RL-6 lands the counting with every
 `-r` line refused by mortar (`OUT_OF_M4R` holds `-r` itself until RL-7)
-and RL-7 to RL-12 move the lines to pass.
+and RL-7 to RL-12 move the lines to pass. A `-r` line mortar links is,
+at RL-6, judged by stage R and final-linked by the driver (GNU ld) from
+mortar's and the reference's `-r` output, both programs run and
+compared; the final link by mortar and P-P1 on the census lines are
+RL-7's to add.
 
 ### Shared-object outputs
 
