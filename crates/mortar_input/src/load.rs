@@ -496,7 +496,18 @@ fn link_inputs<'s>(
         .collect();
     let rpath_from_r: Box<[(u32, &'s [u8])]> =
         link.rpath_from_r.iter().map(|(arg, dir)| (*arg, kept.get(dir))).collect();
-    LinkInputs { group, sonames, closure, opened, probes, script_entries, directives, rpath_from_r }
+    let local_binding = link.local_binding.clone().into_boxed_slice();
+    LinkInputs {
+        group,
+        sonames,
+        closure,
+        opened,
+        probes,
+        script_entries,
+        directives,
+        rpath_from_r,
+        local_binding,
+    }
 }
 
 /// What `--dependency-file` lists and `-t` prints (§10.4): the distinct
