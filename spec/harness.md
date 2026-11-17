@@ -1158,7 +1158,9 @@ says what mortar does.
 | IFUNC address equality with `-fpie` objects in a `-no-pie` link, x86-64 | **broken** | kept | kept | kept | `ifunc/irelative` uses `-fno-pie` |
 | IRELATIVE relocations of a static executable | `.rela.plt` | `.rela.dyn` | `.rela.dyn` | not checked | `ifunc/irelative` |
 | `--require-defined` of a name only a shared object defines | error | (no option) | accepted | error (`spec/resolve.md` §4.2) | `resolve/require-defined` |
-| `-u` of a name only an `--as-needed` shared object defines | not needed (verifier: P-D6) | not needed (P-D6) | needed, no import (P-D7) | needed, imported | `dyn/shared/whole-archive-shared` (mortar only) |
+| `-u` of a name only an `--as-needed` shared object defines | not needed (verifier: P-D6) | not needed (P-D6) | needed, no import (P-D7) | not needed (P-D6) | `dyn/shared/root-as-needed-unneeded` (`xfail(bfd,lld,mortar)` until P-D6 follows D-11 item 2) |
+| `-u` of a name a needed shared object defines | imported | no `.dynsym` entry | no `.dynsym` entry | imported | `dyn/shared/root-as-needed` |
+| `-u` of a name an unneeded `--as-needed` shared object defines, then an archive member | member extracted | root unfulfilled (P-D6) | needed, no import | refused by name | `dyn/shared/root-as-needed`, `-unneeded` |
 | `-z muldefs`, a TLS and a non-TLS definition | error | error in one order | accepted | error | `resolve/allow-multiple-definition` |
 | a `--whole-archive` member that is not ELF | error | error | skipped | error | `resolve/whole-archive-members` |
 | an archive lazy, then the same archive whole | duplicate | duplicate | links | duplicate | `resolve/whole-archive-defs` |

@@ -121,6 +121,12 @@ pub enum What {
         /// (WP-152: it does not satisfy the option, as in GNU ld).
         shared: Option<SymEntry>,
     },
+    /// `Refused{Feature, "root of an unneeded --as-needed shared object
+    /// and an archive member"}` (§4.2, WP-152): the root `arg` names
+    /// `key`, whose `first(key)` is the --as-needed shared object `lib`,
+    /// which ends up not needed, while the lazy file `member`, not live,
+    /// defines `key` (GNU ld extracts it, lld leaves the root unfulfilled).
+    RootAsNeeded { key: SymbolId, arg: u32, lib: FileId, member: FileId },
     /// `entry-not-found` (§5.5), a warning.
     EntryNotFound { key: OptId<SymbolId>, name: Box<[u8]>, arg: u32 },
     /// `common-larger-than-definition` (§3.3), a warning.
@@ -191,6 +197,7 @@ impl Problem {
     pub fn id(&self) -> &'static str {
         match self.what {
             What::AsNeededExtraction { .. }
+            | What::RootAsNeeded { .. }
             | What::NeededOrderUnknown { .. }
             | What::LtoSlim { .. }
             | What::SymbolBinding { .. }

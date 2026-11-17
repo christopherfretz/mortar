@@ -31,3 +31,4 @@ mortar resolve/allow-multiple-definition.test: M9 until the WP-152 rows are mirr
 mortar resolve/start-lib.test: M9 until the WP-152 rows are mirrored
 mortar,aarch64,x86_64 dyn/shared/whole-archive-shared.test: M9 until the WP-152 rows are mirrored
 mortar resolve/whole-archive-members.test: M9 until the WP-152 rows are mirrored
+mortar dyn/shared/root-as-needed.test: M9 until the WP-152 rows are mirrored

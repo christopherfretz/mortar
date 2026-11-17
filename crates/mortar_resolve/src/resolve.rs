@@ -105,6 +105,12 @@ pub mod flags {
     /// `st_other` set, AArch64's `STO_AARCH64_VARIANT_PCS` (§3.7: an
     /// undefined key's `.symtab` entry carries it).
     pub const VARIANT_PCS: u16 = 1 << 10;
+    /// A live relocatable object references the key (an undefined or
+    /// demoted mention; [`REF_REGULAR`] without the roots of §4.2).
+    /// `spec/dyn.md` D-11 item 2: a root makes no shared object needed.
+    pub const OBJ_REF: u16 = 1 << 11;
+    /// One of the [`OBJ_REF`] mentions is not weak.
+    pub const OBJ_STRONG: u16 = 1 << 12;
 }
 
 /// The entry address (§5.5).
@@ -421,6 +427,7 @@ pub fn resolve_steps<V: View>(
             });
         }
     }
+    root_as_needed(view, opts, &roots, &kinds, &targets, &file_live, &def, &mut problems);
     let entry = entry_point(&opts.entry, &def, view, &mut problems);
 
     let gnu = opts.warn_backrefs.then(|| {
@@ -562,9 +569,9 @@ fn d1_file<V: View>(
         match effect(m, class, dropped, ctx.redirect) {
             Effect::Ref { key, weak } => {
                 let k = key.0 as usize;
-                let mut bits = tls | flags::REF_REGULAR;
+                let mut bits = tls | flags::REF_REGULAR | flags::OBJ_REF;
                 if !weak {
-                    bits |= flags::REF_STRONG;
+                    bits |= flags::REF_STRONG | flags::OBJ_STRONG;
                 }
                 if dropped {
                     bits |= flags::DEMOTED;
@@ -1075,5 +1082,75 @@ fn parse_number(text: &[u8]) -> Option<u64> {
         u64::from_str_radix(&text[1..], 8).ok()
     } else {
         text.parse().ok()
+    }
+}
+
+/// §4.2 (WP-152): a root (other than `--require-defined`, which is an
+/// error of its own) that the program does not define, whose `first(K)`
+/// is an `--as-needed` shared object left out of the needed set (a root
+/// makes no library needed, `spec/dyn.md` D-11 item 2) while a lazy file
+/// that is not live defines `K`: GNU ld extracts that member, lld leaves
+/// the root unfulfilled. Refused by name, naming both.
+#[allow(clippy::too_many_arguments, reason = "the stage's columns")]
+fn root_as_needed<V: View>(
+    view: &V,
+    opts: &Options,
+    roots: &[crate::options::Root],
+    kinds: &[FileKind],
+    targets: &Targets,
+    file_live: &[FileLive],
+    def: &[Def],
+    problems: &mut Vec<Problem>,
+) {
+    let mut found: Vec<(SymbolId, u32, FileId)> = Vec::new();
+    for root in roots {
+        if opts.require_defined.iter().any(|n| n.arg == root.arg) {
+            continue;
+        }
+        let k = root.key.0 as usize;
+        if !matches!(def[k], Def::Undefined { .. }) {
+            continue;
+        }
+        let t = targets.first[k];
+        if t == crate::live::NO_FILE
+            || kinds[t as usize] != FileKind::Shared
+            || file_live[t as usize].is_live()
+            || !view.shared(FileId(t)).is_some_and(|s| s.as_needed)
+        {
+            continue;
+        }
+        found.push((root.key, root.arg, FileId(t)));
+    }
+    if found.is_empty() {
+        return;
+    }
+    let mut buf = Vec::new();
+    let mut member: Vec<Option<FileId>> = vec![None; found.len()];
+    for f in 0..kinds.len() {
+        if !kinds[f].is_lazy() || file_live[f].is_live() {
+            continue;
+        }
+        let file = FileId(f as u32);
+        buf.clear();
+        view.mentions(file, &mut buf);
+        for m in &buf {
+            let (class, _) = classify(m, SymEntry { file, index: m.index });
+            if !class.is_candidate() {
+                continue;
+            }
+            for (i, &(key, _, _)) in found.iter().enumerate() {
+                if member[i].is_none() && (m.key == key || m.also.get() == Some(key)) {
+                    member[i] = Some(file);
+                }
+            }
+        }
+    }
+    for (&(key, arg, lib), m) in found.iter().zip(member) {
+        if let Some(member) = m {
+            problems.push(Problem {
+                key: DiagKey::of(FileId::INTERNAL, u64::from(arg)),
+                what: What::RootAsNeeded { key, arg, lib, member },
+            });
+        }
     }
 }
