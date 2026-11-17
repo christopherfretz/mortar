@@ -98,8 +98,20 @@ impl SharedLine {
 
     /// Reads the words of a link (without the program name).
     #[allow(clippy::too_many_lines)] // one arm per option
-    pub fn read(args: &[String]) -> SharedLine {
+    /// `symbolic` is [`Line::symbolic`], the one reader of the
+    /// `-Bsymbolic` family (the last form; `None` with none or after
+    /// `-Bno-symbolic`).
+    pub fn read(args: &[String], symbolic: Option<&str>) -> SharedLine {
         let mut l = SharedLine::default();
+        l.symbolic = match symbolic {
+            None => None,
+            Some("-Bsymbolic") => Some(Symbolic::All),
+            Some("-Bsymbolic-functions") => Some(Symbolic::Functions),
+            Some(other) => {
+                l.outside.push(format!("{other} (dyn.md D-112: refused by name)"));
+                None
+            }
+        };
         let mut i = 0;
         let val = |a: &str, opts: &[&str]| -> Option<String> {
             opts.iter()
@@ -113,16 +125,7 @@ impl SharedLine {
                 args.get(i).cloned()
             };
             match a {
-                "-Bsymbolic" | "--Bsymbolic" => l.symbolic = Some(Symbolic::All),
-                "-Bsymbolic-functions" | "--Bsymbolic-functions" => {
-                    l.symbolic = Some(Symbolic::Functions);
-                }
-                "-Bno-symbolic" | "--Bno-symbolic" => l.symbolic = Some(Symbolic::None),
-                "-Bsymbolic-non-weak"
-                | "--Bsymbolic-non-weak"
-                | "-Bsymbolic-non-weak-functions"
-                | "--Bsymbolic-non-weak-functions"
-                | "--dynamic-list-data"
+                "--dynamic-list-data"
                 | "-dynamic-list-data"
                 | "--dynamic-list-cpp-new"
                 | "-dynamic-list-cpp-new"
@@ -253,7 +256,7 @@ pub fn accept(image: &Image<'_>, out: &DynOut, line: &mut Line, args: &[String])
     if !line.outside.iter().any(|o| o == SHARED_OUTSIDE) {
         return acc;
     }
-    let sl = SharedLine::read(args);
+    let sl = SharedLine::read(args, line.symbolic);
     if sl.static_pie {
         // gcc drops `-shared` before `-static-pie`; a line with both stays
         // outside stage 3, as before.
@@ -1891,6 +1894,19 @@ mod tests {
         w.iter().map(|s| (*s).to_string()).collect()
     }
 
+    struct NoFiles;
+    impl Files for NoFiles {
+        fn read(&self, _: &str) -> Option<Vec<u8>> {
+            None
+        }
+    }
+
+    /// The line read as `accept` reads it: the `-B` family by `Line`.
+    fn sline(w: &[&str]) -> SharedLine {
+        let w = words(w);
+        SharedLine::read(&w, Line::parse(&w, &NoFiles).symbolic)
+    }
+
     // spec: resolve.md §9.7 — globs are fnmatch(3) without flags.
     #[test]
     fn s9_7_fnmatch() {
@@ -1965,24 +1981,24 @@ mod tests {
     // alone when present; the refused forms by name.
     #[test]
     fn d112_the_line_forms() {
-        let sl = SharedLine::read(&words(&["-shared", "-Bsymbolic", "-Bsymbolic-functions"]));
+        let sl = sline(&["-shared", "-Bsymbolic", "-Bsymbolic-functions"]);
         assert_eq!(sl.form(), Symbolic::Functions);
         assert!(!sl.df_symbolic());
-        let sl = SharedLine::read(&words(&["-shared", "-Bsymbolic-functions", "-Bsymbolic"]));
+        let sl = sline(&["-shared", "-Bsymbolic-functions", "-Bsymbolic"]);
         assert!(sl.df_symbolic());
-        let sl = SharedLine::read(&words(&["-shared", "-Bsymbolic", "--dynamic-list", "d"]));
+        let sl = sline(&["-shared", "-Bsymbolic", "--dynamic-list", "d"]);
         assert!(!sl.df_symbolic(), "a list: no DF_SYMBOLIC");
         let l = DynList::parse(&[("d".into(), "{ fn; d*; };".into())]).unwrap();
         assert!(line_preempts(&sl, Some(&l), STT_FUNC, "fn", Format::Mortar));
         assert!(!line_preempts(&sl, Some(&l), STT_FUNC, "g", Format::Mortar));
         assert!(line_preempts(&sl, Some(&l), STT_TLS, "g", Format::Gnu), "GNU's TLS form");
-        let sl = SharedLine::read(&words(&["-shared", "-Bsymbolic-functions"]));
+        let sl = sline(&["-shared", "-Bsymbolic-functions"]);
         assert!(!line_preempts(&sl, None, STT_FUNC, "f", Format::Mortar));
         assert!(line_preempts(&sl, None, STT_NOTYPE, "f", Format::Mortar));
         assert!(!line_preempts(&sl, None, STT_NOTYPE, "f", Format::Gnu));
         for w in ["--dynamic-list-data", "-Bsymbolic-non-weak-functions", "--dynamic-list-cpp-new"]
         {
-            assert!(!SharedLine::read(&words(&["-shared", w])).outside.is_empty(), "{w}");
+            assert!(!sline(&["-shared", w]).outside.is_empty(), "{w}");
         }
     }
 
