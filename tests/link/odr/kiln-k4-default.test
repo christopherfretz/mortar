@@ -1,0 +1,48 @@
+# kiln-k4-details at -fmason-metadata=default (spec/odr.md O-17, O-18,
+# §9.1; WP-134): the same six types, kind 3 without kind 4. Each
+# odr-type-mismatch says what kind 3 alone can say: the sizes, or that
+# the sizes are the same (for the enumerations E and G too, in words
+# written for classes).
+#@ spec: odr.md O-17, O-18, §9.1
+#@ arch: aarch64 x86_64
+#@ requires: kiln g++
+#@ diag: odr-type-mismatch a.o b.o
+#@ diag: odr-type-mismatch a.o b.o
+#@ diag: odr-type-mismatch a.o b.o
+#@ diag: odr-type-mismatch a.o b.o
+#@ diag: odr-type-mismatch a.o b.o
+#@ diag: odr-type-mismatch a.o b.o
+
+cxx(kiln) -O0 -fmason-metadata=default a.cc -o a.o
+cxx(kiln) -O0 -fmason-metadata=default b.cc -o b.o
+cxx(kiln) -O0 main.cc -o main.o
+link(bfd,lld,mold) g++ -static -no-pie main.o a.o b.o -o prog
+link(mortar) g++ -static -no-pie main.o a.o b.o -Wl,--odr=strict -o prog
+  exit: fail
+  diag: ^>>> a.o: size 16, alignment 8; b.o: size 8, alignment 4$
+  diag: ^>>> a.o: size 4, alignment 4; b.o: size 8, alignment 8$
+  diag: ^>>> the layouts differ (members, offsets, bases or vtable) with the same size 16 and alignment 8$
+  diag: ^>>> the layouts differ (members, offsets, bases or vtable) with the same size 8 and alignment 4$
+  diag: ^>>> the layouts differ (members, offsets, bases or vtable) with the same size 4 and alignment 4$
+  no-diag: in a.o only
+
+#--- a.cc
+struct M { int a; long b; };
+struct X { int x; };
+struct D : X { int d; };
+struct V { virtual int f() { return 1; } virtual int g() { return 2; } int x; };
+enum E { A, B };
+enum F : int { F0 = -1, F1 };
+enum G : int { G0, G1 };
+int fa(M* m, D* d, V* v, F* f, G* g) { return int(m->b) + d->d + v->x + (B == 1) + int(*f) + int(*g); }
+#--- b.cc
+struct M { int a; int b; };
+struct Y { int y; };
+struct D : Y { int d; };
+struct V { virtual int f() { return 1; } int x; };
+enum E { A, B = 5 };
+enum F : long { F0 = -1, F1 };
+enum G { G0, G1 };
+int fb(M* m, D* d, V* v, F* f, G* g) { return m->b + d->d + v->x + (B == 5) + int(*f) + int(*g); }
+#--- main.cc
+int main() { return 0; }

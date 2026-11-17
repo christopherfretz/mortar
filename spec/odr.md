@@ -877,7 +877,19 @@ offset in bits, `width` and `BITFIELD` for a bit-field); 1 a base
 the slot's index over the whole group); 4 an enumerator (`name`,
 `value`: the enumerator's value as a 64-bit two's complement number,
 sign-extended when the underlying type is signed, zero-extended
-otherwise; ruling of 2026-11-17); 5 an enumeration's underlying type (`type`). The items stand
+otherwise; ruling of 2026-11-17); 5 an enumeration's underlying type (`type`). **A member of
+unnamed class type** (K-4b: a kind 0 item with `name` 0 and `type` 0,
+followed by the nested class's own items) carries in `width` the
+number of items that follow it and describe it, counted through every
+depth (a nested unnamed member's own items included, and that member's
+item too), so that a reader knows where the nested items end without
+guessing; such an item is never a bit-field (`BITFIELD` clear), so
+`width` has no other meaning there. Ruling of 2026-11-17 (WP-134's
+finding: without the count an unnamed member followed by a named one
+reads the same as an unnamed member with two members); kiln writes 0
+there until its next metadata package, and a reader that sees 0 on
+such an item treats every following item as the class's own, as before
+(mortar's reader: WP-151). The items stand
 in exactly the order O-18 hashes what they describe, one for everything
 O-18 hashes that has an item kind, so the first item that differs
 between two entries is the first difference. A reader ignores an item
@@ -1252,9 +1264,11 @@ one: one unmangled name, two encodings) are compared by `size` only,
 never by `type`, and the difference of language linkage is not reported
 ([dcl.link]'s rule is not diagnosed: the Itanium ABI gives both the same
 symbol). A finding whose rows carry no `type_name` names the two objects
-and says that `-fmason-metadata=detail` records the types [planned:
-WP-134, both sentences: the code compares `type` whatever the `EXTERN_C`
-bits and prints an empty type]. Status: `--odr=strict` until its corpus
+and says that `-fmason-metadata=detail` records the types (both
+sentences implemented by WP-134: `crates/mortar_odr/src/records.rs`
+`kind5`; each language linkage's rows are compared among themselves
+first, and the rows of both by size only if neither of those reports).
+Status: `--odr=strict` until its corpus
 (O-47).
 
 **No row** (kiln K-5, kiln commit 9744b3649; rulings of 2026-11-17):
@@ -2335,6 +2349,9 @@ operator's decision. Each step is useful and testable alone:
 3. **kiln** K-1 + K-2 (1 package): units with kind 1 only.
 4. **kiln** K-5 (1 package): kind 5, C++ and C linkage.
 5. **kiln** K-4 (2 packages: the syntactic test, then the rows): kind 3.
+   **Landed**: kiln main 55b7e0538 (class rows) and d854b23bc (K-4b:
+   enumeration rows, kind 4 at `detail`); read back by mortar on 48
+   units and `format`-heavy code (WP-134, `spec/landed/meta/WP-134.md`).
 6. **kiln** K-3 (5-7 packages): kind 2; it carries the must-equal risk
    and a standing maintenance cost, so it comes after the cheap kinds that
    catch the memory-corrupting violations (K4, K14).

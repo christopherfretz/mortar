@@ -1,0 +1,55 @@
+# Kind 4 written by kiln (spec/odr.md O-17 to O-19, §9.1; WP-134): six
+# types that differ between two translation units compiled by kiln with
+# -fmason-metadata=detail, linked under --odr=strict. Each
+# odr-type-mismatch names the first differing item: a member of another
+# type, another base, a virtual function added, an enumerator's value, an
+# enumeration's underlying type (int against long), and a fixed
+# underlying type against none (kiln hashes `enum G : int` and `enum G`
+# differently on purpose). The classes are reached through pointers only:
+# no vtable or type_info is emitted, so only the records see the
+# differences. kiln numbers a vtable slot by its component in the vtable
+# group, RTTI left out: g, the second virtual function, is slot 2
+# (offset-to-top is 0). kiln-k4-default is the same link at the level default.
+#@ spec: odr.md O-17, O-19, §9.1
+#@ arch: aarch64 x86_64
+#@ requires: kiln g++
+#@ diag: odr-type-mismatch a.o b.o
+#@ diag: odr-type-mismatch a.o b.o
+#@ diag: odr-type-mismatch a.o b.o
+#@ diag: odr-type-mismatch a.o b.o
+#@ diag: odr-type-mismatch a.o b.o
+#@ diag: odr-type-mismatch a.o b.o
+
+cxx(kiln) -O0 -fmason-metadata=detail a.cc -o a.o
+cxx(kiln) -O0 -fmason-metadata=detail b.cc -o b.o
+cxx(kiln) -O0 main.cc -o main.o
+link(bfd,lld,mold) g++ -static -no-pie main.o a.o b.o -o prog
+link(mortar) g++ -static -no-pie main.o a.o b.o -Wl,--odr=strict -o prog
+  exit: fail
+  diag: ^>>> member 'b' (l) at offset 8 in a.o; 'b' (i) at offset 4 in b.o$
+  diag: ^>>> base 1X at offset 0 in a.o; base 1Y at offset 0 in b.o$
+  diag: ^>>> vtable slot 2: _ZN1V1gEv in a.o only$
+  diag: ^>>> underlying type i in a.o; l in b.o$
+  diag: ^>>> underlying type i in a.o; j in b.o$
+  diag: ^>>> enumerator 'B' = 1 in a.o; 'B' = 5 in b.o$
+
+#--- a.cc
+struct M { int a; long b; };
+struct X { int x; };
+struct D : X { int d; };
+struct V { virtual int f() { return 1; } virtual int g() { return 2; } int x; };
+enum E { A, B };
+enum F : int { F0 = -1, F1 };
+enum G : int { G0, G1 };
+int fa(M* m, D* d, V* v, F* f, G* g) { return int(m->b) + d->d + v->x + (B == 1) + int(*f) + int(*g); }
+#--- b.cc
+struct M { int a; int b; };
+struct Y { int y; };
+struct D : Y { int d; };
+struct V { virtual int f() { return 1; } int x; };
+enum E { A, B = 5 };
+enum F : long { F0 = -1, F1 };
+enum G { G0, G1 };
+int fb(M* m, D* d, V* v, F* f, G* g) { return m->b + d->d + v->x + (B == 5) + int(*f) + int(*g); }
+#--- main.cc
+int main() { return 0; }

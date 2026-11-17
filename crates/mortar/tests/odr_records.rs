@@ -419,6 +419,97 @@ fn kind5_rules() {
     assert!(e.contains("a.o: defined as FvvE; b.o: declared as FivE"), "{e}");
 }
 
+/// A kind 5 row of a variable of `size` bytes.
+fn var(name: &str, ty: u64, size: u64, flags: u16) -> Declaration {
+    Declaration { size, ..decl(name, ty, "", flags | flags::DECL_VARIABLE) }
+}
+
+// spec: odr.md O-35 as amended 2026-11-17 (rows of one key whose EXTERN_C
+// bits differ are compared by size only; each linkage's rows among
+// themselves as before; a lang=c unit's rows are C linkage)
+#[test]
+#[allow(clippy::many_single_char_names)] // the units are a.o .. d.o
+fn kind5_language_linkage_by_size() {
+    let Some(cx) = Cx::new("odr-k5-linkage") else { return };
+    let (def, ec) = (flags::DECL_DEFINITION, flags::DECL_EXTERN_C);
+    let mut a = cxx("a.cc");
+    a.declarations.push(var("v", 1, 8, def));
+    a.declarations.push(var("w", 1, 8, def));
+    a.declarations.push(decl("f", 1, "FivE", def));
+    a.declarations.push(var("u", 1, 4, def));
+    a.declarations.push(var("x", 1, 4, 0));
+    let mut b = cxx("b.cc");
+    b.declarations.push(var("v", 2, 8, ec));
+    b.declarations.push(var("w", 2, 16, ec));
+    b.declarations.push(decl("f", 2, "FlvE", ec));
+    b.declarations.push(var("u", 2, 4, ec));
+    let mut c = cxx("c.cc");
+    c.declarations.push(var("u", 3, 4, 0));
+    // A C unit whose rows lack the bit: C linkage all the same.
+    let mut d = unit(&[("lang", "c", 0), ("source", "d.c", 0), ("std", "c17", 0)]);
+    d.declarations.push(var("x", 9, 8, def));
+    for (name, u) in [("a.o", a), ("b.o", b), ("c.o", c), ("d.o", d)] {
+        cx.object(name, &[], Some(&bytes(&[u])));
+    }
+    let (ok, e) = cx.strict(&["a.o", "b.o", "c.o", "d.o"], &[]);
+    assert!(!ok, "{e}");
+    // Different types, one size, two linkages: nothing.
+    assert!(!e.contains(" v is declared"), "{e}");
+    assert!(!e.contains(" f is declared"), "{e}");
+    // Different sizes across linkages: a warning, by size.
+    assert!(e.contains("warning: w is declared with a type that does not match"), "{e}");
+    assert!(
+        e.contains(
+            "a.o: defined with C++ language linkage, size 8; b.o: declared with C language \
+             linkage, size 16"
+        ),
+        "{e}"
+    );
+    assert!(e.contains("differ in language linkage: compared by size only"), "{e}");
+    assert_eq!(count(&e, "compared by size only"), 2, "{e}");
+    // The C++ rows of u disagree among themselves: O-35 as before, an
+    // error, and no second finding by size.
+    assert!(e.contains("error: u is declared"), "{e}");
+    assert_eq!(count(&e, " u is declared"), 1, "{e}");
+    // x: a C++ declaration of size 4 against a C unit's definition of 8.
+    assert!(e.contains("warning: x is declared"), "{e}");
+    assert!(e.contains("d.o: defined with C language linkage, size 8"), "{e}");
+}
+
+// spec: odr.md O-35 as amended 2026-11-17 (a finding whose rows carry no
+// type_name names the objects and points at -fmason-metadata=detail)
+#[test]
+fn kind5_without_type_names() {
+    let Some(cx) = Cx::new("odr-k5-unnamed") else { return };
+    let mut a = cxx("a.cc");
+    a.declarations.push(decl("_Z1gv", 1, "", flags::DECL_DEFINITION));
+    a.declarations.push(decl("_Z1hv", 1, "FvvE", flags::DECL_DEFINITION));
+    a.declarations.push(decl("_Z1kv", 1, "FvvE", flags::DECL_DEFINITION));
+    let mut b = cxx("b.cc");
+    b.declarations.push(decl("_Z1gv", 2, "", 0));
+    b.declarations.push(decl("_Z1hv", 2, "", 0));
+    b.declarations.push(decl("_Z1kv", 2, "FivE", 0));
+    cx.object("a.o", &[], Some(&bytes(&[a])));
+    cx.object("b.o", &[], Some(&bytes(&[b])));
+    let (ok, e) = cx.strict(&["a.o", "b.o"], &[]);
+    assert!(!ok, "{e}");
+    assert!(e.contains("error: _Z1gv is declared"), "{e}");
+    assert!(e.contains("a.o: defined; b.o: declared\n"), "{e}");
+    assert!(
+        e.contains(
+            "a.o and b.o do not record the declared type; -fmason-metadata=detail records it"
+        ),
+        "{e}"
+    );
+    assert!(e.contains("a.o: defined as FvvE; b.o: declared\n"), "{e}");
+    assert!(
+        e.contains("b.o does not record the declared type; -fmason-metadata=detail records it"),
+        "{e}"
+    );
+    assert_eq!(count(&e, "-fmason-metadata=detail"), 2, "{e}");
+    assert!(!e.contains("as ?"), "{e}");
+}
+
 // spec: odr.md O-31 (isa across COMDAT copies, the keeper's known), O-25
 // (_ZTV copies of units with different abi.rtti)
 #[test]

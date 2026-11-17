@@ -672,7 +672,9 @@ missing linker is left out of the matrix with a note; a test that
 `requires:` a missing tool gives a `SKIP` record without a linker
 (`requires X: not found`). Under `MORTAR_REQUIRE_TOOLS=1` each of those is
 an `error:` line in the summary and exit status 3 (the run goes on with
-what there is). A run of mortar without any reference notes that nothing
+what there is), but for `kiln` (a kiln that writes the records, found by
+its probe), which is an error under `MASON_REQUIRE_TOOLS=1` only: the
+lane's gate with an older kiln skips those tests by name (WP-134). A run of mortar without any reference notes that nothing
 is proven.
 
 **Every child** is started through `xtask::process::run` ("Limits"), with
@@ -735,6 +737,11 @@ file with neither architecture nor linker.
 - `requires: <word>...`: once; exactly the tools the steps use beyond
   `gcc` and the binutils: `g++` (a `cxx` step, `link g++` or `shlib g++`),
   `gfortran`, `clang` (a `(clang)` compile step or `link clang`/`clang++`),
+  `kiln` (a `(kiln)` compile step: kiln writing `.mason.meta` kinds 1, 3,
+  4 and 5, found by a probe compile, `MASON_KILN` or the lane's build;
+  without one the test is `SKIP` naming why, and a missing kiln is
+  counted as missing only under `MASON_REQUIRE_TOOLS=1`; such a test runs
+  on `aarch64 x86_64` only, kiln's targets: WP-134),
   `yaml2obj`, `llvm-readelf`, `llvm-dwarfdump`, `gdb`, `lldb`, `eu-elflint`
   (a `check` with that tool). A missing word and an unused one are both errors. A
   fixture states its own `requires`, which every test naming it gets.
@@ -782,7 +789,9 @@ file with neither architecture nor linker.
   linker and never mortar.
 
 **Qualifiers** are words in parentheses after a keyword, of three kinds:
-compiler (`gcc`, the default, or `clang`) on compile steps only; linker
+compiler (`gcc`, the default, `clang`, or `kiln` for C and C++: kiln++
+or kiln with `--target`, its hod route through `KILN_HOD` and
+`KILN_HOD_STRICT=1`) on compile steps only; linker
 (`bfd lld mold mortar`) and architecture on link, run and check steps, on
 expectations and on markers. Words of one kind are alternatives; kinds
 are conjoined: `cc(clang,i386)` is "with Clang, on i386"; `has(bfd,lld)`
@@ -1312,8 +1321,15 @@ to the quick gate's linktest (80 tests, measured at load 13).
 
 The one-definition-rule cases (`tests/link/odr/`, M6) are the violation
 corpus and the legal corpus of `spec/odr.md` §12.1-§12.2, with the
-`diag` directive; before kiln writes records, their units come from the
-test producer (`spec/meta.md` §12). The **L11 lane** (`tests/mason/`,
+`diag` directive; their units come from the test producer (`spec/meta.md`
+§12), and the `kiln-*` tests' from kiln itself (`(kiln)` steps with
+`-fmason-metadata`, WP-134). `cargo xtask mason producers` runs the
+corpus with each producer (`--producer gcc|hod-objcopy|hod|mixed|kiln|
+kiln-hod`): `kiln` and `kiln-hod` compile every C and C++ step with kiln
+(through llc, and through hod at the step's own options), and an object
+a `meta` step takes gets kiln's own container at the level its
+description implies (`detail` for `level detail` or a typed C++-linkage
+function row, else `default`) instead of the description's rows. The **L11 lane** (`tests/mason/`,
 WP-074) builds them with kiln and runs the false-positive oracle of
 `spec/odr.md` §12.3 (libc++'s test suite, the open-source lanes, and the
 C corpus of O-33 for C-linkage kind 5); it joins the full gate as it
@@ -1539,7 +1555,9 @@ link the baseline lacks, `- ...` a baseline link not made. Then a summary
 line (links, tests, architectures, how many differ, seconds) and
 `static-identical: ok` with exit status 0, or `static-identical: FAILED`
 with exit status 1. A unit that did not run because a tool is missing is
-not compared (a note says how many) unless `MORTAR_REQUIRE_TOOLS=1`. An
+not compared (a note says how many) unless `MORTAR_REQUIRE_TOOLS=1`
+requires that tool (a test that `requires: kiln` without
+`MASON_REQUIRE_TOOLS=1`, "Missing tools", is not compared either). An
 error of the run itself (an input that does not build, mortar not built)
 is a failure whatever the digests. `--update` prints the same difference
 lines, then writes the baseline (it refuses when a unit did not run); a

@@ -1,0 +1,71 @@
+# kiln's units beside objects of other producers (spec/odr.md O-11, O-34,
+# O-35; WP-134), under --odr=strict:
+# - beside a GCC object without records: kiln's class rows are compared
+#   with nothing, and its kind 5 rows with nothing TODAY: O-34 (a row's
+#   size against a foreign definition's st_size, `--odr=strict`) is in
+#   the register as "cannot run yet" and not implemented, so kiln's row
+#   of `table` (declared `long[4]`, 32 bytes) against GCC's 16-byte
+#   definition is a miss. When O-34 lands, this link reports
+#   odr-size-mismatch k.o g.o for `table` (not for `count`, 4 bytes on
+#   both sides) and the `no-diag` line below becomes a `diag`;
+# - beside a hod-made object (kiln's hod route, no records of its own)
+#   carrying the test producer's container (`odr.scheme` test-1): kind 5
+#   rows are compared whatever the producer (the type hash is FNV-1a of
+#   the type string in both): `shared_v`, defined `int` by kiln and
+#   declared `long` by the hand rows, is odr-declaration-mismatch;
+#   `shared_w` agrees. Kind 3 rows of two schemes are compared on size,
+#   alignment and flags only (O-11's exception): the hand row of P (16
+#   bytes) against kiln's (8) is odr-type-mismatch; Q, the same size
+#   with another member order, is not reported.
+#@ spec: odr.md O-11, O-34, O-35
+#@ arch: aarch64 x86_64
+#@ requires: kiln g++
+#@ diag: odr-type-mismatch k.o h.o
+#@ diag: odr-declaration-mismatch k.o h.o
+
+cxx(kiln) -O0 -fmason-metadata k.cc -o k.o
+cc -O0 g.c -o g.o
+cxx(kiln) -O0 -fkiln-backend=hod h.cc -o h0.o
+meta h.meta h0.o -o h.o
+link(bfd,lld,mold) g++ k.o g.o h.o -o prog
+link(mortar) g++ k.o g.o h.o -Wl,--odr=strict -o prog
+  exit: fail
+  diag: ^mortar: error: shared_v is declared with a type that does not match its definition$
+  diag: ^>>> k.o: defined as i, size 4; h.o: declared as l, size 8$
+  diag: ^mortar: error: type 1P violates the one-definition rule$
+  diag: ^>>> the translation units use different odr.scheme values: compared on size, alignment and kind only (spec/odr.md O-11, strict)$
+  diag: ^>>> k.o: size 8, alignment 4; h.o: size 16, alignment 8$
+  no-diag: shared_w
+  no-diag: 1Q
+  no-diag: table
+
+#--- k.cc
+struct P { int a; int b; };
+struct Q { int a; int b; };
+int shared_v = 1;
+long shared_w = 2;
+extern long table[4];
+extern int count;
+int fk(P* p, Q* q) { return p->a + q->b + int(table[3]) + count; }
+int fh(P* p, Q* q);
+int main() { return fk(nullptr, nullptr) + fh(nullptr, nullptr); }
+#--- g.c
+long table[2] = { 1, 2 };
+int count = 3;
+#--- h.cc
+struct P { long a; long b; };
+struct Q { int b; int a; };
+extern long shared_v;
+extern long shared_w;
+int fh(P* p, Q* q) { return (p ? int(p->a) + q->a : 0) + int(shared_v + shared_w); }
+#--- h.meta
+# the test producer's rows on a hod-made object (spec/meta.md §12)
+summary name=lang value=c++
+summary name=odr.scheme value=test-1
+summary name=producer value="hand (WP-134)"
+summary name=source value=h.cc
+summary name=std value=c++17
+type name=1P size=16 align=8 file=h.cc line=1
+type name=1Q size=8 align=4 file=h.cc line=2
+declaration anchor=shared_v ty=0xaf63e14c8601f50b size=8 type_name=l flags=2
+declaration anchor=shared_w ty=0xaf63e14c8601f50b size=8 type_name=l flags=2
