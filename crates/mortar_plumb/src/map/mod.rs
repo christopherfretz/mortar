@@ -237,11 +237,18 @@ pub enum OutputKind {
     Exec,
     Pie,
     StaticPie,
+    /// `-shared` (`spec/dyn.md` D-100; §12.5, WP-121).
+    Shared,
 }
 
 impl OutputKind {
-    pub const ALL: [OutputKind; 4] =
-        [OutputKind::Static, OutputKind::Exec, OutputKind::Pie, OutputKind::StaticPie];
+    pub const ALL: [OutputKind; 5] = [
+        OutputKind::Static,
+        OutputKind::Exec,
+        OutputKind::Pie,
+        OutputKind::StaticPie,
+        OutputKind::Shared,
+    ];
 
     pub const fn name(self) -> &'static str {
         match self {
@@ -249,6 +256,7 @@ impl OutputKind {
             OutputKind::Exec => "exec",
             OutputKind::Pie => "pie",
             OutputKind::StaticPie => "static-pie",
+            OutputKind::Shared => "shared",
         }
     }
 
@@ -304,6 +312,49 @@ pub struct DynRecords {
     pub plt: Vec<String>,
     /// `iplt`: the keys of the IPLT entries, in IPLT order.
     pub iplt: Vec<String>,
+    /// The shared-object line records (`symbolic`, `dynamic-list`,
+    /// `version-script`; §3.2, WP-121): `Some` when the map has any.
+    pub shared: Option<SharedRecords>,
+}
+
+/// The line's symbolic form as `spec/dyn.md` D-112 resolves it (§3.2's
+/// `symbolic` record).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Symbolic {
+    /// No `-Bsymbolic` form, or `-Bno-symbolic` last.
+    None,
+    /// `-Bsymbolic` last.
+    All,
+    /// `-Bsymbolic-functions` last.
+    Functions,
+}
+
+impl Symbolic {
+    pub const ALL: [Symbolic; 3] = [Symbolic::None, Symbolic::All, Symbolic::Functions];
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Symbolic::None => "none",
+            Symbolic::All => "all",
+            Symbolic::Functions => "functions",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|k| k.name() == name)
+    }
+}
+
+/// The shared-object line records of a `Shared` map (§3.2, read by
+/// `crate::maprec`): facts of the line, recomputed from its words.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SharedRecords {
+    /// `symbolic`: exactly one in a `Shared` map.
+    pub symbolic: Option<Symbolic>,
+    /// `dynamic-list`: the files, in line order, as the line names them.
+    pub dynamic_lists: Vec<String>,
+    /// `version-script`: the files, in line order, as the line names them.
+    pub version_scripts: Vec<String>,
 }
 
 /// What a `dead` range of mortar's map is (§3.2; `spec/incr.md` IN-3a,

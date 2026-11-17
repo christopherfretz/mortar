@@ -278,6 +278,9 @@ fn write_line(map: &Map, out: &mut String) {
     if let Some(relro) = d.relro {
         out.push_str(if relro { "relro on\n" } else { "relro off\n" });
     }
+    if let Some(sh) = &d.shared {
+        crate::maprec::write_shared(sh, out);
+    }
     for a in &map.args {
         out.push_str("arg ");
         encode_bytes(a, out);
@@ -315,6 +318,8 @@ pub fn parse(text: &str) -> Result<Map, MapError> {
         _ => return Err(MapError::new(1, "not a mortar map (no 'mortar-map 2' header)")),
     }
     let mut ended = false;
+    let mut output_line = 0u32;
+    let mut shared_line: Option<u32> = None;
     let last = text.split('\n').count() as u32;
     for (n, line) in lines {
         // The text after the last newline: empty in a whole map.
@@ -458,6 +463,12 @@ pub fn parse(text: &str) -> Result<Map, MapError> {
                     return Err(bad("a second 'output' record"));
                 }
                 d.kind = Some(OutputKind::from_name(t[1]).ok_or_else(|| bad("kind"))?);
+                output_line = n;
+            }
+            ("symbolic" | "dynamic-list" | "version-script", _) => {
+                let d = map.dynamic.get_or_insert_with(DynRecords::default);
+                crate::maprec::read_shared(d, &t, n)?;
+                shared_line.get_or_insert(n);
             }
             ("interp", 2) => {
                 let v = decode(t[1]).ok_or_else(|| bad("path"))?;
@@ -539,6 +550,7 @@ pub fn parse(text: &str) -> Result<Map, MapError> {
     if !ended {
         return Err(MapError::new(0, "truncated mortar map: no 'end' record"));
     }
+    crate::maprec::end_shared(map.dynamic.as_ref(), output_line, shared_line)?;
     // §3.2a: every mortar map states its line; a link has at least one
     // word (none is `no-input-files`). A map without one (written before
     // WP-102) is refused rather than judged without its options.
@@ -738,6 +750,7 @@ mod tests {
             exports: vec!["main".into()],
             plt: vec!["puts".into(), "memcpy@GLIBC_2.2.5".into()],
             iplt: vec!["my_ifunc".into()],
+            shared: None,
         });
         m.args = vec![b"-pie".to_vec(), b"--as-needed".to_vec(), b"-lc".to_vec(), Vec::new()];
         let text = write(&m);

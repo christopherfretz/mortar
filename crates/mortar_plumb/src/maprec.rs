@@ -290,3 +290,160 @@ pub(crate) fn copies(map: &Map, actual: &[ActualCopy]) -> Vec<Finding> {
     }
     out
 }
+
+// ---- The shared-object line records (§3.2; WP-121) ----
+
+/// Reads one of the shared-object line records (`symbolic`,
+/// `dynamic-list`, `version-script`; §3.2) into `d`: a second `symbolic`,
+/// an unknown form, a wrong number of fields or a path that is not a
+/// string token is a [`MapError`] at line `n`.
+pub(crate) fn read_shared(
+    d: &mut crate::map::DynRecords,
+    t: &[&str],
+    n: u32,
+) -> Result<(), crate::map::MapError> {
+    use crate::map::{MapError, Symbolic};
+    let bad = |what: &str| MapError::new(n, format!("malformed '{}' record: {what}", t[0]));
+    if t.len() != 2 {
+        return Err(bad("wrong number of fields"));
+    }
+    let sh = d.shared.get_or_insert_with(Default::default);
+    match t[0] {
+        "symbolic" => {
+            let form = Symbolic::from_name(t[1]).ok_or_else(|| bad("form"))?;
+            if sh.symbolic.replace(form).is_some() {
+                return Err(bad("a second 'symbolic' record"));
+            }
+        }
+        "dynamic-list" => {
+            sh.dynamic_lists.push(crate::map::mortar::decode(t[1]).ok_or_else(|| bad("path"))?);
+        }
+        _ => {
+            sh.version_scripts.push(crate::map::mortar::decode(t[1]).ok_or_else(|| bad("path"))?);
+        }
+    }
+    Ok(())
+}
+
+/// The map-wide rules of the shared-object line records (§3.2): exactly
+/// one `symbolic` record in a map whose `output` is `shared` (reported at
+/// its `output` line), and none of the three in any other map (reported
+/// at the first of them).
+pub(crate) fn end_shared(
+    d: Option<&crate::map::DynRecords>,
+    output_line: u32,
+    shared_line: Option<u32>,
+) -> Result<(), crate::map::MapError> {
+    use crate::map::{MapError, OutputKind};
+    let shared = d.is_some_and(|d| d.kind == Some(OutputKind::Shared));
+    let has = d.and_then(|d| d.shared.as_ref());
+    match (shared, has) {
+        (true, Some(s)) if s.symbolic.is_some() => Ok(()),
+        (true, _) => Err(MapError::new(
+            output_line,
+            "an 'output shared' map without its 'symbolic' record (§3.2)",
+        )),
+        (false, None) => Ok(()),
+        (false, Some(_)) => Err(MapError::new(
+            shared_line.unwrap_or(0),
+            "a shared-object line record in a map whose output is not 'shared' (§3.2)",
+        )),
+    }
+}
+
+/// Writes the shared-object line records in the grammar's order.
+pub(crate) fn write_shared(sh: &crate::map::SharedRecords, out: &mut String) {
+    if let Some(s) = sh.symbolic {
+        out.push_str("symbolic ");
+        out.push_str(s.name());
+        out.push('\n');
+    }
+    for (record, paths) in
+        [("dynamic-list", &sh.dynamic_lists), ("version-script", &sh.version_scripts)]
+    {
+        for p in paths {
+            out.push_str(record);
+            out.push(' ');
+            crate::map::mortar::encode(p, out);
+            out.push('\n');
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::map::mortar::{parse, write};
+    use crate::map::{OutputKind, SharedRecords, Symbolic};
+
+    const HEAD: &str = "mortar-map 2\n";
+    const TAIL: &str = "arg -shared\nend\n";
+
+    // §3.2: the shared-object line records round-trip in a `Shared` map,
+    // after `relro` and before `arg`, in line order.
+    #[test]
+    fn s3_2_shared_line_records_round_trip() {
+        for form in Symbolic::ALL {
+            let text = format!(
+                "{HEAD}output shared\nrelro on\nsymbolic {}\ndynamic-list a%20b.list\n\
+                 dynamic-list c.list\nversion-script v.map\n{TAIL}",
+                form.name()
+            );
+            let m = parse(&text).unwrap();
+            let d = m.dynamic.as_ref().unwrap();
+            assert_eq!(d.kind, Some(OutputKind::Shared));
+            assert_eq!(
+                d.shared,
+                Some(SharedRecords {
+                    symbolic: Some(form),
+                    dynamic_lists: vec!["a b.list".into(), "c.list".into()],
+                    version_scripts: vec!["v.map".into()],
+                })
+            );
+            let back = write(&m);
+            assert!(
+                back.contains(&format!(
+                    "relro on\nsymbolic {}\ndynamic-list a%20b.list\ndynamic-list c.list\n\
+                     version-script v.map\narg -shared\n",
+                    form.name()
+                )),
+                "{back}"
+            );
+            assert_eq!(parse(&back).unwrap(), m);
+        }
+        // A map of another kind writes none of them.
+        let m = parse(&format!("{HEAD}output pie\n{TAIL}")).unwrap();
+        assert_eq!(m.dynamic.as_ref().unwrap().shared, None);
+        assert!(!write(&m).contains("symbolic"));
+    }
+
+    // §3.2: "A second `symbolic` record, an unknown form, a wrong number
+    // of fields, or any of the three in a map whose `output` is not
+    // `shared` is a `MapError`"; and a `Shared` map has exactly one
+    // `symbolic` record.
+    #[test]
+    fn s3_2_malformed_shared_line_records_are_errors() {
+        let cases: &[(&str, u32)] = &[
+            ("output shared\nsymbolic all\nsymbolic none\n", 4),
+            ("output shared\nsymbolic some\n", 3),
+            ("output shared\nsymbolic\n", 3),
+            ("output shared\nsymbolic all extra\n", 3),
+            ("output shared\nsymbolic all\ndynamic-list\n", 4),
+            ("output shared\nsymbolic all\nversion-script a b\n", 4),
+            ("output shared\nsymbolic all\nversion-script %4\n", 4),
+            ("output shared\ndynamic-list a\n", 2),
+            ("output pie\nsymbolic none\n", 3),
+            ("output exec\ndynamic-list a\n", 3),
+            ("output static-pie\nversion-script a\n", 3),
+            ("version-script a\noutput shared\nsymbolic none\n", 0),
+            ("symbolic none\n", 2),
+        ];
+        for (body, line) in cases {
+            let text = format!("{HEAD}{body}{TAIL}");
+            match parse(&text) {
+                Ok(_) if *line == 0 => {}
+                Ok(m) => panic!("{text:?} read as {m:?}"),
+                Err(e) => assert_eq!(e.line, *line, "{text:?}: {e}"),
+            }
+        }
+    }
+}
