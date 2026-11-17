@@ -578,8 +578,8 @@ mod owners {
         b.extend_from_slice(&[0; 4]);
         let bare = [code_at(at as u64 + 8, code)];
         let f = one(&b, &bare).unwrap();
-        let l = f.records[1].fde().unwrap().lsda.unwrap().at as u64;
-        let p = f.records[0].cie().unwrap().personality.unwrap().at as u64;
+        let l = u64::from(f.records[1].fde().unwrap().lsda.unwrap().at);
+        let p = u64::from(f.records[0].cie().unwrap().personality.unwrap().at);
         let r = vec![
             pc32(p, Target::Undefined { symbol: SymbolId(7), weak: true }),
             code_at(at as u64 + 8, code),
@@ -598,10 +598,9 @@ mod owners {
         // whose own FDE (code DEAD) starts at 0x10: a field at 0x34 is the
         // file 0 FDE's, live (the error) when its code is, dead (the field
         // 0) when not; a field at 0x14 is file 1's dead FDE's.
-        for (code, want) in [
-            (TEXT, EhOwner::Live { code: Some((TEXT, 0x10)) }),
-            (DEAD, EhOwner::Dead),
-        ] {
+        for (code, want) in
+            [(TEXT, EhOwner::Live { code: Some((TEXT, 0x10)) }), (DEAD, EhOwner::Dead)]
+        {
             let f = run(&[lsda_fde(code, 0x30), lsda_fde(DEAD, 0x10)]).unwrap();
             assert_eq!(f.sections.len(), 2);
             let relocs: Vec<Box<[EhReloc]>> =

@@ -1161,22 +1161,30 @@ ruling of 2026-11-17). Both cases, (a) and (b), and every output kind:
   what makes the FDE dead. A place in no record (past the last one) is
   an error.
 - exactly `.gcc_except_table`: no LSDA is parsed. The owner of the field
-  at offset `r` is the FDE of the same file whose LSDA pointer names
-  this section at the greatest start `<= r`, over **all** of the file's
-  FDEs, live or dead; of two FDEs with the same start, the owner is live
+  at offset `r` is the FDE whose LSDA pointer names this section at the
+  greatest start `<= r`, over **all** the FDEs of the link's parsed
+  `.eh_frame` sections, live or dead, whatever file each is in (an FDE
+  can read its LSDA from another file's table: `.cfi_lsda` of a global
+  that file defines); of two FDEs with the same start, the owner is live
   if either is. Owner live: an error, as above. Owner dead: no error, and
   the field is 0 (GNU ld's value; the LSDA is reached only from the dead
-  FDE). No owner (`r` before the first start, or no FDE of the file
-  points into the section): an error, the owner not known. The start is
-  the LSDA pointer's relocation (a section-relative target in the table
-  plus its addend); an LSDA pointer without one is no start.
+  FDE). No owner (`r` before the first start, or no FDE points into the
+  section): an error, the owner not known. The start is the LSDA
+  pointer's relocation (a section-relative target in the table plus its
+  addend); an LSDA pointer without one is no start. Only a reference the
+  scan makes an event of is judged (a dead target; a key only dropped
+  copies define, undefined at the record's mention: a strong key, or a
+  mention COMDAT demoted): an undefined weak mention of a weak key, in a
+  file without a copy of the group, is an ordinary undefined weak
+  reference, its field the undefined weak value of every other section.
 
 The diagnostic adds, for a field of these sections, the function the
 owning record describes (`>>> the field is in the unwind information of
 {function}, which is written`; `>>> the field is in the exception table
-(LSDA) of {function}, which is written`; with no owner, `>>> no FDE of
-{file} has an LSDA at or before this place: the field's owner is not
-known`), and for case (a) the group and the kept copy (`>>> the section
+(LSDA) of {function}, which is written`; with no owner, `>>> no FDE has
+an LSDA in this section at or before this place: the field's owner is
+not known` in `.gcc_except_table`, `>>> the field is in no record of this
+section: its owner is not known` in `.eh_frame`), and for case (a) the group and the kept copy (`>>> the section
 is in a discarded copy of COMDAT group {sig}`, `>>> kept copy:
 {file}`). When the local symbol's name is the group signature, or a name
 the kept copy defines non-locally (case (a)), or the kept copy defines

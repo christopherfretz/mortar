@@ -377,6 +377,56 @@ fn decode(
     Ok(())
 }
 
+/// WP-177: whether the scan made a `comdat-mismatch` event of record `i`
+/// of clip `c` (its key `key` undefined): the key is one only dropped
+/// COMDAT copies define, and its kind at the record's mention is
+/// `Undefined` (a strong key, or a mention COMDAT demoted, WP-176). The
+/// mention is `r_sym` for a deferred section's record; otherwise the
+/// record's `r_sym` is read again from its table (a record carries only
+/// its key, and a weak key's kind depends on the mention); a table that
+/// cannot be read again is the read's error, never a guess. Records
+/// decoded in memory (tests; records the image makes) have no `r_sym`
+/// and are judged by their key.
+fn judged_mismatch(
+    img: &Image<'_>,
+    c: &Clip<'_>,
+    i: u32,
+    r_sym: Option<u32>,
+    key: SymKey,
+) -> Result<bool, Diagnostic> {
+    let Some(facts) = img.tables.scan_facts(key, None) else { return Ok(false) };
+    if !facts.comdat_only {
+        return Ok(false);
+    }
+    if facts.kind == TargetKind::Undefined {
+        return Ok(true);
+    }
+    let r_sym = match (r_sym, &c.rs.rows) {
+        (Some(r_sym), _) => r_sym,
+        (None, RecRows::Decoded(_)) => return Ok(false),
+        (None, RecRows::Rela(t)) => {
+            let range = t.range(i, i + 1);
+            let mut b = [0u8; 24];
+            let n = usize::try_from(range.end - range.start).unwrap_or(usize::MAX);
+            let cut = || internal("fill: a relocation record cut short".into());
+            let b = b.get_mut(..n).ok_or_else(cut)?;
+            source::read(img.source, t.file, range, b)
+                .map_err(|e| source::copy_error(e, &img.plan.path(t.file)))?;
+            let r = match t.class {
+                _ if t.rel => crate::rel::decode(b, t.class),
+                Class::Elf64 => Rela::decode64(b),
+                Class::Elf32 => Rela::decode32(b),
+            };
+            r.ok_or_else(cut)?.r_sym
+        }
+    };
+    let mention = SymEntry { file: c.file, index: SymbolIndex(r_sym) };
+    Ok(img
+        .tables
+        .scan_facts(key, Some(mention))
+        .is_some_and(|f| f.comdat_only && f.kind == TargetKind::Undefined))
+}
+
 /// The order of `n` records with offsets `off` (I-29), found from them:
 /// `Sorted`, or their indexes stably sorted by `r_offset` in `perm`.
 fn local_order(n: u32, off: impl Fn(u32) -> u64, perm: &mut Vec<u32>) -> Order<'_> {
@@ -726,17 +776,31 @@ pub(crate) fn relocate(
             memo.record_sym(img.tables, rec.key)
         };
         // WP-177 (`spec/resolve.md` §6.3): a `.gcc_except_table` field
-        // against a key only a dropped COMDAT copy defines reaches fill
-        // only when the scan judged the FDE that owns it dead (or through
-        // another file's undefined weak mention): the field is 0, as for a
-        // dead target, never `S + A - P` of an absent `S`.
+        // whose reference the scan made a `comdat-mismatch` event of (the
+        // key only dropped COMDAT copies define, and undefined at the
+        // record's mention: a strong key, or a mention COMDAT demoted)
+        // reaches fill only when the scan judged the FDE that owns it
+        // dead: the field is 0, as for a dead target, never `S + A - P`
+        // of an absent `S`. Another file's honest undefined weak mention
+        // of a weak key made no event, and is the undefined weak value
+        // of every other section. Reached only for an undefined key in
+        // `.gcc_except_table`: a link without one pays the name
+        // comparison per clip above.
         if except_table
             && sym.live
             && matches!(sym.kind, TargetKind::Undefined | TargetKind::Weak0 | TargetKind::WeakDyn)
             && rec.key.as_global().is_some()
-            && img.tables.scan_facts(rec.key, None).is_some_and(|f| f.comdat_only)
         {
-            sym.live = false;
+            match judged_mismatch(img, c, i, r_sym, rec.key) {
+                Ok(true) => sym.live = false,
+                Ok(false) => {}
+                Err(d) => {
+                    if reports {
+                        errs.push((fill_key(c.file, c.index, i), d));
+                    }
+                    continue;
+                }
+            }
         }
         let mut out = SectionOut::new(buf, a - base, c.addr.wrapping_add(base), c.alloc, c.name)
             .with_exec(c.exec);

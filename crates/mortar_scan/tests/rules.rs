@@ -362,16 +362,14 @@ fn wp177_case_a_judged_by_the_owning_record() {
         assert!(t.contains(">>> kept copy: g1.o\n"), "{t}");
         let none = l.rescan_eh(Some(&Fixed(EhOwner::None)), &pool);
         assert_eq!(count(&none), 2, "{from}: {}", text(&none));
-        if !from.contains("eh_frame") {
-            let t = text(&none);
-            let n = ">>> no FDE has an LSDA in this section at or before this place: the \
-                     field's owner is not known\n";
-            assert!(t.contains(n), "{t}");
+        let n = if from.contains("eh_frame") {
+            ">>> the field is in no record of this section: its owner is not known\n"
         } else {
-            let t = text(&none);
-            let n = ">>> the field is in no record of this section: its owner is not known\n";
-            assert!(t.contains(n), "{t}");
-        }
+            ">>> no FDE has an LSDA in this section at or before this place: the field's owner \
+             is not known\n"
+        };
+        let t = text(&none);
+        assert!(t.contains(n), "{t}");
     }
 }
 

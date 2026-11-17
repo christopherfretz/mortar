@@ -31,11 +31,7 @@ impl std::fmt::Debug for Owners<'_> {
 
 impl<'a> Owners<'a> {
     #[must_use]
-    pub fn new(
-        frames: &'a EhFrames,
-        relocs: &'a [Box<[EhReloc]>],
-        liveness: &'a Liveness,
-    ) -> Self {
+    pub fn new(frames: &'a EhFrames, relocs: &'a [Box<[EhReloc]>], liveness: &'a Liveness) -> Self {
         Self { frames, relocs, liveness, lsda: OnceLock::new() }
     }
 }
@@ -46,9 +42,9 @@ impl mortar_scan::EhOwners for Owners<'_> {
     }
 
     fn lsda(&self, table: SectionId, offset: u64) -> EhOwner {
-        let starts = self
-            .lsda
-            .get_or_init(|| LsdaStarts::new(self.frames, self.relocs, |s| self.liveness.is_live(s)));
+        let starts = self.lsda.get_or_init(|| {
+            LsdaStarts::new(self.frames, self.relocs, |s| self.liveness.is_live(s))
+        });
         starts.owner(table, offset)
     }
 }

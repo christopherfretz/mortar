@@ -623,8 +623,7 @@ pub fn front<'s>(
     // 70: scan. WP-177: the owners of `.eh_frame` and
     // `.gcc_except_table` fields, asked only about references to dead
     // targets there.
-    let eh_owners =
-        crate::eh_owners::Owners::new(&merge.eh, &merge.eh_relocs, &liveness);
+    let eh_owners = crate::eh_owners::Owners::new(&merge.eh, &merge.eh_relocs, &liveness);
     let output = output_kind(plan.kind);
     let scan_inputs = ScanInputs {
         inputs: &inputs,
