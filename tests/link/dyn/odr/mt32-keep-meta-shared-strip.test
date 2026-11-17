@@ -1,0 +1,40 @@
+# MT-32 in a `Shared` output with -s (spec/meta.md; WP-129): the kept
+# .mason.meta survives -s (it is not a symbol table), 0x178 bytes as in
+# mt32-keep-meta-shared.test; the symbol table is gone.
+#@ spec: meta.md "MT-32"
+#@ arch: aarch64 x86_64
+#@ xfail(mortar): the verifier's P-D22 reads `_fini` from .symtab, which -s removes: it reports "DT_FINI ... the output defines no '_fini'" on every linker's -shared -s output, without --keep-mason-meta too (WP-129 hand-back; owner: the verifier package)
+
+cc -O0 -fPIC a.c -o a0.o
+meta a.meta a0.o -o a.o
+cc -O0 -fPIC b.c -o b0.o
+meta b.meta b0.o -o b.o
+cc -O0 -fPIC u.c -o u0.o
+meta u.meta u0.o -o u.o
+ar rcs libu.a u.o
+link(mortar) gcc -shared a.o b.o libu.a -Wl,-soname,libk.so -s -Wl,--keep-mason-meta -o libs.so
+check(mortar) readelf -SW libs.so
+  has: ] .mason.meta * PROGBITS * 0000000000000000 * 000178 00 * 0 * 0 * 8$
+  not: .symtab
+check(mortar) readelf -lW libs.so
+  not: .mason.meta
+
+#--- a.c
+int b(void);
+int a(void) { return b(); }
+#--- a.meta
+summary name=lang value=c++
+definition anchor=a hash=01010101010101010101010101010101 class=1 flags=0
+#--- b.c
+int b(void) { return 5; }
+#--- b.meta
+unit
+summary name=lang value=c++
+definition anchor=b hash=02020202020202020202020202020202 class=1 flags=0
+unit producer=2
+summary name=reloc-model value=pic
+#--- u.c
+int u(void) { return 4; }
+#--- u.meta
+summary name=lang value=c++
+definition anchor=u hash=03030303030303030303030303030303 class=1 flags=0

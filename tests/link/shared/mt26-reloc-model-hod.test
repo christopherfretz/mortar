@@ -15,7 +15,8 @@
 # (measured: `7 100`); the row closes the hole for both (an object of
 # two units is mt26-reloc-model.test's). Functions are not data: calls-only static code links (the
 # call goes through the PLT: 2), and an address taken is refused by its
-# relocation, not by the row.
+# relocation, not by the row. --keep-mason-meta in a shared object keeps
+# hod's units (MT-32): two objects, two 88-byte units, 0xb0 bytes.
 #@ spec: meta.md "MT-26", dyn.md "D-117"
 #@ arch: aarch64 x86_64
 #@ requires: hod
@@ -43,6 +44,9 @@ link(mortar) gcc -shared uses-pie.o -Wl,-soname,libu.so -o libu.so
   exit: fail
   diag: ^>>> the Mason metadata of uses-pie.o records reloc-model=pie (spec/meta.md MT-26)
 link gcc -shared uses-pic.o -Wl,-soname,libu.so -o libu.so
+link(mortar) gcc -shared uses-pic.o func-pic.o -Wl,-soname,libk.so -Wl,--keep-mason-meta -o libk.so
+check(mortar) readelf -SW libk.so
+  has: ] .mason.meta * PROGBITS * 0000000000000000 * 0000b0 00 * 0 * 0 * 8$
 link gcc -no-pie main_uses.o -L. -lu -o prog-uses
 run prog-uses
   stdout: 100 100 1

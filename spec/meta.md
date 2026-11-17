@@ -677,11 +677,17 @@ needed for incremental links (`spec/incr.md` keeps state in its own
 file).
 
 Implemented for executables (WP-076; static, static-pie, PIE and
-non-PIE; shared-object outputs are M4), `spec/landed/meta/WP-076.md`.
-[M4; planned: WP-129; request R-MT10] It applies to `Shared` as
-written: the units are kept as in an executable, the section is
-non-allocated and changes no loaded byte (`spec/dyn.md` D-126 item 3;
-unmeasured for `Shared`, the executable tests carry over):
+non-PIE), `spec/landed/meta/WP-076.md`, and shared objects (WP-129).
+[M4; landed: WP-129, `spec/landed/meta/WP-129.md`; request R-MT10] It
+applies to `Shared` as written: the units are kept as in an executable
+(hod's units too, MT-20), the section is non-allocated and takes no
+address or segment (`spec/dyn.md` D-126 item 3). Measured for `Shared`
+(AArch64 and x86-64, plain, `--gc-sections`, `-s`) and for executables
+alike: every `PT_LOAD` byte equals the output's without the option but
+the ELF header's `e_shoff`, `e_shnum` and `e_shstrndx` (one more
+section) and, with a build ID, its 20 bytes (the build ID hashes the
+whole file, kept section included); "changes no loaded byte" is read
+with those exceptions [open: the supervisor's ruling, WP-129's record]:
 
 - The units of the live inputs' containers, in `FileId` order, then
   section, then offset, each copied unchanged and followed by zero
