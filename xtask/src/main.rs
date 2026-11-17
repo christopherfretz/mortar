@@ -11,6 +11,7 @@
 //!   cargo xtask mason [programs|census|setup|libcxx|verify] ...  the Mason lane (tests/mason/README.md)
 //!   cargo xtask meta [write|dump] ...              Mason metadata: test producer, dumper (spec/meta.md §12)
 //!   cargo xtask incr-oracle [--quick] ...          the incremental dry run's oracle lane (tests/incr-oracle)
+//!   cargo xtask l10 [--quick] [--seed N] ...       L10, incremental linking's random edit sequences (tests/l10)
 //!   cargo xtask realbuild [options]                real open-source builds linked by mortar ("realbuild")
 //!   cargo xtask spelled                            the accepted options no link test spells
 
@@ -26,6 +27,7 @@ const USAGE: &str = "usage: cargo xtask ci [--quick] [--no-fail-fast] [--step fm
                      cargo xtask mason [programs|census|setup|libcxx|verify] ...   (tests/mason/README.md)\n       \
                      cargo xtask meta [write|dump] ...   (cargo xtask meta)\n       \
                      cargo xtask incr-oracle [--quick] [--only <scenario>,...] [-j <n>] [--keep]\n       \
+                     cargo xtask l10 [--quick] [--seed <n>]... [options]   (tests/l10/l10.py)\n       \
                      cargo xtask realbuild [options]   (spec/harness.md \"realbuild\")\n       \
                      cargo xtask spelled   (spec/harness.md \"Every accepted option is spelled\")\n";
 
@@ -64,6 +66,8 @@ fn main() -> ExitCode {
         Some("meta") => xtask::meta::main(&args[1..]),
         #[cfg(unix)]
         Some("incr-oracle") => xtask::incr_oracle::main(&args[1..]),
+        #[cfg(unix)]
+        Some("l10") => xtask::l10::main(&args[1..]),
         #[cfg(unix)]
         Some("realbuild") => ExitCode::from(xtask::realbuild::main(&args[1..])),
         _ => {
