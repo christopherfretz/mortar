@@ -1483,6 +1483,37 @@ fn self_binding(bytes: &[u8]) -> Option<SelfBinding<'_>> {
     Some(SelfBinding { so, bound, loads, relro })
 }
 
+/// Where P-D24 reports a copied definition at `value`: in a writable
+/// `PT_LOAD` outside every `PT_GNU_RELRO`, in none, or in a library one of
+/// whose `PT_LOAD`s ends past 2^64 (`p_vaddr + p_memsz` overflows: the
+/// place is unknown). `None`: read-only or RELRO, two equal constants. A
+/// `PT_GNU_RELRO` whose end overflows covers nothing; overlapping
+/// `PT_LOAD`s count as writable when any is.
+fn two_objects_at(
+    loads: &[(u64, u64, bool)],
+    relro: &[(u64, u64)],
+    value: u64,
+) -> Option<&'static str> {
+    let mut overflow = false;
+    let mut found: Option<bool> = None;
+    for &(at, size, w) in loads {
+        match at.checked_add(size) {
+            None => overflow = true,
+            Some(end) if at <= value && value < end => found = Some(found.unwrap_or(false) || w),
+            Some(_) => {}
+        }
+    }
+    let in_relro = relro
+        .iter()
+        .any(|&(at, size)| at.checked_add(size).is_some_and(|end| at <= value && value < end));
+    match found {
+        _ if overflow => Some("a library whose PT_LOAD ends past the address space"),
+        None => Some("no PT_LOAD of its library"),
+        Some(true) if !in_relro => Some("a writable PT_LOAD of its library, outside PT_GNU_RELRO"),
+        Some(_) => None,
+    }
+}
+
 /// P-D24 (request P-R9; `spec/dyn.md` D-43a), added to P-D11 for `Exec`
 /// and `Pie`: a `COPY` of a definition its library binds to itself whose
 /// `st_value` lies in a writable `PT_LOAD` of that library outside every
@@ -1528,26 +1559,7 @@ fn pd24(out: &DynOut, line: &Line, model: &Model, ld: &Loader<'_>, v: &mut Vec<F
                 "its .note.mason row is NONPREEMPTIBLE".to_owned()
             }
         };
-        let mut overflow = false;
-        let mut found: Option<bool> = None;
-        for &(at, size, w) in &b.loads {
-            match at.checked_add(size) {
-                None => overflow = true,
-                Some(end) if at <= d.value && d.value < end => {
-                    found = Some(found.unwrap_or(false) || w);
-                }
-                Some(_) => {}
-            }
-        }
-        let in_relro = b.relro.iter().any(|&(at, size)| {
-            at.checked_add(size).is_some_and(|end| at <= d.value && d.value < end)
-        });
-        let place = match found {
-            _ if overflow => "a library whose PT_LOAD ends past the address space",
-            None => "no PT_LOAD of its library",
-            Some(true) if !in_relro => "a writable PT_LOAD of its library, outside PT_GNU_RELRO",
-            Some(_) => continue,
-        };
+        let Some(place) = two_objects_at(&b.loads, &b.relro, d.value) else { continue };
         v.push(
             sym_finding(
                 24,
@@ -2154,5 +2166,68 @@ fn fields(
         if out.has(DT_RELACOUNT) != rel {
             v.push(fd(6, "DT_RELACOUNT is present iff some RELATIVE record (D-30)"));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{nonpreemptible_rows, two_objects_at};
+
+    fn table(version: u32, count: u32, row_size: u32, rows: &[(u64, u32, u16)]) -> Vec<u8> {
+        let mut b = Vec::new();
+        for w in [version, count, row_size, 0] {
+            b.extend_from_slice(&w.to_le_bytes());
+        }
+        for &(key, dynsym, flags) in rows {
+            b.extend_from_slice(&key.to_le_bytes());
+            b.extend_from_slice(&[0; 8]);
+            b.extend_from_slice(&dynsym.to_le_bytes());
+            b.extend_from_slice(&flags.to_le_bytes());
+            b.extend_from_slice(&[0; 2]);
+        }
+        b
+    }
+
+    #[test]
+    fn pd24_rows_with_nonpreemptible() {
+        let t = table(1, 3, 24, &[(1, 5, 0x8001), (2, 6, 1), (3, 7, 0x8000)]);
+        assert_eq!(nonpreemptible_rows(&t).unwrap().into_iter().collect::<Vec<_>>(), [5, 7]);
+        assert!(nonpreemptible_rows(&table(1, 0, 24, &[])).unwrap().is_empty());
+    }
+
+    #[test]
+    fn pd24_malformed_tables() {
+        assert!(nonpreemptible_rows(&[0; 15]).is_err(), "short");
+        assert!(nonpreemptible_rows(&table(2, 0, 24, &[])).is_err(), "version");
+        assert!(nonpreemptible_rows(&table(1, 0, 32, &[])).is_err(), "row size");
+        assert!(nonpreemptible_rows(&table(1, 2, 24, &[(1, 5, 0)])).is_err(), "count");
+        assert!(nonpreemptible_rows(&table(1, u32::MAX, 24, &[])).is_err(), "huge count");
+        let t = table(1, 2, 24, &[(2, 5, 0), (1, 6, 0)]);
+        assert!(nonpreemptible_rows(&t).is_err(), "key order");
+        // Every truncation is a table or an error, never a panic.
+        let t = table(1, 2, 24, &[(1, 5, 0x8000), (2, 6, 0)]);
+        for n in 0..t.len() {
+            let _ = nonpreemptible_rows(&t[..n]);
+        }
+    }
+
+    #[test]
+    fn pd24_places() {
+        let loads = [(0, 0x1000, false), (0x1f000, 0x2000, true)];
+        let relro = [(0x1f000, 0x1000)];
+        assert_eq!(two_objects_at(&loads, &relro, 0x800), None, ".rodata");
+        assert_eq!(two_objects_at(&loads, &relro, 0x1f800), None, "RELRO");
+        assert!(two_objects_at(&loads, &relro, 0x20000).unwrap().starts_with("a writable"));
+        assert!(two_objects_at(&loads, &[], 0x1f800).unwrap().starts_with("a writable"));
+        assert!(two_objects_at(&loads, &relro, 0x21000).unwrap().starts_with("no PT_LOAD"));
+        assert!(two_objects_at(&[], &relro, 0x10).unwrap().starts_with("no PT_LOAD"));
+        // Overflowing headers: an unknown place, or no RELRO.
+        let hostile = [(0, 0x1000, false), (u64::MAX - 1, 4, false)];
+        assert!(two_objects_at(&hostile, &[], 0x10).unwrap().contains("past the address space"));
+        let w = [(0x1000, 0x1000, true)];
+        assert!(two_objects_at(&w, &[(0x1000, u64::MAX)], 0x1010).is_some());
+        // Overlapping PT_LOADs: a writable one decides.
+        let both = [(0, 0x2000, false), (0x1000, 0x1000, true)];
+        assert!(two_objects_at(&both, &[], 0x1800).is_some());
     }
 }

@@ -1289,17 +1289,27 @@ never its section headers; where the definition's `st_value` lies:
   a warning, with the note `{name} is read-only in {file}: two equal
   copies` (two instances of a constant: defined behaviour, only `&v`
   differs);
-- in no `PT_LOAD`: refused (mortar cannot tell).
+- in no `PT_LOAD`: refused (mortar cannot tell); so is any copy from
+  a library one of whose `PT_LOAD`s ends past 2^64 (`p_vaddr + p_memsz`
+  overflows), and a `PT_GNU_RELRO` whose end overflows covers nothing.
+
+A `.note.mason` table that does not parse (O-51's causes) cannot say
+which definitions are bound: every definition of that library counts as
+bound locally, and a note says why.
 
 The rule does not change D-18 (a protected definition is refused
 already) nor the `Pie` and `Exec` rows of D-42/D-43 for a library that
 does not bind locally. A mold `-Bsymbolic` library carries neither tag
-and is not seen (a recorded gap); a `NONPREEMPTIBLE` row is read once
-WP-129 writes the tables of shared objects, `DT_SYMBOLIC`/`DF_SYMBOLIC`
-before. The verifier's side is P-R9, plumb.md P-D24 (§12.5, added to P-D11). *Test:*
+and is not seen (a recorded gap); `NONPREEMPTIBLE` rows are read from
+any table found (`mortar_meta::table`; mortar-made libraries carry one
+once WP-129 writes the tables of shared objects). The verifier's side is P-R9, plumb.md P-D24 (§12.5, added to P-D11). *Test:*
 `copy-of-symbolic` (refuse `.data`/`.bss`, warn `.rodata`/
-`.data.rel.ro`, refuse outside every `PT_LOAD`; a GNU ld and an lld
-`-Bsymbolic` library and a mortar one with a table; W30).
+`.data.rel.ro`, a GNU ld `-Bsymbolic` library; the plain library
+unaffected; W30, anomaly A44), `copy-of-symbolic-rows` (a table's
+`NONPREEMPTIBLE` rows, written by the test producer, and a table that
+does not parse); outside every `PT_LOAD` and overflowing headers: unit
+tests (`mortar_scan` `copies::tests`). An lld library and a mortar one
+wait for WP-129 (the `shlib` step is GNU ld's).
 
 **D-44 [M2] (canonical PLTs).** In `Exec`, a non-GOT address use of a
 shared function (`C` against `Shlib{func: true}`: `R_AARCH64_ADR_PREL_PG_HI21`,

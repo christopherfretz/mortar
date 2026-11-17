@@ -5067,7 +5067,11 @@ and what turns P-D9's equality into a check of D-112.
   writable `PT_LOAD` of that library outside `PT_GNU_RELRO`, or in no
   `PT_LOAD`, is reported (`spec/dyn.md` D-43a; WP-122 owns this rule's
   body in `dyncheck.rs`, WP-121 its call). Decided from the library's
-  program headers and `.dynamic`, as the linker's rule.
+  program headers and `.dynamic`, as the linker's rule: a table that does
+  not parse binds every definition, and a library with a `PT_LOAD` whose
+  `p_vaddr + p_memsz` overflows is reported for every such copy. A copy
+  of read-only or `PT_GNU_RELRO` data is not reported (two equal
+  constants). The references link W30: anomaly A44.
 - **P-D25 (records name only preemptible keys; request P-R10; amends
   P-D9 for `Shared`).** No dynamic record of a `Shared` output names
   (`r_sym` not 0) a key the verifier computes as bound (D-112: hidden,
