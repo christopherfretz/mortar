@@ -2064,7 +2064,7 @@ for).
 *Test:* `r-undefined-kept`, `r-undefined-weak-kept`, `r-u-written`.
 
 **RV-R4 (duplicates).** Two strong definitions of one key are
-`multiple-definition`, as in a final link (§3.8). GNU ld and lld refuse
+`duplicate-symbol`, as in a final link (§3.8). GNU ld and lld refuse
 them at `-r`; mold accepts them silently and keeps both, which makes
 the final link fail or mislink later. `--allow-multiple-definition`
 applies as in §3.8. A weak definition against a strong one is resolved
