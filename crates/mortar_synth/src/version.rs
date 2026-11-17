@@ -1,5 +1,16 @@
-//! `.gnu.version` and `.gnu.version_r` (`spec/dyn.md` D-27;
-//! `spec/synth.md` S-103). Owned by WP-M2-DYNSYM.
+//! `.gnu.version`, `.gnu.version_d` and `.gnu.version_r` (`spec/dyn.md`
+//! D-27, D-115; `spec/synth.md` S-103). Owned by WP-M2-DYNSYM;
+//! `.gnu.version_d` WP-125.
+//!
+//! **Version definitions** ([`VerdefPlan`], [`VerdefChunk`]; D-115, a
+//! shared object with a named version node only): index 1 the base
+//! (`VER_FLG_BASE`, named by the soname, else the output's basename), then
+//! one per node in script order, indices 2…; each `Verdef` (20 bytes)
+//! followed by its `Verdaux` entries (8 bytes each): its own name first,
+//! then its parents' in the order written. An export's `.gnu.version` is
+//! its resolution version (`SymProps.version`: the node's index, with
+//! `VERSYM_HIDDEN` for a non-default `foo@V`; 0 is written 1), and the
+//! `vna_other` numbers continue after the last `Verdef` index.
 //!
 //! **Plan** ([`verneed_plan`]): `Slots.verneed`, one row per needed shared
 //! object that provides a version some `.dynsym` entry with a shared
@@ -102,14 +113,22 @@ pub fn verneed_plan(
     Ok(out.into())
 }
 
+/// The first `vna_other`: 2, or after the last `Verdef` index when the
+/// output defines `verdefs` versions (D-115; the base included).
+#[must_use]
+pub fn first_other(verdefs: u16) -> u16 {
+    if verdefs == 0 { 2 } else { verdefs + 1 }
+}
+
 /// `vna_other` of every `(file, version)` of `verneed`, sorted: numbered
-/// from 2 in output order.
-fn others(verneed: &Verneed) -> Vec<((FileId, VerIndex), u16)> {
+/// from [`first_other`] in output order.
+fn others(verneed: &Verneed, verdefs: u16) -> Vec<((FileId, VerIndex), u16)> {
+    let first = first_other(verdefs);
     let mut v: Vec<((FileId, VerIndex), u16)> = verneed
         .iter()
         .flat_map(|(f, vs)| vs.iter().map(move |&x| (*f, x)))
         .enumerate()
-        .map(|(i, fv)| (fv, 2 + i as u16))
+        .map(|(i, fv)| (fv, first + i as u16))
         .collect();
     v.sort_unstable();
     v
@@ -119,7 +138,141 @@ fn others(verneed: &Verneed) -> Vec<((FileId, VerIndex), u16)> {
 /// section) without `.gnu.version_r`.
 #[must_use]
 pub fn versym_size(plan: &DynsymPlan, verneed: &Verneed) -> u64 {
-    if verneed.is_empty() { 0 } else { 2 * u64::from(plan.count()) }
+    versym_size_with(plan, verneed, 0)
+}
+
+/// [`versym_size`] for an output that defines `verdefs` versions: 0 (no
+/// section) without `.gnu.version_r` and `.gnu.version_d`.
+#[must_use]
+pub fn versym_size_with(plan: &DynsymPlan, verneed: &Verneed, verdefs: u16) -> u64 {
+    if verneed.is_empty() && verdefs == 0 { 0 } else { 2 * u64::from(plan.count()) }
+}
+
+/// One `Verdef` of [`VerdefPlan`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerdefEntry {
+    /// The version's name (the base's: the soname or the basename).
+    pub name: Box<[u8]>,
+    /// The parents' `Verdef` indices (2…), in the order written.
+    pub parents: Box<[u16]>,
+    /// The name's `.dynstr` offset (set by
+    /// `crate::dynstr::dynstr_plan_versioned`).
+    pub name_off: u32,
+}
+
+/// D-115: the output's version definitions, the base first.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct VerdefPlan {
+    pub defs: Box<[VerdefEntry]>,
+}
+
+impl VerdefPlan {
+    /// The base named `base`, then `nodes` in script order, each its name
+    /// and its parents as indices of earlier nodes. No node: no section.
+    #[must_use]
+    pub fn new(base: &[u8], nodes: &[(&[u8], &[usize])]) -> Self {
+        if nodes.is_empty() {
+            return Self::default();
+        }
+        let mut defs = Vec::with_capacity(nodes.len() + 1);
+        defs.push(VerdefEntry { name: base.into(), parents: Box::new([]), name_off: 0 });
+        for (name, parents) in nodes {
+            defs.push(VerdefEntry {
+                name: (*name).into(),
+                parents: parents.iter().map(|&p| (p + 2).min(0x7fff) as u16).collect(),
+                name_off: 0,
+            });
+        }
+        Self { defs: defs.into() }
+    }
+
+    /// The number of `Verdef` entries (`DT_VERDEFNUM`, `sh_info`); 0
+    /// without the section.
+    #[must_use]
+    pub fn count(&self) -> u16 {
+        self.defs.len().min(0x7fff) as u16
+    }
+
+    /// `.gnu.version_d`'s size (S-108): 20 bytes per `Verdef`, 8 per
+    /// `Verdaux`.
+    #[must_use]
+    pub fn size(&self) -> u64 {
+        self.defs.iter().map(|d| 20 + 8 * (1 + d.parents.len() as u64)).sum()
+    }
+}
+
+/// `VER_FLG_BASE`.
+const VER_FLG_BASE: u16 = 1;
+
+/// The `.gnu.version_d` chunk: whole. `plan` `None`: no section (an
+/// executable).
+#[derive(Clone, Copy, Debug)]
+pub struct VerdefChunk<'a> {
+    pub plan: Option<&'a VerdefPlan>,
+    pub class: Class,
+}
+
+impl VerdefChunk<'_> {
+    /// The size (S-108).
+    #[must_use]
+    pub fn size(&self) -> u64 {
+        self.plan.map_or(0, VerdefPlan::size)
+    }
+
+    /// The whole section into `out` (exactly [`Self::size`] bytes).
+    ///
+    /// # Errors
+    ///
+    /// `internal-error` when `out` is not the section's size; a refusal
+    /// for an ELF32 output.
+    pub fn write_all(&self, out: &mut [u8]) -> Result<(), SynthError> {
+        elf64(self.class)?;
+        if out.len() as u64 != self.size() {
+            return Err(internal(".gnu.version_d: the size does not match the plan"));
+        }
+        let le16 =
+            |out: &mut [u8], at: usize, v: u16| out[at..at + 2].copy_from_slice(&v.to_le_bytes());
+        let le32 =
+            |out: &mut [u8], at: usize, v: u32| out[at..at + 4].copy_from_slice(&v.to_le_bytes());
+        let defs = self.plan.map_or(&[][..], |p| &p.defs);
+        let mut at = 0usize;
+        for (i, d) in defs.iter().enumerate() {
+            let cnt = 1 + d.parents.len();
+            let len = 20 + 8 * cnt;
+            le16(out, at, 1); // vd_version
+            le16(out, at + 2, if i == 0 { VER_FLG_BASE } else { 0 });
+            le16(out, at + 4, (i + 1) as u16); // vd_ndx
+            le16(out, at + 6, cnt as u16);
+            le32(out, at + 8, elf_hash(&d.name));
+            le32(out, at + 12, 20); // vd_aux
+            le32(out, at + 16, if i + 1 == defs.len() { 0 } else { len as u32 });
+            let mut aux = at + 20;
+            let names = std::iter::once(d.name_off).chain(d.parents.iter().map(|&p| {
+                defs.get(usize::from(p) - 1).map_or(0, |x| x.name_off)
+            }));
+            for (j, off) in names.enumerate() {
+                le32(out, aux, off); // vda_name
+                le32(out, aux + 4, if j + 1 == cnt { 0 } else { 8 });
+                aux += 8;
+            }
+            at += len;
+        }
+        Ok(())
+    }
+}
+
+impl SynthChunk for VerdefChunk<'_> {
+    fn size(&self, _: &SizeCx<'_>) -> u64 {
+        VerdefChunk::size(self)
+    }
+
+    fn division(&self) -> Division {
+        Division::Whole { max_size: VerdefChunk::size(self) }
+    }
+
+    fn write(&self, _: &FillCx<'_>, range: Range<u64>, out: &mut [u8]) -> Result<(), SynthError> {
+        whole_range(&range, out, VerdefChunk::size(self), |buf| self.write_all(buf))
+    }
 }
 
 /// `.gnu.version_r`'s size (S-108): 16 bytes per `Verneed` and per
@@ -135,6 +288,8 @@ pub struct VersymChunk<'a> {
     pub plan: &'a DynsymPlan,
     pub inputs: DynsymInputs<'a>,
     pub verneed: &'a Verneed,
+    /// The output's `Verdef` count ([`VerdefPlan::count`]; 0 none).
+    pub verdefs: u16,
     pub class: Class,
 }
 
@@ -148,7 +303,7 @@ impl VersymChunk<'_> {
     /// The size (S-108).
     #[must_use]
     pub fn size(&self) -> u64 {
-        versym_size(self.plan, self.verneed)
+        versym_size_with(self.plan, self.verneed, self.verdefs)
     }
 
     /// Fills the window's range.
@@ -159,7 +314,7 @@ impl VersymChunk<'_> {
     /// `verneed` lacks; a refusal for an ELF32 output.
     pub fn write_window(&self, out: &mut Window<'_>) -> Result<(), SynthError> {
         elf64(self.class)?;
-        let others = others(self.verneed);
+        let others = others(self.verneed, self.verdefs);
         let order = self.plan.order();
         let first = out.start() / 2;
         let last = out.end().div_ceil(2).min(u64::from(self.plan.count()));
@@ -169,6 +324,11 @@ impl VersymChunk<'_> {
             } else {
                 let k = order[i as usize - 1];
                 match bound(&self.inputs, k) {
+                    // D-115: an export of a shared object, its version.
+                    None if self.inputs.shared => {
+                        let v = self.inputs.resolution.props.get(k).map_or(0, |p| p.version);
+                        if v == 0 { 1 } else { v }
+                    }
                     None => 1,
                     Some(fv) => match others.binary_search_by_key(&fv, |r| r.0) {
                         Ok(at) => others[at].1,
@@ -208,6 +368,8 @@ impl SynthChunk for VersymChunk<'_> {
 pub struct VerneedChunk<'a> {
     pub needed: &'a [FileId],
     pub verneed: &'a Verneed,
+    /// The output's `Verdef` count (`vna_other` continues after it).
+    pub verdefs: u16,
     pub dynstr: &'a DynStr,
     pub names: &'a (dyn crate::dynstr::DynNames + Sync),
     pub class: Class,
@@ -247,7 +409,7 @@ impl VerneedChunk<'_> {
         let le32 =
             |out: &mut [u8], at: usize, v: u32| out[at..at + 4].copy_from_slice(&v.to_le_bytes());
         let mut at = 0usize;
-        let mut other: u16 = 2;
+        let mut other: u16 = first_other(self.verdefs);
         for (n, ((file, vs), offs)) in self.verneed.iter().zip(&d.versions).enumerate() {
             let Some(pos) = self.needed.iter().position(|f| f == file) else {
                 return Err(internal(".gnu.version_r: a need of a file that is not needed"));

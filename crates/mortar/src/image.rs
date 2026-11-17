@@ -222,6 +222,7 @@ pub fn with_link<T>(
                     shared: d.shared.as_ref().map(|sh| link::SharedPlans {
                         soname: sh.soname.as_ref().map(|(b, o)| (b.as_slice(), *o)),
                         line: &sh.line,
+                        verdef: &sh.verdef,
                     }),
                 }),
                 _ => None,

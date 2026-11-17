@@ -766,6 +766,7 @@ impl Parser<'_> {
             Lands::WarnUnresolved(on) => plan.diagnostics.warn_unresolved_symbols = Some(on),
             Lands::AllowMultipleDefinition(on) => plan.diagnostics.allow_multiple_definition = on,
             Lands::AllowShlibUndefined(on) => plan.dynamic.allow_shlib_undefined = Some(on),
+            Lands::UndefinedVersion(on) => plan.dynamic.undefined_version = Some(on),
             Lands::WarnBackrefs(on) => plan.diagnostics.warn_backrefs = on,
             Lands::WarnCommon(on) => plan.diagnostics.warn_common = on,
             Lands::SortCommon => {

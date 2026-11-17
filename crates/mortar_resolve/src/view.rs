@@ -291,4 +291,11 @@ pub trait View: Sync {
         let _ = (file, index);
         0
     }
+    /// The version `V` of a relocatable object's entry written `foo@@V`
+    /// (a `.symver` default-version definition, whose key is `foo`;
+    /// `spec/resolve.md` §9.2, §9.7 rule 12); `None` for any other entry.
+    fn default_version(&self, file: FileId, index: SymbolIndex) -> Option<&[u8]> {
+        let _ = (file, index);
+        None
+    }
 }

@@ -101,7 +101,7 @@ pub(crate) static REFUSED_NOTES: &[(&str, &str)] = &[
 /// WP-117; `partial` since WP-123 joined the first target): what is joined,
 /// what is not caught and what is refused although correct. A `partial`
 /// row with no refused value: its refusals are by name, in the link.
-pub(crate) const SHARED: &str = "AArch64 and x86-64 (i386 refused, `feature`, until WP-130; TLS and IFUNC in a shared object on x86-64 until WP-127 part 2; local-exec TLS in a shared object refused, dyn.md D-119; version scripts until WP-125). Not caught (with every reference): non-PIC AArch64 code that reaches its own exported data only through a form dyn.md D-117's analysis does not follow (a spilled or reloaded base, a computed index, a 32-bit register, a value passed to a callee, code outside a sized function symbol, hand-written assembly; 3 of 306 measured bound definitions, every object refused for another use). Refused although correct: -fPIC code that forms an address before the start of a static object placed after exported data (`tab - 1`, GCC and Clang AArch64 -O0; dyn.md D-117; remedy -fdata-sections). Not judged on x86-64 (x64.md X-62): a section-relative PC-relative field in code naming exported data (none measured in GCC, Clang or kiln output at any -O)";
+pub(crate) const SHARED: &str = "AArch64 and x86-64 (i386 refused, `feature`, until WP-130; TLS and IFUNC in a shared object on x86-64 until WP-127 part 2; local-exec TLS in a shared object refused, dyn.md D-119; `extern \"C++\"` version-script entries refused, dyn.md D-114). Not caught (with every reference): non-PIC AArch64 code that reaches its own exported data only through a form dyn.md D-117's analysis does not follow (a spilled or reloaded base, a computed index, a 32-bit register, a value passed to a callee, code outside a sized function symbol, hand-written assembly; 3 of 306 measured bound definitions, every object refused for another use). Refused although correct: -fPIC code that forms an address before the start of a static object placed after exported data (`tab - 1`, GCC and Clang AArch64 -O0; dyn.md D-117; remedy -fdata-sections). Not judged on x86-64 (x64.md X-62): a section-relative PC-relative field in code naming exported data (none measured in GCC, Clang or kiln output at any -O)";
 /// `--Bsymbolic-non-weak` and `--Bsymbolic-non-weak-functions` (D-112).
 const NON_WEAK: &str = "dyn.md D-112: GNU ld does not know it (lld and mold do); use -Bsymbolic-functions, or a --dynamic-list";
 /// `--dynamic-list-data` (D-112).
@@ -115,8 +115,10 @@ const DYNAMIC_LIST_CPP: &str =
 /// elsewhere each is refused by name (`Refused{Option, spelling}`) with
 /// this note (GNU ld writes `DT_SONAME` into an executable, mortar does not
 /// write it there).
-pub(crate) static SHARED_ONLY: &[(&str, &str)] =
-    &[("-h", "dyn.md D-102: mortar writes DT_SONAME in a shared object (-shared) only")];
+pub(crate) static SHARED_ONLY: &[(&str, &str)] = &[
+    ("-h", "dyn.md D-102: mortar writes DT_SONAME in a shared object (-shared) only"),
+    ("--version-script", "dyn.md D-114: mortar applies a version script in a shared object (-shared) only; for an executable the references disagree (GNU ld exports the node names, lld exports nothing without -E, mold exports the script's global entries)"),
+];
 
 /// The options whose effect in a `Shared` link a later package implements
 /// (`spec/cli.md` §4.2's M4 block): in a link whose output kind is
@@ -133,7 +135,6 @@ pub(crate) static SHARED_LATER: &[(&str, &str)] = &[
     ("-z initfirst", "dyn.md D-103: -z initfirst is WP-128's"),
     ("-z interpose", "dyn.md D-103: -z interpose is WP-128's"),
     ("-z origin", "dyn.md D-103: -z origin is WP-128's"),
-    ("--version-script", "dyn.md D-114: version scripts are WP-125's"),
 ];
 
 /// The table.
@@ -240,7 +241,7 @@ pub(crate) static ROWS: &[Row] = &[
     r(&[s("T"), g("script")], Arg::Required(Values::Any), "FILE", GLM, &[], Group::Scripts, Refused, Lands::Script(ScriptRole::Script), "Read the linker script FILE"),
     r(&[g("default-script"), g("dT")], Arg::Required(Values::Any), "FILE", GL, &[], Group::Scripts, Refused, Lands::Script(ScriptRole::DefaultScript), "Use FILE as the default linker script"),
     r(&[s("c"), g("mri-script")], Arg::Required(Values::Any), "FILE", G, &[], Group::Scripts, Refused, Lands::Other, "Read the MRI script FILE"),
-    r(&[g("version-script")], Arg::Required(Values::Any), "FILE", GLM, &[], Group::Scripts, Refused, Lands::Script(ScriptRole::VersionScript), "Read the version script FILE"),
+    r(&[g("version-script")], Arg::Required(Values::Any), "FILE", GLM, &[], Group::Scripts, Supported, Lands::Script(ScriptRole::VersionScript), "Read the version script FILE"),
     r(&[g("dynamic-list")], Arg::Required(Values::Any), "FILE", GLM, &[], Group::Scripts, Refused, Lands::Script(ScriptRole::DynamicList), "Read the dynamic list FILE"),
     r(&[g("export-dynamic-symbol-list")], Arg::Required(Values::Any), "FILE", GLM, &[], Group::Scripts, Refused, Lands::Script(ScriptRole::ExportDynamicSymbolList), "Export the symbols FILE lists"),
     r(&[g("retain-symbols-file")], Arg::Required(Values::Any), "FILE", GLM, &[], Group::Scripts, Refused, Lands::Script(ScriptRole::RetainSymbolsFile), "Keep only the symbols FILE lists"),
@@ -284,8 +285,8 @@ pub(crate) static ROWS: &[Row] = &[
     r(&[g("no-demangle")], Arg::None, "", GLM, &[], Group::Symbols, Refused, Lands::Other, "Do not demangle symbol names"),
     r(&[g("default-symver")], Arg::None, "", GM, &[], Group::Symbols, Refused, Lands::Other, "Give exported symbols the output's version"),
     r(&[g("default-imported-symver")], Arg::None, "", G, &[], Group::Symbols, Refused, Lands::Other, "Give imported symbols their library's version"),
-    r(&[g("undefined-version")], Arg::None, "", GLM, &[], Group::Symbols, Refused, Lands::Other, "Accept version scripts that name undefined symbols"),
-    r(&[g("no-undefined-version")], Arg::None, "", GLM, &[], Group::Symbols, Refused, Lands::Other, "Reject version scripts that name undefined symbols"),
+    r(&[g("undefined-version")], Arg::None, "", GLM, &[], Group::Symbols, Supported, Lands::UndefinedVersion(true), "Accept version scripts that name undefined symbols"),
+    r(&[g("no-undefined-version")], Arg::None, "", GLM, &[], Group::Symbols, Supported, Lands::UndefinedVersion(false), "Reject version scripts that name undefined symbols"),
     r(&[g("version-exports-section")], Arg::Required(Values::Any), "SYMBOL", G, &[], Group::Symbols, Refused, Lands::Other, "Take the exported symbols from .exports"),
     r(&[g("disable-multiple-abs-defs")], Arg::None, "", G, &[], Group::Symbols, Refused, Lands::Other, "Reject absolute symbols defined twice through -R"),
     r(&[x("gnu-unique")], Arg::None, "", L, &[], Group::Symbols, Refused, Lands::Other, "Keep the STB_GNU_UNIQUE binding (default)"),

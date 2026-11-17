@@ -9,7 +9,7 @@ use mortar_core::layout::Synth;
 use mortar_elf::Class;
 use mortar_elf::consts::{
     SHF_ALLOC, SHF_EXECINSTR, SHF_INFO_LINK, SHF_MERGE, SHF_STRINGS, SHF_WRITE, SHT_DYNAMIC,
-    SHT_DYNSYM, SHT_GNU_HASH, SHT_GNU_VERNEED, SHT_GNU_VERSYM, SHT_NOTE, SHT_PROGBITS, SHT_REL,
+    SHT_DYNSYM, SHT_GNU_HASH, SHT_GNU_VERDEF, SHT_GNU_VERNEED, SHT_GNU_VERSYM, SHT_NOTE, SHT_PROGBITS, SHT_REL,
     SHT_RELA, SHT_STRTAB, SHT_SYMTAB, SHT_SYMTAB_SHNDX,
 };
 
@@ -35,7 +35,8 @@ pub enum SynthKind {
     Dynstr = 6,
     /// M2: `mortar_synth/src/version.rs` (WP-M2-DYNSYM; D-27).
     GnuVersion = 7,
-    /// M4 (a version script defines a version); never created at M2.
+    /// M4: `mortar_synth/src/version.rs` (WP-125; D-115): a shared object
+    /// whose version script names a version node.
     GnuVersionD = 8,
     /// M2: `mortar_synth/src/version.rs` (WP-M2-DYNSYM; D-27).
     GnuVersionR = 9,
@@ -193,6 +194,8 @@ impl SynthKind {
             Self::Dynsym => h(SHT_DYNSYM, SHF_ALLOC, word, if word == 8 { 24 } else { 16 }),
             Self::Dynstr => h(SHT_STRTAB, SHF_ALLOC, 1, 0),
             Self::GnuVersion => h(SHT_GNU_VERSYM, SHF_ALLOC, 2, 2),
+            // D-115: sh_link `.dynstr`, sh_info the `Verdef` count.
+            Self::GnuVersionD => h(SHT_GNU_VERDEF, SHF_ALLOC, 4, 0),
             Self::GnuVersionR => h(SHT_GNU_VERNEED, SHF_ALLOC, 4, 0),
             Self::Dynamic => h(SHT_DYNAMIC, SHF_ALLOC | SHF_WRITE, word, 2 * word),
             // S-58: alignment 4.
@@ -259,7 +262,8 @@ mod tests {
         assert_eq!(h(SynthKind::Dynamic, Class::Elf64).flags, SHF_ALLOC | SHF_WRITE);
         assert_eq!(SynthKind::RelaDyn.header(Class::Elf32, true).unwrap().sh_type, SHT_REL);
         assert_eq!(h(SynthKind::Interp, Class::Elf64).align, 1);
-        for m4 in [SynthKind::GnuVersionD, SynthKind::RelrDyn, SynthKind::DynBss] {
+        assert_eq!(h(SynthKind::GnuVersionD, Class::Elf64).align, 4);
+        for m4 in [SynthKind::RelrDyn, SynthKind::DynBss] {
             assert!(m4.header(Class::Elf64, false).is_none());
         }
         assert_eq!(SynthKind::BssRelRo.name(false), b".bss.rel.ro");

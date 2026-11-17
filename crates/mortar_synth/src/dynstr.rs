@@ -14,7 +14,10 @@
 //! the `DT_NEEDED` names ([`dynstr_plan_shared`]); its offset is not a
 //! field of `DynStr` (a core type) but travels beside it, to the writer
 //! ([`DynstrChunk::soname`]) and to `.dynamic` (`DynValue::SonameName`).
-//! The `Verdef` names (WP-125) are not written here.
+//! The `Verdef` names (D-116, WP-125) follow the soname, the base's
+//! first ([`dynstr_plan_versioned`]); their offsets are in the
+//! [`crate::version::VerdefPlan`], which the writer reads
+//! ([`DynstrChunk::verdef`]).
 
 use std::collections::HashMap;
 use std::ops::Range;
@@ -75,16 +78,45 @@ pub fn dynstr_plan_shared(
     rpath: Option<&[u8]>,
     names: &dyn DynNames,
 ) -> (DynStr, Option<u32>) {
+    dynstr_plan_versioned(dynsym, needed, soname, None, verneed, rpath, names)
+}
+
+/// D-116: [`dynstr_plan_shared`] with the `Verdef` names of `verdef`
+/// placed after the soname, the base's first (each distinct string once:
+/// a base named by the soname shares its offset); their offsets are
+/// written into `verdef`. With `verdef` `None` it is exactly
+/// [`dynstr_plan_shared`].
+#[must_use]
+pub fn dynstr_plan_versioned(
+    dynsym: &DynsymPlan,
+    needed: &[FileId],
+    soname: Option<&[u8]>,
+    verdef: Option<&mut crate::version::VerdefPlan>,
+    verneed: &[(FileId, Box<[VerIndex]>)],
+    rpath: Option<&[u8]>,
+    names: &dyn DynNames,
+) -> (DynStr, Option<u32>) {
+    // `Strings` borrows its strings: the names are copied out of the plan
+    // that gets their offsets.
+    let verdef_names: Vec<Box<[u8]>> =
+        verdef.as_ref().map(|v| v.defs.iter().map(|d| d.name.clone()).collect()).unwrap_or_default();
     let mut t = Strings { seen: HashMap::with_capacity(dynsym.order().len() + 16), size: 1 };
     let symbols: Box<[u32]> = dynsym.order().iter().map(|&k| t.add(names.symbol(k))).collect();
     let needed_offs: Box<[u32]> = needed.iter().map(|&f| t.add(names.needed(f))).collect();
     let soname_off = soname.map(|s| t.add(s));
+    let verdef_offs: Vec<u32> = verdef_names.iter().map(|n| t.add(n)).collect();
     let versions: Box<[Box<[u32]>]> = verneed
         .iter()
         .map(|(f, vs)| vs.iter().map(|&v| t.add(names.version(*f, v))).collect())
         .collect();
     let runpath = rpath.map(|r| t.add(r));
     let size = t.size;
+    drop(t);
+    if let Some(v) = verdef {
+        for (d, o) in v.defs.iter_mut().zip(verdef_offs) {
+            d.name_off = o;
+        }
+    }
     let table = DynStr {
         symbols,
         needed: needed_offs,
@@ -102,6 +134,7 @@ struct Strings<'a> {
 }
 
 impl<'a> Strings<'a> {
+
     /// The offset of `s`, appended at the end on its first use. An offset
     /// past `u32` is clamped; `dynsym::chunk_sizes` refuses such a table.
     fn add(&mut self, s: &'a [u8]) -> u32 {
@@ -126,6 +159,9 @@ pub struct DynstrChunk<'a> {
     /// A shared object's `-soname` string and its offset
     /// ([`dynstr_plan_shared`]); `None` otherwise.
     pub soname: Option<(&'a [u8], u32)>,
+    /// A shared object's version definitions, their names' offsets set
+    /// ([`dynstr_plan_versioned`]); `None` otherwise.
+    pub verdef: Option<&'a crate::version::VerdefPlan>,
     pub dynstr: &'a DynStr,
     pub names: &'a (dyn DynNames + Sync),
 }
@@ -178,6 +214,9 @@ impl DynstrChunk<'_> {
         }
         if let Some((s, o)) = self.soname {
             put(o, s)?;
+        }
+        for d in self.verdef.map_or(&[][..], |v| &v.defs) {
+            put(d.name_off, &d.name)?;
         }
         for ((f, vs), offs) in self.verneed.iter().zip(&d.versions) {
             for (&v, &o) in vs.iter().zip(offs) {
@@ -247,6 +286,7 @@ mod tests {
             verneed: &verneed,
             rpath: Some(b"/opt/lib"),
             soname: None,
+            verdef: None,
             dynstr: &d,
             names: &Names,
         };

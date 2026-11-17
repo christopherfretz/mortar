@@ -369,8 +369,10 @@ pub enum Kind {
     /// by node `version`'s `local:` entries.
     VersionedDefinitionHidden { name: String, version: String },
     /// `versioned-export` (`spec/dyn.md` D-27): an exported definition
-    /// `name@@version` of an executable, which would need a version
-    /// definition (`.gnu.version_d`, M4).
+    /// of an executable written `name@@V` or `name@V`, which would need a
+    /// version definition (`.gnu.version_d` is written in a shared object
+    /// only, D-115). `version` is the version as written, its `@@` or `@`
+    /// included.
     VersionedExport { name: String, version: String },
 
     // -- one-definition rule (M6, `spec/meta.md`, `spec/odr.md` §9.1) -------

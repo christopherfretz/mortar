@@ -52,6 +52,11 @@ pub struct Dynamic {
     /// in <c>, which is not on the command line` (D-12), with the first
     /// such file. Sorted by key.
     pub closure_only: Vec<(SymbolId, FileId)>,
+    /// Per key: the output version index of an export of a shared object
+    /// (`crate::version::apply`; 0 unversioned); empty outside `Shared`.
+    pub versions: Vec<u16>,
+    /// The version stage's diagnostics (WP-125).
+    pub version_problems: Vec<crate::version::VersionProblem>,
 }
 
 /// One visible definition in a loaded shared object.
@@ -353,8 +358,17 @@ pub(crate) fn link<V: View>(
     let ours = |d: Def| matches!(d, Def::Strong(_) | Def::Weak(_) | Def::Common(_));
     // WP-117: a shared object's export set is D-110's, and preemption
     // D-112's (`crate::export`).
+    let mut versions: Vec<u16> = Vec::new();
+    let mut version_problems = Vec::new();
     let exported: Vec<bool> = if opts.shared_output.is_some() {
-        (0..keys).map(|k| export::exported(def[k], props[k].visibility, ref_dynamic[k])).collect()
+        let mut e: Vec<bool> = (0..keys)
+            .map(|k| export::exported(def[k], props[k].visibility, ref_dynamic[k]))
+            .collect();
+        // D-110 item 1, D-114 (WP-125): the version script.
+        versions = vec![0; keys];
+        version_problems =
+            crate::version::apply(view, &opts.versions, def, &mut e, &mut versions);
+        e
     } else {
         (0..keys)
             .map(|k| {
@@ -504,6 +518,8 @@ pub(crate) fn link<V: View>(
         defined_dynamic,
         preemptible,
         closure_only,
+        versions,
+        version_problems,
     }
 }
 
