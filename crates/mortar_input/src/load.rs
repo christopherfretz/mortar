@@ -14,7 +14,7 @@ use mortar_core::inputs::{
     Opened, OpenedKind, Origin, Probe, ProbeOutcome, Reader, ScriptEntry, SearchRef, SonameUnit,
     StoreRef, SymbolKey, TargetName,
 };
-use mortar_core::intern::{self, SymName, TooManyKeys};
+use mortar_core::intern::{self, InternKey, SymName, TooManyKeys};
 use mortar_core::par::Pool;
 use mortar_core::plan::Plan;
 use mortar_diag::{Collector, Diagnostic, Key, Kind, RefusalClass};
@@ -100,7 +100,8 @@ pub fn load_steps<'s>(
         diag.emit(Key::new(PHASE, 0, 0), Diagnostic::error(Kind::NoTarget));
         return None;
     };
-    let Ok(inputs) = build(&loaded, store, &env.pool, choice.target, steps) else {
+    let extra = plan.option_keys();
+    let Ok(inputs) = build(&loaded, store, &env.pool, choice.target, &extra, steps) else {
         let what = "more than 2^32 - 1 distinct symbol keys";
         diag.emit(Key::new(PHASE, 0, 0), Diagnostic::refused(RefusalClass::Feature, what));
         return None;
@@ -146,6 +147,7 @@ fn build<'s>(
     store: &'s Store,
     pool: &Pool,
     target: LinkTarget,
+    extra: &[Vec<u8>],
     steps: &mut Steps,
 ) -> Result<Inputs<'s>, TooManyKeys> {
     steps.restart();
@@ -211,7 +213,7 @@ fn build<'s>(
         u.checked_sub(1).and_then(|i| rows.get(i)).map_or(Keys::None, signatures)
     })?;
     steps.step("build.intern_comdats");
-    let symbol_rows: Vec<SymbolKey<'s>> = symbols
+    let mut symbol_rows: Vec<SymbolKey<'s>> = symbols
         .names
         .iter()
         .map(|(id, key)| SymbolKey {
@@ -220,6 +222,19 @@ fn build<'s>(
             hash: symbols.names.hash(id),
         })
         .collect();
+    // `spec/model.md` §2.3: after the mentioned keys, a row for each name
+    // an option gives that no file mentions, in option order.
+    for name in extra {
+        let key = SymName { name: kept.get(name), version: None };
+        let known = symbols.names.get(&key).is_some()
+            || symbol_rows[symbols.names.len()..].iter().any(|k| k.name == key.name);
+        if !known {
+            symbol_rows.push(SymbolKey { name: key.name, version: None, hash: key.hash() });
+        }
+    }
+    if u32::try_from(symbol_rows.len()).is_err() {
+        return Err(TooManyKeys);
+    }
     let comdat_rows: Vec<Comdat<'s>> =
         comdats.names.iter().map(|(_, name)| Comdat { name }).collect();
 

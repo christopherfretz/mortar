@@ -72,6 +72,7 @@ R Eq gnu --sort-common --sort_common
 R Next gnu --sort-section
 R Next gnu -u --undefined
 R Next gnu --require-defined
+R Next gnu --wrap
 R Next gnu --export-dynamic-symbol
 R Next gnu --exclude-libs
 R Next gnu -init
@@ -258,7 +259,6 @@ R No - --reverse-sections
 R Next - --randomize-section-padding
 R Next - --undefined-glob
 R Next gnu --defsym
-R Next gnu --wrap
 R Next gnu -y --trace-symbol
 R Next gnu --ignore-unresolved-symbol
 R Eq gnu --demangle

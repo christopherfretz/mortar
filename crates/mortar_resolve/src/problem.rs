@@ -132,6 +132,12 @@ pub enum What {
     /// which ends up not needed, while the lazy file `member`, not live,
     /// defines `key` (GNU ld extracts it, lld leaves the root unfulfilled).
     RootAsNeeded { key: SymbolId, arg: u32, lib: FileId, member: FileId },
+    /// `Refused{Feature, "--wrap of a symbol with a definition in a
+    /// dropped COMDAT copy"}` (§7.1, WP-153): the wrapped `key` has a
+    /// mention in the live object `dropped` demoted by COMDAT
+    /// deduplication, the group's copy kept in `kept` (GNU ld wraps that
+    /// file's references, lld every one, mold none).
+    WrapComdat { key: SymbolId, dropped: SymEntry, kept: FileId },
     /// `entry-not-found` (§5.5), a warning.
     EntryNotFound { key: OptId<SymbolId>, name: Box<[u8]>, arg: u32 },
     /// `common-larger-than-definition` (§3.3), a warning.
@@ -202,6 +208,7 @@ impl Problem {
     pub fn id(&self) -> &'static str {
         match self.what {
             What::RootAsNeeded { .. }
+            | What::WrapComdat { .. }
             | What::NeededOrderUnknown { .. }
             | What::LtoSlim { .. }
             | What::SymbolBinding { .. }

@@ -1224,7 +1224,10 @@ from it:
 
 - **L-102 [C]** `entry` is the value of the symbol named by `-e`/`--entry`
   (or `ENTRY` in a script), else `_start`. A number given to `-e` that
-  is not a symbol name is accepted as an absolute address (GNU).
+  is not a symbol name is accepted as an absolute address (GNU). The
+  symbol is the one named: `--wrap=SYM` does not redirect `-e SYM` to
+  `__wrap_SYM` (GNU ld and mold; lld does; `spec/resolve.md` §7.1,
+  WP-153).
 - **L-103 [C]** If the entry symbol is undefined in an executable,
   mortar warns with resolve.md's `entry-not-found`
   (`cannot find entry symbol {name}`, §5.5 there) and writes

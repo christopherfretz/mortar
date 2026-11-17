@@ -115,7 +115,11 @@ columns of `Resolution`. `spec/resolve.md` specifies the rule in full; the
 key shape is fixed here because interning happens before resolution.
 
 One row exists per distinct key among the non-local symbol-table entries
-of all files (lazy archive members and shared objects included).
+of all files (lazy archive members and shared objects included), and,
+after those, one per name an option gives that no file mentions, in
+option order, unversioned (`--wrap=SYM`'s `SYM`, `__wrap_SYM` and
+`__real_SYM`, `spec/resolve.md` §7.1; WP-153): resolution needs a row to
+bind a redirected reference to, and to report it undefined.
 
 The key is split at the **first** `@`: `foo@@V2` is the unversioned key
 `foo`, `foo@V1` is `foo` with version `V1`, and `foo@` is `foo` with the

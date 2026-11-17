@@ -115,6 +115,7 @@ const Z_EXEC_SHARED_ONLY: &str =
 
 /// `--exclude-libs` (`spec/dyn.md` D-110 item 1, WP-128): what is refused
 /// although a reference links it.
+const WRAP: &str = "resolve.md §7.1: a versioned SYMBOL (f@V: GNU ld and lld wrap the reference f@V, mold f) and --wrap of another --wrap's __real_ name (GNU ld wraps it, lld takes the last option, mold binds it to the symbol) are refused by name";
 const EXCLUDE_LIBS: &str = "dyn.md D-110 item 1: an entry is an archive's file name (ALL: every archive); an entry without .a that names an archive's file name without its .a (libfoo for libfoo.a) is refused by name (GNU ld matches it, lld and mold do not)";
 
 /// The options whose effect exists only in a shared object (`spec/dyn.md`
@@ -283,7 +284,7 @@ pub(crate) static ROWS: &[Row] = &[
     r(&[g("require-defined")], Arg::Required(Values::Any), "SYMBOL", GM, &[], Group::Symbols, Supported, Lands::Symbol(SymbolRole::RequireDefined), "Require that SYMBOL is defined"),
     r(&[x("undefined-glob")], Arg::Required(Values::Any), "PATTERN", LM, &[], Group::Symbols, Refused, Lands::Other, "Add an undefined reference for each symbol PATTERN matches"),
     r(&[g("defsym")], Arg::Required(Values::Any), "SYMBOL=EXPR", GLM, &[], Group::Symbols, Refused, Lands::Symbol(SymbolRole::Defsym), "Define SYMBOL as EXPR"),
-    r(&[g("wrap")], Arg::Required(Values::Any), "SYMBOL", GLM, &[], Group::Symbols, Refused, Lands::Symbol(SymbolRole::Wrap), "Send references to SYMBOL to __wrap_SYMBOL"),
+    r(&[g("wrap")], Arg::Required(Values::Any), "SYMBOL", GLM, &[], Group::Symbols, Partial { refused: &[], note: WRAP }, Lands::Symbol(SymbolRole::Wrap), "Send references to SYMBOL to __wrap_SYMBOL"),
     r(&[g("export-dynamic-symbol")], Arg::Required(Values::Any), "SYMBOL", GLM, &[], Group::Symbols, Supported, Lands::Symbol(SymbolRole::ExportDynamicSymbol), "Export SYMBOL (a glob)"),
     r(&[g("exclude-libs")], Arg::Required(Values::Any), "LIBS", GLM, &[], Group::Symbols, Partial { refused: &[], note: EXCLUDE_LIBS }, Lands::Symbol(SymbolRole::ExcludeLibs), "Do not export the symbols of the archives LIBS"),
     r(&[s("y"), g("trace-symbol")], Arg::Required(Values::Any), "SYMBOL", GLM, &[], Group::Symbols, Refused, Lands::Symbol(SymbolRole::TraceSymbol), "Report each file that mentions SYMBOL"),

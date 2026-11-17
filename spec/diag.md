@@ -573,6 +573,13 @@ The dynamic outputs (M2) added these, without a kind of their own
 | `thread-local undefined weak symbol in a dynamic executable` | the scan | `spec/dyn.md` D-25 |
 | `lazy PLT (shared-library calls)` | `mortar_x64`, `mortar_x86` outside a dynamic plan | `spec/x64.md` §10.3 |
 | `root of an unneeded --as-needed shared object and an archive member: {name}` | resolution, after the needed set (`.at` the option, `-u`/`EXTERN`/`-e`; `defined in` the library, then the member; the note names the references' two results and the two ways out) | `spec/resolve.md` §4.2 (WP-152) |
+| `--wrap of a symbol with a definition in a dropped COMDAT copy: {name}` | resolution, after the COMDAT keepers (`.at` the option `--wrap={name}`; `defined in` the file of the kept copy, then the dropped copy's entry; the note names the three references' results and says a wrapped function must have one definition: make it non-inline, or wrap its callers' own symbol) | `spec/resolve.md` §7.1 (WP-153) |
+
+Two shapes of `--wrap`'s value are refused at the command line as
+`unsupported option value: --wrap={value}` (class `option-value`, the
+row's note naming both; `spec/resolve.md` §7.1, WP-153): a versioned
+name (`--wrap=f@V1`), and `--wrap=__real_X` on a line that also has
+`--wrap=X`.
 
 A dynamic link's notes are the refusing spec's as well: the D-12 note
 `defined in {path}, which is not on the command line`

@@ -1,0 +1,107 @@
+# PENDING (WP-153): every reference's and mortar's output draws L3 findings because the verifier does not follow --wrap yet; the verifier package for --wrap renames this file to .test.
+# The three --wrap shapes mortar refuses by name (resolve.md §7.1
+# "Refused by name", WP-153), where the references link different
+# programs:
+# 1. --wrap=f@V1 (a versioned SYMBOL): GNU ld and lld wrap the reference
+#    f@V1, mold f;
+# 2. --wrap=__real_f beside --wrap=f: GNU ld wraps it in either order, lld
+#    takes the last option, mold binds __real_f to f;
+# 3. a live file's mention of SYM demoted by COMDAT deduplication (an
+#    inline function _Z1fv used in two files): the calls in the file
+#    whose copy is dropped are wrapped by GNU ld (a:f=1 b=50), every call
+#    by lld (a:f=50 b=50), none by mold (a:f=1 b=1). --gc-sections does
+#    not change "live" (the dropped copy's file is live by its other
+#    sections); an archive member extracted for another symbol is live;
+#    a member nothing extracts and a single copy are accepted.
+#@ spec: resolve.md §7.1
+#@ arch: aarch64 x86_64
+#@ requires: g++
+
+cc -O0 m.c -o m.o
+cc -O0 f.c -o f.o
+cxx -O0 a.cc -o a.o
+cxx -O0 b.cc -o b.o
+cxx -O0 -ffunction-sections a.cc -o agc.o
+cxx -O0 -ffunction-sections b.cc -o bgc.o
+cxx -O0 s.cc -o s.o
+cxx -O0 u.cc -o u.o
+ar rcs libb.a b.o
+ar rcs libu.a u.o
+
+link(mortar) gcc m.o f.o -Wl,--wrap=f@V1 -o versioned
+  exit: fail
+  diag: unsupported option value: --wrap=f@V1
+  diag: a versioned SYMBOL
+link(mortar) gcc m.o f.o -Wl,--wrap=f -Wl,--wrap=__real_f -o real
+  exit: fail
+  diag: unsupported option value: --wrap=__real_f
+  diag: --wrap of another --wrap's __real_ name
+
+link(bfd,lld,mold) g++ a.o b.o -Wl,--wrap=_Z1fv -o comdat
+run(bfd) comdat
+  stdout: a:f=1 b=50
+run(lld) comdat
+  stdout: a:f=50 b=50
+run(mold) comdat
+  stdout: a:f=1 b=1
+link(mortar) g++ a.o b.o -Wl,--wrap=_Z1fv -o comdat
+  exit: fail
+  diag: argument '--wrap=_Z1fv': unsupported feature: --wrap of a symbol with a definition in a dropped COMDAT copy: _Z1fv
+  diag: defined in a.o
+  diag: defined in b.o:(_Z1fv)
+  diag: a wrapped function must have one definition; make it non-inline, or wrap its callers' own symbol
+link(bfd,lld,mold) g++ b.o a.o -Wl,--wrap=_Z1fv -o comdat-ba
+run(bfd) comdat-ba
+  stdout: a:f=50 b=1
+link(mortar) g++ b.o a.o -Wl,--wrap=_Z1fv -o comdat-ba
+  exit: fail
+  diag: dropped COMDAT copy: _Z1fv
+  diag: defined in b.o
+  diag: defined in a.o:(_Z1fv)
+link(mortar) g++ agc.o bgc.o -Wl,--gc-sections -Wl,--wrap=_Z1fv -o comdat-gc
+  exit: fail
+  diag: dropped COMDAT copy: _Z1fv
+  diag: defined in agc.o
+  diag: defined in bgc.o:(_Z1fv)
+link(mortar) g++ a.o libb.a -Wl,--wrap=_Z1fv -o comdat-member
+  exit: fail
+  diag: dropped COMDAT copy: _Z1fv
+  diag: defined in a.o
+  diag: defined in libb.a(b.o):(_Z1fv)
+
+link g++ s.o -Wl,--wrap=_Z1fv -o single
+run(bfd,mold,mortar) single
+  stdout: f=1
+run(lld) single
+  stdout: f=50
+link g++ s.o libu.a -Wl,--wrap=_Z1fv -o unextracted
+run(bfd,mold,mortar) unextracted
+  stdout: f=1
+run(lld) unextracted
+  stdout: f=50
+
+#--- m.c
+#include <stdio.h>
+int f(void); int __real_f(void);
+int main(void) { printf("f=%d real=%d\n", f(), __real_f()); return 0; }
+#--- f.c
+int f(void) { return 1; }
+int __wrap_f(void) { return 2; }
+int __wrap___real_f(void) { return 5; }
+#--- a.cc
+#include <cstdio>
+inline int f() { return 1; }
+int b();
+extern "C" int __wrap__Z1fv() { return 50; }
+int main() { std::printf("a:f=%d b=%d\n", f(), b()); return 0; }
+#--- b.cc
+inline int f() { return 1; }
+int b() { return f(); }
+#--- s.cc
+#include <cstdio>
+inline int f() { return 1; }
+extern "C" int __wrap__Z1fv() { return 50; }
+int main() { std::printf("f=%d\n", f()); return 0; }
+#--- u.cc
+inline int f() { return 1; }
+int u() { return f(); }

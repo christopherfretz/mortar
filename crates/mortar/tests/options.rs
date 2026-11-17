@@ -113,6 +113,7 @@ const AUDIT: &[(&str, Proof)] = &[
     ("--sort-section", Check(sort_section)),
     ("-u", Check(undefined_roots)),
     ("--require-defined", Check(require_defined)),
+    ("--wrap", Check(wrap)),
     ("--export-dynamic-symbol", Check(dynamic_options)),
     (
         "--exclude-libs",
@@ -797,6 +798,47 @@ fn require_defined(cx: &Cx) {
     let o = cx.mortar(&missing);
     assert!(!o.success() && o.stderr_text().contains("required symbol not defined: nosuch"));
     assert!(!cx.ld(&missing).success(), "GNU ld accepted --require-defined=nosuch");
+}
+
+// spec: resolve.md §7.1 (`--wrap=f`: an undefined `f` binds to
+// `__wrap_f`, an undefined `__real_f` to `f`; the refused shapes are
+// refused by name), as GNU ld
+fn wrap(cx: &Cx) {
+    for (name, text) in [
+        ("wm", "\t.text\n\t.globl _start\n_start:\n\tbl f\n\tmov x8, #93\n\tsvc #0\n"),
+        (
+            "wf",
+            "\t.text\n\t.globl f\n\t.type f, %function\nf:\n\tmov x0, #2\n\tret\n\
+             \t.globl __wrap_f\n\t.type __wrap_f, %function\n__wrap_f:\n\
+             \tstp x29, x30, [sp, #-16]!\n\tbl __real_f\n\tadd x0, x0, #40\n\
+             \tldp x29, x30, [sp], #16\n\tret\n",
+        ),
+    ] {
+        let text = format!("{text}\t.section .note.GNU-stack,\"\",%progbits\n");
+        let src = cx.scratch.write(&format!("{name}.s"), &text);
+        let args = ["-c".into(), src.into_os_string(), "-o".into(), format!("{name}.o").into()];
+        assert!(cx.run_in(&cx.gcc, &args).success(), "gcc {name}");
+    }
+    // Without the option `__real_f` is a name like any other: undefined.
+    let o = cx.mortar(&["wm.o", "wf.o", "-o", "wr0"]);
+    assert!(!o.success() && o.stderr_text().contains("undefined symbol: __real_f"));
+    assert!(!cx.ld(&["wm.o", "wf.o", "-o", "wr0.ld"]).success(), "GNU ld without --wrap");
+    // Not judged: the verifier does not follow --wrap until its package
+    // (spec/landed/resolve/WP-153.md §6); the run is the check.
+    let words = ["wm.o", "wf.o", "--wrap=f", "-o", "wr1"].map(OsString::from);
+    let o = cx.run_in(Path::new(MORTAR), &words);
+    assert!(o.success(), "{}", o.stderr_text());
+    assert_eq!(Cx::exit(&cx.scratch.join("wr1")), Some(42), "_start -> __wrap_f -> f");
+    assert!(cx.ld(&["wm.o", "wf.o", "--wrap=f", "-o", "wr1.ld"]).success());
+    assert_eq!(Cx::exit(&cx.scratch.join("wr1.ld")), Some(42), "GNU ld");
+    for bad in ["--wrap=f@V1", "--wrap=__real_f"] {
+        let o = cx.mortar(&["wm.o", "wf.o", "--wrap=f", bad, "-o", "wr2"]);
+        let text = o.stderr_text();
+        assert!(
+            !o.success() && text.contains(&format!("unsupported option value: {bad}")),
+            "{text}"
+        );
+    }
 }
 
 // spec: resolve.md §3.8 (`--allow-multiple-definition` and `-z muldefs`:

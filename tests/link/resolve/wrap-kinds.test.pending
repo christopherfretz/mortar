@@ -1,0 +1,134 @@
+# PENDING (WP-153): every reference's and mortar's output draws L3 findings because the verifier does not follow --wrap yet; the verifier package for --wrap renames this file to .test.
+# --wrap=SYM (resolve.md §7.1, WP-153) in the other executable kinds and
+# against shared objects: the same rule as a static link (an undefined
+# mention binds to __wrap_SYM, __real_SYM to SYM).
+# - --wrap=malloc on a dynamic executable: __real_malloc imports libc's
+#   malloc (one UND malloc@GLIBC_ in .dynsym, __wrap_malloc is local to
+#   the program); the four linkers agree;
+# - SYM only in a shared object: __real_f imports it and the object is
+#   DT_NEEDED; when every mention of f is wrapped, an --as-needed object
+#   that only f would need is not DT_NEEDED;
+# - a versioned reference f@V1 is not a mention of f: it is not wrapped;
+# - -e SYM is not redirected (GNU ld and mold: the entry is _start under
+#   --wrap=_start; lld enters __wrap__start: §16).
+#@ spec: resolve.md §7.1
+#@ arch: aarch64 x86_64
+
+cc -O0 -fno-inline m.c -o m.o
+cc -O0 -fno-inline f.c -o f.o
+cc -O0 -fno-inline w.c -o w.o
+cc -O0 mf.c -o mf.o
+cc -O0 mr.c -o mr.o
+cc -O0 w7.c -o w7.o
+cc -O0 mal.c -o mal.o
+cc -O0 -fPIC fo.c -o fo.o
+cc -O0 -fPIC v.c -o v.o
+cc -O0 mv.c -o mv.o
+cc -O0 hi.c -o hi.o
+cc -O0 ws.c -o ws.o
+shlib gcc fo.o -o libfo.so
+shlib gcc v.o -Wl,--version-script=v.map -o libv.so
+
+link gcc -no-pie m.o f.o w.o -Wl,--wrap=f -o nopie
+run(bfd,mold,mortar) nopie
+  stdout: f=101 g=10 real=1
+run(lld) nopie
+  stdout: f=101 g=1010 real=1
+link gcc -pie m.o f.o w.o -Wl,--wrap=f -o pie
+run(bfd,mold,mortar) pie
+  stdout: f=101 g=10 real=1
+run(lld) pie
+  stdout: f=101 g=1010 real=1
+link gcc -static-pie m.o f.o w.o -Wl,--wrap=f -o spie
+run(bfd,mold,mortar) spie
+  stdout: f=101 g=10 real=1
+run(lld) spie
+  stdout: f=101 g=1010 real=1
+
+link gcc -pie mal.o -Wl,--wrap=malloc -o malloc-pie
+run malloc-pie
+  stdout: wrapped=1
+check readelf --dyn-syms -W malloc-pie
+  has: GLOBAL DEFAULT UND malloc@GLIBC_
+  not: __wrap_malloc
+link gcc -no-pie mal.o -Wl,--wrap=malloc -o malloc-nopie
+run malloc-nopie
+  stdout: wrapped=1
+
+link gcc -pie mr.o -L. -lfo -Wl,-rpath,. -Wl,--wrap=f -o so-real
+run so-real
+  stdout: real=1
+check readelf -dW so-real
+  has: (NEEDED) * [libfo.so]
+check readelf --dyn-syms -W so-real
+  has: UND f$
+link gcc -pie mf.o w7.o -L. -lfo -Wl,-rpath,. -Wl,--wrap=f -o so-wrap
+run so-wrap
+  stdout: f=7
+link gcc -pie mf.o w7.o -Wl,--as-needed -L. -lfo -Wl,-rpath,. -Wl,--wrap=f -o so-needed
+run so-needed
+  stdout: f=7
+check readelf -dW so-needed
+  not: libfo.so
+
+link gcc -pie mv.o -L. -lv -Wl,-rpath,. -Wl,--wrap=f -o versioned
+run versioned
+  stdout: old=1 f=70
+
+link gcc -pie hi.o ws.o -Wl,--wrap=_start -o entry
+run(bfd,mold,mortar) entry
+  stdout: main
+run(lld) entry
+  exit: 42
+
+#--- m.c
+#include <stdio.h>
+int f(void); int g(void); int __real_f(void);
+int main(void) { printf("f=%d g=%d real=%d\n", f(), g(), __real_f()); return 0; }
+#--- f.c
+int f(void) { return 1; }
+int g(void) { return f() * 10; }
+#--- w.c
+int __real_f(void);
+int __wrap_f(void) { return 100 + __real_f(); }
+#--- mf.c
+#include <stdio.h>
+int f(void);
+int main(void) { printf("f=%d\n", f()); return 0; }
+#--- mr.c
+#include <stdio.h>
+int __real_f(void);
+int main(void) { printf("real=%d\n", __real_f()); return 0; }
+#--- fo.c
+int f(void) { return 1; }
+#--- w7.c
+int __wrap_f(void) { return 7; }
+#--- mal.c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+void *__real_malloc(size_t);
+static int n;
+void *__wrap_malloc(size_t s) { n++; return __real_malloc(s); }
+int main(void) { char *p = malloc(10); strcpy(p, "x"); printf("wrapped=%d\n", n); free(p); return 0; }
+#--- v.c
+int f_v1(void) { return 1; }
+int f_v2(void) { return 2; }
+__asm__(".symver f_v1, f@V1");
+__asm__(".symver f_v2, f@@V2");
+#--- v.map
+V1 { global: f; local: *; };
+V2 { global: f; } V1;
+#--- mv.c
+#include <stdio.h>
+int f_old(void);
+__asm__(".symver f_old, f@V1");
+int f(void);
+int __wrap_f(void) { return 70; }
+int main(void) { printf("old=%d f=%d\n", f_old(), f()); return 0; }
+#--- hi.c
+#include <stdio.h>
+int main(void) { puts("main"); return 0; }
+#--- ws.c
+#include <unistd.h>
+void __wrap__start(void) { _exit(42); }

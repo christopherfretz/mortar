@@ -653,7 +653,8 @@ impl<'s> Inputs<'s> {
     ///
     /// 6. `SymbolId`s are numbered by first mention (§2.3): walking
     ///    `sym_map`, an id never seen before is the next id, and every row
-    ///    is mentioned;
+    ///    is mentioned but the last ones, which are distinct unversioned
+    ///    names only options give (`--wrap`);
     ///
     /// and for `link`:
     ///
@@ -789,9 +790,21 @@ impl<'s> Inputs<'s> {
                 next += 1;
             }
         }
-        ensure(next == self.symbols.len(), t, || {
+        // `spec/model.md` §2.3: the rows past the mentioned ones are names
+        // only options give (`--wrap`'s), each distinct and unversioned.
+        ensure(next <= self.symbols.len(), t, || {
             format!("rule 6: {} symbol rows, {next} mentioned", self.symbols.len())
-        })
+        })?;
+        let extra = &self.symbols.as_slice()[next as usize..];
+        for (i, k) in extra.iter().enumerate() {
+            let unique = !self.symbols.as_slice()[..next as usize + i]
+                .iter()
+                .any(|o| o.name == k.name && o.version.is_none());
+            ensure(k.version.is_none() && unique, t, || {
+                format!("rule 6: option key row {} is versioned or not distinct", next as usize + i)
+            })?;
+        }
+        Ok(())
     }
 
     fn check_link(&self) -> Result<(), Broken> {

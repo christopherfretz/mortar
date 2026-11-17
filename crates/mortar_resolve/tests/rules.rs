@@ -1570,6 +1570,54 @@ fn s7_1_real_extracts_target() {
     assert!(live_of(&r, x));
 }
 
+#[test]
+fn s7_1_wrap_of_a_dropped_comdat_copy_is_refused() {
+    // WP-153: the references disagree on the calls in a file whose copy
+    // of SYM's group is dropped; one copy is accepted, a second live one
+    // refused, an unextracted member's copy is no copy.
+    let wrap = |m: &mut Model| Options {
+        wrap: vec![Wrap {
+            sym: m.key("_Z1fv"),
+            wrap: m.key("__wrap__Z1fv"),
+            real: m.key("__real__Z1fv"),
+        }],
+        ..opts()
+    };
+    let refused = |r: &Resolved| {
+        r.problems.iter().find_map(|p| match p.what {
+            What::WrapComdat { dropped, kept, .. } => Some((dropped.file, kept)),
+            _ => None,
+        })
+    };
+    // One copy.
+    let mut m = Model::new(A64);
+    let a = m.obj("a.o");
+    m.comdat_def(a, "_Z1fv", "_Z1fv");
+    let o = wrap(&mut m);
+    assert_eq!(refused(&link_with(&m, &o)), None);
+    // Two live copies: b.o's is dropped.
+    let b = m.obj("b.o");
+    m.comdat_def(b, "_Z1fv", "_Z1fv");
+    let o = wrap(&mut m);
+    assert_eq!(refused(&link_with(&m, &o)), Some((b, a)));
+    // Without --wrap the same link is no problem.
+    assert!(link(&m).problems.iter().all(|p| !matches!(p.what, What::WrapComdat { .. })));
+    // The second copy in an archive member nothing extracts.
+    let mut m = Model::new(A64);
+    let a = m.obj("a.o");
+    m.comdat_def(a, "_Z1fv", "_Z1fv");
+    let ar = m.archive();
+    let x = m.member(ar, "b.o");
+    m.comdat_def(x, "_Z1fv", "_Z1fv");
+    m.def(x, "b");
+    let o = wrap(&mut m);
+    assert_eq!(refused(&link_with(&m, &o)), None);
+    // Extracted for another symbol, it is a live copy.
+    m.undef(a, "b");
+    let o = wrap(&mut m);
+    assert_eq!(refused(&link_with(&m, &o)), Some((x, a)));
+}
+
 // ---- §8 --------------------------------------------------------------------
 
 #[test]

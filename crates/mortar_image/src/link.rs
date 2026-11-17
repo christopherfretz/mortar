@@ -2868,6 +2868,14 @@ impl LinkTables<'_, '_> {
         t
     }
 
+    /// The key of the global entry `e`, without `redirect`.
+    fn key_unredirected(&self, e: SymEntry) -> Option<SymKey> {
+        let t = (*self.tables.get(e.file.0 as usize)?)?;
+        let first = t.first_global().0;
+        let at = e.index.0.checked_sub(first)?;
+        self.link.inputs.sym_map_of(e.file).get(at as usize).map(|&id| SymKey::global(id))
+    }
+
     /// The name of entry `e` in its file's symbol table.
     fn entry_name(&self, e: SymEntry) -> Vec<u8> {
         if let Some((t, s)) = self.sym_of(e) {
@@ -2953,7 +2961,16 @@ impl LinkTables<'_, '_> {
                 let name = roots.iter().find(|r| r.0 == by.index.0).map(|r| r.1.clone());
                 (Vec::new(), name.unwrap_or_default())
             } else {
-                (self.file_text(by.file), self.entry_name(by))
+                // The key the reference demands: an undefined mention
+                // `--wrap` redirects names its target (`__real_f` pulls
+                // `f`'s member, `f` pulls `__wrap_f`'s), as GNU ld writes.
+                let symbol = match self.key(by.file, by.index.0).and_then(SymKey::as_global) {
+                    Some(k) if Some(SymKey::global(k)) != self.key_unredirected(by) => {
+                        self.link.inputs.symbols.get(k).map(|n| n.name.to_vec())
+                    }
+                    _ => None,
+                };
+                (self.file_text(by.file), symbol.unwrap_or_else(|| self.entry_name(by)))
             };
             m.archive.push((self.file_text(file), taker, symbol));
         }

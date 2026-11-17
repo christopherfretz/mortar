@@ -336,7 +336,14 @@ fn s2_3_symbol_numbering_is_by_first_mention() {
     assert_eq!(inputs(vec![0, 1, 0, 2], 3).check(), Ok(()));
     assert_eq!(inputs(vec![0, 1, 1, 2, 0, 3], 4).check(), Ok(()));
     assert!(inputs(vec![1, 0, 2, 2], 3).check().unwrap_err().what.contains("first mention"));
-    assert!(inputs(vec![0, 1, 0, 1], 3).check().unwrap_err().what.contains("mentioned"));
+    assert!(inputs(vec![0, 1, 0, 2], 2).check().unwrap_err().what.contains("mentioned"));
+    // Rows past the mentioned ones are names only options give (WP-153):
+    // distinct and unversioned, or the table is broken.
+    assert!(inputs(vec![0, 1, 0, 1], 3).check().unwrap_err().what.contains("not distinct"));
+    let mut extra = inputs(vec![0, 1, 0, 1], 3);
+    extra.symbols[SymbolId(2)] = SymbolKey { name: b"__wrap_s", version: None, hash: 1 };
+    extra.symbols[SymbolId(1)] = SymbolKey { name: b"t", version: None, hash: 2 };
+    assert_eq!(extra.check(), Ok(()));
     let mut gap = inputs(vec![0, 1, 2, 3], 4);
     gap.files[FileId(2)].syms.start = 3;
     assert!(gap.check().unwrap_err().what.contains("contiguous"));
