@@ -17,7 +17,7 @@ mod common;
 use std::path::{Path, PathBuf};
 
 use common::verify_with;
-use mortar_plumb::map::{Discarded, DiscardReason, Format, Map, Placed, SectionRef};
+use mortar_plumb::map::{DiscardReason, Discarded, Format, Map, Placed, SectionRef};
 use mortar_plumb::{Report, map};
 use mortar_testutil::target::Arch;
 use mortar_testutil::{Scratch, tool};
@@ -29,15 +29,14 @@ fn dir(arch: Arch) -> PathBuf {
 }
 
 /// The output, its inputs and its map read from `d`.
-fn load(d: &Path, out: &str, map_file: &str, format: Format) -> (Vec<u8>, Vec<(String, Vec<u8>)>, Map) {
+type Loaded = (Vec<u8>, Vec<(String, Vec<u8>)>, Map);
+
+fn load(d: &Path, out: &str, map_file: &str, format: Format) -> Loaded {
     let output = std::fs::read(d.join(out)).unwrap();
     let text = std::fs::read_to_string(d.join(map_file)).unwrap();
     let m = map::parse(format, &text).unwrap_or_else(|e| panic!("{map_file}: {}", e.message));
-    let files = m
-        .paths()
-        .into_iter()
-        .map(|p| (p.to_string(), std::fs::read(d.join(p)).unwrap()))
-        .collect();
+    let files =
+        m.paths().into_iter().map(|p| (p.to_string(), std::fs::read(d.join(p)).unwrap())).collect();
     (output, files, m)
 }
 
@@ -156,11 +155,9 @@ fn link_all(t: &Tools, arch: Arch, d: &Path, name: &str, objs: &[&str]) {
     let m = emulation(arch);
     let mut common: Vec<String> = vec!["-static".into(), "-e".into(), "get".into()];
     common.extend(objs.iter().map(|s| (*s).to_string()));
-    for (ld, tag, extra) in [
-        (&t.bfd, "bfd", vec![]),
-        (&t.lld, "lld", vec!["-m", m]),
-        (&t.mold, "mold", vec!["-m", m]),
-    ] {
+    for (ld, tag, extra) in
+        [(&t.bfd, "bfd", vec![]), (&t.lld, "lld", vec!["-m", m]), (&t.mold, "mold", vec!["-m", m])]
+    {
         let mut args: Vec<String> = extra.iter().map(|s| (*s).to_string()).collect();
         args.extend(common.iter().cloned());
         args.extend(["-o".into(), format!("{name}.{tag}"), format!("-Map={name}.{tag}.map")]);
@@ -219,8 +216,8 @@ fn rename_gms(output: &[u8]) -> Vec<u8> {
 /// The output with `gms`'s `st_value` set to 0 in `.symtab`.
 fn zero_gms(output: &[u8], arch: Arch) -> Vec<u8> {
     let mut o = output.to_vec();
-    let (soff, ssize) = section_offset(output, ".strtab");
-    let strtab = &output[soff..soff + ssize as usize];
+    let (str_at, str_len) = section_offset(output, ".strtab");
+    let strtab = &output[str_at..str_at + str_len as usize];
     let (off, size) = section_offset(output, ".symtab");
     let (entsize, value_at, width) = if arch == Arch::I386 { (16, 4, 4) } else { (24, 8, 8) };
     for e in (off..off + size as usize).step_by(entsize) {
@@ -251,7 +248,11 @@ fn wp143_references_of_case_1_are_clean_and_a_zeroed_word_is_found() {
             let r = verify_with(&output, &files, &m);
             assert!(ours(&r).is_empty(), "{label}:\n{}", ours(&r).join("\n"));
             let r = verify_with(&zero_word(&output, arch), &files, &m);
-            assert!(r.coverage.failed > 0, "{label}: the zeroed word is not found:\n{}", r.render("o"));
+            assert!(
+                r.coverage.failed > 0,
+                "{label}: the zeroed word is not found:\n{}",
+                r.render("o")
+            );
         }
     }
 }
@@ -276,7 +277,11 @@ fn wp143_case_1_under_mortars_map_mutations_are_found() {
         // mortar's mislink: the word 0, the symbol gone.
         let bad = zero_word(&rename_gms(&output), arch);
         let r = verify_with(&bad, &files, &m);
-        assert!(has(&r, "R5", "empty section '.rodata.str1.1' at 0x0"), "{label}:\n{}", r.render("o"));
+        assert!(
+            has(&r, "R5", "empty section '.rodata.str1.1' at 0x0"),
+            "{label}:\n{}",
+            r.render("o")
+        );
         assert!(has(&r, "Y3", "is not in the output's .symtab"), "{label}:\n{}", r.render("o"));
 
         // `gms` at 0 in `.symtab`: a label of an empty section outside
@@ -306,6 +311,7 @@ fn wp143_case_1_under_mortars_map_mutations_are_found() {
 // reference is R5 whatever the reason, and a reason the inputs and the
 // line do not give is M10.
 #[test]
+#[allow(clippy::many_single_char_names)] // t, d, m, f, r
 fn wp143_discarded_section_with_a_global_and_its_reasons() {
     for arch in ARCHES {
         let Some(t) = tools(arch) else { continue };

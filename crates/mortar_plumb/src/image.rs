@@ -181,7 +181,9 @@ impl<'a> Image<'a> {
     /// (an empty input section's place, WP-143).
     pub fn holds_or_ends(&self, addr: u64) -> bool {
         self.sections.iter().any(|s| {
-            s.alloc() && s.shdr.sh_addr <= addr && addr <= s.shdr.sh_addr.saturating_add(s.shdr.sh_size)
+            s.alloc()
+                && s.shdr.sh_addr <= addr
+                && addr <= s.shdr.sh_addr.saturating_add(s.shdr.sh_size)
         })
     }
 

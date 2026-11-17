@@ -282,7 +282,14 @@ fn read_obj<'a>(store: &'a Store<'a>, k: usize, file: &MapFile) -> Result<Obj<'a
                 Err(_) => Body::Resident(&[]),
             }
         };
-        secs.push(Sec { name, shdr: *s.header(), body, place: Place::Absent, discard: None, relocs: None });
+        secs.push(Sec {
+            name,
+            shdr: *s.header(),
+            body,
+            place: Place::Absent,
+            discard: None,
+            relocs: None,
+        });
     }
     for i in 0..secs.len() {
         if matches!(secs[i].shdr.sh_type, SHT_RELA | SHT_REL) {

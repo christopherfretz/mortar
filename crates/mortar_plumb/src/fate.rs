@@ -3,20 +3,17 @@
 //! (`spec/resolve.md` §10, `spec/image.md` I-6, I-78), derived here, not
 //! taken from the linker (WP-143).
 
-use crate::hasher::HashMap;
-
 use mortar_elf::consts::{
     GRP_COMDAT, SHF_ALLOC, SHF_EXCLUDE, SHF_GNU_RETAIN, SHF_GROUP, SHF_LINK_ORDER, SHN_UNDEF,
-    SHT_AARCH64_ATTRIBUTES, SHT_FINI_ARRAY, SHT_GROUP, SHT_INIT_ARRAY,
-    SHT_LLVM_ADDRSIG, SHT_LLVM_CALL_GRAPH_PROFILE, SHT_LLVM_DEPENDENT_LIBRARIES, SHT_NOTE,
-    SHT_PREINIT_ARRAY,
+    SHT_AARCH64_ATTRIBUTES, SHT_FINI_ARRAY, SHT_GROUP, SHT_INIT_ARRAY, SHT_LLVM_ADDRSIG,
+    SHT_LLVM_CALL_GRAPH_PROFILE, SHT_LLVM_DEPENDENT_LIBRARIES, SHT_NOTE, SHT_PREINIT_ARRAY,
 };
 use mortar_elf::{Machine, SymbolIndex, SymbolSection};
 
-use crate::reloc::debug::is_debug_name;
 use crate::locate::{Obj, Place, Sec};
 use crate::map::{DiscardReason, Format, Map};
 use crate::opts::Options;
+use crate::reloc::debug::is_debug_name;
 use crate::report::{Finding, Rule};
 
 /// Why a section of a live object may be without a place, by
@@ -70,7 +67,7 @@ fn dropped_by_row(o: &Obj<'_>, s: &Sec<'_>, opts: &Options) -> Option<&'static s
 /// `FileId` order, I-78): per object, the sections of its dropped
 /// copies.
 fn comdat_dropped(objs: &[Obj<'_>]) -> Vec<Vec<bool>> {
-    let mut kept: HashMap<Vec<u8>, ()> = HashMap::default();
+    let mut kept: std::collections::BTreeSet<Vec<u8>> = std::collections::BTreeSet::new();
     let mut out: Vec<Vec<bool>> = objs.iter().map(|o| vec![false; o.secs.len()]).collect();
     for (oi, o) in objs.iter().enumerate() {
         for (gi, g) in o.secs.iter().enumerate() {
@@ -82,7 +79,7 @@ fn comdat_dropped(objs: &[Obj<'_>]) -> Vec<Vec<bool>> {
                 continue;
             }
             let Some(sig) = signature(o, SymbolIndex(g.shdr.sh_info)) else { continue };
-            if kept.insert(sig, ()).is_none() {
+            if kept.insert(sig) {
                 continue;
             }
             for m in members {
@@ -107,6 +104,7 @@ fn group_words(o: &Obj<'_>, gi: usize) -> (u32, Vec<usize>) {
 
 /// A group's signature (`spec/resolve.md` §6.1 M1): its symbol's name, or
 /// for a section symbol the name of its section.
+#[allow(clippy::many_single_char_names)] // o, i, t, s, k: the ELF parts
 fn signature(o: &Obj<'_>, i: SymbolIndex) -> Option<Vec<u8>> {
     let t = o.symtab?;
     let s = t.get(i).ok()?;
@@ -164,7 +162,12 @@ fn start_stop(objs: &[Obj<'_>]) -> std::collections::BTreeSet<Vec<u8>> {
 /// Whether a garbage collector may not drop `s` (`spec/image.md` I-6's
 /// roots the inputs show; I-109: a `SHF_LINK_ORDER` section lives with
 /// its link). `None` when it may be dropped.
-fn gc_root(o: &Obj<'_>, s: &Sec<'_>, alloc_group: bool, ss: &std::collections::BTreeSet<Vec<u8>>) -> Option<&'static str> {
+fn gc_root(
+    o: &Obj<'_>,
+    s: &Sec<'_>,
+    alloc_group: bool,
+    ss: &std::collections::BTreeSet<Vec<u8>>,
+) -> Option<&'static str> {
     let f = s.shdr.sh_flags;
     let n = s.name.as_str();
     if f & SHF_LINK_ORDER != 0 {
@@ -175,7 +178,8 @@ fn gc_root(o: &Obj<'_>, s: &Sec<'_>, alloc_group: bool, ss: &std::collections::B
     if f & SHF_GNU_RETAIN != 0 {
         return Some("SHF_GNU_RETAIN (image.md I-6)");
     }
-    let startup = [".init_array", ".fini_array", ".preinit_array", ".init", ".fini", ".ctors", ".dtors"];
+    let startup =
+        [".init_array", ".fini_array", ".preinit_array", ".init", ".fini", ".ctors", ".dtors"];
     if matches!(s.shdr.sh_type, SHT_INIT_ARRAY | SHT_FINI_ARRAY | SHT_PREINIT_ARRAY)
         || startup.iter().any(|p| n == *p || n.strip_prefix(p).is_some_and(|r| r.starts_with('.')))
     {
@@ -274,7 +278,10 @@ pub(crate) fn check(objs: &[Obj<'_>], map: &Map, opts: &Options) -> Vec<Finding>
             out.push(
                 Finding::new(
                     Rule::Map(10),
-                    format!("{line}section '{}' is not in the output without a reason: {msg}", s.name),
+                    format!(
+                        "{line}section '{}' is not in the output without a reason: {msg}",
+                        s.name
+                    ),
                 )
                 .site(o.site(si, 0)),
             );

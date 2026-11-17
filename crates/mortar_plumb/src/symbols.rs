@@ -196,6 +196,7 @@ fn placed_def(e: &Engine<'_, '_>, oi: usize, di: u32) -> Option<Def> {
 /// The input section of a definition of `name` the output holds with an
 /// address: placed whole or as pieces, or (mortar's map) empty without a
 /// record (WP-143), allocated. `None` when every definition is elsewhere.
+#[allow(clippy::many_single_char_names)] // e, o, t, d, s: the ELF parts
 fn held_def(e: &Engine<'_, '_>, name: &str) -> Option<String> {
     e.defs.get(name)?.iter().find_map(|&(oi, di)| {
         let o = &e.objs[oi];
@@ -218,6 +219,7 @@ fn held_def(e: &Engine<'_, '_>, name: &str) -> Option<String> {
 
 /// The name of the empty section without a record (WP-143) a definition
 /// of `name` is in, when one is.
+#[allow(clippy::many_single_char_names)] // e, o, t, d, s: the ELF parts
 fn empty_def(e: &Engine<'_, '_>, name: &str) -> Option<String> {
     e.defs.get(name)?.iter().find_map(|&(oi, di)| {
         let o = &e.objs[oi];
@@ -321,7 +323,12 @@ fn globals(e: &mut Engine<'_, '_>, fs: &mut Vec<Finding>) {
                 && let Some(why) = held_def(e, name)
             {
                 fs.push(named(
-                    y(3, format!("symbol '{name}', defined in {why}, is not in the output's .symtab")),
+                    y(
+                        3,
+                        format!(
+                            "symbol '{name}', defined in {why}, is not in the output's .symtab"
+                        ),
+                    ),
                     name,
                 ));
             }
@@ -357,7 +364,9 @@ fn globals(e: &mut Engine<'_, '_>, fs: &mut Vec<Finding>) {
             fs.push(named(f.at(out.sym.st_value), name));
             continue;
         }
-        if defs.is_empty() && let Some(sec) = empty_def(e, name) {
+        if defs.is_empty()
+            && let Some(sec) = empty_def(e, name)
+        {
             // An empty section's label is where its bytes would be: in or
             // at the end of an allocated output section (WP-143).
             if image.holds_or_ends(out.sym.st_value) {

@@ -1158,14 +1158,11 @@ impl<'a, 'b> Engine<'a, 'b> {
         let a = rec.addend as u64;
         let width = if self.image.class() == mortar_elf::Class::Elf64 { 8 } else { 4 };
         let s = match (rec.def.op, rec.def.field) {
-            (Op::Abs, Field::Data(w)) if w == width => {
-                trunc(rec.out_word.wrapping_sub(a), w)
-            }
+            (Op::Abs, Field::Data(w)) if w == width => trunc(rec.out_word.wrapping_sub(a), w),
             (Op::Prel, Field::Data(8)) => rec.p.wrapping_add(rec.out_word).wrapping_sub(a),
-            (Op::Prel, Field::Data(4)) => rec
-                .p
-                .wrapping_add(i64::from(rec.out_word as u32 as i32) as u64)
-                .wrapping_sub(a),
+            (Op::Prel, Field::Data(4)) => {
+                rec.p.wrapping_add(i64::from(rec.out_word as u32 as i32) as u64).wrapping_sub(a)
+            }
             _ => return self.not_checked(Reason::SectionNotLocatable, 1),
         };
         let s = trunc(s, width);
