@@ -1,0 +1,55 @@
+# PENDING (WP-176): no reference passes: the verifier finds the references' outputs wrong (R5 "refers to section '.text.g'/'.data.g', which is not in the output": the undefined-weak value of a reference through a demoted mention), which is right; the verifier package that follows WP-176 records it as a reference anomaly (an anomaly(bfd,lld) directive) and renames this file to .test.
+# comdat-mismatch-weak.test's shape in dynamic executables (WP-176), with
+# data so the wrong program is an exit status on every target: wa.o's and
+# wb.o's copies of group g define the weak object g; wb.o's also a weak
+# hx, which wb.o's Y reads through the GOT when its address is not 0.
+# mortar keeps wa.o's copy (resolve.md §6.1); the reference through
+# wb.o's demoted hx is comdat-mismatch (§6.3 case (b)), never the
+# undefined-weak 0 nor a weak undefined dynamic symbol (spec/dyn.md
+# D-25). GNU ld and lld write hx as an undefined weak dynamic symbol: Y
+# returns 0 and the program 1 instead of 40 + 1; mold refuses it. With
+# wb.o first all four keep its copy: 42.
+#@ spec: resolve.md §6.3
+#@ spec: dyn.md D-25
+#@ arch: aarch64 x86_64
+
+cc -O1 -fno-pie wm.c -o wm.o
+cc -O1 -fno-pie wa.c -o wa.o
+cc -O1 -fno-pie wb.c -o wb.o
+cc -O1 -fPIE wm.c -o wm-pie.o
+cc -O1 -fPIE wa.c -o wa-pie.o
+cc -O1 -fPIE wb.c -o wb-pie.o
+
+link(bfd,lld) gcc -no-pie wm.o wa.o wb.o -o dyn
+run(bfd,lld) dyn
+  exit: 1
+link(mold,mortar) gcc -no-pie wm.o wa.o wb.o -o dyn
+  exit: fail
+  diag(mold): hx refers to a discarded COMDAT section probably due to an ODR violation
+  diag(mortar): symbol hx is defined only in a discarded copy of COMDAT group g
+
+link(bfd,lld) gcc -pie wm-pie.o wa-pie.o wb-pie.o -o pie
+run(bfd,lld) pie
+  exit: 1
+link(mold,mortar) gcc -pie wm-pie.o wa-pie.o wb-pie.o -o pie
+  exit: fail
+  diag(mold): hx refers to a discarded COMDAT section probably due to an ODR violation
+  diag(mortar): symbol hx is defined only in a discarded copy of COMDAT group g
+
+link gcc -pie wm-pie.o wb-pie.o wa-pie.o -o kept
+run kept
+  exit: 42
+
+#--- wm.c
+extern int g;
+int Y(void);
+int main(void) { return Y() + g; }
+#--- wa.c
+__asm__(".section .data.g,\"awG\",%progbits,g,comdat\n"
+        ".weak g\n.type g,%object\n.size g,4\ng: .long 1\n.previous\n");
+#--- wb.c
+__asm__(".section .data.g,\"awG\",%progbits,g,comdat\n"
+        ".weak g\n.type g,%object\n.size g,4\ng: .long 2\n"
+        ".weak hx\n.type hx,%object\n.size hx,4\nhx: .long 40\n.previous\n");
+extern int hx __attribute__((weak));
+int Y(void) { return &hx ? hx : 0; }
