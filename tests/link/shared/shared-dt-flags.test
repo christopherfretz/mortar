@@ -12,7 +12,6 @@
 # `initfirst`; lld and mold write all five).
 #@ spec: dyn.md "D-103"
 #@ arch: aarch64 x86_64
-#@ xfail(mortar): the verifier's P-D6 on liborigin.so ("DT_FLAGS 0x1 has bits 0x1 (D-30)"): it does not read `-z origin` (`DF_ORIGIN`, `DF_1_ORIGIN`) yet (WP-161); the tags are the references' (the test's own checks, run by hand at WP-128)
 
 cc -O1 -fPIC lib.c -o lib.o
 cc -O1 -fPIC other.c -o other.o

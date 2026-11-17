@@ -1,0 +1,54 @@
+mortar-map 2
+file 0 xmain-a64.o
+file 1 libxfoo-a64.a xfoo-a64.o 60
+piece 0 7 0 380 14
+piece 0 7 14 394 14
+piece 0 7 28 3a8 28
+place 0 1 10420 44
+place 0 3 30600 0
+place 0 4 30604 0
+piece 1 6 14 3d0 14
+place 1 1 10464 8
+place 1 2 30600 4
+place 1 3 30604 0
+merged 0 5 .comment
+merged 1 4 .comment
+chunk synthetic .interp 238 1b
+chunk synthetic .gnu.hash 258 2c
+chunk synthetic .dynsym 288 90
+chunk synthetic .dynstr 318 31
+chunk synthetic .rela.dyn 350 18
+chunk synthetic .rela.plt 368 18
+chunk synthetic .eh_frame 380 68
+chunk synthetic .plt 103f0 30
+chunk synthetic .got 205d0 10
+chunk synthetic .got.plt 305e0 20
+chunk synthetic .dynamic 20470 160
+chunk synthetic .symtab - 120
+chunk synthetic .strtab - 4b
+chunk synthetic .shstrtab - 97
+chunk synthetic .comment - d
+chunk synthetic .pad.relro 205e0 fa20
+output pie
+interp /lib/ld-linux-aarch64.so.1
+bind lazy
+relro on
+arg -pie
+arg -dynamic-linker
+arg /lib/ld-linux-aarch64.so.1
+arg -e
+arg main
+arg -o
+arg e-plain-a64
+arg xmain-a64.o
+arg libxfoo-a64.a
+arg libxdd-a64.so
+arg -E
+arg --mortar-map=e-plain-a64.map
+needed libxdd.so
+export keep_fn
+export main
+export foo_fn
+export foo_data
+plt other_fn
+end

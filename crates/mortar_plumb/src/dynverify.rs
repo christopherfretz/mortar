@@ -339,11 +339,16 @@ fn judge(
     dyn_engine(&mut engine, &v1, &plt, &depths);
     engine.shared = sets.is_some();
     // M10's export roots (WP-147): the shared set's one derivation, or an
-    // executable's `-E` without a script (WP-149).
+    // executable's `-E` without a script (WP-149) or `--dynamic-list`
+    // without `-E`, less what `--exclude-libs` excludes (WP-161).
     engine.exports = match &sets {
         Some(s) => s.rule.clone(),
-        None if opts.export_dynamic => Some(crate::shared::ExportRule::plain(map.format)),
-        None => None,
+        None => crate::shared::ExportRule::executable(
+            map.format,
+            opts.export_dynamic,
+            model.keys.iter().filter(|(_, k)| k.listed).map(|(n, _)| n.clone()).collect(),
+            model.keys.iter().filter(|(_, k)| k.excluded).map(|(n, _)| n.clone()).collect(),
+        ),
     };
     crate::shared::tell_engine(&mut engine, &ifr, |_| true, v1.tls.0);
     engine.dso_words = Some(dso_words.clone());
@@ -403,6 +408,8 @@ fn judge(
     let mut view1_findings = std::mem::take(&mut engine.findings);
     if let Some(s) = &sets {
         crate::shared::filter_view1(&mut view1_findings, s, &ifr);
+    } else {
+        excluded_locals(&mut view1_findings, image, &model);
     }
     report.coverage = std::mem::take(&mut engine.cov);
     report.coverage.meta = meta_cov;
@@ -559,6 +566,30 @@ fn judge(
     report.findings.extend(view1_findings);
     report.sort();
     report
+}
+
+/// Y3's binding and visibility rows for an executable's definition that
+/// `--exclude-libs` excludes (D-110 item 1; WP-161): GNU ld and lld make
+/// it `LOCAL DEFAULT` in `.symtab`, mold `LOCAL HIDDEN`, mortar keeps the
+/// inputs' `GLOBAL` (WP-150's question); GNU ld leaves a data object of
+/// a `-pie` line without `-E` `GLOBAL HIDDEN` (measured, WP-161). When
+/// every defined entry of the name is `LOCAL` or `HIDDEN`, Y3's binding
+/// and visibility findings are accepted; any other form stays Y3's.
+fn excluded_locals(v: &mut Vec<Finding>, image: &Image<'_>, model: &Model) {
+    use mortar_elf::consts::{STB_LOCAL, STV_HIDDEN};
+    v.retain(|f| {
+        !(f.rule == Rule::SymbolTable(3)
+            && (f.message.contains("another binding") || f.message.contains("another visibility"))
+            && f.symbol.as_ref().is_some_and(|n| {
+                model.keys.get(n).is_some_and(|k| k.excluded)
+                    && image.symbols.iter().any(|s| s.name == *n && s.sym.st_shndx != 0)
+                    && image
+                        .symbols
+                        .iter()
+                        .filter(|s| s.name == *n)
+                        .all(|s| s.sym.binding() == STB_LOCAL || s.sym.visibility() == STV_HIDDEN)
+            }))
+    });
 }
 
 /// The link's words: a mortar map's `arg` records (§3.2a), a

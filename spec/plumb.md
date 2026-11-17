@@ -403,6 +403,7 @@ of: mortar accepted the line, so it named exactly one GNU spelling
 | P-M1's kept section, P-M2's presence, P-M3's second half (§13) | `--keep-mason-meta`; the last `--odr-table`; the last of `--odr=M` and `--no-odr-check` | the line | none of them (a reference has none of mortar's options) |
 | P-D4's `PF_X` (dynamic), S10's `PF_X` (static) | the last of `-z execstack` and `-z noexecstack` (L-84) | the line | P-D4: the caller's line; S10: not judged (no line) |
 | stage 3 (§12, P-D1 to P-D15) | the whole line: D-1's kind, the files, `-dynamic-linker`, `-z now`, `-z relro`, `-E`, ... (`line.rs`) | the line | the caller's line (`Ctx.line`); without one, P-D2 |
+| P-D7, P-D19, M10's export roots, the export set's one derivation (`shared::ExportRule`) | `--exclude-libs` (every kind) and `--dynamic-list`, `--version-script` (their files' contents) | the line's words; each file read from the path the line names, relative to the link's directory (`Ctx.files`): the map's `dynamic-list`/`version-script` records (a `Shared` map only) give the path, never the content, so a file changed after the link is judged as it now reads (WP-161) | the caller's line, the files as above |
 
 **Static outputs, S10's clause** (§9.5 hole 1, §11 item 11): in an
 output of mortar's map, `PT_GNU_STACK`'s `PF_X` is P-D4's rule
@@ -537,8 +538,13 @@ input section:
   `version-script` records name). Where stage 3 does not judge the output
   (no `PT_DYNAMIC`: a map that only says `output shared`), the line's
   files are not read: without a version script every such global is a
-  root, as above; with one, no export is taken as a root there. mortar
-  refuses `-u`, `--require-defined`, dynamic lists and `--exclude-libs`
+  root, as above; with one, no export is taken as a root there. The
+  derivation also reads the line's `--exclude-libs` (a key whose every
+  relocatable definition is in a member of an archive it names is not
+  exported, D-110 item 1) and, for an executable, its `--dynamic-list`
+  files (without `-E`, only a listed definition is exported, resolve.md
+  §9.6; WP-161): an excluded key is no root, a listed one is.
+  mortar refuses `-u` and `--require-defined`
   (docs/status/options.md), so its line has none. Not re-derived: a glob
   of `--export-dynamic-symbol`, and a script's `KEEP`. Tests:
   `tests/placeless.rs wp147_gc_of_a_line_root_is_m10` (the entry, `-init`,
@@ -2472,6 +2478,14 @@ rules below judge the rest. Code: `src/symbols.rs`.
     §10.5). Otherwise its binding is `STB_WEAK` when every definition is
     weak, and else D's binding. `STB_GNU_UNIQUE` may become `STB_GLOBAL`.
     Its visibility is V.
+  - A name `--exclude-libs` excludes from the exports of a dynamic
+    executable (P-D7, D-110 item 1; WP-161) is accepted with every
+    `.symtab` entry of it `STB_LOCAL` or `STV_HIDDEN`, one of them
+    defined: D-110 says the linker makes it `STB_LOCAL`; measured
+    (`dyn/dynsym/exclude-libs-exe`, `-pie` without `-E`), GNU ld writes
+    the function `STB_LOCAL STV_DEFAULT` and the data object
+    `STB_GLOBAL STV_HIDDEN`, lld and mold `STB_LOCAL`. No loader reads
+    `.symtab`, and neither form is in `.dynsym`.
   - Its type and size are D's.
   - Its `st_shndx` names an allocated section whose range holds D's input
     section's place. The range includes its end address: a label at the
@@ -4378,7 +4392,12 @@ Static-pie (WP-089, §12.4; each shown by running a program, the cases of
   the program fails at load (`symbol lookup error`, exit 127): P-D6
   ending "(D-13: the link is refused)" (WP-088). Reproducer:
   `tests/link/dyn/shlib/used-underlinks-refused.test`; `tests/dyn.rs`
-  case `W16`.
+  case `W16`. mold's form of the same refusal for `--exclude-libs`
+  (dyn.md D-110 item 1; WP-161): a needed object's strong reference whose
+  only definition is the program's, in an archive member the line
+  excludes, is linked with no export, and the program fails at load
+  (`undefined symbol`); P-D6 names the exclusion and ends the same way.
+  Reproducer: `tests/link/dyn/dynsym/exclude-libs-exe.test` (`bad-mold`).
 - **A35 (mold, x86-64, new).** A `call sym@PLT` (`R_X86_64_PLT32`) to
   an absolute symbol (`SHN_ABS`) in a `-pie` or `-static-pie` output is
   written as a PC-relative `call` to the symbol's value, right at load
@@ -4832,7 +4851,29 @@ own implementation of D-11-D-27 and compared with the output.
   shared objects (hidden `.dynsym` entries ignored, W1), exports the
   program definitions referenced by needed or used objects (W8), every
   copy alias, the `WeakDyn` keys; order per D-22; fields per D-23;
-  `sh_info` 1; `.dynstr` holds each name once.
+  `sh_info` 1; `.dynstr` holds each name once. The line's export options
+  (WP-161; D-110 item 1, resolve.md §9.6), read in every format: a key
+  whose every relocatable definition is in a member of an archive
+  `--exclude-libs` names (`ALL`, or the member's archive by file name)
+  is exported by nothing, neither `-E`, nor a list, nor a shared
+  object's reference ("... its definition is in an archive member
+  --exclude-libs names, which no export gives"); a shared object's
+  strong reference whose only definition is such a key is unsatisfied
+  at load, the P-D6 finding above ("... which no export gives, D-110
+  item 1 (D-13: the link is refused)": mold links it and the program
+  exits 127, A36). An executable's `--dynamic-list` files (read from the
+  paths the line names, as §12.5 reads a version script) list
+  definitions that are exported, with or without `-E` ("... listed by
+  the line's --dynamic-list, and is not exported"); an `extern "C++"`
+  block in one is P-D1's (D-112). Without `-E` and without a list only
+  W8's exports are wanted; whether an executable exports more than
+  these is WP-157's, not judged. A static-pie exports nothing whatever
+  the line says (P-D14). Tests: `tests/shared.rs`
+  `s12_5_executable_option_tail_verifies_clean` (the references),
+  `p_d7_option_tail_mutations_are_caught` (each reference's output
+  under the line with an option added or dropped),
+  `p_d_mortar_option_tail` (mortar's, `tests/shared/optail`); the link
+  test `dyn/dynsym/exclude-libs-exe`.
 - **P-D8 (versions).** Each `.gnu.version` index is 0, 1, or names a
   `Vernaux` whose version is **the version the input reference requested**
   (the default `@@` definition for an unversioned reference, the
@@ -5137,7 +5178,7 @@ the entry's `JUMP_SLOT` record in `DT_JMPREL`.
 
 **The sweep** (`sweep.rs`, `xtask plumb --sweep`) flips bit 0 and bit 7
 of every byte of the synthetic sections (`.dynamic`, `.dynsym`,
-`.dynstr`, `.gnu.hash`, `.gnu.version`, `.gnu.version_r`, `.rela.dyn`,
+`.dynstr`, `.gnu.hash`, `.gnu.version`, `.gnu.version_d` (WP-161), `.gnu.version_r`, `.rela.dyn`,
 `.rela.plt`, `.plt`, `.plt.got`, `.plt.sec`, `.iplt`, `.got`, `.got.plt`,
 `.interp`, `.eh_frame_hdr`, `.eh_frame`, `.gdb_index` (WP-098), stage
 4's `.note.mason` and the kept `.mason.meta` (§13), and the descriptor
@@ -5173,11 +5214,35 @@ field.
 |---|---|---|
 | `.plt` | code no path executes | Bytes of the PLT that no walk of §12.2 reaches (from every entry `loader::plt_entries` finds, to the jump through its word and on from the word's initial content to the next indirect jump; `plt::executed`): the AArch64 header's three `nop`s after `br x17`, x86-64's padding after the header's `jmp *GOTPLT+16`. Every path through the PLT ends in an unconditional indirect jump before them, and every input branch into the PLT is judged to reach an entry (R1-R4), so no instruction there is ever fetched. |
 
+| `.dynamic` | d_val DT_SYMBOLIC | The gABI's table of dynamic array tags gives `DT_SYMBOLIC`'s `d_un` as "ignored": a loader reads the tag's presence only (glibc sets `l_info[DT_SYMBOLIC]` and tests it for non-null). mortar writes 0 (measured; D-102 does not state the value); no consumer can act on it (WP-161). |
+
 **The lane's cases** (WP-101, resealed). The `gdbindex` case (WP-098)
 sweeps `.gdb_index` only, of a PIE linked `--gdb-index --build-id=none`.
 Measured on both targets after WP-101's rules: every case but the
 equivalent `.plt` bytes is caught (`spec/landed/plumb/WP-101.md` has the
 table before and after).
+The `Shared` cases (WP-161; in `--quick` too): `shared`, a `-shared
+-fPIC` library of two version nodes (`--version-script`, `-soname`)
+with an exported and a local TLS variable reached through TLS
+descriptors (AArch64 `-mtls-dialect=desc`, x86-64 `gnu2`) and a PLT
+call; `shared.tail`, the same source unversioned (every default global
+exported) under the option tail: the five D-103 `-z` words,
+`-Bsymbolic`, `-init`/`-fini`, `--exclude-libs ALL`. The survivors
+WP-128 measured, and how each is closed: `DT_SYMBOLIC`'s `d_val`
+(equivalent, the row above); `DT_FLAGS`' `DF_ORIGIN` (P-D22, §12.5);
+bit 7 of an export's `st_other` (P-D7: an export's
+`STO_AARCH64_VARIANT_PCS` is its input definition's, AAELF64; on x86-64
+the bit is P-D7's already); the exports' `.gnu.version` entries (P-D8
+and P-D27 catch every flip in both cases); a TLS descriptor's two `.got`
+words (P-D9 **(mortar)**: both hold 0 in the file, D-119's "place 0
+under RELA"; the loader writes both, so for a reference they are
+equivalent bytes and not judged); `.plt` padding (equivalent, the first
+row). The sweep found one more: `.dynsym` entry 0's `st_name` flipped
+to an offset at a NUL of `.dynstr` read as the empty name, so P-D7's
+"entry 0 is all zero" now reads the field, not the string. Measured
+(WP-161, load about 20, 4 threads): about 20 s per case per target
+(AArch64 1815 and 1696 bytes, x86-64 1712 and 1593), every flip caught
+but the equivalent fields'.
 
 **The field rules** (`dyncheck.rs` `fields`, every format unless marked):
 
@@ -5194,8 +5259,11 @@ table before and after).
   `DT_FLAGS_1` only `DF_1_NOW`, `DF_1_PIE`. **(mortar)** `DT_FLAGS` is
   present exactly under `-z now` and is then exactly `DF_BIND_NOW`;
   `DT_RELACOUNT` is present exactly when a `RELATIVE` record is.
-- **P-D7.** `.dynsym` entry 0 is all zero; `st_other` has no bits beyond
-  the visibility (AArch64: also `STO_AARCH64_VARIANT_PCS`, 0x80; a
+- **P-D7.** `.dynsym` entry 0 is all zero (its `st_name` field, not the
+  string it names: WP-161); `st_other` has no bits beyond
+  the visibility (AArch64: also `STO_AARCH64_VARIANT_PCS`, 0x80, which a
+  defined export has exactly when an input definition of its name has
+  it, WP-161; a
   `JUMP_SLOT` of such a symbol needs `DT_AARCH64_VARIANT_PCS`, AAELF64). An
   import is `STV_DEFAULT`, `STB_GLOBAL` or `STB_WEAK`, and named by a
   reference of the program (or an alias, at the same library value, of a
@@ -5287,7 +5355,8 @@ mortar a single answer and the references differ or are not ruled.
   addend inside a `PT_LOAD` passed.
   **(mortar)**, D-46: a record's place holds in the file `S + A` for
   `RELATIVE` (the addend) and 0 for `GLOB_DAT`, the symbolic word type
-  and `TPOFF`; an `IRELATIVE` record's place (the IPLT word) holds the
+  and `TPOFF`, and a `TLSDESC` record's descriptor 0 in both words (D-119;
+  WP-161); an `IRELATIVE` record's place (the IPLT word) holds the
   resolver's address on AArch64 (a64.md §10.2) and 0 on x86-64 (x64.md
   X-39); a `.got` word no record writes (AArch64's `.got[0]` aside)
   holds a value an input's GOT reference demands. For a reference these
@@ -5630,7 +5699,19 @@ and what turns P-D9's equality into a check of D-112.
   has it (D-112); `DT_FLAGS_1`'s `DF_1_NODELETE`, `DF_1_NOOPEN`,
   `DF_1_INITFIRST`, `DF_1_INTERPOSE` and `DF_1_ORIGIN` each present iff
   the line has its `-z` word (D-103; D-30's executable row does not
-  judge them in a `Shared` output; `DF_1_NOW` stays P-D6's).
+  judge them in a `Shared` output; `DF_1_NOW` stays P-D6's), and
+  `DT_FLAGS`' `DF_ORIGIN` present iff `-z origin` is (D-103 writes both
+  bits; measured, WP-161: GNU ld, lld and mold write both too; P-D6's
+  mask lets `DF_ORIGIN` through for the references, this rule holds it
+  to the line in every format). `DT_INIT`/`DT_FINI` under `-init`/`-fini`
+  are the named function's value, and that value lies in a `PF_X`
+  `PT_LOAD` ("... which is not in an executable segment: the loader calls
+  it"; WP-161). The same holds for an executable's tags (P-D6, D-30 rows
+  3-4). Measured (WP-161, `-init`/`-fini` naming a data object): GNU ld,
+  lld and mold all write the data object's address, in a library and in
+  a PIE, and GNU ld's PIE dies at start-up (SIGSEGV): the loader calls
+  the address, so it is a finding of every format, not an anomaly (no
+  reference test links it).
 - **P-D23 (mutations; request P-R8).** Each wrong output of `spec/dyn.md`
   §17.7, written into a correct mortar library (or, where it concerns
   the executable, a host), is reported by the rule the table below

@@ -1,0 +1,53 @@
+mortar-map 2
+file 0 opt-a64.o
+file 1 libxfoo-a64.a xfoo-a64.o 60
+piece 0 8 0 368 14
+piece 0 8 14 37c 14
+piece 0 8 28 390 14
+piece 0 8 3c 3a4 20
+piece 0 8 5c 3c4 24
+place 0 1 10430 8c
+place 0 5 204c4 4
+place 0 3 30628 4
+place 0 4 30630 4
+piece 1 6 14 3e8 14
+place 1 1 104bc 8
+place 1 2 3062c 4
+place 1 3 30634 0
+merged 0 6 .comment
+merged 1 4 .comment
+chunk synthetic .gnu.hash 200 3c
+chunk synthetic .dynsym 240 a8
+chunk synthetic .dynstr 2e8 35
+chunk synthetic .rela.dyn 320 30
+chunk synthetic .rela.plt 350 18
+chunk synthetic .eh_frame 368 98
+chunk synthetic .plt 10400 30
+chunk synthetic .got 205e8 20
+chunk synthetic .got.plt 30608 20
+chunk synthetic .dynamic 204c8 120
+chunk synthetic .symtab - 1e0
+chunk synthetic .strtab - 76
+chunk synthetic .shstrtab - 9b
+chunk synthetic .comment - d
+chunk synthetic .pad.relro 20608 f9f8
+output shared
+bind lazy
+relro on
+symbolic none
+arg -shared
+arg -o
+arg libex-a64.so
+arg opt-a64.o
+arg libxfoo-a64.a
+arg --exclude-libs
+arg ALL
+arg --mortar-map=libex-a64.map
+export opt_init
+export opt_fini
+export opt_fn
+export opt_data
+export opt_tls
+export opt_other
+plt opt_fn
+end

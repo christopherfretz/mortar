@@ -56,6 +56,10 @@ const SOURCES: &[(&str, &str)] = src![
     "hole.c",
     "format-pic.s",
     "flags.c",
+    "xmain.c",
+    "xfoo.c",
+    "xdd.c",
+    "x.list",
     "sv.c",
     "sv.map",
     "weak.cc",
@@ -380,6 +384,7 @@ fn build() -> Option<Corpus> {
     tls(&mut b);
     tlsgd(&mut b);
     verdef(&mut b);
+    optail(&mut b);
     Some(Corpus { _scratch: scratch, outs: b.outs })
 }
 
@@ -653,6 +658,41 @@ fn refs(b: &mut Builder<'_>) {
         for l in Linker::ALL {
             let want: &'static [&'static str] = if l == Bfd { &["A10"] } else { row(l, &[]) };
             b.link("refs", arch, &d, "libflags.so", &args, l, want);
+        }
+    }
+}
+
+/// WP-161: an executable's `--exclude-libs` and `--dynamic-list` (D-110
+/// item 1, resolve §9.6), by each reference on both targets: `-E` with and
+/// without the exclusion, and no option with and without the list. Every
+/// link is the case `optail`.
+fn optail(b: &mut Builder<'_>) {
+    for arch in [Arch::A64, Arch::X64] {
+        let d = b.dir(arch, "optail");
+        std::fs::copy(b.root.join("x.list"), d.join("x.list")).unwrap();
+        b.obj(arch, &d, "xmain.c", &["-O1", "-fPIE"], "xmain.o");
+        b.obj(arch, &d, "xfoo.c", &["-O1", "-fPIC"], "xfoo.o");
+        let ar = b.t.ar.clone();
+        must(&d, &ar, &["rc", "libxfoo.a", "xfoo.o"]);
+        b.so(arch, &d, "xdd.c", "libxdd.so", "libxdd.so");
+        let base = ["-pie", "xmain.o", "libxfoo.a", "libxdd.so"];
+        for (out, extra) in [
+            ("e-plain", &["-Wl,-E"][..]),
+            ("e-ex", &["-Wl,-E", "-Wl,--exclude-libs,ALL"][..]),
+            ("d-plain", &[][..]),
+            ("d-list", &["-Wl,--dynamic-list,x.list"][..]),
+        ] {
+            let mut args = base.to_vec();
+            args.extend(extra);
+            for l in Linker::ALL {
+                // Each reference's default anomalies of an executable.
+                let want: &'static [&'static str] = match l {
+                    Linker::Mold => &["?A3", "?A9", "?A13"],
+                    Linker::Bfd => &["?A10"],
+                    Linker::Lld => &[],
+                };
+                b.link("optail", arch, &d, out, &args, l, want);
+            }
         }
     }
 }
@@ -1001,6 +1041,141 @@ fn p_d22_flags_1_follows_the_z_words() {
         }
     }
     assert!(n == 0 || n == 6, "{n} libflags outputs");
+}
+
+// WP-161 (P-D22, D-103): `-z origin` sets `DF_ORIGIN` in `DT_FLAGS`:
+// the flag cleared, and the line read without `-z origin`, are findings.
+#[test]
+fn p_d22_df_origin_follows_the_line() {
+    let Some(c) = corpus() else { return };
+    let mut n = 0;
+    for o in c
+        .outs
+        .iter()
+        .filter(|o| o.case == "refs" && o.link.output.to_string_lossy().contains("libflags.so"))
+    {
+        n += 1;
+        let mut b = o.link.output_bytes();
+        let h = pt_dynamic(&b);
+        let (off, size) = (u64at(&b, h + 8) as usize, u64at(&b, h + 32) as usize);
+        let e = (off..off + size).step_by(16).find(|&e| u64at(&b, e) == 0x1e).unwrap();
+        let v = u64at(&b, e + 8) & !1;
+        b[e + 8..e + 16].copy_from_slice(&v.to_le_bytes());
+        let r = o.verify_bytes(&b);
+        assert!(
+            r.findings
+                .iter()
+                .any(|f| f.rule.id() == "P-D22" && f.message.contains("DF_ORIGIN false")),
+            "{}: {:#?}",
+            o.label(),
+            r.findings
+        );
+        let mut words = o.words();
+        let at = words.iter().position(|w| w == "origin").unwrap();
+        words.drain(at - 1..=at);
+        let r = o.verify_line(&o.link.output_bytes(), words);
+        for want in ["DF_ORIGIN true; the line asks for -z origin false", "bits 0x80 no -z word"] {
+            assert!(
+                r.findings.iter().any(|f| f.rule.id() == "P-D22" && f.message.contains(want)),
+                "{}: no '{want}' in {:#?}",
+                o.label(),
+                r.findings
+            );
+        }
+    }
+    assert!(n == 0 || n == 6, "{n} libflags outputs");
+}
+
+// WP-161 (P-D7, D-110 item 1, resolve §9.6): an executable's exports
+// under `--exclude-libs` and `--dynamic-list`, by each reference.
+#[test]
+fn s12_5_executable_option_tail_verifies_clean() {
+    judge("optail");
+}
+
+/// `words` with `add` inserted before the first input, or every word of
+/// `drop` (and the value after a two-word one) removed.
+fn edit_words(mut words: Vec<String>, add: &[&str], drop: &[&str]) -> Vec<String> {
+    let mut i = 0;
+    while i < words.len() {
+        if drop.iter().any(|d| words[i] == *d) {
+            let two = !words[i].contains(',') && !words[i].contains('=');
+            words.drain(i..if two { i + 2 } else { i + 1 });
+        } else {
+            i += 1;
+        }
+    }
+    let at = words
+        .iter()
+        .position(|w| Path::new(w).extension().is_some_and(|e| e.eq_ignore_ascii_case("o")))
+        .unwrap_or(0);
+    for (k, a) in add.iter().enumerate() {
+        words.insert(at + k, (*a).to_string());
+    }
+    words
+}
+
+// WP-161 (P-D7, P-D6): mutations of the line on each reference's
+// executables: `-E` output judged as if `--exclude-libs ALL` were on the
+// line (an excluded definition exported); the excluded output without
+// the option (`foo_fn`, defined by `libxdd.so` too, not exported: W8);
+// the plain output as if `--dynamic-list x.list` listed `keep_fn` (a
+// listed definition not exported).
+#[test]
+fn p_d7_option_tail_mutations_are_caught() {
+    let Some(c) = corpus() else { return };
+    let mut n = 0;
+    for o in c.outs.iter().filter(|o| o.case == "optail") {
+        let file = o.link.output.file_name().unwrap().to_string_lossy().into_owned();
+        let (words, want) = if file.starts_with("e-plain") {
+            (
+                edit_words(o.words(), &["--exclude-libs", "ALL"], &[]),
+                "'foo_fn' is exported, and its definition is in an archive member --exclude-libs names",
+            )
+        } else if file.starts_with("e-ex") {
+            (
+                edit_words(o.words(), &[], &["--exclude-libs"]),
+                "'foo_fn' is defined by the program and referenced by a needed or used object, and is not exported",
+            )
+        } else if file.starts_with("d-plain") {
+            (
+                edit_words(o.words(), &["--dynamic-list", "x.list"], &[]),
+                "'keep_fn' is defined by the program and listed by the line's --dynamic-list, and is not exported",
+            )
+        } else {
+            continue;
+        };
+        n += 1;
+        let r = o.verify_line(&o.link.output_bytes(), words.clone());
+        assert!(
+            r.findings.iter().any(|f| f.rule.id() == "P-D7" && f.message.contains(want)),
+            "{}: no '{want}' under {words:?} in {:#?}",
+            o.label(),
+            r.findings
+        );
+    }
+    assert!(n == 0 || n == 18, "{n} optail mutations");
+}
+
+// WP-161 (P-D19, D-110 item 1): `libmore.so` (`--exclude-libs ALL`) read
+// without the option: the archive member's `arfn` is an export missing
+// from `.dynsym`.
+#[test]
+fn p_d19_exclude_libs_mutation_is_caught() {
+    let Some(c) = corpus() else { return };
+    let mut n = 0;
+    for o in c.outs.iter().filter(|o| o.case == "more") {
+        n += 1;
+        let words = edit_words(o.words(), &[], &["--exclude-libs"]);
+        let r = o.verify_line(&o.link.output_bytes(), words);
+        assert!(
+            r.findings.iter().any(|f| f.rule.id() == "P-D19" && f.message.contains("'arfn'")),
+            "{}: {:#?}",
+            o.label(),
+            r.findings
+        );
+    }
+    assert!(n == 0 || n == 6, "{n} libmore outputs");
 }
 
 // spec/plumb.md §12.5: a library under each line form of D-112, by each
@@ -1728,4 +1903,246 @@ fn m10_export_roots_follow_the_version_script() {
             assert!(m10(&r, name), "loc-{a}.so without a script, {name}:\n{}", r.render("o"));
         }
     }
+}
+
+/// The value of the defined `.dynsym` entry named `name` (ELF64).
+fn dynsym_value(b: &[u8], name: &str) -> Option<u64> {
+    let (sym, size) = section(b, ".dynsym");
+    let (strs, _) = section(b, ".dynstr");
+    (sym..sym + size).step_by(24).find_map(|e| {
+        let at = strs + u32at(b, e) as usize;
+        let shndx = u16at(b, e + 6);
+        (shndx != 0 && b[at..].split(|&c| c == 0).next() == Some(name.as_bytes()))
+            .then(|| u64at(b, e + 8))
+    })
+}
+
+/// `map` with each run of `drop`'s lines removed, and the lines `add`
+/// inserted before the map's own `arg --mortar-map=` line.
+fn edit_map(map: &str, drop: &[&str], add: &[&str]) -> String {
+    let lines: Vec<&str> = map.lines().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        if !drop.is_empty() && lines[i..].starts_with(drop) {
+            i += drop.len();
+            continue;
+        }
+        if lines[i].starts_with("arg --mortar-map=") {
+            out.extend_from_slice(add);
+        }
+        out.push(lines[i]);
+        i += 1;
+    }
+    let mut s = out.join("\n");
+    s.push('\n');
+    assert_ne!(s, map, "edit_map changed nothing");
+    s
+}
+
+// WP-161 (P-D22, P-D19, P-D7; dyn.md D-103, D-110, resolve §9.6): mortar's
+// outputs of the option tail (`tests/shared/optail`) are clean under their
+// maps, and each mutation of the bytes or of the map's line is a finding
+// of the rule named.
+#[test]
+#[allow(clippy::too_many_lines)] // one mutation per rule, both targets
+fn p_d_mortar_option_tail() {
+    let d = fixture_dir("optail");
+    let load = |name: &str, ext: &str| {
+        let map = std::fs::read_to_string(d.join(format!("{name}.map"))).unwrap();
+        let b = std::fs::read(d.join(format!("{name}{ext}"))).unwrap();
+        (map, b)
+    };
+    let has = |r: &Report, rule: &str, want: &str| {
+        r.findings.iter().any(|f| f.rule.id() == rule && f.message.contains(want))
+    };
+    let mut n = 0;
+    for a in ["a64", "x64"] {
+        for (name, ext) in [
+            ("libz", ".so"),
+            ("libex", ".so"),
+            ("libdl", ".so"),
+            ("e-plain", ""),
+            ("e-ex", ""),
+            ("d-plain", ""),
+        ] {
+            let name = format!("{name}-{a}");
+            let (map, b) = load(&name, ext);
+            let clean = keys(&mortar_fixture(&d, &map, &b, &Dir(&d)));
+            assert!(clean.is_empty(), "{name}{ext}: {clean:#?}");
+        }
+        let mut caught = |what: String, r: Report, rule: &str, want: &str| {
+            n += 1;
+            assert!(has(&r, rule, want), "{what}: no {rule} '{want}' in\n{}", r.render("o"));
+        };
+
+        // libz: every DF_1 bit the -z words ask for, and DF_ORIGIN.
+        let (map, b) = load(&format!("libz-{a}"), ".so");
+        let f1 = dyn_value_at(&b, 0x6fff_fffb).expect("DT_FLAGS_1");
+        let v1 = u64at(&b, f1);
+        for bit in [0x8u64, 0x20, 0x40, 0x400, 0x80] {
+            assert!(v1 & bit != 0, "libz-{a}: DF_1 {bit:#x} not set ({v1:#x})");
+            let mut m = b.clone();
+            m[f1..f1 + 8].copy_from_slice(&(v1 & !bit).to_le_bytes());
+            let r = mortar_fixture(&d, &map, &m, &Dir(&d));
+            caught(format!("libz-{a} DF_1 {bit:#x} cleared"), r, "P-D22", "DT_FLAGS_1");
+        }
+        let f = dyn_value_at(&b, 0x1e).expect("DT_FLAGS");
+        let mut m = b.clone();
+        m[f..f + 8].copy_from_slice(&(u64at(&b, f) & !1).to_le_bytes());
+        let r = mortar_fixture(&d, &map, &m, &Dir(&d));
+        caught(format!("libz-{a} DF_ORIGIN cleared"), r, "P-D22", "DF_ORIGIN false");
+        let r = mortar_fixture(&d, &edit_map(&map, &["arg -z", "arg origin"], &[]), &b, &Dir(&d));
+        caught(format!("libz-{a} without -z origin"), r, "P-D22", "-z origin false");
+        // DT_INIT at the data object: the loader would call data.
+        let data = dynsym_value(&b, "opt_data").expect("opt_data");
+        let init = dyn_value_at(&b, 12).expect("DT_INIT");
+        let mut m = b.clone();
+        m[init..init + 8].copy_from_slice(&data.to_le_bytes());
+        let r = mortar_fixture(&d, &map, &m, &Dir(&d));
+        caught(format!("libz-{a} DT_INIT at opt_data"), r, "P-D22", "DT_INIT");
+        let r = mortar_fixture(
+            &d,
+            &edit_map(&map, &["arg -init", "arg opt_init"], &["arg -init", "arg opt_data"]),
+            &m,
+            &Dir(&d),
+        );
+        caught(
+            format!("libz-{a} -init opt_data"),
+            r,
+            "P-D22",
+            "which is not in an executable segment",
+        );
+
+        // libex: without --exclude-libs, foo_fn (an archive member's) is an
+        // export that is missing.
+        let (map, b) = load(&format!("libex-{a}"), ".so");
+        let r = mortar_fixture(
+            &d,
+            &edit_map(&map, &["arg --exclude-libs", "arg ALL"], &[]),
+            &b,
+            &Dir(&d),
+        );
+        caught(format!("libex-{a} without --exclude-libs"), r, "P-D19", "foo_fn");
+
+        // e-plain: the same line with --exclude-libs exports nothing of
+        // the archive.
+        let (map, b) = load(&format!("e-plain-{a}"), "");
+        let r = mortar_fixture(
+            &d,
+            &edit_map(&map, &[], &["arg --exclude-libs", "arg ALL"]),
+            &b,
+            &Dir(&d),
+        );
+        caught(format!("e-plain-{a} with --exclude-libs"), r, "P-D7", "--exclude-libs names");
+
+        // e-ex: without --exclude-libs, -E exports the archive's foo_fn.
+        let (map, b) = load(&format!("e-ex-{a}"), "");
+        let r = mortar_fixture(
+            &d,
+            &edit_map(&map, &["arg --exclude-libs", "arg ALL"], &[]),
+            &b,
+            &Dir(&d),
+        );
+        caught(format!("e-ex-{a} without --exclude-libs"), r, "P-D7", "foo_fn");
+
+        // d-plain: a dynamic list names main and foo_fn, which are not
+        // exported.
+        let (map, b) = load(&format!("d-plain-{a}"), "");
+        let r = mortar_fixture(
+            &d,
+            &edit_map(&map, &[], &["arg --dynamic-list", "arg x.list"]),
+            &b,
+            &Dir(&d),
+        );
+        caught(
+            format!("d-plain-{a} with x.list"),
+            r,
+            "P-D7",
+            "listed by the line's --dynamic-list",
+        );
+
+        // libdl: without the list, -Bsymbolic binds every export.
+        let (map, b) = load(&format!("libdl-{a}"), ".so");
+        let plain = edit_map(
+            &edit_map(&map, &["arg --dynamic-list", "arg dl.list"], &[]),
+            &["dynamic-list dl.list"],
+            &[],
+        );
+        for (rule, want) in [
+            ("P-D22", "the line's symbolic form is all without --dynamic-list"),
+            ("P-D25", "names 'opt_fn', which the line binds"),
+            ("P-D17", "an interposer defines 'opt_fn'"),
+        ] {
+            let r = mortar_fixture(&d, &plain, &b, &Dir(&d));
+            caught(format!("libdl-{a} without its list"), r, rule, want);
+        }
+    }
+    assert_eq!(n, 32, "mutations");
+}
+
+/// The file offset of the virtual address `va` (ELF64, its `PT_LOAD`).
+fn file_offset(b: &[u8], va: u64) -> usize {
+    let (off, ent, n) = (u64at(b, 0x20) as usize, u16at(b, 0x36), u16at(b, 0x38));
+    (0..n)
+        .map(|i| off + i * ent)
+        .filter(|&h| b[h..h + 4] == 1u32.to_le_bytes())
+        .find_map(|h| {
+            let (o, v, fsz) = (u64at(b, h + 8), u64at(b, h + 16), u64at(b, h + 32));
+            (v..v + fsz).contains(&va).then(|| (va - v + o) as usize)
+        })
+        .unwrap()
+}
+
+// WP-161 (P-D9 (mortar), D-119; P-D7, AAELF64): what the `Shared` sweep
+// left unjudged in WP-128's measure. Each word of a TLS descriptor
+// (`libz`: `-Bsymbolic`, so `r_sym` 0) holds 0 in mortar's file; an
+// export's `STO_AARCH64_VARIANT_PCS` is its definition's.
+#[test]
+fn p_d9_tls_descriptor_words_and_variant_pcs() {
+    let d = fixture_dir("optail");
+    for (a, ty) in [("a64", 1031u64), ("x64", 36)] {
+        let map = std::fs::read_to_string(d.join(format!("libz-{a}.map"))).unwrap();
+        let b = std::fs::read(d.join(format!("libz-{a}.so"))).unwrap();
+        let (rela, size) = section(&b, ".rela.dyn");
+        let place = (rela..rela + size)
+            .step_by(24)
+            .find(|&e| u64at(&b, e + 8) & 0xffff_ffff == ty)
+            .map(|e| u64at(&b, e))
+            .expect("a TLSDESC record");
+        for w in 0..2 {
+            let at = file_offset(&b, place + 8 * w);
+            assert_eq!(u64at(&b, at), 0, "libz-{a} descriptor word {w}");
+            let mut m = b.clone();
+            m[at] ^= 1;
+            let r = mortar_fixture(&d, &map, &m, &Dir(&d));
+            assert!(
+                r.findings.iter().any(|f| f.rule.id() == "P-D9"
+                    && f.message.contains(&format!("word {w} of a TlsDesc record"))),
+                "libz-{a} word {w}:\n{}",
+                r.render("o")
+            );
+        }
+    }
+    let map = std::fs::read_to_string(d.join("libz-a64.map")).unwrap();
+    let b = std::fs::read(d.join("libz-a64.so")).unwrap();
+    let (sym, size) = section(&b, ".dynsym");
+    let (strs, _) = section(&b, ".dynstr");
+    let e = (sym..sym + size)
+        .step_by(24)
+        .find(|&e| {
+            let at = strs + u32at(&b, e) as usize;
+            b[at..].split(|&c| c == 0).next() == Some(b"opt_fn".as_slice())
+        })
+        .unwrap();
+    let mut m = b.clone();
+    m[e + 5] |= 0x80;
+    let r = mortar_fixture(&d, &map, &m, &Dir(&d));
+    assert!(
+        r.findings
+            .iter()
+            .any(|f| f.rule.id() == "P-D7" && f.message.contains("STO_AARCH64_VARIANT_PCS set")),
+        "{}",
+        r.render("o")
+    );
 }

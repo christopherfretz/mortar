@@ -58,6 +58,10 @@ struct Case {
     meta: Option<&'static str>,
     /// The sections swept: [`mortar_plumb::sweep::SECTIONS`] when empty.
     only: &'static [&'static str],
+    /// A library's source (`shared.c`, [`SHARED_C`]) and the files beside
+    /// it, instead of the hello program; compiled `-fPIC` with TLS
+    /// descriptors (AArch64's `-mtls-dialect=desc`, x86-64's `gnu2`).
+    library: bool,
 }
 
 /// The source of the stage-4 cases: an exported and a hidden definition.
@@ -73,6 +77,23 @@ const ODR_META: &str = "summary name=lang value=c++\n\
     type name=1S hash=00112233445566778899aabbccddeeff layout=0x55 size=8 align=4 flags=0\n\
     type name=1T hash=ffeeddccbbaa99887766554433221100 layout=0x66 size=16 align=8 flags=1\n";
 
+/// The `Shared` cases' library (WP-161): exports of two version nodes, a
+/// symbol the script makes local, an exported TLS definition and a local
+/// one (TLS descriptors), a PLT call, and the `-init`/`-fini` functions.
+const SHARED_C: &str = "#include <stdio.h>\n\
+                        __thread int sw_tls = 1;\n\
+                        static __thread int sw_ltls = 2;\n\
+                        int sw_data = 3;\n\
+                        int sw_hidden(void){return sw_data;}\n\
+                        int sw_old(void){return sw_hidden() + 1;}\n\
+                        int sw_new(void){return puts(\"hello\") + sw_tls + sw_ltls + sw_old();}\n\
+                        void sw_init(void){sw_data++;}\n\
+                        void sw_fini(void){sw_data--;}\n";
+
+/// Its version script: two nodes, the second a child of the first.
+const SHARED_VER: &str = "SW_1 { global: sw_old; sw_data; sw_tls; local: *; };\n\
+                          SW_2 { global: sw_new; sw_init; sw_fini; } SW_1;\n";
+
 const CASES: &[Case] = &[
     Case {
         name: "pie.lazy",
@@ -82,6 +103,7 @@ const CASES: &[Case] = &[
         window: 0,
         meta: None,
         only: &[],
+        library: false,
     },
     Case {
         name: "pie.now",
@@ -91,6 +113,7 @@ const CASES: &[Case] = &[
         window: 0,
         meta: None,
         only: &[],
+        library: false,
     },
     // Stage 4: a table (`=exported`, `main` exported by `-rdynamic`), and
     // `=full` with the kept container (`helper` a hidden definition row).
@@ -104,6 +127,7 @@ const CASES: &[Case] = &[
         window: 0,
         meta: Some(ODR_META),
         only: &[".note.mason"],
+        library: false,
     },
     Case {
         name: "table.full",
@@ -119,6 +143,7 @@ const CASES: &[Case] = &[
         window: 0,
         meta: Some(ODR_META),
         only: &[".note.mason", ".mason.meta"],
+        library: false,
     },
     Case {
         name: "nopie",
@@ -128,6 +153,7 @@ const CASES: &[Case] = &[
         window: 0,
         meta: None,
         only: &[],
+        library: false,
     },
     Case {
         name: "cxx",
@@ -137,6 +163,7 @@ const CASES: &[Case] = &[
         window: 0,
         meta: None,
         only: &[],
+        library: false,
     },
     Case {
         name: "spie",
@@ -146,6 +173,7 @@ const CASES: &[Case] = &[
         window: 256,
         meta: None,
         only: &[],
+        library: false,
     },
     // `.gdb_index` (WP-098), its bytes only; without a build id (WP-098,
     // before the sweep resealed one: WP-101).
@@ -157,11 +185,47 @@ const CASES: &[Case] = &[
         window: 0,
         meta: None,
         only: &[".gdb_index"],
+        library: false,
+    },
+    // `Shared` (WP-161): a versioned library with TLS descriptors, and the
+    // same source unversioned (every default global exported) with the
+    // option tail of `-shared` (dyn.md D-102, D-103, D-110).
+    Case {
+        name: "shared",
+        cxx: false,
+        compile: &["-fPIC"],
+        link: &["-shared", "-Wl,--version-script=shared.ver", "-Wl,-soname,libsw.so"],
+        window: 0,
+        meta: None,
+        only: &[],
+        library: true,
+    },
+    Case {
+        name: "shared.tail",
+        cxx: false,
+        compile: &["-fPIC"],
+        link: &[
+            "-shared",
+            "-Wl,-z,nodelete",
+            "-Wl,-z,nodlopen",
+            "-Wl,-z,initfirst",
+            "-Wl,-z,interpose",
+            "-Wl,-z,origin",
+            "-Wl,-Bsymbolic",
+            "-Wl,-init,sw_init",
+            "-Wl,-fini,sw_fini",
+            "-Wl,--exclude-libs,ALL",
+        ],
+        window: 0,
+        meta: None,
+        only: &[],
+        library: true,
     },
 ];
 
-/// The cases of `--quick`.
-pub const QUICK_CASES: &[&str] = &["pie.lazy", "nopie"];
+/// The cases of `--quick` (WP-161 added the two `Shared` ones: about 20 s
+/// each on one architecture, measured at a load of 20).
+pub const QUICK_CASES: &[&str] = &["pie.lazy", "nopie", "shared", "shared.tail"];
 
 /// What `cargo xtask sweep` was asked.
 #[derive(Debug, Default)]
@@ -265,6 +329,8 @@ fn run_lane(a: &Args) -> Result<bool, String> {
         std::fs::write(work.join("hello.c"), HELLO_C).map_err(|e| e.to_string())?;
         std::fs::write(work.join("hello.cc"), HELLO_CXX).map_err(|e| e.to_string())?;
         std::fs::write(work.join("odr.c"), ODR_C).map_err(|e| e.to_string())?;
+        std::fs::write(work.join("shared.c"), SHARED_C).map_err(|e| e.to_string())?;
+        std::fs::write(work.join("shared.ver"), SHARED_VER).map_err(|e| e.to_string())?;
         let wanted = |c: &&Case| {
             (!a.quick || QUICK_CASES.contains(&c.name))
                 && (a.cases.is_empty() || a.cases.iter().any(|n| n == c.name))
@@ -324,6 +390,7 @@ fn sweep_case(
     let driver: PathBuf = mortar_testutil::find_listed_tool(&driver_name)
         .ok_or_else(|| format!("`{driver_name}` not found"))?;
     let source = match (case.cxx, case.meta) {
+        _ if case.library => "shared.c",
         (_, Some(_)) => "odr.c",
         (true, None) => "hello.cc",
         (false, None) => "hello.c",
@@ -333,6 +400,10 @@ fn sweep_case(
     let map = format!("{}.map", case.name);
     let mut compile: Vec<String> = vec!["-c".into(), "-O1".into()];
     compile.extend(case.compile.iter().map(|s| (*s).to_owned()));
+    if case.library {
+        let dialect = if arch == Arch::X86_64 { "gnu2" } else { "desc" };
+        compile.push(format!("-mtls-dialect={dialect}"));
+    }
     compile.extend([source.to_owned(), "-o".into(), object.clone()]);
     tool(&driver, &compile, work)?;
     if let Some(desc) = case.meta {

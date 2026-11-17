@@ -242,6 +242,14 @@ pub struct Key {
     /// The positions (line items) of the objects that reference it
     /// strongly, with their groups (D-19a).
     pub ref_pos: Vec<(usize, Option<usize>)>,
+    /// Every definition by a relocatable object is in a member of an
+    /// archive `--exclude-libs` names (D-110 item 1; WP-161): no export
+    /// of the line gives it, and a shared object's reference to it finds
+    /// nothing (D-13).
+    pub excluded: bool,
+    /// An executable's `--dynamic-list` lists it (resolve §9.6, D-21;
+    /// WP-161): a definition of it is exported.
+    pub listed: bool,
 }
 
 /// The model.
@@ -417,8 +425,13 @@ impl Model {
             }
         }
         // The program's keys.
+        // Keys defined in an excluded archive member, and elsewhere
+        // (D-110 item 1, WP-161).
+        let mut in_excluded: HashSet<String> = HashSet::new();
+        let mut in_kept: HashSet<String> = HashSet::new();
         for o in objs {
             let Some(t) = o.symtab else { continue };
+            let excluded = o.member.is_some() && line.exclude_libs.excludes(&o.path);
             let pos = line.position_of(&o.path);
             let group = pos.and_then(|p| match &line.items[p] {
                 Item::Relocatable { group, .. } => *group,
@@ -440,6 +453,11 @@ impl Model {
                     // A versioned definition `foo@@V` defines `foo`.
                     let _ = (SHN_ABS, SHN_COMMON);
                     k.defined = true;
+                    if excluded {
+                        in_excluded.insert(name.to_string());
+                    } else {
+                        in_kept.insert(name.to_string());
+                    }
                 } else {
                     if let Some(v) = ver {
                         k.version = Some(v.to_string());
@@ -452,6 +470,20 @@ impl Model {
                     }
                 }
             }
+        }
+        for n in &in_excluded {
+            if !in_kept.contains(n)
+                && let Some(k) = m.keys.get_mut(n)
+            {
+                k.excluded = true;
+            }
+        }
+        // An executable's dynamic list (D-1: none in a static-pie; a
+        // `Shared` line's list decides preemption, §12.5).
+        if matches!(line.kind, Some(OutputKind::Exec | OutputKind::Pie))
+            && !line.dynamic_lists.is_empty()
+        {
+            m.dynamic_list(line, files);
         }
         for u in line.undefined.iter().chain(line.entry.iter()) {
             let k = m.keys.entry(u.clone()).or_default();
@@ -613,6 +645,34 @@ impl Model {
             }
         }
         m
+    }
+
+    /// Marks the defined keys an executable's `--dynamic-list` files list
+    /// (every file one list; resolve §9.6, D-112's grammar). A file the
+    /// verifier cannot read or parse is P-D2's; a form D-112 refuses
+    /// (`extern "C++"`) puts the link outside stage 3 (P-D1).
+    fn dynamic_list(&mut self, line: &Line, files: &dyn Files) {
+        let mut texts = Vec::new();
+        for p in &line.dynamic_lists {
+            let Some(b) = files.read(p) else {
+                self.problems.push(format!("{p}: cannot be read (a --dynamic-list file)"));
+                return;
+            };
+            texts.push((p.clone(), String::from_utf8_lossy(&b).into_owned()));
+        }
+        match crate::shared::DynList::parse(&texts) {
+            Ok(list) => {
+                for (name, k) in &mut self.keys {
+                    k.listed = k.defined && list.lists(name);
+                }
+            }
+            Err(crate::shared::ScriptError::Syntax(e)) => {
+                self.problems.push(format!("a dynamic list the verifier cannot read: {e}"));
+            }
+            Err(crate::shared::ScriptError::Refused(e)) => {
+                self.outside.push(format!("{e} (dyn.md D-112)"));
+            }
+        }
     }
 
     /// The search of input §8.6 for edge `n` of object `s`.

@@ -1,0 +1,57 @@
+mortar-map 2
+file 0 opt-a64.o
+file 1 libxfoo-a64.a xfoo-a64.o 60
+piece 0 8 0 3b0 14
+piece 0 8 14 3c4 14
+piece 0 8 28 3d8 14
+piece 0 8 3c 3ec 20
+piece 0 8 5c 40c 24
+place 0 1 10480 8c
+place 0 5 20514 4
+place 0 3 30688 4
+place 0 4 30690 4
+piece 1 6 14 430 14
+place 1 1 1050c 8
+place 1 2 3068c 4
+place 1 3 30694 0
+merged 0 6 .comment
+merged 1 4 .comment
+chunk synthetic .gnu.hash 200 48
+chunk synthetic .dynsym 248 d8
+chunk synthetic .dynstr 320 45
+chunk synthetic .rela.dyn 368 30
+chunk synthetic .rela.plt 398 18
+chunk synthetic .eh_frame 3b0 98
+chunk synthetic .plt 10450 30
+chunk synthetic .got 20648 20
+chunk synthetic .got.plt 30668 20
+chunk synthetic .dynamic 20518 130
+chunk synthetic .symtab - 1e0
+chunk synthetic .strtab - 76
+chunk synthetic .shstrtab - 9b
+chunk synthetic .comment - d
+chunk synthetic .pad.relro 20668 f998
+output shared
+bind lazy
+relro on
+symbolic all
+dynamic-list dl.list
+arg -shared
+arg -o
+arg libdl-a64.so
+arg opt-a64.o
+arg libxfoo-a64.a
+arg -Bsymbolic
+arg --dynamic-list
+arg dl.list
+arg --mortar-map=libdl-a64.map
+export foo_fn
+export opt_tls
+export foo_data
+export opt_init
+export opt_fini
+export opt_fn
+export opt_data
+export opt_other
+plt opt_fn
+end

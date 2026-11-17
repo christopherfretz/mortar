@@ -7,15 +7,16 @@
 # definition is refused, as one to a hidden definition (D-13): GNU ld
 # ("hidden symbol ... is referenced by DSO") and lld ("non-exported
 # symbol") refuse it too; mold links a program the loader cannot start
-# ("undefined symbol: foo_fn"). The excluded lines are mortar's here:
-# the references write the same `.dynsym` (measured), but make the
-# excluded definitions LOCAL in `.symtab` (mold also HIDDEN), which the
-# verifier's Y3 reports while the program's references are GLOBAL (the
-# `.symtab` binding of excluded and version-local symbols is WP-150's;
-# mortar keeps them GLOBAL).
+# ("undefined symbol: foo_fn"): `bad-mold`, which the verifier names
+# (P-D6, D-110 item 1 and D-13: anomaly A36, WP-161). Every linker's
+# excluded lines are judged: the three references write the same
+# `.dynsym`; in `.symtab` GNU ld and lld make the excluded definitions
+# LOCAL (GNU ld leaves `foo_data` GLOBAL HIDDEN without `-E`), mold LOCAL
+# HIDDEN, mortar keeps them GLOBAL (WP-150's question); the verifier's Y3
+# accepts each (WP-161).
+#@ anomaly(mold): A36
 #@ spec: dyn.md "D-110"; dyn.md "D-13"
 #@ arch: aarch64 x86_64
-#@ xfail(mortar): the verifier's P-D7 on e-ex ("'foo_fn' is defined by the program and referenced by a needed or used object, and is not exported"): its export rules (P-D7, P-D19) do not read `--exclude-libs` yet (WP-161); mortar's `.dynsym` is GNU ld's and lld's (checked at the merge of WP-128) and the programs print the same
 
 cc -O1 -fPIE main.c -o main.o
 cc -O1 -fPIE user.c -o user.o
@@ -29,26 +30,29 @@ link gcc -pie main.o libfoo.a -L. -ldd -Wl,-E -o e-plain
 check readelf --dyn-syms -W e-plain
   has: FUNC GLOBAL DEFAULT * foo_fn$
   not: UND foo_fn
-link(mortar) gcc -pie main.o libfoo.a -L. -ldd -Wl,-E -Wl,--exclude-libs,ALL -o e-ex
-check(mortar) readelf --dyn-syms -W e-ex
+link gcc -pie main.o libfoo.a -L. -ldd -Wl,-E -Wl,--exclude-libs,ALL -o e-ex
+check readelf --dyn-syms -W e-ex
   not: foo_
-link(mortar) gcc -pie main.o libfoo.a -L. -ldd -Wl,--export-dynamic-symbol,foo_data -Wl,--exclude-libs,libfoo.a -o s-ex
-check(mortar) readelf --dyn-syms -W s-ex
+link gcc -pie main.o libfoo.a -L. -ldd -Wl,--export-dynamic-symbol,foo_data -Wl,--exclude-libs,libfoo.a -o s-ex
+check readelf --dyn-syms -W s-ex
   not: foo_
 link gcc -pie main.o libfoo.a -L. -ldd -o d-plain
 check readelf --dyn-syms -W d-plain
   has: FUNC GLOBAL DEFAULT * foo_fn$
   not: UND foo_fn
-link(mortar) gcc -pie main.o libfoo.a -L. -ldd -Wl,--exclude-libs,ALL -o d-ex
-check(mortar) readelf --dyn-syms -W d-ex
+link gcc -pie main.o libfoo.a -L. -ldd -Wl,--exclude-libs,ALL -o d-ex
+check readelf --dyn-syms -W d-ex
   not: foo_
 run d-plain
   stdout: 1 3 5
-run(mortar) d-ex
+run d-ex
   stdout: 1 3 5
 link(bfd,lld,mortar) gcc -pie user.o libfoo.a -L. -lneeds -Wl,--exclude-libs,ALL -o bad
   exit: fail
   diag(mortar): non-exported symbol referenced by a shared object: foo_fn
+link(mold) gcc -pie user.o libfoo.a -L. -lneeds -Wl,--exclude-libs,ALL -o bad-mold
+run(mold) bad-mold
+  exit: 127
 link gcc -pie user.o libfoo.a -L. -lneeds -o good
 run good
   stdout: 11
