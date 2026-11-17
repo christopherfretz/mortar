@@ -1,8 +1,11 @@
-//! The bytes of a link state, format version 2 (`spec/incr.md` IN-18a):
+//! The bytes of a link state, format version 4 (`spec/incr.md` IN-18a):
 //! the rows as plain values, the encoder, and the validating decoder.
 //! Version 2 is version 1 with the tables `MENTIONS`, `RESOLVED`,
 //! `INDEX` (kinds 32-34) and `HOLES` (39) between `LEAVES` and
-//! `STRINGS`. A state of version 1 is refused by name (`state-version`).
+//! `STRINGS`. Version 3 (WP-094) adds `SYMBOLS`' positions and `FRAG_AT`;
+//! version 4 (WP-064a, IN-18a4) gives `FILES` its flags (the `POSITIONAL`
+//! bit, IN-28a) and makes `FRAG_AT`'s third field the `FRAGS` row. A
+//! state of any other version is refused by name (`state-version`).
 //!
 //! The decoder is the only way in: a state is untrusted input, so every
 //! length, hash, enumeration, pad and reference is checked before a row
@@ -18,7 +21,7 @@ use mortar_digest::{L128, l128};
 /// `MORTARST`.
 pub const MAGIC: [u8; 8] = *b"MORTARST";
 /// The format version this crate writes and reads.
-pub const FORMAT_VERSION: u32 = 3;
+pub const FORMAT_VERSION: u32 = 4;
 /// The header's size.
 pub const HEADER_LEN: usize = 64;
 /// A table record's size.
@@ -117,7 +120,7 @@ pub mod kind {
     /// WP-094 prototype (format version 3): the live fragments by position
     /// (`SECTIONS` row, offset in the section), after `HOLES`.
     pub const FRAG_AT: u32 = 40;
-    /// The number of tables of version 3.
+    /// The number of tables of versions 3 and 4.
     pub const COUNT: u32 = 28;
 
     /// The name of a kind, for diagnostics.
@@ -198,11 +201,26 @@ pub struct StatRow {
     pub fstype: Str,
 }
 
+/// `FILES`' flags (format version 4, IN-18a4).
+pub mod file_flags {
+    /// The row is position-exact (IN-28a): every position row of the file
+    /// (its `SECTIONS` range, the `at_index` of its locals and of the
+    /// globals whose `at_file` it is, its `FRAG_AT` rows) was captured
+    /// from the bytes whose hash the row holds. A full link sets it on
+    /// every row; a writer that changes a hash without recapturing the
+    /// file's position rows clears it.
+    pub const POSITIONAL: u8 = 1;
+    /// Every flag a reader accepts.
+    pub const ALL: u8 = POSITIONAL;
+}
+
 /// `FILES`: one per `FileId`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FileRow {
     pub kind: u8,
     pub member: u8,
+    /// [`file_flags`] (format version 4; byte 2 of the row).
+    pub flags: u8,
     pub path: Str,
     pub mention: u32,
     pub member_name: Str,
@@ -250,13 +268,16 @@ pub struct SymbolRow {
     pub at_index: u32,
 }
 
-/// `FRAG_AT` (WP-094, format version 3): a live fragment by the position
-/// of its first occurrence, and its offset in its output section.
+/// `FRAG_AT` (WP-094, format version 3; version 4: the third field is
+/// the `FRAGS` row, IN-18a4): a live fragment by the position it was read
+/// at (its `SECTIONS` row and its offset in that input section), and the
+/// `FRAGS` row of its identity.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct FragAtRow {
     pub section: u32,
     pub offset: u32,
-    pub at: u64,
+    /// The `FRAGS` row (checked in range by the reader).
+    pub frag: u64,
 }
 
 /// `SECTIONS`: one per `SectionId`.
@@ -771,16 +792,17 @@ impl Row for StatRow {
 impl Row for FileRow {
     const WIDTH: usize = 60;
     fn put(&self, w: &mut W<'_>) {
-        w.u8(self.kind).u8(self.member).pad(2).s(self.path).u32(self.mention);
+        w.u8(self.kind).u8(self.member).u8(self.flags).pad(1).s(self.path).u32(self.mention);
         w.s(self.member_name).u32(self.member_ordinal).u64(self.base).u64(self.len);
         w.bytes(&self.hash);
     }
     fn get(r: &mut R<'_>) -> Self {
-        let (kind, member) = (r.u8(), r.u8());
-        r.pad(2);
+        let (kind, member, flags) = (r.u8(), r.u8(), r.u8());
+        r.pad(1);
         Self {
             kind,
             member,
+            flags,
             path: r.s(),
             mention: r.u32(),
             member_name: r.s(),
@@ -838,10 +860,10 @@ impl Row for SymbolRow {
 impl Row for FragAtRow {
     const WIDTH: usize = 16;
     fn put(&self, w: &mut W<'_>) {
-        w.u32(self.section).u32(self.offset).u64(self.at);
+        w.u32(self.section).u32(self.offset).u64(self.frag);
     }
     fn get(r: &mut R<'_>) -> Self {
-        Self { section: r.u32(), offset: r.u32(), at: r.u64() }
+        Self { section: r.u32(), offset: r.u32(), frag: r.u64() }
     }
 }
 
@@ -1466,7 +1488,12 @@ fn validate(s: &State) -> Result<(), StateError> {
         return Err(corrupt("STAT: an input path appears twice"));
     }
     for (i, f) in s.files.iter().enumerate() {
-        if f.kind > 2 || f.member > 1 || !str_ok(f.path) || !str_ok(f.member_name) {
+        if f.kind > 2
+            || f.member > 1
+            || f.flags & !file_flags::ALL != 0
+            || !str_ok(f.path)
+            || !str_ok(f.member_name)
+        {
             return Err(bad(kind::FILES, i, "field out of range"));
         }
         if f.member == 0 && (f.member_name != Str::default() || f.member_ordinal != 0) {
@@ -1576,6 +1603,9 @@ fn validate(s: &State) -> Result<(), StateError> {
     for (i, f) in s.frag_at.iter().enumerate() {
         if !reference(s.sections.len(), f.section, false) {
             return Err(bad(kind::FRAG_AT, i, "section out of range"));
+        }
+        if f.frag >= s.frags.len() as u64 {
+            return Err(bad(kind::FRAG_AT, i, "FRAGS row out of range"));
         }
     }
     for (i, w) in s.frag_at.windows(2).enumerate() {

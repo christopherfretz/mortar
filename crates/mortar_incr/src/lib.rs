@@ -24,6 +24,7 @@ pub const fn small_output(size: u64) -> bool {
 }
 
 pub mod capture;
+pub mod contribution;
 pub mod delta;
 pub mod detect;
 pub mod format;
