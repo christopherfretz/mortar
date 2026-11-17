@@ -2992,6 +2992,49 @@ impl<'a, 'b> Engine<'a, 'b> {
         }
     }
 
+    /// A GOT group with no pair (§5.5): its records are not checked, but
+    /// a demoted weak mention's record is R5 whatever (§5.7a).
+    fn got_unpaired(&mut self, g: &Group) {
+        let key = |p: &Pending| (p.rec.p, p.rec.def.r_type);
+        let demoted =
+            g.members.iter().filter(|m| self.demoted_pending.contains_key(&key(&m.0))).count();
+        self.not_checked(Reason::GotUnpaired, (g.members.len() - demoted) as u64);
+        for (pend, _) in &g.members {
+            if let Some((f, _)) = self.demoted_pending.remove(&key(pend)) {
+                self.fail(f);
+                continue;
+            }
+            let form = crate::equiv::Form::NotChecked(Reason::GotUnpaired);
+            crate::equiv::reform(self, pend.rec.p, form);
+        }
+    }
+
+    /// A GOT group's record that reaches no slot holding what it wants
+    /// (§5.5): its finding.
+    fn got_no_slot(&mut self, pend: &Pending, want: Want, cands: &[u64]) {
+        let rec = &pend.rec;
+        let mut f = Self::finding(
+            Rule::GotSlot,
+            rec,
+            &pend.site,
+            &pend.symbol,
+            match want {
+                Want::Word(v) if !rec.def.op.is_tls() => {
+                    format!("the GOT-indirect reference reaches no slot that holds S+A ({v:#x})")
+                }
+                Want::Word(v) => format!(
+                    "the GOT-indirect reference reaches no entry that holds the thread-pointer offset {v:#x}"
+                ),
+                Want::Pair(m, v) => format!(
+                    "the GOT-indirect reference reaches no entry that holds the module index {m} and the offset {v:#x}"
+                ),
+            },
+        );
+        f.expected = Some(want.first());
+        f.found = cands.first().and_then(|&c| self.image.value(c, self.word() as u8));
+        self.fail(f);
+    }
+
     /// Decides the GOT groups (§5.5).
     pub fn finish_got(&mut self) {
         let groups = std::mem::take(&mut self.got_groups);
@@ -3003,21 +3046,7 @@ impl<'a, 'b> Engine<'a, 'b> {
         for ((_, goi, gsym, _), g) in groups {
             let key = |p: &Pending| (p.rec.p, p.rec.def.r_type);
             if g.unpaired() {
-                // §5.7a: a demoted weak mention's record is R5 whatever.
-                let demoted = g
-                    .members
-                    .iter()
-                    .filter(|m| self.demoted_pending.contains_key(&key(&m.0)))
-                    .count();
-                self.not_checked(Reason::GotUnpaired, (g.members.len() - demoted) as u64);
-                for (pend, _) in &g.members {
-                    if let Some((f, _)) = self.demoted_pending.remove(&key(pend)) {
-                        self.fail(f);
-                        continue;
-                    }
-                    let form = crate::equiv::Form::NotChecked(Reason::GotUnpaired);
-                    crate::equiv::reform(self, pend.rec.p, form);
-                }
+                self.got_unpaired(&g);
                 continue;
             }
             let want = g.members[0].0.want;
@@ -3039,28 +3068,7 @@ impl<'a, 'b> Engine<'a, 'b> {
                     continue;
                 }
                 if valid.is_empty() {
-                    let mut f = Self::finding(
-                        Rule::GotSlot,
-                        rec,
-                        &pend.site,
-                        &pend.symbol,
-                        match want {
-                            Want::Word(v) if !rec.def.op.is_tls() => {
-                                format!(
-                                    "the GOT-indirect reference reaches no slot that holds S+A ({v:#x})"
-                                )
-                            }
-                            Want::Word(v) => format!(
-                                "the GOT-indirect reference reaches no entry that holds the thread-pointer offset {v:#x}"
-                            ),
-                            Want::Pair(m, v) => format!(
-                                "the GOT-indirect reference reaches no entry that holds the module index {m} and the offset {v:#x}"
-                            ),
-                        },
-                    );
-                    f.expected = Some(want.first());
-                    f.found = cands.first().and_then(|&c| self.image.value(c, self.word() as u8));
-                    self.fail(f);
+                    self.got_no_slot(pend, want, &cands);
                     continue;
                 }
                 let mut last = None;
