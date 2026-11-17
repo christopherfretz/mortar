@@ -3,7 +3,6 @@
 # runs with both loaded; the second's call reaches the first.
 #@ spec: dyn.md "D-11"
 #@ arch: aarch64 x86_64
-#@ xfail(mortar,x86_64): M4: WP-127 (x86-64 shared objects; dyn.md D-100)
 
 cc -O1 -fPIC a.c -o a.o
 cc -O1 -fPIC b.c -o b.o

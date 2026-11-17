@@ -4,7 +4,6 @@
 # form).
 #@ spec: harness.md "LT-4"
 #@ arch: aarch64 x86_64
-#@ xfail(mortar,x86_64): M4: WP-127 (x86-64 shared objects; dyn.md D-100)
 #@ fixture: shared-hello
 
 cc -O1 -fPIC pre.c -o pre.o

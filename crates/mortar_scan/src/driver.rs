@@ -786,8 +786,8 @@ fn walk_unit(view: &View<'_, '_>, u: &Unit, global: &[AtomicU16], bufs: &mut Buf
     let seq_leads = view.arch.facts().seq_leads;
     // The branch candidates (`crate::BranchRec`): only in live code.
     let code = sec.place.alloc && sec.place.exec == Some(true);
-    // D-117 (`crate::bound`): the file's facts in a `Shared` AArch64
-    // link, when it defines preemptible data; `None` otherwise.
+    // D-117 (`crate::bound`): the file's facts in a `Shared` link
+    // (AArch64, x86-64), when it defines preemptible data; `None` otherwise.
     let facts = view.bound_facts(u.file);
     // The analysis (WP-119) judges each code section once, on the walk
     // of its first block: its bound uses join the rule's.
@@ -844,7 +844,15 @@ fn walk_unit(view: &View<'_, '_>, u: &Unit, global: &[AtomicU16], bufs: &mut Buf
             if sec.place.alloc
                 && let Some(f) = facts
                 && let Some(b) =
-                    crate::bound::rule(view, f, key, &raw, sec.recs.addend(&raw, &h), sec.name)
+                    crate::bound::rule(
+                        view,
+                        f,
+                        key,
+                        &raw,
+                        sec.recs.addend(&raw, &h),
+                        sec.name,
+                        sec.place.exec == Some(true),
+                    )
             {
                 faults.push((i, Fault::Bound(b)));
                 continue;

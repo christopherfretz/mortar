@@ -4,7 +4,6 @@
 # still reads its own; the host's call goes to the interposer's.
 #@ spec: dyn.md "D-112"
 #@ arch: aarch64 x86_64
-#@ xfail(mortar,x86_64): M4: WP-127 (x86-64 shared objects; dyn.md D-100)
 
 cc -O1 -fPIC lib.c -o lib.o
 cc -O1 -fPIC pre.c -o pre.o

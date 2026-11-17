@@ -6,7 +6,6 @@
 # (spec/harness.md "Checks").
 #@ spec: dyn.md "D-125"
 #@ arch: aarch64 x86_64
-#@ xfail(mortar,x86_64): M4: WP-127 (x86-64 shared objects; dyn.md D-100)
 #@ requires: gdb
 
 cc -O0 -g -fPIC lib.c -o lib.o

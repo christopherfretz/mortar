@@ -3,7 +3,6 @@
 # `dlsym`, a hidden one not found, and closed.
 #@ spec: dyn.md "D-110"
 #@ arch: aarch64 x86_64
-#@ xfail(mortar,x86_64): M4: WP-127 (x86-64 shared objects; dyn.md D-100)
 
 cc -O1 -fPIC lib.c -o lib.o
 cc -O1 -fPIE load.c -o load.o

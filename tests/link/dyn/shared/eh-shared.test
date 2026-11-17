@@ -6,7 +6,6 @@
 #@ spec: dyn.md "D-125"
 #@ requires: g++
 #@ arch: aarch64 x86_64
-#@ xfail(mortar,x86_64): M4: WP-127 (x86-64 shared objects; dyn.md D-100)
 
 cxx -O1 -fPIC lib.cc -o lib.o
 cxx -O1 -fPIE main.cc -o main.o

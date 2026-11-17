@@ -10,7 +10,7 @@
 //! object in a link that names no interpreter (`spec/input.md` §8.4)
 //! stays, because `spec/dyn.md` D-31 keeps it at M2; `-shared` (a shared
 //! object as output, M4) is a dynamic output on AArch64 since WP-123 and
-//! refused by name on x86-64 (WP-127) and i386 (WP-130); a static
+//! on x86-64 since WP-127, and refused by name on i386 (WP-130); a static
 //! pie on i386 is refused where the layout reads the kind
 //! (`mortar_layout::target`; written on AArch64 and x86-64 since WP-052).
 
@@ -35,16 +35,12 @@ use mortar_elf::Machine;
 /// The refusal of a dynamic output on `machine`.
 #[allow(clippy::result_large_err, reason = "the front's diagnostic, made once")]
 pub fn arch_status(plan: &Plan, machine: Machine) -> Result<Status, Diagnostic> {
-    // `spec/dyn.md` D-100 (WP-123): a shared object is a dynamic output,
-    // joined on AArch64 only (record `spec/landed/dyn/WP-110.md` §G.4).
+    // `spec/dyn.md` D-100: a shared object is a dynamic output, joined on
+    // AArch64 (WP-123) and x86-64 (WP-127; x64.md X-59 to X-62); i386 is
+    // WP-130's (record `spec/landed/dyn/WP-110.md` §G.4).
     if plan.kind == OutputKind::Shared {
         return match machine {
-            Machine::AArch64 => Ok(Status::M2),
-            Machine::X86_64 => Err(Diagnostic::refused(
-                RefusalClass::Feature,
-                "shared object output on x86-64",
-            )
-            .note("dyn.md D-100: x86-64 shared objects are WP-127's (docs/status/options.md, -shared)")),
+            Machine::AArch64 | Machine::X86_64 => Ok(Status::M2),
             Machine::I386 => Err(Diagnostic::refused(
                 RefusalClass::Feature,
                 "ELFCLASS32 shared object",
@@ -102,19 +98,18 @@ mod tests {
         }
     }
 
-    // spec: dyn.md D-100 (WP-123): a shared object is M2 on AArch64 and
-    // refused by name, class `feature`, on x86-64 (WP-127) and i386
+    // spec: dyn.md D-100 (WP-123, WP-127): a shared object is M2 on
+    // AArch64 and x86-64, and refused by name, class `feature`, on i386
     // (WP-130)
     #[test]
-    fn d100_shared_on_aarch64_only() {
+    fn d100_shared_on_aarch64_and_x86_64() {
         let plan = Plan { kind: OutputKind::Shared, ..Plan::default() };
         assert_eq!(arch_status(&plan, Machine::AArch64).ok(), Some(Status::M2));
-        for (m, what) in [
-            (Machine::X86_64, "shared object output on x86-64"),
-            (Machine::I386, "ELFCLASS32 shared object"),
-        ] {
-            let d = arch_status(&plan, m).err();
-            assert_eq!(d.as_ref().and_then(|d| d.refusal()).map(|r| r.1), Some(what), "{m:?}");
-        }
+        assert_eq!(arch_status(&plan, Machine::X86_64).ok(), Some(Status::M2));
+        let d = arch_status(&plan, Machine::I386).err();
+        assert_eq!(
+            d.as_ref().and_then(|d| d.refusal()).map(|r| r.1),
+            Some("ELFCLASS32 shared object")
+        );
     }
 }
