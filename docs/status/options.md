@@ -4,7 +4,7 @@ Generated from `crates/mortar_cli/src/rows.rs` by `mortar_cli::status_markdown`;
 do not edit. `MORTAR_BLESS=1 cargo test -p mortar_cli --test table` rewrites it.
 The rules are `spec/cli.md`.
 
-487 rows: 81 supported, 4 partial, 36 noop, 366 refused.
+487 rows: 81 supported, 4 partial, 34 noop, 368 refused.
 
 Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 18 mortar's own.
 
@@ -17,7 +17,7 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 18 mortar'
 | Option | Value | Linkers | Targets | Status | Lands in | Help |
 |---|---|---|---|---|---|---|
 | `-o`, `--output` | FILE | GNU, lld, mold | all | supported | `output` | Write the output to FILE (default a.out) |
-| `-shared`, `--Bshareable` |  | GNU, lld, mold | all | refused | `kind` | Produce a shared object |
+| `-shared`, `--Bshareable` |  | GNU, lld, mold | all | refused: shared-object output is not joined to the link until WP-123; then: partial: AArch64 (x86-64 and i386 refused, `feature`, until WP-127 and WP-130; TLS and IFUNC in a shared object until WP-124; version scripts until WP-125). Not caught (with every reference): non-PIC AArch64 code that reaches its own exported data only through a form dyn.md D-117's analysis does not follow (a spilled or reloaded base, a computed index, a 32-bit register, a value passed to a callee, code outside a sized function symbol, hand-written assembly; 3 of 306 measured bound definitions, every object refused for another use). Refused although correct: -fPIC code that forms an address before the start of a static object placed after exported data (`tab - 1`, GCC and Clang AArch64 -O0; dyn.md D-117; remedy -fdata-sections) | `kind` | Produce a shared object |
 | `-pie`, `--pic-executable` |  | GNU, lld, mold | all | supported | `kind` | Produce a position-independent executable |
 | `-no-pie`, `--no-pic-executable` |  | GNU, lld, mold | all | supported | `kind` | Produce a position-dependent executable (default) |
 | `-r`, `-i`, `--relocatable` |  | GNU, lld, mold | all | refused | `kind` | Produce a relocatable object |
@@ -197,8 +197,8 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 18 mortar'
 | `--no-export-dynamic` |  | GNU, lld, mold | all | supported | `dynamic.export_dynamic` | Export only the symbols that need it (default) |
 | `-Bsymbolic` |  | GNU, lld, mold | all | noop: it binds a shared object's references to its own definitions; an executable's are bound locally already, and GNU ld writes nothing for it in an executable (shared objects as output are M4) | `dynamic.bsymbolic` | Bind references to global symbols locally |
 | `-Bsymbolic-functions` |  | GNU, lld, mold | all | noop: it binds a shared object's references to its own definitions; an executable's are bound locally already, and GNU ld writes nothing for it in an executable (shared objects as output are M4) | `dynamic.bsymbolic` | Bind references to global functions locally |
-| `--Bsymbolic-non-weak` |  | lld, mold | all | noop: it binds a shared object's references to its own definitions; an executable's are bound locally already, and GNU ld writes nothing for it in an executable (shared objects as output are M4) | `dynamic.bsymbolic` | Bind references to non-weak globals locally |
-| `--Bsymbolic-non-weak-functions` |  | lld, mold | all | noop: it binds a shared object's references to its own definitions; an executable's are bound locally already, and GNU ld writes nothing for it in an executable (shared objects as output are M4) | `dynamic.bsymbolic` | Bind references to non-weak global functions locally |
+| `--Bsymbolic-non-weak` |  | lld, mold | all | refused: dyn.md D-112: GNU ld does not know it (lld and mold do); use -Bsymbolic-functions, or a --dynamic-list | `dynamic.bsymbolic` | Bind references to non-weak globals locally |
+| `--Bsymbolic-non-weak-functions` |  | lld, mold | all | refused: dyn.md D-112: GNU ld does not know it (lld and mold do); use -Bsymbolic-functions, or a --dynamic-list | `dynamic.bsymbolic` | Bind references to non-weak global functions locally |
 | `-Bno-symbolic` |  | GNU, lld, mold | all | noop: it binds a shared object's references to its own definitions; an executable's are bound locally already, and GNU ld writes nothing for it in an executable (shared objects as output are M4) | `dynamic.bsymbolic` | Undo -Bsymbolic (default) |
 | `-h`, `-soname` | NAME | GNU, lld, mold | all | refused | `dynamic.soname` | Record NAME as DT_SONAME |
 | `-rpath` | DIR | GNU, lld, mold | all | supported | `dynamic.rpath` | Add DIR to the run-time search path |
@@ -213,9 +213,9 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 18 mortar'
 | `--audit` | LIB | GNU | all | refused | `other` | Record LIB as DT_AUDIT |
 | `-P`, `--depaudit` | LIB | GNU | all | refused | `other` | Record LIB as DT_DEPAUDIT |
 | `-Bgroup` |  | GNU | all | refused | `other` | Use group lookup for this object's dependencies |
-| `--dynamic-list-data` |  | GNU, mold | all | refused | `other` | Add the data symbols to the dynamic list |
-| `--dynamic-list-cpp-new` |  | GNU | all | refused | `other` | Add operator new and delete to the dynamic list |
-| `--dynamic-list-cpp-typeinfo` |  | GNU | all | refused | `other` | Add the C++ type information to the dynamic list |
+| `--dynamic-list-data` |  | GNU, mold | all | refused: dyn.md D-112: the references disagree (GNU ld binds functions and NOTYPE symbols, mold changes nothing, lld does not know it); use -Bsymbolic-functions, or a --dynamic-list | `other` | Add the data symbols to the dynamic list |
+| `--dynamic-list-cpp-new` |  | GNU | all | refused: dyn.md D-112: GNU ld only (lld and mold refuse it); list the symbols in a --dynamic-list | `other` | Add operator new and delete to the dynamic list |
+| `--dynamic-list-cpp-typeinfo` |  | GNU | all | refused: dyn.md D-112: GNU ld only (lld and mold refuse it); list the symbols in a --dynamic-list | `other` | Add the C++ type information to the dynamic list |
 | `--allow-shlib-undefined` |  | GNU, lld, mold | all | refused | `dynamic.allow_shlib_undefined` | Accept undefined symbols in shared objects |
 | `--no-allow-shlib-undefined` |  | GNU, lld, mold | all | refused | `dynamic.allow_shlib_undefined` | Report undefined symbols in shared objects |
 | `--spare-dynamic-tags` | COUNT (number) | GNU, mold | all | refused | `other` | Reserve COUNT entries in .dynamic |

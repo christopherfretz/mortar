@@ -84,10 +84,51 @@ const fn zx(text: &'static str) -> Spelling {
 
 /// The reasons some `refused` rows give in their refusal's note
 /// (`spec/cli.md` §4.4), by row name.
-pub(crate) static REFUSED_NOTES: &[(&str, &str)] = &[(
-    "--debug-names",
-    "gdb 16 ignores a .debug_names it did not write; use --gdb-index (spec/synth.md S-G9)",
-)];
+pub(crate) static REFUSED_NOTES: &[(&str, &str)] = &[
+    (
+        "--debug-names",
+        "gdb 16 ignores a .debug_names it did not write; use --gdb-index (spec/synth.md S-G9)",
+    ),
+    // `spec/landed/dyn/WP-110.md` §G.4: the row's text, written by WP-117;
+    // the status reads `partial` once WP-123 joins the first target.
+    ("-shared", SHARED),
+    // `spec/dyn.md` D-112 (`spec/cli.md` §4.2's M4 block): refused by name
+    // in every kind, not planned.
+    ("--Bsymbolic-non-weak", NON_WEAK),
+    ("--Bsymbolic-non-weak-functions", NON_WEAK),
+    ("--dynamic-list-data", DYNAMIC_LIST_DATA),
+    ("--dynamic-list-cpp-new", DYNAMIC_LIST_CPP),
+    ("--dynamic-list-cpp-typeinfo", DYNAMIC_LIST_CPP),
+];
+
+/// The `-shared` row's refusal (`spec/landed/dyn/WP-110.md` §G.4): its
+/// status once shared-object output is joined (WP-123), with what is not
+/// caught and what is refused although correct.
+const SHARED: &str = "shared-object output is not joined to the link until WP-123; then: partial: AArch64 (x86-64 and i386 refused, `feature`, until WP-127 and WP-130; TLS and IFUNC in a shared object until WP-124; version scripts until WP-125). Not caught (with every reference): non-PIC AArch64 code that reaches its own exported data only through a form dyn.md D-117's analysis does not follow (a spilled or reloaded base, a computed index, a 32-bit register, a value passed to a callee, code outside a sized function symbol, hand-written assembly; 3 of 306 measured bound definitions, every object refused for another use). Refused although correct: -fPIC code that forms an address before the start of a static object placed after exported data (`tab - 1`, GCC and Clang AArch64 -O0; dyn.md D-117; remedy -fdata-sections)";
+/// `--Bsymbolic-non-weak` and `--Bsymbolic-non-weak-functions` (D-112).
+const NON_WEAK: &str = "dyn.md D-112: GNU ld does not know it (lld and mold do); use -Bsymbolic-functions, or a --dynamic-list";
+/// `--dynamic-list-data` (D-112).
+const DYNAMIC_LIST_DATA: &str = "dyn.md D-112: the references disagree (GNU ld binds functions and NOTYPE symbols, mold changes nothing, lld does not know it); use -Bsymbolic-functions, or a --dynamic-list";
+/// `--dynamic-list-cpp-new` and `--dynamic-list-cpp-typeinfo` (D-112).
+const DYNAMIC_LIST_CPP: &str = "dyn.md D-112: GNU ld only (lld and mold refuse it); list the symbols in a --dynamic-list";
+
+/// The options whose effect in a `Shared` link a later package implements
+/// (`spec/cli.md` §4.2's M4 block): in a link whose output kind is
+/// `Shared` each is refused by name (`Refused{Option, spelling}`) with
+/// this note, whatever its status; elsewhere its row's status holds.
+pub(crate) static SHARED_LATER: &[(&str, &str)] = &[
+    ("-Bsymbolic", "dyn.md D-112, D-103: -Bsymbolic in a shared object is WP-128's"),
+    ("--dynamic-list", "dyn.md D-112: --dynamic-list in a shared object is WP-128's"),
+    ("--exclude-libs", "dyn.md D-110 item 1: --exclude-libs is WP-128's"),
+    ("-init", "dyn.md D-102: -init in a shared object is WP-128's"),
+    ("-fini", "dyn.md D-102: -fini in a shared object is WP-128's"),
+    ("-z nodelete", "dyn.md D-103: -z nodelete is WP-128's"),
+    ("-z nodlopen", "dyn.md D-103: -z nodlopen is WP-128's"),
+    ("-z initfirst", "dyn.md D-103: -z initfirst is WP-128's"),
+    ("-z interpose", "dyn.md D-103: -z interpose is WP-128's"),
+    ("-z origin", "dyn.md D-103: -z origin is WP-128's"),
+    ("--version-script", "dyn.md D-114: version scripts are WP-125's"),
+];
 
 /// The table.
 #[rustfmt::skip]
@@ -248,8 +289,8 @@ pub(crate) static ROWS: &[Row] = &[
     r(&[g("no-export-dynamic")], Arg::None, "", GLM, &[], Group::Dynamic, Supported, Lands::ExportDynamic(false), "Export only the symbols that need it (default)"),
     r(&[g1("Bsymbolic")], Arg::None, "", GLM, &[], Group::Dynamic, Noop(SYMBOLIC), Lands::Bsymbolic(Some(Bsymbolic::All)), "Bind references to global symbols locally"),
     r(&[g1("Bsymbolic-functions")], Arg::None, "", GLM, &[], Group::Dynamic, Noop(SYMBOLIC), Lands::Bsymbolic(Some(Bsymbolic::Functions)), "Bind references to global functions locally"),
-    r(&[x("Bsymbolic-non-weak")], Arg::None, "", LM, &[], Group::Dynamic, Noop(SYMBOLIC), Lands::Bsymbolic(Some(Bsymbolic::NonWeak)), "Bind references to non-weak globals locally"),
-    r(&[x("Bsymbolic-non-weak-functions")], Arg::None, "", LM, &[], Group::Dynamic, Noop(SYMBOLIC), Lands::Bsymbolic(Some(Bsymbolic::NonWeakFunctions)), "Bind references to non-weak global functions locally"),
+    r(&[x("Bsymbolic-non-weak")], Arg::None, "", LM, &[], Group::Dynamic, Refused, Lands::Bsymbolic(Some(Bsymbolic::NonWeak)), "Bind references to non-weak globals locally"),
+    r(&[x("Bsymbolic-non-weak-functions")], Arg::None, "", LM, &[], Group::Dynamic, Refused, Lands::Bsymbolic(Some(Bsymbolic::NonWeakFunctions)), "Bind references to non-weak global functions locally"),
     r(&[g1("Bno-symbolic")], Arg::None, "", GLM, &[], Group::Dynamic, Noop(SYMBOLIC), Lands::Bsymbolic(None), "Undo -Bsymbolic (default)"),
     r(&[s("h"), g1("soname")], Arg::Required(Values::Any), "NAME", GLM, &[], Group::Dynamic, Refused, Lands::Soname, "Record NAME as DT_SONAME"),
     r(&[g1("rpath")], Arg::Required(Values::Any), "DIR", GLM, &[], Group::Dynamic, Supported, Lands::Rpath, "Add DIR to the run-time search path"),

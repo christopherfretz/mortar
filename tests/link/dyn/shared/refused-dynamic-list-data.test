@@ -1,0 +1,36 @@
+# dyn.md D-112 (the table's `--dynamic-list-data` row), cli.md §4.2 (M4
+# block: refused by name, class `option`, in every kind, not planned):
+# `--dynamic-list-data`, `--dynamic-list-cpp-new` and
+# `--dynamic-list-cpp-typeinfo`. The references disagree: GNU ld accepts
+# all three, mold accepts `--dynamic-list-data` only and lld none
+# (`unknown argument`). mortar refuses each by name with D-112's note.
+# mold's link is not run: the harness's stage 3 reads a reference's line
+# through mortar's option table, which has no such accepted row.
+#@ spec: dyn.md "D-112"
+#@ arch: aarch64 x86_64
+
+cc -O1 -fPIC lib.c -o lib.o
+link(bfd) gcc -shared lib.o -Wl,--dynamic-list-data -o data.so
+link(bfd) gcc -shared lib.o -Wl,--dynamic-list-cpp-new -o new.so
+link(bfd) gcc -shared lib.o -Wl,--dynamic-list-cpp-typeinfo -o typeinfo.so
+link(lld) gcc -shared lib.o -Wl,--dynamic-list-data -o data.so
+  exit: fail
+  diag(lld): unknown argument '--dynamic-list-data'
+link(mortar) gcc -shared lib.o -Wl,--dynamic-list-data -o data.so
+  exit: fail
+  diag(mortar): unsupported option: --dynamic-list-data
+  diag(mortar): dyn.md D-112: the references disagree
+link(mortar) gcc -shared lib.o -Wl,--dynamic-list-cpp-new -o new.so
+  exit: fail
+  diag(mortar): unsupported option: --dynamic-list-cpp-new
+  diag(mortar): dyn.md D-112: GNU ld only
+link(mortar) gcc -shared lib.o -Wl,--dynamic-list-cpp-typeinfo -o typeinfo.so
+  exit: fail
+  diag(mortar): unsupported option: --dynamic-list-cpp-typeinfo
+  diag(mortar): dyn.md D-112: GNU ld only
+check(bfd) readelf --dyn-syms -W data.so
+  has: lib_value$
+
+#--- lib.c
+int lib_value = 41;
+int lib_get(void) { return lib_value + 1; }

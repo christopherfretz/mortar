@@ -1,0 +1,39 @@
+# dyn.md D-112 (the table's last row), cli.md §4.2 (M4 block: refused by
+# name, class `option`, in every kind, not planned): `--Bsymbolic-non-weak`
+# and `--Bsymbolic-non-weak-functions`. GNU ld does not know them; lld and
+# mold accept them, in a shared object and in an executable. mortar refuses
+# them by name with D-112's note (their `noop` status of WP-027e became
+# `refused` in WP-117).
+#@ spec: dyn.md "D-112"
+#@ arch: aarch64 x86_64
+
+cc -O1 -fPIC lib.c -o lib.o
+cc -O1 -fPIE main.c -o main.o
+link(lld,mold) gcc -shared lib.o -Wl,--Bsymbolic-non-weak -o nw.so
+link(lld,mold) gcc -shared lib.o -Wl,--Bsymbolic-non-weak-functions -o nwf.so
+link(lld,mold,mortar) gcc -pie main.o -o plain
+link(lld,mold) gcc -pie main.o -Wl,--Bsymbolic-non-weak -o nw
+link(mortar) gcc -pie main.o -Wl,--Bsymbolic-non-weak -o nw
+  exit: fail
+  diag(mortar): unsupported option: --Bsymbolic-non-weak
+  diag(mortar): dyn.md D-112: GNU ld does not know it
+link(mortar) gcc -pie main.o -Wl,--Bsymbolic-non-weak-functions -o nwf
+  exit: fail
+  diag(mortar): unsupported option: --Bsymbolic-non-weak-functions
+  diag(mortar): dyn.md D-112: GNU ld does not know it
+link(mortar) gcc -shared lib.o -Wl,--Bsymbolic-non-weak -o nw.so
+  exit: fail
+  diag(mortar): unsupported option: --Bsymbolic-non-weak
+run(lld,mold,mortar) plain
+  stdout: 42
+
+#--- lib.c
+int lib_value = 41;
+int lib_get(void) { return lib_value + 1; }
+
+#--- main.c
+#include <stdio.h>
+int main(void) {
+  printf("%d\n", 42);
+  return 0;
+}

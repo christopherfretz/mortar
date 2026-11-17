@@ -67,8 +67,10 @@ impl Use {
             Diagnostic::refused(RefusalClass::OptionValue, format!("{}={value}", self.spelling))
                 .note(note)
         } else {
+            // A row that is not `refused` is here only for a `Shared` link
+            // (`Parsed::refused_uses`): its note names the later package.
             let d = Diagnostic::refused(RefusalClass::Option, self.spelling.clone());
-            match self.row().refused_note() {
+            match self.row().refused_note().or_else(|| self.row().shared_later()) {
                 Some(note) => d.note(note),
                 None => d,
             }
@@ -89,6 +91,11 @@ impl Parsed {
     /// value, in argument order. A use of a [`Lands::last_wins`] field
     /// that a later use of the same field overrides is not counted: the
     /// plan is the one the line would give without it.
+    ///
+    /// In a link whose output kind is `Shared`, the first use of each row
+    /// of `rows::SHARED_LATER` is refused too, whatever its status
+    /// (`spec/cli.md` §4.2's M4 block: an option whose `Shared` effect a
+    /// later package implements).
     #[must_use]
     pub fn refused_uses(&self) -> Vec<&Use> {
         let mut seen = vec![false; rows().len()];
@@ -104,7 +111,13 @@ impl Parsed {
             if lands.last_wins() && last.get(lands.field()) != Some(&i) {
                 continue;
             }
+            let shared_later =
+                self.plan.kind == OutputKind::Shared && use_.row().shared_later().is_some();
             match use_.row().status {
+                _ if shared_later && !seen[use_.row] => {
+                    seen[use_.row] = true;
+                    out.push(use_);
+                }
                 Status::Refused if !seen[use_.row] => {
                     seen[use_.row] = true;
                     out.push(use_);
