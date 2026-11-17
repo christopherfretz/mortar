@@ -670,6 +670,57 @@ impl<'a, 'b> Engine<'a, 'b> {
     /// the input section holds. `None` under a foreign map (GNU ld and lld
     /// give a kept record's own place, §10.4), for any other section, or
     /// when the output has no `.eh_frame`.
+    /// The output's allocated `.eh_frame`: its address and size.
+    pub(crate) fn output_eh_frame(&self) -> Option<(u64, u64)> {
+        self.image
+            .sections
+            .iter()
+            .find(|x| x.name == ".eh_frame" && x.alloc())
+            .map(|x| (x.shdr.sh_addr, x.shdr.sh_size))
+    }
+
+    /// `synth.md` S-50's value, under mortar's map, of offset `r` of input
+    /// `.eh_frame` `sec` of object `oi`, for a symbol (WP-143b):
+    /// rule 1 (`r = 0`: the output's start); rule 2 (`r` in a kept record:
+    /// its piece); rule 3, and rule 4 for a symbol (the value of the
+    /// record it lies in): the first kept record after `r` in output
+    /// order — the pieces of `sec` after `r`, then those of the later
+    /// input `.eh_frame` sections in `SectionId` order (S-46: object
+    /// order, then section index) — else the final terminator, the
+    /// output's last 4 bytes. `None` under a foreign map or without an
+    /// output `.eh_frame`.
+    pub(crate) fn eh_frame_value(&self, oi: usize, sec: usize, r: u64) -> Option<u64> {
+        if self.format != Format::Mortar {
+            return None;
+        }
+        let (addr, size) = self.output_eh_frame()?;
+        if r == 0 {
+            return Some(addr);
+        }
+        let pieces = |o: &Obj<'_>, k: usize| match &o.secs[k].place {
+            Place::Pieces(ps) => ps.clone(),
+            _ => Vec::new(),
+        };
+        let own = pieces(&self.objs[oi], sec);
+        if let Some(p) = own.iter().find(|p| p.input_offset <= r && r < p.input_offset + p.size) {
+            return Some(p.addr + (r - p.input_offset));
+        }
+        if let Some(p) = own.iter().filter(|p| p.input_offset >= r).min_by_key(|p| p.input_offset) {
+            return Some(p.addr);
+        }
+        for (i, o) in self.objs.iter().enumerate().skip(oi) {
+            for k in 0..o.secs.len() {
+                if (i == oi && k <= sec) || !o.secs[k].is_eh_frame(o.elf.machine()) {
+                    continue;
+                }
+                if let Some(p) = pieces(o, k).iter().min_by_key(|p| p.input_offset) {
+                    return Some(p.addr);
+                }
+            }
+        }
+        Some(addr + size.saturating_sub(4))
+    }
+
     pub(crate) fn eh_frame_start(&self, oi: usize, sec: usize) -> Option<u64> {
         if self.format != Format::Mortar {
             return None;
@@ -890,6 +941,16 @@ impl<'a, 'b> Engine<'a, 'b> {
             Place::Merged => Target::Merge { oi, sec, value, section_sym },
             Place::Rewritten => Target::Skip(Reason::EhFrame),
             Place::Ambiguous => Target::Skip(Reason::SectionNotLocatable),
+            // An input `.eh_frame` and no output one under mortar's map
+            // (synth.md S-48a: records all dead, no terminator, no empty
+            // input): nothing to refer to (WP-143b).
+            Place::Absent
+                if s.is_eh_frame(o.elf.machine())
+                    && self.format == Format::Mortar
+                    && self.output_eh_frame().is_none() =>
+            {
+                Target::Discarded(s.name.clone())
+            }
             Place::Absent if s.is_eh_frame(o.elf.machine()) => Target::Skip(Reason::EhFrame),
             Place::Absent if s.empty_unrecorded() => Target::Empty(s.name.clone()),
             Place::Absent | Place::Discarded => Target::Discarded(s.name.clone()),
@@ -1203,7 +1264,13 @@ impl<'a, 'b> Engine<'a, 'b> {
             };
             let k = k.0 as usize;
             let s = self.objs[doi].secs.get(k)?;
-            if !matches!(s.place, Place::Absent | Place::Discarded) || s.empty_unrecorded() {
+            // An input `.eh_frame` is rebuilt, never placed: while the
+            // output has an `.eh_frame`, its labels have S-50's values
+            // (synth.md S-48a, S-50; WP-143b), not "not in the output".
+            if !matches!(s.place, Place::Absent | Place::Discarded)
+                || s.empty_unrecorded()
+                || (s.is_eh_frame(self.objs[doi].elf.machine()) && self.output_eh_frame().is_some())
+            {
                 return None;
             }
             first.get_or_insert((doi, di, k));
