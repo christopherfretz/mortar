@@ -11,7 +11,6 @@
 # a library bound to its own `g` would print 10).
 #@ spec: dyn.md "D-117"
 #@ arch: aarch64
-#@ xfail(mortar): M4: WP-123 (the D-117 analysis joined to the -shared link of WP-117)
 
 cc -O2 -fPIE gap2.c -o gap2-pie.o
 cc -O2 -fPIC gap2.c -o gap2-pic.o
