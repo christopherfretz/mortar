@@ -102,18 +102,30 @@ fn mutants() -> Vec<(&'static str, Box<dyn Fn(&mut Vec<String>)>, bool)> {
     vec![
         ("drop --build-id", Box::new(|w| drop_word(w, "--build-id")), true),
         ("drop -z execstack", Box::new(|w| drop_z(w, "execstack")), true),
-        ("change --build-id to --no-build-id", Box::new(|w| {
-            drop_word(w, "--build-id");
-            add(w, &["--no-build-id"]);
-        }), true),
-        ("change --build-id to --build-id=sha256", Box::new(|w| {
-            drop_word(w, "--build-id");
-            add(w, &["--build-id=sha256"]);
-        }), true),
-        ("change -z execstack to -z noexecstack", Box::new(|w| {
-            drop_z(w, "execstack");
-            add(w, &["-z", "noexecstack"]);
-        }), true),
+        (
+            "change --build-id to --no-build-id",
+            Box::new(|w| {
+                drop_word(w, "--build-id");
+                add(w, &["--no-build-id"]);
+            }),
+            true,
+        ),
+        (
+            "change --build-id to --build-id=sha256",
+            Box::new(|w| {
+                drop_word(w, "--build-id");
+                add(w, &["--build-id=sha256"]);
+            }),
+            true,
+        ),
+        (
+            "change -z execstack to -z noexecstack",
+            Box::new(|w| {
+                drop_z(w, "execstack");
+                add(w, &["-z", "noexecstack"]);
+            }),
+            true,
+        ),
         ("add --gdb-index", Box::new(|w| add(w, &["--gdb-index"])), false),
         ("add --strip-all", Box::new(|w| add(w, &["--strip-all"])), false),
         ("add --strip-debug", Box::new(|w| add(w, &["--strip-debug"])), false),
@@ -129,10 +141,14 @@ fn mutants() -> Vec<(&'static str, Box<dyn Fn(&mut Vec<String>)>, bool)> {
         ("add -pie", Box::new(|w| add(w, &["-pie"])), false),
         ("add -z now -z relro", Box::new(|w| add(w, &["-z", "now", "-z", "relro"])), false),
         ("add --hash-style=gnu", Box::new(|w| add(w, &["--hash-style=gnu"])), false),
-        ("change max-page-size", Box::new(|w| {
-            drop_z(w, "max-page-size=4096");
-            add(w, &["-z", "max-page-size=65536"]);
-        }), false),
+        (
+            "change max-page-size",
+            Box::new(|w| {
+                drop_z(w, "max-page-size=4096");
+                add(w, &["-z", "max-page-size=65536"]);
+            }),
+            false,
+        ),
         ("drop -static", Box::new(|w| drop_word(w, "-static")), false),
     ]
 }
