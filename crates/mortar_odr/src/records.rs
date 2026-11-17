@@ -110,8 +110,14 @@ pub struct Switches {
     /// O-32 differences reported as warnings (`--odr=strict`), not only
     /// counted.
     pub system_std_reported: bool,
-    /// Unanchored `INLINED_ONLY` rows are compared (O-41, `strict`).
+    /// Unanchored `INLINED_ONLY` rows, and named kind 2 rows whose file
+    /// defines no symbol of their name, are compared (O-15, O-41,
+    /// `strict`).
     pub inlined_only: bool,
+    /// `PARTIAL` kind 2 rows are compared (O-15, `strict`): the record
+    /// checks run there only; O-23's opt-in check sets them aside below
+    /// it (WP-151).
+    pub partial: bool,
     /// The keeper's kind 2 row of each symbol is gathered (O-24 (a),
     /// O-50's table): [`Dynamic::keepers`].
     pub keepers: bool,
@@ -125,6 +131,10 @@ pub struct Switches {
     /// O-50's `=full` table: one kind 3 row per type of the live units is
     /// gathered ([`Dynamic::types`]).
     pub types: bool,
+    /// The units' `std` per file is gathered for W4's note
+    /// ([`Dynamic::stds`]; §8.1, WP-151). It reads containers only in a
+    /// link that reads them for a record check already.
+    pub stds: bool,
 }
 
 impl Switches {
@@ -162,6 +172,9 @@ pub struct Dynamic {
     /// encoding) of the live units, the first row in (file, unit, row)
     /// order, sorted by key (O-50's `=full`).
     pub types: Vec<TypeEntry>,
+    /// With [`Switches::stds`]: per live file with a container whose units
+    /// that carry `std` all agree, that value; sorted by file (W4's note).
+    pub stds: Vec<(FileId, Vec<u8>)>,
 }
 
 /// A type of the live units, for O-50's `=full` table: the first kind 3
@@ -204,9 +217,16 @@ pub struct Counts {
     pub rows: [u64; 4],
     /// Distinct `odr.scheme` values (a unit without one counts as none).
     pub schemes: u64,
-    /// Unit pairs whose kind 2 and 3 rows are never compared: different
-    /// schemes, or a unit without a scheme (O-11, X13).
+    /// Unit pairs whose definition hashes (kind 2's and kind 3's `hash`)
+    /// are never compared: different schemes, or a unit without a scheme
+    /// (O-11, X13).
     pub pairs_not_compared: u64,
+    /// Distinct layout schemes: `odr.layout-scheme`, or a unit's
+    /// `odr.scheme` without it (O-11, WP-151).
+    pub layout_schemes: u64,
+    /// Unit pairs whose kind 3 layouts are never compared: different
+    /// layout schemes, or a unit without one.
+    pub layout_pairs_not_compared: u64,
     /// Kind 3 groups whose shapes were compared across schemes (O-11's
     /// strict exception).
     pub cross_scheme: u64,
@@ -217,7 +237,9 @@ pub struct Counts {
     /// O-32's differences.
     pub system_std: u64,
     /// Rows set aside: kind 2 and 3 rows of C units (O-33, O-14), rows of
-    /// one entity that contradict each other in one unit.
+    /// one entity that contradict each other in one unit, and archive
+    /// members' rows that O-23 does not compare below strict because a
+    /// row is `PARTIAL` (O-15).
     pub ignored: u64,
     /// Container bytes read.
     pub bytes: u64,
@@ -318,7 +340,12 @@ pub(crate) struct Info<'l> {
     file: FileId,
     pub(crate) lang_c: bool,
     pub(crate) std: Option<&'l [u8]>,
+    /// `odr.scheme`: the definition serialization (kind 2's and kind 3's
+    /// `hash`; O-11).
     pub(crate) scheme: Option<&'l [u8]>,
+    /// The layout serialization (kind 3's `layout`, `size`, `align` and
+    /// flags): `odr.layout-scheme`, or `odr.scheme` without it (O-11).
+    pub(crate) layout_scheme: Option<&'l [u8]>,
 }
 
 /// A row that takes part in a comparison.
@@ -383,6 +410,7 @@ fn archives<'s: 'l, 'l>(
     counts.archive_compared = c.archive_compared;
     counts.system_std += c.system_std;
     counts.pairs_not_compared += c.pairs_not_compared;
+    counts.ignored += c.ignored;
     found
 }
 
@@ -451,9 +479,9 @@ pub fn check(
         }
     }
     counts.units = units.len() as u64;
-    let (schemes, pairs) = schemes(&info);
-    counts.schemes = schemes;
-    counts.pairs_not_compared = pairs;
+    (counts.schemes, counts.pairs_not_compared) = schemes(info.iter().map(|i| i.scheme));
+    (counts.layout_schemes, counts.layout_pairs_not_compared) =
+        schemes(info.iter().map(|i| i.layout_scheme));
 
     let cx = Cx { inputs, resolution, loaded: &loaded, units: &units, info: &info, switches };
 
@@ -538,23 +566,26 @@ pub(crate) fn load<'s>(
 }
 
 pub(crate) fn info_of<'l>(at: usize, file: FileId, u: &Unit<'l>) -> Info<'l> {
-    let value = |name: &[u8]| u.summary_value(name).map(|(v, _)| v);
+    let value = |name: &[u8]| u.summary_value(name).map(|(v, _)| v).filter(|v| !v.is_empty());
+    let scheme = value(b"odr.scheme");
     Info {
         at,
         file,
         lang_c: value(b"lang") == Some(b"c"),
-        std: value(b"std"),
-        scheme: value(b"odr.scheme").filter(|s| !s.is_empty()),
+        std: u.summary_value(b"std").map(|(v, _)| v),
+        scheme,
+        layout_scheme: value(b"odr.layout-scheme").or(scheme),
     }
 }
 
 /// (name, value, file, unit, row) of an ENFORCE kind-1 row.
 type EnforceRow<'a> = (&'a [u8], &'a [u8], FileId, u32, u32);
 
-/// The number of distinct schemes, and the unit pairs never compared
-/// because their schemes differ or one has none (O-11).
-fn schemes(info: &[Info<'_>]) -> (u64, u64) {
-    let mut sorted: Vec<Option<&[u8]>> = info.iter().map(|i| i.scheme).collect();
+/// The number of distinct schemes of one kind (the units' `odr.scheme`,
+/// or their layout schemes), and the unit pairs never compared because
+/// their schemes differ or one has none (O-11).
+fn schemes<'l>(of: impl Iterator<Item = Option<&'l [u8]>>) -> (u64, u64) {
+    let mut sorted: Vec<Option<&[u8]>> = of.collect();
     sorted.sort_unstable();
     let s = &sorted;
     let units = s.len() as u64;
@@ -706,6 +737,18 @@ pub(crate) fn anchor<'s>(syms: &[Sym<'s>], key: u64, defined_only: bool) -> Anch
     found.map_or(Anchor::Missing, |(n, i)| Anchor::Name(n, i))
 }
 
+/// The file's defined global of `name` (O-15's named rows, WP-151): the
+/// first in symbol order when the file has several of that name.
+pub(crate) fn defined(syms: &[Sym<'_>], name: &[u8]) -> Option<SymbolIndex> {
+    let key = fnv1a64(name);
+    let start = syms.partition_point(|s| s.key < key);
+    syms[start..]
+        .iter()
+        .take_while(|s| s.key == key)
+        .find(|s| s.defined && s.name == name)
+        .map(|s| s.index)
+}
+
 /// What a group's comparison gives: a diagnostic, or only counts (an
 /// O-32 difference that is not reported, contradictory rows).
 struct Found {
@@ -780,7 +823,17 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
         if (s.kind2 || s.internal || s.keepers || s.archives) && !info.lang_c {
             for (i, r) in unit.definitions().iter().enumerate() {
                 let (name, sym) = if r.name != 0 {
-                    (unit.string(r.name), None)
+                    // O-15 (WP-151): a named row whose file defines a
+                    // symbol of its name is an anchored row; one whose
+                    // file defines none describes a definition without a
+                    // symbol, compared under strict only (as
+                    // `INLINED_ONLY`); counted by `skipped` otherwise.
+                    let name = unit.string(r.name);
+                    match defined(syms, name) {
+                        Some(i) => (name, Some(i)),
+                        None if s.inlined_only => (name, None),
+                        None => continue,
+                    }
                 } else {
                     match anchor(syms, r.key, true) {
                         Anchor::Name(n, i) => (n, Some(i)),
@@ -849,7 +902,13 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
         if info.lang_c {
             c.ignored += (unit.definitions().len() + unit.types().len()) as u64;
         } else if s.kind2 || s.internal {
-            for r in unit.definitions().iter().filter(|r| r.name == 0) {
+            for r in unit.definitions().iter() {
+                if r.name != 0 {
+                    if !s.inlined_only && defined(syms, unit.string(r.name)).is_none() {
+                        c.unanchored += 1;
+                    }
+                    continue;
+                }
                 match anchor(syms, r.key, true) {
                     Anchor::Name(..) => {}
                     Anchor::Missing if s.inlined_only && r.flags & flags::INLINED_ONLY != 0 => {}
@@ -982,6 +1041,22 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
         out
     }
 
+    /// Per file, the `std` its units agree on (W4's note, §8.1): files
+    /// whose units carry none, or different ones, are left out.
+    fn stds(&self) -> Vec<(FileId, Vec<u8>)> {
+        let mut out: Vec<(FileId, Vec<u8>)> = Vec::new();
+        for units in self.info.chunk_by(|x, y| x.file == y.file) {
+            let mut stds = units.iter().filter_map(|i| i.std);
+            if let Some(first) = stds.next()
+                && stds.all(|s| s == first)
+            {
+                out.push((units[0].file, first.to_vec()));
+            }
+        }
+        out.sort_by_key(|(f, _)| *f);
+        out
+    }
+
     /// The dynamic side's rows (O-24, O-50): each kind 2 group's keeper
     /// row, and the sized kind 5 declarations of variables.
     fn dynamic(&self, entries: &[Entry<'_>], groups: &[(usize, usize)]) -> Dynamic {
@@ -1000,6 +1075,9 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
         }
         if self.switches.types {
             out.types = self.type_entries(entries, groups);
+        }
+        if self.switches.stds {
+            out.stds = self.stds();
         }
         if self.switches.declared {
             for e in entries.iter().filter(|e| e.kind == 5) {
@@ -1067,17 +1145,21 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
         }
     }
 
-    /// Splits `rows` by scheme (O-11): rows of units without a scheme are
-    /// never compared.
-    fn by_scheme(&self, rows: &[Entry<'l>]) -> Vec<Vec<Entry<'l>>> {
+    /// Splits `rows` by scheme (O-11), the definition scheme
+    /// (`odr.scheme`) or, with `layout`, the layout scheme: rows of units
+    /// without one are never compared.
+    fn by_scheme(&self, rows: &[Entry<'l>], layout: Layout) -> Vec<Vec<Entry<'l>>> {
+        let scheme = |e: &Entry<'_>| {
+            let i = &self.info[e.unit as usize];
+            if layout == Layout::Yes { i.layout_scheme } else { i.scheme }
+        };
         let mut sorted: Vec<Entry<'l>> =
-            rows.iter().copied().filter(|e| self.info[e.unit as usize].scheme.is_some()).collect();
-        sorted.sort_by_key(|e| (self.info[e.unit as usize].scheme, self.file_of(e), e.unit));
+            rows.iter().copied().filter(|e| scheme(e).is_some()).collect();
+        sorted.sort_by_key(|e| (scheme(e), self.file_of(e), e.unit));
         let mut out: Vec<Vec<Entry<'l>>> = Vec::new();
         for e in sorted {
-            let scheme = self.info[e.unit as usize].scheme;
             match out.last_mut() {
-                Some(last) if self.info[last[0].unit as usize].scheme == scheme => last.push(e),
+                Some(last) if scheme(&last[0]) == scheme(&e) => last.push(e),
                 _ => out.push(vec![e]),
             }
         }
@@ -1159,7 +1241,7 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
         if !self.switches.kind2 {
             return;
         }
-        for rows in self.by_scheme(rows) {
+        for rows in self.by_scheme(rows, Layout::No) {
             let flag = |e: &Entry<'_>, f: u16| def(e).is_some_and(|r| r.flags & f != 0);
             let spec = rows.iter().any(|e| flag(e, flags::EXPLICIT_SPEC));
             let implicit = rows.iter().any(|e| flag(e, flags::IMPLICIT_INST));
@@ -1211,7 +1293,7 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
                     which(&classes[1]),
                 ));
             }
-            let differ = self.summary_notes(&classes[0][0], &classes[1][0]);
+            let differ = self.summary_notes(&classes[0][0], &classes[1][0], false);
             let none_differ = differ.is_empty();
             notes.extend(differ);
             if none_differ && !k13 && !system {
@@ -1230,10 +1312,11 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
         }
     }
 
-    /// The kind 3 comparison (O-17, O-18, O-32): within one scheme the
-    /// layout (with size, alignment and the shape flags) and the
-    /// definition hash; across schemes, under O-11's strict exception,
-    /// size, alignment and the shape flags only.
+    /// The kind 3 comparison (O-17, O-18, O-32): within one layout scheme
+    /// the layout (with size, alignment and the shape flags); within one
+    /// definition scheme (`odr.scheme`) the definition hash; across layout
+    /// schemes, under O-11's strict exception, size, alignment and the
+    /// shape flags only (O-11 as ruled 2026-11-17, WP-151).
     #[allow(clippy::too_many_lines)] // O-17, O-18, O-11's exception, read top to bottom
     fn kind3(&self, rows: &[Entry<'l>], out: &mut Vec<Found>) {
         const SHAPE: u16 =
@@ -1242,15 +1325,17 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
         let shape = |e: &Entry<'_>| ty(e).map(|r| (r.size, r.align, r.flags & SHAPE));
         let flag = |e: &Entry<'_>, f: u16| ty(e).is_some_and(|r| r.flags & f != 0);
         let mut found: Option<(Vec<Class<'l>>, Compared)> = None;
-        for rows in &self.by_scheme(rows) {
-            if self.switches.kind3_layout {
+        if self.switches.kind3_layout {
+            for rows in &self.by_scheme(rows, Layout::Yes) {
                 let c = self.classes(rows, None, |e| (ty(e).map(|r| r.layout), shape(e)));
                 if c.len() >= 2 {
                     found = Some((c, Compared::Layout));
                     break;
                 }
             }
-            if self.switches.kind3_definition {
+        }
+        if found.is_none() && self.switches.kind3_definition {
+            for rows in &self.by_scheme(rows, Layout::No) {
                 // O-17: hashes compared only when both are non-zero.
                 let hashed: Vec<Entry<'l>> = rows
                     .iter()
@@ -1265,8 +1350,9 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
             }
         }
         if found.is_none() && self.switches.kind3_shape {
-            let first = self.info[rows[0].unit as usize].scheme;
-            if rows.iter().any(|e| self.info[e.unit as usize].scheme != first) {
+            // O-11's exception is keyed on the layout scheme.
+            let first = self.info[rows[0].unit as usize].layout_scheme;
+            if rows.iter().any(|e| self.info[e.unit as usize].layout_scheme != first) {
                 out.push(Found::count(Counts { cross_scheme: 1, ..Counts::default() }));
                 let c = self.classes(rows, None, shape);
                 if c.len() >= 2 {
@@ -1305,8 +1391,9 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
             if compared == Compared::Layout { self.detail_note(a, b, &mut read) } else { None };
         if compared == Compared::Shape {
             notes.push(
-                "the translation units use different odr.scheme values: compared on size, \
-                 alignment and kind only (spec/odr.md O-11, strict)"
+                "the translation units use different layout schemes (odr.layout-scheme, or \
+                 odr.scheme without it): compared on size, alignment and kind only \
+                 (spec/odr.md O-11, strict)"
                     .to_owned(),
             );
         }
@@ -1320,9 +1407,20 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
                     self.file_text(self.file_of(b)),
                     shape_text(kinds(&rb)),
                 ));
-                notes.extend(detail);
+                notes.extend(detail.into_iter().flatten());
             } else if let Some(detail) = detail {
-                notes.push(detail);
+                notes.extend(detail);
+            } else if layout
+                && (ra.size, ra.align) == (rb.size, rb.align)
+                && ra.flags & rb.flags & flags::TYPE_ENUM != 0
+            {
+                // WP-151: an enumeration's layout is its underlying type
+                // and enumerators (O-18).
+                notes.push(format!(
+                    "the enumerators or the underlying type differ, with the same size {} and \
+                     alignment {}",
+                    ra.size, ra.align
+                ));
             } else if layout && (ra.size, ra.align) == (rb.size, rb.align) {
                 notes.push(format!(
                     "the layouts differ (members, offsets, bases or vtable) with the same size \
@@ -1339,15 +1437,23 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
                     rb.size,
                     rb.align,
                 ));
-            } else {
+            } else if self.info[a.unit as usize].layout_scheme
+                == self.info[b.unit as usize].layout_scheme
+            {
                 notes.push(
                     "the layouts agree; the definitions differ (members, initializers or \
                      member declarations)"
                         .to_owned(),
                 );
+            } else {
+                // WP-151: layouts of two layout schemes are not compared.
+                notes.push(
+                    "the definitions differ (members, initializers or member declarations)"
+                        .to_owned(),
+                );
             }
         }
-        notes.extend(self.summary_notes(a, b));
+        notes.extend(self.summary_notes(a, b, false));
         let kind = Kind::OdrTypeMismatch { name: Self::display_name(&classes[0]) };
         let mut found = Found::report(self.diagnostic(kind, severity, &classes, None, notes));
         found.counts.system_std = u64::from(system);
@@ -1360,7 +1466,7 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
     /// `b` (O-19): `None` unless both rows have `details` and both
     /// entries read. Reads only these two entries; one that does not read
     /// goes to `read.malformed`.
-    fn detail_note(&self, a: &Entry<'l>, b: &Entry<'l>, read: &mut Found) -> Option<String> {
+    fn detail_note(&self, a: &Entry<'l>, b: &Entry<'l>, read: &mut Found) -> Option<Vec<String>> {
         let (ra, rb) = (self.type_row(a)?, self.type_row(b)?);
         if ra.details == NO_DETAILS || rb.details == NO_DETAILS {
             return None;
@@ -1382,6 +1488,7 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
         Some(details::first_difference(
             &Side { unit: self.units[a.unit as usize], entry: ea, file: &fa },
             &Side { unit: self.units[b.unit as usize], entry: eb, file: &fb },
+            ra.flags & rb.flags & flags::TYPE_ENUM != 0,
         ))
     }
 
@@ -1531,7 +1638,10 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
                 );
             }
         }
-        notes.extend(self.summary_notes(first, second));
+        // WP-151: a C/C++ pair (compared by size) notes only the ABI keys
+        // both units enforce; `lang`, `std` and the C++-only keys differ
+        // between any C and C++ unit, and no rule judges them there.
+        notes.extend(self.summary_notes(first, second, by_size));
         let kind = Kind::OdrDeclarationMismatch { name: Self::display_name(rows) };
         out.push(Found::report(self.diagnostic(kind, severity, &classes, keeper, notes)));
     }
@@ -1546,8 +1656,9 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
     }
 
     /// §9.1's notes from kind 1: every key whose value differs between the
-    /// units of `a` and `b` (not `producer` or `source`).
-    fn summary_notes(&self, a: &Entry<'_>, b: &Entry<'_>) -> Vec<String> {
+    /// units of `a` and `b` (not `producer` or `source`); with
+    /// `enforced`, only the keys both units carry with `ENFORCE` (O-30).
+    fn summary_notes(&self, a: &Entry<'_>, b: &Entry<'_>, enforced: bool) -> Vec<String> {
         let (ua, ub) = (self.units[a.unit as usize], self.units[b.unit as usize]);
         let fa = self.file_text(self.file_of(a));
         let fb = self.file_text(self.file_of(b));
@@ -1560,8 +1671,14 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
             if NOT_NOTED.contains(&name) {
                 continue;
             }
-            let va = ua.summary_value(name).map(|(v, _)| v);
-            let vb = ub.summary_value(name).map(|(v, _)| v);
+            let (ra, rb) = (ua.summary_value(name), ub.summary_value(name));
+            let both_enforced =
+                |r: Option<(&[u8], u32)>| r.is_some_and(|(_, f)| f & flags::ENFORCE != 0);
+            if enforced && !(both_enforced(ra) && both_enforced(rb)) {
+                continue;
+            }
+            let va = ra.map(|(v, _)| v);
+            let vb = rb.map(|(v, _)| v);
             if va != vb {
                 let text = |v: Option<&[u8]>| {
                     v.map_or_else(
@@ -1630,8 +1747,18 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
             Severity::Warning => Diagnostic::warning(kind),
         };
         for (c, class) in classes.iter().enumerate() {
-            let relation =
-                if c == 0 { Relation::DefinedIn } else { Relation::DefinedDifferentlyIn };
+            // §9.1 (WP-151): a kind 5 row that is no definition is a
+            // declaration, and its place line says so (K14).
+            let relation = |e: &Entry<'_>| {
+                let declared = e.kind == 5
+                    && self.declaration(e).is_some_and(|r| r.flags & flags::DECL_DEFINITION == 0);
+                match (c == 0, declared) {
+                    (true, false) => Relation::DefinedIn,
+                    (false, false) => Relation::DefinedDifferentlyIn,
+                    (true, true) => Relation::DeclaredIn,
+                    (false, true) => Relation::DeclaredDifferentlyIn,
+                }
+            };
             let mut files: Vec<&Entry<'_>> = Vec::new();
             for e in class {
                 if files.last().is_none_or(|l| self.file_of(l) != self.file_of(e)) {
@@ -1639,7 +1766,7 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
                 }
             }
             for e in files.iter().take(FILES_A_CLASS) {
-                d = d.with(relation, self.place(e, keeper));
+                d = d.with(relation(e), self.place(e, keeper));
             }
             if files.len() > FILES_A_CLASS {
                 let rest = files.len() - FILES_A_CLASS;
@@ -1910,6 +2037,15 @@ enum Compared {
 }
 
 /// The shape flags of a kind 3 row in words.
+/// Which scheme [`Cx::by_scheme`] splits by (O-11).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Layout {
+    /// The layout scheme: kind 3's `layout`, `size`, `align`, flags.
+    Yes,
+    /// `odr.scheme`: a definition `hash`.
+    No,
+}
+
 fn shape_text(f: u16) -> String {
     let mut words = Vec::new();
     if f & flags::TYPE_ENUM != 0 {

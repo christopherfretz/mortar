@@ -292,3 +292,53 @@ fn truncations_and_bit_flips() {
         }
     }
 }
+
+/// An item of `flags` with `width`, for [`details::nesting`].
+fn raw(flags: u32, name: u32, ty: u32, width: u32) -> details::Item {
+    details::Item { name, ty, value: 0, width, flags }
+}
+
+// spec: odr.md O-19 (`width` of an unnamed class-type member, ruling of
+// 2026-11-17; WP-151): the items it counts are nested in it, through
+// every depth; 0 counts nothing; a bit-field, a named member or another
+// kind is never an unnamed member; a count past its parent's items or
+// past the entry ends there.
+#[test]
+fn nesting_by_width() {
+    let unnamed = |n| raw(item::MEMBER, 0, 0, n);
+    let named = raw(item::MEMBER, 4, 8, 0);
+    assert_eq!(details::nested_count(&unnamed(3)), 3);
+    assert_eq!(details::nested_count(&raw(item::MEMBER | item::BITFIELD, 0, 0, 3)), 0);
+    assert_eq!(details::nested_count(&raw(item::MEMBER, 4, 0, 3)), 0);
+    assert_eq!(details::nested_count(&raw(item::MEMBER, 0, 8, 3)), 0);
+    assert_eq!(details::nested_count(&raw(item::SLOT, 0, 0, 3)), 0);
+    let none: Vec<usize> = Vec::new();
+    // { a; union { b; struct { c; } } ; d }: widths 3 and 1.
+    let items = [named, unnamed(3), named, unnamed(1), named, named];
+    let got = details::nesting(&items);
+    assert_eq!(got, [none.clone(), none.clone(), vec![1], vec![1], vec![3, 1], none.clone()]);
+    // 0: as before, every following item is the class's own.
+    assert!(details::nesting(&[unnamed(0), named, named]).iter().all(Vec::is_empty));
+    // Counts past the parent's items and past the entry.
+    let got = details::nesting(&[unnamed(1), unnamed(5), named, named]);
+    assert_eq!(got, [none.clone(), vec![0], none.clone(), none.clone()]);
+    let got = details::nesting(&[named, unnamed(u32::MAX), named]);
+    assert_eq!(got, [none.clone(), none, vec![1]]);
+}
+
+// spec: odr.md O-19 (an enumerator's value is sign-extended when the
+// underlying type is signed; WP-151 prints it signed)
+#[test]
+fn signed_underlying_types() {
+    for t in ["a", "s", "i", "l", "x", "n"] {
+        assert_eq!(details::signed_underlying(t.as_bytes(), None), Some(true), "{t}");
+    }
+    for t in ["h", "t", "j", "m", "y", "o", "b", "Ds", "Di", "Du"] {
+        assert_eq!(details::signed_underlying(t.as_bytes(), None), Some(false), "{t}");
+    }
+    assert_eq!(details::signed_underlying(b"c", Some(true)), Some(true));
+    assert_eq!(details::signed_underlying(b"c", Some(false)), Some(false));
+    for t in [&b"c"[..], b"w", b"", b"1E", b"il"] {
+        assert_eq!(details::signed_underlying(t, None), None);
+    }
+}

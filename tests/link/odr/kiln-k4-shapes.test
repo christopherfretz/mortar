@@ -5,12 +5,14 @@
 # class's items), a pure virtual slot (`__cxa_pure_virtual`), a negative
 # enumerator, and `enum H : unsigned` against `enum H` (one underlying
 # type, hashed differently on purpose). Each odr-type-mismatch's note
-# names the first differing item as mortar prints it today: the member
-# of the unnamed union without saying it is one, the negative enumerator
-# in hex, and for H no item (kind 4 does not say whether the underlying
-# type is fixed). kiln's slot index is the component's index in the
-# vtable group with the RTTI slot left out (offset-to-top is 0): the
-# first virtual function is slot 1.
+# names the first differing item as mortar prints it: the member of the
+# unnamed union without saying it is one while kiln writes `width` 0
+# (O-19; "of the unnamed member at offset 0" once kiln writes the count),
+# the negative enumerator in signed decimal (WP-151), and for H no item
+# but what kind 4 does not describe (whether the underlying type is
+# fixed). kiln's slot index is the component's index in the vtable group
+# with the RTTI slot left out (offset-to-top is 0): the first virtual
+# function is slot 1, which the help note under the slot says.
 #@ spec: odr.md O-19, §9.1
 #@ arch: aarch64 x86_64
 #@ requires: kiln g++
@@ -29,8 +31,9 @@ link(mortar) g++ -static -no-pie main.o a.o b.o -Wl,--odr=strict -o prog
   diag: ^>>> base 3VB1 at offset 12 (virtual) in a.o; base 3VB2 at offset 16 (virtual) in b.o$
   diag: ^>>> member 'f' (f) at offset 0 in a.o; member 'l' (l) at offset 0 in b.o$
   diag: ^>>> vtable slot 1: __cxa_pure_virtual in a.o; vtable slot 1: _ZN1P1fEv in b.o$
-  diag: ^>>> enumerator 'N0' = 0xfffffffffffffffe in a.o; 'N0' = 0xfffffffffffffffd in b.o$
-  diag: ^>>> the layout details are equal: the difference is in something kind 4 does not describe$
+  diag: ^>>> vtable slots are numbered over the whole vtable group from 0, its offset-to-top, vcall and vbase entries counted and its RTTI entries not (spec/odr.md O-18, O-19)$
+  diag: ^>>> enumerator 'N0' = -2 in a.o; 'N0' = -3 in b.o$
+  diag: ^>>> the layout details are equal: the enumerations differ in something kind 4 does not describe (whether the underlying type is fixed, or whether the enumeration is scoped)$
 
 #--- a.cc
 struct VB1 { int v; };

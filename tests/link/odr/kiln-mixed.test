@@ -33,7 +33,7 @@ link(mortar) g++ k.o g.o h.o -Wl,--odr=strict -o prog
   diag: ^mortar: error: shared_v is declared with a type that does not match its definition$
   diag: ^>>> k.o: defined as i, size 4; h.o: declared as l, size 8$
   diag: ^mortar: error: type 1P violates the one-definition rule$
-  diag: ^>>> the translation units use different odr.scheme values: compared on size, alignment and kind only (spec/odr.md O-11, strict)$
+  diag: ^>>> the translation units use different layout schemes (odr.layout-scheme, or odr.scheme without it): compared on size, alignment and kind only (spec/odr.md O-11, strict)$
   diag: ^>>> k.o: size 8, alignment 4; h.o: size 16, alignment 8$
   no-diag: shared_w
   no-diag: 1Q

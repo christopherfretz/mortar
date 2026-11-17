@@ -122,6 +122,8 @@ The relations and their words:
 
 | relation | words | use |
 |---|---|---|
+| `DeclaredDifferentlyIn` | `declared differently in` | where a declaration (no definition) of the diagnostic's symbol is that differs from the one before it (`spec/odr.md` §9.1, kind 5; WP-151) |
+| `DeclaredIn` | `declared in` | where a declaration (no definition) of the diagnostic's symbol is (`spec/odr.md` §9.1, kind 5; WP-151) |
 | `DefinedDifferentlyIn` | `defined differently in` | where a definition of the diagnostic's symbol is that differs from the one before it (`spec/odr.md` §9.1) |
 | `DefinedIn` | `defined in` | where a definition of the diagnostic's symbol is |
 | `In` | `in` | what contains the construct, when the head line has no place |

@@ -34,6 +34,9 @@ enum Sym<'a> {
     Comdat(&'a str),
     /// An undefined reference.
     Undef(&'a str),
+    /// Eight bytes of data of that value in its own COMDAT group of the
+    /// same name.
+    Data(&'a str, u64),
 }
 
 impl Cx {
@@ -74,6 +77,13 @@ impl Cx {
                 }
                 Sym::Undef(n) => {
                     let _ = write!(s, "\t.data\n\t.quad {n}\n");
+                }
+                Sym::Data(n, v) => {
+                    let _ = write!(
+                        s,
+                        "\t.section .data.{n},\"awG\",%progbits,{n},comdat\n\t.weak {n}\n\
+                         \t.type {n}, %object\n\t.size {n}, 8\n{n}:\t.quad {v}\n"
+                    );
                 }
             }
         }
@@ -1286,4 +1296,318 @@ fn tools_that_drop_or_rename_are_silent() {
         assert!(got.iter().all(|g| !g.contains("_Z1fv violates")), "{t} {args:?}: {e}");
         assert!(got.iter().all(|g| !g.contains("Mason metadata")), "{t} {args:?}: {e}");
     }
+}
+
+/// A unit of `odr.scheme` `scheme` and `odr.layout-scheme` `layout` (each
+/// row left out when empty).
+fn schemed(source: &str, scheme: &str, layout: &str) -> UnitBuilder {
+    let mut rows = vec![("lang", "c++", 0)];
+    if !layout.is_empty() {
+        rows.push(("odr.layout-scheme", layout, 0));
+    }
+    if !scheme.is_empty() {
+        rows.push(("odr.scheme", scheme, 0));
+    }
+    rows.push(("source", source, 0));
+    unit(&rows)
+}
+
+/// A kind 3 row with a definition hash.
+fn hashed(name: &str, layout: u64, size: u32, hash: u8) -> Type {
+    Type { hash: [hash; 16], ..ty(name, layout, size, 4, 0) }
+}
+
+// spec: odr.md O-11 as ruled for K-3 (WP-151): kind 3's layout compared
+// between equal layout schemes (odr.layout-scheme, or odr.scheme without
+// it), hashes between equal odr.scheme only; a unit without odr.scheme
+// has no hash to compare and is counted; strict's shape exception keyed
+// on the layout scheme; --odr-stats counts both kinds of scheme
+#[test]
+#[allow(clippy::many_single_char_names)] // the units are a.o .. e.o
+fn layout_schemes() {
+    let Some(cx) = Cx::new("odr-layout-schemes") else { return };
+    let mut a = schemed("a.cc", "kiln-odr-1.d0", "L-1");
+    a.types.push(hashed("1A", 0x11, 8, 1));
+    a.types.push(hashed("1B", 0x21, 8, 1));
+    a.types.push(hashed("1C", 0x31, 8, 1));
+    a.types.push(hashed("1D", 0x41, 8, 1));
+    a.types.push(hashed("1E", 0x51, 8, 1));
+    // Another odr.scheme, the same layout scheme: layouts compared (1A),
+    // hashes not (1B).
+    let mut b = schemed("b.cc", "kiln-odr-1.d2", "L-1");
+    b.types.push(hashed("1A", 0x12, 8, 1));
+    b.types.push(hashed("1B", 0x21, 8, 2));
+    // No odr.scheme: no hash compared, no diagnostic.
+    let mut c = schemed("c.cc", "", "L-1");
+    c.types.push(hashed("1B", 0x21, 8, 9));
+    // The definition scheme of a.o, another layout scheme: layouts never
+    // compared (1B, 1D), hashes compared (1D), shapes under strict (1C).
+    let mut d = schemed("d.cc", "kiln-odr-1.d0", "L-2");
+    d.types.push(hashed("1B", 0x99, 8, 1));
+    d.types.push(hashed("1C", 0x99, 16, 1));
+    d.types.push(hashed("1D", 0x99, 8, 2));
+    // No odr.layout-scheme: its odr.scheme is its layout scheme.
+    let mut e = schemed("e.cc", "L-1", "");
+    e.types.push(hashed("1E", 0x52, 8, 1));
+    for (name, u) in [("a.o", a), ("b.o", b), ("c.o", c), ("d.o", d), ("e.o", e)] {
+        cx.object(name, &[], Some(&bytes(&[u])));
+    }
+    let inputs = ["a.o", "b.o", "c.o", "d.o", "e.o"];
+    let (ok, e) = cx.strict(&inputs, &[]);
+    assert!(!ok, "{e}");
+    assert!(e.contains("error: type 1A violates the one-definition rule"), "{e}");
+    assert!(!e.contains("type 1B"), "{e}");
+    assert!(e.contains("error: type 1C violates the one-definition rule"), "{e}");
+    assert!(
+        e.contains(
+            "the translation units use different layout schemes (odr.layout-scheme, or \
+             odr.scheme without it): compared on size, alignment and kind only"
+        ),
+        "{e}"
+    );
+    assert!(e.contains("warning: type 1D violates the one-definition rule"), "{e}");
+    assert!(e.contains(">>> the definitions differ (members, initializers or member"), "{e}");
+    assert!(!e.contains("the layouts agree"), "{e}");
+    assert!(e.contains("error: type 1E violates the one-definition rule"), "{e}");
+    assert_eq!(count(&e, "violates the one-definition rule"), 4, "{e}");
+    // odr.scheme: d0 (a, d), d2, L-1, none: 3 schemes, 9 of 10 pairs not
+    // compared; layout schemes: L-1 (a, b, c, e), L-2: 2, 4 pairs.
+    assert!(e.contains("schemes 3, pairs not compared 9,"), "{e}");
+    assert!(e.contains("layout schemes 2, layout pairs not compared 4,"), "{e}");
+    // The legal pairs alone: silent.
+    let (ok, e) = cx.strict(&["b.o", "c.o"], &[]);
+    assert!(ok && !e.contains("violates"), "{e}");
+    assert!(e.contains("schemes 1, pairs not compared 1,"), "{e}");
+    assert!(e.contains("layout schemes 1, layout pairs not compared 0,"), "{e}");
+}
+
+// spec: odr.md O-15, "Rows of definitions inlined away" (WP-151): a named
+// kind 2 row whose file defines its symbol is an anchored row; one whose
+// file defines none is compared under strict only; N12 at `all` + strict
+// (a symbol renamed by objcopy keeps its row's name): reported
+#[test]
+fn named_rows_with_and_without_symbols() {
+    let Some(cx) = Cx::new("odr-named") else { return };
+    let mut a = cxx("a.cc");
+    a.definitions.push(def("_Z1fv", 1, flags::VAGUE));
+    a.definitions.push(def("_Z1gv", 1, flags::VAGUE));
+    a.definitions.push(def("_Z1hv", 1, flags::VAGUE));
+    let mut b = cxx("b.cc");
+    b.definitions.push(def("_Z1fv", 2, flags::VAGUE));
+    b.definitions.push(def("_Z1gv", 2, flags::VAGUE));
+    b.definitions.push(def("_Z1hv", 1, flags::VAGUE));
+    cx.object("a.o", &[Sym::Comdat("_Z1fv"), Sym::Comdat("_Z1hv")], Some(&bytes(&[a])));
+    cx.object("b.o", &[Sym::Comdat("_Z1fv"), Sym::Comdat("_Z1hv")], Some(&bytes(&[b])));
+    let (ok, e) = cx.strict(&["a.o", "b.o"], &[]);
+    assert!(!ok, "{e}");
+    // f: anchored on its symbol, the place line names it.
+    assert!(e.contains("error: _Z1fv violates the one-definition rule"), "{e}");
+    assert!(e.contains(">>> defined in a.o:(_Z1fv) (kept), at h.h:3"), "{e}");
+    // g: no symbol in either file, compared under strict; no copy kept.
+    assert!(e.contains("error: _Z1gv violates the one-definition rule"), "{e}");
+    assert!(e.contains(">>> defined in a.o:(_Z1gv), at h.h:3"), "{e}");
+    assert!(!e.contains("_Z1hv"), "{e}");
+    assert_eq!(stat(&e, "unanchored rows "), 0, "{e}");
+    // Below strict kind 2 does not run (O-47): silent.
+    for mode in ["--odr=warn", "--odr=error"] {
+        let o = cx.link(&["a.o", "b.o"], &[mode], "out-w");
+        assert!(o.success() && o.stderr_text().is_empty(), "{mode}: {}", o.stderr_text());
+    }
+    // N12: b.o's _Z1hv renamed by objcopy, its row now differs; the row
+    // keeps its name, so strict compares it as a definition without a
+    // symbol (O-15's price, §3 N12).
+    let mut b = cxx("b.cc");
+    b.definitions.push(def("_Z1hv", 2, flags::VAGUE));
+    cx.object("b.o", &[Sym::Comdat("_Z1hv")], Some(&bytes(&[b])));
+    if edit_b(&cx, "objcopy", &["--redefine-sym", "_Z1hv=_Z8vendoredv"]) {
+        let (ok, e) = cx.strict(&["a.o", "b.o"], &[]);
+        assert!(!ok, "{e}");
+        assert!(e.contains("error: _Z1hv violates the one-definition rule"), "{e}");
+        let o = cx.link(&["a.o", "b.o"], &[], "out-d");
+        assert!(o.success() && o.stderr_text().is_empty(), "{}", o.stderr_text());
+    }
+}
+
+// spec: odr.md O-15 (PARTIAL: two PARTIAL rows and a PARTIAL row against
+// a full one are compared, a warning; equal rows silent), O-23 (WP-151:
+// an archive member's PARTIAL row is compared under strict only)
+#[test]
+#[allow(clippy::many_single_char_names)] // the units are a.o .. m.o
+fn partial_rows() {
+    let Some(cx) = Cx::new("odr-partial") else { return };
+    let p = flags::PARTIAL | flags::VAGUE;
+    let mut a = cxx("a.cc");
+    a.definitions.push(def("_Z2ppv", 1, p));
+    a.definitions.push(def("_Z2pfv", 1, p));
+    a.definitions.push(def("_Z2eqv", 1, p));
+    let mut b = cxx("b.cc");
+    b.definitions.push(def("_Z2ppv", 2, p));
+    b.definitions.push(def("_Z2pfv", 2, flags::VAGUE));
+    b.definitions.push(def("_Z2eqv", 1, flags::VAGUE));
+    cx.object("a.o", &[], Some(&bytes(&[a])));
+    cx.object("b.o", &[], Some(&bytes(&[b])));
+    let (ok, e) = cx.strict(&["a.o", "b.o"], &[]);
+    assert!(ok, "{e}");
+    assert!(e.contains("warning: _Z2ppv violates the one-definition rule"), "{e}");
+    assert!(e.contains("warning: _Z2pfv violates the one-definition rule"), "{e}");
+    assert_eq!(count(&e, "a record is PARTIAL"), 2, "{e}");
+    assert!(!e.contains("_Z2eqv"), "{e}");
+
+    // O-23: a member's PARTIAL row differs from the live one.
+    let mut l = cxx("l.cc");
+    l.definitions.push(anchored("_Z1fv", 1, flags::VAGUE));
+    cx.object("l.o", &[Sym::Comdat("_Z1fv")], Some(&bytes(&[l])));
+    let mut m = cxx("m.cc");
+    m.definitions.push(anchored("_Z1fv", 2, p));
+    cx.object("m.o", &[Sym::Comdat("_Z1fv"), Sym::Func("fm")], Some(&bytes(&[m])));
+    ar(&cx, "rcs", "libm.a", &["m.o"]);
+    for mode in ["--odr=warn", "--odr=error"] {
+        let o = cx.link(&["l.o", "libm.a"], &[mode, "--odr-stats", "--odr-check-archives"], "o");
+        let e = o.stderr_text();
+        assert!(o.success() && !e.contains("archive member that is not linked"), "{mode}: {e}");
+        assert_eq!(stat(&e, "archive members "), 1, "{mode}: {e}");
+        assert_eq!(stat(&e, "rows set aside "), 1, "{mode}: {e}");
+    }
+    let (ok, e) = cx.strict(&["l.o", "libm.a"], &["--odr-check-archives"]);
+    assert!(ok, "{e}");
+    assert_eq!(count(&e, "warning: _Z1fv in an archive member that is not linked"), 1, "{e}");
+    assert_eq!(stat(&e, "rows set aside "), 0, "{e}");
+}
+
+// spec: odr.md O-35, §9.1 (WP-151): a declaration's place line says
+// "declared"; a pair of C and C++ linkage notes only the summary keys
+// O-32 judges (ENFORCE in both units), not lang or std
+#[test]
+#[allow(clippy::many_single_char_names)] // the units are a.o .. m.o
+fn declared_place_lines_and_linkage_pair_notes() {
+    let Some(cx) = Cx::new("odr-k5-places") else { return };
+    let mut a = cxx("a.cc");
+    a.declarations.push(decl("_Z1xv", 1, "FvvE", flags::DECL_DEFINITION));
+    a.declarations.push(decl("_Z1yv", 1, "FvvE", 0));
+    a.declarations.push(var("w", 1, 8, flags::DECL_DEFINITION));
+    let mut b = cxx("b.cc");
+    b.declarations.push(decl("_Z1xv", 2, "FivE", 0));
+    b.declarations.push(decl("_Z1yv", 2, "FivE", 0));
+    let mut c = unit(&[("lang", "c", 0), ("source", "c.c", 0), ("std", "c17", 0)]);
+    c.declarations.push(var("w", 9, 16, 0));
+    for (name, u) in [("a.o", a), ("b.o", b), ("c.o", c)] {
+        cx.object(name, &[], Some(&bytes(&[u])));
+    }
+    let (ok, e) = cx.strict(&["a.o", "b.o", "c.o"], &[]);
+    assert!(!ok, "{e}");
+    assert!(e.contains(">>> defined in a.o:(_Z1xv)\n>>> declared differently in b.o:(_Z1xv)\n"));
+    assert!(e.contains(">>> declared in a.o:(_Z1yv)\n>>> declared differently in b.o:(_Z1yv)\n"));
+    assert!(!e.contains("defined differently in b.o"), "{e}");
+    assert!(e.contains("warning: w is declared"), "{e}");
+    let w = e.split("warning: w is declared").nth(1).unwrap();
+    let w = w.split("mortar: ").next().unwrap();
+    assert!(!w.contains("lang=") && !w.contains("std="), "{w}");
+}
+
+// spec: odr.md §8.1, W4's note (WP-151): copies whose units differ in
+// -std say so; equal -std, no note
+#[test]
+fn w4_notes_a_std_difference() {
+    let Some(cx) = Cx::new("odr-w4-std") else { return };
+    let with_std = |source: &str, std: &str| {
+        unit(&[("lang", "c++", 0), ("source", source, 0), ("std", std, 0)])
+    };
+    cx.object("a.o", &[Sym::Data("v", 1)], Some(&bytes(&[with_std("a.cc", "c++20")])));
+    cx.object("b.o", &[Sym::Data("v", 2)], Some(&bytes(&[with_std("b.cc", "c++17")])));
+    cx.object("c.o", &[Sym::Data("v", 2)], Some(&bytes(&[with_std("c.cc", "c++20")])));
+    let note = ">>> the copies' translation units differ in -std (std=c++20 and c++17): the \
+                initialization of a static local, constant in one and dynamic in the other, may \
+                differ legally (spec/odr.md §8.1)\n";
+    let (ok, e) = cx.strict(&["a.o", "b.o"], &[]);
+    assert!(ok, "{e}");
+    assert!(e.contains("warning: v has different contents in different files"), "{e}");
+    assert!(e.contains(note), "{e}");
+    let (ok, e) = cx.strict(&["a.o", "c.o"], &[]);
+    assert!(ok, "{e}");
+    assert!(e.contains("warning: v has different contents in different files"), "{e}");
+    assert!(!e.contains("differ in -std"), "{e}");
+}
+
+// spec: odr.md O-19 (width of an unnamed member), §9.1 (WP-151): the
+// first difference inside an unnamed member names it; a signed
+// enumerator in signed decimal; an enumeration with equal details says
+// what kind 4 does not describe; a slot difference explains the numbers
+#[test]
+fn kind4_reader_notes() {
+    let Some(cx) = Cx::new("odr-k4-notes") else { return };
+    let it = |kind: u32, name: &str, ty: &str, value: u64, width: u32| Detail {
+        name: name.as_bytes().to_vec(),
+        ty: ty.as_bytes().to_vec(),
+        value,
+        width,
+        flags: kind,
+    };
+    let nested = |inner: &str| {
+        vec![
+            it(item::MEMBER, "", "", 0, 2),
+            it(item::MEMBER, "x", "i", 0, 0),
+            it(item::MEMBER, inner, "i", 0, 0),
+            it(item::MEMBER, "z", "i", 64, 0),
+        ]
+    };
+    let enumeration = |name: &str, value: u64, items: Vec<Detail>| Type {
+        items: Some(items),
+        ..ty(name, value, 4, 4, flags::TYPE_ENUM)
+    };
+    let mut a = cxx("a.cc");
+    a.types.push(detailed("1N", 0x11, 12, nested("y")));
+    a.types.push(enumeration(
+        "1E",
+        0x21,
+        vec![it(item::UNDERLYING, "", "i", 0, 0), it(item::ENUMERATOR, "A", "", u64::MAX - 1, 0)],
+    ));
+    a.types.push(enumeration("1F", 0x31, vec![it(item::UNDERLYING, "", "i", 0, 0)]));
+    a.types.push(ty("1G", 0x41, 4, 4, flags::TYPE_ENUM));
+    a.types.push(detailed("1V", 0x51, 8, vec![it(item::SLOT, "_ZN1V1fEv", "", 2, 0)]));
+    let mut b = cxx("b.cc");
+    b.types.push(detailed("1N", 0x12, 12, nested("w")));
+    b.types.push(enumeration(
+        "1E",
+        0x22,
+        vec![it(item::UNDERLYING, "", "i", 0, 0), it(item::ENUMERATOR, "A", "", u64::MAX, 0)],
+    ));
+    b.types.push(enumeration("1F", 0x32, vec![it(item::UNDERLYING, "", "i", 0, 0)]));
+    b.types.push(ty("1G", 0x42, 4, 4, flags::TYPE_ENUM));
+    b.types.push(detailed("1V", 0x52, 8, vec![it(item::SLOT, "_ZN1V1gEv", "", 2, 0)]));
+    cx.object("a.o", &[], Some(&bytes(&[a])));
+    cx.object("b.o", &[], Some(&bytes(&[b])));
+    let (ok, e) = cx.strict(&["a.o", "b.o"], &[]);
+    assert!(!ok, "{e}");
+    assert!(
+        e.contains(
+            ">>> member 'y' (i) at offset 0 of the unnamed member at offset 0 in a.o; member \
+             'w' (i) at offset 0 of the unnamed member at offset 0 in b.o\n"
+        ),
+        "{e}"
+    );
+    assert!(e.contains(">>> enumerator 'A' = -2 in a.o; 'A' = -1 in b.o\n"), "{e}");
+    assert!(
+        e.contains(
+            ">>> the layout details are equal: the enumerations differ in something kind 4 \
+             does not describe (whether the underlying type is fixed, or whether the \
+             enumeration is scoped)\n"
+        ),
+        "{e}"
+    );
+    assert!(
+        e.contains(
+            ">>> the enumerators or the underlying type differ, with the same size 4 and \
+             alignment 4\n"
+        ),
+        "{e}"
+    );
+    assert!(
+        e.contains(
+            ">>> vtable slot 2: _ZN1V1fEv in a.o; vtable slot 2: _ZN1V1gEv in b.o\n>>> vtable \
+             slots are numbered over the whole vtable group from 0, its offset-to-top, vcall \
+             and vbase entries counted and its RTTI entries not (spec/odr.md O-18, O-19)\n"
+        ),
+        "{e}"
+    );
+    assert_eq!(count(&e, "error: type "), 5, "{e}");
 }

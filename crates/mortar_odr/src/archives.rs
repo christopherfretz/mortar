@@ -126,6 +126,7 @@ pub(crate) fn check<'s: 'l, 'l>(
             Found::Shadow(s) => shadows.push(s),
             Found::Compared => counts.archive_compared += 1,
             Found::Schemes => counts.pairs_not_compared += 1,
+            Found::Partial => counts.ignored += 1,
             Found::SystemStd => {
                 counts.archive_compared += 1;
                 counts.system_std += 1;
@@ -149,6 +150,9 @@ enum Found<'l> {
     /// O-32: every row `SYSTEM` and the units' `-std` differ, not reported
     /// below `--odr=strict`.
     SystemStd,
+    /// O-15: a `PARTIAL` row (the member's or the keeper's) is compared
+    /// under `--odr=strict` only (WP-151); set aside below it.
+    Partial,
 }
 
 /// The kind 2 rows of member `m` against the keepers' rows: one result per
@@ -187,6 +191,10 @@ fn compare<'s: 'l, 'l>(
             let kinfo = cx.info[keeper.unit as usize];
             if info.scheme.is_none() || info.scheme != kinfo.scheme {
                 out.push(Found::Schemes);
+                continue;
+            }
+            if (k.flags | r.flags) & flags::PARTIAL != 0 && !cx.switches.partial {
+                out.push(Found::Partial);
                 continue;
             }
             if k.hash == r.hash {
