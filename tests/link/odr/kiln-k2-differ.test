@@ -1,5 +1,5 @@
-# Kind 2 rows as kiln writes them (kiln 4b017b227, scheme kiln-odr-1.d2;
-# spec/odr.md O-10, O-14, O-15, "kiln K-3a" and "kiln K-3c"; WP-174):
+# Kind 2 rows as kiln writes them (kiln b632861e3, scheme kiln-odr-1.d3;
+# spec/odr.md O-10, O-14, O-15, "kiln K-3a", "kiln K-3c"; WP-174; K-3d):
 # one header h.h, compiled into a.o with V=1 and into b.o with V=2, each
 # definition differing in one place, under --odr=strict. Every row is
 # anchored (kiln writes no names yet, K-3f). Reported, each by its row:
@@ -10,17 +10,17 @@
 #   resolution sends elsewhere because b.o declares over(int) (resolves:
 #   the callee is hashed as the entity it names, kiln's Q1 ruling), the
 #   same through a function template overload (calls_tf<int>: tf<int*>
-#   against the more specialized tf(T*) of b.o);
+#   against the more specialized tf(T*) of b.o); since K-3d (.d3: a
+#   closure is hashed) with_lambda, whose lambda's body differs, and
+#   the closure's operator() itself (under .d2 the lambda was one fixed
+#   token: with_lambda silent, the operator() a PARTIAL warning);
 # - K13: spec<int> is an explicit specialization in b.o and an implicit
 #   instantiation in a.o (an error whatever the hashes), beside W3;
-# - warnings only, the rows PARTIAL (kiln hashes lambdas and default
-#   arguments of a definition's own parameters as fixed tokens until
-#   K-3e): the closure's operator() of with_lambda, whose body differs,
-#   and partial_body, whose body differs and which has a default
-#   argument of its own;
+# - a warning only, the row PARTIAL (kiln hashes default arguments of a
+#   definition's own parameters as fixed tokens until K-3e):
+#   partial_body, whose body differs and which has such an argument;
 # - W4 on ivar's bytes (10 against 20).
-# Not reported: with_lambda itself (its lambda is one fixed token: equal
-# hashes, PARTIAL), own_default (only its own default argument differs:
+# Not reported: own_default (only its own default argument differs:
 # not hashed yet, a miss counted as PARTIAL), x15 (a lambda in its
 # declarator: no row, X15), dropped (d.o's copy at -O2 was inlined away:
 # its row is unanchored and never compared, the stats' `unanchored rows`;
@@ -42,7 +42,7 @@
 #@ diag: odr-violation a.o b.o
 #@ diag: odr-violation a.o b.o
 #@ diag: odr-violation a.o b.o
-
+#@ diag: odr-violation a.o b.o
 cxx(kiln) -O0 -DV=1 -DUNIT=fa -fmason-metadata u.cc -o a.o
 cxx(kiln) -O0 -DV=2 -DUNIT=fb -DSPEC_DEF -DUSE_DROPPED -fmason-metadata u.cc -o b.o
 cxx(kiln) -O2 -DV=1 -fmason-metadata d.cc -o d.o
@@ -54,18 +54,18 @@ link(mortar) g++ -static -no-pie main.o a.o b.o d.o -Wl,--odr=strict -Wl,--odr-s
   diag: ^mortar: error: _ZNK3BoxIiE3getEv violates the one-definition rule$
   diag: ^mortar: error: ivar violates the one-definition rule$
   diag: ^mortar: error: _Z5cexpri violates the one-definition rule$
+  diag: ^mortar: error: _Z11with_lambdai violates the one-definition rule$
   diag: ^mortar: error: _Z12uses_defaultv violates the one-definition rule$
   diag: ^mortar: error: _Z8resolvesv violates the one-definition rule$
   diag: ^mortar: error: _Z8calls_tfIiEiT_ violates the one-definition rule$
   diag: ^mortar: error: _Z4specIiEiT_ violates the one-definition rule$
   diag: ^>>> b.o: an explicit specialization; a.o: an implicit instantiation ([temp.expl.spec]: the specialization must be declared before every use)$
-  diag: ^mortar: warning: _ZZ11with_lambdaiENKUliE_clEi violates the one-definition rule$
+  diag: ^mortar: error: _ZZ11with_lambdaiENKUliE_clEi violates the one-definition rule$
   diag: ^mortar: warning: _Z12partial_bodyi violates the one-definition rule$
   diag: ^>>> a record is PARTIAL (its producer did not hash every construct): a warning, never an error (spec/odr.md O-15)$
   diag: ^>>> defined in a.o:(_Z4bodyv) (kept), at ./h.h:2$
   diag: ^>>> the definitions differ; a.o and b.o were compiled with different -D options? (compare their command lines)$
-  diag: ^mortar: odr-stats: mode strict; units 3, * kind 2 30,* unanchored rows 2,* record findings 10;
-  no-diag: _Z11with_lambdai violates
+  diag: ^mortar: odr-stats: mode strict; units 3, * kind 2 30,* unanchored rows 2,* record findings 11;
   no-diag: _Z11own_defaulti
   no-diag: _Z3x15i
   no-diag: _Z7droppedv

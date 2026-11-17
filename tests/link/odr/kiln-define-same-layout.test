@@ -4,7 +4,7 @@
 # inline member function's body and a default argument that depend on
 # the macro, a static data member's initializer, and a member's default
 # initializer. Kind 3 hashes the layout, kind 4 describes it: neither
-# differs. Kind 2 (kiln 4b017b227, scheme kiln-odr-1.d2) has a row for
+# differs. Kind 2 (kiln b632861e3, scheme kiln-odr-1.d3) has a row for
 # S::get in both units with ONE hash: its body's tokens are equal,
 # `level` is hashed as the entity it names (not its value, O-10), and
 # the default argument on get's own parameter is not hashed yet (the row
