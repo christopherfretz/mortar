@@ -173,9 +173,18 @@ fn judge(
             &args.iter().map(|w| w.as_bytes().to_vec()).collect::<Vec<_>>(),
         ),
     };
-    let meta = crate::odrtable::check(image, &objs, map, Some(&opts), Some(&line), &mut meta_cov);
+    let mut pending = crate::odrtable::Pending::default();
+    let meta = crate::odrtable::check(
+        image,
+        &objs,
+        map,
+        Some(&opts),
+        Some(&line),
+        &mut meta_cov,
+        &mut pending,
+    );
     report.findings.extend(meta);
-    report.coverage.meta = meta_cov.clone();
+    report.coverage.meta = meta_cov;
     // P-D1: a link stage 3 does not model is reported by name, as one
     // finding each, and nothing else is judged (§12.1).
     let mut outside: Vec<String> = line.outside.clone();
@@ -265,6 +274,16 @@ fn judge(
     }
     if let (Some(sl), Some(d)) = (&shared.line, &map.dynamic) {
         report.findings.extend(crate::shared::map_facts(sl, d));
+    }
+    // P-M2 on a shared object's table (O-60): the bits by the export set.
+    if let Some(s) = &sets {
+        report.findings.extend(crate::odrtable::shared_rows(
+            image,
+            &objs,
+            s,
+            &pending,
+            &mut report.coverage.meta,
+        ));
     }
     // The loader's order: the image's own DT_NEEDED.
     let mut needed_idx = Vec::new();
@@ -438,8 +457,12 @@ fn judge(
     } else {
         excluded_locals(&mut view1_findings, image, &model);
     }
+    // The engine's coverage, with what stage 3 and 4 counted before it.
+    let meta = std::mem::take(&mut report.coverage.meta);
+    let stripped = std::mem::take(&mut report.coverage.stripped_not_judged);
     report.coverage = std::mem::take(&mut engine.cov);
-    report.coverage.meta = meta_cov;
+    report.coverage.meta = meta;
+    report.coverage.stripped_not_judged = stripped;
     drop(engine);
     // View 2: a second bias (Pie): every word that holds an address of the
     // executable moves with it, every other word does not.
