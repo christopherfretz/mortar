@@ -252,15 +252,23 @@ pub fn apply(
             // A copy or an export: the engine uses it only for a name the
             // output's `.symtab` does not carry plainly (GNU ld's
             // `stdout@GLIBC_2.2.5` for a copied `stdout`).
+            // A non-default `.symver` definition (`foo@V1`, VERSYM_HIDDEN,
+            // D-115) is the key `foo@V1`, never the plain name: an
+            // unversioned reference `foo` binds to the default `foo@@V2`
+            // wherever `.dynsym` puts it (GNU ld writes `foo@V1` first;
+            // resolve §9.2; WP-149).
+            let key = match out.def_version(j) {
+                Some((ver, true)) => format!("{}@{ver}", s.name),
+                _ => s.name.clone(),
+            };
             if s.sym_type() != mortar_elf::consts::STT_TLS {
-                v.dynbind.entry(s.name.clone()).or_insert_with(|| ld.bind(out, j, false, p).addr());
+                v.dynbind.entry(key).or_insert_with(|| ld.bind(out, j, false, p).addr());
             } else if let Bound::Lib { tls: true, i, addr, .. } = ld.bind(out, j, false, p) {
                 // §12.5 view B: a library's preemptible TLS export is the
                 // interposer's.
-                v.dyn_tls.insert(s.name.clone());
-                v.dyn_tls_mod.insert(s.name.clone(), 2 + i as u64);
-                v.dynbind
-                    .insert(s.name.clone(), tls_fake(tls_start, i, addr.wrapping_sub(lib_base(i))));
+                v.dyn_tls.insert(key.clone());
+                v.dyn_tls_mod.insert(key.clone(), 2 + i as u64);
+                v.dynbind.insert(key, tls_fake(tls_start, i, addr.wrapping_sub(lib_base(i))));
             }
             continue;
         }

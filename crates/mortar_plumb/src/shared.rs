@@ -790,6 +790,40 @@ impl Script {
             && !export_dynamic;
         Some(if local { Decision::Local } else { Decision::Node(i) })
     }
+
+    /// Rule 12 as `format`'s linker applies it: mortar and GNU ld by
+    /// [`Script::decide_versioned`]; the references' recorded differences
+    /// (`spec/dyn.md` 17.8, `exp3/vs3/expdyn.py`, `atat.py`): mold never
+    /// hides a `.symver` definition; lld hides `foo@V` when one of V's
+    /// `local:` entries matches `foo` and no exact `global:` entry of V
+    /// names it (a `global:` glob does not keep it), with or without
+    /// `--export-dynamic`, and hides `foo@@V` only for an exact `local:`
+    /// entry of V naming it (WP-149).
+    pub fn decide_versioned_as(
+        &self,
+        name: &str,
+        v: &str,
+        default: bool,
+        export_dynamic: bool,
+        format: Format,
+    ) -> Option<Decision> {
+        let i = self.node(v)?;
+        let n = &self.nodes[i];
+        let exact = |e: &&Entry| !e.is_glob() && e.exact_name() == name;
+        let local = match format {
+            Format::Mortar | Format::Gnu => return self.decide_versioned(name, v, export_dynamic),
+            Format::Mold => false,
+            Format::Lld if default => {
+                n.entries.iter().filter(|e| !e.global).any(|e| exact(&e))
+                    && !n.entries.iter().filter(|e| e.global).any(|e| exact(&e))
+            }
+            Format::Lld => {
+                n.entries.iter().any(|e| !e.global && e.matches(name))
+                    && !n.entries.iter().filter(|e| e.global).any(|e| exact(&e))
+            }
+        };
+        Some(if local { Decision::Local } else { Decision::Node(i) })
+    }
 }
 
 /// A dynamic list: its entries, every file as one list.
@@ -1169,7 +1203,13 @@ pub(crate) fn compute(
                     Some(s.nodes[i].name.clone().map_or(VerOut::Base, VerOut::Node))
                 }
             },
-            (Some(s), Some((v, default))) => match s.decide_versioned(base, v, sl.export_dynamic) {
+            (Some(s), Some((v, default))) => match s.decide_versioned_as(
+                base,
+                v,
+                default,
+                sl.export_dynamic,
+                format,
+            ) {
                 None => {
                     sets.outside.push(format!(
                             "'{name}': no node {v} in the version script (dyn.md D-114: undefined-version)"
@@ -1201,7 +1241,10 @@ pub(crate) fn compute(
             continue;
         }
         let Some(version) = decide(name, &mut sets) else {
-            sets.local.insert(base);
+            // A hidden `.symver` definition is the key `foo@V1` (or
+            // `foo@@V1`): the plain `foo` may still be another node's
+            // export, preemptible (WP-149).
+            sets.local.insert(if split_version(name).1.is_some() { name.clone() } else { base });
             continue;
         };
         let preemptible =
@@ -1333,7 +1376,12 @@ pub fn pd19(out: &DynOut, sets: &Sets, format: Format) -> Vec<Finding> {
         let Some(e) =
             sets.exports.get(&s.name).and_then(|x| x.iter().find(|e| e.version == version))
         else {
-            let why = if sets.local.contains(&s.name) {
+            let key = match &version {
+                VerOut::Base => s.name.clone(),
+                VerOut::Node(n) => format!("{}@@{n}", s.name),
+                VerOut::Hidden(n) => format!("{}@{n}", s.name),
+            };
+            let why = if sets.local.contains(&s.name) || sets.local.contains(&key) {
                 " (a version script or --exclude-libs makes it local)"
             } else if sets.exports.contains_key(&s.name) {
                 " at this version"
@@ -2147,7 +2195,9 @@ pub(crate) fn filter_view1(
 ) {
     v.retain(|f| {
         !(f.rule == Rule::SymbolTable(3)
-            && f.symbol.as_ref().is_some_and(|n| sets.local.contains(split_version(n).0))
+            && f.symbol
+                .as_ref()
+                .is_some_and(|n| sets.local.contains(n) || sets.local.contains(split_version(n).0))
             && (f.message.contains("binding") || f.message.contains("visibility")))
     });
     for f in v.iter_mut() {

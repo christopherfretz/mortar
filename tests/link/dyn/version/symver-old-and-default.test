@@ -8,7 +8,6 @@
 # (mortar: `undefined-version`, rule 12).
 #@ spec: dyn.md "D-114"; dyn.md "D-115"; resolve.md "9.7"
 #@ arch: aarch64 x86_64
-#@ xfail(mortar): M4: WP-149: the verifier's P-D7 'a name twice in .dynsym' on libs.so.1, whose two entries are foo@V1 (hidden) and foo@@V2 as GNU ld's (bytes checked at the merge); runs right with --no-plumb
 
 cc -O1 -fPIC old.c -o old.o
 cc -O1 -fPIC sv.c -o sv.o

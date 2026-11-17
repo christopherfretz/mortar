@@ -900,11 +900,41 @@ fn pd7(
                 v.push(sym_finding(7, &s.name, format!("'{}' is never in .dynsym (D-21)", s.name)));
             }
         }
-        let mut seen = BTreeSet::new();
-        for s in out.syms.iter().skip(1) {
-            if !seen.insert(&s.name) {
-                v.push(sym_finding(7, &s.name, "a name twice in .dynsym"));
-            }
+    }
+    // A name twice in `.dynsym` (every linker, WP-149): two versions of one
+    // name are two keys (D-115, `.symver` `foo@V1` and `foo@@V2`), so a
+    // name may stand twice exactly when its entries' `.gnu.version`
+    // indices differ and at most one of its definitions is not hidden (an
+    // unversioned lookup takes the one default). An import's index names
+    // a `Vernaux` and is never hidden: two imports of one name under two
+    // needed versions are two keys too.
+    // (GNU ld's AArch64 libraries keep nameless STB_LOCAL section symbols
+    // in `.dynsym`: no lookup sees a local entry.)
+    let mut by: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
+    for (j, s) in out.syms.iter().enumerate().skip(1) {
+        if s.binding() == mortar_elf::consts::STB_LOCAL {
+            continue;
+        }
+        by.entry(s.name.as_str()).or_default().push(j);
+    }
+    for (name, js) in by.into_iter().filter(|e| e.1.len() > 1) {
+        let idx = |j: usize| out.versym.as_ref().and_then(|vs| vs.get(j).copied());
+        let raws: Vec<Option<u16>> = js.iter().map(|&j| idx(j)).collect();
+        let distinct = raws.iter().all(Option::is_some)
+            && raws.iter().map(|r| r.map(|x| x & 0x7fff)).collect::<BTreeSet<_>>().len()
+                == raws.len();
+        let defaults = js
+            .iter()
+            .filter(|&&j| out.syms[j].defined() && idx(j).is_none_or(|x| x & 0x8000 == 0))
+            .count();
+        if !distinct || defaults > 1 {
+            v.push(sym_finding(
+                7,
+                name,
+                format!(
+                    "a name twice in .dynsym: '{name}' at indices {js:?} with .gnu.version {raws:?} (two entries of one name need distinct version indices, at most one definition not hidden: D-115)"
+                ),
+            ));
         }
     }
 }
@@ -2024,7 +2054,31 @@ fn fields(
         }
         // The export is the program's definition: its .symtab entry's
         // section, size, binding and type (an IFUNC's is P-D7's above).
-        if let Some(o) = image.global(&s.name)
+        // `.symtab` may hold several definitions of the name: the
+        // `.symver` definitions `foo@V1` and `foo@@V2` of a library, which
+        // GNU ld names so and lld and mortar both name `foo` (WP-149). The
+        // export's definition is a non-local `.symtab` symbol of its key
+        // (the plain name, or the name with the entry's version, `@@` for
+        // a default and `@` for a hidden one) at the export's value; the
+        // fields are compared with the first such one. With none at the
+        // value (the address rule above reports it), with the first
+        // `.symtab` global of the plain name, as before.
+        let ver = out.def_version(j);
+        let keyed = |o: &&crate::image::OutSym| {
+            o.sym.binding() != mortar_elf::consts::STB_LOCAL
+                && o.sym.st_shndx != 0
+                && (o.name == s.name
+                    || ver.as_ref().is_some_and(|(n, hid)| {
+                        o.name == format!("{}{}{n}", s.name, if *hid { "@" } else { "@@" })
+                    }))
+        };
+        let def = image
+            .symbols
+            .iter()
+            .filter(keyed)
+            .find(|o| o.sym.st_value == s.st_value)
+            .or_else(|| image.global(&s.name));
+        if let Some(o) = def
             && o.sym.st_shndx != 0
             && o.sym.sym_type() != STT_GNU_IFUNC
         {
