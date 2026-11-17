@@ -374,6 +374,28 @@ pub(crate) fn link<V: View>(
             }
         }
     }
+    // D-21 (WP-150): in an executable, `_end`, `__bss_start`, ... (the
+    // names GNU ld and lld both define) that a loaded shared object
+    // references or defines while nothing in the program does are the
+    // linker's, and exported below (GNU ld and lld). The names an object
+    // references are already the linker's (§8.1).
+    if opts.shared_output.is_none() {
+        for k in 0..keys {
+            if !(ref_dynamic[k] || defined_dynamic[k]) || !matches!(def[k], Def::Undefined { .. })
+            {
+                continue;
+            }
+            let (name, version) = view.key_name(SymbolId(k as u32));
+            if version.is_some() {
+                continue;
+            }
+            if let Some((sym, conditional)) = linker::candidate(name, machine, opts.output)
+                && sym.exported_as_definition()
+            {
+                def[k] = Def::Provide { sym, conditional };
+            }
+        }
+    }
     let ours = |d: Def| matches!(d, Def::Strong(_) | Def::Weak(_) | Def::Common(_));
     // D-110 item 1 (WP-128): a definition in a member of an archive
     // `--exclude-libs` names is never exported, in every kind (all three
@@ -413,8 +435,21 @@ pub(crate) fn link<V: View>(
                 if props[k].visibility == STV_HIDDEN || excluded(d) {
                     return false;
                 }
-                if matches!(d, Def::Provide { .. }) {
-                    return ref_dynamic[k];
+                // D-21 (WP-150): a linker-defined key a shared object
+                // references; `_end`, `__bss_start`, ... also as an
+                // ordinary definition (a shared object's definition of the
+                // name, `-E`, `--export-dynamic-symbol`, `--dynamic-list`).
+                if let Def::Provide { sym, .. } = d {
+                    return ref_dynamic[k]
+                        || (sym.exported_as_definition()
+                            && (defined_dynamic[k]
+                                || opts.shared.export_dynamic
+                                || opts
+                                    .shared
+                                    .export_symbols
+                                    .binary_search(&SymbolId(k as u32))
+                                    .is_ok()
+                                || listed(k)));
                 }
                 ours(d)
                     && (ref_dynamic[k]

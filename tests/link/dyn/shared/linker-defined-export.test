@@ -1,0 +1,64 @@
+# dyn.md D-110 item 2, D-21 item 2 (WP-150): `_end`, `_edata` and
+# `__bss_start`, referenced by the library's own object, are exported
+# from the library (GNU ld and lld), preemptible (D-112), and the host
+# exports its own because the library references them: the library's
+# `api_end()` is the host's `_end` (`1 1 1`). `-Bsymbolic` binds them to
+# the library's own; a version script's `local: *` makes them local and
+# unexported, so the library sees its own end too (`0 0 0`). mold
+# exports none of them (§17.6): its library always sees its own.
+# The hosts are `-no-pie`: a GNU ld PIE host's GOT slot of `_end` (one
+# past `.bss`) draws the verifier's P-D9 (WP-150 reported it).
+#@ spec: dyn.md "D-110"; dyn.md "D-21"; dyn.md "D-112"
+#@ arch: aarch64 x86_64
+#@ xfail(bfd,lld,mortar): the verifier follows D-110 item 2 before WP-150: P-D19 "'_end' (Base) is in .dynsym and not in the export set", P-D25 "a dynamic record names '_end', which the line binds (D-112)", P-D9 view 2 on the GOT slot of each of the three
+
+cc -O1 -fPIC lib.c -o lib.o
+cc -O1 -fPIE main.c -o main.o
+link gcc -shared lib.o -o libend.so
+check(bfd,lld,mortar) readelf --dyn-syms -W libend.so
+  has: NOTYPE GLOBAL DEFAULT * _end$
+  has: NOTYPE GLOBAL DEFAULT * _edata$
+  has: NOTYPE GLOBAL DEFAULT * __bss_start$
+link gcc -shared lib.o -Wl,-Bsymbolic -o libendsym.so
+check(bfd,lld,mortar) readelf --dyn-syms -W libendsym.so
+  has: NOTYPE GLOBAL DEFAULT * _end$
+link gcc -shared lib.o -Wl,--version-script=local.map -o libendloc.so
+check readelf --dyn-syms -W libendloc.so
+  has: api_end@@V1
+  not: NOTYPE * _end$
+  not: NOTYPE * _edata$
+  not: NOTYPE * __bss_start$
+link gcc -pie main.o -L. -lend -o prog-own
+check(bfd,lld,mortar) readelf --dyn-syms -W prog-own
+  has: GLOBAL DEFAULT * _end$
+  has: GLOBAL DEFAULT * _edata$
+  has: GLOBAL DEFAULT * __bss_start$
+host gcc -no-pie main.o -L. -lend -o prog
+host gcc -no-pie main.o -L. -lendsym -o prog-sym
+host gcc -no-pie main.o -L. -lendloc -o prog-loc
+run(bfd,lld,mortar) prog
+  stdout: 1 1 1
+run(mold) prog
+  stdout: 0 0 0
+run prog-sym
+  stdout: 0 0 0
+run prog-loc
+  stdout: 0 0 0
+
+#--- lib.c
+extern char _end[], _edata[], __bss_start[];
+void *api_end(void) { return _end; }
+void *api_edata(void) { return _edata; }
+void *api_bss(void) { return __bss_start; }
+#--- main.c
+#include <stdio.h>
+extern char _end[], _edata[], __bss_start[];
+void *api_end(void);
+void *api_edata(void);
+void *api_bss(void);
+int main(void) {
+  printf("%d %d %d\n", api_end() == _end, api_edata() == _edata, api_bss() == __bss_start);
+  return 0;
+}
+#--- local.map
+V1 { global: api_end; api_edata; api_bss; local: *; };
