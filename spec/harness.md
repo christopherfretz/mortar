@@ -672,7 +672,9 @@ missing linker is left out of the matrix with a note; a test that
 `requires:` a missing tool gives a `SKIP` record without a linker
 (`requires X: not found`). Under `MORTAR_REQUIRE_TOOLS=1` each of those is
 an `error:` line in the summary and exit status 3 (the run goes on with
-what there is). A run of mortar without any reference notes that nothing
+what there is), but for `kiln` (a kiln that writes the records, found by
+its probe), which is an error under `MASON_REQUIRE_TOOLS=1` only: the
+lane's gate with an older kiln skips those tests by name (WP-134). A run of mortar without any reference notes that nothing
 is proven.
 
 **Every child** is started through `xtask::process::run` ("Limits"), with
@@ -1553,7 +1555,9 @@ link the baseline lacks, `- ...` a baseline link not made. Then a summary
 line (links, tests, architectures, how many differ, seconds) and
 `static-identical: ok` with exit status 0, or `static-identical: FAILED`
 with exit status 1. A unit that did not run because a tool is missing is
-not compared (a note says how many) unless `MORTAR_REQUIRE_TOOLS=1`. An
+not compared (a note says how many) unless `MORTAR_REQUIRE_TOOLS=1`
+requires that tool (a test that `requires: kiln` without
+`MASON_REQUIRE_TOOLS=1`, "Missing tools", is not compared either). An
 error of the run itself (an input that does not build, mortar not built)
 is a failure whatever the digests. `--update` prints the same difference
 lines, then writes the baseline (it refuses when a unit did not run); a

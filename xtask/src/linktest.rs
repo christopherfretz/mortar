@@ -676,6 +676,11 @@ pub fn run(args: &Args) -> Result<Report, String> {
     let mut plumb = engine::Plumb::default();
     for results in run_units(&units, jobs) {
         plumb.add(&results.plumb);
+        if results.optional_skip {
+            report.optional_skips.extend(
+                results.records.iter().take(1).filter_map(|r| Some((r.test.clone(), r.arch?))),
+            );
+        }
         report.records.extend(results.records);
         report.digests.extend(results.digests);
         report.missing.extend(results.missing.into_iter().map(|tool| format!("{tool} not found")));

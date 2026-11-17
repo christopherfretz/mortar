@@ -375,6 +375,10 @@ pub struct Results {
     pub records: Vec<Record>,
     /// The tools the unit needed that are missing.
     pub missing: Vec<String>,
+    /// The unit was skipped for a tool that this run does not require
+    /// even under `MORTAR_REQUIRE_TOOLS=1` (kiln with records: required
+    /// under `MASON_REQUIRE_TOOLS=1` only, WP-134).
+    pub optional_skip: bool,
     pub plumb: Plumb,
     /// The digest mode's rows, in step order.
     pub digests: Vec<DigestRow>,
@@ -859,6 +863,8 @@ impl Unit<'_> {
             };
             if absent.iter().any(needed) {
                 results.missing = missing;
+            } else {
+                results.optional_skip = true;
             }
             return results;
         }

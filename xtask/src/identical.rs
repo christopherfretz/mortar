@@ -286,6 +286,14 @@ pub fn run(args: &Args) -> bool {
                 .filter_map(|r| Some((r.test.clone(), r.arch?.name().to_owned()))),
         )
         .collect();
+    // A unit skipped for a tool that is required under MASON_REQUIRE_TOOLS
+    // alone (a kiln with records, WP-134) is not run under
+    // MORTAR_REQUIRE_TOOLS=1 either.
+    let optional: BTreeSet<(String, String)> = report
+        .optional_skips
+        .iter()
+        .map(|(test, arch)| (test.clone(), arch.name().to_owned()))
+        .collect();
     let Some(host) = Arch::host() else {
         eprintln!("static-identical: this machine is none of the architectures with a baseline");
         return false;
@@ -309,7 +317,9 @@ pub fn run(args: &Args) -> bool {
     let not_run: BTreeSet<(String, String)> = baseline
         .keys()
         .map(|(test, arch, _)| (test.clone(), arch.clone()))
-        .filter(|unit| !ran.contains(unit) && !mortar_testutil::tools_required())
+        .filter(|unit| {
+            !ran.contains(unit) && (!mortar_testutil::tools_required() || optional.contains(unit))
+        })
         .collect();
     let changes = diff(&baseline, &report.digests, &not_run);
     let elapsed = started.elapsed().as_secs_f64();
