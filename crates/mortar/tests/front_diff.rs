@@ -565,8 +565,8 @@ fn s6_empty_merge_section_is_placed_whole() {
     const SOURCES: &[Source] = &[
         Source {
             name: "m.s",
-            text: "\t.section .rodata.str1.1,\"aMS\",@progbits,1\n\t.globl gms\ngms:\n\
-                   \t.section .rodata.cst8,\"aM\",@progbits,8\n\
+            text: "\t.section .rodata.e136.str1.1,\"aMS\",@progbits,1\n\t.globl gms\ngms:\n\
+                   \t.section .rodata.e136.cst8,\"aM\",@progbits,8\n\
                    \t.section .rodata.s,\"aMS\",@progbits,1\nmsg:\t.asciz \"s6\"\n\
                    \t.data\n\t.globl dref\ndref:\t.xword gms\n",
         },
@@ -589,8 +589,8 @@ fn s6_empty_merge_section_is_placed_whole() {
             .collect::<Vec<_>>()
     };
     use mortar_core::resolution::SectionKind;
-    assert_eq!(kind(".rodata.cst8"), vec![SectionKind::Regular], "empty: placed whole");
-    assert!(whole(".rodata.cst8"), "empty: placed whole\n{placed}");
-    assert!(kind(".rodata.str1.1").contains(&SectionKind::Regular), "empty: placed whole");
+    assert_eq!(kind(".rodata.e136.cst8"), vec![SectionKind::Regular], "empty: placed whole");
+    assert!(whole(".rodata.e136.cst8"), "empty: placed whole\n{placed}");
+    assert_eq!(kind(".rodata.e136.str1.1"), vec![SectionKind::Regular], "empty: placed whole");
     assert_eq!(kind(".rodata.s"), vec![SectionKind::Merge], "non-empty: split");
 }
