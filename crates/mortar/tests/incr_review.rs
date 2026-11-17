@@ -207,6 +207,7 @@ fn verdict(r: &Result<mortar::floor::Summary, String>) -> String {
 
 /// Runs a scenario by position and by identity; panics on any wrong
 /// program or unexpected outcome; returns its table rows.
+#[allow(clippy::too_many_lines)] // the three judgments of each hop, in order
 fn play(sc: &Scenario) -> Option<Vec<String>> {
     assembler(sc.arch)?;
     if sc
