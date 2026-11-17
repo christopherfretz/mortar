@@ -546,6 +546,13 @@ pub(crate) struct Engine<'a, 'b> {
     /// Stage 3: the output is dynamic (kept TLS sequences are the
     /// loader's to finish).
     pub(crate) dynamic: bool,
+    /// Stage 3 (§12.5): the output is a shared object: no TLS sequence is
+    /// relaxed, so a `DTPOFF` field is block-relative everywhere (X-46).
+    pub(crate) shared: bool,
+    /// Stage 3 (§12.5): the keys a shared object's view takes from the
+    /// loader (`dynbind`) although the output defines them: preemptible
+    /// keys under an interposer, a preemptible IFUNC's resolved address.
+    pub(crate) loader_keys: std::collections::HashSet<String>,
     /// Stage 3: what §5.8's rule for a target only a shared library
     /// defines reads (`None`: a static output).
     pub(crate) dso_words: Option<dsoword::DsoWords>,
@@ -789,6 +796,8 @@ impl<'a, 'b> Engine<'a, 'b> {
             dyn_tls: std::collections::HashSet::new(),
             dyn_tls_mod: HashMap::default(),
             dynamic: false,
+            shared: false,
+            loader_keys: std::collections::HashSet::new(),
             dso_words: None,
             plt: BTreeMap::new(),
             plt_depths: None,
@@ -1000,10 +1009,15 @@ impl<'a, 'b> Engine<'a, 'b> {
         if name == "_TLS_MODULE_BASE_" && matches!(where_, Ok(SymbolSection::Undefined)) {
             return self.tls_out(0);
         }
+        // §12.5: in a shared object's views a key the loader binds (an
+        // interposed key, a preemptible IFUNC's resolved address) is where
+        // the view puts it, not an IPLT entry.
+        let bound_by_loader = self.loader_keys.contains(&name);
         // An IFUNC by its placed definition, whatever form the output's
         // symbol has (§4.8).
         let chosen = self.chosen_def(&name);
-        if let Some((doi, di)) = chosen
+        if !bound_by_loader
+            && let Some((doi, di)) = chosen
             && self.objs[doi]
                 .symtab
                 .and_then(|dt| dt.get(SymbolIndex(di)).ok())
@@ -1011,14 +1025,16 @@ impl<'a, 'b> Engine<'a, 'b> {
         {
             return self.ifunc_target(doi, di, IfKey::Global(name));
         }
-        if chosen.is_none()
+        if !bound_by_loader
+            && chosen.is_none()
             && sym.sym_type() == STT_GNU_IFUNC
             && matches!(where_, Ok(SymbolSection::Section(_)))
         {
             return self.ifunc_target(oi, idx, IfKey::Global(name));
         }
         // Stage 3: a name the output imports is where the loader binds it.
-        let undefined_out = self.image.global(&name).is_none_or(|o| o.sym.st_shndx == 0);
+        let undefined_out =
+            bound_by_loader || self.image.global(&name).is_none_or(|o| o.sym.st_shndx == 0);
         if undefined_out && let Some(&a) = self.dynbind.get(&name) {
             if self.dyn_tls.contains(&name) {
                 // Where the loader model puts the library's TLS byte.
@@ -1901,7 +1917,16 @@ impl<'a, 'b> Engine<'a, 'b> {
         let size = if word == 8 { want.size() } else { want.size() / 2 };
         g.is_multiple_of(word)
             && !self.occupied.contains(g)
-            && self.got_section.is_none_or(|(lo, hi)| lo <= g && g.saturating_add(size) <= hi)
+            && (self.got_section.is_none_or(|(lo, hi)| lo <= g && g.saturating_add(size) <= hi)
+                // A reference's lazy TLS descriptor of a shared object is
+                // in `.got.plt` (GNU ld; P-D26, WP-121).
+                || (self.format != Format::Mortar
+                    && matches!(want, Want::Pair(crate::loader::TLSDESC_MARK, _))
+                    && self.image.sections.iter().any(|s| {
+                        s.name == ".got.plt"
+                            && s.shdr.sh_addr <= g
+                            && g.saturating_add(size) <= s.shdr.sh_addr.saturating_add(s.shdr.sh_size)
+                    })))
             && match want {
                 Want::Word(v) => self.image.value(g, word as u8) == Some(v & mask),
                 Want::Pair(m, v) => {

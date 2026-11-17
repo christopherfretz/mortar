@@ -704,10 +704,26 @@ impl Engine<'_, '_> {
         }
         // Kept for the loader: the input's bytes, the `lea` reaching a GOT
         // pair that holds the module index and the DTP offset.
+        // The bytes another record of the sequence relocates (the call's
+        // displacement) are that record's to judge (WP-121: a kept GD or
+        // LD sequence, which a shared object keeps, D-119).
+        let machine = self.objs[oi].elf.machine();
+        let others: Vec<(u64, u64)> = recs
+            .iter()
+            .filter(|r| r.off != lead.off && r.off + 8 > lead.off.saturating_sub(before) && r.off < lead.off + 4 + after)
+            .map(|r| (r.off, r.off + u64::from(crate::reloc::width(machine, r.def.r_type))))
+            .collect();
+        let kept = |o: &[u8], i: &[u8]| {
+            (0..o.len()).all(|k| {
+                let off = lead.off.saturating_sub(before) + k as u64;
+                (before as usize..before as usize + 4).contains(&k)
+                    || others.iter().any(|&(a, z)| a <= off && off < z)
+                    || o[k] == i[k]
+            })
+        };
         if self.dynamic
             && let (Some(o), Some(i)) = (out, at(-(before as i64), (hi - lo) as usize))
-            && o[..before as usize] == i[..before as usize]
-            && o[before as usize + 4..] == i[before as usize + 4..]
+            && kept(o, i)
         {
             let rel = i32::from_le_bytes([
                 o[before as usize],
@@ -1011,7 +1027,7 @@ impl Engine<'_, '_> {
             }
         };
         let tp = match self.format {
-            _ if !alloc => false,
+            _ if !alloc || self.shared => false,
             Format::Mortar | Format::Gnu => exec,
             Format::Lld => true,
             Format::Mold => false,

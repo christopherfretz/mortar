@@ -51,6 +51,7 @@ pub const DT_RELACOUNT: u64 = 0x6fff_fff9;
 pub const DT_RELCOUNT: u64 = 0x6fff_fffa;
 pub const DT_FLAGS_1: u64 = 0x6fff_fffb;
 pub const DT_VERDEF: u64 = 0x6fff_fffc;
+pub const DT_VERDEFNUM: u64 = 0x6fff_fffd;
 pub const DT_VERNEED: u64 = 0x6fff_fffe;
 pub const DT_VERNEEDNUM: u64 = 0x6fff_ffff;
 pub const DT_AARCH64_BTI_PLT: u64 = 0x7000_0001;
@@ -175,6 +176,19 @@ pub struct Need {
     pub verneed: usize,
 }
 
+/// A `Verdef` of `.gnu.version_d` with its `Verdaux` names (D-115).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Verdef {
+    pub version: u16,
+    pub flags: u16,
+    pub ndx: u16,
+    pub cnt: u16,
+    pub hash: u32,
+    /// The `Verdaux` names in chain order: the version's own, then its
+    /// parents'.
+    pub names: Vec<String>,
+}
+
 /// The `.gnu.hash` table as written.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GnuHash {
@@ -206,6 +220,8 @@ pub struct DynOut {
     pub needs: Vec<Need>,
     /// `(vn_file offset, file, vn_cnt)` per `Verneed`, in chain order.
     pub verneeds: Vec<(u32, String, u16)>,
+    /// `DT_VERDEF`'s chain, `DT_VERDEFNUM` entries at most (D-115; WP-121).
+    pub verdefs: Vec<Verdef>,
     pub gnu_hash: Option<GnuHash>,
     /// `DT_RELA`/`DT_REL` records, then `DT_JMPREL` records.
     pub rels: Vec<DynRel>,
@@ -452,6 +468,9 @@ impl DynOut {
                 at += u64::from(next);
             }
         }
+        if let Some(a) = d.get(DT_VERDEF) {
+            d.read_verdefs(image, a);
+        }
         // Relocation records.
         let rela = word == 8;
         let tables = [
@@ -483,6 +502,62 @@ impl DynOut {
             }
         }
         Some(d)
+    }
+}
+
+impl DynOut {
+    /// `DT_VERDEF`'s chain (D-115): what cannot be read is a problem.
+    fn read_verdefs(&mut self, image: &Image<'_>, a: u64) {
+        let num = self.get(DT_VERDEFNUM).unwrap_or(0);
+        let mut at = a;
+        for _ in 0..num.min(1 << 16) {
+            let Some(b) = image.bytes(at, 20) else {
+                self.problems.push("a Verdef is not in the output's file image".into());
+                return;
+            };
+            let u16at = |o: usize| u16::from_le_bytes([b[o], b[o + 1]]);
+            let mut v = Verdef {
+                version: u16at(0),
+                flags: u16at(2),
+                ndx: u16at(4),
+                cnt: u16at(6),
+                hash: u32le(b, 8),
+                names: Vec::new(),
+            };
+            let aux = u32le(b, 12);
+            let next = u32le(b, 16);
+            let mut x = at.wrapping_add(u64::from(aux));
+            for _ in 0..v.cnt {
+                let Some(c) = image.bytes(x, 8) else {
+                    self.problems.push("a Verdaux is not in the output's file image".into());
+                    break;
+                };
+                v.names.push(self.string(image, u64::from(u32le(c, 0))).unwrap_or_default());
+                let nx = u32le(c, 4);
+                if nx == 0 {
+                    break;
+                }
+                x = x.wrapping_add(u64::from(nx));
+            }
+            self.verdefs.push(v);
+            if next == 0 {
+                return;
+            }
+            at = at.wrapping_add(u64::from(next));
+        }
+    }
+
+    /// The version a defined `.dynsym` entry's `.gnu.version` index names
+    /// through `.gnu.version_d`: `(name, hidden)`, `None` for index 0/1,
+    /// no table, or an index no `Verdef` has.
+    pub fn def_version(&self, sym: usize) -> Option<(String, bool)> {
+        let raw = *self.versym.as_ref()?.get(sym)?;
+        let v = raw & 0x7fff;
+        if v < 2 {
+            return None;
+        }
+        let d = self.verdefs.iter().find(|d| d.ndx == v)?;
+        Some((d.names.first()?.clone(), raw & 0x8000 != 0))
     }
 }
 
