@@ -278,8 +278,17 @@ fn x86_59_dead_targets_from_eh_sections_are_events() {
         (na, b".debug_info", 0),
     ] {
         let mut sink = Sink::default();
-        support::scan_named(X86::M1, &t, OutputKind::Static, place, name, &input, &[rel(8, key(1), 2)], &mut sink)
-            .unwrap();
+        support::scan_named(
+            X86::M1,
+            &t,
+            OutputKind::Static,
+            place,
+            name,
+            &input,
+            &[rel(8, key(1), 2)],
+            &mut sink,
+        )
+        .unwrap();
         assert!(sink.raised.is_empty() && sink.errors.is_empty());
         assert_eq!(sink.events.len(), n, "{}", String::from_utf8_lossy(name));
     }

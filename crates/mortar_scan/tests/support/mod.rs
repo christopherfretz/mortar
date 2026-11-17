@@ -28,9 +28,7 @@ use mortar_input::load::{LoadEnv, load};
 use mortar_input::store::{Store, StorePolicy};
 use mortar_live::{LiveInputs, LiveOptions, liveness};
 use mortar_resolve::Outcome;
-use mortar_scan::{
-    CodeProof, EhOwners, Mark, Mismatch, ScanInputs, ScanOptions, Scanned, scan,
-};
+use mortar_scan::{CodeProof, EhOwners, Mark, Mismatch, ScanInputs, ScanOptions, Scanned, scan};
 use mortar_testutil::target::Arch;
 
 /// The architecture these tests are about (`spec/harness.md` "A test's

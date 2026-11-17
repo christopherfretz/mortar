@@ -15,8 +15,8 @@ use mortar_diag::{Diagnostic, FileRef, Key, Kind, Place, RefusalClass};
 use mortar_elf::consts::{SHF_ALLOC, SHF_EXECINSTR, SHF_WRITE, SHT_RELA};
 use mortar_elf::{SectionIndex, SymbolIndex};
 
-use crate::events::{Acc, Event, EventClass, GroupKey, RefId, UnitEvents, sym_group};
 use crate::EhOwner;
+use crate::events::{Acc, Event, EventClass, GroupKey, RefId, UnitEvents, sym_group};
 use crate::view::{
     Bufs, EhPlace, Raw, ReadFail, RecTable, RecTables, Recs, View, contents, rec_table, with_bufs,
 };

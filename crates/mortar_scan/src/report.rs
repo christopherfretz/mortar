@@ -7,8 +7,8 @@ use mortar_diag::{Diagnostic, FileRef, Key, Kind, Place, Relation};
 use mortar_elf::consts::{STT_FILE, STT_FUNC, STT_SECTION, STV_HIDDEN, STV_INTERNAL};
 use mortar_elf::{SectionIndex, SymbolIndex, SymbolSection};
 
-use crate::events::{Acc, EventClass, GroupKey, RefId, group_sym};
 use crate::EhOwner;
+use crate::events::{Acc, EventClass, GroupKey, RefId, group_sym};
 use crate::view::{EhPlace, View, contents, rec_offset};
 
 /// `{path}` or `{archive}({member})`, as a note names a file.
