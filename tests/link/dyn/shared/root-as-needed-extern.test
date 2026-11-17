@@ -1,0 +1,90 @@
+# resolve.md §4.2 (WP-152): a script's EXTERN(K) is a root as -u is,
+# and a shared object takes it as -u (dyn/shared/root-as-needed): an
+# --as-needed library defining K is not needed (GNU ld, lld, mortar);
+# a needed one imports K (GNU ld, mortar; lld writes no .dynsym entry);
+# the library first and nothing needing it, then an archive member, is
+# refused by name. mold 2.37 refuses EXTERN (unknown linker script
+# token). The verifier reads EXTERN as a root of the input set (WP-156)
+# and not as what D-21 imports: P-D7 reports the import GNU ld and
+# mortar write for a needed library ("'k_fn' is imported and no input
+# references it"), so the two are xfail until WP-163; lld's lines pass.
+#@ spec: resolve.md §4.2
+#@ spec: dyn.md "D-11"
+#@ arch: aarch64 x86_64
+#@ xfail(bfd,mortar): P-D7 does not read an EXTERN root as a reference a needed library's definition is imported for (WP-152 rule: it is; WP-163)
+
+cc -O1 -fPIC ks.c -o ks.o
+cc -O1 -fPIC ka.c -o ka.o
+cc -O1 -fPIC r.c -o r.o
+cc -O1 -fPIC rk.c -o rk.o
+cc -O1 -fPIE m0.c -o m0.o
+ar rcs libka.a ka.o
+shlib gcc ks.o -o libks.so
+link(bfd,lld,mortar) gcc -pie m0.o ext.ld -L. -Wl,--as-needed -lks -Wl,--no-as-needed -o ext-pie
+run(bfd,lld,mortar) ext-pie
+check(bfd,lld,mortar) readelf -dW ext-pie
+  not: libks.so
+check(bfd,lld,mortar) readelf --dyn-syms -W ext-pie
+  not: * k_fn$
+link(bfd,mortar) gcc -pie m0.o ext.ld -L. -Wl,--no-as-needed -lks -o extnoas-pie
+run(bfd,mortar) extnoas-pie
+check(bfd,mortar) readelf -dW extnoas-pie
+  has: (NEEDED) Shared library: [libks.so]
+check(bfd,mortar) readelf --dyn-syms -W extnoas-pie
+  has: UND k_fn$
+link(mortar) gcc -pie m0.o ext.ld -L. -Wl,--as-needed -lks -Wl,--no-as-needed libka.a -o refext-pie
+  exit: fail
+  diag(mortar): unsupported feature: root of an unneeded --as-needed shared object and an archive member: k_fn
+  diag(mortar): EXTERN(k_fn)
+link(mold) gcc -pie m0.o ext.ld -L. -Wl,--as-needed -lks -Wl,--no-as-needed -o extmold-pie
+  exit: fail
+link(bfd,lld,mortar) gcc -no-pie m0.o ext.ld -L. -Wl,--as-needed -lks -Wl,--no-as-needed -o ext-nopie
+run(bfd,lld,mortar) ext-nopie
+check(bfd,lld,mortar) readelf -dW ext-nopie
+  not: libks.so
+check(bfd,lld,mortar) readelf --dyn-syms -W ext-nopie
+  not: * k_fn$
+link(bfd,mortar) gcc -no-pie m0.o ext.ld -L. -Wl,--no-as-needed -lks -o extnoas-nopie
+run(bfd,mortar) extnoas-nopie
+check(bfd,mortar) readelf -dW extnoas-nopie
+  has: (NEEDED) Shared library: [libks.so]
+check(bfd,mortar) readelf --dyn-syms -W extnoas-nopie
+  has: UND k_fn$
+link(mortar) gcc -no-pie m0.o ext.ld -L. -Wl,--as-needed -lks -Wl,--no-as-needed libka.a -o refext-nopie
+  exit: fail
+  diag(mortar): unsupported feature: root of an unneeded --as-needed shared object and an archive member: k_fn
+  diag(mortar): EXTERN(k_fn)
+link(mold) gcc -no-pie m0.o ext.ld -L. -Wl,--as-needed -lks -Wl,--no-as-needed -o extmold-nopie
+  exit: fail
+link(bfd,lld,mortar) gcc -shared ext.ld -L. -Wl,--as-needed -lks -Wl,--no-as-needed -o ext-so.so
+check(bfd,lld,mortar) readelf -dW ext-so.so
+  not: libks.so
+check(bfd,lld,mortar) readelf --dyn-syms -W ext-so.so
+  not: * k_fn$
+link(bfd,mortar) gcc -shared ext.ld -L. -Wl,--no-as-needed -lks -o extnoas-so.so
+check(bfd,mortar) readelf -dW extnoas-so.so
+  has: (NEEDED) Shared library: [libks.so]
+check(bfd,mortar) readelf --dyn-syms -W extnoas-so.so
+  has: UND k_fn$
+link(mortar) gcc -shared ext.ld -L. -Wl,--as-needed -lks -Wl,--no-as-needed libka.a -o refext-so.so
+  exit: fail
+  diag(mortar): unsupported feature: root of an unneeded --as-needed shared object and an archive member: k_fn
+  diag(mortar): EXTERN(k_fn)
+link(mold) gcc -shared ext.ld -L. -Wl,--as-needed -lks -Wl,--no-as-needed -o extmold-so.so
+  exit: fail
+
+#--- ks.c
+int k_fn(void) { return 5; }
+int k_other(void) { return 6; }
+#--- ka.c
+int k_fn(void) { return 7; }
+#--- r.c
+int k_other(void);
+int use_other(void) { return k_other(); }
+#--- rk.c
+int k_fn(void);
+int use_k(void) { return k_fn(); }
+#--- m0.c
+int main(void) { return 0; }
+#--- ext.ld
+EXTERN(k_fn)

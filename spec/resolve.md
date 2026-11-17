@@ -537,13 +537,49 @@ reference):
 |---|---|---|
 | none of `-e`, `ENTRY`, `-shared`, `-r` | the default entry `_start` (finding 14: all three extract a `_start` member from an archive with no `-e`, R9) | M1 |
 | `-e SYM` / `ENTRY(SYM)` | `SYM` (all three extract it, E13); undefined afterwards: §5.5 | M1 |
-| `-u SYM` | `SYM` (R4b: all three extract; a hidden, weak or IFUNC definition alike; `-u` and `--undefined=` and the joined `-uSYM` alike; WP-152). A name no file defines extracts nothing and is no error (all three; GNU ld writes an undefined `.symtab` entry for it, lld, mold and mortar none). A name only an `--as-needed` shared object defines makes it needed and is imported (D-11 item 2, D-21; GNU ld and lld leave it not needed, mold needed without the import: §16) | M1 |
+| `-u SYM` | `SYM` (R4b: all three extract; a hidden, weak or IFUNC definition alike; `-u` and `--undefined=` and the joined `-uSYM` alike; WP-152). A name no file defines extracts nothing and is no error (all three; GNU ld writes an undefined `.symtab` entry for it, lld, mold and mortar none). A root is not a reference from an object: the rule for a shared object below the table | M1 |
 | `--require-defined=SYM` | `SYM`; if still undefined after the closure, or defined only by a shared object: `required-symbol` (error, the shared object's definition its place; GNU: ``required symbol `x' not defined``, in both cases, mold: `--require-defined: undefined symbol: x`, and mold accepts the shared definition; lld 22 has no such option, E13; WP-152 follows GNU ld) | M1 |
 | `--defsym A=EXPR` | the symbols `EXPR` names, wherever the option is on the line (finding 17: GNU ld extracts them only when the option precedes the archive, ``undefined symbol `k' referenced in expression`` otherwise; lld and mold in any position, R10: §16) | M4 |
 | `--export-dynamic-symbol=GLOB` | each unversioned key whose name matches the glob, among the keys some file mentions (`*` any run, `?` one byte, `[set]` with ranges and `!`/`^` negation, `\` quotes the next byte; a `[` without `]` is literal, fnmatch(3)); a value without a wildcard names its key. GNU ld, lld and mold agree on `exp_d*` (WP-056, `export-dynamic-symbol`); before WP-056 mortar matched the value as a literal name | M2 |
 | a script's `EXTERN(SYM ...)` | each `SYM`, as `-u` (below) | M4; WP-152 |
 | `-init SYM`, `-fini SYM` | none: `SYM` roots no extraction (an archive member only `-init` names stays out and the tag is omitted, all three; mortar's `undefined-init-symbol`, `spec/dyn.md` D-102); its definition is a root of `--gc-sections` (§4.7) | M4 (WP-128) |
 | `--dynamic-list=FILE` | none: a listed name roots no extraction (all three, WP-128); in an executable its definition is exported (§9.6) and so a root of `--gc-sections` (§4.7) | M4 (WP-128) |
+
+**A root and a shared object** (WP-152; every root of this table that
+an option or a script names: `-u`, `EXTERN`, `-e`/`ENTRY`, and
+`--require-defined`, which is an error anyway). The closure is §4.1's
+unchanged: edge 3 targets `first(K)`, and a shared object's definition
+counts there whether or not it is under `--as-needed`. Then:
+
+1. A root never adds a shared object to the needed set (`spec/dyn.md`
+   D-11 item 2: GNU ld's manual defines `--as-needed` by "a non-weak
+   undefined symbol reference from a regular object file", and an
+   option is not one).
+2. If the program does not define `K` after the closure, `K` is imported
+   (an undefined `.dynsym` entry and its `.symtab` entry, `spec/dyn.md`
+   D-21) iff a shared object of the **final** needed set defines it
+   (`--no-as-needed`, or a library some object needs for another
+   symbol); otherwise `K` is written nowhere, as a root no file defines.
+   GNU ld writes the same import (and, when it is not imported, an
+   undefined `.symtab` entry); lld writes `K` nowhere in either case;
+   mold makes the library needed (§16).
+3. **Refused by name**: when the program does not define `K`, `first(K)`
+   is a shared object under `--as-needed` left out of the final needed
+   set, and a lazy file that is not live defines `K` (an archive member
+   after the library): `refused` (class `feature`, name ``root of an
+   unneeded --as-needed shared object and an archive member: `K` ``),
+   `.at` the option, `defined in` the library and the member, with the
+   note that GNU ld extracts the member and lld leaves the root
+   unfulfilled, and the hint `name the archive before the library, or
+   the library under --no-as-needed`. No refusal when the member is live
+   (extracted for another reason: `K` is then the program's) or when no
+   lazy file defines `K` (GNU ld and lld agree: `K` nowhere).
+
+`-e K` with `K` only in an `--as-needed` library that ends up not needed
+is therefore `-e` of an undefined name (§5.5: the `entry-not-found`
+warning, GNU ld's set of needed objects); `-e` of a name a needed shared
+object defines stays refused in an executable (layout's `entry or alias
+in a shared object`).
 
 `EXTERN` (WP-152; before it mortar parsed the command and dropped it, so
 the member was silently not extracted: a mislink). Every name of every
@@ -558,7 +594,8 @@ the diagnostics, which name it `EXTERN(SYM)`). Several names in one
 command and a quoted name (`EXTERN("k")`) are roots each (GNU ld and lld
 agree). A name no file defines extracts nothing and is no error (GNU ld
 and lld; GNU ld writes an undefined `.symtab` entry for it, lld and
-mortar none, as for `-u`). mold 2.37 refuses the command (`unknown
+mortar none, as for `-u`); a shared object's definition is the
+paragraph above, as for `-u`. mold 2.37 refuses the command (`unknown
 linker script token`). Test: `tests/link/resolve/extern-root.test`.
 
 `--whole-archive` (WP-152; measured with GNU ld 2.44, lld 22 and mold
@@ -1346,7 +1383,9 @@ The normative rule is `spec/dyn.md` D-11 (the needed set N), D-12 (the
 used set U, closure files) and D-19a (the order of `DT_NEEDED`); this
 section is its summary. A shared object is **needed** when it is not under `--as-needed`, or when
 some definition of it is `def` of a key that has a **strong reference from
-a live relocatable object** (`ref_strong` from objects), or from another
+a live relocatable object** (`ref_strong` from objects; a root of §4.2
+from an option or a script, `-u`, `-e`, `--require-defined`, `EXTERN`, is
+not one: §4.2, WP-152), or from another
 needed shared object that does not itself list it in `DT_NEEDED` (GNU ld's
 manual, "--as-needed"). A weak reference does not make it needed: GNU ld
 and lld, E4 (the weak reference then resolves to zero: `def` stays the
@@ -2146,7 +2185,13 @@ Every disagreement found; "E" is the experiment in the landed record.
 | `--require-defined` | supported | not an option | supported | supported | E13 |
 | `--require-defined` of a name only a shared object defines | error | not an option | accepted | error (§4.2) | WP-152 |
 | `-u` of a name no file defines, `.symtab` | undefined entry | none | none | none | WP-152 |
-| `-u` of a name only an `--as-needed` shared object defines | not needed | not needed | needed, no import | needed, imported (D-11 item 2, D-21) | WP-152 |
+| `-u` or `EXTERN` of a name only an `--as-needed` shared object defines | not needed, an undefined `.symtab` entry | not needed | needed, no import (`EXTERN` refused) | not needed (§4.2, D-11 item 2) | WP-152 |
+| `-u` or `EXTERN` of a name a needed shared object defines (`--no-as-needed`, or an `--as-needed` one an object needs for another symbol) | imported | no `.dynsym` entry | no `.dynsym` entry | imported (GNU ld; §4.2 item 2) | WP-152 |
+| `-e` of a name only an `--as-needed` shared object defines | not needed, entry warning | needed, imported | needed, no import | not needed, `entry-not-found` (§4.2) | WP-152 |
+| `-u` or `EXTERN` of a name an `--as-needed` shared object defines, then an archive member (nothing else needs the library) | member extracted, the library not needed | nothing extracted, the name nowhere | needed, no import | refused (§4.2 item 3) | WP-152 |
+| `o.o --as-needed libk.so libka.a -u K`, `o.o` needs another symbol of `libk.so` | needed, `K` imported, member not extracted | needed, no `K` | needed, no `K` | GNU ld's | WP-152 |
+| `--as-needed libk.so o.o libka.a -u K`, `o.o` needs another symbol of `libk.so` | executable: undefined (the library dropped, §4.4); `-shared`: not needed, member extracted | needed, no `K` | needed, no `K` | needed, `K` imported, member not extracted | WP-152 |
+| `-u` of a name an archive member defines, then a shared object, executable | defined, not exported | defined and exported | defined, not exported | defined, not exported | WP-152 |
 | `-z muldefs`, a TLS and a non-TLS definition | error | error in one order | accepted | error (§3.4) | WP-152 |
 | `--whole-archive` member that is not ELF | error | error | skipped | error | WP-152 |
 | an archive lazy, then the same archive whole | duplicate | duplicate | links | duplicate | WP-152 |

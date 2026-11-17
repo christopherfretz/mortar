@@ -1035,7 +1035,11 @@ fn sym_props(key: SymbolId, d: Def, p: crate::Props, opts: &Options) -> SymProps
         _ => STB_GLOBAL,
     };
     let mut refs = RefFlags::empty();
-    if p.flags & flags::REF_REGULAR != 0 {
+    // A root of §4.2 is a reference from file 0, not an object's: a key
+    // only roots name that stays undefined is written nowhere, as a root
+    // no file mentions (WP-152: `-u K` of a library left out of N).
+    let undefined = matches!(d, Def::Undefined { .. });
+    if p.flags & flags::OBJ_REF != 0 || (p.flags & flags::REF_REGULAR != 0 && !undefined) {
         refs |= RefFlags::FROM_OBJECT;
     }
     if p.flags & flags::REF_STRONG != 0 {
@@ -1201,6 +1205,21 @@ impl Ctx<'_, '_, '_> {
             .note(
                 "link the library with --no-as-needed, or name the member's definition \
                  earlier (an object or -u)",
+            ),
+            What::RootAsNeeded { key, arg, lib, member } => Diagnostic::refused(
+                C::Feature,
+                format!(
+                    "root of an unneeded --as-needed shared object and an archive member: {}",
+                    self.name(*key)
+                ),
+            )
+            .at(Place::argument(self.root_text(*arg)))
+            .with(Relation::DefinedIn, self.file(*lib))
+            .with(Relation::DefinedIn, self.file(*member))
+            .note(
+                "the references differ: GNU ld extracts the member, lld leaves the root \
+                 unfulfilled; name the archive before the library, or the library under \
+                 --no-as-needed",
             ),
             What::NeededOrderUnknown { file } => Diagnostic::refused(
                 C::Feature,

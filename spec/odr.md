@@ -638,6 +638,31 @@ variables (two of them are already `duplicate-symbol`, `spec/resolve.md`
 for weak definitions that are not vague linkage (N5), and **not from C
 translation units** (C has no vague linkage; N21).
 
+**kiln K-3a, accepted** (2026-11-17; kiln's first kind 2 rows: every row
+`PARTIAL`, the hash over the declared type only). The row set kiln
+chose, none of it against this section:
+1. kind 2 rows are written from level `min`;
+2. a unit with kind 2 rows carries `odr.scheme=kiln-odr-1.d0` (`.d2`
+   when the hash covers bodies); `odr.layout-scheme=kiln-odr-1` goes
+   with kind 3 rows. A reader therefore meets units with kind 3 rows and
+   NO `odr.scheme` row (O-11: nothing of kind 2 to compare);
+3. a member of an explicitly specialized class is `EXPLICIT_SPEC`; its
+   place is its own definition; a C++14 out-of-line `constexpr` member's
+   place is the in-class line;
+4. a definition with an asm label is keyed by the label;
+5. NO row for: aliases, ifuncs, internal linkage, weak definitions that
+   are not vague, vague `always_inline` functions and structors, thunks,
+   guards, TLS wrappers, a coroutine's outlined parts;
+6. `selectany` is vague linkage;
+7. a definition the optimizer dropped keeps its row, unanchored (named);
+8. X15 is decided by closure names and default-argument lambdas; an
+   inline variable of closure type hashes as the per-TU placeholder;
+9. two-deep unnamed nesting is described in kind 4 (such a class newly
+   gets a kind 3 row).
+Item 5's "vague `always_inline` functions and structors" narrows the
+first sentence above: without a row nothing is compared, so a
+difference between two units' copies is a miss, never a false report.
+
 **O-15 (row and flags).** A kind 2 row is
 
 | offset | field | |

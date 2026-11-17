@@ -1,0 +1,167 @@
+# A root of resolve.md §4.2 from an option (-u) and a shared object
+# (WP-152's rule, dyn.md D-11 item 2, D-21): a root never makes an
+# --as-needed library needed; the name is imported iff a library of the
+# final needed set defines it, as GNU ld does (--no-as-needed, or a
+# library an object needs for another symbol; lld writes no .dynsym
+# entry, mold neither); a member after such a library is then not
+# extracted (GNU ld). The one line where GNU ld and lld resolve
+# differently, the root's first definer an --as-needed library nothing
+# needs and an archive member after it (GNU ld extracts the member, lld
+# leaves the root unfulfilled), is refused by name. An object's own
+# reference makes the library needed and imports the name, all four;
+# an archive before the library gives the member, all four.
+# Executables (-pie, -no-pie) and -shared, both architectures. lld's
+# result on the refused line and the other library-not-needed lines are
+# dyn/shared/root-as-needed-unneeded, the EXTERN lines
+# dyn/shared/root-as-needed-extern (the verifier's P-D6, P-D2).
+#@ spec: resolve.md §4.2
+#@ spec: dyn.md "D-11"
+#@ arch: aarch64 x86_64
+
+cc -O1 -fPIC ks.c -o ks.o
+cc -O1 -fPIC ka.c -o ka.o
+cc -O1 -fPIC r.c -o r.o
+cc -O1 -fPIC rk.c -o rk.o
+cc -O1 -fPIE m0.c -o m0.o
+ar rcs libka.a ka.o
+shlib gcc ks.o -o libks.so
+link(bfd,mortar) gcc -pie m0.o -u k_fn -L. -Wl,--no-as-needed -lks -o noas-pie
+run(bfd,mortar) noas-pie
+check(bfd,mortar) readelf -dW noas-pie
+  has: (NEEDED) Shared library: [libks.so]
+check(bfd,mortar) readelf --dyn-syms -W noas-pie
+  has: UND k_fn$
+link(bfd,mortar) gcc -pie m0.o -u k_fn r.o -L. -Wl,--as-needed -lks -Wl,--no-as-needed -o other-pie
+run(bfd,mortar) other-pie
+check(bfd,mortar) readelf -dW other-pie
+  has: (NEEDED) Shared library: [libks.so]
+check(bfd,mortar) readelf --dyn-syms -W other-pie
+  has: UND k_fn$
+link(bfd,mortar) gcc -pie m0.o -u k_fn r.o -L. -Wl,--as-needed -lks -Wl,--no-as-needed libka.a -o otherar-pie
+run(bfd,mortar) otherar-pie
+check(bfd,mortar) readelf -dW otherar-pie
+  has: (NEEDED) Shared library: [libks.so]
+check(bfd,mortar) readelf --dyn-syms -W otherar-pie
+  has: UND k_fn$
+check(bfd,mortar) nm otherar-pie
+  not: T k_fn
+link gcc -pie m0.o -u k_fn rk.o -L. -Wl,--as-needed -lks -Wl,--no-as-needed libka.a -o objref-pie
+run objref-pie
+check readelf -dW objref-pie
+  has: (NEEDED) Shared library: [libks.so]
+check readelf --dyn-syms -W objref-pie
+  has: UND k_fn$
+link gcc -pie m0.o -u k_fn libka.a -L. -Wl,--as-needed -lks -Wl,--no-as-needed -o arfirst-pie
+run arfirst-pie
+check readelf -dW arfirst-pie
+  not: libks.so
+check readelf -sW arfirst-pie
+  has: FUNC * k_fn$
+  not: UND k_fn
+link(mortar) gcc -pie m0.o -u k_fn -L. -Wl,--as-needed -lks -Wl,--no-as-needed libka.a -o refu-pie
+  exit: fail
+  diag(mortar): unsupported feature: root of an unneeded --as-needed shared object and an archive member: k_fn
+  diag(mortar): --undefined=k_fn
+link(bfd) gcc -pie m0.o -u k_fn -L. -Wl,--as-needed -lks -Wl,--no-as-needed libka.a -o refbfd-pie
+check(bfd) readelf -dW refbfd-pie
+  not: libks.so
+check(bfd) readelf -sW refbfd-pie
+  has: FUNC * k_fn$
+  not: UND k_fn
+link(bfd,mortar) gcc -no-pie m0.o -u k_fn -L. -Wl,--no-as-needed -lks -o noas-nopie
+run(bfd,mortar) noas-nopie
+check(bfd,mortar) readelf -dW noas-nopie
+  has: (NEEDED) Shared library: [libks.so]
+check(bfd,mortar) readelf --dyn-syms -W noas-nopie
+  has: UND k_fn$
+link(bfd,mortar) gcc -no-pie m0.o -u k_fn r.o -L. -Wl,--as-needed -lks -Wl,--no-as-needed -o other-nopie
+run(bfd,mortar) other-nopie
+check(bfd,mortar) readelf -dW other-nopie
+  has: (NEEDED) Shared library: [libks.so]
+check(bfd,mortar) readelf --dyn-syms -W other-nopie
+  has: UND k_fn$
+link(bfd,mortar) gcc -no-pie m0.o -u k_fn r.o -L. -Wl,--as-needed -lks -Wl,--no-as-needed libka.a -o otherar-nopie
+run(bfd,mortar) otherar-nopie
+check(bfd,mortar) readelf -dW otherar-nopie
+  has: (NEEDED) Shared library: [libks.so]
+check(bfd,mortar) readelf --dyn-syms -W otherar-nopie
+  has: UND k_fn$
+check(bfd,mortar) nm otherar-nopie
+  not: T k_fn
+link gcc -no-pie m0.o -u k_fn rk.o -L. -Wl,--as-needed -lks -Wl,--no-as-needed libka.a -o objref-nopie
+run objref-nopie
+check readelf -dW objref-nopie
+  has: (NEEDED) Shared library: [libks.so]
+check readelf --dyn-syms -W objref-nopie
+  has: UND k_fn$
+link gcc -no-pie m0.o -u k_fn libka.a -L. -Wl,--as-needed -lks -Wl,--no-as-needed -o arfirst-nopie
+run arfirst-nopie
+check readelf -dW arfirst-nopie
+  not: libks.so
+check readelf -sW arfirst-nopie
+  has: FUNC * k_fn$
+  not: UND k_fn
+link(mortar) gcc -no-pie m0.o -u k_fn -L. -Wl,--as-needed -lks -Wl,--no-as-needed libka.a -o refu-nopie
+  exit: fail
+  diag(mortar): unsupported feature: root of an unneeded --as-needed shared object and an archive member: k_fn
+  diag(mortar): --undefined=k_fn
+link(bfd) gcc -no-pie m0.o -u k_fn -L. -Wl,--as-needed -lks -Wl,--no-as-needed libka.a -o refbfd-nopie
+check(bfd) readelf -dW refbfd-nopie
+  not: libks.so
+check(bfd) readelf -sW refbfd-nopie
+  has: FUNC * k_fn$
+  not: UND k_fn
+link(bfd,mortar) gcc -shared -u k_fn -L. -Wl,--no-as-needed -lks -o noas-so.so
+check(bfd,mortar) readelf -dW noas-so.so
+  has: (NEEDED) Shared library: [libks.so]
+check(bfd,mortar) readelf --dyn-syms -W noas-so.so
+  has: UND k_fn$
+link(bfd,mortar) gcc -shared -u k_fn r.o -L. -Wl,--as-needed -lks -Wl,--no-as-needed -o other-so.so
+check(bfd,mortar) readelf -dW other-so.so
+  has: (NEEDED) Shared library: [libks.so]
+check(bfd,mortar) readelf --dyn-syms -W other-so.so
+  has: UND k_fn$
+link(bfd,mortar) gcc -shared -u k_fn r.o -L. -Wl,--as-needed -lks -Wl,--no-as-needed libka.a -o otherar-so.so
+check(bfd,mortar) readelf -dW otherar-so.so
+  has: (NEEDED) Shared library: [libks.so]
+check(bfd,mortar) readelf --dyn-syms -W otherar-so.so
+  has: UND k_fn$
+check(bfd,mortar) nm otherar-so.so
+  not: T k_fn
+link gcc -shared -u k_fn rk.o -L. -Wl,--as-needed -lks -Wl,--no-as-needed libka.a -o objref-so.so
+check readelf -dW objref-so.so
+  has: (NEEDED) Shared library: [libks.so]
+check readelf --dyn-syms -W objref-so.so
+  has: UND k_fn$
+link gcc -shared -u k_fn libka.a -L. -Wl,--as-needed -lks -Wl,--no-as-needed -o arfirst-so.so
+check readelf -dW arfirst-so.so
+  not: libks.so
+check readelf -sW arfirst-so.so
+  has: FUNC * k_fn$
+  not: UND k_fn
+link(mortar) gcc -shared -u k_fn -L. -Wl,--as-needed -lks -Wl,--no-as-needed libka.a -o refu-so.so
+  exit: fail
+  diag(mortar): unsupported feature: root of an unneeded --as-needed shared object and an archive member: k_fn
+  diag(mortar): --undefined=k_fn
+link(bfd) gcc -shared -u k_fn -L. -Wl,--as-needed -lks -Wl,--no-as-needed libka.a -o refbfd-so.so
+check(bfd) readelf -dW refbfd-so.so
+  not: libks.so
+check(bfd) readelf -sW refbfd-so.so
+  has: FUNC * k_fn$
+  not: UND k_fn
+
+#--- ks.c
+int k_fn(void) { return 5; }
+int k_other(void) { return 6; }
+#--- ka.c
+int k_fn(void) { return 7; }
+#--- r.c
+int k_other(void);
+int use_other(void) { return k_other(); }
+#--- rk.c
+int k_fn(void);
+int use_k(void) { return k_fn(); }
+#--- m0.c
+int main(void) { return 0; }
+#--- ext.ld
+EXTERN(k_fn)

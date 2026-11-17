@@ -6,11 +6,7 @@
 # library under --whole-archive is unchanged by it: under --as-needed
 # nothing references libks.so and it is not needed (all three). -u of a
 # member's name in -shared extracts it and exports it (all three). -u
-# of a name only a shared library defines makes that library needed
-# under --as-needed (dyn.md D-11 item 2: a strong reference from file 0)
-# and imports the name (D-21), as the verifier reads them; GNU ld and lld
-# do not make it needed (P-D6) and mold makes it needed without the
-# import (P-D7), so only mortar links that line here (WP-152 record).
+# of a name a shared library defines: dyn/shared/root-as-needed.
 #@ spec: dyn.md "D-110"
 #@ spec: resolve.md §4.2
 #@ arch: aarch64 x86_64
@@ -45,12 +41,6 @@ check readelf -dW asneeded
 link gcc -shared -u k_fn libk.a -o libu.so
 check readelf --dyn-syms -W libu.so
   has: GLOBAL DEFAULT * k_fn$
-link(mortar) gcc -pie m0.o -u k_fn -L. -Wl,--as-needed -lks -Wl,--no-as-needed -o uneeded
-run(mortar) uneeded
-check(mortar) readelf -dW uneeded
-  has: (NEEDED) Shared library: [libks.so]
-check(mortar) readelf --dyn-syms -W uneeded
-  has: UND k_fn$
 host gcc -pie main.o -L. -lwhole -o prog
 run prog
   stdout: 8

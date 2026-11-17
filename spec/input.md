@@ -1647,6 +1647,7 @@ an argument at `Place::Argument`. A file reached through a script carries
 | `-nostdlib` and `SEARCH_DIR` | ignored | ignored | — | ignored | §4.2 |
 | script cycle | hangs | crashes | hangs | error | §5.3 |
 | `STARTUP` | supported | unsupported | unsupported | refused | §5.1 |
+| `OUTPUT(file)` in an implicit script | ignored | names the output | refused (the script) | ignored (GNU ld) | §5.1 |
 | empty file, `/dev/null` as input | empty script | empty script | error | empty script | §2.3, §2.5 |
 | a FIFO as input | hangs (empty) or error | reads it | error | error, without opening | §2.5 |
 | GCC slim LTO object, no plugin | warning, linked without its code | linked without its code | error | refused | §2.2 |

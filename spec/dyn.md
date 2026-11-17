@@ -474,7 +474,8 @@ every default line links. Notation:
   definition is taken from `bind(k)`**: the import's provider, the size
   and alignment of a `COPY` (D-42), the version and `Verneed` (D-27),
   `STV_PROTECTED` (D-18), `STT_GNU_IFUNC` and `STT_TLS` (D-16, D-23). For
-  a key with a strong program reference `giver(k)` ∈ N (D-11 item 2), so
+  a key with a strong reference from a live object `giver(k)` ∈ N (D-11
+  item 2), so
   `bind(k)` ∈ N, but not always `bind(k) = giver(k)`. A definition that
   lives only in a used object (U, not N) is bound at that object's place
   in the breadth-first part of the order: by a weak program reference
@@ -498,8 +499,19 @@ every default line links. Notation:
    live relocatable object (any relocation or symbol-table mention,
    whether or not its section survives `--gc-sections`: needed is
    decided by resolution, before liveness; GNU ld and mold agree, lld
-   drops the library, E-shlib 2.6a) or from file 0 (`-u`, `--defsym`,
-   `ENTRY`); call the sets of items 1-2 **N0**;
+   drops the library, E-shlib 2.6a); call the sets of items 1-2 **N0**.
+   A **root** of resolve §4.2 that comes from an option or a script
+   directive (`-u`, `--require-defined`, `-e`/`ENTRY`, `EXTERN`) is not
+   such a reference: it makes no shared object needed (GNU ld's manual
+   defines `--as-needed` by "a non-weak undefined symbol reference from
+   a regular object file", and an option is not one; GNU ld and lld
+   leave the library not needed for `-u K` and `EXTERN(K)`, mold makes
+   it needed; `-e K` splits them, resolve §16; WP-152; `--defsym` is M4
+   and not measured). A key only roots name binds a member of N only
+   (never one of U): it is imported iff the final N defines it, and
+   otherwise stays undefined and is written nowhere, as a root no file
+   defines; the one case GNU ld and lld resolve differently is refused
+   (resolve §4.2);
 3. if `x` ∈ N has a strong undefined reference to `k`, `s = giver(k)` is
    in C, and `s` ∉ `reach(N0) ∪ reach({x})`, then `s` ∈ N (an under-linked
    library: GNU ld makes the provider needed and the program runs; lld
@@ -801,7 +813,10 @@ build) writes `.gnu.hash` only, lld and mold write both (E-dynsym,
 the null entry:
 
 1. **imports**: every key whose `def` is `Shared` (from a needed shared
-   object) and which a live relocatable object mentions (`ref_regular`);
+   object) and which a live relocatable object mentions (`ref_regular`),
+   or which a root of resolve §4.2 names (`-u`, `EXTERN`: GNU ld; lld
+   writes none; the root never makes the object needed, D-11 item 2;
+   WP-152);
 2. **exports**: every key `exported` (resolve §9.6, D-12), except
    linker-defined keys of file 0, which are exported only when
    `ref_dynamic` (lld and mold export none of `__bss_start`, `_edata`,

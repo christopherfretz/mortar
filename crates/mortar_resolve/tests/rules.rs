@@ -942,6 +942,127 @@ fn s4_2_require_defined_by_a_shared_object_errors() {
     );
     let r = link_with(&m, &Options { undefined: vec![n], ..opts() });
     assert!(r.problems.is_empty(), "{:?}", r.problems);
+    // An --as-needed library the root leaves out (WP-152): the same note.
+    let mut m = Model::new(A64);
+    m.obj("a.o");
+    let lib = m.shlib("libk.so", true);
+    let k = m.def(lib, "k");
+    let n = named(&mut m, "k", 4);
+    let r = link_with(&m, &Options { require_defined: vec![n], ..opts() });
+    assert_eq!(def(&m, &r, "k"), Def::Undefined { weak: false });
+    assert!(
+        r.problems.iter().any(|p| matches!(&p.what,
+            What::RequiredSymbol { arg: 4, shared: Some(s), .. } if *s == e(lib, k))),
+        "{:?}",
+        r.problems
+    );
+}
+
+/// §4.2, "A root and a shared object" (WP-152): `-u k`, `k` in the
+/// shared object `lib` (as-needed or not), the archive member `member`
+/// after it when `ar` is set; `refs` names an object's references.
+fn root_and_lib(
+    as_needed: bool,
+    ar: bool,
+    refs: &[&str],
+) -> (Model, FileId, Option<FileId>, Options) {
+    let mut m = Model::new(A64);
+    let a = m.obj("a.o");
+    for r in refs {
+        m.undef(a, r);
+    }
+    let lib = m.shlib("libk.so", as_needed);
+    m.def(lib, "k");
+    m.def(lib, "j");
+    let member = ar.then(|| {
+        let arch = m.archive();
+        let k = m.member(arch, "k.o");
+        m.def(k, "k");
+        k
+    });
+    let n = named(&mut m, "k", 4);
+    let o = Options { undefined: vec![n], ..opts() };
+    (m, lib, member, o)
+}
+
+fn imported(m: &Model, r: &Resolved, name: &str) -> bool {
+    r.dynamic.as_ref().is_some_and(|d| d.imported[m.id(name).0 as usize])
+}
+
+#[test]
+fn s4_2_a_root_makes_no_library_needed() {
+    // Item 1: GNU ld and lld leave the library not needed; `k` is written
+    // nowhere (no object reference, so no `FROM_OBJECT`).
+    let (m, lib, _, o) = root_and_lib(true, false, &[]);
+    let r = link_with(&m, &o);
+    assert!(ids(&r).is_empty(), "{:?}", r.problems);
+    assert_eq!(r.file_live[lib.0 as usize], FileLive::Dead);
+    assert_eq!(def(&m, &r, "k"), Def::Undefined { weak: false });
+    assert!(!imported(&m, &r, "k"));
+    assert_eq!(r.props[m.id("k").0 as usize].flags & flags::OBJ_REF, 0);
+}
+
+#[test]
+fn s4_2_a_root_imports_from_a_needed_library() {
+    // Item 2: needed for itself (--no-as-needed) or for another symbol:
+    // the root's name is imported (GNU ld).
+    for (as_needed, refs) in [(false, &[][..]), (true, &["j"][..])] {
+        let (m, lib, _, o) = root_and_lib(as_needed, false, refs);
+        let r = link_with(&m, &o);
+        assert!(ids(&r).is_empty(), "{:?}", r.problems);
+        assert!(matches!(r.file_live[lib.0 as usize], FileLive::Shared { needed: true, .. }));
+        assert!(matches!(def(&m, &r, "k"), Def::Shared(_)));
+        assert!(imported(&m, &r, "k"));
+    }
+    // A member after the needed library is not extracted (GNU ld).
+    let (m, _, member, o) = root_and_lib(true, true, &["j"]);
+    let r = link_with(&m, &o);
+    assert!(ids(&r).is_empty(), "{:?}", r.problems);
+    assert!(!live_of(&r, member.unwrap()));
+    assert!(imported(&m, &r, "k"));
+}
+
+#[test]
+fn s4_2_a_root_an_unneeded_library_and_a_member_is_refused() {
+    // Item 3: GNU ld extracts the member, lld does not.
+    let (m, lib, member, o) = root_and_lib(true, true, &[]);
+    let r = link_with(&m, &o);
+    let member = member.unwrap();
+    assert!(
+        r.problems.iter().any(|p| matches!(p.what,
+            What::RootAsNeeded { arg: 4, lib: l, member: f, .. } if l == lib && f == member)),
+        "{:?}",
+        r.problems
+    );
+    assert_eq!(ids(&r), ["refused"]);
+    // An object's own reference makes the library needed: no refusal.
+    let (m, lib, _, o) = root_and_lib(true, true, &["k"]);
+    let r = link_with(&m, &o);
+    assert!(ids(&r).is_empty(), "{:?}", r.problems);
+    assert!(matches!(r.file_live[lib.0 as usize], FileLive::Shared { needed: true, .. }));
+    assert!(imported(&m, &r, "k"));
+    // The library under --no-as-needed: imported, no refusal.
+    let (m, _, _, o) = root_and_lib(false, true, &[]);
+    let r = link_with(&m, &o);
+    assert!(ids(&r).is_empty(), "{:?}", r.problems);
+    assert!(imported(&m, &r, "k"));
+}
+
+#[test]
+fn s4_2_a_root_and_a_member_before_the_library() {
+    // The archive first: first(k) is the member, extracted (all four).
+    let mut m = Model::new(A64);
+    m.obj("a.o");
+    let arch = m.archive();
+    let km = m.member(arch, "k.o");
+    let ki = m.def(km, "k");
+    let lib = m.shlib("libk.so", true);
+    m.def(lib, "k");
+    let n = named(&mut m, "k", 4);
+    let r = link_with(&m, &Options { undefined: vec![n], ..opts() });
+    assert!(ids(&r).is_empty(), "{:?}", r.problems);
+    assert_eq!(def(&m, &r, "k"), Def::Strong(e(km, ki)));
+    assert_eq!(r.file_live[lib.0 as usize], FileLive::Dead);
 }
 
 #[test]

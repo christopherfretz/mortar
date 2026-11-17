@@ -221,10 +221,11 @@ pub(crate) fn link<V: View>(
             in_n[f.0 as usize] = true;
         }
     }
-    // Item 2: keys with a strong reference from a live relocatable object
-    // or file 0 (D1's `ref_strong`), or a common that yields (rule 2).
+    // Item 2: keys with a strong reference from a live relocatable object,
+    // or a common that yields (rule 2). A root of resolve §4.2 (`-u`,
+    // `EXTERN`, `-e`, `--require-defined`) is not one (WP-152, R2).
     let item2: Vec<Option<FileId>> = pool.unit_cost(4).map(keys, |k| {
-        let strong = props[k].flags & flags::REF_STRONG != 0 || rule2(k);
+        let strong = props[k].flags & flags::OBJ_STRONG != 0 || rule2(k);
         if strong { giver(k, def) } else { None }
     });
     for g in item2.iter().flatten() {
@@ -303,11 +304,18 @@ pub(crate) fn link<V: View>(
     // `DT_NEEDED` search (input §8.6), so a member of C that is not needed
     // is dropped and binds nothing, even when a needed object's edge
     // reaches it (U). Only a weak-only key can have every definition
-    // outside N (a strong one makes `giver(k)` needed, D-11 item 2): it
-    // stays `Undefined{weak: true}` (D-111 item 3), with no version and
-    // no `Verneed` (D-27).
-    let binds = |f: FileId| -> bool {
-        rank[f.0 as usize] != u32::MAX && (opts.shared_output.is_none() || in_n[f.0 as usize])
+    // outside N (an object's strong one makes `giver(k)` needed, D-11
+    // item 2): it stays `Undefined{weak: true}` (D-111 item 3), with no
+    // version and no `Verneed` (D-27). A key only roots name stays
+    // undefined too, as a root nothing defines (WP-152).
+    // A key only roots reference (no live object mentions it) binds only
+    // a needed object: the root imports `k` iff a member of the final N
+    // defines it (resolve §4.2, WP-152's R2).
+    let binds = |f: FileId, k: usize| -> bool {
+        let root_only =
+            props[k].flags & flags::OBJ_REF == 0 && props[k].flags & flags::REF_REGULAR != 0;
+        rank[f.0 as usize] != u32::MAX
+            && ((opts.shared_output.is_none() && !root_only) || in_n[f.0 as usize])
     };
     let new_def: Vec<Option<Def>> = pool.unit_cost(4).map(keys, |k| {
         let defs = l.defs_of(SymbolId(k as u32));
@@ -324,7 +332,7 @@ pub(crate) fn link<V: View>(
             return None;
         }
         defs.iter()
-            .filter(|d| l.in_c[d.file.0 as usize] && binds(d.file))
+            .filter(|d| l.in_c[d.file.0 as usize] && binds(d.file, k))
             .filter(|d| !r2 || d.data)
             .min_by_key(|d| (rank[d.file.0 as usize], d.index.0))
             .map(|d| Def::Shared(SymEntry { file: d.file, index: d.index }))
@@ -334,7 +342,8 @@ pub(crate) fn link<V: View>(
             // A common that yields (rule 2) is demoted: its mentions are
             // references of the shared definition (§3.1, §3.6).
             if matches!(def[k], Def::Common(_)) {
-                props[k].flags |= flags::REF_REGULAR | flags::REF_STRONG;
+                props[k].flags |=
+                    flags::REF_REGULAR | flags::REF_STRONG | flags::OBJ_REF | flags::OBJ_STRONG;
             }
             def[k] = d;
         }

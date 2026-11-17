@@ -562,6 +562,7 @@ The dynamic outputs (M2) added these, without a kind of their own
 | `dynamically linked output on i386` | the front, until M4 | `spec/dyn.md` §1 (i386 dynamic is M4) |
 | `thread-local undefined weak symbol in a dynamic executable` | the scan | `spec/dyn.md` D-25 |
 | `lazy PLT (shared-library calls)` | `mortar_x64`, `mortar_x86` outside a dynamic plan | `spec/x64.md` §10.3 |
+| `root of an unneeded --as-needed shared object and an archive member: {name}` | resolution, after the needed set (`.at` the option, `-u`/`EXTERN`/`-e`; `defined in` the library, then the member; the note names the references' two results and the two ways out) | `spec/resolve.md` §4.2 (WP-152) |
 
 A dynamic link's notes are the refusing spec's as well: the D-12 note
 `defined in {path}, which is not on the command line`
