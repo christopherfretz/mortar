@@ -18,7 +18,6 @@
 # and binds `vfn@V1`. Not wrong outputs; the checks are GNU ld's.
 #@ spec: dyn.md "D-111"
 #@ arch: aarch64 x86_64
-#@ xfail(mortar,x86_64): M4: WP-127 (x86-64 shared objects; dyn.md D-100)
 
 cc -O1 -fPIC v.c -o v.o
 cc -O1 -fPIC m2.c -o m2.o

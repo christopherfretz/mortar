@@ -7,7 +7,6 @@
 # verifier's D-12 W8 finding on the host.)
 #@ spec: dyn.md "D-27"
 #@ arch: aarch64 x86_64
-#@ xfail(mortar,x86_64): M4: WP-127 (x86-64 shared objects; dyn.md D-100)
 
 cc -O1 -fPIC v.c -o v.o
 cc -O1 -fPIC m2.c -o m2.o
