@@ -194,6 +194,7 @@ impl Builder<'_> {
 
     /// Links `out` in `dir` with linker `k` of `Linker::ALL` through the
     /// recording `ld`; a refused link is a test failure.
+    #[allow(clippy::too_many_arguments)] // the link's facts, as `tests/dyn.rs`
     fn link(
         &mut self,
         case: &'static str,

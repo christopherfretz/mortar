@@ -7,6 +7,8 @@
 //! scripts and dynamic lists the line names are read by this module's own
 //! reader (`spec/script.md` §9.1) and matched by its own matcher
 //! (`spec/resolve.md` §9.7).
+// ELF fields read best by the specs' short names.
+#![allow(clippy::many_single_char_names, clippy::similar_names)]
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
@@ -23,7 +25,7 @@ use crate::locate::{Obj, Place};
 use crate::map::{Format, OutputKind, SharedRecords, Symbolic};
 use crate::report::{Finding, Rule};
 
-/// The words Line::parse leaves for a `-shared` line (its P-D1 entry until
+/// The words `Line::parse` leaves for a `-shared` line (its P-D1 entry until
 /// §12.5 judges it).
 const SHARED_OUTSIDE: &str = "-shared (M4)";
 
@@ -95,6 +97,7 @@ impl SharedLine {
     }
 
     /// Reads the words of a link (without the program name).
+    #[allow(clippy::too_many_lines)] // one arm per option
     pub fn read(args: &[String]) -> SharedLine {
         let mut l = SharedLine::default();
         let mut i = 0;
@@ -118,10 +121,8 @@ impl SharedLine {
                 "-Bsymbolic-non-weak"
                 | "--Bsymbolic-non-weak"
                 | "-Bsymbolic-non-weak-functions"
-                | "--Bsymbolic-non-weak-functions" => {
-                    l.outside.push(format!("{a} (dyn.md D-112: refused by name)"));
-                }
-                "--dynamic-list-data"
+                | "--Bsymbolic-non-weak-functions"
+                | "--dynamic-list-data"
                 | "-dynamic-list-data"
                 | "--dynamic-list-cpp-new"
                 | "-dynamic-list-cpp-new"
@@ -511,7 +512,7 @@ fn lex(file: &str, text: &str) -> Result<Vec<(Tok, u32)>, ScriptError> {
                         b[i],
                         b' ' | b'\t' | b'\r' | b'\n' | b'{' | b'}' | b';' | b':' | b'"'
                     )
-                    && !(b[i] == b'#')
+                    && b[i] != b'#'
                 {
                     i += 1;
                 }
@@ -901,13 +902,11 @@ fn read_files(
 ) -> Option<Vec<(String, String)>> {
     let mut v = Vec::new();
     for p in paths {
-        match files.read(p) {
-            Some(b) => v.push((p.clone(), String::from_utf8_lossy(&b).into_owned())),
-            None => {
-                sets.problems.push(format!("{p}: cannot be read (a file of the -shared line)"));
-                return None;
-            }
-        }
+        let Some(b) = files.read(p) else {
+            sets.problems.push(format!("{p}: cannot be read (a file of the -shared line)"));
+            return None;
+        };
+        v.push((p.clone(), String::from_utf8_lossy(&b).into_owned()));
     }
     Some(v)
 }
@@ -960,6 +959,7 @@ pub(crate) fn compute(
     }
     // Every mention of a name by a live object: definitions (full names,
     // `.symver` forms kept) and the merged visibility (by base name).
+    #[allow(clippy::items_after_statements)] // next to its one use
     struct D {
         ty: u8,
         bind: u8,
@@ -1518,10 +1518,10 @@ pub(crate) fn static_checks(
     let num = out.get(crate::dynout::DT_VERDEFNUM);
     match (any_node, out.has(crate::dynout::DT_VERDEF)) {
         (false, true) => {
-            v.push(fd(22, "DT_VERDEF and the version script names no version node (D-115)"))
+            v.push(fd(22, "DT_VERDEF and the version script names no version node (D-115)"));
         }
         (true, false) => {
-            v.push(fd(22, "no DT_VERDEF and the version script names a version node (D-115)"))
+            v.push(fd(22, "no DT_VERDEF and the version script names a version node (D-115)"));
         }
         (true, true) => {
             if num != Some(out.verdefs.len() as u64) {
@@ -1637,7 +1637,7 @@ pub(crate) fn static_checks(
         out.get(crate::dynout::DT_FLAGS).is_some_and(|f| f & crate::dynout::DF_STATIC_TLS != 0);
     // GNU ld on AArch64 never sets it (dyn.md's reference table, D-119).
     let gnu_a64 = format == Format::Gnu && m == mortar_elf::consts::EM_AARCH64;
-    if ie != static_tls && !(gnu_a64 && !static_tls) {
+    if ie != static_tls && (static_tls || !gnu_a64) {
         v.push(fd(
             26,
             format!("DF_STATIC_TLS {static_tls}; an initial-exec slot exists {ie} (D-119)"),
@@ -1728,7 +1728,7 @@ pub(crate) fn filter_dyncheck(v: &mut Vec<Finding>, image: &Image<'_>, out: &Dyn
                     return !hex_after(m, "a tag").is_some_and(|t| SHARED_TAGS.contains(&t));
                 }
                 if m.starts_with("DT_FLAGS 0x") {
-                    return !hex_after(m, "has bits").is_some_and(|b| b & !mask == 0);
+                    return hex_after(m, "has bits").is_none_or(|b| b & !mask != 0);
                 }
                 if m.starts_with("DT_FLAGS is present iff -z now") {
                     // mortar's form: DT_FLAGS also carries D-103's bits.

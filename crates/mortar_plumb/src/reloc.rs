@@ -706,6 +706,7 @@ impl<'a, 'b> Engine<'a, 'b> {
         self.plt.get(&t).is_some_and(|&slot| self.image.value(slot, self.word() as u8) == Some(s))
     }
 
+    #[allow(clippy::too_many_lines)] // one line per field
     pub fn new(image: &'b Image<'a>, objs: &'b [Obj<'a>], format: Format) -> Self {
         let mut defs: HashMap<String, Vec<(usize, u32)>> = HashMap::default();
         let mut commons: HashMap<String, Vec<(usize, u32)>> = HashMap::default();
