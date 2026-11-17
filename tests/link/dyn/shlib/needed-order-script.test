@@ -1,0 +1,637 @@
+# dyn.md D-19a (WP-172): a shared object mentioned again inside a linker
+# script is placed by that mention's own as-needed state (the one in force
+# where its script was named, AS_NEEDED(...) forcing it on,
+# --push-state/--pop-state applied) and its group. Each program prints its
+# constructors (the reverse of the loader's order) and "main"; fixture
+# needed-libs. Measured with GNU ld 2.44, lld 19 and mold 2.37.1 on AArch64
+# and x86-64 (identical lists): mortar writes GNU ld's list on every line
+# GNU ld links (spec/landed/dyn/WP-172.md section 2).
+#
+# Where the references differ (dyn.md 13.1, "DT_NEEDED order"): lld writes
+# each soname at its first mention; mold drops a library whose first
+# mention is as-needed and unreferenced even when a later one is plain
+# (W9). Each linker has its own list below, and its own run.
+#@ spec: dyn.md "D-19a"
+#@ xfail(mold): W9: an unreferenced library first named --as-needed and later plainly is dropped from DT_NEEDED
+#@ arch: aarch64 x86_64
+#@ fixture: needed-libs
+
+cc -O1 -fPIE use_x.c -o use_x.o
+cc -O1 -fPIE -DREFS=f_nx() main.c -o main_x.o
+cc -O1 -fPIE "-DREFS=f_nx()+f_ny()" main.c -o main_xy.o
+cc -O1 -fPIC -DN=dx who.c -o dx.o
+shlib gcc dx.o -Wl,-soname,libdx.so -o libdx.so
+cc -O1 -fPIC -DN=dy who.c -o dy.o
+shlib gcc dy.o -Wl,-soname,libdy.so -o libdy.so
+cc -O1 -fPIE mw.c -o main_w.o
+
+# s_named_off: the script INPUT(libnx.so) named under --no-as-needed after
+# an as-needed, unreferenced libnx.so: kept at the script (GNU ld).
+link gcc -pie main0.o -Wl,--no-as-needed libna.so -Wl,--as-needed libnx.so -Wl,--no-as-needed libnb.so s_x.so libnc.so -o s-named-off
+check readelf -dW s-named-off
+  count(bfd,mortar): 5 (NEEDED)
+  has(bfd,mortar): [libna.so]
+  then(bfd,mortar): [libnb.so]
+  then(bfd,mortar): [libnx.so]
+  then(bfd,mortar): [libnc.so]
+  then(bfd,mortar): [libc.so.6]
+  count(lld): 5 (NEEDED)
+  has(lld): [libna.so]
+  then(lld): [libnx.so]
+  then(lld): [libnb.so]
+  then(lld): [libnc.so]
+  then(lld): [libc.so.6]
+  count(mold): 4 (NEEDED)
+  has(mold): [libna.so]
+  then(mold): [libnb.so]
+  then(mold): [libnc.so]
+  then(mold): [libc.so.6]
+run(bfd,mortar) s-named-off
+  stdout: nc nx nb na main
+run(lld) s-named-off
+  stdout: nc nb nx na main
+run(mold) s-named-off
+  stdout: nc nb na main
+
+# s_named_on: the same script named under --as-needed: not needed.
+link gcc -pie main0.o -Wl,--no-as-needed libna.so -Wl,--as-needed libnx.so -Wl,--no-as-needed libnb.so -Wl,--as-needed s_x.so -Wl,--no-as-needed libnc.so -o s-named-on
+check readelf -dW s-named-on
+  count: 4 (NEEDED)
+  has: [libna.so]
+  then: [libnb.so]
+  then: [libnc.so]
+  then: [libc.so.6]
+run s-named-on
+  stdout: nc nb na main
+
+# s_push_on: named after --push-state --as-needed: not needed.
+link gcc -pie main0.o -Wl,--no-as-needed libna.so -Wl,--as-needed libnx.so -Wl,--no-as-needed libnb.so -Wl,--push-state,--as-needed s_x.so -Wl,--pop-state libnc.so -o s-push-on
+check readelf -dW s-push-on
+  count: 4 (NEEDED)
+  has: [libna.so]
+  then: [libnb.so]
+  then: [libnc.so]
+  then: [libc.so.6]
+run s-push-on
+  stdout: nc nb na main
+
+# s_push_off: named after --push-state --no-as-needed: needed there.
+link gcc -pie main0.o -Wl,--as-needed libna.so libnx.so libnb.so -Wl,--push-state,--no-as-needed s_x.so -Wl,--pop-state libnc.so -o s-push-off
+check readelf -dW s-push-off
+  count(bfd,lld,mortar): 2 (NEEDED)
+  has(bfd,lld,mortar): [libnx.so]
+  then(bfd,lld,mortar): [libc.so.6]
+  count(mold): 1 (NEEDED)
+  has(mold): [libc.so.6]
+run(bfd,lld,mortar) s-push-off
+  stdout: nx main
+run(mold) s-push-off
+  stdout: main
+
+# s_push_pop_restores: --pop-state restores --as-needed before the script.
+link gcc -pie main0.o -Wl,--no-as-needed libna.so -Wl,--as-needed libnx.so -Wl,--push-state,--no-as-needed libnb.so -Wl,--pop-state s_x.so -Wl,--no-as-needed libnc.so -o s-push-pop-restores
+check readelf -dW s-push-pop-restores
+  count: 4 (NEEDED)
+  has: [libna.so]
+  then: [libnb.so]
+  then: [libnc.so]
+  then: [libc.so.6]
+run s-push-pop-restores
+  stdout: nc nb na main
+
+# g_plain_off: GROUP(libnx.so) under --no-as-needed.
+link gcc -pie main0.o -Wl,--no-as-needed libna.so -Wl,--as-needed libnx.so -Wl,--no-as-needed libnb.so g_x.so libnc.so -o g-plain-off
+check readelf -dW g-plain-off
+  count(bfd,mortar): 5 (NEEDED)
+  has(bfd,mortar): [libna.so]
+  then(bfd,mortar): [libnb.so]
+  then(bfd,mortar): [libnx.so]
+  then(bfd,mortar): [libnc.so]
+  then(bfd,mortar): [libc.so.6]
+  count(lld): 5 (NEEDED)
+  has(lld): [libna.so]
+  then(lld): [libnx.so]
+  then(lld): [libnb.so]
+  then(lld): [libnc.so]
+  then(lld): [libc.so.6]
+  count(mold): 4 (NEEDED)
+  has(mold): [libna.so]
+  then(mold): [libnb.so]
+  then(mold): [libnc.so]
+  then(mold): [libc.so.6]
+run(bfd,mortar) g-plain-off
+  stdout: nc nx nb na main
+run(lld) g-plain-off
+  stdout: nc nb nx na main
+run(mold) g-plain-off
+  stdout: nc nb na main
+
+# s_asn_in_off: INPUT(AS_NEEDED(libnx.so)) under --no-as-needed: AS_NEEDED
+# forces it on, not needed.
+link gcc -pie main0.o -Wl,--no-as-needed libna.so -Wl,--as-needed libnx.so -Wl,--no-as-needed libnb.so s_anx.so libnc.so -o s-asn-in-off
+check readelf -dW s-asn-in-off
+  count: 4 (NEEDED)
+  has: [libna.so]
+  then: [libnb.so]
+  then: [libnc.so]
+  then: [libc.so.6]
+run s-asn-in-off
+  stdout: nc nb na main
+
+# s_two_off: INPUT(libny.so libnx.so), both met before as-needed.
+link gcc -pie main0.o -Wl,--no-as-needed libna.so -Wl,--as-needed libnx.so libny.so -Wl,--no-as-needed libnb.so s_yx.so libnc.so -o s-two-off
+check readelf -dW s-two-off
+  count(bfd,mortar): 6 (NEEDED)
+  has(bfd,mortar): [libna.so]
+  then(bfd,mortar): [libnb.so]
+  then(bfd,mortar): [libny.so]
+  then(bfd,mortar): [libnx.so]
+  then(bfd,mortar): [libnc.so]
+  then(bfd,mortar): [libc.so.6]
+  count(lld): 6 (NEEDED)
+  has(lld): [libna.so]
+  then(lld): [libnx.so]
+  then(lld): [libny.so]
+  then(lld): [libnb.so]
+  then(lld): [libnc.so]
+  then(lld): [libc.so.6]
+  count(mold): 4 (NEEDED)
+  has(mold): [libna.so]
+  then(mold): [libnb.so]
+  then(mold): [libnc.so]
+  then(mold): [libc.so.6]
+run(bfd,mortar) s-two-off
+  stdout: nc nx ny nb na main
+run(lld) s-two-off
+  stdout: nc nb ny nx na main
+run(mold) s-two-off
+  stdout: nc nb na main
+
+# s_mixed_off_ref: INPUT(AS_NEEDED(libny.so) libnx.so), both referenced.
+link gcc -pie main_xy.o -Wl,--no-as-needed libna.so -Wl,--as-needed libnb.so -Wl,--no-as-needed s_anyx.so libnc.so -o s-mixed-off-ref
+check readelf -dW s-mixed-off-ref
+  count: 5 (NEEDED)
+  has: [libna.so]
+  then: [libny.so]
+  then: [libnx.so]
+  then: [libnc.so]
+  then: [libc.so.6]
+run s-mixed-off-ref
+  stdout: nc nx ny na main
+
+# n_sx_off: a nested script (INPUT(s_x.so)) under --no-as-needed.
+link gcc -pie main0.o -Wl,--no-as-needed libna.so -Wl,--as-needed libnx.so -Wl,--no-as-needed libnb.so n_sx.so libnc.so -o n-sx-off
+check readelf -dW n-sx-off
+  count(bfd,mortar): 5 (NEEDED)
+  has(bfd,mortar): [libna.so]
+  then(bfd,mortar): [libnb.so]
+  then(bfd,mortar): [libnx.so]
+  then(bfd,mortar): [libnc.so]
+  then(bfd,mortar): [libc.so.6]
+  count(lld): 5 (NEEDED)
+  has(lld): [libna.so]
+  then(lld): [libnx.so]
+  then(lld): [libnb.so]
+  then(lld): [libnc.so]
+  then(lld): [libc.so.6]
+  count(mold): 4 (NEEDED)
+  has(mold): [libna.so]
+  then(mold): [libnb.so]
+  then(mold): [libnc.so]
+  then(mold): [libc.so.6]
+run(bfd,mortar) n-sx-off
+  stdout: nc nx nb na main
+run(lld) n-sx-off
+  stdout: nc nb nx na main
+run(mold) n-sx-off
+  stdout: nc nb na main
+
+# n_asx_off: the nested script inside AS_NEEDED: its entries inherit it.
+link gcc -pie main0.o -Wl,--no-as-needed libna.so -Wl,--as-needed libnx.so -Wl,--no-as-needed libnb.so n_asx.so libnc.so -o n-asx-off
+check readelf -dW n-asx-off
+  count: 4 (NEEDED)
+  has: [libna.so]
+  then: [libnb.so]
+  then: [libnc.so]
+  then: [libc.so.6]
+run n-asx-off
+  stdout: nc nb na main
+
+# n_sanx_off: AS_NEEDED inside the nested script (mold cannot read
+# AS_NEEDED in a nested script: `library not found: AS_NEEDED`).
+link(bfd,lld,mortar) gcc -pie main0.o -Wl,--no-as-needed libna.so -Wl,--as-needed libnx.so -Wl,--no-as-needed libnb.so n_sanx.so libnc.so -o n-sanx-off
+check(bfd,lld,mortar) readelf -dW n-sanx-off
+  count(bfd,lld,mortar): 4 (NEEDED)
+  has(bfd,lld,mortar): [libna.so]
+  then(bfd,lld,mortar): [libnb.so]
+  then(bfd,lld,mortar): [libnc.so]
+  then(bfd,lld,mortar): [libc.so.6]
+run(bfd,lld,mortar) n-sanx-off
+  stdout: nc nb na main
+
+# s_l_off: -lnx inside the script.
+link gcc -pie main0.o -Wl,--no-as-needed libna.so -L. -Wl,--as-needed libnx.so -Wl,--no-as-needed libnb.so s_lx.so libnc.so -o s-l-off
+check readelf -dW s-l-off
+  count(bfd,mortar): 5 (NEEDED)
+  has(bfd,mortar): [libna.so]
+  then(bfd,mortar): [libnb.so]
+  then(bfd,mortar): [libnx.so]
+  then(bfd,mortar): [libnc.so]
+  then(bfd,mortar): [libc.so.6]
+  count(lld): 5 (NEEDED)
+  has(lld): [libna.so]
+  then(lld): [libnx.so]
+  then(lld): [libnb.so]
+  then(lld): [libnc.so]
+  then(lld): [libc.so.6]
+  count(mold): 4 (NEEDED)
+  has(mold): [libna.so]
+  then(mold): [libnb.so]
+  then(mold): [libnc.so]
+  then(mold): [libc.so.6]
+run(bfd,mortar) s-l-off
+  stdout: nc nx nb na main
+run(lld) s-l-off
+  stdout: nc nb nx na main
+run(mold) s-l-off
+  stdout: nc nb na main
+
+# s_al_off: AS_NEEDED(-lnx) inside the script.
+link gcc -pie main0.o -Wl,--no-as-needed libna.so -L. -Wl,--as-needed libnx.so -Wl,--no-as-needed libnb.so s_alx.so libnc.so -o s-al-off
+check readelf -dW s-al-off
+  count: 4 (NEEDED)
+  has: [libna.so]
+  then: [libnb.so]
+  then: [libnc.so]
+  then: [libc.so.6]
+run s-al-off
+  stdout: nc nb na main
+
+# grp_s_anx: INPUT(AS_NEEDED(libnx.so)) inside --start-group with the
+# object that refers to f_nx after it: kept at the script (group rescan).
+link gcc -pie main0.o -Wl,--no-as-needed libna.so -Wl,--as-needed libnx.so -Wl,--no-as-needed libnb.so -Wl,--start-group s_anx.so use_x.o -Wl,--end-group libnc.so -o grp-s-anx
+check readelf -dW grp-s-anx
+  count(bfd,mortar): 5 (NEEDED)
+  has(bfd,mortar): [libna.so]
+  then(bfd,mortar): [libnb.so]
+  then(bfd,mortar): [libnx.so]
+  then(bfd,mortar): [libnc.so]
+  then(bfd,mortar): [libc.so.6]
+  count(lld,mold): 5 (NEEDED)
+  has(lld,mold): [libna.so]
+  then(lld,mold): [libnx.so]
+  then(lld,mold): [libnb.so]
+  then(lld,mold): [libnc.so]
+  then(lld,mold): [libc.so.6]
+run(bfd,mortar) grp-s-anx
+  stdout: nc nx nb na main
+run(lld,mold) grp-s-anx
+  stdout: nc nb nx na main
+
+# grp_cli_s_x: the script named --as-needed inside a command-line group.
+link gcc -pie main0.o -Wl,--no-as-needed libna.so -Wl,--as-needed libnx.so -Wl,--no-as-needed libnb.so -Wl,--start-group -Wl,--as-needed s_x.so -Wl,--no-as-needed use_x.o -Wl,--end-group libnc.so -o grp-cli-s-x
+check readelf -dW grp-cli-s-x
+  count(bfd,mortar): 5 (NEEDED)
+  has(bfd,mortar): [libna.so]
+  then(bfd,mortar): [libnb.so]
+  then(bfd,mortar): [libnx.so]
+  then(bfd,mortar): [libnc.so]
+  then(bfd,mortar): [libc.so.6]
+  count(lld,mold): 5 (NEEDED)
+  has(lld,mold): [libna.so]
+  then(lld,mold): [libnx.so]
+  then(lld,mold): [libnb.so]
+  then(lld,mold): [libnc.so]
+  then(lld,mold): [libc.so.6]
+run(bfd,mortar) grp-cli-s-x
+  stdout: nc nx nb na main
+run(lld,mold) grp-cli-s-x
+  stdout: nc nb nx na main
+
+# before_asn_ref_between: the reference between the as-needed mention and
+# the plain script mention: kept at the script.
+link gcc -pie main0.o -Wl,--no-as-needed libna.so -Wl,--as-needed libnx.so -Wl,--no-as-needed use_x.o libnb.so s_x.so libnc.so -o before-asn-ref-between
+check readelf -dW before-asn-ref-between
+  count(bfd,mortar): 5 (NEEDED)
+  has(bfd,mortar): [libna.so]
+  then(bfd,mortar): [libnb.so]
+  then(bfd,mortar): [libnx.so]
+  then(bfd,mortar): [libnc.so]
+  then(bfd,mortar): [libc.so.6]
+  count(lld,mold): 5 (NEEDED)
+  has(lld,mold): [libna.so]
+  then(lld,mold): [libnx.so]
+  then(lld,mold): [libnb.so]
+  then(lld,mold): [libnc.so]
+  then(lld,mold): [libc.so.6]
+run(bfd,mortar) before-asn-ref-between
+  stdout: nc nx nb na main
+run(lld,mold) before-asn-ref-between
+  stdout: nc nb nx na main
+
+# before_asn_ref_first: referenced before the first mention: kept there.
+link gcc -pie main_x.o -Wl,--no-as-needed libna.so -Wl,--as-needed libnx.so -Wl,--no-as-needed libnb.so s_x.so libnc.so -o before-asn-ref-first
+check readelf -dW before-asn-ref-first
+  count: 5 (NEEDED)
+  has: [libna.so]
+  then: [libnx.so]
+  then: [libnb.so]
+  then: [libnc.so]
+  then: [libc.so.6]
+run before-asn-ref-first
+  stdout: nc nb nx na main
+
+# before_plain: first mention plain; the script mention changes nothing.
+link gcc -pie main0.o -Wl,--no-as-needed libna.so libnx.so libnb.so -Wl,--as-needed s_anx.so -Wl,--no-as-needed libnc.so -o before-plain
+check readelf -dW before-plain
+  count: 5 (NEEDED)
+  has: [libna.so]
+  then: [libnx.so]
+  then: [libnb.so]
+  then: [libnc.so]
+  then: [libc.so.6]
+run before-plain
+  stdout: nc nb nx na main
+
+# after_plain: first met in a script under --as-needed, plain after it.
+link gcc -pie main0.o -Wl,--no-as-needed libna.so -Wl,--as-needed s_x.so -Wl,--no-as-needed libnb.so libnx.so libnc.so -o after-plain
+check readelf -dW after-plain
+  count(bfd,mortar): 5 (NEEDED)
+  has(bfd,mortar): [libna.so]
+  then(bfd,mortar): [libnb.so]
+  then(bfd,mortar): [libnx.so]
+  then(bfd,mortar): [libnc.so]
+  then(bfd,mortar): [libc.so.6]
+  count(lld): 5 (NEEDED)
+  has(lld): [libna.so]
+  then(lld): [libnx.so]
+  then(lld): [libnb.so]
+  then(lld): [libnc.so]
+  then(lld): [libc.so.6]
+  count(mold): 4 (NEEDED)
+  has(mold): [libna.so]
+  then(mold): [libnb.so]
+  then(mold): [libnc.so]
+  then(mold): [libc.so.6]
+run(bfd,mortar) after-plain
+  stdout: nc nx nb na main
+run(lld) after-plain
+  stdout: nc nb nx na main
+run(mold) after-plain
+  stdout: nc nb na main
+
+# after_ref_s_on: first met in a script under --as-needed, a reference,
+# then an as-needed mention: kept at that mention.
+link gcc -pie main0.o -Wl,--no-as-needed libna.so -Wl,--as-needed s_x.so -Wl,--no-as-needed use_x.o libnb.so -Wl,--as-needed libnx.so -Wl,--no-as-needed libnc.so -o after-ref-s-on
+check readelf -dW after-ref-s-on
+  count(bfd,mortar): 5 (NEEDED)
+  has(bfd,mortar): [libna.so]
+  then(bfd,mortar): [libnb.so]
+  then(bfd,mortar): [libnx.so]
+  then(bfd,mortar): [libnc.so]
+  then(bfd,mortar): [libc.so.6]
+  count(lld,mold): 5 (NEEDED)
+  has(lld,mold): [libna.so]
+  then(lld,mold): [libnx.so]
+  then(lld,mold): [libnb.so]
+  then(lld,mold): [libnc.so]
+  then(lld,mold): [libc.so.6]
+run(bfd,mortar) after-ref-s-on
+  stdout: nc nx nb na main
+run(lld,mold) after-ref-s-on
+  stdout: nc nb nx na main
+
+# s_twice_off (the base refused it): two plain script mentions; the first keeps.
+link gcc -pie main0.o -Wl,--no-as-needed libna.so -Wl,--as-needed libnx.so -Wl,--no-as-needed libnb.so s_x.so libny.so s_x.so libnc.so -o s-twice-off
+check readelf -dW s-twice-off
+  count(bfd,mortar): 6 (NEEDED)
+  has(bfd,mortar): [libna.so]
+  then(bfd,mortar): [libnb.so]
+  then(bfd,mortar): [libnx.so]
+  then(bfd,mortar): [libny.so]
+  then(bfd,mortar): [libnc.so]
+  then(bfd,mortar): [libc.so.6]
+  count(lld): 6 (NEEDED)
+  has(lld): [libna.so]
+  then(lld): [libnx.so]
+  then(lld): [libnb.so]
+  then(lld): [libny.so]
+  then(lld): [libnc.so]
+  then(lld): [libc.so.6]
+  count(mold): 5 (NEEDED)
+  has(mold): [libna.so]
+  then(mold): [libnb.so]
+  then(mold): [libny.so]
+  then(mold): [libnc.so]
+  then(mold): [libc.so.6]
+run(bfd,mortar) s-twice-off
+  stdout: nc ny nx nb na main
+run(lld) s-twice-off
+  stdout: nc ny nb nx na main
+run(mold) s-twice-off
+  stdout: nc ny nb na main
+
+# s_then_plain (the base refused it): a plain script mention, then a plain one.
+link gcc -pie main0.o -Wl,--no-as-needed libna.so -Wl,--as-needed libnx.so -Wl,--no-as-needed s_x.so libnb.so libnx.so libnc.so -o s-then-plain
+check readelf -dW s-then-plain
+  count(bfd,lld,mortar): 5 (NEEDED)
+  has(bfd,lld,mortar): [libna.so]
+  then(bfd,lld,mortar): [libnx.so]
+  then(bfd,lld,mortar): [libnb.so]
+  then(bfd,lld,mortar): [libnc.so]
+  then(bfd,lld,mortar): [libc.so.6]
+  count(mold): 4 (NEEDED)
+  has(mold): [libna.so]
+  then(mold): [libnb.so]
+  then(mold): [libnc.so]
+  then(mold): [libc.so.6]
+run(bfd,lld,mortar) s-then-plain
+  stdout: nc nb nx na main
+run(mold) s-then-plain
+  stdout: nc nb na main
+
+# s_on_then_s_off: the script named --as-needed, then --no-as-needed.
+link gcc -pie main0.o -Wl,--no-as-needed libna.so -Wl,--as-needed libnx.so s_x.so -Wl,--no-as-needed libnb.so s_x.so libnc.so -o s-on-then-s-off
+check readelf -dW s-on-then-s-off
+  count(bfd,mortar): 5 (NEEDED)
+  has(bfd,mortar): [libna.so]
+  then(bfd,mortar): [libnb.so]
+  then(bfd,mortar): [libnx.so]
+  then(bfd,mortar): [libnc.so]
+  then(bfd,mortar): [libc.so.6]
+  count(lld): 5 (NEEDED)
+  has(lld): [libna.so]
+  then(lld): [libnx.so]
+  then(lld): [libnb.so]
+  then(lld): [libnc.so]
+  then(lld): [libc.so.6]
+  count(mold): 4 (NEEDED)
+  has(mold): [libna.so]
+  then(mold): [libnb.so]
+  then(mold): [libnc.so]
+  then(mold): [libc.so.6]
+run(bfd,mortar) s-on-then-s-off
+  stdout: nc nx nb na main
+run(lld) s-on-then-s-off
+  stdout: nc nb nx na main
+run(mold) s-on-then-s-off
+  stdout: nc nb na main
+
+# s_off_ref_s_on: referenced before a script named --as-needed at the end:
+# kept there, after libnc.so (GNU ld; lld and mold at the first mention).
+link gcc -pie main0.o -Wl,--no-as-needed libna.so -Wl,--as-needed libnx.so libnb.so -Wl,--no-as-needed use_x.o libnc.so s_x.so -o s-off-ref-s-on
+check readelf -dW s-off-ref-s-on
+  count(bfd,mortar): 4 (NEEDED)
+  has(bfd,mortar): [libna.so]
+  then(bfd,mortar): [libnc.so]
+  then(bfd,mortar): [libnx.so]
+  then(bfd,mortar): [libc.so.6]
+  count(lld,mold): 4 (NEEDED)
+  has(lld,mold): [libna.so]
+  then(lld,mold): [libnx.so]
+  then(lld,mold): [libnc.so]
+  then(lld,mold): [libc.so.6]
+run(bfd,mortar) s-off-ref-s-on
+  stdout: nx nc na main
+run(lld,mold) s-off-ref-s-on
+  stdout: nc nx na main
+
+# cli_group_nested: a nested script inside a command-line group.
+link gcc -pie main0.o -Wl,--no-as-needed libna.so -Wl,--as-needed libnx.so -Wl,--no-as-needed libnb.so -Wl,--start-group -Wl,--as-needed n_sx.so -Wl,--no-as-needed use_x.o -Wl,--end-group libnc.so -o cli-group-nested
+check readelf -dW cli-group-nested
+  count(bfd,mortar): 5 (NEEDED)
+  has(bfd,mortar): [libna.so]
+  then(bfd,mortar): [libnb.so]
+  then(bfd,mortar): [libnx.so]
+  then(bfd,mortar): [libnc.so]
+  then(bfd,mortar): [libc.so.6]
+  count(lld,mold): 5 (NEEDED)
+  has(lld,mold): [libna.so]
+  then(lld,mold): [libnx.so]
+  then(lld,mold): [libnb.so]
+  then(lld,mold): [libnc.so]
+  then(lld,mold): [libc.so.6]
+run(bfd,mortar) cli-group-nested
+  stdout: nc nx nb na main
+run(lld,mold) cli-group-nested
+  stdout: nc nb nx na main
+
+# nested_group_none (the base refused it): a nested script in no group,
+# the reference after every mention. GNU ld refuses (undefined reference);
+# mortar keeps libnx.so at its first mention (D-19a's fallback), as lld
+# and mold write it.
+link(bfd) gcc -pie main0.o -Wl,--no-as-needed libna.so -Wl,--as-needed libnx.so -Wl,--no-as-needed libnb.so -Wl,--as-needed n_sx.so -Wl,--no-as-needed use_x.o libnc.so -o nested-group-none
+  exit: fail
+  diag: undefined reference to `f_nx'
+link(lld,mold,mortar) gcc -pie main0.o -Wl,--no-as-needed libna.so -Wl,--as-needed libnx.so -Wl,--no-as-needed libnb.so -Wl,--as-needed n_sx.so -Wl,--no-as-needed use_x.o libnc.so -o nested-group-none
+check(lld,mold,mortar) readelf -dW nested-group-none
+  count(lld,mold,mortar): 5 (NEEDED)
+  has(lld,mold,mortar): [libna.so]
+  then(lld,mold,mortar): [libnx.so]
+  then(lld,mold,mortar): [libnb.so]
+  then(lld,mold,mortar): [libnc.so]
+  then(lld,mold,mortar): [libc.so.6]
+run(lld,mold,mortar) nested-group-none
+  stdout: nc nb nx na main
+
+# input_then_group: INPUT(libnx.so) GROUP(libny.so use_x.o): the INPUT entry
+# is in no group. GNU ld refuses; mortar writes the fallback, lld and
+# mold's order. (The base took the group of the script's other entries
+# and kept libnx.so at the script: a guess, now the entry's own state.)
+link(bfd) gcc -pie main0.o -Wl,--no-as-needed libna.so -Wl,--as-needed libnx.so libny.so -Wl,--no-as-needed libnb.so -Wl,--as-needed ig_mixed.so -Wl,--no-as-needed libnc.so -o input-then-group
+  exit: fail
+  diag: undefined reference to `f_nx'
+link(lld,mold,mortar) gcc -pie main0.o -Wl,--no-as-needed libna.so -Wl,--as-needed libnx.so libny.so -Wl,--no-as-needed libnb.so -Wl,--as-needed ig_mixed.so -Wl,--no-as-needed libnc.so -o input-then-group
+check(lld,mold,mortar) readelf -dW input-then-group
+  count(lld,mold,mortar): 5 (NEEDED)
+  has(lld,mold,mortar): [libna.so]
+  then(lld,mold,mortar): [libnx.so]
+  then(lld,mold,mortar): [libnb.so]
+  then(lld,mold,mortar): [libnc.so]
+  then(lld,mold,mortar): [libc.so.6]
+run(lld,mold,mortar) input-then-group
+  stdout: nc nb nx na main
+
+# dup_run: libdx.so and libdy.so both define who_dup; main_w.o calls it
+# after the as-needed libdx.so, then INPUT(libdx.so) plain: GNU ld keeps
+# libdx.so at the script, after libdy.so, and the program binds libdy's
+# who_dup; lld and mold write libdx.so first and it binds libdx's.
+link gcc -pie -Wl,--as-needed libdx.so -Wl,--no-as-needed libdy.so main_w.o s_dx.so -o dup-run
+check readelf -dW dup-run
+  count(bfd,mortar): 3 (NEEDED)
+  has(bfd,mortar): [libdy.so]
+  then(bfd,mortar): [libdx.so]
+  then(bfd,mortar): [libc.so.6]
+  count(lld,mold): 3 (NEEDED)
+  has(lld,mold): [libdx.so]
+  then(lld,mold): [libdy.so]
+  then(lld,mold): [libc.so.6]
+run(bfd,mortar) dup-run
+  stdout: dx dy main dy
+run(lld,mold) dup-run
+  stdout: dy dx main dx
+
+# dup_run_on: the script named --as-needed. GNU ld leaves libdx.so out
+# (it decided neededness by its binding); mortar keeps it needed by
+# first mention (D-11, the deliberate superset of needed-order-dup-def
+# line 1), placed after libdy.so: the same binding and run as GNU ld.
+link gcc -pie -Wl,--as-needed libdx.so -Wl,--no-as-needed libdy.so main_w.o -Wl,--as-needed s_dx.so -o dup-run-on
+check readelf -dW dup-run-on
+  count(bfd): 2 (NEEDED)
+  has(bfd): [libdy.so]
+  then(bfd): [libc.so.6]
+  count(lld,mold): 3 (NEEDED)
+  has(lld,mold): [libdx.so]
+  then(lld,mold): [libdy.so]
+  then(lld,mold): [libc.so.6]
+  count(mortar): 3 (NEEDED)
+  has(mortar): [libdy.so]
+  then(mortar): [libdx.so]
+  then(mortar): [libc.so.6]
+run(bfd) dup-run-on
+  stdout: dy main dy
+run(lld,mold) dup-run-on
+  stdout: dy dx main dx
+run(mortar) dup-run-on
+  stdout: dx dy main dy
+
+#--- use_x.c
+int f_nx(void);
+int use_x(void) { return f_nx(); }
+#--- who.c
+#include <stdio.h>
+#define STR2(x) #x
+#define STR(x) STR2(x)
+__attribute__((constructor)) static void ctor(void) { printf(STR(N) " "); }
+const char *who_dup(void) { return STR(N); }
+#--- mw.c
+#include <stdio.h>
+const char *who_dup(void);
+int main(void) {
+  printf("main %s\n", who_dup());
+  return 0;
+}
+#--- s_x.so
+INPUT ( libnx.so )
+#--- s_dx.so
+INPUT ( libdx.so )
+#--- s_anx.so
+INPUT ( AS_NEEDED ( libnx.so ) )
+#--- g_x.so
+GROUP ( libnx.so )
+#--- s_yx.so
+INPUT ( libny.so libnx.so )
+#--- s_anyx.so
+INPUT ( AS_NEEDED ( libny.so ) libnx.so )
+#--- n_sx.so
+INPUT ( s_x.so )
+#--- n_asx.so
+INPUT ( AS_NEEDED ( s_x.so ) )
+#--- n_sanx.so
+INPUT ( s_anx.so )
+#--- s_lx.so
+INPUT ( -lnx )
+#--- s_alx.so
+INPUT ( AS_NEEDED ( -lnx ) )
+#--- ig_mixed.so
+INPUT ( libnx.so ) GROUP ( libny.so use_x.o )

@@ -251,6 +251,15 @@ pub struct ScriptEntry {
     pub script: u32,
     pub offset: u64,
     pub parent: Option<u32>,
+    /// The as-needed state of the entry's mention (`spec/dyn.md` D-19a):
+    /// the one in force where its script was named, `AS_NEEDED(…)` forcing
+    /// it on.
+    pub as_needed: bool,
+    /// The group ordinal of the entry's mention (§10.2, the numbering of
+    /// `LinkTable::group`), or `None`: in no group, or in a group no row
+    /// is in. Set when the walk finishes, since ordinals are given to
+    /// groups as their first row is pushed.
+    pub group: Option<u32>,
 }
 
 /// `OUTPUT`, `ENTRY`, `EXTERN` (§5.1).
@@ -690,6 +699,9 @@ struct Walk<'c, 's> {
     link: LinkTable,
     problems: Vec<Problem>,
     group_ordinals: HashMap<GroupKey, u32>,
+    /// The group of each `script_entries` row, by key: its ordinal is
+    /// known only when the walk finishes.
+    entry_groups: Vec<Option<GroupKey>>,
     script_groups: u32,
     soname_units: FixedMap<Spelled, usize>,
     mentions_of_path: FixedMap<Spelled, u32>,
@@ -734,6 +746,7 @@ impl<'c, 's> Walk<'c, 's> {
             link: LinkTable::default(),
             problems: Vec::new(),
             group_ordinals: HashMap::new(),
+            entry_groups: Vec::new(),
             script_groups: 0,
             soname_units: FixedMap::default(),
             mentions_of_path: FixedMap::default(),
@@ -1307,6 +1320,20 @@ impl<'c, 's> Walk<'c, 's> {
         let out = *n;
         *n += 1;
         out
+    }
+
+    /// A row of `script_entries` with its mention's state; its index.
+    fn push_entry(&mut self, script: u32, offset: u64, parent: Option<u32>, state: &MState) -> u32 {
+        let entry = u32::try_from(self.link.script_entries.len()).unwrap_or(u32::MAX);
+        self.link.script_entries.push(ScriptEntry {
+            script,
+            offset,
+            parent,
+            as_needed: state.as_needed,
+            group: None,
+        });
+        self.entry_groups.push(state.group);
+        entry
     }
 
     fn group_of(&mut self, state: &MState) -> Option<u32> {
@@ -1936,12 +1963,8 @@ impl<'c, 's> Walk<'c, 's> {
                         let dirs = self.search_dirs(&dirs_before);
                         candidates.extend(dirs.iter().map(|d| join(d, name)));
                     }
-                    let entry = u32::try_from(self.link.script_entries.len()).unwrap_or(u32::MAX);
-                    self.link.script_entries.push(ScriptEntry {
-                        script: file.opened,
-                        offset: c.span.start as u64,
-                        parent: m.entry,
-                    });
+                    let entry =
+                        self.push_entry(file.opened, c.span.start as u64, m.entry, &m.state);
                     let sref = SearchRef::ScriptEntry(entry);
                     let mut sub = m.clone();
                     sub.entry = Some(entry);
@@ -2035,12 +2058,7 @@ impl<'c, 's> Walk<'c, 's> {
                 }
                 InputItem::File(file) => {
                     let offset = file.spelling.span.start;
-                    let entry = u32::try_from(self.link.script_entries.len()).unwrap_or(u32::MAX);
-                    self.link.script_entries.push(ScriptEntry {
-                        script: f.opened,
-                        offset: offset as u64,
-                        parent: m.entry,
-                    });
+                    let entry = self.push_entry(f.opened, offset as u64, m.entry, &state);
                     let place = script_place(f, offset);
                     let sub = Mention {
                         input: m.input,
@@ -2546,6 +2564,9 @@ impl<'c, 's> Walk<'c, 's> {
 
     fn finish(mut self) -> Loaded<'s> {
         crate::problem::sort(&mut self.problems);
+        for (e, key) in self.link.script_entries.iter_mut().zip(&self.entry_groups) {
+            e.group = key.and_then(|k| self.group_ordinals.get(&k).copied());
+        }
         Loaded {
             target: self.target,
             files: self.files,

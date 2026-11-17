@@ -48,6 +48,7 @@ check(bfd) readelf -rW libdl.so
 link(mortar) gcc -shared lib.o -Wl,--dynamic-list,cxx.list -o libcxx.so
   exit: fail
   diag: extern "C++" in a dynamic list
+  diag: error: cxx.list:1:18: unsupported
 link gcc -pie pie.o -L. -ldl -o pie-dl
 run pie-dl
   stdout: lib 1 10 3 4 7 5

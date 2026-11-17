@@ -493,7 +493,13 @@ fn link_inputs<'s>(
     let script_entries: Box<[ScriptEntry]> = link
         .script_entries
         .iter()
-        .map(|e| ScriptEntry { script: e.script, offset: e.offset, parent: e.parent })
+        .map(|e| ScriptEntry {
+            script: e.script,
+            offset: e.offset,
+            parent: e.parent,
+            as_needed: e.as_needed,
+            group: e.group.map(GroupOrdinal),
+        })
         .collect();
     let directives: Box<[Directive<'s>]> = link
         .directives

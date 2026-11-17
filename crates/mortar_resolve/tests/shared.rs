@@ -64,10 +64,19 @@ fn mentions(m: &Model, o: &mut Options, files: &[(FileId, u32)]) {
         o.shared.mentions.push(SharedMention {
             file,
             position,
-            as_needed: Some(info.as_needed),
+            as_needed: info.as_needed,
             group: MentionGroup::None,
         });
     }
+    o.shared.mentions.sort_by_key(|m| m.position);
+}
+
+/// One more mention of `file` at `position` with its own state (a script
+/// entry, WP-172: the state in force where its script was named,
+/// `AS_NEEDED(…)` forcing it on).
+fn mention_at(o: &mut Options, file: FileId, position: u32, as_needed: bool, group: Option<u32>) {
+    let group = group.map_or(MentionGroup::None, MentionGroup::In);
+    o.shared.mentions.push(SharedMention { file, position, as_needed, group });
     o.shared.mentions.sort_by_key(|m| m.position);
 }
 
@@ -554,16 +563,108 @@ fn d19a_bind_follows_keeping_mentions_not_file_ids() {
     assert_eq!(def(&m, &r, "f"), Def::Shared(SymEntry { file: la, index: ia }));
 }
 
+// WP-172, the cells of `spec/landed/dyn/WP-172.md` §2: a shared object
+// mentioned again inside a linker script is placed by that mention's own
+// state. Positions: x (as-needed) at 1, b (plain) at 2, then the script's
+// mention of x.
+
+/// `--as-needed libx.so --no-as-needed libb.so s_x.so` (`s_named_off`):
+/// the script's entry is plain, x is needed there, after b (GNU ld).
 #[test]
-fn d19a_unknown_as_needed_state_is_refused() {
+fn d19a_script_mention_plain_keeps_it_there() {
+    let mut m = Model::new(A64);
+    m.obj("a.o");
+    // Merged over its mentions (on only if on at every one): off.
+    let x = m.shlib("libx.so", false);
+    let b = m.shlib("libb.so", false);
+    let mut o = opts();
+    mentions(&m, &mut o, &[(b, 2)]);
+    mention_at(&mut o, x, 1, true, None);
+    mention_at(&mut o, x, 3, false, None);
+    let r = link_with(&m, &o);
+    assert!(ids(&r).is_empty(), "{:?}", ids(&r));
+    assert_eq!(dynamic(&r).needed, vec![b, x]);
+}
+
+/// The same script named under `--as-needed` (`s_named_on`, `s_push_on`):
+/// every mention is as-needed and nothing refers to x: not needed.
+#[test]
+fn d19a_script_mention_as_needed_unreferenced_is_dead() {
+    let mut m = Model::new(A64);
+    m.obj("a.o");
+    let x = m.shlib("libx.so", true);
+    let b = m.shlib("libb.so", false);
+    let mut o = opts();
+    mentions(&m, &mut o, &[(x, 1), (b, 2)]);
+    mention_at(&mut o, x, 3, true, None);
+    let r = link_with(&m, &o);
+    assert!(ids(&r).is_empty(), "{:?}", ids(&r));
+    assert_eq!(dynamic(&r).needed, vec![b]);
+    assert_eq!(row(&r, x), FileLive::Dead);
+}
+
+/// `… s_x.so liby.so s_x.so` (`s_twice_off`, the base refused it): the
+/// first plain mention keeps x, before y.
+#[test]
+fn d19a_two_script_mentions_first_plain_keeps() {
     let mut m = Model::new(A64);
     m.obj("a.o");
     let x = m.shlib("libx.so", false);
+    let b = m.shlib("libb.so", false);
+    let y = m.shlib("liby.so", false);
     let mut o = opts();
-    mentions(&m, &mut o, &[(x, 1)]);
-    o.shared.mentions[0].as_needed = None;
+    mentions(&m, &mut o, &[(b, 2), (y, 4)]);
+    mention_at(&mut o, x, 1, true, None);
+    mention_at(&mut o, x, 3, false, None);
+    mention_at(&mut o, x, 5, false, None);
     let r = link_with(&m, &o);
-    assert_eq!(ids(&r), vec!["refused"]);
+    assert!(ids(&r).is_empty(), "{:?}", ids(&r));
+    assert_eq!(dynamic(&r).needed, vec![b, x, y]);
+}
+
+/// `--as-needed libx.so --no-as-needed libb.so --as-needed g.so` with
+/// `g.so` = `GROUP ( s_x.so use_x.o )` (`nested_group`, refused before):
+/// the nested entry is as-needed and in the group of `use_x.o`, which
+/// refers to x after it: kept at the script's mention, after b.
+#[test]
+fn d19a_nested_script_mention_in_group_keeps_it_there() {
+    let mut m = Model::new(A64);
+    let x = m.shlib("libx.so", true);
+    let b = m.shlib("libb.so", false);
+    let u = m.obj("use_x.o");
+    m.undef(u, "fx");
+    m.def(x, "fx");
+    m.set_group(u, 1);
+    let mut o = opts();
+    mentions(&m, &mut o, &[(x, 1), (b, 2)]);
+    mention_at(&mut o, x, 3, true, Some(1));
+    o.shared.position[u.0 as usize] = 4;
+    let r = link_with(&m, &o);
+    assert!(ids(&r).is_empty(), "{:?}", ids(&r));
+    assert_eq!(dynamic(&r).needed, vec![b, x]);
+}
+
+/// `g.so` = `INPUT ( libx.so ) GROUP ( liby.so use_x.o )`
+/// (`input_then_group`): the `INPUT` entry is in no group, so no mention
+/// of x qualifies (GNU ld refuses the line, `undefined reference`) and x
+/// stays at its first mention, as lld and mold write it. The base took
+/// the group of the script's other entries and wrote `b x`.
+#[test]
+fn d19a_input_entry_beside_a_group_is_in_no_group() {
+    let mut m = Model::new(A64);
+    let x = m.shlib("libx.so", true);
+    let b = m.shlib("libb.so", false);
+    let u = m.obj("use_x.o");
+    m.undef(u, "fx");
+    m.def(x, "fx");
+    m.set_group(u, 1);
+    let mut o = opts();
+    mentions(&m, &mut o, &[(x, 1), (b, 2)]);
+    mention_at(&mut o, x, 3, true, None);
+    o.shared.position[u.0 as usize] = 4;
+    let r = link_with(&m, &o);
+    assert!(ids(&r).is_empty(), "{:?}", ids(&r));
+    assert_eq!(dynamic(&r).needed, vec![x, b]);
 }
 
 #[test]

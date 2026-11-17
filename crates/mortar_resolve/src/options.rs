@@ -187,9 +187,6 @@ pub enum MentionGroup {
     None,
     /// In the group of that ordinal (`FileInfo::group`'s numbering).
     In(u32),
-    /// The input tables do not record it (a second mention of one soname
-    /// inside a linker script).
-    Unknown,
 }
 
 /// One mention of a shared object of the command line or a script
@@ -201,9 +198,10 @@ pub struct SharedMention {
     /// Its position: the order of the mentions with scripts expanded
     /// inline (`spec/input.md` §10.4 `opened`).
     pub position: u32,
-    /// Its own as-needed state; `None` when the input tables do not record
-    /// it (a second mention inside a linker script).
-    pub as_needed: Option<bool>,
+    /// Its own as-needed state: the one in force where it, or its
+    /// enclosing script, is named, `AS_NEEDED(…)` forcing it on (the
+    /// mention's row, or its script entry, `mortar_core::inputs::ScriptEntry`).
+    pub as_needed: bool,
     pub group: MentionGroup,
 }
 

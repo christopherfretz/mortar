@@ -19,11 +19,11 @@
 # of `libgcc_s`, `-lgcc_s -Wl,--no-as-needed` (an explicit `-lgcc_s`
 # under the default `--as-needed`, then the driver's own `-lgcc_s` after
 # `--no-as-needed`) names `libgcc_s.so.1` again inside the linker script
-# `libgcc_s.so`, a mention whose as-needed state the input tables do not
-# record: refused by name (D-19a's keeping mention). The references
-# differ there: GNU ld needs `libstdc++ libm libgcc_s libc` in that
-# order, lld puts `libgcc_s` before `libm`, mold drops it (measured on
-# AArch64). A version script of mangled
+# `libgcc_s.so`, a mention with the switch off: D-19a keeps it there
+# (WP-172; refused by name before the script entries carried their
+# state). That line is in `dyn/shlib/needed-order-script-system.test`
+# (mold drops `libgcc_s` there, W9, a verifier finding that would mark
+# every step of this test). A version script of mangled
 # names (exact and a glob, `_ZN2ns*`) exports them at `V1` and hides the
 # rest (D-114). An `extern "C++"` block, in a version script or a dynamic
 # list, is refused by name (resolve.md §9.7 rule 6: no demangler yet;
@@ -76,9 +76,6 @@ check readelf -dW libnoas.so
   then: [libm.so.6]
   then: [libgcc_s.so.1]
   then: [libc.so.6]
-link(mortar) g++ -shared plain.o -lgcc_s -Wl,--no-as-needed -o libgccs.so
-  exit: fail
-  diag: unsupported feature: DT_NEEDED order of a shared object mentioned again inside a linker script
 link g++ -shared lib.o -Wl,--version-script,v.map -Wl,-soname,libver.so -o libver.so
 check readelf --dyn-syms -W libver.so
   has: _Z9lib_throwi@@V1$
@@ -86,10 +83,10 @@ check readelf --dyn-syms -W libver.so
   not: _Z10lib_secretv
 link(mortar) g++ -shared lib.o -Wl,--version-script,vcxx.map -o libvcxx.so
   exit: fail
-  diag: error: unsupported linker script command: extern "C++" in a version script (spec/resolve.md §9.7 rule 6: it needs the demangler; list the mangled names, or use a glob such as _ZN2ns\*)
+  diag: error: vcxx.map:3:20: unsupported linker script command: extern "C++" in a version script (spec/resolve.md §9.7 rule 6: it needs the demangler; list the mangled names, or use a glob such as _ZN2ns\*)
 link(mortar) g++ -shared lib.o -Wl,--dynamic-list,dl.list -o libdl.so
   exit: fail
-  diag: error: unsupported linker script command: extern "C++" in a dynamic list (spec/resolve.md §9.7 rule 6: it needs the demangler; list the mangled names, or use a glob such as _ZN2ns\*)
+  diag: error: dl.list:2:18: unsupported linker script command: extern "C++" in a dynamic list (spec/resolve.md §9.7 rule 6: it needs the demangler; list the mangled names, or use a glob such as _ZN2ns\*)
 host g++ -pie main.o -L. -lopt -o prog
 run prog
   stdout: caught 3 ns 5
