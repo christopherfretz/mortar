@@ -137,3 +137,38 @@ fn d118_shared_output_of_a_plan() {
     assert_eq!(SharedOutput::unresolved(Some(out), Unresolved::Error), Unresolved::Error);
     assert_eq!(SharedOutput::unresolved(Some(out), Unresolved::Warn), Unresolved::Warn);
 }
+
+// spec: dyn.md D-10 setting, `bind(k)` in `Shared` (WP-137): a weak-only
+// key whose only definition is in a used object (an as-needed member of C
+// that a needed object's edge reaches, not needed) stays weak undefined
+// in a shared object (no `DT_NEEDED` search), and binds there in an
+// executable (unchanged); a strong key still makes its giver needed.
+#[test]
+fn d10_shared_weak_key_does_not_bind_a_used_object() {
+    use mortar_core::resolution::FileLive;
+    use mortar_resolve::Def;
+    let mut m = Model::new(A64);
+    let a = m.obj("a.o");
+    m.weak_undef(a, "vfn");
+    m.undef(a, "m2fn");
+    let v = m.shlib("libv.so", true);
+    let vi = m.def(v, "vfn");
+    let m2 = m.shlib("libm2.so", true);
+    m.def(m2, "m2fn");
+    m.needs(m2, Some(v));
+    let used = FileLive::Shared { needed: false, used: true };
+    let needed = FileLive::Shared { needed: true, used: false };
+    let exe = Options { entry: Entry::None, ..Options::default() };
+    for (o, want) in [
+        (shared_opts(Symbolic::None), Def::Undefined { weak: true }),
+        (exe, Def::Shared(mortar_core::SymEntry { file: v, index: vi })),
+    ] {
+        let r = link_with(&m, &o);
+        assert!(r.problems.is_empty(), "{:?}", r.problems);
+        assert_eq!(r.file_live[v.0 as usize], used);
+        assert_eq!(r.file_live[m2.0 as usize], needed);
+        assert_eq!(dynamic(&r).needed, vec![m2]);
+        assert_eq!(r.def[m.id("vfn").0 as usize], want, "shared: {}", o.shared_output.is_some());
+        assert!(matches!(r.def[m.id("m2fn").0 as usize], Def::Shared(_)));
+    }
+}

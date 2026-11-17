@@ -1,0 +1,69 @@
+# dyn.md D-11 (the D-10 setting's `bind(k)` in `Shared`), D-111 item 3,
+# D-27 (WP-137): the C twin of `cxx-weak-only-libc`, with no C++ runtime.
+# `libwv.so` calls `vfn` weakly, guarded by `if (vfn)`; `vfn@@V1` is
+# defined only in `libv.so`, which `--as-needed` drops: nothing needs it,
+# although `libm2.so` (needed: `m2fn`) lists it. The weak reference stays
+# undefined: an unversioned `WEAK NOTYPE UND` entry, no `DT_NEEDED` of
+# `libv.so`, no `.gnu.version_r` (the C library is dropped too:
+# crtbeginS's `__cxa_finalize` is weak and nothing else calls it). At run
+# time the loader binds `vfn` by name where it exists: `libm2.so` loads
+# `libv.so` (7 + 20); with `alt/libv.so`, which has the version `V1` but
+# no `vfn`, it is absent (0 + 20, every library: mold's `vfn@V1` is weak
+# too). (No host defining `vfn` itself: against mold's
+# `vfn@V1` GNU ld does not export an unversioned program `vfn`, the
+# verifier's D-12 W8 finding on that host.)
+#
+# Where the references differ: lld writes `WEAK FUNC` (unversioned, the
+# same image otherwise); mold keeps `libv.so` and the C library needed
+# and binds `vfn@V1`. Not wrong outputs; the checks are GNU ld's.
+#@ spec: dyn.md "D-111"
+#@ arch: aarch64 x86_64
+#@ xfail(mortar,x86_64): M4: WP-127 (x86-64 shared objects; dyn.md D-100)
+
+cc -O1 -fPIC v.c -o v.o
+cc -O1 -fPIC m2.c -o m2.o
+cc -O1 -fPIC vx.c -o vx.o
+cc -O1 -fPIC lib.c -o lib.o
+cc -O1 -fPIE main.c -o main.o
+shlib gcc v.o -Wl,--version-script=v.map -Wl,-soname,libv.so -o libv.so
+shlib gcc m2.o -Wl,-soname,libm2.so -L. -Wl,--no-as-needed -lv -o libm2.so
+shlib gcc vx.o -Wl,--version-script=vx.map -Wl,-soname,libv.so -o alt/libv.so
+link gcc -shared lib.o -L. -Wl,--as-needed -lv -lm2 -Wl,-soname,libwv.so -o libwv.so
+check(bfd,lld,mortar) readelf -dW libwv.so
+  has: (NEEDED) Shared library: [libm2.so]
+  not: [libv.so]
+  not: [libc.so.6]
+check(bfd,mortar) readelf -W --dyn-syms libwv.so
+  has: NOTYPE WEAK DEFAULT UND vfn$
+  has: NOTYPE WEAK DEFAULT UND __cxa_finalize$
+check(bfd,lld,mortar) readelf -SW libwv.so
+  not: .gnu.version_r
+check(mold) readelf -dW libwv.so
+  has: (NEEDED) Shared library: [libv.so]
+host gcc -pie main.o -L. -lwv -lm2 -o prog
+run prog
+  stdout: 27
+run prog
+  env: LD_LIBRARY_PATH=alt:.
+  stdout: 20
+
+#--- alt/README
+alt/libv.so: libv.so's version V1 without vfn.
+#--- v.map
+V1 { global: vfn; local: *; };
+#--- vx.map
+V1 { global: vother; local: *; };
+#--- vx.c
+int vother(void) { return 1; }
+#--- v.c
+int vfn(void) { return 7; }
+#--- m2.c
+int m2fn(void) { return 20; }
+#--- lib.c
+int vfn(void) __attribute__((weak));
+int m2fn(void);
+int lf(void) { return (vfn ? vfn() : 0) + m2fn(); }
+#--- main.c
+#include <stdio.h>
+int lf(void);
+int main(void) { printf("%d\n", lf()); return 0; }

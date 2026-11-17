@@ -294,6 +294,16 @@ pub(crate) fn link<V: View>(
         rank[f.0 as usize] = r as u32;
     }
     let machine = view.machine();
+    // D-10 setting, `bind(k)` in `Shared` (WP-137): there is no
+    // `DT_NEEDED` search (input §8.6), so a member of C that is not needed
+    // is dropped and binds nothing, even when a needed object's edge
+    // reaches it (U). Only a weak-only key can have every definition
+    // outside N (a strong one makes `giver(k)` needed, D-11 item 2): it
+    // stays `Undefined{weak: true}` (D-111 item 3), with no version and
+    // no `Verneed` (D-27).
+    let binds = |f: FileId| -> bool {
+        rank[f.0 as usize] != u32::MAX && (opts.shared_output.is_none() || in_n[f.0 as usize])
+    };
     let new_def: Vec<Option<Def>> = pool.unit_cost(4).map(keys, |k| {
         let defs = l.defs_of(SymbolId(k as u32));
         if defs.is_empty() || props[k].visibility == STV_HIDDEN {
@@ -309,7 +319,7 @@ pub(crate) fn link<V: View>(
             return None;
         }
         defs.iter()
-            .filter(|d| l.in_c[d.file.0 as usize] && rank[d.file.0 as usize] != u32::MAX)
+            .filter(|d| l.in_c[d.file.0 as usize] && binds(d.file))
             .filter(|d| !r2 || d.data)
             .min_by_key(|d| (rank[d.file.0 as usize], d.index.0))
             .map(|d| Def::Shared(SymEntry { file: d.file, index: d.index }))
