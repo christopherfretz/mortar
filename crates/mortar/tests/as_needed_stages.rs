@@ -35,7 +35,8 @@ impl Cx {
         let bin = Scratch::new(&format!("as-needed-stages-{t}-bin"));
         std::os::unix::fs::symlink(MORTAR, bin.join("ld")).unwrap();
         let b = format!("-B{}/", bin.path().display());
-        let cx = Self { scratch: Scratch::new(&format!("as-needed-stages-{t}")), _bin: bin, b, gxx };
+        let cx =
+            Self { scratch: Scratch::new(&format!("as-needed-stages-{t}")), _bin: bin, b, gxx };
         cx.scratch.write("hello.cc", HELLO);
         cx.scratch.write("u.c", LIBU);
         cx.scratch.write("g.c", G);
@@ -92,8 +93,7 @@ fn check(t: &str) {
     assert_eq!((n, rest.as_str()), (1, ""), "{t}: a default dynamic hello");
     let (n, rest) = cx.stages(&["-static", "hello.o", "-o", "hello-static"]);
     assert_eq!((n, rest.as_str()), (1, ""), "{t}: a static hello");
-    let (n, rest) =
-        cx.stages(&["m.o", "-Wl,--no-as-needed", "-L.", "-lu", "-lg", "-o", "control"]);
+    let (n, rest) = cx.stages(&["m.o", "-Wl,--no-as-needed", "-L.", "-lu", "-lg", "-o", "control"]);
     assert_eq!((n, rest.as_str()), (1, ""), "{t}: the line under --no-as-needed");
     let (n, rest) = cx.stages(&["m.o", "-Wl,--as-needed", "-L.", "-lu", "-lg", "-o", "row1"]);
     assert_eq!((n, rest.as_str()), (2, ""), "{t}: a needed --as-needed library's reference");

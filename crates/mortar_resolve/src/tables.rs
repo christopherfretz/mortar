@@ -1190,13 +1190,11 @@ impl Ctx<'_, '_, '_> {
                 // `spec/dyn.md` D-12 (WP-167): only a needed object's
                 // references extract.
                 match member {
-                    Some((member, false)) => d
-                        .with(Relation::DefinedIn, self.file(*member))
-                        .note(
-                            "the library is not needed (--as-needed): link it with \
+                    Some((member, false)) => d.with(Relation::DefinedIn, self.file(*member)).note(
+                        "the library is not needed (--as-needed): link it with \
                              --no-as-needed, or name the member's definition earlier (an \
                              object or -u)",
-                        ),
+                    ),
                     Some((member, true)) => d.with(Relation::DefinedIn, self.file(*member)).note(
                         "the library is not on the command line, so its references extract \
                          nothing: name it on the line with --no-as-needed, or name the \

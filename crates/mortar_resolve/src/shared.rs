@@ -541,10 +541,9 @@ pub(crate) fn link<V: View>(
             // object or a closure file: a needed one's would have been
             // followed by a later stage).
             let t = targets.first[redirect[m.key.0 as usize].0 as usize];
-            let member = (t != NO_FILE
-                && kinds[t as usize].is_lazy()
-                && !file_live[t as usize].is_live())
-            .then(|| (FileId(t), !l.in_c[x.0 as usize]));
+            let member =
+                (t != NO_FILE && kinds[t as usize].is_lazy() && !file_live[t as usize].is_live())
+                    .then(|| (FileId(t), !l.in_c[x.0 as usize]));
             problems.push(Problem::at(
                 entry,
                 What::ShlibUndefined { file: x, index: m.index, key: m.key, warn, member },
@@ -558,9 +557,8 @@ pub(crate) fn link<V: View>(
     // targets a lazy file that is not live. With one, the next stage takes
     // every member of N under --as-needed as a source of edges.
     let source = |x: FileId| stage.sources.get(x.0 as usize).copied().unwrap_or(false);
-    let as_needed_in_n = |x: FileId| {
-        in_n[x.0 as usize] && view.shared(x).is_some_and(|s| !s.closure && s.as_needed)
-    };
+    let as_needed_in_n =
+        |x: FileId| in_n[x.0 as usize] && view.shared(x).is_some_and(|s| !s.closure && s.as_needed);
     let candidate = l.files.iter().any(|&x| {
         as_needed_in_n(x)
             && !source(x)
