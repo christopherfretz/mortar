@@ -1593,6 +1593,17 @@ fn s10_classification_table() {
             Ok((K::Stack, dropped(DropReason::Consumed))),
         ),
         (MSection::new(".note.gnu.property", SHT_NOTE, SHF_ALLOC), Ok((K::Note, kept))),
+        // WP-135: an input's build id (`ld -r --build-id`) is discarded
+        // whatever its type; the output's is the linker's own (I-69).
+        (
+            MSection::new(".note.gnu.build-id", SHT_NOTE, SHF_ALLOC),
+            Ok((K::Excluded, dropped(DropReason::Excluded))),
+        ),
+        (
+            MSection::new(".note.gnu.build-id", SHT_PROGBITS, 0),
+            Ok((K::Excluded, dropped(DropReason::Excluded))),
+        ),
+        (MSection::new(".note.gnu.build-idx", SHT_NOTE, SHF_ALLOC), Ok((K::Note, kept))),
         (
             MSection::new(".llvm_addrsig", 0x6fff_4c03, 0),
             Ok((K::Excluded, dropped(DropReason::Consumed))),

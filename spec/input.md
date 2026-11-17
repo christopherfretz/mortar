@@ -124,6 +124,13 @@ optimization and that `-ffat-lto-objects` objects link without it. An
 object that has `.gnu.lto_*` sections and no `__gnu_lto_slim` is a "fat"
 LTO object: it is an ordinary object (its `.gnu.lto_*` sections carry
 `SHF_EXCLUDE` and are dropped), as all three references link it [E1].
+
+**`ld -r` outputs.** A relocatable object made by another linker's `ld -r`
+is an ordinary object. What such a link adds that a final link must not
+copy is decided with the other sections' fates (`spec/resolve.md` §10):
+its `.note.gnu.build-id` (`ld -r --build-id`) is discarded in every link
+(WP-135); its `.note.GNU-stack` and `.note.gnu.property` are consumed and
+merged as any object's.
 The references on a slim object: GNU ld *without* a plugin warns `plugin
 needed to handle lto object` and links without the code, exit 0; lld links
 it silently as an object without code; mold refuses [E1]. On a real
