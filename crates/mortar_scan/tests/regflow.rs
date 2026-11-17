@@ -32,8 +32,8 @@ fn analyse_file(path: &Path) -> Analysis {
     analyse_bytes(&std::fs::read(path).unwrap())
 }
 
-/// The uses as `s1d.py --hits` prints them (`ANA <function>+<offset>
-/// <form> <section>+<a> <definition> [boundary]`), each once.
+/// The uses as `s1d.py --hits` prints them, each once:
+/// `ANA <function>+<offset> <form> <section>+<a> <definition> [boundary]`.
 fn hits(a: &Analysis) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for u in &a.uses {
@@ -102,8 +102,8 @@ f:
     Some(std::fs::read(o).unwrap())
 }
 
-/// The uses of `body` (after [`PRO`] when `pro`), as `f+<off> <form>
-/// <section>+<a> <definition>[ boundary]`.
+/// The uses of `body` (after [`PRO`] when `pro`), each as
+/// `f+<off> <form> <section>+<a> <definition>[ boundary]`.
 fn uses_of(s: &Scratch, name: &str, pro: bool, body: &str) -> Option<Vec<String>> {
     let body = if pro { format!("{PRO}{body}") } else { body.to_owned() };
     let a = analyse_bytes(&object(s, name, &body)?);
@@ -427,7 +427,7 @@ fn never_panics() {
             let i = rng.next() as usize % b.len();
             b[i] = rng.next() as u8;
         }
-        if rng.next() % 16 == 0 {
+        if rng.next().is_multiple_of(16) {
             b.truncate(rng.next() as usize % b.len());
         }
         let Ok(obj) = Object::parse(&b) else { continue };
@@ -617,13 +617,13 @@ _ZN4absl12lts_2024072212RFC3339_fullE:
 #[test]
 fn abseil_twins() {
     let s = Scratch::new("regflow-abseil");
-    let raw_pie = "    adrp x2, .LANCHOR0\n    add x2, x2, :lo12:.LANCHOR0\n    mov x1, x0\n    \
+    let raw_anchor = "    adrp x2, .LANCHOR0\n    add x2, x2, :lo12:.LANCHOR0\n    mov x1, x0\n    \
                    mov x19, x0\n    add x2, x2, 32\n    ldr x20, [x2, 8]";
-    let raw_pic = "    adrp x2, :got:_ZN4absl12lts_2024072216raw_log_internal21internal_log_functionB5cxx11E\n    \
+    let raw_got = "    adrp x2, :got:_ZN4absl12lts_2024072216raw_log_internal21internal_log_functionB5cxx11E\n    \
                    ldr x2, [x2, :got_lo12:_ZN4absl12lts_2024072216raw_log_internal21internal_log_functionB5cxx11E]\n    \
                    mov x1, x0\n    mov x19, x0\n    ldr x20, [x2, 8]";
-    let fmt_pie = "    adrp x5, .LANCHOR0\n    add x5, x5, :lo12:.LANCHOR0\n    add x1, x5, 32";
-    let fmt_pic = "    adrp x1, :got:_ZN4absl12lts_2024072212RFC3339_fullE\n    \
+    let fmt_anchor = "    adrp x5, .LANCHOR0\n    add x5, x5, :lo12:.LANCHOR0\n    add x1, x5, 32";
+    let fmt_got = "    adrp x1, :got:_ZN4absl12lts_2024072212RFC3339_fullE\n    \
                    ldr x1, [x1, :got_lo12:_ZN4absl12lts_2024072212RFC3339_fullE]";
     let fn_raw = "_ZN4absl12lts_2024072216raw_log_internal27RegisterInternalLogFunctionEPFvNS0_11LogSeverityEPKciRKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEEE";
     let def_raw = "_ZN4absl12lts_2024072216raw_log_internal21internal_log_functionB5cxx11E";
@@ -635,10 +635,10 @@ fn abseil_twins() {
     ];
     let want_fmt = [format!("ANA {fn_fmt}+0xc add .rodata+0x20 {def_fmt} ")];
     for (name, template, body, want) in [
-        ("raw_logging.pie", RAW_LOGGING, raw_pie, &want_raw[..]),
-        ("raw_logging.pic", RAW_LOGGING, raw_pic, &[][..]),
-        ("format.pie", FORMAT, fmt_pie, &want_fmt[..]),
-        ("format.pic", FORMAT, fmt_pic, &[][..]),
+        ("raw_logging.pie", RAW_LOGGING, raw_anchor, &want_raw[..]),
+        ("raw_logging.pic", RAW_LOGGING, raw_got, &[][..]),
+        ("format.pie", FORMAT, fmt_anchor, &want_fmt[..]),
+        ("format.pic", FORMAT, fmt_got, &[][..]),
     ] {
         let Some(o) = assemble(s.path(), name, &template.replace("{0}", body)) else { return };
         let a = analyse_file(&o);
