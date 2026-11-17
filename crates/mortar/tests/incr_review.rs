@@ -209,7 +209,11 @@ fn verdict(r: &Result<mortar::floor::Summary, String>) -> String {
 /// program or unexpected outcome; returns its table rows.
 fn play(sc: &Scenario) -> Option<Vec<String>> {
     assembler(sc.arch)?;
-    if sc.sources.iter().chain(sc.hops.iter().flat_map(|h| &h.edits)).any(|s| s.0.ends_with(".c"))
+    if sc
+        .sources
+        .iter()
+        .chain(sc.hops.iter().flat_map(|h| &h.edits))
+        .any(|s| Path::new(s.0).extension().is_some_and(|e| e == "c"))
         && sc.arch.tool("gcc").is_none()
     {
         assert!(!tools_required(), "gcc is required");
@@ -690,6 +694,9 @@ fn hostile(k: u32) -> Vec<(&'static str, String)> {
     ]
 }
 
+/// An update's output bytes, or its fall-back.
+type Updated = Result<Vec<u8>, String>;
+
 /// One hostile case: link 0, c.o edited, the state changed by `edit`
 /// (decoded, changed, encoded: every hash recomputed), then the update
 /// by position and by identity. The position must give the identity's
@@ -699,7 +706,7 @@ fn hostile_case(
     label: &str,
     third_ok: bool,
     edit: &dyn Fn(&mut State),
-) -> Option<(Result<Vec<u8>, String>, Result<Vec<u8>, String>)> {
+) -> Option<(Updated, Updated)> {
     let sc = Scenario {
         name: "hostile",
         arch: Arch::Aarch64,
@@ -788,13 +795,10 @@ fn h1_h2_swapped_rows_give_the_identity_output_or_a_name() {
         (s.sections[f].place_chunk, s.sections[f].place_offset) =
             (s.sections[g].place_chunk, s.sections[g].place_offset);
         (s.sections[g].place_chunk, s.sections[g].place_offset) = (c, o);
-    })
-    .map(|(p, _)| {
-        // A forged decision table chooses the output in both translations
-        // (IN-28a "What the state is protected against"): recorded, not
-        // asserted beyond "no panic, no third program by position".
-        let _ = p;
     });
+    // H10: a forged decision table chooses the output in both translations
+    // (IN-28a "What the state is protected against"): recorded, not
+    // asserted beyond "no panic".
 }
 
 // spec: IN-28a (a local accepted when `at_index` is below its file's
@@ -864,35 +868,35 @@ fn a_fuzz_of_the_positional_fields() {
 
 /// One deterministic mutation of a field the positional replay reads.
 fn fuzz(s: &mut State, seed: u64) -> String {
-    let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+    let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
     let mut next = || {
-        x ^= x >> 12;
-        x ^= x << 25;
-        x ^= x >> 27;
-        x.wrapping_mul(0x2545_F491_4F6C_DD1D)
+        state ^= state >> 12;
+        state ^= state << 25;
+        state ^= state >> 27;
+        state.wrapping_mul(0x2545_F491_4F6C_DD1D)
     };
     let pick = |n: usize, r: u64| if n == 0 { 0 } else { (r % n as u64) as usize };
     let field = next() % 6;
     let interesting = [0u64, 1, 2, 3, 4, 7, 8, 0x10, 0xff, 0x7fff_ffff, 0xffff_ffff];
-    let v =
+    let value =
         if next() % 2 == 0 { interesting[pick(interesting.len(), next())] } else { next() % 64 };
     match field {
         0 | 1 if !s.symbols.is_empty() => {
             let i = pick(s.symbols.len(), next());
             if field == 1 && s.symbols[i].kind != format::sym_kind::LOCAL {
-                s.symbols[i].at_file = (v % (s.files.len() as u64 + 1)) as u32;
+                s.symbols[i].at_file = (value % (s.files.len() as u64 + 1)) as u32;
                 if s.symbols[i].at_file as usize >= s.files.len() {
                     s.symbols[i].at_file = format::NONE;
                     s.symbols[i].at_index = 0;
                 }
                 return format!("SYMBOLS {i} at_file");
             }
-            s.symbols[i].at_index = v as u32;
-            format!("SYMBOLS {i} at_index={v}")
+            s.symbols[i].at_index = value as u32;
+            format!("SYMBOLS {i} at_index={value}")
         }
         2 if !s.frag_at.is_empty() => {
             let i = pick(s.frag_at.len(), next());
-            s.frag_at[i].frag = v % s.frags.len().max(1) as u64;
+            s.frag_at[i].frag = value % s.frags.len().max(1) as u64;
             format!("FRAG_AT {i} frag={}", s.frag_at[i].frag)
         }
         3 if s.frag_at.len() > 1 => {
@@ -904,10 +908,10 @@ fn fuzz(s: &mut State, seed: u64) -> String {
         }
         4 if !s.frag_at.is_empty() => {
             let i = pick(s.frag_at.len(), next());
-            s.frag_at[i].offset = v as u32;
+            s.frag_at[i].offset = value as u32;
             s.frag_at.sort_unstable();
             s.frag_at.dedup_by_key(|r| (r.section, r.offset));
-            format!("FRAG_AT {i} offset={v}")
+            format!("FRAG_AT {i} offset={value}")
         }
         _ if s.sections.len() > 1 => {
             let f = s.sections[pick(s.sections.len(), next())].file;

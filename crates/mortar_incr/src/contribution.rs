@@ -24,7 +24,7 @@
 //! slots and patches).
 
 use mortar_core::hash::HashMap;
-use mortar_core::id::{FileId, FragId, Id as _, SymbolId};
+use mortar_core::id::{FileId, FragId, Id as _, SymKey, SymbolId};
 use mortar_core::inputs::Reader;
 use mortar_core::layout::{Layout, MergeMap};
 
@@ -63,11 +63,11 @@ pub fn compare(
     let name = String::from_utf8_lossy(inputs.files[file].path).into_owned();
     // Sections: the count, then each stored row's section and header.
     let (first, count) = pos.sections_of(row).unwrap_or((0, 0));
-    let n = res.section_base[file].len();
-    if count != n {
-        return Err(layout(format!("{name}: {n} sections, the state has {count}")));
+    let sections = res.section_base[file].len();
+    if count != sections {
+        return Err(layout(format!("{name}: {sections} sections, the state has {count}")));
     }
-    let mut hit = vec![false; n as usize];
+    let mut hit = vec![false; sections as usize];
     for k in first..first + count {
         let x = &s.sections[k as usize];
         let at = tr.sections.get(k as usize).copied().flatten().and_then(|id| res.sh_index(id));
@@ -82,8 +82,8 @@ pub fn compare(
             return Err(layout(format!("{name}: section {i} is named twice")));
         }
         hit[i] = true;
-        let (t, fl, size, align, _) = header_fields(inputs, f, index);
-        if (t, fl, size, align) != (x.sh_type, x.sh_flags, x.size, x.align) {
+        let (ty, fl, size, align, _) = header_fields(inputs, f, index);
+        if (ty, fl, size, align) != (x.sh_type, x.sh_flags, x.size, x.align) {
             return Err(layout(format!(
                 "{name}: section {} ({i}) changed type, flags, size or alignment",
                 String::from_utf8_lossy(s.str(x.name))
@@ -178,7 +178,7 @@ pub fn compare(
                 continue;
             }
             if let Some(mortar_core::id::SymKind::Local(e)) =
-                tr.symbols.get(r as usize).copied().flatten().map(|k| k.kind())
+                tr.symbols.get(r as usize).copied().flatten().map(SymKey::kind)
                 && let Some(n) = local_name(e.index.0)
             {
                 wanted.push(n);
@@ -216,7 +216,7 @@ pub fn compare(
     let mut old: Vec<(MentionRow, u32)> = Vec::with_capacity(hi - lo);
     for m in &s.mentions[lo..hi] {
         let key = tr.symbols.get(m.symbol as usize).copied().flatten();
-        let Some(id) = key.and_then(|k| k.as_global()) else {
+        let Some(id) = key.and_then(SymKey::as_global) else {
             return Err(resolution(format!(
                 "{name}: it no longer names {}",
                 String::from_utf8_lossy(
@@ -260,14 +260,14 @@ pub fn compare(
         Some(Reader::Object(o)) => o.symbols().ok().flatten(),
         _ => None,
     };
-    let section_row = |f: FileId, sec| section_of(res, f, sec);
+    let row_of_section = |f: FileId, sec| section_of(res, f, sec);
     for (o, key_row) in &old {
         let id = SymbolId(o.symbol);
         let Some(&def) = res.def.get(id) else {
             return Err(resolution(format!("{name}: {} has no resolution", key_name(o.symbol))));
         };
         let def = link.assignment.def(res, id).unwrap_or(def);
-        let now = resolved_fields(link, &table_of, id, def, &section_row, &commons)
+        let now = resolved_fields(link, &table_of, id, def, &row_of_section, &commons)
             .map_err(|e| resolution(format!("{name}: {e}")))?;
         let at = s.resolved.partition_point(|r| r.symbol < *key_row);
         let Some(was) = s.resolved.get(at).filter(|r| r.symbol == *key_row && r.kind <= 5) else {

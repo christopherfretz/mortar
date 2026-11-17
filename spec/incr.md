@@ -1539,10 +1539,10 @@ with each phase fed from the state for unchanged files:
   A state of version 3 is refused by name (`state-version`, `format
   version 3, this mortar reads 4`) and gives a full link that writes a
   version-4 state. The ranged state of WP-105 (block hashes, the
-  per-file index) is a later version, 5. *Test:* `mortar_incr`'s round
-  trip and validation tests (a flag other than `POSITIONAL`, a `FRAG_AT`
-  row naming no `FRAGS` row: `state-corrupt`);
-  `a_version_3_state_is_refused_by_name`.
+  per-file index) is a later version, 5. *Test:* `crates/mortar/tests/incr_review.rs`:
+  `out_of_range_positions_are_refused_by_name` (a flag other than
+  `POSITIONAL`, a `FRAG_AT` row naming no `FRAGS` row: `state-corrupt`,
+  in both translations), `a_version_3_state_is_refused_by_name`.
 - **IN-18b [v1] The normalized plan.** The plan hash is `L128` of a
   sequence of items, each a tag byte followed by fields that are each a
   `u32` length and that many bytes: first `C` with the working
@@ -2903,8 +2903,8 @@ update), reported as `incremental: full (<reason>)` (IN-10). With
 | `debug-name-index` | IN-55 | v1; [later] neutralized sets |
 | `debug-unit-kind` | a changed file has type units or split-DWARF skeletons (IN-55a) | v1; [later] after S5's tests |
 | `input-changed` | a file the update read is not the file change detection judged: the descriptor's `fstat` after the read (input.md §11.5) differs from the judged tuple, or the update read an inode it did not judge (IN-28a condition 2; the review's m3) | permanent (WP-064a, on the test path; an update that reads no unchanged input meets it only for the files it reads) |
-| `layout-changed` | test path only (WP-064a): the changed file's section count, a section's type, flags, size or alignment, its group, or the positions of its live merged fragments differ from the state's rows | test path only; WP-064 replaces it with its delta layout (IN-31) and the rows above |
-| `resolution-changed` | test path only (WP-064a): the global keys the changed file's symbol table names, or one's binding, type, visibility, definedness or section, or the resolution of one of them (kind, definer, section, value, size), differ from the state's `MENTIONS` and `RESOLVED` rows (the review's M4: a weak definition made global) | test path only; WP-064 replaces it with delta resolution (IN-26) and IN-27's refill set |
+| `layout-changed` | test path only (WP-064a): the changed file's section count, a section's type, flags, size or alignment, its group, the positions of its live merged fragments or the `FRAGS` rows they are (as a multiset) differ from the state's rows; or a row of the state does not translate ("a replay that does not fit") | test path only; WP-064 replaces it with its delta layout (IN-31) and the rows above |
+| `resolution-changed` | test path only (WP-064a): the global keys the changed file's symbol table names, or one's binding, type, visibility, definedness or section, or the resolution of one of them (kind, definer, section, value, size), differ from the state's `MENTIONS` and `RESOLVED` rows (the review's M4: a weak definition made global); or a `SLOTS` or thunk `PATCHES` row names a local of the changed file whose name the file gives to more than one local (a section symbol: §7.1's local identity is then a position; WP-064a's s3) | test path only; WP-064 replaces it with delta resolution (IN-26) and IN-27's refill set |
 
 Not fall-backs but plain links (IN-12; a warning, no state written):
 `-r`, `--emit-relocs`, a `SECTIONS` script, `--compress-debug-sections`

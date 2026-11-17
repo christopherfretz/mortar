@@ -1227,6 +1227,9 @@ fn map(
 
 /// The merged map by identity (IN-18a `FRAGS`): every live fragment
 /// hashed, and ranked among those of its identity.
+/// The `FRAGS` rows of each (output section, hash), with their row index.
+type FragGroups<'s> = HashMap<(OutSecId, [u8; 16]), Vec<(u32, &'s FragRow)>>;
+
 fn frags_by_identity(
     link: &Link<'_, '_>,
     s: &State,
@@ -1234,7 +1237,7 @@ fn frags_by_identity(
     frag_off: &mut Column<FragId, u64>,
     found: &mut Vec<(FragId, u32)>,
 ) -> Result<(), String> {
-    let mut by_identity: HashMap<(OutSecId, [u8; 16]), Vec<(u32, &FragRow)>> = HashMap::default();
+    let mut by_identity: FragGroups<'_> = HashMap::default();
     for (i, f) in s.frags.iter().enumerate() {
         let out = get(&m.outsecs, f.out, "OUTSECS")?;
         by_identity.entry((out, f.hash)).or_default().push((i as u32, f));
@@ -1507,7 +1510,7 @@ fn replay_inner(
         // reference another string). O(the pieces of the files outside
         // the set).
         let mut outside = vec![false; link.split.frags.len() as usize];
-        for r in link.split.merge_of.iter() {
+        for r in &*link.split.merge_of {
             let covered = link
                 .resolution
                 .sh_index(r.section)
