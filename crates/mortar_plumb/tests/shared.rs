@@ -32,7 +32,25 @@ const SOURCES: &[(&str, &str)] = src![
     "v.map",
     "more.c",
     "ar.c",
+    "w19.c",
+    "w21a.c",
+    "w21b.c",
+    "w23.c",
+    "w23.map",
+    "w24.c",
+    "w32.s",
+    "w33.s",
+    "w34.s",
+    "w38.c",
+    "w40.cc",
+    "w40.map",
+    "w41.c",
+    "vdep.c",
+    "vdep.map",
+    "w42.c",
+    "gap.c",
     "before.c",
+    "hole.c",
     "format-pic.s",
     "flags.c",
     "sv.c",
@@ -315,6 +333,7 @@ fn build() -> Option<Corpus> {
             b.link("more", arch, &d, "libmore.so", &args, linker, more_expect(linker));
         }
     }
+    rows(&mut b);
     // P-D4's RELRO end at the line's maxpage (WP-121 part 2): the plain
     // library on AArch64 under `-z max-page-size=0x1000`, by each reference.
     let d = b.dir(Arch::A64, "relro");
@@ -326,6 +345,100 @@ fn build() -> Option<Corpus> {
     refs(&mut b);
     Some(Corpus { _scratch: scratch, outs: b.outs })
 }
+
+/// P-D23's rows (spec/plumb.md §12.5; dyn.md §17.7): each wrong output
+/// the AArch64 and x86-64 references write, linked by the reference that
+/// writes it from the row's input, and D-117's address clause on GCC's
+/// `-fPIE` code (W44), its known refusal of correct code ("before the
+/// start") and its residual hole (NOT caught). Every link is the case
+/// `rows`; `ROWS_DEBUG`-free: `SHARED_DEBUG` prints a link's findings.
+fn rows(b: &mut Builder<'_>) {
+    use Linker::{Bfd, Lld, Mold};
+    let a = Arch::A64;
+    let d = b.dir(a, "rows");
+    for f in ["w23.map", "w40.map", "vdep.map"] {
+        std::fs::copy(b.root.join(f), d.join(f)).unwrap();
+    }
+    let pic = ["-O1", "-fPIC"];
+    b.so(a, &d, "dep.c", "libdep.so", "libdep.so");
+    b.obj(a, &d, "w19.c", &["-O1", "-fPIC", "-ftls-model=local-exec"], "w19.o");
+    b.link("rows", a, &d, "w19.so", &["-shared", "w19.o"], Bfd, ROW_W19);
+    b.obj(a, &d, "w21a.c", &pic, "w21a.o");
+    b.obj(a, &d, "w21b.c", &pic, "w21b.o");
+    for l in [Bfd, Mold] {
+        b.link("rows", a, &d, "w21.so", &["-shared", "w21a.o", "w21b.o"], l, row(l, ROW_W21));
+    }
+    b.obj(a, &d, "w23.c", &pic, "w23.o");
+    let w23 = ["-shared", "w23.o", "-Wl,--gc-sections", "-Wl,--version-script=w23.map"];
+    b.link("rows", a, &d, "w23.so", &w23, Lld, ROW_W23);
+    b.obj(a, &d, "w24.c", &pic, "w24.o");
+    b.link("rows", a, &d, "w24.so", &["-shared", "w24.o"], Lld, ROW_W24);
+    b.obj(a, &d, "w32.s", &[], "w32.o");
+    b.link("rows", a, &d, "w32.so", &["-shared", "w32.o"], Mold, ROW_W32);
+    b.obj(a, &d, "w33.s", &[], "w33.o");
+    b.link("rows", a, &d, "w33.so", &["-shared", "w33.o"], Bfd, ROW_W33);
+    b.obj(a, &d, "w38.c", &["-O1", "-fno-pic"], "w38.o");
+    b.link("rows", a, &d, "w38.so", &["-shared", "w38.o", "libdep.so"], Mold, ROW_W38);
+    b.obj(a, &d, "w40.cc", &pic, "w40.o");
+    let w40 = ["-shared", "w40.o", "-Wl,--version-script=w40.map"];
+    b.link("rows", a, &d, "w40.so", &w40, Mold, ROW_W40);
+    let vdep = b.root.join("vdep.c").display().to_string();
+    let cc = b.cc(a).to_path_buf();
+    let vs = ["-fPIC", "-shared", "-Wl,-soname,libvdep.so", "-Wl,--version-script=vdep.map"];
+    must(&d, &cc, &[&vs[..], &[vdep.as_str(), "-o", "libvdep.so"]].concat());
+    b.obj(a, &d, "w42.c", &pic, "w42.o");
+    b.link("rows", a, &d, "w42.so", &["-shared", "w42.o", "libvdep.so"], Mold, ROW_W42);
+    // W44 and the address clause: bound uses by the analysis (gap.c
+    // -fPIE) and by the rule (before.c -O0, a known refusal of correct
+    // code); their -fPIC, -O2 and -Bsymbolic forms clean; the residual
+    // hole not caught.
+    b.obj(a, &d, "gap.c", &["-O2", "-fPIE"], "gap-pie.o");
+    b.obj(a, &d, "gap.c", &["-O2", "-fPIC"], "gap-pic.o");
+    b.obj(a, &d, "before.c", &["-O0", "-fPIC"], "before-O0.o");
+    b.obj(a, &d, "before.c", &["-O2", "-fPIC"], "before-O2.o");
+    b.obj(a, &d, "hole.c", &["-O2", "-fPIE"], "hole.o");
+    for l in Linker::ALL {
+        b.link("rows", a, &d, "gap-pie.so", &["-shared", "gap-pie.o"], l, row(l, ROW_ANALYSIS));
+        b.link("rows", a, &d, "gap-pic.so", &["-shared", "gap-pic.o"], l, row(l, &[]));
+        let bsym = ["-shared", "gap-pie.o", "-Wl,-Bsymbolic"];
+        b.link("rows", a, &d, "gap-bsym.so", &bsym, l, row(l, &[]));
+        b.link("rows", a, &d, "before-O0.so", &["-shared", "before-O0.o"], l, row(l, ROW_RULE));
+        b.link("rows", a, &d, "before-O2.so", &["-shared", "before-O2.o"], l, row(l, &[]));
+        b.link("rows", a, &d, "hole.so", &["-shared", "hole.o"], l, row(l, &[]));
+    }
+    let x = Arch::X64;
+    let d = b.dir(x, "rows");
+    b.so(x, &d, "dep.c", "libdep.so", "libdep.so");
+    b.obj(x, &d, "w34.s", &[], "w34.o");
+    b.link("rows", x, &d, "w34.so", &["-shared", "w34.o"], Bfd, ROW_W34);
+    b.obj(x, &d, "w41.c", &["-O1", "-fPIC", "-mno-direct-extern-access"], "w41.o");
+    for l in [Lld, Mold] {
+        b.link("rows", x, &d, "w41.so", &["-shared", "w41.o", "libdep.so"], l, row(l, ROW_W41));
+    }
+}
+
+/// A row's findings, with mold's anomaly A3 (every mold library).
+fn row(l: Linker, want: &'static [&'static str]) -> &'static [&'static str] {
+    if l != Linker::Mold {
+        return want;
+    }
+    let v: Vec<&'static str> = std::iter::once("A3").chain(want.iter().copied()).collect();
+    Vec::leak(v)
+}
+
+const ROW_W19: &[&str] = &[];
+const ROW_W21: &[&str] = &[];
+const ROW_W23: &[&str] = &[];
+const ROW_W24: &[&str] = &[];
+const ROW_W32: &[&str] = &[];
+const ROW_W33: &[&str] = &[];
+const ROW_W34: &[&str] = &[];
+const ROW_W38: &[&str] = &[];
+const ROW_W40: &[&str] = &[];
+const ROW_W41: &[&str] = &[];
+const ROW_W42: &[&str] = &[];
+const ROW_ANALYSIS: &[&str] = &["P-D17@the address clause (D-117 analysis)"];
+const ROW_RULE: &[&str] = &["P-D17@the address clause (D-117):"];
 
 fn judge(case: &str) {
     let Some(c) = corpus() else { return };
@@ -441,15 +554,6 @@ fn refs(b: &mut Builder<'_>) {
     }
 }
 
-/// A row's findings, with mold's anomaly A3 (every mold library).
-fn row(l: Linker, want: &'static [&'static str]) -> &'static [&'static str] {
-    if l != Linker::Mold {
-        return want;
-    }
-    let v: Vec<&'static str> = std::iter::once("A3").chain(want.iter().copied()).collect();
-    Vec::leak(v)
-}
-
 // The link tests' reference libraries (WP-121, after part 1): clean.
 #[test]
 fn s12_5_reference_link_tests_verify_clean() {
@@ -516,6 +620,14 @@ fn p_d22_flags_1_follows_the_z_words() {
 #[test]
 fn s12_5_clean_libraries_verify_clean() {
     judge("forms");
+}
+
+// spec/plumb.md P-D23 (WP-121 part 2): each row's wrong output reported
+// by the rule the table names; the address clause's refusals; the
+// residual hole not caught.
+#[test]
+fn p_d23_rows() {
+    judge("rows");
 }
 
 // spec/plumb.md §12.5: IE TLS, an IFUNC, `__start_`/`__stop_`, `-init`/
