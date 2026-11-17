@@ -2317,6 +2317,7 @@ where `all=107 g=7` is right, all three). The rule:
   with llc, GCC, Clang, at every `-O`) before x86-64 `Shared` ships, and
   WP-130 for i386; a producer found to reach exported data through a
   section-relative PC-relative code field reopens this clause.
+  (WP-127 measured none: `spec/landed/dyn/WP-127.md` §1.)
 - A judged use whose named address lies in a preemptible data
   definition's interval is a **bound use**, refused,
   `non-pic-in-shared-object`, naming the definition, the object, the
