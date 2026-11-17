@@ -1,0 +1,168 @@
+# dyn.md D-12's stages, D-11 item 3 and D-19a (WP-167, the supervisor's
+# conditions 3 and 6): a key with two definitions, a shared object's and
+# a member's, and the DT_NEEDED order of libraries that join N late.
+#
+# 7a: libu.so (needed) calls g; libg2.so and libg.a(g.o) both define it.
+# - `--as-needed libu.so libg2.so libg.a`: g is first(k) at libg2.so, a
+#   shared definition: no member is a candidate, and libg2.so gives a
+#   needed object's reference (D-11 item 3): GNU ld and mortar keep
+#   libg2.so and the program runs libg2.so's g (u=61); lld and mold drop
+#   libg2.so and the program fails at load (exit 127).
+# - `--as-needed libu.so libg.a libg2.so`: first(k) is g.o, lazy: stage 2
+#   extracts it, and item 3 gives libg2.so no reason for that key (the
+#   next stage's member defines it): libg2.so is not needed, u=11. All
+#   four.
+# - under --no-as-needed (libg2.so needed as named) the order alone
+#   decides: libg2.so first, u=61 and no member; the archive first, g.o
+#   extracted at stage 1, u=11. All four.
+#
+# D-19a: a library that joins N at a later stage keeps its place on the
+# line (its keeping mention), as a library kept needed does:
+# - `--as-needed libv.so libu.so libgv.a`: libv.so joins at stage 2 (gv.o
+#   calls v) and comes first: libv.so, libu.so (lld, mold, mortar; GNU ld
+#   refuses: it reads libv.so before gv.o needs it).
+# - a library kept needed (2a) before a plain one: as-needed-extract-kept.test.
+# - `--as-needed libu.so libgv.a libv.so libu.so`: libu.so, libv.so.
+#
+# The verifier finds lld's and mold's `shared-first` without libg2.so
+# (A26, D-11 item 3).
+#
+# The verifier's input-set rule (M11/M12) does not have D-12's stages yet:
+# it finds mortar's later-stage members unreached. The bytes and the runs
+# were checked (every expectation passes with the verifier off); the
+# verifier package after WP-167 lifts the mark.
+#@ xfail(mortar): M12: libg.a(g.o) is in the link and no root or live reference reaches it (resolve §4.1), until the verifier package
+#@ anomaly(lld,mold): A26
+#@ spec: dyn.md "D-12"
+#@ spec: dyn.md "D-11"
+#@ spec: dyn.md "D-19a"
+#@ arch: aarch64 x86_64
+
+cc -O1 -fPIC u.c -o u.o
+shlib gcc u.o -Wl,-soname,libu.so -o libu.so
+cc -O1 -fPIC uy.c -o uy.o
+shlib gcc uy.o -Wl,-soname,libuy.so -o libuy.so
+cc -O1 -fPIC v.c -o v.o
+shlib gcc v.o -Wl,-soname,libv.so -o libv.so
+cc -O1 -fPIC g2.c -o g2.o
+shlib gcc g2.o -Wl,-soname,libg2.so -o libg2.so
+cc -O1 -fPIC g.c -o g.o
+cc -O1 -fPIC gv.c -o gv.o
+cc -O1 -fPIC gy.c -o gy.o
+ar rcs libg.a g.o
+ar rcs libgv.a gv.o
+ar rcs libgy.a gy.o
+cc -O1 -fPIC m1.c -o m1.o
+cc -O1 -fPIC m1y.c -o m1y.o
+
+# 7a, as-needed, the shared definition first.
+link gcc -pie m1.o -Wl,--as-needed libu.so libg2.so libg.a -o shared-first
+check(bfd,mortar) readelf -dW shared-first
+  count: 3 (NEEDED)
+  has: [libu.so]
+  then: [libg2.so]
+  then: [libc.so.6]
+run(bfd,mortar) shared-first
+  stdout: u=61
+check(lld,mold) readelf -dW shared-first
+  not: [libg2.so]
+run(lld,mold) shared-first
+  exit: 127
+
+# 7a, as-needed, the archive first.
+link gcc -pie m1.o -Wl,--as-needed libu.so libg.a libg2.so -o archive-first
+  no-diag: *
+check readelf -dW archive-first
+  count: 2 (NEEDED)
+  has: [libu.so]
+  then: [libc.so.6]
+run archive-first
+  stdout: g-ctor
+  stdout: u=11
+
+# 7a under --no-as-needed, and with libg2.so alone --no-as-needed.
+link gcc -pie m1.o -Wl,--no-as-needed libu.so libg2.so libg.a -o plain-shared-first
+check readelf -dW plain-shared-first
+  has: [libu.so]
+  then: [libg2.so]
+run plain-shared-first
+  stdout: u=61
+link gcc -pie m1.o -Wl,--no-as-needed libu.so libg.a libg2.so -o plain-archive-first
+check readelf -dW plain-archive-first
+  has: [libu.so]
+  then: [libg2.so]
+run plain-archive-first
+  stdout: g-ctor
+  stdout: u=11
+link gcc -pie m1.o -Wl,--as-needed libu.so -Wl,--no-as-needed libg2.so libg.a -o named-shared-first
+check readelf -dW named-shared-first
+  has: [libu.so]
+  then: [libg2.so]
+run named-shared-first
+  stdout: u=61
+link gcc -pie m1.o -Wl,--as-needed libu.so libg.a -Wl,--no-as-needed libg2.so -o named-archive-first
+check readelf -dW named-archive-first
+  has: [libu.so]
+  then: [libg2.so]
+run named-archive-first
+  stdout: g-ctor
+  stdout: u=11
+
+# D-19a: joining late, before the library that brought it.
+link(bfd) gcc -pie m1.o -Wl,--as-needed libv.so libu.so libgv.a -o joins-first
+  exit: fail
+  diag: undefined reference to `v'
+link(lld,mold,mortar) gcc -pie m1.o -Wl,--as-needed libv.so libu.so libgv.a -o joins-first
+check(lld,mold,mortar) readelf -dW joins-first
+  count: 3 (NEEDED)
+  has: [libv.so]
+  then: [libu.so]
+  then: [libc.so.6]
+run(lld,mold,mortar) joins-first
+  stdout: gv-ctor
+  stdout: u=31
+
+# D-19a: named twice, both as-needed.
+link gcc -pie m1.o -Wl,--as-needed libu.so libgv.a libv.so libu.so -o twice
+check readelf -dW twice
+  count: 3 (NEEDED)
+  has: [libu.so]
+  then: [libv.so]
+  then: [libc.so.6]
+run twice
+  stdout: gv-ctor
+  stdout: u=31
+
+#--- u.c
+int g(void);
+int u(void) { return g() + 1; }
+#--- uy.c
+int g(void);
+int u(void) { return g() + 1; }
+int y(void) { return 1; }
+#--- v.c
+int v(void) { return 20; }
+#--- g2.c
+int g(void) { return 60; }
+#--- g.c
+#include <stdio.h>
+__attribute__((constructor)) static void gc(void) { puts("g-ctor"); }
+int g(void) { return 10; }
+#--- gv.c
+#include <stdio.h>
+int v(void);
+__attribute__((constructor)) static void gc(void) { puts("gv-ctor"); }
+int g(void) { return 10 + v(); }
+#--- gy.c
+#include <stdio.h>
+__attribute__((constructor)) static void gc(void) { puts("gy-ctor"); }
+int g(void) { return 10; }
+int y(void) { return 2; }
+#--- m1.c
+#include <stdio.h>
+int u(void);
+int main(void) { printf("u=%d\n", u()); return 0; }
+#--- m1y.c
+#include <stdio.h>
+int y(void);
+int main(void) { printf("y=%d\n", y()); return 0; }

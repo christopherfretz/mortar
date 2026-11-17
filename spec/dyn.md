@@ -808,6 +808,19 @@ order of the reference of record, GNU ld. Definitions:
   mentions (position, not the time GNU ld decided: a group rescan that
   keeps `nc` after `nd` still writes `nc` first, `grp_rescan_time_vs_pos`).
 
+- D-12's stages (WP-167) change nothing in this: the order is computed
+  once, from the final stage's N and reasons. A member extracted at a
+  later stage is a relocatable object at its archive's position, so a
+  library that joins N through it is kept at the first mention after
+  that archive, or, when every mention is before it (a line GNU ld
+  refuses), at its first mention: `--as-needed libv.so libu.so libgv.a`
+  (gv.o, stage 2, calls v) gives `libv.so libu.so` as lld and mold
+  write it (measured, both architectures). A library kept needed (D-12's
+  2a: its stage-1 reason stays) keeps the mention its stage-1 reason
+  gave: `m1y.o --as-needed libuy.so --no-as-needed libv.so --as-needed
+  libgy.a` gives `libuy.so libv.so` (GNU ld, mold; lld drops libuy.so).
+  `tests/link/dyn/shlib/as-needed-extract-order.test`.
+
 This is a total function of the command line and the symbol tables,
 computed after D-11's fixed point by walking the mentions once in order.
 It reproduces GNU ld on all 75 cases of `dynamic/needed_order.sh` that

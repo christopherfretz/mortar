@@ -1,0 +1,258 @@
+# dyn.md D-12's stages (WP-167) past row 1: what a later stage's member
+# brings in. Each program prints the constructors of the members
+# extracted (in the loader's order) and its value.
+#
+# - kept needed (2a; the line itself in as-needed-extract-kept.test):
+#   with m1uy.o (u and y from libuy.so, g from gy.o at stage 2) all keep
+#   libuy.so; with the archive first, gy.o comes in at stage 1 and
+#   libuy.so is never needed.
+# - joining (2b): the member gv.o calls v, which libv.so gives: libv.so
+#   joins N at stage 2 (u=31). With libv.so before libgv.a GNU ld refuses
+#   (it reads libv.so before gv.o needs it); lld, mold, mortar link it.
+# - chains (2c): the member gh.o calls h, in the same archive or a later
+#   one (u=41); with libh.a before libgh2.a GNU ld refuses, the others
+#   link it, the constructor order lld's (gh first) or mold's and
+#   mortar's (h first: the members are laid out in line order, libh.a
+#   before libgh2.a).
+# - three stages (2d): gv.o (stage 2) calls v, libvw.so joins and its
+#   reference to w extracts libw.a(w.o) at stage 3 (u=71); the map names
+#   `libvw.so (w)` as w.o's reason (GNU ld's line).
+# - two libraries (3): p.so's chain through pa.o, q.so, qa.o (p=1113),
+#   with GNU ld refusing the line that names both libraries first.
+# - self-supporting (3c): m0.o calls nothing, libu.so stays unneeded,
+#   nothing extracts (GNU ld, mold, mortar); lld extracts gu2.o and keeps
+#   libu.so (its edges do not wait for neededness).
+#
+# The verifier's input-set rule (M11/M12) does not have D-12's stages yet:
+# it finds mortar's later-stage members unreached. The bytes and the runs
+# were checked (every expectation passes with the verifier off); the
+# verifier package after WP-167 lifts the mark.
+#@ xfail(mortar): M12: libgy.a(gy.o) (and each member a later stage extracts) is in the link and no root or live reference reaches it (resolve §4.1), until the verifier package
+#@ spec: dyn.md "D-12"
+#@ spec: dyn.md "D-11"
+#@ spec: resolve.md "4.4"
+#@ arch: aarch64 x86_64
+
+cc -O1 -fPIC u.c -o u.o
+shlib gcc u.o -Wl,-soname,libu.so -o libu.so
+cc -O1 -fPIC uy.c -o uy.o
+shlib gcc uy.o -Wl,-soname,libuy.so -o libuy.so
+cc -O1 -fPIC v.c -o v.o
+shlib gcc v.o -Wl,-soname,libv.so -o libv.so
+cc -O1 -fPIC vw.c -o vw.o
+shlib gcc vw.o -Wl,-soname,libvw.so -o libvw.so
+cc -O1 -fPIC p.c -o p.o
+shlib gcc p.o -Wl,-soname,libp.so -o libp.so
+cc -O1 -fPIC q.c -o q.o
+shlib gcc q.o -Wl,-soname,libq.so -o libq.so
+cc -O1 -fPIC gy.c -o gy.o
+cc -O1 -fPIC gv.c -o gv.o
+cc -O1 -fPIC gh.c -o gh.o
+cc -O1 -fPIC h.c -o h.o
+cc -O1 -fPIC gu2.c -o gu2.o
+cc -O1 -fPIC w.c -o w.o
+cc -O1 -fPIC pa.c -o pa.o
+cc -O1 -fPIC qa.c -o qa.o
+ar rcs libgy.a gy.o
+ar rcs libgv.a gv.o
+ar rcs libgh.a gh.o h.o
+ar rcs libgh2.a gh.o
+ar rcs libh.a h.o
+ar rcs libgu2.a gu2.o
+ar rcs libw.a w.o
+ar rcs libpa.a pa.o
+ar rcs libqa.a qa.o
+cc -O1 -fPIC m1.c -o m1.o
+cc -O1 -fPIC m0.c -o m0.o
+cc -O1 -fPIC m1y.c -o m1y.o
+cc -O1 -fPIC m1uy.c -o m1uy.o
+cc -O1 -fPIC m1p.c -o m1p.o
+
+# 2a with both references from the program (libuy.so given u and y), and
+# with the archive first (gy.o at stage 1); the line where the stage
+# keeps libuy.so is as-needed-extract-kept.test.
+link gcc -pie m1uy.o -Wl,--as-needed libuy.so libgy.a -o kept-both
+check readelf -dW kept-both
+  has: [libuy.so]
+run kept-both
+  stdout: gy-ctor
+  stdout: u=11 y=2
+link gcc -pie m1y.o -Wl,--as-needed libgy.a libuy.so -o kept-archive-first
+check readelf -dW kept-archive-first
+  not: [libuy.so]
+run kept-archive-first
+  stdout: gy-ctor
+  stdout: y=2
+
+# 2b: libv.so joins N at stage 2.
+link gcc -pie m1.o -Wl,--as-needed libu.so libgv.a libv.so -o joins
+  no-diag: *
+check readelf -dW joins
+  count: 3 (NEEDED)
+  has: [libu.so]
+  then: [libv.so]
+  then: [libc.so.6]
+run joins
+  stdout: gv-ctor
+  stdout: u=31
+link(bfd) gcc -pie m1.o -Wl,--as-needed libu.so libv.so libgv.a -o joins-before
+  exit: fail
+  diag: undefined reference to `v'
+link(lld,mold,mortar) gcc -pie m1.o -Wl,--as-needed libu.so libv.so libgv.a -o joins-before
+check(lld,mold,mortar) readelf -dW joins-before
+  has: [libu.so]
+  then: [libv.so]
+run(lld,mold,mortar) joins-before
+  stdout: gv-ctor
+  stdout: u=31
+
+# 2c: chains, in one archive and in two.
+link gcc -pie m1.o -Wl,--as-needed libu.so libgh.a -o chain
+run chain
+  stdout: gh-ctor
+  stdout: h-ctor
+  stdout: u=41
+link gcc -pie m1.o -Wl,--as-needed libu.so libgh2.a libh.a -o chain2
+run chain2
+  stdout: gh-ctor
+  stdout: h-ctor
+  stdout: u=41
+link(bfd) gcc -pie m1.o -Wl,--as-needed libu.so libh.a libgh2.a -o chain-back
+  exit: fail
+  diag: undefined reference to `h'
+link(lld,mold,mortar) gcc -pie m1.o -Wl,--as-needed libu.so libh.a libgh2.a -o chain-back
+run(lld) chain-back
+  stdout: gh-ctor
+  stdout: h-ctor
+  stdout: u=41
+run(mold,mortar) chain-back
+  stdout: h-ctor
+  stdout: gh-ctor
+  stdout: u=41
+
+# 2d: three stages.
+link gcc -pie m1.o -Wl,--as-needed libu.so libgv.a libvw.so libw.a -Wl,-Map=three.map -o three
+  no-diag: *
+check readelf -dW three
+  count: 3 (NEEDED)
+  has: [libu.so]
+  then: [libvw.so]
+  then: [libc.so.6]
+check nm -D --defined-only three
+  has: T g$
+  has: T w$
+run three
+  stdout: gv-ctor
+  stdout: w-ctor
+  stdout: u=71
+check(bfd,mortar) text three.map
+  has: ^libgv.a(gv.o) libu.so (g)$
+  then: ^libw.a(w.o) libvw.so (w)$
+
+# 3: two libraries.
+link(bfd) gcc -pie m1p.o -Wl,--as-needed libp.so libq.so libpa.a libqa.a -o two
+  exit: fail
+  diag: undefined reference to `q'
+link(lld,mold,mortar) gcc -pie m1p.o -Wl,--as-needed libp.so libq.so libpa.a libqa.a -o two
+run(lld,mold,mortar) two
+  stdout: pa-ctor
+  stdout: qa-ctor
+  stdout: p=1113
+link gcc -pie m1p.o -Wl,--as-needed libp.so libpa.a libq.so libqa.a -o two-interleaved
+check readelf -dW two-interleaved
+  has: [libp.so]
+  then: [libq.so]
+run two-interleaved
+  stdout: pa-ctor
+  stdout: qa-ctor
+  stdout: p=1113
+
+# 3c: self-supporting, unneeded.
+link gcc -pie m0.o -Wl,--as-needed libu.so libgu2.a -o self
+check(bfd,mold,mortar) readelf -dW self
+  not: [libu.so]
+run(bfd,mold,mortar) self
+  stdout: m0
+check(lld) readelf -dW self
+  has: [libu.so]
+run(lld) self
+  stdout: gu2-ctor
+  stdout: m0
+
+#--- u.c
+int g(void);
+int u(void) { return g() + 1; }
+int u2(void) { return 7; }
+#--- uy.c
+int g(void);
+int u(void) { return g() + 1; }
+int y(void) { return 1; }
+#--- v.c
+int v(void) { return 20; }
+#--- vw.c
+int w(void);
+int v(void) { return 20 + w(); }
+#--- p.c
+int pa(void);
+int p(void) { return pa() + 1; }
+int p2(void) { return 2; }
+#--- q.c
+int qa(void);
+int q(void) { return qa() + 100; }
+#--- gy.c
+#include <stdio.h>
+__attribute__((constructor)) static void gc(void) { puts("gy-ctor"); }
+int g(void) { return 10; }
+int y(void) { return 2; }
+#--- gv.c
+#include <stdio.h>
+int v(void);
+__attribute__((constructor)) static void gc(void) { puts("gv-ctor"); }
+int g(void) { return 10 + v(); }
+#--- gh.c
+#include <stdio.h>
+int h(void);
+__attribute__((constructor)) static void gc(void) { puts("gh-ctor"); }
+int g(void) { return 10 + h(); }
+#--- h.c
+#include <stdio.h>
+__attribute__((constructor)) static void hc(void) { puts("h-ctor"); }
+int h(void) { return 30; }
+#--- gu2.c
+#include <stdio.h>
+int u2(void);
+__attribute__((constructor)) static void gc(void) { puts("gu2-ctor"); }
+int g(void) { return 10 + u2(); }
+#--- w.c
+#include <stdio.h>
+__attribute__((constructor)) static void wc(void) { puts("w-ctor"); }
+int w(void) { return 40; }
+#--- pa.c
+#include <stdio.h>
+int q(void);
+__attribute__((constructor)) static void c(void) { puts("pa-ctor"); }
+int pa(void) { return q() + 10; }
+#--- qa.c
+#include <stdio.h>
+int p2(void);
+__attribute__((constructor)) static void c(void) { puts("qa-ctor"); }
+int qa(void) { return p2() + 1000; }
+#--- m1.c
+#include <stdio.h>
+int u(void);
+int main(void) { printf("u=%d\n", u()); return 0; }
+#--- m0.c
+#include <stdio.h>
+int main(void) { puts("m0"); return 0; }
+#--- m1y.c
+#include <stdio.h>
+int y(void);
+int main(void) { printf("y=%d\n", y()); return 0; }
+#--- m1uy.c
+#include <stdio.h>
+int u(void); int y(void);
+int main(void) { printf("u=%d y=%d\n", u(), y()); return 0; }
+#--- m1p.c
+#include <stdio.h>
+int p(void);
+int main(void) { printf("p=%d\n", p()); return 0; }

@@ -1,0 +1,83 @@
+# dyn.md D-12, D-13 (WP-167, the supervisor's condition 2): the
+# references of a used object (U) and of a closure file (W) never extract
+# archive members, at any stage. m1t.o calls t (libtop.so: needed);
+# libtop.so calls u, which libuc.so gives through libtop.so's DT_NEEDED;
+# libuc.so calls g, which only libg.a(g.o) defines.
+#
+# - W (libuc.so not on the line, found by -rpath-link): GNU ld refuses
+#   (``./libuc.so: undefined reference to `g'``), so does mortar (D-13's
+#   `undefined-symbol`); lld and mold link it and the program fails at
+#   load (`symbol lookup error: ./libuc.so: undefined symbol: g`, 127).
+# - U (libuc.so on the line, as-needed, not needed: used): GNU ld and
+#   mortar refuse; mold links it and the program fails at load; lld
+#   extracts g.o (its edges do not wait for neededness) and it runs.
+#
+# mortar's diagnostic names the member (`defined in libg.a(g.o)`) and a
+# note with the two ways out: for U ``the library is not needed
+# (--as-needed): link it with --no-as-needed, or name the member's
+# definition earlier (an object or -u)``, for W ``the library is not on
+# the command line, so its references extract nothing: name it on the
+# line with --no-as-needed, or name the member's definition earlier (an
+# object or -u)``. The first way out links (the last line).
+#
+# The verifier names lld's and mold's outputs that load libuc.so without
+# g (P-D6, D-13, W16): A36.
+#@ anomaly(lld,mold): A36
+#@ spec: dyn.md "D-12"
+#@ spec: dyn.md "D-13"
+#@ arch: aarch64 x86_64
+
+cc -O1 -fPIC uc.c -o uc.o
+shlib gcc uc.o -Wl,-soname,libuc.so -o libuc.so
+cc -O1 -fPIC top.c -o top.o
+shlib gcc top.o -Wl,-soname,libtop.so -L. -luc -o libtop.so
+cc -O1 -fPIC g.c -o g.o
+ar rcs libg.a g.o
+cc -O1 -fPIC m1t.c -o m1t.o
+
+# W: a closure file's reference.
+link(bfd,mortar) gcc -pie m1t.o -Wl,--as-needed libtop.so libg.a -Wl,-rpath-link,. -o closure
+  exit: fail
+  diag(bfd): libuc.so: undefined reference to `g'
+  diag(mortar): ./libuc.so: undefined symbol: g
+  diag(mortar): ^>>> defined in libg.a(g.o)$
+  diag(mortar): ^>>> the library is not on the command line, so its references extract nothing: name it on the line with --no-as-needed, or name the member's definition earlier (an object or -u)$
+link(lld,mold) gcc -pie m1t.o -Wl,--as-needed libtop.so libg.a -Wl,-rpath-link,. -o closure
+run(lld,mold) closure
+  exit: 127
+
+# U: a used object's reference.
+link(bfd,mortar) gcc -pie m1t.o -Wl,--as-needed libtop.so libuc.so libg.a -o used
+  exit: fail
+  diag(bfd): libuc.so: undefined reference to `g'
+  diag(mortar): libuc.so: undefined symbol: g
+  diag(mortar): ^>>> defined in libg.a(g.o)$
+  diag(mortar): ^>>> the library is not needed (--as-needed): link it with --no-as-needed, or name the member's definition earlier (an object or -u)$
+link(mold) gcc -pie m1t.o -Wl,--as-needed libtop.so libuc.so libg.a -o used
+run(mold) used
+  exit: 127
+link(lld) gcc -pie m1t.o -Wl,--as-needed libtop.so libuc.so libg.a -o used
+run(lld) used
+  stdout: g-ctor
+  stdout: t=111
+
+# The way out: libuc.so under --no-as-needed is an edge source at stage 1.
+link gcc -pie m1t.o -Wl,--as-needed libtop.so -Wl,--no-as-needed libuc.so libg.a -o fixed
+run fixed
+  stdout: g-ctor
+  stdout: t=111
+
+#--- uc.c
+int g(void);
+int u(void) { return g() + 1; }
+#--- top.c
+int u(void);
+int t(void) { return u() + 100; }
+#--- g.c
+#include <stdio.h>
+__attribute__((constructor)) static void gc(void) { puts("g-ctor"); }
+int g(void) { return 10; }
+#--- m1t.c
+#include <stdio.h>
+int t(void);
+int main(void) { printf("t=%d\n", t()); return 0; }

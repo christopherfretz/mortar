@@ -1,0 +1,77 @@
+# dyn.md D-12's stages (WP-167): the references of a needed `--as-needed`
+# library that are no edges, and the definitions an edge reaches.
+#
+# - weak (4a): libuw.so references g weakly: no edge (D-12, as a weak
+#   reference extracts nothing anywhere), g.o stays in libg.a, u=1. All
+#   four.
+# - versioned (4b): as-needed-extract-versioned.test.
+# - hidden (4c) and `--exclude-libs` (4d): the edge extracts the member,
+#   whose g is then not exported, and a shared object references it: GNU
+#   ld, lld and mortar refuse the link (mortar's `non-exported-symbol`,
+#   dyn.md D-21); mold links it and the program fails at load (`symbol
+#   lookup error: ./libu.so: undefined symbol: g`, exit 127; the verifier
+#   names it P-D6: A36).
+# - `--start-lib` (4e): as-needed-extract.test.
+#@ anomaly(mold): A36
+#@ spec: dyn.md "D-12"
+#@ spec: dyn.md "D-21"
+#@ spec: resolve.md "4.4"
+#@ arch: aarch64 x86_64
+
+cc -O1 -fPIC u.c -o u.o
+shlib gcc u.o -Wl,-soname,libu.so -o libu.so
+cc -O1 -fPIC uw.c -o uw.o
+shlib gcc uw.o -Wl,-soname,libuw.so -o libuw.so
+cc -O1 -fPIC g.c -o g.o
+cc -O1 -fPIC ghid.c -o ghid.o
+ar rcs libg.a g.o
+ar rcs libghid.a ghid.o
+cc -O1 -fPIC m1.c -o m1.o
+
+# 4a: a weak reference.
+link gcc -pie m1.o -Wl,--as-needed libuw.so libg.a -o weak
+  no-diag: *
+check readelf -dW weak
+  has: [libuw.so]
+run weak
+  stdout: u=1
+
+# 4c: the member's g is hidden.
+link(bfd,lld,mortar) gcc -pie m1.o -Wl,--as-needed libu.so libghid.a -o hidden
+  exit: fail
+  diag(bfd): hidden symbol `g' in libghid.a(ghid.o) is referenced by DSO
+  diag(lld): non-exported symbol 'g' in 'libghid.a(ghid.o)' is referenced by DSO 'libu.so'
+  diag(mortar): non-exported symbol referenced by a shared object: g
+link(mold) gcc -pie m1.o -Wl,--as-needed libu.so libghid.a -o hidden
+run(mold) hidden
+  exit: 127
+
+# 4d: --exclude-libs makes the member's g local.
+link(bfd,lld,mortar) gcc -pie m1.o -Wl,--as-needed libu.so libg.a -Wl,--exclude-libs=libg.a -o excluded
+  exit: fail
+  diag(bfd): hidden symbol `g' in libg.a(g.o) is referenced by DSO
+  diag(lld): non-exported symbol 'g' in 'libg.a(g.o)' is referenced by DSO 'libu.so'
+  diag(mortar): non-exported symbol referenced by a shared object: g
+link(mold) gcc -pie m1.o -Wl,--as-needed libu.so libg.a -Wl,--exclude-libs=libg.a -o excluded
+run(mold) excluded
+  exit: 127
+
+#--- u.c
+int g(void);
+int u(void) { return g() + 1; }
+#--- uw.c
+#pragma weak g
+int g(void);
+int u(void) { return g ? g() + 1 : 1; }
+#--- g.c
+#include <stdio.h>
+__attribute__((constructor)) static void gc(void) { puts("g-ctor"); }
+int g(void) { return 10; }
+#--- ghid.c
+#include <stdio.h>
+__attribute__((constructor)) static void gc(void) { puts("g-ctor"); }
+__attribute__((visibility("hidden"))) int g(void) { return 10; }
+#--- m1.c
+#include <stdio.h>
+int u(void);
+int main(void) { printf("u=%d\n", u()); return 0; }
