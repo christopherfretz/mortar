@@ -1973,11 +1973,15 @@ exception and is defined as the script says.
   (`Refused{FileFormat, "LLVM bitcode"}`). lld compiles it at `-r` and
   writes code; GNU ld without the plugin says `file format not
   recognized`; mold asks for `-m`.
-- A slim GCC LTO object is refused (§1.2).
-- A **fat** GCC LTO object (code plus `.gnu.lto_*` sections) is linked
-  as its code at `-r` as well, but GNU ld without a plugin copies the
-  13 `.gnu.lto_*` sections through. Whether a later GCC LTO link reads
-  them from a `-r` output is not verified. mortar refuses
+- A slim GCC LTO object is refused (§1.2), as in a final link. GNU ld
+  without the plugin copies its 13 `.gnu.lto_*` sections through at
+  `-r`, which makes a slim LTO object again. lld copies them as plain
+  sections. mold asks for the plugin. (`more.log`, rows `lto`.)
+- A **fat** GCC LTO object (`-ffat-lto-objects`: code plus `.gnu.lto_*`)
+  is not measured. A final link uses its code. At `-r`, copying its
+  `.gnu.lto_*` sections would let a later LTO link use IR that no longer
+  matches the partial link's resolution. Dropping them is the safe
+  direction, but it changes what a GCC LTO build gets. mortar refuses
   `.gnu.lto_*` sections at `-r` by name (`Refused{Feature, "GCC LTO
   sections with -r"}`) until a line needs it (record §G Q9).
 - A CREL relocation section (`SHT_CREL`, `0x40000014`, clang
