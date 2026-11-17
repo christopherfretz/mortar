@@ -3744,7 +3744,9 @@ and left unchecked, the bytes S12 compared, and the FDEs and header
 entries of §6.4, the symbols of §6.5, the IRELATIVE records and IPLT
 entries of §4.8, and the property types §6.6 judged and did not judge, what B1 made of
 the build id (§6.7), the x86-64 large sections whose placement no
-rule judges (`placement_not_judged`, §6.5), stage 4's `meta` (§13.2), and for an output with a
+rule judges (`placement_not_judged`, §6.5), stage 4's `meta` (§13.2;
+with the ODR runtime also `ODR runtime: outputs, entries, imports`,
+WP-197), and for an output with a
 `.gdb_index` its version, units, address entries and names and the rules
 that judged it (`gdb index: ...`, §6.10). A stripped dynamic output
 (no `.symtab`; WP-164) adds one line, a `-r` output its `relocatable`
@@ -7101,7 +7103,12 @@ Messages start with the sub-rule's name (`kept section`, `place`,
 `imports`), so a mutant's catch is named
 by rule and field. Coverage: `meta` counts outputs judged, live units,
 rows checked, names not judged, and whether the options were known
-(§7.2; `Report::summary`'s `ODR metadata` line).
+(§7.2; `Report::summary`'s `ODR metadata` line); with the runtime
+(WP-197), `runtime_outputs`, `runtime_entries` (entry sections judged)
+and `runtime_imports` (undefined symbols of the runtime judged), the
+`ODR runtime` line. The runtime's relocation records, bytes, FDEs and
+symbols are counted where any object's are (records, S12's bytes, §6.4,
+§6.5), not apart.
 
 What stage 4 does **not** judge: `-r` outputs (stage R's, §14.5 P-P8); MT-32's
 loaded-bytes sentence (above: two links); a unit's kinds 4 and 5 beyond their framing; the ODR verdict

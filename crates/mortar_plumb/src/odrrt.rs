@@ -14,8 +14,8 @@
 use std::collections::BTreeSet;
 
 use mortar_elf::consts::{
-    EM_386, EM_AARCH64, EM_X86_64, ET_DYN, ET_REL, PT_INTERP, SHF_ALLOC, SHN_UNDEF,
-    SHT_INIT_ARRAY, SHT_PREINIT_ARRAY, STB_LOCAL, STB_WEAK,
+    EM_386, EM_AARCH64, EM_X86_64, ET_DYN, ET_REL, PT_INTERP, SHF_ALLOC, SHN_UNDEF, SHT_INIT_ARRAY,
+    SHT_PREINIT_ARRAY, STB_LOCAL, STB_WEAK,
 };
 
 use crate::Source;
@@ -46,7 +46,10 @@ pub(crate) const OBJECTS: [(&str, &[u8]); 6] = [
         "mason_odr_rt-aarch64-exe.o",
         include_bytes!("../../../runtime/odr/obj/mason_odr_rt-aarch64-exe.o"),
     ),
-    ("mason_odr_rt-x86_64-so.o", include_bytes!("../../../runtime/odr/obj/mason_odr_rt-x86_64-so.o")),
+    (
+        "mason_odr_rt-x86_64-so.o",
+        include_bytes!("../../../runtime/odr/obj/mason_odr_rt-x86_64-so.o"),
+    ),
     (
         "mason_odr_rt-x86_64-exe.o",
         include_bytes!("../../../runtime/odr/obj/mason_odr_rt-x86_64-exe.o"),
@@ -144,7 +147,9 @@ impl Source for Overlay<'_> {
                 buf.copy_from_slice(b);
                 Ok(())
             }
-            None => Err(format!("{PATH}: {} bytes at offset {offset:#x} are past its end", buf.len())),
+            None => {
+                Err(format!("{PATH}: {} bytes at offset {offset:#x} are past its end", buf.len()))
+            }
         }
     }
 }
@@ -198,7 +203,13 @@ pub(crate) fn words_with_runtime(words: &[String]) -> Vec<String> {
 
 /// P-M2's runtime note (§13.2): its descriptor's four fields, against the
 /// line's mode (when the options are known) and the output's runtime id.
-pub(crate) fn note(desc: &[u8], at: u64, image: &Image<'_>, mode: Option<u32>, f: &mut Vec<Finding>) {
+pub(crate) fn note(
+    desc: &[u8],
+    at: u64,
+    image: &Image<'_>,
+    mode: Option<u32>,
+    f: &mut Vec<Finding>,
+) {
     let m = |s: String| Finding::new(Rule::Meta(2), s).at(at);
     if desc.len() != 16 {
         f.push(m(format!(
@@ -257,9 +268,7 @@ fn machine(image: &Image<'_>) -> &'static str {
 /// is N; `.init_array`, `.ctors*` and any other name sort after every
 /// numbered one.
 fn priority(name: &str) -> u64 {
-    name.strip_prefix(".init_array.")
-        .and_then(|n| n.parse::<u64>().ok())
-        .unwrap_or(u64::MAX)
+    name.strip_prefix(".init_array.").and_then(|n| n.parse::<u64>().ok()).unwrap_or(u64::MAX)
 }
 
 /// The runtime's object among the map's files: the file named [`PATH`].
@@ -294,10 +303,15 @@ pub(crate) fn pm3(
     let exe = image.phdrs.iter().any(|p| p.p_type == PT_INTERP);
     // Its file is the map's last but the archive members (C-ODR-RT: after
     // every input of the line, before the members are extracted).
-    let rank = |o: &Obj<'_>| map.files.iter().position(|m| m.path == o.path && m.member == o.member);
+    let rank =
+        |o: &Obj<'_>| map.files.iter().position(|m| m.path == o.path && m.member == o.member);
     let r_rank = rank(ro);
     for o in objs {
-        if o.member.is_none() && o.path != PATH && rank(o) > r_rank && o.elf.header().e_type == ET_REL {
+        if o.member.is_none()
+            && o.path != PATH
+            && rank(o) > r_rank
+            && o.elf.header().e_type == ET_REL
+        {
             f.push(m3(format!(
                 "input: {} follows '{PATH}' in the map's file order; the runtime is the line's last input (spec/cli.md C-ODR-RT)",
                 o.label()
@@ -475,7 +489,10 @@ pub(crate) fn pm3(
             continue;
         }
         cov.runtime_imports += 1;
-        if !imported.contains(name.as_ref()) && !defined.contains(name.as_ref()) && !input_defined(n) {
+        if !imported.contains(name.as_ref())
+            && !defined.contains(name.as_ref())
+            && !input_defined(n)
+        {
             f.push(m3(format!(
                 "imports: the runtime's '{name}' is neither imported (.dynsym) nor defined by an input of the output (O-53: it needs it from libc)"
             )));
@@ -499,8 +516,11 @@ mod tests {
                 .find(|l| l.starts_with(&format!("object {name} ")))
                 .unwrap_or_else(|| panic!("PINS has no object {name}"));
             let w: Vec<&str> = line.split(' ').collect();
-            let hex: String =
-                crate::buildid::sha256(bytes).iter().map(|b| format!("{b:02x}")).collect();
+            let hex = crate::buildid::sha256(bytes).iter().fold(String::new(), |mut h, b| {
+                use std::fmt::Write as _;
+                let _ = write!(h, "{b:02x}");
+                h
+            });
             assert_eq!(w[2], hex, "{name}");
             assert_eq!(w[3], bytes.len().to_string(), "{name}");
         }

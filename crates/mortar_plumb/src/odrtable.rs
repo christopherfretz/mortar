@@ -39,6 +39,7 @@ enum Table {
 
 /// The options stage 4 reads (§13.1).
 #[derive(Debug, Clone, Copy)]
+#[allow(clippy::struct_excessive_bools)] // independent facts of the line, one per option
 struct Opts {
     table: Table,
     odr_off: bool,
@@ -490,8 +491,7 @@ pub(crate) fn check(
     };
     let firsts: Vec<&Note<'_>> = notes.iter().filter(|n| n.ty == NT_ODR).collect();
     let seconds: Vec<&Note<'_>> = notes.iter().filter(|n| n.ty == NT_ODR_FULL).collect();
-    let thirds: Vec<&Note<'_>> =
-        notes.iter().filter(|n| n.ty == crate::odrrt::NT_ODR_RT).collect();
+    let thirds: Vec<&Note<'_>> = notes.iter().filter(|n| n.ty == crate::odrrt::NT_ODR_RT).collect();
     // O-52: the table's note, at most one =full note after it, at most
     // one runtime note last (WP-198).
     if firsts.len() != 1

@@ -1100,6 +1100,20 @@ mod tests {
         assert!(read(&["--no-odr-check"]).odr_off);
         assert!(!read(&["--no-odr-check", "--odr=warn"]).odr_off);
         assert!(read(&["--odr", "off"]).odr_off);
+        // §13.1 (WP-197): --odr-runtime, the last one; the table spelled;
+        // the last of -z now and -z lazy.
+        assert_eq!(read(&["--odr-runtime=report"]).odr_runtime, OdrRuntime::Report);
+        assert_eq!(read(&["--odr-runtime", "fatal"]).odr_runtime, OdrRuntime::Fatal);
+        assert_eq!(
+            read(&["--odr-runtime=fatal", "--odr-runtime=off"]).odr_runtime,
+            OdrRuntime::Off
+        );
+        assert_eq!(read(&["--odr-runtime=loud"]).odr_runtime, OdrRuntime::Other);
+        assert_eq!(read(&[]).odr_runtime, OdrRuntime::Off);
+        assert!(!read(&[]).odr_table_given && read(&["--odr-table=off"]).odr_table_given);
+        assert_eq!(read(&["-z", "now", "-zlazy"]).z_now, Some(false));
+        assert_eq!(read(&["-z", "lazy", "-z", "now"]).z_now, Some(true));
+        assert_eq!(read(&["-z", "relro"]).z_now, None);
         assert!(read(&["--keep-mason-meta"]).keep_mason_meta);
         assert_eq!(read(&["--build-id"]).build_id, BuildId::Style("default".into()));
         assert_eq!(read(&["--build-id=0xabcd"]).build_id, BuildId::Given);

@@ -204,8 +204,7 @@ fn judge(
     };
     // §13.1 (WP-197; spec/cli.md C-ODR-RT): the runtime links `-z now`
     // unless the line says `-z lazy` (P-D3's and P-D6's `now`).
-    if map.format == crate::Format::Mortar && crate::odrrt::on(&opts) && opts.z_now != Some(false)
-    {
+    if map.format == crate::Format::Mortar && crate::odrrt::on(&opts) && opts.z_now != Some(false) {
         line.now = true;
     }
     // §3.3: the empty sections not in the output (WP-156b). The
