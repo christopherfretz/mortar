@@ -428,6 +428,7 @@ fn var(name: &str, ty: u64, size: u64, flags: u16) -> Declaration {
 // bits differ are compared by size only; each linkage's rows among
 // themselves as before; a lang=c unit's rows are C linkage)
 #[test]
+#[allow(clippy::many_single_char_names)] // the units are a.o .. d.o
 fn kind5_language_linkage_by_size() {
     let Some(cx) = Cx::new("odr-k5-linkage") else { return };
     let (def, ec) = (flags::DECL_DEFINITION, flags::DECL_EXTERN_C);
