@@ -288,7 +288,10 @@ fn dynamic(linker: Format, output: &[u8], f: &Finding) -> Option<&'static str> {
     }
     let gnu_own = |n: Option<String>| {
         n.is_some_and(|n| {
-            matches!(n.as_str(), "__etext" | "__end__" | "__bss_start__" | "__bss_end__" | "_bss_end__")
+            matches!(
+                n.as_str(),
+                "__etext" | "__end__" | "__bss_start__" | "__bss_end__" | "_bss_end__"
+            )
         })
     };
     if bfd
@@ -510,8 +513,7 @@ fn exports(output: &[u8]) -> bool {
 fn a59(output: &[u8], f: &Finding) -> bool {
     f.rule == Rule::Structure(8)
         && f.message.contains(") is outside its section")
-        && f
-            .message
+        && f.message
             .split('\'')
             .nth(1)
             .is_some_and(|n| crate::shared::SEVEN.contains(&n) && dyn_sym_object(output, n))
@@ -521,9 +523,8 @@ fn a59(output: &[u8], f: &Finding) -> bool {
 fn dyn_sym_object(output: &[u8], name: &str) -> bool {
     let Ok(h) = mortar_elf::FileHeader::parse(output) else { return false };
     let Ok(table) = mortar_elf::SectionTable::parse(output, &h) else { return false };
-    let find = |n: &[u8]| {
-        table.iter().find(|s| s.name().is_ok_and(|x| x == n)).map(|s| *s.header())
-    };
+    let find =
+        |n: &[u8]| table.iter().find(|s| s.name().is_ok_and(|x| x == n)).map(|s| *s.header());
     let (Some(d), Some(st)) = (find(b".dynsym"), find(b".dynstr")) else { return false };
     let slice = |o: u64, n: u64| {
         let (Ok(o), Ok(n)) = (usize::try_from(o), usize::try_from(n)) else { return None };

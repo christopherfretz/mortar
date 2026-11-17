@@ -257,8 +257,7 @@ fn judge(
             let dynamic = model.ref_dynamic.contains(n) || model.def_dynamic.contains(n);
             // One `.dynsym` defines (absent from `.symtab`, or stripped)
             // is the link's too, so D-21 item 2's converse judges it.
-            let exported =
-                dout.syms.iter().skip(1).any(|s| s.name == n && s.st_shndx != 0);
+            let exported = dout.syms.iter().skip(1).any(|s| s.name == n && s.st_shndx != 0);
             if !input_defs.contains(n)
                 && !file0.iter().any(|f| f == n)
                 && (referenced || dynamic || exported)

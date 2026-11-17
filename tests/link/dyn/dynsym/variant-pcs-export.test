@@ -7,6 +7,7 @@
 # export and import rows say so since WP-053.
 #@ spec: dyn.md "D-23"
 #@ arch: aarch64
+#@ anomaly(bfd): A60
 
 cc -O1 -fPIC lib.c -o lib.o
 shlib gcc lib.o -Wl,-soname,libv.so -o libv.so

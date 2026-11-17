@@ -126,9 +126,18 @@ fn file_of(b: &[u8], a: u64) -> usize {
     x.3 + (a - x.2) as usize
 }
 
-
 const CELLS: &[&str] = &[
-    "sh", "shsym", "shfn", "shloc", "shx", "exref-pie", "exref-nopie", "exdef-pie", "exdef-nopie", "exdefr-pie", "exdefr-nopie",
+    "sh",
+    "shsym",
+    "shfn",
+    "shloc",
+    "shx",
+    "exref-pie",
+    "exref-nopie",
+    "exdef-pie",
+    "exdef-nopie",
+    "exdefr-pie",
+    "exdefr-nopie",
     "pie-e",
 ];
 
@@ -271,8 +280,7 @@ fn relative_to_glob(b: &[u8]) -> Option<Vec<u8>> {
     let r = relas(b);
     let k = r.iter().position(|r| r.1 == relative(b) && r.2 == v)?;
     let mut m = b.to_vec();
-    let mut rows: Vec<[u8; 24]> =
-        r.iter().map(|x| b[x.0..x.0 + 24].try_into().unwrap()).collect();
+    let mut rows: Vec<[u8; 24]> = r.iter().map(|x| b[x.0..x.0 + 24].try_into().unwrap()).collect();
     let mut row = rows.remove(k);
     row[8..16].copy_from_slice(&((i as u64) << 32 | glob_dat(b)).to_le_bytes());
     row[16..24].copy_from_slice(&0u64.to_le_bytes());
@@ -369,21 +377,51 @@ const fn mu(
 }
 
 const MUTATIONS: &[Mut] = &[
-    mu("_end out of .dynsym", drop_end, &["sh", "exref-pie", "exref-nopie"], &["P-D19", "P-D7", "P-D17"], "'_end'"),
+    mu(
+        "_end out of .dynsym",
+        drop_end,
+        &["sh", "exref-pie", "exref-nopie"],
+        &["P-D19", "P-D7", "P-D17"],
+        "'_end'",
+    ),
     mu("GLOB_DAT -> RELATIVE", glob_to_relative, &["sh", "shfn"], &["P-D17", "P-D25"], "'_end'"),
     // A reference's record naming a key its `DF_SYMBOLIC` line binds is
     // glibc's own binding (P-D25, GNU ld's form), not a finding.
     Mut {
         skip: &["lld", "bfd", "mold"],
-        ..mu("RELATIVE -> GLOB_DAT under -Bsymbolic", relative_to_glob, &["shsym"], &["P-D25"], "'_end'")
+        ..mu(
+            "RELATIVE -> GLOB_DAT under -Bsymbolic",
+            relative_to_glob,
+            &["shsym"],
+            &["P-D25"],
+            "'_end'",
+        )
     },
     mu("an unreferenced end exported", export_end, &["sh"], &["P-D19"], "'end' "),
     // Without -E: GNU ld's A60 is the -E form alone.
-    mu("an unreferenced end exported", export_end, &["exref-pie", "exref-nopie"], &["P-D7"], "'end' "),
+    mu(
+        "an unreferenced end exported",
+        export_end,
+        &["exref-pie", "exref-nopie"],
+        &["P-D7"],
+        "'end' ",
+    ),
     mu("_end exported though local:", export_local, &["shloc"], &["P-D19"], "'_end'"),
     mu("__etext exported", export_etext, &["shx"], &["P-D19", "P-D7"], "'__etext'"),
-    mu("__executable_start exported", export_executable_start, &["shx"], &["P-D19"], "'__executable_start'"),
-    mu("the one-past-the-end RELATIVE moved by 2", past_end, &["shsym", "shloc", "pie-e"], &["P-D9", "R4"], ""),
+    mu(
+        "__executable_start exported",
+        export_executable_start,
+        &["shx"],
+        &["P-D19"],
+        "'__executable_start'",
+    ),
+    mu(
+        "the one-past-the-end RELATIVE moved by 2",
+        past_end,
+        &["shsym", "shloc", "pie-e"],
+        &["P-D9", "R4"],
+        "",
+    ),
 ];
 
 /// The anomalies each linker's clean fixtures may draw.
@@ -445,11 +483,15 @@ fn mutations() {
                     }
                     let (plain, _) = fx.judge(&b);
                     let hit = plain.iter().find(|p| {
-                        x.rules.iter().any(|r| p.starts_with(&format!("{r} ")))
-                            && p.contains(x.key)
+                        x.rules.iter().any(|r| p.starts_with(&format!("{r} "))) && p.contains(x.key)
                     });
                     match hit {
-                        None => missed.push(format!("{}: {} not caught: {}", x.what, fx.name, plain.join(" | "))),
+                        None => missed.push(format!(
+                            "{}: {} not caught: {}",
+                            x.what,
+                            fx.name,
+                            plain.join(" | ")
+                        )),
                         Some(h) if std::env::var_os("LDEF_SHOW").is_some() => {
                             eprintln!("{}: {}: {h}", x.what, fx.name);
                         }
