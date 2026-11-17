@@ -608,6 +608,12 @@ static void judge(Pass* p, uint32_t sym, uint32_t type, uintptr_t value) {
   const Mod* x = p->x;
   Ctx* c = p->c;
   const ElfW(Sym)* s = &x->symtab[sym];
+  if (p->flags && s->st_shndx != SHN_UNDEF && value == x->base + s->st_value) {
+    // bound to its own definition: the flag map says it has a row; nothing to compare
+    p->n.own++;
+    p->flags[sym] = (unsigned char)(p->flags[sym] | F_DONE);
+    return;
+  }
   const char* name = x->strtab + s->st_name;
   uint64_t key = fnv(name);
   const Row* rx = row_by_sym(x, key, sym);
