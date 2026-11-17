@@ -101,8 +101,8 @@ pub(crate) fn on(o: &Options) -> bool {
 /// serves any: a mortar map whose line asks for the runtime and that
 /// names the input, in an output whose kind has a runtime. Otherwise the
 /// map's [`PATH`] is a file like any other (I1: not among the inputs).
-pub(crate) fn embedded(output: &[u8], map: &Map) -> Option<&'static [u8]> {
-    if !serves(map) {
+pub(crate) fn embedded(output: &[u8], map: &Map, line: Option<&[String]>) -> Option<&'static [u8]> {
+    if !serves(map, line) {
         return None;
     }
     let image = Image::read(output).ok()?;
@@ -112,10 +112,10 @@ pub(crate) fn embedded(output: &[u8], map: &Map) -> Option<&'static [u8]> {
 
 /// Whether the verifier reads the runtime as an input of this link: a
 /// mortar map whose line asks for it and that names [`PATH`] (§13.1).
-pub(crate) fn serves(map: &Map) -> bool {
+pub(crate) fn serves(map: &Map, line: Option<&[String]>) -> bool {
     map.format == Format::Mortar
         && map.files.iter().any(|f| f.path == PATH && f.member.is_none())
-        && crate::opts::of(map).is_some_and(|o| on(&o))
+        && crate::opts::of(map, line).is_some_and(|o| on(&o))
 }
 
 /// A source with the runtime's bytes as one more file, [`PATH`], which

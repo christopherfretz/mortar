@@ -251,7 +251,7 @@ fn side<'a>(
     let image = Image::read(output).map_err(|e| format!("the {tag} cannot be read: {e}"))?;
     let located = crate::locate::locate(map, store, 0, &image);
     let mut objs = located.objs;
-    let o = opts::of(map).or_else(|| {
+    let o = opts::of(map, line).or_else(|| {
         line.map(|w| {
             opts::Options::read(&w.iter().map(|x| x.as_bytes().to_vec()).collect::<Vec<_>>())
         })

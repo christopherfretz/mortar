@@ -76,7 +76,7 @@ pub fn verify_with(output: &[u8], inputs: &[Input<'_>], map: &Map, ctx: &Ctx<'_>
 pub(crate) fn verify_src(output: &[u8], src: &dyn Source, map: &Map, ctx: &Ctx<'_>) -> Report {
     // §13.1 (WP-197): the load-time ODR runtime's bytes are the
     // verifier's own copy, an input by its name for every reader.
-    if let Some(bytes) = crate::odrrt::embedded(output, map) {
+    if let Some(bytes) = crate::odrrt::embedded(output, map, ctx.line.as_deref()) {
         let src = crate::odrrt::Overlay { inner: src, bytes };
         let files = crate::odrrt::OverlayFiles { inner: ctx.files, bytes };
         let ctx = Ctx { line: ctx.line.clone(), files: &files };
@@ -899,7 +899,7 @@ fn line_words(map: &Map, ctx: &Ctx<'_>) -> Option<Vec<String>> {
         })
     };
     // §13.1 (WP-197): the runtime mortar adds is read after every input.
-    if crate::odrrt::serves(map) {
+    if crate::odrrt::serves(map, ctx.line.as_deref()) {
         return words.map(|w| crate::odrrt::words_with_runtime(&w));
     }
     words

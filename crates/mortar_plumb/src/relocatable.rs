@@ -2744,7 +2744,7 @@ fn notes(rv: &mut Rv<'_>) {
         // B1 over the whole file (I-R8).
         match crate::image::Image::read(&rebuild_bytes(rv)) {
             Ok(img) => {
-                let style = crate::buildid::Style::of(rv.map);
+                let style = crate::buildid::Style::of(rv.map, None);
                 let fs = crate::buildid::check(&img, &mut rv.report.coverage, style);
                 rv.report.findings.extend(fs);
             }
