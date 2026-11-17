@@ -1,0 +1,2 @@
+V1 { global: foo; local: *; };
+V2 { global: foo; } V1;

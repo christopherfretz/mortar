@@ -351,7 +351,12 @@ fn pd5(image: &Image<'_>, out: &DynOut, format: Format, v: &mut Vec<Finding>) {
         if s.sym_type() == STT_SECTION || !hashed {
             continue;
         }
-        match dynout::gnu_lookup(g, &out.syms, &s.name, bits) {
+        // glibc's `do_lookup_x` checks each chain entry's version
+        // (`check_match`): the lookup of entry j is by its name and its
+        // `.gnu.version` index, so `foo@V1` (hidden) and `foo@@V2` are
+        // each found (D-115; WP-121).
+        let ver = |i: usize| out.versym.as_ref().and_then(|x| x.get(i)).map(|x| x & 0x7fff);
+        match dynout::gnu_lookup_by(g, &out.syms, &s.name, bits, |i| ver(i) == ver(j)) {
             Some(i) if i == j => {}
             Some(i) => v.push(sym_finding(
                 5,
@@ -845,10 +850,21 @@ fn pd7(
         }
         // The export is the program's definition (its .symtab's, when the
         // output keeps one; an IFUNC's is the resolver, judged below).
+        // Two `.symver` definitions of one name (`foo@V1`, `foo@@V2`, a
+        // library's, D-115) are two globals of the name: any one at the
+        // export's value is its definition (WP-121).
+        let at_value = || {
+            image.symbols.iter().any(|o| {
+                o.name == s.name
+                    && o.sym.binding() != mortar_elf::consts::STB_LOCAL
+                    && o.sym.st_value == s.st_value
+            })
+        };
         if let Some(o) = image.global(&s.name)
             && o.sym.st_shndx != 0
             && o.sym.sym_type() != STT_GNU_IFUNC
             && o.sym.st_value != s.st_value
+            && !at_value()
         {
             v.push(sym_finding(
                 7,
@@ -894,6 +910,7 @@ fn pd7(
 }
 
 /// P-D8: versions.
+#[allow(clippy::too_many_lines)] // one pass per entry kind
 fn pd8(out: &DynOut, model: &Model, ld: &Loader<'_>, v: &mut Vec<Finding>) {
     let Some(vs) = &out.versym else { return };
     let mut others = BTreeSet::new();
@@ -920,7 +937,16 @@ fn pd8(out: &DynOut, model: &Model, ld: &Loader<'_>, v: &mut Vec<Finding>) {
             // definition (an asked `.symver` one, or the default).
             let asked = model.keys.get(&s.name).and_then(|k| k.version.clone());
             let bound = ld.model.bind_in(&ld.order, &s.name, asked.as_deref());
-            if let Some((_, d)) = bound
+            // A weak import whose definition is in a library the output
+            // does not need (`--as-needed` dropped it; reached through
+            // another's dependencies) has no Verneed to name (D-27: one
+            // per needed object; vn_file a DT_NEEDED name): unversioned,
+            // as GNU ld writes it (WP-121, `cxx-weak-only-libc`).
+            let unneeded = |i: usize| {
+                s.binding() == STB_WEAK && !out.needed.contains(&ld.model.dsos[i].soname)
+            };
+            if let Some((i, d)) = bound
+                && !unneeded(i)
                 && let Some(want) = asked.or_else(|| d.version.clone())
             {
                 v.push(sym_finding(

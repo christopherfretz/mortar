@@ -665,6 +665,18 @@ pub fn elf_hash(name: &[u8]) -> u32 {
 /// matches). Written from glibc's documented algorithm (`do_lookup_x`,
 /// `dl_new_hash`).
 pub fn gnu_lookup(g: &GnuHash, syms: &[DynSym], name: &str, word_bits: u32) -> Option<usize> {
+    gnu_lookup_by(g, syms, name, word_bits, |_| true)
+}
+
+/// [`gnu_lookup`] taking the first chain entry of the name that `accept`
+/// takes (glibc's `check_match` on the version).
+pub fn gnu_lookup_by(
+    g: &GnuHash,
+    syms: &[DynSym],
+    name: &str,
+    word_bits: u32,
+    accept: impl Fn(usize) -> bool,
+) -> Option<usize> {
     let h = gnu_hash(name.as_bytes());
     if g.bloom_size == 0 || g.nbuckets == 0 {
         return None;
@@ -683,7 +695,10 @@ pub fn gnu_lookup(g: &GnuHash, syms: &[DynSym], name: &str, word_bits: u32) -> O
     }
     loop {
         let c = *g.chain.get(i.checked_sub(g.symoffset)? as usize)?;
-        if (c | 1) == (h | 1) && syms.get(i as usize).is_some_and(|s| s.name == name) {
+        if (c | 1) == (h | 1)
+            && syms.get(i as usize).is_some_and(|s| s.name == name)
+            && accept(i as usize)
+        {
             return Some(i as usize);
         }
         if c & 1 == 1 {
