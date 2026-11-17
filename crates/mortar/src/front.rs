@@ -599,8 +599,12 @@ pub fn front<'s>(
     let got_output = got_base_defined(&inputs, &resolution, scanned.demands.output);
     let walker = Walker::new(arch, &scan_inputs, scan_options)
         .with_weak_dyn(scanned.demands.weak_dyn.clone());
-    let (got, dyn_tables) = if has_dynamic {
-        let src = crate::dynlink::DynSource::new(&inputs, &resolution, &assignment, &plan);
+    let (got, dyn_tables, placeless) = if has_dynamic {
+        let src =
+            crate::dynlink::DynSource::new(&inputs, &resolution, &assignment, &liveness, &plan);
+        // resolve.md §10.1 P-1 (WP-136): the exports `.dynsym` omits, for
+        // the layout's check of its entries.
+        let placeless = crate::dynlink::placeless_exports(&src, &resolution, &scanned.demands);
         let kinds = crate::dynlink::ScanKinds(&walker);
         let t = crate::dynlink::PlanIn {
             plan: &plan,
@@ -631,9 +635,9 @@ pub fn front<'s>(
         if let Some(rows) = &odr_table {
             tables.note_mason = Some(note_mason(&inputs, rows, odr_full.as_ref(), &slots.dynsym));
         }
-        (got, Some(tables))
+        (got, Some(tables), placeless)
     } else {
-        (GotPlan::new(arch, &slots, got_output, variant, diag).ok()?, None)
+        (GotPlan::new(arch, &slots, got_output, variant, diag).ok()?, None, Vec::new())
     };
     let build_id = BuildIdPlan::new(plan.shaping.build_id.as_ref(), diag).ok()?;
     steps.step("property got build-id", 0, "");
@@ -971,6 +975,7 @@ pub fn front<'s>(
         demands,
         shapes: &shapes,
         shared: plan.kind == plan::OutputKind::Shared,
+        placeless: &placeless,
     };
     steps.step("checks", 0, "");
     // IN-61: the replay's decision tables in place of the computed ones.

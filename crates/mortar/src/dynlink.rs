@@ -17,6 +17,7 @@ use mortar_core::assignment::Assignment;
 use mortar_core::demands::{Demands, GlobalFlags};
 use mortar_core::inputs::{Inputs, Origin, Reader};
 use mortar_core::layout::Slots;
+use mortar_core::liveness::Liveness;
 use mortar_core::par::Pool;
 use mortar_core::plan::{DynamicLinker, InputSpec, OutputKind, Plan};
 use mortar_core::resolution::{Def, RefFlags, Resolution};
@@ -74,6 +75,10 @@ struct Shared<'s> {
 pub struct DynSource<'a, 's> {
     inputs: &'a Inputs<'s>,
     syms: CoreSyms<'a, 's>,
+    /// For P-1's place of a definition (`has_place`).
+    resolution: &'a Resolution,
+    assignment: &'a Assignment<'a>,
+    liveness: &'a Liveness,
     /// Per file: the shared object's tables.
     shared: Vec<Option<Shared<'s>>>,
 }
@@ -95,6 +100,7 @@ impl<'a, 's> DynSource<'a, 's> {
         inputs: &'a Inputs<'s>,
         resolution: &'a Resolution,
         assignment: &'a Assignment<'a>,
+        liveness: &'a Liveness,
         plan: &Plan,
     ) -> Self {
         let shared = inputs
@@ -123,7 +129,14 @@ impl<'a, 's> DynSource<'a, 's> {
                 })
             })
             .collect();
-        Self { inputs, syms: CoreSyms::new(inputs, resolution, assignment), shared }
+        Self {
+            inputs,
+            syms: CoreSyms::new(inputs, resolution, assignment),
+            resolution,
+            assignment,
+            liveness,
+            shared,
+        }
     }
 
     fn shared_of(&self, file: FileId) -> Option<&Shared<'s>> {
@@ -177,10 +190,49 @@ impl DynSymSource for DynSource<'_, '_> {
         Some(ProgramDef { info: g.binding << 4 | typ, other, size: g.size, version })
     }
 
+    fn has_place(&self, key: SymbolId) -> bool {
+        match self.syms.global(key).map(|g| g.def) {
+            Some(SymDef::Section { section, .. }) => mortar_core::place::section_place(
+                self.resolution,
+                Some(self.assignment),
+                self.liveness,
+                section,
+            )
+            .is_ok(),
+            _ => true,
+        }
+    }
+
     fn bound_version(&self, entry: SymEntry) -> Option<VerIndex> {
         let v = self.shared_of(entry.file)?.versions.as_ref()?.versym()?;
         v.get(entry.index.0 as usize).map(|s| VerIndex(s.index()))
     }
+}
+
+/// The exported keys (`Resolution.exported`, the `EXPORT` demands) whose
+/// definition has no place (`spec/resolve.md` §10.1 P-1, WP-136), sorted:
+/// `.dynsym` omits them (`mortar_synth::dynsym`, by the same
+/// [`DynSymSource::has_place`]), and the layout's check does not require
+/// them.
+#[must_use]
+pub fn placeless_exports(
+    src: &DynSource<'_, '_>,
+    resolution: &Resolution,
+    demands: &Demands,
+) -> Vec<SymbolId> {
+    let mut v: Vec<SymbolId> = resolution
+        .exported
+        .iter()
+        .chain(
+            demands
+                .keys_with(mortar_core::demands::DemandFlags::EXPORT)
+                .filter_map(SymKey::as_global),
+        )
+        .filter(|&k| !src.has_place(k))
+        .collect();
+    v.sort_unstable();
+    v.dedup();
+    v
 }
 
 /// The plans of an output with `.dynamic` (`Front.dyn_tables`).
@@ -231,7 +283,7 @@ pub struct PlanIn<'a, 's> {
     pub resolution: &'a Resolution,
     pub assignment: &'a Assignment<'s>,
     pub demands: &'a Demands,
-    pub liveness: &'a mortar_core::Liveness,
+    pub liveness: &'a Liveness,
     pub headers: &'a mortar_layout::Headers<'s>,
     pub src: &'a DynSource<'a, 's>,
     pub kinds: &'a dyn KeyKinds,

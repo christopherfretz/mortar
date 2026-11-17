@@ -591,7 +591,18 @@ The address of anything is computed, not stored: a section's address is
 its chunk's address plus its offset; a symbol's value follows from `def`
 and `redirect` (§3.3) through `place`, `Split` and `MergeMap`,
 `sym_place` or `defined`; a GOT slot's address from `Slots` and its
-chunk. A phase MAY cache such values in a column of its own
+chunk.
+
+**Invariant (no place is never a number; WP-136).** A symbol defined in
+an input section has a value exactly when its section has a place
+(`spec/resolve.md` §10.1 P-1: `Kept`, live, `OutOf::Out`); otherwise it
+has a named reason for having none (`mortar_core::place::NoPlace`). The
+derivation is a typed result whose "no place" case carries no number, so
+no consumer — fill's `S`, a `RELATIVE` addend, a GOT word, `.symtab`,
+`.dynsym`, the map — can default it to 0. A reference to such a symbol is
+P-1's (tombstone, 0 in `.gcc_except_table`, or
+`discarded-section-reference`), decided by the referring section, never
+by the value. A phase MAY cache such values in a column of its own
 (`sym_addr[SymbolId]` for the image phase); a cache is never stored in
 the link state and never an input to another phase.
 

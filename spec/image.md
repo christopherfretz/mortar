@@ -417,7 +417,7 @@ the driver groups the events (§4.5).
 |---|---|---|---|
 | `Undefined` | a surviving reference to a key whose target kind is `Undefined` and whose verdict (`spec/resolve.md` §5.2) is an error or a warning | `SymKey` | `undefined-symbol` |
 | `ComdatMismatch` | a surviving reference to a key defined only in dropped copies of a COMDAT group (`spec/resolve.md` §6.3 case (b)) | `SymKey` | `comdat-mismatch` |
-| `DiscardedSection` | a relocation in a kept section of file `F` naming a local or section symbol of a dropped section of `F`, from a section for which `spec/resolve.md` §6.3 says error (case (a)); or, under `--gc-sections`, from a live section into a collected one where I-12 says error | `(FileId, referring section index, symbol index)` | `discarded-section-reference`, one per (symbol, referring section) |
+| `DiscardedSection` | a relocation in a kept section of file `F` naming a local or section symbol of a dropped section of `F`, from a section for which `spec/resolve.md` §6.3 says error (case (a)); or, under `--gc-sections`, from a live section into a collected one where I-12 says error; or naming a global whose definition has no place (`spec/resolve.md` §10.1 P-1: a dropped, consumed or collected section of any file; the diagnostic names the defining file and section, WP-136) | `(FileId, referring section index, symbol index)` | `discarded-section-reference`, one per (symbol, referring section) |
 | `GnuWarning` | a reference from a live section to a key `K` with a `.gnu.warning.K` section in a live file (`spec/resolve.md` §10) | `SymKey` | `gnu-warning` |
 
 ```rust
@@ -777,6 +777,23 @@ buffer; the clip only selects which of them a job writes.
   `SHT_GNU_verdef`, `SHF_ALLOC`, `sh_link` the `.dynstr` section,
   `sh_info` the number of `Verdef` entries, `sh_addralign` 4, `sh_entsize`
   0; `.gnu.version`'s header is unchanged (it links `.dynsym`).
+- **I-124 [C] (no place is never a number; WP-136).** The value of a
+  definition (`LinkTables::def_value`, `value_in`) is the typed result
+  `link::Valued`: `At(address)`; `Import` (a key not defined in this
+  output: a strong undefined one the scan refused or a shared object
+  supplies, a shared definition without a copy; its static `S` is 0,
+  `spec/arch.md` §4.3); `NoPlace(reason)` (`spec/resolve.md` §10.1
+  P-1, `mortar_core::place::NoPlace`); `Missing` (a defined key whose
+  place the layout lacks: an internal fault). There is no accessor that
+  turns it into an `Option` or a number. Fill's `SymValue` of a
+  `NoPlace` or `Missing` key is not `live`, so fill writes P-1's value
+  for the referring section (the tombstone, 0 in `.gcc_except_table`)
+  or stops with an `internal error` where the scan should have reported
+  `discarded-section-reference`; a `RELATIVE` addend, a GOT word, a
+  thunk target, a map line and a `.dynsym` value of such a key are
+  `internal error`s or omitted, never 0. Before WP-136 `sym_value_of`
+  ended `unwrap_or(0)`: a global in an empty merge section or in
+  `.note.gnu.property` was written as 0.
 
 - **I-116 [M1] The phase's entry point** (`link::write`, WP-027b). It
   reads the front's tables (`Front` of `spec/landed/pipeline/

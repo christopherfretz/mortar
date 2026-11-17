@@ -26,6 +26,7 @@ use mortar_core::demands::Demands;
 use mortar_core::inputs::{CopyError, Reader};
 use mortar_core::layout::{Addresses, AllocKey, ChunkKind, DefValue, Layout, SlotIndex};
 use mortar_core::par::Pool;
+use mortar_core::place::NoPlace;
 use mortar_core::records::RecIndex;
 use mortar_core::resolution::{Def, SectionKind};
 use mortar_core::{
@@ -327,6 +328,40 @@ fn failed(d: Diagnostic) -> Failed {
 // ---- the tables ------------------------------------------------------------
 
 /// One output section as its header gives it (L-86).
+/// The value of a definition (`spec/image.md` I-124; `spec/resolve.md`
+/// §10.1 P-1; `spec/model.md` §4.5's invariant). There is deliberately no
+/// accessor to an `Option` or a number: every consumer says what it does
+/// with each case, so "no place" cannot be defaulted to 0.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Valued {
+    /// Its address (for a non-alloc section, its offset, I-117; for
+    /// `SHN_ABS`, `st_value`; for a weak undefined key, 0, resolve §5.4).
+    At(u64),
+    /// Not defined in this output: a strong undefined key (the scan
+    /// refused its references, or a shared object supplies it at run
+    /// time) or a shared definition without a copy. The static `S` of
+    /// such a key is 0 (`spec/arch.md` §4.3).
+    Import,
+    /// Defined in a section without a place, by the named rule.
+    NoPlace(NoPlace),
+    /// A defined key the layout gave no place although its section has
+    /// one: an internal fault, never a number.
+    Missing,
+}
+
+/// What fill reads of a value (I-124): the address, if any, and whether
+/// the target is live. `NoPlace` and `Missing` are never live, so fill
+/// writes P-1's value for the referring section or stops; only `Import`
+/// (and a split target, whose caller asks `split_target`) is live
+/// without an address of its own, its `S` 0 by `spec/arch.md` §4.3.
+fn fill_parts(value: Valued) -> (Option<u64>, bool) {
+    match value {
+        Valued::At(v) => (Some(v), true),
+        Valued::Import => (None, true),
+        Valued::NoPlace(_) | Valued::Missing => (None, false),
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 struct OutSection {
     addr: u64,
@@ -340,10 +375,10 @@ pub struct LinkTables<'a, 's> {
     addrs: Addresses<'a, 's>,
     /// Per file: its symbol table, when it is an object with one.
     tables: Box<[Option<SymbolTable<'s>>]>,
-    /// Per global symbol: its definition's address (model §4.5, without
+    /// Per global symbol: its definition's value (model §4.5, without
     /// `redirect`: the record keys are already redirected, as the scan
-    /// decoded them).
-    global: Box<[Option<u64>]>,
+    /// decoded them; I-124).
+    global: Box<[Valued]>,
     got: SlotIndex,
     tls_ie: SlotIndex,
     tls_gd: SlotIndex,
@@ -421,7 +456,7 @@ impl<'a, 's> LinkTables<'a, 's> {
         };
         t.pieces = refs::PieceIndex::new(link.split, |s| t.section_size(s));
         let n = link.inputs.symbols.len() as usize;
-        let global = link.pool.unit_cost(16).map(n, |i| t.def_addr(SymbolId(i as u32)));
+        let global = link.pool.unit_cost(16).map(n, |i| t.def_value(SymbolId(i as u32)));
         t.global = global.into();
         t
     }
@@ -469,10 +504,26 @@ impl<'a, 's> LinkTables<'a, 's> {
         self.link.resolution.sections.get(s).map(|r| r.kind)
     }
 
-    /// The output address of a named symbol at `v` in section `s`
-    /// (model §4.5; S-19/S-22 for a split `Merge` section; S-50 for an
-    /// `.eh_frame`).
-    fn value_in(&self, s: SectionId, v: u64) -> Option<u64> {
+    /// Whether section `s` has a place (resolve.md §10.1 P-1): the
+    /// predicate the scan's `dead` asks too.
+    fn place_of(&self, s: SectionId) -> Result<(), NoPlace> {
+        let l = &self.link;
+        mortar_core::place::section_place(l.resolution, Some(l.assignment), l.liveness, s)
+    }
+
+    /// The value of a named symbol at `v` in section `s` (I-124): no
+    /// value at all when the section has no place (P-1).
+    fn value_in(&self, s: SectionId, v: u64) -> Valued {
+        if let Err(why) = self.place_of(s) {
+            return Valued::NoPlace(why);
+        }
+        self.addr_in_placed(s, v).map_or(Valued::Missing, Valued::At)
+    }
+
+    /// The output address of a named symbol at `v` in section `s`, which
+    /// has a place (model §4.5; S-19/S-22 for a split `Merge` section;
+    /// S-50 for an `.eh_frame`).
+    fn addr_in_placed(&self, s: SectionId, v: u64) -> Option<u64> {
         match self.kind_of(s)? {
             SectionKind::Merge => {
                 let p = if let Some(p) = self.pieces.named_symbol(self.link.split, s, v) {
@@ -526,29 +577,46 @@ impl<'a, 's> LinkTables<'a, 's> {
         Some(self.chunk_at(chunk, offset)?.1)
     }
 
-    fn entry_addr(&self, e: SymEntry) -> Option<u64> {
-        match self.entry_place(e)? {
-            Err(abs) => Some(abs),
-            Ok((s, sym)) => self.value_in(s, sym.st_value),
+    /// The value of entry `e`'s definition (I-124).
+    fn entry_value(&self, e: SymEntry) -> Valued {
+        match self.entry_place(e) {
+            Some(Err(abs)) => Valued::At(abs),
+            Some(Ok((s, sym))) => self.value_in(s, sym.st_value),
+            None => Valued::Missing,
         }
     }
 
-    /// The address of global `id`'s definition (model §4.5 without
-    /// `redirect`): weak undefined is 0, strong undefined `None`.
-    fn def_addr(&self, id: SymbolId) -> Option<u64> {
+    /// The value of global `id`'s definition (model §4.5 without
+    /// `redirect`; I-124): weak undefined is `At(0)` (resolve §5.4),
+    /// strong undefined `Import`.
+    fn def_value(&self, id: SymbolId) -> Valued {
         let l = &self.link;
         let pl = &l.layout.placement;
-        match l.assignment.def(l.resolution, id)? {
-            Def::Undefined { weak: true } => Some(0),
-            Def::Undefined { weak: false } => None,
-            Def::Defined(e) => self.entry_addr(e),
-            Def::Common(_) => self.alloc_addr(AllocKey::Common(id)),
+        let found = |v: Option<u64>| v.map_or(Valued::Missing, Valued::At);
+        let Some(def) = l.assignment.def(l.resolution, id) else { return Valued::Import };
+        match def {
+            Def::Undefined { weak: true } => Valued::At(0),
+            Def::Undefined { weak: false } => Valued::Import,
+            Def::Defined(e) => self.entry_value(e),
+            Def::Common(_) => found(self.alloc_addr(AllocKey::Common(id))),
             Def::Shared(_) => {
                 let copies = &l.layout.slots.copy_of;
-                let at = copies.binary_search_by_key(&id, |row| row.0).ok()?;
-                self.alloc_addr(AllocKey::Copy(copies[at].1))
+                match copies.binary_search_by_key(&id, |row| row.0) {
+                    Ok(at) => found(self.alloc_addr(AllocKey::Copy(copies[at].1))),
+                    Err(_) => Valued::Import,
+                }
             }
-            Def::Internal(_) => pl.defined_of(id),
+            Def::Internal(_) => found(pl.defined_of(id)),
+        }
+    }
+
+    /// A global's value as an address for a consumer that has no use for
+    /// the other cases (the map, `.dynamic`'s `DT_INIT`): `None` for
+    /// each, so such a consumer omits the symbol; never 0 for "no place".
+    fn global_addr(&self, id: SymbolId) -> Option<u64> {
+        match self.global.get(id.0 as usize)? {
+            Valued::At(v) => Some(*v),
+            Valued::Import | Valued::NoPlace(_) | Valued::Missing => None,
         }
     }
 
@@ -571,10 +639,13 @@ impl<'a, 's> LinkTables<'a, 's> {
     }
 
     /// The address a slot holds for `key` (S-66): its definition's, the
-    /// resolver's for an IFUNC; `None` for an undefined key.
+    /// resolver's for an IFUNC; `None` for an undefined key, and for one
+    /// without a place (P-1: the scan refused every reference to it, so
+    /// no slot exists; a slot that did would be the caller's internal
+    /// error, never 0).
     fn address(&self, key: SymKey) -> Option<u64> {
-        match key.kind() {
-            SymKind::Local(e) => self.entry_addr(e),
+        let v = match key.kind() {
+            SymKind::Local(e) => self.entry_value(e),
             SymKind::Global(id) => {
                 let l = &self.link;
                 if matches!(l.assignment.def(l.resolution, id)?, Def::Undefined { .. }) {
@@ -582,6 +653,10 @@ impl<'a, 's> LinkTables<'a, 's> {
                 }
                 *self.global.get(id.0 as usize)?
             }
+        };
+        match v {
+            Valued::At(a) => Some(a),
+            Valued::Import | Valued::NoPlace(_) | Valued::Missing => None,
         }
     }
 
@@ -668,25 +743,35 @@ impl LinkTables<'_, '_> {
                     && self.kind_of(*s) == Some(SectionKind::Merge)
                     && self.named_piece_dead(*s, sym.st_value))
         };
-        let (s, live) = match key.kind() {
+        // I-124: the value is typed; a key without a place (P-1), or
+        // whose place the layout lacks, is not live, whatever `facts`
+        // says, so fill writes the referring section's P-1 value (the
+        // tombstone, 0 in `.gcc_except_table`) or stops: never `S = 0`.
+        let value = match key.kind() {
             SymKind::Local(_) => {
-                let live = !facts.dead && !piece_dead(&place);
-                let s = match place {
-                    _ if !live || is_split => None,
-                    Some(Err(abs)) => Some(abs),
-                    Some(Ok((s, sym))) => self.value_in(s, sym.st_value),
-                    None => None,
-                };
-                (s, live)
+                if facts.dead || piece_dead(&place) {
+                    Valued::Missing
+                } else if is_split {
+                    Valued::Import
+                } else {
+                    match place {
+                        Some(Err(abs)) => Valued::At(abs),
+                        Some(Ok((s, sym))) => self.value_in(s, sym.st_value),
+                        // `r_sym` 0, or a symbol of no section: S is 0
+                        // (the gABI's undefined symbol 0).
+                        None => Valued::Import,
+                    }
+                }
             }
             SymKind::Global(id) => {
-                let live = match place {
-                    Some(Ok((sec, _))) => self.link.liveness.is_live(sec) && !piece_dead(&place),
-                    _ => true,
-                };
-                (self.global.get(id.0 as usize).copied().flatten(), live)
+                if piece_dead(&place) {
+                    Valued::Missing
+                } else {
+                    self.global.get(id.0 as usize).copied().unwrap_or(Valued::Missing)
+                }
             }
         };
+        let (s, live) = fill_parts(value);
         // A PLT entry is `S` only where it is the symbol's address for the
         // whole program (`spec/arch.md` §3.6, WP-113): the canonical entry
         // of a `CANON_PLT` key (`spec/dyn.md` D-44), and, S-71, the IPLT
@@ -700,7 +785,14 @@ impl LinkTables<'_, '_> {
         } else {
             self.link.synth.got.iplt_address(&self.got_addrs, key)
         };
-        let s = entry.or(s).unwrap_or(0);
+        // `S` of a live key without an address of its own is 0 only for
+        // `Import` (arch.md §4.3) and a split target (its caller's); a
+        // key that is not live carries no `S` fill reads.
+        let s = match (entry, s) {
+            (Some(e), _) if live => e,
+            (_, Some(v)) => v,
+            _ => 0,
+        };
         (SymValue { s, kind: facts.kind, size, live, tls: facts.tls }, is_split)
     }
 }
@@ -918,7 +1010,10 @@ impl SymAddrs for LinkTables<'_, '_> {
         let (c, at) = self.chunk_of(section)?;
         let (shndx, base) = self.chunk_at(c, 0)?;
         let addr = match self.kind_of(section)? {
-            SectionKind::Merge => self.value_in(section, value)?,
+            SectionKind::Merge => match self.value_in(section, value) {
+                Valued::At(a) => a,
+                Valued::Import | Valued::NoPlace(_) | Valued::Missing => return None,
+            },
             _ if self.link.layout.placement.chunks.get(c)?.addr.is_some() => {
                 self.addrs.addr_in(section, value)?
             }
@@ -1035,8 +1130,11 @@ fn patches(
     for p in &pl.patches {
         let target = match p.kind {
             PatchKind::Thunk(ThunkTarget::Plt(key)) => tables.plt(key),
+            // I-124: a target without a place has no address; the thunk
+            // is then an internal error below, never a branch to 0.
             PatchKind::Thunk(ThunkTarget::Sym { key, addend }) => {
-                Some(tables.sym(key).s.wrapping_add_signed(addend))
+                let v = tables.sym(key);
+                v.live.then(|| v.s.wrapping_add_signed(addend))
             }
             // Written by `Link::fixups` (its words are fill's).
             PatchKind::Erratum { .. } => continue,
@@ -1522,7 +1620,7 @@ impl crate::dynamic::DynamicAddrs for DynView<'_, '_, '_> {
     }
 
     fn symbol(&self, key: SymbolId) -> Option<u64> {
-        self.t.global.get(key.0 as usize).copied().flatten()
+        self.t.global_addr(key)
     }
 
     fn soname(&self) -> Option<u32> {
@@ -1695,7 +1793,12 @@ fn rela_dyn(view: &DynView<'_, '_, '_>) -> Result<crate::dynrel::RelaDyn, Diagno
         match t.split_target(key, addend) {
             Some(Ok(Some(v))) => Some(v),
             Some(_) => None,
-            None => Some(t.sym(key).s.wrapping_add_signed(addend)),
+            // I-124: a key without a place gives no addend (the caller's
+            // internal error, never `RELATIVE` + 0).
+            None => {
+                let v = t.sym(key);
+                v.live.then(|| v.s.wrapping_add_signed(addend))
+            }
         }
     };
     let dynsym = |id: SymbolId| d.dynsym.index(id);
@@ -2780,14 +2883,14 @@ impl LinkTables<'_, '_> {
             if self.section_flags(sid) & SHF_ALLOC == 0 {
                 continue;
             }
-            let Some(Some(addr)) = self.global.get(id.0 as usize) else { continue };
+            let Some(addr) = self.global_addr(id) else { continue };
             if matches!(self.kind_of(sid), Some(SectionKind::Merge | SectionKind::EhFrame)) {
                 let shndx = self.chunk_of(sid).and_then(|(c, _)| self.chunk_at(c, 0));
                 if let Some((shndx, _)) = shndx {
-                    chunk_syms.push((shndx, *addr, key.name.to_vec()));
+                    chunk_syms.push((shndx, addr, key.name.to_vec()));
                 }
             } else {
-                syms.push((sid, *addr, key.name.to_vec()));
+                syms.push((sid, addr, key.name.to_vec()));
             }
         }
         syms.sort();
@@ -2892,5 +2995,39 @@ impl LinkTables<'_, '_> {
             m.loads.push(row.path.to_vec());
         }
         m
+    }
+}
+
+#[cfg(test)]
+mod place_tests {
+    use super::{Valued, fill_parts};
+    use mortar_core::place::NoPlace;
+    use mortar_core::resolution::DropReason;
+
+    // spec: image.md I-124; model.md §4.5 invariant (NEGATIVE: no place is
+    // never a live value, so fill never writes S = 0 for it)
+    #[test]
+    fn i124_no_place_is_not_live() {
+        for why in [
+            NoPlace::Consumed,
+            NoPlace::Collected,
+            NoPlace::Unassigned,
+            NoPlace::Unknown,
+            NoPlace::Dropped(DropReason::Excluded),
+            NoPlace::Dropped(DropReason::Consumed),
+            NoPlace::Dropped(DropReason::Stripped),
+        ] {
+            assert_eq!(fill_parts(Valued::NoPlace(why)), (None, false), "{why:?}");
+        }
+        assert_eq!(fill_parts(Valued::Missing), (None, false));
+    }
+
+    // spec: image.md I-124 (an address is live; an import is live with no
+    // address of its own)
+    #[test]
+    fn i124_values() {
+        assert_eq!(fill_parts(Valued::At(0x4000)), (Some(0x4000), true));
+        assert_eq!(fill_parts(Valued::At(0)), (Some(0), true));
+        assert_eq!(fill_parts(Valued::Import), (None, true));
     }
 }

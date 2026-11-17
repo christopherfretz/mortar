@@ -101,9 +101,12 @@ pub const MAX_MERGE_ENTSIZE: u64 = 1 << 16;
 /// `Regular`: it is writable or code, the target of a relocation section
 /// (`relocated`), TLS, `SHF_COMPRESSED` (its bytes are not the pieces'
 /// until decompressed, S-5), or of a shape merging does not take
-/// (`sh_addralign` not a power of two, `sh_entsize` above 2^16).
-/// `mortar_merge::cut::placed_whole` is the same predicate, kept for its
-/// bare-object tests; after this, phase 60 sees no such section.
+/// (`sh_addralign` not a power of two, `sh_entsize` above 2^16), or
+/// empty (`sh_size` 0: no piece could give a symbol defined in it a
+/// value, so it is an ordinary empty section with a place, resolve.md
+/// §10.1 P-1, WP-136). `mortar_merge::cut::placed_whole` is the same
+/// predicate but for the size, kept for its bare-object tests; after this,
+/// phase 60 sees no such section.
 #[must_use]
 pub fn placed_whole(s: &SectionInfo<'_>, relocated: bool) -> bool {
     s.flags & (SHF_WRITE | SHF_EXECINSTR | SHF_TLS | SHF_COMPRESSED) != 0
@@ -111,6 +114,7 @@ pub fn placed_whole(s: &SectionInfo<'_>, relocated: bool) -> bool {
         || !(s.addralign == 0 || s.addralign.is_power_of_two())
         || s.entsize == 0
         || s.entsize > MAX_MERGE_ENTSIZE
+        || s.size == 0
 }
 
 /// The kind of a section, by the first row of §10's table that matches,

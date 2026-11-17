@@ -199,7 +199,15 @@ a diagnostic is model §8's: 60 for split and merge (unit `FileId`, seq
     not the pieces' until decompressed, and phase 60 reads the file's
     bytes);
   - has `sh_addralign` that is not a power of two (refused already by
-    `elf.md`), or `sh_entsize` larger than 2^16.
+    `elf.md`), or `sh_entsize` larger than 2^16;
+  - is empty (`sh_size` 0; WP-136, `spec/resolve.md` §10.1 P-1): it has
+    no piece, so no fragment could give a symbol defined in it a value.
+    Placed whole it is an ordinary empty section of its output
+    section's body (`spec/layout.md` L-159 when that section holds no
+    bytes), or, after a merged input, at the end of the merged chunk
+    (`spec/layout.md` L-162): where GNU ld and lld agree to put it,
+    measured on the three targets; mold gives it an empty output
+    section of its own.
 
   None of these occurs in the library scan (X-1); the rule exists so
   that a hand-written object cannot make a wrong merge. Such a section

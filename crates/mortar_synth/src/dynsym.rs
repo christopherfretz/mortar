@@ -171,6 +171,13 @@ pub trait DynSymSource: DynNames + Sync {
     /// the hidden bit cleared, D-27, resolve §9.2): `None` or an index
     /// below 2 for an unversioned definition.
     fn bound_version(&self, entry: SymEntry) -> Option<VerIndex>;
+    /// Whether the key's definition has a place (`spec/resolve.md` §10.1
+    /// P-1): `false` only for a key defined in an input section without
+    /// one (dropped, consumed, collected), whose export is omitted, never
+    /// an entry without a value (WP-136). `true` for every other key.
+    fn has_place(&self, _key: SymbolId) -> bool {
+        true
+    }
 }
 
 /// The address facts of the entries (the image phase's answers).
@@ -571,6 +578,9 @@ fn plan_of(t: &DynsymInputs<'_>, pool: &Pool, diag: &Collector) -> Result<Dynsym
         .collect();
     pool.unit_cost(20).sort_by(&mut keys, Ord::cmp);
     keys.dedup();
+    // P-1 (WP-136): an export of a definition without a place is omitted,
+    // never an error; a reference to it the scan refused already.
+    keys.retain(|&k| src.has_place(k));
     if !slots.copies.is_empty() {
         let aliases = copy_aliases(t, &keys, pool);
         keys.extend(aliases);

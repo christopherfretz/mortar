@@ -273,6 +273,7 @@ impl World {
             demands: &demands,
             shapes: &shapes,
             shared: false,
+            placeless: &[],
         };
         layout.validate(&cx)
     }

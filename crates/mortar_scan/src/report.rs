@@ -1,7 +1,7 @@
 //! The diagnostic of each group (`spec/image.md` I-22): its key, head,
 //! `>>> referenced by` lines and the extra context of its kind.
 
-use mortar_core::resolution::Verdict;
+use mortar_core::resolution::{Def, Verdict};
 use mortar_core::{FileId, SymKey, SymKind};
 use mortar_diag::{Diagnostic, FileRef, Key, Kind, Place, Relation};
 use mortar_elf::consts::{STT_SECTION, STV_HIDDEN, STV_INTERNAL};
@@ -118,9 +118,28 @@ fn mismatch(view: &View<'_, '_>, key: SymKey, acc: &Acc) -> Diagnostic {
 /// (symbol, referring section).
 fn discarded(view: &View<'_, '_>, file: FileId, group: u64, acc: &Acc) -> Diagnostic {
     let r_sym = group as u32;
+    let table = view.prep(file).and_then(|p| p.table().copied());
+    // A global whose definition has no place (resolve.md §10.1 P-1,
+    // WP-136): named as the key, defined in its definition's file and
+    // section, which need not be the referring file.
+    if let Some(key) = view.key_of(file, table.as_ref(), r_sym)
+        && let SymKind::Global(id) = key.kind()
+        && let Def::Defined(e) = view.def(id)
+    {
+        let path = view.inputs.files[e.file].display();
+        let dtable = view.prep(e.file).and_then(|p| p.table().copied());
+        let section =
+            view.sym(e.file, e.index).and_then(|s| match dtable?.section_of(e.index, &s).ok()? {
+                SymbolSection::Section(i) => Some(view.section_name(e.file, i.0)),
+                _ => None,
+            });
+        let name = view.shown_name(key);
+        let d = Diagnostic::error(Kind::DiscardedSectionReference { name })
+            .with(Relation::DefinedIn, Place::symbol(path, section.unwrap_or_default()));
+        return with_refs(view, d, acc);
+    }
     let path = view.inputs.files[file].display();
     let sym = view.sym(file, SymbolIndex(r_sym));
-    let table = view.prep(file).and_then(|p| p.table().copied());
     let section = sym.and_then(|s| match table?.section_of(SymbolIndex(r_sym), &s).ok()? {
         SymbolSection::Section(i) => Some(i),
         _ => None,

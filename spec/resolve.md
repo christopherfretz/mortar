@@ -1541,7 +1541,7 @@ classification is per file (I-file), the state needs `comdat`:
 | a container: name `.mason.meta`, `SHT_PROGBITS`, flags exactly `SHF_EXCLUDE` (`spec/meta.md` MT-6) | `Meta` | `Dropped(Consumed)`; `mortar_meta` reads it only when a check that needs it is on | GNU ld, lld, mold drop it (`meta.md` §2) |
 | `SHF_EXCLUDE` (any type) | `Excluded` | `Dropped(Excluded)` | GNU ld, lld; mold keeps an allocated one (E18): §16 |
 | name `.note.GNU-stack` | `Stack` | `Dropped(Consumed)` (layout reads its flags for `PT_GNU_STACK`) | all (E18) |
-| name `.note.gnu.build-id` (any type and flags: an `ld -r --build-id` output carries one, `SHT_NOTE`, `SHF_ALLOC`) | `Excluded` | `Dropped(Excluded)`, in every link whatever the line's `--build-id`: the output's id is the linker's own (`spec/image.md` I-69), never an input's. As any dropped section: a reference to a local or section symbol of it from a kept section is §6.3 (a) (`discarded-section-reference`; from a debug name, the tombstone); a non-local symbol defined in it is as one defined in an `SHF_EXCLUDE` section, which this table does not yet rule (a gap, WP-135.md: referenced from a kept section or exported, mortar refuses it with an `internal error`; GNU ld refuses ``defined in discarded section``, lld `relocation refers to a symbol in a discarded section`, mold `undefined symbol`; no `ld -r` output defines one); it is never live, so never a `--gc-sections` root; the map lists it under the discarded input sections, as GNU ld's does; it is a function of the input alone, so `--incremental` state records nothing new (WP-135) | GNU ld 2.44, lld 19, mold 2.37: one id (their own) with `--build-id`, none with `=none`, for inputs of every style (`sha1`, `md5`, `uuid`, `0x…`, lld's), from two inputs, under `--gc-sections`; GNU ld and lld refuse a reference into it, as into any discarded section (WP-135) |
+| name `.note.gnu.build-id` (any type and flags: an `ld -r --build-id` output carries one, `SHT_NOTE`, `SHF_ALLOC`) | `Excluded` | `Dropped(Excluded)`, in every link whatever the line's `--build-id`: the output's id is the linker's own (`spec/image.md` I-69), never an input's. As any dropped section: a reference to a local or section symbol of it from a kept section is §6.3 (a) (`discarded-section-reference`; from a debug name, the tombstone); a non-local symbol defined in it has no place (§10.1, P-1: referenced from a kept section, `discarded-section-reference`; exported, omitted; WP-136 closed the gap WP-135.md recorded; GNU ld refuses ``defined in discarded section``, lld `relocation refers to a symbol in a discarded section`, mold `undefined symbol`; no `ld -r` output defines one); it is never live, so never a `--gc-sections` root; the map lists it under the discarded input sections, as GNU ld's does; it is a function of the input alone, so `--incremental` state records nothing new (WP-135) | GNU ld 2.44, lld 19, mold 2.37: one id (their own) with `--build-id`, none with `=none`, for inputs of every style (`sha1`, `md5`, `uuid`, `0x…`, lld's), from two inputs, under `--gc-sections`; GNU ld and lld refuse a reference into it, as into any discarded section (WP-135) |
 | name `.note.gnu.property`, `SHT_NOTE` | `Note` | `Kept`; `spec/synth.md` merges the properties into one note | GNU ld, lld, mold merge (not verified here) |
 | `SHT_LLVM_ADDRSIG` (`.llvm_addrsig`) without `SHF_EXCLUDE` | `Excluded` | `Dropped(Consumed)` (a later `--icf=safe` reads it). Clang emits it with `SHF_EXCLUDE`, so the `SHF_EXCLUDE` row above matches first: `Excluded`, `Dropped(Excluded)` | all (E18) |
 | `SHT_LLVM_CALL_GRAPH_PROFILE` | `Excluded` | `Dropped(Consumed)`: a section-order hint; ignoring it is correct | not verified |
@@ -1553,7 +1553,7 @@ classification is per file (I-file), the state needs `comdat`:
 | name prefix `.zdebug` | — | `Refused{Feature, ".zdebug compressed debug sections"}` | (GNU-style compression, superseded by `SHF_COMPRESSED`) |
 | `SHF_COMPRESSED` (GCC and Clang `-gz`) | — | `Refused{Feature, "SHF_COMPRESSED input sections"}` until the store decompresses (`spec/layout.md` L-52); a non-alloc `.debug*` one under `-S`/`-s`: `Dropped(Stripped)` (WP-027c ruling: never copied compressed as if plain) | the references decompress |
 | `SHT_X86_64_UNWIND` (x86-64) or name `.eh_frame` | `EhFrame` | `Kept` | |
-| `SHF_MERGE` with entry size > 0 | `Merge`, or `Regular` when `spec/synth.md` S-6 places it whole (writable, code, TLS, relocated, `SHF_COMPRESSED`, odd shape) | `Kept`; a non-alloc `.debug*` one (`.debug_str`, `.debug_line_str`) under `-S`/`-s`: `Dropped(Stripped)`, as the `Debug` row (WP-027a: GNU ld, lld and mold drop them) | |
+| `SHF_MERGE` with entry size > 0 | `Merge`, or `Regular` when `spec/synth.md` S-6 places it whole (writable, code, TLS, relocated, `SHF_COMPRESSED`, odd shape, empty: §10.1) | `Kept`; a non-alloc `.debug*` one (`.debug_str`, `.debug_line_str`) under `-S`/`-s`: `Dropped(Stripped)`, as the `Debug` row (WP-027a: GNU ld, lld and mold drop them) | |
 | `SHF_MERGE` with entry size 0 | `Regular` | `Kept` (not merged; lld) | not verified with GNU ld |
 | non-alloc, name `.debug_*` | `Debug` | `Kept` (unless `-S`/`-s`: `Dropped(Stripped)`); with `--gdb-index` and neither `-S` nor `-s`, exactly `.debug_gnu_pubnames` and `.debug_gnu_pubtypes` are `Dropped(Consumed)`: the index reads them (`spec/synth.md` S-G6, WP-097) | lld and mold drop them with `--gdb-index` |
 | `SHT_NOTE` other | `Note` | `Kept` | |
@@ -1626,6 +1626,77 @@ does not change the kind once the store decompresses (`spec/model.md`
 `section_base[f]` is the prefix sum of `e_shnum` over the live
 relocatable objects in `FileId` order (`spec/model.md` §2.2): an exclusive
 scan, computed after `file_live`.
+
+### 10.1 The place of a definition (rule P-1; WP-136)
+
+**P-1 [C].** Every symbol defined in an input section (a local, a
+section symbol, or a global whose `def` is that entry) either **has a
+place** or **has no place by a named rule**, and nothing else:
+
+- it has a place when its section is `Kept`, live (`spec/model.md` §3.6),
+  and assigned to an output section (`OutOf::Out`, §3.4). An **empty**
+  section has a place like any other (`spec/layout.md` L-159); an empty
+  `SHF_MERGE` section is placed whole, as `Regular` (`spec/synth.md`
+  S-6), so it is an ordinary empty section, at the end of the merged
+  chunk when it follows a merged input (`spec/layout.md` L-162), where
+  GNU ld and lld agree to place it;
+- it has no place when its section is `Dropped` by a row of the table
+  above (`Comdat`, `Excluded`, `Consumed`, `Stripped`, `Script`), is
+  `Kept` but consumed by the linker (`OutOf::Consumed`: the
+  `.note.gnu.property` sections, `spec/layout.md` L-34), or is `Kept`
+  but not live (`--gc-sections`, §6.1 of `spec/image.md` I-7). The reason
+  is named: `mortar_core::place::NoPlace`.
+
+A reference to a symbol with no place, from a kept and live section, is
+what §6.3's table says of a reference into a dropped copy, whatever the
+reason: from a debug name the tombstone (`spec/image.md` I-47), from
+`.gcc_except_table` 0, from `.eh_frame` a dead FDE, from any other
+section the error `discarded-section-reference`, naming the symbol, the
+referring section and file, and the defining section and file (for a
+global, the file and section of its definition; GNU ld: ``defined in
+discarded section``, lld: `relocation refers to a symbol in a discarded
+section`). A symbol with no place that nothing references is omitted from
+`.symtab` (`spec/synth.md` S-19) and from `.dynsym` (an export of it is
+dropped, `spec/dyn.md` D-110), never an error.
+
+**No path turns "no place" into a number** (`spec/model.md` §4.5): the
+value of a definition is a typed result
+(`mortar_image::link::Valued`), and its "no place" case is never
+read as an address, a `RELATIVE` addend, a GOT word, a `.dynsym`
+value or a map line. Before WP-136 two paths did: the image's
+symbol value defaulted a missing value to 0, so a global in an empty
+merge section or in `.note.gnu.property` was linked as 0 with exit
+status 0.
+
+Measured (WP-136, `spec/landed/resolve/WP-136.md`), for a global, a weak
+global, a local, the section symbol with an addend and a symbol at the
+section's end, referenced by an absolute word, a PC-relative load, a GOT
+load, a `-pie` dynamic record and a debug word, on the three targets:
+
+| section | GNU ld 2.44 | lld 22 | mold 2.37 | mortar |
+|---|---|---|---|---|
+| empty `SHF_MERGE` (`.rodata.str1.1`, `.rodata.cst8`) | placed at its input position (at the end of `.text` when no `.rodata` holds bytes) | placed at its input position (an empty `.rodata`) | placed: an empty output section of its own | placed whole (S-6): in the body (before any merged input: the start, as GNU and lld), at the merged chunk's end (after one: L-162, as GNU and lld); with no `.rodata` bytes, L-159's place (the start of `.text`) |
+| `.note.gnu.property` | refused | refused; a weak global is 0 | globals undefined; locals linked at the note's offset | no place: refused (`Consumed`) |
+| `SHF_EXCLUDE` | globals undefined; locals refused | refused; a weak global is 0 | linked | no place: refused (`Excluded`) |
+| `.note.GNU-stack` | linked, at the end of `.text` | refused; a weak global is 0 | globals undefined; locals linked 0 | no place: refused (`Consumed`), as lld |
+| `.note.gnu.build-id` (an input's) | refused | refused; a weak global is 0 | globals undefined; locals linked at the note's offset | no place: refused (`Excluded`) |
+| `.gnu.warning.*` | refused | linked, its offset (non-alloc) | linked, its offset | no place: refused (`Consumed`) |
+| `.debug_*` under `-S` | refused | linked, 0 (`SHN_ABS`) | globals undefined; locals linked 0 | no place: refused (`Stripped`) |
+| `.llvm_addrsig` (without `SHF_EXCLUDE`) | linked, 0 | linked, 0 | linked, 0 | no place: refused (`Consumed`) |
+| `SHT_AARCH64_ATTRIBUTES` | linked, 0 | linked, 0 | globals undefined; locals linked 0 | no place: refused (`Consumed`) |
+
+The rows are the references from alloc data, PC-relative and GOT loads
+and `-pie` records; from a debug section every reference linker writes
+0 (mold for the kinds it links, the offset) and mortar the tombstone
+(I-47: all ones in ELFCLASS64, 0 in ELFCLASS32). An unreferenced export
+of such a global (`-shared`): GNU ld writes it `SHN_ABS` with its
+offset (`.note.gnu.property`, build-id), at the end of `.text`
+(GNU-stack) or not at all (`SHF_EXCLUDE`); lld writes it undefined; mold
+omits it but for `SHF_EXCLUDE`; mortar omits it.
+
+The references disagree on every dropped kind; P-1 takes the strictest
+reading, the one that cannot produce a wrong word: a symbol of a section
+that has no bytes in the output has no address.
 
 ## 11. `-r` (M4)
 
