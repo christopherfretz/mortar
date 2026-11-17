@@ -36,7 +36,7 @@ i386 fit.
 | 4 (M6) | Mason metadata and the one-definition-rule table: `.mason.meta` in outputs, `.note.mason` (§13, P-M1-P-M3; WP-078) | — |
 | x | x86-64 and i386 tables (§4.5) | `machine` |
 | G (WP-098) | `.gdb_index`: gdb's format for every producer (P-G1–P-G5) and synth.md §17 for mortar's (P-G6–P-G9), §6.10. `.debug_names` is not judged | — |
-| R (M4-r; RL-5, WP-185; P-P1 planned: RL-6, WP-186) | Relocatable outputs (`-r`, `ET_REL`): every input section and relocation once, the symbol table, `.eh_frame`, groups, the header, the container, the notes, every section header (§14, P-P2-P-P11, accepted by P-P9; `mortar_plumb::relocatable::verify`); the final program through `-r` against the direct link, on two final links (P-P1, planned) | — |
+| R (M4-r; RL-5, WP-185; P-P1: RL-6, WP-186) | Relocatable outputs (`-r`, `ET_REL`): every input section and relocation once, the symbol table, `.eh_frame`, groups, the header, the container, the notes, every section header (§14, P-P2-P-P11, accepted by P-P9; `mortar_plumb::relocatable::verify`); the final program through `-r` against the direct link, on two final links (P-P1, `mortar_plumb::compose::compose`) | — |
 | I (M7, WP-091) | An incremental link's holes and dead ranges, for a mortar map that claims them (`incremental`, `hole`, `dead`, §3.2): IN-60's coverage of every allocated section and IN-3a's three checks on every range (§6.8, P-I1–P-I6). `--equiv` (incr.md IN-62) is not started | — |
 
 On the reference corpus, a stage-1 report may give only the stage-2
@@ -213,7 +213,7 @@ the incremental records and end the map.
 
 | record | count | meaning |
 |---|---|---|
-| `output <kind>` | at most one | the output kind of `dyn.md` D-1: `static`, `exec`, `pie`, `static-pie`; `shared` (planned, WP-116); `relocatable` (planned, M4-r: the `-r` records `rplace`, `rframe`, `rgroup`, `rcommon` and which records a relocatable map may hold are §14.2) |
+| `output <kind>` | at most one | the output kind of `dyn.md` D-1: `static`, `exec`, `pie`, `static-pie`; `shared` (planned, WP-116); `relocatable` (M4-r: read by stage R since RL-5, WP-185; mortar writes it from RL-7; the `-r` records `rplace`, `rframe`, `rgroup`, `rcommon` and which records a relocatable map may hold are §14.2) |
 | `interp <path>` | at most one | the `-dynamic-linker` path |
 | `runpath <paths>`, `rpath <paths>` | at most one of the two | the `-rpath` list joined by `:` as written (`$ORIGIN` kept); `rpath` under `--disable-new-dtags` (`DT_RPATH`) |
 | `bind lazy`, `bind now` | at most one | `-z now` in force or not |
@@ -3689,7 +3689,7 @@ A finding has:
 
 - the rule id: `O1`, `S1`–`S21`, `I1`, `I2`, `M1`–`M12` (M11, M12: §3.8), `R1`–`R9`, `T1`,
   `Y1`–`Y5`, `E1`–`E5`, `F1`–`F5` (§4.8), `P1`–`P2` (§6.6), `B1` (§6.7),
-  `C1`–`C6` (§5.10), `P-D1`–`P-D13` (§12), `P-I1`–`P-I6` (§6.8), `P-M1`–`P-M3` (§13), `P-P1`–`P-P11` (§14; planned, RL-5), `P-E1`–`P-E6`
+  `C1`–`C6` (§5.10), `P-D1`–`P-D13` (§12), `P-I1`–`P-I6` (§6.8), `P-M1`–`P-M3` (§13), `P-P1`–`P-P11` (§14; P-P2–P-P11 RL-5, WP-185; P-P1 RL-6, WP-186), `P-E1`–`P-E6`
   (§6.9; a side's finding there carries its side, `X:` or `F:`) or
   `P-G1`–`P-G9` (§6.10);
 - the output address, if it has one;
@@ -3939,12 +3939,14 @@ way, by the linkers that accept it, and its glibc programs are run:
 | `weak-prel` | gcc (asm): PC-relative data, `ADR` and `LDR` literal to an undefined weak | GNU ld, lld | clean (§4.4) |
 | `eh-frames` | gcc (asm): CIEs `zR`, `zPLR` (personality through `DW.ref`, LSDA), `zRS`, `zRB`; one FDE in a collected section | `-static -nostdlib --eh-frame-hdr --gc-sections` | `tests/eh.rs`: exits 0; clean; nothing not checked; 5 FDEs checked, 1 dropped, 5 table entries, 7 records verified |
 
-The relocatable corpus (stage R, planned: RL-5) is §14.9's: GNU ld's
+The relocatable corpus (stage R; RL-5, WP-185) is §14.9's: GNU ld's
 and lld's `-r` outputs verify clean but for the per-linker forms of
-§14.5 (and lld's A91, A93, A100), mold's show only their anomalies
-(A90-A102 as they apply), and
-P-P1 judges the D.3 components' final links through `-r` by GNU ld and
-by mortar against the direct links, static and PIE.
+§14.5 (and lld's A91, A93, A100, A120, A122, A125, A126), mold's show
+only their anomalies (A90-A102, A121-A124 as they apply), and P-P1
+(RL-6, WP-186; `tests/compose.rs`) judges the D.3 components' final
+links through GNU ld's and lld's `-r` by GNU ld, lld and mortar against
+the direct links by the same linker, static (PIE: the lane's smoke
+tests, `spec/harness.md`, "Relocatable outputs").
 
 ### 9.2 Mutations
 
@@ -4192,7 +4194,7 @@ produce a finding that is not a recorded anomaly (`tests/mutation.rs`):
   the object referring to it give mortar the same set, both clean.
 
 - **(t)** Relocatable outputs (§14; V-R12 of record
-  `spec/landed/layout/WP-154.md`; planned: RL-5, `tests/relocatable.rs`),
+  `spec/landed/layout/WP-154.md`; RL-5, WP-185, `tests/relocatable.rs`; (21) RL-6, WP-186, `tests/compose.rs`),
   on GNU ld's `-r` output of the D.3 C and C++ components on each target
   (i686 for the REL mutations), read with mortar's map form where the
   mutation needs a mortar clause (as (l) reads lld's link as mortar's).
@@ -4204,7 +4206,9 @@ produce a finding that is not a recorded anomaly (`tests/mutation.rs`):
   (3) a piece's bytes zeroed (dropped) and a piece's bytes written a
   second time over its neighbor: P-P2;
   (4) a second copy of a COMDAT group kept (its group, members and
-  records appended from the losing input): P-P6 and P-P2;
+  records appended from the losing input): P-P6 and P-P11 (P-P2 when
+  the map places the losing copy) (the supervisor's ruling on RL-5's
+  question 13);
   (5) a hidden global demoted to `STB_LOCAL` (moved below `sh_info`):
   P-P4;
   (6) a common's `st_shndx` set to `SHN_ABS` (mold's A90): P-P4;
@@ -5075,10 +5079,16 @@ is accepted from its linker only, never from mortar's map.
   COMDAT section probably due to an ODR violation`), as mortar does.
   Reproducers: `resolve/comdat-mismatch-weak.test`,
   `-dynamic`, `-shared`, `-archive`, `-needed`; `tests/demoted.rs`.
-- **A120 (lld; WP-185).** At `-r` lld writes an empty `NOBITS` output
-  section named `COMMON` that holds no symbol (the D.3 C component's
-  commons stay `SHN_COMMON`, as RV-R5 says). P-P11 "section {index}
-  COMMON comes from no input section". Harmless for the final link.
+- **A120 (lld; WP-185).** At `-r` lld writes a `NOBITS` output section
+  named `COMMON` that holds no symbol (the D.3 C component's commons
+  stay `SHN_COMMON`, as RV-R5 says): not empty, its `sh_size` is the
+  commons' (8 for the C component, `SHF_WRITE|SHF_ALLOC`, alignment 8;
+  measured by RL-6 on AArch64). P-P11 "section {index} COMMON comes from
+  no input section". Harmless for GNU ld's and lld's final links, which
+  put an input section named `COMMON` in `.bss`; mortar's final link
+  makes it an orphan output section `COMMON` (P-P1 item 1; the
+  supervisor's ruling: WP-203, a gap of mortar's final link, record
+  `spec/landed/harness/WP-186.md`).
   Reproducer: the D.3 C component (`tests/relocatable.rs`).
 - **A121 (mold; WP-185).** At `-r` mold lists a group member's relocation
   section in the output group without `SHF_GROUP` (the D.3 C++
@@ -7023,7 +7033,7 @@ loaded-bytes sentence (above: two links); a unit's kinds 4 and 5 beyond their fr
 itself (`spec/odr.md` Q11, answered in WP-078's record: not
 implemented); the load-time hook (O-58).
 
-## 14. Stage R: relocatable outputs (M4-r; RL-5, WP-185; P-P1 planned: RL-6, WP-186)
+## 14. Stage R: relocatable outputs (M4-r; RL-5, WP-185; P-P1: RL-6, WP-186)
 
 The rules of a `-r` output (`ET_REL`), applied from record
 `spec/landed/layout/WP-154.md` §D.1 by WP-180 (RL-0; record
@@ -7036,7 +7046,7 @@ point (`verify`, `verify_with`, `verify_from`, the dynamic one) hands an
 output to stage R when it is `ET_REL`, its map has `output relocatable`,
 or a foreign map's line has `-r` (P-P9), and stage R is also callable
 alone, `mortar_plumb::relocatable::verify(output, src: &dyn Source, map:
-&Map, ctx: &Ctx) -> Report`. P-P1 is RL-6's (WP-186, planned). The
+&Map, ctx: &Ctx) -> Report`. P-P1 is RL-6's (WP-186): `mortar_plumb::compose::compose`, §14.5. The
 linker rules cited are those of
 `spec/cli.md` §3.16 (C-R*n*), `spec/resolve.md` §11 (RV-R*n*),
 `spec/layout.md` §24 (L-R*n*), `spec/image.md` §17 (I-R*n*),
@@ -7101,8 +7111,16 @@ C-R3's options. The line's options stage R reads: `-d`/`-dc`/`-dp`,
 (and `-z muldefs`).
 
 **The input set** (§3.8) is judged as for a final link, with RV-R2's
-roots: at `-r` neither `-e` nor `ENTRY` nor `_start` is a root (§3.8
-names `-e` as one; at `-r` it is not, `spec/resolve.md` RV-R2); `-u` is.
+roots: `-e SYM` is a root at `-r` exactly as in a final link (all three
+references extract the member that defines `SYM`; the supervisor's
+ruling of 2026-11-17 on RL-2's measurement, which amends RV-R2's
+sentence "`-e` is not a root at `-r`"); `-u` is one; the default
+`_start` is not (`crates/mortar_plumb/src/inset.rs` roots `_start` only
+when the line has neither `-shared` nor `-r`). `-e` writes nothing by
+itself: an `-e SYM` nothing defines is no key of P-P4 (GNU ld's `UND
+SYM`, written with a warning, is GNU ld's alone and no finding on its
+output; lld, mold and mortar write none, and its absence is no finding),
+and mortar's `e_entry` stays 0 (P-P7).
 
 **The places.** Each input section gets one place from the map (§14.2):
 
@@ -7352,8 +7370,48 @@ are the text of each finding (`{…}` a field).
   Linker rules judged: the composition every `-r` rule exists for
   (record §D.1's V-R1); directly RV-R2 (exclusion (a)), RV-R7 (t4),
   L-R1 (exclusion (b)), L-R4 (t1).
+  **RL-6's readings** (`compose.rs`; each a QUESTION to the supervisor,
+  record `spec/landed/harness/WP-186.md`):
+  - `φ` of a common is the place of the symbol of the same key in `V`
+    (the `-r` output may make it `SHN_COMMON` again, lld, or allocate
+    it, GNU ld): the commons are the inputs' `SHN_COMMON` names;
+  - a place of `D` that no input piece holds and that lies inside an
+    allocated output section (a linker-made section, an IPLT entry, a
+    gap) maps to the section of the same name in `V` at the same offset
+    from its start; only a place outside every section maps to the
+    "ends at" of the piece before it;
+  - item 2's order compares **units**: a piece of `D` outside the
+    component, or one output section of the `-r` output (L-R1's merge
+    by name makes every piece of `.text.wk` of two component inputs one
+    unit), each at its first piece and once;
+  - a consumed input section (`.note.GNU-stack`, P-P10) is not judged by
+    item 2; an empty piece is placed or not, but its output section's
+    name is not compared (a linker may put it anywhere);
+  - `.eh_frame` pieces are not compared by item 3 (the `-r` output's
+    `.eh_frame` is re-framed, P-P5; the final link's is judged by
+    stages 1-3): counted as `not compared: .eh_frame`;
+  - addends: an x86 field's addend is the record's (`D`'s on both
+    sides); a REL field's is read from the input's field;
+  - exclusion (a)'s closures are the maps' extracted members (the
+    `-r` map's and `D`'s), not a re-run of §3.8;
+  - (t3) has no "just outside" case of its own: P-P1 compares no
+    linker-made byte, so a change outside the descriptor (the note's
+    flags) is caught by item 1;
+  - (t4) is unreached by every case so far: with contiguous components
+    and first-wins election both links keep the same copy. Its logic
+    has no test (a QUESTION: a case that needs it).
   *Passes:* the D.3 corpus's GNU ld and lld `-r` outputs, final-linked
   by GNU ld and by mortar, static and PIE (the cells marked `=`).
+  Measured by RL-6 (`crates/mortar_plumb/tests/compose.rs`,
+  `p_p1_{aarch64,x86_64,i386}`, static, `-e _start`): the components
+  `compc` (c1, c2), `cifunc` (c4), `cctors` (c3; not with mortar's
+  final, which refuses `.ctors`) and `compx` (two C++ COMDAT objects),
+  `-r` by GNU ld and lld, finals by GNU ld, lld and mortar: judged, no
+  finding, but one cell: lld's `-r` of `compc` final-linked by mortar
+  has the finding "P-P1 ... COMMON (type 0x8, flags 0x3) through -r"
+  (mortar's final link makes lld's input section `COMMON` an orphan:
+  WP-203, a linker gap; the test expects it by name and fails when it
+  flips).
   *Catches:* mold's `-r` of the C component (COMMON→`SHN_ABS`: item 4
   and item 3, the field resolves to the absolute 4); the `.ctors.65335`
   order mold's `-r` moves (item 2); a `-r` output whose piece offsets are
@@ -7450,7 +7508,14 @@ are the text of each finding (`{…}` a field).
     output record naming `foo@@V` (RV-R6's lld form; both final links
     run, the review's x09).
   These are per-linker rules (§10.6), accepted only from their linker.
-  **(mortar)** I-R5 exactly: no `R_*_NONE` record but the inputs'
+  GNU ld's form for the same input (`foo@V1` and `foo@@V2` defined, an
+  `UND foo`, the record naming `foo`) is P-P3's general rule, verified
+  for GNU ld; mold's (two plain `foo` globals) is A95.
+  **(mortar)** RV-R6 with a versioned definition `foo@@V` and a plain
+  reference: lld's form, required (the supervisor's ruling of
+  2026-11-17): the record names `foo@@V`; a record naming `foo` is "P-P3
+  ... has an output record against foo; mortar's names foo@@V (RV-R6,
+  lld's form)". I-R5 exactly: no `R_*_NONE` record but the inputs'
   (none of its own: P-P5's removed FDE leaves nothing), and records in
   the order of `S`'s pieces, then the input order; the target in §14.4's
   mortar form; a relocation section exists exactly for an output section
@@ -7522,7 +7587,14 @@ are the text of each finding (`{…}` a field).
   and mold's output (RV-R3: GNU ld and mortar write it); lld accepts
   `-d` and leaves commons `SHN_COMMON` (record B: "accepted, no
   effect"), and mold accepts `-dc`/`-dp` likewise; lld's plain
-  `foo` bound to `foo@@V` (P-P3) leaves no `UND foo`.
+  `foo` bound to `foo@@V` (P-P3) leaves no `UND foo`; GNU ld's `UND
+  SYM` for an `-e SYM` nothing defines is no key and no finding (§14.1).
+  **(mortar)** RV-R6's lld form, required (the supervisor's ruling of
+  2026-11-17): a plain `foo` bound to `foo@@V` leaves no `UND foo`
+  (judged, not accepted); GNU ld's `UND foo` beside `foo@@V` on mortar's
+  output is "P-P4 foo is undefined in .symtab beside foo@@V: mortar
+  binds the plain reference to foo@@V and writes no UND foo (RV-R6,
+  lld's form)".
   **(mortar)** I-R4 exactly: the null entry, then one `STT_SECTION` per
   output section other than `SHT_GROUP`, the relocation sections,
   `.symtab`, `.symtab_shndx`, `.strtab` and `.shstrtab`, in index order
@@ -7768,12 +7840,14 @@ are the text of each finding (`{…}` a field).
     another type, the input's (all three copy it);
   - `sh_entsize`: 24/16 (`.symtab`), 24/12 (`SHT_RELA`), 16/8
     (`SHT_REL`), 4 (`SHT_GROUP`, `.symtab_shndx`), the merge class's
-    entsize, otherwise the pieces' common value or 0 (RL-5 reads "or 0"
-    as: 0 is accepted whatever the pieces' value). A reference's
-    `SHT_INIT_ARRAY`, `SHT_FINI_ARRAY` or `SHT_PREINIT_ARRAY` may state
-    the pointer size (GNU ld writes 8 on clang's `.init_array`, whose
-    pieces have 0; both readings are a QUESTION to the supervisor, record
-    WP-185);
+    entsize, otherwise the pieces' common value, else 0. **(mortar)**
+    exactly that: 0 where the pieces agree on a value is "P-P11 section
+    {index} {name}: sh_entsize is 0, not {e} (mortar: the pieces' common
+    value, exactly)". A reference may also write 0 whatever the pieces'
+    value, and on `SHT_INIT_ARRAY`, `SHT_FINI_ARRAY` or
+    `SHT_PREINIT_ARRAY` the pointer size (GNU ld writes 8 on clang's
+    `.init_array`, whose pieces have 0) (the supervisor's ruling on
+    RL-5's question 5);
   - a reference's copy of `.llvm_addrsig` or `.llvm.call-graph-profile`
     (§14.3) has neither its `sh_link` nor its `sh_entsize` judged; its
     relocation section is judged as any other;
@@ -7836,9 +7910,17 @@ failed, asserted on every link):
 
 `tombstone` is 0 (a reference's map is not mortar's), `in-mergeable` is
 0 (every reference's merged section is listed or recomputed in the
-corpus) and `options-unknown` is never counted by stage R (the line's
-options are read by §14.1, an unknown one is not a coverage term at
-`-r`: a QUESTION to the supervisor, record WP-185). mold's failed
+corpus). `options-unknown` IS counted at `-r` (the supervisor's ruling
+on RL-5's question 15): a record whose verdict an option of the line
+decides, when there is no line, is not checked `options-unknown` (its
+output record at the place is consumed, matched or not). Since RL-6 that
+is a record against a common (`-d`/`-dc`/`-dp` decide the target's form:
+a name, or the allocated place). Not yet counted: a line with an option
+whose class at `-r` is "acts" (WP-181 §B, `docs/status/options.md`'s
+"At `-r`" column) that §14.1 does not read; this needs that column in
+the verifier's option mirror (`crates/mortar_plumb/src/opts.rs`, which
+the supervisor regenerates: the `at_r` class of each row). The corpus
+links all have a line, so the term is 0 in the table above. mold's failed
 records are those of its findings, every one a §10.2 anomaly of §14.9's
 table. GNU ld's `NONE` records
 where it removed an FDE are output records that no input record gives:
@@ -7881,6 +7963,33 @@ name omitted) counts as a judged symbol, not a record.
   verifier-side package that reads no linker crate; RL-5 (WP-185)
   writes P-P9 (S1's widening and the dispatch to stage R, the entry of
   `relocatable.rs`). RL-6 calls both from `linktest`.
+
+- **RL-5's questions (record `spec/landed/plumb/WP-185.md`,
+  "Questions"), ruled at RL-6.** 1-4, 6-12 and 14 are ACCEPTED as
+  implemented. (5) `sh_entsize`: for mortar's output exact, the pieces'
+  common value, else 0 (0 where the pieces agree is a finding, P-P11);
+  for a reference 0 is accepted, and GNU ld's pointer size on the array
+  sections (`relocatable.rs`; mutants `(q5-mortar)`, `(q5-reference)`).
+  (13) §9.2 (t) (4) reads "P-P6 and P-P11 (P-P2 when the map places the
+  losing copy)". (15) `options-unknown` is counted at `-r` (§14.6; the
+  test `(q15)`); the column it still needs is named there. (16) the
+  "planned: RL-5" places are corrected, the "planned: RL-6" ones made
+  true.
+- **RL-2's measurements (rulings at RL-6).** (1) `-e SYM` at `-r` is an
+  archive-extraction root and writes nothing by itself: no `UND SYM`
+  for mortar, lld or mold (GNU ld's `UND SYM` is no finding on GNU
+  ld's output, its absence none on mortar's), and `e_entry` stays 0
+  (§14.1, P-P4). (2) RV-R6 with `.symver`: mortar writes lld's form
+  (the `@@V2` entry, the caller's record names it, no `UND vfoo`); GNU
+  ld's form stays accepted for GNU ld; mold's is the anomaly (P-P3,
+  P-P4; the mutant `(rv-r6-mortar)`). (3) `-rpath`/`--rpath` at `-r`
+  is a no-op; the option-mirror constants are unchanged.
+- **WP-203 (RL-6's finding, ruled a linker gap).** lld's `-r` writes an
+  input section `COMMON` (A120: `NOBITS`, `WA`, align 8, the commons'
+  size); GNU ld and lld put it in `.bss` at the final link, mortar's
+  final link makes it an orphan output section `COMMON`, which P-P1
+  item 1 reports. P-P1 is unchanged; the composition test expects the
+  finding by name until WP-203 lands.
 
 ### 14.9 The corpus
 

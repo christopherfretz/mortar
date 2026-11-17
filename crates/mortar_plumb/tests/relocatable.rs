@@ -524,6 +524,29 @@ fn cases(t: &Tools) -> Vec<Case> {
         inputs: vec!["xs.o", "xn.o"],
         opts: vec![],
     });
+    // RL-6's fixtures (item 6 of its brief): options at `-r` RL-5 did
+    // not exercise, on the D.3 C component.
+    let d3c = || vec![src(Cc::Gcc, "c1.c", C1, D3, "c1.o"), src(Cc::Gcc, "c2.c", C2, D3, "c2.o")];
+    for (name, opts) in [
+        ("opt-build-id", &["--build-id=sha1"][..]),
+        ("opt-u", &["-u", "nosuch"][..]),
+        ("opt-e", &["-e", "nosuch"][..]),
+        ("opt-s", &["-s"][..]),
+        ("opt-x", &["-x"][..]),
+        ("opt-d", &["-d"][..]),
+    ] {
+        v.push(Case { name: name.into(), srcs: d3c(), inputs: vec!["c1.o", "c2.o"], opts: opts.to_vec() });
+    }
+    // Compressed debug sections in the inputs (`SHF_COMPRESSED`).
+    v.push(Case {
+        name: "compressed".into(),
+        srcs: vec![
+            src(Cc::Gcc, "c1.c", C1, &["-O1", "-g", "-gz=zlib", "-fcommon"], "c1.o"),
+            src(Cc::Gcc, "c2.c", C2, &["-O1", "-g", "-gz=zlib", "-fcommon"], "c2.o"),
+        ],
+        inputs: vec!["c1.o", "c2.o"],
+        opts: vec![],
+    });
     if t.arch != Arch::I386 {
         // Two objects with Mason containers (tests/meta, WP-078): P-P8.
         let arch = t.arch.name();
@@ -1051,6 +1074,10 @@ struct Mutant {
 
 impl Mutant {
     fn caught(&self) -> bool {
+        // "(none)": a tolerated form, which must add no finding.
+        if self.want == ["(none)"] {
+            return self.rules.is_empty() && self.anomalies.is_empty();
+        }
         self.want.iter().all(|w| self.rules.contains(*w)) && self.anomalies.is_empty()
     }
 }
@@ -1166,6 +1193,87 @@ fn mutations(arch: Arch) -> Option<Vec<Mutant>> {
             Some(format!("{} record 0: r_offset + 4", e.name(rs)))
         }),
         "(1)",
+    );
+    // The supervisor's ruling on RL-5's question 5 (RL-6): an output
+    // `.init_array` whose pieces agree on sh_entsize 8 written with 0: a
+    // finding on mortar's output (exact), none on a reference's.
+    let entsize0 = |e: &mut Ed| {
+        let i = (1..e.shnum()).find(|&i| e.sh(i).ty == 14 && e.sh(i).entsize != 0)?;
+        let mut sh = e.sh(i);
+        sh.entsize = 0;
+        e.set_sh(i, &sh);
+        Some(format!("{}: sh_entsize 0 (its pieces' is not)", e.name(i)))
+    };
+    push!(mutant(&c, "(q5-mortar)", &["P-P11"], true, None, entsize0), "(q5-mortar)");
+    push!(mutant(&c, "(q5-reference)", &["(none)"], false, None, entsize0), "(q5-reference)");
+    // The supervisor's ruling on RL-5's question 15 (RL-6): without a
+    // line, a record against a common is `options-unknown`, and the
+    // link has no finding the line's reading does not have.
+    {
+        let inputs: Vec<Input<'_>> =
+            c.files.iter().map(|(p, b)| Input { path: p, bytes: b }).collect();
+        let r = mortar_plumb::verify_with(&c.out, &inputs, &c.map, &Ctx { line: None, files: &Dir(&c.dir) });
+        let (with_line, _) = c.findings(&c.out, false);
+        let fresh: Vec<String> = r
+            .findings
+            .iter()
+            .map(|f| format!("{} {}", f.rule.id(), f.message))
+            .filter(|f| !with_line.contains(f))
+            .collect();
+        let sum = r.summary();
+        let counted = sum.contains("options-unknown");
+        v.push(Mutant {
+            id: "(q15)".into(),
+            base: "d3-c-gcc (no line)".into(),
+            what: "no line: records against commons are options-unknown".into(),
+            want: vec!["(none)"],
+            rules: fresh.iter().map(|s| s.split(' ').next().unwrap_or("").to_string()).collect(),
+            anomalies: if counted { Vec::new() } else { vec!["options-unknown not counted".into()] },
+            first: sum.lines().find(|l| l.contains("options-unknown")).unwrap_or("").to_string(),
+        });
+    }
+    // RL-6's item 6 fixtures, each with a mutant (GNU ld's `-r`).
+    // `--build-id` at `-r`: the note made PROGBITS, so the output has no
+    // build id the line asks for (P-P10).
+    let bid = get("opt-build-id", &["--build-id=sha1"])?;
+    push!(
+        mutant(&bid, "(i6-build-id)", &["P-P10"], false, None, |e| {
+            let i = e.find(".note.gnu.build-id")?;
+            let mut sh = e.sh(i);
+            sh.ty = 1;
+            e.set_sh(i, &sh);
+            Some(".note.gnu.build-id: sh_type SHT_PROGBITS".into())
+        }),
+        "(i6-build-id)",
+    );
+    // `-u nosuch`: GNU ld's `UND nosuch` made a definition (P-P4).
+    let u = get("opt-u", &["-u", "nosuch"])?;
+    push!(
+        mutant(&u, "(i6-u)", &["P-P4"], false, None, |e| {
+            let k = e.sym_by_name("nosuch")?;
+            let mut y = e.sym(k);
+            y.shndx = 0xfff1;
+            y.value = 4;
+            e.set_sym(k, &y);
+            Some("nosuch: SHN_ABS 4 (no input defines it)".into())
+        }),
+        "(i6-u)",
+    );
+    // `-d`: the allocated common made `SHN_COMMON` again (P-P4).
+    let d = get("opt-d", &["-d"])?;
+    push!(
+        mutant(&d, "(i6-d)", &["P-P4"], false, None, |e| {
+            let k = e.sym_by_name("common_x")?;
+            let mut y = e.sym(k);
+            if y.shndx == 0xfff2 {
+                return None;
+            }
+            y.shndx = 0xfff2;
+            y.value = 8;
+            e.set_sym(k, &y);
+            Some("common_x: SHN_COMMON under -d".into())
+        }),
+        "(i6-d)",
     );
     // (2) a section-symbol record's addend without its piece offset.
     let pieces = c.pieces();
@@ -1401,6 +1509,24 @@ fn mutations(arch: Arch) -> Option<Vec<Mutant>> {
         }),
         "(7)",
     );
+
+    // The supervisor's ruling on RV-R6 (2026-11-17): mortar writes lld's
+    // form; GNU ld's (`foo@@V1` defined, `UND foo`, the record naming
+    // `foo`) read as mortar's output is P-P4's and P-P3's finding.
+    {
+        let (f, _) = sv.findings(&sv.out, true);
+        let hit: Vec<&String> =
+            f.iter().filter(|x| x.contains("(RV-R6, lld's form)")).collect();
+        v.push(Mutant {
+            id: "(rv-r6-mortar)".into(),
+            base: "symver (as mortar's)".into(),
+            what: "GNU ld's form read as mortar's".into(),
+            want: vec!["P-P3", "P-P4"],
+            rules: hit.iter().map(|s| s.split(' ').next().unwrap_or("").to_string()).collect(),
+            anomalies: Vec::new(),
+            first: hit.first().map_or_else(String::new, |s| (*s).clone()),
+        });
+    }
 
     // (8) the FDE of a dropped copy kept; (12) a tombstone written 0;
     // (14) a local $d left at a removed FDE's offset.

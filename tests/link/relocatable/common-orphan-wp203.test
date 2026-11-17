@@ -1,0 +1,30 @@
+# WP-203: input section COMMON is an orphan in mortar's final link. lld's
+# `-r` of a component with a common writes it as an input section named
+# `COMMON` (NOBITS, WA; plumb.md A120); GNU ld and lld place it in `.bss`
+# at the final link, mortar makes it an orphan output section `COMMON`
+# (P-P1 item 1: crates/mortar_plumb/tests/compose.rs expects that finding
+# by name). The xfail flips (a stale xfail fails) when WP-203 lands.
+#@ spec: plumb.md "14.8"
+#@ xfail(mortar): WP-203: input section COMMON is an orphan in mortar's final link (an output section COMMON, not .bss)
+
+cc -O1 -fcommon c1.c -o c1.o
+cc -O1 main.c -o main.o
+partial lld c1.o -o comp.lld.o
+check readelf -SW comp.lld.o
+  has: COMMON
+
+link gcc -static main.o comp.lld.o -o via
+run via
+  stdout: 5
+check readelf -SW via
+  not: COMMON
+
+#--- c1.c
+int g_common;
+int g_other;
+void set(void) { g_common = 2; g_other = 3; }
+#--- main.c
+#include <stdio.h>
+extern int g_common, g_other;
+void set(void);
+int main(void) { set(); printf("%d\n", g_common + g_other); return 0; }

@@ -508,6 +508,32 @@ pub struct Coverage {
     pub input_set: Option<String>,
     /// Stage R (§14.6), when the output is relocatable.
     pub relocatable: Option<RelCoverage>,
+    /// P-P1 (§14.5, §14.6), on a composition's report.
+    pub composition: Option<CompCoverage>,
+}
+
+/// What P-P1 compared (§14.6: `composition: {x} judged, {y} not judged
+/// ({letters})`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CompCoverage {
+    /// Compositions judged (0 or 1 per report).
+    pub judged: u64,
+    /// The exclusions that applied, `(letter, reason)` (P-P1 (a)-(d)).
+    pub not_judged: Vec<(char, String)>,
+    /// Input sections compared by place (item 2), records by target
+    /// (item 3), bytes outside the relocated fields (item 3), globals
+    /// (item 4).
+    pub pieces: u64,
+    pub records: u64,
+    pub bytes: u64,
+    pub symbols: u64,
+    /// Records whose target has no input piece to map (a linker-made
+    /// place, a slot, a TLS offset): judged by their form only.
+    pub records_by_form: u64,
+    /// What P-P1 leaves to other rules, by name (`.eh_frame` pieces).
+    pub not_compared: BTreeMap<String, u64>,
+    /// The tolerances used: (t1)-(t4) and how often.
+    pub tolerances: BTreeMap<String, u64>,
 }
 
 /// What stage R judged (§14.6).
@@ -772,6 +798,34 @@ impl Report {
                 r.symbols,
                 r.sections
             );
+        }
+        if let Some(p) = &c.composition {
+            let letters: Vec<String> = p.not_judged.iter().map(|(l, _)| l.to_string()).collect();
+            let _ = writeln!(
+                s,
+                "composition: {} judged, {} not judged ({})",
+                p.judged,
+                p.not_judged.len(),
+                letters.join(", ")
+            );
+            let _ = writeln!(
+                s,
+                "composition compared: pieces {}, records {} ({} by form), bytes {}, globals {}",
+                p.pieces, p.records, p.records_by_form, p.bytes, p.symbols
+            );
+            for (l, why) in &p.not_judged {
+                let _ = writeln!(s, "not judged: relocatable composition ({l}): {why}");
+            }
+            if !p.tolerances.is_empty() || !p.not_compared.is_empty() {
+                let t: Vec<String> = p.tolerances.iter().map(|(k, n)| format!("({k}) {n}")).collect();
+                let nc: Vec<String> = p.not_compared.iter().map(|(k, n)| format!("{k} {n}")).collect();
+                let _ = writeln!(
+                    s,
+                    "composition tolerances: {}; not compared: {}",
+                    t.join(", "),
+                    nc.join(", ")
+                );
+            }
         }
         if let Some(i) = &c.input_set {
             let _ = writeln!(s, "{i}");

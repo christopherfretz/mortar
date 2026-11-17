@@ -415,7 +415,7 @@ pub struct Shlib {
 /// relocatable outputs old build systems feed a final link.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Partial {
-    /// `bfd`, `lld` or `mold`.
+    /// `bfd`, `lld`, `mold` or `mortar` (RL-6).
     pub linker: Linker,
     pub args: Vec<Template>,
 }
@@ -1143,13 +1143,14 @@ impl Parser {
             "partial" => {
                 qualifiers.no_family("'partial'")?;
                 qualifiers.no_linker("'partial'")?;
-                let linker =
-                    Linker::parse(first).filter(|l| l.is_reference()).ok_or_else(|| {
-                        format!(
-                            "'partial' is followed by the reference linker that makes the \
-                         relocatable output (bfd, lld, mold), not '{first}'"
-                        )
-                    })?;
+                // `partial mortar` (RL-6, WP-186): mortar's own `-r`,
+                // judged by stage R; refused until RL-7 lifts the refusal.
+                let linker = Linker::parse(first).ok_or_else(|| {
+                    format!(
+                        "'partial' is followed by the linker that makes the relocatable \
+                         output (bfd, lld, mold, mortar), not '{first}'"
+                    )
+                })?;
                 args.remove(0);
                 if args.is_empty() {
                     return Err("'partial' has no arguments".to_owned());
@@ -2438,8 +2439,12 @@ FileHeader:
         assert_eq!(args, ["a.o", "b.o", "-o", "r.o"]);
         assert!(test.steps[0].is_build() && test.steps[0].feature().is_none());
         assert_eq!(test.steps[0].keyword, "partial");
-        let bad = with("partial mortar a.o -o r.o\nlink gcc r.o\n");
-        assert!(has_error(&bad, 2, "reference linker"));
+        // RL-6: `partial mortar` parses (mortar's `-r`, judged by stage R).
+        let mine = parse(&with("partial mortar a.o -o r.o\nlink gcc r.o\n")).unwrap();
+        let StepKind::Partial(partial) = &mine.steps[0].kind else { panic!() };
+        assert_eq!(partial.linker, Linker::Mortar);
+        let bad = with("partial gold a.o -o r.o\nlink gcc r.o\n");
+        assert!(has_error(&bad, 2, "the linker that makes the relocatable output"));
         assert!(has_error(&with("partial bfd\nlink gcc r.o\n"), 2, "has no arguments"));
         assert!(has_error(&with("partial(mold) bfd a.o\nlink gcc r.o\n"), 2, "'partial'"));
         let in_build = with("partial bfd a.o -o %{linker}.o\nlink gcc r.o\n");

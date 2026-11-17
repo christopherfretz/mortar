@@ -1,0 +1,43 @@
+# RL-6 (WP-186) smoke test: the pre-link idiom of old build systems
+# (record spec/landed/layout/WP-154.md §A.4): `ld -r` of a C component,
+# then `objcopy --localize-hidden`, then the final link by every linker
+# of the matrix. The hidden `hid` is GLOBAL HIDDEN after `-r` and LOCAL
+# after objcopy; the program runs like the direct link. (The C++ form
+# with exceptions is resolve/comdat-mismatch-weak-prelink, pending on
+# WP-178; not touched here.)
+#@ spec: harness.md "Relocatable outputs"
+
+cc -O1 p1.c -o p1.o
+cc -O1 p2.c -o p2.o
+cc -O1 main.c -o main.o
+partial bfd p1.o p2.o -o comp.o
+objcopy --localize-hidden comp.o comp.lh.o
+partial lld p1.o p2.o -o comp.lld.o
+objcopy --localize-hidden comp.lld.o comp.lld.lh.o
+check readelf -sW comp.o
+  has: GLOBAL HIDDEN * hid$
+check readelf -sW comp.lh.o
+  has: LOCAL HIDDEN * hid$
+
+link gcc -static main.o p1.o p2.o -o direct
+run direct
+  stdout: 12
+link gcc -static main.o comp.lh.o -o via
+run via
+  stdout: 12
+link gcc -static main.o comp.lld.lh.o -o via.lld
+run via.lld
+  stdout: 12
+
+#--- p1.c
+__attribute__((visibility("hidden"))) int hid(int x) { return x + 1; }
+int api(int x);
+int api(int x) { return hid(x) * 2; }
+#--- p2.c
+__attribute__((visibility("hidden"))) int hid(int x);
+int api2(int x) { return hid(x) + 4; }
+#--- main.c
+#include <stdio.h>
+int api(int);
+int api2(int);
+int main(void) { printf("%d\n", api(1) + api2(3)); return 0; }

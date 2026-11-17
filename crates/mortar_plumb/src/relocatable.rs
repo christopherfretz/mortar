@@ -839,18 +839,40 @@ impl Rv<'_> {
         Tgt::Place(s.shndx, (s.value as i64).wrapping_add(a))
     }
 
+    /// The output's defined global `name@@V`, for a plain `name`.
+    pub(crate) fn default_version_of(&self, name: &str) -> Option<&str> {
+        self.out
+            .syms
+            .iter()
+            .find(|y| {
+                !y.local()
+                    && y.shndx != SHN_UNDEF
+                    && y.name.strip_prefix(name).is_some_and(|v| v.starts_with("@@"))
+            })
+            .map(|y| y.name.as_str())
+    }
+
     /// §14.4's equivalence; `Some(true)` through a per-linker form.
     pub(crate) fn equiv(&self, inp: &Tgt, out: &Tgt) -> Option<bool> {
         match (inp, out) {
-            (Tgt::Name(a, x), Tgt::Name(b, y)) if a == b && x == y => Some(false),
-            // lld binds a plain `foo` to `foo@@V` (RV-R6's lld form).
+            // mortar binds a plain `foo` to the definition `foo@@V`: GNU
+            // ld's `foo` record (and `UND foo`) is not mortar's form (the
+            // supervisor's ruling on RV-R6, 2026-11-17).
             (Tgt::Name(a, x), Tgt::Name(b, y))
-                if self.format == Format::Lld
+                if a == b && x == y && self.mortar() && self.default_version_of(a).is_some() =>
+            {
+                None
+            }
+            (Tgt::Name(a, x), Tgt::Name(b, y)) if a == b && x == y => Some(false),
+            // lld binds a plain `foo` to `foo@@V` (RV-R6's lld form, which
+            // mortar writes: required of mortar, per-linker for lld).
+            (Tgt::Name(a, x), Tgt::Name(b, y))
+                if matches!(self.format, Format::Lld | Format::Mortar)
                     && x == y
                     && !a.contains('@')
                     && b.strip_prefix(a.as_str()).is_some_and(|v| v.starts_with("@@")) =>
             {
-                Some(true)
+                Some(!self.mortar())
             }
             (Tgt::Place(o, v), Tgt::Place(p, w)) if o == p && v == w => Some(false),
             (Tgt::Abs(v), Tgt::Abs(w)) if v == w => Some(false),
@@ -1008,6 +1030,20 @@ pub fn as_mortar_map(output: &[u8], src: &dyn Source, map: &Map, ctx: &Ctx<'_>) 
         t
     })
     .1
+}
+
+/// The model of a `-r` link after stage R's rules ran, for P-P1
+/// (`compose.rs`, RL-6): `k` reads the places, the record matching and
+/// the `.eh_frame` record map; the report is stage R's own.
+pub(crate) fn model<R>(
+    output: &[u8],
+    store: &Store<'_>,
+    m: usize,
+    map: &Map,
+    line: Option<&[String]>,
+    k: impl FnOnce(&Rv<'_>) -> R,
+) -> (Report, Option<R>) {
+    with_rv(output, store, m, map, line, |rv| k(rv))
 }
 
 /// Builds the model of a `-r` link, runs the rules, then `k` on it; the
@@ -2116,6 +2152,22 @@ impl Rv<'_> {
     ) {
         let machine = self.machine;
         let cands = self.out_recs.get(&(out, at)).cloned().unwrap_or_default();
+        // §14.6 (the supervisor's ruling on RL-5's question 15): a record
+        // against a common, without a line, has the form `-d`/`-dc`/`-dp`
+        // decides (a name, or the allocated place): its output record is
+        // consumed and the record counted `options-unknown`.
+        if !self.opts.known
+            && self.ins[f].elf.syms.get(r.sym as usize).is_some_and(|y| y.shndx == SHN_COMMON)
+        {
+            if let Some(&(ors, oi)) =
+                cands.iter().find(|&&(ors, oi)| !self.used[&(ors, oi)] && self.out_rels[&ors][oi].ty == r.ty)
+            {
+                self.used.insert((ors, oi), true);
+                self.matched.insert((ors, oi), (f, rs, ri));
+            }
+            self.report.coverage.add_not_checked(Reason::OptionsUnknown, 1);
+            return;
+        }
         let mut wrong_target: Option<Tgt> = None;
         let mut wrong_type: Option<u32> = None;
         for &(ors, oi) in &cands {
@@ -2164,7 +2216,13 @@ impl Rv<'_> {
             {
                 self.used.insert((ors, oi), true);
             }
-            format!("{head} has an output record against {ot}, not {t}")
+            match (&ot, t) {
+                (Tgt::Name(a, _), Tgt::Name(b, _)) if a == b && self.mortar() => {
+                    let v = self.default_version_of(a).unwrap_or_default().to_string();
+                    format!("{head} has an output record against {ot}; mortar's names {v} (RV-R6, lld's form)")
+                }
+                _ => format!("{head} has an output record against {ot}, not {t}"),
+            }
         } else if let Some(ty) = wrong_type {
             if let Some(&(ors, oi)) = cands.iter().find(|c| !self.used[c]) {
                 self.used.insert((ors, oi), true);
@@ -2966,8 +3024,16 @@ fn judge_pieces(rv: &mut Rv<'_>, o: usize, os: &Sec, ps: &[&Sec], bad: &mut Vec<
         // state the pointer size, as GNU ld does (a question on P-P11).
         let ptr = if rv.class64 { 8 } else { 4 };
         let array = !rv.mortar() && matches!(os.ty, 14..=16) && os.entsize == ptr;
-        if os.flags & SHF_MERGE == 0 && os.entsize != want_es && os.entsize != 0 && !array {
-            bad.push(format!("sh_entsize is {}, not {want_es}", os.entsize));
+        // The supervisor's ruling on RL-5's question 5: for mortar the
+        // rule is exact (0 where the pieces agree on a value is a
+        // finding); a reference may write 0, or GNU ld's pointer size on
+        // the arrays.
+        if os.flags & SHF_MERGE == 0
+            && os.entsize != want_es
+            && (rv.mortar() || (os.entsize != 0 && !array))
+        {
+            let exact = if rv.mortar() { " (mortar: the pieces' common value, exactly)" } else { "" };
+            bad.push(format!("sh_entsize is {}, not {want_es}{exact}", os.entsize));
         }
     }
     // sh_info: the input's, when the pieces agree.

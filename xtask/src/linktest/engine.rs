@@ -1221,6 +1221,12 @@ impl Unit<'_> {
                 }
             }
             let (program, mut full) = self.build_tool(step)?;
+            let partial_out = match &step.kind {
+                StepKind::Partial(p) if p.linker == Linker::Mortar => {
+                    output_of(&args).map(str::to_owned)
+                }
+                _ => None,
+            };
             full.extend(args.into_iter().map(OsString::from));
             // A `(kiln)` step's hod route uses the lane's hod, and a hod
             // failure is an error, not a fallback (WP-134).
@@ -1233,6 +1239,16 @@ impl Unit<'_> {
                 env.push(("KILN_HOD_STRICT", std::ffi::OsStr::new("1")));
             }
             let output = spawn(step, &program, &full, dir, &env, TOOL_LIMITS)?;
+            if !output.end.success() && partial_out.is_some() {
+                // mortar must link what GNU ld links (spec/harness.md
+                // "partial mortar"): a refusal fails the unit.
+                return Err(Raw::Fail(format!(
+                    "{}: {}: {}",
+                    step.describe(),
+                    output.end,
+                    first_error(&output)
+                )));
+            }
             if !output.end.success() {
                 return Err(Raw::Error(format!(
                     "{}: {}: {}",
@@ -1240,6 +1256,9 @@ impl Unit<'_> {
                     output.end,
                     first_error(&output)
                 )));
+            }
+            if let Some(out) = partial_out {
+                partial_mortar(step, &program, &full, dir, &out)?;
             }
         }
         Ok(())
@@ -1559,7 +1578,7 @@ impl Unit<'_> {
                     Linker::Bfd => self.tools.bfd.as_ref(),
                     Linker::Lld => common.lld.as_ref(),
                     Linker::Mold => common.mold.as_ref(),
-                    Linker::Mortar => None,
+                    Linker::Mortar => self.matrix.mortar.as_ref(),
                 };
                 let program = program.ok_or_else(|| {
                     Raw::Skip(format!(
@@ -1568,6 +1587,13 @@ impl Unit<'_> {
                         partial.linker.name()
                     ))
                 })?;
+                if partial.linker == Linker::Mortar {
+                    // Its own map, for stage R (spec/harness.md
+                    // "partial mortar").
+                    let map = format!("--mortar-map={}", partial_map(step.line));
+                    let m = self.arch().emulation();
+                    return Ok((program.clone(), vec!["-m".into(), m.into(), "-r".into(), map.into()]));
+                }
                 (program.clone(), vec!["-r".into()])
             }
             StepKind::Link(_) | StepKind::Host(_) | StepKind::Run(_) | StepKind::Check(_) => {
@@ -2083,6 +2109,9 @@ impl Unit<'_> {
             // Stage 3 (WP-050) judges dynamic outputs; until it lands they
             // are not judged, by that name.
             Some("dynamic" | "pie-or-shared") if self.matrix.stage3 => {}
+            // Stage R (RL-5, RL-6): a `-r` output is judged on its own
+            // (spec/plumb.md §14), once the verifier has it.
+            Some("relocatable") if mortar_plumb::STAGE_R => {}
             Some("dynamic" | "pie-or-shared") => {
                 *judged.plumb.not_judged.entry(STAGE3_ABSENT).or_default() += 1;
                 return Ok(());
@@ -2547,6 +2576,86 @@ impl Unit<'_> {
 }
 
 /// The `-o` file of a compile step's arguments.
+/// The map of a `partial mortar` step (`spec/harness.md`).
+fn partial_map(line: usize) -> String {
+    format!(".linktest-partial-{line}.map")
+}
+
+/// What the lane checks of mortar's `-r` output (`spec/harness.md`
+/// LT-R4, "partial mortar"): the file's mode (`0o644` under the
+/// harness's umask 022, `spec/image.md` I-R3; read only), the same line
+/// linked again into another name gives the same bytes (I-R11), and
+/// stage R on the output with its own map (`spec/plumb.md` §14): a
+/// finding fails the unit.
+fn partial_mortar(
+    step: &Step,
+    program: &Path,
+    full: &[OsString],
+    dir: &Path,
+    out: &str,
+) -> Result<(), Raw> {
+    use std::os::unix::fs::PermissionsExt as _;
+    let fail = |what: String| Raw::Fail(format!("{}: {what}", step.describe()));
+    let path = dir.join(out);
+    let mode = std::fs::metadata(&path)
+        .map_err(|e| fail(format!("{}: {e}", path.display())))?
+        .permissions()
+        .mode()
+        & 0o777;
+    if mode != 0o644 {
+        return Err(fail(format!("LT-R4: {out} has mode {mode:o}, not 644 (I-R3)")));
+    }
+    // I-R11: the same words into a second name.
+    let again = format!("{out}.linktest-again");
+    let again_map = format!("{}.again", partial_map(step.line));
+    let mut words: Vec<OsString> = Vec::with_capacity(full.len());
+    let mut k = 0;
+    while k < full.len() {
+        let w = full[k].to_string_lossy();
+        if w == "-o" && k + 1 < full.len() {
+            words.push("-o".into());
+            words.push(again.clone().into());
+            k += 2;
+            continue;
+        }
+        words.push(if w.starts_with("--mortar-map=") {
+            format!("--mortar-map={again_map}").into()
+        } else {
+            full[k].clone()
+        });
+        k += 1;
+    }
+    let second = spawn(step, program, &words, dir, &[], TOOL_LIMITS)?;
+    if !second.end.success() {
+        return Err(fail(format!("LT-R4: the second link: {}", second.end)));
+    }
+    let a = std::fs::read(&path).map_err(|e| fail(format!("{out}: {e}")))?;
+    let b = std::fs::read(dir.join(&again)).map_err(|e| fail(format!("{again}: {e}")))?;
+    if a != b {
+        return Err(fail(format!("LT-R4: {out} and {again} differ (I-R11)")));
+    }
+    let verified = crate::plumb::verify_link_line(
+        &path,
+        &dir.join(partial_map(step.line)),
+        mortar_plumb::Format::Mortar,
+        dir,
+        None,
+        None,
+        None,
+    )
+    .map_err(|e| Raw::Error(format!("{}: L3: {e}", step.describe())))?;
+    let report = verified.1;
+    if let Some(f) = report.findings.first() {
+        return Err(fail(format!(
+            "stage R: {} finding(s), the first {} {}",
+            report.findings.len(),
+            f.rule.id(),
+            f.message
+        )));
+    }
+    Ok(())
+}
+
 fn output_of(args: &[String]) -> Option<&str> {
     let at = args.iter().position(|a| a == "-o")?;
     args.get(at + 1).map(String::as_str)

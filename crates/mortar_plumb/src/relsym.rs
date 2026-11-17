@@ -178,14 +178,20 @@ pub(crate) fn check(rv: &mut Rv<'_>) {
             }
             // lld binds a plain undefined `foo` to a definition `foo@@V`
             // and writes no `UND foo` (RV-R6's lld form, §14.5 P-P3/P-P4).
+            // mortar writes that form (the supervisor's ruling on RV-R6,
+            // 2026-11-17): required of it, so judged, not accepted.
             if !defined
-                && rv.format == Format::Lld
+                && matches!(rv.format, Format::Lld | Format::Mortar)
                 && keys.iter().any(|(n, d)| {
                     d.def.is_some()
                         && n.strip_prefix(name.as_str()).is_some_and(|v| v.starts_with("@@"))
                 })
             {
-                accepted += 1;
+                if rv.mortar() {
+                    judged += 1;
+                } else {
+                    accepted += 1;
+                }
                 continue;
             }
             // A key in a local of the output: hidden made local.
@@ -198,6 +204,15 @@ pub(crate) fn check(rv: &mut Rv<'_>) {
         }
         if hits.len() > 1 {
             msgs.push(format!("{name} is in .symtab {} times", hits.len()));
+        }
+        // GNU ld's form on mortar's output: `UND foo` beside `foo@@V`.
+        if rv.mortar()
+            && !defined
+            && let Some(v) = rv.default_version_of(name)
+        {
+            msgs.push(format!(
+                "{name} is undefined in .symtab beside {v}: mortar binds the plain reference to {v} and writes no UND {name} (RV-R6, lld's form)"
+            ));
         }
         judged += 1;
         let o = &syms[hits[0]];

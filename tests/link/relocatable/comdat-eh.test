@@ -1,0 +1,64 @@
+# RL-6 (WP-186) smoke test: a C++ component with COMDAT groups (an
+# inline function with a static and a throwing one, in both units) and
+# `.eh_frame`, through GNU ld's, lld's and mold's `-r` (no common, no
+# IFUNC: mold's `-r` breaks only those), final-linked by every linker of
+# the matrix (spec/harness.md LT-R1, LT-R3). The `-r` drops one copy of
+# each group and its FDE (spec/layout.md L-R6); an exception thrown in
+# the component is caught in main through the component's frames.
+#@ spec: harness.md "Relocatable outputs"
+#@ spec: plumb.md "14.5"
+#@ requires: g++
+
+cxx -O1 k1.cc -o k1.o
+cxx -O1 k2.cc -o k2.o
+cxx -O1 m.cc -o m.o
+partial bfd k1.o k2.o -o comp.bfd.o
+partial lld k1.o k2.o -o comp.lld.o
+partial mold k1.o k2.o -o comp.mold.o
+
+link g++ -static m.o k1.o k2.o -o direct
+run direct
+  stdout: 3 caught 2
+
+link g++ -static m.o comp.bfd.o -o via.bfd
+run via.bfd
+  stdout: 3 caught 2
+link g++ -static m.o comp.lld.o -o via.lld
+run via.lld
+  stdout: 3 caught 2
+link g++ -static m.o comp.mold.o -o via.mold
+run via.mold
+  stdout: 3 caught 2
+
+#--- k.h
+#include <stdexcept>
+inline int counter(int x) { static int k; return k += x; }
+inline int thrower(int x) {
+  if (x > 1) throw std::runtime_error("x");
+  return x;
+}
+#--- k1.cc
+#include "k.h"
+int k1(int x) { return counter(x); }
+int t1(int x) { return thrower(x); }
+#--- k2.cc
+#include "k.h"
+int k2(int x) { return counter(x); }
+int t2(int x) { return thrower(x); }
+#--- m.cc
+#include <cstdio>
+#include <stdexcept>
+int k1(int), k2(int), t1(int), t2(int);
+int main() {
+  k1(1);
+  int r = k2(2);
+  int c = 0;
+  try {
+    t1(1);
+    t2(5);
+  } catch (const std::exception &) {
+    c = 2;
+  }
+  std::printf("%d caught %d\n", r, c);
+  return 0;
+}
