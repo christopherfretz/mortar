@@ -195,8 +195,7 @@ fn i18_comdat_mismatch_weak_demoted_mention() {
     // weak one; the reference through it is still `comdat-mismatch`,
     // never the undefined-weak zero (a branch to the next instruction).
     let m = ".text\n.globl _start\n_start:\n  bl fy\n  ret\n";
-    let Some((_d, l)) =
-        build("scan-i18-weak", &[("m.o", m), ("g1.o", WG1), ("g2.o", WG2)], &[])
+    let Some((_d, l)) = build("scan-i18-weak", &[("m.o", m), ("g1.o", WG1), ("g2.o", WG2)], &[])
     else {
         return;
     };
@@ -231,7 +230,8 @@ fn i18_another_files_undefined_weak_reference_stays_zero() {
     // zero; only g2.o's reference through its demoted mention is the
     // error, and the diagnostic names only it.
     let m = ".text\n.globl _start\n.weak hx\n_start:\n  bl hx\n  ret\n";
-    let g2 = ".section .text.g,\"axG\",@progbits,g,comdat\n.weak g\n.weak hx\ng:\n  ret\nhx:\n  ret\n";
+    let g2 =
+        ".section .text.g,\"axG\",@progbits,g,comdat\n.weak g\n.weak hx\ng:\n  ret\nhx:\n  ret\n";
     let Some((_d, l)) =
         build("scan-i18-weak-other", &[("m.o", m), ("g1.o", WG1), ("g2.o", g2)], &[])
     else {

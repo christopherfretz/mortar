@@ -26,8 +26,8 @@ use mortar_core::par::Pool;
 use mortar_core::resolution::Def;
 use mortar_core::{FileId, IdSet, SectionId, SymEntry, SymKind, SymbolId};
 use mortar_diag::{Diagnostic, Key, RefusalClass};
-use mortar_elf::{SectionIndex, SymbolIndex};
 use mortar_elf::consts::SHF_ALLOC;
+use mortar_elf::{SectionIndex, SymbolIndex};
 
 use crate::driver::{Fault, Sec, key_at};
 use crate::view::{Bufs, View};
