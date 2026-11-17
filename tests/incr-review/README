@@ -1,0 +1,14 @@
+IN-28a adversarial review (review/in28a). Scripts; each takes an EMPTY
+scratch directory. Environment: MORTAR (target/debug/mortar), FLOOR
+(target/debug/examples/incr_floor), STATE_EDIT (built by
+build-state-edit.sh), XTASK for the judge; MORTAR_FLOOR_IDENTITY=1 for the
+identity replay, MORTAR_FLOOR_WRITE_WINDOWS=1 to write the whole image.
+  s1-section-permute.sh   B1 mislink (AArch64): stale SECTIONS rows
+  s1x-section-permute.sh  B1 on x86_64 / i386 (qemu)
+  s2-fragment-permute.sh  B1 mislink: stale FRAG_AT rows (asm)
+  s2c-gcc-strings.sh      B1 mislink with gcc -O2 objects (two calls swapped)
+  s3-local-permute.sh     stale local at_index: position != identity
+  s4-frag-ordinals.sh     one hop, fresh state: position != identity (ordinals)
+  h-hostile.sh, h-cases.sh, h-fuzz.sh, h-local.sh, state_edit.rs   hostile states
+  w-meaning.sh, w-archive.sh   meaning changed through the changed file
+  t-stamp.sh              IN-22 shapes
