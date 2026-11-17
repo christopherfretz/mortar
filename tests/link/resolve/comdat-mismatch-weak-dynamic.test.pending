@@ -1,3 +1,4 @@
+# PENDING (WP-176): no reference passes: the verifier finds the references' outputs wrong (R5 "refers to section '.text.g'/'.data.g', which is not in the output": the undefined-weak value of a reference through a demoted mention), which is right; the verifier package that follows WP-176 records it as a reference anomaly (an anomaly(bfd,lld) directive) and renames this file to .test.
 # comdat-mismatch-weak.test's shape in dynamic executables (WP-176), with
 # data so the wrong program is an exit status on every target: wa.o's and
 # wb.o's copies of group g define the weak object g; wb.o's also a weak

@@ -1,3 +1,4 @@
+# PENDING (WP-176): no reference passes: the verifier finds the references' outputs wrong (R5 "refers to section '.text.g'/'.data.g', which is not in the output": the undefined-weak value of a reference through a demoted mention), which is right; the verifier package that follows WP-176 records it as a reference anomaly (an anomaly(bfd,lld) directive) and renames this file to .test.
 # A WEAK definition only a dropped copy of a COMDAT group has (WP-176):
 # wa.o's and wb.o's copies of group g define g (weak, as C++ writes
 # every vague-linkage symbol), and wb.o's also defines a WEAK hx, which

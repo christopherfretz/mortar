@@ -1,3 +1,4 @@
+# PENDING (WP-176): no reference passes: the verifier finds the references' outputs wrong (R5 "refers to section '.text.g'/'.data.g', which is not in the output": the undefined-weak value of a reference through a demoted mention), which is right; the verifier package that follows WP-176 records it as a reference anomaly (an anomaly(bfd,lld) directive) and renames this file to .test.
 # comdat-mismatch-weak-dynamic.test's shape in a shared object (WP-176):
 # the library holds wa.o's and wb.o's copies of group g; mortar keeps
 # wa.o's (resolve.md §6.1), and wb.o's Y reads hx through its demoted

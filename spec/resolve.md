@@ -1069,7 +1069,17 @@ even with the same name). Its symbols:
 
 - a non-local mention defined in a dropped section is **demoted** (§2): it
   takes part in resolution as an undefined mention of its key with its
-  binding, so it binds to the keeper's definition (all three);
+  binding, so it binds to the keeper's definition (all three). The binding
+  counts for everything resolution decides (precedence, and archive
+  extraction: a demoted weak mention extracts no member, as any weak
+  undefined mention, §4), but not for the verdict of a reference through
+  it: when the key ends with no definition, such a reference is
+  `comdat-mismatch` (§6.3 case (b)) **whatever the mention's binding**
+  (WP-176, the supervisor's ruling of 2026-11-17). The file had a
+  definition, so its reference is not a weak reference; nearly every C++
+  vague-linkage symbol is weak, and the undefined-weak zero would be a
+  wrong program. Another file's genuine undefined weak reference to the
+  same key stays zero (§5.4);
 - a local symbol of a dropped section is gone; a relocation against it, or
   against the section's `STT_SECTION` symbol, from a section that is kept
   is §6.3.
@@ -1079,7 +1089,8 @@ even with the same name). Its symbols:
 A relocation in a kept section of file `F` whose symbol is (a) a local
 symbol or section symbol of a dropped section of `F`, or (b) a demoted
 mention whose key nothing live defines (`def` is `Undefined`, so the
-keeper's copy lacks it): what each reference does (E9, R13):
+keeper's copy lacks it; strong, weak or `STB_GNU_UNIQUE`): what each
+reference does (E9, R13):
 
 | referring section | GNU ld | lld | mold | mortar |
 |---|---|---|---|---|
@@ -1089,10 +1100,14 @@ keeper's copy lacks it): what each reference does (E9, R13):
 | any other non-alloc section (`.comment`, `.comment.x`, `.note.x`, `.gcc_except_table.foo`, `.gnu_debugaltlink`, `.debu`, `.lin`, `.gnu.debuglto_.debug`, `.gnu.linkonce.wix`) | error | accepted | accepted | error `discarded-section-reference` (GNU ld, finding 11) |
 | an alloc section whose name is a debug name (`.debug_x`, `"a"`) | error | error | accepted | error |
 | any other alloc section (`.text`, `.data`, `.rodata`, `.stapsdt.*`, `.gcc_except_table.foo`, …), case (a) | error ``` `lg' referenced in section `.text' of b.o: defined in discarded section `.text.g[g]' of b.o``` | error `relocation refers to a symbol in a discarded section: lg` | accepted silently, or crashes (E9: mold 2.37.1 segfaults after its own error) | error `discarded-section-reference` |
-| case (b), any kept referring section | ``undefined reference to `hg'`` | `relocation refers to a symbol in a discarded section: hg` | `hg refers to a discarded COMDAT section probably due to an ODR violation` | error **`comdat-mismatch`** (below) |
+| case (b), any kept referring section, a strong or unique demoted mention | ``undefined reference to `hg'`` | `relocation refers to a symbol in a discarded section: hg` | `hg refers to a discarded COMDAT section probably due to an ODR violation` | error **`comdat-mismatch`** (below) |
+| case (b), any kept referring section, a **weak** demoted mention (WP-176) | accepted: the undefined-weak value (a call on AArch64 branches to the next instruction, on x86-64 and i386 calls 0; a GOT load reads 0; in a dynamic output an undefined weak dynamic symbol, in `-shared` an export of it) | accepted, as GNU ld | `hx refers to a discarded COMDAT section probably due to an ODR violation`, also from `.debug_info` | error **`comdat-mismatch`**, in every output kind (`-shared` with or without `-z defs` included: never an import left to the loader); a reference from a section `--gc-sections` collects does not survive (§5.1) |
 
 **`comdat-mismatch`** (ruling C): a surviving reference to a key defined
-only in dropped copies of group `G` whose kept copy does not define it.
+only in dropped copies of group `G` whose kept copy does not define it,
+from a file whose own mention is demoted, or from any file when the key
+is `Undefined{weak: false}` (WP-176: a reference of another file through
+its own undefined weak mention is the undefined-weak zero).
 The diagnostic names the symbol, the group signature, the keeper's file,
 and the dropped copy's file that defines the symbol: ``symbol hx is
 defined only in a discarded copy of COMDAT group g``, `>>> kept copy:
@@ -2134,7 +2149,7 @@ messages below in which a GNU phrase appears in parentheses).
 | an object defines a forced linker symbol (§8.2) | `linker-symbol-redefined` (new) | error | 30, the object's mention | `cannot redefine linker-defined symbol: {name}` | (GNU accepts) lld: `u.o cannot redefine linker defined symbol` |
 | `--require-defined` not satisfied | `required-symbol` (new) | error | 30, unit 0, seq = argument index | `required symbol not defined: {name}` | ``required symbol `x' not defined`` |
 | entry symbol undefined (§5.5) | `entry-not-found` (new) | warning | 30, unit 0, seq = argument index (0 for the default) | `cannot find entry symbol {name}` | ``cannot find entry symbol x; defaulting to …`` |
-| reference to a symbol only a dropped COMDAT copy defines (§6.3) | `comdat-mismatch` (new) | error | 70, first surviving reference | `symbol {name} is defined only in a discarded copy of COMDAT group {sig}` + `>>> kept copy:`, `>>> discarded copy defining it:`, `>>> referenced by` + the ODR note | ``undefined reference to `x'`` (GNU ld keeps the other copy and links) |
+| reference to a symbol only a dropped COMDAT copy defines (§6.3), whatever the binding of the referring file's demoted mention (WP-176) | `comdat-mismatch` (new) | error | 70, first surviving reference | `symbol {name} is defined only in a discarded copy of COMDAT group {sig}` + `>>> kept copy:`, `>>> discarded copy defining it:`, `>>> referenced by` + the ODR note | ``undefined reference to `x'`` (GNU ld keeps the other copy and links) |
 | reference into a dropped COMDAT copy (§6.3) | `discarded-section-reference` (new) | error | 70, first reference | `relocation refers to a symbol in a discarded section: {name}` + `>>> defined in`, `>>> referenced by` (lld's) | ``x referenced in section `.text' of b.o: defined in discarded section `.text.g[g]' of b.o`` |
 | common larger than the definition (§3.3) | `common-larger-than-definition` (new) | warning | 30, the definition | `common symbol {name} is larger than its definition` + places + note with both sizes | ``size of symbol `x' changed from 64 in c.o to 8 in d.o`` |
 | definition less aligned than a common (§3.3) | `common-alignment` (new) | warning | 30, the definition | `definition of {name} is less aligned than its common symbols` + note | ``alignment 8 of normal symbol `x' in d.o is smaller than 16 used by the common definition in c.o`` |
@@ -2274,6 +2289,10 @@ Each states the references' behavior it pins; until M1 each also carries
 | `resolve/lto-slim.test` | E18: refused; bfd and mold refuse, lld fails differently | `requires`: gcc `-flto` only |
 | `resolve/weak-after-archive.test` | R1: `t1m.o libt1k.a t1w.o` (weak definition after the archive): bfd, lld, mortar 2, mold 1; with a strong one (`t1s.o`) bfd, lld, mortar fail `multiple definition of`/`duplicate symbol: K`, mold links | written (§15.3) |
 | `resolve/comdat-mismatch.test` | t10, ruling C: `m10.o libG.a`: bfd, lld run 140; mold `undefined symbol: hx`; mortar `comdat-mismatch` | written (§15.3) |
+| `resolve/comdat-mismatch-weak.test.pending` | WP-176, §6.3 case (b) with a weak demoted call, three targets, static: bfd, lld run the undefined-weak call (AArch64 exit 2, x86 SIGSEGV); mold and mortar refuse; kept order 42; `--gc-sections` collecting the reference links | pending (no reference passes L3: R5) |
+| `resolve/comdat-mismatch-weak-dynamic.test.pending` | WP-176, weak demoted data through the GOT, `-no-pie` and `-pie`: bfd, lld run 1 instead of 41; mold and mortar refuse | pending (no reference passes L3: R5) |
+| `resolve/comdat-mismatch-weak-shared.test.pending` | WP-176, `-shared` (and `-z defs`): bfd, lld export `hx` as `WEAK UND`; mold and mortar refuse | pending (no reference passes L3: R5) |
+| `resolve/comdat-mismatch-weak-prelink.test.pending` | WP-176, `ld -r` + `objcopy --localize-hidden`: the live CIE's personality pointer and the LSDA's type entry through demoted weak hidden `DW.ref.*`: bfd, lld abort at the first throw; mortar `comdat-mismatch` | pending the lane's `partial` step (WP-175) |
 | `resolve/entry-default-root.test` | R9: `ld -static m0.o -lst`, no `-e`, `_start` only in an archive member: all three extract it | written (§15.3) |
 | `resolve/tls-ref-mismatch.test` | R7: TLS reference vs non-TLS reference, no definition between them (bfd error, lld/mold link); mortar `tls-mismatch` | per linker |
 | `resolve/hidden-unused.test` | R14: `.hidden zz` with no use: bfd error, lld/mold/mortar link | `link(bfd)` `exit: fail` |
@@ -2341,6 +2360,7 @@ Every disagreement found; "E" is the experiment in the landed record.
 | hidden definition referenced by a shared object | error | error | accepted | error | E20 |
 | COMDAT keeper | first loaded | first loaded | lowest live | lowest live | E10 |
 | kept copy lacks a symbol a dropped copy defines (t10) | links (keeps the other copy), 140 | 140 | `undefined symbol: hx` | `comdat-mismatch` (§6.3) | finding 2 |
+| the same with the symbol weak, referenced by the dropped copy's file (WP-176) | links, the undefined-weak value | links, the same | `hx refers to a discarded COMDAT section` | `comdat-mismatch` (§6.3) | WP-176 |
 | reference into a dropped copy from a non-alloc section that is not a debug name (`.comment`, `.note.x`, …) | error | accepted | accepted | error | R13 |
 | the same from an alloc section with a debug name | error | error | accepted | error | R13 |
 | section-symbol group signature | section name | empty name (merges unrelated groups) | section name | section name | E18 |
