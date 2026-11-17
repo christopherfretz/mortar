@@ -262,17 +262,13 @@ pub fn resolve_steps<V: View>(
     let mut stages = 1;
     loop {
         let (mut resolved, next) = resolve_stage(view, opts, pool, steps, &kinds, &targets, &stage);
-        match next {
-            Some(next) => {
-                stage = next;
-                stages += 1;
-            }
-            None => {
-                resolved.stages = stages;
-                resolved.sources = stage.sources;
-                return resolved;
-            }
-        }
+        let Some(next) = next else {
+            resolved.stages = stages;
+            resolved.sources = stage.sources;
+            return resolved;
+        };
+        stage = next;
+        stages += 1;
     }
 }
 
