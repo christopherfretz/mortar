@@ -5117,7 +5117,13 @@ never read from the output's `.dynsym`, `.gnu.version_d` or
   without `-z defs`/`--no-undefined`), so neither P-D9's "the loader
   finds no definition" nor P-D7's "no needed or used object defines it"
   is reported for it, and its places are judged in view B; under `-z
-  defs`, and for a versioned import (W42), both stay findings;
+  defs`, and for a versioned import (W42), both stay findings. Both are
+  decided from the verifier's sets, never from the output's `.dynsym`
+  or `.gnu.version`: an import is a key no live input defines, versioned
+  when an input reference names a version; `__start_X`/`__stop_X` that
+  a live section's relocation names, X an allocated section of the
+  inputs, is the link's own (layout L-96 keeps every input section X
+  live), never an import (W23; WP-121);
 - **view B**: the interposer first in lookup order.
 
 The loader model resolves every record of the output by the symbol it
@@ -5145,7 +5151,11 @@ and what turns P-D9's equality into a check of D-112.
   included: checked by value, not by the address clause), the expected
   value in each view. *Read:* the place's bytes after the loader model
   applies the output's records. *Reported:* a place whose value differs
-  in either view, naming the input relocation, the view and the key.
+  in either view, naming the input relocation, the view and the key;
+  view A's findings keep stage 2's ids (R1 a field's value, R2 its
+  range), view B's are P-D17's. An output without a section X that
+  L-96 keeps live for a `__start_X`/`__stop_X` an input relocation
+  names is reported (W23: the input computes X's address).
   **The address clause** (D-117): a use whose named address lies in a
   preemptible data definition is reported even when both views agree
   on its value. The named address is computed by the verifier's own
@@ -5168,7 +5178,7 @@ and what turns P-D9's equality into a check of D-112.
 - **P-D18 (IFUNC; request P-R3).** Every use of one IFUNC key, in every
   place and both views, yields one address: the IPLT entry for a bound
   key, the interposer's or the resolver's record for a preemptible one
-  (W21). An i386 `Shared` output has no `STT_GNU_IFUNC` symbol and no
+  (W21). For a bound key this is stage 2's F3, reported under its id. An i386 `Shared` output has no `STT_GNU_IFUNC` symbol and no
   `IRELATIVE` record (D-130).
 - **P-D19 (`.dynsym`; request P-R4).** *Recomputed:* the export set
   (D-110, `__start_`/`__stop_` `PROTECTED` included) with each entry's
@@ -5207,8 +5217,10 @@ and what turns P-D9's equality into a check of D-112.
 - **P-D23 (mutations; request P-R8).** Each wrong output of `spec/dyn.md`
   §17.7, written into a correct mortar library (or, where it concerns
   the executable, a host), is reported by the rule the table below
-  names, and each row is a test (`dynmutate.rs`); a row marked NOT
-  caught is a test that asserts it is not.
+  names, and each row is a test (`tests/shared.rs`, `p_d23_*`: the
+  wrong output as the reference that writes it links it, on AArch64 or
+  x86-64; the i386 rows as P-D1's refusal); a row marked NOT caught is
+  a test that asserts it is not.
 - **P-D24 (executables: a copy of locally bound data; request P-R9).**
   P-D11 gains, for `Exec` and `Pie`: a `COPY` of a definition its
   library binds locally (`DT_SYMBOLIC`/`DF_SYMBOLIC`, or a `.note.mason`
@@ -5275,11 +5287,11 @@ by WP-110's third pass against the interposer above, P-D25 and P-D26):
 
 | wrong output | reported by |
 |---|---|
-| W19 (LE TLS against own TLS, AArch64) | P-D20 (LE form in a shared object's code); P-D26 (a live TLS use without its records) |
+| W19 (LE TLS against own TLS, AArch64) | P-D20 (LE form in a shared object's code; P-D26's LE row is P-D20's: an LE use owes no record) |
 | W20 (exported IFUNC bound) | P-D17, view B; P-D18 |
-| W21 (two addresses of one IFUNC) | P-D18 |
-| W22 (`DT_INIT = 0`, the function collected) | P-D22 |
-| W23 (`__start_` undefined, section dropped) | P-D17 (the input's relocation against `__start_cid_ref` computes the section's address; the output's place holds 0); not P-D19: the version script makes `__start_cid_ref` local, so it is outside the export set |
+| W21 (two addresses of one IFUNC) | P-D18 (`hif` is bound: stage 2's F3) |
+| W22 (`DT_INIT = 0`, the function collected) | P-D22 (mold 2.37.1 writes it: a link, measured here) |
+| W23 (`__start_` undefined, section dropped) | P-D17 (the input's relocation against `__start_cid_ref` computes the section's address; the output's place holds 0); not P-D19: the version script makes `__start_cid_ref` local, so it is outside the export set; and, for the `GLOB_DAT` naming it, P-D9 (no definition), P-D25 (it is bound) and P-D7 |
 | W24 (`.ctors` kept as an output section) | P-D20 |
 | W25 (text relocations in `.eh_frame`, i386) | P-D20 (record in a non-writable `PT_LOAD`; `DT_TEXTREL`) |
 | W26 (`%ebx`-relative IPLT entry as canonical address, i386) | P-D18 (no IFUNC in i386 `Shared`) |
@@ -5290,15 +5302,15 @@ by WP-110's third pass against the interposer above, P-D25 and P-D26):
 | W31 (`DF_SYMBOLIC` with `--dynamic-list`) | P-D22; view B (P-D17) |
 | W32 (`ADR_PREL_LO21`, `LD_PREL_LO19`, `PREL32` without a record, AArch64) | P-D17, view B |
 | W33 (`PREL32` in `.data` bound; weak undefined non-zero) | P-D17, view B; P-D9 (P-D16) for the weak key |
-| W34 (`PC32` dynamic record truncated, x86-64) | P-D17: view A with P-D9's second bias gives a truncated value |
+| W34 (`PC32` dynamic record truncated, x86-64) | P-D9 (a dynamic record of a type the loader model does not apply, `R_X86_64_PC32`); view A's place keeps its link-time bytes (R1); P-D17, view B, for the preemptible and the imported key |
 | W35 (`PC32` call through an `%ebx` PLT, i386) | P-D20 (i386 clause) |
 | W36 (`GOT32X` without a base register, i386) | P-D20 (i386 clause) |
 | W37 (`GOTOFF` to a preemptible key, i386) | P-D17, view B |
-| W38 (`&f` of an import is a PLT stub, AArch64) | P-D17: view A's value is the import's definition, the place holds the stub |
+| W38 (`&f` of an import is a PLT stub, AArch64) | P-D17: view A's value is the import's definition, the place holds the stub (R1, R2); view B the interposer's |
 | W39 (`R_386_TLS_IE` in `.text` without `DT_TEXTREL`) | P-D20 (record in a non-writable `PT_LOAD`) |
-| W40 (`extern "C++" {*}` exports nothing) | P-D19 |
+| W40 (`extern "C++" {*}` exports nothing) | P-D1: the verifier has no demangler, so a script with `extern "C++"` is outside stage 3 by name (D-114) and P-D19 is not reached; P-D19 once it has one |
 | W41 (`NEEDED_INDIRECT_EXTERN_ACCESS` dropped) | P-D22 |
-| W42 (versioned reference unversioned, `DT_NEEDED` dropped) | P-D6, P-D8 (P-D16) |
+| W42 (versioned reference unversioned, `DT_NEEDED` dropped) | P-D6, P-D8 (P-D16: index 1 for `vf@VA`), P-D9 and P-D7 (view A: a versioned import is never the host's) |
 | W43 (TLS GD pair half bound, x86-64) | P-D25 (the `DTPMOD64` names `tv`, which `--dynamic-list` leaves bound) and P-D26 (a bound GD pair is `DTPMOD` with `r_sym` 0); P-D17, view B: the interposer defines `tv` (it is exported), the loader model resolves the `DTPMOD64` to the interposer's module while the offset is the library's, and the expected value is the library's own `tv` |
 | W44 (anchor+immediate bound use, AArch64) | P-D17's address clause (b): the verifier's analysis derives `.data + 4`, inside `g`, from the `ldr` that follows the anchor (both views agree on the value, the clause reports it). What D-117's residual hole names stays not caught, by the verifier as by the linker |
 | a use of a preemptible key bound locally through a named symbol (a `PREL32`, `ABS64` or `ADRP`/`ADD` resolved statically, no record) | P-D17, view B: the interposer defines the key, the place holds the library's own address |
@@ -5306,9 +5318,10 @@ by WP-110's third pass against the interposer above, P-D25 and P-D26):
 | a wrong version index on a defined entry or an import | P-D19 (a defined entry's version, D-115); P-D8 (an import's `.gnu.version` index against its Verneed and the shared definition's version, through P-D16) |
 | a `JUMP_SLOT` naming the wrong symbol index | P-D10 (the slot's record is against another key than its PLT entry's); P-D17, view B (the interposer defines both keys at distinct addresses, the call place reaches the wrong one); P-D25 too when the named key is bound |
 
-`[unmeasured]` for WP-121: its own implementation of D-117 against the
-oracle on every corpus of `spec/landed/dyn/WP-110.md` §G.1 (same
-verdicts); each row above as a mutation of a mortar library.
+Measured for WP-121: its own implementation of D-117 against the
+oracle on every corpus of `spec/landed/dyn/WP-110.md` §G.1 still built
+(same verdicts, `spec/landed/plumb/WP-121.md` §6). `[unmeasured]`: each
+row above as a mutation of a mortar library.
 
 ## 13. Stage 4: Mason metadata and the ODR table (M6)
 

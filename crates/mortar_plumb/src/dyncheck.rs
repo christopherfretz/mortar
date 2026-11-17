@@ -945,7 +945,21 @@ fn pd8(out: &DynOut, model: &Model, ld: &Loader<'_>, v: &mut Vec<Finding>) {
             let unneeded = |i: usize| {
                 s.binding() == STB_WEAK && !out.needed.contains(&ld.model.dsos[i].soname)
             };
-            if let Some((i, d)) = bound
+            if bound.is_none()
+                && s.binding() != STB_WEAK
+                && let Some(want) = &asked
+            {
+                // The reference asked for a version (`.symver`): index 1
+                // drops it whatever the loader finds (W42, resolve §9.2).
+                v.push(sym_finding(
+                    8,
+                    &s.name,
+                    format!(
+                        "'{}' is imported unversioned; the input reference asks for '{want}' (resolve §9.2)",
+                        s.name
+                    ),
+                ));
+            } else if let Some((i, d)) = bound
                 && !unneeded(i)
                 && let Some(want) = asked.or_else(|| d.version.clone())
             {
