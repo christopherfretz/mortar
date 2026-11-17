@@ -691,7 +691,10 @@ fn relocatable(linker: Format, n: u8, m: &str) -> Option<&'static str> {
         4 if mold && m.contains(" is defined in ") && m.ends_with("; no live input defines it") => {
             "A95: at -r mold strips .symver names to their base"
         }
-        4 if lld && (m.starts_with("local wi.") || m.starts_with("local wt.")) && m.contains(" at 65521+") => {
+        4 if lld
+            && (m.starts_with("local wi.") || m.starts_with("local wt."))
+            && m.contains(" at 65521+") =>
+        {
             "A126: at -r lld keeps a dropped COMDAT copy's local group signature as an SHN_ABS local"
         }
         4 if mold && m.ends_with(" is not in .symtab") => {
@@ -700,7 +703,10 @@ fn relocatable(linker: Format, n: u8, m: &str) -> Option<&'static str> {
         4 if mold && m.contains(" is in .symtab 2 times") => {
             "A96: at -r mold writes two strong definitions of one name"
         }
-        5 if lld && m.starts_with("output FDE at ") && m.contains(" comes from a removed FDE of ") => {
+        5 if lld
+            && m.starts_with("output FDE at ")
+            && m.contains(" comes from a removed FDE of ") =>
+        {
             "A91: at -r lld keeps the FDE of a dropped COMDAT copy"
         }
         6 if mold
@@ -724,10 +730,17 @@ fn relocatable(linker: Format, n: u8, m: &str) -> Option<&'static str> {
         4 if mold && m.starts_with("local ") && m.contains(" at 65521+") => {
             "A124: at -r mold makes the local signature symbols of groups SHN_ABS"
         }
-        3 if lld && m.starts_with("output record R_") && m.contains("_NONE at ") && m.contains(" .eh_frame+") => {
+        3 if lld
+            && m.starts_with("output record R_")
+            && m.contains("_NONE at ")
+            && m.contains(" .eh_frame+") =>
+        {
             "A125: at -r lld leaves an R_*_NONE record in .rela.eh_frame where it removed an FDE"
         }
-        10 if lld && m.starts_with("an input asks for an executable stack (") && m.ends_with(" is N") => {
+        10 if lld
+            && m.starts_with("an input asks for an executable stack (")
+            && m.ends_with(" is N") =>
+        {
             "A93: at -r lld writes .note.GNU-stack without SHF_EXECINSTR over an input that has it"
         }
         10 if mold && m.starts_with("the line asks for a build id (") => {
@@ -739,7 +752,10 @@ fn relocatable(linker: Format, n: u8, m: &str) -> Option<&'static str> {
         11 if lld && m.ends_with(": SHF_MERGE with sh_entsize 0") => {
             "A100: at -r lld merges SHF_MERGE pieces of different sh_entsize with sh_entsize 0"
         }
-        11 if mold && (m.ends_with(": sh_link is 0") || m.contains(": SHF_LINK_ORDER pieces link to ")) => {
+        11 if mold
+            && (m.ends_with(": sh_link is 0")
+                || m.contains(": SHF_LINK_ORDER pieces link to ")) =>
+        {
             "A101: at -r mold writes sh_link 0 on an SHF_LINK_ORDER section"
         }
         11 if lld && m.ends_with(" COMMON comes from no input section") => {

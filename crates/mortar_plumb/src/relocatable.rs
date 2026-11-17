@@ -17,11 +17,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
+use crate::Source;
 use crate::dynverify::Ctx;
 use crate::map::{Format, Map, SectionRef};
 use crate::report::{Finding, Reason, RelCoverage, Report, Rewrite, Rule, Site, Via};
 use crate::store::{Resolved, Store};
-use crate::Source;
 
 // ---- ELF constants (gABI) ----
 
@@ -206,7 +206,9 @@ impl Elf {
         if b[5] != 1 {
             return Err("not little-endian".into());
         }
-        let r = |at: u64, n: usize| rd(b, at, n).ok_or_else(|| "the file header is cut short".to_string());
+        let r = |at: u64, n: usize| {
+            rd(b, at, n).ok_or_else(|| "the file header is cut short".to_string())
+        };
         let mut h = Header { class64, osabi: b[7], ..Header::default() };
         h.e_type = r(16, 2)? as u16;
         h.machine = r(18, 2)? as u16;
@@ -233,9 +235,11 @@ impl Elf {
             return Err(format!("e_shentsize is {}, not {ent}", h.shentsize));
         }
         let shdr = |i: u64| -> Result<Sec, String> {
-            let at = h.shoff.checked_add(i.checked_mul(ent).ok_or("overflow")?).ok_or("overflow")?;
+            let at =
+                h.shoff.checked_add(i.checked_mul(ent).ok_or("overflow")?).ok_or("overflow")?;
             let g = |o: u64, n: usize| {
-                rd(b, at + o, n).ok_or_else(|| format!("section header {i} lies past the file's end"))
+                rd(b, at + o, n)
+                    .ok_or_else(|| format!("section header {i} lies past the file's end"))
             };
             Ok(if class64 {
                 Sec {
@@ -269,8 +273,11 @@ impl Elf {
         };
         let s0 = shdr(0)?;
         h.shnum = if h.shnum_field == 0 { s0.size as usize } else { h.shnum_field as usize };
-        h.shstrndx =
-            if h.shstrndx_field == SHN_XINDEX as u16 { s0.link } else { u32::from(h.shstrndx_field) };
+        h.shstrndx = if h.shstrndx_field == SHN_XINDEX as u16 {
+            s0.link
+        } else {
+            u32::from(h.shstrndx_field)
+        };
         if (h.shnum as u64).saturating_mul(ent) > b.len() as u64 {
             return Err(format!("{} section headers do not fit the file", h.shnum));
         }
@@ -344,11 +351,13 @@ impl Elf {
             .map(|e| {
                 let g = |o: u64, n: usize| rd(e, o, n).unwrap_or(0);
                 let (offset, info) = if c64 { (g(0, 8), g(8, 8)) } else { (g(0, 4), g(4, 4)) };
-                let (sym, ty) =
-                    if c64 { ((info >> 32) as u32, info as u32) } else { ((info >> 8) as u32, info as u32 & 0xff) };
-                let addend = rela.then(|| {
-                    if c64 { g(16, 8) as i64 } else { i64::from(g(8, 4) as u32 as i32) }
-                });
+                let (sym, ty) = if c64 {
+                    ((info >> 32) as u32, info as u32)
+                } else {
+                    ((info >> 8) as u32, info as u32 & 0xff)
+                };
+                let addend = rela
+                    .then(|| if c64 { g(16, 8) as i64 } else { i64::from(g(8, 4) as u32 as i32) });
                 Rel { offset, ty, sym, addend }
             })
             .collect()
@@ -397,7 +406,8 @@ pub(crate) fn field(machine: u16, ty: u32) -> (u8, u64) {
 
 /// The type's name.
 pub(crate) fn tname(machine: u16, ty: u32) -> String {
-    mortar_elf::reloc::name(machine, ty).map_or_else(|| format!("relocation type {ty}"), str::to_string)
+    mortar_elf::reloc::name(machine, ty)
+        .map_or_else(|| format!("relocation type {ty}"), str::to_string)
 }
 
 /// The implicit addend of a REL record (§4.5's `Implicit`; A-R2): the
@@ -566,8 +576,7 @@ impl In {
 
 /// L-R9's binary input: one `.data`, three globals.
 fn binary_input(word: &str, bytes: &[u8], out: &Header) -> Elf {
-    let m: String =
-        word.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
+    let m: String = word.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
     let n = bytes.len() as u64;
     let data = Sec {
         name: ".data".into(),
@@ -587,7 +596,12 @@ fn binary_input(word: &str, bytes: &[u8], out: &Header) -> Elf {
         ..Sym::default()
     };
     Elf {
-        h: Header { class64: out.class64, e_type: ET_REL, machine: out.machine, ..Header::default() },
+        h: Header {
+            class64: out.class64,
+            e_type: ET_REL,
+            machine: out.machine,
+            ..Header::default()
+        },
         secs: vec![Sec::default(), data],
         syms: vec![
             Sym::default(),
@@ -658,7 +672,9 @@ impl std::fmt::Display for Tgt {
         };
         match self {
             Tgt::Name(n, a) => write!(f, "{n}{}", add(*a)),
-            Tgt::Place(o, v) => write!(f, "section {o}{}", if *v == 0 { "+0x0".into() } else { add(*v) }),
+            Tgt::Place(o, v) => {
+                write!(f, "section {o}{}", if *v == 0 { "+0x0".into() } else { add(*v) })
+            }
             Tgt::Abs(v) => write!(f, "ABS{}", add(*v)),
             Tgt::Merged(o, b, x) => {
                 write!(f, "the bytes {:?} in section {o}{}", String::from_utf8_lossy(b), add(*x))
@@ -716,7 +732,14 @@ impl Rv<'_> {
     pub(crate) fn p(&mut self, n: u8, msg: impl Into<String>) {
         self.report.findings.push(Finding::new(Rule::Rel(n), msg));
     }
-    pub(crate) fn p_at(&mut self, n: u8, file: usize, sec: usize, off: u64, msg: impl Into<String>) {
+    pub(crate) fn p_at(
+        &mut self,
+        n: u8,
+        file: usize,
+        sec: usize,
+        off: u64,
+        msg: impl Into<String>,
+    ) {
         let site = self.ins[file].site(sec, off);
         self.report.findings.push(Finding::new(Rule::Rel(n), msg).site(site));
     }
@@ -877,8 +900,10 @@ pub(crate) fn is_container(s: &Sec) -> bool {
 
 /// §14.1's consumed sections.
 fn consumed(s: &Sec) -> bool {
-    matches!(s.ty, SHT_NULL | SHT_GROUP | SHT_REL | SHT_RELA | SHT_SYMTAB | SHT_SYMTAB_SHNDX | SHT_STRTAB)
-        || matches!(s.name.as_str(), ".note.gnu.property" | ".note.GNU-stack" | ".note.gnu.build-id")
+    matches!(
+        s.ty,
+        SHT_NULL | SHT_GROUP | SHT_REL | SHT_RELA | SHT_SYMTAB | SHT_SYMTAB_SHNDX | SHT_STRTAB
+    ) || matches!(s.name.as_str(), ".note.gnu.property" | ".note.GNU-stack" | ".note.gnu.build-id")
         || is_container(s)
 }
 
@@ -887,7 +912,8 @@ fn consumed(s: &Sec) -> bool {
 /// Whether stage R judges this output: `ET_REL`, or the map or the line
 /// says `-r` (P-P9).
 pub(crate) fn applies(output: &[u8], map: &Map, line: Option<&[String]>) -> bool {
-    let et_rel = output.len() >= 18 && &output[..4] == b"\x7fELF" && output[16] == 1 && output[17] == 0;
+    let et_rel =
+        output.len() >= 18 && &output[..4] == b"\x7fELF" && output[16] == 1 && output[17] == 0;
     et_rel || map.rel.is_some() || (map.format != Format::Mortar && Opts::read(line).relocatable)
 }
 
@@ -1014,8 +1040,11 @@ fn with_rv<R>(
         bytes[16] = 1;
         bytes[17] = 0;
     } else if map.format == Format::Mortar && map.rel.is_none() {
-        let kind =
-            map.dynamic.as_ref().and_then(|d| d.kind).map_or("static (no 'output' record)", |k| k.name());
+        let kind = map
+            .dynamic
+            .as_ref()
+            .and_then(|d| d.kind)
+            .map_or("static (no 'output' record)", |k| k.name());
         report.findings.push(Finding::new(
             Rule::Rel(9),
             format!("the output is ET_REL and the map says {kind}"),
@@ -1035,9 +1064,10 @@ fn with_rv<R>(
         }
     };
     if !matches!(out.h.machine, EM_AARCH64 | EM_X86_64 | EM_386) {
-        report
-            .findings
-            .push(Finding::new(Rule::Rel(9), format!("e_machine {} is not a supported machine", out.h.machine)));
+        report.findings.push(Finding::new(
+            Rule::Rel(9),
+            format!("e_machine {} is not a supported machine", out.h.machine),
+        ));
     }
     let ins = read_inputs(src, store, m, map, &opts, &out.h, &mut report);
     let machine = out.h.machine;
@@ -1086,9 +1116,10 @@ fn read_inputs(
     for (i, f) in map.files.iter().enumerate() {
         let read = match store.resolved(m, i) {
             Resolved::Missing => {
-                report
-                    .findings
-                    .push(Finding::new(Rule::InputMissing, format!("{f}: the map names it; it was not given")));
+                report.findings.push(Finding::new(
+                    Rule::InputMissing,
+                    format!("{f}: the map names it; it was not given"),
+                ));
                 continue;
             }
             Resolved::Error(e) => Err(e.clone()),
@@ -1110,7 +1141,9 @@ fn read_inputs(
                             if src.read_at(k, 0, &mut buf).is_ok() {
                                 buf
                             } else {
-                                report.findings.push(Finding::new(Rule::InputUnreadable, format!("{f}: {e}")));
+                                report
+                                    .findings
+                                    .push(Finding::new(Rule::InputUnreadable, format!("{f}: {e}")));
                                 continue;
                             }
                         }
@@ -1127,7 +1160,13 @@ fn read_inputs(
             binary_input(&f.path, &bytes, out)
         } else {
             match Elf::parse(&bytes) {
-                Ok(e) if e.h.e_type == ET_REL && e.h.machine == out.machine && e.h.class64 == out.class64 => e,
+                Ok(e)
+                    if e.h.e_type == ET_REL
+                        && e.h.machine == out.machine
+                        && e.h.class64 == out.class64 =>
+                {
+                    e
+                }
                 // P-P7: the output's e_machine is the inputs'. An input of
                 // the class but another machine names the output's header,
                 // once; the input is then not judged.
@@ -1197,10 +1236,15 @@ fn read_inputs(
 /// P-P11.
 fn run(rv: &mut Rv<'_>) {
     rv.out_eh = {
-        let ehs: Vec<u32> =
-            (1..rv.out.secs.len()).filter(|&i| rv.is_eh(&rv.out.secs[i])).map(|i| i as u32).collect();
+        let ehs: Vec<u32> = (1..rv.out.secs.len())
+            .filter(|&i| rv.is_eh(&rv.out.secs[i]))
+            .map(|i| i as u32)
+            .collect();
         if ehs.len() > 1 {
-            rv.push(Finding::new(Rule::Map(1), format!("the output has {} .eh_frame sections", ehs.len())));
+            rv.push(Finding::new(
+                Rule::Map(1),
+                format!("the output has {} .eh_frame sections", ehs.len()),
+            ));
         }
         ehs.first().copied()
     };
@@ -1236,7 +1280,9 @@ fn places(rv: &mut Rv<'_>) {
                 Some(Place::Dropped(Drop::Comdat))
             } else if rv.opts.strip_debug && sec.flags & SHF_ALLOC == 0 && is_debug(&sec.name) {
                 Some(Place::Dropped(Drop::Strip))
-            } else if rv.mortar() && matches!(sec.ty, SHT_LLVM_ADDRSIG | SHT_LLVM_CALL_GRAPH_PROFILE) {
+            } else if rv.mortar()
+                && matches!(sec.ty, SHT_LLVM_ADDRSIG | SHT_LLVM_CALL_GRAPH_PROFILE)
+            {
                 Some(Place::Dropped(Drop::Mortar))
             } else if rv.is_eh(sec) {
                 Some(Place::Framed)
@@ -1260,10 +1306,8 @@ fn places(rv: &mut Rv<'_>) {
     let mut seen: BTreeMap<(usize, usize), u32> = BTreeMap::new();
     let mut place = |rv: &mut Rv<'_>, f: usize, s: usize, p: Place, line: u32| {
         if let Some(prev) = seen.insert((f, s), line) {
-            let msg = format!(
-                "{} has a second place (map lines {prev} and {line})",
-                rv.ins[f].sname(s)
-            );
+            let msg =
+                format!("{} has a second place (map lines {prev} and {line})", rv.ins[f].sname(s));
             let site = rv.ins[f].site(s, 0);
             rv.push(Finding::new(Rule::Map(2), msg).site(site));
             return;
@@ -1278,7 +1322,8 @@ fn places(rv: &mut Rv<'_>) {
                     Drop::Mortar => "mortar drops it (L-R1)",
                 };
                 if d == Drop::Mortar || rv.mortar() || d != Drop::Mortar {
-                    let msg = format!("{} is in the output; §14.3 drops it: {why}", rv.ins[f].sname(s));
+                    let msg =
+                        format!("{} is in the output; §14.3 drops it: {why}", rv.ins[f].sname(s));
                     rv.p_at(2, f, s, 0, msg);
                 }
                 rv.places[f][s] = p;
@@ -1291,7 +1336,14 @@ fn places(rv: &mut Rv<'_>) {
         for r in &rel.places {
             let Some(&f) = fid.get(&r.file).and_then(|v| v.first()) else { continue };
             let Some(s) = section_index(&rv.ins[f].elf, &r.section) else {
-                rv.push(Finding::new(Rule::Map(1), format!("map line {}: rplace names no section of {}", r.line, rv.ins[f].label())));
+                rv.push(Finding::new(
+                    Rule::Map(1),
+                    format!(
+                        "map line {}: rplace names no section of {}",
+                        r.line,
+                        rv.ins[f].label()
+                    ),
+                ));
                 continue;
             };
             if r.out == 0 || r.out >= nout {
@@ -1311,7 +1363,10 @@ fn places(rv: &mut Rv<'_>) {
             place(rv, f, s, Place::Whole { out: r.out, off: r.offset }, r.line);
         }
         if !rel.frames.is_empty() && rv.out_eh.is_none() {
-            rv.push(Finding::new(Rule::Map(1), "the map has rframe records and the output no .eh_frame"));
+            rv.push(Finding::new(
+                Rule::Map(1),
+                "the map has rframe records and the output no .eh_frame",
+            ));
         }
         rv.cov.pieces = rel.places.len() as u64;
     } else {
@@ -1331,8 +1386,9 @@ fn places(rv: &mut Rv<'_>) {
                 // The section of its name and merge class, else of its name.
                 let class = |x: &Sec| (x.flags & (SHF_MERGE | SHF_STRINGS), x.entsize);
                 let o = internal.get(&sec.name).copied().or_else(|| {
-                    let named: Vec<usize> =
-                        (1..rv.out.secs.len()).filter(|&o| rv.out.secs[o].name == sec.name).collect();
+                    let named: Vec<usize> = (1..rv.out.secs.len())
+                        .filter(|&o| rv.out.secs[o].name == sec.name)
+                        .collect();
                     named
                         .iter()
                         .copied()
@@ -1370,7 +1426,8 @@ fn places(rv: &mut Rv<'_>) {
         }
     }
     if !rv.mortar() {
-        rv.cov.pieces = rv.places.iter().flatten().filter(|p| matches!(p, Place::Whole { .. })).count() as u64;
+        rv.cov.pieces =
+            rv.places.iter().flatten().filter(|p| matches!(p, Place::Whole { .. })).count() as u64;
     }
     // M4 and M5 at -r: inside an output section of its name, aligned, no
     // two pieces of one output section overlapping.
@@ -1542,7 +1599,11 @@ fn foreign_places(rv: &mut Rv<'_>, fid: &BTreeMap<u32, Vec<usize>>, place: &mut 
                 p.addr.checked_sub(base)
             }
         };
-        let sized: Vec<usize> = free.iter().copied().filter(|&k| rv.ins[at(k).0].elf.secs[at(k).1].size == p.size).collect();
+        let sized: Vec<usize> = free
+            .iter()
+            .copied()
+            .filter(|&k| rv.ins[at(k).0].elf.secs[at(k).1].size == p.size)
+            .collect();
         // Same-sized candidates (type units): the one whose bytes are the
         // output's there, else the first.
         let same_bytes = |k: usize| {
@@ -1551,7 +1612,10 @@ fn foreign_places(rv: &mut Rv<'_>, fid: &BTreeMap<u32, Vec<usize>>, place: &mut 
             let Some((o, _)) = cur else { return false };
             let Some(off) = offset_of(rv, f, s) else { return false };
             let d = rv.out.secs.get(o as usize).map_or(&[][..], |x| x.data.as_slice());
-            let Some(got) = usize::try_from(off).ok().and_then(|a| d.get(a..a + sec.data.len())) else { return false };
+            let Some(got) = usize::try_from(off).ok().and_then(|a| d.get(a..a + sec.data.len()))
+            else {
+                return false;
+            };
             // The bytes outside the input's relocated fields (REL fields
             // hold the output's addends).
             let mut mask = vec![true; sec.data.len()];
@@ -1566,11 +1630,16 @@ fn foreign_places(rv: &mut Rv<'_>, fid: &BTreeMap<u32, Vec<usize>>, place: &mut 
             }
             got.iter().zip(&sec.data).zip(&mask).all(|((x, y), m)| !m || x == y)
         };
-        let pick = if sized.len() > 1 { sized.iter().copied().find(|&k| same_bytes(k)) } else { None }
-            .or_else(|| sized.first().copied())
-            .or_else(|| free.first().copied());
+        let pick =
+            if sized.len() > 1 { sized.iter().copied().find(|&k| same_bytes(k)) } else { None }
+                .or_else(|| sized.first().copied())
+                .or_else(|| free.first().copied());
         let Some(k) = pick else {
-            let msg = format!("map line {}: {} names a section the input has fewer of", p.line, rv.ins[f0].sname(cands[0]));
+            let msg = format!(
+                "map line {}: {} names a section the input has fewer of",
+                p.line,
+                rv.ins[f0].sname(cands[0])
+            );
             rv.push(Finding::new(Rule::Map(2), msg));
             continue;
         };
@@ -1582,12 +1651,17 @@ fn foreign_places(rv: &mut Rv<'_>, fid: &BTreeMap<u32, Vec<usize>>, place: &mut 
             continue;
         }
         let Some((o, _)) = cur else {
-            let msg = format!("map line {}: {} is under no output section", p.line, rv.ins[f].sname(s));
+            let msg =
+                format!("map line {}: {} is under no output section", p.line, rv.ins[f].sname(s));
             rv.push(Finding::new(Rule::Map(1), msg));
             continue;
         };
         let Some(off) = offset_of(rv, f, s) else {
-            let msg = format!("map line {}: {} is before its output section's start", p.line, rv.ins[f].sname(s));
+            let msg = format!(
+                "map line {}: {} is before its output section's start",
+                p.line,
+                rv.ins[f].sname(s)
+            );
             rv.push(Finding::new(Rule::Map(4), msg));
             continue;
         };
@@ -1646,7 +1720,8 @@ pub(crate) fn tombstone(format: Format, name: &str, class64: bool, width: u8) ->
 /// Whether §14.3 drops an input record for its target: a debug or
 /// `.gcc_except_table` record into a dropped section (I-R7).
 pub(crate) fn drops_record(name: &str, flags: u64, t: &Tgt) -> bool {
-    matches!(t, Tgt::Dropped(..)) && (flags & SHF_ALLOC == 0 && is_debug(name) || name == ".gcc_except_table")
+    matches!(t, Tgt::Dropped(..))
+        && (flags & SHF_ALLOC == 0 && is_debug(name) || name == ".gcc_except_table")
 }
 
 /// The redirect GNU ld writes for a record into a dropped copy (§5.8):
@@ -1683,9 +1758,15 @@ fn content(rv: &mut Rv<'_>) {
             }
             let size = sec.size as usize;
             let input: Vec<u8> = if sec.nobits() { vec![0; size] } else { sec.data.clone() };
-            let Some(got) = usize::try_from(off).ok().and_then(|d| o.data.get(d..d.checked_add(size)?)) else {
+            let Some(got) =
+                usize::try_from(off).ok().and_then(|d| o.data.get(d..d.checked_add(size)?))
+            else {
                 if o.nobits() && !sec.nobits() && sec.data.iter().any(|&b| b != 0) {
-                    let msg = format!("{} has bytes and is in the NOBITS section {}", rv.ins[f].sname(s), rv.osec(out));
+                    let msg = format!(
+                        "{} has bytes and is in the NOBITS section {}",
+                        rv.ins[f].sname(s),
+                        rv.osec(out)
+                    );
                     rv.p_at(2, f, s, 0, msg);
                 }
                 continue;
@@ -1740,13 +1821,17 @@ fn content(rv: &mut Rv<'_>) {
             let mut first_bits: Option<(u64, u32, u32)> = None;
             let mut tomb: Option<(u64, u64, u64)> = None;
             for &(at, w, mask, ref want, ty) in &fields {
-                let Some(a) = usize::try_from(at).ok().filter(|&a| a + w as usize <= size) else { continue };
+                let Some(a) = usize::try_from(at).ok().filter(|&a| a + w as usize <= size) else {
+                    continue;
+                };
                 for c in &mut covered[a..a + w as usize] {
                     *c = true;
                 }
                 let iv = rd(&input, at, w as usize).unwrap_or(0);
                 let gv = rd(&got, at, w as usize).unwrap_or(0);
-                let outside = (iv ^ gv) & !mask & if w >= 8 { u64::MAX } else { (1u64 << (8 * u32::from(w))) - 1 };
+                let outside = (iv ^ gv)
+                    & !mask
+                    & if w >= 8 { u64::MAX } else { (1u64 << (8 * u32::from(w))) - 1 };
                 if outside != 0 && first_bits.is_none() {
                     first_bits = Some((at, outside.count_ones(), ty));
                 }
@@ -1766,9 +1851,16 @@ fn content(rv: &mut Rv<'_>) {
             }
             if let Some((at, n, ty)) = first_bits {
                 let msg = if ty == u32::MAX {
-                    format!("{}+{at:#x}: {n} bits of a relocated field differ from the input's (RELA: a field holds its input bits at -r)", rv.ins[f].sname(s))
+                    format!(
+                        "{}+{at:#x}: {n} bits of a relocated field differ from the input's (RELA: a field holds its input bits at -r)",
+                        rv.ins[f].sname(s)
+                    )
                 } else {
-                    format!("{}+{at:#x}: {n} bits outside the {} field differ", rv.ins[f].sname(s), tname(rv.machine, ty))
+                    format!(
+                        "{}+{at:#x}: {n} bits outside the {} field differ",
+                        rv.ins[f].sname(s),
+                        tname(rv.machine, ty)
+                    )
                 };
                 rv.p_at(2, f, s, at, msg);
             }
@@ -1779,7 +1871,8 @@ fn content(rv: &mut Rv<'_>) {
                 );
                 rv.p_at(2, f, s, at, msg);
             }
-            let diff: Vec<usize> = (0..size).filter(|&i| !covered[i] && input[i] != got[i]).collect();
+            let diff: Vec<usize> =
+                (0..size).filter(|&i| !covered[i] && input[i] != got[i]).collect();
             if let Some(&first) = diff.first() {
                 let msg = format!(
                     "{}+{first:#x}: {} bytes outside its relocated fields differ from the input's",
@@ -1811,7 +1904,8 @@ fn key(rv: &Rv<'_>, f: usize, s: usize) -> String {
     }
     if rv.opts.unique_of(&sec.name) {
         let _ = write!(k, " unique {f}:{s}");
-    } else if sec.flags & SHF_GROUP != 0 && !rv.opts.force_group && rv.places[f][s] != Place::Absent {
+    } else if sec.flags & SHF_GROUP != 0 && !rv.opts.force_group && rv.places[f][s] != Place::Absent
+    {
         let _ = write!(k, " group {f}:{s}");
     }
     k
@@ -1853,7 +1947,15 @@ fn mortar_pieces(rv: &mut Rv<'_>) {
     for (o, keys) in &keys_of {
         if keys.len() > 1 {
             let ks: Vec<&str> = keys.iter().map(String::as_str).collect();
-            rv.p(2, format!("output section {} holds the pieces of {} keys of L-R1 ({})", rv.osec(*o), keys.len(), ks.join("; ")));
+            rv.p(
+                2,
+                format!(
+                    "output section {} holds the pieces of {} keys of L-R1 ({})",
+                    rv.osec(*o),
+                    keys.len(),
+                    ks.join("; ")
+                ),
+            );
         }
     }
     for (o, pieces) in by_out {
@@ -1878,7 +1980,14 @@ fn mortar_pieces(rv: &mut Rv<'_>) {
                 .and_then(|x| x.data.get(end as usize..off as usize))
                 .is_some_and(|g| g.iter().any(|&b| b != 0));
             if gap_dirty {
-                rv.p(2, format!("the gap before {} in section {} is not zero (L-R4)", rv.ins[f].sname(s), rv.osec(o)));
+                rv.p(
+                    2,
+                    format!(
+                        "the gap before {} in section {} is not zero (L-R4)",
+                        rv.ins[f].sname(s),
+                        rv.osec(o)
+                    ),
+                );
             }
             end = off + size;
         }
@@ -1886,7 +1995,10 @@ fn mortar_pieces(rv: &mut Rv<'_>) {
         if osize != end {
             rv.push(Finding::new(
                 Rule::Rel(11),
-                format!("section {}: sh_size is {osize:#x}, not {end:#x} (the last piece's end, L-R4)", rv.osec(o)),
+                format!(
+                    "section {}: sh_size is {osize:#x}, not {end:#x} (the last piece's end, L-R4)",
+                    rv.osec(o)
+                ),
             ));
         }
     }
@@ -1916,7 +2028,12 @@ pub(crate) fn records(rv: &mut Rv<'_>) {
             let (out, off) = match rv.places[f][s] {
                 Place::Whole { out, off } => (out, off),
                 Place::Merged { .. } => {
-                    let n: u64 = rv.ins[f].elf.relocs_of(s).iter().map(|&rs| rv.ins[f].elf.rels(rs).len() as u64).sum();
+                    let n: u64 = rv.ins[f]
+                        .elf
+                        .relocs_of(s)
+                        .iter()
+                        .map(|&rs| rv.ins[f].elf.rels(rs).len() as u64)
+                        .sum();
                     rv.report.coverage.records += n;
                     rv.report.coverage.add_not_checked(Reason::InMergeable, n);
                     continue;
@@ -2031,12 +2148,18 @@ impl Rv<'_> {
             }
         }
         self.report.coverage.failed += 1;
-        let head = format!("{}+{:#x} {} against {t}", self.ins[f].sname(s), r.offset, tname(machine, r.ty));
+        let head = format!(
+            "{}+{:#x} {} against {t}",
+            self.ins[f].sname(s),
+            r.offset,
+            tname(machine, r.ty)
+        );
         let msg = if let Some(ot) = wrong_target {
             // Consume it: it is this record's, wrong.
-            if let Some(&(ors, oi)) = cands.iter().find(|&&(ors, oi)| {
-                !self.used[&(ors, oi)] && self.out_rels[&ors][oi].ty == r.ty
-            }) {
+            if let Some(&(ors, oi)) = cands
+                .iter()
+                .find(|&&(ors, oi)| !self.used[&(ors, oi)] && self.out_rels[&ors][oi].ty == r.ty)
+            {
                 self.used.insert((ors, oi), true);
             }
             format!("{head} has an output record against {ot}, not {t}")
@@ -2159,7 +2282,12 @@ fn header(rv: &mut Rv<'_>) {
     if flags.len() <= 1 {
         let want = flags.first().copied().unwrap_or(0);
         if h.flags != want {
-            bad(rv, "e_flags", format!("{:#x}", h.flags), format!("{want:#x} (A-R3's merge of the inputs')"));
+            bad(
+                rv,
+                "e_flags",
+                format!("{:#x}", h.flags),
+                format!("{want:#x} (A-R3's merge of the inputs')"),
+            );
         }
     }
     if h.phoff != 0 {
@@ -2173,9 +2301,12 @@ fn header(rv: &mut Rv<'_>) {
     }
     if h.entry != 0 {
         // GNU ld and lld write -e SYM's offset in its section (L-R7).
-        let per = !rv.mortar()
-            && matches!(rv.format, Format::Gnu | Format::Lld)
-            && rv.opts.entry.as_ref().is_some_and(|e| rv.out.syms.iter().any(|s| &s.name == e && s.value == h.entry));
+        let per =
+            !rv.mortar()
+                && matches!(rv.format, Format::Gnu | Format::Lld)
+                && rv.opts.entry.as_ref().is_some_and(|e| {
+                    rv.out.syms.iter().any(|s| &s.name == e && s.value == h.entry)
+                });
         if !per {
             bad(rv, "e_entry", format!("{:#x}", h.entry), "0".into());
         }
@@ -2190,7 +2321,14 @@ fn header(rv: &mut Rv<'_>) {
             rv,
             "EI_OSABI",
             h.osabi.to_string(),
-            format!("{want_abi} ({})", if gnu { "an output symbol is STT_GNU_IFUNC or STB_GNU_UNIQUE" } else { "no IFUNC or UNIQUE symbol" }),
+            format!(
+                "{want_abi} ({})",
+                if gnu {
+                    "an output symbol is STT_GNU_IFUNC or STB_GNU_UNIQUE"
+                } else {
+                    "no IFUNC or UNIQUE symbol"
+                }
+            ),
         );
     }
     match rv.out.secs.get(h.shstrndx as usize) {
@@ -2199,7 +2337,12 @@ fn header(rv: &mut Rv<'_>) {
     }
     let big = h.shnum >= SHN_LORESERVE as usize;
     if big && h.shnum_field != 0 {
-        bad(rv, "e_shnum", h.shnum_field.to_string(), "0 (SHN_XINDEX's escape: 0xff00 sections or more)".into());
+        bad(
+            rv,
+            "e_shnum",
+            h.shnum_field.to_string(),
+            "0 (SHN_XINDEX's escape: 0xff00 sections or more)".into(),
+        );
     }
     if !big && h.shstrndx_field == SHN_XINDEX as u16 && h.shstrndx < SHN_LORESERVE {
         bad(rv, "e_shstrndx", "SHN_XINDEX".into(), h.shstrndx.to_string());
@@ -2213,7 +2356,11 @@ fn header(rv: &mut Rv<'_>) {
     }
     for (i, s) in rv.out.secs.iter().enumerate().skip(1) {
         if s.ty != SHT_NOBITS && s.size > 0 {
-            spans.push((s.offset, s.offset.saturating_add(s.size), format!("section {i} {}", s.name)));
+            spans.push((
+                s.offset,
+                s.offset.saturating_add(s.size),
+                format!("section {i} {}", s.name),
+            ));
         }
     }
     spans.sort();
@@ -2247,7 +2394,9 @@ fn mortar_order(rv: &mut Rv<'_>) {
                 Place::Framed => rv.out_eh,
                 Place::Consumed => {
                     let sec = &rv.ins[f].elf.secs[s];
-                    if matches!(sec.name.as_str(), ".note.gnu.property" | ".note.GNU-stack") || is_container(sec) {
+                    if matches!(sec.name.as_str(), ".note.gnu.property" | ".note.GNU-stack")
+                        || is_container(sec)
+                    {
                         (1..n).find(|&o| rv.out.secs[o].name == sec.name).map(|o| o as u32)
                     } else {
                         None
@@ -2282,7 +2431,11 @@ fn mortar_order(rv: &mut Rv<'_>) {
         for g in 1..n {
             let gs = &rv.out.secs[g];
             if gs.ty == SHT_GROUP && !placed_groups.contains(&g) {
-                let first_member = gs.data.chunks_exact(4).nth(1).map(|w| u32::from_le_bytes([w[0], w[1], w[2], w[3]]) as usize);
+                let first_member = gs
+                    .data
+                    .chunks_exact(4)
+                    .nth(1)
+                    .map(|w| u32::from_le_bytes([w[0], w[1], w[2], w[3]]) as usize);
                 if first_member == Some(o) {
                     want.push(g);
                     placed_groups.insert(g);
@@ -2303,7 +2456,10 @@ fn mortar_order(rv: &mut Rv<'_>) {
     }
     for (pos, &o) in want.iter().enumerate() {
         if pos != o {
-            let m = format!("section {o} {} is at position {o}, L-R8 puts it at {pos}", rv.out.secs[o].name);
+            let m = format!(
+                "section {o} {} is at position {o}, L-R8 puts it at {pos}",
+                rv.out.secs[o].name
+            );
             rv.p(7, m);
             break;
         }
@@ -2315,7 +2471,10 @@ fn mortar_order(rv: &mut Rv<'_>) {
         let a = s.align.max(1);
         if s.ty != SHT_NOBITS {
             if s.offset % a != 0 || s.offset < end {
-                let m = format!("section {o} {} is at file offset {:#x}; L-R8 puts it at or after {end:#x}, aligned to {a:#x}", s.name, s.offset);
+                let m = format!(
+                    "section {o} {} is at file offset {:#x}; L-R8 puts it at or after {end:#x}, aligned to {a:#x}",
+                    s.name, s.offset
+                );
                 rv.p(7, m);
                 return;
             }
@@ -2325,14 +2484,20 @@ fn mortar_order(rv: &mut Rv<'_>) {
     let ta = if rv.class64 { 8 } else { 4 };
     let shoff = rv.out.h.shoff;
     if shoff < end || shoff % ta != 0 {
-        rv.p(7, format!("the section header table is at {shoff:#x}; L-R8 puts it last, aligned to {ta}"));
+        rv.p(
+            7,
+            format!(
+                "the section header table is at {shoff:#x}; L-R8 puts it last, aligned to {ta}"
+            ),
+        );
     }
 }
 
 // ---- P-P8 ----
 
 fn container(rv: &mut Rv<'_>) {
-    let outs: Vec<usize> = (1..rv.out.secs.len()).filter(|&o| is_container(&rv.out.secs[o])).collect();
+    let outs: Vec<usize> =
+        (1..rv.out.secs.len()).filter(|&o| is_container(&rv.out.secs[o])).collect();
     let mut inputs: Vec<(usize, usize)> = Vec::new();
     for f in 0..rv.ins.len() {
         for s in 0..rv.ins[f].elf.secs.len() {
@@ -2351,7 +2516,9 @@ fn container(rv: &mut Rv<'_>) {
         want.extend(crate::meta::kept(sec.units.iter()));
     }
     match outs.first() {
-        None if !want.is_empty() => rv.p(8, "the output has 0 containers; the live inputs have units (MT-30)"),
+        None if !want.is_empty() => {
+            rv.p(8, "the output has 0 containers; the live inputs have units (MT-30)")
+        }
         None => {}
         Some(&o) => {
             let s = rv.out.secs[o].clone();
@@ -2368,7 +2535,12 @@ fn container(rv: &mut Rv<'_>) {
                 cat.extend_from_slice(&rv.ins[f].elf.secs[s].data);
             }
             if s.data != want && (rv.mortar() || s.data != cat) {
-                let at = s.data.iter().zip(&want).position(|(a, b)| a != b).unwrap_or(s.data.len().min(want.len()));
+                let at = s
+                    .data
+                    .iter()
+                    .zip(&want)
+                    .position(|(a, b)| a != b)
+                    .unwrap_or(s.data.len().min(want.len()));
                 rv.p(8, format!("container bytes differ from kept_units at {at:#x}"));
             }
         }
@@ -2400,7 +2572,8 @@ fn notes(rv: &mut Rv<'_>) {
             }
         }
     }
-    let outs: Vec<Sec> = rv.out.secs.iter().filter(|s| s.name == ".note.GNU-stack").cloned().collect();
+    let outs: Vec<Sec> =
+        rv.out.secs.iter().filter(|s| s.name == ".note.GNU-stack").cloned().collect();
     let out_x = outs.iter().any(|s| s.flags & SHF_EXECINSTR != 0);
     if let Some(file) = &any_x
         && !out_x
@@ -2422,7 +2595,11 @@ fn notes(rv: &mut Rv<'_>) {
         let got = match outs.as_slice() {
             [] => None,
             [s] => {
-                if s.size != 0 || s.ty != SHT_PROGBITS || s.align > 1 || s.flags & !SHF_EXECINSTR != 0 {
+                if s.size != 0
+                    || s.ty != SHT_PROGBITS
+                    || s.align > 1
+                    || s.flags & !SHF_EXECINSTR != 0
+                {
                     rv.p(10, "the output's .note.GNU-stack is not empty PROGBITS, alignment 1, flags 0 or SHF_EXECINSTR (L-R6a)");
                 }
                 Some(s.flags & SHF_EXECINSTR != 0)
@@ -2438,7 +2615,14 @@ fn notes(rv: &mut Rv<'_>) {
                 Some(true) => "X",
                 Some(false) => "N",
             };
-            rv.p(10, format!("the output's .note.GNU-stack is {}, L-R6a's table gives {}", w(got), w(want)));
+            rv.p(
+                10,
+                format!(
+                    "the output's .note.GNU-stack is {}, L-R6a's table gives {}",
+                    w(got),
+                    w(want)
+                ),
+            );
         }
     }
     // .note.gnu.property.
@@ -2454,8 +2638,10 @@ fn notes(rv: &mut Rv<'_>) {
                 .collect()
         })
         .collect();
-    let ins: Vec<Vec<&[u8]>> = ins_owned.iter().map(|v| v.iter().map(Vec::as_slice).collect()).collect();
-    let outp: Vec<Sec> = rv.out.secs.iter().filter(|s| s.name == ".note.gnu.property").cloned().collect();
+    let ins: Vec<Vec<&[u8]>> =
+        ins_owned.iter().map(|v| v.iter().map(Vec::as_slice).collect()).collect();
+    let outp: Vec<Sec> =
+        rv.out.secs.iter().filter(|s| s.name == ".note.gnu.property").cloned().collect();
     let align = if rv.class64 { 8 } else { 4 };
     if outp.len() > 1 {
         rv.p(10, format!("the output has {} .note.gnu.property sections", outp.len()));
@@ -2465,8 +2651,13 @@ fn notes(rv: &mut Rv<'_>) {
         {
             rv.p(10, format!(".note.gnu.property is not an allocated SHT_NOTE aligned to {align}"));
         }
-        let (msgs, judged, not_judged) =
-            crate::property::check_rel(rv.format, rv.machine, align as usize, &ins, outp.first().map(|s| s.data.as_slice()));
+        let (msgs, judged, not_judged) = crate::property::check_rel(
+            rv.format,
+            rv.machine,
+            align as usize,
+            &ins,
+            outp.first().map(|s| s.data.as_slice()),
+        );
         rv.report.coverage.properties_judged += judged;
         rv.report.coverage.properties_not_judged += not_judged;
         for m in msgs {
@@ -2477,7 +2668,9 @@ fn notes(rv: &mut Rv<'_>) {
     let has = rv.out.secs.iter().any(|s| s.name == ".note.gnu.build-id" && s.ty == SHT_NOTE);
     if rv.opts.known {
         match (&rv.opts.build_id, has) {
-            (Some(style), false) => rv.p(10, format!("the line asks for a build id ({style}) and the output has none")),
+            (Some(style), false) => {
+                rv.p(10, format!("the line asks for a build id ({style}) and the output has none"))
+            }
             (None, true) => rv.p(10, "the output has a build id and the line asks for none"),
             _ => {}
         }
@@ -2508,7 +2701,9 @@ pub(crate) fn pieces_of(rv: &Rv<'_>) -> BTreeMap<u32, Vec<(usize, usize)>> {
     for f in 0..rv.ins.len() {
         for s in 0..rv.ins[f].elf.secs.len() {
             match rv.places[f][s] {
-                Place::Whole { out, .. } | Place::Merged { out } => m.entry(out).or_default().push((f, s)),
+                Place::Whole { out, .. } | Place::Merged { out } => {
+                    m.entry(out).or_default().push((f, s))
+                }
                 Place::Framed => {
                     if let Some(o) = rv.out_eh {
                         m.entry(o).or_default().push((f, s));
@@ -2530,10 +2725,14 @@ fn sections(rv: &mut Rv<'_>) {
     let made = |s: &Sec| {
         s.is_reloc()
             || matches!(s.ty, SHT_GROUP | SHT_SYMTAB | SHT_SYMTAB_SHNDX | SHT_STRTAB)
-            || matches!(s.name.as_str(), ".note.GNU-stack" | ".note.gnu.property" | ".note.gnu.build-id")
+            || matches!(
+                s.name.as_str(),
+                ".note.GNU-stack" | ".note.gnu.property" | ".note.gnu.build-id"
+            )
             || is_container(s)
     };
-    let common_bss = !rv.map.rel.as_ref().is_none_or(|r| r.commons.is_empty()) || rv.opts.define_common;
+    let common_bss =
+        !rv.map.rel.as_ref().is_none_or(|r| r.commons.is_empty()) || rv.opts.define_common;
     for o in 1..n {
         let os = rv.out.secs[o].clone();
         let mut bad: Vec<String> = Vec::new();
@@ -2552,13 +2751,19 @@ fn sections(rv: &mut Rv<'_>) {
             // The sections the -r makes.
             let want_link = match os.ty {
                 SHT_REL | SHT_RELA | SHT_GROUP | SHT_SYMTAB_SHNDX => Some(symtab),
-                SHT_SYMTAB => Some(os.link.max(1)).filter(|&l| rv.out.secs.get(l as usize).is_some_and(|s| s.ty == SHT_STRTAB)).or(Some(u32::MAX)),
+                SHT_SYMTAB => Some(os.link.max(1))
+                    .filter(|&l| rv.out.secs.get(l as usize).is_some_and(|s| s.ty == SHT_STRTAB))
+                    .or(Some(u32::MAX)),
                 _ => None,
             };
             if let Some(l) = want_link
                 && os.link != l
             {
-                bad.push(format!("sh_link is {}, not {}", os.link, if l == u32::MAX { "a SHT_STRTAB".into() } else { l.to_string() }));
+                bad.push(format!(
+                    "sh_link is {}, not {}",
+                    os.link,
+                    if l == u32::MAX { "a SHT_STRTAB".into() } else { l.to_string() }
+                ));
             }
             let es = match (os.ty, rv.class64) {
                 (SHT_SYMTAB, true) => Some(24),
@@ -2577,7 +2782,11 @@ fn sections(rv: &mut Rv<'_>) {
             }
             if os.is_reloc() {
                 let rk = rv.rel_kind();
-                let llvm_target = rv.out.secs.get(os.info as usize).is_some_and(|t| t.ty == SHT_LLVM_CALL_GRAPH_PROFILE);
+                let llvm_target = rv
+                    .out
+                    .secs
+                    .get(os.info as usize)
+                    .is_some_and(|t| t.ty == SHT_LLVM_CALL_GRAPH_PROFILE);
                 if os.ty != rk && !llvm_target {
                     bad.push(format!("sh_type is {:#x}, not {rk:#x} (A-R4)", os.ty));
                 }
@@ -2593,7 +2802,10 @@ fn sections(rv: &mut Rv<'_>) {
                     bad.push(format!("sh_size {:#x} is not a multiple of {e}", os.size));
                 }
                 if os.size == 0 {
-                    bad.push("holds no record (L-R10: a relocation section exists only with a record)".into());
+                    bad.push(
+                        "holds no record (L-R10: a relocation section exists only with a record)"
+                            .into(),
+                    );
                 }
             }
             if os.ty == SHT_SYMTAB && os.info as usize != rv.out.first_global() {
@@ -2626,16 +2838,23 @@ fn judge_pieces(rv: &mut Rv<'_>, o: usize, os: &Sec, ps: &[&Sec], bad: &mut Vec<
     };
     if let Some(t) = want_ty
         && os.ty != t
-        && !(rv.is_eh(os) && rv.machine == EM_X86_64 && matches!(os.ty, SHT_PROGBITS | SHT_X86_64_UNWIND))
+        && !(rv.is_eh(os)
+            && rv.machine == EM_X86_64
+            && matches!(os.ty, SHT_PROGBITS | SHT_X86_64_UNWIND))
     {
         bad.push(format!("sh_type is {:#x}, not {t:#x} (its pieces')", os.ty));
     }
     let or_bits = SHF_WRITE | SHF_ALLOC | SHF_EXECINSTR | SHF_TLS;
     let want_or = ps.iter().fold(0, |a, p| a | (p.flags & or_bits));
     if os.flags & or_bits != want_or {
-        bad.push(format!("sh_flags {:#x} has not the OR of its pieces' W, A, X, TLS ({want_or:#x})", os.flags));
+        bad.push(format!(
+            "sh_flags {:#x} has not the OR of its pieces' W, A, X, TLS ({want_or:#x})",
+            os.flags
+        ));
     }
-    let class = |p: &Sec| (p.flags & (SHF_MERGE | SHF_STRINGS), if p.flags & SHF_MERGE != 0 { p.entsize } else { 0 });
+    let class = |p: &Sec| {
+        (p.flags & (SHF_MERGE | SHF_STRINGS), if p.flags & SHF_MERGE != 0 { p.entsize } else { 0 })
+    };
     let classes: BTreeSet<(u64, u64)> = ps.iter().map(|p| class(p)).collect();
     let same_merge = classes.len() == 1 && ps[0].flags & SHF_MERGE != 0;
     if os.flags & SHF_MERGE != 0 {
@@ -2644,7 +2863,10 @@ fn judge_pieces(rv: &mut Rv<'_>, o: usize, os: &Sec, ps: &[&Sec], bad: &mut Vec<
         } else if !same_merge {
             bad.push("SHF_MERGE over pieces of different merge classes".into());
         } else if os.entsize != ps[0].entsize {
-            bad.push(format!("sh_entsize is {}, not {} (the merge class's)", os.entsize, ps[0].entsize));
+            bad.push(format!(
+                "sh_entsize is {}, not {} (the merge class's)",
+                os.entsize, ps[0].entsize
+            ));
         }
     } else if rv.mortar() && same_merge {
         bad.push("SHF_MERGE is dropped though every piece has the same merge class (L-50)".into());
@@ -2652,21 +2874,34 @@ fn judge_pieces(rv: &mut Rv<'_>, o: usize, os: &Sec, ps: &[&Sec], bad: &mut Vec<
     for (flag, nm) in [(SHF_LINK_ORDER, "SHF_LINK_ORDER"), (SHF_EXCLUDE, "SHF_EXCLUDE")] {
         let all = ps.iter().all(|p| p.flags & flag != 0);
         if (os.flags & flag != 0) != all {
-            bad.push(format!("{nm} is {} though {} piece has it", if all { "not set" } else { "set" }, if all { "every" } else { "not every" }));
+            bad.push(format!(
+                "{nm} is {} though {} piece has it",
+                if all { "not set" } else { "set" },
+                if all { "every" } else { "not every" }
+            ));
         }
     }
     let pieces = pieces_of(rv);
     let list = pieces.get(&(o as u32)).cloned().unwrap_or_default();
     if os.flags & SHF_GNU_RETAIN == 0
-        && let Some(&(f, s)) = list.iter().find(|&&(f, s)| rv.ins[f].elf.secs[s].flags & SHF_GNU_RETAIN != 0)
+        && let Some(&(f, s)) =
+            list.iter().find(|&&(f, s)| rv.ins[f].elf.secs[s].flags & SHF_GNU_RETAIN != 0)
     {
-        bad.push(format!("holds the SHF_GNU_RETAIN piece {} without SHF_GNU_RETAIN", rv.ins[f].sname(s)));
+        bad.push(format!(
+            "holds the SHF_GNU_RETAIN piece {} without SHF_GNU_RETAIN",
+            rv.ins[f].sname(s)
+        ));
     }
     if os.flags & SHF_GNU_RETAIN != 0 && !ps.iter().any(|p| p.flags & SHF_GNU_RETAIN != 0) {
         bad.push("SHF_GNU_RETAIN is set and no piece has it".into());
     }
-    if rv.mortar() && os.flags & SHF_GNU_RETAIN != 0 && !ps.iter().all(|p| p.flags & SHF_GNU_RETAIN != 0) {
-        bad.push("SHF_GNU_RETAIN holds a piece without it (L-R1a: the flag is part of the key)".into());
+    if rv.mortar()
+        && os.flags & SHF_GNU_RETAIN != 0
+        && !ps.iter().all(|p| p.flags & SHF_GNU_RETAIN != 0)
+    {
+        bad.push(
+            "SHF_GNU_RETAIN holds a piece without it (L-R1a: the flag is part of the key)".into(),
+        );
     }
     if os.flags & SHF_COMPRESSED != 0 && rv.mortar() {
         bad.push("SHF_COMPRESSED (L-R1a: no output is compressed)".into());
@@ -2689,24 +2924,29 @@ fn judge_pieces(rv: &mut Rv<'_>, o: usize, os: &Sec, ps: &[&Sec], bad: &mut Vec<
     }
     // sh_link.
     if !llvm {
-        let want_link: Option<u32> = if os.flags & SHF_LINK_ORDER != 0 || ps.iter().any(|p| p.flags & SHF_LINK_ORDER != 0) {
-            let targets: BTreeSet<Option<u32>> = list
-                .iter()
-                .map(|&(f, s)| match rv.places[f].get(rv.ins[f].elf.secs[s].link as usize) {
-                    Some(Place::Whole { out, .. } | Place::Merged { out }) => Some(*out),
-                    _ => None,
-                })
-                .collect();
-            let v: Vec<Option<u32>> = targets.into_iter().collect();
-            if v.len() > 1 {
-                bad.push(format!("SHF_LINK_ORDER pieces link to {} and {}", v[0].map_or("?".into(), |x| x.to_string()), v[1].map_or("?".into(), |x| x.to_string())));
-                None
+        let want_link: Option<u32> =
+            if os.flags & SHF_LINK_ORDER != 0 || ps.iter().any(|p| p.flags & SHF_LINK_ORDER != 0) {
+                let targets: BTreeSet<Option<u32>> = list
+                    .iter()
+                    .map(|&(f, s)| match rv.places[f].get(rv.ins[f].elf.secs[s].link as usize) {
+                        Some(Place::Whole { out, .. } | Place::Merged { out }) => Some(*out),
+                        _ => None,
+                    })
+                    .collect();
+                let v: Vec<Option<u32>> = targets.into_iter().collect();
+                if v.len() > 1 {
+                    bad.push(format!(
+                        "SHF_LINK_ORDER pieces link to {} and {}",
+                        v[0].map_or("?".into(), |x| x.to_string()),
+                        v[1].map_or("?".into(), |x| x.to_string())
+                    ));
+                    None
+                } else {
+                    v.first().copied().flatten()
+                }
             } else {
-                v.first().copied().flatten()
-            }
-        } else {
-            Some(0)
-        };
+                Some(0)
+            };
         if let Some(l) = want_link
             && os.link != l
         {

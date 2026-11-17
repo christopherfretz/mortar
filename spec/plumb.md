@@ -7671,6 +7671,34 @@ pieces {n}, merged {m}, framed {f}; groups {g}; FDEs {k} live, {r}
 removed; symbols {s}; sections {h}` and, under P-P1, `composition: {x}
 judged, {y} not judged ({letters})`.
 
+Measured by RL-5 (`s14_references_*`, the corpus of §14.9 summed per
+target and linker; records = verified + accepted + not checked +
+failed, asserted on every link):
+
+| target | linker | links | records | `place` | `string` | `eh-frame` | `per-linker` | failed |
+|---|---|---|---|---|---|---|---|---|
+| AArch64 | GNU ld | 27 | 10039 | 9834 | 0 | 185 | 20 | 0 |
+| AArch64 | lld | 27 | 10039 | 1656 | 8177 | 185 | 21 | 0 |
+| AArch64 | mold | 25 | 9733 | 1480 | 8076 | 155 | 0 | 22 |
+| x86-64 | GNU ld | 26 | 9919 | 9715 | 0 | 184 | 20 | 0 |
+| x86-64 | lld | 26 | 9919 | 1583 | 8131 | 184 | 21 | 0 |
+| x86-64 | mold | 24 | 9623 | 1413 | 8034 | 154 | 0 | 22 |
+| i386 | GNU ld | 22 | 8184 | 8024 | 0 | 140 | 20 | 0 |
+| i386 | lld | 22 | 8184 | 1236 | 6787 | 140 | 21 | 0 |
+| i386 | mold | 21 | 8006 | 1119 | 6745 | 122 | 0 | 20 |
+
+`tombstone` is 0 (a reference's map is not mortar's), `in-mergeable` is
+0 (every reference's merged section is listed or recomputed in the
+corpus) and `options-unknown` is never counted by stage R (the line's
+options are read by §14.1, an unknown one is not a coverage term at
+`-r`: a QUESTION to the supervisor, record WP-185). mold's failed
+records are those of its findings, every one a §10.2 anomaly of §14.9's
+table. GNU ld's `NONE` records
+where it removed an FDE are output records that no input record gives:
+accepted (P-P3's list), they are in none of the sum's terms, which count
+input records. A per-linker symbol form (P-P4: lld's `foo@@V`, a `-u`
+name omitted) counts as a judged symbol, not a record.
+
 ### 14.7 Not judged at `-r`
 
 - The program's behavior: P-P1's comparison is static; the lane runs

@@ -110,8 +110,10 @@ pub(crate) fn check(rv: &mut Rv<'_>) {
     if let Some(o) = rv.out_eh {
         let o = o as usize;
         let data = rv.out.secs[o].data.clone();
-        let ors = (1..rv.out.secs.len()).find(|&r| rv.out.secs[r].is_reloc() && rv.out.secs[r].info as usize == o);
-        let recs = ors.map(|r| rv.out_rels.get(&r).cloned().unwrap_or_default()).unwrap_or_default();
+        let ors = (1..rv.out.secs.len())
+            .find(|&r| rv.out.secs[r].is_reloc() && rv.out.secs[r].info as usize == o);
+        let recs =
+            ors.map(|r| rv.out_rels.get(&r).cloned().unwrap_or_default()).unwrap_or_default();
         match parse_as(&data, if rv.class64 { 8 } else { 4 }) {
             Ok(fr) => {
                 for d in &fr.fdes {
@@ -136,8 +138,15 @@ pub(crate) fn check(rv: &mut Rv<'_>) {
     // offset is found from the FDE's CIE pointer.
     let out_cie_off = |d: &Fde| -> u64 {
         let data = rv.out_eh.map(|o| rv.out.secs[o as usize].data.as_slice()).unwrap_or(&[]);
-        let id_at = d.off as u64 + if rec_len(data, d.off) > 4 && data.get(d.off..d.off + 4) == Some(&[0xff; 4]) { 12 } else { 4 };
-        let id = data.get(id_at as usize..id_at as usize + 4).map_or(0, |b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+        let id_at = d.off as u64
+            + if rec_len(data, d.off) > 4 && data.get(d.off..d.off + 4) == Some(&[0xff; 4]) {
+                12
+            } else {
+                4
+            };
+        let id = data
+            .get(id_at as usize..id_at as usize + 4)
+            .map_or(0, |b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
         id_at.saturating_sub(u64::from(id))
     };
     let mut removed_by_tgt: Vec<(Tgt, String)> = Vec::new();
@@ -154,7 +163,10 @@ pub(crate) fn check(rv: &mut Rv<'_>) {
                 Ok(x) => x,
                 Err(e) => {
                     let site = rv.ins[f].site(s, 0);
-                    findings.push(Finding::new(Rule::InputUnreadable, format!("{}: {e}", rv.ins[f].sname(s))).site(site));
+                    findings.push(
+                        Finding::new(Rule::InputUnreadable, format!("{}: {e}", rv.ins[f].sname(s)))
+                            .site(site),
+                    );
                     continue;
                 }
             };
@@ -235,7 +247,9 @@ pub(crate) fn check(rv: &mut Rv<'_>) {
                         used[k] = true;
                         let o = &outs[k];
                         rmap.insert(d.off as u64, Some(o.fde.off as u64));
-                        if let Some(&cpos) = cie_offs.iter().rev().find(|&&c| c < d.off).or(cie_offs.first()) {
+                        if let Some(&cpos) =
+                            cie_offs.iter().rev().find(|&&c| c < d.off).or(cie_offs.first())
+                        {
                             // The FDE's own CIE: from its CIE pointer.
                             let cp = cie_of(&data, d.off).unwrap_or(cpos as u64);
                             cie_out.entry(cp as usize).or_insert_with(|| out_cie_off(&o.fde));
@@ -244,8 +258,13 @@ pub(crate) fn check(rv: &mut Rv<'_>) {
                     None => {
                         let site = rv.ins[f].site(s, d.off as u64);
                         let msg = match first_diff {
-                            Some(x) => format!("P-P5 FDE for {pc} of {} differs: {x}", rv.ins[f].label()),
-                            None => format!("FDE for {pc} of {} is not in the output", rv.ins[f].label()),
+                            Some(x) => {
+                                format!("P-P5 FDE for {pc} of {} differs: {x}", rv.ins[f].label())
+                            }
+                            None => format!(
+                                "FDE for {pc} of {} is not in the output",
+                                rv.ins[f].label()
+                            ),
                         };
                         let msg = msg.trim_start_matches("P-P5 ").to_string();
                         findings.push(Finding::new(Rule::Rel(5), msg).site(site));
@@ -270,7 +289,10 @@ pub(crate) fn check(rv: &mut Rv<'_>) {
                 (Tgt::Dropped(..), _) => true,
                 (a, b) => rv.equiv(a, b).is_some(),
             })
-            .map_or_else(|| "no input FDE".to_string(), |(_, file)| format!("a removed FDE of {file}"));
+            .map_or_else(
+                || "no input FDE".to_string(),
+                |(_, file)| format!("a removed FDE of {file}"),
+            );
         // A 0-range FDE kept as GNU ld keeps it? Not accepted: §14.5.
         let _ = o.len;
         findings.push(Finding::new(
@@ -359,8 +381,14 @@ fn rframe(rv: &mut Rv<'_>) {
                             "record {} {off:#x} is at {at:#x}, L-R6 puts it at {cursor:#x}",
                             rv.ins[f].sname(s)
                         ));
-                    } else if term && rv.out.secs[o as usize].data.get(at as usize..at as usize + 4) != Some(&[0u8; 4][..]) {
-                        msgs.push(format!("the zero terminator of {} {off:#x} is not at {at:#x}", rv.ins[f].sname(s)));
+                    } else if term
+                        && rv.out.secs[o as usize].data.get(at as usize..at as usize + 4)
+                            != Some(&[0u8; 4][..])
+                    {
+                        msgs.push(format!(
+                            "the zero terminator of {} {off:#x} is not at {at:#x}",
+                            rv.ins[f].sname(s)
+                        ));
                     }
                     cursor = at + len;
                 }
@@ -407,7 +435,8 @@ fn framed_records(rv: &mut Rv<'_>) {
                         }
                     })
                 });
-                let fresh = rv.out_recs.get(&(o, at)).is_some_and(|c| c.iter().any(|k| !rv.used[k]));
+                let fresh =
+                    rv.out_recs.get(&(o, at)).is_some_and(|c| c.iter().any(|k| !rv.used[k]));
                 if shared.is_some() && !fresh {
                     rv.report.coverage.add_verified(Via::EhFrame, r.ty);
                     continue;

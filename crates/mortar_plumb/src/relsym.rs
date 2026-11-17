@@ -11,9 +11,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::map::Format;
 use crate::relocatable::{
-    Place, Rv, SHN_ABS, SHN_COMMON, SHN_UNDEF, SHT_GROUP, SHT_NOBITS, SHT_REL, SHT_RELA, SHT_STRTAB,
-    SHT_SYMTAB, SHT_SYMTAB_SHNDX, STB_GLOBAL, STB_GNU_UNIQUE, STB_WEAK, STT_COMMON, STT_FILE,
-    STT_OBJECT, STT_SECTION, Sym, Tgt,
+    Place, Rv, SHN_ABS, SHN_COMMON, SHN_UNDEF, SHT_GROUP, SHT_NOBITS, SHT_REL, SHT_RELA,
+    SHT_STRTAB, SHT_SYMTAB, SHT_SYMTAB_SHNDX, STB_GLOBAL, STB_GNU_UNIQUE, STB_WEAK, STT_COMMON,
+    STT_FILE, STT_OBJECT, STT_SECTION, Sym, Tgt,
 };
 use crate::report::{Finding, Rule};
 
@@ -93,7 +93,9 @@ pub(crate) fn check(rv: &mut Rv<'_>) {
                 let strong = s.bind() != STB_WEAK;
                 match k.def {
                     None => k.def = Some((f, i)),
-                    Some((g, j)) if strong && rv.ins[g].elf.syms[j].bind() == STB_WEAK => k.def = Some((f, i)),
+                    Some((g, j)) if strong && rv.ins[g].elf.syms[j].bind() == STB_WEAK => {
+                        k.def = Some((f, i))
+                    }
                     _ => {}
                 }
             }
@@ -131,7 +133,11 @@ pub(crate) fn check(rv: &mut Rv<'_>) {
     // .symtab_shndx.
     if let Some(x) = out.shndx_sec {
         if out.secs[x].size != syms.len() as u64 * 4 {
-            msgs.push(format!(".symtab_shndx has {:#x} bytes for {} symbols", out.secs[x].size, syms.len()));
+            msgs.push(format!(
+                ".symtab_shndx has {:#x} bytes for {} symbols",
+                out.secs[x].size,
+                syms.len()
+            ));
         }
     }
     for (i, s) in syms.iter().enumerate() {
@@ -140,10 +146,16 @@ pub(crate) fn check(rv: &mut Rv<'_>) {
             msgs.push(format!("symbol {i} {}: st_shndx and .symtab_shndx disagree", s.name));
         }
         if s.ty() == STT_SECTION && (s.value != 0 || s.shndx == 0 || s.shndx >= nsec) {
-            msgs.push(format!("section symbol {i} has value {:#x} and section {}", s.value, s.shndx));
+            msgs.push(format!(
+                "section symbol {i} has value {:#x} and section {}",
+                s.value, s.shndx
+            ));
         }
         if s.in_section() && s.shndx >= nsec {
-            msgs.push(format!("symbol {i} {} is in section {}, which does not exist", s.name, s.shndx));
+            msgs.push(format!(
+                "symbol {i} {} is in section {}, which does not exist",
+                s.name, s.shndx
+            ));
         }
     }
     // The globals: every key once.
@@ -168,7 +180,10 @@ pub(crate) fn check(rv: &mut Rv<'_>) {
             // and writes no `UND foo` (RV-R6's lld form, §14.5 P-P3/P-P4).
             if !defined
                 && rv.format == Format::Lld
-                && keys.iter().any(|(n, d)| d.def.is_some() && n.strip_prefix(name.as_str()).is_some_and(|v| v.starts_with("@@")))
+                && keys.iter().any(|(n, d)| {
+                    d.def.is_some()
+                        && n.strip_prefix(name.as_str()).is_some_and(|v| v.starts_with("@@"))
+                })
             {
                 accepted += 1;
                 continue;
@@ -187,7 +202,11 @@ pub(crate) fn check(rv: &mut Rv<'_>) {
         judged += 1;
         let o = &syms[hits[0]];
         if o.vis() != k.vis {
-            msgs.push(format!("{name} is {}, not {} (the merged visibility)", vis_name(o.vis()), vis_name(k.vis)));
+            msgs.push(format!(
+                "{name} is {}, not {} (the merged visibility)",
+                vis_name(o.vis()),
+                vis_name(k.vis)
+            ));
         }
         if let Some((f, i)) = k.def {
             let d = &rv.ins[f].elf.syms[i];
@@ -204,7 +223,10 @@ pub(crate) fn check(rv: &mut Rv<'_>) {
             match rv.at_place(f, d.shndx as usize, d.value as i64) {
                 Tgt::Place(out, v) => {
                     if o.shndx != out || o.value as i64 != v {
-                        msgs.push(format!("{name} is at {}+{:#x}, not {out}+{v:#x}", o.shndx, o.value));
+                        msgs.push(format!(
+                            "{name} is at {}+{:#x}, not {out}+{v:#x}",
+                            o.shndx, o.value
+                        ));
                     }
                 }
                 Tgt::Merged(out, ..) if o.shndx == out => {}
@@ -216,7 +238,10 @@ pub(crate) fn check(rv: &mut Rv<'_>) {
             }
         } else if let Some((size, align)) = k.common {
             let lld_d = rv.format == Format::Lld && rv.opts.define_common;
-            if !rv.opts.define_common || lld_d || (rv.format == Format::Mold && rv.opts.define_common) {
+            if !rv.opts.define_common
+                || lld_d
+                || (rv.format == Format::Mold && rv.opts.define_common)
+            {
                 if o.shndx == SHN_COMMON && (lld_d || rv.opts.define_common) {
                     accepted += 1;
                 }
@@ -230,20 +255,32 @@ pub(crate) fn check(rv: &mut Rv<'_>) {
                 }
             } else {
                 let bss = rv.out.secs.get(o.shndx as usize);
-                if !bss.is_some_and(|s| s.ty == SHT_NOBITS) || o.ty() != STT_OBJECT || o.size != size || (align > 1 && o.value % align != 0) {
+                if !bss.is_some_and(|s| s.ty == SHT_NOBITS)
+                    || o.ty() != STT_OBJECT
+                    || o.size != size
+                    || (align > 1 && o.value % align != 0)
+                {
                     msgs.push(format!(
                         "common {name} under -d is {} type {} size {:#x} at {:#x}, not an OBJECT of size {size:#x} in a NOBITS section aligned {align:#x}",
                         shn(o.shndx), o.ty(), o.size, o.value
                     ));
-                } else if let Some(rc) = rv.map.rel.as_ref().and_then(|r| r.commons.iter().find(|c| &c.name == name)) {
+                } else if let Some(rc) =
+                    rv.map.rel.as_ref().and_then(|r| r.commons.iter().find(|c| &c.name == name))
+                {
                     if (rc.out, rc.offset, rc.size) != (o.shndx, o.value, o.size) {
-                        msgs.push(format!("common {name} is at {}+{:#x}; rcommon says {}+{:#x}", o.shndx, o.value, rc.out, rc.offset));
+                        msgs.push(format!(
+                            "common {name} is at {}+{:#x}; rcommon says {}+{:#x}",
+                            o.shndx, o.value, rc.out, rc.offset
+                        ));
                     }
                 }
             }
         } else {
             if o.shndx != SHN_UNDEF {
-                msgs.push(format!("{name} is defined in {}; no live input defines it", shn(o.shndx)));
+                msgs.push(format!(
+                    "{name} is defined in {}; no live input defines it",
+                    shn(o.shndx)
+                ));
             }
             let want_weak = k.any_ref && k.all_weak_refs;
             if (o.bind() == STB_WEAK) != want_weak {
@@ -260,7 +297,9 @@ pub(crate) fn check(rv: &mut Rv<'_>) {
     for (name, idx) in &by_name {
         if !keys.contains_key(*name) {
             for &i in idx {
-                msgs.push(format!("{name} (symbol {i}) is no input's symbol: -r defines nothing (RV-R8)"));
+                msgs.push(format!(
+                    "{name} (symbol {i}) is no input's symbol: -r defines nothing (RV-R8)"
+                ));
             }
         }
     }
@@ -271,7 +310,8 @@ pub(crate) fn check(rv: &mut Rv<'_>) {
             if !s.local() || matches!(s.ty(), STT_SECTION | STT_FILE) {
                 continue;
             }
-            let in_group = rv.ins[f].elf.secs.get(s.shndx as usize).is_some_and(|x| x.ty == SHT_GROUP);
+            let in_group =
+                rv.ins[f].elf.secs.get(s.shndx as usize).is_some_and(|x| x.ty == SHT_GROUP);
             let t = if s.shndx == SHN_ABS {
                 Tgt::Abs(s.value as i64)
             } else if in_group {
@@ -301,13 +341,21 @@ pub(crate) fn check(rv: &mut Rv<'_>) {
         let mapping = matches!(s.name.as_str(), "$x" | "$d" | "$t" | "$a")
             || s.name.starts_with("$x.")
             || s.name.starts_with("$d.");
-        let exec = rv.out.secs.get(s.shndx as usize).is_some_and(|x| x.flags & crate::relocatable::SHF_EXECINSTR != 0);
+        let exec = rv
+            .out
+            .secs
+            .get(s.shndx as usize)
+            .is_some_and(|x| x.flags & crate::relocatable::SHF_EXECINSTR != 0);
         if mapping && !(s.in_section() && exec) && !rv.mortar() {
             unjudged += 1;
             continue;
         }
         locals += 1;
-        let ot = if s.shndx == SHN_ABS { Tgt::Abs(s.value as i64) } else { Tgt::Place(s.shndx, s.value as i64) };
+        let ot = if s.shndx == SHN_ABS {
+            Tgt::Abs(s.value as i64)
+        } else {
+            Tgt::Place(s.shndx, s.value as i64)
+        };
         let ok = input_locals.get(s.name.as_str()).is_some_and(|v| {
             v.iter().any(|t| match (t, &ot) {
                 (Tgt::Merged(o, ..), Tgt::Place(p, _)) => o == p,
@@ -316,7 +364,10 @@ pub(crate) fn check(rv: &mut Rv<'_>) {
         });
         // A key made local (hidden at -r) is reported above.
         if !ok && !keys.contains_key(&s.name) {
-            msgs.push(format!("local {} at {}+{:#x} is no input's local there (symbol {i})", s.name, s.shndx, s.value));
+            msgs.push(format!(
+                "local {} at {}+{:#x} is no input's local there (symbol {i})",
+                s.name, s.shndx, s.value
+            ));
         }
     }
     if rv.mortar() {
@@ -352,17 +403,15 @@ fn mortar_order(rv: &Rv<'_>, keys: &BTreeMap<String, Key>, msgs: &mut Vec<String
     let want_secs: Vec<u32> = (1..out.secs.len())
         .filter(|&o| {
             let s = &out.secs[o];
-            !matches!(s.ty, SHT_GROUP | SHT_REL | SHT_RELA | SHT_SYMTAB | SHT_SYMTAB_SHNDX | SHT_STRTAB)
+            !matches!(
+                s.ty,
+                SHT_GROUP | SHT_REL | SHT_RELA | SHT_SYMTAB | SHT_SYMTAB_SHNDX | SHT_STRTAB
+            )
         })
         .map(|o| o as u32)
         .collect();
-    let got_secs: Vec<u32> = out
-        .syms
-        .iter()
-        .skip(1)
-        .take_while(|s| s.ty() == STT_SECTION)
-        .map(|s| s.shndx)
-        .collect();
+    let got_secs: Vec<u32> =
+        out.syms.iter().skip(1).take_while(|s| s.ty() == STT_SECTION).map(|s| s.shndx).collect();
     if got_secs != want_secs {
         msgs.push(format!(
             "the section symbols are for sections {got_secs:?}; I-R4 gives one per section in order: {want_secs:?} (mortar)"
@@ -370,10 +419,14 @@ fn mortar_order(rv: &Rv<'_>, keys: &BTreeMap<String, Key>, msgs: &mut Vec<String
     }
     let after = 1 + got_secs.len();
     let fg = out.first_global();
-    if out.syms[after.min(out.syms.len())..fg.min(out.syms.len())].iter().any(|s| s.ty() == STT_SECTION) {
+    if out.syms[after.min(out.syms.len())..fg.min(out.syms.len())]
+        .iter()
+        .any(|s| s.ty() == STT_SECTION)
+    {
         msgs.push("a section symbol follows the file locals (I-R4) (mortar)".into());
     }
-    let mut order: Vec<(&(usize, usize), &str)> = keys.iter().map(|(n, k)| (&k.first, n.as_str())).collect();
+    let mut order: Vec<(&(usize, usize), &str)> =
+        keys.iter().map(|(n, k)| (&k.first, n.as_str())).collect();
     order.sort();
     let want: Vec<&str> = order.into_iter().map(|(_, n)| n).collect();
     let got: Vec<&str> = out.syms.iter().skip(fg).map(|s| s.name.as_str()).collect();

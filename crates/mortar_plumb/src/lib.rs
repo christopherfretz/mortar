@@ -80,8 +80,7 @@ pub use line::{Files, HostFiles};
 pub use locate::thin_members;
 pub use map::{Format, Map, MapError, MapFile};
 pub use report::{
-    Coverage, Finding, MetaCoverage, OUTSIDE, Reason, RelCoverage, Report, Rewrite, Rule, Site,
-    Via,
+    Coverage, Finding, MetaCoverage, OUTSIDE, Reason, RelCoverage, Report, Rewrite, Rule, Site, Via,
 };
 
 /// An input file of the link, by the path the map names it with (§2.1).

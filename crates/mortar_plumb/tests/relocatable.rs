@@ -139,7 +139,13 @@ struct Case {
     opts: Vec<&'static str>,
 }
 
-fn src(cc: Cc, name: &'static str, text: &str, flags: &'static [&'static str], obj: &'static str) -> Src {
+fn src(
+    cc: Cc,
+    name: &'static str,
+    text: &str,
+    flags: &'static [&'static str],
+    obj: &'static str,
+) -> Src {
     Src { cc, name, text: text.to_string(), flags, obj }
 }
 
@@ -190,7 +196,10 @@ fn cases(t: &Tools) -> Vec<Case> {
     // The debugging corpus (exp/debug): -O0 -g.
     v.push(Case {
         name: "debug-cxx".into(),
-        srcs: vec![src(Cc::Gxx, "x1.cc", X1, DEBUG, "x1.o"), src(Cc::Gxx, "x2.cc", X2, DEBUG, "x2.o")],
+        srcs: vec![
+            src(Cc::Gxx, "x1.cc", X1, DEBUG, "x1.o"),
+            src(Cc::Gxx, "x2.cc", X2, DEBUG, "x2.o"),
+        ],
         inputs: vec!["x1.o", "x2.o"],
         opts: vec![],
     });
@@ -219,8 +228,22 @@ fn cases(t: &Tools) -> Vec<Case> {
     v.push(Case {
         name: "none".into(),
         srcs: vec![
-            src(Cc::As, "s.s", &format!("  .text\n  .globl _start\n_start:\n  .reloc ., {none_ty}, keepme\n  {ret}\n"), NONE, "s.o"),
-            src(Cc::As, "k.s", &format!("  .section .text.keepme,\"ax\"\n  .globl keepme\nkeepme:\n  {ret}\n"), NONE, "k.o"),
+            src(
+                Cc::As,
+                "s.s",
+                &format!(
+                    "  .text\n  .globl _start\n_start:\n  .reloc ., {none_ty}, keepme\n  {ret}\n"
+                ),
+                NONE,
+                "s.o",
+            ),
+            src(
+                Cc::As,
+                "k.s",
+                &format!("  .section .text.keepme,\"ax\"\n  .globl keepme\nkeepme:\n  {ret}\n"),
+                NONE,
+                "k.o",
+            ),
         ],
         inputs: vec!["s.o", "k.o"],
         opts: vec![],
@@ -229,7 +252,13 @@ fn cases(t: &Tools) -> Vec<Case> {
         // rl0 13 and none.sh's second part: clang's call-graph profile.
         v.push(Case {
             name: "rl0-13-cgprofile".into(),
-            srcs: vec![src(Cc::ClangAs, "cg.s", "  .text\n  .globl cga, cgb\ncga: ret\ncgb: ret\n  .cg_profile cga, cgb, 10\n", NONE, "cg.o")],
+            srcs: vec![src(
+                Cc::ClangAs,
+                "cg.s",
+                "  .text\n  .globl cga, cgb\ncga: ret\ncgb: ret\n  .cg_profile cga, cgb, 10\n",
+                NONE,
+                "cg.o",
+            )],
             inputs: vec!["cg.o"],
             opts: vec![],
         });
@@ -249,14 +278,32 @@ fn cases(t: &Tools) -> Vec<Case> {
     let mut groups = Case {
         name: "rl0-3-groups".into(),
         srcs: vec![
-            src(Cc::Gxx, "g1.cc", &format!("{g}int use1(int x) {{ return shared_inline(x); }}\n"), O1, "g1.o"),
-            src(Cc::Gxx, "g2.cc", &format!("{g}int use2(int x) {{ return shared_inline(x) + 1; }}\n"), O1, "g2.o"),
+            src(
+                Cc::Gxx,
+                "g1.cc",
+                &format!("{g}int use1(int x) {{ return shared_inline(x); }}\n"),
+                O1,
+                "g1.o",
+            ),
+            src(
+                Cc::Gxx,
+                "g2.cc",
+                &format!("{g}int use2(int x) {{ return shared_inline(x) + 1; }}\n"),
+                O1,
+                "g2.o",
+            ),
         ],
         inputs: vec!["g1.o", "g2.o"],
         opts: vec![],
     };
     if a64 {
-        groups.srcs.push(src(Cc::As, "g3.s", "  .section .text.plain,\"axG\",%progbits,plaingrp\npg:\n  bl use1\n  ret\n", NONE, "g3.o"));
+        groups.srcs.push(src(
+            Cc::As,
+            "g3.s",
+            "  .section .text.plain,\"axG\",%progbits,plaingrp\npg:\n  bl use1\n  ret\n",
+            NONE,
+            "g3.o",
+        ));
         groups.inputs.extend(["g3.o", "g3.o"]);
     }
     v.push(groups);
@@ -276,9 +323,27 @@ fn cases(t: &Tools) -> Vec<Case> {
         v.push(Case {
             name: "rl0-6-property".into(),
             srcs: vec![
-                src(Cc::Gcc, "pa.c", &p.replace("PNAME", "pa"), &["-O1", "-mbranch-protection=standard"], "pa.o"),
-                src(Cc::Gcc, "pc.c", &p.replace("PNAME", "pc"), &["-O1", "-mbranch-protection=pac-ret"], "pc.o"),
-                src(Cc::Gcc, "pd.c", &p.replace("PNAME", "pd"), &["-O1", "-mbranch-protection=none"], "pd.o"),
+                src(
+                    Cc::Gcc,
+                    "pa.c",
+                    &p.replace("PNAME", "pa"),
+                    &["-O1", "-mbranch-protection=standard"],
+                    "pa.o",
+                ),
+                src(
+                    Cc::Gcc,
+                    "pc.c",
+                    &p.replace("PNAME", "pc"),
+                    &["-O1", "-mbranch-protection=pac-ret"],
+                    "pc.o",
+                ),
+                src(
+                    Cc::Gcc,
+                    "pd.c",
+                    &p.replace("PNAME", "pd"),
+                    &["-O1", "-mbranch-protection=none"],
+                    "pd.o",
+                ),
             ],
             inputs: vec!["pa.o", "pc.o", "pd.o"],
             opts: vec![],
@@ -287,8 +352,20 @@ fn cases(t: &Tools) -> Vec<Case> {
         v.push(Case {
             name: "rl0-6-property".into(),
             srcs: vec![
-                src(Cc::Gcc, "xa.c", &p.replace("PNAME", "xa"), &["-O1", "-fcf-protection=full"], "xa.o"),
-                src(Cc::Gcc, "xb.c", &p.replace("PNAME", "xb"), &["-O1", "-fcf-protection=full"], "xb.o"),
+                src(
+                    Cc::Gcc,
+                    "xa.c",
+                    &p.replace("PNAME", "xa"),
+                    &["-O1", "-fcf-protection=full"],
+                    "xa.o",
+                ),
+                src(
+                    Cc::Gcc,
+                    "xb.c",
+                    &p.replace("PNAME", "xb"),
+                    &["-O1", "-fcf-protection=full"],
+                    "xb.o",
+                ),
             ],
             inputs: vec!["xa.o", "xb.o"],
             opts: vec![],
@@ -298,8 +375,20 @@ fn cases(t: &Tools) -> Vec<Case> {
     v.push(Case {
         name: "rl0-7-retain".into(),
         srcs: vec![
-            src(Cc::As, "k1.s", &format!("  .section .text.k,\"axR\",%progbits\n  .globl k1\nk1:\n  {ret}\n"), NONE, "k1.o"),
-            src(Cc::As, "k2.s", &format!("  .section .text.k,\"ax\",%progbits\n  .globl k2\nk2:\n  {ret}\n"), NONE, "k2.o"),
+            src(
+                Cc::As,
+                "k1.s",
+                &format!("  .section .text.k,\"axR\",%progbits\n  .globl k1\nk1:\n  {ret}\n"),
+                NONE,
+                "k1.o",
+            ),
+            src(
+                Cc::As,
+                "k2.s",
+                &format!("  .section .text.k,\"ax\",%progbits\n  .globl k2\nk2:\n  {ret}\n"),
+                NONE,
+                "k2.o",
+            ),
         ],
         inputs: vec!["k1.o", "k2.o"],
         opts: vec![],
@@ -308,8 +397,20 @@ fn cases(t: &Tools) -> Vec<Case> {
     v.push(Case {
         name: "rl0-8-dropdebug".into(),
         srcs: vec![
-            src(Cc::Gxx, "d1.cc", &format!("{g}int use1(int x) {{ return shared_inline(x); }}\n"), &["-O0", "-g"], "d1.o"),
-            src(Cc::Gxx, "d2.cc", &format!("{g}int use2(int x) {{ return shared_inline(x) + 1; }}\n"), &["-O0", "-g"], "d2.o"),
+            src(
+                Cc::Gxx,
+                "d1.cc",
+                &format!("{g}int use1(int x) {{ return shared_inline(x); }}\n"),
+                &["-O0", "-g"],
+                "d1.o",
+            ),
+            src(
+                Cc::Gxx,
+                "d2.cc",
+                &format!("{g}int use2(int x) {{ return shared_inline(x) + 1; }}\n"),
+                &["-O0", "-g"],
+                "d2.o",
+            ),
         ],
         inputs: vec!["d1.o", "d2.o"],
         opts: vec![],
@@ -319,8 +420,20 @@ fn cases(t: &Tools) -> Vec<Case> {
     v.push(Case {
         name: "rl0-9-linkorder".into(),
         srcs: vec![
-            src(Cc::Gcc, "l1.c", &l.replace("LNAME", "lf"), &["-O1", "-ffunction-sections", "-fpatchable-function-entry=2"], "l1.o"),
-            src(Cc::Gcc, "l2.c", &l.replace("LNAME", "lg"), &["-O1", "-ffunction-sections", "-fpatchable-function-entry=2"], "l2.o"),
+            src(
+                Cc::Gcc,
+                "l1.c",
+                &l.replace("LNAME", "lf"),
+                &["-O1", "-ffunction-sections", "-fpatchable-function-entry=2"],
+                "l1.o",
+            ),
+            src(
+                Cc::Gcc,
+                "l2.c",
+                &l.replace("LNAME", "lg"),
+                &["-O1", "-ffunction-sections", "-fpatchable-function-entry=2"],
+                "l2.o",
+            ),
         ],
         inputs: vec!["l1.o", "l2.o"],
         opts: vec![],
@@ -329,8 +442,20 @@ fn cases(t: &Tools) -> Vec<Case> {
     v.push(Case {
         name: "rl0-10-entsize".into(),
         srcs: vec![
-            src(Cc::As, "z1.s", "  .section .rodata.cst,\"aM\",%progbits,4\n  .long 1\n", NONE, "z1.o"),
-            src(Cc::As, "z2.s", "  .section .rodata.cst,\"aM\",%progbits,8\n  .quad 2\n", NONE, "z2.o"),
+            src(
+                Cc::As,
+                "z1.s",
+                "  .section .rodata.cst,\"aM\",%progbits,4\n  .long 1\n",
+                NONE,
+                "z1.o",
+            ),
+            src(
+                Cc::As,
+                "z2.s",
+                "  .section .rodata.cst,\"aM\",%progbits,8\n  .quad 2\n",
+                NONE,
+                "z2.o",
+            ),
         ],
         inputs: vec!["z1.o", "z2.o"],
         opts: vec![],
@@ -356,8 +481,20 @@ fn cases(t: &Tools) -> Vec<Case> {
     v.push(Case {
         name: "symver".into(),
         srcs: vec![
-            src(Cc::Gcc, "sv1.c", "int foo_v1(int x) { return x; }\n__asm__(\".symver foo_v1, foo@@V1\");\n", O1, "sv1.o"),
-            src(Cc::Gcc, "sv2.c", "int foo(int);\nint bar(int x) { return foo(x); }\n", O1, "sv2.o"),
+            src(
+                Cc::Gcc,
+                "sv1.c",
+                "int foo_v1(int x) { return x; }\n__asm__(\".symver foo_v1, foo@@V1\");\n",
+                O1,
+                "sv1.o",
+            ),
+            src(
+                Cc::Gcc,
+                "sv2.c",
+                "int foo(int);\nint bar(int x) { return foo(x); }\n",
+                O1,
+                "sv2.o",
+            ),
         ],
         inputs: vec!["sv1.o", "sv2.o"],
         opts: vec![],
@@ -388,8 +525,20 @@ fn cases(t: &Tools) -> Vec<Case> {
         v.push(Case {
             name: "meta".into(),
             srcs: vec![
-                Src { cc: Cc::Copy, name: "a.o", text: format!("tests/meta/{arch}/a.o"), flags: NONE, obj: "a.o" },
-                Src { cc: Cc::Copy, name: "b.o", text: format!("tests/meta/{arch}/b.o"), flags: NONE, obj: "b.o" },
+                Src {
+                    cc: Cc::Copy,
+                    name: "a.o",
+                    text: format!("tests/meta/{arch}/a.o"),
+                    flags: NONE,
+                    obj: "a.o",
+                },
+                Src {
+                    cc: Cc::Copy,
+                    name: "b.o",
+                    text: format!("tests/meta/{arch}/b.o"),
+                    flags: NONE,
+                    obj: "b.o",
+                },
             ],
             inputs: vec!["a.o", "b.o"],
             opts: vec![],
@@ -434,7 +583,8 @@ fn build(t: &Tools, case: &Case, dir: &Path) -> Result<(), String> {
     for s in &case.srcs {
         if let Cc::Copy = s.cc {
             let from = Path::new(env!("CARGO_MANIFEST_DIR")).join(&s.text);
-            std::fs::copy(&from, dir.join(s.obj)).map_err(|e| format!("{}: {e}", from.display()))?;
+            std::fs::copy(&from, dir.join(s.obj))
+                .map_err(|e| format!("{}: {e}", from.display()))?;
             continue;
         }
         std::fs::write(dir.join(s.name), &s.text).map_err(|e| e.to_string())?;
@@ -490,9 +640,11 @@ fn link(t: &Tools, r: Ref, case: &Case, dir: &Path) -> Result<Vec<String>, Strin
 /// Stage R on a reference's `-r` of `case`.
 fn verify(r: Ref, case: &Case, dir: &Path, line: Vec<String>) -> (Report, Vec<u8>) {
     let out = std::fs::read(dir.join(format!("{}.{}.o", case.name, r.name()))).unwrap();
-    let text = std::fs::read_to_string(dir.join(format!("{}.{}.map", case.name, r.name()))).unwrap();
-    let map: Map = mortar_plumb::map::parse(r.format(), &text)
-        .unwrap_or_else(|e| panic!("{} {}: map line {}: {}", case.name, r.name(), e.line, e.message));
+    let text =
+        std::fs::read_to_string(dir.join(format!("{}.{}.map", case.name, r.name()))).unwrap();
+    let map: Map = mortar_plumb::map::parse(r.format(), &text).unwrap_or_else(|e| {
+        panic!("{} {}: map line {}: {}", case.name, r.name(), e.line, e.message)
+    });
     let files: Vec<(String, Vec<u8>)> = map
         .paths()
         .into_iter()
@@ -521,7 +673,12 @@ fn references(arch: Arch) -> Option<Seen> {
     let t = Tools::find(arch)?;
     let start = Instant::now();
     let scratch = Scratch::new(&format!("plumb-rel-{}", arch.name()));
-    let mut seen = Seen { anomalies: BTreeMap::new(), unclassified: Vec::new(), refused: Vec::new(), lines: Vec::new() };
+    let mut seen = Seen {
+        anomalies: BTreeMap::new(),
+        unclassified: Vec::new(),
+        refused: Vec::new(),
+        lines: Vec::new(),
+    };
     let mut build_time = std::time::Duration::ZERO;
     let mut link_time = std::time::Duration::ZERO;
     let mut verify_time = std::time::Duration::ZERO;
@@ -536,7 +693,10 @@ fn references(arch: Arch) -> Option<Seen> {
             // mold 2.37.1 crashes (SIGSEGV) on an -r whose input defines an
             // IFUNC (c4.c): not run, so that no core file is written.
             if r == Ref::Mold && case.name.starts_with("d3-cifunc") {
-                seen.refused.push(format!("{} mold: not run (mold 2.37.1 crashes on an IFUNC at -r)", case.name));
+                seen.refused.push(format!(
+                    "{} mold: not run (mold 2.37.1 crashes on an IFUNC at -r)",
+                    case.name
+                ));
                 continue;
             }
             let l = Instant::now();
@@ -545,7 +705,12 @@ fn references(arch: Arch) -> Option<Seen> {
             let line = match linked {
                 Ok(l) => l,
                 Err(e) => {
-                    seen.refused.push(format!("{} {}: {}", case.name, r.name(), e.lines().next().unwrap_or("")));
+                    seen.refused.push(format!(
+                        "{} {}: {}",
+                        case.name,
+                        r.name(),
+                        e.lines().next().unwrap_or("")
+                    ));
                     continue;
                 }
             };
@@ -601,7 +766,10 @@ fn references(arch: Arch) -> Option<Seen> {
                         arch.name(),
                         f.rule.id(),
                         f.message,
-                        f.site.as_ref().map_or_else(String::new, |s| format!(" ({}:{}+{:#x})", s.file, s.section, s.offset))
+                        f.site.as_ref().map_or_else(String::new, |s| format!(
+                            " ({}:{}+{:#x})",
+                            s.file, s.section, s.offset
+                        ))
                     )),
                 }
             }
@@ -616,7 +784,10 @@ fn references(arch: Arch) -> Option<Seen> {
         start.elapsed()
     );
     for (r, [n, v, a, x, f]) in &totals {
-        eprintln!("relocatable [{}] {r}: records {n}: verified {v}, accepted {a}, not checked {x}, failed {f}", arch.name());
+        eprintln!(
+            "relocatable [{}] {r}: records {n}: verified {v}, accepted {a}, not checked {x}, failed {f}",
+            arch.name()
+        );
     }
     Some(seen)
 }
@@ -714,7 +885,12 @@ fn judge(arch: Arch) {
             diffs.push(format!("{case} {linker}: shows {got:?}, the table says {w:?}"));
         }
     }
-    assert!(diffs.is_empty(), "[{}] anomalies differ from the table:\n{}", arch.name(), diffs.join("\n"));
+    assert!(
+        diffs.is_empty(),
+        "[{}] anomalies differ from the table:\n{}",
+        arch.name(),
+        diffs.join("\n")
+    );
 }
 
 // spec: plumb.md §14 — the references' -r outputs on AArch64.
@@ -768,20 +944,33 @@ impl Base {
             .filter_map(|p| std::fs::read(dir.join(p)).ok().map(|b| (p.to_string(), b)))
             .collect();
         let mortar = {
-            let inputs: Vec<Input<'_>> = files.iter().map(|(p, b)| Input { path: p, bytes: b }).collect();
+            let inputs: Vec<Input<'_>> =
+                files.iter().map(|(p, b)| Input { path: p, bytes: b }).collect();
             let src: &[Input<'_>] = &inputs;
             let ctx = Ctx { line: Some(line.clone()), files: &Dir(dir) };
-            mortar_plumb::relocatable::as_mortar_map(&out, &src, &map, &ctx).expect("the output reads")
+            mortar_plumb::relocatable::as_mortar_map(&out, &src, &map, &ctx)
+                .expect("the output reads")
         };
-        let mortar_map = mortar_plumb::map::parse(Format::Mortar, &mortar)
-            .unwrap_or_else(|e| panic!("{}: mortar form, line {}: {}\n{mortar}", case.name, e.line, e.message));
-        Base { name: case.name.clone(), dir: dir.to_path_buf(), line, out, map, files, mortar, mortar_map }
+        let mortar_map = mortar_plumb::map::parse(Format::Mortar, &mortar).unwrap_or_else(|e| {
+            panic!("{}: mortar form, line {}: {}\n{mortar}", case.name, e.line, e.message)
+        });
+        Base {
+            name: case.name.clone(),
+            dir: dir.to_path_buf(),
+            line,
+            out,
+            map,
+            files,
+            mortar,
+            mortar_map,
+        }
     }
 
     /// The findings on `out`, as `rule message`, read with GNU ld's map or
     /// with mortar's form.
     fn findings(&self, out: &[u8], mortar: bool) -> (BTreeSet<String>, Report) {
-        let inputs: Vec<Input<'_>> = self.files.iter().map(|(p, b)| Input { path: p, bytes: b }).collect();
+        let inputs: Vec<Input<'_>> =
+            self.files.iter().map(|(p, b)| Input { path: p, bytes: b }).collect();
         let ctx = Ctx { line: Some(self.line.clone()), files: &Dir(&self.dir) };
         let map = if mortar { &self.mortar_map } else { &self.map };
         let r = mortar_plumb::verify_with(out, &inputs, map, &ctx);
@@ -789,7 +978,11 @@ impl Base {
     }
 
     fn records(&self, kind: &str) -> Vec<Vec<String>> {
-        self.mortar.lines().map(|l| l.split(' ').map(str::to_string).collect::<Vec<_>>()).filter(|w| w[0] == kind).collect()
+        self.mortar
+            .lines()
+            .map(|l| l.split(' ').map(str::to_string).collect::<Vec<_>>())
+            .filter(|w| w[0] == kind)
+            .collect()
     }
 
     /// `rplace`: (file, section, out, offset, size).
@@ -797,7 +990,15 @@ impl Base {
         let h = |s: &str| u64::from_str_radix(s, 16).unwrap();
         self.records("rplace")
             .iter()
-            .map(|w| (w[1].parse().unwrap(), w[2].parse().unwrap(), w[3].parse().unwrap(), h(&w[4]), h(&w[5])))
+            .map(|w| {
+                (
+                    w[1].parse().unwrap(),
+                    w[2].parse().unwrap(),
+                    w[3].parse().unwrap(),
+                    h(&w[4]),
+                    h(&w[5]),
+                )
+            })
             .collect()
     }
 
@@ -806,12 +1007,20 @@ impl Base {
         let h = |s: &str| u64::from_str_radix(s, 16).unwrap();
         self.records("rframe")
             .iter()
-            .map(|w| ((w[1].parse().unwrap(), w[2].parse().unwrap(), h(&w[3])), (w[4] != "-").then(|| h(&w[4]))))
+            .map(|w| {
+                (
+                    (w[1].parse().unwrap(), w[2].parse().unwrap(), h(&w[3])),
+                    (w[4] != "-").then(|| h(&w[4])),
+                )
+            })
             .collect()
     }
 
     fn discarded(&self) -> BTreeSet<(usize, usize)> {
-        self.records("discard").iter().map(|w| (w[1].parse().unwrap(), w[2].parse().unwrap())).collect()
+        self.records("discard")
+            .iter()
+            .map(|w| (w[1].parse().unwrap(), w[2].parse().unwrap()))
+            .collect()
     }
 
     /// Input `f` of mortar's form.
@@ -864,7 +1073,9 @@ fn mutant(
         .findings
         .iter()
         .filter(|x| !before.contains(&format!("{} {}", x.rule.id(), x.message)))
-        .filter_map(|x| mortar_plumb::anomaly::classify(format, &e.b, x).map(|c| id_of(c).to_string()))
+        .filter_map(|x| {
+            mortar_plumb::anomaly::classify(format, &e.b, x).map(|c| id_of(c).to_string())
+        })
         .collect();
     Some(Mutant {
         id: id.to_string(),
@@ -905,7 +1116,17 @@ fn mutations(arch: Arch) -> Option<Vec<Mutant>> {
         let c = all.iter().find(|c| c.name == name)?;
         let case = Case {
             name: if opts.is_empty() { c.name.clone() } else { format!("{}-unique", c.name) },
-            srcs: c.srcs.iter().map(|s| Src { cc: s.cc, name: s.name, text: s.text.clone(), flags: s.flags, obj: s.obj }).collect(),
+            srcs: c
+                .srcs
+                .iter()
+                .map(|s| Src {
+                    cc: s.cc,
+                    name: s.name,
+                    text: s.text.clone(),
+                    flags: s.flags,
+                    obj: s.obj,
+                })
+                .collect(),
             inputs: c.inputs.clone(),
             opts: opts.to_vec(),
         };
@@ -934,7 +1155,8 @@ fn mutations(arch: Arch) -> Option<Vec<Mutant>> {
     // (1) a record's r_offset moved by 4.
     push!(
         mutant(&c, "(1)", &["P-P3"], false, None, |e| {
-            let rs = e.reloc_secs().into_iter().find(|&r| is_rel_text(e, r) && !e.rels(r).is_empty())?;
+            let rs =
+                e.reloc_secs().into_iter().find(|&r| is_rel_text(e, r) && !e.rels(r).is_empty())?;
             let mut rel = e.rels(rs);
             rel[0].offset += 4;
             e.set_rels(rs, &rel);
@@ -958,7 +1180,9 @@ fn mutations(arch: Arch) -> Option<Vec<Mutant>> {
                         Some(a) => a,
                         None => e.rd(e.sh(tgt).offset as usize + r.offset as usize, 4) as i64,
                     };
-                    let Some(p) = pieces.iter().find(|p| p.2 == o && p.3 > 0 && (p.3 as i64) <= a && a < (p.3 + p.4) as i64) else {
+                    let Some(p) = pieces.iter().find(|p| {
+                        p.2 == o && p.3 > 0 && (p.3 as i64) <= a && a < (p.3 + p.4) as i64
+                    }) else {
                         continue;
                     };
                     let a2 = a - p.3 as i64;
@@ -966,7 +1190,10 @@ fn mutations(arch: Arch) -> Option<Vec<Mutant>> {
                         let mut rel = e.rels(rs);
                         rel[k].addend = Some(a2);
                         e.set_rels(rs, &rel);
-                        return Some(format!("{} record {k}: r_addend {a:#x} -> {a2:#x}", e.name(rs)));
+                        return Some(format!(
+                            "{} record {k}: r_addend {a:#x} -> {a2:#x}",
+                            e.name(rs)
+                        ));
                     }
                     let at = e.sh(tgt).offset as usize + r.offset as usize;
                     e.wr(at, 4, a2 as u64);
@@ -995,7 +1222,9 @@ fn mutations(arch: Arch) -> Option<Vec<Mutant>> {
     push!(
         mutant(&c, "(3b)", &["P-P2"], false, None, |e| {
             for a in &pieces {
-                let Some(b) = pieces.iter().find(|b| b.2 == a.2 && b.3 > a.3 && b.4 > 0) else { continue };
+                let Some(b) = pieces.iter().find(|b| b.2 == a.2 && b.3 > a.3 && b.4 > 0) else {
+                    continue;
+                };
                 if a.4 == 0 || e.sh(a.2).ty == 8 {
                     continue;
                 }
@@ -1007,7 +1236,12 @@ fn mutations(arch: Arch) -> Option<Vec<Mutant>> {
                 }
                 d[b.3 as usize..b.3 as usize + n].copy_from_slice(&src);
                 e.set_data(a.2, &d);
-                return Some(format!("section {}: the piece at {:#x} written over the one at {:#x}", e.name(a.2), a.3, b.3));
+                return Some(format!(
+                    "section {}: the piece at {:#x} written over the one at {:#x}",
+                    e.name(a.2),
+                    a.3,
+                    b.3
+                ));
             }
             None
         }),
@@ -1047,7 +1281,8 @@ fn mutations(arch: Arch) -> Option<Vec<Mutant>> {
     // (9) an R_*_NONE record at a live record's offset, read as mortar's.
     push!(
         mutant(&c, "(9)", &["P-P3"], true, None, |e| {
-            let rs = e.reloc_secs().into_iter().find(|&r| is_rel_text(e, r) && !e.rels(r).is_empty())?;
+            let rs =
+                e.reloc_secs().into_iter().find(|&r| is_rel_text(e, r) && !e.rels(r).is_empty())?;
             let mut rel = e.rels(rs);
             let r0 = rel[0].clone();
             rel.push(R { offset: r0.offset, sym: 0, ty: 0, addend: r0.addend.map(|_| 0) });
@@ -1121,11 +1356,16 @@ fn mutations(arch: Arch) -> Option<Vec<Mutant>> {
     let x = get("d3-cxx-gcc", &[])?;
     push!(
         mutant(&x, "(4)", &["P-P6", "P-P11"], false, None, |e| {
-            let g = (1..e.shnum()).find(|&i| e.sh(i).ty == ed::SHT_GROUP && e.data(i)[..4] == [1, 0, 0, 0])?;
+            let g = (1..e.shnum())
+                .find(|&i| e.sh(i).ty == ed::SHT_GROUP && e.data(i)[..4] == [1, 0, 0, 0])?;
             let d = e.data(g);
-            let members: Vec<usize> = d[4..].chunks(4).map(|w| u32::from_le_bytes([w[0], w[1], w[2], w[3]]) as usize).collect();
+            let members: Vec<usize> = d[4..]
+                .chunks(4)
+                .map(|w| u32::from_le_bytes([w[0], w[1], w[2], w[3]]) as usize)
+                .collect();
             let mut new: BTreeMap<usize, usize> = BTreeMap::new();
-            let is_rel: Vec<bool> = members.iter().map(|&m| matches!(e.sh(m).ty, ed::SHT_RELA | ed::SHT_REL)).collect();
+            let is_rel: Vec<bool> =
+                members.iter().map(|&m| matches!(e.sh(m).ty, ed::SHT_RELA | ed::SHT_REL)).collect();
             for (&m, _) in members.iter().zip(&is_rel).filter(|(_, r)| !**r) {
                 let (h, d) = (e.sh(m), e.data(m));
                 new.insert(m, e.add(&h, &d));
@@ -1169,8 +1409,10 @@ fn mutations(arch: Arch) -> Option<Vec<Mutant>> {
             let (&(f, s, at), _) = frames.iter().find(|(_, o)| o.is_none())?;
             let inp = dbg.input(f);
             let d = inp.data(s);
-            let len = u32::from_le_bytes(d[at as usize..at as usize + 4].try_into().ok()?) as u64 + 4;
-            let ptr = u32::from_le_bytes(d[at as usize + 4..at as usize + 8].try_into().ok()?) as u64;
+            let len =
+                u32::from_le_bytes(d[at as usize..at as usize + 4].try_into().ok()?) as u64 + 4;
+            let ptr =
+                u32::from_le_bytes(d[at as usize + 4..at as usize + 8].try_into().ok()?) as u64;
             let cie_out = (*frames.get(&(f, s, at + 4 - ptr))?)?;
             let eh = e.find(".eh_frame")?;
             let mut od = e.data(eh);
@@ -1192,7 +1434,12 @@ fn mutations(arch: Arch) -> Option<Vec<Mutant>> {
                 } else {
                     e.sym_by_name(&inp.sym_name(r.sym as usize))? as u32
                 };
-                rel.push(R { offset: pos as u64 + (r.offset - at), sym, ty: r.ty, addend: r.addend });
+                rel.push(R {
+                    offset: pos as u64 + (r.offset - at),
+                    sym,
+                    ty: r.ty,
+                    addend: r.addend,
+                });
             }
             e.set_rels(rout, &rel);
             Some(format!("the removed FDE {}:{s}+{at:#x} copied to .eh_frame+{pos:#x}", f))
@@ -1207,7 +1454,9 @@ fn mutations(arch: Arch) -> Option<Vec<Mutant>> {
         for (f, _) in dbg.records("file").iter().enumerate() {
             let inp = dbg.input(f);
             for s in inp.all(".debug_info") {
-                let Some(p) = dbg.pieces().into_iter().find(|p| p.0 == f && p.1 == s) else { continue };
+                let Some(p) = dbg.pieces().into_iter().find(|p| p.0 == f && p.1 == s) else {
+                    continue;
+                };
                 for rs in inp.relocs_of(s) {
                     for r in inp.rels(rs) {
                         let y = inp.sym(r.sym as usize);
@@ -1219,7 +1468,11 @@ fn mutations(arch: Arch) -> Option<Vec<Mutant>> {
                 }
             }
         }
-        assert!(!fields.is_empty(), "[{}] mutation (12): no debug record into a dropped copy", arch.name());
+        assert!(
+            !fields.is_empty(),
+            "[{}] mutation (12): no debug record into a dropped copy",
+            arch.name()
+        );
         let mut e = Ed::new(&dbg.out);
         for &(o, off, w) in &fields {
             let at = e.sh(o).offset as usize + off as usize;
@@ -1243,8 +1496,13 @@ fn mutations(arch: Arch) -> Option<Vec<Mutant>> {
                 // A removed FDE's input offset that no kept record has as
                 // its output offset (else an input's own $d may be there).
                 let outs: BTreeSet<u64> = frames.values().filter_map(|o| *o).collect();
-                let (&(_, _, at), _) = frames.iter().find(|((_, _, a), o)| o.is_none() && !outs.contains(a))?;
-                let k = (1..e.first_global()).find(|&k| e.sym_name(k).starts_with("$d") && e.sym(k).shndx as usize == eh && e.sym(k).value != at)?;
+                let (&(_, _, at), _) =
+                    frames.iter().find(|((_, _, a), o)| o.is_none() && !outs.contains(a))?;
+                let k = (1..e.first_global()).find(|&k| {
+                    e.sym_name(k).starts_with("$d")
+                        && e.sym(k).shndx as usize == eh
+                        && e.sym(k).value != at
+                })?;
                 let mut y = e.sym(k);
                 y.value = at;
                 e.set_sym(k, &y);
@@ -1276,13 +1534,23 @@ fn mutations(arch: Arch) -> Option<Vec<Mutant>> {
         mutant(&maps, "(13)", &["P-P4"], false, None, |e| {
             for k in e.first_global()..e.nsyms() {
                 let y = e.sym(k);
-                let Some(p) = mp.iter().find(|p| p.2 == y.shndx as usize && p.3 > 0 && p.3 <= y.value && y.value < p.3 + p.4.max(1)) else {
+                let Some(p) = mp.iter().find(|p| {
+                    p.2 == y.shndx as usize
+                        && p.3 > 0
+                        && p.3 <= y.value
+                        && y.value < p.3 + p.4.max(1)
+                }) else {
                     continue;
                 };
                 let mut y2 = y.clone();
                 y2.value -= p.3;
                 e.set_sym(k, &y2);
-                return Some(format!("{}: st_value {:#x} -> {:#x}", e.sym_name(k), y.value, y2.value));
+                return Some(format!(
+                    "{}: st_value {:#x} -> {:#x}",
+                    e.sym_name(k),
+                    y.value,
+                    y2.value
+                ));
             }
             None
         }),
@@ -1296,8 +1564,20 @@ fn mutations(arch: Arch) -> Option<Vec<Mutant>> {
         let case = Case {
             name: "unique".into(),
             srcs: vec![
-                src(Cc::Gcc, "u1.c", "int ext(int);\nint f1(int x) { return ext(x) + 1; }\n", O1, "u1.o"),
-                src(Cc::Gcc, "u2.c", "int ext(int);\nint f2(int x) { return ext(x) + 2; }\n", O1, "u2.o"),
+                src(
+                    Cc::Gcc,
+                    "u1.c",
+                    "int ext(int);\nint f1(int x) { return ext(x) + 1; }\n",
+                    O1,
+                    "u1.o",
+                ),
+                src(
+                    Cc::Gcc,
+                    "u2.c",
+                    "int ext(int);\nint f2(int x) { return ext(x) + 2; }\n",
+                    O1,
+                    "u2.o",
+                ),
             ],
             inputs: vec!["u1.o", "u2.o"],
             opts: vec!["--unique=.text"],
@@ -1306,7 +1586,11 @@ fn mutations(arch: Arch) -> Option<Vec<Mutant>> {
     };
     push!(
         mutant(&un, "(15)", &["P-P3"], false, None, |e| {
-            let rss: Vec<usize> = e.reloc_secs().into_iter().filter(|&r| e.name(e.sh(r).info as usize) == ".text" && !e.rels(r).is_empty()).collect();
+            let rss: Vec<usize> = e
+                .reloc_secs()
+                .into_iter()
+                .filter(|&r| e.name(e.sh(r).info as usize) == ".text" && !e.rels(r).is_empty())
+                .collect();
             let (a, b) = (*rss.first()?, *rss.get(1)?);
             let mut rb = e.rels(b);
             let r = rb.remove(0);
@@ -1349,7 +1633,8 @@ fn mutations(arch: Arch) -> Option<Vec<Mutant>> {
         mutant(&ty, "(18)", &["P-P4"], false, None, |e| {
             let k = (1..e.first_global()).find(|&k| {
                 let n = e.sym_name(k);
-                (n.starts_with("wi.") || n.starts_with("wt.")) && e.sh(e.sym(k).shndx as usize).ty == ed::SHT_GROUP
+                (n.starts_with("wi.") || n.starts_with("wt."))
+                    && e.sh(e.sym(k).shndx as usize).ty == ed::SHT_GROUP
             })?;
             let g = e.sym(k).shndx as usize;
             let d = e.data(g);
@@ -1416,9 +1701,13 @@ fn text_sec(e: &Ed) -> Option<usize> {
 
 /// The first COMDAT group: (index, members).
 fn comdat(e: &Ed) -> Option<(usize, Vec<usize>)> {
-    let g = (1..e.shnum()).find(|&i| e.sh(i).ty == ed::SHT_GROUP && e.data(i).get(..4) == Some(&[1, 0, 0, 0][..]))?;
+    let g = (1..e.shnum())
+        .find(|&i| e.sh(i).ty == ed::SHT_GROUP && e.data(i).get(..4) == Some(&[1, 0, 0, 0][..]))?;
     let d = e.data(g);
-    Some((g, d[4..].chunks(4).map(|w| u32::from_le_bytes([w[0], w[1], w[2], w[3]]) as usize).collect()))
+    Some((
+        g,
+        d[4..].chunks(4).map(|w| u32::from_le_bytes([w[0], w[1], w[2], w[3]]) as usize).collect(),
+    ))
 }
 
 /// The records of `.eh_frame`'s bytes: (offset, size, is a CIE).
@@ -1472,7 +1761,11 @@ fn fields(arch: Arch, c: &Base, x: &Base, v: &mut Vec<Mutant>) {
             let at = e.sym(was as usize).shndx;
             let k = (1..e.nsyms()).find(|&k| {
                 let y = e.sym(k);
-                y.shndx != 0 && y.shndx < 0xff00 && y.shndx != at && y.ty() != 4 && y.ty() != ed::STT_SECTION
+                y.shndx != 0
+                    && y.shndx < 0xff00
+                    && y.shndx != at
+                    && y.ty() != 4
+                    && y.ty() != ed::STT_SECTION
             })?;
             rel[0].sym = k as u32;
             e.set_rels(rs, &rel);
@@ -1559,7 +1852,9 @@ fn fields(arch: Arch, c: &Base, x: &Base, v: &mut Vec<Mutant>) {
     push(
         sym("(f9) st_shndx", |y, e| {
             let was = y.shndx;
-            let o = (1..e.shnum()).find(|&i| i != was as usize && e.sh(i).flags & 2 != 0 && e.sh(i).ty == 1).unwrap_or(1);
+            let o = (1..e.shnum())
+                .find(|&i| i != was as usize && e.sh(i).flags & 2 != 0 && e.sh(i).ty == 1)
+                .unwrap_or(1);
             y.shndx = o as u16;
             format!("st_shndx {was} -> {o}")
         }),
@@ -1672,7 +1967,9 @@ fn fields(arch: Arch, c: &Base, x: &Base, v: &mut Vec<Mutant>) {
             let (g, _) = comdat(e)?;
             let mut h = e.sh(g);
             let was = h.info;
-            let k = (1..e.nsyms() as u32).rev().find(|&k| k != was && e.sym(k as usize).ty() != ed::STT_SECTION)?;
+            let k = (1..e.nsyms() as u32)
+                .rev()
+                .find(|&k| k != was && e.sym(k as usize).ty() != ed::STT_SECTION)?;
             h.info = k;
             e.set_sh(g, &h);
             Some(format!("group {g}: sh_info {was} -> {k}"))
@@ -1771,7 +2068,10 @@ fn fields(arch: Arch, c: &Base, x: &Base, v: &mut Vec<Mutant>) {
         "(f24)",
     );
     // Section headers, field by field.
-    let hdr = |id: &str, want: &'static str, pick: fn(&Ed) -> Option<usize>, f: fn(&mut ed::Sh) -> String| {
+    let hdr = |id: &str,
+               want: &'static str,
+               pick: fn(&Ed) -> Option<usize>,
+               f: fn(&mut ed::Sh) -> String| {
         mutant(c, id, &[want], false, None, |e| {
             let i = pick(e)?;
             let mut h = e.sh(i);
@@ -1802,10 +2102,15 @@ fn fields(arch: Arch, c: &Base, x: &Base, v: &mut Vec<Mutant>) {
         "(f27)",
     );
     push(
-        hdr("(f28) sh_entsize", "P-P11", |e| Some(e.symtab()), |h| {
-            h.entsize = 1;
-            "sh_entsize 1".into()
-        }),
+        hdr(
+            "(f28) sh_entsize",
+            "P-P11",
+            |e| Some(e.symtab()),
+            |h| {
+                h.entsize = 1;
+                "sh_entsize 1".into()
+            },
+        ),
         "(f28)",
     );
     push(
@@ -1816,10 +2121,15 @@ fn fields(arch: Arch, c: &Base, x: &Base, v: &mut Vec<Mutant>) {
         "(f29)",
     );
     push(
-        hdr("(f30) symtab sh_link", "P-P11", |e| Some(e.symtab()), |h| {
-            h.link = 0;
-            "sh_link 0".into()
-        }),
+        hdr(
+            "(f30) symtab sh_link",
+            "P-P11",
+            |e| Some(e.symtab()),
+            |h| {
+                h.link = 0;
+                "sh_link 0".into()
+            },
+        ),
         "(f30)",
     );
     push(
@@ -1890,7 +2200,11 @@ fn judge_mutations(arch: Arch) {
             m.what,
             m.rules,
             m.want,
-            if m.anomalies.is_empty() { String::new() } else { format!(", anomalies {:?}", m.anomalies) },
+            if m.anomalies.is_empty() {
+                String::new()
+            } else {
+                format!(", anomalies {:?}", m.anomalies)
+            },
             m.first
         );
         if !m.caught() {

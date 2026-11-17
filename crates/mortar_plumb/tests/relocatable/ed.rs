@@ -393,7 +393,11 @@ impl Ed {
                 let a = k * es;
                 let offset = e.rd(a, w);
                 let info = e.rd(a + w, w);
-                let (sym, ty) = if self.c64 { ((info >> 32) as u32, info as u32) } else { ((info >> 8) as u32, (info & 0xff) as u32) };
+                let (sym, ty) = if self.c64 {
+                    ((info >> 32) as u32, info as u32)
+                } else {
+                    ((info >> 8) as u32, (info & 0xff) as u32)
+                };
                 let addend = rela.then(|| e.rd(a + 2 * w, w) as i64);
                 let addend = addend.map(|v| if self.c64 { v } else { i64::from(v as i32) });
                 R { offset, sym, ty, addend }
@@ -409,7 +413,11 @@ impl Ed {
             let es = if r.addend.is_some() { 3 * w } else { 2 * w };
             e.b.extend(std::iter::repeat_n(0u8, es));
             e.wr(at, w, r.offset);
-            let info = if self.c64 { (u64::from(r.sym) << 32) | u64::from(r.ty) } else { (u64::from(r.sym) << 8) | u64::from(r.ty & 0xff) };
+            let info = if self.c64 {
+                (u64::from(r.sym) << 32) | u64::from(r.ty)
+            } else {
+                (u64::from(r.sym) << 8) | u64::from(r.ty & 0xff)
+            };
             e.wr(at + w, w, info);
             if let Some(a) = r.addend {
                 e.wr(at + 2 * w, w, a as u64);
@@ -421,7 +429,9 @@ impl Ed {
     /// The relocation sections whose `sh_info` is `i`.
     pub fn relocs_of(&self, i: usize) -> Vec<usize> {
         (1..self.shnum())
-            .filter(|&r| matches!(self.sh(r).ty, SHT_RELA | SHT_REL) && self.sh(r).info as usize == i)
+            .filter(|&r| {
+                matches!(self.sh(r).ty, SHT_RELA | SHT_REL) && self.sh(r).info as usize == i
+            })
             .collect()
     }
 

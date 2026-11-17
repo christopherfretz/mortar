@@ -477,7 +477,9 @@ pub(crate) fn check_rel(
                 if let Ok(v) = merge(m, &vals) {
                     v
                 } else {
-                    msgs.push(format!("the inputs' property {t:#x} differ, and the -r is not refused"));
+                    msgs.push(format!(
+                        "the inputs' property {t:#x} differ, and the -r is not refused"
+                    ));
                     continue;
                 }
             }
@@ -485,8 +487,12 @@ pub(crate) fn check_rel(
         judged += 1;
         if got != want.as_ref() {
             msgs.push(match (&want, got) {
-                (None, _) => format!("the output has property {t:#x}, which the inputs' merge does not give"),
-                (Some(_), None) => format!("the output lacks property {t:#x}, which the inputs' merge gives"),
+                (None, _) => {
+                    format!("the output has property {t:#x}, which the inputs' merge does not give")
+                }
+                (Some(_), None) => {
+                    format!("the output lacks property {t:#x}, which the inputs' merge gives")
+                }
                 _ => format!(
                     "property {t:#x} is {:#x}, not the merge of the inputs' {:#x}",
                     got.map_or(0, |d| word(d)),

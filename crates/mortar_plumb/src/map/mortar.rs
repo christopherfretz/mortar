@@ -428,7 +428,9 @@ pub fn parse(text: &str) -> Result<Map, MapError> {
         match (t[0], t.len()) {
             ("end", 1) => ended = true,
             ("output", 2) if t[1] == "relocatable" => {
-                if map.rel.as_ref().is_some_and(|r| r.line != 0) || map.dynamic.as_ref().is_some_and(|d| d.kind.is_some()) {
+                if map.rel.as_ref().is_some_and(|r| r.line != 0)
+                    || map.dynamic.as_ref().is_some_and(|d| d.kind.is_some())
+                {
                     return Err(bad("a second 'output' record"));
                 }
                 map.rel.get_or_insert_with(RelRecords::default).line = n;
@@ -451,7 +453,11 @@ pub fn parse(text: &str) -> Result<Map, MapError> {
                     file: file_id(t[1])?,
                     section: section(t[2])?,
                     input_offset: num(t[3], "input offset")?,
-                    output_offset: if t[4] == "-" { None } else { Some(num(t[4], "output offset")?) },
+                    output_offset: if t[4] == "-" {
+                        None
+                    } else {
+                        Some(num(t[4], "output offset")?)
+                    },
                     line: n,
                 };
                 map.rel.get_or_insert_with(RelRecords::default).frames.push(r);
@@ -662,9 +668,8 @@ pub fn parse(text: &str) -> Result<Map, MapError> {
             (
                 "end" | "file" | "place" | "piece" | "nplace" | "merged" | "discard" | "fold"
                 | "chunk" | "common" | "define" | "incremental" | "hole" | "dead" | "output"
-                | "rplace" | "rframe" | "rgroup" | "rcommon"
-                | "interp" | "runpath" | "rpath" | "bind" | "relro" | "arg" | "needed" | "copy"
-                | "export" | "plt" | "iplt",
+                | "rplace" | "rframe" | "rgroup" | "rcommon" | "interp" | "runpath" | "rpath"
+                | "bind" | "relro" | "arg" | "needed" | "copy" | "export" | "plt" | "iplt",
                 _,
             ) => {
                 return Err(bad("wrong number of fields"));
@@ -1073,7 +1078,10 @@ mod tests {
             assert_eq!(r.groups.len(), 1);
             assert_eq!(r.groups[0].out, 3);
             assert_eq!(r.commons.len(), 1);
-            assert_eq!((r.commons[0].name.as_str(), r.commons[0].out, r.commons[0].size), ("c d", 7, 4));
+            assert_eq!(
+                (r.commons[0].name.as_str(), r.commons[0].out, r.commons[0].size),
+                ("c d", 7, 4)
+            );
         }
         let cases: &[(&str, u32)] = &[
             ("mortar-map 2\nfile 0 a.o\nrplace 0 1 2 10 8\nend\n", 3),
@@ -1082,8 +1090,14 @@ mod tests {
             ("mortar-map 2\nfile 0 a.o\noutput relocatable\nrframe 0 4 0 +\nend\n", 4),
             ("mortar-map 2\nfile 0 a.o\noutput relocatable\nrgroup 3 0\nend\n", 4),
             ("mortar-map 2\nfile 0 a.o\noutput relocatable\nrcommon c 7 0 4 3\nend\n", 4),
-            ("mortar-map 2\nfile 0 a.o\nrplace 0 1 2 10 8\noutput relocatable\noutput relocatable\nend\n", 5),
-            ("mortar-map 2\nfile 0 a.o\nrplace 0 1 2 10 8\noutput relocatable\noutput exec\nend\n", 5),
+            (
+                "mortar-map 2\nfile 0 a.o\nrplace 0 1 2 10 8\noutput relocatable\noutput relocatable\nend\n",
+                5,
+            ),
+            (
+                "mortar-map 2\nfile 0 a.o\nrplace 0 1 2 10 8\noutput relocatable\noutput exec\nend\n",
+                5,
+            ),
             ("mortar-map 2\nfile 0 a.o\noutput exec\noutput relocatable\nend\n", 4),
             ("mortar-map 2\nfile 0 a.o\noutput relocatable\nhole .text 0 8\nend\n", 4),
         ];
