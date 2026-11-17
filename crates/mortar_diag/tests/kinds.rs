@@ -341,6 +341,31 @@ fn unknown_property() {
     );
 }
 
+// spec: diag.md §3.1 `version-script-syntax` (script.md §9.2), §3.2
+#[test]
+fn version_script_syntax() {
+    let kind = Kind::VersionScriptSyntax {
+        script: s("VERSION script"),
+        what: s("expected ';' after the entry 'foo', found '}'"),
+    };
+    assert_eq!(kind.id(), "version-script-syntax");
+    assert_eq!(kind.symbol(), None);
+    assert_eq!(
+        text(kind.clone()),
+        "ld: error: syntax error in VERSION script: expected ';' after the entry 'foo', found '}'\n"
+    );
+    let placed = Diagnostic::error(kind).at(Place::script("v.map", 3, 12));
+    assert_eq!(
+        placed.render(&Style::plain("ld")),
+        "ld: error: v.map:3:12: syntax error in VERSION script: expected ';' after the entry 'foo', found '}'\n"
+    );
+    let list = Kind::VersionScriptSyntax {
+        script: s("dynamic list"),
+        what: s("'local:' in a dynamic list"),
+    };
+    assert_eq!(text(list), "ld: error: syntax error in dynamic list: 'local:' in a dynamic list\n");
+}
+
 #[test]
 fn unknown_file_type() {
     assert_eq!(Kind::UnknownFileType.id(), "unknown-file-type");
