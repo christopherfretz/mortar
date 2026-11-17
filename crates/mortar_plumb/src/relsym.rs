@@ -198,7 +198,7 @@ pub(crate) fn check(rv: &mut Rv<'_>) {
                         msgs.push(format!("{name} is at {}+{:#x}, not {out}+{v:#x}", o.shndx, o.value));
                     }
                 }
-                Tgt::Merged(out, _) if o.shndx == out => {}
+                Tgt::Merged(out, ..) if o.shndx == out => {}
                 t => msgs.push(format!("{name} is at {}+{:#x}, not at {t}", o.shndx, o.value)),
             }
         } else if let Some(v) = k.abs {
@@ -262,8 +262,16 @@ pub(crate) fn check(rv: &mut Rv<'_>) {
             if !s.local() || matches!(s.ty(), STT_SECTION | STT_FILE) {
                 continue;
             }
+            let in_group = rv.ins[f].elf.secs.get(s.shndx as usize).is_some_and(|x| x.ty == SHT_GROUP);
             let t = if s.shndx == SHN_ABS {
                 Tgt::Abs(s.value as i64)
+            } else if in_group {
+                // A local of a group section (gas's signature symbol):
+                // in the output group of that group.
+                match rv.group_out.get(&(f, s.shndx as usize)) {
+                    Some(&o) => Tgt::Place(o, s.value as i64),
+                    None => continue,
+                }
             } else if s.in_section() {
                 rv.at_place(f, s.shndx as usize, s.value as i64)
             } else {
@@ -273,15 +281,26 @@ pub(crate) fn check(rv: &mut Rv<'_>) {
         }
     }
     let mut locals = 0u64;
+    let mut unjudged = 0u64;
     for (i, s) in syms.iter().enumerate().skip(1) {
         if !s.local() || matches!(s.ty(), STT_SECTION | STT_FILE) {
+            continue;
+        }
+        // A mapping symbol of a non-executable section marks data and
+        // code for disassemblers; it is not judged (§14.5).
+        let mapping = matches!(s.name.as_str(), "$x" | "$d" | "$t" | "$a")
+            || s.name.starts_with("$x.")
+            || s.name.starts_with("$d.");
+        let exec = rv.out.secs.get(s.shndx as usize).is_some_and(|x| x.flags & crate::relocatable::SHF_EXECINSTR != 0);
+        if mapping && !(s.in_section() && exec) {
+            unjudged += 1;
             continue;
         }
         locals += 1;
         let ot = if s.shndx == SHN_ABS { Tgt::Abs(s.value as i64) } else { Tgt::Place(s.shndx, s.value as i64) };
         let ok = input_locals.get(s.name.as_str()).is_some_and(|v| {
             v.iter().any(|t| match (t, &ot) {
-                (Tgt::Merged(o, _), Tgt::Place(p, _)) => o == p,
+                (Tgt::Merged(o, ..), Tgt::Place(p, _)) => o == p,
                 _ => rv.equiv(t, &ot).is_some(),
             })
         });
@@ -296,6 +315,7 @@ pub(crate) fn check(rv: &mut Rv<'_>) {
     rv.cov.symbols = judged + locals;
     rv.report.coverage.globals_checked += judged;
     rv.report.coverage.locals_checked += locals;
+    rv.report.coverage.locals_unchecked += unjudged;
     if accepted > 0 {
         *rv.report.coverage.accepted.entry(Rewrite::PerLinker).or_default() += accepted;
     }

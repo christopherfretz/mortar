@@ -301,7 +301,10 @@ fn cie_of(data: &[u8], off: usize) -> Option<u64> {
 /// mortar's map states the record map with `rframe` (§14.2).
 fn rframe(rv: &mut Rv<'_>) {
     let Some(rel) = rv.map.rel.as_ref() else { return };
-    let fid: BTreeMap<u32, usize> = rv.ins.iter().enumerate().map(|(i, f)| (f.map_file, i)).collect();
+    let mut fid: BTreeMap<u32, usize> = BTreeMap::new();
+    for (i, f) in rv.ins.iter().enumerate() {
+        fid.entry(f.map_file).or_insert(i);
+    }
     let mut msgs = Vec::new();
     let mut stated: BTreeMap<(usize, usize, u64), Option<u64>> = BTreeMap::new();
     for r in &rel.frames {

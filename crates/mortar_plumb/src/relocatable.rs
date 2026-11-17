@@ -172,6 +172,7 @@ pub(crate) struct Elf {
     /// The `.symtab` section, and its `.symtab_shndx`.
     pub symtab: Option<usize>,
     pub shndx_sec: Option<usize>,
+    #[allow(dead_code)] // the file length, for messages
     pub len: u64,
 }
 
@@ -536,6 +537,10 @@ pub(crate) struct In {
     pub elf: Elf,
     /// A `-b binary` input (L-R9).
     pub binary: bool,
+    /// Which copy of a path the line names more than once (0 first).
+    pub copy: usize,
+    /// The position of its word in the line, when known.
+    pub line_pos: Option<usize>,
 }
 
 impl In {
@@ -631,7 +636,11 @@ pub(crate) enum Tgt {
     Abs(i64),
     /// Into a section merged into output section `o`: the string or entry
     /// that must start at the output's effective place.
-    Merged(u32, Vec<u8>),
+    /// The third field is the addend outside the entry: a non-section
+    /// symbol's (lld's and GNU ld's reading: the entry is at the
+    /// symbol, the addend applies after; x86-64's `lea .LC0(%rip)` is
+    /// `.LC0 - 4`).
+    Merged(u32, Vec<u8>, i64),
     /// Into a section not in the output: the section, `{file}:({section})`.
     Dropped(String, Option<(usize, usize, u64)>),
     /// The null symbol.
@@ -651,8 +660,8 @@ impl std::fmt::Display for Tgt {
             Tgt::Name(n, a) => write!(f, "{n}{}", add(*a)),
             Tgt::Place(o, v) => write!(f, "section {o}{}", if *v == 0 { "+0x0".into() } else { add(*v) }),
             Tgt::Abs(v) => write!(f, "ABS{}", add(*v)),
-            Tgt::Merged(o, b) => {
-                write!(f, "the bytes {:?} in section {o}", String::from_utf8_lossy(b))
+            Tgt::Merged(o, b, x) => {
+                write!(f, "the bytes {:?} in section {o}{}", String::from_utf8_lossy(b), add(*x))
             }
             Tgt::Dropped(s, _) => write!(f, "{s} (dropped)"),
             Tgt::Null => write!(f, "symbol 0"),
@@ -689,6 +698,8 @@ pub(crate) struct Rv<'m> {
     /// Matched output record to its input record: (file, reloc section,
     /// index) — P-P3's matching, which mortar's order clause reads.
     pub matched: BTreeMap<(usize, usize), (usize, usize, usize)>,
+    /// The output group of each kept input group: (file, group section).
+    pub group_out: BTreeMap<(usize, usize), u32>,
     pub report: Report,
     pub cov: RelCoverage,
     /// The output's bytes as given (B1 reads them).
@@ -747,6 +758,11 @@ impl Rv<'_> {
             return Tgt::Abs((s.value as i64).wrapping_add(a));
         }
         let t = s.shndx as usize;
+        if s.ty() != STT_SECTION
+            && let Tgt::Merged(o, b, _) = self.at_place(f, t, s.value as i64)
+        {
+            return Tgt::Merged(o, b, a);
+        }
         let v = (s.value as i64).wrapping_add(a);
         self.at_place(f, t, v)
     }
@@ -758,7 +774,7 @@ impl Rv<'_> {
             Some(Place::Whole { out, off }) => Tgt::Place(*out, (*off as i64).wrapping_add(v)),
             Some(Place::Merged { out }) => {
                 let Some(sec) = e.secs.get(t) else { return Tgt::Bad("section".into()) };
-                Tgt::Merged(*out, merged_entry(sec, v))
+                Tgt::Merged(*out, merged_entry(sec, v), 0)
             }
             Some(Place::Framed) => {
                 let rm = self.frames.get(&(f, t));
@@ -812,9 +828,9 @@ impl Rv<'_> {
             }
             (Tgt::Place(o, v), Tgt::Place(p, w)) if o == p && v == w => Some(false),
             (Tgt::Abs(v), Tgt::Abs(w)) if v == w => Some(false),
-            (Tgt::Merged(o, want), Tgt::Place(p, w)) if o == p => {
+            (Tgt::Merged(o, want, x), Tgt::Place(p, w)) if o == p => {
                 let d = self.out.secs.get(*p as usize).map(|s| s.data.as_slice()).unwrap_or(&[]);
-                let at = usize::try_from(*w).ok()?;
+                let at = usize::try_from(w.wrapping_sub(*x)).ok()?;
                 d.get(at..)?.starts_with(want).then_some(false)
             }
             (Tgt::Null, Tgt::Null) => Some(false),
@@ -964,6 +980,7 @@ pub(crate) fn verify_in(
         out_rels: BTreeMap::new(),
         used: BTreeMap::new(),
         matched: BTreeMap::new(),
+        group_out: BTreeMap::new(),
         report,
         cov: RelCoverage::default(),
         raw: output.to_vec(),
@@ -1047,22 +1064,39 @@ fn read_inputs(
                 }
             }
         };
-        ins.push(In { map_file: i as u32, path: f.path.clone(), member: f.member.clone(), elf, binary });
+        // A path the line names n times is n inputs (a foreign map names
+        // it once; its rows come copy after copy).
+        let positions: Vec<usize> = if map.format != Format::Mortar && f.member.is_none() {
+            opts.inputs.iter().enumerate().filter(|(_, w)| **w == f.path).map(|(k, _)| k).collect()
+        } else {
+            Vec::new()
+        };
+        let n = positions.len().max(1);
+        for copy in 0..n {
+            ins.push(In {
+                map_file: i as u32,
+                path: f.path.clone(),
+                member: f.member.clone(),
+                elf: elf.clone(),
+                binary,
+                copy,
+                line_pos: positions.get(copy).copied(),
+            });
+        }
     }
     // FileId order (§14.1): mortar's map order; a foreign map's files by
     // the line's order of their words (GNU ld's `LOAD` lines without a
     // line): GNU ld names a file first in its discarded list.
     if map.format != Format::Mortar {
-        let pos = |p: &str| -> usize {
-            opts.inputs
-                .iter()
-                .position(|w| w == p)
-                .or_else(|| map.loads.iter().position(|w| w == p))
+        let pos = |f: &In| -> usize {
+            f.line_pos
+                .or_else(|| opts.inputs.iter().position(|w| *w == f.path))
+                .or_else(|| map.loads.iter().position(|w| *w == f.path))
                 .unwrap_or(usize::MAX)
         };
         ins.sort_by_key(|f| {
             let mf = &map.files[f.map_file as usize];
-            (pos(&f.path), mf.member_offset.unwrap_or(0), f.map_file)
+            (pos(f), mf.member_offset.unwrap_or(0), f.map_file, f.copy)
         });
     }
     ins
@@ -1086,8 +1120,8 @@ fn run(rv: &mut Rv<'_>) {
     crate::releh::check(rv);
     content(rv);
     records(rv);
-    crate::relsym::check(rv);
     crate::relgroup::check(rv);
+    crate::relsym::check(rv);
     header(rv);
     container(rv);
     notes(rv);
@@ -1128,7 +1162,10 @@ fn places(rv: &mut Rv<'_>) {
         }
     }
     // The map's file index to FileId.
-    let fid: BTreeMap<u32, usize> = rv.ins.iter().enumerate().map(|(i, f)| (f.map_file, i)).collect();
+    let mut fid: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
+    for (i, f) in rv.ins.iter().enumerate() {
+        fid.entry(f.map_file).or_default().push(i);
+    }
     let nout = rv.out.secs.len() as u32;
     let mut seen: BTreeMap<(usize, usize), u32> = BTreeMap::new();
     let mut place = |rv: &mut Rv<'_>, f: usize, s: usize, p: Place, line: u32| {
@@ -1162,7 +1199,7 @@ fn places(rv: &mut Rv<'_>) {
     if rv.mortar() {
         let rel = rv.map.rel.clone().unwrap_or_default();
         for r in &rel.places {
-            let Some(&f) = fid.get(&r.file) else { continue };
+            let Some(&f) = fid.get(&r.file).and_then(|v| v.first()) else { continue };
             let Some(s) = section_index(&rv.ins[f].elf, &r.section) else {
                 rv.push(Finding::new(Rule::Map(1), format!("map line {}: rplace names no section of {}", r.line, rv.ins[f].label())));
                 continue;
@@ -1201,8 +1238,17 @@ fn places(rv: &mut Rv<'_>) {
                 if rv.places[f][s] != Place::Absent || sec.flags & SHF_MERGE == 0 {
                     continue;
                 }
+                // The section of its name and merge class, else of its name.
+                let class = |x: &Sec| (x.flags & (SHF_MERGE | SHF_STRINGS), x.entsize);
                 let o = internal.get(&sec.name).copied().or_else(|| {
-                    (1..rv.out.secs.len()).find(|&o| rv.out.secs[o].name == sec.name).map(|o| o as u32)
+                    let named: Vec<usize> =
+                        (1..rv.out.secs.len()).filter(|&o| rv.out.secs[o].name == sec.name).collect();
+                    named
+                        .iter()
+                        .copied()
+                        .find(|&o| class(&rv.out.secs[o]) == class(sec))
+                        .or_else(|| named.first().copied())
+                        .map(|o| o as u32)
                 });
                 if let Some(o) = o {
                     rv.places[f][s] = Place::Merged { out: o };
@@ -1338,7 +1384,7 @@ fn block_headers(rv: &Rv<'_>) -> Vec<Option<u32>> {
 type PlaceFn<'p> = dyn FnMut(&mut Rv<'_>, usize, usize, Place, u32) + 'p;
 
 /// A foreign map's rows as places (§14.2).
-fn foreign_places(rv: &mut Rv<'_>, fid: &BTreeMap<u32, usize>, place: &mut PlaceFn<'_>) {
+fn foreign_places(rv: &mut Rv<'_>, fid: &BTreeMap<u32, Vec<usize>>, place: &mut PlaceFn<'_>) {
     let headers = block_headers(rv);
     // M1: more blocks of a name than headers.
     let mut count: BTreeMap<&str, usize> = BTreeMap::new();
@@ -1377,20 +1423,23 @@ fn foreign_places(rv: &mut Rv<'_>, fid: &BTreeMap<u32, usize>, place: &mut Place
             cursor = 0;
             b += 1;
         }
-        let Some(&f) = fid.get(&p.file) else { continue };
+        let Some(copies) = fid.get(&p.file) else { continue };
         let SectionRef::Name(name) = &p.section else { continue };
-        let e = &rv.ins[f].elf;
+        let f0 = copies[0];
+        let e = &rv.ins[f0].elf;
         let cands: Vec<usize> = (1..e.secs.len()).filter(|&s| &e.secs[s].name == name).collect();
         if cands.is_empty() || cands.iter().all(|&s| consumed(&e.secs[s])) {
             continue;
         }
-        let k = used.entry((f, name.clone())).or_default();
-        let Some(&s) = cands.get(*k) else {
-            let msg = format!("map line {}: {} names a section the input has fewer of", p.line, rv.ins[f].sname(cands[0]));
+        let k = used.entry((p.file as usize, name.clone())).or_default();
+        let (copy, s) = (*k / cands.len(), cands[*k % cands.len()]);
+        let Some(&f) = copies.get(copy) else {
+            let msg = format!("map line {}: {} names a section the input has fewer of", p.line, rv.ins[f0].sname(cands[0]));
             rv.push(Finding::new(Rule::Map(2), msg));
             continue;
         };
         *k += 1;
+        let e = &rv.ins[f].elf;
         if rv.is_eh(&e.secs[s]) {
             // Framed: its records are judged one by one (P-P5).
             continue;
@@ -1999,7 +2048,10 @@ fn header(rv: &mut Rv<'_>) {
     }
     let gnu = rv.out.syms.iter().any(|s| s.ty() == STT_GNU_IFUNC || s.bind() == STB_GNU_UNIQUE);
     let want_abi = if gnu { 3 } else { 0 };
-    if h.osabi != want_abi {
+    // GNU ld also marks an output with an SHF_GNU_RETAIN section GNU
+    // (measured; a question on P-P7's "iff").
+    let retain = rv.out.secs.iter().any(|s| s.flags & SHF_GNU_RETAIN != 0);
+    if h.osabi != want_abi && !(retain && !gnu && h.osabi == 3) {
         bad(
             rv,
             "EI_OSABI",
@@ -2523,14 +2575,13 @@ fn judge_pieces(rv: &mut Rv<'_>, o: usize, os: &Sec, ps: &[&Sec], bad: &mut Vec<
         }
         // sh_entsize.
         let ents: BTreeSet<u64> = ps.iter().map(|p| p.entsize).collect();
-        let want_es = if same_merge {
-            ps[0].entsize
-        } else if ents.len() == 1 {
-            ps[0].entsize
-        } else {
-            0
-        };
-        if os.flags & SHF_MERGE == 0 && os.entsize != want_es && !(rv.mortar() && os.entsize == 0 && !same_merge) {
+        let want_es = if same_merge || ents.len() == 1 { ps[0].entsize } else { 0 };
+        // "the pieces' common value or 0"; an array of pointers
+        // (SHT_INIT_ARRAY, SHT_FINI_ARRAY, SHT_PREINIT_ARRAY) may also
+        // state the pointer size, as GNU ld does (a question on P-P11).
+        let ptr = if rv.class64 { 8 } else { 4 };
+        let array = matches!(os.ty, 14..=16) && os.entsize == ptr;
+        if os.flags & SHF_MERGE == 0 && os.entsize != want_es && os.entsize != 0 && !array {
             bad.push(format!("sh_entsize is {}, not {want_es}", os.entsize));
         }
     }

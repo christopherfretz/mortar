@@ -169,6 +169,7 @@ pub(crate) fn check(rv: &mut Rv<'_>) {
                 continue;
             };
             claimed.insert(o);
+            rv.group_out.insert((f, g), o as u32);
             let os = rv.out.secs[o].clone();
             let (oflag, omembers) = words(&os);
             let mut bad = Vec::new();
@@ -238,7 +239,11 @@ pub(crate) fn check(rv: &mut Rv<'_>) {
             }
             // P-P4: the signature symbol, when defined, is in a member.
             if let Some(y) = rv.out.syms.get(os.info as usize) {
-                if y.in_section() && !got.contains(&y.shndx) && y.ty() != crate::relocatable::STT_SECTION {
+                if y.in_section()
+                    && !got.contains(&y.shndx)
+                    && y.shndx as usize != o
+                    && y.ty() != crate::relocatable::STT_SECTION
+                {
                     msgs.push((4, format!("group signature {} is in section {}, not its group {o}", y.name, y.shndx)));
                 }
             } else {
