@@ -8,9 +8,9 @@
 # mold and mortar).
 #@ spec: resolve.md §7.2
 #@ arch: aarch64 x86_64
-#@ anomaly(bfd): A85
-#@ anomaly(bfd): A87
-#@ anomaly(bfd): A30
+#@ anomaly(bfd): A85 A87
+#@ anomaly(bfd,aarch64): A30
+#@ anomaly(bfd,x86_64): A31
 #@ skip(mold): mold 2.37.1 aborts (signal 6) writing the -Map the lane asks for when a --defsym names a symbol
 
 cc -O0 -fPIC -fno-inline m.c -o m.o
