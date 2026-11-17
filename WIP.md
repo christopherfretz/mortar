@@ -16,7 +16,10 @@ desc/: the gnu2 library by hand).
   `_TLS_MODULE_BASE_` expected 0xc found 0x0), mortar R1 only. The
   harness refuses markers on all three references: ASKED the coordinator.
 
-## Next (waiting on the coordinator for desc marker and X-62 ruling)
-- le-refused and cxx widened; x86-64-tls-ifunc-refused goes; census
-  OUT_OF_M2 rows; rows.rs note + options.md; spec X-61/X-62; s1d --x86;
-  static-identical; census; gates; record.
+## Next
+- Coordinator answered (Q1: desc test stays red until WP-144; Q2: as
+  proposed). Section-symbol reason, tests, spec, record written.
+- static-identical --update; quick gate + whole lane; record's census and
+  static-identical lines; delete WIP.md; hand-back.
+- P-D9 on mortar's local GD (x86-64-tls-section-symbol) reported to the
+  coordinator (SendMessage main).

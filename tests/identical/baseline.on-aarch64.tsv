@@ -609,11 +609,6 @@ dyn/shared/x86-64-nonpic-scope.test	x86_64	25	exit status 1	-	-	c9ecff6c0f2be330
 dyn/shared/x86-64-nonpic-scope.test	x86_64	28	exit status 0	db019c2e94d693c2ed48f335aec04eaf59a17584c1919817ebc9606e9b1e47ef	363c38842a457b068318a059869817584dca8f3963f46a5572f3a6dace966f4b	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
 dyn/shared/x86-64-nonpic-scope.test	x86_64	29	exit status 0	e9eb0a7852a8a21baed7d6a578f4d2b6b06e0e66dad6cef1f9964c1222b0b960	b3e240c824243e69b20ce97ff1e9330b44a4fa11e15dfa9c57942ed7f5f4196f	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
 dyn/shared/x86-64-nonpic-scope.test	x86_64	30	exit status 0	42ddca5f9d347276905cb3fa3063c9f88deca8c0e4adf81ab645218d9aa459ce	9d01746d82b69655bfa82531bd983b7012797cdabbc7102811b10ddf293d2fee	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
-dyn/shared/x86-64-tls-ifunc-refused.test	x86_64	21	exit status 1	-	-	b0eb4472d934e337f10bf1415494a2a98742d6a66a04e0f890dbfe0888be6d04
-dyn/shared/x86-64-tls-ifunc-refused.test	x86_64	25	exit status 1	-	-	5f85ac5d1112e254c34923588e796df29d32b5be748ff20771e9ea08fd61d30a
-dyn/shared/x86-64-tls-ifunc-refused.test	x86_64	28	exit status 1	-	-	6b8db0c0e62e0f1ade1ca5de5dd3b73015ec58eb40357fcffadb7edd2ba0a044
-dyn/shared/x86-64-tls-ifunc-refused.test	x86_64	32	exit status 1	-	-	46bd2e64a9132936b57db4c9a3102cfff51f29220422c97f60b7d0ea592d6f38
-dyn/shared/x86-64-tls-ifunc-refused.test	x86_64	35	exit status 1	-	-	d70223c3836c353a5c005ba798faebce2e1555680e55535538ec759bee8ffbb3
 dyn/shared/z-defs.test	aarch64	11	exit status 1	-	-	40fdee2390b169f4f7b03fc193e652cf90416ba11518dce83b5aabebba03b6d1
 dyn/shared/z-defs.test	aarch64	14	exit status 1	-	-	40fdee2390b169f4f7b03fc193e652cf90416ba11518dce83b5aabebba03b6d1
 dyn/shared/z-defs.test	aarch64	17	exit status 0	79626843fda0a949a4b954c4444fc68a5bdce365696745d8e1fcdf452c125f6c	89cc67d03d71431ae3bd4d829c17388d6983b12f56e2c6e6012e32cdbf8cc321	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
