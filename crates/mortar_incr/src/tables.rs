@@ -63,7 +63,15 @@ pub(crate) fn fill(
     s: &mut State,
     arch: &dyn Arch,
     pool: &Pool,
+    laps: &mut crate::capture::Laps,
 ) -> Result<(), String> {
+    // WP-105: the parts timed (`mortar: incremental: delta ...` lines).
+    let mut at = std::time::Instant::now();
+    let mut lap = |laps: &mut crate::capture::Laps, name: &'static str| {
+        let now = std::time::Instant::now();
+        laps.push((name, (now - at).as_secs_f64() * 1e3));
+        at = now;
+    };
     let inputs = link.inputs;
     let res = link.resolution;
     let mut tables: Vec<Option<(Object<'_>, SymbolTable<'_>)>> = Vec::new();
@@ -83,10 +91,7 @@ pub(crate) fn fill(
         tables.push(entry);
     }
     let section_row = |file: FileId, sec: Result<SymbolSection, mortar_elf::Error>| -> u32 {
-        match sec {
-            Ok(SymbolSection::Section(i)) => res.section_id(file, i).map_or(NONE, |id| id.0),
-            _ => NONE,
-        }
+        section_of(res, file, sec)
     };
     // MENTIONS and INDEX are read per file in parallel with each global
     // as its `SymbolId`; the ids become rows below, in file order, so the
@@ -94,38 +99,12 @@ pub(crate) fn fill(
     let per_file = pool.map(tables.len(), |n| -> Result<_, String> {
         let Some((object, table)) = &tables[n] else { return Ok((Vec::new(), Vec::new())) };
         let file = FileId(n as u32);
-        let mut mentions = Vec::new();
-        let first = table.first_global().0;
-        let map = inputs.sym_map_of(file);
-        for (index, sym) in table.iter() {
-            if index.0 < first {
-                continue;
-            }
-            let Some(&id) = map.get((index.0 - first) as usize) else { continue };
-            let section = table.section_of(index, &sym);
-            let kind = sym_kind(section);
-            let row = MentionRow {
-                file: file.0,
-                symbol: id.0,
-                kind,
-                bind: sym.st_info >> 4,
-                typ: sym.st_info & 0xf,
-                other: sym.st_other,
-                section: if kind == def_kind::SECTION { section_row(file, section) } else { NONE },
-            };
-            // A definition in a section without an id (one the reader
-            // does not keep) is recorded as absolute: still a definition.
-            let row = if row.kind == def_kind::SECTION && row.section == NONE {
-                MentionRow { kind: def_kind::ABSOLUTE, ..row }
-            } else {
-                row
-            };
-            mentions.push(row);
-        }
+        let mentions = file_mentions(inputs, res, file, table);
         let mut index = Vec::new();
         index_file(inputs, link, file, object, table, arch, &mut index)?;
         Ok((mentions, index))
     });
+    lap(laps, "delta: per-file mentions and index");
     let mut index = Vec::new();
     for part in per_file {
         let (mentions, rows) = part?;
@@ -137,6 +116,7 @@ pub(crate) fn fill(
     }
     s.mentions.sort_by_key(|m| (m.file, m.symbol));
     s.mentions.dedup_by_key(|m| (m.file, m.symbol));
+    lap(laps, "delta: mentions numbered");
     // RESOLVED: every key, then every kept group, then every live file.
     let mut keys = Vec::new();
     let commons: HashMap<SymbolId, u64> =
@@ -173,6 +153,7 @@ pub(crate) fn fill(
             ..ResolvedRow::default()
         });
     }
+    lap(laps, "delta: resolved");
     // INDEX: a GLOBAL or SLOT row's target is a symbol row.
     for rows in index {
         for mut r in rows {
@@ -184,7 +165,60 @@ pub(crate) fn fill(
     }
     s.index.sort_unstable();
     s.index.dedup();
+    lap(laps, "delta: index numbered");
     Ok(())
+}
+
+/// The `SectionId` (as a `u32`) a symbol's section names, `NONE` if none.
+pub(crate) fn section_of(
+    res: &mortar_core::resolution::Resolution,
+    file: FileId,
+    sec: Result<SymbolSection, mortar_elf::Error>,
+) -> u32 {
+    match sec {
+        Ok(SymbolSection::Section(i)) => res.section_id(file, i).map_or(NONE, |id| id.0),
+        _ => NONE,
+    }
+}
+
+/// One live object's `MENTIONS` rows, with each key as its `SymbolId`
+/// and each section as its `SectionId` (not yet state rows), in symbol
+/// table order (the caller sorts and drops repeats).
+pub(crate) fn file_mentions(
+    inputs: &Inputs<'_>,
+    res: &mortar_core::resolution::Resolution,
+    file: FileId,
+    table: &SymbolTable<'_>,
+) -> Vec<MentionRow> {
+    let mut mentions = Vec::new();
+    let first = table.first_global().0;
+    let map = inputs.sym_map_of(file);
+    for (index, sym) in table.iter() {
+        if index.0 < first {
+            continue;
+        }
+        let Some(&id) = map.get((index.0 - first) as usize) else { continue };
+        let section = table.section_of(index, &sym);
+        let kind = sym_kind(section);
+        let row = MentionRow {
+            file: file.0,
+            symbol: id.0,
+            kind,
+            bind: sym.st_info >> 4,
+            typ: sym.st_info & 0xf,
+            other: sym.st_other,
+            section: if kind == def_kind::SECTION { section_of(res, file, section) } else { NONE },
+        };
+        // A definition in a section without an id (one the reader
+        // does not keep) is recorded as absolute: still a definition.
+        let row = if row.kind == def_kind::SECTION && row.section == NONE {
+            MentionRow { kind: def_kind::ABSOLUTE, ..row }
+        } else {
+            row
+        };
+        mentions.push(row);
+    }
+    mentions
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -199,7 +233,23 @@ fn resolved_row(
     commons: &HashMap<SymbolId, u64>,
 ) -> Result<ResolvedRow, String> {
     let symbol = syms.row(strings, SymKey::global(id))?;
-    let mut row = ResolvedRow { symbol, file: NONE, section: NONE, ..ResolvedRow::default() };
+    let table_of = |f: FileId| tables.get(f.0 as usize).and_then(Option::as_ref).map(|t| t.1);
+    let row = resolved_fields(link, &table_of, id, def, section_row, commons)?;
+    Ok(ResolvedRow { symbol, ..row })
+}
+
+/// A key's `RESOLVED` row with `symbol` `NONE`, its file a `FileId` and
+/// its section a `SectionId` (as `u32`s); `table_of` gives a live
+/// object's symbol table.
+pub(crate) fn resolved_fields<'t>(
+    link: &Link<'_, '_>,
+    table_of: &dyn Fn(FileId) -> Option<SymbolTable<'t>>,
+    id: SymbolId,
+    def: Def,
+    section_row: &dyn Fn(FileId, Result<SymbolSection, mortar_elf::Error>) -> u32,
+    commons: &HashMap<SymbolId, u64>,
+) -> Result<ResolvedRow, String> {
+    let mut row = ResolvedRow { symbol: NONE, file: NONE, section: NONE, ..ResolvedRow::default() };
     let props = link.resolution.props.get(id);
     match def {
         Def::Undefined { weak } => {
@@ -218,8 +268,7 @@ fn resolved_row(
         }
         Def::Defined(e) | Def::Common(e) => {
             row.file = e.file.0;
-            let entry = tables.get(e.file.0 as usize).and_then(Option::as_ref);
-            let Some((_, table)) = entry else {
+            let Some(table) = table_of(e.file) else {
                 // Not an object's symbol table: conservatively absolute
                 // with the entry's index as its value (it compares).
                 row.kind = def_kind::ABSOLUTE;

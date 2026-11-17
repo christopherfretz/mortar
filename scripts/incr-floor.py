@@ -139,6 +139,8 @@ def main():
     ap.add_argument("--extra", default="", help="words added to every mortar link line (space-separated)")
     ap.add_argument("--quiet", type=float, default=0.0,
                     help="before each run, wait until the 1-minute load is under this")
+    ap.add_argument("--out-dir", default="",
+                    help="WP-105: where the outputs and states go (default: DIR); the link still runs in DIR")
     ap.add_argument("--interleave", action="store_true",
                     help="round-robin: each round runs every series once (WP-094)")
     o = ap.parse_args()
@@ -151,7 +153,10 @@ def main():
     cur = {"edited": open(efile, "rb").read()[eoff:eoff + len(enew)] == enew}
     start_edited = cur["edited"]
 
+    odir = o.out_dir or o.dir
+
     def line(out):
+        out = os.path.join(odir, out)
         return [out if w == "OUTPUT" else w for w in words] + extra
 
     def set_input(edited):
@@ -197,7 +202,7 @@ def main():
         if st:
             sys.exit(f"incr-floor: {label} run {i} failed ({st}):\n{err}")
         if kind in ("ld", "lld", "mold"):
-            os.remove(os.path.join(o.dir, f"floor.{label}.{i}"))
+            os.remove(os.path.join(odir, f"floor.{label}.{i}"))
         if i == 0:
             return
         runs[label].append({"wall": wall, "peak_kib": peak, "phases": phases(err), "load": before,
@@ -231,8 +236,8 @@ def main():
             w, p, err, st = timed([s["mortar"]] + line("floor.check") + ["--incremental=full"], o.dir)
             if st:
                 sys.exit(f"incr-floor: the reference link failed:\n{err}")
-            same = open(os.path.join(o.dir, f"floor.{label}"), "rb").read() == \
-                open(os.path.join(o.dir, "floor.check"), "rb").read()
+            same = open(os.path.join(odir, f"floor.{label}"), "rb").read() == \
+                open(os.path.join(odir, "floor.check"), "rb").read()
             r["identical_to_full"] = same
             if not same:
                 print(f"incr-floor: {label}: the update differs from the incremental-mode full link", flush=True)
