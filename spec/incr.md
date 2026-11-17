@@ -1667,7 +1667,7 @@ with each phase fed from the state for unchanged files:
      defect (`state-corrupt` in a test build, a panic never).
   5. Write the tables in kind order with fresh slack (IN-18e's
      capacities), sort the key-keyed bodies, rebuild the block lists, the
-     directory and the header (flag clear), to `<S>.mortar-compact`, then
+     directory and the header (flag clear), to `dir(S)/.<base(S)>.mortar-compact`, then
      IN-77's rename.
   The result is, byte for byte, the state the full link of the update's
   inputs writes when its layout is the update's `Placement` (IN-78's
@@ -3418,7 +3418,7 @@ a pass over a whole table of the state; **O(output)**.
   `tests/incr-design/fsprobe.py`), against a full link's 0.18 s on
   protoc.
 
-  **In place** (`A` = `<P>.mortar-torn`, the **aside name**, in `P`'s
+  **In place** (`A` = `dir(P)/.<base(P)>.mortar-torn`, the **aside name**, in `P`'s
   directory):
   - **W1** set the flag; `fdatasync(S)`.
   - **W2** `rename(P, A)`; `stat(A)` must give the descriptor's
@@ -3476,7 +3476,7 @@ a pass over a whole table of the state; **O(output)**.
   When the state's rows do not fit its slack (IN-18e), or `S` is
   hard-linked or a symbolic link (IN-77b), W5/C4 is the **compaction**
   instead (IN-18f): the whole new state, flag clear, written to `S`'s
-  temporary `<S>.mortar-compact` (created and `flock`ed by this link),
+  temporary `dir(S)/.<base(S)>.mortar-compact` (created and `flock`ed by this link),
   `fdatasync`ed, renamed over `S`, the directory `fsync`ed; W6/C5 is then
   nothing (the rename replaced the flag).
 
@@ -3537,14 +3537,14 @@ a pass over a whole table of the state; **O(output)**.
   macOS, plain `fsync` is not `F_FULLFSYNC`: *argued, not run*).
 
   **IN-77d [v1] Leftovers** (review-in77 m-4). The temporaries are `A`,
-  `T` and `<S>.mortar-compact`; each is `flock`ed by its creator. The
+  `T` and `dir(S)/.<base(S)>.mortar-compact`; each is `flock`ed by its creator. The
   link that holds `S`'s lock removes each of them by its exact name before
   its own writes, after a `try_lock` on it succeeds (a held one belongs
   to a live link and is left). No pid is in a name, so pid namespaces and
   pid reuse do not matter. Where the lock is not enforced nothing is
   removed (and no update runs, IN-77b). Today's `<S>.tmp-<pid>` files
   (the floor's `write_atomically`) are not matched; U-7 renames the
-  floor's temporary to `<S>.mortar-compact`.
+  floor's temporary to `dir(S)/.<base(S)>.mortar-compact`.
 
   **IN-77e [v1] Failures** (review-in77 M-5; IN-48 covers failures of the
   link proper, before U10). Any error of a write, a sync, a rename or a
