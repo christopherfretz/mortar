@@ -129,7 +129,8 @@ fn s4_2_options_wp117_implements_are_not_refused_in_shared() {
 }
 
 // spec: landed/dyn/WP-110.md §G.4 (the `-shared` row's text), cli.md §4.2
-// (`-shared` reads `partial` once WP-123 joins the first target)
+// (`-shared` reads `partial` once WP-123 joins the first target; WP-124
+// lifts TLS and IFUNC but local-exec TLS)
 #[test]
 fn g4_shared_row_text() {
     let row = rows().iter().find(|r| r.name() == "-shared").expect("the -shared row");
@@ -139,7 +140,8 @@ fn g4_shared_row_text() {
     assert!(values.is_empty(), "no refused value: its refusals are by name, in the link");
     for part in [
         "AArch64 (x86-64 and i386 refused, `feature`, until WP-127 and WP-130; \
-         TLS and IFUNC in a shared object until WP-124; version scripts until WP-125)",
+         local-exec TLS in a shared object refused, dyn.md D-119; version scripts until \
+         WP-125)",
         "3 of 306 measured bound definitions",
         "Refused although correct: -fPIC code that forms an address before the start of a \
          static object placed after exported data",

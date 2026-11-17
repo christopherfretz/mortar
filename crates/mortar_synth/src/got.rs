@@ -143,10 +143,17 @@ struct DynPlt {
     relative: u32,
     /// The kind of each `Slots.got` key (D-46's rows).
     got_kinds: Box<[TargetKind]>,
-    /// Whether each `tls_ie`/`tls_gd`/`tls_desc` key is a shared object's.
+    /// Whether each `tls_ie`/`tls_gd`/`tls_desc` slot holds 0, its record
+    /// carrying its value: a shared object's key in an executable; in a
+    /// shared object every `TpOff` and `TlsDesc` slot, and a `TlsGd` slot
+    /// of a dynamic key (`spec/dyn.md` D-119).
     ie_shared: Box<[bool]>,
     gd_shared: Box<[bool]>,
     desc_shared: Box<[bool]>,
+    /// A shared object's plan (D-119): the module word of a `TlsGd` or
+    /// `TlsLd` slot is the loader's (a `DTPMOD` record), so it holds 0,
+    /// not the executable's module 1.
+    module_records: bool,
     bind_now: bool,
 }
 
@@ -280,7 +287,7 @@ impl GotPlan {
     /// Every `r_sym` is `dynsym`'s index of the key. Refused by name: a
     /// PLT shape of several sections (x86-64 IBT's `.plt.sec`; follow-up
     /// of the x86-64 package).
-    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    #[allow(clippy::too_many_arguments)]
     pub fn new_dynamic(
         arch: &dyn Arch,
         slots: &Slots,
@@ -290,6 +297,23 @@ impl GotPlan {
         kinds: &dyn KeyKinds,
         dynsym: &DynsymPlan,
         diag: &Collector,
+    ) -> Result<Self, Failed> {
+        Self::build(arch, slots, output, variant, cx, kinds, dynsym, diag, false)
+    }
+
+    /// [`Self::new_dynamic`]; `shared_out` is a `Shared` output's plan
+    /// ([`Self::new_shared`]), whose TLS slots take D-119's records.
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    fn build(
+        arch: &dyn Arch,
+        slots: &Slots,
+        output: GlobalFlags,
+        variant: PltVariant,
+        cx: DynGotCx,
+        kinds: &dyn KeyKinds,
+        dynsym: &DynsymPlan,
+        diag: &Collector,
+        shared_out: bool,
     ) -> Result<Self, Failed> {
         let facts = arch.facts();
         let word = u64::from(facts.word);
@@ -337,7 +361,31 @@ impl GotPlan {
             slot[r] = u64::from((shape.slot_words)(region.slot_kind())) * word;
             bases[r + 1] = bases[r] + counts[r] * slot[r];
         }
-        let shared = |k: SymKey| matches!(kinds.kind(k), TargetKind::Shlib { .. });
+        // The keys whose TLS slots take records against them: a shared
+        // object's in an executable (D-48); in a shared object also its
+        // own preemptible definitions and its undefined weak keys (D-119:
+        // "preemptible definition (D-112) or import").
+        let shared = |k: SymKey| match kinds.kind(k) {
+            TargetKind::Shlib { .. } => true,
+            TargetKind::Preemptible | TargetKind::WeakDyn => shared_out,
+            _ => false,
+        };
+        // D-119 in a shared object: a TLS slot of a key with no TLS block
+        // to name (`weak0`: its offsets 0 would be the executable's
+        // module's) is refused by name rather than written.
+        if shared_out {
+            let tls_keys = slots.tls_ie.iter().chain(&slots.tls_gd).chain(&slots.tls_desc);
+            if tls_keys
+                .into_iter()
+                .any(|&k| matches!(kinds.kind(k), TargetKind::Weak0 | TargetKind::Undefined))
+            {
+                return fail(
+                    diag,
+                    key(0),
+                    feature("a TLS slot of an undefined weak symbol bound to 0 in a shared object"),
+                );
+            }
+        }
         let mut records: Vec<GotRecord> = Vec::new();
         let mut relative = 0u32;
         let mut plain = |offset: u64, role: DynRole, k: SymKey| -> Result<(), SynthError> {
@@ -348,6 +396,14 @@ impl GotPlan {
                 key: Some(k),
                 r_sym: index(k)?,
             });
+            Ok(())
+        };
+        // D-119: a TLS record of a non-preemptible definition of a shared
+        // object, `r_sym` 0; its addend (the key's offset in the block,
+        // [`Self::record_addend`]) is written with addresses.
+        let mut module: Vec<GotRecord> = Vec::new();
+        let mut local = |offset: u64, role: DynRole, k: Option<SymKey>| -> Result<(), SynthError> {
+            module.push(GotRecord { offset, role, r_type: ty(role)?, key: k, r_sym: 0 });
             Ok(())
         };
         let got_kinds: Box<[TargetKind]> = slots.got.iter().map(|&k| kinds.kind(k)).collect();
@@ -378,21 +434,34 @@ impl GotPlan {
                     _ => {}
                 }
             }
+            let tpoff = DynRole::TpOff { negated: false };
             for (i, &k) in slots.tls_ie.iter().enumerate() {
+                let off = bases[2] + i as u64 * slot[2];
                 if shared(k) {
-                    plain(bases[2] + i as u64 * slot[2], DynRole::TpOff { negated: false }, k)?;
+                    plain(off, tpoff, k)?;
+                } else if shared_out {
+                    local(off, tpoff, Some(k))?;
                 }
             }
             for (i, &k) in slots.tls_gd.iter().enumerate() {
+                let off = bases[3] + i as u64 * slot[3];
                 if shared(k) {
-                    let off = bases[3] + i as u64 * slot[3];
                     plain(off, DynRole::DtpMod, k)?;
                     plain(off + word, DynRole::DtpOff, k)?;
+                } else if shared_out {
+                    // The offset word is the static `DTPOFF` value.
+                    local(off, DynRole::DtpMod, Some(k))?;
                 }
             }
+            if shared_out && slots.tls_ld {
+                local(bases[4], DynRole::DtpMod, None)?;
+            }
             for (i, &k) in slots.tls_desc.iter().enumerate() {
+                let off = bases[5] + i as u64 * slot[5];
                 if shared(k) {
-                    plain(bases[5] + i as u64 * slot[5], DynRole::TlsDesc, k)?;
+                    plain(off, DynRole::TlsDesc, k)?;
+                } else if shared_out {
+                    local(off, DynRole::TlsDesc, Some(k))?;
                 }
             }
             Ok(())
@@ -401,6 +470,9 @@ impl GotPlan {
             return fail(diag, key(0), e.into_diagnostic());
         }
         relative = relative.saturating_add(rel_rows.len() as u32);
+        // `r_sym` 0 first, by offset: D-40 step 2's order.
+        module.sort_unstable_by_key(|r| r.offset);
+        rel_rows.extend(module);
         rel_rows.extend(records);
         let records = rel_rows;
         let plt_sym: Result<Box<[u32]>, SynthError> = slots.plt.iter().map(|&k| index(k)).collect();
@@ -427,6 +499,15 @@ impl GotPlan {
         };
         let is_shared =
             |list: &[SymKey]| -> Box<[bool]> { list.iter().map(|&k| shared(k)).collect() };
+        // D-119: in a shared object every `TpOff` and `TlsDesc` slot's value
+        // is its record's (by symbol, or `r_sym` 0 with the offset as
+        // addend).
+        let all = |list: &[SymKey]| -> Box<[bool]> { list.iter().map(|_| true).collect() };
+        let (ie_zero, desc_zero) = if shared_out {
+            (all(&slots.tls_ie), all(&slots.tls_desc))
+        } else {
+            (is_shared(&slots.tls_ie), is_shared(&slots.tls_desc))
+        };
         Ok(Self {
             word: facts.word,
             class: facts.class,
@@ -457,9 +538,10 @@ impl GotPlan {
                 records: records.into(),
                 relative,
                 got_kinds,
-                ie_shared: is_shared(&slots.tls_ie),
+                ie_shared: ie_zero,
                 gd_shared: is_shared(&slots.tls_gd),
-                desc_shared: is_shared(&slots.tls_desc),
+                desc_shared: desc_zero,
+                module_records: shared_out,
                 bind_now: cx.bind_now,
             }),
         })
@@ -469,11 +551,21 @@ impl GotPlan {
     /// [`Self::new_dynamic`] for a `Pie` (`Local` slots `RELATIVE`;
     /// `Preemptible`, `Shlib` and `WeakDyn` slots `GLOB_DAT` holding 0;
     /// calls to imports and preemptible keys through PLT entries with
-    /// `JUMP_SLOT`s, lazy unless `bind_now`).
+    /// `JUMP_SLOT`s, lazy unless `bind_now`), with:
     ///
-    /// Refused by name (class `feature`) until WP-124: TLS slots (D-119:
-    /// a library's TLS needs `DTPMOD` records the plan does not write) and
-    /// IPLT entries (D-121).
+    /// - D-119's TLS records (the input's model, eager): against a
+    ///   preemptible, imported or undefined weak key `TPOFF`,
+    ///   `DTPMOD`+`DTPOFF` or `TLSDESC` by symbol, each slot 0; against a
+    ///   non-preemptible definition `r_sym` 0: `TPOFF` and `TLSDESC` with
+    ///   the key's offset in the TLS block as addend
+    ///   ([`Self::record_addend`]) and the slot 0, one `DTPMOD` per GD
+    ///   pair whose offset word holds the static `DTPOFF` value, one
+    ///   `DTPMOD` for the LD pair (offset word 0). These follow the
+    ///   `RELATIVE`s in `.rela.dyn` (`r_sym` 0 sorts first).
+    /// - D-121's IPLT: a non-preemptible IFUNC's entry and its
+    ///   `IRELATIVE`, last in `.rela.plt` (as in a `Pie`).
+    ///
+    /// Refused by name (class `feature`): a TLS slot of a `weak0` key.
     ///
     /// # Errors
     ///
@@ -489,18 +581,29 @@ impl GotPlan {
         dynsym: &DynsymPlan,
         diag: &Collector,
     ) -> Result<Self, Failed> {
-        let tls = !slots.tls_ie.is_empty()
-            || !slots.tls_gd.is_empty()
-            || slots.tls_ld
-            || !slots.tls_desc.is_empty();
-        if tls {
-            return fail(diag, key(0), feature("thread-local storage in a shared object"));
-        }
-        if !slots.iplt.is_empty() {
-            return fail(diag, key(0), feature("IFUNC (IPLT entries) in a shared object"));
-        }
         let cx = DynGotCx { pie: true, bind_now, static_pie: false };
-        Self::new_dynamic(arch, slots, output, variant, cx, kinds, dynsym, diag)
+        Self::build(arch, slots, output, variant, cx, kinds, dynsym, diag, true)
+    }
+
+    /// The addend of a `.got` record that is not `RELATIVE` (RELA; D-119):
+    /// for a `TPOFF` or `TLSDESC` with `r_sym` 0 (a shared object's
+    /// non-preemptible TLS definition) the key's offset in the TLS block,
+    /// `DTPREL(S)`, to which the loader adds the module's place; 0 for
+    /// every record against a symbol and for `DTPMOD`.
+    ///
+    /// # Errors
+    ///
+    /// `internal-error` when such a key has no address or the output no
+    /// TLS template.
+    pub fn record_addend(&self, r: &GotRecord, values: &dyn SlotValues) -> Result<i64, SynthError> {
+        if r.r_sym != 0 || !matches!(r.role, DynRole::TpOff { .. } | DynRole::TlsDesc) {
+            return Ok(0);
+        }
+        let s = r
+            .key
+            .and_then(|k| values.address(k))
+            .ok_or_else(|| internal::<SynthError>("a module TLS record without an address"))?;
+        Ok(TlsAbi::dtp_rel(s, Self::tls_block(values)?))
     }
 
     /// The `.got` records for `.rela.dyn` (D-40, D-46, D-48): the
@@ -703,17 +806,27 @@ impl GotPlan {
                 Some(s) => [self.tls.tp_rel(s, Self::tls_block(values)?) as u64, 0],
                 None => [0, 0],
             },
-            Region::TlsGd => match s {
-                Some(s) => [1, TlsAbi::dtp_rel(s, Self::tls_block(values)?) as u64],
-                None => [1, 0],
-            },
-            // S-72: module 1 (the executable), offset 0.
-            Region::TlsLd => [1, 0],
+            Region::TlsGd => {
+                // D-119: a shared object's module word is its `DTPMOD`'s.
+                let m = u64::from(!self.module_records());
+                match s {
+                    Some(s) => [m, TlsAbi::dtp_rel(s, Self::tls_block(values)?) as u64],
+                    None => [m, 0],
+                }
+            }
+            // S-72: module 1 (the executable), offset 0; a shared object's
+            // module word is its `DTPMOD`'s (D-119).
+            Region::TlsLd => [u64::from(!self.module_records()), 0],
             // a64.md §10.6: relaxed away in a static output.
             Region::TlsDesc => {
                 return Err(internal("a TLS descriptor slot in a static output"));
             }
         })
+    }
+
+    /// Whether the plan is a shared object's (D-119's module records).
+    fn module_records(&self) -> bool {
+        self.dynamic.as_ref().is_some_and(|d| d.module_records)
     }
 
     /// D-46, D-48: a dynamic slot whose record carries its value holds 0
