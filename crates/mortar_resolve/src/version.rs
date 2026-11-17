@@ -556,13 +556,17 @@ pub type VersionProblem = (DiagKey, Diagnostic, Option<FileId>);
 
 /// The version stage of a `Shared` output (module docs). `exported` is
 /// D-110's column, cleared for version-local keys; `versions` (one per
-/// key, zeroed) gets every exported key's version index.
+/// key, zeroed) gets every exported key's version index; `local` (one per
+/// key, cleared, or empty when the line has no script) is set for the
+/// keys the script makes local (`spec/dyn.md` D-114: `STB_LOCAL` in
+/// `.symtab`, WP-150).
 pub(crate) fn apply<V: View>(
     view: &V,
     line: &VersionLine,
     def: &[Def],
     exported: &mut [bool],
     versions: &mut [u16],
+    local: &mut [bool],
 ) -> Vec<VersionProblem> {
     let mut out: Vec<VersionProblem> = Vec::new();
     let script = line.script.as_deref();
@@ -606,6 +610,9 @@ pub(crate) fn apply<V: View>(
                 )),
                 Some(Decision::Local) => {
                     exported[k] = false;
+                    if let Some(l) = local.get_mut(k) {
+                        *l = true;
+                    }
                     out.push((
                         at,
                         Diagnostic::warning(Kind::VersionedDefinitionHidden {
@@ -629,7 +636,12 @@ pub(crate) fn apply<V: View>(
         }
         match s.decide(name) {
             Decision::Node(i) => versions[k] = s.index(i),
-            Decision::Local => exported[k] = false,
+            Decision::Local => {
+                exported[k] = false;
+                if let Some(l) = local.get_mut(k) {
+                    *l = true;
+                }
+            }
             Decision::Base => {}
         }
     }

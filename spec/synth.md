@@ -1074,7 +1074,8 @@ gdb, lldb, perf, nm, addr2line, objdump and valgrind (§12).
   `_IO_cookie_close` absent in GNU 2.44, `LOCAL HIDDEN UND` in lld 19).
 - **S-121 [G] (bindings are the inputs').** A global's output binding
   is resolve.md §3.7's and nothing else: `STB_LOCAL` only for a
-  definition whose combined visibility is hidden or internal (S-77), and
+  definition whose combined visibility is hidden or internal, or that a
+  version script or `--exclude-libs` makes local (S-77), and
   otherwise the binding of the chosen definition (`STB_WEAK` when every
   definition is weak). A static executable's default-visibility globals
   (`main`, `_start`, libc's) stay `STB_GLOBAL`. mold makes them all
@@ -1150,6 +1151,17 @@ gdb, lldb, perf, nm, addr2line, objdump and valgrind (§12).
   `__executable_start` global; mold makes all of them local
   (measured on AArch64, a static C program referencing each name).
   Y5 of the verifier judges the values only.
+  A definition a version script's `local:` or `--exclude-libs` makes
+  local (`spec/dyn.md` D-114, D-110 item 1) is demoted the same way: an
+  `STB_LOCAL` entry in its defining file's block, its own visibility kept
+  (`DEFAULT`, `PROTECTED`, `HIDDEN`: lld and mold; GNU ld writes
+  `STV_DEFAULT` on every local it demotes, as for hidden ones), kept by
+  `-x` and `-X` (they were not input locals: all three; `-s` drops
+  `.symtab`), a common included. In an executable `--exclude-libs`
+  demotes alike (lld in every kind; mold `LOCAL HIDDEN`; GNU ld in a PIE
+  and a static-pie, `GLOBAL HIDDEN` in `-no-pie` and static).
+  WP-150, measured on AArch64; `dyn/version/symtab-local` runs on both
+  64-bit targets.
 - **S-78 [C] (`-X`, `-x`, `--discard-none`).**
   - `-X` (`--discard-locals`): discard locals whose name begins
     with `.L` (the ELF temporary-label prefix; GNU and lld; mold keeps

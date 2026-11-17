@@ -475,8 +475,12 @@ impl<'a> SymCtx<'a> {
         let Some(at) = at else { return Ok((Class3::Skip, None)) };
         // S-81: a common symbol is `STT_OBJECT` in `.bss`.
         let typ = if g.def == SymDef::Common { STT_OBJECT } else { g.typ };
-        // S-77, S-121: hidden and internal definitions are locals.
-        let local = (vis == STV_HIDDEN || vis == STV_INTERNAL) && g.def != SymDef::Undefined;
+        // S-77, S-121: hidden and internal definitions are locals, and so
+        // are the definitions resolution writes `STB_LOCAL` (a version
+        // script's or `--exclude-libs`' local keys, `spec/dyn.md` D-114,
+        // WP-150), with their own visibility.
+        let local = (vis == STV_HIDDEN || vis == STV_INTERNAL || g.binding == STB_LOCAL)
+            && g.def != SymDef::Undefined;
         let binding = if local { STB_LOCAL } else { g.binding };
         let row =
             Row { name: g.name.into(), info: binding << 4 | typ, other: g.other, size: g.size, at };

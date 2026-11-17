@@ -1,0 +1,31 @@
+# synth.md S-77, dyn.md D-114 (WP-150): a common definition a version
+# script makes local is `STB_LOCAL` in `.symtab`, as any other definition
+# the script demotes (GNU ld, lld, mold: `OBJECT LOCAL DEFAULT`), and is
+# not exported. Its own test because the verifier's map rule M7 holds a
+# common to a global or weak `.symtab` symbol (plumb.md §3.3), which no
+# linker writes here; WP-150 asks the verifier to take a local one.
+#@ spec: synth.md "S-77"; dyn.md "D-114"
+#@ arch: aarch64 x86_64
+#@ xfail(mortar): the verifier's M7 wants the map's common 'cm' a global or weak .symtab symbol; a version script makes it local (WP-150 reported it)
+
+cc -O1 -fPIC -fcommon lib.c -o lib.o
+cc -O1 -fPIE main.c -o main.o
+link gcc -shared lib.o -Wl,--version-script,v.map -o libc1.so
+check readelf -sW libc1.so
+  has: OBJECT LOCAL DEFAULT * cm$
+  not: GLOBAL * cm$
+check readelf --dyn-syms -W libc1.so
+  not: cm$
+host gcc -pie main.o -L. -l:libc1.so -o prog
+run prog
+  stdout: 4
+
+#--- lib.c
+int cm;
+int api(int x) { cm = x; return cm - 1; }
+#--- main.c
+#include <stdio.h>
+int api(int);
+int main(void) { printf("%d\n", api(5)); return 0; }
+#--- v.map
+V1 { global: api; local: *; };

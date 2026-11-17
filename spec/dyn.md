@@ -2101,10 +2101,10 @@ whose `def` is a definition of a live relocatable object with
    `--dynamic-list` and D-21's export of a definition a shared input
    also has (all three), and a shared input's reference to an excluded
    definition is refused as one to a hidden definition (D-13; GNU ld and
-   lld refuse it, mold links a program the loader cannot start). The
-   `.symtab` binding of an excluded definition is WP-150's question (GNU
-   ld and lld write `LOCAL DEFAULT`, mold `LOCAL HIDDEN`; mortar keeps
-   `GLOBAL` meanwhile);
+   lld refuse it, mold links a program the loader cannot start). An
+   excluded definition is `STB_LOCAL` in `.symtab` with its own
+   visibility (synth S-77; GNU ld and lld write `LOCAL DEFAULT`, mold
+   `LOCAL HIDDEN`; WP-150);
 2. linker-defined (file 0): exported only when `ref_dynamic`, as D-21
    item 2 says for executables, but for D-21's seven names (`_etext`,
    `etext`, `_edata`, `edata`, `__bss_start`, `_end`, `end`): one that

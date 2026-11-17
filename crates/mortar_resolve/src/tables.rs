@@ -23,7 +23,7 @@ use mortar_core::resolution::{
 };
 use mortar_core::{ComdatId, FileId, IdSet, OptId, SymEntry, SymbolId};
 use mortar_diag::{Diagnostic, FileRef, Key, Kind, Place, RefusalClass, Relation};
-use mortar_elf::consts::{STB_GLOBAL, STB_WEAK, STT_SECTION};
+use mortar_elf::consts::{STB_GLOBAL, STB_LOCAL, STB_WEAK, STT_SECTION};
 use mortar_elf::{SectionIndex, SymbolIndex, SymbolSection, SymbolTable};
 
 use crate::index::HashIndex;
@@ -428,7 +428,7 @@ fn shared_per_file<'s>(
                 continue;
             }
         };
-        if sym.binding() == mortar_elf::consts::STB_LOCAL {
+        if sym.binding() == STB_LOCAL {
             out.faults.push(format!("dynamic symbol {index}: STB_LOCAL past sh_info"));
             continue;
         }
@@ -639,7 +639,7 @@ impl View for InputsView<'_, '_> {
 /// or protected visibility (hidden and internal ones are ignored; local
 /// and common ones are faults of the view).
 fn shared_mention(sym: &mortar_elf::Sym, place: SymbolSection) -> bool {
-    use mortar_elf::consts::{STB_LOCAL, STV_HIDDEN, STV_INTERNAL};
+    use mortar_elf::consts::{STV_HIDDEN, STV_INTERNAL};
     if sym.binding() == STB_LOCAL || place == SymbolSection::Common {
         return false;
     }
@@ -942,6 +942,16 @@ pub fn resolution<V: View>(
         .enumerate()
         .map(|(k, (&d, &p))| {
             let mut props = sym_props(SymbolId(k as u32), d, p, opts);
+            // `spec/dyn.md` D-114 and D-110 item 1 (WP-150): a definition a
+            // version script or `--exclude-libs` makes local is
+            // `STB_LOCAL` in `.symtab` (synth.md S-77). Without a script
+            // and without `--exclude-libs` both columns are empty.
+            if props.binding != STB_LOCAL
+                && (dynamic.is_some_and(|dy| dy.script_local.get(k) == Some(&true))
+                    || excluded(opts, d))
+            {
+                props.binding = STB_LOCAL;
+            }
             if let Some(dy) = dynamic {
                 dynamic_props(view, k, d, dy, &mut props);
             }
@@ -1025,6 +1035,17 @@ pub fn table_def(d: Def) -> TableDef {
             TableDef::Internal(InternalDef::Provide { conditional })
         }
         Def::Shared(e) => TableDef::Shared(e),
+    }
+}
+
+/// A definition in a member of an archive `--exclude-libs` names
+/// (`spec/dyn.md` D-110 item 1).
+fn excluded(opts: &Options, d: Def) -> bool {
+    match d {
+        Def::Strong(e) | Def::Weak(e) | Def::Common(e) if !opts.exclude_libs.is_empty() => {
+            opts.exclude_libs.get(e.file.0 as usize).copied().unwrap_or(false)
+        }
+        _ => false,
     }
 }
 
