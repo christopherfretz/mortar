@@ -1,0 +1,58 @@
+target  set  option          bfd   lld   mold 
+aarch64 NN   (none)           N N N
+aarch64 NN   -z execstack     X N N
+aarch64 NN   -z noexecstack   N N N
+aarch64 XX   (none)           X N X
+aarch64 XX   -z execstack     X N X
+aarch64 XX   -z noexecstack   X N X
+aarch64 NX   (none)           X N X
+aarch64 NX   -z execstack     X N X
+aarch64 NX   -z noexecstack   X N X
+aarch64 NA   (none)           N N N
+aarch64 NA   -z execstack     X N N
+aarch64 NA   -z noexecstack   N N N
+aarch64 XA   (none)           X N X
+aarch64 XA   -z execstack     X N X
+aarch64 XA   -z noexecstack   X N X
+aarch64 AA   (none)           - N -
+aarch64 AA   -z execstack     X N -
+aarch64 AA   -z noexecstack   N N -
+target  set  option          bfd   lld   mold 
+x86_64  NN   (none)           N N N
+x86_64  NN   -z execstack     N N N
+x86_64  NN   -z noexecstack   N N N
+x86_64  XX   (none)           X N X
+x86_64  XX   -z execstack     X N X
+x86_64  XX   -z noexecstack   X N X
+x86_64  NX   (none)           X N X
+x86_64  NX   -z execstack     X N X
+x86_64  NX   -z noexecstack   X N X
+x86_64  NA   (none)           N N N
+x86_64  NA   -z execstack     N N N
+x86_64  NA   -z noexecstack   N N N
+x86_64  XA   (none)           X N X
+x86_64  XA   -z execstack     X N X
+x86_64  XA   -z noexecstack   X N X
+x86_64  AA   (none)           - N -
+x86_64  AA   -z execstack     X N -
+x86_64  AA   -z noexecstack   N N -
+target  set  option          bfd   lld   mold 
+i686    NN   (none)           N N N
+i686    NN   -z execstack     N N N
+i686    NN   -z noexecstack   N N N
+i686    XX   (none)           X N X
+i686    XX   -z execstack     X N X
+i686    XX   -z noexecstack   X N X
+i686    NX   (none)           X N X
+i686    NX   -z execstack     X N X
+i686    NX   -z noexecstack   X N X
+i686    NA   (none)           N N N
+i686    NA   -z execstack     N N N
+i686    NA   -z noexecstack   N N N
+i686    XA   (none)           X N X
+i686    XA   -z execstack     X N X
+i686    XA   -z noexecstack   X N X
+i686    AA   (none)           - N -
+i686    AA   -z execstack     X N -
+i686    AA   -z noexecstack   N N -
+stack done

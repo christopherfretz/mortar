@@ -1,0 +1,22 @@
+bfd | -r: hidden globals: group signatures 2, other group members 0, outside groups 0 ; groups 16
+exp/more/prelink.sh: line 34: 3618486 Aborted                 ./p.$K.$L > out 2>&1
+bfd | bfd | rc=134 run DIFFERS gdb same
+bfd | mortar | link failed: ld: error: comp.bfd.lh.o:(.eh_frame+0x280): unsupported feature: overlapping relocations
+bfd-fga | -r: hidden globals: group signatures 0, other group members 0, outside groups 2 ; groups 0
+bfd-fga | bfd | rc=0 run same gdb same
+bfd-fga | mortar | link failed: ld: error: comp.bfd-fga.lh.o:(.eh_frame+0x280): unsupported feature: overlapping relocations
+lld | -r: hidden globals: group signatures 2, other group members 0, outside groups 0 ; groups 16
+exp/more/prelink.sh: line 34: 3620413 Aborted                 ./p.$K.$L > out 2>&1
+lld | bfd | rc=134 run DIFFERS gdb same
+exp/more/prelink.sh: line 34: 3620703 Aborted                 ./p.$K.$L > out 2>&1
+lld | mortar | rc=134 run DIFFERS gdb same
+lld-fga | -r: hidden globals: group signatures 0, other group members 0, outside groups 2 ; groups 0
+lld-fga | bfd | rc=0 run same gdb same
+lld-fga | mortar | rc=0 run same gdb same
+mold | -r: hidden globals: group signatures 2, other group members 0, outside groups 0 ; groups 16
+exp/more/prelink.sh: line 34: 3622011 Aborted                 ./p.$K.$L > out 2>&1
+mold | bfd | rc=134 run DIFFERS gdb same
+exp/more/prelink.sh: line 34: 3622247 Aborted                 ./p.$K.$L > out 2>&1
+mold | mortar | rc=134 run DIFFERS gdb same
+GNU objcopy (GNU Binutils for Debian) 2.44
+prelink done

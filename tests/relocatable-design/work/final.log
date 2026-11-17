@@ -1,0 +1,324 @@
+aarch64 gcc c static -r:bfd final:bfd: same (warnings 0)
+aarch64 gcc c static -r:bfd final:mortar: same (warnings 0)
+aarch64 gcc c static -r:lld final:bfd: same (warnings 0)
+aarch64 gcc c static -r:lld final:mortar: same (warnings 0)
+aarch64 gcc c static -r:mold final:bfd: DIFFERS: got [rc=139|] want [ctor order: 101 200 1 2|g_data=5 wk=2 wk_only=11 bump=1,2 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|] (warnings 0)
+aarch64 gcc c static -r:mold final:mortar: DIFFERS: got [rc=139|] want [ctor order: 101 200 1 2|g_data=5 wk=2 wk_only=11 bump=1,2 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|] (warnings 0)
+aarch64 gcc c static direct: ctor order: 101 200 1 2|g_data=5 wk=2 wk_only=11 bump=1,2 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|
+aarch64 gcc c pie -r:bfd final:bfd: same (warnings 0)
+aarch64 gcc c pie -r:bfd final:mortar: same (warnings 0)
+aarch64 gcc c pie -r:lld final:bfd: same (warnings 0)
+aarch64 gcc c pie -r:lld final:mortar: same (warnings 0)
+aarch64 gcc c pie -r:mold final:bfd: DIFFERS: got [ctor order: 101 200 1 2|g_data=5 wk=2 wk_only=11 bump=1,2 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=65794|rc=0|] want [ctor order: 101 200 1 2|g_data=5 wk=2 wk_only=11 bump=1,2 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|] (warnings 0)
+aarch64 gcc c pie -r:mold final:mortar: DIFFERS: got [rc=139|] want [ctor order: 101 200 1 2|g_data=5 wk=2 wk_only=11 bump=1,2 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|] (warnings 0)
+aarch64 gcc c pie direct: ctor order: 101 200 1 2|g_data=5 wk=2 wk_only=11 bump=1,2 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|
+aarch64 gcc cifunc static -r:bfd final:bfd: same (warnings 0)
+aarch64 gcc cifunc static -r:bfd final:mortar: same (warnings 0)
+aarch64 gcc cifunc static -r:lld final:bfd: same (warnings 0)
+aarch64 gcc cifunc static -r:lld final:mortar: same (warnings 0)
+aarch64 gcc cifunc -r:mold: REFUSED ./final/run.sh: line 16: 851637 Segmentation fault      mold -r -o "$o" "$@" 
+aarch64 gcc cifunc static direct: ctor order: 101 200 1 2|g_data=5 wk=2 wk_only=11 bump=1,2 undef_weak=-1 ifn=40 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|
+aarch64 gcc cifunc pie -r:bfd final:bfd: same (warnings 0)
+aarch64 gcc cifunc pie -r:bfd final:mortar: same (warnings 0)
+aarch64 gcc cifunc pie -r:lld final:bfd: same (warnings 0)
+aarch64 gcc cifunc pie -r:lld final:mortar: same (warnings 0)
+aarch64 gcc cifunc -r:mold: REFUSED ./final/run.sh: line 16: 851769 Segmentation fault      mold -r -o "$o" "$@" 
+aarch64 gcc cifunc pie direct: ctor order: 101 200 1 2|g_data=5 wk=2 wk_only=11 bump=1,2 undef_weak=-1 ifn=40 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|
+aarch64 gcc cctors static -r:bfd final:bfd: same (warnings 0)
+aarch64 gcc cctors static -r:bfd final:mortar: LINK FAILED (direct mortar link refused too): ld: error: unsupported feature: .ctors section 
+aarch64 gcc cctors static -r:lld final:bfd: same (warnings 0)
+aarch64 gcc cctors static -r:lld final:mortar: LINK FAILED (direct mortar link refused too): ld: error: unsupported feature: .ctors section 
+aarch64 gcc cctors static -r:mold final:bfd: DIFFERS: got [rc=139|] want [ctor order: 101 3 200 1 2|g_data=5 wk=2 wk_only=11 bump=1,2 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|] (warnings 0)
+aarch64 gcc cctors static -r:mold final:mortar: DIFFERS: got [rc=139|] want [ctor order: 101 3 200 1 2|g_data=5 wk=2 wk_only=11 bump=1,2 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|] (warnings 0)
+aarch64 gcc cctors static direct: ctor order: 101 3 200 1 2|g_data=5 wk=2 wk_only=11 bump=1,2 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|
+aarch64 gcc cctors pie -r:bfd final:bfd: same (warnings 0)
+aarch64 gcc cctors pie -r:bfd final:mortar: LINK FAILED (direct mortar link refused too): ld: error: unsupported feature: .ctors section 
+aarch64 gcc cctors pie -r:lld final:bfd: same (warnings 0)
+aarch64 gcc cctors pie -r:lld final:mortar: LINK FAILED (direct mortar link refused too): ld: error: unsupported feature: .ctors section 
+aarch64 gcc cctors pie -r:mold final:bfd: DIFFERS: got [ctor order: 101 200 1 2 3|g_data=5 wk=2 wk_only=11 bump=1,2 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=65794|rc=0|] want [ctor order: 101 3 200 1 2|g_data=5 wk=2 wk_only=11 bump=1,2 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|] (warnings 0)
+aarch64 gcc cctors pie -r:mold final:mortar: DIFFERS: got [rc=139|] want [ctor order: 101 3 200 1 2|g_data=5 wk=2 wk_only=11 bump=1,2 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|] (warnings 0)
+aarch64 gcc cctors pie direct: ctor order: 101 3 200 1 2|g_data=5 wk=2 wk_only=11 bump=1,2 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|
+aarch64 gcc cxx static -r:bfd final:bfd: same (warnings 0)
+aarch64 gcc cxx static -r:bfd final:mortar: same (warnings 0)
+aarch64 gcc cxx static -r:lld final:bfd: same (warnings 0)
+aarch64 gcc cxx static -r:lld final:mortar: same (warnings 0)
+aarch64 gcc cxx static -r:mold final:bfd: same (warnings 0)
+aarch64 gcc cxx static -r:mold final:mortar: same (warnings 0)
+aarch64 gcc cxx static direct: x1=48 x2=26|caught: x1 says 7|main caught 5|c=1|rc=0|
+aarch64 gcc cxx pie -r:bfd final:bfd: same (warnings 0)
+aarch64 gcc cxx pie -r:bfd final:mortar: same (warnings 0)
+aarch64 gcc cxx pie -r:lld final:bfd: same (warnings 0)
+aarch64 gcc cxx pie -r:lld final:mortar: same (warnings 0)
+aarch64 gcc cxx pie -r:mold final:bfd: same (warnings 0)
+aarch64 gcc cxx pie -r:mold final:mortar: same (warnings 0)
+aarch64 gcc cxx pie direct: x1=48 x2=26|caught: x1 says 7|main caught 5|c=1|rc=0|
+aarch64 clang c static -r:bfd final:bfd: same (warnings 0)
+aarch64 clang c static -r:bfd final:mortar: same (warnings 0)
+aarch64 clang c static -r:lld final:bfd: same (warnings 0)
+aarch64 clang c static -r:lld final:mortar: same (warnings 0)
+aarch64 clang c static -r:mold final:bfd: DIFFERS: got [rc=139|] want [ctor order: 101 200 1 2|g_data=5 wk=2 wk_only=11 bump=1,2 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|] (warnings 0)
+aarch64 clang c static -r:mold final:mortar: DIFFERS: got [rc=139|] want [ctor order: 101 200 1 2|g_data=5 wk=2 wk_only=11 bump=1,2 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|] (warnings 0)
+aarch64 clang c static direct: ctor order: 101 200 1 2|g_data=5 wk=2 wk_only=11 bump=1,2 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|
+aarch64 clang c pie -r:bfd final:bfd: same (warnings 0)
+aarch64 clang c pie -r:bfd final:mortar: same (warnings 0)
+aarch64 clang c pie -r:lld final:bfd: same (warnings 0)
+aarch64 clang c pie -r:lld final:mortar: same (warnings 0)
+aarch64 clang c pie -r:mold final:bfd: DIFFERS: got [ctor order: 101 200 1 2|g_data=5 wk=2 wk_only=11 bump=1,2 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=65794|rc=0|] want [ctor order: 101 200 1 2|g_data=5 wk=2 wk_only=11 bump=1,2 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|] (warnings 0)
+aarch64 clang c pie -r:mold final:mortar: DIFFERS: got [rc=139|] want [ctor order: 101 200 1 2|g_data=5 wk=2 wk_only=11 bump=1,2 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|] (warnings 0)
+aarch64 clang c pie direct: ctor order: 101 200 1 2|g_data=5 wk=2 wk_only=11 bump=1,2 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|
+aarch64 clang cifunc static -r:bfd final:bfd: same (warnings 0)
+aarch64 clang cifunc static -r:bfd final:mortar: same (warnings 0)
+aarch64 clang cifunc static -r:lld final:bfd: same (warnings 0)
+aarch64 clang cifunc static -r:lld final:mortar: same (warnings 0)
+aarch64 clang cifunc -r:mold: REFUSED ./final/run.sh: line 16: 867293 Segmentation fault      mold -r -o "$o" "$@" 
+aarch64 clang cifunc static direct: ctor order: 101 200 1 2|g_data=5 wk=2 wk_only=11 bump=1,2 undef_weak=-1 ifn=40 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|
+aarch64 clang cifunc pie -r:bfd final:bfd: same (warnings 0)
+aarch64 clang cifunc pie -r:bfd final:mortar: same (warnings 0)
+aarch64 clang cifunc pie -r:lld final:bfd: same (warnings 0)
+aarch64 clang cifunc pie -r:lld final:mortar: same (warnings 0)
+aarch64 clang cifunc -r:mold: REFUSED ./final/run.sh: line 16: 867418 Segmentation fault      mold -r -o "$o" "$@" 
+aarch64 clang cifunc pie direct: ctor order: 101 200 1 2|g_data=5 wk=2 wk_only=11 bump=1,2 undef_weak=-1 ifn=40 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|
+aarch64 clang cctors static -r:bfd final:bfd: same (warnings 0)
+aarch64 clang cctors static -r:bfd final:mortar: LINK FAILED (direct mortar link refused too): ld: error: unsupported feature: .ctors section 
+aarch64 clang cctors static -r:lld final:bfd: same (warnings 0)
+aarch64 clang cctors static -r:lld final:mortar: LINK FAILED (direct mortar link refused too): ld: error: unsupported feature: .ctors section 
+aarch64 clang cctors static -r:mold final:bfd: DIFFERS: got [rc=139|] want [ctor order: 101 3 200 1 2|g_data=5 wk=2 wk_only=11 bump=1,2 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|] (warnings 0)
+aarch64 clang cctors static -r:mold final:mortar: DIFFERS: got [rc=139|] want [ctor order: 101 3 200 1 2|g_data=5 wk=2 wk_only=11 bump=1,2 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|] (warnings 0)
+aarch64 clang cctors static direct: ctor order: 101 3 200 1 2|g_data=5 wk=2 wk_only=11 bump=1,2 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|
+aarch64 clang cctors pie -r:bfd final:bfd: same (warnings 0)
+aarch64 clang cctors pie -r:bfd final:mortar: LINK FAILED (direct mortar link refused too): ld: error: unsupported feature: .ctors section 
+aarch64 clang cctors pie -r:lld final:bfd: same (warnings 0)
+aarch64 clang cctors pie -r:lld final:mortar: LINK FAILED (direct mortar link refused too): ld: error: unsupported feature: .ctors section 
+aarch64 clang cctors pie -r:mold final:bfd: DIFFERS: got [ctor order: 101 200 1 2 3|g_data=5 wk=2 wk_only=11 bump=1,2 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=65794|rc=0|] want [ctor order: 101 3 200 1 2|g_data=5 wk=2 wk_only=11 bump=1,2 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|] (warnings 0)
+aarch64 clang cctors pie -r:mold final:mortar: DIFFERS: got [rc=139|] want [ctor order: 101 3 200 1 2|g_data=5 wk=2 wk_only=11 bump=1,2 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|] (warnings 0)
+aarch64 clang cctors pie direct: ctor order: 101 3 200 1 2|g_data=5 wk=2 wk_only=11 bump=1,2 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|
+aarch64 clang cxx static -r:bfd final:bfd: same (warnings 0)
+aarch64 clang cxx static -r:bfd final:mortar: same (warnings 0)
+aarch64 clang cxx static -r:lld final:bfd: same (warnings 0)
+aarch64 clang cxx static -r:lld final:mortar: same (warnings 0)
+aarch64 clang cxx static -r:mold final:bfd: same (warnings 0)
+aarch64 clang cxx static -r:mold final:mortar: same (warnings 0)
+aarch64 clang cxx static direct: x1=48 x2=26|caught: x1 says 7|main caught 5|c=1|rc=0|
+aarch64 clang cxx pie -r:bfd final:bfd: same (warnings 0)
+aarch64 clang cxx pie -r:bfd final:mortar: same (warnings 0)
+aarch64 clang cxx pie -r:lld final:bfd: same (warnings 0)
+aarch64 clang cxx pie -r:lld final:mortar: same (warnings 0)
+aarch64 clang cxx pie -r:mold final:bfd: same (warnings 0)
+aarch64 clang cxx pie -r:mold final:mortar: same (warnings 0)
+aarch64 clang cxx pie direct: x1=48 x2=26|caught: x1 says 7|main caught 5|c=1|rc=0|
+x86_64 gcc c static -r:bfd final:bfd: same (warnings 0)
+x86_64 gcc c static -r:bfd final:mortar: same (warnings 0)
+x86_64 gcc c static -r:lld final:bfd: same (warnings 0)
+x86_64 gcc c static -r:lld final:mortar: same (warnings 0)
+x86_64 gcc c static -r:mold final:bfd: DIFFERS: got [qemu: uncaught target signal 11 (Segmentation fault) - core dumped|rc=139|] want [ctor order: 101 200 1 2|g_data=5 wk=2 wk_only=11 bump=2,1 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|] (warnings 0)
+x86_64 gcc c static -r:mold final:mortar: DIFFERS: got [qemu: uncaught target signal 11 (Segmentation fault) - core dumped|rc=139|] want [ctor order: 101 200 1 2|g_data=5 wk=2 wk_only=11 bump=2,1 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|] (warnings 0)
+x86_64 gcc c static direct: ctor order: 101 200 1 2|g_data=5 wk=2 wk_only=11 bump=2,1 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|
+x86_64 gcc c pie -r:bfd final:bfd: same (warnings 0)
+x86_64 gcc c pie -r:bfd final:mortar: same (warnings 0)
+x86_64 gcc c pie -r:lld final:bfd: same (warnings 0)
+x86_64 gcc c pie -r:lld final:mortar: same (warnings 0)
+x86_64 gcc c pie -r:mold final:bfd: LINK FAILED : /usr/lib/gcc-cross/x86_64-linux-gnu/14/../../../../x86_64-linux-gnu/bin/ld: x86_64.gcc/mainc.o: relocation R_X86_64_PC32 against absolute symbol `common_x' in section `.text.main' is disallowed 
+x86_64 gcc c pie -r:mold final:mortar: LINK FAILED (direct mortar links): ld: error: x86_64.gcc/mainc.o:(.text.main+0xdf): relocation R_X86_64_PC32 cannot be used against symbol 'common_x'; recompile with -fPIE 
+x86_64 gcc c pie direct: ctor order: 101 200 1 2|g_data=5 wk=2 wk_only=11 bump=2,1 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|
+x86_64 gcc cifunc static -r:bfd final:bfd: same (warnings 0)
+x86_64 gcc cifunc static -r:bfd final:mortar: same (warnings 0)
+x86_64 gcc cifunc static -r:lld final:bfd: same (warnings 0)
+x86_64 gcc cifunc static -r:lld final:mortar: same (warnings 0)
+x86_64 gcc cifunc -r:mold: REFUSED ./final/run.sh: line 16: 875557 Segmentation fault      mold -r -o "$o" "$@" 
+x86_64 gcc cifunc static direct: ctor order: 101 200 1 2|g_data=5 wk=2 wk_only=11 bump=2,1 undef_weak=-1 ifn=40 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|
+x86_64 gcc cifunc pie -r:bfd final:bfd: same (warnings 0)
+x86_64 gcc cifunc pie -r:bfd final:mortar: same (warnings 0)
+x86_64 gcc cifunc pie -r:lld final:bfd: same (warnings 0)
+x86_64 gcc cifunc pie -r:lld final:mortar: same (warnings 0)
+x86_64 gcc cifunc -r:mold: REFUSED ./final/run.sh: line 16: 875981 Segmentation fault      mold -r -o "$o" "$@" 
+x86_64 gcc cifunc pie direct: ctor order: 101 200 1 2|g_data=5 wk=2 wk_only=11 bump=2,1 undef_weak=-1 ifn=40 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|
+x86_64 gcc cctors static -r:bfd final:bfd: same (warnings 0)
+x86_64 gcc cctors static -r:bfd final:mortar: LINK FAILED (direct mortar link refused too): ld: error: unsupported feature: .ctors section 
+x86_64 gcc cctors static -r:lld final:bfd: same (warnings 0)
+x86_64 gcc cctors static -r:lld final:mortar: LINK FAILED (direct mortar link refused too): ld: error: unsupported feature: .ctors section 
+x86_64 gcc cctors static -r:mold final:bfd: DIFFERS: got [qemu: uncaught target signal 11 (Segmentation fault) - core dumped|rc=139|] want [ctor order: 101 3 200 1 2|g_data=5 wk=2 wk_only=11 bump=2,1 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|] (warnings 0)
+x86_64 gcc cctors static -r:mold final:mortar: DIFFERS: got [qemu: uncaught target signal 11 (Segmentation fault) - core dumped|rc=139|] want [ctor order: 101 3 200 1 2|g_data=5 wk=2 wk_only=11 bump=2,1 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|] (warnings 0)
+x86_64 gcc cctors static direct: ctor order: 101 3 200 1 2|g_data=5 wk=2 wk_only=11 bump=2,1 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|
+x86_64 gcc cctors pie -r:bfd final:bfd: same (warnings 0)
+x86_64 gcc cctors pie -r:bfd final:mortar: LINK FAILED (direct mortar link refused too): ld: error: unsupported feature: .ctors section 
+x86_64 gcc cctors pie -r:lld final:bfd: same (warnings 0)
+x86_64 gcc cctors pie -r:lld final:mortar: LINK FAILED (direct mortar link refused too): ld: error: unsupported feature: .ctors section 
+x86_64 gcc cctors pie -r:mold final:bfd: LINK FAILED : /usr/lib/gcc-cross/x86_64-linux-gnu/14/../../../../x86_64-linux-gnu/bin/ld: x86_64.gcc/mainc.o: relocation R_X86_64_PC32 against absolute symbol `common_x' in section `.text.main' is disallowed 
+x86_64 gcc cctors pie -r:mold final:mortar: LINK FAILED (direct mortar link refused too): ld: error: x86_64.gcc/mainc.o:(.text.main+0xdf): relocation R_X86_64_PC32 cannot be used against symbol 'common_x'; recompile with -fPIE 
+x86_64 gcc cctors pie direct: ctor order: 101 3 200 1 2|g_data=5 wk=2 wk_only=11 bump=2,1 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|
+x86_64 gcc cxx static -r:bfd final:bfd: same (warnings 0)
+x86_64 gcc cxx static -r:bfd final:mortar: same (warnings 0)
+x86_64 gcc cxx static -r:lld final:bfd: same (warnings 0)
+x86_64 gcc cxx static -r:lld final:mortar: same (warnings 0)
+x86_64 gcc cxx static -r:mold final:bfd: same (warnings 0)
+x86_64 gcc cxx static -r:mold final:mortar: same (warnings 0)
+x86_64 gcc cxx static direct: x1=52 x2=30|caught: x1 says 7|main caught 5|c=1|rc=0|
+x86_64 gcc cxx pie -r:bfd final:bfd: same (warnings 0)
+x86_64 gcc cxx pie -r:bfd final:mortar: same (warnings 0)
+x86_64 gcc cxx pie -r:lld final:bfd: same (warnings 0)
+x86_64 gcc cxx pie -r:lld final:mortar: same (warnings 0)
+x86_64 gcc cxx pie -r:mold final:bfd: same (warnings 0)
+x86_64 gcc cxx pie -r:mold final:mortar: same (warnings 0)
+x86_64 gcc cxx pie direct: x1=52 x2=30|caught: x1 says 7|main caught 5|c=1|rc=0|
+x86_64 clang c static -r:bfd final:bfd: same (warnings 0)
+x86_64 clang c static -r:bfd final:mortar: same (warnings 0)
+x86_64 clang c static -r:lld final:bfd: same (warnings 0)
+x86_64 clang c static -r:lld final:mortar: same (warnings 0)
+x86_64 clang c static -r:mold final:bfd: DIFFERS: got [qemu: uncaught target signal 11 (Segmentation fault) - core dumped|rc=139|] want [ctor order: 101 200 1 2|g_data=5 wk=2 wk_only=11 bump=1,2 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|] (warnings 0)
+x86_64 clang c static -r:mold final:mortar: DIFFERS: got [qemu: uncaught target signal 11 (Segmentation fault) - core dumped|rc=139|] want [ctor order: 101 200 1 2|g_data=5 wk=2 wk_only=11 bump=1,2 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|] (warnings 0)
+x86_64 clang c static direct: ctor order: 101 200 1 2|g_data=5 wk=2 wk_only=11 bump=1,2 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|
+x86_64 clang c pie -r:bfd final:bfd: same (warnings 0)
+x86_64 clang c pie -r:bfd final:mortar: same (warnings 0)
+x86_64 clang c pie -r:lld final:bfd: same (warnings 0)
+x86_64 clang c pie -r:lld final:mortar: same (warnings 0)
+x86_64 clang c pie -r:mold final:bfd: DIFFERS: got [qemu: uncaught target signal 11 (Segmentation fault) - core dumped|rc=139|] want [ctor order: 101 200 1 2|g_data=5 wk=2 wk_only=11 bump=1,2 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|] (warnings 0)
+x86_64 clang c pie -r:mold final:mortar: DIFFERS: got [qemu: uncaught target signal 11 (Segmentation fault) - core dumped|rc=139|] want [ctor order: 101 200 1 2|g_data=5 wk=2 wk_only=11 bump=1,2 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|] (warnings 0)
+x86_64 clang c pie direct: ctor order: 101 200 1 2|g_data=5 wk=2 wk_only=11 bump=1,2 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|
+x86_64 clang cifunc static -r:bfd final:bfd: same (warnings 0)
+x86_64 clang cifunc static -r:bfd final:mortar: same (warnings 0)
+x86_64 clang cifunc static -r:lld final:bfd: same (warnings 0)
+x86_64 clang cifunc static -r:lld final:mortar: same (warnings 0)
+x86_64 clang cifunc -r:mold: REFUSED ./final/run.sh: line 16: 880539 Segmentation fault      mold -r -o "$o" "$@" 
+x86_64 clang cifunc static direct: ctor order: 101 200 1 2|g_data=5 wk=2 wk_only=11 bump=1,2 undef_weak=-1 ifn=40 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|
+x86_64 clang cifunc pie -r:bfd final:bfd: same (warnings 0)
+x86_64 clang cifunc pie -r:bfd final:mortar: same (warnings 0)
+x86_64 clang cifunc pie -r:lld final:bfd: same (warnings 0)
+x86_64 clang cifunc pie -r:lld final:mortar: same (warnings 0)
+x86_64 clang cifunc -r:mold: REFUSED ./final/run.sh: line 16: 880740 Segmentation fault      mold -r -o "$o" "$@" 
+x86_64 clang cifunc pie direct: ctor order: 101 200 1 2|g_data=5 wk=2 wk_only=11 bump=1,2 undef_weak=-1 ifn=40 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|
+x86_64 clang cctors static -r:bfd final:bfd: same (warnings 0)
+x86_64 clang cctors static -r:bfd final:mortar: LINK FAILED (direct mortar link refused too): ld: error: unsupported feature: .ctors section 
+x86_64 clang cctors static -r:lld final:bfd: same (warnings 0)
+x86_64 clang cctors static -r:lld final:mortar: LINK FAILED (direct mortar link refused too): ld: error: unsupported feature: .ctors section 
+x86_64 clang cctors static -r:mold final:bfd: DIFFERS: got [qemu: uncaught target signal 11 (Segmentation fault) - core dumped|rc=139|] want [ctor order: 101 3 200 1 2|g_data=5 wk=2 wk_only=11 bump=1,2 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|] (warnings 0)
+x86_64 clang cctors static -r:mold final:mortar: DIFFERS: got [qemu: uncaught target signal 11 (Segmentation fault) - core dumped|rc=139|] want [ctor order: 101 3 200 1 2|g_data=5 wk=2 wk_only=11 bump=1,2 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|] (warnings 0)
+x86_64 clang cctors static direct: ctor order: 101 3 200 1 2|g_data=5 wk=2 wk_only=11 bump=1,2 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|
+x86_64 clang cctors pie -r:bfd final:bfd: same (warnings 0)
+x86_64 clang cctors pie -r:bfd final:mortar: LINK FAILED (direct mortar link refused too): ld: error: unsupported feature: .ctors section 
+x86_64 clang cctors pie -r:lld final:bfd: same (warnings 0)
+x86_64 clang cctors pie -r:lld final:mortar: LINK FAILED (direct mortar link refused too): ld: error: unsupported feature: .ctors section 
+x86_64 clang cctors pie -r:mold final:bfd: DIFFERS: got [qemu: uncaught target signal 11 (Segmentation fault) - core dumped|rc=139|] want [ctor order: 101 3 200 1 2|g_data=5 wk=2 wk_only=11 bump=1,2 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|] (warnings 0)
+x86_64 clang cctors pie -r:mold final:mortar: DIFFERS: got [qemu: uncaught target signal 11 (Segmentation fault) - core dumped|rc=139|] want [ctor order: 101 3 200 1 2|g_data=5 wk=2 wk_only=11 bump=1,2 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|] (warnings 0)
+x86_64 clang cctors pie direct: ctor order: 101 3 200 1 2|g_data=5 wk=2 wk_only=11 bump=1,2 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|
+x86_64 clang cxx static -r:bfd final:bfd: same (warnings 0)
+x86_64 clang cxx static -r:bfd final:mortar: same (warnings 0)
+x86_64 clang cxx static -r:lld final:bfd: same (warnings 0)
+x86_64 clang cxx static -r:lld final:mortar: same (warnings 0)
+x86_64 clang cxx static -r:mold final:bfd: same (warnings 0)
+x86_64 clang cxx static -r:mold final:mortar: same (warnings 0)
+x86_64 clang cxx static direct: x1=48 x2=26|caught: x1 says 7|main caught 5|c=1|rc=0|
+x86_64 clang cxx pie -r:bfd final:bfd: same (warnings 0)
+x86_64 clang cxx pie -r:bfd final:mortar: same (warnings 0)
+x86_64 clang cxx pie -r:lld final:bfd: same (warnings 0)
+x86_64 clang cxx pie -r:lld final:mortar: same (warnings 0)
+x86_64 clang cxx pie -r:mold final:bfd: same (warnings 0)
+x86_64 clang cxx pie -r:mold final:mortar: same (warnings 0)
+x86_64 clang cxx pie direct: x1=48 x2=26|caught: x1 says 7|main caught 5|c=1|rc=0|
+i686 gcc c static -r:bfd final:bfd: same (warnings 0)
+i686 gcc c static -r:bfd final:mortar: same (warnings 0)
+i686 gcc c static -r:lld final:bfd: same (warnings 0)
+i686 gcc c static -r:lld final:mortar: same (warnings 0)
+i686 gcc c static -r:mold final:bfd: DIFFERS: got [qemu: uncaught target signal 11 (Segmentation fault) - core dumped|rc=139|] want [ctor order: 101 200 1 2|g_data=5 wk=2 wk_only=11 bump=2,1 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|] (warnings 0)
+i686 gcc c static -r:mold final:mortar: DIFFERS: got [qemu: uncaught target signal 11 (Segmentation fault) - core dumped|rc=139|] want [ctor order: 101 200 1 2|g_data=5 wk=2 wk_only=11 bump=2,1 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|] (warnings 0)
+i686 gcc c static direct: ctor order: 101 200 1 2|g_data=5 wk=2 wk_only=11 bump=2,1 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|
+i686 gcc c pie -r:bfd final:bfd: same (warnings 0)
+i686 gcc c pie -r:bfd final:mortar: LINK FAILED (direct mortar link refused too): ld: error: unsupported feature: dynamically linked output on i386 >>> ELFCLASS32 dynamic output is M4 (docs/status/m2.md) 
+i686 gcc c pie -r:lld final:bfd: same (warnings 0)
+i686 gcc c pie -r:lld final:mortar: LINK FAILED (direct mortar link refused too): ld: error: unsupported feature: dynamically linked output on i386 >>> ELFCLASS32 dynamic output is M4 (docs/status/m2.md) 
+i686 gcc c pie -r:mold final:bfd: DIFFERS: got [qemu: uncaught target signal 11 (Segmentation fault) - core dumped|rc=139|] want [ctor order: 101 200 1 2|g_data=5 wk=2 wk_only=11 bump=2,1 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|] (warnings 0)
+i686 gcc c pie -r:mold final:mortar: LINK FAILED (direct mortar link refused too): ld: error: unsupported feature: dynamically linked output on i386 >>> ELFCLASS32 dynamic output is M4 (docs/status/m2.md) 
+i686 gcc c pie direct: ctor order: 101 200 1 2|g_data=5 wk=2 wk_only=11 bump=2,1 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|
+i686 gcc cifunc static -r:bfd final:bfd: same (warnings 0)
+i686 gcc cifunc static -r:bfd final:mortar: same (warnings 0)
+i686 gcc cifunc static -r:lld final:bfd: same (warnings 0)
+i686 gcc cifunc static -r:lld final:mortar: same (warnings 0)
+i686 gcc cifunc -r:mold: REFUSED ./final/run.sh: line 16: 885477 Segmentation fault      mold -r -o "$o" "$@" 
+i686 gcc cifunc static direct: ctor order: 101 200 1 2|g_data=5 wk=2 wk_only=11 bump=2,1 undef_weak=-1 ifn=40 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|
+i686 gcc cifunc pie -r:bfd final:bfd: same (warnings 0)
+i686 gcc cifunc pie -r:bfd final:mortar: LINK FAILED (direct mortar link refused too): ld: error: unsupported feature: dynamically linked output on i386 >>> ELFCLASS32 dynamic output is M4 (docs/status/m2.md) 
+i686 gcc cifunc pie -r:lld final:bfd: same (warnings 0)
+i686 gcc cifunc pie -r:lld final:mortar: LINK FAILED (direct mortar link refused too): ld: error: unsupported feature: dynamically linked output on i386 >>> ELFCLASS32 dynamic output is M4 (docs/status/m2.md) 
+i686 gcc cifunc -r:mold: REFUSED ./final/run.sh: line 16: 885865 Segmentation fault      mold -r -o "$o" "$@" 
+i686 gcc cifunc pie direct: ctor order: 101 200 1 2|g_data=5 wk=2 wk_only=11 bump=2,1 undef_weak=-1 ifn=40 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|
+i686 gcc cctors static -r:bfd final:bfd: same (warnings 0)
+i686 gcc cctors static -r:bfd final:mortar: LINK FAILED (direct mortar link refused too): ld: error: unsupported feature: .ctors section 
+i686 gcc cctors static -r:lld final:bfd: same (warnings 0)
+i686 gcc cctors static -r:lld final:mortar: LINK FAILED (direct mortar link refused too): ld: error: unsupported feature: .ctors section 
+i686 gcc cctors static -r:mold final:bfd: DIFFERS: got [qemu: uncaught target signal 11 (Segmentation fault) - core dumped|rc=139|] want [ctor order: 101 3 200 1 2|g_data=5 wk=2 wk_only=11 bump=2,1 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|] (warnings 0)
+i686 gcc cctors static -r:mold final:mortar: DIFFERS: got [qemu: uncaught target signal 11 (Segmentation fault) - core dumped|rc=139|] want [ctor order: 101 3 200 1 2|g_data=5 wk=2 wk_only=11 bump=2,1 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|] (warnings 0)
+i686 gcc cctors static direct: ctor order: 101 3 200 1 2|g_data=5 wk=2 wk_only=11 bump=2,1 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|
+i686 gcc cctors pie -r:bfd final:bfd: same (warnings 0)
+i686 gcc cctors pie -r:bfd final:mortar: LINK FAILED (direct mortar link refused too): ld: error: unsupported feature: dynamically linked output on i386 >>> ELFCLASS32 dynamic output is M4 (docs/status/m2.md) 
+i686 gcc cctors pie -r:lld final:bfd: same (warnings 0)
+i686 gcc cctors pie -r:lld final:mortar: LINK FAILED (direct mortar link refused too): ld: error: unsupported feature: dynamically linked output on i386 >>> ELFCLASS32 dynamic output is M4 (docs/status/m2.md) 
+i686 gcc cctors pie -r:mold final:bfd: DIFFERS: got [qemu: uncaught target signal 11 (Segmentation fault) - core dumped|rc=139|] want [ctor order: 101 3 200 1 2|g_data=5 wk=2 wk_only=11 bump=2,1 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|] (warnings 0)
+i686 gcc cctors pie -r:mold final:mortar: LINK FAILED (direct mortar link refused too): ld: error: unsupported feature: dynamically linked output on i386 >>> ELFCLASS32 dynamic output is M4 (docs/status/m2.md) 
+i686 gcc cctors pie direct: ctor order: 101 3 200 1 2|g_data=5 wk=2 wk_only=11 bump=2,1 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|
+i686 gcc cxx static -r:bfd final:bfd: same (warnings 0)
+i686 gcc cxx static -r:bfd final:mortar: same (warnings 0)
+i686 gcc cxx static -r:lld final:bfd: same (warnings 0)
+i686 gcc cxx static -r:lld final:mortar: same (warnings 0)
+i686 gcc cxx static -r:mold final:bfd: same (warnings 0)
+i686 gcc cxx static -r:mold final:mortar: same (warnings 0)
+i686 gcc cxx static direct: x1=52 x2=30|caught: x1 says 7|main caught 5|c=1|rc=0|
+i686 gcc cxx pie -r:bfd final:bfd: same (warnings 0)
+i686 gcc cxx pie -r:bfd final:mortar: LINK FAILED (direct mortar link refused too): ld: error: unsupported feature: dynamically linked output on i386 >>> ELFCLASS32 dynamic output is M4 (docs/status/m2.md) 
+i686 gcc cxx pie -r:lld final:bfd: same (warnings 0)
+i686 gcc cxx pie -r:lld final:mortar: LINK FAILED (direct mortar link refused too): ld: error: unsupported feature: dynamically linked output on i386 >>> ELFCLASS32 dynamic output is M4 (docs/status/m2.md) 
+i686 gcc cxx pie -r:mold final:bfd: same (warnings 0)
+i686 gcc cxx pie -r:mold final:mortar: LINK FAILED (direct mortar link refused too): ld: error: unsupported feature: dynamically linked output on i386 >>> ELFCLASS32 dynamic output is M4 (docs/status/m2.md) 
+i686 gcc cxx pie direct: x1=52 x2=30|caught: x1 says 7|main caught 5|c=1|rc=0|
+i686 clang c static -r:bfd final:bfd: same (warnings 0)
+i686 clang c static -r:bfd final:mortar: same (warnings 0)
+i686 clang c static -r:lld final:bfd: same (warnings 0)
+i686 clang c static -r:lld final:mortar: same (warnings 0)
+i686 clang c static -r:mold final:bfd: DIFFERS: got [qemu: uncaught target signal 11 (Segmentation fault) - core dumped|rc=139|] want [ctor order: 101 200 1 2|g_data=5 wk=2 wk_only=11 bump=1,2 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|] (warnings 0)
+i686 clang c static -r:mold final:mortar: DIFFERS: got [qemu: uncaught target signal 11 (Segmentation fault) - core dumped|rc=139|] want [ctor order: 101 200 1 2|g_data=5 wk=2 wk_only=11 bump=1,2 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|] (warnings 0)
+i686 clang c static direct: ctor order: 101 200 1 2|g_data=5 wk=2 wk_only=11 bump=1,2 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|
+i686 clang c pie -r:bfd final:bfd: same (warnings 0)
+i686 clang c pie -r:bfd final:mortar: LINK FAILED (direct mortar link refused too): ld: error: unsupported feature: dynamically linked output on i386 >>> ELFCLASS32 dynamic output is M4 (docs/status/m2.md) 
+i686 clang c pie -r:lld final:bfd: same (warnings 0)
+i686 clang c pie -r:lld final:mortar: LINK FAILED (direct mortar link refused too): ld: error: unsupported feature: dynamically linked output on i386 >>> ELFCLASS32 dynamic output is M4 (docs/status/m2.md) 
+i686 clang c pie -r:mold final:bfd: DIFFERS: got [qemu: uncaught target signal 11 (Segmentation fault) - core dumped|rc=139|] want [ctor order: 101 200 1 2|g_data=5 wk=2 wk_only=11 bump=1,2 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|] (warnings 0)
+i686 clang c pie -r:mold final:mortar: LINK FAILED (direct mortar link refused too): ld: error: unsupported feature: dynamically linked output on i386 >>> ELFCLASS32 dynamic output is M4 (docs/status/m2.md) 
+i686 clang c pie direct: ctor order: 101 200 1 2|g_data=5 wk=2 wk_only=11 bump=1,2 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|
+i686 clang cifunc static -r:bfd final:bfd: same (warnings 0)
+i686 clang cifunc static -r:bfd final:mortar: same (warnings 0)
+i686 clang cifunc static -r:lld final:bfd: same (warnings 0)
+i686 clang cifunc static -r:lld final:mortar: same (warnings 0)
+i686 clang cifunc -r:mold: REFUSED ./final/run.sh: line 16: 896658 Segmentation fault      mold -r -o "$o" "$@" 
+i686 clang cifunc static direct: ctor order: 101 200 1 2|g_data=5 wk=2 wk_only=11 bump=1,2 undef_weak=-1 ifn=40 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|
+i686 clang cifunc pie -r:bfd final:bfd: same (warnings 0)
+i686 clang cifunc pie -r:bfd final:mortar: LINK FAILED (direct mortar link refused too): ld: error: unsupported feature: dynamically linked output on i386 >>> ELFCLASS32 dynamic output is M4 (docs/status/m2.md) 
+i686 clang cifunc pie -r:lld final:bfd: same (warnings 0)
+i686 clang cifunc pie -r:lld final:mortar: LINK FAILED (direct mortar link refused too): ld: error: unsupported feature: dynamically linked output on i386 >>> ELFCLASS32 dynamic output is M4 (docs/status/m2.md) 
+i686 clang cifunc -r:mold: REFUSED ./final/run.sh: line 16: 896996 Segmentation fault      mold -r -o "$o" "$@" 
+i686 clang cifunc pie direct: ctor order: 101 200 1 2|g_data=5 wk=2 wk_only=11 bump=1,2 undef_weak=-1 ifn=40 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|
+i686 clang cctors static -r:bfd final:bfd: same (warnings 0)
+i686 clang cctors static -r:bfd final:mortar: LINK FAILED (direct mortar link refused too): ld: error: unsupported feature: .ctors section 
+i686 clang cctors static -r:lld final:bfd: same (warnings 0)
+i686 clang cctors static -r:lld final:mortar: LINK FAILED (direct mortar link refused too): ld: error: unsupported feature: .ctors section 
+i686 clang cctors static -r:mold final:bfd: DIFFERS: got [qemu: uncaught target signal 11 (Segmentation fault) - core dumped|rc=139|] want [ctor order: 101 3 200 1 2|g_data=5 wk=2 wk_only=11 bump=1,2 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|] (warnings 0)
+i686 clang cctors static -r:mold final:mortar: DIFFERS: got [qemu: uncaught target signal 11 (Segmentation fault) - core dumped|rc=139|] want [ctor order: 101 3 200 1 2|g_data=5 wk=2 wk_only=11 bump=1,2 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|] (warnings 0)
+i686 clang cctors static direct: ctor order: 101 3 200 1 2|g_data=5 wk=2 wk_only=11 bump=1,2 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|
+i686 clang cctors pie -r:bfd final:bfd: same (warnings 0)
+i686 clang cctors pie -r:bfd final:mortar: LINK FAILED (direct mortar link refused too): ld: error: unsupported feature: dynamically linked output on i386 >>> ELFCLASS32 dynamic output is M4 (docs/status/m2.md) 
+i686 clang cctors pie -r:lld final:bfd: same (warnings 0)
+i686 clang cctors pie -r:lld final:mortar: LINK FAILED (direct mortar link refused too): ld: error: unsupported feature: dynamically linked output on i386 >>> ELFCLASS32 dynamic output is M4 (docs/status/m2.md) 
+i686 clang cctors pie -r:mold final:bfd: DIFFERS: got [qemu: uncaught target signal 11 (Segmentation fault) - core dumped|rc=139|] want [ctor order: 101 3 200 1 2|g_data=5 wk=2 wk_only=11 bump=1,2 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|] (warnings 0)
+i686 clang cctors pie -r:mold final:mortar: LINK FAILED (direct mortar link refused too): ld: error: unsupported feature: dynamically linked output on i386 >>> ELFCLASS32 dynamic output is M4 (docs/status/m2.md) 
+i686 clang cctors pie direct: ctor order: 101 3 200 1 2|g_data=5 wk=2 wk_only=11 bump=1,2 undef_weak=-1 ifn=-1 use_hid=10 tv=3|msg same=1 hello, component common_x=0|rc=0|
+i686 clang cxx static -r:bfd final:bfd: same (warnings 0)
+i686 clang cxx static -r:bfd final:mortar: same (warnings 0)
+i686 clang cxx static -r:lld final:bfd: same (warnings 0)
+i686 clang cxx static -r:lld final:mortar: same (warnings 0)
+i686 clang cxx static -r:mold final:bfd: same (warnings 0)
+i686 clang cxx static -r:mold final:mortar: same (warnings 0)
+i686 clang cxx static direct: x1=48 x2=26|caught: x1 says 7|main caught 5|c=1|rc=0|
+i686 clang cxx pie -r:bfd final:bfd: same (warnings 0)
+i686 clang cxx pie -r:bfd final:mortar: LINK FAILED (direct mortar link refused too): ld: error: unsupported feature: dynamically linked output on i386 >>> ELFCLASS32 dynamic output is M4 (docs/status/m2.md) 
+i686 clang cxx pie -r:lld final:bfd: same (warnings 0)
+i686 clang cxx pie -r:lld final:mortar: LINK FAILED (direct mortar link refused too): ld: error: unsupported feature: dynamically linked output on i386 >>> ELFCLASS32 dynamic output is M4 (docs/status/m2.md) 
+i686 clang cxx pie -r:mold final:bfd: same (warnings 0)
+i686 clang cxx pie -r:mold final:mortar: LINK FAILED (direct mortar link refused too): ld: error: unsupported feature: dynamically linked output on i386 >>> ELFCLASS32 dynamic output is M4 (docs/status/m2.md) 
+i686 clang cxx pie direct: x1=48 x2=26|caught: x1 says 7|main caught 5|c=1|rc=0|

@@ -1,0 +1,187 @@
+aarch64 -z bti-report                       no-op (identical)
+aarch64 -z bti-report=error                 no-op (identical)
+aarch64 -z combreloc                        no-op (identical)
+aarch64 -z common                           no-op (identical)
+aarch64 -z common-page-size=0x10000         no-op (identical)
+aarch64 -z defs                             no-op (identical)
+aarch64 -z execstack                        CHANGES: .note.GNU-stack ('', 0)->('X', 0)
+aarch64 -z force-bti                        CHANGES: +.note.gnu.property(A,32); notes: GNU                  0x00000010	NT_GNU_PROPERTY_TYPE_0	      Properties: AArch64 feature: BTI; symbols 17->18; warns: b.aarch64.o: warning: BTI is required by -z force-bti, but this input object fil
+aarch64 -z gcs-report-dynamic=error         no-op (identical)
+aarch64 -z gcs-report                       no-op (identical)
+aarch64 -z gcs-report=error                 no-op (identical)
+aarch64 -z gcs=always                       CHANGES: +.note.gnu.property(A,32); notes: GNU                  0x00000010	NT_GNU_PROPERTY_TYPE_0	      Properties: AArch64 feature: GCS; symbols 17->18; warns: b.aarch64.o: warning: GCS is required by -z gcs, but this input object file lack
+aarch64 -z gcs=never                        no-op (identical)
+aarch64 -z global                           no-op (identical)
+aarch64 -z globalaudit                      no-op (identical)
+aarch64 -z initfirst                        no-op (identical)
+aarch64 -z interpose                        no-op (identical)
+aarch64 -z lazy                             no-op (identical)
+aarch64 -z loadfltr                         no-op (identical)
+aarch64 -z max-page-size=0x10000            no-op (identical)
+aarch64 -z memory-seal                      CHANGES: +.note.gnu.property(A,24); symbols 17->18
+aarch64 -z muldefs                          no-op (identical)
+aarch64 -z nocombreloc                      no-op (identical)
+aarch64 -z nocommon                         no-op (identical)
+aarch64 -z nocopyreloc                      no-op (identical)
+aarch64 -z nodefaultlib                     no-op (identical)
+aarch64 -z nodelete                         no-op (identical)
+aarch64 -z nodlopen                         no-op (identical)
+aarch64 -z nodump                           no-op (identical)
+aarch64 -z noexecstack                      no-op (identical)
+aarch64 -z nomemory-seal                    no-op (identical)
+aarch64 -z norelro                          no-op (identical)
+aarch64 -z nosectionheader                  error: ld.bfd: -r and -z nosectionheader may not be used together
+aarch64 -z noseparate-code                  no-op (identical)
+aarch64 -z nostart-stop-gc                  no-op (identical)
+aarch64 -z notext                           no-op (identical)
+aarch64 -z nounique                         no-op (identical)
+aarch64 -z nounique-symbol                  no-op (identical)
+aarch64 -z now                              no-op (identical)
+aarch64 -z origin                           no-op (identical)
+aarch64 -z pac-plt                          no-op (identical)
+aarch64 -z relro                            no-op (identical)
+aarch64 -z sectionheader                    no-op (identical)
+aarch64 -z separate-code                    no-op (identical)
+aarch64 -z stack-size=0x10000               CHANGES: +.note.gnu.property(A,32); notes: GNU                  0x00000010	NT_GNU_PROPERTY_TYPE_0	      Properties: stack size: 0x10000; symbols 17->18
+aarch64 -z start-stop-gc                    no-op (identical)
+aarch64 -z start-stop-visibility=hidden     no-op (identical)
+aarch64 -z text                             no-op (identical)
+aarch64 -z textoff                          no-op (identical)
+aarch64 -z undefs                           no-op (identical)
+aarch64 -z unique                           no-op (identical)
+aarch64 -z unique-symbol                    CHANGES: differs in bytes only
+x86_64  -z call-nop=suffix-nop              no-op (identical)
+x86_64  -z cet-report=error                 error: a.x86_64.o: error: missing IBT and SHSTK properties
+x86_64  -z combreloc                        no-op (identical)
+x86_64  -z common                           no-op (identical)
+x86_64  -z common-page-size=0x10000         no-op (identical)
+x86_64  -z defs                             no-op (identical)
+x86_64  -z dynamic-undefined-weak           no-op (identical)
+x86_64  -z execstack                        no-op (identical)
+x86_64  -z global                           no-op (identical)
+x86_64  -z globalaudit                      no-op (identical)
+x86_64  -z ibt                              CHANGES: +.note.gnu.property(A,32); notes: GNU                  0x00000010	NT_GNU_PROPERTY_TYPE_0	      Properties: x86 feature: IBT; symbols 12->13
+x86_64  -z ibtplt                           no-op (identical)
+x86_64  -z indirect-extern-access           CHANGES: +.note.gnu.property(A,32); notes: GNU                  0x00000010	NT_GNU_PROPERTY_TYPE_0	      Properties: 1_needed: indirect external access; symbols 12->13
+x86_64  -z initfirst                        no-op (identical)
+x86_64  -z interpose                        no-op (identical)
+x86_64  -z isa-level-report=all             no-op (identical)
+x86_64  -z lam-report=error                 error: a.x86_64.o: error: missing LAM_U48 property
+x86_64  -z lam-u48                          CHANGES: +.note.gnu.property(A,32); notes: GNU                  0x00000010	NT_GNU_PROPERTY_TYPE_0	      Properties: x86 feature: LAM_U48, LAM_U57; symbols 12->13
+x86_64  -z lam-u48-report=error             error: a.x86_64.o: error: missing LAM_U48 property
+x86_64  -z lam-u57                          CHANGES: +.note.gnu.property(A,32); notes: GNU                  0x00000010	NT_GNU_PROPERTY_TYPE_0	      Properties: x86 feature: LAM_U57; symbols 12->13
+x86_64  -z lam-u57-report=error             error: a.x86_64.o: error: missing LAM_U57 property
+x86_64  -z lazy                             no-op (identical)
+x86_64  -z loadfltr                         no-op (identical)
+x86_64  -z mark-plt                         no-op (identical)
+x86_64  -z max-page-size=0x10000            no-op (identical)
+x86_64  -z memory-seal                      CHANGES: +.note.gnu.property(A,24); symbols 12->13
+x86_64  -z muldefs                          no-op (identical)
+x86_64  -z nocombreloc                      no-op (identical)
+x86_64  -z nocommon                         no-op (identical)
+x86_64  -z nocopyreloc                      no-op (identical)
+x86_64  -z nodefaultlib                     no-op (identical)
+x86_64  -z nodelete                         no-op (identical)
+x86_64  -z nodlopen                         no-op (identical)
+x86_64  -z nodump                           no-op (identical)
+x86_64  -z nodynamic-undefined-weak         no-op (identical)
+x86_64  -z noexecstack                      no-op (identical)
+x86_64  -z noextern-protected-data          no-op (identical)
+x86_64  -z noindirect-extern-access         no-op (identical)
+x86_64  -z nomark-plt                       no-op (identical)
+x86_64  -z nomemory-seal                    no-op (identical)
+x86_64  -z nopack-relative-relocs           no-op (identical)
+x86_64  -z noreloc-overflow                 no-op (identical)
+x86_64  -z norelro                          no-op (identical)
+x86_64  -z nosectionheader                  error: -r and -z nosectionheader may not be used together
+x86_64  -z noseparate-code                  no-op (identical)
+x86_64  -z nostart-stop-gc                  no-op (identical)
+x86_64  -z notext                           no-op (identical)
+x86_64  -z nounique                         no-op (identical)
+x86_64  -z nounique-symbol                  no-op (identical)
+x86_64  -z now                              no-op (identical)
+x86_64  -z origin                           no-op (identical)
+x86_64  -z pack-relative-relocs             no-op (identical)
+x86_64  -z relro                            no-op (identical)
+x86_64  -z report-relative-reloc            no-op (identical)
+x86_64  -z sectionheader                    no-op (identical)
+x86_64  -z separate-code                    no-op (identical)
+x86_64  -z shstk                            CHANGES: +.note.gnu.property(A,32); notes: GNU                  0x00000010	NT_GNU_PROPERTY_TYPE_0	      Properties: x86 feature: SHSTK; symbols 12->13
+x86_64  -z stack-size=0x10000               no-op (identical)
+x86_64  -z start-stop-gc                    no-op (identical)
+x86_64  -z start-stop-visibility=hidden     no-op (identical)
+x86_64  -z text                             no-op (identical)
+x86_64  -z textoff                          no-op (identical)
+x86_64  -z undefs                           no-op (identical)
+x86_64  -z unique                           no-op (identical)
+x86_64  -z unique-symbol                    no-op (identical)
+x86_64  -z x86-64-baseline                  error: BFD (GNU Binutils for Debian) 2.44 internal error, aborting at ../../bfd/elfxx-x86.c:4052 in _bfd_x86_elf_merge_gnu_properties
+x86_64  -z x86-64-v3                        CHANGES: +.note.gnu.property(A,32); notes: GNU                  0x00000010	NT_GNU_PROPERTY_TYPE_0	      Properties: x86 ISA needed: x86-64-v3; symbols 12->13
+i686    -z call-nop=suffix-nop              no-op (identical)
+i686    -z cet-report=error                 error: a.i686.o: error: missing IBT and SHSTK properties
+i686    -z combreloc                        no-op (identical)
+i686    -z common                           no-op (identical)
+i686    -z common-page-size=0x10000         no-op (identical)
+i686    -z defs                             no-op (identical)
+i686    -z dynamic-undefined-weak           no-op (identical)
+i686    -z execstack                        no-op (identical)
+i686    -z global                           no-op (identical)
+i686    -z globalaudit                      no-op (identical)
+i686    -z ibt                              CHANGES: +.note.gnu.property(A,28); notes: GNU                  0x0000000c	NT_GNU_PROPERTY_TYPE_0	      Properties: x86 feature: IBT; symbols 12->13
+i686    -z ibtplt                           no-op (identical)
+i686    -z indirect-extern-access           CHANGES: +.note.gnu.property(A,28); notes: GNU                  0x0000000c	NT_GNU_PROPERTY_TYPE_0	      Properties: 1_needed: indirect external access; symbols 12->13
+i686    -z initfirst                        no-op (identical)
+i686    -z interpose                        no-op (identical)
+i686    -z isa-level-report=all             no-op (identical)
+i686    -z lam-report=error                 no-op (identical); warns: warning: -z lam-report=error ignored
+i686    -z lam-u48                          no-op (identical); warns: warning: -z lam-u48 ignored
+i686    -z lam-u48-report=error             no-op (identical); warns: warning: -z lam-u48-report=error ignored
+i686    -z lam-u57                          no-op (identical); warns: warning: -z lam-u57 ignored
+i686    -z lam-u57-report=error             no-op (identical); warns: warning: -z lam-u57-report=error ignored
+i686    -z lazy                             no-op (identical)
+i686    -z loadfltr                         no-op (identical)
+i686    -z mark-plt                         no-op (identical); warns: warning: -z mark-plt ignored
+i686    -z max-page-size=0x10000            no-op (identical)
+i686    -z memory-seal                      CHANGES: +.note.gnu.property(A,24); symbols 12->13
+i686    -z muldefs                          no-op (identical)
+i686    -z nocombreloc                      no-op (identical)
+i686    -z nocommon                         no-op (identical)
+i686    -z nocopyreloc                      no-op (identical)
+i686    -z nodefaultlib                     no-op (identical)
+i686    -z nodelete                         no-op (identical)
+i686    -z nodlopen                         no-op (identical)
+i686    -z nodump                           no-op (identical)
+i686    -z nodynamic-undefined-weak         no-op (identical)
+i686    -z noexecstack                      no-op (identical)
+i686    -z noextern-protected-data          no-op (identical)
+i686    -z noindirect-extern-access         no-op (identical)
+i686    -z nomark-plt                       no-op (identical); warns: warning: -z nomark-plt ignored
+i686    -z nomemory-seal                    no-op (identical)
+i686    -z nopack-relative-relocs           no-op (identical)
+i686    -z noreloc-overflow                 no-op (identical); warns: warning: -z noreloc-overflow ignored
+i686    -z norelro                          no-op (identical)
+i686    -z nosectionheader                  error: -r and -z nosectionheader may not be used together
+i686    -z noseparate-code                  no-op (identical)
+i686    -z nostart-stop-gc                  no-op (identical)
+i686    -z notext                           no-op (identical)
+i686    -z nounique                         no-op (identical)
+i686    -z nounique-symbol                  no-op (identical)
+i686    -z now                              no-op (identical)
+i686    -z origin                           no-op (identical)
+i686    -z pack-relative-relocs             no-op (identical)
+i686    -z relro                            no-op (identical)
+i686    -z report-relative-reloc            no-op (identical)
+i686    -z sectionheader                    no-op (identical)
+i686    -z separate-code                    no-op (identical)
+i686    -z shstk                            CHANGES: +.note.gnu.property(A,28); notes: GNU                  0x0000000c	NT_GNU_PROPERTY_TYPE_0	      Properties: x86 feature: SHSTK; symbols 12->13
+i686    -z stack-size=0x10000               no-op (identical)
+i686    -z start-stop-gc                    no-op (identical)
+i686    -z start-stop-visibility=hidden     no-op (identical)
+i686    -z text                             no-op (identical)
+i686    -z textoff                          no-op (identical)
+i686    -z undefs                           no-op (identical)
+i686    -z unique                           no-op (identical)
+i686    -z unique-symbol                    no-op (identical)
+i686    -z x86-64-baseline                  error: BFD (GNU Binutils for Debian) 2.44 internal error, aborting at ../../bfd/elfxx-x86.c:4052 in _bfd_x86_elf_merge_gnu_properties
+i686    -z x86-64-v3                        CHANGES: +.note.gnu.property(A,28); notes: GNU                  0x0000000c	NT_GNU_PROPERTY_TYPE_0	      Properties: x86 ISA needed: x86-64-v3; symbols 12->13
+zkw done

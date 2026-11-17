@@ -1,0 +1,23 @@
+m1.o: [3] type 1 flags 0x80000000 align 8 size 824 group False rel False units 0x0:824/p1
+m2.o: [3] type 1 flags 0x80000000 align 8 size 824 group False rel False units 0x0:824/p1
+m3.o: [3] type 1 flags 0x80000000 align 8 size 800 group False rel False units 0x0:800/p1
+r.bfd.o: [6] type 1 flags 0x80000000 align 8 size 2448 group False rel False units 0x0:824/p1 0x338:824/p1 0x670:800/p1
+r.lld.o: [2] type 1 flags 0x80000000 align 8 size 2448 group False rel False units 0x0:824/p1 0x338:824/p1 0x670:800/p1
+r.mold.o: [4] type 1 flags 0x80000000 align 8 size 2448 group False rel False units 0x0:824/p1 0x338:824/p1 0x670:800/p1
+direct:
+  rc=1 0 odr lines; 
+via bfd -r:
+  rc=1 0 odr lines; 
+via lld -r:
+  rc=1 0 odr lines; 
+via mold -r:
+  rc=1 0 odr lines; 
+bfd diagnostics equal modulo file names
+legal via bfd -r: rc=0 run: 3 5 4 diagnostics: 0
+legal via lld -r: rc=0 run: 3 5 4 diagnostics: 0
+legal via mold -r: rc=0 run: 3 5 4 diagnostics: 0
+h1.o: [3] type 1 flags 0x80000000 align 8 size 824 group False rel False units 0x0:824/p1
+h2.o: [3] type 1 flags 0x80000000 align 8 size 824 group False rel False units 0x0:824/p1
+hr.o: [8] type 1 flags 0x80000000 align 8 size 1648 group False rel False units 0x0:824/p1 0x338:824/p1
+hod via bfd -r: rc=1 ld: error: type 1S violates the one-definition rule
+meta done

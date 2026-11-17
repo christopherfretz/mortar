@@ -1,0 +1,41 @@
+T0-unchanged
+  ('.text', '', 0)                   units 1 truth holds        | D0 holds | D1 holds | D2 holds | D3 holds (offset 0)
+  ('.comment', '', 0)                units 1 truth holds        | D0 holds | D1 holds | D2 holds | D3 n/a
+  ('.note.GNU-stack', '', 0)         units 1 truth holds        | D0 holds | D1 holds | D2 holds | D3 n/a
+  ('.eh_frame', '', 0)               units 1 truth holds        | D0 holds | D1 holds | D2 holds | D3 n/a
+T1-bfd-r-alone
+  ('.text', '', 0)                   units 1 truth holds        | D0 holds | D1 holds | D2 unanchored | D3 holds (offset 0)
+  ('.comment', '', 0)                units 1 truth holds        | D0 holds | D1 holds | D2 unanchored | D3 n/a
+  ('.note.GNU-stack', '', 0)         units 1 truth holds        | D0 holds | D1 holds | D2 unanchored | D3 n/a
+  ('.eh_frame', '', 0)               units 1 truth holds        | D0 holds | D1 holds | D2 unanchored | D3 n/a
+T2-bfd-r-gcc-first
+  ('.text', '', 0)                   units 1 truth MOVED to offset 8 of the resolved section | D0 holds (WRONG) | D1 unanchored | D2 unanchored | D3 holds (offset 8)
+  ('.comment', '', 0)                units 1 truth MOVED to offset 32 of the resolved section | D0 holds (WRONG) | D1 unanchored | D2 unanchored | D3 n/a
+  ('.note.GNU-stack', '', 0)         units 1 truth holds        | D0 holds | D1 holds | D2 unanchored | D3 n/a
+  ('.eh_frame', '', 0)               units 1 truth MOVED to offset 40 of the resolved section | D0 holds (WRONG) | D1 unanchored | D2 unanchored | D3 n/a
+T2-lld-r-gcc-first
+  ('.text', '', 0)                   units 1 truth MOVED to offset 8 of the resolved section | D0 holds (WRONG) | D1 unanchored | D2 unanchored | D3 holds (offset 8)
+  ('.comment', '', 0)                units 1 truth MOVED to offset 31 of the resolved section | D0 holds (WRONG) | D1 unanchored | D2 unanchored | D3 n/a
+  ('.note.GNU-stack', '', 0)         units 1 truth holds        | D0 holds | D1 holds | D2 unanchored | D3 n/a
+  ('.eh_frame', '', 0)               units 1 truth MOVED to offset 40 of the resolved section | D0 holds (WRONG) | D1 unanchored | D2 unanchored | D3 n/a
+T3-bfd-r-kiln-first
+  ('.text', '', 0)                   units 1 truth holds        | D0 holds | D1 unanchored | D2 unanchored | D3 holds (offset 0)
+  ('.comment', '', 0)                units 1 truth holds        | D0 holds | D1 unanchored | D2 unanchored | D3 n/a
+  ('.note.GNU-stack', '', 0)         units 1 truth holds        | D0 holds | D1 holds | D2 unanchored | D3 n/a
+  ('.eh_frame', '', 0)               units 1 truth holds        | D0 holds | D1 unanchored | D2 unanchored | D3 n/a
+T4-bfd-r-two-units
+  ('.text', '', 0)                   units 2 truth MOVED to offset 8 of the resolved section | D0 unanchored | D1 unanchored | D2 unanchored | D3 holds (offset 8)
+  ('.comment', '', 0)                units 2 truth holds        | D0 unanchored | D1 unanchored | D2 unanchored | D3 n/a
+  ('.note.GNU-stack', '', 0)         units 2 truth holds        | D0 unanchored | D1 holds | D2 unanchored | D3 n/a
+  ('.eh_frame', '', 0)               units 2 truth holds        | D0 unanchored | D1 unanchored | D2 unanchored | D3 n/a
+T5-objcopy-remove-comment
+  ('.text', '', 0)                   units 1 truth holds        | D0 holds | D1 holds | D2 unanchored | D3 holds (offset 0)
+  ('.comment', '', 0)                units 1 truth BROKEN       | D0 holds (WRONG) | D1 unanchored | D2 unanchored | D3 n/a
+  ('.note.GNU-stack', '', 0)         units 1 truth holds        | D0 holds | D1 holds | D2 unanchored | D3 n/a
+  ('.eh_frame', '', 0)               units 1 truth holds        | D0 holds | D1 holds | D2 unanchored | D3 n/a
+T6-objcopy-rename-text
+  ('.text', '', 0)                   units 1 truth BROKEN       | D0 holds (WRONG) | D1 unanchored | D2 unanchored | D3 holds (offset 0)
+  ('.comment', '', 0)                units 1 truth holds        | D0 holds | D1 holds | D2 unanchored | D3 n/a
+  ('.note.GNU-stack', '', 0)         units 1 truth holds        | D0 holds | D1 holds | D2 unanchored | D3 n/a
+  ('.eh_frame', '', 0)               units 1 truth holds        | D0 holds | D1 holds | D2 unanchored | D3 n/a
+anchors done
