@@ -1070,9 +1070,6 @@ fn mutant(
     let what = f(&mut e)?;
     let (before, _) = b.findings(start, mortar);
     let (after, report) = b.findings(&e.b, mortar);
-    if std::env::var_os("RL5_DEBUG").is_some_and(|v| v == id) {
-        eprintln!("DEBUG {id} before: {before:#?}\nDEBUG {id} after: {after:#?}");
-    }
     let fresh: Vec<&String> = after.difference(&before).collect();
     let format = if mortar { Format::Mortar } else { Format::Gnu };
     let anomalies = report

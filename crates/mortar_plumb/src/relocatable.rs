@@ -1325,11 +1325,8 @@ fn places(rv: &mut Rv<'_>) {
                     Drop::Strip => "a debug section under -S or -s (I-R9)",
                     Drop::Mortar => "mortar drops it (L-R1)",
                 };
-                if d == Drop::Mortar || rv.mortar() || d != Drop::Mortar {
-                    let msg =
-                        format!("{} is in the output; §14.3 drops it: {why}", rv.ins[f].sname(s));
-                    rv.p_at(2, f, s, 0, msg);
-                }
+                let msg = format!("{} is in the output; §14.3 drops it: {why}", rv.ins[f].sname(s));
+                rv.p_at(2, f, s, 0, msg);
                 rv.places[f][s] = p;
             }
             _ => rv.places[f][s] = p,
