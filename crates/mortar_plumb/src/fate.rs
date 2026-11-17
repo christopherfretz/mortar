@@ -360,7 +360,7 @@ pub(crate) fn collect_empty(
     let comdat = comdat_dropped(objs);
     let gc = opts
         .filter(|o| o.gc_sections)
-        .map(|o| (in_alloc_group(objs), start_stop(objs), line_roots(objs, o, exports)));
+        .map(|o| (in_alloc_group(objs), start_stop(objs), line_roots(objs, o, exports, &comdat)));
     let mut out = Vec::new();
     for (oi, o) in objs.iter().enumerate() {
         for (si, s) in o.secs.iter().enumerate() {
