@@ -791,11 +791,44 @@ weak undefined mention after `--wrap` redirection (resolve §7.1). Keys
 follow resolve §9.4: `foo@@V` is `foo` and also binds `foo@V`; `foo@V`
 is its own key. A shared object's visible dynamic definitions are its
 definitions (a default `foo@@V` is `foo` and `foo@V`, a hidden `foo@V`
-only `foo@V`), and its strong references are edges unless it is
-`--as-needed` at every mention (resolve §4.4; dyn.md "Archive extraction
-by the references of shared objects"). Only the command line's shared
-objects (and those of its scripts) are read: a `DT_NEEDED` closure file
-has no edges. A reference's key is resolve §9.2's: `name@V` when its
+only `foo@V`), and its strong references are edges (an object `--as-needed` at every
+mention's only as D-12's stages below say; resolve §4.4; dyn.md
+"Archive extraction by the references of shared objects"). Only the
+command line's shared objects (and those of its scripts) are read: a
+`DT_NEEDED` closure file has no edges.
+
+**D-12's stages (WP-171).** An `--as-needed` command-line shared
+object's strong undefined references are edges exactly when it is a
+*source* of the last stage: a member of N, as the verifier replays D-11
+and D-12 from the line's inputs (below), and named by the output's
+`DT_NEEDED`. Both halves are needed: the output's entry alone is no
+reason (an entry nothing justifies is P-D6 and licenses no member,
+`d12_an_unjustified_needed_entry_licenses_nothing`), and the replay
+alone does not judge the output (a needed library the output lacks is
+P-D6, and its references are then no edges of that output's closure).
+The replay: stage 1 is resolve §4.1's closure with no as-needed object's
+reference as an edge; D-11 (§12, `dynmodel.rs`) runs over the output's
+objects that the stage's closure reaches, with D-12's item-3 rule (a
+shared object's reference whose `first(k)` is a lazy file the stage has
+not made live gives no reason, cell 7a2), and N is the union of every
+stage's (N only grows: row 2a); the next stage's sources are the
+as-needed members of N the output's `DT_NEEDED` names, and stages repeat
+until the sources do not change (at most |C| + 1). One closure over the
+union of the edges is the least fixed point. An output with no
+`DT_NEEDED` at all (no `PT_DYNAMIC`) has no source. Where the replay
+does not run (stage 3 outside its model, §12.1) an as-needed object's
+references are followed by the upper bound and not by the lower (open),
+and the coverage says `D-12's stages not replayed`. An M12 that only a
+non-source's references explain says so ("... only the references of an
+--as-needed shared object the output does not need reach it (dyn.md
+D-12: not an edge)"): lld extracts for an as-needed object not in N
+(1c, 3c; a used one, D-13's cell), A70 on lld's output only; and the
+P-D6 or P-D7 of what such a member needs ends "(only an object no stage
+of D-12 extracts makes it needed)", A70's too. Rule 2's M11 demands
+include the sources' references. Tests: `tests/inset_stages.rs`, the
+lane's `dyn/shlib/as-needed-extract*.test`.
+
+A reference's key is resolve §9.2's: `name@V` when its
 `.gnu.version` entry names a version need `V`, so only a `name@@V` or
 `name@V` definition is its target, never an object's plain `name`
 (libstdc++.so's `__udivti3@GCC_3.0` does not reach
@@ -4576,7 +4609,29 @@ is accepted from its linker only, never from mortar's map.
   is the same M12, not accepted, and M11 is never excused by it (mold
   that does not extract is judged as GNU ld). Reproducers:
   `tests/link/dyn/cxx/threads-tls.test` (`pie-sgcc`),
-  `tests/inset_ver.rs`.
+  `tests/inset_ver.rs`; an `--as-needed` library's versioned reference
+  (dyn.md D-12 cell 4b): `dyn/shlib/as-needed-extract-versioned.test`,
+  `tests/inset_stages.rs` (`vr`).
+- **A70 (lld; WP-171).** lld extracts an archive member for the strong
+  references of an `--as-needed` command-line shared object that is not
+  in N (dyn.md D-12: an unneeded one, cells 1c and 3c; a used one, D-13's
+  cell), where GNU ld, mold and mortar extract nothing: M12 (§3.8) "...
+  only the references of an --as-needed shared object the output does
+  not need reach it (dyn.md D-12: not an edge)", and what the member then
+  needs (3c: libu.so, and its `u2`) P-D6 or P-D7 ending "(only an object
+  no stage of D-12 extracts makes it needed)". On mortar's, GNU ld's or
+  mold's output the same findings are not accepted. Reproducers:
+  `dyn/shlib/as-needed-extract.test` (`unneeded`),
+  `-stages.test` (`self`), `-refused.test` (`used`);
+  `tests/inset_stages.rs` (`r1c`).
+- **A71 (lld; WP-171).** lld drops an `--as-needed` library that D-11
+  makes needed at stage 1 when a later stage's member defines the keys it
+  gave (dyn.md D-12 row 2a: N only grows; GNU ld and mold keep it, the
+  program runs alike from the member's definition): P-D6 "DT_NEEDED
+  lacks '...', which D-11 makes needed and D-12 keeps needed (row 2a: N
+  only grows; a later stage's member defines what it gave)". Reproducers:
+  `dyn/shlib/as-needed-extract-kept.test`, `tests/inset_stages.rs`
+  (`k2a`).
 
 - **A55 (mold; WP-165).** An undefined weak key reached by branches
   (alone, or beside an unfillable use in `-no-pie`) gets no `.dynsym`
@@ -5010,7 +5065,18 @@ own implementation of D-11-D-27 and compared with the output.
   with the value equal to the address or size of its section; exactly
   six `DT_NULL` entries at the end. The `DT_NEEDED` entries equal the
   needed set the verifier computes by D-11/D-12 from the P-D2 inputs, in
-  D-19a's order (W9).
+  D-19a's order (W9). Under D-12's stages (WP-171, §3.8's replay) N is
+  the union of every stage's, and D-19a's reasons are every stage's (a
+  member a later stage extracts is a relocatable object at its archive's
+  position): a library that joins N through it is kept at the first
+  mention after that archive, and one kept needed (row 2a) at the
+  mention its stage-1 reason gave. A needed library the output lacks
+  whose every key it gave at its stage is defined by the output's own
+  objects (a later stage's member: row 2a) is P-D6 "DT_NEEDED lacks
+  '...', which D-11 makes needed and D-12 keeps needed (row 2a: N only
+  grows; a later stage's member defines what it gave)"; lld drops it
+  (A71). GNU ld's own neededness (`gnu_unbound`) reads the keys a
+  library gave at the stage that made it needed.
   A root (WP-163; resolve.md §4.2's table: `-e`, else the script's
   `ENTRY`; `-u`; `--require-defined`; an implicit script's `EXTERN`,
   quoted or not) is no reference for D-11: it never makes an

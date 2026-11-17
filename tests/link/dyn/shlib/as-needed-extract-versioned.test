@@ -6,8 +6,8 @@
 # mortar extract nothing and the program runs libgver.so's g (u=51).
 #
 # mold differs: it extracts g.o and the loader binds g@V to the
-# program's unversioned g (u=11); the verifier finds g.o unreached (M12).
-#@ xfail(mold): M12: mold 2.37.1 extracts a member for a needed --as-needed library's versioned reference (g@V), which D-12 makes no edge
+# program's unversioned g (g-ctor, u=11); the verifier finds g.o unreached (M12), A49.
+#@ anomaly(mold): A49
 #@ spec: dyn.md "D-12"
 #@ arch: aarch64 x86_64
 
@@ -23,10 +23,15 @@ link gcc -pie m1.o -Wl,--as-needed libuv.so libg.a libgver.so -o versioned
   no-diag: *
 check readelf -dW versioned
   has: [libuv.so]
-check nm versioned
+check(bfd,lld,mortar) nm versioned
   not: T g$
-run versioned
+run(bfd,lld,mortar) versioned
   stdout: u=51
+check(mold) nm versioned
+  has: T g$
+run(mold) versioned
+  stdout: g-ctor
+  stdout: u=11
 
 #--- u.c
 int g(void);

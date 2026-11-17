@@ -1,0 +1,36 @@
+mortar-map 2
+file 0 m1y.o
+file 1 libgy.a gy.o 54
+place 0 1 4012d6 1
+place 0 2 4033a8 8
+place 0 4 4033c0 0
+place 1 1 4012d7 0
+place 1 2 4033b0 10
+place 1 3 4033c0 0
+chunk synthetic .interp 400238 1c
+chunk synthetic .gnu.hash 400258 24
+chunk synthetic .dynsym 400280 48
+chunk synthetic .dynstr 4002c8 e
+chunk synthetic .dynamic 4022d8 d0
+chunk synthetic .symtab - 60
+chunk synthetic .strtab - 2a
+chunk synthetic .shstrtab - 66
+chunk synthetic .comment - d
+chunk synthetic .pad.relro 4023a8 c58
+output exec
+interp /lib64/ld-linux-x86-64.so.2
+bind lazy
+relro on
+arg -dynamic-linker
+arg /lib64/ld-linux-x86-64.so.2
+arg m1y.o
+arg --as-needed
+arg libuy.so
+arg libgy.a
+arg -o
+arg k2a
+arg --mortar-map=k2a.map
+needed libuy.so
+export y
+export g
+end

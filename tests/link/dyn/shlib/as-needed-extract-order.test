@@ -27,11 +27,11 @@
 # The verifier finds lld's and mold's `shared-first` without libg2.so
 # (A26, D-11 item 3).
 #
-# The verifier's input-set rule (M11/M12) does not have D-12's stages yet:
-# it finds mortar's later-stage members unreached. The bytes and the runs
-# were checked (every expectation passes with the verifier off); the
-# verifier package after WP-167 lifts the mark.
-#@ xfail(mortar): M12: libg.a(g.o) is in the link and no root or live reference reaches it (resolve §4.1), until the verifier package
+# The verifier replays the stages (WP-171): each member a later stage
+# extracts is required and reached, and D-19a's order of a library that
+# joins N at a later stage is judged from every stage's reasons (the
+# member at its archive's position).
+#
 #@ anomaly(lld,mold): A26
 #@ spec: dyn.md "D-12"
 #@ spec: dyn.md "D-11"

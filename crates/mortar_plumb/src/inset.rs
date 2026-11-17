@@ -45,9 +45,16 @@ const WUNDEF: u8 = 32;
 /// (`name` of `name@V`): no edge (resolve §9.2), but mold extracts by it
 /// (§10.2 A49), so an M12 it alone explains says so.
 const VPLAIN: u8 = 64;
+/// A strong undefined mention of an `--as-needed` command-line shared
+/// object: an edge exactly when the object is a source of D-12's last
+/// stage (in N, named by the output's `DT_NEEDED`; WP-171).
+const ASN: u8 = 128;
 
 /// The end of an M12 that only [`VPLAIN`] mentions explain (A49).
 pub(crate) const VERSIONED_PLAIN: &str = "only a shared object's versioned reference reaches it, by its plain name (resolve §9.2: not an edge)";
+/// The end of an M12 that only [`ASN`] mentions of an object that is not
+/// a source explain (A70 on lld).
+pub(crate) const UNNEEDED_AS_NEEDED: &str = "only the references of an --as-needed shared object the output does not need reach it (dyn.md D-12: not an edge)";
 
 const NONE: u32 = u32::MAX;
 
@@ -61,25 +68,120 @@ pub(crate) struct Verdict {
 /// Judges the input set of `map`, the link of `words` (the mortar map's
 /// `arg` records or the caller's line), reading inputs through `files`.
 /// With no line, the coverage says so and nothing is judged.
-pub(crate) fn judge(map: &Map, words: Option<&[String]>, files: &dyn Files) -> Verdict {
+/// `staged`: the inputs as D-12's replay left them (its last stage's
+/// sources), read once for both.
+pub(crate) fn judge(
+    map: &Map,
+    words: Option<&[String]>,
+    files: &dyn Files,
+    staged: Option<Stager>,
+) -> Verdict {
     let Some(words) = words else {
         return not_judged("no command line (a reference's map with no --inputs-from line)");
     };
     if map.format == Format::Mortar && map.files.is_empty() {
         return not_judged("the map names no file");
     }
+    let (line, set) = match staged {
+        Some(st) => (st.line, st.set),
+        None => match read_line(words, files) {
+            Ok(x) => x,
+            Err(e) => return not_judged(&e),
+        },
+    };
+    let mut v =
+        if map.format == Format::Mortar { set.strict(map) } else { set.loose(map, &line, words) };
+    if set.sources.is_none() && set.files.iter().any(|f| f.mentions.iter().any(|m| m.1 & ASN != 0))
+    {
+        v.coverage.push_str(
+            "; an --as-needed shared object's references open (D-12's stages not replayed)",
+        );
+    }
+    v
+}
+
+/// The line and its inputs, read, or why they are not judged.
+fn read_line(words: &[String], files: &dyn Files) -> Result<(Line, Inputs), String> {
     let line = Line::parse(words, files);
     if let Some(p) = line.problems.first() {
-        return not_judged(&format!("the line is not read: {p}"));
+        return Err(format!("the line is not read: {p}"));
     }
     if let Some(u) = line.unmodelled.first() {
-        return not_judged(&format!("{u} is not modelled"));
+        return Err(format!("{u} is not modelled"));
     }
-    let set = match Inputs::read(&line, words, files) {
-        Ok(s) => s,
-        Err(e) => return not_judged(&e),
-    };
-    if map.format == Format::Mortar { set.strict(map) } else { set.loose(map, &line, words) }
+    let set = Inputs::read(&line, words, files)?;
+    Ok((line, set))
+}
+
+/// D-12's stages over the line's inputs (WP-171): resolve §4.1's closure
+/// with a stage's sources' strong references as edges, for the dyn
+/// model's replay of D-11 ([`crate::dynmodel::Staging`]).
+pub(crate) struct Stager {
+    line: Line,
+    set: Inputs,
+    /// `first(K)` of resolve §4.1 (the lower bound's).
+    first: Vec<u32>,
+    /// The last stage's live files.
+    live: Vec<bool>,
+    index: HashMap<Ident, Vec<usize>>,
+}
+
+impl Stager {
+    /// The stager of a line that names a shared object, `None` for any
+    /// other (a static link pays nothing) or a line not read.
+    pub(crate) fn new(words: &[String], files: &dyn Files) -> Option<Stager> {
+        let line = Line::parse(words, files);
+        if !line.items.iter().any(|i| matches!(i, Item::Shared { .. })) {
+            return None;
+        }
+        let (line, set) = read_line(words, files).ok()?;
+        let (first, _) = set.targets(&set.maybe_defined);
+        let index = set.by_ident().into_iter().map(|(k, v)| (k.clone(), v)).collect();
+        Some(Stager { line, set, first, live: Vec::new(), index })
+    }
+
+    /// The stager of an output with no `DT_NEEDED`: no source.
+    pub(crate) fn without_sources(mut self) -> Stager {
+        self.set.sources = Some(vec![false; self.set.files.len()]);
+        self
+    }
+}
+
+impl crate::dynmodel::Staging for Stager {
+    fn stage(
+        &mut self,
+        objs: &[crate::locate::Obj<'_>],
+        sources: &std::collections::BTreeSet<String>,
+    ) -> Vec<bool> {
+        let src: Vec<bool> = self
+            .set
+            .files
+            .iter()
+            .map(|f| {
+                f.kind == Kind::Shared && f.soname.as_ref().is_some_and(|n| sources.contains(n))
+            })
+            .collect();
+        self.set.sources = Some(src);
+        self.live = self.set.closure(false, true).0;
+        objs.iter()
+            .map(|o| {
+                let id = Ident { path: norm(&o.path), member: o.member.clone() };
+                self.index.get(&id).is_none_or(|v| v.iter().any(|&i| self.live[i]))
+            })
+            .collect()
+    }
+
+    fn lazy_first(&self, name: &str, ver: Option<&str>) -> bool {
+        let key = match ver {
+            Some(v) => format!("{name}@{v}"),
+            None => name.to_string(),
+        };
+        let Some(k) = self.set.find(&key) else { return false };
+        let f = self.first.get(k as usize).copied().unwrap_or(NONE);
+        f != NONE
+            && self.set.files[f as usize].lazy
+            && !self.live.get(f as usize).copied().unwrap_or(true)
+    }
 }
 
 /// A missing key's demand: the demanding file, its name, the members
@@ -129,6 +231,9 @@ struct File {
     /// link: allocated, not mergeable, not `.eh_frame` (mold lists
     /// neither, §3.6).
     listed: bool,
+    /// A shared object's soname, or its name as the line writes it
+    /// (dyn.md D-19a's identity).
+    soname: Option<String>,
 }
 
 /// A root key and the item position it is read at (GNU ld reads `EXTERN`
@@ -146,8 +251,30 @@ struct Root {
     no_position: bool,
 }
 
+/// Which files' [`ASN`] mentions are edges.
+#[derive(Clone, Copy)]
+enum Asn<'a> {
+    None,
+    All,
+    /// By file: the sources of D-12's last stage.
+    Of(&'a [bool]),
+}
+
+impl Asn<'_> {
+    fn of(self, f: usize) -> bool {
+        match self {
+            Asn::None => false,
+            Asn::All => true,
+            Asn::Of(s) => s.get(f).copied().unwrap_or(false),
+        }
+    }
+}
+
 struct Inputs {
     files: Vec<File>,
+    /// The sources of D-12's last stage, by file ([`Stager`]); `None`
+    /// without a replay.
+    sources: Option<Vec<bool>>,
     keys: HashMap<Box<[u8]>, u32>,
     roots: Vec<Root>,
     /// Keys file 0 may define (a script's assignments, an expression this
@@ -271,6 +398,7 @@ impl Inputs {
     fn read(line: &Line, words: &[String], files: &dyn Files) -> Result<Inputs, String> {
         let mut s = Inputs {
             files: Vec::new(),
+            sources: None,
             keys: HashMap::default(),
             roots: Vec::new(),
             maybe_defined: Vec::new(),
@@ -292,6 +420,7 @@ impl Inputs {
             mentions: Vec::new(),
             alt: None,
             listed: false,
+            soname: None,
         };
         // The roots of resolve §4.2.
         let entry = line.entry.clone().or_else(|| line.script_entry.clone());
@@ -403,7 +532,7 @@ impl Inputs {
         s.files.push(zero);
         for (item, it) in line.items.iter().enumerate() {
             match it {
-                Item::Shared { path, as_needed, group, .. } => {
+                Item::Shared { path, named, as_needed, group } => {
                     let bytes =
                         files.read(path).ok_or_else(|| format!("{path}: cannot be read"))?;
                     let d = crate::dynmodel::Dso::read(path, bytes, true)?;
@@ -446,13 +575,20 @@ impl Inputs {
                             None => r.name.clone(),
                         };
                         let k = s.key(key.as_bytes());
-                        let bits = if r.weak || *as_needed { WUNDEF } else { UNDEF };
+                        let bits = if r.weak {
+                            WUNDEF
+                        } else if *as_needed {
+                            ASN
+                        } else {
+                            UNDEF
+                        };
                         mentions.push((k, bits));
                         // A49: mold extracts by it, `--as-needed` or not.
                         if r.version.is_some() && !r.weak {
                             mentions.push((s.key(r.name.as_bytes()), VPLAIN));
                         }
                     }
+                    let soname = if d.soname == *path { named.clone() } else { d.soname.clone() };
                     s.files.push(File {
                         kind: Kind::Shared,
                         ident: Ident { path: norm(path), member: None },
@@ -464,6 +600,7 @@ impl Inputs {
                         mentions,
                         alt: None,
                         listed: false,
+                        soname: Some(soname),
                     });
                 }
                 Item::Relocatable { path, group, whole, lib } => {
@@ -514,6 +651,7 @@ impl Inputs {
                                 mentions,
                                 alt,
                                 listed,
+                                soname: None,
                             });
                         }
                     } else {
@@ -532,6 +670,7 @@ impl Inputs {
                             mentions,
                             alt: None,
                             listed,
+                            soname: None,
                         });
                     }
                 }
@@ -642,15 +781,28 @@ impl Inputs {
     /// the uncertain roots followed and the uncertain definitions not
     /// counted; else the reverse. `commons`: the edges of a common.
     fn closure(&self, upper: bool, commons: bool) -> (Vec<bool>, Vec<(u32, u32)>) {
-        self.closure_with(upper, commons, false)
+        self.closure_with(upper, commons, false, self.asn(upper))
     }
 
-    /// [`Self::closure`]; `plain`: the [`VPLAIN`] mentions edges too.
+    /// Which [`ASN`] mentions are edges in a bound: the last stage's
+    /// sources; with no replay of D-12's stages (the output's `DT_NEEDED`
+    /// unread), every one in the upper bound and none in the lower.
+    fn asn(&self, upper: bool) -> Asn<'_> {
+        match (&self.sources, upper) {
+            (Some(s), _) => Asn::Of(s),
+            (None, true) => Asn::All,
+            (None, false) => Asn::None,
+        }
+    }
+
+    /// [`Self::closure`]; `plain`: the [`VPLAIN`] mentions edges too;
+    /// `asn`: which [`ASN`] mentions are.
     fn closure_with(
         &self,
         upper: bool,
         commons: bool,
         plain: bool,
+        asn: Asn<'_>,
     ) -> (Vec<bool>, Vec<(u32, u32)>) {
         let extra: &[u32] = if upper { &[] } else { &self.maybe_defined };
         let (first, cfirst) = self.targets(extra);
@@ -672,8 +824,9 @@ impl Inputs {
             pull(first[r.key as usize], 0, r.key, &mut live, &mut work);
         }
         while let Some(f) = work.pop() {
+            let src = asn.of(f as usize);
             for &(k, b) in &self.files[f as usize].mentions {
-                if b & UNDEF != 0 || (plain && b & VPLAIN != 0) {
+                if b & UNDEF != 0 || (plain && b & VPLAIN != 0) || (src && b & ASN != 0) {
                     pull(first[k as usize], f, k, &mut live, &mut work);
                 }
                 if commons && b & COMMON != 0 {
@@ -711,7 +864,8 @@ impl Inputs {
     fn strict(&self, map: &Map) -> Verdict {
         let (lo, why) = self.closure(false, true);
         let (hi, _) = self.closure(true, true);
-        let (hv, _) = self.closure_with(true, true, true);
+        let (hv, _) = self.closure_with(true, true, true, self.asn(true));
+        let (ha, _) = self.closure_with(true, true, false, Asn::All);
         let names = self.names();
         let name = |k: u32| {
             String::from_utf8_lossy(names.get(k as usize).copied().unwrap_or(b"")).into_owned()
@@ -745,6 +899,8 @@ impl Inputs {
             if !self.export_globs && !cands.iter().any(|&i| hi[i]) {
                 let m = if cands.iter().any(|&i| hv[i]) {
                     format!("{mf} is in the link and {VERSIONED_PLAIN}")
+                } else if cands.iter().any(|&i| ha[i]) {
+                    format!("{mf} is in the link and {UNNEEDED_AS_NEEDED}")
                 } else {
                     format!(
                         "{mf} is in the link and no root or live reference reaches it (resolve §4.1)"
@@ -777,6 +933,14 @@ impl Inputs {
             } else if from == 0 {
                 let by = self.roots.iter().find(|r| r.key == k).map_or("a root", |r| r.by.as_str());
                 format!("{by} roots `{}` (resolve §4.2) and it is first(`{}`)", name(k), name(k))
+            } else if self.files[from as usize].mentions.iter().any(|m| m.0 == k && m.1 & ASN != 0)
+                && !self.files[from as usize].mentions.iter().any(|m| m.0 == k && m.1 & UNDEF != 0)
+            {
+                format!(
+                    "{} refers to `{}` and it is the target (resolve §4.1; a source of D-12's last stage)",
+                    self.label(from as usize),
+                    name(k)
+                )
             } else {
                 format!(
                     "{} refers to `{}` and it is the target (resolve §4.1)",
@@ -912,8 +1076,10 @@ impl Inputs {
         }
         // Extra: an in-link lazy file no root or reference reaches, over
         // every edge any linker of §16 follows.
-        // `plain`: and by the VPLAIN mentions (A49's reach, the text only).
-        let reaching = |plain: bool| {
+        // `plain`: and by the VPLAIN mentions (A49's reach, the text only);
+        // `asn`: the ASN mentions of these files (the sources of D-12's
+        // last stage; every one: A70's reach, the text only).
+        let reaching = |plain: bool, asn: Asn<'_>| {
             let mut reached: Vec<bool> = self.files.iter().map(|f| !f.lazy).collect();
             let mut work: Vec<usize> = (0..n).filter(|&i| reached[i]).collect();
             let reach = |k: u32, reached: &mut Vec<bool>, work: &mut Vec<usize>| {
@@ -928,10 +1094,12 @@ impl Inputs {
                 reach(r.key, &mut reached, &mut work);
             }
             while let Some(f) = work.pop() {
+                let src = asn.of(f);
                 for &(k, b) in &self.files[f].mentions {
                     if (b & (UNDEF | COMMON | WUNDEF) != 0
                         && (b & WUNDEF == 0 || self.files[f].kind == Kind::Shared))
                         || (plain && b & VPLAIN != 0)
+                        || (src && b & ASN != 0)
                     {
                         reach(k, &mut reached, &mut work);
                     }
@@ -939,8 +1107,9 @@ impl Inputs {
             }
             reached
         };
-        let reached = reaching(false);
-        let reached_plain = reaching(true);
+        let reached = reaching(false, self.asn(true));
+        let reached_plain = reaching(true, self.asn(true));
+        let reached_asn = reaching(false, Asn::All);
         let mut reported: HashSet<&Ident> = HashSet::default();
         if !self.export_globs {
             for i in 0..n {
@@ -956,6 +1125,8 @@ impl Inputs {
                 {
                     let m = if reached_plain[i] {
                         format!("{} is in the link and {VERSIONED_PLAIN}", self.label(i))
+                    } else if reached_asn[i] {
+                        format!("{} is in the link and {UNNEEDED_AS_NEEDED}", self.label(i))
                     } else {
                         format!(
                             "{} is in the link and no root or reference of the link reaches it (§3.8)",
@@ -1029,12 +1200,14 @@ impl Inputs {
                 demand(r.key, 0, r.at, false, r.no_position, r.by.clone());
             }
         }
+        let sources = self.asn(false);
         for (i, f) in self.files.iter().enumerate() {
             if !in_link[i] {
                 continue;
             }
+            let src = sources.of(i);
             for &(k, b) in &f.mentions {
-                if b & UNDEF != 0 {
+                if b & UNDEF != 0 || (src && b & ASN != 0) {
                     demand(k, i, f.item, false, false, self.label(i));
                 }
                 if b & COMMON != 0 {
@@ -1076,56 +1249,56 @@ impl Inputs {
                         })
                     })
                 };
-                let bad =
-                    match &inc.by {
-                        // GNU ld prints a C++ name demangled: not judged.
-                        IncludedBy::Root(sym) | IncludedBy::Reference { symbol: sym, .. }
-                            if demangled(sym) =>
-                        {
-                            reasons_unjudged += 1;
+                let bad = match &inc.by {
+                    // GNU ld prints a C++ name demangled: not judged.
+                    IncludedBy::Root(sym) | IncludedBy::Reference { symbol: sym, .. }
+                        if demangled(sym) =>
+                    {
+                        reasons_unjudged += 1;
+                        None
+                    }
+                    IncludedBy::WholeArchive => {
+                        (!ls.iter().any(|&l| self.files[l].whole)).then(|| {
+                            "its archive is not under --whole-archive on the line".to_string()
+                        })
+                    }
+                    IncludedBy::Root(sym) => {
+                        let k = self.find(sym);
+                        if !self.roots.iter().any(|r| Some(r.key) == k) {
+                            Some(format!("`{sym}` is not a root of the line (resolve §4.2)"))
+                        } else if !holds(k) {
+                            Some(format!("it does not define `{sym}`"))
+                        } else {
                             None
                         }
-                        IncludedBy::WholeArchive => (!ls.iter().any(|&l| self.files[l].whole))
-                            .then(|| {
-                                "its archive is not under --whole-archive on the line".to_string()
-                            }),
-                        IncludedBy::Root(sym) => {
-                            let k = self.find(sym);
-                            if !self.roots.iter().any(|r| Some(r.key) == k) {
-                                Some(format!("`{sym}` is not a root of the line (resolve §4.2)"))
-                            } else if !holds(k) {
-                                Some(format!("it does not define `{sym}`"))
-                            } else {
-                                None
-                            }
-                        }
-                        IncludedBy::Reference { file, symbol } => {
-                            let k = self.find(symbol);
-                            if line.wrap.iter().any(|w| symbol.ends_with(w.as_str())) {
+                    }
+                    IncludedBy::Reference { file, symbol } => {
+                        let k = self.find(symbol);
+                        if line.wrap.iter().any(|w| symbol.ends_with(w.as_str())) {
+                            reasons_unjudged += 1;
+                            None
+                        } else {
+                            let refs: Vec<usize> =
+                                index.get(&map_ident(file)).cloned().unwrap_or_default();
+                            if refs.is_empty() {
                                 reasons_unjudged += 1;
                                 None
+                            } else if !refs.iter().any(|&i| in_link[i]) {
+                                Some(format!("{file} is not in the link"))
+                            } else if !refs.iter().any(|&i| {
+                                self.files[i].mentions.iter().any(|m| {
+                                    Some(m.0) == k && m.1 & (UNDEF | WUNDEF | ASN | COMMON) != 0
+                                })
+                            }) {
+                                Some(format!("{file} has no undefined or common `{symbol}`"))
+                            } else if !holds(k) {
+                                Some(format!("it does not define `{symbol}`"))
                             } else {
-                                let refs: Vec<usize> =
-                                    index.get(&map_ident(file)).cloned().unwrap_or_default();
-                                if refs.is_empty() {
-                                    reasons_unjudged += 1;
-                                    None
-                                } else if !refs.iter().any(|&i| in_link[i]) {
-                                    Some(format!("{file} is not in the link"))
-                                } else if !refs.iter().any(|&i| {
-                                    self.files[i].mentions.iter().any(|m| {
-                                        Some(m.0) == k && m.1 & (UNDEF | WUNDEF | COMMON) != 0
-                                    })
-                                }) {
-                                    Some(format!("{file} has no undefined or common `{symbol}`"))
-                                } else if !holds(k) {
-                                    Some(format!("it does not define `{symbol}`"))
-                                } else {
-                                    None
-                                }
+                                None
                             }
                         }
-                    };
+                    }
+                };
                 if let Some(b) = bad {
                     v.findings.push(Finding::new(
                         EXTRA,
@@ -1346,6 +1519,11 @@ fn script(text: &str) -> Result<Script, String> {
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    /// [`super::judge`] without a replay of D-12's stages.
+    fn judge(map: &Map, words: Option<&[String]>, files: &dyn Files) -> Verdict {
+        super::judge(map, words, files, None)
+    }
 
     /// A symbol of a synthetic object: `name`, and `D` a function
     /// definition, `O` a data definition, `W` a weak function definition,

@@ -90,9 +90,10 @@ pub(crate) fn verify_in(
     map: &Map,
     ctx: &Ctx<'_>,
 ) -> Report {
-    let mut report = verify_kind(output, store, m, map, ctx);
-    // The input set (§3.8), for every output kind.
-    let set = crate::inset::judge(map, line_words(map, ctx).as_deref(), ctx.files);
+    let (mut report, staged) = verify_kind(output, store, m, map, ctx);
+    // The input set (§3.8), for every output kind; a dynamic one's with
+    // D-12's last stage (WP-171).
+    let set = crate::inset::judge(map, line_words(map, ctx).as_deref(), ctx.files, staged);
     crate::prof::mark("input set");
     if !set.findings.is_empty() {
         report.findings.extend(set.findings);
@@ -102,14 +103,21 @@ pub(crate) fn verify_in(
     report
 }
 
-/// [`verify_in`] without the input set: the rules of the output's kind.
-fn verify_kind(output: &[u8], store: &Store<'_>, m: usize, map: &Map, ctx: &Ctx<'_>) -> Report {
+/// [`verify_in`] without the input set: the rules of the output's kind,
+/// and a dynamic output's replay of D-12's stages.
+fn verify_kind(
+    output: &[u8],
+    store: &Store<'_>,
+    m: usize,
+    map: &Map,
+    ctx: &Ctx<'_>,
+) -> (Report, Option<crate::inset::Stager>) {
     let image = match Image::read(output) {
         Ok(i) => i,
         Err(e) => {
             let mut report = Report::default();
             report.findings.push(Finding::new(Rule::OutputUnreadable, e));
-            return report;
+            return (report, None);
         }
     };
     let Some(dout) = DynOut::read(&image) else {
@@ -118,17 +126,24 @@ fn verify_kind(output: &[u8], store: &Store<'_>, m: usize, map: &Map, ctx: &Ctx<
         // judge it besides (a static judging of a dynamic program names
         // its PLT and its imports wrongly); any other is static.
         let missing = no_dynamic(&image, line_words(map, ctx).as_deref(), ctx.files, map.format);
+        // No DT_NEEDED: no as-needed shared object of the line is a
+        // source of D-12 (WP-171).
+        let staged = line_words(map, ctx)
+            .and_then(|w| crate::inset::Stager::new(&w, ctx.files))
+            .map(crate::inset::Stager::without_sources);
         if missing.is_empty() {
-            return crate::verify_static_in(output, store, m, map, ctx.line.as_deref());
+            return (crate::verify_static_in(output, store, m, map, ctx.line.as_deref()), staged);
         }
         let mut report = Report::default();
         report.findings.extend(structure::check(&image));
         report.findings.extend(structure::check_layout(&image, map));
         report.findings.extend(missing);
         report.sort();
-        return report;
+        return (report, staged);
     };
-    judge(&image, &dout, store, m, map, ctx)
+    let mut staged = None;
+    let report = judge(&image, &dout, store, m, map, ctx, &mut staged);
+    (report, staged)
 }
 
 /// Stage 3 over a dynamic output (§12).
@@ -140,6 +155,7 @@ fn judge(
     m: usize,
     map: &Map,
     ctx: &Ctx<'_>,
+    staged: &mut Option<crate::inset::Stager>,
 ) -> Report {
     let mut report = Report::default();
     report.findings.extend(structure::check(image));
@@ -240,7 +256,16 @@ fn judge(
         })
         .map(|s| s.name.clone())
         .collect();
-    let mut model = Model::build(&line, &objs, &[], ctx.files);
+    // D-12's stages (WP-171): replayed over the line's inputs, a stage's
+    // sources named by the output's DT_NEEDED.
+    *staged = crate::inset::Stager::new(&args, ctx.files);
+    let mut model = Model::build(
+        &line,
+        &objs,
+        &[],
+        ctx.files,
+        staged.as_mut().map(|s| (s as &mut dyn crate::dynmodel::Staging, &dout.needed[..])),
+    );
     // D-21 item 2 (WP-150): the seven names are the program's own however
     // a needed library defines them (a library's `char _end[1]` never
     // serves the program's reference), and the link defines each that a
@@ -276,7 +301,13 @@ fn judge(
         }
     }
     if !file0.is_empty() {
-        model = Model::build(&line, &objs, &file0, ctx.files);
+        model = Model::build(
+            &line,
+            &objs,
+            &file0,
+            ctx.files,
+            staged.as_mut().map(|s| (s as &mut dyn crate::dynmodel::Staging, &dout.needed[..])),
+        );
     }
     for p in &model.problems {
         report.findings.push(Finding::new(Rule::Dyn(2), p.clone()));

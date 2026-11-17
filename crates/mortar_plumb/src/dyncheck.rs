@@ -578,9 +578,12 @@ fn pd6(
     let hs: BTreeSet<&str> = have.iter().copied().collect();
     for m in ws.difference(&hs) {
         let item3 = model.by_soname(m).is_some_and(|i| model.item3.contains(&i));
+        let kept = model.by_soname(m).is_some_and(|i| model.kept.contains(&i));
         v.push(fd(
             6,
-            if item3 {
+            if kept {
+                format!("DT_NEEDED lacks '{m}', which D-11 makes needed{KEPT_NEEDED}")
+            } else if item3 {
                 format!(
                     "DT_NEEDED lacks '{m}', which D-11 item 3 makes needed (an under-linked library's provider; E-shlib 2.3b)"
                 )
@@ -616,6 +619,8 @@ fn pd6(
                     " (only a STV_HIDDEN entry: W1)"
                 } else if root {
                     ROOT_NEEDED
+                } else if model.by_soname(m).is_some_and(|i| model.unreached_needed.contains(&i)) {
+                    UNREACHED_NEEDS
                 } else {
                     ""
                 }
@@ -820,6 +825,18 @@ fn d30_rank() -> HashMap<u64, usize> {
 /// library needed; mold does, anomaly A48; WP-163).
 pub(crate) const ROOT_NEEDED: &str = " (only a root names a definition of it: D-11 item 2)";
 
+/// The suffix of P-D6 and P-D7 for a library only an object of the
+/// output that no stage of D-12 extracts makes needed (dyn.md D-12: an
+/// as-needed object not in N extracts nothing; lld extracts, A70; WP-171).
+pub(crate) const UNREACHED_NEEDS: &str =
+    " (only an object no stage of D-12 extracts makes it needed)";
+
+/// P-D6's suffix for a needed library left out of `DT_NEEDED` whose every
+/// stage-1 key the output's own objects define (dyn.md D-12 row 2a: N
+/// only grows; lld drops it, anomaly A71; WP-171).
+pub(crate) const KEPT_NEEDED: &str =
+    " and D-12 keeps needed (row 2a: N only grows; a later stage's member defines what it gave)";
+
 /// P-D7's suffix for a root a needed library defines and `.dynsym`
 /// lacks (D-21 item 1: GNU ld and mortar import it; lld and mold write
 /// none, anomaly A47; WP-163).
@@ -883,7 +900,18 @@ fn pd7(
                     name,
                     format!(
                         "'{name}' is imported and no needed or used object defines it visibly{}",
-                        if hidden { " (only a STV_HIDDEN entry: W1)" } else { "" }
+                        if hidden {
+                            " (only a STV_HIDDEN entry: W1)"
+                        } else if model.unreached_needed.iter().any(|&i| {
+                            model.dsos[i]
+                                .defs
+                                .get(name)
+                                .is_some_and(|x| x.iter().any(crate::dynmodel::SoDef::visible))
+                        }) {
+                            UNREACHED_NEEDS
+                        } else {
+                            ""
+                        }
                     ),
                 ));
             }

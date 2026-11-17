@@ -10,17 +10,17 @@
 # place (its stage-1 reason, m1.o's reference, is before the mention):
 # `libuy.so libv.so` (GNU ld, mold, mortar; lld `libv.so`).
 #
-# The verifier (D-11 without the stages) finds libuy.so not needed
-# (P-D6) on GNU ld's, mold's and mortar's outputs; the verifier package
-# after WP-167 justifies it from the inputs: libuy.so gives y to m1.o
-# while every member is lazy (stage 1).
+# The verifier replays D-12's stages (WP-171): libuy.so gives y to m1.o
+# while every member is lazy (stage 1), so it is needed, named by
+# DT_NEEDED, a source of stage 2 (gy.o is required and reached), and
+# stays needed. lld's output lacks it: P-D6 "DT_NEEDED lacks 'libuy.so',
+# which D-11 makes needed and D-12 keeps needed (row 2a ...)", A71.
 #
-# The verifier's input-set rule (M11/M12) does not have D-12's stages yet:
-# it finds mortar's later-stage members unreached. The bytes and the runs
-# were checked (every expectation passes with the verifier off); the
-# verifier package after WP-167 lifts the mark.
-#@ xfail(mortar): M12: libgy.a(gy.o) is in the link and no root or live reference reaches it (resolve §4.1); P-D6: DT_NEEDED names 'libuy.so', which D-11 does not make needed; until the verifier package
-#@ xfail(bfd,mold): P-D6: DT_NEEDED names 'libuy.so', kept needed by D-12's stages (2a), which the verifier's D-11 does not model
+# GNU ld's, mold's and mortar's outputs draw nothing; before WP-171 the
+# verifier's D-11 (one stage) found libuy.so not needed (P-D6) and
+# mortar's gy.o unreached (M12).
+#
+#@ anomaly(lld): A71
 #@ spec: dyn.md "D-12"
 #@ spec: dyn.md "D-19a"
 #@ arch: aarch64 x86_64
