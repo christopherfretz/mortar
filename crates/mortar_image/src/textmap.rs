@@ -39,7 +39,8 @@ pub struct TextMap {
     /// The address width in hex digits: 16 (ELFCLASS64) or 8.
     pub digits: usize,
     /// Per extracted archive member: `ARCHIVE(MEMBER)`, the file whose
-    /// reference extracted it, and the symbol.
+    /// reference extracted it (empty for a root), and the symbol; per
+    /// `--whole-archive` member: no file and `--whole-archive`.
     pub archive: Vec<(Vec<u8>, Vec<u8>, Vec<u8>)>,
     /// Per discarded input section: name, size, file.
     pub discarded: Vec<(Vec<u8>, u64, Vec<u8>)>,
@@ -140,8 +141,13 @@ pub fn render(map: &TextMap, pool: &Pool) -> Vec<u8> {
             } else {
                 out.push_str(&" ".repeat(ARCHIVE_COLUMN - member.len()));
             }
-            text(&mut out, by);
-            out.push_str(" (");
+            // A root's or a whole archive's line has no file: `(SYMBOL)`
+            // at column 30, as GNU ld writes it.
+            if !by.is_empty() {
+                text(&mut out, by);
+                out.push(' ');
+            }
+            out.push('(');
             text(&mut out, symbol);
             out.push_str(")\n");
         }
@@ -177,4 +183,35 @@ pub fn render(map: &TextMap, pool: &Pool) -> Vec<u8> {
     // GNU's pseudo-file of its stubs, the file the patch lines name.
     out.push_str("LOAD linker stubs\n");
     out.into_bytes()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // spec: image.md I-121 item 1: a member a reference took names the
+    // file and symbol at column 30; a root's names only `(SYMBOL)` there,
+    // and a `--whole-archive` member `(--whole-archive)`, as GNU ld 2.44.
+    #[test]
+    fn i121_archive_lines_of_roots_and_whole_members() {
+        let map = TextMap {
+            digits: 16,
+            archive: vec![
+                (b"libk.a(k.o)".to_vec(), b"m.o".to_vec(), b"k_fn".to_vec()),
+                (b"libk.a(u.o)".to_vec(), Vec::new(), b"u_fn".to_vec()),
+                (b"libw.a(w.o)".to_vec(), Vec::new(), b"--whole-archive".to_vec()),
+            ],
+            ..TextMap::default()
+        };
+        let text = String::from_utf8(render(&map, &Pool::sequential())).unwrap();
+        let lines: Vec<&str> = text.lines().skip(2).take(3).collect();
+        assert_eq!(
+            lines,
+            [
+                "libk.a(k.o)                   m.o (k_fn)",
+                "libk.a(u.o)                   (u_fn)",
+                "libw.a(w.o)                   (--whole-archive)",
+            ]
+        );
+    }
 }

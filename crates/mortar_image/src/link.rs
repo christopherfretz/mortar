@@ -2842,8 +2842,19 @@ impl LinkTables<'_, '_> {
             ..TextMap::default()
         };
         // 1. The archive members taken, and by whom (FileId order).
+        // A `--whole-archive` member (always live, and a member) is
+        // listed with no taker and `--whole-archive` as GNU ld writes it.
         for (file, live) in l.resolution.file_live.iter() {
-            let FileLive::Extracted(by) = *live else { continue };
+            let by = match *live {
+                FileLive::Extracted(by) => by,
+                FileLive::Always
+                    if l.inputs.files.get(file).is_some_and(|r| r.member.is_some()) =>
+                {
+                    m.archive.push((self.file_text(file), Vec::new(), b"--whole-archive".to_vec()));
+                    continue;
+                }
+                _ => continue,
+            };
             let (taker, symbol) = if by.file == FileId::INTERNAL {
                 let name = roots.iter().find(|r| r.0 == by.index.0).map(|r| r.1.clone());
                 (Vec::new(), name.unwrap_or_default())
