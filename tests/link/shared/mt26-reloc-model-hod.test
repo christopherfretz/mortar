@@ -1,0 +1,122 @@
+# MT-26's row `reloc-model` written by hod itself (hod H-3; WP-129) in a
+# `Shared` link (spec/dyn.md D-117). The C is clang's IR, the objects
+# hod's: -fno-pic gives `static`, -fPIE `pie`, -fPIC `pic`.
+#
+# uses.o defines `g` and reads it by name: today's address-level rule
+# refuses the static and pie objects already; the row refuses them first,
+# naming the row's value. noref.o defines `g` and no code names it: GNU
+# ld and today's mortar link it; under the row the static and pie objects
+# are refused (WP-110 Q23: an exported preemptible datum in code of a
+# model that binds locally), the pic one links and the program's `g` is
+# the library's. hole.o is D-117's residual hole: `at` reaches `g` from
+# the static `before` beside it by a computed index, so no relocation or
+# instruction names `g`: GNU ld links every model, and the static and pie
+# libraries run their own `g` while `.dynsym` says it is preemptible
+# (measured: `7 100`); the row closes the hole for both (an object of
+# two units is mt26-reloc-model.test's). Functions are not data: calls-only static code links (the
+# call goes through the PLT: 2), and an address taken is refused by its
+# relocation, not by the row. --keep-mason-meta in a shared object keeps
+# hod's units (MT-32): two objects, two 88-byte units, 0xb0 bytes.
+#@ spec: meta.md "MT-26", dyn.md "D-117"
+#@ arch: aarch64 x86_64
+#@ requires: hod
+
+cc(hod) -O0 -fno-pic uses.c -o uses-static.o
+cc(hod) -O0 -fPIE uses.c -o uses-pie.o
+cc(hod) -O0 -fPIC uses.c -o uses-pic.o
+cc(hod) -O0 -fno-pic noref.c -o noref-static.o
+cc(hod) -O0 -fPIE noref.c -o noref-pie.o
+cc(hod) -O0 -fPIC noref.c -o noref-pic.o
+cc(hod) -O0 -fno-pic hole.c -o hole-static.o
+cc(hod) -O0 -fPIE hole.c -o hole-pie.o
+cc(hod) -O0 -fno-pic funcall.c -o funcall-static.o
+cc(hod) -O0 -fno-pic func.c -o func-static.o
+cc(hod) -O0 -fPIC func.c -o func-pic.o
+cc -O0 -fno-pie main_uses.c -o main_uses.o
+cc -O0 -fno-pie main_noref.c -o main_noref.o
+cc -O0 -fno-pie main_funcall.c -o main_funcall.o
+cc -O0 -fno-pie main_func.c -o main_func.o
+link(mortar) gcc -shared uses-static.o -Wl,-soname,libu.so -o libu.so
+  exit: fail
+  diag: uses-static.o:(g): code not compiled as position-independent defines symbol `g'
+  diag: ^>>> the Mason metadata of uses-static.o records reloc-model=static (spec/meta.md MT-26)
+link(mortar) gcc -shared uses-pie.o -Wl,-soname,libu.so -o libu.so
+  exit: fail
+  diag: ^>>> the Mason metadata of uses-pie.o records reloc-model=pie (spec/meta.md MT-26)
+link gcc -shared uses-pic.o -Wl,-soname,libu.so -o libu.so
+link(mortar) gcc -shared uses-pic.o func-pic.o -Wl,-soname,libk.so -Wl,--keep-mason-meta -o libk.so
+check(mortar) readelf -SW libk.so
+  has: ] .mason.meta * PROGBITS * 0000000000000000 * 0000b0 00 * 0 * 0 * 8$
+link gcc -no-pie main_uses.o -L. -lu -o prog-uses
+run prog-uses
+  stdout: 100 100 1
+link(mortar) gcc -shared noref-static.o -Wl,-soname,libn.so -o libn.so
+  exit: fail
+  diag: ^>>> the Mason metadata of noref-static.o records reloc-model=static (spec/meta.md MT-26)
+link(mortar) gcc -shared noref-pie.o -Wl,-soname,libn.so -o libn.so
+  exit: fail
+  diag: ^>>> the Mason metadata of noref-pie.o records reloc-model=pie (spec/meta.md MT-26)
+link gcc -shared noref-pic.o -Wl,-soname,libn.so -o libn.so
+link gcc -no-pie main_noref.o -L. -ln -o prog-noref
+run prog-noref
+  stdout: 3 100
+link(mortar) gcc -shared hole-static.o -Wl,-soname,libh.so -o libh.so
+  exit: fail
+  diag: hole-static.o:(g): code not compiled as position-independent defines symbol `g'
+  diag: ^>>> the Mason metadata of hole-static.o records reloc-model=static (spec/meta.md MT-26)
+link(mortar) gcc -shared hole-pie.o -Wl,-soname,libh.so -o libh.so
+  exit: fail
+  diag: ^>>> the Mason metadata of hole-pie.o records reloc-model=pie (spec/meta.md MT-26)
+link gcc -shared funcall-static.o -Wl,-soname,libc1.so -o libc1.so
+link gcc -no-pie main_funcall.o -L. -lc1 -o prog-funcall
+run prog-funcall
+  stdout: 2
+link(mortar) gcc -shared func-static.o -Wl,-soname,libf.so -o libf.so
+  exit: fail
+  diag: func-static.o:(.text+*): relocation R_* against symbol `f' which may bind externally can not be used when making a shared object; recompile with -fPIC
+  no-diag: reloc-model
+link gcc -shared func-pic.o -Wl,-soname,libf.so -o libf.so
+link gcc -no-pie main_func.o -L. -lf -o prog-func
+run prog-func
+  stdout: 2 1
+
+#--- uses.c
+int g = 7;
+int get_g(void) { return g; }
+int *addr_g(void) { return &g; }
+#--- noref.c
+int g = 7;
+int other(void) { return 3; }
+#--- hole.c
+static int before[2] = {1, 2};
+int g = 7;
+int at(long i) { return before[i]; }
+#--- funcall.c
+int f(void) { return 1; }
+int call_f(void) { return f(); }
+#--- func.c
+int f(void) { return 1; }
+int call_f(void) { return f(); }
+void *addr_f(void) { return (void *)&f; }
+#--- main_uses.c
+#include <stdio.h>
+int g = 100;
+int get_g(void);
+int *addr_g(void);
+int main(void) { printf("%d %d %d\n", get_g(), *addr_g(), addr_g() == &g); return 0; }
+#--- main_noref.c
+#include <stdio.h>
+int g = 100;
+int other(void);
+int main(void) { printf("%d %d\n", other(), g); return 0; }
+#--- main_funcall.c
+#include <stdio.h>
+int f(void) { return 2; }
+int call_f(void);
+int main(void) { printf("%d\n", call_f()); return 0; }
+#--- main_func.c
+#include <stdio.h>
+int f(void) { return 2; }
+int call_f(void);
+void *addr_f(void);
+int main(void) { printf("%d %d\n", call_f(), addr_f() == (void *)&f); return 0; }

@@ -71,6 +71,9 @@ pub(crate) mod tag {
     /// A malformed kind 4 entry, found when a kind 3 finding read it
     /// (O-19, WP-145).
     pub const DETAILS: u64 = 13;
+    /// `spec/dyn.md` D-117's `reloc-model` row (`crate::reloc_model`,
+    /// WP-129): not an ODR finding, keyed beside them.
+    pub const RELOC_MODEL: u64 = 14;
 }
 
 /// A record check's `seq`: its tag above `base`.
@@ -1724,12 +1727,14 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
         }
     }
 
-    /// A file's value of a kind 1 key, when all its units agree on it and
-    /// state it; `None` when the file has no unit, or they disagree.
+    /// A file's value of a kind 1 key: the value its units state, merged
+    /// by name (MT-20: hod's unit, which states only `reloc-model`, beside
+    /// kiln's leaves kiln's `abi.rtti` and `isa` the file's); `None` when
+    /// no unit states it, or two disagree.
     fn file_value(&self, units: &[usize], name: &[u8]) -> Option<&'l [u8]> {
         let mut value: Option<&'l [u8]> = None;
         for &u in units {
-            let v = self.units[u].summary_value(name).map(|(v, _)| v)?;
+            let Some((v, _)) = self.units[u].summary_value(name) else { continue };
             match value {
                 None => value = Some(v),
                 Some(w) if w == v => {}

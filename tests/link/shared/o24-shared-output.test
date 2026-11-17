@@ -1,0 +1,25 @@
+# O-24 [M4] for a shared-object output (spec/odr.md; WP-129): a library
+# linked under --odr=strict against a library with a table (mortar's
+# libl.so of fixture shared-o60, f@@V1, its row clear) and defining f
+# differently itself is refused: the output is first in lookup order
+# for its own `DT_NEEDED` (O-24), so libl.so's references to f run the
+# output's copy. Without --odr=strict it links.
+#@ spec: odr.md "O-24", "O-60"
+#@ arch: aarch64 x86_64
+#@ fixture: shared-o60
+#@ xfail(mortar): the verifier (P-M2) does not know O-60 yet: it finds the .note.mason of the fixture's libraries "a .note.mason the link does not ask for" (WP-129 hand-back; owner: the verifier package)
+#@ diag: odr-violation top.o ./libl.so
+
+cc -O1 -fPIC top.c -o top0.o
+meta top.meta top0.o -o top.o
+link(mortar) gcc -shared top.o -Wl,--no-as-needed -L. -ll -Wl,--odr=strict -o libtop.so
+  exit: fail
+  diag: ^>>> defined differently in ./libl.so:(f@@V1)$
+  diag: ^>>> the output exports the definition and comes first in lookup order: it runs its own copy; ./libl.so runs the output's copy$
+
+#--- top.c
+int f(void) { return 7; }
+int top(void) { return f(); }
+#--- top.meta
+summary name=lang value=c++
+definition anchor=f hash=0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e class=1 flags=1

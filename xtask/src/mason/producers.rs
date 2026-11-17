@@ -119,8 +119,9 @@ fn run_one(
         producer,
         variants: VARIANTS.iter().map(|v| v.iter().map(|&o| o.to_owned()).collect()).collect(),
         paths: vec![root.join("tests/link/odr"), root.join("tests/link/dyn/odr")],
-        // The tests with kiln steps compare producers themselves (WP-134).
-        without: vec![linktest::target::Feature::Kiln],
+        // The tests with kiln or hod steps compare producers themselves
+        // (WP-134, WP-129).
+        without: vec![linktest::target::Feature::Kiln, linktest::target::Feature::Hod],
         ..linktest::Args::default()
     };
     let report = match linktest::run(&args) {

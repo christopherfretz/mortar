@@ -1,0 +1,65 @@
+# MT-32 in a `Shared` output (spec/meta.md; WP-129): --keep-mason-meta
+# keeps the live inputs' units in a non-allocated .mason.meta
+# (SHT_PROGBITS, no flags, alignment 8) of a shared object, as WP-076
+# does for executables: a.o's unit, then b.o's two (a second producer's
+# unit beside the first, as hod's H-3 unit sits beside kiln's: MT-20),
+# in FileId order, each unchanged; an unextracted member's unit is not
+# kept. It takes no address and no segment, with --gc-sections too, and
+# the library runs under a host (-s: mt32-keep-meta-shared-strip.test;
+# hod's own units: mt26-reloc-model-hod.test). The reference linkers drop
+# the containers (MT-3). Measured beside the test (record WP-129):
+# every PT_LOAD byte of the library equals the one linked without the
+# option but the ELF header's e_shoff, e_shnum and e_shstrndx and, with
+# a build ID, the build ID, which hashes the whole file.
+#@ spec: meta.md "MT-30", "MT-32"
+#@ arch: aarch64 x86_64
+
+cc -O0 -fPIC a.c -o a0.o
+meta a.meta a0.o -o a.o
+cc -O0 -fPIC b.c -o b0.o
+meta b.meta b0.o -o b.o
+cc -O0 -fPIC u.c -o u0.o
+meta u.meta u0.o -o u.o
+ar rcs libu.a u.o
+cc -O0 -fPIE main.c -o main.o
+link(bfd,lld,mold) gcc -shared a.o b.o libu.a -Wl,-soname,libk.so -o libk.so
+link(mortar) gcc -shared a.o b.o libu.a -Wl,-soname,libk.so -Wl,--keep-mason-meta -o libk.so
+check(mortar) readelf -SW libk.so
+  has: ] .mason.meta * PROGBITS * 0000000000000000 * 000178 00 * 0 * 0 * 8$
+check(mortar) readelf -lW libk.so
+  not: .mason.meta
+link gcc -pie main.o -L. -lk -o prog
+run prog
+  stdout: 5
+link(mortar) gcc -shared a.o b.o libu.a -Wl,-soname,libk.so -Wl,--gc-sections -Wl,--keep-mason-meta -o libgc.so
+check(mortar) readelf -SW libgc.so
+  has: ] .mason.meta * PROGBITS * 0000000000000000 * 000178 00 * 0 * 0 * 8$
+check(mortar) readelf -lW libgc.so
+  not: .mason.meta
+link(mortar) gcc -shared a.o b.o libu.a -Wl,-soname,libk.so -o plain.so
+check(mortar) readelf -SW plain.so
+  not: .mason.meta
+
+#--- a.c
+int b(void);
+int a(void) { return b(); }
+#--- a.meta
+summary name=lang value=c++
+definition anchor=a hash=01010101010101010101010101010101 class=1 flags=0
+#--- b.c
+int b(void) { return 5; }
+#--- b.meta
+unit
+summary name=lang value=c++
+definition anchor=b hash=02020202020202020202020202020202 class=1 flags=0
+unit producer=2
+summary name=reloc-model value=pic
+#--- u.c
+int u(void) { return 4; }
+#--- u.meta
+summary name=lang value=c++
+definition anchor=u hash=03030303030303030303030303030303 class=1 flags=0
+#--- main.c
+#include <stdio.h>
+int a(void);
+int main(void) { printf("%d\n", a()); return 0; }

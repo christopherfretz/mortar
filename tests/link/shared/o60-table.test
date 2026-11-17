@@ -1,0 +1,43 @@
+# O-60 (spec/odr.md; WP-129): the table of a shared object, its rows
+# and bits read in fixture shared-o60. Linked against each library
+# without --odr=strict, a program that defines d, p and f itself shows
+# what the bits say: v() is d + p + f as the library binds them, 10 + 2
+# + 30 against libl.so (only p bound inside), 10 + 2 + 3 against libb.so
+# (p, and f by -Bsymbolic-functions). Without the option a mortar-made
+# library has no table. -Bsymbolic and --dynamic-list are WP-128's
+# (o60-table-wp128.test).
+#@ spec: odr.md "O-60"
+#@ arch: aarch64 x86_64
+#@ fixture: shared-o60
+#@ xfail(mortar): the verifier (P-M2) does not know O-60 yet: it finds the .note.mason of the fixture's libraries "a .note.mason the link does not ask for" (WP-129 hand-back; owner: the verifier package)
+
+cc -O1 -fPIC lib.c -o lib0.o
+cc -O1 -fPIE main.c -o main0.o
+meta main.meta main0.o -o main.o
+link(mortar) gcc -shared lib0.o -Wl,-soname,libp.so -o libp.so
+check(mortar) readelf -SW libp.so
+  not: .note.mason
+link gcc -pie main.o -L. -ll -o prog
+run prog
+  stdout: 10 20 30 42
+link gcc -pie main.o -L. -lb -o progb
+run progb
+  stdout: 10 20 30 15
+
+#--- lib.c
+int d = 1;
+__attribute__((visibility("protected"))) int p = 2;
+int f(void) { return 3; }
+int v(void) { return d + p + f(); }
+#--- main.c
+#include <stdio.h>
+int d = 10;
+int p = 20;
+int f(void) { return 30; }
+int v(void);
+int main(void) { printf("%d %d %d %d\n", d, p, f(), v()); return 0; }
+#--- main.meta
+summary name=lang value=c++
+definition anchor=d hash=0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a class=1 flags=1
+definition anchor=p hash=0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b class=1 flags=1
+definition anchor=f hash=0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c class=1 flags=1

@@ -1041,9 +1041,9 @@ of it is read beyond what the link reads today.
 Identity (`meta.md` MT-13) is (name, version node): a table row's
 version is its `.dynsym` entry's `.gnu.version` index (index 1, or no
 `.gnu.version` at all, is **unversioned**); a row's version is its
-`.dynsym` entry's version node (`spec/dyn.md` D-115; O-60 [M4; planned:
-WP-129]): a mortar-made output's definitions are unversioned until
-`--version-script` lands in WP-125. Two rows of
+`.dynsym` entry's version node (`spec/dyn.md` D-115; O-60, WP-129): a
+mortar-made library's rows carry the node its version script or
+`.symver` gives the definition, as any other library's (R-O10). Two rows of
 one name are compared when the loader connects them, which glibc's does
 as follows (each measured, the rows of the record):
 
@@ -1737,7 +1737,7 @@ WP-077, never by `--odr-table`.
 Implemented (WP-075) for dynamic executables, PIE or not: `=exported`
 writes the table; `=full` writes it and a second note (WP-076, O-52);
 a static executable exports nothing and gets no table, with `=full`
-too; a shared object's table is `[M4]` (O-60; planned: WP-129). Every row of an executable's table carries `NONPREEMPTIBLE`:
+too; a shared object's table is O-60's (WP-129). Every row of an executable's table carries `NONPREEMPTIBLE`:
 an executable comes first in lookup order and binds its own definitions
 at link time, so it always runs its own copy. The keeper's unit is the
 file whose definition resolution kept; its first kind 2 row for the
@@ -1808,7 +1808,7 @@ hand): `libstdc++.so.6` 3,991, `libclang-cpp.so.19.1` 12,929,
 `libLLVM.so.19.1` 15,129: 96 KB, 310 KB and 363 KB of table, in pages
 that are read at load and never written.
 
-**O-60 [M4; planned: WP-129] (the table of a shared object).** Request
+**O-60 [M4; landed: WP-129, `spec/landed/meta/WP-129.md`] (the table of a shared object).** Request
 R-O10 of `spec/dyn.md` §18.2 (D-126 item 1). A `Shared` output's table
 is O-50's and O-51's with three statements:
 
@@ -1838,7 +1838,19 @@ is O-50's and O-51's with three statements:
    reads `NONPREEMPTIBLE` as that check does: the library runs its own
    copy whatever an earlier module defines.
 
-*Test:* `odr-table-shared` (rows; the bit per D-112 case; versions).
+*Test:* `tests/link/fixtures/shared-o60.fixture` (rows; the bit for
+default, protected and `-Bsymbolic-functions` definitions; versions by
+a version script), `tests/link/shared/o60-table.test` (the bindings the
+bits describe, run), `o60-reader.test` and `o60-reader-symbolic.test`
+(statement 3: an executable's O-24 under `--odr=strict` reads the bit
+of a mortar-made library), `o60-table-wp128.test` (`-Bsymbolic`,
+`--dynamic-list`: skipped for mortar, WP-128). The verifier does not
+know O-60 yet (P-M2 reports the table of a shared object): those
+tests are `xfail(mortar)` until its package. A `Shared` link also runs
+O-24 against its own `DT_NEEDED` libraries, as an executable does,
+with the library first in lookup order for its exported names
+(implemented by the same check; untested beyond the executable's
+shapes).
 
 ### 10.2 Section and segment
 

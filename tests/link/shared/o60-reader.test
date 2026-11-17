@@ -1,0 +1,37 @@
+# O-60 statement 3 (spec/odr.md; WP-129) with O-24 (a): an executable
+# that defines d, p and f differently from libl.so (fixture shared-o60,
+# mortar's with its table) and is linked against it under --odr=strict
+# is refused, one odr-violation per name, and each note reads the row's
+# bit: libl.so runs the output's copy where the bit is clear, its own where
+# it is set (p alone, protected). The rows are compared at the library's
+# default version (`@@V1`: the version script's node, O-60 statement 1).
+#@ spec: odr.md "O-60", "O-24"
+#@ arch: aarch64 x86_64
+#@ fixture: shared-o60
+#@ xfail(mortar): the verifier (P-M2) does not know O-60 yet: it finds the .note.mason of the fixture's libraries "a .note.mason the link does not ask for" (WP-129 hand-back; owner: the verifier package)
+#@ diag: odr-violation main.o ./libl.so
+#@ diag: odr-violation main.o ./libl.so
+#@ diag: odr-violation main.o ./libl.so
+
+cc -O1 -fPIE main.c -o main0.o
+meta main.meta main0.o -o main.o
+link(mortar) gcc -pie main.o -L. -ll -Wl,--odr=strict -o prog
+  exit: fail
+  diag: ^>>> defined differently in ./libl.so:(d@@V1)$
+  diag: ^>>> defined differently in ./libl.so:(f@@V1)$
+  diag: ^>>> defined differently in ./libl.so:(p@@V1)$
+  diag: in lookup order: it runs its own copy; ./libl.so runs the output's copy$
+  diag: in lookup order: it runs its own copy; ./libl.so runs its own copy (its row is NONPREEMPTIBLE: protected, or bound by -Bsymbolic or -Bsymbolic-functions)$
+
+#--- main.c
+#include <stdio.h>
+int d = 10;
+int p = 20;
+int f(void) { return 30; }
+int v(void);
+int main(void) { printf("%d %d %d %d\n", d, p, f(), v()); return 0; }
+#--- main.meta
+summary name=lang value=c++
+definition anchor=d hash=0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a class=1 flags=1
+definition anchor=p hash=0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b class=1 flags=1
+definition anchor=f hash=0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c class=1 flags=1

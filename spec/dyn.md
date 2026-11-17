@@ -2718,9 +2718,18 @@ hand-written assembly (`boundary.c`'s `asmlabel`); after a computed
 jump (`BR`) at every leader. Measured share: 3 of 306 bound definitions
 of the twin corpora (1%), and no object escapes (every one is refused
 for another use); x86's "not judged" case above has 0 measured
-instances. The `docs/status` row is in the record (§G.4); a Mason
-object will close it for kiln and hod output (record §G.5, the request
-to hod). A candidate opt-in diagnostic (not a default warning: it
+instances. The `docs/status` row is in the record (§G.4). hod's
+`reloc-model` row closes it for hod's objects (`spec/meta.md` MT-26,
+hod H-3; WP-129, `spec/landed/meta/WP-129.md`): in a `Shared` link an
+object whose row says `static` or `pie` and that defines an exported
+preemptible datum is refused, `non-pic-in-shared-object`, whatever its
+code does (measured: a hod `-fno-pic` and `-fPIE` object reaching `g`
+only by a computed index from a static array beside it links with GNU
+ld and with mortar before WP-129, and its library reads its own `g`
+while `.dynsym` says preemptible; refused now). `pic` never exempts:
+the rule and the analysis above run on every object as before, and an
+object without the row (GCC, Clang, kiln's llc route) is judged by them
+alone, so the hole stays open for those. A candidate opt-in diagnostic (not a default warning: it
 fires on correct code), the **no-self-GOT signature**: an object that
 defines exported data in a section its code addresses through local
 symbols and has no GOT relocation against any own exported datum

@@ -535,6 +535,28 @@ fn isa_and_vtable_rtti() {
     assert!(e.contains(">>> defined in a.o:(_ZTV1S) (kept)"), "{e}");
 }
 
+// spec: meta.md MT-20 (kind 1 rows of one TU's units merged by name),
+// odr.md O-31, O-25: a second unit stating only `reloc-model` (hod's,
+// H-3) beside the first leaves the first's `isa` and `abi.rtti` the file's
+#[test]
+fn isa_and_vtable_rtti_beside_a_second_unit() {
+    let Some(cx) = Cx::new("odr-isa-two-units") else { return };
+    let a = unit(&[("lang", "c++"), ("isa", "v8a"), ("abi.rtti", "on")].map(|(n, v)| (n, v, 0)));
+    let b =
+        unit(&[("lang", "c++"), ("isa", "v8a+sve"), ("abi.rtti", "off")].map(|(n, v)| (n, v, 0)));
+    let hod = unit(&[("reloc-model", "static", 0)]);
+    let syms = [Sym::Comdat("_Z1fv"), Sym::Comdat("_ZTV1S")];
+    cx.object("a.o", &syms, Some(&bytes(&[a, hod.clone()])));
+    cx.object("b.o", &syms, Some(&bytes(&[b, hod])));
+    let (ok, e) = cx.strict(&["a.o", "b.o"], &[]);
+    assert!(ok, "{e}");
+    assert!(e.contains(">>> a.o: isa=v8a; b.o: isa=v8a+sve"), "{e}");
+    assert!(
+        e.contains("warning: the vtable of 1S is emitted by translation units compiled with and"),
+        "{e}"
+    );
+}
+
 /// O-30's diagnostics in order, as (first, second) value pairs.
 fn abi_lines(e: &str) -> Vec<&str> {
     e.lines().filter(|l| l.contains("translation units compiled with different abi.k")).collect()

@@ -7,7 +7,9 @@
 //! WP-072: the foreign checks and the switches; WP-073: the record
 //! checks; WP-075: the check against shared-object inputs (O-24) and the
 //! `.note.mason` table's rows (O-50); WP-076: O-23 (`archives`), `=full`
-//! and `--keep-mason-meta` (`kept`).
+//! and `--keep-mason-meta` (`kept`); WP-129: hod's `reloc-model` row in a
+//! `Shared` link (`reloc_model`, `spec/dyn.md` D-117) and a shared
+//! object's table (O-60).
 #![forbid(unsafe_code)]
 
 pub mod archives;
@@ -18,6 +20,7 @@ pub mod foreign;
 pub mod kept;
 pub mod records;
 pub mod register;
+pub mod reloc_model;
 
 use std::time::Instant;
 

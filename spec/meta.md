@@ -201,9 +201,9 @@ start of the unit. Every structure below is 8-aligned and a multiple of
 8 bytes, so `u64` fields are naturally aligned when the section is.
 
 **MT-10 (units).** The section's contents are a sequence of **units**,
-one per translation unit and producer [M4; planned, request R-MT11:
-until WP-129 lands a reader may assume one; hod's unit of H-3,
-`odr.md` §11, is the second producer's]. At an 8-aligned offset, a reader finds either a
+one per translation unit and producer [M4; landed: hod H-3, mortar's
+reader WP-129, `spec/landed/meta/WP-129.md`; request R-MT11: hod's unit
+of H-3, `odr.md` §11, is the second producer's]. At an 8-aligned offset, a reader finds either a
 unit (its first four bytes are the magic `MASN`, `4d 41 53 4e`) or eight
 zero bytes of padding, which it skips; anything else is malformed. A
 unit is
@@ -341,8 +341,8 @@ record lives and dies with the group. It must **not**:
 
 **MT-20 (one unit per TU, outside every group).** A producer writes the
 records of a translation unit into one unit of one `.mason.meta`
-section that is in no group (MT-2). [M4; planned, request R-MT11,
-WP-129] One unit per translation unit **and producer**: kiln's unit
+section that is in no group (MT-2). [M4; landed: hod H-3, WP-129;
+request R-MT11] One unit per translation unit **and producer**: kiln's unit
 and hod's (H-3) may share one container, each written by its own
 producer; a reader merges kind 1 rows of one translation unit's units
 only by name, as it would rows of two translation units. No order is
@@ -413,7 +413,25 @@ a row without it is information. Names defined now [kiln]:
 | `abi.wchar` | size in bytes | yes | |
 | `abi.long-double` | size in bits | yes | |
 | `isa` | the target feature string the TU was compiled for | no | K16d: `odr.md` O-31 |
-| `reloc-model` [hod; M4; planned: hod H-3, mortar's reader WP-129; request R-MT11] | `static`, `pie` or `pic`: the relocation model hod's code generation used (`-fno-pic`, `-fPIE`, `-fPIC`) | no | `dyn.md` D-117: exact refusal of non-PIC code in a shared object (`static` or `pie` in an object defining an exported preemptible datum refuses it, `non-pic-in-shared-object`; `pic` never exempts) |
+| `reloc-model` [hod; M4; landed: hod H-3, mortar's reader WP-129; request R-MT11] | `static`, `pie` or `pic`: the relocation model hod's code generation used (`-fno-pic` and `dynamic-no-pic`; `-fPIE`; `-fPIC`) | no | `dyn.md` D-117: exact refusal of non-PIC code in a shared object (`static` or `pie` in an object defining an exported preemptible datum refuses it, `non-pic-in-shared-object`; `pic` never exempts) |
+
+The `reloc-model` row (WP-129) is read in a `Shared` link only, from any
+producer's unit (kiln's llc route writes none; a test producer may), and
+in every `--odr` mode, `--odr=off` included: it is D-117's refusal, not
+an ODR check (MT-42's exception below). An object's value is that of its
+first unit, in MT-30's order, whose row says `static` or `pie`: an
+object of several units (GNU ld `-r` of two hod objects) is refused when
+any of them binds locally, since a row does not say which definition
+came from which unit. A value other than the three is no row. The
+"exported preemptible datum": a non-local symbol of the object, defined
+in a section without `SHF_EXECINSTR` (`STT_TLS` included) or common,
+that `Resolution`'s preemptible set holds (D-112: not protected, not
+bound by `-Bsymbolic`). One error per object, naming its first such
+datum in symbol order. Functions are not judged by the row: calls go
+through the PLT, and an address taken is D-117's table's (measured with
+hod, `spec/landed/meta/WP-129.md`). The row speaks in no other output
+kind: hod's `static` code is PC-relative on both 64-bit targets and
+links and runs right in `-pie` and `-no-pie` (measured).
 
 The three `abi.stdlib*` rows come from the macro state at the end of the
 TU: a unit that includes no library header has `abi.stdlib` at most, and
@@ -561,7 +579,11 @@ MT-42.
 **MT-42 (a link that does not use the feature does not pay for it).**
 A hard rule (the operator's, 2026-11-15). Mortar reads a container's
 bytes only when a check that needs them is on, or `--keep-mason-meta`
-(MT-32) asks for them (`odr.md` O-42): without that option, with
+(MT-32) asks for them (`odr.md` O-42), and in a `Shared` link for an
+object that defines an exported preemptible datum (the `reloc-model`
+row, MT-26, WP-129: a correctness refusal, read in every mode; a link
+without containers pays nothing, and an object without one is never
+read): without that option, with
 `--odr=off`, and in the default mode as long as every record-based check
 is `--odr=strict` only (`odr.md` O-47), **a link pays nothing for the
 containers**: mortar parses no unit and keeps no container byte. This
@@ -655,11 +677,19 @@ needed for incremental links (`spec/incr.md` keeps state in its own
 file).
 
 Implemented for executables (WP-076; static, static-pie, PIE and
-non-PIE; shared-object outputs are M4), `spec/landed/meta/WP-076.md`.
-[M4; planned: WP-129; request R-MT10] It applies to `Shared` as
-written: the units are kept as in an executable, the section is
-non-allocated and changes no loaded byte (`spec/dyn.md` D-126 item 3;
-unmeasured for `Shared`, the executable tests carry over):
+non-PIE), `spec/landed/meta/WP-076.md`, and shared objects (WP-129).
+[M4; landed: WP-129, `spec/landed/meta/WP-129.md`; request R-MT10] It
+applies to `Shared` as written: the units are kept as in an executable
+(hod's units too, MT-20), the section is non-allocated and takes no
+address or segment (`spec/dyn.md` D-126 item 3). Measured for `Shared`
+(AArch64 and x86-64, plain, `--gc-sections`, `-s`) and for executables
+alike: every `PT_LOAD` byte equals the output's without the option but
+the ELF header's `e_shoff`, `e_shnum` and `e_shstrndx` (one more
+section) and, with a build ID, its 20 bytes (the build ID hashes the
+whole file, kept section included); "changes no loaded byte" is read
+with those exceptions and no other (supervisor's ruling, 2026-11-17:
+the build ID identifies the FILE, so a file with the kept section has
+its own):
 
 - The units of the live inputs' containers, in `FileId` order, then
   section, then offset, each copied unchanged and followed by zero

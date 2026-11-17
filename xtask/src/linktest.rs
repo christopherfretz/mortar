@@ -626,6 +626,7 @@ pub fn run(args: &Args) -> Result<Report, String> {
         producer: args.producer,
         mason: None,
         kiln: None,
+        hod: None,
         variants: args.variants.clone(),
     };
     if args.producer != engine::Producer::Gcc {
@@ -654,6 +655,10 @@ pub fn run(args: &Args) -> Result<Report, String> {
             report.errors.push(format!("--producer {}: {e}", args.producer.name()));
         }
         matrix.kiln = Some(found);
+    }
+    // WP-129: a hod that writes the reloc-model row, the same way.
+    if parsed.iter().any(|(_, _, test)| test.requires.contains(&target::Feature::Hod)) {
+        matrix.hod = Some(crate::mason::HodRows::find(&work.join("hod-probe")));
     }
     check_xfails(args, &matrix.xfails, &tests, &parsed, &mut report);
     if matrix.plumb && !matrix.stage3 {

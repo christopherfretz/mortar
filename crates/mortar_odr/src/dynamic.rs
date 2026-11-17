@@ -34,7 +34,9 @@ pub struct Output<'a> {
     /// The shared objects in `DT_NEEDED`, in that order (O-24's scope).
     pub needed: &'a [FileId],
     /// An executable (`Exec` or `Pie`): every row of its table is
-    /// `NONPREEMPTIBLE` (an executable binds its own definitions).
+    /// `NONPREEMPTIBLE` (an executable binds its own definitions). `false`
+    /// for a shared object (O-60): a row is `NONPREEMPTIBLE` exactly when
+    /// its symbol is exported and not preemptible.
     pub executable: bool,
 }
 
@@ -183,9 +185,14 @@ fn table_rows(resolution: &Resolution, output: Output<'_>, keepers: &[&Keeper]) 
         .iter()
         .filter(|k| k.flags & (flags::VAGUE | flags::EXPLICIT_SPEC) != 0)
         .map(|k| {
+            // O-60: an executable binds every definition it exports; a
+            // shared object exactly those `Resolution.preemptible` leaves
+            // out (protected, and `-Bsymbolic`/`-Bsymbolic-functions`'
+            // bindings: D-112). Protected is read too, for a resolution
+            // that computed no preemptible set.
             let protected =
                 resolution.props.get(k.sym).is_some_and(|p| p.visibility == STV_PROTECTED);
-            let np = output.executable || protected;
+            let np = output.executable || protected || !resolution.preemptible.contains(k.sym);
             let mut hash = [0; 8];
             hash.copy_from_slice(&k.hash[..8]);
             TableRow {

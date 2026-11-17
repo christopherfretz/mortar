@@ -518,6 +518,7 @@ impl Step {
             StepKind::Compile(compile) => match (compile.family, compile.language) {
                 (Family::Clang, _) => Some(Feature::Clang),
                 (Family::Kiln, _) => Some(Feature::Kiln),
+                (Family::Hod, _) => Some(Feature::Hod),
                 (Family::Gcc, Language::Cxx) => Some(Feature::Gxx),
                 (Family::Gcc, Language::Fortran) => Some(Feature::Gfortran),
                 (Family::Gcc, Language::C | Language::Asm) => None,
@@ -1692,6 +1693,11 @@ fn compile(
     if family == Family::Kiln && !matches!(language, Language::C | Language::Cxx) {
         return Err(format!("'{keyword}' has no kiln family: kiln compiles C and C++"));
     }
+    if family == Family::Hod && !matches!(language, Language::C | Language::Cxx) {
+        return Err(format!(
+            "'{keyword}' has no hod family: hod compiles the IR clang makes of C and C++"
+        ));
+    }
     qualifiers.no_linker(&format!("'{keyword}'"))?;
     if args.is_empty() {
         return Err(format!("'{keyword}' has no arguments"));
@@ -2232,6 +2238,12 @@ FileHeader:
         assert_eq!(compile.family, Family::Clang);
         let StepKind::Link(link) = &clang.steps[1].kind else { panic!() };
         assert_eq!(link.driver, Driver::Clangxx);
+        // WP-129: a `(hod)` step needs `requires: hod`; hod takes C and C++.
+        let hod = ok("#@ requires: hod\ncc(hod) -fPIC a.c -o a.o\nlink gcc -shared a.o\n");
+        let StepKind::Compile(compile) = &hod.steps[0].kind else { panic!() };
+        assert_eq!((compile.family, hod.requires.as_slice()), (Family::Hod, &[Feature::Hod][..]));
+        assert!(has_error(&with("cc(hod) a.c -o a.o\nlink gcc a.o\n"), 2, "requires: hod"));
+        assert!(has_error(&with("#@ requires: hod\nas(hod) a.s\n"), 3, "no hod family"));
         let fortran = ok("#@ requires: gfortran\nfc a.f90\nlink gfortran a.o\n");
         assert_eq!(fortran.requires, [Feature::Gfortran]);
         let asm = ok("as a.S -o a.o\nlink gcc -static a.o\n");

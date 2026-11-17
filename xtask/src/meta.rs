@@ -1197,9 +1197,31 @@ pub fn add_with(objcopy: &Path, items: &[Item], input: &Path, out: &Path) -> Res
     };
     let bin = out.with_extension("mason.bin");
     let step = out.with_extension("mason.o");
-    std::fs::write(&bin, section_bytes(items)?).map_err(|e| e.to_string())?;
+    // An object with a container already (hod's own unit, H-3): the
+    // description's unit goes before the bytes there, as hod appends its
+    // unit after an incoming container (spec/meta.md MT-20), in the one
+    // section objcopy can name.
+    let elf = std::fs::read(input).map_err(|e| format!("{}: {e}", input.display()))?;
+    let present = mortar_elf::Object::parse(&elf)
+        .ok()
+        .and_then(|o| {
+            o.sections()
+                .find(|s| s.name().is_ok_and(|n| n == mortar_meta::SECTION_NAME))
+                .map(|s| s.data().map(<[u8]>::to_vec))
+        })
+        .transpose()
+        .map_err(|e| format!("{}: .mason.meta: {e}", input.display()))?;
+    let mut bytes = section_bytes(items)?;
+    let how = match present {
+        Some(old) => {
+            bytes.extend_from_slice(&old);
+            "--update-section"
+        }
+        None => "--add-section",
+    };
+    std::fs::write(&bin, bytes).map_err(|e| e.to_string())?;
     let r = run(&[
-        "--add-section".into(),
+        how.into(),
         format!(".mason.meta={}", bin.display()),
         "--set-section-flags".into(),
         ".mason.meta=exclude,readonly".into(),

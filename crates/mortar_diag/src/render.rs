@@ -506,6 +506,17 @@ fn message<'d>(kind: &'d Kind, style: &Style<'_>, out: &mut String) -> Option<&'
             let shown = symbol_into(name, style, out);
             return shown.then_some(name);
         }
+        Kind::NonPicInSharedObject { r_type, name, file: _ } if r_type.is_empty() => {
+            // No relocation: the object's `reloc-model` row decides
+            // (`spec/dyn.md` D-117, `spec/meta.md` MT-26; WP-129).
+            out.push_str("code not compiled as position-independent defines symbol `");
+            let shown = symbol_into(name, style, out);
+            out.push_str(
+                "' which may bind externally: it can not be used when making a shared object; \
+                 recompile with -fPIC",
+            );
+            return shown.then_some(name);
+        }
         Kind::NonPicInSharedObject { r_type, name, file: _ } => {
             // GNU ld's words; the input object is the head line's place.
             out.push_str("relocation ");
