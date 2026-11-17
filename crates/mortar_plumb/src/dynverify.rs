@@ -180,9 +180,18 @@ fn judge(
     let exports =
         (opts.shared || opts.export_dynamic).then(|| crate::shared::ExportRule::plain(map.format));
     crate::fate::collect_empty(&mut objs, Some(&opts), exports.as_ref());
-    let meta = crate::odrtable::check(image, &objs, map, Some(&opts), Some(&line), &mut meta_cov);
+    let mut pending = crate::odrtable::Pending::default();
+    let meta = crate::odrtable::check(
+        image,
+        &objs,
+        map,
+        Some(&opts),
+        Some(&line),
+        &mut meta_cov,
+        &mut pending,
+    );
     report.findings.extend(meta);
-    report.coverage.meta = meta_cov.clone();
+    report.coverage.meta = meta_cov;
     // P-D1: a link stage 3 does not model is reported by name, as one
     // finding each, and nothing else is judged (§12.1).
     let mut outside: Vec<String> = line.outside.clone();
@@ -273,6 +282,16 @@ fn judge(
     if let (Some(sl), Some(d)) = (&shared.line, &map.dynamic) {
         report.findings.extend(crate::shared::map_facts(sl, d));
     }
+    // P-M2 on a shared object's table (O-60): the bits by the export set.
+    if let Some(s) = &sets {
+        report.findings.extend(crate::odrtable::shared_rows(
+            image,
+            &objs,
+            s,
+            &pending,
+            &mut report.coverage.meta,
+        ));
+    }
     // The loader's order: the image's own DT_NEEDED.
     let mut needed_idx = Vec::new();
     for n in &dout.needed {
@@ -290,13 +309,22 @@ fn judge(
         machine: image.header.e_machine,
     };
     let kind = line.kind.unwrap_or(OutputKind::Exec);
-    let mut checked = crate::dyncheck::check(image, dout, &line, &model, &ld, &objs, map);
+    let mut unjudged = Vec::new();
+    let mut checked =
+        crate::dyncheck::check(image, dout, &line, &model, &ld, &objs, map, &mut unjudged);
     if let (Some(sl), Some(s)) = (&shared.line, &sets) {
         // §12.5: P-D16's changes to the executable rules, then P-D19-P-D26.
         crate::shared::filter_dyncheck(&mut checked, image, dout, sl, s, map.format);
-        report
-            .findings
-            .extend(crate::shared::static_checks(image, dout, &objs, sl, s, &args, map.format));
+        report.findings.extend(crate::shared::static_checks(
+            image,
+            dout,
+            &objs,
+            sl,
+            s,
+            &args,
+            map.format,
+            &mut unjudged,
+        ));
         // P-D17's address clause (D-117): a bound use is reported even when
         // both views agree on its value.
         report.findings.extend(crate::sharedflow::address_clause(&objs, s).0);
@@ -331,6 +359,7 @@ fn judge(
         image.header.e_machine,
         map.format,
     ));
+    report.coverage.stripped_not_judged = unjudged;
     // View 1: bias 0.
     // §12.5 view A: a preemptible IFUNC key is what its resolver returns,
     // through the record that names it (P-D18).
@@ -410,6 +439,14 @@ fn judge(
         // when the word is not an
         // input's absolute use).
         let known: BTreeSet<u64> = abs.iter().filter(|w| w.3).map(|w| w.0).collect();
+        // A stripped output (no `.symtab`, WP-164): a reference to a name
+        // only the linker defines (`__start_X`, measured: mold's GOT slots
+        // of them) resolves to nothing (`symbol-unresolved`), so the GOT
+        // slots the inputs demand are not all known: a slot's addend no
+        // known demand gives is not judged.
+        let demands_known = crate::dyncheck::has_symtab(image)
+            || engine.cov.not_checked_of(crate::report::Reason::SymbolUnresolved) == 0;
+        let mut slots_unjudged = 0u64;
         for r in &dout.rels {
             if loader::kind(image.header.e_machine, r.ty) == loader::Kind::Relative
                 && !known.contains(&r.offset)
@@ -425,8 +462,17 @@ fn judge(
                     crate::dynfields::linker_word(image, r.offset, a, &engine.got_demands)
                 };
                 let Some(why) = why else { continue };
+                if !demands_known && why.contains(crate::dynfields::UNDEMANDED) {
+                    slots_unjudged += 1;
+                    continue;
+                }
                 report.findings.push(Finding::new(Rule::Dyn(9), why).at(r.offset));
             }
+        }
+        if slots_unjudged > 0 {
+            report.coverage.stripped_not_judged.push(format!(
+                "P-D9: {slots_unjudged} .got slot addends (a GOT-indirect reference to a name only the linker defines is unresolved)"
+            ));
         }
     }
     if map.format == crate::Format::Mortar {
@@ -444,8 +490,12 @@ fn judge(
     } else {
         excluded_locals(&mut view1_findings, image, &model);
     }
+    // The engine's coverage, with what stage 3 and 4 counted before it.
+    let meta = std::mem::take(&mut report.coverage.meta);
+    let stripped = std::mem::take(&mut report.coverage.stripped_not_judged);
     report.coverage = std::mem::take(&mut engine.cov);
-    report.coverage.meta = meta_cov;
+    report.coverage.meta = meta;
+    report.coverage.stripped_not_judged = stripped;
     drop(engine);
     // View 2: a second bias (Pie): every word that holds an address of the
     // executable moves with it, every other word does not.

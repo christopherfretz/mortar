@@ -2,7 +2,8 @@
 # Regenerates the stage-4 fixtures of tests/meta.rs (spec/plumb.md §13;
 # WP-078): two objects with test-producer units (`cargo xtask meta`, the
 # descriptions a.meta and b.meta), a stub library, and mortar's PIE of
-# them with --odr-table=full and --keep-mason-meta, for AArch64 and x86-64.
+# them with --odr-table=full and --keep-mason-meta, and its -shared twin
+# (WP-164), for AArch64 and x86-64.
 #   sh gen.sh <mortar> <xtask>
 # Run from this directory; the outputs are checked in.
 set -e
@@ -22,5 +23,8 @@ for arch in aarch64 x86_64; do
   rm a0.o b0.o
   "$mortar" -pie -export-dynamic -dynamic-linker /lib/ld.so -o prog a.o b.o libs.so \
     --odr-table=full --keep-mason-meta --mortar-map=prog.map
+  # WP-164: the shared object of the same inputs (O-60, MT-32 in Shared).
+  "$mortar" -shared -o lib.so a.o b.o libs.so \
+    --odr-table=full --keep-mason-meta --mortar-map=lib.map
   cd ..
 done

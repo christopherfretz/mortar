@@ -94,6 +94,16 @@ const SHARED_C: &str = "#include <stdio.h>\n\
 const SHARED_VER: &str = "SW_1 { global: sw_old; sw_data; sw_tls; local: *; };\n\
                           SW_2 { global: sw_new; sw_init; sw_fini; } SW_1;\n";
 
+/// The units of `shared.table` (WP-164): rows for the two exported
+/// functions (one `SYSTEM`), the exported variable, the one the script
+/// makes local (no row, O-50) and a type.
+const SHARED_META: &str = "summary name=lang value=c++\n\
+    definition anchor=sw_old hash=0123456789abcdef0123456789abcdef class=1 flags=1\n\
+    definition anchor=sw_new hash=fedcba9876543210fedcba9876543210 class=1 flags=0x101\n\
+    definition anchor=sw_data hash=00112233445566778899aabbccddeeff class=2 flags=8\n\
+    definition anchor=sw_hidden hash=ffeeddccbbaa99887766554433221100 class=1 flags=1\n\
+    type name=1S hash=0f1e2d3c4b5a69788796a5b4c3d2e1f0 layout=0x55 size=8 align=4 flags=0\n";
+
 const CASES: &[Case] = &[
     Case {
         name: "pie.lazy",
@@ -221,11 +231,32 @@ const CASES: &[Case] = &[
         only: &[],
         library: true,
     },
+    // `Shared` with stage 4's sections (WP-164, O-60 and MT-32): the
+    // versioned library's table under `-Bsymbolic-functions` (the two
+    // functions' rows NONPREEMPTIBLE, the variable's not), `=full`'s note
+    // with the local `sw_hidden`, and the kept container.
+    Case {
+        name: "shared.table",
+        cxx: false,
+        compile: &["-fPIC"],
+        link: &[
+            "-shared",
+            "-Wl,--version-script=shared.ver",
+            "-Wl,-Bsymbolic-functions",
+            "-Wl,--odr-table=full",
+            "-Wl,--keep-mason-meta",
+            "-Wl,--build-id=none",
+        ],
+        window: 0,
+        meta: Some(SHARED_META),
+        only: &[".note.mason", ".mason.meta"],
+        library: true,
+    },
 ];
 
 /// The cases of `--quick` (WP-161 added the two `Shared` ones: about 20 s
 /// each on one architecture, measured at a load of 20).
-pub const QUICK_CASES: &[&str] = &["pie.lazy", "nopie", "shared", "shared.tail"];
+pub const QUICK_CASES: &[&str] = &["pie.lazy", "nopie", "shared", "shared.tail", "shared.table"];
 
 /// What `cargo xtask sweep` was asked.
 #[derive(Debug, Default)]

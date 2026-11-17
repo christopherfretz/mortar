@@ -8,7 +8,6 @@
 #@ spec: odr.md "O-60", "O-24"
 #@ arch: aarch64 x86_64
 #@ fixture: shared-o60
-#@ xfail(mortar): the verifier (P-M2) does not know O-60 yet: it finds the .note.mason of the fixture's libraries "a .note.mason the link does not ask for" (WP-129 hand-back; owner: the verifier package)
 #@ diag: odr-violation main.o ./libb.so
 #@ diag: odr-violation main.o ./libb.so
 #@ diag: odr-violation main.o ./libb.so

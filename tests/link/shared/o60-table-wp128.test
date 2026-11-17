@@ -9,7 +9,6 @@
 # binds them, 1 + 2 + 3 under -Bsymbolic, 10 + 2 + 3 under the list.
 #@ spec: odr.md "O-60"
 #@ arch: aarch64 x86_64
-#@ xfail(mortar): the verifier (P-M2) does not know O-60 yet: it finds the .note.mason of the libraries "a .note.mason the link does not ask for" (WP-164; the checks pass with --no-plumb)
 
 cc -O1 -fPIC lib.c -o lib0.o
 meta lib.meta lib0.o -o lib.o

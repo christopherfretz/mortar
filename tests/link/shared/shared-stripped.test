@@ -1,0 +1,82 @@
+# A stripped shared object (spec/plumb.md P-D22, §12.5; WP-164): -s
+# removes .symtab, -S and --strip-debug the debug sections only. The
+# verifier's rules that read the OUTPUT's .symtab judge what the file
+# still shows: DT_INIT/DT_FINI (crti's _init/_fini, or the -init/-fini
+# function) by the map's symbol records for mortar, by .dynsym when the
+# function is exported, and otherwise by the segment the value lies in
+# (an executable PT_LOAD). The library runs: its -init function before
+# its constructor, its -fini function after its destructor.
+#@ spec: plumb.md "P-D22"; dyn.md "D-102"; dyn.md "D-124"
+#@ arch: aarch64 x86_64
+
+cc -g -O1 -fPIC lib.c -o lib.o
+cc -g -O1 -fPIE main.c -o main.o
+cc -O1 -fPIC more.c -o more.o
+link gcc -shared lib.o -s -Wl,-soname,liba.so -o liba.so
+check readelf -SW liba.so
+  not: .symtab
+link gcc -shared lib.o -Wl,-S -Wl,-soname,libb.so -o libb.so
+check readelf -SW libb.so
+  has: .symtab
+  not: .debug_info
+link gcc -shared lib.o -Wl,--strip-debug -Wl,-soname,libc2.so -o libc2.so
+link gcc -shared lib.o -Wl,--strip-all -Wl,-soname,libd.so -o libd.so
+check readelf -SW libd.so
+  not: .symtab
+link gcc -shared lib.o -s -Wl,-init,lib_init -Wl,-fini,lib_fini -Wl,-soname,libe.so -o libe.so
+link gcc -shared lib.o -s -Wl,-init,hid_init -Wl,-fini,hid_fini -Wl,-soname,libf.so -o libf.so
+link gcc -shared more.o -s -Wl,-soname,libm1.so -o libm1.so
+link gcc -shared more.o -s -Wl,-Bsymbolic -Wl,-soname,libm2.so -o libm2.so
+link gcc -shared more.o -Wl,--strip-all -Wl,-Bsymbolic-functions -Wl,-soname,libm3.so -o libm3.so
+link gcc -shared more.o -Wl,-S -Wl,-Bsymbolic -Wl,-soname,libm4.so -o libm4.so
+link gcc -pie main.o -L. -la -s -o prog-a
+run prog-a
+  env: LD_LIBRARY_PATH=.
+  stdout: ctor
+  stdout: main 7
+  stdout: dtor
+link gcc -pie main.o -L. -le -s -o prog-e
+run prog-e
+  env: LD_LIBRARY_PATH=.
+  stdout: lib_init
+  stdout: ctor
+  stdout: main 7
+  stdout: dtor
+  stdout: lib_fini
+link gcc -pie main.o -L. -lf -Wl,-S -o prog-f
+run prog-f
+  env: LD_LIBRARY_PATH=.
+  stdout: hid_init
+  stdout: ctor
+  stdout: main 7
+  stdout: dtor
+  stdout: hid_fini
+
+#--- lib.c
+#include <stdio.h>
+void lib_init(void) { puts("lib_init"); }
+void lib_fini(void) { puts("lib_fini"); }
+__attribute__((visibility("hidden"))) void hid_init(void) { puts("hid_init"); }
+__attribute__((visibility("hidden"))) void hid_fini(void) { puts("hid_fini"); }
+__attribute__((constructor)) static void ctor(void) { puts("ctor"); }
+__attribute__((destructor)) static void dtor(void) { puts("dtor"); }
+int seven(void) { return 7; }
+#--- more.c
+/* The forms a stripped library's relocation rules resolve by name: a
+   protected datum and a default one used PC-relative or through the GOT,
+   a TLS variable, a weak undefined, a common, the linker's
+   __start_/__stop_ of a C-identifier section, _GLOBAL_OFFSET_TABLE_. */
+__attribute__((visibility("protected"))) int prot = 3;
+int dflt = 4;
+int com;
+__thread int tv = 5;
+__attribute__((weak)) extern int missing;
+__attribute__((section("tbl"), used)) static int t1 = 1;
+extern int __start_tbl[], __stop_tbl[];
+int more(void) {
+  return prot + dflt + com + tv + (&missing ? 1 : 0) + (int)(__stop_tbl - __start_tbl);
+}
+#--- main.c
+#include <stdio.h>
+int seven(void);
+int main(void) { printf("main %d\n", seven()); return 0; }

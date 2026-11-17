@@ -1966,9 +1966,9 @@ a version script), `tests/link/shared/o60-table.test` (the bindings the
 bits describe, run), `o60-reader.test` and `o60-reader-symbolic.test`
 (statement 3: an executable's O-24 under `--odr=strict` reads the bit
 of a mortar-made library), `o60-table-wp128.test` (`-Bsymbolic`,
-`--dynamic-list`: skipped for mortar, WP-128). The verifier does not
-know O-60 yet (P-M2 reports the table of a shared object): those
-tests are `xfail(mortar)` until its package. A `Shared` link also runs
+`--dynamic-list`: skipped for mortar, WP-128). The verifier
+judges O-60 as P-M2's (`spec/plumb.md` §13.2, WP-164): every link of
+those tests is judged. A `Shared` link also runs
 O-24 against its own `DT_NEEDED` libraries, as an executable does,
 with the library first in lookup order for its exported names
 (implemented by the same check; untested beyond the executable's

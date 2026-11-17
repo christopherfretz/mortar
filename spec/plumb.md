@@ -898,7 +898,11 @@ The notation is AAELF64's:
 - **G(GDAT(S+A))** is the address of the GOT slot that holds S+A (§5.5).
 - **GOT** is the value of `_GLOBAL_OFFSET_TABLE_` (the unique symbol of
   that name, else the global one), else the address of the output's
-  `.got`.
+  `.got`; in a stripped output (no `.symtab`, so no symbol of that name
+  to read; WP-164) on x86-64 the start of `.got.plt` when the output has
+  one (where all four linkers put the symbol, the table of linker-defined
+  names below), else `.got` (measured: mold's stripped large-model
+  `GOTOFF64` was R1 against `.got` before).
 - **Page(x)** is `x & ~0xfff`.
 
 X, the value a type writes, is computed in 64-bit wrapping arithmetic. Its
@@ -3504,7 +3508,12 @@ entries of §4.8, and the property types §6.6 judged and did not judge, what B1
 the build id (§6.7), the x86-64 large sections whose placement no
 rule judges (`placement_not_judged`, §6.5), stage 4's `meta` (§13.2), and for an output with a
 `.gdb_index` its version, units, address entries and names and the rules
-that judged it (`gdb index: ...`, §6.10).
+that judged it (`gdb index: ...`, §6.10). A stripped dynamic output
+(no `.symtab`; WP-164) adds one line, `stripped output (no .symtab),
+not judged: a; b`, naming each clause a rule could not judge without the
+symbol table (P-D6 and P-D22's `DT_INIT`/`DT_FINI` judged by segment
+only, §12.5; P-D9's GOT-slot addends, §12.3); the relocations against a
+name only the linker defines are `symbol-unresolved` as before (§4.4).
 
 The four stage-2 reasons are the only ones allowed on the reference
 corpus.
@@ -5037,7 +5046,13 @@ own implementation of D-11-D-27 and compared with the output.
   as a preloaded library would (the GOT and the call must both reach it:
   the image of the review's F2 fails here). This proves at once the
   `RELATIVE`/symbolic choice, addends, the copy redirection,
-  canonical-PLT equality and IFUNC equality (D-44, D-45; W3). Plus:
+  canonical-PLT equality and IFUNC equality (D-44, D-45; W3). Whether
+  the output defines a reference's name (else the loader binds it) is
+  read from its `.symtab`; a stripped output has none (WP-164), and the
+  name is then defined exactly when resolution chooses an input
+  definition or a common for it (§4.4), so a stripped library's
+  exported, bound key stays its own (measured: mold's `-s -Bsymbolic`
+  library, view B, a false finding before). Plus:
   `RELATIVE` first and sorted, `DT_RELACOUNT` right (D-40); no record in
   a non-writable place outside RELRO (D-47; W6).
 - **P-D10 (PLT and GOT).** Each PLT entry decodes (the architecture's
@@ -5382,6 +5397,16 @@ to an offset at a NUL of `.dynstr` read as the empty name, so P-D7's
 (WP-161, load about 20, 4 threads): about 20 s per case per target
 (AArch64 1815 and 1696 bytes, x86-64 1712 and 1593), every flip caught
 but the equivalent fields'.
+`shared.table` (WP-164; in `--quick` too): the versioned library of
+`shared` with test-producer units (`sw_old`, `sw_new` `SYSTEM`,
+`sw_data`, the script-local `sw_hidden`, a type) under
+`-Bsymbolic-functions`, `--odr-table=full`, `--keep-mason-meta` and
+`--build-id=none`, over `.note.mason` and the kept `.mason.meta` only:
+the table's rows carry both values of `NONPREEMPTIBLE` (the functions'
+set, the variable's clear, O-60), `=full`'s note the local definition.
+Measured (load about 11, 4 threads): 576 bytes, 1152 flips per target,
+every one caught (P-M1 720, P-M2 432, S11 30; no survivor, no field
+named equivalent), 3.1 s on AArch64 and 3.6 s on x86-64.
 
 **The field rules** (`dyncheck.rs` `fields`, every format unless marked):
 
@@ -5491,7 +5516,16 @@ mortar a single answer and the references differ or are not ruled.
   gives an x86-64 `GOTPC64` reference to it a GOT slot of that symbol
   which nothing loads (measured, WP-101: `weak-class-table`, the
   large-model tests; harmless, so not an anomaly). Before WP-101 any
-  addend inside a `PT_LOAD` passed.
+  addend inside a `PT_LOAD` passed. In a stripped output (no `.symtab`;
+  WP-164) a GOT-indirect reference to a name only the linker defines
+  (`_GLOBAL_OFFSET_TABLE_`, `__ehdr_start`, `__start_X`/`__stop_X`, an
+  undefined weak) is `symbol-unresolved` (§4.4: no symbol to read), so
+  the demands are not all known: a slot's addend that no known demand
+  asks for is then not judged and counted in the coverage line ("P-D9: N
+  .got slot addends (a GOT-indirect reference to a name only the linker
+  defines is unresolved)"); with every reference resolved the clause is
+  judged as above (measured: mold's stripped libraries and PIEs, both
+  targets, before this sentence a false finding on every one).
   **(mortar)**, D-46: a record's place holds in the file `S + A` for
   `RELATIVE` (the addend) and 0 for `GLOB_DAT`, the symbolic word type
   and `TPOFF`, and a `TLSDESC` record's descriptor 0 in both words (D-119;
@@ -5851,6 +5885,23 @@ and what turns P-D9's equality into a check of D-112.
   a PIE, and GNU ld's PIE dies at start-up (SIGSEGV): the loader calls
   the address, so it is a finding of every format, not an anomaly (no
   reference test links it).
+  **A stripped output** (no `.symtab`: `-s`, `--strip-all`; WP-164).
+  Before WP-164 the rule read `_init`/`_fini` (and the `-init`/`-fini`
+  names) from `.symtab` alone and reported "the output defines no
+  '_fini'" on every `-shared -s` library of the four linkers. Without a
+  `.symtab` the function is looked up where the output and its map still
+  show it: an exported definition in `.dynsym` (its value), else the
+  relocatable inputs' non-local definitions of the name in sections the
+  map places whole (place + `st_value`: the tag holds one of them); "the
+  output defines no ..." is reported only when neither `.dynsym` nor any
+  live input defines the name. A name the inputs define in sections the
+  map does not place whole leaves the value judged by its segment only
+  (a `PF_X` `PT_LOAD`), named in the coverage line ("stripped output (no
+  .symtab), not judged: DT_INIT: the symbol is not in the output, value
+  judged by segment only"). P-D6's `-init`/`-fini` clause for an
+  executable reads a stripped output the same way (`.dynsym`, else the
+  one address the placed input definitions agree on, else the segment,
+  named the same way: "the function is not in the output").
 - **P-D23 (mutations; request P-R8).** Each wrong output of `spec/dyn.md`
   §17.7, written into a correct mortar library (or, where it concerns
   the executable, a host), is reported by the rule the table below
@@ -6078,8 +6129,11 @@ stage 3 puts outside (P-D1) is still judged here.
   or none (with none, every row set is empty: a count-0 table; measured
   with no `.mason.meta` input at all, with and without shared inputs,
   with and without tables in them). An output with no `PT_INTERP`
-  (static, static-pie) never has one, `=full` included; a shared object
-  is M4 and is held to "no table" until then.
+  (static, static-pie) never has one, `=full` included. A shared object
+  (`-shared` on the line, the output kind `Shared`) is due under the
+  same options (O-60, WP-164; measured on mortar's libraries: no unit, or
+  C units only, give a count-0 table, as for an executable: "present
+  iff asked", not "iff there is a row").
 - **The live units.** The map's files in map order (FileId order; §3.2's
   ids count up in the order the linker read the files), each read as an
   `ET_REL`; of each, the sections that are containers (MT-6: name
@@ -6105,6 +6159,12 @@ stage 3 puts outside (P-D1) is still judged here.
   the object has names nothing. Rows match a name when their key is the
   name's FNV-1a 64 and their name is the name. A row is **qualifying**
   when its flags have `VAGUE` (bit 0) or `EXPLICIT_SPEC` (bit 3).
+- **The export set** of a shared object (WP-164): stage 3's (§12.4,
+  `shared.rs`'s `Sets`: D-110's `ExportRule`, the version script's
+  `local:` and `--exclude-libs` applied) and its binding, D-112's, the
+  derivation P-D17's view B uses (`Sets::preemptible`): protected,
+  `-Bsymbolic`, `-Bsymbolic-functions` and a function, `--dynamic-list`
+  not listing it bind a name inside the library.
 - **The keeper** of a name (odr.md O-51): the input file whose
   definition the output holds. Candidates are the map's files whose
   symbol table defines the name non-locally in a section the map places
@@ -6125,10 +6185,14 @@ stage 3 puts outside (P-D1) is still judged here.
 - **P-M1 (containers in outputs).**
   - No input container is placed (`place`, `piece`, `merged`) in an
     executable or shared object: MT-31 consumes them.
-  - A `.mason.meta` output section in an executable is either the kept
+  - A `.mason.meta` output section in an executable or shared object
+    (one rule for every output kind, WP-164; WP-076's for executables
+    before) is either the kept
     section or an ordinary copy. The **kept section** is the one the map
     calls `chunk synthetic .mason.meta`; it must be `SHT_PROGBITS`, flags
-    0, `sh_addralign` 8, and its bytes must equal MT-32's: the units that
+    0, `sh_addralign` 8, at address 0 and inside no segment's file bytes
+    (D-126 item 3; WP-164: "takes no address and lies in no segment"),
+    and its bytes must equal MT-32's: the units that
     parse, in the order above, each followed by zeros to a multiple of 8.
     It is present exactly when `--keep-mason-meta` was given and at least
     one unit parses. An **ordinary copy** is a `.mason.meta` that
@@ -6137,7 +6201,17 @@ stage 3 puts outside (P-D1) is still judged here.
     `SHF_EXCLUDE`): legal without the option, and with it when no live
     unit parses; a finding with the option and a unit (MT-32, as WP-099
     wrote it: refused by name when the output gets the kept section).
-    Any other `.mason.meta` in an executable is a finding.
+    Any other `.mason.meta` in an executable or shared object is a
+    finding. MT-32's padding is empty for every unit that parses (MT-14:
+    `unit_size` is a multiple of 8), so a unit's own zero bytes (its
+    string table's padding up to `unit_size`) are compared as its bytes
+    and a padding after a unit is bytes the concatenation does not have.
+  - MT-32's loaded-bytes sentence (every `PT_LOAD` byte equals the link
+    without the option but `e_shoff`, `e_shnum`, `e_shstrndx` and the
+    build ID) is a property of two links and is **not judged** by a rule
+    of one output; what one output shows of it is judged above (no
+    address, no segment). The lane tests' `cmp` of the two links
+    (`tests/link/dyn/odr/mt32-keep-meta-*.test`) is its only check.
   - A relocatable output is not judged (mortar writes none; MT-30 is M4).
 - **P-M2 (`.note.mason`).**
   - *Place.* The section is `SHT_NOTE`, `SHF_ALLOC`, `sh_addralign` 8,
@@ -6161,11 +6235,24 @@ stage 3 puts outside (P-D1) is still judged here.
   - *Row set* (O-50). The rows' `.dynsym` indices are exactly the
     entries that are defined (`st_shndx` not `SHN_UNDEF`), `STV_DEFAULT`
     or `STV_PROTECTED`, and whose keeper's row qualifies; entries whose
-    keeper is not judged are left out of both sides (counted).
+    keeper is not judged are left out of both sides (counted). A row
+    naming an undefined, local, hidden or internal entry is a finding
+    ("which is not an exported definition", WP-164). In a shared object
+    also: every row's name is in the export set ("which the export set
+    does not export"), and every name of the export set whose keeper's
+    row qualifies has a row, also when its `.dynsym` entry is missing
+    ("is in the export set (D-110) ... and no row names it"); a name all
+    of whose entries the export set marks optional is not required.
   - *Hash.* A row's hash is the first 8 bytes of its keeper's row's hash.
   - *Flags.* A row's flags are the keeper's row's flags with bit 15
     (`NONPREEMPTIBLE`) set; in an executable every row has it (O-51,
-    WP-075 finding 1: the executable binds its own definitions).
+    WP-075 finding 1: the executable binds its own definitions). In a
+    shared object (O-60 statement 2; WP-164) the other fifteen bits are
+    the keeper's row's (its own bit 15 cleared), and bit 15 is set
+    exactly when the export set's binding (§13.1) binds the name inside
+    the library; the message names which ("bound inside the library" or
+    "preemptible", by D-112). A row whose name the export set does not
+    hold has no binding to judge and is the row set's finding.
   - *`=full`'s note* (O-51, O-52): header version 1, `row_size` 32,
     `n_descsz` exactly `16 + 32 × (definitions + types)`, each array
     sorted by its bytes as integers in field order with no two equal.
@@ -6194,7 +6281,7 @@ by rule and field. Coverage: `meta` counts outputs judged, live units,
 rows checked, names not judged, and whether the options were known
 (§7.2; `Report::summary`'s `ODR metadata` line).
 
-What stage 4 does **not** judge: `-r` outputs (M4); shared-object tables
-(M4); a unit's kinds 4 and 5 beyond their framing; the ODR verdict
+What stage 4 does **not** judge: `-r` outputs (M4); MT-32's
+loaded-bytes sentence (above: two links); a unit's kinds 4 and 5 beyond their framing; the ODR verdict
 itself (`spec/odr.md` Q11, answered in WP-078's record: not
 implemented); the load-time hook (O-58).

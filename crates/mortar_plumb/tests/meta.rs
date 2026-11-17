@@ -1,6 +1,7 @@
 //! Stage 4 (`spec/plumb.md` §13; WP-078): the rules P-M1-P-M3 on mortar's
 //! PIEs with `--odr-table=full` and `--keep-mason-meta`, AArch64 and
-//! x86-64 (`tests/meta/gen.sh`), accepted as linked, and one mutant per
+//! x86-64, and their `-shared` twins (WP-164; `tests/meta/gen.sh`),
+//! accepted as linked, and one mutant per
 //! field a rule reads, each caught by its rule and sub-rule name.
 
 use std::path::PathBuf;
@@ -371,6 +372,253 @@ fn hostile_tables_never_panic() {
             let mut p = fx.prog.clone();
             p[i] = v;
             let _ = judge(&fx, &p, &fx.map);
+        }
+    }
+}
+
+// ---- WP-164: a shared object (O-60, MT-32 in `Shared`) ----
+
+/// mortar's `-shared` of the same inputs, `--odr-table=full
+/// --keep-mason-meta` (`gen.sh`): rows for `_Z2prv` (protected: bit 15
+/// set), `_Z2viv` and `_Z2wdv` (default: clear).
+fn lib(arch: &str) -> Fx {
+    let d = dir(arch);
+    Fx {
+        prog: std::fs::read(d.join("lib.so")).unwrap(),
+        map: std::fs::read_to_string(d.join("lib.map")).unwrap(),
+        dir: d,
+    }
+}
+
+/// Adds `d` to the `n`-byte field at `o`.
+fn add(b: &mut [u8], at: usize, n: usize, delta: i64) {
+    let v = rd(b, at, n).wrapping_add_signed(delta);
+    wr(b, at, n, v);
+}
+
+/// Row `i` of the first note removed: the rest of the section moves up,
+/// the note, the section and the segment shrink by a row.
+fn remove_row(p: &mut [u8], i: usize) {
+    let (h, off, size) = section(p, ".note.mason");
+    let (d1, _) = notes(p);
+    let row = |i: usize| d1 + 16 + 24 * i;
+    let ph = pt_note(p);
+    p.copy_within(row(i + 1)..off + size, row(i));
+    p[off + size - 24..off + size].fill(0);
+    add(p, off + 4, 4, -24);
+    add(p, d1 + 4, 4, -1);
+    add(p, h + 0x20, 8, -24);
+    add(p, ph + 0x20, 8, -24);
+    add(p, ph + 0x28, 8, -24);
+}
+
+/// The `.dynsym` index of `name`.
+fn dynsym_index(p: &[u8], name: &[u8]) -> usize {
+    let dynsym = section(p, ".dynsym");
+    let dynstr = section(p, ".dynstr");
+    (1..dynsym.2 / 24)
+        .find(|&i| {
+            let at = dynstr.1 + rd(p, dynsym.1 + 24 * i, 4) as usize;
+            let end = p[at..].iter().position(|&c| c == 0).unwrap();
+            &p[at..at + end] == name
+        })
+        .unwrap()
+}
+
+/// The program header whose file bytes hold `.note.mason`.
+fn pt_note(p: &[u8]) -> usize {
+    let phoff = rd(p, 0x20, 8) as usize;
+    (0..rd(p, 0x38, 2) as usize)
+        .map(|i| phoff + 56 * i)
+        .find(|&ph| rd(p, ph, 4) == 4 && rd(p, ph + 0x30, 8) == 8)
+        .unwrap()
+}
+
+#[test]
+fn the_shared_fixtures_are_accepted() {
+    for arch in ARCHES {
+        let fx = lib(arch);
+        let r = judge(&fx, &fx.prog, &fx.map);
+        assert!(r.clean(), "{arch}: {:#?}", keys(&r));
+        let m = &r.coverage.meta;
+        assert_eq!(
+            (m.outputs, m.units, m.tables, m.rows, m.full_rows),
+            (1, 3, 1, 3, 3),
+            "{arch}: {m:?}"
+        );
+        assert!(m.options_known && m.kept_bytes == 888 && m.not_judged == 0, "{arch}: {m:?}");
+        // The rows the comment above names, in key order.
+        let (d1, _) = notes(&fx.prog);
+        let row = |i: usize| d1 + 16 + 24 * i;
+        let got: Vec<(u64, u64)> =
+            (0..3).map(|i| (rd(&fx.prog, row(i) + 16, 4), rd(&fx.prog, row(i) + 20, 2))).collect();
+        let idx = |n: &[u8]| dynsym_index(&fx.prog, n) as u64;
+        assert_eq!(
+            got,
+            vec![(idx(b"_Z2prv"), 0x8008), (idx(b"_Z2viv"), 0x3), (idx(b"_Z2wdv"), 0x101)],
+            "{arch}"
+        );
+    }
+}
+
+/// P-M2 in `Shared` (O-60), WP-164's mutations.
+#[test]
+fn p_m2_shared_mutants() {
+    for arch in ARCHES {
+        let fx = lib(arch);
+        let (h, _, _) = section(&fx.prog, ".note.mason");
+        let (d1, _) = notes(&fx.prog);
+        let row = move |i: usize| d1 + 16 + 24 * i;
+        let vi = dynsym_index(&fx.prog, b"_Z2viv");
+        let dynsym = section(&fx.prog, ".dynsym").1;
+        let cases: Vec<(&str, &str, Mutation)> = vec![
+            ("row set", "a row removed", Box::new(move |p| remove_row(p, 1))),
+            (
+                "row set: row 1 names '_Z2viv'",
+                "a row for a hidden symbol",
+                Box::new(move |p| p[dynsym + 24 * vi + 5] = 2),
+            ),
+            ("flags", "NONPREEMPTIBLE cleared", Box::new(move |p| p[row(0) + 21] ^= 0x80)),
+            ("flags", "NONPREEMPTIBLE set", Box::new(move |p| p[row(1) + 21] ^= 0x80)),
+            ("flags", "the keeper's bits", Box::new(move |p| p[row(2) + 20] ^= 0x01)),
+            ("key", "the index one up", Box::new(move |p| add(p, row(1) + 16, 4, 1))),
+            ("key", "the index one down", Box::new(move |p| add(p, row(1) + 16, 4, -1))),
+            (
+                "order",
+                "two rows swapped",
+                Box::new(move |p| {
+                    let a = p[row(0)..row(1)].to_vec();
+                    let b = p[row(1)..row(2)].to_vec();
+                    p[row(0)..row(1)].copy_from_slice(&b);
+                    p[row(1)..row(2)].copy_from_slice(&a);
+                }),
+            ),
+            (
+                "presence",
+                "the option without the note",
+                Box::new(move |p| {
+                    // The section renamed: no `.note.mason` in the output.
+                    let (strndx, shoff) = (rd(p, 0x3e, 2) as usize, rd(p, 0x28, 8) as usize);
+                    let str_off = rd(p, shoff + strndx * 64 + 0x18, 8) as usize;
+                    let at = str_off + rd(p, h, 4) as usize + 10;
+                    assert_eq!(p[at], b'n');
+                    p[at] = b'x';
+                }),
+            ),
+        ];
+        for (sub, what, f) in cases {
+            let mut p = fx.prog.clone();
+            f(&mut p);
+            caught(&fx, &p, &fx.map, "P-M2", sub, what);
+        }
+        // The removed row is named as missing, with the export set's text.
+        let mut p = fx.prog.clone();
+        remove_row(&mut p, 1);
+        let r = judge(&fx, &p, &fx.map);
+        assert!(
+            r.findings.iter().any(|f| f.rule.id() == "P-M2"
+                && f.message.starts_with("row set: '_Z2viv'")
+                && f.message.ends_with("no row names it (O-50)")),
+            "{arch}: {:#?}",
+            keys(&r)
+        );
+        // The note without the option, and with --odr=off.
+        let m = map_without(&fx.map, "arg --odr-table=full");
+        caught(&fx, &fx.prog, &m, "P-M2", "presence", "--odr-table dropped");
+        let m = map_with(&fx.map, "arg --mortar-map", "arg --odr=off");
+        caught(&fx, &fx.prog, &m, "P-M2", "presence", "--odr=off");
+        // The binding read from the line: under -Bsymbolic every row's bit
+        // is set (D-112), so the default rows' clear bits are findings.
+        let m = map_with(&fx.map, "arg --mortar-map", "arg -Bsymbolic");
+        let r = judge(&fx, &fx.prog, &m);
+        for n in ["_Z2viv", "_Z2wdv"] {
+            assert!(
+                r.findings.iter().any(|f| f.rule.id() == "P-M2"
+                    && f.message.starts_with("flags:")
+                    && f.message.contains(&format!("('{n}')"))
+                    && f.message.contains("bound inside the library")),
+                "{arch} {n}: {:#?}",
+                keys(&r)
+            );
+        }
+    }
+}
+
+/// The units of a kept `.mason.meta`: (offset, size) in the file.
+fn units(p: &[u8]) -> Vec<(usize, usize)> {
+    let (_, off, size) = section(p, ".mason.meta");
+    let mut out = Vec::new();
+    let mut at = off;
+    while at < off + size {
+        let n = rd(p, at + 8, 4) as usize;
+        out.push((at, n));
+        at += n;
+    }
+    out
+}
+
+/// The kept section given new contents, at the end of the file.
+fn reseat(p: &mut Vec<u8>, bytes: &[u8]) {
+    let (h, _, _) = section(p, ".mason.meta");
+    while !p.len().is_multiple_of(8) {
+        p.push(0);
+    }
+    let n = p.len() as u64;
+    wr(p, h + 0x18, 8, n);
+    wr(p, h + 0x20, 8, bytes.len() as u64);
+    p.extend_from_slice(bytes);
+}
+
+/// P-M1 over the kept section, in the PIE and in the shared object
+/// (MT-32, WP-164's mutations).
+#[test]
+fn p_m1_kept_mutants() {
+    for arch in ARCHES {
+        for fx in [fixture(arch), lib(arch)] {
+            let u = units(&fx.prog);
+            assert_eq!(u.len(), 3, "{arch}");
+            let unit = |i: usize| fx.prog[u[i].0..u[i].0 + u[i].1].to_vec();
+            let (h, off, size) = section(&fx.prog, ".mason.meta");
+            let all = fx.prog[off..off + size].to_vec();
+            let cases: Vec<(&str, Vec<u8>)> = vec![
+                ("a unit dropped", [unit(0), unit(2)].concat()),
+                ("a unit duplicated", [unit(0), unit(0), unit(1), unit(2)].concat()),
+                ("units reordered", [unit(1), unit(0), unit(2)].concat()),
+                ("padding that is not zero", [all.clone(), vec![0xff; 8]].concat()),
+                ("padding where none is due", [all.clone(), vec![0; 8]].concat()),
+            ];
+            for (what, bytes) in cases {
+                let mut p = fx.prog.clone();
+                reseat(&mut p, &bytes);
+                caught(&fx, &p, &fx.map, "P-M1", "kept section", what);
+            }
+            // The same bytes reseated are accepted: the mutants above are
+            // caught by their contents, not by the move.
+            let mut p = fx.prog.clone();
+            reseat(&mut p, &all);
+            let r = judge(&fx, &p, &fx.map);
+            assert!(r.clean(), "{arch}: {:#?}", keys(&r));
+            // A byte of a unit, its zero padding, the section allocated,
+            // given an address, and inside a segment.
+            let mut p = fx.prog.clone();
+            p[u[1].0 + 40] ^= 0x04;
+            caught(&fx, &p, &fx.map, "P-M1", "kept section", "a byte of a unit");
+            let mut p = fx.prog.clone();
+            let last = u[2].0 + u[2].1 - 1;
+            assert_eq!(p[last], 0, "{arch}: the unit's last byte is its strtab's padding");
+            p[last] = 1;
+            caught(&fx, &p, &fx.map, "P-M1", "kept section", "a unit's zero padding");
+            let mut p = fx.prog.clone();
+            wr(&mut p, h + 0x08, 8, 2);
+            caught(&fx, &p, &fx.map, "P-M1", "kept section", "SHF_ALLOC");
+            let mut p = fx.prog.clone();
+            wr(&mut p, h + 0x10, 8, 0x10_0000);
+            caught(&fx, &p, &fx.map, "P-M1", "kept section: at address", "an address");
+            let mut p = fx.prog.clone();
+            let ph = pt_note(&p);
+            let start = rd(&p, ph + 0x08, 8) as usize;
+            wr(&mut p, ph + 0x20, 8, (off + 8 - start) as u64);
+            caught(&fx, &p, &fx.map, "P-M1", "kept section: at address", "inside a segment");
         }
     }
 }

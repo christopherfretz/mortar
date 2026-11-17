@@ -1721,7 +1721,7 @@ fn needed_bits(data: &[u8], word: usize) -> u64 {
 }
 
 /// The static rules of §12.5 on a `Shared` output.
-#[allow(clippy::too_many_lines)] // one block per rule
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)] // one block per rule
 pub(crate) fn static_checks(
     image: &Image<'_>,
     out: &DynOut,
@@ -1730,6 +1730,7 @@ pub(crate) fn static_checks(
     sets: &Sets,
     args: &[String],
     format: Format,
+    unjudged: &mut Vec<String>,
 ) -> Vec<Finding> {
     use crate::loader::{Kind, kind};
     let mut v = pd19(out, sets, format);
@@ -1942,54 +1943,80 @@ pub(crate) fn static_checks(
         ));
     }
     // DT_INIT/DT_FINI at the defined, live function they name (D-124).
+    // A stripped output (no `.symtab`, WP-164) is judged by what it still
+    // shows: `.dynsym` when the function is exported, else the inputs'
+    // placed definitions (the value is one of their addresses), else the
+    // segment the value lies in.
     let line = Line::parse(args, &crate::line::HostFiles);
+    let symtab = crate::dyncheck::has_symtab(image);
     for (tag, opt, default) in [
         (crate::dynout::DT_INIT, line.init.as_deref(), "_init"),
         (crate::dynout::DT_FINI, line.fini.as_deref(), "_fini"),
     ] {
         let name = opt.unwrap_or(default);
-        let def = image.symbols.iter().find(|s| s.name == name && s.sym.st_shndx != 0);
         let tagname = crate::dynout::tag_name(tag);
-        match (out.get(tag), def) {
-            (Some(val), Some(d)) => {
+        // The values the tag may hold: `Some(empty)` the output defines no
+        // such function; `None` it defines one whose value is not known.
+        let want: Option<Vec<u64>> = if symtab {
+            Some(
+                image
+                    .symbols
+                    .iter()
+                    .find(|s| s.name == name && s.sym.st_shndx != 0)
+                    .map(|d| vec![d.sym.st_value])
+                    .unwrap_or_default(),
+            )
+        } else {
+            match crate::dyncheck::stripped_def(out, objs, name) {
+                crate::dyncheck::Stripped::Dynsym(a) => Some(vec![a]),
+                crate::dyncheck::Stripped::Inputs(a) => Some(a),
+                crate::dyncheck::Stripped::Undefined => Some(Vec::new()),
+                crate::dyncheck::Stripped::Unplaced => None,
+            }
+        };
+        let defined = want.as_ref().is_some_and(|w| !w.is_empty());
+        match out.get(tag) {
+            Some(val) => {
+                if want.is_none() {
+                    unjudged.push(format!(
+                        "{tagname}: the symbol is not in the output, value judged by segment only"
+                    ));
+                }
                 let exec = image
                     .load_of(val, 1)
                     .is_some_and(|p| p.p_flags & mortar_elf::consts::PF_X != 0);
-                if val != d.sym.st_value {
-                    v.push(fd(
+                match &want {
+                    Some(w) if w.is_empty() => v.push(fd(
                         22,
                         format!(
-                            "{tagname} is {val:#x}; '{name}' is at {:#x} (D-124, W22)",
-                            d.sym.st_value
+                            "{tagname} is {val:#x} and the output defines no '{name}' (D-124, W22)"
                         ),
-                    ));
-                } else if !exec {
-                    // The loader calls it (D-102 rows 3-4): a data object
-                    // named by `-init`/`-fini` is refused by mortar; the
-                    // references write its address (WP-161).
-                    v.push(fd(
+                    )),
+                    Some(w) if !w.contains(&val) => v.push(fd(
                         22,
-                        format!(
-                            "{tagname} is {val:#x}, '{name}', which is not in an executable segment: the loader calls it (D-102 rows 3-4, D-124)"
-                        ),
-                    ));
+                        format!("{tagname} is {val:#x}; '{name}' is at {:#x} (D-124, W22)", w[0]),
+                    )),
+                    _ if !exec => {
+                        // The loader calls it (D-102 rows 3-4): a data object
+                        // named by `-init`/`-fini` is refused by mortar; the
+                        // references write its address (WP-161).
+                        v.push(fd(
+                            22,
+                            format!(
+                                "{tagname} is {val:#x}, '{name}', which is not in an executable segment: the loader calls it (D-102 rows 3-4, D-124)"
+                            ),
+                        ));
+                    }
+                    _ => {}
                 }
             }
-            (Some(val), None) => {
-                v.push(fd(
-                    22,
-                    format!(
-                        "{tagname} is {val:#x} and the output defines no '{name}' (D-124, W22)"
-                    ),
-                ));
-            }
-            (None, Some(_)) => {
+            None if defined => {
                 v.push(fd(
                     22,
                     format!("no {tagname}, and the output defines '{name}' (D-30 rows 3-4, W22)"),
                 ));
             }
-            (None, None) => {}
+            None => {}
         }
     }
     // DT_SONAME: the `-soname` string.

@@ -246,7 +246,15 @@ pub(crate) fn verify_static_in(
         }
     }
     // Stage 4 (§13).
-    let meta = odrtable::check(&image, &objs, map, opts.as_ref(), None, &mut report.coverage.meta);
+    let meta = odrtable::check(
+        &image,
+        &objs,
+        map,
+        opts.as_ref(),
+        None,
+        &mut report.coverage.meta,
+        &mut odrtable::Pending::default(),
+    );
     report.findings.extend(meta);
     report.sort();
     prof::mark("odr table, sort");

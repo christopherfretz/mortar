@@ -236,6 +236,30 @@ struct Note<'a> {
     desc: &'a [u8],
 }
 
+/// A row of a shared object's table whose `NONPREEMPTIBLE` bit waits for
+/// the export set (§13.2 *Flags*, O-60 statement 2): D-112's binding is
+/// stage 3's computation (`shared::Sets`, the one P-D17's view B reads),
+/// made after stage 4 runs.
+#[derive(Debug, Clone)]
+pub(crate) struct PendingRow {
+    pub i: usize,
+    pub name: String,
+    pub flags: u16,
+    /// The keeper's row's flags, bit 15 cleared.
+    pub keeper: u16,
+    pub at: u64,
+}
+
+/// What stage 4 leaves to [`shared_rows`] in a `Shared` output.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Pending {
+    /// Whether the output carries a table judged by [`table`].
+    pub table: bool,
+    pub rows: Vec<PendingRow>,
+    /// The `.dynsym` names the table's rows carry.
+    pub carried: BTreeSet<String>,
+}
+
 /// Stage 4's rules over one output. `opts` are the line's options when
 /// known (§3.2a); `line` the line stage 3 read from its words.
 #[allow(clippy::too_many_lines, clippy::similar_names)] // one rule after another, in §13.2's order
@@ -246,9 +270,12 @@ pub(crate) fn check(
     opts: Option<&Options>,
     line: Option<&Line>,
     cov: &mut MetaCoverage,
+    pending: &mut Pending,
 ) -> Vec<Finding> {
     let mut f = Vec::new();
     let mortar = map.format == Format::Mortar;
+    // O-60 (WP-164): a shared object's table, by the line's output kind.
+    let shared = line.is_some_and(|l| l.kind == Some(crate::map::OutputKind::Shared));
     // A reference linker has none of mortar's options.
     let opts = if mortar {
         opts.map(options)
@@ -322,6 +349,20 @@ pub(crate) fn check(
                         format!("kept section: type {:#x}, flags {:#x}, alignment {}; MT-32 is SHT_PROGBITS, no flags, 8", s.sh_type, s.sh_flags, s.sh_addralign),
                     ));
                 }
+                // In no segment, at no address (MT-32; D-126 item 3; WP-164).
+                let end = s.sh_offset.saturating_add(s.sh_size);
+                let covered = image.phdrs.iter().any(|p| {
+                    p.p_filesz > 0
+                        && s.sh_size > 0
+                        && p.p_offset < end
+                        && s.sh_offset < p.p_offset.saturating_add(p.p_filesz)
+                });
+                if s.sh_addr != 0 || covered {
+                    f.push(Finding::new(
+                        Rule::Meta(1),
+                        format!("kept section: at address {:#x}{}; MT-32's section takes no address and lies in no segment", s.sh_addr, if covered { ", inside a segment's file bytes" } else { "" }),
+                    ));
+                }
                 let got = image
                     .data
                     .get(s.sh_offset as usize..(s.sh_offset.saturating_add(s.sh_size)) as usize);
@@ -361,7 +402,7 @@ pub(crate) fn check(
 
     // P-M2.
     let interp = image.phdrs.iter().any(|p| p.p_type == PT_INTERP);
-    let due = opts.map(|o| interp && o.table != Table::Off && !o.odr_off);
+    let due = opts.map(|o| (interp || shared) && o.table != Table::Off && !o.odr_off);
     let full = opts.map(|o| o.table == Table::Full);
     let note_sec = image.sections.iter().position(|s| s.name == ".note.mason");
     let Some(ni) = note_sec else {
@@ -379,7 +420,7 @@ pub(crate) fn check(
     cov.tables += 1;
     let sh = image.sections[ni].shdr;
     if due == Some(false) {
-        f.push(Finding::new(Rule::Meta(2), "presence: a .note.mason the link does not ask for (O-50: dynamic executables with --odr-table, --odr not off)").at(sh.sh_addr));
+        f.push(Finding::new(Rule::Meta(2), "presence: a .note.mason the link does not ask for (O-50, O-60: dynamic executables and shared objects with --odr-table, --odr not off)").at(sh.sh_addr));
     }
     if sh.sh_type != SHT_NOTE || sh.sh_flags & SHF_ALLOC == 0 || sh.sh_addralign != 8 {
         f.push(Finding::new(Rule::Meta(2), format!("place: .note.mason has type {:#x}, flags {:#x}, alignment {}; O-52 is an allocated SHT_NOTE aligned to 8", sh.sh_type, sh.sh_flags, sh.sh_addralign)).at(sh.sh_addr));
@@ -440,7 +481,8 @@ pub(crate) fn check(
     let mut carried: BTreeSet<Vec<u8>> = BTreeSet::new();
     if let Some(n) = firsts.first() {
         let base = sh.sh_addr + n.at as u64;
-        table(n.desc, base, dout.as_ref(), &live, &mut carried, cov, &mut f);
+        let shared_rows = shared.then_some(&mut *pending);
+        table(n.desc, base, dout.as_ref(), &live, &mut carried, shared_rows, cov, &mut f);
     }
     if let Some(n) = seconds.first() {
         let base = sh.sh_addr + n.at as u64;
@@ -485,16 +527,20 @@ fn notes(data: &[u8]) -> Result<Vec<Note<'_>>, String> {
 }
 
 /// The first note: O-51's header and rows, against O-50's row set.
-#[allow(clippy::too_many_lines, clippy::many_single_char_names)]
+#[allow(clippy::too_many_lines, clippy::many_single_char_names, clippy::too_many_arguments)]
 fn table(
     desc: &[u8],
     base: u64,
     dout: Option<&DynOut>,
     live: &Lives<'_, '_>,
     carried: &mut BTreeSet<Vec<u8>>,
+    mut shared: Option<&mut Pending>,
     cov: &mut MetaCoverage,
     f: &mut Vec<Finding>,
 ) {
+    if let Some(p) = shared.as_deref_mut() {
+        p.table = true;
+    }
     let h = |o| u32_at(desc, o).unwrap_or(0);
     let (version, count, row_size, reserved) = (h(0), h(4), h(8), h(12));
     if desc.len() < 16
@@ -549,6 +595,15 @@ fn table(
         };
         rows.insert(idx);
         carried.insert(s.name.as_bytes().to_vec());
+        if let Some(p) = shared.as_deref_mut() {
+            p.carried.insert(s.name.clone());
+        }
+        // No row for an entry O-50 does not export: undefined, local, or
+        // hidden or internal (WP-164).
+        let vis = s.st_other & 3;
+        if s.st_shndx == 0 || s.binding() == STB_LOCAL || !(vis == 0 || vis == 3) {
+            f.push(Finding::new(Rule::Meta(2), format!("row set: row {i} names '{}' (.dynsym {idx}), which is not an exported definition (undefined, local, hidden or internal; O-50)", s.name)).at(at + 16));
+        }
         if key != fnv1a(s.name.as_bytes()) {
             f.push(
                 Finding::new(
@@ -593,9 +648,22 @@ fn table(
                     if r[8..16] != kr[8..16] {
                         f.push(Finding::new(Rule::Meta(2), format!("hash: row {i} ('{}') does not carry the first 8 bytes of its keeper's kind 2 hash ({})", s.name, k.map(|k| k.obj.label()).unwrap_or_default())).at(at + 8));
                     }
-                    let want = u16_at(kr, 30).unwrap_or(0) | NONPREEMPTIBLE;
-                    if flags != want {
-                        f.push(Finding::new(Rule::Meta(2), format!("flags: row {i} ('{}') has {flags:#x}; the keeper's row's flags with NONPREEMPTIBLE are {want:#x}", s.name)).at(at + 20));
+                    let kf = u16_at(kr, 30).unwrap_or(0);
+                    if let Some(p) = shared.as_deref_mut() {
+                        // O-60 statement 2: the bit waits for D-112's
+                        // binding ([`shared_rows`]); the others are the
+                        // keeper's.
+                        let keeper = kf & !NONPREEMPTIBLE;
+                        if flags & !NONPREEMPTIBLE != keeper {
+                            f.push(Finding::new(Rule::Meta(2), format!("flags: row {i} ('{}') has {flags:#x}; the keeper's row's flags are {keeper:#x} (bit 15 is the binding's, O-60)", s.name)).at(at + 20));
+                        }
+                        cov.not_judged += 1;
+                        p.rows.push(PendingRow { i, name: s.name.clone(), flags, keeper, at: at + 20 });
+                    } else {
+                        let want = kf | NONPREEMPTIBLE;
+                        if flags != want {
+                            f.push(Finding::new(Rule::Meta(2), format!("flags: row {i} ('{}') has {flags:#x}; the keeper's row's flags with NONPREEMPTIBLE are {want:#x}", s.name)).at(at + 20));
+                        }
                     }
                 }
             },
@@ -788,6 +856,63 @@ fn full_note(
             f.push(Finding::new(Rule::Meta(2), format!("full: type row {i}'s {field} is not that of its group's first row in (file, unit, row) order")).at(at(defs as usize + i)));
         }
     }
+}
+
+/// The rest of P-M2 on a shared object's table (O-60; WP-164), once stage
+/// 3 has the export set: each pending row's `NONPREEMPTIBLE` is set
+/// exactly when D-112 binds the name inside the library (`Sets`'
+/// `preemptible`, P-D17 view B's derivation); no row names a key the
+/// export set does not export; and every key it exports whose keeper's
+/// row qualifies, and that `.dynsym` does not carry (that half is
+/// [`table`]'s), has a row.
+pub(crate) fn shared_rows(
+    image: &Image<'_>,
+    objs: &[Obj<'_>],
+    sets: &crate::shared::Sets,
+    pending: &Pending,
+    cov: &mut MetaCoverage,
+) -> Vec<Finding> {
+    let mut f = Vec::new();
+    if !pending.table {
+        return f;
+    }
+    for r in &pending.rows {
+        cov.not_judged = cov.not_judged.saturating_sub(1);
+        if !sets.exports.contains_key(&r.name) {
+            f.push(Finding::new(Rule::Meta(2), format!("row set: row {} names '{}', which the export set does not export (hidden, or local by a version script; O-50, D-110)", r.i, r.name)).at(r.at - 4));
+            continue;
+        }
+        let bound = !sets.preemptible(&r.name);
+        let want = r.keeper | if bound { NONPREEMPTIBLE } else { 0 };
+        if r.flags != want {
+            f.push(Finding::new(Rule::Meta(2), format!("flags: row {} ('{}') has {:#x}; the keeper's row's flags are {:#x} with NONPREEMPTIBLE {} (O-60: '{}' is {} by D-112)", r.i, r.name, r.flags, r.keeper, if bound { "set" } else { "clear" }, r.name, if bound { "bound inside the library" } else { "preemptible" })).at(r.at));
+        }
+    }
+    // The export set's side of the row set.
+    let dynsym: BTreeSet<String> = DynOut::read(image)
+        .map(|d| {
+            d.syms.iter().skip(1).filter(|s| s.st_shndx != 0).map(|s| s.name.clone()).collect()
+        })
+        .unwrap_or_default();
+    let mut scratch = MetaCoverage::default();
+    let live = Lives::new(live_files(objs, true, &mut scratch));
+    for (name, exports) in &sets.exports {
+        if pending.carried.contains(name)
+            || dynsym.contains(name)
+            || exports.iter().all(|e| e.optional)
+        {
+            continue;
+        }
+        match live.keeper(name.as_bytes(), None) {
+            Err(()) => cov.not_judged += 1,
+            Ok(k) => {
+                if k.and_then(|k| k.row(name.as_bytes())).is_some_and(qualifies) {
+                    f.push(Finding::new(Rule::Meta(2), format!("row set: '{name}' is in the export set (D-110) and its keeper's kind 2 row has VAGUE or EXPLICIT_SPEC, and no row names it (O-50)")));
+                }
+            }
+        }
+    }
+    f
 }
 
 /// O-51's order: the fields as integers, key first.
