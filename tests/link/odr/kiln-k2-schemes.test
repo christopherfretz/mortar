@@ -1,7 +1,8 @@
 # kiln's kind 2 rows beside rows it cannot be compared with (spec/odr.md
 # O-11, O-14, X9, X13; WP-174), under --odr=strict: one inline function
 # shared_fn with three bodies (N=1, 2, 3), in
-# - k.o: kiln b632861e3, scheme kiln-odr-1.d3, its row hashing the body;
+# - k.o: kiln 3b77b13c7, scheme kiln-odr-1.d4 (b632861e3 wrote .d3), its
+#   row hashing the body;
 # - h.o: a GCC object with a hand-written unit of kiln K-3a's scheme
 #   kiln-odr-1.d0 (the declared type only, PARTIAL) for the same key:
 #   two different schemes are never compared (O-11, X13), only counted
