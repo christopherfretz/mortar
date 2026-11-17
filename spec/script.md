@@ -236,6 +236,7 @@ not yet measured, open for the stage that needs them:
   modes above: measured). The exact byte sets are to be swept as in §1.4.
 - **version** (version scripts, `VERSION { }`, dynamic lists): `global:`,
   `local:`, `extern "C++"`, glob patterns, `;`-terminated nodes.
+  Implemented as `Mode::Version` (§9.1, WP-125).
 - **Expression** beyond `EXTERN`: the full operator set is lexed already
   (§1.8); the grammar and the values are the later stage's.
 
@@ -750,7 +751,8 @@ Files under `crates/mortar_script/`.
 
 ## 8. Open questions and later stages
 
-- The byte sets of the wildcard and version modes (§1.10) are unmeasured.
+- The byte sets of the wildcard mode (§1.10) are unmeasured; the
+  version mode's are §9.1's (WP-125).
 - The `Expression` integer rule is pinned for letter-initial names (hex
   digits + `h H x X`); its interaction with names containing `$` and `.`
   in full expressions is the expression stage's to sweep.
@@ -775,10 +777,21 @@ says whose rule this is.
 
 ### 9.1 Grammar
 
-The lexer's **version** mode (§1.10): a name token is a maximal run of
-bytes other than whitespace and `{ } ; :` and `"`; it may hold the glob
-bytes `* ? [ ]` and `\`; a quoted string is a name taken literally:
-the bytes between the quotes, no escape processed, never a glob. The
+The lexer's **version** mode (§1.10, `lex::Mode::Version`): a name token
+is a maximal run of bytes other than whitespace, control bytes (NUL,
+form feed, vertical tab, DEL: invalid characters, §1.9), `{ } ;`, `"`,
+`#` and `:`, except that the pair `::` inside a name is part of it
+(`ns::foo`; a name never starts with `:`, `foo:bar` is `foo`, `:`, `bar`
+and `foo:::bar` is `foo::`, `:`, `bar`: GNU ld and lld reject both, mold
+accepts); it may hold the glob bytes `* ? [ ]`, `\`, `~`, `!`, `=`, `/`
+and bytes above 0x7f (GNU ld rejects `~`, `=` and `/`, lld and mold
+accept them; GNU ld accepts UTF-8 there, lld and mold do not). `/*` or
+`//` inside a name is an error (`foo/*c*/;`: GNU ld ends the name and
+reads a comment, lld and mold read one name). `#` ends a name and starts
+a comment. A quoted string is a name taken literally:
+the bytes between the quotes, no escape processed, never a glob; the
+empty string `""` is refused (GNU ld, lld and mold accept it as an entry
+that matches nothing). The
 lexer keeps a name token's text as written (backslashes included); what
 it means, exact name or glob, with the escape rules and the glob syntax
 (`fnmatch(3)` without flags: `*`, `?`, classes with ranges and `!`/`^`
@@ -794,7 +807,7 @@ node           := NAME "{" body "}" parents ";"
 parents        := NAME*                      ; zero or more parent node names
 body           := ( "global" ":" | "local" ":" | entry )*
 entry          := pattern ";"
-                | "extern" STRING "{" ( pattern ";"? )* "}" ";"
+                | "extern" STRING "{" ( pattern ";" )* pattern? "}" ";"
 pattern        := NAME | STRING
 dynamic-list   := "{" ( entry )* "}" ";"
 VERSION        := "VERSION" "{" version-script "}"
@@ -802,6 +815,33 @@ VERSION        := "VERSION" "{" version-script "}"
 
 - Entries before the first `global:`/`local:` of a node are `global`
   (all three; zlib.map's 13 later nodes are written so).
+- `global`, `local` and `extern` are words, not keywords: `global` or
+  `local` followed by `:` (also `global :`) is a label, `extern` followed
+  by a string opens a block, and otherwise each is a pattern
+  (`V1 { global; };` lists the symbol `global`: all three).
+- The last entry of a node and of a dynamic list ends with `;` (GNU ld,
+  lld; mold accepts it without); inside an `extern` block the last `;` is
+  optional (all three), the `;` after the block's `}` is not (all three);
+  an empty entry (`foo;;`) and a stray `;` after a node are errors (GNU
+  ld, lld). A label twice, or labels with no entry after them
+  (`global: local: };`), and an empty `extern` block: accepted (lld, mold;
+  GNU ld reports a syntax error).
+- A version name (a node's, a parent's) is unquoted and made of the
+  bytes GNU ld reads in one: `[A-Za-z_.$][A-Za-z0-9_.$]*`. Any other
+  name is refused: GNU ld drops a leading digit and stops at another byte
+  without a word (`1.0` names `.0`, `V-1` names `V`) or rejects it, while
+  lld and mold keep the whole name; a quoted name GNU ld reads without
+  its quotes and lld and mold with them.
+- Each file holds at least one node: an empty file (or one of comments)
+  is refused (GNU ld and lld; mold accepts).
+- No construct nests: an `extern` block inside another is refused (GNU
+  ld and mold accept it, lld does not), and so are labels inside an
+  `extern` block (GNU ld, lld; mold accepts). The parser does not
+  recurse; its work is linear in the bytes.
+- A dynamic list has no labels (`global:` and `local:` refused: GNU ld
+  and mold; lld accepts `global:`) and one `{ … };` block per file (GNU
+  ld accepts several, lld and mold refuse); `{ };` is accepted (lld,
+  mold; GNU ld reports a syntax error).
 - `local:` before `global:` in one node: accepted (lld, mold; GNU ld
   reports a syntax error).
 - Several parents (`V3 { … } V1 V2;`): accepted (GNU ld; lld and mold
@@ -813,7 +853,10 @@ VERSION        := "VERSION" "{" version-script "}"
 - `extern "C"` holds plain names; `extern "C++"` names are matched
   against the demangled name (resolve §9.7 rule 6) and are refused by
   name until the demangler exists (`spec/diag.md` §9). Any other
-  language string is refused.
+  language string is refused (`"c"`, `"Java"`: GNU ld accepts any string,
+  lld and mold refuse); an unquoted language is a syntax error (all
+  three). The parser keeps an `extern "C++"` entry, with its language,
+  in the tree; the refusal is the consumer's (D-114), at the entry.
 - A node name used twice: `version-script-syntax` (GNU ld: ``duplicate
   version tag `V1'``; lld and mold merge the two; `exp2/vscript2`).
 - A parent that is not a node defined earlier (forward, or absent):
@@ -831,10 +874,21 @@ VERSION        := "VERSION" "{" version-script "}"
   three references agree on each of these (WP-110 `exp2/comments`,
   AArch64).
 
+The API (`mortar_script::version`, WP-125): `parse_version_script(&[
+SourceFile { path, bytes }]) -> Result<VersionScript, Box<Diagnostic>>`
+and `parse_dynamic_list(..) -> Result<DynamicList, ..>`, the files in
+command-line order (`Plan::version_scripts()`, `Plan::dynamic_lists()`);
+no file gives the empty script or list. Each node records its file's
+index; spans are offsets into that file. A parent holds the index of the
+node it names.
+
 ### 9.2 Diagnostics
 
 A syntax error is `version-script-syntax`, with file, line and column
-(§1.1) and GNU ld's text (``syntax error in VERSION script``). An entry
+(§1.1) and GNU ld's text (``syntax error in VERSION script``, or ``syntax
+error in dynamic list``) followed by what is wrong; the lexer's errors
+in version mode (an unterminated comment or string, an invalid
+character) are this kind too. An entry
 under `global:` in one node and `local:` in another is not a syntax
 error but resolve §9.7's `duplicate-version-pattern`. The
 `VERSION` command in a `-T` script is refused until `-T` scripts are
@@ -842,9 +896,16 @@ supported (§2.10).
 
 ### 9.3 Tests
 
+`crates/mortar_script/tests/version_grammar.rs`
 `version-script-grammar` (each production, each refusal; quoted and
 unquoted entries with `\`, `*`, `?`, `[`, an unterminated `[` and a
 trailing `\` lex as one token each, text kept; the zlib.map
 of `spec/dyn.md` record §A parses to 14 nodes and 13 parent links; the
 comment forms; two files as one script), `dynamic-list-grammar` (the
-comment forms).
+comment forms). `tests/version_corpus.rs`: the 213 scripts of
+`tests/shared-design/exp3/vs3/` each parse to the tree of WP-110's model
+(`model_a.py`), and the syntax disagreements among them take §9.1's side.
+`tests/version_hostile.rs`: every prefix of those scripts, 20000
+fixed-seed mutations, every byte, megabytes of openers and names, 50000
+chained nodes: `Ok` or a `version-script-syntax` placed inside its file,
+never a panic.
