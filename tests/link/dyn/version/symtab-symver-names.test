@@ -1,0 +1,34 @@
+# synth.md S-75 (WP-150): a definition its object names with a version
+# (`.symver foo_v1, foo@V1`; `foo_v2, foo@@V2`) keeps that name in
+# `.symtab`, GNU ld's form; lld and mold write `foo` twice. Chosen for
+# the debuggers: gdb's `info symbol` then names the version of each
+# address, where lld's form shows `foo` for both. `.dynsym` is D-114's
+# (`foo@V1`, `foo@@V2` in every linker).
+#@ spec: synth.md "S-75"; dyn.md "D-114"
+#@ arch: aarch64
+#@ requires: gdb
+
+cc -g -O1 -fPIC sv.c -o sv.o
+link gcc -shared sv.o -Wl,--version-script=v.map -o libs.so
+check nm libs.so
+  has(bfd,mortar): T foo@V1$
+  has(bfd,mortar): T foo@@V2$
+  not(bfd,mortar): T foo$
+  has(lld,mold): T foo$
+  count(lld,mold): 2 T foo$
+check readelf --dyn-syms -W libs.so
+  has: FUNC GLOBAL DEFAULT * foo@V1$
+  has: FUNC GLOBAL DEFAULT * foo@@V2$
+check gdb libs.so "info symbol foo_v1" "info symbol foo_v2"
+  has(bfd,mortar): ^foo@V1 in section .text$
+  has(bfd,mortar): ^foo@@V2 in section .text$
+  count(lld,mold): 2 ^foo in section .text$
+
+#--- sv.c
+__asm__(".symver foo_v1, foo@V1");
+__asm__(".symver foo_v2, foo@@V2");
+int foo_v1(int x) { return x + 1; }
+int foo_v2(int x) { return x + 2; }
+#--- v.map
+V1 { global: foo; local: *; };
+V2 { global: foo; } V1;

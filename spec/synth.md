@@ -1072,6 +1072,17 @@ gdb, lldb, perf, nm, addr2line, objdump and valgrind (§12).
   file block to be local in. This is GNU's form; lld writes it as an
   `STB_LOCAL` `SHN_UNDEF` entry (WP-027a, GCC 14 static C program:
   `_IO_cookie_close` absent in GNU 2.44, `LOCAL HIDDEN UND` in lld 19).
+  A definition whose input entry is named with a version (`foo@V1`,
+  `foo@@V2`: `.symver`, resolve.md §2.3, the key being `foo`) keeps that
+  full name in `.symtab`, demoted (S-77) or not: GNU ld's form, in every
+  output kind; lld and mold write `foo` for each (lld names a demoted
+  one `foo@V1`). Chosen for the debuggers (WP-150, AArch64, gdb 16.3,
+  lldb 19.1.7): with the versioned names gdb's `info symbol` (and `bt`
+  and lldb's frames without `-g`) name the version, gdb's `break
+  'foo@V1'` and lldb's `b foo@V1` and `image lookup -s` resolve one
+  definition, and nm and objdump show it; with two `foo` every tool
+  shows the same name for two addresses. `break foo` finds both
+  locations in either form.
 - **S-121 [G] (bindings are the inputs').** A global's output binding
   is resolve.md §3.7's and nothing else: `STB_LOCAL` only for a
   definition whose combined visibility is hidden or internal, or that a

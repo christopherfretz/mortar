@@ -183,6 +183,20 @@ impl SymSource for CoreSyms<'_, '_> {
                 };
                 let mut g = row(s.sym_type(), s.st_size, self.def_of(e, &s, t), e.file, binding);
                 g.other |= s.st_other & !3;
+                // synth.md S-75 (WP-150): a definition its object writes
+                // with a version (`foo@V1`, `foo@@V2`, `.symver`) keeps
+                // that name, GNU ld's form. The key's name is the
+                // entry's before any `@` (resolve.md §2.3), so one byte
+                // of the entry's string decides: no scan of the name
+                // for an unversioned definition.
+                let strings = t.strings().bytes();
+                let at = (s.st_name as usize).saturating_add(key.name.len());
+                if strings.get(at) == Some(&b'@')
+                    && let Ok(full) = t.name(&s)
+                    && full.starts_with(key.name)
+                {
+                    g.name = full;
+                }
                 g
             }
             Def::Common(e) => {
