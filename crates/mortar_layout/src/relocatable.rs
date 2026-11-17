@@ -33,9 +33,7 @@ use mortar_core::assignment::{Assignment, MergeClass, OutOf, OutSec};
 use mortar_core::column::Column;
 use mortar_core::id::{ChunkId, FileId, OptId, OutSecId, SectionId, SymbolId};
 use mortar_core::inputs::Reader;
-use mortar_core::layout::{
-    Chunk, ChunkKind, Layout, Part, Place, Placement, PlacementKind, Synth,
-};
+use mortar_core::layout::{Chunk, ChunkKind, Layout, Part, Place, Placement, PlacementKind, Synth};
 use mortar_core::par::Pool;
 use mortar_core::plan::Plan;
 use mortar_core::resolution::{Def, DropReason, RefFlags, SectionKind, SectionState};
@@ -45,10 +43,9 @@ use mortar_diag::RefusalClass;
 use mortar_diag::relocatable::refused_with_r;
 use mortar_elf::consts::{
     SHF_ALLOC, SHF_COMPRESSED, SHF_EXCLUDE, SHF_EXECINSTR, SHF_GNU_RETAIN, SHF_GROUP,
-    SHF_INFO_LINK, SHF_LINK_ORDER, SHF_MERGE, SHF_STRINGS, SHF_TLS, SHF_WRITE,
-    SHF_X86_64_LARGE, SHT_LLVM_ADDRSIG, SHT_LLVM_CALL_GRAPH_PROFILE, SHT_NOTE,
-    SHT_PROGBITS, SHT_REL, SHT_RELA, SHT_STRTAB, SHT_SYMTAB, SHT_SYMTAB_SHNDX,
-    SHT_X86_64_UNWIND, STT_FILE, STT_SECTION,
+    SHF_INFO_LINK, SHF_LINK_ORDER, SHF_MERGE, SHF_STRINGS, SHF_TLS, SHF_WRITE, SHF_X86_64_LARGE,
+    SHT_LLVM_ADDRSIG, SHT_LLVM_CALL_GRAPH_PROFILE, SHT_NOTE, SHT_PROGBITS, SHT_REL, SHT_RELA,
+    SHT_STRTAB, SHT_SYMTAB, SHT_SYMTAB_SHNDX, SHT_X86_64_UNWIND, STT_FILE, STT_SECTION,
 };
 use mortar_elf::{Class, Machine, Object, SectionIndex, SymbolIndex, SymbolSection, SymbolTable};
 
@@ -124,8 +121,15 @@ pub fn layout<'s>(
             Some(SectionState::Dropped(DropReason::Comdat | DropReason::Stripped))
         )
     });
-    let records =
-        relocation_records(&objects, inputs, resolution, &headers, &assigned, &removed, target.class)?;
+    let records = relocation_records(
+        &objects,
+        inputs,
+        resolution,
+        &headers,
+        &assigned,
+        &removed,
+        target.class,
+    )?;
     let removed_sizes = removed_record_sizes(&objects, inputs, resolution, &removed)?;
     build(&Build {
         inputs,
@@ -668,7 +672,9 @@ struct Acc {
     ty: u32,
     all_unwind: bool,
     flags: u64,
-    merge: Option<Option<MergeClass>>,
+    /// Whether a piece has been seen, and the merge class all agree on.
+    merge_seen: bool,
+    merge: Option<MergeClass>,
     alloc: Option<bool>,
     tls: Option<bool>,
     large: Option<bool>,
@@ -683,6 +689,7 @@ impl Acc {
         ty: 0,
         all_unwind: true,
         flags: 0,
+        merge_seen: false,
         merge: None,
         alloc: None,
         tls: None,
@@ -745,11 +752,8 @@ impl Acc {
         self.flags |= h.flags & kept;
         let class = (h.flags & SHF_MERGE != 0)
             .then_some(MergeClass { strings: h.flags & SHF_STRINGS != 0, entsize: h.entsize });
-        self.merge = Some(match self.merge {
-            None => class,
-            Some(prev) if prev == class => prev,
-            Some(_) => None,
-        });
+        self.merge = if self.merge_seen && self.merge != class { None } else { class };
+        self.merge_seen = true;
         self.all_unwind &= h.sh_type == SHT_X86_64_UNWIND;
         if self.ty == 0 {
             self.ty = h.sh_type;
@@ -768,8 +772,9 @@ impl Acc {
         if let Some(e) = &self.error {
             return Err(e.clone());
         }
-        let ty = if self.ty == SHT_X86_64_UNWIND && !self.all_unwind { SHT_PROGBITS } else { self.ty };
-        let merge = self.merge.flatten();
+        let ty =
+            if self.ty == SHT_X86_64_UNWIND && !self.all_unwind { SHT_PROGBITS } else { self.ty };
+        let merge = self.merge;
         let mut flags = self.flags;
         if let Some(m) = merge {
             flags |= SHF_MERGE | if m.strings { SHF_STRINGS } else { 0 };
@@ -781,6 +786,7 @@ impl Acc {
     }
 }
 
+#[allow(clippy::too_many_lines, reason = "L-R1 and L-R1a, one role after another")]
 fn assign<'n>(
     resolution: &Resolution,
     headers: &Headers<'n>,
@@ -840,9 +846,7 @@ fn assign<'n>(
                 // S1: one `.eh_frame` output section; what would make two
                 // is refused until a later package.
                 if h.flags & (SHF_GNU_RETAIN | SHF_LINK_ORDER) != 0 {
-                    errors.push(feature(
-                        ".eh_frame with SHF_GNU_RETAIN or SHF_LINK_ORDER at -r",
-                    ));
+                    errors.push(feature(".eh_frame with SHF_GNU_RETAIN or SHF_LINK_ORDER at -r"));
                     continue;
                 }
                 let o = match eh_out {
@@ -874,14 +878,13 @@ fn assign<'n>(
             Role::Piece if h.flags & SHF_LINK_ORDER != 0 => link_order.push(s),
             Role::Piece => {
                 let key = Key { name: h.name, link: None, retain: h.flags & SHF_GNU_RETAIN != 0 };
-                let o = match keys.get(&key) {
-                    Some(&o) => o,
-                    None => {
-                        let o = new_out(&mut assignment, &mut pieces, &mut member_out, h.name, false)
-                            .map_err(|e| vec![e])?;
-                        keys.insert(key, o);
-                        o
-                    }
+                let o = if let Some(&o) = keys.get(&key) {
+                    o
+                } else {
+                    let o = new_out(&mut assignment, &mut pieces, &mut member_out, h.name, false)
+                        .map_err(|e| vec![e])?;
+                    keys.insert(key, o);
+                    o
                 };
                 assignment.out_of[s] = OutOf::Out(o);
                 pieces[o.0 as usize].push(s);
@@ -916,14 +919,13 @@ fn assign<'n>(
                 continue;
             };
             let key = Key { name: h.name, link: Some(link), retain: h.flags & SHF_GNU_RETAIN != 0 };
-            let o = match keys.get(&key) {
-                Some(&o) => o,
-                None => {
-                    let o = new_out(&mut assignment, &mut pieces, &mut member_out, h.name, false)
-                        .map_err(|e| vec![e])?;
-                    keys.insert(key, o);
-                    o
-                }
+            let o = if let Some(&o) = keys.get(&key) {
+                o
+            } else {
+                let o = new_out(&mut assignment, &mut pieces, &mut member_out, h.name, false)
+                    .map_err(|e| vec![e])?;
+                keys.insert(key, o);
+                o
             };
             assignment.out_of[s] = OutOf::Out(o);
             pieces[o.0 as usize].push(s);
@@ -996,7 +998,7 @@ fn reloc_section(
         return Err(refused(RefusalClass::SectionType, name));
     }
     let entsize = reloc_entry_size(class);
-    if h.entsize != entsize || h.size % entsize != 0 {
+    if h.entsize != entsize || !h.size.is_multiple_of(entsize) {
         return Err(internal(format!(
             "relocation section {} of section {}: entsize {} size {}",
             text(h.name),
@@ -1055,7 +1057,7 @@ fn relocation_records(
 }
 
 /// The removed records of `eh` with their sizes, in offset order.
-fn removed_of<'r>(removed: &'r [(SectionId, u64)], eh: SectionId) -> &'r [(SectionId, u64)] {
+fn removed_of(removed: &[(SectionId, u64)], eh: SectionId) -> &[(SectionId, u64)] {
     let start = removed.partition_point(|r| r.0 < eh);
     let end = removed.partition_point(|r| r.0 <= eh);
     &removed[start..end]
@@ -1113,12 +1115,18 @@ fn records_in_removed(
     let bytes = section_bytes(inputs, &fo.object, file, index, 0..s.size())
         .map_err(|e| internal(format!("reading a relocation section: {e}")))?;
     let offsets: Vec<u64> = match class {
-        Class::Elf64 => {
-            s.rela_in(&bytes).map_err(|e| internal(e.to_string()))?.iter().map(|x| x.r_offset).collect()
-        }
-        Class::Elf32 => {
-            s.rel_in(&bytes).map_err(|e| internal(e.to_string()))?.iter().map(|x| x.r_offset).collect()
-        }
+        Class::Elf64 => s
+            .rela_in(&bytes)
+            .map_err(|e| internal(e.to_string()))?
+            .iter()
+            .map(|x| x.r_offset)
+            .collect(),
+        Class::Elf32 => s
+            .rel_in(&bytes)
+            .map_err(|e| internal(e.to_string()))?
+            .iter()
+            .map(|x| x.r_offset)
+            .collect(),
     };
     let inside = |at: u64| {
         let i = ranges.partition_point(|r| r.1 <= at);
@@ -1194,6 +1202,14 @@ struct LocalCount {
     xindex: bool,
 }
 
+/// One unit of L-R8's order, sorted by its first piece.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Unit {
+    Out(u32),
+    Property,
+    Group(u32),
+}
+
 #[allow(clippy::too_many_lines, reason = "MD-R1's chunks, L-R8's order and offsets in turn")]
 fn build<'s>(b: &Build<'_, 's>) -> Result<RelocatableLayout<'s>, Vec<LayoutDiag>> {
     let class = b.target.class;
@@ -1229,11 +1245,18 @@ fn build<'s>(b: &Build<'_, 's>) -> Result<RelocatableLayout<'s>, Vec<LayoutDiag>
         chunks.push(c);
         ChunkId(chunks.len() as u32 - 1)
     };
-    let fh = push(&mut chunks, chunk(ChunkKind::FileHeader, SHT_PROGBITS, 0, word_align(class), file_header_size(class)));
-    let sh = push(&mut chunks, chunk(ChunkKind::SectionHeaders, SHT_PROGBITS, 0, word_align(class), 0));
+    let fh = push(
+        &mut chunks,
+        chunk(ChunkKind::FileHeader, SHT_PROGBITS, 0, word_align(class), file_header_size(class)),
+    );
+    let sh =
+        push(&mut chunks, chunk(ChunkKind::SectionHeaders, SHT_PROGBITS, 0, word_align(class), 0));
     let property = match (b.notes.property, a.property_inputs.first()) {
         (Some(size), Some(&first)) => Some((
-            push(&mut chunks, chunk(synth(b".note.gnu.property"), SHT_NOTE, SHF_ALLOC, word_align(class), size)),
+            push(
+                &mut chunks,
+                chunk(synth(b".note.gnu.property"), SHT_NOTE, SHF_ALLOC, word_align(class), size),
+            ),
             first,
         )),
         (Some(_), None) => {
@@ -1264,26 +1287,32 @@ fn build<'s>(b: &Build<'_, 's>) -> Result<RelocatableLayout<'s>, Vec<LayoutDiag>
     for o in 0..nout {
         let out = OutSecId(o as u32);
         let row = &a.assignment.outsecs[out];
-        if Some(out) != a.eh_out {
+        if Some(out) == a.eh_out {
+            body[o] = eh;
+        } else {
             let c = push(
                 &mut chunks,
-                chunk(ChunkKind::Body(Part::first(out)), row.sh_type, row.flags, a.align[o], body_size[o]),
+                chunk(
+                    ChunkKind::Body(Part::first(out)),
+                    row.sh_type,
+                    row.flags,
+                    a.align[o],
+                    body_size[o],
+                ),
             );
             body[o] = Some(c);
             for (k, &s) in a.pieces[o].iter().enumerate() {
                 place[s] = Place::at(c, offsets[o][k]);
             }
-        } else {
-            body[o] = eh;
         }
     }
-    for o in 0..nout {
+    for (o, slot) in relocs.iter_mut().enumerate() {
         if let Some(size) = relocs_size(class, b.records[o]) {
             let mut flags = SHF_INFO_LINK;
             if a.member[o] {
                 flags |= SHF_GROUP;
             }
-            relocs[o] = Some(push(
+            *slot = Some(push(
                 &mut chunks,
                 chunk(
                     ChunkKind::Relocs(OutSecId(o as u32)),
@@ -1315,12 +1344,6 @@ fn build<'s>(b: &Build<'_, 's>) -> Result<RelocatableLayout<'s>, Vec<LayoutDiag>
     // by their first piece's (FileId, section index), each group right
     // before its first member, each relocation section right after its
     // target; then .symtab, .symtab_shndx, .strtab, .shstrtab.
-    #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-    enum Unit {
-        Out(u32),
-        Property,
-        Group(u32),
-    }
     let mut units: Vec<(SectionId, Unit)> = Vec::with_capacity(nout + 1);
     for (o, list) in a.pieces.iter().enumerate() {
         units.push((list[0], Unit::Out(o as u32)));
@@ -1478,6 +1501,10 @@ fn build<'s>(b: &Build<'_, 's>) -> Result<RelocatableLayout<'s>, Vec<LayoutDiag>
 }
 
 /// I-R4's kept locals, per live file (in parallel over files).
+#[allow(
+    clippy::many_single_char_names,
+    reason = "b, c, f, t, x: the build, the count, the file, the table, the section"
+)]
 fn local_counts(
     b: &Build<'_, '_>,
     out_index: &Column<SectionId, u32>,
@@ -1512,7 +1539,16 @@ fn local_counts(
                         let s = res
                             .section_id(file, x)
                             .ok_or_else(|| "a local's section out of range".to_owned())?;
-                        local_index(b, s, sym.st_value, i.0, out_index, eh_index, &removed, group_sig)
+                        local_index(
+                            b,
+                            s,
+                            sym.st_value,
+                            i.0,
+                            out_index,
+                            eh_index,
+                            &removed,
+                            group_sig,
+                        )
                     }
                     _ => None,
                 }
@@ -1571,13 +1607,16 @@ struct GlobalCount {
     xindex: bool,
 }
 
+#[allow(
+    clippy::many_single_char_names,
+    reason = "b, c, e, k, t: the build, the count, the definition, the key, the table"
+)]
 fn global_counts(
     b: &Build<'_, '_>,
     out_index: &Column<SectionId, u32>,
 ) -> Result<GlobalCount, Vec<LayoutDiag>> {
     let res = b.resolution;
-    let n = res.def.len() as usize;
-    let mut mentioned = vec![false; n];
+    let mut mentioned = vec![false; res.def.len() as usize];
     for (f, fo) in b.objects.iter().enumerate() {
         if fo.is_none() {
             continue;
@@ -1590,15 +1629,15 @@ fn global_counts(
     }
     let mut c = GlobalCount::default();
     let mut errors = Vec::new();
-    for k in 0..n {
+    for (k, &is_mentioned) in mentioned.iter().enumerate() {
         let id = SymbolId(k as u32);
         let def = res.def[id];
         let written = match def {
             Def::Internal(_) => false,
             Def::Undefined { .. } => {
-                mentioned[k] || res.props[id].refs.contains(RefFlags::FROM_OBJECT)
+                is_mentioned || res.props[id].refs.contains(RefFlags::FROM_OBJECT)
             }
-            _ => mentioned[k],
+            _ => is_mentioned,
         };
         if !written {
             continue;
@@ -1608,7 +1647,9 @@ fn global_counts(
         match def {
             Def::Defined(e) => {
                 let Some(Some(fo)) = b.objects.get(e.file.0 as usize) else {
-                    errors.push(internal(format!("key {k}: defined in a file that is not an object")));
+                    errors.push(internal(format!(
+                        "key {k}: defined in a file that is not an object"
+                    )));
                     continue;
                 };
                 let Some(t) = fo.symbols else {
@@ -1641,10 +1682,7 @@ fn global_counts(
                 c.strtab += EntryName { name: key.name, version: key.version }.strtab_bytes();
             }
             Def::Shared(_) | Def::Internal(_) => {
-                errors.push(internal(format!(
-                    "key {}: a shared definition at -r",
-                    text(key.name)
-                )));
+                errors.push(internal(format!("key {}: a shared definition at -r", text(key.name))));
             }
         }
     }

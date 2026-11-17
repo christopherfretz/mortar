@@ -632,7 +632,8 @@ the link state and never an input to another phase.
     output section with a relocated piece (`Relocs(o)`); and the
     synthetic `.symtab`, `.symtab_shndx`, `.strtab`, `.shstrtab` and
     `.eh_frame` chunks, plus the build-id note when `--build-id` is
-    given (`spec/image.md` I-R8).
+    given (`spec/image.md` I-R8). `ChunkKind::Group(SectionId)` names
+    the KEPT INPUT `SHT_GROUP` section the chunk is written from.
   - `segments`, `defined`, `patches`, `sized` and `tls` are empty;
     `entry` is none; `sym_place` holds only `-d`'s commons; no chunk has
     an address.

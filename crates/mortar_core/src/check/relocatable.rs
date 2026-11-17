@@ -30,7 +30,7 @@ use std::collections::BTreeSet;
 use mortar_elf::Class;
 use mortar_elf::consts::{SHF_GROUP, SHT_GROUP, SHT_REL, SHT_RELA};
 
-use crate::check::{CheckContext, Rule, Row, Violation, aligned, end, fail, need};
+use crate::check::{CheckContext, Row, Rule, Violation, aligned, end, fail, need};
 use crate::id::{ChunkId, OutSecId, SectionId};
 use crate::layout::{AllocKey, ChunkKind, Layout};
 use crate::resolution::{Def, SectionKind};
@@ -150,15 +150,16 @@ pub fn validate_groups(
             },
             [],
         )?;
-        for (id, c) in p.chunks.iter() {
-            if c.kind == ChunkKind::Body(crate::layout::Part::first(o)) {
-                need(
-                    (c.flags & SHF_GROUP != 0) == member,
-                    R,
-                    || "a body chunk's SHF_GROUP differs from its output section's group".into(),
-                    [Row::Chunk(id)],
-                )?;
-            }
+    }
+    for (id, c) in p.chunks.iter() {
+        if let ChunkKind::Body(part) = c.kind {
+            let member = members.contains(&part.out);
+            need(
+                (c.flags & SHF_GROUP != 0) == member,
+                R,
+                || "a body chunk's SHF_GROUP differs from its output section's group".into(),
+                [Row::Chunk(id)],
+            )?;
         }
     }
     Ok(())
@@ -237,7 +238,9 @@ impl Validator<'_, '_, '_> {
         )?;
         for (id, c) in p.chunks.iter() {
             let ok = match c.kind {
-                ChunkKind::Body(part) | ChunkKind::Patches(part) => cx.assignment.outsecs.has(part.out),
+                ChunkKind::Body(part) | ChunkKind::Patches(part) => {
+                    cx.assignment.outsecs.has(part.out)
+                }
                 ChunkKind::Merged(o) | ChunkKind::Relocs(o) => cx.assignment.outsecs.has(o),
                 ChunkKind::Group(g) => cx.resolution.sections.has(g),
                 _ => true,
@@ -270,7 +273,12 @@ impl Validator<'_, '_, '_> {
             let live = cx.liveness.live.get(s).copied().unwrap_or(false);
             let needs = row.is_kept() && live && placed_at_r(row.kind) && out.is_some();
             let Some((chunk, off)) = p.place[s].get() else {
-                need(!needs, R, || "rule 1: a live section has no place".into(), [Row::Section(s)])?;
+                need(
+                    !needs,
+                    R,
+                    || "rule 1: a live section has no place".into(),
+                    [Row::Section(s)],
+                )?;
                 continue;
             };
             need(
@@ -318,7 +326,8 @@ impl Validator<'_, '_, '_> {
             let c = p.chunks.get(row.chunk);
             need(
                 c.is_some_and(|c| {
-                    matches!(c.kind, ChunkKind::Body(_)) && end(row.offset, row.size) <= c.size.into()
+                    matches!(c.kind, ChunkKind::Body(_))
+                        && end(row.offset, row.size) <= c.size.into()
                 }),
                 R,
                 || "rule 1: a common's allocation is not inside a body chunk".into(),
@@ -339,6 +348,7 @@ impl Validator<'_, '_, '_> {
     }
 
     /// Rule 2 on file offsets only (L-R7, L-R8).
+    #[allow(clippy::too_many_lines, reason = "one reading of L-R10 after another")]
     fn chunks(&self) -> Check {
         let p = &self.layout.placement;
         let mut seen = vec![false; p.chunks.len() as usize];
@@ -482,9 +492,12 @@ impl Validator<'_, '_, '_> {
         for (id, c) in p.chunks.iter() {
             if let ChunkKind::Body(part) = c.kind {
                 let slot = &mut body[part.out.0 as usize];
-                need(slot.is_none(), R, || "MD-R1: two bodies of one output section".into(), [
-                    Row::Chunk(id),
-                ])?;
+                need(
+                    slot.is_none(),
+                    R,
+                    || "MD-R1: two bodies of one output section".into(),
+                    [Row::Chunk(id)],
+                )?;
                 *slot = Some(id);
                 let row = &cx.assignment.outsecs[part.out];
                 need(
@@ -568,10 +581,10 @@ impl Validator<'_, '_, '_> {
     /// target (L-R8).
     fn relocs(&self) -> Check {
         let cx = self.cx;
-        let p = &self.layout.placement;
-        let n = cx.assignment.outsecs.len() as usize;
-        let mut has_reloc = vec![false; n];
-        let mut has_content = vec![false; n];
+        let place = &self.layout.placement;
+        let outs = cx.assignment.outsecs.len() as usize;
+        let mut has_reloc = vec![false; outs];
+        let mut has_content = vec![false; outs];
         for (s, row) in cx.resolution.sections.iter() {
             let Some(o) = cx.assignment.out(s) else { continue };
             if row.is_kept() && cx.liveness.live.get(s).copied().unwrap_or(false) {
@@ -583,9 +596,9 @@ impl Validator<'_, '_, '_> {
             Class::Elf64 => (SHT_RELA, reloc_entry(Class::Elf64)),
             Class::Elf32 => (SHT_REL, reloc_entry(Class::Elf32)),
         };
-        let mut seen = vec![false; n];
-        for (at, &id) in p.order.iter().enumerate() {
-            let c = &p.chunks[id];
+        let mut seen = vec![false; outs];
+        for (at, &id) in place.order.iter().enumerate() {
+            let c = &place.chunks[id];
             let ChunkKind::Relocs(o) = c.kind else { continue };
             let me = [Row::Chunk(id)];
             let k = o.0 as usize;
@@ -604,12 +617,12 @@ impl Validator<'_, '_, '_> {
                 me,
             )?;
             need(
-                c.sh_type == want_type && c.size > 0 && c.size % entry == 0,
+                c.sh_type == want_type && c.size > 0 && c.size.is_multiple_of(entry),
                 R,
                 || "S6: a relocation chunk's type or size".into(),
                 me,
             )?;
-            let before = at.checked_sub(1).map(|b| &p.chunks[p.order[b]]);
+            let before = at.checked_sub(1).map(|b| &place.chunks[place.order[b]]);
             let target = before.is_some_and(|b| match b.kind {
                 ChunkKind::Body(part) => part.out == o,
                 ChunkKind::Synthetic(s) => s.name == b".eh_frame" && eh_out(cx) == Some(o),
