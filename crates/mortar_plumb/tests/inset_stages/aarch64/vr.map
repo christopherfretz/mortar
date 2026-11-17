@@ -1,0 +1,33 @@
+mortar-map 2
+file 0 m1.o
+place 0 1 4102d0 4
+place 0 2 4303e0 8
+place 0 4 4303e8 0
+chunk synthetic .interp 400238 1b
+chunk synthetic .gnu.hash 400258 1c
+chunk synthetic .dynsym 400278 30
+chunk synthetic .dynstr 4002a8 c
+chunk synthetic .rela.dyn 4002b8 18
+chunk synthetic .got 4203d8 8
+chunk synthetic .dynamic 4202d8 100
+chunk synthetic .symtab - 48
+chunk synthetic .strtab - 26
+chunk synthetic .shstrtab - 75
+chunk synthetic .comment - d
+chunk synthetic .pad.relro 4203e0 fc20
+output exec
+interp /lib/ld-linux-aarch64.so.1
+bind lazy
+relro on
+arg -dynamic-linker
+arg /lib/ld-linux-aarch64.so.1
+arg m1.o
+arg --as-needed
+arg libuv.so
+arg libg.a
+arg libgver.so
+arg -o
+arg vr
+arg --mortar-map=vr.map
+needed libuv.so
+end

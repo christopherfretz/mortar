@@ -1,0 +1,39 @@
+mortar-map 2
+file 0 m1.o
+file 1 libgv.a gv.o 4e
+place 0 1 410320 4
+place 0 2 430440 8
+place 0 4 430450 0
+place 1 1 410324 0
+place 1 2 430448 8
+place 1 4 430450 0
+chunk synthetic .interp 400238 1b
+chunk synthetic .gnu.hash 400258 20
+chunk synthetic .dynsym 400278 60
+chunk synthetic .dynstr 4002d8 17
+chunk synthetic .rela.dyn 4002f0 30
+chunk synthetic .got 420438 8
+chunk synthetic .dynamic 420328 110
+chunk synthetic .symtab - 60
+chunk synthetic .strtab - 28
+chunk synthetic .shstrtab - 75
+chunk synthetic .comment - d
+chunk synthetic .pad.relro 420440 fbc0
+output exec
+interp /lib/ld-linux-aarch64.so.1
+bind lazy
+relro on
+arg -dynamic-linker
+arg /lib/ld-linux-aarch64.so.1
+arg m1.o
+arg --as-needed
+arg libu.so
+arg libgv.a
+arg libv.so
+arg -o
+arg j2b
+arg --mortar-map=j2b.map
+needed libu.so
+needed libv.so
+export g
+end

@@ -126,15 +126,20 @@ fn verify_kind(
         // judge it besides (a static judging of a dynamic program names
         // its PLT and its imports wrongly); any other is static.
         let missing = no_dynamic(&image, line_words(map, ctx).as_deref(), ctx.files, map.format);
+        // No DT_NEEDED: no as-needed shared object of the line is a
+        // source of D-12 (WP-171).
+        let staged = line_words(map, ctx)
+            .and_then(|w| crate::inset::Stager::new(&w, ctx.files))
+            .map(crate::inset::Stager::without_sources);
         if missing.is_empty() {
-            return (crate::verify_static_in(output, store, m, map, ctx.line.as_deref()), None);
+            return (crate::verify_static_in(output, store, m, map, ctx.line.as_deref()), staged);
         }
         let mut report = Report::default();
         report.findings.extend(structure::check(&image));
         report.findings.extend(structure::check_layout(&image, map));
         report.findings.extend(missing);
         report.sort();
-        return (report, None);
+        return (report, staged);
     };
     let mut staged = None;
     let report = judge(&image, &dout, store, m, map, ctx, &mut staged);

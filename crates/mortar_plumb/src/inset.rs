@@ -139,6 +139,12 @@ impl Stager {
         let index = set.by_ident().into_iter().map(|(k, v)| (k.clone(), v)).collect();
         Some(Stager { line, set, first, live: Vec::new(), index })
     }
+
+    /// The stager of an output with no `DT_NEEDED`: no source.
+    pub(crate) fn without_sources(mut self) -> Stager {
+        self.set.sources = Some(vec![false; self.set.files.len()]);
+        self
+    }
 }
 
 impl crate::dynmodel::Staging for Stager {
@@ -1511,6 +1517,11 @@ fn script(text: &str) -> Result<Script, String> {
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    /// [`super::judge`] without a replay of D-12's stages.
+    fn judge(map: &Map, words: Option<&[String]>, files: &dyn Files) -> Verdict {
+        super::judge(map, words, files, None)
+    }
 
     /// A symbol of a synthetic object: `name`, and `D` a function
     /// definition, `O` a data definition, `W` a weak function definition,
