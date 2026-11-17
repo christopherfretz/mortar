@@ -99,7 +99,8 @@ impl SharedLine {
         let mut l = SharedLine::default();
         let mut i = 0;
         let val = |a: &str, opts: &[&str]| -> Option<String> {
-            opts.iter().find_map(|o| a.strip_prefix(o).and_then(|r| r.strip_prefix('=')))
+            opts.iter()
+                .find_map(|o| a.strip_prefix(o).and_then(|r| r.strip_prefix('=')))
                 .map(str::to_string)
         };
         while i < args.len() {
@@ -114,12 +115,17 @@ impl SharedLine {
                     l.symbolic = Some(Symbolic::Functions);
                 }
                 "-Bno-symbolic" | "--Bno-symbolic" => l.symbolic = Some(Symbolic::None),
-                "-Bsymbolic-non-weak" | "--Bsymbolic-non-weak" | "-Bsymbolic-non-weak-functions"
+                "-Bsymbolic-non-weak"
+                | "--Bsymbolic-non-weak"
+                | "-Bsymbolic-non-weak-functions"
                 | "--Bsymbolic-non-weak-functions" => {
                     l.outside.push(format!("{a} (dyn.md D-112: refused by name)"));
                 }
-                "--dynamic-list-data" | "-dynamic-list-data" | "--dynamic-list-cpp-new"
-                | "-dynamic-list-cpp-new" | "--dynamic-list-cpp-typeinfo"
+                "--dynamic-list-data"
+                | "-dynamic-list-data"
+                | "--dynamic-list-cpp-new"
+                | "-dynamic-list-cpp-new"
+                | "--dynamic-list-cpp-typeinfo"
                 | "-dynamic-list-cpp-typeinfo" => {
                     l.outside.push(format!("{a} (dyn.md D-112: refused by name)"));
                 }
@@ -143,16 +149,61 @@ impl SharedLine {
                 "--no-export-dynamic" => l.export_dynamic = false,
                 "-static-pie" | "--static-pie" => l.static_pie = true,
                 // Options whose next word is a value the loop must skip.
-                "-o" | "-m" | "-e" | "--entry" | "-u" | "--undefined" | "-T" | "--script"
-                | "-Map" | "-plugin" | "--plugin" | "-plugin-opt" | "-y" | "--trace-symbol"
-                | "--defsym" | "-Y" | "-A" | "-F" | "-f" | "-G" | "--sysroot" | "--wrap"
-                | "--image-base" | "-Ttext" | "-Tdata" | "-Tbss" | "--section-start"
-                | "--thread-count" | "-mllvm" | "--chroot" | "--hash-style" | "-z" | "-L"
-                | "--library-path" | "-l" | "--library" | "-rpath" | "-R" | "--rpath"
-                | "-rpath-link" | "--rpath-link" | "-dynamic-linker" | "--dynamic-linker"
-                | "-I" | "-init" | "--init" | "-fini" | "--fini" | "--export-dynamic-symbol"
-                | "-export-dynamic-symbol" | "--export-dynamic-symbol-list"
-                | "-export-dynamic-symbol-list" | "--odr-table" | "-odr-table" | "--odr"
+                "-o"
+                | "-m"
+                | "-e"
+                | "--entry"
+                | "-u"
+                | "--undefined"
+                | "-T"
+                | "--script"
+                | "-Map"
+                | "-plugin"
+                | "--plugin"
+                | "-plugin-opt"
+                | "-y"
+                | "--trace-symbol"
+                | "--defsym"
+                | "-Y"
+                | "-A"
+                | "-F"
+                | "-f"
+                | "-G"
+                | "--sysroot"
+                | "--wrap"
+                | "--image-base"
+                | "-Ttext"
+                | "-Tdata"
+                | "-Tbss"
+                | "--section-start"
+                | "--thread-count"
+                | "-mllvm"
+                | "--chroot"
+                | "--hash-style"
+                | "-z"
+                | "-L"
+                | "--library-path"
+                | "-l"
+                | "--library"
+                | "-rpath"
+                | "-R"
+                | "--rpath"
+                | "-rpath-link"
+                | "--rpath-link"
+                | "-dynamic-linker"
+                | "--dynamic-linker"
+                | "-I"
+                | "-init"
+                | "--init"
+                | "-fini"
+                | "--fini"
+                | "--export-dynamic-symbol"
+                | "-export-dynamic-symbol"
+                | "--export-dynamic-symbol-list"
+                | "-export-dynamic-symbol-list"
+                | "--odr-table"
+                | "-odr-table"
+                | "--odr"
                 | "-odr" => i += 1,
                 _ => {
                     if let Some(f) = val(a, &["--dynamic-list", "-dynamic-list"]) {
@@ -456,7 +507,10 @@ fn lex(file: &str, text: &str) -> Result<Vec<(Tok, u32)>, ScriptError> {
             _ => {
                 let s = i;
                 while i < b.len()
-                    && !matches!(b[i], b' ' | b'\t' | b'\r' | b'\n' | b'{' | b'}' | b';' | b':' | b'"')
+                    && !matches!(
+                        b[i],
+                        b' ' | b'\t' | b'\r' | b'\n' | b'{' | b'}' | b';' | b':' | b'"'
+                    )
                     && !(b[i] == b'#')
                 {
                     i += 1;
@@ -815,16 +869,19 @@ pub fn split_version(name: &str) -> (&str, Option<(&str, bool)>) {
 /// the line's form and list decide; `format` admits GNU ld's own forms
 /// (it binds `NOTYPE` under `-Bsymbolic-functions`, and keeps `TLS` and
 /// `GNU_IFUNC` preemptible under a list: record §F.2).
-pub fn line_preempts(sl: &SharedLine, list: Option<&DynList>, ty: u8, name: &str, format: Format) -> bool {
+pub fn line_preempts(
+    sl: &SharedLine,
+    list: Option<&DynList>,
+    ty: u8,
+    name: &str,
+    format: Format,
+) -> bool {
     if let Some(l) = list {
-        return l.lists(name)
-            || (format == Format::Gnu && matches!(ty, STT_TLS | STT_GNU_IFUNC));
+        return l.lists(name) || (format == Format::Gnu && matches!(ty, STT_TLS | STT_GNU_IFUNC));
     }
     match sl.form() {
         Symbolic::All => false,
-        Symbolic::Functions => {
-            !(ty == STT_FUNC || (format == Format::Gnu && ty == STT_NOTYPE))
-        }
+        Symbolic::Functions => !(ty == STT_FUNC || (format == Format::Gnu && ty == STT_NOTYPE)),
         Symbolic::None => true,
     }
 }
@@ -837,7 +894,11 @@ fn c_ident(s: &str) -> bool {
 }
 
 /// Reads the line's files (version scripts or dynamic lists).
-fn read_files(paths: &[String], files: &dyn Files, sets: &mut Sets) -> Option<Vec<(String, String)>> {
+fn read_files(
+    paths: &[String],
+    files: &dyn Files,
+    sets: &mut Sets,
+) -> Option<Vec<(String, String)>> {
     let mut v = Vec::new();
     for p in paths {
         match files.read(p) {
@@ -979,22 +1040,20 @@ pub(crate) fn compute(
                     Some(s.nodes[i].name.clone().map_or(VerOut::Base, VerOut::Node))
                 }
             },
-            (Some(s), Some((v, default))) => {
-                match s.decide_versioned(base, v, sl.export_dynamic) {
-                    None => {
-                        sets.outside.push(format!(
+            (Some(s), Some((v, default))) => match s.decide_versioned(base, v, sl.export_dynamic) {
+                None => {
+                    sets.outside.push(format!(
                             "'{name}': no node {v} in the version script (dyn.md D-114: undefined-version)"
                         ));
-                        None
-                    }
-                    Some(Decision::Local) => None,
-                    Some(_) => Some(if default {
-                        VerOut::Node(v.to_string())
-                    } else {
-                        VerOut::Hidden(v.to_string())
-                    }),
+                    None
                 }
-            }
+                Some(Decision::Local) => None,
+                Some(_) => Some(if default {
+                    VerOut::Node(v.to_string())
+                } else {
+                    VerOut::Hidden(v.to_string())
+                }),
+            },
         }
     };
     for (name, ds) in &defs {
@@ -1016,7 +1075,8 @@ pub(crate) fn compute(
             sets.local.insert(base);
             continue;
         };
-        let preemptible = v != STV_PROTECTED && line_preempts(sl, list.as_ref(), d.ty, &base, format);
+        let preemptible =
+            v != STV_PROTECTED && line_preempts(sl, list.as_ref(), d.ty, &base, format);
         sets.exports.entry(base.clone()).or_default().push(Export {
             name: base,
             version,
@@ -1054,8 +1114,8 @@ pub(crate) fn compute(
             continue;
         };
         let vis = if startstop { STV_PROTECTED } else { STV_DEFAULT };
-        let preemptible = !startstop
-            && line_preempts(sl, list.as_ref(), s.sym.sym_type(), &s.name, format);
+        let preemptible =
+            !startstop && line_preempts(sl, list.as_ref(), s.sym.sym_type(), &s.name, format);
         sets.exports.entry(s.name.clone()).or_default().push(Export {
             name: s.name.clone(),
             version,
@@ -1111,7 +1171,8 @@ pub fn pd19(out: &DynOut, sets: &Sets, format: Format) -> Vec<Finding> {
         {
             continue;
         }
-        let Some(e) = sets.exports.get(&s.name).and_then(|x| x.iter().find(|e| e.version == version))
+        let Some(e) =
+            sets.exports.get(&s.name).and_then(|x| x.iter().find(|e| e.version == version))
         else {
             let why = if sets.local.contains(&s.name) {
                 " (a version script or --exclude-libs makes it local)"
@@ -1122,7 +1183,10 @@ pub fn pd19(out: &DynOut, sets: &Sets, format: Format) -> Vec<Finding> {
             };
             v.push(sym(
                 &s.name,
-                format!("'{}' ({version:?}) is in .dynsym and not in the export set{why} (D-110)", s.name),
+                format!(
+                    "'{}' ({version:?}) is in .dynsym and not in the export set{why} (D-110)",
+                    s.name
+                ),
             ));
             continue;
         };
@@ -1130,7 +1194,12 @@ pub fn pd19(out: &DynOut, sets: &Sets, format: Format) -> Vec<Finding> {
         if s.binding() != e.bind {
             v.push(sym(
                 &s.name,
-                format!("'{}' is exported with binding {}, its definition's is {} (D-111)", s.name, s.binding(), e.bind),
+                format!(
+                    "'{}' is exported with binding {}, its definition's is {} (D-111)",
+                    s.name,
+                    s.binding(),
+                    e.bind
+                ),
             ));
         }
         // A bound IFUNC may be exported at its IPLT entry (D-121).
@@ -1139,13 +1208,23 @@ pub fn pd19(out: &DynOut, sets: &Sets, format: Format) -> Vec<Finding> {
         if !ty_ok {
             v.push(sym(
                 &s.name,
-                format!("'{}' is exported with type {}, its definition's is {} (D-111)", s.name, s.sym_type(), e.ty),
+                format!(
+                    "'{}' is exported with type {}, its definition's is {} (D-111)",
+                    s.name,
+                    s.sym_type(),
+                    e.ty
+                ),
             ));
         }
         if s.visibility() != e.vis {
             v.push(sym(
                 &s.name,
-                format!("'{}' is exported with visibility {}, its definitions' is {} (D-110)", s.name, s.visibility(), e.vis),
+                format!(
+                    "'{}' is exported with visibility {}, its definitions' is {} (D-110)",
+                    s.name,
+                    s.visibility(),
+                    e.vis
+                ),
             ));
         }
     }
@@ -1154,7 +1233,10 @@ pub fn pd19(out: &DynOut, sets: &Sets, format: Format) -> Vec<Finding> {
             if !e.optional && !seen.contains(&(e.name.clone(), e.version.clone())) {
                 v.push(sym(
                     &e.name,
-                    format!("'{}' ({:?}) is in the export set and not defined in .dynsym (D-110)", e.name, e.version),
+                    format!(
+                        "'{}' ({:?}) is in the export set and not defined in .dynsym (D-110)",
+                        e.name, e.version
+                    ),
                 ));
             }
         }
@@ -1200,8 +1282,11 @@ fn sym0_allowed(machine: u16, ty: u32, format: Format) -> bool {
 fn needed_bits(data: &[u8], word: usize) -> u64 {
     let mut bits = 0;
     let mut at = 0usize;
-    let u32at = |b: &[u8], o: usize| b.get(o..o + 4).map(|x| u32::from_le_bytes([x[0], x[1], x[2], x[3]]));
-    while let (Some(nsz), Some(dsz), Some(ty)) = (u32at(data, at), u32at(data, at + 4), u32at(data, at + 8)) {
+    let u32at =
+        |b: &[u8], o: usize| b.get(o..o + 4).map(|x| u32::from_le_bytes([x[0], x[1], x[2], x[3]]));
+    while let (Some(nsz), Some(dsz), Some(ty)) =
+        (u32at(data, at), u32at(data, at + 4), u32at(data, at + 8))
+    {
         let name_end = at + 12 + (nsz as usize).next_multiple_of(4);
         let desc = name_end;
         let desc_end = desc + dsz as usize;
@@ -1243,12 +1328,21 @@ pub(crate) fn static_checks(
     // P-D20: the forbidden forms.
     for r in &out.rels {
         if kind(m, r.ty) == Kind::Copy {
-            v.push(fd(20, format!("a COPY record of '{}' in a shared object (D-122)", name_of(r))).at(r.offset));
+            v.push(
+                fd(20, format!("a COPY record of '{}' in a shared object (D-122)", name_of(r)))
+                    .at(r.offset),
+            );
         }
     }
     for s in out.syms.iter().skip(1) {
         if !s.defined() && s.st_value != 0 {
-            let mut f = fd(20, format!("'{}' has a canonical PLT entry (SHN_UNDEF, st_value {:#x}; D-122)", s.name, s.st_value));
+            let mut f = fd(
+                20,
+                format!(
+                    "'{}' has a canonical PLT entry (SHN_UNDEF, st_value {:#x}; D-122)",
+                    s.name, s.st_value
+                ),
+            );
             f.symbol = Some(s.name.clone());
             v.push(f);
         }
@@ -1289,8 +1383,15 @@ pub(crate) fn static_checks(
             let Some(recs) = o.records(rs) else { continue };
             for &(off, _, ty, _) in &recs {
                 if le_type(machine, ty) {
-                    let mut f = fd(20, format!("a local-exec TLS form (type {ty}) in a shared object's code (D-119)"));
-                    f.site = Some(o.site(o.secs.iter().position(|x| std::ptr::eq(x, s)).unwrap_or(0), off));
+                    let mut f = fd(
+                        20,
+                        format!(
+                            "a local-exec TLS form (type {ty}) in a shared object's code (D-119)"
+                        ),
+                    );
+                    f.site = Some(
+                        o.site(o.secs.iter().position(|x| std::ptr::eq(x, s)).unwrap_or(0), off),
+                    );
                     v.push(f);
                 }
             }
@@ -1313,7 +1414,9 @@ pub(crate) fn static_checks(
         };
         if let Some(n) = z.and_then(|z| z.strip_prefix("max-page-size=")) {
             let n = n.trim();
-            let p = n.strip_prefix("0x").map_or_else(|| n.parse().ok(), |h| u64::from_str_radix(h, 16).ok());
+            let p = n
+                .strip_prefix("0x")
+                .map_or_else(|| n.parse().ok(), |h| u64::from_str_radix(h, 16).ok());
             if let Some(p) = p {
                 page = p;
             }
@@ -1325,7 +1428,16 @@ pub(crate) fn static_checks(
             v.push(fd(21, format!("a PT_LOAD at {:#x} has p_align {:#x}, the max page size is {page:#x} (D-123)", p.p_vaddr, p.p_align)).at(p.p_vaddr));
         }
         if p.p_align > 0 && p.p_offset % p.p_align != p.p_vaddr % p.p_align {
-            v.push(fd(21, format!("a PT_LOAD at {:#x}: p_offset {:#x} is not p_vaddr modulo p_align {:#x}", p.p_vaddr, p.p_offset, p.p_align)).at(p.p_vaddr));
+            v.push(
+                fd(
+                    21,
+                    format!(
+                        "a PT_LOAD at {:#x}: p_offset {:#x} is not p_vaddr modulo p_align {:#x}",
+                        p.p_vaddr, p.p_offset, p.p_align
+                    ),
+                )
+                .at(p.p_vaddr),
+            );
         }
     }
     // P-D22: the shared object's `.dynamic`.
@@ -1361,16 +1473,32 @@ pub(crate) fn static_checks(
         let tagname = crate::dynout::tag_name(tag);
         match (out.get(tag), def) {
             (Some(val), Some(d)) => {
-                let exec = image.load_of(val, 1).is_some_and(|p| p.p_flags & mortar_elf::consts::PF_X != 0);
+                let exec = image
+                    .load_of(val, 1)
+                    .is_some_and(|p| p.p_flags & mortar_elf::consts::PF_X != 0);
                 if val != d.sym.st_value || !exec {
-                    v.push(fd(22, format!("{tagname} is {val:#x}; '{name}' is at {:#x} (D-124, W22)", d.sym.st_value)));
+                    v.push(fd(
+                        22,
+                        format!(
+                            "{tagname} is {val:#x}; '{name}' is at {:#x} (D-124, W22)",
+                            d.sym.st_value
+                        ),
+                    ));
                 }
             }
             (Some(val), None) => {
-                v.push(fd(22, format!("{tagname} is {val:#x} and the output defines no '{name}' (D-124, W22)")));
+                v.push(fd(
+                    22,
+                    format!(
+                        "{tagname} is {val:#x} and the output defines no '{name}' (D-124, W22)"
+                    ),
+                ));
             }
             (None, Some(_)) => {
-                v.push(fd(22, format!("no {tagname}, and the output defines '{name}' (D-30 rows 3-4, W22)")));
+                v.push(fd(
+                    22,
+                    format!("no {tagname}, and the output defines '{name}' (D-30 rows 3-4, W22)"),
+                ));
             }
             (None, None) => {}
         }
@@ -1380,20 +1508,34 @@ pub(crate) fn static_checks(
     match (&sl.soname, soname) {
         (None, None) => {}
         (Some(want), Some(Some(got))) if *want == got => {}
-        (want, got) => v.push(fd(22, format!("DT_SONAME is {:?}; the line's -soname is {want:?} (D-102)", got.flatten()))),
+        (want, got) => v.push(fd(
+            22,
+            format!("DT_SONAME is {:?}; the line's -soname is {want:?} (D-102)", got.flatten()),
+        )),
     }
     // DT_VERDEF/DT_VERDEFNUM and `.gnu.version_d` (D-115).
     let any_node = !sets.nodes.is_empty();
     let num = out.get(crate::dynout::DT_VERDEFNUM);
     match (any_node, out.has(crate::dynout::DT_VERDEF)) {
-        (false, true) => v.push(fd(22, "DT_VERDEF and the version script names no version node (D-115)")),
-        (true, false) => v.push(fd(22, "no DT_VERDEF and the version script names a version node (D-115)")),
+        (false, true) => {
+            v.push(fd(22, "DT_VERDEF and the version script names no version node (D-115)"))
+        }
+        (true, false) => {
+            v.push(fd(22, "no DT_VERDEF and the version script names a version node (D-115)"))
+        }
         (true, true) => {
             if num != Some(out.verdefs.len() as u64) {
-                v.push(fd(22, format!("DT_VERDEFNUM {num:?}; the Verdef chain has {} entries", out.verdefs.len())));
+                v.push(fd(
+                    22,
+                    format!(
+                        "DT_VERDEFNUM {num:?}; the Verdef chain has {} entries",
+                        out.verdefs.len()
+                    ),
+                ));
             }
             let want: Vec<&String> = sets.nodes.iter().collect();
-            let got: Vec<&String> = out.verdefs.iter().skip(1).filter_map(|d| d.names.first()).collect();
+            let got: Vec<&String> =
+                out.verdefs.iter().skip(1).filter_map(|d| d.names.first()).collect();
             if got != want {
                 v.push(fd(22, format!("the Verdefs after the base are {got:?}; the script's nodes are {want:?} (D-115)")));
             }
@@ -1415,12 +1557,15 @@ pub(crate) fn static_checks(
     let w = word as usize;
     let input_has = objs.iter().any(|o| {
         o.secs.iter().any(|s| {
-            s.name == ".note.gnu.property" && needed_bits(s.data, w) & NEEDED_INDIRECT_EXTERN_ACCESS != 0
+            s.name == ".note.gnu.property"
+                && needed_bits(s.data, w) & NEEDED_INDIRECT_EXTERN_ACCESS != 0
         })
     });
     let output_has = image.sections.iter().any(|s| {
         s.name == ".note.gnu.property"
-            && image.bytes(s.shdr.sh_addr, s.shdr.sh_size).is_some_and(|d| needed_bits(d, w) & NEEDED_INDIRECT_EXTERN_ACCESS != 0)
+            && image
+                .bytes(s.shdr.sh_addr, s.shdr.sh_size)
+                .is_some_and(|d| needed_bits(d, w) & NEEDED_INDIRECT_EXTERN_ACCESS != 0)
     });
     if input_has != output_has {
         v.push(fd(22, format!("GNU_PROPERTY_1_NEEDED_INDIRECT_EXTERN_ACCESS: an input has it {input_has}, the output {output_has} (D-112, W41)")));
@@ -1430,14 +1575,27 @@ pub(crate) fn static_checks(
     for r in &out.rels {
         if r.sym as usize >= out.syms.len() {
             v.push(
-                fd(25, format!("a dynamic record names .dynsym entry {}, past the table's {} entries", r.sym, out.syms.len()))
-                    .at(r.offset),
+                fd(
+                    25,
+                    format!(
+                        "a dynamic record names .dynsym entry {}, past the table's {} entries",
+                        r.sym,
+                        out.syms.len()
+                    ),
+                )
+                .at(r.offset),
             );
             continue;
         }
         if r.sym == 0 {
             if !sym0_allowed(m, r.ty, format) {
-                v.push(fd(25, format!("a dynamic record of type {} with r_sym 0 (P-D25's kinds)", r.ty)).at(r.offset));
+                v.push(
+                    fd(
+                        25,
+                        format!("a dynamic record of type {} with r_sym 0 (P-D25's kinds)", r.ty),
+                    )
+                    .at(r.offset),
+                );
             }
             continue;
         }
@@ -1448,9 +1606,19 @@ pub(crate) fn static_checks(
         // (GNU ld's form; view B checks the value).
         let own = format != Format::Mortar
             && ((dt_sym || df_sym) && sl.df_symbolic()
-                || sets.exports.get(&n).is_some_and(|es| es.iter().all(|e| e.vis == STV_PROTECTED)));
+                || sets
+                    .exports
+                    .get(&n)
+                    .is_some_and(|es| es.iter().all(|e| e.vis == STV_PROTECTED)));
         if (sets.bound(&n) || sets.local.contains(&n)) && !own {
-            let mut f = fd(25, format!("a dynamic record (type {}) names '{n}', which the line binds (D-112)", r.ty)).at(r.offset);
+            let mut f = fd(
+                25,
+                format!(
+                    "a dynamic record (type {}) names '{n}', which the line binds (D-112)",
+                    r.ty
+                ),
+            )
+            .at(r.offset);
             f.symbol = Some(n);
             v.push(f);
         }
@@ -1459,15 +1627,21 @@ pub(crate) fn static_checks(
     // `DF_STATIC_TLS` iff an IE slot exists.
     if format == Format::Mortar {
         for r in out.rels.iter().filter(|r| r.plt && kind(m, r.ty) == Kind::TlsDesc) {
-            v.push(fd(26, "a TLSDESC record in DT_JMPREL (D-119: eager, in .rela.dyn)").at(r.offset));
+            v.push(
+                fd(26, "a TLSDESC record in DT_JMPREL (D-119: eager, in .rela.dyn)").at(r.offset),
+            );
         }
     }
     let ie = out.rels.iter().any(|r| kind(m, r.ty) == Kind::TpOff);
-    let static_tls = out.get(crate::dynout::DT_FLAGS).is_some_and(|f| f & crate::dynout::DF_STATIC_TLS != 0);
+    let static_tls =
+        out.get(crate::dynout::DT_FLAGS).is_some_and(|f| f & crate::dynout::DF_STATIC_TLS != 0);
     // GNU ld on AArch64 never sets it (dyn.md's reference table, D-119).
     let gnu_a64 = format == Format::Gnu && m == mortar_elf::consts::EM_AARCH64;
     if ie != static_tls && !(gnu_a64 && !static_tls) {
-        v.push(fd(26, format!("DF_STATIC_TLS {static_tls}; an initial-exec slot exists {ie} (D-119)")));
+        v.push(fd(
+            26,
+            format!("DF_STATIC_TLS {static_tls}; an initial-exec slot exists {ie} (D-119)"),
+        ));
     }
     v
 }
@@ -1493,7 +1667,13 @@ pub(crate) fn relaxed(cov: &crate::report::Coverage) -> Option<Finding> {
         .map(|(r, k)| format!("{r:?} x{k}"))
         .collect();
     (!n.is_empty()).then(|| {
-        fd(26, format!("TLS sequences relaxed in a shared object ({}): D-119 keeps the input's model", n.join(", ")))
+        fd(
+            26,
+            format!(
+                "TLS sequences relaxed in a shared object ({}): D-119 keeps the input's model",
+                n.join(", ")
+            ),
+        )
     })
 }
 
@@ -1560,9 +1740,9 @@ pub(crate) fn filter_dyncheck(v: &mut Vec<Finding>, image: &Image<'_>, out: &Dyn
             Rule::Dyn(7) => !m.contains("is not exported (D-12, W8)"),
             Rule::Dyn(8) => {
                 !(m.contains("names no Vernaux")
-                    && f.symbol.as_ref().is_some_and(|n| {
-                        out.syms.iter().any(|s| &s.name == n && s.defined())
-                    }))
+                    && f.symbol
+                        .as_ref()
+                        .is_some_and(|n| out.syms.iter().any(|s| &s.name == n && s.defined())))
             }
             _ => true,
         }
@@ -1668,7 +1848,8 @@ pub(crate) fn tell_engine(
         if x.tls {
             e.dyn_tls.insert(k.clone());
             e.dyn_tls_mod.insert(k.clone(), 2 + INTERPOSER as u64);
-            e.dynbind.insert(k.clone(), tls_fake(tls_start, INTERPOSER, x.addr - lib_base(INTERPOSER)));
+            e.dynbind
+                .insert(k.clone(), tls_fake(tls_start, INTERPOSER, x.addr - lib_base(INTERPOSER)));
         } else {
             e.dyn_tls.remove(k);
             e.dyn_tls_mod.remove(k);
@@ -1728,10 +1909,9 @@ mod tests {
     // last glob global, glob local, star global, star local, base.
     #[test]
     fn s9_7_the_decision() {
-        let s = script(
-            "V1 { global: foo; f*; local: bar; b*; }; V2 { global: fa*; local: *; } V1;",
-        )
-        .unwrap();
+        let s =
+            script("V1 { global: foo; f*; local: bar; b*; }; V2 { global: fa*; local: *; } V1;")
+                .unwrap();
         assert_eq!(s.decide("foo"), Decision::Node(0));
         assert_eq!(s.decide("bar"), Decision::Local);
         assert_eq!(s.decide("fab"), Decision::Node(1), "the last node with a glob match");
@@ -1765,9 +1945,15 @@ mod tests {
             script("V1 { global: foo; }; V2 { local: foo; };"),
             Err(ScriptError::Refused(_))
         ));
-        assert!(matches!(script("V1 { global: a; }; V1 { global: b; };"), Err(ScriptError::Syntax(_))));
+        assert!(matches!(
+            script("V1 { global: a; }; V1 { global: b; };"),
+            Err(ScriptError::Syntax(_))
+        ));
         assert!(matches!(script("V2 { global: a; } V1;"), Err(ScriptError::Syntax(_))));
-        assert!(matches!(script("{ global: a; }; V1 { global: b; };"), Err(ScriptError::Syntax(_))));
+        assert!(matches!(
+            script("{ global: a; }; V1 { global: b; };"),
+            Err(ScriptError::Syntax(_))
+        ));
         assert!(matches!(script("V1 { global: a; }; // c"), Err(ScriptError::Syntax(_))));
         let s = script("# c\nV1 { /* c */ global: extern \"C\" { a; }; b; };").unwrap();
         assert_eq!(s.decide("a"), Decision::Node(0));
@@ -1793,7 +1979,8 @@ mod tests {
         assert!(!line_preempts(&sl, None, STT_FUNC, "f", Format::Mortar));
         assert!(line_preempts(&sl, None, STT_NOTYPE, "f", Format::Mortar));
         assert!(!line_preempts(&sl, None, STT_NOTYPE, "f", Format::Gnu));
-        for w in ["--dynamic-list-data", "-Bsymbolic-non-weak-functions", "--dynamic-list-cpp-new"] {
+        for w in ["--dynamic-list-data", "-Bsymbolic-non-weak-functions", "--dynamic-list-cpp-new"]
+        {
             assert!(!SharedLine::read(&words(&["-shared", w])).outside.is_empty(), "{w}");
         }
     }

@@ -710,7 +710,11 @@ impl Engine<'_, '_> {
         let machine = self.objs[oi].elf.machine();
         let others: Vec<(u64, u64)> = recs
             .iter()
-            .filter(|r| r.off != lead.off && r.off + 8 > lead.off.saturating_sub(before) && r.off < lead.off + 4 + after)
+            .filter(|r| {
+                r.off != lead.off
+                    && r.off + 8 > lead.off.saturating_sub(before)
+                    && r.off < lead.off + 4 + after
+            })
             .map(|r| (r.off, r.off + u64::from(crate::reloc::width(machine, r.def.r_type))))
             .collect();
         let kept = |o: &[u8], i: &[u8]| {

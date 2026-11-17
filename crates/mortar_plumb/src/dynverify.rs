@@ -224,9 +224,9 @@ pub fn verify_with(output: &[u8], inputs: &[Input<'_>], map: &Map, ctx: &Ctx<'_>
     if let (Some(sl), Some(s)) = (&shared.line, &sets) {
         // §12.5: P-D16's changes to the executable rules, then P-D19-P-D26.
         crate::shared::filter_dyncheck(&mut checked, &image, &dout);
-        report.findings.extend(crate::shared::static_checks(
-            &image, &dout, &objs, sl, s, &args, map.format,
-        ));
+        report
+            .findings
+            .extend(crate::shared::static_checks(&image, &dout, &objs, sl, s, &args, map.format));
     }
     report.findings.extend(checked);
     // View 1: bias 0.
@@ -235,10 +235,15 @@ pub fn verify_with(output: &[u8], inputs: &[Input<'_>], map: &Map, ctx: &Ctx<'_>
     let ifr = sets.as_ref().map(crate::shared::ifunc_results).unwrap_or_default();
     let p1 = Params { interpose: ifr.clone(), ..Params::default() };
     let v1 = loader::apply(&image, &dout, &ld, &p1, true);
-    report.findings.extend(v1.findings.iter().filter(|f| {
-        // P-D20 names a `Shared` output's text relocation.
-        sets.is_none() || !f.message.contains("a text relocation (D-47, W6)")
-    }).cloned());
+    report.findings.extend(
+        v1.findings
+            .iter()
+            .filter(|f| {
+                // P-D20 names a `Shared` output's text relocation.
+                sets.is_none() || !f.message.contains("a text relocation (D-47, W6)")
+            })
+            .cloned(),
+    );
     let Ok(img1) = Image::read(&v1.bytes) else {
         report.sort();
         return report;
@@ -370,7 +375,9 @@ pub fn verify_with(output: &[u8], inputs: &[Input<'_>], map: &Map, ctx: &Ctx<'_>
     if let Some(s) = &sets {
         // §12.5: view B, the interposer, in place of view 3.
         let symbolic = dout.has(crate::shared::DT_SYMBOLIC)
-            || dout.get(crate::dynout::DT_FLAGS).is_some_and(|f| f & crate::shared::DF_SYMBOLIC != 0);
+            || dout
+                .get(crate::dynout::DT_FLAGS)
+                .is_some_and(|f| f & crate::shared::DF_SYMBOLIC != 0);
         let pb = Params { interpose: crate::shared::interposer(s), symbolic, ..Params::default() };
         let vb = loader::apply(&image, &dout, &ld, &pb, false);
         if let Ok(imgb) = Image::read(&vb.bytes) {

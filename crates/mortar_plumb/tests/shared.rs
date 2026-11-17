@@ -269,7 +269,7 @@ fn build() -> Option<Corpus> {
             std::fs::copy(root.join(f), d.join(f)).unwrap();
         }
         b.so(arch, &d, "dep.c", "libdep.so", "libdep.so");
-        b.obj(arch, &d, "lib.c", &["-O1", "-fPIC"], "lib.o");
+        b.obj(arch, &d, "lib.c", &["-O1", "-g", "-fPIC"], "lib.o");
         for (form, extra) in FORMS {
             for linker in Linker::ALL {
                 let mut args = vec!["-shared", "-Wl,-soname,libx.so", "lib.o", "libdep.so"];
@@ -281,7 +281,7 @@ fn build() -> Option<Corpus> {
     }
     for arch in [Arch::A64, Arch::X64] {
         let d = b.dir(arch, "more");
-        b.obj(arch, &d, "more.c", &["-O1", "-fPIC"], "more.o");
+        b.obj(arch, &d, "more.c", &["-O1", "-g", "-fPIC"], "more.o");
         b.obj(arch, &d, "ar.c", &["-O1", "-fPIC"], "ar.o");
         let ar = b.t.ar.clone();
         must(&d, &ar, &["rc", "libar.a", "ar.o"]);
@@ -382,7 +382,8 @@ fn pt_dynamic(b: &[u8]) -> usize {
 
 /// The file range of the section named `name` (ELF64).
 fn section(b: &[u8], name: &str) -> (usize, usize) {
-    let (off, ent, n, str_i) = (u64at(b, 0x28) as usize, u16at(b, 0x3a), u16at(b, 0x3c), u16at(b, 0x3e));
+    let (off, ent, n, str_i) =
+        (u64at(b, 0x28) as usize, u16at(b, 0x3a), u16at(b, 0x3c), u16at(b, 0x3e));
     let strs = u64at(b, off + str_i * ent + 24) as usize;
     (0..n)
         .map(|i| off + i * ent)
@@ -398,7 +399,9 @@ fn section(b: &[u8], name: &str) -> (usize, usize) {
 /// by name (WP-121's brief).
 fn hostile(edit: impl Fn(&mut Vec<u8>), want: &str) {
     let Some(c) = corpus() else { return };
-    for o in c.outs.iter().filter(|o| o.case == "forms" && o.link.output.ends_with("libx-plain.so.bfd")) {
+    for o in
+        c.outs.iter().filter(|o| o.case == "forms" && o.link.output.ends_with("libx-plain.so.bfd"))
+    {
         let mut b = o.link.output_bytes();
         edit(&mut b);
         let r = o.verify_bytes(&b);
