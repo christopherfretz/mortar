@@ -1311,8 +1311,7 @@ pub(crate) fn compute(
         // discarded group) is `Absent`, no place: the kept copy is the
         // definition, wherever it stands in object order (WP-147b).
         let with_place: Vec<&D> = ds.iter().filter(|d| !d.placeless).collect();
-        let pool: Vec<&D> =
-            if with_place.is_empty() { ds.iter().collect() } else { with_place };
+        let pool: Vec<&D> = if with_place.is_empty() { ds.iter().collect() } else { with_place };
         let d = pool
             .iter()
             .find(|d| d.strong)
