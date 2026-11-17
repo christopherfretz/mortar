@@ -1425,7 +1425,14 @@ What resolution marks for `.dynsym` (M2 executables; M4 shared output):
   **linker-defined key of file 0**
   (§8: `__bss_start`, `_edata`, `_end`, …) is exported only when
   `ref_dynamic`, never by `--export-dynamic` or a glob alone
-  (`spec/dyn.md` D-21 item 2; lld and mold; GNU ld exports them). The
+  (`spec/dyn.md` D-21 item 2; lld and mold; GNU ld exports them);
+  except the seven names GNU ld and lld both define (`_etext`, `etext`,
+  `_edata`, `edata`, `__bss_start`, `_end`, `end`), which are exported
+  as an ordinary definition of the program is: also when a needed
+  shared object defines the name (`defined_dynamic`), and, once an
+  object references the name, by `--export-dynamic`,
+  `--export-dynamic-symbol` or `--dynamic-list` (`spec/dyn.md` D-21
+  item 2 as WP-150 amended it; the normative text is there). The
   rule is the same with no shared object on the line (`ref_dynamic` and
   `defined_dynamic` are then empty): `--export-dynamic` and
   `--export-dynamic-symbol` export from an executable of objects alone
@@ -1436,9 +1443,10 @@ What resolution marks for `.dynsym` (M2 executables; M4 shared output):
   `STB_GNU_UNIQUE` ones included, not made local by a version script
   (§9.7) or by `--exclude-libs` (defined by a member of a named archive,
   or of every archive for `ALL`). A linker-defined key of file 0 is
-  exported only when `ref_dynamic`, as from an executable (no reference
-  exports `_end`, `_edata`, `__bss_start` from a shared object, WP-110),
-  except `__start_NAME`/`__stop_NAME` of a kept C-identifier section,
+  exported only when `ref_dynamic`, as from an executable, except the
+  seven names above when a live object references them (exported
+  `STV_DEFAULT`, preemptible by D-112; GNU ld and lld, WP-150) and
+  `__start_NAME`/`__stop_NAME` of a kept C-identifier section,
   exported `STV_PROTECTED` (GNU ld and lld; `spec/dyn.md` D-110 item 2). `--export-dynamic`,
   `--export-dynamic-symbol` and the `-Bsymbolic` variants change nothing
   in the export set; `--dynamic-list` changes preemption only.

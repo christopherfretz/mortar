@@ -1188,14 +1188,19 @@ from it:
 - **L-100 [C] [M4; planned: WP-117]** (shared-object output is M4,
   `spec/dyn.md` Q8) A linker-defined symbol is exported from a shared
   object only when `ref_dynamic`, as from an executable (D-21 item 2,
-  D-110 item 2): no reference exports `_end`, `_edata` or
-  `__bss_start` from a `-shared` link (WP-110 [X-A] A1). The one
-  exception: `__start_NAME` and `__stop_NAME` of a C-identifier output
+  D-110 item 2), with two exceptions. The seven names GNU ld and lld
+  both define (`_etext`, `etext`, `_edata`, `edata`, `__bss_start`,
+  `_end`, `end`) are exported `STB_GLOBAL STT_NOTYPE STV_DEFAULT` when
+  a live object references them, preemptible by D-112 (GNU ld and lld;
+  D-110 item 2 as WP-150 amended it: WP-110's [X-A] A1 was measured
+  without a reference); unreferenced, none is defined and none
+  exported. `__start_NAME` and `__stop_NAME` of a C-identifier output
   section that a live object references are exported `STB_GLOBAL
   STT_NOTYPE STV_PROTECTED` (GNU ld and lld; D-110 item 2), and are
   never preempted. `_DYNAMIC` is hidden (D-32). (Until WP-115 this rule
   said `_end`, `_edata` and `__bss_start` were exported
-  `STB_GLOBAL STV_DEFAULT` when defined; request R-L10 withdrew it.)
+  `STB_GLOBAL STV_DEFAULT` when defined; request R-L10 withdrew it;
+  WP-150 restored it for the seven names when referenced.)
 - **L-101 [C]** `_GLOBAL_OFFSET_TABLE_` is tied to the `GOT_BASE`
   demand: a reference to the symbol demands `GOT_BASE` (`spec/arch.md`),
   and so does a definition of the symbol in an input's symbol table, as a
