@@ -1,0 +1,38 @@
+# dyn.md D-124 (WP-123): with --gc-sections the roots of a shared
+# object are its exported definitions (item 1), the start-up tables
+# (item 3), a C-identifier section reached by `__start_`/`__stop_` from
+# live code (item 4) and SHF_GNU_RETAIN sections (item 5); a hidden
+# function nothing reaches is collected (its undefined reference:
+# `shared-gc-undefined`). Item 2 (`-init`/`-fini`) waits for
+# WP-128 (refused in a shared object).
+#@ spec: dyn.md "D-124"
+#@ arch: aarch64 x86_64
+#@ xfail(mortar,x86_64): M4: WP-127 (x86-64 shared objects; dyn.md D-100)
+#@ xfail(lld): dyn.md D-124 item 4: lld leaves `__stop_gcset` undefined in the library, and a host link refuses it (W23's kin)
+
+cc -O1 -fPIC -ffunction-sections -fdata-sections lib.c -o lib.o
+cc -O1 -fPIE main.c -o main.o
+link gcc -shared lib.o -Wl,--gc-sections -o libgc.so
+check readelf -sW libgc.so
+  not: hidden_unused
+  has: kept_retain$
+  has: exported$
+host gcc -pie main.o -L. -lgc -o prog
+run prog
+  stdout: ctor
+  stdout: 7 1
+
+#--- lib.c
+#include <stdio.h>
+__attribute__((visibility("hidden"))) int hidden_unused(void) { return 99; }
+int exported(void) { return 7; }
+__attribute__((constructor)) static void ctor(void) { puts("ctor"); }
+__attribute__((section("gcset"), used)) static const int g1 = 5;
+extern const int __start_gcset[], __stop_gcset[];
+int set_count(void) { return (int)(__stop_gcset - __start_gcset); }
+__attribute__((visibility("hidden"), retain)) int kept_retain(void) { return 3; }
+#--- main.c
+#include <stdio.h>
+int exported(void);
+int set_count(void);
+int main(void) { printf("%d %d\n", exported(), set_count()); return 0; }

@@ -4,9 +4,8 @@
 # `--dynamic-list`, `--exclude-libs`, `-init`, `-fini`, `-z nodelete`,
 # `nodlopen`, `initfirst`, `interpose`, `origin`), and keep their status in
 # an executable (`-Bsymbolic` `noop`, `-init`/`-fini` `supported`). Every
-# reference links each line. `-shared` itself is refused until WP-123
-# joins shared-object output, with the status text of the WP-110 record's
-# §G.4. lld's `-Bsymbolic` executable is left out: it writes DF_SYMBOLIC,
+# reference links each line (mortar's own `-shared` links are the first
+# target's tests, `dyn/shared/*`, since WP-123). lld's `-Bsymbolic` executable is left out: it writes DF_SYMBOLIC,
 # which the verifier judges (WP-112 finding V2, as `shlib/bsymbolic.test`).
 #@ spec: cli.md "§4.2"
 #@ arch: aarch64 x86_64
@@ -14,10 +13,6 @@
 cc -O1 -fPIC lib.c -o lib.o
 cc -O1 -fPIE main.c -o main.o
 link(bfd,lld,mold) gcc -shared lib.o -Wl,-Bsymbolic -Wl,-init,lib_init -Wl,-fini,lib_fini -Wl,-z,nodelete -Wl,-z,nodlopen -Wl,-z,initfirst -Wl,-z,interpose -Wl,-z,origin -Wl,--exclude-libs,ALL -o lib.so
-link(mortar) gcc -shared lib.o -o lib.so
-  exit: fail
-  diag(mortar): unsupported option: -shared
-  diag(mortar): shared-object output is not joined to the link until WP-123
 link(mortar) gcc -shared lib.o -Wl,-Bsymbolic -o lib.so
   exit: fail
   diag(mortar): unsupported option: -Bsymbolic

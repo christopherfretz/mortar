@@ -90,12 +90,17 @@ fn shared_pic_before_start() {
 
     // Clang's `-O0` object reaches `gcount` through `.data + 0x18` and a
     // `sub #8` in a register: no relocation names the address, so the
-    // rule links it; WP-119's analysis refuses it (D-117's table, the
-    // Clang row). When the analysis is wired this assertion becomes a
-    // refusal with both notes.
+    // rule alone would link it; WP-119's analysis, joined by WP-123,
+    // refuses it (D-117's table, the Clang row) with both notes.
     if clang(dir.path(), "k0.o", BEFORE_START, &["-O0", "-fPIC"]).is_some() {
         let l = shared(dir.path(), &["k0.o"], &[]);
-        assert!(non_pic(&l).is_empty(), "the rule alone: {}", l.rendered());
+        let refused = non_pic(&l);
+        assert!(!refused.is_empty(), "the analysis: {}", l.rendered());
+        for text in &refused {
+            assert!(text.contains("against symbol `gcount' which may bind externally"), "{text}");
+            assert!(text.contains("-fdata-sections"), "{text}");
+            assert!(text.contains("do not form an address before an object"), "{text}");
+        }
     }
 }
 

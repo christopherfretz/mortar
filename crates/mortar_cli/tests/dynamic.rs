@@ -385,7 +385,7 @@ fn m2_refusals_keep_their_names() {
         (&["-m", "aarch64linux", "-z", "pac-plt"], "-z pac-plt"),
         (&["-m", "elf_x86_64", "-z", "ibtplt"], "-z ibtplt"),
         (&["-m", "elf_x86_64", "-z", "ibt"], "-z ibt"),
-        (&["-shared"], "-shared"),
+        // `-shared` links since WP-123; `-soname` outside it stays refused.
         (&["-soname", "libx.so.1"], "-soname"),
         (&["--pack-dyn-relocs=relr"], "--pack-dyn-relocs"),
         (&["-z", "pack-relative-relocs"], "-z pack-relative-relocs"),

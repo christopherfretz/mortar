@@ -194,6 +194,10 @@ pub struct CheckContext<'t, 'n> {
     pub liveness: &'t Liveness,
     pub demands: &'t Demands,
     pub shapes: &'t dyn SectionShapes,
+    /// The output is a shared object (`spec/dyn.md` D-111): `.dynsym`
+    /// also holds every undefined key a live relocatable object
+    /// references, and has no copy alias (D-122).
+    pub shared: bool,
 }
 
 impl std::fmt::Debug for CheckContext<'_, '_> {
@@ -813,6 +817,8 @@ impl<'a, 't, 'n> Checker<'a, 't, 'n> {
         let res = cx.resolution;
         let export = |k: SymbolId| cx.demands.of(SymKey::global(k)).contains(DemandFlags::EXPORT);
         let copied = |k: SymbolId| slots.copy_of.binary_search_by_key(&k, |row| row.0).is_ok();
+        // D-111 items 2 and 3: in a shared object `weak_dyn` is the scan's
+        // set of undefined keys (strong or weak) a live section names.
         let required = |k: SymbolId| {
             res.imported.contains(k)
                 || res.exported.contains(k)
@@ -821,7 +827,7 @@ impl<'a, 't, 'n> Checker<'a, 't, 'n> {
                 || copied(k)
         };
         let alias = |k: SymbolId| {
-            res.bind(k).is_some_and(|e| slots.copies.iter().any(|c| c.file == e.file))
+            !cx.shared && res.bind(k).is_some_and(|e| slots.copies.iter().any(|c| c.file == e.file))
         };
         for &k in dynsym {
             need(

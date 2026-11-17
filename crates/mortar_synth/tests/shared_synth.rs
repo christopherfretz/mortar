@@ -177,7 +177,8 @@ enum Spec {
     /// A definition here: `st_info`, `st_other`, size; exported or not
     /// (hidden), preemptible or not (protected).
     Def { info: u8, other: u8, size: u64, exported: bool, preemptible: bool },
-    /// Undefined: weak or strong; referenced from a live object or not.
+    /// Undefined: weak or strong; referenced from a live object or not
+    /// (the scan's D-111 set, `Demands::weak_dyn` in a shared object).
     Undef { weak: bool, live: bool },
     /// Defined in needed file 1 and referenced (an import).
     Import { info: u8 },
@@ -218,6 +219,7 @@ impl Fx {
                     let mut r = if weak { RefFlags::empty() } else { RefFlags::STRONG };
                     if live {
                         r |= RefFlags::FROM_OBJECT;
+                        demands.weak_dyn.insert(k);
                     }
                     (Def::Undefined { weak }, r)
                 }

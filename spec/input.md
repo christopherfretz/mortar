@@ -849,6 +849,11 @@ executable (`Executable`, `PieExecutable`; a static kind loads no shared
 object, §8.4), when it
 is a shared object and `--no-allow-shlib-undefined` is in effect. It is
 never loaded for `-r`. The decision is a function of the `Plan` only.
+In a shared object whose closure is not loaded, the edges of the walk's
+shared objects are still recorded, in the order below, and nothing is
+searched: an edge is satisfied by a loaded shared object with soname `N`,
+otherwise it is unsatisfied (`spec/dyn.md` D-11 item 3 reads them;
+WP-123).
 
 **Of what.** The closure of *every* shared object the walk loaded,
 including those mentioned under `--as-needed` that resolution will later

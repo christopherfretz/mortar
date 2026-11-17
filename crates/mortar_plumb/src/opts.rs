@@ -22,6 +22,7 @@
 /// cli.md §2.4); `Z <keyword> <value>` for a `-z` keyword.
 pub const ACCEPTED: &str = "\
 R Next gnu -o --output
+R No gnu -shared --Bshareable
 R No gnu -pie --pic-executable
 R No gnu -no-pie --no-pic-executable
 R Next gnu -m
@@ -71,6 +72,7 @@ R No gnu --no-export-dynamic
 R No gnu -Bsymbolic
 R No gnu -Bsymbolic-functions
 R No gnu -Bno-symbolic
+R Next gnu -h -soname
 R Next gnu -rpath
 R Next gnu -I --dynamic-linker
 R No gnu --no-dynamic-linker
@@ -154,7 +156,6 @@ R Next gnu --max-cache-size
 /// linker's output of a line mortar refused): whether such an option
 /// takes the next word is the table's, as for every row (WP-131, V6).
 pub const REFUSED: &str = "\
-R No gnu -shared --Bshareable
 R No gnu -r -i --relocatable
 R Next gnu --oformat
 R No gnu -Ur
@@ -263,7 +264,6 @@ R No - --no-gnu-unique
 R Next gnu --task-link
 R No - --Bsymbolic-non-weak
 R No - --Bsymbolic-non-weak-functions
-R Next gnu -h -soname
 R Next - --pack-dyn-relocs
 R Next gnu -f --auxiliary
 R Next gnu -F --filter

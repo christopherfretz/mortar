@@ -1,0 +1,61 @@
+# Record WP-110 §D "Where the refusal stays" (WP-123): what a `-shared`
+# line may ask for outside the first target is refused by name; the
+# references link each line. TLS (`TLS in a shared object`) and the
+# library's own IFUNC (`IFUNC in a shared object`) until WP-124 (an
+# IFUNC the C library defines is an import: `z-now`); `.symver`
+# definitions until WP-125 (`--version-script`: `refused-shared-later`);
+# `--dynamic-list` until WP-128; `--incremental` with `-shared` is
+# IN-12a's warning and a plain link writing no state, and
+# `--incremental=update` its error. The references do not link the
+# IFUNC line: mold binds a preemptible IFUNC locally (`bl sel$pltgot`,
+# design W20; the verifier's P-D17), which a whole test's `xfail(mold)`
+# would hide everywhere else.
+#@ spec: dyn.md "D-100"; incr.md "IN-12a"
+#@ arch: aarch64
+
+cc -O1 -fPIC tls.c -o tls.o
+cc -O1 -fPIC ifunc.c -o ifunc.o
+cc -O1 -fPIC sv.c -o sv.o
+cc -O1 -fPIC lib.c -o lib.o
+link(bfd,lld,mold) gcc -shared tls.o -o libtls.so
+link(mortar) gcc -shared tls.o -o libtls.so
+  exit: fail
+  diag: unsupported feature: TLS in a shared object
+link(mortar) gcc -shared ifunc.o -o libifunc.so
+  exit: fail
+  diag: unsupported feature: IFUNC in a shared object
+link(bfd,lld,mold) gcc -shared sv.o -Wl,--version-script,sv.map -o libsv.so
+link(mortar) gcc -shared sv.o -o libsv.so
+  exit: fail
+  diag: versioned definition foo@@V2 cannot be exported
+link(bfd,lld,mold) gcc -shared lib.o -Wl,--dynamic-list,dl.txt -o libdl.so
+link(mortar) gcc -shared lib.o -Wl,--dynamic-list,dl.txt -o libdl.so
+  exit: fail
+  diag: unsupported option: --dynamic-list
+  diag: --dynamic-list in a shared object is WP-128's
+link(mortar) gcc -shared lib.o -Wl,--incremental -o libinc.so
+  diag: --incremental is not supported with -shared; linking without a state
+link(mortar) gcc -shared lib.o -Wl,--incremental=update -o libinc2.so
+  exit: fail
+  diag: --incremental=update: cannot update: incremental-unsupported (-shared)
+
+#--- tls.c
+__thread int t = 1;
+int get_t(void) { return t; }
+#--- ifunc.c
+static int one(void) { return 1; }
+static int (*pick(void))(void) { return one; }
+int sel(void) __attribute__((ifunc("pick")));
+int call_sel(void) { return sel(); }
+#--- sv.c
+__asm__(".symver foo_v1, foo@V1");
+__asm__(".symver foo_v2, foo@@V2");
+int foo_v1(void) { return 1; }
+int foo_v2(void) { return 2; }
+#--- sv.map
+V1 { global: foo; local: *; };
+V2 { global: foo; } V1;
+#--- dl.txt
+{ lib_get; };
+#--- lib.c
+int lib_get(void) { return 1; }

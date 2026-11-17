@@ -1,0 +1,32 @@
+# dyn.md D-103 (WP-123): `-z now` in a shared object writes DT_FLAGS
+# BIND_NOW and DT_FLAGS_1 NOW (no PIE bit), and the library's PLT calls
+# still run; `strlen` is an IFUNC of the C library, which the library
+# imports like any function (the refusal of IFUNC in a shared object is
+# of the library's own, D-121, WP-124).
+#@ spec: dyn.md "D-103"
+#@ arch: aarch64 x86_64
+#@ xfail(mortar,x86_64): M4: WP-127 (x86-64 shared objects; dyn.md D-100)
+
+cc -O1 -fPIC lib.c -o lib.o
+cc -O1 -fPIE main.c -o main.o
+link gcc -shared lib.o -Wl,-z,now -o libnow.so
+check readelf -dW libnow.so
+  has: (FLAGS) BIND_NOW
+  has: (FLAGS_1) Flags: NOW
+  not: PIE
+link gcc -shared lib.o -o liblazy.so
+check readelf -dW liblazy.so
+  not: (FLAGS)
+  not: (FLAGS_1)
+host gcc -pie main.o -L. -lnow -o prog
+run prog
+  stdout: now 4
+
+#--- lib.c
+#include <stdio.h>
+#include <string.h>
+int len(const char *s) { printf("%s ", s); return (int)strlen(s) + 1; }
+#--- main.c
+#include <stdio.h>
+int len(const char *);
+int main(void) { printf("%d\n", len("now")); return 0; }

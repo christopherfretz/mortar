@@ -1,0 +1,35 @@
+# dyn.md D-124, D-118, D-111 (WP-123): under --gc-sections an undefined
+# reference only from a collected section is not reported by `-z defs`
+# (all three references) and gives no .dynsym entry (D-111: GNU ld, lld,
+# and mold under `-z defs`; mold without it keeps the entry, whatever the
+# collection); a host links against the library and runs. The second
+# library is the same line without `-z defs` (WP-123 finding F2: mortar
+# kept the entry, and a mortar host refused the library).
+#@ spec: dyn.md "D-124"
+#@ arch: aarch64 x86_64
+#@ xfail(mortar,x86_64): M4: WP-127 (x86-64 shared objects; dyn.md D-100)
+#@ xfail(mold): D-111: without -z defs mold keeps an undefined key named only from a collected section in .dynsym, and a GNU ld host refuses the library (mortar host: the verifier anomaly A36)
+
+cc -O1 -fPIC -ffunction-sections -fdata-sections lib.c -o lib.o
+cc -O1 -fPIE main.c -o main.o
+link gcc -shared lib.o -Wl,--gc-sections -Wl,-z,defs -o libgu.so
+check(bfd,lld,mold,mortar) readelf -W --dyn-syms libgu.so
+  not: missing_fn
+link gcc -shared lib.o -Wl,--gc-sections -o libgn.so
+check(bfd,lld,mortar) readelf -W --dyn-syms libgn.so
+  not: missing_fn
+host gcc -pie main.o -L. -lgu -o prog
+run prog
+  stdout: 7
+host gcc -pie main.o -L. -lgn -o prog2
+run prog2
+  stdout: 7
+
+#--- lib.c
+int missing_fn(void);
+__attribute__((visibility("hidden"))) int hidden_unused(void) { return missing_fn(); }
+int exported(void) { return 7; }
+#--- main.c
+#include <stdio.h>
+int exported(void);
+int main(void) { printf("%d\n", exported()); return 0; }

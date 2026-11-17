@@ -1,0 +1,31 @@
+# dyn.md D-11, D-100 (WP-123): a library linked against another records
+# it as DT_NEEDED (its soname), and a host that links only the second
+# runs with both loaded; the second's call reaches the first.
+#@ spec: dyn.md "D-11"
+#@ arch: aarch64 x86_64
+#@ xfail(mortar,x86_64): M4: WP-127 (x86-64 shared objects; dyn.md D-100)
+
+cc -O1 -fPIC a.c -o a.o
+cc -O1 -fPIC b.c -o b.o
+cc -O1 -fPIE main.c -o main.o
+link gcc -shared a.o -Wl,-soname,liba.so -o liba.so
+link gcc -shared b.o -L. -la -Wl,-soname,libb.so -o libb.so
+check readelf -dW libb.so
+  has: (NEEDED) Shared library: [liba.so]
+  then: (NEEDED) Shared library: [libc.so.6]
+  count: 2 (NEEDED)
+host gcc -pie main.o -L. -lb -Wl,-rpath-link,. -o prog
+run prog
+  stdout: 40
+
+#--- a.c
+int a_val(void) { return 4; }
+#--- b.c
+#include <stdio.h>
+int a_val(void);
+int b_val(void) { return a_val() * 10; }
+void b_print(int v) { printf("%d\n", v); }
+#--- main.c
+int b_val(void);
+void b_print(int);
+int main(void) { b_print(b_val()); return 0; }

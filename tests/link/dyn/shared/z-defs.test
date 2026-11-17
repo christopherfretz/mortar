@@ -1,0 +1,32 @@
+# dyn.md D-118, D-111 (WP-123): an undefined reference of a shared
+# object is refused under `-z defs` (and `--no-undefined`); without them
+# the library links, the symbol is a GLOBAL NOTYPE UND entry of .dynsym,
+# and the loader resolves it from the host, which exports its definition
+# because a library on its line references it.
+#@ spec: dyn.md "D-118"
+#@ arch: aarch64 x86_64
+#@ xfail(mortar,x86_64): M4: WP-127 (x86-64 shared objects; dyn.md D-100)
+
+cc -O1 -fPIC lib.c -o lib.o
+cc -O1 -fPIE main.c -o main.o
+link(mortar) gcc -shared lib.o -Wl,-z,defs -o libzd.so
+  exit: fail
+  diag: undefined symbol: host_value
+link(mortar) gcc -shared lib.o -Wl,--no-undefined -o libzd.so
+  exit: fail
+  diag: undefined symbol: host_value
+link gcc -shared lib.o -o libund.so
+check readelf -W --dyn-syms libund.so
+  has: NOTYPE GLOBAL DEFAULT UND host_value$
+host gcc -pie main.o -L. -lund -o prog
+run prog
+  stdout: 42
+
+#--- lib.c
+int host_value(void);
+int lib_get(void) { return host_value() + 1; }
+#--- main.c
+#include <stdio.h>
+int lib_get(void);
+int host_value(void) { return 41; }
+int main(void) { printf("%d\n", lib_get()); return 0; }

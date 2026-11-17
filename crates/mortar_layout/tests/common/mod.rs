@@ -272,6 +272,7 @@ impl World {
             liveness: &self.liveness,
             demands: &demands,
             shapes: &shapes,
+            shared: false,
         };
         layout.validate(&cx)
     }

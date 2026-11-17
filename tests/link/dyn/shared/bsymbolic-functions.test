@@ -1,0 +1,47 @@
+# dyn.md D-112 (WP-123): `-Bsymbolic-functions` binds the library's
+# references to its own functions and leaves its data preemptible: under
+# an interposer of both `lib_fn` and `lib_data`, the library's `probe`
+# reads the interposer's data and calls its own function, while the
+# host's call reaches the interposer's function. Without the option both
+# are preempted; `-Bno-symbolic` after it undoes it (the last one wins).
+# GNU ld writes no DT_SYMBOLIC and no DF_SYMBOLIC for it.
+#@ spec: dyn.md "D-112"
+#@ arch: aarch64 x86_64
+#@ xfail(mortar,x86_64): M4: WP-127 (x86-64 shared objects; dyn.md D-100)
+
+cc -O1 -fPIC lib.c -o lib.o
+cc -O1 -fPIC pre.c -o pre.o
+cc -O1 -fPIE main.c -o main.o
+shlib gcc pre.o -o libpre.so
+link gcc -shared lib.o -Wl,-Bsymbolic-functions -o libsf.so
+check readelf -dW libsf.so
+  not: SYMBOLIC
+link gcc -shared lib.o -o libnf.so
+link gcc -shared lib.o -Wl,-Bsymbolic-functions -Wl,-Bno-symbolic -o libbn.so
+host gcc -pie main.o -L. -lsf -o prog-sf
+host gcc -pie main.o -L. -lnf -o prog-nf
+host gcc -pie main.o -L. -lbn -o prog-bn
+run prog-sf
+  stdout: 1001 10
+run prog-sf
+  env: LD_PRELOAD=./libpre.so
+  stdout: 1002 20
+run prog-nf
+  env: LD_PRELOAD=./libpre.so
+  stdout: 2002 20
+run prog-bn
+  env: LD_PRELOAD=./libpre.so
+  stdout: 2002 20
+
+#--- lib.c
+int lib_data = 1;
+int lib_fn(void) { return 10; }
+int probe(void) { return lib_fn() * 100 + lib_data; }
+#--- pre.c
+int lib_data = 2;
+int lib_fn(void) { return 20; }
+#--- main.c
+#include <stdio.h>
+int lib_fn(void);
+int probe(void);
+int main(void) { printf("%d %d\n", probe(), lib_fn()); return 0; }

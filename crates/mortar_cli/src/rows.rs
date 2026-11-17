@@ -28,11 +28,10 @@ const HASH_STYLE: &str =
     "dyn.md D-20: an executable gets .gnu.hash and no .hash; mortar writes =gnu";
 /// The reason of `--no-copy-dt-needed-entries` (`spec/dyn.md` D-15).
 const NO_COPY_DT_NEEDED: &str = "dyn.md D-15: the default; a library reached only through another's DT_NEEDED entries never defines a symbol of the link (D-12), and --copy-dt-needed-entries is refused";
-/// The reason of the `-Bsymbolic` rows: measured, GNU ld and mold write nothing for them
-/// in a PIE (lld writes `DF_SYMBOLIC` for `-Bsymbolic`).
-const SYMBOLIC: &str = "it binds a shared object's references to its own definitions; an executable's are bound locally already, and GNU ld writes nothing for it in an executable (shared objects as output are M4)";
-/// The reason of `--no-undefined` and `-z defs`.
-const DEFS: &str = "resolve.md §5: an undefined symbol of an executable's objects is an error already; the option only changes a shared object's link (shared objects as output are M4)";
+/// The reason of the `-Bsymbolic` row: measured, GNU ld and mold write nothing for it
+/// in a PIE (lld writes `DF_SYMBOLIC` for `-Bsymbolic`); in a shared object it is
+/// WP-128's (`SHARED_LATER`).
+const SYMBOLIC: &str = "it binds a shared object's references to its own definitions; an executable's are bound locally already, and GNU ld writes nothing for it in an executable (in a shared object it is refused until WP-128)";
 
 /// The reason of gold's `--detect-odr-violations` (`spec/odr.md` O-41):
 /// mortar's checks are on by default, and the option lowers nothing.
@@ -89,9 +88,6 @@ pub(crate) static REFUSED_NOTES: &[(&str, &str)] = &[
         "--debug-names",
         "gdb 16 ignores a .debug_names it did not write; use --gdb-index (spec/synth.md S-G9)",
     ),
-    // `spec/landed/dyn/WP-110.md` §G.4: the row's text, written by WP-117;
-    // the status reads `partial` once WP-123 joins the first target.
-    ("-shared", SHARED),
     // `spec/dyn.md` D-112 (`spec/cli.md` §4.2's M4 block): refused by name
     // in every kind, not planned.
     ("--Bsymbolic-non-weak", NON_WEAK),
@@ -101,10 +97,11 @@ pub(crate) static REFUSED_NOTES: &[(&str, &str)] = &[
     ("--dynamic-list-cpp-typeinfo", DYNAMIC_LIST_CPP),
 ];
 
-/// The `-shared` row's refusal (`spec/landed/dyn/WP-110.md` §G.4): its
-/// status once shared-object output is joined (WP-123), with what is not
-/// caught and what is refused although correct.
-const SHARED: &str = "shared-object output is not joined to the link until WP-123; then: partial: AArch64 (x86-64 and i386 refused, `feature`, until WP-127 and WP-130; TLS and IFUNC in a shared object until WP-124; version scripts until WP-125). Not caught (with every reference): non-PIC AArch64 code that reaches its own exported data only through a form dyn.md D-117's analysis does not follow (a spilled or reloaded base, a computed index, a 32-bit register, a value passed to a callee, code outside a sized function symbol, hand-written assembly; 3 of 306 measured bound definitions, every object refused for another use). Refused although correct: -fPIC code that forms an address before the start of a static object placed after exported data (`tab - 1`, GCC and Clang AArch64 -O0; dyn.md D-117; remedy -fdata-sections)";
+/// The `-shared` row's status (`spec/landed/dyn/WP-110.md` §G.4, written by
+/// WP-117; `partial` since WP-123 joined the first target): what is joined,
+/// what is not caught and what is refused although correct. A `partial`
+/// row with no refused value: its refusals are by name, in the link.
+pub(crate) const SHARED: &str = "AArch64 (x86-64 and i386 refused, `feature`, until WP-127 and WP-130; TLS and IFUNC in a shared object until WP-124; version scripts until WP-125). Not caught (with every reference): non-PIC AArch64 code that reaches its own exported data only through a form dyn.md D-117's analysis does not follow (a spilled or reloaded base, a computed index, a 32-bit register, a value passed to a callee, code outside a sized function symbol, hand-written assembly; 3 of 306 measured bound definitions, every object refused for another use). Refused although correct: -fPIC code that forms an address before the start of a static object placed after exported data (`tab - 1`, GCC and Clang AArch64 -O0; dyn.md D-117; remedy -fdata-sections)";
 /// `--Bsymbolic-non-weak` and `--Bsymbolic-non-weak-functions` (D-112).
 const NON_WEAK: &str = "dyn.md D-112: GNU ld does not know it (lld and mold do); use -Bsymbolic-functions, or a --dynamic-list";
 /// `--dynamic-list-data` (D-112).
@@ -112,6 +109,14 @@ const DYNAMIC_LIST_DATA: &str = "dyn.md D-112: the references disagree (GNU ld b
 /// `--dynamic-list-cpp-new` and `--dynamic-list-cpp-typeinfo` (D-112).
 const DYNAMIC_LIST_CPP: &str =
     "dyn.md D-112: GNU ld only (lld and mold refuse it); list the symbols in a --dynamic-list";
+
+/// The options whose effect exists only in a shared object (`spec/dyn.md`
+/// D-102, WP-123): supported in a link whose output kind is `Shared`;
+/// elsewhere each is refused by name (`Refused{Option, spelling}`) with
+/// this note (GNU ld writes `DT_SONAME` into an executable, mortar does not
+/// write it there).
+pub(crate) static SHARED_ONLY: &[(&str, &str)] =
+    &[("-h", "dyn.md D-102: mortar writes DT_SONAME in a shared object (-shared) only")];
 
 /// The options whose effect in a `Shared` link a later package implements
 /// (`spec/cli.md` §4.2's M4 block): in a link whose output kind is
@@ -135,7 +140,7 @@ pub(crate) static SHARED_LATER: &[(&str, &str)] = &[
 #[rustfmt::skip]
 pub(crate) static ROWS: &[Row] = &[
     r(&[s("o"), g("output")], Arg::Required(Values::Any), "FILE", GLM, &[], Group::Output, Supported, Lands::Output, "Write the output to FILE (default a.out)"),
-    r(&[g1("shared"), g("Bshareable")], Arg::None, "", GLM, &[], Group::Output, Refused, Lands::Kind(KindSet::Shared), "Produce a shared object"),
+    r(&[g1("shared"), g("Bshareable")], Arg::None, "", GLM, &[], Group::Output, Partial { refused: &[], note: SHARED }, Lands::Kind(KindSet::Shared), "Produce a shared object"),
     r(&[g1("pie"), g("pic-executable")], Arg::None, "", GLM, &[], Group::Output, Supported, Lands::Kind(KindSet::Pie), "Produce a position-independent executable"),
     r(&[g1("no-pie"), x("no-pic-executable")], Arg::None, "", GLM, &[], Group::Output, Supported, Lands::Kind(KindSet::NoPie), "Produce a position-dependent executable (default)"),
     r(&[s("r"), s("i"), g("relocatable")], Arg::None, "", GLM, &[], Group::Output, Refused, Lands::Kind(KindSet::Relocatable), "Produce a relocatable object"),
@@ -289,11 +294,11 @@ pub(crate) static ROWS: &[Row] = &[
     r(&[s("E"), g("export-dynamic")], Arg::None, "", GLM, &[], Group::Dynamic, Supported, Lands::ExportDynamic(true), "Export every symbol"),
     r(&[g("no-export-dynamic")], Arg::None, "", GLM, &[], Group::Dynamic, Supported, Lands::ExportDynamic(false), "Export only the symbols that need it (default)"),
     r(&[g1("Bsymbolic")], Arg::None, "", GLM, &[], Group::Dynamic, Noop(SYMBOLIC), Lands::Bsymbolic(Some(Bsymbolic::All)), "Bind references to global symbols locally"),
-    r(&[g1("Bsymbolic-functions")], Arg::None, "", GLM, &[], Group::Dynamic, Noop(SYMBOLIC), Lands::Bsymbolic(Some(Bsymbolic::Functions)), "Bind references to global functions locally"),
+    r(&[g1("Bsymbolic-functions")], Arg::None, "", GLM, &[], Group::Dynamic, Supported, Lands::Bsymbolic(Some(Bsymbolic::Functions)), "Bind references to global functions locally"),
     r(&[x("Bsymbolic-non-weak")], Arg::None, "", LM, &[], Group::Dynamic, Refused, Lands::Bsymbolic(Some(Bsymbolic::NonWeak)), "Bind references to non-weak globals locally"),
     r(&[x("Bsymbolic-non-weak-functions")], Arg::None, "", LM, &[], Group::Dynamic, Refused, Lands::Bsymbolic(Some(Bsymbolic::NonWeakFunctions)), "Bind references to non-weak global functions locally"),
-    r(&[g1("Bno-symbolic")], Arg::None, "", GLM, &[], Group::Dynamic, Noop(SYMBOLIC), Lands::Bsymbolic(None), "Undo -Bsymbolic (default)"),
-    r(&[s("h"), g1("soname")], Arg::Required(Values::Any), "NAME", GLM, &[], Group::Dynamic, Refused, Lands::Soname, "Record NAME as DT_SONAME"),
+    r(&[g1("Bno-symbolic")], Arg::None, "", GLM, &[], Group::Dynamic, Supported, Lands::Bsymbolic(None), "Undo -Bsymbolic (default)"),
+    r(&[s("h"), g1("soname")], Arg::Required(Values::Any), "NAME", GLM, &[], Group::Dynamic, Supported, Lands::Soname, "Record NAME as DT_SONAME"),
     r(&[g1("rpath")], Arg::Required(Values::Any), "DIR", GLM, &[], Group::Dynamic, Supported, Lands::Rpath, "Add DIR to the run-time search path"),
     r(&[s("I"), g("dynamic-linker")], Arg::Required(Values::Any), "FILE", GLM, &[], Group::Dynamic, Supported, Lands::DynamicLinker, "Use FILE as the program interpreter"),
     r(&[g("no-dynamic-linker")], Arg::None, "", GLM, &[], Group::Dynamic, Supported, Lands::NoDynamicLinker, "Write no program interpreter"),
@@ -344,7 +349,7 @@ pub(crate) static ROWS: &[Row] = &[
     r(&[s("w"), g("no-warnings")], Arg::None, "", GL, &[], Group::Diagnostics, Supported, Lands::NoWarnings, "Report no warnings"),
     r(&[x("color-diagnostics")], Arg::Optional(Values::Choice(&["auto", "always", "never"])), "WHEN", LM, &[], Group::Diagnostics, Supported, Lands::Color, "Color diagnostics: always (alone), auto (default) or never"),
     r(&[x("no-color-diagnostics")], Arg::None, "", L, &[], Group::Diagnostics, Supported, Lands::NoColor, "Do not color diagnostics"),
-    r(&[g("no-undefined")], Arg::None, "", GLM, &[], Group::Diagnostics, Noop(DEFS), Lands::NoUndefined, "Report undefined symbols even in a shared object"),
+    r(&[g("no-undefined")], Arg::None, "", GLM, &[], Group::Diagnostics, Supported, Lands::NoUndefined, "Report undefined symbols even in a shared object"),
     r(&[g("unresolved-symbols")], Arg::Required(Values::Choice(&["report-all", "ignore-all", "ignore-in-object-files", "ignore-in-shared-libs"])), "METHOD", GLM, &[], Group::Diagnostics, Refused, Lands::UnresolvedSymbols, "How to treat unresolved symbols"),
     r(&[g("warn-unresolved-symbols")], Arg::None, "", GLM, &[], Group::Diagnostics, Refused, Lands::WarnUnresolved(true), "Report unresolved symbols as warnings"),
     r(&[g("error-unresolved-symbols")], Arg::None, "", GLM, &[], Group::Diagnostics, Refused, Lands::WarnUnresolved(false), "Report unresolved symbols as errors (default)"),
@@ -526,7 +531,7 @@ pub(crate) static ROWS: &[Row] = &[
     r(&[z("notext"), z("textoff")], Arg::None, "", GLM, &[], Group::Z, Refused, Lands::Z(ZField::Text(false)), "Accept text relocations"),
     r(&[z("separate-code")], Arg::None, "", GLM, &[], Group::Z, Supported, Lands::Z(ZField::SeparateCode(true)), "Put code in segments of its own pages"),
     r(&[z("noseparate-code")], Arg::None, "", GLM, &[], Group::Z, Supported, Lands::Z(ZField::SeparateCode(false)), "Let code share pages with other data"),
-    r(&[z("defs")], Arg::None, "", GLM, &[], Group::Z, Noop(DEFS), Lands::Z(ZField::Defs(true)), "Report undefined symbols of object files"),
+    r(&[z("defs")], Arg::None, "", GLM, &[], Group::Z, Supported, Lands::Z(ZField::Defs(true)), "Report undefined symbols of object files"),
     r(&[z("undefs")], Arg::None, "", GLM, &[], Group::Z, Refused, Lands::Z(ZField::Defs(false)), "Accept undefined symbols in a shared object"),
     r(&[z("max-page-size")], Arg::Required(Values::Any), "SIZE", GLM, &[], Group::Z, Supported, Lands::Z(ZField::MaxPageSize), "The largest page size the output supports"),
     r(&[z("common-page-size")], Arg::Required(Values::Any), "SIZE", GLM, &[], Group::Z, Noop("layout.md L-75: the value is checked, and no layout rule reads it"), Lands::Z(ZField::CommonPageSize), "The common page size"),

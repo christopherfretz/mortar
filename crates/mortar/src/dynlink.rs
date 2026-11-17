@@ -27,7 +27,9 @@ use mortar_elf::{SymbolIndex, SymbolTable, Version, Versions};
 use mortar_scan::Walker;
 use mortar_scan::weak::SectionMap;
 use mortar_synth::copy::CopyPlan;
-use mortar_synth::dynamic::{DynKind, DynamicInputs, RunpathTag, init_key, join_rpath};
+use mortar_synth::dynamic::{
+    DynKind, DynamicInputs, RunpathTag, SharedDyn, init_key, join_rpath, shared_init_key,
+};
 use mortar_synth::dynstr::DynNames;
 use mortar_synth::dynsym::{DynSymSource, DynsymInputs, ProgramDef, SharedDef};
 use mortar_synth::symtab::SymDef;
@@ -205,6 +207,20 @@ pub struct DynTables {
     /// `.note.mason` (`spec/odr.md` O-50 to O-52), with `--odr-table`;
     /// filled by the front once `.dynsym`'s order is known.
     pub note_mason: Option<mortar_synth::NoteMasonPlan>,
+    /// A shared object's facts (`spec/dyn.md` D-102, D-116; plumb.md
+    /// §3.2): `Some` exactly when `kind` is `DynKind::Shared`.
+    pub shared: Option<SharedTables>,
+}
+
+/// What a shared object's image needs besides an executable's plans
+/// (`mortar_image::link::SharedPlans`, record `spec/landed/dyn/WP-118.md`
+/// §4 item 8).
+#[derive(Debug, Clone)]
+pub struct SharedTables {
+    /// The `-soname` string and its `.dynstr` offset (D-102, D-116).
+    pub soname: Option<(Vec<u8>, u32)>,
+    /// The map's shared-object line records (`map::SharedLine::of`).
+    pub line: mortar_image::map::SharedLine,
 }
 
 /// What [`plan`] reads.
@@ -274,6 +290,33 @@ fn init_fini(t: &PlanIn<'_, '_>) -> (Option<SymbolId>, Option<SymbolId>) {
     (init, fini)
 }
 
+/// The keys of `DT_INIT` and `DT_FINI` of a shared object (D-102,
+/// [`shared_init_key`]): a symbol `-init`/`-fini` names must be defined
+/// (`undefined-init-symbol`); without the option, `_init`/`_fini` when
+/// defined. (`-init`/`-fini` are refused in a `Shared` link until WP-128,
+/// `spec/cli.md` §4.2, so only the second form is reached today.)
+#[allow(clippy::result_large_err, reason = "the phase's diagnostic, made once")]
+fn shared_init_fini(
+    t: &PlanIn<'_, '_>,
+) -> Result<(Option<SymbolId>, Option<SymbolId>), Diagnostic> {
+    use std::os::unix::ffi::OsStrExt as _;
+    let d = &t.plan.dynamic;
+    let (init, fini) = init_fini(t);
+    // With the option: the named symbol (its key when defined); without
+    // it: `_init`/`_fini` when defined.
+    let init = match &d.init {
+        Some(n) => shared_init_key(Some((n.as_bytes(), init)), None),
+        None => shared_init_key(None, init),
+    }
+    .map_err(mortar_synth::SynthError::into_diagnostic)?;
+    let fini = match &d.fini {
+        Some(n) => shared_init_key(Some((n.as_bytes(), fini)), None),
+        None => shared_init_key(None, fini),
+    }
+    .map_err(mortar_synth::SynthError::into_diagnostic)?;
+    Ok((init, fini))
+}
+
 /// Whether output sections `.preinit_array`, `.init_array`, `.fini_array`
 /// have live content (D-30 rows 5-10).
 fn arrays(t: &PlanIn<'_, '_>) -> [bool; 3] {
@@ -302,6 +345,12 @@ fn kind_and_interp(
         OutputKind::Executable => DynKind::Exec,
         OutputKind::PieExecutable => DynKind::Pie,
         OutputKind::StaticPie => DynKind::StaticPie,
+        // D-102: `DT_SONAME` with `-soname`; `DT_SYMBOLIC`/`DF_SYMBOLIC`
+        // for a last `-Bsymbolic` without `--dynamic-list` (D-112).
+        OutputKind::Shared => DynKind::Shared(SharedDyn {
+            soname: plan.dynamic.soname.is_some(),
+            symbolic: plan.symbolic().is_some_and(mortar_cli::SymbolicLine::writes_symbolic_tags),
+        }),
         _ => {
             emit(refused("this output kind with .dynamic"));
             return None;
@@ -313,8 +362,8 @@ fn kind_and_interp(
     // nothing can bind the exports: WP-056; judged by P-D14, WP-088).
     // D-1: a `StaticPie` names no interpreter and has no `.interp`.
     let interp = match kind {
-        // D-100: a shared object has no `.interp` (unreached until WP-123:
-        // the match above refuses `Shared`).
+        // D-100: a shared object has no `.interp`, `-dynamic-linker` or
+        // not (GNU ld and lld write none; record WP-117 §5).
         DynKind::StaticPie | DynKind::Shared(_) => None,
         DynKind::Exec | DynKind::Pie => Some(interp(plan).map_err(emit).ok()?),
     };
@@ -325,6 +374,10 @@ fn kind_and_interp(
 /// `.dynstr`, GOT, `.rela.dyn`, `.dynamic` and `.interp` plans, with the
 /// `Slots` fields they fix (`needed`, `copies`, `copy_of`, `dynsym`,
 /// `verneed`, `dynstr`). Each failure is reported into `diag`.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one step per plan, the shared object's beside the executable's"
+)]
 pub fn plan(
     t: &PlanIn<'_, '_>,
     slots: &mut Slots,
@@ -336,6 +389,7 @@ pub fn plan(
     };
     let facts = t.arch.facts();
     let (kind, interp) = kind_and_interp(t.plan, &emit)?;
+    let shared = matches!(kind, DynKind::Shared(_));
     // D-42: the copy allocations.
     let defs = InputCopyDefs { inputs: t.inputs, resolution: t.resolution };
     let copy =
@@ -343,39 +397,71 @@ pub fn plan(
     slots.needed = t.needed.into();
     slots.copies.clone_from(&copy.copies);
     slots.copy_of.clone_from(&copy.copy_of);
-    // D-21, D-22, D-26.
-    let dynsym =
-        mortar_synth::dynsym_plan(t.resolution, t.demands, slots, t.src, t.pool, diag).ok()?;
+    // D-21, D-22, D-26; in a shared object D-111's set.
+    let dynsym = if shared {
+        mortar_synth::dynsym::dynsym_plan_shared(
+            t.resolution,
+            t.demands,
+            slots,
+            t.src,
+            t.pool,
+            diag,
+        )
+        .ok()?
+    } else {
+        mortar_synth::dynsym_plan(t.resolution, t.demands, slots, t.src, t.pool, diag).ok()?
+    };
     slots.dynsym = dynsym.order().into();
     slots.dynsym_unhashed = dynsym.unhashed();
     slots.gnu_hash_buckets = dynsym.nbuckets();
     // D-27.
-    let inputs = DynsymInputs {
-        resolution: t.resolution,
-        demands: t.demands,
-        slots,
-        src: t.src,
-        shared: false,
-    };
+    let inputs =
+        DynsymInputs { resolution: t.resolution, demands: t.demands, slots, src: t.src, shared };
     let verneed = mortar_synth::version::verneed_plan(&dynsym, &inputs, t.needed, diag).ok()?;
     // D-24.
     let rpath =
         join_rpath(&t.plan.dynamic.rpath.iter().map(|p| p.as_encoded_bytes()).collect::<Vec<_>>());
-    let dynstr = mortar_synth::dynstr_plan(&dynsym, t.needed, &verneed, rpath.as_deref(), t.src);
+    // D-116: a shared object's soname after the needed names.
+    let soname_bytes = t.plan.dynamic.soname.as_ref().map(|s| s.as_encoded_bytes().to_vec());
+    let (dynstr, soname_off) = if shared {
+        mortar_synth::dynstr::dynstr_plan_shared(
+            &dynsym,
+            t.needed,
+            soname_bytes.as_deref(),
+            &verneed,
+            rpath.as_deref(),
+            t.src,
+        )
+    } else {
+        (mortar_synth::dynstr_plan(&dynsym, t.needed, &verneed, rpath.as_deref(), t.src), None)
+    };
     let sizes = mortar_synth::dynsym::chunk_sizes(&dynsym, &verneed, &dynstr, facts.class)
         .map_err(|e| emit(e.into_diagnostic()))
         .ok()?;
     slots.verneed = verneed.iter().cloned().collect();
     slots.dynstr = dynstr;
-    // D-46, D-48, D-41.
-    let cx = DynGotCx {
-        pie: matches!(kind, DynKind::Pie | DynKind::StaticPie),
-        bind_now: t.output_cx.bind_now,
-        static_pie: kind == DynKind::StaticPie,
-    };
-    let got =
+    // D-46, D-48, D-41; D-120 in a shared object.
+    let got = if shared {
+        GotPlan::new_shared(
+            t.arch,
+            slots,
+            t.got_output,
+            t.variant,
+            t.output_cx.bind_now,
+            t.kinds,
+            &dynsym,
+            diag,
+        )
+        .ok()?
+    } else {
+        let cx = DynGotCx {
+            pie: matches!(kind, DynKind::Pie | DynKind::StaticPie),
+            bind_now: t.output_cx.bind_now,
+            static_pie: kind == DynKind::StaticPie,
+        };
         GotPlan::new_dynamic(t.arch, slots, t.got_output, t.variant, cx, t.kinds, &dynsym, diag)
-            .ok()?;
+            .ok()?
+    };
     // D-40.
     let rela = RelaPlan::new(facts.class, facts.rel_form, t.demands, &got, slots.copies.len())
         .map_err(|e| emit(e.into_diagnostic()))
@@ -383,8 +469,8 @@ pub fn plan(
     // The sections with dynamic records, by section (their `RELATIVE`
     // records are ordered by address at write time, D-40).
     slots.dyn_relocs = rela.sections().collect();
-    // D-30.
-    let (init, fini) = init_fini(t);
+    // D-30; D-102 in a shared object.
+    let (init, fini) = if shared { shared_init_fini(t).map_err(emit).ok()? } else { init_fini(t) };
     let [preinit_array, init_array, fini_array] = arrays(t);
     let runpath = rpath.map(|r| (RunpathTag::of(t.plan.dynamic.new_dtags), r));
     let variant_pcs_jump_slot = slots.plt.iter().any(|&k| {
@@ -424,6 +510,29 @@ pub fn plan(
         variant_pcs_jump_slot,
     };
     let dynamic = DynamicPlan::new(&inputs).map_err(|e| emit(e.into_diagnostic())).ok()?;
+    let shared = if shared {
+        let Some(line) = mortar_image::map::SharedLine::of(t.plan) else {
+            // `spec/cli.md` §4.2 refuses the `-Bsymbolic-non-weak*` forms
+            // before the link.
+            emit(Diagnostic::error(mortar_diag::Kind::InternalError {
+                what: "a shared object's line with a refused -Bsymbolic form".into(),
+            }));
+            return None;
+        };
+        let soname = match (soname_bytes, soname_off) {
+            (Some(b), Some(o)) => Some((b, o)),
+            (None, None) => None,
+            _ => {
+                emit(Diagnostic::error(mortar_diag::Kind::InternalError {
+                    what: "the soname and its .dynstr offset disagree".into(),
+                }));
+                return None;
+            }
+        };
+        Some(SharedTables { soname, line })
+    } else {
+        None
+    };
     let tables = DynTables {
         kind,
         copy,
@@ -436,6 +545,7 @@ pub fn plan(
         relro: t.relro,
         sizes,
         note_mason: None,
+        shared,
     };
     Some((got, tables))
 }

@@ -79,7 +79,7 @@ fn s4_2_options_a_later_package_implements_are_refused_in_shared() {
         line.push("a.o");
         let parsed = p(&line);
         assert_eq!(parsed.plan.kind, OutputKind::Shared);
-        assert_eq!(refused(&parsed), ["-shared", spelling], "{line:?}");
+        assert_eq!(refused(&parsed), [spelling], "{line:?}");
         let text = refusals(&parsed).join("\n");
         assert!(text.contains(&format!("unsupported option: {spelling}")), "{text}");
         assert!(text.contains(package), "{spelling}: {text}");
@@ -94,17 +94,17 @@ fn s4_2_options_a_later_package_implements_are_refused_in_shared() {
     }
     // Each is refused once, whatever the number of uses.
     let parsed = p(&["-shared", "-init", "f", "-init", "g", "a.o"]);
-    assert_eq!(refused(&parsed), ["-shared", "-init"]);
+    assert_eq!(refused(&parsed), ["-init"]);
     // `-pie` after `-shared` wins (cli.md §3.2): not a `Shared` link, and
-    // only the `-shared` row's own refusal remains.
+    // nothing is refused (`-shared` is `partial` since WP-123).
     let parsed = p(&["-shared", "-pie", "-Bsymbolic", "-init", "f", "a.o"]);
     assert_ne!(parsed.plan.kind, OutputKind::Shared);
-    assert_eq!(refused(&parsed), ["-shared"]);
+    assert!(refused(&parsed).is_empty());
     // Not a `last_wins` field: `-Bsymbolic` is refused even when a later
     // `-Bsymbolic-functions` or `-Bno-symbolic` decides the line (D-112).
     for last in ["-Bsymbolic-functions", "-Bno-symbolic"] {
         let parsed = p(&["-shared", "-Bsymbolic", last, "a.o"]);
-        assert_eq!(refused(&parsed), ["-shared", "-Bsymbolic"], "{last}");
+        assert_eq!(refused(&parsed), ["-Bsymbolic"], "{last}");
     }
 }
 
@@ -121,7 +121,7 @@ fn s4_2_options_wp117_implements_are_not_refused_in_shared() {
         let mut line = vec!["-shared"];
         line.extend_from_slice(words);
         line.push("a.o");
-        assert_eq!(refused(&p(&line)), ["-shared"], "{line:?}");
+        assert!(refused(&p(&line)).is_empty(), "{line:?}");
     }
     let parsed = p(&["-shared", "-z", "defs", "-Bsymbolic-functions", "a.o"]);
     assert_eq!(parsed.plan.z.defs, Some(true));
@@ -129,15 +129,16 @@ fn s4_2_options_wp117_implements_are_not_refused_in_shared() {
 }
 
 // spec: landed/dyn/WP-110.md §G.4 (the `-shared` row's text), cli.md §4.2
-// ("`-shared` stays refused" until WP-123 joins the first target)
+// (`-shared` reads `partial` once WP-123 joins the first target)
 #[test]
 fn g4_shared_row_text() {
     let row = rows().iter().find(|r| r.name() == "-shared").expect("the -shared row");
-    assert_eq!(row.status, Status::Refused, "-shared stays refused until WP-123");
-    let note = row.refused_note().expect("its note");
+    let Status::Partial { refused: values, note } = row.status else {
+        panic!("-shared is partial since WP-123: {:?}", row.status);
+    };
+    assert!(values.is_empty(), "no refused value: its refusals are by name, in the link");
     for part in [
-        "WP-123",
-        "partial: AArch64 (x86-64 and i386 refused, `feature`, until WP-127 and WP-130; \
+        "AArch64 (x86-64 and i386 refused, `feature`, until WP-127 and WP-130; \
          TLS and IFUNC in a shared object until WP-124; version scripts until WP-125)",
         "3 of 306 measured bound definitions",
         "Refused although correct: -fPIC code that forms an address before the start of a \
@@ -146,11 +147,34 @@ fn g4_shared_row_text() {
     ] {
         assert!(note.contains(part), "{part}");
     }
-    let text = refusals(&p(&["-shared", "a.o"])).join("\n");
-    assert!(text.contains("unsupported option: -shared"), "{text}");
-    assert!(text.contains("WP-123"), "{text}");
+    assert!(!note.contains("WP-123"), "{note}");
+    assert!(refusals(&p(&["-shared", "a.o"])).is_empty());
     let md = mortar_cli::status_markdown();
-    assert!(md.contains(&format!("refused: {note}")), "options.md shows the row's text");
+    assert!(md.contains(&format!("partial: {note}")), "options.md shows the row's text");
+    assert!(mortar_cli::help_text("ld").contains("Produce a shared object [partial]"));
+}
+
+// spec: dyn.md D-102 (WP-123): `-soname`/`-h` is supported in a shared
+// object and refused by name elsewhere (mortar writes DT_SONAME only in a
+// shared object)
+#[test]
+fn d102_soname_only_in_shared() {
+    for line in
+        [&["-shared", "-soname", "libx.so.1", "a.o"][..], &["-shared", "-h", "libx.so.1", "a.o"]]
+    {
+        let parsed = p(line);
+        assert!(refused(&parsed).is_empty(), "{line:?}");
+        assert_eq!(parsed.plan.dynamic.soname.as_deref(), Some(std::ffi::OsStr::new("libx.so.1")));
+    }
+    for kind in [&[][..], &["-pie"][..], &["-static"][..]] {
+        let mut line = kind.to_vec();
+        line.extend(["-soname", "libx.so.1", "a.o"]);
+        let parsed = p(&line);
+        assert_eq!(refused(&parsed), ["-soname"], "{line:?}");
+        let text = refusals(&parsed).join("\n");
+        assert!(text.contains("unsupported option: -soname"), "{text}");
+        assert!(text.contains("dyn.md D-102"), "{text}");
+    }
 }
 
 // spec: cli.md §4.2 (the M4 block's list is the table's): every name of

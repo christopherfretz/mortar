@@ -471,7 +471,9 @@ lists are admitted and what the output is for each.
 Valid when every demand of §3.7 has exactly one slot of its kind (the
 module slot exists exactly when `TLS_LD` is demanded), no slot is given
 twice, `.dynsym` holds exactly D-21's set (every import, export, `EXPORT`
-demand, `WeakDyn` key and copied key, plus copy aliases) with the
+demand, `WeakDyn` key and copied key, plus copy aliases; in a shared
+object D-111's set: no copy alias, and every undefined symbol an object
+file references) with the
 unhashed block inside it, each copy allocation's `alias` maps to it and
 its alignment is a power of two, `verneed` follows `needed` with
 non-empty increasing versions, `.dynstr`'s offsets match the lists they

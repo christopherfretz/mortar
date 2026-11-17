@@ -203,7 +203,31 @@ pub const OUT_OF_M2: &[(&str, &str)] = &[
     ),
     ("unsupported feature: dynamically linked output on i386", "i386 dynamic output is M4"),
     ("unsupported feature: position-independent executable output", "i386 PIE output is M4"),
-    ("unsupported option: -shared", "shared-object output is M4 (spec/dyn.md D-112; WP-123)"),
+    // The `-shared` lines (LT-7) since WP-123: what "Where the refusal
+    // stays" of record WP-110 §D keeps refused in a shared object.
+    (
+        "unsupported feature: shared object output on x86-64",
+        "x86-64 shared objects are WP-127's (spec/dyn.md D-100)",
+    ),
+    (
+        "unsupported feature: ELFCLASS32 shared object",
+        "i386 shared objects are WP-130's (spec/dyn.md D-130)",
+    ),
+    (
+        "unsupported feature: TLS in a shared object",
+        "TLS in a shared object is WP-124's (spec/dyn.md D-119)",
+    ),
+    (
+        "unsupported feature: IFUNC in a shared object",
+        "IFUNC in a shared object is WP-124's (spec/dyn.md D-121)",
+    ),
+    // WP-123 finding F3: crtbeginS's weak `__cxa_finalize` when the C
+    // library is not needed (gfortran's `-shared` lines).
+    (
+        "bound in a shared object that is not needed",
+        "a weak undefined versioned reference whose library --as-needed drops, in a shared \
+         object, is refused (spec/dyn.md D-27; WP-123 finding F3)",
+    ),
 ];
 
 /// Lines whose REFERENCE program is known broken: the variation, the
@@ -1002,7 +1026,7 @@ mod tests {
             variation,
             outcome,
         };
-        let refused = OUT_OF_M2.iter().find(|(k, _)| k.contains("-shared")).unwrap();
+        let refused = OUT_OF_M2.iter().find(|(k, _)| k.contains("shared object")).unwrap();
         let lines = [
             line("default", Outcome::Ok),
             line("shared", Outcome::OutOfM2(refused.0, refused.1)),

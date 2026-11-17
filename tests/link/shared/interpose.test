@@ -8,7 +8,7 @@
 # call goes to the interposer's.
 #@ spec: harness.md "LT-3"
 #@ arch: aarch64 x86_64
-#@ xfail(mortar): M4: mortar refuses -shared until WP-123 (spec/dyn.md D-112)
+#@ xfail(mortar,x86_64): M4: WP-127 (x86-64 shared objects; dyn.md D-100)
 
 cc -O1 -fPIC lib.c -o lib.o
 cc -O1 -fPIC pre.c -o pre.o

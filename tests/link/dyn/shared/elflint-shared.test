@@ -1,0 +1,29 @@
+# dyn.md D-125, D-71 (WP-123): `eu-elflint --gnu-ld` passes GNU ld's
+# libraries clean and must pass mortar's with no allowance (lld's and
+# mold's draw its complaints: D-71, they are checked for running only).
+#@ spec: dyn.md "D-125"
+#@ arch: aarch64 x86_64
+#@ xfail(mortar,x86_64): M4: WP-127 (x86-64 shared objects; dyn.md D-100)
+#@ requires: eu-elflint
+
+cc -O1 -fPIC lib.c -o lib.o
+cc -O1 -fPIC -ffunction-sections -fdata-sections lib.c -o libgc.o
+cc -O1 -fPIE main.c -o main.o
+link gcc -shared lib.o -Wl,-soname,libel.so -o libel.so
+link gcc -shared libgc.o -Wl,--gc-sections -Wl,-z,now -Wl,-Bsymbolic-functions -o libel2.so
+check(bfd,mortar) elflint libel.so
+check(bfd,mortar) elflint libel2.so
+host gcc -pie main.o -L. -lel -o prog
+run prog
+  stdout: 42
+
+#--- lib.c
+int lib_add(int a, int b) {
+  int sum = a + b;
+  int twice = sum * 2;
+  return twice - sum;
+}
+#--- main.c
+#include <stdio.h>
+int lib_add(int, int);
+int main(void) { printf("%d\n", lib_add(20, 22)); return 0; }

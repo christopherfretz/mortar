@@ -38,6 +38,35 @@ pub fn verify(out: &Path, map: &Path, dir: &Path) -> Vec<mortar_plumb::Finding> 
     mortar_plumb::verify(&std::fs::read(out).expect("the output"), &inputs, &parsed).findings
 }
 
+/// The files of a link, read relative to the directory it ran in (the
+/// verifier's stage 3 reads the line's files, `spec/plumb.md` §12).
+struct BaseFiles<'a>(&'a Path);
+
+impl mortar_plumb::Files for BaseFiles<'_> {
+    fn read(&self, path: &str) -> Option<Vec<u8>> {
+        std::fs::read(self.0.join(path)).ok()
+    }
+}
+
+/// [`verify`] with stage 3 for a dynamic output (`spec/plumb.md` §12), as
+/// `cargo xtask plumb` judges a link: the line is the map's `arg` records
+/// (WP-123: a shared object is judged by stage 3 only).
+///
+/// # Panics
+///
+/// As [`verify`].
+pub fn verify_staged(out: &Path, map: &Path, dir: &Path) -> Vec<mortar_plumb::Finding> {
+    let text = std::fs::read_to_string(map).expect("the map");
+    let parsed = mortar_plumb::map::parse(mortar_plumb::Format::Mortar, &text)
+        .unwrap_or_else(|e| panic!("the map does not parse: {e:?}"));
+    let files = inputs(&parsed, dir);
+    let inputs: Vec<mortar_plumb::Input<'_>> =
+        files.iter().map(|(p, b)| mortar_plumb::Input { path: p, bytes: b }).collect();
+    let ctx = mortar_plumb::Ctx { line: None, files: &BaseFiles(dir) };
+    mortar_plumb::verify_with(&std::fs::read(out).expect("the output"), &inputs, &parsed, &ctx)
+        .findings
+}
+
 /// A change to a map's line (its `arg` records, `spec/plumb.md` §3.2a):
 /// the mutants of WP-102, which show that a rule reading an option
 /// follows the map's line. The words are the records' tokens (an option

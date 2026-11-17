@@ -1,0 +1,30 @@
+# dyn.md D-111 (WP-123): a weak undefined reference of a shared object
+# is a WEAK UND entry of .dynsym; the library tests its address, null
+# when no loaded object defines it, the host's definition when it does.
+#@ spec: dyn.md "D-111"
+#@ arch: aarch64 x86_64
+#@ xfail(mortar,x86_64): M4: WP-127 (x86-64 shared objects; dyn.md D-100)
+
+cc -O1 -fPIC lib.c -o lib.o
+cc -O1 -fPIE main.c -o main.o
+cc -O1 -fPIE -DHOOK main.c -o hook.o
+link gcc -shared lib.o -o libwk.so
+check readelf -W --dyn-syms libwk.so
+  has: NOTYPE WEAK DEFAULT UND opt_hook$
+host gcc -pie main.o -L. -lwk -o prog
+host gcc -pie hook.o -L. -lwk -o prog-hook
+run prog
+  stdout: -1
+run prog-hook
+  stdout: 5
+
+#--- lib.c
+extern int opt_hook(void) __attribute__((weak));
+int use_hook(void) { return opt_hook ? opt_hook() : -1; }
+#--- main.c
+#include <stdio.h>
+int use_hook(void);
+#ifdef HOOK
+int opt_hook(void) { return 5; }
+#endif
+int main(void) { printf("%d\n", use_hook()); return 0; }

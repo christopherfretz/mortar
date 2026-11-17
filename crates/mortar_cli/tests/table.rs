@@ -91,6 +91,9 @@ const SUPPORTED: &[&str] = &[
     "-fini",
     "-E",
     "--no-export-dynamic",
+    "-Bsymbolic-functions",
+    "-Bno-symbolic",
+    "-h",
     "-rpath",
     "-I",
     "--no-dynamic-linker",
@@ -102,6 +105,7 @@ const SUPPORTED: &[&str] = &[
     "-w",
     "--color-diagnostics",
     "--no-color-diagnostics",
+    "--no-undefined",
     "--warn-common",
     "--no-warn-common",
     // The one-definition-rule switches (WP-072, odr.md O-41).
@@ -135,6 +139,7 @@ const SUPPORTED: &[&str] = &[
     "-z text",
     "-z separate-code",
     "-z noseparate-code",
+    "-z defs",
     "-z max-page-size",
     "-z memory-seal",
     "-z nomemory-seal",
@@ -293,8 +298,6 @@ fn r_c1_statuses() {
         "--dynamic-list",
         "-z nodynamic-undefined-weak",
         "-z dynamic-undefined-weak",
-        "-shared",
-        "-h",
         "-z force-bti",
         "-z pac-plt",
         "-z ibtplt",
@@ -304,6 +307,11 @@ fn r_c1_statuses() {
     ] {
         assert_eq!(row(name).status, Status::Refused, "{name}");
     }
+    // Since WP-123: `-shared` is partial (its refusals are by name, in the
+    // link) and `-h` is supported in a shared object (refused elsewhere,
+    // `rows::SHARED_ONLY`).
+    assert!(matches!(row("-shared").status, Status::Partial { refused: [], .. }));
+    assert_eq!(row("-h").status, Status::Supported);
     // The default (D-15).
     assert!(matches!(row("--no-copy-dt-needed-entries").status, Status::Noop(_)));
 }

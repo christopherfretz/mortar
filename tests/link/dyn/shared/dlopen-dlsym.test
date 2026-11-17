@@ -1,0 +1,34 @@
+# dyn.md D-100, D-110 (WP-123): a mortar library loaded by `dlopen`
+# (twice: one handle count), its exported function and variable found by
+# `dlsym`, a hidden one not found, and closed.
+#@ spec: dyn.md "D-110"
+#@ arch: aarch64 x86_64
+#@ xfail(mortar,x86_64): M4: WP-127 (x86-64 shared objects; dyn.md D-100)
+
+cc -O1 -fPIC lib.c -o lib.o
+cc -O1 -fPIE load.c -o load.o
+link gcc -shared lib.o -Wl,-soname,libdy.so -o libdy.so
+host gcc -pie load.o -o load
+run load
+  stdout: 7 8 hidden-absent same
+
+#--- lib.c
+int value = 7;
+int next(void) { return ++value; }
+__attribute__((visibility("hidden"))) int secret(void) { return 1; }
+#--- load.c
+#include <dlfcn.h>
+#include <stdio.h>
+int main(void) {
+  void *h = dlopen("libdy.so", RTLD_NOW);
+  void *h2 = dlopen("libdy.so", RTLD_LAZY);
+  if (!h || !h2) { printf("%s\n", dlerror()); return 1; }
+  int *v = (int *)dlsym(h, "value");
+  int (*n)(void) = (int (*)(void))dlsym(h, "next");
+  if (!v || !n) return 2;
+  int before = *v;
+  printf("%d %d %s %s\n", before, n(), dlsym(h, "secret") ? "hidden-found" : "hidden-absent",
+         h == h2 ? "same" : "other");
+  dlclose(h2);
+  return dlclose(h);
+}

@@ -25,12 +25,14 @@
 //! `crate::regflow`) joins here: [`analysis`] is its hook, and its
 //! findings are judged by the same [`judge`].
 
-use mortar_core::{FileId, SymKind, SymbolId};
-use mortar_diag::Diagnostic;
-use mortar_elf::consts::{SHF_EXECINSTR, SHT_REL, SHT_RELA, STT_SECTION};
-use mortar_elf::{SectionIndex, SymbolIndex, SymbolSection};
+use std::borrow::Cow;
 
-use crate::view::{Raw, View, rec_table};
+use mortar_core::{FileId, SymKind, SymbolId};
+use mortar_diag::{Diagnostic, Key, Place};
+use mortar_elf::consts::{SHF_EXECINSTR, SHT_REL, SHT_RELA, STT_SECTION};
+use mortar_elf::{Object, SectionIndex, SymbolIndex, SymbolSection};
+
+use crate::view::{Raw, ReadFail, View, contents, rec_table};
 
 /// `R_AARCH64_NONE` and its withdrawn alias (no `SIZE` type on AArch64).
 const NONE_TYPES: [u32; 2] = [0, 256];
@@ -72,6 +74,13 @@ pub(crate) struct FileFacts {
     /// D-117 (ii): a relocation of a GOT form names one of the file's own
     /// preemptible data definitions by a non-local symbol.
     pub self_got: bool,
+    /// The analysis's verdict (WP-119, `crate::regflow`), run once per
+    /// file with the facts: per bound use, the code section it is in and
+    /// its keyed `non-pic-in-shared-object` error; or, when the analysis
+    /// could not run, the diagnostic of why (reported for each code
+    /// section of the file the scan walks: a file whose code is all dead
+    /// puts no use in the output).
+    analysed: Result<Vec<(u32, Key, Diagnostic)>, Box<Diagnostic>>,
 }
 
 /// A bound use: the rule's (or the analysis's) verdict on one named
@@ -141,6 +150,7 @@ impl FileFacts {
             r_sym >= first
                 && map.get((r_sym - first) as usize).is_some_and(|k| keys.binary_search(k).is_ok())
         };
+        let analysed = analyse(view, file, &obj, &defs);
         let mut buf = Vec::new();
         let mut self_got = false;
         for s in obj.sections() {
@@ -157,7 +167,7 @@ impl FileFacts {
                 break;
             }
         }
-        Some(Self { defs, ends, self_got })
+        Some(Self { defs, ends, self_got, analysed })
     }
 
     /// Whether section `section` of the file holds a preemptible data
@@ -215,38 +225,95 @@ pub(crate) fn rule(
     judge(f, t.0, addr, ACCESS_TYPES.contains(&raw.r_type))
 }
 
-/// One finding of the analysis (WP-119) for [`analysis`] to return: an
-/// address the analysis judged, in the object's section `section`
-/// (holding a preemptible data definition), whether it is an access at
-/// the address (item 6), the relocation record (of the code section's
-/// relocation table) that formed it, and the text of the note that names
-/// the function and the offset of the instruction.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Judged {
-    pub section: u32,
-    pub addr: u64,
-    pub access: bool,
-    pub record: u32,
-    pub note: String,
+/// D-117's analysis (WP-119's [`crate::regflow::analyse`]) of object
+/// `obj` (`file`) for its preemptible data definitions `defs`: each bound
+/// use as the code section it is in and its error (`BoundUse::diagnostic`,
+/// placed at the instruction), keyed on the record of the code section's
+/// relocation table that formed the address (record 0 when that record
+/// applies to another section: a literal word outside the code), or why
+/// the analysis could not run. The analysis's own boundary rule ("access"
+/// per item 6, self-GOT) is its verdict; nothing is judged again.
+fn analyse<'s>(
+    view: &View<'_, 's>,
+    file: FileId,
+    obj: &Object<'s>,
+    defs: &[PreDef],
+) -> Result<Vec<(u32, Key, Diagnostic)>, Box<Diagnostic>> {
+    let fref = view.inputs.files[file].display();
+    let preemptible: Vec<SymbolIndex> = defs.iter().map(|d| d.index).collect();
+    let mut buf = Vec::new();
+    let mut bytes = |i: SectionIndex| -> Result<Cow<'_, [u8]>, ReadFail> {
+        let s = obj.section(i).map_err(|e| ReadFail::Malformed(e.to_string()))?;
+        if let Ok(d) = s.data() {
+            return Ok(Cow::Borrowed(d));
+        }
+        contents(view, file, &s, &mut buf).map(|b| Cow::Owned(b.to_vec()))
+    };
+    let analysis = match crate::regflow::analyse(obj, &preemptible, &mut bytes) {
+        Ok(a) => a,
+        Err(crate::regflow::Fault::Malformed(what)) => {
+            return Err(Box::new(ReadFail::Malformed(what).diagnostic(&fref)));
+        }
+        Err(crate::regflow::Fault::Contents(i, fail)) => {
+            let name = view.section_name(file, i.0);
+            return Err(Box::new(fail.diagnostic(&fref).at(Place::section(fref.clone(), name, 0))));
+        }
+    };
+    let mut out = Vec::with_capacity(analysis.uses.len());
+    let mut rbuf = Vec::new();
+    for u in &analysis.uses {
+        let mut record = 0;
+        if u.origin.section == u.section {
+            for s in obj.sections() {
+                if s.sh_type() != SHT_RELA {
+                    continue;
+                }
+                let Ok((recs, _, target)) = rec_table(view, file, obj, s.index(), &mut rbuf) else {
+                    continue;
+                };
+                if target != u.section {
+                    continue;
+                }
+                let n = u32::try_from(recs.len()).unwrap_or(u32::MAX);
+                // The last record at the offset (the analysis's reading).
+                if let Some(i) = (0..n)
+                    .rev()
+                    .find(|&i| recs.raw(i).is_some_and(|r| r.r_offset == u.origin.offset))
+                {
+                    record = i;
+                }
+                break;
+            }
+        }
+        let key = mortar_arch::cx::scan_key(file, u.section.0, record);
+        out.push((u.section.0, key, u.diagnostic(&fref)));
+    }
+    Ok(out)
 }
 
-/// **The hook of D-117's analysis** (WP-119, `crate::regflow`; WP-123
-/// wires it): the judged addresses of code section `section` of `file`,
-/// whose relocation records the walk is reading. Called once per code
-/// section (on the walk of its first block), only in a `Shared` AArch64
-/// link and only for a file whose [`FileFacts`] exist (D-117 item 1's
-/// pre-filter is then the analysis's own). Each [`Judged`] is passed to
-/// [`judge`] with the file's facts, so the boundary rule applies with
-/// "access" as item 6 says; a bound use is refused as the rule's are,
-/// `non-pic-in-shared-object`, on the record that formed the address,
-/// with the note. Until the analysis is wired: nothing.
+/// **The hook of D-117's analysis** (WP-119, `crate::regflow`; joined by
+/// WP-123): the keyed errors of the bound uses in code section `section`
+/// of `file`, whose relocation records the walk is reading. Called once
+/// per code section (on the walk of its first block), only in a `Shared`
+/// AArch64 link and only for a file whose [`FileFacts`] exist (D-117 item
+/// 1's pre-filter is then the analysis's own). The analysis ran once for
+/// the file when its facts were made; a bound use is refused,
+/// `non-pic-in-shared-object`, at the instruction, with the note naming
+/// the function, the offset and the relocation that formed the address.
+/// When the analysis could not run, its diagnostic is the result for
+/// every code section.
 pub(crate) fn analysis(
     _view: &View<'_, '_>,
-    _file: FileId,
-    _facts: &FileFacts,
-    _section: u32,
-) -> Vec<Judged> {
-    Vec::new()
+    file: FileId,
+    facts: &FileFacts,
+    section: u32,
+) -> Vec<(Key, Diagnostic)> {
+    match &facts.analysed {
+        Ok(uses) => {
+            uses.iter().filter(|(s, _, _)| *s == section).map(|(_, k, d)| (*k, d.clone())).collect()
+        }
+        Err(d) => vec![(mortar_arch::cx::scan_key(file, section, 0), (**d).clone())],
+    }
 }
 
 /// The notes of a bound use's `non-pic-in-shared-object` diagnostic

@@ -1,0 +1,35 @@
+# dyn.md D-110, D-112 (WP-123): a protected function and a protected
+# variable are exported (PROTECTED in .dynsym) and never preempted inside
+# the library: under an interposer of both, the library's `read_all`
+# still reads its own; the host's call goes to the interposer's.
+#@ spec: dyn.md "D-112"
+#@ arch: aarch64 x86_64
+#@ xfail(mortar,x86_64): M4: WP-127 (x86-64 shared objects; dyn.md D-100)
+
+cc -O1 -fPIC lib.c -o lib.o
+cc -O1 -fPIC pre.c -o pre.o
+cc -O1 -fPIE main.c -o main.o
+shlib gcc pre.o -o libpre.so
+link gcc -shared lib.o -o libpr.so
+check readelf -W --dyn-syms libpr.so
+  has: FUNC * PROTECTED * pfn$
+  has: OBJECT * PROTECTED * pdata$
+host gcc -pie main.o -L. -lpr -o prog
+run prog
+  stdout: 33 30
+run prog
+  env: LD_PRELOAD=./libpre.so
+  stdout: 33 40
+
+#--- lib.c
+__attribute__((visibility("protected"))) int pdata = 3;
+__attribute__((visibility("protected"))) int pfn(void) { return 30; }
+int read_all(void) { return pfn() + pdata; }
+#--- pre.c
+int pdata = 4;
+int pfn(void) { return 40; }
+#--- main.c
+#include <stdio.h>
+int pfn(void);
+int read_all(void);
+int main(void) { printf("%d %d\n", read_all(), pfn()); return 0; }

@@ -1,0 +1,41 @@
+# dyn.md D-100, D-103, D-112 (WP-123): Python's LDSHARED line
+# (`gcc -shared -Wl,-O1 -Wl,-Bsymbolic-functions -Wl,-z,relro`) links an
+# extension-like module, loaded by `dlopen` and `dlsym`. Under
+# `-Bsymbolic-functions` the module's call of its own `helper` stays in
+# the module even with an interposer of `helper` preloaded.
+#@ spec: dyn.md "D-112"
+#@ arch: aarch64 x86_64
+#@ xfail(mortar,x86_64): M4: WP-127 (x86-64 shared objects; dyn.md D-100)
+
+cc -O2 -fwrapv -fPIC mod.c -o mod.o
+cc -O1 -fPIC pre.c -o pre.o
+cc -O1 -fPIE load.c -o load.o
+shlib gcc pre.o -o libpre.so
+link gcc -shared -Wl,-O1 -Wl,-Bsymbolic-functions -Wl,-z,relro mod.o -o modx.so
+check readelf -lW modx.so
+  has: GNU_RELRO
+check readelf -dW modx.so
+  not: SYMBOLIC
+host gcc -pie load.o -o load
+run load
+  stdout: 41
+run load
+  env: LD_PRELOAD=./libpre.so
+  stdout: 41
+
+#--- mod.c
+static int calls;
+int helper(int x) { calls++; return x * 2; }
+int mod_init(void) { return helper(20) + calls; }
+#--- pre.c
+int helper(int x) { return x * 0; }
+#--- load.c
+#include <dlfcn.h>
+#include <stdio.h>
+int main(void) {
+  void *h = dlopen("modx.so", RTLD_NOW);
+  if (!h) { printf("%s\n", dlerror()); return 1; }
+  int (*init)(void) = (int (*)(void))dlsym(h, "mod_init");
+  printf("%d\n", init ? init() : -1);
+  return dlclose(h);
+}
