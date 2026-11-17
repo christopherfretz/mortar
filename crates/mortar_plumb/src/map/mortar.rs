@@ -428,7 +428,7 @@ pub fn parse(text: &str) -> Result<Map, MapError> {
         match (t[0], t.len()) {
             ("end", 1) => ended = true,
             ("output", 2) if t[1] == "relocatable" => {
-                if map.rel.is_some() || map.dynamic.as_ref().is_some_and(|d| d.kind.is_some()) {
+                if map.rel.as_ref().is_some_and(|r| r.line != 0) || map.dynamic.as_ref().is_some_and(|d| d.kind.is_some()) {
                     return Err(bad("a second 'output' record"));
                 }
                 map.rel.get_or_insert_with(RelRecords::default).line = n;
@@ -583,7 +583,7 @@ pub fn parse(text: &str) -> Result<Map, MapError> {
                 line: n,
             }),
             ("output", 2) => {
-                if map.rel.is_some() {
+                if map.rel.as_ref().is_some_and(|r| r.line != 0) {
                     return Err(bad("a second 'output' record"));
                 }
                 let d = map.dynamic.get_or_insert_with(DynRecords::default);
@@ -681,11 +681,14 @@ pub fn parse(text: &str) -> Result<Map, MapError> {
     }
     crate::maprec::end_shared(map.dynamic.as_ref(), output_line, shared_line)?;
     // §14.2: nothing at -r has an address; the -r records need the kind.
-    match (&map.rel, not_at_r, r_record) {
-        (Some(_), Some((record, at)), _) => {
+    // The -r records alone (`rplace` ...) create `map.rel`; the kind is
+    // `output relocatable`, whose line is never 0.
+    let relocatable = map.rel.as_ref().is_some_and(|r| r.line != 0);
+    match (relocatable, not_at_r, r_record) {
+        (true, Some((record, at)), _) => {
             return Err(MapError::new(at, format!("'{record}' in a relocatable map")));
         }
-        (None, _, Some((record, at))) => {
+        (false, _, Some((record, at))) => {
             return Err(MapError::new(
                 at,
                 format!("'{record}' in a map without 'output relocatable'"),
@@ -1049,6 +1052,45 @@ mod tests {
         // (P-I2, §6.8).
         let m = parse("mortar-map 2\nhole .text 0 0\nhole .text 0 8\nhole .text 4 8\nhole .nowhere ffffffffffffffff ffffffffffffffff\nend\n").unwrap();
         assert_eq!(m.dead.len(), 4);
+    }
+
+    // §14.2 (WP-185): the -r records, in any order with `output
+    // relocatable`, written back, and malformed by line.
+    #[test]
+    fn s14_2_relocatable_records() {
+        for text in [
+            "mortar-map 2\nfile 0 a.o\noutput relocatable\nrplace 0 1 2 10 8\nrframe 0 4 0 -\nrframe 0 4 18 20\nrgroup 3 0 5\nrcommon c%20d 7 0 4 8\nend\n",
+            "mortar-map 2\nfile 0 a.o\nrplace 0 1 2 10 8\nrframe 0 4 0 -\nrframe 0 4 18 20\nrgroup 3 0 5\nrcommon c%20d 7 0 4 8\noutput relocatable\nend\n",
+        ] {
+            let m = parse(text).unwrap_or_else(|e| panic!("{text:?}: {e}"));
+            let r = m.rel.as_ref().expect("relocatable");
+            assert_ne!(r.line, 0);
+            assert_eq!(r.places.len(), 1);
+            assert_eq!((r.places[0].out, r.places[0].offset, r.places[0].size), (2, 0x10, 8));
+            assert_eq!(r.frames.len(), 2);
+            assert_eq!(r.frames[0].output_offset, None);
+            assert_eq!((r.frames[1].input_offset, r.frames[1].output_offset), (0x18, Some(0x20)));
+            assert_eq!(r.groups.len(), 1);
+            assert_eq!(r.groups[0].out, 3);
+            assert_eq!(r.commons.len(), 1);
+            assert_eq!((r.commons[0].name.as_str(), r.commons[0].out, r.commons[0].size), ("c d", 7, 4));
+        }
+        let cases: &[(&str, u32)] = &[
+            ("mortar-map 2\nfile 0 a.o\nrplace 0 1 2 10 8\nend\n", 3),
+            ("mortar-map 2\nfile 0 a.o\noutput relocatable\nrplace 0 1 2 10\nend\n", 4),
+            ("mortar-map 2\nfile 0 a.o\noutput relocatable\nrplace 0 1 x 10 8\nend\n", 4),
+            ("mortar-map 2\nfile 0 a.o\noutput relocatable\nrframe 0 4 0 +\nend\n", 4),
+            ("mortar-map 2\nfile 0 a.o\noutput relocatable\nrgroup 3 0\nend\n", 4),
+            ("mortar-map 2\nfile 0 a.o\noutput relocatable\nrcommon c 7 0 4 3\nend\n", 4),
+            ("mortar-map 2\nfile 0 a.o\nrplace 0 1 2 10 8\noutput relocatable\noutput relocatable\nend\n", 5),
+            ("mortar-map 2\nfile 0 a.o\nrplace 0 1 2 10 8\noutput relocatable\noutput exec\nend\n", 5),
+            ("mortar-map 2\nfile 0 a.o\noutput exec\noutput relocatable\nend\n", 4),
+            ("mortar-map 2\nfile 0 a.o\noutput relocatable\nhole .text 0 8\nend\n", 4),
+        ];
+        for (text, line) in cases {
+            let e = parse(text).unwrap_err();
+            assert_eq!(e.line, *line, "{text:?}: {e}");
+        }
     }
 
     // §3.2 (WP-096): the allocation records, malformed, by line.

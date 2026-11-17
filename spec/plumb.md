@@ -4964,7 +4964,7 @@ is accepted from its linker only, never from mortar's map.
   the final link then binds every reference to that absolute address,
   and every mold `-r` WRONG or SEGV cell of record §D.3 is this. P-P4
   "common {name} is SHN_ABS, not SHN_COMMON". Reproducer: the D.3 C
-  component (`tests/relocatable.rs`, planned RL-5).
+  component (`tests/relocatable.rs`, case `d3-c-gcc`; RL-5, WP-185).
 - **A91 (lld; WP-180).** At `-r` lld keeps the FDE of a dropped COMDAT
   copy, its initial location then naming a section that is not in the
   output (record §D, `rl0` case 8). P-P5 "output FDE at {offset} for

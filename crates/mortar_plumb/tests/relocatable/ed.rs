@@ -226,6 +226,17 @@ impl Ed {
         self.set_sh(i, &s);
     }
 
+    /// Appends `name` to `.shstrtab`; its `sh_name`.
+    pub fn add_name(&mut self, name: &str) -> u32 {
+        let i = self.shstrndx();
+        let mut d = self.data(i);
+        let at = d.len() as u32;
+        d.extend_from_slice(name.as_bytes());
+        d.push(0);
+        self.set_data(i, &d);
+        at
+    }
+
     /// Appends a section; its index.
     pub fn add(&mut self, s: &Sh, d: &[u8]) -> usize {
         let n = self.shnum();

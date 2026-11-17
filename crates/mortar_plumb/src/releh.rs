@@ -338,6 +338,40 @@ fn rframe(rv: &mut Rv<'_>) {
     for ((f, s, off), _) in stated {
         msgs.push(format!("rframe {} {off:#x} names no input record", rv.ins[f].sname(s)));
     }
+    // L-R6 and I-R6: the live records in (FileId, record) order, end to
+    // end, a zero terminator exactly where an input has one.
+    if let Some(o) = rv.out_eh {
+        let mut cursor = 0u64;
+        for (&(f, s), m) in &rv.frames {
+            let data = &rv.ins[f].elf.secs[s].data;
+            let mut off = 0usize;
+            while off + 4 <= data.len() {
+                let len = rec_len(data, off);
+                let term = data[off..off + 4] == [0; 4];
+                let live = match m.get(&(off as u64)) {
+                    Some(to) => *to,
+                    None if term => Some(cursor),
+                    None => None,
+                };
+                if let Some(at) = live {
+                    if at != cursor {
+                        msgs.push(format!(
+                            "record {} {off:#x} is at {at:#x}, L-R6 puts it at {cursor:#x}",
+                            rv.ins[f].sname(s)
+                        ));
+                    } else if term && rv.out.secs[o as usize].data.get(at as usize..at as usize + 4) != Some(&[0u8; 4][..]) {
+                        msgs.push(format!("the zero terminator of {} {off:#x} is not at {at:#x}", rv.ins[f].sname(s)));
+                    }
+                    cursor = at + len;
+                }
+                off = off.saturating_add(usize::try_from(len).unwrap_or(usize::MAX).max(4));
+            }
+        }
+        let size = rv.out.secs[o as usize].size;
+        if size != cursor {
+            msgs.push(format!(".eh_frame is {size:#x} bytes, L-R6's records end at {cursor:#x}"));
+        }
+    }
     for m in msgs {
         rv.p(5, m);
     }

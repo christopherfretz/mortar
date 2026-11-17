@@ -525,6 +525,7 @@ fn references(arch: Arch) -> Option<Seen> {
     let mut build_time = std::time::Duration::ZERO;
     let mut link_time = std::time::Duration::ZERO;
     let mut verify_time = std::time::Duration::ZERO;
+    let mut totals: BTreeMap<&'static str, [u64; 5]> = BTreeMap::new();
     for case in cases(&t) {
         let dir = scratch.join(&case.name);
         std::fs::create_dir_all(&dir).unwrap();
@@ -553,11 +554,15 @@ fn references(arch: Arch) -> Option<Seen> {
             verify_time += v.elapsed();
             let rc = report.coverage.relocatable.clone().unwrap_or_default();
             seen.lines.push(format!(
-                "{} {} [{}]: {} findings; relocatable: pieces {}, merged {}, framed {}; groups {}; FDEs {} live, {} removed; symbols {}; sections {}",
+                "{} {} [{}]: {} findings; records {}: verified {:?}, accepted {:?}, not checked {:?}; relocatable: pieces {}, merged {}, framed {}; groups {}; FDEs {} live, {} removed; symbols {}; sections {}",
                 case.name,
                 r.name(),
                 arch.name(),
                 report.findings.len(),
+                report.coverage.records,
+                report.coverage.verified,
+                report.coverage.accepted,
+                report.coverage.not_checked,
                 rc.pieces,
                 rc.merged,
                 rc.framed,
@@ -567,6 +572,21 @@ fn references(arch: Arch) -> Option<Seen> {
                 rc.symbols,
                 rc.sections
             ));
+            let c = &report.coverage;
+            assert_eq!(
+                c.records,
+                c.verified_total() + c.accepted_total() + c.not_checked_total() + c.failed,
+                "{} {} [{}]: §7.2's sum",
+                case.name,
+                r.name(),
+                arch.name()
+            );
+            let tot = totals.entry(r.name()).or_insert([0u64; 5]);
+            tot[4] += c.failed;
+            tot[0] += report.coverage.records;
+            tot[1] += report.coverage.verified_total();
+            tot[2] += report.coverage.accepted_total();
+            tot[3] += report.coverage.not_checked_total();
             let key = (case.name.clone(), r.name());
             let set = seen.anomalies.entry(key).or_default();
             for f in &report.findings {
@@ -595,6 +615,9 @@ fn references(arch: Arch) -> Option<Seen> {
         verify_time,
         start.elapsed()
     );
+    for (r, [n, v, a, x, f]) in &totals {
+        eprintln!("relocatable [{}] {r}: records {n}: verified {v}, accepted {a}, not checked {x}, failed {f}", arch.name());
+    }
     Some(seen)
 }
 
@@ -714,6 +737,7 @@ fn s14_references_i386() {
 
 // ---- the mutations (§9.2 (t), V-R12) ----
 
+#[path = "relocatable/ed.rs"]
 mod ed;
 use ed::{Ed, R};
 
@@ -831,6 +855,9 @@ fn mutant(
     let what = f(&mut e)?;
     let (before, _) = b.findings(start, mortar);
     let (after, report) = b.findings(&e.b, mortar);
+    if std::env::var_os("RL5_DEBUG").is_some_and(|v| v == id) {
+        eprintln!("DEBUG {id} before: {before:#?}\nDEBUG {id} after: {after:#?}");
+    }
     let fresh: Vec<&String> = after.difference(&before).collect();
     let format = if mortar { Format::Mortar } else { Format::Gnu };
     let anomalies = report
@@ -874,7 +901,7 @@ fn mutations(arch: Arch) -> Option<Vec<Mutant>> {
     let t = Tools::find(arch)?;
     let scratch = Scratch::new(&format!("plumb-relmut-{}", arch.name()));
     let all = cases(&t);
-    let mut get = |name: &str, opts: &[&'static str]| -> Option<Base> {
+    let get = |name: &str, opts: &[&'static str]| -> Option<Base> {
         let c = all.iter().find(|c| c.name == name)?;
         let case = Case {
             name: if opts.is_empty() { c.name.clone() } else { format!("{}-unique", c.name) },
@@ -886,10 +913,18 @@ fn mutations(arch: Arch) -> Option<Vec<Mutant>> {
     };
     let mut v: Vec<Mutant> = Vec::new();
     macro_rules! push {
-        ($m:expr, $id:expr) => {
+        ($m:expr, $id:expr $(,)?) => {
             match $m {
                 Some(m) => v.push(m),
-                None => panic!("[{}] mutation {}: no site", arch.name(), $id),
+                None => v.push(Mutant {
+                    id: $id.to_string(),
+                    base: String::new(),
+                    what: "no site".into(),
+                    want: vec!["(a site)"],
+                    rules: BTreeSet::new(),
+                    anomalies: Vec::new(),
+                    first: String::new(),
+                }),
             }
         };
     }
@@ -1085,16 +1120,17 @@ fn mutations(arch: Arch) -> Option<Vec<Mutant>> {
     // (4) a second copy of a COMDAT group kept.
     let x = get("d3-cxx-gcc", &[])?;
     push!(
-        mutant(&x, "(4)", &["P-P6"], false, None, |e| {
+        mutant(&x, "(4)", &["P-P6", "P-P11"], false, None, |e| {
             let g = (1..e.shnum()).find(|&i| e.sh(i).ty == ed::SHT_GROUP && e.data(i)[..4] == [1, 0, 0, 0])?;
             let d = e.data(g);
             let members: Vec<usize> = d[4..].chunks(4).map(|w| u32::from_le_bytes([w[0], w[1], w[2], w[3]]) as usize).collect();
             let mut new: BTreeMap<usize, usize> = BTreeMap::new();
-            for &m in members.iter().filter(|&&m| !matches!(e.sh(m).ty, ed::SHT_RELA | ed::SHT_REL)) {
+            let is_rel: Vec<bool> = members.iter().map(|&m| matches!(e.sh(m).ty, ed::SHT_RELA | ed::SHT_REL)).collect();
+            for (&m, _) in members.iter().zip(&is_rel).filter(|(_, r)| !**r) {
                 let (h, d) = (e.sh(m), e.data(m));
                 new.insert(m, e.add(&h, &d));
             }
-            for &m in members.iter().filter(|&&m| matches!(e.sh(m).ty, ed::SHT_RELA | ed::SHT_REL)) {
+            for (&m, _) in members.iter().zip(&is_rel).filter(|(_, r)| **r) {
                 let mut h = e.sh(m);
                 h.info = *new.get(&(h.info as usize))? as u32;
                 let d = e.data(m);
@@ -1204,12 +1240,12 @@ fn mutations(arch: Arch) -> Option<Vec<Mutant>> {
         push!(
             mutant(&dbg, "(14)", &["P-P4"], true, None, |e| {
                 let eh = e.find(".eh_frame")?;
-                let (&(_, _, at), _) = frames.iter().find(|(_, o)| o.is_none())?;
-                let k = (1..e.first_global()).find(|&k| e.sym_name(k).starts_with("$d") && e.sym(k).shndx as usize == eh)?;
+                // A removed FDE's input offset that no kept record has as
+                // its output offset (else an input's own $d may be there).
+                let outs: BTreeSet<u64> = frames.values().filter_map(|o| *o).collect();
+                let (&(_, _, at), _) = frames.iter().find(|((_, _, a), o)| o.is_none() && !outs.contains(a))?;
+                let k = (1..e.first_global()).find(|&k| e.sym_name(k).starts_with("$d") && e.sym(k).shndx as usize == eh && e.sym(k).value != at)?;
                 let mut y = e.sym(k);
-                if y.value == at {
-                    return None;
-                }
                 y.value = at;
                 e.set_sym(k, &y);
                 Some(format!("local $d of .eh_frame moved to {at:#x}"))
@@ -1254,7 +1290,20 @@ fn mutations(arch: Arch) -> Option<Vec<Mutant>> {
     );
 
     // (15) on a --unique output, a record moved into the other .rela.text.
-    let un = get("rl0-1-maps", &["--unique"])?;
+    // Its own case: two inputs whose .text both have records on every
+    // target (rl0 case 1's m1.c has none on x86-64 and i386).
+    let un = {
+        let case = Case {
+            name: "unique".into(),
+            srcs: vec![
+                src(Cc::Gcc, "u1.c", "int ext(int);\nint f1(int x) { return ext(x) + 1; }\n", O1, "u1.o"),
+                src(Cc::Gcc, "u2.c", "int ext(int);\nint f2(int x) { return ext(x) + 2; }\n", O1, "u2.o"),
+            ],
+            inputs: vec!["u1.o", "u2.o"],
+            opts: vec!["--unique=.text"],
+        };
+        Base::new(&t, &case, &scratch.join("unique"))
+    };
     push!(
         mutant(&un, "(15)", &["P-P3"], false, None, |e| {
             let rss: Vec<usize> = e.reloc_secs().into_iter().filter(|&r| e.name(e.sh(r).info as usize) == ".text" && !e.rels(r).is_empty()).collect();
@@ -1338,7 +1387,493 @@ fn mutations(arch: Arch) -> Option<Vec<Mutant>> {
         }),
         "(22)",
     );
+    // Field by field: one mutant for every field the rules read that
+    // (1)-(22) leave alone (brief WP-185 item 4), on d3-c-gcc and, for the
+    // groups, d3-cxx-gcc.
+    fields(arch, &c, &x, &mut v);
     Some(v)
+}
+
+const SHF_GROUP: u64 = 0x200;
+
+/// A `.text` relocation section with two records or more.
+fn text_rels(e: &Ed) -> Option<usize> {
+    e.reloc_secs().into_iter().find(|&r| is_rel_text(e, r) && e.rels(r).len() >= 2)
+}
+
+/// A defined global function with a size.
+fn global_func(e: &Ed) -> Option<usize> {
+    (e.first_global()..e.nsyms()).find(|&k| {
+        let y = e.sym(k);
+        y.ty() == 2 && y.shndx != 0 && y.shndx < 0xff00 && y.size > 0
+    })
+}
+
+/// An executable section with bytes.
+fn text_sec(e: &Ed) -> Option<usize> {
+    (1..e.shnum()).find(|&i| e.sh(i).flags & ed::SHF_EXECINSTR != 0 && e.sh(i).size > 0)
+}
+
+/// The first COMDAT group: (index, members).
+fn comdat(e: &Ed) -> Option<(usize, Vec<usize>)> {
+    let g = (1..e.shnum()).find(|&i| e.sh(i).ty == ed::SHT_GROUP && e.data(i).get(..4) == Some(&[1, 0, 0, 0][..]))?;
+    let d = e.data(g);
+    Some((g, d[4..].chunks(4).map(|w| u32::from_le_bytes([w[0], w[1], w[2], w[3]]) as usize).collect()))
+}
+
+/// The records of `.eh_frame`'s bytes: (offset, size, is a CIE).
+fn eh_records(d: &[u8]) -> Vec<(usize, usize, bool)> {
+    let mut v = Vec::new();
+    let mut at = 0;
+    while at + 8 <= d.len() {
+        let len = u32::from_le_bytes([d[at], d[at + 1], d[at + 2], d[at + 3]]) as usize;
+        if len == 0 || len == 0xffff_ffff {
+            break;
+        }
+        let id = u32::from_le_bytes([d[at + 4], d[at + 5], d[at + 6], d[at + 7]]);
+        v.push((at, 4 + len, id == 0));
+        at += 4 + len;
+    }
+    v
+}
+
+/// The field mutations (brief WP-185 item 4).
+#[allow(clippy::too_many_lines)] // one mutant after the other
+fn fields(arch: Arch, c: &Base, x: &Base, v: &mut Vec<Mutant>) {
+    let mut push = |m: Option<Mutant>, id: &str| match m {
+        Some(m) => v.push(m),
+        None => v.push(Mutant {
+            id: id.to_string(),
+            base: String::new(),
+            what: "no site".into(),
+            want: vec!["(a site)"],
+            rules: BTreeSet::new(),
+            anomalies: Vec::new(),
+            first: String::new(),
+        }),
+    };
+    // Relocation records: dropped, symbol, type, addend, duplicated.
+    push(
+        mutant(c, "(f1) record dropped", &["P-P3"], false, None, |e| {
+            let rs = text_rels(e)?;
+            let mut rel = e.rels(rs);
+            let r = rel.remove(0);
+            e.set_rels(rs, &rel);
+            Some(format!("{}: the record at {:#x} dropped", e.name(rs), r.offset))
+        }),
+        "(f1)",
+    );
+    push(
+        mutant(c, "(f2) record symbol", &["P-P3"], false, None, |e| {
+            let rs = text_rels(e)?;
+            let mut rel = e.rels(rs);
+            let was = rel[0].sym;
+            // A defined symbol in another section: not the same place.
+            let at = e.sym(was as usize).shndx;
+            let k = (1..e.nsyms()).find(|&k| {
+                let y = e.sym(k);
+                y.shndx != 0 && y.shndx < 0xff00 && y.shndx != at && y.ty() != 4 && y.ty() != ed::STT_SECTION
+            })?;
+            rel[0].sym = k as u32;
+            e.set_rels(rs, &rel);
+            Some(format!("{}: record 0's symbol {was} -> {k} ({})", e.name(rs), e.sym_name(k)))
+        }),
+        "(f2)",
+    );
+    push(
+        mutant(c, "(f3) record type", &["P-P3"], false, None, |e| {
+            let rs = text_rels(e)?;
+            let mut rel = e.rels(rs);
+            let abs = match arch {
+                Arch::Aarch64 => 257,
+                Arch::X86_64 | Arch::I386 => 1,
+            };
+            let k = rel.iter().position(|r| r.ty != abs && r.ty != 0)?;
+            let was = rel[k].ty;
+            rel[k].ty = abs;
+            e.set_rels(rs, &rel);
+            Some(format!("{}: record {k}'s type {was} -> {abs}", e.name(rs)))
+        }),
+        "(f3)",
+    );
+    push(
+        mutant(c, "(f4) record addend", &["P-P3"], false, None, |e| {
+            let rs = text_rels(e)?;
+            let mut rel = e.rels(rs);
+            if let Some(a) = rel[0].addend {
+                rel[0].addend = Some(a + 4);
+                e.set_rels(rs, &rel);
+                return Some(format!("{}: record 0's r_addend {a:#x} + 4", e.name(rs)));
+            }
+            // REL: the addend is the field (i386's 32-bit fields).
+            let tgt = e.sh(rs).info as usize;
+            let at = e.sh(tgt).offset as usize + rel[0].offset as usize;
+            let a = e.rd(at, 4);
+            e.wr(at, 4, a.wrapping_add(4));
+            Some(format!("{}: record 0's field {a:#x} + 4", e.name(rs)))
+        }),
+        "(f4)",
+    );
+    push(
+        mutant(c, "(f5) record duplicated", &["P-P3"], false, None, |e| {
+            let rs = text_rels(e)?;
+            let mut rel = e.rels(rs);
+            rel.push(rel[0].clone());
+            e.set_rels(rs, &rel);
+            Some(format!("{}: record 0 written twice", e.name(rs)))
+        }),
+        "(f5)",
+    );
+    // Symbols: size, binding, visibility, section, name, type; a section
+    // symbol missing.
+    let sym = |id: &str, f: fn(&mut ed::Sym, &Ed) -> String| {
+        mutant(c, id, &["P-P4"], false, None, |e| {
+            let k = global_func(e)?;
+            let mut y = e.sym(k);
+            let what = f(&mut y, e);
+            e.set_sym(k, &y);
+            Some(format!("{}: {what}", e.sym_name(k)))
+        })
+    };
+    push(
+        sym("(f6) st_size", |y, _| {
+            y.size += 1;
+            "st_size + 1".into()
+        }),
+        "(f6)",
+    );
+    push(
+        sym("(f7) binding", |y, _| {
+            y.info = (2 << 4) | (y.info & 0xf);
+            "STB_WEAK".into()
+        }),
+        "(f7)",
+    );
+    push(
+        sym("(f8) visibility", |y, _| {
+            y.other = (y.other & !3) | 3;
+            "STV_PROTECTED".into()
+        }),
+        "(f8)",
+    );
+    push(
+        sym("(f9) st_shndx", |y, e| {
+            let was = y.shndx;
+            let o = (1..e.shnum()).find(|&i| i != was as usize && e.sh(i).flags & 2 != 0 && e.sh(i).ty == 1).unwrap_or(1);
+            y.shndx = o as u16;
+            format!("st_shndx {was} -> {o}")
+        }),
+        "(f9)",
+    );
+    push(
+        sym("(f10) st_type", |y, _| {
+            y.info = (y.info & 0xf0) | 1;
+            "STT_OBJECT".into()
+        }),
+        "(f10)",
+    );
+    push(
+        mutant(c, "(f11) st_name", &["P-P4"], false, None, |e| {
+            let k = global_func(e)?;
+            let name = e.sym_name(k);
+            let at = e.sym_name_at(k);
+            e.b[at] = if e.b[at] == b'Z' { b'Y' } else { b'Z' };
+            Some(format!("{name}: its name's first byte changed"))
+        }),
+        "(f11)",
+    );
+    push(
+        mutant(c, "(f12) section symbol", &["P-P4"], false, None, |e| {
+            let t = text_sec(e)?;
+            let k = e.section_sym(t)?;
+            let mut y = e.sym(k);
+            y.info &= 0xf0;
+            e.set_sym(k, &y);
+            Some(format!("{}'s section symbol {k} made STT_NOTYPE", e.name(t)))
+        }),
+        "(f12)",
+    );
+    // .eh_frame: a live FDE dropped; a terminator added.
+    push(
+        mutant(c, "(f13) live FDE dropped", &["P-P5"], false, None, |e| {
+            let eh = e.find(".eh_frame")?;
+            let d = e.data(eh);
+            let &(at, n, _) = eh_records(&d).iter().rev().find(|r| !r.2)?;
+            let mut d2 = d[..at].to_vec();
+            d2.extend_from_slice(&d[at + n..]);
+            e.set_data(eh, &d2);
+            for rs in e.relocs_of(eh) {
+                let rel: Vec<R> = e
+                    .rels(rs)
+                    .into_iter()
+                    .filter(|r| !(at as u64..(at + n) as u64).contains(&r.offset))
+                    .map(|mut r| {
+                        if r.offset >= (at + n) as u64 {
+                            r.offset -= n as u64;
+                        }
+                        r
+                    })
+                    .collect();
+                e.set_rels(rs, &rel);
+            }
+            Some(format!(".eh_frame: the FDE at {at:#x} ({n} bytes) and its records dropped"))
+        }),
+        "(f13)",
+    );
+    push(
+        mutant(c, "(f14) terminator", &["P-P5"], true, None, |e| {
+            // At the front, the records and their relocation records moved
+            // by 4 (CIE pointers are relative): appended, it would fill
+            // the 4 bytes of padding GNU ld trims on AArch64 and match
+            // L-R6's size by chance.
+            let eh = e.find(".eh_frame")?;
+            let mut d = vec![0u8; 4];
+            d.extend(e.data(eh));
+            e.set_data(eh, &d);
+            for rs in e.relocs_of(eh) {
+                let rel: Vec<R> = e
+                    .rels(rs)
+                    .into_iter()
+                    .map(|mut r| {
+                        r.offset += 4;
+                        r
+                    })
+                    .collect();
+                e.set_rels(rs, &rel);
+            }
+            Some(".eh_frame: a zero terminator written before its first record".into())
+        }),
+        "(f14)",
+    );
+    // Groups: the flag word, the member list, the signature, a member
+    // without SHF_GROUP, the group's sh_link and sh_entsize.
+    push(
+        mutant(x, "(f15) group flag word", &["P-P6"], false, None, |e| {
+            let (g, _) = comdat(e)?;
+            let mut d = e.data(g);
+            d[0] = 0;
+            e.set_data(g, &d);
+            Some(format!("group {g}: GRP_COMDAT cleared"))
+        }),
+        "(f15)",
+    );
+    push(
+        mutant(x, "(f16) group member list", &["P-P6"], false, None, |e| {
+            let (g, m) = comdat(e)?;
+            let mut d = e.data(g);
+            d.truncate(d.len() - 4);
+            e.set_data(g, &d);
+            Some(format!("group {g}: its last member {} left out", m.last()?))
+        }),
+        "(f16)",
+    );
+    push(
+        mutant(x, "(f17) group signature", &["P-P6"], false, None, |e| {
+            let (g, _) = comdat(e)?;
+            let mut h = e.sh(g);
+            let was = h.info;
+            let k = (1..e.nsyms() as u32).rev().find(|&k| k != was && e.sym(k as usize).ty() != ed::STT_SECTION)?;
+            h.info = k;
+            e.set_sh(g, &h);
+            Some(format!("group {g}: sh_info {was} -> {k}"))
+        }),
+        "(f17)",
+    );
+    push(
+        mutant(x, "(f18) member without SHF_GROUP", &["P-P6"], false, None, |e| {
+            let (_, m) = comdat(e)?;
+            let mut h = e.sh(m[0]);
+            h.flags &= !SHF_GROUP;
+            e.set_sh(m[0], &h);
+            Some(format!("{}: SHF_GROUP cleared", e.name(m[0])))
+        }),
+        "(f18)",
+    );
+    push(
+        mutant(x, "(f19) group sh_link", &["P-P11"], false, None, |e| {
+            let (g, _) = comdat(e)?;
+            let mut h = e.sh(g);
+            h.link = 0;
+            e.set_sh(g, &h);
+            Some(format!("group {g}: sh_link 0"))
+        }),
+        "(f19)",
+    );
+    push(
+        mutant(x, "(f20) group sh_entsize", &["P-P11"], false, None, |e| {
+            let (g, _) = comdat(e)?;
+            let mut h = e.sh(g);
+            h.entsize = 8;
+            e.set_sh(g, &h);
+            Some(format!("group {g}: sh_entsize 8"))
+        }),
+        "(f20)",
+    );
+    // The header: e_machine, e_flags, e_entry.
+    push(
+        mutant(c, "(f21) e_machine", &["P-P7"], false, None, |e| {
+            let was = e.rd(18, 2);
+            let m = if was == 62 { 183 } else { 62 };
+            e.wr(18, 2, m);
+            Some(format!("e_machine {was} -> {m}"))
+        }),
+        "(f21)",
+    );
+    push(
+        mutant(c, "(f22) e_flags", &["P-P7"], false, None, |e| {
+            let at = if e.c64 { 48 } else { 36 };
+            e.wr(at, 4, 1);
+            Some("e_flags 1".into())
+        }),
+        "(f22)",
+    );
+    push(
+        mutant(c, "(f23) e_entry", &["P-P7"], false, None, |e| {
+            let w = if e.c64 { 8 } else { 4 };
+            e.wr(24, w, 0x10);
+            Some("e_entry 0x10".into())
+        }),
+        "(f23)",
+    );
+    // The notes: a property note no input has.
+    push(
+        mutant(c, "(f24) property note", &["P-P10"], false, None, |e| {
+            if e.find(".note.gnu.property").is_some() {
+                return None;
+            }
+            let (al, pr): (usize, u32) = match arch {
+                Arch::Aarch64 => (8, 0xc000_0000),
+                Arch::X86_64 => (8, 0xc000_0002),
+                Arch::I386 => (4, 0xc000_0002),
+            };
+            let mut desc = Vec::new();
+            desc.extend_from_slice(&pr.to_le_bytes());
+            desc.extend_from_slice(&4u32.to_le_bytes());
+            desc.extend_from_slice(&1u32.to_le_bytes());
+            while desc.len() % al != 0 {
+                desc.push(0);
+            }
+            let mut d = Vec::new();
+            d.extend_from_slice(&4u32.to_le_bytes());
+            d.extend_from_slice(&(desc.len() as u32).to_le_bytes());
+            d.extend_from_slice(&5u32.to_le_bytes());
+            d.extend_from_slice(b"GNU\0");
+            d.extend_from_slice(&desc);
+            let mut h = e.sh(1);
+            h.name = e.add_name(".note.gnu.property");
+            h.ty = 7;
+            h.flags = 2;
+            h.align = al as u64;
+            (h.entsize, h.link, h.info, h.addr) = (0, 0, 0, 0);
+            e.add(&h, &d);
+            Some("an allocated property note (FEATURE_1_AND 1) added".into())
+        }),
+        "(f24)",
+    );
+    // Section headers, field by field.
+    let hdr = |id: &str, want: &'static str, pick: fn(&Ed) -> Option<usize>, f: fn(&mut ed::Sh) -> String| {
+        mutant(c, id, &[want], false, None, |e| {
+            let i = pick(e)?;
+            let mut h = e.sh(i);
+            let what = f(&mut h);
+            e.set_sh(i, &h);
+            Some(format!("{}: {what}", e.name(i)))
+        })
+    };
+    push(
+        hdr("(f25) sh_type", "P-P11", text_sec, |h| {
+            h.ty = 7;
+            "sh_type SHT_NOTE".into()
+        }),
+        "(f25)",
+    );
+    push(
+        hdr("(f26) sh_flags", "P-P11", text_sec, |h| {
+            h.flags &= !ed::SHF_EXECINSTR;
+            "SHF_EXECINSTR cleared".into()
+        }),
+        "(f26)",
+    );
+    push(
+        hdr("(f27) sh_addralign", "P-P11", text_sec, |h| {
+            h.align = if h.align > 1 { 1 } else { 16 };
+            format!("sh_addralign {}", h.align)
+        }),
+        "(f27)",
+    );
+    push(
+        hdr("(f28) sh_entsize", "P-P11", |e| Some(e.symtab()), |h| {
+            h.entsize = 1;
+            "sh_entsize 1".into()
+        }),
+        "(f28)",
+    );
+    push(
+        hdr("(f29) sh_link", "P-P11", text_rels, |h| {
+            h.link = 0;
+            "sh_link 0".into()
+        }),
+        "(f29)",
+    );
+    push(
+        hdr("(f30) symtab sh_link", "P-P11", |e| Some(e.symtab()), |h| {
+            h.link = 0;
+            "sh_link 0".into()
+        }),
+        "(f30)",
+    );
+    push(
+        hdr("(f31) sh_info", "P-P3", text_rels, |h| {
+            h.info = h.link;
+            "sh_info .symtab".into()
+        }),
+        "(f31)",
+    );
+    push(
+        hdr("(f32) sh_addr", "P-P7", text_sec, |h| {
+            h.addr = 0x1000;
+            "sh_addr 0x1000".into()
+        }),
+        "(f32)",
+    );
+    push(
+        hdr("(f33) sh_size", "P-P2", text_sec, |h| {
+            h.size = 0;
+            "sh_size 0 (its pieces lost)".into()
+        }),
+        "(f33)",
+    );
+    push(
+        mutant(c, "(f34) sh_name", &["P-P11"], false, None, |e| {
+            let t = text_sec(e)?;
+            let o = (1..e.shnum()).find(|&i| e.name(i) != e.name(t) && e.sh(i).ty == 1)?;
+            let mut h = e.sh(t);
+            h.name = e.sh(o).name;
+            e.set_sh(t, &h);
+            Some(format!("section {t}: sh_name of {}", e.name(o)))
+        }),
+        "(f34)",
+    );
+    push(
+        mutant(c, "(f35) section duplicated", &["P-P11"], false, None, |e| {
+            let t = text_sec(e)?;
+            let (h, d) = (e.sh(t), e.data(t));
+            e.add(&h, &d);
+            Some(format!("{} appended a second time, without its records", e.name(t)))
+        }),
+        "(f35)",
+    );
+    // An SHF_MERGE section's entry size (the merged strings).
+    push(
+        mutant(c, "(f36) merge sh_entsize", &["P-P11"], false, None, |e| {
+            let i = (1..e.shnum()).find(|&i| e.sh(i).flags & 0x10 != 0 && e.sh(i).entsize > 0)?;
+            let mut h = e.sh(i);
+            h.entsize *= 2;
+            e.set_sh(i, &h);
+            Some(format!("{}: sh_entsize {}", e.name(i), h.entsize))
+        }),
+        "(f36)",
+    );
 }
 
 fn judge_mutations(arch: Arch) {

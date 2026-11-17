@@ -15,7 +15,7 @@ use crate::relocatable::{
     SHT_SYMTAB, SHT_SYMTAB_SHNDX, STB_GLOBAL, STB_GNU_UNIQUE, STB_WEAK, STT_COMMON, STT_FILE,
     STT_OBJECT, STT_SECTION, Sym, Tgt,
 };
-use crate::report::{Finding, Rewrite, Rule};
+use crate::report::{Finding, Rule};
 
 /// The merged view of one key over the inputs.
 #[derive(Debug, Default)]
@@ -296,12 +296,13 @@ pub(crate) fn check(rv: &mut Rv<'_>) {
             continue;
         }
         // A mapping symbol of a non-executable section marks data and
-        // code for disassemblers; it is not judged (§14.5).
+        // code for disassemblers; it is not judged for a reference
+        // (§14.5; mortar's are, `.eh_frame`'s through the record map).
         let mapping = matches!(s.name.as_str(), "$x" | "$d" | "$t" | "$a")
             || s.name.starts_with("$x.")
             || s.name.starts_with("$d.");
         let exec = rv.out.secs.get(s.shndx as usize).is_some_and(|x| x.flags & crate::relocatable::SHF_EXECINSTR != 0);
-        if mapping && !(s.in_section() && exec) {
+        if mapping && !(s.in_section() && exec) && !rv.mortar() {
             unjudged += 1;
             continue;
         }
@@ -325,9 +326,9 @@ pub(crate) fn check(rv: &mut Rv<'_>) {
     rv.report.coverage.globals_checked += judged;
     rv.report.coverage.locals_checked += locals;
     rv.report.coverage.locals_unchecked += unjudged;
-    if accepted > 0 {
-        *rv.report.coverage.accepted.entry(Rewrite::PerLinker).or_default() += accepted;
-    }
+    // A per-linker symbol form is a symbol judged, not a relocation
+    // record: §7.2's sum is over records.
+    rv.report.coverage.globals_checked += accepted;
     for m in msgs {
         rv.push(Finding::new(Rule::Rel(4), m));
     }

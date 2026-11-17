@@ -1128,6 +1128,16 @@ fn read_inputs(
         } else {
             match Elf::parse(&bytes) {
                 Ok(e) if e.h.e_type == ET_REL && e.h.machine == out.machine && e.h.class64 == out.class64 => e,
+                // P-P7: the output's e_machine is the inputs'. An input of
+                // the class but another machine names the output's header,
+                // once; the input is then not judged.
+                Ok(e) if e.h.e_type == ET_REL && e.h.class64 == out.class64 => {
+                    let msg = format!("e_machine is {}, not {}", out.machine, e.h.machine);
+                    if !report.findings.iter().any(|x| x.rule == Rule::Rel(7) && x.message == msg) {
+                        report.findings.push(Finding::new(Rule::Rel(7), msg));
+                    }
+                    continue;
+                }
                 Ok(e) => {
                     report.findings.push(Finding::new(
                         Rule::InputUnreadable,
@@ -2081,8 +2091,9 @@ fn leftovers(rv: &mut Rv<'_>) {
         let orr = rv.out_rels[&ors][oi];
         let tsec = rv.out.secs[ors].info;
         // GNU ld: a NONE record where it removed an FDE (L-R6).
+        // (An output record, not an input one: §7.2's sum counts the
+        // input records, so it is in none of its terms.)
         if rv.format == Format::Gnu && orr.ty == 0 && Some(tsec) == rv.out_eh {
-            rv.report.coverage.add_accepted(Rewrite::PerLinker, 0);
             continue;
         }
         let ot = rv.out_target(ors, &orr);
