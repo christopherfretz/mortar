@@ -1,0 +1,91 @@
+# dyn.md D-114, D-110 item 1, synth.md S-77 (WP-150): a definition a
+# version script makes local (a node's `local: *`, the anonymous script)
+# or that `--exclude-libs` excludes is `STB_LOCAL` in `.symtab`, in its
+# defining file's block (before `sh_info`), with its own visibility:
+# `helper`, the weak `wk`, `gvar` local DEFAULT (a common:
+# `symtab-local-common`), `prot`
+# local PROTECTED (lld, mold; GNU ld writes DEFAULT on every local it
+# demotes), the hidden `hid` local HIDDEN (GNU ld: DEFAULT, S-77). `-x`
+# and `-X` keep them (they were not input locals; all three). An excluded
+# definition is local in a PIE too (GNU ld and lld; mold LOCAL HIDDEN).
+# Measured on AArch64: GNU ld 2.44, lld 19.1.7, mold 2.37.1.
+#@ spec: dyn.md "D-114"; dyn.md "D-110"; synth.md "S-77"
+#@ arch: aarch64 x86_64
+#@ requires: eu-elflint
+
+cc -O1 -fPIC lib.c -o lib.o
+cc -O1 -fPIC ex.c -o ex.o
+cc -O1 -fPIE main.c -o main.o
+cc -O1 -fPIE mex.c -o mex.o
+ar rcs libex.a ex.o
+link gcc -shared lib.o -Wl,--version-script,v.map -o libv.so
+check readelf -sW libv.so
+  has: FUNC LOCAL DEFAULT * helper$
+  has: FUNC LOCAL DEFAULT * wk$
+  has: OBJECT LOCAL DEFAULT * gvar$
+  has(lld,mold,mortar): FUNC LOCAL PROTECTED * prot$
+  has(bfd): FUNC LOCAL DEFAULT * prot$
+  has(lld,mold,mortar): FUNC LOCAL HIDDEN * hid$
+  has: FUNC GLOBAL DEFAULT * api$
+  not: GLOBAL * helper$
+  not: WEAK * wk$
+  not: GLOBAL * gvar$
+check elflint libv.so
+  allow(lld,mold): relro_padding
+  allow(mold): __ehdr_start
+  allow(mold): __executable_start
+  allow(mold): _TLS_MODULE_BASE_
+  allow(lld): invalid processor-specific flag
+link gcc -shared lib.o -Wl,--version-script,anon.map -o liba.so
+check readelf -sW liba.so
+  has: FUNC LOCAL DEFAULT * helper$
+  has: OBJECT LOCAL DEFAULT * gvar$
+  has: FUNC GLOBAL DEFAULT * api$
+  not: GLOBAL * helper$
+link gcc -shared lib.o -Wl,--version-script,v.map -Wl,-x -o libx.so
+check readelf -sW libx.so
+  has: FUNC LOCAL DEFAULT * helper$
+  has: OBJECT LOCAL DEFAULT * gvar$
+  not: lib.c$
+link gcc -shared lib.o -Wl,--version-script,v.map -Wl,-X -o libdx.so
+check readelf -sW libdx.so
+  has: FUNC LOCAL DEFAULT * helper$
+link gcc -shared lib.o -L. -Wl,-u,exfn -lex -Wl,--exclude-libs,ALL -o libe.so
+check readelf -sW libe.so
+  has(bfd,lld,mortar): FUNC LOCAL DEFAULT * exfn$
+  has(mold): FUNC LOCAL HIDDEN * exfn$
+  has: FUNC GLOBAL DEFAULT * helper$
+  not: GLOBAL * exfn$
+check readelf --dyn-syms -W libe.so
+  not: exfn
+link gcc -pie mex.o -L. -lex -Wl,--exclude-libs,ALL -o prog
+check readelf -sW prog
+  has(bfd,lld,mortar): FUNC LOCAL DEFAULT * exfn$
+  not: GLOBAL * exfn$
+run prog
+  exit: 0
+host gcc -pie main.o -L. -l:libv.so -o useapi
+run useapi
+  stdout: api 19
+
+#--- lib.c
+static int st(int x) { return x + 1; }
+__attribute__((visibility("hidden"))) int hid(int x) { return st(x) * 2; }
+int helper(int x) { return hid(x) + 3; }
+int api(int x) { return helper(x) + 4; }
+int gvar = 5;
+__attribute__((weak)) int wk(void) { return 6; }
+__attribute__((visibility("protected"))) int prot(int x) { return x - 1; }
+#--- ex.c
+int exfn(int x) { return x * 7; }
+#--- main.c
+#include <stdio.h>
+int api(int);
+int main(void) { printf("api %d\n", api(5)); return 0; }
+#--- mex.c
+int exfn(int);
+int main(void) { return exfn(1) - 7; }
+#--- v.map
+V1 { global: api; local: *; };
+#--- anon.map
+{ global: api; local: *; };

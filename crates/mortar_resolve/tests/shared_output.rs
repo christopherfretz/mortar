@@ -69,8 +69,9 @@ fn column(m: &Model, col: &[bool]) -> Vec<&'static str> {
 }
 
 // spec: dyn.md D-110 (the export set: no shared input needed, -E changes
-// nothing; hidden keys, undefined keys and `_end` without a shared
-// reference are not exported; `__start_` always)
+// nothing; hidden keys and undefined keys are not exported; `_end` that an
+// object references is, without a shared reference (item 2, WP-150: GNU
+// ld and lld); `__start_` always)
 #[test]
 fn d110_export_set_of_a_shared_object() {
     let m = library();
@@ -80,17 +81,18 @@ fn d110_export_set_of_a_shared_object() {
         let r = link_with(&m, &o);
         assert!(r.problems.is_empty(), "{:?}", r.problems);
         let d = dynamic(&r);
-        assert_eq!(column(&m, &d.exported), ["f", "d", "w", "c", "p", "__start_mysec"]);
+        assert_eq!(column(&m, &d.exported), ["f", "d", "w", "c", "p", "_end", "__start_mysec"]);
     }
 }
 
-// spec: dyn.md D-112 (the table), model.md §3.3 check (8)
+// spec: dyn.md D-112 (the table; `_end` is `NOTYPE`: preemptible under
+// `-Bsymbolic-functions`, lld's form, WP-150), model.md §3.3 check (8)
 #[test]
 fn d112_preemptible_per_form() {
     let m = library();
     for (form, want) in [
-        (Symbolic::None, &["f", "d", "w", "c"][..]),
-        (Symbolic::Functions, &["d", "c"][..]),
+        (Symbolic::None, &["f", "d", "w", "c", "_end"][..]),
+        (Symbolic::Functions, &["d", "c", "_end"][..]),
         (Symbolic::All, &[][..]),
     ] {
         let r = link_with(&m, &shared_opts(form));
@@ -231,6 +233,70 @@ fn d10_exec_weak_key_binds_a_used_object() {
                     Def::Shared(mortar_core::SymEntry { file: v, index })
                 };
                 assert_eq!(r.def[m.id(name).0 as usize], want, "{name} {case} pie={pie}");
+            }
+        }
+    }
+}
+
+/// dyn.md D-21 item 2, D-110 item 2 (WP-150, measured: GNU ld and lld
+/// agree on each cell asserted here): in `Exec` and `Pie` the seven names
+/// both define (`_end`, `__bss_start`, ...) are exported when a needed
+/// shared object references or defines them ("ref", "def"), or when an
+/// object references them and `-E` is given; `__etext` (lld does not
+/// define it) only when a shared object references it and an object does
+/// too. `-E` alone exports none of them (GNU ld exports some: a
+/// difference, mortar keeps lld's form); no reference, no `-E`: none.
+#[test]
+fn d21_linker_defined_exports_of_an_executable() {
+    use mortar_resolve::Def;
+    for pie in [false, true] {
+        for (cell, lib_refs, lib_defs, obj_refs, export_dynamic, want) in [
+            ("def", false, true, false, false, true),
+            ("ref", true, false, false, false, true),
+            ("obj", false, false, true, false, false),
+            ("obj -E", false, false, true, true, true),
+            ("-E", false, false, false, true, false),
+        ] {
+            let mut m = Model::new(A64);
+            let a = m.obj("a.o");
+            m.def(a, "main");
+            if obj_refs {
+                m.undef(a, "_end");
+                m.undef(a, "__bss_start");
+                m.undef(a, "__etext");
+            }
+            let l = m.shlib("libl.so", false);
+            m.def(l, "api");
+            if lib_refs {
+                m.undef(l, "_end");
+                m.undef(l, "__bss_start");
+            }
+            if lib_defs {
+                m.data(l, "_end", 1);
+                m.data(l, "__bss_start", 1);
+            }
+            let mut o = Options {
+                entry: Entry::None,
+                output: Output { pie, dynamic: true },
+                ..Options::default()
+            };
+            o.shared.export_dynamic = export_dynamic;
+            let r = link_with(&m, &o);
+            assert!(r.problems.is_empty(), "{cell}: {:?}", r.problems);
+            let d = dynamic(&r);
+            for name in ["_end", "__bss_start"] {
+                let Some(k) = m.try_id(name) else {
+                    assert!(!want, "{cell}: no key {name}");
+                    continue;
+                };
+                let k = k.0 as usize;
+                assert_eq!(d.exported[k], want, "{cell} pie={pie} {name}");
+                if want {
+                    assert!(matches!(r.def[k], Def::Provide { .. }), "{cell} {name}");
+                }
+            }
+            if let Some(k) = m.try_id("__etext") {
+                assert!(!d.exported[k.0 as usize], "{cell} pie={pie} __etext");
             }
         }
     }

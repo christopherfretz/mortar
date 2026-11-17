@@ -820,10 +820,25 @@ the null entry:
 2. **exports**: every key `exported` (resolve §9.6, D-12), except
    linker-defined keys of file 0, which are exported only when
    `ref_dynamic` (lld and mold export none of `__bss_start`, `_edata`,
-   `_end`, `__bss_end__`… under `-rdynamic`, GNU ld exports them; the
+   `_end`, `__bss_end__`… under `-rdynamic` alone, GNU ld exports them; the
    set of linker-defined names is each linker's own, so exporting them
    would make the dynamic interface an artefact of the implementation;
-   request R-R5 to resolve §9.6);
+   request R-R5 to resolve §9.6). **Except** the seven names GNU ld and
+   lld both define, `_etext`, `etext`, `_edata`, `edata`,
+   `__bss_start`, `_end`, `end` (`linker::EXPORTED_AS_DEFINITIONS`):
+   these are exported as an ordinary definition of the program is, so
+   also when a needed shared object defines the name (`defined_dynamic`;
+   the linker then defines it although no object references it), and,
+   once an object references the name, under `-E`,
+   `--export-dynamic-symbol` or `--dynamic-list` (GNU ld and lld,
+   AArch64 and x86-64, PIE and `-no-pie`; WP-150). A library that reads
+   `_end` then sees the program's (`api_end() == _end`, a library of
+   GNU ld, lld or mortar under a GNU ld or mortar host). `-E` with no
+   reference exports none of them (lld; GNU ld exports `_edata`,
+   `__bss_start`, `_end` and on AArch64 its own names: a difference,
+   §13.1); `__etext` and the AArch64-only names follow the rule's first
+   sentence (lld does not define them; GNU ld exports them as the
+   seven). mold exports none (§13.1);
 3. **copy aliases**: every key whose shared definition lies at the address
    of a copy allocation (`Slots` copy allocations, model §4.3), whether
    or not the program references it. All three export the referenced name;
@@ -1754,6 +1769,7 @@ unchanged. Every `P-D` id this spec cites is that section's.
 | `--dynamic-list` in a static-pie | exports the listed names | exports the listed names | exports the listed names | accepted, no effect: `.dynsym` stays the null entry (D-1, P-D14; WP-128 measured, AArch64) |
 | `--export-dynamic-symbol=GLOB` | glob | glob | glob | glob (resolve.md §4.2; WP-056 fixed a literal match) |
 | `--export-dynamic`/`--export-dynamic-symbol` in an `Exec`/`Pie` of objects alone (no shared object on the line) | `Pie`: exports (and its linker-defined `_end`/`__end__` under a section that does not hold them, P-D7); `-no-pie`: no `.dynamic`, a static program | `Pie`: exports; `-no-pie`: `.interp` only, a static program | exports; `-no-pie`: `.dynsym` without `PT_DYNAMIC` (P-D4) | exports, D-21's set as with a shared input (WP-148; before, accepted with an empty `.dynsym`) |
+| `_end`, `__bss_start`, ... (D-21 item 2's seven names) in an `Exec`/`Pie` | exported when a needed library references or defines them (a library's ordinary `char _end[1]`: exported as the program's own, `STT_OBJECT`), or referenced and `-E`; `-E` alone exports `_edata`, `__bss_start`, `_end` (AArch64: also `__bss_start__`, `__bss_end__`, `_bss_end__`, `__end__`) | exported when a needed library references or defines them (`STT_NOTYPE`), or referenced and `-E`; `-E` alone none | none in any cell: a library reading `_end` sees its own | lld's (D-21 item 2, WP-150) |
 | `.gnu.version_r` align | 8 | 4 | 4 | 4 (D-34) |
 | `IRELATIVE` in a PIE | last of `.rela.plt` | end of `.rela.dyn` | end of `.rela.dyn` | GNU ld's (D-41) |
 | `.rela.dyn` non-`RELATIVE` order | offset, `COPY` last | (sym, offset) | (sym, offset) | (sym, offset) (D-40) |
@@ -2085,15 +2101,29 @@ whose `def` is a definition of a live relocatable object with
    `--dynamic-list` and D-21's export of a definition a shared input
    also has (all three), and a shared input's reference to an excluded
    definition is refused as one to a hidden definition (D-13; GNU ld and
-   lld refuse it, mold links a program the loader cannot start). The
-   `.symtab` binding of an excluded definition is WP-150's question (GNU
-   ld and lld write `LOCAL DEFAULT`, mold `LOCAL HIDDEN`; mortar keeps
-   `GLOBAL` meanwhile);
+   lld refuse it, mold links a program the loader cannot start). An
+   excluded definition is `STB_LOCAL` in `.symtab` with its own
+   visibility (synth S-77; GNU ld and lld write `LOCAL DEFAULT`, mold
+   `LOCAL HIDDEN`; WP-150);
 2. linker-defined (file 0): exported only when `ref_dynamic`, as D-21
-   item 2 says for executables; no reference exports `_end`, `_edata`
-   or `__bss_start` in `-shared` ([X-A] A1); layout L-100's "exported
-   `STB_GLOBAL STV_DEFAULT` when defined (GNU and lld)" is withdrawn
-   (request R-L10). **Except** `__start_NAME` and `__stop_NAME` of a
+   item 2 says for executables, but for D-21's seven names (`_etext`,
+   `etext`, `_edata`, `edata`, `__bss_start`, `_end`, `end`): one that
+   a live object references (the linker defines it, resolve §8) is
+   exported `STB_GLOBAL STT_NOTYPE STV_DEFAULT` as the library's own
+   definition and is preemptible by D-112's table like any `NOTYPE`
+   key: bound by `-Bsymbolic`, preemptible under `-Bsymbolic-functions`
+   (lld; GNU ld binds it there: a difference, §17.6), bound when a
+   `--dynamic-list` does not name it, local under a version script's
+   `local:` (GNU ld and lld, AArch64 and x86-64; WP-150, whose
+   measurement corrected [X-A] A1, made without a reference). Unreferenced, none
+   is defined and none exported. `__etext` and the AArch64-only names
+   (`__end__`, `__bss_start__`, ...) stay unexported without
+   `ref_dynamic` (GNU ld exports them, lld leaves the reference
+   undefined); `__executable_start` and `__init_array_start` stay
+   local and hidden (lld; GNU ld leaves them undefined). Layout
+   L-100's "exported `STB_GLOBAL STV_DEFAULT` when defined (GNU and
+   lld)" was withdrawn by request R-L10 and holds again for the seven
+   names when referenced. **Except** `__start_NAME` and `__stop_NAME` of a
    C-identifier output section that a live object references: exported
    `STB_GLOBAL STT_NOTYPE STV_PROTECTED` (GNU ld and lld, AArch64 and
    x86-64, with and without `--gc-sections`; mold exports neither, a
@@ -2348,7 +2378,18 @@ GNU ld wherever the references differ, with one deliberate exception
 - `foo@V`/`foo@@V` with no node `V` in the script, or with no script:
   refused, `undefined-version` (all three, [X-F] F2; resolve §9.4
   confirmed; D-27's note on GNU ld writing a verdef holds for
-  executables only).
+  executables only);
+- a key the script makes local is `STB_LOCAL` in `.symtab` with its own
+  visibility (synth S-77), linker-defined keys included: `__start_SEC`
+  and `__stop_SEC` under `local: *` are `LOCAL PROTECTED` (local: GNU ld
+  and mold, which write `DEFAULT`; lld keeps them `GLOBAL PROTECTED` and
+  exported), `_end`, `__bss_start`, ... `LOCAL DEFAULT` (all three; none
+  exports them). Without a reference they are not defined (D-110 item
+  2), and an unreferenced `global: _end` warns,
+  `version-script-undefined-name` (GNU ld is silent, lld refuses, mold
+  warns; WP-150). A linker-defined key named in a node's `global:` is
+  exported in that node (`__start_mysec@@V1`: GNU ld; `_end@@V1`: GNU ld
+  and lld).
 
 The script grammar is script.md §9. *Tests:* `version-script-rules`
 (every one of the 213 scripts of `exp3/vs3/cases.py`, with and without
@@ -3160,7 +3201,8 @@ form):
 | `.ctors` input | into `.init_array` | own section, never run (W24) | into `.init_array` | into `.init_array` (D-124) |
 | hidden `-init` function under gc | kept | kept | collected, `DT_INIT = 0` (W22) | kept (D-124) |
 | C-identifier section hidden by a version script | kept | dropped, `__start_` undefined (W23) | every one kept | kept (D-124) |
-| linker-defined exports | `__start_`/`__stop_` of a referenced C-identifier section, `PROTECTED` | same | none | GNU ld's and lld's (D-110 item 2; L-100's other exports withdrawn) |
+| linker-defined exports | `__start_`/`__stop_` of a referenced C-identifier section, `PROTECTED`; `_end`, `__bss_start`, ... (D-21's seven and its own names) when referenced, preemptible | `__start_`/`__stop_` the same; the seven when referenced, preemptible | none | GNU ld's and lld's where they agree: `__start_`/`__stop_`, the seven (D-110 item 2, WP-150) |
+| a referenced `_end` under `-Bsymbolic-functions` | bound | preemptible | not exported | preemptible (D-110 item 2, D-112: `NOTYPE`) |
 | version-node name symbols | exported (`ABS`) | no | no | no (D-110) |
 | `STT_SECTION` in `.dynsym` | AArch64 2 | none | none | none (D-110) |
 | `.gnu.hash` geometry | own | D-26 | own | D-26 (D-111) |

@@ -410,7 +410,22 @@ fn removed_lines(prog: &str, f: &front::Front<'_>) -> String {
 /// `--dependency-file` (`spec/input.md` §10.4) of the link `f` to `path`.
 fn write_dependency_file(f: &front::Front<'_>, path: &Path, diagnostics: &Collector) {
     let target = f.plan.output.as_deref().unwrap_or_else(|| OsStr::new("a.out"));
-    let paths = mortar_input::dependency_paths(&f.inputs.link);
+    // WP-150: the `--version-script` and `--dynamic-list` files, in
+    // command-line order before the inputs (GNU ld's order; lld lists
+    // them before the inputs too, mold sorted), each once.
+    let scripts = f.plan.scripts.iter().filter(|s| {
+        matches!(
+            s.role,
+            mortar_core::plan::ScriptRole::VersionScript
+                | mortar_core::plan::ScriptRole::DynamicList
+        )
+    });
+    let mut seen = std::collections::HashSet::new();
+    let paths: Vec<&[u8]> = scripts
+        .map(|s| s.path.as_encoded_bytes())
+        .chain(mortar_input::dependency_paths(&f.inputs.link))
+        .filter(|p| seen.insert(*p))
+        .collect();
     match depfile::render(target.as_encoded_bytes(), &paths) {
         Ok(text) => {
             if let Err((k, d)) = mortar_image::output::write_whole(path, &text, 0o666) {

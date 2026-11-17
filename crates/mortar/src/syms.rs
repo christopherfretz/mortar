@@ -6,8 +6,8 @@ use mortar_core::inputs::{Inputs, Reader};
 use mortar_core::resolution::{Def, InternalDef, RefFlags, Resolution};
 use mortar_core::{FileId, SectionId, SymEntry, SymKey, SymKind, SymbolId};
 use mortar_elf::consts::{
-    STB_GLOBAL, STB_GNU_UNIQUE, STB_WEAK, STO_AARCH64_VARIANT_PCS, STT_NOTYPE, STT_OBJECT, STT_TLS,
-    STV_DEFAULT, STV_HIDDEN, STV_INTERNAL, STV_PROTECTED,
+    STB_GLOBAL, STB_GNU_UNIQUE, STB_LOCAL, STB_WEAK, STO_AARCH64_VARIANT_PCS, STT_NOTYPE,
+    STT_OBJECT, STT_TLS, STV_DEFAULT, STV_HIDDEN, STV_INTERNAL, STV_PROTECTED,
 };
 use mortar_elf::{Machine, Sym, SymbolIndex, SymbolSection, SymbolTable};
 use mortar_synth::SymSource;
@@ -183,6 +183,20 @@ impl SymSource for CoreSyms<'_, '_> {
                 };
                 let mut g = row(s.sym_type(), s.st_size, self.def_of(e, &s, t), e.file, binding);
                 g.other |= s.st_other & !3;
+                // synth.md S-75 (WP-150): a definition its object writes
+                // with a version (`foo@V1`, `foo@@V2`, `.symver`) keeps
+                // that name, GNU ld's form. The key's name is the
+                // entry's before any `@` (resolve.md §2.3), so one byte
+                // of the entry's string decides: no scan of the name
+                // for an unversioned definition.
+                let strings = t.strings().bytes();
+                let at = (s.st_name as usize).saturating_add(key.name.len());
+                if strings.get(at) == Some(&b'@')
+                    && let Ok(full) = t.name(&s)
+                    && full.starts_with(key.name)
+                {
+                    g.name = full;
+                }
                 g
             }
             Def::Common(e) => {
@@ -207,7 +221,10 @@ impl SymSource for CoreSyms<'_, '_> {
                 // (x64.md X-47; GNU ld writes it `STT_TLS`): its value is
                 // then a template offset (synth.md S-81), 0.
                 let typ = if key.name == b"_TLS_MODULE_BASE_" { STT_TLS } else { STT_NOTYPE };
-                let mut g = row(typ, 0, SymDef::Internal, FileId::INTERNAL, STB_GLOBAL);
+                // A version script's `local:` makes it `STB_LOCAL`
+                // (`spec/dyn.md` D-114, WP-150; resolution's binding).
+                let binding = if props.binding == STB_LOCAL { STB_LOCAL } else { STB_GLOBAL };
+                let mut g = row(typ, 0, SymDef::Internal, FileId::INTERNAL, binding);
                 g.other = (g.other & !3) | stricter(other, table);
                 g
             }

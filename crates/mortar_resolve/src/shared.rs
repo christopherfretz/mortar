@@ -55,6 +55,10 @@ pub struct Dynamic {
     /// Per key: the output version index of an export of a shared object
     /// (`crate::version::apply`; 0 unversioned); empty outside `Shared`.
     pub versions: Vec<u16>,
+    /// Per key: a definition the version script makes local (D-114, its
+    /// `STB_LOCAL` `.symtab` entry, WP-150); empty when the line has no
+    /// script.
+    pub script_local: Vec<bool>,
     /// The version stage's diagnostics (WP-125).
     pub version_problems: Vec<crate::version::VersionProblem>,
 }
@@ -374,6 +378,27 @@ pub(crate) fn link<V: View>(
             }
         }
     }
+    // D-21 (WP-150): in an executable, `_end`, `__bss_start`, ... (the
+    // names GNU ld and lld both define) that a loaded shared object
+    // references or defines while nothing in the program does are the
+    // linker's, and exported below (GNU ld and lld). The names an object
+    // references are already the linker's (§8.1).
+    if opts.shared_output.is_none() {
+        for k in 0..keys {
+            if !(ref_dynamic[k] || defined_dynamic[k]) || !matches!(def[k], Def::Undefined { .. }) {
+                continue;
+            }
+            let (name, version) = view.key_name(SymbolId(k as u32));
+            if version.is_some() {
+                continue;
+            }
+            if let Some((sym, conditional)) = linker::candidate(name, machine, opts.output)
+                && sym.exported_as_definition()
+            {
+                def[k] = Def::Provide { sym, conditional };
+            }
+        }
+    }
     let ours = |d: Def| matches!(d, Def::Strong(_) | Def::Weak(_) | Def::Common(_));
     // D-110 item 1 (WP-128): a definition in a member of an archive
     // `--exclude-libs` names is never exported, in every kind (all three
@@ -388,6 +413,7 @@ pub(crate) fn link<V: View>(
     // WP-117: a shared object's export set is D-110's, and preemption
     // D-112's (`crate::export`).
     let mut versions: Vec<u16> = Vec::new();
+    let mut script_local: Vec<bool> = Vec::new();
     let mut version_problems = Vec::new();
     // D-112, §9.6 (WP-128): the keys a `--dynamic-list` lists, by name
     // without a version.
@@ -404,7 +430,17 @@ pub(crate) fn link<V: View>(
             .collect();
         // D-110 item 1, D-114 (WP-125): the version script.
         versions = vec![0; keys];
-        version_problems = crate::version::apply(view, &opts.versions, def, &mut e, &mut versions);
+        if opts.versions.script.is_some() {
+            script_local = vec![false; keys];
+        }
+        version_problems = crate::version::apply(
+            view,
+            &opts.versions,
+            def,
+            &mut e,
+            &mut versions,
+            &mut script_local,
+        );
         e
     } else {
         (0..keys)
@@ -413,8 +449,21 @@ pub(crate) fn link<V: View>(
                 if props[k].visibility == STV_HIDDEN || excluded(d) {
                     return false;
                 }
-                if matches!(d, Def::Provide { .. }) {
-                    return ref_dynamic[k];
+                // D-21 (WP-150): a linker-defined key a shared object
+                // references; `_end`, `__bss_start`, ... also as an
+                // ordinary definition (a shared object's definition of the
+                // name, `-E`, `--export-dynamic-symbol`, `--dynamic-list`).
+                if let Def::Provide { sym, .. } = d {
+                    return ref_dynamic[k]
+                        || (sym.exported_as_definition()
+                            && (defined_dynamic[k]
+                                || opts.shared.export_dynamic
+                                || opts
+                                    .shared
+                                    .export_symbols
+                                    .binary_search(&SymbolId(k as u32))
+                                    .is_ok()
+                                || listed(k)));
                 }
                 ours(d)
                     && (ref_dynamic[k]
@@ -570,6 +619,7 @@ pub(crate) fn link<V: View>(
         preemptible,
         closure_only,
         versions,
+        script_local,
         version_problems,
     }
 }

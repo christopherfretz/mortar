@@ -1,0 +1,48 @@
+# dyn.md D-21 item 2 (WP-150): in an executable, the seven names GNU ld
+# and lld both define (`_end`, `_edata`, `__bss_start`, ...) are
+# exported under `-E` when an object references them (GNU ld and lld),
+# not without `-E`; `-E` with no reference exports none (lld; GNU ld
+# exports `_end`, `_edata`, `__bss_start`: a difference, §13.1). mold
+# exports none in any cell. The cells with a needed library that
+# references or defines the names (exported too) are proven by
+# `mortar_resolve`'s `d21_linker_defined_exports_of_an_executable`: the
+# verifier's P-D11 and P-D7 reject every reference's output there today
+# (WP-150's record).
+#@ spec: dyn.md "D-21"
+#@ arch: aarch64 x86_64
+#@ xfail(bfd,aarch64): the verifier's P-D9 view 2 on the PIE's GOT slot of _end, a RELATIVE record whose value is one past the last segment's end (a legal address value; WP-150 reported it)
+
+cc -O1 -fPIE refs.c -o refs.o
+cc -O1 -fPIE plain.c -o plain.o
+link gcc -pie refs.o -Wl,-E -o prog-e
+check(bfd,lld,mortar) readelf --dyn-syms -W prog-e
+  has: NOTYPE GLOBAL DEFAULT * _end$
+  has: NOTYPE GLOBAL DEFAULT * _edata$
+  has: NOTYPE GLOBAL DEFAULT * __bss_start$
+  not: UND _end$
+check(mold) readelf --dyn-syms -W prog-e
+  not: * _end$
+run prog-e
+  stdout: 1
+link gcc -no-pie refs.o -Wl,-E -o prog-e-nopie
+check(bfd,lld,mortar) readelf --dyn-syms -W prog-e-nopie
+  has: NOTYPE GLOBAL DEFAULT * _end$
+link gcc -pie refs.o -o prog
+check readelf --dyn-syms -W prog
+  not: * _end$
+  not: * _edata$
+  not: * __bss_start$
+link gcc -pie plain.o -Wl,-E -o prog-e0
+check(lld,mold,mortar) readelf --dyn-syms -W prog-e0
+  not: * _end$
+  not: * _edata$
+  not: * __bss_start$
+check(bfd) readelf --dyn-syms -W prog-e0
+  has: * _end$
+
+#--- refs.c
+#include <stdio.h>
+extern char _end[], _edata[], __bss_start[];
+int main(void) { printf("%d\n", _edata <= __bss_start + 1 && __bss_start <= _end); return 0; }
+#--- plain.c
+int main(void) { return 0; }
