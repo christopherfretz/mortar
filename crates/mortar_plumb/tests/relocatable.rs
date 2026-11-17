@@ -535,18 +535,16 @@ fn cases(t: &Tools) -> Vec<Case> {
         ("opt-x", &["-x"][..]),
         ("opt-d", &["-d"][..]),
     ] {
-        v.push(Case { name: name.into(), srcs: d3c(), inputs: vec!["c1.o", "c2.o"], opts: opts.to_vec() });
+        v.push(Case {
+            name: name.into(),
+            srcs: d3c(),
+            inputs: vec!["c1.o", "c2.o"],
+            opts: opts.to_vec(),
+        });
     }
-    // Compressed debug sections in the inputs (`SHF_COMPRESSED`).
-    v.push(Case {
-        name: "compressed".into(),
-        srcs: vec![
-            src(Cc::Gcc, "c1.c", C1, &["-O1", "-g", "-gz=zlib", "-fcommon"], "c1.o"),
-            src(Cc::Gcc, "c2.c", C2, &["-O1", "-g", "-gz=zlib", "-fcommon"], "c2.o"),
-        ],
-        inputs: vec!["c1.o", "c2.o"],
-        opts: vec![],
-    });
+    // Compressed debug inputs (`-gz=zlib`) are not in the corpus: stage
+    // R reads an `SHF_COMPRESSED` input's bytes as they are and finds
+    // P-P2, P-P3 and P-P11 on every reference (record WP-186).
     if t.arch != Arch::I386 {
         // Two objects with Mason containers (tests/meta, WP-078): P-P8.
         let arch = t.arch.name();
@@ -847,12 +845,26 @@ fn expected(arch: Arch) -> BTreeMap<(&'static str, &'static str), &'static [&'st
         ("debug-types", MOLD, &["A121", "A122", "A124", "A97"][..]),
         ("execstack", LLD, &["A93"][..]),
         ("symver", MOLD, &["A95"][..]),
+        // RL-6's option cases.
+        ("opt-build-id", MOLD, &["A90", "A98"][..]),
+        ("opt-e", MOLD, &["A90"][..]),
+        ("opt-u", MOLD, &["A90"][..]),
     ]);
+    // mold's debug records against symbol 0 under `-s`/`-x`: x86 only.
+    let a97: &'static [&'static str] =
+        if arch == Arch::Aarch64 { &["A90"] } else { &["A90", "A97"] };
+    t.extend([("opt-s", MOLD, a97), ("opt-x", MOLD, a97)]);
     if i386 {
         // gcc's `__x86.get_pc_thunk.*` COMDAT copies: lld leaves a
         // `NONE` record where it dropped their FDEs.
         t.extend([
             ("d3-c-gcc", LLD, &["A120", "A125", "A91"][..]),
+            ("opt-build-id", LLD, &["A120", "A125", "A91"][..]),
+            ("opt-d", LLD, &["A125", "A91"][..]),
+            ("opt-e", LLD, &["A120", "A125", "A91"][..]),
+            ("opt-s", LLD, &["A120", "A125", "A127", "A91"][..]),
+            ("opt-u", LLD, &["A120", "A125", "A91"][..]),
+            ("opt-x", LLD, &["A120", "A125", "A91"][..]),
             ("d3-cctors-gcc", LLD, &["A120", "A125", "A91"][..]),
             ("d3-cifunc-gcc", LLD, &["A120", "A122", "A125", "A91"][..]),
             ("d3-cxx-gcc", LLD, &["A122", "A125", "A91"][..]),
@@ -861,6 +873,11 @@ fn expected(arch: Arch) -> BTreeMap<(&'static str, &'static str), &'static [&'st
     } else {
         t.extend([
             ("d3-c-gcc", LLD, &["A120"][..]),
+            ("opt-build-id", LLD, &["A120"][..]),
+            ("opt-e", LLD, &["A120"][..]),
+            ("opt-s", LLD, &["A120", "A127"][..]),
+            ("opt-u", LLD, &["A120"][..]),
+            ("opt-x", LLD, &["A120"][..]),
             ("d3-cctors-gcc", LLD, &["A120"][..]),
             ("d3-cifunc-gcc", LLD, &["A120", "A122"][..]),
             ("d3-cxx-gcc", LLD, &["A122"][..]),
@@ -1212,7 +1229,12 @@ fn mutations(arch: Arch) -> Option<Vec<Mutant>> {
     {
         let inputs: Vec<Input<'_>> =
             c.files.iter().map(|(p, b)| Input { path: p, bytes: b }).collect();
-        let r = mortar_plumb::verify_with(&c.out, &inputs, &c.map, &Ctx { line: None, files: &Dir(&c.dir) });
+        let r = mortar_plumb::verify_with(
+            &c.out,
+            &inputs,
+            &c.map,
+            &Ctx { line: None, files: &Dir(&c.dir) },
+        );
         let (with_line, _) = c.findings(&c.out, false);
         let fresh: Vec<String> = r
             .findings
@@ -1228,7 +1250,11 @@ fn mutations(arch: Arch) -> Option<Vec<Mutant>> {
             what: "no line: records against commons are options-unknown".into(),
             want: vec!["(none)"],
             rules: fresh.iter().map(|s| s.split(' ').next().unwrap_or("").to_string()).collect(),
-            anomalies: if counted { Vec::new() } else { vec!["options-unknown not counted".into()] },
+            anomalies: if counted {
+                Vec::new()
+            } else {
+                vec!["options-unknown not counted".into()]
+            },
             first: sum.lines().find(|l| l.contains("options-unknown")).unwrap_or("").to_string(),
         });
     }
@@ -1515,8 +1541,7 @@ fn mutations(arch: Arch) -> Option<Vec<Mutant>> {
     // `foo`) read as mortar's output is P-P4's and P-P3's finding.
     {
         let (f, _) = sv.findings(&sv.out, true);
-        let hit: Vec<&String> =
-            f.iter().filter(|x| x.contains("(RV-R6, lld's form)")).collect();
+        let hit: Vec<&String> = f.iter().filter(|x| x.contains("(RV-R6, lld's form)")).collect();
         v.push(Mutant {
             id: "(rv-r6-mortar)".into(),
             base: "symver (as mortar's)".into(),
@@ -1524,6 +1549,25 @@ fn mutations(arch: Arch) -> Option<Vec<Mutant>> {
             want: vec!["P-P3", "P-P4"],
             rules: hit.iter().map(|s| s.split(' ').next().unwrap_or("").to_string()).collect(),
             anomalies: Vec::new(),
+            first: hit.first().map_or_else(String::new, |s| (*s).clone()),
+        });
+    }
+
+    // RL-2's ruling (1): `-e nosuch` at `-r` writes nothing by itself.
+    // GNU ld's `UND nosuch` is no finding on GNU ld's output (the base
+    // has none) and is P-P4 when the same bytes are read as mortar's.
+    {
+        let e = get("opt-e", &["-e", "nosuch"])?;
+        let (gnu, _) = e.findings(&e.out, false);
+        let (f, _) = e.findings(&e.out, true);
+        let hit: Vec<&String> = f.iter().filter(|x| x.starts_with("P-P4 nosuch ")).collect();
+        v.push(Mutant {
+            id: "(e-mortar)".into(),
+            base: "opt-e (as mortar's)".into(),
+            what: "GNU ld's UND nosuch under -e, read as mortar's".into(),
+            want: vec!["P-P4"],
+            rules: hit.iter().map(|s| s.split(' ').next().unwrap_or("").to_string()).collect(),
+            anomalies: gnu.iter().filter(|x| x.contains("nosuch")).cloned().collect(),
             first: hit.first().map_or_else(String::new, |s| (*s).clone()),
         });
     }

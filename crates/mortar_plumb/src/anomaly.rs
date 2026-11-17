@@ -682,6 +682,20 @@ pub fn id(text: &str) -> &str {
 
 /// The anomalies of the references' `-r` outputs (stage R, §14; §10.2
 /// A90-A102, A120-A122), by the rule and the message's form.
+/// A127 (RL-6): what lld's debug sections kept under `-r -s` show.
+fn a127(n: u8, m: &str) -> bool {
+    match n {
+        2 => {
+            m.contains("§14.3 drops it: a debug section under -S or -s")
+                || (m.contains(":(.debug_") && m.contains(", not the tombstone "))
+        }
+        3 => {
+            m.contains(":(.debug_") && m.contains("(a record into a dropped copy has no equivalent")
+        }
+        _ => m.contains(" .debug_") && m.ends_with(" comes from no input section"),
+    }
+}
+
 fn relocatable(linker: Format, n: u8, m: &str) -> Option<&'static str> {
     let (lld, mold) = (linker == Format::Lld, linker == Format::Mold);
     let a = match n {
@@ -746,6 +760,7 @@ fn relocatable(linker: Format, n: u8, m: &str) -> Option<&'static str> {
         {
             "A125: at -r lld leaves an R_*_NONE record in .rela.eh_frame where it removed an FDE"
         }
+        2 | 3 | 11 if lld && a127(n, m) => "A127: at -r lld keeps the debug sections under -s",
         10 if lld
             && m.starts_with("an input asks for an executable stack (")
             && m.ends_with(" is N") =>

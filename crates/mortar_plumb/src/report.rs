@@ -817,8 +817,10 @@ impl Report {
                 let _ = writeln!(s, "not judged: relocatable composition ({l}): {why}");
             }
             if !p.tolerances.is_empty() || !p.not_compared.is_empty() {
-                let t: Vec<String> = p.tolerances.iter().map(|(k, n)| format!("({k}) {n}")).collect();
-                let nc: Vec<String> = p.not_compared.iter().map(|(k, n)| format!("{k} {n}")).collect();
+                let t: Vec<String> =
+                    p.tolerances.iter().map(|(k, n)| format!("({k}) {n}")).collect();
+                let nc: Vec<String> =
+                    p.not_compared.iter().map(|(k, n)| format!("{k} {n}")).collect();
                 let _ = writeln!(
                     s,
                     "composition tolerances: {}; not compared: {}",

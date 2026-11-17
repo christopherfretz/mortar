@@ -79,8 +79,10 @@ pub const STAGE_R: bool = true;
 pub use line::{Files, HostFiles};
 pub use locate::thin_members;
 pub use map::{Format, Map, MapError, MapFile};
+/// P-P1's coverage (RL-6, `compose`).
+pub use report::CompCoverage;
 pub use report::{
-    CompCoverage, Coverage, Finding, MetaCoverage, OUTSIDE, Reason, RelCoverage, Report, Rewrite, Rule, Site, Via,
+    Coverage, Finding, MetaCoverage, OUTSIDE, Reason, RelCoverage, Report, Rewrite, Rule, Site, Via,
 };
 
 /// An input file of the link, by the path the map names it with (§2.1).

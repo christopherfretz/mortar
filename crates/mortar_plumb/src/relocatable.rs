@@ -2159,8 +2159,9 @@ impl Rv<'_> {
         if !self.opts.known
             && self.ins[f].elf.syms.get(r.sym as usize).is_some_and(|y| y.shndx == SHN_COMMON)
         {
-            if let Some(&(ors, oi)) =
-                cands.iter().find(|&&(ors, oi)| !self.used[&(ors, oi)] && self.out_rels[&ors][oi].ty == r.ty)
+            if let Some(&(ors, oi)) = cands
+                .iter()
+                .find(|&&(ors, oi)| !self.used[&(ors, oi)] && self.out_rels[&ors][oi].ty == r.ty)
             {
                 self.used.insert((ors, oi), true);
                 self.matched.insert((ors, oi), (f, rs, ri));
@@ -2219,7 +2220,9 @@ impl Rv<'_> {
             match (&ot, t) {
                 (Tgt::Name(a, _), Tgt::Name(b, _)) if a == b && self.mortar() => {
                     let v = self.default_version_of(a).unwrap_or_default().to_string();
-                    format!("{head} has an output record against {ot}; mortar's names {v} (RV-R6, lld's form)")
+                    format!(
+                        "{head} has an output record against {ot}; mortar's names {v} (RV-R6, lld's form)"
+                    )
                 }
                 _ => format!("{head} has an output record against {ot}, not {t}"),
             }
@@ -2966,7 +2969,19 @@ fn judge_pieces(rv: &mut Rv<'_>, o: usize, os: &Sec, ps: &[&Sec], bad: &mut Vec<
     if os.flags & SHF_COMPRESSED != 0 && rv.mortar() {
         bad.push("SHF_COMPRESSED (L-R1a: no output is compressed)".into());
     }
-    let want_align = ps.iter().map(|p| p.align.max(1)).max().unwrap_or(1);
+    let mut want_align = ps.iter().map(|p| p.align.max(1)).max().unwrap_or(1);
+    // Under `-d` the commons allocated in this section are pieces too:
+    // their alignment (an `SHN_COMMON` symbol's value) counts (RL-6).
+    if rv.opts.define_common {
+        for f in &rv.ins {
+            for y in f.elf.syms.iter().filter(|y| y.shndx == SHN_COMMON) {
+                if rv.out.syms.iter().any(|z| z.name == y.name && !z.local() && z.shndx == o as u32)
+                {
+                    want_align = want_align.max(y.value.max(1));
+                }
+            }
+        }
+    }
     if os.align.max(1) != want_align && !rv.is_eh(os) {
         bad.push(format!("sh_addralign is {}, not {want_align} (its largest piece's)", os.align));
     }
@@ -3032,7 +3047,8 @@ fn judge_pieces(rv: &mut Rv<'_>, o: usize, os: &Sec, ps: &[&Sec], bad: &mut Vec<
             && os.entsize != want_es
             && (rv.mortar() || (os.entsize != 0 && !array))
         {
-            let exact = if rv.mortar() { " (mortar: the pieces' common value, exactly)" } else { "" };
+            let exact =
+                if rv.mortar() { " (mortar: the pieces' common value, exactly)" } else { "" };
             bad.push(format!("sh_entsize is {}, not {want_es}{exact}", os.entsize));
         }
     }

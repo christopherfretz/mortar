@@ -869,7 +869,9 @@ impl ComposeArgs {
         while let Some(a) = it.next() {
             let mut value =
                 |name: &str| it.next().cloned().ok_or_else(|| format!("{name} needs a value"));
-            let fmt = |v: String| Format::from_name(&v).ok_or_else(|| format!("unknown map format '{v}'"));
+            let fmt = |v: String| {
+                Format::from_name(&v).ok_or_else(|| format!("unknown map format '{v}'"))
+            };
             match a.as_str() {
                 "--map-format" => format = Some(fmt(value(a)?)?),
                 "--r-format" => r_format = Some(fmt(value(a)?)?),
@@ -912,7 +914,9 @@ pub fn run_compose(args: &ComposeArgs) -> Result<bool, String> {
                 .map_err(|e| format!("{}:{}: {}", map.display(), e.line, e.message))?,
         );
         lines.push(match &args.lines[k] {
-            Some(l) => Some(String::from_utf8_lossy(&read(l)?).lines().map(str::to_string).collect()),
+            Some(l) => {
+                Some(String::from_utf8_lossy(&read(l)?).lines().map(str::to_string).collect())
+            }
             None => None,
         });
     }
@@ -929,7 +933,11 @@ pub fn run_compose(args: &ComposeArgs) -> Result<bool, String> {
     };
     let (d, v, r) = (link(0), link(1), link(2));
     let path = args.links[2].0.display().to_string();
-    let report = mortar_plumb::compose::compose(&d, &v, &mortar_plumb::compose::Partial { link: r, path: &path });
+    let report = mortar_plumb::compose::compose(
+        &d,
+        &v,
+        &mortar_plumb::compose::Partial { link: r, path: &path },
+    );
     print!("{}", report.render(&args.links[1].0.display().to_string()));
     for n in mortar_plumb::compose::not_judged(&report) {
         println!("composition not judged: {n}");

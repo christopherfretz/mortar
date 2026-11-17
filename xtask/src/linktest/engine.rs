@@ -1592,7 +1592,10 @@ impl Unit<'_> {
                     // "partial mortar").
                     let map = format!("--mortar-map={}", partial_map(step.line));
                     let m = self.arch().emulation();
-                    return Ok((program.clone(), vec!["-m".into(), m.into(), "-r".into(), map.into()]));
+                    return Ok((
+                        program.clone(),
+                        vec!["-m".into(), m.into(), "-r".into(), map.into()],
+                    ));
                 }
                 (program.clone(), vec!["-r".into()])
             }

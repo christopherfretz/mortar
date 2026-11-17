@@ -252,7 +252,9 @@ fn side<'a>(
     let located = crate::locate::locate(map, store, 0, &image);
     let mut objs = located.objs;
     let o = opts::of(map).or_else(|| {
-        line.map(|w| opts::Options::read(&w.iter().map(|x| x.as_bytes().to_vec()).collect::<Vec<_>>()))
+        line.map(|w| {
+            opts::Options::read(&w.iter().map(|x| x.as_bytes().to_vec()).collect::<Vec<_>>())
+        })
     });
     let exports = o.as_ref().and_then(|o| crate::fate::static_exports(map, o));
     crate::fate::collect_empty(&mut objs, o.as_ref(), exports.as_ref());
@@ -517,13 +519,21 @@ fn records_of(d: &Side<'_>, o: usize, s: usize) -> Vec<(usize, u64, u32, u8, u32
     let Some(raw) = ob.records(rs) else { return Vec::new() };
     raw.into_iter()
         .enumerate()
-        .map(|(i, (off, sym, ty, a))| (i, off, ty, crate::reloc::width(ob.elf.machine(), ty), sym, a))
+        .map(|(i, (off, sym, ty, a))| {
+            (i, off, ty, crate::reloc::width(ob.elf.machine(), ty), sym, a)
+        })
         .collect()
 }
 
 /// The `V` counterpart of `D`'s record `i` at `off` of `(o, s)`: object,
 /// section, offset.
-fn v_record(cx: &Cx<'_, '_>, o: usize, s: usize, i: usize, off: u64) -> Option<(usize, usize, u64)> {
+fn v_record(
+    cx: &Cx<'_, '_>,
+    o: usize,
+    s: usize,
+    i: usize,
+    off: u64,
+) -> Option<(usize, usize, u64)> {
     let (o, s) = cx.t4.get(&(o, s)).copied().unwrap_or((o, s));
     match cx.comp_of.get(&o) {
         None => {
@@ -715,8 +725,8 @@ fn items23(cx: &mut Cx<'_, '_>) {
                 let (bd, bv) = (d.bytes(&space, da, size), v.bytes(&vspace, va, size));
                 if let (Some(bd), Some(bv)) = (bd, bv) {
                     cx.cov.bytes += size;
-                    if let Some(k) =
-                        (0..bd.len()).find(|&k| bd[k] != bv[k] && !masked.get(k).copied().unwrap_or(true))
+                    if let Some(k) = (0..bd.len())
+                        .find(|&k| bd[k] != bv[k] && !masked.get(k).copied().unwrap_or(true))
                     {
                         let mut g = p1(format!(
                             "P-P1 {}+{k:#x}: a byte no relocation covers is {:#04x} in the direct link and {:#04x} through -r",
@@ -779,10 +789,10 @@ fn items23(cx: &mut Cx<'_, '_>) {
                 let tv = full_target(v, &v.space_of(wo, ws), pv, ty)
                     .map(|t| v.mask(t.wrapping_sub(ad as u64)));
                 if let (Some(td), Some(tv)) = (td, tv) {
-                        let (found, want) = cx.phi_addr(&tspace, td);
-                        if found && !want.is_empty() {
-                            if !cx.hits(&want, &tspace, tv) {
-                                cx.out.push(
+                    let (found, want) = cx.phi_addr(&tspace, td);
+                    if found && !want.is_empty() {
+                        if !cx.hits(&want, &tspace, tv) {
+                            cx.out.push(
                                     p1(format!(
                                         "P-P1 {}+{off:#x} {tname} resolves to {td:#x} ({}) in the direct link and to {tv:#x} through -r, not {}",
                                         d.label(o, s),
@@ -792,9 +802,9 @@ fn items23(cx: &mut Cx<'_, '_>) {
                                     .site(at_site)
                                     .at(pv),
                                 );
-                            }
-                            continue;
                         }
+                        continue;
+                    }
                 }
                 // By form: a target no input piece holds (a slot, an IPLT
                 // entry, a TLS offset, a partial field): the two links'
@@ -827,10 +837,7 @@ fn machine_code(m: Machine) -> u16 {
 
 fn describe(d: &Side<'_>, space: &Space, t: u64) -> String {
     let ids = d.spans.get(space).map(|s| s.ids(t)).unwrap_or_default();
-    ids.first().map_or_else(
-        || format!("{t:#x}"),
-        |(o, s, x)| format!("{}+{x:#x}", d.label(*o, *s)),
-    )
+    ids.first().map_or_else(|| format!("{t:#x}"), |(o, s, x)| format!("{}+{x:#x}", d.label(*o, *s)))
 }
 
 fn show_places(w: &[VPlace]) -> String {
@@ -942,7 +949,8 @@ fn globals(image: &Image<'_>, dynamic: bool) -> BTreeMap<String, Glob> {
         let Ok(t) = SectionTable::parse(image.data, &image.header) else { return m };
         let Ok(Some(d)) = t.find_symbol_table(SHT_DYNSYM) else { return m };
         for (_, y) in d.iter() {
-            let name = d.name(&y).map(|n| String::from_utf8_lossy(n).into_owned()).unwrap_or_default();
+            let name =
+                d.name(&y).map(|n| String::from_utf8_lossy(n).into_owned()).unwrap_or_default();
             add(name, &y);
         }
     } else {
@@ -979,7 +987,10 @@ fn item4<'a>(cx: &mut Cx<'a, '_>) {
     }
     // (t3): the build-id descriptor is not compared; counted when it differs.
     let note = |i: &Image<'a>| {
-        i.sections.iter().position(|y| y.name == ".note.gnu.build-id").and_then(|k| i.section_data(k))
+        i.sections
+            .iter()
+            .position(|y| y.name == ".note.gnu.build-id")
+            .and_then(|k| i.section_data(k))
     };
     if let (Some(a), Some(b)) = (note(&cx.d.image), note(&cx.v.image))
         && a != b
@@ -1016,8 +1027,16 @@ fn item4<'a>(cx: &mut Cx<'a, '_>) {
 }
 
 /// Whether `V`'s value `y` is `φ` of `D`'s `x`.
-fn value_corresponds(cx: &Cx<'_, '_>, x: Glob, y: Glob, tls_d: Option<u64>, tls_v: Option<u64>) -> bool {
-    if matches!(x.5, SHN_UNDEF | SHN_ABS | SHN_COMMON) || matches!(y.5, SHN_UNDEF | SHN_ABS | SHN_COMMON) {
+fn value_corresponds(
+    cx: &Cx<'_, '_>,
+    x: Glob,
+    y: Glob,
+    tls_d: Option<u64>,
+    tls_v: Option<u64>,
+) -> bool {
+    if matches!(x.5, SHN_UNDEF | SHN_ABS | SHN_COMMON)
+        || matches!(y.5, SHN_UNDEF | SHN_ABS | SHN_COMMON)
+    {
         return x.5 == y.5 && x.0 == y.0;
     }
     // A TLS symbol's value is its offset in the TLS block.
@@ -1030,7 +1049,8 @@ fn value_corresponds(cx: &Cx<'_, '_>, x: Glob, y: Glob, tls_d: Option<u64>, tls_
     let (Some(sd), Some(sv)) = (sec_of(&cx.d.image, x.5), sec_of(&cx.v.image, y.5)) else {
         return false;
     };
-    let space = if sd.shdr.sh_flags & SHF_ALLOC != 0 { Space::Mem } else { Space::Non(sd.name.clone()) };
+    let space =
+        if sd.shdr.sh_flags & SHF_ALLOC != 0 { Space::Mem } else { Space::Non(sd.name.clone()) };
     let (found, want) = cx.phi_addr(&space, xa);
     if found && !want.is_empty() {
         return cx.hits(&want, &space, ya);
@@ -1094,16 +1114,16 @@ fn exclusions(l: &[String], rl: &[String], r: &RModel, d: &Side<'_>) -> Vec<(cha
         if in_d != r.members {
             x.push((
                 'a',
-                "the -r line's closure extracts other archive members than the direct link's".into(),
+                "the -r line's closure extracts other archive members than the direct link's"
+                    .into(),
             ));
         }
     }
     let gc = last_of(l, "gc-sections", "no-gc-sections");
     let icf = opt_values(l, "icf").last().is_some_and(|v| v != "none");
     if gc || icf {
-        let mixed = r.pieces.values().any(|ps| {
-            ps.iter().map(|p| p.0).collect::<BTreeSet<_>>().len() > 1
-        });
+        let mixed =
+            r.pieces.values().any(|ps| ps.iter().map(|p| p.0).collect::<BTreeSet<_>>().len() > 1);
         if mixed {
             x.push((
                 'b',
@@ -1143,7 +1163,8 @@ fn comdat_of(s: &Side<'_>) -> BTreeMap<(usize, usize), String> {
                 continue;
             }
             let Ok(y) = t.get(mortar_elf::SymbolIndex(sec.shdr.sh_info)) else { continue };
-            let sig = t.name(&y).map(|n| String::from_utf8_lossy(n).into_owned()).unwrap_or_default();
+            let sig =
+                t.name(&y).map(|n| String::from_utf8_lossy(n).into_owned()).unwrap_or_default();
             for w in b[4..].chunks_exact(4) {
                 m.insert((o, u32::from_le_bytes([w[0], w[1], w[2], w[3]]) as usize), sig.clone());
             }
@@ -1163,7 +1184,9 @@ fn t4_map(cx: &Cx<'_, '_>) -> BTreeMap<(usize, usize), (usize, usize)> {
     }
     let kept_v = |cx: &Cx<'_, '_>, o: usize, s: usize| -> bool {
         match cx.comp_of.get(&o) {
-            None => cx.v.by_key.get(&cx.d.keys[o]).is_some_and(|&vo| cx.v.placed(vo, s) == Some(true)),
+            None => {
+                cx.v.by_key.get(&cx.d.keys[o]).is_some_and(|&vo| cx.v.placed(vo, s) == Some(true))
+            }
             Some(&f) => match cx.r.places.get(f).and_then(|p| p.get(s)) {
                 Some(rel::Place::Whole { out, .. }) => {
                     cx.rv.is_some_and(|vo| cx.v.placed(vo, *out as usize) == Some(true))
@@ -1175,15 +1198,17 @@ fn t4_map(cx: &Cx<'_, '_>) -> BTreeMap<(usize, usize), (usize, usize)> {
     let mut m = BTreeMap::new();
     for members in by_sig.values() {
         let in_comp = |o: usize| cx.comp_of.contains_key(&o);
-        let dk: Vec<_> = members.iter().filter(|&&(o, s)| cx.d.placed(o, s) == Some(true)).collect();
+        let dk: Vec<_> =
+            members.iter().filter(|&&(o, s)| cx.d.placed(o, s) == Some(true)).collect();
         let vk: Vec<_> = members.iter().filter(|&&(o, s)| kept_v(cx, o, s)).collect();
         for &&(o, s) in &dk {
             if vk.iter().any(|&&(p, _)| p == o) {
                 continue;
             }
             let name = &cx.d.objs[o].secs[s].name;
-            if let Some(&&(p, t)) =
-                vk.iter().find(|&&&(p, t)| in_comp(p) != in_comp(o) && &cx.d.objs[p].secs[t].name == name)
+            if let Some(&&(p, t)) = vk
+                .iter()
+                .find(|&&&(p, t)| in_comp(p) != in_comp(o) && &cx.d.objs[p].secs[t].name == name)
             {
                 m.insert((o, s), (p, t));
             }
@@ -1230,7 +1255,8 @@ pub fn compose(direct: &Link<'_>, via: &Link<'_>, rmap: &Partial<'_>) -> Report 
     let vs = Store::read(via.src, &[via.map]);
     let rs = Store::read(rmap.link.src, &[rmap.link.map]);
     let rwords = words(&rmap.link);
-    let (_, model) = rel::model(rmap.link.output, &rs, 0, rmap.link.map, rwords.as_deref(), read_model);
+    let (_, model) =
+        rel::model(rmap.link.output, &rs, 0, rmap.link.map, rwords.as_deref(), read_model);
     let Some(r) = model else {
         report.findings.push(p1("P-P1 the -r output cannot be read: nothing to compare"));
         report.coverage.composition = Some(cov);
@@ -1250,12 +1276,8 @@ pub fn compose(direct: &Link<'_>, via: &Link<'_>, rmap: &Partial<'_>) -> Report 
             return report;
         }
     };
-    let excl = exclusions(
-        lwords.as_deref().unwrap_or(&[]),
-        rwords.as_deref().unwrap_or(&[]),
-        &r,
-        &d,
-    );
+    let excl =
+        exclusions(lwords.as_deref().unwrap_or(&[]), rwords.as_deref().unwrap_or(&[]), &r, &d);
     if !excl.is_empty() {
         cov.not_judged = excl;
         report.coverage.composition = Some(cov);
@@ -1270,9 +1292,10 @@ pub fn compose(direct: &Link<'_>, via: &Link<'_>, rmap: &Partial<'_>) -> Report 
     }
     let rv = v.objs.iter().position(|o| o.path == rmap.path && o.member.is_none());
     if rv.is_none() {
-        report
-            .findings
-            .push(p1(format!("P-P1 the link through -r does not name the -r output {}", rmap.path)));
+        report.findings.push(p1(format!(
+            "P-P1 the link through -r does not name the -r output {}",
+            rmap.path
+        )));
     }
     let mut cx = Cx {
         d: &d,

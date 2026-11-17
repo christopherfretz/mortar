@@ -101,7 +101,11 @@ pub(crate) fn check(rv: &mut Rv<'_>) {
             }
         }
     }
-    for u in &rv.opts.undefined {
+    // `-e SYM` at `-r` is an extraction root and writes nothing by itself;
+    // GNU ld's `UND SYM` is no finding on GNU ld's output (the
+    // supervisor's ruling on RL-2's measurements, RL-6).
+    let entry = rv.opts.entry.iter().filter(|_| rv.format == Format::Gnu);
+    for u in rv.opts.undefined.iter().chain(entry) {
         keys.entry(u.clone()).or_insert_with(|| Key {
             first: (usize::MAX, 0),
             all_weak_refs: false,

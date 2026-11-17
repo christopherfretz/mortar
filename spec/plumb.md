@@ -5120,6 +5120,17 @@ is accepted from its linker only, never from mortar's map.
   {name} at 65521+0x0 is no input's local there". Reproducer: the
   `-fdebug-types-section` corpus (`tests/relocatable.rs`, `debug-types`).
 
+- **A127 (lld; WP-186).** At `-r -s` lld keeps the inputs' debug
+  sections (GNU ld drops them, §14.3, I-R9). P-P2 "{file}:({section})
+  is in the output; §14.3 drops it: a debug section under -S or -s"
+  and "... not the tombstone ..." at their records' fields, and P-P3
+  "(a record into a dropped copy has no equivalent target ...)" for
+  the records between debug sections, and P-P11 "section {i}
+  .debug_str comes from no input section" (likewise `.debug_line_str`,
+  on x86-64). Reproducer: `tests/relocatable.rs`,
+  `opt-s` (the D.3 C component, `-r -s`), every target. A QUESTION to
+  the supervisor: an anomaly, or lld's form accepted at `-r -s`.
+
 lld also links a `.hidden` or `.protected` undefined reference that only
 a library defines (writing 0) and drops the library from `DT_NEEDED`:
 that is dyn.md W9, P-D6 (A36's family), declared where a test has it,
@@ -7825,7 +7836,9 @@ are the text of each finding (`{…}` a field).
     the SHF_GNU_RETAIN piece {file}:({section}) without SHF_GNU_RETAIN";
     mold, A99); `SHF_GROUP` exactly on group members and their relocation
     sections (P-P6); a relocation section `SHF_INFO_LINK`;
-  - `sh_addralign`: the largest piece alignment (at least 1);
+  - `sh_addralign`: the largest piece alignment (at least 1); under
+    `-d` a common allocated in the section is a piece of its alignment
+    (RL-6, measured on GNU ld's `.bss`);
   - `sh_size`: at least the end of its last piece; a relocation
     section's a multiple of its entry size;
   - `sh_link`: for `SHF_LINK_ORDER`, the output section of the linked-to
@@ -8022,7 +8035,10 @@ and four cases RL-5 adds: `symver` (`foo@@V1` and a plain `foo`
 reference), `debug-types` (the debug corpus with
 `-fdebug-types-section`: local `wi.` signatures), `execstack` (an X
 `.note.GNU-stack` input) and `meta` (`tests/meta`'s two objects with
-Mason containers; not i386). Each case's anomalies per linker are the
+Mason containers; not i386). RL-6 (WP-186) adds the D.3 C component
+with `--build-id=sha1`, `-u nosuch`, `-e nosuch`, `-s`, `-x` and `-d`
+(`opt-*`; mold refuses `-d`); with them lld shows A127 under `-s`.
+Each case's anomalies per linker are the
 test's table, which must equal what the run shows; a finding no
 anomaly names fails the test. mold is not run on `cifunc`: mold 2.37.1
 crashes (`SIGSEGV`) at `-r` on an input that defines an IFUNC (a

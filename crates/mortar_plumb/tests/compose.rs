@@ -190,7 +190,11 @@ fn words(t: &Tools, l: L, out: &str, opts: &[&str], inputs: &[&str]) -> Vec<Stri
     }
     w.extend(s(opts));
     w.extend(["-o".to_string(), out.to_string()]);
-    w.push(if l == L::Mortar { format!("--mortar-map={out}.map") } else { format!("-Map={out}.map") });
+    w.push(if l == L::Mortar {
+        format!("--mortar-map={out}.map")
+    } else {
+        format!("-Map={out}.map")
+    });
     w.extend(s(inputs));
     w
 }
@@ -241,12 +245,19 @@ fn p1(d: &Read, v: &Read, r: &Read, rpath: &str) -> Report {
     let line = |x: &Read| (x.format != Format::Mortar).then(|| x.line.clone());
     let dl = Link { output: &d.out, src: &di, map: &d.map, line: line(d) };
     let vl = Link { output: &v.out, src: &vi, map: &v.map, line: line(v) };
-    let rl = Partial { link: Link { output: &r.out, src: &ri, map: &r.map, line: Some(r.line.clone()) }, path: rpath };
+    let rl = Partial {
+        link: Link { output: &r.out, src: &ri, map: &r.map, line: Some(r.line.clone()) },
+        path: rpath,
+    };
     compose(&dl, &vl, &rl)
 }
 
 fn p1_findings(rep: &Report) -> Vec<String> {
-    rep.findings.iter().filter(|f| f.message.starts_with("P-P1")).map(|f| f.message.clone()).collect()
+    rep.findings
+        .iter()
+        .filter(|f| f.message.starts_with("P-P1"))
+        .map(|f| f.message.clone())
+        .collect()
 }
 
 /// A composition: the component, its inputs, the -r output's name.
@@ -287,7 +298,14 @@ fn via_line(line: &[&'static str], c: &Comp, r: &str) -> Vec<&'static str> {
 }
 
 /// The `-r` of a component by `rl`: its read link.
-fn partial(t: &Tools, rl: L, dir: &Path, c: &Comp, extra: &[&str], tag: &str) -> Result<(String, Read), String> {
+fn partial(
+    t: &Tools,
+    rl: L,
+    dir: &Path,
+    c: &Comp,
+    extra: &[&str],
+    tag: &str,
+) -> Result<(String, Read), String> {
     let out = format!("{}.{}{tag}.o", c.name, rl.name());
     let mut ins: Vec<&str> = c.inputs.to_vec();
     ins.extend(extra);
@@ -298,7 +316,14 @@ fn partial(t: &Tools, rl: L, dir: &Path, c: &Comp, extra: &[&str], tag: &str) ->
 }
 
 /// A final link: its read link.
-fn final_link(t: &Tools, l: L, dir: &Path, out: &str, opts: &[&str], ins: &[&str]) -> Result<Read, String> {
+fn final_link(
+    t: &Tools,
+    l: L,
+    dir: &Path,
+    out: &str,
+    opts: &[&str],
+    ins: &[&str],
+) -> Result<Read, String> {
     let mut o: Vec<&str> = FINAL.to_vec();
     o.extend(opts);
     let w = words(t, l, out, &o, ins);
@@ -314,8 +339,10 @@ fn tmp(dir: &Path, name: &str, b: &[u8]) {
 /// GNU ld, lld and mortar.
 fn passes(t: &Tools, dir: &Path, log: &mut String) -> Vec<String> {
     let mut bad = Vec::new();
-    let finals: Vec<L> =
-        [L::Bfd, L::Lld, L::Mortar].into_iter().filter(|l| *l != L::Mortar || t.mortar.is_some()).collect();
+    let finals: Vec<L> = [L::Bfd, L::Lld, L::Mortar]
+        .into_iter()
+        .filter(|l| *l != L::Mortar || t.mortar.is_some())
+        .collect();
     if t.mortar.is_none() {
         let _ = writeln!(log, "{:?}: mortar finals skipped: mortar is not built", t.arch);
     }
@@ -330,7 +357,11 @@ fn passes(t: &Tools, dir: &Path, log: &mut String) -> Vec<String> {
             };
             for &fl in &finals {
                 if fl == L::Mortar && c.name == "cctors" {
-                    let _ = writeln!(log, "{:?} cctors: no mortar final (.ctors is refused by name)", t.arch);
+                    let _ = writeln!(
+                        log,
+                        "{:?} cctors: no mortar final (.ctors is refused by name)",
+                        t.arch
+                    );
                     continue;
                 }
                 let dout = format!("d.{}", fl.name());
@@ -341,7 +372,14 @@ fn passes(t: &Tools, dir: &Path, log: &mut String) -> Vec<String> {
                     (Ok(d), Ok(v)) => (d, v),
                     (d, v) => {
                         for e in [d.err(), v.err()].into_iter().flatten() {
-                            let _ = writeln!(log, "{:?} {} {}->{}: link refused: {e}", t.arch, c.name, rl.name(), fl.name());
+                            let _ = writeln!(
+                                log,
+                                "{:?} {} {}->{}: link refused: {e}",
+                                t.arch,
+                                c.name,
+                                rl.name(),
+                                fl.name()
+                            );
                             if fl != L::Mortar {
                                 bad.push(e);
                             }
@@ -361,7 +399,11 @@ fn passes(t: &Tools, dir: &Path, log: &mut String) -> Vec<String> {
                     fl.name(),
                     cov.judged,
                     f.len(),
-                    rep.summary().lines().filter(|l| l.starts_with("composition")).collect::<Vec<_>>().join("; ")
+                    rep.summary()
+                        .lines()
+                        .filter(|l| l.starts_with("composition"))
+                        .collect::<Vec<_>>()
+                        .join("; ")
                 );
                 for m in &f {
                     let _ = writeln!(log, "    {m}");
@@ -373,8 +415,9 @@ fn passes(t: &Tools, dir: &Path, log: &mut String) -> Vec<String> {
                 // when WP-203 lands this expectation fails: delete it.
                 let wp203 = rl == L::Lld && fl == L::Mortar && c.name == "compc";
                 let f: Vec<String> = if wp203 {
-                    let (named, rest): (Vec<String>, Vec<String>) =
-                        f.into_iter().partition(|m| m.contains(", COMMON (type 0x8, flags 0x3) through -r"));
+                    let (named, rest): (Vec<String>, Vec<String>) = f
+                        .into_iter()
+                        .partition(|m| m.contains(", COMMON (type 0x8, flags 0x3) through -r"));
                     if named.len() != 1 {
                         bad.push(format!("{:?} {} -r lld final mortar: WP-203: input section COMMON is no longer an orphan in mortar's final link? (the expected P-P1 finding is not shown)", t.arch, c.name));
                     }
@@ -383,7 +426,13 @@ fn passes(t: &Tools, dir: &Path, log: &mut String) -> Vec<String> {
                     f
                 };
                 if cov.judged != 1 || !f.is_empty() {
-                    bad.push(format!("{:?} {} -r {} final {}: {f:?}", t.arch, c.name, rl.name(), fl.name()));
+                    bad.push(format!(
+                        "{:?} {} -r {} final {}: {f:?}",
+                        t.arch,
+                        c.name,
+                        rl.name(),
+                        fl.name()
+                    ));
                 }
             }
         }
@@ -463,7 +512,9 @@ fn m21_swap(e: &mut Ed, map: &mut String) -> bool {
     let bb = e.b[pb..pb + n].to_vec();
     e.b[pa..pa + n].copy_from_slice(&bb);
     e.b[pb..pb + n].copy_from_slice(&ba);
-    let (Some(ra), Some(rb)) = (map_addr(map, ".text.hid", "compc"), map_addr(map, ".text.wk_only", "compc")) else {
+    let (Some(ra), Some(rb)) =
+        (map_addr(map, ".text.hid", "compc"), map_addr(map, ".text.wk_only", "compc"))
+    else {
         return false;
     };
     let (sa, sb) = (map[ra.0..ra.1].to_string(), map[rb.0..rb.1].to_string());
@@ -545,17 +596,37 @@ fn m_t3_out(e: &mut Ed, _: &mut String) -> bool {
 const MUTANTS: &[Mutant] = &[
     Mutant { name: "(21) .init_array word +8: item 3", edit: m21_word, expect: "resolves to" },
     Mutant { name: "(21) g_data value +4: item 4", edit: m21_sym, expect: "symbol g_data:" },
-    Mutant { name: "(21) .text pieces swapped: item 2", edit: m21_swap, expect: "in another order through -r" },
-    Mutant { name: "item 1: .comment flags", edit: m_item1, expect: "the output sections differ at" },
+    Mutant {
+        name: "(21) .text pieces swapped: item 2",
+        edit: m21_swap,
+        expect: "in another order through -r",
+    },
+    Mutant {
+        name: "item 1: .comment flags",
+        edit: m_item1,
+        expect: "the output sections differ at",
+    },
     Mutant { name: "item 4: wk_only size +1", edit: m_item4_size, expect: "symbol wk_only: size" },
-    Mutant { name: "(t1) outside: a byte no record covers", edit: m_t1, expect: "a byte no relocation covers" },
+    Mutant {
+        name: "(t1) outside: a byte no record covers",
+        edit: m_t1,
+        expect: "a byte no relocation covers",
+    },
     Mutant { name: "(t2) inside: a local's value", edit: m_t2_in, expect: "" },
-    Mutant { name: "(t2) outside: g_data made weak", edit: m_t2_out, expect: "symbol g_data: size" },
+    Mutant {
+        name: "(t2) outside: g_data made weak",
+        edit: m_t2_out,
+        expect: "symbol g_data: size",
+    },
 ];
 
 const BUILD_ID_MUTANTS: &[Mutant] = &[
     Mutant { name: "(t3) inside: the build-id descriptor", edit: m_t3_in, expect: "" },
-    Mutant { name: "(t3) outside: the note's flags", edit: m_t3_out, expect: "the output sections differ at" },
+    Mutant {
+        name: "(t3) outside: the note's flags",
+        edit: m_t3_out,
+        expect: "the output sections differ at",
+    },
 ];
 
 /// What a mutant runs on: `D`, `V` (and `V`'s output name), the `-r`.
@@ -571,7 +642,12 @@ struct Base<'a> {
 /// mutant is caught when P-P1 adds a finding with its text to the
 /// unmutated links' (none, for the pass cells); one for no finding when
 /// it adds none.
-fn mutate(dir: &Path, b: &Base<'_>, ms: &[Mutant], log: &mut String) -> (usize, usize, Vec<String>) {
+fn mutate(
+    dir: &Path,
+    b: &Base<'_>,
+    ms: &[Mutant],
+    log: &mut String,
+) -> (usize, usize, Vec<String>) {
     let base = p1_findings(&p1(b.d, b.v, b.r, b.rpath));
     let (mut applied, mut caught, mut bad) = (0, 0, Vec::new());
     for m in ms {
@@ -587,9 +663,12 @@ fn mutate(dir: &Path, b: &Base<'_>, ms: &[Mutant], log: &mut String) -> (usize, 
         tmp(dir, &name, &e.b);
         tmp(dir, &format!("{name}.map"), text.as_bytes());
         let mv = read_as(dir, b.v.format, &name, b.v.line.clone());
-        let f: Vec<String> =
-            p1_findings(&p1(b.d, &mv, b.r, b.rpath)).into_iter().filter(|x| !base.contains(x)).collect();
-        let ok = if m.expect.is_empty() { f.is_empty() } else { f.iter().any(|x| x.contains(m.expect)) };
+        let f: Vec<String> = p1_findings(&p1(b.d, &mv, b.r, b.rpath))
+            .into_iter()
+            .filter(|x| !base.contains(x))
+            .collect();
+        let ok =
+            if m.expect.is_empty() { f.is_empty() } else { f.iter().any(|x| x.contains(m.expect)) };
         let shown = f.iter().find(|x| m.expect.is_empty() || x.contains(m.expect)).or(f.first());
         let _ = writeln!(
             log,
@@ -615,7 +694,9 @@ fn mutants(t: &Tools, dir: &Path, log: &mut String) -> Vec<String> {
     let Ok((rpath, r)) = partial(t, L::Bfd, dir, c, &[], "") else {
         return vec![format!("{:?}: bfd -r", t.arch)];
     };
-    for (opts, ms, tag) in [(&[][..], MUTANTS, ""), (&["--build-id=sha1"][..], BUILD_ID_MUTANTS, ".bid")] {
+    for (opts, ms, tag) in
+        [(&[][..], MUTANTS, ""), (&["--build-id=sha1"][..], BUILD_ID_MUTANTS, ".bid")]
+    {
         let d = final_link(t, L::Bfd, dir, &format!("md{tag}"), opts, &LINE);
         let vout = format!("mv{tag}");
         let v = final_link(t, L::Bfd, dir, &vout, opts, &via_line(&LINE, c, &rpath));
@@ -624,8 +705,17 @@ fn mutants(t: &Tools, dir: &Path, log: &mut String) -> Vec<String> {
             continue;
         };
         let base = p1(&d, &v, &r, &rpath);
-        let _ = writeln!(log, "{:?} mutants{tag}: base {} findings; {}", t.arch, p1_findings(&base).len(),
-            base.summary().lines().filter(|l| l.starts_with("composition tol")).collect::<Vec<_>>().join(""));
+        let _ = writeln!(
+            log,
+            "{:?} mutants{tag}: base {} findings; {}",
+            t.arch,
+            p1_findings(&base).len(),
+            base.summary()
+                .lines()
+                .filter(|l| l.starts_with("composition tol"))
+                .collect::<Vec<_>>()
+                .join("")
+        );
         if !p1_findings(&base).is_empty() {
             bad.push(format!("{:?} mutant base{tag}: {:?}", t.arch, p1_findings(&base)));
         }
@@ -635,7 +725,8 @@ fn mutants(t: &Tools, dir: &Path, log: &mut String) -> Vec<String> {
         // GNU ld's finals through GNU ld's or lld's `-r` keep the same
         // locals and `.strtab`: (t2) is needed by lld's finals (the pass
         // cells, checked in `p_p1`) and by the mutant `(t2) inside`.
-        let (a, k, mut b) = mutate(dir, &Base { d: &d, v: &v, vout: &vout, r: &r, rpath: &rpath }, ms, log);
+        let (a, k, mut b) =
+            mutate(dir, &Base { d: &d, v: &v, vout: &vout, r: &r, rpath: &rpath }, ms, log);
         let _ = writeln!(log, "{:?} mutants{tag}: {a} applied, {k} caught", t.arch);
         bad.append(&mut b);
     }
@@ -649,7 +740,12 @@ fn exclusions(t: &Tools, dir: &Path, log: &mut String) -> Vec<String> {
     let mut want = |letter: char, rep: &Report, bad: &mut Vec<String>| {
         let tag = format!("not judged: relocatable composition ({letter})");
         let ok = rep.summary().contains(&tag) && p1_findings(rep).is_empty();
-        let _ = writeln!(log, "{:?} exclusion ({letter}): {}", t.arch, if ok { "named" } else { "MISSED" });
+        let _ = writeln!(
+            log,
+            "{:?} exclusion ({letter}): {}",
+            t.arch,
+            if ok { "named" } else { "MISSED" }
+        );
         if !ok {
             bad.push(format!("{:?} exclusion ({letter}): {}", t.arch, rep.summary()));
         }

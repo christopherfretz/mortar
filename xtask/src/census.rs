@@ -1166,7 +1166,9 @@ mod tests {
             VARIATIONS.iter().filter(|v| v.is_relocatable()).map(|v| v.name).collect();
         assert_eq!(names.len(), 13, "{names:?}");
         assert!(names.iter().all(|n| n.starts_with("r-")));
-        assert!(VARIATIONS.iter().filter(|v| v.name.starts_with("r-")).all(Variation::is_relocatable));
+        assert!(
+            VARIATIONS.iter().filter(|v| v.name.starts_with("r-")).all(Variation::is_relocatable)
+        );
         assert!(Outcome::OutOfM4r(r.0, r.1).passes());
     }
 

@@ -16,7 +16,8 @@ check readelf -SW comp.lld.o
 link gcc -static main.o comp.lld.o -o via
 run via
   stdout: 5
-check readelf -SW via
+# mold orphans it too (record WP-186): not checked for mold.
+check(bfd,lld,mortar) readelf -SW via
   not: COMMON
 
 #--- c1.c
