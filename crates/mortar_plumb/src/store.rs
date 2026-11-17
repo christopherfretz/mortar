@@ -44,7 +44,7 @@ pub(crate) struct At {
 
 /// An object's resident bytes.
 #[derive(Debug)]
-enum Skel {
+pub(crate) enum Skel {
     /// The skeleton.
     Parts(Vec<Part>),
     /// The whole object: a file the skeleton is not enough for.
@@ -113,7 +113,7 @@ impl std::fmt::Debug for Store<'_> {
 type Members = HashMap<Vec<u8>, Vec<(u64, Loc)>>;
 
 #[derive(Debug, Clone)]
-enum Loc {
+pub(crate) enum Loc {
     Inline { offset: u64, size: u64 },
     External(Vec<u8>),
     ExternalMember,
@@ -327,7 +327,7 @@ fn parts(
 /// table, section names, symbol table (its strings, its extended indexes)
 /// and groups, or the whole object when `mortar_elf` needs more of it than
 /// that (a malformed file).
-fn skeleton(src: &dyn Source, at: At) -> Result<Skel, String> {
+pub(crate) fn skeleton(src: &dyn Source, at: At) -> Result<Skel, String> {
     let len = at.len;
     let within = |o: u64, n: u64| o.checked_add(n).is_some_and(|e| e <= len);
     let head = read(src, at.file, at.base, len.min(64))?;
@@ -419,6 +419,29 @@ fn skeleton(src: &dyn Source, at: At) -> Result<Skel, String> {
 /// thin archive (it holds no contents) and anything that is not a regular
 /// archive are read whole.
 fn members_of(src: &dyn Source, file: usize) -> Result<Members, String> {
+    let mut by_name: Members = HashMap::default();
+    for (name, offset, loc) in members_in_order(src, file)? {
+        by_name.entry(name).or_default().push((offset, loc));
+    }
+    Ok(by_name)
+}
+
+impl Skel {
+    /// The resident bytes as a view of an object of `len` bytes.
+    pub(crate) fn view(&self, len: u64) -> View<'_> {
+        match self {
+            Skel::Parts(p) => View::parts(p, len),
+            Skel::Whole(b) => View::whole(b),
+        }
+    }
+}
+
+/// An archive's members in archive order: `(name, header offset, where)`
+/// (the input set's file order, §3.8), read as [`members_of`] reads them.
+pub(crate) fn members_in_order(
+    src: &dyn Source,
+    file: usize,
+) -> Result<Vec<(Vec<u8>, u64, Loc)>, String> {
     let len = src.len(file);
     let magic = read(src, file, 0, len.min(8))?;
     if magic.as_slice() == archive::MAGIC {
@@ -449,9 +472,9 @@ fn members_of(src: &dyn Source, file: usize) -> Result<Members, String> {
     members_in(View::whole(&whole)).map_err(|e| e.to_string())
 }
 
-fn members_in(view: View<'_>) -> Result<Members, archive::Error> {
+fn members_in(view: View<'_>) -> Result<Vec<(Vec<u8>, u64, Loc)>, archive::Error> {
     let archive = Archive::parse_view(view)?;
-    let mut by_name: Members = HashMap::default();
+    let mut out = Vec::new();
     for h in archive.headers() {
         let h = h?;
         let loc = match h.location {
@@ -459,9 +482,9 @@ fn members_in(view: View<'_>) -> Result<Members, archive::Error> {
             Location::External { path } => Loc::External(path.to_vec()),
             Location::ExternalMember { .. } => Loc::ExternalMember,
         };
-        by_name.entry(h.name.to_vec()).or_default().push((h.header_offset, loc));
+        out.push((h.name.to_vec(), h.header_offset, loc));
     }
-    Ok(by_name)
+    Ok(out)
 }
 
 /// The member a map's file names (§3.3): by name, and by the header's
@@ -537,10 +560,10 @@ mod tests {
         a
     }
 
-    /// The members (or the error) in a fixed order.
-    fn shown(r: Result<Members, String>) -> String {
+    /// The members (or the error), in archive order.
+    fn shown(r: Result<Vec<(Vec<u8>, u64, Loc)>, String>) -> String {
         match r {
-            Ok(m) => format!("{:?}", m.into_iter().collect::<std::collections::BTreeMap<_, _>>()),
+            Ok(m) => format!("{m:?}"),
             Err(e) => format!("error: {e}"),
         }
     }
@@ -584,7 +607,7 @@ mod tests {
         cases.push(b"not an archive at all".to_vec());
         for (n, a) in cases.iter().enumerate() {
             let inputs = vec![Input { path: "lib.a", bytes: a }];
-            let by_position = shown(members_of(&inputs, 0));
+            let by_position = shown(members_in_order(&inputs, 0));
             let whole = shown(members_in(View::whole(a)).map_err(|e| e.to_string()));
             assert_eq!(by_position, whole, "case {n}");
         }

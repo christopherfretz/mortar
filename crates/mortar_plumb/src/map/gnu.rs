@@ -1,9 +1,15 @@
 //! GNU ld's `-Map` file (`spec/plumb.md` §3.4).
 
 use super::{
-    Chunk, ChunkKind, DiscardReason, Discarded, FileInterner, Format, Map, MapError, Placed,
-    SectionRef, hex, split_member,
+    Chunk, ChunkKind, DiscardReason, Discarded, FileInterner, Format, Included, IncludedBy, Map,
+    MapError, Placed, SectionRef, hex, split_member,
 };
+
+/// The heading of the preamble's member list (§3.4).
+const INCLUDED: &str = "Archive member included to satisfy reference by file (symbol)";
+/// GNU ld prints a member in a field of this width, its reason after it;
+/// a longer member name ends its line and the reason follows, indented.
+const MEMBER_FIELD: usize = 30;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Block {
@@ -33,8 +39,52 @@ pub fn parse(text: &str) -> Result<Map, MapError> {
     let mut output_section = String::new();
     // A wrapped input-section line: the name and its line number.
     let mut pending: Option<(String, u32)> = None;
+    // In the member list of the preamble, and a member whose reason is on
+    // the next line.
+    let mut in_members = false;
+    let mut member: Option<(String, u32)> = None;
     for (i, line) in text.lines().enumerate() {
         let n = (i + 1) as u32;
+        if block == Block::Preamble {
+            if line == INCLUDED {
+                in_members = true;
+                continue;
+            }
+            if in_members {
+                if let Some((m, at)) = member.take() {
+                    if !line.starts_with(' ') || line.trim().is_empty() {
+                        return Err(MapError::new(at, format!("archive member '{m}' has no reason")));
+                    }
+                    map.included.push(included(&m, line.trim(), at)?);
+                    continue;
+                }
+                if line.is_empty() {
+                    continue;
+                }
+                if line.starts_with(' ') {
+                    return Err(MapError::new(n, "a reason without an archive member"));
+                }
+                let split = line
+                    .get(..MEMBER_FIELD)
+                    .filter(|f| f.ends_with(' ') && line.len() > MEMBER_FIELD)
+                    .map(|f| (f.trim_end(), &line[MEMBER_FIELD..]));
+                match split {
+                    Some((m, why)) if !m.is_empty() && !why.trim().is_empty() => {
+                        map.included.push(included(m, why.trim(), n)?);
+                    }
+                    _ if line.ends_with(')') && line.contains('(') && !line.contains("  ") => {
+                        member = Some((line.to_string(), n));
+                    }
+                    // Another heading ("Allocating common symbols",
+                    // "Discarded input sections", ...): the list has
+                    // ended, and the line is read as any other.
+                    _ => in_members = false,
+                }
+                if in_members {
+                    continue;
+                }
+            }
+        }
         if let Some((name, at)) = pending.take() {
             let tokens: Vec<&str> = line.split_whitespace().collect();
             if !line.starts_with(' ') || tokens.len() < 2 {
@@ -100,10 +150,36 @@ pub fn parse(text: &str) -> Result<Map, MapError> {
     if let Some((name, at)) = pending {
         return Err(MapError::new(at, format!("input section '{name}' has no address line")));
     }
+    if let Some((m, at)) = member {
+        return Err(MapError::new(at, format!("archive member '{m}' has no reason")));
+    }
     if !seen_script {
         return Err(MapError::new(0, "not a GNU ld map: no 'Linker script and memory map'"));
     }
     Ok(map)
+}
+
+/// A member of the preamble's list and its reason: `(--whole-archive)`,
+/// `(sym)` or `file (sym)` (§3.4).
+fn included(member: &str, why: &str, n: u32) -> Result<Included, MapError> {
+    let file = split_member(member);
+    if file.member.is_none() {
+        return Err(MapError::new(n, format!("'{member}' is not an archive member")));
+    }
+    let bad = || MapError::new(n, format!("archive member '{member}': reason '{why}' not read"));
+    let by = if why == "(--whole-archive)" {
+        IncludedBy::WholeArchive
+    } else if let Some(sym) = why.strip_prefix('(').and_then(|w| w.strip_suffix(')')) {
+        IncludedBy::Root(sym.to_string())
+    } else {
+        let (f, sym) = why.rsplit_once(" (").ok_or_else(bad)?;
+        let sym = sym.strip_suffix(')').ok_or_else(bad)?;
+        if f.is_empty() || sym.is_empty() {
+            return Err(bad());
+        }
+        IncludedBy::Reference { file: split_member(f), symbol: sym.to_string() }
+    };
+    Ok(Included { file, by, line: n })
 }
 
 /// One input-section entry: `name`, then `rest` = `0xADDR 0xSIZE FILE`.
@@ -277,6 +353,73 @@ OUTPUT(a.out elf64-littleaarch64)
         assert_eq!(discarded[0].2, 8, "a wrapped entry has the line of its name");
         let chunks: Vec<_> = m.chunks.iter().map(|c| (c.kind, c.name.as_str())).collect();
         assert_eq!(chunks, [(ChunkKind::Thunk, ".text.stub"), (ChunkKind::Common, "a.o")]);
+    }
+
+    // §3.4: the preamble's member list (the input set, §3.8): a member in
+    // its 30-column field and the reason after it, or a longer member and
+    // the reason on the next line; the three forms of a reason.
+    #[test]
+    fn s3_4_the_preamble_s_members_and_reasons() {
+        let m = parse(EXCERPT).unwrap();
+        assert_eq!(
+            m.included,
+            [Included {
+                file: MapFile::member("/usr/lib/aarch64-linux-gnu/libc.a", "libc-start.o"),
+                by: IncludedBy::Reference {
+                    file: MapFile::plain("/usr/lib/aarch64-linux-gnu/crt1.o"),
+                    symbol: "__libc_start_main".into(),
+                },
+                line: 3,
+            }]
+        );
+        let text = "\
+Archive member included to satisfy reference by file (symbol)
+
+libk.a(k.o)                   (k_fn)
+libk.a(j.o)                   (--whole-archive)
+libk.a(i.o)                   libk.a(k.o) (i_fn)
+a very long archive name.a(member.o)
+                              dir (x)/r.o (r_fn)
+
+Allocating common symbols
+Common symbol       size              file
+
+v                   0x4               r.o
+
+Linker script and memory map
+";
+        let m = parse(text).unwrap();
+        let got: Vec<(String, IncludedBy, u32)> =
+            m.included.iter().map(|i| (i.file.to_string(), i.by.clone(), i.line)).collect();
+        assert_eq!(
+            got,
+            [
+                ("libk.a(k.o)".into(), IncludedBy::Root("k_fn".into()), 3),
+                ("libk.a(j.o)".into(), IncludedBy::WholeArchive, 4),
+                (
+                    "libk.a(i.o)".into(),
+                    IncludedBy::Reference { file: MapFile::member("libk.a", "k.o"), symbol: "i_fn".into() },
+                    5
+                ),
+                (
+                    "a very long archive name.a(member.o)".into(),
+                    IncludedBy::Reference { file: MapFile::plain("dir (x)/r.o"), symbol: "r_fn".into() },
+                    6
+                ),
+            ]
+        );
+        let head = "Archive member included to satisfy reference by file (symbol)\n\n";
+        let tail = "\nLinker script and memory map\n";
+        for (bad, line) in [
+            ("a long archive member name.a(m.o)\n\n", 3),
+            ("                              r.o (x)\n", 3),
+            ("libk.a(k.o)                   r.o x\n", 3),
+            ("k.o                           (x)\n", 3),
+        ] {
+            assert_eq!(parse(&format!("{head}{bad}{tail}")).unwrap_err().line, line, "{bad}");
+        }
+        let ended = format!("{head}a long archive member name.a(m.o)");
+        assert_eq!(parse(&ended).unwrap_err().line, 3);
     }
 
     // §3.4, §3.7: what is refused.

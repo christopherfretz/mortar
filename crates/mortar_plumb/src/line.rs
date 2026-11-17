@@ -9,9 +9,41 @@ use crate::map::OutputKind;
 use crate::opts::Word;
 
 /// Where the verifier reads files from.
+///
+/// Only [`Files::read`] is required; the positional reads have defaults
+/// that read the whole file (a caller over real files overrides them, so
+/// that the input set of §3.8 reads an archive's members by position and
+/// the line's files are sniffed by their first bytes, §8.1).
 pub trait Files: Sync {
     /// The bytes of `path`, or `None` when it cannot be read.
     fn read(&self, path: &str) -> Option<Vec<u8>>;
+
+    /// The length of `path` in bytes, or `None` when it cannot be read.
+    fn len(&self, path: &str) -> Option<u64> {
+        self.read(path).map(|b| b.len() as u64)
+    }
+
+    /// The first `n` bytes of `path` (fewer for a shorter file).
+    fn head(&self, path: &str, n: usize) -> Option<Vec<u8>> {
+        self.read(path).map(|mut b| {
+            b.truncate(n);
+            b
+        })
+    }
+
+    /// Exactly `buf.len()` bytes of `path` from `offset`.
+    ///
+    /// # Errors
+    /// The message names the file and what failed.
+    fn read_at(&self, path: &str, offset: u64, buf: &mut [u8]) -> Result<(), String> {
+        let b = self.read(path).ok_or_else(|| format!("{path}: cannot be read"))?;
+        let got = usize::try_from(offset)
+            .ok()
+            .and_then(|at| b.get(at..at.checked_add(buf.len())?))
+            .ok_or_else(|| format!("{path}: {} bytes at {offset:#x} are past its end", buf.len()))?;
+        buf.copy_from_slice(got);
+        Ok(())
+    }
 }
 
 /// The host's file system.
@@ -22,13 +54,50 @@ impl Files for HostFiles {
     fn read(&self, path: &str) -> Option<Vec<u8>> {
         std::fs::read(path).ok()
     }
+    fn len(&self, path: &str) -> Option<u64> {
+        std::fs::metadata(path).ok().filter(std::fs::Metadata::is_file).map(|m| m.len())
+    }
+    fn head(&self, path: &str, n: usize) -> Option<Vec<u8>> {
+        host_head(std::path::Path::new(path), n)
+    }
+    fn read_at(&self, path: &str, offset: u64, buf: &mut [u8]) -> Result<(), String> {
+        host_read_at(std::path::Path::new(path), offset, buf)
+    }
+}
+
+/// The first `n` bytes of a regular file of the host.
+pub fn host_head(path: &std::path::Path, n: usize) -> Option<Vec<u8>> {
+    use std::io::Read as _;
+    let f = std::fs::File::open(path).ok()?;
+    if !f.metadata().ok()?.is_file() {
+        return None;
+    }
+    let mut b = Vec::with_capacity(n);
+    f.take(n as u64).read_to_end(&mut b).ok()?;
+    Some(b)
+}
+
+/// `buf.len()` bytes of a file of the host from `offset`.
+///
+/// # Errors
+/// The message names the file and what failed.
+pub fn host_read_at(path: &std::path::Path, offset: u64, buf: &mut [u8]) -> Result<(), String> {
+    use std::io::{Read as _, Seek as _, SeekFrom};
+    let mut f = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    f.seek(SeekFrom::Start(offset)).map_err(|e| format!("{}: {e}", path.display()))?;
+    f.read_exact(buf).map_err(|e| {
+        format!("{}: {} bytes at {offset:#x}: {e}", path.display(), buf.len())
+    })
 }
 
 /// An input of the line, in order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Item {
-    /// A relocatable object or an archive, by its path as named.
-    Relocatable { path: String, group: Option<usize> },
+    /// A relocatable object or an archive, by its path as named, with the
+    /// `--whole-archive` state (an archive's members are all live) and the
+    /// `--start-lib` state (an object is lazy) in force where it is named
+    /// (input §5.2, §7.5, §7.6; the input set, §3.8).
+    Relocatable { path: String, group: Option<usize>, whole: bool, lib: bool },
     /// A shared object mention (D-19a): the file found, the state in
     /// force, the `--start-group`/`GROUP` it is in.
     /// `named` is the name the linker records in `DT_NEEDED` when the
@@ -66,6 +135,28 @@ pub struct Line {
     /// `-init`/`-fini` (`DT_INIT`/`DT_FINI` name these functions, D-30).
     pub init: Option<String>,
     pub fini: Option<String>,
+    /// `-shared` was given.
+    pub shared: bool,
+    /// `-r` (`--relocatable`) was given.
+    pub relocatable: bool,
+    /// `--require-defined` names (`spec/resolve.md` §4.2).
+    pub require_defined: Vec<String>,
+    /// `--defsym` operands as written (`A=EXPR`), each with the number of
+    /// items named before it (GNU ld reads it in place, resolve §4.2).
+    pub defsym: Vec<(String, usize)>,
+    /// `--wrap` names (resolve §7.1).
+    pub wrap: Vec<String>,
+    /// The `EXTERN` names of the implicit scripts, each with the number
+    /// of items named before the script (input §5.1; resolve §4.2).
+    pub externs: Vec<(String, usize)>,
+    /// The last `ENTRY` of an implicit script.
+    pub script_entry: Option<String>,
+    /// `-T`/`--script`/`--default-script` files (not inputs: their
+    /// commands are read by the input set, §3.8).
+    pub scripts: Vec<String>,
+    /// Options whose effect on the input set this reader does not model
+    /// (`--undefined-glob`, `--mri-script`), by name.
+    pub unmodelled: Vec<String>,
     /// The last of the `-Bsymbolic` family, by its row (`-Bsymbolic`,
     /// `-Bsymbolic-functions`, `--Bsymbolic-non-weak`,
     /// `--Bsymbolic-non-weak-functions`); `None` with none or after
@@ -124,6 +215,18 @@ pub(crate) const INTERPRETED: &[&str] = &[
     "--Bsymbolic-non-weak",
     "--Bsymbolic-non-weak-functions",
     "-Bno-symbolic",
+    "--whole-archive",
+    "--no-whole-archive",
+    "--start-lib",
+    "--end-lib",
+    "--require-defined",
+    "--defsym",
+    "--wrap",
+    "-r",
+    "-T",
+    "--default-script",
+    "--undefined-glob",
+    "-c",
 ];
 
 /// The `-z` keywords this reader interprets.
@@ -131,9 +234,13 @@ pub(crate) const INTERPRETED: &[&str] = &[
 pub(crate) const INTERPRETED_Z: &[&str] =
     &["now", "lazy", "relro", "norelro", "execstack", "noexecstack"];
 
+#[derive(Clone, Copy)]
+#[allow(clippy::struct_excessive_bools)] // the positional state of cli.md §3.3
 struct State {
     as_needed: bool,
     bstatic: bool,
+    whole: bool,
+    lib: bool,
 }
 
 impl Line {
@@ -158,8 +265,8 @@ impl Line {
             }
             i += used;
         }
-        let mut st = State { as_needed: false, bstatic: false };
-        let mut stack: Vec<(bool, bool)> = Vec::new();
+        let mut st = State { as_needed: false, bstatic: false, whole: false, lib: false };
+        let mut stack: Vec<State> = Vec::new();
         let mut group: Option<usize> = None;
         let mut groups = 0usize;
         let mut i = 0;
@@ -200,11 +307,12 @@ impl Line {
                 "-Bdynamic" => st.bstatic = false,
                 "--as-needed" => st.as_needed = true,
                 "--no-as-needed" => st.as_needed = false,
-                "--push-state" => stack.push((st.as_needed, st.bstatic)),
+                "--push-state" => stack.push(st),
                 "--pop-state" => {
-                    if let Some((n, b)) = stack.pop() {
-                        st.as_needed = n;
-                        st.bstatic = b;
+                    if let Some(s) = stack.pop() {
+                        st.as_needed = s.as_needed;
+                        st.bstatic = s.bstatic;
+                        st.whole = s.whole;
                     } else {
                         l.problems.push("--pop-state without --push-state".into());
                     }
@@ -230,7 +338,7 @@ impl Line {
                 // `-rpath`; naming a file it takes only its symbols, which
                 // stage 3 does not model.
                 "-R" => {
-                    if files.read(&v).is_some() {
+                    if files.len(&v).is_some() {
                         l.outside.push(format!("--just-symbols {v} (cli.md: refused)"));
                     } else {
                         l.rpath.extend(v.split(':').map(str::to_string));
@@ -241,6 +349,16 @@ impl Line {
                 "-e" => l.entry = Some(v),
                 "-init" => l.init = Some(v),
                 "-fini" => l.fini = Some(v),
+                "--whole-archive" => st.whole = true,
+                "--no-whole-archive" => st.whole = false,
+                "--start-lib" => st.lib = true,
+                "--end-lib" => st.lib = false,
+                "--require-defined" => l.require_defined.push(v),
+                "--defsym" => l.defsym.push((v, l.items.len())),
+                "--wrap" => l.wrap.push(v),
+                "-r" => l.relocatable = true,
+                "-T" | "--default-script" => l.scripts.push(v),
+                "--undefined-glob" | "-c" => l.unmodelled.push(format!("{id} {v}")),
                 "-l" => l.library(&v, &st, group, files),
                 "--copy-dt-needed-entries" => {
                     l.outside.push("--copy-dt-needed-entries (dyn.md D-15)".into());
@@ -259,6 +377,7 @@ impl Line {
         // interpreter) and the inputs' (a shared object loaded makes the
         // executable dynamic); never the output's (WP-131, V5).
         let loads_shared = l.items.iter().any(|i| matches!(i, Item::Shared { .. }));
+        l.shared = shared;
         if no_interp {
             l.interp = None;
         }
@@ -303,19 +422,19 @@ impl Line {
 
     fn library(&mut self, name: &str, st: &State, group: Option<usize>, files: &dyn Files) {
         let found = if let Some(exact) = name.strip_prefix(':') {
-            self.lib_dirs.iter().map(|d| format!("{d}/{exact}")).find(|p| files.read(p).is_some())
+            self.lib_dirs.iter().map(|d| format!("{d}/{exact}")).find(|p| files.len(p).is_some())
         } else {
             let mut found = None;
             for d in &self.lib_dirs {
                 if !st.bstatic {
                     let so = format!("{d}/lib{name}.so");
-                    if files.read(&so).is_some() {
+                    if files.len(&so).is_some() {
                         found = Some(so);
                         break;
                     }
                 }
                 let a = format!("{d}/lib{name}.a");
-                if files.read(&a).is_some() {
+                if files.len(&a).is_some() {
                     found = Some(a);
                     break;
                 }
@@ -342,7 +461,7 @@ impl Line {
         files: &dyn Files,
         depth: u32,
     ) {
-        let Some(bytes) = files.read(path) else {
+        let Some(bytes) = files.head(path, 64) else {
             self.problems.push(format!("{path}: cannot be read"));
             return;
         };
@@ -360,16 +479,25 @@ impl Line {
                     group,
                 });
             } else {
-                self.items.push(Item::Relocatable { path: path.into(), group });
+                self.items.push(Item::Relocatable {
+                    path: path.into(),
+                    group,
+                    whole: false,
+                    lib: st.lib,
+                });
             }
         } else if bytes.starts_with(b"!<arch>\n") || bytes.starts_with(b"!<thin>\n") {
-            self.items.push(Item::Relocatable { path: path.into(), group });
+            self.items.push(Item::Relocatable { path: path.into(), group, whole: st.whole, lib: false });
         } else if bytes.is_empty() {
             // input §2.3: an empty file is ignored.
         } else if depth > 8 {
             self.problems.push(format!("{path}: scripts nested too deeply"));
         } else {
-            self.script(path, &String::from_utf8_lossy(&bytes), st, group, files, depth);
+            let Some(text) = files.read(path) else {
+                self.problems.push(format!("{path}: cannot be read"));
+                return;
+            };
+            self.script(path, &String::from_utf8_lossy(&text), st, group, files, depth);
         }
     }
 
@@ -427,6 +555,35 @@ impl Line {
                     }
                 }
                 "AS_NEEDED" => as_needed_at = Some(depth_paren),
+                // input §5.1: recorded for the phases that use them (the
+                // input set's roots, §3.8; resolve §4.2).
+                "EXTERN" | "ENTRY" if !in_input => {
+                    let at = self.items.len();
+                    let mut names = Vec::new();
+                    let mut j = i + 1;
+                    if words.get(j) != Some(&"(") {
+                        self.problems.push(format!("{path}: {w} without '('"));
+                        return;
+                    }
+                    j += 1;
+                    while let Some(&x) = words.get(j) {
+                        if x == ")" {
+                            break;
+                        }
+                        names.push(x.to_string());
+                        j += 1;
+                    }
+                    if j >= words.len() {
+                        self.problems.push(format!("{path}: {w} without ')'"));
+                        return;
+                    }
+                    if w == "ENTRY" {
+                        self.script_entry = names.pop();
+                    } else {
+                        self.externs.extend(names.into_iter().map(|n| (n, at)));
+                    }
+                    i = j;
+                }
                 "(" => depth_paren += 1,
                 ")" => {
                     depth_paren -= 1;
@@ -439,13 +596,10 @@ impl Line {
                     }
                 }
                 _ if in_input => {
-                    let sub = State {
-                        as_needed: st.as_needed || as_needed_at.is_some(),
-                        bstatic: st.bstatic,
-                    };
+                    let sub = State { as_needed: st.as_needed || as_needed_at.is_some(), ..*st };
                     if let Some(n) = w.strip_prefix("-l") {
                         self.library(n, &sub, grp, files);
-                    } else if w.starts_with('/') || files.read(w).is_some() {
+                    } else if w.starts_with('/') || files.len(w).is_some() {
                         self.file(w, w, &sub, grp, files, depth + 1);
                     } else {
                         // GNU ld: a relative name is tried in the current
@@ -455,7 +609,7 @@ impl Line {
                             .iter()
                             .chain(self.lib_dirs.iter())
                             .map(|d| format!("{d}/{w}"))
-                            .find(|p| files.read(p).is_some());
+                            .find(|p| files.len(p).is_some());
                         match found {
                             Some(p) => self.file(&p, w, &sub, grp, files, depth + 1),
                             None => self.problems.push(format!("{w} (in {path}): not found")),
@@ -685,6 +839,11 @@ mod tests {
                 "--no-allow-shlib-undefined" => ("--allow-shlib-undefined", ""),
                 "--enable-new-dtags" => ("--disable-new-dtags", ""),
                 "-Bno-symbolic" => ("-Bsymbolic", ""),
+                // The positional states show on an object named after.
+                "--whole-archive" => ("", "/l/libg.a"),
+                "--no-whole-archive" => ("--whole-archive", "/l/libg.a"),
+                "--start-lib" => ("", "h.o"),
+                "--end-lib" => ("--start-lib", "h.o"),
                 _ => ("", ""),
             }
         };

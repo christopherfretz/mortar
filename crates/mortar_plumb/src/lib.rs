@@ -29,6 +29,7 @@ mod gdbindex;
 mod gdbnames;
 mod hasher;
 mod image;
+mod inset;
 pub mod line;
 mod loader;
 mod locate;

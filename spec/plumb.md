@@ -592,7 +592,13 @@ s3_3_m8_copy_records_are_the_copies`.
 GNU ld's map is a sequence of blocks, each opened by a line at column 0:
 
 1. **Preamble.** The archive members included, then "Allocating common
-   symbols". Nothing in it is read.
+   symbols". The member list is read for the input set (§3.8, WP-156):
+   a member padded to a 30-column field and its reason after it, or a
+   longer member alone on its line and the reason on the next, indented
+   30 columns. A reason is `(--whole-archive)`, `(sym)` (a root of the
+   line) or `file (sym)`, split at the last ` (`. A member with no reason,
+   a reason with no member, or a name that is not a member is an error.
+   Nothing else in the preamble is read.
 2. **`Discarded input sections`.** Each entry becomes a `discarded`
    record with reason `unspecified`.
 3. **`Memory Configuration`.** Nothing in it is read.
@@ -633,7 +639,8 @@ Ambiguities, and how they are resolved:
 - **Spaces in names.** An input-section name never contains a space. A
   file name may.
 
-Tests: `map::gnu::tests::s3_4_gnu_map_excerpt` and
+Tests: `map::gnu::tests::s3_4_gnu_map_excerpt`,
+`s3_4_the_preamble_s_members_and_reasons` and
 `s3_4_malformed_gnu_maps_are_errors`.
 
 ### 3.5 lld (`-Map`)
@@ -701,6 +708,126 @@ mortar map states its line; one written before WP-102 by a static link
 has none). No
 input, however truncated or corrupted, leads to any other outcome (tests:
 `s3_7_truncations_are_answers`, `tests/hostile.rs s9_4_mutated_maps`).
+
+### 3.8 The input set (WP-156)
+
+Which files are in the link is judged against the line, the input files
+and the archives' members, not taken from the map: a member the map
+leaves out has no section for any other rule to judge. The rule runs
+after the rules of the output's kind, for every kind (static, dynamic,
+static-pie), once per map (`--equiv`: per side). Two ids:
+
+- **M11 (missing)**: a file the link must contain is not in it.
+- **M12 (extra)**: a file is in the link that no root or live reference
+  reaches; for GNU ld's map also a reason its preamble prints (§3.4) that
+  the inputs do not bear out.
+
+**The line.** mortar's map: its `arg` records (§3.2a). A reference's
+map: the caller's line (`--inputs-from`, the link-test lane's ld words);
+with none, the coverage says `input set: not judged (no command line …)`.
+The line is read by stage 3's reader (§12, `line.rs`): the items in
+order with their `--whole-archive`, `--start-lib`, `--as-needed` and
+group state, implicit scripts expanded (their `EXTERN` and `ENTRY` are
+read in place), `-u`, `--require-defined`, `--defsym`, `-e`, `--wrap`,
+`-shared`, `-r`, `-T`. A line it cannot read (a file not found, a script
+word it does not model), `--undefined-glob` and `-c` leave the link not
+judged, by name. A `-T` script with `INPUT`, `GROUP`, `STARTUP` or
+`INCLUDE` is not judged; its `ENTRY` and `EXTERN` are roots and every
+name it assigns (`PROVIDE` too) is an *open* key, below.
+
+**The files** are numbered as resolve §4.1 numbers them: file 0 (the
+line's own definitions and roots), then each item in order, an archive
+as its members in archive order. Each file's mentions are read from its
+own symbol table (never an archive index; thin members at their stored
+path, a member of a nested thin archive not judged) and kept as `(key,
+kind)`: a definition (weak or not, function or data, resolve §4.5's
+classes), a common (`SHN_COMMON`, `SHN_X86_64_LCOMMON`), a strong or
+weak undefined mention after `--wrap` redirection (resolve §7.1). Keys
+follow resolve §9.4: `foo@@V` is `foo` and also binds `foo@V`; `foo@V`
+is its own key. A shared object's visible dynamic definitions are its
+definitions, and its strong references are edges unless it is
+`--as-needed` (resolve §4.4).
+
+**The roots** (resolve §4.2): the files live from the start (the named
+objects outside `--start-lib`, the `--whole-archive` members, the shared
+objects, file 0) and the keys of `-e`/`ENTRY` (else `_start`, except
+under `-shared` or `-r`), `-u`, `--require-defined`, `EXTERN` and the
+names a `--defsym` expression refers to. A `--defsym` whose expression is
+not only names, numbers, `+ - * / ( )` (a builtin like `ADDR(…)`, a
+section name, `.`) makes its target an open key and its names open roots.
+`-init`/`-fini` are not roots (measured: none of the four linkers
+extracts for them). `--export-dynamic-symbol` is a root in resolve §4.2
+but no linker extracts for it (measured, WP-156: GNU ld, lld, mold and
+mortar, static, PIE and shared, a name and a glob); it is not expanded,
+and with it on the line M12 is not judged (the coverage says so).
+
+**mortar's map (rule 1, exact).** The closure of resolve §4.1 is
+computed twice: the lower bound with the open keys defined by file 0 and
+the open roots not followed, the upper bound the other way. A file the
+lower bound reaches and the map does not name is M11, with the
+reference that pulls it (the least edge found, by name); a file the map
+names that the upper bound does not reach, or that is not an input of
+the line, is M12. A file between the bounds is not judged. Files are
+compared by identity (resolve §4.6; `spec/model.md` §7.1): the path
+normalized lexically (`.`, `..` and repeated `/` removed: GNU ld and
+lld print the path as found, mold normalizes it, §3.6), the member name,
+and the header offset when the map gives it. An archive named twice is
+one file: a member is required when either mention's is.
+
+**A reference's map (rule 2).** Each reference follows its own
+extraction rule (resolve §16); the rule holds it to what all of them
+share. The files in the link are the members the map names (GNU ld's:
+with the preamble's), the files live from the start, and the shared
+objects.
+
+- **M12**: a member in the link that no root and no reference of a file
+  in the link reaches, where a strong or weak undefined mention or a
+  common reaches every member in the link that defines or holds the key
+  in common (the union of every reference's edges: lld's weak and
+  common rules, mold's R1/R3/R5, GNU ld's walk all extract along a
+  subset of them).
+- **M11**: a file live from the start that the map does not name; and
+  a key with a strong demand (a strong undefined mention of a file in
+  the link, a root) or a common demand (GNU ld and mold; lld only with
+  `--fortran-common`) that no file in the link, no shared object and
+  no file 0 definition satisfies, while a member not in the link defines
+  it (a common: with a non-weak data definition). Under GNU ld the
+  demand is judged only when such a member is one GNU ld's walk reaches
+  after the demand: a later item, the demanding member's own archive, or
+  the same group; a root is read before every item, except `EXTERN` and
+  `--defsym`, read where the line names them (resolve §4.2, finding 17).
+  A back-reference is **not judged** and is counted (`demands not judged
+  n (GNU ld's back-references)`). A `-T` script's roots have no position
+  for GNU ld and are not judged there.
+- **GNU ld's preamble**: `(--whole-archive)` is true when the member's
+  archive is under `--whole-archive` on the line; `(sym)` when `sym` is
+  a root and the member defines it; `file (sym)` when `file` is in the
+  link with an undefined (either binding) or common `sym` and the member
+  defines it; a reason naming a `--wrap`ped symbol, or a file not on the
+  line, is not judged. A member the map places and the preamble does not
+  list is M12.
+- The closure of rule 1 is computed for the reference's line too (lld:
+  without common edges unless `--fortran-common`) and compared, as
+  coverage, not a finding: resolve §16 records where each differs.
+
+**Coverage**: one line, `input set: files judged n of m (in the link k,
+required r)` for mortar's map, `input set: files judged n of m (in the
+link k); mortar's closure: the same` (or `differs (+a -b, c open)`) for a
+reference's, followed by what was not judged; or `input set: not judged
+(why)`. `m` counts the relocatable files of the line, members one by
+one.
+
+**Cost** (§8.1): each object's symbol table is read once by position (an
+archive's members by their headers; nothing else of a member), its
+mentions kept as 5 bytes per symbol with the names interned once; the
+closure is linear in the mentions. Measured on `cxx-large-g`: see the
+landed record `spec/landed/plumb/WP-156.md`.
+
+Tests: `inset::tests` (the closure on synthetic archives: a cycle, one
+symbol in two archives, an archive named twice, weak references and
+commons, the roots, GNU ld's position), `tests/inset.rs` (the EXTERN
+defect of 2026-11-17 by name, GNU ld's link of the same line clean, the
+mutations of §9.2 (s)), `map::gnu::tests::s3_4_the_preamble_s_members_and_reasons`.
 
 ## 4. Relocation values
 
@@ -3267,7 +3394,7 @@ tests (the hash, the probe, the header). The byte sweep's `gdbindex` case
 
 A finding has:
 
-- the rule id: `O1`, `S1`–`S21`, `I1`, `I2`, `M1`–`M10`, `R1`–`R9`, `T1`,
+- the rule id: `O1`, `S1`–`S21`, `I1`, `I2`, `M1`–`M12` (M11, M12: §3.8), `R1`–`R9`, `T1`,
   `Y1`–`Y5`, `E1`–`E5`, `F1`–`F5` (§4.8), `P1`–`P2` (§6.6), `B1` (§6.7),
   `C1`–`C6` (§5.10), `P-D1`–`P-D13` (§12), `P-I1`–`P-I6` (§6.8), `P-M1`–`P-M3` (§13), `P-E1`–`P-E6`
   (§6.9; a side's finding there carries its side, `X:` or `F:`) or
@@ -3740,6 +3867,20 @@ produce a finding that is not a recorded anomaly (`tests/mutation.rs`):
     `2^32 − 1`; a 1000-slot table; a full table (P-G4); every byte of the
     header, CU list and area and 400 random bytes set to 0, `0xff` and
     flipped by bit 7: findings, no panic.
+- **(s)** The input set (§3.8; WP-156, `tests/inset.rs`), on the checked-in
+  links of AArch64 and x86-64 (`tests/inset/gen.sh`), mortar's map and
+  GNU ld's: (1) a required member removed (`r.o libk.a` without
+  `libk.a(k.o)`): M11 naming it and `k_fn`, for mortar's map in both
+  orders of the line, for GNU ld's with `r.o` first; with the archive
+  first GNU ld's demand is a back-reference, not judged and counted;
+  (2) an unreferenced member added (`libk.a(j.o)`): M12, and for GNU ld
+  also M12 for a member the preamble does not list; (3) a
+  `--whole-archive` member dropped: M11 "live from the start" (mortar's
+  map read with the option added to its `arg` records, since mortar at
+  e1e60cf refuses it; GNU ld's map without `j.o`); (4) a member added
+  that only a weak reference names: M12; (5) GNU ld's printed reason
+  made false: M12 naming the map line. The two orders of an archive and
+  the object referring to it give mortar the same set, both clean.
 
 ### 9.3 Map readers
 
