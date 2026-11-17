@@ -584,7 +584,10 @@ fn refs(b: &mut Builder<'_>) {
     }
     if let Some(clang) = tool("clang") {
         let src = b.root.join("before.c").display().to_string();
-        must(&d, &clang, &["-O2", "-fPIC", "-c", &src, "-o", "c2.o"]);
+        // The target is named: on an x86-64 host a bare `clang` writes an
+        // x86-64 object, which the AArch64 link below refuses.
+        let t = "--target=aarch64-linux-gnu";
+        must(&d, &clang, &[t, "-O2", "-fPIC", "-c", &src, "-o", "c2.o"]);
         b.link("refs", a, &d, "libc2.so", &["-shared", "c2.o", "-Wl,-soname,libc2.so"], Bfd, &[]);
     }
     // WP-123's V3: two `.symver` definitions of `foo` (`foo@V1` hidden,
