@@ -1305,7 +1305,7 @@ any table found (`mortar_meta::table`; mortar-made libraries carry one
 once WP-129 writes the tables of shared objects). The verifier's side is P-R9, plumb.md P-D24 (§12.5, added to P-D11). *Test:*
 `copy-of-symbolic` (refuse `.data`/`.bss`, warn `.rodata`/
 `.data.rel.ro`, a GNU ld `-Bsymbolic` library; the plain library
-unaffected; W30, anomaly A44), `copy-of-symbolic-rows` (a table's
+unaffected; W30, anomaly A45), `copy-of-symbolic-rows` (a table's
 `NONPREEMPTIBLE` rows, written by the test producer, and a table that
 does not parse); outside every `PT_LOAD` and overflowing headers: unit
 tests (`mortar_scan` `copies::tests`). An lld library and a mortar one

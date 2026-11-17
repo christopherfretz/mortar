@@ -9,7 +9,7 @@
 # here are the producer's claim, not the library's code (which reaches
 # `rw` through its GOT): the references, which do not read tables, link
 # and run one object (`one 9`), and the verifier, which reads the table as
-# mortar does, reports their copy of `rw` (P-D24, anomaly A44).
+# mortar does, reports their copy of `rw` (P-D24, anomaly A45).
 #
 # A table that does not parse (here: version 2, odr.md O-51) cannot say
 # which definitions are bound: every definition counts as bound, and the
@@ -17,7 +17,7 @@
 #@ spec: dyn.md "D-43a"
 #@ spec: odr.md "O-60"
 #@ arch: aarch64 x86_64
-#@ anomaly(bfd,lld,mold): A44
+#@ anomaly(bfd,lld,mold): A45
 
 cc -O1 -fPIC lib.c -o lib.o
 as note4.s -o note4.o

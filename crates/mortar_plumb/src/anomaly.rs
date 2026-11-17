@@ -181,7 +181,7 @@ fn dynamic(linker: Format, output: &[u8], f: &Finding) -> Option<&'static str> {
     }
     if d(24) && m.ends_with("(D-43a, W30)") {
         return Some(
-            "A44: GNU ld, lld and mold copy writable data a library binds to itself into the executable: two objects (dyn.md D-43a, W30)",
+            "A45: GNU ld, lld and mold copy writable data a library binds to itself into the executable: two objects (dyn.md D-43a, W30)",
         );
     }
     if (lld || mold) && d(10) && m.ends_with("(D-41, H1)") {

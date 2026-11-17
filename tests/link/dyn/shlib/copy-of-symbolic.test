@@ -11,7 +11,7 @@
 #   still reads its 3, at another address (`two 3`, where the same
 #   program against the plain library prints `one 9`). mortar refuses,
 #   `copy-of-locally-bound-definition`, and the verifier reports the
-#   references' outputs (P-D24, anomaly A44);
+#   references' outputs (P-D24, anomaly A45);
 # - `ro` (`.rodata`, a read-only PT_LOAD) and `rr` (`.data.rel.ro`,
 #   inside PT_GNU_RELRO): two equal constants, defined behaviour, only
 #   `&v` differs (`two 1`): mortar warns with the same kind and links.
@@ -23,7 +23,7 @@
 # measured the same way.
 #@ spec: dyn.md "D-43a"
 #@ arch: aarch64 x86_64
-#@ anomaly(bfd,lld,mold): A44
+#@ anomaly(bfd,lld,mold): A45
 
 cc -O1 -fPIC lib.c -o lib.o
 shlib gcc lib.o -Wl,-Bsymbolic -Wl,-z,relro -Wl,-soname,libsym.so -o libsym.so
