@@ -312,3 +312,360 @@ impl<'o> Pools<'_, 'o> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! W4's rule on constructed objects, both directions (the mutation
+    //! rule): equal data referred to from different places is the same;
+    //! different data, a different entry or a different place inside equal
+    //! strings is a finding.
+    use super::*;
+    use mortar_elf::consts::{
+        EM_386, EM_AARCH64, EM_X86_64, SHF_ALLOC, SHF_EXECINSTR, SHF_MERGE, SHF_STRINGS, SHF_WRITE,
+        SHT_PROGBITS, SHT_REL, SHT_RELA, SHT_STRTAB, SHT_SYMTAB,
+    };
+    use mortar_elf::reloc::{aarch64, i386, x86_64};
+
+    const STR: u32 = 1; // section symbol of .rodata.str1.1
+    const CST: u32 = 2; // section symbol of .rodata.cst8
+    const RO: u32 = 3; // section symbol of .rodata
+    const TEXT: u32 = 4; // section symbol of .text
+    const LV: u32 = 5; // named local object `lv` in .rodata
+    const G: u32 = 6; // undefined global `g`
+
+    /// (name, type, flags, contents, link, info, align, entsize).
+    type Sec = (u32, u32, u64, Vec<u8>, u32, u32, u64, u64);
+
+    /// One unit: the copy `.data.x` (`len` bytes) and its relocations
+    /// (offset, type, symbol, addend: in the bytes for `SHT_REL`), with a
+    /// string pool, an 8-byte constant pool, a plain `.rodata` and `.text`.
+    struct Unit<'a> {
+        machine: u16,
+        strings: &'a [u8],
+        cst8: &'a [u8],
+        rodata: &'a [u8],
+        len: usize,
+        relocs: &'a [(u64, u32, u32, i64)],
+    }
+
+    impl Unit<'_> {
+        #[allow(clippy::too_many_lines, reason = "one object, written out")]
+        fn bytes(&self) -> Vec<u8> {
+            let wide = self.machine != EM_386;
+            let word = |out: &mut Vec<u8>, v: u64| {
+                if wide {
+                    out.extend_from_slice(&v.to_le_bytes());
+                } else {
+                    out.extend_from_slice(&(v as u32).to_le_bytes());
+                }
+            };
+            let mut data = vec![0u8; self.len];
+            let mut rel = Vec::new();
+            for &(offset, r_type, sym, addend) in self.relocs {
+                word(&mut rel, offset);
+                if wide {
+                    rel.extend_from_slice(
+                        &((u64::from(sym) << 32) | u64::from(r_type)).to_le_bytes(),
+                    );
+                    rel.extend_from_slice(&addend.to_le_bytes());
+                } else {
+                    rel.extend_from_slice(&((sym << 8) | r_type).to_le_bytes());
+                    let at = offset as usize;
+                    data[at..at + 4].copy_from_slice(&(addend as i32).to_le_bytes());
+                }
+            }
+            let strtab = b"\0lv\0g\0".to_vec();
+            let mut symtab = Vec::new();
+            // (name, info, shndx, value, size)
+            let syms: [(u32, u8, u16, u64, u64); 7] = [
+                (0, 0, 0, 0, 0),
+                (0, 3, 3, 0, 0),
+                (0, 3, 4, 0, 0),
+                (0, 3, 5, 0, 0),
+                (0, 3, 6, 0, 0),
+                (1, 1, 5, 0, 4),
+                (4, 0x10, 0, 0, 0),
+            ];
+            for (name, info, shndx, value, size) in syms {
+                symtab.extend_from_slice(&name.to_le_bytes());
+                if wide {
+                    symtab.extend_from_slice(&[info, 0]);
+                    symtab.extend_from_slice(&shndx.to_le_bytes());
+                    symtab.extend_from_slice(&value.to_le_bytes());
+                    symtab.extend_from_slice(&size.to_le_bytes());
+                } else {
+                    symtab.extend_from_slice(&(value as u32).to_le_bytes());
+                    symtab.extend_from_slice(&(size as u32).to_le_bytes());
+                    symtab.extend_from_slice(&[info, 0]);
+                    symtab.extend_from_slice(&shndx.to_le_bytes());
+                }
+            }
+            let (rel_name, rel_type, rel_size): (&[u8], u32, u64) =
+                if wide { (b".rela.data.x", SHT_RELA, 24) } else { (b".rel.data.x", SHT_REL, 8) };
+            let mut shstr = vec![0u8];
+            let mut name = |n: &[u8]| {
+                let at = shstr.len() as u32;
+                shstr.extend_from_slice(n);
+                shstr.push(0);
+                at
+            };
+            // (name, type, flags, contents, link, info, align, entsize)
+            let mut secs: Vec<Sec> = vec![
+                (name(b".data.x"), SHT_PROGBITS, SHF_ALLOC | SHF_WRITE, data, 0, 0, 8, 0),
+                (name(rel_name), rel_type, 0x40, rel, 7, 1, 8, rel_size),
+                (
+                    name(b".rodata.str1.1"),
+                    SHT_PROGBITS,
+                    SHF_ALLOC | SHF_MERGE | SHF_STRINGS,
+                    self.strings.to_vec(),
+                    0,
+                    0,
+                    1,
+                    1,
+                ),
+                (
+                    name(b".rodata.cst8"),
+                    SHT_PROGBITS,
+                    SHF_ALLOC | SHF_MERGE,
+                    self.cst8.to_vec(),
+                    0,
+                    0,
+                    8,
+                    8,
+                ),
+                (name(b".rodata"), SHT_PROGBITS, SHF_ALLOC, self.rodata.to_vec(), 0, 0, 8, 0),
+                (name(b".text"), SHT_PROGBITS, SHF_ALLOC | SHF_EXECINSTR, vec![0; 16], 0, 0, 4, 0),
+                (name(b".symtab"), SHT_SYMTAB, 0, symtab, 8, 6, 8, if wide { 24 } else { 16 }),
+                (name(b".strtab"), SHT_STRTAB, 0, strtab, 0, 0, 1, 0),
+            ];
+            let shstrndx = secs.len() as u16 + 1;
+            let shstr_name = name(b".shstrtab");
+            secs.push((shstr_name, SHT_STRTAB, 0, shstr, 0, 0, 1, 0));
+            let ehsize: usize = if wide { 64 } else { 52 };
+            let mut out = vec![0u8; ehsize];
+            let mut headers = vec![0u8; if wide { 64 } else { 40 }];
+            for (name, sh_type, flags, contents, link, info, align, entsize) in secs {
+                while !out.len().is_multiple_of(8) {
+                    out.push(0);
+                }
+                let offset = out.len() as u64;
+                out.extend_from_slice(&contents);
+                headers.extend_from_slice(&name.to_le_bytes());
+                headers.extend_from_slice(&sh_type.to_le_bytes());
+                word(&mut headers, flags);
+                word(&mut headers, 0);
+                word(&mut headers, offset);
+                word(&mut headers, contents.len() as u64);
+                headers.extend_from_slice(&link.to_le_bytes());
+                headers.extend_from_slice(&info.to_le_bytes());
+                word(&mut headers, align);
+                word(&mut headers, entsize);
+            }
+            while !out.len().is_multiple_of(8) {
+                out.push(0);
+            }
+            let shoff = out.len() as u64;
+            out.extend_from_slice(&headers);
+            let shnum = shstrndx + 1;
+            let mut e = vec![0x7f, b'E', b'L', b'F', if wide { 2 } else { 1 }, 1, 1, 0];
+            e.extend_from_slice(&[0; 8]);
+            e.extend_from_slice(&1u16.to_le_bytes()); // ET_REL
+            e.extend_from_slice(&self.machine.to_le_bytes());
+            e.extend_from_slice(&1u32.to_le_bytes());
+            word(&mut e, 0);
+            word(&mut e, 0);
+            word(&mut e, shoff);
+            e.extend_from_slice(&0u32.to_le_bytes());
+            for half in [ehsize as u16, 0, 0, if wide { 64 } else { 40 }, shnum, shstrndx] {
+                e.extend_from_slice(&half.to_le_bytes());
+            }
+            out[..ehsize].copy_from_slice(&e);
+            out
+        }
+
+        fn contents(&self) -> Option<Contents> {
+            let bytes = self.bytes();
+            let obj = Object::parse(&bytes).expect("a constructed object");
+            let table = obj.symbols().expect("symbols").expect("a symbol table");
+            let data = |s: SectionIndex| obj.section(s).ok()?.data().ok().map(Cow::Borrowed);
+            read(&obj, &table, SectionIndex(1), Some(SectionIndex(2)), &data)
+        }
+    }
+
+    /// A unit of `machine` whose copy holds one pointer: `reloc` at 0.
+    fn one(machine: u16, strings: &[u8], reloc: (u32, u32, i64)) -> Option<Contents> {
+        let cst8 = [1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0];
+        let rodata = [0u8; 32];
+        Unit {
+            machine,
+            strings,
+            cst8: &cst8,
+            rodata: &rodata,
+            len: 16,
+            relocs: &[(0, reloc.0, reloc.1, reloc.2)],
+        }
+        .contents()
+    }
+
+    fn compare(a: Option<Contents>, b: Option<Contents>) -> Option<String> {
+        differ(&a.expect("first readable"), &b.expect("second readable"))
+    }
+
+    const ABS64: u32 = aarch64::R_AARCH64_ABS64;
+    const REFERS: &str = "the data its relocation at offset 0 refers to";
+
+    /// The kiln shape (`__bool_strings<char>::__true`): a section symbol of
+    /// `.rodata.str1.1` plus an addend that differs with the unit's pool.
+    #[test]
+    fn same_string_at_different_places_is_the_same() {
+        let a = one(EM_AARCH64, b"alpha\0beta\0true\0false\0", (ABS64, STR, 11));
+        let b = one(EM_AARCH64, b"true\0false\0", (ABS64, STR, 0));
+        assert_eq!(compare(a, b), None);
+        let a = one(EM_AARCH64, b"alpha\0beta\0true\0false\0", (ABS64, STR, 16));
+        let b = one(EM_AARCH64, b"true\0false\0", (ABS64, STR, 5));
+        assert_eq!(compare(a, b), None);
+        let a = one(EM_X86_64, b"omega\0true\0", (x86_64::R_X86_64_64, STR, 6));
+        let b = one(EM_X86_64, b"true\0", (x86_64::R_X86_64_64, STR, 0));
+        assert_eq!(compare(a, b), None);
+    }
+
+    #[test]
+    fn different_string_is_a_finding() {
+        let a = one(EM_AARCH64, b"alpha\0true\0", (ABS64, STR, 6));
+        let b = one(EM_AARCH64, b"True\0", (ABS64, STR, 0));
+        assert_eq!(compare(a, b).as_deref(), Some(REFERS));
+        // At the same place too, which the first rule's name and addend
+        // could not see.
+        let a = one(EM_AARCH64, b"true\0", (ABS64, STR, 0));
+        let b = one(EM_AARCH64, b"True\0", (ABS64, STR, 0));
+        assert_eq!(compare(a, b).as_deref(), Some(REFERS));
+    }
+
+    /// `"xtrue"+1` is `"true"`; `"true"+1` is not.
+    #[test]
+    fn the_place_inside_equal_strings_counts() {
+        let a = one(EM_AARCH64, b"xtrue\0", (ABS64, STR, 1));
+        let b = one(EM_AARCH64, b"true\0", (ABS64, STR, 0));
+        assert_eq!(compare(a, b), None);
+        let a = one(EM_AARCH64, b"true\0", (ABS64, STR, 0));
+        let b = one(EM_AARCH64, b"true\0", (ABS64, STR, 1));
+        assert_eq!(compare(a, b).as_deref(), Some(REFERS));
+    }
+
+    #[test]
+    fn merged_entries_by_their_bytes_and_the_place_inside() {
+        // Entry 1 (the value 2) in both, at different places.
+        let a = one(EM_AARCH64, b"\0", (ABS64, CST, 8));
+        let b = Unit {
+            machine: EM_AARCH64,
+            strings: b"\0",
+            cst8: &[2, 0, 0, 0, 0, 0, 0, 0],
+            rodata: &[0; 8],
+            len: 16,
+            relocs: &[(0, ABS64, CST, 0)],
+        }
+        .contents();
+        assert_eq!(compare(a, b), None);
+        // A different entry.
+        let a = one(EM_AARCH64, b"\0", (ABS64, CST, 0));
+        let b = one(EM_AARCH64, b"\0", (ABS64, CST, 8));
+        assert_eq!(compare(a, b).as_deref(), Some(REFERS));
+        // The same entry, another place inside it.
+        let a = one(EM_AARCH64, b"\0", (ABS64, CST, 8));
+        let b = one(EM_AARCH64, b"\0", (ABS64, CST, 9));
+        assert_eq!(compare(a, b).as_deref(), Some(REFERS));
+    }
+
+    /// The conservative path: any other unit-local target by its kind.
+    #[test]
+    fn other_local_targets_by_kind_only() {
+        let a = one(EM_AARCH64, b"\0", (ABS64, RO, 16));
+        let b = one(EM_AARCH64, b"\0", (ABS64, RO, 0));
+        assert_eq!(compare(a, b), None);
+        // GCC -O2's named local and Clang's section symbol.
+        let a = one(EM_AARCH64, b"\0", (ABS64, LV, 0));
+        let b = one(EM_AARCH64, b"\0", (ABS64, RO, 8));
+        assert_eq!(compare(a, b), None);
+        // A string in a mergeable pool and one in a plain `.rodata` (GCC
+        // -O0 against Clang).
+        let a = one(EM_AARCH64, b"true\0", (ABS64, STR, 0));
+        let b = one(EM_AARCH64, b"\0", (ABS64, RO, 0));
+        assert_eq!(compare(a, b), None);
+        // Code against data is a finding.
+        let a = one(EM_AARCH64, b"\0", (ABS64, TEXT, 0));
+        let b = one(EM_AARCH64, b"\0", (ABS64, RO, 0));
+        assert_eq!(compare(a, b).as_deref(), Some("its relocations"));
+        // A type that is not absolute is not read by content.
+        let prel = aarch64::R_AARCH64_PREL32;
+        let a = one(EM_AARCH64, b"true\0", (prel, STR, 0));
+        let b = one(EM_AARCH64, b"True\0", (prel, STR, 0));
+        assert_eq!(compare(a, b), None);
+        // A string without a terminator, or a place past the pool.
+        let a = one(EM_AARCH64, b"true", (ABS64, STR, 0));
+        let b = one(EM_AARCH64, b"True", (ABS64, STR, 0));
+        assert_eq!(compare(a, b), None);
+        let a = one(EM_AARCH64, b"true\0", (ABS64, STR, 9));
+        let b = one(EM_AARCH64, b"True\0", (ABS64, STR, 0));
+        assert_eq!(compare(a, b), None);
+    }
+
+    /// A key stays compared by name and addend; a key against a local is
+    /// the conservative path (a local alias).
+    #[test]
+    fn keys_by_name_and_addend() {
+        let a = one(EM_AARCH64, b"\0", (ABS64, G, 0));
+        let b = one(EM_AARCH64, b"\0", (ABS64, G, 0));
+        assert_eq!(compare(a, b), None);
+        let a = one(EM_AARCH64, b"\0", (ABS64, G, 0));
+        let b = one(EM_AARCH64, b"\0", (ABS64, G, 8));
+        assert_eq!(compare(a, b).as_deref(), Some("its relocations"));
+        let a = one(EM_AARCH64, b"\0", (ABS64, G, 0));
+        let b = one(EM_AARCH64, b"\0", (ABS64, TEXT, 0));
+        assert_eq!(compare(a, b), None);
+    }
+
+    /// i386: the implicit addend is in the bytes; for a unit-local target
+    /// it is read for the lookup and left out of the byte comparison.
+    #[test]
+    fn rel_implicit_addends() {
+        let r32 = i386::R_386_32;
+        let a = one(EM_386, b"alpha\0true\0", (r32, STR, 6));
+        let b = one(EM_386, b"true\0", (r32, STR, 0));
+        assert_eq!(compare(a, b), None);
+        let a = one(EM_386, b"alpha\0true\0", (r32, STR, 6));
+        let b = one(EM_386, b"True\0", (r32, STR, 0));
+        assert_eq!(compare(a, b).as_deref(), Some(REFERS));
+        let a = one(EM_386, b"\0", (r32, RO, 24));
+        let b = one(EM_386, b"\0", (r32, RO, 0));
+        assert_eq!(compare(a, b), None);
+        // A key's implicit addend stays in the bytes.
+        let a = one(EM_386, b"\0", (r32, G, 0));
+        let b = one(EM_386, b"\0", (r32, G, 4));
+        assert_eq!(compare(a, b).as_deref(), Some("its bytes"));
+        // A field width W4's table does not give: the copy takes no part.
+        assert_eq!(one(EM_386, b"\0", (i386::R_386_RELATIVE, RO, 0)), None);
+    }
+
+    #[test]
+    fn bytes_and_data_together() {
+        let a = Unit {
+            machine: EM_AARCH64,
+            strings: b"true\0",
+            cst8: &[0; 8],
+            rodata: &[0; 8],
+            len: 16,
+            relocs: &[(8, ABS64, STR, 0)],
+        };
+        let mut b_bytes = a.contents().expect("readable");
+        if let Bytes::Data(d) = &mut b_bytes.bytes {
+            d[0] = 1;
+        }
+        let b = Unit { strings: b"True\0", ..a };
+        let mut b = b.contents().expect("readable");
+        b.bytes = b_bytes.bytes;
+        assert_eq!(
+            differ(&a.contents().expect("readable"), &b).as_deref(),
+            Some("its bytes and the data its relocation at offset 8 refers to")
+        );
+    }
+}

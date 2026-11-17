@@ -1,0 +1,49 @@
+# The twin of w4-local-refs (spec/odr.md §8.1, W4's rule; WP-146): b.cc's
+# copy of `bool_strings<char>::t` points at "True", a.cc's at "true", at
+# different places in their units' string pools. W4 reports the member by
+# name and says the difference is in the data the relocation refers to;
+# the other copies (`f`, and the conservative targets) are not reported.
+# The program reads the kept (a.o's) copy through b's function. GCC
+# only: `diag` binds every mortar link of a test, so the Clang objects'
+# form is w4-local-refs's (no finding) and the unit tests' (finding).
+#@ spec: odr.md §8.1
+#@ requires: g++
+#@ diag: odr-contents-mismatch a.o b.o
+
+cxx -O2 -std=c++17 a.cc -o a.o
+cxx -O2 -std=c++17 b.cc -o b.o
+cxx -O2 -std=c++17 main.cc -o main.o
+link(bfd,lld,mold) g++ -static -no-pie main.o a.o b.o -o prog
+link(mortar) g++ -static -no-pie main.o a.o b.o -Wl,--odr=strict -o prog
+  diag: _ZN12bool_stringsIcE1tE has different contents in different files
+  diag: in the data its relocation at offset 0 refers to
+  no-diag: _ZN12bool_stringsIcE1fE
+run prog
+  stdout: true
+
+#--- a.cc
+const char* other_a(int i) {
+  static const char* const xs[] = {"alpha", "beta", "gamma", "delta"};
+  return xs[i];
+}
+struct sv { const char* p; unsigned long n; };
+template <class C> struct bool_strings;
+template <> struct bool_strings<char> {
+  static constexpr sv t{"true", 4};
+  static constexpr sv f{"false", 5};
+};
+const sv* from_a(int i) { return i ? &bool_strings<char>::f : &bool_strings<char>::t; }
+#--- b.cc
+struct sv { const char* p; unsigned long n; };
+template <class C> struct bool_strings;
+template <> struct bool_strings<char> {
+  static constexpr sv t{"True", 4};
+  static constexpr sv f{"false", 5};
+};
+const sv* from_b(int i) { return i ? &bool_strings<char>::f : &bool_strings<char>::t; }
+#--- main.cc
+#include <cstdio>
+struct sv { const char* p; unsigned long n; };
+const sv* from_a(int);
+const sv* from_b(int);
+int main() { std::printf("%s\n", from_b(0)->p); }
