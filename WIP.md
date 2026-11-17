@@ -1,14 +1,7 @@
-# WIP — WP-077 (load-time ODR check, prototype package)
-
-Done:
-- read the brief, m6-common, odr.md §10, the prototypes; mortar release build in
-  `.build/target-wp-077/release/mortar`; xtask debug build.
-
-Half-done:
-- `tests/hook/mason_odr_rt.cpp` (the runtime, mechanism "read the binding":
-  each module's dynamic relocations against its own rows, the slot's value,
-  the defining module's row at that address).
-
-Next:
-- `tests/hook/run.sh` (the matrix), cost tables, fail-the-load experiments,
-  audit experiment, the record `spec/landed/meta/WP-077.md`, §10.3 rewrite.
+# WIP WP-077 (deleted in the final commit)
+Done: runtime (tests/hook/mason_odr_rt.cpp), run.sh/lib.sh matrix, exp/ (fail-the-load, audit);
+aarch64 hod matrix all pass (T2-dlopen, R3m-lazy, T2-initial-lazy named exclusions);
+byte-identical rebuilds; a68 == hod-next bytes on aarch64/x86-64.
+Running: chain1 (aarch64 gcc, x86_64 hod, i686 hod), then chain2 (cost aarch64, AUD-4 x15,
+i686 under -cpu pentium2,-mmx). Logs in .build/target-wp-077/scratch/.
+Next: spec/landed/meta/WP-077.md, the §10.3 proposal in it, gate (cargo check, cargo test -p xtask).

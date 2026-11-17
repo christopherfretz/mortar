@@ -12,7 +12,7 @@ RT_FLAVOR=${RT_FLAVOR:-hod}
 case $T in
   aarch64) CC=gcc; CXX=g++; RUN=(); KT=() ;;
   x86_64) CC=x86_64-linux-gnu-gcc; CXX=x86_64-linux-gnu-g++; RUN=(qemu-x86_64 -L /usr/x86_64-linux-gnu); KT=(--target=x86_64-linux-gnu) ;;
-  i686) CC=i686-linux-gnu-gcc; CXX=i686-linux-gnu-g++; RUN=(qemu-i386 -L /usr/i686-linux-gnu); KT=() ;;
+  i686) CC=i686-linux-gnu-gcc; CXX=i686-linux-gnu-g++; RUN=(qemu-i386 -cpu "${QEMU_I386_CPU:-pentium2,-mmx}" -L /usr/i686-linux-gnu); KT=() ;;
   *) echo "lib.sh: T=$T?"; exit 2 ;;
 esac
 mkdir -p "$W/wrap"
