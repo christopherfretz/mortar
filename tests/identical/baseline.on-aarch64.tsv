@@ -432,6 +432,9 @@ dyn/reloc/z-text.test	aarch64	25	exit status 0	eb408a592faeb9820902c5b37e58f3558
 dyn/reloc/z-text.test	x86_64	19	exit status 1	-	-	012379a0d69d99ce25230cab68f7fd1c4348b0cfbc78dcaf3a60c63799b7d87e
 dyn/reloc/z-text.test	x86_64	24	exit status 0	970306f46cebed443846cbe54107c880722981674af8d6e7aec6e55be87ebf24	8bd13214202e03c36607e0bb1a495e22f0e21c4b34eef64fa53983954cc5d449	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
 dyn/reloc/z-text.test	x86_64	25	exit status 0	970306f46cebed443846cbe54107c880722981674af8d6e7aec6e55be87ebf24	241beec18b4a63f4ebe28d93f9f5d0960522a95e34641c80f9ebdc77c38fd0f4	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+dyn/shared/nonpic-analysis-before-start.test	aarch64	16	exit status 1	-	-	d881fcdea6495cb494b4fbce4f0af443b3616e1f9354dd6109547aec71c53e60
+dyn/shared/nonpic-analysis-format.test	aarch64	14	exit status 1	-	-	d881fcdea6495cb494b4fbce4f0af443b3616e1f9354dd6109547aec71c53e60
+dyn/shared/nonpic-analysis-gap2.test	aarch64	19	exit status 1	-	-	d881fcdea6495cb494b4fbce4f0af443b3616e1f9354dd6109547aec71c53e60
 dyn/shared/refused-bsymbolic-non-weak.test	aarch64	14	exit status 0	9c28e5050bcbdaedf0e0d916ab638d587b5a188fb9d58ab2363630b1c8a989c6	94c6939c4a880bb74d5832864d9cc422a32f8c2c59192e24f66b2b4ea2bd294f	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
 dyn/shared/refused-bsymbolic-non-weak.test	aarch64	16	exit status 1	-	-	84bce1665ceaaf2b5cc04dc14833f1ff1016777c48095b19dda76a3d6b51a7f0
 dyn/shared/refused-bsymbolic-non-weak.test	aarch64	20	exit status 1	-	-	0a12f6c7140a4c914a663da40064a282bf22bb987bab7068f8ea561545dd986e
