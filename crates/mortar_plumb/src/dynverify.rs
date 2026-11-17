@@ -72,7 +72,7 @@ pub fn verify_with(output: &[u8], inputs: &[Input<'_>], map: &Map, ctx: &Ctx<'_>
         // a finding (P-D4, P-D6; WP-131 V5), and only the structure rules
         // judge it besides (a static judging of a dynamic program names
         // its PLT and its imports wrongly); any other is static.
-        let missing = no_dynamic(&image, line_words(map, ctx), ctx.files);
+        let missing = no_dynamic(&image, line_words(map, ctx).as_deref(), ctx.files);
         if missing.is_empty() {
             return crate::verify(output, inputs, map);
         }
@@ -406,11 +406,11 @@ fn line_words(map: &Map, ctx: &Ctx<'_>) -> Option<Vec<String>> {
 /// `--push-state -Bstatic --pop-state -lgreet`: SIGSEGV). Each is P-D4;
 /// each shared object the line loads but not `--as-needed` is P-D6 (no
 /// `DT_NEEDED` can name it).
-fn no_dynamic(image: &Image<'_>, words: Option<Vec<String>>, files: &dyn Files) -> Vec<Finding> {
+fn no_dynamic(image: &Image<'_>, words: Option<&[String]>, files: &dyn Files) -> Vec<Finding> {
     use mortar_elf::consts::{EM_386, EM_AARCH64, EM_X86_64, PT_INTERP, SHT_DYNSYM, SHT_REL, SHT_RELA};
     let mut v = Vec::new();
     let mut why = Vec::new();
-    if let Some(w) = &words {
+    if let Some(w) = words {
         let line = Line::parse(w, files);
         if let Some(k @ (OutputKind::Exec | OutputKind::Pie | OutputKind::StaticPie)) = line.kind
         {

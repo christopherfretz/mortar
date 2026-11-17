@@ -140,7 +140,7 @@ impl Line {
     /// Reads `args` (the linker's words, without the program name). Each
     /// word is placed by the options table (`opts::Table::word`, cli.md
     /// §2): its row, its value, or an input file.
-    #[allow(clippy::too_many_lines)] // one arm per option family
+    #[allow(clippy::too_many_lines, clippy::many_single_char_names)] // one arm per option family
     pub fn parse(args: &[String], files: &dyn Files) -> Line {
         let table = crate::opts::Table::get();
         let mut l = Line { relro: true, new_dtags: true, ..Line::default() };
