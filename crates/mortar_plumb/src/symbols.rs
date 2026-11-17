@@ -795,10 +795,11 @@ fn linker_defined(e: &mut Engine<'_, '_>, fs: &mut Vec<Finding>) {
                 }
             }
             "_DYNAMIC" => Some(Want::Exactly(sec(".dynamic").map_or(0, |(lo, _)| lo))),
-            // At the TLS block's start; GNU ld's x86-64 one is at TP, the
-            // offset align_up(p_memsz, p_align) (variant II, §10.6).
+            // At the TLS block's start; GNU ld's x86-64 executable's is at
+            // TP, the offset align_up(p_memsz, p_align) (variant II,
+            // §10.6); in a shared object GNU ld's is 0 too (X-61, WP-144).
             "_TLS_MODULE_BASE_" => Some(Want::Exactly(match e.tls {
-                Ok(Some(b)) if x86 && e.format == Format::Gnu => b.tcb.wrapping_neg(),
+                Ok(Some(b)) if x86 && e.format == Format::Gnu && !e.shared => b.tcb.wrapping_neg(),
                 _ => 0,
             })),
             _ => {

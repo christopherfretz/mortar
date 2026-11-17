@@ -7,9 +7,11 @@
 # no TLSLD relocations). It runs loaded at start in two threads, under an
 # interposer, and by `dlopen` with a thread started before it. Nothing
 # is relaxed: the input's 8 calls of `__tls_get_addr` are the output's.
+# GNU ld writes one spare R_AARCH64_NONE record (all fields 0) per local
+# pair, after DT_RELACOUNT's RELATIVE records: anomaly A46 (WP-144).
 #@ spec: dyn.md "D-119"
 #@ arch: aarch64
-#@ xfail(bfd): GNU ld writes a spare R_AARCH64_NONE record at offset 0 in .rela.dyn (harmless to glibc; the verifier's P-D25, no anomaly id)
+#@ anomaly(bfd): A46
 #@ skip(lld): lld does not take the traditional AArch64 TLS dialect ("unknown relocation (513)", R_AARCH64_TLSGD_ADR_PAGE21)
 
 cc -O1 -fPIC -fno-section-anchors -mtls-dialect=trad tls.c -o tls.o

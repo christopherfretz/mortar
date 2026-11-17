@@ -2356,7 +2356,7 @@ rules below judge the rest. Code: `src/symbols.rs`.
   | `_etext`, `etext`, `__etext` | in [the end of `.text`, the next non-executable section's start] |
   | `__rela_iplt_start`/`_end` (AArch64, x86-64), `__rel_iplt_start`/`_end` (i386) | the bounds of the only allocated `SHT_RELA` (i386: `SHT_REL`) section; with none, start = end (synth.md R-P6; under `-static-pie` they are not defined, and an `ET_DYN` output's range is P-D15's, §12.4) |
   | `_DYNAMIC` | the start of `.dynamic`, else 0 |
-  | `_TLS_MODULE_BASE_` | 0, and `STT_TLS` (§4.7) |
+  | `_TLS_MODULE_BASE_` | 0, and `STT_TLS` (§4.7); GNU ld's x86-64 executable (`exec`, `pie`, static) TP, align_up(`p_memsz`, `p_align`), its shared object 0 (measured, WP-144: lld 0 in every kind, mold an address, A3) |
   | `__start_X`, `__stop_X` (X a C identifier) | the bounds of section X |
   | `__CortexA53843419_H` (lld; H the hex address of a site's patched final word) | the patch W8 accepted for the 843419 site whose final word is at H, size 8; with no patched site at H the name labels dead bytes and is not judged (the site's C1 or its not-judged count reports it; WP-082) |
 
@@ -4197,6 +4197,25 @@ is accepted from its linker only, never from mortar's map.
   `NONPREEMPTIBLE` row): the program and the library use two objects
   (`spec/dyn.md` D-43a, W30), which mortar refuses. P-D24 ending "(D-43a,
   W30)". Reproducer: `tests/link/dyn/shlib/copy-of-symbolic.test`.
+- **A46 (GNU ld, AArch64; WP-144).** In a shared object GNU ld writes
+  one spare `R_AARCH64_NONE` record, every field 0, per local
+  general-dynamic pair (a hidden or static thread-local, traditional
+  dialect: its `DTPMOD64` has `r_sym` 0 and its DTP offset word is a
+  constant): it reserved a `DTPREL64` record and did not need it. They
+  sit in `.rela.dyn` right after the `RELATIVE` records, at index
+  `DT_RELACOUNT` onwards and counted in `DT_RELASZ` (`.rela.got` under
+  `-z nocombreloc`, where no `DT_RELACOUNT` is written); glibc skips
+  type 0. Measured: 1, 2, 3 and 5 locals give 1, 2, 3 and 5 records,
+  the same with `-z now` or two functions using one local; none for
+  the TLSDESC or initial-exec dialects, none from mold or lld (lld
+  takes no traditional dialect), none from any reference on x86-64 or
+  i386. P-D25 with the message "a spare R_AARCH64_NONE record ...
+  (A46)" (P-D25's shape); a type-0 record with a non-zero field, past
+  that count, inside `DT_RELACOUNT`'s prefix or in mortar's output is
+  P-D25's plain finding. Reproducer:
+  `tests/link/dyn/shared/tls-shared-gd.test`. (GNU ld's `-nostdlib`
+  AArch64 PIE that leaves `__tls_get_addr` undefined writes one in
+  `.rela.plt` for the PLT entry it dropped; not this anomaly.)
 
 lld also links a `.hidden` or `.protected` undefined reference that only
 a library defines (writing 0) and drops the library from `DT_NEEDED`:
@@ -4992,7 +5011,8 @@ mortar a single answer and the references differ or are not ruled.
   demands (D-40, D-46): its place is an aligned word of `.got` and its
   addend the value some GOT-indirect reference of the inputs asks a slot
   to hold (relaxed or not, a TLS reference's TPREL word or module pair
-  included; `reloc.rs`'s `got_demands`), or an IPLT entry (D-45: an
+  included, a kept x86-64 GD or LD sequence's pair too, a bound key's
+  static DTP offset with it, WP-144; `reloc.rs`'s `got_demands`), or an IPLT entry (D-45: an
   entry whose word carries an `IRELATIVE`, in `.plt` or `.iplt`). For a
   reference the value of `_GLOBAL_OFFSET_TABLE_` is accepted too: mold
   gives an x86-64 `GOTPC64` reference to it a GOT slot of that symbol
@@ -5344,6 +5364,17 @@ and what turns P-D9's equality into a check of D-112.
   targets, and lld's x86-64 GD pair under `-Bsymbolic`; WP-121). A
   `DTPOFF` record with `r_sym` 0 is accepted from a reference (P-D26).
   A record whose `r_sym` is past `.dynsym` is reported by name.
+  A type-0 record (`R_AARCH64_NONE`) is reported with its own message
+  when it has A46's shape, from a reference's AArch64 output only: in
+  the `DT_RELA` table (`DT_RELASZ` bytes, not `DT_JMPREL`'s), `r_sym`,
+  `r_offset` and `r_addend` all 0, at an index not below `DT_RELACOUNT`
+  (the count of leading records glibc applies as `RELATIVE` without
+  reading their type: a type-0 record inside it would write the load
+  base at address 0 + base), and no more of them than `TLS_DTPMOD64`
+  records with `r_sym` 0. glibc's loop over the rest skips type 0. Any
+  other type-0 record with `r_sym` 0, and any in mortar's output
+  (D-30), keeps the message above; a type-0 record that names a key is
+  reported too, in every output (WP-144).
 - **P-D26 (TLS in a shared object; request P-R11; replaces P-D12's
   executable forms for `Shared`; D-119).** Per model and binding, the
   records of a live TLS use are:
@@ -5357,7 +5388,15 @@ and what turns P-D9's equality into a check of D-112.
     naming the key (in `.rela.dyn` for mortar, D-119; in `.rela.plt`
     from a reference); against a bound key: `TLSDESC` with `r_sym` 0 and
     the offset as addend (RELA) or in the descriptor's second word
-    (i386 REL);
+    (i386 REL). On x86-64 the pair is kept (`spec/x64.md` X-61): the
+    `lea`'s three instruction bytes are the input's and its field
+    reaches the descriptor, `call *(%rax)` stays (R1's kept branch; the
+    field itself is the link's, WP-144); GCC's local-dynamic descriptor
+    for `_TLS_MODULE_BASE_` is `r_sym` 0 with addend 0 and holds the
+    block's start, not X-47's relaxed `T = 0`. Every reference measured
+    (WP-144): GNU ld in `.rela.plt` with `DT_TLSDESC_PLT` and
+    `DT_TLSDESC_GOT`, under `-z now` in `.rela.plt` without them; lld
+    and mold in `.rela.dyn`, eager, both ways;
   - IE against a preemptible key or an import: `TPREL64`/`TPOFF64`/
     `TLS_TPOFF` naming the key; against a bound key: the same type with
     `r_sym` 0 and the offset as addend (RELA) or in place (REL);

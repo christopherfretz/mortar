@@ -27,6 +27,8 @@ macro_rules! src {
 
 const SOURCES: &[(&str, &str)] = src![
     "lib.c",
+    "tls.c",
+    "tlso.c",
     "dep.c",
     "dl.list",
     "v.map",
@@ -369,6 +371,8 @@ fn build() -> Option<Corpus> {
         b.link("relro", Arch::A64, &d, "libr.so", &args, linker, &[]);
     }
     refs(&mut b);
+    tls(&mut b);
+    tlsgd(&mut b);
     Some(Corpus { _scratch: scratch, outs: b.outs })
 }
 
@@ -642,6 +646,291 @@ fn refs(b: &mut Builder<'_>) {
         for l in Linker::ALL {
             let want: &'static [&'static str] = if l == Bfd { &["A10"] } else { row(l, &[]) };
             b.link("refs", arch, &d, "libflags.so", &args, l, want);
+        }
+    }
+}
+
+/// The x86-64 TLS dialects of WP-144: (name, the compiler's flags).
+const TLS_DIALECTS: &[(&str, &[&str])] = &[
+    ("desc", &["-O1", "-fPIC", "-mtls-dialect=gnu2"]),
+    ("gd", &["-O1", "-fPIC"]),
+    ("ie", &["-O1", "-fPIC", "-ftls-model=initial-exec"]),
+];
+
+/// WP-144 (P-D26, X-61): `tls.c` in each dialect, `-shared` by each
+/// reference, the imported variable from `libtlso.so`. mold's library
+/// defines `_TLS_MODULE_BASE_` at an address in every dialect (A3).
+fn tls(b: &mut Builder<'_>) {
+    let a = Arch::X64;
+    let d = b.dir(a, "tls");
+    b.so(a, &d, "tlso.c", "libtlso.so", "libtlso.so");
+    for (name, flags) in TLS_DIALECTS {
+        let obj = format!("tls-{name}.o");
+        b.obj(a, &d, "tls.c", flags, &obj);
+        for l in Linker::ALL {
+            let out = format!("libt-{name}.so");
+            let args = ["-shared", &obj, "libtlso.so", "-Wl,-soname,libt.so"];
+            let want: &'static [&'static str] = if l == Linker::Mold { MOLD } else { &[] };
+            b.link("tls", a, &d, &out, &args, l, want);
+        }
+    }
+}
+
+// WP-144: the x86-64 TLS libraries of every dialect and reference are
+// clean (P-D26; R1's kept descriptor, X-61; Y5's `_TLS_MODULE_BASE_`).
+#[test]
+fn p_d26_x64_tls_libraries_verify_clean() {
+    judge("tls");
+}
+
+/// WP-144 (A46): `tls.c` in AArch64's traditional dialect (general-
+/// dynamic pairs; three local thread-locals), `-shared` by GNU ld and
+/// mold (lld takes no traditional dialect). GNU ld writes a spare
+/// `R_AARCH64_NONE` per local pair: A46; mold's `_TLS_MODULE_BASE_` is
+/// A3 here too.
+fn tlsgd(b: &mut Builder<'_>) {
+    let a = Arch::A64;
+    let d = b.dir(a, "tlsgd");
+    b.so(a, &d, "tlso.c", "libtlso.so", "libtlso.so");
+    let flags = ["-O1", "-fPIC", "-fno-section-anchors", "-mtls-dialect=trad"];
+    b.obj(a, &d, "tls.c", &flags, "tls.o");
+    for l in [Linker::Bfd, Linker::Mold] {
+        let args = ["-shared", "tls.o", "libtlso.so", "-Wl,-soname,libtg.so"];
+        let want: &'static [&'static str] = if l == Linker::Bfd { &["A46"] } else { MOLD };
+        b.link("tlsgd", a, &d, "libtg.so", &args, l, want);
+    }
+}
+
+// WP-144: GNU ld's spare records are A46 and nothing else; mold's
+// library has only A3.
+#[test]
+fn a46_aarch64_gd_libraries_verify_clean() {
+    judge("tlsgd");
+}
+
+// WP-144 (A46, P-D25): A46 accepts exactly its shape. Every mutation of
+// a spare record (a non-zero `r_offset`, `r_addend` or `r_sym`; the
+// records moved inside `DT_RELACOUNT`'s prefix; one more type-0 record
+// than local pairs) gives a new finding no anomaly names; and the clean
+// library judged as mortar's output keeps P-D25's plain finding (D-30).
+#[test]
+fn a46_accepts_only_its_shape() {
+    let Some(c) = corpus() else { return };
+    let o = c
+        .outs
+        .iter()
+        .find(|o| o.case == "tlsgd" && o.link.linker == Linker::Bfd)
+        .expect("GNU ld's libtg.so");
+    let b = o.link.output_bytes();
+    let a46 = |f: &mortar_plumb::Finding| {
+        known_anomaly(&o.link, f).is_some_and(|a| mortar_plumb::anomaly::id(a) == "A46")
+    };
+    let clean = o.verify_bytes(&b);
+    let key = |f: &mortar_plumb::Finding| format!("{} {}", f.rule.id(), f.message);
+    let clean_keys: BTreeSet<String> = clean.findings.iter().map(key).collect();
+    let spare = clean.findings.iter().filter(|f| a46(f)).count();
+    assert!(spare > 0, "GNU ld's libtg.so has no A46 finding");
+    let (off, size, _) = section_at(&b, ".rela.dyn").unwrap();
+    let recs: Vec<usize> = (off..off + size).step_by(24).collect();
+    let nones: Vec<usize> = recs.iter().copied().filter(|&e| u64at(&b, e + 8) == 0).collect();
+    assert_eq!(nones.len(), 3, "three local pairs, three spare records");
+    let mut ms: Vec<Mutant> = Vec::new();
+    for &e in &nones {
+        for (field, at, v) in
+            [("r_offset", e, 8u64), ("r_sym", e + 8, 1 << 32), ("r_addend", e + 16, 8)]
+        {
+            let mut m = b.clone();
+            m[at..at + 8].copy_from_slice(&v.to_le_bytes());
+            ms.push((format!("the type-0 record at {e:#x}: {field} {v:#x}"), m));
+        }
+    }
+    // One more: the last record (a GLOB_DAT) zeroed.
+    let mut m = b.clone();
+    let last = *recs.last().unwrap();
+    m[last..last + 24].fill(0);
+    ms.push(("the last record zeroed: one type-0 record past the local pairs".into(), m));
+    // DT_RELACOUNT raised past the spare records.
+    let (doff, dsize, _) = section_at(&b, ".dynamic").unwrap();
+    let rc = (doff..doff + dsize)
+        .step_by(16)
+        .find(|&e| u64at(&b, e) == 0x6fff_fff9)
+        .expect("DT_RELACOUNT");
+    let mut m = b.clone();
+    let k = u64at(&b, rc + 8) + nones.len() as u64;
+    m[rc + 8..rc + 16].copy_from_slice(&k.to_le_bytes());
+    ms.push((format!("DT_RELACOUNT {k}: the spare records inside its prefix"), m));
+    for (what, m) in ms {
+        let r = o.verify_bytes(&m);
+        let new = r
+            .findings
+            .iter()
+            .find(|f| known_anomaly(&o.link, f).is_none() && !clean_keys.contains(&key(f)));
+        assert!(new.is_some(), "{what}: no new finding outside A46");
+        if std::env::var("SHARED_DEBUG").is_ok_and(|v| v == "a46") {
+            let n = r.findings.iter().filter(|f| a46(f)).count();
+            eprintln!("{what}: A46 {n}; {:?}", new.map(|f| &f.message));
+        }
+    }
+    let r = o.verify_as_mortar(&b);
+    assert!(!r.findings.iter().any(|f| f.message == mortar_plumb::shared::SPARE_NONE));
+    let plain = r
+        .findings
+        .iter()
+        .filter(|f| f.rule == mortar_plumb::Rule::Dyn(25) && f.message.contains("of type 0"));
+    assert!(plain.count() > 0, "as mortar's output: no P-D25 plain finding");
+}
+
+/// The file offset and address of section `name` (ELF64), if any.
+fn section_at(b: &[u8], name: &str) -> Option<(usize, usize, u64)> {
+    let (off, ent, n, str_i) =
+        (u64at(b, 0x28) as usize, u16at(b, 0x3a), u16at(b, 0x3c), u16at(b, 0x3e));
+    let strs = u64at(b, off + str_i * ent + 24) as usize;
+    (0..n).map(|i| off + i * ent).find_map(|h| {
+        let at = strs + u32::from_le_bytes(b[h..h + 4].try_into().unwrap()) as usize;
+        (b[at..].split(|&c| c == 0).next() == Some(name.as_bytes()))
+            .then(|| (u64at(b, h + 24) as usize, u64at(b, h + 32) as usize, u64at(b, h + 16)))
+    })
+}
+
+/// One mutation of an x86-64 TLS library: what it changes, and the bytes.
+type Mutant = (String, Vec<u8>);
+
+/// WP-144's mutations of an x86-64 TLS library, one per TLS form: each
+/// TLS record of `.rela.dyn` and `.rela.plt` (`DTPOFF64`, `TPOFF64` and
+/// `TLSDESC` addend + 8; `DTPMOD64` retyped `TPOFF64`), each static
+/// `DTPOFF` word beside a `DTPMOD64` with `r_sym` 0 and no record (+ 8),
+/// and each descriptor's `lea` reaching the next 16 bytes.
+fn tls_mutants(b: &[u8]) -> Vec<Mutant> {
+    const DTPMOD64: u64 = 16;
+    const DTPOFF64: u64 = 17;
+    const TPOFF64: u64 = 18;
+    const TLSDESC: u64 = 36;
+    let mut recs = Vec::new();
+    for name in [".rela.dyn", ".rela.plt"] {
+        let Some((off, size, _)) = section_at(b, name) else { continue };
+        recs.extend((off..off + size).step_by(24).map(|e| (e, u64at(b, e), u64at(b, e + 8))));
+    }
+    let placed: BTreeSet<u64> = recs.iter().map(|r| r.1).collect();
+    let file_of = |addr: u64| -> Option<usize> {
+        [".got", ".got.plt"].iter().find_map(|n| {
+            let (off, size, at) = section_at(b, n)?;
+            (at..at + size as u64).contains(&addr).then(|| off + (addr - at) as usize)
+        })
+    };
+    let mut out = Vec::new();
+    for &(e, place, info) in &recs {
+        let (ty, sym) = (info & 0xffff_ffff, info >> 32);
+        let mut m = b.to_vec();
+        match ty {
+            DTPOFF64 | TPOFF64 | TLSDESC => {
+                let a = u64at(b, e + 16).wrapping_add(8);
+                m[e + 16..e + 24].copy_from_slice(&a.to_le_bytes());
+                out.push((format!("type {ty} r_sym {sym} at {place:#x}: addend + 8"), m));
+            }
+            DTPMOD64 => {
+                let i = (info & !0xffff_ffff) | TPOFF64;
+                m[e + 8..e + 16].copy_from_slice(&i.to_le_bytes());
+                out.push((format!("DTPMOD64 r_sym {sym} at {place:#x}: retyped TPOFF64"), m));
+                if sym == 0
+                    && !placed.contains(&(place + 8))
+                    && let Some(w) = file_of(place + 8)
+                {
+                    let mut m = b.to_vec();
+                    let v = u64at(b, w).wrapping_add(8);
+                    m[w..w + 8].copy_from_slice(&v.to_le_bytes());
+                    out.push((format!("the static DTPOFF word at {:#x}: + 8", place + 8), m));
+                }
+            }
+            _ => {}
+        }
+        if ty == TLSDESC
+            && let Some((off, size, at)) = section_at(b, ".text")
+        {
+            for i in off..off + size.saturating_sub(7) {
+                let (rex, op, modrm) = (b[i], b[i + 1], b[i + 2]);
+                if rex & 0xf8 != 0x48 || op != 0x8d || modrm & 0xc7 != 0x05 {
+                    continue;
+                }
+                let disp = i32::from_le_bytes(b[i + 3..i + 7].try_into().unwrap());
+                let next = at + (i + 7 - off) as u64;
+                if next.wrapping_add(i64::from(disp) as u64) == place {
+                    let mut m = b.to_vec();
+                    m[i + 3..i + 7].copy_from_slice(&(disp + 16).to_le_bytes());
+                    out.push((
+                        format!("the lea at {:#x} of the descriptor at {place:#x}: + 16", next - 7),
+                        m,
+                    ));
+                }
+            }
+        }
+    }
+    out
+}
+
+// WP-144 (P-D26, X-61): every TLS form of the x86-64 libraries is
+// checked, not skipped: each mutation of `tls_mutants` gives a finding
+// the clean library does not have. Every dialect is mutated at least once.
+#[test]
+fn p_d26_x64_tls_records_are_checked() {
+    let Some(c) = corpus() else { return };
+    let mut n = 0;
+    let key = |f: &mortar_plumb::Finding| format!("{} {}", f.rule.id(), f.message);
+    for o in c.outs.iter().filter(|o| o.case == "tls") {
+        let b = o.link.output_bytes();
+        let clean: BTreeSet<String> = o.verify_bytes(&b).findings.iter().map(key).collect();
+        let ms = tls_mutants(&b);
+        assert!(!ms.is_empty(), "{}: no TLS form found", o.label());
+        for (what, m) in ms {
+            n += 1;
+            let r = o.verify_bytes(&m);
+            let new: Vec<String> =
+                r.findings.iter().map(key).filter(|k| !clean.contains(k)).collect();
+            assert!(!new.is_empty(), "{} {what}: NOT caught", o.label());
+            if std::env::var("SHARED_DEBUG").is_ok_and(|v| v == "tlsmut") {
+                eprintln!("{} {what}: {}", o.label(), new[0]);
+            }
+        }
+    }
+    assert!(n > 0 || c.outs.is_empty(), "no TLS mutation");
+}
+
+/// mortar's x86-64 TLS library `name` of `tests/shared/x64tls`
+/// (`gen.sh`) judged under its map, as `bytes`.
+fn mortar_x64tls(name: &str, bytes: Option<&[u8]>) -> Report {
+    let d = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/shared/x64tls");
+    let text = std::fs::read_to_string(d.join(format!("libt-{name}.map"))).unwrap();
+    let map = mortar_plumb::map::parse(mortar_plumb::Format::Mortar, &text).unwrap();
+    let files: Vec<(String, Vec<u8>)> = map
+        .paths()
+        .into_iter()
+        .filter_map(|p| std::fs::read(d.join(p)).ok().map(|b| (p.to_string(), b)))
+        .collect();
+    let inputs: Vec<Input<'_>> = files.iter().map(|(p, b)| Input { path: p, bytes: b }).collect();
+    let own = std::fs::read(d.join(format!("libt-{name}.so"))).unwrap();
+    let out = bytes.unwrap_or(&own);
+    mortar_plumb::verify_with(out, &inputs, &map, &Ctx { line: None, files: &Dir(&d) })
+}
+
+// WP-144 (P-D26, X-61, D-46): mortar's x86-64 shared objects of WP-127
+// part 2 (fixtures) are clean: the kept descriptor pair (R1) with
+// `_TLS_MODULE_BASE_`'s block-start descriptor, the general-dynamic pair
+// of a local key (`gd0`: `DTPMOD64` with `r_sym` 0 and the static DTPOFF
+// word no record writes, which D-46's mortar rows now count as asked
+// for), LD and IE; and every mutation of `tls_mutants` is caught.
+#[test]
+fn p_d26_mortar_x64_tls_libraries() {
+    let key = |f: &mortar_plumb::Finding| format!("{} {}", f.rule.id(), f.message);
+    for name in ["gd0", "desc", "gd", "ie"] {
+        let r = mortar_x64tls(name, None);
+        let got: Vec<String> = r.findings.iter().map(key).collect();
+        assert!(got.is_empty(), "libt-{name}.so: {got:#?}");
+        let d = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/shared/x64tls");
+        let b = std::fs::read(d.join(format!("libt-{name}.so"))).unwrap();
+        let ms = tls_mutants(&b);
+        assert!(!ms.is_empty(), "libt-{name}.so: no TLS form found");
+        for (what, m) in ms {
+            let r = mortar_x64tls(name, Some(&m));
+            assert!(!r.findings.is_empty(), "libt-{name}.so {what}: NOT caught");
         }
     }
 }

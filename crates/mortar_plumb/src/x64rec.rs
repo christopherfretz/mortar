@@ -44,8 +44,9 @@ enum SeqX {
     Bad(String, Vec<u8>, Option<(u64, u64)>),
     /// Not judged: the symbol cannot be resolved (a stripped output).
     Unknown(Reason),
-    /// Stage 3: kept for the loader, its GOT pair verified.
-    Kept,
+    /// Stage 3: kept for the loader, its GOT pair verified: the pair
+    /// (module, offset) it holds.
+    Kept(u64, u64),
 }
 
 /// Why T of a TLS reference is not known.
@@ -96,7 +97,7 @@ impl Engine<'_, '_> {
                 SeqX::Bad(..) => return self.not_checked(Reason::TlsSequence, 1),
                 SeqX::Unknown(r) => return self.not_checked(r, 1),
                 // A kept sequence's call is an ordinary call.
-                SeqX::Kept => {}
+                SeqX::Kept(..) => {}
             }
         }
         // X-48 (mortar): a static output makes no TLS runtime call; a
@@ -135,7 +136,13 @@ impl Engine<'_, '_> {
                         self.fail(f);
                     }
                     SeqX::Unknown(r) => self.x64_unjudged(rec, r),
-                    SeqX::Kept => self.cov.add_verified(Via::GotSlot, ty),
+                    SeqX::Kept(m, o) => {
+                        // What the pair holds (D-46's `got_demands`, as
+                        // AArch64's): a bound key's static DTP offset is a
+                        // word no record writes (P-D26, WP-144).
+                        self.demand(Want::Pair(m, o));
+                        self.cov.add_verified(Via::GotSlot, ty);
+                    }
                 };
             }
             Op::Slot(Slot::Desc | Slot::TpRel, _) | Op::DescCall | Op::TpRel => {
@@ -741,7 +748,7 @@ impl Engine<'_, '_> {
             let module = self.dyn_tls_mod.get(&name).copied().unwrap_or(1);
             let off = if gd { t.wrapping_sub(b.tcb) } else { 0 };
             if self.slot_ok(g, Want::Pair(module, off)) {
-                return SeqX::Kept;
+                return SeqX::Kept(module, off);
             }
             return SeqX::Bad(
                 format!(
@@ -929,9 +936,21 @@ impl Engine<'_, '_> {
             // 14 schedules `__once_call`'s into %rbp; GNU ld, lld and mold
             // write `48 8b 2d` and the programs run).
             let ie = out[0] == inp[0] && out[1] == 0x8b && out[2] == inp[2];
-            if out == inp || ie {
+            // Kept: the instruction's three bytes are the input's (the
+            // window ends with the field, which the link writes; X-61,
+            // WP-144: comparing it too made every kept descriptor R1).
+            let kept = out[..3] == inp[..3];
+            if kept || ie {
                 let Some(ev) = self.slot_evidence(rec) else {
                     return self.x64_unjudged(rec, Reason::SymbolUnresolved);
+                };
+                // A descriptor the loader resolves names the module's
+                // block: `_TLS_MODULE_BASE_`'s is its start (`r_sym` 0,
+                // addend 0; X-61), not X-47's relaxed `T = 0`.
+                let t = if self.sym_name(oi, rec.sym) == TLS_MODULE_BASE {
+                    b.tprel(b.start)
+                } else {
+                    t
                 };
                 let (slot, want) = if ie {
                     self.x64_rewrote(rec.p - 3, rec.p);
