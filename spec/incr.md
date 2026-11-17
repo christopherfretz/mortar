@@ -2247,7 +2247,12 @@ with each phase fed from the state for unchanged files:
   body-grow and body-shrink steps check that only the region's file and
   its referrers were refilled (`--incremental-report`); R4's three cases
   in L10 with the fixed rule (the update's packed sections equal the full
-  link's order, IN-2 item 5).
+  link's order, IN-2 item 5). *(Amended by WP-207: "laid out again from
+  its region's start" is replaced by IN-72 item 2's keep / place /
+  overflow phases; and the list of hole-tolerant sections is closed:
+  every other allocated section, except the TLS sections and notes, is
+  packed, as `mortar_layout`'s `slack.rs` `class()` does, review-in72
+  m-1.)*
 - **IN-31 [v2] Section-level refill inside a changed file** (the M12
   package, §10). v1's unit of change detection stays the file; this is
   the designed second step, specified now so that v1's state and index
@@ -2296,7 +2301,10 @@ with each phase fed from the state for unchanged files:
   within its capacity, and grows by a growth step (moving what follows
   it) when its capacity is exhausted. A hole is reused only by its own
   file's region (to keep the policy a function of history that is simple
-  to state); [later] a free list with first-fit for any region (debug
+  to state; amended by WP-207: a region that overflowed is not given up,
+  its file keeps it and every later region until compaction, and IN-72
+  item 2 fills them in order; the growth step's size and rounding are
+  IN-72 item 3's); [later] a free list with first-fit for any region (debug
   sections have one in v1, IN-50). *Test:* L10 grows one function step by
   step past its region, its section's tail and its segment's reserve,
   and checks the reasons.
@@ -2827,16 +2835,16 @@ a pass over a whole table of the state; **O(output)**.
 
   | step | what | rules | cost class (basis) | failure → §7 reason |
   |---|---|---|---|---|
-  | U1 | IN-11/IN-12; the state opened by range: header, directory, `META`, the flag; the plan hash; the output's binding | IN-18c, IN-18b, IN-21 | O(1) + the directory (WP-105 §4: 2 preads) | no state: `no-state`; a hash or range fails: `state-corrupt`; another format: `state-version`; the plan: `options-changed`; the output: `output-changed`; the flag: `output-torn`; `META`'s size: `small-output` |
+  | U1 | IN-11/IN-12; `S` and `P` opened once (IN-77a), `S` locked (IN-77b); the flag read first (review-in77 m-1); the state opened by range: header, directory, `META`; the plan hash; the output's binding through the descriptor; after a reboot with `output-synced` 0, the leaves (IN-77c) | IN-18c, IN-18b, IN-21, IN-77a-c | O(1) + the directory (WP-105 §4: 2 preads) + the lock (IN-77b: 3.5-352 µs); O(output) once after a reboot | the flag: `output-torn`; the lock: `state-busy`, `lock-unavailable`; no state: `no-state`; a hash or range fails: `state-corrupt`; another format: `state-version`; the plan: `options-changed`; the output: `output-changed`; `META`'s size: `small-output` |
   | U2 | every input `stat`ed (on the pool), the stamps, change detection; archives | IN-22, IN-22a, IN-24 | O(inputs) stats + O(changed bytes) hashed (WP-105 §5: 102 ms for 8,241 inputs on virtiofs, pool) | a changed path that is no file of the link: `options-changed`; two unchanged files reordered: `inputs-reordered` |
   | U3 | the positional set | IN-28a | O(inputs) over `FILES`/`STAT` | none (a file outside the set is translated by identity) |
-  | U4 | the front over the changed files only: parse, split, scan; their descriptors `fstat`ed after the read | IN-14, IN-28a cond. 2 | O(change) (*estimate*: the floor's front over all inputs is what WP-061b measured) | a file the update read is not the file it judged: `input-changed` |
-  | U5 | delta resolution | IN-71 | O(change) (*estimate*; WP-105 §7 (iv): the whole-program resolve is 102.7 ms on g10x, the term this removes) | IN-71's list |
+  | U4 | the front over the changed, drawn-in and newly extracted files only: parse, split, scan; their descriptors `fstat`ed against `STAT` (IN-75); repeated with U5 until no file flips (IN-71) | IN-14, IN-28a cond. 2, IN-71b, IN-72 item 2a | O(change) (*estimate*: the floor's front over all inputs is what WP-061b measured) | a file the update read is not the file it judged: `input-changed` |
+  | U5 | delta resolution and extraction; the ODR-affected keys | IN-71, IN-71b, IN-71d | O(change) (*estimate*; WP-105 §7 (iv): the whole-program resolve is 102.7 ms on g10x, the term this removes) | IN-71's list; `extraction-changed` |
   | U6 | liveness, under `--gc-sections` only | IN-29, IN-71a | O(stored edges) (*estimate*: 0.48 MB of rows on protoc, §5.5) | none |
-  | U7 | the delta layout, `.symtab`/`.strtab` included | IN-72, IN-73, IN-49a | O(change) + the growth steps' moved sections (*estimate*) | IN-72's and IN-73's list |
+  | U7 | the delta layout, `.symtab`/`.strtab` included; then `DEFINED` from the `Placement` (IN-71c) | IN-72, IN-73, IN-49a, IN-71c | O(change) + the growth steps' moved sections (*estimate*) | IN-72's and IN-73's list |
   | U8 | the refill set, against the update's own layout | IN-27, IN-74 | O(change) + the referrers it reaches (WP-063: 46-54 ms on protoc against a full link's layout, an over-approximation) | over IN-16's bound: `too-much-changed` |
   | U9 | refill and image: dirty ranges, windows, the build id | IN-75 | O(dirty windows) + O(leaves) for the build id (WP-094 §4: 0.48 MB written on g10x) | none (a refill error is the link's own diagnostic, IN-5) |
-  | U10 | writes: output, then state; the crash protocol | IN-76, IN-77, IN-45 | in place: 5 `fdatasync`s (IN-46: 2.3-8.2 ms) + the patch's (WP-105 §4: 154-191 ms under load) | IN-77 |
+  | U10 | writes: output, then state; the crash protocol; the diagnostics (IN-75a) | IN-76, IN-77, IN-45, IN-78 | in place: 5 `fdatasync`s and 2 renames with 2 directory `fsync`s (IN-46: 2.3-8.2 ms) + the patch's (WP-105 §4: 154-191 ms under load) | IN-77 |
 
   Debug sections (§6) are handled by the G packages; until they merge,
   U2 ends the update with `update-not-implemented` naming `debug` when
