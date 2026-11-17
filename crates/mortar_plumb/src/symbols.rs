@@ -590,10 +590,24 @@ struct Placed {
     only: Option<u64>,
     /// Some input local of the name has no known place.
     unknown: bool,
+    /// Some input local of the name is in a section with no place
+    /// (P-1, `Obj::no_place`; mortar's map; WP-147).
+    placeless: bool,
+}
+
+/// Whether input symbol `di` of object `oi` is in a section with no place
+/// (§4.4 step 0's predicate, `Obj::no_place`).
+#[allow(clippy::many_single_char_names)] // e, o, t, d, k: the ELF parts
+fn def_no_place(e: &Engine<'_, '_>, oi: usize, di: u32) -> bool {
+    let o = &e.objs[oi];
+    let Some(t) = o.symtab else { return false };
+    let Ok(d) = t.get(SymbolIndex(di)) else { return false };
+    matches!(t.section_of(SymbolIndex(di), &d), Ok(SymbolSection::Section(k))
+        if o.no_place(k.0 as usize, e.output_eh_frame().is_some()))
 }
 
 /// Y4 (§6.5): every output local whose name an input local has.
-#[allow(clippy::many_single_char_names)] // e, s, p, d, f
+#[allow(clippy::many_single_char_names, clippy::too_many_lines)] // e, s, p, d, f; Y4 in order
 fn locals(e: &mut Engine<'_, '_>, fs: &mut Vec<Finding>) {
     let image = e.image;
     let mut by_name: BTreeMap<&str, Vec<(usize, u32)>> = BTreeMap::new();
@@ -649,12 +663,41 @@ fn locals(e: &mut Engine<'_, '_>, fs: &mut Vec<Finding>) {
                     // could be the one; one in a non-alloc or discarded
                     // section has no address in the output (every
                     // object's `$d` of its debug sections; WP-028d).
+                    // Under mortar's map, one in a section with no place
+                    // is not in the output (P-1; WP-147).
+                    None if e.format == Format::Mortar && def_no_place(e, oi, di) => {
+                        p.placeless = true;
+                    }
                     None => p.unknown |= !not_in_memory(e, oi, di),
                 }
             }
             p
         });
         let unknown = p.unknown;
+        // A mapping symbol may be the linker's own (a veneer's, a note's).
+        let own_mapping = out.name.starts_with("$x") || out.name.starts_with("$d");
+        if p.count == 0
+            && !unknown
+            && p.placeless
+            && !own_mapping
+            && !e.defs.contains_key(&out.name)
+        {
+            // `spec/resolve.md` §10.1 P-1: every input local of the name
+            // is in a section with no place, so the output has no local of
+            // it (before WP-136 mortar wrote a `.note.gnu.property`
+            // local's offset in the note; WP-147).
+            checked += 1;
+            let mut f = y(
+                4,
+                format!(
+                    "local symbol '{}' is in the output, but every input local of its name is in a section with no place (P-1 omits it)",
+                    out.name
+                ),
+            );
+            f.found = Some(s.st_value);
+            fs.push(named(f.at(s.st_value), &out.name));
+            continue;
+        }
         let (false, Some(value)) = (p.count == 0 || e.defs.contains_key(&out.name), address(e, s))
         else {
             unchecked += 1;

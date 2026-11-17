@@ -904,6 +904,66 @@ pub struct Import {
     pub versioned: bool,
 }
 
+/// The one derivation of a key's export (D-110, D-114, D-115; resolve
+/// §9.7, rule 12 per reference): whether a definition named `key` (`foo`,
+/// `foo@V`, `foo@@V`) of default or protected visibility (merged by base
+/// name; the caller asks) is exported, and with which version. P-D19's
+/// export set, P-1's placeless keys and M10's roots (`fate.rs`, WP-147)
+/// all ask it (WP-149). `--exclude-libs` is not in it: mortar refuses the
+/// option, and P-D19 reads it per object.
+#[derive(Debug, Clone)]
+pub struct ExportRule {
+    pub script: Option<Script>,
+    /// `-E` (lld's rule 12 ignores it; GNU ld's and mortar's do not).
+    pub export_dynamic: bool,
+    pub format: Format,
+}
+
+impl ExportRule {
+    /// No version script (an executable with `-E`, a library without
+    /// one): every key without a version is exported at the base.
+    pub fn plain(format: Format) -> ExportRule {
+        ExportRule { script: None, export_dynamic: false, format }
+    }
+
+    /// `Ok(None)`: the key is local. `Err`: the link is outside (D-114:
+    /// undefined-version), with P-D1's text.
+    pub fn version(&self, key: &str) -> Result<Option<VerOut>, String> {
+        let (base, ver) = split_version(key);
+        match (&self.script, ver) {
+            (None, None) => Ok(Some(VerOut::Base)),
+            (None, Some((v, _))) => Err(format!(
+                "'{key}': version {v} and no version script (dyn.md D-114: undefined-version)"
+            )),
+            (Some(s), None) => Ok(match s.decide(base) {
+                Decision::Local => None,
+                Decision::Base => Some(VerOut::Base),
+                Decision::Node(i) => {
+                    Some(s.nodes[i].name.clone().map_or(VerOut::Base, VerOut::Node))
+                }
+            }),
+            (Some(s), Some((v, default))) => {
+                match s.decide_versioned_as(base, v, default, self.export_dynamic, self.format) {
+                    None => Err(format!(
+                        "'{key}': no node {v} in the version script (dyn.md D-114: undefined-version)"
+                    )),
+                    Some(Decision::Local) => Ok(None),
+                    Some(_) => Ok(Some(if default {
+                        VerOut::Node(v.to_string())
+                    } else {
+                        VerOut::Hidden(v.to_string())
+                    })),
+                }
+            }
+        }
+    }
+
+    /// Whether `key` is exported (an `Err` is not: the link is outside).
+    pub fn exports(&self, key: &str) -> bool {
+        matches!(self.version(key), Ok(Some(_)))
+    }
+}
+
 /// The sets of §12.5, recomputed from the inputs and the line.
 #[derive(Debug, Default)]
 pub struct Sets {
@@ -925,6 +985,13 @@ pub struct Sets {
     /// a section of the inputs that the map keeps none of (layout L-96
     /// keeps them all live; W23): the key and `X`.
     pub dropped: Vec<(String, String)>,
+    /// Keys whose definition has no place (`spec/resolve.md` §10.1 P-1,
+    /// §4.4 step 0's predicate `Obj::no_place`): never in the export set
+    /// (D-110; WP-147), by name with the definition's input `st_value`.
+    pub placeless: BTreeMap<String, u64>,
+    /// The one derivation of the export set (WP-149): what P-D19's set,
+    /// P-1's placeless keys and M10's roots ask.
+    pub rule: Option<ExportRule>,
 }
 
 impl Sets {
@@ -1123,7 +1190,7 @@ pub(crate) fn compute(
     }
     // Every mention of a name by a live object: definitions (full names,
     // `.symver` forms kept) and the merged visibility (by base name).
-    #[allow(clippy::items_after_statements)] // next to its one use
+    #[allow(clippy::items_after_statements, clippy::struct_excessive_bools)] // next to its one use
     struct D {
         ty: u8,
         bind: u8,
@@ -1131,8 +1198,13 @@ pub(crate) fn compute(
         strong: bool,
         common: bool,
         excluded: bool,
+        /// P-1: its section has no place (WP-147).
+        placeless: bool,
+        value: u64,
     }
+    let out_eh_frame = image.sections.iter().any(|x| x.name == ".eh_frame" && x.alloc());
     let mut defs: BTreeMap<String, Vec<D>> = BTreeMap::new();
+    let mut gone: BTreeMap<String, u64> = BTreeMap::new();
     let mut vis: HashMap<String, u8> = HashMap::new();
     let mut refs: BTreeMap<String, Import> = BTreeMap::new();
     for o in objs {
@@ -1170,9 +1242,14 @@ pub(crate) fn compute(
                 Err(_) => false,
             };
             if !live {
+                // A definition in a discarded section: P-1's "no place"
+                // when no live object defines the key (below; WP-147).
+                gone.entry(name).or_insert(s.st_value);
                 continue;
             }
             let common = matches!(t.section_of(i, &s), Ok(SymbolSection::Common));
+            let placeless = matches!(t.section_of(i, &s), Ok(SymbolSection::Section(k))
+                if o.no_place(k.0 as usize, out_eh_frame));
             defs.entry(name).or_default().push(D {
                 ty: if common { mortar_elf::consts::STT_OBJECT } else { s.sym_type() },
                 bind: s.binding(),
@@ -1180,11 +1257,27 @@ pub(crate) fn compute(
                 strong: matches!(s.binding(), STB_GLOBAL | STB_GNU_UNIQUE) && !common,
                 common,
                 excluded,
+                placeless,
+                value: s.st_value,
             });
         }
     }
     let defined_base: HashSet<String> =
         defs.keys().map(|n| split_version(n).0.to_string()).collect();
+    let rule = ExportRule { script, export_dynamic: sl.export_dynamic, format };
+    // P-1 (WP-147): a key every definition of which is discarded (not a
+    // COMDAT copy another object keeps) has no place, when the one
+    // derivation of the export set exports it (WP-149).
+    for (name, value) in gone {
+        let base = split_version(&name).0;
+        let v = vis.get(base).copied().unwrap_or(STV_DEFAULT);
+        if !defined_base.contains(base)
+            && matches!(v, STV_DEFAULT | STV_PROTECTED)
+            && rule.exports(&name)
+        {
+            sets.placeless.entry(base.to_string()).or_insert(value);
+        }
+    }
     // Layout L-96: `__start_X`/`__stop_X` named from a live section, `X` a
     // C-identifier section of the inputs, is the link's own definition.
     let startstop = start_stop(objs, &refs);
@@ -1196,45 +1289,13 @@ pub(crate) fn compute(
         let versioned = r.versioned;
         sets.imports.entry(base.to_string()).or_insert(r).versioned |= versioned;
     }
-    // A key's version and whether a script or --exclude-libs hides it.
+    // A key's version and whether a script hides it: the one derivation
+    // (`ExportRule`), which M10's roots ask too (WP-149).
     let decide = |name: &str, sets: &mut Sets| -> Option<VerOut> {
-        let (base, ver) = split_version(name);
-        match (&script, ver) {
-            (None, None) => Some(VerOut::Base),
-            (None, Some((v, _))) => {
-                sets.outside.push(format!(
-                    "'{name}': version {v} and no version script (dyn.md D-114: undefined-version)"
-                ));
-                None
-            }
-            (Some(s), None) => match s.decide(base) {
-                Decision::Local => None,
-                Decision::Base => Some(VerOut::Base),
-                Decision::Node(i) => {
-                    Some(s.nodes[i].name.clone().map_or(VerOut::Base, VerOut::Node))
-                }
-            },
-            (Some(s), Some((v, default))) => match s.decide_versioned_as(
-                base,
-                v,
-                default,
-                sl.export_dynamic,
-                format,
-            ) {
-                None => {
-                    sets.outside.push(format!(
-                            "'{name}': no node {v} in the version script (dyn.md D-114: undefined-version)"
-                        ));
-                    None
-                }
-                Some(Decision::Local) => None,
-                Some(_) => Some(if default {
-                    VerOut::Node(v.to_string())
-                } else {
-                    VerOut::Hidden(v.to_string())
-                }),
-            },
-        }
+        rule.version(name).unwrap_or_else(|m| {
+            sets.outside.push(m);
+            None
+        })
     };
     for (name, ds) in &defs {
         let base = split_version(name).0.to_string();
@@ -1258,6 +1319,13 @@ pub(crate) fn compute(
             sets.local.insert(if split_version(name).1.is_some() { name.clone() } else { base });
             continue;
         };
+        // P-1: an export whose definition has no place is omitted
+        // (`spec/resolve.md` §10.1, D-110; WP-147); a key the script
+        // makes local is local first (WP-149).
+        if d.placeless {
+            sets.placeless.insert(base, d.value);
+            continue;
+        }
         let preemptible =
             v != STV_PROTECTED && line_preempts(sl, list.as_ref(), d.ty, &base, format);
         sets.exports.entry(base.clone()).or_default().push(Export {
@@ -1354,11 +1422,13 @@ pub(crate) fn compute(
         !(sets.exports.contains_key(n) || sets.local.contains(n) || linker_def)
     });
     sets.local.extend(own);
+    sets.rule = Some(rule);
     sets
 }
 
 /// P-D19: `.dynsym`'s defined entries against the export set, with
 /// binding, type, visibility and version (D-110, D-115).
+#[allow(clippy::too_many_lines)] // one pass over .dynsym, then the set
 pub fn pd19(out: &DynOut, sets: &Sets, format: Format) -> Vec<Finding> {
     let mut v = Vec::new();
     let sym = |name: &str, m: String| {
@@ -1382,6 +1452,26 @@ pub fn pd19(out: &DynOut, sets: &Sets, format: Format) -> Vec<Finding> {
             && version == VerOut::Node(s.name.clone())
             && sets.nodes.contains(&s.name)
         {
+            continue;
+        }
+        if let Some(&value) = sets.placeless.get(&s.name)
+            && !sets.exports.contains_key(&s.name)
+        {
+            // GNU ld's form (measured, WP-147): an absolute symbol whose
+            // value is the definition's offset in its section.
+            if format == Format::Gnu
+                && s.st_shndx == mortar_elf::consts::SHN_ABS
+                && s.st_value == value
+            {
+                continue;
+            }
+            v.push(sym(
+                &s.name,
+                format!(
+                    "'{}' is defined in .dynsym (at {:#x}), but its definition has no place: P-1 omits it (resolve.md §10.1, D-110)",
+                    s.name, s.st_value
+                ),
+            ));
             continue;
         }
         let Some(e) =
@@ -2117,7 +2207,10 @@ pub(crate) fn pd27(
     // Every entry's `.gnu.version` index.
     let Some(vs) = &out.versym else {
         if any_node {
-            v.push(fd(27, "no .gnu.version (DT_VERSYM) and the version script names a node (D-115)"));
+            v.push(fd(
+                27,
+                "no .gnu.version (DT_VERSYM) and the version script names a node (D-115)",
+            ));
         }
         return v;
     };
@@ -2154,7 +2247,10 @@ pub(crate) fn pd27(
         let Some(&x) = vs.get(j) else { break };
         if s.binding() == STB_LOCAL {
             if x != 0 {
-                v.push(sym(&s.name, format!("the local .dynsym entry {j} has .gnu.version {x:#x}, not 0 (D-115)")));
+                v.push(sym(
+                    &s.name,
+                    format!("the local .dynsym entry {j} has .gnu.version {x:#x}, not 0 (D-115)"),
+                ));
             }
             continue;
         }
@@ -2180,7 +2276,13 @@ pub(crate) fn pd27(
         {
             let w = versym_of(&VerOut::Node(s.name.clone()), &sets.nodes);
             if Some(x) != w {
-                v.push(sym(&s.name, format!("GNU ld's node symbol '{}' has .gnu.version {x:#x}, not {w:?} (D-115)", s.name)));
+                v.push(sym(
+                    &s.name,
+                    format!(
+                        "GNU ld's node symbol '{}' has .gnu.version {x:#x}, not {w:?} (D-115)",
+                        s.name
+                    ),
+                ));
             }
             continue;
         }
@@ -2365,6 +2467,7 @@ pub(crate) fn filter_dyncheck(
     out: &DynOut,
     sl: &SharedLine,
     sets: &Sets,
+    format: Format,
 ) {
     let entry0 = image.header.e_entry == 0;
     let mask = DF_SYMBOLIC | crate::dynout::DF_STATIC_TLS;
@@ -2399,6 +2502,15 @@ pub(crate) fn filter_dyncheck(
                 }
                 // D-30's order has no library tags: D-102's is P-D22's.
                 m != "a tag D-30 does not write" && m != "the .dynamic tags are not in D-30's order"
+            }
+            // lld's form of an unreferenced export with no place
+            // (measured, WP-147): an import no input references.
+            Rule::Dyn(7)
+                if format == Format::Lld
+                    && m.contains("is imported and no input references it")
+                    && f.symbol.as_deref().is_some_and(|n| sets.placeless.contains_key(n)) =>
+            {
+                false
             }
             Rule::Dyn(7) => {
                 !m.contains("is not exported (D-12, W8)")

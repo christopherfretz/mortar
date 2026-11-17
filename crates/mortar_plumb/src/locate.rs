@@ -115,6 +115,20 @@ pub(crate) struct Obj<'a> {
 }
 
 impl<'a> Obj<'a> {
+    /// §4.4 step 0's predicate, `spec/resolve.md` §10.1 P-1 as the map
+    /// shows it: section `k` has no place. It is discarded or has no
+    /// record (absent), except an allocated one without bytes (its labels
+    /// are where its bytes would be, WP-143) and an input `.eh_frame`
+    /// while the output has one (`synth.md` S-48a, S-50; WP-143b). One
+    /// derivation for every rule that asks (§4.4, Y3, Y4, P-D19; WP-147).
+    pub fn no_place(&self, k: usize, output_eh_frame: bool) -> bool {
+        self.secs.get(k).is_some_and(|s| {
+            matches!(s.place, Place::Absent | Place::Discarded)
+                && !s.empty_unrecorded()
+                && !(output_eh_frame && s.is_eh_frame(self.elf.machine()))
+        })
+    }
+
     /// The contents of section `si`: empty for `SHT_NOBITS`, for a
     /// section out of bounds, for an index past the table, and for one
     /// whose read failed (an I2 finding, [`Store::take_errors`]).

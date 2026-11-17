@@ -1,0 +1,39 @@
+mortar-map 2
+file 0 gc-a64.o
+piece 0 9 0 2b8 14
+piece 0 9 14 2cc 14
+piece 0 9 28 2e0 18
+place 0 4 102fc 8
+place 0 5 10304 8
+place 0 6 303f8 4
+merged 0 7 .comment
+chunk synthetic .gnu.hash 1c8 28
+chunk synthetic .dynsym 1f0 60
+chunk synthetic .dynstr 250 23
+chunk synthetic .gnu.version 274 8
+chunk synthetic .gnu.version_d 27c 38
+chunk synthetic .eh_frame 2b8 44
+chunk synthetic .got 203f0 8
+chunk synthetic .dynamic 20310 e0
+chunk synthetic .symtab - d8
+chunk synthetic .strtab - 38
+chunk synthetic .shstrtab - 89
+chunk synthetic .comment - d
+chunk synthetic .pad.relro 203f8 fc08
+output shared
+bind lazy
+relro on
+symbolic none
+version-script exp.map
+arg -shared
+arg --gc-sections
+arg -o
+arg exp-a64.so
+arg gc-a64.o
+arg --version-script
+arg exp.map
+arg --mortar-map=exp-a64.map
+export keep
+export gone
+export data_gone
+end

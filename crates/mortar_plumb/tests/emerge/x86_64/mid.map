@@ -1,0 +1,29 @@
+mortar-map 2
+file 0 get.o
+file 1 pre.o
+file 2 emid.o
+place 0 1 401127 9
+place 0 2 402130 0
+place 0 3 402138 0
+piece 1 4 0 400120 7
+place 1 1 401130 0
+place 1 2 402130 0
+place 1 3 402138 0
+place 2 5 400127 0
+place 2 1 401130 0
+place 2 2 402130 8
+place 2 4 402138 0
+chunk synthetic .symtab - 78
+chunk synthetic .strtab - 30
+chunk synthetic .shstrtab - 38
+chunk synthetic .comment - d
+arg -static
+arg get.o
+arg pre.o
+arg emid.o
+arg -e
+arg get
+arg -o
+arg mid
+arg --mortar-map=mid.map
+end
