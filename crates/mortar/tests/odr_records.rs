@@ -267,7 +267,10 @@ fn system_std_and_schemes() {
     assert!(ok, "{e}");
     assert!(e.contains("warning: _Z3sysv violates the one-definition rule"), "{e}");
     assert!(e.contains("spec/odr.md O-32"), "{e}");
-    assert!(e.contains(">>> the translation units also differ in std (a.o: c++20; b.o: c++17)"), "{e}");
+    assert!(
+        e.contains(">>> the translation units also differ in std (a.o: c++20; b.o: c++17)"),
+        "{e}"
+    );
     assert!(!e.contains("_Z3usrv"), "{e}");
     assert!(e.contains("schemes 2, pairs not compared 2,"), "{e}");
     assert!(e.contains("system -std differences 1,"), "{e}");
