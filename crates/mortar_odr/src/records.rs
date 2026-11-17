@@ -1437,10 +1437,18 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
                     rb.size,
                     rb.align,
                 ));
-            } else {
+            } else if self.info[a.unit as usize].layout_scheme
+                == self.info[b.unit as usize].layout_scheme
+            {
                 notes.push(
                     "the layouts agree; the definitions differ (members, initializers or \
                      member declarations)"
+                        .to_owned(),
+                );
+            } else {
+                // WP-151: layouts of two layout schemes are not compared.
+                notes.push(
+                    "the definitions differ (members, initializers or member declarations)"
                         .to_owned(),
                 );
             }

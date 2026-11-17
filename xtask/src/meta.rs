@@ -49,10 +49,11 @@
 //!
 //! ```text
 //! member name=S type=S offset=N [width=N]   # width= makes a bit-field
+//! member offset=N nested=N         # an unnamed class-type member: N items follow (O-19)
 //! base type=S offset=N [virtual=1]
 //! vptr offset=N
 //! slot name=S index=N              # a vtable slot: the final overrider's declaration
-//! enumerator name=S value=N
+//! enumerator name=S value=N      # N may be negative: two's complement (O-19)
 //! underlying type=S
 //! item flags=N name=S type=S value=N width=N   # any item, as given (kind in bits 0-3)
 //! ```
@@ -352,13 +353,17 @@ fn detail_item(directive: &[u8], fields: &Fields) -> Result<Option<Detail>, Stri
     };
     let out = match directive {
         b"member" => {
-            let mut x = d(item::MEMBER, &["name", "type", "offset", "width"])?;
+            let mut x = d(item::MEMBER, &["name", "type", "offset", "width", "nested"])?;
             x.name = fields.string("name");
             x.ty = fields.string("type");
             x.value = fields.num("offset", 0)?;
             if fields.get("width").is_some() {
                 x.width = fields.num("width", 0)?;
                 x.flags |= item::BITFIELD;
+            } else if fields.get("nested").is_some() {
+                // O-19 (WP-151): the nested-item count of an unnamed
+                // class-type member, in `width`, without BITFIELD.
+                x.width = fields.num("nested", 0)?;
             }
             x
         }
@@ -385,7 +390,16 @@ fn detail_item(directive: &[u8], fields: &Fields) -> Result<Option<Detail>, Stri
         b"enumerator" => {
             let mut x = d(item::ENUMERATOR, &["name", "value"])?;
             x.name = fields.string("name");
-            x.value = fields.num("value", 0)?;
+            x.value = match fields.get("value").and_then(|v| v.strip_prefix(b"-")) {
+                Some(neg) => {
+                    let n = number(neg)?;
+                    if n > 1 << 63 {
+                        return Err("an enumerator value below -2^63".to_owned());
+                    }
+                    0u64.wrapping_sub(n)
+                }
+                None => fields.num("value", 0)?,
+            };
             x
         }
         b"underlying" => {
@@ -759,12 +773,27 @@ fn print_items(out: &mut String, u: &Unit<'_>, offset: u32) -> bool {
     if entry.reserved != 0 {
         return false;
     }
+    // O-19 (WP-151): an enumerator in signed decimal when the underlying
+    // type is signed.
+    let char_signed = u.summary_value(b"abi.char").and_then(|(v, _)| match v {
+        b"signed" => Some(true),
+        b"unsigned" => Some(false),
+        _ => None,
+    });
+    let signed = entry
+        .all_items()
+        .find(|it| it.flags == item::UNDERLYING)
+        .and_then(|it| mortar_meta::details::signed_underlying(u.string(it.ty), char_signed))
+        == Some(true);
     for it in entry.all_items() {
         let (name, ty) = (quote(u.string(it.name)), quote(u.string(it.ty)));
         let plain = it.name == 0 && it.ty == 0 && it.width == 0;
         let line = match it.flags {
             item::MEMBER if it.width == 0 => {
                 format!("member name={name} type={ty} offset={}", it.value)
+            }
+            item::MEMBER if it.name == 0 && it.ty == 0 => {
+                format!("member offset={} nested={}", it.value, it.width)
             }
             f if f == item::MEMBER | item::BITFIELD => {
                 format!("member name={name} type={ty} offset={} width={}", it.value, it.width)
@@ -778,7 +807,9 @@ fn print_items(out: &mut String, u: &Unit<'_>, offset: u32) -> bool {
                 format!("slot name={name} index={}", it.value)
             }
             item::ENUMERATOR if it.ty == 0 && it.width == 0 => {
-                format!("enumerator name={name} value={}", it.value)
+                #[allow(clippy::cast_possible_wrap, reason = "O-19's two's complement")]
+                let v = if signed { (it.value as i64).to_string() } else { it.value.to_string() };
+                format!("enumerator name={name} value={v}")
             }
             item::UNDERLYING if it.name == 0 && it.width == 0 && it.value == 0 => {
                 format!("underlying type={ty}")
@@ -1555,6 +1586,15 @@ type name=1E size=4 align=4 flags=1
 underlying type=i
 enumerator name=A value=0
 enumerator name=B value=0xffffffffffffffff
+enumerator name=C value=-2
+type name=1F size=4 align=4 flags=1
+underlying type=j
+enumerator name=U value=0xffffffffffffffff
+type name=1U size=8 align=4
+member offset=0 nested=2
+member name=i type=i offset=0
+member name=f type=f offset=0
+member name=k type=i offset=32
 type name=1D size=24 align=8 flags=8
 base type=1S offset=0 virtual=1
 base type=1B offset=128
@@ -1601,7 +1641,10 @@ type name=1N size=1 align=1
             "member name=b type=i offset=96 width=3\n",
             "slot name=_ZN1S1fEv index=0\n",
             "underlying type=i\n",
-            "enumerator name=B value=18446744073709551615\n",
+            "enumerator name=B value=-1\n",
+            "enumerator name=C value=-2\n",
+            "enumerator name=U value=18446744073709551615\n",
+            "member offset=0 nested=2\n",
             "base type=1S offset=0 virtual=1\n",
             "base type=1B offset=128\n",
             "item flags=0x7 name=future type=x value=9 width=1\n",
@@ -1622,7 +1665,14 @@ type name=1N size=1 align=1
         // (Not a unit the writer could have written: its strings that only
         // kind 4 names are not in the raw form, so it does not write back.)
         assert!(!text.contains("level detail") && text.contains("details hex="), "{text}");
-        for bad in ["member name=x\n", "type name=1S\nmember nam=x\n", "level\n", "level x\n"] {
+        for bad in [
+            "member name=x\n",
+            "type name=1S\nmember nam=x\n",
+            "level\n",
+            "level x\n",
+            "type name=1E\nenumerator name=A value=-9223372036854775809\n",
+            "type name=1E\nenumerator name=A value=-x\n",
+        ] {
             assert!(parse(bad).is_err(), "{bad}");
         }
         assert!(parse("type name=1S\nmember name=x\ndetails hex=00\n").is_ok());
