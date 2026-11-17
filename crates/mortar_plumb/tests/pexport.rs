@@ -383,7 +383,7 @@ fn wp147b_comdat_export_is_judged_by_its_kept_copy() {
                     !(l.contains("cka.o")
                         && (l.contains("(.text._Z4pickv)") || l.contains("(.text._ZN3BoxC2Ev)")))
                 })
-                .map(|l| format!("{l}\n"))
+                .flat_map(|l| [l, "\n"])
                 .collect();
             assert!(cut.len() < text.len(), "{label}: the kept copies' lines not found");
             let m = map::parse(format, &cut).unwrap_or_else(|e| panic!("{label}: {}", e.message));
