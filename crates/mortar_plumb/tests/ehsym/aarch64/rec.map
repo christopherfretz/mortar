@@ -1,0 +1,30 @@
+mortar-map 2
+file 0 get.o
+file 1 getc.o
+file 2 end.o
+place 0 1 410114 c
+place 0 2 410124 0
+place 0 3 410124 0
+piece 1 4 0 4000e8 14
+piece 1 4 14 4000fc 14
+place 1 1 410120 4
+place 1 2 410124 0
+place 1 3 410124 0
+place 2 1 410124 0
+place 2 2 410124 0
+place 2 3 410124 0
+chunk synthetic .eh_frame 4000e8 2c
+chunk synthetic .symtab - a8
+chunk synthetic .strtab - 3b
+chunk synthetic .shstrtab - 34
+chunk synthetic .comment - d
+arg -static
+arg get.o
+arg getc.o
+arg end.o
+arg -e
+arg get
+arg -o
+arg rec
+arg --mortar-map=rec.map
+end

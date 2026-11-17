@@ -838,7 +838,10 @@ offset; through the output's `.symtab` that address is `PT_TLS` `p_vaddr`
   - **in `.eh_frame`** (a label such as crtbeginT.o's
     `__EH_FRAME_BEGIN__`) when the section is rewritten, absent, or the
     label is in a dropped part, and the row above does not apply:
-    `eh-frame`;
+    `eh-frame`; except, under mortar's map, when the output has no
+    allocated `.eh_frame` (`synth.md` S-48a: no live record, no
+    terminator, no empty input): the absent section is then not in the
+    output, and a reference to it is R5 (WP-143b);
   - **ambiguous:** `section-not-locatable`;
   - **empty without a record** (the "absent" row of §3.3 for a section
     without bytes, or a foreign map's empty merged section without a
@@ -851,7 +854,9 @@ offset; through the output's `.symtab` that address is `PT_TLS` `p_vaddr`
   of these that applies:
   0. **No definition with a place** (WP-143). When the name has input
      definitions, none `SHN_ABS` or common, and every one is in a section
-     that is discarded or absent (not one without bytes, above), and the
+     that is discarded or absent (not one without bytes, above; nor an
+     input `.eh_frame` while the output has an allocated `.eh_frame`,
+     whose labels have `synth.md` S-50's values, WP-143b), and the
      loader does not bind the name (§12.5): the definition is the first
      strong one in object order, else the first, and S follows from its
      section as for a local symbol: R5 (§5.7), or §5.8's tombstone from a
@@ -2308,6 +2313,42 @@ rules below judge the rest. Code: `src/symbols.rs`.
   - **a label of an empty section without a record** (§3.3, "absent";
     not thread-local): its output value is in or at the end of an
     allocated output section, else a finding;
+  - **a label of an input `.eh_frame`** (WP-143b). When the name has no
+    placed definition, every input definition is in an input `.eh_frame`
+    and the output has an allocated `.eh_frame`, the output value of the
+    first strong definition (else the first) at input offset r is judged:
+    - under mortar's map, by `synth.md` S-50 (S-48a for a terminator
+      alone), re-derived from the map's `piece` records: rule 1 (r = 0:
+      the section's start; §4.4 decides this one before this bullet),
+      rule 2 (a piece covering r), and rule 3 (rule 4 for a symbol in a
+      removed record, whose next kept record is the same): the first
+      piece of the same section at or after r, else the first piece of
+      the later input `.eh_frame` sections in `SectionId` order (S-46),
+      else the final terminator, the output's last 4 bytes. No record
+      is parsed: a symbol in a removed record and one at its end both
+      take the next kept record, and a symbol inside a kept record is in
+      its piece. A value other than this: a finding;
+    - under a reference's map, which does not say where a removed record
+      went: in or at the end of the output `.eh_frame`
+      (`[sh_addr, sh_addr + sh_size]`), else a finding. Measured with a
+      global at the end of a terminator-only input (`get.o end.o`; and
+      with a live CIE and FDE before or after it: `get.o getc.o end.o`,
+      `get.o end.o getc.o`), on AArch64, x86-64 and i386: GNU ld places
+      the input (edited to size 0) and writes the label at its end (the
+      output's end for the first two, offset 4 for the third, whose
+      terminator it drops), which its map's row gives, so Y1 judges it;
+      lld writes the output's start + 4 (the input offset, from the
+      start), the end only for the first; mold leaves the name out of
+      `.symtab` (the missing-global bullet above does not apply: the
+      label is in no live piece and no section placed whole). All are in
+      or at the end of the output `.eh_frame`;
+    - Before WP-143b, such a name was counted in `globals_unchecked`
+      (unless at r = 0, or in a kept record), and WP-143's bullet below
+      called mortar's S-48a terminator "not in the output".
+
+    When the output has no allocated `.eh_frame`, the bullet below
+    applies under mortar's map, and the name stays unchecked under a
+    reference's. Test: `tests/ehsym.rs`.
   - **a name with no definition with a place** (§4.4 step 0; mortar's
     map) that the output defines: a finding, whatever its value.
 - **Y4. Locals.** This rule applies to each defined output local, other

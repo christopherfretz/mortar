@@ -1,0 +1,23 @@
+mortar-map 2
+file 0 get.o
+file 1 end.o
+place 0 1 4100ec c
+place 0 2 4100f8 0
+place 0 3 4100f8 0
+place 1 1 4100f8 0
+place 1 2 4100f8 0
+place 1 3 4100f8 0
+chunk synthetic .eh_frame 4000e8 4
+chunk synthetic .symtab - 60
+chunk synthetic .strtab - 33
+chunk synthetic .shstrtab - 34
+chunk synthetic .comment - d
+arg -static
+arg get.o
+arg end.o
+arg -e
+arg get
+arg -o
+arg end
+arg --mortar-map=end.map
+end

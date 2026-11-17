@@ -227,6 +227,53 @@ fn held_def(e: &Engine<'_, '_>, name: &str) -> Option<String> {
     })
 }
 
+/// When every input definition of `name` is in an input `.eh_frame` and
+/// the output has one: the first (strong first) definition's place, and
+/// whether `value` is the one it must have (WP-143b). Under mortar's map
+/// it is `synth.md` S-50's ([`Engine::eh_frame_value`]); under a
+/// reference's, inside or at the end of the output `.eh_frame` (GNU ld
+/// and lld write the end for a label after a terminator; mold drops it).
+/// `None` when a definition is elsewhere, or there is no output
+/// `.eh_frame` (then §4.4 step 0's rules hold).
+#[allow(clippy::many_single_char_names)] // e, o, t, d, s: the ELF parts
+fn eh_frame_label(
+    e: &Engine<'_, '_>,
+    name: &str,
+    value: u64,
+) -> Option<(String, Result<(), String>)> {
+    let (addr, size) = e.output_eh_frame()?;
+    let mut first = None;
+    let mut strong = None;
+    for &(oi, di) in e.defs.get(name)? {
+        let o = &e.objs[oi];
+        let t = o.symtab?;
+        let d = t.get(SymbolIndex(di)).ok()?;
+        let SymbolSection::Section(k) = t.section_of(SymbolIndex(di), &d).ok()? else {
+            return None;
+        };
+        let k = k.0 as usize;
+        if !o.secs.get(k)?.is_eh_frame(o.elf.machine()) {
+            return None;
+        }
+        first.get_or_insert((oi, k, d.st_value));
+        if d.binding() != STB_WEAK {
+            strong.get_or_insert((oi, k, d.st_value));
+        }
+    }
+    let (oi, k, r) = strong.or(first)?;
+    let what = format!("'.eh_frame' of {} at offset {r:#x}", e.objs[oi].path);
+    let verdict = match e.eh_frame_value(oi, k, r) {
+        Some(want) if want == value => Ok(()),
+        Some(want) => Err(format!("is at {value:#x}, not S-50's {want:#x} (synth.md S-50)")),
+        None if addr <= value && value <= addr.saturating_add(size) => Ok(()),
+        None => Err(format!(
+            "is at {value:#x}, neither in nor at the end of the output's .eh_frame [{addr:#x}, {:#x}]",
+            addr.saturating_add(size)
+        )),
+    };
+    Some((what, verdict))
+}
+
 /// The name of the empty section without a record (WP-143) a definition
 /// of `name` is in, when one is.
 #[allow(clippy::many_single_char_names)] // e, o, t, d, s: the ELF parts
@@ -359,6 +406,21 @@ fn globals(e: &mut Engine<'_, '_>, fs: &mut Vec<Finding>) {
         // mold form (a function at an IPLT entry) is Y1's (§4.8).
         let canonical_ifunc = defs.iter().any(|(d, _)| d.sym.sym_type() == STT_GNU_IFUNC)
             && out.sym.sym_type() != STT_GNU_IFUNC;
+        if defs.is_empty()
+            && let Some((what, want)) = eh_frame_label(e, name, out.sym.st_value)
+        {
+            // A label of an input `.eh_frame` (synth.md S-48a, S-50;
+            // WP-143b): judged by S-50's value, not as "not in the output".
+            match want {
+                Ok(()) => checked += 1,
+                Err(m) => {
+                    let mut f = y(3, format!("symbol '{name}' of {what} {m}"));
+                    f.found = Some(out.sym.st_value);
+                    fs.push(named(f.at(out.sym.st_value), name));
+                }
+            }
+            continue;
+        }
         if defs.is_empty()
             && e.format == Format::Mortar
             && let Some((doi, _, k)) = e.placeless_def(name)
