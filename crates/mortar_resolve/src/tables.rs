@@ -751,7 +751,13 @@ fn shared_link(
 ) -> SharedLink {
     let files = inputs.files.as_slice();
     if !files.iter().any(|f| f.kind() == InputKind::Shared) {
-        return SharedLink::default();
+        // WP-148: the switches of D-21 hold without a shared input too (a
+        // dynamic executable of objects alone exports by §9.6).
+        return SharedLink {
+            export_dynamic: plan.dynamic.export_dynamic,
+            export_symbols: export_symbols(view, export),
+            ..SharedLink::default()
+        };
     }
     let link = &inputs.link;
     let mut position = vec![u32::MAX; files.len()];
@@ -874,26 +880,30 @@ fn shared_link(
     } else {
         ShlibUndefined::Error
     };
-    // resolve.md §4.2: each key matching the glob (a value without a
-    // wildcard names its key; a glob is matched against the unversioned
-    // keys' names).
-    let mut export_symbols: Vec<SymbolId> = export.iter().filter_map(|n| n.key.get()).collect();
-    let globs: Vec<&[u8]> = export.iter().map(|n| &*n.name).filter(|p| is_glob(p)).collect();
-    if !globs.is_empty() {
-        export_symbols.extend((0..view.keys()).map(SymbolId).filter(|&k| {
-            let (name, version) = view.key_name(k);
-            version.is_none() && globs.iter().any(|p| glob_match(p, name))
-        }));
-    }
-    export_symbols.sort_unstable();
-    export_symbols.dedup();
     SharedLink {
         mentions,
         position,
         shlib_undefined,
         export_dynamic: plan.dynamic.export_dynamic,
-        export_symbols,
+        export_symbols: export_symbols(view, export),
     }
+}
+
+/// The `--export-dynamic-symbol` keys, sorted (resolve.md §4.2): each key
+/// matching the glob (a value without a wildcard names its key; a glob is
+/// matched against the unversioned keys' names).
+fn export_symbols(view: &InputsView<'_, '_>, export: &[Named]) -> Vec<SymbolId> {
+    let mut keys: Vec<SymbolId> = export.iter().filter_map(|n| n.key.get()).collect();
+    let globs: Vec<&[u8]> = export.iter().map(|n| &*n.name).filter(|p| is_glob(p)).collect();
+    if !globs.is_empty() {
+        keys.extend((0..view.keys()).map(SymbolId).filter(|&k| {
+            let (name, version) = view.key_name(k);
+            version.is_none() && globs.iter().any(|p| glob_match(p, name))
+        }));
+    }
+    keys.sort_unstable();
+    keys.dedup();
+    keys
 }
 
 // ---- the Resolution table ---------------------------------------------------

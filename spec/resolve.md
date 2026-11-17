@@ -1327,7 +1327,11 @@ What resolution marks for `.dynsym` (M2 executables; M4 shared output):
   (M4). Hidden keys never (§3.5). A **linker-defined key of file 0**
   (§8: `__bss_start`, `_edata`, `_end`, …) is exported only when
   `ref_dynamic`, never by `--export-dynamic` or a glob alone
-  (`spec/dyn.md` D-21 item 2; lld and mold; GNU ld exports them).
+  (`spec/dyn.md` D-21 item 2; lld and mold; GNU ld exports them). The
+  rule is the same with no shared object on the line (`ref_dynamic` and
+  `defined_dynamic` are then empty): `--export-dynamic` and
+  `--export-dynamic-symbol` export from an executable of objects alone
+  (WP-148).
 - **Exported from a shared object** (M4; the normative rule is
   `spec/dyn.md` D-110): every key defined by a live relocatable object,
   of default or protected visibility, weak, vague-linkage and
@@ -1662,6 +1666,18 @@ place** or **has no place by a named rule**, and nothing else:
   `.note.gnu.property` sections, `spec/layout.md` L-34), or is `Kept`
   but not live (`--gc-sections`, §6.1 of `spec/image.md` I-7). The reason
   is named: `mortar_core::place::NoPlace`.
+
+A symbol of a kept **non-allocated** section (`.comment`, which mortar
+merges but does not allocate; a debug section) has a place: its value is
+its offset in its output section (`spec/image.md` I-117). An allocated
+word that names it holds that offset; in a PIE (and a static-pie or a
+shared object) the word gets a `RELATIVE` record whose addend is the
+offset, so the run-time word is the load base plus the offset, an address
+of nothing. GNU ld 2.44 and lld 19 write exactly this, on the three
+targets (WP-148, `.comment`'s section symbol and a label in it); mold
+2.37 stops on an assertion. mortar follows GNU ld and lld. A section
+symbol plus addend one past such a merge section's end is
+`spec/synth.md` S-18's refusal, as in an allocated one.
 
 A reference to a symbol with no place, from a kept and live section, is
 what §6.3's table says of a reference into a dropped copy, whatever the

@@ -816,6 +816,15 @@ the null entry:
    `envalias`, `lib&_environ=0`): a wrong output of GNU ld;
 4. **dynamic weak undefined**: the `WeakDyn` keys of D-25.
 
+The set does not depend on a shared object being on the line: an `Exec`
+or `Pie` of relocatable objects alone exports by item 2 too, so a library
+loaded into it later (`LD_PRELOAD`, `dlopen`) binds to the exports
+(WP-148: mortar accepted `--export-dynamic` and `--export-dynamic-symbol`
+there and wrote the null entry only; lld and mold export, GNU ld in a
+PIE). `--gc-sections` keeps every exported definition (resolve §4.7's
+roots; all three). A link that loads no shared object and exports
+nothing computes no export set. A `StaticPie` exports nothing (D-1).
+
 Never: local or hidden symbols, section symbols (GNU ld writes two
 `STT_SECTION` entries in an AArch64 PIE; lld and mold none), `_DYNAMIC`,
 `_GLOBAL_OFFSET_TABLE_`, `__dso_handle`. The set equals lld's on the
@@ -1672,6 +1681,7 @@ unchanged. Every `P-D` id this spec cites is that section's.
 | `--export-dynamic` in a static-pie | exports every global (x86-64: the program dies at start-up) | exports every global | exports every global | accepted, no effect: `.dynsym` stays the null entry (D-1, P-D14); the exports are useless: a library the program `dlopen`s does not bind to them and `dlsym(RTLD_DEFAULT)` does not find them (WP-056, all three) |
 | `--export-dynamic-symbol` in a static-pie | exports the name | exports the name | exports the name | accepted, no effect: `.dynsym` stays the null entry (D-1, P-D14) |
 | `--export-dynamic-symbol=GLOB` | glob | glob | glob | glob (resolve.md §4.2; WP-056 fixed a literal match) |
+| `--export-dynamic`/`--export-dynamic-symbol` in an `Exec`/`Pie` of objects alone (no shared object on the line) | `Pie`: exports (and its linker-defined `_end`/`__end__` under a section that does not hold them, P-D7); `-no-pie`: no `.dynamic`, a static program | `Pie`: exports; `-no-pie`: `.interp` only, a static program | exports; `-no-pie`: `.dynsym` without `PT_DYNAMIC` (P-D4) | exports, D-21's set as with a shared input (WP-148; before, accepted with an empty `.dynsym`) |
 | `.gnu.version_r` align | 8 | 4 | 4 | 4 (D-34) |
 | `IRELATIVE` in a PIE | last of `.rela.plt` | end of `.rela.dyn` | end of `.rela.dyn` | GNU ld's (D-41) |
 | `.rela.dyn` non-`RELATIVE` order | offset, `COPY` last | (sym, offset) | (sym, offset) | (sym, offset) (D-40) |

@@ -1,0 +1,225 @@
+# References at and past the end of a split SHF_MERGE section
+# (synth.md S-17 to S-19, S-22; WP-148). A section symbol plus addend
+# r with r < 0 or r >= sh_size names no piece and is refused by name
+# (S-18): `malformed-input`, at the referring place, with the target
+# section and its file. GNU as writes `.dc.a .Lend` (a local label after
+# the last string, addend 0) as the section symbol plus sh_size, so
+# hand-written assembly makes this shape. lld refuses it with the same
+# words; GNU ld writes the end of the OUTPUT section's input (not of the
+# string: wrong when the string is merged with another copy); mold
+# writes the end of the last piece, an unrelated address for
+# `.rodata.cst8`, and crashes on a negative addend: the references
+# disagree, so the conservative reading stands. Before WP-148 a
+# `-pie`, `-static-pie` or `-shared` link stopped with the internal
+# error `.rela.dyn: ... a RELATIVE record without S + A` instead, and a
+# static link's refusal named no place.
+#
+# A label in the middle of a string is linked, through the label and
+# through the section symbol (S-17), by every linker. The same end
+# address through a named symbol (S-19, S-22) is linked too:
+# `split/merge-end-named.test`. `.comment`'s section symbol is linked as
+# its offset, the end of a `.comment` refused as any merge end.
+#@ spec: synth.md "S-18"
+#@ spec: synth.md "S-19"
+#@ spec: resolve.md §10.1
+
+cc -O1 main-ref.c -o main-ref.o
+cc -O1 -fPIE main-ref.c -o main-refp.o
+cc -O1 -fPIE main-mid.c -o main-mid.o
+as end-str.s -o end-str.o
+as end-cst.s -o end-cst.o
+as past.s -o past.o
+as neg.s -o neg.o
+as com-end.s -o com-end.o
+as hello.s -o hello.o
+as dedup.s -o dedup.o
+as code-%{arch}.s -o code.o
+as mid.s -o mid.o
+as com.s -o com.o
+
+# S-18: refused by name, at the referring place, in every output kind.
+link(lld,mortar) gcc -static main-ref.o end-str.o -o r-str
+  exit: fail
+  diag(lld): offset is outside the section
+  diag(mortar): end-str.o:(.data+0x0): offset is outside the section; refer to it through a named symbol
+  diag(mortar): defined in end-str.o:(.rodata.str1.1)
+  diag(mortar): the reference is to .rodata.str1.1+0x7
+link(lld,mortar,aarch64,x86_64) gcc -pie main-refp.o end-str.o -o r-str-pie
+  exit: fail
+  diag(lld): offset is outside the section
+  diag(mortar): end-str.o:(.data+0x0): offset is outside the section; refer to it through a named symbol
+  no-diag(mortar): internal error
+link(lld,mortar,aarch64,x86_64) gcc -static-pie main-refp.o end-str.o -o r-str-spie
+  exit: fail
+  diag(mortar): end-str.o:(.data+0x0): offset is outside the section
+  no-diag(mortar): internal error
+link(lld,mortar,aarch64) ld -shared end-str.o -o r-str.so
+  exit: fail
+  diag(mortar): end-str.o:(.data+0x0): offset is outside the section
+  no-diag(mortar): internal error
+link(lld,mortar) gcc -static -Wl,--gc-sections main-ref.o end-str.o -o r-str-gc
+  exit: fail
+  diag(mortar): end-str.o:(.data+0x0): offset is outside the section
+link(lld,mortar) gcc -static main-ref.o end-cst.o -o r-cst
+  exit: fail
+  diag(mortar): end-cst.o:(.data+0x0): offset is outside the section
+  diag(mortar): the reference is to .rodata.cst8+0x8
+link(lld,mortar,aarch64,x86_64) gcc -pie main-refp.o end-cst.o -o r-cst-pie
+  exit: fail
+  diag(mortar): the reference is to .rodata.cst8+0x8
+  no-diag(mortar): internal error
+link(lld,mortar) gcc -static main-ref.o past.o -o r-past
+  exit: fail
+  diag(mortar): the reference is to .rodata.str1.1+0x8
+link(lld,mortar,aarch64,x86_64) gcc -pie main-refp.o past.o -o r-past-pie
+  exit: fail
+  diag(mortar): the reference is to .rodata.str1.1+0x8
+  no-diag(mortar): internal error
+link(lld,mortar) gcc -static main-ref.o neg.o -o r-neg
+  exit: fail
+  diag(mortar): the reference is to .rodata.str1.1-0x1
+link(lld,mortar,aarch64,x86_64) gcc -pie main-refp.o neg.o -o r-neg-pie
+  exit: fail
+  diag(mortar): the reference is to .rodata.str1.1-0x1
+  no-diag(mortar): internal error
+link(lld,mortar) gcc -static main-ref.o com-end.o -o r-com
+  exit: fail
+  diag(mortar): defined in com-end.o:(.comment)
+link(lld,mortar,aarch64,x86_64) gcc -pie main-refp.o com-end.o -o r-com-pie
+  exit: fail
+  diag(mortar): defined in com-end.o:(.comment)
+  no-diag(mortar): internal error
+link(lld,mortar) gcc -static main-ref.o hello.o dedup.o -o r-dedup
+  exit: fail
+  diag(mortar): dedup.o:(.data+0x0): offset is outside the section
+link(lld,mortar,aarch64,x86_64) gcc -pie main-refp.o hello.o dedup.o -o r-dedup-pie
+  exit: fail
+  diag(mortar): dedup.o:(.data+0x0): offset is outside the section
+  no-diag(mortar): internal error
+# GNU as writes AArch64's `adrp`/`add` of the end label against the
+# section symbol plus sh_size too (x86-64's `lea` keeps the label).
+link(lld,mortar,aarch64) gcc -static main-ref.o end-str.o code.o -o r-code
+  exit: fail
+  diag(mortar): code.o:(.text+0x0): offset is outside the section
+
+# Linked: a label in the middle of a string, through the label and
+# through the section symbol (S-17).
+link gcc -static main-mid.o mid.o -o mid
+run mid
+  exit: 42
+link(aarch64,x86_64) gcc -pie main-mid.o mid.o -o mid-pie
+run(aarch64,x86_64) mid-pie
+  exit: 42
+# `.comment` is kept but not allocated: an allocated word naming it holds
+# its offset (image.md I-117), with a RELATIVE record in a PIE, as GNU ld
+# and lld write (mold stops on an assertion).
+link(bfd,lld,mortar) gcc -static main-ref.o com.o -o com
+link(bfd,lld,mortar,aarch64,x86_64) gcc -pie main-refp.o com.o -o com-pie
+check(bfd,lld,mortar,aarch64,x86_64) readelf -rW com-pie
+  has: _RELATIVE
+
+#--- main-ref.c
+extern const char *const w;
+int main(void) { return w != 0 ? 42 : 1; }
+#--- main-mid.c
+extern const char gstr[];
+extern const char *const w1, *const w2;
+int main(void) { return w1 == gstr + 3 && w2 == gstr + 3 ? 42 : 1; }
+#--- end-str.s
+	.section .rodata.str1.1,"aMS",%progbits,1
+	.globl	gstr
+gstr:	.asciz	"zq7hel"
+lend:
+	.data
+	.p2align 3
+	.globl	w
+w:	.dc.a	lend
+	.section .note.GNU-stack,"",%progbits
+#--- end-cst.s
+	.section .rodata.cst8,"aM",%progbits,8
+gcst:	.quad	0x1122334455667788
+cend:
+	.data
+	.p2align 3
+	.globl	w
+w:	.dc.a	cend
+	.section .note.GNU-stack,"",%progbits
+#--- past.s
+	.section .rodata.str1.1,"aMS",%progbits,1
+	.asciz	"zq7hel"
+	.data
+	.p2align 3
+	.globl	w
+w:	.dc.a	.rodata.str1.1+8
+	.section .note.GNU-stack,"",%progbits
+#--- neg.s
+	.section .rodata.str1.1,"aMS",%progbits,1
+	.asciz	"zq7hel"
+	.data
+	.p2align 3
+	.globl	w
+w:	.dc.a	.rodata.str1.1-1
+	.section .note.GNU-stack,"",%progbits
+#--- com-end.s
+	.section .comment,"MS",%progbits,1
+	.asciz	"zq7comment"
+lcomend:
+	.data
+	.p2align 3
+	.globl	w
+w:	.dc.a	lcomend
+	.section .note.GNU-stack,"",%progbits
+#--- hello.s
+	.section .rodata.str1.1,"aMS",%progbits,1
+	.globl	gstr
+gstr:	.asciz	"zq7hel"
+	.section .note.GNU-stack,"",%progbits
+#--- dedup.s
+	.section .rodata.str1.1,"aMS",%progbits,1
+	.asciz	"zq7hel"
+lend2:
+	.data
+	.p2align 3
+	.globl	w
+w:	.dc.a	lend2
+	.section .note.GNU-stack,"",%progbits
+#--- code-aarch64.s
+	.section .rodata.str1.1,"aMS",%progbits,1
+	.asciz	"zq7cod"
+lcend:
+	.text
+	.globl	getend
+getend:	adrp	x0, lcend
+	add	x0, x0, :lo12:lcend
+	ret
+	.section .note.GNU-stack,"",%progbits
+#--- code-x86_64.s
+	.text
+	.globl	getend
+getend:	ret
+	.section .note.GNU-stack,"",%progbits
+#--- code-i386.s
+	.text
+	.globl	getend
+getend:	ret
+	.section .note.GNU-stack,"",%progbits
+#--- mid.s
+	.section .rodata.str1.1,"aMS",%progbits,1
+	.globl	gstr
+gstr:	.ascii	"zq7"
+lmid:	.asciz	"hel"
+	.data
+	.p2align 3
+	.globl	w1, w2
+w1:	.dc.a	lmid
+w2:	.dc.a	.rodata.str1.1+3
+	.section .note.GNU-stack,"",%progbits
+#--- com.s
+	.section .comment,"MS",%progbits,1
+lcom:	.asciz	"zq7comment"
+	.data
+	.p2align 3
+	.globl	w, w2
+w:	.dc.a	.comment
+w2:	.dc.a	lcom
+	.section .note.GNU-stack,"",%progbits

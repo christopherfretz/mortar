@@ -379,21 +379,29 @@ pub fn resolve_steps<V: View>(
     steps.step("resolve.d2");
     // WP-117: a shared object's export set and preemption are the shared
     // stage's too (`spec/dyn.md` D-110, D-112), with or without shared
-    // inputs.
-    let dynamic = (kinds.contains(&FileKind::Shared) || opts.shared_output.is_some()).then(|| {
-        crate::shared::link(
-            view,
-            opts,
-            &kinds,
-            &targets,
-            &redirect,
-            &mut file_live,
-            &mut def,
-            &mut props,
-            &mut problems,
-            pool,
-        )
-    });
+    // inputs. WP-148: so is a dynamic executable's export set (§9.6,
+    // D-21) when the line exports (`--export-dynamic`,
+    // `--export-dynamic-symbol`) and no shared object is loaded: without
+    // it the options were accepted and `.dynsym` stayed empty. A link
+    // that exports nothing and loads no shared object skips the stage,
+    // as before.
+    let exports = opts.output.dynamic
+        && (opts.shared.export_dynamic || !opts.shared.export_symbols.is_empty());
+    let dynamic = (kinds.contains(&FileKind::Shared) || opts.shared_output.is_some() || exports)
+        .then(|| {
+            crate::shared::link(
+                view,
+                opts,
+                &kinds,
+                &targets,
+                &redirect,
+                &mut file_live,
+                &mut def,
+                &mut props,
+                &mut problems,
+                pool,
+            )
+        });
     // A common that yields to a shared data definition (§3.2 rule 2) is
     // allocated nowhere.
     common.retain(|(k, _)| matches!(def[k.0 as usize], Def::Common(_)));

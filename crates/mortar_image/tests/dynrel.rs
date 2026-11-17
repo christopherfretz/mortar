@@ -65,6 +65,23 @@ fn howto() -> &'static mortar_arch::Howto {
 /// The records of a writable section of `n` `ABS64` words in a `Pie`,
 /// word `i` against `keys(i)` with addend `i`.
 fn section(n: u32, addr: u64, keys: impl Fn(u32) -> SymKey) -> dynrel::SectionRecords {
+    let value = |k: SymKey, a: i64| -> Result<u64, dynrel::Unvalued> {
+        let s = match k.as_global() {
+            Some(SymbolId(1 | 2)) => 0,
+            _ => 0x10_0000,
+        };
+        Ok((i64::from(s) + a) as u64)
+    };
+    section_with(n, addr, keys, &value).unwrap()
+}
+
+/// [`section`] with the link-time value `value`.
+fn section_with(
+    n: u32,
+    addr: u64,
+    keys: impl Fn(u32) -> SymKey,
+    value: &(dyn Fn(SymKey, i64) -> Result<u64, dynrel::Unvalued> + Sync),
+) -> Result<dynrel::SectionRecords, dynrel::RecordError> {
     let recs = Recs(
         (0..n)
             .map(|i| Reloc {
@@ -83,15 +100,8 @@ fn section(n: u32, addr: u64, keys: impl Fn(u32) -> SymKey) -> dynrel::SectionRe
         place: PlaceFacts { alloc: true, writable: true, exec: Some(false) },
         name: b".data",
     };
-    let value = |k: SymKey, a: i64| -> Option<u64> {
-        let s = match k.as_global() {
-            Some(SymbolId(1 | 2)) => 0,
-            _ => 0x10_0000,
-        };
-        Some((i64::from(s) + a) as u64)
-    };
     let dynsym = |id: SymbolId| -> Option<u32> { (id.0 <= 2).then_some(10 - id.0) };
-    let cx = SectionCx { arch: &A64::M1, scan, addr, value: &value, dynsym: &dynsym };
+    let cx = SectionCx { arch: &A64::M1, scan, addr, value, dynsym: &dynsym };
     let at = |i: u32| {
         let r = recs.get(i)?;
         Some(RelocAt {
@@ -109,7 +119,7 @@ fn section(n: u32, addr: u64, keys: impl Fn(u32) -> SymKey) -> dynrel::SectionRe
             leads: true,
         })
     };
-    dynrel::section_records(&cx, &recs, &at).unwrap()
+    dynrel::section_records(&cx, &recs, &at)
 }
 
 fn local(_: u32) -> SymKey {
@@ -144,6 +154,36 @@ fn d46_section_records_by_target_kind() {
             DynRecord { r_offset: 0x4028, r_sym: 8, r_type: ABS64, addend: 5 },
         ]
     );
+}
+
+// WP-148 (synth.md S-18, image.md I-124): a RELATIVE record whose
+// reference the image refuses (a section symbol plus addend outside its
+// split merge section) carries that refusal to the caller, which reports
+// it at the record's place; a key without a place (P-1), for which the
+// scan plans no record, is an internal fault. Neither is RELATIVE + 0.
+#[test]
+fn wp148_relative_without_a_value_is_refused_or_a_fault() {
+    let refusal = mortar_diag::Diagnostic::error(mortar_diag::Kind::Malformed {
+        what: "offset is outside the section; refer to it through a named symbol".into(),
+    });
+    let value = |k: SymKey, a: i64| -> Result<u64, dynrel::Unvalued> {
+        match k.as_global() {
+            Some(SymbolId(7)) => Err(dynrel::Unvalued::Refused(Box::new(refusal.clone()))),
+            Some(SymbolId(8)) => Err(dynrel::Unvalued::NotLive),
+            _ => Ok((0x10_0000 + a) as u64),
+        }
+    };
+    let ok = section_with(2, 0x4000, local, &value).unwrap();
+    assert_eq!(ok.relative.len(), 2);
+    match section_with(2, 0x4000, |i| SymKey::global(SymbolId(if i == 1 { 7 } else { 5 })), &value)
+    {
+        Err(dynrel::RecordError::Refused(d)) => assert_eq!(*d, refusal),
+        other => panic!("expected the refusal, got {other:?}"),
+    }
+    match section_with(1, 0x4000, |_| SymKey::global(SymbolId(8)), &value) {
+        Err(dynrel::RecordError::Fault(m)) => assert!(m.contains("without a place"), "{m}"),
+        other => panic!("expected a fault, got {other:?}"),
+    }
 }
 
 /// `units` sections of RELATIVE records, unit `u` holding `count(u)`.

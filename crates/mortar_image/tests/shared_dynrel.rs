@@ -89,13 +89,13 @@ fn d120_records_by_target_kind() {
         place: PlaceFacts { alloc: true, writable: true, exec: Some(false) },
         name: b".data",
     };
-    let value = |k: SymKey, a: i64| -> Option<u64> {
+    let value = |k: SymKey, a: i64| -> Result<u64, dynrel::Unvalued> {
         let s = match k.as_global() {
             Some(SymbolId(2 | 3)) => 0,
             Some(SymbolId(1)) => 0x2_0010,
             _ => 0x10_0000,
         };
-        Some((s + a) as u64)
+        Ok((s + a) as u64)
     };
     // `.dynsym`: 1, 2 and 3 at 7, 4 and 3.
     let dynsym = |id: SymbolId| -> Option<u32> {
