@@ -129,7 +129,16 @@ assumed), or if it is one of these exclusions.
   preprocessor mark exist (O-10).
 - **X18** a type that fails O-17's syntactic TU-local test without being
   TU-local (a specialization over a pointer to a global object, a
-  typedef-named unnamed class): no kind 3 row (O-17).
+  typedef-named unnamed class [requested of kiln, O-17]): no kind 3 row
+  (O-17). Kiln's K-4 also writes none for: a class with
+  `[[clang::internal_linkage]]`; a specialization over a floating-point
+  or pointer value, a template template argument or a vector type;
+  AArch64's implicit `std::__va_list`; a class one of whose bases,
+  member types or final overriders' classes fails the test (O-18).
+- **X18a** an enumeration that differs between two units and is used
+  only through its enumerators as constants in function bodies (K7's
+  shape), while kiln's row rule is "named in the type of an emitted
+  function or variable" (O-17).
 - **X19** C-linkage signature differences that O-33's conservative
   canonical C type maps to one string (record types, `va_list`
   spellings, `noexcept`, reference vs pointer, `restrict`): equal under
@@ -635,6 +644,25 @@ clause]`). A class or enumeration gets a row only if all hold:
    points to an entity, a template template argument, or a pack
    containing any argument that fails gives **no row**.
 
+*Enumerations: which subset.* The one-definition rule on an enumeration
+does not depend on its use, so ANY subset of "the complete, named, not
+TU-local enumerations the unit defines" is sound (it can only miss).
+The rule above ("appears in an emitted definition") needs a usage
+record kiln does not keep; kiln's K-4 writes no enumeration rows, and
+the rule accepted for its first ones is "complete in the unit and named
+in the type of an emitted function or variable", or, if kiln has a
+reference mark on the enumeration or its enumerators, "complete and
+referenced anywhere in the unit" (preferred: the former misses K7's
+own shape, an enumerator used only as a constant in a body: X18a).
+
+*Typedef-named unnamed classes* (`typedef struct { … } T;`, a typedef
+name for linkage purposes) are excluded by item 1 today (X18).
+**Requested of kiln** (2026-11-17, after K-3 and K-6): a row for them,
+keyed by the encoding of the typedef name, when 2 and 3 hold. The
+reason: it is the C-header idiom of old code bases, where a layout that
+differs between units by a macro or a packing pragma is what this check
+is for.
+
 So `std::optional<(anonymous)::S>`, `std::vector<std::pair<int,
 (anonymous)::S*>>`, `Local` and every closure write no row, while
 `std::optional<int>` and `ns::Widget<ns::Gadget*>` write one. A type that
@@ -689,14 +717,48 @@ the class attributes of O-10's list that are a class's property:
 `gcc_struct` and `packed` (their effect on offsets is already in the
 layout; the attribute is hashed too, so the record says why). From kiln's
 `RecordLayout` (`kiln_ast/src/types/layout.rs`) and `VTableLayout`
-(`kiln_ast/src/class.rs`).
+(`kiln_ast/src/class.rs`). Kiln's choices in K-4 (scheme `kiln-odr-1`),
+accepted 2026-11-17: a member of unnamed class type is hashed by its
+structure and one of unnamed enumeration type as its underlying type;
+the vtable shape is the whole vtable group (secondary vtables too),
+without the RTTI slots; `gcc_struct` counts when written, `ms_struct`
+when in effect; a class gets NO row when a base, a member's type or the
+class of a final overrider fails O-17's test (a miss, X18); `PARTIAL`
+and `ENUM` are never set and `hash` is zero until K-3. Measured by kiln
+against mortar e3f9ed7: a class that differs between two units is
+`odr-type-mismatch`; three real units with libstdc++ (1,020 rows) and
+libc++ (1,331 rows) under `--odr=strict` give 0 record findings; the
+heavy unit has 337 kind 3 rows (18,888 B, names 14,342 B).
 
 **O-19 (kind 4, layout details).** Optional (`-fmason-metadata=detail`):
 per type, the list O-18 hashes, in readable form (member names, offsets,
 type strings), so that a diagnostic can say *what* differs. Mortar reads
-kind 4 only to render a diagnostic that kind 3 already decided. Its exact
-encoding is fixed by WP-073 with kiln (a list of `{u32 name; u32 type;
-u64 bit_offset; u32 width; u32 flags}` entries is the proposal).
+kind 4 only to render a diagnostic that kind 3 already decided. The
+encoding (fixed 2026-11-17; kiln writes it after K-3, mortar reads it
+with WP-145): the block's body is a sequence of **entries**, each
+aligned to 8 bytes from the body's start; a kind 3 row's `details` is
+its entry's byte offset in the body. An entry is `{u32 count; u32
+reserved}` (`reserved` 0) followed by `count` **items** of 24 bytes:
+
+| offset | field | |
+|---|---|---|
+| 0 | `u32 name` | a string offset as kind 3's `name`; 0 when the item has none |
+| 4 | `u32 type` | a type string, the one O-18 hashes; 0 when none |
+| 8 | `u64 value` | by item kind, below |
+| 16 | `u32 width` | a bit-field's width in bits, else 0 |
+| 20 | `u32 flags` | bits 0-3 the item kind; bit 4 `BITFIELD`; bit 5 `VIRTUAL` |
+
+Item kinds: 0 a non-static data member (`name`, `type`, `value` its
+offset in bits, `width` and `BITFIELD` for a bit-field); 1 a base
+(`type` the base's `<type>` encoding, `value` its offset in bits,
+`VIRTUAL`); 2 the vptr (`value` its offset in bits); 3 a vtable slot
+(`name` the mangled name of the final overrider's declaration, `value`
+the slot's index over the whole group); 4 an enumerator (`name`,
+`value`); 5 an enumeration's underlying type (`type`). The items stand
+in exactly the order O-18 hashes what they describe, one for everything
+O-18 hashes that has an item kind, so the first item that differs
+between two entries is the first difference. A reader ignores an item
+kind it does not know and a set `reserved`.
 
 ## 7. Comparison points
 
@@ -979,7 +1041,9 @@ bits and prints an empty type]. Status: `--odr=strict` until its corpus
   `at_quick_exit`: `char *(char *, int)` and `const char *(const char *,
   int)` against C's `char *(const char *, int)`). C-linkage asm-labelled
   declarations (glibc's `__REDIRECT` inside `extern "C"`, C units) keep
-  their rows, keyed by the label;
+  their rows, keyed by the label; a unit that declares one symbol both
+  ways (a C-linkage declaration and a C++-linkage asm-labelled one)
+  writes no row for it (kiln's choice, accepted: a miss);
 - a unit holds **at most one kind 5 row per key**: if its declarations
   of one symbol disagree, it writes none for that key;
 - constructors and destructors (the name carries the type), aliases,
@@ -1044,12 +1108,20 @@ form (`KF…E`, `F…RE`, `F…OE`); every row of a C unit has `EXTERN_C`;
   dropped (other pointer-level qualifiers, `const` and `volatile`, are
   kept); a GCC transparent union parameter becomes its first member's
   type (glibc's `__SOCKADDR_ARG`, measured below); `(void)` and `()` in a
-  prototyped declaration are one form. *Measured by kiln with its own
+  prototyped declaration are one form; **an array bound is erased
+  wherever C lets it be omitted**: on every array type that is not the
+  element type of another array (a variable's own major bound, O-35,
+  and the outer bound of an array reached through a pointer, a typedef
+  or a nested function type), because `int (*)[]` and `int (*)[4]` are
+  compatible in C and a hash has only equality; inner dimensions are
+  kept, and `[3]` against `[4]` behind a pointer is a miss (X19; ruling
+  of 2026-11-17 on kiln's reading). *Measured by kiln with its own
   types* (K-5, AArch64, 24 headers, 2,644 functions, before the two
   rulings of 2026-11-17): 13 differences, 11 the asm-labelled
   `extern "C++"` overloads (O-35 "No row") and 2 `getitimer`/`setitimer`
-  (the erased signedness above) [planned: kiln re-measures with both
-  rulings; expected 0]. The proxy measurement that preceded it missed
+  (the erased signedness above); with both rulings (kiln PR #769): **0**
+  canonical types and 0 flags differ of the 2,633 functions with rows in
+  both units. The proxy measurement that preceded it missed
   both: *measured* [proxy: clang's types,
   not kiln's; T-O-33]: glibc's public declarations (24 headers,
   `-D_GNU_SOURCE`) compiled as C17 and as C++20 `extern "C"`, clang 19
