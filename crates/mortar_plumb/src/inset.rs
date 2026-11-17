@@ -1431,43 +1431,16 @@ fn redirect(name: &[u8], wrap: &crate::wrap::Wrap) -> Vec<u8> {
 }
 
 /// `--defsym A=EXPR`: `A`, the names `EXPR` refers to, and whether the
-/// expression was read exactly (names, numbers, `+ - * / ( )` only).
+/// expression was read exactly (the one reader, `defsym.rs`, WP-170).
 fn defsym(op: &str) -> (Option<String>, Vec<String>, bool) {
-    let Some((a, e)) = op.split_once('=') else { return (None, Vec::new(), false) };
-    let a = a.trim();
-    if a.is_empty() {
-        return (None, Vec::new(), false);
-    }
-    let mut names = Vec::new();
-    let mut exact = true;
-    let mut cur = String::new();
-    let flush = |cur: &mut String, names: &mut Vec<String>| {
-        if !cur.is_empty() && !cur.as_bytes()[0].is_ascii_digit() {
-            names.push(std::mem::take(cur));
+    use crate::defsym::Operand;
+    match crate::defsym::operand(op) {
+        Operand::Judged { sym, expr } => {
+            (Some(sym), expr.base().map(str::to_string).into_iter().collect(), true)
         }
-        cur.clear();
-    };
-    for c in e.chars() {
-        if c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '$') {
-            cur.push(c);
-        } else if c == '(' && !cur.is_empty() {
-            // A builtin function (`ADDR`, `ABSOLUTE`, ...).
-            exact = false;
-            cur.clear();
-        } else {
-            flush(&mut cur, &mut names);
-            if !matches!(c, ' ' | '+' | '-' | '*' | '/' | '(' | ')') {
-                exact = false;
-            }
-        }
+        Operand::Other { sym, names, exact, .. } => (Some(sym), names, exact),
+        Operand::Unread => (None, Vec::new(), false),
     }
-    flush(&mut cur, &mut names);
-    if names.iter().any(|n| n.starts_with('.')) {
-        // `.` or a section's name.
-        exact = false;
-        names.retain(|n| !n.starts_with('.'));
-    }
-    (Some(a.to_string()), names, exact)
 }
 
 /// What the input set reads of a `-T` script: `ENTRY`, `EXTERN`, and the

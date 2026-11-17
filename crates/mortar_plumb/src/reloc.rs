@@ -584,6 +584,9 @@ pub(crate) struct Engine<'a, 'b> {
     /// `--wrap` word (E13), with `__wrap_SYM`'s address: a finding there
     /// whose field `__wrap_SYM` gives is tagged [`crate::wrap::E13`].
     e13: Option<Box<(Rec, u64, String)>>,
+    /// The line's `--defsym` assignments (`defsym.rs`, WP-170 part 2):
+    /// `def[SYM]` of each; empty without `--defsym`.
+    pub(crate) defsym: crate::defsym::Defsym,
     /// Stage 3 (§12.5): the keys a shared object's view takes from the
     /// loader (`dynbind`) although the output defines them: preemptible
     /// keys under an interposer, a preemptible IFUNC's resolved address.
@@ -727,6 +730,19 @@ impl<'a, 'b> Engine<'a, 'b> {
             return matches!(t.section_of(SymbolIndex(idx), &sym), Ok(SymbolSection::Absolute));
         }
         let name = String::from_utf8_lossy(t.name(&sym).unwrap_or(b"")).into_owned();
+        // §4.4b (WP-170): a `--defsym` number is `SHN_ABS`, never
+        // relocated, in every output kind; an alias or `B ± N` is `B`'s.
+        if !self.defsym.is_empty() {
+            let key =
+                if matches!(t.section_of(SymbolIndex(idx), &sym), Ok(SymbolSection::Undefined)) {
+                    self.wrap.key(&name).into_owned()
+                } else {
+                    name.clone()
+                };
+            if let Some(a) = self.defsym_absolute(&key) {
+                return a;
+            }
+        }
         if let Some((doi, di)) = self.chosen_def(&name) {
             return self.objs[doi].symtab.is_some_and(|dt| {
                 dt.get(SymbolIndex(di)).is_ok_and(|ds| {
@@ -746,6 +762,30 @@ impl<'a, 'b> Engine<'a, 'b> {
                         && x.shdr.sh_addr <= v
                         && v <= x.shdr.sh_addr + x.shdr.sh_size
                 })
+        })
+    }
+
+    /// [`Engine::absolute`] of a `--defsym` key (§4.4b): `Some(true)` for
+    /// a number, `B`'s for an alias or `B ± N` (one level: a chain is not
+    /// derived), `None` for any other name.
+    pub(crate) fn defsym_absolute(&self, key: &str) -> Option<bool> {
+        use crate::defsym::Expr;
+        Some(match self.defsym.get(key)? {
+            Expr::Number(_) => true,
+            Expr::Alias(b) | Expr::Offset(b, _) => {
+                if let Some((doi, di)) = self.chosen_def(b) {
+                    self.objs[doi].symtab.is_some_and(|dt| {
+                        dt.get(SymbolIndex(di)).is_ok_and(|ds| {
+                            matches!(
+                                dt.section_of(SymbolIndex(di), &ds),
+                                Ok(SymbolSection::Absolute)
+                            )
+                        })
+                    })
+                } else {
+                    false
+                }
+            }
         })
     }
 
@@ -955,6 +995,7 @@ impl<'a, 'b> Engine<'a, 'b> {
             wrap: crate::wrap::Wrap::default(),
             wrap_comdat: BTreeMap::new(),
             e13: None,
+            defsym: crate::defsym::Defsym::default(),
             loader_keys: std::collections::HashSet::new(),
             dso_words: None,
             plt: BTreeMap::new(),
@@ -1185,16 +1226,44 @@ impl<'a, 'b> Engine<'a, 'b> {
         } else {
             name
         };
+        let undefined = matches!(where_, Ok(SymbolSection::Undefined));
+        let here_ifunc = (sym.sym_type() == STT_GNU_IFUNC
+            && matches!(where_, Ok(SymbolSection::Section(_))))
+        .then_some((oi, idx));
+        self.global_target(name, undefined, sym.binding() == STB_WEAK, here_ifunc)
+    }
+
+    /// §4.4's lookup of a global `name` (its `--wrap` key) by a mention
+    /// that is `undefined` or defined, `weak` or not; `here_ifunc`: the
+    /// mention itself, when it is a defined IFUNC.
+    #[allow(clippy::too_many_lines)] // §4.4, its steps in order
+    fn global_target(
+        &self,
+        name: String,
+        undefined: bool,
+        weak: bool,
+        here_ifunc: Option<(usize, u32)>,
+    ) -> Target {
         // §4.7: `_TLS_MODULE_BASE_` is, by its definition in the TLS
         // descriptor ABI, the start of the module's TLS block, whatever
         // value the linker gives its symbol (A3).
-        if name == "_TLS_MODULE_BASE_" && matches!(where_, Ok(SymbolSection::Undefined)) {
+        if name == "_TLS_MODULE_BASE_" && undefined {
             return self.tls_out(0);
         }
         // §12.5: in a shared object's views a key the loader binds (an
         // interposed key, a preemptible IFUNC's resolved address) is where
         // the view puts it, not an IPLT entry.
         let bound_by_loader = self.loader_keys.contains(&name);
+        // §4.4b (WP-170): `def[SYM]` is the line's `--defsym`, whatever
+        // an input or the output's `.symtab` says of `SYM`.
+        if !bound_by_loader && !self.defsym.is_empty() {
+            if let Some(t) = self.defsym_target(&name) {
+                return t;
+            }
+            if self.defsym.unjudged(&name) {
+                return Target::Skip(Reason::Defsym);
+            }
+        }
         // §4.4 step 0 (WP-143): a name every input definition of which is
         // in a section without a place (discarded, or absent from the
         // map) is that section's, whatever the output's symbol says: R5,
@@ -1222,8 +1291,7 @@ impl<'a, 'b> Engine<'a, 'b> {
         }
         if !bound_by_loader
             && chosen.is_none()
-            && sym.sym_type() == STT_GNU_IFUNC
-            && matches!(where_, Ok(SymbolSection::Section(_)))
+            && let Some((oi, idx)) = here_ifunc
         {
             return self.ifunc_target(oi, idx, IfKey::Global(name));
         }
@@ -1255,7 +1323,7 @@ impl<'a, 'b> Engine<'a, 'b> {
                 }
                 return Target::Addr(out.sym.st_value);
             }
-            return if out.sym.binding() == STB_WEAK || sym.binding() == STB_WEAK {
+            return if out.sym.binding() == STB_WEAK || weak {
                 Target::UndefWeak
             } else {
                 Target::Skip(Reason::SymbolUnresolved)
@@ -1293,10 +1361,7 @@ impl<'a, 'b> Engine<'a, 'b> {
         // 4. An undefined weak: only when the output has a `.symtab`. A
         // stripped output (`-s`) does not say whether the linker defined
         // the name (`__rela_iplt_start`).
-        if matches!(where_, Ok(SymbolSection::Undefined))
-            && sym.binding() == STB_WEAK
-            && !self.image.symbols.is_empty()
-        {
+        if undefined && weak && !self.image.symbols.is_empty() {
             return Target::UndefWeak;
         }
         // A name defined only in empty sections without a record (WP-143).
@@ -1441,8 +1506,58 @@ impl<'a, 'b> Engine<'a, 'b> {
         {
             f.message.push_str(crate::wrap::E13);
         }
+        // §4.4b (WP-170): a PC-relative form against a `--defsym` number in
+        // a position-independent output (GNU ld's relocated number, A87).
+        if !self.defsym.is_empty()
+            && f.rule == Rule::Field
+            && f.message.ends_with("(spec/plumb.md §5.1a)")
+            && f.symbol
+                .as_deref()
+                .is_some_and(|n| matches!(self.defsym.get(n), Some(crate::defsym::Expr::Number(_))))
+        {
+            f.message.push_str(crate::defsym::NUMBER_MOVED);
+        }
         self.cov.failed += 1;
         self.findings.push(f);
+    }
+
+    /// Sets the line's `--defsym` assignments (§4.4b, WP-170 part 2).
+    pub(crate) fn set_defsym(&mut self, d: crate::defsym::Defsym) {
+        self.cov.defsym_not_judged = d.unjudged_text();
+        self.defsym = d;
+    }
+
+    /// `def[name]` (§4.4b) when the line's `--defsym` of `name` is
+    /// derived: a number is its value (modulo the address width: the
+    /// three references truncate on i386, mortar refuses it, §7.2 item 3),
+    /// an alias is `B`'s target, `B ± N` `B`'s address plus `N`. `B` is a
+    /// root, looked up by its own name (no `--wrap` key).
+    fn defsym_target(&self, name: &str) -> Option<Target> {
+        use crate::defsym::Expr;
+        let e = self.defsym.get(name)?;
+        let narrow = self.image.class() != mortar_elf::Class::Elf64;
+        Some(match e {
+            Expr::Number(n) => Target::Addr(if narrow { n & 0xffff_ffff } else { *n }),
+            Expr::Alias(b) => self.global_target(b.clone(), true, false, None),
+            Expr::Offset(b, n) => match self.global_target(b.clone(), true, false, None) {
+                Target::Addr(a) => Target::Addr(a.wrapping_add(*n as u64)),
+                Target::Tls(a) => Target::Tls(a.wrapping_add(*n as u64)),
+                Target::Ifunc { .. } => Target::Skip(Reason::Defsym),
+                t => t,
+            },
+        })
+    }
+
+    /// `def[name]`'s value (§4.4b) for the `.symtab` rule; `None` when
+    /// `name` has no derived `--defsym`.
+    pub(crate) fn defsym_value(&self, name: &str) -> Option<crate::defsym::Value> {
+        use crate::defsym::Value;
+        Some(match self.defsym_target(name)? {
+            Target::Addr(a) => Value::Addr(a),
+            Target::Tls(a) => Value::Tls(a),
+            Target::Ifunc { resolver, .. } => Value::Ifunc(resolver),
+            _ => Value::Unknown,
+        })
     }
 
     /// Sets the line's `--wrap` words (§4.4a, WP-170), and finds refused

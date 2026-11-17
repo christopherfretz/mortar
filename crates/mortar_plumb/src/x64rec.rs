@@ -238,19 +238,37 @@ impl Engine<'_, '_> {
                 self.got_demands.insert(s);
                 if alloc && let Some(rw) = self.x64_got_form(oi, si, rec, s, kind) {
                     if rw == Rewrite::GotToLea && self.abs_in_pic(oi, rec.sym, kind) {
+                        // §4.4b (WP-170): GNU ld's rewriting against a
+                        // `--defsym` number is the record's finding (A87);
+                        // its bytes are not S12's as well.
+                        if matches!(self.defsym.get(&symbol), Some(crate::defsym::Expr::Number(_)))
+                            && let Some((lo, hi)) = rewrite_window(rec.def.r_type, rec.p)
+                        {
+                            self.x64_rewrote(lo, hi);
+                        }
                         return self.fail(Self::pc_to_absolute(rec, &site, &symbol));
                     }
                     return self.cov.add_accepted(rw, ty);
                 }
                 if !self.x64_window_kept(oi, si, rec) {
+                    // §4.4b (WP-170): GNU ld rewrites a GOT load of a
+                    // `--defsym` number in a PIE to a PC-relative `lea`
+                    // (the number plus the bias, A87): one finding, the
+                    // record's, tagged; its bytes are not S12's as well.
+                    let moved = self.image.header.e_type == ET_DYN
+                        && matches!(self.defsym.get(&symbol), Some(crate::defsym::Expr::Number(_)));
+                    if moved && let Some((lo, hi)) = rewrite_window(rec.def.r_type, rec.p) {
+                        self.x64_rewrote(lo, hi);
+                    }
                     let mut f = Self::finding(
                         Rule::Field,
                         rec,
                         &site,
                         &symbol,
                         format!(
-                            "the instruction is neither the GOT-indirect one of the input nor a rewriting {} writes (spec/plumb.md §5.9)",
-                            linker_name(self.format)
+                            "the instruction is neither the GOT-indirect one of the input nor a rewriting {} writes (spec/plumb.md §5.9){}",
+                            linker_name(self.format),
+                            if moved { crate::defsym::NUMBER_MOVED } else { "" }
                         ),
                     );
                     f.found = Some(rec.out_word);
@@ -378,6 +396,16 @@ impl Engine<'_, '_> {
         let o = &self.objs[oi];
         let Some(t) = o.symtab else { return false };
         let Ok(sym) = t.get(SymbolIndex(idx)) else { return false };
+        // §4.4b (WP-170): a `--defsym` key is absolute by its derivation
+        // (a number; an alias or `B ± N` of an absolute `B`), whatever an
+        // input or the output's `.symtab` says.
+        if !self.defsym.is_empty() && idx != 0 && sym.binding() != mortar_elf::consts::STB_LOCAL {
+            let name = String::from_utf8_lossy(t.name(&sym).unwrap_or(b""));
+            let key = if sym.st_shndx == SHN_UNDEF { self.wrap.key(&name) } else { name };
+            if let Some(a) = self.defsym_absolute(&key) {
+                return a;
+            }
+        }
         match sym.st_shndx {
             SHN_ABS => true,
             SHN_UNDEF => {
@@ -393,6 +421,13 @@ impl Engine<'_, '_> {
         let o = &self.objs[oi];
         let t = o.symtab?;
         let sym = t.get(SymbolIndex(idx)).ok()?;
+        // §4.4b: a `--defsym` symbol has size 0 (resolve.md §7.2).
+        if !self.defsym.is_empty()
+            && sym.binding() != mortar_elf::consts::STB_LOCAL
+            && self.defsym.defines(&String::from_utf8_lossy(t.name(&sym).ok()?))
+        {
+            return Some(0);
+        }
         if sym.st_shndx != SHN_UNDEF {
             return Some(sym.st_size);
         }

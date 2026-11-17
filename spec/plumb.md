@@ -709,6 +709,11 @@ Special rows:
   thunk, `.text.patch` an erratum patch, and anything else (merged
   `.rodata.str*`, `.got`) is synthetic.
 - **COMMON.** `file:(COMMON)` is a common chunk.
+- **Rows without text** (WP-170 part 2). lld 19 writes each `--defsym`
+  as a row of four numbers, size 0 and no text (the assignment, whose
+  text it leaves empty). It places nothing and is skipped; a row without
+  text whose size is not 0 is still an error ("row has no name"). Test:
+  `map::lld::tests::s4_4b_lld_defsym_row_is_an_assignment`.
 
 Ambiguities, and how they are resolved:
 

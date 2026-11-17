@@ -370,6 +370,11 @@ fn globals(e: &mut Engine<'_, '_>, fs: &mut Vec<Finding>) {
     names.sort();
     let (mut checked, mut unchecked) = (0u64, 0u64);
     for name in names {
+        // §4.4b (WP-170): a `--defsym` symbol is `defsym_syms`'s, never
+        // the replaced definition's.
+        if e.defsym.defines(name) {
+            continue;
+        }
         let Some(out) = image.global(name).or_else(|| image.unique(name)) else {
             // Y3 (WP-143): a name an input defines globally in a section
             // the output holds is in a `.symtab` the output has.
@@ -1108,11 +1113,181 @@ fn wrap_real(e: &Engine<'_, '_>, fs: &mut Vec<Finding>) {
     }
 }
 
+/// The section index of the output section that holds `v` (or ends at
+/// it): allocated, `SHF_TLS` for a TLS value when `tls`.
+fn holds_value(image: &Image<'_>, shndx: u16, v: u64) -> bool {
+    shndx != SHN_UNDEF
+        && shndx < SHN_LORESERVE
+        && image.sections.get(usize::from(shndx)).is_some_and(|s| {
+            s.alloc() && s.shdr.sh_addr <= v && v <= s.shdr.sh_addr.saturating_add(s.shdr.sh_size)
+        })
+}
+
+/// Y1 and Y3 of a `--defsym` symbol (§4.4b, WP-170 part 2): its
+/// `.symtab` entry is `def[SYM]`, whatever an input defines: the value
+/// (Y1); `SHN_ABS` and `STT_NOTYPE` for a number, `B`'s section and type
+/// for an alias, `B`'s section and `STT_NOTYPE` for `B ± N`; size 0;
+/// `STB_GLOBAL` (`STB_LOCAL` when the line makes it local) (Y3).
+#[allow(clippy::too_many_lines)] // the attributes in order
+fn defsym_syms(e: &mut Engine<'_, '_>, fs: &mut Vec<Finding>) {
+    use crate::defsym::{Expr, OFFSET_ABS, REPLACED_SIZE, Value};
+    if e.defsym.is_empty() {
+        return;
+    }
+    let image = e.image;
+    let all: Vec<(String, Expr)> =
+        e.defsym.iter().map(|(s, x)| (s.to_string(), x.clone())).collect();
+    let (mut checked, mut unchecked) = (0u64, 0u64);
+    for (name, expr) in &all {
+        let Some(out) = image.global(name).or_else(|| image.unique(name)) else {
+            if !image.symbols.is_empty() {
+                fs.push(named(
+                    y(3, format!("symbol '{name}' of --defsym is not in the output's .symtab (resolve.md §7.2)")),
+                    name,
+                ));
+            }
+            continue;
+        };
+        let o = out.sym;
+        if o.st_shndx == SHN_UNDEF {
+            fs.push(named(
+                y(
+                    3,
+                    format!(
+                        "symbol '{name}' of --defsym is undefined in .symtab (resolve.md §7.2)"
+                    ),
+                )
+                .at(o.st_value),
+                name,
+            ));
+            continue;
+        }
+        let Some(value) = e.defsym_value(name) else { continue };
+        let v = match value {
+            Value::Addr(a) | Value::Ifunc(a) => a,
+            Value::Tls(a) => a,
+            Value::Unknown => {
+                unchecked += 1;
+                continue;
+            }
+        };
+        checked += 1;
+        // Y1: the value.
+        let found = if o.sym_type() == STT_TLS { address(e, &o) } else { Some(o.st_value) };
+        let ifunc_ok = matches!(value, Value::Ifunc(r) if e.format != Format::Mortar
+            && o.sym_type() == STT_FUNC && e.iplt.entries_of(r).contains(&o.st_value));
+        if found != Some(v) && !ifunc_ok {
+            let mut f = Finding::new(
+                Rule::SymbolValue,
+                format!("symbol '{name}' is not where --defsym puts it (resolve.md §7.2)"),
+            )
+            .at(o.st_value);
+            f.symbol = Some(name.clone());
+            f.expected = Some(v);
+            f.found = Some(o.st_value);
+            fs.push(f);
+        }
+        // Y3: section and type.
+        let b_type = |b: &str| {
+            image
+                .global(b)
+                .or_else(|| image.unique(b))
+                .filter(|s| s.sym.st_shndx != 0)
+                .map(|s| s.sym.sym_type())
+        };
+        let (want_abs, want_type) = match expr {
+            Expr::Number(_) => (true, Some(mortar_elf::consts::STT_NOTYPE)),
+            Expr::Alias(b) => (false, b_type(b)),
+            Expr::Offset(..) => (false, Some(mortar_elf::consts::STT_NOTYPE)),
+        };
+        let gnu_offset = matches!(expr, Expr::Offset(..))
+            && (o.st_shndx == SHN_ABS || o.sym_type() != mortar_elf::consts::STT_NOTYPE);
+        let tag = if gnu_offset { OFFSET_ABS } else { "" };
+        let section_ok = if want_abs {
+            o.st_shndx == SHN_ABS
+        } else {
+            match value {
+                Value::Tls(_) => o.st_shndx != SHN_ABS && o.st_shndx < SHN_LORESERVE,
+                _ => holds_value(image, o.st_shndx, o.st_value),
+            }
+        };
+        if !section_ok {
+            let mut f = y(
+                3,
+                if want_abs {
+                    format!(
+                        "symbol '{name}', a --defsym number, is not SHN_ABS (resolve.md §7.2){tag}"
+                    )
+                } else {
+                    format!(
+                        "symbol '{name}' of --defsym names a section that does not hold its value (resolve.md §7.2){tag}"
+                    )
+                },
+            );
+            f.found = Some(u64::from(o.st_shndx));
+            fs.push(named(f.at(o.st_value), name));
+        }
+        if let Some(t) = want_type
+            && o.sym_type() != t
+            && !(ifunc_ok && t == STT_GNU_IFUNC)
+        {
+            let tag = if tag.is_empty() && e.defsym.several(name) {
+                crate::defsym::EARLIER_TYPE
+            } else {
+                tag
+            };
+            let mut f = y(
+                3,
+                format!(
+                    "symbol '{name}' of --defsym has another type than resolve.md §7.2 gives it{tag}"
+                ),
+            );
+            f.expected = Some(u64::from(t));
+            f.found = Some(u64::from(o.sym_type()));
+            fs.push(named(f.at(o.st_value), name));
+        }
+        if o.st_size != 0 {
+            let replaced = e.defs.get(name.as_str()).is_some_and(|ds| {
+                ds.iter().any(|&(oi, di)| {
+                    e.objs[oi]
+                        .symtab
+                        .and_then(|t| t.get(SymbolIndex(di)).ok())
+                        .is_some_and(|d| d.st_size == o.st_size)
+                })
+            });
+            let tag = if replaced { REPLACED_SIZE } else { "" };
+            let mut f = y(
+                3,
+                format!("symbol '{name}' of --defsym has a size, not 0 (resolve.md §7.2){tag}"),
+            );
+            f.expected = Some(0);
+            f.found = Some(o.st_size);
+            fs.push(named(f.at(o.st_value), name));
+        }
+        let local = e.made_local.keys.contains(name.as_str());
+        let want = if local { STB_LOCAL } else { STB_GLOBAL };
+        if o.binding() != want {
+            let mut f = y(
+                3,
+                format!(
+                    "symbol '{name}' of --defsym has another binding than resolve.md §7.2 gives it"
+                ),
+            );
+            f.expected = Some(u64::from(want));
+            f.found = Some(u64::from(o.binding()));
+            fs.push(named(f.at(o.st_value), name));
+        }
+    }
+    e.cov.symbols_checked += checked;
+    e.cov.symbols_unchecked += unchecked;
+}
+
 /// Y2 to Y5 (§6.5).
 pub(crate) fn check(e: &mut Engine<'_, '_>) {
     let mut fs = Vec::new();
     tables(e.image, &mut fs);
     wrap_real(e, &mut fs);
+    defsym_syms(e, &mut fs);
     globals(e, &mut fs);
     locals(e, &mut fs);
     linker_defined(e, &mut fs);

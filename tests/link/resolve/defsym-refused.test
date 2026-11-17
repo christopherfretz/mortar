@@ -13,7 +13,7 @@
 #@ spec: resolve.md §7.2
 #@ arch: aarch64 x86_64
 #@ skip(mold): mold 2.37.1 crashes on --defsym=k=0x1000+4 (signal 11) and aborts (signal 6) writing the -Map the lane asks for when a --defsym names a symbol
-#@ skip(lld): the verifier cannot read lld's map of a --defsym ("row has no name": lld lists the assignment): the verifier package for --defsym
+# lld 19's map writes each --defsym as a row with no text: an assignment (plumb.md §4.4b).
 
 cc -O0 m.c -o m.o
 cc -O0 b.c -o b.o

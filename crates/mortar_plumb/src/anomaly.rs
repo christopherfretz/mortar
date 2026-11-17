@@ -84,6 +84,9 @@ pub fn classify(linker: Format, output: &[u8], f: &Finding) -> Option<&'static s
     if lld && let Some(a) = wrap_lld(f) {
         return Some(a);
     }
+    if bfd && let Some(a) = defsym_bfd(f) {
+        return Some(a);
+    }
     let sym = f.symbol.as_deref().unwrap_or("");
     let y = |n| f.rule == Rule::SymbolTable(n);
     if mold && y(3) && f.message.contains("binding") && f.found == Some(0) {
@@ -628,6 +631,34 @@ fn wrap_lld(f: &Finding) -> Option<&'static str> {
     if f.rule == Rule::SymbolTable(3) && m.ends_with(REAL_STRONG) {
         return Some(
             "A81: lld writes a weak SYM STB_GLOBAL in .symtab when a strong undefined __real_SYM binds to it under --wrap=SYM (resolve.md §7.1)",
+        );
+    }
+    None
+}
+
+/// GNU ld's forms of `--defsym` (§4.4b, WP-170 part 2), by the tags the
+/// rules add.
+fn defsym_bfd(f: &Finding) -> Option<&'static str> {
+    use crate::defsym::{NUMBER_MOVED, OFFSET_ABS, REPLACED_SIZE};
+    let m = f.message.as_str();
+    if f.rule == Rule::SymbolTable(3) && m.ends_with(OFFSET_ABS) {
+        return Some(
+            "A85: GNU ld writes --defsym SYM=B+N (or B-N) as SHN_ABS with B's type, not in B's section as STT_NOTYPE (resolve.md §7.2, §16)",
+        );
+    }
+    if f.rule == Rule::SymbolTable(3) && m.ends_with(REPLACED_SIZE) {
+        return Some(
+            "A86: GNU ld gives a --defsym alias the size of the input definition it replaces, not 0 (resolve.md §7.2, §16)",
+        );
+    }
+    if f.rule == Rule::SymbolTable(3) && m.ends_with(crate::defsym::EARLIER_TYPE) {
+        return Some(
+            "A88: GNU ld gives a SYM assigned by several --defsym the type of an earlier one, not the last one's (resolve.md §7.2)",
+        );
+    }
+    if matches!(f.rule, Rule::Field | Rule::Dyn(9)) && m.ends_with(NUMBER_MOVED) {
+        return Some(
+            "A87: GNU ld adds the load base to a --defsym number in a PIE or static-pie: the program reads the number plus the bias (resolve.md §7.2, §16)",
         );
     }
     None

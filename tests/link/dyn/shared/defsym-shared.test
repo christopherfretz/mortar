@@ -1,4 +1,3 @@
-# PENDING (WP-153): every reference's output draws a finding or an error because the verifier does not follow --defsym yet (GNU ld: P-D25, the alias's own preemptible name; lld: its map's assignment row; mold aborts writing the map); the verifier package for --defsym renames this file to .test.
 # --defsym in a shared object (resolve.md §7.2, WP-153): the alias
 # calla=b is a definition of its own, exported (FUNC at b's address,
 # size 0) and preemptible by its own name; k=0x10 is exported SHN_ABS.
@@ -11,6 +10,7 @@
 # faults: not linked).
 #@ spec: resolve.md §7.2
 #@ arch: aarch64 x86_64
+#@ skip(mold): mold 2.37.1 aborts (signal 6) writing the -Map the lane asks for when a --defsym names a symbol
 
 cc -O0 -fPIC -fno-inline ls.c -o ls.o
 cc -O0 -fPIC pre.c -o pre.o
