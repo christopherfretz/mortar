@@ -933,7 +933,9 @@ impl Inputs {
             } else if from == 0 {
                 let by = self.roots.iter().find(|r| r.key == k).map_or("a root", |r| r.by.as_str());
                 format!("{by} roots `{}` (resolve §4.2) and it is first(`{}`)", name(k), name(k))
-            } else if self.files[from as usize].kind == Kind::Shared {
+            } else if self.files[from as usize].mentions.iter().any(|m| m.0 == k && m.1 & ASN != 0)
+                && !self.files[from as usize].mentions.iter().any(|m| m.0 == k && m.1 & UNDEF != 0)
+            {
                 format!(
                     "{} refers to `{}` and it is the target (resolve §4.1; a source of D-12's last stage)",
                     self.label(from as usize),
