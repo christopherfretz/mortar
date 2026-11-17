@@ -504,7 +504,9 @@ pub fn fetch_archive(
         match link_place(&unpacked, name) {
             Some(place) => std::os::unix::fs::symlink(target, &place)
                 .map_err(|e| format!("{what}: cannot make the link {}: {e}", place.display()))?,
-            None => log(&format!("{what}: not unpacked (a link outside what was unpacked): {name}")),
+            None => {
+                log(&format!("{what}: not unpacked (a link outside what was unpacked): {name}"))
+            }
         }
     }
     std::fs::write(&done, b"").map_err(|e| format!("cannot write {}: {e}", done.display()))?;
@@ -1195,7 +1197,8 @@ crw-rw-rw- 0/0             1,3 2026-11-17 16:45 top/null
         std::os::unix::fs::symlink("sub", root.join("top/alias")).unwrap();
         std::fs::write(root.join("top/taken"), b"").unwrap();
         assert_eq!(link_place(&root, "top/sub/up"), Some(root.join("top/sub/up")));
-        for name in ["top/taken", "top/alias/x", "top/gone/x", "../x", "/x", "top//x", "top/./x", ""]
+        for name in
+            ["top/taken", "top/alias/x", "top/gone/x", "../x", "/x", "top//x", "top/./x", ""]
         {
             assert_eq!(link_place(&root, name), None, "{name}");
         }
