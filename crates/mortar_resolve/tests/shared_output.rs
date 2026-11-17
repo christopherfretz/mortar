@@ -3,6 +3,8 @@
 //! output with or without shared inputs, fills `exported` by D-110 and
 //! `preemptible` by D-112. Every link runs under `check_schedules`.
 
+#![allow(clippy::many_single_char_names, reason = "files and keys are short names here")]
+
 mod support;
 
 use mortar_core::par::check_schedules;
