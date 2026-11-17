@@ -88,7 +88,7 @@ pub(crate) fn parse(source: &[u8], path: &str) -> Result<Script, Box<Diagnostic>
 }
 
 /// A short description of a token for "expected X, found Y".
-fn describe(src: &[u8], token: &Token) -> String {
+pub(crate) fn describe(src: &[u8], token: &Token) -> String {
     let text = || {
         let bytes = token.span.of(src);
         let mut shown = String::from_utf8_lossy(&bytes[..bytes.len().min(40)]).into_owned();
