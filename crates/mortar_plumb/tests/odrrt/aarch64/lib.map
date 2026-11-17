@@ -1,0 +1,200 @@
+mortar-map 2
+file 0 lib.o
+file 1 <mortar:odr-runtime>
+piece 0 13 0 c78 14
+piece 0 13 14 c8c 14
+piece 0 13 28 ca0 14
+piece 0 13 3c cb4 14
+piece 0 13 50 cc8 18
+place 0 1 118c0 44
+place 0 9 277c0 8
+place 0 5 277d0 8
+place 0 7 277d8 8
+place 0 3 379c8 0
+place 0 4 379c8 4
+piece 1 3 0 518 d
+piece 1 3 d 525 a
+piece 1 3 17 52f f
+piece 1 3 26 53e a
+piece 1 3 30 548 4
+piece 1 3 34 54c 7
+piece 1 3 3b 553 6
+piece 1 3 41 559 7
+piece 1 3 48 560 10
+piece 1 3 58 570 16
+piece 1 3 6e 586 f
+piece 1 3 7d 595 b
+piece 1 3 88 5a0 16
+piece 1 3 9e 5b6 3d
+piece 1 3 db 5f3 5
+piece 1 3 e0 5f8 2
+piece 1 3 e2 5fa 49
+piece 1 3 12b 643 1e
+piece 1 3 149 661 7
+piece 1 3 150 668 11
+piece 1 3 161 679 d
+piece 1 3 16e 686 7
+piece 1 3 175 68d 9
+piece 1 3 17e 696 6
+piece 1 3 184 69c 7
+piece 1 3 18b 6a3 9
+piece 1 3 194 6ac d
+piece 1 3 1a1 6b9 b
+piece 1 3 1ac 6c4 9
+piece 1 3 1b5 6cd 7
+piece 1 3 1bc 6d4 a
+piece 1 3 1c6 6de 7
+piece 1 3 1cd 6e5 9
+piece 1 3 1d6 6ee 10
+piece 1 3 1e6 6fe 8
+piece 1 3 1ee 706 6
+piece 1 3 1f4 70c c
+piece 1 3 200 718 c
+piece 1 3 20c 724 2
+piece 1 3 20e 726 2b
+piece 1 3 239 751 3
+piece 1 3 23c 754 30
+piece 1 3 26c 784 3
+piece 1 3 26f 787 1d
+piece 1 3 28c 7a4 5a
+piece 1 3 2e6 7fe 17
+piece 1 3 2fd 815 2b
+piece 1 3 328 840 43
+piece 1 3 36b 883 37
+piece 1 3 3a2 8ba 3c
+piece 1 3 3de 8f6 2a
+piece 1 3 408 920 1e
+piece 1 3 426 93e 55
+piece 1 3 47b 993 3e
+piece 1 3 4b9 9d1 35
+piece 1 3 4ee a06 25
+piece 1 3 513 a2b 19
+piece 1 3 52c a44 29
+piece 1 3 555 a6d 26
+piece 1 3 57b a93 28
+piece 1 3 5a3 abb 24
+piece 1 3 5c7 adf 1a
+piece 1 3 5e1 af9 24
+piece 1 3 605 b1d 8
+piece 1 3 60d b25 9
+piece 1 3 616 b2e 11
+piece 1 3 627 b3f 20
+piece 1 3 647 b5f 58
+piece 1 3 69f bb7 c
+piece 1 3 6ab bc3 26
+piece 1 3 6d1 be9 4c
+piece 1 3 71d c35 3f
+piece 1 5 0 ce0 14
+piece 1 5 14 cf4 34
+piece 1 5 48 d28 28
+piece 1 5 70 d50 28
+piece 1 5 98 d78 28
+piece 1 5 c0 da0 28
+piece 1 5 e8 dc8 28
+piece 1 5 110 df0 2c
+piece 1 5 13c e1c 28
+piece 1 5 164 e44 38
+piece 1 5 19c e7c 28
+piece 1 5 1c4 ea4 28
+piece 1 5 1ec ecc 2c
+piece 1 5 218 ef8 2c
+piece 1 5 244 f24 2c
+piece 1 5 270 f50 28
+piece 1 5 298 f78 2c
+piece 1 5 2c4 fa4 28
+piece 1 5 2ec fcc 28
+piece 1 5 314 ff4 28
+piece 1 5 33c 101c 28
+piece 1 5 364 1044 28
+piece 1 5 38c 106c 28
+piece 1 5 3b4 1094 28
+piece 1 5 3dc 10bc 28
+piece 1 5 404 10e4 28
+piece 1 5 42c 110c 2c
+piece 1 5 458 1138 2c
+piece 1 5 484 1164 28
+piece 1 5 4ac 118c 28
+piece 1 5 4d4 11b4 28
+piece 1 5 4fc 11dc 28
+piece 1 5 524 1204 28
+piece 1 5 54c 122c 2c
+piece 1 5 578 1258 28
+piece 1 5 5a0 1280 2c
+piece 1 5 5cc 12ac 2c
+piece 1 5 5f8 12d8 28
+piece 1 5 620 1300 28
+piece 1 5 648 1328 28
+piece 1 5 670 1350 28
+piece 1 5 698 1378 28
+piece 1 5 6c0 13a0 28
+piece 1 5 6e8 13c8 28
+piece 1 5 710 13f0 2c
+piece 1 5 73c 141c 28
+piece 1 5 764 1444 28
+piece 1 5 78c 146c 28
+piece 1 5 7b4 1494 28
+piece 1 5 7dc 14bc 28
+piece 1 5 804 14e4 28
+piece 1 5 82c 150c 28
+piece 1 5 854 1534 2c
+piece 1 5 880 1560 2c
+piece 1 5 8ac 158c 28
+piece 1 5 8d4 15b4 28
+piece 1 5 8fc 15dc 28
+piece 1 5 924 1604 2c
+piece 1 5 950 1630 28
+piece 1 5 978 1658 28
+piece 1 5 9a0 1680 28
+piece 1 5 9c8 16a8 28
+piece 1 5 9f0 16d0 28
+piece 1 5 a18 16f8 28
+piece 1 5 a40 1720 28
+piece 1 5 a68 1748 28
+piece 1 5 a90 1770 28
+piece 1 5 ab8 1798 28
+piece 1 5 ae0 17c0 28
+piece 1 5 b08 17e8 30
+place 1 1 11904 5ebc
+place 1 2 277c8 8
+place 1 4 379d0 8
+merged 0 11 .comment
+chunk synthetic .gnu.hash 250 24
+chunk synthetic .dynsym 278 108
+chunk synthetic .dynstr 380 5f
+chunk synthetic .rela.dyn 3e0 78
+chunk synthetic .rela.plt 458 c0
+chunk synthetic .eh_frame c78 ba4
+chunk synthetic .plt 11820 a0
+chunk synthetic .got 27960 10
+chunk synthetic .got.plt 27970 58
+chunk synthetic .dynamic 277e0 180
+chunk synthetic .symtab - 828
+chunk synthetic .strtab - 717
+chunk synthetic .shstrtab - ae
+chunk synthetic .comment - d
+chunk synthetic .note.mason 200 50
+chunk synthetic .pad.relro 279c8 8638
+define __ehdr_start 0
+output shared
+bind now
+relro on
+symbolic none
+arg -shared
+arg -o
+arg lib.so
+arg lib.o
+arg libc.so.6
+arg --odr-runtime=fatal
+arg --mortar-map=lib.map
+needed libc.so.6
+export seen
+export user_fn
+plt clock_gettime
+plt getenv
+plt mmap
+plt getauxval
+plt abort
+plt write
+plt dl_iterate_phdr
+plt munmap
+end

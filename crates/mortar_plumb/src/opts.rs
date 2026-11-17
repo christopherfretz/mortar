@@ -736,6 +736,16 @@ pub enum OdrTable {
     Full,
 }
 
+/// `--odr-runtime`'s value (§13.1, WP-197; default `off`). `Other`: a
+/// value mortar refuses (`spec/cli.md` C-ODR-RT), so no output of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OdrRuntime {
+    Off,
+    Report,
+    Fatal,
+    Other,
+}
+
 /// The build id the line asks for (`spec/image.md` I-69; the last of
 /// `--build-id[=STYLE]` and `--no-build-id` wins).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -802,6 +812,15 @@ pub struct Options {
     /// Words that no accepted option spells, in order, with their index
     /// in the line (M9).
     pub unread: Vec<(usize, String)>,
+    /// The last `--odr-runtime=MODE` (§13.1, WP-197; default `off`).
+    pub odr_runtime: OdrRuntime,
+    /// Whether the line spells `--odr-table` at all (§13.1: the runtime's
+    /// implied table stands only when the line names none; an explicit
+    /// last `=off` beside the runtime is a line mortar refuses).
+    pub odr_table_given: bool,
+    /// The last of `-z now` (true) and `-z lazy` (false), when the line
+    /// has either (§13.1: the runtime's `-z now` unless `-z lazy`).
+    pub z_now: Option<bool>,
 }
 
 impl Default for Options {
@@ -823,6 +842,9 @@ impl Default for Options {
             export_dynamic: false,
             named_roots: Vec::new(),
             max_page: None,
+            odr_runtime: OdrRuntime::Off,
+            odr_table_given: false,
+            z_now: None,
             wrap: Vec::new(),
             defsym: Vec::new(),
             unread: Vec::new(),
@@ -873,6 +895,8 @@ impl Options {
         match kw {
             "execstack" => self.execstack = Some(true),
             "noexecstack" => self.execstack = Some(false),
+            "now" => self.z_now = Some(true),
+            "lazy" => self.z_now = Some(false),
             "max-page-size" => self.max_page = value.and_then(number),
             _ => {}
         }
@@ -903,6 +927,7 @@ impl Options {
             "--wrap" => self.wrap.extend(value.map(str::to_string)),
             "--defsym" => self.defsym.extend(value.map(str::to_string)),
             "--odr-table" => {
+                self.odr_table_given = true;
                 self.odr_table = match value {
                     Some("exported") => OdrTable::Exported,
                     Some("full") => OdrTable::Full,
@@ -910,6 +935,16 @@ impl Options {
                 };
             }
             "--odr" => self.odr_off = value == Some("off"),
+            "--odr-runtime" => {
+                self.odr_runtime = match value {
+                    Some("report") => OdrRuntime::Report,
+                    Some("fatal") => OdrRuntime::Fatal,
+                    Some("off") => OdrRuntime::Off,
+                    // mortar refuses any other value: the line is not one
+                    // it linked (§13.1).
+                    _ => OdrRuntime::Other,
+                };
+            }
             "--no-odr-check" => self.odr_off = true,
             "--build-id" => {
                 self.build_id = match value {
