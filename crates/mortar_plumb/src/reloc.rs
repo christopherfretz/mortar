@@ -24,7 +24,7 @@ pub(crate) mod debug;
 #[path = "dsoword.rs"]
 pub(crate) mod dsoword;
 #[path = "eh.rs"]
-mod eh;
+pub(crate) mod eh;
 #[path = "ifunc.rs"]
 mod ifunc;
 #[path = "x64rec.rs"]

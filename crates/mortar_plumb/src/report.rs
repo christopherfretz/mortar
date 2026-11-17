@@ -67,6 +67,8 @@ pub enum Rule {
     Meta(u8),
     /// P-G1 .. P-G9: `.gdb_index` (§6.10; `spec/synth.md` §17).
     GdbIndex(u8),
+    /// P-P2 .. P-P11: stage R, a relocatable (`-r`) output (§14).
+    Rel(u8),
 }
 
 impl Rule {
@@ -100,6 +102,7 @@ impl Rule {
             Rule::Equiv(n) => format!("P-E{n}"),
             Rule::Meta(n) => format!("P-M{n}"),
             Rule::GdbIndex(n) => format!("P-G{n}"),
+            Rule::Rel(n) => format!("P-P{n}"),
         }
     }
 }
@@ -144,10 +147,12 @@ pub enum Rewrite {
     GotToImm,
     /// X4 (x86-64): a GOT load made `mov $S` (GNU ld).
     GotToMovImm,
+    /// Stage R: one of P-P3's per-linker forms, from its linker (§14.5).
+    PerLinker,
 }
 
 impl Rewrite {
-    pub const ALL: [Rewrite; 18] = [
+    pub const ALL: [Rewrite; 19] = [
         Rewrite::AdrpAddToAdr,
         Rewrite::GotToAdrpAdd,
         Rewrite::GotToAdr,
@@ -166,6 +171,7 @@ impl Rewrite {
         Rewrite::GotToDirect,
         Rewrite::GotToImm,
         Rewrite::GotToMovImm,
+        Rewrite::PerLinker,
     ];
 
     pub const fn id(self) -> &'static str {
@@ -188,6 +194,7 @@ impl Rewrite {
             Rewrite::GotToDirect => "got-to-direct",
             Rewrite::GotToImm => "got-to-imm",
             Rewrite::GotToMovImm => "got-to-mov-imm",
+            Rewrite::PerLinker => "per-linker",
         }
     }
 }
@@ -240,6 +247,9 @@ pub enum Reason {
     /// `spec/resolve.md` §7.2 refuses, in a reference's output (§4.4b,
     /// WP-170 part 2).
     Defsym,
+    /// Stage R: the clause needs an option of the line and there is no
+    /// line (§14.1, §14.6).
+    OptionsUnknown,
 }
 
 impl Reason {
@@ -262,6 +272,7 @@ impl Reason {
             Reason::Dynamic => "dynamic",
             Reason::Wrap => "wrap-shape",
             Reason::Defsym => "defsym-shape",
+            Reason::OptionsUnknown => "options-unknown",
         }
     }
 
@@ -291,6 +302,10 @@ pub enum Via {
     /// Stage 3: a branch to a PLT entry whose `.got.plt` word holds S
     /// after the loader's work (§12, P-D9).
     Plt,
+    /// Stage R: matched by place and target (P-P3, §14.6).
+    Place,
+    /// Stage R: matched by content into a merged section (§14.4).
+    String,
 }
 
 impl Via {
@@ -303,6 +318,8 @@ impl Via {
             Via::Iplt => "iplt",
             Via::Tombstone => "tombstone",
             Via::Plt => "plt",
+            Via::Place => "place",
+            Via::String => "string",
         }
     }
 }
@@ -489,6 +506,26 @@ pub struct Coverage {
     pub meta: MetaCoverage,
     /// What the input set made of the link (§3.8): its coverage line.
     pub input_set: Option<String>,
+    /// Stage R (§14.6), when the output is relocatable.
+    pub relocatable: Option<RelCoverage>,
+}
+
+/// What stage R judged (§14.6).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RelCoverage {
+    /// Input sections placed whole, merged (a foreign map's), framed.
+    pub pieces: u64,
+    pub merged: u64,
+    pub framed: u64,
+    /// Output `SHT_GROUP` sections judged.
+    pub groups: u64,
+    /// Input FDEs live and removed.
+    pub fdes_live: u64,
+    pub fdes_removed: u64,
+    /// Output symbols judged.
+    pub symbols: u64,
+    /// Output section headers judged.
+    pub sections: u64,
 }
 
 /// What stage 4 judged (§13.2).
@@ -720,6 +757,20 @@ impl Report {
                 s,
                 "stripped output (no .symtab), not judged: {}",
                 c.stripped_not_judged.join("; ")
+            );
+        }
+        if let Some(r) = &c.relocatable {
+            let _ = writeln!(
+                s,
+                "relocatable: pieces {}, merged {}, framed {}; groups {}; FDEs {} live, {} removed; symbols {}; sections {}",
+                r.pieces,
+                r.merged,
+                r.framed,
+                r.groups,
+                r.fdes_live,
+                r.fdes_removed,
+                r.symbols,
+                r.sections
             );
         }
         if let Some(i) = &c.input_set {

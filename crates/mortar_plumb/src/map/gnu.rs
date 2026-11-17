@@ -2,7 +2,7 @@
 
 use super::{
     Chunk, ChunkKind, DiscardReason, Discarded, FileInterner, Format, Included, IncludedBy, Map,
-    MapError, Placed, SectionRef, hex, split_member,
+    MapError, OutBlock, Placed, SectionRef, hex, split_member,
 };
 
 /// The heading of the preamble's member list (§3.4).
@@ -40,6 +40,7 @@ pub fn parse(text: &str) -> Result<Map, MapError> {
     let mut output_section = String::new();
     // A wrapped input-section line: the name and its line number.
     let mut pending: Option<(String, u32)> = None;
+    let mut block_wrap = false;
     // In the member list of the preamble, and a member whose reason is on
     // the next line.
     let mut in_members = false;
@@ -103,6 +104,19 @@ pub fn parse(text: &str) -> Result<Map, MapError> {
                 }
             }
         }
+        // A block name alone on its line: its address and size, when it
+        // has them, are on the next (§14.2).
+        if std::mem::take(&mut block_wrap) && line.starts_with(' ') {
+            let tokens: Vec<&str> = line.split_whitespace().collect();
+            if tokens.len() == 2
+                && let (Some(a), Some(z)) = (hex(tokens[0]), hex(tokens[1]))
+                && let Some(b) = map.blocks.last_mut()
+            {
+                b.addr = Some(a);
+                b.size = Some(z);
+                continue;
+            }
+        }
         if let Some((name, at)) = pending.take() {
             let tokens: Vec<&str> = line.split_whitespace().collect();
             if !line.starts_with(' ') || tokens.len() < 2 {
@@ -145,6 +159,24 @@ pub fn parse(text: &str) -> Result<Map, MapError> {
                 ) && !first.starts_with("OUTPUT(")
                 {
                     output_section = first.to_string();
+                    let t: Vec<&str> = line.split_whitespace().collect();
+                    let (addr, size) = match t.as_slice() {
+                        [_, a, z, ..] => (hex(a), hex(z)),
+                        _ => (None, None),
+                    };
+                    block_wrap = t.len() == 1;
+                    map.blocks.push(OutBlock {
+                        name: first.to_string(),
+                        addr,
+                        size: addr.and(size),
+                        line: n,
+                        first_placed: map.placed.len(),
+                        first_chunk: map.chunks.len(),
+                    });
+                } else if first == "LOAD"
+                    && let Some(path) = line.strip_prefix("LOAD ")
+                {
+                    map.loads.push(path.trim().to_string());
                 }
             }
             continue;

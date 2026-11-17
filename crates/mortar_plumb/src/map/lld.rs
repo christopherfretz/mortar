@@ -176,6 +176,8 @@ pub fn parse(text: &str) -> Result<Map, MapError> {
         dec(r.numbers[3]).ok_or_else(|| MapError::new(n, "bad alignment"))?;
         if r.column == columns.input {
             add_input(&mut map, &mut files, r.text, addr, size, n);
+        } else if r.column == columns.out {
+            super::push_block(&mut map, r.text, addr, size, n);
         } else if r.column != columns.out && r.column != columns.symbol {
             return Err(MapError::new(
                 n,
