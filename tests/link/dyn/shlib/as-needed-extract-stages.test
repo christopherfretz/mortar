@@ -23,11 +23,11 @@
 #   nothing extracts (GNU ld, mold, mortar); lld extracts gu2.o and keeps
 #   libu.so (its edges do not wait for neededness).
 #
-# The verifier's input-set rule (M11/M12) does not have D-12's stages yet:
-# it finds mortar's later-stage members unreached. The bytes and the runs
-# were checked (every expectation passes with the verifier off); the
-# verifier package after WP-167 lifts the mark.
-#@ xfail(mortar): M12: libgy.a(gy.o) (and each member a later stage extracts) is in the link and no root or live reference reaches it (resolve §4.1), until the verifier package
+# The verifier replays the stages (WP-171): each member a later stage
+# extracts is required and reached. lld's `self` (3c) extracts gu2.o for
+# the unneeded libu.so, which gu2.o then needs: M12, P-D6 and P-D7 "...
+# (only an object no stage of D-12 extracts makes it needed)", A70.
+#@ anomaly(lld): A70
 #@ spec: dyn.md "D-12"
 #@ spec: dyn.md "D-11"
 #@ spec: resolve.md "4.4"

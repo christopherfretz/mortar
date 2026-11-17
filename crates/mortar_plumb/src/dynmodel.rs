@@ -266,6 +266,32 @@ pub struct Key {
     pub linker: bool,
 }
 
+/// D-12's stages over the line's inputs (`crate::inset`'s closure of
+/// resolve §4.1): what is live at a stage, given its sources.
+pub(crate) trait Staging {
+    /// The live mask over the output's objects (`objs` of
+    /// [`Model::build`]) at a stage whose sources are the members of C
+    /// with these sonames. An object the inputs do not name is live.
+    fn stage(&mut self, objs: &[Obj<'_>], sources: &BTreeSet<String>) -> Vec<bool>;
+    /// Whether `first(k)` of resolve §4.1 for a shared object's reference
+    /// (`name`, at `ver`) is a lazy file not live at the last stage
+    /// (D-12's item-3 rule, cell 7a2).
+    fn lazy_first(&self, name: &str, ver: Option<&str>) -> bool;
+}
+
+/// D-11 over one stage's view of the program's keys.
+#[derive(Default)]
+struct Stage {
+    n0: BTreeSet<usize>,
+    n: BTreeSet<usize>,
+    /// Item-2 givers: the positions of the strong references they give.
+    obj_reasons: HashMap<usize, Vec<(usize, Option<usize>)>>,
+    /// Item-3 pairs: provider, the needers.
+    dso_reasons: HashMap<usize, Vec<usize>>,
+    /// The keys each item-2 giver gives (GNU ld's own neededness).
+    given: HashMap<usize, Vec<String>>,
+}
+
 /// The model.
 #[derive(Debug, Default)]
 pub struct Model {
@@ -292,6 +318,19 @@ pub struct Model {
     /// The objects D-11 item 3 alone makes needed (an under-linked
     /// library's providers).
     pub item3: BTreeSet<usize>,
+    /// Objects of N that D-12 keeps needed (row 2a): every key they gave
+    /// at the stage that made them needed is defined by the output's own
+    /// objects, a later stage's member (GNU ld and mold keep them, lld
+    /// drops them, anomaly A71).
+    pub kept: BTreeSet<usize>,
+    /// Objects D-11 over every object of the output makes needed and D-12's
+    /// stages do not: only an object no stage extracts needs them.
+    pub unreached_needed: BTreeSet<usize>,
+    /// The sources of D-12's last stage: the as-needed members of N the
+    /// output's `DT_NEEDED` names, whose strong references are edges.
+    pub sources: BTreeSet<usize>,
+    /// The number of D-12 stages replayed (1 without a staging view).
+    pub stages: usize,
     /// Names of a needed or used object's references: `ref_dynamic`.
     pub ref_dynamic: HashSet<String>,
     pub def_dynamic: HashSet<String>,
@@ -358,9 +397,17 @@ impl Model {
     }
 
     /// Builds the model from the line, the live relocatable objects and the
-    /// output's `.symtab` definitions (file 0's).
+    /// output's `.symtab` definitions (file 0's). `staging`: D-12's stages
+    /// over the line's inputs, and the output's `DT_NEEDED` names; without
+    /// it N is D-11 over the output's objects (one stage).
     #[allow(clippy::too_many_lines)] // D-11, D-12, D-19a in order
-    pub fn build(line: &Line, objs: &[Obj<'_>], file0: &[String], files: &dyn Files) -> Model {
+    pub(crate) fn build(
+        line: &Line,
+        objs: &[Obj<'_>],
+        file0: &[String],
+        files: &dyn Files,
+        staging: Option<(&mut dyn Staging, &[String])>,
+    ) -> Model {
         let mut m = Model { shared: line.kind == Some(OutputKind::Shared), ..Model::default() };
         // C: one object per soname, in mention order. A file without a
         // soname is named as the line names it, so two spellings are two
@@ -439,66 +486,7 @@ impl Model {
             }
         }
         // The program's keys.
-        // Keys defined in an excluded archive member, and elsewhere
-        // (D-110 item 1, WP-161).
-        let mut in_excluded: HashSet<String> = HashSet::new();
-        let mut in_kept: HashSet<String> = HashSet::new();
-        for o in objs {
-            let Some(t) = o.symtab else { continue };
-            let excluded = o.member.is_some() && line.exclude_libs.excludes(&o.path);
-            let pos = line.position_of(&o.path);
-            let group = pos.and_then(|p| match &line.items[p] {
-                Item::Relocatable { group, .. } => *group,
-                Item::Shared { .. } => None,
-            });
-            for (i, s) in t.iter() {
-                if i.0 == 0 || !matches!(s.binding(), STB_GLOBAL | STB_WEAK | STB_GNU_UNIQUE) {
-                    continue;
-                }
-                let Ok(raw) = t.name(&s) else { continue };
-                let full = String::from_utf8_lossy(raw).into_owned();
-                let (name, ver) = split_version(&full);
-                let k = m.keys.entry(name.to_string()).or_default();
-                if matches!(s.st_other & 3, STV_HIDDEN | STV_INTERNAL) {
-                    k.hidden = true;
-                }
-                let defined = s.st_shndx != SHN_UNDEF;
-                if defined {
-                    // A versioned definition `foo@@V` defines `foo`.
-                    let _ = (SHN_ABS, SHN_COMMON);
-                    k.defined = true;
-                    if excluded {
-                        in_excluded.insert(name.to_string());
-                    } else {
-                        in_kept.insert(name.to_string());
-                    }
-                } else {
-                    if let Some(v) = ver {
-                        k.version = Some(v.to_string());
-                    }
-                    if s.binding() == STB_WEAK {
-                        k.weak_ref = true;
-                    } else {
-                        k.strong_ref = true;
-                        k.ref_pos.push((pos.unwrap_or(0), group));
-                    }
-                }
-            }
-        }
-        for n in &in_excluded {
-            if !in_kept.contains(n)
-                && let Some(k) = m.keys.get_mut(n)
-            {
-                k.excluded = true;
-            }
-        }
-        // file 0's definitions (before the dynamic list: D-21 item 2's
-        // seven names may be listed).
-        for n in file0 {
-            let k = m.keys.entry(n.clone()).or_default();
-            k.linker = !k.defined;
-            k.defined = true;
-        }
+        m.keys = Self::keys_of(line, objs.iter(), file0);
         // An executable's dynamic list (D-1: none in a static-pie; a
         // `Shared` line's list decides preemption, §12.5).
         if matches!(line.kind, Some(OutputKind::Exec | OutputKind::Pie))
@@ -509,51 +497,75 @@ impl Model {
         for u in line.root_names() {
             m.keys.entry(u.to_string()).or_default().root = true;
         }
-        // D-11: N0, then item 3 to the fixed point.
-        let mut n0: BTreeSet<usize> =
-            m.c.iter().copied().filter(|&i| !m.dsos[i].as_needed).collect();
-        let strong: Vec<String> = m
-            .keys
-            .iter()
-            .filter(|(_, k)| k.strong_ref && !k.defined)
-            .map(|(n, _)| n.clone())
-            .collect();
-        for k in &strong {
-            if let Some(g) = m.giver(k) {
-                n0.insert(g);
-            }
-        }
-        let reach_n0 = m.reach(n0.iter().copied());
-        let mut n = n0.clone();
+        // D-11 at each stage of D-12 (WP-171): N only grows; a stage's
+        // sources are the as-needed members of N the output's DT_NEEDED
+        // names (the output is what is judged, and the need must be the
+        // replay's own, so an unjustified entry licenses nothing).
+        let mut acc = Stage::default();
+        let mut sources: BTreeSet<usize> = BTreeSet::new();
+        let mut staging = staging;
         loop {
-            let mut add = BTreeSet::new();
-            for &x in &n {
-                let rx = m.reach([x]);
-                for r in &m.dsos[x].refs {
-                    if r.weak {
-                        continue;
-                    }
-                    if m.keys.get(&r.name).is_some_and(|k| k.defined) {
-                        continue;
-                    }
-                    let s =
-                        m.c.iter()
-                            .copied()
-                            .find(|&i| m.dsos[i].def(&r.name, r.version.as_deref()).is_some());
-                    if let Some(s) = s
-                        && !reach_n0.contains(&s)
-                        && !rx.contains(&s)
-                        && !n.contains(&s)
-                    {
-                        add.insert(s);
-                    }
+            m.stages += 1;
+            let st = match staging.as_mut() {
+                Some((s, _)) => {
+                    let names: BTreeSet<String> =
+                        sources.iter().map(|&i| m.dsos[i].soname.clone()).collect();
+                    let live = s.stage(objs, &names);
+                    let view = Self::keys_of(
+                        line,
+                        objs.iter().zip(&live).filter(|(_, l)| **l).map(|(o, _)| o),
+                        file0,
+                    );
+                    let s: &dyn Staging = &**s;
+                    m.d11(&view, &|n, v| s.lazy_first(n, v), &acc)
                 }
+                None => m.d11(&m.keys, &|_, _| false, &acc),
+            };
+            acc.n0.extend(st.n0.iter().copied());
+            acc.n.extend(st.n.iter().copied());
+            for (g, v) in st.obj_reasons {
+                acc.obj_reasons.entry(g).or_default().extend(v);
             }
-            if add.is_empty() {
+            for (s, v) in st.dso_reasons {
+                acc.dso_reasons.entry(s).or_default().extend(v);
+            }
+            for (g, v) in st.given {
+                acc.given.entry(g).or_insert(v);
+            }
+            let Some((_, needed)) = staging.as_ref() else { break };
+            let next: BTreeSet<usize> = acc
+                .n
+                .iter()
+                .copied()
+                .filter(|&i| m.dsos[i].as_needed && needed.iter().any(|x| *x == m.dsos[i].soname))
+                .collect();
+            if next == sources || m.stages > m.c.len() + 1 {
                 break;
             }
-            n.extend(add);
+            sources = next;
         }
+        m.sources = sources;
+        if staging.is_some() {
+            let all = m.d11(&m.keys, &|_, _| false, &Stage::default());
+            m.unreached_needed = all.n.difference(&acc.n).copied().collect();
+        }
+        let n0 = acc.n0;
+        let n = acc.n;
+        // Kept (row 2a): an as-needed object item 2 made needed at some
+        // stage, no item-3 pair, and every key it gave is defined by the
+        // output's own objects (a later stage's member, or lld's output
+        // that dropped it).
+        m.kept = n
+            .iter()
+            .copied()
+            .filter(|i| {
+                m.dsos[*i].as_needed
+                    && !acc.dso_reasons.contains_key(i)
+                    && acc.given.get(i).is_some_and(|g| {
+                        !g.is_empty() && g.iter().all(|k| m.keys.get(k).is_some_and(|x| x.defined))
+                    })
+            })
+            .collect();
         // D-21 item 1 (WP-163): a root the program does not define is
         // imported iff a library of the final needed set defines it (any
         // version or the default one: what a reference without a version
@@ -579,36 +591,11 @@ impl Model {
         m.item3 = n.difference(&n0).copied().collect();
         m.used = m.reach(n.iter().copied()).difference(&n).copied().collect();
         m.needed = n;
-        // D-19a: each needed object at its keeping mention.
+        // D-19a: each needed object at its keeping mention, by the reasons
+        // of every stage (a kept object's stage-1 reason stays).
         let mut keep: HashMap<usize, usize> = HashMap::new();
-        // Reasons by object: strong reference positions; item-3 needers.
-        let mut obj_reasons: HashMap<usize, Vec<(usize, Option<usize>)>> = HashMap::new();
-        for k in &strong {
-            if let Some(g) = m.giver(k) {
-                obj_reasons.entry(g).or_default().extend(m.keys[k].ref_pos.iter().copied());
-            }
-        }
-        // D-19a counts a shared object's reference only as D-11 item 3
-        // does: a provider outside reach(N0) and reach({x}).
-        let mut dso_reasons: HashMap<usize, Vec<usize>> = HashMap::new();
-        for &x in &m.needed {
-            let rx = m.reach([x]);
-            for r in &m.dsos[x].refs {
-                if r.weak || m.keys.get(&r.name).is_some_and(|k| k.defined) {
-                    continue;
-                }
-                if let Some(s) =
-                    m.c.iter()
-                        .copied()
-                        .find(|&i| m.dsos[i].def(&r.name, r.version.as_deref()).is_some())
-                    && s != x
-                    && !reach_n0.contains(&s)
-                    && !rx.contains(&s)
-                {
-                    dso_reasons.entry(s).or_default().push(x);
-                }
-            }
-        }
+        let obj_reasons = acc.obj_reasons;
+        let dso_reasons = acc.dso_reasons;
         loop {
             let mut changed = false;
             for &(d, asn, pos, group) in &m.mentions {
@@ -654,7 +641,7 @@ impl Model {
                 let ver = m.keys.get(k).and_then(|x| x.version.as_deref());
                 before.iter().any(|&d| m.dsos[d].def(k, ver).is_some())
             };
-            if strong.iter().filter(|k| m.giver(k) == Some(s)).all(bound_before) {
+            if acc.given.get(&s).is_none_or(|g| g.iter().all(bound_before)) {
                 gnu_unbound.insert(s);
             }
         }
@@ -683,6 +670,158 @@ impl Model {
             }
         }
         m
+    }
+
+    /// The program's keys from `objs` and file 0's definitions.
+    fn keys_of<'o, 'a: 'o>(
+        line: &Line,
+        objs: impl Iterator<Item = &'o Obj<'a>>,
+        file0: &[String],
+    ) -> BTreeMap<String, Key> {
+        let mut keys: BTreeMap<String, Key> = BTreeMap::new();
+        // Keys defined in an excluded archive member, and elsewhere
+        // (D-110 item 1, WP-161).
+        let mut in_excluded: HashSet<String> = HashSet::new();
+        let mut in_kept: HashSet<String> = HashSet::new();
+        for o in objs {
+            let Some(t) = o.symtab else { continue };
+            let excluded = o.member.is_some() && line.exclude_libs.excludes(&o.path);
+            let pos = line.position_of(&o.path);
+            let group = pos.and_then(|p| match &line.items[p] {
+                Item::Relocatable { group, .. } => *group,
+                Item::Shared { .. } => None,
+            });
+            for (i, s) in t.iter() {
+                if i.0 == 0 || !matches!(s.binding(), STB_GLOBAL | STB_WEAK | STB_GNU_UNIQUE) {
+                    continue;
+                }
+                let Ok(raw) = t.name(&s) else { continue };
+                let full = String::from_utf8_lossy(raw).into_owned();
+                let (name, ver) = split_version(&full);
+                let k = keys.entry(name.to_string()).or_default();
+                if matches!(s.st_other & 3, STV_HIDDEN | STV_INTERNAL) {
+                    k.hidden = true;
+                }
+                let defined = s.st_shndx != SHN_UNDEF;
+                if defined {
+                    // A versioned definition `foo@@V` defines `foo`.
+                    let _ = (SHN_ABS, SHN_COMMON);
+                    k.defined = true;
+                    if excluded {
+                        in_excluded.insert(name.to_string());
+                    } else {
+                        in_kept.insert(name.to_string());
+                    }
+                } else {
+                    if let Some(v) = ver {
+                        k.version = Some(v.to_string());
+                    }
+                    if s.binding() == STB_WEAK {
+                        k.weak_ref = true;
+                    } else {
+                        k.strong_ref = true;
+                        k.ref_pos.push((pos.unwrap_or(0), group));
+                    }
+                }
+            }
+        }
+        for n in &in_excluded {
+            if !in_kept.contains(n)
+                && let Some(k) = keys.get_mut(n)
+            {
+                k.excluded = true;
+            }
+        }
+        // file 0's definitions (before the dynamic list: D-21 item 2's
+        // seven names may be listed).
+        for n in file0 {
+            let k = keys.entry(n.clone()).or_default();
+            k.linker = !k.defined;
+            k.defined = true;
+        }
+        keys
+    }
+
+    /// `giver(k)` over a stage's `keys`.
+    fn giver_in(&self, keys: &BTreeMap<String, Key>, k: &str) -> Option<usize> {
+        let key = keys.get(k);
+        if key.is_some_and(|x| x.defined) {
+            return None;
+        }
+        let ver = key.and_then(|x| x.version.as_deref());
+        self.c.iter().copied().find(|&i| self.dsos[i].def(k, ver).is_some())
+    }
+
+    /// D-11 over a stage's `keys`, with every object of `earlier` (the
+    /// earlier stages) kept in N. `lazy_first`: D-12's item-3 rule (a
+    /// reference whose edge targets a lazy file that is not live gives no
+    /// reason: the next stage extracts that file).
+    fn d11(
+        &self,
+        keys: &BTreeMap<String, Key>,
+        lazy_first: &dyn Fn(&str, Option<&str>) -> bool,
+        earlier: &Stage,
+    ) -> Stage {
+        let mut st = Stage::default();
+        let strong: Vec<&String> =
+            keys.iter().filter(|(_, k)| k.strong_ref && !k.defined).map(|(n, _)| n).collect();
+        let mut n0: BTreeSet<usize> =
+            self.c.iter().copied().filter(|&i| !self.dsos[i].as_needed).collect();
+        for k in &strong {
+            if let Some(g) = self.giver_in(keys, k) {
+                n0.insert(g);
+                st.obj_reasons.entry(g).or_default().extend(keys[*k].ref_pos.iter().copied());
+                st.given.entry(g).or_default().push((*k).clone());
+            }
+        }
+        let reach_n0 = self.reach(n0.iter().chain(&earlier.n0).copied());
+        // The provider of `x`'s reference `r` that item 3 counts.
+        let provider = |x: usize, r: &SoRef, rx: &BTreeSet<usize>| {
+            if r.weak || keys.get(&r.name).is_some_and(|k| k.defined) {
+                return None;
+            }
+            let s = self
+                .c
+                .iter()
+                .copied()
+                .find(|&i| self.dsos[i].def(&r.name, r.version.as_deref()).is_some())?;
+            (s != x
+                && !reach_n0.contains(&s)
+                && !rx.contains(&s)
+                && !lazy_first(&r.name, r.version.as_deref()))
+            .then_some(s)
+        };
+        let mut n: BTreeSet<usize> = n0.iter().chain(&earlier.n).copied().collect();
+        loop {
+            let mut add = BTreeSet::new();
+            for &x in &n {
+                let rx = self.reach([x]);
+                for r in &self.dsos[x].refs {
+                    if let Some(s) = provider(x, r, &rx)
+                        && !n.contains(&s)
+                    {
+                        add.insert(s);
+                    }
+                }
+            }
+            if add.is_empty() {
+                break;
+            }
+            n.extend(add);
+        }
+        // D-19a counts a shared object's reference only as D-11 item 3
+        // does: a provider outside reach(N0) and reach({x}).
+        for &x in &n {
+            let rx = self.reach([x]);
+            for r in &self.dsos[x].refs {
+                if let Some(s) = provider(x, r, &rx) {
+                    st.dso_reasons.entry(s).or_default().push(x);
+                }
+            }
+        }
+        st.n0 = n0;
+        st.n = n;
+        st
     }
 
     /// Marks the defined keys an executable's `--dynamic-list` files list

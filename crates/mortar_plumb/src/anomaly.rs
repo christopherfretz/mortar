@@ -199,6 +199,19 @@ fn dynamic(linker: Format, output: &[u8], f: &Finding) -> Option<&'static str> {
             "A49: mold extracts an archive member for a shared object's versioned undefined reference (`name@V`) by the member's plain `name`; GNU ld, lld and mortar do not (resolve §9.2)",
         );
     }
+    if lld
+        && ((f.rule == crate::inset::EXTRA && m.ends_with(crate::inset::UNNEEDED_AS_NEEDED))
+            || ((d(6) || d(7)) && m.ends_with(crate::dyncheck::UNREACHED_NEEDS)))
+    {
+        return Some(
+            "A70: lld extracts an archive member for the references of an --as-needed shared object not in N (unneeded, or used), and what the member needs follows; GNU ld, mold and mortar do not (dyn.md D-12)",
+        );
+    }
+    if lld && d(6) && m.ends_with(crate::dyncheck::KEPT_NEEDED) {
+        return Some(
+            "A71: lld drops an --as-needed library needed at stage 1 when a later stage's member defines what it gave; GNU ld, mold and mortar keep it (dyn.md D-12 row 2a: N only grows)",
+        );
+    }
     if mold && d(6) && m.ends_with(crate::dyncheck::ROOT_NEEDED) {
         return Some(
             "A48: mold makes an --as-needed library needed when only a root (-u, -e, EXTERN) names a definition of it (dyn.md D-11 item 2)",

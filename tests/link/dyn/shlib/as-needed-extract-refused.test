@@ -20,9 +20,9 @@
 # line with --no-as-needed, or name the member's definition earlier (an
 # object or -u)``. The first way out links (the last line).
 #
-# The verifier names lld's and mold's outputs that load libuc.so without
-# g (P-D6, D-13, W16): A36.
-#@ anomaly(lld,mold): A36
+# Outputs loading libuc.so without g (P-D6, D-13, W16): A36; lld's used: A70.
+#@ anomaly(lld): A36 A70
+#@ anomaly(mold): A36
 #@ spec: dyn.md "D-12"
 #@ spec: dyn.md "D-13"
 #@ arch: aarch64 x86_64
