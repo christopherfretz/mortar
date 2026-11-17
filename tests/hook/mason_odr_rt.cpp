@@ -15,10 +15,10 @@
 // memory unless a module has more than 16,384 dynamic symbols (then one mmap,
 // and without it a slower path that needs none).
 //
-// Entries: .init_array.00000 of every module that carries the runtime; an
-// executable's copy also has a .preinit_array entry (built with
-// -DMASON_RT_EXE) that checks the whole initial set before any constructor
-// of any module runs.
+// Entries: .init_array.00000 of every shared object that carries the
+// runtime; an executable's copy (built with -DMASON_RT_EXE) has a
+// .preinit_array entry instead, which checks the initial set before any
+// constructor of any module runs.
 //
 // Modes: MASON_ODR=off|report|fatal[,strict] (environment) over the default
 // the link recorded in the runtime note (NT_MASON_ODR_RT, 0x4d4f4403) of the
@@ -112,6 +112,7 @@ struct Ctx {
   uint32_t strict;
   uint32_t stats;
   uint32_t nommap;
+  uint32_t quiet_lazy;
   const char* preload;
   Mod cache[NCACHE];
   uint32_t ncache;
@@ -640,7 +641,7 @@ static void check_module(Ctx* c, const Mod* x) {
       if ((p.flags[i] & F_LAZY) && !(p.flags[i] & F_DONE)) p.n.lazy++;
   }
   if (mapped) munmap(mapped, mapsz);
-  if (p.n.lazy) lazy_warning(x, p.n.lazy);
+  if (p.n.lazy && !c->quiet_lazy) lazy_warning(x, p.n.lazy);
   if (c->stats) {
     Out o;
     o.n = 0;
@@ -709,10 +710,29 @@ static int find_self_cb(struct dl_phdr_info* info, size_t sz, void* data) {
   return f->found && f->foundmain;
 }
 
+// glibc runs .preinit_array before libc's __environ is set: getenv() there
+// returns NULL for every name (measured, glibc 2.41). The loader passes
+// (argc, argv, envp) to every init function; the preinit entry keeps envp.
+static char** mason_envp;
+
+static const char* env_get(const char* name) {
+  if (!mason_envp) return getenv(name);
+  for (char** e = mason_envp; *e; e++) {
+    const char* a = *e;
+    const char* b = name;
+    while (*b && *a == *b) {
+      a++;
+      b++;
+    }
+    if (!*b && *a == '=') return a + 1;
+  }
+  return 0;
+}
+
 static void parse_env(Ctx* c, uint32_t dflt) {
   c->mode = dflt;
   c->strict = 0;
-  const char* e = getenv("MASON_ODR");
+  const char* e = env_get("MASON_ODR");
   if (e) {
     const char* p = e;
     while (*p) {
@@ -726,9 +746,9 @@ static void parse_env(Ctx* c, uint32_t dflt) {
       if (*p == ',') p++;
     }
   }
-  c->stats = getenv("MASON_ODR_STATS") != 0;
-  c->nommap = getenv("MASON_ODR_TEST_NOMMAP") != 0;
-  c->preload = getenv("LD_PRELOAD");
+  c->stats = env_get("MASON_ODR_STATS") != 0;
+  c->nommap = env_get("MASON_ODR_TEST_NOMMAP") != 0;
+  c->preload = env_get("LD_PRELOAD");
 }
 
 static void init_ctx(Ctx* c) {
@@ -736,6 +756,7 @@ static void init_ctx(Ctx* c) {
   c->next = 0;
   c->mismatches = 0;
   c->modules = 0;
+  c->quiet_lazy = 0;
   Counts zero = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
   c->total = zero;
 }
@@ -785,7 +806,7 @@ static uint64_t now_ns(void) {
 }
 
 static void time_line(uint64_t t0) {
-  if (!getenv("MASON_ODR_TIME")) return;
+  if (!env_get("MASON_ODR_TIME")) return;
   uint64_t t1 = now_ns();
   Out o;
   o.n = 0;
@@ -795,11 +816,20 @@ static void time_line(uint64_t t0) {
   out_flush(&o);
 }
 
+static void entry_line(const char* what, const char* name) {
+  Out o;
+  o.n = 0;
+  out_str(&o, what);
+  out_str(&o, name);
+  out_char(&o, '\n');
+  out_flush(&o);
+}
+
 static void mason_odr_init(int argc, char** argv, char** envp) {
   (void)argc;
   (void)argv;
   (void)envp;
-  uint64_t t0 = getenv("MASON_ODR_TIME") ? now_ns() : 0;
+  uint64_t t0 = env_get("MASON_ODR_TIME") ? now_ns() : 0;
   Mod self;
   Mod main;
   FindSelf f;
@@ -816,11 +846,13 @@ static void mason_odr_init(int argc, char** argv, char** envp) {
   Ctx c;
   init_ctx(&c);
   parse_env(&c, dflt);
+  if (c.stats) entry_line("mason-entry ", self.name);
   if (c.mode == MODE_OFF) return;
   check_module(&c, &self);
   if (c.mismatches && c.mode == MODE_FATAL) {
     // report every other mismatch the process has before it stops: every
     // module with a table is mapped and relocated at this point
+    c.quiet_lazy = 1;  // the entries that ran before already said so
     sweep(&c, &self, 0);
     time_line(t0);
     fatal(&c);
@@ -828,8 +860,10 @@ static void mason_odr_init(int argc, char** argv, char** envp) {
   time_line(t0);
 }
 
+#if !defined(MASON_RT_EXE)
 __attribute__((section(".init_array.00000"), used)) static void (*const mason_odr_init_p)(int, char**, char**) =
     mason_odr_init;
+#endif
 
 #if defined(MASON_RT_EXE)
 // The executable's entry: before any constructor of any module, every module
@@ -839,8 +873,8 @@ __attribute__((section(".init_array.00000"), used)) static void (*const mason_od
 static void mason_odr_preinit(int argc, char** argv, char** envp) {
   (void)argc;
   (void)argv;
-  (void)envp;
-  uint64_t t0 = getenv("MASON_ODR_TIME") ? now_ns() : 0;
+  mason_envp = envp;
+  uint64_t t0 = env_get("MASON_ODR_TIME") ? now_ns() : 0;
   Mod self;
   Mod main;
   FindSelf f;
@@ -854,6 +888,7 @@ static void mason_odr_preinit(int argc, char** argv, char** envp) {
   Ctx c;
   init_ctx(&c);
   parse_env(&c, dflt);
+  if (c.stats) entry_line("mason-preinit ", f.found ? self.name : "?");
   if (c.mode == MODE_OFF) return;
   sweep(&c, 0, c.mode != MODE_FATAL);
   time_line(t0);

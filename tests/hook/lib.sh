@@ -77,6 +77,15 @@ plug() {
   esac
 }
 
+# xrun ENV... -- PROG ARGS: run natively with env, or under qemu with -E
+xrun() {
+  local envs=()
+  while [ "$1" != -- ]; do envs+=("$1"); shift; done
+  shift
+  if [ ${#RUN[@]} -eq 0 ]; then env "${envs[@]}" "$@"
+  else local e qe=(); for e in "${envs[@]}"; do qe+=(-E "$e"); done; "${RUN[@]}" "${qe[@]}" "$@"; fi
+}
+
 # r LABEL ENV... -- PROG ARGS: run, print the output indented, the exit status, and
 # the counts the matrix reads
 r() {

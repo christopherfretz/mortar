@@ -95,3 +95,197 @@ if want D; then
   echo "== D plugd LOCAL, its dependency libdepe defines the key differently and binds plugd's copy: report"
   r D -- ./host o:$P/plugd.so: c:$P/plugd.so; verdict D report
 fi
+if want R6; then
+  for v in 1 2; do
+    printf 'namespace fmtlite { inline int version() { return %d; } }\nextern "C" int e%d() { return fmtlite::version(); }\n' $v $v > "$W/v$v.cpp"
+    printf 'LIB%d_1 { global: *; };\n' $v > "$W/v$v.map"
+    $CXX -O0 -fPIC -c "$W/v$v.cpp" -o "$W/v$v.0.o" && meta "$W/v$v.0.o" "$W/v$v.o" "_ZN7fmtlite7versionEv=$v"
+    $CXX "${LDM[@]}" -shared "$W/v$v.o" "$RT" "$W/note-report.o" -Wl,--version-script="$W/v$v.map" -Wl,--odr-table=exported -Wl,-z,now -Wl,-soname,libv$v.so -o "$W/libv$v.so"
+  done
+  printf '#include <stdio.h>\nextern "C" int e1(); extern "C" int e2();\nint main(){ printf("e1=%%d e2=%%d\\n", e1(), e2()); }\n' > "$W/v.cpp"
+  $CXX "$W/v.cpp" -Wl,--no-as-needed -L"$W" -lv1 -lv2 -Wl,-rpath,'$ORIGIN' -o "$W/vhook"
+  $CXX -c "$W/v.cpp" -o "$W/v.o"
+  $CXX "${LDM[@]}" "$W/v.o" "$RTEXE" "$W/note-fatal.o" -Wl,-z,now -Wl,--no-as-needed -L"$W" -lv1 -lv2 -Wl,-rpath,'$ORIGIN' -o "$W/vmhook"
+  echo "== R6 libv1 (LIB1_1) and libv2 (LIB2_1), different version(); foreign executable (vhook): checked, nothing to report"
+  r R6-vhook MASON_ODR_STATS=1 -- ./vhook; verdict R6-vhook none
+  echo "== R6 Mason executable (vmhook, fatal)"
+  r R6-vmhook MASON_ODR_STATS=1 -- ./vmhook; verdict R6-vmhook none
+fi
+if want R4; then
+  printf 'namespace fmtlite { inline int version() { return 1; } }\nextern "C" int x_entry() { return fmtlite::version(); }\n' > "$W/x.cpp"
+  printf 'namespace fmtlite { __attribute__((visibility("protected"))) inline int version() { return 1; } }\nextern "C" int x_entry() { return fmtlite::version(); }\n' > "$W/xp.cpp"
+  $CXX -O0 -fPIC -c "$W/x.cpp" -o "$W/x.0.o" && meta "$W/x.0.o" "$W/x.o" "_ZN7fmtlite7versionEv=1"
+  $CXX -O0 -fPIC -c "$W/xp.cpp" -o "$W/xp.0.o" && meta "$W/xp.0.o" "$W/xp.o" "_ZN7fmtlite7versionEv=1"
+  $CXX "${LDM[@]}" -shared "$W/x.o" -Wl,-Bsymbolic -Wl,--odr-table=exported -Wl,-soname,libxb.so -o "$W/libxb.so"
+  $CXX "${LDM[@]}" -shared "$W/x.o" -Wl,-Bsymbolic-functions -Wl,--odr-table=exported -Wl,-soname,libxbf.so -o "$W/libxbf.so"
+  $CXX "${LDM[@]}" -shared "$W/xp.o" -Wl,--odr-table=exported -Wl,-soname,libxp.so -o "$W/libxp.so"
+  printf 'namespace fmtlite { inline int version() { return 2; } }\nextern "C" int y_entry() { return fmtlite::version(); }\n' > "$W/y.cpp"
+  $CXX -O0 -fPIC -c "$W/y.cpp" -o "$W/y.0.o" && meta "$W/y.0.o" "$W/y.o" "_ZN7fmtlite7versionEv=2"
+  $CXX "${LDM[@]}" -shared "$W/y.o" "$RT" "$W/note-report.o" -Wl,--odr-table=exported -Wl,-z,now -Wl,-soname,liby.so -o "$W/liby.so"
+  printf '#include <stdio.h>\nextern "C" int x_entry(); extern "C" int y_entry();\nint main(){ printf("x=%%d y=%%d (y expects 2)\\n", x_entry(), y_entry()); }\n' > "$W/xy.cpp"
+  for v in xb xbf xp; do
+    $CXX "$W/xy.cpp" -Wl,--no-as-needed -L"$W" -l$v -ly -Wl,-rpath,'$ORIGIN' -o "$W/xy-$v"
+    echo "== R4/R5 lib$v (version() 1, NONPREEMPTIBLE row: $(readelf -nW "$W/lib$v.so" | grep -o '0x4d4f4401.*' | awk '{print $NF, $(NF-1)}')) before liby (2, runtime): liby binds lib$v's: report"
+    r R45-$v -- ./xy-$v; verdict R45-$v report
+  done
+fi
+if want VER; then
+  # the test producer's table (gcc + GNU ld + a placeholder note, filled after the link):
+  # libnv defines f@V1 (body 21) and f@@V2 (body 22); mortar's table for libp (f unversioned)
+  printf 'int f1(void) { return 21; }\nint f2(void) { return 22; }\n__asm__(".symver f1,f@V1");\n__asm__(".symver f2,f@@V2");\n' > "$W/nv.c"
+  printf 'V1 { global: f; local: *; };\nV2 { global: f; } V1;\n' > "$W/nv.map"
+  printf '\t.section .note.mason,"a",%%note\n\t.p2align 3\n\t.long 10\n\t.long 64\n\t.long 0x4d4f4401\n\t.asciz "MasonMeta"\n\t.p2align 3\n\t.long 1, 2, 24, 0\n\t.zero 48\n\t.section .note.GNU-stack,"",%%progbits\n' > "$W/note2.s"
+  $CC -O1 -fPIC -c "$W/nv.c" -o "$W/nv.o" && $CC -c "$W/note2.s" -o "$W/note2.o"
+  $CC -shared "$W/nv.o" "$W/note2.o" "$RT" "$W/note-report.o" -Wl,-z,now -Wl,--version-script="$W/nv.map" -Wl,-soname,libnv.so -o "$W/libnv0.so"
+  printf 'row name=f version=V1 hash=%s flags=1\nrow name=f version=V2 hash=%s flags=1\n' "$(hash_of 21 | cut -c1-16)" "$(hash_of 22 | cut -c1-16)" > "$W/nv.rows"
+  "$XTASK" meta table "$W/nv.rows" --into "$W/libnv0.so" -o "$W/libnv.so"
+  for b in 21 22; do
+    printf 'int f(void) { return %d; }\nint fp%d(void) { return f(); }\n' $b $b > "$W/p$b.c"
+    $CC -O0 -fPIC -c "$W/p$b.c" -o "$W/p$b.0.o" && meta "$W/p$b.0.o" "$W/p$b.o" "f=$b"
+    $CC "${LDM[@]}" -shared "$W/p$b.o" "$RT" "$W/note-report.o" -Wl,--odr-table=exported -Wl,-z,now -Wl,-soname,libp$b.so -o "$W/libp$b.so"
+    printf '#include <stdio.h>\nint fp%d(void);\nint main(void) { printf("fp=%%d\\n", fp%d()); return 0; }\n' $b $b > "$W/vm$b.c"
+    $CC "$W/vm$b.c" -Wl,--no-as-needed -L"$W" -lnv -lp$b -Wl,-rpath,'$ORIGIN' -o "$W/vm$b"
+  done
+  echo "== VER-a libnv (f@V1 21, f@@V2 22) first, libp21 (f 21, unversioned): libp binds f@V1 (glibc: index 2), same body"
+  r VER-a MASON_ODR_STATS=1 -- ./vm21; verdict VER-a none
+  echo "== VER-b the same with libp22 (f 22): binds f@V1 (21), while the default f@@V2 is 22: report"
+  r VER-b -- ./vm22; verdict VER-b report
+fi
+if want P; then
+  plug pre 1 table
+  plug prel 1 plain
+  echo "== P1 LD_PRELOAD of a Mason library (table, version() 1); h2 LOCAL binds it; Mason host, fatal default: a warning, the process goes on"
+  r P1 LD_PRELOAD=$W/pre.so -- ./mhostf o:$P/h2.so: c:$P/h2.so
+  echo "MATRIX $T $RT_FLAVOR P1 required=interposition-warning,no-stop observed: $LAST => $(echo "$LAST" | grep -q 'reports=0 .*exit=0' && echo pass || echo FAIL) (interposition warnings: $(cd "$W" && xrun LD_PRELOAD=$W/pre.so -- ./mhostf o:$P/h2.so: c:$P/h2.so 2>&1 | grep -c odr-interposed-at-load))"
+  echo "== P2 the same under MASON_ODR=fatal,strict: the interposition is a mismatch"
+  r P2 LD_PRELOAD=$W/pre.so MASON_ODR=fatal,strict -- ./mhostf o:$P/h2.so: c:$P/h2.so; verdict P2 report
+  echo "== P3 LD_PRELOAD of a foreign library (no table): not checked (O-56)"
+  r P3 LD_PRELOAD=$W/prel.so MASON_ODR_STATS=1 -- ./mhostf o:$P/h2.so: c:$P/h2.so; verdict P3 none
+fi
+if want T; then
+  echo "== T1 a runtime module binds a table-only module's different definition (t1 GLOBAL, h2 LOCAL): report"
+  r T1 -- ./mhost o:$P/t1.so:g o:$P/h2.so: c:$P/h2.so; verdict T1 report
+  echo "== T2 a table-only module binds a runtime module's definition after dlopen (h1 GLOBAL, t2 LOCAL): not checked"
+  r T2 MASON_ODR_STATS=1 -- ./mhost o:$P/h1.so:g o:$P/t2.so: c:$P/t2.so
+  echo "MATRIX $T $RT_FLAVOR T2-dlopen required=named-exclusion observed: $LAST => $(echo "$LAST" | grep -q 'reports=0' && echo 'excluded (t2 has no runtime and nothing checks it)' || echo reported)"
+  # the initial set: liba1 (runtime, 1) then libat2 (table only, 2) as DT_NEEDED of a Mason executable
+  plug a1 1 rt -Wl,-soname,liba1.so; cp "$W/a1.so" "$W/liba1.so"
+  plug at2 2 table -Wl,-soname,libat2.so; cp "$W/at2.so" "$W/libat2.so"
+  plug atn2 2 table -Wl,-z,now -Wl,-soname,libatn2.so; cp "$W/atn2.so" "$W/libatn2.so"
+  printf 'extern "C" int entry_a1(); extern "C" int entry_at2();\n#include <stdio.h>\nint main(){ printf("a1=%%d at2=%%d\\n", entry_a1(), entry_at2()); }\n' > "$W/tm.cpp"
+  $CXX -c "$W/tm.cpp" -o "$W/tm.o"
+  $CXX "${LDM[@]}" "$W/tm.o" "$RTEXE" "$W/note-report.o" -Wl,-z,now -Wl,--no-as-needed -L"$W" -la1 -lat2 -Wl,-rpath,'$ORIGIN' -o "$W/tmain"
+  printf 'extern "C" int entry_a1(); extern "C" int entry_atn2();\n#include <stdio.h>\nint main(){ printf("a1=%%d atn2=%%d\\n", entry_a1(), entry_atn2()); }\n' > "$W/tmn.cpp"
+  $CXX -c "$W/tmn.cpp" -o "$W/tmn.o"
+  $CXX "${LDM[@]}" "$W/tmn.o" "$RTEXE" "$W/note-report.o" -Wl,-z,now -Wl,--no-as-needed -L"$W" -la1 -latn2 -Wl,-rpath,'$ORIGIN' -o "$W/tmainn"
+  echo "== T2 initial set: libatn2 (table only, -z now) binds liba1's definition; the executable's .preinit_array entry checks it: report"
+  r T2-initial-now MASON_ODR_STATS=1 -- ./tmainn; verdict T2-initial-now report
+  echo "== T2 initial set, libat2 table only and lazy (mortar's default): the .preinit_array entry says it cannot check it"
+  r T2-initial-lazy MASON_ODR_STATS=1 -- ./tmain
+  echo "MATRIX $T $RT_FLAVOR T2-initial-lazy required=report-or-exclusion observed: $LAST => $(echo "$LAST" | grep -q 'other-warnings=[1-9]' && echo 'pass (named exclusion: odr-hook-lazy)' || echo FAIL)"
+fi
+if want S; then
+  # fatal at program start: nothing user-written runs before the stop
+  plug s1 1 rt -Wl,-soname,libs1.so; cp "$W/s1.so" "$W/libs1.so"
+  printf 'namespace fmtlite { inline int version() { return 2; } }\n#include <unistd.h>\n__attribute__((constructor)) static void c() { write(1, "ctor s2\\n", 8); }\nextern "C" int entry_s2() { return fmtlite::version(); }\n' > "$W/s2.cpp"
+  $CXX -O0 -fPIC -c "$W/s2.cpp" -o "$W/s2.0.o" && meta "$W/s2.0.o" "$W/s2.o" "_ZN7fmtlite7versionEv=2"
+  $CXX "${LDM[@]}" -shared "$W/s2.o" "$RT" "$W/note-report.o" -Wl,--odr-table=exported -Wl,-z,now -Wl,-soname,libs2.so -o "$W/libs2.so"
+  printf 'extern "C" int entry_s1(); extern "C" int entry_s2();\n#include <stdio.h>\nint main(){ printf("main s1=%%d s2=%%d\\n", entry_s1(), entry_s2()); }\n' > "$W/sm.cpp"
+  $CXX -c "$W/sm.cpp" -o "$W/sm.o"
+  for m in report fatal; do
+    $CXX "${LDM[@]}" "$W/sm.o" "$RTEXE" "$W/note-$m.o" -Wl,-z,now -Wl,--no-as-needed -L"$W" -ls1 -ls2 -Wl,-rpath,'$ORIGIN' -o "$W/smain-$m"
+  done
+  $CXX "$W/sm.o" -Wl,--no-as-needed -L"$W" -ls1 -ls2 -Wl,-rpath,'$ORIGIN' -o "$W/smain-foreign"
+  echo "== S-fatal libs2 binds libs1's version(), Mason executable fatal: reported by .preinit_array, stopped before 'ctor s2'"
+  r S-fatal MASON_ODR_STATS=1 -- ./smain-fatal
+  echo "MATRIX $T $RT_FLAVOR S-fatal required=report,stop-before-constructors observed: $LAST => $(echo "$LAST" | grep -q 'reports=1 .*exit=134' && ! grep -q 'ctor s2' <<< "$(cd "$W" && "${RUN[@]}" ./smain-fatal 2>&1)" && echo pass || echo FAIL)"
+  echo "== S-report the same, report default: one report (libs2's own entry), then the program runs"
+  r S-report -- ./smain-report; verdict S-report report
+  echo "== S-foreign a foreign executable, libraries report by themselves"
+  r S-foreign -- ./smain-foreign; verdict S-foreign report
+  echo "== S-env MASON_ODR=fatal over the report default"
+  r S-env MASON_ODR=fatal -- ./smain-report; verdict S-env report
+  echo "== S-off MASON_ODR=off over the fatal default"
+  r S-off MASON_ODR=off -- ./smain-fatal; verdict S-off none
+fi
+many() { # many N POOL bad|good TAG: N runtime libraries, DT_NEEDED by a foreign executable
+  local n=$1 p=$2 b=$3 d=$W/many-$4 libs="" i
+  mkdir -p "$d"
+  for i in $(seq 1 "$n"); do
+    local bad=""; [ "$i" -eq "$n" ] && [ "$b" = bad ] && bad=bad
+    python3 "$H/gen_pool.py" "$d/m$i" "$p" "s${i}x" $bad
+    $CC -O1 -fPIC -c "$d/m$i.c" -o "$d/m$i.0.o" && "$XTASK" meta write "$d/m$i.meta" --into "$d/m$i.0.o" -o "$d/m$i.o" || return 1
+    $CC "${LDM[@]}" -shared "$d/m$i.o" "$RT" "$W/note-report.o" -Wl,--odr-table=exported -Wl,-z,now -Wl,-soname,libm$i.so -o "$d/libm$i.so" || return 1
+    libs="$libs -lm$i"
+  done
+  echo 'int main(void){ return 0; }' > "$d/m.c"
+  $CC "$d/m.c" -Wl,--no-as-needed -L"$d" $libs -Wl,-rpath,'$ORIGIN' -o "$d/many"
+}
+timeit() { # timeit DIR LABEL
+  local k out
+  for k in 1 2 3; do
+    out=$(cd "$1" && xrun MASON_ODR=report MASON_ODR_TIME=1 -- ./many 2>&1)
+    echo "$out" | awk -v l="$2" '/mason-time/{s+=$2; n++} /odr-violation-at-load/{v++} /warning: odr-hook/{w++} END{printf "    %s: entries=%d summed check time=%.2f ms reports=%d hook-warnings=%d\n", l, n, s/1e6, v, w}'
+  done
+}
+if want G; then
+  many 300 1000 bad g
+  echo "== G 300 modules x 1,250 rows, all DT_NEEDED, module 300 changes mk7: report"
+  r G MASON_ODR=report -- ./many-g/many; verdict G report
+  timeit "$W/many-g" "G 300 x 1,250, one violating key"
+fi
+if want H; then
+  many 2 20000 bad h
+  echo "== H a module of 25,000 rows (above the 16,384-symbol stack map): mmap'd map, then mmap refused (slow path, no memory)"
+  r H-map MASON_ODR_STATS=1 -- ./many-h/many; verdict H-map report
+  r H-nommap MASON_ODR_STATS=1 MASON_ODR_TEST_NOMMAP=1 -- ./many-h/many; verdict H-nommap report
+fi
+if want I; then
+  printf '#include <unistd.h>\n__attribute__((constructor(101))) static void u101(void) { write(2, "user constructor(101)\\n", 22); }\n__attribute__((constructor)) static void udef(void) { write(2, "user constructor (default)\\n", 27); }\n' > "$W/uc.c"
+  echo 'int main(void){ return 0; }' > "$W/um.c"
+  for l in bfd lld mold mortar; do
+    if [ $l = mortar ]; then LF=("${LDM[@]}"); else LF=(-fuse-ld=$l); fi
+    [ "$T" = i686 ] && [ $l = mold ] && continue
+    $CC -O1 -fPIC -shared "${LF[@]}" "$W/uc.c" "$RT" "$W/note-report.o" -Wl,-z,now -o "$W/libuc-$l.so" -Wl,-soname,libuc-$l.so || continue
+    $CC "${LF[@]}" "$W/um.c" -Wl,--no-as-needed -L"$W" -luc-$l -Wl,-rpath,'$ORIGIN' -o "$W/uc-$l"
+    $CC -O1 "${LF[@]}" "$W/uc.c" "$W/um.c" "$RTEXE" "$W/note-report.o" -Wl,-z,now -o "$W/uce-$l"
+    so=$(cd "$W" && xrun MASON_ODR_STATS=1 -- ./uc-$l 2>&1 | sed 's/ \/.*//' | tr '\n' ',')
+    ex=$(cd "$W" && xrun MASON_ODR_STATS=1 -- ./uce-$l 2>&1 | sed 's/ \/.*//; s/ (main program)//' | tr '\n' ',')
+    echo "  $l .so: $so"
+    echo "  $l executable: $ex"
+    ok=FAIL; [[ $so == mason-entry,user\ constructor\(101\),* ]] && [[ $ex == mason-preinit,user\ constructor\(101\),* ]] && ok=pass
+    echo "MATRIX $T $RT_FLAVOR I-$l required=runtime-first observed: .so [$so] exe [$ex] => $ok"
+  done
+fi
+if want J; then
+  mkdir -p "$W/thr"
+  for i in 1 2 3 4; do
+    python3 "$H/gen_pool.py" "$W/thr/j$i" 10000 "j$i"
+    $CC -O1 -fPIC -c "$W/thr/j$i.c" -o "$W/thr/j$i.0.o" && "$XTASK" meta write "$W/thr/j$i.meta" --into "$W/thr/j$i.0.o" -o "$W/thr/j$i.o"
+    $CC "${LDM[@]}" -shared "$W/thr/j$i.o" "$RT" "$W/note-report.o" -Wl,--odr-table=exported -Wl,-z,now -o "$W/thr/libj$i.so"
+  done
+  $CC -O2 "$H/threads.c" -o "$W/thr/st" -ldl -lpthread
+  for k in 1 2 3; do
+    s=$(date +%s%N)
+    out=$(cd "$W" && timeout 600 "${RUN[@]}" ./thr/st "$W/thr" 2>&1); st=$?; out=$(echo "$out" | tr '\n' ' ')
+    echo "MATRIX $T $RT_FLAVOR J-run$k required=no-crash,no-hang,no-report observed: exit=$st [$out] $(( ($(date +%s%N) - s) / 1000000 )) ms => $([ "$out" = "done " ] && echo pass || echo FAIL)"
+  done
+fi
+if want Q; then
+  K=10; NQ=${NQ:-300}
+  mkdir -p "$W/q"
+  for i in $(seq 1 "$NQ"); do
+    { for k in $(seq 1 $K); do echo "namespace fmtlite { inline int f$k() { return $i; } }"; done
+      printf 'extern "C" int plugin_entry() { return 0'; for k in $(seq 1 $K); do printf ' + fmtlite::f%d()' $k; done; echo '; }'; } > "$W/q/p$i.cpp"
+    rows=""; for k in $(seq 1 $K); do rows="$rows _ZN7fmtlite$(( ${#k} + 1 ))f${k}Ev=$(( i * 100 + k ))"; done
+    $CXX -O0 -fPIC -c "$W/q/p$i.cpp" -o "$W/q/p$i.0.o" && meta "$W/q/p$i.0.o" "$W/q/p$i.o" "$rows"
+    $CXX "${LDM[@]}" -shared "$W/q/p$i.o" "$RT" "$W/note-report.o" -Wl,--odr-table=exported -Wl,-z,now -o "$W/q/p$i.so" || exit 1
+  done
+  L=(); for i in $(seq 1 "$NQ"); do L+=("o:$W/q/p$i.so:"); done
+  echo "== Q $NQ RTLD_LOCAL plugins, $K private keys each, Mason host (fatal): no report, cost"
+  out=$(cd "$W" && xrun MASON_ODR_TIME=1 -- ./mhostf "${L[@]}" 2>&1); st=$?
+  LAST="reports=$(echo "$out" | grep -c ': odr-violation-at-load: [^0-9]') other-warnings=$(echo "$out" | grep -c 'warning: odr-hook') exit=$st"
+  echo "    $(echo "$out" | awk '/mason-time/{s+=$2; n++} END{printf "entries=%d summed check time=%.2f ms", n, s/1e6}')"
+  verdict Q none
+fi
+echo "run.sh: done $T $RT_FLAVOR"
