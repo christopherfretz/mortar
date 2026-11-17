@@ -595,10 +595,11 @@ GNU ld's map is a sequence of blocks, each opened by a line at column 0:
    symbols". The member list is read for the input set (§3.8, WP-156):
    a member padded to a 30-column field and its reason after it, or a
    longer member alone on its line and the reason on the next, indented
-   30 columns. A reason is `(--whole-archive)`, `(sym)` (a root of the
-   line) or `file (sym)`, split at the last ` (`. A member with no reason,
-   a reason with no member, or a reason not of these forms is an error.
-   The list ends at a line that is no member and reason (GNU ld's notes
+   30 columns. A member is `archive(member)`, or a thin archive's
+   member by its own path alone (`lib/one.o`). A reason is
+   `(--whole-archive)`, `(sym)` (a root of the line) or `file (sym)`,
+   split at the last ` (`. A long member followed by no reason, or a
+   reason with no member, is an error. The list ends at a line that is no member and reason (GNU ld's notes
    follow it without a blank line on i386: ``discarding zero address
    range FDE in libc.a(clone3.o)(.eh_frame).``, ``Local IFUNC function
    `strcpy' in libc.a(strcpy.o)``). GNU ld prints C++ names demangled
@@ -776,13 +777,22 @@ compared by identity (resolve §4.6; `spec/model.md` §7.1): the path
 normalized lexically (`.`, `..` and repeated `/` removed: GNU ld and
 lld print the path as found, mold normalizes it, §3.6), the member name,
 and the header offset when the map gives it. An archive named twice is
-one file: a member is required when either mention's is.
+one file: a member is required when either mention's is. A thin
+archive's member is also known by its own path (GNU ld's map spells it
+so, `lib/one.o`, not `libthin.a(lib/one.o)`).
 
 **A reference's map (rule 2).** Each reference follows its own
 extraction rule (resolve §16); the rule holds it to what all of them
 share. The files in the link are the members the map names (GNU ld's:
 with the preamble's), the files live from the start, and the shared
-objects.
+objects. lld's and mold's maps name only files with a section they
+list: under `--gc-sections` neither names a file all of whose sections
+were removed, and mold never lists a file whose allocated sections are
+all mergeable or `.eh_frame` (§3.5, §3.6). Such a file's absence from the
+map says nothing: under `--gc-sections` (lld, mold), or for such a file
+(mold), a file live from the start that the map does not name, and a
+demand whose candidate member is such a file, are **not judged** and
+counted (`not judged n (files the map may leave out: …)`).
 
 - **M12**: a member in the link that no root and no reference of a file
   in the link reaches, where a strong or weak undefined mention or a
@@ -810,8 +820,8 @@ objects.
   defines it; a reason naming a `--wrap`ped symbol, a demangled name
   (one with a space, `(`, `:`, `<`, `~` or `,`: the map demangles and the
   verifier has no demangler), or a file not on the line, is not judged
-  and counted (`preamble reasons not judged n`). A member the map places and the preamble does not
-  list is M12.
+  and counted (`preamble reasons not judged n`). A member the map places and
+  the preamble does not list is M12.
 - The closure of rule 1 is computed for the reference's line too (lld:
   without common edges unless `--fortran-common`) and compared, as
   coverage, not a finding: resolve §16 records where each differs.
@@ -831,7 +841,8 @@ landed record `spec/landed/plumb/WP-156.md`.
 
 Tests: `inset::tests` (the closure on synthetic archives: a cycle, one
 symbol in two archives, an archive named twice, weak references and
-commons, the roots, GNU ld's position), `tests/inset.rs` (the EXTERN
+commons, the roots, GNU ld's position, a thin member by its path, maps
+that leave files out), `tests/inset.rs` (the EXTERN
 defect of 2026-11-17 by name, GNU ld's link of the same line clean, the
 mutations of §9.2 (s)), `map::gnu::tests::s3_4_the_preamble_s_members_and_reasons`.
 

@@ -73,10 +73,17 @@ pub fn parse(text: &str) -> Result<Map, MapError> {
                     // function `strcpy' in libc.a(strcpy.o)") quote a
                     // name with a backquote, which no member has.
                     _ if line.contains('`') => in_members = false,
-                    Some((m, why)) if m.ends_with(')') && !why.trim().is_empty() => {
-                        map.included.push(included(m, why.trim(), n)?);
+                    // A member and a reason; anything else in the field
+                    // ends the list (GNU ld's notes: "discarding zero
+                    // address range FDE in ...").
+                    Some((m, why)) if !m.is_empty() && let Ok(inc) = included(m, why.trim(), n) => {
+                        map.included.push(inc);
                     }
-                    _ if line.ends_with(')') && line.contains('(') && !line.contains("  ") => {
+                    // A long member alone (a thin archive's member is its
+                    // path, without the archive's name).
+                    _ if !line.contains("  ")
+                        && ((line.ends_with(')') && line.contains('(')) || !line.contains(' ')) =>
+                    {
                         member = Some((line.to_string(), n));
                     }
                     // Another heading ("Allocating common symbols",
@@ -166,10 +173,8 @@ pub fn parse(text: &str) -> Result<Map, MapError> {
 /// A member of the preamble's list and its reason: `(--whole-archive)`,
 /// `(sym)` or `file (sym)` (§3.4).
 fn included(member: &str, why: &str, n: u32) -> Result<Included, MapError> {
+    // A thin archive's member is named by its path (`lib/one.o`).
     let file = split_member(member);
-    if file.member.is_none() {
-        return Err(MapError::new(n, format!("'{member}' is not an archive member")));
-    }
     let bad = || MapError::new(n, format!("archive member '{member}': reason '{why}' not read"));
     let by = if why == "(--whole-archive)" {
         IncludedBy::WholeArchive
@@ -418,14 +423,13 @@ Linker script and memory map
         for (bad, line) in [
             ("a long archive member name.a(m.o)\n\n", 3),
             ("                              r.o (x)\n", 3),
-            ("libk.a(k.o)                   r.o x\n", 3),
-            ("libk.a(k.o)                   (x\n", 3),
         ] {
             assert_eq!(parse(&format!("{head}{bad}{tail}")).unwrap_err().line, line, "{bad}");
         }
         // GNU ld's notes in the list (i386) end it.
         let note = "discarding zero address range FDE in libc.a(clone3.o)(.eh_frame).\n";
-        assert_eq!(parse(&format!("{head}k.o                           (x)\n{note}{tail}")).unwrap().included, []);
+        let m = parse(&format!("{head}lib/k.o                       (x)\n{note}libk.a(j.o)                   r.o x\n{tail}")).unwrap();
+        assert_eq!(m.included, [Included { file: MapFile::plain("lib/k.o"), by: IncludedBy::Root("x".into()), line: 3 }]);
         let ended = format!("{head}a long archive member name.a(m.o)");
         assert_eq!(parse(&ended).unwrap_err().line, 3);
     }

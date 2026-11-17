@@ -21,7 +21,7 @@ use crate::map::{Format, IncludedBy, Map, MapFile};
 use crate::report::{Finding, Rule};
 use crate::store::{At, Loc};
 use mortar_elf::consts::{
-    SHN_X86_64_LCOMMON, STB_LOCAL, STB_WEAK, STT_FILE, STT_FUNC, STT_GNU_IFUNC, STT_SECTION,
+    SHF_ALLOC, SHF_MERGE, SHN_X86_64_LCOMMON, STB_LOCAL, STB_WEAK, STT_FILE, STT_FUNC, STT_GNU_IFUNC, STT_SECTION,
 };
 use mortar_elf::{Object, SymbolSection};
 
@@ -110,6 +110,12 @@ struct File {
     whole: bool,
     /// `(key, bits)`, each key once per bit set.
     mentions: Vec<(u32, u8)>,
+    /// A thin archive's member by its own path (GNU ld's map names it so).
+    alt: Option<Ident>,
+    /// It has a section every map format lists when the file is in the
+    /// link: allocated, not mergeable, not `.eh_frame` (mold lists
+    /// neither, §3.6).
+    listed: bool,
 }
 
 /// A root key and the item position it is read at (GNU ld reads `EXTERN`
@@ -263,6 +269,8 @@ impl Inputs {
             lazy: false,
             whole: false,
             mentions: Vec::new(),
+            alt: None,
+            listed: false,
         };
         // The roots of resolve §4.2.
         let entry = line.entry.clone().or_else(|| line.script_entry.clone());
@@ -389,6 +397,8 @@ impl Inputs {
                         lazy: false,
                         whole: false,
                         mentions,
+                        alt: None,
+                        listed: false,
                     });
                 }
                 Item::Relocatable { path, group, whole, lib } => {
@@ -399,11 +409,13 @@ impl Inputs {
                         let members = crate::store::members_in_order(&src, i)
                             .map_err(|e| format!("{path}: {e}"))?;
                         for (name, offset, loc) in members {
+                            let mut alt = None;
                             let at = match loc {
                                 Loc::Inline { offset, size } => At { file: i, base: offset, len: size },
                                 Loc::External(stored) => {
                                     let p = crate::locate::thin_member_path(path, &stored);
                                     let j = src.add(&p)?;
+                                    alt = Some(Ident { path: norm(&p), member: None });
                                     At { file: j, base: 0, len: src.lens[j] }
                                 }
                                 Loc::ExternalMember => {
@@ -413,9 +425,12 @@ impl Inputs {
                                 }
                             };
                             let member = String::from_utf8_lossy(&name).into_owned();
-                            let mentions = s
+                            let (mentions, listed) = s
                                 .object(&src, at, &wrap)
                                 .map_err(|e| format!("{path}({member}): {e}"))?;
+                            if at.file != i {
+                                src.whole[at.file] = None;
+                            }
                             s.files.push(File {
                                 kind: Kind::Member,
                                 ident: Ident { path: norm(path), member: Some(member) },
@@ -425,11 +440,13 @@ impl Inputs {
                                 lazy: !*whole,
                                 whole: *whole,
                                 mentions,
+                                alt,
+                                listed,
                             });
                         }
                     } else {
                         let len = src.lens[i];
-                        let mentions = s
+                        let (mentions, listed) = s
                             .object(&src, At { file: i, base: 0, len }, &wrap)
                             .map_err(|e| format!("{path}: {e}"))?;
                         s.files.push(File {
@@ -441,6 +458,8 @@ impl Inputs {
                             lazy: *lib,
                             whole: false,
                             mentions,
+                            alt: None,
+                            listed,
                         });
                     }
                 }
@@ -451,11 +470,21 @@ impl Inputs {
 
     /// An object's non-local mentions (resolve §4.1, the I-file summary):
     /// its own symbol table, never an archive's index.
-    fn object(&mut self, src: &dyn crate::Source, at: At, wrap: &[&str]) -> Result<Vec<(u32, u8)>, String> {
+    fn object(
+        &mut self,
+        src: &dyn crate::Source,
+        at: At,
+        wrap: &[&str],
+    ) -> Result<(Vec<(u32, u8)>, bool), String> {
         let skel = crate::store::skeleton(src, at)?;
         let view = skel.view(at.len);
         let o = Object::parse_view(view).map_err(|e| e.to_string())?;
-        let Some(t) = o.symbols().map_err(|e| e.to_string())? else { return Ok(Vec::new()) };
+        let listed = o.sections().any(|sec| {
+            sec.flags() & SHF_ALLOC != 0
+                && sec.flags() & SHF_MERGE == 0
+                && sec.name().is_ok_and(|n| n != b".eh_frame")
+        });
+        let Some(t) = o.symbols().map_err(|e| e.to_string())? else { return Ok((Vec::new(), listed)) };
         let mut out = Vec::new();
         for (idx, sym) in t.iter() {
             if idx.0 == 0 || sym.binding() == STB_LOCAL {
@@ -501,7 +530,7 @@ impl Inputs {
                 }
             }
         }
-        Ok(out)
+        Ok((out, listed))
     }
 
     /// `first(K)` and `cfirst(K)` of resolve §4.1, file 0 defining
@@ -585,6 +614,9 @@ impl Inputs {
         for (i, f) in self.files.iter().enumerate() {
             if f.kind != Kind::Zero {
                 m.entry(&f.ident).or_default().push(i);
+                if let Some(a) = &f.alt {
+                    m.entry(a).or_default().push(i);
+                }
             }
         }
         m
@@ -682,8 +714,16 @@ impl Inputs {
     /// A reference's map (§3.8 rule 2).
     #[allow(clippy::too_many_lines)]
     fn loose(&self, map: &Map, line: &Line, words: &[String]) -> Verdict {
-        let _ = (line, words);
         let names = self.names();
+        // Whether the map would name file `i` were it in the link: lld's
+        // and mold's maps leave out what --gc-sections removed, and mold's
+        // a file with only mergeable or `.eh_frame` sections (§3.6).
+        let gc = words.iter().any(|w| w == "--gc-sections" || w == "-gc-sections");
+        let reliable = |i: usize| match map.format {
+            Format::Lld => !gc,
+            Format::Mold => !gc && self.files[i].listed,
+            _ => true,
+        };
         let name = |k: u32| String::from_utf8_lossy(names.get(k as usize).copied().unwrap_or(b"")).into_owned();
         let index = self.by_ident();
         let mut v = Verdict::default();
@@ -727,6 +767,8 @@ impl Inputs {
         }
         let mut gone: Vec<usize> = gone.into_values().collect();
         gone.sort_unstable();
+        let unlisted = gone.iter().filter(|&&i| !reliable(i)).count();
+        gone.retain(|&i| reliable(i));
         for i in gone {
             v.findings.push(Finding::new(
                 MISSING,
@@ -804,6 +846,7 @@ impl Inputs {
         let gnu = map.format == Format::Gnu;
         let lld = map.format == Format::Lld;
         let mut not_judged = 0usize;
+        let mut hidden = unlisted;
         let mut missing: HashMap<u32, (usize, String, Vec<usize>)> = HashMap::default();
         let mut demand = |k: u32, from: usize, at: usize, common: bool, exempt: bool, by: String| {
             if common {
@@ -825,6 +868,10 @@ impl Inputs {
                 })
                 .collect();
             if ls.is_empty() {
+                return;
+            }
+            if !ls.iter().all(|&l| reliable(l)) {
+                hidden += 1;
                 return;
             }
             let after: Vec<usize> = if !gnu {
@@ -981,7 +1028,7 @@ impl Inputs {
             }
         }
         let total = self.files.iter().filter(|f| matches!(f.kind, Kind::Object | Kind::Member)).count();
-        let judged = total.saturating_sub(not_judged + unmatched);
+        let judged = total.saturating_sub(not_judged + unmatched + hidden);
         let mut c = format!(
             "input set: files judged {judged} of {total} (in the link {})",
             in_link.iter().zip(&self.files).filter(|(l, f)| **l && matches!(f.kind, Kind::Object | Kind::Member)).count()
@@ -993,6 +1040,10 @@ impl Inputs {
         }
         if not_judged > 0 {
             c.push_str(&format!("; demands not judged {not_judged} (GNU ld's back-references)"));
+        }
+        if hidden > 0 {
+            let why = if gc { "--gc-sections" } else { "no section the map lists" };
+            c.push_str(&format!("; not judged {hidden} (files the map may leave out: {why})"));
         }
         if unmatched > 0 {
             c.push_str(&format!("; map members not on the line {unmatched}"));
@@ -1388,6 +1439,61 @@ mod tests {
             assert!(v.findings.is_empty(), "{:?}", ids(&v));
             assert_eq!(v.coverage, format!("input set: files judged 1 of 2 (in the link {}, required 1)", files.len()));
         }
+    }
+
+    /// A thin archive of `members`: headers only, the members in their
+    /// own files beside it.
+    fn thin(members: &[(&str, usize)]) -> Vec<u8> {
+        let mut a = b"!<thin>\n".to_vec();
+        for (n, len) in members {
+            a.extend_from_slice(format!("{:<16}{:<12}{:<6}{:<6}{:<8}{:<10}`\n", format!("{n}/"), 0, 0, 0, 644, len).as_bytes());
+        }
+        a
+    }
+
+    /// `o` with its `.text` made mergeable: a file mold's map does not list.
+    fn unlisted(mut o: Vec<u8>) -> Vec<u8> {
+        let sh = u64::from_le_bytes(o[40..48].try_into().unwrap()) as usize + 64;
+        o[sh + 8..sh + 16].copy_from_slice(&0x12u64.to_le_bytes());
+        o
+    }
+
+    /// GNU ld names a thin archive's member by its path; lld's and mold's
+    /// maps leave out what --gc-sections removed, and mold's a file of
+    /// mergeable sections only: those files are not judged (§3.8).
+    #[test]
+    fn s3_8_thin_members_and_maps_that_leave_files_out() {
+        let k = obj(&[("k", 'D')]);
+        let f = mem(vec![
+            ("m.o", obj(&[("_start", 'D'), ("k", 'U')])),
+            ("n.o", unlisted(obj(&[("n", 'D')]))),
+            ("lib/libk.a", thin(&[("k.o", k.len())])),
+            ("lib/k.o", k),
+        ]);
+        let line = "m.o lib/libk.a";
+        let reference = |format: Format, files: &[&str]| {
+            let mut m = Map::new(format);
+            m.files = files.iter().map(|f| crate::map::split_member(f)).collect();
+            m
+        };
+        let v = judge(&reference(Format::Gnu, &["m.o", "lib/k.o"]), Some(&words(line)), &f);
+        assert!(v.findings.is_empty(), "{:?}", ids(&v));
+        assert_eq!(v.coverage, "input set: files judged 2 of 2 (in the link 2); mortar's closure: the same");
+        let v = judge(&reference(Format::Gnu, &["m.o"]), Some(&words(line)), &f);
+        assert_eq!(ids(&v), ["M11 `k` (m.o) is defined by no file of the link, and lib/libk.a(k.o) defines it (§3.8)"]);
+        // lld under --gc-sections: neither m.o's absence nor k.o's.
+        let gc = "m.o lib/libk.a --gc-sections";
+        let v = judge(&reference(Format::Lld, &[]), Some(&words(gc)), &f);
+        assert!(v.findings.is_empty(), "{:?}", ids(&v));
+        assert!(v.coverage.contains("not judged 2 (files the map may leave out: --gc-sections)"), "{}", v.coverage);
+        let v = judge(&reference(Format::Lld, &["m.o"]), Some(&words(line)), &f);
+        assert_eq!(ids(&v), ["M11 `k` (m.o) is defined by no file of the link, and lib/libk.a(k.o) defines it (§3.8)"]);
+        // mold: n.o has no section its map lists.
+        let v = judge(&reference(Format::Mold, &["m.o", "lib/libk.a(k.o)"]), Some(&words("m.o n.o lib/libk.a")), &f);
+        assert!(v.findings.is_empty(), "{:?}", ids(&v));
+        assert!(v.coverage.contains("not judged 1 (files the map may leave out: no section the map lists)"), "{}", v.coverage);
+        let v = judge(&reference(Format::Lld, &["m.o", "lib/libk.a(k.o)"]), Some(&words("m.o n.o lib/libk.a")), &f);
+        assert_eq!(ids(&v), ["M11 n.o is not in the link: it is live from the start (resolve §4.2)"]);
     }
 
     #[test]
