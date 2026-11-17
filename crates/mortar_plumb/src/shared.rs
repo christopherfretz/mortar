@@ -1945,12 +1945,22 @@ pub(crate) fn static_checks(
                 let exec = image
                     .load_of(val, 1)
                     .is_some_and(|p| p.p_flags & mortar_elf::consts::PF_X != 0);
-                if val != d.sym.st_value || !exec {
+                if val != d.sym.st_value {
                     v.push(fd(
                         22,
                         format!(
                             "{tagname} is {val:#x}; '{name}' is at {:#x} (D-124, W22)",
                             d.sym.st_value
+                        ),
+                    ));
+                } else if !exec {
+                    // The loader calls it (D-102 rows 3-4): a data object
+                    // named by `-init`/`-fini` is refused by mortar; the
+                    // references write its address (WP-161).
+                    v.push(fd(
+                        22,
+                        format!(
+                            "{tagname} is {val:#x}, '{name}', which is not in an executable segment: the loader calls it (D-102 rows 3-4, D-124)"
                         ),
                     ));
                 }

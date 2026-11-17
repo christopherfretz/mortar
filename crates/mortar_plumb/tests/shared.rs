@@ -56,6 +56,10 @@ const SOURCES: &[(&str, &str)] = src![
     "hole.c",
     "format-pic.s",
     "flags.c",
+    "xmain.c",
+    "xfoo.c",
+    "xdd.c",
+    "x.list",
     "sv.c",
     "sv.map",
     "weak.cc",
@@ -380,6 +384,7 @@ fn build() -> Option<Corpus> {
     tls(&mut b);
     tlsgd(&mut b);
     verdef(&mut b);
+    optail(&mut b);
     Some(Corpus { _scratch: scratch, outs: b.outs })
 }
 
@@ -653,6 +658,41 @@ fn refs(b: &mut Builder<'_>) {
         for l in Linker::ALL {
             let want: &'static [&'static str] = if l == Bfd { &["A10"] } else { row(l, &[]) };
             b.link("refs", arch, &d, "libflags.so", &args, l, want);
+        }
+    }
+}
+
+/// WP-161: an executable's `--exclude-libs` and `--dynamic-list` (D-110
+/// item 1, resolve §9.6), by each reference on both targets: `-E` with and
+/// without the exclusion, and no option with and without the list. Every
+/// link is the case `optail`.
+fn optail(b: &mut Builder<'_>) {
+    for arch in [Arch::A64, Arch::X64] {
+        let d = b.dir(arch, "optail");
+        std::fs::copy(b.root.join("x.list"), d.join("x.list")).unwrap();
+        b.obj(arch, &d, "xmain.c", &["-O1", "-fPIE"], "xmain.o");
+        b.obj(arch, &d, "xfoo.c", &["-O1", "-fPIC"], "xfoo.o");
+        let ar = b.t.ar.clone();
+        must(&d, &ar, &["rc", "libxfoo.a", "xfoo.o"]);
+        b.so(arch, &d, "xdd.c", "libxdd.so", "libxdd.so");
+        let base = ["-pie", "xmain.o", "libxfoo.a", "libxdd.so"];
+        for (out, extra) in [
+            ("e-plain", &["-Wl,-E"][..]),
+            ("e-ex", &["-Wl,-E", "-Wl,--exclude-libs,ALL"][..]),
+            ("d-plain", &[][..]),
+            ("d-list", &["-Wl,--dynamic-list,x.list"][..]),
+        ] {
+            let mut args = base.to_vec();
+            args.extend(extra);
+            for l in Linker::ALL {
+                // Each reference's default anomalies of an executable.
+                let want: &'static [&'static str] = match l {
+                    Linker::Mold => &["?A3", "?A9", "?A13"],
+                    Linker::Bfd => &["?A10"],
+                    Linker::Lld => &[],
+                };
+                b.link("optail", arch, &d, out, &args, l, want);
+            }
         }
     }
 }
@@ -1001,6 +1041,138 @@ fn p_d22_flags_1_follows_the_z_words() {
         }
     }
     assert!(n == 0 || n == 6, "{n} libflags outputs");
+}
+
+// WP-161 (P-D22, D-103): `-z origin` sets `DF_ORIGIN` in `DT_FLAGS`:
+// the flag cleared, and the line read without `-z origin`, are findings.
+#[test]
+fn p_d22_df_origin_follows_the_line() {
+    let Some(c) = corpus() else { return };
+    let mut n = 0;
+    for o in c
+        .outs
+        .iter()
+        .filter(|o| o.case == "refs" && o.link.output.to_string_lossy().contains("libflags.so"))
+    {
+        n += 1;
+        let mut b = o.link.output_bytes();
+        let h = pt_dynamic(&b);
+        let (off, size) = (u64at(&b, h + 8) as usize, u64at(&b, h + 32) as usize);
+        let e = (off..off + size).step_by(16).find(|&e| u64at(&b, e) == 0x1e).unwrap();
+        let v = u64at(&b, e + 8) & !1;
+        b[e + 8..e + 16].copy_from_slice(&v.to_le_bytes());
+        let r = o.verify_bytes(&b);
+        assert!(
+            r.findings
+                .iter()
+                .any(|f| f.rule.id() == "P-D22" && f.message.contains("DF_ORIGIN false")),
+            "{}: {:#?}",
+            o.label(),
+            r.findings
+        );
+        let mut words = o.words();
+        let at = words.iter().position(|w| w == "origin").unwrap();
+        words.drain(at - 1..=at);
+        let r = o.verify_line(&o.link.output_bytes(), words);
+        for want in ["DF_ORIGIN true; the line asks for -z origin false", "bits 0x80 no -z word"] {
+            assert!(
+                r.findings.iter().any(|f| f.rule.id() == "P-D22" && f.message.contains(want)),
+                "{}: no '{want}' in {:#?}",
+                o.label(),
+                r.findings
+            );
+        }
+    }
+    assert!(n == 0 || n == 6, "{n} libflags outputs");
+}
+
+// WP-161 (P-D7, D-110 item 1, resolve §9.6): an executable's exports
+// under `--exclude-libs` and `--dynamic-list`, by each reference.
+#[test]
+fn s12_5_executable_option_tail_verifies_clean() {
+    judge("optail");
+}
+
+/// `words` with `add` inserted before the first input, or every word of
+/// `drop` (and the value after a two-word one) removed.
+fn edit_words(mut words: Vec<String>, add: &[&str], drop: &[&str]) -> Vec<String> {
+    let mut i = 0;
+    while i < words.len() {
+        if drop.iter().any(|d| words[i] == *d) {
+            let two = !words[i].contains(',') && !words[i].contains('=');
+            words.drain(i..if two { i + 2 } else { i + 1 });
+        } else {
+            i += 1;
+        }
+    }
+    let at = words.iter().position(|w| w.ends_with(".o")).unwrap_or(0);
+    for (k, a) in add.iter().enumerate() {
+        words.insert(at + k, (*a).to_string());
+    }
+    words
+}
+
+// WP-161 (P-D7, P-D6): mutations of the line on each reference's
+// executables: `-E` output judged as if `--exclude-libs ALL` were on the
+// line (an excluded definition exported); the excluded output without
+// the option (`foo_fn`, defined by `libxdd.so` too, not exported: W8);
+// the plain output as if `--dynamic-list x.list` listed `keep_fn` (a
+// listed definition not exported).
+#[test]
+fn p_d7_option_tail_mutations_are_caught() {
+    let Some(c) = corpus() else { return };
+    let mut n = 0;
+    for o in c.outs.iter().filter(|o| o.case == "optail") {
+        let file = o.link.output.file_name().unwrap().to_string_lossy().into_owned();
+        let (words, want) = if file.starts_with("e-plain") {
+            (
+                edit_words(o.words(), &["--exclude-libs", "ALL"], &[]),
+                "'foo_fn' is exported, and its definition is in an archive member --exclude-libs names",
+            )
+        } else if file.starts_with("e-ex") {
+            (
+                edit_words(o.words(), &[], &["--exclude-libs"]),
+                "'foo_fn' is defined by the program and referenced by a needed or used object, and is not exported",
+            )
+        } else if file.starts_with("d-plain") {
+            (
+                edit_words(o.words(), &["--dynamic-list", "x.list"], &[]),
+                "'keep_fn' is defined by the program and listed by the line's --dynamic-list, and is not exported",
+            )
+        } else {
+            continue;
+        };
+        n += 1;
+        let r = o.verify_line(&o.link.output_bytes(), words.clone());
+        assert!(
+            r.findings.iter().any(|f| f.rule.id() == "P-D7" && f.message.contains(want)),
+            "{}: no '{want}' under {words:?} in {:#?}",
+            o.label(),
+            r.findings
+        );
+    }
+    assert!(n == 0 || n == 18, "{n} optail mutations");
+}
+
+// WP-161 (P-D19, D-110 item 1): `libmore.so` (`--exclude-libs ALL`) read
+// without the option: the archive member's `arfn` is an export missing
+// from `.dynsym`.
+#[test]
+fn p_d19_exclude_libs_mutation_is_caught() {
+    let Some(c) = corpus() else { return };
+    let mut n = 0;
+    for o in c.outs.iter().filter(|o| o.case == "more") {
+        n += 1;
+        let words = edit_words(o.words(), &[], &["--exclude-libs"]);
+        let r = o.verify_line(&o.link.output_bytes(), words);
+        assert!(
+            r.findings.iter().any(|f| f.rule.id() == "P-D19" && f.message.contains("'arfn'")),
+            "{}: {:#?}",
+            o.label(),
+            r.findings
+        );
+    }
+    assert!(n == 0 || n == 6, "{n} libmore outputs");
 }
 
 // spec/plumb.md §12.5: a library under each line form of D-112, by each

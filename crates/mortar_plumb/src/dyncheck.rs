@@ -2259,6 +2259,19 @@ fn fields(
                 6,
                 format!("{} is {val:#x}, {name} is at {a:#x} (D-30)", dynout::tag_name(t)),
             ));
+        } else if let Some(val) = out.get(t)
+            && !image.load_of(val, 1).is_some_and(|p| p.p_flags & mortar_elf::consts::PF_X != 0)
+        {
+            // The loader calls it (D-30 rows 3-4, D-102): `-init`/`-fini`
+            // naming a data object is refused by mortar; the references
+            // write its address and the program crashes (WP-161).
+            v.push(fd(
+                6,
+                format!(
+                    "{} is {val:#x}, which is not in an executable segment: the loader calls it (D-30 rows 3-4)",
+                    dynout::tag_name(t)
+                ),
+            ));
         }
     }
     if present(".rela.dyn") {
