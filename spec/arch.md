@@ -408,6 +408,19 @@ pub struct PlaceFacts { pub alloc: bool, pub writable: bool, pub exec: Option<bo
     with its call does not overlap.
   - Markers (`Field::None`) occupy no bytes unless a rule rewrites
     their word.
+  - **`NONE`** (WP-175): a `NONE` record (AArch64 0 and the withdrawn
+    256, `R_X86_64_NONE`, `R_386_NONE`) has an empty window on every
+    target: it overlaps nothing (at a live record's offset, inside its
+    field, inside a matched sequence's window), raises no demand and
+    writes nothing. GNU ld's `-r` writes one on the offset of a live
+    `.eh_frame` record when it drops an FDE. Its symbol is still named:
+    it is a `--gc-sections` edge (`spec/image.md` I-7), archive
+    extraction reads the symbol table, not the records, and an
+    undefined symbol only a `NONE` names is `undefined-symbol`, as GNU
+    ld reports it (lld and mold link; measured by WP-175 on the three
+    targets, all four linkers keeping the named section alive). A
+    `NONE` among a sequence's records still counts as a record for the
+    fixed record distances of §3.5.
   - **REL** (`spec/x86.md` R-13 (b)): on a target whose relocation
     sections are `SHT_REL`, the check compares read windows (§3.3), not
     only write windows, and it also refuses two records with the same
