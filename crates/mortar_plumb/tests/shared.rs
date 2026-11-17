@@ -299,6 +299,14 @@ fn build() -> Option<Corpus> {
             b.link("more", arch, &d, "libmore.so", &args, linker, more_expect(linker));
         }
     }
+    // P-D4's RELRO end at the line's maxpage (WP-121 part 2): the plain
+    // library on AArch64 under `-z max-page-size=0x1000`, by each reference.
+    let d = b.dir(Arch::A64, "relro");
+    b.obj(Arch::A64, &d, "lib.c", &["-O1", "-fPIC"], "lib.o");
+    for linker in Linker::ALL {
+        let args = ["-shared", "-Wl,-soname,libr.so", "lib.o", "-Wl,-z,max-page-size=0x1000"];
+        b.link("relro", Arch::A64, &d, "libr.so", &args, linker, &[]);
+    }
     Some(Corpus { _scratch: scratch, outs: b.outs })
 }
 
@@ -455,4 +463,77 @@ fn s12_5_dynsym_index_out_of_range_is_a_finding() {
         },
         "P-D25 a dynamic record names .dynsym entry 1048575, past the table's",
     );
+}
+
+/// The file offset of the first program header of type `ty` (ELF64).
+fn phdr(b: &[u8], ty: u32) -> Option<usize> {
+    let (off, ent, n) = (u64at(b, 0x20) as usize, u16at(b, 0x36), u16at(b, 0x38));
+    (0..n).map(|i| off + i * ent).find(|&h| b[h..h + 4] == ty.to_le_bytes())
+}
+
+const PT_GNU_RELRO: u32 = 0x6474_e552;
+
+// spec/plumb.md P-D4 (WP-121 part 2): under mortar's map, PT_GNU_RELRO
+// ends on the line's maxpage, S2's (`-z max-page-size`; L-74), not on the
+// machine's default. Each reference's AArch64 library linked under
+// `-z max-page-size=0x1000` whose RELRO ends on 4 KiB, read as mortar's
+// map: no RELRO-end finding; the same output under a line without the
+// option (`max-page-size=0`, 64 KiB): the finding when the end is not on 64 KiB; the end
+// moved by 8: the finding. `-z common-page-size` changes nothing (L-75).
+#[test]
+fn p_d4_relro_ends_on_the_lines_maxpage() {
+    let Some(c) = corpus() else { return };
+    let mut n = 0;
+    for o in c.outs.iter().filter(|o| o.case == "relro") {
+        let out = o.link.output_bytes();
+        let Some(h) = phdr(&out, PT_GNU_RELRO) else { continue };
+        let end = u64at(&out, h + 16) + u64at(&out, h + 40);
+        if !end.is_multiple_of(0x1000) {
+            continue; // lld's AArch64 RELRO ends mid-page (D-61)
+        }
+        n += 1;
+        let line: Vec<String> =
+            std::fs::read_to_string(&o.line).unwrap().lines().map(str::to_string).collect();
+        let relro = |bytes: &[u8], words: &[String]| -> Vec<String> {
+            let mut map = o.link.parse_map();
+            let files = o.link.inputs(&map);
+            map.format = mortar_plumb::Format::Mortar;
+            map.args = words.iter().map(|w| w.as_bytes().to_vec()).collect();
+            let inputs: Vec<Input<'_>> =
+                files.iter().map(|(p, b)| Input { path: p, bytes: b }).collect();
+            let ctx = Ctx { line: Some(words.to_vec()), files: &Dir(&o.link.dir) };
+            mortar_plumb::verify_with(bytes, &inputs, &map, &ctx)
+                .findings
+                .iter()
+                .filter(|f| f.rule.id() == "P-D4" && f.message.starts_with("PT_GNU_RELRO ends"))
+                .map(|f| f.message.clone())
+                .collect()
+        };
+        let got = relro(&out, &line);
+        assert!(got.is_empty(), "{}: {got:#?}", o.label());
+        let mut common = line.clone();
+        common.extend(["-z".to_string(), "common-page-size=0x10000".to_string()]);
+        let got = relro(&out, &common);
+        assert!(got.is_empty(), "{} common-page-size: {got:#?}", o.label());
+        // `max-page-size=0`: the default (L-74).
+        let default: Vec<String> =
+            line.iter()
+                .map(|w| {
+                    if w.starts_with("max-page-size") {
+                        "max-page-size=0".into()
+                    } else {
+                        w.clone()
+                    }
+                })
+                .collect();
+        assert_ne!(default, line, "{}: the line has no -z max-page-size", o.label());
+        let got = relro(&out, &default);
+        assert_eq!(got.is_empty(), end.is_multiple_of(0x1_0000), "{} default: {got:#?}", o.label());
+        let mut moved = out.clone();
+        let memsz = u64at(&moved, h + 40) - 8;
+        moved[h + 40..h + 48].copy_from_slice(&memsz.to_le_bytes());
+        let got = relro(&moved, &line);
+        assert!(got.iter().any(|g| g.contains("maxpage 0x1000")), "{} moved: {got:#?}", o.label());
+    }
+    assert!(n > 0 || c.outs.is_empty(), "no reference ends RELRO on 4 KiB");
 }

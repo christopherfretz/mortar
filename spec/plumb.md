@@ -4389,7 +4389,10 @@ own implementation of D-11-D-27 and compared with the output.
   `PT_INTERP`; WP-050 proposal 3); `PT_DYNAMIC` covers exactly `.dynamic` and is writable; unless
   `-z norelro`, `PT_GNU_RELRO` covers `.dynamic`, `.got`, `.bss.rel.ro`
   and (`-z now`) `.got.plt`, and ends on maxpage (D-33, D-42, D-49,
-  D-61); under `-z norelro` there is no `PT_GNU_RELRO`.
+  D-61): for mortar's map, maxpage is S2's, the line's last `-z
+  max-page-size` (0 or none: 64 KiB on AArch64, 4 KiB on x86-64 and
+  i386; layout.md L-74), and `-z common-page-size` changes nothing
+  (L-75; WP-121); under `-z norelro` there is no `PT_GNU_RELRO`.
   `PT_GNU_STACK`'s `PF_X` (WP-088; the kernel and glibc read only that
   bit of it): under the line's last `-z execstack` it is set, under
   `-z noexecstack` clear; with neither, it is set only when an input
