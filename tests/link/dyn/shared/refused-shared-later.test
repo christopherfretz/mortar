@@ -1,0 +1,60 @@
+# cli.md §4.2 (M4 block): in a `Shared` link, the options whose effect
+# there a later package implements are refused by name, with a note naming
+# the package (WP-125: `--version-script`; WP-128: `-Bsymbolic`,
+# `--dynamic-list`, `--exclude-libs`, `-init`, `-fini`, `-z nodelete`,
+# `nodlopen`, `initfirst`, `interpose`, `origin`), and keep their status in
+# an executable (`-Bsymbolic` `noop`, `-init`/`-fini` `supported`). Every
+# reference links each line. `-shared` itself is refused until WP-123
+# joins shared-object output, with the status text of the WP-110 record's
+# §G.4. lld's `-Bsymbolic` executable is left out: it writes DF_SYMBOLIC,
+# which the verifier judges (WP-112 finding V2, as `shlib/bsymbolic.test`).
+#@ spec: cli.md "§4.2"
+#@ arch: aarch64 x86_64
+
+cc -O1 -fPIC lib.c -o lib.o
+cc -O1 -fPIE main.c -o main.o
+link(bfd,lld,mold) gcc -shared lib.o -Wl,-Bsymbolic -Wl,-init,lib_init -Wl,-fini,lib_fini -Wl,-z,nodelete -Wl,-z,nodlopen -Wl,-z,initfirst -Wl,-z,interpose -Wl,-z,origin -Wl,--exclude-libs,ALL -o lib.so
+link(mortar) gcc -shared lib.o -o lib.so
+  exit: fail
+  diag(mortar): unsupported option: -shared
+  diag(mortar): shared-object output is not joined to the link until WP-123
+link(mortar) gcc -shared lib.o -Wl,-Bsymbolic -o lib.so
+  exit: fail
+  diag(mortar): unsupported option: -Bsymbolic
+  diag(mortar): -Bsymbolic in a shared object is WP-128's
+link(mortar) gcc -shared lib.o -Wl,-init,lib_init -Wl,-fini,lib_fini -o lib.so
+  exit: fail
+  diag(mortar): unsupported option: -init
+  diag(mortar): unsupported option: -fini
+  diag(mortar): -init in a shared object is WP-128's
+link(mortar) gcc -shared lib.o -Wl,-z,nodelete -Wl,-z,nodlopen -Wl,-z,initfirst -Wl,-z,interpose -Wl,-z,origin -o lib.so
+  exit: fail
+  diag(mortar): unsupported option: -z nodelete
+  diag(mortar): unsupported option: -z nodlopen
+  diag(mortar): unsupported option: -z initfirst
+  diag(mortar): unsupported option: -z interpose
+  diag(mortar): unsupported option: -z origin
+link(mortar) gcc -shared lib.o -Wl,--exclude-libs,ALL -Wl,--version-script,v.map -o lib.so
+  exit: fail
+  diag(mortar): unsupported option: --exclude-libs
+  diag(mortar): unsupported option: --version-script
+  diag(mortar): version scripts are WP-125's
+link(bfd,mold,mortar) gcc -pie main.o -Wl,-Bsymbolic -o prog
+run(bfd,mold,mortar) prog
+  stdout: main
+
+#--- lib.c
+int lib_value = 41;
+void lib_init(void) {}
+void lib_fini(void) {}
+int lib_get(void) { return lib_value + 1; }
+
+#--- v.map
+V1 { global: lib_get; local: *; };
+
+#--- main.c
+#include <stdio.h>
+int main(void) {
+  printf("main\n");
+  return 0;
+}

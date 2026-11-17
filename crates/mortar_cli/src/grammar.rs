@@ -89,6 +89,11 @@ impl Parsed {
     /// value, in argument order. A use of a [`Lands::last_wins`] field
     /// that a later use of the same field overrides is not counted: the
     /// plan is the one the line would give without it.
+    ///
+    /// In a link whose output kind is `Shared`, the first use of each row
+    /// of `rows::SHARED_LATER` is refused too, whatever its status
+    /// (`spec/cli.md` §4.2's M4 block: an option whose `Shared` effect a
+    /// later package implements).
     #[must_use]
     pub fn refused_uses(&self) -> Vec<&Use> {
         let mut seen = vec![false; rows().len()];
@@ -104,7 +109,13 @@ impl Parsed {
             if lands.last_wins() && last.get(lands.field()) != Some(&i) {
                 continue;
             }
+            let shared_later =
+                self.plan.kind == OutputKind::Shared && use_.row().shared_later().is_some();
             match use_.row().status {
+                _ if shared_later && !seen[use_.row] => {
+                    seen[use_.row] = true;
+                    out.push(use_);
+                }
                 Status::Refused if !seen[use_.row] => {
                     seen[use_.row] = true;
                     out.push(use_);
@@ -122,7 +133,22 @@ impl Parsed {
     /// row's note.
     #[must_use]
     pub fn refusals(&self) -> Vec<(Key, Diagnostic)> {
-        self.refused_uses().into_iter().map(Use::refusal).collect()
+        let shared = self.plan.kind == OutputKind::Shared;
+        self.refused_uses()
+            .into_iter()
+            .map(|use_| {
+                let (key, d) = use_.refusal();
+                // In a `Shared` link a row of `rows::SHARED_LATER` names
+                // the later package (`spec/cli.md` §4.2's M4 block); every
+                // other link's refusals are unchanged.
+                match use_.row().shared_later() {
+                    Some(note) if shared && use_.row().refused_note().is_none() => {
+                        (key, d.note(note))
+                    }
+                    _ => (key, d),
+                }
+            })
+            .collect()
     }
 }
 

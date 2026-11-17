@@ -111,14 +111,6 @@ const AUDIT: &[(&str, Proof)] = &[
         "-Bsymbolic-functions",
         Same(&["-Bsymbolic-functions"], Some(bsymbolic_is_for_shared_objects)),
     ),
-    (
-        "--Bsymbolic-non-weak",
-        Same(&["--Bsymbolic-non-weak"], Some(bsymbolic_is_for_shared_objects)),
-    ),
-    (
-        "--Bsymbolic-non-weak-functions",
-        Same(&["--Bsymbolic-non-weak-functions"], Some(bsymbolic_is_for_shared_objects)),
-    ),
     ("-Bno-symbolic", Same(&["-Bno-symbolic"], Some(bsymbolic_is_for_shared_objects))),
     ("-rpath", Check(dynamic_options)),
     ("-I", Check(dynamic_options)),

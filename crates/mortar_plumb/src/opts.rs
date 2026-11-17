@@ -70,8 +70,6 @@ R No gnu -E --export-dynamic
 R No gnu --no-export-dynamic
 R No gnu -Bsymbolic
 R No gnu -Bsymbolic-functions
-R No - --Bsymbolic-non-weak
-R No - --Bsymbolic-non-weak-functions
 R No gnu -Bno-symbolic
 R Next gnu -rpath
 R Next gnu -I --dynamic-linker
@@ -263,6 +261,8 @@ R No gnu --disable-multiple-abs-defs
 R No - --gnu-unique
 R No - --no-gnu-unique
 R Next gnu --task-link
+R No - --Bsymbolic-non-weak
+R No - --Bsymbolic-non-weak-functions
 R Next gnu -h -soname
 R Next - --pack-dyn-relocs
 R Next gnu -f --auxiliary

@@ -736,6 +736,15 @@ impl Row {
         crate::rows::REFUSED_NOTES.iter().find(|(n, _)| *n == name).map(|(_, note)| *note)
     }
 
+    /// The note of the row's refusal in a link whose output kind is
+    /// `Shared`, when a later package implements its effect there
+    /// (`spec/cli.md` §4.2's M4 block, `crate::rows::SHARED_LATER`).
+    #[must_use]
+    pub fn shared_later(&self) -> Option<&'static str> {
+        let name = self.name();
+        crate::rows::SHARED_LATER.iter().find(|(n, _)| *n == name).map(|(_, note)| *note)
+    }
+
     /// Whether the row is a `-z` keyword.
     #[must_use]
     pub fn is_z(&self) -> bool {
