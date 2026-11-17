@@ -1884,6 +1884,51 @@ row matches, kept or dropped: WP-022.md.) A section named `.mason.meta`
 that is not a container takes the existing rows, as any other name would
 (`spec/meta.md` MT-6).
 
+**Relocations of a dropped section** (WP-194). A relocation section
+whose target has no place is dropped with its target, whatever its
+type, and its records are nothing: no liveness edge (`spec/image.md`
+I-7 speaks of the records of a live section), no reference (a symbol
+they name is referenced exactly as far as the object's symbol table
+says: an `UND` entry extracts an archive member and makes a shared
+object needed as it would without the records, and keeps its `.dynsym`
+entry in a shared object as a key named by no relocation does,
+`spec/dyn.md` D-111), no undefined-symbol diagnostic, no type check,
+and no form check. The target's row records no relocation section, so
+no later phase can read them. This is what GNU ld 2.44, lld 22 and
+mold 2.37 do (measured on the three targets: the call-graph profile's
+`SHT_REL` and a hand-made `R_*_64`/`R_386_32` record against a symbol
+defined nowhere in an `SHF_EXCLUDE` section's relocation section of the
+other form link, with and without `--gc-sections`, and the member that
+defines a symbol named only by such a record is extracted, and a shared
+object that defines it stays needed under `--as-needed`). The classes
+of target, by the row the first pass gave it (`sections::reloc_fate`):
+
+- **placed** (`Kept`): the relocation section applies; the other form
+  is `Refused{SectionType, "SHT_REL"}` (AArch64, x86-64) or
+  `"SHT_RELA"` (i386). So is one with no target (`sh_info` 0).
+- **`Excluded` kind**, whatever its reason (`SHF_EXCLUDE`, the consumed
+  `SHT_LLVM_*` types, `.gnu.lto_*`, an input's build id, `.gnu.warning*`,
+  `.ARM.attributes`): nothing, of either form. No phase reads the
+  records of one (`.gnu.warning.<sym>` warns on references from live
+  sections, never on its own records).
+- **a `.mason.meta` container**: the relocation section applies, of
+  either form, so that `spec/meta.md` MT-2a sees the container
+  relocated; it then takes the `Excluded` row, and records nothing.
+- **`Dropped(Comdat)`** (a discarded copy; its relocation section
+  inside or outside the group) and **`Dropped(Stripped)`** (`.debug*`
+  under `-S`/`-s`): the other form is nothing; the native form applies
+  as before (no phase applies it).
+- **any other consumed target**: `.debug_gnu_pubnames` and
+  `.debug_gnu_pubtypes` under `--gdb-index` (the index reads their
+  records by the machine's form: `spec/synth.md` S-G6), a symbol or
+  string table, a group, a relocation section, `.note.GNU-stack`: the
+  other form stays refused, the native form applies.
+
+A section kept at resolve but later discarded (`--gc-sections`, a
+script's `/DISCARD/`) is placed for this rule: its other-form
+relocation section is refused at resolve, before either is decided (no
+producer writes one).
+
 **Dependent libraries** (WP-034; M1 ruling). Clang writes `#pragma
 comment(lib, "name")` as a `.deplibs` section (`SHT_LLVM_DEPENDENT_LIBRARIES`,
 `SHF_MERGE | SHF_STRINGS`, entry size 1): NUL-terminated library

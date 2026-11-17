@@ -267,7 +267,10 @@ the three targets it is 0. A relocation section of the other form
 (`SHT_REL` where `Rela` is accepted, and the reverse) is refused by name
 at resolve (`SectionRefusal::RelForm`, class `section-type`, name
 `SHT_REL` or `SHT_RELA`): an `SHT_REL` section in an ELFCLASS64 input
-(AArch64, x86-64) and an `SHT_RELA` section in an `EM_386` input. Before
+(AArch64, x86-64) and an `SHT_RELA` section in an `EM_386` input, when
+its target is placed; one whose target has no place is dropped with it
+and its records are nothing (`spec/resolve.md` §10, "Relocations of a
+dropped section": Clang's `.rel.llvm.call-graph-profile`, WP-194). Before
 WP-030c a 64-bit `SHT_REL` section was accepted with A = 0, which wrote
 wrong bytes.
 

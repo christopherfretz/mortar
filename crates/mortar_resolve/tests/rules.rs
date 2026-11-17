@@ -2059,7 +2059,8 @@ fn s10_mason_containers() {
 
 /// A section with MT-1's name, type and flags that a relocation section
 /// applies to is not a container (MT-2): not listed, the `SHF_EXCLUDE`
-/// row, its relocations dropped with it, one warning per file; the
+/// row, its relocations dropped with it (not recorded: WP-194), one
+/// warning per file; the
 /// file's other container is still one.
 // spec: meta.md MT-2, MT-6 (WP-099: hod writes `.rela.mason.meta` for an
 // initializer with a pointer)
@@ -2071,7 +2072,7 @@ fn s10_relocated_container_is_not_one() {
     let i = m.section(a, MSection::new(META, SHT_PROGBITS, SHF_EXCLUDE));
     let mut rela = MSection::new(".rela.mason.meta", SHT_RELA, 0);
     rela.info = i;
-    let ri = m.section(a, rela);
+    m.section(a, rela);
     let j = m.section(a, MSection::new(META, SHT_PROGBITS, SHF_EXCLUDE));
     let k = m.section(a, MSection::new(META, SHT_PROGBITS, SHF_EXCLUDE));
     let mut rela2 = MSection::new(".rela.mason.meta", SHT_RELA, 0);
@@ -2082,8 +2083,10 @@ fn s10_relocated_container_is_not_one() {
     let row = r.sections[base + i as usize];
     assert_eq!(
         (row.kind, row.state, row.reloc),
-        (SectionKind::Excluded, SectionState::Dropped(DropReason::Excluded), SectionIndex(ri))
+        (SectionKind::Excluded, SectionState::Dropped(DropReason::Excluded), SectionIndex(0))
     );
+    // An `Excluded` target records no relocation section: its records
+    // are nothing (§10, WP-194).
     assert_eq!(r.sections[base + k as usize].kind, SectionKind::Excluded);
     assert_eq!(r.meta, vec![(a, SectionIndex(j))]);
     assert_eq!(ids(&r), ["meta-malformed"]);
@@ -2133,4 +2136,101 @@ fn s1_2_shared_objects_are_no_longer_refused() {
     assert!(ids(&r).is_empty(), "{:?}", ids(&r));
     assert!(matches!(def(&m, &r, "f"), Def::Shared(_)));
     let _ = Pool::sequential();
+}
+
+/// §10, "Relocations of a dropped section" (WP-194): a relocation section
+/// of the form the machine does not use (`SHT_REL` on AArch64 and x86-64,
+/// `SHT_RELA` on i386) is refused by name when its target is placed, has
+/// no target, or is a consumed section whose records a phase reads
+/// (`.debug_gnu_pubnames` under `--gdb-index`); one whose target has no
+/// place (`SHF_EXCLUDE`: Clang's `.rel.llvm.call-graph-profile`; a
+/// discarded COMDAT copy; a `.debug_*` section under `-S`) is dropped
+/// with it, and an `Excluded` target records no relocation section of
+/// either form: its records are nothing.
+#[test]
+fn s10_other_rel_form_dropped_with_a_target_without_place() {
+    use mortar_elf::consts::{SHT_LLVM_CALL_GRAPH_PROFILE, SHT_REL};
+    let row = |r: &Resolved, f: FileId, s: u32| {
+        r.sections[(r.section_base[f.0 as usize].start.0 + s) as usize]
+    };
+    for (machine, other, native) in [
+        (Machine::AArch64, SHT_REL, SHT_RELA),
+        (Machine::X86_64, SHT_REL, SHT_RELA),
+        (Machine::I386, SHT_RELA, SHT_REL),
+    ] {
+        let refused = |r: &Resolved, f: FileId, s: u32| {
+            assert_eq!(
+                r.problems.iter().map(|p| p.what.clone()).collect::<Vec<_>>(),
+                vec![What::Section {
+                    file: f,
+                    section: SectionIndex(s),
+                    why: SectionRefusal::RelForm(other)
+                }],
+                "{machine:?}"
+            );
+        };
+        let rel = |name: &str, sh_type: u32, info: u32| {
+            let mut s = MSection::new(name, sh_type, 0);
+            s.info = info;
+            s
+        };
+        // A placed target: refused by name.
+        let mut m = Model::new(machine);
+        let a = m.obj("a.o");
+        let s = m.section(a, rel(".rel.data", other, DATA));
+        refused(&link(&m), a, s);
+        // No target (`sh_info` 0): refused.
+        let mut m = Model::new(machine);
+        let a = m.obj("a.o");
+        let s = m.section(a, rel(".rel.none", other, 0));
+        refused(&link(&m), a, s);
+        // The call-graph profile (`SHF_EXCLUDE`), and any `SHF_EXCLUDE`
+        // section: nothing, of either form; the target records none.
+        for flags in [SHF_EXCLUDE, 0] {
+            for form in [other, native] {
+                let mut m = Model::new(machine);
+                let a = m.obj("a.o");
+                let p = m.section(
+                    a,
+                    MSection::new(".llvm.call-graph-profile", SHT_LLVM_CALL_GRAPH_PROFILE, flags),
+                );
+                m.section(a, rel(".rel.llvm.call-graph-profile", form, p));
+                let x = m.section(a, MSection::new(".foo", SHT_PROGBITS, SHF_EXCLUDE | SHF_ALLOC));
+                m.section(a, rel(".rel.foo", form, x));
+                let r = link(&m);
+                assert!(r.problems.is_empty(), "{machine:?} {flags:#x}: {:?}", r.problems);
+                let reason = if flags == 0 { DropReason::Consumed } else { DropReason::Excluded };
+                assert_eq!(row(&r, a, p).state, SectionState::Dropped(reason));
+                assert_eq!(row(&r, a, p).reloc, SectionIndex(0));
+                assert_eq!(row(&r, a, x).reloc, SectionIndex(0));
+            }
+        }
+        // A discarded COMDAT copy: dropped with it (its relocation section
+        // outside the group, as the in-group one always was).
+        let mut m = Model::new(machine);
+        let a = m.obj("a.o");
+        let b = m.obj("b.o");
+        m.comdat_def(a, "G", "x");
+        let sb = m.comdat_def(b, "G", "x");
+        m.section(b, rel(".rel.text.G", other, sb));
+        let r = link(&m);
+        assert!(r.problems.is_empty(), "{machine:?}: {:?}", r.problems);
+        assert_eq!(row(&r, b, sb).reloc, SectionIndex(0));
+        // `.debug_info` under `-S`: dropped with it; without, refused.
+        let mut m = Model::new(machine);
+        let a = m.obj("a.o");
+        let d = m.section(a, MSection::new(".debug_info", SHT_PROGBITS, 0));
+        let s = m.section(a, rel(".rel.debug_info", other, d));
+        assert!(link_with(&m, &Options { strip_debug: true, ..opts() }).problems.is_empty());
+        refused(&link(&m), a, s);
+        // `.debug_gnu_pubnames` consumed by `--gdb-index`: the index reads
+        // its records, so the other form stays refused.
+        let mut m = Model::new(machine);
+        let a = m.obj("a.o");
+        let d = m.section(a, MSection::new(".debug_gnu_pubnames", SHT_PROGBITS, 0));
+        let s = m.section(a, rel(".rel.debug_gnu_pubnames", other, d));
+        let r = link_with(&m, &Options { consume_gnu_pubnames: true, ..opts() });
+        assert_eq!(row(&r, a, d).state, SectionState::Dropped(DropReason::Consumed));
+        refused(&r, a, s);
+    }
 }

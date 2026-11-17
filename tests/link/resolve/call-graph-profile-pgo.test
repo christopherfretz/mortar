@@ -1,0 +1,35 @@
+# A real PGO object (resolve.md §10, "Relocations of a dropped section",
+# WP-194): Clang 22 compiling with a sample profile
+# (`-fprofile-sample-use`; the instrumented route needs
+# `libclang_rt.profile.a`, which this host does not have) writes
+# `.llvm.call-graph-profile` with its `SHT_REL` relocation section on all
+# three targets, next to line tables. The static program links with all
+# four, the sections are gone, and it prints what it computes.
+#@ spec: resolve.md §10
+#@ requires: clang
+
+cc(clang) -O2 -gline-tables-only -fprofile-sample-use=p.prof p.c -o p.o
+link gcc -static p.o -o prog
+run prog
+  stdout: 48
+check readelf -SW prog
+  not: call-graph
+
+#--- p.prof
+main:100000:1
+ 6: 100000 hot:100000
+ 5: 100000
+ 7: 1
+hot:100000:100000
+ 0: 100000
+#--- p.c
+#include <stdio.h>
+__attribute__((noinline)) int hot(int x) { return x * 3 + 1; }
+__attribute__((noinline)) int cold(int x) { return x - 7; }
+int main(int argc, char **argv) {
+  int s = 0;
+  for (int i = 0; i < 100000; i++) s += hot(i) & 0xff;
+  if (argc > 5) s += cold(argc);
+  printf("%d\n", s & 0x7f);
+  return 0;
+}
