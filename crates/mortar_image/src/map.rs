@@ -135,6 +135,72 @@ pub struct Map {
     /// I-78): the command line's words in order, response files
     /// expanded, the program name excluded.
     pub args: Vec<Vec<u8>>,
+    /// The records of a `-r` link (`spec/plumb.md` §14.2): `None` in every
+    /// other map, which then writes none of them. A `-r` map has no
+    /// `placed`, `nonalloc`, `folds`, `chunks`, `commons`, `defines`, no
+    /// incremental record, and of `dynamic` only `kind`
+    /// (`Some(OutputKind::Relocatable)`): nothing at `-r` has an address.
+    /// RL-4 fills it (`crate::relocatable`, WP-181).
+    pub relocatable: Option<RelocatableRecords>,
+}
+
+/// An `rplace` record (`spec/plumb.md` §14.2): input section `section`
+/// of its map file is the piece at `offset` of the output section whose
+/// header index is `out`, with `size` its input size.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RPlace {
+    pub section: u32,
+    pub out: u32,
+    pub offset: u64,
+    pub size: u64,
+}
+
+/// An `rframe` record (`spec/plumb.md` §14.2, `spec/layout.md` L-R6's
+/// record map): the record (CIE, FDE or zero terminator) at
+/// `input_offset` of input `.eh_frame` `section` of its map file is at
+/// `output_offset` of the output `.eh_frame`, or removed (`None`, `-`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RFrame {
+    pub section: u32,
+    pub input_offset: u64,
+    pub output_offset: Option<u64>,
+}
+
+/// An `rgroup` record (a **hint**, `spec/plumb.md` §14.2): the output
+/// `SHT_GROUP` at header index `out` is made from input group section
+/// `section` of map file `file` (the keeper).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RGroup {
+    pub out: u32,
+    pub file: u32,
+    pub section: u32,
+}
+
+/// An `rcommon` record (`spec/plumb.md` §14.2, RV-R5, L-R4): a common
+/// allocated under `-d`, at `offset` of output section `out` (a header
+/// index), with the alignment it was placed at (a power of two).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RCommon {
+    pub name: Vec<u8>,
+    pub out: u32,
+    pub offset: u64,
+    pub size: u64,
+    pub align: u64,
+}
+
+/// The records of a `-r` map (`spec/plumb.md` §14.2), by group, each in
+/// output order. File ids are map ids, as in [`Map`]; `discard` records
+/// are [`Map::discards`].
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RelocatableRecords {
+    /// Per map file, its `rplace` records.
+    pub rplace: Vec<Vec<RPlace>>,
+    /// Per map file, its `rframe` records.
+    pub rframe: Vec<Vec<RFrame>>,
+    /// In output header order.
+    pub rgroup: Vec<RGroup>,
+    /// In `SymbolId` order (L-R4).
+    pub rcommon: Vec<RCommon>,
 }
 
 /// The kind of a `dead` record (`spec/plumb.md` §3.2 and §6.8,
@@ -183,6 +249,10 @@ pub enum OutputKind {
     /// A shared object (`-shared`). No link writes it before the front
     /// accepts `-shared` (`spec/cli.md` §4.2, WP-117).
     Shared,
+    /// A relocatable object (`-r`, `spec/plumb.md` §14.2's `output
+    /// relocatable`). No link writes it before RL-7 lifts the refusal of
+    /// `-r` (WP-181).
+    Relocatable,
 }
 
 impl OutputKind {
@@ -194,6 +264,7 @@ impl OutputKind {
             Self::Pie => "pie",
             Self::StaticPie => "static-pie",
             Self::Shared => "shared",
+            Self::Relocatable => "relocatable",
         }
     }
 }
@@ -310,6 +381,10 @@ pub fn token(s: &[u8], out: &mut String) {
 
 /// The text of `map` (I-79): groups formatted in parallel per file and
 /// concatenated in the format's group order.
+///
+/// A `-r` map's records go in `spec/plumb.md` §14.2's writer order:
+/// `rplace` where `place` goes, then `rframe`, `rgroup`, `discard`,
+/// `rcommon`, `output`, `arg`.
 #[must_use]
 pub fn render(map: &Map, pool: &Pool) -> Vec<u8> {
     let mut out = String::from("mortar-map 2\n");
@@ -363,8 +438,16 @@ pub fn render(map: &Map, pool: &Pool) -> Vec<u8> {
         s
     });
     out.extend(placed);
+    // A `-r` map has no `nplace`/`merged` record (§14.2).
+    if let Some(r) = &map.relocatable {
+        render_rplace(r, pool, &mut out);
+        render_rframe_rgroup(r, &mut out);
+    }
     out.extend(nonalloc);
     out.extend(discards);
+    if let Some(r) = &map.relocatable {
+        render_rcommon(r, &mut out);
+    }
     for f in &map.folds {
         let _ = writeln!(out, "fold {} {} {} {}", f.file, f.section, f.into_file, f.into_section);
     }
@@ -404,6 +487,42 @@ pub fn render(map: &Map, pool: &Pool) -> Vec<u8> {
     render_dynamic(map.dynamic.as_ref(), &map.args, &mut out);
     out.push_str("end\n");
     out.into_bytes()
+}
+
+/// The `rplace` records of a `-r` map, per file in parallel.
+fn render_rplace(r: &RelocatableRecords, pool: &Pool, out: &mut String) {
+    out.extend(pool.map(r.rplace.len(), |id| {
+        let mut s = String::new();
+        for p in &r.rplace[id] {
+            let _ = writeln!(s, "rplace {id} {} {} {:x} {:x}", p.section, p.out, p.offset, p.size);
+        }
+        s
+    }));
+}
+
+/// The `rcommon` records of a `-r` map.
+fn render_rcommon(r: &RelocatableRecords, out: &mut String) {
+    for c in &r.rcommon {
+        out.push_str("rcommon ");
+        token(&c.name, out);
+        let _ = writeln!(out, " {} {:x} {:x} {:x}", c.out, c.offset, c.size, c.align);
+    }
+}
+
+/// The `rframe` and `rgroup` records of a `-r` map.
+fn render_rframe_rgroup(r: &RelocatableRecords, out: &mut String) {
+    for (id, frames) in r.rframe.iter().enumerate() {
+        for f in frames {
+            let _ = write!(out, "rframe {id} {} {:x} ", f.section, f.input_offset);
+            let _ = match f.output_offset {
+                Some(o) => writeln!(out, "{o:x}"),
+                None => writeln!(out, "-"),
+            };
+        }
+    }
+    for g in &r.rgroup {
+        let _ = writeln!(out, "rgroup {} {} {}", g.out, g.file, g.section);
+    }
 }
 
 /// The `incremental`, `hole` and `dead` records (`spec/plumb.md` §3.2).
@@ -553,5 +672,44 @@ mod tests {
         assert_eq!(line.version_scripts, [b"v.map".to_vec(), b"w.map".to_vec()]);
         plan.dynamic.bsymbolic = Some(Bsymbolic::NonWeakFunctions);
         assert_eq!(SharedLine::of(&plan), None);
+    }
+
+    // spec: plumb.md §14.2 (the map at `-r`, WP-181's writer): `rplace`
+    // where `place` goes, then `rframe`, `rgroup`, `discard`, `rcommon`,
+    // `output relocatable`, `arg`; offsets in hex, header indexes decimal.
+    #[test]
+    fn s14_2_relocatable_records_in_writer_order() {
+        let map = Map {
+            files: vec![MapFile { path: b"a.o".to_vec(), member: None }],
+            discards: vec![vec![(7, DiscardWhy::Comdat)]],
+            dynamic: Some(DynRecords {
+                kind: Some(OutputKind::Relocatable),
+                ..DynRecords::default()
+            }),
+            args: vec![b"-r".to_vec()],
+            relocatable: Some(RelocatableRecords {
+                rplace: vec![vec![RPlace { section: 1, out: 12, offset: 0x10, size: 0x20 }]],
+                rframe: vec![vec![
+                    RFrame { section: 4, input_offset: 0, output_offset: Some(0x18) },
+                    RFrame { section: 4, input_offset: 0x18, output_offset: None },
+                ]],
+                rgroup: vec![RGroup { out: 2, file: 0, section: 3 }],
+                rcommon: vec![RCommon {
+                    name: b"c".to_vec(),
+                    out: 13,
+                    offset: 0x8,
+                    size: 0x4,
+                    align: 0x4,
+                }],
+            }),
+            ..Map::default()
+        };
+        assert_eq!(
+            String::from_utf8(render(&map, &Pool::new(1))).unwrap(),
+            "mortar-map 2\nfile 0 a.o\nrplace 0 1 12 10 20\nrframe 0 4 0 18\nrframe 0 4 18 -\n\
+             rgroup 2 0 3\ndiscard 0 7 comdat\nrcommon c 13 8 4 4\noutput relocatable\n\
+             arg -r\nend\n"
+        );
+        assert_eq!(OutputKind::Relocatable.token(), "relocatable");
     }
 }

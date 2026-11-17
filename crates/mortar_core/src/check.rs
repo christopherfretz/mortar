@@ -26,9 +26,11 @@ use crate::id::{
 };
 use crate::inputs::{Inputs, Reader};
 use crate::layout::{
-    AllocKey, ChunkKind, CopyAlloc, CopyPlace, DefValue, Layout, PatchKind, SegmentRules,
-    ThunkTarget, derive_segments,
+    AllocKey, ChunkKind, CopyAlloc, CopyPlace, DefValue, Layout, PatchKind, PlacementKind,
+    SegmentRules, ThunkTarget, derive_segments,
 };
+
+pub mod relocatable;
 use crate::liveness::Liveness;
 use crate::resolution::{Def, Resolution};
 use crate::split::Split;
@@ -60,6 +62,10 @@ pub enum Rule {
     /// §4.4 rule 5: `sym_place`, `defined`, `sized`, `entry` present for
     /// exactly what needs them.
     Presence,
+    /// §4.6 MD-R1 and `spec/layout.md` L-R10: the readings of rules 1-5 for
+    /// a relocatable placement, and the group and relocation chunks
+    /// [M4-r].
+    Relocatable,
 }
 
 impl Rule {
@@ -77,6 +83,7 @@ impl Rule {
             Self::Segments => "§4.4 rule 3",
             Self::Patches => "§4.4 rule 4",
             Self::Presence => "§4.4 rule 5",
+            Self::Relocatable => "§4.6 MD-R1 (layout.md L-R10)",
         }
     }
 }
@@ -275,6 +282,11 @@ impl Layout {
 
     /// [`Layout::check`] with the violation as data.
     pub fn validate(&self, cx: &CheckContext<'_, '_>) -> Result<(), Violation> {
+        // A relocatable placement (`-r`) is read by L-R10's readings, never
+        // by the loadable rules (§4.6 MD-R1).
+        if self.placement.kind == PlacementKind::Relocatable {
+            return relocatable::validate(self, cx);
+        }
         let checker = Checker::new(self, cx)?;
         checker.width()?;
         checker.folds()?;

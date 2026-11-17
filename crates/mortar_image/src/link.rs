@@ -3071,9 +3071,9 @@ impl LinkTables<'_, '_> {
             let Some(shndx) = chunk.shndx else { continue };
             let name: &[u8] = match chunk.kind {
                 ChunkKind::Body(p) | ChunkKind::Patches(p) => l.assignment.outsecs[p.out].name,
-                ChunkKind::Merged(o) | ChunkKind::Group(o) | ChunkKind::Relocs(o) => {
-                    l.assignment.outsecs[o].name
-                }
+                ChunkKind::Merged(o) | ChunkKind::Relocs(o) => l.assignment.outsecs[o].name,
+                // `-r` only (`spec/layout.md` L-R3); no final link has one.
+                ChunkKind::Group(_) => b".group",
                 ChunkKind::Synthetic(s) => s.name,
                 _ => continue,
             };

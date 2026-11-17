@@ -15,6 +15,8 @@
 //!   and answers "has the link failed?" with one atomic load.
 //! - [`Style`]: the program name, color and the demangling hook, for
 //!   [`Report::render`] and [`Diagnostic::render`].
+//! - [`relocatable`]: the names and constructors of a `-r` link's
+//!   refusals (`spec/diag.md` §4.4), so that the `-r` packages use them.
 //! - [`stream`]: the one writer to standard error and standard output; a
 //!   failed write never panics (`spec/cli.md` §3.15).
 //!
@@ -36,6 +38,7 @@
 
 mod collect;
 mod model;
+pub mod relocatable;
 mod render;
 pub mod stream;
 

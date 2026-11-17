@@ -289,6 +289,7 @@ impl World {
             place[SectionId(s)] = Place::at(ChunkId(c), off);
         }
         let placement = Placement {
+            kind: mortar_core::PlacementKind::Loadable,
             chunks,
             order: (0..10).map(ChunkId).collect(),
             segments,

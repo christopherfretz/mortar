@@ -1,6 +1,8 @@
 //! The option table: one row per option, with its grammar and its status
 //! (`spec/cli.md` §4). The rows are in `rows.rs`.
 
+use std::fmt::Write as _;
+
 use crate::plan::{Bsymbolic, Discard, Magic, ScriptRole, Strip, SymbolRole, Target, VersionStyle};
 
 /// One option of the command line (`spec/cli.md` §4.1).
@@ -25,6 +27,10 @@ pub struct Row {
     pub lands: Lands,
     /// One line for `--help` and the generated table.
     pub help: &'static str,
+    /// What the option does at `-r` (`spec/cli.md` C-R2b): its class
+    /// there. `None` is a defect of the table (`every_row_has_a_class_at_r`).
+    /// Data only: the grammar and the conflicts at `-r` read it (RL-2).
+    pub at_r: Option<AtR>,
 }
 
 /// One spelling of an option (`spec/cli.md` §2.1).
@@ -240,6 +246,85 @@ impl Status {
             Self::Partial { .. } => "partial",
             Self::Refused => "refused",
         }
+    }
+}
+
+/// The class of an option at `-r` (`spec/cli.md` C-R2b): one of five.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AtRClass {
+    /// A rule says what it does at `-r` (C-R3; IN-12's warning).
+    Acts,
+    /// Accepted, and no byte of the output changes (C-R2, C-R2a's first
+    /// row, C-R2b's no-ops).
+    Noop,
+    /// It does at `-r` what it does in a final link: a diagnostic,
+    /// informational or input-selecting switch, or a row that keeps its
+    /// final-link status (refused by its own name, C-R2a's last
+    /// paragraph).
+    AsFinal,
+    /// `conflicting-options` with `-r` as `first` (C-R1, C-R2a, C-R4).
+    Conflicting,
+    /// Refused by name at `-r`: `Refused{Option, "<option> with -r"}`
+    /// (C-R4, C-R2a; `spec/diag.md` §4.4).
+    Refused,
+}
+
+impl AtRClass {
+    /// The words of the generated table's "at `-r`" column.
+    #[must_use]
+    pub const fn words(self) -> &'static str {
+        match self {
+            Self::Acts => "acts",
+            Self::Noop => "noop",
+            Self::AsFinal => "as in a final link",
+            Self::Conflicting => "conflicting-options with -r",
+            Self::Refused => "refused",
+        }
+    }
+}
+
+/// The package that makes an `acts` row act at `-r`, and the refusal it
+/// is until then (`spec/cli.md` C-R2b's last bullet:
+/// `Refused{Option, "<option> with -r"}`; `-r` itself is
+/// `relocatable output (-r)`, `spec/diag.md` §4.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Until {
+    /// `RL-7`, `RL-8`, `RL-10`, `RL-11`.
+    pub package: &'static str,
+    /// The refusal's name as `spec/diag.md` §4.4 spells it for the row's
+    /// first spelling.
+    pub refusal: &'static str,
+}
+
+/// A row's class at `-r`, with what the column says about it
+/// (`spec/cli.md` C-R2b).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AtR {
+    pub class: AtRClass,
+    /// What the class means for this row, or empty.
+    pub note: &'static str,
+    /// The rules (`spec/cli.md` §3.16 and the rules they cite), or empty.
+    pub rule: &'static str,
+    /// For an `acts` row, refused until a package lands.
+    pub until: Option<Until>,
+}
+
+impl AtR {
+    /// The "at `-r`" cell of `docs/status/options.md`.
+    #[must_use]
+    pub fn cell(&self) -> String {
+        let mut out = self.class.words().to_owned();
+        if !self.note.is_empty() {
+            out.push_str(": ");
+            out.push_str(self.note);
+        }
+        if let Some(u) = self.until {
+            let _ = write!(out, "; refused until {} (`{}`)", u.package, u.refusal);
+        }
+        if !self.rule.is_empty() {
+            let _ = write!(out, " ({})", self.rule);
+        }
+        out
     }
 }
 
@@ -579,6 +664,15 @@ pub enum Lands {
     Plugin,
     /// `plugin.options`.
     PluginOpt,
+    /// `ur` (`-Ur`, `spec/cli.md` C-R1) [M4-r]. Only the flag: making the
+    /// line's kind `Relocatable` is C-R1's, with the grammar at `-r` (RL-2).
+    Ur,
+    /// `force_group_allocation` (`spec/cli.md` C-R3) [M4-r].
+    ForceGroupAllocation,
+    /// `define_common` (`-d`, `-dc`, `-dp`; `spec/cli.md` C-R3) [M4-r].
+    DefineCommon,
+    /// `unique` (`--unique[=PATTERN]`; `spec/cli.md` C-R3) [M4-r].
+    Unique,
     /// `other`.
     Other,
 }
@@ -586,6 +680,7 @@ pub enum Lands {
 impl Lands {
     /// The `Plan` field the option lands in, for the generated table.
     #[must_use]
+    #[allow(clippy::too_many_lines)] // one arm per variant
     pub const fn field(self) -> &'static str {
         match self {
             Self::Output => "output",
@@ -685,6 +780,10 @@ impl Lands {
             Self::DependencyFile => "bookkeeping.dependency_file",
             Self::Plugin => "plugin.path",
             Self::PluginOpt => "plugin.options",
+            Self::Ur => "ur",
+            Self::ForceGroupAllocation => "force_group_allocation",
+            Self::DefineCommon => "define_common",
+            Self::Unique => "unique",
             Self::Other => "other",
         }
     }
@@ -723,6 +822,12 @@ impl Lands {
 }
 
 impl Row {
+    /// The row with its class at `-r` (`spec/cli.md` C-R2b).
+    #[must_use]
+    pub const fn at(self, at_r: AtR) -> Self {
+        Self { at_r: Some(at_r), ..self }
+    }
+
     /// The row's name: its first spelling as `--help` shows it.
     #[must_use]
     pub fn name(&self) -> String {

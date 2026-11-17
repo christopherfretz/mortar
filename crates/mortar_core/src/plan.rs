@@ -11,6 +11,7 @@ use std::ffi::OsString;
 /// What the command line asks for. Built by `mortar_cli::parse`; every field
 /// is filled whatever the option's status (`spec/cli.md` §3.1).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools)] // independent options of the line
 pub struct Plan {
     /// `-o`, `--output`: the output path. `None`: the default, `a.out`.
     pub output: Option<OsString>,
@@ -59,6 +60,20 @@ pub struct Plan {
     pub print_version: Option<VersionStyle>,
     /// Incremental linking (§3.13; `spec/incr.md` IN-10).
     pub incremental: Incremental,
+    /// `-Ur` (§3.16 C-R1) [M4-r]: GNU ld's "`-r`, and resolve C++
+    /// constructors", which writes the same sections as `-r`; recorded for
+    /// the map.
+    pub ur: bool,
+    /// `--force-group-allocation` (§3.16 C-R3; `spec/resolve.md` RV-R7,
+    /// `spec/layout.md` L-R2, L-R3) [M4-r]: every COMDAT group dissolved
+    /// after the election, no `SHT_GROUP` written.
+    pub force_group_allocation: bool,
+    /// `-d`, `-dc`, `-dp` (§3.16 C-R3; `spec/resolve.md` RV-R5,
+    /// `spec/layout.md` L-R4) [M4-r]: commons allocated at `-r`.
+    pub define_common: bool,
+    /// `--unique` and `--unique=PATTERN`, in command-line order (§3.16
+    /// C-R3; `spec/layout.md` L-R11) [M4-r]: `None` is the bare form.
+    pub unique: Vec<Option<OsString>>,
 }
 
 impl Plan {

@@ -201,6 +201,7 @@ pub fn place_with_copies(
     warnings.extend(syms.warnings);
     steps.step("symbols", 0, "");
     let placement = Placement {
+        kind: mortar_core::PlacementKind::Loadable,
         chunks: fixed.addressed.chunks,
         order: staged.order.clone(),
         segments: Column::from_vec(fixed.addressed.segments).unwrap_or_default(),

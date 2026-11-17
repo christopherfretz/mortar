@@ -326,9 +326,14 @@ pub enum ChunkKind {
     /// the linker adds after it.
     Patches(Part),
     Synthetic(Synth),
-    /// `-r`: the group of an output section.
-    Group(OutSecId),
-    /// `-r`: the relocations of an output section.
+    /// `-r`: one `SHT_GROUP` output section per kept group (§4.6 MD-R1,
+    /// `spec/layout.md` L-R3), named by the input `SHT_GROUP` section it
+    /// is written from: the kept copy of a COMDAT group, or one copy of a
+    /// non-COMDAT group (`spec/resolve.md` RV-R7). Its members are the
+    /// output sections `out_of` gives the input group's members (L-R2).
+    Group(SectionId),
+    /// `-r`: the relocation section of an output section with a relocated
+    /// piece (§4.6 MD-R1, `spec/layout.md` L-R10, `spec/image.md` I-R5).
     Relocs(OutSecId),
 }
 
@@ -338,10 +343,12 @@ impl ChunkKind {
     pub fn out(self) -> Option<OutSecId> {
         match self {
             Self::Body(p) | Self::Patches(p) => Some(p.out),
-            Self::Merged(o) | Self::Group(o) | Self::Relocs(o) => Some(o),
-            Self::FileHeader | Self::ProgramHeaders | Self::SectionHeaders | Self::Synthetic(_) => {
-                None
-            }
+            Self::Merged(o) | Self::Relocs(o) => Some(o),
+            Self::FileHeader
+            | Self::ProgramHeaders
+            | Self::SectionHeaders
+            | Self::Synthetic(_)
+            | Self::Group(_) => None,
         }
     }
 
@@ -366,7 +373,8 @@ pub struct Chunk {
     pub size: u64,
     /// `≥ size`; the rest is slack.
     pub capacity: u64,
-    /// The address; `None` exactly for a non-alloc chunk.
+    /// The address; `None` exactly for a non-alloc chunk, and for every
+    /// chunk of a [`PlacementKind::Relocatable`] placement (§4.6 MD-R1).
     pub addr: Option<u64>,
     /// The file offset.
     pub offset: u64,
@@ -466,13 +474,14 @@ impl Chunk {
     }
 
     /// The chunk's name: its output section's, a synthetic chunk's own, none
-    /// for the headers. (For `Group` and `Relocs`, the name of the output
-    /// section they are about; the section header's name is
-    /// `spec/layout.md`'s.)
+    /// for the headers. (A `Group` chunk is `.group`, `spec/layout.md`
+    /// L-R3; for `Relocs`, the name of the output section it is about; the
+    /// relocation section header's name is `spec/image.md` I-R5's.)
     #[must_use]
     pub fn name<'n>(&self, assignment: &Assignment<'n>) -> Option<&'n [u8]> {
         match self.kind {
             ChunkKind::Synthetic(synth) => Some(synth.name),
+            ChunkKind::Group(_) => Some(b".group"),
             kind => kind.out().and_then(|o| assignment.outsecs.get(o)).map(|o| o.name),
         }
     }
@@ -1005,9 +1014,31 @@ pub struct Hole {
     pub kind: HoleKind,
 }
 
+/// What a placement places its chunks in (§4.4; §4.6 MD-R1).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum PlacementKind {
+    /// A loadable output (an executable or a shared object): alloc chunks
+    /// have addresses, `segments` are derived from the chunks, and
+    /// `Layout::check` reads its rules 1-5 as written.
+    #[default]
+    Loadable,
+    /// A relocatable output (`-r`, §4.6 MD-R1, `spec/layout.md` L-R7): file
+    /// offsets only. No chunk has an address (alloc or not), `segments`,
+    /// `defined`, `patches`, `sized` and `tls` are empty, `entry` is none
+    /// and `sym_place` holds only `-d`'s commons; the chunks are the file
+    /// header, the section headers, `Body(o, 0)`, `Group(g)`, `Relocs(o)`
+    /// and the synthetic `.symtab`, `.symtab_shndx`, `.strtab`,
+    /// `.shstrtab`, `.eh_frame` and build-id note. `Layout::check` reads
+    /// its rules as `spec/layout.md` L-R10 says (RL-3).
+    Relocatable,
+}
+
 /// The table (§4.4).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Placement {
+    /// What the chunks are placed in: [`PlacementKind::Loadable`] for every
+    /// output but `-r`.
+    pub kind: PlacementKind,
     pub chunks: Column<ChunkId, Chunk>,
     /// Every chunk once, in file order.
     pub order: Box<[ChunkId]>,
@@ -1075,6 +1106,28 @@ pub struct Layout {
     pub merge: MergeMap,
     pub slots: Slots,
     pub placement: Placement,
+}
+
+/// The layout of a `-r` link (§4.6 MD-R1, `spec/layout.md` §24): what
+/// `mortar_layout::relocatable::layout` (RL-3) gives
+/// `mortar_image::relocatable::write` (RL-4). WP-181 fixed it so that the
+/// two packages, which run at the same time, share this type and no file.
+#[derive(Debug, Clone, Default)]
+pub struct RelocatableLayout<'n> {
+    /// `out_of` by L-R1/L-R2 (an output section is an index, never a name
+    /// alone).
+    pub assignment: Assignment<'n>,
+    /// `placement.kind` is [`PlacementKind::Relocatable`]: MD-R1's chunks
+    /// (the file header, the section headers, `Body(o, 0)` per output
+    /// section, `Group(g)` per kept group, `Relocs(o)` per output section
+    /// with a relocated piece, the synthetic chunks), in L-R8's order,
+    /// with file offsets and no address; `sym_place` holds only `-d`'s
+    /// commons (L-R4). `folds`, `merge` and `slots` are empty.
+    pub layout: Layout,
+    /// L-R6 as data: the `.eh_frame` records removed, as (input
+    /// `.eh_frame` section, offset of the record in it), sorted. A record
+    /// not listed is kept, in input order.
+    pub eh_removed: Box<[(SectionId, u64)]>,
 }
 
 // ---- §4.5 -----------------------------------------------------------------

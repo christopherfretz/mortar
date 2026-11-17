@@ -22,6 +22,7 @@ pub mod fixed;
 pub mod headers;
 pub mod order;
 pub mod rank;
+pub mod relocatable;
 pub mod run;
 pub mod slack;
 pub mod stack;

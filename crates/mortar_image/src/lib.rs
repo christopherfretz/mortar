@@ -38,6 +38,8 @@ pub mod phases;
 pub mod plan;
 mod rel;
 mod reloc;
+pub mod relocatable;
+pub mod relrel;
 pub mod source;
 pub mod synth;
 pub mod target;

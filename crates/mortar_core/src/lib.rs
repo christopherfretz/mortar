@@ -54,7 +54,8 @@ pub use id::{
 pub use idset::IdSet;
 pub use inputs::Inputs;
 pub use layout::{
-    CopyAlloc, CopyPlace, DynStr, Folds, Layout, MergeMap, Placement, Slots, VerIndex,
+    CopyAlloc, CopyPlace, DynStr, Folds, Layout, MergeMap, Placement, PlacementKind,
+    RelocatableLayout, Slots, VerIndex,
 };
 pub use liveness::Liveness;
 pub use records::RecIndex;

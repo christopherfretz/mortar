@@ -13,6 +13,7 @@
 pub use load::{LoadEnv, dependency_paths, load};
 pub use store::{ReadHook, ReadSite, Store, StorePolicy};
 
+pub mod binary;
 pub mod facts;
 pub mod load;
 pub mod problem;
