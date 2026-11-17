@@ -261,6 +261,8 @@ R No gnu --disable-multiple-abs-defs
 R No - --gnu-unique
 R No - --no-gnu-unique
 R Next gnu --task-link
+R No - --Bsymbolic-non-weak
+R No - --Bsymbolic-non-weak-functions
 R Next gnu -h -soname
 R Next - --pack-dyn-relocs
 R Next gnu -f --auxiliary
