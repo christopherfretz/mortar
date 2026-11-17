@@ -1524,6 +1524,9 @@ pub fn resolve_inputs_with(
     steps.count("comdats", u64::from(inputs.comdats.len()));
     steps.count("sections", r.sections.len() as u64);
     steps.count("rounds", u64::from(r.rounds));
+    // `spec/dyn.md` D-12 (WP-167): 1 unless a needed --as-needed shared
+    // object's reference extracts a member.
+    steps.count("stages", u64::from(r.stages));
     // §4.2, §4.7 (WP-128): `-init`/`-fini`'s symbols are roots of
     // `--gc-sections` (GNU ld and lld keep the function), never of
     // extraction (none of the three extracts a member for them).
