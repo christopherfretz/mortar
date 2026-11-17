@@ -1,0 +1,105 @@
+# dyn.md D-112, D-102, D-103 (WP-128): `-Bsymbolic` as the line's last
+# `-Bsymbolic` form, without `--dynamic-list`, binds every reference of a
+# shared object to its own definitions, of every type (function, object,
+# TLS, GNU_IFUNC, weak; protected is bound on every line), and writes
+# DT_SYMBOLIC after DT_SONAME and DF_SYMBOLIC (request P-R7; GNU ld's
+# tags: lld writes DF_SYMBOLIC only, mold neither). No dynamic
+# record names an own definition: the IFUNC's slot is an IRELATIVE, the
+# TLS module record's (TLSDESC, DTPMOD64) symbol is 0, as mold's (lld's
+# too on AArch64; lld's x86-64 DTPMOD64 names the TLS variable, and GNU
+# ld still names the IFUNC in a JUMP_SLOT and the TLS variable in its
+# TLS records: the loader binds them to the library itself through
+# DT_SYMBOLIC/DF_SYMBOLIC). Under an
+# interposer the library's own uses do NOT reach the interposer while the
+# host's calls do; the classic hazard, function address equality, runs as
+# the GNU ld pair's: a PIE host sees the library's own address (1), a
+# `-no-pie` host its canonical PLT entry (0). A writable variable the host
+# copies is R-D43's (`dyn/shlib/copy-of-symbolic*`). A later
+# `-Bno-symbolic` or `-Bsymbolic-functions` undoes it (no tag). mold's
+# libraries without `-Bsymbolic` bind the IFUNC (W20, the verifier's
+# P-D17): those lines are GNU ld's, lld's and mortar's.
+#@ spec: dyn.md "D-112"; dyn.md "D-102"
+#@ arch: aarch64 x86_64
+#@ anomaly(lld): A20
+#@ anomaly(mold): A20
+#@ xfail(bfd): the verifier's F4 on GNU ld's library: under -Bsymbolic GNU ld still calls its own IFUNC through a JUMP_SLOT naming it (the loader binds it to the library's resolver through DT_SYMBOLIC; the runs agree), not through an IPLT entry
+
+cc -O1 -fPIC lib.c -o lib.o
+cc -O1 -fPIC pre.c -o pre.o
+cc -O1 -fPIE main.c -o pie.o
+cc -O1 -fno-pie main.c -o exe.o
+shlib gcc pre.o -Wl,-soname,libpre.so -o libpre.so
+link gcc -shared lib.o -Wl,-Bsymbolic -Wl,-soname,libbs.so -o libbs.so
+check(bfd,lld,mortar) readelf -dW libbs.so
+  has: (FLAGS) SYMBOLIC$
+check(mold) readelf -dW libbs.so
+  not: SYMBOLIC
+check(bfd,mortar) readelf -dW libbs.so
+  has: (SONAME)
+  then: (SYMBOLIC) 0x0$
+  then: (FLAGS) SYMBOLIC$
+check(mold,mortar) readelf -rW libbs.so
+  not: lib_
+link(bfd,lld,mortar) gcc -shared lib.o -Wl,-soname,libplain.so -o libplain.so
+check(bfd,lld,mortar) readelf -dW libplain.so
+  not: SYMBOLIC
+check(bfd,lld,mortar) readelf -rW libplain.so
+  has: lib_f
+link(bfd,lld,mortar) gcc -shared lib.o -Wl,-Bsymbolic -Wl,-Bno-symbolic -o libbn.so
+check(bfd,lld,mortar) readelf -dW libbn.so
+  not: SYMBOLIC
+link(bfd,lld,mortar) gcc -shared lib.o -Wl,-Bsymbolic -Wl,-Bsymbolic-functions -o libbf.so
+check(bfd,lld,mortar) readelf -dW libbf.so
+  not: SYMBOLIC
+host gcc -pie pie.o -L. -lbs -o pie-bs
+host gcc -no-pie exe.o -L. -lbs -o exe-bs
+run pie-bs
+  stdout: lib 1 10 3 4 7 5
+  stdout: host 1 4 7 5 1
+run pie-bs
+  env: LD_PRELOAD=./libpre.so
+  stdout: lib 1 10 3 4 7 5
+  stdout: host 2 40 70 50 0
+run exe-bs
+  stdout: lib 1 10 3 4 7 5
+  stdout: host 1 4 7 5 0
+run exe-bs
+  env: LD_PRELOAD=./libpre.so
+  stdout: lib 1 10 3 4 7 5
+  stdout: host 2 40 70 50 0
+
+#--- lib.c
+#include <stdio.h>
+int lib_d = 10;
+__thread int lib_t = 3;
+int lib_f(void) { return 1; }
+__attribute__((weak)) int lib_w(void) { return 4; }
+__attribute__((visibility("protected"))) int lib_g(void) { return 7; }
+static int impl(void) { return 5; }
+static int (*resolve_i(void))(void) { return impl; }
+int lib_i(void) __attribute__((ifunc("resolve_i")));
+void *lib_addr_f(void) { return (void *)lib_f; }
+void lib_report(void) {
+  printf("lib %d %d %d %d %d %d\n", lib_f(), lib_d, lib_t, lib_w(), lib_g(), lib_i());
+}
+#--- pre.c
+int lib_d = 20;
+__thread int lib_t = 30;
+int lib_f(void) { return 2; }
+int lib_w(void) { return 40; }
+int lib_g(void) { return 70; }
+int lib_i(void) { return 50; }
+#--- main.c
+#include <stdio.h>
+int lib_f(void);
+int lib_w(void);
+int lib_g(void);
+int lib_i(void);
+void *lib_addr_f(void);
+void lib_report(void);
+int main(void) {
+  lib_report();
+  printf("host %d %d %d %d %d\n", lib_f(), lib_w(), lib_g(), lib_i(),
+         (void *)lib_f == lib_addr_f());
+  return 0;
+}

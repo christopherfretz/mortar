@@ -293,6 +293,17 @@ pub fn text_map_of(
             .filter(|s| matches!(s.role, SymbolRole::Undefined | SymbolRole::RequireDefined))
             .map(|s| (s.arg, s.value.as_encoded_bytes().to_vec())),
     );
+    // A script's `EXTERN(SYM)` roots, numbered as resolve numbers them.
+    roots.extend(
+        front
+            .inputs
+            .link
+            .directives
+            .iter()
+            .filter(|d| d.kind == DirectiveKind::Extern)
+            .enumerate()
+            .map(|(i, d)| (mortar_resolve::options::EXTERN_ARG + i as u32, d.value.to_vec())),
+    );
     with_link(front, store, &|_| {}, |l: &link::Link<'_, '_>| link::text_map_of(l, output, &roots))
 }
 

@@ -72,6 +72,52 @@ pub fn zeroed_place(arch: &dyn Arch, kind: TargetKind, cx: &ScanCx<'_>, at: &Rel
     roles(arch, cx, at).iter().any(|r| r.place(form) == Some(PlaceContent::Zero))
 }
 
+/// Why a record's key and addend have no `S + A` ([`SectionCx::value`]).
+/// A `RELATIVE` record is planned by the scan only for a target that has
+/// a place (`spec/resolve.md` §10.1 P-1: the scan refuses a reference to
+/// a key without one, `discarded-section-reference`), so the one case an
+/// input can bring here is a reference the image refuses by its own rule:
+/// a section symbol plus addend outside its split `Merge` section
+/// (`spec/synth.md` S-18), which `Refused` carries with its place.
+#[derive(Debug, Clone)]
+pub enum Unvalued {
+    /// The image's refusal of the reference, by name (S-18): the link
+    /// stops with it, as fill's does in a static link.
+    Refused(Box<mortar_diag::Diagnostic>),
+    /// The key is not live (no place, P-1; or the layout lacks its place):
+    /// the scan planned no record for it, so this is an internal fault,
+    /// never `RELATIVE` + 0 (`spec/image.md` I-124).
+    NotLive,
+}
+
+/// What stops [`push_records`].
+#[derive(Debug, Clone)]
+pub enum RecordError {
+    /// An invariant broken: the internal error's text.
+    Fault(String),
+    /// The record's reference is refused ([`Unvalued::Refused`]), its
+    /// diagnostic without the referring place (the caller adds it).
+    Refused(Box<mortar_diag::Diagnostic>),
+}
+
+impl RecordError {
+    /// The fault's text, or the refusal's diagnostic text: for callers
+    /// (tests) that only print it.
+    #[must_use]
+    pub fn text(&self) -> String {
+        match self {
+            Self::Fault(m) => m.clone(),
+            Self::Refused(d) => format!("{:?}", d.kind()),
+        }
+    }
+}
+
+impl From<String> for RecordError {
+    fn from(m: String) -> Self {
+        Self::Fault(m)
+    }
+}
+
 /// The records of one relocated section of an output with `.dynamic`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SectionRecords {
@@ -88,8 +134,9 @@ pub struct SectionCx<'a> {
     /// The section's address (`P` of offset 0).
     pub addr: u64,
     /// `S + A` of a record's key and addend, at link time (a `RELATIVE`'s
-    /// addend; the IPLT entry for an IFUNC, S-71).
-    pub value: &'a (dyn Fn(SymKey, i64) -> Option<u64> + Sync),
+    /// addend; the IPLT entry for an IFUNC, S-71), or why there is none
+    /// ([`Unvalued`]).
+    pub value: &'a (dyn Fn(SymKey, i64) -> Result<u64, Unvalued> + Sync),
     /// The `.dynsym` index of a key (`DynsymPlan::index`).
     pub dynsym: &'a (dyn Fn(SymbolId) -> Option<u32> + Sync),
 }
@@ -108,7 +155,7 @@ pub fn section_records<'r>(
     cx: &SectionCx<'_>,
     records: &dyn Records,
     at: &dyn Fn(u32) -> Option<RelocAt<'r>>,
-) -> Result<SectionRecords, String> {
+) -> Result<SectionRecords, RecordError> {
     let mut out = SectionRecords::default();
     for i in 0..records.len() {
         let Some(at) = at(i) else { continue };
@@ -120,12 +167,13 @@ pub fn section_records<'r>(
 
 /// The records of the one relocation at `at` ([`section_records`]'s
 /// step), pushed onto `out` (`relative` unsorted). An error names what
-/// broke an invariant.
+/// broke an invariant, or carries the refusal of the record's reference
+/// ([`Unvalued::Refused`]).
 pub fn push_records(
     cx: &SectionCx<'_>,
     at: &RelocAt<'_>,
     out: &mut SectionRecords,
-) -> Result<(), String> {
+) -> Result<(), RecordError> {
     let i = at.index;
     let rs = roles(cx.arch, &cx.scan, at);
     if rs.is_empty() {
@@ -140,12 +188,21 @@ pub fn push_records(
             .ok_or_else(|| format!("record {i}: no type for the role {role:?}"))?;
         match role {
             DynRole::Relative => {
-                let v = (cx.value)(at.key, addend)
-                    .ok_or_else(|| format!("record {i}: a RELATIVE record without S + A"))?;
+                let v = match (cx.value)(at.key, addend) {
+                    Ok(v) => v,
+                    Err(Unvalued::Refused(d)) => return Err(RecordError::Refused(d)),
+                    Err(Unvalued::NotLive) => {
+                        // P-1: the scan refuses every reference to a key
+                        // without a place, so it plans no record for one.
+                        return Err(RecordError::Fault(format!(
+                            "record {i}: a RELATIVE record of a key without a place (P-1)"
+                        )));
+                    }
+                };
                 out.relative.push(DynRecord { r_offset, r_sym: 0, r_type, addend: v as i64 });
             }
             DynRole::IRelative => {
-                return Err(format!("record {i}: an IRELATIVE record in .rela.dyn (D-41)"));
+                return Err(format!("record {i}: an IRELATIVE record in .rela.dyn (D-41)").into());
             }
             _ => {
                 let id = at.key.as_global().ok_or_else(|| {

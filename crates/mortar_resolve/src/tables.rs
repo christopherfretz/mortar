@@ -698,7 +698,18 @@ pub fn options(plan: &Plan, inputs: &Inputs<'_>, view: &InputsView<'_, '_>) -> O
     };
     Options {
         entry,
-        undefined: by_role(SymbolRole::Undefined),
+        undefined: by_role(SymbolRole::Undefined)
+            .into_iter()
+            .chain(
+                inputs
+                    .link
+                    .directives
+                    .iter()
+                    .filter(|d| d.kind == DirectiveKind::Extern)
+                    .enumerate()
+                    .map(|(i, d)| named(d.value, crate::options::EXTERN_ARG + i as u32)),
+            )
+            .collect(),
         require_defined: by_role(SymbolRole::RequireDefined),
         wrap: Vec::new(),
         allow_multiple_definition: d.allow_multiple_definition,
@@ -725,7 +736,19 @@ pub fn options(plan: &Plan, inputs: &Inputs<'_>, view: &InputsView<'_, '_>) -> O
             export_dynamic: plan.dynamic.export_dynamic,
             no_undefined_version: plan.dynamic.undefined_version == Some(false),
         },
+        exclude_libs: exclude_libs(inputs),
+        dynamic_list: None,
     }
+}
+
+/// [`Options::exclude_libs`]: the walk's flag of each file, or nothing
+/// when no file has it.
+fn exclude_libs(inputs: &Inputs<'_>) -> Vec<bool> {
+    let flag = |f: &mortar_core::inputs::File<'_>| f.state.contains(InputFlags::EXCLUDE_LIBS);
+    if !inputs.files.iter().any(|(_, f)| flag(f)) {
+        return Vec::new();
+    }
+    inputs.files.iter().map(|(_, f)| flag(f)).collect()
 }
 
 /// [`SharedLink`]: the mentions of shared objects and the positions of the
@@ -740,7 +763,13 @@ fn shared_link(
 ) -> SharedLink {
     let files = inputs.files.as_slice();
     if !files.iter().any(|f| f.kind() == InputKind::Shared) {
-        return SharedLink::default();
+        // WP-148: the switches of D-21 hold without a shared input too (a
+        // dynamic executable of objects alone exports by §9.6).
+        return SharedLink {
+            export_dynamic: plan.dynamic.export_dynamic,
+            export_symbols: export_symbols(view, export),
+            ..SharedLink::default()
+        };
     }
     let link = &inputs.link;
     let mut position = vec![u32::MAX; files.len()];
@@ -863,26 +892,30 @@ fn shared_link(
     } else {
         ShlibUndefined::Error
     };
-    // resolve.md §4.2: each key matching the glob (a value without a
-    // wildcard names its key; a glob is matched against the unversioned
-    // keys' names).
-    let mut export_symbols: Vec<SymbolId> = export.iter().filter_map(|n| n.key.get()).collect();
-    let globs: Vec<&[u8]> = export.iter().map(|n| &*n.name).filter(|p| is_glob(p)).collect();
-    if !globs.is_empty() {
-        export_symbols.extend((0..view.keys()).map(SymbolId).filter(|&k| {
-            let (name, version) = view.key_name(k);
-            version.is_none() && globs.iter().any(|p| glob_match(p, name))
-        }));
-    }
-    export_symbols.sort_unstable();
-    export_symbols.dedup();
     SharedLink {
         mentions,
         position,
         shlib_undefined,
         export_dynamic: plan.dynamic.export_dynamic,
-        export_symbols,
+        export_symbols: export_symbols(view, export),
     }
+}
+
+/// The `--export-dynamic-symbol` keys, sorted (resolve.md §4.2): each key
+/// matching the glob (a value without a wildcard names its key; a glob is
+/// matched against the unversioned keys' names).
+fn export_symbols(view: &InputsView<'_, '_>, export: &[Named]) -> Vec<SymbolId> {
+    let mut keys: Vec<SymbolId> = export.iter().filter_map(|n| n.key.get()).collect();
+    let globs: Vec<&[u8]> = export.iter().map(|n| &*n.name).filter(|p| is_glob(p)).collect();
+    if !globs.is_empty() {
+        keys.extend((0..view.keys()).map(SymbolId).filter(|&k| {
+            let (name, version) = view.key_name(k);
+            version.is_none() && globs.iter().any(|p| glob_match(p, name))
+        }));
+    }
+    keys.sort_unstable();
+    keys.dedup();
+    keys
 }
 
 // ---- the Resolution table ---------------------------------------------------
@@ -1112,6 +1145,9 @@ impl Ctx<'_, '_, '_> {
             _ => {}
         }
         if let Some(n) = o.undefined.iter().find(|n| n.arg == arg) {
+            if arg >= crate::options::EXTERN_ARG {
+                return format!("EXTERN({})", text(n));
+            }
             return format!("--undefined={}", text(n));
         }
         if let Some(n) = o.require_defined.iter().find(|n| n.arg == arg) {
@@ -1278,10 +1314,16 @@ impl Ctx<'_, '_, '_> {
                 Diagnostic::error(Kind::LinkerSymbolRedefined { name: self.name(*key) })
                     .at(self.entry(*entry))
             }
-            What::RequiredSymbol { name, arg, .. } => {
+            What::RequiredSymbol { name, arg, shared, .. } => {
                 let name = String::from_utf8_lossy(name).into_owned();
-                Diagnostic::error(Kind::RequiredSymbol { name })
-                    .at(Place::argument(self.root_text(*arg)))
+                let d = Diagnostic::error(Kind::RequiredSymbol { name })
+                    .at(Place::argument(self.root_text(*arg)));
+                match shared {
+                    Some(e) => d.with(Relation::DefinedIn, self.entry(*e)).note(
+                        "only a shared object defines it; --require-defined needs a definition in the output (GNU ld)",
+                    ),
+                    None => d,
+                }
             }
             What::EntryNotFound { name, .. } => {
                 warn(Kind::EntryNotFound { name: String::from_utf8_lossy(name).into_owned() })
@@ -1382,8 +1424,8 @@ pub struct Outcome {
     pub retained: Vec<(FileId, SectionIndex)>,
     pub entry: crate::EntryPoint,
     /// The keys the options root (§4.2: the entry, `-u`,
-    /// `--require-defined`), in option order: their definitions are
-    /// roots of `--gc-sections` (§4.7).
+    /// `--require-defined`), in option order, then `-init`'s and
+    /// `-fini`'s: their definitions are roots of `--gc-sections` (§4.7).
     pub roots: Vec<SymbolId>,
     /// The needed shared objects in `DT_NEEDED` order (`spec/dyn.md`
     /// D-19a): `Slots.needed`. Empty in a static link.
@@ -1402,23 +1444,26 @@ pub struct Outcome {
 /// `check_against`) and the diagnostics.
 #[must_use]
 pub fn resolve_inputs(inputs: &Inputs<'_>, plan: &Plan, pool: &Pool) -> Outcome {
-    resolve_inputs_with(inputs, plan, pool, None)
+    resolve_inputs_with(inputs, plan, pool, None, None)
 }
 
 /// [`resolve_inputs`] with the line's version script, compiled
 /// (`crate::version::VersionScript::compile`; `spec/resolve.md` §9.7):
-/// applied in a `Shared` output.
+/// applied in a `Shared` output; and its `--dynamic-list` files, compiled
+/// (`crate::version::DynamicList::load`; `spec/dyn.md` D-112, WP-128).
 #[must_use]
 pub fn resolve_inputs_with(
     inputs: &Inputs<'_>,
     plan: &Plan,
     pool: &Pool,
     script: Option<std::sync::Arc<crate::version::VersionScript>>,
+    dynamic_list: Option<std::sync::Arc<crate::version::DynamicList>>,
 ) -> Outcome {
     let mut steps = Steps::default();
     let view = InputsView::new_steps(inputs, pool, &mut steps);
     let mut opts = options(plan, inputs, &view);
     opts.versions.script = script;
+    opts.dynamic_list = dynamic_list;
     steps.step("options");
     let r = resolve_steps(&view, &opts, pool, &mut steps);
     let mut diagnostics = diagnostics(inputs, &view, &opts, &r);
@@ -1455,6 +1500,15 @@ pub fn resolve_inputs_with(
     steps.count("comdats", u64::from(inputs.comdats.len()));
     steps.count("sections", r.sections.len() as u64);
     steps.count("rounds", u64::from(r.rounds));
+    // §4.2, §4.7 (WP-128): `-init`/`-fini`'s symbols are roots of
+    // `--gc-sections` (GNU ld and lld keep the function), never of
+    // extraction (none of the three extracts a member for them).
+    let mut roots: Vec<SymbolId> = opts.roots().iter().map(|root| root.key).collect();
+    for name in [&plan.dynamic.init, &plan.dynamic.fini].into_iter().flatten() {
+        if let Some(key) = view.find_key(name.as_encoded_bytes()) {
+            roots.push(key);
+        }
+    }
     drop(view);
     let outcome = Outcome {
         resolution,
@@ -1463,7 +1517,7 @@ pub fn resolve_inputs_with(
         gnu_warning_syms: r.gnu_warning_syms,
         retained: r.retained,
         entry: r.entry,
-        roots: opts.roots().iter().map(|root| root.key).collect(),
+        roots,
         needed: r.dynamic.as_ref().map(|d| d.needed.clone()).unwrap_or_default(),
         closure_only: r.dynamic.as_ref().map(|d| d.closure_only.clone()).unwrap_or_default(),
         steps: Steps::default(),

@@ -1,0 +1,117 @@
+# dyn.md D-103 (WP-128): in a shared object each `-z` keyword of the
+# table sets its bit in DT_FLAGS_1 (`-z origin` also DF_ORIGIN in
+# DT_FLAGS), with `-Bsymbolic`'s DF_SYMBOLIC beside them, and the tags in
+# GNU ld's order (D-102). The loader honours them: a `nodelete` library
+# keeps its data across `dlclose` (the second `bump` counts on), a
+# `nodlopen` one cannot be `dlopen`ed, an `initfirst` one runs its
+# constructor before its sibling's although the host names it last, and
+# an `interpose` one preloaded wins as any preloaded definition does
+# (glibc reads DF_1_INTERPOSE for the preload list only). In an
+# executable the five are refused by name (`rows::SHARED_ONLY`): the
+# references disagree there (GNU ld drops `nodelete`, `nodlopen` and
+# `initfirst`; lld and mold write all five).
+#@ spec: dyn.md "D-103"
+#@ arch: aarch64 x86_64
+#@ xfail(mortar): the verifier's P-D6 on liborigin.so ("DT_FLAGS 0x1 has bits 0x1 (D-30)"): it does not read `-z origin` (`DF_ORIGIN`, `DF_1_ORIGIN`) yet (WP-161); the tags are the references' (the test's own checks, run by hand at WP-128)
+
+cc -O1 -fPIC lib.c -o lib.o
+cc -O1 -fPIC other.c -o other.o
+cc -O1 -fPIC pre.c -o pre.o
+cc -O1 -fPIE load.c -o load.o
+cc -O1 -fPIE main.c -o main.o
+shlib gcc other.o -Wl,-soname,libother.so -o libother.so
+link gcc -shared lib.o -Wl,-soname,libplain.so -o libplain.so
+check readelf -dW libplain.so
+  not: (FLAGS)
+  not: (FLAGS_1)
+link gcc -shared lib.o -Wl,-z,nodelete -o libnodelete.so
+check readelf -dW libnodelete.so
+  has: (FLAGS_1) Flags: NODELETE$
+  not: (FLAGS)
+link gcc -shared lib.o -Wl,-z,nodlopen -o libnodlopen.so
+check readelf -dW libnodlopen.so
+  has: (FLAGS_1) Flags: NOOPEN$
+link gcc -shared lib.o -Wl,-z,initfirst -Wl,-soname,libinitfirst.so -o libinitfirst.so
+check readelf -dW libinitfirst.so
+  has: (FLAGS_1) Flags: INITFIRST$
+link gcc -shared pre.o -Wl,-z,interpose -o libpre.so
+check readelf -dW libpre.so
+  has: (FLAGS_1) Flags: INTERPOSE$
+link gcc -shared lib.o -Wl,-z,origin -o liborigin.so
+check readelf -dW liborigin.so
+  has: (FLAGS) ORIGIN$
+  has: (FLAGS_1) Flags: ORIGIN$
+link gcc -shared lib.o -Wl,-z,nodelete,-z,nodlopen,-z,initfirst,-z,interpose,-z,origin,-Bsymbolic,-soname,liball.so -o liball.so
+check(lld) readelf -dW liball.so
+  has: (FLAGS) ORIGIN SYMBOLIC$
+check readelf -dW liball.so
+  has: (FLAGS_1) Flags: NODELETE INITFIRST NOOPEN ORIGIN INTERPOSE$
+check(bfd,mortar) readelf -dW liball.so
+  has: (SONAME)
+  then: (SYMBOLIC)
+  then: (FLAGS) ORIGIN SYMBOLIC$
+  then: (FLAGS_1) Flags: NODELETE INITFIRST NOOPEN ORIGIN INTERPOSE$
+link(mortar) gcc -pie main.o -L. -lplain -Wl,-z,nodelete -o bad
+  exit: fail
+  diag: unsupported option: -z nodelete
+  diag: dyn.md D-103: mortar writes this flag in a shared object (-shared) only
+link(mortar) gcc -no-pie main.o -L. -lplain -Wl,-z,origin -o bad
+  exit: fail
+  diag: unsupported option: -z origin
+host gcc -pie load.o -o load
+host gcc -pie main.o -L. -lplain -lother -o prog-plain
+host gcc -pie main.o -L. -linitfirst -lother -o prog-first
+run load ./libplain.so
+  stdout: lib ctor
+  stdout: bump 1
+  stdout: lib ctor
+  stdout: bump 1
+run load ./libnodelete.so
+  stdout: lib ctor
+  stdout: bump 1
+  stdout: bump 2
+run load ./libnodlopen.so
+  stdout: dlopen refused
+run prog-plain
+  stdout: other ctor
+  stdout: lib ctor
+  stdout: main 1 1
+run prog-first
+  stdout: lib ctor
+  stdout: other ctor
+  stdout: main 1 1
+run prog-plain
+  env: LD_PRELOAD=./libpre.so
+  stdout: other ctor
+  stdout: lib ctor
+  stdout: main 1 100
+
+#--- lib.c
+#include <stdio.h>
+static int count;
+int bump(void) { return ++count; }
+__attribute__((constructor)) static void ctor(void) { puts("lib ctor"); }
+#--- other.c
+#include <stdio.h>
+__attribute__((constructor)) static void octor(void) { puts("other ctor"); }
+int other(void) { return 1; }
+#--- pre.c
+int bump(void) { return 100; }
+#--- load.c
+#include <dlfcn.h>
+#include <stdio.h>
+int main(int argc, char **argv) {
+  for (int i = 0; i < 2 && argc > 1; i++) {
+    void *h = dlopen(argv[1], RTLD_NOW);
+    if (!h) { printf("dlopen refused\n"); return 0; }
+    int (*bump)(void) = (int (*)(void))dlsym(h, "bump");
+    printf("bump %d\n", bump());
+    dlclose(h);
+  }
+  return 0;
+}
+#--- main.c
+#include <stdio.h>
+int bump(void);
+int other(void);
+int main(void) { printf("main %d %d\n", other(), bump()); return 0; }

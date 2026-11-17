@@ -167,6 +167,9 @@ const REJECTED: &[(&[&str], &str)] = &[
     (&["-)"], "ld: error: -) without a matching --start-group\n"),
     (&["--end-lib"], "ld: error: --end-lib without a matching --start-lib\n"),
     (&["--start-lib", "--start-lib"], "ld: error: --start-lib without a matching --end-lib\n"),
+    // spec: cli.md §3.3 (a group and a lib region do not nest; WP-152)
+    (&["--start-lib", "--start-group"], "ld: error: unsupported feature: --start-group inside a --start-lib region\n"),
+    (&["-(", "--start-lib"], "ld: error: unsupported feature: --start-lib inside a group\n"),
     // spec: cli.md §3.2 (-r with -shared or -pie)
     (&["-r", "-shared"], "ld: error: -r and -shared cannot be used together\n"),
     (&["-pie", "-r"], "ld: error: -r and -pie cannot be used together\n"),
@@ -290,7 +293,7 @@ fn positional_state() {
 }
 
 // spec: cli.md §3.3 (--push-state does not save -b, the group or the lib
-// region; unterminated regions are accepted)
+// region; an unterminated region is accepted)
 #[test]
 fn push_state_saves_four_switches_only() {
     let parsed = p(&[
@@ -301,6 +304,7 @@ fn push_state_saves_four_switches_only() {
         "x.a",
         "--pop-state",
         "y.a",
+        "--end-group",
         "--push-state",
         "--start-lib",
         "z.o",
@@ -623,7 +627,7 @@ fn refused_uses_in_argument_order() {
         "0",
         "-o",
         "y",
-        "--whole-archive",
+        "--copy-dt-needed-entries",
         "-z",
         "nodelete",
         "-EL",
@@ -633,7 +637,7 @@ fn refused_uses_in_argument_order() {
         "p.so",
     ]);
     let refused: Vec<&str> = parsed.refused_uses().iter().map(|u| u.spelling.as_str()).collect();
-    assert_eq!(refused, ["-Tdata", "--whole-archive", "-z nodelete"]);
+    assert_eq!(refused, ["-Tdata", "--copy-dt-needed-entries", "-z nodelete"]);
     let rendered: Vec<String> =
         parsed.refusals().iter().map(|(_, d)| d.render(&Style::plain("ld"))).collect();
     assert_eq!(rendered[0], "ld: error: unsupported option: -Tdata\n");

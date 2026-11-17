@@ -1,0 +1,124 @@
+# The definitions of --whole-archive members are those of named objects
+# (resolve.md §3.8, §4.1, §4.2):
+# - two members defining one symbol strongly are duplicates, all three;
+#   under --allow-multiple-definition the first member's wins (E6);
+# - the same archive twice: whole then lazy links (the lazy copy is not
+#   extracted, its symbols are defined), lazy then whole extracts the
+#   lazy copy for the reference and clashes with the whole one (GNU ld,
+#   lld; mold links, input.md §9.1 [E15]), whole twice clashes, all
+#   three;
+# - R4: a lazy member of an EARLIER archive is extracted before a whole
+#   member's weak definition and wins (GNU ld, lld 2; mold does not
+#   extract, 1); a whole member first keeps the later lazy one out (1,
+#   all three);
+# - a weak definition in one member and a strong one in another: the
+#   strong one; commons of two members merge to the largest (mold
+#   keeps the first, its known bug: resolve.md §16);
+# - an inline function (a COMDAT group) in two whole members is one
+#   copy.
+#@ spec: resolve.md §3.8
+#@ spec: resolve.md §4.1
+#@ spec: input.md §9.1
+#@ requires: g++
+
+cc -O1 dup1.c -o dup1.o
+cc -O1 dup2.c -o dup2.o
+cc -O1 rd.c -o rd.o
+ar rcs libdup.a dup1.o dup2.o
+cc -O1 a.c -o a.o
+cc -O1 ma.c -o ma.o
+ar rcs liba.a a.o
+cc -O1 ks.c -o ks.o
+cc -O1 kw.c -o kw.o
+cc -O1 mk.c -o mk.o
+ar rcs libKS.a ks.o
+ar rcs libKW.a kw.o
+cc -O1 w1.c -o w1.o
+cc -O1 w2.c -o w2.o
+cc -O1 mw.c -o mw.o
+ar rcs libw.a w1.o w2.o
+cxx -O0 i1.cc -o i1.o
+cxx -O0 i2.cc -o i2.o
+cxx -O0 mi.cc -o mi.o
+ar rcs libi.a i1.o i2.o
+link gcc -static -no-pie rd.o -Wl,--whole-archive libdup.a -Wl,--no-whole-archive -o dup
+  exit: fail
+  diag(bfd): multiple definition of `dup'
+  diag(lld,mortar): duplicate symbol: dup
+  diag(mold): duplicate symbol: *: dup$
+link gcc -static -no-pie rd.o -Wl,--allow-multiple-definition,--whole-archive libdup.a -Wl,--no-whole-archive -o first
+run first
+  exit: 1
+link gcc -static -no-pie ma.o -Wl,--whole-archive liba.a -Wl,--no-whole-archive liba.a -o wholelazy
+run wholelazy
+  exit: 5
+link(bfd,lld,mortar) gcc -static -no-pie ma.o liba.a -Wl,--whole-archive liba.a -Wl,--no-whole-archive -o lazywhole
+  exit: fail
+  diag(bfd): multiple definition of `a_fn'
+  diag(lld,mortar): duplicate symbol: a_fn
+link(mold) gcc -static -no-pie ma.o liba.a -Wl,--whole-archive liba.a -Wl,--no-whole-archive -o lazywhole
+run(mold) lazywhole
+  exit: 5
+link gcc -static -no-pie ma.o -Wl,--whole-archive liba.a liba.a -Wl,--no-whole-archive -o wholewhole
+  exit: fail
+  diag(bfd): multiple definition of `a_fn'
+  diag(lld,mortar): duplicate symbol: a_fn
+  diag(mold): duplicate symbol: *: a_fn$
+link gcc -static -no-pie mk.o libKS.a -Wl,--whole-archive libKW.a -Wl,--no-whole-archive -o r4lazyfirst
+run(bfd,lld,mortar) r4lazyfirst
+  exit: 2
+run(mold) r4lazyfirst
+  exit: 1
+link gcc -static -no-pie mk.o -Wl,--whole-archive libKW.a -Wl,--no-whole-archive libKS.a -o r4wholefirst
+run r4wholefirst
+  exit: 1
+link gcc -static -no-pie mw.o -Wl,--whole-archive libw.a -Wl,--no-whole-archive -o weakcommon
+run weakcommon
+  exit: 2
+check nm -S weakcommon
+  has(bfd,lld,mortar): 0*10 B C1$
+link g++ -static -no-pie mi.o -Wl,--whole-archive libi.a -Wl,--no-whole-archive -o comdat
+run comdat
+  exit: 22
+check nm comdat
+  count: 1 _Z3inlv$
+
+#--- dup1.c
+int dup(void) { return 1; }
+#--- dup2.c
+int dup(void) { return 2; }
+#--- rd.c
+int dup(void);
+int main(void) { return dup(); }
+#--- a.c
+int a_fn(void) { return 1; }
+#--- ma.c
+int a_fn(void);
+int main(void) { return a_fn() + 4; }
+#--- ks.c
+int K(void) { return 2; }
+#--- kw.c
+__attribute__((weak)) int K(void) { return 1; }
+#--- mk.c
+int K(void);
+int main(void) { return K(); }
+#--- w1.c
+__attribute__((weak)) int W(void) { return 1; }
+__attribute__((common)) int C1;
+#--- w2.c
+int W(void) { return 2; }
+__attribute__((common)) int C1[4];
+#--- mw.c
+int W(void);
+extern int C1;
+int main(void) { return W() + C1; }
+#--- i1.cc
+inline int inl() { return 11; }
+int f1() { return inl(); }
+#--- i2.cc
+inline int inl() { return 11; }
+int f2() { return inl(); }
+#--- mi.cc
+int f1();
+int f2();
+int main() { return f1() + f2(); }

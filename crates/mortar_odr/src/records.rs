@@ -17,6 +17,7 @@
 //! and listed in `spec/landed/meta/WP-073.md`.
 
 use std::borrow::Cow;
+use std::fmt::Write as _;
 
 use mortar_core::inputs::{File, Reader};
 use mortar_core::par::Pool;
@@ -1381,12 +1382,43 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
         ))
     }
 
-    /// The kind 5 comparison (O-35, O-33).
+    /// Whether a kind 5 row is of C language linkage: `EXTERN_C`, or a row
+    /// of a `lang=c` unit (O-35: "every row of a C unit has `EXTERN_C`";
+    /// a unit that leaves the bit out is read as if it had it).
+    fn c_linkage(&self, e: &Entry<'_>) -> bool {
+        self.declaration(e).is_some_and(|r| r.flags & flags::DECL_EXTERN_C != 0)
+            || self.info[e.unit as usize].lang_c
+    }
+
+    /// The kind 5 comparison (O-35, O-33). Rows of one key whose language
+    /// linkage differs (`EXTERN_C`) are compared by `size` only (O-35 as
+    /// amended 2026-11-17): each linkage's rows among themselves first,
+    /// and only if neither of those reports, all of them by size.
     fn kind5(&self, rows: &[Entry<'l>], out: &mut Vec<Found>) {
+        let (c, cxx): (Vec<Entry<'l>>, Vec<Entry<'l>>) =
+            rows.iter().copied().partition(|e| self.c_linkage(e));
+        if c.is_empty() || cxx.is_empty() {
+            self.kind5_one(rows, false, out);
+            return;
+        }
+        let before = out.len();
+        for side in [&cxx, &c] {
+            if side.len() >= 2 {
+                self.kind5_one(side, false, out);
+            }
+        }
+        if out.len() == before {
+            self.kind5_one(rows, true, out);
+        }
+    }
+
+    /// One kind 5 comparison of `rows`: by `type` and `size`, or with
+    /// `by_size` (rows of both language linkages) by `size` alone.
+    #[allow(clippy::too_many_lines)] // one rule (O-35), read top to bottom
+    fn kind5_one(&self, rows: &[Entry<'l>], by_size: bool, out: &mut Vec<Found>) {
         let decl = |e: &Entry<'_>| self.declaration(e);
         let flag = |e: &Entry<'_>, f: u16| decl(e).is_some_and(|r| r.flags & f != 0);
-        let c_linkage =
-            rows.iter().any(|e| flag(e, flags::DECL_EXTERN_C) || self.info[e.unit as usize].lang_c);
+        let c_linkage = rows.iter().any(|e| self.c_linkage(e));
         let on = if c_linkage { self.switches.kind5_c } else { self.switches.kind5_cxx };
         if !on {
             return;
@@ -1402,10 +1434,16 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
             })
             .collect();
         sized.sort_unstable();
+        // By size alone, a row without a size joins the first sized row
+        // (the smallest type, then file order): it disagrees with none.
         let size_of = |e: &Entry<'_>| {
             let r = decl(e)?;
+            let ty = if by_size { 0 } else { r.ty };
             if r.size != 0 {
-                return Some((r.ty, r.size));
+                return Some((ty, r.size));
+            }
+            if by_size {
+                return Some((0, sized.first().map_or(0, |s| s.3)));
             }
             let at = sized.partition_point(|s| s.0 < r.ty);
             Some((r.ty, sized.get(at).filter(|s| s.0 == r.ty).map_or(0, |s| s.3)))
@@ -1416,7 +1454,7 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
         // declaration on one side of a disagreeing pair, and with two
         // classes any declaration is on one side of one.
         let disagree = classes.len() >= 2 && rows.iter().any(|e| !definition(e));
-        let noexcept_only = !disagree && classes.len() == 1 && {
+        let noexcept_only = !by_size && !disagree && classes.len() == 1 && {
             let first = flag(&rows[0], flags::DECL_NOEXCEPT);
             rows.iter().any(|e| flag(e, flags::DECL_NOEXCEPT) != first)
         };
@@ -1434,15 +1472,24 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
         if let (Some(ra), Some(rb)) = (decl(first), decl(second)) {
             let fa = self.file_text(self.file_of(first));
             let fb = self.file_text(self.file_of(second));
+            let named = |r: &DeclarationRow, e: &Entry<'_>| {
+                !self.units[e.unit as usize].string(r.type_name).is_empty()
+            };
             let what = |r: &DeclarationRow, e: &Entry<'_>| {
                 let s = self.units[e.unit as usize].string(r.type_name);
-                let t = if s.is_empty() { "?".into() } else { String::from_utf8_lossy(s) };
                 let d = if r.flags & flags::DECL_DEFINITION != 0 { "defined" } else { "declared" };
-                if r.size != 0 {
-                    format!("{d} as {t}, size {}", r.size)
-                } else {
-                    format!("{d} as {t}")
+                let mut text = d.to_owned();
+                if !s.is_empty() {
+                    let _ = write!(text, " as {}", String::from_utf8_lossy(s));
                 }
+                if by_size {
+                    let l = if self.c_linkage(e) { "C" } else { "C++" };
+                    let _ = write!(text, " with {l} language linkage");
+                }
+                if r.size != 0 {
+                    let _ = write!(text, ", size {}", r.size);
+                }
+                text
             };
             if noexcept_only {
                 notes.push(format!(
@@ -1453,7 +1500,27 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
             } else {
                 notes.push(format!("{fa}: {}; {fb}: {}", what(&ra, first), what(&rb, second)));
             }
-            if c_linkage {
+            let both_named = named(&ra, first) && named(&rb, second);
+            if !noexcept_only && !by_size && !both_named {
+                let unnamed: Vec<&str> = [(&ra, first, &fa), (&rb, second, &fb)]
+                    .into_iter()
+                    .filter(|(r, e, _)| !named(r, e))
+                    .map(|(_, _, f)| f.as_str())
+                    .collect();
+                notes.push(format!(
+                    "{} {} not record the declared type; -fmason-metadata=detail records it \
+                     (spec/odr.md O-35)",
+                    unnamed.join(" and "),
+                    if unnamed.len() == 1 { "does" } else { "do" },
+                ));
+            }
+            if by_size {
+                notes.push(
+                    "the declarations differ in language linkage: compared by size only \
+                     (spec/odr.md O-35)"
+                        .to_owned(),
+                );
+            } else if c_linkage {
                 notes.push(
                     "C linkage: compared as the producer's canonical C types (spec/odr.md O-33); \
                      a warning"

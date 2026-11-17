@@ -9,10 +9,10 @@
 //! (D-113). Neither is called for an executable.
 //!
 //! A version script's `local:` (D-110 item 1, D-114) is applied after
-//! [`exported`] by `crate::version::apply`. Not here yet: `--exclude-libs`
-//! (D-110 item 1, WP-128) and a `--dynamic-list` (D-112, WP-128): the
-//! command line refuses both in a `Shared` link (`spec/cli.md` §4.2), so
-//! no such line reaches resolution.
+//! [`exported`] by `crate::version::apply`; `--exclude-libs` (D-110 item
+//! 1, WP-128) before it, by the shared stage (`Options::exclude_libs`). A
+//! `--dynamic-list` (D-112, WP-128) changes preemption only: the shared
+//! stage tells [`preemptible`] whether the list names the key.
 
 use mortar_core::plan::{Symbolic, SymbolicLine};
 use mortar_elf::consts::{STT_FUNC, STV_DEFAULT, STV_PROTECTED};
@@ -59,8 +59,11 @@ pub fn exported(def: Def, visibility: u8, ref_dynamic: bool) -> bool {
 /// every type, `-Bsymbolic-functions` binds `STT_FUNC` only (lld's rule;
 /// `STT_GNU_IFUNC` stays preemptible), `-Bno-symbolic` or no form binds
 /// nothing. A weak definition is its type's column. A line with a
-/// `--dynamic-list` is read without it: the list is WP-128's, and the
-/// command line refuses it in a `Shared` link.
+/// `--dynamic-list` decides by the list alone, whatever its `-Bsymbolic`
+/// forms: `listed` (whether the list names the key) keeps it
+/// preemptible, of every type; an unlisted key is bound (lld's rule; GNU
+/// ld keeps `STT_TLS` and `STT_GNU_IFUNC` preemptible). `listed` is read
+/// only on such a line.
 #[must_use]
 pub fn preemptible(
     def: Def,
@@ -68,12 +71,16 @@ pub fn preemptible(
     sym_type: u8,
     exported: bool,
     symbolic: SymbolicLine,
+    listed: bool,
 ) -> bool {
     if !exported || visibility == STV_PROTECTED {
         return false;
     }
     if let Def::Provide { sym: Provided::Start | Provided::Stop, .. } = def {
         return false;
+    }
+    if symbolic.has_dynamic_list {
+        return listed;
     }
     match symbolic.form {
         Symbolic::None => true,
@@ -138,26 +145,59 @@ mod tests {
         let types = [STT_FUNC, STT_OBJECT, STT_COMMON, STT_NOTYPE, STT_TLS, STT_GNU_IFUNC];
         for d in [Def::Strong(E), Def::Weak(E)] {
             for &t in &types {
-                assert!(preemptible(d, STV_DEFAULT, t, true, line(Symbolic::None)), "{t}");
-                assert!(!preemptible(d, STV_DEFAULT, t, true, line(Symbolic::All)), "{t}");
-                let functions = preemptible(d, STV_DEFAULT, t, true, line(Symbolic::Functions));
+                assert!(preemptible(d, STV_DEFAULT, t, true, line(Symbolic::None), false), "{t}");
+                assert!(!preemptible(d, STV_DEFAULT, t, true, line(Symbolic::All), false), "{t}");
+                let functions =
+                    preemptible(d, STV_DEFAULT, t, true, line(Symbolic::Functions), false);
                 assert_eq!(functions, t != STT_FUNC, "-Bsymbolic-functions, type {t}");
                 for form in [Symbolic::None, Symbolic::All, Symbolic::Functions] {
-                    assert!(!preemptible(d, STV_PROTECTED, t, true, line(form)), "protected");
+                    assert!(
+                        !preemptible(d, STV_PROTECTED, t, true, line(form), false),
+                        "protected"
+                    );
                 }
             }
         }
         // Not exported: never preemptible (model.md §3.3 check (8)).
-        assert!(!preemptible(Def::Strong(E), STV_HIDDEN, STT_OBJECT, false, line(Symbolic::None)));
+        assert!(!preemptible(
+            Def::Strong(E),
+            STV_HIDDEN,
+            STT_OBJECT,
+            false,
+            line(Symbolic::None),
+            false
+        ));
         for sym in [Provided::Start, Provided::Stop] {
             let d = Def::Provide { sym, conditional: true };
-            assert!(!preemptible(d, STV_DEFAULT, STT_NOTYPE, true, line(Symbolic::None)));
+            assert!(!preemptible(d, STV_DEFAULT, STT_NOTYPE, true, line(Symbolic::None), false));
         }
         // A linker-defined key a shared input references is exported
         // `NOTYPE` and follows the table.
         let end = Def::Provide { sym: table(b"_end"), conditional: false };
-        assert!(preemptible(end, STV_DEFAULT, STT_NOTYPE, true, line(Symbolic::None)));
-        assert!(preemptible(end, STV_DEFAULT, STT_NOTYPE, true, line(Symbolic::Functions)));
-        assert!(!preemptible(end, STV_DEFAULT, STT_NOTYPE, true, line(Symbolic::All)));
+        assert!(preemptible(end, STV_DEFAULT, STT_NOTYPE, true, line(Symbolic::None), false));
+        assert!(preemptible(end, STV_DEFAULT, STT_NOTYPE, true, line(Symbolic::Functions), false));
+        assert!(!preemptible(end, STV_DEFAULT, STT_NOTYPE, true, line(Symbolic::All), false));
+    }
+
+    // spec: dyn.md D-112 (the `--dynamic-list` rows: key in F, key not in
+    // F, with each `-Bsymbolic` form; protected bound)
+    #[test]
+    fn d112_dynamic_list_decides_alone() {
+        let line = |form| SymbolicLine { form, has_dynamic_list: true };
+        let types = [STT_FUNC, STT_OBJECT, STT_COMMON, STT_NOTYPE, STT_TLS, STT_GNU_IFUNC];
+        for d in [Def::Strong(E), Def::Weak(E), Def::Common(E)] {
+            for &t in &types {
+                for form in [Symbolic::None, Symbolic::All, Symbolic::Functions] {
+                    assert!(preemptible(d, STV_DEFAULT, t, true, line(form), true), "{t} {form:?}");
+                    assert!(!preemptible(d, STV_DEFAULT, t, true, line(form), false), "{t}");
+                    assert!(!preemptible(d, STV_PROTECTED, t, true, line(form), true), "{t}");
+                    assert!(!preemptible(d, STV_HIDDEN, t, false, line(form), true), "{t}");
+                }
+            }
+        }
+        for sym in [Provided::Start, Provided::Stop] {
+            let d = Def::Provide { sym, conditional: true };
+            assert!(!preemptible(d, STV_DEFAULT, STT_NOTYPE, true, line(Symbolic::None), true));
+        }
     }
 }

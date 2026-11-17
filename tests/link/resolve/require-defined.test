@@ -1,0 +1,44 @@
+# --require-defined=SYM is -u SYM that must end defined in the output
+# (resolve.md §4.2): the defining member is extracted (its constructor
+# runs) and kept by --gc-sections; a name no file defines is the error
+# required-symbol (GNU ld: required symbol `x' not defined; mold:
+# --require-defined: undefined symbol: x). A definition that only a
+# shared object gives does not satisfy it in GNU ld (required symbol not
+# defined); mold accepts it (not linked here: the verifier's reading
+# of D-11 judges mold's DT_NEEDED). mortar follows GNU ld (WP-152): the line
+# is refused by name, with the shared object as a place. lld 22 has no
+# such option.
+#@ spec: resolve.md §4.2
+#@ skip(lld): lld 22 does not know --require-defined
+
+cc -O1 m.c -o m.o
+cc -O1 k.c -o k.o
+ar rcs libk.a k.o
+cc -O1 -fPIC ks.c -o ks.o
+shlib gcc ks.o -o libks.so
+link gcc -static -no-pie m.o -Wl,--require-defined=k_fn libk.a -o found
+run found
+  stdout: k ctor
+link gcc -static -no-pie m.o -Wl,--require-defined,k_fn -Wl,--gc-sections libk.a -o gc
+run gc
+  stdout: k ctor
+check nm gc
+  has: * k_fn$
+link gcc -static -no-pie m.o -Wl,--require-defined=nosuch_fn libk.a -o missing
+  exit: fail
+  diag(bfd): required symbol `nosuch_fn' not defined
+  diag(mold): --require-defined: undefined symbol: nosuch_fn
+  diag(mortar): required symbol not defined: nosuch_fn
+link(bfd,mortar) gcc m.o -Wl,--require-defined=k_fn -L. -lks -o shlib
+  exit: fail
+  diag(bfd): required symbol `k_fn' not defined
+  diag(mortar): required symbol not defined: k_fn
+
+#--- m.c
+int main(void) { return 0; }
+#--- k.c
+#include <stdio.h>
+__attribute__((constructor)) static void kc(void) { puts("k ctor"); }
+int k_fn(void) { return 5; }
+#--- ks.c
+int k_fn(void) { return 5; }

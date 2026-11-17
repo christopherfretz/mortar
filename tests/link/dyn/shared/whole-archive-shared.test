@@ -1,0 +1,72 @@
+# --whole-archive in -shared, the usual way to make a shared library of
+# a static one (resolve.md §4.2, dyn.md D-110): every member is linked,
+# referenced or not, and every default-visibility global of every member
+# is exported (g_unused too), all three; a host linked against it runs.
+# In a PIE every member is linked as in a static executable. A shared
+# library under --whole-archive is unchanged by it: under --as-needed
+# nothing references libks.so and it is not needed (all three). -u of a
+# member's name in -shared extracts it and exports it (all three). -u
+# of a name only a shared library defines makes that library needed
+# under --as-needed (dyn.md D-11 item 2: a strong reference from file 0)
+# and imports the name (D-21), as the verifier reads them; GNU ld and lld
+# do not make it needed (P-D6) and mold makes it needed without the
+# import (P-D7), so only mortar links that line here (WP-152 record).
+#@ spec: dyn.md "D-110"
+#@ spec: resolve.md §4.2
+#@ arch: aarch64 x86_64
+
+cc -O1 -fPIC g.c -o g.o
+cc -O1 -fPIC a.c -o a.o
+cc -O1 -fPIC k.c -o k.o
+cc -O1 -fPIE main.c -o main.o
+cc -O1 -fPIE m0.c -o m0.o
+ar rcs libga.a g.o a.o
+ar rcs libk.a k.o
+shlib gcc k.o -o libks.so
+link gcc -shared -Wl,--whole-archive libga.a -Wl,--no-whole-archive -o libwhole.so
+check readelf --dyn-syms -W libwhole.so
+  has: GLOBAL DEFAULT * g_unused$
+  has: GLOBAL DEFAULT * g_used$
+  has: GLOBAL DEFAULT * a_fn$
+  has: GLOBAL DEFAULT * a_var$
+  not: g_hidden
+link gcc -shared libga.a -o liblazy.so
+check readelf --dyn-syms -W liblazy.so
+  not: g_unused
+link gcc -pie m0.o -Wl,--whole-archive libga.a -Wl,--no-whole-archive -o pie
+run pie
+check nm pie
+  has: * g_unused$
+  has: * a_fn$
+link gcc -pie m0.o -L. -Wl,--whole-archive,--as-needed -lks -Wl,--no-whole-archive,--no-as-needed -o asneeded
+run asneeded
+check readelf -dW asneeded
+  not: libks.so
+link gcc -shared -u k_fn libk.a -o libu.so
+check readelf --dyn-syms -W libu.so
+  has: GLOBAL DEFAULT * k_fn$
+link(mortar) gcc -pie m0.o -u k_fn -L. -Wl,--as-needed -lks -Wl,--no-as-needed -o uneeded
+run(mortar) uneeded
+check(mortar) readelf -dW uneeded
+  has: (NEEDED) Shared library: [libks.so]
+check(mortar) readelf --dyn-syms -W uneeded
+  has: UND k_fn$
+host gcc -pie main.o -L. -lwhole -o prog
+run prog
+  stdout: 8
+
+#--- g.c
+int g_unused(void) { return 7; }
+int g_used(void) { return 8; }
+__attribute__((visibility("hidden"))) int g_hidden(void) { return 9; }
+#--- a.c
+int a_var = 1;
+int a_fn(void) { return a_var; }
+#--- k.c
+int k_fn(void) { return 5; }
+#--- main.c
+#include <stdio.h>
+int g_used(void);
+int main(void) { printf("%d\n", g_used()); return 0; }
+#--- m0.c
+int main(void) { return 0; }

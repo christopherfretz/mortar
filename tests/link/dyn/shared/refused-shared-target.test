@@ -1,9 +1,10 @@
 # Record WP-110 §D "Where the refusal stays" (WP-123): what a `-shared`
 # line may ask for outside the first target is refused by name; the
-# references link each line. `--dynamic-list` until WP-128 (`.symver`
-# definitions and version scripts link since WP-125, `dyn/version/*`);
-# `--incremental` with `-shared` is IN-12a's warning and a plain link
-# writing no state, and `--incremental=update` its error. TLS and
+# references link each line (`--dynamic-list` links since WP-128,
+# `shared/dynamic-list-*`; `.symver` definitions and version scripts
+# since WP-125, `dyn/version/*`). `--incremental` with `-shared` is
+# IN-12a's warning and a plain link writing no state, and
+# `--incremental=update` its error. TLS and
 # the library's own IFUNC link since WP-124 (`tls-shared-*`,
 # `ifunc-shared-equality`); local-exec TLS stays refused
 # (`tls-shared-le-refused`).
@@ -11,18 +12,11 @@
 #@ arch: aarch64
 
 cc -O1 -fPIC lib.c -o lib.o
-link(bfd,lld,mold) gcc -shared lib.o -Wl,--dynamic-list,dl.txt -o libdl.so
-link(mortar) gcc -shared lib.o -Wl,--dynamic-list,dl.txt -o libdl.so
-  exit: fail
-  diag: unsupported option: --dynamic-list
-  diag: --dynamic-list in a shared object is WP-128's
 link(mortar) gcc -shared lib.o -Wl,--incremental -o libinc.so
   diag: --incremental is not supported with -shared; linking without a state
 link(mortar) gcc -shared lib.o -Wl,--incremental=update -o libinc2.so
   exit: fail
   diag: --incremental=update: cannot update: incremental-unsupported (-shared)
 
-#--- dl.txt
-{ lib_get; };
 #--- lib.c
 int lib_get(void) { return 1; }

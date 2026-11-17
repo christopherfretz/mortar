@@ -28,11 +28,6 @@ const HASH_STYLE: &str =
     "dyn.md D-20: an executable gets .gnu.hash and no .hash; mortar writes =gnu";
 /// The reason of `--no-copy-dt-needed-entries` (`spec/dyn.md` D-15).
 const NO_COPY_DT_NEEDED: &str = "dyn.md D-15: the default; a library reached only through another's DT_NEEDED entries never defines a symbol of the link (D-12), and --copy-dt-needed-entries is refused";
-/// The reason of the `-Bsymbolic` row: measured, GNU ld and mold write nothing for it
-/// in a PIE (lld writes `DF_SYMBOLIC` for `-Bsymbolic`); in a shared object it is
-/// WP-128's (`SHARED_LATER`).
-const SYMBOLIC: &str = "it binds a shared object's references to its own definitions; an executable's are bound locally already, and GNU ld writes nothing for it in an executable (in a shared object it is refused until WP-128)";
-
 /// The reason of gold's `--detect-odr-violations` (`spec/odr.md` O-41):
 /// mortar's checks are on by default, and the option lowers nothing.
 const DETECT_ODR: &str = "odr.md O-41: mortar checks the one-definition rule by default; --detect-odr-violations has no further effect";
@@ -110,6 +105,18 @@ const DYNAMIC_LIST_DATA: &str = "dyn.md D-112: the references disagree (GNU ld b
 const DYNAMIC_LIST_CPP: &str =
     "dyn.md D-112: GNU ld only (lld and mold refuse it); list the symbols in a --dynamic-list";
 
+/// `-z nodelete`, `-z nodlopen`, `-z initfirst` outside a shared object
+/// (`spec/dyn.md` D-103, measured by WP-128).
+const Z_EXEC_DIFFER: &str = "dyn.md D-103: mortar writes this flag in a shared object (-shared) only; in an executable the references disagree (GNU ld writes nothing, lld and mold write the flag)";
+/// `-z interpose`, `-z origin` outside a shared object (`spec/dyn.md`
+/// D-103).
+const Z_EXEC_SHARED_ONLY: &str =
+    "dyn.md D-103: mortar writes this flag in a shared object (-shared) only";
+
+/// `--exclude-libs` (`spec/dyn.md` D-110 item 1, WP-128): what is refused
+/// although a reference links it.
+const EXCLUDE_LIBS: &str = "dyn.md D-110 item 1: an entry is an archive's file name (ALL: every archive); an entry without .a that names an archive's file name without its .a (libfoo for libfoo.a) is refused by name (GNU ld matches it, lld and mold do not)";
+
 /// The options whose effect exists only in a shared object (`spec/dyn.md`
 /// D-102, WP-123): supported in a link whose output kind is `Shared`;
 /// elsewhere each is refused by name (`Refused{Option, spelling}`) with
@@ -121,24 +128,23 @@ pub(crate) static SHARED_ONLY: &[(&str, &str)] = &[
         "--version-script",
         "dyn.md D-114: mortar applies a version script in a shared object (-shared) only; for an executable the references disagree (GNU ld exports the node names, lld exports nothing without -E, mold exports the script's global entries)",
     ),
+    // `spec/dyn.md` D-103 (WP-128): in an executable GNU ld drops these three
+    // and lld and mold write them; D-103 keeps them at their M2 status there.
+    ("-z nodelete", Z_EXEC_DIFFER),
+    ("-z nodlopen", Z_EXEC_DIFFER),
+    ("-z initfirst", Z_EXEC_DIFFER),
+    // `-z interpose` and `-z origin`: all three write the flag in every
+    // executable kind; D-103 keeps them at their M2 status there too.
+    ("-z interpose", Z_EXEC_SHARED_ONLY),
+    ("-z origin", Z_EXEC_SHARED_ONLY),
 ];
 
 /// The options whose effect in a `Shared` link a later package implements
 /// (`spec/cli.md` §4.2's M4 block): in a link whose output kind is
 /// `Shared` each is refused by name (`Refused{Option, spelling}`) with
 /// this note, whatever its status; elsewhere its row's status holds.
-pub(crate) static SHARED_LATER: &[(&str, &str)] = &[
-    ("-Bsymbolic", "dyn.md D-112, D-103: -Bsymbolic in a shared object is WP-128's"),
-    ("--dynamic-list", "dyn.md D-112: --dynamic-list in a shared object is WP-128's"),
-    ("--exclude-libs", "dyn.md D-110 item 1: --exclude-libs is WP-128's"),
-    ("-init", "dyn.md D-102: -init in a shared object is WP-128's"),
-    ("-fini", "dyn.md D-102: -fini in a shared object is WP-128's"),
-    ("-z nodelete", "dyn.md D-103: -z nodelete is WP-128's"),
-    ("-z nodlopen", "dyn.md D-103: -z nodlopen is WP-128's"),
-    ("-z initfirst", "dyn.md D-103: -z initfirst is WP-128's"),
-    ("-z interpose", "dyn.md D-103: -z interpose is WP-128's"),
-    ("-z origin", "dyn.md D-103: -z origin is WP-128's"),
-];
+/// Empty since WP-128 landed the option tail.
+pub(crate) static SHARED_LATER: &[(&str, &str)] = &[];
 
 /// The table.
 #[rustfmt::skip]
@@ -205,12 +211,12 @@ pub(crate) static ROWS: &[Row] = &[
     r(&[s("b"), g("format")], Arg::Required(Values::Any), "FORMAT", GL, &[], Group::Inputs, Refused, Lands::State(StateOp::Format), "Read the following inputs as FORMAT"),
     r(&[s("("), g("start-group")], Arg::None, "", GLM, &[], Group::Inputs, Supported, Lands::State(StateOp::StartGroup), "Start a group of archives searched repeatedly"),
     r(&[s(")"), g("end-group")], Arg::None, "", GLM, &[], Group::Inputs, Supported, Lands::State(StateOp::EndGroup), "End a group"),
-    r(&[x("start-lib")], Arg::None, "", LM, &[], Group::Inputs, Refused, Lands::State(StateOp::StartLib), "Read the following objects as members of an archive"),
-    r(&[x("end-lib")], Arg::None, "", LM, &[], Group::Inputs, Refused, Lands::State(StateOp::EndLib), "End --start-lib"),
+    r(&[x("start-lib")], Arg::None, "", LM, &[], Group::Inputs, Supported, Lands::State(StateOp::StartLib), "Read the following objects as members of an archive"),
+    r(&[x("end-lib")], Arg::None, "", LM, &[], Group::Inputs, Supported, Lands::State(StateOp::EndLib), "End --start-lib"),
     r(&[g("as-needed")], Arg::None, "", GLM, &[], Group::Inputs, Supported, Lands::State(StateOp::AsNeeded(true)), "Record DT_NEEDED for the following shared objects only if used"),
     r(&[g("no-as-needed")], Arg::None, "", GLM, &[], Group::Inputs, Supported, Lands::State(StateOp::AsNeeded(false)), "Record DT_NEEDED for every following shared object (default)"),
-    r(&[g("whole-archive")], Arg::None, "", GLM, &[], Group::Inputs, Refused, Lands::State(StateOp::WholeArchive(true)), "Take every member of the following archives"),
-    r(&[g("no-whole-archive")], Arg::None, "", GLM, &[], Group::Inputs, Refused, Lands::State(StateOp::WholeArchive(false)), "Take the members of archives that are needed (default)"),
+    r(&[g("whole-archive")], Arg::None, "", GLM, &[], Group::Inputs, Supported, Lands::State(StateOp::WholeArchive(true)), "Take every member of the following archives"),
+    r(&[g("no-whole-archive")], Arg::None, "", GLM, &[], Group::Inputs, Supported, Lands::State(StateOp::WholeArchive(false)), "Take the members of archives that are needed (default)"),
     r(&[g1("Bstatic"), g("dn"), g("non_shared"), g("static")], Arg::None, "", GLM, &[], Group::Inputs, Supported, Lands::State(StateOp::Static(true)), "Search -l for archives only"),
     r(&[g1("Bdynamic"), g("dy"), g("call_shared")], Arg::None, "", GLM, &[], Group::Inputs, Supported, Lands::State(StateOp::Static(false)), "Search -l for shared objects too (default)"),
     r(&[g("copy-dt-needed-entries"), g("add-needed")], Arg::None, "", G, &[], Group::Inputs, Refused, Lands::State(StateOp::CopyDtNeeded(true)), "Follow the DT_NEEDED entries of the following shared objects"),
@@ -245,7 +251,7 @@ pub(crate) static ROWS: &[Row] = &[
     r(&[g("default-script"), g("dT")], Arg::Required(Values::Any), "FILE", GL, &[], Group::Scripts, Refused, Lands::Script(ScriptRole::DefaultScript), "Use FILE as the default linker script"),
     r(&[s("c"), g("mri-script")], Arg::Required(Values::Any), "FILE", G, &[], Group::Scripts, Refused, Lands::Other, "Read the MRI script FILE"),
     r(&[g("version-script")], Arg::Required(Values::Any), "FILE", GLM, &[], Group::Scripts, Supported, Lands::Script(ScriptRole::VersionScript), "Read the version script FILE"),
-    r(&[g("dynamic-list")], Arg::Required(Values::Any), "FILE", GLM, &[], Group::Scripts, Refused, Lands::Script(ScriptRole::DynamicList), "Read the dynamic list FILE"),
+    r(&[g("dynamic-list")], Arg::Required(Values::Any), "FILE", GLM, &[], Group::Scripts, Supported, Lands::Script(ScriptRole::DynamicList), "Read the dynamic list FILE"),
     r(&[g("export-dynamic-symbol-list")], Arg::Required(Values::Any), "FILE", GLM, &[], Group::Scripts, Refused, Lands::Script(ScriptRole::ExportDynamicSymbolList), "Export the symbols FILE lists"),
     r(&[g("retain-symbols-file")], Arg::Required(Values::Any), "FILE", GLM, &[], Group::Scripts, Refused, Lands::Script(ScriptRole::RetainSymbolsFile), "Keep only the symbols FILE lists"),
     r(&[g("section-ordering-file")], Arg::Required(Values::Any), "FILE", G, &[], Group::Scripts, Refused, Lands::Other, "Order sections as FILE says"),
@@ -273,13 +279,13 @@ pub(crate) static ROWS: &[Row] = &[
     r(&[x("shuffle-sections")], Arg::Optional(Values::Any), "GLOB=SEED", LM, &[], Group::Scripts, Refused, Lands::Other, "Shuffle the sections GLOB matches"),
     r(&[x("reverse-sections")], Arg::None, "", M, &[], Group::Scripts, Refused, Lands::Other, "Reverse the order of input sections"),
     r(&[x("randomize-section-padding")], Arg::Required(Values::Any), "SEED", L, &[], Group::Scripts, Refused, Lands::Other, "Insert random padding between sections"),
-    r(&[s("u"), g("undefined")], Arg::Required(Values::Any), "SYMBOL", GLM, &[], Group::Symbols, Refused, Lands::Symbol(SymbolRole::Undefined), "Start with an undefined reference to SYMBOL"),
-    r(&[g("require-defined")], Arg::Required(Values::Any), "SYMBOL", GM, &[], Group::Symbols, Refused, Lands::Symbol(SymbolRole::RequireDefined), "Require that SYMBOL is defined"),
+    r(&[s("u"), g("undefined")], Arg::Required(Values::Any), "SYMBOL", GLM, &[], Group::Symbols, Supported, Lands::Symbol(SymbolRole::Undefined), "Start with an undefined reference to SYMBOL"),
+    r(&[g("require-defined")], Arg::Required(Values::Any), "SYMBOL", GM, &[], Group::Symbols, Supported, Lands::Symbol(SymbolRole::RequireDefined), "Require that SYMBOL is defined"),
     r(&[x("undefined-glob")], Arg::Required(Values::Any), "PATTERN", LM, &[], Group::Symbols, Refused, Lands::Other, "Add an undefined reference for each symbol PATTERN matches"),
     r(&[g("defsym")], Arg::Required(Values::Any), "SYMBOL=EXPR", GLM, &[], Group::Symbols, Refused, Lands::Symbol(SymbolRole::Defsym), "Define SYMBOL as EXPR"),
     r(&[g("wrap")], Arg::Required(Values::Any), "SYMBOL", GLM, &[], Group::Symbols, Refused, Lands::Symbol(SymbolRole::Wrap), "Send references to SYMBOL to __wrap_SYMBOL"),
     r(&[g("export-dynamic-symbol")], Arg::Required(Values::Any), "SYMBOL", GLM, &[], Group::Symbols, Supported, Lands::Symbol(SymbolRole::ExportDynamicSymbol), "Export SYMBOL (a glob)"),
-    r(&[g("exclude-libs")], Arg::Required(Values::Any), "LIBS", GLM, &[], Group::Symbols, Refused, Lands::Symbol(SymbolRole::ExcludeLibs), "Do not export the symbols of the archives LIBS"),
+    r(&[g("exclude-libs")], Arg::Required(Values::Any), "LIBS", GLM, &[], Group::Symbols, Partial { refused: &[], note: EXCLUDE_LIBS }, Lands::Symbol(SymbolRole::ExcludeLibs), "Do not export the symbols of the archives LIBS"),
     r(&[s("y"), g("trace-symbol")], Arg::Required(Values::Any), "SYMBOL", GLM, &[], Group::Symbols, Refused, Lands::Symbol(SymbolRole::TraceSymbol), "Report each file that mentions SYMBOL"),
     r(&[g("ignore-unresolved-symbol")], Arg::Required(Values::Any), "SYMBOL", G, &[], Group::Symbols, Refused, Lands::Symbol(SymbolRole::IgnoreUnresolved), "Do not report SYMBOL as unresolved"),
     r(&[g1("init")], Arg::Required(Values::Any), "SYMBOL", GLM, &[], Group::Symbols, Supported, Lands::Init, "Call SYMBOL when the object is loaded"),
@@ -297,7 +303,7 @@ pub(crate) static ROWS: &[Row] = &[
     r(&[g("task-link")], Arg::Required(Values::Any), "SYMBOL", G, &[], Group::Symbols, Refused, Lands::Other, "Link at task level"),
     r(&[s("E"), g("export-dynamic")], Arg::None, "", GLM, &[], Group::Dynamic, Supported, Lands::ExportDynamic(true), "Export every symbol"),
     r(&[g("no-export-dynamic")], Arg::None, "", GLM, &[], Group::Dynamic, Supported, Lands::ExportDynamic(false), "Export only the symbols that need it (default)"),
-    r(&[g1("Bsymbolic")], Arg::None, "", GLM, &[], Group::Dynamic, Noop(SYMBOLIC), Lands::Bsymbolic(Some(Bsymbolic::All)), "Bind references to global symbols locally"),
+    r(&[g1("Bsymbolic")], Arg::None, "", GLM, &[], Group::Dynamic, Supported, Lands::Bsymbolic(Some(Bsymbolic::All)), "Bind a shared object's references to its own definitions (DT_SYMBOLIC); nothing in an executable"),
     r(&[g1("Bsymbolic-functions")], Arg::None, "", GLM, &[], Group::Dynamic, Supported, Lands::Bsymbolic(Some(Bsymbolic::Functions)), "Bind references to global functions locally"),
     r(&[x("Bsymbolic-non-weak")], Arg::None, "", LM, &[], Group::Dynamic, Refused, Lands::Bsymbolic(Some(Bsymbolic::NonWeak)), "Bind references to non-weak globals locally"),
     r(&[x("Bsymbolic-non-weak-functions")], Arg::None, "", LM, &[], Group::Dynamic, Refused, Lands::Bsymbolic(Some(Bsymbolic::NonWeakFunctions)), "Bind references to non-weak global functions locally"),
@@ -357,8 +363,8 @@ pub(crate) static ROWS: &[Row] = &[
     r(&[g("unresolved-symbols")], Arg::Required(Values::Choice(&["report-all", "ignore-all", "ignore-in-object-files", "ignore-in-shared-libs"])), "METHOD", GLM, &[], Group::Diagnostics, Refused, Lands::UnresolvedSymbols, "How to treat unresolved symbols"),
     r(&[g("warn-unresolved-symbols")], Arg::None, "", GLM, &[], Group::Diagnostics, Refused, Lands::WarnUnresolved(true), "Report unresolved symbols as warnings"),
     r(&[g("error-unresolved-symbols")], Arg::None, "", GLM, &[], Group::Diagnostics, Refused, Lands::WarnUnresolved(false), "Report unresolved symbols as errors (default)"),
-    r(&[g("allow-multiple-definition")], Arg::None, "", GLM, &[], Group::Diagnostics, Refused, Lands::AllowMultipleDefinition(true), "Take the first of several definitions of a symbol"),
-    r(&[x("no-allow-multiple-definition")], Arg::None, "", L, &[], Group::Diagnostics, Refused, Lands::AllowMultipleDefinition(false), "Report symbols defined more than once (default)"),
+    r(&[g("allow-multiple-definition")], Arg::None, "", GLM, &[], Group::Diagnostics, Supported, Lands::AllowMultipleDefinition(true), "Take the first of several definitions of a symbol"),
+    r(&[x("no-allow-multiple-definition")], Arg::None, "", L, &[], Group::Diagnostics, Supported, Lands::AllowMultipleDefinition(false), "Report symbols defined more than once (default)"),
     r(&[g("noinhibit-exec"), g("noinhibit_exec")], Arg::None, "", GLM, &[], Group::Diagnostics, Refused, Lands::NoinhibitExec, "Write the output even after errors"),
     r(&[g("error-handling-script")], Arg::Required(Values::Any), "SCRIPT", GL, &[], Group::Diagnostics, Refused, Lands::Other, "Run SCRIPT for undefined symbols and missing libraries"),
     r(&[g("warn-common")], Arg::None, "", GLM, &[], Group::Diagnostics, Supported, Lands::WarnCommon(true), "Warn about common symbols"),
@@ -548,7 +554,7 @@ pub(crate) static ROWS: &[Row] = &[
     r(&[z("nocombreloc")], Arg::None, "", GLM, &[], Group::Z, Refused, Lands::Z(ZField::Combreloc(false)), "Do not sort dynamic relocations"),
     r(&[z("sectionheader")], Arg::None, "", GLM, &[], Group::Z, Noop("layout.md L-63: the section header table is always written (the default)"), Lands::Z(ZField::Sectionheader(true)), "Write the section header table (default)"),
     r(&[z("nosectionheader")], Arg::None, "", GLM, &[], Group::Z, Refused, Lands::Z(ZField::Sectionheader(false)), "Write no section header table"),
-    r(&[z("muldefs")], Arg::None, "", GLM, &[], Group::Z, Refused, Lands::AllowMultipleDefinition(true), "Take the first of several definitions of a symbol"),
+    r(&[z("muldefs")], Arg::None, "", GLM, &[], Group::Z, Supported, Lands::AllowMultipleDefinition(true), "Take the first of several definitions of a symbol"),
     r(&[z("unique-symbol")], Arg::None, "", G, &[], Group::Z, Refused, Lands::Other, "Give local symbols unique names"),
     r(&[z("nounique-symbol")], Arg::None, "", G, &[], Group::Z, Refused, Lands::Other, "Keep duplicate local symbol names (default)"),
     r(&[z("globalaudit")], Arg::None, "", G, &[], Group::Z, Refused, Lands::Other, "Mark the executable for global auditing"),
@@ -556,16 +562,16 @@ pub(crate) static ROWS: &[Row] = &[
     r(&[z("nostart-stop-gc")], Arg::None, "", GL, &[], Group::Z, Noop("layout.md L-96: the default"), Lands::Other, "Let __start_/__stop_ references keep sections (default)"),
     r(&[z("start-stop-visibility")], Arg::Required(Values::Choice(&["default", "internal", "hidden", "protected"])), "VISIBILITY", GL, &[], Group::Z, Refused, Lands::Other, "Visibility of __start_ and __stop_ symbols"),
     r(&[z("global")], Arg::None, "", GL, &[], Group::Z, Refused, Lands::Other, "Make the symbols of this object available to later loads"),
-    r(&[z("initfirst")], Arg::None, "", GLM, &[], Group::Z, Refused, Lands::Other, "Initialize this object first"),
-    r(&[z("interpose")], Arg::None, "", GLM, &[], Group::Z, Refused, Lands::Other, "Let this object interpose all but the executable"),
+    r(&[z("initfirst")], Arg::None, "", GLM, &[], Group::Z, Supported, Lands::Other, "Initialize this object first"),
+    r(&[z("interpose")], Arg::None, "", GLM, &[], Group::Z, Supported, Lands::Other, "Let this object interpose all but the executable"),
     r(&[z("unique")], Arg::None, "", G, &[], Group::Z, Refused, Lands::Other, "Load this object at most once"),
     r(&[z("nounique")], Arg::None, "", G, &[], Group::Z, Refused, Lands::Other, "Do not mark the object as unique"),
     r(&[z("loadfltr")], Arg::None, "", G, &[], Group::Z, Refused, Lands::Other, "Process the filtees at load time"),
     r(&[z("nodefaultlib")], Arg::None, "", GLM, &[], Group::Z, Refused, Lands::Other, "Do not search the default directories for dependencies"),
-    r(&[z("nodelete")], Arg::None, "", GLM, &[], Group::Z, Refused, Lands::Other, "Never unload this object"),
-    r(&[z("nodlopen")], Arg::None, "", GLM, &[], Group::Z, Refused, Lands::Other, "Do not allow dlopen of this object"),
+    r(&[z("nodelete")], Arg::None, "", GLM, &[], Group::Z, Supported, Lands::Other, "Never unload this object"),
+    r(&[z("nodlopen")], Arg::None, "", GLM, &[], Group::Z, Supported, Lands::Other, "Do not allow dlopen of this object"),
     r(&[z("nodump")], Arg::None, "", GM, &[], Group::Z, Refused, Lands::Other, "Do not allow dldump of this object"),
-    r(&[z("origin")], Arg::None, "", GLM, &[], Group::Z, Refused, Lands::Other, "The object uses $ORIGIN"),
+    r(&[z("origin")], Arg::None, "", GLM, &[], Group::Z, Supported, Lands::Other, "The object uses $ORIGIN"),
     r(&[z("common")], Arg::None, "", G, &[], Group::Z, Refused, Lands::Other, "Give common symbols the type STT_COMMON"),
     r(&[z("nocommon")], Arg::None, "", G, &[], Group::Z, Refused, Lands::Other, "Give common symbols the type STT_OBJECT"),
     r(&[z("memory-seal")], Arg::None, "", G, &[], Group::Z, Supported, Lands::Z(ZField::MemorySeal(true)), "Mark the object for memory sealing"),

@@ -880,6 +880,15 @@ impl Parser<'_> {
                 None => self.unbalanced(at, name, "--push-state"),
             },
             StateOp::StartGroup => {
+                // §3.3 (WP-152): a group and a lib region do not nest,
+                // either way (lld 22 refuses both, mold accepts both, GNU
+                // ld has no lib regions). An unclosed `--start-lib` before
+                // a driver's `--start-group -lgcc -lc --end-group crtend.o
+                // crtn.o` made the start-up files lazy and the program
+                // crash: refused by name.
+                if self.state.lib.is_some() {
+                    self.nesting(at, "--start-group inside a --start-lib region");
+                }
                 if self.group_depth == 0 {
                     self.groups += 1;
                     self.state.group = Some(self.groups);
@@ -897,6 +906,9 @@ impl Parser<'_> {
                 }
             }
             StateOp::StartLib => {
+                if self.group_depth > 0 {
+                    self.nesting(at, "--start-lib inside a group");
+                }
                 if self.state.lib.is_some() {
                     self.unbalanced(at, name, "--end-lib");
                 } else {
@@ -912,6 +924,11 @@ impl Parser<'_> {
                 }
             }
         }
+    }
+
+    /// A group and a lib region nested (§3.3): refused by name.
+    fn nesting(&mut self, at: usize, what: &str) {
+        self.error(at, Diagnostic::refused(RefusalClass::Feature, what));
     }
 
     fn unbalanced(&mut self, at: usize, option: &str, counterpart: &str) {

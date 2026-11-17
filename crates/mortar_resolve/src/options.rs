@@ -47,12 +47,18 @@ pub struct Output {
     pub dynamic: bool,
 }
 
+/// The argument index of the first script `EXTERN(SYM)` root (§4.2): a
+/// script directive has no command-line argument, so its roots are
+/// numbered from here, after any argument index a line can have.
+pub const EXTERN_ARG: u32 = 1 << 31;
+
 /// Everything resolution reads besides the view.
 #[allow(clippy::struct_excessive_bools, reason = "one field per switch of the command line")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Options {
     pub entry: Entry,
-    /// `-u SYM` (§4.2).
+    /// `-u SYM` (§4.2), then each script `EXTERN(SYM)` (§4.2; its `arg`
+    /// is [`EXTERN_ARG`] plus the directive's ordinal).
     pub undefined: Vec<Named>,
     /// `--require-defined=SYM` (§4.2).
     pub require_defined: Vec<Named>,
@@ -85,6 +91,15 @@ pub struct Options {
     /// The version script and the options rule 12 and rule 9 read
     /// (`spec/resolve.md` §9.7; WP-125): applied in a `Shared` output.
     pub versions: crate::version::VersionLine,
+    /// `--exclude-libs` (`spec/dyn.md` D-110 item 1; WP-128): one flag per
+    /// file, set for a member of an archive the option names (the input
+    /// walk's `InputFlags::EXCLUDE_LIBS`). Empty when no file is excluded.
+    pub exclude_libs: Vec<bool>,
+    /// The line's `--dynamic-list` files as one list, compiled
+    /// (`spec/dyn.md` D-112, `spec/resolve.md` §9.6; WP-128): in a
+    /// `Shared` output it decides preemption alone; in an executable each
+    /// definition it lists is exported (as `--export-dynamic-symbol`).
+    pub dynamic_list: Option<std::sync::Arc<crate::version::DynamicList>>,
 }
 
 /// What a `Shared` output's resolution reads (`spec/dyn.md` D-110, D-112,
@@ -205,6 +220,8 @@ impl Default for Options {
             shared: SharedLink::default(),
             shared_output: None,
             versions: crate::version::VersionLine::default(),
+            exclude_libs: Vec::new(),
+            dynamic_list: None,
         }
     }
 }

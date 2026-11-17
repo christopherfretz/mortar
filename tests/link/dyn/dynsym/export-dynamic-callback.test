@@ -1,0 +1,156 @@
+# dyn.md D-21, resolve.md §9.6 (WP-148): an executable's exports, used
+# at run time by a library that calls back into it.
+#
+# 1. A dynamic executable of objects alone (`-nostdlib`, no shared object
+#    on the line) with `--export-dynamic` / `--export-dynamic-symbol`:
+#    a library preloaded into it (`LD_PRELOAD`, not on the line) calls
+#    the executable's exported function and reads its exported variable
+#    from its constructor. Before WP-148 mortar accepted both options and
+#    wrote an empty `.dynsym` (the shared stage, which computes the
+#    export set, ran only with a shared input): the loader stopped on
+#    `undefined symbol: exported_var`. lld and mold export in a PIE; so
+#    does GNU ld, with its linker-defined `_end`/`__end__` exported under
+#    a section index that does not hold them (the verifier's P-D7), so its
+#    output is left out. In `-no-pie` GNU ld and lld write no `.dynamic`
+#    at all (the program is static, the preload is ignored) and mold
+#    writes `.dynsym` and `PT_INTERP` with no `PT_DYNAMIC` (P-D4): the
+#    `-no-pie` steps are mortar's only (the same exports as the PIE).
+# 2. With libc on the line (gcc's line, `-Wl,-E`): a plugin the program
+#    `dlopen`s calls the program's exported function and writes its
+#    exported variable, which the program then reads.
+# 3. Without any export option: a needed library that REFERENCES the
+#    program's function and variable binds them, so they are exported
+#    (`ref_dynamic`, §9.6), and nothing else is.
+#@ spec: dyn.md "D-21"
+#@ spec: resolve.md "9.6 Export, preemption, copy relocations"
+#@ arch: aarch64 x86_64
+
+cc -O1 -fPIE bare.c -o bare.o
+cc -O1 -fno-pie bare.c -o bare-exec.o
+cc -O1 -fPIC pre.c -o pre.o
+cc -O1 -fPIC plugin.c -o plugin.o
+cc -O1 -fPIC cb.c -o cb.o
+cc -O1 -fPIE main.c -o main.o
+cc -O1 -fno-pie main.c -o main-exec.o
+cc -O1 -fPIE needs.c -o needs.o
+cc -O1 -fno-pie needs.c -o needs-exec.o
+shlib gcc pre.o -Wl,-soname,libpre.so -o libpre.so
+shlib gcc plugin.o -Wl,-soname,libplug.so -o libplug.so
+shlib gcc cb.o -Wl,-soname,libcb.so -o libcb.so
+
+# 1. Objects alone.
+link(lld,mold,mortar) gcc -pie -nostdlib -Wl,--export-dynamic bare.o -o bare-pie
+check(lld,mold,mortar) readelf --dyn-syms -W bare-pie
+  has: FUNC GLOBAL DEFAULT * exported_fn$
+  has: OBJECT GLOBAL DEFAULT * exported_var$
+  not: hidden_fn
+run(lld,mold,mortar) bare-pie
+  env: LD_PRELOAD=./libpre.so
+  stdout: pre: 42 7
+  exit: 42
+link gcc -pie -nostdlib -Wl,--export-dynamic-symbol=exported_* bare.o -o bare-eds
+check readelf --dyn-syms -W bare-eds
+  has: exported_fn$
+  has: exported_var$
+  not: other_fn
+run bare-eds
+  env: LD_PRELOAD=./libpre.so
+  stdout: pre: 42 7
+  exit: 42
+link(mortar) gcc -no-pie -nostdlib -Wl,--export-dynamic bare-exec.o -o bare-exec
+check(mortar) readelf --dyn-syms -W bare-exec
+  has: FUNC GLOBAL DEFAULT * exported_fn$
+  has: OBJECT GLOBAL DEFAULT * exported_var$
+run(mortar) bare-exec
+  env: LD_PRELOAD=./libpre.so
+  stdout: pre: 42 7
+  exit: 42
+
+# 2. A dlopen'ed plugin.
+link gcc -pie -Wl,-E main.o -o plug-pie
+run plug-pie
+  stdout: plugin: 42 7
+  stdout: main: 99
+link gcc -no-pie -Wl,-E main-exec.o -o plug-exec
+run plug-exec
+  stdout: plugin: 42 7
+  stdout: main: 99
+
+# 3. A needed library's references, no export option.
+link gcc -pie needs.o -L. -lcb -o needs-pie
+check readelf --dyn-syms -W needs-pie
+  has: FUNC GLOBAL DEFAULT * exported_fn$
+  has: OBJECT GLOBAL DEFAULT * exported_var$
+  not: other_fn
+run needs-pie
+  stdout: cb: 50 8
+link gcc -no-pie needs-exec.o -L. -lcb -o needs-exec
+check readelf --dyn-syms -W needs-exec
+  has: FUNC GLOBAL DEFAULT * exported_fn$
+  has: OBJECT GLOBAL DEFAULT * exported_var$
+  not: other_fn
+run needs-exec
+  stdout: cb: 50 8
+
+#--- bare.c
+int exported_var = 7;
+__attribute__((noinline)) int exported_fn(void) { return 42; }
+__attribute__((noinline)) int other_fn(void) { return 1; }
+__attribute__((visibility("hidden"), noinline)) int hidden_fn(void) { return 2; }
+void _start(void) {
+#if defined(__aarch64__)
+  __asm__ volatile("mov x0, #42\n\tmov x8, #94\n\tsvc #0" ::: "x0", "x8", "memory");
+#else
+  __asm__ volatile("mov $42, %%edi\n\tmov $231, %%eax\n\tsyscall" ::: "rdi", "rax", "rcx", "r11", "memory");
+#endif
+  for (;;) {}
+}
+#--- pre.c
+#include <stdio.h>
+extern int exported_fn(void);
+extern int exported_var;
+__attribute__((constructor)) static void pre(void) {
+  printf("pre: %d %d\n", exported_fn(), exported_var);
+  fflush(stdout);
+}
+#--- plugin.c
+extern int exported_fn(void);
+extern int exported_var;
+int plugin_run(void) {
+  int v = exported_var;
+  exported_var = 99;
+  return exported_fn() * 100 + v;
+}
+#--- main.c
+#include <dlfcn.h>
+#include <stdio.h>
+int exported_var = 7;
+__attribute__((noinline)) int exported_fn(void) { return 42; }
+int main(void) {
+  void *h = dlopen("libplug.so", RTLD_NOW);
+  if (!h) { printf("%s\n", dlerror()); return 1; }
+  int (*run)(void) = (int (*)(void))dlsym(h, "plugin_run");
+  if (!run) return 2;
+  int r = run();
+  printf("plugin: %d %d\n", r / 100, r % 100);
+  printf("main: %d\n", exported_var);
+  return 0;
+}
+#--- cb.c
+extern int exported_fn(void);
+extern int exported_var;
+int lib_calls_back(void) {
+  int f = exported_fn();
+  return f + exported_var;
+}
+#--- needs.c
+#include <stdio.h>
+extern int lib_calls_back(void);
+int exported_var = 7;
+__attribute__((noinline)) int exported_fn(void) { exported_var++; return 42; }
+__attribute__((noinline)) int other_fn(void) { return 1; }
+int main(void) {
+  int r = lib_calls_back();
+  printf("cb: %d %d\n", r, exported_var + other_fn() - 1);
+  return 0;
+}

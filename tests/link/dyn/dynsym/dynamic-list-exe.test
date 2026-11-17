@@ -1,0 +1,46 @@
+# resolve.md §9.6, spec/dyn.md D-21 (WP-128): in an executable
+# `--dynamic-list` exports the definitions it lists, as
+# `--export-dynamic-symbol` does (an exact name, a glob; several files are
+# one list), and only them: the other definitions stay out of `.dynsym`.
+# A listed name is no root of archive extraction (the member defining
+# `mem_fn` stays out), and its definition is a root of `--gc-sections`
+# (`keep_fn`, in a section nothing references, is kept). All three
+# agree, `-pie` and `-no-pie`.
+#@ spec: resolve.md "§9.6"; dyn.md "D-21"
+#@ arch: aarch64 x86_64
+
+cc -O1 -fPIE -ffunction-sections main.c -o main.o
+cc -O1 -fPIE mem.c -o mem.o
+ar rcs libmem.a mem.o
+link gcc -pie main.o libmem.a -Wl,--gc-sections -Wl,--dynamic-list,l1.list -Wl,--dynamic-list,l2.list -o pie
+check readelf --dyn-syms -W pie
+  has: FUNC GLOBAL DEFAULT * keep_fn$
+  has: OBJECT GLOBAL DEFAULT * exp_data$
+  not: mem_fn
+  not: other_fn
+  not: main$
+check nm pie
+  has: T keep_fn$
+  not: mem_fn
+link gcc -no-pie main.o libmem.a -Wl,--dynamic-list,l1.list -o exe
+check readelf --dyn-syms -W exe
+  has: FUNC GLOBAL DEFAULT * keep_fn$
+  not: exp_data
+  not: other_fn
+run pie
+  stdout: 2
+run exe
+  stdout: 2
+
+#--- main.c
+#include <stdio.h>
+int keep_fn(void) { return 1; }
+int other_fn(void) { return 2; }
+int exp_data = 3;
+int main(void) { printf("%d\n", other_fn()); return 0; }
+#--- mem.c
+int mem_fn(void) { return 4; }
+#--- l1.list
+{ keep_fn; mem_fn; };
+#--- l2.list
+{ exp_*; };

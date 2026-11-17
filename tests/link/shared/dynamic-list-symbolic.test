@@ -1,0 +1,72 @@
+# dyn.md D-112, W31 (WP-128): a `-Bsymbolic` form given with a
+# `--dynamic-list`, before it or after it, changes nothing: the list
+# decides alone (GNU ld's rule) and no DT_SYMBOLIC or DF_SYMBOLIC is
+# written (D-102, D-103; request P-R7). The listed function stays
+# preemptible (an interposer reaches the library's own call), the
+# unlisted function and variable are bound. The lines are those of the
+# references that agree: lld with `-Bsymbolic` writes DF_SYMBOLIC, and
+# glibc then binds the listed function too (W31); mold follows the list
+# with `-Bsymbolic` (it ignores the option) and with
+# `-Bsymbolic-functions` before the list, and makes every data key
+# preemptible for the list then `-Bsymbolic-functions`, every key for the
+# list then `-Bno-symbolic`.
+#@ spec: dyn.md "D-112"; dyn.md "W31"
+#@ arch: aarch64 x86_64
+
+cc -O1 -fPIC lib.c -o lib.o
+cc -O1 -fPIC pre.c -o pre.o
+cc -O1 -fPIE main.c -o main.o
+shlib gcc pre.o -Wl,-soname,libpre.so -o libpre.so
+link(bfd,mold,mortar) gcc -shared lib.o -Wl,--dynamic-list,f.list -Wl,-Bsymbolic -Wl,-soname,liba.so -o liba.so
+check(bfd,mold,mortar) readelf -dW liba.so
+  not: SYMBOLIC
+link(bfd,mold,mortar) gcc -shared lib.o -Wl,-Bsymbolic -Wl,--dynamic-list,f.list -Wl,-soname,libb.so -o libb.so
+check(bfd,mold,mortar) readelf -dW libb.so
+  not: SYMBOLIC
+link gcc -shared lib.o -Wl,-Bsymbolic-functions -Wl,--dynamic-list,f.list -Wl,-soname,libc1.so -o libc1.so
+check readelf -dW libc1.so
+  not: SYMBOLIC
+link(bfd,lld,mortar) gcc -shared lib.o -Wl,--dynamic-list,f.list -Wl,-Bsymbolic-functions -Wl,-soname,libd.so -o libd.so
+link(bfd,lld,mortar) gcc -shared lib.o -Wl,--dynamic-list,f.list -Wl,-Bno-symbolic -Wl,-soname,libe.so -o libe.so
+check(bfd,lld,mortar) readelf -rW libe.so
+  has: lib_f
+  not: lib_g
+  not: lib_d
+link(bfd,mold,mortar) gcc -pie main.o -L. -la -o pa
+link(bfd,mold,mortar) gcc -pie main.o -L. -lb -o pb
+link gcc -pie main.o -L. -lc1 -o pc
+link(bfd,lld,mortar) gcc -pie main.o -L. -ld -o pd
+link(bfd,lld,mortar) gcc -pie main.o -L. -le -o pe
+run(bfd,mold,mortar) pa
+  env: LD_PRELOAD=./libpre.so
+  stdout: lib 2 10 3
+run(bfd,mold,mortar) pb
+  env: LD_PRELOAD=./libpre.so
+  stdout: lib 2 10 3
+run pc
+  env: LD_PRELOAD=./libpre.so
+  stdout: lib 2 10 3
+run(bfd,lld,mortar) pd
+  env: LD_PRELOAD=./libpre.so
+  stdout: lib 2 10 3
+run(bfd,lld,mortar) pe
+  env: LD_PRELOAD=./libpre.so
+  stdout: lib 2 10 3
+run pc
+  stdout: lib 1 10 3
+
+#--- f.list
+{ lib_f; };
+#--- lib.c
+#include <stdio.h>
+int lib_d = 10;
+int lib_f(void) { return 1; }
+int lib_g(void) { return 3; }
+void lib_report(void) { printf("lib %d %d %d\n", lib_f(), lib_d, lib_g()); }
+#--- pre.c
+int lib_d = 20;
+int lib_f(void) { return 2; }
+int lib_g(void) { return 30; }
+#--- main.c
+void lib_report(void);
+int main(void) { lib_report(); return 0; }

@@ -1,0 +1,75 @@
+# dyn.md D-110 item 1 (WP-128): in an executable `--exclude-libs` takes
+# the definitions of the named archives' members out of every export the
+# line would give: `-E`, `--export-dynamic-symbol`, and a shared
+# library's definition of the same name (D-21's export of a definition a
+# shared object also has); the program still runs, its own uses bound to
+# its own definitions. A shared library's reference to an excluded
+# definition is refused, as one to a hidden definition (D-13): GNU ld
+# ("hidden symbol ... is referenced by DSO") and lld ("non-exported
+# symbol") refuse it too; mold links a program the loader cannot start
+# ("undefined symbol: foo_fn"). The excluded lines are mortar's here:
+# the references write the same `.dynsym` (measured), but make the
+# excluded definitions LOCAL in `.symtab` (mold also HIDDEN), which the
+# verifier's Y3 reports while the program's references are GLOBAL (the
+# `.symtab` binding of excluded and version-local symbols is WP-150's;
+# mortar keeps them GLOBAL).
+#@ spec: dyn.md "D-110"; dyn.md "D-13"
+#@ arch: aarch64 x86_64
+#@ xfail(mortar): the verifier's P-D7 on e-ex ("'foo_fn' is defined by the program and referenced by a needed or used object, and is not exported"): its export rules (P-D7, P-D19) do not read `--exclude-libs` yet (WP-161); mortar's `.dynsym` is GNU ld's and lld's (checked at the merge of WP-128) and the programs print the same
+
+cc -O1 -fPIE main.c -o main.o
+cc -O1 -fPIE user.c -o user.o
+cc -O1 -fPIC foo.c -o foo.o
+cc -O1 -fPIC dd.c -o dd.o
+cc -O1 -fPIC needs.c -o needs.o
+ar rcs libfoo.a foo.o
+shlib gcc dd.o -Wl,-soname,libdd.so -o libdd.so
+shlib gcc needs.o -Wl,-soname,libneeds.so -o libneeds.so
+link gcc -pie main.o libfoo.a -L. -ldd -Wl,-E -o e-plain
+check readelf --dyn-syms -W e-plain
+  has: FUNC GLOBAL DEFAULT * foo_fn$
+  not: UND foo_fn
+link(mortar) gcc -pie main.o libfoo.a -L. -ldd -Wl,-E -Wl,--exclude-libs,ALL -o e-ex
+check(mortar) readelf --dyn-syms -W e-ex
+  not: foo_
+link(mortar) gcc -pie main.o libfoo.a -L. -ldd -Wl,--export-dynamic-symbol,foo_data -Wl,--exclude-libs,libfoo.a -o s-ex
+check(mortar) readelf --dyn-syms -W s-ex
+  not: foo_
+link gcc -pie main.o libfoo.a -L. -ldd -o d-plain
+check readelf --dyn-syms -W d-plain
+  has: FUNC GLOBAL DEFAULT * foo_fn$
+  not: UND foo_fn
+link(mortar) gcc -pie main.o libfoo.a -L. -ldd -Wl,--exclude-libs,ALL -o d-ex
+check(mortar) readelf --dyn-syms -W d-ex
+  not: foo_
+run d-plain
+  stdout: 1 3 5
+run(mortar) d-ex
+  stdout: 1 3 5
+link(bfd,lld,mortar) gcc -pie user.o libfoo.a -L. -lneeds -Wl,--exclude-libs,ALL -o bad
+  exit: fail
+  diag(mortar): non-exported symbol referenced by a shared object: foo_fn
+link gcc -pie user.o libfoo.a -L. -lneeds -o good
+run good
+  stdout: 11
+
+#--- foo.c
+int foo_data = 3;
+int foo_fn(void) { return 1; }
+#--- dd.c
+int foo_fn(void) { return 100; }
+int other_fn(void) { return 5; }
+#--- needs.c
+int foo_fn(void);
+int needs_fn(void) { return foo_fn() + 10; }
+#--- main.c
+#include <stdio.h>
+int foo_fn(void);
+extern int foo_data;
+int other_fn(void);
+int main(void) { printf("%d %d %d\n", foo_fn(), foo_data, other_fn()); return 0; }
+#--- user.c
+#include <stdio.h>
+int foo_fn(void);
+int needs_fn(void);
+int main(void) { printf("%d\n", needs_fn() + foo_fn() - 1); return 0; }

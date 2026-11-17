@@ -1,0 +1,103 @@
+# --whole-archive makes every relocatable member of the archives that
+# follow it live from the start (resolve.md §4.2, input.md §7.5): members
+# nobody references are linked, in member order. The constructors of
+# libabc.a's members (b, a, c in the archive) run in that order, and
+# their symbols are laid out in it, with all three references (mold
+# makes them local: the type letter is not checked). The
+# switch is positional (cli.md §3.3): by -l under -Bstatic, kept and
+# restored by --push-state/--pop-state, applied inside --start-group and
+# to the archives a script's GROUP or INPUT names (input.md §5.2), to a
+# thin archive, and an empty archive adds nothing. Without it nothing
+# unreferenced is taken.
+#@ spec: resolve.md §4.2
+#@ spec: input.md §7.5
+
+cc -O1 main.c -o main.o
+cc -O1 a.c -o a.o
+cc -O1 b.c -o b.o
+cc -O1 c.c -o c.o
+ar rcs libabc.a b.o a.o c.o
+cc -O1 sub/t.c -o sub/t.o
+ar rcsT libthin.a sub/t.o a.o
+ar rcs libempty.a
+link gcc -static -no-pie main.o -Wl,--whole-archive libabc.a -Wl,--no-whole-archive -o whole
+run whole
+  stdout: ctor b
+  stdout: ctor a
+  stdout: ctor c
+  stdout: main
+check nm -n whole
+  has: * b_fn$
+  then: * a_fn$
+  then: * c_fn$
+  has: * b_var$
+  then: * a_var$
+  then: * c_var$
+link gcc -static -no-pie main.o libabc.a -o lazy
+run lazy
+  stdout: main
+check nm lazy
+  not: a_fn$
+  not: b_fn$
+  not: c_fn$
+link gcc -static -no-pie main.o -L. -Wl,-Bstatic,--whole-archive -labc -Wl,--no-whole-archive -o byname
+run byname
+  stdout: ctor b
+  stdout: ctor a
+  stdout: ctor c
+  stdout: main
+link gcc -static -no-pie main.o -Wl,--push-state,--whole-archive libabc.a -Wl,--pop-state libthin.a -o pushed
+run pushed
+  stdout: ctor b
+  stdout: ctor a
+  stdout: ctor c
+  stdout: main
+link gcc -static -no-pie main.o -Wl,--whole-archive,--start-group libabc.a -Wl,--end-group,--no-whole-archive -o grouped
+run grouped
+  stdout: ctor b
+  stdout: ctor a
+  stdout: ctor c
+  stdout: main
+link gcc -static -no-pie main.o -Wl,--whole-archive group.ld -Wl,--no-whole-archive -o scriptgroup
+run scriptgroup
+  stdout: ctor b
+  stdout: ctor a
+  stdout: ctor c
+  stdout: main
+link gcc -static -no-pie main.o -Wl,--whole-archive input.ld -Wl,--no-whole-archive -o scriptinput
+run scriptinput
+  stdout: ctor b
+  stdout: ctor a
+  stdout: ctor c
+  stdout: main
+link gcc -static -no-pie main.o -Wl,--whole-archive libthin.a libempty.a -Wl,--no-whole-archive -o thin
+run thin
+  stdout: ctor t
+  stdout: ctor a
+  stdout: main
+
+#--- main.c
+#include <stdio.h>
+int main(void) { puts("main"); return 0; }
+#--- a.c
+#include <stdio.h>
+__attribute__((constructor)) static void ctor_a(void) { puts("ctor a"); }
+int a_var = 1;
+int a_fn(void) { return 1; }
+#--- b.c
+#include <stdio.h>
+__attribute__((constructor)) static void ctor_b(void) { puts("ctor b"); }
+int b_var = 1;
+int b_fn(void) { return 1; }
+#--- c.c
+#include <stdio.h>
+__attribute__((constructor)) static void ctor_c(void) { puts("ctor c"); }
+int c_var = 1;
+int c_fn(void) { return 1; }
+#--- sub/t.c
+#include <stdio.h>
+__attribute__((constructor)) static void ctor_t(void) { puts("ctor t"); }
+#--- group.ld
+GROUP(libabc.a)
+#--- input.ld
+INPUT(libabc.a)

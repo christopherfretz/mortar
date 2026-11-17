@@ -1,0 +1,79 @@
+# dyn.md D-102 rows 3-4, D-124 item 2 (WP-128): in a shared object
+# `-init`/`-fini` name DT_INIT/DT_FINI; the loader runs the `-init`
+# function at `dlopen` before `.init_array`'s constructor and the `-fini`
+# function at `dlclose` after `.fini_array`'s destructor (the order all
+# three references give). Under `--gc-sections` both are roots (resolve.md
+# §4.2, §4.7), a hidden `-fini` function included, while a hidden function
+# nothing reaches is collected. mold collects the hidden `-fini` function
+# and writes DT_FINI 0 (dyn.md W22): its library crashes at `dlclose`. A
+# data object is refused by name (the three write its address, which the
+# loader calls: a crash at `dlopen`; the verifier's P-D22 wants code). An
+# explicit name that is not defined in the output (a local symbol, a
+# definition of a shared library only, an archive member nothing
+# extracts: `-init` extracts nothing in the three) is mortar's
+# `undefined-init-symbol`; the references omit the tag.
+#@ spec: dyn.md "D-102"; dyn.md "D-124"; resolve.md "§4.2"
+#@ arch: aarch64 x86_64
+#@ xfail(mold): W22: mold collects the hidden -fini function under --gc-sections and writes DT_FINI 0; the library crashes at dlclose
+
+cc -O1 -fPIC -ffunction-sections lib.c -o lib.o
+cc -O1 -fPIC dep.c -o dep.o
+cc -O1 -fPIC mem.c -o mem.o
+cc -O1 -fPIE load.c -o load.o
+ar rcs libmem.a mem.o
+shlib gcc dep.o -Wl,-soname,libdep.so -o libdep.so
+link gcc -shared lib.o -Wl,--gc-sections -Wl,-init,lib_init -Wl,-fini,lib_fini -o libif.so
+check readelf -dW libif.so
+  has: (INIT)
+  has: (FINI)
+check nm libif.so
+  has: lib_fini$
+  not: lost$
+link(mortar) gcc -shared lib.o -Wl,-init,data_init -o libdata.so
+  exit: fail
+  diag: unsupported feature: -init naming data_init, which is not a function
+link(mortar) gcc -shared lib.o -Wl,-init,loc_init -o libbad.so
+  exit: fail
+  diag: -init/-fini symbol loc_init is not defined
+link(mortar) gcc -shared lib.o -L. -ldep -Wl,-init,dep_init -o libbad.so
+  exit: fail
+  diag: -init/-fini symbol dep_init is not defined
+link(mortar) gcc -shared lib.o libmem.a -Wl,-fini,mem_fini -o libbad.so
+  exit: fail
+  diag: -init/-fini symbol mem_fini is not defined
+host gcc -pie load.o -o load
+run load
+  stdout: lib_init
+  stdout: ctor
+  stdout: get 7
+  stdout: dtor
+  stdout: lib_fini
+  stdout: closed
+
+#--- lib.c
+#include <stdio.h>
+void lib_init(void) { puts("lib_init"); }
+__attribute__((visibility("hidden"))) void lib_fini(void) { puts("lib_fini"); }
+__attribute__((visibility("hidden"))) int lost(void) { return 9; }
+__attribute__((constructor)) static void ctor(void) { puts("ctor"); }
+__attribute__((destructor)) static void dtor(void) { puts("dtor"); }
+static void loc_init(void) { puts("loc_init"); }
+void *keep_loc = (void *)loc_init;
+int data_init = 5;
+int get(void) { return 7; }
+#--- dep.c
+void dep_init(void) {}
+#--- mem.c
+void mem_fini(void) {}
+#--- load.c
+#include <dlfcn.h>
+#include <stdio.h>
+int main(void) {
+  void *h = dlopen("./libif.so", RTLD_NOW);
+  if (!h) { printf("%s\n", dlerror()); return 1; }
+  int (*get)(void) = (int (*)(void))dlsym(h, "get");
+  printf("get %d\n", get());
+  dlclose(h);
+  puts("closed");
+  return 0;
+}

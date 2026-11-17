@@ -80,8 +80,12 @@ const AUDIT: &[(&str, Proof)] = &[
     ("-l", Check(libraries)),
     ("-(", Check(groups)),
     ("-)", Check(groups)),
+    ("--start-lib", Check(start_lib)),
+    ("--end-lib", Check(start_lib)),
     ("--as-needed", Check(dynamic_options)),
     ("--no-as-needed", Check(dynamic_options)),
+    ("--whole-archive", Check(whole_archive)),
+    ("--no-whole-archive", Check(whole_archive)),
     ("-Bstatic", Check(bstatic)),
     ("-Bdynamic", Check(dynamic_options)),
     (
@@ -101,16 +105,26 @@ const AUDIT: &[(&str, Proof)] = &[
     ),
     ("-rpath-link", Check(dynamic_options)),
     ("--version-script", Check(version_script)),
+    (
+        "--dynamic-list",
+        Test("crates/mortar/tests/shared.rs", "dynamic_list_decides_preemption_and_exports"),
+    ),
     ("--sort-common", Check(sort_common)),
     ("--sort-section", Check(sort_section)),
+    ("-u", Check(undefined_roots)),
+    ("--require-defined", Check(require_defined)),
     ("--export-dynamic-symbol", Check(dynamic_options)),
+    (
+        "--exclude-libs",
+        Test("crates/mortar/tests/shared.rs", "exclude_libs_hides_archive_definitions"),
+    ),
     ("-init", Check(dynamic_options)),
     ("-fini", Check(dynamic_options)),
     ("--undefined-version", Check(version_script)),
     ("--no-undefined-version", Check(version_script)),
     ("-E", Check(dynamic_options)),
     ("--no-export-dynamic", Check(dynamic_options)),
-    ("-Bsymbolic", Same(&["-Bsymbolic"], Some(bsymbolic_is_for_shared_objects))),
+    ("-Bsymbolic", Test("crates/mortar/tests/shared.rs", "bsymbolic_binds_every_own_definition")),
     (
         "-Bsymbolic-functions",
         Test("crates/mortar/tests/shared.rs", "bsymbolic_functions_binds_functions_not_data"),
@@ -137,6 +151,8 @@ const AUDIT: &[(&str, Proof)] = &[
         "--no-undefined",
         Test("crates/mortar/tests/shared.rs", "z_defs_refuses_an_undefined_reference"),
     ),
+    ("--allow-multiple-definition", Check(muldefs)),
+    ("--no-allow-multiple-definition", Check(muldefs)),
     ("--warn-common", Check(warn_common)),
     ("--no-warn-common", Check(warn_common)),
     ("--warn-execstack", Same(&["--warn-execstack"], Some(execstack_warns_by_default))),
@@ -221,7 +237,25 @@ const AUDIT: &[(&str, Proof)] = &[
         Same(&["-z", "common-page-size=4096"], Some(common_page_size_is_checked)),
     ),
     ("-z sectionheader", Same(&["-z", "sectionheader"], None)),
+    ("-z muldefs", Check(muldefs)),
     ("-z nostart-stop-gc", Same(&["-z", "nostart-stop-gc"], None)),
+    (
+        "-z initfirst",
+        Test("crates/mortar/tests/shared.rs", "z_flags_are_written_in_a_shared_object"),
+    ),
+    (
+        "-z interpose",
+        Test("crates/mortar/tests/shared.rs", "z_flags_are_written_in_a_shared_object"),
+    ),
+    (
+        "-z nodelete",
+        Test("crates/mortar/tests/shared.rs", "z_flags_are_written_in_a_shared_object"),
+    ),
+    (
+        "-z nodlopen",
+        Test("crates/mortar/tests/shared.rs", "z_flags_are_written_in_a_shared_object"),
+    ),
+    ("-z origin", Test("crates/mortar/tests/shared.rs", "z_flags_are_written_in_a_shared_object")),
     ("-z memory-seal", Check(memory_seal)),
     ("-z nomemory-seal", Check(memory_seal)),
     ("-EL", Same(&["-EL"], Some(big_endian_is_refused))),
@@ -697,6 +731,110 @@ fn groups(cx: &Cx) {
         assert!(o.success(), "{}", o.stderr_text());
         assert_eq!(Cx::exit(&cx.scratch.join("grp.out")), Some(9));
     }
+}
+
+// spec: resolve.md §4.2, input.md §7.6 (`--start-lib` objects are lazy
+// members of an archive of their own; a stray `--end-lib` is an error,
+// cli.md §3.3)
+fn start_lib(cx: &Cx) {
+    let o = cx.mortar(&["circ.o", "--start-lib", "ca.o", "cb.o", "--end-lib", "-o", "sl.out"]);
+    assert!(o.success(), "{}", o.stderr_text());
+    assert_eq!(Cx::exit(&cx.scratch.join("sl.out")), Some(9));
+    let out = cx.link(&["--start-lib", "ca.o", "cb.o", "--end-lib"], "sl0.out");
+    let g = symbols(cx, &out, "GLOBAL");
+    assert!(
+        !g.iter().any(|n| n == "ca" || n == "cb"),
+        "an unreferenced lazy object was linked: {g:?}"
+    );
+    let o = cx.mortar(&["start.o", "ca.o", "--end-lib", "-o", "sl1.out"]);
+    assert!(
+        o.stderr_text().contains("--end-lib without a matching --start-lib"),
+        "{}",
+        o.stderr_text()
+    );
+}
+
+// spec: resolve.md §4.2 (`--whole-archive` takes every member of the
+// archives that follow it, until `--no-whole-archive`), as GNU ld
+fn whole_archive(cx: &Cx) {
+    let whole = ["--whole-archive", "lib/liba.a", "--no-whole-archive", "lib/libb.a"];
+    let off = ["--whole-archive", "--no-whole-archive", "lib/liba.a", "lib/libb.a"];
+    for (extra, out, taken) in [(&whole, "wa", true), (&off, "nwa", false)] {
+        let m = symbols(cx, &cx.link(extra, &format!("{out}.out")), "GLOBAL");
+        let g = symbols(cx, &cx.link_ld(extra, &format!("{out}.ld")), "GLOBAL");
+        for name in ["ca", "cb", "cc"] {
+            assert_eq!(m.iter().any(|n| n == name), taken, "{out}: {name} in {m:?}");
+            assert_eq!(g.iter().any(|n| n == name), taken, "{out} (GNU ld): {name} in {g:?}");
+        }
+    }
+}
+
+// spec: resolve.md §4.2 (`-u SYM` is a strong reference from file 0: the
+// member defining it is extracted), as GNU ld, in each spelling
+fn undefined_roots(cx: &Cx) {
+    for (extra, out) in [
+        (&["-u", "ca"][..], "u1"),
+        (&["-uca"][..], "u2"),
+        (&["--undefined=ca"][..], "u3"),
+        (&["--undefined", "ca"][..], "u4"),
+    ] {
+        let e = [extra, &["lib/liba.a", "lib/libb.a"][..]].concat();
+        let m = symbols(cx, &cx.link(&e, &format!("{out}.out")), "GLOBAL");
+        let g = symbols(cx, &cx.link_ld(&e, &format!("{out}.ld")), "GLOBAL");
+        assert!(m.iter().any(|n| n == "ca") && g.iter().any(|n| n == "ca"), "{extra:?}: {m:?}");
+    }
+    let m = symbols(cx, &cx.link(&["lib/liba.a", "lib/libb.a"], "u0.out"), "GLOBAL");
+    assert!(!m.iter().any(|n| n == "ca"), "{m:?}");
+}
+
+// spec: resolve.md §4.2 (`--require-defined=SYM` is `-u SYM` that must
+// end defined; else required-symbol, as GNU ld's error)
+fn require_defined(cx: &Cx) {
+    let found = ["--require-defined=ca", "lib/liba.a", "lib/libb.a"];
+    let m = symbols(cx, &cx.link(&found, "rd.out"), "GLOBAL");
+    assert!(m.iter().any(|n| n == "ca"), "{m:?}");
+    let missing = ["start.o", "--require-defined", "nosuch", "lib/liba.a", "-o", "rd1.out"];
+    let o = cx.mortar(&missing);
+    assert!(!o.success() && o.stderr_text().contains("required symbol not defined: nosuch"));
+    assert!(!cx.ld(&missing).success(), "GNU ld accepted --require-defined=nosuch");
+}
+
+// spec: resolve.md §3.8 (`--allow-multiple-definition` and `-z muldefs`:
+// the first definition wins, silently; `--no-allow-multiple-definition`
+// after it restores the error), as GNU ld
+fn muldefs(cx: &Cx) {
+    let base = ["circ.o", "ca.o", "cb.o", "ca.o"];
+    let o = cx.mortar(&[&base[..], &["-o", "md0.out"]].concat());
+    assert!(
+        !o.success() && o.stderr_text().contains("duplicate symbol: ca"),
+        "{}",
+        o.stderr_text()
+    );
+    for (extra, out) in [
+        (&["--allow-multiple-definition"][..], "md1"),
+        (&["-z", "muldefs"][..], "md2"),
+        (&["-zmuldefs"][..], "md3"),
+    ] {
+        let args = [&base[..], extra, &["-o", out]].concat();
+        let o = cx.mortar(&args);
+        assert!(o.success() && o.stderr_text().is_empty(), "{extra:?}: {}", o.stderr_text());
+        assert_eq!(Cx::exit(&cx.scratch.join(out)), Some(9));
+        let ld = format!("{out}.ld");
+        assert!(cx.ld(&[&base[..], extra, &["-o", &ld]].concat()).success(), "GNU ld {extra:?}");
+        assert_eq!(Cx::exit(&cx.scratch.join(&ld)), Some(9));
+    }
+    let o = cx.mortar(
+        &[
+            &base[..],
+            &["--allow-multiple-definition", "--no-allow-multiple-definition", "-o", "md4"],
+        ]
+        .concat(),
+    );
+    assert!(
+        !o.success() && o.stderr_text().contains("duplicate symbol: ca"),
+        "{}",
+        o.stderr_text()
+    );
 }
 
 // spec: input.md §4 (`-Bstatic`: `-l` takes archives only, so a library
@@ -1387,17 +1525,6 @@ fn copy_dt_needed_is_refused(cx: &Cx) {
     assert!(!o.success());
     let text = o.stderr_text();
     assert!(text.contains("unsupported option: --copy-dt-needed-entries"), "{text}");
-}
-
-// The reason of `-Bsymbolic`: it binds a shared object's references, and
-// in a shared object it is refused by name until WP-128 (dyn.md D-112;
-// the effect of a shared object's link is `crates/mortar/tests/shared.rs`).
-fn bsymbolic_is_for_shared_objects(cx: &Cx) {
-    let o = cx.mortar(&["start.o", "-shared", "-Bsymbolic", "-o", "dyn.out"]);
-    assert!(!o.success());
-    let e = o.stderr_text();
-    assert!(e.contains("unsupported option: -Bsymbolic"), "{e}");
-    assert!(e.contains("WP-128"), "{e}");
 }
 
 // The reason of `--rosegment` (layout.md L-65).

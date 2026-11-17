@@ -1,0 +1,65 @@
+# -u SYM (--undefined=SYM) is a root of extraction, a strong reference
+# from file 0 (resolve.md §4.2, R4b): the member defining SYM is
+# extracted though nothing references it, its constructor runs, and its
+# definition is a --gc-sections root (§4.7: all three keep k_fn). A
+# hidden, a weak and an IFUNC definition are extracted alike; the same
+# name twice is one root. A name no file defines extracts nothing and is
+# no error, with all three (GNU ld writes an undefined .symtab entry for
+# it, lld, mold and mortar none: not checked). In -shared, -u extracts
+# the member and its definition is exported (the shared test).
+#@ spec: resolve.md §4.2
+#@ spec: resolve.md §4.7
+
+cc -O1 m.c -o m.o
+cc -O1 k.c -o k.o
+cc -O1 h.c -o h.o
+cc -O1 w.c -o w.o
+cc -O1 i.c -o i.o
+ar rcs libk.a k.o
+ar rcs libh.a h.o
+ar rcs libw.a w.o
+ar rcs libi.a i.o
+link gcc -static -no-pie m.o -u k_fn libk.a -o short
+run short
+  stdout: k ctor
+link gcc -static -no-pie m.o -Wl,--undefined=k_fn,--undefined,k_fn libk.a -o long
+run long
+  stdout: k ctor
+link gcc -static -no-pie m.o -Wl,-uk_fn libk.a -o glued
+run glued
+  stdout: k ctor
+link gcc -static -no-pie m.o libk.a -o none
+run none
+link gcc -static -no-pie m.o -u nosuch_fn -o nosuch
+run nosuch
+link gcc -static -no-pie -Wl,--gc-sections m.o -u k_fn k.o -o gc
+run gc
+  stdout: k ctor
+check nm gc
+  has: * k_fn$
+link gcc -static -no-pie -Wl,--gc-sections m.o -u k_fn libk.a -o gcmember
+run gcmember
+  stdout: k ctor
+check nm gcmember
+  has: * k_fn$
+link gcc -static -no-pie m.o -u h_fn -u w_fn -u i_fn libh.a libw.a libi.a -o kinds
+run kinds
+check nm kinds
+  has: * h_fn$
+  has: * w_fn$
+  has: * i_fn$
+
+#--- m.c
+int main(void) { return 0; }
+#--- k.c
+#include <stdio.h>
+__attribute__((constructor)) static void kc(void) { puts("k ctor"); }
+int k_fn(void) { return 5; }
+#--- h.c
+__attribute__((visibility("hidden"))) int h_fn(void) { return 6; }
+#--- w.c
+__attribute__((weak)) int w_fn(void) { return 6; }
+#--- i.c
+static int impl(void) { return 1; }
+static void *res(void) { return (void *)impl; }
+int i_fn(void) __attribute__((ifunc("res")));

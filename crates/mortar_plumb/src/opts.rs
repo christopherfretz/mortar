@@ -49,8 +49,12 @@ R No - --no-debug-names
 R Next gnu -l --library
 R No gnu -( --start-group
 R No gnu -) --end-group
+R No - --start-lib
+R No - --end-lib
 R No gnu --as-needed
 R No gnu --no-as-needed
+R No gnu --whole-archive
+R No gnu --no-whole-archive
 R No gnu -Bstatic --dn --non_shared --static
 R No gnu -Bdynamic --dy --call_shared
 R No gnu --no-copy-dt-needed-entries --no-add-needed
@@ -63,9 +67,13 @@ R Next gnu -L --library-path
 R Next gnu --sysroot
 R Next gnu -rpath-link
 R Next gnu --version-script
+R Next gnu --dynamic-list
 R Eq gnu --sort-common --sort_common
 R Next gnu --sort-section
+R Next gnu -u --undefined
+R Next gnu --require-defined
 R Next gnu --export-dynamic-symbol
+R Next gnu --exclude-libs
 R Next gnu -init
 R Next gnu -fini
 R No gnu --undefined-version
@@ -90,6 +98,8 @@ R No gnu -w --no-warnings
 R Eq - --color-diagnostics
 R No - --no-color-diagnostics
 R No gnu --no-undefined
+R No gnu --allow-multiple-definition
+R No - --no-allow-multiple-definition
 R No gnu --warn-common
 R No - --no-warn-common
 R No gnu --warn-execstack
@@ -135,7 +145,13 @@ Z defs No
 Z max-page-size Next
 Z common-page-size Next
 Z sectionheader No
+Z muldefs No
 Z nostart-stop-gc No
+Z initfirst No
+Z interpose No
+Z nodelete No
+Z nodlopen No
+Z origin No
 Z memory-seal No
 Z nomemory-seal No
 R No gnu -EL
@@ -193,10 +209,6 @@ R Eq - --separate-debug-file
 R No - --no-separate-debug-file
 R Next gnu -R --just-symbols
 R Next gnu -b --format
-R No - --start-lib
-R No - --end-lib
-R No gnu --whole-archive
-R No gnu --no-whole-archive
 R No gnu --copy-dt-needed-entries --add-needed
 R No gnu --accept-unknown-input-arch
 R No gnu --no-accept-unknown-input-arch
@@ -219,7 +231,6 @@ R Next - --chroot
 R Next gnu -T --script
 R Next gnu --default-script --dT
 R Next gnu -c --mri-script
-R Next gnu --dynamic-list
 R Next gnu --export-dynamic-symbol-list
 R Next gnu --retain-symbols-file
 R Next gnu --section-ordering-file
@@ -245,12 +256,9 @@ R No gnu --no-check-sections
 R Eq - --shuffle-sections
 R No - --reverse-sections
 R Next - --randomize-section-padding
-R Next gnu -u --undefined
-R Next gnu --require-defined
 R Next - --undefined-glob
 R Next gnu --defsym
 R Next gnu --wrap
-R Next gnu --exclude-libs
 R Next gnu -y --trace-symbol
 R Next gnu --ignore-unresolved-symbol
 R Eq gnu --demangle
@@ -304,8 +312,6 @@ R No - --no-branch-to-branch
 R Next gnu --unresolved-symbols
 R No gnu --warn-unresolved-symbols
 R No gnu --error-unresolved-symbols
-R No gnu --allow-multiple-definition
-R No - --no-allow-multiple-definition
 R No gnu --noinhibit-exec --noinhibit_exec
 R Next gnu --error-handling-script
 R No gnu --warn-constructors
@@ -449,23 +455,17 @@ Z nocopyreloc No
 Z combreloc No
 Z nocombreloc No
 Z nosectionheader No
-Z muldefs No
 Z unique-symbol No
 Z nounique-symbol No
 Z globalaudit No
 Z start-stop-gc No
 Z start-stop-visibility Next
 Z global No
-Z initfirst No
-Z interpose No
 Z unique No
 Z nounique No
 Z loadfltr No
 Z nodefaultlib No
-Z nodelete No
-Z nodlopen No
 Z nodump No
-Z origin No
 Z common No
 Z nocommon No
 Z dead-reloc-in-nonalloc Next

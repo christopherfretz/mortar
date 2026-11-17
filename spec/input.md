@@ -719,7 +719,10 @@ the members. An index can lie; the members cannot. WP-005's open question
 ### 7.5 `--whole-archive`
 
 Each relocatable member of an archive read with `whole_archive` has it in
-its `files` row; `spec/resolve.md` makes such members live.
+its `files` row; `spec/resolve.md` makes such members live. A member that is
+not a relocatable object (`libj.a(junk.txt): archive member is not a
+relocatable object: not an ELF file`) is an error, as GNU ld's and lld's
+(mold skips it silently; WP-152, `tests/link/resolve/whole-archive-members.test`).
 
 ### 7.6 `--start-lib` and `--end-lib`
 

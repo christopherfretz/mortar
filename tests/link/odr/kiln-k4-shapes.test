@@ -1,0 +1,54 @@
+# Kind 4 shapes that only kiln writes (spec/odr.md O-19, §9.1; WP-134),
+# under --odr=strict at -fmason-metadata=detail: a virtual base (two base
+# items: the direct-base list, then all virtual bases), a member of an
+# unnamed class type (an item with an empty type, then the nested
+# class's items), a pure virtual slot (`__cxa_pure_virtual`), a negative
+# enumerator, and `enum H : unsigned` against `enum H` (one underlying
+# type, hashed differently on purpose). Each odr-type-mismatch's note
+# names the first differing item as mortar prints it today: the member
+# of the unnamed union without saying it is one, the negative enumerator
+# in hex, and for H no item (kind 4 does not say whether the underlying
+# type is fixed). kiln's slot index is the component's index in the
+# vtable group with the RTTI slot left out (offset-to-top is 0): the
+# first virtual function is slot 1.
+#@ spec: odr.md O-19, §9.1
+#@ arch: aarch64 x86_64
+#@ requires: kiln g++
+#@ diag: odr-type-mismatch a.o b.o
+#@ diag: odr-type-mismatch a.o b.o
+#@ diag: odr-type-mismatch a.o b.o
+#@ diag: odr-type-mismatch a.o b.o
+#@ diag: odr-type-mismatch a.o b.o
+
+cxx(kiln) -O0 -fmason-metadata=detail a.cc -o a.o
+cxx(kiln) -O0 -fmason-metadata=detail b.cc -o b.o
+cxx(kiln) -O0 main.cc -o main.o
+link(bfd,lld,mold) g++ -static -no-pie main.o a.o b.o -o prog
+link(mortar) g++ -static -no-pie main.o a.o b.o -Wl,--odr=strict -o prog
+  exit: fail
+  diag: ^>>> base 3VB1 at offset 12 (virtual) in a.o; base 3VB2 at offset 16 (virtual) in b.o$
+  diag: ^>>> member 'f' (f) at offset 0 in a.o; member 'l' (l) at offset 0 in b.o$
+  diag: ^>>> vtable slot 1: __cxa_pure_virtual in a.o; vtable slot 1: _ZN1P1fEv in b.o$
+  diag: ^>>> enumerator 'N0' = 0xfffffffffffffffe in a.o; 'N0' = 0xfffffffffffffffd in b.o$
+  diag: ^>>> the layout details are equal: the difference is in something kind 4 does not describe$
+
+#--- a.cc
+struct VB1 { int v; };
+struct VB2 { long v; };
+struct W : virtual VB1 { int w; };
+struct U { union { int i; float f; }; int k; };
+struct P { virtual int f() = 0; virtual int g(); };
+enum N { N0 = -2, N1 };
+enum H : unsigned { H0, H1 };
+int fa(W* w, U* u, P* p, N* n, H* h) { return w->w + u->k + p->g() + int(*n) + int(*h); }
+#--- b.cc
+struct VB1 { int v; };
+struct VB2 { long v; };
+struct W : virtual VB2 { int w; };
+struct U { union { int i; long l; }; int k; };
+struct P { virtual int f(); virtual int g(); };
+enum N { N0 = -3, N1 };
+enum H { H0, H1 };
+int fb(W* w, U* u, P* p, N* n, H* h) { return w->w + u->k + p->g() + int(*n) + int(*h); }
+#--- main.cc
+int main() { return 0; }

@@ -379,34 +379,52 @@ pub fn resolve_steps<V: View>(
     steps.step("resolve.d2");
     // WP-117: a shared object's export set and preemption are the shared
     // stage's too (`spec/dyn.md` D-110, D-112), with or without shared
-    // inputs.
-    let dynamic = (kinds.contains(&FileKind::Shared) || opts.shared_output.is_some()).then(|| {
-        crate::shared::link(
-            view,
-            opts,
-            &kinds,
-            &targets,
-            &redirect,
-            &mut file_live,
-            &mut def,
-            &mut props,
-            &mut problems,
-            pool,
-        )
-    });
+    // inputs. WP-148: so is a dynamic executable's export set (§9.6,
+    // D-21) when the line exports (`--export-dynamic`,
+    // `--export-dynamic-symbol`) and no shared object is loaded: without
+    // it the options were accepted and `.dynsym` stayed empty. A link
+    // that exports nothing and loads no shared object skips the stage,
+    // as before.
+    let exports = opts.output.dynamic
+        && (opts.shared.export_dynamic || !opts.shared.export_symbols.is_empty());
+    let dynamic = (kinds.contains(&FileKind::Shared) || opts.shared_output.is_some() || exports)
+        .then(|| {
+            crate::shared::link(
+                view,
+                opts,
+                &kinds,
+                &targets,
+                &redirect,
+                &mut file_live,
+                &mut def,
+                &mut props,
+                &mut problems,
+                pool,
+            )
+        });
     // A common that yields to a shared data definition (§3.2 rule 2) is
     // allocated nowhere.
     common.retain(|(k, _)| matches!(def[k.0 as usize], Def::Common(_)));
     steps.step("resolve.shared");
-    // Roots that must be defined (§4.2, §5.5).
+    // Roots that must be defined (§4.2, §5.5): in the output, so a
+    // definition only a shared object gives does not satisfy it (GNU ld;
+    // WP-152).
     for named in &opts.require_defined {
-        if named.key.get().is_none_or(|k| def[k.0 as usize].is_undefined()) {
+        if named
+            .key
+            .get()
+            .is_none_or(|k| matches!(def[k.0 as usize], Def::Undefined { .. } | Def::Shared(_)))
+        {
             problems.push(Problem {
                 key: DiagKey::of(FileId::INTERNAL, u64::from(named.arg)),
                 what: What::RequiredSymbol {
                     key: named.key,
                     name: named.name.clone(),
                     arg: named.arg,
+                    shared: named.key.get().and_then(|k| match def[k.0 as usize] {
+                        Def::Shared(e) => Some(e),
+                        _ => None,
+                    }),
                 },
             });
         }

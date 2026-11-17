@@ -47,6 +47,10 @@ pub struct Report {
     pub kept: Option<PathBuf>,
     /// The digest mode's rows (`cargo xtask static-identical`), sorted.
     pub digests: Vec<super::engine::DigestRow>,
+    /// The units skipped for a tool that is not required even under
+    /// `MORTAR_REQUIRE_TOOLS=1` (`engine::Results::optional_skip`): test
+    /// and architecture.
+    pub optional_skips: Vec<(String, Arch)>,
 }
 
 /// A field of the results file: `\`, tab, newline and carriage return

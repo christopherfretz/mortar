@@ -1,0 +1,61 @@
+# A linker script's EXTERN(SYM) is a root of extraction, as -u is
+# (resolve.md §4.2, WP-152): nothing on the line references k_fn or
+# j_fn, yet the members defining them are extracted and their
+# constructors run. Several names in one EXTERN and a quoted name are
+# roots each; a name nothing defines extracts nothing and is no error.
+# GNU ld and lld agree; mold 2.37 refuses the command ("unknown linker
+# script token"), so it is skipped. Before WP-152 mortar parsed EXTERN and
+# dropped it: the member was silently not extracted.
+# The script comes before the archives: GNU ld extracts only from
+# archives after it (resolve.md §4.3).
+#@ spec: resolve.md §4.2
+#@ skip(mold): mold 2.37 does not know EXTERN (unknown linker script token)
+
+cc -O1 m.c -o m.o
+cc -O1 k.c -o k.o
+cc -O1 j.c -o j.o
+ar rcs libk.a k.o
+ar rcs libj.a j.o
+link gcc -static -no-pie m.o one.ld libk.a -o one
+run one
+  stdout: k ctor
+link gcc -static -no-pie m.o two.ld libk.a libj.a -o two
+run two
+  stdout: k ctor
+  stdout: j ctor
+link gcc -static -no-pie m.o quoted.ld libk.a -o quoted
+run quoted
+  stdout: k ctor
+link gcc -static -no-pie m.o nosuch.ld libk.a -o nosuch
+run nosuch
+link gcc -static -no-pie m.o input.ld -o input
+run input
+  stdout: k ctor
+link gcc -static -no-pie -Wl,--gc-sections m.o one.ld libk.a -o gc
+run gc
+  stdout: k ctor
+check nm gc
+  has: T k_fn$
+link gcc -static -no-pie m.o libk.a -o plain
+run plain
+
+#--- m.c
+int main(void) { return 0; }
+#--- k.c
+#include <stdio.h>
+__attribute__((constructor)) static void kc(void) { puts("k ctor"); }
+int k_fn(void) { return 5; }
+#--- j.c
+#include <stdio.h>
+__attribute__((constructor)) static void jc(void) { puts("j ctor"); }
+int j_fn(void) { return 6; }
+#--- one.ld
+EXTERN(k_fn)
+#--- two.ld
+EXTERN(k_fn j_fn)
+#--- quoted.ld
+EXTERN("k_fn")
+#--- nosuch.ld
+EXTERN(nosuch_fn)
+#--- input.ld
+EXTERN(k_fn) INPUT(libk.a)

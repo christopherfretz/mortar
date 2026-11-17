@@ -1,0 +1,93 @@
+# dyn.md D-110 item 1 (WP-128): `--exclude-libs` takes the definitions of
+# the members of the archives it names out of a shared object's export
+# set. An entry is an archive's file name (its base name, case-sensitive),
+# however the archive was found (`libfoo.a`, `-lfoo`, `sub/libfoo.a`);
+# `ALL` (exactly so) names every archive; `,` and `:` separate entries; an
+# entry with a directory, `foo` and `all` name nothing. The excluded
+# definitions bind locally: no dynamic record names them, and an
+# interposer does not reach the library's own uses. An exclusion wins over
+# a version script's `global:` (all three). `libfoo` (no `.a`) names
+# `libfoo.a` in GNU ld only: mortar refuses it by name. `.symtab` keeps
+# the excluded definitions GLOBAL in mortar's output (GNU ld and lld make
+# them LOCAL DEFAULT, mold LOCAL HIDDEN: the version-local symbols'
+# question, WP-150).
+#@ spec: dyn.md "D-110"
+#@ arch: aarch64 x86_64
+
+cc -O1 -fPIC lib.c -o lib.o
+cc -O1 -fPIC foo.c -o foo.o
+cc -O1 -fPIC bar.c -o bar.o
+cc -O1 -fPIC pre.c -o pre.o
+cc -O1 -fPIE main.c -o main.o
+ar rcs libfoo.a foo.o
+ar rcs libbar.a bar.o
+ar rcs sub/libfoo.a foo.o
+ar rcs sub/libbar.a bar.o
+shlib gcc pre.o -Wl,-soname,libpre.so -o libpre.so
+link gcc -shared lib.o libfoo.a libbar.a -o libnone.so
+check readelf --dyn-syms -W libnone.so
+  has: foo_fn$
+  has: foo_data$
+  has: bar_fn$
+link gcc -shared lib.o libfoo.a libbar.a -Wl,--exclude-libs,ALL -Wl,-soname,liball.so -o liball.so
+check readelf --dyn-syms -W liball.so
+  has: lib_fn$
+  not: foo_
+  not: bar_fn
+check readelf -rW liball.so
+  not: foo_
+  not: bar_fn
+link gcc -shared lib.o -L. -lfoo -lbar -Wl,--exclude-libs,libfoo.a -o libl.so
+check readelf --dyn-syms -W libl.so
+  not: foo_
+  has: bar_fn$
+link gcc -shared lib.o sub/libfoo.a sub/libbar.a -Wl,--exclude-libs,libfoo.a:libbar.a -o libsub.so
+check readelf --dyn-syms -W libsub.so
+  not: foo_
+  not: bar_fn
+link gcc -shared lib.o libfoo.a libbar.a -Xlinker --exclude-libs -Xlinker libbar.a,,libfoo.a: -o libcomma.so
+check readelf --dyn-syms -W libcomma.so
+  not: foo_
+  not: bar_fn
+link gcc -shared lib.o libfoo.a libbar.a -Xlinker --exclude-libs -Xlinker all,foo,sub/libfoo.a,libfoo.so -o libnothing.so
+check readelf --dyn-syms -W libnothing.so
+  has: foo_fn$
+  has: bar_fn$
+link gcc -shared lib.o libfoo.a libbar.a -Wl,--exclude-libs,libfoo.a -Wl,--version-script,v.map -o libv.so
+check readelf --dyn-syms -W libv.so
+  not: foo_
+  has: lib_fn@@V1$
+  has: bar_fn@@V1$
+link(mortar) gcc -shared lib.o libfoo.a libbar.a -Wl,--exclude-libs,libfoo -o libbad.so
+  exit: fail
+  diag: --exclude-libs: invalid value 'libfoo'
+  diag: GNU ld matches an archive name without its .a; lld and mold do not
+host gcc -pie main.o -L. -lall -o prog
+run prog
+  stdout: 6
+run prog
+  env: LD_PRELOAD=./libpre.so
+  stdout: 6
+
+#--- lib.c
+int foo_fn(void);
+extern int foo_data;
+int bar_fn(void);
+int lib_fn(void) { return foo_fn() + foo_data + bar_fn(); }
+#--- foo.c
+int foo_data = 3;
+int foo_fn(void) { return 1; }
+#--- bar.c
+int bar_fn(void) { return 2; }
+#--- pre.c
+int foo_data = 30;
+int foo_fn(void) { return 10; }
+int bar_fn(void) { return 20; }
+#--- main.c
+#include <stdio.h>
+int lib_fn(void);
+int main(void) { printf("%d\n", lib_fn()); return 0; }
+#--- v.map
+V1 { global: *; };
+#--- sub/keep.txt
+The directory of the second copies of the archives.

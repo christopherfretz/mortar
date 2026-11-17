@@ -366,6 +366,12 @@ Groups:
 - Groups nest. An inner group is part of the outermost one, whose
   ordinal is the one recorded (counted from 1).
 - A `--start-lib` inside a lib region is `unbalanced-option`.
+- A group and a lib region do not nest (WP-152): `--start-group` inside a
+  lib region and `--start-lib` inside a group are refused by name
+  (`unsupported feature: --start-group inside a --start-lib region`,
+  `unsupported feature: --start-lib inside a group`), as lld 22 refuses
+  both (mold accepts both; GNU ld has no lib regions). An unclosed region
+  at the end of the line is accepted (all three).
 
 `--push-state` and `--pop-state`:
 - `--push-state` saves the four switches: `as_needed`, `whole_archive`,
@@ -990,6 +996,17 @@ until the phase that honors them lands with its test:
   `--fortran-common`, whose help says "mortar's behavior, always on":
   mortar always takes an archive member for a common symbol
   (`spec/resolve.md` §3.3). `--no-fortran-common` stays `refused`.
+  WP-152 made `-u`/`--undefined`, `--require-defined`,
+  `--allow-multiple-definition`, `--no-allow-multiple-definition`,
+  `-z muldefs`, `--whole-archive`, `--no-whole-archive`, `--start-lib`
+  and `--end-lib` `supported` (`spec/resolve.md` §3.8, §4.2, §4.8; the
+  evidence in `crates/mortar/tests/options.rs` and `tests/link/resolve`).
+  `--unresolved-symbols`, `--warn-unresolved-symbols`,
+  `--error-unresolved-symbols` and `--ignore-unresolved-symbol` stay
+  `refused`: resolution decides them, but WP-152 found more than the
+  status missing (opened for a probe, `ignore-all` gave an ignored
+  function a nonzero address in a static executable where GNU ld gives
+  0, and `-pie --warn-unresolved-symbols` failed to link).
   `--warn-backrefs` and `--no-warn-backrefs` became `supported` in
   WP-027d (resolve.md §4.6's simulation had landed; the evidence is in
   `crates/mortar/tests/options.rs`); `--warn-backrefs-exclude` stays
@@ -1052,8 +1069,8 @@ until the phase that honors them lands with its test:
     `-shared` status text is the record's §G.4 (written with the row).
     In a `Shared` link until their packages: `-Bsymbolic`,
     `--dynamic-list`, `--exclude-libs`, `-init`, `-fini`,
-    `-z nodelete`/`nodlopen`/`initfirst`/`interpose`/`origin` are
-    refused (WP-128).
+    `-z nodelete`/`nodlopen`/`initfirst`/`interpose`/`origin` were
+    refused (WP-128 landed them; `SHARED_LATER` is empty).
   - WP-118 (`Shared` synth, layout, image): `-z now` in `Shared`
     (`DF_BIND_NOW`, `DF_1_NOW`, D-103; rustc's `cdylib` line passes
     `-z relro,-z now`); the row is `supported` already.
@@ -1066,13 +1083,19 @@ until the phase that honors them lands with its test:
     executable `--version-script` is refused by name (D-114: the
     references disagree). Landed (WP-125).
   - WP-128 (the option tail): `-Bsymbolic` `supported` (D-112, D-103:
-    `DT_SYMBOLIC`, `DF_SYMBOLIC`), `--dynamic-list` `supported` (D-112;
-    the grammar is WP-125's), `--exclude-libs` `supported` (D-110 item
-    1), `-z nodelete`, `-z nodlopen`, `-z initfirst`, `-z interpose`,
-    `-z origin` `supported` (D-103's flags; in an executable GNU ld
-    writes the same flags), `-init`/`-fini` in `Shared` (D-102 rows
-    3-4: an explicit name that is not defined is refused,
-    `undefined-init-symbol`), `--whole-archive` `supported`.
+    `DT_SYMBOLIC`, `DF_SYMBOLIC`; in an executable it does nothing, as
+    GNU ld and mold), `--dynamic-list` `supported` in every kind (D-112;
+    the grammar is WP-125's, `extern "C++"` refused by name; in an
+    executable it exports the listed definitions, resolve.md §9.6),
+    `--exclude-libs` `partial` (D-110 item 1; an entry naming an archive
+    without its `.a` is refused by name), `-z nodelete`, `-z nodlopen`,
+    `-z initfirst`, `-z interpose`, `-z origin` `supported` in `Shared`
+    only (D-103's flags; in an executable they are refused by name,
+    `SHARED_ONLY`: GNU ld drops the first three there and lld and mold
+    write them), `-init`/`-fini` in `Shared` (D-102 rows 3-4: an
+    explicit name that is not defined is refused,
+    `undefined-init-symbol`; one that is not code is refused by name).
+    `--whole-archive` is WP-152's. Landed (WP-128).
   - Refused by name, class `option`, in every kind, not planned:
     `--Bsymbolic-non-weak`, `--Bsymbolic-non-weak-functions` (GNU ld
     does not know them; their `noop` status of WP-027e becomes
