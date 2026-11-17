@@ -124,11 +124,20 @@ pub struct Update {
 /// The update of the link `args` in `cwd` (see the module's text). The
 /// command line is the one of the full link that wrote the state
 /// (`--incremental`'s rows aside, IN-18b).
+/// The replay translates by position (IN-28a) unless
+/// `MORTAR_FLOOR_IDENTITY` is set ([`update_by`]).
 #[must_use]
 pub fn update(args: &[OsString], cwd: &Path, write: WritePath) -> Update {
+    update_by(args, cwd, write, std::env::var_os("MORTAR_FLOOR_IDENTITY").is_none())
+}
+
+/// [`update`], translating by position (IN-28a) when `by_position`, else
+/// every file by identity (IN-28).
+#[must_use]
+pub fn update_by(args: &[OsString], cwd: &Path, write: WritePath, by_position: bool) -> Update {
     let mut timer = Timer::new(true);
     let mut report = None;
-    let outcome = run(args, cwd, write, &mut timer, &mut report);
+    let outcome = run(args, cwd, write, by_position, &mut timer, &mut report);
     Update { outcome, report, phases: timer.finish() }
 }
 
@@ -159,6 +168,7 @@ fn run(
     args: &[OsString],
     cwd: &Path,
     write: WritePath,
+    by_position: bool,
     timer: &mut Timer,
     report: &mut Option<mortar_diag::Report>,
 ) -> Result<Summary, String> {
@@ -257,8 +267,6 @@ fn run(
         Store::with_config(StorePolicy::from_env(), config, mortar_input::store::Hooks::default());
     // The replay's two parts, timed apart (inside phase 90's wall time).
     let replay_ms = std::cell::Cell::new((0.0_f64, 0.0_f64));
-    // IN-28a: by position unless MORTAR_FLOOR_IDENTITY is set.
-    let by_position = std::env::var_os("MORTAR_FLOOR_IDENTITY").is_none();
     let laps = std::cell::RefCell::new(mortar_incr::capture::Laps::new());
     // What the replay translated (for the guard and the recapture), and
     // why it failed.
