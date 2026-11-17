@@ -1,0 +1,47 @@
+mortar-map 2
+file 0 ie.o
+piece 0 8 0 3b8 18
+piece 0 8 18 3d0 14
+piece 0 8 2c 3e4 14
+piece 0 8 40 3f8 14
+piece 0 8 54 40c 14
+piece 0 8 68 420 18
+place 0 1 143c 6c
+place 0 5 24a8 10
+place 0 3 3618 0
+place 0 4 3618 0
+merged 0 6 .comment
+chunk synthetic .gnu.hash 200 3c
+chunk synthetic .dynsym 240 c0
+chunk synthetic .dynstr 300 3d
+chunk synthetic .rela.dyn 340 78
+chunk synthetic .eh_frame 3b8 84
+chunk synthetic .got 25d8 28
+chunk synthetic .got.plt 3600 18
+chunk synthetic .dynamic 24b8 120
+chunk synthetic .symtab - 120
+chunk synthetic .strtab - 71
+chunk synthetic .shstrtab - 81
+chunk synthetic .comment - d
+chunk synthetic .pad.relro 2600 a00
+define _GLOBAL_OFFSET_TABLE_ 3600
+output shared
+bind lazy
+relro on
+symbolic none
+arg -shared
+arg -soname
+arg libt.so
+arg -o
+arg libt-ie.so
+arg ie.o
+arg libtlso.so
+arg --mortar-map=libt-ie.map
+needed libtlso.so
+export get_e
+export e_tls
+export get_h
+export get_s
+export get_o
+export bump
+end

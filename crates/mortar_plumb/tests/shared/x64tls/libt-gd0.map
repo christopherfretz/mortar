@@ -1,0 +1,44 @@
+mortar-map 2
+file 0 gd0.o
+piece 0 8 0 340 18
+piece 0 8 18 358 20
+piece 0 8 38 378 20
+place 0 1 13c0 6c
+place 0 5 242c 8
+place 0 3 35b8 0
+place 0 4 35b8 0
+merged 0 6 .comment
+chunk synthetic .gnu.hash 200 28
+chunk synthetic .dynsym 228 78
+chunk synthetic .dynstr 2a0 3d
+chunk synthetic .rela.dyn 2e0 48
+chunk synthetic .rela.plt 328 18
+chunk synthetic .eh_frame 340 5c
+chunk synthetic .plt 13a0 20
+chunk synthetic .got 2578 20
+chunk synthetic .got.plt 3598 20
+chunk synthetic .dynamic 2438 140
+chunk synthetic .symtab - c0
+chunk synthetic .strtab - 6f
+chunk synthetic .shstrtab - 90
+chunk synthetic .comment - d
+chunk synthetic .pad.relro 2598 a68
+define _GLOBAL_OFFSET_TABLE_ 3598
+output shared
+bind lazy
+relro on
+symbolic none
+arg -shared
+arg -soname
+arg libt.so
+arg -o
+arg libt-gd0.so
+arg gd0.o
+arg libtlso.so
+arg --mortar-map=libt-gd0.map
+needed libtlso.so
+export tls_exported
+export get_tls
+export bump
+plt __tls_get_addr
+end

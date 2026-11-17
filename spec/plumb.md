@@ -2274,7 +2274,7 @@ rules below judge the rest. Code: `src/symbols.rs`.
   | `_etext`, `etext`, `__etext` | in [the end of `.text`, the next non-executable section's start] |
   | `__rela_iplt_start`/`_end` (AArch64, x86-64), `__rel_iplt_start`/`_end` (i386) | the bounds of the only allocated `SHT_RELA` (i386: `SHT_REL`) section; with none, start = end (synth.md R-P6; under `-static-pie` they are not defined, and an `ET_DYN` output's range is P-D15's, §12.4) |
   | `_DYNAMIC` | the start of `.dynamic`, else 0 |
-  | `_TLS_MODULE_BASE_` | 0, and `STT_TLS` (§4.7) |
+  | `_TLS_MODULE_BASE_` | 0, and `STT_TLS` (§4.7); GNU ld's x86-64 executable (`exec`, `pie`, static) TP, align_up(`p_memsz`, `p_align`), its shared object 0 (measured, WP-144: lld 0 in every kind, mold an address, A3) |
   | `__start_X`, `__stop_X` (X a C identifier) | the bounds of section X |
   | `__CortexA53843419_H` (lld; H the hex address of a site's patched final word) | the patch W8 accepted for the 843419 site whose final word is at H, size 8; with no patched site at H the name labels dead bytes and is not judged (the site's C1 or its not-judged count reports it; WP-082) |
 
@@ -4910,7 +4910,8 @@ mortar a single answer and the references differ or are not ruled.
   demands (D-40, D-46): its place is an aligned word of `.got` and its
   addend the value some GOT-indirect reference of the inputs asks a slot
   to hold (relaxed or not, a TLS reference's TPREL word or module pair
-  included; `reloc.rs`'s `got_demands`), or an IPLT entry (D-45: an
+  included, a kept x86-64 GD or LD sequence's pair too, a bound key's
+  static DTP offset with it, WP-144; `reloc.rs`'s `got_demands`), or an IPLT entry (D-45: an
   entry whose word carries an `IRELATIVE`, in `.plt` or `.iplt`). For a
   reference the value of `_GLOBAL_OFFSET_TABLE_` is accepted too: mold
   gives an x86-64 `GOTPC64` reference to it a GOT slot of that symbol
@@ -5275,7 +5276,15 @@ and what turns P-D9's equality into a check of D-112.
     naming the key (in `.rela.dyn` for mortar, D-119; in `.rela.plt`
     from a reference); against a bound key: `TLSDESC` with `r_sym` 0 and
     the offset as addend (RELA) or in the descriptor's second word
-    (i386 REL);
+    (i386 REL). On x86-64 the pair is kept (`spec/x64.md` X-61): the
+    `lea`'s three instruction bytes are the input's and its field
+    reaches the descriptor, `call *(%rax)` stays (R1's kept branch; the
+    field itself is the link's, WP-144); GCC's local-dynamic descriptor
+    for `_TLS_MODULE_BASE_` is `r_sym` 0 with addend 0 and holds the
+    block's start, not X-47's relaxed `T = 0`. Every reference measured
+    (WP-144): GNU ld in `.rela.plt` with `DT_TLSDESC_PLT` and
+    `DT_TLSDESC_GOT`, under `-z now` in `.rela.plt` without them; lld
+    and mold in `.rela.dyn`, eager, both ways;
   - IE against a preemptible key or an import: `TPREL64`/`TPOFF64`/
     `TLS_TPOFF` naming the key; against a bound key: the same type with
     `r_sym` 0 and the offset as addend (RELA) or in place (REL);
