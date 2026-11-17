@@ -363,7 +363,8 @@ fn s5_demand_cells_exec_and_pie() {
                         && kind == TargetKind::WeakDyn
                         && mortar_a64::weak::weak_class(t, writable)
                             == Some(mortar_arch::WeakClass::Unfillable);
-                    let w = want(h.class, out, if split { TargetKind::Weak0 } else { kind }, writable);
+                    let w =
+                        want(h.class, out, if split { TargetKind::Weak0 } else { kind }, writable);
                     assert_eq!(got(&s), w, "{} {out:?} {kind:?} writable={writable}", h.name);
                     *by.entry(format!("{w:?}")).or_default() += 1;
                     cells += 1;

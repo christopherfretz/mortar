@@ -98,11 +98,7 @@ pub fn scan(m2: bool, cx: &ScanCx<'_>, at: &RelocAt<'_>, out: &mut DemandSink<'_
     let kind = mortar_arch::weak_use_kind(cx.output, sym.kind, cx.place.alloc, || {
         crate::weak::weak_class(at.r_type, cx.place.writable).filter(|_| !h.class.is_tls())
     });
-    let kind = if h.class.is_tls() && kind == TargetKind::Weak0 {
-        TargetKind::Local
-    } else {
-        kind
-    };
+    let kind = if h.class.is_tls() && kind == TargetKind::Weak0 { TargetKind::Local } else { kind };
     let data = matches!(h.field, Field::Data { .. });
     let outcome = class_outcome(h.class, data, cx.output, kind, cx.place, sym.tls);
     // a64.md §5's dynamic cells are arch.md §4.3's since WP-046 (D-43,
