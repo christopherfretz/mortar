@@ -1263,14 +1263,9 @@ impl<'a, 'b> Engine<'a, 'b> {
                 return None;
             };
             let k = k.0 as usize;
-            let s = self.objs[doi].secs.get(k)?;
-            // An input `.eh_frame` is rebuilt, never placed: while the
-            // output has an `.eh_frame`, its labels have S-50's values
-            // (synth.md S-48a, S-50; WP-143b), not "not in the output".
-            if !matches!(s.place, Place::Absent | Place::Discarded)
-                || s.empty_unrecorded()
-                || (s.is_eh_frame(self.objs[doi].elf.machine()) && self.output_eh_frame().is_some())
-            {
+            // P-1's predicate (`Obj::no_place`): an input `.eh_frame`
+            // while the output has one has S-50's values (WP-143b).
+            if !self.objs[doi].no_place(k, self.output_eh_frame().is_some()) {
                 return None;
             }
             first.get_or_insert((doi, di, k));

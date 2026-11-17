@@ -1,0 +1,22 @@
+mortar-map 2
+file 0 plain.o
+file 1 propl.o
+place 0 1 410120 4
+place 0 2 420124 4
+place 0 3 42012c 0
+place 1 1 410124 0
+place 1 2 420128 4
+place 1 3 42012c 0
+chunk synthetic .symtab - 78
+chunk synthetic .strtab - 2e
+chunk synthetic .shstrtab - 30
+chunk synthetic .comment - d
+arg -static
+arg plain.o
+arg propl.o
+arg -e
+arg f
+arg -o
+arg loc
+arg --mortar-map=loc.map
+end

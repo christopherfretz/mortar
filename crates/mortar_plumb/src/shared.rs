@@ -882,6 +882,10 @@ pub struct Sets {
     /// a section of the inputs that the map keeps none of (layout L-96
     /// keeps them all live; W23): the key and `X`.
     pub dropped: Vec<(String, String)>,
+    /// Keys whose definition has no place (`spec/resolve.md` §10.1 P-1,
+    /// §4.4 step 0's predicate `Obj::no_place`): never in the export set
+    /// (D-110; WP-147), by name with the definition's input `st_value`.
+    pub placeless: BTreeMap<String, u64>,
 }
 
 impl Sets {
@@ -1078,7 +1082,7 @@ pub(crate) fn compute(
     }
     // Every mention of a name by a live object: definitions (full names,
     // `.symver` forms kept) and the merged visibility (by base name).
-    #[allow(clippy::items_after_statements)] // next to its one use
+    #[allow(clippy::items_after_statements, clippy::struct_excessive_bools)] // next to its one use
     struct D {
         ty: u8,
         bind: u8,
@@ -1086,8 +1090,13 @@ pub(crate) fn compute(
         strong: bool,
         common: bool,
         excluded: bool,
+        /// P-1: its section has no place (WP-147).
+        placeless: bool,
+        value: u64,
     }
+    let out_eh_frame = image.sections.iter().any(|x| x.name == ".eh_frame" && x.alloc());
     let mut defs: BTreeMap<String, Vec<D>> = BTreeMap::new();
+    let mut gone: BTreeMap<String, u64> = BTreeMap::new();
     let mut vis: HashMap<String, u8> = HashMap::new();
     let mut refs: BTreeMap<String, Import> = BTreeMap::new();
     for o in objs {
@@ -1125,9 +1134,14 @@ pub(crate) fn compute(
                 Err(_) => false,
             };
             if !live {
+                // A definition in a discarded section: P-1's "no place"
+                // when no live object defines the key (below; WP-147).
+                gone.entry(name).or_insert(s.st_value);
                 continue;
             }
             let common = matches!(t.section_of(i, &s), Ok(SymbolSection::Common));
+            let placeless = matches!(t.section_of(i, &s), Ok(SymbolSection::Section(k))
+                if o.no_place(k.0 as usize, out_eh_frame));
             defs.entry(name).or_default().push(D {
                 ty: if common { mortar_elf::consts::STT_OBJECT } else { s.sym_type() },
                 bind: s.binding(),
@@ -1135,11 +1149,22 @@ pub(crate) fn compute(
                 strong: matches!(s.binding(), STB_GLOBAL | STB_GNU_UNIQUE) && !common,
                 common,
                 excluded,
+                placeless,
+                value: s.st_value,
             });
         }
     }
     let defined_base: HashSet<String> =
         defs.keys().map(|n| split_version(n).0.to_string()).collect();
+    // P-1 (WP-147): a key every definition of which is discarded (not a
+    // COMDAT copy another object keeps) has no place.
+    for (name, value) in gone {
+        let base = split_version(&name).0;
+        let v = vis.get(base).copied().unwrap_or(STV_DEFAULT);
+        if !defined_base.contains(base) && matches!(v, STV_DEFAULT | STV_PROTECTED) {
+            sets.placeless.entry(base.to_string()).or_insert(value);
+        }
+    }
     // Layout L-96: `__start_X`/`__stop_X` named from a live section, `X` a
     // C-identifier section of the inputs, is the link's own definition.
     let startstop = start_stop(objs, &refs);
@@ -1198,6 +1223,12 @@ pub(crate) fn compute(
             .unwrap_or(&ds[0]);
         if d.excluded {
             sets.local.insert(base);
+            continue;
+        }
+        // P-1: an export whose definition has no place is omitted
+        // (`spec/resolve.md` §10.1, D-110; WP-147).
+        if d.placeless {
+            sets.placeless.insert(base, d.value);
             continue;
         }
         let Some(version) = decide(name, &mut sets) else {
@@ -1305,6 +1336,7 @@ pub(crate) fn compute(
 
 /// P-D19: `.dynsym`'s defined entries against the export set, with
 /// binding, type, visibility and version (D-110, D-115).
+#[allow(clippy::too_many_lines)] // one pass over .dynsym, then the set
 pub fn pd19(out: &DynOut, sets: &Sets, format: Format) -> Vec<Finding> {
     let mut v = Vec::new();
     let sym = |name: &str, m: String| {
@@ -1328,6 +1360,26 @@ pub fn pd19(out: &DynOut, sets: &Sets, format: Format) -> Vec<Finding> {
             && version == VerOut::Node(s.name.clone())
             && sets.nodes.contains(&s.name)
         {
+            continue;
+        }
+        if let Some(&value) = sets.placeless.get(&s.name)
+            && !sets.exports.contains_key(&s.name)
+        {
+            // GNU ld's form (measured, WP-147): an absolute symbol whose
+            // value is the definition's offset in its section.
+            if format == Format::Gnu
+                && s.st_shndx == mortar_elf::consts::SHN_ABS
+                && s.st_value == value
+            {
+                continue;
+            }
+            v.push(sym(
+                &s.name,
+                format!(
+                    "'{}' is defined in .dynsym (at {:#x}), but its definition has no place: P-1 omits it (resolve.md §10.1, D-110)",
+                    s.name, s.st_value
+                ),
+            ));
             continue;
         }
         let Some(e) =
@@ -2074,6 +2126,7 @@ pub(crate) fn filter_dyncheck(
     out: &DynOut,
     sl: &SharedLine,
     sets: &Sets,
+    format: Format,
 ) {
     let entry0 = image.header.e_entry == 0;
     let mask = DF_SYMBOLIC | crate::dynout::DF_STATIC_TLS;
@@ -2108,6 +2161,15 @@ pub(crate) fn filter_dyncheck(
                 }
                 // D-30's order has no library tags: D-102's is P-D22's.
                 m != "a tag D-30 does not write" && m != "the .dynamic tags are not in D-30's order"
+            }
+            // lld's form of an unreferenced export with no place
+            // (measured, WP-147): an import no input references.
+            Rule::Dyn(7)
+                if format == Format::Lld
+                    && m.contains("is imported and no input references it")
+                    && f.symbol.as_deref().is_some_and(|n| sets.placeless.contains_key(n)) =>
+            {
+                false
             }
             Rule::Dyn(7) => {
                 !m.contains("is not exported (D-12, W8)")

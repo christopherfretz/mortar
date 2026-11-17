@@ -1,0 +1,42 @@
+mortar-map 2
+file 0 plain.o
+file 1 prop.o
+file 2 stk.o
+file 3 defs.o
+place 0 1 1242 1
+place 0 2 32f8 4
+place 0 3 32fc 0
+place 1 1 1243 0
+place 1 2 32fc 0
+place 1 3 32fc 0
+place 2 1 1243 0
+place 2 2 32fc 0
+place 2 3 32fc 0
+place 3 1 1243 0
+place 3 2 32fc 0
+place 3 3 32fc 0
+discard 3 4 unspecified
+discard 3 5 unspecified
+chunk synthetic .gnu.hash 1c8 24
+chunk synthetic .dynsym 1f0 48
+chunk synthetic .dynstr 238 a
+chunk synthetic .dynamic 2248 b0
+chunk synthetic .shstrtab - 4e
+chunk synthetic .comment - d
+chunk synthetic .pad.relro 22f8 d08
+output shared
+bind lazy
+relro on
+symbolic none
+arg -shared
+arg -s
+arg plain.o
+arg prop.o
+arg stk.o
+arg defs.o
+arg -o
+arg libs.so
+arg --mortar-map=libs.map
+export f
+export gplain
+end

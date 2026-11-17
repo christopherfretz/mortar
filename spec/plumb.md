@@ -517,9 +517,23 @@ input section:
     root, as for `discard ... gc`.
   A `discard ... comdat` record must be the COMDAT row, `... unspecified`
   one of §10's rows, `... gc` and `... script` as above; anything else, and
-  a section with bytes no record names and no row explains, is M10. The
-  verifier does not re-derive the roots that need the line's symbols (the
-  entry, `-u`, `--require-defined`, the exports) nor a script's `KEEP`.
+  a section with bytes no record names and no row explains, is M10.
+
+  **The roots the line names** (WP-147; `spec/resolve.md` §4.2, §4.7). A
+  `discard ... gc` record, or a collected `SHT_NOBITS` section, is also
+  M10 when the section holds the definition (the first strong one in
+  object order, else the first) of a key the line roots: the entry (`-e`,
+  else `_start` outside `-shared`); a name of `-init`, `-fini` or
+  `--export-dynamic-symbol`; and, when the output exports (the map's
+  `output shared`, or `output exec`/`output pie` with `-E`), every global
+  or weak of default or protected visibility that no live object makes
+  hidden or internal. mortar refuses `-u`, `--require-defined`, version
+  scripts, dynamic lists and `--exclude-libs` (docs/status/options.md),
+  so its line has none. Not re-derived: a glob of
+  `--export-dynamic-symbol`, and a script's `KEEP`. Test:
+  `tests/placeless.rs wp147_gc_of_a_line_root_is_m10` (the entry, `-init`,
+  an export of a library: each M10; `-E` in a static link and no root:
+  accepted).
 
 Each rule has a test: `tests/mutation.rs s9_2e_each_map_rule_is_enforced`;
 the WP-143 rows (M4 for an empty section, M10): `tests/placeless.rs`.
@@ -857,7 +871,10 @@ offset; through the output's `.symtab` that address is `PT_TLS` `p_vaddr`
      that is discarded or absent (not one without bytes, above; nor an
      input `.eh_frame` while the output has an allocated `.eh_frame`,
      whose labels have `synth.md` S-50's values, WP-143b), and the
-     loader does not bind the name (§12.5): the definition is the first
+     loader does not bind the name (§12.5). This predicate, "the section
+     has no place" (`spec/resolve.md` §10.1 P-1 as the map shows it), is
+     the one derivation every rule that lists the expected symbols asks:
+     this step, Y3, Y4 and P-D19's export set (WP-147): the definition is the first
      strong one in object order, else the first, and S follows from its
      section as for a local symbol: R5 (§5.7), or §5.8's tombstone from a
      non-alloc place, whatever the output's `.symtab` says. Before WP-143
@@ -2377,6 +2394,19 @@ rules below judge the rest. Code: `src/symbols.rs`.
 
   A name the inputs also define globally, or a TLS local without a usable
   `PT_TLS`, is also counted in `locals_unchecked`.
+
+  **A local of a section with no place** (WP-147; mortar's map;
+  `spec/resolve.md` §10.1 P-1: omitted from `.symtab`). When every input
+  local of the name is in a section with no place (§4.4 step 0's
+  predicate), the name is not a mapping symbol and no input defines it
+  globally, an output local of the name is a finding, whatever its value
+  or section. Before WP-136 mortar wrote a `.note.gnu.property` local as
+  its offset in the note; mold still does (`SHN_ABS`, the offset),
+  measured with an unreferenced local in the note on AArch64 and x86-64;
+  GNU ld and lld omit it. Under a reference's map such a local stays in
+  `locals_unchecked`. Test: `tests/pexport.rs
+  wp147_local_of_a_placeless_section_in_symtab_is_found` (the local as
+  its offset, in a section or absolute: Y4).
 - **Y5. Linker-defined symbols.** This rule applies to each defined output
   symbol whose name no input defines. The names below have these values.
   Here, "the section" means the allocated output section of that name;
@@ -5328,7 +5358,27 @@ and what turns P-D9's equality into a check of D-112.
   (D-110, `__start_`/`__stop_` `PROTECTED` included) with each entry's
   binding, type, visibility and version (D-115). *Read:* `.dynsym`'s
   defined entries and `.gnu.version`. *Reported:* a defined entry
-  missing, extra or with a field or version that differs. Imports are
+  missing, extra or with a field or version that differs. A definition
+  whose section has no place (§4.4 step 0's predicate; a key every
+  definition of which is discarded, not a COMDAT copy another object
+  keeps) is not in the export set (`spec/resolve.md` §10.1 P-1: an
+  unreferenced placeless symbol is omitted from `.dynsym`, D-110;
+  WP-147). Under mortar's map such a key defined in `.dynsym`, in any
+  form, is a finding ("its definition has no place"). Under a
+  reference's, what each writes is accepted as measured (an unreferenced
+  global in `.note.gnu.property`, `.note.GNU-stack`, an `SHF_EXCLUDE`
+  section and an input build-id note, `-shared` and `-pie
+  --export-dynamic`, AArch64 and x86-64): GNU ld an `SHN_ABS` symbol
+  whose value is the definition's offset in its section (its
+  `.note.GNU-stack` global it places at the end of `.text`, an ordinary
+  export); lld an undefined symbol under `-shared` (P-D7's "imported and
+  no input references it" is not reported for it) and nothing under
+  `-pie`; mold nothing (its `SHF_EXCLUDE` section it places, an ordinary
+  export). GNU ld's form at another value is a finding. Before WP-147 the
+  set held these keys: mortar's library without them was "in the export
+  set and not defined in .dynsym". An executable's exports
+  (`-pie --export-dynamic`) are not P-D19's: not judged. Test:
+  `tests/pexport.rs`. Imports are
   P-D7's import rule and P-D8, unchanged, except that an import's
   static binding, `bind(k)`, ranges over N alone (`spec/dyn.md` D-10 as
   WP-137 amends it; WP-140): a weak-only key whose every definition lies

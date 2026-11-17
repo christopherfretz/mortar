@@ -780,6 +780,15 @@ pub struct Options {
     /// `-T`/`--script`/`--default-script` (a `discard script` record's
     /// reason, M10).
     pub script: bool,
+    /// The last `-e`/`--entry` (M10's roots of the line, WP-147).
+    pub entry: Option<String>,
+    /// `-shared` (M10: every export is a root, `spec/resolve.md` §4.7).
+    pub shared: bool,
+    /// The last of `-E` and `--no-export-dynamic`.
+    pub export_dynamic: bool,
+    /// The names of `-init`, `-fini` and `--export-dynamic-symbol` (M10's
+    /// roots of the line, `spec/resolve.md` §4.7, WP-147).
+    pub named_roots: Vec<String>,
     /// The last `-z max-page-size=N` (layout.md L-74; `N = 0` means the
     /// default), when its value reads as a number.
     pub max_page: Option<u64>,
@@ -802,6 +811,10 @@ impl Default for Options {
             strip_all: false,
             gc_sections: false,
             script: false,
+            entry: None,
+            shared: false,
+            export_dynamic: false,
+            named_roots: Vec::new(),
             max_page: None,
             unread: Vec::new(),
         }
@@ -870,6 +883,13 @@ impl Options {
             "--gc-sections" => self.gc_sections = true,
             "--no-gc-sections" => self.gc_sections = false,
             "-T" | "--default-script" => self.script = true,
+            "-e" => self.entry = value.map(str::to_string),
+            "-shared" => self.shared = true,
+            "-E" => self.export_dynamic = true,
+            "--no-export-dynamic" => self.export_dynamic = false,
+            "-init" | "-fini" | "--export-dynamic-symbol" => {
+                self.named_roots.extend(value.map(str::to_string));
+            }
             "--keep-mason-meta" => self.keep_mason_meta = true,
             "--odr-table" => {
                 self.odr_table = match value {

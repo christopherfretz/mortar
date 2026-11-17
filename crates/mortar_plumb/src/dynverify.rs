@@ -272,7 +272,7 @@ fn judge(
     let mut checked = crate::dyncheck::check(image, dout, &line, &model, &ld, &objs, map);
     if let (Some(sl), Some(s)) = (&shared.line, &sets) {
         // §12.5: P-D16's changes to the executable rules, then P-D19-P-D26.
-        crate::shared::filter_dyncheck(&mut checked, image, dout, sl, s);
+        crate::shared::filter_dyncheck(&mut checked, image, dout, sl, s, map.format);
         report
             .findings
             .extend(crate::shared::static_checks(image, dout, &objs, sl, s, &args, map.format));

@@ -11,8 +11,10 @@ use mortar_elf::consts::{
 };
 use mortar_elf::{Machine, SymbolIndex, SymbolSection};
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use crate::locate::{Obj, Place, Sec};
-use crate::map::{DiscardReason, Format, Map};
+use crate::map::{DiscardReason, Format, Map, OutputKind};
 use crate::opts::Options;
 use crate::reloc::debug::is_debug_name;
 use crate::report::{Finding, Rule};
@@ -68,7 +70,7 @@ fn dropped_by_row(o: &Obj<'_>, s: &Sec<'_>, opts: &Options) -> Option<&'static s
 /// `FileId` order, I-78): per object, the sections of its dropped
 /// copies.
 fn comdat_dropped(objs: &[Obj<'_>]) -> Vec<Vec<bool>> {
-    let mut kept: std::collections::BTreeSet<Vec<u8>> = std::collections::BTreeSet::new();
+    let mut kept: BTreeSet<Vec<u8>> = BTreeSet::new();
     let mut out: Vec<Vec<bool>> = objs.iter().map(|o| vec![false; o.secs.len()]).collect();
     for (oi, o) in objs.iter().enumerate() {
         for (gi, g) in o.secs.iter().enumerate() {
@@ -143,8 +145,8 @@ fn in_alloc_group(objs: &[Obj<'_>]) -> Vec<Vec<bool>> {
 
 /// The names `__start_X`/`__stop_X` some input references (undefined):
 /// the `X` (`spec/image.md` I-6, last root).
-fn start_stop(objs: &[Obj<'_>]) -> std::collections::BTreeSet<Vec<u8>> {
-    let mut out = std::collections::BTreeSet::new();
+fn start_stop(objs: &[Obj<'_>]) -> BTreeSet<Vec<u8>> {
+    let mut out = BTreeSet::new();
     for o in objs {
         let Some(t) = o.symtab else { continue };
         for (_, s) in t.iter() {
@@ -167,7 +169,7 @@ fn gc_root(
     o: &Obj<'_>,
     s: &Sec<'_>,
     alloc_group: bool,
-    ss: &std::collections::BTreeSet<Vec<u8>>,
+    ss: &BTreeSet<Vec<u8>>,
 ) -> Option<&'static str> {
     let f = s.shdr.sh_flags;
     let n = s.name.as_str();
@@ -198,6 +200,78 @@ fn gc_root(
     None
 }
 
+/// An object and a section index.
+type At = (usize, usize);
+
+/// The sections of the live objects that hold the definition of a key
+/// the line roots (`spec/resolve.md` §4.2, §4.7; WP-147): the entry (`-e`,
+/// else `_start` outside `-shared`), `-init`, `-fini`,
+/// `--export-dynamic-symbol` (a name; a glob is not re-derived), and,
+/// when the output has a `.dynsym` that exports (`-shared`, or a
+/// dynamically linked executable with `-E`: the map's `output` record),
+/// every global or weak of default or protected visibility (no object
+/// makes the name hidden or internal). mortar
+/// refuses `-u`, `--require-defined`, version scripts, dynamic lists and
+/// `--exclude-libs` (docs/status/options.md), so they are not in its line.
+/// The definition of a name is its first strong one in object order,
+/// else its first. Maps (object, section) to the name.
+fn line_roots(
+    objs: &[Obj<'_>],
+    opts: &Options,
+    kind: Option<OutputKind>,
+) -> BTreeMap<(usize, usize), String> {
+    use mortar_elf::consts::{STB_LOCAL, STB_WEAK, STV_DEFAULT, STV_PROTECTED};
+    let mut named: BTreeSet<String> = opts.named_roots.iter().cloned().collect();
+    match &opts.entry {
+        Some(e) => {
+            named.insert(e.clone());
+        }
+        None if !opts.shared => {
+            named.insert("_start".into());
+        }
+        None => {}
+    }
+    let exports = match kind {
+        Some(OutputKind::Shared) => true,
+        Some(OutputKind::Exec | OutputKind::Pie) => opts.export_dynamic,
+        _ => false,
+    };
+    let mut hidden: BTreeSet<String> = BTreeSet::new();
+    // name -> (strong, first): (object, section)
+    let mut defs: BTreeMap<String, (Option<At>, At)> = BTreeMap::new();
+    for (oi, o) in objs.iter().enumerate() {
+        let Some(t) = o.symtab else { continue };
+        for (i, sym) in t.iter() {
+            if sym.binding() == STB_LOCAL {
+                continue;
+            }
+            let Ok(n) = t.name(&sym) else { continue };
+            let n = String::from_utf8_lossy(n).into_owned();
+            if !matches!(sym.visibility(), STV_DEFAULT | STV_PROTECTED) {
+                hidden.insert(n.clone());
+            }
+            let Ok(SymbolSection::Section(k)) = t.section_of(i, &sym) else { continue };
+            let at = (oi, k.0 as usize);
+            let e = defs.entry(n).or_insert((None, at));
+            if sym.binding() != STB_WEAK && e.0.is_none() {
+                e.0 = Some(at);
+            }
+        }
+    }
+    let mut out = BTreeMap::new();
+    for (n, (strong, first)) in defs {
+        let why = if named.contains(&n) {
+            format!("'{n}', which the line names (resolve.md §4.2, §4.7)")
+        } else if exports && !hidden.contains(&n) {
+            format!("'{n}', an export (resolve.md §4.7)")
+        } else {
+            continue;
+        };
+        out.entry(strong.unwrap_or(first)).or_insert(why);
+    }
+    out
+}
+
 /// Whether `--gc-sections`, `-T` or a group could be the reason, by the
 /// record's word; `Err` the finding's text.
 #[allow(clippy::too_many_arguments)]
@@ -208,7 +282,8 @@ fn judge_discard(
     opts: &Options,
     comdat: bool,
     alloc_group: bool,
-    ss: &std::collections::BTreeSet<Vec<u8>>,
+    ss: &BTreeSet<Vec<u8>>,
+    root: Option<&String>,
 ) -> Result<(), String> {
     match reason {
         DiscardReason::Comdat if comdat => Ok(()),
@@ -221,9 +296,10 @@ fn judge_discard(
         DiscardReason::Gc if !opts.gc_sections => {
             Err("discarded as 'gc' but the line has no --gc-sections".into())
         }
-        DiscardReason::Gc => match gc_root(o, s, alloc_group, ss) {
-            Some(r) => Err(format!("discarded as 'gc' but it is a root: {r}")),
-            None => Ok(()),
+        DiscardReason::Gc => match (gc_root(o, s, alloc_group, ss), root) {
+            (Some(r), _) => Err(format!("discarded as 'gc' but it is a root: {r}")),
+            (None, Some(n)) => Err(format!("discarded as 'gc' but it defines {n}: a root")),
+            (None, None) => Ok(()),
         },
         DiscardReason::Script if opts.script => Ok(()),
         DiscardReason::Script => Err("discarded as 'script' but the line has no -T".into()),
@@ -245,6 +321,7 @@ pub(crate) fn check(objs: &[Obj<'_>], map: &Map, opts: &Options) -> Vec<Finding>
     let comdat = comdat_dropped(objs);
     let groups = in_alloc_group(objs);
     let ss = start_stop(objs);
+    let roots = line_roots(objs, opts, map.dynamic.as_ref().and_then(|d| d.kind));
     for (oi, o) in objs.iter().enumerate() {
         for (si, s) in o.secs.iter().enumerate() {
             if si == 0 || s.consumed() {
@@ -252,7 +329,17 @@ pub(crate) fn check(objs: &[Obj<'_>], map: &Map, opts: &Options) -> Vec<Finding>
             }
             let msg = match (&s.place, s.discard) {
                 (Place::Discarded, Some((reason, _))) => {
-                    match judge_discard(o, s, reason, opts, comdat[oi][si], groups[oi][si], &ss) {
+                    let root = roots.get(&(oi, si));
+                    match judge_discard(
+                        o,
+                        s,
+                        reason,
+                        opts,
+                        comdat[oi][si],
+                        groups[oi][si],
+                        &ss,
+                        root,
+                    ) {
                         Ok(()) => continue,
                         Err(m) => m,
                     }
@@ -267,7 +354,8 @@ pub(crate) fn check(objs: &[Obj<'_>], map: &Map, opts: &Options) -> Vec<Finding>
                     // record; `--gc-sections` and no root explain it.
                     let gc_nobits = s.shdr.sh_type == SHT_NOBITS
                         && opts.gc_sections
-                        && gc_root(o, s, groups[oi][si], &ss).is_none();
+                        && gc_root(o, s, groups[oi][si], &ss).is_none()
+                        && !roots.contains_key(&(oi, si));
                     if s.shdr.sh_size == 0
                         || gc_nobits
                         || comdat[oi][si]
