@@ -6,12 +6,12 @@
 use crate::hasher::HashMap;
 
 use mortar_elf::consts::{
-    SHF_ALLOC, SHF_EXCLUDE, SHF_GNU_RETAIN, SHF_GROUP, SHF_LINK_ORDER, SHN_UNDEF,
+    GRP_COMDAT, SHF_ALLOC, SHF_EXCLUDE, SHF_GNU_RETAIN, SHF_GROUP, SHF_LINK_ORDER, SHN_UNDEF,
     SHT_AARCH64_ATTRIBUTES, SHT_FINI_ARRAY, SHT_GROUP, SHT_INIT_ARRAY,
     SHT_LLVM_ADDRSIG, SHT_LLVM_CALL_GRAPH_PROFILE, SHT_LLVM_DEPENDENT_LIBRARIES, SHT_NOTE,
     SHT_PREINIT_ARRAY,
 };
-use mortar_elf::{Machine, SectionIndex, SymbolIndex, SymbolSection};
+use mortar_elf::{Machine, SymbolIndex, SymbolSection};
 
 use crate::reloc::debug::is_debug_name;
 use crate::locate::{Obj, Place, Sec};
@@ -77,23 +77,32 @@ fn comdat_dropped(objs: &[Obj<'_>]) -> Vec<Vec<bool>> {
             if g.shdr.sh_type != SHT_GROUP {
                 continue;
             }
-            let Ok(sec) = o.elf.section(SectionIndex(gi as u32)) else { continue };
-            let Ok(group) = sec.group() else { continue };
-            if !group.is_comdat() {
+            let (flags, members) = group_words(o, gi);
+            if flags & GRP_COMDAT == 0 {
                 continue;
             }
-            let Some(sig) = signature(o, group.signature()) else { continue };
+            let Some(sig) = signature(o, SymbolIndex(g.shdr.sh_info)) else { continue };
             if kept.insert(sig, ()).is_none() {
                 continue;
             }
-            for m in group.members().flatten() {
-                if let Some(d) = out[oi].get_mut(m.0 as usize) {
+            for m in members {
+                if let Some(d) = out[oi].get_mut(m) {
                     *d = true;
                 }
             }
         }
     }
     out
+}
+
+/// The flag word and member indexes of `SHT_GROUP` section `gi` (gABI
+/// "Section Groups": `Elf32_Word`s, the first the flags), read through
+/// [`Obj::data`] (an object's contents may not be resident).
+fn group_words(o: &Obj<'_>, gi: usize) -> (u32, Vec<usize>) {
+    let data = o.data(gi);
+    let mut words = data.chunks_exact(4).map(|w| u32::from_le_bytes([w[0], w[1], w[2], w[3]]));
+    let flags = words.next().unwrap_or(0);
+    (flags, words.map(|w| w as usize).filter(|&w| w != 0).collect())
 }
 
 /// A group's signature (`spec/resolve.md` §6.1 M1): its symbol's name, or
@@ -120,9 +129,7 @@ fn in_alloc_group(objs: &[Obj<'_>]) -> Vec<Vec<bool>> {
             if g.shdr.sh_type != SHT_GROUP {
                 continue;
             }
-            let Ok(sec) = o.elf.section(SectionIndex(gi as u32)) else { continue };
-            let Ok(group) = sec.group() else { continue };
-            let members: Vec<usize> = group.members().flatten().map(|m| m.0 as usize).collect();
+            let (_, members) = group_words(o, gi);
             if members.iter().any(|&m| o.secs.get(m).is_some_and(Sec::alloc)) {
                 for m in members {
                     if let Some(d) = out[oi].get_mut(m) {
