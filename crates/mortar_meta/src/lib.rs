@@ -9,6 +9,7 @@
 //!   access (no copy of the rows).
 //! - [`write`]: the canonical writer (MT-38): the same rows in any order
 //!   give the same bytes.
+//! - [`details`]: kind 4's entries (`spec/odr.md` O-19), read on demand.
 //! - [`anchor`]: the name of an anchored row (MT-12, `spec/odr.md` O-4).
 //! - [`table`]: the `.note.mason` table of a dynamic output (`spec/odr.md`
 //!   O-50 to O-52), its encoder and its reader.
@@ -18,6 +19,7 @@
 #![forbid(unsafe_code)]
 
 pub mod anchor;
+pub mod details;
 pub mod read;
 pub mod table;
 pub mod write;
@@ -60,8 +62,8 @@ pub mod kind {
     pub const DEFINITIONS: u16 = 0x0002;
     /// Type definitions (`spec/odr.md` O-17).
     pub const TYPES: u16 = 0x0003;
-    /// Layout details (`spec/odr.md` O-19): not rows; its encoding is
-    /// WP-073's.
+    /// Layout details (`spec/odr.md` O-19): not rows; entries addressed
+    /// from kind 3 ([`crate::details`]).
     pub const DETAILS: u16 = 0x0004;
     /// Declarations (`spec/odr.md` O-35).
     pub const DECLARATIONS: u16 = 0x0005;

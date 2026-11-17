@@ -29,7 +29,9 @@ use mortar_elf::{SectionIndex, SymbolIndex, SymbolSection};
 use mortar_meta::read::{
     DeclarationRow, DefinitionRow, FileReader, Finding, SectionAttrs, TypeRow, Unit,
 };
-use mortar_meta::{flags, fnv1a64};
+use mortar_meta::{Malformation, NO_DETAILS, flags, fnv1a64};
+
+use crate::details::{self, Side};
 
 use crate::foreign::PHASE;
 
@@ -66,6 +68,9 @@ pub(crate) mod tag {
     pub const SIZE: u64 = 11;
     /// O-23, `odr-archive-shadow` (`crate::archives`).
     pub const ARCHIVE: u64 = 12;
+    /// A malformed kind 4 entry, found when a kind 3 finding read it
+    /// (O-19, WP-145).
+    pub const DETAILS: u64 = 13;
 }
 
 /// A record check's `seq`: its tag above `base`.
@@ -226,6 +231,8 @@ pub struct Counts {
     pub archive_units: u64,
     pub archive_bytes: u64,
     pub archive_compared: u64,
+    /// Kind 4 entries read for kind 3's notes (O-19: only on a finding).
+    pub details: u64,
 }
 
 impl Counts {
@@ -242,6 +249,7 @@ impl Counts {
         self.ignored += o.ignored;
         self.bytes += o.bytes;
         self.findings += o.findings;
+        self.details += o.details;
     }
 }
 
@@ -467,10 +475,15 @@ pub fn check(
         let (a, b) = groups[g];
         cx.group(&entries[a..b], out);
     });
+    let mut malformed: Vec<BadEntry> = Vec::new();
     for f in found.items {
         counts.add(&f.counts);
         diagnostics.extend(f.diagnostic);
+        malformed.extend(f.malformed);
     }
+    let bad = details_findings(inputs, malformed);
+    counts.findings += bad.len() as u64;
+    diagnostics.extend(bad);
     let dynamic = cx.dynamic(&entries, &groups);
     if switches.archives {
         diagnostics.extend(archives(&cx, &entries, &groups, pool, &mut counts));
@@ -643,6 +656,30 @@ fn container_finding(
     (key, d)
 }
 
+/// `meta-malformed` for kind 4 entries that did not read (O-19, §9.1):
+/// once per (file, section, unit, entry), keyed by their order in the
+/// file under their own tag.
+fn details_findings(inputs: &Inputs<'_>, mut bad: Vec<BadEntry>) -> Vec<(Key, Diagnostic)> {
+    bad.sort_by_key(|b| (b.0, b.1, b.2, b.3));
+    bad.dedup_by_key(|b| (b.0, b.1, b.2, b.3));
+    let mut out = Vec::with_capacity(bad.len());
+    let (mut i, mut prev) = (0u64, None);
+    for (file, section, unit, _, what) in bad {
+        if prev != Some(file) {
+            (i, prev) = (0, Some(file));
+        }
+        let finding = Finding::Malformed { section, unit: Some(unit), what };
+        let key = Key::new(PHASE, file.0, seq(tag::DETAILS, i));
+        i += 1;
+        let mut d = Diagnostic::error(Kind::MetaMalformed { reason: finding.reason() });
+        if let Some(f) = inputs.files.get(file) {
+            d = d.at(Place::section(f.display(), ".mason.meta", unit));
+        }
+        out.push((key, d));
+    }
+    out
+}
+
 /// The anchor of a row (O-4).
 pub(crate) enum Anchor<'s> {
     Name(&'s [u8], SymbolIndex),
@@ -671,15 +708,26 @@ pub(crate) fn anchor<'s>(syms: &[Sym<'s>], key: u64, defined_only: bool) -> Anch
 struct Found {
     diagnostic: Option<(Key, Diagnostic)>,
     counts: Counts,
+    /// Kind 4 entries that did not read (O-19), reported once each by
+    /// [`check`].
+    malformed: Vec<BadEntry>,
 }
+
+/// A kind 4 entry that did not read: its file, section, unit offset,
+/// entry offset, and why.
+type BadEntry = (FileId, u32, u64, u32, Malformation);
 
 impl Found {
     fn report(d: (Key, Diagnostic)) -> Self {
-        Self { diagnostic: Some(d), counts: Counts { findings: 1, ..Counts::default() } }
+        Self {
+            diagnostic: Some(d),
+            counts: Counts { findings: 1, ..Counts::default() },
+            malformed: Vec::new(),
+        }
     }
 
     fn count(counts: Counts) -> Self {
-        Self { diagnostic: None, counts }
+        Self { diagnostic: None, counts, malformed: Vec::new() }
     }
 }
 
@@ -1249,6 +1297,9 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
             Severity::Warning
         };
         let (a, b) = (&classes[0][0], &classes[1][0]);
+        let mut read = Found::count(Counts::default());
+        let detail =
+            if compared == Compared::Layout { self.detail_note(a, b, &mut read) } else { None };
         if compared == Compared::Shape {
             notes.push(
                 "the translation units use different odr.scheme values: compared on size, \
@@ -1266,6 +1317,9 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
                     self.file_text(self.file_of(b)),
                     shape_text(kinds(&rb)),
                 ));
+                notes.extend(detail);
+            } else if let Some(detail) = detail {
+                notes.push(detail);
             } else if layout && (ra.size, ra.align) == (rb.size, rb.align) {
                 notes.push(format!(
                     "the layouts differ (members, offsets, bases or vtable) with the same size \
@@ -1294,7 +1348,38 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
         let kind = Kind::OdrTypeMismatch { name: Self::display_name(&classes[0]) };
         let mut found = Found::report(self.diagnostic(kind, severity, &classes, None, notes));
         found.counts.system_std = u64::from(system);
+        found.counts.details = read.counts.details;
+        found.malformed = read.malformed;
         out.push(found);
+    }
+
+    /// §9.1's kind 4 note for a layout finding between the rows `a` and
+    /// `b` (O-19): `None` unless both rows have `details` and both
+    /// entries read. Reads only these two entries; one that does not read
+    /// goes to `read.malformed`.
+    fn detail_note(&self, a: &Entry<'l>, b: &Entry<'l>, read: &mut Found) -> Option<String> {
+        let (ra, rb) = (self.type_row(a)?, self.type_row(b)?);
+        if ra.details == NO_DETAILS || rb.details == NO_DETAILS {
+            return None;
+        }
+        let mut entry = |e: &Entry<'l>, r: &TypeRow| {
+            let u = self.units[e.unit as usize];
+            read.counts.details += 1;
+            match u.detail_entry(r.details) {
+                Ok(x) => x,
+                Err(what) => {
+                    read.malformed.push((self.file_of(e), u.section, u.offset, r.details, what));
+                    None
+                }
+            }
+        };
+        let (ea, eb) = (entry(a, &ra), entry(b, &rb));
+        let (ea, eb) = (ea?, eb?);
+        let (fa, fb) = (self.file_text(self.file_of(a)), self.file_text(self.file_of(b)));
+        Some(details::first_difference(
+            &Side { unit: self.units[a.unit as usize], entry: ea, file: &fa },
+            &Side { unit: self.units[b.unit as usize], entry: eb, file: &fb },
+        ))
     }
 
     /// Whether a kind 5 row is of C language linkage: `EXTERN_C`, or a row

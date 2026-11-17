@@ -1,0 +1,83 @@
+# Kind 4's companion (spec/odr.md §9.1; WP-145): the link of
+# k4-details without kind 4 (the default -fmason-metadata level), under
+# --odr=strict. The same records give the same findings, and the notes
+# are the sizes and alignments, as before kind 4.
+#@ spec: odr.md O-19, §9.1
+#@ requires: g++
+#@ diag: odr-type-mismatch a.o b.o
+#@ diag: odr-type-mismatch a.o b.o
+#@ diag: odr-type-mismatch a.o b.o
+#@ diag: odr-type-mismatch a.o b.o
+
+cxx -O0 a.cc -o a0.o
+meta a.meta a0.o -o a.o
+cxx -O0 b.cc -o b0.o
+meta b.meta b0.o -o b.o
+cxx -O0 main.cc -o main.o
+link(bfd,lld,mold) g++ -static -no-pie main.o a.o b.o -o prog
+link(mortar) g++ -static -no-pie main.o a.o b.o -Wl,--odr=strict -o prog
+  exit: fail
+  diag: ^>>> a.o: size 16, alignment 8; b.o: size 8, alignment 4$
+  diag: ^>>> the layouts differ (members, offsets, bases or vtable) with the same size
+  no-diag: in a.o only
+  no-diag: in a.o; 
+
+#--- a.cc
+struct M { int a; long b; };
+struct X { int x; };
+struct D : X { int d; };
+struct V { virtual int f() { return 1; } virtual int g() { return 2; } int x; };
+enum E { A, B };
+int fa(M* m, D* d, V* v) { return int(m->b) + d->d + v->x + (B == 1); }
+#--- a.meta
+# the records kiln would write (spec/odr.md O-17 to O-19)
+summary name=lang value=c++
+summary name=odr.scheme value=test-1
+summary name=producer value="hand (WP-145)"
+summary name=source value=a.cc
+summary name=std value=c++17
+type name=1M size=16 align=8 file=h.h line=1
+member name=a type=i offset=0
+member name=b type=l offset=64
+type name=1D size=8 align=4 file=h.h line=3
+base type=1X offset=0
+member name=d type=i offset=32
+type name=1V size=16 align=8 flags=4 file=h.h line=4
+member name=x type=i offset=64
+vptr offset=0
+slot name=_ZN1V1fEv index=0
+slot name=_ZN1V1gEv index=1
+type name=1E size=4 align=4 flags=1 file=h.h line=5
+underlying type=j
+enumerator name=A value=0
+enumerator name=B value=1
+#--- b.cc
+struct M { int a; int b; };
+struct Y { int y; };
+struct D : Y { int d; };
+struct V { virtual int f() { return 1; } int x; };
+enum E { A, B = 5 };
+int fb(M* m, D* d, V* v) { return m->b + d->d + v->x + (B == 5); }
+#--- b.meta
+# the records kiln would write (spec/odr.md O-17 to O-19)
+summary name=lang value=c++
+summary name=odr.scheme value=test-1
+summary name=producer value="hand (WP-145)"
+summary name=source value=b.cc
+summary name=std value=c++17
+type name=1M size=8 align=4 file=h.h line=1
+member name=a type=i offset=0
+member name=b type=i offset=32
+type name=1D size=8 align=4 file=h.h line=3
+base type=1Y offset=0
+member name=d type=i offset=32
+type name=1V size=16 align=8 flags=4 file=h.h line=4
+member name=x type=i offset=64
+vptr offset=0
+slot name=_ZN1V1fEv index=0
+type name=1E size=4 align=4 flags=1 file=h.h line=5
+underlying type=j
+enumerator name=A value=0
+enumerator name=B value=5
+#--- main.cc
+int main() { return 0; }
