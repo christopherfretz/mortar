@@ -64,6 +64,15 @@ licence = BSD-3-Clause
 why = CMake C++ with its own tests: death tests (fork and exec of the test binary), threads, exceptions, typed and parameterised tests
 rows = gcc clang
 
+[googletest-shared]
+version = 1.15.2
+url = https://github.com/google/googletest/releases/download/v1.15.2/googletest-1.15.2.tar.gz
+sha256 = 7b42b4d6ed48810c5362c265a17faebe90dc2373c885e5216439d37927f02926
+root = googletest-1.15.2
+licence = BSD-3-Clause
+why = googletest again, configured -DBUILD_SHARED_LIBS=ON (WP-126): its four libraries are C++ shared objects (-shared -soname: vague linkage, typeinfo, STB_GNU_UNIQUE, exceptions across the boundary) and every test binary is linked against them
+rows = gcc clang
+
 [fmt]
 version = 11.0.2
 url = https://github.com/fmtlib/fmt/archive/refs/tags/11.0.2.tar.gz
