@@ -5313,6 +5313,16 @@ to an offset at a NUL of `.dynstr` read as the empty name, so P-D7's
 (WP-161, load about 20, 4 threads): about 20 s per case per target
 (AArch64 1815 and 1696 bytes, x86-64 1712 and 1593), every flip caught
 but the equivalent fields'.
+`shared.table` (WP-164; in `--quick` too): the versioned library of
+`shared` with test-producer units (`sw_old`, `sw_new` `SYSTEM`,
+`sw_data`, the script-local `sw_hidden`, a type) under
+`-Bsymbolic-functions`, `--odr-table=full`, `--keep-mason-meta` and
+`--build-id=none`, over `.note.mason` and the kept `.mason.meta` only:
+the table's rows carry both values of `NONPREEMPTIBLE` (the functions'
+set, the variable's clear, O-60), `=full`'s note the local definition.
+Measured (load about 11, 4 threads): 576 bytes, 1152 flips per target,
+every one caught (P-M1 720, P-M2 432, S11 30; no survivor, no field
+named equivalent), 3.1 s on AArch64 and 3.6 s on x86-64.
 
 **The field rules** (`dyncheck.rs` `fields`, every format unless marked):
 
