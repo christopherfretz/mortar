@@ -597,8 +597,12 @@ GNU ld's map is a sequence of blocks, each opened by a line at column 0:
    longer member alone on its line and the reason on the next, indented
    30 columns. A reason is `(--whole-archive)`, `(sym)` (a root of the
    line) or `file (sym)`, split at the last ` (`. A member with no reason,
-   a reason with no member, or a name that is not a member is an error.
-   Nothing else in the preamble is read.
+   a reason with no member, or a reason not of these forms is an error.
+   The list ends at a line that is no member and reason (GNU ld's notes
+   follow it without a blank line on i386: ``discarding zero address
+   range FDE in libc.a(clone3.o)(.eh_frame).``, ``Local IFUNC function
+   `strcpy' in libc.a(strcpy.o)``). GNU ld prints C++ names demangled
+   there. Nothing else in the preamble is read.
 2. **`Discarded input sections`.** Each entry becomes a `discarded`
    record with reason `unspecified`.
 3. **`Memory Configuration`.** Nothing in it is read.
@@ -803,8 +807,10 @@ objects.
   archive is under `--whole-archive` on the line; `(sym)` when `sym` is
   a root and the member defines it; `file (sym)` when `file` is in the
   link with an undefined (either binding) or common `sym` and the member
-  defines it; a reason naming a `--wrap`ped symbol, or a file not on the
-  line, is not judged. A member the map places and the preamble does not
+  defines it; a reason naming a `--wrap`ped symbol, a demangled name
+  (one with a space, `(`, `:`, `<`, `~` or `,`: the map demangles and the
+  verifier has no demangler), or a file not on the line, is not judged
+  and counted (`preamble reasons not judged n`). A member the map places and the preamble does not
   list is M12.
 - The closure of rule 1 is computed for the reference's line too (lld:
   without common edges unless `--fortran-common`) and compared, as

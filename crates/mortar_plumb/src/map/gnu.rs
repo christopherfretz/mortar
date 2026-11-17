@@ -69,7 +69,11 @@ pub fn parse(text: &str) -> Result<Map, MapError> {
                     .filter(|f| f.ends_with(' ') && line.len() > MEMBER_FIELD)
                     .map(|f| (f.trim_end(), &line[MEMBER_FIELD..]));
                 match split {
-                    Some((m, why)) if !m.is_empty() && !why.trim().is_empty() => {
+                    // GNU ld's notes after the list (i386: "Local IFUNC
+                    // function `strcpy' in libc.a(strcpy.o)") quote a
+                    // name with a backquote, which no member has.
+                    _ if line.contains('`') => in_members = false,
+                    Some((m, why)) if m.ends_with(')') && !why.trim().is_empty() => {
                         map.included.push(included(m, why.trim(), n)?);
                     }
                     _ if line.ends_with(')') && line.contains('(') && !line.contains("  ") => {
@@ -380,6 +384,7 @@ libk.a(j.o)                   (--whole-archive)
 libk.a(i.o)                   libk.a(k.o) (i_fn)
 a very long archive name.a(member.o)
                               dir (x)/r.o (r_fn)
+Local IFUNC function `strcpy' in libc.a(strcpy.o)
 
 Allocating common symbols
 Common symbol       size              file
@@ -414,10 +419,13 @@ Linker script and memory map
             ("a long archive member name.a(m.o)\n\n", 3),
             ("                              r.o (x)\n", 3),
             ("libk.a(k.o)                   r.o x\n", 3),
-            ("k.o                           (x)\n", 3),
+            ("libk.a(k.o)                   (x\n", 3),
         ] {
             assert_eq!(parse(&format!("{head}{bad}{tail}")).unwrap_err().line, line, "{bad}");
         }
+        // GNU ld's notes in the list (i386) end it.
+        let note = "discarding zero address range FDE in libc.a(clone3.o)(.eh_frame).\n";
+        assert_eq!(parse(&format!("{head}k.o                           (x)\n{note}{tail}")).unwrap().included, []);
         let ended = format!("{head}a long archive member name.a(m.o)");
         assert_eq!(parse(&ended).unwrap_err().line, 3);
     }

@@ -139,11 +139,18 @@ struct Inputs {
     lld_fortran_common: bool,
 }
 
-/// [`crate::Source`] over [`Files`]: the files read by position.
+/// A file up to this size is read whole, once (a caller's [`Files`] may
+/// read a whole file for every positional read); a larger one by
+/// position (§8.1).
+const WHOLE: u64 = 64 << 20;
+
+/// [`crate::Source`] over [`Files`]: the files read by position, or held
+/// whole while their members are read when small.
 struct Positional<'f> {
     files: &'f dyn Files,
     paths: Vec<String>,
     lens: Vec<u64>,
+    whole: Vec<Option<Vec<u8>>>,
 }
 
 impl crate::Source for Positional<'_> {
@@ -157,6 +164,14 @@ impl crate::Source for Positional<'_> {
         self.lens.get(i).copied().unwrap_or(0)
     }
     fn read_at(&self, i: usize, offset: u64, buf: &mut [u8]) -> Result<(), String> {
+        if let Some(Some(b)) = self.whole.get(i) {
+            let got = usize::try_from(offset)
+                .ok()
+                .and_then(|at| b.get(at..at.checked_add(buf.len())?))
+                .ok_or_else(|| format!("{}: {} bytes at {offset:#x} are past its end", self.path(i), buf.len()))?;
+            buf.copy_from_slice(got);
+            return Ok(());
+        }
         self.files.read_at(self.path(i), offset, buf)
     }
 }
@@ -164,8 +179,15 @@ impl crate::Source for Positional<'_> {
 impl Positional<'_> {
     fn add(&mut self, path: &str) -> Result<usize, String> {
         let len = self.files.len(path).ok_or_else(|| format!("{path}: cannot be read"))?;
+        let whole = if len <= WHOLE {
+            let b = self.files.read(path).ok_or_else(|| format!("{path}: cannot be read"))?;
+            Some(b)
+        } else {
+            None
+        };
         self.paths.push(path.to_string());
-        self.lens.push(len);
+        self.lens.push(whole.as_ref().map_or(len, |b| b.len() as u64));
+        self.whole.push(whole);
         Ok(self.paths.len() - 1)
     }
 }
@@ -370,7 +392,7 @@ impl Inputs {
                     });
                 }
                 Item::Relocatable { path, group, whole, lib } => {
-                    let mut src = Positional { files, paths: Vec::new(), lens: Vec::new() };
+                    let mut src = Positional { files, paths: Vec::new(), lens: Vec::new(), whole: Vec::new() };
                     let i = src.add(path)?;
                     let head = files.head(path, 8).unwrap_or_default();
                     if head == b"!<arch>\n" || head == b"!<thin>\n" {
@@ -877,6 +899,13 @@ impl Inputs {
                     })
                 };
                 let bad = match &inc.by {
+                    // GNU ld prints a C++ name demangled: not judged.
+                    IncludedBy::Root(sym) | IncludedBy::Reference { symbol: sym, .. }
+                        if demangled(sym) =>
+                    {
+                        reasons_unjudged += 1;
+                        None
+                    }
                     IncludedBy::WholeArchive => {
                         (!ls.iter().any(|&l| self.files[l].whole)).then(|| "its archive is not under --whole-archive on the line".to_string())
                     }
@@ -985,6 +1014,12 @@ fn shown(by: &IncludedBy) -> String {
         IncludedBy::Root(s) => format!("({s})"),
         IncludedBy::Reference { file, symbol } => format!("{file} ({symbol})"),
     }
+}
+
+/// A name as GNU ld's map prints a demangled C++ name (it demangles by
+/// default): characters no ELF name of a compiler has.
+fn demangled(sym: &str) -> bool {
+    sym.contains([' ', '(', ':', '<', '~', ','])
 }
 
 fn find(h: &[u8], n: &[u8]) -> Option<usize> {

@@ -821,6 +821,8 @@ mod tests {
         files.insert("/l/libg.so".to_string(), elf(3));
         files.insert("/l/libg.a".to_string(), b"!<arch>\n".to_vec());
         files.insert("/l/libh.so".to_string(), elf(3));
+        // An object, so that `--start-lib` shows on it.
+        files.insert("h.o".to_string(), elf(1));
         let m = Mem(files);
         let t = crate::opts::Table::get();
         // The line each option is put in: `h.o -lg` after the context
