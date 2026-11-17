@@ -39,7 +39,7 @@ check readelf -dsW plain
 check(bfd,mold,mortar) readelf -dW bs
   not: SYMBOLIC
 check(lld) readelf -dW bs
-  has: FLAGS * SYMBOLIC
+  has: SYMBOLIC$
 check(bfd,mortar) cmp bs plain
   has: ^identical$
 check(bfd,mortar) cmp bsf plain
