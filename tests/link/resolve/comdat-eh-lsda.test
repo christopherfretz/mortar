@@ -1,0 +1,82 @@
+# THE REAL SHAPE of WP-177 (resolve.md §6.3 case (a), from a live LSDA):
+# q1.o pre-linked by a reference (`ld -r`) and then
+# `objcopy --localize-symbol=DW.ref._ZTISt9exception`: api1's LSDA type
+# table names a LOCAL symbol of its copy of the COMDAT group
+# DW.ref._ZTISt9exception, which is dropped (m.o's copy comes first).
+# The LSDA is live (api1 is), so mortar refuses
+# discarded-section-reference by name, in every output kind; lld refuses
+# it. GNU ld writes 0 into the type entry, a catch-all: api1's
+# `catch (const std::exception &)` catches the int that thrower throws
+# (comdat-eh-wrong.test.pending runs it). The same objects linked
+# directly (no partial link, no localizing) are sound with every linker.
+#@ spec: resolve.md §6.3
+#@ requires: g++
+
+cxx -O1 q1.cc -o q1.o
+cxx -O1 m.cc -o m.o
+partial bfd q1.o -o r.bfd.o
+partial lld q1.o -o r.lld.o
+objcopy --localize-symbol=DW.ref._ZTISt9exception r.bfd.o ti.bfd.o
+objcopy --localize-symbol=DW.ref._ZTISt9exception r.lld.o ti.lld.o
+
+link(lld,mortar) g++ -static m.o ti.bfd.o -o p1
+  exit: fail
+  diag(lld): relocation refers to a symbol in a discarded section: DW.ref._ZTISt9exception
+  diag(mortar): relocation refers to a symbol in a discarded section: DW.ref._ZTISt9exception
+  diag(mortar): >>> defined in ti.bfd.o:(.data.rel.local.DW.ref._ZTISt9exception)
+  diag(mortar): >>> the section is in a discarded copy of COMDAT group DW.ref._ZTISt9exception
+  diag(mortar): >>> kept copy: m.o
+  diag(mortar): >>> referenced by ti.bfd.o:(.gcc_except_table+0x
+  diag(mortar): >>> the field is in the exception table (LSDA) of _Z4api1i, which is written
+  diag(mortar): >>> DW.ref._ZTISt9exception is local in its file: it was probably made local after a partial link * then localize
+link(lld,mortar) g++ -static m.o ti.lld.o -o p2
+  exit: fail
+  diag(lld): relocation refers to a symbol in a discarded section: DW.ref._ZTISt9exception
+  diag(mortar): relocation refers to a symbol in a discarded section: DW.ref._ZTISt9exception
+  diag(mortar): >>> referenced by ti.lld.o:(.gcc_except_table+0x
+link(lld,mortar,aarch64,x86_64) g++ m.o ti.bfd.o -o p3
+  exit: fail
+  diag(lld): relocation refers to a symbol in a discarded section: DW.ref._ZTISt9exception
+  diag(mortar): relocation refers to a symbol in a discarded section: DW.ref._ZTISt9exception
+link(mortar,aarch64,x86_64) g++ -shared m.o ti.lld.o -o p4.so
+  exit: fail
+  diag(mortar): relocation refers to a symbol in a discarded section: DW.ref._ZTISt9exception
+
+link g++ -static m.o q1.o -o direct
+run direct
+  stdout: main caught logic_error
+  stdout: main caught int 42 (right)
+
+#--- q1.cc
+#include <stdexcept>
+__attribute__((noinline)) int thrower(int x) {
+  if (x == 1) throw 42;
+  if (x == 2) throw std::runtime_error("e");
+  return x;
+}
+int api1(int x) {
+  try {
+    return thrower(x);
+  } catch (const std::exception &) {
+    return -1;
+  }
+}
+#--- m.cc
+#include <cstdio>
+#include <stdexcept>
+int api1(int);
+int main() {
+  try {
+    throw std::logic_error("x");
+  } catch (const std::exception &) {
+    std::puts("main caught logic_error");
+  }
+  int r;
+  try {
+    r = api1(1);
+    std::printf("api1(1) returned %d (wrong: int caught as std::exception)\n", r);
+  } catch (int i) {
+    std::printf("main caught int %d (right)\n", i);
+  }
+  return 0;
+}

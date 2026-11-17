@@ -1,0 +1,134 @@
+# PENDING (a verifier package, WP-177's record): the lane refuses it. L3 finds R5 `refers to section '.data.rel.local.DW.ref._ZTISt9exception', which is not in the output` on GNU ld's and mold's outputs on every architecture, and is right: they write 0 or a wrong value into a live record. Rename this file to .test when that is a recorded anomaly of bfd and mold (spec/plumb.md §10.2) that the test declares.
+# The WRONG programs of comdat-eh-cie.test and comdat-eh-lsda.test
+# (resolve.md §6.3 case (a), WP-177): GNU ld and mold link the shapes
+# that mortar and lld refuse. GNU ld writes 0 into the live CIE's
+# personality pointer and the live LSDA's type entry: the first throw
+# through the component finds no personality and aborts ("terminate
+# called after throwing an instance of 'std::runtime_error'", signal 6),
+# and api1's `catch (const std::exception &)` becomes a catch-all that
+# catches thrower's int. mold's programs die (signal 11; measured with
+# WP-177: the dynamic lh form on AArch64 dies of signal 7).
+#@ spec: resolve.md §6.3
+#@ requires: g++
+
+cxx -O1 p1.cc -o p1.o
+cxx -O1 p2.cc -o p2.o
+cxx -O1 pm.cc -o pm.o
+cxx -O1 q1.cc -o q1.o
+cxx -O1 qm.cc -o qm.o
+partial bfd p1.o p2.o -o r.bfd.o
+partial lld p1.o p2.o -o r.lld.o
+partial bfd q1.o -o rq.bfd.o
+partial lld q1.o -o rq.lld.o
+objcopy --localize-hidden r.bfd.o lh.bfd.o
+objcopy --keep-global-symbol=_Z4api1i --keep-global-symbol=_Z4api2i r.lld.o kg.lld.o
+objcopy --localize-symbol=DW.ref.__gxx_personality_v0 --localize-symbol=DW.ref._ZTISt9exception r.bfd.o ls.bfd.o
+objcopy --localize-symbol=DW.ref.__gxx_personality_v0 --localize-symbol=DW.ref._ZTISt9exception r.lld.o ls.lld.o
+objcopy --localize-symbol=DW.ref._ZTISt9exception rq.bfd.o ti.bfd.o
+objcopy --localize-symbol=DW.ref._ZTISt9exception rq.lld.o ti.lld.o
+
+link(bfd) g++ -static pm.o ls.bfd.o -o p1
+run(bfd) p1
+  exit: signal 6
+link(bfd) g++ -static pm.o ls.lld.o -o p2
+run(bfd) p2
+  exit: signal 6
+link(bfd,aarch64,x86_64) g++ pm.o lh.bfd.o -o p3
+run(bfd,aarch64,x86_64) p3
+  exit: signal 6
+link(bfd,aarch64,x86_64) g++ -static pm.o kg.lld.o -o p4
+run(bfd,aarch64,x86_64) p4
+  exit: signal 6
+link(bfd) g++ -static qm.o ti.bfd.o -o q1
+run(bfd) q1
+  stdout: main caught logic_error
+  stdout: api1(1) returned -1 (wrong: int caught as std::exception)
+link(bfd) g++ -static qm.o ti.lld.o -o q2
+run(bfd) q2
+  stdout: main caught logic_error
+  stdout: api1(1) returned -1 (wrong: int caught as std::exception)
+link(mold) g++ -static pm.o ls.bfd.o -o p1
+run(mold) p1
+  exit: signal 11
+link(mold) g++ -static pm.o ls.lld.o -o p2
+run(mold) p2
+  exit: signal 11
+link(mold) g++ -static qm.o ti.lld.o -o q2
+run(mold) q2
+  exit: signal 11
+link(mortar) g++ -static pm.o ls.bfd.o -o p1
+  exit: fail
+  diag(mortar): relocation refers to a symbol in a discarded section: DW.ref.__gxx_personality_v0
+link(mortar) g++ -static qm.o ti.lld.o -o q2
+  exit: fail
+  diag(mortar): relocation refers to a symbol in a discarded section: DW.ref._ZTISt9exception
+
+#--- p1.cc
+#include <stdexcept>
+#include <string>
+inline std::string greet(int n) { return "p" + std::to_string(n); }
+__attribute__((visibility("hidden"))) int hidden_helper(int x) {
+  if (x < 0) throw std::runtime_error("neg");
+  return x * 2;
+}
+int api1(int x) {
+  try {
+    return hidden_helper(x) + (int)greet(x).size();
+  } catch (const std::exception &) {
+    return -1;
+  }
+}
+#--- p2.cc
+#include <string>
+inline std::string greet(int n) { return "p" + std::to_string(n); }
+int hidden_helper(int);
+int api2(int x) { return hidden_helper(x + 1) + (int)greet(x).size(); }
+#--- q1.cc
+#include <stdexcept>
+__attribute__((noinline)) int thrower(int x) {
+  if (x == 1) throw 42;
+  if (x == 2) throw std::runtime_error("e");
+  return x;
+}
+int api1(int x) {
+  try {
+    return thrower(x);
+  } catch (const std::exception &) {
+    return -1;
+  }
+}
+#--- pm.cc
+#include <cstdio>
+#include <stdexcept>
+#include <string>
+inline std::string greet(int n) { return "p" + std::to_string(n); }
+int api1(int);
+int api2(int);
+int main() {
+  try {
+    throw std::logic_error("x");
+  } catch (const std::exception &e) {
+    std::printf("main caught %s\n", e.what());
+  }
+  std::printf("%d %d %d %s\n", api1(3), api1(-1), api2(4), greet(9).c_str());
+  return 0;
+}
+#--- qm.cc
+#include <cstdio>
+#include <stdexcept>
+int api1(int);
+int main() {
+  try {
+    throw std::logic_error("x");
+  } catch (const std::exception &) {
+    std::puts("main caught logic_error");
+  }
+  int r;
+  try {
+    r = api1(1);
+    std::printf("api1(1) returned %d (wrong: int caught as std::exception)\n", r);
+  } catch (int i) {
+    std::printf("main caught int %d (right)\n", i);
+  }
+  return 0;
+}

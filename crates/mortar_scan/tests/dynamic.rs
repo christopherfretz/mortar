@@ -91,6 +91,7 @@ fn dyn_link(cwd: &Path, args: &[&str], output: OutputKind) -> DynLinked {
         comdat_mismatch: &mismatch,
         gnu_warnings: &outcome.gnu_warning_syms,
         closure_only: &outcome.closure_only,
+        eh: None,
     };
     let opts = ScanOptions { output, dynamic: true, sections: None, proof: &A64Proof };
     let scanned = scan(&DynA64::default(), &t, &opts, &pool);
@@ -618,6 +619,7 @@ fn dyn_link_static_pie(cwd: &Path, args: &[&str]) -> Vec<&'static str> {
         comdat_mismatch: &mismatch,
         gnu_warnings: &l.outcome.gnu_warning_syms,
         closure_only: &l.outcome.closure_only,
+        eh: None,
     };
     let opts =
         ScanOptions { output: OutputKind::Pie, dynamic: false, sections: None, proof: &A64Proof };

@@ -15,9 +15,10 @@ use mortar_diag::{Diagnostic, FileRef, Key, Kind, Place, RefusalClass};
 use mortar_elf::consts::{SHF_ALLOC, SHF_EXECINSTR, SHF_WRITE, SHT_RELA};
 use mortar_elf::{SectionIndex, SymbolIndex};
 
+use crate::EhOwner;
 use crate::events::{Acc, Event, EventClass, GroupKey, RefId, UnitEvents, sym_group};
 use crate::view::{
-    Bufs, Raw, ReadFail, RecTable, RecTables, Recs, View, contents, rec_table, with_bufs,
+    Bufs, EhPlace, Raw, ReadFail, RecTable, RecTables, Recs, View, contents, rec_table, with_bufs,
 };
 
 /// One scan unit: records `lo..hi` of the relocation section `rel` of
@@ -763,6 +764,7 @@ fn walk_unit(view: &View<'_, '_>, u: &Unit, global: &[AtomicU16], bufs: &mut Buf
     let seq_leads = view.arch.facts().seq_leads;
     // The branch candidates (`crate::BranchRec`): only in live code.
     let code = sec.place.alloc && sec.place.exec == Some(true);
+    let eh_place = EhPlace::of(sec.name);
     // D-117 (`crate::bound`): the file's facts in a `Shared` link
     // (AArch64, x86-64), when it defines preemptible data; `None` otherwise.
     let facts = view.bound_facts(u.file);
@@ -858,6 +860,24 @@ fn walk_unit(view: &View<'_, '_>, u: &Unit, global: &[AtomicU16], bufs: &mut Buf
             faults.push((record, Fault::Scan(dynamic_error(view, e))));
         }
         for (record, class, k) in sink.refs.drain(..) {
+            // WP-177 (`spec/resolve.md` §6.3): in `.eh_frame` and
+            // `.gcc_except_table` a reference to a dead target, or
+            // through a demoted mention nothing live defines, is judged
+            // by the record that owns its field: none in a record that is
+            // not written. Without the tables, the name decides.
+            if let Some(p) = eh_place
+                && matches!(class, EventClass::DiscardedSection | EventClass::ComdatMismatch)
+            {
+                let off = sec.recs.records.raw(record).map_or(raw.r_offset, |r| r.r_offset);
+                let stands = match view.eh_owner(p, u.section, off) {
+                    Some(EhOwner::Dead) => false,
+                    Some(EhOwner::Live { .. } | EhOwner::None) => true,
+                    None => class == EventClass::ComdatMismatch,
+                };
+                if !stands {
+                    continue;
+                }
+            }
             let group = if class == EventClass::DiscardedSection {
                 // (referring section index, symbol index): the record's.
                 let r_sym = sec.recs.records.raw(record).map_or(raw.r_sym, |r| r.r_sym);

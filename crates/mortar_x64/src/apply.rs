@@ -171,8 +171,11 @@ pub fn scan(m2: bool, cx: &ScanCx<'_>, at: &RelocAt<'_>, out: &mut DemandSink<'_
     }
     // arch.md §3.4: a dead target demands nothing; the referring section
     // decides whether the field is the tombstone, 0, or an error (X-53).
+    // Outside a debug name it is a reference event: in `.eh_frame` and
+    // `.gcc_except_table` the scan driver judges it by the record that
+    // owns the field (WP-177, resolve.md §6.3).
     if sym.dead {
-        if dead_reference(cx.name, cx.place.alloc) == DeadRef::Discarded {
+        if dead_reference(cx.name, cx.place.alloc) != DeadRef::Tombstone {
             out.reference(at.index, EventClass::DiscardedSection, at.key);
         }
         return;

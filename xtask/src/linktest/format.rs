@@ -485,6 +485,10 @@ pub enum StepKind {
     Compile(Compile),
     Yaml2obj(Vec<Template>),
     Ar(Vec<Template>),
+    /// `objcopy <args>` (WP-177): the architecture's `objcopy` on an
+    /// input, as old build systems pass an `ld -r` output through it
+    /// (`--localize-hidden`, `--keep-global-symbol`).
+    Objcopy(Vec<Template>),
     /// `meta <description> <in.o> -o <out.o>`: the test producer
     /// (`spec/meta.md` §12) adds one container to an object.
     Meta(Vec<Template>),
@@ -518,6 +522,7 @@ impl Step {
             StepKind::Compile(_)
                 | StepKind::Yaml2obj(_)
                 | StepKind::Ar(_)
+                | StepKind::Objcopy(_)
                 | StepKind::Meta(_)
                 | StepKind::Shlib(_)
                 | StepKind::Partial(_)
@@ -562,7 +567,11 @@ impl Step {
                 | CheckTool::Ldd => None,
             },
             // The linkers need no `requires`.
-            StepKind::Ar(_) | StepKind::Meta(_) | StepKind::Partial(_) | StepKind::Run(_) => None,
+            StepKind::Ar(_)
+            | StepKind::Objcopy(_)
+            | StepKind::Meta(_)
+            | StepKind::Partial(_)
+            | StepKind::Run(_) => None,
         }
     }
 
@@ -1094,15 +1103,24 @@ impl Parser {
                 }
                 ("meta", StepKind::Meta(args))
             }
-            "yaml2obj" | "ar" => {
-                let keyword = if key == "ar" { "ar" } else { "yaml2obj" };
+            "yaml2obj" | "ar" | "objcopy" => {
+                let keyword = match key {
+                    "ar" => "ar",
+                    "objcopy" => "objcopy",
+                    _ => "yaml2obj",
+                };
                 let what = format!("'{keyword}'");
                 qualifiers.no_family(&what)?;
                 qualifiers.no_linker(&what)?;
                 if args.is_empty() {
                     return Err(format!("{what} has no arguments"));
                 }
-                (keyword, if key == "ar" { StepKind::Ar(args) } else { StepKind::Yaml2obj(args) })
+                let kind = match keyword {
+                    "ar" => StepKind::Ar(args),
+                    "objcopy" => StepKind::Objcopy(args),
+                    _ => StepKind::Yaml2obj(args),
+                };
+                (keyword, kind)
             }
             "shlib" => {
                 qualifiers.no_family("'shlib'")?;
@@ -1223,6 +1241,7 @@ impl Parser {
                     | "as"
                     | "yaml2obj"
                     | "ar"
+                    | "objcopy"
                     | "meta"
                     | "shlib"
                     | "partial"
@@ -1399,6 +1418,7 @@ impl Parser {
                 StepKind::Compile(_)
                 | StepKind::Yaml2obj(_)
                 | StepKind::Ar(_)
+                | StepKind::Objcopy(_)
                 | StepKind::Meta(_)
                 | StepKind::Shlib(_)
                 | StepKind::Partial(_),
@@ -1627,6 +1647,7 @@ impl Parser {
                 StepKind::Compile(Compile { args, .. })
                 | StepKind::Yaml2obj(args)
                 | StepKind::Ar(args)
+                | StepKind::Objcopy(args)
                 | StepKind::Meta(args)
                 | StepKind::Shlib(Shlib { args, .. })
                 | StepKind::Partial(Partial { args, .. }) => {
@@ -2424,6 +2445,25 @@ FileHeader:
         let in_build = with("partial bfd a.o -o %{linker}.o\nlink gcc r.o\n");
         assert!(has_error(&in_build, 2, "'%{linker}' in a step that builds an input"));
         assert!(has_error(&with("partial bfd a.o -o r.o\n  exit: 0\nlink gcc r.o\n"), 3, "has no"));
+    }
+
+    // "Steps": `objcopy <args>` (WP-177), a build step.
+    #[test]
+    fn objcopy_step() {
+        let with = |text: &str| format!("#@ spec: resolve.md \"6.3\"\n{text}");
+        let src = "objcopy --localize-hidden r.o r.lh.o\nlink gcc r.lh.o\n";
+        let test = parse(&with(src)).unwrap();
+        let StepKind::Objcopy(args) = &test.steps[0].kind else { panic!() };
+        let vars = Vars { arch: Arch::I386, host: Some(Arch::Aarch64), linker: None };
+        let args: Vec<String> = args.iter().map(|a| a.expand(vars)).collect();
+        assert_eq!(args, ["--localize-hidden", "r.o", "r.lh.o"]);
+        assert!(test.steps[0].is_build() && test.steps[0].feature().is_none());
+        assert_eq!(test.steps[0].keyword, "objcopy");
+        assert!(has_error(&with("objcopy\nlink gcc r.o\n"), 2, "'objcopy' has no arguments"));
+        assert!(has_error(&with("objcopy(mold) r.o\nlink gcc r.o\n"), 2, "'objcopy'"));
+        let in_build = with("objcopy r.o %{linker}.o\nlink gcc r.o\n");
+        assert!(has_error(&in_build, 2, "'%{linker}' in a step that builds an input"));
+        assert!(has_error(&with("objcopy r.o s.o\n  exit: 0\nlink gcc s.o\n"), 3, "has no"));
     }
 
     // "Steps", "Expectations", "Checks": the forms dynamic tests use.

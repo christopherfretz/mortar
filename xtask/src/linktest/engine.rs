@@ -1537,7 +1537,9 @@ impl Unit<'_> {
             }
             StepKind::Yaml2obj(_) => (common.yaml2obj.clone().ok_or_else(missing)?, Vec::new()),
             StepKind::Ar(_) => (self.tools.ar.clone(), Vec::new()),
-            StepKind::Meta(_) => (self.tools.objcopy.clone(), Vec::new()),
+            // WP-177: `objcopy` runs the architecture's own objcopy (the
+            // tool guard, scripts/ci-tools.sh, has it for each triple).
+            StepKind::Objcopy(_) | StepKind::Meta(_) => (self.tools.objcopy.clone(), Vec::new()),
             // The system's own GNU ld links every fixture library, whatever
             // linkers the run has.
             StepKind::Shlib(shlib) => {
@@ -1724,6 +1726,7 @@ impl Unit<'_> {
                 | StepKind::Compile(_)
                 | StepKind::Yaml2obj(_)
                 | StepKind::Ar(_)
+                | StepKind::Objcopy(_)
                 | StepKind::Meta(_)
                 | StepKind::Shlib(_)
                 | StepKind::Partial(_) => {
@@ -1768,6 +1771,7 @@ impl Unit<'_> {
                 StepKind::Compile(_)
                 | StepKind::Yaml2obj(_)
                 | StepKind::Ar(_)
+                | StepKind::Objcopy(_)
                 | StepKind::Meta(_)
                 | StepKind::Shlib(_)
                 | StepKind::Partial(_) => {
@@ -2685,7 +2689,10 @@ pub fn has_meta_section(bytes: &[u8]) -> bool {
 fn build_args(step: &Step) -> &[Template] {
     match &step.kind {
         StepKind::Compile(compile) => &compile.args,
-        StepKind::Yaml2obj(args) | StepKind::Ar(args) | StepKind::Meta(args) => args,
+        StepKind::Yaml2obj(args)
+        | StepKind::Ar(args)
+        | StepKind::Objcopy(args)
+        | StepKind::Meta(args) => args,
         StepKind::Shlib(shlib) => &shlib.args,
         StepKind::Partial(partial) => &partial.args,
         StepKind::Link(_) | StepKind::Host(_) | StepKind::Run(_) | StepKind::Check(_) => &[],

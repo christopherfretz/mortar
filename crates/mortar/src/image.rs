@@ -135,6 +135,8 @@ pub fn with_link<T>(
         comdat_mismatch: &f.comdat_mismatch,
         gnu_warnings: &f.gnu_warnings,
         closure_only: &f.closure_only,
+        // The walk after the scan makes no reference event.
+        eh: None,
     };
     // As the scan's options (front.rs): a dynamic output's walk sees the
     // output sections' writability and the scan's `WeakDyn` keys.

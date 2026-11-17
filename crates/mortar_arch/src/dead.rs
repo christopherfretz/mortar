@@ -12,10 +12,15 @@ pub enum DeadRef {
     /// A non-alloc section with a debug name: accepted, the field holds
     /// [`tombstone`].
     Tombstone,
-    /// Exactly `.gcc_except_table`, alloc or not: accepted, the field is 0.
+    /// Exactly `.gcc_except_table`, alloc or not: judged by the FDE that
+    /// owns the field (WP-177): the scan reports `DiscardedSection` and
+    /// its driver keeps the event when that FDE is live or there is none;
+    /// for a dead one the field is 0.
     Zero,
-    /// Exactly `.eh_frame`: accepted, the FDE is dead (`spec/model.md`
-    /// §3.6) and no field of it is written; no event.
+    /// Exactly `.eh_frame`: judged by the record that owns the field
+    /// (WP-177): the scan reports `DiscardedSection` and its driver keeps
+    /// the event for a live record; a dead record (`spec/model.md` §3.6)
+    /// is not written, nor is any field of it.
     DeadFde,
     /// Any other section: scan reports the event `DiscardedSection`.
     Discarded,

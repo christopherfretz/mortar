@@ -1,0 +1,110 @@
+# resolve.md §6.3 case (b) from a DEAD record (WP-177; WP-176 refused it):
+# kg.o's copy of the COMDAT group DW.ref.pp is dropped (ka.o's is kept),
+# and ka.o's copy defines DW.ref.pp as a LOCAL symbol, so nothing live
+# defines the key. kg.o's CIE personality pointer and F's LSDA name kg.o's
+# demoted mention; F is collected (--gc-sections), so no live FDE uses the
+# CIE and the LSDA's owner (F's FDE) is dead: neither record is written,
+# and the link is a correct program with every linker (the
+# .gcc_except_table field is 0). The strong form (ks.o: the mention is
+# GLOBAL, not WEAK): GNU ld and lld refuse it (GNU ld an undefined
+# reference from .eh_frame, lld a reference into a discarded section from
+# .gcc_except_table); mold and mortar link it (the records are not
+# written; resolve.md §16).
+# lld links the weak form correctly too, writing 0 as GNU ld does, but
+# L3 refuses its output (R5): its link is comdat-eh-dead.test.pending.
+#@ spec: resolve.md §6.3
+#@ spec: resolve.md §16
+
+cc -O1 m.c -o m.o
+as ka.s -o ka.o
+as kg.s -o kg.o
+as ks.s -o ks.o
+
+link(bfd,mold,mortar) gcc -static -Wl,--gc-sections m.o ka.o kg.o -o weak
+run(bfd,mold,mortar) weak
+  exit: 7
+link(bfd,mold,mortar,aarch64,x86_64) gcc -Wl,--gc-sections m.o ka.o kg.o -o weak-pie
+run(bfd,mold,mortar,aarch64,x86_64) weak-pie
+  exit: 7
+link(mold,mortar) gcc -static -Wl,--gc-sections m.o ka.o ks.o -o strong
+run(mold,mortar) strong
+  exit: 7
+link(bfd,lld) gcc -static -Wl,--gc-sections m.o ka.o ks.o -o strong
+  exit: fail
+  diag(bfd): DW.ref.pp
+  diag(lld): DW.ref.pp
+
+#--- m.c
+extern int K;
+int main(void) { return K; }
+#--- ka.s
+	.section .data.rel.local.DW.ref.pp,"awG",@progbits,DW.ref.pp,comdat
+	.p2align 3
+	.type DW.ref.pp, @object
+	.size DW.ref.pp, 8
+DW.ref.pp:
+	.4byte 0x1234, 0
+	.data
+	.globl K
+	.type K, @object
+	.size K, 4
+K:
+	.4byte 7
+#--- kg.s
+	.section .data.rel.local.DW.ref.pp,"awG",@progbits,DW.ref.pp,comdat
+	.p2align 3
+	.weak DW.ref.pp
+	.hidden DW.ref.pp
+	.type DW.ref.pp, @object
+	.size DW.ref.pp, 8
+DW.ref.pp:
+	.4byte 0x1234, 0
+	.section .text.F,"ax",@progbits
+	.globl F
+	.type F, @function
+F:
+	.cfi_startproc
+	.cfi_personality 0x9b, DW.ref.pp
+	.cfi_lsda 0x1b, .LLSDA
+	ret
+	.cfi_endproc
+	.section .gcc_except_table,"a",@progbits
+	.p2align 2
+.LLSDA:
+	.byte 0xff, 0x9b
+	.uleb128 .Lend-.Lstart
+.Lstart:
+	.byte 0x1
+	.uleb128 0
+	.p2align 2
+	.4byte DW.ref.pp-.
+.Lend:
+#--- ks.s
+	.section .data.rel.local.DW.ref.pp,"awG",@progbits,DW.ref.pp,comdat
+	.p2align 3
+	.globl DW.ref.pp
+	.hidden DW.ref.pp
+	.type DW.ref.pp, @object
+	.size DW.ref.pp, 8
+DW.ref.pp:
+	.4byte 0x1234, 0
+	.section .text.F,"ax",@progbits
+	.globl F
+	.type F, @function
+F:
+	.cfi_startproc
+	.cfi_personality 0x9b, DW.ref.pp
+	.cfi_lsda 0x1b, .LLSDA
+	ret
+	.cfi_endproc
+	.section .gcc_except_table,"a",@progbits
+	.p2align 2
+.LLSDA:
+	.byte 0xff, 0x9b
+	.uleb128 .Lend-.Lstart
+.Lstart:
+	.byte 0x1
+	.uleb128 0
+	.p2align 2
+	.4byte DW.ref.pp-.
+.Lend:

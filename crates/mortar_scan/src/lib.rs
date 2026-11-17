@@ -51,6 +51,7 @@ use mortar_core::demands::{DemandFlags, DynCounts};
 use mortar_core::inputs::Inputs;
 use mortar_core::par::Pool;
 use mortar_core::resolution::Resolution;
+pub use mortar_core::split::EhOwner;
 use mortar_core::{ComdatId, Demands, FileId, Liveness, LocalSym, SectionId, SymEntry, SymbolId};
 use mortar_diag::{Diagnostic, Key};
 use mortar_elf::SectionIndex;
@@ -123,6 +124,27 @@ pub struct ScanInputs<'a, 's> {
     /// `defined in <file>, which is not on the command line`. Sorted by
     /// key; empty in a static link.
     pub closure_only: &'a [(SymbolId, FileId)],
+    /// The records of `.eh_frame` and the LSDA starts of
+    /// `.gcc_except_table` (WP-177, `spec/resolve.md` §6.3): a reference
+    /// there to a dead target, or through a demoted mention nothing live
+    /// defines, is judged by the record that owns its field. `None`: the
+    /// section's name decides, as before WP-177 (a dead target is no
+    /// event there; a `comdat-mismatch` key is one).
+    pub eh: Option<&'a dyn EhOwners>,
+}
+
+/// The owners of `.eh_frame` and `.gcc_except_table` fields
+/// (`spec/resolve.md` §6.3, WP-177), asked only for a reference to a dead
+/// target or through a demoted mention nothing live defines.
+pub trait EhOwners: Sync + std::fmt::Debug {
+    /// The record of `.eh_frame` section `section` whose bytes hold
+    /// `offset`.
+    fn frame(&self, section: SectionId, offset: u64) -> EhOwner;
+    /// The FDE that owns the field at `offset` of the `.gcc_except_table`
+    /// section `table`: of every parsed FDE whose LSDA pointer names
+    /// `table`, whatever its file, the one whose LSDA start is the
+    /// greatest `<= offset`.
+    fn lsda(&self, table: SectionId, offset: u64) -> EhOwner;
 }
 
 /// The options the scan depends on.

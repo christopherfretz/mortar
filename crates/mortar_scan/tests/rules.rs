@@ -13,7 +13,7 @@ use mortar_core::par::{Pool, check_schedules};
 use mortar_core::{FileId, SymKey};
 use mortar_diag::{Key, Policy};
 use mortar_elf::Object;
-use mortar_scan::Order;
+use mortar_scan::{EhOwner, EhOwners, Order};
 use mortar_testutil::Scratch;
 use support::{Linked, assemble, link_args, render};
 
@@ -271,10 +271,14 @@ fn i18_discarded_section_reference_per_symbol_and_section() {
     assert!(
         text == "ld: error: relocation refers to a symbol in a discarded section: lg\n\
                  >>> defined in b.o:(.text.g)\n\
+                 >>> the section is in a discarded copy of COMDAT group g\n\
+                 >>> kept copy: g1.o\n\
                  >>> referenced by b.o:(.text+0x0)\n"
             || text
                 == "ld: error: relocation refers to a symbol in a discarded section: .text.g\n\
                     >>> defined in b.o:(.text.g)\n\
+                    >>> the section is in a discarded copy of COMDAT group g\n\
+                    >>> kept copy: g1.o\n\
                     >>> referenced by b.o:(.text+0x0)\n",
         "{text}"
     );
@@ -301,6 +305,116 @@ fn i45_i46_resolve_6_3_referring_section_names() {
         let n = l.ids().iter().filter(|i| **i == "discarded-section-reference").count();
         assert_eq!(n, 1 + usize::from(*error), "{from}: {}", l.rendered());
     }
+}
+
+/// WP-177's owners, one answer for every field.
+#[derive(Debug)]
+struct Fixed(EhOwner);
+
+impl EhOwners for Fixed {
+    fn frame(&self, _: mortar_core::SectionId, _: u64) -> EhOwner {
+        self.0
+    }
+
+    fn lsda(&self, _: mortar_core::SectionId, _: u64) -> EhOwner {
+        self.0
+    }
+}
+
+const LIVE: EhOwner = EhOwner::Live { code: None };
+
+#[test]
+fn wp177_case_a_judged_by_the_owning_record() {
+    // `.eh_frame` and `.gcc_except_table` against a local of a dropped
+    // copy (resolve.md §6.3 case (a)): an error from a live record, none
+    // from a dead one; from `.gcc_except_table` with no owner, an error.
+    // Without the owners, the name decides (no event), as before WP-177.
+    let pool = Pool::new(4);
+    for (k, from) in [
+        ".section .gcc_except_table,\"a\",@progbits\n  .xword lg\n",
+        ".section .gcc_except_table,\"\",@progbits\n  .xword lg\n",
+        ".section .eh_frame,\"a\",@unwind\n  .xword lg\n",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let b = dropped_ref(from);
+        let label = format!("scan-wp177-a-{k}");
+        let Some((_d, l)) = build(&label, &[("a.o", START), ("g1.o", G1), ("b.o", &b)], &[]) else {
+            return;
+        };
+        let count = |s: &mortar_scan::Scanned| {
+            s.diagnostics.iter().filter(|d| d.1.id() == "discarded-section-reference").count()
+        };
+        let text = |s: &mortar_scan::Scanned| {
+            let v: Vec<_> = s.diagnostics.clone();
+            render(&v, Policy::default())
+        };
+        assert_eq!(count(&l.scanned), 1, "{from}: {}", l.rendered());
+        let dead = l.rescan_eh(Some(&Fixed(EhOwner::Dead)), &pool);
+        assert_eq!(count(&dead), 1, "{from}: {}", text(&dead));
+        let live = l.rescan_eh(Some(&Fixed(LIVE)), &pool);
+        assert_eq!(count(&live), 2, "{from}: {}", text(&live));
+        let what = if from.contains("eh_frame") { "unwind information" } else { "(LSDA)" };
+        let t = text(&live);
+        assert!(t.contains(&format!("{what} of a live function, which is written")), "{t}");
+        assert!(t.contains(">>> the section is in a discarded copy of COMDAT group g\n"), "{t}");
+        assert!(t.contains(">>> kept copy: g1.o\n"), "{t}");
+        let none = l.rescan_eh(Some(&Fixed(EhOwner::None)), &pool);
+        assert_eq!(count(&none), 2, "{from}: {}", text(&none));
+        let n = if from.contains("eh_frame") {
+            ">>> the field is in no record of this section: its owner is not known\n"
+        } else {
+            ">>> no FDE has an LSDA in this section at or before this place: the field's owner \
+             is not known\n"
+        };
+        let t = text(&none);
+        assert!(t.contains(n), "{t}");
+    }
+}
+
+#[test]
+fn wp177_prelink_note_when_the_local_name_is_the_signature() {
+    // A local symbol named as its group's signature (the `objcopy
+    // --localize-hidden` shape): the note on partial links.
+    let b = ".section .data.g,\"awG\",@progbits,g,comdat\ng:\n  .xword 1\n\
+             .section .gcc_except_table,\"a\",@progbits\n  .xword g\n\
+             .text\n.globl fb\nfb:\n  ret\n";
+    let g1 = ".section .data.g,\"awG\",@progbits,g,comdat\n.globl g\ng:\n  .xword 1\n";
+    let Some((_d, l)) = build("scan-wp177-pre", &[("a.o", START), ("g1.o", g1), ("b.o", b)], &[])
+    else {
+        return;
+    };
+    let live = l.rescan_eh(Some(&Fixed(LIVE)), &Pool::new(4));
+    let t = render(&live.diagnostics, Policy::default());
+    assert!(
+        t.contains(">>> g is local in its file: it was probably made local after a partial link"),
+        "{t}"
+    );
+    assert!(t.contains("(ld -r --force-group-allocation), then localize\n"), "{t}");
+}
+
+#[test]
+fn wp177_case_b_judged_by_the_owning_record() {
+    // A demoted weak mention nothing live defines (§6.3 case (b)),
+    // referenced from `.gcc_except_table` only: `comdat-mismatch` from a
+    // live or unknown owner, nothing from a dead one; without the owners,
+    // the error (WP-176).
+    let m = ".text\n.globl _start\n_start:\n  ret\n";
+    let g2 = ".section .text.g,\"axG\",@progbits,g,comdat\n.weak g\n.weak hx\ng:\n  ret\n\
+              hx:\n  ret\n.section .gcc_except_table,\"a\",@progbits\n  .word hx-.\n";
+    let Some((_d, l)) = build("scan-wp177-b", &[("m.o", m), ("g1.o", WG1), ("g2.o", g2)], &[])
+    else {
+        return;
+    };
+    let pool = Pool::new(4);
+    let ids = |s: &mortar_scan::Scanned| -> Vec<&'static str> {
+        s.diagnostics.iter().map(|d| d.1.id()).collect()
+    };
+    assert_eq!(ids(&l.scanned), ["comdat-mismatch"], "{}", l.rendered());
+    assert!(ids(&l.rescan_eh(Some(&Fixed(EhOwner::Dead)), &pool)).is_empty());
+    assert_eq!(ids(&l.rescan_eh(Some(&Fixed(LIVE)), &pool)), ["comdat-mismatch"]);
+    assert_eq!(ids(&l.rescan_eh(Some(&Fixed(EhOwner::None)), &pool)), ["comdat-mismatch"]);
 }
 
 #[test]

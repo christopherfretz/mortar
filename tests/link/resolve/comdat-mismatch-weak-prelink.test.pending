@@ -1,4 +1,4 @@
-# PENDING (WP-175): the input comp.lh.o is a reference's `ld -r` output passed through `objcopy --localize-hidden`; the lane has no step for either until WP-175's `partial` step lands. Then: build x1.o, `partial` it to comp.o (`ld -r x1.o -o comp.o`), `objcopy --localize-hidden comp.o comp.lh.o`, and rename this file to .test.
+# PENDING (WP-178): it runs since WP-177 (the `partial` and `objcopy` steps), and the lane refuses it: L3 finds R5 `refers to section '.data.rel.local.DW.ref._ZTISt9exception', which is not in the output` on GNU ld's and lld's outputs (AArch64, x86-64), the undefined-weak value of resolve/comdat-mismatch-weak*.test.pending: rename this file to .test with them.
 # The pre-link idiom (WP-154's cells prelink-lh-x-*; WP-176): a component
 # made by `ld -r` and passed through `objcopy --localize-hidden` keeps
 # its copies of the COMDAT groups DW.ref.__gxx_personality_v0 and
@@ -18,8 +18,8 @@
 
 cxx -O1 x1.cc -o x1.o
 cxx -O1 x2.cc -o x2.o
-# partial ld -r x1.o -o comp.o                      (WP-175's step; syntax to come)
-# objcopy --localize-hidden comp.o comp.lh.o        (the same package's tool step, or a fixture)
+partial bfd x1.o -o comp.o
+objcopy --localize-hidden comp.o comp.lh.o
 
 link(bfd,lld) g++ -static comp.lh.o x2.o -o prog
 run(bfd,lld) prog

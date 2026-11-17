@@ -1,0 +1,130 @@
+# THE REAL SHAPE of WP-177 (resolve.md §6.3 case (a), from a live CIE
+# and a live LSDA): a component pre-linked by a reference (`ld -r`) and
+# then localized keeps its copies of the COMDAT groups
+# DW.ref.__gxx_personality_v0 and DW.ref._ZTISt9exception, whose hidden
+# weak symbols are now LOCAL: by `objcopy --localize-hidden` (lh), by
+# `--keep-global-symbol` of its API (kg), or by `--localize-symbol` of
+# the two words (ls). m.o comes first, so its copies are kept and the
+# component's dropped; the component's CIE personality pointer
+# (.eh_frame) and api1's LSDA type entry (.gcc_except_table) name the
+# local symbols of the dropped copies. Both records are live (the CIE is
+# used by hidden_helper's FDE, the LSDA is api1's): mortar refuses
+# discarded-section-reference by name in every output kind, and says the
+# symbol was probably localized after a partial link; lld refuses both.
+# GNU ld and mold link programs that die on the first throw through the
+# component: comdat-eh-wrong.test.pending. On i386, lh and kg also
+# localize the component's __x86.get_pc_thunk.* (hidden, each in a group
+# of its own), whose copies are dropped too: a case (a) reference from
+# .text, refused by every reference but mold. The sound idiom (dissolve
+# the groups first, then localize) is comdat-eh-sound.test.
+#@ spec: resolve.md §6.3
+#@ spec: harness.md "The test file"
+#@ requires: g++
+
+cxx -O1 p1.cc -o p1.o
+cxx -O1 p2.cc -o p2.o
+cxx -O1 m.cc -o m.o
+partial bfd p1.o p2.o -o r.bfd.o
+partial lld p1.o p2.o -o r.lld.o
+objcopy --localize-hidden r.bfd.o lh.bfd.o
+objcopy --localize-hidden r.lld.o lh.lld.o
+objcopy --keep-global-symbol=_Z4api1i --keep-global-symbol=_Z4api2i r.bfd.o kg.bfd.o
+objcopy --keep-global-symbol=_Z4api1i --keep-global-symbol=_Z4api2i r.lld.o kg.lld.o
+objcopy --localize-symbol=DW.ref.__gxx_personality_v0 --localize-symbol=DW.ref._ZTISt9exception r.bfd.o ls.bfd.o
+objcopy --localize-symbol=DW.ref.__gxx_personality_v0 --localize-symbol=DW.ref._ZTISt9exception r.lld.o ls.lld.o
+
+link(lld,mortar) g++ -static m.o ls.bfd.o -o p1
+  exit: fail
+  diag(lld): relocation refers to a symbol in a discarded section: DW.ref.__gxx_personality_v0
+  diag(mortar): relocation refers to a symbol in a discarded section: DW.ref.__gxx_personality_v0
+  diag(mortar): >>> defined in ls.bfd.o:(.data.rel.local.DW.ref.__gxx_personality_v0)
+  diag(mortar): >>> the section is in a discarded copy of COMDAT group DW.ref.__gxx_personality_v0
+  diag(mortar): >>> kept copy: m.o
+  diag(mortar): >>> referenced by ls.bfd.o:(.eh_frame+0x
+  diag(mortar): >>> the field is in the unwind information of *, which is written
+  diag(mortar): >>> DW.ref.__gxx_personality_v0 is local in its file: it was probably made local after a partial link * then localize
+  diag(mortar): relocation refers to a symbol in a discarded section: DW.ref._ZTISt9exception
+  diag(mortar): >>> referenced by ls.bfd.o:(.gcc_except_table+0x
+  diag(mortar): >>> the field is in the exception table (LSDA) of _Z4api1i, which is written
+  diag(mortar): >>> DW.ref._ZTISt9exception is local in its file: it was probably made local after a partial link * then localize
+link(lld,mortar) g++ -static m.o ls.lld.o -o p2
+  exit: fail
+  diag(lld): relocation refers to a symbol in a discarded section: DW.ref.__gxx_personality_v0
+  diag(mortar): relocation refers to a symbol in a discarded section: DW.ref.__gxx_personality_v0
+  diag(mortar): >>> referenced by ls.lld.o:(.eh_frame+0x
+  diag(mortar): relocation refers to a symbol in a discarded section: DW.ref._ZTISt9exception
+  diag(mortar): >>> the field is in the exception table (LSDA) of _Z4api1i, which is written
+link(lld,mortar,aarch64,x86_64) g++ m.o lh.bfd.o -o p3
+  exit: fail
+  diag(lld): relocation refers to a symbol in a discarded section: DW.ref.__gxx_personality_v0
+  diag(mortar): relocation refers to a symbol in a discarded section: DW.ref.__gxx_personality_v0
+  diag(mortar): >>> referenced by lh.bfd.o:(.eh_frame+0x
+  diag(mortar): >>> DW.ref.__gxx_personality_v0 is local in its file: it was probably made local after a partial link
+link(lld,mortar,aarch64,x86_64) g++ m.o lh.lld.o -o p4
+  exit: fail
+  diag(lld): relocation refers to a symbol in a discarded section: DW.ref.__gxx_personality_v0
+  diag(mortar): relocation refers to a symbol in a discarded section: DW.ref.__gxx_personality_v0
+link(lld,mortar,aarch64,x86_64) g++ m.o kg.bfd.o -o p5
+  exit: fail
+  diag(lld): relocation refers to a symbol in a discarded section: DW.ref.__gxx_personality_v0
+  diag(mortar): relocation refers to a symbol in a discarded section: DW.ref.__gxx_personality_v0
+link(lld,mortar,aarch64,x86_64) g++ -static m.o kg.lld.o -o p6
+  exit: fail
+  diag(lld): relocation refers to a symbol in a discarded section: DW.ref.__gxx_personality_v0
+  diag(mortar): relocation refers to a symbol in a discarded section: DW.ref.__gxx_personality_v0
+link(lld,mortar,i386) g++ -static m.o lh.bfd.o -o p3
+  exit: fail
+  diag(lld): relocation refers to a symbol in a discarded section: __x86.get_pc_thunk.
+  diag(mortar): relocation refers to a symbol in a discarded section: __x86.get_pc_thunk.
+  diag(mortar): relocation refers to a symbol in a discarded section: DW.ref.__gxx_personality_v0
+link(lld,mortar,i386) g++ -static m.o kg.lld.o -o p6
+  exit: fail
+  diag(lld): relocation refers to a symbol in a discarded section: __x86.get_pc_thunk.
+  diag(mortar): relocation refers to a symbol in a discarded section: __x86.get_pc_thunk.
+  diag(mortar): relocation refers to a symbol in a discarded section: DW.ref.__gxx_personality_v0
+link(mortar,aarch64,x86_64) g++ m.o ls.bfd.o -o p7
+  exit: fail
+  diag(mortar): relocation refers to a symbol in a discarded section: DW.ref.__gxx_personality_v0
+link(mortar,aarch64,x86_64) g++ -shared m.o ls.bfd.o -o p8.so
+  exit: fail
+  diag(mortar): relocation refers to a symbol in a discarded section: DW.ref.__gxx_personality_v0
+link(mortar,aarch64,x86_64) g++ -static-pie m.o ls.lld.o -o p9
+  exit: fail
+  diag(mortar): relocation refers to a symbol in a discarded section: DW.ref.__gxx_personality_v0
+
+#--- p1.cc
+#include <stdexcept>
+#include <string>
+inline std::string greet(int n) { return "p" + std::to_string(n); }
+__attribute__((visibility("hidden"))) int hidden_helper(int x) {
+  if (x < 0) throw std::runtime_error("neg");
+  return x * 2;
+}
+int api1(int x) {
+  try {
+    return hidden_helper(x) + (int)greet(x).size();
+  } catch (const std::exception &) {
+    return -1;
+  }
+}
+#--- p2.cc
+#include <string>
+inline std::string greet(int n) { return "p" + std::to_string(n); }
+int hidden_helper(int);
+int api2(int x) { return hidden_helper(x + 1) + (int)greet(x).size(); }
+#--- m.cc
+#include <cstdio>
+#include <stdexcept>
+#include <string>
+inline std::string greet(int n) { return "p" + std::to_string(n); }
+int api1(int);
+int api2(int);
+int main() {
+  try {
+    throw std::logic_error("x");
+  } catch (const std::exception &e) {
+    std::printf("main caught %s\n", e.what());
+  }
+  std::printf("%d %d %d %s\n", api1(3), api1(-1), api2(4), greet(9).c_str());
+  return 0;
+}

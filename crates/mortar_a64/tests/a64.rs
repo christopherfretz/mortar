@@ -710,17 +710,19 @@ fn s13_2_non_alloc_and_tombstones() {
         assert_eq!(out[..4], [0; 4]);
     }
     c.alloc = false;
-    // Scan: a dead target demands nothing; from a debug name or
-    // `.gcc_except_table` it is accepted, from any other section it is the
-    // event `DiscardedSection` (arch.md §3.4).
+    // Scan: a dead target demands nothing; from a debug name it is
+    // accepted, from any other section it is the event `DiscardedSection`
+    // (arch.md §3.4): in `.eh_frame` and `.gcc_except_table` the scan's
+    // driver judges it by the record that owns the field (WP-177).
     t.facts.get_mut(&key(1)).unwrap().dead = true;
     let r = Reloc { r_offset: 0, key: key(1), r_type: 257, addend: 0 };
     let na = PlaceFacts { alloc: false, writable: false, exec: None };
     let w = PlaceFacts { alloc: true, writable: true, exec: None };
     for (place, name, discarded) in [
         (na, &b".debug_info"[..], false),
-        (na, b".gcc_except_table", false),
-        (w, b".gcc_except_table", false),
+        (na, b".gcc_except_table", true),
+        (w, b".gcc_except_table", true),
+        (w, b".eh_frame", true),
         (na, b".comment", true),
         (w, b".data", true),
         (w, b".debug_info", true),
