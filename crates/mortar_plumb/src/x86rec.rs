@@ -246,6 +246,7 @@ impl Engine<'_, '_> {
                 );
                 return self.fail(f);
             }
+            Target::Empty(sec) => return self.empty_record(rec, &site, &symbol, &sec),
             Target::Outside(_) => {
                 if self.format != Format::Mortar {
                     return self.x86_unjudged(rec, Reason::PieceNotLocatable);

@@ -491,6 +491,7 @@ impl Engine<'_, '_> {
                     Target::Addr(v) => In::Value(v.wrapping_add(a as u64)),
                     Target::UndefWeak => In::Value(a as u64),
                     Target::Discarded(_) => In::Dead,
+                    Target::Empty(_) => In::Unknown(Reason::SectionNotLocatable),
                     Target::Skip(r) => In::Unknown(r),
                     Target::Tls(_) => In::Unknown(Reason::Tls),
                     Target::Ifunc { .. } => In::Unknown(Reason::Ifunc),

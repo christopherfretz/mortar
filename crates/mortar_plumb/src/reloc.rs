@@ -20,7 +20,7 @@ use crate::image::Image;
 use crate::locate::{Obj, Place};
 use crate::map::Format;
 #[path = "debug.rs"]
-mod debug;
+pub(crate) mod debug;
 #[path = "dsoword.rs"]
 pub(crate) mod dsoword;
 #[path = "eh.rs"]
@@ -186,6 +186,10 @@ enum Target {
     Skip(Reason),
     /// The symbol's section is not in the output (R5).
     Discarded(String),
+    /// A label of an empty section no record places and no output symbol
+    /// gives (WP-143): the field must name an address in or at the end of
+    /// an allocated output section.
+    Empty(String),
     /// A section symbol plus addend outside its section, which is placed
     /// as pieces: no piece is named (`synth.md` S-18).
     Outside(String),
@@ -880,10 +884,14 @@ impl<'a, 'b> Engine<'a, 'b> {
                     },
                     |p| Target::Addr(p.addr + (value - p.input_offset)),
                 ),
+            // An empty section has no pieces (WP-143): where its labels
+            // are, only the output's symbols say (§4.4 steps 1 and 3).
+            Place::Merged if s.shdr.sh_size == 0 => Target::Empty(s.name.clone()),
             Place::Merged => Target::Merge { oi, sec, value, section_sym },
             Place::Rewritten => Target::Skip(Reason::EhFrame),
             Place::Ambiguous => Target::Skip(Reason::SectionNotLocatable),
             Place::Absent if s.is_eh_frame(o.elf.machine()) => Target::Skip(Reason::EhFrame),
+            Place::Absent if s.empty_unrecorded() => Target::Empty(s.name.clone()),
             Place::Absent | Place::Discarded => Target::Discarded(s.name.clone()),
         }
     }
@@ -1014,6 +1022,19 @@ impl<'a, 'b> Engine<'a, 'b> {
         // interposed key, a preemptible IFUNC's resolved address) is where
         // the view puts it, not an IPLT entry.
         let bound_by_loader = self.loader_keys.contains(&name);
+        // §4.4 step 0 (WP-143): a name every input definition of which is
+        // in a section without a place (discarded, or absent from the
+        // map) is that section's, whatever the output's symbol says: R5,
+        // or §5.8's tombstone from a non-alloc place. Before WP-143 the
+        // steps below looked at placed definitions only and ended in
+        // `symbol-unresolved`, a count, never R5: a word left 0 passed.
+        if !bound_by_loader && let Some((doi, di, k)) = self.placeless_def(&name) {
+            let value = self.objs[doi]
+                .symtab
+                .and_then(|dt| dt.get(SymbolIndex(di)).ok())
+                .map_or(0, |d| d.st_value);
+            return self.in_section(doi, k, value, false);
+        }
         // An IFUNC by its placed definition, whatever form the output's
         // symbol has (§4.8).
         let chosen = self.chosen_def(&name);
@@ -1098,7 +1119,99 @@ impl<'a, 'b> Engine<'a, 'b> {
         {
             return Target::UndefWeak;
         }
+        // A name defined only in empty sections without a record (WP-143).
+        if let Some(sec) = self.empty_only(&name) {
+            return Target::Empty(sec);
+        }
         Target::Skip(Reason::SymbolUnresolved)
+    }
+
+    /// When every input definition of `name` is in an empty section that
+    /// has no place record (an empty merged section, or a foreign map's
+    /// empty mergeable section without a row), the first one's name.
+    fn empty_only(&self, name: &str) -> Option<String> {
+        let defs = self.defs.get(name)?;
+        let mut first = None;
+        for &(doi, di) in defs {
+            let dt = self.objs[doi].symtab?;
+            let ds = dt.get(SymbolIndex(di)).ok()?;
+            let Ok(SymbolSection::Section(k)) = dt.section_of(SymbolIndex(di), &ds) else {
+                return None;
+            };
+            let s = self.objs[doi].secs.get(k.0 as usize)?;
+            let empty = s.empty_unrecorded()
+                || (s.shdr.sh_size == 0 && s.alloc() && matches!(s.place, Place::Merged));
+            if !empty {
+                return None;
+            }
+            first.get_or_insert_with(|| s.name.clone());
+        }
+        first
+    }
+
+    /// A record against [`Target::Empty`]: the address its field names,
+    /// when the type is an address-sized `S + A` or a 4- or 8-byte
+    /// `S + A - P`, is in or at the end of an allocated output section
+    /// (a label of an empty section is where its bytes would be; 0 or a
+    /// gap is a finding). Other types are not checked.
+    fn empty_record(&mut self, rec: &Rec, site: &Site, symbol: &str, sec: &str) {
+        let a = rec.addend as u64;
+        let width = if self.image.class() == mortar_elf::Class::Elf64 { 8 } else { 4 };
+        let s = match (rec.def.op, rec.def.field) {
+            (Op::Abs, Field::Data(w)) if w == width => trunc(rec.out_word.wrapping_sub(a), w),
+            (Op::Prel, Field::Data(8)) => rec.p.wrapping_add(rec.out_word).wrapping_sub(a),
+            (Op::Prel, Field::Data(4)) => {
+                rec.p.wrapping_add(i64::from(rec.out_word as u32 as i32) as u64).wrapping_sub(a)
+            }
+            _ => return self.not_checked(Reason::SectionNotLocatable, 1),
+        };
+        let s = trunc(s, width);
+        if self.image.holds_or_ends(s) {
+            self.cov.add_verified(Via::Direct, rec.def.r_type);
+            return;
+        }
+        let mut f = Self::finding(
+            Rule::DiscardedTarget,
+            rec,
+            site,
+            symbol,
+            format!(
+                "refers to empty section '{sec}' at {s:#x}, neither in nor at the end of an allocated output section"
+            ),
+        );
+        f.found = Some(s);
+        self.fail(f);
+    }
+
+    /// §4.4 step 0 (WP-143): when `name` has input definitions, every one
+    /// of them in a section of an input object (none `SHN_ABS`, none
+    /// common) and every such section without a place (`Absent` or
+    /// `Discarded`, §3.3), the definition the name resolves to: the first
+    /// strong one in object order, else the first. `None` otherwise.
+    pub(crate) fn placeless_def(&self, name: &str) -> Option<(usize, u32, usize)> {
+        let defs = self.defs.get(name)?;
+        if self.commons.contains_key(name) {
+            return None;
+        }
+        let mut first: Option<(usize, u32, usize)> = None;
+        let mut strong: Option<(usize, u32, usize)> = None;
+        for &(doi, di) in defs {
+            let dt = self.objs[doi].symtab?;
+            let ds = dt.get(SymbolIndex(di)).ok()?;
+            let Ok(SymbolSection::Section(k)) = dt.section_of(SymbolIndex(di), &ds) else {
+                return None;
+            };
+            let k = k.0 as usize;
+            let s = self.objs[doi].secs.get(k)?;
+            if !matches!(s.place, Place::Absent | Place::Discarded) || s.empty_unrecorded() {
+                return None;
+            }
+            first.get_or_insert((doi, di, k));
+            if ds.binding() != STB_WEAK {
+                strong.get_or_insert((doi, di, k));
+            }
+        }
+        strong.or(first)
     }
 
     /// §4.4 step 2's choice: the one placed strong definition of `name`,
@@ -1473,6 +1586,7 @@ impl<'a, 'b> Engine<'a, 'b> {
                 );
                 return self.fail(f);
             }
+            Target::Empty(sec) => return self.empty_record(rec, &site, &symbol, &sec),
             Target::Outside(name) => {
                 if self.format != Format::Mortar {
                     return self.not_checked(Reason::PieceNotLocatable, 1);
@@ -1673,6 +1787,7 @@ impl<'a, 'b> Engine<'a, 'b> {
                     None,
                 ));
             }
+            Target::Empty(_) => return Err(Outcome::Skip(Reason::SectionNotLocatable)),
         };
         match self.tls {
             Ok(Some(b)) => Ok((b, sa)),

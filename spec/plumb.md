@@ -450,10 +450,10 @@ Each input section ends up with one *place*:
 |---|---|---|
 | whole at `a` | a `place` record | checked, with `P = a + r_offset` |
 | pieces | `piece` records (mortar's format), or lld's `.eh_frame+0xOFF` rows | checked where a piece covers `r_offset`. A record outside every piece is in a dropped part and is counted as not in the output |
-| merged | an `SHF_MERGE` `SHF_ALLOC` section in a foreign map, placed, absent or ambiguous | not checked (`in-mergeable`). References *to* it are checked by content (§5.6) |
+| merged | an `SHF_MERGE` `SHF_ALLOC` section in a foreign map, placed, absent or ambiguous, except an empty one with a row (WP-143: GNU ld, lld and mold each write one, at the address its labels have; it is whole) | not checked (`in-mergeable`). References *to* it are checked by content (§5.6); to an empty one without a row, as to an empty section below |
 | rewritten | `.eh_frame` placed whole with a size other than its input's (GNU ld) | checked by CIE and FDE (§6.4) |
 | discarded | a `discard` record, or GNU's "Discarded input sections" and `/DISCARD/` | not in the output |
-| absent | no record | not in the output. An allocated `.eh_frame` is checked by CIE and FDE whatever its place (§6.4): mold lists none |
+| absent | no record | not in the output. An allocated `.eh_frame` is checked by CIE and FDE whatever its place (§6.4): mold lists none. An allocated section **with no bytes** (`sh_size` 0) and no record is not "not in the output" (WP-143): it has no bytes for a record to place (mortar's map lists none for an empty merged section: it has no piece, `spec/image.md` I-78), and its labels are where its bytes would be, which only the output's symbols say (§4.4 step 1 and 3, Y3); a reference whose type names an address (address-sized `S + A`, 4- or 8-byte `S + A - P`) is judged by the address it names: in or at the end of an allocated output section (`[sh_addr, sh_addr + sh_size]`), else R5; other types are `section-not-locatable` |
 | ambiguous | see above | not checked (`section-not-locatable`) |
 
 A fold gives a section its target's place.
@@ -472,11 +472,57 @@ input section:
 - **M4.** A section with bytes, other than `.tbss`, is not inside an
   allocated output section. Or that output section lacks its
   `SHF_EXECINSTR` or `SHF_WRITE`. Or the address is not a multiple of its
-  `sh_addralign`.
+  `sh_addralign`. Under mortar's map (WP-143), an allocated section
+  without bytes placed whole is at an address in or at the end of an
+  allocated output section (`[sh_addr, sh_addr + sh_size]`): its labels
+  are there, never at 0 or between sections. A foreign map's row of one is
+  trusted as its labels' address (GNU ld writes the place its dropped
+  empty output section would have had, §10.2 A10).
 - **M5.** Two input sections placed whole share bytes. A `.tbss` section
   occupies no memory and is exempt.
 
-Each rule has a test: `tests/mutation.rs s9_2e_each_map_rule_is_enforced`.
+- **M10 (WP-143; mortar's map).** Every section of a live object that is
+  neither consumed (the list under "By index" above) nor without bytes,
+  and has no place (discarded or absent), has a reason the inputs and the
+  line give, derived by the verifier, not taken from the map:
+  - a row of `spec/resolve.md` §10 that drops or consumes it, whatever the
+    record says: `SHF_EXCLUDE`; a `.mason.meta` container; `.note.GNU-stack`;
+    `.note.gnu.build-id`; `.note.gnu.property` of type `SHT_NOTE`
+    (consumed into the output's note, `spec/synth.md`); `.gnu.lto_*`;
+    `.gnu.warning`/`.gnu.warning.*`; `SHT_LLVM_ADDRSIG`,
+    `SHT_LLVM_CALL_GRAPH_PROFILE`, `SHT_LLVM_DEPENDENT_LIBRARIES`;
+    `SHT_AARCH64_ATTRIBUTES` on AArch64 (`spec/layout.md` L-35); a
+    non-alloc debug section (GNU ld's debug names, `spec/resolve.md` §6.3)
+    under `-S`/`-s`; `.debug_gnu_pubnames`/`.debug_gnu_pubtypes` under
+    `--gdb-index` without `-S`/`-s` (`spec/synth.md` S-G6);
+  - a member of a COMDAT group that is not its signature's keeper
+    (`spec/resolve.md` §6.1: the group of the least `FileId` among the
+    live files, the first by section index there; the map lists the files
+    in `FileId` order, I-78);
+  - a `discard ... gc` record, when the line has `--gc-sections` (the last
+    of it and `--no-gc-sections`) and the section is not one of
+    `spec/image.md` I-6's roots the inputs show: `SHF_GNU_RETAIN`; a
+    start-up table (type `SHT_INIT_ARRAY`/`SHT_FINI_ARRAY`/
+    `SHT_PREINIT_ARRAY`, or a name `.init_array`, `.fini_array`,
+    `.preinit_array`, `.init`, `.fini`, `.ctors`, `.dtors`, alone or
+    followed by `.`); a note or non-alloc section not in a group with an
+    allocated member; `.eh_frame`; a C-identifier name whose `__start_` or
+    `__stop_` some input references. A `SHF_LINK_ORDER` section is never a
+    root; it is a finding when its link target is placed (I-109). A
+    reference from a placed allocated section to a symbol of a collected
+    one is R5 (§5.7), which is I-7's edge seen from the other side;
+  - a `discard ... script` record, when the line has `-T`;
+  - for an `SHT_NOBITS` section with no record (I-78 lists `discard` only
+    for a section with file bytes): `--gc-sections` on the line and not a
+    root, as for `discard ... gc`.
+  A `discard ... comdat` record must be the COMDAT row, `... unspecified`
+  one of §10's rows, `... gc` and `... script` as above; anything else, and
+  a section with bytes no record names and no row explains, is M10. The
+  verifier does not re-derive the roots that need the line's symbols (the
+  entry, `-u`, `--require-defined`, the exports) nor a script's `KEEP`.
+
+Each rule has a test: `tests/mutation.rs s9_2e_each_map_rule_is_enforced`;
+the WP-143 rows (M4 for an empty section, M10): `tests/placeless.rs`.
 
 The allocation records (§3.2; WP-096) are mortar's: these rules judge a
 map of mortar's format only, every such map, and each is a finding at
@@ -794,12 +840,25 @@ offset; through the output's `.symtab` that address is `PT_TLS` `p_vaddr`
     label is in a dropped part, and the row above does not apply:
     `eh-frame`;
   - **ambiguous:** `section-not-locatable`;
+  - **empty without a record** (the "absent" row of §3.3 for a section
+    without bytes, or a foreign map's empty merged section without a
+    row): the address the field names, §3.3;
   - **discarded or absent:** R5 (§5.7).
 
   An `SHN_ABS` symbol has S = `st_value`. Anything else is
   `symbol-unresolved`.
 - **A global, weak or `STB_GNU_UNIQUE` symbol**, by name, takes the first
   of these that applies:
+  0. **No definition with a place** (WP-143). When the name has input
+     definitions, none `SHN_ABS` or common, and every one is in a section
+     that is discarded or absent (not one without bytes, above), and the
+     loader does not bind the name (§12.5): the definition is the first
+     strong one in object order, else the first, and S follows from its
+     section as for a local symbol: R5 (§5.7), or §5.8's tombstone from a
+     non-alloc place, whatever the output's `.symtab` says. Before WP-143
+     the steps below looked at placed definitions only and such a name
+     ended in `symbol-unresolved`, a count: mortar's word 0 against a
+     global of a consumed `.note.gnu.property` passed (WP-136).
   1. **The output's global symbol of that name.** This is the first
      `STB_GLOBAL` or `STB_WEAK` symbol of the name in `.symtab`, and it
      decides which definition won (an IFUNC is §4.8's; TLS is §4.7's).
@@ -816,7 +875,9 @@ offset; through the output's `.symtab` that address is `PT_TLS` `p_vaddr`
      name (glibc's weak `__rela_iplt_start`), so the record is
      `symbol-unresolved` (`resolve/symtab` in the link tests).
 
-  If none applies, the record is `symbol-unresolved`.
+  If none applies and every definition of the name is in a section
+  without bytes and without a record, the field names the address (§3.3,
+  "absent"); otherwise the record is `symbol-unresolved`.
 
 **An undefined weak** has S = 0, except for a PC-relative type that is
 not a branch (`PREL64/32/16`, `LD_PREL_LO19`, `ADR_PREL_LO21`, the
@@ -1471,7 +1532,11 @@ references to `.debug_str`), the verifier's largest structure.
 ### 5.7 Discarded targets (R5)
 
 A relocation of a placed section whose symbol's section is discarded or
-absent is R5. This does not apply to `.eh_frame`'s own records, which
+absent is R5, for a local symbol and, by §4.4 step 0, for a global one
+whose every definition is so (WP-143); and a reference to a label of an
+empty section without a record that names an address neither in nor at
+the end of an allocated output section (§3.3). Whether the section's
+absence has a reason is M10's (§3.3); R5 holds either way. This does not apply to `.eh_frame`'s own records, which
 §6.4 checks (an FDE whose function is discarded is dropped, not R5), nor
 to non-alloc records (§5.8).
 
@@ -2227,7 +2292,24 @@ rules below judge the rest. Code: `src/symbols.rs`.
     `SHN_ABS` definition it is `SHN_ABS`.
 
   A name with an IFUNC definition, with no placed definition, or a TLS
-  name without a usable `PT_TLS`, is counted in `globals_unchecked`.
+  name without a usable `PT_TLS`, is counted in `globals_unchecked`,
+  except (WP-143):
+  - **a missing global.** When the output has a `.symtab`, no symbol of
+    any binding has the name, the name's visibility V is default or
+    protected, and an input defines it (global or weak) in an allocated
+    section placed whole, or as pieces with a piece holding its label (a
+    dead piece of a merged section is collected under `--gc-sections`, and
+    its labels with it: glibc's `__nptl_version`), or (mortar's map) without bytes and
+    without a record: a finding. A foreign map's merged section is not
+    known to hold anything (lld collects the pieces of one under
+    `--gc-sections`), so its names are not judged so. A versioned input
+    name (`foo@@V2`) is present when its base name is. Before WP-143 a
+    missing name was skipped: mortar's output without `gms` passed;
+  - **a label of an empty section without a record** (§3.3, "absent";
+    not thread-local): its output value is in or at the end of an
+    allocated output section, else a finding;
+  - **a name with no definition with a place** (§4.4 step 0; mortar's
+    map) that the output defines: a finding, whatever its value.
 - **Y4. Locals.** This rule applies to each defined output local, other
   than section and file symbols, whose name some input local has. The
   input locals of the name are found in this order:
@@ -3097,7 +3179,7 @@ tests (the hash, the probe, the header). The byte sweep's `gdbindex` case
 
 A finding has:
 
-- the rule id: `O1`, `S1`–`S21`, `I1`, `I2`, `M1`–`M8`, `R1`–`R9`, `T1`,
+- the rule id: `O1`, `S1`–`S21`, `I1`, `I2`, `M1`–`M10`, `R1`–`R9`, `T1`,
   `Y1`–`Y5`, `E1`–`E5`, `F1`–`F5` (§4.8), `P1`–`P2` (§6.6), `B1` (§6.7),
   `C1`–`C6` (§5.10), `P-D1`–`P-D13` (§12), `P-I1`–`P-I6` (§6.8), `P-M1`–`P-M3` (§13), `P-E1`–`P-E6`
   (§6.9; a side's finding there carries its side, `X:` or `F:`) or

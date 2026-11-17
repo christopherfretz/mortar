@@ -23,6 +23,7 @@ pub mod dynout;
 mod dynverify;
 pub mod equiv;
 mod erratum;
+mod fate;
 mod gdbdwarf;
 mod gdbindex;
 mod gdbnames;
@@ -351,6 +352,12 @@ pub(crate) fn run_engine(
             engine.findings.extend(buildid::line_rules(image, map, &o));
         }
         prof::mark("build id");
+        // M10 (§3.3): every section without a place has a reason.
+        if only.is_none()
+            && let Some(o) = opts::of(map)
+        {
+            engine.findings.extend(fate::check(objs, map, &o));
+        }
         // M6, M7 (§3.3): the allocation records, in every mortar map.
         engine.findings.extend(maprec::check(image, objs, map));
         prof::mark("allocation records");
