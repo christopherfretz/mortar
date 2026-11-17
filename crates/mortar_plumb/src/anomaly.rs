@@ -189,6 +189,11 @@ fn dynamic(linker: Format, output: &[u8], f: &Finding) -> Option<&'static str> {
             "A47: lld and mold write no .dynsym entry for a root (-u, EXTERN) that only a needed shared library defines; GNU ld and mortar import it (dyn.md D-21 item 1)",
         );
     }
+    if mold && f.rule == crate::inset::EXTRA && m.ends_with(crate::inset::VERSIONED_PLAIN) {
+        return Some(
+            "A49: mold extracts an archive member for a shared object's versioned undefined reference (`name@V`) by the member's plain `name`; GNU ld, lld and mortar do not (resolve §9.2)",
+        );
+    }
     if mold && d(6) && m.ends_with(crate::dyncheck::ROOT_NEEDED) {
         return Some(
             "A48: mold makes an --as-needed library needed when only a root (-u, -e, EXTERN) names a definition of it (dyn.md D-11 item 2)",

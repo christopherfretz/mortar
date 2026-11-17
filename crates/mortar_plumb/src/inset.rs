@@ -41,6 +41,13 @@ const DATA: u8 = 8;
 const UNDEF: u8 = 16;
 /// A weak undefined mention (no edge; GNU's printed reason may name it).
 const WUNDEF: u8 = 32;
+/// The plain name of a shared object's strong versioned reference
+/// (`name` of `name@V`): no edge (resolve §9.2), but mold extracts by it
+/// (§10.2 A49), so an M12 it alone explains says so.
+const VPLAIN: u8 = 64;
+
+/// The end of an M12 that only [`VPLAIN`] mentions explain (A49).
+pub(crate) const VERSIONED_PLAIN: &str = "only a shared object's versioned reference reaches it, by its plain name (resolve §9.2: not an edge)";
 
 const NONE: u32 = u32::MAX;
 
@@ -441,6 +448,9 @@ impl Inputs {
                         let k = s.key(key.as_bytes());
                         let bits = if r.weak || *as_needed { WUNDEF } else { UNDEF };
                         mentions.push((k, bits));
+                        if r.version.is_some() && bits == UNDEF {
+                            mentions.push((s.key(r.name.as_bytes()), VPLAIN));
+                        }
                     }
                     s.files.push(File {
                         kind: Kind::Shared,
@@ -631,6 +641,16 @@ impl Inputs {
     /// the uncertain roots followed and the uncertain definitions not
     /// counted; else the reverse. `commons`: the edges of a common.
     fn closure(&self, upper: bool, commons: bool) -> (Vec<bool>, Vec<(u32, u32)>) {
+        self.closure_with(upper, commons, false)
+    }
+
+    /// [`Self::closure`]; `plain`: the [`VPLAIN`] mentions edges too.
+    fn closure_with(
+        &self,
+        upper: bool,
+        commons: bool,
+        plain: bool,
+    ) -> (Vec<bool>, Vec<(u32, u32)>) {
         let extra: &[u32] = if upper { &[] } else { &self.maybe_defined };
         let (first, cfirst) = self.targets(extra);
         let n = self.files.len();
@@ -652,7 +672,7 @@ impl Inputs {
         }
         while let Some(f) = work.pop() {
             for &(k, b) in &self.files[f as usize].mentions {
-                if b & UNDEF != 0 {
+                if b & UNDEF != 0 || (plain && b & VPLAIN != 0) {
                     pull(first[k as usize], f, k, &mut live, &mut work);
                 }
                 if commons && b & COMMON != 0 {
@@ -689,6 +709,7 @@ impl Inputs {
     fn strict(&self, map: &Map) -> Verdict {
         let (lo, why) = self.closure(false, true);
         let (hi, _) = self.closure(true, true);
+        let (hv, _) = self.closure_with(true, true, true);
         let names = self.names();
         let name = |k: u32| {
             String::from_utf8_lossy(names.get(k as usize).copied().unwrap_or(b"")).into_owned()
@@ -720,10 +741,14 @@ impl Inputs {
                 in_map[i] = true;
             }
             if !self.export_globs && !cands.iter().any(|&i| hi[i]) {
-                v.findings.push(Finding::new(
-                    EXTRA,
-                    format!("{mf} is in the link and no root or live reference reaches it (resolve §4.1)"),
-                ));
+                let m = if cands.iter().any(|&i| hv[i]) {
+                    format!("{mf} is in the link and {VERSIONED_PLAIN}")
+                } else {
+                    format!(
+                        "{mf} is in the link and no root or live reference reaches it (resolve §4.1)"
+                    )
+                };
+                v.findings.push(Finding::new(EXTRA, m));
             }
         }
         // An identity is required when any of its mentions is (an archive
@@ -885,28 +910,35 @@ impl Inputs {
         }
         // Extra: an in-link lazy file no root or reference reaches, over
         // every edge any linker of §16 follows.
-        let mut reached: Vec<bool> = self.files.iter().map(|f| !f.lazy).collect();
-        let mut work: Vec<usize> = (0..n).filter(|&i| reached[i]).collect();
-        let reach = |k: u32, reached: &mut Vec<bool>, work: &mut Vec<usize>| {
-            for &t in lazy_defs.get(&k).map_or(&[][..], Vec::as_slice) {
-                if in_link[t] && !reached[t] {
-                    reached[t] = true;
-                    work.push(t);
+        // `plain`: and by the VPLAIN mentions (A49's reach, the text only).
+        let reaching = |plain: bool| {
+            let mut reached: Vec<bool> = self.files.iter().map(|f| !f.lazy).collect();
+            let mut work: Vec<usize> = (0..n).filter(|&i| reached[i]).collect();
+            let reach = |k: u32, reached: &mut Vec<bool>, work: &mut Vec<usize>| {
+                for &t in lazy_defs.get(&k).map_or(&[][..], Vec::as_slice) {
+                    if in_link[t] && !reached[t] {
+                        reached[t] = true;
+                        work.push(t);
+                    }
+                }
+            };
+            for r in &self.roots {
+                reach(r.key, &mut reached, &mut work);
+            }
+            while let Some(f) = work.pop() {
+                for &(k, b) in &self.files[f].mentions {
+                    if (b & (UNDEF | COMMON | WUNDEF) != 0
+                        && (b & WUNDEF == 0 || self.files[f].kind == Kind::Shared))
+                        || (plain && b & VPLAIN != 0)
+                    {
+                        reach(k, &mut reached, &mut work);
+                    }
                 }
             }
+            reached
         };
-        for r in &self.roots {
-            reach(r.key, &mut reached, &mut work);
-        }
-        while let Some(f) = work.pop() {
-            for &(k, b) in &self.files[f].mentions {
-                if b & (UNDEF | COMMON | WUNDEF) != 0
-                    && (b & WUNDEF == 0 || self.files[f].kind == Kind::Shared)
-                {
-                    reach(k, &mut reached, &mut work);
-                }
-            }
-        }
+        let reached = reaching(false);
+        let reached_plain = reaching(true);
         let mut reported: HashSet<&Ident> = HashSet::default();
         if !self.export_globs {
             for i in 0..n {
@@ -920,13 +952,15 @@ impl Inputs {
                         .enumerate()
                         .any(|(j, g)| reached[j] && g.ident == self.files[i].ident)
                 {
-                    v.findings.push(Finding::new(
-                        EXTRA,
+                    let m = if reached_plain[i] {
+                        format!("{} is in the link and {VERSIONED_PLAIN}", self.label(i))
+                    } else {
                         format!(
                             "{} is in the link and no root or reference of the link reaches it (§3.8)",
                             self.label(i)
-                        ),
-                    ));
+                        )
+                    };
+                    v.findings.push(Finding::new(EXTRA, m));
                 }
             }
         }
