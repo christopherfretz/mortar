@@ -562,6 +562,7 @@ fn s6_unsafe_merge_sections_are_placed_whole() {
 // spec: synth.md S-6 (empty: placed whole); resolve.md §10.1 P-1
 #[test]
 fn s6_empty_merge_section_is_placed_whole() {
+    use mortar_core::resolution::SectionKind;
     const SOURCES: &[Source] = &[
         Source {
             name: "m.s",
@@ -588,7 +589,6 @@ fn s6_empty_merge_section_is_placed_whole() {
             .map(|(_, row)| row.kind)
             .collect::<Vec<_>>()
     };
-    use mortar_core::resolution::SectionKind;
     assert_eq!(kind(".rodata.e136.cst8"), vec![SectionKind::Regular], "empty: placed whole");
     assert!(whole(".rodata.e136.cst8"), "empty: placed whole\n{placed}");
     assert_eq!(kind(".rodata.e136.str1.1"), vec![SectionKind::Regular], "empty: placed whole");

@@ -808,7 +808,7 @@ pub fn chunk(
         if let Some((size, align)) = merged[o] {
             let mut c = blank(ChunkKind::Merged(id), out.sh_type, out.flags, align, size);
             c.relro = inputs.relro && r.is_relro();
-            let m = push(
+            let merged_chunk = push(
                 &mut chunks,
                 &mut ranks,
                 &mut keys,
@@ -826,14 +826,14 @@ pub fn chunk(
             // keeps the body place too.
             if let Some(first) = first_merge[o] {
                 for row in &mut place_rows[rows_from..] {
-                    let h = &inputs.headers[row.0];
-                    if h.size == 0
-                        && h.flags & SHF_MERGE != 0
+                    let head = &inputs.headers[row.0];
+                    if head.size == 0
+                        && head.flags & SHF_MERGE != 0
                         && row.0 > first
-                        && size % (1u64 << h.align.min(63)) == 0
-                        && align >= h.align
+                        && size % (1u64 << head.align.min(63)) == 0
+                        && align >= head.align
                     {
-                        *row = (row.0, m, size);
+                        *row = (row.0, merged_chunk, size);
                     }
                 }
             }
