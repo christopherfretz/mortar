@@ -938,15 +938,16 @@ parsing].
 
 **O-35 (kind 5 row) [kiln].** One row per external-linkage function or
 variable the TU defines or references (an undefined symbol), excluding
-unprototyped C declarations:
+unprototyped C declarations and the entities listed under "No row"
+below:
 
 | offset | field | |
 |---|---|---|
 | 0 | `u64 key` | MT-13 |
-| 8 | `u64 type` | 64-bit hash of the declared type's `<type>` encoding with array bounds erased |
+| 8 | `u64 type` | FNV-1a 64 of the declared type's `<type>` encoding (the string `type_name` names, whether or not it is written), with the **major** array bound of a variable's own type erased (`A_`; inner bounds and the arrays a pointer points to are kept: N15 needs no more), in C and C++ units alike |
 | 16 | `u64 size` | `sizeof` of a variable's declared type; 0 for a function or an array of unknown bound |
 | 24 | `u32 name` | 0: anchored |
-| 28 | `u32 type_name` | the `<type>` encoding as a string (deduplicated), for the message |
+| 28 | `u32 type_name` | the `<type>` encoding as a string (deduplicated), for the message; 0 (MT-12's empty string: not written) for a C++-linkage **function** row below the level `detail` of `-fmason-metadata` (`meta.md` MT-41: its mangled name already carries the parameter types); variables and every C-linkage row carry it at `default` |
 | 32 | `u16 flags` | 0 `DEFINITION`, 1 `VARIABLE`, 2 `EXTERN_C`, 3 `NOEXCEPT` |
 | 34 | `u16 reserved`, `u32 reserved` | 0 |
 
@@ -958,7 +959,42 @@ shall be identical", `[std, unverified clause]`), except that a
 difference only in `NOEXCEPT` is reported as a note-level warning
 [unverified: whether the two compilers mangle and treat it alike in every
 mode]. **C-linkage** entities (`EXTERN_C`, and every row of a `lang=c`
-unit) follow O-33. Status: `--odr=strict` until its corpus (O-47).
+unit) follow O-33. Rows of one key whose `EXTERN_C` bits differ (a
+C++-linkage variable of the global namespace against a C or `extern "C"`
+one: one unmangled name, two encodings) are compared by `size` only,
+never by `type`, and the difference of language linkage is not reported
+([dcl.link]'s rule is not diagnosed: the Itanium ABI gives both the same
+symbol). A finding whose rows carry no `type_name` names the two objects
+and says that `-fmason-metadata=detail` records the types [planned:
+WP-134, both sentences: the code compares `type` whatever the `EXTERN_C`
+bits and prints an empty type]. Status: `--odr=strict` until its corpus
+(O-47).
+
+**No row** (kiln K-5, kiln commit 9744b3649; rulings of 2026-11-17):
+- an entity with **C++ language linkage whose symbol name comes from an
+  asm label**: its name is not a function of its declaration, and
+  several C++ types share the symbol by design (glibc's `extern "C++"`
+  overloads `strchr`, `strrchr`, `strpbrk`, `strstr`, `strcasestr`,
+  `strchrnul`, `memchr`, `memrchr`, `rawmemchr`, `basename`,
+  `at_quick_exit`: `char *(char *, int)` and `const char *(const char *,
+  int)` against C's `char *(const char *, int)`). C-linkage asm-labelled
+  declarations (glibc's `__REDIRECT` inside `extern "C"`, C units) keep
+  their rows, keyed by the label;
+- a unit holds **at most one kind 5 row per key**: if its declarations
+  of one symbol disagree, it writes none for that key;
+- constructors and destructors (the name carries the type), aliases,
+  IFUNCs, `weakref`s; functions with a non-default calling convention,
+  `regparm`, SME attributes, or a nested unprototyped function type;
+  library builtins the source does not declare (a `memcpy` the compiler
+  introduces for a struct copy; `abort` or `strlen` declared by the
+  source get rows).
+
+Further readings: an `available_externally` use counts as a reference
+(if the object ends with no symbol of that name the row is unanchored
+and not compared, O-4); a variable of incomplete class type has `size`
+0; cv- and ref-qualified member function types are written in Itanium
+form (`KF…E`, `F…RE`, `F…OE`); every row of a C unit has `EXTERN_C`;
+`NOEXCEPT` is set only on C++-linkage functions.
 
 **O-33 (C translation units).** A unit whose kind 1 `lang` is `c`
 (`meta.md` MT-26):
@@ -971,7 +1007,17 @@ unit) follow O-33. Status: `--odr=strict` until its corpus (O-47).
   units' `extern "C"` rows) use **C's compatible-type rules**: an
   enumeration is equal to its compatible integer type (GCC: `unsigned
   int` for an enum without negative values, else `int`; kiln records the
-  compatible type it chose, K-5), top-level qualifiers of parameters are
+  compatible type it chose, K-5), and **the signedness of `int` is
+  erased**: `unsigned int` and `int` are one token (`i`) at every level,
+  so an enumeration whose compatible type is either is `i` (an
+  enumeration of another width, under `-fshort-enums`, with a C23 fixed
+  underlying type or with 64-bit values, keeps the compatible type kiln
+  chose). The reason: an enum must equal `unsigned int` (N28, GCC's
+  documented choice) AND `int` (glibc declares `getitimer`'s and
+  `setitimer`'s first parameter `enum __itimer_which` in GNU C and `int`
+  in C++), and a hash has only equality; the finding lost (`int` against
+  `unsigned int`) is harmless at the ABI of all three targets. Top-level
+  qualifiers of parameters are
   ignored, an unprototyped declaration is never compared (before C23,
   `f()` is unprototyped; from C23 it means `f(void)` and is compared,
   decided by the unit's `std`). The C++ side of an `extern "C"` row is
@@ -998,7 +1044,13 @@ unit) follow O-33. Status: `--odr=strict` until its corpus (O-47).
   dropped (other pointer-level qualifiers, `const` and `volatile`, are
   kept); a GCC transparent union parameter becomes its first member's
   type (glibc's `__SOCKADDR_ARG`, measured below); `(void)` and `()` in a
-  prototyped declaration are one form. *Measured* [proxy: clang's types,
+  prototyped declaration are one form. *Measured by kiln with its own
+  types* (K-5, AArch64, 24 headers, 2,644 functions, before the two
+  rulings of 2026-11-17): 13 differences, 11 the asm-labelled
+  `extern "C++"` overloads (O-35 "No row") and 2 `getitimer`/`setitimer`
+  (the erased signedness above) [planned: kiln re-measures with both
+  rulings; expected 0]. The proxy measurement that preceded it missed
+  both: *measured* [proxy: clang's types,
   not kiln's; T-O-33]: glibc's public declarations (24 headers,
   `-D_GNU_SOURCE`) compiled as C17 and as C++20 `extern "C"`, clang 19
   and 22, AArch64, x86-64 and i386: 2,573 / 2,461 / 2,461 functions per
@@ -1750,8 +1802,9 @@ Estimates are the receiving agents' own (kiln's and hod's review,
   then the rows; kiln's estimate).
 - **K-5 — kind 5 (declarations).** One row per defined or referenced
   external function or variable: a 64-bit hash of the declared type's
-  Itanium encoding with array bounds erased, `sizeof` for variables,
-  flags (`spec/odr.md` O-35). For **C-linkage** entities (in C units, and
+  Itanium encoding with a variable's major array bound erased, `sizeof`
+  for variables, flags (`spec/odr.md` O-35, with its "No row" list).
+  **Landed: kiln commit 9744b3649** (kiln `spec/codegen.md` §5.5). For **C-linkage** entities (in C units, and
   `extern "C"` in C++ units), hash a canonical **C** type instead: an
   enumeration replaced by its compatible integer type (the one kiln
   chose), top-level parameter qualifiers dropped, C++'s builtin types

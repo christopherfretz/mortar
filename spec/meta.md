@@ -422,12 +422,22 @@ left `_GLIBCXX_DEBUG` against `off` unreported (found by kiln while
 building K-2). **libc++** (17 and later) has no debug ABI of that kind:
 its hardening mode does not change layout, and a libc++ unit writes
 `abi.stdlib-debug` `off`. What changes its layouts are the vendor's ABI
-switches (`_LIBCPP_ABI_VERSION`, and the `_LIBCPP_ABI_BOUNDED_*` family
-that widens iterators and `unique_ptr<T[]>`); they belong to
+switches (`_LIBCPP_ABI_VERSION`, the `_LIBCPP_ABI_BOUNDED_*` family
+that widens iterators and `unique_ptr<T[]>`, and, verified by kiln in
+the headers of the libc++ it ships with (K-5, kiln commit 9744b3649),
+`_LIBCPP_ABI_ALTERNATE_STRING_LAYOUT`,
+`_LIBCPP_ABI_INCOMPLETE_TYPES_IN_DEQUE`,
+`_LIBCPP_ABI_IOS_ALLOW_ARBITRARY_FILL_VALUE`,
+`_LIBCPP_ABI_NO_COMPRESSED_PAIR_PADDING`,
+`_LIBCPP_ABI_NO_ITERATOR_BASES`,
+`_LIBCPP_ABI_NO_RANDOM_DEVICE_COMPATIBILITY_LAYOUT`,
+`_LIBCPP_ABI_NO_REVERSE_ITERATOR_SECOND_MEMBER`,
+`_LIBCPP_ABI_OPTIMIZED_FUNCTION`,
+`_LIBCPP_ABI_VARIANT_INDEX_TYPE_OPTIMIZATION`); they belong to
 `abi.stdlib-abi`, as the version followed by `+<macro>` for each such
 switch that is defined, in byte order of the macro names [kiln K-5;
-planned: the list of switches is kiln's to measure against the libc++
-it ships with; mortar compares the string and nothing else].
+the list of switches is kiln's, measured against the libc++ it ships
+with; mortar compares the string and nothing else].
 
 **MT-27 (kinds 2-5).** Their rows are specified in `spec/odr.md` §5
 (kind 2), §6 (kinds 3, 4) and §8.2 (kind 5); the row sizes above are
@@ -533,7 +543,11 @@ not in these numbers (nothing gave the test producer a declared type).
 (the L11 lane, on kiln's units of the heavy TU): a row is 16 B (kind 1),
 48 B (kind 2), 56 B (kind 3), 40 B (kind 5), the v1 row sizes; kind 3's
 names at most 160 B a row on average; kind 5's type strings at most
-8 KB a unit; the unit (kinds 1, 2, 3 and 5) at most **125,000 B** and at
+8 KB a unit at the level `default` of `-fmason-metadata` (kiln K-5
+measured a `<format>`-heavy unit: 800 kind 5 rows, 32,000 B, and
+18,124 B of type strings for 427 distinct types; hence `odr.md` O-35's
+rule that a C++-linkage function row carries its `type_name` only from
+the level `detail`, whose strings are measured and not gated); the unit (kinds 1, 2, 3 and 5) at most **125,000 B** and at
 most **12 %** of the `-O0 -g` object. It is measured again when kiln
 writes kind 3. What a link pays with the checks off is none of it:
 MT-42.
