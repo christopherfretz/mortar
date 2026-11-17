@@ -1,15 +1,17 @@
-# dyn.md D-11, D-111, D-27 (WP-123): a C++ library that references the C
+# dyn.md D-11 (the D-10 setting's `bind(k)` in `Shared`), D-111, D-27
+# (WP-137, WP-123's finding F3): a C++ library that references the C
 # library only weakly (crtbeginS's `__cxa_finalize`): under the driver's
-# `--as-needed` the C library is not needed, and GNU ld writes
-# `__cxa_finalize` as an unversioned WEAK NOTYPE UND entry. mortar binds
-# it to the C library's versioned definition and refuses the link by
-# name (D-27: a version of a shared object that is not needed). (lld
-# writes an unversioned WEAK FUNC UND entry and mold keeps the C library
-# needed and binds `__cxa_finalize@GLIBC_2.17`: the checks are GNU ld's.)
+# `--as-needed` the C library is not needed, and it is dropped although
+# `libstdc++.so.6` lists it (a shared object's link searches no
+# `DT_NEEDED` entry). GNU ld and mortar write `__cxa_finalize` as an
+# unversioned WEAK NOTYPE UND entry and no `.gnu.version_r` need of the C
+# library. (lld writes an unversioned WEAK FUNC UND entry and mold keeps
+# the C library needed and binds `__cxa_finalize@GLIBC_2.17`: the checks
+# are GNU ld's.)
 #@ spec: dyn.md "D-111"
 #@ arch: aarch64 x86_64
 #@ requires: g++
-#@ xfail(mortar): M4: WP-123 finding F3, the follow-up row "weak undefined versioned reference whose library --as-needed drops, in Shared" (D-27)
+#@ xfail(mortar,x86_64): M4: WP-127 (x86-64 shared objects; dyn.md D-100)
 
 cxx -O1 -fPIC lib.cc -o lib.o
 cxx -O1 -fPIE main.cc -o main.o
@@ -18,6 +20,8 @@ check(bfd,mortar) readelf -dW libwo.so
   not: [libc.so.6]
 check(bfd,mortar) readelf -W --dyn-syms libwo.so
   has: NOTYPE WEAK DEFAULT UND __cxa_finalize$
+check(bfd,mortar) readelf -VW libwo.so
+  not: File: libc.so.6
 host g++ -pie main.o -L. -lwo -o prog
 run prog
   stdout: caught boom
