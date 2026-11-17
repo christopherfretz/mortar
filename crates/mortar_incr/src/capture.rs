@@ -720,8 +720,10 @@ pub fn capture_timed(
     }
     s.layout.bits = bits;
     clock.lap("capture slots to holes");
-    crate::tables::fill(link, &mut syms, strings, &mut s, arch, pool)?;
+    let mut sub = Laps::new();
+    crate::tables::fill(link, &mut syms, strings, &mut s, arch, pool, &mut sub)?;
     clock.lap("capture delta tables");
+    clock.laps.extend(sub);
     s.symbols = syms.rows;
     if !strings.fits() {
         return Err("the string pool exceeds 4 GiB".into());

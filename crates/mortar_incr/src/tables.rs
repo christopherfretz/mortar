@@ -63,7 +63,15 @@ pub(crate) fn fill(
     s: &mut State,
     arch: &dyn Arch,
     pool: &Pool,
+    laps: &mut crate::capture::Laps,
 ) -> Result<(), String> {
+    // WP-105: the parts timed (`mortar: incremental: delta ...` lines).
+    let mut at = std::time::Instant::now();
+    let mut lap = |laps: &mut crate::capture::Laps, name: &'static str| {
+        let now = std::time::Instant::now();
+        laps.push((name, (now - at).as_secs_f64() * 1e3));
+        at = now;
+    };
     let inputs = link.inputs;
     let res = link.resolution;
     let mut tables: Vec<Option<(Object<'_>, SymbolTable<'_>)>> = Vec::new();
@@ -126,6 +134,7 @@ pub(crate) fn fill(
         index_file(inputs, link, file, object, table, arch, &mut index)?;
         Ok((mentions, index))
     });
+    lap(laps, "delta: per-file mentions and index");
     let mut index = Vec::new();
     for part in per_file {
         let (mentions, rows) = part?;
@@ -137,6 +146,7 @@ pub(crate) fn fill(
     }
     s.mentions.sort_by_key(|m| (m.file, m.symbol));
     s.mentions.dedup_by_key(|m| (m.file, m.symbol));
+    lap(laps, "delta: mentions numbered");
     // RESOLVED: every key, then every kept group, then every live file.
     let mut keys = Vec::new();
     let commons: HashMap<SymbolId, u64> =
@@ -173,6 +183,7 @@ pub(crate) fn fill(
             ..ResolvedRow::default()
         });
     }
+    lap(laps, "delta: resolved");
     // INDEX: a GLOBAL or SLOT row's target is a symbol row.
     for rows in index {
         for mut r in rows {
@@ -184,6 +195,7 @@ pub(crate) fn fill(
     }
     s.index.sort_unstable();
     s.index.dedup();
+    lap(laps, "delta: index numbered");
     Ok(())
 }
 

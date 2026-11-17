@@ -164,15 +164,22 @@ fn run(
         .collect();
     let mut suspects: Vec<(usize, PathBuf, Tuple)> = Vec::new();
     let mut inputs = 0;
-    for (i, row) in state.stat.iter().enumerate() {
-        if row.tag != stat_tag::INPUT {
-            continue;
-        }
+    // WP-105: the `stat`s on the link's pool (8,241 of them cost 0.83 s
+    // serially on virtiofs); the rows are judged in order below.
+    let pool = crate::pool_of(plan).map_err(|_| "a malformed MORTAR_SCHED_SEED".to_owned())?;
+    let metas = pool.map(state.stat.len(), |i| {
+        let row = &state.stat[i];
+        (row.tag == stat_tag::INPUT).then(|| {
+            let path = cwd.join(path_of(state.str(row.path)));
+            let meta = std::fs::metadata(&path)
+                .map_err(|e| format!("input-changed: cannot stat {}: {e}", path.display()));
+            (path, meta)
+        })
+    });
+    for ((i, row), m) in state.stat.iter().enumerate().zip(metas) {
+        let Some((path, meta)) = m else { continue };
         inputs += 1;
-        let path = cwd.join(path_of(state.str(row.path)));
-        let meta = std::fs::metadata(&path)
-            .map_err(|e| format!("input-changed: cannot stat {}: {e}", path.display()))?;
-        let now = Tuple::of(&meta);
+        let now = Tuple::of(&meta?);
         let recorded = Tuple {
             dev: row.dev,
             ino: row.ino,
@@ -211,7 +218,6 @@ fn run(
 
     // 4. The front over the edited inputs, the layout from the state.
     let diagnostics = Collector::new(crate::policy(plan));
-    let pool = crate::pool_of(plan).map_err(|_| "a malformed MORTAR_SCHED_SEED".to_owned())?;
     let config = StoreConfig {
         containers: mortar_odr::reads_containers(&plan.diagnostics.odr),
         ..StoreConfig::default()
@@ -481,11 +487,36 @@ fn run(
         return Err("FILES does not have a row per file of this link".to_owned());
     }
     state.files[file.0 as usize].hash = new_hash;
-    state.meta.build_id = add_str(&mut state, &build_id);
+    // WP-105: the state's strings do not grow at every update. The build
+    // id is overwritten in place when it is the pool's last string and of
+    // the same length (no later string can share its bytes); a stamp's
+    // directory and file-system type reuse an earlier device row's string.
+    let old = state.meta.build_id;
+    if old.len as usize == build_id.len()
+        && old.off as usize + build_id.len() == state.strings.len()
+        && !build_id.is_empty()
+    {
+        state.strings[old.off as usize..].copy_from_slice(&build_id);
+    } else {
+        state.meta.build_id = add_str(&mut state, &build_id);
+    }
+    let old_devices: Vec<(Str, Str)> = state
+        .stat
+        .iter()
+        .filter(|r| r.tag == stat_tag::DEVICE)
+        .map(|r| (r.path, r.fstype))
+        .collect();
+    let reuse = |state: &mut State, bytes: &[u8], pick: fn(&(Str, Str)) -> Str| {
+        old_devices
+            .iter()
+            .map(pick)
+            .find(|&x| state.str(x) == bytes && !bytes.is_empty())
+            .unwrap_or_else(|| add_str(state, bytes))
+    };
     let mut devices = Vec::new();
     for s in &stamps {
-        let path = add_str(&mut state, s.dir.as_os_str().as_encoded_bytes());
-        let fstype = add_str(&mut state, s.fs_type.as_bytes());
+        let path = reuse(&mut state, s.dir.as_os_str().as_encoded_bytes(), |x| x.0);
+        let fstype = reuse(&mut state, s.fs_type.as_bytes(), |x| x.1);
         devices.push(format::StatRow {
             tag: stat_tag::DEVICE,
             trust: u8::from(!s.trusted),

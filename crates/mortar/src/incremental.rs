@@ -686,18 +686,22 @@ impl Session {
         // One row per path: a path the link opens twice (`-lgfortran`
         // named twice on gfortran's line) is one file to watch.
         let mut seen: std::collections::HashSet<&[u8]> = std::collections::HashSet::new();
-        for o in &f.inputs.link.opened {
-            if !seen.insert(o.path) {
-                continue;
-            }
-            let path = PathBuf::from(<OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(o.path));
+        let paths: Vec<&[u8]> =
+            f.inputs.link.opened.iter().map(|o| o.path).filter(|p| seen.insert(p)).collect();
+        // WP-105: the `stat`s on the link's pool (8,241 of them cost 0.9 s
+        // serially on virtiofs); the rows are made in order below.
+        let metas = f.pool.map(paths.len(), |i| {
+            let path = PathBuf::from(<OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(paths[i]));
+            std::fs::metadata(cwd.join(&path)).ok()
+        });
+        for (&p, meta) in paths.iter().zip(metas) {
             let mut row = StatRow {
                 tag: stat_tag::INPUT,
                 trust: 1,
-                path: strings.add(o.path),
+                path: strings.add(p),
                 ..StatRow::default()
             };
-            if let Ok(m) = std::fs::metadata(cwd.join(&path)) {
+            if let Some(m) = meta {
                 use std::os::unix::fs::MetadataExt as _;
                 let t = Tuple::of(&m);
                 (row.dev, row.ino, row.size, row.mtime_ns, row.ctime_ns) =
