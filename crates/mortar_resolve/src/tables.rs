@@ -698,7 +698,18 @@ pub fn options(plan: &Plan, inputs: &Inputs<'_>, view: &InputsView<'_, '_>) -> O
     };
     Options {
         entry,
-        undefined: by_role(SymbolRole::Undefined),
+        undefined: by_role(SymbolRole::Undefined)
+            .into_iter()
+            .chain(
+                inputs
+                    .link
+                    .directives
+                    .iter()
+                    .filter(|d| d.kind == DirectiveKind::Extern)
+                    .enumerate()
+                    .map(|(i, d)| named(d.value, crate::options::EXTERN_ARG + i as u32)),
+            )
+            .collect(),
         require_defined: by_role(SymbolRole::RequireDefined),
         wrap: Vec::new(),
         allow_multiple_definition: d.allow_multiple_definition,
@@ -1112,6 +1123,9 @@ impl Ctx<'_, '_, '_> {
             _ => {}
         }
         if let Some(n) = o.undefined.iter().find(|n| n.arg == arg) {
+            if arg >= crate::options::EXTERN_ARG {
+                return format!("EXTERN({})", text(n));
+            }
             return format!("--undefined={}", text(n));
         }
         if let Some(n) = o.require_defined.iter().find(|n| n.arg == arg) {

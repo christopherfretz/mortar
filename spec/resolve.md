@@ -524,7 +524,23 @@ reference):
 | `--require-defined=SYM` | `SYM`; if still undefined after the closure: `required-symbol` (error; GNU: ``required symbol `x' not defined``, mold: `--require-defined: undefined symbol: x`; lld 22 has no such option, E13) | M1 |
 | `--defsym A=EXPR` | the symbols `EXPR` names, wherever the option is on the line (finding 17: GNU ld extracts them only when the option precedes the archive, ``undefined symbol `k' referenced in expression`` otherwise; lld and mold in any position, R10: §16) | M4 |
 | `--export-dynamic-symbol=GLOB` | each unversioned key whose name matches the glob, among the keys some file mentions (`*` any run, `?` one byte, `[set]` with ranges and `!`/`^` negation, `\` quotes the next byte; a `[` without `]` is literal, fnmatch(3)); a value without a wildcard names its key. GNU ld, lld and mold agree on `exp_d*` (WP-056, `export-dynamic-symbol`); before WP-056 mortar matched the value as a literal name | M2 |
-| a script's `EXTERN(SYM)` | `SYM` | M4 |
+| a script's `EXTERN(SYM ...)` | each `SYM`, as `-u` (below) | M4; WP-152 |
+
+`EXTERN` (WP-152; before it mortar parsed the command and dropped it, so
+the member was silently not extracted: a mislink). Every name of every
+`EXTERN` of every script the link reads (an implicit script named on the
+line or by `INPUT`/`GROUP`; `-T` is refused by the command line,
+`spec/cli.md` §4.2) is a root exactly as `-u` is: an edge from file 0,
+wherever the script is on the line (§4.3; GNU ld extracts only from
+archives after the script, lld and mortar from any), a `--gc-sections`
+root (§4.7), its own argument index (`EXTERN_ARG` plus the command's
+ordinal among the link's `EXTERN` names, for the map's "pulled by" and
+the diagnostics, which name it `EXTERN(SYM)`). Several names in one
+command and a quoted name (`EXTERN("k")`) are roots each (GNU ld and lld
+agree). A name no file defines extracts nothing and is no error (GNU ld
+and lld; GNU ld writes an undefined `.symtab` entry for it, lld and
+mortar none, as for `-u`). mold 2.37 refuses the command (`unknown
+linker script token`). Test: `tests/link/resolve/extern-root.test`.
 
 ### 4.3 What GNU ld users see
 

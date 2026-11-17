@@ -47,12 +47,18 @@ pub struct Output {
     pub dynamic: bool,
 }
 
+/// The argument index of the first script `EXTERN(SYM)` root (§4.2): a
+/// script directive has no command-line argument, so its roots are
+/// numbered from here, after any argument index a line can have.
+pub const EXTERN_ARG: u32 = 1 << 31;
+
 /// Everything resolution reads besides the view.
 #[allow(clippy::struct_excessive_bools, reason = "one field per switch of the command line")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Options {
     pub entry: Entry,
-    /// `-u SYM` (§4.2).
+    /// `-u SYM` (§4.2), then each script `EXTERN(SYM)` (§4.2; its `arg`
+    /// is [`EXTERN_ARG`] plus the directive's ordinal).
     pub undefined: Vec<Named>,
     /// `--require-defined=SYM` (§4.2).
     pub require_defined: Vec<Named>,
