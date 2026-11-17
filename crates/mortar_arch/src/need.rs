@@ -92,6 +92,9 @@ impl BranchCandidate {
 /// [`branch_site`] without the flags: `None` exactly when `branch_site`
 /// is `None` for every value of the flags. `weak0`: the target's kind is
 /// `TargetKind::Weak0` (the only kind the answer depends on).
+///
+/// A `-r` output has no site (§4.6 A-R1, A-R5: no range is checked and no
+/// veneer is made; `spec/layout.md` L-R7: no thunk exists at `-r`).
 #[must_use]
 pub fn branch_candidate(
     arch: &dyn Arch,
@@ -100,6 +103,9 @@ pub fn branch_candidate(
     names: &dyn SymNames,
     weak0: bool,
 ) -> Option<BranchCandidate> {
+    if output == OutputKind::Relocatable {
+        return None;
+    }
     let branch = arch.branch(at.howto)?;
     if !branch.veneer || weak0 || arch.consumed(output, at, names) {
         return None;
