@@ -1,0 +1,36 @@
+# dyn.md D-125 (WP-123): gdb sets a breakpoint in a library function
+# before `run` (pending until the library loads), stops there, prints a
+# local, steps, lists the library's source and shows the library in
+# `info sharedlibrary`, from a host that loads it by DT_NEEDED. gdb runs
+# host programs only here: on x86-64 (qemu) the step is skipped by name
+# (spec/harness.md "Checks").
+#@ spec: dyn.md "D-125"
+#@ arch: aarch64 x86_64
+#@ xfail(mortar,x86_64): M4: WP-127 (x86-64 shared objects; dyn.md D-100)
+#@ requires: gdb
+
+cc -O0 -g -fPIC lib.c -o lib.o
+cc -O0 -g -fPIE main.c -o main.o
+link gcc -shared lib.o -Wl,-soname,libgb.so -o libgb.so
+host gcc -pie main.o -L. -lgb -o prog
+run prog
+  stdout: 42
+check gdb prog "set breakpoint pending on" "break lib_add" run bt next next "print sum" "info locals" "list lib_add" "info sharedlibrary" kill
+  has: Breakpoint 1, lib_add (a=20, b=22) at lib.c:
+  has: #0 lib_add (a=20, b=22) at lib.c:
+  has: $1 = 42
+  has: int twice = sum * 2;
+  has: ^0x* 0x* Yes * */libgb.so$
+  not: Cannot insert breakpoint
+  not: Cannot access memory
+
+#--- lib.c
+int lib_add(int a, int b) {
+  int sum = a + b;
+  int twice = sum * 2;
+  return twice - sum;
+}
+#--- main.c
+#include <stdio.h>
+int lib_add(int, int);
+int main(void) { printf("%d\n", lib_add(20, 22)); return 0; }

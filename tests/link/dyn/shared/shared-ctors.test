@@ -1,0 +1,45 @@
+# dyn.md D-124 item 3, D-125 (WP-123): a library's constructors and
+# destructors run in glibc's order (DT_INIT, .init_array forward;
+# .fini_array backward, DT_FINI) around the host's `main`. A `.ctors`
+# input section, which D-124 puts into .init_array (layout L-56; lld
+# keeps a `.ctors` output section whose constructor never runs, W24),
+# stays refused by name in mortar as in an executable (layout L-40).
+#@ spec: dyn.md "D-124"
+#@ arch: aarch64 x86_64
+#@ xfail(mortar,x86_64): M4: WP-127 (x86-64 shared objects; dyn.md D-100)
+
+cc -O1 -fPIC lib.c -o lib.o
+cc -O1 -fPIC old.c -o old.o
+cc -O1 -fPIE main.c -o main.o
+link(mortar) gcc -shared old.o -o libold.so
+  exit: fail
+  diag: unsupported feature: .ctors section
+link gcc -shared lib.o -o libct.so
+check readelf -dW libct.so
+  has: (INIT) *
+  has: (FINI) *
+  has: (INIT_ARRAY) *
+  has: (FINI_ARRAY) *
+host gcc -pie main.o -L. -lct -o prog
+run prog
+  stdout: ctor 101
+  stdout: ctor 102
+  stdout: main 1
+  stdout: dtor 102
+  stdout: dtor 101
+
+#--- lib.c
+#include <stdio.h>
+__attribute__((constructor(101))) static void c1(void) { puts("ctor 101"); }
+__attribute__((constructor(102))) static void c2(void) { puts("ctor 102"); }
+__attribute__((destructor(101))) static void d1(void) { puts("dtor 101"); }
+__attribute__((destructor(102))) static void d2(void) { puts("dtor 102"); }
+int lib_live(void) { return 1; }
+#--- old.c
+#include <stdio.h>
+static void old(void) { puts("old ctor"); }
+__attribute__((section(".ctors"), used)) static void (*pold)(void) = old;
+#--- main.c
+#include <stdio.h>
+int lib_live(void);
+int main(void) { printf("main %d\n", lib_live()); return 0; }

@@ -1,0 +1,31 @@
+# dyn.md D-125 (WP-123): lldb sets `b lib_add` before `run`, stops in
+# the library, prints a local after a step and lists the library in
+# `image list`. lldb runs host programs only here: on x86-64 (qemu) the
+# step is skipped by name (spec/harness.md "Checks").
+#@ spec: dyn.md "D-125"
+#@ arch: aarch64 x86_64
+#@ xfail(mortar,x86_64): M4: WP-127 (x86-64 shared objects; dyn.md D-100)
+#@ requires: lldb
+
+cc -O0 -g -fPIC lib.c -o lib.o
+cc -O0 -g -fPIE main.c -o main.o
+link gcc -shared lib.o -Wl,-soname,liblb.so -o liblb.so
+host gcc -pie main.o -L. -llb -o prog
+run prog
+  stdout: 42
+check lldb prog "b lib_add" run bt next next "frame variable sum" "image list" kill
+  has: stop reason = breakpoint 1.1
+  has: frame #0: * liblb.so`lib_add(a=20, b=22) at lib.c:
+  has: (int) sum = 42
+  has: ] * 0x* */liblb.so
+
+#--- lib.c
+int lib_add(int a, int b) {
+  int sum = a + b;
+  int twice = sum * 2;
+  return twice - sum;
+}
+#--- main.c
+#include <stdio.h>
+int lib_add(int, int);
+int main(void) { printf("%d\n", lib_add(20, 22)); return 0; }

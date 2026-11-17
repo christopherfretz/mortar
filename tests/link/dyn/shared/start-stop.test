@@ -1,0 +1,25 @@
+# dyn.md D-124 item 4, layout L-96 (WP-123): `__start_NAME` and
+# `__stop_NAME` of a C-identifier section in a shared object bound the
+# library's own section; the library walks it.
+#@ spec: dyn.md "D-124"
+#@ arch: aarch64 x86_64
+#@ xfail(mortar,x86_64): M4: WP-127 (x86-64 shared objects; dyn.md D-100)
+
+cc -O1 -fPIC lib.c -o lib.o
+cc -O1 -fPIE main.c -o main.o
+link gcc -shared lib.o -o libss.so
+host gcc -pie main.o -L. -lss -o prog
+run prog
+  stdout: 3 2
+
+#--- lib.c
+__attribute__((section("myset"), used)) static const int a = 1;
+__attribute__((section("myset"), used)) static const int b = 2;
+extern const int __start_myset[], __stop_myset[];
+int set_sum(void) { int s = 0; for (const int *p = __start_myset; p < __stop_myset; p++) s += *p; return s; }
+int set_count(void) { return (int)(__stop_myset - __start_myset); }
+#--- main.c
+#include <stdio.h>
+int set_sum(void);
+int set_count(void);
+int main(void) { printf("%d %d\n", set_sum(), set_count()); return 0; }

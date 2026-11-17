@@ -1,0 +1,31 @@
+# dyn.md D-102 (WP-123): `-soname` (and its spelling `-h`) writes
+# DT_SONAME, the name as given, after DT_NEEDED; a host that links the
+# library records the soname as its DT_NEEDED and the loader finds the
+# library by it.
+#@ spec: dyn.md "D-102"
+#@ arch: aarch64 x86_64
+#@ xfail(mortar,x86_64): M4: WP-127 (x86-64 shared objects; dyn.md D-100)
+
+cc -O1 -fPIC lib.c -o lib.o
+cc -O1 -fPIE main.c -o main.o
+link gcc -shared lib.o -Wl,-h,libh.so.2 -o libh.so
+check readelf -dW libh.so
+  has: (SONAME) Library soname: [libh.so.2]
+link gcc -shared lib.o -Wl,-soname,libsn.so.1 -o libsn.so.1
+check readelf -dW libsn.so.1
+  has: (NEEDED) Shared library: [libc.so.6]
+  then: (SONAME) Library soname: [libsn.so.1]
+  count: 1 (SONAME)
+host gcc -pie main.o -L. -l:libsn.so.1 -o prog
+check readelf -dW prog
+  has: (NEEDED) Shared library: [libsn.so.1]
+run prog
+  stdout: soname 3
+
+#--- lib.c
+#include <stdio.h>
+int sn(const char *s) { printf("%s ", s); return 3; }
+#--- main.c
+#include <stdio.h>
+int sn(const char *);
+int main(void) { printf("%d\n", sn("soname")); return 0; }

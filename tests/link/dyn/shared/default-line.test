@@ -1,0 +1,49 @@
+# dyn.md D-100, D-112 (WP-123, the first target): the default driver
+# line `gcc -shared -fPIC`, no soname. The library is ET_DYN without
+# PT_INTERP or DT_SONAME and needs only the C library (no NEEDED of the
+# loader, input.md §8.6). A host links against it and runs it, plain and
+# with `bump` preempted by an interposer, which the library's own call
+# reaches too (default visibility).
+#@ spec: dyn.md "D-100"
+#@ arch: aarch64 x86_64
+#@ xfail(mortar,x86_64): M4: WP-127 (x86-64 shared objects; dyn.md D-100)
+
+cc -O1 -fPIC lib.c -o lib.o
+cc -O1 -fPIC pre.c -o pre.o
+cc -O1 -fPIE main.c -o main.o
+shlib gcc pre.o -o libpre.so
+link gcc -shared lib.o -o libdef.so
+check readelf -hlW libdef.so
+  has: DYN (Shared object file)
+  not: INTERP
+check readelf -dW libdef.so
+  has: (NEEDED) Shared library: [libc.so.6]
+  count: 1 (NEEDED)
+  not: (SONAME)
+  not: (DEBUG)
+host gcc -pie main.o -L. -ldef -o prog
+run prog
+  stdout: 13
+  stdout: lib: hi 7
+run prog
+  env: LD_PRELOAD=./libpre.so
+  stdout: 200
+  stdout: lib: hi 5
+
+#--- lib.c
+#include <stdio.h>
+int counter = 5;
+int bump(void) { return ++counter; }
+int twice(void) { return bump() + bump(); }
+void say(const char *s) { printf("lib: %s %d\n", s, counter); }
+#--- pre.c
+int bump(void) { return 100; }
+#--- main.c
+#include <stdio.h>
+int twice(void);
+void say(const char *);
+int main(void) {
+  printf("%d\n", twice());
+  say("hi");
+  return 0;
+}

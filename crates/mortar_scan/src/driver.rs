@@ -648,7 +648,8 @@ pub(crate) fn dynamic_error(view: &View<'_, '_>, e: ScanError) -> ScanError {
 /// What a `Shared` output refuses by name before the architecture's scan
 /// (`spec/cli.md` §4.2; until WP-124): a relocation of a TLS class or
 /// against a thread-local target, `TLS in a shared object`; one against
-/// an IFUNC (a preemptible one included), `IFUNC in a shared object`.
+/// an IFUNC this output defines (a preemptible one included), `IFUNC in a
+/// shared object`; an imported IFUNC is an import.
 fn shared_feature(
     view: &View<'_, '_>,
     key: SymKey,
@@ -663,7 +664,12 @@ fn shared_feature(
     if f.tls {
         return named("TLS in a shared object");
     }
-    if f.kind == mortar_arch::TargetKind::Ifunc || f.sym_type == STT_GNU_IFUNC {
+    // An IFUNC another shared object defines (glibc's `strlen`, `memcpy`)
+    // is an import like any function: its `JUMP_SLOT`/`GLOB_DAT` is
+    // resolved by the loader (WP-123: the refusal is the library's own
+    // IFUNC, D-121).
+    let imported = matches!(f.kind, mortar_arch::TargetKind::Shlib { .. });
+    if f.kind == mortar_arch::TargetKind::Ifunc || (f.sym_type == STT_GNU_IFUNC && !imported) {
         return named("IFUNC in a shared object");
     }
     None

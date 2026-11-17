@@ -115,9 +115,11 @@ impl Cx {
 }
 
 /// The verifier on mortar's library `out` (its map `<out>.mortar-map`):
-/// no finding, but one: `P-D6` on the `.dynamic` order, which the
-/// verifier gives a mortar library whose tags are in GNU ld's library
-/// order (reported to the verifier agent, WP-123's V2).
+/// no finding.
+// TEMPORARY (WP-121): `P-D6` on the `.dynamic` order, which the verifier
+// gives a mortar library whose tags are in D-102's (and GNU ld's) order,
+// is filtered until WP-121's fix of WP-123's V2 is merged; remove the
+// filter then.
 fn verify(dir: &Path, out: &str) {
     verify_but(dir, out, &[]);
 }
