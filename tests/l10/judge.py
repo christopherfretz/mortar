@@ -263,11 +263,22 @@ def judge_step(tools, x, f, base, new):
     if not R.ended:
         v.add('oracle', 'n/a no prediction in the report (%s)' % (R.reason or v.reason or 'none'))
         return v
-    try:
-        F = oracle.Facts(base.dir, new.dir)
-        ok, _npred, lines = oracle.judge(F, R, set())
-    except Exception as e:  # noqa: BLE001 - an oracle crash is a lane failure, reported as such
-        v.add('oracle', 'FAIL the oracle raised %s: %s' % (type(e).__name__, e))
-        return v
-    v.add('oracle', 'pass' if ok else 'FAIL %s' % (lines[0] if lines else '?'))
+    note = ''
+    for attempt in (1, 2):
+        try:
+            F = oracle.Facts(base.dir, new.dir)
+            ok, _npred, lines = oracle.judge(F, R, set())
+            break
+        except FileNotFoundError as e:
+            # seen once on the workspace's virtiofs under load: ENOENT for a
+            # file that exists when looked at again. One retry, named.
+            if attempt == 1 and e.filename and os.path.exists(e.filename):
+                note = ' (after a retry: %s)' % e
+                continue
+            v.add('oracle', 'FAIL the oracle raised %s: %s' % (type(e).__name__, e))
+            return v
+        except Exception as e:  # noqa: BLE001 - an oracle crash is a lane failure, reported as such
+            v.add('oracle', 'FAIL the oracle raised %s: %s' % (type(e).__name__, e))
+            return v
+    v.add('oracle', ('pass' + note) if ok else 'FAIL %s' % (lines[0] if lines else '?'))
     return v

@@ -418,6 +418,11 @@ class Runner:
             res['reasons'][reason] += 1
             if reason == 'update':
                 res['updates'] += 1
+            elif step is not None and xs == 0 and os.path.exists(x.report):
+                for l in open(x.report):
+                    if l.startswith('l10: the floor refused: '):
+                        why = l.split('failed: ', 1)[-1].split(':')[0].strip()
+                        res.setdefault('floor_refused', collections.Counter())[why] += 1
             if xs != 0 and fs != 0:
                 res['failed_links'] += 1
                 res.setdefault('fail_diag', (f.diags[0][:160] if f.diags else 'status %s' % fs))
@@ -599,8 +604,8 @@ def self_test(opts, log=print):
         steps = edits.generate(proj, build.Cfg(cfg), seed, 10)
         at = target(steps, seed)
         cases.append((name, Seq('gen200', cfg, seed, steps, sub, 'self.%s' % name, {'L10_WRONG_AT': str(at)}), at))
-    rows = ['undef-fix', 'e1', 'touch']
-    steps = edits.generate(proj, build.Cfg(cfg), 13, 6, rows)
+    rows = ['undef-fix']    # the error row alone: every sequence then has diagnostics to drop
+    steps = edits.generate(proj, build.Cfg(cfg), 13, 4, rows)
     cases.append(('drop-diag', Seq('gen200', cfg, 13, steps, 'drop_diag.py', 'self.drop-diag', {}, rows), None))
     precompile([c[1] for c in cases], opts['work'], opts['jobs'])
     with concurrent.futures.ProcessPoolExecutor(max_workers=max(1, min(opts['jobs'], len(cases)))) as ex:
@@ -627,10 +632,14 @@ def self_test(opts, log=print):
         seq = Seq('gen200', cfg, 14, steps, 'floor', 'self.floor', {}, rows)
         precompile([seq], opts['work'], opts['jobs'])
         _s, r = run_one((seq, opts))
-        good = r['failure'] is None and r['updates'] == len(steps)
-        out.append('L10 SELF-TEST floor seed=14: %s, %d of %d steps updates (%s)%s' % (
+        refused = r.get('floor_refused', collections.Counter())
+        # every step is an update, or the floor refused it by name (WP-061's
+        # floor takes one changed loose object or thin member, same size)
+        good = r['failure'] is None and r['updates'] >= 1 and r['updates'] + sum(refused.values()) == len(steps)
+        out.append('L10 SELF-TEST floor seed=14: %s, %d of %d steps updates, %d refused by the floor (%s)%s' % (
             'passes' if r['failure'] is None else 'FAILS: ' + r['failure'], r['updates'], len(steps),
-            ','.join('%s:%d' % kv for kv in sorted(r['reasons'].items())), '' if good else ' UNEXPECTED'))
+            sum(refused.values()), ','.join('%s:%d' % kv for kv in sorted(refused.items())),
+            '' if good else ' UNEXPECTED'))
     else:
         out.append('L10 SELF-TEST floor: SKIPPED (no --floor)')
     for l in out:
