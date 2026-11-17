@@ -6,7 +6,7 @@
 # mortar extract nothing and the program runs libgver.so's g (u=51).
 #
 # mold differs: it extracts g.o and the loader binds g@V to the
-# program's unversioned g (u=11); the verifier finds g.o unreached (M12), A49.
+# program's unversioned g (g-ctor, u=11); the verifier finds g.o unreached (M12), A49.
 #@ anomaly(mold): A49
 #@ spec: dyn.md "D-12"
 #@ arch: aarch64 x86_64
@@ -30,6 +30,7 @@ run(bfd,lld,mortar) versioned
 check(mold) nm versioned
   has: T g$
 run(mold) versioned
+  stdout: g-ctor
   stdout: u=11
 
 #--- u.c

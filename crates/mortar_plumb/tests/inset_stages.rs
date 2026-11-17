@@ -185,7 +185,7 @@ fn dynamic(b: &[u8]) -> Vec<usize> {
 }
 
 /// The image with its `DT_NEEDED` entries' order reversed.
-fn needed_reversed(b: &mut Vec<u8>) {
+fn needed_reversed(b: &mut [u8]) {
     let n: Vec<usize> = dynamic(b).into_iter().filter(|&e| rd(b, e, 8) == 1).collect();
     let vals: Vec<u64> = n.iter().map(|&e| rd(b, e + 8, 8)).collect();
     for (&e, v) in n.iter().zip(vals.iter().rev()) {
@@ -195,7 +195,7 @@ fn needed_reversed(b: &mut Vec<u8>) {
 
 /// The image without its first `DT_NEEDED` entry (the later entries move
 /// up, a `DT_NULL` fills the end).
-fn needed_dropped(b: &mut Vec<u8>) {
+fn needed_dropped(b: &mut [u8]) {
     let d = dynamic(b);
     let at = d.iter().position(|&e| rd(b, e, 8) == 1).unwrap();
     let last = *d.last().unwrap();
@@ -301,7 +301,7 @@ fn d12_an_unneeded_library_s_member_added_is_m12() {
 fn d12_the_kept_library_dropped_is_p_d6() {
     for arch in ARCHES {
         for linker in ["mortar", "gnu", "mold"] {
-            let (r, out) = judge(arch, "k2a", linker, rest("k2a"), |_| {}, needed_dropped);
+            let (r, out) = judge(arch, "k2a", linker, rest("k2a"), |_| {}, |b| needed_dropped(b));
             let who = format!("{arch} {linker}");
             let f = found(&r);
             assert!(f.contains(&format!("P-D6 {KEPT}")), "{who}: {f:?}");
@@ -365,7 +365,7 @@ fn d12_a_versioned_reference_s_member_added_is_m12() {
 fn d12_the_late_library_misplaced_is_p_d6() {
     for arch in ARCHES {
         for linker in LINKERS {
-            let (r, out) = judge(arch, "j2b", linker, rest("j2b"), |_| {}, needed_reversed);
+            let (r, out) = judge(arch, "j2b", linker, rest("j2b"), |_| {}, |b| needed_reversed(b));
             let who = format!("{arch} {linker}");
             let rule = if matches!(linker, "mortar" | "gnu") {
                 "D-19a"
