@@ -20,13 +20,13 @@ run(mortar) uc
   env: LD_LIBRARY_PATH=.
   env: MASON_ODR_STATS=1
   stdout: mason-entry ./libuc.so
-  stdout: mason-stats ./libuc.so rows=0 relocs=0 own=0 same=0 differ=0 interposed=0 no-table=0 no-row=0 lazy=0 unknown=0 copy=0 system=0
+  stdout: mason-stats ./libuc.so rows=0 relocs=0 own=0 same=0 differ=0 interposed=0 no-table=0 no-row=0 lazy=0 unknown=0 copy=0 system=0 canonical-plt=0 ifunc=0 tls=0 malformed=0
   stdout: user constructor(101)
   stdout: user constructor (default)
 run(mortar) uce
   env: MASON_ODR_STATS=1
   stdout: mason-preinit (main program)
-  stdout: mason-stats (main program) rows=0 relocs=0 own=0 same=0 differ=0 interposed=0 no-table=0 no-row=0 lazy=0 unknown=0 copy=0 system=0
+  stdout: mason-stats (main program) rows=0 relocs=0 own=0 same=0 differ=0 interposed=0 no-table=0 no-row=0 lazy=0 unknown=0 copy=0 system=0 canonical-plt=0 ifunc=0 tls=0 malformed=0
   stdout: user constructor(101)
   stdout: user constructor (default)
 

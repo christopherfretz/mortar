@@ -79,35 +79,35 @@ check(mortar) text prog.map
 run(mortar) prog
   env: MASON_ODR_STATS=1
   stdout: mason-preinit (main program)
-  stdout: mason-stats (main program) rows=0 relocs=0 own=0 same=0 differ=0 interposed=0 no-table=0 no-row=0 lazy=0 unknown=0 copy=0 system=0
+  stdout: mason-stats (main program) rows=0 relocs=0 own=0 same=0 differ=0 interposed=0 no-table=0 no-row=0 lazy=0 unknown=0 copy=0 system=0 canonical-plt=0 ifunc=0 tls=0 malformed=0
   stdout: 7
 run(mortar) gc
   env: MASON_ODR_STATS=1
   stdout: mason-preinit (main program)
-  stdout: mason-stats (main program) rows=0 relocs=0 own=0 same=0 differ=0 interposed=0 no-table=0 no-row=0 lazy=0 unknown=0 copy=0 system=0
+  stdout: mason-stats (main program) rows=0 relocs=0 own=0 same=0 differ=0 interposed=0 no-table=0 no-row=0 lazy=0 unknown=0 copy=0 system=0 canonical-plt=0 ifunc=0 tls=0 malformed=0
   stdout: 7
 run(mortar) stripped
   env: MASON_ODR_STATS=1
   stdout: mason-preinit (main program)
-  stdout: mason-stats (main program) rows=0 relocs=0 own=0 same=0 differ=0 interposed=0 no-table=0 no-row=0 lazy=0 unknown=0 copy=0 system=0
+  stdout: mason-stats (main program) rows=0 relocs=0 own=0 same=0 differ=0 interposed=0 no-table=0 no-row=0 lazy=0 unknown=0 copy=0 system=0 canonical-plt=0 ifunc=0 tls=0 malformed=0
   stdout: 7
 run(mortar) excl
   env: MASON_ODR_STATS=1
   stdout: mason-preinit (main program)
-  stdout: mason-stats (main program) rows=0 relocs=0 own=0 same=0 differ=0 interposed=0 no-table=0 no-row=0 lazy=0 unknown=0 copy=0 system=0
+  stdout: mason-stats (main program) rows=0 relocs=0 own=0 same=0 differ=0 interposed=0 no-table=0 no-row=0 lazy=0 unknown=0 copy=0 system=0 canonical-plt=0 ifunc=0 tls=0 malformed=0
   stdout: 7
 run(mortar) noexp
   env: MASON_ODR_STATS=1
   stdout: mason-preinit (main program)
-  stdout: mason-stats (main program) rows=0 relocs=0 own=0 same=0 differ=0 interposed=0 no-table=0 no-row=0 lazy=0 unknown=0 copy=0 system=0
+  stdout: mason-stats (main program) rows=0 relocs=0 own=0 same=0 differ=0 interposed=0 no-table=0 no-row=0 lazy=0 unknown=0 copy=0 system=0 canonical-plt=0 ifunc=0 tls=0 malformed=0
   stdout: 7
 run(mortar) libs
   env: LD_LIBRARY_PATH=.
   env: MASON_ODR_STATS=1
   stdout: mason-entry ./libl.so
-  stdout: mason-stats ./libl.so rows=0 relocs=0 own=0 same=0 differ=0 interposed=0 no-table=0 no-row=0 lazy=0 unknown=0 copy=0 system=0
+  stdout: mason-stats ./libl.so rows=0 relocs=0 own=0 same=0 differ=0 interposed=0 no-table=0 no-row=0 lazy=0 unknown=0 copy=0 system=0 canonical-plt=0 ifunc=0 tls=0 malformed=0
   stdout: mason-entry ./libhide.so
-  stdout: mason-stats ./libhide.so rows=0 relocs=0 own=0 same=0 differ=0 interposed=0 no-table=0 no-row=0 lazy=0 unknown=0 copy=0 system=0
+  stdout: mason-stats ./libhide.so rows=0 relocs=0 own=0 same=0 differ=0 interposed=0 no-table=0 no-row=0 lazy=0 unknown=0 copy=0 system=0 canonical-plt=0 ifunc=0 tls=0 malformed=0
   stdout: 7
 run(mortar) lazy
   stdout: 7
