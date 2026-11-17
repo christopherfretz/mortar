@@ -37,9 +37,18 @@ const CASES: [&str; 12] = [
 /// The 80-byte unit of the item-3 cases (one `summary lang=c++`).
 const UNIT_LEN: usize = 80;
 
-fn dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/hod-meta-a598555f")
+fn fixtures() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
 }
+
+fn dir() -> PathBuf {
+    fixtures().join("hod-meta-a598555f")
+}
+
+/// The same objects made by later hods, which [`the_fixtures_are_hods`]
+/// also accepts: hod b701c7be (H-3) appends its own unit, `reloc-model`
+/// (`spec/meta.md` MT-20, MT-26; WP-129). The cases link the fixtures'.
+const LATER: [&str; 1] = ["hod-meta-b701c7be"];
 
 fn object(case: &str, arch: &str) -> PathBuf {
     dir().join(format!("{case}.{arch}.o"))
@@ -305,8 +314,9 @@ fn hod() -> Option<PathBuf> {
 
 // The fixtures cannot go stale silently: where hod is built, each object
 // is made again with the README's command and must be the same bytes
-// (hod is deterministic). A hod other than a598555f that writes other
-// bytes fails here: make the fixtures again in a new directory named for
+// (hod is deterministic) as the fixtures' or as those of a later hod
+// kept beside them ([`LATER`]). A hod that writes other bytes than all of
+// them fails here: make the objects again in a new directory named for
 // its sha.
 #[test]
 fn the_fixtures_are_hods() {
@@ -331,8 +341,11 @@ fn the_fixtures_are_hods() {
             let o = run_with(&mut command, b"", Duration::from_mins(1));
             assert!(o.success(), "hod {case} {arch}: {}", o.stderr_text());
             let made = std::fs::read(&out).unwrap();
-            let fixture = std::fs::read(object(case, arch)).unwrap();
-            assert!(made == fixture, "{case}.{arch}.o: hod {} makes other bytes", hod.display());
+            let known = std::iter::once(dir()).chain(LATER.iter().map(|d| fixtures().join(d)));
+            let same = known.into_iter().any(|d| {
+                std::fs::read(d.join(format!("{case}.{arch}.o"))).is_ok_and(|f| f == made)
+            });
+            assert!(same, "{case}.{arch}.o: hod {} makes other bytes", hod.display());
         }
     }
 }
