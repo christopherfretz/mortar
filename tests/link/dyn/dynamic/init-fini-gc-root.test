@@ -1,0 +1,30 @@
+# resolve.md §4.2, §4.7 (WP-128): `-init`/`-fini`'s symbols are roots of
+# `--gc-sections` in an executable too. A program whose `-init` function
+# (default visibility) and `-fini` function (hidden) sit in sections
+# nothing else reaches keeps both and runs them; before WP-128 mortar
+# collected them and stopped on an internal error (".dynamic names
+# symbol ..."). mold collects the hidden `-fini` function (dyn.md W22)
+# and writes DT_FINI 0: its program crashes at exit.
+#@ spec: resolve.md "§4.7"; dyn.md "D-30"
+#@ arch: aarch64 x86_64
+#@ xfail(mold): W22: mold collects the hidden -fini function under --gc-sections and writes DT_FINI 0; the program crashes at exit
+
+cc -O1 -fPIE -ffunction-sections main.c -o main.o
+link gcc -pie main.o -Wl,--gc-sections -Wl,-init,my_init -Wl,-fini,my_fini -o prog
+check nm prog
+  has: T my_init$
+  not: lost$
+check readelf -dW prog
+  has: (INIT)
+  has: (FINI)
+run prog
+  stdout: my_init
+  stdout: main
+  stdout: my_fini
+
+#--- main.c
+#include <stdio.h>
+void my_init(void) { puts("my_init"); }
+__attribute__((visibility("hidden"))) void my_fini(void) { puts("my_fini"); }
+__attribute__((visibility("hidden"))) int lost(void) { return 9; }
+int main(void) { puts("main"); return 0; }

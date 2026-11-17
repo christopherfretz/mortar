@@ -377,7 +377,7 @@ fn m2_refusals_keep_their_names() {
         (&["--spare-dynamic-tags=5"], "--spare-dynamic-tags"),
         (&["--copy-dt-needed-entries"], "--copy-dt-needed-entries"),
         (&["--add-needed"], "--add-needed"),
-        (&["--dynamic-list", "l.txt"], "--dynamic-list"),
+        // `--dynamic-list` links since WP-128 (D-112; resolve.md §9.6).
         (&["--export-dynamic-symbol-list", "l.txt"], "--export-dynamic-symbol-list"),
         (&["-m", "elf_x86_64", "-z", "dynamic-undefined-weak"], "-z dynamic-undefined-weak"),
         (&["-m", "elf_x86_64", "-z", "nodynamic-undefined-weak"], "-z nodynamic-undefined-weak"),

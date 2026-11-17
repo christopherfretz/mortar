@@ -736,7 +736,19 @@ pub fn options(plan: &Plan, inputs: &Inputs<'_>, view: &InputsView<'_, '_>) -> O
             export_dynamic: plan.dynamic.export_dynamic,
             no_undefined_version: plan.dynamic.undefined_version == Some(false),
         },
+        exclude_libs: exclude_libs(inputs),
+        dynamic_list: None,
     }
+}
+
+/// [`Options::exclude_libs`]: the walk's flag of each file, or nothing
+/// when no file has it.
+fn exclude_libs(inputs: &Inputs<'_>) -> Vec<bool> {
+    let flag = |f: &mortar_core::inputs::File<'_>| f.state.contains(InputFlags::EXCLUDE_LIBS);
+    if !inputs.files.iter().any(|(_, f)| flag(f)) {
+        return Vec::new();
+    }
+    inputs.files.iter().map(|(_, f)| flag(f)).collect()
 }
 
 /// [`SharedLink`]: the mentions of shared objects and the positions of the
@@ -1412,8 +1424,8 @@ pub struct Outcome {
     pub retained: Vec<(FileId, SectionIndex)>,
     pub entry: crate::EntryPoint,
     /// The keys the options root (§4.2: the entry, `-u`,
-    /// `--require-defined`), in option order: their definitions are
-    /// roots of `--gc-sections` (§4.7).
+    /// `--require-defined`), in option order, then `-init`'s and
+    /// `-fini`'s: their definitions are roots of `--gc-sections` (§4.7).
     pub roots: Vec<SymbolId>,
     /// The needed shared objects in `DT_NEEDED` order (`spec/dyn.md`
     /// D-19a): `Slots.needed`. Empty in a static link.
@@ -1432,23 +1444,26 @@ pub struct Outcome {
 /// `check_against`) and the diagnostics.
 #[must_use]
 pub fn resolve_inputs(inputs: &Inputs<'_>, plan: &Plan, pool: &Pool) -> Outcome {
-    resolve_inputs_with(inputs, plan, pool, None)
+    resolve_inputs_with(inputs, plan, pool, None, None)
 }
 
 /// [`resolve_inputs`] with the line's version script, compiled
 /// (`crate::version::VersionScript::compile`; `spec/resolve.md` §9.7):
-/// applied in a `Shared` output.
+/// applied in a `Shared` output; and its `--dynamic-list` files, compiled
+/// (`crate::version::DynamicList::load`; `spec/dyn.md` D-112, WP-128).
 #[must_use]
 pub fn resolve_inputs_with(
     inputs: &Inputs<'_>,
     plan: &Plan,
     pool: &Pool,
     script: Option<std::sync::Arc<crate::version::VersionScript>>,
+    dynamic_list: Option<std::sync::Arc<crate::version::DynamicList>>,
 ) -> Outcome {
     let mut steps = Steps::default();
     let view = InputsView::new_steps(inputs, pool, &mut steps);
     let mut opts = options(plan, inputs, &view);
     opts.versions.script = script;
+    opts.dynamic_list = dynamic_list;
     steps.step("options");
     let r = resolve_steps(&view, &opts, pool, &mut steps);
     let mut diagnostics = diagnostics(inputs, &view, &opts, &r);
@@ -1485,6 +1500,15 @@ pub fn resolve_inputs_with(
     steps.count("comdats", u64::from(inputs.comdats.len()));
     steps.count("sections", r.sections.len() as u64);
     steps.count("rounds", u64::from(r.rounds));
+    // §4.2, §4.7 (WP-128): `-init`/`-fini`'s symbols are roots of
+    // `--gc-sections` (GNU ld and lld keep the function), never of
+    // extraction (none of the three extracts a member for them).
+    let mut roots: Vec<SymbolId> = opts.roots().iter().map(|root| root.key).collect();
+    for name in [&plan.dynamic.init, &plan.dynamic.fini].into_iter().flatten() {
+        if let Some(key) = view.find_key(name.as_encoded_bytes()) {
+            roots.push(key);
+        }
+    }
     drop(view);
     let outcome = Outcome {
         resolution,
@@ -1493,7 +1517,7 @@ pub fn resolve_inputs_with(
         gnu_warning_syms: r.gnu_warning_syms,
         retained: r.retained,
         entry: r.entry,
-        roots: opts.roots().iter().map(|root| root.key).collect(),
+        roots,
         needed: r.dynamic.as_ref().map(|d| d.needed.clone()).unwrap_or_default(),
         closure_only: r.dynamic.as_ref().map(|d| d.closure_only.clone()).unwrap_or_default(),
         steps: Steps::default(),

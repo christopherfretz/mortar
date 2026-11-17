@@ -67,11 +67,13 @@ R Next gnu -L --library-path
 R Next gnu --sysroot
 R Next gnu -rpath-link
 R Next gnu --version-script
+R Next gnu --dynamic-list
 R Eq gnu --sort-common --sort_common
 R Next gnu --sort-section
 R Next gnu -u --undefined
 R Next gnu --require-defined
 R Next gnu --export-dynamic-symbol
+R Next gnu --exclude-libs
 R Next gnu -init
 R Next gnu -fini
 R No gnu --undefined-version
@@ -145,6 +147,11 @@ Z common-page-size Next
 Z sectionheader No
 Z muldefs No
 Z nostart-stop-gc No
+Z initfirst No
+Z interpose No
+Z nodelete No
+Z nodlopen No
+Z origin No
 Z memory-seal No
 Z nomemory-seal No
 R No gnu -EL
@@ -224,7 +231,6 @@ R Next - --chroot
 R Next gnu -T --script
 R Next gnu --default-script --dT
 R Next gnu -c --mri-script
-R Next gnu --dynamic-list
 R Next gnu --export-dynamic-symbol-list
 R Next gnu --retain-symbols-file
 R Next gnu --section-ordering-file
@@ -253,7 +259,6 @@ R Next - --randomize-section-padding
 R Next - --undefined-glob
 R Next gnu --defsym
 R Next gnu --wrap
-R Next gnu --exclude-libs
 R Next gnu -y --trace-symbol
 R Next gnu --ignore-unresolved-symbol
 R Eq gnu --demangle
@@ -456,16 +461,11 @@ Z globalaudit No
 Z start-stop-gc No
 Z start-stop-visibility Next
 Z global No
-Z initfirst No
-Z interpose No
 Z unique No
 Z nounique No
 Z loadfltr No
 Z nodefaultlib No
-Z nodelete No
-Z nodlopen No
 Z nodump No
-Z origin No
 Z common No
 Z nocommon No
 Z dead-reloc-in-nonalloc Next

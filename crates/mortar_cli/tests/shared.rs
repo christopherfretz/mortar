@@ -56,55 +56,57 @@ fn d112_non_weak_and_dynamic_list_data_are_refused_in_every_kind() {
     assert_eq!(parsed.plan.symbolic().map(|s| s.form), Some(Symbolic::Functions));
 }
 
-// spec: cli.md §4.2 (M4 block: "In a `Shared` link until their
-// packages: … are refused (WP-125, WP-128)")
+// spec: cli.md §4.2 (M4 block, WP-128's rows): accepted in a `Shared`
+// link; outside it `-Bsymbolic` is a `noop`, `-init`/`-fini`,
+// `--dynamic-list` and `--exclude-libs` keep their rows, and D-103's five
+// `-z` flags are refused by name (`rows::SHARED_ONLY`: an executable keeps
+// its M2 status, dyn.md D-103)
 #[test]
-fn s4_2_options_a_later_package_implements_are_refused_in_shared() {
-    let later = [
-        (&["-Bsymbolic"][..], "-Bsymbolic", "WP-128"),
-        (&["--dynamic-list", "l.list"][..], "--dynamic-list", "WP-128"),
-        (&["--exclude-libs", "ALL"][..], "--exclude-libs", "WP-128"),
-        (&["-init", "f"][..], "-init", "WP-128"),
-        (&["-fini", "f"][..], "-fini", "WP-128"),
-        (&["-z", "nodelete"][..], "-z nodelete", "WP-128"),
-        (&["-z", "nodlopen"][..], "-z nodlopen", "WP-128"),
-        (&["-z", "initfirst"][..], "-z initfirst", "WP-128"),
-        (&["-z", "interpose"][..], "-z interpose", "WP-128"),
-        (&["-z", "origin"][..], "-z origin", "WP-128"),
+fn s4_2_options_wp128_implements_are_accepted_in_shared() {
+    let rows128 = [
+        &["-Bsymbolic"][..],
+        &["--dynamic-list", "l.list"],
+        &["--exclude-libs", "ALL"],
+        &["-init", "f"],
+        &["-fini", "f"],
+        &["-z", "nodelete"],
+        &["-z", "nodlopen"],
+        &["-z", "initfirst"],
+        &["-z", "interpose"],
+        &["-z", "origin"],
     ];
-    for (words, spelling, package) in later {
+    for words in rows128 {
         let mut line = vec!["-shared"];
         line.extend_from_slice(words);
         line.push("a.o");
         let parsed = p(&line);
         assert_eq!(parsed.plan.kind, OutputKind::Shared);
-        assert_eq!(refused(&parsed), [spelling], "{line:?}");
-        let text = refusals(&parsed).join("\n");
-        assert!(text.contains(&format!("unsupported option: {spelling}")), "{text}");
-        assert!(text.contains(package), "{spelling}: {text}");
-        // Outside `Shared` the row's own status holds: `-Bsymbolic` is a
-        // `noop`, `-init`/`-fini` are `supported`, the others `refused`.
+        assert!(refused(&parsed).is_empty(), "{line:?}: {:?}", refusals(&parsed));
         let exec: Vec<&str> = words.iter().copied().chain(["a.o"]).collect();
-        let row_refused = rows()
-            .iter()
-            .find(|r| r.name() == spelling)
-            .is_some_and(|r| r.status == Status::Refused);
-        assert_eq!(refused(&p(&exec)) == [spelling], row_refused, "{exec:?}");
+        let parsed = p(&exec);
+        if words[0] == "-z" {
+            let spelling = format!("-z {}", words[1]);
+            assert_eq!(refused(&parsed), [spelling.as_str()], "{exec:?}");
+            let text = refusals(&parsed).join("\n");
+            assert!(text.contains("dyn.md D-103"), "{text}");
+            assert!(text.contains("(-shared) only"), "{text}");
+        } else {
+            assert!(refused(&parsed).is_empty(), "{exec:?}: {:?}", refusals(&parsed));
+        }
     }
-    // Each is refused once, whatever the number of uses.
-    let parsed = p(&["-shared", "-init", "f", "-init", "g", "a.o"]);
-    assert_eq!(refused(&parsed), ["-init"]);
-    // `-pie` after `-shared` wins (cli.md §3.2): not a `Shared` link, and
-    // nothing is refused (`-shared` is `partial` since WP-123).
-    let parsed = p(&["-shared", "-pie", "-Bsymbolic", "-init", "f", "a.o"]);
-    assert_ne!(parsed.plan.kind, OutputKind::Shared);
-    assert!(refused(&parsed).is_empty());
-    // Not a `last_wins` field: `-Bsymbolic` is refused even when a later
-    // `-Bsymbolic-functions` or `-Bno-symbolic` decides the line (D-112).
-    for last in ["-Bsymbolic-functions", "-Bno-symbolic"] {
-        let parsed = p(&["-shared", "-Bsymbolic", last, "a.o"]);
-        assert_eq!(refused(&parsed), ["-Bsymbolic"], "{last}");
-    }
+    // The last `-Bsymbolic` form decides the line (D-112).
+    let form = |words: &[&str]| {
+        let mut line = vec!["-shared"];
+        line.extend_from_slice(words);
+        line.push("a.o");
+        p(&line).plan.symbolic().map(|s| (s.form, s.writes_symbolic_tags()))
+    };
+    assert_eq!(form(&["-Bsymbolic"]), Some((Symbolic::All, true)));
+    assert_eq!(form(&["-Bsymbolic", "-Bsymbolic-functions"]), Some((Symbolic::Functions, false)));
+    assert_eq!(form(&["-Bsymbolic", "-Bno-symbolic"]), Some((Symbolic::None, false)));
+    assert_eq!(form(&["-Bno-symbolic", "-Bsymbolic"]), Some((Symbolic::All, true)));
+    // With `--dynamic-list` the list decides: no DT_SYMBOLIC.
+    assert_eq!(form(&["-Bsymbolic", "--dynamic-list", "l.list"]).map(|f| f.1), Some(false));
 }
 
 // spec: cli.md §4.2 (M4 block, WP-117's rows): accepted in a `Shared`
@@ -217,24 +219,6 @@ fn d114_version_script_only_in_shared() {
 // the `Shared` list is a row
 #[test]
 fn s4_2_shared_list_names_rows() {
-    let later: Vec<String> = rows()
-        .iter()
-        .filter(|r| r.shared_later().is_some())
-        .map(mortar_cli::table::Row::name)
-        .collect();
-    assert_eq!(
-        later,
-        [
-            "--dynamic-list",
-            "--exclude-libs",
-            "-init",
-            "-fini",
-            "-Bsymbolic",
-            "-z initfirst",
-            "-z interpose",
-            "-z nodelete",
-            "-z nodlopen",
-            "-z origin",
-        ]
-    );
+    // Empty since WP-128.
+    assert!(rows().iter().all(|r| r.shared_later().is_none()));
 }

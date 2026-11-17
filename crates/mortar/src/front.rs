@@ -352,9 +352,43 @@ fn version_script(
     if plan.kind != plan::OutputKind::Shared || plan.version_scripts().next().is_none() {
         return Ok(None);
     }
+    let texts = read_scripts(plan.version_scripts(), cwd, diag)?;
+    let files: Vec<mortar_resolve::version::SourceFile<'_>> = texts
+        .iter()
+        .map(|(path, bytes)| mortar_resolve::version::SourceFile { path, bytes })
+        .collect();
+    loaded(mortar_resolve::version::VersionScript::load(&files), diag)
+}
+
+/// The line's `--dynamic-list` files as one list (`spec/dyn.md` D-112,
+/// `spec/resolve.md` §9.6; WP-128), in every output kind that accepts
+/// the option.
+fn dynamic_list(
+    plan: &Plan,
+    cwd: &Path,
+    diag: &Collector,
+) -> Result<Option<std::sync::Arc<mortar_resolve::version::DynamicList>>, ()> {
+    if plan.dynamic_lists().next().is_none() {
+        return Ok(None);
+    }
+    let texts = read_scripts(plan.dynamic_lists(), cwd, diag)?;
+    let files: Vec<mortar_resolve::version::SourceFile<'_>> = texts
+        .iter()
+        .map(|(path, bytes)| mortar_resolve::version::SourceFile { path, bytes })
+        .collect();
+    loaded(mortar_resolve::version::DynamicList::load(&files), diag)
+}
+
+/// Reads each of `scripts`' files: `(path as shown, bytes)`, or
+/// `cannot-open-file` for each that does not open.
+fn read_scripts<'p>(
+    scripts: impl Iterator<Item = &'p plan::ScriptArg>,
+    cwd: &Path,
+    diag: &Collector,
+) -> Result<Vec<(String, Vec<u8>)>, ()> {
     let mut texts: Vec<(String, Vec<u8>)> = Vec::new();
     let mut failed = false;
-    for s in plan.version_scripts() {
+    for s in scripts {
         let shown = s.path.to_string_lossy().into_owned();
         match std::fs::read(cwd.join(&s.path)) {
             Ok(bytes) => texts.push((shown, bytes)),
@@ -370,14 +404,15 @@ fn version_script(
             }
         }
     }
-    if failed {
-        return Err(());
-    }
-    let files: Vec<mortar_resolve::version::SourceFile<'_>> = texts
-        .iter()
-        .map(|(path, bytes)| mortar_resolve::version::SourceFile { path, bytes })
-        .collect();
-    match mortar_resolve::version::VersionScript::load(&files) {
+    if failed { Err(()) } else { Ok(texts) }
+}
+
+/// A compiled script, or its diagnostics emitted.
+fn loaded<T>(
+    got: Result<T, Vec<Diagnostic>>,
+    diag: &Collector,
+) -> Result<Option<std::sync::Arc<T>>, ()> {
+    match got {
         Ok(v) => Ok(Some(std::sync::Arc::new(v))),
         Err(ds) => {
             for (i, d) in ds.into_iter().enumerate() {
@@ -420,7 +455,9 @@ pub fn front<'s>(
     // 30: the version script (`spec/script.md` §9; resolve.md §9.7,
     // dyn.md D-114; WP-125), then resolve.
     let versions = version_script(&plan, env.cwd, diag).ok()?;
-    let outcome = mortar_resolve::resolve_inputs_with(&inputs, &plan, &pool, versions.clone());
+    let dynamic_list = dynamic_list(&plan, env.cwd, diag).ok()?;
+    let outcome =
+        mortar_resolve::resolve_inputs_with(&inputs, &plan, &pool, versions.clone(), dynamic_list);
     if time_steps {
         print_steps("resolve", &outcome.steps.times, &outcome.steps.counts);
     }

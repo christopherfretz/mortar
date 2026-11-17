@@ -44,6 +44,55 @@ pub struct VersionLine {
     pub no_undefined_version: bool,
 }
 
+/// A line's `--dynamic-list` files, read as one list in command-line
+/// order and compiled (`spec/dyn.md` D-112, `spec/resolve.md` §9.6;
+/// WP-128). Several files are one list: a name any of them lists is
+/// listed (GNU ld, lld and mold, measured). An entry is matched against a
+/// key's name without its version, as a version script's entry
+/// ([`Pattern::of`]: quoted exact, glob, `*`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DynamicList {
+    patterns: Box<[Pattern]>,
+}
+
+impl DynamicList {
+    /// Compiles a parsed list.
+    ///
+    /// # Errors
+    ///
+    /// `extern "C++"` entries: refused by name (class `script-command`),
+    /// as in a version script (§9.7 rule 6: no demangler).
+    pub fn compile(ast: &mortar_script::DynamicList) -> Result<Self, Vec<Diagnostic>> {
+        if ast.entries.iter().any(|e| e.language == Language::Cxx) {
+            return Err(vec![Diagnostic::refused(
+                RefusalClass::ScriptCommand,
+                "extern \"C++\" in a dynamic list (spec/resolve.md §9.7 rule 6: it needs the \
+                 demangler; list the mangled names, or use a glob such as _ZN2ns*)",
+            )]);
+        }
+        let patterns =
+            ast.entries.iter().map(|e| Pattern::of(&e.pattern.text, e.pattern.quoted)).collect();
+        Ok(Self { patterns })
+    }
+
+    /// Parses the `--dynamic-list` files of a line, in command-line order,
+    /// as one list (`spec/script.md` §9.1), and compiles it.
+    ///
+    /// # Errors
+    ///
+    /// The parser's diagnostics, and [`Self::compile`]'s.
+    pub fn load(files: &[SourceFile<'_>]) -> Result<Self, Vec<Diagnostic>> {
+        let ast = mortar_script::version::parse_dynamic_list(files).map_err(|d| vec![*d])?;
+        Self::compile(&ast)
+    }
+
+    /// Whether the list names `name` (a key's name without its version).
+    #[must_use]
+    pub fn matches(&self, name: &[u8]) -> bool {
+        self.patterns.iter().any(|p| p.matches(name))
+    }
+}
+
 /// One glob token: each but `Star` matches one byte.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Token {

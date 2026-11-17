@@ -356,8 +356,11 @@ fn init_fini(t: &PlanIn<'_, '_>) -> (Option<SymbolId>, Option<SymbolId>) {
 /// The keys of `DT_INIT` and `DT_FINI` of a shared object (D-102,
 /// [`shared_init_key`]): a symbol `-init`/`-fini` names must be defined
 /// (`undefined-init-symbol`); without the option, `_init`/`_fini` when
-/// defined. (`-init`/`-fini` are refused in a `Shared` link until WP-128,
-/// `spec/cli.md` §4.2, so only the second form is reached today.)
+/// defined. An explicit name must also be code: a function (or a
+/// `NOTYPE` label) in an executable input section; a data object, TLS or
+/// IFUNC symbol is refused by name (WP-128: GNU ld, lld and mold write a
+/// data object's address and the loader calls it, crashing; the verifier's
+/// P-D22 wants "defined, live code").
 #[allow(clippy::result_large_err, reason = "the phase's diagnostic, made once")]
 fn shared_init_fini(
     t: &PlanIn<'_, '_>,
@@ -377,7 +380,27 @@ fn shared_init_fini(
         None => shared_init_key(None, fini),
     }
     .map_err(mortar_synth::SynthError::into_diagnostic)?;
+    for (option, name, key) in [("-init", &d.init, init), ("-fini", &d.fini, fini)] {
+        if let (Some(name), Some(key)) = (name, key)
+            && !is_code(t, key)
+        {
+            return Err(refused(&format!(
+                "{option} naming {}, which is not a function (dyn.md D-102 rows 3-4)",
+                name.to_string_lossy()
+            )));
+        }
+    }
     Ok((init, fini))
+}
+
+/// Whether `key`'s definition is code: `STT_FUNC` or `STT_NOTYPE` in an
+/// input section with `SHF_EXECINSTR`.
+fn is_code(t: &PlanIn<'_, '_>, key: SymbolId) -> bool {
+    use mortar_elf::consts::{SHF_EXECINSTR, STT_FUNC, STT_NOTYPE};
+    use mortar_synth::symtab::SymDef;
+    let Some(g) = t.src.syms.global(key) else { return false };
+    let SymDef::Section { section, .. } = g.def else { return false };
+    matches!(g.typ, STT_FUNC | STT_NOTYPE) && t.headers[section].flags & SHF_EXECINSTR != 0
 }
 
 /// Whether output sections `.preinit_array`, `.init_array`, `.fini_array`
@@ -416,6 +439,20 @@ fn verdef_plan(t: &PlanIn<'_, '_>, soname: Option<&[u8]>) -> VerdefPlan {
     VerdefPlan::new(base, &nodes)
 }
 
+/// D-103's `-z` flags of a `Shared` line (WP-128): each keyword lands in
+/// [`Plan::other`] as `-z <keyword>`; repeating one changes nothing (no
+/// reference has a `no` form). The front refuses them in the other kinds.
+fn z_flags(plan: &Plan) -> mortar_synth::dynamic::ZFlags {
+    let has = |name: &str| plan.other.iter().any(|o| o.name == name);
+    mortar_synth::dynamic::ZFlags {
+        nodelete: has("-z nodelete"),
+        nodlopen: has("-z nodlopen"),
+        initfirst: has("-z initfirst"),
+        interpose: has("-z interpose"),
+        origin: has("-z origin"),
+    }
+}
+
 /// The `.dynamic` kind of the plan's output and its `.interp` plan (none
 /// in a `StaticPie`, D-1), or the refusal reported through `emit`.
 fn kind_and_interp(
@@ -435,6 +472,7 @@ fn kind_and_interp(
             static_tls: false,
             // Set from the version script by `plan` (D-115).
             verdef: 0,
+            z: z_flags(plan),
         }),
         _ => {
             emit(refused("this output kind with .dynamic"));
