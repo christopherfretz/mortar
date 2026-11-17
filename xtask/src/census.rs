@@ -217,13 +217,6 @@ pub const OUT_OF_M2: &[(&str, &str)] = &[
         "unsupported feature: IFUNC in a shared object",
         "IFUNC in an x86-64 shared object is WP-127 part 2's (spec/dyn.md D-121)",
     ),
-    // WP-123 finding F3: crtbeginS's weak `__cxa_finalize` when the C
-    // library is not needed (gfortran's `-shared` lines).
-    (
-        "bound in a shared object that is not needed",
-        "a weak undefined versioned reference whose library --as-needed drops, in a shared \
-         object, is refused (spec/dyn.md D-27; WP-123 finding F3)",
-    ),
 ];
 
 /// Lines whose REFERENCE program is known broken: the variation, the

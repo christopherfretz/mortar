@@ -16,6 +16,7 @@ use mortar_elf::{SharedObject, SymbolIndex, Version};
 
 use crate::line::{Files, Item, Line};
 use crate::locate::Obj;
+use crate::map::OutputKind;
 
 /// A definition in a shared object's `.dynsym`.
 #[derive(Debug, Clone)]
@@ -272,6 +273,9 @@ pub struct Model {
     /// `DT_NEEDED` objects no search finds: the link is outside stage 3
     /// (P-D1, [`crate::report::OUTSIDE`]).
     pub outside: Vec<String>,
+    /// The line links a shared object: `bind(k)` ranges over N alone
+    /// (`spec/dyn.md` D-10 as WP-137 amends it).
+    pub shared: bool,
 }
 
 impl Model {
@@ -331,7 +335,7 @@ impl Model {
     /// output's `.symtab` definitions (file 0's).
     #[allow(clippy::too_many_lines)] // D-11, D-12, D-19a in order
     pub fn build(line: &Line, objs: &[Obj<'_>], file0: &[String], files: &dyn Files) -> Model {
-        let mut m = Model::default();
+        let mut m = Model { shared: line.kind == Some(OutputKind::Shared), ..Model::default() };
         // C: one object per soname, in mention order. A file without a
         // soname is named as the line names it, so two spellings are two
         // members (two DT_NEEDED entries, D-19a).
@@ -644,12 +648,14 @@ impl Model {
     }
 
     /// `bind(k)` over a loader order: the first object in `order` (members
-    /// of C only, D-12) with a visible definition at `ver`.
+    /// of C only, D-12) with a visible definition at `ver`. In `Shared`
+    /// members of N only (D-10, WP-137): a weak-only key whose every
+    /// definition lies in an object that is not needed stays unbound.
     pub fn bind_in(&self, order: &[usize], k: &str, ver: Option<&str>) -> Option<(usize, &SoDef)> {
         order
             .iter()
             .copied()
-            .filter(|&i| self.dsos[i].in_c)
+            .filter(|&i| self.dsos[i].in_c && (!self.shared || self.needed.contains(&i)))
             .find_map(|i| self.dsos[i].def(k, ver).map(|d| (i, d)))
     }
 

@@ -1,0 +1,40 @@
+# synth.md S-48a in a shared object: `gcc -shared` of objects compiled
+# with `-fno-asynchronous-unwind-tables -fno-unwind-tables` has no
+# `.eh_frame` input but `crtendS.o`'s terminator on x86-64 (its
+# `crti.o` and `crtbeginS.o` have none). The library's `.eh_frame` is the
+# terminator alone, 4 bytes, with `__FRAME_END__` at its start, and no
+# `PT_GNU_EH_FRAME` without an FDE (S-57: GNU ld; lld writes an empty
+# table, mold always one); a program loads it and calls it. AArch64's
+# `crtbeginS.o` has FDEs, so the first line is GNU ld's directly, on both
+# architectures; the driver's own line follows on x86-64, where it
+# reaches the case.
+#@ spec: synth.md "S-48a"
+#@ arch: aarch64 x86_64
+
+as term.s -o term.o
+cc -O1 -fPIC -fno-asynchronous-unwind-tables -fno-unwind-tables lib.c -o lib.o
+cc -O1 -fPIE main.c -o main.o
+link ld -shared --eh-frame-hdr lib.o term.o -soname libt.so -o libt.so
+check readelf -lSW libt.so
+  has: .eh_frame PROGBITS * 000004 00 A
+  not(bfd,mortar): GNU_EH_FRAME
+check readelf -sW libt.so
+  has(bfd,lld,mortar): OBJECT LOCAL DEFAULT * __FRAME_END__$
+link(x86_64) gcc -shared lib.o -Wl,-soname,libd.so -o libd.so
+check(x86_64) readelf -SW libd.so
+  has: .eh_frame PROGBITS * 000004 00 A
+host gcc -pie main.o -L. -lt -o prog
+run prog
+  stdout: 42
+
+#--- term.s
+	.section .eh_frame,"a",%progbits
+	.type	__FRAME_END__, %object
+__FRAME_END__:
+	.long	0
+#--- lib.c
+int get_value(int x) { return x + 41; }
+#--- main.c
+#include <stdio.h>
+int get_value(int);
+int main(void) { printf("%d\n", get_value(1)); return 0; }

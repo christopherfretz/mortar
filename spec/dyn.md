@@ -478,7 +478,15 @@ every default line links. Notation:
   in the breadth-first part of the order: by a weak program reference
   (D-25 then does not apply: the key is defined) and by the shared
   objects' own references (D-13 asks existence there, and the loader
-  binds them in the same order at run time).
+  binds them in the same order at run time). In `Shared` `bind(k)` ranges
+  over N alone (WP-137): a shared object's link searches no `DT_NEEDED`
+  entry (input §8.6), so a member of C that is not needed is dropped
+  even when a needed object's edge reaches it, and a weak-only key whose
+  every definition lies outside N stays `Undefined{weak: true}` (D-111
+  item 3: `WEAK NOTYPE`, unversioned, the dropped object neither
+  `DT_NEEDED` nor a `Verneed`; GNU ld; lld writes `FUNC`, mold keeps the
+  object needed and the version; crtbeginS's `__cxa_finalize` when the
+  driver's `--as-needed` drops the C library).
 
 **D-11 [M2] (needed).** N is the least set such that
 
@@ -1045,6 +1053,12 @@ versioned import (resolve §9.3); bit 15 never set. `.gnu.version_r`:
   ELF hash of the version name (the `vd_hash` the library wrote, D-14);
   `vna_flags` 0 (all three, a weak-only reference included);
   `vna_other` numbered from 2 in output order (mold);
+- an object that is not needed has no `Verneed`: an entry bound to a
+  version of a used object is refused by name in `Exec` and `Pie`
+  (`versioned reference to <k> bound in a shared object that is not
+  needed`, class `feature`; GNU ld and lld write it unversioned, 1, and
+  mold makes the object needed), and cannot arise in
+  `Shared`, where such a key is unbound (D-10 setting, WP-137);
 - no `.gnu.version_d` in an executable (no reference writes one without a
   version script, which is M4; a `.symver` `foo@@V` definition that is
   exported is refused, `versioned-export (M4)`: GNU ld writes a verdef
@@ -2008,7 +2022,10 @@ function gets `STT_FUNC`, and keeps the binding of the references to it:
 `WEAK FUNC` with every reference, AArch64, x86-64 and i386, 9 census
 libraries; the first pass's "GNU ld `NOTYPE`" did not reproduce), else
 `STB_GLOBAL`; a weak undefined key with no shared definition is item
-3's `WEAK NOTYPE` (`__gmon_start__`, `_ITM_*`); an export keeps its
+3's `WEAK NOTYPE` (`__gmon_start__`, `_ITM_*`), and so is one whose
+only definitions are in objects that are not needed (D-10 setting:
+crtbeginS's `__cxa_finalize` when `--as-needed` drops the C library,
+GNU ld's `NOTYPE`, WP-137); an export keeps its
 `.symtab` type and binding, an exported preemptible IFUNC
 `STT_GNU_IFUNC` at its resolver (D-121).
 `.gnu.version` of an unversioned import is 1 (GNU ld, mold, lld 19;

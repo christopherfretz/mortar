@@ -1,0 +1,62 @@
+# synth.md S-48a in a position-independent executable: when the only
+# `.eh_frame` input is a terminator (`crtendS.o`'s `__FRAME_END__`, the
+# other objects compiled with `-fno-asynchronous-unwind-tables
+# -fno-unwind-tables`, or assembly without CFI), the output `.eh_frame`
+# is the terminator alone, 4 bytes, with the symbol at its start; no
+# `PT_GNU_EH_FRAME` without an FDE (S-57: GNU ld; lld writes an empty
+# table, mold always one). The program (no interpreter, no dynamic
+# relocation) reads the word at its `.eh_frame` reference and exits 42
+# when it is the terminator.
+#@ spec: synth.md "S-48a"
+#@ arch: aarch64 x86_64
+#@ skip(mold,aarch64): mold's GOT word is 0, not _DYNAMIC (P-D14); no anomaly id records it
+
+as begin-%{arch}.s -o begin.o
+as term.s -o term.o
+link ld -pie --no-dynamic-linker --eh-frame-hdr begin.o term.o -e get -o pie
+run pie
+  exit: 42
+check readelf -lSW pie
+  has: .eh_frame PROGBITS * 000004 00 A
+  not(bfd,mortar): GNU_EH_FRAME
+check readelf -sW pie
+  has(bfd,lld,mortar): OBJECT LOCAL DEFAULT * __FRAME_END__$
+
+#--- begin-aarch64.s
+	.section .eh_frame,"a",%progbits
+	.type	__EH_FRAME_BEGIN__, %object
+__EH_FRAME_BEGIN__:
+	.text
+	.globl	get
+get:
+	adrp	x1, __EH_FRAME_BEGIN__
+	add	x1, x1, :lo12:__EH_FRAME_BEGIN__
+	ldr	w2, [x1]
+	mov	x0, #42
+	cbz	w2, 1f
+	mov	x0, #1
+1:	mov	x8, #93		// exit
+	svc	#0
+#--- begin-x86_64.s
+# A named symbol: `leaq` of a local one is `.eh_frame - 4`, which S-50
+# rule 5 refuses (the record of WP-142).
+	.section .eh_frame,"a",%progbits
+	.globl	__EH_FRAME_BEGIN__
+	.hidden	__EH_FRAME_BEGIN__
+	.type	__EH_FRAME_BEGIN__, %object
+__EH_FRAME_BEGIN__:
+	.text
+	.globl	get
+get:
+	leaq	__EH_FRAME_BEGIN__(%rip), %rsi
+	movl	$42, %edi
+	movl	$1, %eax
+	cmpl	$0, (%rsi)
+	cmovne	%eax, %edi
+	movl	$60, %eax	# exit
+	syscall
+#--- term.s
+	.section .eh_frame,"a",%progbits
+	.type	__FRAME_END__, %object
+__FRAME_END__:
+	.long	0

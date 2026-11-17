@@ -1,0 +1,143 @@
+# synth.md S-48a: a link whose only `.eh_frame` input is a terminator
+# (`crtend.o`'s and `crtendS.o`'s `__FRAME_END__`; every object compiled
+# with `-fno-asynchronous-unwind-tables -fno-unwind-tables`, or assembly
+# without CFI) has an `.eh_frame` of 4 bytes, the terminator alone, and a
+# symbol defined in such an input lies at its start (S-50 rules 1 and 3):
+# GNU ld, lld and mold all write the 4 bytes (mold drops the symbol). Two
+# terminators make one; `--gc-sections` keeps it; no `.eh_frame_hdr`
+# without an FDE (S-57; lld writes an empty table, mold always one). An
+# empty input `.eh_frame` (x86 `crtbeginT.o`'s, with `frame_dummy`'s
+# reference to its start) gets the terminator too, with or without one
+# from another input: lld and mold write it; GNU ld writes a 0-byte
+# section, so the frame list the reference names starts on whatever comes
+# next (the `empty` program, which reads that word, is not run on GNU ld's
+# output). Each program reads the word at its `.eh_frame` reference and
+# exits 42 when it is the terminator.
+#@ spec: synth.md "S-48a"
+# mold: `__bss_start` at 0 under `--gc-sections` (A11).
+#@ anomaly(mold): A11
+
+as get-%{arch}.s -o get.o
+as begin-%{arch}.s -o begin.o
+as term.s -o term.o
+as term.s -o term2.o
+as end.s -o end.o
+link ld -static get.o term.o -e get -o prog
+run prog
+  exit: 42
+check readelf -SW prog
+  has: .eh_frame PROGBITS * 000004 00 A
+  not(bfd,lld,mortar): .eh_frame_hdr
+check readelf -sW prog
+  has(bfd,lld,mortar): OBJECT LOCAL DEFAULT * __FRAME_END__$
+link ld -static --eh-frame-hdr get.o term.o -e get -o hdr
+check readelf -lSW hdr
+  has: .eh_frame PROGBITS * 000004 00 A
+  not(bfd,mortar): GNU_EH_FRAME
+link ld -static --gc-sections get.o term.o -e get -o gc
+check readelf -SW gc
+  has: .eh_frame PROGBITS * 000004 00 A
+link ld -static get.o term.o term2.o -e get -o two
+check readelf -SW two
+  has: .eh_frame PROGBITS * 000004 00 A
+check readelf -sW two
+  count(bfd,lld,mortar): 2 OBJECT LOCAL DEFAULT * __FRAME_END__$
+link ld -static get.o end.o -e get -o end
+check readelf -SW end
+  has: .eh_frame PROGBITS * 000004 00 A
+check readelf -sW end
+  has(bfd,lld,mortar): OBJECT GLOBAL DEFAULT * frame_end_after$
+link ld -static begin.o term.o -e get -o crt
+run crt
+  exit: 42
+check readelf -SW crt
+  has: .eh_frame PROGBITS * 000004 00 A
+link ld -static begin.o -e get -o empty
+run(lld,mold,mortar) empty
+  exit: 42
+check readelf -SW empty
+  has(lld,mold,mortar): .eh_frame PROGBITS * 000004 00 A
+
+#--- get-aarch64.s
+	.text
+	.globl	get
+get:
+	mov	x0, #42
+	mov	x8, #93		// exit
+	svc	#0
+#--- get-x86_64.s
+	.text
+	.globl	get
+get:
+	movl	$60, %eax	# exit
+	movl	$42, %edi
+	syscall
+#--- get-i386.s
+	.text
+	.globl	get
+get:
+	movl	$1, %eax	# exit
+	movl	$42, %ebx
+	int	$0x80
+#--- begin-aarch64.s
+# The shape of x86 crtbeginT.o: an empty .eh_frame, a local symbol at its
+# start, code that takes the address.
+	.section .eh_frame,"a",%progbits
+	.type	__EH_FRAME_BEGIN__, %object
+__EH_FRAME_BEGIN__:
+	.text
+	.globl	get
+get:
+	adrp	x1, __EH_FRAME_BEGIN__
+	add	x1, x1, :lo12:__EH_FRAME_BEGIN__
+	ldr	w2, [x1]
+	mov	x0, #42
+	cbz	w2, 1f
+	mov	x0, #1
+1:	mov	x8, #93		// exit
+	svc	#0
+#--- begin-x86_64.s
+# A named symbol: `leaq` of a local one is `.eh_frame - 4`, which S-50
+# rule 5 refuses (the record of WP-142).
+	.section .eh_frame,"a",%progbits
+	.globl	__EH_FRAME_BEGIN__
+	.hidden	__EH_FRAME_BEGIN__
+	.type	__EH_FRAME_BEGIN__, %object
+__EH_FRAME_BEGIN__:
+	.text
+	.globl	get
+get:
+	leaq	__EH_FRAME_BEGIN__(%rip), %rsi
+	movl	$42, %edi
+	movl	$1, %eax
+	cmpl	$0, (%rsi)
+	cmovne	%eax, %edi
+	movl	$60, %eax	# exit
+	syscall
+#--- begin-i386.s
+	.section .eh_frame,"a",%progbits
+	.type	__EH_FRAME_BEGIN__, %object
+__EH_FRAME_BEGIN__:
+	.text
+	.globl	get
+get:
+	movl	$42, %ebx
+	movl	$1, %ecx
+	cmpl	$0, __EH_FRAME_BEGIN__
+	cmovne	%ecx, %ebx
+	movl	$1, %eax	# exit
+	int	$0x80
+#--- term.s
+# crtend.o's terminator.
+	.section .eh_frame,"a",%progbits
+	.type	__FRAME_END__, %object
+__FRAME_END__:
+	.long	0
+#--- end.s
+# A terminator with a symbol at its end (offset 4 = sh_size): S-50 rule 3,
+# the final terminator's place.
+	.section .eh_frame,"a",%progbits
+	.long	0
+	.globl	frame_end_after
+	.type	frame_end_after, %object
+frame_end_after:

@@ -127,6 +127,43 @@ fn s48_one_terminator_and_input_terminators_dropped() {
 }
 
 #[test]
+fn s48a_wp142_a_terminator_alone_when_no_record_survives() {
+    // crtend.o's terminator, the only input: the chunk exists, 4 bytes,
+    // and `__FRAME_END__` (offset 0) and a symbol at its end (offset 4)
+    // lie at its start (S-50 rules 1 and 3).
+    let mut eh = Eh::default();
+    eh.add(1, 1, &[R::Term]);
+    let p = plan(&eh, &[]);
+    assert!(p.exists());
+    assert_eq!((p.size(), p.fde_count()), (4, 0));
+    assert_eq!(bytes(&p, &eh), [0; 4]);
+    let sym = EhWho::Symbol { droppable: false };
+    assert_eq!(p.value(&eh, SectionId(1), 0, sym), Ok(EhValue::Offset(0)));
+    assert_eq!(p.value(&eh, SectionId(1), 4, sym), Ok(EhValue::Offset(0)));
+    // Two terminators make one; an empty input (x86 crtbeginT.o's) is a
+    // frame list too, alone or not.
+    eh.add(2, 2, &[R::Term]);
+    let p = plan(&eh, &[]);
+    assert_eq!(bytes(&p, &eh), [0; 4]);
+    let mut empty = Eh::default();
+    empty.add(1, 1, &[]);
+    let p = plan(&empty, &[]);
+    assert_eq!((p.exists(), p.size()), (true, 4));
+    assert_eq!(p.value(&empty, SectionId(1), 0, EhWho::Reloc), Ok(EhValue::Offset(0)));
+    // Records that all die, with no terminator and no empty input: no
+    // chunk (S-3); with crtend.o's terminator after them: the terminator.
+    let mut dead = Eh::default();
+    dead.add(1, 1, &[cie(0, 16), fde(0, 10, 0)]);
+    assert!(!plan(&dead, &[10]).exists());
+    dead.add(2, 2, &[R::Term]);
+    let p = plan(&dead, &[10]);
+    assert_eq!((p.exists(), p.size(), p.records().len()), (true, 4, 0));
+    assert_eq!(p.value(&dead, SectionId(1), 0, EhWho::Reloc), Ok(EhValue::Offset(0)));
+    // No input at all: no chunk.
+    assert!(!plan(&Eh::default(), &[]).exists());
+}
+
+#[test]
 fn s38_finding5_fde_without_initial_location_is_dropped() {
     let mut eh = Eh::default();
     eh.add(

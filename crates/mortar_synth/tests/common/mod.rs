@@ -35,6 +35,8 @@ pub enum R {
     /// augmentation length and three `DW_CFA_nop`: 16 bytes before
     /// `extra`.
     Fde { cie: u32, code: Option<(u32, i64)>, extra: usize, empty: bool },
+    /// A terminator (a zero length word), last in its section (S-39).
+    Term,
 }
 
 pub fn fde(cie: u32, section: u32, offset: i64) -> R {
@@ -106,6 +108,7 @@ impl Eh {
                         relocs.push(pc32(u64::from(off) + 8, target));
                     }
                 }
+                R::Term => bytes.extend_from_slice(&[0; 4]),
             }
         }
         self.ins.push((SectionId(id), FileId(file), bytes, relocs, offs));

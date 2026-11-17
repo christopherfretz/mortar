@@ -4892,7 +4892,8 @@ mortar a single answer and the references differ or are not ruled.
   `st_size` 0; `STB_WEAK` exactly when no input references it strongly
   and the line does not `-u` it; type `STT_FUNC` for a function or IFUNC
   definition or a canonical PLT, else the definition's, `STT_NOTYPE` when
-  nothing defines it (`WeakDyn`); on AArch64 `STO_AARCH64_VARIANT_PCS`
+  nothing defines it (`WeakDyn`; in `Shared`, when no member of N
+  defines it, D-10 and P-D19, WP-140); on AArch64 `STO_AARCH64_VARIANT_PCS`
   exactly when the definition has it or, with none, an input's undefined
   reference has it. A defined entry at a `COPY` record's place (the copy
   and each alias) has the shared definition's type and `st_size`, and
@@ -5185,7 +5186,14 @@ and what turns P-D9's equality into a check of D-112.
   binding, type, visibility and version (D-115). *Read:* `.dynsym`'s
   defined entries and `.gnu.version`. *Reported:* a defined entry
   missing, extra or with a field or version that differs. Imports are
-  P-D7's import rule and P-D8, unchanged.
+  P-D7's import rule and P-D8, unchanged, except that an import's
+  static binding, `bind(k)`, ranges over N alone (`spec/dyn.md` D-10 as
+  WP-137 amends it; WP-140): a weak-only key whose every definition lies
+  in an object that is not needed is unbound, D-111 item 3's `WEAK
+  NOTYPE`, unversioned (GNU ld; lld's `FUNC` and mold's needed object and
+  version are reference forms, judged as before). The loader's run-time
+  lookup (P-D9, P-D17) still reaches that object through a needed
+  object's `DT_NEEDED`.
 - **P-D20 (forbidden forms; request P-R5).** Reported, each by name: a
   `COPY` record; a canonical PLT (`SHN_UNDEF` with a non-zero
   `st_value`); `DT_TEXTREL`; a dynamic record whose place is in a
