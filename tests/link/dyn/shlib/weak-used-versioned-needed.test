@@ -1,0 +1,108 @@
+# dyn.md D-27 (WP-141), row (c) of its table: `weak-used-versioned` with
+# `libv.so` NEEDED (a strong reference to `vfn2@@V1`), the reference to
+# `vfn`/`vdat` still weak. The import is versioned (`vfn@V1`, a `Verneed`
+# of `libv.so`), every linker alike. It pins, by measurement, that the
+# run-time hazard of a weak reference from non-PIC code does not depend on
+# whether the library is needed or only used: on x86-64 `-no-pie` the
+# canonical PLT (`cmp`) and the `R_X86_64_COPY` (`dat`) are taken from
+# the NEEDED `libv.so`, and with `alt/libv.so` (its `V1` has `vfn2` but
+# not `vfn`, `vdat`) the PLT address makes `if (vfn)` true and the call
+# crashes, and GNU ld's and mortar's `GLOBAL` copy stops the load
+# (`symbol lookup error`, 127). lld and mold write the copy `WEAK`: the
+# loader skips it and `vdat` reads 0 at a non-null address (320).
+#@ spec: dyn.md "D-27"
+#@ arch: aarch64 x86_64
+
+cc -O1 -fPIC v.c -o v.o
+cc -O1 -fPIC vx.c -o vx.o
+cc -O1 -fPIC m2.c -o m2.o
+cc -O1 -fPIE cmp.c -o cmp-pie.o
+cc -O1 -fPIE dat.c -o dat-pie.o
+cc -O1 -fno-pie cmp.c -o cmp-nopie.o
+cc -O1 -fno-pie dat.c -o dat-nopie.o
+shlib gcc v.o -Wl,--version-script=v.map -Wl,-soname,libv.so -o libv.so
+shlib gcc vx.o -Wl,--version-script=vx.map -Wl,-soname,libv.so -o alt/libv.so
+shlib gcc m2.o -Wl,-soname,libm2.so -L. -Wl,--no-as-needed -lv -o libm2.so
+
+link gcc -pie cmp-pie.o -L. -Wl,--as-needed -lv -lm2 -o cmp-pie
+run cmp-pie
+  stdout: 327
+run cmp-pie
+  env: LD_LIBRARY_PATH=alt:.
+  stdout: 320
+check readelf -dW cmp-pie
+  has: (NEEDED) Shared library: [libv.so]
+check readelf -W --dyn-syms cmp-pie
+  has: FUNC WEAK DEFAULT UND vfn@V1
+check readelf -VW cmp-pie
+  has: File: libv.so
+
+link gcc -pie dat-pie.o -L. -Wl,--as-needed -lv -lm2 -o dat-pie
+run dat-pie
+  stdout: 325
+run dat-pie
+  env: LD_LIBRARY_PATH=alt:.
+  stdout: 319
+check readelf -W --dyn-syms dat-pie
+  has: OBJECT WEAK DEFAULT UND vdat@V1
+
+link gcc -no-pie cmp-nopie.o -L. -Wl,--as-needed -lv -lm2 -o cmp-nopie
+run cmp-nopie
+  stdout: 327
+run(aarch64) cmp-nopie
+  env: LD_LIBRARY_PATH=alt:.
+  stdout: 320
+# The hazard, with a needed library: the canonical PLT makes `vfn`
+# non-null; `alt` lacks it.
+run(x86_64) cmp-nopie
+  env: LD_LIBRARY_PATH=alt:.
+  exit: signal 11
+check readelf -W --dyn-syms cmp-nopie
+  has: FUNC WEAK DEFAULT UND vfn@V1
+check(x86_64) readelf -W --dyn-syms cmp-nopie
+  not: 0000000000000000 * UND vfn@V1
+
+link gcc -no-pie dat-nopie.o -L. -Wl,--as-needed -lv -lm2 -o dat-nopie
+run dat-nopie
+  stdout: 325
+run(aarch64) dat-nopie
+  env: LD_LIBRARY_PATH=alt:.
+  stdout: 319
+# The hazard, with a needed library: a GLOBAL copy of `vdat`, which
+# `alt` lacks: the loader refuses the program.
+run(bfd,mortar,x86_64) dat-nopie
+  env: LD_LIBRARY_PATH=alt:.
+  exit: 127
+run(lld,mold,x86_64) dat-nopie
+  env: LD_LIBRARY_PATH=alt:.
+  stdout: 320
+check(x86_64) readelf -rW dat-nopie
+  has: R_X86_64_COPY * vdat@V1 + 0
+
+#--- alt/README
+alt/libv.so: libv.so's version V1 with vfn2, without vfn and vdat.
+#--- v.map
+V1 { global: vfn; vdat; vfn2; local: *; };
+#--- vx.map
+V1 { global: vother; vfn2; local: *; };
+#--- v.c
+int vfn(void) { return 7; }
+int vdat = 5;
+int vfn2(void) { return 300; }
+#--- vx.c
+int vother(void) { return 1; }
+int vfn2(void) { return 300; }
+#--- m2.c
+int m2fn(void) { return 20; }
+#--- cmp.c
+#include <stdio.h>
+int vfn(void) __attribute__((weak));
+int m2fn(void);
+int vfn2(void);
+int main(void) { printf("%d\n", (vfn ? vfn() : 0) + m2fn() + vfn2()); return 0; }
+#--- dat.c
+#include <stdio.h>
+extern int vdat __attribute__((weak));
+int m2fn(void);
+int vfn2(void);
+int main(void) { printf("%d\n", (&vdat ? vdat : -1) + m2fn() + vfn2()); return 0; }

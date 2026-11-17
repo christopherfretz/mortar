@@ -7,18 +7,20 @@
 # link stopped with mortar's internal error ("missing term: live
 # target"). With no reference the globals are never an error and are in
 # neither `.symtab` nor the `.dynsym` of a shared object that would
-# export them (mortar makes shared objects on AArch64 only).
+# export them (AArch64 and x86-64; mortar refuses `-shared` on i386).
 #
 # The references disagree on each kind, so each link is checked where
 # they refuse it: GNU ld calls `gex` undefined and mold links it in its
 # own `.foo`; GNU ld links `gstk` (at the end of `.text`) and mold calls
 # it undefined; mold calls `gbid` undefined. GNU ld exports each as an
-# absolute symbol (the offset in its section), lld as undefined: the
-# shared object is checked on mortar only, and without `gstk`: the
-# verifier's P-D19 still expects an unreferenced export of
-# `.note.GNU-stack` in `.dynsym` (its side is WP-143's). lld keeps each unreferenced
-# global in `.symtab` as an undefined symbol.
+# absolute symbol (the offset in its section; `gstk` at the end of
+# `.text`, where it places `.note.GNU-stack`), lld as undefined, mold
+# omits all but `gex` (in its own `.foo`): every reference's shared
+# object is verified (P-D19 accepts each form as measured, WP-147), and
+# the absence is checked on mortar. lld keeps each unreferenced global in
+# `.symtab` as an undefined symbol.
 #@ spec: resolve.md §10.1
+#@ spec: plumb.md "P-D19"
 
 cc -O1 main.c -o main.o
 as defs.s -o defs.o
@@ -47,10 +49,11 @@ check(bfd,mortar) readelf -sW prog
   not: gbid
 check(mold,mortar) readelf -sW prog
   not: gstk
-link(aarch64,mortar) ld -shared defs.o -o libdefs.so
-check(aarch64,mortar) readelf -sW --dyn-syms libdefs.so
+link(aarch64,x86_64) ld -shared defs.o stk.o -o libdefs.so
+check(aarch64,x86_64,mortar) readelf -sW --dyn-syms libdefs.so
   not: gex
   not: gbid
+  not: gstk
 
 #--- main.c
 int main(void) { return 42; }

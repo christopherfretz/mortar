@@ -169,9 +169,26 @@ assumed), or if it is one of these exclusions.
   mode (§8.1 compares the COMDAT copies and the resolved definition
   only; `wcheck.py` would, and finds nothing on the corpora of §8.1).
 
+- **X21** objects without records: W4 compares a relocation whose
+  target is unit-local (§8.1, W4's rule) by the string or merged entry
+  it refers to, and any other unit-local target (a local object or
+  function, a section symbol and addend outside a mergeable section, a
+  type that is not absolute) by its kind (code or data) only; a key on
+  one side and a unit-local target on the other agree. Missed: two
+  copies that point at different local objects or functions, or at
+  different contents of them (`inline int* p = &x;` with a
+  unit-local `x` of 1 in one unit and 2 in another), at different
+  strings in a plain `.rodata` (GCC `-O0`), or at a global on one side
+  and a local on the other. A bounded comparison of a local target's
+  bytes over its `st_size` and its own relocations (depth-bounded,
+  cycles cut) would catch the named-local form (GCC `-O2`), not a
+  section symbol and addend (no extent); proposed in
+  `spec/landed/meta/WP-146.md`, not implemented (the corpus needs none
+  for zero false findings).
+
 Numbers X1-X12 are those of revision 1; X7 is split into X7a and X7b;
 X13-X19 were added by the peer review of kiln and hod (2026-11-15); X20
-by WP-072.
+by WP-072; X21 by WP-146.
 
 **Best effort (no proof).** Objects without records: W1 and W2 of §8 are
 on by default and catch K5 and K6 when two copies' sizes differ; nothing
@@ -724,8 +741,12 @@ clause]`). A class or enumeration gets a row only if all hold:
 does not depend on its use, so ANY subset of "the complete, named, not
 TU-local enumerations the unit defines" is sound (it can only miss).
 The rule above ("appears in an emitted definition") needs a usage
-record kiln does not keep; kiln's K-4 writes no enumeration rows, and
-the rule accepted for its first ones is "complete in the unit and named
+record kiln does not keep; kiln's K-4 wrote no enumeration rows; its
+K-4b (d854b23bc) writes them under the preferred rule below, "complete
+and referenced anywhere in the unit" (sema's referenced mark on the
+enumeration or an enumerator; a member enumeration of a class template
+specialization counts when the template's own is marked), so X18a no
+longer applies to kiln's rows. The rule accepted for the first ones was "complete in the unit and named
 in the type of an emitted function or variable", or, if kiln has a
 reference mark on the enumeration or its enumerators, "complete and
 referenced anywhere in the unit" (preferred: the former misses K7's
@@ -809,6 +830,26 @@ against mortar e3f9ed7: a class that differs between two units is
 `odr-type-mismatch`; three real units with libstdc++ (1,020 rows) and
 libc++ (1,331 rows) under `--odr=strict` give 0 record findings; the
 heavy unit has 337 kind 3 rows (18,888 B, names 14,342 B).
+Kiln's K-4b (kiln d854b23bc; accepted 2026-11-17): **an enumeration's
+layout hash** is the token `E`, one byte (bit 0 scoped, bit 1 a fixed
+underlying type), the underlying type's `<type>` string, a `u32` count
+and per enumerator its name and `u64` value: `enum E : int` and `enum
+E` hash differently (different definitions of one key; scoped and
+unscoped enumerations share a `<type>` encoding, so the byte is
+needed), and `ENUM` is set. **A virtual direct base** is hashed twice
+(the direct-base list, then the list of all virtual bases). **A
+member of unnamed class type** is hashed as the member (no type
+string) followed by the nested class's own structure. **A vtable
+slot's index** is the component's index in the group as hashed (RTTI
+slots left out; vcall, vbase and offset-to-top components counted);
+pure and deleted slots are named `__cxa_pure_virtual` and
+`__cxa_deleted_virtual`. Kind 4's items (O-19) follow the same order:
+direct bases, all virtual bases, members, the vptr, vtable slots; a
+slot item's `value` is that index. Measured by kiln on the heavy unit:
+`default` 72,976 B = 6.1 % of the `-O0 -g` object (368 kind 3 rows of
+which 31 enumerations, 800 kind 5 rows); `detail` 125,792 B (kind 4:
+24,704 B, 368 entries, 906 items, 10,231 B of strings); under
+`--odr=strict` 0 findings (libstdc++ 1,113 rows, libc++ 1,430).
 
 **O-19 (kind 4, layout details).** Optional (`-fmason-metadata=detail`):
 per type, the list O-18 hashes, in readable form (member names, offsets,
@@ -1092,9 +1133,88 @@ COMMON, C tentative-definition and 12-TU mixed links:
 | W1 | an `STT_OBJECT`/`STT_TLS` symbol defined in two copies of one COMDAT group with different `st_size` | K5 (`_ZTV1B` 48/40), K6 (`_ZTI1D` 56/24, `_ZTV1D` 72/40) | 0 on every corpus above; 0 on N20-N24 | **on**, warning `odr-size-mismatch` |
 | W2 | one key defined as `STT_FUNC`/`STT_GNU_IFUNC` in one live file and as `STT_OBJECT`/`STT_TLS`/common in another; `STT_NOTYPE` never participates | (none in the catalogue) | 0 on every corpus; N23 (F4) is not a finding under this wording (the first draft's prototype flagged it) | **on**, warning `odr-symbol-type-mismatch` |
 | W3 | a strong non-COMDAT definition and a COMDAT copy of the same key | K13 | **3**: N20, N21, N22 (`legal-fp` F1-F3; protobuf ships N22's pattern) | `--odr=strict` only, warning `odr-strong-and-comdat`; never proposed as a default |
-| W4 | data contents (bytes and symbol-normalized relocations) differ between copies | K5, K6, K9 | **1**: a libstdc++ vtable (D1/D2 aliases differ between GCC and Clang) | `--odr=strict` only, warning `odr-contents-mismatch` |
+| W4 | data contents differ between copies: the bytes, and the relocations compared by W4's rule below (a global or weak target by name and addend; a unit-local target by what it refers to, never by its place in the unit) | K5, K6, K9; a string or merged entry a copy refers to that differs (`"true"` vs `"True"`) | **1**: a libstdc++ vtable (D1/D2 aliases differ between GCC and Clang); the first rule's (names and addends of local targets) 425 on WP-146's 72 equal-source unit pairs, 0 under this rule | `--odr=strict` only, warning `odr-contents-mismatch` |
 | W5 | section alignment differs | — | **4**: `_ZTS*` 8 (GCC) vs 1 (Clang) | not a check |
 | F | function code bytes differ | K1, K2, K11 … | everything at different `-O` (N1) | never |
+
+**W4's comparison (normative; WP-146).** W4 compares the data
+definitions of one key that cover their section (`st_value` 0,
+`st_size` the section's size) in the copies of its COMDAT groups. Two
+copies are the same when all of the following hold, and a copy is put in
+the first class (copies in the order of file, then symbol index) whose
+first copy it is the same as; a finding is two classes or more. A copy
+whose section, relocation section or a target's section cannot be read,
+or one of whose `SHT_REL` relocations has a field width the table below
+does not give, takes no part (no finding from it).
+
+1. *Bytes.* The section's bytes are equal (for `SHT_NOBITS`, its size),
+   except at the field of every relocation of an `SHT_REL` section whose
+   target is unit-local (2): those bytes hold the implicit addend, an
+   address in the unit, and are left out of both sides. The field's
+   width is that of the relocation type: `EM_386` `R_386_32`,
+   `R_386_PC32`, `R_386_GOT32`, `R_386_PLT32`, `R_386_GOTOFF`,
+   `R_386_GOTPC`, `R_386_GOT32X` and the `R_386_TLS_*` types 4 bytes,
+   `R_386_16` and `R_386_PC16` 2, `R_386_8` and `R_386_PC8` 1. A global
+   or weak target's field stays in the bytes (its implicit addend is
+   compared there).
+2. *Relocations.* Both sides have the same number of relocations; sorted
+   by (`r_offset`, `r_type`), ties in the relocation section's order, the
+   n-th of each side has the same `r_offset` and `r_type`, and targets
+   that agree. A relocation's **target** is a *key* when its symbol's
+   binding is not `STB_LOCAL` (`STB_GLOBAL`, `STB_WEAK`,
+   `STB_GNU_UNIQUE`; encoded by its symbol-table name and the addend);
+   otherwise (`STB_LOCAL`, `STT_SECTION` included) it is
+   *unit-local*, encoded by what it refers to:
+   - **a string**: the type is absolute (its value is S + A:
+     `R_AARCH64_ABS64`, `_ABS32`, `_ABS16`; `R_X86_64_64`, `_32`,
+     `_32S`, `_16`, `_8`; `R_386_32`, `_16`, `_8`), the symbol's
+     section has `SHF_MERGE` and `SHF_STRINGS` with `sh_entsize` E > 0,
+     and p = `st_value` + addend (for `SHT_REL`, the addend is the
+     field's bytes, little-endian, sign-extended) is a multiple of E
+     inside the section, and a terminator (E zero bytes at a multiple of
+     E) lies at or after p in the section: the target is the bytes from
+     p up to that terminator (not included) and E. So `"xtrue"+1` and
+     `"true"` refer to the same string; `"true"` and `"true"+1` do not.
+   - **an entry**: the type is absolute, the section has `SHF_MERGE`
+     without `SHF_STRINGS`, E > 0, and p lies inside the section: the
+     target is the E bytes of the entry that holds p (from p − p mod E),
+     p mod E, and E.
+   - **anything else unit-local** (a local object or function, a section
+     symbol and addend in a section that is not mergeable, a target the
+     two forms above refuse, a type that is not absolute): only its
+     *kind*: code (the symbol's section has `SHF_EXECINSTR`) or data
+     (any other section, or none).
+   Two targets agree when: both are keys with equal names and addends;
+   both are strings with equal bytes and E, or both entries with equal
+   bytes, offset and E; or one of them is an "anything else" target, or
+   the two are a string and an entry, and their kinds are equal; or one
+   is a key and the other unit-local (the conservative path, X21: a key
+   and a local alias of a function, GCC's `.localalias` or Clang's
+   `$local`, are the same target).
+3. The note of a finding says where the first two classes' first copies
+   first differ: "its bytes", "its relocations", or "the data its
+   relocation at offset N refers to" (N in decimal, the first relocation
+   whose targets are both strings or both entries and do not agree);
+   when the bytes differ too, "its bytes and relocations" or "its bytes
+   and the data its relocation at offset N refers to".
+
+Why by content: the address of a unit-local target is its place in the
+unit, which differs whenever the units' other contents do. Measured
+(WP-146, a header with eleven inline and template static data members
+in two units whose other strings and objects differ, GCC 14, Clang 19
+and 22, `-O0`/`-O2`, `-fPIC`/`-fno-PIC`, AArch64, x86-64 and i386, 36
+same-compiler pairs, 24 GCC-vs-Clang pairs and 12 `-fPIC`-vs-not
+pairs): Clang refers to every unit-local target by its section symbol
+and addend (`.L.str` and `.L` labels never reach the symbol table);
+GCC does too at `-O0` and for strings at `-O2`, and refers to a local
+object by its own name (`_ZL3arr`, in `.rodata._ZL3arr`) at `-O2`. GCC
+`-O0` puts string literals in a plain `.rodata` (no `SHF_MERGE`), GCC
+`-O2` in `.rodata.str1.8` on AArch64 and `.rodata.str1.1` on x86, Clang
+in `.rodata.str1.1`; a table of pointers is in `.rodata` without
+`-fPIC` and in `.data.rel.ro`/`.data.rel.ro.local` with it. So the kind
+is code or data only: whether the section is writable or mergeable
+differs between legal units of one source. The first rule's encoding
+gave 425 findings on those 72 equal pairs, this one 0.
 
 Cost: one pass over the copies resolution keeps, comparing two integers
 per symbol [estimate: under 1 ms per 100,000 copies; the Python
@@ -1222,7 +1342,14 @@ form (`KF…E`, `F…RE`, `F…OE`); every row of a C unit has `EXTERN_C`;
   or a nested function type), because `int (*)[]` and `int (*)[4]` are
   compatible in C and a hash has only equality; inner dimensions are
   kept, and `[3]` against `[4]` behind a pointer is a miss (X19; ruling
-  of 2026-11-17 on kiln's reading). *Measured by kiln with its own
+  of 2026-11-17 on kiln's reading). A C-linkage declaration whose type
+  contains a **variable** array bound anywhere (`[n]`, `[*]`, at any
+  depth, in a parameter or a nested function-pointer type) gets **no
+  row**: `void f(int n, int b[][n][n])` and `void f(int n, int
+  b[][4][4])` are compatible in C, and erasing bounds in the unit that
+  has the variable one would still leave the other unit's `PA4_A4_i`
+  to differ from it; a unit without a row is never a party (a miss,
+  X19; ruling of 2026-11-17, kiln's K-4b question). *Measured by kiln with its own
   types* (K-5, AArch64, 24 headers, 2,644 functions, before the two
   rulings of 2026-11-17): 13 differences, 11 the asm-labelled
   `extern "C++"` overloads (O-35 "No row") and 2 `getitimer`/`setitimer`

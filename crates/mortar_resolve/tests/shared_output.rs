@@ -172,3 +172,66 @@ fn d10_shared_weak_key_does_not_bind_a_used_object() {
         assert!(matches!(r.def[m.id("m2fn").0 as usize], Def::Shared(_)));
     }
 }
+
+/// dyn.md D-10 setting, D-27 (WP-141): the executable twin of the test
+/// above. In `Exec` and `Pie` a weak-only key whose only (versioned)
+/// definition is in a used, not needed object (`libv.so`, reached by
+/// `libm2.so`'s `DT_NEEDED`) STAYS bound there, function and data alike:
+/// its type and PLT/GOT/copy form follow the binding (GNU ld); D-27 then
+/// writes it unversioned. Case (a), no edge: `libv.so` is dead and the key
+/// stays `Undefined{weak: true}` (D-11, D-25). Case (c), a strong
+/// reference to another symbol of `libv.so`: it is needed, and the weak
+/// key binds there too.
+#[test]
+fn d10_exec_weak_key_binds_a_used_object() {
+    use mortar_core::resolution::FileLive;
+    use mortar_resolve::Def;
+    for pie in [false, true] {
+        let exe = Options {
+            entry: Entry::None,
+            output: Output { pie, dynamic: true },
+            ..Options::default()
+        };
+        for case in ['a', 'b', 'c'] {
+            let mut m = Model::new(A64);
+            let a = m.obj("a.o");
+            m.weak_undef(a, "vfn");
+            m.weak_undef(a, "vdat");
+            m.undef(a, "m2fn");
+            if case == 'c' {
+                m.undef(a, "vfn2");
+            }
+            let v = m.shlib("libv.so", true);
+            let vi = m.def(v, "vfn");
+            let di = m.data(v, "vdat", 4);
+            let fi = m.def(v, "vfn2");
+            for i in [vi, di, fi] {
+                m.set_version(v, i, 2);
+            }
+            let m2 = m.shlib("libm2.so", true);
+            m.def(m2, "m2fn");
+            if case != 'a' {
+                m.needs(m2, Some(v));
+            }
+            let r = link_with(&m, &exe);
+            assert!(r.problems.is_empty(), "{case} pie={pie}: {:?}", r.problems);
+            let (live, needed) = match case {
+                'a' => (FileLive::Dead, vec![m2]),
+                'b' => (FileLive::Shared { needed: false, used: true }, vec![m2]),
+                _ => (FileLive::Shared { needed: true, used: false }, vec![v, m2]),
+            };
+            assert_eq!(r.file_live[v.0 as usize], live, "{case} pie={pie}");
+            let mut got = dynamic(&r).needed.clone();
+            got.sort_unstable();
+            assert_eq!(got, needed, "{case} pie={pie}");
+            for (name, index) in [("vfn", vi), ("vdat", di)] {
+                let want = if case == 'a' {
+                    Def::Undefined { weak: true }
+                } else {
+                    Def::Shared(mortar_core::SymEntry { file: v, index })
+                };
+                assert_eq!(r.def[m.id(name).0 as usize], want, "{name} {case} pie={pie}");
+            }
+        }
+    }
+}

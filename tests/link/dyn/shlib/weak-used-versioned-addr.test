@@ -1,0 +1,66 @@
+# dyn.md D-27 (WP-141): `weak-used-versioned`'s `addr` form in `-no-pie`
+# (`int (*hp)(void) = vfn;` in data, a `-fno-pie` object), `vfn@@V1`
+# defined only in `libv.so`, which `--as-needed` drops and `libm2.so`
+# lists (used, not needed). mortar keeps the key bound in `libv.so`
+# and writes a symbolic record on the word (`ABS64`, `R_X86_64_64`)
+# against the unversioned `FUNC WEAK UND` entry: 27 with `libv.so`, 20
+# with `alt/libv.so` (which lacks `vfn`).
+#
+# The references, and why two are skipped (the verifier, which binds the
+# key as D-10 does, judges their word wrong, R1 "the relocated field
+# holds the wrong value"; no recorded anomaly names these cases, reported
+# by WP-141):
+# - GNU ld on AArch64 writes the address of an ordinary PLT entry into
+#   `hp` without making it canonical (`vfn`'s `.dynsym` value is 0), so
+#   `hp != dlsym(vfn)`; with `alt/libv.so` the call through `hp` crashes.
+#   (On x86-64 it writes `R_X86_64_64`, mortar's form.)
+# - lld leaves the key unbound in `-no-pie`: no record, `hp` is 0 and the
+#   program prints 20 even with `libv.so` loaded.
+# mold keeps `libv.so` needed (`vfn@V1`) and writes a record.
+#@ spec: dyn.md "D-27"
+#@ arch: aarch64 x86_64
+#@ skip(bfd,aarch64): the verifier's R1 on the word: an ordinary PLT entry's address, not canonical (WP-141)
+#@ skip(lld): the verifier's R1 on the word: 0, the key left unbound in -no-pie (WP-141)
+
+cc -O1 -fPIC v.c -o v.o
+cc -O1 -fPIC vx.c -o vx.o
+cc -O1 -fPIC m2.c -o m2.o
+cc -O1 -fno-pie addr.c -o addr-nopie.o
+shlib gcc v.o -Wl,--version-script=v.map -Wl,-soname,libv.so -o libv.so
+shlib gcc vx.o -Wl,--version-script=vx.map -Wl,-soname,libv.so -o alt/libv.so
+shlib gcc m2.o -Wl,-soname,libm2.so -L. -Wl,--no-as-needed -lv -o libm2.so
+
+link gcc -no-pie addr-nopie.o -L. -Wl,--as-needed -lv -lm2 -o addr-nopie
+run addr-nopie
+  stdout: 27
+run addr-nopie
+  env: LD_LIBRARY_PATH=alt:.
+  stdout: 20
+check(bfd,mortar) readelf -W --dyn-syms addr-nopie
+  has: FUNC WEAK DEFAULT UND vfn$
+check(bfd,mortar) readelf -dW addr-nopie
+  not: [libv.so]
+check(bfd,mortar) readelf -VW addr-nopie
+  not: File: libv.so
+check(mortar) readelf -rW addr-nopie
+  has: R_*64 * vfn + 0
+
+#--- alt/README
+alt/libv.so: libv.so's version V1 without vfn and vdat.
+#--- v.map
+V1 { global: vfn; vdat; local: *; };
+#--- vx.map
+V1 { global: vother; local: *; };
+#--- v.c
+int vfn(void) { return 7; }
+int vdat = 5;
+#--- vx.c
+int vother(void) { return 1; }
+#--- m2.c
+int m2fn(void) { return 20; }
+#--- addr.c
+#include <stdio.h>
+int vfn(void) __attribute__((weak));
+int m2fn(void);
+int (*hp)(void) = vfn;
+int main(void) { printf("%d\n", (hp ? hp() : 0) + m2fn()); return 0; }

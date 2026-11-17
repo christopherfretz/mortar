@@ -20,10 +20,11 @@ use mortar_core::resolution::Def;
 use mortar_core::{ComdatId, FileId, Inputs, Resolution, SymEntry, SymbolId};
 use mortar_diag::{Diagnostic, Key, Kind, Place, Relation};
 use mortar_elf::consts::{
-    SHT_NOBITS, SHT_REL, SHT_RELA, STB_GLOBAL, STB_LOCAL, STT_COMMON, STT_FUNC, STT_GNU_IFUNC,
-    STT_OBJECT, STT_SECTION, STT_TLS,
+    STB_GLOBAL, STB_LOCAL, STT_COMMON, STT_FUNC, STT_GNU_IFUNC, STT_OBJECT, STT_TLS,
 };
 use mortar_elf::{Object, SectionIndex, SymbolIndex, SymbolSection, SymbolTable};
+
+use crate::contents::{self, Contents};
 
 /// The phase of the one-definition-rule checks (`spec/model.md` §8).
 pub const PHASE: u16 = 40;
@@ -455,8 +456,10 @@ impl Cx<'_, '_> {
 
     /// W4: the data definitions that cover their section, by the
     /// section's contents (bytes, or the size of `SHT_NOBITS`) and its
-    /// relocations with symbols named (§8.1, `weakcheck.py`). A copy whose
-    /// contents cannot be read is left out (no finding from it).
+    /// relocations, each target a key by name and addend or a unit-local
+    /// one by what it refers to (§8.1, W4's rule; `contents`). Each copy
+    /// joins the first class whose first copy it is the same as. A copy
+    /// whose contents cannot be read is left out (no finding from it).
     fn w4(&self, key: SymbolId, defs: &[Held]) -> Option<Finding> {
         let mut encodings: Vec<Contents> = Vec::new();
         let mut classes: Vec<Vec<At>> = Vec::new();
@@ -470,7 +473,8 @@ impl Cx<'_, '_> {
         for d in sorted {
             let Some(contents) = self.contents(d.file, d.section) else { continue };
             let at = At { file: d.file, index: d.index };
-            if let Some(c) = encodings.iter().position(|e| *e == contents) {
+            if let Some(c) = encodings.iter().position(|e| contents::differ(e, &contents).is_none())
+            {
                 classes[c].push(at);
             } else {
                 encodings.push(contents);
@@ -481,14 +485,9 @@ impl Cx<'_, '_> {
         if classes.len() < 2 {
             return None;
         }
-        let (a, b) = (&encodings[0], &encodings[1]);
-        let what = match (a.bytes != b.bytes, a.relocs != b.relocs) {
-            (true, true) => "bytes and relocations",
-            (true, false) => "bytes",
-            _ => "relocations",
-        };
+        let what = contents::differ(&encodings[0], &encodings[1]).unwrap_or_default();
         let mut note = format!(
-            "the second differs from the first in its {what}, in the copies of COMDAT group {}",
+            "the second differs from the first in {what}, in the copies of COMDAT group {}",
             self.group_name(groups[1])
         );
         if self.kept(groups[0], classes[0][0].file) {
@@ -501,45 +500,15 @@ impl Cx<'_, '_> {
         })
     }
 
-    /// A section's contents and its relocations, symbols by name: section
-    /// symbols `[sec]<section name>`, locals `[local]<name>`.
+    /// A section's contents as W4 compares them (`contents::read`).
     fn contents(&self, file: FileId, section: SectionIndex) -> Option<Contents> {
         let (obj, table) = object(self.inputs, file)?;
-        let sec = obj.section(section).ok()?;
-        let bytes = if sec.sh_type() == SHT_NOBITS {
-            Bytes::Nobits(sec.size())
-        } else {
-            Bytes::Data(self.data(file, &obj, section)?.into_owned())
-        };
-        let mut relocs: Vec<(u64, u32, Vec<u8>, i64)> = Vec::new();
         let row = self
             .resolution
             .section_id(file, section)
             .and_then(|s| self.resolution.sections.get(s))?;
-        if row.reloc.0 != 0 {
-            let rsec = obj.section(row.reloc).ok()?;
-            let raw = self.data(file, &obj, row.reloc)?;
-            let mut push = |offset: u64, r_type: u32, r_sym: u32, addend: i64| -> Option<()> {
-                let name = reloc_name(&obj, &table, r_sym)?;
-                relocs.push((offset, r_type, name, addend));
-                Some(())
-            };
-            match rsec.sh_type() {
-                SHT_RELA => {
-                    for r in rsec.rela_in(&raw).ok()? {
-                        push(r.r_offset, r.r_type, r.r_sym, r.r_addend)?;
-                    }
-                }
-                SHT_REL => {
-                    for r in rsec.rel_in(&raw).ok()? {
-                        push(r.r_offset, r.r_type, r.r_sym, 0)?;
-                    }
-                }
-                _ => return None,
-            }
-        }
-        relocs.sort_unstable();
-        Some(Contents { bytes, relocs })
+        let reloc = (row.reloc.0 != 0).then_some(row.reloc);
+        contents::read(&obj, &table, section, reloc, &|s| self.data(file, &obj, s))
     }
 
     /// A section's bytes in the file: borrowed when resident, else copied
@@ -559,37 +528,6 @@ impl Cx<'_, '_> {
         self.inputs.copy_to(file, range.start as u64..range.end as u64, &mut buf).ok()?;
         Some(Cow::Owned(buf))
     }
-}
-
-/// A relocation's symbol, named so that two files compare.
-fn reloc_name(obj: &Object<'_>, table: &SymbolTable<'_>, r_sym: u32) -> Option<Vec<u8>> {
-    let index = SymbolIndex(r_sym);
-    let sym = table.get(index).ok()?;
-    let mut name = Vec::new();
-    if sym.sym_type() == STT_SECTION {
-        name.extend_from_slice(b"[sec]");
-        if let Ok(SymbolSection::Section(s)) = table.section_of(index, &sym) {
-            name.extend_from_slice(obj.section(s).ok()?.name().ok()?);
-        }
-    } else {
-        if sym.binding() == STB_LOCAL {
-            name.extend_from_slice(b"[local]");
-        }
-        name.extend_from_slice(table.name(&sym).ok()?);
-    }
-    Some(name)
-}
-
-#[derive(Debug, PartialEq, Eq)]
-enum Bytes {
-    Data(Vec<u8>),
-    Nobits(u64),
-}
-
-#[derive(Debug, PartialEq, Eq)]
-struct Contents {
-    bytes: Bytes,
-    relocs: Vec<(u64, u32, Vec<u8>, i64)>,
 }
 
 /// `a, b and c`.

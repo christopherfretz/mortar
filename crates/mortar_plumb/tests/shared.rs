@@ -59,6 +59,12 @@ const SOURCES: &[(&str, &str)] = src![
     "sv.c",
     "sv.map",
     "weak.cc",
+    "vd.c",
+    "vd.map",
+    "vd3.map",
+    "vd31.map",
+    "vdx.c",
+    "vdx.map",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -373,6 +379,7 @@ fn build() -> Option<Corpus> {
     refs(&mut b);
     tls(&mut b);
     tlsgd(&mut b);
+    verdef(&mut b);
     Some(Corpus { _scratch: scratch, outs: b.outs })
 }
 
@@ -1374,4 +1381,351 @@ fn p_d23_i386_is_outside_stage_3() {
         r.findings
     );
     assert!(ids.iter().all(|i| i == "P-D1"), "{:#?}", r.findings);
+}
+
+/// WP-149 (P-D27, D-115): `vd.c`'s library by each reference on both
+/// arches: `libvd.so` under `vd.map` (V1, V2 with parent V1; `-soname`)
+/// and `libvd3.so` under `vd3.map` (V3 with parents V1 V2; no `-soname`:
+/// the base is the output's name, lld's the `-o` as written; lld and mold
+/// refuse two parents, measured, so theirs is `vd31.map`, V3's one parent
+/// V2), each with
+/// `foo@V1` hidden and `foo@@V2`, the local `hid`, and `ext` imported
+/// from `libvdx.so`'s `X1` (a Vernaux after the Verdefs). Every link is
+/// the case `verdef`.
+fn verdef(b: &mut Builder<'_>) {
+    for arch in [Arch::A64, Arch::X64] {
+        let d = b.dir(arch, "verdef");
+        for f in ["vd.map", "vd3.map", "vd31.map", "vdx.map"] {
+            std::fs::copy(b.root.join(f), d.join(f)).unwrap();
+        }
+        let src = b.root.join("vdx.c").display().to_string();
+        let args = [
+            "-fPIC",
+            "-O1",
+            "-shared",
+            "-Wl,-soname,libvdx.so",
+            "-Wl,--version-script,vdx.map",
+            &src,
+            "-o",
+            "libvdx.so",
+        ];
+        must(&d, b.cc(arch), &args);
+        b.obj(arch, &d, "vd.c", &["-O1", "-fPIC"], "vd.o");
+        for l in Linker::ALL {
+            let args = ["-shared", "-Wl,-soname,libvd.so", "vd.o", "libvdx.so"];
+            let mut a = args.to_vec();
+            a.push("-Wl,--version-script,vd.map");
+            b.link("verdef", arch, &d, "libvd.so", &a, l, row(l, &[]));
+            let s = if l == Linker::Bfd { "vd3.map" } else { "vd31.map" };
+            let s = format!("-Wl,--version-script,{s}");
+            let a = ["-shared", "vd.o", "libvdx.so", &s];
+            b.link("verdef", arch, &d, "libvd3.so", &a, l, row(l, &[]));
+        }
+    }
+}
+
+// WP-149: the versioned libraries of every reference are clean (P-D27's
+// nodes, indices, parents, hashes and `.gnu.version`).
+#[test]
+fn p_d27_verdef_libraries_verify_clean() {
+    judge("verdef");
+}
+
+fn u32at(b: &[u8], o: usize) -> u32 {
+    u32::from_le_bytes(b[o..o + 4].try_into().unwrap())
+}
+
+fn put16(b: &mut [u8], o: usize, v: u16) {
+    b[o..o + 2].copy_from_slice(&v.to_le_bytes());
+}
+
+fn put32(b: &mut [u8], o: usize, v: u32) {
+    b[o..o + 4].copy_from_slice(&v.to_le_bytes());
+}
+
+/// The file offset of the value of `.dynamic`'s first `tag` (ELF64).
+fn dyn_value_at(b: &[u8], tag: u64) -> Option<usize> {
+    let h = pt_dynamic(b);
+    let (off, size) = (u64at(b, h + 8) as usize, u64at(b, h + 32) as usize);
+    (off..off + size).step_by(16).find(|&e| u64at(b, e) == tag).map(|e| e + 8)
+}
+
+/// The `.gnu.version` slot of the defined `.dynsym` entry named `name`
+/// whose raw version has the hidden bit `hidden` (ELF64).
+fn versym_at(b: &[u8], name: &str, defined: bool, hidden: Option<bool>) -> Option<usize> {
+    let (ds, dsz, _) = section_at(b, ".dynsym")?;
+    let (st, _, _) = section_at(b, ".dynstr")?;
+    let (vs, _, _) = section_at(b, ".gnu.version")?;
+    (0..dsz / 24).find_map(|i| {
+        let e = ds + i * 24;
+        let at = st + u32at(b, e) as usize;
+        let n = b[at..].split(|&c| c == 0).next()?;
+        let slot = vs + 2 * i;
+        let raw = u16at(b, slot);
+        (n == name.as_bytes()
+            && (u16at(b, e + 6) != 0) == defined
+            && hidden.is_none_or(|h| (raw & 0x8000 != 0) == h))
+        .then_some(slot)
+    })
+}
+
+/// The Verdef records of `.gnu.version_d`: (offset, the offsets of its
+/// Verdaux records), by `vd_next`/`vda_next`.
+fn verdefs(b: &[u8]) -> Vec<(usize, Vec<usize>)> {
+    let Some((off, size, _)) = section_at(b, ".gnu.version_d") else { return Vec::new() };
+    let mut out = Vec::new();
+    let mut at = off;
+    while at + 20 <= off + size {
+        let cnt = u16at(b, at + 6);
+        let mut aux = Vec::new();
+        let mut x = at + u32at(b, at + 12) as usize;
+        for _ in 0..cnt {
+            aux.push(x);
+            let next = u32at(b, x + 4) as usize;
+            if next == 0 {
+                break;
+            }
+            x += next;
+        }
+        out.push((at, aux));
+        let next = u32at(b, at + 16) as usize;
+        if next == 0 {
+            break;
+        }
+        at += next;
+    }
+    out
+}
+
+/// WP-149's mutations of a library of `vd.c` (P-D27; D-115): each must
+/// be a new P-D27 finding. The parent's only where the library has one.
+#[allow(clippy::too_many_lines)] // one mutation each
+fn verdef_mutants(b: &[u8]) -> Vec<Mutant> {
+    const DT_VERDEFNUM: u64 = 0x6fff_fffd;
+    let mut v: Vec<Mutant> = Vec::new();
+    let mut m = |what: &str, f: &dyn Fn(&mut Vec<u8>)| {
+        let mut c = b.to_vec();
+        f(&mut c);
+        v.push((what.to_string(), c));
+    };
+    let vds = verdefs(b);
+    assert!(vds.len() >= 3, "no V1 and V2 in .gnu.version_d");
+    let (base, ref aux0) = vds[0];
+    let (v1, ref aux1) = vds[1];
+    let (v2, ref aux2) = vds[2];
+    m("a wrong vd_hash (V2 + 1)", &|c| {
+        let h = u32at(c, v2 + 8);
+        put32(c, v2 + 8, h.wrapping_add(1));
+    });
+    m("VER_FLG_BASE cleared on the base entry", &|c| put16(c, base + 2, 0));
+    m("VER_FLG_BASE set on V1", &|c| put16(c, v1 + 2, 1));
+    m("V1 and V2's vd_ndx swapped", &|c| {
+        let (a, z) = (u16at(c, v1 + 4), u16at(c, v2 + 4));
+        put16(c, v1 + 4, u16::try_from(z).unwrap());
+        put16(c, v2 + 4, u16::try_from(a).unwrap());
+    });
+    if let Some(at) = dyn_value_at(b, DT_VERDEFNUM) {
+        m("DT_VERDEFNUM + 1", &|c| {
+            let n = u64at(c, at);
+            c[at..at + 8].copy_from_slice(&(n + 1).to_le_bytes());
+        });
+        m("DT_VERDEFNUM - 1", &|c| {
+            let n = u64at(c, at);
+            c[at..at + 8].copy_from_slice(&(n - 1).to_le_bytes());
+        });
+        let last2 = vds[vds.len() - 2].0;
+        m("the last node missing (vd_next 0 before it, DT_VERDEFNUM - 1)", &|c| {
+            put32(c, last2 + 16, 0);
+            let n = u64at(c, at);
+            c[at..at + 8].copy_from_slice(&(n - 1).to_le_bytes());
+        });
+    }
+    m("the base's name is V1's", &|c| {
+        let n = u32at(c, aux1[0]);
+        put32(c, aux0[0], n);
+    });
+    m("V1's name is V2's", &|c| {
+        let n = u32at(c, aux2[0]);
+        put32(c, aux1[0], n);
+    });
+    if aux2.len() >= 2 {
+        m("a wrong parent (V2's parent is V2)", &|c| {
+            let n = u32at(c, aux2[0]);
+            put32(c, aux2[1], n);
+        });
+        m("vd_cnt - 1 (V2's parent unread)", &|c| put16(c, v2 + 6, 1));
+    } else {
+        m("vd_cnt + 1 (a parent of V2 read past its names)", &|c| put16(c, v2 + 6, 2));
+    }
+    let slot = |n: &str, h: Option<bool>| versym_at(b, n, true, h).unwrap();
+    let (bar, bz) = (slot("bar", None), slot("baz", None));
+    m("bar's and baz's .gnu.version swapped", &|c| {
+        let (x, y) = (u16at(c, bar), u16at(c, bz));
+        put16(c, bar, u16::try_from(y).unwrap());
+        put16(c, bz, u16::try_from(x).unwrap());
+    });
+    let hid = slot("foo", Some(true));
+    m("VERSYM_HIDDEN cleared on foo@V1", &|c| c[hid + 1] &= 0x7f);
+    m("VERSYM_HIDDEN set on bar", &|c| c[bar + 1] |= 0x80);
+    let def = slot("foo", Some(false));
+    m("VERSYM_HIDDEN set on foo@@V2", &|c| c[def + 1] |= 0x80);
+    m("bar's .gnu.version 0 (local)", &|c| put16(c, bar, 0));
+    m("bar's .gnu.version 1 (the base)", &|c| put16(c, bar, 1));
+    if let Some(ext) = versym_at(b, "ext", false, None) {
+        m("ext's .gnu.version 2 (a definition's index)", &|c| put16(c, ext, 2));
+    }
+    v
+}
+
+/// The rule ids and messages of a report.
+fn keys(r: &Report) -> BTreeSet<String> {
+    r.findings.iter().map(|f| format!("{} {}", f.rule.id(), f.message)).collect()
+}
+
+// WP-149 (P-D27): every mutation of `verdef_mutants` of each reference's
+// versioned library is a new P-D27 finding.
+#[test]
+fn p_d27_verdef_mutations_are_caught() {
+    let Some(c) = corpus() else { return };
+    let mut n = 0;
+    let mut missed = Vec::new();
+    for o in c.outs.iter().filter(|o| o.case == "verdef") {
+        let b = o.link.output_bytes();
+        let clean = keys(&o.verify_bytes(&b));
+        for (what, m) in verdef_mutants(&b) {
+            n += 1;
+            let new: Vec<String> =
+                keys(&o.verify_bytes(&m)).into_iter().filter(|k| !clean.contains(k)).collect();
+            if !new.iter().any(|k| k.starts_with("P-D27 ")) {
+                missed.push(format!("{} {what}: {new:?}", o.label()));
+            }
+            if std::env::var("SHARED_DEBUG").is_ok_and(|v| v == "vdmut") {
+                eprintln!("{} {what}: {:?}", o.label(), new.first());
+            }
+        }
+    }
+    assert!(n > 0 || c.outs.is_empty(), "no verdef mutation");
+    assert!(missed.is_empty(), "NOT caught by P-D27:\n{}", missed.join("\n"));
+}
+
+// WP-149: the reference's alignment of `.gnu.version_d` is not judged
+// (GNU ld's 8, lld's and mold's 4); mortar's is (4), so GNU ld's library
+// judged as mortar's output is a P-D27 finding.
+#[test]
+fn p_d27_mortars_alignment_only() {
+    let Some(c) = corpus() else { return };
+    let o = c
+        .outs
+        .iter()
+        .find(|o| o.case == "verdef" && o.link.linker == Linker::Bfd)
+        .expect("GNU ld's verdef library");
+    let r = o.verify_as_mortar(&o.link.output_bytes());
+    assert!(
+        r.findings.iter().any(|f| f.rule.id() == "P-D27" && f.message.contains("sh_addralign")),
+        "{}: {:#?}",
+        o.label(),
+        r.findings
+    );
+}
+
+/// A mortar fixture of `tests/shared/<dir>` (its `gen.sh`): the output
+/// `bytes` judged under the map text `map`, the line's files read by
+/// `files`.
+fn mortar_fixture(dir: &Path, map: &str, bytes: &[u8], files: &dyn Files) -> Report {
+    let map = mortar_plumb::map::parse(mortar_plumb::Format::Mortar, map).unwrap();
+    let inputs: Vec<(String, Vec<u8>)> = map
+        .paths()
+        .into_iter()
+        .filter_map(|p| std::fs::read(dir.join(p)).ok().map(|b| (p.to_string(), b)))
+        .collect();
+    let inputs: Vec<Input<'_>> = inputs.iter().map(|(p, b)| Input { path: p, bytes: b }).collect();
+    mortar_plumb::verify_with(bytes, &inputs, &map, &Ctx { line: None, files })
+}
+
+fn fixture_dir(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/shared").join(name)
+}
+
+// WP-149 (P-D27): mortar's versioned libraries (`tests/shared/verdef`,
+// two nodes with `-soname`, three with two parents and the output's name
+// as the base) are clean under their maps, and every mutation of
+// `verdef_mutants` is a new P-D27 finding.
+#[test]
+fn p_d27_mortar_libraries() {
+    let d = fixture_dir("verdef");
+    let mut n = 0;
+    for name in ["libvd-a64", "libvd-x64", "libvd3-a64", "libvd3-x64"] {
+        let map = std::fs::read_to_string(d.join(format!("{name}.map"))).unwrap();
+        let b = std::fs::read(d.join(format!("{name}.so"))).unwrap();
+        let clean = keys(&mortar_fixture(&d, &map, &b, &Dir(&d)));
+        assert!(clean.is_empty(), "{name}.so: {clean:#?}");
+        for (what, m) in verdef_mutants(&b) {
+            n += 1;
+            let new = keys(&mortar_fixture(&d, &map, &m, &Dir(&d)));
+            assert!(new.iter().any(|k| k.starts_with("P-D27 ")), "{name}.so {what}: {new:#?}");
+        }
+    }
+    assert!(n > 40);
+}
+
+/// The line's files of a fixture, with `from` read as `to`.
+struct Swap<'a> {
+    dir: &'a Path,
+    from: &'a str,
+    to: &'a str,
+}
+
+impl Files for Swap<'_> {
+    fn read(&self, path: &str) -> Option<Vec<u8>> {
+        std::fs::read(self.dir.join(if path == self.from { self.to } else { path })).ok()
+    }
+}
+
+// WP-149 with WP-147 (§3.3 M10; resolve §4.7, §9.7; D-114): under
+// `-shared --gc-sections` a version script's `local:` takes `gone` and
+// `data_gone` out of the export set, so mortar's collection of their
+// sections is clean (`tests/shared/gcver`, loc.map); the same records
+// under a script that exports them (exp.map read for loc.map), or with
+// no script, are M10 findings: they are roots. mortar's library under
+// exp.map keeps both sections and is clean.
+#[test]
+fn m10_export_roots_follow_the_version_script() {
+    let d = fixture_dir("gcver");
+    let m10 = |r: &Report, name: &str| {
+        r.findings.iter().any(|f| {
+            f.rule.id() == "M10" && f.message.contains(&format!("defines '{name}', an export"))
+        })
+    };
+    for a in ["a64", "x64"] {
+        for v in ["loc", "exp"] {
+            let map = std::fs::read_to_string(d.join(format!("{v}-{a}.map"))).unwrap();
+            let b = std::fs::read(d.join(format!("{v}-{a}.so"))).unwrap();
+            let r = keys(&mortar_fixture(&d, &map, &b, &Dir(&d)));
+            assert!(r.is_empty(), "{v}-{a}.so: {r:#?}");
+        }
+        let map = std::fs::read_to_string(d.join(format!("loc-{a}.map"))).unwrap();
+        assert!(map.contains("discard 0 5 gc") && map.contains("discard 0 6 gc"), "{map}");
+        let b = std::fs::read(d.join(format!("loc-{a}.so"))).unwrap();
+        let swap = Swap { dir: &d, from: "loc.map", to: "exp.map" };
+        let r = mortar_fixture(&d, &map, &b, &swap);
+        for name in ["gone", "data_gone"] {
+            assert!(m10(&r, name), "loc-{a}.so under exp.map, {name}:\n{}", r.render("o"));
+        }
+        // No script: every default global is an export (WP-147's rule).
+        let plain: String = map
+            .lines()
+            .filter(|l| {
+                !matches!(*l, "version-script loc.map" | "arg --version-script" | "arg loc.map")
+            })
+            .fold(String::new(), |mut a, l| {
+                a.push_str(l);
+                a.push('\n');
+                a
+            });
+        assert_ne!(plain, map);
+        let r = mortar_fixture(&d, &plain, &b, &Dir(&d));
+        for name in ["gone", "data_gone"] {
+            assert!(m10(&r, name), "loc-{a}.so without a script, {name}:\n{}", r.render("o"));
+        }
+    }
 }

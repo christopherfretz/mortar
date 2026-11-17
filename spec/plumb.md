@@ -517,9 +517,40 @@ input section:
     root, as for `discard ... gc`.
   A `discard ... comdat` record must be the COMDAT row, `... unspecified`
   one of §10's rows, `... gc` and `... script` as above; anything else, and
-  a section with bytes no record names and no row explains, is M10. The
-  verifier does not re-derive the roots that need the line's symbols (the
-  entry, `-u`, `--require-defined`, the exports) nor a script's `KEEP`.
+  a section with bytes no record names and no row explains, is M10.
+
+  **The roots the line names** (WP-147; `spec/resolve.md` §4.2, §4.7). A
+  `discard ... gc` record, or a collected `SHT_NOBITS` section, is also
+  M10 when the section holds the definition (the first strong one in
+  object order, else the first) of a key the line roots: the entry (`-e`,
+  else `_start` outside `-shared`); a name of `-init`, `-fini` or
+  `--export-dynamic-symbol`; and, when the output exports (the map's
+  `output shared`, or `output exec`/`output pie` with `-E`), every global
+  or weak of default or protected visibility (merged by base name) that
+  no live object makes hidden or internal and that the export set's one
+  derivation exports (WP-149: `shared::ExportRule`, which P-D19's set and
+  P-1's placeless keys ask too): a name a version script's `local:` (or
+  `local: *`) takes out of the set is not a root, so mortar may rightly
+  collect its section; a `.symver` key (`foo@V1`, `foo@@V2`) is a root
+  when its node exports it (resolve.md §9.7, D-114). Stage 3 asks the
+  derivation with the line's script (read from the files the map's
+  `version-script` records name). Where stage 3 does not judge the output
+  (no `PT_DYNAMIC`: a map that only says `output shared`), the line's
+  files are not read: without a version script every such global is a
+  root, as above; with one, no export is taken as a root there. mortar
+  refuses `-u`, `--require-defined`, dynamic lists and `--exclude-libs`
+  (docs/status/options.md), so its line has none. Not re-derived: a glob
+  of `--export-dynamic-symbol`, and a script's `KEEP`. Tests:
+  `tests/placeless.rs wp147_gc_of_a_line_root_is_m10` (the entry, `-init`,
+  an export of a library: each M10; `-E` in a static link and no root:
+  accepted); `tests/shared.rs m10_export_roots_follow_the_version_script`
+  (WP-149, `tests/shared/gcver`: mortar's `-shared --gc-sections`
+  libraries whose script makes `gone` and `data_gone` local, their
+  sections collected: clean; the same records under a script that exports
+  them, or with no script: M10 for each) and the link test
+  `dyn/version/gc-local-unreferenced` (measured: GNU ld, lld and mold
+  collect the local names' sections too, and keep them when the script
+  exports them).
 
 Each rule has a test: `tests/mutation.rs s9_2e_each_map_rule_is_enforced`;
 the WP-143 rows (M4 for an empty section, M10): `tests/placeless.rs`.
@@ -857,7 +888,10 @@ offset; through the output's `.symtab` that address is `PT_TLS` `p_vaddr`
      that is discarded or absent (not one without bytes, above; nor an
      input `.eh_frame` while the output has an allocated `.eh_frame`,
      whose labels have `synth.md` S-50's values, WP-143b), and the
-     loader does not bind the name (§12.5): the definition is the first
+     loader does not bind the name (§12.5). This predicate, "the section
+     has no place" (`spec/resolve.md` §10.1 P-1 as the map shows it), is
+     the one derivation every rule that lists the expected symbols asks:
+     this step, Y3, Y4 and P-D19's export set (WP-147): the definition is the first
      strong one in object order, else the first, and S follows from its
      section as for a local symbol: R5 (§5.7), or §5.8's tombstone from a
      non-alloc place, whatever the output's `.symtab` says. Before WP-143
@@ -2377,6 +2411,19 @@ rules below judge the rest. Code: `src/symbols.rs`.
 
   A name the inputs also define globally, or a TLS local without a usable
   `PT_TLS`, is also counted in `locals_unchecked`.
+
+  **A local of a section with no place** (WP-147; mortar's map;
+  `spec/resolve.md` §10.1 P-1: omitted from `.symtab`). When every input
+  local of the name is in a section with no place (§4.4 step 0's
+  predicate), the name is not a mapping symbol and no input defines it
+  globally, an output local of the name is a finding, whatever its value
+  or section. Before WP-136 mortar wrote a `.note.gnu.property` local as
+  its offset in the note; mold still does (`SHN_ABS`, the offset),
+  measured with an unreferenced local in the note on AArch64 and x86-64;
+  GNU ld and lld omit it. Under a reference's map such a local stays in
+  `locals_unchecked`. Test: `tests/pexport.rs
+  wp147_local_of_a_placeless_section_in_symtab_is_found` (the local as
+  its offset, in a section or absolute: Y4).
 - **Y5. Linker-defined symbols.** This rule applies to each defined output
   symbol whose name no input defines. The names below have these values.
   Here, "the section" means the allocated output section of that name;
@@ -4638,8 +4685,14 @@ own implementation of D-11-D-27 and compared with the output.
   (WP-121, WP-123's V5). In a `Shared` output, `VERSYM_HIDDEN` on a
   definition whose index names a `Verdef` is D-115's `foo@V`, not D-27's
   "bit 15 never set" (an executable's), and P-D22 reports a name with
-  more than one definition without it.
-- **P-D9 (dynamic relocations).** The extension of stage 2's
+  more than one definition without it. Every other index of a `Shared`
+  output's `.gnu.version` is P-D27's (WP-149).
+- **P-D9 (dynamic relocations).** A defined `.dynsym` entry with
+  `VERSYM_HIDDEN` (`foo@V1`) is bound by the loader model as the key
+  `foo@V1`, never as the plain `foo`: an unversioned lookup does not
+  find it (glibc's `check_match`; WP-149: GNU ld writes `foo@V1` before
+  `foo@@V2`, and R1 judged the call to `foo@plt` against the hidden
+  one). The extension of stage 2's
   reconstruction: for each input relocation whose place is in the output,
   the run-time value of the place is computed from the output (its
   bytes, then its dynamic records applied by a loader model of the
@@ -4987,7 +5040,16 @@ table before and after).
   `STB_GNU_UNIQUE`; the section it names holds its value (an
   `STT_SECTION` entry: the section's start; not judged for reserved
   indices, `STT_TLS` and a value at a PLT entry); its size, section and
-  `st_info` equal its `.symtab` entry's (an IFUNC's are P-D7's own). A
+  `st_info` equal its `.symtab` entry's (an IFUNC's are P-D7's own). Its
+  `.symtab` entry is the first non-local defined one whose name is the
+  export's (`foo`, or GNU ld's `foo@V1`/`foo@@V2` for a `.symver` key, by
+  its `.gnu.version`) and whose value is the export's; with none, the
+  first global of the name (WP-149: `foo@V1` and `foo@@V2` are two
+  entries named `foo` in mortar's and lld's `.symtab`, the first of which
+  need not be the export's). A name stands twice in `.dynsym` (every
+  format; STB_LOCAL entries aside) exactly when the entries' version
+  indices differ and at most one of them is not `VERSYM_HIDDEN` (WP-149,
+  D-115: `foo@V1` and `foo@@V2`); any other repeat is P-D7. A
   name every input defines `STB_GNU_UNIQUE` is exported `STB_GNU_UNIQUE`
   (dyn.md D-23's export row: glibc's unique table then holds the
   program's instance, which an `RTLD_DEEPBIND` library binds to); mortar's
@@ -5232,7 +5294,8 @@ one), `spie-dynamic-word` (the GOT's `_DYNAMIC` word 0 or plus 8).
 ### 12.5 Shared objects (M4; planned: WP-121)
 
 Requests P-R1-P-R11 of `spec/dyn.md` §18.3, applied by WP-115 as rules
-P-D16-P-D26 (P-R*n* is P-D(15+*n*)). Until WP-121 lands, P-D1 rejects
+P-D16-P-D26 (P-R*n* is P-D(15+*n*)); P-D27 (version definitions) is
+WP-149's. Until WP-121 lands, P-D1 rejects
 an `ET_DYN` without `DF_1_PIE` and without `PT_INTERP` that is not a
 static-pie, as today. The `D-` rules cited are `spec/dyn.md` §17's; D-117
 items 1-9 are its "Bound use through a register" and are cited, not
@@ -5328,7 +5391,38 @@ and what turns P-D9's equality into a check of D-112.
   (D-110, `__start_`/`__stop_` `PROTECTED` included) with each entry's
   binding, type, visibility and version (D-115). *Read:* `.dynsym`'s
   defined entries and `.gnu.version`. *Reported:* a defined entry
-  missing, extra or with a field or version that differs. Imports are
+  missing, extra or with a field or version that differs. A definition
+  whose section has no place (§4.4 step 0's predicate; a key every
+  definition of which is discarded, not a COMDAT copy another object
+  keeps) is not in the export set (`spec/resolve.md` §10.1 P-1: an
+  unreferenced placeless symbol is omitted from `.dynsym`, D-110;
+  WP-147). Under mortar's map such a key defined in `.dynsym`, in any
+  form, is a finding ("its definition has no place"). Under a
+  reference's, what each writes is accepted as measured (an unreferenced
+  global in `.note.gnu.property`, `.note.GNU-stack`, an `SHF_EXCLUDE`
+  section and an input build-id note, `-shared` and `-pie
+  --export-dynamic`, AArch64 and x86-64): GNU ld an `SHN_ABS` symbol
+  whose value is the definition's offset in its section (its
+  `.note.GNU-stack` global it places at the end of `.text`, an ordinary
+  export); lld an undefined symbol under `-shared` (P-D7's "imported and
+  no input references it" is not reported for it) and nothing under
+  `-pie`; mold nothing (its `SHF_EXCLUDE` section it places, an ordinary
+  export). GNU ld's form at another value is a finding. Before WP-147 the
+  set held these keys: mortar's library without them was "in the export
+  set and not defined in .dynsym". An executable's exports
+  (`-pie --export-dynamic`) are not P-D19's: not judged. Test:
+  `tests/pexport.rs`. The set is one derivation (WP-149,
+  `shared::ExportRule`): P-D19's keys, P-1's placeless keys (a key every
+  definition of which has no place is placeless only when the script
+  exports it; one the script makes local is local) and M10's export
+  roots (§3.3) all ask it. Its rule 12 (resolve.md §9.7, a `.symver`
+  key under the script) is each format's, as measured (dyn.md §17.8):
+  mortar's and GNU ld's as resolve §9.7 states it; mold never makes a
+  `.symver` key local; lld makes `foo@V` local when a `local:` entry of
+  node V matches `foo` and no exact `global:` entry of V names it,
+  whatever `-E` says, and `foo@@V` only for an exact `local:` entry.
+  A hidden `.symver` key the script makes local is the local key
+  `foo@V1` (the plain `foo` may still be another node's export). Imports are
   P-D7's import rule and P-D8, unchanged, except that an import's
   static binding, `bind(k)`, ranges over N alone (`spec/dyn.md` D-10 as
   WP-137 amends it; WP-140): a weak-only key whose every definition lies
@@ -5359,7 +5453,8 @@ and what turns P-D9's equality into a check of D-112.
   the line's last `-Bsymbolic` form is `-Bsymbolic` and the line has no
   `--dynamic-list` (D-112, D-102, D-103); `DT_INIT`/`DT_FINI` point at
   defined, live code (D-124); `DT_SONAME` the `-soname` string;
-  `DT_VERDEF`/`DT_VERDEFNUM` consistent with `.gnu.version_d` (D-115);
+  `DT_VERDEF`/`DT_VERDEFNUM` and `.gnu.version_d` as P-D27 recomputes
+  them (D-115; WP-149);
   `GNU_PROPERTY_1_NEEDED_INDIRECT_EXTERN_ACCESS` present iff an input
   has it (D-112); `DT_FLAGS_1`'s `DF_1_NODELETE`, `DF_1_NOOPEN`,
   `DF_1_INITFIRST`, `DF_1_INTERPOSE` and `DF_1_ORIGIN` each present iff
@@ -5451,6 +5546,77 @@ and what turns P-D9's equality into a check of D-112.
   a bound key's the library's (P-D17). P-D12's D-16 direction (W14)
   applies unchanged.
 
+- **P-D27 (version definitions; WP-149; D-115).** *Recomputed:* the
+  script's named nodes in order, each node's parents, the line's
+  `-soname` and `-o`, the export set's versions (P-D19). *Read:*
+  `DT_VERDEF`, `DT_VERDEFNUM`, `.gnu.version_d` (by `DT_VERDEF`, its
+  header when the output has one), `.gnu.version`, the Vernaux records.
+  *Reported* (one finding per Verdef, per entry, or per header):
+  - `DT_VERDEF` present exactly when the script names a node;
+    `DT_VERDEFNUM` without `DT_VERDEF`; `DT_VERDEFNUM` other than the
+    nodes + 1, or other than the chain's length;
+  - per Verdef *k* (from 0): `vd_version` 1; `vd_ndx` *k* + 1; `vd_flags`
+    exactly `VER_FLG_BASE` on entry 0 and 0 on the others; `vd_hash` the
+    ELF hash of its first name; its names (`vda_name`, in chain order):
+    entry 0 the soname, else the output's name (the basename of `-o`,
+    default `a.out`; lld's the `-o` as written, measured: `sub/p.so`
+    stays `sub/p.so`); entry *k* the script's *k*-th named node, then,
+    for mortar and GNU ld, its parents last-written first (`V3 {...} V1
+    V2;` gives `V3`, `V2`, `V1`); `vd_cnt` equal to the names read and to
+    the expected count; the last Verdaux's `vda_next` 0; `vd_next` 0
+    exactly on the last entry;
+  - the section header: `sh_info` the number of Verdefs, `sh_link`
+    `.dynstr`, `sh_addr` `DT_VERDEF`; mortar's `sh_addralign` 4;
+  - no `.gnu.version` while the script names a node;
+  - each `vna_other` above the definitions' indices (`max(DT_VERDEFNUM,
+    1)`: the index space is shared, definitions first, needs after;
+    every linker measured writes the first need at definitions + 1);
+  - `.gnu.version` per `.dynsym` entry: 0 for an `STB_LOCAL` entry; an
+    import 0, 1 or a need's index, never `VERSYM_HIDDEN` and never a
+    definition's index 2..=`DT_VERDEFNUM` (lld and mold write 0 for an
+    unversioned weak import, resolve §9.2); GNU ld's node-name symbols
+    (`V1`, `SHN_ABS`) their node's index; each defined export one of the
+    indices the export set gives its name, each consumed once: 1 for the
+    base (no script, an anonymous node, matched by no node), the node's
+    index for `foo` and `foo@@V`, the index with `VERSYM_HIDDEN` exactly
+    for the non-default `foo@V`. A name the script makes local is absent
+    (P-D19's; `-E` changes nothing for it: rule 12's per-format reading
+    above).
+
+  *Judged for each reference* only on common ground or as measured:
+  every field above but lld's and mold's parents (they write none:
+  `vd_cnt` 1; measured, and they refuse a node with two parents), lld's
+  base name (the `-o` as written, measured, not the basename) and the
+  references' `sh_addralign` (GNU ld's 8, lld's and mold's 4: not
+  judged). *Not judged:* the layout of `.dynstr` (D-116); the i386
+  output (P-D1). Tests: `tests/shared.rs`
+  `p_d27_verdef_libraries_verify_clean` (case `verdef`: `vd.c` under
+  two and three nodes, with and without `-soname`, by each reference on
+  both arches), `p_d27_verdef_mutations_are_caught` and
+  `p_d27_mortar_libraries` (`tests/shared/verdef`, mortar's): each of
+  `verdef_mutants` is a new P-D27 finding: a wrong `vd_hash`,
+  `VER_FLG_BASE` cleared on the base and set on V1, V1's and V2's
+  `vd_ndx` swapped, `DT_VERDEFNUM` ± 1, the last node missing, the
+  base's name and V1's name wrong, a wrong parent, `vd_cnt` ± 1,
+  `bar`'s and `baz`'s `.gnu.version` swapped, `VERSYM_HIDDEN` cleared on
+  `foo@V1` and set on `bar` and `foo@@V2`, `bar`'s index 0 and 1, the
+  import `ext`'s index 2; `p_d27_mortars_alignment_only` (GNU ld's
+  library judged as mortar's: `sh_addralign 8`).
+
+  **A version-local symbol in `.symtab` (WP-150's; not a finding now).**
+  A key a version script (or `--exclude-libs`) makes local is written
+  `STB_LOCAL` in `.symtab` by GNU ld and lld (D-114), `STB_GLOBAL` by
+  mortar. Today Y3's binding and visibility rows are dropped for every
+  key in the set's local keys (`shared::filter_view1`, by the full key
+  and by its base name), so Y3 accepts both forms for every format and
+  judges only the value, section, type and size. After WP-150 decides
+  mortar's form (D-114 says local; the decision for debuggers is
+  WP-150's), mortar's map is held to it: the rows are dropped only for a
+  reference, and a mortar `.symtab` entry of a local key that is not
+  `STB_LOCAL` is Y3's binding finding. The `.symtab` name of a `.symver`
+  key (GNU ld `foo@V1`/`foo@@V2`, lld and mortar two `foo`) is matched
+  in both forms (P-D7 above) until then.
+
 What reports each wrong output of `spec/dyn.md` §17.7 (P-D23; the P-D
 rules are this section's, applied through P-D16; the table was redone
 by WP-110's third pass against the interposer above, P-D25 and P-D26):
@@ -5485,7 +5651,9 @@ by WP-110's third pass against the interposer above, P-D25 and P-D26):
 | W44 (anchor+immediate bound use, AArch64) | P-D17's address clause (b): the verifier's analysis derives `.data + 4`, inside `g`, from the `ldr` that follows the anchor (both views agree on the value, the clause reports it). What D-117's residual hole names stays not caught, by the verifier as by the linker |
 | a use of a preemptible key bound locally through a named symbol (a `PREL32`, `ABS64` or `ADRP`/`ADD` resolved statically, no record) | P-D17, view B: the interposer defines the key, the place holds the library's own address |
 | an export missing from `.dynsym` | P-D19 (the defined set differs from the verifier's export set); P-D17, view B, for every record that should have named it |
-| a wrong version index on a defined entry or an import | P-D19 (a defined entry's version, D-115); P-D8 (an import's `.gnu.version` index against its Verneed and the shared definition's version, through P-D16) |
+| a wrong version index on a defined entry or an import | P-D19 (a defined entry's version, D-115); P-D27 (the index the export set gives the name, `VERSYM_HIDDEN` exactly on `foo@V`; an import's never a definition's; WP-149); P-D8 (an import's `.gnu.version` index against its Verneed and the shared definition's version, through P-D16) |
+| a wrong version definition (a node missing or extra, its index, flags, hash, name or parents; `DT_VERDEFNUM` off; a need's index among the definitions') | P-D27 (WP-149) |
+| a name twice in `.dynsym` at one version, or twice not hidden | P-D7 (WP-149; D-115) |
 | a `JUMP_SLOT` naming the wrong symbol index | P-D10 (the slot's record is against another key than its PLT entry's); P-D17, view B (the interposer defines both keys at distinct addresses, the call place reaches the wrong one); P-D25 too when the named key is bound |
 
 Measured for WP-121: its own implementation of D-117 against the

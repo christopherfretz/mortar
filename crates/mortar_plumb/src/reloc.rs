@@ -553,6 +553,10 @@ pub(crate) struct Engine<'a, 'b> {
     /// Stage 3 (§12.5): the output is a shared object: no TLS sequence is
     /// relaxed, so a `DTPOFF` field is block-relative everywhere (X-46).
     pub(crate) shared: bool,
+    /// The one derivation of the export set (`shared::ExportRule`):
+    /// M10's export roots ask it; `None` when the output exports nothing
+    /// (WP-147, WP-149).
+    pub(crate) exports: Option<crate::shared::ExportRule>,
     /// Stage 3 (§12.5): the keys a shared object's view takes from the
     /// loader (`dynbind`) although the output defines them: preemptible
     /// keys under an interposer, a preemptible IFUNC's resolved address.
@@ -853,6 +857,7 @@ impl<'a, 'b> Engine<'a, 'b> {
             dyn_tls_mod: HashMap::default(),
             dynamic: false,
             shared: false,
+            exports: None,
             loader_keys: std::collections::HashSet::new(),
             dso_words: None,
             plt: BTreeMap::new(),
@@ -1263,14 +1268,9 @@ impl<'a, 'b> Engine<'a, 'b> {
                 return None;
             };
             let k = k.0 as usize;
-            let s = self.objs[doi].secs.get(k)?;
-            // An input `.eh_frame` is rebuilt, never placed: while the
-            // output has an `.eh_frame`, its labels have S-50's values
-            // (synth.md S-48a, S-50; WP-143b), not "not in the output".
-            if !matches!(s.place, Place::Absent | Place::Discarded)
-                || s.empty_unrecorded()
-                || (s.is_eh_frame(self.objs[doi].elf.machine()) && self.output_eh_frame().is_some())
-            {
+            // P-1's predicate (`Obj::no_place`): an input `.eh_frame`
+            // while the output has one has S-50's values (WP-143b).
+            if !self.objs[doi].no_place(k, self.output_eh_frame().is_some()) {
                 return None;
             }
             first.get_or_insert((doi, di, k));

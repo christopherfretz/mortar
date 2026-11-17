@@ -17,11 +17,13 @@
 # reference the symbol is never an error and is not in `.symtab` (lld
 # keeps it as an undefined symbol). A shared object omits it from
 # `.dynsym` too (D-110; GNU ld exports it as an absolute symbol whose
-# value is its offset in the note, lld as undefined, mold not at all),
-# which is not checked here: the verifier's P-D19 still expects it there
-# (its side is WP-143's).
+# value is its offset in the note, lld as undefined, mold not at all:
+# the verifier's P-D19 accepts each reference's form and holds mortar's
+# to P-1, WP-147), on AArch64 and x86-64 (mortar refuses `-shared` on
+# i386).
 #@ spec: resolve.md §10.1
 #@ spec: image.md "I-124"
+#@ spec: plumb.md "P-D19"
 
 cc -O1 main.c -o main.o
 as prop-%{arch}.s -o prop.o
@@ -41,6 +43,9 @@ link gcc -static main.o prop.o -o prog
 run prog
   exit: 42
 check(bfd,mold,mortar) readelf -sW prog
+  not: gprop
+link(aarch64,x86_64) ld -shared prop.o -o libprop.so
+check(aarch64,x86_64,mortar,mold) readelf -sW --dyn-syms libprop.so
   not: gprop
 link(mortar) gcc -static main.o prop.o dbg.o -o dbg
 check(mortar,aarch64,x86_64) readelf -x .debug_info dbg

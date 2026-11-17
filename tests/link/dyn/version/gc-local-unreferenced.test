@@ -1,0 +1,46 @@
+# dyn.md D-114, resolve.md §4.7, §9.7 (WP-149 with WP-147's M10 roots):
+# `-shared --gc-sections` and a version script. `gone` (a function) and
+# `data_gone` (an object), each in its own section and referenced by
+# nothing, are what the script decides: under `loc.map` its `local: *`
+# takes them out of the export set, so they are not roots and every
+# linker collects their sections (measured: GNU ld, lld and mold keep
+# neither symbol, in `.symtab` or `.dynsym`); under `exp.map` they are
+# exports, roots, and every linker keeps them with their version. The
+# verifier judges mortar's `discard ... gc` records of the first library
+# under the script (M10 asks the export set's one derivation), and would
+# report the same records under the second.
+#@ spec: dyn.md "D-114"; resolve.md "4.7"; resolve.md "9.7"
+#@ arch: aarch64 x86_64
+
+cc -O1 -fPIC -ffunction-sections -fdata-sections lib.c -o lib.o
+cc -O1 -fPIE main.c -o main.o
+link gcc -shared lib.o -Wl,--gc-sections -Wl,--version-script,loc.map -Wl,-soname,libg.so -o libg.so
+check readelf --dyn-syms -W libg.so
+  has: FUNC GLOBAL DEFAULT * keep@@V1$
+  not: gone
+check readelf -s -W libg.so
+  not: gone
+link gcc -shared lib.o -Wl,--gc-sections -Wl,--version-script,exp.map -Wl,-soname,libe.so -o libe.so
+check readelf --dyn-syms -W libe.so
+  has: FUNC GLOBAL DEFAULT * keep@@V1$
+  has: FUNC GLOBAL DEFAULT * gone@@V1$
+  has: OBJECT GLOBAL DEFAULT * data_gone@@V1$
+host gcc -pie main.o -L. -lg -o prog
+run prog
+  stdout: 1
+host gcc -pie main.o -L. -le -o proge
+run proge
+  stdout: 1
+
+#--- lib.c
+int keep(void) { return 1; }
+int gone(void) { return 2; }
+int data_gone = 7;
+#--- loc.map
+V1 { global: keep; local: *; };
+#--- exp.map
+V1 { global: keep; gone; data_gone; local: *; };
+#--- main.c
+#include <stdio.h>
+int keep(void);
+int main(void) { printf("%d\n", keep()); return 0; }

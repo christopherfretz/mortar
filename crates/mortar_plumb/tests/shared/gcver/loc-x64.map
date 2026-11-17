@@ -1,0 +1,35 @@
+mortar-map 2
+file 0 gc-x64.o
+piece 0 9 0 230 18
+piece 0 9 18 248 14
+place 0 4 1260 6
+merged 0 7 .comment
+discard 0 5 gc
+discard 0 6 gc
+chunk synthetic .gnu.hash 190 20
+chunk synthetic .dynsym 1b0 30
+chunk synthetic .dynstr 1e0 14
+chunk synthetic .gnu.version 1f4 4
+chunk synthetic .gnu.version_d 1f8 38
+chunk synthetic .eh_frame 230 30
+chunk synthetic .dynamic 2268 e0
+chunk synthetic .symtab - 48
+chunk synthetic .strtab - 29
+chunk synthetic .shstrtab - 7e
+chunk synthetic .comment - d
+chunk synthetic .pad.relro 2348 cb8
+output shared
+bind lazy
+relro on
+symbolic none
+version-script loc.map
+arg -shared
+arg --gc-sections
+arg -o
+arg loc-x64.so
+arg gc-x64.o
+arg --version-script
+arg loc.map
+arg --mortar-map=loc-x64.map
+export keep
+end

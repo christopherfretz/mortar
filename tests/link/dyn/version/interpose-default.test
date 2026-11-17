@@ -6,8 +6,6 @@
 # preemptible, D-112), while `foo@V1` stays the library's.
 #@ spec: dyn.md "D-114"; dyn.md "D-112"
 #@ arch: aarch64 x86_64
-#@ xfail(bfd): the verifier's R1 on GNU ld's call to foo@plt (bound to foo@@V2), a library that runs right plain and interposed (--no-plumb); reported with WP-125 part 2
-#@ xfail(mortar): M4: WP-149: the verifier's P-D7 'a name twice in .dynsym' on libi.so, whose two entries are foo@V1 (hidden) and foo@@V2 as GNU ld's (bytes checked at the merge); runs right with --no-plumb
 
 cc -O1 -fPIC lib.c -o lib.o
 cc -O1 -fPIC pre.c -o pre.o

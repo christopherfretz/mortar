@@ -68,6 +68,9 @@ pub struct SharedLine {
     pub exclude_libs: ExcludeLibs,
     /// `-soname`/`-h`, the last.
     pub soname: Option<String>,
+    /// `-o`/`--output`, the last, as written (D-115's base name without
+    /// `-soname`; lld writes it as given).
+    pub output: Option<String>,
     /// `-E`/`--export-dynamic` (rule 12 only, D-114).
     pub export_dynamic: bool,
     /// `-static-pie` is on the line (P-D16: then not `Shared`).
@@ -154,6 +157,7 @@ impl SharedLine {
                     }
                 }
                 "-soname" | "--soname" | "-h" => l.soname = next(),
+                "-o" | "--output" => l.output = next(),
                 "-E" | "--export-dynamic" | "-export-dynamic" => l.export_dynamic = true,
                 "--no-export-dynamic" => l.export_dynamic = false,
                 "-static-pie" | "--static-pie" => l.static_pie = true,
@@ -164,8 +168,7 @@ impl SharedLine {
                 }
                 "--no-undefined" | "-no-undefined" => l.zdefs = true,
                 // Options whose next word is a value the loop must skip.
-                "-o"
-                | "-m"
+                "-m"
                 | "-e"
                 | "--entry"
                 | "-u"
@@ -228,6 +231,10 @@ impl SharedLine {
                         l.exclude(&v);
                     } else if let Some(s) = val(a, &["-soname", "--soname"]) {
                         l.soname = Some(s);
+                    } else if let Some(o) = val(a, &["--output"]) {
+                        l.output = Some(o);
+                    } else if let Some(o) = a.strip_prefix("-o").filter(|o| !o.is_empty()) {
+                        l.output = Some(o.to_string());
                     } else if let Some(s) = a.strip_prefix("-h").filter(|s| !s.is_empty()) {
                         l.soname = Some(s.to_string());
                     } else if let Some(z) = a.strip_prefix("-z").filter(|z| !z.is_empty()) {
@@ -790,6 +797,40 @@ impl Script {
             && !export_dynamic;
         Some(if local { Decision::Local } else { Decision::Node(i) })
     }
+
+    /// Rule 12 as `format`'s linker applies it: mortar and GNU ld by
+    /// [`Script::decide_versioned`]; the references' recorded differences
+    /// (`spec/dyn.md` 17.8, `exp3/vs3/expdyn.py`, `atat.py`): mold never
+    /// hides a `.symver` definition; lld hides `foo@V` when one of V's
+    /// `local:` entries matches `foo` and no exact `global:` entry of V
+    /// names it (a `global:` glob does not keep it), with or without
+    /// `--export-dynamic`, and hides `foo@@V` only for an exact `local:`
+    /// entry of V naming it (WP-149).
+    pub fn decide_versioned_as(
+        &self,
+        name: &str,
+        v: &str,
+        default: bool,
+        export_dynamic: bool,
+        format: Format,
+    ) -> Option<Decision> {
+        let i = self.node(v)?;
+        let n = &self.nodes[i];
+        let exact = |e: &&Entry| !e.is_glob() && e.exact_name() == name;
+        let local = match format {
+            Format::Mortar | Format::Gnu => return self.decide_versioned(name, v, export_dynamic),
+            Format::Mold => false,
+            Format::Lld if default => {
+                n.entries.iter().filter(|e| !e.global).any(|e| exact(&e))
+                    && !n.entries.iter().filter(|e| e.global).any(|e| exact(&e))
+            }
+            Format::Lld => {
+                n.entries.iter().any(|e| !e.global && e.matches(name))
+                    && !n.entries.iter().filter(|e| e.global).any(|e| exact(&e))
+            }
+        };
+        Some(if local { Decision::Local } else { Decision::Node(i) })
+    }
 }
 
 /// A dynamic list: its entries, every file as one list.
@@ -863,6 +904,66 @@ pub struct Import {
     pub versioned: bool,
 }
 
+/// The one derivation of a key's export (D-110, D-114, D-115; resolve
+/// §9.7, rule 12 per reference): whether a definition named `key` (`foo`,
+/// `foo@V`, `foo@@V`) of default or protected visibility (merged by base
+/// name; the caller asks) is exported, and with which version. P-D19's
+/// export set, P-1's placeless keys and M10's roots (`fate.rs`, WP-147)
+/// all ask it (WP-149). `--exclude-libs` is not in it: mortar refuses the
+/// option, and P-D19 reads it per object.
+#[derive(Debug, Clone)]
+pub struct ExportRule {
+    pub script: Option<Script>,
+    /// `-E` (lld's rule 12 ignores it; GNU ld's and mortar's do not).
+    pub export_dynamic: bool,
+    pub format: Format,
+}
+
+impl ExportRule {
+    /// No version script (an executable with `-E`, a library without
+    /// one): every key without a version is exported at the base.
+    pub fn plain(format: Format) -> ExportRule {
+        ExportRule { script: None, export_dynamic: false, format }
+    }
+
+    /// `Ok(None)`: the key is local. `Err`: the link is outside (D-114:
+    /// undefined-version), with P-D1's text.
+    pub fn version(&self, key: &str) -> Result<Option<VerOut>, String> {
+        let (base, ver) = split_version(key);
+        match (&self.script, ver) {
+            (None, None) => Ok(Some(VerOut::Base)),
+            (None, Some((v, _))) => Err(format!(
+                "'{key}': version {v} and no version script (dyn.md D-114: undefined-version)"
+            )),
+            (Some(s), None) => Ok(match s.decide(base) {
+                Decision::Local => None,
+                Decision::Base => Some(VerOut::Base),
+                Decision::Node(i) => {
+                    Some(s.nodes[i].name.clone().map_or(VerOut::Base, VerOut::Node))
+                }
+            }),
+            (Some(s), Some((v, default))) => {
+                match s.decide_versioned_as(base, v, default, self.export_dynamic, self.format) {
+                    None => Err(format!(
+                        "'{key}': no node {v} in the version script (dyn.md D-114: undefined-version)"
+                    )),
+                    Some(Decision::Local) => Ok(None),
+                    Some(_) => Ok(Some(if default {
+                        VerOut::Node(v.to_string())
+                    } else {
+                        VerOut::Hidden(v.to_string())
+                    })),
+                }
+            }
+        }
+    }
+
+    /// Whether `key` is exported (an `Err` is not: the link is outside).
+    pub fn exports(&self, key: &str) -> bool {
+        matches!(self.version(key), Ok(Some(_)))
+    }
+}
+
 /// The sets of §12.5, recomputed from the inputs and the line.
 #[derive(Debug, Default)]
 pub struct Sets {
@@ -874,6 +975,8 @@ pub struct Sets {
     pub imports: BTreeMap<String, Import>,
     /// Node names of the script, by `Verdef` index order (index 2 first).
     pub nodes: Vec<String>,
+    /// Each node's parents as the script writes them, in `nodes`' order.
+    pub parents: Vec<Vec<String>>,
     /// An input the verifier cannot read (P-D2).
     pub problems: Vec<String>,
     /// A form refused by name (P-D1).
@@ -882,6 +985,13 @@ pub struct Sets {
     /// a section of the inputs that the map keeps none of (layout L-96
     /// keeps them all live; W23): the key and `X`.
     pub dropped: Vec<(String, String)>,
+    /// Keys whose definition has no place (`spec/resolve.md` §10.1 P-1,
+    /// §4.4 step 0's predicate `Obj::no_place`): never in the export set
+    /// (D-110; WP-147), by name with the definition's input `st_value`.
+    pub placeless: BTreeMap<String, u64>,
+    /// The one derivation of the export set (WP-149): what P-D19's set,
+    /// P-1's placeless keys and M10's roots ask.
+    pub rule: Option<ExportRule>,
 }
 
 impl Sets {
@@ -1075,10 +1185,12 @@ pub(crate) fn compute(
     };
     if let Some(s) = &script {
         sets.nodes = s.nodes.iter().filter_map(|n| n.name.clone()).collect();
+        sets.parents =
+            s.nodes.iter().filter(|n| n.name.is_some()).map(|n| n.parents.clone()).collect();
     }
     // Every mention of a name by a live object: definitions (full names,
     // `.symver` forms kept) and the merged visibility (by base name).
-    #[allow(clippy::items_after_statements)] // next to its one use
+    #[allow(clippy::items_after_statements, clippy::struct_excessive_bools)] // next to its one use
     struct D {
         ty: u8,
         bind: u8,
@@ -1086,8 +1198,13 @@ pub(crate) fn compute(
         strong: bool,
         common: bool,
         excluded: bool,
+        /// P-1: its section has no place (WP-147).
+        placeless: bool,
+        value: u64,
     }
+    let out_eh_frame = image.sections.iter().any(|x| x.name == ".eh_frame" && x.alloc());
     let mut defs: BTreeMap<String, Vec<D>> = BTreeMap::new();
+    let mut gone: BTreeMap<String, u64> = BTreeMap::new();
     let mut vis: HashMap<String, u8> = HashMap::new();
     let mut refs: BTreeMap<String, Import> = BTreeMap::new();
     for o in objs {
@@ -1125,9 +1242,14 @@ pub(crate) fn compute(
                 Err(_) => false,
             };
             if !live {
+                // A definition in a discarded section: P-1's "no place"
+                // when no live object defines the key (below; WP-147).
+                gone.entry(name).or_insert(s.st_value);
                 continue;
             }
             let common = matches!(t.section_of(i, &s), Ok(SymbolSection::Common));
+            let placeless = matches!(t.section_of(i, &s), Ok(SymbolSection::Section(k))
+                if o.no_place(k.0 as usize, out_eh_frame));
             defs.entry(name).or_default().push(D {
                 ty: if common { mortar_elf::consts::STT_OBJECT } else { s.sym_type() },
                 bind: s.binding(),
@@ -1135,11 +1257,27 @@ pub(crate) fn compute(
                 strong: matches!(s.binding(), STB_GLOBAL | STB_GNU_UNIQUE) && !common,
                 common,
                 excluded,
+                placeless,
+                value: s.st_value,
             });
         }
     }
     let defined_base: HashSet<String> =
         defs.keys().map(|n| split_version(n).0.to_string()).collect();
+    let rule = ExportRule { script, export_dynamic: sl.export_dynamic, format };
+    // P-1 (WP-147): a key every definition of which is discarded (not a
+    // COMDAT copy another object keeps) has no place, when the one
+    // derivation of the export set exports it (WP-149).
+    for (name, value) in gone {
+        let base = split_version(&name).0;
+        let v = vis.get(base).copied().unwrap_or(STV_DEFAULT);
+        if !defined_base.contains(base)
+            && matches!(v, STV_DEFAULT | STV_PROTECTED)
+            && rule.exports(&name)
+        {
+            sets.placeless.entry(base.to_string()).or_insert(value);
+        }
+    }
     // Layout L-96: `__start_X`/`__stop_X` named from a live section, `X` a
     // C-identifier section of the inputs, is the link's own definition.
     let startstop = start_stop(objs, &refs);
@@ -1151,39 +1289,13 @@ pub(crate) fn compute(
         let versioned = r.versioned;
         sets.imports.entry(base.to_string()).or_insert(r).versioned |= versioned;
     }
-    // A key's version and whether a script or --exclude-libs hides it.
+    // A key's version and whether a script hides it: the one derivation
+    // (`ExportRule`), which M10's roots ask too (WP-149).
     let decide = |name: &str, sets: &mut Sets| -> Option<VerOut> {
-        let (base, ver) = split_version(name);
-        match (&script, ver) {
-            (None, None) => Some(VerOut::Base),
-            (None, Some((v, _))) => {
-                sets.outside.push(format!(
-                    "'{name}': version {v} and no version script (dyn.md D-114: undefined-version)"
-                ));
-                None
-            }
-            (Some(s), None) => match s.decide(base) {
-                Decision::Local => None,
-                Decision::Base => Some(VerOut::Base),
-                Decision::Node(i) => {
-                    Some(s.nodes[i].name.clone().map_or(VerOut::Base, VerOut::Node))
-                }
-            },
-            (Some(s), Some((v, default))) => match s.decide_versioned(base, v, sl.export_dynamic) {
-                None => {
-                    sets.outside.push(format!(
-                            "'{name}': no node {v} in the version script (dyn.md D-114: undefined-version)"
-                        ));
-                    None
-                }
-                Some(Decision::Local) => None,
-                Some(_) => Some(if default {
-                    VerOut::Node(v.to_string())
-                } else {
-                    VerOut::Hidden(v.to_string())
-                }),
-            },
-        }
+        rule.version(name).unwrap_or_else(|m| {
+            sets.outside.push(m);
+            None
+        })
     };
     for (name, ds) in &defs {
         let base = split_version(name).0.to_string();
@@ -1201,9 +1313,19 @@ pub(crate) fn compute(
             continue;
         }
         let Some(version) = decide(name, &mut sets) else {
-            sets.local.insert(base);
+            // A hidden `.symver` definition is the key `foo@V1` (or
+            // `foo@@V1`): the plain `foo` may still be another node's
+            // export, preemptible (WP-149).
+            sets.local.insert(if split_version(name).1.is_some() { name.clone() } else { base });
             continue;
         };
+        // P-1: an export whose definition has no place is omitted
+        // (`spec/resolve.md` §10.1, D-110; WP-147); a key the script
+        // makes local is local first (WP-149).
+        if d.placeless {
+            sets.placeless.insert(base, d.value);
+            continue;
+        }
         let preemptible =
             v != STV_PROTECTED && line_preempts(sl, list.as_ref(), d.ty, &base, format);
         sets.exports.entry(base.clone()).or_default().push(Export {
@@ -1300,11 +1422,13 @@ pub(crate) fn compute(
         !(sets.exports.contains_key(n) || sets.local.contains(n) || linker_def)
     });
     sets.local.extend(own);
+    sets.rule = Some(rule);
     sets
 }
 
 /// P-D19: `.dynsym`'s defined entries against the export set, with
 /// binding, type, visibility and version (D-110, D-115).
+#[allow(clippy::too_many_lines)] // one pass over .dynsym, then the set
 pub fn pd19(out: &DynOut, sets: &Sets, format: Format) -> Vec<Finding> {
     let mut v = Vec::new();
     let sym = |name: &str, m: String| {
@@ -1330,10 +1454,35 @@ pub fn pd19(out: &DynOut, sets: &Sets, format: Format) -> Vec<Finding> {
         {
             continue;
         }
+        if let Some(&value) = sets.placeless.get(&s.name)
+            && !sets.exports.contains_key(&s.name)
+        {
+            // GNU ld's form (measured, WP-147): an absolute symbol whose
+            // value is the definition's offset in its section.
+            if format == Format::Gnu
+                && s.st_shndx == mortar_elf::consts::SHN_ABS
+                && s.st_value == value
+            {
+                continue;
+            }
+            v.push(sym(
+                &s.name,
+                format!(
+                    "'{}' is defined in .dynsym (at {:#x}), but its definition has no place: P-1 omits it (resolve.md §10.1, D-110)",
+                    s.name, s.st_value
+                ),
+            ));
+            continue;
+        }
         let Some(e) =
             sets.exports.get(&s.name).and_then(|x| x.iter().find(|e| e.version == version))
         else {
-            let why = if sets.local.contains(&s.name) {
+            let key = match &version {
+                VerOut::Base => s.name.clone(),
+                VerOut::Node(n) => format!("{}@@{n}", s.name),
+                VerOut::Hidden(n) => format!("{}@{n}", s.name),
+            };
+            let why = if sets.local.contains(&s.name) || sets.local.contains(&key) {
                 " (a version script or --exclude-libs makes it local)"
             } else if sets.exports.contains_key(&s.name) {
                 " at this version"
@@ -1769,46 +1918,9 @@ pub(crate) fn static_checks(
             format!("DT_SONAME is {:?}; the line's -soname is {want:?} (D-102)", got.flatten()),
         )),
     }
-    // DT_VERDEF/DT_VERDEFNUM and `.gnu.version_d` (D-115).
-    let any_node = !sets.nodes.is_empty();
-    let num = out.get(crate::dynout::DT_VERDEFNUM);
-    match (any_node, out.has(crate::dynout::DT_VERDEF)) {
-        (false, true) => {
-            v.push(fd(22, "DT_VERDEF and the version script names no version node (D-115)"));
-        }
-        (true, false) => {
-            v.push(fd(22, "no DT_VERDEF and the version script names a version node (D-115)"));
-        }
-        (true, true) => {
-            if num != Some(out.verdefs.len() as u64) {
-                v.push(fd(
-                    22,
-                    format!(
-                        "DT_VERDEFNUM {num:?}; the Verdef chain has {} entries",
-                        out.verdefs.len()
-                    ),
-                ));
-            }
-            let want: Vec<&String> = sets.nodes.iter().collect();
-            let got: Vec<&String> =
-                out.verdefs.iter().skip(1).filter_map(|d| d.names.first()).collect();
-            if got != want {
-                v.push(fd(22, format!("the Verdefs after the base are {got:?}; the script's nodes are {want:?} (D-115)")));
-            }
-            for (k, d) in out.verdefs.iter().enumerate() {
-                let n = d.names.first().cloned().unwrap_or_default();
-                let base = k == 0;
-                if d.version != 1
-                    || d.ndx != k as u16 + 1
-                    || (d.flags & 1 != 0) != base
-                    || d.hash != crate::dynout::elf_hash(n.as_bytes())
-                {
-                    v.push(fd(22, format!("Verdef {k} ('{n}'): vd_version {}, vd_flags {:#x}, vd_ndx {}, vd_hash {:#x} (D-115)", d.version, d.flags, d.ndx, d.hash)));
-                }
-            }
-        }
-        (false, false) => {}
-    }
+    // P-D27: the version definitions and every entry's `.gnu.version`
+    // index (D-115; WP-149).
+    v.extend(pd27(image, out, sets, sl, format));
     // NEEDED_INDIRECT_EXTERN_ACCESS kept iff an input has it (D-112).
     let w = word as usize;
     let input_has = objs.iter().any(|o| {
@@ -1911,6 +2023,287 @@ pub(crate) fn static_checks(
             26,
             format!("DF_STATIC_TLS {static_tls}; an initial-exec slot exists {ie} (D-119)"),
         ));
+    }
+    v
+}
+
+/// `VER_FLG_BASE`.
+const VER_FLG_BASE: u16 = 1;
+/// `VERSYM_HIDDEN`.
+const VERSYM_HIDDEN: u16 = 0x8000;
+
+/// The `.gnu.version` index D-115 gives an export of version `v`, with the
+/// script's nodes `nodes` at indices 2, 3, ... (`None`: a node the script
+/// does not have, which P-D19 reports).
+fn versym_of(v: &VerOut, nodes: &[String]) -> Option<u16> {
+    let ndx = |n: &str| nodes.iter().position(|x| x == n).and_then(|i| u16::try_from(i + 2).ok());
+    match v {
+        VerOut::Base => Some(1),
+        VerOut::Node(n) => ndx(n),
+        VerOut::Hidden(n) => ndx(n).map(|i| i | VERSYM_HIDDEN),
+    }
+}
+
+/// P-D27 (D-115, WP-149): a `Shared` output's version definitions, against
+/// the script the line names (read from its files, `--version-script` of
+/// the map's `arg` records or of the reference's line) and the export set
+/// recomputed from the inputs, never from the output:
+///
+/// - `DT_VERDEF` iff the script names a node; `DT_VERDEFNUM` 1 + the
+///   nodes, and the chain that long (each `vd_next` but the last's non-0,
+///   the last's 0);
+/// - the base: index 1, `vd_flags` `VER_FLG_BASE`, `vd_cnt` 1, named by
+///   `-soname`, else by the output's basename (lld: the `-o` path as
+///   written, `spec/dyn.md` D-115's [X-F] F3);
+/// - node k (script order): index k + 2, `vd_flags` 0, `vd_version` 1,
+///   `vd_hash` the ELF hash of its name, its `Verdaux` first, then (GNU ld
+///   and mortar) its parents last-written first and `vd_cnt` 1 + their
+///   number; lld and mold write no parent (`vd_cnt` 1: measured,
+///   `parents.test`);
+/// - `.gnu.version_d`'s header: `sh_info` the count, `sh_link` `.dynstr`,
+///   `sh_addr` `DT_VERDEF`; mortar's `sh_addralign` 4;
+/// - every `.dynsym` entry's index: 0 for a local entry; for a definition,
+///   the index of its version in the export set (1 unversioned, the
+///   node's, the node's with `VERSYM_HIDDEN` for `foo@V`), each export's
+///   index once; an import's index is 0, 1 or a `Vernaux`'s, never a
+///   `Verdef`'s, and the two spaces share `.gnu.version`: definitions
+///   1 ..= `DT_VERDEFNUM`, then every `vna_other` above them.
+#[allow(clippy::too_many_lines)] // one block per field
+pub(crate) fn pd27(
+    image: &Image<'_>,
+    out: &DynOut,
+    sets: &Sets,
+    sl: &SharedLine,
+    format: Format,
+) -> Vec<Finding> {
+    use crate::dynout::{DT_VERDEF, DT_VERDEFNUM};
+    let mut v = Vec::new();
+    let any_node = !sets.nodes.is_empty();
+    let want_num = if any_node { sets.nodes.len() as u64 + 1 } else { 0 };
+    let num = out.get(DT_VERDEFNUM);
+    match (any_node, out.has(DT_VERDEF)) {
+        (false, true) => {
+            v.push(fd(27, "DT_VERDEF and the version script names no version node (D-115)"));
+        }
+        (true, false) => {
+            v.push(fd(27, "no DT_VERDEF and the version script names a version node (D-115)"));
+        }
+        (false, false) => {
+            if num.is_some() {
+                v.push(fd(27, "DT_VERDEFNUM without DT_VERDEF (D-115)"));
+            }
+        }
+        (true, true) => {
+            if num != Some(want_num) {
+                v.push(fd(
+                    27,
+                    format!(
+                        "DT_VERDEFNUM is {num:?}; the script names {} nodes, so {want_num} Verdefs with the base (D-115)",
+                        sets.nodes.len()
+                    ),
+                ));
+            }
+            if num != Some(out.verdefs.len() as u64) {
+                v.push(fd(
+                    27,
+                    format!(
+                        "DT_VERDEFNUM is {num:?}; the Verdef chain has {} entries (D-115)",
+                        out.verdefs.len()
+                    ),
+                ));
+            }
+            let base_want = match (&sl.soname, format) {
+                (Some(s), _) => s.clone(),
+                (None, Format::Lld) => sl.output.clone().unwrap_or_else(|| "a.out".into()),
+                (None, _) => {
+                    let o = sl.output.as_deref().unwrap_or("a.out");
+                    o.rsplit_once('/').map_or(o, |(_, f)| f).to_string()
+                }
+            };
+            let parents_written = matches!(format, Format::Mortar | Format::Gnu);
+            let last = out.verdefs.len().saturating_sub(1);
+            for (k, d) in out.verdefs.iter().enumerate() {
+                let n = d.names.first().cloned().unwrap_or_default();
+                let base = k == 0;
+                let mut bad = Vec::new();
+                if d.version != 1 {
+                    bad.push(format!("vd_version {}", d.version));
+                }
+                if usize::from(d.ndx) != k + 1 {
+                    bad.push(format!("vd_ndx {} at position {k}", d.ndx));
+                }
+                let flags = if base { VER_FLG_BASE } else { 0 };
+                if d.flags != flags {
+                    bad.push(format!("vd_flags {:#x}, not {flags:#x}", d.flags));
+                }
+                if d.hash != crate::dynout::elf_hash(n.as_bytes()) {
+                    bad.push(format!("vd_hash {:#x}, not the ELF hash of its name", d.hash));
+                }
+                let want_names: Vec<String> = if base {
+                    vec![base_want.clone()]
+                } else if let Some(node) = sets.nodes.get(k - 1) {
+                    let mut w = vec![node.clone()];
+                    if parents_written {
+                        w.extend(sets.parents.get(k - 1).into_iter().flatten().rev().cloned());
+                    }
+                    w
+                } else {
+                    Vec::new()
+                };
+                if !want_names.is_empty() && d.names != want_names {
+                    bad.push(format!(
+                        "names (its own, then its parents) {:?}, not {want_names:?}",
+                        d.names
+                    ));
+                }
+                if usize::from(d.cnt) != d.names.len()
+                    || (!want_names.is_empty() && usize::from(d.cnt) != want_names.len())
+                {
+                    bad.push(format!(
+                        "vd_cnt {}, with {} Verdaux entries read",
+                        d.cnt,
+                        d.names.len()
+                    ));
+                }
+                if d.aux_next != 0 {
+                    bad.push(format!("the last Verdaux's vda_next {:#x}, not 0", d.aux_next));
+                }
+                if (d.next == 0) != (k == last) {
+                    bad.push(format!("vd_next {:#x}", d.next));
+                }
+                if !bad.is_empty() {
+                    v.push(fd(27, format!("Verdef {k} ('{n}'): {} (D-115)", bad.join(", "))));
+                }
+            }
+            // The section header, when the output has one.
+            if let Some(s) = image.sections.iter().find(|s| s.name == ".gnu.version_d") {
+                let dynstr = image.sections.iter().position(|x| x.name == ".dynstr");
+                let mut bad = Vec::new();
+                if u64::from(s.shdr.sh_info) != out.verdefs.len() as u64 {
+                    bad.push(format!("sh_info {}", s.shdr.sh_info));
+                }
+                if dynstr.is_some_and(|i| i as u64 != u64::from(s.shdr.sh_link)) {
+                    bad.push(format!("sh_link {} (not .dynstr)", s.shdr.sh_link));
+                }
+                if out.get(DT_VERDEF) != Some(s.shdr.sh_addr) {
+                    bad.push(format!("sh_addr {:#x} (not DT_VERDEF)", s.shdr.sh_addr));
+                }
+                if format == Format::Mortar && s.shdr.sh_addralign != 4 {
+                    bad.push(format!("sh_addralign {}", s.shdr.sh_addralign));
+                }
+                if !bad.is_empty() {
+                    v.push(fd(
+                        27,
+                        format!(
+                            ".gnu.version_d's header: {} ({} Verdefs; D-115)",
+                            bad.join(", "),
+                            out.verdefs.len()
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+    // Every entry's `.gnu.version` index.
+    let Some(vs) = &out.versym else {
+        if any_node {
+            v.push(fd(
+                27,
+                "no .gnu.version (DT_VERSYM) and the version script names a node (D-115)",
+            ));
+        }
+        return v;
+    };
+    let defs = num.unwrap_or(0);
+    for n in &out.needs {
+        if u64::from(n.other) <= defs.max(1) {
+            v.push(fd(
+                27,
+                format!(
+                    "vna_other {} of '{}' is not above the version definitions' indices 1..={} (D-115: definitions first, needs after)",
+                    n.other,
+                    n.name,
+                    defs.max(1)
+                ),
+            ));
+        }
+    }
+    let sym = |name: &str, m: String| {
+        let mut f = fd(27, m);
+        f.symbol = Some(name.to_string());
+        f
+    };
+    // The expected indices of each name's exports, consumed as `.dynsym`
+    // entries take them.
+    let mut want: BTreeMap<&str, Vec<u16>> = BTreeMap::new();
+    for (name, es) in &sets.exports {
+        for e in es {
+            if let Some(x) = versym_of(&e.version, &sets.nodes) {
+                want.entry(name.as_str()).or_default().push(x);
+            }
+        }
+    }
+    for (j, s) in out.syms.iter().enumerate().skip(1) {
+        let Some(&x) = vs.get(j) else { break };
+        if s.binding() == STB_LOCAL {
+            if x != 0 {
+                v.push(sym(
+                    &s.name,
+                    format!("the local .dynsym entry {j} has .gnu.version {x:#x}, not 0 (D-115)"),
+                ));
+            }
+            continue;
+        }
+        if !s.defined() {
+            let i = u64::from(x & 0x7fff);
+            // 0 on an undefined entry is unversioned too (resolve §9.2;
+            // lld and mold write it for an unversioned weak import).
+            if (2..=defs).contains(&i) || (x & VERSYM_HIDDEN != 0) {
+                v.push(sym(
+                    &s.name,
+                    format!(
+                        "the import '{}' has .gnu.version {x:#x}: 0, 1 or a Vernaux's index above the {defs} definitions, never hidden (D-115)",
+                        s.name
+                    ),
+                ));
+            }
+            continue;
+        }
+        // GNU ld's node-name symbols (`V1@@V1`, SHN_ABS; D-110 item 3).
+        if format == Format::Gnu
+            && s.st_shndx == mortar_elf::consts::SHN_ABS
+            && sets.nodes.contains(&s.name)
+        {
+            let w = versym_of(&VerOut::Node(s.name.clone()), &sets.nodes);
+            if Some(x) != w {
+                v.push(sym(
+                    &s.name,
+                    format!(
+                        "GNU ld's node symbol '{}' has .gnu.version {x:#x}, not {w:?} (D-115)",
+                        s.name
+                    ),
+                ));
+            }
+            continue;
+        }
+        let Some(ws) = want.get_mut(s.name.as_str()) else { continue }; // P-D19's
+        if let Some(p) = ws.iter().position(|&w| w == x) {
+            ws.remove(p);
+        } else {
+            v.push(sym(
+                &s.name,
+                format!(
+                    "'{}' has .gnu.version {x:#x}; the version script and its .symver definitions give {:?} (D-115{})",
+                    s.name,
+                    ws.iter().map(|w| format!("{w:#x}")).collect::<Vec<_>>(),
+                    if x & VERSYM_HIDDEN != 0 {
+                        ": VERSYM_HIDDEN only on a non-default foo@V"
+                    } else {
+                        ""
+                    }
+                ),
+            ));
+        }
     }
     v
 }
@@ -2074,6 +2467,7 @@ pub(crate) fn filter_dyncheck(
     out: &DynOut,
     sl: &SharedLine,
     sets: &Sets,
+    format: Format,
 ) {
     let entry0 = image.header.e_entry == 0;
     let mask = DF_SYMBOLIC | crate::dynout::DF_STATIC_TLS;
@@ -2108,6 +2502,15 @@ pub(crate) fn filter_dyncheck(
                 }
                 // D-30's order has no library tags: D-102's is P-D22's.
                 m != "a tag D-30 does not write" && m != "the .dynamic tags are not in D-30's order"
+            }
+            // lld's form of an unreferenced export with no place
+            // (measured, WP-147): an import no input references.
+            Rule::Dyn(7)
+                if format == Format::Lld
+                    && m.contains("is imported and no input references it")
+                    && f.symbol.as_deref().is_some_and(|n| sets.placeless.contains_key(n)) =>
+            {
+                false
             }
             Rule::Dyn(7) => {
                 !m.contains("is not exported (D-12, W8)")
@@ -2147,7 +2550,9 @@ pub(crate) fn filter_view1(
 ) {
     v.retain(|f| {
         !(f.rule == Rule::SymbolTable(3)
-            && f.symbol.as_ref().is_some_and(|n| sets.local.contains(split_version(n).0))
+            && f.symbol
+                .as_ref()
+                .is_some_and(|n| sets.local.contains(n) || sets.local.contains(split_version(n).0))
             && (f.message.contains("binding") || f.message.contains("visibility")))
     });
     for f in v.iter_mut() {

@@ -582,6 +582,60 @@ fn fields_per_row() {
     }
 }
 
+// dyn.md D-27 (WP-141): a weak versioned import bound in an object that is
+// used but not needed (file 3, outside `Slots.needed`) is written
+// unversioned, index 1, and its object has no `Verneed`; the needed
+// object's versioned import keeps its need. Alone, it makes no
+// `.gnu.version` at all (GNU ld and lld).
+#[test]
+fn verneed_skips_a_used_object() {
+    let build = |with_needed_version: bool| {
+        let mut fx = Fx { needed: vec![(1, b"libc.so.6".to_vec())], ..Fx::default() };
+        let vfn = fx.key(
+            "vfn",
+            Spec::Shared {
+                file: 3,
+                def: sh(3, STB_GLOBAL << 4 | STT_FUNC, 0x10, 0),
+                referenced: true,
+                strong: false,
+                version: 2,
+            },
+        );
+        fx.vernames.insert((3, 2), b"V1".to_vec());
+        let puts = with_needed_version.then(|| {
+            fx.vernames.insert((1, 3), b"GLIBC_2.17".to_vec());
+            fx.key(
+                "puts",
+                Spec::Shared {
+                    file: 1,
+                    def: sh(1, STB_GLOBAL << 4 | STT_FUNC, 0x1000, 8),
+                    referenced: true,
+                    strong: true,
+                    version: 3,
+                },
+            )
+        });
+        (fx.build(), vfn, puts)
+    };
+    for machine in [Machine::AArch64, Machine::X86_64] {
+        let (b, _, _) = build(false);
+        let out = b.link(machine, &Pool::sequential()).unwrap();
+        assert!(out.verneed.is_empty(), "{:?}", out.verneed);
+        assert!(out.versym.is_empty() && out.verneed_bytes.is_empty());
+        let s = syms(&out.dynsym);
+        assert_eq!(s.len(), 2);
+        assert_eq!(s[1].info, STB_WEAK << 4 | STT_FUNC, "the definition's type, weak");
+
+        let (b, vfn, puts) = build(true);
+        let out = b.link(machine, &Pool::sequential()).unwrap();
+        assert_eq!(&*out.verneed, &[(FileId(1), vec![VerIndex(3)].into_boxed_slice())][..]);
+        let ver: Vec<u16> =
+            out.versym.chunks(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+        assert_eq!(ver[out.plan.index(vfn).unwrap() as usize], 1, "unversioned");
+        assert_eq!(ver[out.plan.index(puts.unwrap()).unwrap() as usize], 2, "the need's vna_other");
+    }
+}
+
 // dyn.md D-21, D-23, D-27, WP-040 §6: the refusals and the broken tables.
 #[test]
 fn refusals_by_name() {
@@ -642,25 +696,6 @@ fn refusals_by_name() {
     let mut b = shared_weak_dyn;
     b.demands.weak_dyn.insert(SymbolId(0));
     assert!(b.plan(&Pool::sequential()).unwrap_err().contains("WeakDyn and has a shared"));
-    // A versioned import bound in an object that is not needed.
-    let unneeded = one(&|fx| {
-        fx.key(
-            "f",
-            Spec::Shared {
-                file: 3,
-                def: sh(3, 0x12, 0x10, 0),
-                referenced: true,
-                strong: true,
-                version: 2,
-            },
-        );
-        fx.vernames.insert((3, 2), b"V2".to_vec());
-    });
-    let e = unneeded.link(Machine::AArch64, &Pool::sequential()).unwrap_err();
-    assert!(
-        e.contains("versioned reference to f bound in a shared object that is not needed"),
-        "{e}"
-    );
     // i386 dynamic output is M4.
     let (b, _) = every_row();
     let e = b.link(Machine::I386, &Pool::sequential()).unwrap_err();

@@ -17,7 +17,9 @@ mod common;
 use std::path::{Path, PathBuf};
 
 use common::verify_with;
-use mortar_plumb::map::{DiscardReason, Discarded, Format, Map, Placed, SectionRef};
+use mortar_plumb::map::{
+    DiscardReason, Discarded, DynRecords, Format, Map, OutputKind, Placed, SectionRef,
+};
 use mortar_plumb::{Report, map};
 use mortar_testutil::target::Arch;
 use mortar_testutil::{Scratch, tool};
@@ -364,5 +366,64 @@ fn wp143_discarded_section_with_a_global_and_its_reasons() {
             "{label}:\n{}",
             r.render("o")
         );
+    }
+}
+
+// §3.3 M10 (WP-147): a `discard gc` of a section that defines a key the
+// line roots (`spec/resolve.md` §4.2, §4.7): the entry (`-e get`), a name
+// of `-init`, or, under `-shared` or `-E`, an export. Without a root
+// name the same record is accepted (the test above).
+#[test]
+#[allow(clippy::many_single_char_names)] // t, d, m, f, r
+fn wp147_gc_of_a_line_root_is_m10() {
+    for arch in ARCHES {
+        let Some(t) = tools(arch) else { continue };
+        let scratch = Scratch::new("plumb-placeless");
+        let d = scratch.path();
+        link_all(&t, arch, d, "gsec", &["get.o", "gsec.o", "r-gsec.o"]);
+        let label = arch.name();
+        let line = ["-static", "get.o", "gsec.o", "r-gsec.o", "-e", "get", "-o", "gsec"];
+        let m = as_mortar(d, "gsec.lld", &line);
+        let (output, files, _) = load(d, "gsec.lld", "gsec.lld.map", Format::Lld);
+        let gc = |file: &str, sec: &str, extra: &[&str]| {
+            let f = file_of(&m, file);
+            let s = SectionRef::Name(sec.into());
+            let mut m2 = m.clone();
+            m2.placed.retain(|p| !(p.file == f && p.section == s));
+            m2.discarded.push(Discarded {
+                file: f,
+                section: s,
+                reason: DiscardReason::Gc,
+                line: 0,
+            });
+            m2.args.push(b"--gc-sections".to_vec());
+            m2.args.extend(extra.iter().map(|w| w.as_bytes().to_vec()));
+            map::parse(Format::Mortar, &map::mortar::write(&m2)).unwrap()
+        };
+        // The entry's section.
+        let r = verify_with(&output, &files, &gc("get.o", ".text", &[]));
+        assert!(
+            has(&r, "M10", "defines 'get', which the line names"),
+            "{label} entry:\n{}",
+            r.render("o")
+        );
+        // `gx` named by -init.
+        let r = verify_with(&output, &files, &gc("gsec.o", ".rodata.gx", &["-init", "gx"]));
+        assert!(
+            has(&r, "M10", "defines 'gx', which the line names"),
+            "{label} -init:\n{}",
+            r.render("o")
+        );
+        // `gx` exported by a library (the map's `output shared`); under
+        // `-E` in a static link nothing is exported, so not a root.
+        let mut ms = gc("gsec.o", ".rodata.gx", &["-shared"]);
+        ms.dynamic = Some(DynRecords { kind: Some(OutputKind::Shared), ..DynRecords::default() });
+        let r = verify_with(&output, &files, &ms);
+        assert!(has(&r, "M10", "defines 'gx', an export"), "{label} -shared:\n{}", r.render("o"));
+        let r = verify_with(&output, &files, &gc("gsec.o", ".rodata.gx", &["-E"]));
+        assert!(r.with_rule("M10").next().is_none(), "{label} static -E:\n{}", r.render("o"));
+        // No root: accepted (R5 for the reference, as above).
+        let r = verify_with(&output, &files, &gc("gsec.o", ".rodata.gx", &[]));
+        assert!(r.with_rule("M10").next().is_none(), "{label} no root:\n{}", r.render("o"));
     }
 }

@@ -20,9 +20,9 @@
 //!
 //! **Write**: `.gnu.version` ([`VersymChunk`], divisible) holds one `u16`
 //! per `.dynsym` entry: 0 for the null entry, 1 for an executable's
-//! exports and a shared object's unversioned ones, `WeakDyn` keys and
-//! unversioned shared definitions, the need's `vna_other` for a versioned
-//! one; bit 15 only for a shared object's non-default `foo@V` export.
+//! exports and a shared object's unversioned ones, `WeakDyn` keys,
+//! unversioned shared definitions and every definition of a used, not
+//! needed object (WP-141), the need's `vna_other` for a versioned one; bit 15 only for a shared object's non-default `foo@V` export.
 //! `.gnu.version_r` ([`VerneedChunk`], whole) holds each `Verneed`
 //! followed directly by its `Vernaux` entries; `vn_file` the `DT_NEEDED` name's `.dynstr` offset, `vna_hash`
 //! the ELF hash of the version name, `vna_flags` 0, `vna_other` numbered
@@ -37,7 +37,7 @@ use mortar_diag::{Collector, Diagnostic};
 use mortar_elf::Class;
 
 use crate::dynsym::{DynsymInputs, DynsymPlan, check_range, elf64, whole_range};
-use crate::error::{Failed, SynthError, feature, internal, key, malformed};
+use crate::error::{Failed, SynthError, internal, key, malformed};
 use crate::image::{Division, FillCx, SizeCx, SynthChunk};
 use crate::out::Window;
 
@@ -60,11 +60,16 @@ pub fn elf_hash(name: &[u8]) -> u32 {
 }
 
 /// The version a `.dynsym` entry binds to: `(file, version)` for a key
-/// with a shared definition whose version index is 2 or more.
+/// with a shared definition, in a NEEDED object, whose version index is 2
+/// or more. A definition in an object that is used but not needed (D-12:
+/// a weak-only key bound through a needed object's own `DT_NEEDED`) has
+/// no `Verneed` to name its version: the entry is written unversioned,
+/// index 1 (D-27, WP-141; GNU ld and lld).
 fn bound(t: &DynsymInputs<'_>, k: SymbolId) -> Option<(FileId, VerIndex)> {
     let Some(Def::Shared(e)) = t.resolution.def.get(k).copied() else { return None };
     let v = t.src.bound_version(e)?;
-    (v.0 & 0x7fff >= 2).then_some((e.file, VerIndex(v.0 & 0x7fff)))
+    (v.0 & 0x7fff >= 2 && t.slots.needed.contains(&e.file))
+        .then_some((e.file, VerIndex(v.0 & 0x7fff)))
 }
 
 /// D-27's `Slots.verneed` for `plan`: per needed object (in `needed`
@@ -74,9 +79,13 @@ fn bound(t: &DynsymInputs<'_>, k: SymbolId) -> Option<(FileId, VerIndex)> {
 ///
 /// # Errors
 ///
-/// [`Failed`], with a refusal under `(80, 0, SymbolId)`, when an entry
-/// binds to a version of a shared object that is not needed (it has no
-/// `DT_NEEDED` name for a `Verneed`).
+/// An entry bound in an object that is used but not needed has no row
+/// (it is written unversioned, index 1: D-27, WP-141).
+///
+/// # Errors
+///
+/// [`Failed`], with an internal error under `(80, 0, SymbolId)`, when
+/// `needed` is not `Slots.needed` (an entry's needed object is missing).
 pub fn verneed_plan(
     plan: &DynsymPlan,
     t: &DynsymInputs<'_>,
@@ -84,27 +93,16 @@ pub fn verneed_plan(
     diag: &Collector,
 ) -> Result<Box<Verneed>, Failed> {
     let mut rows: Vec<(usize, VerIndex)> = Vec::new();
-    let mut failed = false;
     for &k in plan.order() {
         let Some((file, v)) = bound(t, k) else { continue };
-        if let Some(at) = needed.iter().position(|&n| n == file) {
-            rows.push((at, v));
-        } else {
-            {
-                let name = String::from_utf8_lossy(t.src.symbol(k)).into_owned();
-                diag.emit(
-                    key(u64::from(k.0)),
-                    feature(format!(
-                        "versioned reference to {name} bound in a shared object that is not \
-                         needed (spec/dyn.md D-27)"
-                    )),
-                );
-                failed = true;
-            }
-        }
-    }
-    if failed {
-        return Err(Failed);
+        let Some(at) = needed.iter().position(|&n| n == file) else {
+            diag.emit(
+                key(u64::from(k.0)),
+                internal::<Diagnostic>(".gnu.version_r: the needed list is not Slots.needed"),
+            );
+            return Err(Failed);
+        };
+        rows.push((at, v));
     }
     rows.sort_unstable();
     rows.dedup();

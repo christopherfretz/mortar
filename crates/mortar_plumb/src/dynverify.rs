@@ -272,7 +272,7 @@ fn judge(
     let mut checked = crate::dyncheck::check(image, dout, &line, &model, &ld, &objs, map);
     if let (Some(sl), Some(s)) = (&shared.line, &sets) {
         // §12.5: P-D16's changes to the executable rules, then P-D19-P-D26.
-        crate::shared::filter_dyncheck(&mut checked, image, dout, sl, s);
+        crate::shared::filter_dyncheck(&mut checked, image, dout, sl, s, map.format);
         report
             .findings
             .extend(crate::shared::static_checks(image, dout, &objs, sl, s, &args, map.format));
@@ -324,6 +324,13 @@ fn judge(
     let mut engine = reloc::Engine::new(&img1, &objs, map.format);
     dyn_engine(&mut engine, &v1, &plt, &depths);
     engine.shared = sets.is_some();
+    // M10's export roots (WP-147): the shared set's one derivation, or an
+    // executable's `-E` without a script (WP-149).
+    engine.exports = match &sets {
+        Some(s) => s.rule.clone(),
+        None if opts.export_dynamic => Some(crate::shared::ExportRule::plain(map.format)),
+        None => None,
+    };
     crate::shared::tell_engine(&mut engine, &ifr, |_| true, v1.tls.0);
     engine.dso_words = Some(dso_words.clone());
     run_engine(&mut engine, image, map, None);

@@ -1,0 +1,30 @@
+mortar-map 2
+file 0 get.o
+file 1 em.o
+file 2 ew.o
+place 0 1 410120 c
+place 0 2 420130 0
+place 0 3 420150 0
+place 1 4 410120 0
+place 1 5 410120 0
+place 1 1 41012c 0
+place 1 2 420130 0
+place 1 3 420150 0
+place 2 5 410120 0
+place 2 1 41012c 0
+place 2 2 420130 20
+place 2 4 420150 0
+chunk synthetic .symtab - 120
+chunk synthetic .strtab - 3f
+chunk synthetic .shstrtab - 30
+chunk synthetic .comment - d
+arg -static
+arg get.o
+arg em.o
+arg ew.o
+arg -e
+arg get
+arg -o
+arg em
+arg --mortar-map=em.map
+end
