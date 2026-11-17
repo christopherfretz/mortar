@@ -1563,6 +1563,11 @@ warning: f(int) violates the one-definition rule
 >>> the definitions differ; a.o and b.o were compiled with different -D options? (compare their command lines)
 ```
 
+- The `-D` note is a guess for one header compiled twice: when the two
+  kind 2 rows' `file` strings name files of different base names
+  (kiln's rows name each definition's own file), it reads instead `the
+  definitions differ and are written in different files (a.cc in a.o,
+  b.cc in b.o)` (WP-174).
 - Places are `spec/diag.md` §2.4's `file:(symbol)`. A kind 5 finding's
   place says what each row is (WP-151): a row with `DEFINITION`
   "defined in", without it "declared in" (as the first class) or

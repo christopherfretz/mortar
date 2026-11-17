@@ -1379,6 +1379,55 @@ fn layout_schemes() {
     assert!(ok && !e.contains("violates"), "{e}");
     assert!(e.contains("schemes 1, pairs not compared 1,"), "{e}");
     assert!(e.contains("layout schemes 1, layout pairs not compared 0,"), "{e}");
+    // A unit with kind 2 rows and no kind 3 rows (kiln at `min`, or a
+    // unit whose classes are all elsewhere): its odr.scheme is not a
+    // layout scheme (O-11: the fallback is for units WITH kind 3 rows;
+    // WP-174). b.o and f.o share their odr.scheme; layouts: L-1 only,
+    // f.o has none (its pairs counted, as a unit without odr.scheme is).
+    let mut f = schemed("f.cc", "kiln-odr-1.d2", "");
+    f.definitions.push(def("_Z1fv", 1, flags::VAGUE));
+    cx.object("f.o", &[], Some(&bytes(&[f])));
+    let (ok, e) = cx.strict(&["b.o", "f.o"], &[]);
+    assert!(ok && !e.contains("violates"), "{e}");
+    assert!(e.contains("schemes 1, pairs not compared 0,"), "{e}");
+    assert!(e.contains("layout schemes 1, layout pairs not compared 1,"), "{e}");
+    // The other direction: with a kind 3 row, f's odr.scheme is its
+    // layout scheme, another than b's L-1.
+    let mut g = schemed("g.cc", "kiln-odr-1.d2", "");
+    g.types.push(hashed("1Z", 0x71, 8, 1));
+    cx.object("g.o", &[], Some(&bytes(&[g])));
+    let (ok, e) = cx.strict(&["b.o", "g.o"], &[]);
+    assert!(ok && !e.contains("violates"), "{e}");
+    assert!(e.contains("layout schemes 2, layout pairs not compared 1,"), "{e}");
+}
+
+// spec: odr.md §9.1, `odr-violation`'s note (WP-174): two kind 2 rows
+// whose definitions are written in different files (by base name) say so
+// instead of guessing at -D options; one header reached by two paths
+// (`./h.h`, `inc/h.h`) keeps the -D note
+#[test]
+fn kind2_note_names_different_files() {
+    let Some(cx) = Cx::new("odr-def-files") else { return };
+    let at = |name: &str, hash: u8, file: &str| Definition {
+        file: file.as_bytes().to_vec(),
+        ..def(name, hash, flags::VAGUE)
+    };
+    let mut a = cxx("a.cc");
+    a.definitions.push(at("_Z3twov", 1, "a.cc"));
+    a.definitions.push(at("_Z3onev", 1, "./h.h"));
+    let mut b = cxx("b.cc");
+    b.definitions.push(at("_Z3twov", 2, "src/b.cc"));
+    b.definitions.push(at("_Z3onev", 2, "inc/h.h"));
+    cx.object("a.o", &[], Some(&bytes(&[a])));
+    cx.object("b.o", &[], Some(&bytes(&[b])));
+    let (ok, e) = cx.strict(&["a.o", "b.o"], &[]);
+    assert!(!ok, "{e}");
+    assert!(
+        e.contains(">>> the definitions differ and are written in different files (a.cc in a.o, b.cc in b.o)"),
+        "{e}"
+    );
+    assert_eq!(count(&e, "different -D options"), 1, "{e}");
+    assert_eq!(count(&e, "written in different files"), 1, "{e}");
 }
 
 // spec: odr.md O-15, "Rows of definitions inlined away" (WP-151): a named

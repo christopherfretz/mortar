@@ -574,7 +574,11 @@ pub(crate) fn info_of<'l>(at: usize, file: FileId, u: &Unit<'l>) -> Info<'l> {
         lang_c: value(b"lang") == Some(b"c"),
         std: u.summary_value(b"std").map(|(v, _)| v),
         scheme,
-        layout_scheme: value(b"odr.layout-scheme").or(scheme),
+        // O-11: a unit WITH kind 3 rows and no `odr.layout-scheme` uses
+        // its `odr.scheme` for layouts; a unit without kind 3 rows (kiln
+        // at `min`, or kind 2 rows only) has no layout to compare and no
+        // layout scheme (WP-174).
+        layout_scheme: value(b"odr.layout-scheme").or(scheme.filter(|_| !u.types().is_empty())),
     }
 }
 
@@ -1296,7 +1300,24 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
             let differ = self.summary_notes(&classes[0][0], &classes[1][0], false);
             let none_differ = differ.is_empty();
             notes.extend(differ);
-            if none_differ && !k13 && !system {
+            let written_in = |e: &Entry<'_>| {
+                let path = def(e).map_or(&b""[..], |r| self.units[e.unit as usize].string(r.file));
+                path.rsplit(|&b| b == b'/').next().unwrap_or(path)
+            };
+            let (wa, wb) = (written_in(&classes[0][0]), written_in(&classes[1][0]));
+            if none_differ && !k13 && !system && !wa.is_empty() && !wb.is_empty() && wa != wb {
+                // Two definitions written in different files (WP-174:
+                // kiln's rows name each definition's own file): not one
+                // header under two -D sets.
+                notes.push(format!(
+                    "the definitions differ and are written in different files ({} in {}, {} \
+                     in {})",
+                    String::from_utf8_lossy(wa),
+                    self.file_text(self.file_of(&classes[0][0])),
+                    String::from_utf8_lossy(wb),
+                    self.file_text(self.file_of(&classes[1][0])),
+                ));
+            } else if none_differ && !k13 && !system {
                 notes.push(format!(
                     "the definitions differ; {} and {} were compiled with different -D options? \
                      (compare their command lines)",

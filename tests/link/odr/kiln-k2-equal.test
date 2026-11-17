@@ -1,0 +1,96 @@
+# kiln-k2-differ's header with V=1 in every unit (kiln's kind 2 rows,
+# spec/odr.md O-10 "insensitive to", O-13 must-equal, O-15; WP-174),
+# under --odr=strict: the equal-source twins must be silent. The units
+# differ in everything the hash must not see: -O0 (a.o) beside -O2
+# (b.o, whose copy of `dropped` is inlined away: an unanchored row),
+# llc beside hod (c.o, kiln's hod route, which also carries hod's own
+# reloc-model unit without odr.scheme: the stats' 5 pairs not compared),
+# -fmason-metadata beside =detail (s.o), and declarations c.o sees
+# before h.h (extra.h by -include: another overload set in another
+# namespace, an unrelated class and inline function). spec<int> is
+# declared in every unit and defined in s.o (EXPLICIT_SPEC in s.o only:
+# no K13). Nothing is reported, not even W3/W4.
+#@ spec: odr.md O-10, O-13, O-15
+#@ arch: aarch64 x86_64
+#@ requires: kiln g++
+
+cxx(kiln) -O0 -DV=1 -DUNIT=fa -DSPEC_DECL -fmason-metadata u.cc -o a.o
+cxx(kiln) -O2 -DV=1 -DUNIT=fb -DSPEC_DECL -DUSE_DROPPED -fmason-metadata u.cc -o b.o
+cxx(kiln) -O0 -fkiln-backend=hod -DV=1 -DUNIT=fc -DSPEC_DECL -include extra.h -fmason-metadata u.cc -o c.o
+cxx(kiln) -O0 -DV=1 -DUNIT=fs -DSPEC_DECL -DSPEC_DEF -fmason-metadata=detail u.cc -o s.o
+cxx(kiln) -O0 -DV=1 -fmason-metadata d.cc -o d.o
+cxx(kiln) -O0 main2.cc -o main2.o
+link(bfd,lld,mold) g++ -static -no-pie main2.o a.o b.o c.o s.o d.o -o prog
+link(mortar) g++ -static -no-pie main2.o a.o b.o c.o s.o d.o -Wl,--odr=strict -Wl,--odr-stats -o prog
+  diag: ^mortar: odr-stats: mode strict; units 6,* schemes 1, pairs not compared 5, layout schemes 1,* record findings 0;* findings W1 0, W2 0, W3 0, W4 0;
+run prog
+  stdout: 32 33 32 32 1
+
+#--- h.h
+// V: 1 or 2. Each definition below depends on V in one place.
+__attribute__((noinline)) inline int body() { return V; }
+template <class T> struct Box {
+  T v;
+  __attribute__((noinline)) T get() const { return v + V; }
+};
+inline int ivar = V * 10;
+constexpr int cexpr(int x) { return x + V; }
+__attribute__((noinline)) inline int with_lambda(int x) {
+  auto l = [x](int y) { return x + y + V; };
+  return l(1);
+}
+__attribute__((noinline)) inline int own_default(int k = V) { return k; }
+__attribute__((noinline)) inline int uses_default() { return own_default(); }
+__attribute__((noinline)) inline int partial_body(int k = 3) { return k + V; }
+__attribute__((noinline)) inline int x15(int k = [] { return V; }()) { return k; }
+inline int over(long) { return 1; }
+#if V == 2
+inline int over(int) { return 2; }
+#endif
+__attribute__((noinline)) inline int resolves() { return over(0); }
+template <class T> __attribute__((noinline)) int tf(T) { return 1; }
+#if V == 2
+template <class T> __attribute__((noinline)) int tf(T*) { return 2; }
+#endif
+template <class T> __attribute__((noinline)) int calls_tf(T t) { return tf(&t); }
+template <class T> __attribute__((noinline)) int spec(T) { return 1; }
+#ifdef SPEC_DECL
+template <> int spec<int>(int);
+#endif
+inline int dropped() { return V; }
+#--- u.cc
+#include "h.h"
+#ifdef SPEC_DEF
+template <> int spec<int>(int) { return 2; }
+#endif
+int UNIT() {
+  volatile int z = 0;
+  return body() + Box<int>{1}.get() + ivar + cexpr(z) + with_lambda(1) + own_default(5) +
+         uses_default() + partial_body() + x15() + resolves() + calls_tf(1) + spec(1)
+#ifdef USE_DROPPED
+         + dropped()
+#endif
+      ;
+}
+#--- d.cc
+#include "h.h"
+int fd() { return dropped(); }
+#--- main.cc
+#include <cstdio>
+int fa();
+int fb();
+int fd();
+int main() { std::printf("%d %d %d\n", fa(), fb(), fd()); }
+#--- extra.h
+// Declarations a unit sees before h.h: other overloads, other templates.
+namespace other { inline int body(int) { return 7; } template <class T> int tf(T, T) { return 8; } }
+struct Unrelated { int a; double b; };
+inline int unrelated_inline() { return 9; }
+#--- main2.cc
+#include <cstdio>
+int fa();
+int fb();
+int fc();
+int fs();
+int fd();
+int main() { std::printf("%d %d %d %d %d\n", fa(), fb(), fc(), fs(), fd()); }

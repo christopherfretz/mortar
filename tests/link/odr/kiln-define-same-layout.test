@@ -4,10 +4,17 @@
 # inline member function's body and a default argument that depend on
 # the macro, a static data member's initializer, and a member's default
 # initializer. Kind 3 hashes the layout, kind 4 describes it: neither
-# differs, so --odr=strict reports nothing, at the level default and at
-# detail (the test has no `diag` directive: any one-definition-rule
-# diagnostic fails it). The program prints what each unit's inline
-# function gave (the one copy the linker kept).
+# differs. Kind 2 (kiln 4b017b227, scheme kiln-odr-1.d2) has a row for
+# S::get in both units with ONE hash: its body's tokens are equal,
+# `level` is hashed as the entity it names (not its value, O-10), and
+# the default argument on get's own parameter is not hashed yet (the row
+# is PARTIAL until kiln's K-3e, O-10 "kiln K-3c" item 5); S::name, in
+# b.o only, is compared with nothing. So --odr=strict reports nothing, at
+# the level default and at detail (the test has no `diag` directive: any
+# one-definition-rule diagnostic fails it). The class itself differs in
+# its tokens (a miss: kind 3's definition hash is zero, X22). The
+# program prints what each unit's inline function gave (the one copy the
+# linker kept).
 #@ spec: odr.md O-17, O-19
 #@ arch: aarch64 x86_64
 #@ requires: kiln g++

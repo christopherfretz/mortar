@@ -1,0 +1,128 @@
+# Kind 2 rows as kiln writes them (kiln 4b017b227, scheme kiln-odr-1.d2;
+# spec/odr.md O-10, O-14, O-15, "kiln K-3a" and "kiln K-3c"; WP-174):
+# one header h.h, compiled into a.o with V=1 and into b.o with V=2, each
+# definition differing in one place, under --odr=strict. Every row is
+# anchored (kiln writes no names yet, K-3f). Reported, each by its row:
+# - errors: an inline function's body (body), a class template's member
+#   (Box<int>::get), an inline variable's initializer (ivar), a constexpr
+#   function (cexpr), a default argument used at a call inside the
+#   definition (uses_default: hashed at the use), a call that overload
+#   resolution sends elsewhere because b.o declares over(int) (resolves:
+#   the callee is hashed as the entity it names, kiln's Q1 ruling), the
+#   same through a function template overload (calls_tf<int>: tf<int*>
+#   against the more specialized tf(T*) of b.o);
+# - K13: spec<int> is an explicit specialization in b.o and an implicit
+#   instantiation in a.o (an error whatever the hashes), beside W3;
+# - warnings only, the rows PARTIAL (kiln hashes lambdas and default
+#   arguments of a definition's own parameters as fixed tokens until
+#   K-3e): the closure's operator() of with_lambda, whose body differs,
+#   and partial_body, whose body differs and which has a default
+#   argument of its own;
+# - W4 on ivar's bytes (10 against 20).
+# Not reported: with_lambda itself (its lambda is one fixed token: equal
+# hashes, PARTIAL), own_default (only its own default argument differs:
+# not hashed yet, a miss counted as PARTIAL), x15 (a lambda in its
+# declarator: no row, X15), dropped (d.o's copy at -O2 was inlined away:
+# its row is unanchored and never compared, the stats' `unanchored rows`;
+# b.o's copy is compared with nothing), over (two keys). kiln-k2-silent
+# is the same link at the default mode and --odr=warn (kind 2 is
+# strict's, O-47); kiln-k2-equal the same source with V=1 everywhere.
+#@ spec: odr.md O-10, O-14, O-15
+#@ arch: aarch64 x86_64
+#@ requires: kiln g++
+#@ diag: odr-strong-and-comdat b.o a.o
+#@ diag: odr-violation b.o a.o
+#@ diag: odr-contents-mismatch a.o b.o
+#@ diag: odr-violation a.o b.o
+#@ diag: odr-violation a.o b.o
+#@ diag: odr-violation a.o b.o
+#@ diag: odr-violation a.o b.o
+#@ diag: odr-violation a.o b.o
+#@ diag: odr-violation a.o b.o
+#@ diag: odr-violation a.o b.o
+#@ diag: odr-violation a.o b.o
+#@ diag: odr-violation a.o b.o
+
+cxx(kiln) -O0 -DV=1 -DUNIT=fa -fmason-metadata u.cc -o a.o
+cxx(kiln) -O0 -DV=2 -DUNIT=fb -DSPEC_DEF -DUSE_DROPPED -fmason-metadata u.cc -o b.o
+cxx(kiln) -O2 -DV=1 -fmason-metadata d.cc -o d.o
+cxx(kiln) -O0 main.cc -o main.o
+link(bfd,lld,mold) g++ -static -no-pie main.o a.o b.o d.o -o prog
+link(mortar) g++ -static -no-pie main.o a.o b.o d.o -Wl,--odr=strict -Wl,--odr-stats -o prog
+  exit: fail
+  diag: ^mortar: error: _Z4bodyv violates the one-definition rule$
+  diag: ^mortar: error: _ZNK3BoxIiE3getEv violates the one-definition rule$
+  diag: ^mortar: error: ivar violates the one-definition rule$
+  diag: ^mortar: error: _Z5cexpri violates the one-definition rule$
+  diag: ^mortar: error: _Z12uses_defaultv violates the one-definition rule$
+  diag: ^mortar: error: _Z8resolvesv violates the one-definition rule$
+  diag: ^mortar: error: _Z8calls_tfIiEiT_ violates the one-definition rule$
+  diag: ^mortar: error: _Z4specIiEiT_ violates the one-definition rule$
+  diag: ^>>> b.o: an explicit specialization; a.o: an implicit instantiation ([temp.expl.spec]: the specialization must be declared before every use)$
+  diag: ^mortar: warning: _ZZ11with_lambdaiENKUliE_clEi violates the one-definition rule$
+  diag: ^mortar: warning: _Z12partial_bodyi violates the one-definition rule$
+  diag: ^>>> a record is PARTIAL (its producer did not hash every construct): a warning, never an error (spec/odr.md O-15)$
+  diag: ^>>> defined in a.o:(_Z4bodyv) (kept), at ./h.h:2$
+  diag: ^>>> the definitions differ; a.o and b.o were compiled with different -D options? (compare their command lines)$
+  diag: ^mortar: odr-stats: mode strict; units 3, * kind 2 30,* unanchored rows 2,* record findings 10;
+  no-diag: _Z11with_lambdai violates
+  no-diag: _Z11own_defaulti
+  no-diag: _Z3x15i
+  no-diag: _Z7droppedv
+  no-diag: _Z4over
+
+#--- h.h
+// V: 1 or 2. Each definition below depends on V in one place.
+__attribute__((noinline)) inline int body() { return V; }
+template <class T> struct Box {
+  T v;
+  __attribute__((noinline)) T get() const { return v + V; }
+};
+inline int ivar = V * 10;
+constexpr int cexpr(int x) { return x + V; }
+__attribute__((noinline)) inline int with_lambda(int x) {
+  auto l = [x](int y) { return x + y + V; };
+  return l(1);
+}
+__attribute__((noinline)) inline int own_default(int k = V) { return k; }
+__attribute__((noinline)) inline int uses_default() { return own_default(); }
+__attribute__((noinline)) inline int partial_body(int k = 3) { return k + V; }
+__attribute__((noinline)) inline int x15(int k = [] { return V; }()) { return k; }
+inline int over(long) { return 1; }
+#if V == 2
+inline int over(int) { return 2; }
+#endif
+__attribute__((noinline)) inline int resolves() { return over(0); }
+template <class T> __attribute__((noinline)) int tf(T) { return 1; }
+#if V == 2
+template <class T> __attribute__((noinline)) int tf(T*) { return 2; }
+#endif
+template <class T> __attribute__((noinline)) int calls_tf(T t) { return tf(&t); }
+template <class T> __attribute__((noinline)) int spec(T) { return 1; }
+#ifdef SPEC_DECL
+template <> int spec<int>(int);
+#endif
+inline int dropped() { return V; }
+#--- u.cc
+#include "h.h"
+#ifdef SPEC_DEF
+template <> int spec<int>(int) { return 2; }
+#endif
+int UNIT() {
+  volatile int z = 0;
+  return body() + Box<int>{1}.get() + ivar + cexpr(z) + with_lambda(1) + own_default(5) +
+         uses_default() + partial_body() + x15() + resolves() + calls_tf(1) + spec(1)
+#ifdef USE_DROPPED
+         + dropped()
+#endif
+      ;
+}
+#--- d.cc
+#include "h.h"
+int fd() { return dropped(); }
+#--- main.cc
+#include <cstdio>
+int fa();
+int fb();
+int fd();
+int main() { std::printf("%d %d %d\n", fa(), fb(), fd()); }
