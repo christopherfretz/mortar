@@ -103,47 +103,47 @@ impl<'a> Rd<'a> {
 
 /// A pointer field: where it is in its section and its raw value.
 #[derive(Debug, Clone, Copy)]
-struct Field {
-    off: usize,
-    raw: u64,
-    enc: u8,
+pub(crate) struct Field {
+    pub(crate) off: usize,
+    pub(crate) raw: u64,
+    pub(crate) enc: u8,
 }
 
 #[derive(Debug, Clone)]
-struct Cie {
-    version: u8,
-    aug: Vec<u8>,
-    code_align: u64,
-    data_align: i64,
-    ra: u64,
-    fde_enc: u8,
-    lsda_enc: u8,
-    personality: Option<Field>,
-    insns: Vec<u8>,
+pub(crate) struct Cie {
+    pub(crate) version: u8,
+    pub(crate) aug: Vec<u8>,
+    pub(crate) code_align: u64,
+    pub(crate) data_align: i64,
+    pub(crate) ra: u64,
+    pub(crate) fde_enc: u8,
+    pub(crate) lsda_enc: u8,
+    pub(crate) personality: Option<Field>,
+    pub(crate) insns: Vec<u8>,
 }
 
 #[derive(Debug, Clone)]
-struct Fde {
-    off: usize,
-    cie: usize,
-    pc: Field,
-    range: u64,
+pub(crate) struct Fde {
+    pub(crate) off: usize,
+    pub(crate) cie: usize,
+    pub(crate) pc: Field,
+    pub(crate) range: u64,
     /// The length of the augmentation data, for a `z` CIE.
-    aug_len: Option<u64>,
-    lsda: Option<Field>,
-    insns: Vec<u8>,
+    pub(crate) aug_len: Option<u64>,
+    pub(crate) lsda: Option<Field>,
+    pub(crate) insns: Vec<u8>,
 }
 
 #[derive(Debug, Default)]
-struct Frames {
-    cies: Vec<Cie>,
-    fdes: Vec<Fde>,
+pub(crate) struct Frames {
+    pub(crate) cies: Vec<Cie>,
+    pub(crate) fdes: Vec<Fde>,
     /// Offset of a zero terminator, if any.
-    terminator: Option<usize>,
+    pub(crate) terminator: Option<usize>,
 }
 
 /// Instructions without their trailing `DW_CFA_nop` padding.
-fn strip(b: &[u8]) -> Vec<u8> {
+pub(crate) fn strip(b: &[u8]) -> Vec<u8> {
     let n = b.iter().rposition(|&x| x != 0).map_or(0, |i| i + 1);
     b[..n].to_vec()
 }
@@ -157,7 +157,7 @@ fn parse(b: &[u8]) -> Result<Frames, String> {
 
 /// As [`parse`], with `addr`-byte absolute pointers (4 on ELFCLASS32).
 #[allow(clippy::too_many_lines)] // the record format, field by field
-fn parse_as(b: &[u8], addr: usize) -> Result<Frames, String> {
+pub(crate) fn parse_as(b: &[u8], addr: usize) -> Result<Frames, String> {
     let mut f = Frames::default();
     let mut cie_at: BTreeMap<usize, usize> = BTreeMap::new();
     let mut pos = 0usize;

@@ -209,6 +209,9 @@ pub(crate) fn verify_static_in(
     map: &Map,
     line: Option<&[String]>,
 ) -> Report {
+    if relocatable::applies(output, map, line) {
+        return relocatable::verify_in(output, store, m, map, line);
+    }
     let mut report = Report::default();
     let image = match image::Image::read(output) {
         Ok(i) => i,

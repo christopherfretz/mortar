@@ -112,6 +112,10 @@ fn verify_kind(
     map: &Map,
     ctx: &Ctx<'_>,
 ) -> (Report, Option<crate::inset::Stager>) {
+    // Stage R (§14, P-P9): an ET_REL output, or a map or line that says -r.
+    if crate::relocatable::applies(output, map, line_words(map, ctx).as_deref()) {
+        return (crate::relocatable::verify_in(output, store, m, map, ctx.line.as_deref()), None);
+    }
     let image = match Image::read(output) {
         Ok(i) => i,
         Err(e) => {
