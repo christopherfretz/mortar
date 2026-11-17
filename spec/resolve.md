@@ -1311,7 +1311,11 @@ What resolution marks for `.dynsym` (M2 executables; M4 shared output):
   (M4). Hidden keys never (§3.5). A **linker-defined key of file 0**
   (§8: `__bss_start`, `_edata`, `_end`, …) is exported only when
   `ref_dynamic`, never by `--export-dynamic` or a glob alone
-  (`spec/dyn.md` D-21 item 2; lld and mold; GNU ld exports them).
+  (`spec/dyn.md` D-21 item 2; lld and mold; GNU ld exports them). The
+  rule is the same with no shared object on the line (`ref_dynamic` and
+  `defined_dynamic` are then empty): `--export-dynamic` and
+  `--export-dynamic-symbol` export from an executable of objects alone
+  (WP-148).
 - **Exported from a shared object** (M4; the normative rule is
   `spec/dyn.md` D-110): every key defined by a live relocatable object,
   of default or protected visibility, weak, vague-linkage and

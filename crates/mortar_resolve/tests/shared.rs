@@ -265,6 +265,37 @@ fn d21_export_dynamic_exports_every_visible_definition() {
     assert!(!d.exported[m.id("h").0 as usize]);
 }
 
+/// WP-148: a dynamic executable of objects alone exports by §9.6 too:
+/// `--export-dynamic` every visible definition, `--export-dynamic-symbol`
+/// its keys. Without either (or in a static link) there is no shared
+/// stage, so a link that exports nothing pays nothing.
+#[test]
+fn d21_exports_without_a_shared_input() {
+    let mut m = Model::new(A64);
+    let a = m.obj("a.o");
+    m.def(a, "f");
+    m.def(a, "g");
+    let h = m.def(a, "h");
+    m.set_visibility(a, h, STV_HIDDEN);
+    let mut o = opts();
+    o.output.dynamic = true;
+    assert!(link_with(&m, &o).dynamic.is_none());
+    o.shared.export_symbols = vec![m.id("g")];
+    let r = link_with(&m, &o);
+    let d = r.dynamic.as_ref().expect("the line exports");
+    assert!(!d.exported[m.id("f").0 as usize]);
+    assert!(d.exported[m.id("g").0 as usize]);
+    o.shared.export_dynamic = true;
+    let r = link_with(&m, &o);
+    let d = r.dynamic.as_ref().expect("the line exports");
+    assert!(d.exported[m.id("f").0 as usize]);
+    assert!(d.exported[m.id("g").0 as usize]);
+    assert!(!d.exported[m.id("h").0 as usize]);
+    // A static executable or static-pie (`spec/dyn.md` D-1): no stage.
+    o.output.dynamic = false;
+    assert!(link_with(&m, &o).dynamic.is_none());
+}
+
 #[test]
 fn d21_program_definition_interposes_a_shared_one() {
     let mut m = Model::new(A64);
