@@ -217,7 +217,7 @@ impl Ed {
             return;
         }
         let al = s.align.max(1) as usize;
-        while self.b.len() % al != 0 {
+        while !self.b.len().is_multiple_of(al) {
             self.b.push(0);
         }
         s.offset = self.b.len() as u64;
@@ -241,7 +241,7 @@ impl Ed {
     pub fn add(&mut self, s: &Sh, d: &[u8]) -> usize {
         let n = self.shnum();
         let table = self.b[self.shoff()..self.shoff() + n * self.shentsize()].to_vec();
-        while self.b.len() % 8 != 0 {
+        while !self.b.len().is_multiple_of(8) {
             self.b.push(0);
         }
         let at = self.b.len();
@@ -253,12 +253,12 @@ impl Ed {
         s.size = 0;
         s.offset = 0;
         self.set_sh(n, &s);
-        if s.ty != 8 {
-            self.set_data(n, d);
-        } else {
+        if s.ty == 8 {
             let mut x = self.sh(n);
             x.size = d.len() as u64;
             self.set_sh(n, &x);
+        } else {
+            self.set_data(n, d);
         }
         n
     }

@@ -209,8 +209,8 @@ pub(crate) fn check(rv: &mut Rv<'_>) {
             }
             let got: BTreeSet<u32> = omembers.iter().copied().collect();
             if got != want {
-                let miss: Vec<String> = want.difference(&got).map(|m| m.to_string()).collect();
-                let extra: Vec<String> = got.difference(&want).map(|m| m.to_string()).collect();
+                let miss: Vec<String> = want.difference(&got).map(ToString::to_string).collect();
+                let extra: Vec<String> = got.difference(&want).map(ToString::to_string).collect();
                 bad.push(format!(
                     "its members are not its input members' output sections and their relocation sections (missing [{}], extra [{}])",
                     miss.join(", "),

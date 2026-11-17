@@ -13,6 +13,7 @@ use crate::report::{Finding, Rule};
 /// The anomaly of §10.2 that `f`, a finding on `output` linked by the
 /// linker that writes maps in `linker`'s format, is: its id and a line of
 /// text, as in `"A9: ..."`. `None` for anything else.
+#[allow(clippy::too_many_lines)] // one arm per anomaly
 pub fn classify(linker: Format, output: &[u8], f: &Finding) -> Option<&'static str> {
     let (bfd, mold) = (linker == Format::Gnu, linker == Format::Mold);
     if linker == Format::Mortar {

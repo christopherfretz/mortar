@@ -14,6 +14,10 @@
 //! record map of `.eh_frame`); the map says only where each input
 //! section went (§14.2).
 
+// f, s, o, r, t, v, w: file, section, output section, record, target,
+// value, width, as §14 names them throughout.
+#![allow(clippy::many_single_char_names)]
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
@@ -304,7 +308,7 @@ impl Elf {
             elf.shndx_sec =
                 secs.iter().position(|s| s.ty == SHT_SYMTAB_SHNDX && s.link as usize == st);
             let s = &secs[st];
-            let strtab = secs.get(s.link as usize).map(|s| s.data.as_slice()).unwrap_or(&[]);
+            let strtab = secs.get(s.link as usize).map_or(&[][..], |s| s.data.as_slice());
             let es: usize = if class64 { 24 } else { 16 };
             let shx = elf.shndx_sec.map(|i| secs[i].data.as_slice());
             for (k, e) in s.data.chunks_exact(es).enumerate() {
@@ -391,16 +395,15 @@ pub(crate) fn field(machine: u16, ty: u32) -> (u8, u64) {
         EM_386 => crate::x86::def(ty).map(|d| d.field),
         _ => None,
     };
-    match f {
-        Some(f) => (f.width(), f.mask()),
-        None => {
-            let w = match machine {
-                EM_AARCH64 => crate::a64::unchecked_width(ty),
-                EM_X86_64 => crate::x64::unchecked_width(ty),
-                _ => crate::x86::unchecked_width(ty),
-            };
-            (w, if w >= 8 { u64::MAX } else { (1u64 << (8 * u32::from(w))) - 1 })
-        }
+    if let Some(f) = f {
+        (f.width(), f.mask())
+    } else {
+        let w = match machine {
+            EM_AARCH64 => crate::a64::unchecked_width(ty),
+            EM_X86_64 => crate::x64::unchecked_width(ty),
+            _ => crate::x86::unchecked_width(ty),
+        };
+        (w, if w >= 8 { u64::MAX } else { (1u64 << (8 * u32::from(w))) - 1 })
     }
 }
 
@@ -816,7 +819,7 @@ impl Rv<'_> {
     /// The target of output record `r` of relocation section `rs`.
     pub(crate) fn out_target(&self, rs: usize, r: &Rel) -> Tgt {
         let target = self.out.secs.get(rs).map_or(0, |s| s.info as usize);
-        let data = self.out.secs.get(target).map(|s| s.data.as_slice()).unwrap_or(&[]);
+        let data = self.out.secs.get(target).map_or(&[][..], |s| s.data.as_slice());
         let a = match r.addend {
             Some(a) => a,
             None => implicit(self.machine, r.ty, data, r.offset).unwrap_or(0),
@@ -852,7 +855,7 @@ impl Rv<'_> {
             (Tgt::Place(o, v), Tgt::Place(p, w)) if o == p && v == w => Some(false),
             (Tgt::Abs(v), Tgt::Abs(w)) if v == w => Some(false),
             (Tgt::Merged(o, want, x), Tgt::Place(p, w)) if o == p => {
-                let d = self.out.secs.get(*p as usize).map(|s| s.data.as_slice()).unwrap_or(&[]);
+                let d = self.out.secs.get(*p as usize).map_or(&[][..], |s| s.data.as_slice());
                 let at = usize::try_from(w.wrapping_sub(*x)).ok()?;
                 d.get(at..)?.starts_with(want).then_some(false)
             }
@@ -1103,6 +1106,7 @@ fn with_rv<R>(
 }
 
 /// Reads the inputs the map names, in `FileId` order (§14.1).
+#[allow(clippy::too_many_lines)] // one arm per kind of input
 fn read_inputs(
     src: &dyn Source,
     store: &Store<'_>,
@@ -1531,6 +1535,7 @@ fn block_headers(rv: &Rv<'_>) -> Vec<Option<u32>> {
 type PlaceFn<'p> = dyn FnMut(&mut Rv<'_>, usize, usize, Place, u32) + 'p;
 
 /// A foreign map's rows as places (§14.2).
+#[allow(clippy::too_many_lines)] // §14.2's row matching, clause by clause
 fn foreign_places(rv: &mut Rv<'_>, fid: &BTreeMap<u32, Vec<usize>>, place: &mut PlaceFn<'_>) {
     let headers = block_headers(rv);
     // M1: more blocks of a name than headers.
@@ -1703,13 +1708,7 @@ pub(crate) fn tombstone(format: Format, name: &str, class64: bool, width: u8) ->
             ".debug_ranges" | ".debug_loc" => 1,
             ".debug_rnglists" | ".debug_loclists" | ".debug_addr" | ".gcc_except_table" => 0,
             ".debug_aranges" | ".debug_frame" => ones,
-            n if is_debug(n) => {
-                if class64 {
-                    ones
-                } else {
-                    0
-                }
-            }
+            n if is_debug(n) && class64 => ones,
             _ => 0,
         },
         Format::Lld | Format::Mold => u64::from(name == ".debug_ranges" || name == ".debug_loc"),
@@ -1735,15 +1734,21 @@ pub(crate) fn gnu_redirect(rv: &Rv<'_>, t: &Tgt) -> Option<Tgt> {
     for g in 0..rv.ins.len() {
         for k in 0..rv.ins[g].elf.secs.len() {
             let o = &rv.ins[g].elf.secs[k];
-            if o.name == sec.name && o.size == sec.size && o.flags & SHF_GROUP != 0 {
-                if let Place::Whole { out, off } = rv.places[g][k] {
-                    return Some(Tgt::Place(out, (off + v) as i64));
-                }
+            if o.name == sec.name
+                && o.size == sec.size
+                && o.flags & SHF_GROUP != 0
+                && let Place::Whole { out, off } = rv.places[g][k]
+            {
+                return Some(Tgt::Place(out, (off + v) as i64));
             }
         }
     }
     None
 }
+
+/// A relocated field of an input piece: (offset, width, mask, the values
+/// the field may hold, relocation type).
+type Field = (u64, u8, u64, Option<Vec<u64>>, u32);
 
 /// P-P2: the bytes of every section placed whole.
 #[allow(clippy::too_many_lines)] // the fields, then the bytes
@@ -1773,7 +1778,7 @@ fn content(rv: &mut Rv<'_>) {
             };
             let got = got.to_vec();
             // The fields: (offset, width, mask, expected-in-field, type).
-            let mut fields: Vec<(u64, u8, u64, Option<Vec<u64>>, u32)> = Vec::new();
+            let mut fields: Vec<Field> = Vec::new();
             for rs in rv.ins[f].elf.relocs_of(s) {
                 let recs = rv.ins[f].elf.rels(rs);
                 for r in recs {
@@ -2011,10 +2016,10 @@ fn mortar_pieces(rv: &mut Rv<'_>) {
 fn per_linker_dropped(rv: &Rv<'_>, r: &Rel, t: &Tgt, out_rec: &Rel, ot: &Tgt) -> bool {
     match rv.format {
         Format::Lld => out_rec.ty == 0,
-        Format::Gnu => out_rec.ty == r.ty && gnu_redirect(rv, t).is_some_and(|g| {
-            matches!((&g, ot), (Tgt::Place(o, v), Tgt::Place(p, w)) if o == p
-                && *w == v + match t { Tgt::Dropped(..) => 0, _ => 0 } + r.addend.unwrap_or(0) - r.addend.unwrap_or(0))
-        }),
+        Format::Gnu => out_rec.ty == r.ty
+            && gnu_redirect(rv, t).is_some_and(
+                |g| matches!((&g, ot), (Tgt::Place(o, v), Tgt::Place(p, w)) if o == p && w == v),
+            ),
         _ => false,
     }
 }
@@ -2383,6 +2388,7 @@ fn header(rv: &mut Rv<'_>) {
 }
 
 /// L-R8's header order and file offsets (mortar).
+#[allow(clippy::too_many_lines)] // L-R8's order, section kind by kind
 fn mortar_order(rv: &mut Rv<'_>) {
     let n = rv.out.secs.len();
     // The first piece of each output section.
@@ -2470,7 +2476,7 @@ fn mortar_order(rv: &mut Rv<'_>) {
         let s = &rv.out.secs[o];
         let a = s.align.max(1);
         if s.ty != SHT_NOBITS {
-            if s.offset % a != 0 || s.offset < end {
+            if !s.offset.is_multiple_of(a) || s.offset < end {
                 let m = format!(
                     "section {o} {} is at file offset {:#x}; L-R8 puts it at or after {end:#x}, aligned to {a:#x}",
                     s.name, s.offset
@@ -2483,7 +2489,7 @@ fn mortar_order(rv: &mut Rv<'_>) {
     }
     let ta = if rv.class64 { 8 } else { 4 };
     let shoff = rv.out.h.shoff;
-    if shoff < end || shoff % ta != 0 {
+    if shoff < end || !shoff.is_multiple_of(ta) {
         rv.p(
             7,
             format!(
@@ -2517,7 +2523,7 @@ fn container(rv: &mut Rv<'_>) {
     }
     match outs.first() {
         None if !want.is_empty() => {
-            rv.p(8, "the output has 0 containers; the live inputs have units (MT-30)")
+            rv.p(8, "the output has 0 containers; the live inputs have units (MT-30)");
         }
         None => {}
         Some(&o) => {
@@ -2584,6 +2590,7 @@ fn notes(rv: &mut Rv<'_>) {
     if rv.mortar() && rv.opts.known {
         let _ = absent;
         let aarch64 = rv.machine == EM_AARCH64;
+        #[allow(clippy::match_same_arms)] // L-R6a's table, cell by cell
         let want = match (any_x.is_some(), any_n, rv.opts.execstack) {
             (true, _, _) => Some(true),
             (false, true, Some(true)) => Some(aarch64),
@@ -2640,13 +2647,13 @@ fn notes(rv: &mut Rv<'_>) {
         .collect();
     let ins: Vec<Vec<&[u8]>> =
         ins_owned.iter().map(|v| v.iter().map(Vec::as_slice).collect()).collect();
-    let outp: Vec<Sec> =
+    let out_notes: Vec<Sec> =
         rv.out.secs.iter().filter(|s| s.name == ".note.gnu.property").cloned().collect();
     let align = if rv.class64 { 8 } else { 4 };
-    if outp.len() > 1 {
-        rv.p(10, format!("the output has {} .note.gnu.property sections", outp.len()));
+    if out_notes.len() > 1 {
+        rv.p(10, format!("the output has {} .note.gnu.property sections", out_notes.len()));
     } else {
-        if let Some(s) = outp.first()
+        if let Some(s) = out_notes.first()
             && (s.ty != SHT_NOTE || s.flags & SHF_ALLOC == 0 || s.align != align)
         {
             rv.p(10, format!(".note.gnu.property is not an allocated SHT_NOTE aligned to {align}"));
@@ -2656,7 +2663,7 @@ fn notes(rv: &mut Rv<'_>) {
             rv.machine,
             align as usize,
             &ins,
-            outp.first().map(|s| s.data.as_slice()),
+            out_notes.first().map(|s| s.data.as_slice()),
         );
         rv.report.coverage.properties_judged += judged;
         rv.report.coverage.properties_not_judged += not_judged;
@@ -2669,7 +2676,7 @@ fn notes(rv: &mut Rv<'_>) {
     if rv.opts.known {
         match (&rv.opts.build_id, has) {
             (Some(style), false) => {
-                rv.p(10, format!("the line asks for a build id ({style}) and the output has none"))
+                rv.p(10, format!("the line asks for a build id ({style}) and the output has none"));
             }
             (None, true) => rv.p(10, "the output has a build id and the line asks for none"),
             _ => {}
@@ -2702,7 +2709,7 @@ pub(crate) fn pieces_of(rv: &Rv<'_>) -> BTreeMap<u32, Vec<(usize, usize)>> {
         for s in 0..rv.ins[f].elf.secs.len() {
             match rv.places[f][s] {
                 Place::Whole { out, .. } | Place::Merged { out } => {
-                    m.entry(out).or_default().push((f, s))
+                    m.entry(out).or_default().push((f, s));
                 }
                 Place::Framed => {
                     if let Some(o) = rv.out_eh {
@@ -2766,11 +2773,9 @@ fn sections(rv: &mut Rv<'_>) {
                 ));
             }
             let es = match (os.ty, rv.class64) {
-                (SHT_SYMTAB, true) => Some(24),
-                (SHT_SYMTAB, false) => Some(16),
-                (SHT_RELA, true) => Some(24),
+                (SHT_SYMTAB | SHT_RELA, true) => Some(24),
+                (SHT_SYMTAB, false) | (SHT_REL, true) => Some(16),
                 (SHT_RELA, false) => Some(12),
-                (SHT_REL, true) => Some(16),
                 (SHT_REL, false) => Some(8),
                 (SHT_GROUP | SHT_SYMTAB_SHNDX, _) => Some(4),
                 _ => None,
@@ -2797,7 +2802,7 @@ fn sections(rv: &mut Rv<'_>) {
                     bad.push(format!("sh_info is {}, which names no section", os.info));
                 }
                 if let Some(e) = es
-                    && os.size % e != 0
+                    && !os.size.is_multiple_of(e)
                 {
                     bad.push(format!("sh_size {:#x} is not a multiple of {e}", os.size));
                 }

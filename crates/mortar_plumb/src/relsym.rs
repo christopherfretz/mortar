@@ -20,7 +20,7 @@ use crate::report::{Finding, Rule};
 /// The merged view of one key over the inputs.
 #[derive(Debug, Default)]
 struct Key {
-    /// First mention: (FileId, symbol index) — the `SymbolId` order.
+    /// First mention: (`FileId`, symbol index) — the `SymbolId` order.
     first: (usize, usize),
     /// The definition that wins: (file, symbol), strong before weak.
     def: Option<(usize, usize)>,
@@ -94,7 +94,7 @@ pub(crate) fn check(rv: &mut Rv<'_>) {
                 match k.def {
                     None => k.def = Some((f, i)),
                     Some((g, j)) if strong && rv.ins[g].elf.syms[j].bind() == STB_WEAK => {
-                        k.def = Some((f, i))
+                        k.def = Some((f, i));
                     }
                     _ => {}
                 }
@@ -131,14 +131,14 @@ pub(crate) fn check(rv: &mut Rv<'_>) {
     }
     let nsec = out.secs.len() as u32;
     // .symtab_shndx.
-    if let Some(x) = out.shndx_sec {
-        if out.secs[x].size != syms.len() as u64 * 4 {
-            msgs.push(format!(
-                ".symtab_shndx has {:#x} bytes for {} symbols",
-                out.secs[x].size,
-                syms.len()
-            ));
-        }
+    if let Some(x) = out.shndx_sec
+        && out.secs[x].size != syms.len() as u64 * 4
+    {
+        msgs.push(format!(
+            ".symtab_shndx has {:#x} bytes for {} symbols",
+            out.secs[x].size,
+            syms.len()
+        ));
     }
     for (i, s) in syms.iter().enumerate() {
         let needs = s.shndx >= 0xff00 && !matches!(s.shndx, SHN_ABS | SHN_COMMON);
@@ -238,10 +238,7 @@ pub(crate) fn check(rv: &mut Rv<'_>) {
             }
         } else if let Some((size, align)) = k.common {
             let lld_d = rv.format == Format::Lld && rv.opts.define_common;
-            if !rv.opts.define_common
-                || lld_d
-                || (rv.format == Format::Mold && rv.opts.define_common)
-            {
+            if !rv.opts.define_common || lld_d || rv.format == Format::Mold {
                 if o.shndx == SHN_COMMON && (lld_d || rv.opts.define_common) {
                     accepted += 1;
                 }
@@ -255,10 +252,10 @@ pub(crate) fn check(rv: &mut Rv<'_>) {
                 }
             } else {
                 let bss = rv.out.secs.get(o.shndx as usize);
-                if !bss.is_some_and(|s| s.ty == SHT_NOBITS)
+                if bss.is_none_or(|s| s.ty != SHT_NOBITS)
                     || o.ty() != STT_OBJECT
                     || o.size != size
-                    || (align > 1 && o.value % align != 0)
+                    || (align > 1 && !o.value.is_multiple_of(align))
                 {
                     msgs.push(format!(
                         "common {name} under -d is {} type {} size {:#x} at {:#x}, not an OBJECT of size {size:#x} in a NOBITS section aligned {align:#x}",
@@ -266,13 +263,12 @@ pub(crate) fn check(rv: &mut Rv<'_>) {
                     ));
                 } else if let Some(rc) =
                     rv.map.rel.as_ref().and_then(|r| r.commons.iter().find(|c| &c.name == name))
+                    && (rc.out, rc.offset, rc.size) != (o.shndx, o.value, o.size)
                 {
-                    if (rc.out, rc.offset, rc.size) != (o.shndx, o.value, o.size) {
-                        msgs.push(format!(
-                            "common {name} is at {}+{:#x}; rcommon says {}+{:#x}",
-                            o.shndx, o.value, rc.out, rc.offset
-                        ));
-                    }
+                    msgs.push(format!(
+                        "common {name} is at {}+{:#x}; rcommon says {}+{:#x}",
+                        o.shndx, o.value, rc.out, rc.offset
+                    ));
                 }
             }
         } else {

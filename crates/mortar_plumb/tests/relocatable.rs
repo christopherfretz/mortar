@@ -9,7 +9,12 @@
 //! GNU ld's and lld's outputs pass, or show the anomalies §10.2 names;
 //! mold's fail by name (§10.2 A90-A102 and the A12x it adds). Every
 //! finding of a reference is a named anomaly, and the anomalies of each
-//! link are the table's.
+//! link are the table's. The mutations of §9.2 (t) and one per field
+//! the rules read (V-R12) start from GNU ld's outputs.
+
+// e, f, s, o, r, k, y: the editor, file, section, output section, record,
+// symbol index, symbol, throughout.
+#![allow(clippy::many_single_char_names)]
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
@@ -595,7 +600,7 @@ fn build(t: &Tools, case: &Case, dir: &Path) -> Result<(), String> {
             Cc::Gxx => (t.gxx.clone(), Vec::new()),
             Cc::Clang | Cc::ClangAs => {
                 let c = t.clang.clone().ok_or("clang")?;
-                let c = if s.name.ends_with(".cc") {
+                let c = if Path::new(s.name).extension().is_some_and(|x| x == "cc") {
                     c.with_file_name(c.file_name().map_or_else(OsString::new, |n| {
                         n.to_string_lossy().replacen("clang", "clang++", 1).into()
                     }))
@@ -669,6 +674,7 @@ struct Seen {
     lines: Vec<String>,
 }
 
+#[allow(clippy::too_many_lines)] // build, link, verify, count, classify
 fn references(arch: Arch) -> Option<Seen> {
     let t = Tools::find(arch)?;
     let start = Instant::now();
@@ -1294,8 +1300,7 @@ fn mutations(arch: Arch) -> Option<Vec<Mutant>> {
     // (11) an opcode bit flipped under a branch or page record.
     let flips: &[(&str, u32)] = match arch {
         Arch::Aarch64 => &[("(11a) CALL26", 283), ("(11b) ADR_PREL_PG_HI21", 275)],
-        Arch::X86_64 => &[("(11) PLT32/PC32 call", 4), ("(11) PC32 call", 2)],
-        Arch::I386 => &[("(11) PLT32/PC32 call", 4), ("(11) PC32 call", 2)],
+        Arch::X86_64 | Arch::I386 => &[("(11) PLT32/PC32 call", 4), ("(11) PC32 call", 2)],
     };
     let mut flipped = false;
     for &(id, ty) in flips {
@@ -1410,9 +1415,9 @@ fn mutations(arch: Arch) -> Option<Vec<Mutant>> {
             let inp = dbg.input(f);
             let d = inp.data(s);
             let len =
-                u32::from_le_bytes(d[at as usize..at as usize + 4].try_into().ok()?) as u64 + 4;
+                u64::from(u32::from_le_bytes(d[at as usize..at as usize + 4].try_into().ok()?)) + 4;
             let ptr =
-                u32::from_le_bytes(d[at as usize + 4..at as usize + 8].try_into().ok()?) as u64;
+                u64::from(u32::from_le_bytes(d[at as usize + 4..at as usize + 8].try_into().ok()?));
             let cie_out = (*frames.get(&(f, s, at + 4 - ptr))?)?;
             let eh = e.find(".eh_frame")?;
             let mut od = e.data(eh);
@@ -1442,7 +1447,7 @@ fn mutations(arch: Arch) -> Option<Vec<Mutant>> {
                 });
             }
             e.set_rels(rout, &rel);
-            Some(format!("the removed FDE {}:{s}+{at:#x} copied to .eh_frame+{pos:#x}", f))
+            Some(format!("the removed FDE {f}:{s}+{at:#x} copied to .eh_frame+{pos:#x}"))
         }),
         "(8)",
     );

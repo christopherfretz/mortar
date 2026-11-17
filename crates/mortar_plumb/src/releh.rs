@@ -137,7 +137,7 @@ pub(crate) fn check(rv: &mut Rv<'_>) {
     // Output CIE offsets: the CIE of each output FDE is its index; the
     // offset is found from the FDE's CIE pointer.
     let out_cie_off = |d: &Fde| -> u64 {
-        let data = rv.out_eh.map(|o| rv.out.secs[o as usize].data.as_slice()).unwrap_or(&[]);
+        let data = rv.out_eh.map_or(&[][..], |o| rv.out.secs[o as usize].data.as_slice());
         let id_at = d.off as u64
             + if rec_len(data, d.off) > 4 && data.get(d.off..d.off + 4) == Some(&[0xff; 4]) {
                 12
@@ -242,34 +242,30 @@ pub(crate) fn check(rv: &mut Rv<'_>) {
                         }
                     }
                 }
-                match hit {
-                    Some(k) => {
-                        used[k] = true;
-                        let o = &outs[k];
-                        rmap.insert(d.off as u64, Some(o.fde.off as u64));
-                        if let Some(&cpos) =
-                            cie_offs.iter().rev().find(|&&c| c < d.off).or(cie_offs.first())
-                        {
-                            // The FDE's own CIE: from its CIE pointer.
-                            let cp = cie_of(&data, d.off).unwrap_or(cpos as u64);
-                            cie_out.entry(cp as usize).or_insert_with(|| out_cie_off(&o.fde));
+                if let Some(k) = hit {
+                    used[k] = true;
+                    let o = &outs[k];
+                    rmap.insert(d.off as u64, Some(o.fde.off as u64));
+                    if let Some(&cpos) =
+                        cie_offs.iter().rev().find(|&&c| c < d.off).or(cie_offs.first())
+                    {
+                        // The FDE's own CIE: from its CIE pointer.
+                        let cp = cie_of(&data, d.off).unwrap_or(cpos as u64);
+                        cie_out.entry(cp as usize).or_insert_with(|| out_cie_off(&o.fde));
+                    }
+                } else {
+                    let site = rv.ins[f].site(s, d.off as u64);
+                    let msg = match first_diff {
+                        Some(x) => {
+                            format!("P-P5 FDE for {pc} of {} differs: {x}", rv.ins[f].label())
                         }
-                    }
-                    None => {
-                        let site = rv.ins[f].site(s, d.off as u64);
-                        let msg = match first_diff {
-                            Some(x) => {
-                                format!("P-P5 FDE for {pc} of {} differs: {x}", rv.ins[f].label())
-                            }
-                            None => format!(
-                                "FDE for {pc} of {} is not in the output",
-                                rv.ins[f].label()
-                            ),
-                        };
-                        let msg = msg.trim_start_matches("P-P5 ").to_string();
-                        findings.push(Finding::new(Rule::Rel(5), msg).site(site));
-                        rmap.insert(d.off as u64, None);
-                    }
+                        None => {
+                            format!("FDE for {pc} of {} is not in the output", rv.ins[f].label())
+                        }
+                    };
+                    let msg = msg.trim_start_matches("P-P5 ").to_string();
+                    findings.push(Finding::new(Rule::Rel(5), msg).site(site));
+                    rmap.insert(d.off as u64, None);
                 }
             }
             for c in cie_offs {
