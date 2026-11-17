@@ -88,6 +88,18 @@ fn stamp_path(dir: &Path) -> PathBuf {
     dir.join(format!(".mortar-stamp-{}", std::process::id()))
 }
 
+/// The stamp file has one name per process and directory (IN-22a), so a
+/// process that runs several links at once (a library caller; the tests'
+/// in-process links, which all stamp the temporary directory) takes its
+/// stamps one at a time: two threads would otherwise create and remove
+/// one file between them, and the second removal is `NotFound`. Held from
+/// the creation to the removal; a command-line link never waits on it.
+static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn one_at_a_time() -> std::sync::MutexGuard<'static, ()> {
+    ONE_AT_A_TIME.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 fn create(path: &Path) -> io::Result<File> {
     OpenOptions::new().read(true).write(true).create(true).truncate(true).open(path)
 }
@@ -95,6 +107,7 @@ fn create(path: &Path) -> io::Result<File> {
 /// Takes one stamp in `dir`: creates the stamp file, `fstat`s it and
 /// removes it. Its device and ctime.
 pub fn take(dir: &Path) -> io::Result<(u64, i64)> {
+    let _one = one_at_a_time();
     let path = stamp_path(dir);
     let file = create(&path)?;
     let meta = file.metadata();
@@ -113,6 +126,7 @@ pub fn take(dir: &Path) -> io::Result<(u64, i64)> {
 /// restore is a metadata change of its own, which would move the ctime
 /// whether or not the write did (the second finding).
 pub fn probe(dir: &Path) -> io::Result<bool> {
+    let _one = one_at_a_time();
     let path = stamp_path(dir);
     let file = create(&path)?;
     let result = (|| -> io::Result<bool> {
@@ -235,6 +249,32 @@ pub fn bind_output(output: &Path) -> io::Result<Option<(Tuple, i64)>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // spec: incr.md IN-22a (one stamp name per process and directory:
+    // several links of one process take their stamps one at a time).
+    // Without the lock a `take` or a `probe` here fails with `NotFound`
+    // within a few hundred rounds (the flake of
+    // `stamp_rule_b_own_output_is_clean` beside an in-process link).
+    #[test]
+    fn stamps_of_one_process_in_one_directory_do_not_collide() {
+        let scratch = mortar_testutil::Scratch::new("incr-stamp-threads");
+        let dir = scratch.path().to_path_buf();
+        std::thread::scope(|s| {
+            for t in 0..4 {
+                let dir = &dir;
+                s.spawn(move || {
+                    for i in 0..150 {
+                        if (i + t) % 8 == 0 {
+                            probe(dir).unwrap();
+                        } else {
+                            take(dir).unwrap();
+                        }
+                    }
+                });
+            }
+        });
+        assert!(!stamp_path(&dir).exists());
+    }
 
     // spec: incr.md IN-22a (a mountinfo line maps to its type; off-list
     // types are always hashed)

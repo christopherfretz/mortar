@@ -1225,8 +1225,11 @@ fn a_version_1_state_is_refused_by_name() {
 /// directory, and the system temporary directory and `/dev/shm` are the
 /// same directories for every test of this process. Two tests there at
 /// once create and remove one file between them, and the second removal
-/// is `NotFound` (seen once in a gate under load). A link takes its stamps
-/// from one thread, so only the tests need this.
+/// is `NotFound` (seen once in a gate under load). Since the stamps of one
+/// process are taken one at a time (`stamp::take`, `stamp::probe`: the
+/// in-process links of this file's other tests stamp the temporary
+/// directory too, which this lock never covered), the lock only keeps the
+/// three timing tests from disturbing each other's measurements.
 static STAMP_DIRS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn stamp_lock() -> std::sync::MutexGuard<'static, ()> {

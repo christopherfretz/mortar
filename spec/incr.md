@@ -1547,7 +1547,8 @@ with each phase fed from the state for unchanged files:
 - **IN-22a [v1] Stamps.** A **stamp** on a file system is the ctime of a
   file the link creates there (`<dir>/.mortar-stamp-<pid>`, created,
   `fstat`ed and unlinked; measured 8–10 µs on overlay, 0.3–0.5 ms on
-  virtiofs, R6). Before it `stat`s any input, a link in incremental
+  virtiofs, R6; the name is one per process and directory, so a process
+  that runs several links takes its stamps one at a time). Before it `stat`s any input, a link in incremental
   mode takes one stamp on each file system (`st_dev`) that holds an
   input, in a writable directory of that file system among those it
   knows (the output's, the state's, each input's, `TMPDIR`), and records
