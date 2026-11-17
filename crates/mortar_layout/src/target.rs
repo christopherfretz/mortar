@@ -99,7 +99,10 @@ pub enum EntryName {
     Symbol(Vec<u8>),
     /// `-e` gave a number that is no symbol's name: an absolute address.
     Address(u64),
-    /// `-shared` or `-r` with no `-e`: no entry (`e_entry = 0`, silently).
+    /// `-shared` with no `-e` (`spec/dyn.md` D-101): the default `_start`'s
+    /// address when it is defined, else `e_entry = 0` silently.
+    IfDefined(Vec<u8>),
+    /// `-r` with no `-e`: no entry (`e_entry = 0`, silently).
     None,
 }
 
@@ -159,13 +162,15 @@ impl Options {
 
     /// The options of a plan. Layout places static executables and the
     /// other kinds of `spec/dyn.md` D-1 (`Exec`; `Pie` and `StaticPie` at
-    /// base 0) on ELF64; another output kind is refused by name.
+    /// base 0) on ELF64, and a shared object as a PIE (D-123: base 0; no
+    /// `.interp`, which synth does not plan; the entry by D-101); another
+    /// output kind is refused by name.
     ///
     /// # Errors
     ///
     /// `invalid-option-value` for a page size L-74 or L-75 does not accept;
-    /// `refused` for an output kind layout does not place: shared objects
-    /// and `-r` (M4), and a dynamic executable or a static-pie of
+    /// `refused` for an output kind layout does not place: `-r` (M4), and
+    /// a dynamic executable, a shared object or a static-pie of
     /// ELFCLASS32 (i386 dynamic links are M4, `spec/landed/dyn/WP-040.md`
     /// §6; i386 static-pie is not an M2 target).
     pub fn from_plan(plan: &Plan, target: &Target) -> Result<Self, LayoutDiag> {
@@ -178,9 +183,12 @@ impl Options {
             OutputKind::StaticPie if target.class == Class::Elf32 => {
                 return Err(feature("position-independent executable output"));
             }
+            // i386 shared objects are WP-130's (`spec/dyn.md` §17).
+            OutputKind::Shared if target.class == Class::Elf32 => {
+                return Err(feature("ELFCLASS32 shared object"));
+            }
             OutputKind::StaticExecutable | OutputKind::Executable => false,
-            OutputKind::PieExecutable | OutputKind::StaticPie => true,
-            OutputKind::Shared => return Err(feature("shared object output")),
+            OutputKind::PieExecutable | OutputKind::StaticPie | OutputKind::Shared => true,
             OutputKind::Relocatable => return Err(feature("relocatable output")),
         };
         let mut o = Self::defaults(target);
@@ -226,6 +234,8 @@ impl Options {
         }
         if let Some(e) = &plan.entry {
             o.entry = EntryName::Symbol(e.as_encoded_bytes().to_vec());
+        } else if plan.kind == OutputKind::Shared {
+            o.entry = EntryName::IfDefined(b"_start".to_vec());
         }
         Ok(o)
     }
@@ -287,8 +297,20 @@ mod tests {
         })
         .unwrap();
         assert!(o.separate_code && !o.relro && o.execstack == Some(true));
-        let e = with(|p| p.kind = OutputKind::Shared).unwrap_err();
-        assert_eq!(e.refusal().map(|r| r.1), Some("shared object output"));
+        // spec/dyn.md D-123: a shared object is laid out as a PIE; D-101:
+        // its default entry is `_start` if defined.
+        let o = with(|p| p.kind = OutputKind::Shared).unwrap();
+        assert!(o.pie);
+        assert_eq!(o.entry, EntryName::IfDefined(b"_start".to_vec()));
+        let o = with(|p| {
+            p.kind = OutputKind::Shared;
+            p.entry = Some("f".into());
+        })
+        .unwrap();
+        assert_eq!(o.entry, EntryName::Symbol(b"f".to_vec()));
+        let plan = Plan { kind: OutputKind::Shared, ..Plan::default() };
+        let e = Options::from_plan(&plan, &Target::of(Machine::I386)).unwrap_err();
+        assert_eq!(e.refusal().map(|r| r.1), Some("ELFCLASS32 shared object"));
     }
 
     // spec: dyn.md D-1 (Pie: base 0, L-68), D-61 (ELF64 only in M2)
