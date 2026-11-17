@@ -1,7 +1,11 @@
-# WP-077: the matrix's build helpers (sourced by run.sh and cost.sh).
+# The load-time ODR matrix's build helpers (sourced by run.sh and cost.sh;
+# spec/odr.md O-58, records WP-077 and WP-196).
 # Needs: T (aarch64 | x86_64 | i686), W (an empty work directory), H (this
 # directory), MORTAR, XTASK. RT_FLAVOR = hod (default) | gcc picks the runtime
-# object every module gets.
+# object every module gets. RT_SRC = obj (default: the hod objects checked in
+# under runtime/odr/obj/, the bytes mortar ships) | build (hod objects rebuilt
+# from runtime/odr/mason_odr_rt.cpp with KILN, HOD, HOD386 and CLANG22). The
+# gcc flavour is always GCC -O2 of the source.
 set -u
 ulimit -c 0
 KILN=${KILN:-/Volumes/AgentWork/mortar-helper/.build/target-kiln-next/release/kiln++}
@@ -9,6 +13,8 @@ HOD=${HOD:-/Volumes/AgentWork/mortar-helper/.build/target-hod-next/release/hod}
 HOD386=${HOD386:-/Volumes/AgentWork/mortar-helper/.build/target-hod-a68/release/hod}
 CLANG22=${CLANG22:-clang++-22}
 RT_FLAVOR=${RT_FLAVOR:-hod}
+RT_SRC=${RT_SRC:-obj}
+RTDIR=${RTDIR:-$(cd "$H/../../runtime/odr" && pwd)}
 case $T in
   aarch64) CC=gcc; CXX=g++; RUN=(); KT=() ;;
   x86_64) CC=x86_64-linux-gnu-gcc; CXX=x86_64-linux-gnu-g++; RUN=(qemu-x86_64 -L /usr/x86_64-linux-gnu); KT=(--target=x86_64-linux-gnu) ;;
@@ -25,12 +31,17 @@ LDM=(-B"$W/wrap/")   # gcc/g++ drive mortar as their ld
 PRODUCER=${PRODUCER:-mortar}
 [ "$T" = i686 ] && PRODUCER=gnu
 
-# the runtime: hod's object (kiln++ on aarch64 and x86-64, clang 22 IR on i386) and GCC -O2's
+# the runtime: hod's object (the checked-in one, or kiln++ on aarch64 and
+# x86-64 and clang 22 IR on i386, through hod) and GCC -O2's
 build_rt() {
-  local s=$H/mason_odr_rt.cpp f
+  local s=$RTDIR/mason_odr_rt.cpp f arch=$T
+  [ "$T" = i686 ] && arch=i386
   for f in "" -DMASON_RT_EXE; do
-    local o=rt${f:+exe}
-    if [ "$T" = i686 ]; then
+    local o=rt${f:+exe} kind=so
+    [ -n "$f" ] && kind=exe
+    if [ "$RT_SRC" = obj ]; then
+      cp "$RTDIR/obj/mason_odr_rt-$arch-$kind.o" "$W/$o-hod.o" || return 1
+    elif [ "$T" = i686 ]; then
       $CLANG22 --target=i686-linux-gnu -O0 -fPIC -fno-exceptions -fno-rtti $f -S -emit-llvm -o "$W/$o-hod.ll" "$s" || return 1
       "$HOD386" -O0 -filetype=obj -mtriple=i686-linux-gnu -relocation-model=pic --strict "$W/$o-hod.ll" -o "$W/$o-hod.o" || return 1
     else
@@ -38,11 +49,12 @@ build_rt() {
     fi
     $CXX -O2 -fPIC -fno-exceptions -fno-rtti $f -c "$s" -o "$W/$o-gcc.o" || return 1
   done
-  # the runtime note mortar would write (proposed NT_MASON_ODR_RT): {version 1, mode, flags, 0}
+  # the runtime note --odr-runtime writes (NT_MASON_ODR_RT, spec/odr.md O-53a):
+  # {version 1, mode, flags, runtime id}, a third note type in .note.mason (Q-77.4)
   local m
   for m in 1:report 2:fatal; do
-    printf '#include <stdint.h>\n__attribute__((section(".note.mason.rt"), aligned(4), used)) static const struct { uint32_t namesz, descsz, type; char name[12]; uint32_t d[4]; } n = { 10, 16, 0x4d4f4403u, "MasonMeta", {1, %s, 0, 0} };\n' "${m%%:*}" > "$W/note-${m#*:}.c"
-    $CC -c "$W/note-${m#*:}.c" -o "$W/note-${m#*:}.o" || return 1
+    printf '\t.section .note.mason,"a",%%note\n\t.p2align 3\n\t.long 10, 16, 0x4d4f4403\n\t.asciz "MasonMeta"\n\t.p2align 3\n\t.long 1, %s, 0, 0\n\t.section .note.GNU-stack,"",%%progbits\n' "${m%%:*}" > "$W/note-${m#*:}.s"
+    $CC -c "$W/note-${m#*:}.s" -o "$W/note-${m#*:}.o" || return 1
   done
   RT=$W/rt-$RT_FLAVOR.o
   RTEXE=$W/rtexe-$RT_FLAVOR.o
