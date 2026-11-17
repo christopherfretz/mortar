@@ -3479,7 +3479,12 @@ entries of §4.8, and the property types §6.6 judged and did not judge, what B1
 the build id (§6.7), the x86-64 large sections whose placement no
 rule judges (`placement_not_judged`, §6.5), stage 4's `meta` (§13.2), and for an output with a
 `.gdb_index` its version, units, address entries and names and the rules
-that judged it (`gdb index: ...`, §6.10).
+that judged it (`gdb index: ...`, §6.10). A stripped dynamic output
+(no `.symtab`; WP-164) adds one line, `stripped output (no .symtab),
+not judged: a; b`, naming each clause a rule could not judge without the
+symbol table (P-D6 and P-D22's `DT_INIT`/`DT_FINI` judged by segment
+only, §12.5; P-D9's GOT-slot addends, §12.3); the relocations against a
+name only the linker defines are `symbol-unresolved` as before (§4.4).
 
 The four stage-2 reasons are the only ones allowed on the reference
 corpus.
