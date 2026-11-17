@@ -427,9 +427,18 @@ impl Inputs {
                         }
                     }
                     // resolve §4.4: a non-as-needed command-line shared
-                    // object's strong references are edges.
+                    // object's strong references are edges (dyn.md
+                    // "Archive extraction by the references of shared
+                    // objects"; an as-needed mention's are not). §9.2: a
+                    // reference requiring version V has the key `name@V`,
+                    // which only a hidden `name@V` or a default `name@@V`
+                    // defines; never an object's plain `name`.
                     for r in &d.refs {
-                        let k = s.key(r.name.as_bytes());
+                        let key = match &r.version {
+                            Some(v) => format!("{}@{v}", r.name),
+                            None => r.name.clone(),
+                        };
+                        let k = s.key(key.as_bytes());
                         let bits = if r.weak || *as_needed { WUNDEF } else { UNDEF };
                         mentions.push((k, bits));
                     }
