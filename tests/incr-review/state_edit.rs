@@ -10,8 +10,8 @@
 //!   swap-place A B           swap the places of SECTIONS rows A and B
 //!   local-index ROW V        SYMBOLS row ROW: at_index = V
 //!   global-at ROW F V        SYMBOLS row ROW: at_file = F, at_index = V
-//!   frag-at ROW V            FRAG_AT row ROW: at = V
-//!   frag-at-swap A B         swap the `at` of FRAG_AT rows A and B
+//!   frag-at ROW V            FRAG_AT row ROW: its FRAGS row = V
+//!   frag-at-swap A B         swap the FRAGS row of FRAG_AT rows A and B
 //!   frag-at-key ROW S O      FRAG_AT row ROW: section = S, offset = O (resorted)
 //!   fuzz SEED                one deterministic mutation of a positional field
 //! The state is rewritten in place; one line says what was done.
@@ -67,7 +67,7 @@ fn main() {
                 );
             }
             for (i, f) in s.frag_at.iter().enumerate() {
-                println!("FRAG_AT {i} section={} offset={} at={:#x}", f.section, f.offset, f.at);
+                println!("FRAG_AT {i} section={} offset={} frag={}", f.section, f.offset, f.frag);
             }
             for (i, f) in s.frags.iter().enumerate() {
                 println!("FRAGS {i} out={} ord={} off={:#x}", f.out, f.ordinal, f.offset);
@@ -92,12 +92,12 @@ fn main() {
             y.at_file = arg(1) as u32;
             y.at_index = arg(2) as u32;
         }
-        "frag-at" => s.frag_at[arg(0) as usize].at = arg(1),
+        "frag-at" => s.frag_at[arg(0) as usize].frag = arg(1),
         "frag-at-swap" => {
             let (i, j) = (arg(0) as usize, arg(1) as usize);
-            let t = s.frag_at[i].at;
-            s.frag_at[i].at = s.frag_at[j].at;
-            s.frag_at[j].at = t;
+            let t = s.frag_at[i].frag;
+            s.frag_at[i].frag = s.frag_at[j].frag;
+            s.frag_at[j].frag = t;
         }
         "frag-at-key" => {
             let r = &mut s.frag_at[arg(0) as usize];
@@ -136,14 +136,14 @@ fn main() {
                 }
                 2 if !s.frag_at.is_empty() => {
                     let i = pick(s.frag_at.len(), next());
-                    s.frag_at[i].at = v;
+                    s.frag_at[i].frag = v;
                     format!("FRAG_AT {i} at={v}")
                 }
                 3 if s.frag_at.len() > 1 => {
                     let (i, j) = (pick(s.frag_at.len(), next()), pick(s.frag_at.len(), next()));
-                    let t = s.frag_at[i].at;
-                    s.frag_at[i].at = s.frag_at[j].at;
-                    s.frag_at[j].at = t;
+                    let t = s.frag_at[i].frag;
+                    s.frag_at[i].frag = s.frag_at[j].frag;
+                    s.frag_at[j].frag = t;
                     format!("FRAG_AT swap {i} {j}")
                 }
                 4 if !s.frag_at.is_empty() => {

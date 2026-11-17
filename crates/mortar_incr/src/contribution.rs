@@ -7,15 +7,21 @@
 //! refill set) and is a fall-back by name here:
 //!
 //! - `layout-changed`: the file's section count, a section's type, flags,
-//!   size or alignment, its group (through its identity), or the
-//!   positions of its live merged fragments;
+//!   size or alignment, its group (through its identity), the positions
+//!   of its live merged fragments, or the identities (`FRAGS` rows)
+//!   they are;
 //! - `resolution-changed`: the set of global keys its symbol table names,
 //!   or any one's binding, type, visibility (`st_other`), definedness or
 //!   section; or, for each such key, how the link resolves it (kind,
-//!   definer, section, value, size, binding, type, `st_other`).
+//!   definer, section, value, size, binding, type, `st_other`); or a GOT
+//!   slot or thunk keyed by one of its locals whose name it gives to more
+//!   than one local (a section symbol: §7.1's identity is then a
+//!   position, and the slot may now denote another symbol).
 //!
 //! The comparison reads the changed file's tables and, for each key it
-//! names, the definer's one symbol entry: O(the changed file's rows).
+//! names, the definer's one symbol entry; it walks `SLOTS` and `PATCHES`
+//! once for the rows naming its locals: O(the changed file's rows + the
+//! slots and patches).
 
 use mortar_core::hash::HashMap;
 use mortar_core::id::{FileId, FragId, Id as _, SymbolId};
@@ -114,11 +120,91 @@ pub fn compare(
             stored.len()
         )));
     }
-    // Mentions: the keys its symbol table names and how.
+    // The FRAGS rows its live fragments are (the identities they merge
+    // into), as a multiset: equal when its strings only moved inside it
+    // (the review's s2). Otherwise another file's copy of an identity with
+    // ordinals is ranked among the live copies (IN-18a `FRAGS`) and may
+    // move (the review's s4, M1), and an identity it no longer has leaves
+    // its bytes in the output with no line of the map (the review's W6,
+    // m2): the full link's to place.
+    let mut rows_was: Vec<u32> =
+        s.frag_at[lo..hi].iter().map(|r| u32::try_from(r.frag).unwrap_or(NONE)).collect();
+    let mut rows_now: Vec<u32> = tr
+        .frag_rows
+        .iter()
+        .filter(|(fid, _)| {
+            link.split
+                .frags
+                .get(*fid)
+                .and_then(|f| res.sh_index(f.section))
+                .is_some_and(|(x, _)| x == file)
+        })
+        .map(|&(_, r)| r)
+        .collect();
+    rows_was.sort_unstable();
+    rows_now.sort_unstable();
+    if rows_was != rows_now {
+        return Err(layout(format!(
+            "{name}: its merged fragments are not the identities they were ({} now, {} stored): a copy added or dropped moves another file's copy ranked among them, or leaves a dead fragment the full link would not place",
+            rows_now.len(),
+            rows_was.len()
+        )));
+    }
     let Reader::Object(object) = inputs.files[file].reader else { return Ok(()) };
-    let table = object
-        .symbols()
-        .map_err(|_| resolution(format!("{name}: its symbol table")))?;
+    let table = object.symbols().map_err(|_| resolution(format!("{name}: its symbol table")))?;
+    // Its locals that a slot or a thunk names: a local's identity is its
+    // name and its ordinal among the file's locals of that name (§7.1),
+    // which for a name the file gives to more than one local (every
+    // section symbol's empty name) is a position. A slot (the GOT is not
+    // refilled) or a thunk keyed by such a local may now denote another
+    // symbol: not judged here.
+    if let Some(t) = &table {
+        let first_global = t.first_global().0;
+        let local_name =
+            |i: u32| t.get(mortar_elf::SymbolIndex(i)).ok().and_then(|y| t.name(&y).ok());
+        let keyed = s.slots.iter().map(|r| r.symbol).chain(
+            s.patches
+                .iter()
+                .filter(|p| {
+                    p.kind == crate::format::patch_kind::THUNK
+                        || p.kind == crate::format::patch_kind::THUNK_PLT
+                })
+                .map(|p| p.symbol),
+        );
+        let mut wanted: Vec<&[u8]> = Vec::new();
+        for r in keyed {
+            let Some(y) = s.symbols.get(r as usize) else { continue };
+            if y.kind != crate::format::sym_kind::LOCAL || y.file != row {
+                continue;
+            }
+            if let Some(mortar_core::id::SymKind::Local(e)) =
+                tr.symbols.get(r as usize).copied().flatten().map(|k| k.kind())
+                && let Some(n) = local_name(e.index.0)
+            {
+                wanted.push(n);
+            }
+        }
+        if !wanted.is_empty() {
+            wanted.sort_unstable();
+            wanted.dedup();
+            let mut count = vec![0u32; wanted.len()];
+            for i in 0..first_global {
+                if let Some(n) = local_name(i)
+                    && let Ok(k) = wanted.binary_search(&n)
+                {
+                    count[k] += 1;
+                }
+            }
+            if let Some(k) = count.iter().position(|&c| c > 1) {
+                return Err(resolution(format!(
+                    "{name}: a GOT slot or a thunk names one of its {} locals called \"{}\", whose identity is a position (§7.1)",
+                    count[k],
+                    String::from_utf8_lossy(wanted[k])
+                )));
+            }
+        }
+    }
+    // Mentions: the keys its symbol table names and how.
     let mut new: Vec<MentionRow> = match &table {
         Some(t) => file_mentions(inputs, res, file, t),
         None => Vec::new(),
@@ -133,7 +219,9 @@ pub fn compare(
         let Some(id) = key.and_then(|k| k.as_global()) else {
             return Err(resolution(format!(
                 "{name}: it no longer names {}",
-                String::from_utf8_lossy(s.symbols.get(m.symbol as usize).map_or(&b""[..], |y| s.str(y.name)))
+                String::from_utf8_lossy(
+                    s.symbols.get(m.symbol as usize).map_or(&b""[..], |y| s.str(y.name))
+                )
             )));
         };
         let section = if m.section == NONE {
@@ -145,9 +233,10 @@ pub fn compare(
     }
     old.sort_by_key(|m| m.0.symbol);
     let key_name = |id: u32| {
-        inputs.symbols.get(SymbolId(id)).map_or_else(String::new, |k| {
-            String::from_utf8_lossy(k.name).into_owned()
-        })
+        inputs
+            .symbols
+            .get(SymbolId(id))
+            .map_or_else(String::new, |k| String::from_utf8_lossy(k.name).into_owned())
     };
     if old.len() != new.len() {
         return Err(resolution(format!(

@@ -26,9 +26,13 @@
 //!    judged (its descriptor's `fstat` after the read against the judged
 //!    tuple: `input-changed`), and the changed file's contribution is
 //!    compared with the state's rows (`mortar_incr::contribution`: a
-//!    different section count, section header, merged-fragment position,
-//!    global key, binding, type, visibility, definedness, section or
-//!    resolution is `layout-changed` or `resolution-changed`);
+//!    different section count, section header, merged-fragment position
+//!    or identity, global key, binding, type, visibility, definedness,
+//!    section or resolution, or a GOT slot or thunk keyed by a local
+//!    whose §7.1 identity is a position, is `layout-changed` or
+//!    `resolution-changed`). A replay that does not translate is
+//!    `layout-changed` (`state-corrupt` for a row out of range); a file
+//!    named twice on the line is `too-much-changed`;
 //! 5. the dirty windows (image.md I-95) filled into memory through the
 //!    image phase (phase 100): the windows of the changed file's placed
 //!    sections, of the sections an update rewrites whole (`.symtab`,
@@ -53,9 +57,8 @@
 //! the comparison lets through keeps the changed file's sections, globals
 //! and resolution as stored: its output is equivalent to the full link of
 //! the edited inputs (`xtask plumb --equiv`), and byte-equal to it when
-//! the edit leaves the file's merged contents and section order alone
-//! (a permutation keeps the stored places; a merged string that changes
-//! keeps its stored offset and leaves a dead fragment, the review's m2).
+//! the edit leaves the file's section and string order alone (a
+//! permutation keeps the stored places). The tests: `tests/incr_review.rs`.
 
 use std::ffi::{OsStr, OsString};
 use std::fs::{File, OpenOptions};
@@ -336,8 +339,12 @@ fn run(
     let Some(mut f) = front else {
         *report = Some(diagnostics.finish());
         return Err(match failed.borrow_mut().take() {
-            Some(e) => format!("the replay failed: {e}"),
-            None => "the front failed (a replay that does not fit is a changed layout)".to_owned(),
+            // A damaged state is refused as such; any other row the replay
+            // cannot translate is a changed layout (IN-28's "a replay
+            // that does not fit").
+            Some(e) if e.starts_with("state-corrupt") => e,
+            Some(e) => format!("layout-changed: the replay: {e}"),
+            None => "layout-changed: the replayed layout does not fit this link".to_owned(),
         });
     };
     f.keep_leaves = true;
@@ -368,6 +375,16 @@ fn run(
             _ => None,
         })
         .ok_or("the changed file is not an object of this link")?;
+    // A file named twice on the line is two inputs of the link, both
+    // changed; the test path refills one (WP-064a: before, the second
+    // copy kept its old bytes in the output).
+    let copies = f.inputs.link.opened.iter().filter(|o| o.path == &changed_path[..]).count();
+    if copies > 1 {
+        return Err(format!(
+            "too-much-changed: {} is {copies} inputs of this link; the test path refills one",
+            String::from_utf8_lossy(&changed_path)
+        ));
+    }
     // m3 (IN-28a condition 2): every file the front read is the file
     // change detection judged; the store's `fstat` after its read (§11.5)
     // equals the judged tuple.
@@ -542,8 +559,7 @@ fn run(
     // link writes for the same output (made before anything is written).
     let machine_map = match plan.bookkeeping.mortar_map.as_deref() {
         Some(m) => {
-            let map = crate::image::map_of(&f, &store)
-                .map_err(|e| format!("the map: {e:?}"))?;
+            let map = crate::image::map_of(&f, &store).map_err(|e| format!("the map: {e:?}"))?;
             Some((cwd.join(m), mortar_image::map::render(&map, &f.pool)))
         }
         None => None,

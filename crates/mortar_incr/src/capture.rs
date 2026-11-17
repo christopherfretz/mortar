@@ -857,7 +857,11 @@ impl Positional {
 
     /// The present file of a `FILES` row in the set.
     fn file(&self, row: u32) -> Option<FileId> {
-        if *self.set.get(row as usize)? { self.files.get(row as usize).copied().flatten() } else { None }
+        if *self.set.get(row as usize)? {
+            self.files.get(row as usize).copied().flatten()
+        } else {
+            None
+        }
     }
 }
 
@@ -880,11 +884,8 @@ pub fn positional_set(
     let inputs = link.inputs;
     let identities = inputs.file_identities();
     let index = Lookup::new(identities.ids().iter(), |f| identities[f]);
-    let files: Vec<Option<FileId>> = s
-        .files
-        .iter()
-        .map(|row| index.find(&file_identity(s, row), |f| identities[f]))
-        .collect();
+    let files: Vec<Option<FileId>> =
+        s.files.iter().map(|row| index.find(&file_identity(s, row), |f| identities[f])).collect();
     let mut row_of = vec![NONE; inputs.files.len() as usize];
     let mut set = vec![false; s.files.len()];
     for (r, f) in files.iter().enumerate() {
@@ -1016,7 +1017,8 @@ fn recapture_rows(
             return None;
         }
     }
-    let headers: Vec<_> = (0..count).map(|k| header_fields(inputs, file, SectionIndex(k))).collect();
+    let headers: Vec<_> =
+        (0..count).map(|k| header_fields(inputs, file, SectionIndex(k))).collect();
     let mut first_at: HashMap<SymbolId, u32> = HashMap::default();
     for (i, &id) in inputs.sym_map_of(file).iter().enumerate() {
         first_at.entry(id).or_insert(i as u32);
@@ -1168,7 +1170,7 @@ fn map(
                     }
                     if y.at_index >= *n {
                         return Err(format!(
-                            "SYMBOLS row {row}: a local's position {} is not below its file's {} locals",
+                            "state-corrupt: SYMBOLS row {row}: a local's position {} is not below its file's {} locals",
                             y.at_index, *n
                         ));
                     }
@@ -1496,6 +1498,31 @@ fn replay_inner(
         }
         let mut buf = Vec::new();
         let mut ok = true;
+        // A fragment is one content of a merge class, numbered by its
+        // first occurrence (`spec/model.md` §3.5): when its first
+        // occurrence is in a file of the set and another occurrence is in
+        // a file outside it, the outside file's references mean its bytes,
+        // so the fragment is hashed, not taken by position (the review's
+        // H2: a forged FRAG_AT row otherwise gives the changed file's
+        // reference another string). O(the pieces of the files outside
+        // the set).
+        let mut outside = vec![false; link.split.frags.len() as usize];
+        for r in link.split.merge_of.iter() {
+            let covered = link
+                .resolution
+                .sh_index(r.section)
+                .and_then(|(f, _)| p.row_of.get(f.0 as usize).copied())
+                .is_some_and(|row| row != NONE && p.set[row as usize]);
+            if covered {
+                continue;
+            }
+            let (start, len) = (r.pieces.start as usize, r.pieces.len as usize);
+            for fr in link.split.piece_frag.get(start..start + len).unwrap_or(&[]) {
+                if let Some(x) = outside.get_mut(fr.index() as usize) {
+                    *x = true;
+                }
+            }
+        }
         // The FRAGS rows taken by position, with their fragment.
         let mut by_position: Vec<(u32, FragId)> = Vec::new();
         for (i, off) in frag_off.as_mut_slice().iter_mut().enumerate() {
@@ -1509,7 +1536,7 @@ fn replay_inner(
             let out = link.assignment.out(f.section).ok_or("a fragment's output section")?;
             let out_row = out_rows.get(out.0 as usize).copied().unwrap_or(NONE);
             let row = p.row_of.get(file.0 as usize).copied().unwrap_or(NONE);
-            if row != NONE && p.set[row as usize] {
+            if row != NONE && p.set[row as usize] && !outside[i] {
                 let section = p.first[row as usize].0 + index.0;
                 let want = (section, f.offset);
                 let at = s.frag_at.partition_point(|r| (r.section, r.offset) < want);
