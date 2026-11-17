@@ -1,0 +1,139 @@
+# Clang's call-graph profile (`.cg_profile from, to, count`, and every
+# `-fprofile-use` object): `.llvm.call-graph-profile`
+# (`SHT_LLVM_CALL_GRAPH_PROFILE`, `SHF_EXCLUDE`) names each weight's
+# caller and callee by an `SHT_REL` section of `R_*_NONE` records on
+# every target, the 64-bit RELA ones too. Its target has no place, so it
+# is dropped with it whatever its form, and its records are nothing
+# (resolve.md §10, "Relocations of a dropped section", WP-194): the link
+# succeeds (mortar refused `SHT_REL` on AArch64 and x86-64 before), both
+# sections are gone, the profile keeps nothing alive under
+# `--gc-sections` (`cold`, named only by a record, is collected, as by
+# GNU ld, lld and mold), an archive member defining a symbol the profile
+# alone names is still extracted (the symbol is `UND` in `.symtab`, which
+# is what extraction reads: all four), and the records naming a symbol
+# of a COMDAT group's dropped copy (`cloc`), an undefined weak symbol
+# (`wk`) and a symbol defined nowhere (`nowhere`) are not references
+# either: no diagnostic.
+#@ spec: resolve.md §10
+#@ anomaly(mold): A11
+#@ skip(mold,aarch64): mold 2.37 writes Clang's `$d` mapping symbols of the dropped `.llvm.call-graph-profile` as `SHN_ABS` locals of value 0, which the verifier reports (Y4 local symbol '$d' is not where any input local of its name was placed at 0x0); no anomaly names it yet (WP-194)
+#@ requires: clang
+
+as(clang) start-%{arch}.s -o start.o
+as(clang) h.s -o h.o
+as(clang) c1.s -o c1.o
+as(clang) c2.s -o c2.o
+ar rcs libh.a h.o
+link ld -static start.o c1.o c2.o libh.a -o prog
+run prog
+  exit: 42
+check readelf -SW prog
+  not: call-graph
+check nm prog
+  has: cold$
+  has: hmark$
+  has: cfn$
+link ld -static --gc-sections start.o c1.o c2.o libh.a -o prog-gc
+run prog-gc
+  exit: 42
+check nm prog-gc
+  not: cold$
+  not: hmark$
+  not: cfn$
+check readelf -SW prog-gc
+  not: call-graph
+
+#--- start-aarch64.s
+	.text
+	.globl	_start
+_start:
+	bl	f
+	add	x0, x0, #2
+	mov	x8, #93
+	svc	#0
+	.section .text.f,"ax",%progbits
+	.globl	f
+f:
+	mov	x0, #40
+	ret
+	.section .text.cold,"ax",%progbits
+	.globl	cold
+cold:
+	ret
+	.weak	wk
+	.cg_profile _start, f, 10
+	.cg_profile _start, cold, 1000
+	.cg_profile _start, h, 5
+	.cg_profile _start, wk, 1
+	.cg_profile f, cfn, 3
+	.cg_profile _start, nowhere, 2
+#--- start-x86_64.s
+	.text
+	.globl	_start
+_start:
+	call	f
+	leal	2(%rax), %edi
+	movl	$60, %eax
+	syscall
+	.section .text.f,"ax",%progbits
+	.globl	f
+f:
+	movl	$40, %eax
+	ret
+	.section .text.cold,"ax",%progbits
+	.globl	cold
+cold:
+	ret
+	.weak	wk
+	.cg_profile _start, f, 10
+	.cg_profile _start, cold, 1000
+	.cg_profile _start, h, 5
+	.cg_profile _start, wk, 1
+	.cg_profile f, cfn, 3
+	.cg_profile _start, nowhere, 2
+#--- start-i386.s
+	.text
+	.globl	_start
+_start:
+	call	f
+	leal	2(%eax), %ebx
+	movl	$1, %eax
+	int	$0x80
+	.section .text.f,"ax",%progbits
+	.globl	f
+f:
+	movl	$40, %eax
+	ret
+	.section .text.cold,"ax",%progbits
+	.globl	cold
+cold:
+	ret
+	.weak	wk
+	.cg_profile _start, f, 10
+	.cg_profile _start, cold, 1000
+	.cg_profile _start, h, 5
+	.cg_profile _start, wk, 1
+	.cg_profile f, cfn, 3
+	.cg_profile _start, nowhere, 2
+#--- h.s
+	.text
+	.globl	h
+h:
+	ret
+	.data
+	.globl	hmark
+hmark:
+	.long	7
+#--- c1.s
+	.section .text.cfn,"axG",%progbits,cfn,comdat
+	.globl	cfn
+cfn:
+	ret
+#--- c2.s
+	.section .text.cfn,"axG",%progbits,cfn,comdat
+	.globl	cfn
+cfn:
+cloc:
+	ret
+	.cg_profile cloc, cfn, 4
+	.cg_profile cfn, cloc, 4
