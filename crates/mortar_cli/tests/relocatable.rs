@@ -120,8 +120,6 @@ const CONFLICT_LINES: &[(&[&str], &str)] = &[
     (&["--export-dynamic-symbol-list=l"], "--export-dynamic-symbol-list"),
     (&["-soname", "x.so"], "-soname"),
     (&["-h", "x.so"], "-h"),
-    (&["-rpath", "/x"], "-rpath"),
-    (&["--rpath=/x"], "--rpath"),
     (&["--enable-new-dtags"], "--enable-new-dtags"),
     (&["-init", "f"], "-init"),
     (&["-fini", "f"], "-fini"),
@@ -258,7 +256,8 @@ fn r_z_refused() {
 }
 
 // spec: cli.md §3.16 C-R2, C-R2a (first row, the report keywords: ruling
-// (a)), C-R2b (no-ops), C-R4 (`=none`; `-rpath-link`: ruling (b))
+// (a)), C-R2b (no-ops), C-R4 (`=none`; `-rpath-link`: ruling (b); `-rpath`, `--rpath`:
+// measured, the supervisor's ruling on WP-182 §G2)
 #[test]
 fn r_noop_options() {
     for extra in [
@@ -283,6 +282,8 @@ fn r_noop_options() {
         &["--no-relax"],
         &["-rpath-link", "/x"],
         &["-rpath-link=/x"],
+        &["-rpath", "/x"],
+        &["--rpath=/x"],
         &["--compress-debug-sections=none"],
         &["-z", "gcs=never"],
         &["-z", "text"],

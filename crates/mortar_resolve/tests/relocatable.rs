@@ -244,7 +244,7 @@ fn r_no_verdict() {
 }
 
 // spec: resolve.md RV-R3 (`-u SYM` written), cli.md C-R2b
-// (`--require-defined`), RV-R2 (`-e` is not a root at `-r`)
+// (`--require-defined`), RV-R2 (`-e` writes nothing)
 #[test]
 fn r_u_written() {
     let s = scratch!("r-u-written");
@@ -274,9 +274,13 @@ fn r_u_written() {
         assert!(matches!(l.def("here"), Def::Defined(_)));
     })
     .unwrap();
-    // `-e`: nothing written for it (lld, mold; RV-R2, RV-R6 is `-u`'s).
+    // `-e` that nothing defines: nothing written, no warning (lld, mold;
+    // RV-R2).
     link_r(s.path(), &["-e", "zz", "a.o", "-o", "out.o"], |l| {
         assert!(l.errors().is_empty(), "{:?}", l.errors());
+        assert!(l.warnings().is_empty(), "{:?}", l.warnings());
+        assert_eq!(l.outcome.entry, mortar_resolve::EntryPoint::Default);
+        assert!(mortar_resolve::relocatable::undefined_without_key(&l.plan, &l.inputs).is_empty());
         if let Some((id, _)) = l.inputs.symbols.iter().find(|(_, k)| k.name == b"zz") {
             assert!(!l.t().props.get(id).unwrap().refs.contains(RefFlags::FROM_OBJECT));
         }
@@ -308,6 +312,22 @@ fn r_archives() {
     // r-archive-u
     link_r(s.path(), &["-u", "keep_me", "plain.o", "libo.a", "-o", "out.o"], |l| {
         assert!(l.live("libo.a(keep.o)") && !l.live("libo.a(other.o)"));
+    })
+    .unwrap();
+    // r-archive-e: `-e` extracts as in a final link (all three); the
+    // output has no entry (L-R7).
+    link_r(s.path(), &["-e", "keep_me", "plain.o", "libo.a", "-o", "out.o"], |l| {
+        assert!(l.errors().is_empty() && l.warnings().is_empty(), "{:?}", l.errors());
+        assert!(l.live("libo.a(keep.o)") && !l.live("libo.a(other.o)"));
+        assert_eq!(l.outcome.entry, mortar_resolve::EntryPoint::Default);
+    })
+    .unwrap();
+    // `-e missing`: nothing extracted, nothing written, no warning.
+    link_r(s.path(), &["-e", "missing", "plain.o", "libo.a", "-o", "out.o"], |l| {
+        assert!(l.errors().is_empty() && l.warnings().is_empty(), "{:?}", l.warnings());
+        assert!(!l.live("libo.a(keep.o)") && !l.live("libo.a(other.o)"));
+        assert!(!l.inputs.symbols.iter().any(|(_, k)| k.name == b"missing"));
+        assert!(mortar_resolve::relocatable::undefined_without_key(&l.plan, &l.inputs).is_empty());
     })
     .unwrap();
     // r-archive-after-ref

@@ -1032,16 +1032,14 @@ per refused keyword), `r-stack-note`.
   nothing). synth.md S-G8 already says that a relocatable output has no
   index.
 - `-Bsymbolic*`, `--dynamic-list*`, `--export-dynamic*`, `-soname`,
-  `-rpath` (`--rpath`), `--enable-new-dtags` (dynamic-output options):
-  with `-r` these are `conflicting-options` with `-r` as `first`.
-  `-rpath-link` is not of this family: it only finds shared objects for
-  a link that loads them, and is a no-op at `-r` (C-R2b, measured).
-  Measured again (WP-182, record §B): GNU ld 2.44, lld 22 and mold
-  2.37.1 accept `-rpath DIR`, `--rpath=DIR`, `-rpath-link DIR` and
-  `-rpath-link=DIR` at `-r`, and each writes the same bytes as without
-  the option (no `.dynamic`, no `DT_RPATH`). mortar's conflict for
-  `-rpath` is stricter than the three references; it is kept because
-  the option asks for a run-time path that an `ET_REL` cannot carry.
+  `--enable-new-dtags` (dynamic-output options): with `-r` these are
+  `conflicting-options` with `-r` as `first`.
+  `-rpath` (`--rpath`) and `-rpath-link` are not of this family: they
+  are no-ops at `-r` (class `Noop`). Measured (WP-182, record §B): GNU
+  ld 2.44, lld 22 and mold 2.37.1 accept `-rpath DIR`, `--rpath=DIR`,
+  `-rpath-link DIR` and `-rpath-link=DIR` at `-r`, and each writes the
+  same bytes as without the option (no `.dynamic`, no `DT_RPATH`). A
+  build that passes its LDFLAGS to `ld -r` is not refused.
 - `--incremental` with `-r`: IN-12's warning and a plain link (as
   today).
 - the `-z` keywords that C-R2a refuses.

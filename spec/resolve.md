@@ -2039,16 +2039,24 @@ run). `Resolution` has the same shape. `verdict` is not computed.
 
 **RV-R2 (archives).** Extraction is the rule of §4.1, unchanged:
 - an archive member is extracted when it defines a key that is undefined
-  at that point, or that a `-u` root names;
+  at that point, or that a root names: `-u`, `--require-defined`, and
+  `-e SYM` given on the line;
 - `--whole-archive`, `--start-group` and thin archives act as in a final
   link.
 All three references extract by this rule at `-r` (record B.3, the
 `input:` rows): an archive alone on the line extracts nothing, so the
 output is an `ET_REL` with no section from the archive; `-u keep_me`
 extracts the member that defines it; `o2.o libo.a` extracts the member
-that `o2.o` needs. No root is implied by `-r`. In particular `-e` is
-not a root at `-r` (L-R7).
-*Test:* `r-archive-alone`, `r-archive-u`, `r-archive-after-ref`,
+that `o2.o` needs. No root is implied by `-r`: there is no default
+`_start` root. An explicit `-e SYM` is a root exactly as in a final
+link: all three references extract the member that defines it
+(measured, WP-182 record §B). It writes nothing by itself: an `-e` that
+nothing defines gives no entry, no `.symtab` entry and no warning
+(lld's and mold's form; GNU ld writes `UND SYM` and warns "cannot find
+entry symbol", which mortar does not follow). The output's `e_entry`
+stays 0 (L-R7: an `ET_REL` has no entry ADDRESS; L-R7 does not bear on
+extraction).
+*Test:* `r-archive-alone`, `r-archive-u`, `r-archive-e`, `r-archive-after-ref`,
 `r-thin-whole-archive`, `r-start-group`.
 
 **RV-R3 (undefined keys).** A key with no definition stays undefined
@@ -2108,18 +2116,20 @@ Its name, binding, type and visibility follow these rules:
 - **Type**: the definition's, kept (`STT_FUNC`, `STT_OBJECT`,
   `STT_TLS`, `STT_GNU_IFUNC`, `STT_NOTYPE`). `EI_OSABI` follows I-R2.
 - **Versioned names** from `.symver` (`foo@V`, `foo@@V`) are written
-  under their full names, unchanged. A plain `foo` reference is NOT
-  bound to the `foo@@V` definition at `-r`. It stays the undefined
-  global `foo`, and its records name `foo`. The final link binds it by
-  §9.4, as it would have bound the input's reference. This is GNU ld's
-  form. lld binds the reference to `foo@@V2` at `-r`: its record names
-  `vfoo@@V2`, and its output has no `UND vfoo`. Both forms' final links
-  run (the review's x09, rerun in `work/review-x.log`: GNU ld writes
-  `UND vfoo` and `R_AARCH64_CALL26 vfoo`). mortar takes GNU ld's
-  because a partial link decides less, and the record keeps the name
-  its input wrote. The first version described lld's form. mold strips
-  the names to two plain `foo` globals (B.3), which is a mislink of
-  the version information.
+  under their full names, unchanged, and a plain `foo` reference IS
+  bound to the `foo@@V` definition at `-r`: lld's form. The key table
+  has one row for `foo` and `foo@@V` (`spec/model.md` §2.3), so the
+  row's `def` is the `@@` definition; the row's entry is written under
+  the defining entry's own name string (`foo@@V`), a plain reference's
+  records name that entry, and there is no separate `UND foo`. The
+  three forms, measured (WP-182 record §B; `v.o` defines `vfoo@V1` and
+  `vfoo@@V2`, `u.o` calls `vfoo`): GNU ld writes both versioned names
+  and a separate `UND vfoo`, the record naming `vfoo`; lld writes both
+  and no `UND vfoo`, the record naming `vfoo@@V2`; mold strips the
+  names to two plain `vfoo` globals, which loses the version
+  information and is not followed. The final links of GNU ld's and
+  lld's forms both bind a later plain `foo` to the default version
+  (the review's x09, rerun in `work/review-x.log`).
 - **The order** of these entries is the `.symtab` order of
   `spec/model.md` §4.3 (I-R4).
 *Test:* `r-hidden-stays-global`, `r-unique-kept`, `r-ifunc-tls-types`,

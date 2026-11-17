@@ -42,8 +42,9 @@ use mortar_elf::consts::{
 };
 use mortar_elf::{Machine, SectionIndex};
 
+use crate::options::{Entry, Named};
 use crate::problem::{PHASE, Problem, What};
-use crate::resolve::{Def, Resolved, flags, resolve_steps};
+use crate::resolve::{Def, EntryPoint, Resolved, flags, resolve_steps};
 use crate::sections::{self, SectionRefusal};
 use crate::steps::Steps;
 use crate::tables::{diagnostics, options, resolution};
@@ -70,7 +71,18 @@ pub fn resolve(
     refuse_inputs(inputs, plan)?;
     let mut steps = Steps::default();
     let view = InputsView::new_steps(inputs, pool, &mut steps);
-    let opts = options(plan, inputs, &view);
+    let mut opts = options(plan, inputs, &view);
+    // RV-R2: `-e SYM` on the line is an extraction root at `-r` as in a
+    // final link (all three references extract its member); there is no
+    // default `_start` root, and the output has no entry (L-R7).
+    if let Some(e) = &plan.entry {
+        let name = e.as_encoded_bytes();
+        opts.entry = Entry::Named(Named {
+            key: view.key_of(name).map_or(OptId::NONE, OptId::some),
+            name: name.into(),
+            arg: 0,
+        });
+    }
     steps.step("options");
     let mut r = resolve_steps(&view, &opts, pool, &mut steps);
     let mut extra = Vec::new();
@@ -113,7 +125,8 @@ pub fn resolve(
         comdat_mismatch: r.comdat_mismatch,
         gnu_warning_syms: Vec::new(),
         retained: r.retained,
-        entry: r.entry,
+        // L-R7: an `ET_REL` has no entry (`e_entry` 0).
+        entry: EntryPoint::Default,
         roots,
         needed: Vec::new(),
         closure_only: Vec::new(),
@@ -214,14 +227,20 @@ fn take_back<V: View>(view: &V, opts: &crate::Options, r: &mut Resolved) {
     // §8.2's names may be defined by an object at `-r`; `.gnu.warning*`
     // sections are carried, and the final link warns.
     r.problems.retain(|p| {
-        !matches!(p.what, What::LinkerSymbolRedefined { .. } | What::GnuWarning { .. })
+        !matches!(
+            p.what,
+            What::LinkerSymbolRedefined { .. }
+                | What::GnuWarning { .. }
+                | What::EntryNotFound { .. }
+        )
     });
     r.gnu_warning_syms.clear();
     // RV-R3: `-u SYM` with no definition is written as an undefined
     // global, as GNU ld does: it is a reference of the output
     // (`FROM_OBJECT`, rl-sizes.md S14). `--require-defined` of an
     // undefined key is refused (`required-symbol`, measured: GNU ld
-    // refuses it at `-r` too); `-e` is not a root at `-r` (RV-R2).
+    // refuses it at `-r` too); `-e` is a root (RV-R2) but writes nothing
+    // by itself.
     for named in &opts.undefined {
         if let Some(k) = named.key.get()
             && r.def[k.0 as usize].is_undefined()
