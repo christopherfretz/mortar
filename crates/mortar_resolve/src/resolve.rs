@@ -25,7 +25,7 @@ use mortar_elf::{SectionIndex, SymbolSection};
 
 use crate::comdat::{Keepers, SectionMap, keepers};
 use crate::linker::{self, Provided};
-use crate::live::{Closure, Prior, Targets, closure, kinds, targets_with};
+use crate::live::{Closure, Prior, PriorOwned, Targets, closure, kinds, targets_with};
 use crate::mention::{
     Class, align_log2, atomics_u8, atomics_u16, atomics_u64, classify, max_u8, max_u64, min_u8,
     min_u64, or_u16, rank_vis, vis_rank,
@@ -338,7 +338,7 @@ fn resolve_stage<V: View>(
     // (`live::feeds_back`), or a non-weak one that would extract a member
     // for a key no live object defines (`live::would_pull`), with the
     // keepers of the iteration before; a link without one runs once.
-    let mut prior: Option<(Vec<FileLive>, Vec<OptId<FileId>>, Vec<bool>)> = None;
+    let mut prior: Option<PriorOwned> = None;
     let mut iterations = 1;
     let (mut file_live, rounds, live_objects, keepers, section_base, sections, acc, found) = loop {
         let p = prior.as_ref().map(|(live, keeper, open)| Prior { live, keeper, open });

@@ -111,6 +111,9 @@ fn targets_demoted<V: View>(
     }
 }
 
+/// A [`Prior`]'s columns, owned between iterations.
+pub(crate) type PriorOwned = (Vec<FileLive>, Vec<OptId<FileId>>, Vec<bool>);
+
 /// The previous iteration of the closure (§4.1, §6.2; WP-200): its live
 /// files, the keepers over them, and per key whether no live object
 /// defines it outside a dropped copy (`open`). A mention of one of those
@@ -389,7 +392,7 @@ pub fn oracle_with<V: View>(
     let kinds = kinds(view);
     let seq = Pool::sequential();
     let mut targets = targets.clone();
-    let mut prior: Option<(Vec<FileLive>, Vec<OptId<FileId>>, Vec<bool>)> = None;
+    let mut prior: Option<PriorOwned> = None;
     loop {
         let p = prior.as_ref().map(|(live, keeper, open)| Prior { live, keeper, open });
         let live = oracle_once(view, &kinds, &targets, redirect, roots, sources, p);
