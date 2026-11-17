@@ -361,8 +361,7 @@ fn s5_demand_cells_exec_and_pie() {
                     // use of a `WeakDyn` key (a split key) is `Weak0`'s cell.
                     let split = out == OutputKind::Exec
                         && kind == TargetKind::WeakDyn
-                        && mortar_a64::weak::weak_class(t, writable)
-                            == Some(mortar_arch::WeakClass::Unfillable);
+                        && mortar_a64::weak::weak_class(t, writable) == Some(WeakClass::Unfillable);
                     let w =
                         want(h.class, out, if split { TargetKind::Weak0 } else { kind }, writable);
                     assert_eq!(got(&s), w, "{} {out:?} {kind:?} writable={writable}", h.name);
