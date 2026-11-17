@@ -164,6 +164,15 @@ pub(crate) fn check(rv: &mut Rv<'_>) {
                 accepted += 1;
                 continue;
             }
+            // lld binds a plain undefined `foo` to a definition `foo@@V`
+            // and writes no `UND foo` (RV-R6's lld form, §14.5 P-P3/P-P4).
+            if !defined
+                && rv.format == Format::Lld
+                && keys.iter().any(|(n, d)| d.def.is_some() && n.strip_prefix(name.as_str()).is_some_and(|v| v.starts_with("@@")))
+            {
+                accepted += 1;
+                continue;
+            }
             // A key in a local of the output: hidden made local.
             if syms.iter().any(|s| s.local() && &s.name == name) && defined {
                 msgs.push(format!("{name} is local; a hidden key stays global at -r (RV-R6)"));
@@ -234,7 +243,7 @@ pub(crate) fn check(rv: &mut Rv<'_>) {
             }
         } else {
             if o.shndx != SHN_UNDEF {
-                msgs.push(format!("{name} is in section {}; no live input defines it", shn(o.shndx)));
+                msgs.push(format!("{name} is defined in {}; no live input defines it", shn(o.shndx)));
             }
             let want_weak = k.any_ref && k.all_weak_refs;
             if (o.bind() == STB_WEAK) != want_weak {

@@ -672,7 +672,7 @@ pub fn id(text: &str) -> &str {
 }
 
 /// The anomalies of the references' `-r` outputs (stage R, §14; §10.2
-/// A90-A102, A120-A123), by the rule and the message's form.
+/// A90-A102, A120-A122), by the rule and the message's form.
 fn relocatable(linker: Format, n: u8, m: &str) -> Option<&'static str> {
     let (lld, mold) = (linker == Format::Lld, linker == Format::Mold);
     let a = match n {
@@ -687,6 +687,12 @@ fn relocatable(linker: Format, n: u8, m: &str) -> Option<&'static str> {
         }
         4 if mold && m.ends_with(" is not in .symtab") && m.contains('@') => {
             "A95: at -r mold strips .symver names to their base"
+        }
+        4 if mold && m.contains(" is defined in ") && m.ends_with("; no live input defines it") => {
+            "A95: at -r mold strips .symver names to their base"
+        }
+        4 if lld && (m.starts_with("local wi.") || m.starts_with("local wt.")) && m.contains(" at 65521+") => {
+            "A126: at -r lld keeps a dropped COMDAT copy's local group signature as an SHN_ABS local"
         }
         4 if mold && m.ends_with(" is not in .symtab") => {
             "A94: at -r mold drops an STB_GNU_UNIQUE member symbol"
@@ -704,22 +710,22 @@ fn relocatable(linker: Format, n: u8, m: &str) -> Option<&'static str> {
             "A92: at -r mold drops non-COMDAT groups"
         }
         6 if mold && m.contains(" .rel") && m.ends_with(" is a group member without SHF_GROUP") => {
-            "A122: at -r mold lists a member's relocation section in its group without SHF_GROUP"
+            "A121: at -r mold lists a member's relocation section in its group without SHF_GROUP"
         }
         7 if (lld || mold) && m.starts_with("EI_OSABI is 0, not 3") => {
-            "A123: at -r lld and mold write STB_GNU_UNIQUE or STT_GNU_IFUNC symbols with EI_OSABI ELFOSABI_NONE"
+            "A122: at -r lld and mold write STB_GNU_UNIQUE or STT_GNU_IFUNC symbols with EI_OSABI ELFOSABI_NONE"
         }
         2 if mold && m.contains(":(.ctors") && m.contains(" .init_array, of another name") => {
-            "A124: at -r mold moves .ctors pieces into .init_array, dropping their priority suffix"
+            "A123: at -r mold moves .ctors pieces into .init_array, dropping their priority suffix"
         }
         11 if mold && m.contains(" .init_array: its name is not its pieces' name") => {
-            "A124: at -r mold moves .ctors pieces into .init_array, dropping their priority suffix"
+            "A123: at -r mold moves .ctors pieces into .init_array, dropping their priority suffix"
         }
         4 if mold && m.starts_with("local ") && m.contains(" at 65521+") => {
-            "A125: at -r mold makes the local signature symbols of groups SHN_ABS"
+            "A124: at -r mold makes the local signature symbols of groups SHN_ABS"
         }
         3 if lld && m.starts_with("output record R_") && m.contains("_NONE at ") && m.contains(" .eh_frame+") => {
-            "A126: at -r lld leaves an R_*_NONE record in .rela.eh_frame where it removed an FDE"
+            "A125: at -r lld leaves an R_*_NONE record in .rela.eh_frame where it removed an FDE"
         }
         10 if lld && m.starts_with("an input asks for an executable stack (") && m.ends_with(" is N") => {
             "A93: at -r lld writes .note.GNU-stack without SHF_EXECINSTR over an input that has it"

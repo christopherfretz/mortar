@@ -10,8 +10,8 @@
 use std::collections::BTreeMap;
 
 use crate::reloc::eh::{Cie, Fde, Frames, parse_as};
-use crate::relocatable::{Place, Rel, Rv, Tgt, field};
-use crate::report::{Finding, Rewrite, Rule, Via};
+use crate::relocatable::{Place, Rel, Rv, Tgt};
+use crate::report::{Finding, Rule, Via};
 
 /// One FDE of an input or of the output, with its targets.
 struct Rec {
@@ -379,8 +379,6 @@ fn framed_records(rv: &mut Rv<'_>) {
                     continue;
                 }
                 rv.match_record(f, s, rs, ri, r, &t, o, at, Via::EhFrame);
-                let _ = field;
-                let _ = Rewrite::PerLinker;
             }
         }
     }

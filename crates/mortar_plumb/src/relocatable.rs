@@ -912,6 +912,85 @@ pub(crate) fn verify_in(
     map: &Map,
     line: Option<&[String]>,
 ) -> Report {
+    with_rv(output, store, m, map, line, |_| ()).0
+}
+
+/// A foreign `-r` link's map written in mortar's form (§3.2, §14.2), from
+/// the places stage R derives: `rplace` for every whole piece, `rframe`
+/// for every input `.eh_frame` record, `rgroup` for every kept group and
+/// `discard ... comdat` for every member of a copy not kept. It lets a
+/// test read a reference's link as mortar's (§9.2 (t), as (l) reads
+/// lld's); `None` when the output does not read. Only a link without
+/// merged pieces has a mortar form: a merged piece gets no record.
+#[doc(hidden)]
+pub fn as_mortar_map(output: &[u8], src: &dyn Source, map: &Map, ctx: &Ctx<'_>) -> Option<String> {
+    use crate::map::mortar::{HEADER, encode};
+    use std::fmt::Write as _;
+    let store = Store::read(src, &[map]);
+    with_rv(output, &store, 0, map, ctx.line.as_deref(), |rv| {
+        let mut t = format!("{HEADER}\n");
+        for (i, f) in rv.ins.iter().enumerate() {
+            let _ = write!(t, "file {i} ");
+            encode(&f.path, &mut t);
+            if let Some(mem) = &f.member {
+                t.push(' ');
+                encode(mem, &mut t);
+                let off = rv.map.files[f.map_file as usize].member_offset.unwrap_or(0);
+                let _ = write!(t, " {off:x}");
+            }
+            t.push('\n');
+        }
+        for (f, ps) in rv.places.iter().enumerate() {
+            for (s, p) in ps.iter().enumerate() {
+                match p {
+                    Place::Whole { out, off } => {
+                        let size = rv.ins[f].elf.secs[s].size;
+                        let _ = writeln!(t, "rplace {f} {s} {out} {off:x} {size:x}");
+                    }
+                    Place::Dropped(Drop::Comdat) => {
+                        let _ = writeln!(t, "discard {f} {s} comdat");
+                    }
+                    _ => {}
+                }
+            }
+        }
+        for (&(f, s), recs) in &rv.frames {
+            for (&at, to) in recs {
+                match to {
+                    Some(o) => {
+                        let _ = writeln!(t, "rframe {f} {s} {at:x} {o:x}");
+                    }
+                    None => {
+                        let _ = writeln!(t, "rframe {f} {s} {at:x} -");
+                    }
+                }
+            }
+        }
+        for (&(f, g), o) in &rv.group_out {
+            let _ = writeln!(t, "rgroup {o} {f} {g}");
+        }
+        t.push_str("output relocatable\n");
+        for w in ctx.line.as_deref().unwrap_or(&[]) {
+            t.push_str("arg ");
+            encode(w, &mut t);
+            t.push('\n');
+        }
+        t.push_str("end\n");
+        t
+    })
+    .1
+}
+
+/// Builds the model of a `-r` link, runs the rules, then `k` on it; the
+/// report, and `k`'s result when the output reads.
+fn with_rv<R>(
+    output: &[u8],
+    store: &Store<'_>,
+    m: usize,
+    map: &Map,
+    line: Option<&[String]>,
+    k: impl FnOnce(&mut Rv<'_>) -> R,
+) -> (Report, Option<R>) {
     let src = store.src();
     let words: Option<Vec<String>> = if map.format == Format::Mortar {
         (!map.args.is_empty())
@@ -952,7 +1031,7 @@ pub(crate) fn verify_in(
         Err(e) => {
             report.findings.push(Finding::new(Rule::OutputUnreadable, e));
             report.coverage.relocatable = Some(RelCoverage::default());
-            return report;
+            return (report, None);
         }
     };
     if !matches!(out.h.machine, EM_AARCH64 | EM_X86_64 | EM_386) {
@@ -986,10 +1065,11 @@ pub(crate) fn verify_in(
         raw: output.to_vec(),
     };
     run(&mut rv);
+    let r = k(&mut rv);
     let mut report = std::mem::take(&mut rv.report);
     report.coverage.relocatable = Some(rv.cov.clone());
     report.sort();
-    report
+    (report, Some(r))
 }
 
 /// Reads the inputs the map names, in `FileId` order (§14.1).
@@ -1405,7 +1485,12 @@ fn foreign_places(rv: &mut Rv<'_>, fid: &BTreeMap<u32, Vec<usize>>, place: &mut 
         }
     }
     // Each row's block: the last block that starts at or before it.
-    let mut used: BTreeMap<(usize, String), usize> = BTreeMap::new();
+    // A row is the first section of its name, over the copies in order,
+    // not yet named, of the row's size; else the first not yet named
+    // (§14.2). GNU ld lists the rows in output order: a script-placed
+    // section (`*(.debug_info)`, a CU) before the orphans of its name
+    // (type units) that precede it in the input.
+    let mut used: BTreeMap<(usize, String), BTreeSet<usize>> = BTreeMap::new();
     let mut b = 0usize;
     // A GNU ld block without an address carries its rows to no section;
     // rows under it fall to the last block with one.
@@ -1431,39 +1516,77 @@ fn foreign_places(rv: &mut Rv<'_>, fid: &BTreeMap<u32, Vec<usize>>, place: &mut 
         if cands.is_empty() || cands.iter().all(|&s| consumed(&e.secs[s])) {
             continue;
         }
-        let k = used.entry((p.file as usize, name.clone())).or_default();
-        let (copy, s) = (*k / cands.len(), cands[*k % cands.len()]);
-        let Some(&f) = copies.get(copy) else {
+        let taken = used.entry((p.file as usize, name.clone())).or_default();
+        let total = cands.len() * copies.len();
+        let at = |k: usize| (copies[k / cands.len()], cands[k % cands.len()]);
+        let free: Vec<usize> = (0..total).filter(|k| !taken.contains(k)).collect();
+        // The row's offset in its output section for a candidate.
+        let offset_of = |rv: &Rv<'_>, f: usize, s: usize| -> Option<u64> {
+            let (o, base) = cur?;
+            let unaddressed = rv.format == Format::Mold
+                && rv.out.secs.get(o as usize).is_some_and(|x| x.flags & SHF_ALLOC == 0)
+                && p.addr == 0;
+            if unaddressed {
+                Some(cursor.next_multiple_of(rv.ins[f].elf.secs[s].align.max(1)))
+            } else {
+                p.addr.checked_sub(base)
+            }
+        };
+        let sized: Vec<usize> = free.iter().copied().filter(|&k| rv.ins[at(k).0].elf.secs[at(k).1].size == p.size).collect();
+        // Same-sized candidates (type units): the one whose bytes are the
+        // output's there, else the first.
+        let same_bytes = |k: usize| {
+            let (f, s) = at(k);
+            let sec = &rv.ins[f].elf.secs[s];
+            let Some((o, _)) = cur else { return false };
+            let Some(off) = offset_of(rv, f, s) else { return false };
+            let d = rv.out.secs.get(o as usize).map_or(&[][..], |x| x.data.as_slice());
+            let Some(got) = usize::try_from(off).ok().and_then(|a| d.get(a..a + sec.data.len())) else { return false };
+            // The bytes outside the input's relocated fields (REL fields
+            // hold the output's addends).
+            let mut mask = vec![true; sec.data.len()];
+            for rs in rv.ins[f].elf.relocs_of(s) {
+                for r in rv.ins[f].elf.rels(rs) {
+                    let w = usize::from(field(rv.machine, r.ty).0);
+                    let a = usize::try_from(r.offset).unwrap_or(usize::MAX);
+                    for m in mask.iter_mut().skip(a).take(w) {
+                        *m = false;
+                    }
+                }
+            }
+            got.iter().zip(&sec.data).zip(&mask).all(|((x, y), m)| !m || x == y)
+        };
+        let pick = if sized.len() > 1 { sized.iter().copied().find(|&k| same_bytes(k)) } else { None }
+            .or_else(|| sized.first().copied())
+            .or_else(|| free.first().copied());
+        let Some(k) = pick else {
             let msg = format!("map line {}: {} names a section the input has fewer of", p.line, rv.ins[f0].sname(cands[0]));
             rv.push(Finding::new(Rule::Map(2), msg));
             continue;
         };
-        *k += 1;
+        taken.insert(k);
+        let (f, s) = at(k);
         let e = &rv.ins[f].elf;
         if rv.is_eh(&e.secs[s]) {
             // Framed: its records are judged one by one (P-P5).
             continue;
         }
-        let Some((o, base)) = cur else {
+        let Some((o, _)) = cur else {
             let msg = format!("map line {}: {} is under no output section", p.line, rv.ins[f].sname(s));
             rv.push(Finding::new(Rule::Map(1), msg));
+            continue;
+        };
+        let Some(off) = offset_of(rv, f, s) else {
+            let msg = format!("map line {}: {} is before its output section's start", p.line, rv.ins[f].sname(s));
+            rv.push(Finding::new(Rule::Map(4), msg));
             continue;
         };
         let unaddressed = rv.format == Format::Mold
             && rv.out.secs.get(o as usize).is_some_and(|x| x.flags & SHF_ALLOC == 0)
             && p.addr == 0;
-        let off = if unaddressed {
-            let sec = &rv.ins[f].elf.secs[s];
-            let off = cursor.next_multiple_of(sec.align.max(1));
-            cursor = off + sec.size;
-            off
-        } else if let Some(off) = p.addr.checked_sub(base) {
-            off
-        } else {
-            let msg = format!("map line {}: {} is before its output section's start", p.line, rv.ins[f].sname(s));
-            rv.push(Finding::new(Rule::Map(4), msg));
-            continue;
-        };
+        if unaddressed {
+            cursor = off + rv.ins[f].elf.secs[s].size;
+        }
         place(rv, f, s, Place::Whole { out: o, off }, p.line);
     }
 }
@@ -2049,9 +2172,9 @@ fn header(rv: &mut Rv<'_>) {
     let gnu = rv.out.syms.iter().any(|s| s.ty() == STT_GNU_IFUNC || s.bind() == STB_GNU_UNIQUE);
     let want_abi = if gnu { 3 } else { 0 };
     // GNU ld also marks an output with an SHF_GNU_RETAIN section GNU
-    // (measured; a question on P-P7's "iff").
+    // (measured; a reference's form, a question on P-P7's "iff").
     let retain = rv.out.secs.iter().any(|s| s.flags & SHF_GNU_RETAIN != 0);
-    if h.osabi != want_abi && !(retain && !gnu && h.osabi == 3) {
+    if h.osabi != want_abi && !(retain && !gnu && h.osabi == 3 && rv.format == Format::Gnu) {
         bad(
             rv,
             "EI_OSABI",
@@ -2224,7 +2347,16 @@ fn container(rv: &mut Rv<'_>) {
             if s.align != 8 {
                 rv.p(8, format!("the container is aligned to {}, not 8", s.align));
             }
-            if s.data != want {
+            // A reference concatenates the input containers by name, each
+            // at a multiple of 8: kept_units' bytes unless an input has
+            // bytes between its units (tests/meta's b.o: 8 zeros); that
+            // copy is its form (§14.5 P-P8).
+            let mut cat: Vec<u8> = Vec::new();
+            for &(f, s) in &inputs {
+                cat.resize(cat.len().next_multiple_of(8), 0);
+                cat.extend_from_slice(&rv.ins[f].elf.secs[s].data);
+            }
+            if s.data != want && (rv.mortar() || s.data != cat) {
                 let at = s.data.iter().zip(&want).position(|(a, b)| a != b).unwrap_or(s.data.len().min(want.len()));
                 rv.p(8, format!("container bytes differ from kept_units at {at:#x}"));
             }
@@ -2580,7 +2712,7 @@ fn judge_pieces(rv: &mut Rv<'_>, o: usize, os: &Sec, ps: &[&Sec], bad: &mut Vec<
         // (SHT_INIT_ARRAY, SHT_FINI_ARRAY, SHT_PREINIT_ARRAY) may also
         // state the pointer size, as GNU ld does (a question on P-P11).
         let ptr = if rv.class64 { 8 } else { 4 };
-        let array = matches!(os.ty, 14..=16) && os.entsize == ptr;
+        let array = !rv.mortar() && matches!(os.ty, 14..=16) && os.entsize == ptr;
         if os.flags & SHF_MERGE == 0 && os.entsize != want_es && os.entsize != 0 && !array {
             bad.push(format!("sh_entsize is {}, not {want_es}", os.entsize));
         }
