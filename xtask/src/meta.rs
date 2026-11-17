@@ -36,9 +36,37 @@
 //! definition name=S|anchor=S key=N hash=HEX class=N flags=N module=S file=S line=N
 //! type name=S key=N hash=HEX layout=N size=N align=N flags=N file=S line=N details=N
 //! declaration name=S|anchor=S key=N ty=N size=N type_name=S flags=N
-//! details hex=HEX                 # kind 4's body
+//! details hex=HEX                 # kind 4's body, as given
 //! raw kind=N version=N row_size=N row_count=N hex=HEX   # any block, as given
+//! level detail                    # this unit writes kind 4 (`default`: it does not)
 //! ```
+//!
+//! # Layout details (kind 4, `spec/odr.md` O-19; WP-145)
+//!
+//! Item lines after a `type` describe that type's layout, in O-18's order
+//! (O-19: the order the items stand in). Offsets are in BITS, as O-19
+//! writes them:
+//!
+//! ```text
+//! member name=S type=S offset=N [width=N]   # width= makes a bit-field
+//! base type=S offset=N [virtual=1]
+//! vptr offset=N
+//! slot name=S index=N              # a vtable slot: the final overrider's declaration
+//! enumerator name=S value=N
+//! underlying type=S
+//! item flags=N name=S type=S value=N width=N   # any item, as given (kind in bits 0-3)
+//! ```
+//!
+//! A type with items gets the layout hash computed from them (unless it
+//! says `layout=`), so that kind 3's hash and kind 4's items cannot
+//! disagree: FNV-1a 64 (MT-13's) over `size` (u32 LE), `align` (u16 LE),
+//! then per item `flags`, `value`, `width` (LE) and `name` and `type`, each
+//! followed by a NUL. The test producer's hash: kiln's is its own (O-18).
+//! The unit writes the items as kind 4 entries only at the `detail` level
+//! (`level detail`, kiln's `-fmason-metadata=detail`); at the default
+//! level the same description writes the same kind 3 rows, without
+//! details. The dump prints a canonical kind 4 block as `level detail` and
+//! item lines (a type row then shows its `layout=`), any other one raw.
 //!
 //! `name=S` sets the key to FNV-1a 64 of `S` (MT-13) unless `key=` says
 //! otherwise; `anchor=S` writes an anchored row (name 0) whose key is that
@@ -85,7 +113,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use mortar_meta::read::{BlockHeader, FileReader, Finding, SectionAttrs, Unit};
-use mortar_meta::write::{Declaration, Definition, RawBlock, Summary, Type};
+use mortar_meta::write::{Declaration, Definition, Detail, RawBlock, Summary, Type};
 use mortar_meta::{UnitBuilder, kind, producer};
 
 pub const USAGE: &str = "usage: cargo xtask meta write <description> (-o <out.s> | --bin <out> | \
@@ -114,6 +142,9 @@ pub fn parse(text: &str) -> Result<Sections, String> {
     // Whether the current section's last unit was opened by `unit` or by
     // a row (rows after a `section` or `pad` open a new implicit unit).
     let mut open = false;
+    // The open unit's level and which of its types gave `layout=`
+    // (WP-145): applied when the unit closes.
+    let mut state = Level::default();
     for (n, line) in text.lines().enumerate() {
         let at = |e: String| format!("line {}: {e}", n + 1);
         let words = split(line).map_err(at)?;
@@ -122,21 +153,39 @@ pub fn parse(text: &str) -> Result<Sections, String> {
         if directive == b"pad" {
             let [count] = rest else { return Err(at("pad takes one count".into())) };
             let count = number(count).map_err(at)?;
+            state.close(items, &mut open);
             items.push(Item::Pad(usize::try_from(count).map_err(|e| at(e.to_string()))?));
-            open = false;
+            continue;
+        }
+        if directive == b"level" {
+            state.detail = match rest {
+                [w] if w == b"detail" => true,
+                [w] if w == b"default" => false,
+                _ => return Err(at("level is 'level detail' or 'level default'".into())),
+            };
+            unit(items, &mut open);
             continue;
         }
         let fields = Fields::parse(rest).map_err(at)?;
+        if let Some(detail) = detail_item(directive, &fields).map_err(at)? {
+            let u = unit(items, &mut open);
+            let Some(t) = u.types.last_mut() else {
+                return Err(at("a layout item before any type".into()));
+            };
+            t.items.get_or_insert_with(Vec::new).push(detail);
+            continue;
+        }
         match directive.as_slice() {
             b"section" => {
                 fields.done(&[]).map_err(at)?;
+                state.close(items, &mut open);
                 sections.push(Vec::new());
-                open = false;
             }
             b"unit" => {
                 let mut u = UnitBuilder::new(producer::TEST);
                 u.producer = fields.num("producer", u64::from(producer::TEST)).map_err(at)?;
                 fields.done(&["producer"]).map_err(at)?;
+                state.close(items, &mut open);
                 items.push(Item::Unit(u));
                 open = true;
             }
@@ -174,7 +223,11 @@ pub fn parse(text: &str) -> Result<Sections, String> {
                     Some(k) => number(k).map_err(at)?,
                     None => mortar_meta::fnv1a64(&name),
                 };
+                if fields.get("layout").is_some() {
+                    state.explicit.push(unit(items, &mut open).types.len());
+                }
                 let row = Type {
+                    items: None,
                     key,
                     name,
                     hash: fields.hash().map_err(at)?,
@@ -236,7 +289,123 @@ pub fn parse(text: &str) -> Result<Sections, String> {
             }
         }
     }
+    let items = sections.last_mut().expect("one section at least");
+    state.close(items, &mut open);
     Ok(sections)
+}
+
+/// The open unit's kind 4 state while a description is parsed (WP-145).
+#[derive(Debug, Default)]
+struct Level {
+    /// `level detail`: the unit writes its items as kind 4.
+    detail: bool,
+    /// The unit's types (by index) that gave `layout=`.
+    explicit: Vec<usize>,
+}
+
+impl Level {
+    /// Closes the open unit, if any: layout hashes from the items where
+    /// `layout=` was not given; the items dropped below `detail`.
+    fn close(&mut self, items: &mut [Item], open: &mut bool) {
+        if *open && let Some(Item::Unit(u)) = items.last_mut() {
+            for (i, t) in u.types.iter_mut().enumerate() {
+                let explicit = self.explicit.contains(&i);
+                if let Some(list) = &t.items
+                    && !explicit
+                {
+                    t.layout = layout_hash(t.size, t.align, list);
+                }
+                if !self.detail {
+                    t.items = None;
+                }
+            }
+        }
+        *open = false;
+        *self = Self::default();
+    }
+}
+
+/// The test producer's layout hash (the module's doc): FNV-1a 64 over the
+/// size, the alignment and the items.
+pub fn layout_hash(size: u32, align: u16, items: &[Detail]) -> u64 {
+    let mut b = Vec::with_capacity(6 + items.len() * 32);
+    b.extend_from_slice(&size.to_le_bytes());
+    b.extend_from_slice(&align.to_le_bytes());
+    for it in items {
+        b.extend_from_slice(&it.flags.to_le_bytes());
+        b.extend_from_slice(&it.value.to_le_bytes());
+        b.extend_from_slice(&it.width.to_le_bytes());
+        b.extend_from_slice(&it.name);
+        b.push(0);
+        b.extend_from_slice(&it.ty);
+        b.push(0);
+    }
+    mortar_meta::fnv1a64(&b)
+}
+
+/// A layout item line (the module's doc), or `None` for another directive.
+fn detail_item(directive: &[u8], fields: &Fields) -> Result<Option<Detail>, String> {
+    use mortar_meta::details::item;
+    let d = |kind: u32, known: &[&str]| -> Result<Detail, String> {
+        fields.done(known)?;
+        Ok(Detail { flags: kind, ..Detail::default() })
+    };
+    let out = match directive {
+        b"member" => {
+            let mut x = d(item::MEMBER, &["name", "type", "offset", "width"])?;
+            x.name = fields.string("name");
+            x.ty = fields.string("type");
+            x.value = fields.num("offset", 0)?;
+            if fields.get("width").is_some() {
+                x.width = fields.num("width", 0)?;
+                x.flags |= item::BITFIELD;
+            }
+            x
+        }
+        b"base" => {
+            let mut x = d(item::BASE, &["type", "offset", "virtual"])?;
+            x.ty = fields.string("type");
+            x.value = fields.num("offset", 0)?;
+            if fields.num::<u64>("virtual", 0)? != 0 {
+                x.flags |= item::VIRTUAL;
+            }
+            x
+        }
+        b"vptr" => {
+            let mut x = d(item::VPTR, &["offset"])?;
+            x.value = fields.num("offset", 0)?;
+            x
+        }
+        b"slot" => {
+            let mut x = d(item::SLOT, &["name", "index"])?;
+            x.name = fields.string("name");
+            x.value = fields.num("index", 0)?;
+            x
+        }
+        b"enumerator" => {
+            let mut x = d(item::ENUMERATOR, &["name", "value"])?;
+            x.name = fields.string("name");
+            x.value = fields.num("value", 0)?;
+            x
+        }
+        b"underlying" => {
+            let mut x = d(item::UNDERLYING, &["type"])?;
+            x.ty = fields.string("type");
+            x
+        }
+        b"item" => {
+            fields.done(&["flags", "name", "type", "value", "width"])?;
+            Detail {
+                name: fields.string("name"),
+                ty: fields.string("type"),
+                value: fields.num("value", 0)?,
+                width: fields.num("width", 0)?,
+                flags: fields.num("flags", 0)?,
+            }
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(out))
 }
 
 /// The unit rows go to: the open one, or a new implicit one.
@@ -513,7 +682,36 @@ fn as_written(b: &BlockHeader) -> bool {
     b.version == 1 && kind::row_size(b.kind).is_some_and(|r| r == b.row_size)
 }
 
+/// One unit as a description: a kind 4 block the writer would write from
+/// typed items is printed as `level detail` and item lines (WP-145), when
+/// writing that text back gives the unit's bytes; otherwise raw.
 fn print_unit(out: &mut String, u: &Unit<'_>) {
+    let mut text = String::new();
+    if unit_text(&mut text, u, true) && reproduces(&text, u) {
+        out.push_str(&text);
+        return;
+    }
+    text.clear();
+    unit_text(&mut text, u, false);
+    out.push_str(&text);
+}
+
+/// Whether the description `text` of one unit writes `u`'s bytes.
+fn reproduces(text: &str, u: &Unit<'_>) -> bool {
+    let Ok(sections) = parse(text) else { return false };
+    match sections.as_slice() {
+        [items] => match items.as_slice() {
+            [Item::Unit(b)] => b.finish().is_ok_and(|bytes| bytes == u.bytes()),
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+/// `u` as a description; with `typed`, kind 4 as items (false when the
+/// unit has no version 1 kind 4 block or an entry does not read).
+fn unit_text(out: &mut String, u: &Unit<'_>, typed: bool) -> bool {
+    let typed = typed && u.version(kind::DETAILS) == Some(1);
     let _ = writeln!(
         out,
         "# unit at offset {}: {} bytes, minor {}, header_size {}, flags {:#x}",
@@ -524,10 +722,15 @@ fn print_unit(out: &mut String, u: &Unit<'_>) {
         u.flags
     );
     let _ = writeln!(out, "unit producer={}", u.producer);
+    if typed {
+        out.push_str("level detail\n");
+    }
     for b in u.blocks() {
         let known = kind::row_size(b.kind).is_some();
         if known && as_written(&b) {
-            print_rows(out, u, b.kind);
+            if !print_rows(out, u, b.kind, typed) {
+                return false;
+            }
             continue;
         }
         let body = u
@@ -544,9 +747,54 @@ fn print_unit(out: &mut String, u: &Unit<'_>) {
             hex(body)
         );
     }
+    typed
 }
 
-fn print_rows(out: &mut String, u: &Unit<'_>, k: u16) {
+/// The item lines of the kind 4 entry at `offset` (the module's doc):
+/// false when it does not read.
+fn print_items(out: &mut String, u: &Unit<'_>, offset: u32) -> bool {
+    use mortar_meta::details::item;
+    const VIRTUAL_BASE: u32 = item::BASE | item::VIRTUAL;
+    let Ok(Some(entry)) = u.detail_entry(offset) else { return false };
+    if entry.reserved != 0 {
+        return false;
+    }
+    for it in entry.all_items() {
+        let (name, ty) = (quote(u.string(it.name)), quote(u.string(it.ty)));
+        let plain = it.name == 0 && it.ty == 0 && it.width == 0;
+        let line = match it.flags {
+            item::MEMBER if it.width == 0 => {
+                format!("member name={name} type={ty} offset={}", it.value)
+            }
+            f if f == item::MEMBER | item::BITFIELD => {
+                format!("member name={name} type={ty} offset={} width={}", it.value, it.width)
+            }
+            f @ (item::BASE | VIRTUAL_BASE) if it.name == 0 && it.width == 0 => {
+                let v = if f == item::BASE { "" } else { " virtual=1" };
+                format!("base type={ty} offset={}{v}", it.value)
+            }
+            item::VPTR if plain => format!("vptr offset={}", it.value),
+            item::SLOT if it.ty == 0 && it.width == 0 => {
+                format!("slot name={name} index={}", it.value)
+            }
+            item::ENUMERATOR if it.ty == 0 && it.width == 0 => {
+                format!("enumerator name={name} value={}", it.value)
+            }
+            item::UNDERLYING if it.name == 0 && it.width == 0 && it.value == 0 => {
+                format!("underlying type={ty}")
+            }
+            _ => format!(
+                "item flags={:#x} name={name} type={ty} value={} width={}",
+                it.flags, it.value, it.width
+            ),
+        };
+        out.push_str(&line);
+        out.push('\n');
+    }
+    true
+}
+
+fn print_rows(out: &mut String, u: &Unit<'_>, k: u16, typed: bool) -> bool {
     let name_or_anchor = |out: &mut String, name: u32, key: u64| {
         if name == 0 {
             let _ = write!(out, " key={key:#018x}");
@@ -604,8 +852,13 @@ fn print_rows(out: &mut String, u: &Unit<'_>, k: u16) {
                     r.line,
                     r.details
                 );
+                if typed && r.details != mortar_meta::NO_DETAILS && !print_items(out, u, r.details)
+                {
+                    return false;
+                }
             }
         }
+        kind::DETAILS if typed => {}
         kind::DETAILS => {
             let _ = writeln!(out, "details hex={}", hex(u.details().unwrap_or_default()));
         }
@@ -625,6 +878,7 @@ fn print_rows(out: &mut String, u: &Unit<'_>, k: u16) {
         }
         _ => {}
     }
+    true
 }
 
 /// A string as the description writes it: bare when it is a plain word.
@@ -1226,6 +1480,94 @@ definition name=f
                 .collect();
             assert_eq!(back, want, "{text}");
         }
+    }
+
+    const DETAILED: &str = r#"
+unit producer=4
+level detail
+summary name=odr.scheme value=test-1
+type name=1S size=16 align=8 flags=4
+vptr offset=0
+member name=a type=i offset=64
+member name=b type=i offset=96 width=3
+slot name=_ZN1S1fEv index=0
+type name=1E size=4 align=4 flags=1
+underlying type=i
+enumerator name=A value=0
+enumerator name=B value=0xffffffffffffffff
+type name=1D size=24 align=8 flags=8
+base type=1S offset=0 virtual=1
+base type=1B offset=128
+item flags=0x7 name=future type=x value=9 width=1
+type name=1N size=1 align=1
+"#;
+
+    /// The description's single unit.
+    fn only_unit(text: &str) -> UnitBuilder {
+        match parse(text).unwrap().as_slice() {
+            [items] => match items.as_slice() {
+                [Item::Unit(u)] => u.clone(),
+                other => panic!("{other:?}"),
+            },
+            other => panic!("{other:?}"),
+        }
+    }
+
+    // spec: odr.md O-19 (WP-145): the test producer writes kind 4 from the
+    // same items its kind 3 hash is computed from; at the default level
+    // the same rows without details; the dump prints entries and items
+    // and writes back to the same bytes.
+    #[test]
+    fn layout_details_round_trip() {
+        let detail = only_unit(DETAILED);
+        let default = only_unit(&DETAILED.replace("level detail\n", ""));
+        for (d, f) in detail.types.iter().zip(&default.types) {
+            assert_eq!(d.layout, f.layout, "the level does not change the hash");
+            assert!(f.items.is_none());
+        }
+        let s = detail.types.iter().find(|t| t.name == b"1S").unwrap();
+        assert_eq!(s.layout, layout_hash(16, 8, s.items.as_ref().unwrap()));
+        assert_ne!(s.layout, 0);
+        assert!(detail.types.iter().find(|t| t.name == b"1N").unwrap().items.is_none());
+        let bytes = detail.finish().unwrap();
+        let (units, findings) = mortar_meta::read_section(SectionAttrs::conforming(1), &bytes);
+        assert!(findings.is_empty(), "{findings:?}");
+        let mut text = String::new();
+        print_unit(&mut text, &units[0]);
+        assert!(text.contains("level detail\n"), "{text}");
+        for line in [
+            "vptr offset=0\n",
+            "member name=a type=i offset=64\n",
+            "member name=b type=i offset=96 width=3\n",
+            "slot name=_ZN1S1fEv index=0\n",
+            "underlying type=i\n",
+            "enumerator name=B value=18446744073709551615\n",
+            "base type=1S offset=0 virtual=1\n",
+            "base type=1B offset=128\n",
+            "item flags=0x7 name=future type=x value=9 width=1\n",
+        ] {
+            assert!(text.contains(line), "{line}: {text}");
+        }
+        assert_eq!(only_unit(&text).finish().unwrap(), bytes, "{text}");
+        // An entry the writer would not write (a set `reserved`): raw.
+        let mut odd = bytes.clone();
+        let body = units[0].details().unwrap();
+        let at = odd.len() - units[0].bytes().len()
+            + (body.as_ptr() as usize - units[0].bytes().as_ptr() as usize)
+            + 4;
+        odd[at] = 1;
+        let (units, _) = mortar_meta::read_section(SectionAttrs::conforming(1), &odd);
+        let mut text = String::new();
+        print_unit(&mut text, &units[0]);
+        // (Not a unit the writer could have written: its strings that only
+        // kind 4 names are not in the raw form, so it does not write back.)
+        assert!(!text.contains("level detail") && text.contains("details hex="), "{text}");
+        for bad in ["member name=x\n", "type name=1S\nmember nam=x\n", "level\n", "level x\n"] {
+            assert!(parse(bad).is_err(), "{bad}");
+        }
+        assert!(parse("type name=1S\nmember name=x\ndetails hex=00\n").is_ok());
+        let both = only_unit("level detail\ntype name=1S\nmember name=x\ndetails hex=00\n");
+        assert!(both.finish().is_err(), "typed items and a raw kind 4 block");
     }
 
     #[test]

@@ -118,6 +118,12 @@ pub enum Malformation {
     /// MT-11, MT-14 (MT-26: names unique): row `row` of `kind` is out of
     /// order with the row before it.
     Unsorted { kind: u16, row: u32 },
+    /// `spec/odr.md` O-19, MT-14: the kind 4 entry at byte `offset` of
+    /// the kind 4 block's body (a kind 3 row's `details`) is not one.
+    /// `block` is the kind 4 block's offset in its unit (`None`: the unit
+    /// has no kind 4 block). Found only when the entry is read, on a
+    /// finding (O-19); the unit's rows stay in use.
+    Details { block: Option<u32>, offset: u32, fault: crate::details::Fault },
 }
 
 /// Why a block's framing is wrong.
@@ -151,6 +157,7 @@ impl Malformation {
             Self::HeaderSize { .. } => "meta.md MT-10, MT-36",
             Self::BlockOrder { .. } => "meta.md MT-11",
             Self::Strtab { .. } => "meta.md MT-12",
+            Self::Details { .. } => "odr.md O-19, meta.md MT-14",
         }
     }
 
@@ -210,6 +217,14 @@ impl fmt::Display for Malformation {
             Self::Unsorted { kind, row } => {
                 write!(f, "row {row} of kind {kind:#06x} is out of order")
             }
+            Self::Details { block: None, offset, .. } => write!(
+                f,
+                "a kind 3 row names the kind 4 entry at offset {offset}, and the unit has no \
+                 kind 4 block"
+            ),
+            Self::Details { block: Some(block), offset, fault } => {
+                write!(f, "kind 4 block at offset {block}: entry at offset {offset}: {fault}")
+            }
         }
     }
 }
@@ -225,7 +240,7 @@ fn u16_at(b: &[u8], at: usize) -> u16 {
 }
 
 #[inline]
-fn u32_at(b: &[u8], at: usize) -> u32 {
+pub(crate) fn u32_at(b: &[u8], at: usize) -> u32 {
     match b.get(at..at.wrapping_add(4)) {
         Some(&[a, b2, c, d]) => u32::from_le_bytes([a, b2, c, d]),
         _ => 0,
@@ -233,7 +248,7 @@ fn u32_at(b: &[u8], at: usize) -> u32 {
 }
 
 #[inline]
-fn u64_at(b: &[u8], at: usize) -> u64 {
+pub(crate) fn u64_at(b: &[u8], at: usize) -> u64 {
     let mut out = [0u8; 8];
     if let Some(s) = b.get(at..at.wrapping_add(8)) {
         out.copy_from_slice(s);
@@ -608,12 +623,43 @@ impl<'a> Unit<'a> {
         self.rows()
     }
 
-    /// Kind 4's block body (everything after its header); its encoding is
-    /// WP-073's (`spec/odr.md` O-19).
+    /// Kind 4's block body (everything after its 16-byte header; a kind 4
+    /// block has no rows, `spec/odr.md` O-19), unvalidated: entries are
+    /// read one at a time by [`Self::detail_entry`].
     #[must_use]
     pub fn details(&self) -> Option<&'a [u8]> {
         let l = self.located(kind::DETAILS)?;
         self.bytes.get((l.at + BLOCK_HEADER_SIZE) as usize..(l.at + l.block_size) as usize)
+    }
+
+    /// The kind 4 entry at byte `offset` of the kind 4 body (a kind 3
+    /// row's `details`, `spec/odr.md` O-19), validated now: nothing of
+    /// kind 4 is read when the unit is opened (MT-42: read on a finding
+    /// only). `Ok(None)`: the block is of a later version than 1, which
+    /// this reader skips (MT-25).
+    ///
+    /// # Errors
+    /// [`Malformation::Details`]: no kind 4 block, an offset that is not a
+    /// multiple of 8, an entry or its items past the block, or a string
+    /// of an item of a known kind past the table or without NUL.
+    pub fn detail_entry(
+        &self,
+        offset: u32,
+    ) -> Result<Option<crate::details::Entry<'a>>, Malformation> {
+        let Some(l) = self.located(kind::DETAILS) else {
+            return Err(Malformation::Details {
+                block: None,
+                offset,
+                fault: crate::details::Fault::NoBlock,
+            });
+        };
+        if l.version != 1 {
+            return Ok(None);
+        }
+        let body = self.details().unwrap_or_default();
+        crate::details::entry(body, self.strtab, offset)
+            .map(Some)
+            .map_err(|fault| Malformation::Details { block: Some(l.at), offset, fault })
     }
 
     /// Kind 1's value of `name` (MT-26), by binary search.
@@ -626,7 +672,7 @@ impl<'a> Unit<'a> {
     }
 }
 
-fn string_at(table: &[u8], offset: u32) -> Option<&[u8]> {
+pub(crate) fn string_at(table: &[u8], offset: u32) -> Option<&[u8]> {
     if offset == 0 {
         return Some(b"");
     }

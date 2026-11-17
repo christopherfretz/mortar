@@ -45,8 +45,24 @@ pub struct Type {
     pub flags: u16,
     pub file: Vec<u8>,
     pub line: u32,
-    /// [`NO_DETAILS`]: none.
+    /// [`NO_DETAILS`]: none. Ignored when `items` is `Some`.
     pub details: u32,
+    /// The type's kind 4 entry (`spec/odr.md` O-19): when `Some`, the
+    /// writer writes it into the unit's kind 4 block and sets `details` to
+    /// its offset (a unit cannot have both these and a raw
+    /// [`UnitBuilder::details`]).
+    pub items: Option<Vec<Detail>>,
+}
+
+/// A kind 4 item (`spec/odr.md` O-19): `flags` holds the item kind in
+/// bits 0-3 ([`crate::details::item`]); an empty string is written as 0.
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Detail {
+    pub name: Vec<u8>,
+    pub ty: Vec<u8>,
+    pub value: u64,
+    pub width: u32,
+    pub flags: u32,
 }
 
 /// A kind 5 row (`spec/odr.md` O-35). `name: None` is anchored.
@@ -108,7 +124,9 @@ pub struct UnitBuilder {
     pub summary: Vec<Summary>,
     pub definitions: Vec<Definition>,
     pub types: Vec<Type>,
-    /// Kind 4's body (WP-073 fixes its encoding); written when `Some`.
+    /// Kind 4's body as given (any bytes; the forward-compatibility and
+    /// malformed-block tests); written when `Some`. Typed entries are
+    /// [`Type::items`].
     pub details: Option<Vec<u8>>,
     pub declarations: Vec<Declaration>,
     pub raw: Vec<RawBlock>,
@@ -194,12 +212,28 @@ impl UnitBuilder {
         });
         let mut types = self.types.clone();
         types.sort_by(|a, b| {
-            (a.key, &a.name, a.hash, a.layout, a.size, a.align, a.flags, &a.file, a.line, a.details)
+            (
+                a.key, &a.name, a.hash, a.layout, a.size, a.align, a.flags, &a.file, a.line,
+                a.details, &a.items,
+            )
                 .cmp(&(
                     b.key, &b.name, b.hash, b.layout, b.size, b.align, b.flags, &b.file, b.line,
-                    b.details,
+                    b.details, &b.items,
                 ))
         });
+        // Kind 4 (O-19): one entry per row with items, in row order, each
+        // right after the one before (entries are multiples of 8 bytes).
+        let typed = types.iter().any(|t| t.items.is_some());
+        if typed && self.details.is_some() {
+            return Err(WriteError::DuplicateKind(kind::DETAILS));
+        }
+        let mut entry_at = 0usize;
+        for t in &mut types {
+            if let Some(items) = &t.items {
+                t.details = u32::try_from(entry_at).map_err(|_| WriteError::TooLarge)?;
+                entry_at += 8 + 24 * items.len();
+            }
+        }
         let mut declarations = self.declarations.clone();
         declarations.sort_by(|a, b| {
             (a.key, a.flags, opt(a.name.as_ref()), a.ty, a.size, &a.type_name).cmp(&(
@@ -271,6 +305,20 @@ impl UnitBuilder {
         }
         if let Some(details) = &self.details {
             header(kind::DETAILS, 1, 0, 0, details.clone())?;
+        } else if typed {
+            let mut body = Vec::with_capacity(entry_at);
+            for items in types.iter().filter_map(|t| t.items.as_ref()) {
+                put32(&mut body, u32::try_from(items.len()).map_err(|_| WriteError::TooLarge)?);
+                put32(&mut body, 0);
+                for it in items {
+                    put32(&mut body, strings.add(&it.name)?);
+                    put32(&mut body, strings.add(&it.ty)?);
+                    put64(&mut body, it.value);
+                    put32(&mut body, it.width);
+                    put32(&mut body, it.flags);
+                }
+            }
+            header(kind::DETAILS, 1, 0, 0, body)?;
         }
         if !declarations.is_empty() {
             let mut body = Vec::with_capacity(declarations.len() * 40);
@@ -352,6 +400,7 @@ impl Type {
             file: Vec::new(),
             line: 0,
             details: NO_DETAILS,
+            items: None,
         }
     }
 }
