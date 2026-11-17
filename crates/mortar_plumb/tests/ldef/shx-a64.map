@@ -1,0 +1,41 @@
+mortar-map 2
+file 0 libx-a64.o
+piece 0 7 0 308 14
+piece 0 7 14 31c 14
+piece 0 7 28 330 14
+piece 0 7 3c 344 14
+piece 0 7 50 358 18
+place 0 1 10374 2c
+place 0 3 304b0 4
+place 0 4 304b4 0
+merged 0 5 .comment
+chunk synthetic .gnu.hash 1c8 30
+chunk synthetic .dynsym 1f8 90
+chunk synthetic .dynstr 288 38
+chunk synthetic .rela.dyn 2c0 48
+chunk synthetic .eh_frame 308 6c
+chunk synthetic .got 20490 20
+chunk synthetic .dynamic 203a0 f0
+chunk synthetic .symtab - 138
+chunk synthetic .strtab - 7b
+chunk synthetic .shstrtab - 77
+chunk synthetic .comment - d
+chunk synthetic .pad.relro 204b0 fb50
+define __etext 103a0
+define __end__ 304b4
+define __bss_start__ 304b4
+output shared
+bind lazy
+relro on
+symbolic none
+arg -o
+arg shx-a64
+arg -shared
+arg libx-a64.o
+arg --mortar-map=shx-a64.map
+export api__etext
+export api__executable_start
+export api_end2
+export api_bss2
+export one
+end

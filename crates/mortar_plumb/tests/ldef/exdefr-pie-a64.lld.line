@@ -1,0 +1,10 @@
+-z
+max-page-size=4096
+-o
+exdefr-pie-a64.lld
+-pie
+-dynamic-linker
+/lib/ld-linux-aarch64.so.1
+startr-a64.o
+libdef-a64.so
+-Map=exdefr-pie-a64.lld.map

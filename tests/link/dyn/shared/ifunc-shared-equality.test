@@ -28,6 +28,7 @@
 #@ spec: dyn.md "D-121"
 #@ arch: aarch64 x86_64
 #@ anomaly(lld): A20
+#@ anomaly(bfd): A60
 #@ xfail(bfd): W21: a non-preemptible IFUNC's address differs between uses (AArch64: a hidden one between translation units, and an assertion under -Bsymbolic-functions; x86-64: a static and a protected one between code and data, and R_X86_64_NONE records)
 #@ xfail(mold): W20, W21: mold binds an exported IFUNC inside the library; a non-preemptible one's address differs between uses (AArch64: a hidden one between translation units; x86-64: a static and a protected one between code and data)
 

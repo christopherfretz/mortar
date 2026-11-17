@@ -16,6 +16,7 @@
 #@ spec: odr.md "O-50"
 #@ arch: aarch64 x86_64
 #@ requires: eu-elflint gdb lldb
+#@ anomaly(bfd): A60
 
 cc -O0 -g -fPIE main.c -o main0.o
 meta main.meta main0.o -o main.o

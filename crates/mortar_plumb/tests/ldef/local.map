@@ -1,0 +1,1 @@
+V1 { global: api_end; api_edata; api_bss; local: *; };

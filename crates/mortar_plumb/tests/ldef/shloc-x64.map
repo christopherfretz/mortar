@@ -1,0 +1,39 @@
+mortar-map 2
+file 0 lib-x64.o
+place 0 1 1300 18
+place 0 3 3478 4
+place 0 4 347c 4
+merged 0 5 .comment
+chunk synthetic .gnu.hash 1c8 28
+chunk synthetic .dynsym 1f0 60
+chunk synthetic .dynstr 250 28
+chunk synthetic .gnu.version 278 8
+chunk synthetic .gnu.version_d 280 38
+chunk synthetic .rela.dyn 2b8 48
+chunk synthetic .got 2448 18
+chunk synthetic .got.plt 3460 18
+chunk synthetic .dynamic 2318 130
+chunk synthetic .symtab - 108
+chunk synthetic .strtab - 79
+chunk synthetic .shstrtab - 97
+chunk synthetic .comment - d
+chunk synthetic .pad.relro 2460 ba0
+define _GLOBAL_OFFSET_TABLE_ 3460
+define _end 3480
+define _edata 347c
+define __bss_start 347c
+output shared
+bind lazy
+relro on
+symbolic none
+version-script local.map
+arg -o
+arg shloc-x64
+arg -shared
+arg --version-script=local.map
+arg lib-x64.o
+arg --mortar-map=shloc-x64.map
+export api_end
+export api_edata
+export api_bss
+end

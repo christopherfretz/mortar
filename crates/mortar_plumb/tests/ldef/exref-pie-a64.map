@@ -1,0 +1,44 @@
+mortar-map 2
+file 0 start-a64.o
+piece 0 7 0 340 14
+piece 0 7 14 354 1c
+place 0 1 103b0 10
+place 0 3 30508 0
+place 0 4 30508 0
+merged 0 5 .comment
+chunk synthetic .interp 238 1b
+chunk synthetic .gnu.hash 258 28
+chunk synthetic .dynsym 280 78
+chunk synthetic .dynstr 2f8 2b
+chunk synthetic .rela.plt 328 18
+chunk synthetic .eh_frame 340 34
+chunk synthetic .plt 10380 30
+chunk synthetic .got 204e0 8
+chunk synthetic .got.plt 304e8 20
+chunk synthetic .dynamic 203c0 120
+chunk synthetic .symtab - c0
+chunk synthetic .strtab - 46
+chunk synthetic .shstrtab - 87
+chunk synthetic .comment - d
+chunk synthetic .pad.relro 204e8 fb18
+define _edata 30508
+define _end 30508
+define __bss_start 30508
+output pie
+interp /lib/ld-linux-aarch64.so.1
+bind lazy
+relro on
+arg -o
+arg exref-pie-a64
+arg -pie
+arg -dynamic-linker
+arg /lib/ld-linux-aarch64.so.1
+arg start-a64.o
+arg libend-a64.so
+arg --mortar-map=exref-pie-a64.map
+needed libend.so
+export _edata
+export _end
+export __bss_start
+plt api_end
+end

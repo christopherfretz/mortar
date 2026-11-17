@@ -1,0 +1,7 @@
+-z
+max-page-size=4096
+-o
+shx-x64.bfd
+-shared
+libx-x64.o
+-Map=shx-x64.bfd.map

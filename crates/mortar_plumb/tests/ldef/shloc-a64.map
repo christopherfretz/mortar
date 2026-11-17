@@ -1,0 +1,42 @@
+mortar-map 2
+file 0 lib-a64.o
+piece 0 7 0 300 14
+piece 0 7 14 314 14
+piece 0 7 28 328 14
+piece 0 7 3c 33c 14
+place 0 1 10354 24
+place 0 3 304b8 4
+place 0 4 304bc 4
+merged 0 5 .comment
+chunk synthetic .gnu.hash 1c8 28
+chunk synthetic .dynsym 1f0 60
+chunk synthetic .dynstr 250 28
+chunk synthetic .gnu.version 278 8
+chunk synthetic .gnu.version_d 280 38
+chunk synthetic .rela.dyn 2b8 48
+chunk synthetic .eh_frame 300 54
+chunk synthetic .got 20498 20
+chunk synthetic .dynamic 20378 120
+chunk synthetic .symtab - 150
+chunk synthetic .strtab - 63
+chunk synthetic .shstrtab - 98
+chunk synthetic .comment - d
+chunk synthetic .pad.relro 204b8 fb48
+define _end 304c0
+define _edata 304bc
+define __bss_start 304bc
+output shared
+bind lazy
+relro on
+symbolic none
+version-script local.map
+arg -o
+arg shloc-a64
+arg -shared
+arg --version-script=local.map
+arg lib-a64.o
+arg --mortar-map=shloc-a64.map
+export api_end
+export api_edata
+export api_bss
+end

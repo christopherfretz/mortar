@@ -14,6 +14,7 @@
 #@ spec: cli.md "§3.6"
 #@ arch: aarch64 x86_64
 #@ fixture: greet
+#@ anomaly(bfd): A60
 
 cc -O1 -fno-pie main.c -o main.o
 cc -O1 -fno-pie undef.c -o undef.o

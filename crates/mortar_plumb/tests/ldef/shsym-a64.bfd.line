@@ -1,0 +1,8 @@
+-z
+max-page-size=4096
+-o
+shsym-a64.bfd
+-shared
+-Bsymbolic
+lib-a64.o
+-Map=shsym-a64.bfd.map

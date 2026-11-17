@@ -21,8 +21,8 @@
 # 3. Without any export option: a needed library that REFERENCES the
 #    program's function and variable binds them, so they are exported
 #    (`ref_dynamic`, §9.6), and nothing else is.
-#@ spec: dyn.md "D-21"
-#@ spec: resolve.md "9.6 Export, preemption, copy relocations"
+#@ spec: dyn.md "D-21"; resolve.md "9.6 Export, preemption, copy relocations"
+#@ anomaly(bfd): A60
 #@ arch: aarch64 x86_64
 
 cc -O1 -fPIE bare.c -o bare.o

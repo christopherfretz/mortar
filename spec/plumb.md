@@ -4434,6 +4434,10 @@ Static-pie (WP-089, §12.4; each shown by running a program, the cases of
   records that glibc's self-relocation applies before the thread pointer
   exists (P-D14): the program faults at start-up (SIGSEGV, WP-056 F4).
   lld and mold write neither.
+  A30 and A34 are matched on a static-pie or a `-pie` output (`DF_1_PIE`
+  in `DT_FLAGS_1`) alone since WP-166: a GNU ld shared object's GOT slot
+  of `_end` was matched as A34 before, the one-past-the-end value P-D9
+  now accepts.
 - **A36 (lld, mold).** dyn.md W16: a used shared object's strong
   reference that no member of N ∪ U satisfies is linked, the library that
   defines it is left out of `DT_NEEDED` (it is not needed by D-11), and
@@ -4573,6 +4577,44 @@ is accepted from its linker only, never from mortar's map.
   (A): WeakDyn for its branches)", on an `EM_X86_64` output of GNU ld
   only. Reproducers: `tests/link/dyn/reloc/weak-branch-split.test`,
   `tests/weak.rs` (`split-x64.bfd`).
+- **A57 (mold; WP-166).** mold exports none of D-21 item 2's seven
+  linker-defined names (dyn.md D-110 item 2, D-21 item 2): its library
+  binds a referenced `_end` to its own (the interposer's view of P-D17
+  fails: a program's `_end` does not reach it), and its executable
+  exports none that a needed library references or defines, so the
+  library's `_end` is its own (a `char _end[1]` library's `api_end()`
+  is not the program's `_end`). P-D19 "... is in the export set and not
+  defined in .dynsym (D-110)", P-D7 "... is defined by the program and
+  referenced by a needed or used object, and is not exported" or "...
+  an object references it and the line's -E or --dynamic-list exports
+  it, and it is not exported", or P-D17 "view B (an interposer defines
+  'K'", K one of the seven, on mold's output only. Reproducers:
+  `tests/link/dyn/shared/linker-defined-export.test` (xfail: mortar then
+  hosts no mold library), `dyn/dynsym/linker-defined-export-exec`,
+  `dyn/dynsym/linker-defined-def-exec`; `tests/ldef.rs`.
+- **A58 (GNU ld; WP-166).** GNU ld's shared object exports `__etext`
+  and, on AArch64, `__end__`, `__bss_start__`, `__bss_end__`,
+  `_bss_end__` that an object references, preemptible, where D-110 item
+  2 exports the seven alone (mortar and lld keep them unexported): P-D19
+  ") is in .dynsym and not in the export set", P-D25 "... which the line
+  binds (D-112)" or P-D7 "... which does not hold it", on one of those
+  names, in a GNU ld output without `DF_1_PIE`. Reproducer:
+  `tests/ldef.rs` (`shx-*.bfd`).
+- **A59 (GNU ld; WP-166).** An executable against a library that
+  defines the seven (`char _end[1]`): GNU ld defines the program's own
+  `_end`, `_edata`, `__bss_start` with the library's type and size
+  (`STT_OBJECT`, size 1, so one byte past the end of its section): the
+  value is the program's (the runs agree), the size is wrong. The
+  structure finding "... is outside its section" on one of the seven
+  that `.dynsym` defines as `STT_OBJECT`. Reproducers:
+  `dyn/dynsym/linker-defined-def-exec`; `tests/ldef.rs` (`exdef*`).
+- **A60 (GNU ld; WP-166).** Under `-E` GNU ld's executable exports
+  `_edata`, `__bss_start` and `_end` though no object and no library
+  references them (D-21 item 2: `-E` with no reference exports none;
+  §13.1's named difference, harmless: nothing looks them up). P-D7
+  "'K' is exported under -E, and no needed library ...", K one of the
+  seven, on GNU ld's output. Reproducer:
+  `dyn/dynsym/linker-defined-export-exec`.
 
 lld also links a `.hidden` or `.protected` undefined reference that only
 a library defines (writing 0) and drops the library from `DT_NEEDED`:
@@ -5018,6 +5060,32 @@ own implementation of D-11-D-27 and compared with the output.
   under the line with an option added or dropped),
   `p_d_mortar_option_tail` (mortar's, `tests/shared/optail`); the link
   test `dyn/dynsym/exclude-libs-exe`.
+  D-21 item 2's seven linker-defined names (`_etext etext _edata edata
+  __bss_start _end end`, WP-150 §3a; WP-166) in `Exec` and `Pie`: the
+  link defines each, whatever a needed library defines (a library's
+  `char _end[1]` never serves the program's reference: the seven are
+  file 0's even where a `DT_NEEDED` object defines them, and a needed
+  library's definition does not make the name an import, so P-D11 does
+  not ask a `COPY` of it), and exports it iff a needed or used object
+  references or defines it (`ref_dynamic`, `def_dynamic`), or an object
+  references it (strong or weak, not hidden) and the line has `-E` or a
+  `--dynamic-list` that names it. `-E` with no reference exports none.
+  One missing is P-D7 "... is defined by the program and referenced by
+  a needed or used object, and is not exported" or "... an object
+  references it and the line's -E or --dynamic-list exports it, and it
+  is not exported (D-21 item 2)"; one exported with neither is P-D7
+  "'K' is exported, and no needed library references or defines it and
+  no object's reference under -E or --dynamic-list exports it (D-21
+  item 2)" ("'K' is exported under -E, ..." when the line has `-E`; not judged under `--export-dynamic-symbol`, whose words the
+  line model does not read). A name of the seven that `.dynsym` defines
+  and no input defines is the link's definition however `.symtab`
+  reads (absent, or stripped). Strict for mortar; mold exports none
+  (A57); GNU ld under `-E` exports `_edata`, `__bss_start` and `_end`
+  though no object references them (A60, the `-E` form only). Tests: `crates/mortar_plumb/tests/ldef.rs` (`clean`,
+  `mutations`) on `tests/ldef/` (`gen.sh`), the link tests
+  `dyn/dynsym/linker-defined-export-exec` and
+  `dyn/dynsym/linker-defined-def-exec` (a library that defines the
+  seven, `-pie` and `-no-pie`, the run `api_end() == _end`).
 - **P-D8 (versions).** Each `.gnu.version` index is 0, 1, or names a
   `Vernaux` whose version is **the version the input reference requested**
   (the default `@@` definition for an unversioned reference, the
@@ -5064,7 +5132,19 @@ own implementation of D-11-D-27 and compared with the output.
   exported, bound key stays its own (measured: mold's `-s -Bsymbolic`
   library, view B, a false finding before). Plus:
   `RELATIVE` first and sorted, `DT_RELACOUNT` right (D-40); no record in
-  a non-writable place outside RELRO (D-47; W6).
+  a non-writable place outside RELRO (D-47; W6). One past the end
+  (WP-166): a `RELATIVE` record (or an absolute word, view 2's
+  non-address rule) whose value is in `[E, E rounded up to 8]`, E the
+  end of a `PT_LOAD`, is an address of the executable when the input
+  symbol is a global or weak segment-end key no input defines (`_end`,
+  `end`, `__end__`, `_bss_end__`, `__bss_end__`, `_edata`, `edata`,
+  `__bss_start`, `__bss_start__`, `_etext`, `etext`, `__etext`) and an
+  output symbol of that name has exactly that value (Y5's window: GNU
+  ld's `_end` is the end rounded up to 8). Before WP-166 such a record
+  was P-D9 view 2 "(a record moves a value that is not an address of
+  the executable)", undeclared as A30/A34 on GNU ld's libraries. The
+  same value moved 2 bytes further is P-D9 (a slot no reference asks
+  for) or R4 (`tests/ldef.rs`, `mutations`).
 - **P-D10 (PLT and GOT).** Each PLT entry decodes (the architecture's
   plumb rules, already stage 2 for IPLT) to its `.got.plt` word; that
   word has one `JUMP_SLOT` against the entry's key; its initial content
@@ -5854,6 +5934,23 @@ and what turns P-D9's equality into a check of D-112.
   version are reference forms, judged as before). The loader's run-time
   lookup (P-D9, P-D17) still reaches that object through a needed
   object's `DT_NEEDED`.
+  D-110 item 2's seven names (WP-150 §3a; WP-166): in a `Shared` output a
+  name of the seven that no input defines, that a live object references
+  (an undefined reference, not hidden) and that the script does not make
+  local is in the export set as `GLOBAL NOTYPE DEFAULT`, size 0, its
+  version the script's, preemptible by D-112 as a `NOTYPE` key
+  (`line_preempts`: under `-Bsymbolic` bound; under
+  `-Bsymbolic-functions` preemptible for mortar and lld, bound for GNU
+  ld, which binds `NOTYPE` there, the format's measured rule, no
+  anomaly). It is no import. The one derivation is "an object references
+  it": a referenced name missing is P-D19 "... is in the export set and
+  not defined in .dynsym", one exported though no object references it,
+  or though `local:` hides it, P-D19 "... is in .dynsym and not in the
+  export set". Strict for mortar. mold exports none (A57). GNU ld exports
+  more: `__etext` and, on AArch64, `__end__`, `__bss_start__`,
+  `__bss_end__`, `_bss_end__` when an object references them (A58);
+  another linker-defined key exported by mortar (`__etext`,
+  `__executable_start`) is P-D19's plain finding.
 - **P-D20 (forbidden forms; request P-R5).** Reported, each by name: a
   `COPY` record; a canonical PLT (`SHN_UNDEF` with a non-zero
   `st_value`); `DT_TEXTREL`; a dynamic record whose place is in a

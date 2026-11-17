@@ -261,6 +261,9 @@ pub struct Key {
     /// `strong_ref` by D-21 item 1 alone (GNU ld and mortar import it; lld
     /// and mold write none, anomaly A47; WP-163).
     pub root_import: bool,
+    /// Defined by file 0 alone (the linker's definition, resolve §8; D-21
+    /// item 2's seven names among them).
+    pub linker: bool,
 }
 
 /// The model.
@@ -489,6 +492,13 @@ impl Model {
                 k.excluded = true;
             }
         }
+        // file 0's definitions (before the dynamic list: D-21 item 2's
+        // seven names may be listed).
+        for n in file0 {
+            let k = m.keys.entry(n.clone()).or_default();
+            k.linker = !k.defined;
+            k.defined = true;
+        }
         // An executable's dynamic list (D-1: none in a static-pie; a
         // `Shared` line's list decides preemption, §12.5).
         if matches!(line.kind, Some(OutputKind::Exec | OutputKind::Pie))
@@ -498,9 +508,6 @@ impl Model {
         }
         for u in line.root_names() {
             m.keys.entry(u.to_string()).or_default().root = true;
-        }
-        for n in file0 {
-            m.keys.entry(n.clone()).or_default().defined = true;
         }
         // D-11: N0, then item 3 to the fixed point.
         let mut n0: BTreeSet<usize> =

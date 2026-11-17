@@ -314,6 +314,9 @@ const MOLD_IFX: Option<&[&str]> = Some(&[
     "Y1@is not STT_GNU_IFUNC at its resolver",
     "P-D7@which does not hold it",
 ]);
+/// GNU ld's `-E` exports `_edata`, `__bss_start` and `_end` with no
+/// reference (A60, WP-166).
+const BFD_E: Option<&[&str]> = Some(&["A60"]);
 /// dyn.md W16's outputs (lld, mold).
 const W16: Option<&[&str]> = Some(&["P-D6@(D-13: the link is refused)", "A36"]);
 /// lld's x86-64 large-model GD outputs (dyn.md W17).
@@ -951,14 +954,14 @@ fn build() -> Option<Corpus> {
         let d = b.dir(arch, "W13E");
         b.obj(arch, &d, "ifx.c", &["-O1", "-fPIE"], "p.o");
         b.obj(arch, &d, "ifx.c", &["-O1", "-fno-pie"], "n.o");
-        b.link("W13E", arch, &d, "ifx.pie", &["-pie", "-Wl,-E", "p.o"], [CLEAN; 3]);
+        b.link("W13E", arch, &d, "ifx.pie", &["-pie", "-Wl,-E", "p.o"], [BFD_E, CLEAN, CLEAN]);
         b.link(
             "W13E",
             arch,
             &d,
             "ifx.nopie",
             &["-no-pie", "-Wl,-E", "n.o"],
-            [CLEAN, CLEAN, MOLD_IFX],
+            [BFD_E, CLEAN, MOLD_IFX],
         );
 
         // W14: data.o reads `tv` as an address; libtv.so's `tv` is

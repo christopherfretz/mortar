@@ -1,0 +1,9 @@
+-m
+elf_x86_64
+-z
+max-page-size=4096
+-o
+shx-x64.mold
+-shared
+libx-x64.o
+-Map=shx-x64.mold.map

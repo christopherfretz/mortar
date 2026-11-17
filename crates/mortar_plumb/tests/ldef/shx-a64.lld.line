@@ -1,0 +1,7 @@
+-z
+max-page-size=4096
+-o
+shx-a64.lld
+-shared
+libx-a64.o
+-Map=shx-a64.lld.map

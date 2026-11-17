@@ -1,0 +1,10 @@
+-z
+max-page-size=4096
+-o
+exdefr-pie-x64.bfd
+-pie
+-dynamic-linker
+/lib64/ld-linux-x86-64.so.2
+startr-x64.o
+libdef-x64.so
+-Map=exdefr-pie-x64.bfd.map

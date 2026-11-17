@@ -693,10 +693,11 @@ fn optail(b: &mut Builder<'_>) {
             let mut args = base.to_vec();
             args.extend(extra);
             for l in Linker::ALL {
-                // Each reference's default anomalies of an executable.
+                // Each reference's default anomalies of an executable;
+                // GNU ld's -E exports _edata, __bss_start and _end (A60).
                 let want: &'static [&'static str] = match l {
                     Linker::Mold => &["?A3", "?A9", "?A13"],
-                    Linker::Bfd => &["?A10"],
+                    Linker::Bfd => &["?A10", "?A60"],
                     Linker::Lld => &[],
                 };
                 b.link("optail", arch, &d, out, &args, l, want);

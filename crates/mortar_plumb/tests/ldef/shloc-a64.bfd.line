@@ -1,0 +1,8 @@
+-z
+max-page-size=4096
+-o
+shloc-a64.bfd
+-shared
+--version-script=local.map
+lib-a64.o
+-Map=shloc-a64.bfd.map

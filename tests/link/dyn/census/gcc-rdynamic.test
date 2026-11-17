@@ -4,8 +4,8 @@
 # executable is exported: `dlsym(RTLD_DEFAULT, ...)` finds the program's
 # own function and datum at the addresses the program uses, and the
 # `.dynsym` has them and `main`.
-#@ spec: dyn.md "2.1 Default link lines"
-#@ spec: dyn.md "D-21"
+#@ spec: dyn.md "2.1 Default link lines"; dyn.md "D-21"
+#@ anomaly(bfd): A60
 #@ arch: aarch64 x86_64
 
 cc -O2 hello.c -o hello.o

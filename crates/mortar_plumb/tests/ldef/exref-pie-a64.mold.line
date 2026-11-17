@@ -1,0 +1,12 @@
+-m
+aarch64linux
+-z
+max-page-size=4096
+-o
+exref-pie-a64.mold
+-pie
+-dynamic-linker
+/lib/ld-linux-aarch64.so.1
+start-a64.o
+libend-a64.so
+-Map=exref-pie-a64.mold.map

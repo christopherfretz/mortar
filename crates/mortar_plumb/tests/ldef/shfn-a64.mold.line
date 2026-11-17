@@ -1,0 +1,10 @@
+-m
+aarch64linux
+-z
+max-page-size=4096
+-o
+shfn-a64.mold
+-shared
+-Bsymbolic-functions
+lib-a64.o
+-Map=shfn-a64.mold.map

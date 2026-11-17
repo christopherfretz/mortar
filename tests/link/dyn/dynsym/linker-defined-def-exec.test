@@ -1,0 +1,74 @@
+# dyn.md D-21 item 2 (WP-150, WP-166): a needed library that DEFINES
+# the seven names as ordinary data (`char _end[1]`). The program defines
+# its own `_end` and exports it, whether or not its object references
+# the name (GNU ld `STT_OBJECT` with the library's size, A59; lld and
+# mortar `NOTYPE`), so the library's `api_end()` is the program's
+# `_end`, not the library's own (`api_own()`). The library is linked by
+# the system's GNU ld (`shlib`): mortar refuses an object's definition of
+# `_end` (resolve §8.2). mold exports none of the seven (A57): its program
+# keeps its own `_end` and the library keeps its own, so every mold run
+# prints 0.
+#@ spec: dyn.md "D-21"
+#@ arch: aarch64 x86_64
+#@ anomaly(mold): A57
+#@ anomaly(bfd): A59
+
+cc -O1 -fPIC def.c -o def.o
+cc -O1 -fPIE main.c -o main.o
+cc -O1 -fPIE mainr.c -o mainr.o
+shlib gcc def.o -Wl,-soname,libdef.so -o libdef.so
+link gcc -pie main.o -L. -ldef -o prog-pie
+check(bfd,lld,mortar) readelf --dyn-syms -W prog-pie
+  has: GLOBAL DEFAULT * _end$
+  has: GLOBAL DEFAULT * _edata$
+  has: GLOBAL DEFAULT * __bss_start$
+  not: UND _end$
+check(mold) readelf --dyn-syms -W prog-pie
+  not: * _end$
+link gcc -no-pie main.o -L. -ldef -o prog-nopie
+check(bfd,lld,mortar) readelf --dyn-syms -W prog-nopie
+  has: GLOBAL DEFAULT * _end$
+  not: UND _end$
+link gcc -pie mainr.o -L. -ldef -o progr-pie
+check(bfd,lld,mortar) readelf --dyn-syms -W progr-pie
+  has: GLOBAL DEFAULT * _end$
+  not: UND _end$
+link gcc -no-pie mainr.o -L. -ldef -o progr-nopie
+run(bfd,lld,mortar) prog-pie
+  stdout: 1
+run(mold) prog-pie
+  stdout: 0
+run(bfd,lld,mortar) prog-nopie
+  stdout: 1
+run(mold) prog-nopie
+  stdout: 0
+run(bfd,lld,mortar) progr-pie
+  stdout: 1
+run(mold) progr-pie
+  stdout: 0
+run(bfd,lld,mortar) progr-nopie
+  stdout: 1
+run(mold) progr-nopie
+  stdout: 0
+
+#--- def.c
+char _end[1], _edata[1], __bss_start[1];
+extern char own_end[1] __attribute__((alias("_end"), visibility("hidden")));
+void *api_end(void) { return _end; }
+void *api_own(void) { return own_end; }
+#--- main.c
+#include <stdio.h>
+void *api_end(void);
+void *api_own(void);
+int main(void) {
+  printf("%d\n", api_end() != api_own());
+  return 0;
+}
+#--- mainr.c
+#include <stdio.h>
+extern char _end[];
+void *api_end(void);
+int main(void) {
+  printf("%d\n", api_end() == _end);
+  return 0;
+}

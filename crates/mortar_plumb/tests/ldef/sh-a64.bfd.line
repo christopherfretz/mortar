@@ -1,0 +1,7 @@
+-z
+max-page-size=4096
+-o
+sh-a64.bfd
+-shared
+lib-a64.o
+-Map=sh-a64.bfd.map

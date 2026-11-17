@@ -15,6 +15,7 @@
 # HIDDEN, mortar keeps them GLOBAL (WP-150's question); the verifier's Y3
 # accepts each (WP-161).
 #@ anomaly(mold): A36
+#@ anomaly(bfd): A60
 #@ spec: dyn.md "D-110"; dyn.md "D-13"
 #@ arch: aarch64 x86_64
 
