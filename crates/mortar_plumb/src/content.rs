@@ -294,6 +294,11 @@ pub(crate) fn check_symbols(e: &mut Engine<'_, '_>) {
     let mut findings = Vec::new();
     let (mut checked, mut unchecked) = (0u64, 0u64);
     for name in names {
+        // §4.4b (WP-170): `def[SYM]` of a `--defsym` is the option's
+        // (`symbols.rs`), not the replaced definition's.
+        if e.defsym.defines(name) {
+            continue;
+        }
         let Some(out) = image.global(name).or_else(|| image.unique(name)) else { continue };
         if out.sym.st_shndx == 0 {
             continue;

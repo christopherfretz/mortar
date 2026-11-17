@@ -1,0 +1,17 @@
+-m
+elf_x86_64
+-z
+max-page-size=4096
+-o
+pie-x64.lld
+-pie
+-dynamic-linker
+/lib64/ld-linux-x86-64.so.2
+-e
+_start
+mp-x64.o
+bp-x64.o
+--defsym=k=0x1234
+--defsym=a=b
+--defsym=c=b+4
+-Map=pie-x64.lld.map

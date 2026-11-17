@@ -1,4 +1,3 @@
-# PENDING (WP-153): every reference's output draws a finding or an error because the verifier does not follow --defsym yet (GNU ld: P-D9/S12 on its relocated number, a true difference, §16; lld: its map's assignment row; mold aborts writing the map); the verifier package for --defsym renames this file to .test.
 # --defsym=SYM=N in a PIE and a static-pie (resolve.md §7.2, WP-153): the
 # number is absolute, SHN_ABS and not relocated, in every output kind
 # (lld, mold, mortar). GNU ld 2.44 adds the load base to it in a PIE and
@@ -9,6 +8,10 @@
 # mold and mortar).
 #@ spec: resolve.md §7.2
 #@ arch: aarch64 x86_64
+#@ anomaly(bfd): A85 A87
+#@ anomaly(bfd,aarch64): A30
+#@ anomaly(bfd,x86_64): A31
+#@ skip(mold): mold 2.37.1 aborts (signal 6) writing the -Map the lane asks for when a --defsym names a symbol
 
 cc -O0 -fPIC -fno-inline m.c -o m.o
 cc -O0 -fPIC -fno-inline b.c -o b.o

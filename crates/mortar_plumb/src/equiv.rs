@@ -444,6 +444,7 @@ fn run_side<'a>(
     crate::fate::collect_empty(&mut objs, o.as_ref(), exports.as_ref());
     let mut engine = Engine::new(&image, &objs, map.format);
     engine.set_wrap(crate::wrap::Wrap::of(o.as_ref()));
+    engine.set_defsym(crate::defsym::Defsym::of(o.as_ref()));
     // Room for every relocation record of the inputs (at most one per 8
     // bytes of their relocation sections): the trace is the side's
     // largest structure.

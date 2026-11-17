@@ -3,7 +3,7 @@
 # 0x123456789 to 0x23456789); 0xfffffff0 fits.
 #@ spec: resolve.md §7.2
 #@ arch: i386
-#@ skip(lld): the verifier cannot read lld's map of a --defsym ("row has no name": lld lists the assignment): the verifier package for --defsym
+# lld 19's map writes each --defsym as a row with no text: an assignment (plumb.md §4.4b).
 
 cc -O0 m.c -o m.o
 link gcc -static m.o -Wl,--defsym=k=0xfffffff0 -o fits

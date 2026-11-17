@@ -104,6 +104,9 @@ pub struct SharedLine {
     /// The line's `--wrap` redirection (resolve §7.1, `wrap.rs`; WP-170),
     /// from [`Line::wrap`].
     pub(crate) wrap: crate::wrap::Wrap,
+    /// The line's `--defsym` assignments (resolve §7.2, `defsym.rs`;
+    /// WP-170 part 2), from [`Line::defsym`].
+    pub(crate) defsym: crate::defsym::Defsym,
 }
 
 impl SharedLine {
@@ -322,6 +325,7 @@ pub fn accept(image: &Image<'_>, out: &DynOut, line: &mut Line, args: &[String])
     }
     let mut sl = SharedLine::read(args, line.symbolic);
     sl.wrap = crate::wrap::Wrap::new(line.wrap.iter().cloned());
+    sl.defsym = crate::defsym::Defsym::new(line.defsym.iter().map(|(d, _)| d.as_str()));
     if sl.static_pie {
         // gcc drops `-shared` before `-static-pie`; a line with both stays
         // outside stage 3, as before.
@@ -1319,6 +1323,30 @@ pub(crate) fn compute(
                 value: s.st_value,
             });
         }
+    }
+    // resolve §7.2 (WP-170 part 2): a `--defsym` symbol is a program
+    // definition of its own (D-110), the option's whatever an input
+    // defines: `B`'s type for an alias, `STT_NOTYPE` otherwise, size 0.
+    for name in sl.defsym.names() {
+        let ty = match sl.defsym.get(name) {
+            Some(crate::defsym::Expr::Alias(b)) => defs.get(b.as_str()).map_or(STT_NOTYPE, |ds| {
+                ds.iter().find(|d| d.strong).or(ds.first()).map_or(STT_NOTYPE, |d| d.ty)
+            }),
+            _ => STT_NOTYPE,
+        };
+        defs.insert(
+            name.to_string(),
+            vec![D {
+                ty,
+                bind: STB_GLOBAL,
+                size: 0,
+                strong: true,
+                common: false,
+                excluded: false,
+                placeless: false,
+                value: 0,
+            }],
+        );
     }
     let defined_base: HashSet<String> =
         defs.keys().map(|n| split_version(n).0.to_string()).collect();

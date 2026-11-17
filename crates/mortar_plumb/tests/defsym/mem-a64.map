@@ -1,0 +1,35 @@
+mortar-map 2
+file 0 m-a64.o
+file 1 b-a64.o
+place 0 1 401120 28
+place 0 3 402150 18
+place 0 5 402168 0
+place 1 1 401148 8
+place 1 2 402168 0
+place 1 3 402168 0
+merged 0 6 .comment
+merged 1 4 .comment
+chunk synthetic .symtab - 180
+chunk synthetic .strtab - 44
+chunk synthetic .shstrtab - 30
+chunk synthetic .comment - d
+define k 1234
+define a 401148
+define c 40114c
+arg -m
+arg aarch64linux
+arg -z
+arg max-page-size=4096
+arg -o
+arg mem-a64
+arg -static
+arg -e
+arg _start
+arg m-a64.o
+arg b-a64.o
+arg libam-a64.a
+arg --defsym=k=0x1234
+arg --defsym=a=b
+arg --defsym=c=b+4
+arg --mortar-map=mem-a64.map
+end

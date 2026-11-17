@@ -709,6 +709,11 @@ Special rows:
   thunk, `.text.patch` an erratum patch, and anything else (merged
   `.rodata.str*`, `.got`) is synthetic.
 - **COMMON.** `file:(COMMON)` is a common chunk.
+- **Rows without text** (WP-170 part 2). lld 19 writes each `--defsym`
+  as a row of four numbers, size 0 and no text (the assignment, whose
+  text it leaves empty). It places nothing and is skipped; a row without
+  text whose size is not 0 is still an error ("row has no name"). Test:
+  `map::lld::tests::s4_4b_lld_defsym_row_is_an_assignment`.
 
 Ambiguities, and how they are resolved:
 
@@ -1217,6 +1222,73 @@ A84. mold's `.symtab` (`__wrap_SYM` and `SYM` `STB_LOCAL`) is A9. The
 same findings on mortar's output are never named. Tests:
 `tests/wrap.rs` (`tests/wrap/gen.sh`), `tests/link/resolve/wrap*.test`,
 `tests/link/dyn/shared/wrap-shared.test`.
+
+### 4.4b `--defsym=SYM=EXPR` (WP-170 part 2)
+
+`spec/resolve.md` §7.2, derived once (`defsym.rs`) from the line's
+`--defsym` words (mortar's `arg` records, a reference's line). Of
+several words of one `SYM` the last is the one. The forms derived:
+
+| `EXPR` | the value | section | type | size |
+|---|---|---|---|---|
+| a number (`0x...`, or decimal without a leading `0`; truncated to 32 bits on ELFCLASS32) | the number, never moved by the load bias | `SHN_ABS` | `STT_NOTYPE` | 0 |
+| `B` | `B`'s address, by §4.4's lookup of `B` | `B`'s | `B`'s output type | 0 |
+| `B + N`, `B - N` | `B`'s address plus or minus `N` | the section holding the value | `STT_NOTYPE` | 0 |
+
+`def[SYM]` is the option's: no redirection, every mention of `SYM` (and
+only of `SYM`) binds to it, whatever an input defines. A line without
+`--defsym` has the empty set, and no rule pays for it (each reader
+starts with an emptiness test). Every rule that asks which definition a
+reference binds to, or what `SYM` is, reads it:
+
+- §4.4's lookup by name of a global (R1, R2, R4, R5, the slot, GOT and
+  PLT checks, stage 3's views, S12): a number is an absolute value, and
+  §5.1a's "absolute" (a GOT load relaxed to an immediate, a word given
+  no `RELATIVE` record) holds for it; an alias or `B±N` is as absolute
+  as `B`'s definition is. A `B±N` whose `B` is an IFUNC is not judged
+  (`defsym-shape`);
+- `.symtab` (Y1, Y3): `SYM` is in `.symtab`, defined, with the table's
+  value, section, type and size, binding `STB_GLOBAL` (`STB_LOCAL` when the
+  line makes it local, as a version script's `local:` does); the
+  ordinary Y1/Y3 checks of a global skip `SYM` (an input's replaced
+  definition is not what `.symtab` holds);
+- the input set (§3.8): `B` is a root, so `B`'s member is reached; a
+  reference to `SYM` is no edge, so `SYM`'s defining member is not reached
+  (M12 on mortar's map; a reference's map is the union of edges, rule 2,
+  which accepts lld's extraction of it);
+- stage 3's model (§12): `SYM` is a definition of the program's file 0
+  (no import, P-D25, P-D7's keys); in `-shared` it is exported and
+  preemptible by its own name (D-110, D-112), so P-D17's interposer
+  views take a call of `SYM` that does not go through the PLT;
+- the PIE's dynamic records (P-D9's view 2): a word holding a number
+  does not move with the executable; one holding an alias's or `B±N`'s
+  address does.
+
+Not derived, and named in the coverage (`--defsym, not judged:
+--defsym=SYM=EXPR: the value is not derived; ...`): a chain (`B` is
+another word's `SYM`), and every form resolve.md §7.2 refuses on the
+command line (octal, `k`/`M` suffixes, arithmetic between numbers,
+`ALIGN`, `.`). mortar refuses them, so its output never has them; on a
+reference's output every record against such a `SYM` is
+`defsym-shape`.
+
+lld 19's `-Map` writes each `--defsym` as a row of its four numbers with
+no text (size 0): an assignment, not a placed section (§3.5).
+
+GNU ld's forms are named (§10.2): A85 (`B±N` as `SHN_ABS` with `B`'s
+type, and in a PIE a word holding it with no record: Y3 ending "(a
+--defsym B+N or B-N written as GNU ld writes it: SHN_ABS, B's type;
+resolve.md §7.2: B's section, STT_NOTYPE)", P-D9 ending "(a --defsym
+B+N or B-N: in B's section, moved with the executable; resolve.md
+§7.2)"), A86 (the replaced definition's size), A87 (a number moved by
+the load base, P-D9 or a relaxed GOT load's R1, ending "(a --defsym
+number: SHN_ABS, never relocated; resolve.md §7.2)"), A88 (the type of
+an earlier word of a repeated `SYM`). mold aborts writing `-Map` when a
+`--defsym` names a symbol and refuses `B+N`: such a link has no mold
+fixture. The same findings on mortar's output are never named. Tests:
+`tests/defsym.rs` (`tests/defsym/gen.sh`),
+`tests/link/resolve/defsym*.test`,
+`tests/link/dyn/shared/defsym-shared.test`.
 
 ### 4.5 Other machines and REL
 
@@ -4790,6 +4862,35 @@ is accepted from its linker only, never from mortar's map.
   it). Y3 "symbol '__real_SYM', defined in ..., is not in the output's
   .symtab (a definition of __real_SYM under --wrap=SYM)". Reproducer:
   `resolve/wrap.test` (`chain`).
+
+- **A85 (GNU ld; WP-170).** GNU ld writes `--defsym=SYM=B+N` (or
+  `B-N`) as an `SHN_ABS` symbol with `B`'s type, not in `B`'s section as
+  `STT_NOTYPE` (resolve.md §7.2, §16); in a PIE it gives a word holding
+  `SYM`'s address no `RELATIVE` record, so the program reads `B+N`
+  without the load bias (the bytes are wrong at any bias but 0). Y3
+  "... (a --defsym B+N or B-N written as GNU ld writes it: SHN_ABS, B's
+  type; resolve.md §7.2: B's section, STT_NOTYPE)"; P-D9 view 2 "... (a
+  --defsym B+N or B-N: in B's section, moved with the executable;
+  resolve.md §7.2)". Reproducers: `resolve/defsym.test`,
+  `resolve/defsym-pie.test`; `tests/defsym.rs` (`st-*.bfd`,
+  `pie-*.bfd`).
+- **A86 (GNU ld; WP-170).** GNU ld gives a `--defsym` alias that
+  replaces an input's definition that definition's size, not 0. Y3
+  "symbol 'SYM' of --defsym has a size, not 0 (resolve.md §7.2) (the
+  size of the definition --defsym replaced; resolve.md §7.2: size 0)".
+  Reproducers: `resolve/defsym-override.test`; `tests/defsym.rs`
+  (`ov-*.bfd`, `mem-*.bfd`).
+- **A87 (GNU ld; WP-170).** GNU ld adds the load base to a `--defsym`
+  number in a PIE or static-pie (AArch64: a `RELATIVE` record on its
+  word, P-D9; x86-64: a `GOTPCRELX` load relaxed to a `lea`, R1), so the
+  program reads the number plus the bias. "... (a --defsym number:
+  SHN_ABS, never relocated; resolve.md §7.2)". Reproducers:
+  `resolve/defsym-pie.test`; `tests/defsym.rs` (`pie-*.bfd`).
+- **A88 (GNU ld; WP-170).** Of several `--defsym` of one `SYM`, GNU ld
+  writes the type of an earlier one, not the last one's. Y3 "symbol
+  'SYM' of --defsym has another type than resolve.md §7.2 gives it (SYM
+  has several --defsym: resolve.md §7.2, the last one's type)".
+  Reproducer: `resolve/defsym.test` (`last`).
 
 lld also links a `.hidden` or `.protected` undefined reference that only
 a library defines (writing 0) and drops the library from `DT_NEEDED`:

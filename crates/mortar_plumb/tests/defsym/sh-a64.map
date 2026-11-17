@@ -1,0 +1,46 @@
+mortar-map 2
+file 0 ls-a64.o
+place 0 1 1320 30
+place 0 3 3480 0
+place 0 4 3480 0
+merged 0 5 .comment
+chunk synthetic .gnu.hash 1c8 30
+chunk synthetic .dynsym 1f8 90
+chunk synthetic .dynstr 288 1e
+chunk synthetic .rela.plt 2a8 30
+chunk synthetic .plt 12e0 40
+chunk synthetic .got 2450 8
+chunk synthetic .got.plt 3458 28
+chunk synthetic .dynamic 2350 100
+chunk synthetic .symtab - c0
+chunk synthetic .strtab - 38
+chunk synthetic .shstrtab - 75
+chunk synthetic .comment - d
+chunk synthetic .pad.relro 2458 ba8
+define calla 1320
+define k 10
+output shared
+bind lazy
+relro on
+symbolic none
+arg -m
+arg aarch64linux
+arg -z
+arg max-page-size=4096
+arg -o
+arg sh-a64
+arg -shared
+arg -soname
+arg libls.so
+arg ls-a64.o
+arg --defsym=calla=b
+arg --defsym=k=0x10
+arg --mortar-map=sh-a64.map
+export b
+export callb
+export via
+export calla
+export k
+plt b
+plt calla
+end

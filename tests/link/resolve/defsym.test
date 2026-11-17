@@ -3,7 +3,7 @@
 # type, size 0; B+N / B-N is B's address moved by N, in B's section
 # (lld's form; GNU ld writes it SHN_ABS; mold refuses it). The last of
 # two --defsym of one symbol wins (all three). The option beating an
-# object's definition of SYM is defsym-override.test.pending.
+# object's definition of SYM is defsym-override.test.
 #
 # B is a root wherever the option stands: the member defining B is
 # extracted (its constructor runs) and --gc-sections keeps B (lld, mold,
@@ -12,12 +12,12 @@
 # member that defines SYM (mold, mortar, GNU ld; lld extracts it, its
 # constructor runs, and the option still wins).
 #
-# Aliases of a TLS, a common, a data (&da == &db) and an IFUNC symbol (lld 22 crashes on the
-# IFUNC alias: it is not linked there).
+# Aliases of a TLS, a common, a data (&da == &db) and an IFUNC symbol (lld 22 crashes on the IFUNC alias: it is not linked there).
+#@ anomaly(bfd): A88
 #@ spec: resolve.md §7.2
 #@ arch: aarch64 x86_64 i386
 #@ skip(mold): mold 2.37.1 aborts (signal 6) writing the -Map the lane asks for when a --defsym names a symbol
-#@ skip(lld): the verifier cannot read lld's map of a --defsym ("row has no name": lld lists the assignment): the verifier package for --defsym
+#@ anomaly(bfd): A85
 
 cc -O0 -fno-inline m.c -o m.o
 cc -O0 -fno-inline b.c -o b.o

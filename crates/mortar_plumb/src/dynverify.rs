@@ -300,6 +300,13 @@ fn judge(
             }
         }
     }
+    // resolve §7.2 (WP-170 part 2): each `--defsym` symbol is file 0's
+    // definition, whatever the inputs, a library or the output say.
+    for n in crate::defsym::Defsym::new(line.defsym.iter().map(|(d, _)| d.as_str())).names() {
+        if !file0.iter().any(|f| f == n) {
+            file0.push(n.to_string());
+        }
+    }
     if !file0.is_empty() {
         model = Model::build(
             &line,
@@ -457,9 +464,11 @@ fn judge(
     // §5.8: a non-alloc word against a name only a library defines.
     let dso_words = reloc::dsoword::build(image, dout, &model, &ld.order, &plt);
     let wrap = crate::wrap::Wrap::of(Some(&opts));
+    let defsym = crate::defsym::Defsym::of(Some(&opts));
     let mut engine = reloc::Engine::new(&img1, &objs, map.format);
     dyn_engine(&mut engine, &v1, &plt, &depths);
     engine.set_wrap(wrap.clone());
+    engine.set_defsym(defsym.clone());
     engine.shared = sets.is_some();
     // M10's export roots (WP-147): the shared set's one derivation, or an
     // executable's `-E` without a script (WP-149) or `--dynamic-list`
@@ -566,6 +575,15 @@ fn judge(
     report.coverage = std::mem::take(&mut engine.cov);
     report.coverage.meta = meta;
     report.coverage.stripped_not_judged = stripped;
+    // §4.4b (WP-170): the addresses of the line's `--defsym` `B±N`.
+    let offsets: BTreeSet<u64> = defsym
+        .iter()
+        .filter(|(_, e)| matches!(e, crate::defsym::Expr::Offset(..)))
+        .filter_map(|(s, _)| match engine.defsym_value(s) {
+            Some(crate::defsym::Value::Addr(a)) => Some(a),
+            _ => None,
+        })
+        .collect();
     drop(engine);
     // View 2: a second bias (Pie): every word that holds an address of the
     // executable moves with it, every other word does not.
@@ -587,12 +605,28 @@ fn judge(
                 let mut f = Finding::new(
                     Rule::Dyn(9),
                     format!(
-                        "view 2 (load bias {BIAS2:#x}): the word holds {found:#x}, the program needs {:#x}{}",
+                        "view 2 (load bias {BIAS2:#x}): the word holds {found:#x}, the program needs {:#x}{}{}",
                         want & mask,
                         if internal {
                             " (no record moves it with the executable)"
                         } else if found & mask == v.wrapping_add(BIAS2) & mask {
                             " (a record moves a value that is not an address of the executable)"
+                        } else {
+                            ""
+                        },
+                        // §4.4b (WP-170): the word holds a `--defsym`
+                        // number (GNU ld relocates it, A87), or the
+                        // address of a `B±N` (GNU ld writes it SHN_ABS
+                        // and does not, A85).
+                        if internal && offsets.contains(&(v & mask)) {
+                            crate::defsym::OFFSET_UNMOVED
+                        } else if !internal
+                            && found & mask == v.wrapping_add(BIAS2) & mask
+                            && defsym.iter().any(|(_, e)| {
+                                matches!(e, crate::defsym::Expr::Number(n) if n & mask == v & mask)
+                            })
+                        {
+                            crate::defsym::NUMBER_MOVED
                         } else {
                             ""
                         }
@@ -627,6 +661,7 @@ fn judge(
             let mut eb = reloc::Engine::new(&imgb, &objs, map.format);
             dyn_engine(&mut eb, &vb, &plt, &depths);
             eb.set_wrap(wrap.clone());
+            eb.set_defsym(defsym.clone());
             eb.shared = true;
             // The expected `S`: the interposer's for a preemptible key or
             // an import; a bound key's module and offset are the
@@ -669,6 +704,7 @@ fn judge(
             let mut e3 = reloc::Engine::new(&img3, &objs, map.format);
             dyn_engine(&mut e3, &v3, &plt, &depths);
             e3.set_wrap(wrap.clone());
+            e3.set_defsym(defsym.clone());
             e3.dso_words = Some(dso_words.clone());
             run_engine(&mut e3, image, map, Some(&names));
             let mut bad: HashMap<String, Vec<Finding>> = HashMap::new();

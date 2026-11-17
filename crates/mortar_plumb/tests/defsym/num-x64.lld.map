@@ -1,0 +1,18 @@
+             VMA              LMA     Size Align Out     In      Symbol
+          201158           201158        2     2 .text
+          201158           201158        2     2         n-x64.o:(.text)
+          201158           201158        2     1                 _start
+          202160           202160        8     8 .data
+          202160           202160        8     8         n-x64.o:(.data)
+          202160           202160        8     1                 pk
+          202168           202168        0     1 .bss
+          202168           202168        0     1         n-x64.o:(.bss)
+               0                0       3a     1 .comment
+               0                0       3a     1         <internal>:(.comment)
+               0                0       78     8 .symtab
+               0                0       78     8         <internal>:(.symtab)
+               0                0       35     1 .shstrtab
+               0                0       35     1         <internal>:(.shstrtab)
+               0                0       11     1 .strtab
+               0                0       11     1         <internal>:(.strtab)
+          202168           202168        0     1 

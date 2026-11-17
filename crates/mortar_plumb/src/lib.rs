@@ -15,6 +15,7 @@ mod cfa;
 mod content;
 pub mod dead;
 mod deaddwarf;
+mod defsym;
 mod dyncheck;
 mod dynfields;
 mod dynmodel;
@@ -227,6 +228,7 @@ pub(crate) fn verify_static_in(
     prof::mark("engine new");
     engine.exports = exports;
     engine.set_wrap(wrap::Wrap::of(line_opts.as_ref()));
+    engine.set_defsym(defsym::Defsym::of(line_opts.as_ref()));
     run_engine(&mut engine, &image, map, None);
     report.findings.append(&mut engine.findings);
     // M8 (§3.3): an output with no dynamic section has no COPY record.
