@@ -1,0 +1,9 @@
+-static
+-z
+max-page-size=4096
+-o
+upc.bfd
+start.o
+a.o
+upc.o
+-Map=upc.bfd.map

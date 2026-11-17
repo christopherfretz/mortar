@@ -16,17 +16,24 @@
 #   none    the word is before the table's first start: no owner
 #   drop    the only FDE whose LSDA is in the table is in an .eh_frame of
 #           g's dropped copy: no FDE the link reads owns the word
-#   sh gen.sh <mortar>
+#   abs     dead with fa, whose LSDA pointer is against an absolute
+#           symbol: no owner can be named in any table
+#   upc     the only FDE whose LSDA is in the table has an initial
+#           location without a relocation (PC-relative 0x100): its life
+#           is unknown, so is the owner
+#   sh gen.sh <mortar> [case]   (one case only, when named)
 # Run from this directory. First made with the mortar of WP-201's base
 # (int/batch-12, 953f3bee).
 set -e
 ulimit -c 0
 mortar=$1
-for s in start a dead live cie x tb x8 shared none drop; do
+only=$2
+for s in start a dead live cie x tb x8 shared none drop abs upc; do
   as $s.s -o $s.o
 done
 link() {
   name=$1; shift
+  [ -z "$only" ] || [ "$only" = "$name" ] || return 0
   objs="$*"
   for l in bfd lld mold mortar; do
     case $l in
@@ -55,3 +62,14 @@ link x8 x8.o tb.o
 link shared shared.o
 link none none.o
 link drop drop.o
+link abs dead.o abs.o
+link upc upc.o
+# opts: dead.o linked by mortar with --build-id and -z execstack, for
+# tests/optline.rs (spec/plumb.md §3.2a: the options come from the
+# caller's line; the map's arg records are mutated there).
+if [ -z "$only" ] || [ "$only" = opts ]; then
+  set -- -static -z max-page-size=4096 --build-id -z execstack -o opts.mortar start.o a.o dead.o --mortar-map=opts.mortar.map
+  $mortar "$@"
+  printf '%s\n' "$@" > opts.mortar.line
+  echo "opts: mortar links"
+fi

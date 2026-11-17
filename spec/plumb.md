@@ -348,18 +348,21 @@ was truncated, with no `end`. Tests:
 A mortar map carries its link's command line as `arg` records (§3.2),
 in **every** map: static, static-pie, dynamic, plain or incremental. The
 verifier's rules that hold only when an option was given read the
-option from those words, through one reader (`src/opts.rs`), and from
-nothing else: not from the caller, not from the output, not from a
-chunk that only exists because of the option. A reference linker's map
-has no line; for it the caller supplies the line (`xtask plumb --line`,
-the `--inputs-from` response file, or the link test's `ld` wrapper
-words) wherever a rule reads one, as the table says. A mortar map has
-at least one `arg` record (a link of no word is `no-input-files` and
-writes no map): a map without one, as a static link's map before WP-102,
-is malformed (§3.7), not judged without its options. For mortar's map
-nothing else is read for an option: not the caller's statement
-(`Map.fix_843419`, `Ctx.line`), not a chunk that exists because of the
-option.
+option through one reader (`src/opts.rs`) from **the caller's line**
+when the caller gives one (`Ctx.line`: `xtask plumb --line`, the
+`--inputs-from` response file, or the link test's recorded words), for
+every format, and from a mortar map's `arg` records only when the
+caller gives none (§12.1a's rule, WP-193; WP-201: before it, a mortar
+map's records were the options even when a line was given, so a map
+whose records dropped, added or changed an option moved the verdict).
+Never from the output, nor from a chunk that only exists because of
+the option. A reference linker's map has no line; without the caller's,
+a rule that reads one is judged as the table says. A mortar map has at
+least one `arg` record (a link of no word is `no-input-files` and
+writes no map): a map without one, as a static link's map before
+WP-102, is malformed (§3.7), not judged without its options. The map's
+records are judged whatever the caller gives (M9 below). The caller's
+`Map.fix_843419` statement is a reference map's only (the table).
 
 **Reading the words** is `spec/cli.md` §2's grammar, not restated: one
 or two dashes by §2.2's forms (a long name starting with `l`, `m` or `o`
@@ -390,15 +393,20 @@ abbreviation is read as the one accepted GNU spelling it is a prefix
 of: mortar accepted the line, so it named exactly one GNU spelling
 (§2.4), and the accepted one with that prefix is it.
 
-- **M9 (the line, mortar's map).** A word that starts with `-`, is not
+- **M9 (the line, mortar's map).** A word of the map's `arg` records
+  that starts with `-`, is not
   `-` alone, and that no accepted option spells by the rules above (an
   unknown name, a value given to an option that takes none, a required
   value missing at the end of the line, an unknown `-z` keyword, a word
   that is not UTF-8 where an option's name stands) is a finding, one per
-  word: no link of this mortar wrote that line. The options are read
-  from the other words.
+  word: no link of this mortar wrote that line. It judges the map's
+  records whether or not the caller gives a line. When the records are
+  the options (no caller's line), they are read from the other words.
 
 **The rules and where they read their option:**
+
+Below, "the line" for mortar's map is the caller's line, else its `arg`
+records (WP-201).
 
 | rule | option | mortar's map | a reference's map |
 |---|---|---|---|
@@ -425,7 +433,10 @@ in stage 3 only (P-D4); a static output's entry is held to "some
 symbol's value" (S7, mortar's clause).
 
 Tests: `opts::tests` (the forms, values, last wins, abbreviations, M9's
-words, the table), `map::mortar::tests::s3_2_arg_records_in_every_map`
+words, the table), `tests/optline.rs` (WP-201: mortar's map with its
+`arg` records dropping, adding or changing an option `opts` reads gives
+the caller's line's verdict; M9 on the records with and without a line),
+`map::mortar::tests::s3_2_arg_records_in_every_map`
 (a static map's words, with a space, a newline, `%`, the empty word and
 bytes that are not UTF-8, round-trip and make no dynamic record).
 
@@ -5145,6 +5156,38 @@ is accepted from its linker only, never from mortar's map.
   nothing live defines, written as an undefined weak reference:
   resolve.md §6.3 case (b))". mold refuses (`hx refers to a discarded
   COMDAT section probably due to an ODR violation`), as mortar does.
+  The same trial names the form in a written CIE's personality field
+  and in `.gcc_except_table.<fn>` (§5.7a, §5.7b): GNU ld and lld write
+  the personality and the type entry of `objcopy --localize-hidden`'s
+  pre-link idiom as the undefined weak value, 0 on AArch64 (the place:
+  the first throw aborts, signal 6) and `S = 0` on x86-64 (`-P`: it
+  faults, signal 11) (`resolve/comdat-mismatch-weak-prelink.test`,
+  WP-201).
+- **A104 (mold, AArch64; WP-201).** mold writes the mapping symbols of
+  an input section it drops as `SHF_EXCLUDE` (Clang's `$d` of
+  `.llvm.call-graph-profile`) as `SHN_ABS` locals of value 0; GNU ld,
+  lld and mortar drop them with the section. Y4's text ends "(a mapping
+  symbol of an input section dropped as SHF_EXCLUDE, written SHN_ABS
+  with value 0)" exactly when the output symbol is `SHN_ABS`, value 0,
+  and an input local of the name is in an `SHF_EXCLUDE` section without
+  a place (`resolve/call-graph-profile.test`; it skipped mold on AArch64
+  before).
+- **A105 (GNU ld; WP-201).** A field of a written `.eh_frame` or
+  `.gcc_except_table` record (a live CIE's personality, a live LSDA's
+  type entry) that refers to a dropped COMDAT copy (`spec/resolve.md`
+  §6.3 case (a): a local symbol of the dropped section) is written 0:
+  the first throw through the CIE's frames finds no personality and
+  aborts, and a type entry 0 makes the `catch` a catch-all. R5 ending
+  "(a field of a written .eh_frame or .gcc_except_table record, written
+  0: resolve.md §6.3)" (§5.7b: the field's owner is written and every
+  output field holds 0); another value is plain R5
+  (`resolve/comdat-eh-wrong.test`, every target; `tests/ehowner.rs`).
+- **A106 (mold; WP-201).** The same field written as if its target
+  were at address 0 (`A`, or `A - P` PC-relative): the programs die
+  (signal 11; 7 on AArch64's dynamic form). R5 ending "(a field of a
+  written .eh_frame or .gcc_except_table record, written as if its
+  target were at address 0: resolve.md §6.3)" (`comdat-eh-wrong.test`,
+  every target; `tests/ehowner.rs`). lld and mortar refuse these links.
   Reproducers: `resolve/comdat-mismatch-weak.test`,
   `-dynamic`, `-shared`, `-archive`, `-needed`; `tests/demoted.rs`.
 
@@ -5790,7 +5833,9 @@ This subsection records how WP-050's verifier reaches the rules above.
 A dynamic output (`PT_DYNAMIC`) is judged with the map, the inputs and
 the **line**: the caller's (the linker's words: `--line FILE`, one word
 per line, or `--inputs-from`), for a mortar map its `arg` records
-(§3.2a) only when the caller gives none (§12.1a, WP-193). The line gives D-1's kind, `-dynamic-linker`, `-z
+(§3.2a) only when the caller gives none (§12.1a, WP-193), and the
+options §3.2a's reader gives (P-D4's `-z execstack`, B1's `--build-id`,
+...) from the same line (WP-201). The line gives D-1's kind, `-dynamic-linker`, `-z
 now`, `-z relro`, `-E` and the files of D-11/D-12; the shared objects are read
 from the file system (`line::Files`).
 

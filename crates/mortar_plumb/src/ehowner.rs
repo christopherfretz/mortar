@@ -256,3 +256,65 @@ impl Engine<'_, '_> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{Life, LsdaStarts, Owner};
+
+    const T: (usize, usize) = (1, 4);
+
+    #[test]
+    fn s5_7b_the_greatest_start_not_above_the_field() {
+        let mut s = LsdaStarts::default();
+        s.add(T, 0, Life::Dead);
+        s.add(T, 8, Life::Live);
+        s.add(T, 0x20, Life::Dead);
+        assert_eq!(s.owner(T, 4), Owner::Dead);
+        assert_eq!(s.owner(T, 8), Owner::Live);
+        assert_eq!(s.owner(T, 0x1f), Owner::Live);
+        assert_eq!(s.owner(T, 0x20), Owner::Dead);
+        assert_eq!(s.owner(T, 0x1000), Owner::Dead);
+        // Another table's starts are not this one's.
+        assert_eq!(s.owner((1, 5), 8), Owner::None);
+        assert_eq!(s.owner((2, 4), 8), Owner::None);
+    }
+
+    #[test]
+    fn s5_7b_no_start_at_or_before_is_no_owner() {
+        let mut s = LsdaStarts::default();
+        s.add(T, 0x10, Life::Dead);
+        assert_eq!(s.owner(T, 0xc), Owner::None);
+    }
+
+    #[test]
+    fn s5_7b_one_live_fde_at_a_start_makes_it_live() {
+        for order in [[Life::Dead, Life::Live], [Life::Live, Life::Dead]] {
+            let mut s = LsdaStarts::default();
+            for l in order {
+                s.add(T, 0, l);
+            }
+            assert_eq!(s.owner(T, 4), Owner::Live);
+        }
+        for order in [[Life::Dead, Life::Unknown], [Life::Unknown, Life::Dead]] {
+            let mut s = LsdaStarts::default();
+            for l in order {
+                s.add(T, 0, l);
+            }
+            assert!(matches!(s.owner(T, 4), Owner::Unknown(_)));
+        }
+        let mut s = LsdaStarts::default();
+        s.add(T, 0, Life::Unknown);
+        s.add(T, 0, Life::Live);
+        assert_eq!(s.owner(T, 4), Owner::Live);
+    }
+
+    #[test]
+    fn s5_7b_an_unread_eh_frame_names_no_owner_anywhere() {
+        let mut s = LsdaStarts::default();
+        s.add(T, 0, Life::Dead);
+        s.unknown("x.o: its .eh_frame cannot be read".to_string());
+        s.unknown("a second reason".to_string());
+        assert_eq!(s.owner(T, 4), Owner::Unknown("x.o: its .eh_frame cannot be read".to_string()));
+        assert!(matches!(s.owner((9, 9), 0), Owner::Unknown(_)));
+    }
+}

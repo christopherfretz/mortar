@@ -1,0 +1,36 @@
+mortar-map 2
+file 0 start.o
+file 1 a.o
+file 2 dead.o
+place 0 1 401190 4
+place 0 2 402198 0
+place 0 3 4021a0 0
+place 1 3 401194 0
+place 1 7 401194 4
+place 1 4 402198 0
+place 1 6 402198 8
+place 1 5 4021a0 0
+place 2 8 400180 10
+place 2 3 401198 0
+place 2 4 4021a0 0
+place 2 5 4021a0 0
+discard 2 6 comdat
+discard 2 7 comdat
+chunk synthetic .note.gnu.build-id 400158 24
+chunk synthetic .symtab - c0
+chunk synthetic .strtab - 32
+chunk synthetic .shstrtab - 55
+chunk synthetic .comment - d
+arg -static
+arg -z
+arg max-page-size=4096
+arg --build-id
+arg -z
+arg execstack
+arg -o
+arg opts.mortar
+arg start.o
+arg a.o
+arg dead.o
+arg --mortar-map=opts.mortar.map
+end

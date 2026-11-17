@@ -17,8 +17,10 @@
 //!   is plain R5, no anomaly.
 //! - An owner the verifier cannot name (`none`: the field is before the
 //!   table's first LSDA start; `drop`: the only FDE whose LSDA is in the
-//!   table is in an `.eh_frame` the link drops with its group): R5, no
-//!   anomaly — never taken as dead.
+//!   table is in an `.eh_frame` the link drops with its group; `abs`: an
+//!   LSDA pointer against an absolute symbol, which may name any table;
+//!   `upc`: the only FDE at the start has an initial location §6.4 cannot
+//!   resolve): R5, no anomaly — never taken as dead.
 //!
 //! Each live and unknown case is the mutant of the unsafe direction: an
 //! owner taken for dead would let the field go unreported.
@@ -247,8 +249,8 @@ fn live_cie_personality() {
 }
 
 /// No owner the verifier can name: R5 whatever the field holds.
-fn unknown(case: &str) {
-    for l in ["bfd", "mold"] {
+fn unknown(case: &str, linkers: &[&str]) {
+    for &l in linkers {
         let fx = Fx::new(case, l);
         let b = fx.bytes();
         let (at, off) = field(&b);
@@ -262,10 +264,26 @@ fn unknown(case: &str) {
 
 #[test]
 fn no_start_before_the_field() {
-    unknown("none");
+    unknown("none", &["bfd", "mold"]);
 }
 
 #[test]
 fn owner_in_a_dropped_eh_frame() {
-    unknown("drop");
+    unknown("drop", &["bfd", "mold"]);
+}
+
+/// An LSDA pointer whose target the verifier cannot place (an absolute
+/// symbol) may name any table: no owner is named, the dead word of
+/// `dead` included, on every output (mortar's 0 too).
+#[test]
+fn an_lsda_pointer_not_placed_names_no_owner() {
+    unknown("abs", &["bfd", "mold", "mortar"]);
+}
+
+/// The only FDE at the start has an initial location §6.4 cannot resolve
+/// (no relocation, PC-relative): its life is unknown, and so is the
+/// owner (GNU ld links it; mold and mortar refuse the FDE).
+#[test]
+fn an_fde_of_unknown_life_names_no_owner() {
+    unknown("upc", &["bfd"]);
 }
