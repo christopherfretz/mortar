@@ -12,8 +12,8 @@
 # excluded lines are judged: the three references write the same
 # `.dynsym`; in `.symtab` GNU ld and lld make the excluded definitions
 # LOCAL (GNU ld leaves `foo_data` GLOBAL HIDDEN without `-E`), mold LOCAL
-# HIDDEN, mortar keeps them GLOBAL (WP-150's question); the verifier's Y3
-# accepts each (WP-161).
+# HIDDEN, mortar LOCAL with their own visibility (S-77, WP-150); the
+# verifier's Y3 judges mortar's form and names the others (WP-169).
 #@ anomaly(mold): A36
 #@ anomaly(bfd): A60
 #@ spec: dyn.md "D-110"; dyn.md "D-13"
