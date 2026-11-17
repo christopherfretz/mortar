@@ -20,7 +20,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use mortar_elf::SymbolSection;
 use mortar_elf::consts::{
     SHF_TLS, SHN_COMMON, SHN_LORESERVE, SHN_UNDEF, SHN_X86_64_LCOMMON, SHT_NOBITS, STB_GLOBAL,
-    STB_WEAK,
+    STB_LOCAL, STB_WEAK, STT_FILE, STT_SECTION, STV_HIDDEN, STV_INTERNAL,
 };
 
 use crate::image::Image;
@@ -63,11 +63,36 @@ pub(crate) fn common_only(objs: &[Obj<'_>]) -> BTreeMap<String, u64> {
     common
 }
 
+/// The names an input entry gives hidden or internal visibility (gABI
+/// "Symbol Visibility": the output symbol is `STB_LOCAL`; S-121).
+fn hidden_names(objs: &[Obj<'_>]) -> BTreeSet<String> {
+    let mut h = BTreeSet::new();
+    for o in objs {
+        let Some(t) = &o.symtab else { continue };
+        for (_, sym) in t.iter() {
+            if matches!(sym.binding(), STB_GLOBAL | STB_WEAK)
+                && matches!(sym.visibility(), STV_HIDDEN | STV_INTERNAL)
+                && let Ok(n) = t.name(&sym)
+            {
+                h.insert(String::from_utf8_lossy(n).into_owned());
+            }
+        }
+    }
+    h
+}
+
 /// M6 and M7 over a map of mortar's format.
-pub(crate) fn check(image: &Image<'_>, objs: &[Obj<'_>], map: &Map) -> Vec<Finding> {
+/// `made_local`: the keys the line makes local by a version script or
+/// `--exclude-libs` (stage 3's; WP-169).
+pub(crate) fn check(
+    image: &Image<'_>,
+    objs: &[Obj<'_>],
+    map: &Map,
+    made_local: &BTreeSet<String>,
+) -> Vec<Finding> {
     let mut out = Vec::new();
     nobits_chunks(image, map, &mut out);
-    commons(image, objs, map, &mut out);
+    commons(image, objs, map, made_local, &mut out);
     out
 }
 
@@ -134,8 +159,31 @@ fn nobits_chunks(image: &Image<'_>, map: &Map, out: &mut Vec<Finding>) {
 
 /// M7: each `common` record is a common symbol of the inputs, placed
 /// where the output's `.symtab` says, aligned as its definitions ask.
-fn commons(image: &Image<'_>, objs: &[Obj<'_>], map: &Map, out: &mut Vec<Finding>) {
+fn commons(
+    image: &Image<'_>,
+    objs: &[Obj<'_>],
+    map: &Map,
+    made_local: &BTreeSet<String>,
+    out: &mut Vec<Finding>,
+) {
     let only = common_only(objs);
+    // S-121: the keys whose output binding is `STB_LOCAL`, the common's
+    // `.symtab` symbol then a local of the name (synth S-77; all three
+    // references write `OBJECT LOCAL DEFAULT` for a script's: WP-150).
+    let hidden = hidden_names(objs);
+    let local_of = |name: &str, addr: u64| {
+        let made = made_local.contains(name) || hidden.contains(name);
+        let mut l = image.symbols.iter().filter(|s| {
+            made && s.name == name
+                && s.sym.binding() == STB_LOCAL
+                && s.sym.st_shndx != SHN_UNDEF
+                && !matches!(s.sym.sym_type(), STT_SECTION | STT_FILE)
+        });
+        let first = l.clone().next();
+        // Two locals of the name (another file's static one): the one at
+        // the record's address.
+        if l.clone().nth(1).is_some() { l.find(|s| s.sym.st_value == addr) } else { first }
+    };
     for (name, want) in &only {
         if !map.commons.iter().any(|r| &r.name == name) {
             let at = image.global(name).map_or(0, |s| s.sym.st_value);
@@ -182,8 +230,14 @@ fn commons(image: &Image<'_>, objs: &[Obj<'_>], map: &Map, out: &mut Vec<Finding
         if image.symbols.is_empty() {
             continue;
         }
-        let Some(sym) = image.global(&r.name).map(|s| s.sym) else {
-            out.push(say("is not a global symbol of the output's .symtab".into()));
+        let Some(sym) = image.global(&r.name).or_else(|| local_of(&r.name, r.addr)).map(|s| s.sym)
+        else {
+            out.push(say(if made_local.contains(&r.name) || hidden.contains(&r.name) {
+                "is a key the line makes local, and no symbol of the output's .symtab defines it"
+                    .into()
+            } else {
+                "is not a global symbol of the output's .symtab".into()
+            }));
             continue;
         };
         if sym.st_shndx == SHN_UNDEF || sym.st_shndx >= SHN_LORESERVE {

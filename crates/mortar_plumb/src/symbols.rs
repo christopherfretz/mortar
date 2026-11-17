@@ -11,7 +11,7 @@ use mortar_elf::consts::{
     PT_LOAD, SHF_EXECINSTR, SHF_TLS, SHF_WRITE, SHF_X86_64_LARGE, SHN_ABS, SHN_LORESERVE,
     SHN_UNDEF, SHN_XINDEX, SHT_NOBITS, SHT_REL, SHT_RELA, SHT_STRTAB, SHT_SYMTAB, STB_GLOBAL,
     STB_GNU_UNIQUE, STB_LOCAL, STB_WEAK, STT_FILE, STT_FUNC, STT_GNU_IFUNC, STT_SECTION, STT_TLS,
-    STV_HIDDEN, STV_INTERNAL, STV_PROTECTED,
+    STV_DEFAULT, STV_HIDDEN, STV_INTERNAL, STV_PROTECTED,
 };
 use mortar_elf::{Class, Sym, SymbolIndex, SymbolSection};
 
@@ -376,8 +376,10 @@ fn globals(e: &mut Engine<'_, '_>, fs: &mut Vec<Finding>) {
             let v = vis.get(name.as_str()).copied().unwrap_or(0);
             if !image.symbols.is_empty()
                 && !image.has_name(name)
-                // `foo@@V2`: the output's `.symtab` names it `foo`.
-                && !name.split_once('@').is_some_and(|(base, _)| image.has_name(base))
+                // `foo@@V2`: lld's and mold's `.symtab` name it `foo`;
+                // mortar's keeps the versioned name (synth S-75, WP-150).
+                && (e.format == Format::Mortar
+                    || !name.split_once('@').is_some_and(|(base, _)| image.has_name(base)))
                 && rank(v) < rank(STV_HIDDEN)
                 && let Some(why) = held_def(e, name)
             {
@@ -483,7 +485,47 @@ fn globals(e: &mut Engine<'_, '_>, fs: &mut Vec<Finding>) {
         }
         let v = vis.get(name.as_str()).copied().unwrap_or(0);
         let b = out.sym.binding();
-        if rank(v) >= rank(STV_HIDDEN) {
+        // synth S-77, S-121 (WP-169): a key the line makes local is
+        // `STB_LOCAL` in mortar's `.symtab` with its own visibility. The
+        // references' measured forms are named (WP-150 items 1 and 2):
+        // `STB_LOCAL` with its own, `DEFAULT` (GNU ld, lld) or `HIDDEN`
+        // (mold) visibility; GNU ld's executable `GLOBAL HIDDEN`.
+        let made = e.made_local.keys.contains(name)
+            || e.made_local.keys.contains(crate::shared::split_version(name).0);
+        let mortar = e.format == Format::Mortar;
+        let vis_ok = |x: u8| x == v || (!mortar && matches!(x, STV_DEFAULT | STV_HIDDEN));
+        let bfd_hidden =
+            e.format == Format::Gnu && e.made_local.exec && out.sym.visibility() == STV_HIDDEN;
+        if made && rank(v) < rank(STV_HIDDEN) {
+            if b != STB_LOCAL && !bfd_hidden {
+                let mut f = y(
+                    3,
+                    format!(
+                        "symbol '{name}', which the line makes local, is not STB_LOCAL (synth S-77)"
+                    ),
+                );
+                f.expected = Some(u64::from(STB_LOCAL));
+                f.found = Some(u64::from(b));
+                fs.push(named(f.at(value), name));
+            }
+            if !vis_ok(out.sym.visibility()) {
+                let mut f = y(
+                    3,
+                    if mortar {
+                        format!(
+                            "symbol '{name}', which the line makes local, does not keep its own st_other visibility (synth S-77)"
+                        )
+                    } else {
+                        format!(
+                            "symbol '{name}', which the line makes local, has neither its own st_other visibility nor the references' DEFAULT or HIDDEN (WP-150 item 1)"
+                        )
+                    },
+                );
+                f.expected = Some(u64::from(v));
+                f.found = Some(u64::from(out.sym.visibility()));
+                fs.push(named(f.at(value), name));
+            }
+        } else if rank(v) >= rank(STV_HIDDEN) {
             // gABI: converted to STB_LOCAL (GNU ld keeps the binding and
             // the visibility, §10.5).
             if b != STB_LOCAL && rank(out.sym.visibility()) < rank(STV_HIDDEN) {
@@ -515,7 +557,12 @@ fn globals(e: &mut Engine<'_, '_>, fs: &mut Vec<Finding>) {
     let mut names: Vec<&String> = e.commons.keys().collect();
     names.sort();
     for name in names {
-        let Some(out) = image.global(name) else { continue };
+        // A common the line makes local is a local of its name (S-77).
+        let local = e.format == Format::Mortar && e.made_local.keys.contains(name.as_str());
+        let Some(out) = image.global(name).or_else(|| local.then(|| image.unique(name)).flatten())
+        else {
+            continue;
+        };
         if let Some(c) = commons(e, name) {
             checked += 1;
             common(image, out, c, fs);
@@ -786,6 +833,15 @@ fn linker_defined(e: &mut Engine<'_, '_>, fs: &mut Vec<Finding>) {
     let end = |s: &crate::image::OutSection| s.shdr.sh_addr.saturating_add(s.shdr.sh_size);
     let flag = |s: &crate::image::OutSection, f: u64| s.shdr.sh_flags & f != 0;
     let nobits = |s: &crate::image::OutSection| s.shdr.sh_type == SHT_NOBITS;
+    let relro: Vec<(u64, u64)> = image
+        .phdrs
+        .iter()
+        .filter(|p| p.p_type == mortar_elf::consts::PT_GNU_RELRO)
+        .map(|p| (p.p_vaddr, p.p_vaddr.saturating_add(p.p_memsz)))
+        .collect();
+    let in_relro = |s: &crate::image::OutSection| {
+        relro.iter().any(|&(lo, hi)| lo <= s.shdr.sh_addr && s.shdr.sh_addr < hi)
+    };
     // The first allocated section at or above `a`, with `keep`.
     let next = |a: u64, keep: &dyn Fn(&crate::image::OutSection) -> bool| {
         alloc().filter(|s| s.shdr.sh_addr >= a && keep(s)).map(|s| s.shdr.sh_addr).min()
@@ -870,7 +926,13 @@ fn linker_defined(e: &mut Engine<'_, '_>, fs: &mut Vec<Finding>) {
             "__GNU_EH_FRAME_HDR" => sec(".eh_frame_hdr").map(|(lo, _)| Want::Exactly(lo)),
             "_edata" | "edata" => e_end.map(|v| Want::Within(v, next(v, &|_| true).unwrap_or(v))),
             "__bss_start" | "__bss_start__" => e_end.map(|v| {
-                let bss = next(v, &|s| nobits(s) && flag(s, SHF_WRITE) && !flag(s, SHF_TLS));
+                // layout §13.1: the first rank-8 `NOBITS` chunk; the RELRO
+                // padding (mortar's `.pad.relro`, L-64; lld's
+                // `.relro_padding`) is rank 7, inside `PT_GNU_RELRO`
+                // (WP-169).
+                let bss = next(v, &|s| {
+                    nobits(s) && flag(s, SHF_WRITE) && !flag(s, SHF_TLS) && !in_relro(s)
+                });
                 Want::Within(v, bss.or_else(|| next(v, &|_| true)).unwrap_or(v))
             }),
             "_end" | "end" | "__end__" | "_bss_end__" | "__bss_end__" => {

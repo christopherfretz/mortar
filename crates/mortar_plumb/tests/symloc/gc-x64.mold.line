@@ -1,0 +1,9 @@
+-m
+elf_x86_64
+-z
+max-page-size=4096
+-o
+gc-x64.mold
+-shared
+vl-x64.o
+-Map=gc-x64.mold.map

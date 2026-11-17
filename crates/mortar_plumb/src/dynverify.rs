@@ -440,6 +440,12 @@ fn judge(
             model.keys.iter().filter(|(_, k)| k.excluded).map(|(n, _)| n.clone()).collect(),
         ),
     };
+    // S-77, S-121 (WP-169): the keys the line makes local.
+    engine.made_local.keys = match &sets {
+        Some(s) => s.local.clone(),
+        None => model.keys.iter().filter(|(_, k)| k.excluded).map(|(n, _)| n.clone()).collect(),
+    };
+    engine.made_local.exec = sets.is_none();
     crate::shared::tell_engine(&mut engine, &ifr, |_| true, v1.tls.0);
     engine.dso_words = Some(dso_words.clone());
     run_engine(&mut engine, image, map, None);
@@ -513,9 +519,12 @@ fn judge(
         report.findings.extend(exported_ifuncs(image, dout, &model, &chosen, map.format));
     }
     let mut view1_findings = std::mem::take(&mut engine.findings);
+    if let Some(rule) = sets.as_ref().and_then(|s| s.rule.as_ref()) {
+        view1_findings.extend(script_local_linker_keys(image, rule, &input_defs, map.format));
+    }
     if let Some(s) = &sets {
-        crate::shared::filter_view1(&mut view1_findings, s, &ifr);
-    } else {
+        crate::shared::filter_view1(&mut view1_findings, s, &ifr, map.format);
+    } else if map.format != crate::Format::Mortar {
         excluded_locals(&mut view1_findings, image, &model);
     }
     // The engine's coverage, with what stage 3 and 4 counted before it.
@@ -713,6 +722,66 @@ fn excluded_locals(v: &mut Vec<Finding>, image: &Image<'_>, model: &Model) {
                         .all(|s| s.sym.binding() == STB_LOCAL || s.sym.visibility() == STV_HIDDEN)
             }))
     });
+}
+
+/// dyn.md D-114's bullet, synth S-77 (WP-150; WP-169): in mortar's
+/// shared object a linker-defined key the version script makes local is
+/// `STB_LOCAL` in `.symtab` with resolve §8.1's column's visibility:
+/// `__start_SEC`/`__stop_SEC` `PROTECTED`, D-21 item 2's seven
+/// `DEFAULT` (none exported: P-D19). Y5 judges their values. The
+/// references' forms are named (WP-150 item 3): GNU ld and mold write
+/// `__start_`/`__stop_` `LOCAL DEFAULT`; lld keeps them exported `GLOBAL
+/// PROTECTED` (§10.2 A61, by P-D19), so its `.symtab` rows of them are
+/// not judged here.
+fn script_local_linker_keys(
+    image: &Image<'_>,
+    rule: &crate::shared::ExportRule,
+    input_defs: &HashSet<String>,
+    format: crate::Format,
+) -> Vec<Finding> {
+    use mortar_elf::consts::{STB_LOCAL, STT_FILE, STT_SECTION, STV_DEFAULT, STV_PROTECTED};
+    let mut v = Vec::new();
+    if rule.script.is_none() {
+        return v;
+    }
+    for s in &image.symbols {
+        let n = s.name.as_str();
+        let start_stop = n.strip_prefix("__start_").or_else(|| n.strip_prefix("__stop_"));
+        if s.sym.st_shndx == 0
+            || matches!(s.sym.sym_type(), STT_SECTION | STT_FILE)
+            || input_defs.contains(n)
+            || !(start_stop.is_some_and(crate::shared::c_ident)
+                || crate::shared::SEVEN.contains(&n))
+            || !matches!(rule.version(n), Ok(None))
+        {
+            continue;
+        }
+        let want = if start_stop.is_some() { STV_PROTECTED } else { STV_DEFAULT };
+        if start_stop.is_some() && format == crate::Format::Lld {
+            continue;
+        }
+        let vis_ok = s.sym.visibility() == want
+            || (format != crate::Format::Mortar && s.sym.visibility() == STV_DEFAULT);
+        if s.sym.binding() != STB_LOCAL || !vis_ok {
+            let mut f = Finding::new(
+                Rule::SymbolTable(5),
+                format!(
+                    "the linker-defined '{n}', which the version script makes local, is binding {} visibility {} in .symtab; D-114 and synth S-77 write it STB_LOCAL, visibility {want}{}",
+                    s.sym.binding(),
+                    s.sym.visibility(),
+                    if format == crate::Format::Mortar {
+                        ""
+                    } else {
+                        " (GNU ld's and mold's form: visibility 0)"
+                    }
+                ),
+            )
+            .at(s.sym.st_value);
+            f.symbol = Some(n.to_string());
+            v.push(f);
+        }
+    }
+    v
 }
 
 /// The link's words: a mortar map's `arg` records (§3.2a), a

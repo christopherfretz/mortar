@@ -1,0 +1,8 @@
+-z
+max-page-size=4096
+-o
+vl-x64.lld
+-shared
+--version-script=vl.map
+vl-x64.o
+-Map=vl-x64.lld.map

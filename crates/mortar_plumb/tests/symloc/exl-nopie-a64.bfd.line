@@ -1,0 +1,13 @@
+-z
+max-page-size=4096
+-o
+exl-nopie-a64.bfd
+-no-pie
+-E
+-dynamic-linker
+/lib/ld-linux-aarch64.so.1
+ex-a64.o
+libx-a64.a
+libdep-a64.so
+--exclude-libs=ALL
+-Map=exl-nopie-a64.bfd.map

@@ -2031,6 +2031,9 @@ fn fields(
     // the export carries its definition's bit; WP-161, the sweep's
     // survivor), by base name.
     let mut vpcs = BTreeSet::new();
+    // The definitions an input names with a version (`.symver`: `foo@V1`,
+    // `foo@@V2`): mortar's `.symtab` keeps those names (synth S-75).
+    let mut symver: BTreeSet<String> = BTreeSet::new();
     let unique = {
         let (mut u, mut other) = (BTreeSet::new(), BTreeSet::new());
         for o in objs {
@@ -2041,6 +2044,9 @@ fn fields(
                     continue;
                 }
                 let n = String::from_utf8_lossy(t.name(&x).unwrap_or(b"")).into_owned();
+                if n.contains('@') {
+                    symver.insert(n.clone());
+                }
                 if x.st_other & 0x80 != 0 {
                     vpcs.insert(n.split('@').next().unwrap_or_default().to_owned());
                 }
@@ -2242,20 +2248,59 @@ fn fields(
         // value (the address rule above reports it), with the first
         // `.symtab` global of the plain name, as before.
         let ver = out.def_version(j);
+        let versioned =
+            ver.as_ref().map(|(n, hid)| format!("{}{}{n}", s.name, if *hid { "@" } else { "@@" }));
+        // mortar's `.symtab` names a `.symver` definition with its version
+        // and any other export plainly (synth S-75, WP-150; WP-169), as GNU
+        // ld's does; lld's and mold's are matched in both forms (they write
+        // `foo` twice, WP-150 item 2).
+        let mortar = format == Format::Mortar;
+        let strict = (mortar || format == Format::Gnu)
+            && versioned.as_ref().is_some_and(|x| symver.contains(x));
         let keyed = |o: &&crate::image::OutSym| {
             o.sym.binding() != mortar_elf::consts::STB_LOCAL
                 && o.sym.st_shndx != 0
-                && (o.name == s.name
-                    || ver.as_ref().is_some_and(|(n, hid)| {
-                        o.name == format!("{}{}{n}", s.name, if *hid { "@" } else { "@@" })
-                    }))
+                && if strict {
+                    versioned.as_ref() == Some(&o.name)
+                } else {
+                    o.name == s.name || (!mortar && versioned.as_ref() == Some(&o.name))
+                }
         };
-        let def = image
-            .symbols
-            .iter()
-            .filter(keyed)
-            .find(|o| o.sym.st_value == s.st_value)
-            .or_else(|| image.global(&s.name));
+        let at_value = image.symbols.iter().filter(keyed).find(|o| o.sym.st_value == s.st_value);
+        if strict
+            && at_value.is_none()
+            && !image.symbols.is_empty()
+            && let Some(x) = &versioned
+        {
+            v.push(sym_finding(
+                7,
+                &s.name,
+                format!(
+                    "'{x}' is exported, and .symtab has no entry of that name at its value (synth S-75: a .symver definition keeps its versioned name)"
+                ),
+            ));
+            continue;
+        }
+        let def = at_value.or_else(|| image.global(&s.name));
+        // An exported definition is global in `.symtab` (gABI: a local
+        // is no key); one only `STB_LOCAL` at its value was made local
+        // with no reason (WP-169: the local common's converse).
+        if def.is_none()
+            && s.st_shndx != 0
+            && image.symbols.iter().any(|o| {
+                o.name == s.name
+                    && o.sym.binding() == mortar_elf::consts::STB_LOCAL
+                    && o.sym.st_shndx != 0
+                    && o.sym.st_value == s.st_value
+            })
+        {
+            v.push(sym_finding(
+                7,
+                &s.name,
+                format!("'{}' is exported, and .symtab defines it STB_LOCAL only", s.name),
+            ));
+            continue;
+        }
         if let Some(o) = def
             && o.sym.st_shndx != 0
             && o.sym.sym_type() != STT_GNU_IFUNC

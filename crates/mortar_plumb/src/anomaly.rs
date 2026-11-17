@@ -310,6 +310,22 @@ fn dynamic(linker: Format, output: &[u8], f: &Finding) -> Option<&'static str> {
             "A58: GNU ld's shared object exports __etext and its AArch64 names (__end__, __bss_start__, ...) an object references, preemptible, where mortar and lld keep them unexported (dyn.md D-110 item 2, §17.6)",
         );
     }
+    let start_stop = |n: Option<String>| {
+        n.is_some_and(|n| {
+            n.strip_prefix("__start_")
+                .or_else(|| n.strip_prefix("__stop_"))
+                .is_some_and(|x| !x.is_empty())
+        })
+    };
+    if lld
+        && d(19)
+        && m.contains(") is in .dynsym and not in the export set (a version script or --exclude-libs makes it local)")
+        && start_stop(f.symbol.clone().or_else(|| quoted(m)))
+    {
+        return Some(
+            "A61: lld keeps __start_SEC and __stop_SEC exported (GLOBAL PROTECTED) under a version script's local: * (dyn.md D-114)",
+        );
+    }
     if bfd
         && d(7)
         && m.contains("is exported under -E, and no needed library references or defines it and no object's reference")

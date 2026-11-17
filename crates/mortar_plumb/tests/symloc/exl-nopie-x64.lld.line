@@ -1,0 +1,13 @@
+-z
+max-page-size=4096
+-o
+exl-nopie-x64.lld
+-no-pie
+-E
+-dynamic-linker
+/lib64/ld-linux-x86-64.so.2
+ex-x64.o
+libx-x64.a
+libdep-x64.so
+--exclude-libs=ALL
+-Map=exl-nopie-x64.lld.map

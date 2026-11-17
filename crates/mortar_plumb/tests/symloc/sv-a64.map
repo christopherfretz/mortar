@@ -1,0 +1,36 @@
+mortar-map 2
+file 0 sv-a64.o
+piece 0 6 0 278 14
+piece 0 6 14 28c 14
+piece 0 6 28 2a0 18
+place 0 1 102bc 10
+place 0 2 203b8 0
+place 0 3 203b8 0
+merged 0 4 .comment
+chunk synthetic .gnu.hash 190 24
+chunk synthetic .dynsym 1b8 48
+chunk synthetic .dynstr 200 12
+chunk synthetic .gnu.version 212 6
+chunk synthetic .gnu.version_d 218 5c
+chunk synthetic .eh_frame 278 44
+chunk synthetic .got 203b0 8
+chunk synthetic .dynamic 202d0 e0
+chunk synthetic .symtab - c0
+chunk synthetic .strtab - 41
+chunk synthetic .shstrtab - 83
+chunk synthetic .comment - d
+chunk synthetic .pad.relro 203b8 fc48
+output shared
+bind lazy
+relro on
+symbolic none
+version-script sv.map
+arg -o
+arg sv-a64
+arg -shared
+arg --version-script=sv.map
+arg sv-a64.o
+arg --mortar-map=sv-a64.map
+export foo
+export foo
+end

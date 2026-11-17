@@ -1,0 +1,1 @@
+V1 { global: api; api_end; api_bss; api__start_mysec; local: *; };

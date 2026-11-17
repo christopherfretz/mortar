@@ -25,7 +25,7 @@ chunk synthetic .got 20618 8
 chunk synthetic .got.plt 30620 20
 chunk synthetic .dynamic 204b8 160
 chunk synthetic .symtab - 138
-chunk synthetic .strtab - 51
+chunk synthetic .strtab - 58
 chunk synthetic .shstrtab - aa
 chunk synthetic .comment - d
 chunk synthetic .pad.relro 20620 f9e0

@@ -603,8 +603,13 @@ each record:
   definitions (a global or weak symbol of `SHN_COMMON`, or x86-64
   `SHN_X86_64_LCOMMON`, and no definition in a section the map places),
   named by one record only. The output's `.symtab` defines it (a global or
-  weak symbol in a section) with `st_value` = `<addr>` and `st_size` =
-  `<size>`, in an allocated `SHT_NOBITS` output section that holds
+  weak symbol in a section; or, exactly when the line makes the key
+  local, a `STB_LOCAL` one: stage 3's local keys, §6's "A key the line
+  makes local, in `.symtab`" (a version script's `local:`,
+  `--exclude-libs`), or an input's `HIDDEN`/`INTERNAL` global or weak
+  entry of the name; of two such locals the one at `<addr>`; synth S-77,
+  WP-169) with `st_value` = `<addr>` and `st_size` = `<size>`, in an
+  allocated `SHT_NOBITS` output section that holds
   `[<addr>, <addr> + <size>)`. `<align>` is the largest alignment the
   inputs' common definitions of the name ask (their `st_value`, gABI
   "Symbol Values"), and `<addr>` is a multiple of it. An output without
@@ -2647,7 +2652,7 @@ rules below judge the rest. Code: `src/symbols.rs`.
   | `_GLOBAL_OFFSET_TABLE_` | AArch64: the start of `.got`; x86-64 and i386: the start of `.got.plt` (synth.md R-P5) |
   | `__GNU_EH_FRAME_HDR` | the start of `.eh_frame_hdr` |
   | `_edata`, `edata` | in [E, the next allocated section's start] |
-  | `__bss_start`, `__bss_start__` | in [E, the first writable `NOBITS` section at or after E] |
+  | `__bss_start`, `__bss_start__` | in [E, the first writable, non-TLS `NOBITS` section at or after E outside `PT_GNU_RELRO`]; with none, in [E, the next allocated section's start] (layout.md §13.1: the start of the first rank-8 `NOBITS` chunk, else `edata`; the RELRO padding, mortar's `.pad.relro` (L-64) and lld's `.relro_padding`, is rank 7 inside `PT_GNU_RELRO`, so an output with no `.data` does not judge `__bss_start` against it; WP-169) |
   | `_end`, `end`, `__end__`, `_bss_end__`, `__bss_end__` | in [M, M rounded up to 8] |
   | `_etext`, `etext`, `__etext` | in [the end of `.text`, the next non-executable section's start] |
   | `__rela_iplt_start`/`_end` (AArch64, x86-64), `__rel_iplt_start`/`_end` (i386) | the bounds of the only allocated `SHT_RELA` (i386: `SHT_REL`) section; with none, start = end (synth.md R-P6; under `-static-pie` they are not defined, and an `ET_DYN` output's range is P-D15's, §12.4) |
@@ -4631,6 +4636,16 @@ is accepted from its linker only, never from mortar's map.
   "'K' is exported under -E, and no needed library ...", K one of the
   seven, on GNU ld's output. Reproducer:
   `dyn/dynsym/linker-defined-export-exec`.
+- **A61 (lld; WP-169).** Under a version script's `local: *` lld keeps
+  `__start_SEC` and `__stop_SEC` exported `GLOBAL PROTECTED` (in
+  `.dynsym` and `.symtab`), where dyn.md D-114 makes them `STB_LOCAL`
+  and unexported (GNU ld, mold and mortar). Harmless to the library
+  (`PROTECTED`: its own uses bind to its own section), but a program or
+  library that defines or looks up the name sees lld's. P-D19
+  "'__start_SEC' (...) is in .dynsym and not in the export set (a
+  version script or --exclude-libs makes it local)" on lld's output.
+  Reproducers: `dyn/version/symtab-linker-defined-local`;
+  `tests/symloc.rs` (`vl-*.lld`).
 
 lld also links a `.hidden` or `.protected` undefined reference that only
 a library defines (writing 0) and drops the library from `DT_NEEDED`:
@@ -5543,11 +5558,15 @@ named equivalent), 3.1 s on AArch64 and 3.6 s on x86-64.
   indices, `STT_TLS` and a value at a PLT entry); its size, section and
   `st_info` equal its `.symtab` entry's (an IFUNC's are P-D7's own). Its
   `.symtab` entry is the first non-local defined one whose name is the
-  export's (`foo`, or GNU ld's `foo@V1`/`foo@@V2` for a `.symver` key, by
-  its `.gnu.version`) and whose value is the export's; with none, the
-  first global of the name (WP-149: `foo@V1` and `foo@@V2` are two
-  entries named `foo` in mortar's and lld's `.symtab`, the first of which
-  need not be the export's). A name stands twice in `.dynsym` (every
+  export's and whose value is the export's; with none, the first global
+  of the name (WP-149: lld's and mold's `foo@V1` and `foo@@V2` are two
+  entries named `foo`, the first of which need not be the export's). For
+  a `.symver` key (an input defines `foo@V1` or `foo@@V2`) mortar's and
+  GNU ld's entry is the one named `foo@V1`/`foo@@V2` by the export's
+  `.gnu.version`, at its value, and none is P-D7 (synth S-75; §6's
+  "A key the line makes local, in `.symtab`", WP-169); lld's and mold's
+  are matched by either name. An exported key whose only `.symtab`
+  definition at its value is `STB_LOCAL` is P-D7. A name stands twice in `.dynsym` (every
   format; STB_LOCAL entries aside) exactly when the entries' version
   indices differ and at most one of them is not `VERSYM_HIDDEN` (WP-149,
   D-115: `foo@V1` and `foo@@V2`); any other repeat is P-D7. A
@@ -6168,19 +6187,49 @@ and what turns P-D9's equality into a check of D-112.
   import `ext`'s index 2; `p_d27_mortars_alignment_only` (GNU ld's
   library judged as mortar's: `sh_addralign 8`).
 
-  **A version-local symbol in `.symtab` (WP-150's; not a finding now).**
-  A key a version script (or `--exclude-libs`) makes local is written
-  `STB_LOCAL` in `.symtab` by GNU ld and lld (D-114), `STB_GLOBAL` by
-  mortar. Today Y3's binding and visibility rows are dropped for every
-  key in the set's local keys (`shared::filter_view1`, by the full key
-  and by its base name), so Y3 accepts both forms for every format and
-  judges only the value, section, type and size. After WP-150 decides
-  mortar's form (D-114 says local; the decision for debuggers is
-  WP-150's), mortar's map is held to it: the rows are dropped only for a
-  reference, and a mortar `.symtab` entry of a local key that is not
-  `STB_LOCAL` is Y3's binding finding. The `.symtab` name of a `.symver`
-  key (GNU ld `foo@V1`/`foo@@V2`, lld and mortar two `foo`) is matched
-  in both forms (P-D7 above) until then.
+  **A key the line makes local, in `.symtab` (WP-150's forms; judged
+  since WP-169).** The keys the line makes local are stage 3's: a
+  `Shared` output's set's local keys (a version script's `local:`,
+  `--exclude-libs`; by the full key and by its base name), an
+  executable's excluded keys (D-110 item 1); none for a static output.
+  For each such key whose inputs' visibility is below `HIDDEN` (a hidden
+  or internal one is a local as before):
+  - **mortar** (synth S-77, S-121): the `.symtab` entry is `STB_LOCAL`
+    with its own visibility. Else Y3 "symbol 'K', which the line makes
+    local, is not STB_LOCAL (synth S-77)" or "... does not keep its own
+    st_other visibility (synth S-77)".
+  - **a reference** (WP-150 item 1's measured forms, named): `STB_LOCAL`
+    with its own, `DEFAULT` (GNU ld; lld's `--exclude-libs`) or `HIDDEN`
+    (mold's `--exclude-libs`) visibility; GNU ld's executable `GLOBAL
+    HIDDEN` (`-no-pie` and static, WP-161). Else Y3 "... is not
+    STB_LOCAL" or "... has neither its own st_other visibility nor the
+    references' DEFAULT or HIDDEN (WP-150 item 1)". The older Y3 binding
+    and visibility rows of these keys are dropped for a reference only
+    (`shared::filter_view1`, `excluded_locals`).
+  - **An exported definition is global** in `.symtab`: an exported key
+    whose only `.symtab` definition at its value is `STB_LOCAL` is P-D7
+    "'K' is exported, and .symtab defines it STB_LOCAL only" (every
+    linker).
+  - **D-114's linker-defined keys under `local:`** (a `Shared` output
+    with a version script): a `__start_SEC`/`__stop_SEC` (SEC a C
+    identifier) or one of D-21 item 2's seven that no input defines and
+    the script makes local is, in mortar's `.symtab`, `STB_LOCAL` with
+    `PROTECTED` (`__start_`/`__stop_`) or `DEFAULT` (the seven); GNU ld's
+    and mold's `LOCAL DEFAULT` for `__start_`/`__stop_` is named. Else
+    Y5 "the linker-defined 'K', which the version script makes local, is
+    binding B visibility V in .symtab; ...". lld keeps `__start_`/
+    `__stop_` exported `GLOBAL PROTECTED` (§10.2 A61, by P-D19); its
+    `.symtab` rows of them are not judged. That none is exported is
+    P-D19's (outside the export set).
+  - **A `.symver` definition** (an input defines `foo@V1` or `foo@@V2`):
+    mortar's and GNU ld's `.symtab` keep the versioned name (synth
+    S-75): the `.dynsym` export `foo` of version `V2` (`.gnu.version`;
+    `@` for a hidden index) is matched to the `.symtab` global named
+    `foo@@V2` at its value alone, else P-D7 "'foo@@V2' is exported, and
+    .symtab has no entry of that name at its value (synth S-75: a
+    .symver definition keeps its versioned name)". lld's and mold's two
+    plain `foo` are named: their exports are matched in both forms, and
+    Y3's "not in .symtab" accepts the plain base name for them alone.
 
 What reports each wrong output of `spec/dyn.md` §17.7 (P-D23; the P-D
 rules are this section's, applied through P-D16; the table was redone

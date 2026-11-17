@@ -1,0 +1,9 @@
+-m
+aarch64linux
+-z
+max-page-size=4096
+-o
+gc-a64.mold
+-shared
+vl-a64.o
+-Map=gc-a64.mold.map

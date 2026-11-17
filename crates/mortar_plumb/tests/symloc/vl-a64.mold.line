@@ -1,0 +1,10 @@
+-m
+aarch64linux
+-z
+max-page-size=4096
+-o
+vl-a64.mold
+-shared
+--version-script=vl.map
+vl-a64.o
+-Map=vl-a64.mold.map
