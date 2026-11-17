@@ -1279,7 +1279,11 @@ with each phase fed from the state for unchanged files:
   second `fstat`, with the size kept), which the link's lock (IN-45)
   excludes for cooperating writers and nothing excludes for others, as
   for any file two programs write at once. The state also has the
-  "updating" flag of IN-46: set means `output-torn`. *Test:* `touch`,
+  "updating" flag of IN-46: set means `output-torn`. *(Amended by
+  WP-207: an update makes these checks through the one descriptor U1
+  opened, and checks the path again before its first write to `P`
+  (IN-77a); "the link's lock" is IN-77b's lock on `S`; a full link's
+  unsynced output is checked once after a reboot (IN-77c).)* *Test:* `touch`,
   `strip`, `cp` of another output, `objcopy` in place, each over the
   output: each gives `output-changed`; a killed update gives
   `output-torn`; `stamp_rule.py` case B (an update followed at once by
@@ -1623,6 +1627,14 @@ with each phase fed from the state for unchanged files:
   slack or a table's append area (IN-18e); when neither has room the
   whole state is rewritten (the compaction, IN-77), and
   `--incremental-report` says so (`delta state compacted <reason>`).
+  **Verified before re-hashed** (WP-207, review-in77 M-4): every block
+  W5 writes is read and checked against its current block-list entry
+  (IN-18c) before it is modified, in U-steps before W1 (the update reads
+  the blocks it will patch anyway, to modify their rows); a block that
+  fails is `state-corrupt` before W1, and the update does not run. A new
+  hash therefore only ever vouches for bytes an old hash vouched for,
+  plus the update's own rows. The block list and directory entries W5
+  rewrites are those of verified blocks only.
   Measured on the prototype (WP-105 §4, same-length patches of one
   file): 21.6 KB written in 191 ms on g10x and 23.4 KB in 154 ms on
   `cxx-large-g`, the three `fdatasync`s under load being the time; a
@@ -2496,6 +2508,32 @@ objects.
     enforces it (the probe of image.md I-59); otherwise two concurrent
     updates of one output could interleave their writes. (The
     workspace's virtiofs now enforces `flock`, the reviewer's m2.)
+    *(Amended by WP-207: the lock is IN-77b's, taken by every
+    incremental-mode link on `S`'s descriptor; where it is not enforced
+    no update runs at all, `lock-unavailable`, on either path.)*
+
+  **Who in place does not protect** (WP-207, review-in77 M-2; this list
+  is the text of the `incremental-in-place-unchecked` note, printed once
+  per link that writes in place):
+  - a reader that opened `P` before W2 and reads across W2..W4: `cp`,
+    `install`, `rsync` of the build directory, a test harness copying the
+    binary, a packager; it can copy a runnable mix whose `e_ident` it read
+    before W2 (IN-77's aside name makes a reader that opens `P` after W2
+    fail with `ENOENT` instead);
+  - a process that maps `P` without write denial: a program started
+    through `ld.so` or qemu, lldb with `P` loaded, gdb's lazy reads of
+    debug sections (R7, above); the `/proc` scan sees them only in the
+    link's own pid namespace and, for an unprivileged user, only that
+    user's processes; containers sharing a build directory are invisible
+    to it;
+  - a process that runs `P` where the kernel does not deny writes to a
+    running executable: `ETXTBSY` is measured on kernel 6.8 (overlay,
+    virtiofs) and depends on the kernel and the file system (over NFS it
+    is local to the client; whether a later kernel dropped exec's write
+    denial is not verified: *argued, not run*); where it is absent, the
+    `/proc` scan is the only protection;
+  - a process that opens `P` after the scan and before W2.
+  The copy path protects all of them (they keep the old inode).
   What a debugger holding the old file sees (R7): after copy and rename,
   gdb and lldb keep the old inode and show the old program consistently
   (old symbols, old line table, the running process's old code) until
@@ -2605,7 +2643,9 @@ objects.
   outputs.
 - **IN-48 [v1] The state is written only by a successful link**
   (image.md I-100). A failed update removes the output (image.md I-66)
-  and the state. *Test:* an update that introduces an undefined symbol
+  and the state. *(Amended by WP-207: this covers a failure of the link
+  proper, before U10's first write; a failure of a write, sync or rename
+  is IN-77e's, which keeps a good old pair before W1/C2.)* *Test:* an update that introduces an undefined symbol
   leaves neither file; the next `--incremental` link reports `no-state`.
 - **IN-49 [v1] The map** (`--mortar-map`, plumb.md §3.2) is rewritten
   whole (image.md I-99), with `hole` and `dead` lines (§8.2). *Test:*
@@ -2894,86 +2934,232 @@ a pass over a whole table of the state; **O(output)**.
   above and below the bound with `--incremental=update`.
 
 - **IN-77 [v1] The crash protocol: one order of writes for the output
-  and the state.** Let `S` be the state file (format 5, written in place
-  by blocks, IN-46b) and `P` the output. The **flag** is `S`'s updating
-  word (IN-18c: one aligned 4-byte word in the header, outside every
-  hash; one sector, so a write of it is all or nothing). A state whose
-  flag is set is never trusted: `output-torn`, a full link.
+  and the state** (amended by WP-207: one descriptor per file, one lock,
+  the output set aside while torn, the boot id, failures). Let `S` be the
+  state file (format 5, written in place by blocks, IN-46b) and `P` the
+  output. The **flag** is `S`'s updating word (IN-18c: one aligned 4-byte
+  word in the header, outside every hash; one sector, so a write of it is
+  all or nothing). A state whose flag is set is never trusted:
+  `output-torn`, a full link.
 
-  In place:
+  **IN-77a [v1] One descriptor per file** (review-in77 B-1). U1 opens `S`
+  read-write and `P` once (read-write for in place, read-only for the
+  copy path) and makes IN-21's checks through those descriptors:
+  `fstat` gives the tuple, and the build id and the racy leaves are read
+  with positioned reads on the descriptor. Every later read and write of
+  `P` (C1's copy, W2..W4) and of `S` (W1, W5, W6, the compaction's read)
+  goes through them; no step reopens either by path. Immediately before
+  W2 (in place) or C3 (copy), `stat(P)` by path must give the
+  descriptor's `(dev, ino)` and size, else `output-changed`, nothing
+  written (`T` removed). W4's and C3's tuple is the descriptor's (in
+  place) or `T`'s descriptor's (copy) `fstat`, taken by IN-21's binding
+  (`fstat`, stamps until one is later, `fstat` again; review-in77 M-8,
+  m-5). In place, the descriptor stays open for writing from W2 to W4, so
+  an `exec` of `P` in that span fails with `ETXTBSY` where the kernel
+  denies it (measured on overlay and virtiofs, kernel 6.8; IN-45 names
+  where it does not).
+
+  **IN-77b [v1] One lock** (review-in77 B-2; replaces "image.md I-59's
+  lock" and IN-45's lock condition). Every link in incremental mode (full,
+  update, `--incremental-report`) that finds a state takes an exclusive
+  `flock` (`File::lock`, `std`) on `S`'s descriptor before it reads any
+  byte of `S` past the header's magic, and holds it to its last write.
+  After acquiring it, `stat(S)` by path must give the locked
+  `(dev, ino)`; else it closes the descriptor and starts again (at most 8
+  times, then `state-busy`, a full link that writes no state). A rename of
+  `S` (the compaction, a full link's state write) happens while the lock
+  is held, so a waiter wakes on the old inode, fails the check and
+  retries on the new one. Where the probe of image.md I-59 says `flock`
+  is not enforced on `S`'s file system, no update is attempted
+  (`lock-unavailable`, a full link), on both write paths: the copy path
+  does not make an unlocked update safe, because `S` is patched in place
+  on both. A link that finds no state (the first link, or after
+  `state-corrupt`) has nothing to lock; two such links racing are IN-21's
+  post-rename check (the loser removes the state it wrote). `S` with
+  `st_nlink` > 1 or reached through a symbolic link is never patched: W5
+  is the compaction (a rename), so a hard-linked snapshot keeps its bytes
+  (review-in77 m-3). **Cost**: a plain link opens no state and takes no
+  lock (IN-11: it touches no state path), so it pays nothing; an
+  incremental-mode link pays one open, `flock`, `fstat`, `stat` and
+  unlock: median 352.5 µs (p90 1.15 ms) on the workspace's virtiofs and
+  3.5 µs (p90 4.4 µs) on overlay, at load ~20 (WP-207
+  `tests/incr-design/fsprobe.py`), against a full link's 0.18 s on
+  protoc.
+
+  **In place** (`A` = `<P>.mortar-torn`, the **aside name**, in `P`'s
+  directory):
   - **W1** set the flag; `fdatasync(S)`.
-  - **W2** zero `P`'s `e_ident`; `fdatasync(P)`.
-  - **W3** write the dirty ranges; truncate or extend `P` (image.md
-    I-97); `fdatasync(P)`.
-  - **W4** write `P`'s true ELF header; `fdatasync(P)`. `P` is the new
-    output; its stat tuple (IN-21) is taken now.
+  - **W2** `rename(P, A)`; `stat(A)` must give the descriptor's
+    `(dev, ino)`, else `rename(A, P)` and `output-changed` (the flag
+    stays set: a full link); `fsync` the directory; zero `e_ident`
+    through the descriptor; `fdatasync(P)`. From here `P`'s path names no
+    file.
+  - **W3** write the dirty ranges; truncate or extend (image.md I-97);
+    `fdatasync(P)`.
+  - **W4** write the true ELF header; `fsync(P)` (data and metadata, so
+    the mtime the writes set is durable: review-in77 m-6);
+    `rename(A, P)`; `fsync` the directory. `P` is the new output; its
+    tuple is taken now (IN-77a).
   - **W5** write the state's patch: the changed blocks, their block-list
-    entries, the directory entries, the header with the new binding (the
-    tuple of W4, the build id, the new leaves); `fdatasync(S)`.
+    entries, the directory entries, and the header except its flags word
+    (bytes 16 to the end, review-in77 m-2), with the new binding (the
+    tuple of W4, the build id, the new leaves, `output-synced` 1);
+    `fdatasync(S)`.
   - **W6** clear the flag; `fdatasync(S)`.
 
-  By copy (`T` beside `P`, image.md I-59's name):
-  - **C1** create `T`, copy `P` into it (`copy_file_range`, a clone where
-    the file system clones, IN-47), write the dirty ranges and the true
-    header; `fdatasync(T)`.
+  **Why the aside name** (review-in77 M-3, decided by WP-207 against the
+  epoch mtime). A torn output must not look up to date to the build
+  system, or the repairing full link never runs. Measured
+  (`tests/incr-design/bsprobe.sh`, GNU Make 4.4.1, ninja 1.12.1): a torn
+  output with a fresh mtime is relinked by ninja but **not by make**; an
+  epoch-dated or missing one is relinked by both. The epoch mtime of
+  review-in77's fix does not survive the writes: every `pwrite` after
+  `utime(0)` sets the mtime to now (measured on virtiofs and overlay,
+  `fsprobe.py`), so a kill inside W3 leaves a fresh torn file; the crash
+  model with mtimes (`tests/incr-design/crash_model.py`) gives 2 fresh
+  torn outcomes for the epoch variant and for W1..W6 as WP-202 wrote them,
+  and 0 for the aside variant (kill and power loss at every prefix; 0
+  trusted mixes in all three). Removing `P` on failure (I-66) covers
+  failures only, not kills or power loss. With the aside name, after any
+  crash in W2..W4 `P` is missing: make and ninja relink, `exec P` fails
+  with `ENOENT`, and a reader that opens `P` in the window fails instead
+  of copying a mix (it narrows review-in77 M-2 to readers that opened
+  before W2). A debugger holding `P` keeps its descriptor on the same
+  inode, as before (IN-45: unprotected); gdb's `run` in the window finds
+  no file, and after W4 sees the new mtime and re-reads. Cost: two
+  renames and two directory `fsync`s (IN-46 measured a directory sync at
+  0.62 ms on overlay and 0.23 ms on virtiofs; the renames are not
+  measured: *argued, not run*).
+
+  By copy (`T` = image.md I-59's temporary beside `P`, created and
+  `flock`ed by this link):
+  - **C1** create `T`, copy `P`'s descriptor into it
+    (`copy_file_range`, a clone where the file system clones, IN-47),
+    write the dirty ranges and the true header; `fdatasync(T)`.
   - **C2** set the flag; `fdatasync(S)`.
-  - **C3** rename `T` over `P`; `fsync` the directory; take `P`'s tuple.
+  - **C3** check `P` by path (IN-77a); rename `T` over `P`; `fsync` the
+    directory; take `T`'s descriptor's tuple.
   - **C4**, **C5**: W5 and W6.
 
-  When the state's rows do not fit its slack (IN-18e), W5/C4 is the
-  **compaction** instead: the whole new state, flag clear, written to
-  `S`'s temporary name, `fdatasync`ed, renamed over `S`, the directory
-  `fsync`ed; W6/C5 is then nothing (the rename replaced the flag).
+  When the state's rows do not fit its slack (IN-18e), or `S` is
+  hard-linked or a symbolic link (IN-77b), W5/C4 is the **compaction**
+  instead (IN-18f): the whole new state, flag clear, written to `S`'s
+  temporary `<S>.mortar-compact` (created and `flock`ed by this link),
+  `fdatasync`ed, renamed over `S`, the directory `fsync`ed; W6/C5 is then
+  nothing (the rename replaced the flag).
+
+  **IN-77c [v1] The full link in incremental mode and the boot id**
+  (review-in77 M-1, form (b)). A full link renames `P` unsynced (image.md
+  I-61) and then writes `S` durably, so after a power loss `S` can be
+  durable while `P`'s data is not. `META` carries the **boot id** (the 16
+  bytes of `/proc/sys/kernel/random/boot_id`, read once per link) and an
+  **`output-synced`** bit: a full link writes 0; W5/C4 writes 1 (`P` was
+  synced at W4 or `T` at C1). U1, when the state's bit is 0 and its boot
+  id differs from the current one, compares every leaf of `P` with
+  `LEAVES` before it trusts `P` (IN-21's racy path, O(output), once per
+  reboot: after a reboot the page cache is gone, so what it reads is what
+  is on the disk); a leaf that differs is `output-changed`; when all
+  match, the update proceeds and W5 writes the bit 1. Where the boot id
+  cannot be read, a full link in incremental mode `fdatasync`s `T` before
+  its rename (form (a)) and writes the bit 1. In a container the boot id
+  is the host's (not namespaced); in a virtual machine it is the guest's,
+  which also changes on any host power loss: both are conservative.
+  Modelled (`crash_model.py` variant `full-incremental-bootid`): 0
+  trusted mixes, against 7 (build id) and 15 (`--build-id=none`) for
+  today's full link; the torn outputs it leaves after a power loss are
+  any linker's unsynced output (I-61), out of this rule's scope.
 
   What a kill (or a power loss: each sync orders the writes before it
-  ahead of every write after it) leaves, and what the next link does:
+  ahead of every write after it) leaves, and what the next link does
+  (U1 reads the flag before any hash, review-in77 m-1; the leftover names
+  are removed by the next lock holder, IN-77d):
 
   | killed after | `P` | `S` | next link |
   |---|---|---|---|
   | nothing written | old | old, flag clear | an update from the old pair |
   | W1 | old | old, flag set | `output-torn`: full link |
-  | W2, W3 | not executable (`ENOEXEC`), torn | old, flag set | `output-torn`: full link |
+  | W2, W3 | missing (the torn file is at `A`, `e_ident` zero) | old, flag set | `output-torn`: full link; make and ninja relink |
+  | W4 before the rename | missing (`A` complete) | old, flag set | `output-torn`: full link |
   | W4 | new | old blocks, flag set | `output-torn`: full link |
   | W5 (part or all) | new | some blocks new, flag set | `output-torn`: full link |
   | W6 | new | new, flag clear | an update from the new pair |
-  | C1 (part or all) | old (`T` partial or whole beside it) | old, flag clear | an update from the old pair; `T` removed (below) |
+  | C1 (part or all) | old (`T` beside it) | old, flag clear | an update from the old pair |
   | C2 | old | old, flag set | `output-torn`: full link |
   | C3 | new | old, flag set | `output-torn`: full link |
   | C4, C5 | as W5, W6 | | |
-  | compaction, before the rename | new | old, flag set (and a temporary beside it) | `output-torn`: full link |
+  | compaction, before the rename | new | old, flag set | `output-torn`: full link |
   | compaction, after the rename | new | new, flag clear | an update from the new pair |
 
   **Why never a silent mix.** A link trusts `S` only with the flag
-  clear. The flag is clear in exactly two states of the protocol:
-  before W1/C2, where `S` and `P` are the old pair (C1 writes only `T`),
-  and after W6/C5 (or the compaction's rename), where W5 and every write
-  to `P` were synced first, so they are the new pair. Every other state
-  has the flag set, and the next link is a full link. Independently of
-  the flag, IN-21's binding (the stat tuple and the build id) is checked
-  by U1, so an output replaced by anyone between links is
-  `output-changed`, and a `S` whose blocks are torn is `state-corrupt`
-  (IN-18c's block hashes). A state's block patched by W5 is reached only
-  after the flag is cleared, so a reader never mixes old and new blocks
-  of a state it trusts.
+  clear. The flag is clear in exactly two states of the protocol: before
+  W1/C2, where `S` and `P` are the old pair (C1 writes only `T`), and
+  after W6/C5 (or the compaction's rename), where W5 and every write to
+  `P` were synced first, so they are the new pair. Every other state has
+  the flag set. Independently of the flag, IN-21's binding is checked by
+  U1 through the descriptor (IN-77a), so an output replaced by anyone
+  between links, or between U1 and W2/C3, is `output-changed`; a `S`
+  whose blocks are torn is `state-corrupt`; two links of one state are
+  serialized by IN-77b; and a full link's unsynced output is checked once
+  after a reboot (IN-77c). The power-loss half holds as far as the file
+  system's `fdatasync`/`fsync` does (on a virtiofs mount whose host is
+  macOS, plain `fsync` is not `F_FULLFSYNC`: *argued, not run*).
 
-  **The lock and the leftovers.** The update holds image.md I-59's lock
-  from U1 to the end; a second link of the same output waits or is
-  refused as I-59 says. Temporaries are named `<P>.mortar-update-<pid>`
-  and `<S>.mortar-tmp-<pid>`; the link that holds the lock removes such
-  a file of a process that no longer exists (WP-061 F8.2), by its exact
-  name, before its own writes. A failed update (IN-48) after W1 leaves
-  the flag set: the next link is a full link, never an update over a
-  half-written output.
+  **IN-77d [v1] Leftovers** (review-in77 m-4). The temporaries are `A`,
+  `T` and `<S>.mortar-compact`; each is `flock`ed by its creator. The
+  link that holds `S`'s lock removes each of them by its exact name before
+  its own writes, after a `try_lock` on it succeeds (a held one belongs
+  to a live link and is left). No pid is in a name, so pid namespaces and
+  pid reuse do not matter. Where the lock is not enforced nothing is
+  removed (and no update runs, IN-77b). Today's `<S>.tmp-<pid>` files
+  (the floor's `write_atomically`) are not matched; U-7 renames the
+  floor's temporary to `<S>.mortar-compact`.
+
+  **IN-77e [v1] Failures** (review-in77 M-5; IN-48 covers failures of the
+  link proper, before U10). Any error of a write, a sync, a rename or a
+  `set_len` ends the update at once: no further write is issued to `P`
+  or `S`, and **no sync is retried** (after `EIO` Linux marks the pages
+  clean, so a retry can return 0 with the data lost).
+  - Before C2 (copy): `T` is removed; `P` and `S` are left (the old
+    pair); the link fails.
+  - Before W1 (in place): nothing was written; the link fails.
+  - From W1/C2 on: the flag stays set (or is set: a failed W1 leaves it
+    as the disk has it, and the next link reads it); in place, the file at
+    `A` (or at `P` after W4's rename) is removed (I-66: it is torn or
+    unsynced), which frees its blocks for the next full link's `T`; by
+    copy, `P` is the old or the new file and is kept. The link fails, and
+    the next link is a full link.
+  - The compaction's temporary failing: it is removed; the flag stays
+    set.
+
+  **IN-77f [v1] Readers of `S`** (review-in77 m-8). No consumer of `S`
+  uses a row of a state whose flag is set, or whose blocks it has not
+  hashed (IN-18c): mortar's links, `--incremental-report`, `incr_state`,
+  and any later tool (a debugger's helper, Tuck). The verifier reads no
+  state (IN-60).
 
   **Crash hooks.** A test-only environment variable,
-  `MORTAR_INCR_CRASH=<point>` with `<point>` one of `W1`..`W6`, `C1`..
-  `C5`, `compact-written`, `compact-renamed`, aborts the process right
-  after that point's last call (its sync, its rename); a binary built
-  without `cfg(test)` or the `testhooks` feature does not read it. *Test
-  (U-7 alone, then the join):* a kill at every point, then the next
-  link: the reason of the table, an output equivalent to a full link's
-  (IN-79), `exec` of `P` failing with `ENOEXEC` after W2 and W3, and
-  never an update from a flag-set state.
+  `MORTAR_INCR_CRASH=<point>`, aborts the process at `<point>`: after a
+  step's last call (`W1`..`W6`, `C1`..`C5`, `compact-written`,
+  `compact-renamed`), and **between a write and its sync**
+  (`W2-renamed`, `W2-written`, `W3-written`, `W4-written`,
+  `W4-renamed`, `W5-written`, `C1-written`; review-in77 m-7); a binary
+  built without `cfg(test)` or the `testhooks` feature does not read it.
+  Power loss is tested without a device: U-7 routes every write, sync and
+  rename through a `WriteOps` trait whose test implementation records
+  them, and the test replays every prefix with every subset of the
+  unsynced operations onto byte buffers, then runs the real reader and
+  binding (`power_loss_every_prefix_and_subset`: old pair, new pair or a
+  named reason, never a trusted mix). *Test (U-7 alone, then the join):*
+  a kill at every point, then the next link: the reason of the table, an
+  output equivalent to a full link's (IN-79); `P` missing after W2..W4
+  and `make_relinks_after_kill_at_w3`;
+  `output_replaced_between_check_and_write` (in place and copy, same
+  inode and new inode: `output-changed`, nothing written);
+  `two_updates_one_output_serialize`; `state_renamed_while_waiting_retries`;
+  `hard_linked_state_is_compacted`; `failed_sync_is_not_retried`;
+  `enospc_at_each_step_then_full_link`; `torn_state_with_flag_is_output_torn`;
+  `leftovers_removed_only_when_unlocked`; `boot_id_changed_checks_leaves`;
+  and H-2's `full_link_power_loss_replay` (IN-77c).
 
 - **IN-78 [v1] The state's writer's duty in an update.** W5's patch (or
   the compaction) writes, for every changed, appeared or newly extracted
