@@ -229,10 +229,15 @@ fn imports(
             ));
         }
         let asked = key.version.as_deref();
+        // In `Shared` the closure is not searched (input §8.6) and
+        // `bind(k)` ranges over N alone (D-10, WP-137): an import N does
+        // not define is D-111 item 3's `STT_NOTYPE`.
         let def = ld
             .model
             .bind_in(&ld.order, &s.name, asked)
-            .or_else(|| ld.model.lookup(&ld.order, &s.name, asked))
+            .or_else(|| {
+                if ld.model.shared { None } else { ld.model.lookup(&ld.order, &s.name, asked) }
+            })
             .map(|(_, d)| d);
         let want_type = match def {
             _ if s.st_value != 0 => STT_FUNC,

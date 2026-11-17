@@ -19,7 +19,6 @@
 #@ spec: dyn.md "D-111"
 #@ arch: aarch64 x86_64
 #@ xfail(mortar,x86_64): M4: WP-127 (x86-64 shared objects; dyn.md D-100)
-#@ xfail(mortar,aarch64): the verifier's stage 3 (P-D7) still binds a weak key to a used object in Shared; dyn.md D-10 setting (WP-137) leaves it unbound: the verifier's follow-up
 
 cc -O1 -fPIC v.c -o v.o
 cc -O1 -fPIC m2.c -o m2.o

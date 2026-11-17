@@ -146,6 +146,19 @@ impl Out {
         let ctx = Ctx { line: Some(words), files: &Dir(&self.link.dir) };
         mortar_plumb::verify_with(out, &inputs, &map, &ctx)
     }
+
+    /// `out` judged as mortar's output of the same line (mortar's rows).
+    fn verify_as_mortar(&self, out: &[u8]) -> Report {
+        let words = self.words();
+        let mut map = self.link.parse_map();
+        let files = self.link.inputs(&map);
+        map.format = mortar_plumb::Format::Mortar;
+        map.args = words.iter().map(|w| w.as_bytes().to_vec()).collect();
+        let inputs: Vec<Input<'_>> =
+            files.iter().map(|(p, b)| Input { path: p, bytes: b }).collect();
+        let ctx = Ctx { line: Some(words), files: &Dir(&self.link.dir) };
+        mortar_plumb::verify_with(out, &inputs, &map, &ctx)
+    }
 }
 
 struct Corpus {
@@ -942,6 +955,86 @@ fn p_d23_w28_is_not_caught() {
         );
     }
     assert!(n > 0 || c.outs.is_empty(), "no g++ library of GNU ld");
+}
+
+// spec/plumb.md P-D19 and P-D7 (mortar) (WP-140; dyn.md D-10 as WP-137
+// amends it): in `Shared` `bind(k)` ranges over N alone. g++'s
+// `--as-needed` drops the C library; crtbeginS's weak `__cxa_finalize`
+// is defined only there (libstdc++ still lists it). Judged under mortar's
+// rows: GNU ld's form (`WEAK NOTYPE UND`, unversioned, no `libc.so.6`) is
+// no longer asked to be the C library's `STT_FUNC`; lld's `WEAK FUNC` is
+// P-D7's type finding; mold's (versioned, `libc.so.6` needed) with the
+// `DT_NEEDED` of `libc.so.6` removed is P-D8's `vn_file` finding and P-D7's
+// type finding. Every reference's own verdict is `refs`' (clean).
+#[test]
+fn p_d19_weak_key_outside_n_is_unbound() {
+    let Some(c) = corpus() else { return };
+    let mut n = 0;
+    let about = |r: &Report, id: &str| -> Vec<String> {
+        r.findings
+            .iter()
+            .filter(|f| f.rule.id() == id && f.symbol.as_deref() == Some("__cxa_finalize"))
+            .map(|f| f.message.clone())
+            .collect()
+    };
+    for o in c.outs.iter().filter(|o| o.link.output.to_string_lossy().contains("libwo.so")) {
+        n += 1;
+        let b = o.link.output_bytes();
+        match o.link.linker {
+            Linker::Bfd => {
+                let r = o.verify_as_mortar(&b);
+                for id in ["P-D7", "P-D8"] {
+                    let got = about(&r, id);
+                    assert!(got.is_empty(), "{}: {id} {got:#?}", o.label());
+                }
+            }
+            Linker::Lld => {
+                let got = about(&o.verify_as_mortar(&b), "P-D7");
+                assert!(
+                    got.iter().any(|m| m.contains("has type 2 (D-23: 0)")),
+                    "{}: {got:#?}",
+                    o.label()
+                );
+            }
+            Linker::Mold => {
+                let mut b = b;
+                drop_needed(&mut b, "libc.so.6");
+                let r = o.verify_as_mortar(&b);
+                assert!(
+                    r.findings.iter().any(|f| f.rule.id() == "P-D8"
+                        && f.message.contains("vn_file 'libc.so.6' is not a DT_NEEDED name")),
+                    "{}: {:#?}",
+                    o.label(),
+                    r.findings
+                );
+                let got = about(&r, "P-D7");
+                assert!(
+                    got.iter().any(|m| m.contains("has type 2 (D-23: 0)")),
+                    "{}: {got:#?}",
+                    o.label()
+                );
+            }
+        }
+    }
+    assert!(n >= 3 || c.outs.is_empty(), "{n} libwo outputs");
+}
+
+/// Removes the `DT_NEEDED` entry naming `soname` (the later entries move
+/// up one, a `DT_NULL` last).
+fn drop_needed(b: &mut [u8], soname: &str) {
+    let h = pt_dynamic(b);
+    let (off, size) = (u64at(b, h + 8) as usize, u64at(b, h + 32) as usize);
+    let (str_off, str_size) = section(b, ".dynstr");
+    let name_at = |b: &[u8], v: usize| -> String {
+        let s = &b[str_off + v..str_off + str_size];
+        String::from_utf8_lossy(&s[..s.iter().position(|&c| c == 0).unwrap()]).into_owned()
+    };
+    let e = (off..off + size)
+        .step_by(16)
+        .find(|&e| u64at(b, e) == 1 && name_at(b, u64at(b, e + 8) as usize) == soname)
+        .unwrap_or_else(|| panic!("no DT_NEEDED {soname}"));
+    b.copy_within(e + 16..off + size, e);
+    b[off + size - 16..off + size].fill(0);
 }
 
 // spec/plumb.md P-D23: the i386 rows (W25-W29, W35-W37, W39) are outside

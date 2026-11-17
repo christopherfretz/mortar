@@ -238,15 +238,7 @@ pub const REFERENCE_BROKEN: &[(&str, &str, &str, &str)] = &[(
 /// Verifier findings judged wrong in the verifier, not in mortar (a
 /// finding of the record that names them): the variation, the rule, and
 /// the reason. Only a line whose findings are all of that rule passes.
-pub const KNOWN_FINDINGS: &[(&str, &str, &str)] = &[
-    ("shared", "P-D7", WP137_PD7),
-    ("shared-soname", "P-D7", WP137_PD7),
-    ("shared-ldshared", "P-D7", WP137_PD7),
-];
-
-/// The reason of WP-137's entries of [`KNOWN_FINDINGS`] (the gfortran
-/// `-shared` lines on AArch64).
-const WP137_PD7: &str = "WP-137: the verifier's stage 3 still binds crtbeginS's weak __cxa_finalize to the C library that --as-needed drops; spec/dyn.md D-10 setting leaves it unbound in Shared (GNU ld's NOTYPE): the verifier's follow-up";
+pub const KNOWN_FINDINGS: &[(&str, &str, &str)] = &[];
 
 /// A compiler driver of the census.
 #[derive(Clone, Debug)]
