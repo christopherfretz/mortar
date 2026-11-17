@@ -1,0 +1,60 @@
+# kiln-define-same-layout's objects at the default mode and --odr=warn
+# (spec/odr.md O-47: kind 2 is compared under --odr=strict only): since
+# kiln K-3e (scheme kiln-odr-1.d4) S::get's rows differ by their default
+# argument (a finding under strict, kiln-define-same-layout), and here
+# mortar reads no row and reports nothing. The program prints what each
+# unit's inline function gave (the one copy the linker kept). Split from
+# kiln-define-same-layout by WP-199 (a `#@ diag:` holds for every link
+# of a test).
+#@ spec: odr.md O-17, O-47
+#@ arch: aarch64 x86_64
+#@ requires: kiln g++
+
+cxx(kiln) -O0 -DTRACE=1 -fmason-metadata a.cc -o a.o
+cxx(kiln) -O0 -DTRACE=2 -DWITH_NAME -fmason-metadata b.cc -o b.o
+cxx(kiln) -O0 main.cc -o main.o
+link(bfd,lld,mold) g++ main.o a.o b.o -o prog
+link(mortar) g++ main.o a.o b.o -Wl,--odr-stats -o prog
+  diag: ^mortar: odr-stats: mode warn; units 0,* record findings 0;
+run prog
+  stdout: 13 13
+link(bfd,lld,mold) g++ main.o a.o b.o -o progw
+link(mortar) g++ main.o a.o b.o -Wl,--odr=warn -Wl,--odr-stats -o progw
+  diag: ^mortar: odr-stats: mode warn; units 0,* record findings 0;
+run progw
+  stdout: 13 13
+
+#--- s.h
+struct S {
+  int a = TRACE;
+  long b;
+  static const int level = TRACE;
+  int get(int k = TRACE) const { return a * 0 + k + 10 + level * 0 + 1; }
+#ifdef WITH_NAME
+  const char* name() const { return "S"; }
+#endif
+};
+struct Base { virtual ~Base() {} virtual int v() const { return TRACE; } int x; };
+struct Derived : Base { int v() const override { return TRACE + 1; } S s; };
+#--- a.cc
+#include "s.h"
+int from_a(S* s, Base* b) { return s->get(2) + (b ? b->x : 0); }
+#--- b.cc
+#include "s.h"
+int from_b(S* s, Base* b) {
+#ifdef WITH_NAME
+  (void)s->name();
+#endif
+  return s->get(2) + (b ? b->x : 0);
+}
+#--- main.cc
+#include <stdio.h>
+struct S;
+struct Base;
+int from_a(S*, Base*);
+int from_b(S*, Base*);
+int main() {
+  alignas(16) static char buf[64] = {};
+  printf("%d %d\n", from_a((S*)buf, nullptr), from_b((S*)buf, nullptr));
+  return 0;
+}

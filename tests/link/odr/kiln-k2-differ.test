@@ -1,8 +1,9 @@
-# Kind 2 rows as kiln writes them (kiln b632861e3, scheme kiln-odr-1.d3;
-# spec/odr.md O-10, O-14, O-15, "kiln K-3a", "kiln K-3c"; WP-174; K-3d):
-# one header h.h, compiled into a.o with V=1 and into b.o with V=2, each
-# definition differing in one place, under --odr=strict. Every row is
-# anchored (kiln writes no names yet, K-3f). Reported, each by its row:
+# Kind 2 rows as kiln writes them (kiln 3b77b13c7, scheme kiln-odr-1.d4;
+# spec/odr.md O-10, O-14, O-15, "kiln K-3a", "kiln K-3c"; WP-174; K-3d;
+# K-3e, WP-199): one header h.h, compiled into a.o with V=1 and into b.o
+# with V=2, each definition differing in one place, under --odr=strict.
+# Every row is anchored (kiln writes no names yet, K-3f). Reported, each
+# by its row:
 # - errors: an inline function's body (body), a class template's member
 #   (Box<int>::get), an inline variable's initializer (ivar), a constexpr
 #   function (cexpr), a default argument used at a call inside the
@@ -13,26 +14,29 @@
 #   against the more specialized tf(T*) of b.o); since K-3d (.d3: a
 #   closure is hashed) with_lambda, whose lambda's body differs, and
 #   the closure's operator() itself (under .d2 the lambda was one fixed
-#   token: with_lambda silent, the operator() a PARTIAL warning);
+#   token: with_lambda silent, the operator() a PARTIAL warning); since
+#   K-3e (.d4: the declaration's own default arguments are hashed, at
+#   the end of the unit) own_default, whose default argument alone
+#   differs (silent under .d3, a miss counted as PARTIAL), and
+#   partial_body, whose body differs and whose row is no longer PARTIAL
+#   (a PARTIAL warning under .d3; .d4 sets PARTIAL only for
+#   target_clones and a short-form callee of an overloaded template);
 # - K13: spec<int> is an explicit specialization in b.o and an implicit
 #   instantiation in a.o (an error whatever the hashes), beside W3;
-# - a warning only, the row PARTIAL (kiln hashes default arguments of a
-#   definition's own parameters as fixed tokens until K-3e):
-#   partial_body, whose body differs and which has such an argument;
 # - W4 on ivar's bytes (10 against 20).
-# Not reported: own_default (only its own default argument differs:
-# not hashed yet, a miss counted as PARTIAL), x15 (a lambda in its
-# declarator: no row, X15), dropped (d.o's copy at -O2 was inlined away:
-# its row is unanchored and never compared, the stats' `unanchored rows`;
-# b.o's copy is compared with nothing), over (two keys). kiln-k2-silent
-# is the same link at the default mode and --odr=warn (kind 2 is
-# strict's, O-47); kiln-k2-equal the same source with V=1 everywhere.
+# Not reported: x15 (a lambda in its declarator: no row, X15), dropped
+# (d.o's copy at -O2 was inlined away: its row is unanchored and never
+# compared, the stats' `unanchored rows`; b.o's copy is compared with
+# nothing), over (two keys). kiln-k2-silent is the same link at the
+# default mode and --odr=warn (kind 2 is strict's, O-47); kiln-k2-equal
+# the same source with V=1 everywhere.
 #@ spec: odr.md O-10, O-14, O-15
 #@ arch: aarch64 x86_64
 #@ requires: kiln g++
 #@ diag: odr-strong-and-comdat b.o a.o
 #@ diag: odr-violation b.o a.o
 #@ diag: odr-contents-mismatch a.o b.o
+#@ diag: odr-violation a.o b.o
 #@ diag: odr-violation a.o b.o
 #@ diag: odr-violation a.o b.o
 #@ diag: odr-violation a.o b.o
@@ -61,12 +65,11 @@ link(mortar) g++ -static -no-pie main.o a.o b.o d.o -Wl,--odr=strict -Wl,--odr-s
   diag: ^mortar: error: _Z4specIiEiT_ violates the one-definition rule$
   diag: ^>>> b.o: an explicit specialization; a.o: an implicit instantiation ([temp.expl.spec]: the specialization must be declared before every use)$
   diag: ^mortar: error: _ZZ11with_lambdaiENKUliE_clEi violates the one-definition rule$
-  diag: ^mortar: warning: _Z12partial_bodyi violates the one-definition rule$
-  diag: ^>>> a record is PARTIAL (its producer did not hash every construct): a warning, never an error (spec/odr.md O-15)$
+  diag: ^mortar: error: _Z11own_defaulti violates the one-definition rule$
+  diag: ^mortar: error: _Z12partial_bodyi violates the one-definition rule$
   diag: ^>>> defined in a.o:(_Z4bodyv) (kept), at ./h.h:2$
   diag: ^>>> the definitions differ; a.o and b.o were compiled with different -D options? (compare their command lines)$
-  diag: ^mortar: odr-stats: mode strict; units 3, * kind 2 30,* unanchored rows 2,* record findings 11;
-  no-diag: _Z11own_defaulti
+  diag: ^mortar: odr-stats: mode strict; units 3, * kind 2 30,* unanchored rows 2,* record findings 12;
   no-diag: _Z3x15i
   no-diag: _Z7droppedv
   no-diag: _Z4over
