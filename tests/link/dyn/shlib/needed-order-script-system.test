@@ -8,6 +8,7 @@
 # first mentioned as-needed and unreferenced (W9): each has its own list.
 # The programs run (exit 0).
 #@ spec: dyn.md "D-19a"
+#@ xfail(mold): W9: an unreferenced library first named --as-needed and later plainly is dropped from DT_NEEDED
 #@ requires: g++
 #@ arch: aarch64 x86_64
 
@@ -99,8 +100,33 @@ check readelf -dW libgxxlm.so
   then: [libgcc_s.so.1]
   then: [libstdc++.so.6]
   then: [libc.so.6]
+
+# g++ -shared with -lgcc_s, then --no-as-needed, on a library that uses
+# nothing of libgcc_s: the driver's own -lgcc_s names libgcc_s.so.1
+# again inside the script libgcc_s.so with the switch off; D-19a keeps
+# it there (refused by name before WP-172; was in
+# dyn/cxx/shared-cxx-options.test).
+link g++ -shared plain.o -lgcc_s -Wl,--no-as-needed -Wl,-soname,libgccs.so -o libgccs.so
+check readelf -dW libgccs.so
+  count(bfd,mortar): 4 (NEEDED)
+  has(bfd,mortar): [libstdc++.so.6]
+  then(bfd,mortar): [libm.so.6]
+  then(bfd,mortar): [libgcc_s.so.1]
+  then(bfd,mortar): [libc.so.6]
+  count(lld): 4 (NEEDED)
+  has(lld): [libgcc_s.so.1]
+  then(lld): [libstdc++.so.6]
+  then(lld): [libm.so.6]
+  then(lld): [libc.so.6]
+  count(mold): 3 (NEEDED)
+  has(mold): [libstdc++.so.6]
+  then(mold): [libm.so.6]
+  then(mold): [libc.so.6]
 host gcc -pie pm.o -L. -lgxxlm -o prog-gxxlm
 run prog-gxxlm
+  stdout: 2
+host gcc -pie pm.o -L. -lgccs -o prog-gccs
+run prog-gccs
   stdout: 2
 
 #--- m_plain.c

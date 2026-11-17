@@ -801,7 +801,7 @@ order of the reference of record, GNU ld. Definitions:
   *again*) has no row of its own: its state and group are its script
   entry's (input §10.3, `ScriptEntry`; WP-172, which withdrew the M2
   refusal `DT_NEEDED order of a shared object mentioned again inside a
-  linker script`). Measured on 33 script shapes and 9 driver lines
+  linker script`). Measured on 46 script shapes and 10 driver lines
   (`libgcc_s.so`, glibc's `libm.so` and `libc.so` named again with the
   switch changed between; GNU ld 2.44, lld 19, mold 2.37.1, AArch64 and
   x86-64 alike; `spec/landed/dyn/WP-172.md` §2): the rule gives GNU ld's
@@ -859,8 +859,10 @@ GNU ld's output; and `underlink-after`, which must run), `needed-order-as-needed
 constructor order compared), `needed-order-group`, `needed-order-script`
 (the script shapes, and two libraries defining one function where the
 order decides the binding at run time), `needed-order-script-system`
-(the driver lines), `cxx/shared-cxx-options` (`g++ -shared plain.o
--lgcc_s -Wl,--no-as-needed`).
+(the driver lines, `g++ -shared plain.o -lgcc_s -Wl,--no-as-needed`
+among them), `needed-order-script-group.test.pending` (an object in a
+script's own `GROUP` as the reason: pending on the verifier's P-D6,
+WP-172 §6).
 ## 6. `.dynsym`, `.dynstr`, hash tables, versions
 
 Owner: `mortar_synth` (synth.md S-101..S-103 are the outline these rules

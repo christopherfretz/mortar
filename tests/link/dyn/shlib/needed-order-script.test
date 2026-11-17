@@ -12,6 +12,7 @@
 # mention is as-needed and unreferenced even when a later one is plain
 # (W9). Each linker has its own list below, and its own run.
 #@ spec: dyn.md "D-19a"
+#@ xfail(mold): W9: an unreferenced library first named --as-needed and later plainly is dropped from DT_NEEDED
 #@ arch: aarch64 x86_64
 #@ fixture: needed-libs
 
@@ -287,26 +288,6 @@ run(bfd,mortar) grp-s-anx
 run(lld,mold) grp-s-anx
   stdout: nc nb nx na main
 
-# g_anx_obj: GROUP(AS_NEEDED(libnx.so) use_x.o): the same in a script GROUP.
-link gcc -pie main0.o -Wl,--no-as-needed libna.so -Wl,--as-needed libnx.so -Wl,--no-as-needed libnb.so g_anx_obj.so libnc.so -o g-anx-obj
-check readelf -dW g-anx-obj
-  count(bfd,mortar): 5 (NEEDED)
-  has(bfd,mortar): [libna.so]
-  then(bfd,mortar): [libnb.so]
-  then(bfd,mortar): [libnx.so]
-  then(bfd,mortar): [libnc.so]
-  then(bfd,mortar): [libc.so.6]
-  count(lld,mold): 5 (NEEDED)
-  has(lld,mold): [libna.so]
-  then(lld,mold): [libnx.so]
-  then(lld,mold): [libnb.so]
-  then(lld,mold): [libnc.so]
-  then(lld,mold): [libc.so.6]
-run(bfd,mortar) g-anx-obj
-  stdout: nc nx nb na main
-run(lld,mold) g-anx-obj
-  stdout: nc nb nx na main
-
 # grp_cli_s_x: the script named --as-needed inside a command-line group.
 link gcc -pie main0.o -Wl,--no-as-needed libna.so -Wl,--as-needed libnx.so -Wl,--no-as-needed libnb.so -Wl,--start-group -Wl,--as-needed s_x.so -Wl,--no-as-needed use_x.o -Wl,--end-group libnc.so -o grp-cli-s-x
 check readelf -dW grp-cli-s-x
@@ -515,47 +496,6 @@ run(bfd,mortar) s-off-ref-s-on
 run(lld,mold) s-off-ref-s-on
   stdout: nc nx na main
 
-# nested_group (the base refused it): GROUP(s_x.so use_x.o) named
-# --as-needed: the nested entry is in the group of use_x.o.
-link gcc -pie main0.o -Wl,--no-as-needed libna.so -Wl,--as-needed libnx.so -Wl,--no-as-needed libnb.so -Wl,--as-needed g_sx_use.so -Wl,--no-as-needed libnc.so -o nested-group
-check readelf -dW nested-group
-  count(bfd,mortar): 5 (NEEDED)
-  has(bfd,mortar): [libna.so]
-  then(bfd,mortar): [libnb.so]
-  then(bfd,mortar): [libnx.so]
-  then(bfd,mortar): [libnc.so]
-  then(bfd,mortar): [libc.so.6]
-  count(lld,mold): 5 (NEEDED)
-  has(lld,mold): [libna.so]
-  then(lld,mold): [libnx.so]
-  then(lld,mold): [libnb.so]
-  then(lld,mold): [libnc.so]
-  then(lld,mold): [libc.so.6]
-run(bfd,mortar) nested-group
-  stdout: nc nx nb na main
-run(lld,mold) nested-group
-  stdout: nc nb nx na main
-
-# nested_group_asn (the base refused it): GROUP(s_anx.so use_x.o).
-link(bfd,lld,mortar) gcc -pie main0.o -Wl,--no-as-needed libna.so -Wl,--as-needed libnx.so -Wl,--no-as-needed libnb.so g_sanx_use.so libnc.so -o nested-group-asn
-check(bfd,lld,mortar) readelf -dW nested-group-asn
-  count(bfd,mortar): 5 (NEEDED)
-  has(bfd,mortar): [libna.so]
-  then(bfd,mortar): [libnb.so]
-  then(bfd,mortar): [libnx.so]
-  then(bfd,mortar): [libnc.so]
-  then(bfd,mortar): [libc.so.6]
-  count(lld): 5 (NEEDED)
-  has(lld): [libna.so]
-  then(lld): [libnx.so]
-  then(lld): [libnb.so]
-  then(lld): [libnc.so]
-  then(lld): [libc.so.6]
-run(bfd,mortar) nested-group-asn
-  stdout: nc nx nb na main
-run(lld) nested-group-asn
-  stdout: nc nb nx na main
-
 # cli_group_nested: a nested script inside a command-line group.
 link gcc -pie main0.o -Wl,--no-as-needed libna.so -Wl,--as-needed libnx.so -Wl,--no-as-needed libnb.so -Wl,--start-group -Wl,--as-needed n_sx.so -Wl,--no-as-needed use_x.o -Wl,--end-group libnc.so -o cli-group-nested
 check readelf -dW cli-group-nested
@@ -693,11 +633,5 @@ INPUT ( s_anx.so )
 INPUT ( -lnx )
 #--- s_alx.so
 INPUT ( AS_NEEDED ( -lnx ) )
-#--- g_anx_obj.so
-GROUP ( AS_NEEDED ( libnx.so ) use_x.o )
-#--- g_sx_use.so
-GROUP ( s_x.so use_x.o )
-#--- g_sanx_use.so
-GROUP ( s_anx.so use_x.o )
 #--- ig_mixed.so
 INPUT ( libnx.so ) GROUP ( libny.so use_x.o )
