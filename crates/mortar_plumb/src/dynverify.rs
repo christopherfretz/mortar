@@ -90,6 +90,20 @@ pub(crate) fn verify_in(
     map: &Map,
     ctx: &Ctx<'_>,
 ) -> Report {
+    let mut report = verify_kind(output, store, m, map, ctx);
+    // The input set (§3.8), for every output kind.
+    let set = crate::inset::judge(map, line_words(map, ctx).as_deref(), ctx.files);
+    crate::prof::mark("input set");
+    if !set.findings.is_empty() {
+        report.findings.extend(set.findings);
+        report.sort();
+    }
+    report.coverage.input_set = Some(set.coverage);
+    report
+}
+
+/// [`verify_in`] without the input set: the rules of the output's kind.
+fn verify_kind(output: &[u8], store: &Store<'_>, m: usize, map: &Map, ctx: &Ctx<'_>) -> Report {
     let image = match Image::read(output) {
         Ok(i) => i,
         Err(e) => {

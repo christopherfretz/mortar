@@ -26,6 +26,9 @@ pub struct SoDef {
     /// `name@@V` (or unversioned): what an unversioned reference binds.
     pub default: bool,
     pub ty: u8,
+    /// `STB_GLOBAL`, `STB_WEAK` or `STB_GNU_UNIQUE` (the input set's
+    /// `cfirst`, §3.8).
+    pub bind: u8,
     pub other: u8,
     pub shndx: u16,
     pub value: u64,
@@ -110,7 +113,7 @@ impl Dso {
         if value == 0 { sec } else { sec.min(1u64 << value.trailing_zeros()) }
     }
 
-    fn read(path: &str, bytes: Vec<u8>, in_c: bool) -> Result<Dso, String> {
+    pub(crate) fn read(path: &str, bytes: Vec<u8>, in_c: bool) -> Result<Dso, String> {
         let so = SharedObject::parse(&bytes).map_err(|e| format!("{path}: {e}"))?;
         let dynamic = so.dynamic().map_err(|e| format!("{path}: {e}"))?;
         let mut d = Dso {
@@ -200,6 +203,7 @@ impl Dso {
                     default: !hidden,
                     version,
                     ty: s.sym_type(),
+                    bind: s.binding(),
                     other: s.st_other,
                     shndx: s.st_shndx,
                     value: s.st_value,

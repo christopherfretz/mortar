@@ -438,6 +438,30 @@ pub struct Map {
     /// mode, and the map claims IN-60's coverage even with no `hole` or
     /// `dead` line.
     pub incremental: bool,
+    /// GNU ld's preamble (§3.4): each archive member it included, with
+    /// the reason it prints, in map order. Empty for every other format.
+    pub included: Vec<Included>,
+}
+
+/// An archive member GNU ld's map says it included, and why (§3.4; the
+/// input set's M12, §3.8).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Included {
+    pub file: MapFile,
+    pub by: IncludedBy,
+    /// The map line of the member.
+    pub line: u32,
+}
+
+/// The reason GNU ld prints for an included member (§3.4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IncludedBy {
+    /// `(--whole-archive)`.
+    WholeArchive,
+    /// `(sym)`: a symbol the line names (`-u`, `-e`, `EXTERN`, ...).
+    Root(String),
+    /// `file (sym)`: a reference from a file of the link.
+    Reference { file: MapFile, symbol: String },
 }
 
 impl Map {
@@ -458,6 +482,7 @@ impl Map {
             args: Vec::new(),
             dead: Vec::new(),
             incremental: false,
+            included: Vec::new(),
         }
     }
 

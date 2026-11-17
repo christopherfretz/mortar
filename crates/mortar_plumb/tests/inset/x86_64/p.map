@@ -1,0 +1,17 @@
+mortar-map 2
+file 0 m.o
+place 0 1 4010e8 9
+place 0 2 4010f1 0
+place 0 3 4010f1 0
+chunk synthetic .symtab - 30
+chunk synthetic .strtab - 26
+chunk synthetic .shstrtab - 2a
+chunk synthetic .comment - d
+arg -static
+arg m.o
+arg ext.ld
+arg libk.a
+arg -o
+arg p
+arg --mortar-map=p.map
+end

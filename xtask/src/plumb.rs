@@ -466,6 +466,20 @@ impl mortar_plumb::Files for BaseFiles<'_> {
     fn read(&self, path: &str) -> Option<Vec<u8>> {
         std::fs::read(self.0.join(path)).ok()
     }
+    // By position (the input set reads archives' members, spec/plumb.md
+    // §3.8, §8.1).
+    fn len(&self, path: &str) -> Option<u64> {
+        std::fs::metadata(self.0.join(path))
+            .ok()
+            .filter(std::fs::Metadata::is_file)
+            .map(|m| m.len())
+    }
+    fn head(&self, path: &str, n: usize) -> Option<Vec<u8>> {
+        mortar_plumb::line::host_head(&self.0.join(path), n)
+    }
+    fn read_at(&self, path: &str, offset: u64, buf: &mut [u8]) -> Result<(), String> {
+        mortar_plumb::line::host_read_at(&self.0.join(path), offset, buf)
+    }
 }
 
 /// [`verify_link_with`], with the linker's words for stage 3 (a dynamic

@@ -1,0 +1,22 @@
+mortar-map 2
+file 0 libk.a k.o 5a
+file 1 r.o
+place 0 1 401190 7
+place 0 4 4021a0 8
+place 0 2 4031a8 0
+place 0 3 4031b0 0
+place 1 1 401197 9
+place 1 2 4031a8 8
+place 1 4 4031b0 0
+chunk synthetic .symtab - 60
+chunk synthetic .strtab - 2e
+chunk synthetic .shstrtab - 47
+chunk synthetic .comment - d
+chunk synthetic .pad.relro 4021a8 e58
+arg -static
+arg libk.a
+arg r.o
+arg -o
+arg qr
+arg --mortar-map=qr.map
+end

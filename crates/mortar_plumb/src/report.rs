@@ -469,6 +469,8 @@ pub struct Coverage {
     pub checked_types: BTreeMap<u32, u64>,
     /// Stage 4 (§13).
     pub meta: MetaCoverage,
+    /// What the input set made of the link (§3.8): its coverage line.
+    pub input_set: Option<String>,
 }
 
 /// What stage 4 judged (§13.2).
@@ -688,6 +690,9 @@ impl Report {
                 "placement not judged (large sections, X-54): {}",
                 c.placement_not_judged.join(", ")
             );
+        }
+        if let Some(i) = &c.input_set {
+            let _ = writeln!(s, "{i}");
         }
         let _ = writeln!(s, "findings: {}", self.findings.len());
         s
