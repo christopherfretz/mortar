@@ -36,6 +36,7 @@ i386 fit.
 | 4 (M6) | Mason metadata and the one-definition-rule table: `.mason.meta` in outputs, `.note.mason` (§13, P-M1-P-M3; WP-078) | — |
 | x | x86-64 and i386 tables (§4.5) | `machine` |
 | G (WP-098) | `.gdb_index`: gdb's format for every producer (P-G1–P-G5) and synth.md §17 for mortar's (P-G6–P-G9), §6.10. `.debug_names` is not judged | — |
+| R (M4-r; planned: RL-5, WP-185) | Relocatable outputs (`-r`, `ET_REL`): every input section and relocation once, the symbol table, `.eh_frame`, groups, the header, the container, the notes, every section header (§14, P-P2-P-P11, accepted by P-P9); the final program through `-r` against the direct link, on two final links (P-P1). Until it lands, S1 rejects `ET_REL` and the lane counts the output as `relocatable` (`spec/harness.md`) | — |
 | I (M7, WP-091) | An incremental link's holes and dead ranges, for a mortar map that claims them (`incremental`, `hole`, `dead`, §3.2): IN-60's coverage of every allocated section and IN-3a's three checks on every range (§6.8, P-I1–P-I6). `--equiv` (incr.md IN-62) is not started | — |
 
 On the reference corpus, a stage-1 report may give only the stage-2
@@ -147,7 +148,11 @@ define <name> <value>
 incremental
 hole <output-section> <offset> <size>
 dead <output-section> <offset> <size> neutral|contribution|strings|cie
-output static|exec|pie|static-pie|shared
+output static|exec|pie|static-pie|shared|relocatable
+rplace <file> <section> <out-index> <offset> <size>
+rframe <file> <section> <input-offset> <output-offset>|-
+rgroup <out-index> <file> <section>
+rcommon <name> <out-index> <offset> <size> <align>
 interp <path>
 runpath|rpath <paths>
 bind lazy|now
@@ -208,7 +213,7 @@ the incremental records and end the map.
 
 | record | count | meaning |
 |---|---|---|
-| `output <kind>` | at most one | the output kind of `dyn.md` D-1: `static`, `exec`, `pie`, `static-pie`; `shared` (planned, WP-116) |
+| `output <kind>` | at most one | the output kind of `dyn.md` D-1: `static`, `exec`, `pie`, `static-pie`; `shared` (planned, WP-116); `relocatable` (planned, M4-r: the `-r` records `rplace`, `rframe`, `rgroup`, `rcommon` and which records a relocatable map may hold are §14.2) |
 | `interp <path>` | at most one | the `-dynamic-linker` path |
 | `runpath <paths>`, `rpath <paths>` | at most one of the two | the `-rpath` list joined by `:` as written (`$ORIGIN` kept); `rpath` under `--disable-new-dtags` (`DT_RPATH`) |
 | `bind lazy`, `bind now` | at most one | `-z now` in force or not |
@@ -841,7 +846,8 @@ mold's output only (§10.2). Tests: `tests/inset_ver.rs`.
 **The roots** (resolve §4.2): the files live from the start (the named
 objects outside `--start-lib`, the `--whole-archive` members, the shared
 objects, file 0) and the keys of `-e`/`ENTRY` (else `_start`, except
-under `-shared` or `-r`), `-u`, `--require-defined`, `EXTERN` and the
+under `-shared`; under `-r` none of the three is a root, resolve.md
+RV-R2, §14.1), `-u`, `--require-defined`, `EXTERN` and the
 names a `--defsym` expression refers to. A `--defsym` whose expression is
 not only names, numbers, `+ - * / ( )` (a builtin like `ADDR(…)`, a
 section name, `.`) makes its target an open key and its names open roots.
@@ -3566,7 +3572,7 @@ A finding has:
 
 - the rule id: `O1`, `S1`–`S21`, `I1`, `I2`, `M1`–`M12` (M11, M12: §3.8), `R1`–`R9`, `T1`,
   `Y1`–`Y5`, `E1`–`E5`, `F1`–`F5` (§4.8), `P1`–`P2` (§6.6), `B1` (§6.7),
-  `C1`–`C6` (§5.10), `P-D1`–`P-D13` (§12), `P-I1`–`P-I6` (§6.8), `P-M1`–`P-M3` (§13), `P-E1`–`P-E6`
+  `C1`–`C6` (§5.10), `P-D1`–`P-D13` (§12), `P-I1`–`P-I6` (§6.8), `P-M1`–`P-M3` (§13), `P-P1`–`P-P11` (§14; planned, RL-5), `P-E1`–`P-E6`
   (§6.9; a side's finding there carries its side, `X:` or `F:`) or
   `P-G1`–`P-G9` (§6.10);
 - the output address, if it has one;
@@ -3590,9 +3596,11 @@ once:
 
 - **verified**, by how S was found: `direct`, `got-slot`, `piece`,
   `eh-frame` (a pointer field of a matched CIE or FDE, §6.4), `iplt`
-  (an IFUNC reference, §4.8) or `tombstone` (§5.8);
+  (an IFUNC reference, §4.8), `tombstone` (§5.8), and for a `-r` output
+  `place` and `string` (§14.6);
 - **accepted**, by rewriting (W1 to W13; on x86-64 §5.9's `got-to-lea`,
-  `got-to-direct`, `got-to-imm`, `got-to-mov-imm` and the TLS ones);
+  `got-to-direct`, `got-to-imm`, `got-to-mov-imm` and the TLS ones), and
+  for a `-r` output `per-linker` (§14.5 P-P3's list);
 - **not checked**, by reason: `tls`, `tls-sequence`, `ifunc`, `non-alloc`, `eh-frame`, `compressed`,
   `type`, `machine`, `section-not-locatable`, `piece-not-locatable`,
   `in-mergeable`, `symbol-unresolved`, `got-unpaired`,
@@ -3611,7 +3619,8 @@ the build id (§6.7), the x86-64 large sections whose placement no
 rule judges (`placement_not_judged`, §6.5), stage 4's `meta` (§13.2), and for an output with a
 `.gdb_index` its version, units, address entries and names and the rules
 that judged it (`gdb index: ...`, §6.10). A stripped dynamic output
-(no `.symtab`; WP-164) adds one line, `stripped output (no .symtab),
+(no `.symtab`; WP-164) adds one line, a `-r` output its `relocatable`
+and `composition` lines (§14.6), `stripped output (no .symtab),
 not judged: a; b`, naming each clause a rule could not judge without the
 symbol table (P-D6 and P-D22's `DT_INIT`/`DT_FINI` judged by segment
 only, §12.5; P-D9's GOT-slot addends, §12.3); the relocations against a
@@ -3812,6 +3821,12 @@ way, by the linkers that accept it, and its glibc programs are run:
 | `got-ldr-w` | gcc (asm): `LDR w0, [x0, :got_lo12:]` | `-static -nostdlib` | R8 for every linker |
 | `weak-prel` | gcc (asm): PC-relative data, `ADR` and `LDR` literal to an undefined weak | GNU ld, lld | clean (§4.4) |
 | `eh-frames` | gcc (asm): CIEs `zR`, `zPLR` (personality through `DW.ref`, LSDA), `zRS`, `zRB`; one FDE in a collected section | `-static -nostdlib --eh-frame-hdr --gc-sections` | `tests/eh.rs`: exits 0; clean; nothing not checked; 5 FDEs checked, 1 dropped, 5 table entries, 7 records verified |
+
+The relocatable corpus (stage R, planned: RL-5) is §14.9's: GNU ld's
+and lld's `-r` outputs verify clean but for the per-linker forms of
+§14.5, mold's show only their anomalies (A90-A101 as they apply), and
+P-P1 judges the D.3 components' final links through `-r` by GNU ld and
+by mortar against the direct links, static and PIE.
 
 ### 9.2 Mutations
 
@@ -4057,6 +4072,55 @@ produce a finding that is not a recorded anomaly (`tests/mutation.rs`):
   that only a weak reference names: M12; (5) GNU ld's printed reason
   made false: M12 naming the map line. The two orders of an archive and
   the object referring to it give mortar the same set, both clean.
+
+- **(t)** Relocatable outputs (§14; V-R12 of record
+  `spec/landed/layout/WP-154.md`; planned: RL-5, `tests/relocatable.rs`),
+  on GNU ld's `-r` output of the D.3 C and C++ components on each target
+  (i686 for the REL mutations), read with mortar's map form where the
+  mutation needs a mortar clause (as (l) reads lld's link as mortar's).
+  Each mutation is caught by the rule named, and by nothing that is a
+  recorded anomaly:
+  (1) a relocation record's `r_offset` moved by 4: P-P3;
+  (2) a section-symbol record's addend without its piece offset, in
+  `r_addend` (x86-64, AArch64) and in the field (i686): P-P3;
+  (3) a piece's bytes zeroed (dropped) and a piece's bytes written a
+  second time over its neighbor: P-P2;
+  (4) a second copy of a COMDAT group kept (its group, members and
+  records appended from the losing input): P-P6 and P-P2;
+  (5) a hidden global demoted to `STB_LOCAL` (moved below `sh_info`):
+  P-P4;
+  (6) a common's `st_shndx` set to `SHN_ABS` (mold's A90): P-P4;
+  (7) a `.symver` name stripped to its base (A95's form): P-P4;
+  (8) the FDE of a dropped copy kept (copied in with its records):
+  P-P5;
+  (9) an `R_*_NONE` record written at a live record's offset, read as
+  mortar's: P-P3;
+  (10) the container's bytes appended twice: P-P8;
+  (11) an opcode bit flipped under `CALL26` and under
+  `ADR_PREL_PG_HI21` (AArch64), under a `PC32` `call` (x86-64): P-P2;
+  (12) a DWARF 5 `.debug_info` field of a record into a dropped copy
+  written 0, read as mortar's (I-47's tombstone is 0xffffffff): P-P2;
+  (13) a global's `st_value` without its piece offset: P-P4;
+  (14) a local `$d` moved to a removed FDE's offset, read as mortar's:
+  P-P4;
+  (15) on a `--unique` output, a record moved into the other
+  `.rela.text`: P-P3;
+  (16) a `SHF_LINK_ORDER` section's `sh_link` set to 0: P-P11;
+  (17) `SHF_GNU_RETAIN` cleared on a section holding a retained piece:
+  P-P11;
+  (18) a type-unit group signature's `st_shndx` pointed at a member:
+  P-P4;
+  (19) the `.note.GNU-stack` flags cleared over an X input: P-P10;
+  (20) `e_type` set to `ET_EXEC`, `e_phnum` to 1, `EI_OSABI` flipped:
+  P-P9 and P-P7;
+  (21) for P-P1, the final link `V` of the D.3 C component through GNU
+  ld's `-r` output, `D` its direct link: a `.data` pointer's word in `V`
+  increased by 8: P-P1 item 3; a global's `.symtab` value in `V` moved by
+  4: item 4; two pieces of `V`'s `.text` swapped (their bytes and
+  records): item 2. (`V` is also wrong for stages 1-3; P-P1 must name
+  the composition all the same.)
+  Each mutation's finding names its rule; (11), (12) and (17) are the
+  review's x-cases (record §H).
 
 ### 9.3 Map readers
 
@@ -4791,6 +4855,57 @@ is accepted from its linker only, never from mortar's map.
   .symtab (a definition of __real_SYM under --wrap=SYM)". Reproducer:
   `resolve/wrap.test` (`chain`).
 
+- **A90 (mold; WP-180).** At `-r` mold turns a common (no definition,
+  RV-R5) into a definition `SHN_ABS` whose value is its alignment
+  (`comm2`, 32; record `spec/landed/layout/WP-154.md` §B, `exp/moldbug/`):
+  the final link then binds every reference to that absolute address,
+  and every mold `-r` WRONG or SEGV cell of record §D.3 is this. P-P4
+  "common {name} is SHN_ABS, not SHN_COMMON". Reproducer: the D.3 C
+  component (`tests/relocatable.rs`, planned RL-5).
+- **A91 (lld; WP-180).** At `-r` lld keeps the FDE of a dropped COMDAT
+  copy, its initial location then naming a section that is not in the
+  output (record §D, `rl0` case 8). P-P5 "output FDE at {offset} for
+  {target} comes from a removed FDE of {file}". Reproducer: `rl0` case 8.
+- **A92 (mold; WP-180).** At `-r` mold drops non-COMDAT groups: no
+  `SHT_GROUP`, the signature symbols `SHN_ABS`, the members still
+  `SHF_GROUP` and their relocation sections not (`rl0` case 3, gas's
+  `plaingrp`). P-P6 "group {signature} of {file} is not in the output",
+  with P-P4's and P-P11's findings on the signature and the flags.
+- **A93 (lld; WP-180).** At `-r` lld writes `.note.GNU-stack` without
+  `SHF_EXECINSTR` over an input that has it (every X cell of
+  `work/stack.log`): the final link then gives a non-executable stack to
+  code that asked for one. P-P10 "an input asks for an executable stack
+  ({file}) and the output's .note.GNU-stack is N".
+- **A94 (mold; WP-180).** At `-r` mold drops an `STB_GNU_UNIQUE` member
+  symbol (`_ZZ1fiE1k`; record B, `3-comdat`). P-P4 "{name} is not in
+  .symtab".
+- **A95 (mold; WP-180).** At `-r` mold strips `.symver` names to their
+  base (`vfoo@V1`, `vfoo@@V2` become two `vfoo`): a mislink in the final
+  link. P-P4 "{name} is not in .symtab" for each versioned name.
+- **A96 (mold; WP-180).** At `-r` mold accepts two strong definitions of
+  one name silently and writes both (RV-R4 refuses; GNU ld and lld
+  refuse). P-P4 "{name} is in .symtab 2 times".
+- **A97 (mold; WP-180).** At `-r` mold writes a debug record whose
+  target is a dropped copy against symbol 0, addend 0 (record §D, `rl0`
+  case 8). P-P3 "... has an output record against symbol 0, not
+  {target}" (no target is equivalent: the record should be dropped with
+  the field tombstoned, or kept as GNU ld's or lld's per-linker form).
+- **A98 (mold; WP-180).** At `-r` mold writes no `.note.gnu.build-id`
+  under `--build-id` (GNU ld and lld write one; `work/rl0-opts.log`).
+  P-P10 "the line asks for a build id (sha1) and the output has none".
+- **A99 (mold; WP-180).** At `-r` mold merges a `SHF_GNU_RETAIN` piece
+  into a section of its name without `SHF_GNU_RETAIN` (`rl0` case 7), so
+  a final `--gc-sections` may collect it. P-P11 "section {name} holds
+  the SHF_GNU_RETAIN piece {file}:({section}) without SHF_GNU_RETAIN".
+- **A100 (lld; WP-180).** At `-r` lld merges `SHF_MERGE` pieces of
+  different `sh_entsize` into one section `SHF_MERGE` with `sh_entsize` 0
+  (`rl0` case 10; GNU ld drops `SHF_MERGE`, mold writes two sections).
+  P-P11 "section {name}: SHF_MERGE with sh_entsize 0".
+- **A101 (mold; WP-180).** At `-r` mold writes `sh_link` 0 on a
+  `SHF_LINK_ORDER` section (`__patchable_function_entries`; the review's
+  `w/lo`, `rl0` case 9): the final link cannot order it. P-P11 "section
+  {name}: sh_link is 0".
+
 lld also links a `.hidden` or `.protected` undefined reference that only
 a library defines (writing 0) and drops the library from `DT_NEEDED`:
 that is dyn.md W9, P-D6 (A36's family), declared where a test has it,
@@ -4823,6 +4938,9 @@ id):
   protection, not of correctness (S16 holds).
 - With no `.note.GNU-stack` in any input, GNU ld writes no
   `PT_GNU_STACK` (L-84).
+- At `-r` GNU ld gives a non-allocated output section the address its
+  location counter had (`.note.GNU-stack` at 0x5c; WP-180, `rl0` case 1).
+  Nothing reads it (§14.1); P-P7 does not judge it for GNU ld.
 - A `PT_LOAD` both `PF_W` and `PF_X` (L-6) is hardening, not
   correctness; the verifier does not report it.
 
@@ -6539,7 +6657,9 @@ stage 3 puts outside (P-D1) is still judged here.
     of one output; what one output shows of it is judged above (no
     address, no segment). The lane tests' `cmp` of the two links
     (`tests/link/dyn/odr/mt32-keep-meta-*.test`) is its only check.
-  - A relocatable output is not judged (mortar writes none; MT-30 is M4).
+  - A relocatable output is judged by stage R: its container by P-P8
+    (MT-30), the units' contents in the final link that consumes it
+    (§14.5).
 - **P-M2 (`.note.mason`).**
   - *Place.* The section is `SHT_NOTE`, `SHF_ALLOC`, `sh_addralign` 8,
     and lies inside a `PT_NOTE` with `p_align` 8 whose file range holds
@@ -6608,7 +6728,776 @@ by rule and field. Coverage: `meta` counts outputs judged, live units,
 rows checked, names not judged, and whether the options were known
 (§7.2; `Report::summary`'s `ODR metadata` line).
 
-What stage 4 does **not** judge: `-r` outputs (M4); MT-32's
+What stage 4 does **not** judge: `-r` outputs (stage R's, §14.5 P-P8); MT-32's
 loaded-bytes sentence (above: two links); a unit's kinds 4 and 5 beyond their framing; the ODR verdict
 itself (`spec/odr.md` Q11, answered in WP-078's record: not
 implemented); the load-time hook (O-58).
+
+## 14. Stage R: relocatable outputs (M4-r; planned: RL-5, WP-185)
+
+The rules of a `-r` output (`ET_REL`), applied from record
+`spec/landed/layout/WP-154.md` §D.1 by WP-180 (RL-0; record
+`spec/landed/plumb/WP-180.md`). Request V-R*n* of the design is rule
+P-P*n* here (n = 1 to 11); V-R12, the mutations, is §9.2 (t). Until RL-5
+lands, S1 rejects every `ET_REL` output and `spec/harness.md` counts it
+as not judged (`relocatable`). The linker rules cited are those of
+`spec/cli.md` §3.16 (C-R*n*), `spec/resolve.md` §11 (RV-R*n*),
+`spec/layout.md` §24 (L-R*n*), `spec/image.md` §17 (I-R*n*),
+`spec/arch.md` §4.6 (A-R*n*), `spec/model.md` §4.6 (MD-R*n*) and
+`spec/meta.md` MT-30.
+
+A `-r` output is judged against the `-r`'s own inputs, as a final link
+is (P-P2-P-P8, P-P10, P-P11). That the component then links as its
+inputs would have is judged on two final links (P-P1). **The verifier
+recomputes from the inputs and the line every decision the rules make**
+(which file is live, the COMDAT keepers, the dropped sections and FDEs,
+the merged visibility, each piece's output section under mortar's
+rules): the map says only where each input section went.
+
+Measured for this section on GNU ld 2.44, lld 22 and mold 2.37.1
+(`tests/relocatable-design/exp/rl0/run.sh`, `work/rl0.log`; the
+options in `exp/rl0/opts.sh`, `work/rl0-opts.log`), on top of the
+design's experiments. "The references" in this section means GNU ld and
+lld: their `-r` outputs of the corpus (§14.9) pass, but for lld's three
+anomalies (A91, A93, A100). mold's fail by name (§10.2 A90-A101); a mold
+`-r` output is judged like any other.
+
+### 14.1 What stage R reads
+
+**The output.** `ET_REL` of a supported machine (P-P9). It has no
+program headers: §2.1's memory model does not apply, nothing is read by
+address, and every place is **(output section index, offset)**: the
+section header's index in the output and the offset from the section's
+start. An output section is identified by its index, never by its name:
+two output sections of one `-r` output may have the same name
+(`spec/layout.md` L-R1, L-R2, L-R11).
+
+**The inputs** are the files the map names (§2.2), each `ET_REL` of the
+output's machine (I2). They are numbered in map order: the `FileId`
+order of the rules.
+
+**The line.** mortar's map: its `arg` records (§3.2a). A reference's:
+the caller's line, as stage 3 reads it (`--line`, the link-test lane's
+ld words). Without a line the clauses that need an option are not
+judged (`options unknown`) and the others run as if the line had none of
+C-R3's options. The line's options stage R reads: `-d`/`-dc`/`-dp`,
+`-s`, `-S`, `-x`, `-u`, `-e`, `--build-id[=STYLE]`/`--no-build-id`,
+`-z execstack`/`-z noexecstack` (the last of the two), `--unique` and
+`--unique=PATTERN`, `--force-group-allocation`, `--allow-multiple-definition`
+(and `-z muldefs`).
+
+**The input set** (§3.8) is judged as for a final link, with RV-R2's
+roots: at `-r` neither `-e` nor `ENTRY` nor `_start` is a root (§3.8
+names `-e` as one; at `-r` it is not, `spec/resolve.md` RV-R2); `-u` is.
+
+**The places.** Each input section gets one place from the map (§14.2):
+
+| place | meaning |
+|---|---|
+| whole at `(o, d)` | the input section is the piece at offset `d` of output section `o`; `off(S) = d`, `out(S) = o` |
+| merged into `o` | a foreign map's `SHF_MERGE` input section whose pieces are in output section `o` and are not listed (lld's `<internal>` rows, mold's unlisted mergeable sections) |
+| framed | an input `.eh_frame`: its records are placed one by one (mortar's `rframe` records), or the section is placed whole with another size (GNU ld's edited `.eh_frame`), or not listed (mold); judged record by record (P-P5) |
+| consumed | an input section the `-r` makes an output section from rather than placing it: its `SHT_GROUP`, its relocation sections, `.symtab`, `.symtab_shndx`, `.strtab`, the section-name table; `.note.gnu.property` and `.note.GNU-stack` (merged, P-P10); `.note.gnu.build-id` (dropped, I-R8); a Mason container (P-P8) |
+| dropped | a section a rule drops (§14.3) |
+| absent | no record and no rule: a finding when the section has bytes (P-P2) |
+
+**The keepers.** The keeper of each COMDAT signature is recomputed by
+`spec/resolve.md` §6.1 among the live inputs of the `-r` alone (RV-R7):
+the group of the least `FileId`, the first by section index there.
+
+### 14.2 The map at `-r`
+
+**mortar's map.** A `-r` link writes version 2 (§3.2) with these
+records, added within the version as the incremental records were (a
+reader that predates them refuses the map: "unknown record"):
+
+| record | count | meaning |
+|---|---|---|
+| `output relocatable` | exactly one | the output kind (`Plan.kind == Relocatable`); §3.2's `output` record gains the value |
+| `rplace <file> <section> <out> <offset> <size>` | one per input section placed whole | the input section `<section>` of `<file>` is the piece at `<offset>` (hex) of the output section whose header index is `<out>` (decimal), with `<size>` (hex) its input size |
+| `rframe <file> <section> <input-offset> <output-offset>\|-` | one per record (CIE, FDE, zero terminator) of each input `.eh_frame` | the record's output offset in the output `.eh_frame` (L-R6's record map), or `-` for a removed record |
+| `rgroup <out> <file> <section>` | one per output `SHT_GROUP` | **hint**: the input group section the output group at header index `<out>` is made from (the keeper; I-R12) |
+| `rcommon <name> <out> <offset> <size> <align>` | one per common allocated under `-d` | as §3.2's `common`, with the place `(out, offset)` in place of an address (RV-R5, L-R4) |
+| `discard <file> <section> comdat\|unspecified` | one per input section with bytes that is dropped | §3.2's record: `comdat` for a member of a COMDAT copy that is not kept, `unspecified` for every other drop of §14.3 |
+
+with `file` and `arg` as in every map, in §3.2's writer order (`rplace`
+where `place` goes, then `rframe`, `rgroup`, `discard`, `rcommon`,
+`output`, `arg`). In a map with `output relocatable`, `place`,
+`piece`, `nplace`, `merged`, `fold`, `chunk`, `common`, `define`, the
+incremental records and every dynamic record but `arg` are a `MapError`
+("<record> in a relocatable map"): nothing at `-r` has an address. An
+`rplace` whose `<out>` is not an output section header, or an `rframe`
+in a map whose output has no `.eh_frame` output section or more than one,
+is M1 against the output. The `.eh_frame` output section is the one
+section of that name (L-R11 never splits it). The hints are never the
+expected value: P-P6 recomputes the keepers and P-P5 the record map, and
+a hint that disagrees is a finding of that rule.
+
+**Foreign maps** (§3.4-§3.6) are read as they are, with three changes
+when the output is `ET_REL`:
+
+- **Offsets.** An input row's address is read as an offset: the row's
+  address minus its output section block's address. (GNU ld gives a
+  non-allocated output section at `-r` the address its location counter
+  had, `.note.GNU-stack` at 0x5c after a 0x5c-byte `.eh_frame`, and its
+  rows the same base; lld and mold give 0.)
+- **Which output section.** The *k*-th output section block of a name
+  in the map is the *k*-th section header of that name in the output, in
+  index order (measured on the three references with two `.text.r`
+  sections, one `SHF_GNU_RETAIN`: GNU ld lists two blocks in header
+  order; lld and mold write one section and one block). A GNU ld block
+  line is an output section only when it has an address and a size,
+  on its line or on the wrapped next line; GNU ld's `-r` script lists
+  every statement, so most block names have neither and are skipped. A
+  map whose blocks of a name outnumber the output's headers of that name
+  is M1.
+- **Consumed rows.** A row naming an input relocation section (lld lists
+  `m1.o:(.rela.text)` under `.rela.text`) is skipped: §3.3 consumes
+  those sections. lld's `<internal>` rows under an output section make
+  that section's same-named `SHF_MERGE` inputs *merged* into it; its
+  `<internal>` `.symtab`, `.strtab`, `.shstrtab`, `.comment` and
+  `.note.GNU-stack` rows are the consumed or merged sections they name.
+
+GNU ld's edited `.eh_frame` (a whole row of another size: GNU ld trims an
+FDE's trailing `DW_CFA_nop` padding at `-r` too, 0x38 to 0x34 in the
+measurement) is *framed*; so is lld's whole `.eh_frame` row and mold's
+missing one.
+
+M2-M5 apply with places for addresses: M4 reads "inside an output
+section of its name" and "`off(S)` a multiple of its `sh_addralign`",
+and has no `SHF_EXECINSTR`/`SHF_WRITE` clause (P-P11 judges the flags);
+M5 reads "two pieces of one output section overlap". M6-M8 do not apply
+(`rcommon` is judged by P-P4). **M10 at `-r`** (mortar's map): a section
+of a live input with bytes that has no place has a reason of §14.3, or
+it is M10.
+
+### 14.3 What a `-r` drops
+
+The verifier derives each from the inputs and the line:
+
+- the members of a COMDAT copy that is not its signature's keeper (RV-R7,
+  §14.1), with their relocation sections;
+- under `--force-group-allocation`, no member is dropped for that reason
+  other than the losers' (the keeper's members become ordinary sections);
+- under `-S` or `-s`, the non-allocated debug sections (§3.3's M10 list:
+  GNU ld's debug names) with their relocation sections (I-R9);
+- **(mortar)** `.llvm_addrsig` (`SHT_LLVM_ADDRSIG`) with its relocation
+  section, if any (L-R1); the references copy it (all three, with
+  `sh_link` 0), which is accepted from them;
+- the input relocation records RV-R7 drops: the records of a removed FDE
+  (P-P5) and the debug and `.gcc_except_table` records whose target is a
+  dropped copy (I-R7);
+- every `R_*_NONE` input record (**mortar**, I-R5; the references keep
+  them, P-P3).
+
+Nothing else is dropped: `--gc-sections` is refused at `-r` (I-R10),
+and `SHF_EXCLUDE` sections are copied (L-R1). Every other section of a
+live input that is not consumed must have a place.
+
+### 14.4 How a target is compared
+
+Every input relocation record names a **target**, and so does every
+output record. P-P2-P-P6 compare targets by this one rule.
+
+The **effective place** of a record against a symbol defined in a
+section `T` is `(out(T), off(T) + st_value + A)` in the input (the
+symbol's input value, the record's addend `A`), and `(shndx, st_value +
+A')` in the output, where `A` and `A'` are the addends: `r_addend` on
+RELA, and on REL the field's implicit addend read by §4.5's `Implicit`
+description of the type from the input's and the output's bytes
+(`spec/arch.md` A-R2). An `STT_SECTION` symbol's value is 0. A record
+against a symbol of `SHN_ABS` has the effective place `(ABS, st_value +
+A)`; one against an undefined, common or global symbol has the target
+`(name, A)` (the name with its version, `foo@V`, `foo@@V`, as written).
+
+An output record's target is **equivalent** to the input's when:
+
+- the input names a global or weak symbol (defined or not), a common or
+  an undefined symbol: the output names a global or weak symbol of the
+  same name (version included), and `A' = A`;
+- the input names a local symbol, an `STT_SECTION` symbol or a
+  symbol of `SHN_ABS`: the output's effective place equals the input's,
+  through a local, `STT_SECTION` or `SHN_ABS` symbol (a reference may
+  write either form; mortar's is fixed, below);
+- the input's target lies in a section placed *merged* into `o` (a
+  foreign map): the output's effective place lies in `o`, and the
+  NUL-terminated string (`SHF_STRINGS`) or the `sh_entsize`-byte entry
+  that starts there equals the input's at its effective place. Counted
+  as verified `string`. This is the form of lld's and mold's merged
+  strings (record B.4, "the same string").
+
+**(mortar)** I-R5's form exactly: a global or weak target by the
+output index of its key (I-R4), `A' = A`; a local non-section symbol by
+the output index of the same kept local, `A' = A`; an `STT_SECTION`
+symbol of input section `T` by the `STT_SECTION` symbol of `out(T)`,
+`A' = A + off(T)` (on REL in the field, written by `write_addend`).
+
+A target in a dropped section has no equivalent: a record that needs
+one is a finding of the rule that reads it, except where §14.3 drops the
+record.
+
+### 14.5 The rules
+
+Each finding is at the output section and offset it names, sited at the
+input file, section and offset when there is one. The messages below
+are the text of each finding (`{…}` a field).
+
+- **P-P1 (the final program; V-R1; open: Q-R2).** Judged on two final links, not
+  on the `-r` output: the **direct** link `D` of a line `L`, and the
+  link `V` of the same line with the component's inputs (contiguous in
+  `L`) replaced, at the place of the first of them, by the `-r` output of
+  those inputs; the same linker. Each is also verified by stages 1-3;
+  P-P1 runs whatever they find, and reports only its own comparisons. The entry point is
+  `mortar_plumb::compose::compose(direct, via, rmap) -> Report`
+  (open, §14.8 Q-R2: who writes it):
+  `direct` and `via` are each an output with its inputs and map, `rmap`
+  the `-r` output's own inputs and map. `φ` maps a place of `D` to a
+  place of `V`: an input piece's bytes by the piece (in `V` through the
+  `-r` map: `V`'s place of the `-r` output's section `out(S)`, plus
+  `off(S)`); a GOT slot, PLT or IPLT entry, copy, or TLS offset of a key
+  to the one of the same key; a linker-made section to the section of
+  its name. Compared:
+  1. **The sections.** The output sections' (name, `sh_type`,
+     `sh_flags`) in header order are equal. "P-P1 the output sections
+     differ at {index}: {direct} in the direct link, {via} through -r".
+  2. **The pieces.** Every input section of `L` is placed in `D` exactly
+     when it is placed in `V`, in an output section of the same name,
+     and the pieces of each output section are in the same order. "P-P1
+     {file}:({section}) is {placed or not} in the direct link and {...}
+     through -r".
+  3. **The bytes.** Every placed piece's bytes are equal outside its
+     relocated fields; every relocated field resolves (§5.1: stage 1-3's
+     `S`, or the slot it names) in `V` to `φ` of what it resolves to in
+     `D`. A record of a component input is the `-r` output's record
+     P-P3 matched to it. "P-P1 {file}:({section})+{offset} {type}
+     resolves to {target} in the direct link and to {target'} through
+     -r".
+  4. **The globals.** For every global or weak name of `D`'s and `V`'s
+     `.symtab` and `.dynsym`, `V`'s value is `φ` of `D`'s, and its
+     size, type, binding and visibility are equal. "P-P1 symbol {name}:
+     {value} in the direct link, {value'} through -r".
+  **Tolerances** (V-R1's; nothing else may differ):
+  - **(t1)** addresses, offsets and sizes of sections and pieces: `φ`
+    absorbs them. A `-r` section is one input aligned to its largest
+    piece, so the final link may pad it differently;
+  - **(t2)** `.symtab`'s locals (the `-r` output's `STT_SECTION` and
+    `STT_FILE` symbols, the order of locals): not compared; `.strtab`'s
+    and `.shstrtab`'s bytes: not compared;
+  - **(t3)** the build-id descriptor, which hashes (t1) and (t2): not
+    compared;
+  - **(t4)** the members of a COMDAT group that has a copy inside the
+    component and one outside, with different bytes: item 2 and 3 accept
+    either copy as the kept one (the `-r` elects first).
+  **Exclusions**: P-P1 is not applied, and the report says which (`not
+  judged: relocatable composition ({letter})`), when:
+  - **(a)** the `-r` line names an archive or a `--start-lib` group, and
+    §3.8's closure of the `-r` line alone extracts other members than the
+    closure of `L` does from the same archive (the review's x06 case 1:
+    the `-r` extracts a strong `foo` that a weak `foo` outside the
+    component keeps the direct link from extracting);
+  - **(b)** `L`'s last of `--gc-sections`/`--no-gc-sections` is
+    `--gc-sections`, or `L` has `--icf` other than `=none`, and some
+    output section of the `-r` output holds pieces of two input files
+    (L-R1's merge by name; x06 case 2). Under `--unique` (L-R11) each
+    piece is its own section and (b) does not apply;
+  - **(c)** `L` has `--wrap=SYM` and the component both defines `SYM`
+    and references it (a reference the `-r` binds inside the component;
+    `work/equiv.log`). A component that only references `SYM`, or only
+    defines it, composes;
+  - **(d)** `L` has `--exclude-libs` and the `-r` line names an archive
+    member that §3.8's closure of the `-r` line extracts.
+  Not judged: anything only a run shows (the lane runs both programs,
+  `spec/harness.md`); `D` and `V` by different linkers.
+  *Passes:* the D.3 corpus's GNU ld and lld `-r` outputs, final-linked
+  by GNU ld and by mortar, static and PIE (the cells marked `=`).
+  *Catches:* mold's `-r` of the C component (COMMON→`SHN_ABS`: item 4
+  and item 3, the field resolves to the absolute 4); the `.ctors.65335`
+  order mold's `-r` moves (item 2); a `-r` output whose piece offsets are
+  off by 4 (item 3).
+
+- **P-P2 (every live input section once; V-R2).** For every section of a
+  live input that is neither consumed nor dropped (§14.1, §14.3):
+  - it has exactly one place: whole, merged or framed. None is "P-P2
+    {file}:({section}) is not in the output"; a second is M2;
+  - placed whole at `(o, d)`: `o` has the input's name, `d` is a multiple
+    of the input's `sh_addralign`, and `[d, d + size)` lies in `o`
+    (`size` the input's; a `NOBITS` input in a `PROGBITS` output section
+    holds zeros, L-49);
+  - its bytes equal the input's in every bit no relocation record writes.
+    For a relocated field (§4.3's field of the record's type, the
+    machine's table in §4.2 and §4.5), the bits outside the field's
+    encoded value, an instruction's opcode and register bits, are
+    compared too: "P-P2 {file}:({section})+{offset}: {n} bits outside the
+    {type} field differ". Inside the field:
+    - RELA: the bits equal the input's;
+    - REL: they hold the output record's implicit addend, which P-P3
+      judges (on i386 GNU ld, lld and mold all rewrite a section-symbol
+      record's field to `A + off(T)`: 4 to 0xc for `.data+4` with
+      `.data` at 8, 1 to 4 for `.text+1` with `.text` at 3, and the
+      same for `R_386_16`; a global's field stays `A`);
+    - a record §14.3 drops for its dropped target (I-R7): the field holds
+      §5.8's value for a target not in the output, in mortar's column
+      for mortar (I-47's tombstone of the referring section and the
+      field's width; 0 in `.gcc_except_table`), and in the referring
+      linker's column, or its input bits under its record (P-P3's
+      per-linker forms), for a reference. "P-P2 {file}:({section})+{offset}
+      holds {value}, not the tombstone {tombstone} of a record into a
+      dropped copy";
+  - a merged section's strings or entries are not compared by bytes
+    (`in-mergeable`); records into it are judged by content (§14.4).
+  **(mortar)** the place is the rules':
+  - `o` is the output section of L-R1's key (the exact name; for
+    `SHF_LINK_ORDER` the output section of the linked-to section; whether
+    `SHF_GNU_RETAIN` is set; under `--unique` the piece itself, L-R11),
+    or for a member of a kept group (and no `--force-group-allocation`)
+    an output section of its own (L-R2): "P-P2 {file}:({section}) is in
+    output section {o}, not {o'} (L-R1's key {key})";
+  - the pieces of `o` are in input order `(FileId, section index)`, each
+    at the next offset aligned to its `sh_addralign` after the previous
+    one, the gaps zero (L-R4), and `sh_size` is the last piece's end;
+  - no piece is merged or deduplicated (L-R5): an `SHF_MERGE` piece is
+    placed whole, byte for byte;
+  - a `PROGBITS` and a `NOBITS` piece of one key share one `PROGBITS`
+    output section (L-R1a, L-49; lld's form; GNU ld and mold write two
+    sections, accepted from them).
+  Linker rules judged: L-R1, L-R1a, L-R2, L-R4, L-R5, L-R11, I-R7,
+  I-R9 (what `-S`/`-s` drop), A-R2 (the field).
+  Not judged: a merged piece's bytes (the final link merges again);
+  references' piece order and offsets beyond alignment and bounds
+  (theirs differ, record B.1).
+  *Passes:* GNU ld's and lld's outputs of the corpus, of
+  `rl0/run.sh`'s cases 1-14.
+  *Catches:* a piece dropped or written twice; an opcode bit flipped
+  under `CALL26` or `ADR_PREL_PG_HI21`; a tombstone written as 0 in a
+  DWARF 5 `.debug_info` field (§9.2 (t)).
+
+- **P-P3 (every input relocation once; V-R3).** For each record of a
+  placed input section (whole or merged; a framed `.eh_frame`'s records
+  are P-P5's, which uses this rule's matching) that is not `R_*_NONE`
+  and that §14.3 does not drop, there is exactly one output record:
+  - in the relocation section whose `sh_info` is `out(S)` (on AArch64
+    and x86-64 `SHT_RELA`, on i386 `SHT_REL`, A-R4); never matched by
+    the target section's name, so two output sections of one name are
+    two relocation sections;
+  - at `r_offset = off(S) + r_offset_in` there;
+  - with the same `r_type` (nothing is relaxed, A-R1);
+  - with an equivalent target (§14.4).
+  "P-P3 {file}:({section})+{offset} {type} against {target} has no
+  output record at {out}+{offset'}"; "... has an output record against
+  {target'}, not {target}"; "... has an output record of type {type'}".
+  **No other records**: an output record that no input record gives is
+  "P-P3 output record {type} at {out}+{offset} comes from no input
+  record", except:
+  - an `R_*_NONE` record at the place of an input `R_*_NONE` record,
+    from a reference (all three keep the inputs' `NONE` records, and the
+    relocation section that holds only them: `rl0` case 5);
+  - GNU ld: an `R_*_NONE` record in `.rela.eh_frame`/`.rel.eh_frame`
+    where it removed an FDE (L-R6; record §D finding 1);
+  - GNU ld: a debug-section record retargeted from a dropped copy to
+    the kept copy's section, when the two input sections have the same
+    name and size (§10.6's per-linker rule, now at `-r`: record B.2,
+    "retargeted ... all of them");
+  - lld: an `R_*_NONE` record at the place of a debug record into a
+    dropped copy, the field holding its input bits (lld writes 12 of
+    them for the corpus's 10 records in DWARF 4, 10 in DWARF 5);
+  - lld: a plain `foo` reference bound to the definition `foo@@V`, its
+    output record naming `foo@@V` (RV-R6's lld form; both final links
+    run, the review's x09).
+  These are per-linker rules (§10.6), accepted only from their linker.
+  **(mortar)** I-R5 exactly: no `R_*_NONE` record at all, and records in
+  the order of `S`'s pieces, then the input order; the target in §14.4's
+  mortar form; a relocation section exists exactly for an output section
+  with at least one output record (L-R10; open, §14.8 Q-R1: written for its option (a)), and is
+  named `.rela<name>`/`.rel<name>` of its target, `SHF_INFO_LINK`, plus
+  `SHF_GROUP` iff its target is a group member (P-P11).
+  Linker rules judged: I-R5, I-R7 (no record), A-R1, A-R2 (the addend
+  through the field), A-R4.
+  Not judged: what the final link computes (P-P1).
+  *Passes:* rcheck's measurement (record B.4): GNU ld 2264 of 2264
+  records equal on AArch64, 2230 on x86-64, 2044 on i686; lld and mold
+  the same with "the same string" for merged strings.
+  *Catches:* a record moved by 4 bytes; a section-symbol addend without
+  the piece offset, on RELA and on REL in the field; a `NONE` record left
+  at a live record's offset (mortar); a record moved into the other
+  `.rela.text` of a `--unique` output; a global's record matched by name
+  but at the wrong place; mold's debug records against symbol 0 (A97).
+
+- **P-P4 (the symbol table; V-R4).** For every producer:
+  - the locals precede the globals and `.symtab`'s `sh_info` is the
+    index of the first non-local: "P-P4 .symtab's sh_info is {n}, the
+    first non-local is {m}";
+  - every key RV-R6 writes appears exactly once among the globals: every
+    global or weak name a live input mentions, other than the losers
+    RV-R4 drops (a weak definition against a strong one). Absent: "P-P4
+    {name} is not in .symtab"; twice: "P-P4 {name} is in .symtab {n}
+    times";
+  - its binding, type and visibility: the merged visibility
+    (`spec/resolve.md` §3.5), and a hidden or internal key stays
+    `STB_GLOBAL` or `STB_WEAK` ("P-P4 {name} is local; a hidden key
+    stays global at -r (RV-R6)"); `STB_GNU_UNIQUE` kept when the
+    definition has it; the definition's type; versioned names under their
+    full names (RV-R6);
+  - a defined key: `st_shndx = out(S)` of the definition's input section
+    `S` and `st_value = off(S) + v` (`v` its input value): "P-P4 {name}
+    is at {out}+{value}, not {out'}+{value'}"; in a section placed
+    *merged*, the value is judged by content as §14.4 says;
+  - a common key (no definition, RV-R5) without `-d`: `SHN_COMMON`,
+    `st_size` the largest of its mentions' sizes and `st_value` the
+    largest alignment: "P-P4 common {name} is {shndx}, not SHN_COMMON";
+    with `-d`/`-dc`/`-dp`: a definition `STT_OBJECT` of its size in a
+    `NOBITS` `.bss` output section at an offset that is a multiple of its
+    alignment, which mortar's `rcommon` record states (L-R4);
+  - an undefined key: `SHN_UNDEF`, `STB_WEAK` exactly when every live
+    mention is a weak reference (RV-R3);
+  - a local that is not `STT_SECTION` or `STT_FILE`, of the output: an
+    input local of the same name, type and size, at its mapped place
+    (`out(S)`, `off(S) + v`; in `.eh_frame` the record map's, P-P5);
+    "P-P4 local {name} at {out}+{value} is no input's local there". A
+    mapping symbol (`$x`, `$d`, `$t`, with or without a `.` suffix) in a
+    non-executable output section is not judged for a reference
+    (I-R4: optional there; GNU ld moves an `.eh_frame` `$d`, mold makes
+    them `SHN_ABS`);
+  - an `STT_SECTION` symbol has value 0 and names an output section that
+    exists;
+  - a group's local signature defined in its input `SHT_GROUP` (GCC's
+    type-unit `wt.`/`wi.`, gas's non-COMDAT group signature) has
+    `st_shndx` = the output `SHT_GROUP` of that group and value 0
+    (L-R3): "P-P4 group signature {name} is in section {shndx}, not its
+    group {g}";
+  - no linker-defined symbol (RV-R8): a name of `spec/resolve.md` §8.1
+    that no live input defines is undefined or absent, never defined;
+  - `.symtab_shndx`, when present, has one word per `.symtab` entry, and
+    an entry with `SHN_XINDEX` has its index there.
+  Per-linker forms: a `-u` name no input defines is absent from lld's
+  and mold's output (RV-R3: GNU ld and mortar write it); lld accepts
+  `-d` and leaves commons `SHN_COMMON` (record B: "accepted, no
+  effect"), and mold accepts `-dc`/`-dp` likewise; lld's plain
+  `foo` bound to `foo@@V` (P-P3) leaves no `UND foo`.
+  **(mortar)** I-R4 exactly: the null entry, then one `STT_SECTION` per
+  output section other than `SHT_GROUP`, the relocation sections,
+  `.symtab`, `.symtab_shndx`, `.strtab` and `.shstrtab`, in index order
+  (GNU ld writes this set; lld has none for `.note.GNU-stack`, mold one
+  for every section: `rl0` case 4, accepted from them); then per live
+  input in `FileId` order its `STT_FILE` entries and kept locals in its
+  table order, the kept set being I-R4's "kept local symbols at `-r`"
+  (no more, no fewer: "P-P4 local {name} of {file} is {kept or not}, by
+  I-R4"); then the globals in `SymbolId` order (the first mention in
+  `FileId` and symbol order); a `-u` name written `STB_GLOBAL`
+  `SHN_UNDEF` (RV-R3); an `.eh_frame` local through the record map and
+  one in a removed record dropped; `.symtab_shndx` exactly when some
+  index is `SHN_LORESERVE` or more.
+  Linker rules judged: I-R4, RV-R3, RV-R4, RV-R5, RV-R6, RV-R8, MD-R2,
+  L-R3 (the signature), I-R9 (`-s`/`-x`: the locals dropped).
+  Not judged: `.strtab`'s layout (S-86 at `-r`) beyond each name
+  reading back; the order of a reference's locals.
+  *Passes:* GNU ld's and lld's outputs of the corpus (both keep hidden
+  keys `GLOBAL HIDDEN`, commons `COM` with the largest size and
+  alignment, `UNIQUE` and versioned names).
+  *Catches:* mold's COMMON→`SHN_ABS` (A90); mold's dropped `UNIQUE`
+  member (A94); mold's stripped `.symver` names (A95); mold's two strong
+  definitions (A96); a hidden global demoted to local; a global's value
+  off by its piece offset; a local `$d` left at a removed FDE's offset
+  (mortar); a type-unit signature pointed at a member.
+
+- **P-P5 (`.eh_frame`; V-R5).** The output `.eh_frame` and each input
+  `.eh_frame` are read as §6.4 reads them (framing, CIE pointers,
+  augmentations, encodings: E1), with the pointer fields read as
+  relocation targets (§14.4) instead of values: an FDE's initial location
+  is the target of the record at its field.
+  - An input FDE whose initial location's target is a dropped section, or
+    whose address range is 0, is **removed**; every other input FDE is
+    **live**.
+  - Every live input FDE has exactly one output FDE whose initial
+    location is equivalent (§14.4), with E3's equality: the same range,
+    augmentation data length and instructions (without trailing
+    `DW_CFA_nop` padding: GNU ld trims it), an equivalent LSDA target, and
+    a CIE with the same version, augmentation, alignments, return address
+    register, initial instructions and an equivalent personality target.
+    "P-P5 FDE for {target} of {file} is not in the output"; "... differs:
+    {field}".
+  - No output FDE comes from a removed input FDE or from no input FDE:
+    "P-P5 output FDE at {offset} for {target} comes from {a removed FDE of
+    file, or no input FDE}".
+  - Each output FDE's CIE pointer names a CIE (E1).
+  - The relocation records of a live FDE or CIE are matched by P-P3 at
+    the record's output offset plus the field's offset in it.
+  - A live FDE's or CIE's field whose target is a dropped section (an
+    LSDA, a personality into a dropped copy) is P-P3 "no equivalent
+    target": the `-r` must have refused (RV-R7, WP-177's rule), so an
+    output that has it is wrong.
+  Per-linker forms: mold deduplicates CIEs (4 to 2 in the corpus) and
+  writes a 4-byte terminator when no input has `.eh_frame`; GNU ld trims
+  padding; all accepted by the comparison above.
+  **(mortar)** L-R6 and I-R6 exactly: the output `.eh_frame` is the
+  input records of the live inputs in `(FileId, record)` order, every
+  CIE kept (none deduplicated), every live FDE kept, each byte for byte
+  except its CIE-pointer word, which is its distance back to its own
+  CIE's output place; a zero terminator exactly where an input has one;
+  the map's `rframe` records equal this record map ("P-P5 rframe
+  {file} {offset} says {x}, the record map gives {y}").
+  Linker rules judged: L-R6, I-R6, RV-R7 (`.eh_frame`).
+  Not judged: the instructions' meaning (as §6.4); an `.eh_frame` with an
+  `SHT_X86_64_UNWIND` type mix (P-P11 judges the type).
+  *Passes:* GNU ld's outputs (removed FDE, `NONE` record left: P-P3's
+  per-linker form).
+  *Catches:* lld's kept FDE of a dropped copy (A91); an FDE of a dropped
+  copy kept (§9.2 (t)).
+
+- **P-P6 (groups; V-R6).** Without `--force-group-allocation`:
+  - **one `SHT_GROUP` per kept group**: the keeper of every COMDAT
+    signature (§14.1) and every non-COMDAT group (flag word 0) of every
+    live input, each copy its own (RV-R7). Missing: "P-P6 group {signature}
+    of {file} is not in the output"; a COMDAT group written twice: "P-P6
+    COMDAT group {signature} is in the output {n} times";
+  - each output group: `sh_flags` 0, `sh_link` `.symtab`, `sh_entsize` 4,
+    `sh_info` the index of a symbol whose name is the signature (for an
+    assembler group named by its section, an `STT_SECTION` symbol of the
+    member's output section), the flag word the input's
+    (`GRP_COMDAT` = 1, or 0), and the members exactly the output sections
+    that hold the pieces of the input group's members (each placed whole
+    and alone in its section: "P-P6 member {section} of group {signature}
+    shares output section {o} with {other}") and the relocation sections
+    of those, each with `SHF_GROUP`. Measured: GNU ld and lld write
+    `sh_flags` 0, the input's flag word (1 for the COMDAT
+    `_Z13shared_inlinei`, 0 for gas's `plaingrp`), and the members
+    `[member, its .rela]` with `SHF_GROUP` on both;
+  - no section is a member of two groups, and an output section has
+    `SHF_GROUP` exactly when it is a member;
+  - the map's `rgroup` hints (mortar) name the keeper's group section.
+  With `--force-group-allocation`: no `SHT_GROUP`, no `SHF_GROUP`, and the
+  keepers' members placed by L-R1's key (P-P2).
+  **(mortar)** L-R3's order: the members in the input member order, each
+  member's relocation section right after it; the group section named
+  `.group`, `sh_addralign` 4.
+  Linker rules judged: RV-R7, L-R2, L-R3, C-R3's
+  `--force-group-allocation`.
+  Not judged: whether a reference's non-COMDAT group copies have
+  distinct signature symbols beyond P-P4's.
+  *Passes:* `rl0` case 3 by GNU ld and lld; the corpus's COMDAT C++.
+  *Catches:* mold's dropped non-COMDAT groups (A92: no `SHT_GROUP`, the
+  signatures `SHN_ABS`, the members still `SHF_GROUP`, their relocation
+  sections not); two copies of a COMDAT group kept (§9.2 (t)).
+
+- **P-P7 (the header; V-R7).** `ET_REL`; `e_machine` the inputs';
+  `e_flags` A-R3's merge of the live inputs' (0 on the three targets);
+  `e_phoff` 0, `e_phnum` 0, `e_phentsize` 0; `e_entry` 0;
+  `EI_OSABI` `ELFOSABI_GNU` when an output symbol is `STT_GNU_IFUNC` or
+  `STB_GNU_UNIQUE`, else `ELFOSABI_NONE` (I-R2); `e_shstrndx` names a
+  `SHT_STRTAB`, with the `SHN_XINDEX` escape when there are 0xff00
+  sections or more (I-R1); every section with file bytes lies in the
+  file and no two overlap, nor the file header or the section header
+  table (S6's file clause). "P-P7 {field} is {x}, not {y}". Every
+  allocated section's `sh_addr` is 0 (all three).
+  Per-linker forms: with `-e SYM`, GNU ld and lld write `SYM`'s offset in
+  its section as `e_entry` (8 in the corpus; L-R7); a non-allocated
+  section's `sh_addr` is not judged for GNU ld, which writes its location
+  counter there (0x28, 0x5c: a note, §10.2).
+  **(mortar)** L-R7 and L-R8: every `sh_addr` 0; `e_entry` 0 with `-e`
+  too; the headers in L-R8's order (index 0; the build-id note with
+  `--build-id`; the output sections by their first piece's
+  `(FileId, section index)`, the merged notes and the container at their
+  first input's place; each `SHT_GROUP` right before its first member;
+  each relocation section right after its target; `.symtab`,
+  `.symtab_shndx`, `.strtab`, `.shstrtab`); file offsets in the same
+  order, each aligned to its `sh_addralign`, `NOBITS` without bytes;
+  the section header table last, aligned to 8 (ELF64) or 4 (ELF32).
+  "P-P7 section {index} {name} is at position {i}, L-R8 puts it at
+  {j}".
+  Linker rules judged: I-R1, I-R2, L-R7, L-R8, A-R3.
+  Not judged: the file's mode (I-R3; the bytes do not carry it: the
+  link-test lane checks it, `spec/harness.md`); determinism (I-R11; two
+  links, the lane's).
+  *Catches:* the mutations `e_type`, `e_phnum`, `EI_OSABI` (§9.2 (t)).
+
+- **P-P8 (the Mason container; V-R8).** At most one output section that
+  is a container (MT-6). Its bytes equal `kept_units` over the live
+  inputs (MT-30: their units in `FileId`, section, offset order, each
+  padded with zeros to 8, malformed units dropped), `SHT_PROGBITS`,
+  `SHF_EXCLUDE`, alignment 8; no input container is placed as a piece
+  anywhere else. "P-P8 the output has {n} containers"; "P-P8 container
+  bytes differ from kept_units at {offset}". A `.mason.meta` that is not a
+  container is copied by name (P-P2). The references concatenate the
+  containers by name, which gives the same bytes when every unit parses
+  and is a multiple of 8 (measured, MT-30's check).
+  **(mortar)** the container at its first input container's place
+  (L-R8).
+  Linker rules judged: MT-30.
+  Not judged: the units' contents (stage 4, §13, judges them in the final
+  link); MT-30a's checks (diagnostics).
+  *Catches:* a container duplicated (§9.2 (t)).
+
+- **P-P9 (accept; V-R9).** S1 accepts `ET_REL` as a `-r` output, and the
+  kind must agree with the map (`output relocatable`) or, for a
+  reference, with the line (`-r`, `-i`, `--relocatable`, `-Ur`): "P-P9
+  the output is ET_REL and the map says {kind}". Stage R then applies:
+  §6.1's O1, I1, I2; §3.3's map rules as §14.2 reads them; §3.8; P-P2
+  to P-P8, P-P10, P-P11; B1 (§6.7) on mortar's build-id note, over the
+  whole file; P1 (§6.6) on the property note. Stage 1-3's address rules
+  (S2-S5, S7-S9, S13-S21, the R rules, Y1-Y5, E1-E6, F1-F5, P-D*) do
+  not run: an `ET_REL` has no memory.
+  Linker rules judged: C-R1 (the kind), I-R1.
+
+- **P-P10 (the notes; V-R10).**
+  - **`.note.GNU-stack`.** Over the live inputs' notes (N: an input note
+    without `SHF_EXECINSTR`, X: with it): when some input is X, the
+    output has one `.note.GNU-stack` with `SHF_EXECINSTR` ("P-P10 an
+    input asks for an executable stack ({file}) and the output's
+    .note.GNU-stack {is N or absent}"). **(mortar)** L-R6a's table
+    exactly, per target, for the line's last `-z execstack`/`-z
+    noexecstack`: at most one, empty, `PROGBITS`, alignment 1, flags 0
+    (N) or `SHF_EXECINSTR` (X), absent in the "−" cells. Per-linker
+    forms, accepted by the general clause (`work/stack.log`): GNU ld
+    writes X over N inputs under `-z execstack` on AArch64 and ignores
+    it on x86-64 and i686; mold ignores `-z` and writes no note when no
+    input has one; lld writes N in every cell, so over an X input it is
+    A93.
+  - **`.note.gnu.property`.** P1's merge (§6.6) over the live inputs, by
+    the writing linker's column; P2 without its segment clause (no
+    `PT_GNU_PROPERTY` at `-r`): one allocated `SHT_NOTE` section, aligned
+    to 8 (ELFCLASS64) or 4, one property note. Measured at `-r`
+    (`rl0` case 6): AArch64 GNU ld and lld AND the feature words (`BTI,
+    PAC` with `PAC` gives `PAC`) and write no section when one input has
+    no note, mold writes none (P1's "dropped" column); x86-64 all three
+    AND `IBT`/`SHSTK`, and an object with only the `USED`/`NEEDED`
+    properties merged with one with `FEATURE_1_AND` or with none gives
+    no note in all three.
+  - **`.note.gnu.build-id`.** Exactly when the line's last of
+    `--build-id[=STYLE]`, `--build-id=none`, `--no-build-id` asks for one
+    (I-R8): "P-P10 the line asks for a build id ({style}) and the output
+    has none", or the reverse. On mortar's output B1 judges the
+    descriptor over the whole file (I-R8: I-69/I-72 over the `-r`
+    output's bytes, the descriptor zeroed), the style from the map's
+    line (§6.7). A reference's descriptor is not judged (§6.7). The
+    inputs' build-id notes are not in the output (consumed).
+  Linker rules judged: L-R6a, L-R1 (the merged notes), I-R8, A-R5, C-R3
+  (`-z execstack`/`noexecstack`, `--build-id`).
+  *Passes:* GNU ld's outputs for every L-R6a cell (`work/stack.log`);
+  lld's and GNU ld's property notes.
+  *Catches:* the stack note written without X over an X input (§9.2 (t);
+  lld's A93); mold's missing build-id note (A98).
+
+- **P-P11 (every output section header; V-R11).** For each output
+  section, every header field is recomputed and compared ("P-P11
+  section {index} {name}: {field} is {x}, not {y}"):
+  - `sh_type`: the pieces' type by L-49 (`PROGBITS` with `NOBITS` gives
+    `PROGBITS`); a relocation section `SHT_RELA` (AArch64, x86-64) or
+    `SHT_REL` (i386); `SHT_GROUP`, `SHT_SYMTAB`, `SHT_STRTAB`,
+    `SHT_SYMTAB_SHNDX` for the sections the `-r` makes;
+  - `sh_flags`: the OR of the pieces' `SHF_WRITE`, `SHF_ALLOC`,
+    `SHF_EXECINSTR`, `SHF_TLS`; `SHF_MERGE`/`SHF_STRINGS` only when every
+    piece has the same merge class, and then `sh_entsize` that class's
+    (L-50): "SHF_MERGE with sh_entsize 0" is a finding (lld, A100);
+    `SHF_LINK_ORDER` and `SHF_EXCLUDE` when every piece has them;
+    `SHF_GNU_RETAIN` when some piece has it ("P-P11 section {name} holds
+    the SHF_GNU_RETAIN piece {file}:({section}) without SHF_GNU_RETAIN";
+    mold, A99); `SHF_GROUP` exactly on group members and their relocation
+    sections (P-P6); a relocation section `SHF_INFO_LINK`;
+  - `sh_addralign`: the largest piece alignment (at least 1);
+  - `sh_size`: at least the end of its last piece; a relocation
+    section's a multiple of its entry size;
+  - `sh_link`: for `SHF_LINK_ORDER`, the output section of the linked-to
+    input section of every piece, one section for all of them ("P-P11
+    section {name}: SHF_LINK_ORDER pieces link to {a} and {b}" or
+    "sh_link is 0"; mold, A101); for a relocation section and
+    `SHT_GROUP`, `.symtab`; for `.symtab`, `.strtab`; for
+    `.symtab_shndx`, `.symtab`; otherwise 0;
+  - `sh_info`: for a relocation section, the output section its records
+    belong to (P-P3); for `SHT_GROUP`, the signature's index (P-P6); for
+    `.symtab`, the first non-local (P-P4); for a copied section of
+    another type, the input's (all three copy it);
+  - `sh_entsize`: 24/16 (`.symtab`), 24/12 (`SHT_RELA`), 16/8
+    (`SHT_REL`), 4 (`SHT_GROUP`, `.symtab_shndx`), the merge class's
+    entsize, otherwise the pieces' common value or 0;
+  - `sh_name` reads back, in `.shstrtab`, as the pieces' name.
+  **(mortar)** L-R1a exactly: `SHF_GNU_RETAIN` is part of the key, so a
+  section with it holds only retained pieces (GNU ld's form; lld merges
+  and keeps `R`, accepted from it); `sh_size` exactly the last piece's
+  end; `sh_entsize` 0 when the merge classes differ, with `SHF_MERGE`
+  and `SHF_STRINGS` dropped (L-50; GNU ld's `A` with entsize 0 in `rl0`
+  case 10); a `SHF_COMPRESSED` input decompressed and no output
+  compressed (L-R1a).
+  Linker rules judged: L-R1, L-R1a, L-R2, L-R3, L-R10 (one relocation
+  section per output section with records, none for a group or a
+  relocation section), I-R5's section form, A-R4.
+  Not judged: `sh_offset` beyond P-P7; a reference's non-allocated
+  `sh_addr`.
+  *Catches:* mold's `sh_link` 0 on `__patchable_function_entries`
+  (A101; the review's `w/lo`, `rl0` case 9); mold's dropped
+  `SHF_GNU_RETAIN` (A99); lld's `AM` with entsize 0 (A100); `sh_link` of a
+  `SHF_LINK_ORDER` section set to 0 and `SHF_GNU_RETAIN` dropped
+  (§9.2 (t)).
+
+### 14.6 Coverage
+
+§7.2's sum holds at `-r` with the records of every placed input
+section: **verified** by `place` (P-P3's match by place and target),
+`string` (§14.4's content match into a merged section), `eh-frame` (a
+pointer field of a matched CIE or FDE) or `tombstone` (a field of a
+dropped record, P-P2); **accepted** by `per-linker` (P-P3's list, by
+linker); **not checked** by `in-mergeable` (a record inside a merged
+foreign section: its place is not listed) or `options-unknown`; **none**
+for the inputs' `R_*_NONE` records. The summary adds `relocatable:
+pieces {n}, merged {m}, framed {f}; groups {g}; FDEs {k} live, {r}
+removed; symbols {s}; sections {h}` and, under P-P1, `composition: {x}
+judged, {y} not judged ({letters})`.
+
+### 14.7 Not judged at `-r`
+
+- The program's behavior: P-P1's comparison is static; the lane runs
+  both programs (`spec/harness.md`, "Relocatable outputs").
+- I-R3's file mode and I-R11's determinism (two links; the lane's).
+- C-R2's no-ops (`r-noop-options`: the lane's `check cmp`), and every
+  refusal (no output).
+- The references' build-id descriptors (§6.7), section order, piece
+  order and offsets, kept-local sets and mapping symbols in
+  non-executable sections.
+- A reference's `.llvm_addrsig` and `.llvm.call-graph-profile` contents
+  (copied with `sh_link` 0 by all three; see the record's defect list
+  for the call-graph profile).
+- `-T` at `-r` (refused until RL-11; a script's placement is then
+  judged as `spec/script.md` says, which this section does not yet
+  cover).
+
+### 14.8 Open questions (marked in the rules; the supervisor's)
+
+- **Q-R1 (a relocation section with no output record).** A placed
+  section whose input records are all `R_*_NONE` (or all dropped) has no
+  output record under I-R5. The references keep the `NONE` records and
+  their section (`rl0` case 5). L-R10 says "every output section with a
+  relocated piece has exactly one relocation chunk" and does not define
+  "relocated". *Options:* (a) a relocation section exactly when it holds
+  at least one output record (no empty relocation section); (b) one for
+  every output section that has a piece with an input relocation
+  section, possibly empty; (c) as (b), and write the `NONE` records
+  after all. *Recommendation:* (a); P-P3's mortar clause and P-P11 are
+  written for (a) and say so.
+- **Q-R2 (who writes P-P1 and P-P9).** The cut (record §F) gives RL-5
+  "V-R2-V-R8, V-R10, V-R11 and V-R12" in `crates/mortar_plumb`, and RL-6
+  "V-R1's comparison" and "S1 on `ET_REL` (V-R9)", with RL-6's files
+  all under `xtask/` and `tests/link/relocatable/`. P-P1 and P-P9 are
+  verifier rules of this file, and RL-5 and RL-6 run in parallel.
+  *Options:* (a) RL-6 writes P-P1 in a new
+  `crates/mortar_plumb/src/compose.rs` (`mortar_plumb::compose::compose`,
+  its `mod` line by RL-1 with the others), and RL-5 writes P-P9 (S1's
+  widening and the dispatch to stage R are the entry of
+  `relocatable.rs`); RL-6 calls both from `linktest`. No file is shared,
+  and the rule stays in the independent verifier (`cargo xtask plumb`
+  can run it); (b) as the cut reads: both in `xtask/src/linktest`
+  (a plumb rule outside `mortar_plumb`; `S1` would have to be bypassed
+  in the lane); (c) RL-5 writes both (RL-5 grows by about 1k lines).
+  *Recommendation:* (a). The entry point named in P-P1 follows the
+  answer.
+
+### 14.9 The corpus
+
+The D.3 corpus of record `spec/landed/layout/WP-154.md` (the C component
+with a common, a merged string, hidden, weak and undefined weak symbols
+and constructors at three priorities; `cifunc`; `cctors`; the C++
+component with exceptions; gcc and clang-22, `-O1 -g -fcommon
+-ffunction-sections -fdata-sections`, three targets), the `-O0 -g`
+debug corpus (`exp/debug/`), `exp/none-overlap/`, and
+`exp/rl0/run.sh`'s fourteen cases, each partially linked by GNU ld, lld
+and mold with `-Map`. RL-5's fixtures are built from them at test time
+(§9.1: nothing binary is checked in). For each GNU ld and lld output:
+no finding but the per-linker forms; every mold output: its anomalies by
+name (A90-A101 as they apply), and nothing else.

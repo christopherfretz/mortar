@@ -823,6 +823,7 @@ keeps blanks (with `\"` and `\\`).
 | `link <driver> <args>` | a link; `<driver>` is `ld` (the linker itself) or `gcc`, `g++`, `gfortran`, `clang`, `clang++` |
 | `run <program> [<args>]` | runs a linked program |
 | `check <tool> <args>` | `readelf`, `nm`, `objdump` (the architecture's), `llvm-readelf`, `llvm-dwarfdump` (WP-080: `--verify`, the DWARF of a split-DWARF output), `text` (the file named by the one argument, read), `cmp` (two files, compared byte for byte), `elflint`, `ldd`, `gdb`, `lldb` ("Checks") |
+| `partial mortar <args>` | (planned: RL-6, WP-186, usable once RL-7 lifts the `-r` refusal) the same as `partial <reference>` with mortar as the linker: `mortar -r <args>`, with `--mortar-map=` a map of its own (`.linktest-partial-<line>.map`), judged by L3's stage R like a link step's output; the same file for every linker of the matrix. A refused `partial mortar` fails the unit (mortar must link what GNU ld links), unless the unit says `exit: fail` |
 
 The build steps come before every link, run and check step. Expectations
 are the indented lines under a step:
@@ -963,7 +964,17 @@ mortar included (`docs/VALIDATION.md` layer L3).
   `machine` (x86-64, i386; any non-AArch64 machine), `pie-or-shared`
   (`ET_DYN`: PIE, static PIE and shared objects, stage 3), `dynamic`
   (`ET_EXEC` with `PT_INTERP` or `PT_DYNAMIC`, stage 3) and `relocatable`
-  (`-r`). A file that is not ELF is judged, and fails S1.
+  (`-r`; `ET_REL`). A file that is not ELF is judged, and fails S1.
+- **Stage R** (planned: RL-5 and RL-6). A `relocatable` output is judged
+  when the verifier has stage R (`mortar_plumb::STAGE_R`, a constant RL-5
+  sets to `true`), read once at the run's start like stage 3's: S1 accepts
+  `ET_REL` (`spec/plumb.md` §14.5 P-P9) and stage R's rules run on the
+  output, its map and the link's words (the `.linktest-ld-status` line of
+  a driver step, a `link ld` step's own words; mortar's from its `arg`
+  records). Without it, the output is counted as not judged,
+  `relocatable`, as now. Every step that makes a `-r` output is judged
+  so: a `link` step with `-r`, `-i`, `--relocatable` or `-Ur` (or a
+  driver's `-r`), and every `partial` step ("Relocatable outputs").
 - **Stage 3.** Dynamic outputs (`pie-or-shared`, `dynamic`) are judged
   when the verifier has stage 3, which the run reads once at its start
   (`engine::stage3_present`: the verifier's constant
@@ -1202,6 +1213,99 @@ says what mortar does.
 | `--fatal-warnings`: the severity word | `warning:` | `error:` | `error:` | `error:` | `diag/diagnostic-switches` |
 | `-M` with `-Map=FILE` | the map to FILE | no FILE written | the map to FILE | the map to standard output | `input/info-requests` |
 | `--threads` without N | unknown | reads the next word as N | all processors | all processors | `input/bookkeeping` |
+| `-r`: a common symbol | `COM`, largest size and alignment | the same | **`SHN_ABS`, value its alignment** (a mislink, `plumb.md` A90) | `COM` (`spec/resolve.md` RV-R5) | planned (RL-6, `skip(mold)` `commons`) |
+| `-r`: an IFUNC definition | kept | kept | **crashes** | kept | planned (RL-6, `skip(mold)` `ifunc`) |
+| `-r`: `.symver` names; a plain reference to the default version | kept; stays `UND vfoo` | kept; bound to `vfoo@@V2` | **stripped** (A95) | GNU ld's (RV-R6) | planned (RL-8) |
+| `-r`: two strong definitions | `multiple definition` | `duplicate symbol` | linked silently (A96) | `duplicate-symbol` (RV-R4) | planned (RL-2) |
+| `-r -u NAME`, no definition | `UND NAME` written | not written | not written | written (RV-R3) | planned (RL-2) |
+| `-r`: debug records into a dropped COMDAT copy | retargeted to the kept copy | `NONE` records | against symbol 0 (A97) | dropped, the field tombstoned (`spec/image.md` I-R7) | planned (RL-8, `r-debug-gdb`) |
+| `-r`: the FDE of a dropped copy | removed, a `NONE` record left | **kept** (A91) | removed | removed with its records (L-R6) | planned (RL-8, `r-eh-*`) |
+| `-r`: an input `.note.GNU-stack` with `X` | X | **N** (A93) | X | X (`spec/layout.md` L-R6a) | planned (RL-7, `r-stack-note`) |
+| `-r --build-id` | note written | note written | **none** (A98) | written over the file (I-R8) | planned (RL-7) |
+| `-r -e SYM` | `e_entry` = `SYM`'s offset | the same | 0 | 0 (L-R7) | planned (RL-2) |
+| `-r`: `SHF_GNU_RETAIN` and plain pieces of one name | two sections | one, `R` kept | one, **`R` dropped** (A99) | two (L-R1a) | planned (RL-8) |
+| `-r`: `SHF_LINK_ORDER` pieces | `sh_link` kept | kept | **0** (A101) | kept (L-R1) | planned (RL-8) |
+| `-r`: `SHF_MERGE` pieces of two entry sizes | one section, `SHF_MERGE` dropped | **`AM`, entsize 0** (A100) | two sections | GNU ld's (L-R1a) | planned (RL-8) |
+
+### Relocatable outputs (M4-r; planned: RL-6, WP-186)
+
+Record `spec/landed/layout/WP-154.md` §D.2, as rules. A `-r` output is
+judged twice: by stage R on its own (L3), and by what it does in a final
+link. The second is the lane's, since no rule of one output shows it.
+
+**LT-R1 (two final links, both run).** For each `-r` output of a link
+test (a `link` step with `-r`, or a `partial` step), the lane links it
+finally twice: by GNU ld of the architecture and by mortar, each with
+the test's final step words (the next `link` step that names the `-r`
+output), and runs both programs with that step's `run` expectations.
+Both are judged by L3 like any final link. A test whose `-r` output no
+final step names gets one: `link gcc -nostdlib -static <rout> -o
+<rout>.final` with the C runtime's `_start` only when the test says
+`final: <driver> <args>`; without it the unit fails ("a -r output that
+no link consumes", a test-file error), so that no `-r` test checks only
+the `-r` bytes.
+
+**LT-R2 (the direct form, P-P1).** The lane also links the **direct
+form**: the final step with the `-r` output replaced, at its place in the
+line, by the `-r` step's inputs, in their order (an archive of the `-r`
+line stays an archive). For each of the two final linkers, the direct
+link `D` and the link through `-r` `V` are compared by `spec/plumb.md`
+§14.5 P-P1 (`mortar_plumb::compose`, as §14.8 Q-R2 settles), with the
+`-r` output's own map: GNU ld's `D` with GNU ld's `V`, mortar's with
+mortar's. A finding fails the unit. P-P1's exclusions (a)-(d) are
+**named skips of the comparison only** (the two links still run and are
+judged): the unit prints `composition not judged: (<letter>) <reason>`
+and counts it; the reasons are P-P1's, decided by the verifier from the
+two lines, never declared by the test. Both programs' outputs are
+compared too: `V`'s run must print and exit as `D`'s ("the program
+through -r differs from the direct link").
+
+**LT-R3 (the mixed-toolchain case).** Each reference's `-r` output of
+the same inputs (`partial bfd`, `partial lld`, `partial mold`; plus
+`partial mortar` once RL-7 lands) is fed to mortar's final link and to
+GNU ld's, and LT-R1 and LT-R2 apply to each. mold's `-r` outputs are
+known wrong in four named ways; a test whose inputs have one of them
+says `skip(mold)` with the reason's name, and the lane checks that the
+inputs have it (a `skip(mold)` whose reason the inputs do not show is a
+stale skip, a failure):
+
+| reason | the inputs have | mold's `-r` | `spec/plumb.md` |
+|---|---|---|---|
+| `commons` | a common symbol (`SHN_COMMON`) | makes it `SHN_ABS` | A90 |
+| `ifunc` | an `STT_GNU_IFUNC` definition | crashes (SIGSEGV) | — (no output) |
+| `symver` | a `.symver` name (`@` in a symbol name) | strips it to the base | A95 |
+| `duplicate-strong` | two strong definitions of one name | links them silently | A96 |
+
+Other mold anomalies at `-r` (A92, A94, A97-A99, A101) are declared as
+any anomaly is, `#@ anomaly(mold): <id>`.
+
+**LT-R4 (mode and determinism).** For mortar's `-r` output the lane
+checks the file's mode bits, `0o644` under the harness's umask 022
+(`spec/image.md` I-R3; GNU ld, lld and mold measured the same), and
+links the `-r` line a second time into another name and compares the two
+files byte for byte (I-R11). Neither is a verifier rule (§14.7 of
+`spec/plumb.md`).
+
+**LT-R5 (no-ops).** A test of a C-R2 option (`spec/cli.md`: accepted at
+`-r`, no byte changed) links the `-r` line with and without it and
+`check cmp`s the two (`r-noop-options`).
+
+**The census at `-r`.** `VARIATIONS` gains the driver `-r` lines of
+record §A.2 that a reference links (`r-plain` `-r`, `r-nostdlib`, `r-g`,
+`r-pthread`, `r-pie` `-r -pie`, `r-no-pie`, `r-static`, `r-s`, `r-flto`,
+`r-no-pie-nostdlib` `-no-pie -nostdlib -Wl,-r`, `r-gc-e`
+`-r -Wl,--gc-sections,-e,a`; `r-fuse-lld` and `r-fuse-mold` run the
+same words through the wrapper of that linker), and the ones every
+driver refuses are not variations. For each, mortar links the line;
+the line passes when it passes as above with the program being LT-R1's
+final link of the `-r` output by GNU ld and by mortar, compared with the
+reference's own `-r` output through the same finals, and stage R is
+clean. A refusal is a pass only with a key of `OUT_OF_M4R` (the
+refusals `spec/diag.md` §4.4 lists, each printed). The census's last
+line adds the `-r` counts: `census: <n> lines (<r> -r), ... <p> pass
+(<rp> -r), <f> fail (<rf> -r)`; RL-6 lands the counting with every
+`-r` line refused by mortar (`OUT_OF_M4R` holds `-r` itself until RL-7)
+and RL-7 to RL-12 move the lines to pass.
 
 ### Shared-object outputs
 
