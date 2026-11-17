@@ -3154,30 +3154,75 @@ a pass over a whole table of the state; **O(output)**.
   (IN-72) and resolution (IN-71) as the new side; IN-27's table is the
   rule. The referrers of a target are found without reading an
   unchanged input: by `INDEX` (IN-25), read by the referring file's
-  range for files that `KEY_REFS` lists for a key, and by the target
-  file's own range for its sections (IN-18e). The set's bytes over
-  IN-16's bound: `too-much-changed`. *Test:* the IN-63a oracle on every
-  update (IN-79 (c)); the mutation lane (IN-63b) with the update's
-  layout.
+  range for the files that `KEY_REFS` lists for a key (every mentioning
+  file, single mentioners and file 0's keys included, IN-18e), and by the
+  target file's own range for its sections (IN-18e). The keys whose
+  referrers are looked up are the affected keys of IN-71 whose
+  resolution, value or size changed, the linker-defined keys of IN-71c
+  (known after U7), and the globals defined in moved sections. The set's
+  bytes over IN-16's bound: `too-much-changed`. *Test:* the IN-63a
+  oracle on every update (IN-79 (c)); the mutation lane (IN-63b) with
+  the update's layout. *Bench rows* (IN-64, WP-207): per update, the
+  moved-definition count (definitions of changed and drawn-in files whose
+  address moved) and the refill set's size (units, bytes, referrer
+  files), so that M-5's cost is watched, not only judged.
 
-- **IN-75 [v1] Refill, dirty ranges, build id.** The units of the set
-  are filled (image.md I-95) into windows, and only the **dirty
-  ranges** are written: the refilled units' bytes, the holes they left
-  (their fill, IN-3a), the `.symtab`/`.strtab` entries and names
-  IN-49a changes, the changed `.eh_frame` range and its padding,
-  `.eh_frame_hdr` (rewritten whole when an FDE address changed, S-111),
-  `.debug_aranges` (G packages), the ELF header, the section headers
-  whose `sh_size` changed, and the build-id note. The build id is the
-  tree hash of image.md I-76 over the patched image: the leaves of the
-  blocks the update wrote are recomputed from the new bytes, every other
-  leaf is the state's (`LEAVES`), and the tree is combined; the note's
-  own bytes are hashed as I-76 says (zeroed). The new leaves go to the
-  state's patch. The update's map (`--mortar-map`) is the full link's
-  map grammar with the update's placement, `incremental`, and its
-  `hole`/`dead` lines, written whole (IN-49): the judge reads it
-  (IN-79 (b)). *Test:* the refilled windows of an update with an empty
-  delta equal the old output's bytes; the build id of an update equals
-  the tree over the whole new output (`xtask plumb` recomputes it).
+- **IN-75 [v1] Refill, dirty ranges, build id** (amended by WP-207;
+  review-in72 B-4, M-6, M-7). The units of the set are filled (image.md
+  I-95) into windows, and only the **dirty ranges** are written. The rule
+  is an invariant: **the dirty ranges cover every byte in which the
+  update's output differs from the previous output**, and outside them
+  the previous output's bytes are the update's. They include, and are
+  not limited to: the refilled units' bytes; the holes they left (their
+  fill, IN-3a); the packed sections IN-72 item 4 rewrote; the fragments
+  appended or revived (item 6); the slots appended and the dead slots
+  written 0, and `.rela.plt` (item 7); the `.eh_frame` range and its
+  padding; `.eh_frame_hdr` (rewritten whole when an FDE address changed,
+  S-111); the `.symtab`/`.strtab` entries and names IN-49a changes; the
+  ELF header; **the program header table and the section header table,
+  each whole, whenever the update changed any field of either** (a
+  growth step changes `p_filesz`/`p_memsz` and every later section's
+  `sh_addr`/`sh_offset`; IN-34's "rewritten whole"); every byte a growth
+  step moved; `.debug_aranges` (G packages); and the build-id note. The
+  enumeration is the implementation's; the invariant is the test.
+  **Inputs read here** (review-in72 M-6): every input read for a refill,
+  a placement or a drawn-in file (IN-72 item 2a) is opened, `fstat`ed and
+  compared with its `STAT` row (IN-28a condition 2) before its first byte
+  is used; a difference is `input-changed`. The build id is the tree
+  hash of image.md I-76 over the patched image: the leaves of the blocks
+  the update wrote are recomputed from the new bytes, every other leaf is
+  the state's (`LEAVES`), and the tree is combined; the note's own bytes
+  are hashed as I-76 says (zeroed). The new leaves go to the state's
+  patch. The update's map (`--mortar-map`) is the full link's map grammar
+  with the update's placement, `incremental`, and its `hole`/`dead`
+  lines, written whole (IN-49): the judge reads it (IN-79 (b)). *Test
+  (U-6):* the refilled windows of an update with an empty delta equal the
+  old output's bytes; `dirty_ranges_cover_every_differing_byte` (the
+  update's output against the previous output, byte by byte: every
+  differing byte inside a dirty range); `growth_step_rewrites_headers`
+  (readelf of both header tables against the full link of the same
+  `Placement`, and IN-79 (a)); `input_rewritten_after_u4_is_input_changed`;
+  the build id of an update equals the tree over the whole new output
+  (`xtask plumb` recomputes it).
+
+- **IN-75a [v1] Diagnostics equal to a full link's** (WP-207). An update
+  emits the warnings the full link of the same inputs would emit, in the
+  same order. The state's `DIAGS` table (IN-18e) holds every warning of
+  the link that wrote it, each with its **subject** (a file, a key, an
+  output section, or the link) as `spec/diag.md`'s code table gives it
+  for the code. An update drops the rows whose subject is a changed,
+  appeared, gone, drawn-in, newly extracted or no longer extracted file,
+  an affected or ODR-affected key (IN-71, IN-71d), or an output section
+  or the link (these are recomputed from the update's `Placement` every
+  time), recomputes those subjects' warnings, and emits the union in
+  diag.md's order. A warning code without a subject in diag.md's table is
+  a spec defect that `spec_tables` reports (REQUEST to diag.md, WP-207
+  §R). Errors are not stored: a link with an error writes no state
+  (IN-48). *Test:* `warning_repeated_by_update` (an unchanged file that
+  draws a warning in the full link: the update prints it too),
+  `warning_gone_with_its_file`, and the ODR three-hop series (IN-71d);
+  every IN-79 run compares the update's standard error with the full
+  link's, modulo the `incremental:` report line. *Argued, not run.*
 
 - **IN-76 [v1] The write path.** In place (IN-46) is the default when
   the output the state describes is at least `small-output`'s bound
@@ -3420,22 +3465,81 @@ a pass over a whole table of the state; **O(output)**.
   `leftovers_removed_only_when_unlocked`; `boot_id_changed_checks_leaves`;
   and H-2's `full_link_power_loss_replay` (IN-77c).
 
-- **IN-78 [v1] The state's writer's duty in an update.** W5's patch (or
-  the compaction) writes, for every changed, appeared or newly extracted
-  file, its `FILES` row (hash, stat), its position rows recaptured from
-  the bytes it hashed, or its `POSITIONAL` bit cleared (IN-28a); for a
-  gone or no longer extracted file, its row and ranges marked gone (a
-  tombstone the next compaction drops); for the changed files, their
-  `SECTIONS`, `MENTIONS`, `INDEX`, `EDGES`, `FRAG_AT`, `EH_RECORDS` and
-  `SYMTAB` ranges (IN-18e: in the file's slack, else compaction); for
-  every affected key, its `SYMBOLS` row (appended when new), its
-  `RESOLVED` row and its `KEY_REFS` rows; the layout tables the delta
-  layout changed (`CHUNKS`, `HOLES`, `SLOTS`, `PATCHES`, `REDIRECTS`,
-  `FRAGS`); `LEAVES`; `META` and the binding. Recapture is O(the file's
-  rows); clearing the bit costs the next update one more file translated
-  by identity. A field the update does not recompute is never written
-  from a guess: a row it cannot recompute is the reason that row's rule
-  names, before W1.
+- **IN-78 [v1] The state's writer's duty in an update: an invariant**
+  (rewritten by WP-207; review-in77 B-3, B-4, M-6, M-7, M-8). The duty is
+  not a list of tables; it is this equation, whoever's file a row
+  belongs to:
+
+  > **After W5 (or the compaction), `canon(S')` equals `canon(C(U))`.**
+
+  - `S'` is the state the update wrote. `C(U)` is the state the **full
+    link of the update's inputs writes when its layout is the update's
+    `Placement` `P_U`**: IN-61's replay run with `P_U` read from `S'`
+    (the decision rows: each section's place, `CHUNKS`' addresses,
+    offsets and capacities, `ORDER`, `HOLES`, `SLOTS`, `PATCHES`,
+    `REDIRECTS`, `FRAGS`' offsets, the `.symtab` blocks' places), with
+    every other row computed afresh from the inputs by the full link's
+    own front, resolution, liveness and capture: `FILES`, `STAT`,
+    `MENTIONS`, `KEY_REFS`, `RESOLVED`, `GROUPS`, `COMMONS`, `INDEX`,
+    `EDGES`, `FRAG_AT`, `EH_RECORDS`, `SYMBOLS` (with `at_file`,
+    `at_index`), `SYMTAB`'s entries, `ODR_*`, `DIAGS`, and the derived
+    layout rows (`DEFINED`, `SYM_PLACE`, `SIZES`, `SIZED`, `SEGMENTS`,
+    `LAYOUT`, `OUTSECS`). The replay runs `Layout::check` on `P_U` (no
+    live section in a hole, none overlapping), and a live section that
+    `P_U` does not place, or a dead one it places, is a replay failure.
+  - `canon(X)` is `X`'s rows with: the slack rows of file-keyed ranges,
+    the unused capacity of every table, tombstones (`GONE` symbols,
+    deleted key-keyed rows) and the ranges and rows of gone files
+    removed; each key-keyed table sorted by its key (append order
+    forgotten); every row reference replaced by the referenced row's
+    canonical name: a file by its load-order position (`rank` order), a
+    symbol by its key name (a local by (file, symbol-table index)), a
+    section by (file, section index), a fragment by its identity, a
+    chunk by (output section, ordinal, part), a string offset by the
+    string's bytes.
+  - **Excepted**, and checked otherwise: `LEAVES` and `META`'s binding
+    (tuple, reference stamp, build id), which equal the leaves and the
+    binding of the output the update wrote (the test re-hashes `P`); and
+    `META`'s history fields (boot id, `output-synced`, the compaction
+    count), which no full link computes.
+
+  **The list, derived** (a consequence the test checks, not a second
+  rule): the rows where `canon(S)` and `canon(C(U))` differ are written
+  by W5; the causes and their rows are:
+
+  | cause | rows that change |
+  |---|---|
+  | a changed, appeared, drawn-in or newly extracted file | its `FILES` row (hash, rank, flags, round; `POSITIONAL` recaptured or cleared, IN-28a), its `STAT` row (tuple re-taken), its ranges of `SECTIONS`, `MENTIONS`, `INDEX`, `EDGES`, `FRAG_AT`, `EH_RECORDS`, `SYMTAB`; its `KEY_REFS`, `COMMONS`, `ODR_REFS` and `DIAGS` rows |
+  | a gone or no longer extracted file | its row marked gone (extracted → `LAZY` with its defined rows kept), its ranges gone, its key-keyed rows deleted |
+  | an input `stat`ed again but hashed equal (touched) | its `STAT` row (review-in77 M-8) |
+  | the device stamps (IN-22a) | the device rows of `STAT` |
+  | an affected key | its `SYMBOLS` row (appended when new; `at_file`/`at_index`, IN-71), `RESOLVED`, `KEY_REFS` |
+  | a re-elected group | its `GROUPS` row, and the drawn-in files of IN-72 item 2a (review-in77 M-7) |
+  | a section moved, killed or revived (IN-72 items 1-5, 11), in any file | its `SECTIONS` row, whether or not its file changed (review-in77 B-3) |
+  | a linker-defined key's value or a placed symbol's place | `DEFINED`, `SYM_PLACE` (IN-71c) |
+  | a growth step, a packed rewrite, a TLS template's size, `-e` in a changed file | `CHUNKS`, `SIZES`, `SIZED`, `SEGMENTS`, `ORDER`, `LAYOUT`, `OUTSECS` |
+  | holes, slots, thunks, fragments | `HOLES`, `SLOTS`, `PATCHES`, `REDIRECTS`, `FRAGS` (`refs`) |
+  | a `.symtab` entry moved or a `.strtab` name moved (IN-49a's last global taking a removed one's place, names appended) | that key's `SYMTAB` column row (review-in77 M-6) |
+  | the output | `LEAVES`, `META`'s binding (IN-21's tuple with its reference stamp, the build id), `output-synced` 1 |
+
+  Recapture is O(the file's rows); clearing `POSITIONAL` costs the next
+  update one more file translated by identity. A field the update does
+  not recompute is never written from a guess: a row it cannot recompute
+  is the reason that row's rule names, before W1.
+
+  **The test and why it is cheap.** `state_equals_capture_of_its_placement`
+  runs after every update of every H-1 scenario, L10 step and crash
+  series step (on the update's success): the replay above writes `C(U)`
+  to a scratch path, and `incr_state canon` compares `canon(S')` with
+  `canon(C(U))` table by table, printing the first differing row. IN-79
+  (a) already runs the full link of the same inputs, so the replay is
+  that same full link with `--mortar-replay-placement=<S'>` and no output
+  written: the added cost is the capture (part of every incremental-mode
+  full link) and a linear comparison, O(state), about the cost of reading
+  the state whole (WP-105: 0.56 s on g10x, 0.20 s on `cxx-large-g`), not
+  a second link. `duty_list_covers_differences` checks the table above
+  against the comparison: every differing row's table and cause is a row
+  of the table. *Argued, not run* (no update code yet).
 
 - **IN-79 [v1] How an update is judged** (the test packages' rule).
   Every update of a test, of L10 and of the crash series is judged three
@@ -3445,7 +3549,16 @@ a pass over a whole table of the state; **O(output)**.
   two-full-link oracle (IN-63a) covers every unit that differs. A
   second and a third update follow every first one (the review's
   finding was on the second hop). The targets are AArch64, x86-64 and
-  i386 (qemu for the last two).
+  i386 (qemu for the last two). *(Amended by WP-207: four ways.)* (d)
+  the state the update wrote equals the capture of its `Placement`
+  (IN-78, `state_equals_capture_of_its_placement`), and the update's
+  standard error equals the full link's modulo the `incremental:` line
+  (IN-75a). (b) runs with `check elflint` (harness.md, with the four
+  allow patterns every static glibc output needs, review-in72 T-1). The
+  dirty-range invariant (IN-75) is checked on every update against the
+  previous output. (d) is what catches the stale-row class (a datum an
+  update leaves stale) on the hop where it is written, before a later
+  hop turns it into a wrong program.
 
 ## 6. Debug information
 
