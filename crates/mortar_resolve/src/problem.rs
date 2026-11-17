@@ -99,11 +99,6 @@ pub enum What {
     /// (`entry`) refers to `key`, whose program definition `def` is hidden
     /// and which no live shared object defines.
     NonExported { key: SymbolId, def: SymEntry, entry: SymEntry },
-    /// `Refused{Feature, ..}` (`spec/dyn.md` D-19a): the keeping mention of
-    /// the needed object `file` depends on a mention whose `AS_NEEDED` or
-    /// group state the input tables do not record (a second mention of
-    /// one soname inside a linker script).
-    NeededOrderUnknown { file: FileId },
     /// `Refused{FileFormat, "GCC LTO object"}` (§10).
     LtoSlim { file: FileId },
     /// `Refused{SymbolBinding, <0x..>}` (§1.2).
@@ -226,7 +221,6 @@ impl Problem {
             What::RootAsNeeded { .. }
             | What::WrapComdat { .. }
             | What::Defsym { .. }
-            | What::NeededOrderUnknown { .. }
             | What::LtoSlim { .. }
             | What::SymbolBinding { .. }
             | What::WeakCommon { .. }
