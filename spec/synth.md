@@ -1157,11 +1157,15 @@ gdb, lldb, perf, nm, addr2line, objdump and valgrind (§12).
   (`DEFAULT`, `PROTECTED`, `HIDDEN`: lld and mold; GNU ld writes
   `STV_DEFAULT` on every local it demotes, as for hidden ones), kept by
   `-x` and `-X` (they were not input locals: all three; `-s` drops
-  `.symtab`), a common included. In an executable `--exclude-libs`
-  demotes alike (lld in every kind; mold `LOCAL HIDDEN`; GNU ld in a PIE
-  and a static-pie, `GLOBAL HIDDEN` in `-no-pie` and static).
-  WP-150, measured on AArch64; `dyn/version/symtab-local` runs on both
-  64-bit targets.
+  `.symtab`), a common included. A linker-defined key such a script
+  makes local (`__start_SEC`, `_end`, `__bss_start` under `local: *`) is
+  `STB_LOCAL` in the internal block with the column's visibility
+  (`PROTECTED` for `__start_`/`__stop_`, lld's visibility; GNU ld and
+  mold write them `LOCAL DEFAULT`, lld `GLOBAL PROTECTED`, exported). In
+  an executable `--exclude-libs` demotes alike (lld in every kind; mold
+  `LOCAL HIDDEN`; GNU ld in a PIE and a static-pie, `GLOBAL HIDDEN` in
+  `-no-pie` and static). WP-150, measured on AArch64;
+  `dyn/version/symtab-local` runs on both 64-bit targets.
 - **S-78 [C] (`-X`, `-x`, `--discard-none`).**
   - `-X` (`--discard-locals`): discard locals whose name begins
     with `.L` (the ELF temporary-label prefix; GNU and lld; mold keeps

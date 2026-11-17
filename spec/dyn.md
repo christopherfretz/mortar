@@ -2378,7 +2378,18 @@ GNU ld wherever the references differ, with one deliberate exception
 - `foo@V`/`foo@@V` with no node `V` in the script, or with no script:
   refused, `undefined-version` (all three, [X-F] F2; resolve §9.4
   confirmed; D-27's note on GNU ld writing a verdef holds for
-  executables only).
+  executables only);
+- a key the script makes local is `STB_LOCAL` in `.symtab` with its own
+  visibility (synth S-77), linker-defined keys included: `__start_SEC`
+  and `__stop_SEC` under `local: *` are `LOCAL PROTECTED` (local: GNU ld
+  and mold, which write `DEFAULT`; lld keeps them `GLOBAL PROTECTED` and
+  exported), `_end`, `__bss_start`, ... `LOCAL DEFAULT` (all three; none
+  exports them). Without a reference they are not defined (D-110 item
+  2), and an unreferenced `global: _end` warns,
+  `version-script-undefined-name` (GNU ld is silent, lld refuses, mold
+  warns; WP-150). A linker-defined key named in a node's `global:` is
+  exported in that node (`__start_mysec@@V1`: GNU ld; `_end@@V1`: GNU ld
+  and lld).
 
 The script grammar is script.md §9. *Tests:* `version-script-rules`
 (every one of the 213 scripts of `exp3/vs3/cases.py`, with and without

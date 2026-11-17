@@ -1,0 +1,44 @@
+# dyn.md D-114, synth.md S-77 (WP-150): under a version script's
+# `local: *`, the linker-defined keys the library references are
+# `STB_LOCAL` in `.symtab` and not exported: `__start_mysec` and
+# `__stop_mysec` keep their `PROTECTED` (GNU ld and mold write them
+# `LOCAL DEFAULT`; lld keeps them exported `GLOBAL PROTECTED`), `_end` is
+# `LOCAL DEFAULT` (all three). The section stays and the library walks it
+# (D-124 item 4).
+#@ spec: dyn.md "D-114"; synth.md "S-77"
+#@ xfail(bfd,aarch64): the verifier's P-D9 view 2 on the GOT slot of _end, a RELATIVE record whose value is one past the last segment's end (a legal address value; WP-150 reported it)
+#@ xfail(lld): D-114: lld keeps `__start_`/`__stop_` exported under `local: *` (the verifier's P-D19)
+#@ arch: aarch64 x86_64
+
+cc -O1 -fPIC lib.c -o lib.o
+cc -O1 -fPIE main.c -o main.o
+link gcc -shared lib.o -Wl,--version-script=local.map -o libss.so
+check readelf -sW libss.so
+  has(mortar): NOTYPE LOCAL PROTECTED * __start_mysec$
+  has(mortar): NOTYPE LOCAL PROTECTED * __stop_mysec$
+  has(bfd,mold): NOTYPE LOCAL DEFAULT * __start_mysec$
+  has(lld): NOTYPE GLOBAL PROTECTED * __start_mysec$
+  has: NOTYPE LOCAL DEFAULT * _end$
+  not: GLOBAL DEFAULT * _end$
+check readelf --dyn-syms -W libss.so
+  has: set_count@@V1
+  not(bfd,mold,mortar): __start_mysec
+  not: * _end$
+host gcc -pie main.o -L. -lss -o prog
+run prog
+  stdout: 2 1
+
+#--- lib.c
+__attribute__((section("mysec"), used)) static const int a = 1;
+__attribute__((section("mysec"), used)) static const int b = 2;
+extern const int __start_mysec[], __stop_mysec[];
+extern char _end[];
+int set_count(void) { return (int)(__stop_mysec - __start_mysec); }
+const char *get_end(void) { return _end; }
+#--- main.c
+#include <stdio.h>
+int set_count(void);
+const char *get_end(void);
+int main(void) { printf("%d %d\n", set_count(), get_end() != 0); return 0; }
+#--- local.map
+V1 { global: set_count; get_end; local: *; };

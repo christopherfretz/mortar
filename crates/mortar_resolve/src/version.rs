@@ -576,6 +576,16 @@ pub(crate) fn apply<V: View>(
     let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
     for k in 0..def.len() {
         if !exported[k] {
+            // WP-150 (D-114): a linker-defined key no shared object
+            // references (`_end`, `__bss_start`, `__start_SEC` of a
+            // section no live object references) is not exported, but a
+            // `local:` entry that matches it still makes it `STB_LOCAL` in
+            // `.symtab` (GNU ld and lld).
+            if let (Some(s), Def::Provide { .. }, Some(l)) = (script, def[k], local.get_mut(k))
+                && s.decide(view.key_name(SymbolId(k as u32)).0) == Decision::Local
+            {
+                *l = true;
+            }
             continue;
         }
         let d = def[k];
