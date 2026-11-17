@@ -1,0 +1,160 @@
+# dyn.md D-102, D-110 item 4, D-123 (WP-126): C++ global constructors
+# and destructors of libraries each linker links. `liba.so` has two
+# objects with `init_priority` (200 before 300 whatever the source order:
+# `.init_array.NNNNN` sorted, layout L-12 in a shared object) and a plain
+# one; `libb.so` needs `liba.so`, so the loader runs a's constructors
+# first and its destructors last. A function-local static of a library is
+# destroyed through `__cxa_atexit` with the library's own `__dso_handle`
+# (hidden, one per object, never in `.dynsym`: each object prints a
+# different address), so `dlclose` runs it from `__cxa_finalize` before
+# the library is unmapped. A plugin opened with `dlopen`, closed, and
+# opened again runs its constructors twice and its destructors twice, and
+# its state starts afresh. g++ objects; the plugin also clang++.
+#@ spec: dyn.md "D-102"; dyn.md "D-110"; dyn.md "D-123"
+#@ requires: g++ clang
+#@ arch: aarch64 x86_64
+
+cxx -O1 -fPIC a.cc -o a.o
+cxx -O1 -fPIC b.cc -o b.o
+cxx -O1 -fPIC plug.cc -o plug-g.o
+cxx(clang) -O1 -fPIC plug.cc -o plug-c.o
+cxx -O1 -fPIE main.cc -o main.o
+link g++ -shared a.o -Wl,-soname,liba.so -o liba.so
+link g++ -shared b.o -L. -la -Wl,-soname,libb.so -o libb.so
+link g++ -shared plug-g.o -o libplugg.so
+link clang++ -shared plug-c.o -o libplugc.so
+check readelf --dyn-syms -W liba.so
+  not: __dso_handle
+check readelf --dyn-syms -W libplugg.so
+  not: __dso_handle
+check readelf -SW liba.so
+  has: .init_array
+host g++ -pie main.o -L. -lb -la -ldl -o prog
+run prog
+  stdout: ctor a200
+  stdout: ctor a300
+  stdout: ctor a
+  stdout: ctor b
+  stdout: main dso a!=b 1 a!=main 1
+  stdout: open ./libplugg.so
+  stdout: ctor plug 1
+  stdout: plug 1 41
+  stdout: dtor local 41
+  stdout: dtor plug
+  stdout: closed
+  stdout: open ./libplugg.so
+  stdout: ctor plug 1
+  stdout: plug 1 41
+  stdout: dtor local 41
+  stdout: dtor plug
+  stdout: closed
+  stdout: open ./libplugc.so
+  stdout: ctor plug 1
+  stdout: plug 1 41
+  stdout: dtor local 41
+  stdout: dtor plug
+  stdout: closed
+  stdout: ctor a local
+  stdout: a local 7
+  stdout: dtor a local
+  stdout: dtor b
+  stdout: dtor a
+  stdout: dtor a300
+  stdout: dtor a200
+
+#--- say.h
+#include <cstdio>
+struct Say {
+  const char *s;
+  explicit Say(const char *x) : s(x) {
+    std::printf("ctor %s\n", s);
+    std::fflush(stdout);
+  }
+  ~Say() {
+    std::printf("dtor %s\n", s);
+    std::fflush(stdout);
+  }
+};
+#--- a.cc
+#include "say.h"
+static Say a300 __attribute__((init_priority(300)))("a300");
+static Say plain("a");
+static Say a200 __attribute__((init_priority(200)))("a200");
+extern "C" void *a_dso() {
+  extern void *__dso_handle;
+  return &__dso_handle;
+}
+extern "C" int a_local() {
+  static Say local("a local");
+  return 7;
+}
+#--- b.cc
+#include "say.h"
+extern "C" void *a_dso();
+static Say b("b");
+extern "C" void *b_dso() {
+  extern void *__dso_handle;
+  return &__dso_handle;
+}
+extern "C" int b_check() { return a_dso() != nullptr; }
+#--- plug.cc
+#include <cstdio>
+static int loads;
+struct Plug {
+  Plug() {
+    ++loads;
+    std::printf("ctor plug %d\n", loads);
+    std::fflush(stdout);
+  }
+  ~Plug() {
+    std::printf("dtor plug\n");
+    std::fflush(stdout);
+  }
+} plug;
+struct Local {
+  int v;
+  Local() : v(41) {}
+  ~Local() {
+    std::printf("dtor local %d\n", v);
+    std::fflush(stdout);
+  }
+};
+extern "C" int plug_use() {
+  static Local l;
+  std::printf("plug %d %d\n", loads, l.v);
+  std::fflush(stdout);
+  return 0;
+}
+#--- main.cc
+#include <cstdio>
+#include <dlfcn.h>
+extern "C" void *a_dso();
+extern "C" void *b_dso();
+extern "C" int a_local();
+extern "C" int b_check();
+static void cycle(const char *name) {
+  std::printf("open %s\n", name);
+  std::fflush(stdout);
+  void *h = dlopen(name, RTLD_NOW);
+  if (!h) {
+    std::printf("dlopen: %s\n", dlerror());
+    return;
+  }
+  auto use = reinterpret_cast<int (*)()>(dlsym(h, "plug_use"));
+  if (use) use();
+  dlclose(h);
+  std::printf("closed\n");
+  std::fflush(stdout);
+}
+int main() {
+  extern void *__dso_handle;
+  std::printf("main dso a!=b %d a!=main %d\n", a_dso() != b_dso() && b_check(),
+              a_dso() != static_cast<void *>(&__dso_handle));
+  std::fflush(stdout);
+  cycle("./libplugg.so");
+  cycle("./libplugg.so");
+  cycle("./libplugc.so");
+  std::printf("a local %d\n", a_local());
+  std::fflush(stdout);
+  return 0;
+}
