@@ -920,8 +920,13 @@ impl<'a, 't, 'n> Checker<'a, 't, 'n> {
             };
             need(needs, r, || "a section that needs no place has one".into(), [Row::Section(s)])?;
             let c = &p.chunks[chunk];
-            let in_body =
-                out.is_some_and(|o| matches!(c.kind, ChunkKind::Body(part) if part.out == o));
+            // layout.md L-162: an empty section may also lie in its output
+            // section's merged chunk (the checks below still apply).
+            let in_body = out.is_some_and(|o| match c.kind {
+                ChunkKind::Body(part) => part.out == o,
+                ChunkKind::Merged(m) => m == o && cx.shapes.shape(s).is_some_and(|sh| sh.size == 0),
+                _ => false,
+            });
             // layout.md L-159: an empty section whose output section has
             // no chunk lies in a neighbour, at most at its end, unaligned.
             let beside = !in_body

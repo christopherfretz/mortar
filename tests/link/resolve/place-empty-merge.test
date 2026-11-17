@@ -17,6 +17,12 @@
 # object of `em.o` exports `gms` with its address, not 0 (mortar makes
 # shared objects on AArch64 only, and PIEs on the 64-bit targets).
 #
+# `progm` pins layout.md L-162: an empty merge section that comes after
+# a merged input (`pre.o`'s string) lies at the end of the merged chunk,
+# where GNU ld and lld agree to put it, so `gmid` is past `gpre`'s
+# string (mortar before L-162 put it in the body, before the merged
+# strings: exit 1).
+#
 # mold gives an empty merge section an output section of its own, at the
 # address of the next section's first byte, which the verifier's R6
 # reads as a reference reaching other bytes. GNU ld does not relocate
@@ -25,12 +31,16 @@
 #@ spec: resolve.md §10.1
 #@ spec: synth.md "S-6"
 #@ spec: image.md "I-124"
+#@ spec: layout.md "L-162"
 #@ skip(mold): mold places an empty merge section in an output section of its own at the next section's address (the verifier's R6)
 
 cc -O1 main.c -o main.o
 cc -O1 -fPIE mainp.c -o mainp.o
 as em.s -o em.o
 as ew.s -o ew.o
+cc -O1 mainm.c -o mainm.o
+as pre.s -o pre.o
+as emid.s -o emid.o
 link gcc -static -no-pie mainp.o em.o -o progg
 run progg
   exit: 42
@@ -41,6 +51,9 @@ check readelf -sW prog
   has: GLOBAL DEFAULT * gms$
   has: WEAK DEFAULT * wcs$
   not: UND gms$
+link gcc -static -no-pie mainm.o pre.o emid.o -o progm
+run progm
+  exit: 42
 link(aarch64,x86_64) gcc -pie mainp.o em.o -o piep
 run(aarch64,x86_64) piep
   exit: 42
@@ -96,4 +109,21 @@ lms:
 lp:	.dc.a	lms
 	.globl	sp
 sp:	.dc.a	.rodata.str1.1
+	.section .note.GNU-stack,"",%progbits
+#--- mainm.c
+extern const char gpre[], gmid[];
+const char *volatile pp = gpre, *volatile pm = gmid;
+
+int main(void) {
+    return pm >= pp + 7 ? 42 : 1;
+}
+#--- pre.s
+	.section .rodata.str1.1,"aMS",%progbits,1
+	.globl	gpre
+gpre:	.asciz	"zq7pre"
+	.section .note.GNU-stack,"",%progbits
+#--- emid.s
+	.section .rodata.str1.1,"aMS",%progbits,1
+	.globl	gmid
+gmid:
 	.section .note.GNU-stack,"",%progbits

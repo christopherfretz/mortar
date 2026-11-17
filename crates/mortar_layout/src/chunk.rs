@@ -21,7 +21,8 @@ use mortar_core::resolution::{Def, InternalDef, Resolution};
 use mortar_core::split::Split;
 use mortar_elf::Class;
 use mortar_elf::consts::{
-    SHF_ALLOC, SHF_EXECINSTR, SHF_WRITE, SHF_X86_64_LARGE, SHT_NOBITS, SHT_PROGBITS, STT_TLS,
+    SHF_ALLOC, SHF_EXECINSTR, SHF_MERGE, SHF_WRITE, SHF_X86_64_LARGE, SHT_NOBITS, SHT_PROGBITS,
+    STT_TLS,
 };
 
 use crate::assign::{OutInfo, is_c_identifier};
@@ -504,6 +505,9 @@ pub fn chunk(
     // Merged chunks: per output section, the extent and alignment of its
     // live fragments (MergeMap offsets).
     let mut merged: Vec<Option<(u64, u8)>> = vec![None; outs];
+    // The first input section (in input order) with a live piece in each
+    // merged chunk, for L-162.
+    let mut first_merge: Vec<Option<SectionId>> = vec![None; outs];
     for (f, frag) in inputs.split.frags.iter() {
         let Some(off) = inputs.merge.offset(f) else { continue };
         if !inputs.liveness.frag_live.get(f).copied().unwrap_or(true) {
@@ -514,6 +518,10 @@ pub fn chunk(
         let m = merged[o.0 as usize].get_or_insert((0, 0));
         m.0 = m.0.max(end);
         m.1 = m.1.max(frag.align);
+        let first = &mut first_merge[o.0 as usize];
+        if first.is_none_or(|s| frag.section < s) {
+            *first = Some(frag.section);
+        }
     }
     // Synthetic chunks named like an output section join it; `.dynbss`
     // joins `.bss` (`rank::home`).
@@ -732,6 +740,7 @@ pub fn chunk(
         let n_parts = plans[o].len();
         // From 1: a leading copy chunk is (o, 0, 0).
         let mut sub = 1u32;
+        let rows_from = place_rows.len();
         let has_body = !inputs.ordered.members[id].is_empty()
             || has_commons(id)
             || (merged[o].is_none() && !has_synth[o]);
@@ -799,7 +808,35 @@ pub fn chunk(
         if let Some((size, align)) = merged[o] {
             let mut c = blank(ChunkKind::Merged(id), out.sh_type, out.flags, align, size);
             c.relro = inputs.relro && r.is_relro();
-            push(&mut chunks, &mut ranks, &mut keys, &mut out_of, c, r, (id.0, 0, sub), Some(id));
+            let m = push(
+                &mut chunks,
+                &mut ranks,
+                &mut keys,
+                &mut out_of,
+                c,
+                r,
+                (id.0, 0, sub),
+                Some(id),
+            );
+            // L-162: an empty `SHF_MERGE` input (placed whole, synth.md
+            // S-6) that comes after a merged input of its output section
+            // is placed at the end of the merged chunk, where GNU ld and
+            // lld put it; one before every merged input keeps its body
+            // place (their start). An end its alignment does not divide
+            // keeps the body place too.
+            if let Some(first) = first_merge[o] {
+                for row in &mut place_rows[rows_from..] {
+                    let h = &inputs.headers[row.0];
+                    if h.size == 0
+                        && h.flags & SHF_MERGE != 0
+                        && row.0 > first
+                        && size % (1u64 << h.align.min(63)) == 0
+                        && align >= h.align
+                    {
+                        *row = (row.0, m, size);
+                    }
+                }
+            }
         }
     }
     // Order (L-60): by (rank, within, OutSecId), synthetic chunks by their

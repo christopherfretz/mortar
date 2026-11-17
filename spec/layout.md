@@ -636,6 +636,22 @@ order of the output sections themselves is in §10.
   `tests/link/dyn/cxx/threads-tls.test` with `-static-libgcc`). L-160 is
   the case of an island. A section whose first chunk is already the
   widest is unchanged.
+- **L-162 [C] (an empty merge input; WP-136)** An empty `SHF_MERGE`
+  input section is placed whole (`spec/synth.md` S-6), so it is a member
+  of its output section's body; that gives it, and every symbol defined
+  in it, a place (`spec/resolve.md` §10.1 P-1). When it comes after an
+  input section with a live piece in its output section's merged chunk
+  (in `SectionId` order), it is placed at the END of the merged chunk
+  instead, where GNU ld 2.44 and lld 18 agree to put it (measured,
+  WP-136: `pre.o def.o post.o` and `pre.o post.o def.o` give the end of
+  the merged strings in both; `def.o pre.o post.o` gives the start of
+  `.rodata` in both, mortar's body place). It keeps its body place when
+  the merged chunk's size is not a multiple of its alignment or the
+  chunk is less aligned than it (no measured case; GNU ld then aligns
+  the address, which would lie past the chunk). mold puts an empty merge
+  input in an output section of its own (not followed). The layout's
+  check (§4.4 rule 1) accepts an empty section in its output section's
+  merged chunk.
 
 ## 10. Output section order
 

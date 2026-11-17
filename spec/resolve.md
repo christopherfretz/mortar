@@ -1637,8 +1637,9 @@ place** or **has no place by a named rule**, and nothing else:
   and assigned to an output section (`OutOf::Out`, §3.4). An **empty**
   section has a place like any other (`spec/layout.md` L-159); an empty
   `SHF_MERGE` section is placed whole, as `Regular` (`spec/synth.md`
-  S-6), so it is an ordinary empty section at its input-order position,
-  as GNU ld and lld place it;
+  S-6), so it is an ordinary empty section, at the end of the merged
+  chunk when it follows a merged input (`spec/layout.md` L-162), where
+  GNU ld and lld agree to place it;
 - it has no place when its section is `Dropped` by a row of the table
   above (`Comdat`, `Excluded`, `Consumed`, `Stripped`, `Script`), is
   `Kept` but consumed by the linker (`OutOf::Consumed`: the
@@ -1674,14 +1675,24 @@ load, a `-pie` dynamic record and a debug word, on the three targets:
 
 | section | GNU ld 2.44 | lld 22 | mold 2.37 | mortar |
 |---|---|---|---|---|
-| empty `SHF_MERGE` (`.rodata.str1.1`, `.rodata.cst8`) | placed: its input position | placed: its input position | placed: an empty output section of its own | placed (S-6), as GNU ld and lld |
-| `.note.gnu.property` | refused | refused | globals refused; locals linked at the note's offset | no place: refused (Consumed) |
-| `SHF_EXCLUDE` | undefined | refused | linked | no place: refused (Excluded) |
-| `.note.GNU-stack` | linked, at the end of `.text` | refused | undefined | no place: refused (Consumed), as lld |
-| `.note.gnu.build-id` (input) | refused | refused | linked | no place: refused (Excluded) |
-| `.gnu.warning.*` | refused | linked, 0 (non-alloc) | linked, 0 | no place: refused (Consumed) |
-| a debug section under `-S` | refused | refused | linked | no place: refused (Stripped) |
-| `.llvm_addrsig`, `SHT_AARCH64_ATTRIBUTES` | linked, 0 | linked, 0 | linked, 0 | no place: refused (Consumed) |
+| empty `SHF_MERGE` (`.rodata.str1.1`, `.rodata.cst8`) | placed at its input position (at the end of `.text` when no `.rodata` holds bytes) | placed at its input position (an empty `.rodata`) | placed: an empty output section of its own | placed whole (S-6): in the body (before any merged input: the start, as GNU and lld), at the merged chunk's end (after one: L-162, as GNU and lld); with no `.rodata` bytes, L-159's place (the start of `.text`) |
+| `.note.gnu.property` | refused | refused; a weak global is 0 | globals undefined; locals linked at the note's offset | no place: refused (`Consumed`) |
+| `SHF_EXCLUDE` | globals undefined; locals refused | refused; a weak global is 0 | linked | no place: refused (`Excluded`) |
+| `.note.GNU-stack` | linked, at the end of `.text` | refused; a weak global is 0 | globals undefined; locals linked 0 | no place: refused (`Consumed`), as lld |
+| `.note.gnu.build-id` (an input's) | refused | refused; a weak global is 0 | globals undefined; locals linked at the note's offset | no place: refused (`Excluded`) |
+| `.gnu.warning.*` | refused | linked, its offset (non-alloc) | linked, its offset | no place: refused (`Consumed`) |
+| `.debug_*` under `-S` | refused | linked, 0 (`SHN_ABS`) | globals undefined; locals linked 0 | no place: refused (`Stripped`) |
+| `.llvm_addrsig` (without `SHF_EXCLUDE`) | linked, 0 | linked, 0 | linked, 0 | no place: refused (`Consumed`) |
+| `SHT_AARCH64_ATTRIBUTES` | linked, 0 | linked, 0 | globals undefined; locals linked 0 | no place: refused (`Consumed`) |
+
+The rows are the references from alloc data, PC-relative and GOT loads
+and `-pie` records; from a debug section every reference linker writes
+0 (mold for the kinds it links, the offset) and mortar the tombstone
+(I-47: all ones in ELFCLASS64, 0 in ELFCLASS32). An unreferenced export
+of such a global (`-shared`): GNU ld writes it `SHN_ABS` with its
+offset (`.note.gnu.property`, build-id), at the end of `.text`
+(GNU-stack) or not at all (`SHF_EXCLUDE`); lld writes it undefined; mold
+omits it but for `SHF_EXCLUDE`; mortar omits it.
 
 The references disagree on every dropped kind; P-1 takes the strictest
 reading, the one that cannot produce a wrong word: a symbol of a section
