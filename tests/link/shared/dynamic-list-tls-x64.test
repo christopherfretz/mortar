@@ -1,0 +1,49 @@
+# dyn.md D-112, D-119, W43 (WP-128): a `--dynamic-list` that does not list
+# a TLS variable binds it, and a bound variable's general-dynamic pair is
+# one DTPMOD64 with symbol 0 and the variable's static offset in the
+# library's block: no record names it, and under an interposer of the
+# variable (with another TLS layout) the library reads its own `tv` (3).
+# GNU ld keeps the unlisted TLS variable preemptible (its records name
+# `tv`; the library reads the interposer's 30); lld names `tv` in the
+# DTPMOD64 while its offset is static (W43: the module is the
+# interposer's, the offset the library's; the verifier's P-D17 view B
+# finds it); mold binds it as mortar.
+#@ spec: dyn.md "D-112"; dyn.md "W43"
+#@ arch: x86_64
+#@ xfail(mortar): the verifier predates WP-128: its option mirror (crates/mortar_plumb/src/opts.rs, regenerated at the merge) reads `--dynamic-list` as an option mortar does not accept (M9)
+#@ xfail(lld): W43: lld names the unlisted TLS variable in a DTPMOD64 with a static DTPOFF; the verifier's P-D17 view B finds the general-dynamic pair under an interposer
+
+cc -O1 -fPIC lib.c -o lib.o
+cc -O1 -fPIC pre.c -o pre.o
+cc -O1 -fPIE main.c -o main.o
+shlib gcc pre.o -Wl,-soname,libpre.so -o libpre.so
+link gcc -shared lib.o -Wl,--dynamic-list,get.list -Wl,-soname,libtv.so -o libtv.so
+check(mold,mortar) readelf -rW libtv.so
+  has: R_X86_64_DTPMOD64
+  not: tv
+check(bfd) readelf -rW libtv.so
+  has: R_X86_64_DTPMOD64 * tv
+link gcc -pie main.o -L. -ltv -o prog
+run prog
+  stdout: 3 7
+run(mold,mortar) prog
+  env: LD_PRELOAD=./libpre.so
+  stdout: 3 7
+run(bfd) prog
+  env: LD_PRELOAD=./libpre.so
+  stdout: 30 7
+
+#--- get.list
+{ get_tv; get_other; };
+#--- lib.c
+__thread int other = 7;
+__thread int tv = 3;
+int get_tv(void) { return tv; }
+int get_other(void) { return other; }
+#--- pre.c
+__thread int tv = 30;
+#--- main.c
+#include <stdio.h>
+int get_tv(void);
+int get_other(void);
+int main(void) { printf("%d %d\n", get_tv(), get_other()); return 0; }

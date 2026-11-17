@@ -1,24 +1,15 @@
 # WP-128 WIP (deleted in the final commit)
 
-Scratch: /Volumes/AgentWork/mortar-helper/.build/target-wp-141/wp128/ (m1 flags, m4 exclude-libs, m5 -init).
+Scratch: /Volumes/AgentWork/mortar-helper/.build/target-wp-141/wp128/ (m1 flags, m4 exclude-libs,
+m5 -init, m6 dynamic-list exe/shared, m7-m9 manual mortar checks of the xfail(mortar) tests).
 
-## Measured so far
-- D-103 -z flags: Shared all three agree with the table. Executables: GNU ld writes
-  INTERPOSE and ORIGIN only (nodelete/nodlopen/initfirst dropped; no-pie writes an
-  empty FLAGS_1); lld and mold write all five. static: nothing written by any.
-  No `no-` forms in any reference (unknown -z, warned).
-  -> D-103 keeps executables at M2 status (refused): rows go SHARED_ONLY. cli.md
-  sentence "in an executable GNU ld writes the same flags" is wrong: correct it.
-- -init: local symbol, symbol only in a shared lib, archive member not extracted:
-  all three omit the tag (mortar: undefined-init-symbol). -init does not extract.
-  data object: all three write its address. gc: GNU ld, lld keep hidden fn; mold W22.
-  mortar exe -init + --gc-sections: INTERNAL ERROR today (not a root) -> fix (roots).
-- --exclude-libs: basename of the archive; a path in the option matches nothing;
-  `,` and `:` separators; ALL case-sensitive; `libfoo` (no .a) matches in GNU ld only
-  (STOP cell -> refused by name meanwhile). .symtab: GNU ld/lld LOCAL DEFAULT, mold
-  LOCAL HIDDEN. No dynamic records for excluded keys. Exe: exclusion removes -E and
-  --export-dynamic-symbol exports; a DSO reference to an excluded key: GNU ld, lld
-  refuse; mold links a broken program.
+## Done (commits a687103, a89e29e, then part 3)
+- parts 1, 2, 5, 4, 3 implemented, link tests + crate tests written; spec edits in dyn.md
+  (D-102 rows 3-4, D-103, D-110 item 1, D-112, D-124 item 2, D-1 static-pie rows),
+  resolve.md (§4.2 rows -init/-fini and --dynamic-list, §4.7, §9.6), cli.md §4.2.
+- --dynamic-list measured: exe exports listed (all three), no extraction, gc root;
+  several lists one (union); quoted entries; static-pie: references export, mortar no effect (D-1).
 
 ## Next
-- code: rows (cli), dynlink flags, exclude-libs (resolve), dynamic-list, init roots.
+- census (`cargo xtask census --filter shared`, quick census), static-identical, sweep.
+- record spec/landed/dyn/WP-128.md; gates (linktest whole lane, ci --quick); hand back.

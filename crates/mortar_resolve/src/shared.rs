@@ -380,6 +380,13 @@ pub(crate) fn link<V: View>(
     // D-112's (`crate::export`).
     let mut versions: Vec<u16> = Vec::new();
     let mut version_problems = Vec::new();
+    // D-112, §9.6 (WP-128): the keys a `--dynamic-list` lists, by name
+    // without a version.
+    let listed = |k: usize| {
+        opts.dynamic_list
+            .as_ref()
+            .is_some_and(|list| list.matches(view.key_name(SymbolId(k as u32)).0))
+    };
     let exported: Vec<bool> = if opts.shared_output.is_some() {
         let mut e: Vec<bool> = (0..keys)
             .map(|k| {
@@ -404,7 +411,8 @@ pub(crate) fn link<V: View>(
                     && (ref_dynamic[k]
                         || defined_dynamic[k]
                         || opts.shared.export_dynamic
-                        || opts.shared.export_symbols.binary_search(&SymbolId(k as u32)).is_ok())
+                        || opts.shared.export_symbols.binary_search(&SymbolId(k as u32)).is_ok()
+                        || listed(k))
             })
             .collect()
     };
@@ -418,7 +426,14 @@ pub(crate) fn link<V: View>(
                     }
                     _ => 0,
                 };
-                export::preemptible(d, props[k].visibility, sym_type, exported[k], out.symbolic)
+                export::preemptible(
+                    d,
+                    props[k].visibility,
+                    sym_type,
+                    exported[k],
+                    out.symbolic,
+                    listed(k),
+                )
             })
             .collect(),
         None => Vec::new(),

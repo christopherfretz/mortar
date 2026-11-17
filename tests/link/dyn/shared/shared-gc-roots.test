@@ -3,8 +3,8 @@
 # (item 3), a C-identifier section reached by `__start_`/`__stop_` from
 # live code (item 4) and SHF_GNU_RETAIN sections (item 5); a hidden
 # function nothing reaches is collected (its undefined reference:
-# `shared-gc-undefined`). Item 2 (`-init`/`-fini`) waits for
-# WP-128 (refused in a shared object).
+# `shared-gc-undefined`). Item 2 (`-init`/`-fini`) is
+# `shared/shared-init-fini` (WP-128).
 #@ spec: dyn.md "D-124"
 #@ arch: aarch64 x86_64
 #@ xfail(lld): dyn.md D-124 item 4: lld leaves `__stop_gcset` undefined in the library, and a host link refuses it (W23's kin)

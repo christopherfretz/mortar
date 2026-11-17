@@ -393,7 +393,7 @@ in E-dynamic (108 outputs: C, C++, Fortran hello × PIE, `-no-pie`,
 | `PT_PHDR` | no | yes | yes | no (GNU ld; lld and mold write one; layout L-67 "iff `PT_INTERP`") |
 | `.dynamic`, `PT_DYNAMIC`, `_DYNAMIC` | no | yes | yes | yes |
 | `DT_NEEDED`, versions | no | yes | yes | no (a shared input is refused, input §8.4) |
-| `.dynsym` | none | D-21 | D-21 | the null entry only: `--export-dynamic` and `--export-dynamic-symbol` are accepted with no effect (WP-056 measured exports from a static-pie useless; §13.1) |
+| `.dynsym` | none | D-21 | D-21 | the null entry only: `--export-dynamic`, `--export-dynamic-symbol` and `--dynamic-list` are accepted with no effect (WP-056 measured exports from a static-pie useless; §13.1) |
 | `DT_DEBUG` | — | yes | yes | yes (all three) |
 | `DT_FLAGS_1` | — | `DF_1_NOW` under `-z now` | `DF_1_PIE` (+ `DF_1_NOW`) | `DF_1_PIE` (+ `DF_1_NOW` under `-z now`: all three references; WP-052) |
 | `RELATIVE` | never | never (absolute values are final) | every absolute word (GOT slots included) of a non-preemptible target that is an address of the executable; never one of an absolute symbol (`SHN_ABS`: the word holds the value, D-46 row `Abs`; GNU ld's AArch64 record there is A30, §13.2) | same as `Pie` |
@@ -1639,6 +1639,7 @@ unchanged. Every `P-D` id this spec cites is that section's.
 | writable place (D-25) of a read-only input section in a writable output section | the output section: links (RWX segment, no `PT_GNU_RELRO`) | the input section: refuses the PIE ("recompile with -fPIC") | the output section: links (`DT_TEXTREL`, A24) | the output section; records, RELRO kept (D-25, WP-056) |
 | `--export-dynamic` in a static-pie | exports every global (x86-64: the program dies at start-up) | exports every global | exports every global | accepted, no effect: `.dynsym` stays the null entry (D-1, P-D14); the exports are useless: a library the program `dlopen`s does not bind to them and `dlsym(RTLD_DEFAULT)` does not find them (WP-056, all three) |
 | `--export-dynamic-symbol` in a static-pie | exports the name | exports the name | exports the name | accepted, no effect: `.dynsym` stays the null entry (D-1, P-D14) |
+| `--dynamic-list` in a static-pie | exports the listed names | exports the listed names | exports the listed names | accepted, no effect: `.dynsym` stays the null entry (D-1, P-D14; WP-128 measured, AArch64) |
 | `--export-dynamic-symbol=GLOB` | glob | glob | glob | glob (resolve.md §4.2; WP-056 fixed a literal match) |
 | `.gnu.version_r` align | 8 | 4 | 4 | 4 (D-34) |
 | `IRELATIVE` in a PIE | last of `.rela.plt` | end of `.rela.dyn` | end of `.rela.dyn` | GNU ld's (D-41) |
@@ -1899,7 +1900,7 @@ as in D-30):
 |---|---|
 | after 1 | `DT_SONAME` iff `-soname` (the name as given), then `DT_SYMBOLIC` iff the line's last `-Bsymbolic` form is `-Bsymbolic` and it has no `--dynamic-list` (D-112; GNU ld; lld writes `DF_SYMBOLIC` only, mold neither) |
 | 2 | `DT_RUNPATH`/`DT_RPATH` unchanged (after `DT_SONAME`/`DT_SYMBOLIC`, GNU ld and mold; lld puts it first) |
-| 3-4 | `DT_INIT`/`DT_FINI`: an explicit `-init`/`-fini` naming a symbol that is not defined is refused by name, `undefined-init-symbol` (all three silently omit both tags and the library's `_init`/`_fini` never run, [B] `b_init_undef`). Without the option, an undefined default `_init`/`_fini` (`-nostdlib`, no `crti.o`) omits the tag silently, as D-30 rows 3-4 |
+| 3-4 | `DT_INIT`/`DT_FINI`: an explicit `-init`/`-fini` naming a symbol that is not defined is refused by name, `undefined-init-symbol` (all three silently omit both tags and the library's `_init`/`_fini` never run, [B] `b_init_undef`); so is one that names a local symbol, a definition of a shared input only, or an archive member nothing else extracts (`-init` extracts nothing: all three omit the tag; WP-128). An explicit name whose definition is not code (not `STT_FUNC`, nor `STT_NOTYPE` in an executable section) is refused by name, class `feature`: all three write the data's address, which the loader calls (a crash at `dlopen`; WP-128). The loader runs the `-init` function before `.init_array` and the `-fini` function after `.fini_array` (all three but mold under `--gc-sections`, W22; `shared-init-fini`). Without the option, an undefined default `_init`/`_fini` (`-nostdlib`, no `crti.o`) omits the tag silently, as D-30 rows 3-4 |
 | 5-6 | `DT_PREINIT_ARRAY*`: a `.preinit_array` in a shared object is refused by name, `preinit-array-in-shared-object` (glibc runs pre-initialisers of the executable only) [unmeasured on the references] |
 | 16 | `DT_DEBUG`: never |
 | 26-27 | `DT_FLAGS`/`DT_FLAGS_1`: D-103 |
@@ -1931,9 +1932,17 @@ them identically ([B]: 12 of 12 runs per option):
 | `-z origin` | `DF_ORIGIN` | `DF_1_ORIGIN` | — |
 | IE TLS present (D-119) | `DF_STATIC_TLS` | — | — |
 
-`-Bsymbolic-functions` writes no tag (all three). Every one of these
-options is `supported` with its `Shared` row only; with an executable
-kind each keeps its M2 status (cli.md, request R-C10). `-z now` and
+`-Bsymbolic-functions` writes no tag (all three). Several flags share
+one `DT_FLAGS_1`; with `-soname` and `-Bsymbolic` the tags come in GNU
+ld's order: `DT_SONAME`, `DT_SYMBOLIC`, ..., `DT_FLAGS`, `DT_FLAGS_1`
+(WP-128, measured on both architectures). Every one of these options is
+`supported` with its `Shared` row only; with an executable kind each
+keeps its M2 status (cli.md, request R-C10): the five `-z` keywords are
+refused by name there (`rows::SHARED_ONLY`). Measured (WP-128) in
+`-pie`, `-no-pie` and `-static-pie`: GNU ld writes `DF_1_INTERPOSE` and
+`DF_1_ORIGIN` (with `DF_ORIGIN`) and drops `nodelete`, `nodlopen` and
+`initfirst` (a `-no-pie` line gets an empty `DT_FLAGS_1`); lld and mold
+write all five; in a `-static` executable none of the three writes any. `-z now` and
 `-z norelro` behave as in D-49 and D-33. *Test:* `shared-dt-flags` (the
 table, run).
 
@@ -1947,7 +1956,25 @@ whose `def` is a definition of a live relocatable object with
 
 1. made local by a version script (D-114) or by `--exclude-libs`
    (defined by a member of a named archive, or of any archive for `ALL`;
-   all three, [X-A], [X-G]);
+   all three, [X-A], [X-G]). An `--exclude-libs` entry is an archive's
+   file name, its base name however the archive was found (`libfoo.a`,
+   `-lfoo`, `sub/libfoo.a`), case-sensitive; `ALL` exactly names every
+   archive; `,` and `:` separate entries; an entry with a directory, or
+   `all`, names nothing (all three, WP-128). An entry without `.a` that
+   is an archive's name without its `.a` (`libfoo` for `libfoo.a`)
+   names it in GNU ld only (lld and mold: nothing): refused by name,
+   `invalid-option-value`. The exclusion wins over a version script's
+   `global:` (all three), and an excluded definition binds locally (no
+   dynamic record names it; an interposer does not reach the library's
+   uses). In an executable the exclusion takes the definitions out of
+   every export the line would give, `-E`, `--export-dynamic-symbol`,
+   `--dynamic-list` and D-21's export of a definition a shared input
+   also has (all three), and a shared input's reference to an excluded
+   definition is refused as one to a hidden definition (D-13; GNU ld and
+   lld refuse it, mold links a program the loader cannot start). The
+   `.symtab` binding of an excluded definition is WP-150's question (GNU
+   ld and lld write `LOCAL DEFAULT`, mold `LOCAL HIDDEN`; mortar keeps
+   `GLOBAL` meanwhile);
 2. linker-defined (file 0): exported only when `ref_dynamic`, as D-21
    item 2 says for executables; no reference exports `_end`, `_edata`
    or `__bss_start` in `-shared` ([X-A] A1); layout L-100's "exported
@@ -1980,7 +2007,8 @@ unique, D-23), every member extracted from an archive whole (not only
 the referenced definitions), and `main` when a library defines it
 (googletest's `gtest_main`). `--export-dynamic`/`-E` and
 `--export-dynamic-symbol` change nothing in `-shared`; `--dynamic-list`
-changes preemption only (D-112) (all three, [X-A] A2). The set equals
+changes preemption only (D-112) (all three, [X-A] A2; WP-128 measured
+again: a definition no list names stays in `.dynsym`). The set equals
 every reference's on every library of the census (gtest: 3840 defined,
 zlib, Lua) but for GNU ld's items 3 and 4. *Tests:* `shared-export-set`
 (each item, each architecture), `shared-exclude-libs`.
@@ -2062,6 +2090,13 @@ cell are in `exp2/bsym2/result.txt`, summarised in the record §F.2).
 | `--dynamic-list-data`, `--dynamic-list-cpp-new`, `--dynamic-list-cpp-typeinfo` | refused by name | | | | | | GNU ld accepts all three (`-data` acts as `-Bsymbolic-functions` binding `NOTYPE` too; `-cpp-*` as a list of `operator new`/`delete` or typeinfo); lld refuses all three (`unknown argument`); mold accepts `-data` and changes nothing, refuses `-cpp-*` |
 | `-Bsymbolic-non-weak-functions`, `-Bsymbolic-non-weak` | refused by name | | | | | | GNU ld does not know them (lld and mold accept) |
 
+A line's `--dynamic-list` files are one list: a key any of them names is
+listed (all three, WP-128). An entry is matched against the key's name
+without its version, as a version script's entry (resolve.md §9.7
+"Entries": a quoted name exact, a glob, `*`); an `extern "C++"` block is
+refused by name (class `script-command`), as in a version script (rule
+6: no demangler; the three accept it).
+
 In words: without `--dynamic-list`, the last of `-Bsymbolic`,
 `-Bsymbolic-functions` and `-Bno-symbolic` decides (`-Bsymbolic` binds
 every type; `-Bsymbolic-functions` binds `STT_FUNC` only, lld's rule;
@@ -2099,7 +2134,15 @@ AArch64 property unmeasured]. *Tests:* `shared-preemption` (the table:
 every row and column, run under `LD_PRELOAD`, both targets),
 `shared-protected` (executables against a protected definition:
 `-fPIE` GOT ones run, COPY and canonical PLT ones refused, D-18),
-`dynamic-list-symbolic` (W31), `dynamic-list-tls-x64` (W43).
+`dynamic-list` (the list rows, every type, two files, run under
+`LD_PRELOAD`), `dynamic-list-symbolic` (W31), `dynamic-list-tls-x64`
+(W43), `bsymbolic` (the `-Bsymbolic` row, run under `LD_PRELOAD`).
+Under `-Bsymbolic` GNU ld still names the library's own IFUNC in a
+`JUMP_SLOT` (AArch64 and x86-64) and its TLS variable in its TLS
+records (`TLSDESC`; x86-64 `DTPMOD64`/`DTPOFF64`), and lld names the TLS
+variable in its x86-64 `DTPMOD64`; the loader binds them to the library
+itself through `DF_SYMBOLIC`, and every run agrees (WP-128). mortar
+names none: an `IRELATIVE`, TLS records with symbol 0.
 
 **D-113 [M4] (where preemption lives).** Preemption is a property of a
 key computed by resolution after the export set, before the relocation
@@ -2820,8 +2863,9 @@ every key exported to `.dynsym`; for `Shared` they read:
    E2);
 2. the functions named by `-init`/`-fini`, even when hidden (GNU ld and
    lld; mold collects a hidden `-init` function and writes
-   `DT_INIT = 0`: the library crashes at load, W22). resolve §4.7 does
-   not list them today; request R-R10 adds them for every kind;
+   `DT_INIT = 0`: the library crashes at load, W22). resolve §4.7 lists
+   them for every kind since WP-128 (request R-R10; `shared-init-fini`,
+   `init-fini-gc-root`);
 3. the start-up tables of I-6 (`.init_array`, `.fini_array`, `.ctors`,
    `.dtors`, `.init`, `.fini`; all three);
 4. a C-identifier section reached through `__start_NAME`/`__stop_NAME`

@@ -1,0 +1,107 @@
+# dyn.md D-112 (WP-128): with a `--dynamic-list` the list decides a
+# shared object's preemption alone. A key it lists (an exact name, a
+# quoted one, a glob; several `--dynamic-list` files are one list, all
+# three) stays preemptible: its uses go through a record and an
+# interposer reaches them. A key it does not list is bound, of every
+# type: no dynamic record names the TLS variable (its module record's
+# symbol is 0) or the IFUNC (an IRELATIVE). The export set does not
+# change: every definition is in `.dynsym` (all three). `STV_PROTECTED`
+# stays bound. GNU ld keeps the unlisted TLS variable and IFUNC
+# preemptible (its records name them; under the interposer the library
+# reads the interposer's 30 and 50); lld on x86-64 binds the TLS
+# variable half (W43, `dynamic-list-tls-x64`; the verifier's P-D17 finds
+# its library). The program is linked by the linker of its library, so
+# each run under the interposer is its linker's. An
+# `extern "C++"` entry is refused by name (it needs the demangler, as in
+# a version script, resolve.md §9.7 rule 6); GNU ld, lld and mold take it.
+#@ spec: dyn.md "D-112"; resolve.md "§9.6"
+#@ arch: aarch64 x86_64
+#@ anomaly(lld): A20
+#@ anomaly(mold): A20
+#@ xfail(mortar): the verifier predates WP-128: its option mirror (crates/mortar_plumb/src/opts.rs, regenerated at the merge) reads `--dynamic-list` as an option mortar does not accept (M9)
+#@ xfail(lld,x86_64): W43: lld binds the unlisted TLS variable half (a DTPMOD64 naming it, a static offset); the verifier's P-D17 view B finds the general-dynamic sequence under an interposer
+
+cc -O1 -fPIC lib.c -o lib.o
+cc -O1 -fPIC pre.c -o pre.o
+cc -O1 -fPIE main.c -o pie.o
+shlib gcc pre.o -Wl,-soname,libpre.so -o libpre.so
+link gcc -shared lib.o -Wl,--dynamic-list,f.list -Wl,--dynamic-list,w.list -Wl,-soname,libdl.so -o libdl.so
+check readelf -dW libdl.so
+  not: SYMBOLIC
+check readelf --dyn-syms -W libdl.so
+  has: lib_f$
+  has: lib_d$
+  has: lib_t$
+  has: lib_w$
+  has: lib_g$
+  has: lib_i$
+check readelf -rW libdl.so
+  has: lib_f
+  has: lib_d
+  has: lib_w
+check(mold,mortar) readelf -rW libdl.so
+  not: lib_t
+  not: lib_i
+  not: lib_g
+check(bfd) readelf -rW libdl.so
+  has: lib_t
+  has: lib_i
+link(mortar) gcc -shared lib.o -Wl,--dynamic-list,cxx.list -o libcxx.so
+  exit: fail
+  diag: extern "C++" in a dynamic list
+link gcc -pie pie.o -L. -ldl -o pie-dl
+run pie-dl
+  stdout: lib 1 10 3 4 7 5
+  stdout: host 1 4 7 5 1
+run(mold,mortar,lld,aarch64) pie-dl
+  env: LD_PRELOAD=./libpre.so
+  stdout: lib 2 20 3 40 7 5
+  stdout: host 2 40 70 50 1
+run(bfd) pie-dl
+  env: LD_PRELOAD=./libpre.so
+  stdout: lib 2 20 30 40 7 50
+  stdout: host 2 40 70 50 1
+
+#--- f.list
+{ lib_f; "lib_d"; };
+#--- w.list
+{
+  lib_w*;
+};
+#--- cxx.list
+{ extern "C++" { "lib_f()"; }; };
+#--- lib.c
+#include <stdio.h>
+int lib_d = 10;
+__thread int lib_t = 3;
+int lib_f(void) { return 1; }
+__attribute__((weak)) int lib_w(void) { return 4; }
+__attribute__((visibility("protected"))) int lib_g(void) { return 7; }
+static int impl(void) { return 5; }
+static int (*resolve_i(void))(void) { return impl; }
+int lib_i(void) __attribute__((ifunc("resolve_i")));
+void *lib_addr_f(void) { return (void *)lib_f; }
+void lib_report(void) {
+  printf("lib %d %d %d %d %d %d\n", lib_f(), lib_d, lib_t, lib_w(), lib_g(), lib_i());
+}
+#--- pre.c
+int lib_d = 20;
+__thread int lib_t = 30;
+int lib_f(void) { return 2; }
+int lib_w(void) { return 40; }
+int lib_g(void) { return 70; }
+int lib_i(void) { return 50; }
+#--- main.c
+#include <stdio.h>
+int lib_f(void);
+int lib_w(void);
+int lib_g(void);
+int lib_i(void);
+void *lib_addr_f(void);
+void lib_report(void);
+int main(void) {
+  lib_report();
+  printf("host %d %d %d %d %d\n", lib_f(), lib_w(), lib_g(), lib_i(),
+         (void *)lib_f == lib_addr_f());
+  return 0;
+}

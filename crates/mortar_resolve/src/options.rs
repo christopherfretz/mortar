@@ -89,6 +89,11 @@ pub struct Options {
     /// file, set for a member of an archive the option names (the input
     /// walk's `InputFlags::EXCLUDE_LIBS`). Empty when no file is excluded.
     pub exclude_libs: Vec<bool>,
+    /// The line's `--dynamic-list` files as one list, compiled
+    /// (`spec/dyn.md` D-112, `spec/resolve.md` §9.6; WP-128): in a
+    /// `Shared` output it decides preemption alone; in an executable each
+    /// definition it lists is exported (as `--export-dynamic-symbol`).
+    pub dynamic_list: Option<std::sync::Arc<crate::version::DynamicList>>,
 }
 
 /// What a `Shared` output's resolution reads (`spec/dyn.md` D-110, D-112,
@@ -210,6 +215,7 @@ impl Default for Options {
             shared_output: None,
             versions: crate::version::VersionLine::default(),
             exclude_libs: Vec::new(),
+            dynamic_list: None,
         }
     }
 }

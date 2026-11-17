@@ -726,6 +726,7 @@ pub fn options(plan: &Plan, inputs: &Inputs<'_>, view: &InputsView<'_, '_>) -> O
             no_undefined_version: plan.dynamic.undefined_version == Some(false),
         },
         exclude_libs: exclude_libs(inputs),
+        dynamic_list: None,
     }
 }
 
@@ -1413,23 +1414,26 @@ pub struct Outcome {
 /// `check_against`) and the diagnostics.
 #[must_use]
 pub fn resolve_inputs(inputs: &Inputs<'_>, plan: &Plan, pool: &Pool) -> Outcome {
-    resolve_inputs_with(inputs, plan, pool, None)
+    resolve_inputs_with(inputs, plan, pool, None, None)
 }
 
 /// [`resolve_inputs`] with the line's version script, compiled
 /// (`crate::version::VersionScript::compile`; `spec/resolve.md` §9.7):
-/// applied in a `Shared` output.
+/// applied in a `Shared` output; and its `--dynamic-list` files, compiled
+/// (`crate::version::DynamicList::load`; `spec/dyn.md` D-112, WP-128).
 #[must_use]
 pub fn resolve_inputs_with(
     inputs: &Inputs<'_>,
     plan: &Plan,
     pool: &Pool,
     script: Option<std::sync::Arc<crate::version::VersionScript>>,
+    dynamic_list: Option<std::sync::Arc<crate::version::DynamicList>>,
 ) -> Outcome {
     let mut steps = Steps::default();
     let view = InputsView::new_steps(inputs, pool, &mut steps);
     let mut opts = options(plan, inputs, &view);
     opts.versions.script = script;
+    opts.dynamic_list = dynamic_list;
     steps.step("options");
     let r = resolve_steps(&view, &opts, pool, &mut steps);
     let mut diagnostics = diagnostics(inputs, &view, &opts, &r);

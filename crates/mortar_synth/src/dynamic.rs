@@ -119,6 +119,7 @@ pub struct SharedDyn {
 /// `DF_1_*` bit in `DT_FLAGS_1`, and `-z origin` also `DF_ORIGIN` in
 /// `DT_FLAGS` (all three, every architecture).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[allow(clippy::struct_excessive_bools, reason = "five independent options of the line")]
 pub struct ZFlags {
     /// `-z nodelete`: `DF_1_NODELETE`.
     pub nodelete: bool,

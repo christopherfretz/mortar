@@ -313,6 +313,54 @@ fn exclude_libs_hides_archive_definitions() {
     );
 }
 
+// spec: dyn.md D-112 (`--dynamic-list`: a listed key preemptible, an
+// unlisted one bound, whatever `-Bsymbolic` form is given with it; no
+// DT_SYMBOLIC), resolve.md §9.6 (the export set unchanged; in an
+// executable the listed definitions are exported)
+#[test]
+fn dynamic_list_decides_preemption_and_exports() {
+    let Some(cx) = Cx::new("shared-dynlist") else { return };
+    cx.scratch.write("f.list", "{ f; };\n");
+    for words in [
+        &["-Wl,--dynamic-list,f.list"][..],
+        &["-Wl,-Bsymbolic", "-Wl,--dynamic-list,f.list"],
+        &["-Wl,--dynamic-list,f.list", "-Wl,-Bsymbolic"],
+        &["-Wl,--dynamic-list,f.list", "-Wl,-Bsymbolic-functions"],
+        &["-Wl,--dynamic-list,f.list", "-Wl,-Bno-symbolic"],
+    ] {
+        let o = cx.mortar_shared(&["lib.o"], words, "libl.so");
+        assert!(o.success(), "{words:?}: {}", o.stderr_text());
+        verify_but_the_mirror(cx.scratch.path(), "libl.so");
+        assert!(!cx.readelf(&["-dW"], "libl.so").contains("SYMBOLIC"), "{words:?}");
+        let syms = cx.readelf(&["--dyn-syms", "-W"], "libl.so");
+        for name in [" f", " d", " g", " via_f"] {
+            assert!(syms.lines().any(|l| l.ends_with(name)), "{words:?} {name}: {syms}");
+        }
+        // `f` listed: the interposer reaches the library's call; `d` not
+        // listed: the library reads its own.
+        let out = cx.run_host("host.c", &["-DINTERPOSE"], "libl.so", "dl");
+        assert_eq!(out, "2 10 7\n", "{words:?}");
+    }
+    // In an executable the listed definitions are exported, and only they.
+    cx.scratch
+        .write("exe.c", "int f(void) { return 1; }\nint d = 2;\nint main(void) { return 0; }\n");
+    cx.ok(&["-O1", "-fPIE", "-c", "exe.c", "-o", "exe.o"]);
+    let o = cx.gcc(&[
+        cx.b.as_str(),
+        "-pie",
+        "exe.o",
+        "-Wl,--dynamic-list,f.list",
+        "-Wl,--mortar-map=exe.mortar-map",
+        "-o",
+        "exe",
+    ]);
+    assert!(o.success(), "{}", o.stderr_text());
+    verify_but_the_mirror(cx.scratch.path(), "exe");
+    let syms = cx.readelf(&["--dyn-syms", "-W"], "exe");
+    assert!(syms.lines().any(|l| l.ends_with(" f")), "{syms}");
+    assert!(!syms.lines().any(|l| l.ends_with(" d") || l.ends_with(" main")), "{syms}");
+}
+
 /// [`verify`], but for M9's findings on the line's words: the verifier's
 /// option mirror (`crates/mortar_plumb/src/opts.rs`) predates WP-128's
 /// rows and is regenerated at the merge, after which this is [`verify`].

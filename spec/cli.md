@@ -1052,8 +1052,8 @@ until the phase that honors them lands with its test:
     `-shared` status text is the record's §G.4 (written with the row).
     In a `Shared` link until their packages: `-Bsymbolic`,
     `--dynamic-list`, `--exclude-libs`, `-init`, `-fini`,
-    `-z nodelete`/`nodlopen`/`initfirst`/`interpose`/`origin` are
-    refused (WP-128).
+    `-z nodelete`/`nodlopen`/`initfirst`/`interpose`/`origin` were
+    refused (WP-128 landed them; `SHARED_LATER` is empty).
   - WP-118 (`Shared` synth, layout, image): `-z now` in `Shared`
     (`DF_BIND_NOW`, `DF_1_NOW`, D-103; rustc's `cdylib` line passes
     `-z relro,-z now`); the row is `supported` already.
@@ -1066,13 +1066,19 @@ until the phase that honors them lands with its test:
     executable `--version-script` is refused by name (D-114: the
     references disagree). Landed (WP-125).
   - WP-128 (the option tail): `-Bsymbolic` `supported` (D-112, D-103:
-    `DT_SYMBOLIC`, `DF_SYMBOLIC`), `--dynamic-list` `supported` (D-112;
-    the grammar is WP-125's), `--exclude-libs` `supported` (D-110 item
-    1), `-z nodelete`, `-z nodlopen`, `-z initfirst`, `-z interpose`,
-    `-z origin` `supported` (D-103's flags; in an executable GNU ld
-    writes the same flags), `-init`/`-fini` in `Shared` (D-102 rows
-    3-4: an explicit name that is not defined is refused,
-    `undefined-init-symbol`), `--whole-archive` `supported`.
+    `DT_SYMBOLIC`, `DF_SYMBOLIC`; in an executable it does nothing, as
+    GNU ld and mold), `--dynamic-list` `supported` in every kind (D-112;
+    the grammar is WP-125's, `extern "C++"` refused by name; in an
+    executable it exports the listed definitions, resolve.md §9.6),
+    `--exclude-libs` `partial` (D-110 item 1; an entry naming an archive
+    without its `.a` is refused by name), `-z nodelete`, `-z nodlopen`,
+    `-z initfirst`, `-z interpose`, `-z origin` `supported` in `Shared`
+    only (D-103's flags; in an executable they are refused by name,
+    `SHARED_ONLY`: GNU ld drops the first three there and lld and mold
+    write them), `-init`/`-fini` in `Shared` (D-102 rows 3-4: an
+    explicit name that is not defined is refused,
+    `undefined-init-symbol`; one that is not code is refused by name).
+    `--whole-archive` is WP-152's. Landed (WP-128).
   - Refused by name, class `option`, in every kind, not planned:
     `--Bsymbolic-non-weak`, `--Bsymbolic-non-weak-functions` (GNU ld
     does not know them; their `noop` status of WP-027e becomes

@@ -525,6 +525,8 @@ reference):
 | `--defsym A=EXPR` | the symbols `EXPR` names, wherever the option is on the line (finding 17: GNU ld extracts them only when the option precedes the archive, ``undefined symbol `k' referenced in expression`` otherwise; lld and mold in any position, R10: §16) | M4 |
 | `--export-dynamic-symbol=GLOB` | each unversioned key whose name matches the glob, among the keys some file mentions (`*` any run, `?` one byte, `[set]` with ranges and `!`/`^` negation, `\` quotes the next byte; a `[` without `]` is literal, fnmatch(3)); a value without a wildcard names its key. GNU ld, lld and mold agree on `exp_d*` (WP-056, `export-dynamic-symbol`); before WP-056 mortar matched the value as a literal name | M2 |
 | a script's `EXTERN(SYM)` | `SYM` | M4 |
+| `-init SYM`, `-fini SYM` | none: `SYM` roots no extraction (an archive member only `-init` names stays out and the tag is omitted, all three; mortar's `undefined-init-symbol`, `spec/dyn.md` D-102); its definition is a root of `--gc-sections` (§4.7) | M4 (WP-128) |
+| `--dynamic-list=FILE` | none: a listed name roots no extraction (all three, WP-128); in an executable its definition is exported (§9.6) and so a root of `--gc-sections` (§4.7) | M4 (WP-128) |
 
 ### 4.3 What GNU ld users see
 
@@ -766,14 +768,15 @@ section); the entry; every key exported to `.dynsym` (§9.6; in a shared
 object after the version script, so a version-local definition is not a
 root, `spec/dyn.md` D-124 item 1); the keys named by `-init` and `-fini`,
 in every output kind, even when hidden (D-124 item 2: GNU ld and lld
-keep them; mold collects a hidden `-init` function, W22) [M4; planned:
-WP-117]; every section of `SHF_GNU_RETAIN`; `KEEP` (assignment's). `def` itself is the same with
+keep them; mold collects a hidden `-init` function, W22) [M4; WP-128:
+`Outcome.roots` carries them after the option roots; they root no
+extraction, §4.2]; every section of `SHF_GNU_RETAIN`; `KEEP` (assignment's). `def` itself is the same with
 and without `--gc-sections`: extraction is decided before liveness, so a
 member whose sections are later collected still settled its keys (all
 three: a collected member's definition still collides with a later one,
 verified by WP-031, `spec/landed/image/WP-031.md` Q10). `Outcome.roots`
 carries the rooted keys (`Options::roots`: the entry, `-u`,
-`--require-defined`) to `mortar_live`.
+`--require-defined`; then `-init`'s and `-fini`'s keys) to `mortar_live`.
 
 ### 4.8 `--start-lib` (M4)
 
@@ -1308,7 +1311,12 @@ What resolution marks for `.dynsym` (M2 executables; M4 shared output):
   (`defined_dynamic`: the executable's definition interposes; all three
   export `x` defined weak in the executable and defined by `libso.so`,
   E12); or it matches `--export-dynamic-symbol` (M2), `--dynamic-list`
-  (M4). Hidden keys never (§3.5). A **linker-defined key of file 0**
+  (M4: in an executable a listed definition is exported as by
+  `--export-dynamic-symbol`, an entry an exact name, a quoted name or a
+  glob, several files one list; all three, WP-128; no effect in a
+  static-pie, `spec/dyn.md` D-1). Hidden keys never (§3.5), nor a
+  definition `--exclude-libs` excludes (`spec/dyn.md` D-110 item 1). A
+  **linker-defined key of file 0**
   (§8: `__bss_start`, `_edata`, `_end`, …) is exported only when
   `ref_dynamic`, never by `--export-dynamic` or a glob alone
   (`spec/dyn.md` D-21 item 2; lld and mold; GNU ld exports them).
