@@ -4427,12 +4427,20 @@ own implementation of D-11-D-27 and compared with the output.
   **No `PT_DYNAMIC` (WP-131 V5).** The output kind comes from the line
   and the inputs (D-1), never from what the output holds: an output
   without `PT_DYNAMIC` is judged as static only when nothing says it is
-  dynamic. When the line's kind (§12.1, `line.rs`) is `Exec`, `Pie` or
-  `StaticPie`, or the output has `PT_INTERP`, an `SHT_DYNSYM` section, a
+  dynamic. When the output has `PT_INTERP`, an `SHT_DYNSYM` section, a
   `.dynamic` section, or an allocated relocation section with a record
-  other than `IRELATIVE`, then a missing `PT_DYNAMIC` is P-D4 ("no
-  PT_DYNAMIC, and ...", naming each reason): the loader finds no
-  `.dynamic`, so no `DT_NEEDED` and no relocation table. Each shared
+  other than `IRELATIVE`, or (mortar's outputs) the line's kind (§12.1,
+  `line.rs`) is `Exec`, `Pie` or `StaticPie`, or (a reference's) the
+  line loads a shared object (not under `--as-needed`), then a missing
+  `PT_DYNAMIC` is P-D4 ("no PT_DYNAMIC, and ...", naming each reason):
+  the loader finds no `.dynamic`, so no `DT_NEEDED` and no relocation
+  table. The line's kind alone binds mortar only (D-1's `Exec` row always
+  has `.dynamic`): GNU ld, lld and mold all write a `-no-pie` line with
+  no shared input as a static-shaped executable, judged as the static
+  executable it is when none of the other reasons holds (GNU ld's;
+  lld's and mold's carry `PT_INTERP` and crash at start, measured on
+  AArch64: P-D4, `reloc/x64-gotpcrelx-slot`; WP-121, test `tests/dyn.rs`
+  `s12_p_d4_reference_without_shared_inputs`). Each shared
   object the line loads (not under `--as-needed`) is also P-D6 ("no
   PT_DYNAMIC, so no DT_NEEDED names ..."). Such an output gets the
   structure rules (§6.2) and these findings, not the static rules,
@@ -5169,7 +5177,12 @@ and what turns P-D9's equality into a check of D-112.
   max page size and `p_offset ≡ p_vaddr (mod p_align)` (glibc checks
   only the page, D-123).
 - **P-D22 (`.dynamic` of a shared object; request P-R7).** In addition
-  to P-D6 with D-102's rows: `DT_SYMBOLIC` and `DF_SYMBOLIC` present iff
+  to P-D6 with D-102's rows: mortar's tags in D-102's order (D-30's with
+  `DT_SONAME` and `DT_SYMBOLIC` after `DT_NEEDED`, then the run path; no
+  `DT_PREINIT_ARRAY*`, no `DT_DEBUG`; `DT_VERDEF`/`DT_VERDEFNUM` before
+  `DT_VERNEED`), each a tag D-102 writes ("the .dynamic tags are not in
+  D-102's order", "a tag D-102 does not write"; D-30's order is an
+  executable's and does not judge a `Shared` output); `DT_SYMBOLIC` and `DF_SYMBOLIC` present iff
   the line's last `-Bsymbolic` form is `-Bsymbolic` and the line has no
   `--dynamic-list` (D-112, D-102, D-103); `DT_INIT`/`DT_FINI` point at
   defined, live code (D-124); `DT_SONAME` the `-soname` string;

@@ -1512,6 +1512,10 @@ pub(crate) fn static_checks(
             ),
         ));
     }
+    // D-102's order (mortar's form; D-30's is an executable's).
+    if format == Format::Mortar {
+        v.extend(d102_order(&out.entries));
+    }
     // DT_FLAGS_1: D-103's bits, each iff its `-z` word is on the line
     // (D-30's executable row is not a library's: `filter_dyncheck`).
     // `DF_1_NOW` stays D-30's (P-D6).
@@ -1747,6 +1751,73 @@ pub(crate) fn relaxed(cov: &crate::report::Coverage) -> Option<Finding> {
 // The executable rules a `Shared` output answers differently
 // ---------------------------------------------------------------------------
 
+/// D-102's `.dynamic` order for a `Shared` output: D-30's with
+/// `DT_SONAME` and `DT_SYMBOLIC` after `DT_NEEDED` (before the run path,
+/// GNU ld's and mold's place), no `DT_PREINIT_ARRAY*` (refused) and no
+/// `DT_DEBUG`, `DT_VERDEF`/`DT_VERDEFNUM` after `DT_FLAGS_1`.
+const D102_ORDER: &[u64] = {
+    use crate::dynout::{
+        DT_AARCH64_BTI_PLT, DT_AARCH64_VARIANT_PCS, DT_FINI, DT_FINI_ARRAY, DT_FINI_ARRAYSZ,
+        DT_FLAGS, DT_GNU_HASH, DT_INIT, DT_INIT_ARRAY, DT_INIT_ARRAYSZ, DT_JMPREL, DT_NEEDED,
+        DT_PLTGOT, DT_PLTREL, DT_PLTRELSZ, DT_RELA, DT_RELACOUNT, DT_RELAENT, DT_RELASZ, DT_RPATH,
+        DT_RUNPATH, DT_SONAME, DT_STRSZ, DT_STRTAB, DT_SYMENT, DT_SYMTAB, DT_VERDEF, DT_VERDEFNUM,
+        DT_VERNEED, DT_VERNEEDNUM, DT_VERSYM,
+    };
+    &[
+        DT_NEEDED,
+        DT_SONAME,
+        DT_SYMBOLIC,
+        DT_RUNPATH,
+        DT_RPATH,
+        DT_INIT,
+        DT_FINI,
+        DT_INIT_ARRAY,
+        DT_INIT_ARRAYSZ,
+        DT_FINI_ARRAY,
+        DT_FINI_ARRAYSZ,
+        DT_GNU_HASH,
+        DT_STRTAB,
+        DT_SYMTAB,
+        DT_STRSZ,
+        DT_SYMENT,
+        DT_PLTGOT,
+        DT_PLTRELSZ,
+        DT_PLTREL,
+        DT_JMPREL,
+        DT_RELA,
+        DT_RELASZ,
+        DT_RELAENT,
+        DT_AARCH64_BTI_PLT,
+        DT_AARCH64_VARIANT_PCS,
+        DT_FLAGS,
+        DT_FLAGS_1,
+        DT_VERDEF,
+        DT_VERDEFNUM,
+        DT_VERNEED,
+        DT_VERNEEDNUM,
+        DT_VERSYM,
+        DT_RELACOUNT,
+    ]
+};
+
+/// P-D22: mortar's `.dynamic` tags (the `(tag, value)` entries) in
+/// D-102's order, each one D-102 writes.
+fn d102_order(entries: &[(u64, u64)]) -> Vec<Finding> {
+    let mut v = Vec::new();
+    let ranks: Vec<usize> = entries
+        .iter()
+        .filter(|e| e.0 != crate::dynout::DT_NULL)
+        .map(|e| D102_ORDER.iter().position(|&t| t == e.0).unwrap_or(usize::MAX))
+        .collect();
+    if ranks.windows(2).any(|w| w[0] > w[1]) {
+        v.push(fd(22, "the .dynamic tags are not in D-102's order"));
+    }
+    if ranks.contains(&usize::MAX) {
+        v.push(fd(22, "a tag D-102 does not write"));
+    }
+    v
+}
+
 /// The `.dynamic` tags a library carries and no executable does (D-102,
 /// D-103, D-115, D-119).
 const SHARED_TAGS: &[u64] = &[
@@ -1824,7 +1895,7 @@ pub(crate) fn filter_dyncheck(
                     return out.get(crate::dynout::DT_FLAGS).is_none_or(|f| f & mask == 0);
                 }
                 // D-30's order has no library tags: D-102's is P-D22's.
-                m != "a tag D-30 does not write"
+                m != "a tag D-30 does not write" && m != "the .dynamic tags are not in D-30's order"
             }
             Rule::Dyn(7) => {
                 !m.contains("is not exported (D-12, W8)")
@@ -1982,6 +2053,60 @@ mod tests {
 
     fn words(w: &[&str]) -> Vec<String> {
         w.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    // spec/plumb.md P-D22 (D-102): mortar's first libraries' tag order
+    // (WP-123's `libt.so`, identical to GNU ld's library) is D-102's;
+    // D-30's executable order put DT_SONAME nowhere (WP-121).
+    #[test]
+    fn p_d22_d102_order() {
+        use crate::dynout::*;
+        let mortar = [
+            DT_NEEDED,
+            DT_SONAME,
+            DT_INIT,
+            DT_FINI,
+            DT_INIT_ARRAY,
+            DT_INIT_ARRAYSZ,
+            DT_FINI_ARRAY,
+            DT_FINI_ARRAYSZ,
+            DT_GNU_HASH,
+            DT_STRTAB,
+            DT_SYMTAB,
+            DT_STRSZ,
+            DT_SYMENT,
+            DT_PLTGOT,
+            DT_PLTRELSZ,
+            DT_PLTREL,
+            DT_JMPREL,
+            DT_RELA,
+            DT_RELASZ,
+            DT_RELAENT,
+            DT_VERNEED,
+            DT_VERNEEDNUM,
+            DT_VERSYM,
+            DT_RELACOUNT,
+            DT_NULL,
+        ];
+        let e = |t: &[u64]| t.iter().map(|&t| (t, 0)).collect::<Vec<_>>();
+        assert!(d102_order(&e(&mortar)).is_empty());
+        let mut sym = mortar.to_vec();
+        sym.insert(2, DT_SYMBOLIC);
+        sym.insert(3, DT_RUNPATH);
+        sym.insert(22, DT_VERDEF);
+        sym.insert(23, DT_VERDEFNUM);
+        assert!(d102_order(&e(&sym)).is_empty());
+        let mut swapped = mortar.to_vec();
+        swapped.swap(0, 1);
+        let f = d102_order(&e(&swapped));
+        assert!(
+            f.iter().any(|f| f.message == "the .dynamic tags are not in D-102's order"),
+            "{f:?}"
+        );
+        let mut debug = mortar.to_vec();
+        debug.insert(13, DT_DEBUG);
+        let f = d102_order(&e(&debug));
+        assert!(f.iter().any(|f| f.message == "a tag D-102 does not write"), "{f:?}");
     }
 
     struct NoFiles;
