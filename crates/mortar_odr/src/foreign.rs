@@ -97,11 +97,15 @@ struct Finding {
 
 /// Runs the checks `checks` asks for. The diagnostics are warnings
 /// (O-40, O-41: no W check is an error in any mode), keyed per §9.1.
+/// `stds`: the `std` of the units of each file with a container, sorted
+/// by file, for W4's note (§8.1, WP-151); the record checks give it, and
+/// it is empty when they read no container.
 #[must_use]
 pub fn check(
     inputs: &Inputs<'_>,
     resolution: &Resolution,
     checks: Checks,
+    stds: &[(FileId, Vec<u8>)],
     pool: &Pool,
 ) -> (Vec<(Key, Diagnostic)>, Counts) {
     let mut counts = Counts::default();
@@ -135,7 +139,7 @@ pub fn check(
     let found =
         pool.unit_cost(500).map_collect(runs.len(), |u, out: &mut Vec<(usize, Finding)>| {
             let (a, b) = runs[u];
-            let cx = Cx { inputs, resolution };
+            let cx = Cx { inputs, resolution, stds };
             for (w, finding) in cx.key(&defs[a..b], checks) {
                 out.push((w, finding));
             }
@@ -251,6 +255,9 @@ struct Resolved {
 struct Cx<'a, 's> {
     inputs: &'a Inputs<'s>,
     resolution: &'a Resolution,
+    /// Per file with a container, the `std` of its units, sorted by file
+    /// (W4's note, WP-151); empty when no container was read.
+    stds: &'a [(FileId, Vec<u8>)],
 }
 
 impl Cx<'_, '_> {
@@ -493,11 +500,25 @@ impl Cx<'_, '_> {
         if self.kept(groups[0], classes[0][0].file) {
             note.push_str("; the first is kept");
         }
-        Some(Finding {
-            kind: Kind::OdrContentsMismatch { name: self.name(key) },
-            classes,
-            notes: vec![note],
-        })
+        let mut notes = vec![note];
+        // §8.1 (WP-151), as O-32 says for rows: a static local may be
+        // constant-initialized under one -std and dynamically under
+        // another, which is legal.
+        let std = |file: FileId| {
+            self.stds.binary_search_by_key(&file, |(f, _)| *f).ok().map(|i| &self.stds[i].1)
+        };
+        if let (Some(a), Some(b)) = (std(classes[0][0].file), std(classes[1][0].file))
+            && a != b
+        {
+            notes.push(format!(
+                "the copies' translation units differ in -std (std={} and {}): the \
+                 initialization of a static local, constant in one and dynamic in the other, may \
+                 differ legally (spec/odr.md §8.1)",
+                String::from_utf8_lossy(a),
+                String::from_utf8_lossy(b)
+            ));
+        }
+        Some(Finding { kind: Kind::OdrContentsMismatch { name: self.name(key) }, classes, notes })
     }
 
     /// A section's contents as W4 compares them (`contents::read`).

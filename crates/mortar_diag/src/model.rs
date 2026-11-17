@@ -862,6 +862,12 @@ impl From<FileRef> for Place {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
 pub enum Relation {
+    /// `declared differently in`: where a declaration of the symbol is
+    /// that differs from the one before it (`spec/odr.md` §9.1, K14;
+    /// WP-151).
+    DeclaredDifferentlyIn,
+    /// `declared in`: where a declaration of the symbol is (§9.1).
+    DeclaredIn,
     /// `defined differently in`: where a definition of the symbol is that
     /// differs from the one before it (`spec/odr.md` §9.1).
     DefinedDifferentlyIn,
@@ -877,13 +883,22 @@ pub enum Relation {
 
 impl Relation {
     /// Every relation, in the order of `spec/diag.md` §2.4.
-    pub const ALL: [Self; 5] =
-        [Self::DefinedDifferentlyIn, Self::DefinedIn, Self::In, Self::NamedBy, Self::ReferencedBy];
+    pub const ALL: [Self; 7] = [
+        Self::DeclaredDifferentlyIn,
+        Self::DeclaredIn,
+        Self::DefinedDifferentlyIn,
+        Self::DefinedIn,
+        Self::In,
+        Self::NamedBy,
+        Self::ReferencedBy,
+    ];
 
     /// The words printed between `>>> ` and the place.
     #[must_use]
     pub const fn phrase(self) -> &'static str {
         match self {
+            Self::DeclaredDifferentlyIn => "declared differently in",
+            Self::DeclaredIn => "declared in",
             Self::DefinedDifferentlyIn => "defined differently in",
             Self::DefinedIn => "defined in",
             Self::In => "in",

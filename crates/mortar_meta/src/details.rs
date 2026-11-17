@@ -51,6 +51,62 @@ pub mod item {
     pub const KNOWN_FLAGS: u32 = KIND_MASK | BITFIELD | VIRTUAL;
 }
 
+/// Whether an enumeration whose underlying type is the `<builtin-type>`
+/// encoding `ty` is signed (O-19's enumerator `value` is sign-extended
+/// when it is, WP-151): `Some(true)` for `a` (signed char), `s`, `i`,
+/// `l`, `x` and `n` (`__int128`); `Some(false)` for `h`, `t`, `j`, `m`,
+/// `y`, `o`, `b`, `Ds`, `Di` and `Du`; `c` (plain `char`) by `char_signed`
+/// (kind 1's `abi.char`, MT-26); `None` for anything else (`w`, whose
+/// signedness is the target's, and any other string).
+#[must_use]
+pub fn signed_underlying(ty: &[u8], char_signed: Option<bool>) -> Option<bool> {
+    match ty {
+        b"a" | b"s" | b"i" | b"l" | b"x" | b"n" => Some(true),
+        b"h" | b"t" | b"j" | b"m" | b"y" | b"o" | b"b" | b"Ds" | b"Di" | b"Du" => Some(false),
+        b"c" => char_signed,
+        _ => None,
+    }
+}
+
+/// An unnamed class-type member's item (O-19, ruling of 2026-11-17): a
+/// member item with `name` and `type` 0 that is not a bit-field. Its
+/// `width` is the number of items after it that describe the nested
+/// class, counted through every depth; 0 (kiln before the ruling) means
+/// unknown, and a reader reads every following item as the class's own.
+#[must_use]
+pub const fn nested_count(it: &Item) -> u32 {
+    if it.kind() == item::MEMBER && it.name == 0 && it.ty == 0 && !it.bitfield() {
+        it.width
+    } else {
+        0
+    }
+}
+
+/// For each item of `items` (an entry's items in order, every kind
+/// included), the indices of the unnamed members it is nested in, the
+/// innermost first (O-19's `width`). A count that runs past the items of
+/// the member it is itself nested in (or past the entry) ends there: the
+/// rendering never reads past an entry, and such a count describes no
+/// other item.
+#[must_use]
+pub fn nesting(items: &[Item]) -> Vec<Vec<usize>> {
+    let mut out = Vec::with_capacity(items.len());
+    // (index of the unnamed member, end of its items, exclusive).
+    let mut open: Vec<(usize, usize)> = Vec::new();
+    for (i, it) in items.iter().enumerate() {
+        while open.last().is_some_and(|&(_, end)| end <= i) {
+            open.pop();
+        }
+        out.push(open.iter().rev().map(|&(at, _)| at).collect());
+        let n = nested_count(it) as usize;
+        if n > 0 {
+            let limit = open.last().map_or(items.len(), |&(_, end)| end);
+            open.push((i, (i + 1).saturating_add(n).min(limit)));
+        }
+    }
+    out
+}
+
 /// One item as the block holds it: `name` and `ty` are string offsets in
 /// the unit's table (MT-12).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

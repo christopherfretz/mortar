@@ -71,13 +71,15 @@ pub fn check(
         w3: Check::W3.runs(odr),
         w4: Check::W4.runs(odr),
     };
-    let (mut diagnostics, counts) = foreign::check(inputs, resolution, checks, pool);
     let dyn_switches = dynamic_switches(odr, output.is_some());
     let mut s = switches(odr);
     s.keepers = dyn_switches.shared || dyn_switches.table;
     s.declared = dyn_switches.shared;
     s.types = dyn_switches.full;
+    s.stds = checks.w4;
+    // The record checks first: W4's note reads the units' `std` (§8.1).
     let (records, mut r, rows) = records::check(inputs, resolution, s, pool);
+    let (mut diagnostics, counts) = foreign::check(inputs, resolution, checks, &rows.stds, pool);
     diagnostics.extend(records);
     let mut table = None;
     let mut full = None;
@@ -124,10 +126,12 @@ pub fn switches(odr: &Odr) -> Switches {
         // O-32: reported under strict; counted in any mode that compares.
         system_std_reported: Check::SystemStd.runs(odr),
         inlined_only: odr.mode == OdrMode::Strict,
+        partial: odr.mode == OdrMode::Strict,
         keepers: false,
         declared: false,
         archives: Check::ArchiveShadow.runs(odr),
         types: false,
+        stds: false,
     }
 }
 
@@ -143,7 +147,7 @@ pub fn reads_containers(odr: &Odr) -> bool {
 fn stats_line(odr: Odr, c: &Counts, r: &records::Counts, micros: u128) -> String {
     format!(
         "mortar: odr-stats: mode {}; units {}, rows {} (kind 1 {}, kind 2 {}, kind 3 {}, kind 5 \
-         {}), schemes {}, pairs not compared {}, type groups compared across schemes {}, ambiguous anchors {}, unanchored rows {}, \
+         {}), schemes {}, pairs not compared {}, layout schemes {}, layout pairs not compared {}, type groups compared across schemes {}, ambiguous anchors {}, unanchored rows {}, \
          system -std differences {}, rows set aside {}, container bytes read {}, shared-object \
          tables {} ({} rows), archive members {} ({} units, {} bytes, {} rows compared), layout \
          details read {}, record findings {}; files with COMDAT copies {}, groups {}, copies {}, definitions {}; \
@@ -157,6 +161,8 @@ fn stats_line(odr: Odr, c: &Counts, r: &records::Counts, micros: u128) -> String
         r.rows[3],
         r.schemes,
         r.pairs_not_compared,
+        r.layout_schemes,
+        r.layout_pairs_not_compared,
         r.cross_scheme,
         r.ambiguous,
         r.unanchored,
