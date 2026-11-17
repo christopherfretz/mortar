@@ -1,0 +1,136 @@
+# dyn.md D-125, D-110, D-21 (WP-126): C++ exceptions across the boundary
+# of a C++ library that each linker links, compiled by g++ and by
+# clang++. The library throws its own class (key function in the
+# library) and the host catches it by a base class (GCC and Clang still write the typeinfo
+# objects as COMDAT `WEAK OBJECT`s); the host throws a class whose base's
+# typeinfo lives in the host only, through the library's frame, and the
+# library catches it by that base (the library's undefined reference to
+# `_ZTI8HostBase` binds to the executable's export: D-21 makes the host
+# export it); an `int` crosses both ways; a rethrow (`throw;`) in the
+# library goes on to the host. The unwinder finds the library's frames
+# through its `.eh_frame_hdr` (`PT_GNU_EH_FRAME`, D-125). Each pair of
+# LT-3 runs it: a GNU ld host and a mortar host of every library.
+#@ spec: dyn.md "D-125"; dyn.md "D-110"
+#@ requires: g++ clang
+#@ arch: aarch64 x86_64
+
+cxx -O1 -fPIC lib.cc -o lib-g.o
+cxx(clang) -O1 -fPIC lib.cc -o lib-c.o
+cxx -O1 -fPIE main.cc -o main-g.o
+cxx(clang) -O1 -fPIE main.cc -o main-c.o
+link g++ -shared lib-g.o -Wl,-soname,libehg.so -o libehg.so
+link clang++ -shared lib-c.o -Wl,-soname,libehc.so -o libehc.so
+check readelf -lW libehg.so
+  has: GNU_EH_FRAME
+check readelf -lW libehc.so
+  has: GNU_EH_FRAME
+check readelf --dyn-syms -W libehg.so
+  has: OBJECT * WEAK * _ZTI7LibBase$
+  has: OBJECT * WEAK * _ZTI6LibErr$
+  has: NOTYPE * GLOBAL * UND _ZTI8HostBase$
+host g++ -pie main-g.o -L. -lehg -o prog-g
+check readelf --dyn-syms -W prog-g
+  has: OBJECT * _ZTI8HostBase$
+run prog-g
+  stdout: host caught LibErr 7 via LibBase
+  stdout: lib caught HostErr 3 via HostBase
+  stdout: lib caught int 11
+  stdout: host caught int 12
+  stdout: host caught rethrown HostErr 4
+  stdout: std 1
+host clang++ -pie main-c.o -L. -lehc -o prog-c
+run prog-c
+  stdout: host caught LibErr 7 via LibBase
+  stdout: lib caught HostErr 3 via HostBase
+  stdout: lib caught int 11
+  stdout: host caught int 12
+  stdout: host caught rethrown HostErr 4
+  stdout: std 1
+
+#--- eh.h
+#include <stdexcept>
+struct LibBase : std::runtime_error {
+  explicit LibBase(const char *m) : std::runtime_error(m) {}
+  virtual int code() const;
+};
+struct LibErr : LibBase {
+  int v;
+  explicit LibErr(int x) : LibBase("LibErr"), v(x) {}
+  int code() const override;
+};
+struct HostBase {
+  virtual ~HostBase();
+  virtual int code() const = 0;
+};
+void lib_throw(int);
+int lib_call(void (*)(int), int);
+void lib_rethrow(void (*)(int), int);
+int lib_std(void (*)(int));
+#--- lib.cc
+#include "eh.h"
+int LibBase::code() const { return 0; }
+int LibErr::code() const { return v; }
+void lib_throw(int x) {
+  if (x > 0) throw LibErr(x);
+}
+int lib_call(void (*f)(int), int x) {
+  try {
+    f(x);
+  } catch (const HostBase &e) {
+    return e.code();
+  } catch (int v) {
+    return 100 + v;
+  }
+  return -1;
+}
+void lib_rethrow(void (*f)(int), int x) {
+  try {
+    f(x);
+  } catch (...) {
+    throw;
+  }
+}
+int lib_std(void (*f)(int)) {
+  try {
+    f(-1);
+  } catch (const std::exception &e) {
+    return 1;
+  }
+  return 0;
+}
+#--- main.cc
+#include <cstdio>
+#include <stdexcept>
+#include "eh.h"
+HostBase::~HostBase() {}
+struct HostErr : HostBase {
+  int v;
+  explicit HostErr(int x) : v(x) {}
+  int code() const override { return v; }
+};
+static void host_throw(int x) {
+  if (x < 0) throw std::out_of_range("x");
+  if (x > 10) throw x;
+  throw HostErr(x);
+}
+int main() {
+  try {
+    lib_throw(7);
+  } catch (const LibBase &e) {
+    std::printf("host caught %s %d via LibBase\n", e.what(), e.code());
+  }
+  std::printf("lib caught HostErr %d via HostBase\n", lib_call(host_throw, 3));
+  std::printf("lib caught int %d\n", lib_call(host_throw, 11) - 100);
+  try {
+    lib_rethrow(host_throw, 12);
+  } catch (int v) {
+    std::printf("host caught int %d\n", v);
+  }
+  try {
+    lib_rethrow(host_throw, 4);
+  } catch (const HostErr &e) {
+    std::printf("host caught rethrown HostErr %d\n", e.code());
+  }
+  std::printf("std %d\n", lib_std(host_throw));
+  return 0;
+}
