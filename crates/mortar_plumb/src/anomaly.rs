@@ -81,10 +81,7 @@ pub fn classify(linker: Format, output: &[u8], f: &Finding) -> Option<&'static s
             "A17: mold marks an output IBT and writes its IPLT entries without endbr64 (spec/x64.md W6)",
         );
     }
-    if lld && let Some(a) = wrap_lld(f) {
-        return Some(a);
-    }
-    if bfd && let Some(a) = defsym_bfd(f) {
+    if let Some(a) = lld.then(|| wrap_lld(f)).or_else(|| bfd.then(|| defsym_bfd(f))).flatten() {
         return Some(a);
     }
     let sym = f.symbol.as_deref().unwrap_or("");
@@ -639,11 +636,13 @@ fn wrap_lld(f: &Finding) -> Option<&'static str> {
 /// GNU ld's forms of `--defsym` (§4.4b, WP-170 part 2), by the tags the
 /// rules add.
 fn defsym_bfd(f: &Finding) -> Option<&'static str> {
-    use crate::defsym::{NUMBER_MOVED, OFFSET_ABS, REPLACED_SIZE};
+    use crate::defsym::{NUMBER_MOVED, OFFSET_ABS, OFFSET_UNMOVED, REPLACED_SIZE};
     let m = f.message.as_str();
-    if f.rule == Rule::SymbolTable(3) && m.ends_with(OFFSET_ABS) {
+    if (f.rule == Rule::SymbolTable(3) && m.ends_with(OFFSET_ABS))
+        || (f.rule == Rule::Dyn(9) && m.ends_with(OFFSET_UNMOVED))
+    {
         return Some(
-            "A85: GNU ld writes --defsym SYM=B+N (or B-N) as SHN_ABS with B's type, not in B's section as STT_NOTYPE (resolve.md §7.2, §16)",
+            "A85: GNU ld writes --defsym SYM=B+N (or B-N) as SHN_ABS with B's type, not in B's section as STT_NOTYPE, and in a PIE gives a word holding its address no record: the program reads B+N without the load bias (resolve.md §7.2, §16)",
         );
     }
     if f.rule == Rule::SymbolTable(3) && m.ends_with(REPLACED_SIZE) {

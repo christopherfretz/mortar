@@ -1,0 +1,13 @@
+-m
+elf_x86_64
+-z
+max-page-size=4096
+-o
+sh-x64.bfd
+-shared
+-soname
+libls.so
+ls-x64.o
+--defsym=calla=b
+--defsym=k=0x10
+-Map=sh-x64.bfd.map

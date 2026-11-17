@@ -1,0 +1,39 @@
+             VMA              LMA     Size Align Out     In      Symbol
+             200              200       90     8 .dynsym
+             200              200       90     8         <internal>:(.dynsym)
+             290              290       30     8 .gnu.hash
+             290              290       30     8         <internal>:(.gnu.hash)
+             2c0              2c0       38     4 .hash
+             2c0              2c0       38     4         <internal>:(.hash)
+             2f8              2f8       1e     1 .dynstr
+             2f8              2f8       1e     1         <internal>:(.dynstr)
+             318              318       30     8 .rela.plt
+             318              318       30     8         <internal>:(.rela.plt)
+            1348             1348       30     4 .text
+            1348             1348       30     4         ls-a64.o:(.text)
+            1348             1348        0     1                 $x
+            1348             1348        8     1                 b
+            1350             1350       14     1                 callb
+            1364             1364       14     1                 via
+            1380             1380       40    16 .plt
+            1380             1380       40    16         <internal>:(.plt)
+            23c0             23c0       c0     8 .dynamic
+            23c0             23c0       c0     8         <internal>:(.dynamic)
+            2480             2480      b80     1 .relro_padding
+            2480             2480        0     1         <internal>:(.relro_padding)
+            3480             3480        0     1 .data
+            3480             3480        0     1         ls-a64.o:(.data)
+            3480             3480       28     8 .got.plt
+            3480             3480       28     8         <internal>:(.got.plt)
+            34a8             34a8        0     1 .bss
+            34a8             34a8        0     1         ls-a64.o:(.bss)
+               0                0       3a     1 .comment
+               0                0       3a     1         <internal>:(.comment)
+               0                0       d8     8 .symtab
+               0                0       d8     8         <internal>:(.symtab)
+               0                0       85     1 .shstrtab
+               0                0       85     1         <internal>:(.shstrtab)
+               0                0       26     1 .strtab
+               0                0       26     1         <internal>:(.strtab)
+            34a8             34a8        0     1 
+            34a8             34a8        0     1 

@@ -33,6 +33,12 @@ pub const EARLIER_TYPE: &str = " (SYM has several --defsym: resolve.md §7.2, th
 /// resolve.md §16).
 pub const NUMBER_MOVED: &str = " (a --defsym number: SHN_ABS, never relocated; resolve.md §7.2)";
 
+/// The tag of a finding on a word that holds a `--defsym` `B+N`'s
+/// address, not moved by the load bias (GNU ld writes it `SHN_ABS`, A85,
+/// and gives the word no record).
+pub const OFFSET_UNMOVED: &str =
+    " (a --defsym B+N or B-N: in B's section, moved with the executable; resolve.md §7.2)";
+
 /// What `EXPR` is (§7.2's table).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Expr {

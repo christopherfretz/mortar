@@ -1,0 +1,50 @@
+             VMA              LMA     Size Align Out     In      Symbol
+             238              238       1b     1 .interp
+             238              238       1b     1         <internal>:(.interp)
+             258              258       18     8 .dynsym
+             258              258       18     8         <internal>:(.dynsym)
+             270              270       1c     8 .gnu.hash
+             270              270       1c     8         <internal>:(.gnu.hash)
+             28c              28c       10     4 .hash
+             28c              28c       10     4         <internal>:(.hash)
+             29c              29c        1     1 .dynstr
+             29c              29c        1     1         <internal>:(.dynstr)
+             2a0              2a0       30     8 .rela.dyn
+             2a0              2a0       30     8         <internal>:(.rela.dyn)
+            12d0             12d0       38     4 .text
+            12d0             12d0       30     4         mp-a64.o:(.text)
+            12d0             12d0        0     1                 $x
+            12d0             12d0        8     1                 g
+            12d8             12d8        c     1                 rk
+            12e4             12e4       1c     1                 _start
+            1300             1300        8     4         bp-a64.o:(.text)
+            1300             1300        0     1                 $x
+            1300             1300        8     1                 b
+            2308             2308       d0     8 .dynamic
+            2308             2308       d0     8         <internal>:(.dynamic)
+            23d8             23d8        8     8 .got
+            23d8             23d8        8     8         <internal>:(.got)
+            23e0             23e0      c20     1 .relro_padding
+            23e0             23e0        0     1         <internal>:(.relro_padding)
+            33e0             33e0       18     8 .data
+            33e0             33e0        0     1         mp-a64.o:(.data)
+            33e0             33e0       18     8         mp-a64.o:(.data.rel)
+            33e0             33e0        0     1                 $d
+            33e0             33e0        8     1                 pa
+            33e8             33e8        8     1                 pc
+            33f0             33f0        8     1                 pk
+            33f8             33f8        0     1         bp-a64.o:(.data)
+            33f8             33f8        0     1 .bss
+            33f8             33f8        0     1         mp-a64.o:(.bss)
+            33f8             33f8        0     1         bp-a64.o:(.bss)
+               0                0       3a     1 .comment
+               0                0       3a     1         <internal>:(.comment)
+               0                0      198     8 .symtab
+               0                0      198     8         <internal>:(.symtab)
+               0                0       84     1 .shstrtab
+               0                0       84     1         <internal>:(.shstrtab)
+               0                0       38     1 .strtab
+               0                0       38     1         <internal>:(.strtab)
+            33f8             33f8        0     1 
+            33f8             33f8        0     1 
+            33f8             33f8        0     1 

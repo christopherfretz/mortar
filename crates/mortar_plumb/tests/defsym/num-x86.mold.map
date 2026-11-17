@@ -1,0 +1,21 @@
+               VMA       Size Align Out     In      Symbol
+          0x200000         52     4 EHDR
+          0x200034        256     4 PHDR
+          0x200134          4     4 .eh_frame
+          0x200138         12     4 .eh_frame_hdr
+          0x201144          2     2 .text
+          0x201144          2     2         n-x86.o:(.text)
+          0x201144          0     0                 _start
+          0x202148          4     4 .got
+          0x20214c       3764     1 .relro_padding
+          0x20314c          4     4 .data
+          0x20314c          4     4         n-x86.o:(.data)
+          0x20314c          0     0                 pk
+          0x203150         12     4 .got.plt
+          0x20315c          0     1 .bss
+          0x20315c          0     1         n-x86.o:(.bss)
+                 0         69     1 .comment
+                 0        106     1 .shstrtab
+                 0        399     1 .strtab
+                 0        704     4 .symtab
+                 0        520     4 SHDR

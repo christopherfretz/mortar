@@ -1,0 +1,17 @@
+-m
+aarch64linux
+-z
+max-page-size=4096
+-o
+pie-a64.lld
+-pie
+-dynamic-linker
+/lib/ld-linux-aarch64.so.1
+-e
+_start
+mp-a64.o
+bp-a64.o
+--defsym=k=0x1234
+--defsym=a=b
+--defsym=c=b+4
+-Map=pie-a64.lld.map

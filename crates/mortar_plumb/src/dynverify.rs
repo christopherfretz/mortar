@@ -575,6 +575,15 @@ fn judge(
     report.coverage = std::mem::take(&mut engine.cov);
     report.coverage.meta = meta;
     report.coverage.stripped_not_judged = stripped;
+    // §4.4b (WP-170): the addresses of the line's `--defsym` `B±N`.
+    let offsets: BTreeSet<u64> = defsym
+        .iter()
+        .filter(|(_, e)| matches!(e, crate::defsym::Expr::Offset(..)))
+        .filter_map(|(s, _)| match engine.defsym_value(s) {
+            Some(crate::defsym::Value::Addr(a)) => Some(a),
+            _ => None,
+        })
+        .collect();
     drop(engine);
     // View 2: a second bias (Pie): every word that holds an address of the
     // executable moves with it, every other word does not.
@@ -606,8 +615,12 @@ fn judge(
                             ""
                         },
                         // §4.4b (WP-170): the word holds a `--defsym`
-                        // number (GNU ld relocates it, A87).
-                        if !internal
+                        // number (GNU ld relocates it, A87), or the
+                        // address of a `B±N` (GNU ld writes it SHN_ABS
+                        // and does not, A85).
+                        if internal && offsets.contains(&(v & mask)) {
+                            crate::defsym::OFFSET_UNMOVED
+                        } else if !internal
                             && found & mask == v.wrapping_add(BIAS2) & mask
                             && defsym.iter().any(|(_, e)| {
                                 matches!(e, crate::defsym::Expr::Number(n) if n & mask == v & mask)

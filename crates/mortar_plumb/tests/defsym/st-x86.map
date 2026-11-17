@@ -1,0 +1,34 @@
+mortar-map 2
+file 0 m-x86.o
+file 1 b-x86.o
+place 0 1 80490b4 1c
+place 0 3 804a0d8 c
+place 0 5 804a0e4 0
+place 1 1 80490d0 6
+place 1 2 804a0e4 0
+place 1 3 804a0e4 0
+merged 0 6 .comment
+merged 1 4 .comment
+chunk synthetic .symtab - d0
+chunk synthetic .strtab - 44
+chunk synthetic .shstrtab - 30
+chunk synthetic .comment - d
+define k 1234
+define a 80490d0
+define c 80490d4
+arg -m
+arg elf_i386
+arg -z
+arg max-page-size=4096
+arg -o
+arg st-x86
+arg -static
+arg -e
+arg _start
+arg m-x86.o
+arg b-x86.o
+arg --defsym=k=0x1234
+arg --defsym=a=b
+arg --defsym=c=b+4
+arg --mortar-map=st-x86.map
+end

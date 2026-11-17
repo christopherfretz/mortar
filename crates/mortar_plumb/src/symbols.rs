@@ -1164,8 +1164,7 @@ fn defsym_syms(e: &mut Engine<'_, '_>, fs: &mut Vec<Finding>) {
         }
         let Some(value) = e.defsym_value(name) else { continue };
         let v = match value {
-            Value::Addr(a) | Value::Ifunc(a) => a,
-            Value::Tls(a) => a,
+            Value::Addr(a) | Value::Ifunc(a) | Value::Tls(a) => a,
             Value::Unknown => {
                 unchecked += 1;
                 continue;

@@ -1,0 +1,16 @@
+-m
+elf_i386
+-z
+max-page-size=4096
+-o
+mem-x86.bfd
+-static
+-e
+_start
+m-x86.o
+b-x86.o
+libam-x86.a
+--defsym=k=0x1234
+--defsym=a=b
+--defsym=c=b+4
+-Map=mem-x86.bfd.map
