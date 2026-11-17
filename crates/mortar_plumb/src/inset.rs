@@ -448,7 +448,8 @@ impl Inputs {
                         let k = s.key(key.as_bytes());
                         let bits = if r.weak || *as_needed { WUNDEF } else { UNDEF };
                         mentions.push((k, bits));
-                        if r.version.is_some() && bits == UNDEF {
+                        // A49: mold extracts by it, `--as-needed` or not.
+                        if r.version.is_some() && !r.weak {
                             mentions.push((s.key(r.name.as_bytes()), VPLAIN));
                         }
                     }
@@ -706,6 +707,7 @@ impl Inputs {
     }
 
     /// mortar's map: the closure exactly (§3.8 rule 1).
+    #[allow(clippy::too_many_lines)] // one pass per bound and its findings
     fn strict(&self, map: &Map) -> Verdict {
         let (lo, why) = self.closure(false, true);
         let (hi, _) = self.closure(true, true);

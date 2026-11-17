@@ -4547,7 +4547,8 @@ is accepted from its linker only, never from mortar's map.
   `tests/shared.rs` case `roots`.
 - **A49 (mold; batch 9).** mold extracts an archive member for a
   command-line shared object's strong versioned undefined reference
-  (`name@V`) by the member's plain `name`: libstdc++.so's
+  (`name@V`) by the member's plain `name`, `--as-needed` or not
+  (D-11's rule aside): libstdc++.so's
   `__udivti3@GCC_3.0` extracts `libgcc.a(_udivdi3.o)` under
   `-static-libgcc`. Resolve §9.2 gives the reference the key `name@V`,
   which a plain `name` does not define: GNU ld, lld and mortar do not
