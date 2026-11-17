@@ -1063,10 +1063,11 @@ does not give, takes no part (no finding from it).
    and a local alias of a function, GCC's `.localalias` or Clang's
    `$local`, are the same target).
 3. The note of a finding says where the first two classes' first copies
-   first differ: "bytes", "relocations", or "the data its relocation at
-   offset N refers to" (N in decimal, the first relocation whose targets
-   are both strings or both entries and do not agree), joined by "and"
-   when the bytes differ too.
+   first differ: "its bytes", "its relocations", or "the data its
+   relocation at offset N refers to" (N in decimal, the first relocation
+   whose targets are both strings or both entries and do not agree);
+   when the bytes differ too, "its bytes and relocations" or "its bytes
+   and the data its relocation at offset N refers to".
 
 Why by content: the address of a unit-local target is its place in the
 unit, which differs whenever the units' other contents do. Measured

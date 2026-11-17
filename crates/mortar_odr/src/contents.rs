@@ -112,7 +112,8 @@ pub(crate) fn differ(a: &Contents, b: &Contents) -> Option<String> {
         (false, None) => None,
         (true, None) => Some("its bytes".to_owned()),
         (false, Some(r)) => Some(r),
-        (true, Some(r)) => Some(format!("its bytes and {r}")),
+        // "its bytes and relocations": WP-072's wording, kept.
+        (true, Some(r)) => Some(format!("its bytes and {}", r.trim_start_matches("its "))),
     }
 }
 
