@@ -1618,7 +1618,7 @@ with each phase fed from the state for unchanged files:
   a row.
 
   **Size, restated** (*estimate* over WP-105 §3's measured rows, the
-  arithmetic in `spec/landed/incr/WP-207.md` §S; review-in77 M-9):
+  arithmetic in `spec/landed/incr/WP-207.md` §M.6; review-in77 M-9):
 
   | | g10x | `cxx-large-g` |
   |---|---|---|
@@ -4544,25 +4544,38 @@ reference may share its suffix."
 WP-061-WP-063 landed (S1-S3), with WP-091/WP-092 (the verifier's I and
 E stages), WP-094/WP-105 (the measured floor, the state by range) and
 WP-064a (position-exact rows). The old WP-064 (S4), WP-065 (S5) and the
-rest of the old table are replaced by **WP-202's cut**
-(`spec/landed/incr/WP-202.md` §C: rule ids, dependencies, files owned,
-what each package is tested against alone, sizes). In short:
+rest of the old table are replaced by **WP-207's cut**
+(`spec/landed/incr/WP-207.md` §C, which replaces WP-202 §C after the
+reviews R-C and R-L: rule ids, dependencies, files owned, what each
+package is tested against alone, sizes). In short:
 
 | package | content | after |
 |---|---|---|
-| U-0 | spec step 0: the REQUEST blocks of WP-202 applied (`spec/plumb.md` §6.8-§6.9, `spec/model.md` §7.1, `spec/synth.md` S-79/S-112/Q8, `spec/layout.md`, `spec/harness.md`, `spec/diag.md`'s new reason) | this design |
-| R-C, R-L | adversarial reviews, before code: the crash protocol (IN-77, IN-46b, IN-78); the delta layout and the symbol tables (IN-72, IN-73, IN-49a, IN-28b) | this design (at once) |
-| U-1 | shared types and every later entry point as an empty function | U-0 |
-| U-2 | state format 5 (IN-18c-IN-18e, IN-46b, IN-78's rows), WP-064a item 8's numbers | U-1 |
-| U-3 | delta resolution and liveness (IN-71, IN-71a, IN-74) | U-1 |
-| U-4 | delta layout (IN-72, IN-28b's slots) | U-1, R-L |
-| U-5 | the per-file symbol tables (IN-49a), first link and update | U-1, R-L |
-| U-6 | refill, dirty ranges, build id, the update's map (IN-75) | U-1 |
-| U-7 | writes and the crash protocol (IN-76, IN-77) | U-1, R-C |
-| V-1 | the verifier: fillers, `.symtab`/`.strtab` holes and dead names (plumb.md as U-0 amends it) | U-0 |
-| H-1, H-2, H-3 | harness: the three-way judge (IN-79), crash injection, L10 (IN-63, WP-067) | U-0 (H-3 at once) |
-| U-10 | the join: static executables without debug information | U-2-U-7, V-1, H-1, H-2 |
-| G-1, G-2, G-3 | debug: contributions in place (IN-50-IN-57), split DWARF and the GNU name index (IN-55, IN-55a), the `-g` join | G-1, G-2 beside U-2-U-7; G-3 after U-10 |
+| R-2 | re-review of WP-207's amendments (its §X first) | WP-207 (at once) |
+| H-3 | L10 (IN-63, WP-067) with WP-207 §D's edit shapes | at once |
+| G-1, G-2 | debug contributions in place (IN-50-IN-54, IN-56, IN-57); split DWARF without the GNU name index (IN-55 option (A), decided, IN-55a) | at once (G-1's `.mason.meta` row after R-2) |
+| U-0 | spec step 0: WP-207 §R, and WP-202 §R.1, R.3, R.5 | R-2 |
+| U-1 | shared types, every later entry point as an empty function, `WRITE_PATH` | U-0 |
+| U-2 | state format 5 (IN-18c-IN-18f, IN-46b, IN-77c's fields, IN-78's `canon`); size gate 1.15 × format 4 | U-1 |
+| U-3 | resolution, extraction, linker-defined keys, liveness, refill set (IN-71, IN-71a-c, IN-74, IN-72 item 2a's draw-in) | U-1 |
+| U-4 | delta layout (IN-72, IN-30, IN-32, IN-28b's slots) | U-1 |
+| U-5 | the per-file symbol tables (IN-49a) | U-1 |
+| U-6 | refill, dirty ranges, header tables, input checks (IN-75) | U-1 |
+| U-7 | writes, lock and crash protocol (IN-45, IN-76, IN-77, IN-77a-f) | U-1 |
+| U-8 | ODR in an update (IN-71d; default `--odr=warn`) | U-1 |
+| U-9 | diagnostics equal to a full link's (IN-75a) | U-1, U-0 |
+| V-1 | the verifier: fillers (section 1's address), `.symtab`/`.strtab` holes, dead names | U-0 |
+| H-1, H-2 | the judge (IN-79 (a)-(d)), crash injection | U-0 |
+| U-10 | the join (static, no `-g`); **the go/no-go gate**: an update at most 1/2 of a full link on protoc, at most 1/3 on the large workload; the first real update numbers | U-2-U-9, V-1, H-1, H-2 |
+| B-1, W-1 | bench rows (moved definitions, refill set); the clone probe (IN-76a) | U-10 |
+| G-3 | the `-g` join | U-10, G-1, G-2 |
+
+**Decided by the operator (2026-11-17).** The first incremental-mode
+link costs 1.6-1.8x a plain link; that is accepted on the premise that
+the update ends as a measured win. U-10's gate is therefore hard: if it
+is not met, the update does not ship as designed and the cost goes back
+to the operator. Nothing turns `--incremental` on by default (kiln does
+not pass it) until U-10's measurement is a win.
 
 Not cut yet (each has its condition in its rule): dynamic outputs
 (IN-40-IN-43, the old WP-066), section-level refill (IN-31, the old
