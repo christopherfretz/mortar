@@ -638,7 +638,7 @@ pub(crate) struct Engine<'a, 'b> {
 /// the other at a `/` (the map's spelling and the line's may differ by a
 /// directory).
 fn names_path(w: &str, p: &str) -> bool {
-    w == p
+    crate::line::same_file(w, p)
         || w.strip_suffix(p).is_some_and(|d| d.ends_with('/'))
         || p.strip_suffix(w).is_some_and(|d| d.ends_with('/'))
 }
@@ -2027,8 +2027,10 @@ impl<'a, 'b> Engine<'a, 'b> {
         self.trial = None;
         let deferred = members(self) > pending;
         let shown = |c: &Coverage| {
-            (c.verified.values().sum::<u64>() + c.accepted.values().sum::<u64>(),
-             c.not_checked.values().sum::<u64>())
+            (
+                c.verified.values().sum::<u64>() + c.accepted.values().sum::<u64>(),
+                c.not_checked.values().sum::<u64>(),
+            )
         };
         let (was, now) = (shown(&cov), shown(&self.cov));
         let clean = self.findings.len() == n && now.1 == was.1;
@@ -3002,8 +3004,11 @@ impl<'a, 'b> Engine<'a, 'b> {
             let key = |p: &Pending| (p.rec.p, p.rec.def.r_type);
             if g.unpaired() {
                 // §5.7a: a demoted weak mention's record is R5 whatever.
-                let demoted =
-                    g.members.iter().filter(|m| self.demoted_pending.contains_key(&key(&m.0))).count();
+                let demoted = g
+                    .members
+                    .iter()
+                    .filter(|m| self.demoted_pending.contains_key(&key(&m.0)))
+                    .count();
                 self.not_checked(Reason::GotUnpaired, (g.members.len() - demoted) as u64);
                 for (pend, _) in &g.members {
                     if let Some((f, _)) = self.demoted_pending.remove(&key(pend)) {

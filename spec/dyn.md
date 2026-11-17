@@ -860,9 +860,9 @@ constructor order compared), `needed-order-group`, `needed-order-script`
 (the script shapes, and two libraries defining one function where the
 order decides the binding at run time), `needed-order-script-system`
 (the driver lines, `g++ -shared plain.o -lgcc_s -Wl,--no-as-needed`
-among them), `needed-order-script-group.test.pending` (an object in a
-script's own `GROUP` as the reason: pending on the verifier's P-D6,
-WP-172 §6).
+among them), `needed-order-script-group` (an object in a
+script's own `GROUP` as the reason; the verifier's P-D6 judges it,
+`spec/plumb.md` §12.1a, WP-193).
 ## 6. `.dynsym`, `.dynstr`, hash tables, versions
 
 Owner: `mortar_synth` (synth.md S-101..S-103 are the outline these rules

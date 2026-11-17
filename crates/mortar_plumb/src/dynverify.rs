@@ -21,8 +21,8 @@ use crate::{Input, Source, reloc, run_engine, structure};
 /// What stage 3 needs beyond stage 2's arguments.
 #[allow(missing_debug_implementations)]
 pub struct Ctx<'f> {
-    /// The linker's words (`--inputs-from`'s line, or the mortar map's
-    /// `arg` records when `None`).
+    /// The linker's words (`--inputs-from`'s line; for a mortar map its
+    /// `arg` records only when `None`, §12.1).
     pub line: Option<Vec<String>>,
     pub files: &'f dyn Files,
 }
@@ -861,13 +861,16 @@ fn script_local_linker_keys(
 /// The link's words: a mortar map's `arg` records (§3.2a), a
 /// reference's from the caller.
 fn line_words(map: &Map, ctx: &Ctx<'_>) -> Option<Vec<String>> {
-    if map.format == crate::Format::Mortar {
-        (!map.args.is_empty()).then(|| {
-            map.args.iter().map(|w| String::from_utf8_lossy(w).into_owned()).collect::<Vec<_>>()
-        })
-    } else {
-        ctx.line.clone()
+    // §12.1 (WP-193): the caller's line, whatever the format; a mortar
+    // map's `arg` records (mortar's own account of its line) only when
+    // the caller has none. A mention's state, group and position are the
+    // line's, never what the judged linker writes of them.
+    if ctx.line.is_some() || map.format != crate::Format::Mortar {
+        return ctx.line.clone();
     }
+    (!map.args.is_empty()).then(|| {
+        map.args.iter().map(|w| String::from_utf8_lossy(w).into_owned()).collect::<Vec<_>>()
+    })
 }
 
 /// `DF_SYMBOLIC` (0x2) in a reference's `DT_FLAGS` under `-Bsymbolic`:

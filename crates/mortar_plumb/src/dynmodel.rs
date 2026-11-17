@@ -487,6 +487,17 @@ impl Model {
         }
         // The program's keys.
         m.keys = Self::keys_of(line, objs.iter(), file0);
+        // §12.1a (WP-193): an input the map names and the line does not is
+        // no reason at any position; D-19a's order is not computed without
+        // it (it was counted before every mention).
+        for o in objs {
+            if o.symtab.is_some() && line.position_of(&o.path).is_none() {
+                m.problems.push(format!(
+                    "{}: an input of the map that no line item is (D-19a needs its position)",
+                    o.path
+                ));
+            }
+        }
         // An executable's dynamic list (D-1: none in a static-pie; a
         // `Shared` line's list decides preemption, §12.5).
         if matches!(line.kind, Some(OutputKind::Exec | OutputKind::Pie))
@@ -708,7 +719,9 @@ impl Model {
                 let full = String::from_utf8_lossy(raw).into_owned();
                 let (name, ver) = split_version(&full);
                 let demoted = t.section_of(i, &s).is_ok_and(|w| match w {
-                    SymbolSection::Section(k) => dropped.get(k.0 as usize).copied().unwrap_or(false),
+                    SymbolSection::Section(k) => {
+                        dropped.get(k.0 as usize).copied().unwrap_or(false)
+                    }
                     _ => false,
                 });
                 let defined = s.st_shndx != SHN_UNDEF && !demoted;

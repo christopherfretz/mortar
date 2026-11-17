@@ -1,0 +1,146 @@
+mortar-map 2
+file 0 /usr/lib/gcc/aarch64-linux-gnu/14/../../../aarch64-linux-gnu/Scrt1.o
+file 1 /usr/lib/gcc/aarch64-linux-gnu/14/../../../aarch64-linux-gnu/crti.o
+file 2 /usr/lib/gcc/aarch64-linux-gnu/14/crtbeginS.o
+file 3 main0.o
+file 4 use_x.o
+file 5 /usr/lib/gcc/aarch64-linux-gnu/14/crtendS.o
+file 6 /usr/lib/gcc/aarch64-linux-gnu/14/../../../aarch64-linux-gnu/crtn.o
+place 0 8 2e8 20
+piece 0 3 0 658 4
+piece 0 4 0 6a0 14
+piece 0 4 14 6b4 14
+place 0 1 10840 34
+place 0 9 30c70 4
+place 0 10 30c80 0
+place 1 6 10778 10
+place 1 1 10874 14
+place 1 8 1099c c
+place 1 3 30c74 0
+place 1 4 30c80 0
+piece 2 15 14 6c8 14
+piece 2 15 28 6dc 14
+piece 2 15 3c 6f0 28
+piece 2 15 64 718 14
+place 2 1 108a0 c8
+place 2 10 209b8 8
+place 2 8 209c0 8
+place 2 3 30c74 0
+place 2 6 30c78 8
+place 2 4 30c80 1
+place 2 5 30c80 0
+piece 3 5 0 650 5
+piece 3 8 14 72c 24
+place 3 1 10968 20
+place 3 3 30c80 0
+place 3 4 30c81 0
+piece 4 7 14 750 24
+place 4 1 10988 14
+place 4 3 30c80 0
+place 4 4 30c81 0
+place 5 1 1099c 0
+place 5 2 30c80 0
+place 5 5 30c80 0
+place 5 3 30c81 0
+place 6 5 10788 c
+place 6 1 1099c 0
+place 6 6 109a8 c
+place 6 2 30c80 0
+place 6 3 30c81 0
+merged 2 12 .comment
+merged 3 6 .comment
+merged 4 5 .comment
+merged 5 6 .comment
+chunk synthetic .interp 2a8 1b
+chunk synthetic .note.gnu.build-id 2c4 24
+chunk synthetic .gnu.hash 308 1c
+chunk synthetic .dynsym 328 d8
+chunk synthetic .dynstr 400 bb
+chunk synthetic .gnu.version 4bc 12
+chunk synthetic .gnu.version_r 4d0 30
+chunk synthetic .rela.dyn 500 c0
+chunk synthetic .rela.plt 5c0 90
+chunk synthetic .eh_frame_hdr 65c 44
+chunk synthetic .eh_frame 6a0 d8
+chunk synthetic .plt 107a0 80
+chunk synthetic .got 20bf8 30
+chunk synthetic .got.plt 30c28 48
+chunk synthetic .dynamic 209c8 230
+chunk synthetic .symtab - 498
+chunk synthetic .strtab - 1b5
+chunk synthetic .shstrtab - 113
+chunk synthetic .comment - d
+chunk synthetic .pad.relro 20c28 f3d8
+output pie
+interp /lib/ld-linux-aarch64.so.1
+bind lazy
+relro on
+arg -plugin
+arg /usr/libexec/gcc/aarch64-linux-gnu/14/liblto_plugin.so
+arg -plugin-opt=/usr/libexec/gcc/aarch64-linux-gnu/14/lto-wrapper
+arg -plugin-opt=-fresolution=/tmp/ccaTDvka.res
+arg -plugin-opt=-pass-through=-lgcc
+arg -plugin-opt=-pass-through=-lgcc_s
+arg -plugin-opt=-pass-through=-lc
+arg -plugin-opt=-pass-through=-lgcc
+arg -plugin-opt=-pass-through=-lgcc_s
+arg --build-id
+arg --eh-frame-hdr
+arg --hash-style=gnu
+arg --as-needed
+arg -dynamic-linker
+arg /lib/ld-linux-aarch64.so.1
+arg -X
+arg -EL
+arg -maarch64linux
+arg --fix-cortex-a53-843419
+arg -pie
+arg -o
+arg g-anx-obj
+arg /usr/lib/gcc/aarch64-linux-gnu/14/../../../aarch64-linux-gnu/Scrt1.o
+arg /usr/lib/gcc/aarch64-linux-gnu/14/../../../aarch64-linux-gnu/crti.o
+arg /usr/lib/gcc/aarch64-linux-gnu/14/crtbeginS.o
+arg -L/Volumes/AgentWork/mortar-helper/.build/target-wp-116/linktest/run-3081457/bin/aarch64/mortar
+arg -L/usr/lib/gcc/aarch64-linux-gnu/14
+arg -L/usr/lib/gcc/aarch64-linux-gnu/14/../../../aarch64-linux-gnu
+arg -L/usr/lib/gcc/aarch64-linux-gnu/14/../../../../lib
+arg -L/lib/aarch64-linux-gnu
+arg -L/lib/../lib
+arg -L/usr/lib/aarch64-linux-gnu
+arg -L/usr/lib/../lib
+arg -L/usr/lib/gcc/aarch64-linux-gnu/14/../../..
+arg main0.o
+arg --no-as-needed
+arg libna.so
+arg --as-needed
+arg libnx.so
+arg --no-as-needed
+arg libnb.so
+arg g_anx_obj.so
+arg libnc.so
+arg --mortar-map=.linktest-plumb-20.map
+arg -lgcc
+arg --push-state
+arg --as-needed
+arg -lgcc_s
+arg --pop-state
+arg -lc
+arg -lgcc
+arg --push-state
+arg --as-needed
+arg -lgcc_s
+arg --pop-state
+arg /usr/lib/gcc/aarch64-linux-gnu/14/crtendS.o
+arg /usr/lib/gcc/aarch64-linux-gnu/14/../../../aarch64-linux-gnu/crtn.o
+needed libna.so
+needed libnb.so
+needed libnx.so
+needed libnc.so
+needed libc.so.6
+plt abort@GLIBC_2.17
+plt __libc_start_main@GLIBC_2.34
+plt __gmon_start__
+plt __cxa_finalize@GLIBC_2.17
+plt puts@GLIBC_2.17
+plt f_nx
+end

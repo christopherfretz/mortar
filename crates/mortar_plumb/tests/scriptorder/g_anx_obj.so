@@ -1,0 +1,1 @@
+GROUP ( AS_NEEDED ( libnx.so ) use_x.o )

@@ -218,7 +218,8 @@ fn s5_7a_reference_outputs_are_a103_only() {
 
 #[test]
 fn s5_7a_another_value_is_plain_r5() {
-    for (name, linker) in [("st-a64", "bfd"), ("st-a64", "lld"), ("st-x64", "bfd"), ("st-x64", "lld")]
+    for (name, linker) in
+        [("st-a64", "bfd"), ("st-a64", "lld"), ("st-x64", "bfd"), ("st-x64", "lld")]
     {
         let fx = Fx::reference(name, linker);
         let mut b = fx.bytes();
@@ -226,16 +227,15 @@ fn s5_7a_another_value_is_plain_r5() {
         // Another value: AArch64 a `bl` to Y+12 (neither the NOP nor the
         // branch to the next instruction); x86-64 a call 8 bytes further.
         let w = le32(&b, o);
-        let m = if le16(&b, 0x12) == 183 {
-            0x9400_0002
-        } else {
-            w.wrapping_add(8)
-        };
+        let m = if le16(&b, 0x12) == 183 { 0x9400_0002 } else { w.wrapping_add(8) };
         b[o..o + 4].copy_from_slice(&m.to_le_bytes());
         let (plain, named) = fx.judge(&b);
         assert!(named.is_empty(), "{name}.{linker}: {named:?}");
         assert!(
-            plain.iter().any(|p| p.starts_with("R5 refers to section '.text.g', which is not in the output @")),
+            plain
+                .iter()
+                .any(|p| p
+                    .starts_with("R5 refers to section '.text.g', which is not in the output @")),
             "{name}.{linker}: {plain:#?}"
         );
         assert!(r5(&fx, &b).iter().all(|m| !m.ends_with(TAG)), "{name}.{linker}");
@@ -252,7 +252,10 @@ fn s5_7a_another_value_is_plain_r5() {
     b[o..o + 4].copy_from_slice(&w.to_le_bytes());
     let (plain, named) = fx.judge(&b);
     assert!(named.is_empty(), "pie: {named:?}");
-    assert!(plain.iter().any(|p| p.starts_with("R5 refers to section '.data.g'")), "pie: {plain:#?}");
+    assert!(
+        plain.iter().any(|p| p.starts_with("R5 refers to section '.data.g'")),
+        "pie: {plain:#?}"
+    );
 }
 
 #[test]
@@ -277,7 +280,10 @@ fn s5_7a_the_same_value_at_a_mention_not_demoted_is_plain_r5() {
             let (_, named) = fx.judge(&b);
             assert!(!named.contains(&"A103".to_string()), "{name}.{linker} {what}: {named:?}");
             let r = r5(&fx, &b);
-            assert!(!r.is_empty() && r.iter().all(|m| !m.ends_with(TAG)), "{name}.{linker} {what}: {r:?}");
+            assert!(
+                !r.is_empty() && r.iter().all(|m| !m.ends_with(TAG)),
+                "{name}.{linker} {what}: {r:?}"
+            );
         }
     }
 }
@@ -300,7 +306,9 @@ fn s5_7a_mortar_writing_the_undefined_weak_value_fails() {
     assert!(plain.is_empty(), "mortar's own link: {plain:#?}");
     fx.map_edit = Some(("wbu-a64.o".into(), "wb-a64.o".into()));
     let r = fx.verify(&b);
-    assert!(r.findings.iter().all(|f| mortar_plumb::anomaly::classify(Format::Mortar, &b, f).is_none()));
+    assert!(
+        r.findings.iter().all(|f| mortar_plumb::anomaly::classify(Format::Mortar, &b, f).is_none())
+    );
     let r5: Vec<_> = r.findings.iter().filter(|f| f.rule.id() == "R5").collect();
     assert_eq!(r5.len(), 1, "{:#?}", r.findings);
     assert!(r5[0].message.starts_with("refers to section '.text.g', which is not in the output"));

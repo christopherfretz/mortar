@@ -5716,9 +5716,9 @@ and `Weak0` written for a branch-only key (mortar's form before WP-155).
 
 This subsection records how WP-050's verifier reaches the rules above.
 A dynamic output (`PT_DYNAMIC`) is judged with the map, the inputs and
-the **line**: a mortar map's `arg` records (§3.2a), a reference's from
-the caller (the linker's words: `--line FILE`, one word per line, or
-`--inputs-from`). The line gives D-1's kind, `-dynamic-linker`, `-z
+the **line**: the caller's (the linker's words: `--line FILE`, one word
+per line, or `--inputs-from`), for a mortar map its `arg` records
+(§3.2a) only when the caller gives none (§12.1a, WP-193). The line gives D-1's kind, `-dynamic-linker`, `-z
 now`, `-z relro`, `-E` and the files of D-11/D-12; the shared objects are read
 from the file system (`line::Files`).
 
@@ -5842,6 +5842,90 @@ from the file system (`line::Files`).
   `r1_a64_large_model_local_exec_in_a_dynamic_executable`, WP-088).
 
 - **Static-pie** (WP-089): §12.4.
+
+### 12.1a D-19a's order in the model (WP-193)
+
+P-D6's expected `DT_NEEDED` order is computed from what the verifier
+reads itself: the caller's line, the scripts it names (read from the
+file system) and the inputs' symbol tables. Never from what the judged
+linker writes of its mentions or groups.
+
+- **The line.** It is the caller's words (`--line`, the lane's recorded
+  words) for every format. A mortar map's `arg` records are the line
+  only when the caller gives none; they are not compared with it here.
+  A mention's state, group and position are never taken from a map.
+- **The mentions** are the line's shared-object items, in order. Scripts
+  are expanded inline at their own position, depth first: `INPUT`,
+  `GROUP`, `AS_NEEDED`, a nested script, and `-l` inside a script
+  searched as on the command line. A relative name is looked up in the
+  current directory, then in the script's directory, then in the `-L`
+  path.
+- **A mention's as-needed state** is the one in force where the mention
+  is named. For a mention inside a script, that is the state of the
+  script's entry on the line (the script's own entry when it is
+  nested). `AS_NEEDED(…)` forces it on. `--push-state` and
+  `--pop-state` restore the saved state, and the state of an entry
+  between them is its own.
+- **A mention's group**:
+  - a `--start-group` region, or a script's `GROUP`;
+  - every entry of a nested script is in the group of the entry that
+    named the script;
+  - an `INPUT` entry of a script is in the group of the script's own
+    entry. So beside a `GROUP` in a script named outside every group,
+    it is in no group (`input_then_group`).
+- **A mention again** (a mention, inside a script, of an object already
+  met) has no state or group of its own. It takes those of its script
+  entry, as above.
+- **Each relocatable input's position and group** come from the line
+  item that is that input. The map tells which file is which, by path.
+  The map's path is taken as the same file as a line item when the two
+  are equal once `.` components and repeated `/` are removed and each
+  `dir/..` is collapsed (lexically). GNU ld names an object that a
+  script found in the script's directory `./use_x.o`, and that is the
+  line's `use_x.o`. mold's map names the driver's
+  `/usr/lib/gcc/T/14/../../../T/crti.o` as `/usr/lib/T/crti.o`, and that
+  is the line's word. An input that no line item is (any other
+  spelling) is P-D2 "an input of the map that no line item is (D-19a
+  needs its position)", and stage 3 stops.
+- **The keeping mention, and the order**, are then those of `spec/dyn.md`
+  D-19a. A strong reference from an object counts as a reason for an
+  as-needed mention when either:
+  - the object is at a position before the mention, or
+  - the object is in the mention's group.
+
+  A mention again inside a script `GROUP` therefore keeps a library that
+  an object of the same `GROUP` references (`g_anx_obj`, `nested_group`,
+  `nested_group_asn`). The fallback is the first mention. GNU ld's and
+  mortar's outputs are held to this order. lld's and mold's outputs are
+  held to the first-mention order (§13.1; mold's W9 where it applies).
+
+Before WP-193, the matching was by the exact path, and an input it could
+not place counted as being at position 0 with no group (before every
+mention). GNU ld's `./use_x.o` was not placed, so it became a reason for
+libnx.so's first, as-needed mention. That made P-D6 expect
+`na nx nb nc c` on GNU ld's own correct list. mortar's map spells the
+file `use_x.o`, so mortar's identical list passed. The verifier also took
+a mortar map's `arg` records as the line even when the caller gave one.
+In the lane those records are the caller's words verbatim, so the
+verdict did not depend on them, but they were believed.
+
+Tests: `tests/scriptorder.rs` (fixtures `tests/scriptorder/`), with
+GNU ld's and mortar's AArch64 outputs of `g-anx-obj`, `nested-group` and
+`s-twice-off`, and mortar's `input-then-group`:
+- each output is clean;
+- each list permuted to lld's order is P-D6;
+- `input-then-group` with the list mortar's base wrote (`na nb nx nc
+  c`) is P-D6;
+- a mortar map whose `arg` records change libnx.so's state, put
+  `use_x.o` in a command-line group, or are removed, or whose `use_x.o`
+  is spelled `./use_x.o`, gives the same verdict on the same image. The
+  first of these edits, given with no caller's line, is P-D6, which
+  shows the edit is one the model would follow if it believed the map;
+- GNU ld's map spelled as the line spells it gives the same verdict;
+- an input spelled by no line item is P-D2.
+
+`line.rs` `one_file_by_its_spellings`; the lane's
+`dyn/shlib/needed-order-script*.test`.
 
 ### 12.2 The PLT header and the way back to it (WP-082)
 
