@@ -179,6 +179,11 @@ fn dynamic(linker: Format, output: &[u8], f: &Finding) -> Option<&'static str> {
             "A36: lld and mold link a used shared object's strong reference that no member of N ∪ U satisfies and leave the library that defines it out of DT_NEEDED; the program fails at load (dyn.md D-13, W16)",
         );
     }
+    if d(24) && m.ends_with("(D-43a, W30)") {
+        return Some(
+            "A44: GNU ld, lld and mold copy writable data a library binds to itself into the executable: two objects (dyn.md D-43a, W30)",
+        );
+    }
     if (lld || mold) && d(10) && m.ends_with("(D-41, H1)") {
         return Some(
             "A20: lld and mold put IRELATIVE records before the JUMP_SLOTs; a resolver that calls through the PLT jumps to an unbound slot (dyn.md H1)",

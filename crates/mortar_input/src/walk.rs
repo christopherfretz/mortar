@@ -22,7 +22,8 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use mortar_core::hash::HashMap as FixedMap;
-use mortar_core::inputs::{ContentHash, LinkTarget, Reader};
+use mortar_core::id::FileId;
+use mortar_core::inputs::{BindsLocally, ContentHash, LinkTarget, LoadSpan, LocalBinding, Reader};
 use mortar_core::par::Pool;
 use mortar_core::plan::{InputFormat, InputSpec, OutputKind, Plan, SymbolRole};
 use mortar_diag::{FileRef, Kind as Dk, Place, RefusalClass, Severity};
@@ -294,6 +295,9 @@ pub struct LinkTable {
     pub script_entries: Vec<ScriptEntry>,
     pub directives: Vec<Directive>,
     pub rpath_from_r: Vec<(u32, Spelled)>,
+    /// `spec/dyn.md` D-43a's side table: a row per loaded shared object
+    /// that binds a definition locally, in `FileId` order.
+    pub local_binding: Vec<LocalBinding>,
 }
 
 /// The result of the walk.
@@ -1511,6 +1515,7 @@ impl<'c, 's> Walk<'c, 's> {
             Identity { path: path.clone(), mention: self.mention_ordinal(&path), member: None };
         let id = u32::try_from(self.files.len() + 1).unwrap_or(u32::MAX);
         self.soname_units.insert(soname.0.clone(), self.link.sonames.len());
+        self.link.local_binding.extend(local_binding(FileId(id), s));
         self.link.sonames.push(SonameUnit {
             file: id,
             mentions: vec![opened],
@@ -2533,6 +2538,43 @@ impl<'c, 's> Walk<'c, 's> {
             timing: Timing::default(),
         }
     }
+}
+
+/// The D-43a row of a shared object that binds a definition locally
+/// (`spec/dyn.md` D-43a): `DT_SYMBOLIC` or `DF_SYMBOLIC`, else the
+/// `NONPREEMPTIBLE` rows of its `.note.mason` table (`spec/odr.md` O-51,
+/// O-60), else none. A table that does not parse binds every definition
+/// (mortar cannot tell which). Nothing is allocated for a shared object
+/// that binds nothing locally.
+fn local_binding(file: FileId, s: &SharedFacts<'_>) -> Option<LocalBinding> {
+    use mortar_elf::consts::DF_SYMBOLIC;
+    use mortar_meta::table::{NONPREEMPTIBLE, Table};
+    let binds = if s.symbolic || s.flags & DF_SYMBOLIC != 0 {
+        BindsLocally::Symbolic
+    } else {
+        match Table::parse(s.mason_note?) {
+            Ok(table) => {
+                let mut rows: Vec<u32> = table
+                    .iter()
+                    .filter(|row| row.flags & NONPREEMPTIBLE != 0)
+                    .map(|row| row.dynsym)
+                    .collect();
+                if rows.is_empty() {
+                    return None;
+                }
+                rows.sort_unstable();
+                rows.dedup();
+                BindsLocally::Rows(rows.into_boxed_slice())
+            }
+            Err(e) => BindsLocally::Unreadable(e.reason().into_boxed_str()),
+        }
+    };
+    let loads = s
+        .loads
+        .iter()
+        .map(|l| LoadSpan { vaddr: l.vaddr, memsz: l.memsz, writable: l.writable })
+        .collect();
+    Some(LocalBinding { file, binds, loads, relro: s.relro })
 }
 
 /// [`Walk::member_facts`].

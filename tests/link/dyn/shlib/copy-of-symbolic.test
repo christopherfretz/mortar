@@ -1,0 +1,114 @@
+# dyn.md D-43a (request R-D43; W30): an executable that takes a `COPY` of
+# a datum its library binds to itself (`-Bsymbolic`: DT_SYMBOLIC and
+# DF_SYMBOLIC) runs with two objects where the program believes in one:
+# the loader binds the program's references (and every other module's)
+# to the copy, the library's own code keeps using its instance. The
+# library's program headers say whether that matters:
+#
+# - `rw` (`.data`) and `bz` (`.bss`) lie in a writable PT_LOAD outside
+#   PT_GNU_RELRO: a write through one name is not seen through the other.
+#   All three references link it; the program writes 9 and the library
+#   still reads its 3, at another address (`two 3`, where the same
+#   program against the plain library prints `one 9`). mortar refuses,
+#   `copy-of-locally-bound-definition`, and the verifier reports the
+#   references' outputs (P-D24, anomaly A44);
+# - `ro` (`.rodata`, a read-only PT_LOAD) and `rr` (`.data.rel.ro`,
+#   inside PT_GNU_RELRO): two equal constants, defined behaviour, only
+#   `&v` differs (`two 1`): mortar warns with the same kind and links.
+#
+# The plain library (no -Bsymbolic) is unaffected: one object, no
+# diagnostic. `-no-pie` code copies on both architectures (E-reloc).
+# The library is GNU ld's (every `shlib` step is); the record of WP-122
+# lists lld's and mold's libraries (tests/shared-design/exp2/q10b) as
+# measured the same way.
+#@ spec: dyn.md "D-43a"
+#@ arch: aarch64 x86_64
+#@ anomaly(bfd,lld,mold): A44
+
+cc -O1 -fPIC lib.c -o lib.o
+shlib gcc lib.o -Wl,-Bsymbolic -Wl,-z,relro -Wl,-soname,libsym.so -o libsym.so
+shlib gcc lib.o -Wl,-z,relro -Wl,-soname,libplain.so -o libplain.so
+cc -O1 -fno-pie -DRW host.c -o rw.o
+cc -O1 -fno-pie -DBZ host.c -o bz.o
+cc -O1 -fno-pie -DRO host.c -o ro.o
+cc -O1 -fno-pie -DRR host.c -o rr.o
+check readelf -dW libsym.so
+  has: (SYMBOLIC)
+  has: (FLAGS) * SYMBOLIC
+check readelf -dW libplain.so
+  not: SYMBOLIC
+link gcc -no-pie rw.o -L. -lplain -o rw-plain
+run rw-plain
+  stdout: one 9
+check readelf -rW rw-plain
+  has: _COPY * rw
+link(bfd,lld,mold) gcc -no-pie rw.o -L. -lsym -o rw
+run(bfd,lld,mold) rw
+  stdout: two 3
+check(bfd,lld,mold) readelf -rW rw
+  has: _COPY * rw
+link(mortar) gcc -no-pie rw.o -L. -lsym -o rw
+  exit: fail
+  diag: copy relocation against rw, which *libsym.so binds to itself; the program and *libsym.so would use two different objects
+  diag: rw is writable in *libsym.so: the program would write its copy and *libsym.so read its own
+  diag: libsym.so is linked -Bsymbolic (DT_SYMBOLIC or DF_SYMBOLIC)
+link(bfd,lld,mold) gcc -no-pie bz.o -L. -lsym -o bz
+run(bfd,lld,mold) bz
+  stdout: two 0
+link(mortar) gcc -no-pie bz.o -L. -lsym -o bz
+  exit: fail
+  diag: copy relocation against bz, which *libsym.so binds to itself
+  diag: bz is writable in *libsym.so
+link gcc -no-pie ro.o -L. -lsym -o ro
+  diag(mortar): warning: *copy relocation against ro, which *libsym.so binds to itself
+  diag(mortar): ro is read-only in *libsym.so: two equal copies
+run ro
+  stdout: two 1
+check readelf -rW ro
+  has: _COPY * ro
+link gcc -no-pie rr.o -L. -lsym -o rr
+  diag(mortar): warning: *copy relocation against rr, which *libsym.so binds to itself
+  diag(mortar): rr is read-only in *libsym.so: two equal copies
+run rr
+  stdout: two abc
+link gcc -no-pie ro.o -L. -lplain -o ro-plain
+  no-diag(mortar): copy relocation
+run ro-plain
+  stdout: one 1
+
+#--- lib.c
+const int ro = 1;
+const char *const rr = "abc";
+int rw = 3;
+int bz;
+const void *addr_ro(void) { return &ro; }
+const void *addr_rr(void) { return &rr; }
+const void *addr_rw(void) { return &rw; }
+const void *addr_bz(void) { return &bz; }
+int get_ro(void) { return ro; }
+const char *get_rr(void) { return rr; }
+int get_rw(void) { return rw; }
+int get_bz(void) { return bz; }
+#--- host.c
+#include <stdio.h>
+extern const int ro;
+extern const char *const rr;
+extern int rw, bz;
+const void *addr_ro(void), *addr_rr(void), *addr_rw(void), *addr_bz(void);
+int get_ro(void), get_rw(void), get_bz(void);
+const char *get_rr(void);
+#define SAME(v) ((const void *)&v == addr_##v() ? "one" : "two")
+int main(void) {
+#if defined(RW)
+  rw = 9;
+  printf("%s %d\n", SAME(rw), get_rw());
+#elif defined(BZ)
+  bz = 4;
+  printf("%s %d\n", SAME(bz), get_bz());
+#elif defined(RO)
+  printf("%s %d\n", SAME(ro), get_ro());
+#else
+  printf("%s %s\n", SAME(rr), get_rr());
+#endif
+  return 0;
+}

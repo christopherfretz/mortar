@@ -1,0 +1,113 @@
+# dyn.md D-43a, its second reading of "binds locally": a `.note.mason`
+# table row with `NONPREEMPTIBLE` (odr.md O-51, O-60: the library runs
+# its own copy of that definition) counts as `-Bsymbolic` does, for that
+# definition only. The libraries are GNU ld's, linked without
+# -Bsymbolic, with a table written by the test producer (`meta`), as a
+# mortar-made library's will be (WP-129): `rw` and `ro` carry the flag,
+# `bz` does not. So mortar refuses the copy of `rw` (writable), warns on
+# `ro` (read-only: two equal copies) and copies `bz` silently. The rows
+# here are the producer's claim, not the library's code (which reaches
+# `rw` through its GOT): the references, which do not read tables, link
+# and run one object (`one 9`), and the verifier, which reads the table as
+# mortar does, reports their copy of `rw` (P-D24, anomaly A44).
+#
+# A table that does not parse (here: version 2, odr.md O-51) cannot say
+# which definitions are bound: every definition counts as bound, and the
+# copy of the writable `bz` is refused, with the reason in a note.
+#@ spec: dyn.md "D-43a"
+#@ spec: odr.md "O-60"
+#@ arch: aarch64 x86_64
+#@ anomaly(bfd,lld,mold): A44
+
+cc -O1 -fPIC lib.c -o lib.o
+as note4.s -o note4.o
+as bad.s -o bad.o
+shlib gcc lib.o note4.o -Wl,-soname,librows.so -o librows0.so
+meta lib.rows librows0.so -o librows.so
+shlib gcc lib.o bad.o -Wl,-soname,libbad.so -o libbad.so
+cc -O1 -fno-pie -DRW host.c -o rw.o
+cc -O1 -fno-pie -DBZ host.c -o bz.o
+cc -O1 -fno-pie -DRO host.c -o ro.o
+check readelf -dW librows.so
+  not: SYMBOLIC
+link(bfd,lld,mold) gcc -no-pie rw.o -L. -lrows -o rw
+run(bfd,lld,mold) rw
+  stdout: one 9
+link(mortar) gcc -no-pie rw.o -L. -lrows -o rw
+  exit: fail
+  diag: copy relocation against rw, which *librows.so binds to itself
+  diag: rw is writable in *librows.so
+  diag: the .note.mason table of *librows.so marks rw NONPREEMPTIBLE
+link gcc -no-pie ro.o -L. -lrows -o ro
+  diag(mortar): warning: *copy relocation against ro, which *librows.so binds to itself
+  diag(mortar): ro is read-only in *librows.so: two equal copies
+run ro
+  stdout: one 1
+link gcc -no-pie bz.o -L. -lrows -o bz
+  no-diag(mortar): copy relocation
+run bz
+  stdout: one 4
+link(bfd,lld,mold) gcc -no-pie bz.o -L. -lbad -o bz-bad
+run(bfd,lld,mold) bz-bad
+  stdout: one 4
+link(mortar) gcc -no-pie bz.o -L. -lbad -o bz-bad
+  exit: fail
+  diag: copy relocation against bz, which *libbad.so binds to itself
+  diag: bz is writable in *libbad.so
+  diag: the .note.mason table of *libbad.so does not parse (*): every definition is taken as bound locally
+
+#--- lib.rows
+row name=rw hash=0101010101010101 flags=0x8001
+row name=ro hash=0101010101010101 flags=0x8001
+row name=bz hash=0101010101010101 flags=1
+#--- note4.s
+	.section .note.mason,"a",%note
+	.p2align 3
+	.long 10
+	.long 112
+	.long 0x4d4f4401
+	.asciz "MasonMeta"
+	.p2align 3
+	.long 1, 4, 24, 0
+	.zero 96
+	.section .note.GNU-stack,"",%progbits
+#--- bad.s
+	.section .note.mason,"a",%note
+	.p2align 3
+	.long 10
+	.long 40
+	.long 0x4d4f4401
+	.asciz "MasonMeta"
+	.p2align 3
+	.long 2, 1, 24, 0
+	.zero 24
+	.section .note.GNU-stack,"",%progbits
+#--- lib.c
+const int ro = 1;
+int rw = 3;
+int bz;
+const void *addr_ro(void) { return &ro; }
+const void *addr_rw(void) { return &rw; }
+const void *addr_bz(void) { return &bz; }
+int get_ro(void) { return ro; }
+int get_rw(void) { return rw; }
+int get_bz(void) { return bz; }
+#--- host.c
+#include <stdio.h>
+extern const int ro;
+extern int rw, bz;
+const void *addr_ro(void), *addr_rw(void), *addr_bz(void);
+int get_ro(void), get_rw(void), get_bz(void);
+#define SAME(v) ((const void *)&v == addr_##v() ? "one" : "two")
+int main(void) {
+#if defined(RW)
+  rw = 9;
+  printf("%s %d\n", SAME(rw), get_rw());
+#elif defined(BZ)
+  bz = 4;
+  printf("%s %d\n", SAME(bz), get_bz());
+#else
+  printf("%s %d\n", SAME(ro), get_ro());
+#endif
+  return 0;
+}

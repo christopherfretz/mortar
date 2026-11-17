@@ -338,6 +338,58 @@ pub struct SonameUnit {
     pub copy_dt_needed: bool,
 }
 
+/// One `PT_LOAD` of a shared object, as `spec/dyn.md` D-43a reads it: the
+/// header's `p_vaddr` and `p_memsz`, unchecked (`vaddr + memsz` may
+/// overflow in a hostile file: the reader checks it), and `PF_W`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct LoadSpan {
+    pub vaddr: u64,
+    pub memsz: u64,
+    pub writable: bool,
+}
+
+/// Which definitions of a shared object the object binds to itself
+/// (`spec/dyn.md` D-43a, "binds locally").
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BindsLocally {
+    /// `DT_SYMBOLIC`, or `DF_SYMBOLIC` in `DT_FLAGS`: every definition.
+    Symbolic,
+    /// The `.dynsym` indices that a row of its `.note.mason` table marks
+    /// `NONPREEMPTIBLE` (`spec/odr.md` O-51, O-60), sorted, without
+    /// repeats; never empty.
+    Rows(Box<[u32]>),
+    /// Its `.note.mason` table does not parse (the reason, O-51's): taken
+    /// as binding every definition, since mortar cannot tell which.
+    Unreadable(Box<str>),
+}
+
+/// What `spec/dyn.md` D-43a reads of a loaded shared object that binds
+/// some of its definitions locally: from its program headers and
+/// `.dynamic` only. A shared object that binds nothing locally has no
+/// row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalBinding {
+    pub file: FileId,
+    pub binds: BindsLocally,
+    /// Every `PT_LOAD`, in table order.
+    pub loads: Box<[LoadSpan]>,
+    /// The last `PT_GNU_RELRO`'s `(p_vaddr, p_memsz)` (glibc's reading),
+    /// unchecked like `loads`.
+    pub relro: Option<(u64, u64)>,
+}
+
+impl LocalBinding {
+    /// Whether the object binds its definition at `.dynsym` index `index`
+    /// to itself.
+    #[must_use]
+    pub fn binds(&self, index: u32) -> bool {
+        match &self.binds {
+            BindsLocally::Symbolic | BindsLocally::Unreadable(_) => true,
+            BindsLocally::Rows(rows) => rows.binary_search(&index).is_ok(),
+        }
+    }
+}
+
 /// What a `DT_NEEDED` edge of the closure led to (`spec/input.md` §8.6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EdgeOutcome {
@@ -480,6 +532,12 @@ pub struct LinkInputs<'s> {
     /// The directories `-R` named (`spec/input.md` §4.8): argument index
     /// and directory.
     pub rpath_from_r: Box<[(u32, &'s [u8])]>,
+    /// The side table of `spec/dyn.md` D-43a: one row per loaded shared
+    /// object that binds a definition locally, in `FileId` order. A row
+    /// depends on its file alone; it is here, not in the `Copy` file row,
+    /// so that a link allocates nothing for it unless a library binds
+    /// locally.
+    pub local_binding: Box<[LocalBinding]>,
 }
 
 impl LinkInputs<'_> {
@@ -565,6 +623,15 @@ impl<'s> Inputs<'s> {
         Some(&self.link.sonames[at])
     }
 
+    /// The D-43a row of a shared object, when it binds a definition
+    /// locally (`spec/dyn.md` D-43a).
+    #[must_use]
+    pub fn local_binding(&self, file: FileId) -> Option<&LocalBinding> {
+        let rows = &self.link.local_binding;
+        let at = rows.binary_search_by_key(&file, |row| row.file).ok()?;
+        Some(&rows[at])
+    }
+
     /// The invariants of §2.1 to §3.2 and `spec/input.md` §10 that the
     /// table alone shows. Per file:
     ///
@@ -597,7 +664,9 @@ impl<'s> Inputs<'s> {
     /// 9. `closure` is sorted by `(needing, index)`, needed by and
     ///    satisfied with shared objects;
     /// 10. every index into `opened`, `script_entries` and `closure` is in
-    ///     range, and names the right kind of row.
+    ///     range, and names the right kind of row;
+    /// 11. `local_binding` is in `FileId` order, one row per file at most,
+    ///     each of a shared object.
     pub fn check(&self) -> Result<(), Broken> {
         self.check_files()?;
         self.check_symbols()?;
@@ -760,6 +829,13 @@ impl<'s> Inputs<'s> {
                 what: format!("rule 9: closure[{at}] is out of order"),
             });
         }
+        let rows = &link.local_binding;
+        ensure(rows.windows(2).all(|w| w[0].file < w[1].file), t, || {
+            "rule 11: local_binding is not in FileId order".to_owned()
+        })?;
+        ensure(rows.iter().all(|row| shared(row.file)), t, || {
+            "rule 11: a local_binding row of a file that is not a shared object".to_owned()
+        })?;
         for (i, edge) in link.closure.iter().enumerate() {
             ensure(shared(edge.needing), t, || {
                 format!("rule 9: closure[{i}]: needed by a file that is not a shared object")
