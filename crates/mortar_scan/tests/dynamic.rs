@@ -709,8 +709,11 @@ fn d25_weak_classes() {
     a.extend(["-o", "out"]);
     let pie = dyn_link(dir.path(), &a, OutputKind::Pie);
     assert!(pie.scanned.diagnostics.is_empty(), "{}", pie.rendered());
-    let want: BTreeSet<String> =
-        ["k_got", "k_word", "k_relro", "k_gotcall"].iter().map(|s| (*s).to_owned()).collect();
+    // A branch alone is `WeakDyn` too (WP-155: GNU ld and lld).
+    let want: BTreeSet<String> = ["k_got", "k_word", "k_relro", "k_branch", "k_gotcall"]
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect();
     assert_eq!(pie.weak_dyn(), want);
     let m = pie.records();
     eprintln!("mortar pie: {m:?}");
@@ -718,10 +721,12 @@ fn d25_weak_classes() {
         m.names("GLOB_DAT"),
         ["k_got", "k_gotcall"].iter().map(|s| (*s).to_owned()).collect()
     );
-    assert_eq!(m.names("JUMP_SLOT"), ["k_gotcall"].iter().map(|s| (*s).to_owned()).collect());
+    assert_eq!(
+        m.names("JUMP_SLOT"),
+        ["k_branch", "k_gotcall"].iter().map(|s| (*s).to_owned()).collect()
+    );
     assert_eq!(m.count("ABS64"), 2);
-    // lld agrees on every row but the branch-only key (§13.1: GNU ld and
-    // lld make it dynamic with a JUMP_SLOT; mortar Weak0).
+    // lld agrees on every row, the branch-only key included (WP-155).
     let refs = references(dir.path(), &a[..a.len() - 2], "out");
     for (ld, r) in &refs {
         let r = r.as_ref().unwrap_or_else(|e| panic!("{ld}: {e}"));
@@ -729,9 +734,7 @@ fn d25_weak_classes() {
         if *ld == "ld.lld" {
             assert_eq!(m.names("GLOB_DAT"), r.names("GLOB_DAT"));
             assert_eq!(m.count("ABS64"), r.count("ABS64"));
-            let mut jl = r.names("JUMP_SLOT");
-            jl.remove("k_branch");
-            assert_eq!(m.names("JUMP_SLOT"), jl);
+            assert_eq!(m.names("JUMP_SLOT"), r.names("JUMP_SLOT"));
         }
     }
     // Exec: the unfillable rows are Weak0, no refusal.
