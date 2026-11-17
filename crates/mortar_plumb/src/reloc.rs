@@ -1014,6 +1014,19 @@ impl<'a, 'b> Engine<'a, 'b> {
         // interposed key, a preemptible IFUNC's resolved address) is where
         // the view puts it, not an IPLT entry.
         let bound_by_loader = self.loader_keys.contains(&name);
+        // §4.4 step 0 (WP-143): a name every input definition of which is
+        // in a section without a place (discarded, or absent from the
+        // map) is that section's, whatever the output's symbol says: R5,
+        // or §5.8's tombstone from a non-alloc place. Before WP-143 the
+        // steps below looked at placed definitions only and ended in
+        // `symbol-unresolved`, a count, never R5: a word left 0 passed.
+        if !bound_by_loader && let Some((doi, di, k)) = self.placeless_def(&name) {
+            let value = self.objs[doi]
+                .symtab
+                .and_then(|dt| dt.get(SymbolIndex(di)).ok())
+                .map_or(0, |d| d.st_value);
+            return self.in_section(doi, k, value, false);
+        }
         // An IFUNC by its placed definition, whatever form the output's
         // symbol has (§4.8).
         let chosen = self.chosen_def(&name);
@@ -1099,6 +1112,37 @@ impl<'a, 'b> Engine<'a, 'b> {
             return Target::UndefWeak;
         }
         Target::Skip(Reason::SymbolUnresolved)
+    }
+
+    /// §4.4 step 0 (WP-143): when `name` has input definitions, every one
+    /// of them in a section of an input object (none `SHN_ABS`, none
+    /// common) and every such section without a place (`Absent` or
+    /// `Discarded`, §3.3), the definition the name resolves to: the first
+    /// strong one in object order, else the first. `None` otherwise.
+    pub(crate) fn placeless_def(&self, name: &str) -> Option<(usize, u32, usize)> {
+        let defs = self.defs.get(name)?;
+        if self.commons.contains_key(name) {
+            return None;
+        }
+        let mut first: Option<(usize, u32, usize)> = None;
+        let mut strong: Option<(usize, u32, usize)> = None;
+        for &(doi, di) in defs {
+            let dt = self.objs[doi].symtab?;
+            let ds = dt.get(SymbolIndex(di)).ok()?;
+            let Ok(SymbolSection::Section(k)) = dt.section_of(SymbolIndex(di), &ds) else {
+                return None;
+            };
+            let k = k.0 as usize;
+            let s = self.objs[doi].secs.get(k)?;
+            if !matches!(s.place, Place::Absent | Place::Discarded) {
+                return None;
+            }
+            first.get_or_insert((doi, di, k));
+            if ds.binding() != STB_WEAK {
+                strong.get_or_insert((doi, di, k));
+            }
+        }
+        strong.or(first)
     }
 
     /// §4.4 step 2's choice: the one placed strong definition of `name`,
