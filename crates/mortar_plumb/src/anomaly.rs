@@ -26,6 +26,19 @@ pub fn classify(linker: Format, output: &[u8], f: &Finding) -> Option<&'static s
             "A6: GNU ld, lld and mold fill the GOT slot of a section symbol plus an addend without the addend",
         );
     }
+    if bfd
+        && f.rule == Rule::Structure(8)
+        && f.message.contains(") is outside its section")
+        && f
+            .message
+            .split('\'')
+            .nth(1)
+            .is_some_and(|n| crate::shared::SEVEN.contains(&n) && dyn_sym_object(output, n))
+    {
+        return Some(
+            "A59: GNU ld defines the program's own _end, _edata, __bss_start a needed library defines with the library's type and size (STT_OBJECT, 1 byte past the end of its section) (dyn.md D-21 item 2, §13.1)",
+        );
+    }
     if mold && f.rule == Rule::Erratum(1) {
         return Some(
             "A4: mold accepts --fix-cortex-a53-843419 and leaves erratum 843419 sites as they are",
@@ -265,6 +278,47 @@ fn dynamic(linker: Format, output: &[u8], f: &Finding) -> Option<&'static str> {
             "A56: GNU ld on x86-64 writes no .dynsym entry for an undefined weak key reached by a branch and an unfillable use in -no-pie (its -z nodynamic-undefined-weak form): the call goes to 0 under LD_PRELOAD too (dyn.md D-25, §13.1's named difference)",
         );
     }
+    // D-21 item 2's seven names (D-110 item 2, WP-150): the name a
+    // finding is about.
+    let quoted = |m: &str| m.split('\'').nth(1).map(str::to_string);
+    let seven = |n: Option<String>| n.is_some_and(|n| crate::shared::SEVEN.contains(&n.as_str()));
+    if mold
+        && ((d(19) && m.ends_with("is in the export set and not defined in .dynsym (D-110)"))
+            || (d(7)
+                && (m.contains("is defined by the program and referenced by a needed or used object, and is not exported")
+                    || m.contains("an object references it and the line's -E or --dynamic-list exports it, and it is not exported")))
+            || (d(17) && m.starts_with("view B (an interposer defines '")))
+        && seven(f.symbol.clone().or_else(|| quoted(m)))
+    {
+        return Some(
+            "A57: mold exports none of D-21 item 2's seven linker-defined names (_end, _edata, __bss_start, ...): its library binds a referenced _end to its own and its executable exports none a library references or defines (dyn.md D-110 item 2, D-21 item 2, §13.1, §17.6)",
+        );
+    }
+    let gnu_own = |n: Option<String>| {
+        n.is_some_and(|n| {
+            matches!(n.as_str(), "__etext" | "__end__" | "__bss_start__" | "__bss_end__" | "_bss_end__")
+        })
+    };
+    if bfd
+        && ((d(19) && m.contains(") is in .dynsym and not in the export set"))
+            || (d(25) && m.ends_with("which the line binds (D-112)"))
+            || (d(7) && m.ends_with("which does not hold it")))
+        && gnu_own(f.symbol.clone().or_else(|| quoted(m)))
+        && !pie_flag(output)
+    {
+        return Some(
+            "A58: GNU ld's shared object exports __etext and its AArch64 names (__end__, __bss_start__, ...) an object references, preemptible, where mortar and lld keep them unexported (dyn.md D-110 item 2, §17.6)",
+        );
+    }
+    if bfd
+        && d(7)
+        && m.contains("is exported, and no needed library references or defines it and no object's reference")
+        && seven(quoted(m))
+    {
+        return Some(
+            "A60: GNU ld's executable exports _edata, __bss_start and _end under -E with no reference (dyn.md D-21 item 2, §13.1's named difference)",
+        );
+    }
     if mold && d(2) && m.ends_with("a shared object after -Bstatic (dyn.md D-19)") {
         return Some(
             "A33: mold links a shared object named after -Bstatic (-static-pie): DT_NEEDED and no PT_INTERP, so nothing loads it and the program faults (dyn.md D-19, D-2)",
@@ -293,9 +347,12 @@ fn dynamic(linker: Format, output: &[u8], f: &Finding) -> Option<&'static str> {
     // A static-pie: ET_DYN with .dynamic and no .interp (spec/plumb.md
     // §12.4); the machine.
     let header = mortar_elf::FileHeader::parse(output).ok();
+    // `DF_1_PIE`: a shared object (no `.interp` either) is no static-pie
+    // (WP-166: GNU ld's libraries drew A30/A34 for the GOT slot of `_end`).
     let spie = header.as_ref().is_some_and(|h| h.e_type == mortar_elf::consts::ET_DYN)
         && section(b".dynamic").is_some()
-        && section(b".interp").is_none();
+        && section(b".interp").is_none()
+        && pie_flag(output);
     let machine = header.as_ref().map_or(0, |h| h.e_machine);
     if bfd
         && spie
@@ -453,6 +510,49 @@ fn exports(output: &[u8]) -> bool {
     b.chunks_exact(24).skip(1).any(|e| {
         let shndx = u16::from_le_bytes([e[6], e[7]]);
         shndx != 0 && e[4] & 0xf != mortar_elf::consts::STT_SECTION
+    })
+}
+
+/// `.dynsym` defines `name` as `STT_OBJECT` (A59's form).
+fn dyn_sym_object(output: &[u8], name: &str) -> bool {
+    let Ok(h) = mortar_elf::FileHeader::parse(output) else { return false };
+    let Ok(table) = mortar_elf::SectionTable::parse(output, &h) else { return false };
+    let find = |n: &[u8]| {
+        table.iter().find(|s| s.name().is_ok_and(|x| x == n)).map(|s| *s.header())
+    };
+    let (Some(d), Some(st)) = (find(b".dynsym"), find(b".dynstr")) else { return false };
+    let slice = |o: u64, n: u64| {
+        let (Ok(o), Ok(n)) = (usize::try_from(o), usize::try_from(n)) else { return None };
+        output.get(o..o.saturating_add(n))
+    };
+    let (Some(b), Some(strs)) = (slice(d.sh_offset, d.sh_size), slice(st.sh_offset, st.sh_size))
+    else {
+        return false;
+    };
+    b.chunks_exact(24).skip(1).any(|e| {
+        let at = u32::from_le_bytes([e[0], e[1], e[2], e[3]]) as usize;
+        let shndx = u16::from_le_bytes([e[6], e[7]]);
+        let n = strs.get(at..).and_then(|r| r.split(|&c| c == 0).next());
+        shndx != 0 && e[4] & 0xf == mortar_elf::consts::STT_OBJECT && n == Some(name.as_bytes())
+    })
+}
+
+/// `DT_FLAGS_1` has `DF_1_PIE` (an executable, a static-pie among them).
+fn pie_flag(output: &[u8]) -> bool {
+    let Ok(h) = mortar_elf::FileHeader::parse(output) else { return false };
+    let Ok(table) = mortar_elf::SectionTable::parse(output, &h) else { return false };
+    let Some(d) = table.iter().find(|s| s.name().is_ok_and(|n| n == b".dynamic")) else {
+        return false;
+    };
+    let x = d.header();
+    let (Ok(at), Ok(size)) = (usize::try_from(x.sh_offset), usize::try_from(x.sh_size)) else {
+        return false;
+    };
+    let Some(b) = output.get(at..at.saturating_add(size)) else { return false };
+    b.chunks_exact(16).any(|e| {
+        let tag = u64::from_le_bytes(e[..8].try_into().unwrap_or_default());
+        let val = u64::from_le_bytes(e[8..].try_into().unwrap_or_default());
+        tag == crate::dynout::DT_FLAGS_1 && val & crate::dynout::DF_1_PIE != 0
     })
 }
 

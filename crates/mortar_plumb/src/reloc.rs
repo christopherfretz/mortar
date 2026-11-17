@@ -626,6 +626,61 @@ impl<'a, 'b> Engine<'a, 'b> {
         self.extent.0 <= s && s < self.extent.1
     }
 
+    /// [`Engine::internal`] for the value `s` of symbol `idx` of object
+    /// `oi`, which may also lie at the end of a `PT_LOAD`'s memory image,
+    /// or past it up to the next multiple of 8 (GNU ld's `_end`, Y5's
+    /// window), when the symbol is a segment-end key: a reference (a
+    /// global of the input) to a name layout gives an end (`_end`,
+    /// `_edata`, `__bss_start`, `_etext` and their aliases) that no input
+    /// defines (the linker's, resolve §8) and whose output definition is
+    /// `s` (GNU ld's AArch64 PIE GOT slot of `_end`, WP-150 §3a item 3).
+    /// Only the key's own value is an address there: a word that holds
+    /// anything else is still judged against it.
+    pub(crate) fn internal_value(&self, s: u64, oi: usize, idx: u32) -> bool {
+        if self.internal(s) {
+            return true;
+        }
+        let at_end = self.image.phdrs.iter().any(|p| {
+            let end = p.p_vaddr.saturating_add(p.p_memsz);
+            p.p_type == mortar_elf::consts::PT_LOAD
+                && p.p_memsz > 0
+                && end <= s
+                && s <= end.saturating_add(7) & !7
+        });
+        if !at_end || idx == 0 {
+            return false;
+        }
+        let Some(t) = self.objs[oi].symtab else { return false };
+        let Ok(sym) = t.get(SymbolIndex(idx)) else { return false };
+        if !matches!(sym.binding(), STB_GLOBAL | STB_WEAK) {
+            return false;
+        }
+        let name = String::from_utf8_lossy(t.name(&sym).unwrap_or(b"")).into_owned();
+        let end_key = matches!(
+            name.as_str(),
+            "_end"
+                | "end"
+                | "__end__"
+                | "_bss_end__"
+                | "__bss_end__"
+                | "_edata"
+                | "edata"
+                | "__bss_start"
+                | "__bss_start__"
+                | "_etext"
+                | "etext"
+                | "__etext"
+        );
+        end_key
+            && self.chosen_def(&name).is_none()
+            && self.image.symbols.iter().any(|out| {
+                out.name == name
+                    && out.sym.st_shndx != 0
+                    && out.sym.sym_type() != STT_SECTION
+                    && out.sym.st_value == s
+            })
+    }
+
     /// Whether symbol `idx` of object `oi` resolves to an absolute
     /// definition (`SHN_ABS`): its value is not an address of the image
     /// and no load bias moves it (gABI "Symbol Values"; dyn.md D-46's
@@ -1729,7 +1784,7 @@ impl<'a, 'b> Engine<'a, 'b> {
                 && self.objs[oi].secs[si].alloc()
             {
                 let s = sa.wrapping_sub(addend as u64);
-                let internal = self.internal(s) && !self.absolute(oi, rec.sym);
+                let internal = self.internal_value(s, oi, rec.sym) && !self.absolute(oi, rec.sym);
                 self.abs_words.push((rec.p, rec.def.field.width(), sa, internal));
             }
             match rw {
@@ -2566,7 +2621,7 @@ impl<'a, 'b> Engine<'a, 'b> {
                     && !rec.def.op.is_tls()
                 {
                     let w = self.word() as u8;
-                    let internal = self.internal(v.wrapping_sub(slot_addend(rec)))
+                    let internal = self.internal_value(v.wrapping_sub(slot_addend(rec)), goi, gsym)
                         && !matches!(self.resolve_any(goi, gsym), Target::UndefWeak)
                         && !self.absolute(goi, gsym);
                     for &gv in &valid {

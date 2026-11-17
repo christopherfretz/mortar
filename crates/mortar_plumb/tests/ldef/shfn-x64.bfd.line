@@ -1,0 +1,8 @@
+-z
+max-page-size=4096
+-o
+shfn-x64.bfd
+-shared
+-Bsymbolic-functions
+lib-x64.o
+-Map=shfn-x64.bfd.map

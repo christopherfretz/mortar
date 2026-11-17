@@ -1,0 +1,10 @@
+-z
+max-page-size=4096
+-o
+exdefr-nopie-a64.lld
+-no-pie
+-dynamic-linker
+/lib/ld-linux-aarch64.so.1
+startr-a64.o
+libdef-a64.so
+-Map=exdefr-nopie-a64.lld.map

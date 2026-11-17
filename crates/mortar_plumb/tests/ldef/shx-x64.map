@@ -1,0 +1,33 @@
+mortar-map 2
+file 0 libx-x64.o
+place 0 1 1290 e
+place 0 3 33c0 4
+place 0 4 33c4 0
+merged 0 5 .comment
+chunk synthetic .gnu.hash 1c8 28
+chunk synthetic .dynsym 1f0 60
+chunk synthetic .dynstr 250 26
+chunk synthetic .rela.dyn 278 18
+chunk synthetic .got 23a0 8
+chunk synthetic .got.plt 33a8 18
+chunk synthetic .dynamic 22a0 100
+chunk synthetic .symtab - a8
+chunk synthetic .strtab - 69
+chunk synthetic .shstrtab - 76
+chunk synthetic .comment - d
+chunk synthetic .pad.relro 23a8 c58
+define _GLOBAL_OFFSET_TABLE_ 33a8
+define __etext 129e
+output shared
+bind lazy
+relro on
+symbolic none
+arg -o
+arg shx-x64
+arg -shared
+arg libx-x64.o
+arg --mortar-map=shx-x64.map
+export api__etext
+export api__executable_start
+export one
+end

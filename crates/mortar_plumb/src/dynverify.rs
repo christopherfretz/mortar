@@ -232,12 +232,35 @@ fn judge(
         .map(|s| s.name.clone())
         .collect();
     let mut model = Model::build(&line, &objs, &[], ctx.files);
-    let file0: Vec<String> = pre
+    // D-21 item 2 (WP-150): the seven names are the program's own however
+    // a needed library defines them (a library's `char _end[1]` never
+    // serves the program's reference), and the link defines each that a
+    // needed or used object references or defines, or that an object
+    // references, whatever the output holds (mold defines none: A57).
+    let seven = |n: &str| crate::shared::SEVEN.contains(&n);
+    let mut file0: Vec<String> = pre
         .into_iter()
         .filter(|n| {
-            !model.dsos.iter().any(|d| d.defs.get(n).is_some_and(|v| v.iter().any(SoDef::visible)))
+            seven(n)
+                || !model
+                    .dsos
+                    .iter()
+                    .any(|d| d.defs.get(n).is_some_and(|v| v.iter().any(SoDef::visible)))
         })
         .collect();
+    if matches!(line.kind, Some(OutputKind::Exec | OutputKind::Pie)) {
+        for n in crate::shared::SEVEN {
+            let referenced = model
+                .keys
+                .get(n)
+                .is_some_and(|k| !k.defined && !k.hidden && (k.strong_ref || k.weak_ref));
+            let dynamic = model.ref_dynamic.contains(n) || model.def_dynamic.contains(n);
+            if !input_defs.contains(n) && !file0.iter().any(|f| f == n) && (referenced || dynamic)
+            {
+                file0.push(n.to_string());
+            }
+        }
+    }
     if !file0.is_empty() {
         model = Model::build(&line, &objs, &file0, ctx.files);
     }

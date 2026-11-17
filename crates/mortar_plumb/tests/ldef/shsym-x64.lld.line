@@ -1,0 +1,8 @@
+-z
+max-page-size=4096
+-o
+shsym-x64.lld
+-shared
+-Bsymbolic
+lib-x64.o
+-Map=shsym-x64.lld.map

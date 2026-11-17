@@ -1,0 +1,40 @@
+mortar-map 2
+file 0 start-x64.o
+place 0 1 401360 c
+place 0 3 4034a0 0
+place 0 4 4034a0 0
+merged 0 5 .comment
+chunk synthetic .interp 400238 1c
+chunk synthetic .gnu.hash 400258 28
+chunk synthetic .dynsym 400280 78
+chunk synthetic .dynstr 4002f8 2b
+chunk synthetic .rela.plt 400328 18
+chunk synthetic .plt 401340 20
+chunk synthetic .got.plt 403480 20
+chunk synthetic .dynamic 402370 110
+chunk synthetic .symtab - 90
+chunk synthetic .strtab - 46
+chunk synthetic .shstrtab - 78
+chunk synthetic .comment - d
+chunk synthetic .pad.relro 402480 b80
+define _edata 4034a0
+define _end 4034a0
+define __bss_start 4034a0
+output exec
+interp /lib64/ld-linux-x86-64.so.2
+bind lazy
+relro on
+arg -o
+arg exref-nopie-x64
+arg -no-pie
+arg -dynamic-linker
+arg /lib64/ld-linux-x86-64.so.2
+arg start-x64.o
+arg libend-x64.so
+arg --mortar-map=exref-nopie-x64.map
+needed libend.so
+export _edata
+export _end
+export __bss_start
+plt api_end
+end

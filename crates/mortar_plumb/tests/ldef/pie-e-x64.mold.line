@@ -1,0 +1,12 @@
+-m
+elf_x86_64
+-z
+max-page-size=4096
+-o
+pie-e-x64.mold
+-pie
+-E
+-dynamic-linker
+/lib64/ld-linux-x86-64.so.2
+startr-x64.o
+-Map=pie-e-x64.mold.map

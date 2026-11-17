@@ -1,0 +1,10 @@
+-m
+elf_x86_64
+-z
+max-page-size=4096
+-o
+shloc-x64.mold
+-shared
+--version-script=local.map
+lib-x64.o
+-Map=shloc-x64.mold.map

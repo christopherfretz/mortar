@@ -81,7 +81,7 @@ pub(crate) fn check(
             &mut v,
         );
     } else {
-        pd7(image, out, model, ld, format, &mut v);
+        pd7(image, out, model, ld, line, format, &mut v);
         // P-D14's entry rule for an Exec or a Pie (WP-088).
         // The entry symbol undefined in the output (WP-163, resolve.md
         // §5.5: `-e K` of a name only an unneeded --as-needed library
@@ -774,11 +774,13 @@ pub(crate) const ROOT_IMPORT: &str = " (D-21 item 1: a root is imported)";
 
 /// P-D7: the `.dynsym` set and fields (D-21, D-23).
 #[allow(clippy::too_many_lines)] // imports, exports, fields
+#[allow(clippy::too_many_arguments)] // the line for D-21 item 2's seven names
 fn pd7(
     image: &Image<'_>,
     out: &DynOut,
     model: &Model,
     ld: &Loader<'_>,
+    line: &Line,
     format: Format,
     v: &mut Vec<Finding>,
 ) {
@@ -882,7 +884,30 @@ fn pd7(
             continue;
         }
         let dynamic = model.ref_dynamic.contains(name) || model.def_dynamic.contains(name);
-        if !dynamic && !k.listed {
+        // D-21 item 2 (WP-150): one of the seven names, the link's own,
+        // is exported as a definition of the program: also when an object
+        // references it and the line has `-E` or a `--dynamic-list` naming
+        // it (unreferenced, neither exports it).
+        let seven = !model.shared && k.linker && crate::shared::SEVEN.contains(&name.as_str());
+        let referenced = k.strong_ref || k.weak_ref;
+        let by_e = seven && (line.export_dynamic || k.listed) && referenced;
+        let listed = k.listed && !k.linker;
+        if seven && !dynamic && !by_e {
+            // ... and only so: an export of it is no definition D-21 gives
+            // (`--export-dynamic-symbol` is not judged: its patterns).
+            if !line.export_symbols
+                && let Some(&j) = by_name.get(name.as_str())
+                && out.syms[j].defined()
+            {
+                v.push(sym_finding(
+                    7,
+                    name,
+                    format!("'{name}' is exported, and no needed library references or defines it and no object's reference under -E or --dynamic-list exports it (D-21 item 2)"),
+                ));
+            }
+            continue;
+        }
+        if !dynamic && !listed && !by_e {
             continue;
         }
         let Some(&j) = by_name.get(name.as_str()) else {
@@ -891,6 +916,8 @@ fn pd7(
                 name,
                 if dynamic {
                     format!("'{name}' is defined by the program and referenced by a needed or used object, and is not exported (D-12, W8)")
+                } else if by_e {
+                    format!("'{name}' is defined by the link, an object references it and the line's -E or --dynamic-list exports it, and it is not exported (D-21 item 2)")
                 } else {
                     format!("'{name}' is defined by the program and listed by the line's --dynamic-list, and is not exported (resolve.md §9.6, D-21)")
                 },

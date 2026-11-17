@@ -1095,6 +1095,11 @@ pub fn line_preempts(
     }
 }
 
+/// D-21 item 2's seven names (`linker::EXPORTED_AS_DEFINITIONS`): the
+/// linker-defined keys GNU ld and lld both define and export as a
+/// definition of the output (D-110 item 2, D-21 item 2; WP-150).
+pub const SEVEN: [&str; 7] = ["_etext", "etext", "_edata", "edata", "__bss_start", "_end", "end"];
+
 /// A C identifier (`__start_`/`__stop_` sections, layout L-96).
 fn c_ident(s: &str) -> bool {
     !s.is_empty()
@@ -1398,6 +1403,35 @@ pub(crate) fn compute(
             vis: v,
             size: d.size,
             preemptible,
+            optional: false,
+        });
+    }
+    // D-110 item 2 (WP-150): D-21 item 2's seven names that a live object
+    // references and no live object defines: the link defines each
+    // (resolve §8) and exports it `STB_GLOBAL STT_NOTYPE STV_DEFAULT` as
+    // its own, preemptible by D-112 as any `NOTYPE` key, local under a
+    // version script's `local:`. Derived from the inputs, whatever the
+    // output holds (mold's output exports none: A57).
+    for name in SEVEN {
+        if defined_base.contains(name)
+            || !sets.imports.contains_key(name)
+            || vis.get(name).is_some_and(|&v| v != STV_DEFAULT)
+        {
+            continue;
+        }
+        sets.imports.remove(name);
+        let Some(version) = decide(name, &mut sets) else {
+            sets.local.insert(name.to_string());
+            continue;
+        };
+        sets.exports.entry(name.to_string()).or_default().push(Export {
+            name: name.to_string(),
+            version,
+            ty: STT_NOTYPE,
+            bind: STB_GLOBAL,
+            vis: STV_DEFAULT,
+            size: 0,
+            preemptible: line_preempts(sl, list.as_ref(), STT_NOTYPE, name, format),
             optional: false,
         });
     }

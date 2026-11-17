@@ -1,0 +1,40 @@
+mortar-map 2
+file 0 start-def-x64.o
+place 0 1 1360 c
+place 0 3 34b0 0
+place 0 4 34b0 0
+merged 0 5 .comment
+chunk synthetic .interp 238 1c
+chunk synthetic .gnu.hash 258 28
+chunk synthetic .dynsym 280 78
+chunk synthetic .dynstr 2f8 2b
+chunk synthetic .rela.plt 328 18
+chunk synthetic .plt 1340 20
+chunk synthetic .got.plt 3490 20
+chunk synthetic .dynamic 2370 120
+chunk synthetic .symtab - 90
+chunk synthetic .strtab - 46
+chunk synthetic .shstrtab - 78
+chunk synthetic .comment - d
+chunk synthetic .pad.relro 2490 b70
+define _edata 34b0
+define _end 34b0
+define __bss_start 34b0
+output pie
+interp /lib64/ld-linux-x86-64.so.2
+bind lazy
+relro on
+arg -o
+arg exdef-pie-x64
+arg -pie
+arg -dynamic-linker
+arg /lib64/ld-linux-x86-64.so.2
+arg start-def-x64.o
+arg libdef-x64.so
+arg --mortar-map=exdef-pie-x64.map
+needed libdef.so
+export _edata
+export _end
+export __bss_start
+plt lib_end
+end

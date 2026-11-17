@@ -1,0 +1,10 @@
+-z
+max-page-size=4096
+-o
+exdef-pie-x64.lld
+-pie
+-dynamic-linker
+/lib64/ld-linux-x86-64.so.2
+start-def-x64.o
+libdef-x64.so
+-Map=exdef-pie-x64.lld.map

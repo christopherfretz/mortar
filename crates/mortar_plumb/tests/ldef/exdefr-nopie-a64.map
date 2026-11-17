@@ -1,0 +1,40 @@
+mortar-map 2
+file 0 startr-a64.o
+piece 0 7 0 400308 14
+piece 0 7 14 40031c 14
+place 0 1 410334 2c
+place 0 3 430450 4
+place 0 4 430458 18
+merged 0 5 .comment
+chunk synthetic .interp 400238 1b
+chunk synthetic .gnu.hash 400258 28
+chunk synthetic .dynsym 400280 60
+chunk synthetic .dynstr 4002e0 23
+chunk synthetic .eh_frame 400308 2c
+chunk synthetic .got 420430 20
+chunk synthetic .dynamic 420360 d0
+chunk synthetic .symtab - 120
+chunk synthetic .strtab - 4d
+chunk synthetic .shstrtab - 7a
+chunk synthetic .comment - d
+chunk synthetic .pad.relro 420450 fbb0
+define _end 430470
+define _edata 430454
+define __bss_start 430458
+output exec
+interp /lib/ld-linux-aarch64.so.1
+bind lazy
+relro on
+arg -o
+arg exdefr-nopie-a64
+arg -no-pie
+arg -dynamic-linker
+arg /lib/ld-linux-aarch64.so.1
+arg startr-a64.o
+arg libdef-a64.so
+arg --mortar-map=exdefr-nopie-a64.map
+needed libdef.so
+export _end
+export _edata
+export __bss_start
+end

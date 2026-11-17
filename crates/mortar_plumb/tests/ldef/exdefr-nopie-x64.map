@@ -1,0 +1,36 @@
+mortar-map 2
+file 0 startr-x64.o
+place 0 1 401304 2c
+place 0 3 403400 4
+place 0 4 403410 18
+merged 0 5 .comment
+chunk synthetic .interp 400238 1c
+chunk synthetic .gnu.hash 400258 28
+chunk synthetic .dynsym 400280 60
+chunk synthetic .dynstr 4002e0 23
+chunk synthetic .dynamic 402330 d0
+chunk synthetic .symtab - c0
+chunk synthetic .strtab - 4d
+chunk synthetic .shstrtab - 6b
+chunk synthetic .comment - d
+chunk synthetic .pad.relro 402400 c00
+define _end 403428
+define _edata 403404
+define __bss_start 403410
+output exec
+interp /lib64/ld-linux-x86-64.so.2
+bind lazy
+relro on
+arg -o
+arg exdefr-nopie-x64
+arg -no-pie
+arg -dynamic-linker
+arg /lib64/ld-linux-x86-64.so.2
+arg startr-x64.o
+arg libdef-x64.so
+arg --mortar-map=exdefr-nopie-x64.map
+needed libdef.so
+export _end
+export _edata
+export __bss_start
+end

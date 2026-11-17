@@ -1,0 +1,10 @@
+-z
+max-page-size=4096
+-o
+pie-e-a64.lld
+-pie
+-E
+-dynamic-linker
+/lib/ld-linux-aarch64.so.1
+startr-a64.o
+-Map=pie-e-a64.lld.map
