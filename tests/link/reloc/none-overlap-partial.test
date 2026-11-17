@@ -1,0 +1,88 @@
+# THE REAL SHAPE of WP-175: a reference linker's `-r` output as an input.
+# GNU ld's `-r` of two C++ units that share an inline function (at -O0 a
+# COMDAT `.text` with its own FDE) drops the losing copy's FDE and turns
+# that FDE's `.eh_frame` relocation into `R_*_NONE`, whose `r_offset` can
+# equal a live record's (AArch64: `PREL32` and `NONE` at 0x6c; x86-64
+# and i386 the same shape). A `NONE` has an empty window and overlaps
+# nothing (arch.md §3.4): mortar links what GNU ld links. Pre-linked by
+# GNU ld, lld and mold (no COMMON, no IFUNC here: mold's `-r` breaks
+# both), the final link by all four; with `-g`; with
+# `-ffunction-sections` and `--gc-sections` on the final link; static on
+# the three machines, dynamic on the two 64-bit ones.
+#@ spec: arch.md "3.4"
+#@ spec: harness.md "The test file"
+#@ requires: g++
+
+cxx -O0 g1.cc -o g1.o
+cxx -O0 g2.cc -o g2.o
+cxx -O0 m.cc -o m.o
+cxx -O0 -g g1.cc -o g1g.o
+cxx -O0 -g g2.cc -o g2g.o
+cxx -O0 -ffunction-sections g1.cc -o g1f.o
+cxx -O0 -ffunction-sections g2.cc -o g2f.o
+partial bfd g1.o g2.o -o r.bfd.o
+partial lld g1.o g2.o -o r.lld.o
+partial mold g1.o g2.o -o r.mold.o
+partial bfd g1g.o g2g.o -o rg.bfd.o
+partial lld g1g.o g2g.o -o rg.lld.o
+partial mold g1g.o g2g.o -o rg.mold.o
+partial bfd g1f.o g2f.o -o rf.bfd.o
+partial lld g1f.o g2f.o -o rf.lld.o
+partial mold g1f.o g2f.o -o rf.mold.o
+# The shape: GNU ld's output has a NONE in .eh_frame.
+check readelf -rW r.bfd.o
+  has: _NONE
+check readelf -rW rg.bfd.o
+  has: _NONE
+
+link g++ -static m.o r.bfd.o -o p.bfd
+run p.bfd
+  stdout: 5
+link g++ -static m.o r.lld.o -o p.lld
+run p.lld
+  stdout: 5
+link g++ -static m.o r.mold.o -o p.mold
+run p.mold
+  stdout: 5
+link g++ -static m.o rg.bfd.o -o pg.bfd
+run pg.bfd
+  stdout: 5
+link g++ -static m.o rg.lld.o -o pg.lld
+run pg.lld
+  stdout: 5
+link g++ -static m.o rg.mold.o -o pg.mold
+run pg.mold
+  stdout: 5
+link g++ -static -Wl,--gc-sections m.o rf.bfd.o -o pf.bfd
+run pf.bfd
+  stdout: 5
+link g++ -static -Wl,--gc-sections m.o rf.lld.o -o pf.lld
+run pf.lld
+  stdout: 5
+link g++ -static -Wl,--gc-sections m.o rf.mold.o -o pf.mold
+run pf.mold
+  stdout: 5
+link(aarch64,x86_64) g++ m.o r.bfd.o -o d.bfd
+run(aarch64,x86_64) d.bfd
+  stdout: 5
+link(aarch64,x86_64) g++ m.o rg.lld.o -o dg.lld
+run(aarch64,x86_64) dg.lld
+  stdout: 5
+link(aarch64,x86_64) g++ -Wl,--gc-sections m.o rf.mold.o -o df.mold
+run(aarch64,x86_64) df.mold
+  stdout: 5
+link(aarch64,x86_64) g++ -Wl,--gc-sections m.o rf.bfd.o -o df.bfd
+run(aarch64,x86_64) df.bfd
+  stdout: 5
+
+#--- g1.cc
+inline int f(int x) { static int k; return k += x; }
+int g1(int x) { return f(x); }
+#--- g2.cc
+int g3(int x) { return x; }
+inline int f(int x) { static int k; return k += x; }
+int g2(int x) { return f(x) + g3(1); }
+#--- m.cc
+#include <cstdio>
+int g1(int); int g2(int);
+int main() { std::printf("%d\n", g1(1) + g2(2)); }

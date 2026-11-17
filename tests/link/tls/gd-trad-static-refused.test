@@ -1,14 +1,22 @@
 # a64.md §8.4, R4's static column (WP-090): in a static executable and a
 # static PIE there is no unrelaxed traditional GD (the static tables keep
 # no module/offset pair), so a sequence that does not match R4's pattern
-# is refused by name on its 513 and 514, never applied half; a record that
-# overlaps the matched window is refused by arch.md §3.4's overlap check;
-# and a TP offset beyond 32 bits is `relocation-out-of-range` (§12.3).
+# is refused by name on its 513 and 514, never applied half; an
+# `R_AARCH64_NONE` record in the matched window overlaps nothing (its
+# window is empty, arch.md §3.4, WP-175) and the sequence is relaxed as
+# without it; and a TP offset beyond 32 bits is `relocation-out-of-range`
+# (§12.3).
 #
 # - nonop.S: the word after `bl __tls_get_addr` is a `mov`, not the `nop`
 #   (as `dyn/reloc/tls-gd-unrelaxed.test` writes it for a dynamic link).
 # - overlap.S: the pattern holds, and an `R_AARCH64_NONE` record sits on
-#   the `nop` (a marker's window is its word, a64.md §6.1).
+#   the `nop`, after the three members in record order: relaxed (WP-175;
+#   it was refused as an overlap before).
+# - between.S: a `NONE` on the `add`, which the assembler sorts between
+#   the 514 and the `CALL26`: the members are no longer records i, i+1,
+#   i+2, the pattern does not hold, and the static link refuses the
+#   sequence by name (GNU ld 2.44 fails an assertion, elfnn-aarch64.c:6764;
+#   lld does not know 513; mold keeps it as GD and its program runs).
 # - huge.o: 4 GiB of `.tbss` before `far_v`: T = 0x100000068.
 #
 # What the references do (measured, WP-090 record): lld 19 and 22 do not
@@ -27,6 +35,7 @@
 cc -O1 main.c -o main.o
 as nonop.S -o nonop.o
 as overlap.S -o overlap.o
+as between.S -o between.o
 cc -O1 -fPIC -mtls-dialect=trad far.c -o far.o
 cc -O1 huge.c -o huge.o
 cc -O1 hugemain.c -o hugemain.o
@@ -48,17 +57,20 @@ link(bfd,mold) gcc -static-pie main.o nonop.o -o nonop-pie
 run(bfd,mold) nonop-pie
   stdout: gd 5 same 1
 
-link(mortar) gcc -static main.o overlap.o -o overlap
-  exit: fail
-  diag: overlap.o:(.text+0x14): unsupported feature: overlapping relocations
-link(bfd,mold) gcc -static main.o overlap.o -o overlap
-run(bfd,mold) overlap
+link(bfd,mold,mortar) gcc -static main.o overlap.o -o overlap
+run(bfd,mold,mortar) overlap
   stdout: gd 5 same 1
-link(mortar) gcc -static-pie main.o overlap.o -o overlap-pie
+check(mortar) objdump -d --disassemble=gd_addr overlap
+  not: __tls_get_addr
+link(bfd,mold,mortar) gcc -static-pie main.o overlap.o -o overlap-pie
+run(bfd,mold,mortar) overlap-pie
+  stdout: gd 5 same 1
+
+link(mortar) gcc -static main.o between.o -o between
   exit: fail
-  diag: unsupported feature: overlapping relocations
-link(bfd,mold) gcc -static-pie main.o overlap.o -o overlap-pie
-run(bfd,mold) overlap-pie
+  diag: between.o:(.text+0x8): unsupported feature: unrecognized general-dynamic TLS sequence
+link(mold) gcc -static main.o between.o -o between
+run(mold) between
   stdout: gd 5 same 1
 
 # 4 GiB of TLS: linked, not run (the run limit is 1 GiB).
@@ -104,6 +116,24 @@ gd_addr:
         bl      __tls_get_addr
         nop
         .reloc  .Lgd+12, R_AARCH64_NONE, tlsx
+        ldp     x29, x30, [sp], 16
+        ret
+        .size   gd_addr, .-gd_addr
+        .section .note.GNU-stack,"",%progbits
+#--- between.S
+// R4's words, with an `R_AARCH64_NONE` record on the `add` at o+4.
+        .text
+        .globl  gd_addr
+        .type   gd_addr, %function
+gd_addr:
+        stp     x29, x30, [sp, -16]!
+        mov     x29, sp
+.Lgd:
+        adrp    x0, :tlsgd:tlsx
+        add     x0, x0, :tlsgd_lo12:tlsx
+        .reloc  .Lgd+4, R_AARCH64_NONE, tlsx
+        bl      __tls_get_addr
+        nop
         ldp     x29, x30, [sp], 16
         ret
         .size   gd_addr, .-gd_addr
