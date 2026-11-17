@@ -67,10 +67,8 @@ impl Use {
             Diagnostic::refused(RefusalClass::OptionValue, format!("{}={value}", self.spelling))
                 .note(note)
         } else {
-            // A row that is not `refused` is here only for a `Shared` link
-            // (`Parsed::refused_uses`): its note names the later package.
             let d = Diagnostic::refused(RefusalClass::Option, self.spelling.clone());
-            match self.row().refused_note().or_else(|| self.row().shared_later()) {
+            match self.row().refused_note() {
                 Some(note) => d.note(note),
                 None => d,
             }
@@ -135,7 +133,22 @@ impl Parsed {
     /// row's note.
     #[must_use]
     pub fn refusals(&self) -> Vec<(Key, Diagnostic)> {
-        self.refused_uses().into_iter().map(Use::refusal).collect()
+        let shared = self.plan.kind == OutputKind::Shared;
+        self.refused_uses()
+            .into_iter()
+            .map(|use_| {
+                let (key, d) = use_.refusal();
+                // In a `Shared` link a row of `rows::SHARED_LATER` names
+                // the later package (`spec/cli.md` §4.2's M4 block); every
+                // other link's refusals are unchanged.
+                match use_.row().shared_later() {
+                    Some(note) if shared && use_.row().refused_note().is_none() => {
+                        (key, d.note(note))
+                    }
+                    _ => (key, d),
+                }
+            })
+            .collect()
     }
 }
 
