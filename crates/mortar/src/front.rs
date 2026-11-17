@@ -620,7 +620,11 @@ pub fn front<'s>(
     let mut order = offsets(&pool, &merge.split, &merge.meta, &liveness.frag_live);
     timer.phase(50, "liveness");
 
-    // 70: scan.
+    // 70: scan. WP-177: the owners of `.eh_frame` and
+    // `.gcc_except_table` fields, asked only about references to dead
+    // targets there.
+    let eh_owners =
+        crate::eh_owners::Owners::new(&merge.eh, &merge.eh_relocs, &liveness, &resolution);
     let output = output_kind(plan.kind);
     let scan_inputs = ScanInputs {
         inputs: &inputs,
@@ -630,6 +634,7 @@ pub fn front<'s>(
         comdat_mismatch: &comdat_mismatch,
         gnu_warnings: &gnu_warnings,
         closure_only: &closure_only,
+        eh: Some(&eh_owners),
     };
     // D-25: a writable place, from the section mapping.
     let out_writable = crate::dynlink::OutWritable(&assignment);

@@ -70,6 +70,22 @@ pub struct Split {
     pub eh_piece: Box<[EhPiece]>,
 }
 
+/// The record that owns a field of `.eh_frame` or `.gcc_except_table`
+/// (`spec/resolve.md` §6.3, WP-177): a field is judged by its record, not
+/// by its section's name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EhOwner {
+    /// A live FDE, or a CIE a live FDE uses (`spec/model.md` §3.6): the
+    /// record is written. `code` is the code the FDE describes (for a CIE,
+    /// the first live FDE that uses it): its section and offset there.
+    Live { code: Option<(SectionId, u64)> },
+    /// A record that is not written: its fields are not either.
+    Dead,
+    /// No record owns the field (a `.gcc_except_table` offset before
+    /// every LSDA start of its file's FDEs; a place outside every record).
+    None,
+}
+
 /// A piece of a split section: the section's row and the piece's position
 /// in it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

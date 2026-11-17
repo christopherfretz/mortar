@@ -657,6 +657,7 @@ pub(crate) fn relocate(
         ..*p
     }));
     let leads = deferred || img.records.leads(c.section);
+    let except_table = c.name == b".gcc_except_table";
     let mut fault = false;
     for &i in picks.iter() {
         let Some(&rec) = view.at(i) else {
@@ -724,6 +725,19 @@ pub(crate) fn relocate(
         } else {
             memo.record_sym(img.tables, rec.key)
         };
+        // WP-177 (`spec/resolve.md` §6.3): a `.gcc_except_table` field
+        // against a key only a dropped COMDAT copy defines reaches fill
+        // only when the scan judged the FDE that owns it dead (or through
+        // another file's undefined weak mention): the field is 0, as for a
+        // dead target, never `S + A - P` of an absent `S`.
+        if except_table
+            && sym.live
+            && matches!(sym.kind, TargetKind::Undefined | TargetKind::Weak0 | TargetKind::WeakDyn)
+            && rec.key.as_global().is_some()
+            && img.tables.scan_facts(rec.key, None).is_some_and(|f| f.comdat_only)
+        {
+            sym.live = false;
+        }
         let mut out = SectionOut::new(buf, a - base, c.addr.wrapping_add(base), c.alloc, c.name)
             .with_exec(c.exec);
         if let Some(w) = img.tables.section_writable(c.section) {

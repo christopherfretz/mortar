@@ -24,7 +24,7 @@ use mortar_elf::{
     Object, Rel, Rela, Section, SectionIndex, Sym, SymbolIndex, SymbolSection, SymbolTable, Table,
 };
 
-use crate::{CodeProof, Mark, Mismatch, ScanInputs, ScanOptions};
+use crate::{CodeProof, EhOwner, Mark, Mismatch, ScanInputs, ScanOptions};
 
 /// A file as the scan reads it.
 pub(crate) struct Prep<'s> {
@@ -66,6 +66,8 @@ pub(crate) struct View<'a, 's> {
     pub gnu_warnings: Vec<(SymbolId, FileId, SectionIndex)>,
     /// `closure_only` (D-12), sorted by key.
     pub closure_only: &'a [(SymbolId, FileId)],
+    /// WP-177: the owners of `.eh_frame` and `.gcc_except_table` fields.
+    pub eh: Option<&'a dyn crate::EhOwners>,
     /// `spec/dyn.md` D-25: the `WeakDyn` keys ([`crate::weak::classes`]);
     /// empty until it ran, and in every static link.
     pub weak_dyn: IdSet<SymbolId>,
@@ -77,6 +79,26 @@ pub(crate) struct View<'a, 's> {
     /// output is a `Shared` object of an architecture with a scope
     /// (`crate::bound::Scope`: AArch64, x86-64).
     bound: Vec<OnceLock<Option<crate::bound::FileFacts>>>,
+}
+
+/// The two sections whose fields WP-177 judges by their record
+/// (`spec/resolve.md` §6.3): exactly `.eh_frame` and exactly
+/// `.gcc_except_table`, alloc or not (`mortar_arch::dead_reference`'s
+/// `DeadFde` and `Zero`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EhPlace {
+    Frame,
+    ExceptTable,
+}
+
+impl EhPlace {
+    pub fn of(name: &[u8]) -> Option<Self> {
+        match name {
+            b".eh_frame" => Some(Self::Frame),
+            b".gcc_except_table" => Some(Self::ExceptTable),
+            _ => None,
+        }
+    }
 }
 
 /// The name of the linker-defined TLS symbol (`spec/resolve.md` §8.1).
@@ -112,6 +134,7 @@ impl<'a, 's> View<'a, 's> {
                 v
             },
             closure_only: t.closure_only,
+            eh: t.eh,
             weak_dyn: IdSet::new(),
             weak_refused: IdSet::new(),
             bound: if opts.output == OutputKind::Shared
@@ -198,6 +221,18 @@ impl<'a, 's> View<'a, 's> {
     pub fn def(&self, id: SymbolId) -> Def {
         let d = self.assignment.and_then(|a| a.def(self.resolution, id));
         d.or_else(|| self.resolution.def.get(id).copied()).unwrap_or(Def::Undefined { weak: false })
+    }
+
+    /// WP-177 (`spec/resolve.md` §6.3): the owner of the field at
+    /// `offset` of section `sid`, an `.eh_frame` or exactly
+    /// `.gcc_except_table` ([`EhPlace::of`]); `None` without the tables
+    /// (`ScanInputs::eh`).
+    pub fn eh_owner(&self, place: EhPlace, sid: SectionId, offset: u64) -> Option<EhOwner> {
+        let eh = self.eh?;
+        Some(match place {
+            EhPlace::Frame => eh.frame(sid, offset),
+            EhPlace::ExceptTable => eh.lsda(sid, offset),
+        })
     }
 
     /// Whether section `index` of `file` has a place (`spec/resolve.md`

@@ -15,7 +15,7 @@
 
 use mortar_core::hash::HashMap;
 use mortar_core::par::Pool;
-use mortar_core::split::{EhPiece, SplitRow};
+use mortar_core::split::{EhOwner, EhPiece, SplitRow};
 use mortar_core::{FileId, OptId, SectionId, Span, SymbolId};
 
 use crate::problem::{Problem, What};
@@ -271,6 +271,136 @@ impl EhFrames {
             }
         }
         kept
+    }
+}
+
+/// WP-177 (`spec/resolve.md` §6.3): whether an FDE is live by S-41
+/// (`spec/model.md` §3.6): its code is in a section `live` accepts.
+fn fde_live(f: &Fde, live: &impl Fn(SectionId) -> bool) -> bool {
+    matches!(f.code, Code::Section { section, .. } if live(section))
+}
+
+/// The code an FDE describes, as [`EhOwner::Live`] names it.
+fn fde_code(f: &Fde) -> Option<(SectionId, u64)> {
+    match f.code {
+        Code::Section { section, offset } => Some((section, offset.cast_unsigned())),
+        _ => None,
+    }
+}
+
+impl EhFrames {
+    /// The row of `.eh_frame` section `section` in [`EhFrames::sections`].
+    #[must_use]
+    pub fn row_of(&self, section: SectionId) -> Option<usize> {
+        self.sections.binary_search_by_key(&section, |s| s.section).ok()
+    }
+
+    /// WP-177 (`spec/resolve.md` §6.3): the record of `.eh_frame` section
+    /// `section` whose bytes hold `offset`, and whether it is written. An
+    /// FDE is live when its code section is (`live`, S-41); a CIE when a
+    /// live FDE of its section uses it (S-42). The initial location of an
+    /// FDE (`offset` 8 bytes into it) decides the FDE's liveness, so it is
+    /// asked about only for an FDE whose target is gone: it is `Dead`
+    /// without a look at the code. A place in no record (the terminator, a
+    /// section the parse did not take) is [`EhOwner::None`].
+    ///
+    /// Cost: two binary searches; for a CIE, a walk of its section's
+    /// records.
+    #[must_use]
+    pub fn frame_owner(
+        &self,
+        section: SectionId,
+        offset: u64,
+        live: impl Fn(SectionId) -> bool,
+    ) -> EhOwner {
+        let Some(row) = self.row_of(section) else { return EhOwner::None };
+        let recs = self.records_of(row);
+        let Some(k) = recs.partition_point(|r| u64::from(r.offset) <= offset).checked_sub(1) else {
+            return EhOwner::None;
+        };
+        let rec = &recs[k];
+        if offset >= rec.end() {
+            return EhOwner::None;
+        }
+        match rec.kind {
+            Kind::Fde(f) => {
+                if offset == u64::from(rec.offset) + 8 || !fde_live(&f, &live) {
+                    EhOwner::Dead
+                } else {
+                    EhOwner::Live { code: fde_code(&f) }
+                }
+            }
+            Kind::Cie(_) => recs
+                .iter()
+                .filter_map(Record::fde)
+                .find(|f| f.cie as usize == k && fde_live(f, &live))
+                .map_or(EhOwner::Dead, |f| EhOwner::Live { code: fde_code(f) }),
+        }
+    }
+}
+
+/// WP-177 (`spec/resolve.md` §6.3): the LSDA starts of every FDE that has
+/// an LSDA pointer into a section of its own file, for the owner of a
+/// `.gcc_except_table` field: the FDE whose LSDA start is the greatest
+/// `<=` the field's offset. No LSDA is parsed: the starts are enough.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LsdaStarts {
+    /// `(table, start, live, code)`, sorted by `(table, start)`, one row
+    /// per start: two FDEs with one start make a live row if either is
+    /// live (the code is then a live one's).
+    rows: Box<[(SectionId, u64, bool, Option<(SectionId, u64)>)]>,
+}
+
+impl LsdaStarts {
+    /// The starts of `frames`, whose relocations are `relocs` (one list
+    /// per [`EhFrames::sections`] row, sorted by offset: phase 60's
+    /// `eh_relocs`). `live` is S-41's test of a code section;
+    /// `same_file(eh, table)` whether two sections are of one file. An
+    /// LSDA pointer with no relocation, or whose target is not a section,
+    /// gives no start.
+    #[must_use]
+    pub fn new(
+        frames: &EhFrames,
+        relocs: &[Box<[EhReloc]>],
+        live: impl Fn(SectionId) -> bool,
+        same_file: impl Fn(SectionId, SectionId) -> bool,
+    ) -> Self {
+        let mut rows = Vec::new();
+        for (row, s) in frames.sections.iter().enumerate() {
+            let Some(rel) = relocs.get(row) else { continue };
+            for rec in frames.records_of(row) {
+                let Some(f) = rec.fde() else { continue };
+                let Some(p) = f.lsda else { continue };
+                let at = u64::from(rec.offset) + u64::from(p.at);
+                let span = relocs_in(rel, at, at + 1);
+                let Some(r) = rel[span].iter().find(|r| r.class != RelocClass::None) else {
+                    continue;
+                };
+                let Target::Section { section: table, value } = r.target else { continue };
+                if !same_file(s.section, table) {
+                    continue;
+                }
+                let start = value.wrapping_add(r.addend.cast_unsigned());
+                rows.push((table, start, fde_live(f, &live), fde_code(f)));
+            }
+        }
+        // Live first among equal starts, so the kept row is live if any is.
+        rows.sort_by_key(|&(t, start, live, _)| (t, start, !live));
+        rows.dedup_by_key(|r| (r.0, r.1));
+        Self { rows: rows.into() }
+    }
+
+    /// The owner of the field at `offset` of `.gcc_except_table` section
+    /// `table`: the FDE of the greatest LSDA start `<= offset`; `None`
+    /// when no start of the table is at or before it.
+    #[must_use]
+    pub fn owner(&self, table: SectionId, offset: u64) -> EhOwner {
+        let k = self.rows.partition_point(|r| (r.0, r.1) <= (table, offset));
+        match k.checked_sub(1).map(|k| self.rows[k]) {
+            Some((t, _, true, code)) if t == table => EhOwner::Live { code },
+            Some((t, _, false, _)) if t == table => EhOwner::Dead,
+            _ => EhOwner::None,
+        }
     }
 }
 

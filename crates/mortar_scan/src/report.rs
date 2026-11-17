@@ -1,14 +1,15 @@
 //! The diagnostic of each group (`spec/image.md` I-22): its key, head,
 //! `>>> referenced by` lines and the extra context of its kind.
 
-use mortar_core::resolution::{Def, Verdict};
-use mortar_core::{FileId, SymKey, SymKind};
+use mortar_core::resolution::{Def, DropReason, SectionState, Verdict};
+use mortar_core::{FileId, SectionId, SymKey, SymKind};
 use mortar_diag::{Diagnostic, FileRef, Key, Kind, Place, Relation};
-use mortar_elf::consts::{STT_SECTION, STV_HIDDEN, STV_INTERNAL};
+use mortar_elf::consts::{STT_FILE, STT_FUNC, STT_SECTION, STV_HIDDEN, STV_INTERNAL};
 use mortar_elf::{SectionIndex, SymbolIndex, SymbolSection};
 
 use crate::events::{Acc, EventClass, GroupKey, RefId, group_sym};
-use crate::view::{View, contents, rec_offset};
+use crate::EhOwner;
+use crate::view::{EhPlace, View, contents, rec_offset};
 
 /// `{path}` or `{archive}({member})`, as a note names a file.
 fn file_text(f: &FileRef) -> String {
@@ -26,14 +27,18 @@ fn file_text(f: &FileRef) -> String {
 fn ref_place(view: &View<'_, '_>, r: RefId) -> Place {
     let path = view.inputs.files[r.file].display();
     let section = view.section_name(r.file, r.section);
-    let off = (|| {
+    Place::section(path, section, ref_offset(view, r))
+}
+
+/// `r_offset` of the record of reference `r` ([`ref_place`]'s).
+fn ref_offset(view: &View<'_, '_>, r: RefId) -> u64 {
+    (|| {
         let sid = view.section_of(r.file, r.section)?;
         let rel = view.resolution.sections.get(sid)?.reloc;
         let obj = view.prep(r.file)?.obj?;
         rec_offset(view, r.file, &obj, rel, r.record).ok()?
     })()
-    .unwrap_or(0);
-    Place::section(path, section, off)
+    .unwrap_or(0)
 }
 
 fn with_refs(view: &View<'_, '_>, mut d: Diagnostic, acc: &Acc) -> Diagnostic {
@@ -106,12 +111,101 @@ fn mismatch(view: &View<'_, '_>, key: SymKey, acc: &Acc) -> Diagnostic {
         .map_or_else(String::new, |c| String::from_utf8_lossy(c.name).into_owned());
     let kept = file_text(&view.inputs.files[m.keeper].display());
     let dropped = file_text(&view.inputs.files[m.dropped.file].display());
+    let raw_name = view.name(key);
     let d = Diagnostic::error(Kind::ComdatMismatch { name, signature: signature.clone() })
         .note(format!("kept copy: {kept}"))
         .note(format!("discarded copy defining it: {dropped}"));
-    with_refs(view, d, acc).note(format!(
+    let mut d = eh_note(view, with_refs(view, d, acc), acc.first[0]);
+    // WP-177: the kept copy defines the name, but as a local symbol.
+    if defines(view, m.keeper, raw_name, true) {
+        d = d.note(format!("{kept} defines {} as a local symbol: {PRELINK}", view.shown_name(key)));
+        return d;
+    }
+    d.note(format!(
         "the copies of {signature} differ: a one-definition-rule violation, or objects compiled with different options"
     ))
+}
+
+/// WP-177's note on a symbol of a COMDAT group made local after `ld -r`.
+const PRELINK: &str = "it was probably made local after a partial link (objcopy \
+    --localize-hidden, --keep-global-symbol); dissolve the groups first (ld -r \
+    --force-group-allocation), then localize";
+
+/// Whether `file` defines a symbol named `name` in a section: a local one
+/// (`local`), or a non-local one.
+fn defines(view: &View<'_, '_>, file: FileId, name: &[u8], local: bool) -> bool {
+    let Some(t) = view.prep(file).and_then(|p| p.table().copied()) else { return false };
+    let first = t.first_global().0;
+    let (lo, hi) = if local { (1, first) } else { (first, t.len()) };
+    (lo..hi).any(|i| {
+        t.get(SymbolIndex(i)).is_ok_and(|s| {
+            s.sym_type() != STT_SECTION
+                && matches!(t.section_of(SymbolIndex(i), &s), Ok(SymbolSection::Section(_)))
+                && t.name(&s).is_ok_and(|n| n == name)
+        })
+    })
+}
+
+/// WP-177 (`spec/resolve.md` §6.3): for a reference from `.eh_frame` or
+/// `.gcc_except_table`, the record that owns its field, as a note: the
+/// function whose unwind data it is, when known.
+fn eh_note(view: &View<'_, '_>, d: Diagnostic, r: RefId) -> Diagnostic {
+    let name = view.section_name(r.file, r.section);
+    let Some(place) = EhPlace::of(name.as_bytes()) else { return d };
+    let Some(sid) = view.section_of(r.file, r.section) else { return d };
+    let off = ref_offset(view, r);
+    let what = match place {
+        EhPlace::Frame => "unwind information",
+        EhPlace::ExceptTable => "exception table (LSDA)",
+    };
+    match view.eh_owner(place, sid, off) {
+        Some(EhOwner::Live { code }) => {
+            let f = code.map_or_else(|| "a live function".to_owned(), |c| function_at(view, c));
+            d.note(format!("the field is in the {what} of {f}, which is written"))
+        }
+        Some(EhOwner::None) => d.note(format!(
+            "no FDE of {} has an LSDA at or before this place: the field's owner is not known",
+            file_text(&view.inputs.files[r.file].display())
+        )),
+        Some(EhOwner::Dead) | None => d,
+    }
+}
+
+/// The function at `offset` of section `sid`: a symbol of its file
+/// defined there (a function first), else `section+0xoff`.
+fn function_at(view: &View<'_, '_>, (sid, offset): (SectionId, u64)) -> String {
+    let Some((file, index)) = view.resolution.sh_index(sid) else { return String::new() };
+    let at = || format!("{}+{offset:#x}", view.section_name(file, index.0));
+    let Some(t) = view.prep(file).and_then(|p| p.table().copied()) else { return at() };
+    let mut best: Option<(bool, SymbolIndex)> = None;
+    for i in 1..t.len() {
+        let Ok(s) = t.get(SymbolIndex(i)) else { continue };
+        if s.st_value != offset
+            || matches!(s.sym_type(), STT_SECTION | STT_FILE)
+            || t.section_of(SymbolIndex(i), &s).ok() != Some(SymbolSection::Section(index))
+        {
+            continue;
+        }
+        let func = s.sym_type() == STT_FUNC;
+        if best.is_none_or(|b| func && !b.0) {
+            best = Some((func, SymbolIndex(i)));
+        }
+    }
+    match best {
+        Some((_, i)) => {
+            let key = if i.0 < t.first_global().0 {
+                SymKey::local(mortar_core::SymEntry { file, index: i })
+            } else {
+                return t
+                    .get(i)
+                    .ok()
+                    .and_then(|s| t.name(&s).ok())
+                    .map_or_else(at, |n| String::from_utf8_lossy(n).into_owned());
+            };
+            view.shown_name(key)
+        }
+        None => at(),
+    }
 }
 
 /// `discarded-section-reference` (`spec/resolve.md` §6.3 (a)): one per
@@ -146,14 +240,38 @@ fn discarded(view: &View<'_, '_>, file: FileId, group: u64, acc: &Acc) -> Diagno
     });
     let section_name =
         section.map_or_else(String::new, |i: SectionIndex| view.section_name(file, i.0));
-    let name = match sym {
-        Some(s) if s.sym_type() == STT_SECTION => section_name.clone(),
-        _ => view
-            .shown_name(SymKey::local(mortar_core::SymEntry { file, index: SymbolIndex(r_sym) })),
+    let is_section = matches!(sym, Some(s) if s.sym_type() == STT_SECTION);
+    let name = if is_section {
+        section_name.clone()
+    } else {
+        view.shown_name(SymKey::local(mortar_core::SymEntry { file, index: SymbolIndex(r_sym) }))
     };
-    let d = Diagnostic::error(Kind::DiscardedSectionReference { name })
+    let mut d = Diagnostic::error(Kind::DiscardedSectionReference { name: name.clone() })
         .with(Relation::DefinedIn, Place::symbol(path, section_name));
-    with_refs(view, d, acc)
+    // WP-177: the group and its kept copy, when COMDAT dropped the
+    // section; the record that owns the field in `.eh_frame` and
+    // `.gcc_except_table`; the note on a symbol made local after `ld -r`.
+    let group = section
+        .and_then(|i| view.section_of(file, i.0))
+        .and_then(|sid| view.resolution.sections.get(sid))
+        .filter(|row| row.state == SectionState::Dropped(DropReason::Comdat))
+        .and_then(|row| row.comdat.get());
+    let mut prelink = false;
+    if let Some(g) = group {
+        let signature = view.inputs.comdats.get(g).map_or(&[][..], |c| c.name);
+        let keeper = view.resolution.comdat.get(g).and_then(|k| k.get());
+        d = d.note(format!(
+            "the section is in a discarded copy of COMDAT group {}",
+            String::from_utf8_lossy(signature)
+        ));
+        if let Some(k) = keeper {
+            d = d.note(format!("kept copy: {}", file_text(&view.inputs.files[k].display())));
+            let raw = name.as_bytes();
+            prelink = !is_section && (raw == signature || defines(view, k, raw, false));
+        }
+    }
+    let d = eh_note(view, with_refs(view, d, acc), acc.first[0]);
+    if prelink { d.note(format!("{name} is local in its file: {PRELINK}")) } else { d }
 }
 
 /// `gnu-warning` per key (`spec/resolve.md` §10): the text of the first
