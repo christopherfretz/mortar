@@ -16,7 +16,11 @@
 //! incremental
 //! hole <output-section> <offset> <size>
 //! dead <output-section> <offset> <size> neutral|contribution|strings|cie
-//! output static|exec|pie|static-pie
+//! output static|exec|pie|static-pie|relocatable
+//! rplace <file> <section> <out> <offset> <size>
+//! rframe <file> <section> <input-offset> <output-offset>|-
+//! rgroup <out> <file> <section>
+//! rcommon <name> <out> <offset> <size> <align>
 //! interp <path>
 //! runpath|rpath <paths>
 //! bind lazy|now
@@ -43,7 +47,7 @@ use std::fmt::Write as _;
 use super::{
     Chunk, ChunkKind, CommonAlloc, CopyHint, DeadKind, DeadRange, Defined, DiscardReason,
     Discarded, DynRecords, Fold, Format, Map, MapError, MapFile, NonAlloc, OutputKind, Placed,
-    RunpathTag, SectionRef, dec, hex,
+    RCommon, RFrame, RGroup, RPlace, RelRecords, RunpathTag, SectionRef, dec, hex,
 };
 
 /// The first line of a version-2 map.
@@ -175,6 +179,18 @@ pub fn write(map: &Map) -> String {
             }
         }
     }
+    let rel = map.rel.as_ref();
+    for r in rel.iter().flat_map(|r| &r.places) {
+        let _ = writeln!(
+            out,
+            "rplace {} {} {} {:x} {:x}",
+            r.file,
+            idx(&r.section),
+            r.out,
+            r.offset,
+            r.size
+        );
+    }
     for r in &map.nonalloc {
         let mut o = String::new();
         encode(&r.out, &mut o);
@@ -188,7 +204,18 @@ pub fn write(map: &Map) -> String {
             }
         }
     }
-
+    for r in rel.iter().flat_map(|r| &r.frames) {
+        let _ = write!(out, "rframe {} {} {:x} ", r.file, idx(&r.section), r.input_offset);
+        match r.output_offset {
+            Some(o) => {
+                let _ = writeln!(out, "{o:x}");
+            }
+            None => out.push_str("-\n"),
+        }
+    }
+    for r in rel.iter().flat_map(|r| &r.groups) {
+        let _ = writeln!(out, "rgroup {} {} {}", r.out, r.file, idx(&r.section));
+    }
     for d in &map.discarded {
         let _ = writeln!(out, "discard {} {} {}", d.file, idx(&d.section), d.reason.name());
     }
@@ -224,6 +251,11 @@ pub fn write(map: &Map) -> String {
         out.push_str("common ");
         encode(&c.name, &mut out);
         let _ = writeln!(out, " {:x} {:x} {:x}", c.addr, c.size, c.align);
+    }
+    for c in rel.iter().flat_map(|r| &r.commons) {
+        out.push_str("rcommon ");
+        encode(&c.name, &mut out);
+        let _ = writeln!(out, " {} {:x} {:x} {:x}", c.out, c.offset, c.size, c.align);
     }
     for d in &map.defined {
         out.push_str("define ");
@@ -261,6 +293,8 @@ fn write_line(map: &Map, out: &mut String) {
     };
     if let Some(k) = d.kind {
         let _ = writeln!(out, "output {}", k.name());
+    } else if map.rel.is_some() {
+        out.push_str("output relocatable\n");
     }
     if let Some(i) = &d.interp {
         named(out, "interp", i);
@@ -318,6 +352,10 @@ pub fn parse(text: &str) -> Result<Map, MapError> {
         _ => return Err(MapError::new(1, "not a mortar map (no 'mortar-map 2' header)")),
     }
     let mut ended = false;
+    // The first record a relocatable map refuses, and the first `-r`
+    // record (§14.2).
+    let mut not_at_r: Option<(String, u32)> = None;
+    let mut r_record: Option<(String, u32)> = None;
     let mut output_line = 0u32;
     let mut shared_line: Option<u32> = None;
     let last = text.split('\n').count() as u32;
@@ -353,8 +391,95 @@ pub fn parse(text: &str) -> Result<Map, MapError> {
         let align = |s: &str| {
             hex(s).filter(|a| a.is_power_of_two()).ok_or_else(|| bad("alignment (a power of two)"))
         };
+        if not_at_r.is_none()
+            && matches!(
+                t[0],
+                "place"
+                    | "piece"
+                    | "nplace"
+                    | "merged"
+                    | "fold"
+                    | "chunk"
+                    | "common"
+                    | "define"
+                    | "incremental"
+                    | "hole"
+                    | "dead"
+                    | "interp"
+                    | "runpath"
+                    | "rpath"
+                    | "bind"
+                    | "relro"
+                    | "needed"
+                    | "copy"
+                    | "export"
+                    | "plt"
+                    | "iplt"
+                    | "symbolic"
+                    | "dynamic-list"
+                    | "version-script"
+            )
+        {
+            not_at_r = Some((t[0].to_string(), n));
+        }
+        if r_record.is_none() && matches!(t[0], "rplace" | "rframe" | "rgroup" | "rcommon") {
+            r_record = Some((t[0].to_string(), n));
+        }
         match (t[0], t.len()) {
             ("end", 1) => ended = true,
+            ("output", 2) if t[1] == "relocatable" => {
+                if map.rel.is_some() || map.dynamic.as_ref().is_some_and(|d| d.kind.is_some()) {
+                    return Err(bad("a second 'output' record"));
+                }
+                map.rel.get_or_insert_with(RelRecords::default).line = n;
+            }
+            ("rplace", 6) => {
+                let r = RPlace {
+                    file: file_id(t[1])?,
+                    section: section(t[2])?,
+                    out: dec(t[3])
+                        .and_then(|v| u32::try_from(v).ok())
+                        .ok_or_else(|| bad("output section index"))?,
+                    offset: num(t[4], "offset")?,
+                    size: num(t[5], "size")?,
+                    line: n,
+                };
+                map.rel.get_or_insert_with(RelRecords::default).places.push(r);
+            }
+            ("rframe", 5) => {
+                let r = RFrame {
+                    file: file_id(t[1])?,
+                    section: section(t[2])?,
+                    input_offset: num(t[3], "input offset")?,
+                    output_offset: if t[4] == "-" { None } else { Some(num(t[4], "output offset")?) },
+                    line: n,
+                };
+                map.rel.get_or_insert_with(RelRecords::default).frames.push(r);
+            }
+            ("rgroup", 4) => {
+                let r = RGroup {
+                    out: dec(t[1])
+                        .and_then(|v| u32::try_from(v).ok())
+                        .ok_or_else(|| bad("output section index"))?,
+                    file: file_id(t[2])?,
+                    section: section(t[3])?,
+                    line: n,
+                };
+                map.rel.get_or_insert_with(RelRecords::default).groups.push(r);
+            }
+            ("rcommon", 6) => {
+                let r = RCommon {
+                    name: decode(t[1]).ok_or_else(|| bad("name"))?,
+                    out: dec(t[2])
+                        .and_then(|v| u32::try_from(v).ok())
+                        .ok_or_else(|| bad("output section index"))?,
+                    offset: num(t[3], "offset")?,
+                    size: num(t[4], "size")?,
+                    align: align(t[5])?,
+                    line: n,
+                };
+                map.rel.get_or_insert_with(RelRecords::default).commons.push(r);
+            }
             ("file", 3 | 5) => {
                 let id = dec(t[1]).ok_or_else(|| bad("id"))?;
                 if id != map.files.len() as u64 {
@@ -458,6 +583,9 @@ pub fn parse(text: &str) -> Result<Map, MapError> {
                 line: n,
             }),
             ("output", 2) => {
+                if map.rel.is_some() {
+                    return Err(bad("a second 'output' record"));
+                }
                 let d = map.dynamic.get_or_insert_with(DynRecords::default);
                 if d.kind.is_some() {
                     return Err(bad("a second 'output' record"));
@@ -534,6 +662,7 @@ pub fn parse(text: &str) -> Result<Map, MapError> {
             (
                 "end" | "file" | "place" | "piece" | "nplace" | "merged" | "discard" | "fold"
                 | "chunk" | "common" | "define" | "incremental" | "hole" | "dead" | "output"
+                | "rplace" | "rframe" | "rgroup" | "rcommon"
                 | "interp" | "runpath" | "rpath" | "bind" | "relro" | "arg" | "needed" | "copy"
                 | "export" | "plt" | "iplt",
                 _,
@@ -551,6 +680,19 @@ pub fn parse(text: &str) -> Result<Map, MapError> {
         return Err(MapError::new(0, "truncated mortar map: no 'end' record"));
     }
     crate::maprec::end_shared(map.dynamic.as_ref(), output_line, shared_line)?;
+    // §14.2: nothing at -r has an address; the -r records need the kind.
+    match (&map.rel, not_at_r, r_record) {
+        (Some(_), Some((record, at)), _) => {
+            return Err(MapError::new(at, format!("'{record}' in a relocatable map")));
+        }
+        (None, _, Some((record, at))) => {
+            return Err(MapError::new(
+                at,
+                format!("'{record}' in a map without 'output relocatable'"),
+            ));
+        }
+        _ => {}
+    }
     // §3.2a: every mortar map states its line; a link has at least one
     // word (none is `no-input-files`). A map without one (written before
     // WP-102) is refused rather than judged without its options.
