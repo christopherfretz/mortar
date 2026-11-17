@@ -615,12 +615,20 @@ the link state and never an input to another phase.
     `--gc-sections` is refused, I-R10) and `Split` (`.eh_frame` only:
     L-R5 merges nothing) are the tables of a final link.
   - `Demands`, `Folds`, `MergeMap` and `Slots` are empty.
+  - An output section is an `OutSecId` (an index), and `out_of` maps
+    each placed input section to one. It is never keyed by name alone.
+    L-R1's key is name, `SHF_LINK_ORDER` target, `SHF_GNU_RETAIN` and,
+    under `--unique` (L-R11), the piece itself. L-R2 also makes each
+    group member its own output section. So two output sections may
+    share a name, and the name is an attribute of the section. Nothing
+    in these tables precludes `--unique`, or a later per-piece reuse.
   - `Placement` has these chunks: the file header; the section headers;
     `Body(o, 0)` per output section (a single part: no islands); one
     group chunk per kept group (`Group(g)`); one relocation chunk per
     output section with a relocated piece (`Relocs(o)`); and the
     synthetic `.symtab`, `.symtab_shndx`, `.strtab`, `.shstrtab` and
-    `.eh_frame` chunks.
+    `.eh_frame` chunks, plus the build-id note when `--build-id` is
+    given (`spec/image.md` I-R8).
   - `segments`, `defined`, `patches`, `sized` and `tls` are empty;
     `entry` is none; `sym_place` holds only `-d`'s commons; no chunk has
     an address.

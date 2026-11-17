@@ -2724,14 +2724,65 @@ B.7; `tests/relocatable-design/work/facts.log`,
   3. per live input in `FileId` order, its `STT_FILE` entries and kept
      local symbols (not `STT_SECTION`) in the input's table order;
   4. the globals of `spec/resolve.md` RV-R6 in `SymbolId` order.
-  `sh_info` is the index of the first global. A local symbol's value is
-  its piece's offset plus its input value; a defined global's the same
-  for its definition; `st_shndx` is the output section index (or
-  `SHN_XINDEX` and `.symtab_shndx`). Mapping symbols (`$x`, `$d`,
-  `$t`) are locals like any other and are kept. `STT_SECTION`
-  counts differ (B.3: GNU ld 9, lld 8, mold 15 for one input set). The
-  rule above is a function of the section list alone, so V-R4 can
-  recompute it. *Test:* `r-symtab-order`, `r-section-symbols`.
+  `sh_info` is the index of the first global.
+
+  **Kept local symbols at `-r`.** This is the one definition the other
+  `-r` rules use. A local symbol of a live input (not `STT_SECTION`,
+  which is item 2's) is kept when all of these hold:
+  - its section is placed in the output as a piece, or it is `SHN_ABS`,
+    or it is the type-unit group signature of `spec/layout.md` L-R3
+    (`st_shndx` = its `SHT_GROUP`);
+  - in `.eh_frame`, it is not in a removed record. Its value goes
+    through L-R6's record map: input record offset → output record
+    offset, with the offset within the record unchanged. A mapping
+    symbol (`$d`, `$x`) of a removed record is dropped, and so is a
+    local in the interior of a removed record. That is `spec/synth.md`
+    S-76's `.eh_frame` clause, applied to the `-r` record map instead
+    of S-50's. GCC on AArch64 puts `$d` in `.eh_frame` (at 0x14 in the
+    corpus). GNU ld instead moves a removed record's `$d` to the next
+    kept record (`work/mapsym.log`, `exp/review/mapsym.sh`). In a
+    non-executable section a mapping symbol is optional either way;
+    mortar drops it, by S-76;
+  - its section is not one that the `-r` itself makes from its inputs:
+    - the merged `.note.gnu.property` (its bytes belong to no input);
+    - the merged `.note.GNU-stack`;
+    - the Mason container (MT-30).
+    So the `$d` that GCC writes at offset 0 of `.note.gnu.property` is
+    dropped. GNU ld keeps one `$d` at offset 0 of the merged note, lld
+    drops it, and mold writes it `SHN_ABS`. The note is data in a
+    non-executable section, so the marker carries nothing;
+  - `-x`/`-s` (I-R9) do not discard it.
+  S-76's other clauses do not apply at `-r`: no fragment of a `Merge`
+  section is dropped (`spec/layout.md` L-R5), and no section is
+  consumed by a final-link row (L-R1).
+
+  **Values and sections.**
+  - A kept local's value is its piece's offset plus its input value,
+    or its `.eh_frame` mapped value. `st_shndx` is its output section's
+    index.
+  - The type-unit signature has value 0 and the output group's index.
+  - A defined global's value is its definition piece's offset plus the
+    input value.
+  - Commons follow RV-R5; `SHN_ABS` symbols keep their value.
+  - When some index is `SHN_LORESERVE` (0xff00) or more, `st_shndx`
+    is `SHN_XINDEX` and the index is in `.symtab_shndx`.
+    `.symtab_shndx` is written iff some symbol needs it. It then has
+    one word per `.symtab` entry: the index for those, 0 for every
+    other entry (gABI). Measured, the review's x05: the 80,007-section
+    `-r` outputs of all three references link with GNU ld and mortar.
+  `STT_SECTION` counts differ (B.3: GNU ld 9, lld 8, mold 15 for one
+  input set). The rule above is a function of the section list alone,
+  so V-R4 can recompute it.
+
+  **`.strtab` and `.shstrtab`.** `spec/synth.md` S-86 (layout: the zero
+  byte, the fixed table of common names, then one region per block of
+  this rule, in `.symtab` order) and S-90 apply at `-r`.
+  - S-90 writes each name once. At `-r` several output sections may
+    share a name (group members, L-R1's `SHF_LINK_ORDER` and
+    `SHF_GNU_RETAIN` keys, `--unique`), and they share that one string.
+  - The type-unit signature's name is written in its file's region.
+  *Test:* `r-symtab-order`, `r-section-symbols`, `r-eh-frame-mapping-symbols`,
+  `r-type-unit-signature`, `r-xindex`.
 - **I-R5 (relocation records).** For every live input relocation record
   of a placed input section `S`, other than `R_*_NONE`, the output has
   exactly one record:
@@ -2769,19 +2820,64 @@ B.7; `tests/relocatable-design/work/facts.log`,
   computed from the record's and its CIE's output offsets. Their
   relocation records move with the records, through the input-to-output
   record offset map, by I-R5. *Test:* `r-eh-frame-dropped-fde`.
-- **I-R7 (fields of records not written).** Where RV-R7 writes no record
-  for a debug or `.gcc_except_table` reference into a dropped copy, the
-  field gets the value a final link writes for it:
-  - §6.1's tombstone for the referring section;
-  - 0 in `.gcc_except_table`.
-  [unverified against the references at `-r`; record §G Q5.]
-- **I-R8 (notes).** No `.note.gnu.build-id` is written, whether or not
-  `--build-id` is given (`spec/cli.md` C-R2). The inputs' build-id
-  notes are dropped, as in every link (`spec/input.md` §6, "`ld -r`
-  outputs"). GNU ld and lld write a note into the `-r` output with
-  `--build-id`, which clang's `-r` line passes; mold writes none. The
-  final link drops it either way (`facts-supp.log`, 9-buildid-final:
-  one note in the final output, its own).
+- **I-R7 (fields of records not written).** A debug record into a
+  dropped COMDAT copy is not written. Its field holds I-47's tombstone
+  for the referring section and the field's width. I-112's rule (a
+  `.debug_aranges` length of 0) applies, as in a final link. A
+  `.gcc_except_table` field whose owning record is dead holds 0. A
+  field whose owning record is LIVE is an error by name
+  (`spec/resolve.md` §6.3 as WP-177 rules), and is never written 0.
+
+  The references differ, and mortar follows none of them (the review's
+  x02, rerun in `work/review-x.log`). `-O0 -g` C++ with a shared inline
+  function has 10 (DWARF 4) or 8 (DWARF 5) input debug records against
+  the dropped copy's `.text._Z13shared_inlinei`:
+  - GNU ld RETARGETS every one of them to the kept copy's section
+    (`_bfd_elf_check_kept_section`) and writes only 2 `NONE` records.
+    The dropped copy's DIEs then describe the kept copy's code, so gdb
+    sees two subprograms at one address;
+  - lld writes `R_*_NONE` records (12 and 10);
+  - mold is mixed: it writes the records against symbol index 0 with
+    addend 0, an absolute 0 that the final link does not tombstone.
+  The rule is checked by execution. The review's independent model
+  writes this form, and links it through GNU ld, lld, mold and mortar,
+  static and PIE, DWARF 4 and 5. All 16 gdb transcripts are identical,
+  and `elflint` reports no error (the review's x01). The first
+  version's claim that this is GNU ld's form was false; record §G Q5 is
+  closed.
+- **I-R8 (notes).** With `--build-id` in any form the final link
+  accepts (I-69's table: bare, `sha1`, `sha256`, `fast`, `0xHEX`,
+  `uuid` from M2, and `none`/`--no-build-id` for no note; `uuid` is the
+  one nondeterministic form, as in a final link, an exception to
+  I-R11), the
+  `-r` output gets a `.note.gnu.build-id`, as GNU ld and lld write
+  one. Without the option it gets none.
+  - Its bytes are computed as I-69 and I-72 say for any output: over
+    the whole `-r` output file's bytes `F`, with the descriptor
+    replaced by zeros, by the style's tree. The bare form is mortar's
+    20-byte fast tree (§8.3). Its place is
+    L-R8's item 2, `.note.gnu.build-id`, `SHT_NOTE`, `SHF_ALLOC`,
+    alignment 4.
+  - `--build-id=md5` and a style mortar refuses in a final link are
+    refused at `-r` the same way. GNU ld and lld write 16 bytes for
+    `md5` and `uuid`, and the given bytes for `0xHEX`; lld writes 8
+    bytes for `fast` and GNU ld writes no note for it. mold writes none
+    in any form (`work/unique-buildid.log`).
+  - The two references' hash inputs were not reproduced by a whole-file
+    hash. GNU ld uses its own checksum of the contents, and lld a tree
+    over its buffer. mortar does not try to match them: a build id is
+    an identifier, and no tool recomputes it.
+  - The inputs' build-id notes are dropped, as in every link
+    (`spec/input.md` §6, "`ld -r` outputs"), and so the final link drops
+    this note too (`facts-supp.log`, 9-buildid-final: one note in the
+    final output, its own).
+  The first version wrote no note at `-r` ("every final link drops
+  it"). That is wrong for an `ET_REL` that no further link follows. A
+  kernel module is one (the review's x07: Kbuild passes
+  `--build-id=sha1`). Kernel modules themselves stay out of scope
+  (`spec/layout.md` L-R1).
+  *Test:* `r-build-id` (each style; none without the option),
+  `r-build-id-dropped-by-final`.
 - **I-R9 (stripping at `-r`).** These follow GNU ld (B.3):
   - `-S`: the non-allocated `.debug*` sections (L-158) and their
     relocation sections are dropped.
@@ -2800,5 +2896,5 @@ B.7; `tests/relocatable-design/work/facts.log`,
 - **I-R12 (the map).** `--mortar-map` at `-r` records, per output
   section, its pieces `(FileId, section index, offset)`, each kept
   group with its keeper and the dropped copies, and per input FDE
-  whether it was dropped. This is what V-R1 to V-R6 read. A GNU-style
+  whether it was dropped. This is what V-R1 to V-R11 read. A GNU-style
   `-Map` lists the output sections and their pieces without addresses.

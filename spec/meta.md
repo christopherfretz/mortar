@@ -326,12 +326,28 @@ DIFFERENT inputs into one section (L-R1). After a `-r` the triple of a
 unit no longer names a section of its own: two units' `(".text", "", 0)`
 both name the merged `.text`, at offsets the unit does not record. A
 row anchored by MT-16 is therefore valid only in the object that its
-producer wrote. A reader treats MT-16 anchors in a container that came
-through a `-r` as unanchored, the safe direction of O-4. It knows that
-the container came through a `-r` when the container holds units of more
-than one producer run (more than one unit). No kind uses MT-16 yet: kiln
-d854b23bc writes kinds 1, 3, 4 and 5 (record B.8). A kind that needs it
-across `-r` must record the offset as well (`incr.md`, record §G Q10).
+producer wrote.
+
+How a reader decides whether a unit's MT-16 anchors still hold is **NOT
+decided** (record §G Q10, the options for the supervisor). The first
+version said "more than one unit", which is the wrong test, as measured
+in `tests/relocatable-design/work/anchors.log` (`exp/review/anchors.sh`):
+- A `-r` of ONE kiln object after a GCC object (GNU ld and lld) leaves
+  one unit, while its `.text`, `.comment` and `.eh_frame` now start at
+  offsets 8, 32 (31) and 40 of the merged sections. "More than one
+  unit" answers "holds" there, wrongly.
+- `objcopy` with no `-r` at all also defeats it.
+  `--rename-section .text=.text.moved` leaves the `.text` triple naming
+  nothing, and `--remove-section .comment` leaves the `.comment` triple
+  dangling. One unit either way.
+Today's test is wrong in 8 of the experiment's rows. Renumbering alone
+does no harm, because the triple holds no index.
+
+Until Q10 is decided, a reader treats every MT-16 anchor as unanchored
+in any object, the safe direction of O-4. That costs nothing today: no
+kind uses MT-16 yet (kiln d854b23bc writes kinds 1, 3, 4 and 5, record
+B.8). A kind that needs section anchors (`incr.md`'s 0x10) waits for
+Q10's answer.
 
 ## 6. COMDAT membership: the crux
 
@@ -698,7 +714,10 @@ through as ordinary sections. Not built (M4).
   types by name, and `-r` keeps global names (`spec/resolve.md` RV-R6),
   so nothing in a unit needs rewriting when sections are concatenated
   and symbols renumbered. MT-16's section anchors are the one exception
-  (above). mortar's `-r` writes the concatenation of `kept_units` at the
+  (above). Whether mortar's own `-r` should repair them is open: it
+  could, since it has the map, and then "concatenated unchanged" would
+  become "unchanged by other linkers, completed by mortar". The options
+  are record §G Q10's. mortar's `-r` writes the concatenation of `kept_units` at the
   place of the first input container (`spec/layout.md` L-R8), and drops
   the inputs' containers. A `.mason.meta` that is not a container
   (MT-6) is copied by name, with MT-6's warning.

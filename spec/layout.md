@@ -1870,21 +1870,47 @@ B.2, B.5; `tests/relocatable-design/work/facts.log`).
 
 - **L-R1 (the output section of an input section).** A live input
   section that is not a member of a kept group goes to the output
-  section of its exact name, and §8.2's prefix table does not apply.
-  `.text.foo` stays `.text.foo`, and two inputs' `.text` sections
-  become one `.text`. All three references keep input names at `-r`
-  without folding (B.1). §8.1's rows apply at `-r` with these changes:
+  section of its **key**, and §8.2's prefix table does not apply. The
+  key is the exact name together with:
+  - the output section of the linked-to section, for `SHF_LINK_ORDER`
+    (below);
+  - whether the piece has `SHF_GNU_RETAIN` (L-R1a);
+  - under `--unique` (L-R11), the piece itself.
+  An output section is therefore NOT identified by its name alone:
+  two output sections of one `-r` output may have the same name, which
+  ELF allows (`spec/model.md` MD-R1). Without those three, same-named
+  sections merge: `.text.foo` stays `.text.foo`, and two inputs'
+  `.text` sections become one `.text`. All three references keep input
+  names at `-r` without folding, and merge same-named sections of
+  different inputs (B.1). That merge is the default because tools
+  downstream select sections by name. Its cost is V-R1's exception (b)
+  (record §D.1), which `--unique` removes. §8.1's rows apply at `-r`
+  with these changes:
   - `SHF_EXCLUDE` sections are copied (L-31 is a final-link rule; all
-    three keep them at `-r`). The exceptions are the Mason container,
-    which follows `spec/meta.md` MT-30, and `.llvm_addrsig`, which is
-    dropped: its contents are symbol indexes that `-r` renumbers. All
-    three references write it empty, and an empty `.llvm_addrsig` tells
-    lld's later `--icf=safe` that no symbol is address-significant.
-    Dropping it is the safe direction.
+    three keep them at `-r`). There are two exceptions:
+    - The Mason container follows `spec/meta.md` MT-30.
+    - `.llvm_addrsig` is dropped. Its contents are symbol indexes, and
+      `-r` renumbers symbols. All three references copy the inputs'
+      bytes (4 in the review's x08) with `sh_link` 0, so they no longer
+      name the output's symbols. lld's later `--icf=safe` ignores an
+      `.llvm_addrsig` with `sh_link` 0 (`conservatively ignores
+      SHT_LLVM_ADDRSIG … likely created using objcopy or ld -r`) and
+      treats every symbol as address-significant. Dropping the section
+      gives that same safe reading without a stale table (record §B.2,
+      corrected by the review's m8).
   - `.note.GNU-stack` and `.note.gnu.property` are merged into one
-    output section each. The stack note follows L-R6a, the property note
-    `spec/synth.md`'s AND merge (B.2: GNU ld and lld AND; mold drops the
-    AArch64 properties even when every input has BTI).
+    output section each. The stack note follows L-R6a. The property
+    note follows `spec/synth.md` S-94/S-95, property by property,
+    applied to the live inputs exactly as in a final link. Each type has
+    its own rule from S-95's list: `And`, `Or`, `OrAll`, `Max`,
+    `Present`, `Option`, `EqualOrAbsent`. So the `FEATURE_1_AND` words
+    are ANDed, the x86 `ISA_1_NEEDED`/`ISA_1_USED` families ORed, and
+    `STACK_SIZE` takes the maximum. It is not a single AND, which the
+    first version said (the review's m6). Measured (B.2): GNU ld and
+    lld AND the feature words. mold drops
+    the AArch64 properties even when every input has BTI. The `-z`
+    keywords that add a property at `-r` in GNU ld are refused at `-r`
+    (`spec/cli.md` C-R2a).
   - `.gnu.warning*` sections are copied by name (all three).
   - `.ctors*` and `.dtors*` are copied by name: L-40's refusal and L-56
     are final-link rules.
@@ -1892,7 +1918,14 @@ B.2, B.5; `tests/relocatable-design/work/facts.log`).
     sections by name, so the final link sorts their priorities as it
     would have sorted the inputs' (B.1: the program of `exp/corpus`
     prints the same constructor order on every route).
-  - `.gnu.linkonce.*` stays refused (L-37).
+  - `.gnu.linkonce.*` stays refused (L-37), and so does
+    `.gnu.linkonce.this_module`. Every Linux kernel module (`.ko`) has
+    one: a single plain section, not a group. Kbuild's module line is
+    `ld -r -z noexecstack --build-id=sha1 -T module.lds` (the review's
+    x07). **Kernel modules are out of scope for now.** That line is
+    refused by name twice: by L-37 for the section, and by `-T` at `-r`
+    (`spec/cli.md` C-R4). The refusal is lifted when a real line of the
+    target codebase needs it (record §A.5).
   - Under `-S`/`-s`, L-158's sections go nowhere, as in a final link
     (`spec/cli.md` C-R3).
   - Any other row of §8.1 that consumes a section in a final link does
@@ -1906,10 +1939,16 @@ B.2, B.5; `tests/relocatable-design/work/facts.log`).
 - **L-R1a (type, flags, alignment).** L-49 to L-51 apply to the live
   pieces of an output section, with three changes:
   - `SHF_GROUP` is set exactly on group members (L-R2).
-  - `SHF_LINK_ORDER`, `SHF_GNU_RETAIN` and `SHF_EXCLUDE` are kept when
-    every live piece has them. A mix is `section-conflict`, except that
-    `SHF_GNU_RETAIN` is kept when any piece has it (GNU ld and lld keep
-    it; mold drops it).
+  - `SHF_LINK_ORDER` and `SHF_EXCLUDE` are kept when every live piece
+    has them. A mix is `section-conflict`.
+  - `SHF_GNU_RETAIN` is part of L-R1's key, so it is never mixed.
+    Retained and non-retained pieces of one name are two output
+    sections, one `AXR` and one `AX`. This is GNU ld's form (the
+    review's x09: `.text.k` with and without `R`). lld merges them and
+    keeps `R`, which retains the non-retained piece too. mold merges
+    them and drops `R`, so the final `--gc-sections` may collect a
+    retained piece, which is a mislink. GNU ld's form keeps the final
+    link's choice per piece.
   - `SHF_COMPRESSED` inputs are decompressed (L-52) and the output is
     not compressed (`--compress-debug-sections` is refused at `-r`,
     `spec/cli.md` C-R4).
@@ -1934,9 +1973,22 @@ B.2, B.5; `tests/relocatable-design/work/facts.log`).
     right after it.
   `sh_entsize` 4, `sh_addralign` 4. When the signature is a section
   symbol (an assembler group named by its section), `sh_info` names
-  that output section's `STT_SECTION` symbol. mold also writes an
-  `STT_SECTION` symbol for each relocation section of a group, which
-  is not needed.
+  that output section's `STT_SECTION` symbol.
+
+  A signature symbol defined **in the `SHT_GROUP` section itself** is
+  `STB_LOCAL`, with `st_shndx` = the group section. GCC's type-unit
+  groups (`-fdebug-types-section`: `wt.<hash>` in DWARF 4, `wi.<hash>`
+  in DWARF 5) have such a signature. It is kept, with `st_shndx` = the
+  OUTPUT group section's index and value 0, among its file's locals
+  (`spec/image.md` I-R4). This is GNU ld's form. It is the one local
+  whose section is an `SHT_GROUP`, and I-R4 keeps it by this rule.
+  Measured (the review's x09): with this form all four final linkers
+  deduplicate the type units, and gdb's `ptype` is right. Dropping the
+  symbol, or pointing it at a member, leaves a group with no signature
+  or one that names the wrong section.
+
+  mold also writes an `STT_SECTION` symbol for each relocation section
+  of a group, which is not needed.
 - **L-R4 (pieces within an output section).** The pieces are in input
   order, `(FileId, section index)`, each at the next offset aligned to
   its `sh_addralign`, and the gaps are zero. All three references
@@ -1957,9 +2009,23 @@ B.2, B.5; `tests/relocatable-design/work/facts.log`).
   - the verifier can then match every input byte in place (V-R3);
   - the final link does the merging anyway;
   - an incremental design can later reuse pieces unchanged.
-  The cost is file size: over 400 objects of cxx-large-g, GNU ld's
-  output is 322 MB against lld's 245 MB, almost all of it `.debug_str`
-  (record §E). Record §G Q2 keeps merging open as an option for later.
+  The cost is file size. Over 400 objects of cxx-large-g, GNU ld's
+  output is 322.4 MB against lld's 245.2 MB. Of the 77.1 MB gap, 77.07
+  MB (99.9 %) is `.debug_str` and 2.07 MB is `.debug_line_str`. lld's
+  larger `.shstrtab` (−1.7 MB) and `.eh_frame` (−0.2 MB) take a little
+  back (`tests/relocatable-design/work/gap.log`, `exp/review/gap.sh`).
+
+  Merging `SHF_MERGE|SHF_STRINGS` sections at `-r` is a later, optional
+  package (record §G Q2), and no rule here forbids it. It would rewrite:
+  - every relocation record whose target lies in such a section: a
+    section-symbol record's addend becomes the offset of the string
+    that survives (I-R5), and a record against a local symbol in the
+    section gets that symbol's moved value;
+  - the values of local symbols defined in those sections;
+  - the verifier's piece rule for those sections, from byte-identical
+    pieces (V-R2) to "the same string" (rcheck's form, record B.4).
+  It would not change the output's `SHF_MERGE`/`sh_entsize`, so the
+  final link merges again.
 - **L-R6 (`.eh_frame`).** The `.eh_frame` pieces of an input are kept
   in input order, record by record, with these changes:
   - an FDE whose initial location is in a dropped section (a COMDAT
@@ -1972,18 +2038,60 @@ B.2, B.5; `tests/relocatable-design/work/facts.log`).
   - a zero terminator is kept where an input has one. The driver adds
     no `crtend.o` to a `-r` line (`spec/cli.md` C-R6).
   This is GNU ld's choice, without the `R_*_NONE` records GNU ld leaves
-  where it removed an FDE. Those records at the offset of a live record
-  are what mortar 3ad9867a refuses on AArch64 (record §D, finding 1).
+  where it removed an FDE. mortar 3ad9867a refused those records on
+  AArch64, where they sit at the offset of a live record (record §D,
+  finding 1). WP-175 fixed that (batch 11): a `NONE` record has an
+  empty window, overlaps nothing and writes nothing (`spec/arch.md`
+  §3.4). So mortar's final link now accepts GNU ld's form, and mortar's
+  `-r` still writes none.
+
   lld keeps the dropped copy's FDE, with a record against a section
   that is not in the output. mold rewrites the whole section (it
   deduplicates CIEs, 4 to 2 in the corpus).
+
+  An FDE or CIE that is KEPT here but whose field (a personality
+  pointer, an LSDA, or a `.gcc_except_table` entry) points into a
+  dropped copy is an error by name, `discarded-section-reference` or
+  `comdat-mismatch`, never a 0. That is the WP-176/WP-177 rule of
+  `spec/resolve.md` §6.3 ("a field is judged by the record that owns
+  it"), and it applies at `-r` unchanged (RV-R7).
   *Test:* `r-eh-frame-dropped-fde`, `r-eh-frame-cies-kept`, and the
   final link of each run under gdb (`r-eh-throw-across`).
-- **L-R6a (`.note.GNU-stack`).** The output has one empty `.note.GNU-
-  stack`. It has `SHF_EXECINSTR` if any live input's note has it. When
-  some live input has no such note, the output has none either, so that
-  the final link sees "unknown" as it would have for that input.
-  [unverified: what the references write in the mixed case.]
+- **L-R6a (`.note.GNU-stack`).** GNU ld's rule, per target. This
+  replaces the first version, which wrote no note when an input lacked
+  one, unlike all three references (the review's M3). The output has
+  at most one empty `.note.GNU-stack` (`PROGBITS`, alignment 1). Write N
+  for a note without `SHF_EXECINSTR`, X for one with it, and − for no
+  note. Over the live inputs' notes:
+
+  | inputs | no option | `-z execstack` | `-z noexecstack` |
+  |---|---|---|---|
+  | all N | N | X on AArch64; N on x86-64 and i386 | N |
+  | all X | X | X | X |
+  | N and X | X | X | X |
+  | N and absent | N | X on AArch64; N on x86-64 and i386 | N |
+  | X and absent | X | X | X |
+  | all absent | − | X | N |
+
+  So:
+  - an input's X always wins: GNU ld's `-z noexecstack` does not
+    override it at `-r`, on any target;
+  - an input's N is written even when other inputs have no note;
+  - with no note at all, only the option writes one;
+  - `-z execstack` turns N into X only on AArch64. GNU ld 2.44's x86
+    backends ignore it when some input has a note (both cross
+    linkers). mortar keeps the difference because the rule is "as GNU
+    ld".
+  The final link then reads the note as it reads any input's.
+
+  The other references differ:
+  - lld writes N in every cell, even over X inputs and with no inputs'
+    notes. That drops an input's request for an executable stack.
+  - mold writes X iff some input has X, ignores `-z`, and writes no
+    note when no input has one.
+  Measured: `tests/relocatable-design/work/stack.log`
+  (`exp/review/stack.sh`, 54 cells per reference), and the review's
+  x03. *Test:* `r-stack-note` (each row on each target).
 - **L-R7 (no addresses, no segments, no entry).** At `-r`:
   - every output section has `sh_addr` 0 and no chunk has an address;
   - `segments` is empty;
@@ -1995,13 +2103,18 @@ B.2, B.5; `tests/relocatable-design/work/facts.log`).
 - **L-R8 (output section order).** The section header table is laid out
   as follows:
   1. index 0;
-  2. the output sections in order of their first piece's
+  2. `.note.gnu.build-id` when `--build-id` writes one
+     (`spec/image.md` I-R8). It is made by the linker and has no input
+     position, so it comes first;
+  3. the output sections in order of their first piece's
      `(FileId, section index)`, where a merged note (L-R1) and the Mason
-     container (MT-30) take the place of their first input;
-  3. each `SHT_GROUP` immediately before its first member;
-  4. each relocation section immediately after its target section;
-  5. then `.symtab`, `.symtab_shndx` when needed, `.strtab` and
-     `.shstrtab`, in that order.
+     container (MT-30) take the place of their first input. Under
+     `--unique` each piece is its own output section, at its own
+     position;
+  4. each `SHT_GROUP` immediately before its first member;
+  5. each relocation section immediately after its target section;
+  6. then `.symtab`, `.symtab_shndx` (when I-R4 needs one), `.strtab`
+     and `.shstrtab`, in that order.
   File offsets follow the same order, each section aligned to its
   `sh_addralign` (at least 1; `NOBITS` takes no file bytes). The
   section header table comes last, aligned to 8 (ELF64) or 4 (ELF32).
@@ -2012,19 +2125,40 @@ B.2, B.5; `tests/relocatable-design/work/facts.log`).
   ld's relocation placement because it is a function of input order
   alone and needs no name table. Record §G Q3.
   *Test:* `r-section-order`.
-- **L-R9 (`-b binary`).** `-b binary FILE` (and `--format=binary`,
-  until `-b default`/`--format=default`) makes an input of one output
-  section `.data`: `SHT_PROGBITS`, `SHF_ALLOC|SHF_WRITE`, alignment 1,
-  holding the file's bytes. It defines three global symbols. Their
-  `M` is the path as written on the line, with every byte that is not
-  `[A-Za-z0-9]` replaced by `_`:
-  - `_binary_M_start` at offset 0;
-  - `_binary_M_end` at the end;
-  - `_binary_M_size`, `SHN_ABS`, whose value is the size.
-  The output's machine is that of `-m`, or of the line's other objects;
-  with neither the link is refused (`spec/cli.md` C-R5). GNU ld writes
-  this. lld needs `-m` and gives the section alignment 8; mold refuses
-  `-b binary`. Record §B.3, rows `input:binary*`.
+- **L-R9 (`-b binary`).** GNU ld's form. `-b binary FILE` (and
+  `--format=binary`, until `-b default`/`--format=default`) makes an
+  input with one section, `.data`: `SHT_PROGBITS`,
+  `SHF_ALLOC|SHF_WRITE`, alignment 1, holding the file's bytes. It
+  defines three symbols, named from `M`: the path as written on the
+  line, with every byte that is not `[A-Za-z0-9]` replaced by `_`. So
+  `sub.d/my-blob.v1.bin` gives `_binary_sub_d_my_blob_v1_bin_…` and
+  `./sub.d/my-blob.v1.bin` gives `_binary___sub_d_my_blob_v1_bin_…`.
+  The symbols are, in this `.symtab` order (after the input's locals,
+  of which there are none):
+  1. `_binary_M_size`: `SHN_ABS`, value = the file's size;
+  2. `_binary_M_end`: in `.data`, value = the size;
+  3. `_binary_M_start`: in `.data`, value 0.
+  Each is `STT_NOTYPE`, `STB_GLOBAL`, `STV_DEFAULT`, `st_size` 0. They
+  are globals of RV-R6 and follow I-R4's `SymbolId` order. The binary
+  input's `SymbolId`s are allocated in this order, which is how GNU ld
+  2.44 writes them.
+
+  The output's machine is that of `-m`, or of the line's other
+  objects. With neither, the link is refused (`spec/cli.md` C-R5).
+
+  lld needs `-m`, writes `STT_OBJECT` in the order start, end, size,
+  gives `.data` alignment 8, and adds a `.note.gnu.property` and a
+  `.note.GNU-stack`. mold refuses `-b binary`. GNU ld writes a stack
+  note only with `-z noexecstack` (L-R6a's "all absent" row). Measured:
+  the review's x04, rerun in `tests/relocatable-design/work/review-x.log`.
+
+  *Lane note:* GNU ld 2.44's own final PIE link on AArch64 adds the
+  load base to the `SHN_ABS` `_binary_M_size`. The program reads
+  199451271364611 instead of 3, while mortar reads 3, and so does
+  every static link. That is a known GNU ld form for absolute symbols
+  in a PIE. `r-binary-blob` therefore links statically for its GNU ld
+  route, and its PIE route names the GNU ld cell `skip(bfd: SHN_ABS
+  relocated in PIE)`.
   *Test:* `r-binary-blob` (the final program reads the bytes back
   through the three symbols).
 - **L-R10 (the layout's own checks at `-r`).** `Layout::check`
@@ -2039,3 +2173,61 @@ B.2, B.5; `tests/relocatable-design/work/facts.log`).
   whose members are output sections with `SHF_GROUP`; every output
   section with a relocated piece has exactly one relocation chunk; no
   relocation chunk targets a group chunk or a relocation chunk.
+- **L-R11 (`--unique[=PATTERN]`, accepted in RL-11).** One output
+  section per input section, for the input sections it selects, which
+  keep their names. Duplicate section names are legal ELF.
+  - `--unique=PATTERN`: every live input section whose name matches
+    the glob `PATTERN` (the script glob of `spec/script.md`) is its own
+    output section, merged with nothing.
+  - Bare `--unique`: every live input section whose name is NOT an
+    output section name of GNU ld's `-r` script for the emulation is
+    its own output section. GNU ld calls those sections orphans. The
+    names are a fixed table in the rule, taken from `ld --verbose -r`
+    of GNU ld 2.44: 84 distinct names on AArch64, 91 on x86-64, 85 on
+    i386, listed in `work/unique-buildid.log`. They include `.text`, `.data`, `.bss`,
+    `.rodata`, `.eh_frame`, `.gcc_except_table`, `.tdata`, `.tbss`,
+    `.init`, `.fini`, the `.debug_*` sections and the `.stab*`
+    sections. So `.text.helper` of two inputs becomes two sections,
+    and two `.text` sections stay one.
+  - Under either form, `.eh_frame` is never split: one `.eh_frame`
+    output section, whatever `PATTERN` matches. GNU ld's final link
+    reads only the first `.eh_frame` of an input as unwind data: on
+    lld's `--unique` output (two `.eh_frame` sections) GNU ld's
+    `--gc-sections` keeps the dead helper alive and fails, where
+    mortar's runs. The notes and the Mason container are not split
+    either (L-R1, MT-30).
+  - Group members are already apart (L-R2).
+  Each such output section gets its own `STT_SECTION` symbol (I-R4)
+  and its own relocation section. With it, the final link's
+  `--gc-sections` and ICF work at the granularity of the inputs'
+  sections, and the pieces of a pre-linked component stay apart for
+  per-piece reuse.
+
+  Measured (`exp/review/unique-buildid.sh`,
+  `work/unique-buildid.log`; the case is the review's x06 case 2: two
+  static `helper`s in `.text.helper`, one of them calling a missing
+  function, with a final `--gc-sections`):
+
+  | `-r` | `.text.helper` | final GNU ld | final mortar |
+  |---|---|---|---|
+  | GNU ld, plain | one | fails (`undefined reference to missing_function`) | fails |
+  | GNU ld `--unique` | two | runs | runs |
+  | GNU ld `--unique=.text.helper` | two | runs | runs |
+  | GNU ld `--unique=.text*` | two, and `.text` split too | runs | runs |
+  | lld `--unique` | two, and two of every section | fails (two `.eh_frame`) | runs |
+  | lld `--unique=PATTERN` | refused (`unknown argument`) | — | — |
+  | mold `--unique=PATTERN` | no change: one | fails | fails |
+  | mold bare `--unique` | takes the next word as its pattern (`cannot open` the output) | — | — |
+
+  The record's first version said mold "drops definitions (its symbols
+  become `UND`)" under `--unique`. That came from the same misparse:
+  in `options/run.sh`, `mold -r -o OUT --unique o1.o o2.o` took `o1.o`
+  as the pattern and linked `o2.o` alone, so `o1.o`'s definitions were
+  missing (`work/options.log` line 45). It is a parse of mold's option
+  syntax, not a mislink. mold's `--unique=PATTERN` is a no-op on this
+  case, so mold cannot make the split.
+  Without `-ffunction-sections` (both helpers in `.text`) bare
+  `--unique` changes nothing in GNU ld, and the final `--gc-sections`
+  fails as before. `--unique=.text` is the form that splits those.
+  *Test:* `r-unique-gc` (the table's case through both finals),
+  `r-unique-pattern`, `r-unique-eh-frame-one`.

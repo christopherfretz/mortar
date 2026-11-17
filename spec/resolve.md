@@ -1918,11 +1918,18 @@ Its name, binding, type and visibility follow these rules:
 - **Type**: the definition's, kept (`STT_FUNC`, `STT_OBJECT`,
   `STT_TLS`, `STT_GNU_IFUNC`, `STT_NOTYPE`). `EI_OSABI` follows I-R2.
 - **Versioned names** from `.symver` (`foo@V`, `foo@@V`) are written
-  under their full names, unchanged. §9.4's keys apply to binding
-  references inside the `-r` (a `foo` reference and a `foo@@V`
-  definition become one defined symbol named `foo@@V`). GNU ld and lld
-  keep both names. mold strips them to two plain `foo` globals (B.3),
-  which is a mislink of the version information.
+  under their full names, unchanged. A plain `foo` reference is NOT
+  bound to the `foo@@V` definition at `-r`. It stays the undefined
+  global `foo`, and its records name `foo`. The final link binds it by
+  §9.4, as it would have bound the input's reference. This is GNU ld's
+  form. lld binds the reference to `foo@@V2` at `-r`: its record names
+  `vfoo@@V2`, and its output has no `UND vfoo`. Both forms' final links
+  run (the review's x09, rerun in `work/review-x.log`: GNU ld writes
+  `UND vfoo` and `R_AARCH64_CALL26 vfoo`). mortar takes GNU ld's
+  because a partial link decides less, and the record keeps the name
+  its input wrote. The first version described lld's form. mold strips
+  the names to two plain `foo` globals (B.3), which is a mislink of
+  the version information.
 - **The order** of these entries is the `.symtab` order of
   `spec/model.md` §4.3 (I-R4).
 *Test:* `r-hidden-stays-global`, `r-unique-kept`, `r-ifunc-tls-types`,
@@ -1940,23 +1947,35 @@ members as plain sections. References into a dropped copy (§6.3), by
 referring section:
 - `.eh_frame`: the FDE is dropped with its records (L-R6, I-R6). No
   `R_*_NONE` record is written.
-- **GNU ld's debug names** (§6.3's first row) and `.gcc_except_table`:
-  the record is not written. Its field holds the value that a final
-  link writes for it (`spec/image.md` §6.1's tombstone; 0 in
-  `.gcc_except_table`), so the final link reads a resolved field. This
-  is what GNU ld's `-r` does in its code (`_bfd_clear_contents`), but it
-  is **not verified** on a `-r` output in this design: the corpus had
-  no debug record into a dropped copy (record §B.2).
+- **GNU ld's debug names** (§6.3's first row): the record is not
+  written. Its field holds I-47's tombstone, with I-112's aranges
+  length 0 (`spec/image.md` I-R7), so the final link reads a resolved
+  field. The references do otherwise: GNU ld retargets the record to
+  the kept copy (`_bfd_elf_check_kept_section`), lld writes
+  `R_*_NONE`, and mold writes it against symbol 0. mortar follows none
+  of them; the review's x02 measured them, and its x01 verified this
+  form by execution. Record §G Q5 is closed.
+- `.gcc_except_table` and `.eh_frame` fields: judged by the record that
+  owns them (WP-177's rule in §6.3). A field of a dead record is not
+  written (0 in `.gcc_except_table`). A field of a LIVE CIE, FDE or
+  LSDA that points into a dropped copy is `discarded-section-reference`
+  (case a) or `comdat-mismatch` (case b), never 0. That case arises
+  after `objcopy --localize-hidden` of a plain `-r` output (record
+  §A.4).
 - Every other referring section: `discarded-section-reference` or
-  `comdat-mismatch`, as §6.3 says. WP-176 decides the demoted weak
-  mention, and that ruling applies at `-r` unchanged.
+  `comdat-mismatch`, as §6.3 says. WP-176's ruling applies at `-r`
+  unchanged: a reference through a demoted mention whose key ends with
+  no definition is `comdat-mismatch` whatever the mention's binding.
+  §6.3 is edited on WP-176's and WP-177's branches, not here.
 With `--force-group-allocation` (GNU ld, lld; spec/cli.md C-R3), every
 COMDAT group is dissolved after the election: the kept copy's members
 become ordinary sections merged by name (L-R1), its signature symbol
 stays the global it was, and no `SHT_GROUP` is written. This is the
-sound form of the pre-link idiom with C++ (record §A.4: with EH and
-`-g`, `--localize-hidden` afterwards links and runs under GNU ld, lld
-and mortar, where the plain `-r` form aborts).
+sound form of the pre-link idiom with C++:
+`ld -r --force-group-allocation`, then `objcopy --localize-hidden`.
+Record §A.4: with EH and `-g`, that form links and runs under GNU ld,
+lld and mortar. The plain `-r` form aborts at the first throw, and
+after WP-176/WP-177 mortar refuses it by name.
 *Test:* `r-comdat-one-copy`, `r-comdat-nested`,
 `r-group-flag0-kept`, `r-force-group-allocation`.
 

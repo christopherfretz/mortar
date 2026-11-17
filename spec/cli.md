@@ -871,12 +871,12 @@ acts only on an executable or shared output. `-no-pie`; `-static`,
 `-Bstatic`, `-Bdynamic` (they still pick `.a` or `.so` for `-l`, and a
 `.so` is refused, C-R5); `-dynamic-linker`, `--no-dynamic-linker`;
 `--eh-frame-hdr`; `--hash-style`; `--as-needed`, `--no-as-needed`;
-`--build-id[=style]` (it writes no note: I-R8); `-X`,
+`--no-build-id`, `--build-id=none`; `-X`,
 `--discard-locals` (no visible change in any reference, B.3); `-EL`;
 `-m <emulation>` (checked as today: a wrong emulation is still refused
 by `emulation`); `--fix-cortex-a53-843419` (patches need addresses);
-`--emit-relocs`, `-q`; every `-z` keyword that mortar accepts in a final
-link; `--no-undefined`, `-z defs` (nothing is undefined at `-r`, as all
+`--emit-relocs`, `-q`; the `-z` keywords that C-R2a marks no-op;
+`--no-undefined`, `-z defs` (nothing is undefined at `-r`, as all
 three references do); `--warn-common`; `--sort-common`,
 `--sort-section` (a final link's order; GNU ld does not change the
 `-r` output); `-O<n>`; `-Map`, `--mortar-map` (they are written as in
@@ -891,6 +891,25 @@ options.md` gains a column "at `-r`" with `noop(-r: …)`.
 *Test:* `r-noop-options`: each row against the line without it, byte
 identical.
 
+**C-R2a (`-z` keywords at `-r`, by measurement).** Every `-z` keyword
+that GNU ld 2.44 lists in `--help` for each target was run at `-r`
+over two GCC objects, and its output compared with the plain `-r`
+(`tests/relocatable-design/exp/review/zkw.sh`, `work/zkw.log`, 259
+cells over three targets). Each keyword falls in one class:
+
+| class | keywords | at `-r` in mortar |
+|---|---|---|
+| byte-identical on every target where GNU ld knows them | `combreloc`, `nocombreloc`, `common`, `nocommon`, `common-page-size=`, `max-page-size=`, `defs`, `undefs`, `muldefs`, `global`, `globalaudit`, `initfirst`, `interpose`, `lazy`, `now`, `loadfltr`, `nocopyreloc`, `nodefaultlib`, `nodelete`, `nodlopen`, `nodump`, `origin`, `relro`, `norelro`, `separate-code`, `noseparate-code`, `text`, `notext`, `textoff`, `start-stop-gc`, `nostart-stop-gc`, `start-stop-visibility=`, `sectionheader`, `unique`, `nounique`, `nounique-symbol`, `nomemory-seal`; AArch64 `bti-report[=…]`, `gcs-report[=…]`, `gcs-report-dynamic=`, `gcs=never`, `pac-plt`; x86 `call-nop=`, `ibtplt`, `isa-level-report=`, `dynamic-undefined-weak`, `nodynamic-undefined-weak`, `noextern-protected-data`, `noindirect-extern-access`, `pack-relative-relocs`, `nopack-relative-relocs`, `report-relative-reloc`, `mark-plt`, `nomark-plt`, `noreloc-overflow`, `lam-u48`/`lam-u57` and their `-report` forms on i386 (GNU ld warns `ignored`) | no-op (C-R2) |
+| the stack note | `execstack`, `noexecstack` | act: `spec/layout.md` L-R6a's table. On x86-64 and i386 `execstack` changes nothing when an input has a note, so the plain comparison showed it identical there |
+| add a `.note.gnu.property` (and its section symbol) | AArch64 `force-bti`, `gcs=always`, `stack-size=`; `memory-seal` (all three targets); x86 `ibt`, `shstk`, `indirect-extern-access`, `x86-64-v2/v3/v4` (`x86-64-baseline` makes GNU ld 2.44 abort with an internal error in `_bfd_x86_elf_merge_gnu_properties`); x86-64 `lam-u48`, `lam-u57`; `stack-size=` adds nothing on x86 | refused by name, `Refused{Option, "-z KEYWORD with -r"}`, until a line needs one. Then GNU ld's form: the property merged into L-R1's note |
+| renames locals | `unique-symbol`: GNU ld appends `.N` to every duplicated local name, mapping symbols included (`$x` becomes `$x.0`, a static `h` becomes `h.0` and `h.1`); lld and mold do not know it | refused by name until a line needs it |
+| fail on the inputs at `-r` | `cet-report=error`, `lam-report=error`, `lam-u48-report=error`, `lam-u57-report=error` (x86-64: "missing … property") | the same check as in a final link (the report keywords' rows of `spec/x64.md`/`a64.md`); `=none`/`=warning` are no-ops |
+| refused by GNU ld at `-r` | `nosectionheader` (`-r and -z nosectionheader may not be used together`) | `conflicting-options` |
+
+A keyword that mortar refuses in a final link is refused at `-r` too.
+*Test:* `r-z-noop` (the first row, byte-identical), `r-z-refused` (one
+per refused keyword), `r-stack-note`.
+
 **C-R3 (options that act at `-r`).**
 
 | option | at `-r` | rule | package |
@@ -902,10 +921,13 @@ identical.
 | `-s`, `--strip-all` | GNU ld and mold: debug sections and their relocation sections are dropped, and so is every local symbol that no relocation names. lld ignores the option. mortar does what GNU ld does | I-R9 | RL-11 |
 | `-S`, `--strip-debug` | debug sections and their relocation sections dropped (GNU ld, mold; lld ignores) | I-R9 | RL-11 |
 | `-x`, `--discard-all` | local symbols that no relocation names are dropped, except `STT_SECTION` and `STT_FILE` (all three) | I-R9 | RL-11 |
-| `-T script` | GNU ld and lld honour a `SECTIONS` script at `-r` (record B.1: `.text.*` into `.text`). mold refuses it. | refused by name (`Refused{Option, "-T with -r"}`) until RL-11 | RL-11 |
+| `-T script` | GNU ld and lld honour a `SECTIONS` script at `-r` (record B.1: `.text.*` into `.text`). mold refuses it. The main user is Kbuild's module line (`-T module.lds`). Kernel modules are out of scope for now (`spec/layout.md` L-R1), and the refusal is lifted when a real line of the target needs it | refused by name (`Refused{Option, "-T with -r"}`) until RL-11 | RL-11 |
 | `-b binary`, `--format=binary`, `-b default` | the input file becomes a data section (L-R9) | L-R9 | RL-10 |
 | `--defsym SYM=EXPR` | GNU ld and lld define `SYM` in the output: absolute, or relative to a section. mold does nothing. | refused until RL-11, then GNU ld's | RL-11 |
-| `--force-group-allocation` | every group is dissolved: its members become ordinary sections merged by name, and no `SHT_GROUP` is written (GNU ld and lld). This is the sound form of the pre-link idiom (record §A.4) | L-R3 | RL-8 |
+| `--force-group-allocation` | every group is dissolved: its members become ordinary sections merged by name, and no `SHT_GROUP` is written (GNU ld and lld). This is the sound form of the pre-link idiom (record §A.4): `--force-group-allocation` before `objcopy --localize-hidden` | L-R3 | RL-8 |
+| `--build-id[=STYLE]` | the note is written over the `-r` output (I-69's styles; GNU ld and lld write one, mold none) | I-R8 | RL-4 |
+| `-z execstack`, `-z noexecstack` | GNU ld's stack-note table, per target | L-R6a | RL-7 |
+| `--unique`, `--unique=PATTERN` | one output section per selected input section (GNU ld's form; lld has only the bare form, mold misparses it) | L-R11 | RL-11 |
 
 **C-R4 (options refused at `-r`, by name).** Each is
 `Refused{Option, "<option> with -r"}` with a note naming the reason:
@@ -916,10 +938,13 @@ identical.
   the final link will need. image.md I-11 becomes permanent (I-R10).
 - `--icf`. GNU ld does not know it, lld refuses it at `-r`, mold accepts
   it.
-- `--unique[=pat]`. GNU ld's output does not change, because its `-r`
-  already keeps sections by name. lld splits more and rejects `=pat`.
-  mold drops definitions (its symbols become `UND`, record B.3), which
-  is a mislink.
+- `--unique[=pat]` until RL-11, which accepts it (C-R3, L-R11). The
+  first version refused it for good, on two wrong readings:
+  - "GNU ld's output does not change". It does not change on inputs
+    whose section names are already distinct. On duplicate names GNU
+    ld splits them (the review's x06 case and `work/unique-buildid.log`).
+  - "mold drops definitions". That was mold's option parse taking the
+    next input as its pattern.
 - `--relax` (GNU ld refuses it at `-r`).
 - `--wrap=SYM`. lld adds an undefined `__wrap_SYM`, GNU ld and mold do
   nothing. The final link is the place for it.
@@ -933,6 +958,10 @@ identical.
   these are `conflicting-options` with `-r` as `first`.
 - `--incremental` with `-r`: IN-12's warning and a plain link (as
   today).
+- the `-z` keywords that C-R2a refuses.
+- A kernel module line is refused by name, through L-37
+  (`.gnu.linkonce.this_module`) and `-T`: kernel modules are out of
+  scope for now (`spec/layout.md` L-R1).
 *Test:* `r-refused-options` (one link per row; the name checked).
 
 **C-R5 (inputs at `-r`).**

@@ -1,0 +1,157 @@
+# The review's scripts x02 x03 x04 x06 x07 x08 x09 (.build/review-154-adv/mine, read-only), rerun into .build/target-wp-154/rev by WP-154's fix pass, 2026-11-17
+### x02-debug-into-dropped
+== dwarf4 bfd: NONE records 2; debug records naming the kept copy's section: 10; against symbol 0: 0
+== dwarf4 lld: NONE records 12; debug records naming the kept copy's section: 5; against symbol 0: 0
+== dwarf4 mold: NONE records 0; debug records naming the kept copy's section: 5; against symbol 0: 0
+inputs: debug records against .text._Z13shared_inlinei: 10
+== dwarf5 bfd: NONE records 2; debug records naming the kept copy's section: 8; against symbol 0: 0
+== dwarf5 lld: NONE records 10; debug records naming the kept copy's section: 4; against symbol 0: 0
+== dwarf5 mold: NONE records 0; debug records naming the kept copy's section: 4; against symbol 0: 0
+inputs: debug records against .text._Z13shared_inlinei: 8
+x02 done
+### x03-stack-notes
+bfd   a.o b.o                  : note=noX
+bfd   a.o b.o  -z execstack    : note=X
+bfd   a.o b.o  -z noexecstack  : note=noX
+bfd   a.o c.o                  : note=X
+bfd   a.o c.o  -z execstack    : note=X
+bfd   a.o c.o  -z noexecstack  : note=X
+bfd   a.o                      : note=noX
+bfd   a.o      -z execstack    : note=X
+bfd   a.o      -z noexecstack  : note=noX
+lld   a.o b.o                  : note=noX
+lld   a.o b.o  -z execstack    : note=noX
+lld   a.o b.o  -z noexecstack  : note=noX
+lld   a.o c.o                  : note=noX
+lld   a.o c.o  -z execstack    : note=noX
+lld   a.o c.o  -z noexecstack  : note=noX
+lld   a.o                      : note=noX
+lld   a.o      -z execstack    : note=noX
+lld   a.o      -z noexecstack  : note=noX
+mold  a.o b.o                  : note=noX
+mold  a.o b.o  -z execstack    : note=noX
+mold  a.o b.o  -z noexecstack  : note=noX
+mold  a.o c.o                  : note=X
+mold  a.o c.o  -z execstack    : note=X
+mold  a.o c.o  -z noexecstack  : note=X
+mold  a.o                      : note=noX
+mold  a.o      -z execstack    : note=noX
+mold  a.o      -z noexecstack  : note=noX
+x03 done
+### x04-binary
+== bfd
+  [ 1] .data             PROGBITS        0000000000000000 000040 000003 00  WA  0   0  1
+  [ 2] .symtab           SYMTAB          0000000000000000 000048 000078 18      3   2  8
+  [ 3] .strtab           STRTAB          0000000000000000 0000c0 000067 00      0   0  1
+  [ 4] .shstrtab         STRTAB          0000000000000000 000127 000021 00      0   0  1
+     2: 0000000000000003     0 NOTYPE  GLOBAL DEFAULT  ABS _binary_sub_d_my_blob_v1_bin_size
+     3: 0000000000000003     0 NOTYPE  GLOBAL DEFAULT    1 _binary_sub_d_my_blob_v1_bin_end
+     4: 0000000000000000     0 NOTYPE  GLOBAL DEFAULT    1 _binary_sub_d_my_blob_v1_bin_start
+     4: 0000000000000000     0 NOTYPE  GLOBAL DEFAULT    1 _binary___sub_d_my_blob_v1_bin_start
+with -z noexecstack:
+  [ 1] .note.GNU-stack   PROGBITS        0000000000000000 000040 000000 00      0   0  1
+== lld
+  [ 1] .data             PROGBITS        0000000000000000 000040 000003 00  WA  0   0  8
+  [ 2] .note.gnu.property NOTE            0000000000000000 000048 000020 00   A  0   0  8
+  [ 3] .note.GNU-stack   PROGBITS        0000000000000000 000068 000000 00      0   0  1
+  [ 4] .symtab           SYMTAB          0000000000000000 000068 000078 18      6   2  8
+  [ 5] .shstrtab         STRTAB          0000000000000000 0000e0 000044 00      0   0  1
+  [ 6] .strtab           STRTAB          0000000000000000 000124 000067 00      0   0  1
+     2: 0000000000000000     0 OBJECT  GLOBAL DEFAULT    1 _binary_sub_d_my_blob_v1_bin_start
+     3: 0000000000000003     0 OBJECT  GLOBAL DEFAULT    1 _binary_sub_d_my_blob_v1_bin_end
+     4: 0000000000000003     0 OBJECT  GLOBAL DEFAULT  ABS _binary_sub_d_my_blob_v1_bin_size
+     2: 0000000000000000     0 OBJECT  GLOBAL DEFAULT    1 _binary___sub_d_my_blob_v1_bin_start
+with -z noexecstack:
+  [ 3] .note.GNU-stack   PROGBITS        0000000000000000 000068 000000 00      0   0  1
+-r bfd final GNU ld : 3 a 199451271364611
+-r bfd final mortar : 3 a 3
+-r bfd final GNU ld -static: 3 a 3
+-r bfd final mortar -static: 3 a 3
+-r lld final GNU ld : 3 a 197068711264259
+-r lld final mortar : 3 a 3
+-r lld final GNU ld -static: 3 a 3
+-r lld final mortar -static: 3 a 3
+(expected: 3 a 3; the size symbol is SHN_ABS)
+x04 done
+### x06-equiv
+1. archive on the -r line, weak definition outside:
+  direct GNU ld : weak foo in C
+  direct mortar : weak foo in C
+  via -r GNU ld : strong foo from archive member
+  via -r mortar : strong foo from archive member
+2. same-named static functions merged by name, final --gc-sections:
+  direct GNU ld: links, runs
+  direct mortar: links, runs
+  via -r GNU ld: /usr/bin/ld: gcomp.o: in function `helper':
+  via -r GNU ld: g2.c:(.text.helper+0x20): undefined reference to `missing_function'
+  via -r mortar: ld: error: undefined symbol: missing_function (undefined reference to `missing_function')
+x06 done
+### x07-kmod
+== bfd
+  [ 2] .note.gnu.build-id NOTE            0000000000000000 000088 000024 00   A  0   0  4
+  [ 5] .gnu.linkonce.this_module PROGBITS        0000000000000000 000100 000010 00   A  0   0  8
+  [ 9] .note.GNU-stack   PROGBITS        0000000000000000 00011c 000000 00      0   0  1
+== lld
+  [ 7] .gnu.linkonce.this_module PROGBITS        0000000000000000 0000d8 000010 00   A  0   0  8
+  [ 9] .note.gnu.build-id NOTE            0000000000000000 0000f4 000024 00   A  0   0  4
+  [10] .note.GNU-stack   PROGBITS        0000000000000000 000180 000000 00      0   0  1
+x07 done
+### x08-addrsig
+bfd: 0000000000000000 0001aa 000004 00   E  0   0  1
+lld: 0000000000000000 0001c8 000004 00   E  0   0  1
+mold: 0000000000000000 000171 000004 00   E  0   0  1
+direct: distinct
+  ld.lld: warning: r.bfd.o: --icf=safe conservatively ignores SHT_LLVM_ADDRSIG [index 13] with sh_link=0 (likely created using objcopy or ld -r)
+r.bfd: distinct
+  ld.lld: warning: r.lld.o: --icf=safe conservatively ignores SHT_LLVM_ADDRSIG [index 7] with sh_link=0 (likely created using objcopy or ld -r)
+r.lld: distinct
+  ld.lld: warning: r.mold.o: --icf=safe conservatively ignores SHT_LLVM_ADDRSIG [index 9] with sh_link=0 (likely created using objcopy or ld -r)
+r.mold: distinct
+r.none: distinct
+x08 done
+### x09-misc-refs
+-- retain
+bfd: 4 AXR 4 AX 
+lld: 4 AXR 
+mold: 4 AX 
+-- symver
+bfd: record names 0 + 
+lld: record names 0 + 
+-- i386 R_386_16 overflow
+bfd: links; 16-bit field = 0x4 (addend 0x10004 truncated)
+lld: ld.lld: error: s.o:(.data+0x1): relocation R_386_16 out of range: 65540 is not in [-32768, 65535]; references section '.data'
+mold: links (same truncation)
+-- debug types
+dwarf4 group signature: LOCAL 1 wt.183fe7d1cd7c2405 (st_shndx = the SHT_GROUP section)
+dwarf5 group signature: LOCAL 1 wi.183fe7d1cd7c2405 (st_shndx = the SHT_GROUP section)
+x09 done
+### details: x02 mold's records into the dropped copy (r4.mold.o .rela.debug_*): symbol index 0, addend 0
+10
+### details: x09 .symver after -r
+bfd:
+    13: 0000000000000000     0 NOTYPE  GLOBAL DEFAULT  UND vfoo
+    15: 0000000000000008     8 FUNC    GLOBAL DEFAULT    1 vfoo@V1
+    16: 0000000000000000     8 FUNC    GLOBAL DEFAULT    1 vfoo_new
+    17: 0000000000000000     8 FUNC    GLOBAL DEFAULT    1 vfoo@@V2
+    18: 0000000000000008     8 FUNC    GLOBAL DEFAULT    1 vfoo_old
+0000000000000018  0000000d0000011b R_AARCH64_CALL26       0000000000000000 vfoo + 0
+lld:
+    12: 0000000000000000     8 FUNC    GLOBAL DEFAULT    1 vfoo_new
+    13: 0000000000000008     8 FUNC    GLOBAL DEFAULT    1 vfoo_old
+    14: 0000000000000000     8 FUNC    GLOBAL DEFAULT    1 vfoo@@V2
+    15: 0000000000000008     8 FUNC    GLOBAL DEFAULT    1 vfoo@V1
+0000000000000018  0000000e0000011b R_AARCH64_CALL26       0000000000000000 vfoo@@V2 + 0
+### mapping symbols in .eh_frame and .note.gnu.property after -r (g++ -O0 -mbranch-protection=standard, a.cc b.cc share an inline function; b's FDE at 0x14 is the dropped copy's)
+a.o:
+    10: 0000000000000000     0 NOTYPE  LOCAL  DEFAULT    9 $d
+    11: 0000000000000014     0 NOTYPE  LOCAL  DEFAULT   10 $d
+r.bfd.o:
+    13: 0000000000000000     0 NOTYPE  LOCAL  DEFAULT    2 $d
+    14: 0000000000000014     0 NOTYPE  LOCAL  DEFAULT    6 $d
+    17: 0000000000000064     0 NOTYPE  LOCAL  DEFAULT    6 $d
+r.lld.o:
+     4: 0000000000000014     0 NOTYPE  LOCAL  DEFAULT    8 $d
+    13: 0000000000000064     0 NOTYPE  LOCAL  DEFAULT    8 $d
+r.mold.o:
+    17: 0000000000000000     0 NOTYPE  LOCAL  DEFAULT  ABS $d
+    20: 0000000000000000     0 NOTYPE  LOCAL  DEFAULT  ABS $d
