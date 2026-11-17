@@ -1,0 +1,107 @@
+# A `NONE` relocation (R_AARCH64_NONE, R_X86_64_NONE, R_386_NONE) reads
+# and writes nothing: its window is empty, so a `NONE` record on a live
+# record's offset, or inside its field, overlaps nothing (arch.md §3.4,
+# WP-175) and the output is the one without it. GNU ld's `-r` writes such
+# a pair in `.eh_frame` when it drops an FDE (`none-overlap-partial.test`);
+# here the assembler's `.reloc` places them by hand, in `.text`, in
+# `.data` and in an `.eh_frame`-like PC-relative word.
+#
+# none.o and plain.o are one source, with and without the `NONE` records
+# (-DNONE): mortar's programs from either are byte for byte the same
+# (`check cmp`); every linker's program runs and finds `val` three ways.
+#@ spec: arch.md "3.4"
+#@ spec: a64.md "6.1"
+#@ spec: x64.md "6.1"
+#@ spec: x86.md "6.1"
+
+cc -O1 main.c -o main.o
+as -DNONE parts.S -o none.o
+as parts.S -o plain.o
+check readelf -rW none.o
+  has: _NONE
+link gcc -static main.o none.o -o none
+run none
+  stdout: text 1 data 1 rel 1 val 42
+link gcc -static main.o plain.o -o plain
+run plain
+  stdout: text 1 data 1 rel 1 val 42
+check(mortar) cmp none plain
+  has: ^identical$
+link(aarch64,x86_64) gcc main.o none.o -o none-dyn
+run(aarch64,x86_64) none-dyn
+  stdout: text 1 data 1 rel 1 val 42
+link(aarch64,x86_64) gcc main.o plain.o -o plain-dyn
+check(mortar,aarch64,x86_64) cmp none-dyn plain-dyn
+  has: ^identical$
+
+#--- main.c
+#include <stdio.h>
+int val = 42;
+int *text_addr(void);
+extern int *data_ptr;
+extern const int rel_word;
+int main(void) {
+  const char *rel = (const char *)&rel_word + rel_word;
+  printf("text %d data %d rel %d val %d\n", text_addr() == &val, data_ptr == &val,
+         rel == (const char *)&val, *text_addr());
+  return 0;
+}
+#--- parts.S
+// Each live record of the three sections, and (-DNONE) `NONE` records on
+// its offset and inside its field, some naming `val`, some no symbol.
+#if defined(__aarch64__)
+# define NONE_AT(at, ...) .reloc at, R_AARCH64_NONE __VA_OPT__(,) __VA_ARGS__
+#elif defined(__x86_64__)
+# define NONE_AT(at, ...) .reloc at, R_X86_64_NONE __VA_OPT__(,) __VA_ARGS__
+#else
+# define NONE_AT(at, ...) .reloc at, R_386_NONE __VA_OPT__(,) __VA_ARGS__
+#endif
+#ifndef NONE
+# undef NONE_AT
+# define NONE_AT(at, ...)
+#endif
+        .text
+        .globl  text_addr
+        .type   text_addr, %function
+text_addr:
+#if defined(__aarch64__)
+.Lt:
+        adrp    x0, val
+        add     x0, x0, :lo12:val
+        ret
+        NONE_AT(.Lt, val)
+        NONE_AT(.Lt+4)
+        NONE_AT(.Lt+6, val)
+#elif defined(__x86_64__)
+        leaq    val(%rip), %rax
+        ret
+        NONE_AT(text_addr+3, val)
+        NONE_AT(text_addr+5)
+#else
+        movl    $val, %eax
+        ret
+        NONE_AT(text_addr+1, val)
+        NONE_AT(text_addr+3)
+#endif
+        .size   text_addr, .-text_addr
+
+        .data
+        .globl  data_ptr
+        .p2align 3
+data_ptr:
+#if defined(__i386__)
+        .long   val
+#else
+        .quad   val
+#endif
+        NONE_AT(data_ptr, val)
+        NONE_AT(data_ptr+2)
+
+        .section .rodata.ehlike,"a",%progbits
+        .globl  rel_word
+        .p2align 2
+rel_word:
+        .long   val - .
+        NONE_AT(rel_word)
+        NONE_AT(rel_word+1, val)
+        .section .note.GNU-stack,"",%progbits

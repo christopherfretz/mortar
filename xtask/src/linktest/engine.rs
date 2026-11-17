@@ -1549,6 +1549,25 @@ impl Unit<'_> {
                 let before = vec!["-shared".into(), "-fuse-ld=bfd".into()];
                 (program.ok_or_else(missing)?.clone(), before)
             }
+            // The reference's own program, the one its links run (WP-175).
+            // Not there: the unit is skipped by name, as a missing linker
+            // is left out of the matrix.
+            StepKind::Partial(partial) => {
+                let program = match partial.linker {
+                    Linker::Bfd => self.tools.bfd.as_ref(),
+                    Linker::Lld => common.lld.as_ref(),
+                    Linker::Mold => common.mold.as_ref(),
+                    Linker::Mortar => None,
+                };
+                let program = program.ok_or_else(|| {
+                    Raw::Skip(format!(
+                        "{}: {} is not there",
+                        step.describe(),
+                        partial.linker.name()
+                    ))
+                })?;
+                (program.clone(), vec!["-r".into()])
+            }
             StepKind::Link(_) | StepKind::Host(_) | StepKind::Run(_) | StepKind::Check(_) => {
                 unreachable!("{} does not build an input", step.describe())
             }
@@ -1706,7 +1725,8 @@ impl Unit<'_> {
                 | StepKind::Yaml2obj(_)
                 | StepKind::Ar(_)
                 | StepKind::Meta(_)
-                | StepKind::Shlib(_) => {
+                | StepKind::Shlib(_)
+                | StepKind::Partial(_) => {
                     unreachable!("the pair part links no library (LT-2); builds ran before")
                 }
             };
@@ -1749,7 +1769,8 @@ impl Unit<'_> {
                 | StepKind::Yaml2obj(_)
                 | StepKind::Ar(_)
                 | StepKind::Meta(_)
-                | StepKind::Shlib(_) => {
+                | StepKind::Shlib(_)
+                | StepKind::Partial(_) => {
                     unreachable!("build steps are run once, before the linkers")
                 }
             };
@@ -2666,6 +2687,7 @@ fn build_args(step: &Step) -> &[Template] {
         StepKind::Compile(compile) => &compile.args,
         StepKind::Yaml2obj(args) | StepKind::Ar(args) | StepKind::Meta(args) => args,
         StepKind::Shlib(shlib) => &shlib.args,
+        StepKind::Partial(partial) => &partial.args,
         StepKind::Link(_) | StepKind::Host(_) | StepKind::Run(_) | StepKind::Check(_) => &[],
     }
 }

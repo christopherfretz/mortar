@@ -409,6 +409,17 @@ pub struct Shlib {
     pub args: Vec<Template>,
 }
 
+/// A `partial <reference> <args>` step (WP-175): an input made by a
+/// reference linker's partial link (`-r`, which the harness puts before the
+/// test's arguments), the same for every linker of the matrix: the
+/// relocatable outputs old build systems feed a final link.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Partial {
+    /// `bfd`, `lld` or `mold`.
+    pub linker: Linker,
+    pub args: Vec<Template>,
+}
+
 /// A link step.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Link {
@@ -478,6 +489,7 @@ pub enum StepKind {
     /// (`spec/meta.md` §12) adds one container to an object.
     Meta(Vec<Template>),
     Shlib(Shlib),
+    Partial(Partial),
     Link(Link),
     /// `host <driver> <args>` (WP-120, `spec/harness.md` LT-1): a program
     /// linked against the libraries of the unit's linkers, once per pair
@@ -508,6 +520,7 @@ impl Step {
                 | StepKind::Ar(_)
                 | StepKind::Meta(_)
                 | StepKind::Shlib(_)
+                | StepKind::Partial(_)
         )
     }
 
@@ -548,7 +561,8 @@ impl Step {
                 | CheckTool::Cmp
                 | CheckTool::Ldd => None,
             },
-            StepKind::Ar(_) | StepKind::Meta(_) | StepKind::Run(_) => None,
+            // The linkers need no `requires`.
+            StepKind::Ar(_) | StepKind::Meta(_) | StepKind::Partial(_) | StepKind::Run(_) => None,
         }
     }
 
@@ -1108,6 +1122,22 @@ impl Parser {
                 }
                 ("shlib", StepKind::Shlib(Shlib { driver, args }))
             }
+            "partial" => {
+                qualifiers.no_family("'partial'")?;
+                qualifiers.no_linker("'partial'")?;
+                let linker =
+                    Linker::parse(first).filter(|l| l.is_reference()).ok_or_else(|| {
+                        format!(
+                            "'partial' is followed by the reference linker that makes the \
+                         relocatable output (bfd, lld, mold), not '{first}'"
+                        )
+                    })?;
+                args.remove(0);
+                if args.is_empty() {
+                    return Err("'partial' has no arguments".to_owned());
+                }
+                ("partial", StepKind::Partial(Partial { linker, args }))
+            }
             "link" | "host" => {
                 let keyword = if key == "host" { "host" } else { "link" };
                 qualifiers.no_family(&format!("'{keyword}'"))?;
@@ -1195,6 +1225,7 @@ impl Parser {
                     | "ar"
                     | "meta"
                     | "shlib"
+                    | "partial"
                     | "link"
                     | "check"
             )
@@ -1369,7 +1400,8 @@ impl Parser {
                 | StepKind::Yaml2obj(_)
                 | StepKind::Ar(_)
                 | StepKind::Meta(_)
-                | StepKind::Shlib(_),
+                | StepKind::Shlib(_)
+                | StepKind::Partial(_),
                 _,
             ) => Err(format!("'{keyword}' builds an input and has no expectations")),
         };
@@ -1596,7 +1628,8 @@ impl Parser {
                 | StepKind::Yaml2obj(args)
                 | StepKind::Ar(args)
                 | StepKind::Meta(args)
-                | StepKind::Shlib(Shlib { args, .. }) => {
+                | StepKind::Shlib(Shlib { args, .. })
+                | StepKind::Partial(Partial { args, .. }) => {
                     if uses_linker(args) {
                         self.error(
                             step.line,
@@ -2370,6 +2403,27 @@ FileHeader:
         assert!(has_error(&with("link ld a.o\ncheck nm a\n  diag: x\n"), 4, "of a check"));
         // An expectation of a step that did not parse is not reported again.
         assert_eq!(errors(&with("lnk ld a.o\n  exit: 0\nlink ld a.o\n")).len(), 1);
+    }
+
+    // "Steps": `partial <reference> <args>` (WP-175), a build step.
+    #[test]
+    fn partial_step() {
+        let with = |text: &str| format!("#@ spec: arch.md \"3.4\"\n{text}");
+        let test = parse(&with("partial lld a.o b.o -o r.o\nlink gcc r.o\n")).unwrap();
+        let StepKind::Partial(partial) = &test.steps[0].kind else { panic!() };
+        assert_eq!(partial.linker, Linker::Lld);
+        let vars = Vars { arch: Arch::X86_64, host: Some(Arch::Aarch64), linker: None };
+        let args: Vec<String> = partial.args.iter().map(|a| a.expand(vars)).collect();
+        assert_eq!(args, ["a.o", "b.o", "-o", "r.o"]);
+        assert!(test.steps[0].is_build() && test.steps[0].feature().is_none());
+        assert_eq!(test.steps[0].keyword, "partial");
+        let bad = with("partial mortar a.o -o r.o\nlink gcc r.o\n");
+        assert!(has_error(&bad, 2, "reference linker"));
+        assert!(has_error(&with("partial bfd\nlink gcc r.o\n"), 2, "has no arguments"));
+        assert!(has_error(&with("partial(mold) bfd a.o\nlink gcc r.o\n"), 2, "'partial'"));
+        let in_build = with("partial bfd a.o -o %{linker}.o\nlink gcc r.o\n");
+        assert!(has_error(&in_build, 2, "'%{linker}' in a step that builds an input"));
+        assert!(has_error(&with("partial bfd a.o -o r.o\n  exit: 0\nlink gcc r.o\n"), 3, "has no"));
     }
 
     // "Steps", "Expectations", "Checks": the forms dynamic tests use.

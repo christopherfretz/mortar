@@ -93,10 +93,12 @@ const fn h(
     align: u8,
     status: Status,
 ) -> Howto {
-    // A marker's word may be rewritten by a relaxation (R1, R2): its
-    // window is that word.
-    let window = match field {
-        Field::None => Window { before: 0, after: 4 },
+    // A TLSDESC marker's word may be rewritten by a relaxation (R1, R2):
+    // its window is that word. `NONE` (0, the withdrawn 256) has no
+    // window: it overlaps nothing (arch.md §3.4).
+    let window = match (field, class) {
+        (Field::None, DemandClass::None) => Window { before: 0, after: 0 },
+        (Field::None, _) => Window { before: 0, after: 4 },
         _ => Window { before: 0, after: 0 },
     };
     Howto { name, value, field, check, align, class, addend, implicit: None, window, status }

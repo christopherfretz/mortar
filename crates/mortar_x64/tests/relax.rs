@@ -709,3 +709,69 @@ fn shown_bytes_are_the_reach_clipped() {
     );
     assert_eq!(shown_bytes(&input, 36), "20 21 22 23 24 25 26 27");
 }
+
+// ------------------------------------------- arch.md §3.4: `NONE` (WP-175)
+
+/// The overlaps §3.4 finds among `relocs`; every record from
+/// `first_none` on has an empty window.
+fn none_overlaps(
+    t: &Tables,
+    output: OutputKind,
+    input: &[u8],
+    relocs: &[Reloc],
+    first_none: usize,
+) -> Vec<(u32, u32)> {
+    let x = X64::M1;
+    let mut windows: Vec<UnitWindow> = (0..relocs.len())
+        .map(|i| x.unit_window(output, &at(relocs, i, input), t).unwrap())
+        .collect();
+    for w in &windows[first_none..] {
+        assert_eq!(w.start, w.end, "{w:?}");
+    }
+    let mut out = Vec::new();
+    mortar_arch::seq::overlaps(&mut windows, &mut out);
+    out
+}
+
+/// `R_X86_64_NONE` has an empty window (arch.md §3.4): at a live record's
+/// offset, inside its field, inside a matched sequence's window, it
+/// overlaps nothing, raises nothing, writes nothing, and does not break
+/// the match (pinned for WP-175, where AArch64's differed).
+#[test]
+fn s3_4_none_overlaps_nothing() {
+    let t = tables(TargetKind::Local, false, S);
+    let input = section(&[]);
+    let live = [rel(AT, SYM, 2, -4), rel(AT + 4, SYM, 1, 0)];
+    let want = applied(&t, &input, OutputKind::Static, &live);
+    let mut relocs = live.to_vec();
+    for o in [AT, AT + 2, AT + 4, AT + 8] {
+        relocs.push(rel(o, SYM, 0, 0));
+    }
+    for output in [OutputKind::Static, OutputKind::Exec, OutputKind::Shared] {
+        let out = none_overlaps(&t, output, &input, &relocs, 2);
+        assert!(out.is_empty(), "{output:?}: {out:?}");
+    }
+    assert_eq!(applied(&t, &input, OutputKind::Static, &relocs), want);
+    let s = scan(&t, OutputKind::Static, &input, &relocs[2..]);
+    assert!(s.errors.is_empty() && s.events.is_empty(), "{s:?}");
+    assert!(s.raised.iter().all(|(_, f)| f.is_empty()), "{s:?}");
+    // Every sequence of §8.3 and §8.4, with NONE records on the lead's
+    // field, the follower's and the window's first and last byte, after
+    // both members in record order.
+    let t = tables(TargetKind::Local, true, TLS_S);
+    for output in EXEC {
+        for (name, form, lead, p, follower, delta, le) in sequences() {
+            let input = section(&form);
+            let p = AT + p;
+            let mut relocs = vec![rel(p, SYM, lead, -4), rel(p + delta, GET_ADDR, follower, -4)];
+            for o in [p, p + delta, AT, AT + le.len() - 1] {
+                relocs.push(rel(o, SYM, 0, 0));
+            }
+            let out = none_overlaps(&t, output, &input, &relocs, 2);
+            assert!(out.is_empty(), "{name}: {out:?}");
+            assert_eq!(applied(&t, &input, output, &relocs), with(&input, AT, &le), "{name}");
+            let s = scan(&t, output, &input, &relocs);
+            assert!(s.errors.is_empty() && s.events.is_empty(), "{name}: {s:?}");
+        }
+    }
+}

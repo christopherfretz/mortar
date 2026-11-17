@@ -347,11 +347,20 @@ fn s8_4_pattern_fails() {
     assert_eq!(mortar_a64::relax::gd_lead(&at, &t), Some((0, 0)));
     // Another record in [o, o+16): the pattern still holds, and the record
     // overlaps the unit (refused by arch.md §3.4, never relaxed around).
-    // A marker's window is its word (§6.1), so `NONE` at o+12 overlaps
-    // the `CALL26`'s [o+8, o+16); one past the window does not.
-    for (extra, overlap) in
-        [(r(12, 1, 0), true), (r(12, 1, 258), true), (r(4, 1, 258), true), (r(16, 1, 0), false)]
-    {
+    // A TLSDESC marker's window is its word (§6.1), so a `TLSDESC_CALL`
+    // at o+12 overlaps the `CALL26`'s [o+8, o+16); a `NONE` (0, 256) has
+    // no window and overlaps nothing, inside the window or past it
+    // (arch.md §3.4, WP-175).
+    for (extra, overlap) in [
+        (r(12, 1, 0), false),
+        (r(12, 1, 256), false),
+        (r(8, 1, 0), false),
+        (r(0, 1, 0), false),
+        (r(12, 1, 569), true),
+        (r(12, 1, 258), true),
+        (r(4, 1, 258), true),
+        (r(16, 1, 0), false),
+    ] {
         let mut relocs = gd_relocs().to_vec();
         relocs.push(extra);
         let s = scan(M2, &t, OutputKind::Static, &input, &relocs);
@@ -666,4 +675,109 @@ fn s7_thread_local_undefined_weak() {
     let le = words(&[0x9100_0042]);
     let s = scan(M2, &t, OutputKind::Shared, &le, &[r(0, 1, 551)]);
     assert_eq!(s.errors.len(), 1);
+}
+
+// ------------------------------------------- arch.md §3.4: `NONE` (WP-175)
+
+/// The unit windows of `relocs` in `output` and the overlaps §3.4 finds.
+fn overlaps_of(
+    t: &Tables,
+    output: OutputKind,
+    input: &[u8],
+    relocs: &[Reloc],
+) -> (Vec<UnitWindow>, Vec<(u32, u32)>) {
+    let all = support::all_code(input.len());
+    let mut windows: Vec<UnitWindow> = (0..relocs.len())
+        .map(|i| {
+            let rr = relocs[i];
+            let h = M2.classify(rr.r_type, Site { bytes: input, offset: rr.r_offset }).unwrap();
+            let at = RelocAt {
+                file: FileId(1),
+                section: SectionId(3),
+                index: u32::try_from(i).unwrap(),
+                r_offset: rr.r_offset,
+                key: rr.key,
+                r_type: rr.r_type,
+                addend: Some(0),
+                howto: &h,
+                site: Site { bytes: input, offset: rr.r_offset },
+                records: &relocs,
+                proof: &all,
+                leads: true,
+            };
+            M2.unit_window(output, &at, t).unwrap()
+        })
+        .collect();
+    let mut out = Vec::new();
+    mortar_arch::seq::overlaps(&mut windows, &mut out);
+    (windows, out)
+}
+
+/// A `NONE` record (0, and the withdrawn 256) has an empty window: at a
+/// live record's offset, inside a live record's field, or inside a
+/// matched sequence's window (R4, R2), it overlaps nothing, raises
+/// nothing, writes nothing, and does not break the match. GNU ld's `-r`
+/// writes one on a live `PREL32`'s offset of `.eh_frame` (WP-175).
+#[test]
+fn s3_4_none_overlaps_nothing() {
+    // Data: a PREL32 at 4, an ABS64 at 8; NONE on both offsets and
+    // inside each field.
+    let mut t = tls_tables(TargetKind::Local);
+    t.sym(key(2), 0x41_0000, TargetKind::Local);
+    let input = vec![0u8; 16];
+    let live = [r(4, 2, 261), r(8, 2, 257)];
+    let c = Case::new(&t, &input, 0x40_0000);
+    let want = c.apply(&live).unwrap();
+    for ty in [0, 256] {
+        let mut relocs = live.to_vec();
+        relocs.extend([r(4, 2, ty), r(6, 2, ty), r(8, 2, ty), r(12, 2, ty), r(16, 2, ty)]);
+        for output in [OutputKind::Static, OutputKind::Exec, OutputKind::Shared] {
+            let (windows, out) = overlaps_of(&t, output, &input, &relocs);
+            assert!(out.is_empty(), "{ty} {output:?}: {out:?}");
+            for w in windows.iter().filter(|w| w.record >= 2) {
+                assert_eq!(w.start, w.end, "{ty}: {w:?}");
+            }
+        }
+        assert_eq!(c.apply(&relocs).unwrap(), want, "{ty}: NONE writes nothing");
+        let s = scan(M2, &t, OutputKind::Static, &input, &relocs[2..]);
+        assert!(s.raised.iter().all(|(_, f)| f.is_empty()), "{:?}", s.raised);
+        assert!(s.errors.is_empty() && s.events.is_empty());
+    }
+    // R4 (§8.4): NONE records at o, o+8 and o+12 after the three members
+    // in record order: the pattern still holds, nothing overlaps, and
+    // the relaxed bytes are those without them.
+    let t = gd_tables(TargetKind::Local);
+    let input = words(&GD);
+    let mut c = Case::new(&t, &input, 0x40_0ff8);
+    c.arch = M2;
+    c.tls = Some(TLS);
+    let want = apply_both(&c, &gd_relocs()).unwrap();
+    let mut relocs = gd_relocs().to_vec();
+    relocs.extend([r(0, 1, 0), r(8, 1, 0), r(12, 1, 0), r(12, 1, 256)]);
+    let (_, out) = overlaps_of(&t, OutputKind::Static, &input, &relocs);
+    assert!(out.is_empty(), "{out:?}");
+    assert_eq!(c.apply(&relocs).unwrap(), want);
+    let s = scan(M2, &t, OutputKind::Static, &input, &relocs);
+    assert!(s.raised.iter().all(|(_, f)| f.is_empty()), "{:?}", s.raised);
+    assert!(s.events.is_empty() && s.errors.is_empty(), "{:?}", s.errors);
+    // R2 (§8.2): the large TLSDESC sequence to IE with NONE records on
+    // the `ldr`, the `add` and the `blr` (whose marker word R2 rewrites).
+    let t = tls_tables(TargetKind::Shlib { func: false });
+    let input = words(&[0x9000_0000, 0xF940_0001, 0x9100_0000, 0xD63F_0020]);
+    let seq = [r(0, 1, 562), r(4, 1, 563), r(8, 1, 564), r(12, 1, 569)];
+    let mut c = Case::new(&t, &input, 0x40_0ff8);
+    c.arch = M2;
+    c.output = OutputKind::Exec;
+    let want = apply_both(&c, &seq).unwrap();
+    let mut relocs = seq.to_vec();
+    relocs.extend([r(4, 1, 0), r(8, 1, 0), r(12, 1, 0)]);
+    let (_, out) = overlaps_of(&t, OutputKind::Exec, &input, &relocs);
+    assert!(out.is_empty(), "{out:?}");
+    assert_eq!(c.apply(&relocs).unwrap(), want);
+    // A TLSDESC marker keeps its word as its window: on the `blr`'s
+    // word, a second `TLSDESC_CALL` overlaps the first.
+    let mut relocs = seq.to_vec();
+    relocs.push(r(12, 1, 569));
+    let (_, out) = overlaps_of(&t, OutputKind::Exec, &input, &relocs);
+    assert_eq!(out, [(4, 3)]);
 }
