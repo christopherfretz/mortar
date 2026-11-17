@@ -83,7 +83,12 @@ pub(crate) fn check(
     } else {
         pd7(image, out, model, ld, format, &mut v);
         // P-D14's entry rule for an Exec or a Pie (WP-088).
-        crate::spie::entry_point(image, line.entry.as_deref(), 4, &mut v);
+        // The entry symbol undefined in the output (WP-163, resolve.md
+        // §5.5: `-e K` of a name only an unneeded --as-needed library
+        // defines): e_entry 0, L-103.
+        let entry = line.entry_name();
+        let undefined = !model.keys.get(entry.unwrap_or("_start")).is_some_and(|k| k.defined);
+        crate::spie::entry_point_of(image, entry, Some((undefined, format)), 4, &mut v);
     }
     pd8(out, model, ld, &mut v);
     pd9_order(out, ld.machine, &mut v);
@@ -539,11 +544,28 @@ fn pd6(
                     && model.keys.get(name).is_some_and(|k| k.strong_ref && !k.defined)
             })
         });
+        // D-11 item 2: a library only a root names a definition of.
+        let root = !hidden
+            && model.by_soname(m).is_some_and(|i| {
+                model.dsos[i].defs.iter().any(|(name, defs)| {
+                    defs.iter().any(crate::dynmodel::SoDef::visible)
+                        && model
+                            .keys
+                            .get(name)
+                            .is_some_and(|k| k.root && !k.defined && !k.strong_ref)
+                })
+            });
         v.push(fd(
             6,
             format!(
                 "DT_NEEDED names '{m}', which D-11 does not make needed{}",
-                if hidden { " (only a STV_HIDDEN entry: W1)" } else { "" }
+                if hidden {
+                    " (only a STV_HIDDEN entry: W1)"
+                } else if root {
+                    ROOT_NEEDED
+                } else {
+                    ""
+                }
             ),
         ));
     }
@@ -740,6 +762,16 @@ fn d30_rank() -> HashMap<u64, usize> {
     .collect()
 }
 
+/// P-D6's suffix for a library in `DT_NEEDED` that only a root names a
+/// definition of (D-11 item 2: a root never makes an `--as-needed`
+/// library needed; mold does, anomaly A48; WP-163).
+pub(crate) const ROOT_NEEDED: &str = " (only a root names a definition of it: D-11 item 2)";
+
+/// P-D7's suffix for a root a needed library defines and `.dynsym`
+/// lacks (D-21 item 1: GNU ld and mortar import it; lld and mold write
+/// none, anomaly A47; WP-163).
+pub(crate) const ROOT_IMPORT: &str = " (D-21 item 1: a root is imported)";
+
 /// P-D7: the `.dynsym` set and fields (D-21, D-23).
 #[allow(clippy::too_many_lines)] // imports, exports, fields
 fn pd7(
@@ -764,7 +796,16 @@ fn pd7(
             (Some((i, d)), None) => {
                 // A key resolved but absent from .dynsym: its uses must
                 // then not need it; a reference that reaches it is P-D9's.
-                if k.strong_ref {
+                if k.root_import {
+                    v.push(sym_finding(
+                        7,
+                        name,
+                        format!(
+                            "'{name}' is a root defined by {}, a needed library, and is not in .dynsym{ROOT_IMPORT}",
+                            model.dsos[i].soname
+                        ),
+                    ));
+                } else if k.strong_ref {
                     v.push(sym_finding(
                         7,
                         name,
@@ -2022,12 +2063,23 @@ fn fields(
                     })
                 })
             };
-            let referenced = refd(&s.name) || line.undefined.contains(&s.name) || alias();
+            // A root is a reference only when a library of the needed
+            // set defines it (D-21 item 1, D-11 item 2; WP-163): the model
+            // has then made it one.
+            let referenced = refd(&s.name) || alias();
             if !referenced {
+                let root = model.keys.get(&s.name).is_some_and(|k| k.root);
                 v.push(sym_finding(
                     7,
                     &s.name,
-                    format!("'{}' is imported and no input references it (D-21)", s.name),
+                    if root {
+                        format!(
+                            "'{}' is imported and no library of the needed set defines it (a root: D-21 item 1, D-11 item 2)",
+                            s.name
+                        )
+                    } else {
+                        format!("'{}' is imported and no input references it (D-21)", s.name)
+                    },
                 ));
             }
             // A non-zero value is a canonical PLT claim (D-18): the

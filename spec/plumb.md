@@ -4487,6 +4487,24 @@ is accepted from its linker only, never from mortar's map.
   AArch64 PIE that leaves `__tls_get_addr` undefined writes one in
   `.rela.plt` for the PLT entry it dropped; not this anomaly.)
 
+- **A47 (lld, mold; WP-163).** A root (`-u K`, an implicit script's
+  `EXTERN(K)`) that no input references and only a needed shared library
+  defines gets no `.dynsym` entry: dyn.md D-21 item 1 imports it, as GNU
+  ld and mortar do. Nothing at load depends on the entry (no reference
+  binds through it); a `dlsym` of the program for K finds the library's
+  definition either way. P-D7 with the message "... (D-21 item 1: a
+  root is imported)" (P-D7's shape); in mortar's output it is P-D7's
+  plain finding. Reproducers: `tests/link/dyn/shared/root-as-needed-extern.test`
+  (lld's `extnoas-*`), `tests/shared.rs` case `roots`.
+- **A48 (mold; WP-163).** mold makes an `--as-needed` library needed when
+  only a root (`-u`, `-e`) names a definition of it, where D-11 item 2
+  (GNU ld, lld, mortar) does not: an extra `DT_NEEDED` entry, the
+  library loaded for nothing. P-D6 with the message "... (only a root
+  names a definition of it: D-11 item 2)"; in mortar's output it is
+  P-D6's plain finding. Reproducers:
+  `tests/link/dyn/shared/root-as-needed-unneeded.test` (`umold-*`),
+  `tests/shared.rs` case `roots`.
+
 lld also links a `.hidden` or `.protected` undefined reference that only
 a library defines (writing 0) and drops the library from `DT_NEEDED`:
 that is dyn.md W9, P-D6 (A36's family), declared where a test has it,
@@ -4795,6 +4813,20 @@ own implementation of D-11-D-27 and compared with the output.
   `s12_pie_entry_and_non_address_relative` (case `pie-rules`: each
   linker's `-pie` output of `relx.c` with `e_entry` + 4 is P-D4 on both
   machines, missed with the rule dropped).
+  An entry symbol the output does not define (WP-163; resolve.md §5.5:
+  `-e K` where no live object defines K, as when only an `--as-needed`
+  library that the root does not make needed defines it, D-11 item 2):
+  the link warned `entry-not-found` and mortar writes `e_entry` 0
+  (layout.md L-103), so 0 is accepted from every linker; in mortar's
+  output any other value is P-D4 ("... is defined by no live object and
+  the entry point is X: layout L-103 writes 0"); a reference's own
+  fallback (GNU ld: the start of `.text`) is held to an executable
+  `PT_LOAD`. "Defined" is the verifier's model: a definition in a live
+  relocatable object or one of file 0's (the linker's own). When the symbol is
+  defined, a 0 is P-D4 as any other wrong value. Tests: `tests/shared.rs`
+  `p_d_roots_mutations_are_caught` (GNU ld's `-e k_fn` outputs, whose
+  `e_entry` is the start of `.text`, are P-D4 as mortar's; each
+  reference's output with `_start` defined and `e_entry` 0 is P-D4).
   **No `PT_DYNAMIC` (WP-131 V5).** The output kind comes from the line
   and the inputs (D-1), never from what the output holds: an output
   without `PT_DYNAMIC` is judged as static only when nothing says it is
@@ -4837,6 +4869,16 @@ own implementation of D-11-D-27 and compared with the output.
   six `DT_NULL` entries at the end. The `DT_NEEDED` entries equal the
   needed set the verifier computes by D-11/D-12 from the P-D2 inputs, in
   D-19a's order (W9).
+  A root (WP-163; resolve.md §4.2's table: `-e`, else the script's
+  `ENTRY`; `-u`; `--require-defined`; an implicit script's `EXTERN`,
+  quoted or not) is no reference for D-11: it never makes an
+  `--as-needed` library needed (D-11 item 2); the needed set comes from
+  the inputs' references alone. A library in `DT_NEEDED` that only a
+  root names a definition of is P-D6 "... which D-11 does not make
+  needed (only a root names a definition of it: D-11 item 2)"; mold
+  makes it needed (A48). The verifier reads the roots once
+  (`Line::root_names`), from the fields the input set's rule (§3.8)
+  reads.
   D-13 (WP-088, W16): unless the line has `--allow-shlib-undefined`,
   every strong undefined reference of a member of N ∪ U is satisfied by
   a program definition that is not hidden, or by a visible definition, of
@@ -4851,7 +4893,20 @@ own implementation of D-11-D-27 and compared with the output.
   shared objects (hidden `.dynsym` entries ignored, W1), exports the
   program definitions referenced by needed or used objects (W8), every
   copy alias, the `WeakDyn` keys; order per D-22; fields per D-23;
-  `sh_info` 1; `.dynstr` holds each name once. The line's export options
+  `sh_info` 1; `.dynstr` holds each name once. A root (P-D6 above) the
+  program does not define is imported iff a library of the final needed
+  set has a visible definition of it, unversioned or of its default
+  version (what a reference without a version binds; D-21 item 1,
+  WP-163); otherwise it is written nowhere. A root a needed library
+  defines and `.dynsym` lacks is P-D7 "... is a root defined by L, a
+  needed library, and is not in .dynsym (D-21 item 1: a root is
+  imported)": lld and mold write none (A47); a root imported though no
+  library of the needed set defines it is P-D7 "... is imported and no
+  library of the needed set defines it (a root: ...)". Tests:
+  `tests/shared.rs` `p_d_roots_of_as_needed_libraries` (case `roots`:
+  each reference's `-u k_fn` link with `libks.so` as-needed and not,
+  and a quoted `EXTERN("k_fn")`) and `p_d_roots_mutations_are_caught`;
+  the link tests `dyn/shared/root-as-needed*.test`. The line's export options
   (WP-161; D-110 item 1, resolve.md §9.6), read in every format: a key
   whose every relocatable definition is in a member of an archive
   `--exclude-libs` names (`ALL`, or the member's archive by file name)

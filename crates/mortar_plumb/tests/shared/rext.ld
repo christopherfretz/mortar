@@ -1,0 +1,1 @@
+EXTERN("k_fn")

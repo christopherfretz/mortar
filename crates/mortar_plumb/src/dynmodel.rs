@@ -250,6 +250,17 @@ pub struct Key {
     /// An executable's `--dynamic-list` lists it (resolve §9.6, D-21;
     /// WP-161): a definition of it is exported.
     pub listed: bool,
+    /// A root of the line (`Line::root_names`: `-e`, `-u`,
+    /// `--require-defined`, `EXTERN`; resolve §4.2, WP-163). A root is
+    /// no reference for D-11 (item 2: it never makes an `--as-needed`
+    /// library needed); after the needed set it is a strong reference
+    /// iff a library of that set defines it (D-21 item 1: imported),
+    /// else it is written nowhere.
+    pub root: bool,
+    /// A root a library of the needed set defines and no input references:
+    /// `strong_ref` by D-21 item 1 alone (GNU ld and mortar import it; lld
+    /// and mold write none, anomaly A47; WP-163).
+    pub root_import: bool,
 }
 
 /// The model.
@@ -485,10 +496,8 @@ impl Model {
         {
             m.dynamic_list(line, files);
         }
-        for u in line.undefined.iter().chain(line.entry.iter()) {
-            let k = m.keys.entry(u.clone()).or_default();
-            k.strong_ref = true;
-            k.ref_pos.push((0, None));
+        for u in line.root_names() {
+            m.keys.entry(u.to_string()).or_default().root = true;
         }
         for n in file0 {
             m.keys.entry(n.clone()).or_default().defined = true;
@@ -537,6 +546,28 @@ impl Model {
                 break;
             }
             n.extend(add);
+        }
+        // D-21 item 1 (WP-163): a root the program does not define is
+        // imported iff a library of the final needed set defines it (any
+        // version or the default one: what a reference without a version
+        // binds).
+        let imported: Vec<String> = m
+            .keys
+            .iter()
+            .filter(|(name, k)| {
+                k.root
+                    && !k.defined
+                    && !k.strong_ref
+                    && n.iter().any(|&i| m.dsos[i].def(name, None).is_some())
+            })
+            .map(|(name, _)| name.clone())
+            .collect();
+        for name in imported {
+            if let Some(k) = m.keys.get_mut(&name) {
+                k.strong_ref = true;
+                k.root_import = true;
+                k.ref_pos.push((0, None));
+            }
         }
         m.item3 = n.difference(&n0).copied().collect();
         m.used = m.reach(n.iter().copied()).difference(&n).copied().collect();

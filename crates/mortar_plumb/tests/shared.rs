@@ -69,6 +69,9 @@ const SOURCES: &[(&str, &str)] = src![
     "vd31.map",
     "vdx.c",
     "vdx.map",
+    "rks.c",
+    "rm0.c",
+    "rext.ld",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -161,7 +164,11 @@ impl Out {
 
     /// `out` judged as mortar's output of the same line (mortar's rows).
     fn verify_as_mortar(&self, out: &[u8]) -> Report {
-        let words = self.words();
+        self.verify_line_as_mortar(out, self.words())
+    }
+
+    /// `out` judged as mortar's output of the line `words`.
+    fn verify_line_as_mortar(&self, out: &[u8], words: Vec<String>) -> Report {
         let mut map = self.link.parse_map();
         let files = self.link.inputs(&map);
         map.format = mortar_plumb::Format::Mortar;
@@ -385,6 +392,7 @@ fn build() -> Option<Corpus> {
     tlsgd(&mut b);
     verdef(&mut b);
     optail(&mut b);
+    roots(&mut b);
     Some(Corpus { _scratch: scratch, outs: b.outs })
 }
 
@@ -695,6 +703,207 @@ fn optail(b: &mut Builder<'_>) {
             }
         }
     }
+}
+
+/// WP-163 (resolve.md §4.2, dyn.md D-11 item 2, D-21 item 1, L-103): a
+/// root names a definition only an `--as-needed` library has (`u`: the
+/// library is not needed, `k_fn` written nowhere; mold makes it needed,
+/// A48), a needed library's (`noas`: imported; lld and mold write none, A47), a
+/// quoted `EXTERN("k_fn")` of an implicit script with the library needed
+/// (`ext`), and `-e k_fn` where the library is not needed (`entry`: GNU
+/// ld warns and writes the start of `.text`). Every link is the case
+/// `roots`.
+fn roots(b: &mut Builder<'_>) {
+    use Linker::{Bfd, Lld, Mold};
+    const ASN: [&str; 3] = ["-Wl,--as-needed", "-lks", "-Wl,--no-as-needed"];
+    for arch in [Arch::A64, Arch::X64] {
+        let d = b.dir(arch, "roots");
+        std::fs::copy(b.root.join("rext.ld"), d.join("ext.ld")).unwrap();
+        b.obj(arch, &d, "rm0.c", &["-O1", "-fPIE"], "m0.o");
+        b.so(arch, &d, "rks.c", "libks.so", "libks.so");
+        for (pie, sfx) in [("-pie", "pie"), ("-no-pie", "nopie")] {
+            for l in Linker::ALL {
+                let want: &'static [&'static str] = match l {
+                    Mold => &["?A3", "?A9", "?A13", "A48"],
+                    Bfd => &["?A10"],
+                    Lld => &[],
+                };
+                let mut args = vec![pie, "m0.o", "-u", "k_fn", "-L."];
+                args.extend(ASN);
+                b.link("roots", arch, &d, &format!("u-{sfx}"), &args, l, want);
+                let noas: &'static [&'static str] = match l {
+                    Bfd => &["?A10"],
+                    Lld => &["A47"],
+                    Mold => &["?A3", "?A9", "?A13", "A47"],
+                };
+                let args = [pie, "m0.o", "-u", "k_fn", "-L.", "-Wl,--no-as-needed", "-lks"];
+                b.link("roots", arch, &d, &format!("noas-{sfx}"), &args, l, noas);
+                if l != Mold {
+                    // mold 2.37 refuses EXTERN.
+                    let args = [pie, "m0.o", "ext.ld", "-L.", "-Wl,--no-as-needed", "-lks"];
+                    b.link("roots", arch, &d, &format!("ext-{sfx}"), &args, l, noas);
+                }
+            }
+            let mut args = vec![pie, "m0.o", "-Wl,-e,k_fn", "-L."];
+            args.extend(ASN);
+            b.link("roots", arch, &d, &format!("entry-{sfx}"), &args, Bfd, &["?A10"]);
+        }
+    }
+}
+
+// WP-163: the roots' links of every reference verify clean but for their
+// named differences (A47, A48).
+#[test]
+fn p_d_roots_of_as_needed_libraries() {
+    judge("roots");
+}
+
+/// Points the `.dynsym` entry named `from` at `to`, a string of `.dynstr`
+/// (a suffix of one is a string).
+fn rename_dynsym(b: &mut [u8], from: &str, to: &str) {
+    let (sym, size) = section(b, ".dynsym");
+    let (strs, ssize) = section(b, ".dynstr");
+    let name = |b: &[u8], at: usize| b[at..].split(|&c| c == 0).next().unwrap().to_vec();
+    let to_at = (0..ssize)
+        .find(|&i| b[strs + i..].starts_with(to.as_bytes()) && b[strs + i + to.len()] == 0)
+        .expect("no such string") as u32;
+    let e = (sym..sym + size)
+        .step_by(24)
+        .find(|&e| name(b, strs + u32at(b, e) as usize) == from.as_bytes())
+        .expect("no such entry");
+    put32(b, e, to_at);
+}
+
+/// The words of `o`'s line with `-lks` under `--as-needed`, the words
+/// after it as they were (GCC's driver passes `--as-needed` before the
+/// inputs on this host).
+fn ks_as_needed(o: &Out) -> Vec<String> {
+    let mut w = o.words();
+    let i = w.iter().position(|x| x == "-lks").expect("-lks");
+    let after = w.iter().take(i).rev().find(|x| x.ends_with("as-needed")).cloned();
+    let mut put = vec!["--as-needed".to_string(), "-lks".to_string()];
+    put.extend(after);
+    w.splice(i..=i, put);
+    w
+}
+
+// WP-163's mutations (spec/plumb.md §9.2's form), on the references'
+// outputs judged as mortar's: the library in DT_NEEDED though only a root
+// names it (P-D6); `k_fn` imported though no needed library defines it,
+// and not imported though one does (P-D7); `e_entry` not 0 for an entry
+// symbol the output does not define, and 0 for one it does (P-D4).
+#[test]
+fn p_d_roots_mutations_are_caught() {
+    let Some(c) = corpus() else { return };
+    let has = |r: &Report, rule: &str, want: &str| {
+        r.findings.iter().any(|f| f.rule.id() == rule && f.message.contains(want))
+    };
+    let mut n = 0;
+    let mut caught = |what: String, r: &Report, rule: &str, want: &str| {
+        n += 1;
+        assert!(has(r, rule, want), "{what}: no {rule} '{want}' in\n{}", r.render("o"));
+    };
+    let get = |arch: Arch, l: Linker, out: &str| {
+        c.outs
+            .iter()
+            .find(|o| {
+                o.case == "roots"
+                    && o.arch == arch
+                    && o.link.linker == l
+                    && o.link
+                        .output
+                        .file_name()
+                        .is_some_and(|f| f.to_string_lossy() == format!("{out}.{}", l.name()))
+            })
+            .unwrap_or_else(|| panic!("no {out} of {}", l.name()))
+    };
+    for arch in [Arch::A64, Arch::X64] {
+        for sfx in ["pie", "nopie"] {
+            let what = |s: &str| format!("{} {sfx}: {s}", arch.name());
+            // Clean as mortar's: GNU ld's needed set, imports and entry.
+            for out in ["u", "noas", "ext", "entry"] {
+                let o = get(arch, Linker::Bfd, &format!("{out}-{sfx}"));
+                let bytes = o.link.output_bytes();
+                let mut b = bytes.clone();
+                if out == "entry" {
+                    // L-103: mortar writes 0 for the undefined entry.
+                    b[0x18..0x20].copy_from_slice(&0u64.to_le_bytes());
+                }
+                // A reference's output judged as mortar's has mortar's
+                // other rules to meet (the map, D-26, D-30); the roots'
+                // rules are clean.
+                let r = o.verify_as_mortar(&b);
+                let k: Vec<String> = keys(&r)
+                    .into_iter()
+                    .filter(|k| k.starts_with("P-D4") || k.contains("k_fn") || k.contains("libks"))
+                    .collect();
+                assert!(k.is_empty(), "{}: {k:#?}", what(&format!("GNU ld's {out} as mortar's")));
+            }
+            // P-D6: a root made the library needed (mold's output; GNU
+            // ld's noas output judged against the --as-needed line).
+            let o = get(arch, Linker::Mold, &format!("u-{sfx}"));
+            let r = o.verify_as_mortar(&o.link.output_bytes());
+            caught(what("mold's u"), &r, "P-D6", "only a root names a definition of it");
+            let o = get(arch, Linker::Bfd, &format!("noas-{sfx}"));
+            let r = o.verify_line_as_mortar(&o.link.output_bytes(), ks_as_needed(o));
+            caught(
+                what("noas under --as-needed"),
+                &r,
+                "P-D6",
+                "only a root names a definition of it",
+            );
+            // P-D7: k_fn imported though no needed library defines it.
+            caught(
+                what("noas under --as-needed"),
+                &r,
+                "P-D7",
+                "'k_fn' is imported and no library of the needed set defines it",
+            );
+            // P-D7: k_fn not imported though a needed library defines it
+            // (GNU ld's noas output with its .dynsym entry renamed; lld's
+            // noas and ext outputs, whose A47 is no difference of mortar's).
+            let o = get(arch, Linker::Bfd, &format!("noas-{sfx}"));
+            let mut b = o.link.output_bytes();
+            rename_dynsym(&mut b, "k_fn", "ks.so");
+            let r = o.verify_as_mortar(&b);
+            caught(what("noas, k_fn renamed"), &r, "P-D7", "D-21 item 1: a root is imported");
+            for out in ["noas", "ext"] {
+                let o = get(arch, Linker::Lld, &format!("{out}-{sfx}"));
+                let r = o.verify_as_mortar(&o.link.output_bytes());
+                caught(
+                    what(&format!("lld's {out}")),
+                    &r,
+                    "P-D7",
+                    "D-21 item 1: a root is imported",
+                );
+            }
+            // P-D4: GNU ld's e_entry for the undefined k_fn (the start of
+            // .text) is not mortar's 0.
+            let o = get(arch, Linker::Bfd, &format!("entry-{sfx}"));
+            let bytes = o.link.output_bytes();
+            assert_ne!(u64at(&bytes, 0x18), 0, "{}", what("GNU ld's e_entry"));
+            let r = o.verify_as_mortar(&bytes);
+            caught(what("entry as mortar's"), &r, "P-D4", "L-103 writes 0");
+            // P-D4: e_entry 0 though _start is defined, from every linker.
+            for l in [Linker::Bfd, Linker::Lld, Linker::Mold] {
+                let o = get(arch, l, &format!("u-{sfx}"));
+                let mut b = o.link.output_bytes();
+                b[0x18..0x20].copy_from_slice(&0u64.to_le_bytes());
+                let r = o.verify_bytes(&b);
+                caught(
+                    what(&format!("{}'s u, e_entry 0", l.name())),
+                    &r,
+                    "P-D4",
+                    "the entry point",
+                );
+                if l == Linker::Bfd {
+                    let r = o.verify_line_as_mortar(&b, o.words());
+                    caught(what("u as mortar's, e_entry 0"), &r, "P-D4", "the entry point");
+                }
+            }
+        }
+    }
+    assert_eq!(n, 2 * 2 * 11, "mutations");
 }
 
 /// The x86-64 TLS dialects of WP-144: (name, the compiler's flags).

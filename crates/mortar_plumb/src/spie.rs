@@ -111,7 +111,43 @@ pub(crate) fn is_static_pie(image: &Image<'_>) -> bool {
 /// value (`-e`, else `_start`) when `.symtab` defines it (S7 judges
 /// `ET_EXEC`'s segment only). Findings of rule P-D`n`.
 pub(crate) fn entry_point(image: &Image<'_>, entry: Option<&str>, n: u8, v: &mut Vec<Finding>) {
+    entry_point_of(image, entry, None, n, v);
+}
+
+/// [`entry_point`], told by the dynamic model that the entry symbol is
+/// `undefined` in the output (`Some((true, format))`: no live object
+/// defines it, resolve.md §5.5; WP-163): the link warned
+/// `entry-not-found`, and mortar writes `e_entry` 0 (layout L-103), so 0
+/// is accepted from every linker and, in mortar's output, any other value
+/// is a finding; a reference's own fallback (GNU ld: the start of
+/// `.text`) is held to an executable `PT_LOAD` as before.
+pub(crate) fn entry_point_of(
+    image: &Image<'_>,
+    entry: Option<&str>,
+    undefined: Option<(bool, Format)>,
+    n: u8,
+    v: &mut Vec<Finding>,
+) {
     let e = image.header.e_entry;
+    let name = entry.unwrap_or("_start");
+    if let Some((true, format)) = undefined {
+        if e == 0 {
+            return;
+        }
+        if format == Format::Mortar {
+            let mut f = Finding::new(
+                Rule::Dyn(n),
+                format!(
+                    "the entry symbol '{name}' is defined by no live object and the entry point is {e:#x}: layout L-103 writes 0 (resolve.md §5.5)"
+                ),
+            )
+            .at(e);
+            f.expected = Some(0);
+            f.found = Some(e);
+            v.push(f);
+            return;
+        }
+    }
     let insn = if image.header.e_machine == EM_AARCH64 { 4 } else { 1 };
     if image.load_of(e, insn).is_none_or(|p| p.p_flags & mortar_elf::consts::PF_X == 0) {
         v.push(
@@ -122,7 +158,6 @@ pub(crate) fn entry_point(image: &Image<'_>, entry: Option<&str>, n: u8, v: &mut
             .at(e),
         );
     }
-    let name = entry.unwrap_or("_start");
     if let Some(s) = image.global(name).or_else(|| image.unique(name))
         && s.sym.st_shndx != 0
         && s.sym.st_value != e

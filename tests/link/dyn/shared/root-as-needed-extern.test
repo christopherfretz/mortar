@@ -1,17 +1,15 @@
 # resolve.md §4.2 (WP-152): a script's EXTERN(K) is a root as -u is,
 # and a shared object takes it as -u (dyn/shared/root-as-needed): an
 # --as-needed library defining K is not needed (GNU ld, lld, mortar);
-# a needed one imports K (GNU ld, mortar; lld writes no .dynsym entry);
-# the library first and nothing needing it, then an archive member, is
-# refused by name. mold 2.37 refuses EXTERN (unknown linker script
-# token). The verifier reads EXTERN as a root of the input set (WP-156)
-# and not as what D-21 imports: P-D7 reports the import GNU ld and
-# mortar write for a needed library ("'k_fn' is imported and no input
-# references it"), so the two are xfail until WP-163; lld's lines pass.
+# a needed one imports K (dyn.md D-21 item 1: GNU ld, mortar), where lld
+# writes no .dynsym entry: the verifier's P-D7 names that, anomaly A47
+# (WP-163). The library first and nothing needing it, then an archive
+# member, is refused by name. mold 2.37 refuses EXTERN (unknown linker
+# script token).
 #@ spec: resolve.md §4.2
 #@ spec: dyn.md "D-11"
 #@ arch: aarch64 x86_64
-#@ xfail(bfd,mortar): P-D7 does not read an EXTERN root as a reference a needed library's definition is imported for (WP-152 rule: it is; WP-163)
+#@ anomaly(lld): A47
 
 cc -O1 -fPIC ks.c -o ks.o
 cc -O1 -fPIC ka.c -o ka.o
@@ -26,9 +24,9 @@ check(bfd,lld,mortar) readelf -dW ext-pie
   not: libks.so
 check(bfd,lld,mortar) readelf --dyn-syms -W ext-pie
   not: * k_fn$
-link(bfd,mortar) gcc -pie m0.o ext.ld -L. -Wl,--no-as-needed -lks -o extnoas-pie
-run(bfd,mortar) extnoas-pie
-check(bfd,mortar) readelf -dW extnoas-pie
+link(bfd,lld,mortar) gcc -pie m0.o ext.ld -L. -Wl,--no-as-needed -lks -o extnoas-pie
+run(bfd,lld,mortar) extnoas-pie
+check(bfd,lld,mortar) readelf -dW extnoas-pie
   has: (NEEDED) Shared library: [libks.so]
 check(bfd,mortar) readelf --dyn-syms -W extnoas-pie
   has: UND k_fn$
@@ -44,9 +42,9 @@ check(bfd,lld,mortar) readelf -dW ext-nopie
   not: libks.so
 check(bfd,lld,mortar) readelf --dyn-syms -W ext-nopie
   not: * k_fn$
-link(bfd,mortar) gcc -no-pie m0.o ext.ld -L. -Wl,--no-as-needed -lks -o extnoas-nopie
-run(bfd,mortar) extnoas-nopie
-check(bfd,mortar) readelf -dW extnoas-nopie
+link(bfd,lld,mortar) gcc -no-pie m0.o ext.ld -L. -Wl,--no-as-needed -lks -o extnoas-nopie
+run(bfd,lld,mortar) extnoas-nopie
+check(bfd,lld,mortar) readelf -dW extnoas-nopie
   has: (NEEDED) Shared library: [libks.so]
 check(bfd,mortar) readelf --dyn-syms -W extnoas-nopie
   has: UND k_fn$
@@ -61,8 +59,8 @@ check(bfd,lld,mortar) readelf -dW ext-so.so
   not: libks.so
 check(bfd,lld,mortar) readelf --dyn-syms -W ext-so.so
   not: * k_fn$
-link(bfd,mortar) gcc -shared ext.ld -L. -Wl,--no-as-needed -lks -o extnoas-so.so
-check(bfd,mortar) readelf -dW extnoas-so.so
+link(bfd,lld,mortar) gcc -shared ext.ld -L. -Wl,--no-as-needed -lks -o extnoas-so.so
+check(bfd,lld,mortar) readelf -dW extnoas-so.so
   has: (NEEDED) Shared library: [libks.so]
 check(bfd,mortar) readelf --dyn-syms -W extnoas-so.so
   has: UND k_fn$
