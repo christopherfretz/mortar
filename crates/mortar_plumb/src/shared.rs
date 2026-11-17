@@ -74,6 +74,11 @@ pub struct SharedLine {
     pub static_pie: bool,
     /// Forms D-112 refuses by name (each a P-D1 finding).
     pub outside: Vec<String>,
+    /// The `-z` keywords of the line, in order (D-103's flags, P-D22).
+    pub z: Vec<String>,
+    /// `-z defs`/`--no-undefined` (D-118: an import nothing defines is
+    /// then refused; without it the host resolves it, P-D17 view A).
+    pub zdefs: bool,
 }
 
 impl SharedLine {
@@ -98,8 +103,20 @@ impl SharedLine {
 
     /// Reads the words of a link (without the program name).
     #[allow(clippy::too_many_lines)] // one arm per option
-    pub fn read(args: &[String]) -> SharedLine {
+    /// `symbolic` is [`Line::symbolic`], the one reader of the
+    /// `-Bsymbolic` family (the last form; `None` with none or after
+    /// `-Bno-symbolic`).
+    pub fn read(args: &[String], symbolic: Option<&str>) -> SharedLine {
         let mut l = SharedLine::default();
+        l.symbolic = match symbolic {
+            None => None,
+            Some("-Bsymbolic") => Some(Symbolic::All),
+            Some("-Bsymbolic-functions") => Some(Symbolic::Functions),
+            Some(other) => {
+                l.outside.push(format!("{other} (dyn.md D-112: refused by name)"));
+                None
+            }
+        };
         let mut i = 0;
         let val = |a: &str, opts: &[&str]| -> Option<String> {
             opts.iter()
@@ -113,16 +130,7 @@ impl SharedLine {
                 args.get(i).cloned()
             };
             match a {
-                "-Bsymbolic" | "--Bsymbolic" => l.symbolic = Some(Symbolic::All),
-                "-Bsymbolic-functions" | "--Bsymbolic-functions" => {
-                    l.symbolic = Some(Symbolic::Functions);
-                }
-                "-Bno-symbolic" | "--Bno-symbolic" => l.symbolic = Some(Symbolic::None),
-                "-Bsymbolic-non-weak"
-                | "--Bsymbolic-non-weak"
-                | "-Bsymbolic-non-weak-functions"
-                | "--Bsymbolic-non-weak-functions"
-                | "--dynamic-list-data"
+                "--dynamic-list-data"
                 | "-dynamic-list-data"
                 | "--dynamic-list-cpp-new"
                 | "-dynamic-list-cpp-new"
@@ -149,6 +157,12 @@ impl SharedLine {
                 "-E" | "--export-dynamic" | "-export-dynamic" => l.export_dynamic = true,
                 "--no-export-dynamic" => l.export_dynamic = false,
                 "-static-pie" | "--static-pie" => l.static_pie = true,
+                "-z" => {
+                    if let Some(z) = next() {
+                        l.zword(&z);
+                    }
+                }
+                "--no-undefined" | "-no-undefined" => l.zdefs = true,
                 // Options whose next word is a value the loop must skip.
                 "-o"
                 | "-m"
@@ -181,7 +195,6 @@ impl SharedLine {
                 | "-mllvm"
                 | "--chroot"
                 | "--hash-style"
-                | "-z"
                 | "-L"
                 | "--library-path"
                 | "-l"
@@ -217,12 +230,43 @@ impl SharedLine {
                         l.soname = Some(s);
                     } else if let Some(s) = a.strip_prefix("-h").filter(|s| !s.is_empty()) {
                         l.soname = Some(s.to_string());
+                    } else if let Some(z) = a.strip_prefix("-z").filter(|z| !z.is_empty()) {
+                        l.zword(z);
                     }
                 }
             }
             i += 1;
         }
         l
+    }
+
+    fn zword(&mut self, z: &str) {
+        match z {
+            "defs" => self.zdefs = true,
+            "undefs" => self.zdefs = false,
+            _ => {}
+        }
+        self.z.push(z.to_string());
+    }
+
+    /// `DT_FLAGS_1`'s bits the line's `-z` words ask for (D-103):
+    /// `nodelete`, `nodlopen`, `initfirst`, `interpose`, `origin`; `now`
+    /// (the last of `now`/`lazy`).
+    pub fn flags_1(&self) -> u64 {
+        let mut f = 0;
+        for z in &self.z {
+            match z.as_str() {
+                "now" => f |= crate::dynout::DF_1_NOW,
+                "lazy" => f &= !crate::dynout::DF_1_NOW,
+                "nodelete" => f |= DF_1_NODELETE,
+                "nodlopen" => f |= DF_1_NOOPEN,
+                "initfirst" => f |= DF_1_INITFIRST,
+                "interpose" => f |= DF_1_INTERPOSE,
+                "origin" => f |= DF_1_ORIGIN,
+                _ => {}
+            }
+        }
+        f
     }
 
     fn exclude(&mut self, v: &str) {
@@ -253,7 +297,7 @@ pub fn accept(image: &Image<'_>, out: &DynOut, line: &mut Line, args: &[String])
     if !line.outside.iter().any(|o| o == SHARED_OUTSIDE) {
         return acc;
     }
-    let sl = SharedLine::read(args);
+    let sl = SharedLine::read(args, line.symbolic);
     if sl.static_pie {
         // gcc drops `-shared` before `-static-pie`; a line with both stays
         // outside stage 3, as before.
@@ -1250,6 +1294,12 @@ pub fn pd19(out: &DynOut, sets: &Sets, format: Format) -> Vec<Finding> {
 
 pub const DT_SYMBOLIC: u64 = 16;
 pub const DF_SYMBOLIC: u64 = 2;
+/// `DT_FLAGS_1` bits of D-103's `-z` words.
+pub const DF_1_NODELETE: u64 = 0x8;
+pub const DF_1_INITFIRST: u64 = 0x20;
+pub const DF_1_NOOPEN: u64 = 0x40;
+pub const DF_1_ORIGIN: u64 = 0x80;
+pub const DF_1_INTERPOSE: u64 = 0x400;
 /// `GNU_PROPERTY_1_NEEDED` and its `INDIRECT_EXTERN_ACCESS` bit.
 const GNU_PROPERTY_1_NEEDED: u32 = 0xb000_8000;
 const NEEDED_INDIRECT_EXTERN_ACCESS: u64 = 1;
@@ -1459,6 +1509,25 @@ pub(crate) fn static_checks(
                 "DT_SYMBOLIC {dt_sym}, DF_SYMBOLIC {df_sym}: the line's symbolic form is {} {} --dynamic-list (D-112, W31)",
                 sl.form().name(),
                 if sl.dynamic_lists.is_empty() { "without" } else { "with" }
+            ),
+        ));
+    }
+    // D-102's order (mortar's form; D-30's is an executable's).
+    if format == Format::Mortar {
+        v.extend(d102_order(&out.entries));
+    }
+    // DT_FLAGS_1: D-103's bits, each iff its `-z` word is on the line
+    // (D-30's executable row is not a library's: `filter_dyncheck`).
+    // `DF_1_NOW` stays D-30's (P-D6).
+    let f1 = out.get(DT_FLAGS_1).unwrap_or(0);
+    let asked = sl.flags_1() & !crate::dynout::DF_1_NOW;
+    let extra = f1 & !(asked | crate::dynout::DF_1_NOW | DF_1_PIE);
+    let missing = asked & !f1;
+    if extra != 0 || missing != 0 {
+        v.push(fd(
+            22,
+            format!(
+                "DT_FLAGS_1 {f1:#x}: bits {extra:#x} no -z word of the line asks for, bits {missing:#x} the line asks for are absent (D-103)"
             ),
         ));
     }
@@ -1682,6 +1751,73 @@ pub(crate) fn relaxed(cov: &crate::report::Coverage) -> Option<Finding> {
 // The executable rules a `Shared` output answers differently
 // ---------------------------------------------------------------------------
 
+/// D-102's `.dynamic` order for a `Shared` output: D-30's with
+/// `DT_SONAME` and `DT_SYMBOLIC` after `DT_NEEDED` (before the run path,
+/// GNU ld's and mold's place), no `DT_PREINIT_ARRAY*` (refused) and no
+/// `DT_DEBUG`, `DT_VERDEF`/`DT_VERDEFNUM` after `DT_FLAGS_1`.
+const D102_ORDER: &[u64] = {
+    use crate::dynout::{
+        DT_AARCH64_BTI_PLT, DT_AARCH64_VARIANT_PCS, DT_FINI, DT_FINI_ARRAY, DT_FINI_ARRAYSZ,
+        DT_FLAGS, DT_GNU_HASH, DT_INIT, DT_INIT_ARRAY, DT_INIT_ARRAYSZ, DT_JMPREL, DT_NEEDED,
+        DT_PLTGOT, DT_PLTREL, DT_PLTRELSZ, DT_RELA, DT_RELACOUNT, DT_RELAENT, DT_RELASZ, DT_RPATH,
+        DT_RUNPATH, DT_SONAME, DT_STRSZ, DT_STRTAB, DT_SYMENT, DT_SYMTAB, DT_VERDEF, DT_VERDEFNUM,
+        DT_VERNEED, DT_VERNEEDNUM, DT_VERSYM,
+    };
+    &[
+        DT_NEEDED,
+        DT_SONAME,
+        DT_SYMBOLIC,
+        DT_RUNPATH,
+        DT_RPATH,
+        DT_INIT,
+        DT_FINI,
+        DT_INIT_ARRAY,
+        DT_INIT_ARRAYSZ,
+        DT_FINI_ARRAY,
+        DT_FINI_ARRAYSZ,
+        DT_GNU_HASH,
+        DT_STRTAB,
+        DT_SYMTAB,
+        DT_STRSZ,
+        DT_SYMENT,
+        DT_PLTGOT,
+        DT_PLTRELSZ,
+        DT_PLTREL,
+        DT_JMPREL,
+        DT_RELA,
+        DT_RELASZ,
+        DT_RELAENT,
+        DT_AARCH64_BTI_PLT,
+        DT_AARCH64_VARIANT_PCS,
+        DT_FLAGS,
+        DT_FLAGS_1,
+        DT_VERDEF,
+        DT_VERDEFNUM,
+        DT_VERNEED,
+        DT_VERNEEDNUM,
+        DT_VERSYM,
+        DT_RELACOUNT,
+    ]
+};
+
+/// P-D22: mortar's `.dynamic` tags (the `(tag, value)` entries) in
+/// D-102's order, each one D-102 writes.
+fn d102_order(entries: &[(u64, u64)]) -> Vec<Finding> {
+    let mut v = Vec::new();
+    let ranks: Vec<usize> = entries
+        .iter()
+        .filter(|e| e.0 != crate::dynout::DT_NULL)
+        .map(|e| D102_ORDER.iter().position(|&t| t == e.0).unwrap_or(usize::MAX))
+        .collect();
+    if ranks.windows(2).any(|w| w[0] > w[1]) {
+        v.push(fd(22, "the .dynamic tags are not in D-102's order"));
+    }
+    if ranks.contains(&usize::MAX) {
+        v.push(fd(22, "a tag D-102 does not write"));
+    }
+    v
+}
+
 /// The `.dynamic` tags a library carries and no executable does (D-102,
 /// D-103, D-115, D-119).
 const SHARED_TAGS: &[u64] = &[
@@ -1692,6 +1828,18 @@ const SHARED_TAGS: &[u64] = &[
     0x6fff_fef6, // DT_TLSDESC_PLT (GNU ld)
     0x6fff_fef7, // DT_TLSDESC_GOT (GNU ld)
 ];
+
+/// §12.5 view A, D-118: `name` is an unversioned import of the output,
+/// which the host resolves when nothing the link loads defines it and the
+/// line has no `-z defs` (a versioned one needs its version, W42).
+pub(crate) fn host_import(out: &DynOut, name: &str) -> bool {
+    out.syms.iter().enumerate().any(|(j, s)| {
+        j > 0
+            && s.name == name
+            && !s.defined()
+            && out.versym.as_ref().and_then(|v| v.get(j)).is_none_or(|&x| x & 0x7fff <= 1)
+    })
+}
 
 fn hex_after(m: &str, key: &str) -> Option<u64> {
     let r = m.split_once(key)?.1.trim_start();
@@ -1709,7 +1857,12 @@ fn hex_after(m: &str, key: &str) -> Option<u64> {
 /// on a defined entry (a `Verdef` index: P-D19), P-D7's "not exported"
 /// (P-D19's export set decides), P-D12 (P-D26), and P-D6's text
 /// relocation (P-D20).
-pub(crate) fn filter_dyncheck(v: &mut Vec<Finding>, image: &Image<'_>, out: &DynOut) {
+pub(crate) fn filter_dyncheck(
+    v: &mut Vec<Finding>,
+    image: &Image<'_>,
+    out: &DynOut,
+    sl: &SharedLine,
+) {
     let entry0 = image.header.e_entry == 0;
     let mask = DF_SYMBOLIC | crate::dynout::DF_STATIC_TLS;
     v.retain(|f| {
@@ -1728,6 +1881,12 @@ pub(crate) fn filter_dyncheck(v: &mut Vec<Finding>, image: &Image<'_>, out: &Dyn
                 if m.starts_with("a tag 0x") {
                     return !hex_after(m, "a tag").is_some_and(|t| SHARED_TAGS.contains(&t));
                 }
+                if m.starts_with("DT_FLAGS_1 0x") {
+                    // P-D22 judges D-103's bits; DF_1_NOW and DF_1_PIE stay.
+                    let lib =
+                        DF_1_NODELETE | DF_1_INITFIRST | DF_1_NOOPEN | DF_1_ORIGIN | DF_1_INTERPOSE;
+                    return hex_after(m, "has bits").is_none_or(|b| b & !lib != 0);
+                }
                 if m.starts_with("DT_FLAGS 0x") {
                     return hex_after(m, "has bits").is_none_or(|b| b & !mask != 0);
                 }
@@ -1736,9 +1895,14 @@ pub(crate) fn filter_dyncheck(v: &mut Vec<Finding>, image: &Image<'_>, out: &Dyn
                     return out.get(crate::dynout::DT_FLAGS).is_none_or(|f| f & mask == 0);
                 }
                 // D-30's order has no library tags: D-102's is P-D22's.
-                m != "a tag D-30 does not write"
+                m != "a tag D-30 does not write" && m != "the .dynamic tags are not in D-30's order"
             }
-            Rule::Dyn(7) => !m.contains("is not exported (D-12, W8)"),
+            Rule::Dyn(7) => {
+                !m.contains("is not exported (D-12, W8)")
+                    && (!m.contains("is imported and no needed or used object defines it visibly")
+                        || sl.zdefs
+                        || !f.symbol.as_deref().is_some_and(|n| host_import(out, n)))
+            }
             Rule::Dyn(8) => {
                 !(m.contains("names no Vernaux")
                     && f.symbol
@@ -1891,6 +2055,73 @@ mod tests {
         w.iter().map(|s| (*s).to_string()).collect()
     }
 
+    // spec/plumb.md P-D22 (D-102): mortar's first libraries' tag order
+    // (WP-123's `libt.so`, identical to GNU ld's library) is D-102's;
+    // D-30's executable order put DT_SONAME nowhere (WP-121).
+    #[test]
+    fn p_d22_d102_order() {
+        use crate::dynout::*;
+        let mortar = [
+            DT_NEEDED,
+            DT_SONAME,
+            DT_INIT,
+            DT_FINI,
+            DT_INIT_ARRAY,
+            DT_INIT_ARRAYSZ,
+            DT_FINI_ARRAY,
+            DT_FINI_ARRAYSZ,
+            DT_GNU_HASH,
+            DT_STRTAB,
+            DT_SYMTAB,
+            DT_STRSZ,
+            DT_SYMENT,
+            DT_PLTGOT,
+            DT_PLTRELSZ,
+            DT_PLTREL,
+            DT_JMPREL,
+            DT_RELA,
+            DT_RELASZ,
+            DT_RELAENT,
+            DT_VERNEED,
+            DT_VERNEEDNUM,
+            DT_VERSYM,
+            DT_RELACOUNT,
+            DT_NULL,
+        ];
+        let e = |t: &[u64]| t.iter().map(|&t| (t, 0)).collect::<Vec<_>>();
+        assert!(d102_order(&e(&mortar)).is_empty());
+        let mut sym = mortar.to_vec();
+        sym.insert(2, DT_SYMBOLIC);
+        sym.insert(3, DT_RUNPATH);
+        sym.insert(22, DT_VERDEF);
+        sym.insert(23, DT_VERDEFNUM);
+        assert!(d102_order(&e(&sym)).is_empty());
+        let mut swapped = mortar.to_vec();
+        swapped.swap(0, 1);
+        let f = d102_order(&e(&swapped));
+        assert!(
+            f.iter().any(|f| f.message == "the .dynamic tags are not in D-102's order"),
+            "{f:?}"
+        );
+        let mut debug = mortar.to_vec();
+        debug.insert(13, DT_DEBUG);
+        let f = d102_order(&e(&debug));
+        assert!(f.iter().any(|f| f.message == "a tag D-102 does not write"), "{f:?}");
+    }
+
+    struct NoFiles;
+    impl Files for NoFiles {
+        fn read(&self, _: &str) -> Option<Vec<u8>> {
+            None
+        }
+    }
+
+    /// The line read as `accept` reads it: the `-B` family by `Line`.
+    fn sline(w: &[&str]) -> SharedLine {
+        let w = words(w);
+        SharedLine::read(&w, Line::parse(&w, &NoFiles).symbolic)
+    }
+
     // spec: resolve.md §9.7 — globs are fnmatch(3) without flags.
     #[test]
     fn s9_7_fnmatch() {
@@ -1965,24 +2196,24 @@ mod tests {
     // alone when present; the refused forms by name.
     #[test]
     fn d112_the_line_forms() {
-        let sl = SharedLine::read(&words(&["-shared", "-Bsymbolic", "-Bsymbolic-functions"]));
+        let sl = sline(&["-shared", "-Bsymbolic", "-Bsymbolic-functions"]);
         assert_eq!(sl.form(), Symbolic::Functions);
         assert!(!sl.df_symbolic());
-        let sl = SharedLine::read(&words(&["-shared", "-Bsymbolic-functions", "-Bsymbolic"]));
+        let sl = sline(&["-shared", "-Bsymbolic-functions", "-Bsymbolic"]);
         assert!(sl.df_symbolic());
-        let sl = SharedLine::read(&words(&["-shared", "-Bsymbolic", "--dynamic-list", "d"]));
+        let sl = sline(&["-shared", "-Bsymbolic", "--dynamic-list", "d"]);
         assert!(!sl.df_symbolic(), "a list: no DF_SYMBOLIC");
         let l = DynList::parse(&[("d".into(), "{ fn; d*; };".into())]).unwrap();
         assert!(line_preempts(&sl, Some(&l), STT_FUNC, "fn", Format::Mortar));
         assert!(!line_preempts(&sl, Some(&l), STT_FUNC, "g", Format::Mortar));
         assert!(line_preempts(&sl, Some(&l), STT_TLS, "g", Format::Gnu), "GNU's TLS form");
-        let sl = SharedLine::read(&words(&["-shared", "-Bsymbolic-functions"]));
+        let sl = sline(&["-shared", "-Bsymbolic-functions"]);
         assert!(!line_preempts(&sl, None, STT_FUNC, "f", Format::Mortar));
         assert!(line_preempts(&sl, None, STT_NOTYPE, "f", Format::Mortar));
         assert!(!line_preempts(&sl, None, STT_NOTYPE, "f", Format::Gnu));
         for w in ["--dynamic-list-data", "-Bsymbolic-non-weak-functions", "--dynamic-list-cpp-new"]
         {
-            assert!(!SharedLine::read(&words(&["-shared", w])).outside.is_empty(), "{w}");
+            assert!(!sline(&["-shared", w]).outside.is_empty(), "{w}");
         }
     }
 

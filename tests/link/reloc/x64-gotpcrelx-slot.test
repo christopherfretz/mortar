@@ -28,6 +28,7 @@
 #@ spec: x64.md "X-19"
 #@ spec: x64.md "X-21"
 #@ arch: x86_64
+#@ xfail(lld,mold): lld and mold write the `-no-pie -nostdlib` exec with PT_INTERP and no PT_DYNAMIC, which crashes at start (plumb.md P-D4; measured natively on AArch64, WP-121)
 
 cc x.s -o x.o
 cc big.s -o big.o

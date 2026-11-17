@@ -60,7 +60,7 @@ pub(crate) fn check(
         v.push(fd(6, p.clone()));
     }
     pd1(image, out, line, &mut v);
-    pd4(image, out, line, format, &mut v);
+    pd4(image, out, line, map, &mut v);
     if let Some((m, at)) = stack(image, line.execstack, objs, format) {
         v.push(fd(4, m).at(at));
     }
@@ -172,7 +172,8 @@ pub(crate) fn stack(
 }
 
 #[allow(clippy::too_many_lines)] // one block per segment
-fn pd4(image: &Image<'_>, out: &DynOut, line: &Line, format: Format, v: &mut Vec<Finding>) {
+fn pd4(image: &Image<'_>, out: &DynOut, line: &Line, map: &Map, v: &mut Vec<Finding>) {
+    let format = map.format;
     let h = &image.header;
     let okind = line.kind.unwrap_or(OutputKind::Exec);
     let dynamic_exec = matches!(okind, OutputKind::Exec | OutputKind::Pie);
@@ -277,11 +278,20 @@ fn pd4(image: &Image<'_>, out: &DynOut, line: &Line, format: Format, v: &mut Vec
                 v.push(fd(4, format!("{n} is not inside PT_GNU_RELRO")));
             }
         }
-        if format == Format::Mortar {
-            let maxpage = if h.e_machine == EM_AARCH64 { 0x10000 } else { 0x1000 };
+        // maxpage is S2's: the line's last `-z max-page-size` (0: the
+        // default); `-z common-page-size` changes nothing (L-74, L-75).
+        if let Some(o) = crate::opts::of(map) {
+            let default = if h.e_machine == EM_AARCH64 { 0x1_0000 } else { 0x1000 };
+            let maxpage = o.max_page.filter(|&n| n != 0).unwrap_or(default);
             for &(_, hi) in &relro {
                 if hi % maxpage != 0 {
-                    v.push(fd(4, "PT_GNU_RELRO does not end on a maximum page boundary (D-61)"));
+                    v.push(fd(
+                        4,
+                        format!(
+                            "PT_GNU_RELRO ends at {hi:#x}, not on a maximum page boundary \
+                             (maxpage {maxpage:#x}; D-61)"
+                        ),
+                    ));
                 }
             }
         }

@@ -61,6 +61,9 @@ const SMALL: &[(&str, &str)] = &[
     // own TLS variable, defined in another file (WP-082 follow-up 4).
     ("tlsle_u.c", "extern __thread int gv;\nint main(void){return gv - 5;}\n"),
     ("tlsle_d.c", "__thread int gv = 5;\n"),
+    // P-D4 (WP-121 after WP-131 V5): a `-no-pie -nostdlib` program with
+    // no shared input (`reloc/x64-gotpcrelx-slot`'s `exec`).
+    ("nostd.c", "int nv = 13;\nint *np = &nv;\nvoid _start(void){for(;;);}\n"),
     // P-D9's non-address rule in a Pie (WP-088): `rx_v` holds a number,
     // `rx_p` its address.
     (
@@ -795,9 +798,19 @@ fn build() -> Option<Corpus> {
                 &format!("{from}.line"),
                 linker,
                 no_pt_dynamic,
-                &["P-D4@no PT_DYNAMIC, and the line's kind is 'exec' (D-1), it has PT_INTERP"],
+                &["P-D4@no PT_DYNAMIC, and it has PT_INTERP"],
             );
         }
+        // P-D4 (WP-121): from a reference, a `-no-pie` line with no shared
+        // input owes no PT_DYNAMIC: GNU ld writes a static executable,
+        // judged as one. lld and mold write PT_INTERP without it: the
+        // program crashes at start (measured natively on AArch64), and
+        // that stays P-D4.
+        let d = b.dir(arch, "nostd");
+        b.obj(arch, &d, "nostd.c", &["-O1", "-fno-pic"], "nostd.o");
+        let interp: Option<&[&str]> = Some(&["P-D4@it has PT_INTERP"]);
+        let nostd = ["-no-pie", "-nostdlib", "-fno-use-linker-plugin", "nostd.o"];
+        b.link("nostd", arch, &d, "nostd", &nostd, [CLEAN, interp, interp]);
         let hello = b.dir(arch, "hello");
         for linker in Linker::ALL {
             let from = format!("hello-pie.lazy.{}", linker.name());
@@ -1711,7 +1724,7 @@ fn judge(case: &str) {
         // P-D2 stops stage 3 before any record is judged, and so does
         // P-D4 without PT_DYNAMIC (V5).
         assert!(
-            r.coverage.records > 0 || ["PD2", "nodyn"].contains(&o.case),
+            r.coverage.records > 0 || ["PD2", "nodyn", "nostd"].contains(&o.case),
             "{}: no records",
             o.label()
         );
@@ -1921,6 +1934,14 @@ fn s12_p_d4_no_pt_dynamic_in_equiv() {
 #[test]
 fn s12_p_d4_gnu_stack_execute() {
     judge("stack");
+}
+
+// spec/plumb.md §12 P-D4 (WP-121): a reference's `-no-pie -nostdlib`
+// program with no shared input is static unless its contents say
+// otherwise; lld's and mold's PT_INTERP without PT_DYNAMIC stays P-D4.
+#[test]
+fn s12_p_d4_reference_without_shared_inputs() {
+    judge("nostd");
 }
 
 // spec/plumb.md §6.4 E6 (WP-088): GNU ld's x86-64 PLT FDEs are judged
