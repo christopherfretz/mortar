@@ -606,6 +606,45 @@ by the value. A phase MAY cache such values in a column of its own
 (`sym_addr[SymbolId]` for the image phase); a cache is never stored in
 the link state and never an input to another phase.
 
+### 4.6 The relocatable output (`-r`) [M4-r; planned: WP-154's cut]
+
+- **MD-R1 (the tables of a `-r` link).**
+  - `Plan`, `Inputs`, `Resolution` (without verdicts,
+    `spec/resolve.md` RV-R1), `Assignment` (`out_of` by L-R1/L-R2),
+    `Liveness` (every section of a live file that is not dropped:
+    `--gc-sections` is refused, I-R10) and `Split` (`.eh_frame` only:
+    L-R5 merges nothing) are the tables of a final link.
+  - `Demands`, `Folds`, `MergeMap` and `Slots` are empty.
+  - `Placement` has these chunks: the file header; the section headers;
+    `Body(o, 0)` per output section (a single part: no islands); one
+    group chunk per kept group (`Group(g)`); one relocation chunk per
+    output section with a relocated piece (`Relocs(o)`); and the
+    synthetic `.symtab`, `.symtab_shndx`, `.strtab`, `.shstrtab` and
+    `.eh_frame` chunks.
+  - `segments`, `defined`, `patches`, `sized` and `tls` are empty;
+    `entry` is none; `sym_place` holds only `-d`'s commons; no chunk has
+    an address.
+  - `order` is L-R8's.
+  The image is a function of these tables and the input bytes (§5), so
+  a `-r` output is as re-computable as an executable: the verifier and
+  the L10 test "this layout gives these bytes" hold for it. The layout
+  of a `-r` link is data for the same reason as everywhere: a later
+  design may move pieces (record §E) without new kinds of state.
+- **MD-R2 (`.symtab` at `-r`).** §4.3's rule, with two `-r` blocks:
+  - the output's `STT_SECTION` symbols come first after the null entry,
+    one per output section that L-R8 lists before `.symtab`, except the
+    group and relocation sections;
+  - the kept globals include undefined and common keys
+    (`spec/resolve.md` RV-R3, RV-R5), and hidden keys stay global
+    (RV-R6).
+  The output index of `(FileId, st_index)` stays a prefix sum per file.
+  The output index of a key stays a function of `SymbolId`, so no table
+  has a row per symbol (§5).
+- **MD-R3 (what is not computed).** Addresses, the entry, the build ID,
+  GNU properties beyond their merge, and every dynamic table. A phase
+  that needs one of them does not run at `-r`. That a phase does not
+  run is a function of `Plan.kind`, never of the inputs.
+
 ## 5. The image is a function
 
 `mortar_image` computes the output bytes from the tables of §3 and §4 and
@@ -906,7 +945,10 @@ pub mod par { /* §6: for_each, map_collect, sort_by_key, the scheduling seed */
 |---|---|
 | A section kind `Property` for `.note.gnu.property`, which synth merges by kind (optional, `spec/resolve.md` §18) | `spec/synth.md` |
 | Divisible synthetic chunks, the sealing function for the build id, resident image or positioned writes | `spec/synth.md`, `spec/image.md` |
-| `-r`: relocation and group chunks, REL addends of section symbols rewritten in the bytes | `spec/layout.md`, `spec/image.md` (M4) |
+
+Closed (WP-154): `-r`'s relocation and group chunks and the REL addends of
+section symbols rewritten in the bytes: §4.6 (MD-R1 to MD-R3),
+`spec/layout.md` §24, `spec/image.md` §17, `spec/arch.md` A-R2.
 
 Closed (WP-020d): the mapping of `Plan` inputs to files (`spec/input.md`);
 archive semantics, `file_live` being reachability, and the COMDAT keeper

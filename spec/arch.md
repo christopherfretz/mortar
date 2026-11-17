@@ -334,7 +334,7 @@ pub struct Site<'a> { pub bytes: &'a [u8], pub offset: u64 } // the input sectio
   on REL, and what the image does at fill, are `spec/image.md`'s
   (`spec/x86.md` R-13 (a), (d), (e)).
 - **Write-back**, for REL outputs only:
-  - `-r` (M4): the field of the output holds the output relocation's
+  - `-r` (M4-r, A-R2): the field of the output holds the output relocation's
     addend: `A + delta`, where `delta` is what `spec/image.md` adds for a
     relocation against a section symbol whose section moved within its
     output section. `write_addend` checks it fits `Implicit` and returns
@@ -1089,6 +1089,50 @@ cell, read for `Shared`:
 
 *Tests:* `shared-reloc-table` (`spec/dyn.md` D-117: every row and kind,
 each architecture, plain and interposed).
+
+### 4.6 `Relocatable` outputs [M4-r; planned: WP-154's cut, record `spec/landed/layout/WP-154.md`]
+
+- **A-R1 (nothing is decided at `-r`).** With `OutputKind::Relocatable`:
+  - no record is classified for a demand: `scan` computes no `Demands`,
+    no slot, no PLT and no copy;
+  - no relaxation or TLS transition is made, and no range is checked;
+  - no sequence is matched (§3.5): its members are carried one by one;
+  - `apply` is not called.
+  Every input record is moved and renamed by `spec/image.md` I-R5. The
+  checks of §3.4 that need no target still run: the type is one the
+  architecture knows; the field lies in the section; on REL, the
+  addend's read window. An unknown type is `relocation-type`, as in a
+  final link. PIC, PIE and non-PIC objects mix freely, since nothing
+  depends on the code model. Measured: every type of the corpus is kept
+  unchanged by all three references on the three targets, including
+  x86-64 `R_X86_64_REX_GOTPCRELX` from `-fPIC` (`facts-supp.log`,
+  9-gotpcrelx) and the AArch64 `TLSDESC` sequence (record §B.4).
+  *Test:* `r-no-relax` (each relaxable form, per target).
+- **A-R2 (REL write-back).** §3.3's write-back for `-r`: the output field
+  is `A + delta`, written by `write_addend` with the type's `Implicit`
+  description. `A` is read by `read_addend` from the input bytes, and
+  `delta` is I-R5's piece offset of the target section. Range: the
+  `Implicit` width and signedness. A value that does not fit is
+  `relocation-out-of-range` with the record's type, as for any field.
+  i386 (`spec/x86.md`): every type with an `Implicit` field (the 1-, 2-
+  and 4-byte data and PC-relative forms, the GOT and TLS forms) is
+  rewritten this way. A type with no `Implicit` (`R_386_NONE`, which is
+  dropped) is never written.
+  *Test:* `r-i386-rel-addend`, `r-i386-rel-addend-16bit-overflow`.
+- **A-R3 (`e_flags`).** The `-r` output's `e_flags` is the same merge of
+  the live inputs' `e_flags` that the executable rule computes (AArch64
+  and x86: 0, and any other value refused as there).
+- **A-R4 (relocation section type).** AArch64 and x86-64 outputs write
+  `SHT_RELA`, i386 `SHT_REL`, as the inputs of each target do. An input
+  relocation section of the other type, for example an `SHT_REL` on
+  x86-64, is refused at `-r` by name:
+  `Refused{SectionType, "SHT_REL"}` on x86-64 and AArch64,
+  `Refused{SectionType, "SHT_RELA"}` on i386. No compiler on the matrix
+  produces one (record §G Q8).
+- **A-R5 (tables the architecture owns).** No synthetic section is
+  written at `-r`: no GOT, PLT, IPLT, `.eh_frame_hdr` or
+  `.note.gnu.property` beyond L-R1's merge, which
+  `spec/synth.md` computes as in a final link.
 
 ## 5. What is decided when
 

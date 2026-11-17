@@ -317,7 +317,21 @@ copies of a library are made distinct on purpose.
 the unit with that name and signature)`, never by index, so that it
 survives `-r`. [unverified: whether `-r` by the references preserves the
 relative order of same-named sections from one input; mortar's `-r`
-(M4) will.]
+(M4) will.] WP-154 settled half of this and left the other half open.
+GNU ld 2.44, lld 22 and mold 2.37.1 concatenate same-named sections in
+input order (`spec/landed/layout/WP-154.md` B.1), and mortar's `-r` does
+too (`spec/layout.md` L-R4), so the relative order holds. But every `-r`,
+mortar's included, also merges the same-named non-group sections of
+DIFFERENT inputs into one section (L-R1). After a `-r` the triple of a
+unit no longer names a section of its own: two units' `(".text", "", 0)`
+both name the merged `.text`, at offsets the unit does not record. A
+row anchored by MT-16 is therefore valid only in the object that its
+producer wrote. A reader treats MT-16 anchors in a container that came
+through a `-r` as unanchored, the safe direction of O-4. It knows that
+the container came through a `-r` when the container holds units of more
+than one producer run (more than one unit). No kind uses MT-16 yet: kiln
+d854b23bc writes kinds 1, 3, 4 and 5 (record B.8). A kind that needs it
+across `-r` must record the offset as well (`incr.md`, record §G Q10).
 
 ## 6. COMDAT membership: the crux
 
@@ -662,6 +676,47 @@ offset order, each padded with zeros to 8, malformed units dropped);
 `PROGBITS` without flags, and must not also let the inputs' containers
 through as ordinary sections. Not built (M4).
 
+*Checked (WP-154, M4-r; `spec/landed/layout/WP-154.md` B.8,
+`tests/relocatable-design/work/meta.log`).*
+- **What the references do.** kiln++ (kiln d854b23bc,
+  `-fmason-metadata=detail`, the llc route and the hod route) writes one
+  container per object: `PROGBITS`, `SHF_EXCLUDE`, alignment 8, one
+  unit (`producer` 1, kinds 1, 3, 4, 5), not in a group, no relocation
+  section. A `-r` of three such objects by GNU ld, lld or mold gives
+  ONE container of the same attributes holding the three units
+  unchanged, in input order, at offsets 0, 0x338 and 0x670 (each unit's
+  size is already a multiple of 8, so there is no padding).
+- **What mortar does with it.** mortar's final link of each of the three
+  outputs under `--odr=strict` reports the same `odr-type-mismatch` for
+  `struct S` (`int a` against `long a`) as the direct link, with the
+  same source lines. Only the object names differ: `r.bfd.o` twice
+  where the direct link names `m1.o` and `m2.o`, while the
+  `source=`/`producer=` lines still tell the units apart. The legal set
+  (the same `S` in both) gives no diagnostic and runs on all three
+  routes.
+- **So MT-30 holds as written.** Rows name symbols by name (MT-12) and
+  types by name, and `-r` keeps global names (`spec/resolve.md` RV-R6),
+  so nothing in a unit needs rewriting when sections are concatenated
+  and symbols renumbered. MT-16's section anchors are the one exception
+  (above). mortar's `-r` writes the concatenation of `kept_units` at the
+  place of the first input container (`spec/layout.md` L-R8), and drops
+  the inputs' containers. A `.mason.meta` that is not a container
+  (MT-6) is copied by name, with MT-6's warning.
+
+**MT-30a (ODR checks at `-r`, M4-r).** A `-r` link runs the checks of
+`spec/odr.md` that its `--odr` mode turns on, over the units of its own
+live inputs, exactly as a final link over the same inputs would. A
+violation among a component's own translation units is known at the
+partial link, and the component's build is the place to report it. The
+units are written to the output whether the checks ran or not, so the
+final link checks again over every unit it sees and reports the
+violation again if it is still there. The mode's default is a final
+link's. A check that needs the final program (O-50's loadable table;
+anything that reads addresses) does not run at `-r`. *Test:*
+`r-odr-violation-at-r` (the pair `exp/meta/m1.cc`, `m2.cc`: the `-r`
+reports it, and the final link reports it again);
+`r-odr-units-concatenated`.
+
 **MT-31 (executables and shared objects).** The container is consumed
 (MT-6) and not copied. If the loadable table is on (`odr.md` O-50), the
 output gets the allocated note `.note.mason` in a `PT_NOTE` with
@@ -761,7 +816,7 @@ has seen every definition (`odr.md` O-20).
   never panic and keep exactly the units that parse;
   `keep_refuses_a_copied_section_of_the_name`);
   `tests/link/{odr,dyn/odr}/mt32-keep-meta.test`.
-- **T-MT-30** (M4): `mortar -r` of two Mason objects, then a final link
+- **T-MT-30** (M4-r; MT-30's check above is its oracle): `mortar -r` of two Mason objects, then a final link
   by mortar: the same diagnostics as linking the two objects directly.
 - **T-MT-38**: determinism, above.
 - **T-MT-42** (bytes read, not only outputs): with `--odr=off`, and in

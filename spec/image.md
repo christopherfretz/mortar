@@ -277,7 +277,8 @@ The design is fixed now so that the M1 tables need no change.
   and mold print `removing unused section <file>:(<section>)` to
   standard output, size-0 sections included, mold in no stable order
   (Q9).
-- **I-11 [M2]** `-r` with `--gc-sections` is refused (M4 decides).
+- **I-11 [M2]** `-r` with `--gc-sections` is refused. M4-r decided that
+  the refusal is permanent (I-R10).
   `--gc-sections` with `-shared` (M4) roots every exported key (I-6).
 
 ### 3.3 Liveness diagnostics (M2)
@@ -2690,3 +2691,114 @@ Resolved by the review (2026-11-15):
 - Q7: `fast` is 8 bytes; `sha256` accepted in M1 (I-69).
 - Q8: `-o` equal to an input, accepted (I-62). Reversed by WP-087's
   review: refused (`written-file-clash`).
+
+## 17. Relocatable output (`-r`) [M4-r; planned: WP-154's cut, record `spec/landed/layout/WP-154.md`]
+
+The image of a `-r` link is a function of the tables (`spec/model.md`
+MD-R1) and of the input bytes, like any image (§5). It applies no
+relocation: it moves each record and rewrites its symbol and addend.
+Measured against GNU ld 2.44, lld 22 and mold 2.37.1 (record §B.3, B.4,
+B.7; `tests/relocatable-design/work/facts.log`,
+`exp/tools/rcheck.py`).
+
+- **I-R1 (the file header).** `ET_REL`; `e_machine` of the inputs;
+  `e_flags` merged by the architecture's rule (`spec/arch.md` A-R3);
+  `e_entry` 0 (L-R7); `e_phoff` 0, `e_phnum` 0, `e_phentsize` 0;
+  `e_shoff`, `e_shnum` and `e_shstrndx` per L-R8 (with the `SHN_XINDEX`
+  escapes of the gABI when 0xff00 or more sections). All three
+  references write `ET_REL`, no program headers, entry 0 without `-e`,
+  and flags 0 on the three targets (B.7).
+- **I-R2 (`EI_OSABI`).** `ELFOSABI_GNU` when some output symbol is
+  `STT_GNU_IFUNC` or `STB_GNU_UNIQUE`, else `ELFOSABI_NONE`. This is
+  the executable rule of `spec/a64.md` minus the `IRELATIVE` clause:
+  an `ET_REL` has no dynamic records. All three write `GNU` for an
+  input with `STB_GNU_UNIQUE` (`facts-supp.log`, 9-osabi).
+- **I-R3 (mode).** I-59's `0o666` for `-r` (the umask applies: 644 on
+  the host, as all three). Not executable.
+- **I-R4 (`.symtab`).** The order is `spec/model.md` §4.3, with the
+  `-r` blocks of MD-R2:
+  1. the null entry;
+  2. one `STT_SECTION` symbol per output section other than
+     `SHT_GROUP`, relocation sections, `.symtab`, `.symtab_shndx`,
+     `.strtab` and `.shstrtab`, in section index order;
+  3. per live input in `FileId` order, its `STT_FILE` entries and kept
+     local symbols (not `STT_SECTION`) in the input's table order;
+  4. the globals of `spec/resolve.md` RV-R6 in `SymbolId` order.
+  `sh_info` is the index of the first global. A local symbol's value is
+  its piece's offset plus its input value; a defined global's the same
+  for its definition; `st_shndx` is the output section index (or
+  `SHN_XINDEX` and `.symtab_shndx`). Mapping symbols (`$x`, `$d`,
+  `$t`) are locals like any other and are kept. `STT_SECTION`
+  counts differ (B.3: GNU ld 9, lld 8, mold 15 for one input set). The
+  rule above is a function of the section list alone, so V-R4 can
+  recompute it. *Test:* `r-symtab-order`, `r-section-symbols`.
+- **I-R5 (relocation records).** For every live input relocation record
+  of a placed input section `S`, other than `R_*_NONE`, the output has
+  exactly one record:
+  - in the relocation section of `S`'s output section;
+  - in the order of `S`'s pieces, then the input record order;
+  - with `r_offset` = piece offset of `S` + input `r_offset`;
+  - with `r_type` unchanged, since nothing is relaxed (`spec/arch.md`
+    A-R1).
+  The symbol and addend depend on what the input record names:
+  - a global or weak key: its output index (I-R4), addend unchanged;
+  - a local non-section symbol: its output index, addend unchanged;
+  - an `STT_SECTION` symbol of input section `T`: the `STT_SECTION`
+    symbol of `T`'s output section, with addend + piece offset of `T`.
+    On RELA the new addend is in `r_addend`. On REL (i386) it is
+    written into the field by `write_addend` (`spec/arch.md` A-R2),
+    and a value that does not fit the field is
+    `relocation-out-of-range`.
+  The records `spec/resolve.md` RV-R7 drops (`.eh_frame` of a dropped
+  FDE; debug and `.gcc_except_table` records into dropped copies) have
+  no output record. The input's `R_*_NONE` records are not written
+  (GNU ld writes its own: L-R6). The relocation section is
+  `SHT_RELA`/`SHT_REL` as the target's (A-R4), named `.rela<name>` or
+  `.rel<name>`, `sh_link` `.symtab`, `sh_info` its target,
+  `SHF_INFO_LINK`, plus `SHF_GROUP` when its target is a group member.
+  All three references rewrite the i386 REL addend of a section-symbol
+  record in the bytes correctly (`facts.log` row 8-rcheck: "records
+  equal 2"). Every relocation type of the corpus is carried unchanged
+  on the three targets (B.4: x86-64 `GOTPCRELX`, `REX_GOTPCRELX`,
+  `GOTTPOFF`, `TLSGD`; AArch64 `ADR_GOT_PAGE`, `LD64_GOT_LO12_NC`,
+  `TLSDESC_*`, `CALL26`; i386 `GOT32X`, `GOTPC`, `TLS_GOTIE`).
+  *Test:* `r-reloc-moved`, `r-reloc-section-symbol-addend` (per target),
+  `r-reloc-types-kept`, `r-i386-rel-addend`.
+- **I-R6 (`.eh_frame` bytes).** The kept CIEs and FDEs of L-R6 are
+  copied byte for byte. Only the FDEs' CIE-pointer words change, each
+  computed from the record's and its CIE's output offsets. Their
+  relocation records move with the records, through the input-to-output
+  record offset map, by I-R5. *Test:* `r-eh-frame-dropped-fde`.
+- **I-R7 (fields of records not written).** Where RV-R7 writes no record
+  for a debug or `.gcc_except_table` reference into a dropped copy, the
+  field gets the value a final link writes for it:
+  - §6.1's tombstone for the referring section;
+  - 0 in `.gcc_except_table`.
+  [unverified against the references at `-r`; record §G Q5.]
+- **I-R8 (notes).** No `.note.gnu.build-id` is written, whether or not
+  `--build-id` is given (`spec/cli.md` C-R2). The inputs' build-id
+  notes are dropped, as in every link (`spec/input.md` §6, "`ld -r`
+  outputs"). GNU ld and lld write a note into the `-r` output with
+  `--build-id`, which clang's `-r` line passes; mold writes none. The
+  final link drops it either way (`facts-supp.log`, 9-buildid-final:
+  one note in the final output, its own).
+- **I-R9 (stripping at `-r`).** These follow GNU ld (B.3):
+  - `-S`: the non-allocated `.debug*` sections (L-158) and their
+    relocation sections are dropped.
+  - `-s`: the same, and every local symbol that no output record names,
+    except `STT_SECTION`.
+  - `-x`: every local symbol that no output record names, except
+    `STT_SECTION` and `STT_FILE`.
+  - `-X`, `--discard-locals`: no change (no reference changes the
+    output, B.3).
+  A dropped debug section's relocations are dropped with it.
+- **I-R10 (`--gc-sections`).** Refused at `-r` (I-11). The final link
+  is where liveness is known (`spec/cli.md` C-R4).
+- **I-R11 (determinism).** The same line twice gives identical bytes.
+  All three references do this (B.7). Nothing in the output depends on
+  time, paths beyond the names the inputs carry, or threads.
+- **I-R12 (the map).** `--mortar-map` at `-r` records, per output
+  section, its pieces `(FileId, section index, offset)`, each kept
+  group with its keeper and the dropped copies, and per input FDE
+  whether it was dropped. This is what V-R1 to V-R6 read. A GNU-style
+  `-Map` lists the output sections and their pieces without addresses.
