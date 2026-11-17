@@ -191,6 +191,7 @@ is added before or after it.
 | `malformed-input` | `Malformed { what }` | `{what}` | lld's shape |
 | `unknown-file-type` | `UnknownFileType` | `file not recognized: file format not recognized` | GNU ld (§8.3) |
 | `unknown-property` | `UnknownProperty { path, pr_type }` | `{path}: unsupported GNU_PROPERTY_TYPE {pr_type:#x}; property dropped` | GNU ld's phrase; a warning (`spec/synth.md` S-95, R-D2) |
+| `version-script-syntax` | `VersionScriptSyntax { script, what }` | `syntax error in {script}: {what}` | GNU ld's phrase, with what is wrong (`spec/script.md` §9.2; M4, WP-125) |
 | `archive-backref` | `ArchiveBackref { name }` | `backward reference to an archive member: {name}` | own (lld: `backward reference detected: x in b refers to a`) |
 | `archive-choice` | `ArchiveChoice { name }` | `GNU ld would choose another definition of {name}` | own |
 | `comdat-mismatch` | `ComdatMismatch { name, signature }` | `symbol {name} is defined only in a discarded copy of COMDAT group {signature}` | own |
@@ -318,6 +319,13 @@ is added before or after it.
   format it can name and does not read is `refused` with class
   `file-format`, built with `Diagnostic::refused_unrecognized_format` when
   GNU ld does not read it either (§8.3).
+- `version-script-syntax` (`spec/script.md` §9.2) is emitted by
+  `mortar_script`'s version-script and dynamic-list parser with a place
+  (`.at` the file, line and column of the offending byte, as every script
+  error). `{script}` is `VERSION script` for a `--version-script` file and
+  `dynamic list` for a `--dynamic-list` file (GNU ld's two phrases);
+  `{what}` is the parser's statement, lower-case, no final period; notes
+  say where GNU ld, lld or mold read the text otherwise. An error.
 - `duplicate-symbol` and `undefined-symbol` carry the symbol-table name,
   shown twice: after lld's head and inside GNU ld's phrase, quoted as GNU
   ld quotes it (`` `name' ``, §8.3). For `duplicate-symbol`, where the

@@ -8,9 +8,10 @@
 //! column.
 //!
 //! Modes implemented: [`Mode::Script`], [`Mode::InputList`],
-//! [`Mode::Expression`]. The modes of later stages (section-description
-//! wildcards, version scripts) are specified in `spec/script.md` §1.2 and
-//! are added here as variants when a stage needs them.
+//! [`Mode::Expression`], and [`Mode::Version`] for version scripts and
+//! dynamic lists (§9.1, M4). The wildcard mode of section descriptions is
+//! specified in `spec/script.md` §1.2 and is added here as a variant when
+//! its stage needs it.
 
 use crate::Span;
 
@@ -28,6 +29,12 @@ pub enum Mode {
     /// Expressions; in stage 1 only the list of `EXTERN` (GNU ld's
     /// EXPRESSION state).
     Expression,
+    /// Version scripts and dynamic lists (`spec/script.md` §9.1; GNU ld's
+    /// `VERS_START`, `VERS_SCRIPT` and `VERS_NODE` states): names that may hold
+    /// glob bytes, `::` and `~`, quoted strings, `{ } ; :`. No keywords:
+    /// `global`, `local` and `extern` are names the parser reads by
+    /// context.
+    Version,
 }
 
 /// An operator or separator (`spec/script.md` §1.8).
@@ -167,6 +174,7 @@ macro_rules! keywords {
                     Mode::Script => $script,
                     Mode::Expression => $expr,
                     Mode::InputList => $list,
+                    Mode::Version => false,
                 } ),* }
             }
         }
@@ -332,6 +340,12 @@ const fn is_expr_name_char(b: u8) -> bool {
     is_expr_name_start(b) || b.is_ascii_digit() || matches!(b, b'/' | b'~')
 }
 
+/// Bytes that may stand in a name of [`Mode::Version`] (§9.1); `:` only as
+/// the pair `::`, inside a name, which [`Lexer::version_token`] handles.
+const fn is_version_name_byte(b: u8) -> bool {
+    !matches!(b, 0..=0x20 | 0x7f | b'{' | b'}' | b';' | b':' | b'"' | b'#')
+}
+
 /// How a byte is shown in a diagnostic: `'x'` for printable ASCII, the
 /// value in hexadecimal otherwise.
 pub(crate) fn show_byte(b: u8) -> String {
@@ -414,6 +428,7 @@ impl<'a> Lexer<'a> {
             Mode::Script => self.script_token(b)?,
             Mode::InputList => self.input_list_token(b)?,
             Mode::Expression => self.expression_token(b)?,
+            Mode::Version => self.version_token(b)?,
         };
         Ok(Token { kind, span: Span::new(start, self.pos) })
     }
@@ -563,6 +578,50 @@ impl<'a> Lexer<'a> {
             _ => Err(self.invalid(b)
                 .note("GNU ld skips this character in an input list; lld and mold read it as part of a file name")),
         }
+    }
+
+    /// A token of [`Mode::Version`] (`spec/script.md` §9.1). A name is a
+    /// maximal run of bytes other than whitespace, control bytes, `{ } ;
+    /// " #` and a `:` that is not one of the pair `::` (a name never
+    /// starts with `:`); it may hold the glob bytes `* ? [ ]`, `\`, `~`
+    /// and bytes above 0x7f. `/*` and `//` inside a name are errors: GNU
+    /// ld ends the name there (and reads a comment, or rejects the `/`),
+    /// lld and mold read on.
+    fn version_token(&mut self, b: u8) -> Result<TokenKind, LexError> {
+        let punct = match b {
+            b'"' => return self.string(),
+            b'{' => Punct::LBrace,
+            b'}' => Punct::RBrace,
+            b';' => Punct::Semicolon,
+            b':' => Punct::Colon,
+            b'/' if self.peek(1) == Some(b'/') => {
+                return Err(LexError::new(self.pos, "'//' starts no comment")
+                    .note("comments are '#' to the end of the line and '/* ... */'"));
+            }
+            _ if is_version_name_byte(b) => {
+                let start = self.pos;
+                let mut at = start;
+                loop {
+                    match self.src.get(at).copied() {
+                        Some(b':') if self.src.get(at + 1) == Some(&b':') => at += 2,
+                        Some(b'/') if matches!(self.src.get(at + 1), Some(b'*' | b'/')) => {
+                            return Err(LexError::new(at, format!(
+                                "'{}' inside a name",
+                                if self.src[at + 1] == b'*' { "/*" } else { "//" }
+                            ))
+                            .note("GNU ld ends the name before it, lld and mold read it as part of the name: put a space before it"));
+                        }
+                        Some(c) if is_version_name_byte(c) => at += 1,
+                        _ => break,
+                    }
+                }
+                self.pos = at;
+                return Ok(TokenKind::Name);
+            }
+            _ => return Err(self.invalid(b)),
+        };
+        self.pos += 1;
+        Ok(TokenKind::Punct(punct))
     }
 
     fn expression_token(&mut self, b: u8) -> Result<TokenKind, LexError> {

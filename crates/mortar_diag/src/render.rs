@@ -243,6 +243,12 @@ fn message<'d>(kind: &'d Kind, style: &Style<'_>, out: &mut String) -> Option<&'
             escaped(path, out);
             let _ = write!(out, ": unsupported GNU_PROPERTY_TYPE {pr_type:#x}; property dropped");
         }
+        Kind::VersionScriptSyntax { script, what } => {
+            out.push_str("syntax error in ");
+            escaped(script, out);
+            out.push_str(": ");
+            escaped(what, out);
+        }
         Kind::ArchiveBackref { name } => {
             out.push_str("backward reference to an archive member: ");
             return symbol_into(name, style, out).then_some(name);
