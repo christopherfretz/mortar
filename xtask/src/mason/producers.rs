@@ -16,6 +16,16 @@
 //!   in the baseline's last column, or the check fails.
 //! - no output of a variant without `--keep-mason-meta` has a section
 //!   named `.mason.meta`.
+//! - kiln as the producer (WP-134, `spec/landed/meta/WP-134.md`): kiln's
+//!   own containers, from the source (`kiln`: kiln's LLVM route;
+//!   `kiln-hod`: its hod route), against GCC's objects with the test
+//!   producer's rows. The rows describe; kiln writes what the source has:
+//!   a test whose source has the violation its rows describe gives the
+//!   same answer, one whose rows are synthetic gives none. Every test's
+//!   class is the baseline's last column, and a kiln answer that differs
+//!   from GCC's, or `kiln-hod` from `kiln`, without one fails. Where the
+//!   kiln found writes no kind 3 and 5 rows (an older kiln), the kiln
+//!   columns are not run and the baseline's are kept, with a note.
 //!
 //! The rows are checked against `tests/mason/producers.tsv`; `--update`
 //! rewrites it, keeping each row's explanation.
@@ -43,14 +53,24 @@ pub const VARIANTS: [&[&str]; 5] = [
 
 const BASELINE: &str = "tests/mason/producers.tsv";
 
-const HEADER: &str = "# The producer equality of WP-099 (`cargo xtask mason producers`, \
-spec/landed/meta/WP-099.md):\n\
-# one mortar link step x variant per line: what GCC's objects, hod's objects and the mixed\n\
-# link answer (end; diagnostics; meta-malformed warnings), then why hod's or the mixed answer\n\
-# differs from GCC's. Rewritten by `--update`, which keeps the last column.\n\
-# test\tarch\tline\tvariant\tgcc\thod\tmixed\twhy\n";
+const HEADER: &str = "# The producer equality of WP-099 and WP-134 (`cargo xtask mason producers`, \
+spec/landed/meta/WP-099.md, WP-134.md):\n\
+# one mortar link step x variant per line: what GCC's objects, hod's objects, the mixed link,\n\
+# kiln's objects with kiln's containers (LLVM route, hod route) answer (end; diagnostics;\n\
+# meta-malformed warnings), then why hod's or the mixed answer differs from GCC's, then the\n\
+# test's class for kiln (real: the source has the violation its rows describe; synthetic: the\n\
+# rows describe one the source has not) and why kiln's answer differs.\n\
+# Rewritten by `--update`, which keeps the last two columns.\n\
+# test\tarch\tline\tvariant\tgcc\thod\tmixed\tkiln\tkiln-hod\twhy\tkiln-why\n";
 
 type Key = (String, String, usize, usize);
+
+/// The answers of a link: gcc, hod, mixed, kiln, kiln-hod.
+type Answers = [String; 5];
+
+/// The producers of [`Answers`], in its order.
+const COLUMNS: [Producer; 5] =
+    [Producer::Gcc, Producer::Hod, Producer::Mixed, Producer::Kiln, Producer::KilnHod];
 
 /// One link's answer, file names aside.
 fn answer(row: &DigestRow) -> String {
@@ -99,6 +119,8 @@ fn run_one(
         producer,
         variants: VARIANTS.iter().map(|v| v.iter().map(|&o| o.to_owned()).collect()).collect(),
         paths: vec![root.join("tests/link/odr"), root.join("tests/link/dyn/odr")],
+        // The tests with kiln steps compare producers themselves (WP-134).
+        without: vec![linktest::target::Feature::Kiln],
         ..linktest::Args::default()
     };
     let report = match linktest::run(&args) {
@@ -122,16 +144,21 @@ fn run_one(
     report.digests.into_iter().map(|row| (key_of(&row), row)).collect()
 }
 
-/// The baseline's rows: key -> (gcc, hod, mixed, why).
-fn parse_baseline(contents: &str) -> Result<BTreeMap<Key, [String; 4]>, String> {
+/// A baseline row: the [`Answers`], then `why` and `kiln-why`.
+type BaselineRow = ([String; 5], [String; 2]);
+
+/// The baseline's rows by key.
+fn parse_baseline(contents: &str) -> Result<BTreeMap<Key, BaselineRow>, String> {
     let mut rows = BTreeMap::new();
     for (n, line) in contents.lines().enumerate() {
         if line.starts_with('#') || line.trim().is_empty() {
             continue;
         }
         let f: Vec<&str> = line.split('\t').collect();
-        let [test, arch, at, variant, gcc, hod, mixed, why] = f.as_slice() else {
-            return Err(format!("{BASELINE}:{}: not 8 columns", n + 1));
+        let [test, arch, at, variant, gcc, hod, mixed, kiln, kiln_hod, why, kiln_why] =
+            f.as_slice()
+        else {
+            return Err(format!("{BASELINE}:{}: not 11 columns", n + 1));
         };
         let number = |s: &str| {
             s.parse::<usize>().map_err(|_| format!("{BASELINE}:{}: '{s}' is not a number", n + 1))
@@ -140,9 +167,10 @@ fn parse_baseline(contents: &str) -> Result<BTreeMap<Key, [String; 4]>, String> 
             .iter()
             .position(|v| variant_name(v) == *variant)
             .ok_or_else(|| format!("{BASELINE}:{}: unknown variant '{variant}'", n + 1))?;
+        let own = |s: &&str| (*s).to_owned();
         rows.insert(
             ((*test).to_owned(), (*arch).to_owned(), number(at)?, variant),
-            [(*gcc).to_owned(), (*hod).to_owned(), (*mixed).to_owned(), (*why).to_owned()],
+            ([gcc, hod, mixed, kiln, kiln_hod].map(own), [why, kiln_why].map(own)),
         );
     }
     Ok(rows)
@@ -154,15 +182,15 @@ fn variant_name(variant: &[&str]) -> String {
 
 type Runs = BTreeMap<Producer, BTreeMap<Key, DigestRow>>;
 
-/// Each link's answers (GCC's objects, hod's, the mixed link), how many of
-/// hod's and of the mixed answers are GCC's; the stop condition and an
-/// output's `.mason.meta` are `problems`.
-fn compare(runs: &Runs, problems: &mut Vec<String>) -> (BTreeMap<Key, [String; 3]>, [usize; 2]) {
+/// Each link's [`Answers`], how many of hod's, the mixed, kiln's and
+/// kiln-hod's answers are GCC's; the stop condition and an output's
+/// `.mason.meta` are `problems`.
+fn compare(runs: &Runs, problems: &mut Vec<String>) -> (BTreeMap<Key, Answers>, [usize; 4]) {
     let keys: std::collections::BTreeSet<Key> =
         runs.values().flat_map(|r| r.keys().cloned()).collect();
     let not_run = "not run".to_owned();
-    let mut now: BTreeMap<Key, [String; 3]> = BTreeMap::new();
-    let mut same = [0usize; 2];
+    let mut now: BTreeMap<Key, Answers> = BTreeMap::new();
+    let mut same = [0usize; 4];
     for key in &keys {
         let get = |p: Producer| runs.get(&p).and_then(|r| r.get(key));
         let label = label(key);
@@ -188,13 +216,11 @@ fn compare(runs: &Runs, problems: &mut Vec<String>) -> (BTreeMap<Key, [String; 3
                     .push(format!("{label}: {}: the output has a section .mason.meta", p.name()));
             }
         }
-        let answers = [Producer::Gcc, Producer::Hod, Producer::Mixed]
-            .map(|p| get(p).map_or_else(|| not_run.clone(), answer));
-        if answers[1] == answers[0] {
-            same[0] += 1;
-        }
-        if answers[2] == answers[0] {
-            same[1] += 1;
+        let answers = COLUMNS.map(|p| get(p).map_or_else(|| not_run.clone(), answer));
+        for (i, s) in same.iter_mut().enumerate() {
+            if answers[i + 1] == answers[0] {
+                *s += 1;
+            }
         }
         now.insert(key.clone(), answers);
     }
@@ -209,6 +235,7 @@ fn label(key: &Key) -> String {
 ///
 /// # Errors
 /// An unknown option.
+#[allow(clippy::too_many_lines)] // the run, then one pass over the rows
 pub fn main(args: &[String]) -> Result<ExitCode, String> {
     let mut update = false;
     let mut mortar = None;
@@ -231,32 +258,54 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
         return Ok(ExitCode::SUCCESS);
     }
     let mut problems = Vec::new();
-    let runs: Runs = Producer::ALL
-        .into_iter()
-        .map(|p| (p, run_one(p, mortar.clone(), jobs, &filters, &mut problems)))
+    // WP-134: the kiln columns need a kiln that writes records.
+    let kiln = super::KilnRecords::find(&linktest::build_dir().join("producers-kiln-probe"));
+    if let (Err(e), true) = (&kiln, super::required()) {
+        problems.push(format!("kiln columns: {e} (MASON_REQUIRE_TOOLS=1)"));
+    }
+    let producers: Vec<Producer> =
+        Producer::ALL.into_iter().filter(|p| !p.is_kiln() || kiln.is_ok()).collect();
+    let runs: Runs = producers
+        .iter()
+        .map(|&p| (p, run_one(p, mortar.clone(), jobs, &filters, &mut problems)))
         .collect();
-    let (now, same) = compare(&runs, &mut problems);
+    let (mut now, same) = compare(&runs, &mut problems);
     let path = workspace_root().join(BASELINE);
     let baseline = match std::fs::read_to_string(&path) {
         Ok(text) => parse_baseline(&text)?,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
         Err(e) => return Err(format!("{}: {e}", path.display())),
     };
+    // Without kiln the kiln columns are the baseline's, neither compared
+    // nor changed.
+    if kiln.is_err() {
+        for (key, answers) in &mut now {
+            if let Some((b, _)) = baseline.get(key) {
+                answers[3].clone_from(&b[3]);
+                answers[4].clone_from(&b[4]);
+            }
+        }
+    }
     let mut text = String::from(HEADER);
     let mut changed = 0usize;
     for (key, answers) in &now {
-        let why = baseline.get(key).map(|b| b[3].clone()).unwrap_or_default();
-        let explained = answers[1] == answers[0] && answers[2] == answers[0] || !why.is_empty();
+        let [why, kiln_why] = baseline.get(key).map(|b| b.1.clone()).unwrap_or_default();
+        let hod_same = answers[1] == answers[0] && answers[2] == answers[0];
+        let kiln_same = answers[3] == answers[0] && answers[4] == answers[3];
         let label = label(key);
         match baseline.get(key) {
-            Some(b) if b[..3] == answers[..] => {}
-            Some(b) => {
+            Some((b, _)) if b == answers => {}
+            Some((b, _)) => {
                 changed += 1;
                 if !update {
-                    problems.push(format!(
-                        "{label}: changed: was gcc '{}' hod '{}' mixed '{}', now gcc '{}' hod '{}' mixed '{}'",
-                        b[0], b[1], b[2], answers[0], answers[1], answers[2]
-                    ));
+                    let mut text = format!("{label}: changed:");
+                    for (i, p) in COLUMNS.iter().enumerate() {
+                        if b[i] != answers[i] {
+                            let _ =
+                                write!(text, " {} was '{}', now '{}';", p.name(), b[i], answers[i]);
+                        }
+                    }
+                    problems.push(text);
                 }
             }
             None => {
@@ -266,22 +315,26 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
                 }
             }
         }
-        if !explained {
+        if !hod_same && why.is_empty() {
             problems.push(format!(
                 "{label}: differs without an explanation: gcc '{}' hod '{}' mixed '{}'",
                 answers[0], answers[1], answers[2]
             ));
         }
+        if !kiln_same && kiln_why.is_empty() && kiln.is_ok() {
+            problems.push(format!(
+                "{label}: kiln differs without an explanation: gcc '{}' kiln '{}' kiln-hod '{}'",
+                answers[0], answers[3], answers[4]
+            ));
+        }
         let _ = writeln!(
             text,
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{why}",
+            "{}\t{}\t{}\t{}\t{}\t{why}\t{kiln_why}",
             key.0,
             key.1,
             key.2,
             variant_name(VARIANTS[key.3]),
-            answers[0],
-            answers[1],
-            answers[2]
+            answers.join("\t"),
         );
     }
     let gone = baseline.keys().filter(|k| !now.contains_key(*k)).count();
@@ -291,12 +344,17 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
     if update && filters.is_empty() {
         std::fs::write(&path, &text).map_err(|e| format!("{}: {e}", path.display()))?;
     }
+    if let Err(e) = &kiln {
+        say!("xtask mason producers: the kiln columns are not run: {e}");
+    }
     say!(
-        "xtask mason producers: {} links x {} producers; hod = gcc {}, mixed = gcc {}; {} changed, {} gone from {BASELINE}",
+        "xtask mason producers: {} links x {} producers; hod = gcc {}, mixed = gcc {}, kiln = gcc {}, kiln-hod = gcc {}; {} changed, {} gone from {BASELINE}",
         now.len(),
-        Producer::ALL.len(),
+        producers.len(),
         same[0],
         same[1],
+        same[2],
+        same[3],
         changed,
         gone
     );

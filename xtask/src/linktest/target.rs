@@ -187,6 +187,9 @@ impl Linker {
 pub enum Family {
     Gcc,
     Clang,
+    /// kiln, the Mason toolchain's front end (`cc(kiln)`, `cxx(kiln)`;
+    /// WP-134): `kiln` for C, `kiln++` for C++, objects by its LLVM route.
+    Kiln,
 }
 
 impl Family {
@@ -195,12 +198,13 @@ impl Family {
         match self {
             Self::Gcc => "gcc",
             Self::Clang => "clang",
+            Self::Kiln => "kiln",
         }
     }
 
     /// The family of that name.
     pub fn parse(name: &str) -> Option<Self> {
-        [Self::Gcc, Self::Clang].into_iter().find(|family| family.name() == name)
+        [Self::Gcc, Self::Clang, Self::Kiln].into_iter().find(|family| family.name() == name)
     }
 }
 
@@ -221,11 +225,14 @@ pub enum Feature {
     Lldb,
     /// `check elflint`: elfutils' `eu-elflint`.
     Elflint,
+    /// A `(kiln)` compile step: a kiln build that writes `.mason.meta`
+    /// with kinds 1, 3 and 5 (WP-134; `crate::mason::KilnRecords`).
+    Kiln,
 }
 
 impl Feature {
     /// Every feature.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::Gxx,
         Self::Gfortran,
         Self::Clang,
@@ -235,6 +242,7 @@ impl Feature {
         Self::Gdb,
         Self::Lldb,
         Self::Elflint,
+        Self::Kiln,
     ];
 
     /// The word of a `requires` directive.
@@ -249,6 +257,7 @@ impl Feature {
             Self::Gdb => "gdb",
             Self::Lldb => "lldb",
             Self::Elflint => "eu-elflint",
+            Self::Kiln => "kiln",
         }
     }
 
@@ -405,6 +414,7 @@ pub fn feature_tool_name(feature: Feature, arch: Arch, host: Option<Arch>) -> St
         Feature::Gdb => "gdb".to_owned(),
         Feature::Lldb => "lldb of a pinned LLVM major".to_owned(),
         Feature::Elflint => "eu-elflint (Debian package elfutils)".to_owned(),
+        Feature::Kiln => "kiln with .mason.meta kinds 3 and 5 (MASON_KILN)".to_owned(),
     }
 }
 

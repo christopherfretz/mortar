@@ -40,7 +40,7 @@ use target::{Arch, ArchTools, CommonTools, Linker};
 pub const USAGE: &str = "usage: cargo xtask linktest [--linker bfd,lld,mold,mortar] \
                          [--arch aarch64,x86_64,i386] [--filter <text>]... [-j <n>] \
                          [--mortar <binary>] [--results <file>] [--keep] [--no-plumb] [-v] \
-                         [--producer gcc|hod-objcopy|hod|mixed] [<file or directory>...]\n";
+                         [--producer gcc|hod-objcopy|hod|mixed|kiln|kiln-hod] [<file or directory>...]\n";
 
 /// The most worker threads a run starts by default.
 const DEFAULT_JOBS: usize = 8;
@@ -79,6 +79,10 @@ pub struct Args {
     /// The digest mode's option variants ([`engine::Matrix::variants`];
     /// not an option of `linktest`).
     pub variants: Vec<Vec<String>>,
+    /// Tests that require one of these are left out of the run (not an
+    /// option of `linktest`: `cargo xtask mason producers` leaves out the
+    /// tests with kiln steps, which compare producers themselves).
+    pub without: Vec<target::Feature>,
 }
 
 impl Args {
@@ -125,7 +129,7 @@ impl Args {
                 "--producer" => {
                     let word = value("--producer")?;
                     parsed.producer = engine::Producer::parse(&word).ok_or_else(|| {
-                        format!("unknown producer `{word}` (gcc, hod-objcopy, hod, mixed)")
+                        format!("unknown producer `{word}` (gcc, hod-objcopy, hod, mixed, kiln, kiln-hod)")
                     })?;
                 }
                 "--keep" if inline.is_none() => parsed.keep = true,
@@ -621,6 +625,7 @@ pub fn run(args: &Args) -> Result<Report, String> {
         built: engine::FixtureCache::default(),
         producer: args.producer,
         mason: None,
+        kiln: None,
         variants: args.variants.clone(),
     };
     if args.producer != engine::Producer::Gcc {
@@ -634,7 +639,22 @@ pub fn run(args: &Args) -> Result<Report, String> {
     }
 
     let parsed = parse_tests(&tests, &mut report);
+    let parsed: Vec<_> = parsed
+        .into_iter()
+        .filter(|(_, _, test)| !args.without.iter().any(|f| test.requires.contains(f)))
+        .collect();
     load_fixtures(&mut matrix, &parsed);
+    // WP-134: a kiln that writes records, probed once, when a test asks
+    // for one or the producer is kiln.
+    if args.producer.is_kiln()
+        || parsed.iter().any(|(_, _, test)| test.requires.contains(&target::Feature::Kiln))
+    {
+        let found = crate::mason::KilnRecords::find(&work.join("kiln-probe"));
+        if let (true, Err(e)) = (args.producer.is_kiln(), &found) {
+            report.errors.push(format!("--producer {}: {e}", args.producer.name()));
+        }
+        matrix.kiln = Some(found);
+    }
     check_xfails(args, &matrix.xfails, &tests, &parsed, &mut report);
     if matrix.plumb && !matrix.stage3 {
         report.notes.push(stage3_note());

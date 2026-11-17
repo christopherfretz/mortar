@@ -81,6 +81,10 @@ pub struct Matrix {
     pub producer: Producer,
     /// kiln's and hod's builds, when [`Matrix::producer`] needs them.
     pub mason: Option<crate::mason::Mason>,
+    /// A kiln that writes records (`requires: kiln`, the kiln producers;
+    /// WP-134), or why there is none; `None` when nothing of the run
+    /// needs one.
+    pub kiln: Option<Result<crate::mason::KilnRecords, String>>,
     /// The digest mode's option variants (WP-099): when not empty, each
     /// mortar link step runs once per variant, the variant's options after
     /// the test's (`-Wl,` before each for a driver link), each recorded
@@ -110,11 +114,28 @@ pub enum Producer {
     /// others by objcopy into the compiler's object: one unit from each
     /// producer, hod's beside objects without records.
     Mixed,
+    /// C and C++ by kiln itself (WP-134), its LLVM route (`opt`, `llc`):
+    /// an object a `meta` step takes is compiled with
+    /// `-fmason-metadata=<level>` ([`meta_level`]) and the `meta` step
+    /// keeps kiln's container (the test producer's rows are not used);
+    /// other objects have none, as with GCC. A `meta` step on any other
+    /// object (assembly, a shared object's table) is the test producer's.
+    Kiln,
+    /// As [`Producer::Kiln`], by kiln's hod route (`-fkiln-backend=hod`,
+    /// `KILN_HOD_STRICT=1`): hod makes the `-O0` objects, the LLVM route
+    /// the others (kiln's own rule, `spec/driver.md` of kiln).
+    KilnHod,
 }
 
 impl Producer {
-    pub const ALL: [Producer; 4] =
-        [Producer::Gcc, Producer::HodObjcopy, Producer::Hod, Producer::Mixed];
+    pub const ALL: [Producer; 6] = [
+        Producer::Gcc,
+        Producer::HodObjcopy,
+        Producer::Hod,
+        Producer::Mixed,
+        Producer::Kiln,
+        Producer::KilnHod,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -122,7 +143,15 @@ impl Producer {
             Producer::HodObjcopy => "hod-objcopy",
             Producer::Hod => "hod",
             Producer::Mixed => "mixed",
+            Producer::Kiln => "kiln",
+            Producer::KilnHod => "kiln-hod",
         }
+    }
+
+    /// Whether kiln writes the containers ([`Producer::Kiln`],
+    /// [`Producer::KilnHod`]).
+    pub fn is_kiln(self) -> bool {
+        matches!(self, Producer::Kiln | Producer::KilnHod)
     }
 
     pub fn parse(word: &str) -> Option<Self> {
@@ -308,6 +337,7 @@ impl Matrix {
             Feature::Gdb => self.common.gdb.is_some(),
             Feature::Lldb => self.common.lldb.is_some(),
             Feature::Elflint => self.common.elflint.is_some(),
+            Feature::Kiln => matches!(self.kiln, Some(Ok(_))),
         }
     }
 }
@@ -805,17 +835,29 @@ impl Unit<'_> {
         }
         requires.sort_unstable();
         requires.dedup();
-        let missing: Vec<String> = requires
+        let absent: Vec<Feature> =
+            requires.iter().copied().filter(|f| !self.matrix.has(self.tools, *f)).collect();
+        let missing: Vec<String> = absent
             .iter()
-            .filter(|feature| !self.matrix.has(self.tools, **feature))
-            .map(|feature| {
-                super::target::feature_tool_name(*feature, self.arch(), self.matrix.host)
+            .map(|feature| match (feature, &self.matrix.kiln) {
+                (Feature::Kiln, Some(Err(why))) => why.clone(),
+                _ => super::target::feature_tool_name(*feature, self.arch(), self.matrix.host),
             })
             .collect();
         if !missing.is_empty() {
             let detail = format!("requires {}: not found", missing.join(", "));
             results.records.push(self.record(None, Outcome::Skip, detail));
-            if mortar_testutil::tools_required() {
+            // A kiln with records is the Mason lane's tool: required under
+            // MASON_REQUIRE_TOOLS=1 only (WP-134), so that a gate with an
+            // older kiln skips these tests by name.
+            let needed = |f: &Feature| {
+                if *f == Feature::Kiln {
+                    crate::mason::required()
+                } else {
+                    mortar_testutil::tools_required()
+                }
+            };
+            if absent.iter().any(needed) {
                 results.missing = missing;
             }
             return results;
@@ -1079,15 +1121,54 @@ impl Unit<'_> {
         }
         let vars = Vars { arch: self.arch(), host: self.matrix.host, linker: None };
         let mut meta_steps = 0usize;
+        // The kiln producers: the objects `meta` steps take, with the level
+        // each description implies, and those kiln made with records.
+        let levels = if self.matrix.producer.is_kiln() {
+            meta_levels(steps, self.arch(), vars, dir)
+        } else {
+            BTreeMap::new()
+        };
+        let mut by_kiln: BTreeSet<String> = BTreeSet::new();
         for step in steps {
             if !step.is_build() || !step.scope.has_arch(self.arch()) {
                 continue;
             }
             let args = expand(build_args(step), vars);
+            if let StepKind::Meta(_) = step.kind
+                && self.matrix.producer.is_kiln()
+            {
+                if let [_, input, _, out] = args.as_slice()
+                    && by_kiln.contains(input)
+                {
+                    // kiln's own container, not the description's rows.
+                    std::fs::copy(dir.join(input), dir.join(out)).map_err(|e| {
+                        Raw::Error(format!("{}: cannot copy '{input}': {e}", step.describe()))
+                    })?;
+                    by_kiln.insert(out.clone());
+                } else {
+                    let (program, _) = self.build_tool(step)?;
+                    meta_step(step, &program, &args, dir)?;
+                }
+                continue;
+            }
+            if let StepKind::Compile(compile) = &step.kind
+                && self.matrix.producer.is_kiln()
+                && matches!(compile.language, Language::C | Language::Cxx)
+            {
+                let out = output_of(&args);
+                let level = out.and_then(|o| levels.get(o)).copied();
+                self.compile_kiln(step, compile, &args, dir, level)?;
+                if let (Some(o), Some(_)) = (out, level) {
+                    by_kiln.insert(o.to_owned());
+                }
+                continue;
+            }
             if let StepKind::Meta(_) = step.kind {
                 let (program, _) = self.build_tool(step)?;
                 let through_ir = match self.matrix.producer {
-                    Producer::Gcc | Producer::HodObjcopy => false,
+                    Producer::Gcc | Producer::HodObjcopy | Producer::Kiln | Producer::KilnHod => {
+                        false
+                    }
                     Producer::Hod => true,
                     Producer::Mixed => meta_steps.is_multiple_of(2),
                 };
@@ -1110,7 +1191,17 @@ impl Unit<'_> {
             }
             let (program, mut full) = self.build_tool(step)?;
             full.extend(args.into_iter().map(OsString::from));
-            let output = spawn(step, &program, &full, dir, &[], TOOL_LIMITS)?;
+            // A `(kiln)` step's hod route uses the lane's hod, and a hod
+            // failure is an error, not a fallback (WP-134).
+            let mut env: Vec<(&str, &std::ffi::OsStr)> = Vec::new();
+            if let StepKind::Compile(c) = &step.kind
+                && c.family == Family::Kiln
+                && let Some(Ok(kiln)) = &self.matrix.kiln
+            {
+                env.push(("KILN_HOD", kiln.hod.as_os_str()));
+                env.push(("KILN_HOD_STRICT", std::ffi::OsStr::new("1")));
+            }
+            let output = spawn(step, &program, &full, dir, &env, TOOL_LIMITS)?;
             if !output.end.success() {
                 return Err(Raw::Error(format!(
                     "{}: {}: {}",
@@ -1201,6 +1292,53 @@ impl Unit<'_> {
         self.hod(step, &ll, &out, dir)
     }
 
+    /// A C or C++ compile step for a kiln producer (WP-134): the object by
+    /// kiln (`kiln` for C, `kiln++` for C++, the step's options), with
+    /// `-fmason-metadata=<level>` before them when a `meta` step takes it;
+    /// [`Producer::KilnHod`] asks for kiln's hod route.
+    fn compile_kiln(
+        &self,
+        step: &Step,
+        compile: &super::format::Compile,
+        args: &[String],
+        dir: &Path,
+        level: Option<&str>,
+    ) -> Result<(), Raw> {
+        let fail = |e: String| Raw::Error(format!("{}: {e}", step.describe()));
+        let kiln = match &self.matrix.kiln {
+            Some(Ok(kiln)) => kiln,
+            Some(Err(why)) => return Err(fail(why.clone())),
+            None => return Err(fail("no kiln for this run".to_owned())),
+        };
+        let program = if compile.language == Language::Cxx { &kiln.cxx } else { &kiln.c };
+        let mut full: Vec<OsString> = vec![format!("--target={}", self.arch().triple()).into()];
+        full.push("-c".into());
+        if self.matrix.digest {
+            let mut map = OsString::from("-ffile-prefix-map=");
+            map.push(self.dir.join("inputs").as_os_str());
+            map.push("=.");
+            full.push(map);
+        }
+        let mut env: Vec<(&str, &std::ffi::OsStr)> = Vec::new();
+        if self.matrix.producer == Producer::KilnHod {
+            let mason = self.mason(step)?;
+            full.push("-fkiln-backend=hod".into());
+            let mut hod = OsString::from("--hod=");
+            hod.push(mason.hod.as_os_str());
+            full.push(hod);
+            env.push(("KILN_HOD_STRICT", std::ffi::OsStr::new("1")));
+        }
+        if let Some(level) = level {
+            full.push(format!("-fmason-metadata={level}").into());
+        }
+        full.extend(args.iter().map(OsString::from));
+        let output = spawn(step, program, &full, dir, &env, TOOL_LIMITS)?;
+        if !output.end.success() {
+            return Err(fail(format!("kiln: {}: {}", output.end, first_error(&output))));
+        }
+        Ok(())
+    }
+
     /// `<out>` by hod from `<ll>`, with the relocation model of the object
     /// the IR was made for.
     fn hod(&self, step: &Step, ll: &str, out: &str, dir: &Path) -> Result<(), Raw> {
@@ -1269,9 +1407,14 @@ impl Unit<'_> {
                     (Family::Gcc, Language::Fortran) => self.tools.gfortran.as_ref(),
                     (Family::Clang, Language::Cxx) => common.clangxx.as_ref(),
                     (Family::Clang, _) => common.clang.as_ref(),
+                    (Family::Kiln, language) => match &self.matrix.kiln {
+                        Some(Ok(k)) if language == Language::Cxx => Some(&k.cxx),
+                        Some(Ok(k)) => Some(&k.c),
+                        _ => None,
+                    },
                 };
                 let mut before = Vec::new();
-                if compile.family == Family::Clang {
+                if matches!(compile.family, Family::Clang | Family::Kiln) {
                     before.push(format!("--target={}", self.arch().triple()).into());
                 }
                 before.push("-c".into());
@@ -2267,6 +2410,68 @@ impl Unit<'_> {
             memory_kib: self.test.memory_mib.map_or(base.memory_kib, |mib| mib << 10),
         }
     }
+}
+
+/// The `-o` file of a compile step's arguments.
+fn output_of(args: &[String]) -> Option<&str> {
+    let at = args.iter().position(|a| a == "-o")?;
+    args.get(at + 1).map(String::as_str)
+}
+
+/// For the kiln producers (WP-134): the object each `meta` step of `steps`
+/// takes (not a shared object), with the `-fmason-metadata` level its
+/// description implies ([`meta_level`]).
+fn meta_levels(
+    steps: &[Step],
+    arch: Arch,
+    vars: Vars,
+    dir: &Path,
+) -> BTreeMap<String, &'static str> {
+    let mut levels = BTreeMap::new();
+    for step in steps {
+        if !matches!(step.kind, StepKind::Meta(_)) || !step.scope.has_arch(arch) {
+            continue;
+        }
+        let args = expand(build_args(step), vars);
+        let [description, input, _, _] = args.as_slice() else { continue };
+        if Path::new(input).extension().is_some_and(|e| e == "so") {
+            continue;
+        }
+        let text = std::fs::read_to_string(dir.join(description)).unwrap_or_default();
+        levels.insert(input.clone(), meta_level(&text));
+    }
+    levels
+}
+
+/// The `-fmason-metadata` level a test producer's description implies
+/// (WP-134): `detail` when a kind 5 row of a C++-linkage function carries
+/// its type (`spec/odr.md` O-35: only `detail` writes those), else
+/// `default` (kinds 1, 3 and 5).
+pub fn meta_level(description: &str) -> &'static str {
+    for line in description.lines() {
+        let mut words = line.split_whitespace();
+        if words.next() != Some("declaration") {
+            continue;
+        }
+        let mut flags = 0u16;
+        let mut typed = false;
+        for word in words {
+            if let Some(v) = word.strip_prefix("flags=") {
+                flags = v
+                    .strip_prefix("0x")
+                    .map_or_else(|| v.parse().ok(), |h| u16::from_str_radix(h, 16).ok())
+                    .unwrap_or(0);
+            } else if let Some(v) = word.strip_prefix("type_name=") {
+                typed = !v.is_empty() && v != "\"\"";
+            }
+        }
+        let function = flags & 2 == 0;
+        let cxx = flags & 4 == 0;
+        if function && cxx && typed {
+            return "detail";
+        }
+    }
+    "default"
 }
 
 /// A `meta <description> <in.o> -o <out.o>` step: the description's one

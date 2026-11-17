@@ -517,6 +517,7 @@ impl Step {
         match &self.kind {
             StepKind::Compile(compile) => match (compile.family, compile.language) {
                 (Family::Clang, _) => Some(Feature::Clang),
+                (Family::Kiln, _) => Some(Feature::Kiln),
                 (Family::Gcc, Language::Cxx) => Some(Feature::Gxx),
                 (Family::Gcc, Language::Fortran) => Some(Feature::Gfortran),
                 (Family::Gcc, Language::C | Language::Asm) => None,
@@ -1462,6 +1463,7 @@ impl Parser {
         self.check_pairs(&steps);
         self.check_scopes(&steps, &arches);
         self.check_requires(&steps);
+        self.check_kiln_arches(&steps, &arches);
         self.check_steps(&steps, &arches);
         self.check_markers(&arches);
         self.check_file_names();
@@ -1569,6 +1571,21 @@ impl Parser {
         }
     }
 
+    /// kiln targets AArch64 and x86-64 only: a test with a `(kiln)` step
+    /// says so with `arch` (WP-134).
+    fn check_kiln_arches(&mut self, steps: &[Step], arches: &[Arch]) {
+        let Some(step) = steps.iter().find(|s| s.feature() == Some(Feature::Kiln)) else {
+            return;
+        };
+        if arches.contains(&Arch::I386) {
+            self.error(
+                step.line,
+                "a kiln step in a test that runs on i386: kiln does not target it (add \
+                 '#@ arch: aarch64 x86_64')",
+            );
+        }
+    }
+
     /// The rules of single steps that need the whole step.
     fn check_steps(&mut self, steps: &[Step], arches: &[Arch]) {
         for step in steps {
@@ -1671,6 +1688,9 @@ fn compile(
     };
     if language == Language::Fortran && family == Family::Clang {
         return Err("'fc' has no clang family: flang is not a pinned tool".to_owned());
+    }
+    if family == Family::Kiln && !matches!(language, Language::C | Language::Cxx) {
+        return Err(format!("'{keyword}' has no kiln family: kiln compiles C and C++"));
     }
     qualifiers.no_linker(&format!("'{keyword}'"))?;
     if args.is_empty() {
