@@ -2244,7 +2244,10 @@ rules below judge the rest. Code: `src/symbols.rs`.
     `merged` section, such as GNU ld's `.eh_frame`). A local in a
     non-alloc or discarded section has no address in the output and
     does not count (every object's `$d` in its debug sections; WP-028d:
-    without this, no output `$x` or `$d` was judged);
+    without this, no output `$x` or `$d` was judged); likewise an
+    output local in a non-alloc section (GNU ld keeps Clang's `$d` of
+    `.comment`, an `SHF_MERGE` string section, where the merged empty
+    string lands: `nonpic-analysis-before-start`, WP-121);
   - the symbol is a mapping symbol (`$x…`, `$d…`, AAELF64 "Mapping
     symbols") at an address of an allocated section that no input section
     occupies: the linker's own, marking a veneer or a patch.
@@ -4389,7 +4392,10 @@ own implementation of D-11-D-27 and compared with the output.
   `PT_INTERP`; WP-050 proposal 3); `PT_DYNAMIC` covers exactly `.dynamic` and is writable; unless
   `-z norelro`, `PT_GNU_RELRO` covers `.dynamic`, `.got`, `.bss.rel.ro`
   and (`-z now`) `.got.plt`, and ends on maxpage (D-33, D-42, D-49,
-  D-61); under `-z norelro` there is no `PT_GNU_RELRO`.
+  D-61): for mortar's map, maxpage is S2's, the line's last `-z
+  max-page-size` (0 or none: 64 KiB on AArch64, 4 KiB on x86-64 and
+  i386; layout.md L-74), and `-z common-page-size` changes nothing
+  (L-75; WP-121); under `-z norelro` there is no `PT_GNU_RELRO`.
   `PT_GNU_STACK`'s `PF_X` (WP-088; the kernel and glibc read only that
   bit of it): under the line's last `-z execstack` it is set, under
   `-z noexecstack` clear; with neither, it is set only when an input
@@ -4421,12 +4427,20 @@ own implementation of D-11-D-27 and compared with the output.
   **No `PT_DYNAMIC` (WP-131 V5).** The output kind comes from the line
   and the inputs (D-1), never from what the output holds: an output
   without `PT_DYNAMIC` is judged as static only when nothing says it is
-  dynamic. When the line's kind (§12.1, `line.rs`) is `Exec`, `Pie` or
-  `StaticPie`, or the output has `PT_INTERP`, an `SHT_DYNSYM` section, a
+  dynamic. When the output has `PT_INTERP`, an `SHT_DYNSYM` section, a
   `.dynamic` section, or an allocated relocation section with a record
-  other than `IRELATIVE`, then a missing `PT_DYNAMIC` is P-D4 ("no
-  PT_DYNAMIC, and ...", naming each reason): the loader finds no
-  `.dynamic`, so no `DT_NEEDED` and no relocation table. Each shared
+  other than `IRELATIVE`, or (mortar's outputs) the line's kind (§12.1,
+  `line.rs`) is `Exec`, `Pie` or `StaticPie`, or (a reference's) the
+  line loads a shared object (not under `--as-needed`), then a missing
+  `PT_DYNAMIC` is P-D4 ("no PT_DYNAMIC, and ...", naming each reason):
+  the loader finds no `.dynamic`, so no `DT_NEEDED` and no relocation
+  table. The line's kind alone binds mortar only (D-1's `Exec` row always
+  has `.dynamic`): GNU ld, lld and mold all write a `-no-pie` line with
+  no shared input as a static-shaped executable, judged as the static
+  executable it is when none of the other reasons holds (GNU ld's;
+  lld's and mold's carry `PT_INTERP` and crash at start, measured on
+  AArch64: P-D4, `reloc/x64-gotpcrelx-slot`; WP-121, test `tests/dyn.rs`
+  `s12_p_d4_reference_without_shared_inputs`). Each shared
   object the line loads (not under `--as-needed`) is also P-D6 ("no
   PT_DYNAMIC, so no DT_NEEDED names ..."). Such an output gets the
   structure rules (§6.2) and these findings, not the static rules,
@@ -5086,7 +5100,12 @@ never read from the output's `.dynsym`, `.gnu.version_d` or
 
 - **view A**: no interposer; a defined key resolves to the library's
   own definition, an import to its definition in the shared inputs
-  (P-D2), at P-D9's two load biases;
+  (P-D2), at P-D9's two load biases. View A has no host: an unversioned
+  import no shared input defines is the host's to resolve (D-118, legal
+  without `-z defs`/`--no-undefined`), so neither P-D9's "the loader
+  finds no definition" nor P-D7's "no needed or used object defines it"
+  is reported for it, and its places are judged in view B; under `-z
+  defs`, and for a versioned import (W42), both stay findings;
 - **view B**: the interposer first in lookup order.
 
 The loader model resolves every record of the output by the symbol it
@@ -5158,13 +5177,21 @@ and what turns P-D9's equality into a check of D-112.
   max page size and `p_offset ≡ p_vaddr (mod p_align)` (glibc checks
   only the page, D-123).
 - **P-D22 (`.dynamic` of a shared object; request P-R7).** In addition
-  to P-D6 with D-102's rows: `DT_SYMBOLIC` and `DF_SYMBOLIC` present iff
+  to P-D6 with D-102's rows: mortar's tags in D-102's order (D-30's with
+  `DT_SONAME` and `DT_SYMBOLIC` after `DT_NEEDED`, then the run path; no
+  `DT_PREINIT_ARRAY*`, no `DT_DEBUG`; `DT_VERDEF`/`DT_VERDEFNUM` before
+  `DT_VERNEED`), each a tag D-102 writes ("the .dynamic tags are not in
+  D-102's order", "a tag D-102 does not write"; D-30's order is an
+  executable's and does not judge a `Shared` output); `DT_SYMBOLIC` and `DF_SYMBOLIC` present iff
   the line's last `-Bsymbolic` form is `-Bsymbolic` and the line has no
   `--dynamic-list` (D-112, D-102, D-103); `DT_INIT`/`DT_FINI` point at
   defined, live code (D-124); `DT_SONAME` the `-soname` string;
   `DT_VERDEF`/`DT_VERDEFNUM` consistent with `.gnu.version_d` (D-115);
   `GNU_PROPERTY_1_NEEDED_INDIRECT_EXTERN_ACCESS` present iff an input
-  has it (D-112).
+  has it (D-112); `DT_FLAGS_1`'s `DF_1_NODELETE`, `DF_1_NOOPEN`,
+  `DF_1_INITFIRST`, `DF_1_INTERPOSE` and `DF_1_ORIGIN` each present iff
+  the line has its `-z` word (D-103; D-30's executable row does not
+  judge them in a `Shared` output; `DF_1_NOW` stays P-D6's).
 - **P-D23 (mutations; request P-R8).** Each wrong output of `spec/dyn.md`
   §17.7, written into a correct mortar library (or, where it concerns
   the executable, a host), is reported by the rule the table below

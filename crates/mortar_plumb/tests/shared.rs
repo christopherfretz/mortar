@@ -25,7 +25,17 @@ macro_rules! src {
     ($($n:literal),* $(,)?) => { &[$(($n, include_str!(concat!("shared/", $n)))),*] };
 }
 
-const SOURCES: &[(&str, &str)] = src!["lib.c", "dep.c", "dl.list", "v.map", "more.c", "ar.c"];
+const SOURCES: &[(&str, &str)] = src![
+    "lib.c",
+    "dep.c",
+    "dl.list",
+    "v.map",
+    "more.c",
+    "ar.c",
+    "before.c",
+    "format-pic.s",
+    "flags.c",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Arch {
@@ -299,6 +309,15 @@ fn build() -> Option<Corpus> {
             b.link("more", arch, &d, "libmore.so", &args, linker, more_expect(linker));
         }
     }
+    // P-D4's RELRO end at the line's maxpage (WP-121 part 2): the plain
+    // library on AArch64 under `-z max-page-size=0x1000`, by each reference.
+    let d = b.dir(Arch::A64, "relro");
+    b.obj(Arch::A64, &d, "lib.c", &["-O1", "-fPIC"], "lib.o");
+    for linker in Linker::ALL {
+        let args = ["-shared", "-Wl,-soname,libr.so", "lib.o", "-Wl,-z,max-page-size=0x1000"];
+        b.link("relro", Arch::A64, &d, "libr.so", &args, linker, &[]);
+    }
+    refs(&mut b);
     Some(Corpus { _scratch: scratch, outs: b.outs })
 }
 
@@ -351,6 +370,92 @@ fn judge(case: &str) {
     }
     assert!(n > 0 || c.outs.is_empty(), "no outputs of case {case}");
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// The reference `-shared` links of the link tests that stage 3 judged
+/// falsely when WP-121 part 1 landed (`tests/link/dyn/shared/`): a library
+/// whose imports no shared input defines, without `-z defs` (D-118: the
+/// host's; `nonpic-analysis-format`); Clang's `.comment` mapping symbol in
+/// a GNU ld library (`nonpic-analysis-before-start`); D-103's `-z` words
+/// (`refused-shared-later`). Every link is the case `refs`.
+fn refs(b: &mut Builder<'_>) {
+    use Linker::Bfd;
+    let a = Arch::A64;
+    let d = b.dir(a, "refs");
+    b.obj(a, &d, "format-pic.s", &[], "format-pic.o");
+    for l in Linker::ALL {
+        let args = ["-shared", "format-pic.o", "-Wl,-soname,libpic.so"];
+        b.link("refs", a, &d, "libpic.so", &args, l, row(l, &[]));
+    }
+    if let Some(clang) = tool("clang") {
+        let src = b.root.join("before.c").display().to_string();
+        must(&d, &clang, &["-O2", "-fPIC", "-c", &src, "-o", "c2.o"]);
+        b.link("refs", a, &d, "libc2.so", &["-shared", "c2.o", "-Wl,-soname,libc2.so"], Bfd, &[]);
+    }
+    for arch in [Arch::A64, Arch::X64] {
+        let d = b.dir(arch, "refs");
+        b.obj(arch, &d, "flags.c", &["-O1", "-fPIC"], "flags.o");
+        let args = [
+            "-shared",
+            "flags.o",
+            "-Wl,-z,nodelete",
+            "-Wl,-z,nodlopen",
+            "-Wl,-z,initfirst",
+            "-Wl,-z,interpose",
+            "-Wl,-z,origin",
+        ];
+        // A10: GNU ld's label of the empty section it removes.
+        for l in Linker::ALL {
+            let want: &'static [&'static str] = if l == Bfd { &["A10"] } else { row(l, &[]) };
+            b.link("refs", arch, &d, "libflags.so", &args, l, want);
+        }
+    }
+}
+
+/// A row's findings, with mold's anomaly A3 (every mold library).
+fn row(l: Linker, want: &'static [&'static str]) -> &'static [&'static str] {
+    if l != Linker::Mold {
+        return want;
+    }
+    let v: Vec<&'static str> = std::iter::once("A3").chain(want.iter().copied()).collect();
+    Vec::leak(v)
+}
+
+// The link tests' reference libraries (WP-121, after part 1): clean.
+#[test]
+fn s12_5_reference_link_tests_verify_clean() {
+    judge("refs");
+}
+
+// P-D22 (D-103): a `DT_FLAGS_1` bit no `-z` word asks for, and one the
+// line asks for that is absent, are findings.
+#[test]
+fn p_d22_flags_1_follows_the_z_words() {
+    let Some(c) = corpus() else { return };
+    let mut n = 0;
+    for o in c
+        .outs
+        .iter()
+        .filter(|o| o.case == "refs" && o.link.output.to_string_lossy().contains("libflags.so"))
+    {
+        n += 1;
+        for (flip, want) in [(0x4u64, "bits 0x4 no -z word"), (0x8, "bits 0x8 the line asks for")] {
+            let mut b = o.link.output_bytes();
+            let h = pt_dynamic(&b);
+            let (off, size) = (u64at(&b, h + 8) as usize, u64at(&b, h + 32) as usize);
+            let e = (off..off + size).step_by(16).find(|&e| u64at(&b, e) == 0x6fff_fffb).unwrap();
+            let v = u64at(&b, e + 8) ^ flip;
+            b[e + 8..e + 16].copy_from_slice(&v.to_le_bytes());
+            let r = o.verify_bytes(&b);
+            assert!(
+                r.findings.iter().any(|f| f.rule.id() == "P-D22" && f.message.contains(want)),
+                "{}: no P-D22 '{want}' in {:#?}",
+                o.label(),
+                r.findings
+            );
+        }
+    }
+    assert!(n == 0 || n == 6, "{n} libflags outputs");
 }
 
 // spec/plumb.md §12.5: a library under each line form of D-112, by each
@@ -455,4 +560,77 @@ fn s12_5_dynsym_index_out_of_range_is_a_finding() {
         },
         "P-D25 a dynamic record names .dynsym entry 1048575, past the table's",
     );
+}
+
+/// The file offset of the first program header of type `ty` (ELF64).
+fn phdr(b: &[u8], ty: u32) -> Option<usize> {
+    let (off, ent, n) = (u64at(b, 0x20) as usize, u16at(b, 0x36), u16at(b, 0x38));
+    (0..n).map(|i| off + i * ent).find(|&h| b[h..h + 4] == ty.to_le_bytes())
+}
+
+const PT_GNU_RELRO: u32 = 0x6474_e552;
+
+// spec/plumb.md P-D4 (WP-121 part 2): under mortar's map, PT_GNU_RELRO
+// ends on the line's maxpage, S2's (`-z max-page-size`; L-74), not on the
+// machine's default. Each reference's AArch64 library linked under
+// `-z max-page-size=0x1000` whose RELRO ends on 4 KiB, read as mortar's
+// map: no RELRO-end finding; the same output under a line without the
+// option (`max-page-size=0`, 64 KiB): the finding when the end is not on 64 KiB; the end
+// moved by 8: the finding. `-z common-page-size` changes nothing (L-75).
+#[test]
+fn p_d4_relro_ends_on_the_lines_maxpage() {
+    let Some(c) = corpus() else { return };
+    let mut n = 0;
+    for o in c.outs.iter().filter(|o| o.case == "relro") {
+        let out = o.link.output_bytes();
+        let Some(h) = phdr(&out, PT_GNU_RELRO) else { continue };
+        let end = u64at(&out, h + 16) + u64at(&out, h + 40);
+        if !end.is_multiple_of(0x1000) {
+            continue; // lld's AArch64 RELRO ends mid-page (D-61)
+        }
+        n += 1;
+        let line: Vec<String> =
+            std::fs::read_to_string(&o.line).unwrap().lines().map(str::to_string).collect();
+        let relro = |bytes: &[u8], words: &[String]| -> Vec<String> {
+            let mut map = o.link.parse_map();
+            let files = o.link.inputs(&map);
+            map.format = mortar_plumb::Format::Mortar;
+            map.args = words.iter().map(|w| w.as_bytes().to_vec()).collect();
+            let inputs: Vec<Input<'_>> =
+                files.iter().map(|(p, b)| Input { path: p, bytes: b }).collect();
+            let ctx = Ctx { line: Some(words.to_vec()), files: &Dir(&o.link.dir) };
+            mortar_plumb::verify_with(bytes, &inputs, &map, &ctx)
+                .findings
+                .iter()
+                .filter(|f| f.rule.id() == "P-D4" && f.message.starts_with("PT_GNU_RELRO ends"))
+                .map(|f| f.message.clone())
+                .collect()
+        };
+        let got = relro(&out, &line);
+        assert!(got.is_empty(), "{}: {got:#?}", o.label());
+        let mut common = line.clone();
+        common.extend(["-z".to_string(), "common-page-size=0x10000".to_string()]);
+        let got = relro(&out, &common);
+        assert!(got.is_empty(), "{} common-page-size: {got:#?}", o.label());
+        // `max-page-size=0`: the default (L-74).
+        let default: Vec<String> =
+            line.iter()
+                .map(|w| {
+                    if w.starts_with("max-page-size") {
+                        "max-page-size=0".into()
+                    } else {
+                        w.clone()
+                    }
+                })
+                .collect();
+        assert_ne!(default, line, "{}: the line has no -z max-page-size", o.label());
+        let got = relro(&out, &default);
+        assert_eq!(got.is_empty(), end.is_multiple_of(0x1_0000), "{} default: {got:#?}", o.label());
+        let mut moved = out.clone();
+        let memsz = u64at(&moved, h + 40) - 8;
+        moved[h + 40..h + 48].copy_from_slice(&memsz.to_le_bytes());
+        let got = relro(&moved, &line);
+        assert!(got.iter().any(|g| g.contains("maxpage 0x1000")), "{} moved: {got:#?}", o.label());
+    }
+    assert!(n > 0 || c.outs.is_empty(), "no reference ends RELRO on 4 KiB");
 }

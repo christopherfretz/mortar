@@ -46,7 +46,7 @@ pub fn is_dynamic(output: &[u8]) -> bool {
 pub(crate) fn judged_dynamic(output: &[u8], map: &Map, ctx: &Ctx<'_>) -> bool {
     let Ok(image) = Image::read(output) else { return false };
     image.phdrs.iter().any(|p| p.p_type == PT_DYNAMIC)
-        || !no_dynamic(&image, line_words(map, ctx).as_deref(), ctx.files).is_empty()
+        || !no_dynamic(&image, line_words(map, ctx).as_deref(), ctx.files, map.format).is_empty()
 }
 
 /// Whether section `si` of `o` has a record naming one of `names`.
@@ -103,7 +103,7 @@ pub(crate) fn verify_in(
         // a finding (P-D4, P-D6; WP-131 V5), and only the structure rules
         // judge it besides (a static judging of a dynamic program names
         // its PLT and its imports wrongly); any other is static.
-        let missing = no_dynamic(&image, line_words(map, ctx).as_deref(), ctx.files);
+        let missing = no_dynamic(&image, line_words(map, ctx).as_deref(), ctx.files, map.format);
         if missing.is_empty() {
             return crate::verify_static_in(output, store, m, map);
         }
@@ -272,10 +272,13 @@ fn judge(
     let mut checked = crate::dyncheck::check(image, dout, &line, &model, &ld, &objs, map);
     if let (Some(sl), Some(s)) = (&shared.line, &sets) {
         // §12.5: P-D16's changes to the executable rules, then P-D19-P-D26.
-        crate::shared::filter_dyncheck(&mut checked, image, dout);
+        crate::shared::filter_dyncheck(&mut checked, image, dout, sl);
         report
             .findings
             .extend(crate::shared::static_checks(image, dout, &objs, sl, s, &args, map.format));
+        // P-D17's address clause (D-117): a bound use is reported even when
+        // both views agree on its value.
+        report.findings.extend(crate::sharedflow::address_clause(&objs, s).0);
     } else if map.format != crate::Format::Mortar && line.symbolic == Some("-Bsymbolic") {
         // A44 is an executable's: a shared object's DF_SYMBOLIC is P-D22's.
         symbolic_flag(&mut checked);
@@ -293,6 +296,16 @@ fn judge(
             .filter(|f| {
                 // P-D20 names a `Shared` output's text relocation.
                 sets.is_none() || !f.message.contains("a text relocation (D-47, W6)")
+            })
+            .filter(|f| {
+                // §12.5 view A: an unversioned import no shared input
+                // defines is the host's (D-118) unless the line has `-z
+                // defs`; view B's interposer defines it.
+                shared.line.as_ref().is_none_or(|sl| {
+                    sl.zdefs
+                        || !f.message.starts_with("the loader finds no definition of ")
+                        || !f.symbol.as_deref().is_some_and(|n| crate::shared::host_import(dout, n))
+                })
             })
             .cloned(),
     );
@@ -584,8 +597,18 @@ pub const SYMBOLIC: &str =
 /// no relocation table, and the program fails (mold 2.37's
 /// `--push-state -Bstatic --pop-state -lgreet`: SIGSEGV). Each is P-D4;
 /// each shared object the line loads but not `--as-needed` is P-D6 (no
-/// `DT_NEEDED` can name it).
-fn no_dynamic(image: &Image<'_>, words: Option<&[String]>, files: &dyn Files) -> Vec<Finding> {
+/// `DT_NEEDED` can name it). The line's kind alone counts for mortar's
+/// outputs only (D-1's `Exec` row always has `.dynamic`): from a
+/// reference, a `-no-pie` line with no shared library among its inputs
+/// is a static-shaped executable (GNU ld, lld and mold all write one),
+/// judged as static unless its contents or a loaded shared library say
+/// otherwise (WP-121, `reloc/x64-gotpcrelx-slot`).
+fn no_dynamic(
+    image: &Image<'_>,
+    words: Option<&[String]>,
+    files: &dyn Files,
+    format: crate::Format,
+) -> Vec<Finding> {
     use mortar_elf::consts::{
         EM_386, EM_AARCH64, EM_X86_64, PT_INTERP, SHT_DYNSYM, SHT_REL, SHT_RELA,
     };
@@ -593,11 +616,18 @@ fn no_dynamic(image: &Image<'_>, words: Option<&[String]>, files: &dyn Files) ->
     let mut why = Vec::new();
     if let Some(w) = words {
         let line = Line::parse(w, files);
-        if let Some(k @ (OutputKind::Exec | OutputKind::Pie | OutputKind::StaticPie)) = line.kind {
+        if let Some(k @ (OutputKind::Exec | OutputKind::Pie | OutputKind::StaticPie)) = line.kind
+            && format == crate::Format::Mortar
+        {
             why.push(format!("the line's kind is '{}' (D-1)", k.name()));
         }
+        let mut loads = false;
         for i in &line.items {
             if let crate::line::Item::Shared { named, as_needed: false, .. } = i {
+                if !loads && format != crate::Format::Mortar {
+                    why.push(format!("the line loads the shared object '{named}' (D-1)"));
+                }
+                loads = true;
                 v.push(Finding::new(
                     Rule::Dyn(6),
                     format!("no PT_DYNAMIC, so no DT_NEEDED names '{named}', which the line loads (D-11, W9)"),
