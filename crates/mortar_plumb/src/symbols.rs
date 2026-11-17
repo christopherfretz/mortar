@@ -211,8 +211,18 @@ fn held_def(e: &Engine<'_, '_>, name: &str) -> Option<String> {
         let s = o.secs.get(k.0 as usize)?;
         // A foreign map's merged section may have lost every piece (lld
         // under --gc-sections): not known to be held.
-        let held = matches!(s.place, Place::Whole(_) | Place::Pieces(_))
-            || (e.format == Format::Mortar && s.empty_unrecorded());
+        // Placed as pieces: the piece holding the label must be live
+        // (mortar collects the dead pieces of a merged section under
+        // --gc-sections; glibc's `__nptl_version`).
+        let v = d.st_value;
+        let held = match &s.place {
+            Place::Whole(_) => true,
+            Place::Pieces(ps) => ps.iter().any(|p| {
+                (p.input_offset <= v && v < p.input_offset + p.size)
+                    || (v == s.shdr.sh_size && p.input_offset + p.size == v)
+            }),
+            _ => e.format == Format::Mortar && s.empty_unrecorded(),
+        };
         (s.alloc() && held).then(|| format!("section '{}' of {}", s.name, o.path))
     })
 }

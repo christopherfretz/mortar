@@ -2297,7 +2297,9 @@ rules below judge the rest. Code: `src/symbols.rs`.
   - **a missing global.** When the output has a `.symtab`, no symbol of
     any binding has the name, the name's visibility V is default or
     protected, and an input defines it (global or weak) in an allocated
-    section placed whole or as pieces, or (mortar's map) without bytes and
+    section placed whole, or as pieces with a piece holding its label (a
+    dead piece of a merged section is collected under `--gc-sections`, and
+    its labels with it: glibc's `__nptl_version`), or (mortar's map) without bytes and
     without a record: a finding. A foreign map's merged section is not
     known to hold anything (lld collects the pieces of one under
     `--gc-sections`), so its names are not judged so. A versioned input
