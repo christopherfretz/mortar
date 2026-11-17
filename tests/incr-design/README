@@ -18,3 +18,5 @@ bsprobe.sh        WP-207: do make and ninja relink after a torn output that is f
 symfill.py        WP-207: rebuild a linked file's .symtab the way IN-49a's update does, with or without fillers.
 fillers.sh        WP-207: IN-49a's filler form against ~35 tools on AArch64, x86-64, i386 (uses symfill.py
                   and the prebuilt mortar). From review-in72/r7-fillers.sh.
+fillcmp.py        WP-207: for the listing tools fillers.sh reports as differing, compare again without the filler
+                  lines, index columns and the table-size lines (run: fillcmp.py SCRATCH/fill-T SECTION1-NAME).
