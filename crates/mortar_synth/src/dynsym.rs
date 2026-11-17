@@ -275,6 +275,7 @@ impl DynsymInputs<'_> {
     /// IPLT entry), or `internal-error` when the tables contradict each
     /// other (an undefined key that is not `WeakDyn`, an export the
     /// program does not define or that is hidden).
+    #[allow(clippy::too_many_lines, reason = "one arm per definition kind (D-23, D-111)")]
     pub fn form(&self, key: SymbolId) -> Result<Form, SynthError> {
         let res = self.resolution;
         let name = || String::from_utf8_lossy(self.src.symbol(key)).into_owned();

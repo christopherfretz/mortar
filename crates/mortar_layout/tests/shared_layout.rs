@@ -126,6 +126,7 @@ fn names(a: &mortar_core::assignment::Assignment<'_>, placed: &Placed) -> Vec<St
 // end, p_align, congruence), D-120 (.got.plt outside RELRO when lazy),
 // layout.md L-68 (base 0)
 #[test]
+#[allow(clippy::many_single_char_names)] // the world, assignment, placement and segments of one case
 fn d123_shared_segments() {
     let mut cases = 0;
     for max_page in [None, Some(0x1000), Some(0x1_0000)] {
@@ -273,7 +274,8 @@ fn d101_shared_entry() {
         w.check(&a, &placed).unwrap();
         let text = placed.placement.place[w.sid(1, 1)].get().unwrap();
         let text = placed.placement.chunks[text.0].addr.unwrap() + text.1;
-        let warnings: Vec<&str> = placed.warnings.iter().map(|d| d.id()).collect();
+        let warnings: Vec<&str> =
+            placed.warnings.iter().map(mortar_layout::LayoutDiag::id).collect();
         (placed.placement.entry.map(|e| e - text), warnings.join(","))
     };
     // No `_start`: 0, nothing reported.

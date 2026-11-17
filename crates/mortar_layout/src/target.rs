@@ -177,13 +177,12 @@ impl Options {
             OutputKind::StaticPie if target.class == Class::Elf32 => {
                 return Err(feature("position-independent executable output"));
             }
-            OutputKind::StaticExecutable | OutputKind::Executable => false,
-            OutputKind::PieExecutable | OutputKind::StaticPie => true,
             // i386 shared objects are WP-130's (`spec/dyn.md` §17).
             OutputKind::Shared if target.class == Class::Elf32 => {
                 return Err(feature("ELFCLASS32 shared object"));
             }
-            OutputKind::Shared => true,
+            OutputKind::StaticExecutable | OutputKind::Executable => false,
+            OutputKind::PieExecutable | OutputKind::StaticPie | OutputKind::Shared => true,
             OutputKind::Relocatable => return Err(feature("relocatable output")),
         };
         let mut o = Self::defaults(target);

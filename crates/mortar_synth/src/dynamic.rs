@@ -323,6 +323,7 @@ impl DynamicPlan {
     /// `.preinit_array in a shared object`) for a `Shared` output with a
     /// `.preinit_array` (D-102 rows 5-6: glibc runs the pre-initialisers of
     /// the executable only).
+    #[allow(clippy::too_many_lines, reason = "D-30's rows in order, each a few lines")]
     pub fn new(inputs: &DynamicInputs) -> Result<Self, SynthError> {
         let i = inputs;
         if i.kind == DynKind::StaticPie && (i.needed != 0 || i.verneed != 0) {
