@@ -187,8 +187,11 @@ fn d10_exec_weak_key_binds_a_used_object() {
     use mortar_core::resolution::FileLive;
     use mortar_resolve::Def;
     for pie in [false, true] {
-        let exe =
-            Options { entry: Entry::None, output: Output { pie, dynamic: true }, ..Options::default() };
+        let exe = Options {
+            entry: Entry::None,
+            output: Output { pie, dynamic: true },
+            ..Options::default()
+        };
         for case in ['a', 'b', 'c'] {
             let mut m = Model::new(A64);
             let a = m.obj("a.o");
