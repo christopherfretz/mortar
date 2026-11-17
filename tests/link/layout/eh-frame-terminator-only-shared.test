@@ -4,11 +4,12 @@
 # `crti.o` and `crtbeginS.o` have none). The library's `.eh_frame` is the
 # terminator alone, 4 bytes, with `__FRAME_END__` at its start, and no
 # `PT_GNU_EH_FRAME` without an FDE (S-57: GNU ld; lld writes an empty
-# table, mold always one); a program loads it and calls it. AArch64 only:
-# x86-64 shared objects are WP-127's (dyn.md D-100), and AArch64's
-# `crtbeginS.o` has FDEs, so the line is GNU ld's directly.
+# table, mold always one); a program loads it and calls it. AArch64's
+# `crtbeginS.o` has FDEs, so the first line is GNU ld's directly, on both
+# architectures; the driver's own line follows on x86-64, where it
+# reaches the case.
 #@ spec: synth.md "S-48a"
-#@ arch: aarch64
+#@ arch: aarch64 x86_64
 
 as term.s -o term.o
 cc -O1 -fPIC -fno-asynchronous-unwind-tables -fno-unwind-tables lib.c -o lib.o
@@ -19,6 +20,9 @@ check readelf -lSW libt.so
   not(bfd,mortar): GNU_EH_FRAME
 check readelf -sW libt.so
   has(bfd,lld,mortar): OBJECT LOCAL DEFAULT * __FRAME_END__$
+link(x86_64) gcc -shared lib.o -Wl,-soname,libd.so -o libd.so
+check(x86_64) readelf -SW libd.so
+  has: .eh_frame PROGBITS * 000004 00 A
 host gcc -pie main.o -L. -lt -o prog
 run prog
   stdout: 42
