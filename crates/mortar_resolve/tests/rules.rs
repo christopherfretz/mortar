@@ -22,8 +22,8 @@ use mortar_elf::consts::{
 };
 use mortar_elf::{Machine, SectionIndex, SymbolIndex, SymbolSection};
 use mortar_resolve::linker::{Provided, TABLE, When};
-use mortar_resolve::options::{Entry, Named, Options, Output, Wrap};
-use mortar_resolve::problem::{MalformedSymbol, What};
+use mortar_resolve::options::{Defsym, DefsymValue, Entry, Named, Options, Output, Wrap};
+use mortar_resolve::problem::{DefsymWhy, MalformedSymbol, What};
 use mortar_resolve::resolve::flags;
 use mortar_resolve::sections::SectionRefusal;
 use mortar_resolve::verdict::{SymtabEntry, Unresolved, Verdict, symtab_entry, verdict};
@@ -1616,6 +1616,107 @@ fn s7_1_wrap_of_a_dropped_comdat_copy_is_refused() {
     m.undef(a, "b");
     let o = wrap(&mut m);
     assert_eq!(refused(&link_with(&m, &o)), Some((x, a)));
+}
+
+fn defsym(m: &mut Model, sym: &str, value: DefsymValue, arg: u32) -> Defsym {
+    Defsym { sym: m.key(sym), value, arg, text: sym.as_bytes().into() }
+}
+
+fn defsym_refusals(r: &Resolved) -> Vec<DefsymWhy> {
+    r.problems
+        .iter()
+        .filter_map(|p| match p.what {
+            What::Defsym { why, .. } => Some(why),
+            _ => None,
+        })
+        .collect()
+}
+
+// spec: resolve.md §7.2 (WP-153): rank 0 over every definition; the
+// symbol is a root; an option's symbol extracts no member defining it.
+#[test]
+fn s7_2_defsym_beats_every_definition_and_its_symbol_is_a_root() {
+    let mut m = Model::new(A64);
+    let a = m.obj("a.o");
+    m.def(a, "s");
+    m.undef(a, "t");
+    let ar = m.archive();
+    let x = m.member(ar, "b.o");
+    m.def(x, "b");
+    let y = m.member(ar, "t.o");
+    m.def(y, "t");
+    let b = m.key("b");
+    let o = Options {
+        defsym: vec![
+            defsym(&mut m, "s", DefsymValue::Number(0x10), 1),
+            defsym(&mut m, "t", DefsymValue::Alias(b), 2),
+        ],
+        ..opts()
+    };
+    let r = link_with(&m, &o);
+    assert_eq!(def(&m, &r, "s"), Def::Defsym(DefsymValue::Number(0x10)));
+    assert_eq!(def(&m, &r, "t"), Def::Defsym(DefsymValue::Alias(b)));
+    // b.o is extracted for the root b; t.o, which defines t, is not.
+    assert!(r.file_live[x.0 as usize].is_live());
+    assert!(!r.file_live[y.0 as usize].is_live());
+    assert!(matches!(def(&m, &r, "b"), Def::Strong(_)));
+    assert!(defsym_refusals(&r).is_empty(), "{:?}", r.problems);
+}
+
+// spec: resolve.md §7.2: the symbol named must be defined in the output:
+// undefined, shared-only and another --defsym's are refused by name.
+#[test]
+fn s7_2_defsym_of_an_undefined_shared_or_defsym_symbol_is_refused() {
+    let mut m = Model::new(A64);
+    let a = m.obj("a.o");
+    m.undef(a, "f");
+    let lib = m.shlib("libb.so", false);
+    m.def(lib, "sh");
+    m.undef(a, "sh");
+    let (nosuch, sh, c) = (m.key("nosuch"), m.key("sh"), m.key("c"));
+    let o = Options {
+        defsym: vec![
+            defsym(&mut m, "a1", DefsymValue::Alias(nosuch), 1),
+            defsym(&mut m, "a2", DefsymValue::Offset(sh, 4), 2),
+            defsym(&mut m, "c", DefsymValue::Number(1), 3),
+            defsym(&mut m, "a3", DefsymValue::Alias(c), 4),
+        ],
+        ..opts()
+    };
+    let r = link_with(&m, &o);
+    let mut got = defsym_refusals(&r);
+    got.sort();
+    assert_eq!(got, vec![DefsymWhy::Undefined(nosuch), DefsymWhy::Shared(sh), DefsymWhy::Chain(c)]);
+    // A B only a shared object defines and no object mentions is still
+    // named as the shared object's (a root binds no shared definition).
+    let lib2 = m.shlib("libc2.so", false);
+    m.def(lib2, "only");
+    let only = m.key("only");
+    let o = Options { defsym: vec![defsym(&mut m, "a5", DefsymValue::Alias(only), 1)], ..opts() };
+    assert_eq!(defsym_refusals(&link_with(&m, &o)), vec![DefsymWhy::Shared(only)]);
+    // A symbol aliasing itself is a chain too.
+    let a4 = m.key("a4");
+    let o = Options { defsym: vec![defsym(&mut m, "a4", DefsymValue::Alias(a4), 1)], ..opts() };
+    assert_eq!(defsym_refusals(&link_with(&m, &o)), vec![DefsymWhy::Chain(a4)]);
+}
+
+// spec: resolve.md §7.2: a number wider than the target's address.
+#[test]
+fn s7_2_defsym_number_wider_than_the_address_is_refused_on_i386() {
+    for (machine, refused) in [(Machine::I386, true), (Machine::X86_64, false)] {
+        let mut m = Model::new(machine);
+        m.obj("a.o");
+        let wide = DefsymValue::Number(0x1_2345_6789);
+        let o = Options {
+            defsym: vec![
+                defsym(&mut m, "k", wide, 1),
+                defsym(&mut m, "j", DefsymValue::Number(0xffff_fff0), 2),
+            ],
+            ..opts()
+        };
+        let want = if refused { vec![DefsymWhy::TooWide(0x1_2345_6789)] } else { vec![] };
+        assert_eq!(defsym_refusals(&link_with(&m, &o)), want, "{machine:?}");
+    }
 }
 
 // ---- §8 --------------------------------------------------------------------

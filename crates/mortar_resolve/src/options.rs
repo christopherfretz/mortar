@@ -38,6 +38,39 @@ pub struct Wrap {
     pub real: SymbolId,
 }
 
+/// One `--defsym=SYM=EXPR` (§7.2), the last of its `SYM`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Defsym {
+    pub sym: SymbolId,
+    pub value: DefsymValue,
+    /// The option's argument index (a root's `arg`, a refusal's place).
+    pub arg: u32,
+    /// The option's value, `SYM=EXPR`, as given.
+    pub text: Box<[u8]>,
+}
+
+/// What a `--defsym` defines its symbol as (§7.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DefsymValue {
+    /// An absolute number.
+    Number(u64),
+    /// An alias of the key.
+    Alias(SymbolId),
+    /// The key's address plus the addend, in the key's section.
+    Offset(SymbolId, i64),
+}
+
+impl DefsymValue {
+    /// The key the expression names, if any.
+    #[must_use]
+    pub fn base(self) -> Option<SymbolId> {
+        match self {
+            Self::Number(_) => None,
+            Self::Alias(b) | Self::Offset(b, _) => Some(b),
+        }
+    }
+}
+
 /// The output's kind, as far as §8.1 depends on it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Output {
@@ -64,6 +97,9 @@ pub struct Options {
     pub require_defined: Vec<Named>,
     /// `--wrap` (§7.1).
     pub wrap: Vec<Wrap>,
+    /// `--defsym` (§7.2): one per symbol, the last option of each, in
+    /// command-line order of those.
+    pub defsym: Vec<Defsym>,
     /// `--allow-multiple-definition` / `-z muldefs` (§3.8).
     pub allow_multiple_definition: bool,
     /// `--warn-common` (§3.3).
@@ -209,6 +245,7 @@ impl Default for Options {
             undefined: Vec::new(),
             require_defined: Vec::new(),
             wrap: Vec::new(),
+            defsym: Vec::new(),
             allow_multiple_definition: false,
             warn_common: false,
             warn_backrefs: false,
@@ -255,6 +292,14 @@ impl Options {
         for named in self.undefined.iter().chain(&self.require_defined) {
             if let Some(key) = named.key.get() {
                 roots.push(Root { key, arg: named.arg });
+            }
+        }
+        // §7.2: the symbol a `--defsym` names is a root wherever the
+        // option stands (lld, mold; GNU ld only when it precedes the
+        // archive), and kept by `--gc-sections` (lld, mold).
+        for d in &self.defsym {
+            if let Some(key) = d.value.base() {
+                roots.push(Root { key, arg: d.arg });
             }
         }
         roots

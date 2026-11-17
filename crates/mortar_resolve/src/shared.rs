@@ -27,7 +27,7 @@ use crate::export;
 use crate::linker;
 use crate::live::{NO_FILE, Targets};
 use crate::mention::{Class, classify, is_data};
-use crate::options::{MentionGroup, Options, ShlibUndefined};
+use crate::options::{DefsymValue, MentionGroup, Options, ShlibUndefined};
 use crate::problem::{Problem, What};
 use crate::resolve::{Def, Props, flags};
 use crate::view::{FileKind, Mention, View};
@@ -188,7 +188,7 @@ impl Loaded {
 /// (resolve §3.2 rule 2: a common yields to a shared data definition).
 fn program_defines(def: Def, rule2: bool) -> bool {
     match def {
-        Def::Strong(_) | Def::Weak(_) | Def::Provide { .. } => true,
+        Def::Strong(_) | Def::Weak(_) | Def::Provide { .. } | Def::Defsym(_) => true,
         Def::Common(_) => !rule2,
         Def::Undefined { .. } | Def::Shared(_) => false,
     }
@@ -434,7 +434,8 @@ pub(crate) fn link<V: View>(
             }
         }
     }
-    let ours = |d: Def| matches!(d, Def::Strong(_) | Def::Weak(_) | Def::Common(_));
+    let ours =
+        |d: Def| matches!(d, Def::Strong(_) | Def::Weak(_) | Def::Common(_) | Def::Defsym(_));
     // D-110 item 1 (WP-128): a definition in a member of an archive
     // `--exclude-libs` names is never exported, in every kind (all three
     // drop the exports `-E`, `--export-dynamic-symbol`, a version script's
@@ -513,7 +514,13 @@ pub(crate) fn link<V: View>(
         Some(out) => (0..keys)
             .map(|k| {
                 let d = def[k];
-                let sym_type = match d {
+                // `--defsym SYM=B` has `B`'s type (§7.2); a number or
+                // `B+N` is `STT_NOTYPE`.
+                let d_type = match d {
+                    Def::Defsym(DefsymValue::Alias(b)) => def[b.0 as usize],
+                    d => d,
+                };
+                let sym_type = match d_type {
                     Def::Strong(e) | Def::Weak(e) | Def::Common(e) => {
                         view.mention(e.file, e.index).map_or(0, |m| m.sym_type)
                     }

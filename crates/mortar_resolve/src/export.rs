@@ -38,7 +38,7 @@ use crate::resolve::Def;
 pub fn exported(def: Def, visibility: u8, ref_dynamic: bool) -> bool {
     let visible = matches!(visibility, STV_DEFAULT | STV_PROTECTED);
     match def {
-        Def::Strong(_) | Def::Weak(_) | Def::Common(_) => visible,
+        Def::Strong(_) | Def::Weak(_) | Def::Common(_) | Def::Defsym(_) => visible,
         Def::Provide { sym: Provided::Start | Provided::Stop, .. } => true,
         // D-110 item 2 (WP-150): `_end`, `__bss_start`, ... that an input
         // object references are exported as the library's own definitions

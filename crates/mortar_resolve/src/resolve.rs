@@ -30,8 +30,8 @@ use crate::mention::{
     Class, align_log2, atomics_u8, atomics_u16, atomics_u64, classify, max_u8, max_u64, min_u8,
     min_u64, or_u16, rank_vis, vis_rank,
 };
-use crate::options::{Entry, Options};
-use crate::problem::{ComdatMismatch, DefPlace, DiagKey, Problem, What};
+use crate::options::{DefsymValue, Entry, Options};
+use crate::problem::{ComdatMismatch, DefPlace, DefsymWhy, DiagKey, Problem, What};
 use crate::sections::{self, Note, SectionRefusal};
 use crate::steps::Steps;
 use crate::view::{FileKind, Mention, View, entry_word, word_entry};
@@ -53,6 +53,8 @@ pub enum Def {
     /// A definition in a shared object (rank 4, M2): the entry of
     /// `bind(k)` (`spec/dyn.md` D-11).
     Shared(SymEntry),
+    /// `--defsym` (rank 0, §7.2): beats every other candidate.
+    Defsym(DefsymValue),
 }
 
 impl Def {
@@ -61,7 +63,9 @@ impl Def {
     pub fn entry(self) -> Option<SymEntry> {
         match self {
             Self::Strong(e) | Self::Common(e) | Self::Weak(e) => Some(e),
-            Self::Undefined { .. } | Self::Provide { .. } | Self::Shared(_) => None,
+            Self::Undefined { .. } | Self::Provide { .. } | Self::Shared(_) | Self::Defsym(_) => {
+                None
+            }
         }
     }
 
@@ -254,6 +258,20 @@ pub fn resolve_steps<V: View>(
     steps.step("resolve.kinds");
     let targets = targets_with(view, &kinds, pool);
     steps.step("resolve.targets");
+    // §7.2: a `--defsym` symbol is defined by the option, so a reference
+    // to it extracts no member that defines it (mold; GNU ld when the
+    // option precedes the archive; lld extracts the member and the option
+    // wins), and no shared object's definition binds it: it has no
+    // target.
+    let mut targets = targets;
+    for d in &opts.defsym {
+        if let Some(f) = targets.first.get_mut(d.sym.0 as usize) {
+            *f = crate::live::NO_FILE;
+        }
+        if let Some(f) = targets.cfirst.get_mut(d.sym.0 as usize) {
+            *f = crate::live::NO_FILE;
+        }
+    }
     // `spec/dyn.md` D-12 (WP-167): a stage that finds a needed
     // `--as-needed` shared object whose reference would extract a member
     // hands the next stage those objects as sources of edges and its N;
@@ -358,6 +376,12 @@ fn resolve_stage<V: View>(
     // def (§3.2) and the merged properties (§3.5, §3.6).
     let mut def = vec![Def::Undefined { weak: false }; keys];
     pool.unit_cost(2).for_each_mut(&mut def, |k, d| *d = def_of(&acc, k));
+    // §7.2: rank 0, over every definition (the last option of a symbol).
+    for d in &opts.defsym {
+        if let Some(slot) = def.get_mut(d.sym.0 as usize) {
+            *slot = Def::Defsym(d.value);
+        }
+    }
     let mut props: Vec<Props> = pool.unit_cost(1).map(keys, |k| Props {
         visibility: rank_vis(acc.vis[k].load(Relaxed)),
         flags: acc.flags[k].load(Relaxed),
@@ -482,6 +506,7 @@ fn resolve_stage<V: View>(
         }
     }
     root_as_needed(view, opts, &roots, &kinds, &targets, &file_live, &def, &mut problems);
+    defsym_checks(view, opts, &kinds, &targets, &def, &mut problems);
     wrap_comdat(view, opts, &live_objects, &keepers, &props, &mut problems);
     let entry = entry_point(&opts.entry, &def, view, &mut problems);
 
@@ -1282,5 +1307,49 @@ fn wrap_comdat<V: View>(
                 problems.push(Problem::at(dropped, What::WrapComdat { key: m.key, dropped, kept }));
             }
         }
+    }
+}
+
+/// §7.2 (WP-153): the `--defsym` refusals resolution decides. A symbol
+/// expression names a key this output defines: an undefined one (all
+/// three refuse), one only a shared object defines (GNU ld and lld
+/// refuse, mold crashes) and another `--defsym`'s symbol (a chain, a
+/// cycle or the symbol itself: mold crashes on a chain, all three on a
+/// cycle) are refused by name. A number wider than the target's address
+/// (i386: all three truncate it) is refused by name.
+fn defsym_checks<V: View>(
+    view: &V,
+    opts: &Options,
+    kinds: &[FileKind],
+    targets: &Targets,
+    def: &[Def],
+    problems: &mut Vec<Problem>,
+) {
+    let wide = view.machine().class() == mortar_elf::Class::Elf64;
+    for d in &opts.defsym {
+        let why = match d.value {
+            DefsymValue::Number(n) => {
+                if wide || u32::try_from(n).is_ok() {
+                    continue;
+                }
+                DefsymWhy::TooWide(n)
+            }
+            DefsymValue::Alias(b) | DefsymValue::Offset(b, _) => match def[b.0 as usize] {
+                // B is a root, and a root binds no shared definition
+                // (WP-152): a B only a shared object defines is still
+                // undefined here, so it is named by its definer.
+                Def::Undefined { .. } if shared_definer(view, kinds, targets, b).is_some() => {
+                    DefsymWhy::Shared(b)
+                }
+                Def::Undefined { .. } => DefsymWhy::Undefined(b),
+                Def::Shared(_) => DefsymWhy::Shared(b),
+                Def::Defsym(_) => DefsymWhy::Chain(b),
+                _ => continue,
+            },
+        };
+        problems.push(Problem {
+            key: DiagKey::of(FileId::INTERNAL, u64::from(d.arg)),
+            what: What::Defsym { key: d.sym, arg: d.arg, why },
+        });
     }
 }

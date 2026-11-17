@@ -4,7 +4,7 @@ Generated from `crates/mortar_cli/src/rows.rs` by `mortar_cli::status_markdown`;
 do not edit. `MORTAR_BLESS=1 cargo test -p mortar_cli --test table` rewrites it.
 The rules are `spec/cli.md`.
 
-487 rows: 110 supported, 7 partial, 29 noop, 341 refused.
+487 rows: 110 supported, 8 partial, 29 noop, 340 refused.
 
 Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 18 mortar's own.
 
@@ -169,7 +169,7 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 18 mortar'
 | `-u`, `--undefined` | SYMBOL | GNU, lld, mold | all | supported | `symbols` | Start with an undefined reference to SYMBOL |
 | `--require-defined` | SYMBOL | GNU, mold | all | supported | `symbols` | Require that SYMBOL is defined |
 | `--undefined-glob` | PATTERN | lld, mold | all | refused | `other` | Add an undefined reference for each symbol PATTERN matches |
-| `--defsym` | SYMBOL=EXPR | GNU, lld, mold | all | refused | `symbols` | Define SYMBOL as EXPR |
+| `--defsym` | SYMBOL=EXPR | GNU, lld, mold | all | partial: resolve.md §7.2: EXPR is a number (0x... hexadecimal, or decimal without a leading 0), a symbol, or a symbol + or - a number; a number with a leading 0 (GNU ld reads it octal, lld and mold decimal: write it in hexadecimal) and every other expression (k/M suffixes, arithmetic, parentheses, shifts, ALIGN, two symbols) are refused by name | `symbols` | Define SYMBOL as EXPR |
 | `--wrap` | SYMBOL | GNU, lld, mold | all | partial: resolve.md §7.1: a versioned SYMBOL (f@V: GNU ld and lld wrap the reference f@V, mold f) and --wrap of another --wrap's __real_ name (GNU ld wraps it, lld takes the last option, mold binds it to the symbol) are refused by name | `symbols` | Send references to SYMBOL to __wrap_SYMBOL |
 | `--export-dynamic-symbol` | SYMBOL | GNU, lld, mold | all | supported | `symbols` | Export SYMBOL (a glob) |
 | `--exclude-libs` | LIBS | GNU, lld, mold | all | partial: dyn.md D-110 item 1: an entry is an archive's file name (ALL: every archive); an entry without .a that names an archive's file name without its .a (libfoo for libfoo.a) is refused by name (GNU ld matches it, lld and mold do not) | `symbols` | Do not export the symbols of the archives LIBS |

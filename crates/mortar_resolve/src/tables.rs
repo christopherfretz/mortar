@@ -19,7 +19,7 @@ use mortar_core::intern::{InternKey, SymName};
 use mortar_core::par::Pool;
 use mortar_core::plan::{OutputKind, Plan, Strip, SymbolRole, UnresolvedSymbols};
 use mortar_core::resolution::{
-    Def as TableDef, InternalDef, RefFlags, Resolution, SymProps, Verdict as TableVerdict,
+    Assigned, Def as TableDef, InternalDef, RefFlags, Resolution, SymProps, Verdict as TableVerdict,
 };
 use mortar_core::{ComdatId, FileId, IdSet, OptId, SymEntry, SymbolId};
 use mortar_diag::{Diagnostic, FileRef, Key, Kind, Place, RefusalClass, Relation};
@@ -27,16 +27,18 @@ use mortar_elf::consts::{STB_GLOBAL, STB_LOCAL, STB_WEAK, STT_SECTION};
 use mortar_elf::{SectionIndex, SymbolIndex, SymbolSection, SymbolTable};
 
 use crate::index::HashIndex;
+use crate::options::DefsymValue;
 use crate::options::{
     Entry, MentionGroup, Named, Options, Output, SharedLink, SharedMention, SharedOutput,
     ShlibUndefined, Wrap, glob_match, is_glob,
 };
-use crate::problem::{DefPlace, MalformedSymbol, Problem, What};
+use crate::problem::{DefPlace, DefsymWhy, MalformedSymbol, Problem, What};
 use crate::resolve::{Def, Resolved, flags, resolve_steps};
 use crate::sections::SectionRefusal;
 use crate::steps::Steps;
 use crate::verdict::{SymtabEntry, Unresolved, Verdict, symtab_entry, verdict};
 use crate::view::{FileInfo, FileKind, Groups, Mention, SectionInfo, SharedInfo, View};
+use mortar_core::plan::DefsymExpr;
 
 /// One `SHT_GROUP` of a file, decoded once.
 #[derive(Debug, Clone, Copy)]
@@ -724,6 +726,7 @@ pub fn options(plan: &Plan, inputs: &Inputs<'_>, view: &InputsView<'_, '_>) -> O
                 })
             })
             .collect(),
+        defsym: defsyms(plan, view),
         allow_multiple_definition: d.allow_multiple_definition,
         warn_common: d.warn_common,
         warn_backrefs: d.warn_backrefs,
@@ -751,6 +754,39 @@ pub fn options(plan: &Plan, inputs: &Inputs<'_>, view: &InputsView<'_, '_>) -> O
         exclude_libs: exclude_libs(inputs),
         dynamic_list: None,
     }
+}
+
+/// [`Options::defsym`]: the last `--defsym` of each symbol, in the order
+/// of those (§7.2: a later option of a symbol replaces an earlier one, in
+/// all three references). A value the command line refuses never gets
+/// here (`spec/cli.md` §4.2); the input phase gave each name a row
+/// (model.md §2.3).
+fn defsyms(plan: &Plan, view: &InputsView<'_, '_>) -> Vec<crate::options::Defsym> {
+    let mut out: Vec<crate::options::Defsym> = Vec::new();
+    let all = plan.symbols.iter().filter(|s| s.role == SymbolRole::Defsym);
+    for (s, parsed) in all.zip(plan.defsyms()) {
+        let Ok(d) = parsed else { continue };
+        let Some(sym) = view.find_key(d.sym) else { continue };
+        let value = match d.expr {
+            DefsymExpr::Number(n) => DefsymValue::Number(n),
+            DefsymExpr::Symbol(b) => match view.find_key(b) {
+                Some(b) => DefsymValue::Alias(b),
+                None => continue,
+            },
+            DefsymExpr::Offset(b, n) => match view.find_key(b) {
+                Some(b) => DefsymValue::Offset(b, n),
+                None => continue,
+            },
+        };
+        out.retain(|o| o.sym != sym);
+        out.push(crate::options::Defsym {
+            sym,
+            value,
+            arg: s.arg,
+            text: s.value.as_encoded_bytes().into(),
+        });
+    }
+    out
 }
 
 /// [`Options::exclude_libs`]: the walk's flag of each file, or nothing
@@ -945,7 +981,24 @@ pub fn resolution<V: View>(
     // N, U and the rest of the loaded shared objects are the shared
     // stage's (`spec/dyn.md` D-11, D-12); a static link has none.
     let file_live = r.file_live.clone();
-    let def = r.def.iter().map(|&d| table_def(d)).collect();
+    // §7.2: a `--defsym` number or `B±N` is a row of `assigned`, in key
+    // order.
+    let mut assigned = Vec::new();
+    let def = r
+        .def
+        .iter()
+        .map(|&d| match d {
+            Def::Defsym(DefsymValue::Number(n)) => {
+                assigned.push(Assigned::Number(n));
+                TableDef::Internal(InternalDef::Assign(assigned.len() as u32 - 1))
+            }
+            Def::Defsym(DefsymValue::Offset(to, addend)) => {
+                assigned.push(Assigned::Offset { to, addend });
+                TableDef::Internal(InternalDef::Assign(assigned.len() as u32 - 1))
+            }
+            d => table_def(d),
+        })
+        .collect();
     let dynamic = r.dynamic.as_ref();
     let props = r
         .def
@@ -994,6 +1047,7 @@ pub fn resolution<V: View>(
         section_base: mortar_core::Column::from_vec(r.section_base.clone())?,
         sections: mortar_core::Column::from_vec(r.sections.clone())?,
         meta: r.meta.clone().into_boxed_slice(),
+        assigned: assigned.into_boxed_slice(),
         // The dynamic columns (`spec/dyn.md` D-11, D-12, D-21): empty in a
         // static link.
         exported: set(dynamic.map(|d| &d.exported)),
@@ -1047,6 +1101,10 @@ pub fn table_def(d: Def) -> TableDef {
             TableDef::Internal(InternalDef::Provide { conditional })
         }
         Def::Shared(e) => TableDef::Shared(e),
+        Def::Defsym(DefsymValue::Alias(to)) => TableDef::Internal(InternalDef::Alias(to)),
+        // A number and `B±N` index `Resolution::assigned`, which only the
+        // table builder fills; alone, row 0.
+        Def::Defsym(_) => TableDef::Internal(InternalDef::Assign(0)),
     }
 }
 
@@ -1190,6 +1248,9 @@ impl Ctx<'_, '_, '_> {
         if let Some(n) = o.require_defined.iter().find(|n| n.arg == arg) {
             return format!("--require-defined={}", text(n));
         }
+        if let Some(d) = o.defsym.iter().find(|d| d.arg == arg) {
+            return format!("--defsym={}", String::from_utf8_lossy(&d.text));
+        }
         format!("argument {arg}")
     }
 
@@ -1272,6 +1333,37 @@ impl Ctx<'_, '_, '_> {
                  wraps them, lld wraps every call, mold none): a wrapped function must have one \
                  definition; make it non-inline, or wrap its callers' own symbol",
             ),
+            What::Defsym { arg, why, .. } => {
+                let (what, note) = match why {
+                    DefsymWhy::Undefined(b) => (
+                        format!("--defsym of an undefined symbol: {}", self.name(*b)),
+                        "the symbol the expression names must be defined in the output \
+                         (GNU ld, lld and mold refuse it too)"
+                            .to_owned(),
+                    ),
+                    DefsymWhy::Shared(b) => (
+                        format!("--defsym of a symbol a shared object defines: {}", self.name(*b)),
+                        "the symbol the expression names must be defined in the output, not by \
+                         a shared object (GNU ld and lld refuse it, mold crashes)"
+                            .to_owned(),
+                    ),
+                    DefsymWhy::Chain(b) => (
+                        format!("--defsym of a symbol another --defsym defines: {}", self.name(*b)),
+                        "name the final symbol in each --defsym (a chain links in GNU ld and \
+                         lld, crashes mold; a cycle fails in all three)"
+                            .to_owned(),
+                    ),
+                    DefsymWhy::TooWide(n) => (
+                        format!("--defsym value wider than the target's address: {n:#x}"),
+                        "the target's addresses are 32 bits; GNU ld, lld and mold truncate the \
+                         value"
+                            .to_owned(),
+                    ),
+                };
+                Diagnostic::refused(C::Feature, what)
+                    .at(Place::argument(self.root_text(*arg)))
+                    .note(note)
+            }
             What::NeededOrderUnknown { file } => Diagnostic::refused(
                 C::Feature,
                 "DT_NEEDED order of a shared object mentioned again inside a linker script",

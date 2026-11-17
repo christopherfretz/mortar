@@ -1261,20 +1261,94 @@ consumers (scan, fill, the verifier) resolve an undefined mention of key
 
 ### 7.2 `--defsym=SYM=EXPR` (M4)
 
-A file-0 `Assign` candidate for `SYM` (rank 0, §3.1): it beats every
-object definition of `SYM` without a duplicate error (all three, E13).
-Expression forms:
+A file-0 candidate for `SYM` of rank 0 (§3.1): it beats every object
+and shared definition of `SYM` without a duplicate error (all three,
+E13), whatever the option's place on the line. Of several `--defsym` of
+one `SYM` the last is the one (all three). `SYM` keeps its own key: a
+`--defsym` is **not** a redirection (`redirect[SYM] = SYM`), every
+mention of `SYM` binds to `def[SYM]`, which is the option's
+(`spec/model.md` §3.3 `InternalDef`; WP-153). The measured cells are
+the record's (`spec/landed/resolve/WP-153.md` §8).
 
-| form | meaning | references |
+| `EXPR` | meaning | `def[SYM]` |
 |---|---|---|
-| a number (`0x1234`, decimal, octal as GNU ld reads it) | absolute `SYM` | all three (E13) |
-| `B` (a symbol) | `SYM` is an alias of `B`: `redirect[SYM] = B` for **every** mention of `SYM` (defined ones too: E13, the object's own `f` is replaced), and `def[SYM]` is `Internal{Alias(B)}` so that `.symtab` has `SYM` with `B`'s value, section and type | all three |
-| `B + N`, `B - N` | `SYM` = `B`'s address plus `N`, in `B`'s section | lld (section-relative, `T`); GNU ld makes it absolute (`A`, the same value in a non-PIE link); mold refuses (E13). mortar: section-relative, which is also right in a PIE |
-| anything else (`ALIGN`, `.`, two symbols, a script function) | `Refused{Feature, "--defsym expression"}`, named with the text | until `spec/script.md`'s expressions |
+| a number: `0x...` hexadecimal, or decimal without a leading `0` (`0` itself included), at most 64 bits | the absolute value, `SHN_ABS` and never relocated, in every output kind (lld and mold; GNU ld adds the load base in a PIE or static-pie, AArch64 and x86-64: §16) | `Internal{Assign(i)}`, `assigned[i] = Number(N)` |
+| `B` (a symbol) | an alias: `B`'s address and type, size 0 (all three), under `SYM`'s own name | `Internal{Alias(B)}` |
+| `B + N`, `B - N` (`N` a number as above) | `B`'s address plus `N`, relative to `B`'s section, `STT_NOTYPE`, size 0 (lld's form; GNU ld writes an `SHN_ABS` `STT_FUNC` with the same value in a non-PIE link, mold refuses: §16) | `Internal{Assign(i)}`, `assigned[i] = Offset(B, N)` |
 
-If `B` is a shared object's definition (M4): an alias redirects to it
-(references get `B`'s GOT/PLT); `B + N` is refused
-(`Refused{Feature, "--defsym offset from a shared object's symbol"}`).
+Blanks around `=` and the operator are allowed. A symbol is a name of
+letters, digits, `_`, `.` and `$` not starting with a digit (`.` alone
+is not one).
+
+**Refused by name** (WP-153, the supervisor's rulings of 2026-11-17):
+
+1. **On the command line** (`unsupported option value:
+   --defsym=SYM=EXPR`, the row is `partial`, `spec/cli.md` §4.2), with
+   the text: a number with a leading `0` and more digits (GNU ld reads
+   it as octal, lld and mold as decimal; note "write it in
+   hexadecimal"); every other expression (`k`/`M` suffixes, which GNU ld
+   and lld accept; arithmetic between numbers, parentheses and shifts,
+   which GNU ld and lld evaluate; `ALIGN`, which GNU ld evaluates to 0
+   and lld to an address; two symbols, `B + B`, which only GNU ld
+   accepts; `.`); a value with no `=` or an empty side.
+2. **By resolution** (`Refused{Feature, ...}` at the option), when `B`:
+   - is defined nowhere: "--defsym of an undefined symbol: B" (all
+     three refuse it);
+   - is defined only by a shared object, for `B` and for `B ± N`:
+     "--defsym of a symbol a shared object defines: B" (GNU ld and lld
+     refuse both, mold crashes or refuses);
+   - is itself a `--defsym`'s `SYM` (a chain `a=c c=b`, a cycle, `a=a`):
+     "--defsym of a symbol another --defsym defines: B" (GNU ld and lld
+     link a chain, mold crashes; a cycle fails in all three);
+3. a number that does not fit the target's address (i386: above
+   `0xffffffff`): "--defsym value wider than the target's address" (all
+   three truncate it).
+
+`B` is a **root** (§4.2) wherever the option stands: the member that
+defines it is extracted, and `--gc-sections` keeps its section (lld and
+mold; GNU ld extracts only when the option precedes the archive and
+collects `B`'s section: §16). A reference to `SYM` itself extracts no
+member: `SYM` has no target (§4.1), whatever an archive defines (mold,
+and GNU ld when the option precedes the archive; lld extracts the
+member, whose `SYM` the option then beats).
+
+`B` may be any definition of the output: a function, data, a common
+(the alias is `STT_OBJECT`), `STT_TLS` (a TLS alias, its value the
+template offset), `STT_GNU_IFUNC` (the alias is the IFUNC: GNU ld; mold
+writes `STT_FUNC`, lld crashes: §16), a linker-defined symbol (`_end`).
+A reference to the alias reaches `B`'s definition: a call to `SYM`
+calls `B`'s code, `&SYM == &B`.
+
+**Output kinds.** In an executable the alias is bound in the output.
+In `-shared`, `SYM` is a definition of the program like any other
+(`spec/dyn.md` D-110): exported when visible, and **preemptible by its
+own name** (D-112): a library that preloads `SYM` takes the library's
+references to `SYM`, not those to `B`, and one that preloads `B`
+takes those to `B` (GNU ld and lld; mold binds the alias's references
+inside the library: §16). `-Bsymbolic`, `-Bsymbolic-functions` (by
+`B`'s type), `--dynamic-list` and a version script's `local:` decide
+for `SYM` by their ordinary rules, independently of `B`. A number is
+exported as an `SHN_ABS` `STT_NOTYPE` entry.
+
+**A copy of a data alias** (a note, measured): `.dynsym`'s alias has
+size 0 in every reference, so an executable that needs a `COPY` of it
+(non-PIC code reading `SYM` of the library) gets no sound one from any
+linker: lld refuses it ("cannot create a copy relocation for symbol
+SYM"), GNU ld writes a 0-byte symbol in `.bss` and the program's
+accesses land outside any object, mold's output faults; and a sized
+copy would be a separate object from the library's `B`. The way out is
+PIC or PIE code in the consumer, or exporting `B` itself.
+
+`.symtab`: `SYM` is `STB_GLOBAL` (`STB_LOCAL` under `local:`) with the
+value above; an alias has `B`'s type and size 0 also when it replaces
+an object's definition of `SYM` (lld and mold; GNU ld keeps the
+replaced definition's size: §16). The text map lists no `--defsym`
+(lld and GNU ld list the assignment; `spec/image.md`).
+
+`--odr` (`spec/odr.md`): `SYM` is a file-0 definition, outside the
+ODR pass, as the other linker-defined symbols. An incremental link
+whose `--defsym` options change is a full link (the options are part
+of the state; `spec/incr.md` IN-12).
 
 ### 7.3 Aliases
 
@@ -2138,7 +2212,11 @@ succeeds:
   (t10),
   `s6_4_non_comdat_groups_are_not_merged`, `s6_6_linkonce_is_refused`.
 - §7: `s7_1_wrap_undefined_mentions_only`, `s7_1_real_extracts_target`,
-  `s7_2_defsym_forms`, `s7_2_defsym_alias_redirects_all_mentions`.
+  `s7_1_wrap_of_a_dropped_comdat_copy_is_refused`,
+  `s7_2_defsym_beats_every_definition_and_its_symbol_is_a_root`,
+  `s7_2_defsym_of_an_undefined_shared_or_defsym_symbol_is_refused`,
+  `s7_2_defsym_number_wider_than_the_address_is_refused_on_i386`; the
+  grammar in `mortar_core`'s `tests/defsym.rs`.
 - §8: `s8_1_provided_only_when_referenced`, `s8_1_table` (one per row and
   architecture), `s8_2_object_definition_wins`, `s8_2_forced_names_refused`.
 - §9: `s9_2_versym_table` (each row, with hand-built shared objects),
@@ -2237,7 +2315,7 @@ Every disagreement found; "E" is the experiment in the landed record.
 | two lazy definers, the lower weak (`libKW.a libKS.a`) | weak one, 1 | 1 | strong one, 2 | 1 | R3 |
 | lazy member before a `--whole-archive` definer | extracted, 2 | 2 | not extracted, 1 | 2 | R4 |
 | archive without an index (`ar rcS`) | error ``archive has no index; run ranlib to add one`` | links | links | links (member tables, §4.1) | R8 |
-| `--defsym K=k` after the archive defining `k` | ``undefined symbol `k' referenced in expression`` | links | links | links (M4) | R10 |
+| `--defsym K=k` after the archive defining `k` | ``undefined symbol `k' referenced in expression`` | links | links | links (§7.2) | R10 |
 | strong and common reference, lazy common before lazy data definition | both extracted, 9 | common only, 0 | data only, 9 | both, 9 | R5 |
 | weak definition and a common, lazy data definition | extracted, 9 | not, 0 | extracted, 4 | extracted, 9 | R6 |
 | common vs lazy data definition | extracts | does not (default; `--help` says it does) | extracts | extracts | E3 |
@@ -2278,7 +2356,21 @@ Every disagreement found; "E" is the experiment in the landed record.
 | `--wrap=f@V1`, references `f@V1` and `f` (lld 19) | `f@V1` wrapped (`__wrap_f@V1` undefined) | the same | `f` wrapped | refused (§7.1 item 1) | WP-153 |
 | `--wrap=f --wrap=__real_f`, an undefined `__real_f` (lld 19) | `__wrap___real_f` (5) either order | the last option: 5, or 1 with `--wrap=__real_f` first | `f` (1) either order | refused (§7.1 item 2) | WP-153 |
 | `--wrap=_Z1fv`, inline `f` in `a.o` (keeper) and `b.o` (dropped copy), each calling it; `a.o b.o` / `b.o a.o` (lld 19; `--gc-sections` and `b.o` extracted from an archive alike) | `a:f=1 b=50` / `a:f=50 b=1` | 50 50 / 50 50 | 1 1 / 1 1 | refused (§7.1 item 3) | WP-153 |
-| `--defsym a=b+4` | absolute | section-relative | refused | section-relative | E13 |
+| `--defsym a=b+4` | absolute (`SHN_ABS` `STT_FUNC`, size 0) | section-relative `STT_NOTYPE` | refused | section-relative (§7.2) | E13, WP-153 |
+| `--defsym k=011064` | octal (`0x1234`) | decimal (`0x2b38`) | decimal | refused (§7.2 item 1) | WP-153 |
+| `--defsym k=0x1234+4`, `1<<4`, `(0x1000)`, `1k`, `1M` | evaluated | evaluated | refused | refused (§7.2 item 1) | WP-153 |
+| `--defsym k=ALIGN(16)` | 0 | an address (`0x2b9ff0`) | refused | refused | WP-153 |
+| `--defsym k=b+b` | `b`'s value twice (`0x890`) | refused | refused | refused | WP-153 |
+| `--defsym k=0x1234` in a PIE or static-pie (AArch64, x86-64) | load base + `0x1234` (relocated) | `0x1234` | `0x1234` | `0x1234`, `SHN_ABS` (§7.2) | WP-153 |
+| `--defsym k=0x123456789` on i386 | truncated to `0x23456789` | truncated | truncated | refused (§7.2 item 3) | WP-153 |
+| `--defsym a=b`, `ov.o` defines `a` (a FUNC of 8 bytes): `.symtab` size of `a` | 8 (the replaced definition's) | 0 | 0 | 0 (§7.2) | WP-153 |
+| `--defsym a=b`, `b` an IFUNC | `a` IFUNC, runs | crashes (bus error) | `a` `STT_FUNC` `STB_LOCAL`, runs | `a` IFUNC (§7.2) | WP-153 |
+| `--defsym a=c --defsym c=b` (a chain) | links | links | crashes | refused (§7.2 item 2) | WP-153 |
+| `--defsym a=b`, `b` only in a shared object (and `a=b+4`) | error | error | crashes / refuses | refused (§7.2 item 2) | WP-153 |
+| `--defsym z=b` with `b` in its own section, nothing else uses `b`, `--gc-sections` | `b`'s section collected (`z` absolute) | kept | kept | kept (`B` is a root) | WP-153 |
+| `--defsym a=b`, `libam.a` defines `a` (option before or after the archive) | extracted only when the option follows the archive | extracted (`a` is the option's) | not extracted | not extracted (§7.2) | WP-153 |
+| `-shared --defsym calla=b`, a preloaded library defines `b` and `calla` | the library's references to `calla` take the preloaded one | the same | bound inside the library | GNU ld and lld (§7.2) | WP-153 |
+| `-shared --defsym a=b`, a shared object defines `a` too: `.dynsym` | `a` exported | exported | not exported | exported | WP-153 |
 | `--require-defined` | supported | not an option | supported | supported | E13 |
 | `--require-defined` of a name only a shared object defines | error | not an option | accepted | error (§4.2) | WP-152 |
 | `-u` of a name no file defines, `.symtab` | undefined entry | none | none | none | WP-152 |

@@ -113,6 +113,7 @@ const AUDIT: &[(&str, Proof)] = &[
     ("--sort-section", Check(sort_section)),
     ("-u", Check(undefined_roots)),
     ("--require-defined", Check(require_defined)),
+    ("--defsym", Check(defsym)),
     ("--wrap", Check(wrap)),
     ("--export-dynamic-symbol", Check(dynamic_options)),
     (
@@ -798,6 +799,33 @@ fn require_defined(cx: &Cx) {
     let o = cx.mortar(&missing);
     assert!(!o.success() && o.stderr_text().contains("required symbol not defined: nosuch"));
     assert!(!cx.ld(&missing).success(), "GNU ld accepted --require-defined=nosuch");
+}
+
+// spec: resolve.md §7.2 (`--defsym=a=b`: a call to `a` reaches `b`; a
+// number with a leading 0 and an undefined `B` are refused by name), as
+// GNU ld
+fn defsym(cx: &Cx) {
+    let text = "\t.text\n\t.globl _start\n_start:\n\tbl a\n\tmov x8, #93\n\tsvc #0\n\
+                \t.globl b\n\t.type b, %function\nb:\n\tmov x0, #7\n\tret\n\
+                \t.section .note.GNU-stack,\"\",%progbits\n";
+    let src = cx.scratch.write("ds.s", text);
+    let args = ["-c".into(), src.into_os_string(), "-o".into(), "ds.o".into()];
+    assert!(cx.run_in(&cx.gcc, &args).success(), "gcc ds");
+    // Not judged: the verifier does not follow --defsym until its package
+    // (spec/landed/resolve/WP-153.md §11); the run is the check.
+    let words = ["ds.o", "--defsym=a=b", "-o", "ds1"].map(OsString::from);
+    let o = cx.run_in(Path::new(MORTAR), &words);
+    assert!(o.success(), "{}", o.stderr_text());
+    assert_eq!(Cx::exit(&cx.scratch.join("ds1")), Some(7), "_start -> a = b");
+    assert!(cx.ld(&["ds.o", "--defsym=a=b", "-o", "ds1.ld"]).success());
+    assert_eq!(Cx::exit(&cx.scratch.join("ds1.ld")), Some(7), "GNU ld");
+    let o = cx.mortar(&["ds.o", "--defsym=a=b", "--defsym=k=011", "-o", "ds2"]);
+    let text = o.stderr_text();
+    assert!(!o.success() && text.contains("unsupported option value: --defsym=k=011"), "{text}");
+    let o = cx.mortar(&["ds.o", "--defsym=a=nosuch", "-o", "ds3"]);
+    let text = o.stderr_text();
+    assert!(!o.success() && text.contains("--defsym of an undefined symbol: nosuch"), "{text}");
+    assert!(!cx.ld(&["ds.o", "--defsym=a=nosuch", "-o", "ds3.ld"]).success(), "GNU ld");
 }
 
 // spec: resolve.md §7.1 (`--wrap=f`: an undefined `f` binds to

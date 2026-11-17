@@ -62,11 +62,13 @@ impl FileLive {
 /// How the linker defines a key it defines (§3.3 `def`: `Internal`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InternalDef {
-    /// An assignment of rank 0 (`spec/resolve.md` §3.1, §7.2): the
-    /// argument index of the `--defsym`, or a script assignment's position
-    /// (M4).
+    /// `--defsym SYM=N` or `SYM=B±N` (`spec/resolve.md` §3.1, §7.2, rank
+    /// 0): the row of [`Resolution::assigned`] (a side table, so that a
+    /// 64-bit value does not widen every key's `def`).
     Assign(u32),
-    /// `--defsym SYM=B`: an alias of `B` (`spec/resolve.md` §7.2).
+    /// `--defsym SYM=B`: an alias of `B` (`spec/resolve.md` §7.2): `B`'s
+    /// address, type and size; `SYM` stays a symbol of its own
+    /// (preemptible by its own name in `-shared`).
     Alias(SymbolId),
     /// A linker-defined symbol of `spec/resolve.md` §8.1 (rank 5).
     /// `conditional` for the ones whose existence depends on output
@@ -74,6 +76,18 @@ pub enum InternalDef {
     /// `__GNU_EH_FRAME_HDR`): `Assignment` confirms or withdraws them
     /// (§3.4).
     Provide { conditional: bool },
+}
+
+/// A `--defsym` value (`spec/resolve.md` §7.2): a row of
+/// [`Resolution::assigned`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Assigned {
+    /// An absolute number: `SHN_ABS` in every output kind, never
+    /// relocated.
+    Number(u64),
+    /// `B`'s address plus `addend`, relative to `B`'s section,
+    /// `STT_NOTYPE`, size 0.
+    Offset { to: SymbolId, addend: i64 },
 }
 
 /// The resolved definition of a key (§3.3 `def`).
@@ -302,9 +316,10 @@ pub struct Resolution {
     pub common: Box<[(SymbolId, CommonShape)]>,
     /// Whether two or more live definitions tie at the strongest rank.
     pub clash: Column<SymbolId, bool>,
-    /// The row the key's **undefined** mentions bind to (`--wrap`); for a
-    /// `--defsym` alias, every mention. A defined mention binds to its own
-    /// row. Itself otherwise; a consumer applies it once.
+    /// The row the key's **undefined** mentions bind to (`--wrap`). A
+    /// defined mention binds to its own row. Itself otherwise; a consumer
+    /// applies it once. A `--defsym` is no redirection: `SYM` keeps its
+    /// row, whose `def` is the option's (`spec/resolve.md` §7.2).
     pub redirect: Column<SymbolId, SymbolId>,
     /// The file whose copy of the group is kept: the least live `FileId`
     /// with the signature (`spec/resolve.md` §6.1); none if no live file
@@ -323,6 +338,9 @@ pub struct Resolution {
     /// `(FileId, SectionIndex)`, so that `mortar_odr` finds a file's units
     /// without a rescan. Empty in a link without containers.
     pub meta: Box<[(FileId, SectionIndex)]>,
+    /// The `--defsym` values `InternalDef::Assign` indexes
+    /// (`spec/resolve.md` §7.2). Empty in a link without one.
+    pub assigned: Box<[Assigned]>,
     // ---- the dynamic columns (`spec/dyn.md` D-11, D-12, D-21; request
     // R-R3): computed by `mortar_resolve` after the needed/used fixed
     // point (D-11, D-12). Each is empty (no room, `IdSet::new`) in a
@@ -369,12 +387,19 @@ impl Resolution {
             section_base: Column::filled(files, IdRange::empty(SectionId(0))),
             sections: Column::new(),
             meta: Box::new([]),
+            assigned: Box::new([]),
             exported: IdSet::new(),
             imported: IdSet::new(),
             ref_dynamic: IdSet::new(),
             defined_dynamic: IdSet::new(),
             preemptible: IdSet::new(),
         }
+    }
+
+    /// The `--defsym` value of `InternalDef::Assign(i)`.
+    #[must_use]
+    pub fn assigned(&self, i: u32) -> Option<Assigned> {
+        self.assigned.get(i as usize).copied()
     }
 
     /// `bind(k)` (`spec/dyn.md` D-11): the shared definition key `k` binds
@@ -505,6 +530,17 @@ impl Resolution {
                 ensure(to.index() < keys, t, || {
                     format!("symbol {}: alias out of range", symbol.0)
                 })?;
+            }
+            if let Def::Internal(InternalDef::Assign(i)) = def {
+                let row = self.assigned.get(*i as usize);
+                ensure(row.is_some(), t, || {
+                    format!("symbol {}: --defsym row out of range", symbol.0)
+                })?;
+                if let Some(Assigned::Offset { to, .. }) = row {
+                    ensure(to.index() < keys, t, || {
+                        format!("symbol {}: --defsym symbol out of range", symbol.0)
+                    })?;
+                }
             }
             let refs = self.props[symbol].refs;
             if let Def::Undefined { weak: true } = def {

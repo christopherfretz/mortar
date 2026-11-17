@@ -122,7 +122,147 @@ impl Plan {
             out.push([b"__wrap_", sym].concat());
             out.push([b"__real_", sym].concat());
         }
+        // `--defsym=SYM=EXPR` (`spec/resolve.md` §7.2): `SYM`, and the
+        // symbol `EXPR` names.
+        for d in self.defsyms().into_iter().flatten() {
+            out.push(d.sym.to_vec());
+            if let Some(b) = d.expr.symbol() {
+                out.push(b.to_vec());
+            }
+        }
         out
+    }
+
+    /// The `--defsym` options in command-line order, each parsed
+    /// (`spec/resolve.md` §7.2); a value outside the accepted grammar is
+    /// its refusal text.
+    #[must_use]
+    pub fn defsyms(&self) -> Vec<Result<Defsym<'_>, DefsymRefusal>> {
+        self.symbols
+            .iter()
+            .filter(|s| s.role == SymbolRole::Defsym)
+            .map(|s| Defsym::parse(s.value.as_encoded_bytes()))
+            .collect()
+    }
+}
+
+/// One `--defsym=SYM=EXPR` (`spec/resolve.md` §7.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Defsym<'a> {
+    pub sym: &'a [u8],
+    pub expr: DefsymExpr<'a>,
+}
+
+/// The `EXPR` forms the references agree on (§7.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DefsymExpr<'a> {
+    /// `0x...` hexadecimal, or decimal without a leading `0`.
+    Number(u64),
+    /// A lone symbol: `SYM` is an alias of it.
+    Symbol(&'a [u8]),
+    /// `B + N` or `B - N`: `B`'s address plus the signed `N`, in `B`'s
+    /// section.
+    Offset(&'a [u8], i64),
+}
+
+impl<'a> DefsymExpr<'a> {
+    /// The symbol the expression names, if any.
+    #[must_use]
+    pub fn symbol(self) -> Option<&'a [u8]> {
+        match self {
+            Self::Number(_) => None,
+            Self::Symbol(b) | Self::Offset(b, _) => Some(b),
+        }
+    }
+}
+
+/// Why a `--defsym` value is refused (§7.2): its note.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DefsymRefusal {
+    /// No `=`, or an empty `SYM`.
+    Shape,
+    /// A number with a leading `0` and more digits: GNU ld reads it
+    /// octal, lld and mold decimal.
+    LeadingZero,
+    /// An expression beyond the agreed forms.
+    Expression,
+}
+
+impl DefsymRefusal {
+    /// The note that goes with the refusal.
+    #[must_use]
+    pub fn note(self) -> &'static str {
+        match self {
+            Self::Shape => "--defsym takes SYMBOL=EXPRESSION",
+            Self::LeadingZero => {
+                "GNU ld reads a number with a leading 0 as octal, lld and mold as decimal: \
+                 write it in hexadecimal"
+            }
+            Self::Expression => {
+                "mortar accepts a number (0x... or decimal), a symbol, or a symbol + or - a \
+                 number (resolve.md §7.2)"
+            }
+        }
+    }
+}
+
+fn defsym_number(t: &[u8]) -> Result<Option<u64>, DefsymRefusal> {
+    let t = std::str::from_utf8(t).map_err(|_| DefsymRefusal::Expression)?;
+    if let Some(hex) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
+        if hex.is_empty() || !hex.bytes().all(|c| c.is_ascii_hexdigit()) {
+            return Err(DefsymRefusal::Expression);
+        }
+        return u64::from_str_radix(hex, 16).map(Some).map_err(|_| DefsymRefusal::Expression);
+    }
+    if t.is_empty() || !t.bytes().all(|c| c.is_ascii_digit()) {
+        return Ok(None);
+    }
+    if t.len() > 1 && t.starts_with('0') {
+        return Err(DefsymRefusal::LeadingZero);
+    }
+    t.parse().map(Some).map_err(|_| DefsymRefusal::Expression)
+}
+
+fn defsym_symbol(t: &[u8]) -> bool {
+    // The names a linker script expression reads as one symbol without
+    // quotes, and that do not start with a digit.
+    // `.` alone is a script's location counter.
+    !t.is_empty()
+        && t != b"."
+        && !t[0].is_ascii_digit()
+        && t.iter().all(|&c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'.' | b'$'))
+}
+
+impl<'a> Defsym<'a> {
+    /// Parses `SYM=EXPR`; blanks around the operator are allowed.
+    ///
+    /// # Errors
+    ///
+    /// The [`DefsymRefusal`] of a value outside the grammar.
+    pub fn parse(value: &'a [u8]) -> Result<Self, DefsymRefusal> {
+        let eq = value.iter().position(|&c| c == b'=').ok_or(DefsymRefusal::Shape)?;
+        let sym = value[..eq].trim_ascii();
+        let expr = value[eq + 1..].trim_ascii();
+        if sym.is_empty() || expr.is_empty() {
+            return Err(DefsymRefusal::Shape);
+        }
+        if let Some(n) = defsym_number(expr)? {
+            return Ok(Self { sym, expr: DefsymExpr::Number(n) });
+        }
+        if defsym_symbol(expr) {
+            return Ok(Self { sym, expr: DefsymExpr::Symbol(expr) });
+        }
+        let op =
+            expr.iter().position(|&c| c == b'+' || c == b'-').ok_or(DefsymRefusal::Expression)?;
+        let base = expr[..op].trim_ascii();
+        let n = expr[op + 1..].trim_ascii();
+        if !defsym_symbol(base) {
+            return Err(DefsymRefusal::Expression);
+        }
+        let n = defsym_number(n)?.ok_or(DefsymRefusal::Expression)?;
+        let n = i64::try_from(n).map_err(|_| DefsymRefusal::Expression)?;
+        let n = if expr[op] == b'-' { -n } else { n };
+        Ok(Self { sym, expr: DefsymExpr::Offset(base, n) })
     }
 }
 

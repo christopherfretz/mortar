@@ -1,0 +1,22 @@
+# --defsym=SYM=N on i386 (resolve.md §7.2, WP-153): a number that does
+# not fit 32 bits is refused by name (GNU ld, lld and mold truncate
+# 0x123456789 to 0x23456789); 0xfffffff0 fits.
+#@ spec: resolve.md §7.2
+#@ arch: i386
+#@ skip(lld): the verifier cannot read lld's map of a --defsym ("row has no name": lld lists the assignment): the verifier package for --defsym
+
+cc -O0 m.c -o m.o
+link gcc -static m.o -Wl,--defsym=k=0xfffffff0 -o fits
+run fits
+  stdout: k=0xfffffff0
+link(mortar) gcc -static m.o -Wl,--defsym=k=0x123456789 -o wide
+  exit: fail
+  diag(mortar): --defsym value wider than the target's address: 0x123456789
+link(bfd,lld,mold) gcc -static m.o -Wl,--defsym=k=0x123456789 -o wide
+run(bfd,lld,mold) wide
+  stdout: k=0x23456789
+
+#--- m.c
+#include <stdio.h>
+extern char k[];
+int main(void) { printf("k=%p\n", (void *)k); return 0; }

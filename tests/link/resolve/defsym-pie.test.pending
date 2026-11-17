@@ -1,0 +1,40 @@
+# PENDING (WP-153): every reference's output draws a finding or an error because the verifier does not follow --defsym yet (GNU ld: P-D9/S12 on its relocated number, a true difference, §16; lld: its map's assignment row; mold aborts writing the map); the verifier package for --defsym renames this file to .test.
+# --defsym=SYM=N in a PIE and a static-pie (resolve.md §7.2, WP-153): the
+# number is absolute, SHN_ABS and not relocated, in every output kind
+# (lld, mold, mortar). GNU ld 2.44 adds the load base to it in a PIE and
+# a static-pie (AArch64 and x86-64: §16), so its program does not print
+# 0x1234. The alias and B+N follow B's load address in every linker.
+# The objects are PIC, so that x86-64 reads k through the GOT (a
+# PC-relative reference to an absolute symbol is refused in a PIE by
+# mold and mortar).
+#@ spec: resolve.md §7.2
+#@ arch: aarch64 x86_64
+
+cc -O0 -fPIC -fno-inline m.c -o m.o
+cc -O0 -fPIC -fno-inline b.c -o b.o
+
+link(bfd,lld,mortar) gcc -pie m.o b.o -Wl,--defsym=k=0x1234 -Wl,--defsym=a=b -Wl,--defsym=c=b+4 -o pie
+run(lld,mortar) pie
+  stdout: k=0x1234 a=7 c-b=4
+check(lld,mortar) readelf -sW pie
+  has: : * 0 NOTYPE * GLOBAL DEFAULT * ABS k$
+link(mold) gcc -pie m.o b.o -Wl,--defsym=k=0x1234 -Wl,--defsym=a=b -Wl,--defsym=c=b -o pie
+run(mold) pie
+  stdout: k=0x1234 a=7 c-b=0
+link gcc -static-pie m.o b.o -Wl,--defsym=k=0x1234 -Wl,--defsym=a=b -Wl,--defsym=c=b -o static-pie
+run(lld,mold,mortar) static-pie
+  stdout: k=0x1234 a=7 c-b=0
+link gcc -no-pie m.o b.o -Wl,--defsym=k=0x1234 -Wl,--defsym=a=b -Wl,--defsym=c=b -o no-pie
+run no-pie
+  stdout: k=0x1234 a=7 c-b=0
+
+#--- m.c
+#include <stdio.h>
+extern char k[], c[];
+int b(void); int a(void);
+int main(void) {
+  printf("k=%p a=%d c-b=%d\n", (void *)k, a(), (int)(c - (char *)b));
+  return 0;
+}
+#--- b.c
+int b(void) { return 7; }

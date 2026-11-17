@@ -63,7 +63,16 @@ impl Use {
     #[must_use]
     pub fn refusal(&self) -> (Key, Diagnostic) {
         let d = if let Status::Partial { note, .. } = self.row().status {
-            let value = self.value.as_deref().unwrap_or_default().to_string_lossy();
+            let raw = self.value.as_deref().unwrap_or_default();
+            let value = raw.to_string_lossy();
+            // `--defsym` (resolve.md §7.2): the note of the value's own
+            // refusal.
+            let note = match self.row().lands {
+                Lands::Symbol(crate::plan::SymbolRole::Defsym) => {
+                    crate::plan::Defsym::parse(raw.as_bytes()).err().map_or(note, |e| e.note())
+                }
+                _ => note,
+            };
             Diagnostic::refused(RefusalClass::OptionValue, format!("{}={value}", self.spelling))
                 .note(note)
         } else {
@@ -176,6 +185,10 @@ fn refused_shape(plan: &Plan, use_: &Use) -> bool {
         Lands::Symbol(crate::plan::SymbolRole::Wrap) => {
             value.contains(&b'@')
                 || value.strip_prefix(b"__real_").is_some_and(|sym| plan.wraps().contains(&sym))
+        }
+        // §7.2: a value outside the grammar the references agree on.
+        Lands::Symbol(crate::plan::SymbolRole::Defsym) => {
+            crate::plan::Defsym::parse(value).is_err()
         }
         _ => false,
     }

@@ -1,0 +1,26 @@
+# PENDING (WP-153): every reference's output draws a finding or an error because the verifier does not follow --defsym yet (GNU ld: Y1 on the replaced definition; lld: its map's assignment row); the verifier package for --defsym renames this file to .test.
+# --defsym=a=b beats an object's definition of a (resolve.md §7.2,
+# WP-153): no duplicate error, the object's own call to a reaches b (all
+# three). In .symtab the alias has b's type and size 0 (lld, mold,
+# mortar); GNU ld keeps the replaced definition's size (8 on AArch64:
+# §16).
+#@ spec: resolve.md §7.2
+#@ arch: aarch64 x86_64 i386
+#@ skip(mold): mold 2.37.1 aborts (signal 6) writing the -Map the lane asks for when a --defsym names a symbol
+
+cc -O0 -fno-inline ov.c -o ov.o
+link gcc -static -no-pie ov.o -Wl,--defsym=a=b -o override
+run override
+  stdout: a=7 self=7
+check(lld,mortar) readelf -sW override
+  has: : * 0 FUNC * GLOBAL DEFAULT * a$
+check(bfd) readelf -sW override
+  has: FUNC * GLOBAL DEFAULT * a$
+  not: : * 0 FUNC * GLOBAL DEFAULT * a$
+
+#--- ov.c
+#include <stdio.h>
+int a(void) { return 1; }
+int b(void) { return 7; }
+int self(void) { return a(); }
+int main(void) { printf("a=%d self=%d\n", a(), self()); return 0; }
