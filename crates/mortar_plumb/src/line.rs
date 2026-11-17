@@ -6,6 +6,7 @@
 //! [`Files`], so tests and `xtask` decide where bytes come from.
 
 use crate::map::OutputKind;
+use crate::opts::Word;
 
 /// Where the verifier reads files from.
 pub trait Files: Sync {
@@ -65,6 +66,11 @@ pub struct Line {
     /// `-init`/`-fini` (`DT_INIT`/`DT_FINI` name these functions, D-30).
     pub init: Option<String>,
     pub fini: Option<String>,
+    /// The last of the `-Bsymbolic` family, by its row (`-Bsymbolic`,
+    /// `-Bsymbolic-functions`, `--Bsymbolic-non-weak`,
+    /// `--Bsymbolic-non-weak-functions`); `None` with none or after
+    /// `-Bno-symbolic` (V2, A44).
+    pub symbolic: Option<&'static str>,
     /// What the verifier could not read (each a finding of P-D2).
     pub problems: Vec<String>,
     /// What puts the link outside stage 3 (each a P-D1 finding,
@@ -73,54 +79,57 @@ pub struct Line {
     pub outside: Vec<String>,
 }
 
-/// Options whose value is the next word.
-const WITH_ARG: &[&str] = &[
-    // spec/cli.md §2.3: these take their value as the next word too.
-    "--odr-table",
-    "-odr-table",
-    "--odr",
-    "-odr",
-    "-o",
-    "-m",
-    "-e",
-    "--entry",
-    "-u",
-    "--undefined",
-    "-T",
-    "--script",
-    "-Map",
-    "-plugin",
-    "--plugin",
-    "-plugin-opt",
-    "-y",
-    "--trace-symbol",
-    "-soname",
-    "-h",
-    "--defsym",
-    "-Y",
-    "-A",
-    "-F",
-    "-f",
-    "-G",
-    "--sysroot",
-    "--wrap",
-    "--version-script",
-    "--dynamic-list",
-    "--image-base",
-    "-Ttext",
-    "-Tdata",
-    "-Tbss",
-    "--section-start",
-    "--thread-count",
-    "-mllvm",
-    "--exclude-libs",
-    "--chroot",
-    "--hash-style",
+/// The rows of the options table (`opts.rs`, `docs/status/options.md`)
+/// whose option this reader interprets, by the row's first spelling: every
+/// spelling of such a row, and every form of its value, reaches the same
+/// state, and every other row leaves the state alone (WP-131, V1 and V6;
+/// `tests::s12_1_every_spelling_of_a_row_reads_alike`). Whether an option
+/// takes the next word is the table's too, for every row.
+#[cfg_attr(not(test), allow(dead_code))] // the tests' list; the match below is the reader
+pub(crate) const INTERPRETED: &[&str] = &[
+    "-pie",
+    "-no-pie",
+    "-shared",
+    "-Bstatic",
+    "-Bdynamic",
+    "--as-needed",
+    "--no-as-needed",
+    "--push-state",
+    "--pop-state",
+    "--no-dynamic-linker",
+    "-I",
+    "-E",
+    "--no-export-dynamic",
     "--export-dynamic-symbol",
-    "-export-dynamic-symbol",
     "--export-dynamic-symbol-list",
-    "-export-dynamic-symbol-list",
+    "--allow-shlib-undefined",
+    "--no-allow-shlib-undefined",
+    "--enable-new-dtags",
+    "--disable-new-dtags",
+    "-(",
+    "-)",
+    "-rpath",
+    "-R",
+    "-rpath-link",
+    "-u",
+    "-e",
+    "-init",
+    "-fini",
+    "-l",
+    "-L",
+    "--copy-dt-needed-entries",
+    "--hash-style",
+    "-Bsymbolic",
+    "-Bsymbolic-functions",
+    "--Bsymbolic-non-weak",
+    "--Bsymbolic-non-weak-functions",
+    "-Bno-symbolic",
 ];
+
+/// The `-z` keywords this reader interprets.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) const INTERPRETED_Z: &[&str] =
+    &["now", "lazy", "relro", "norelro", "execstack", "noexecstack"];
 
 struct State {
     as_needed: bool,
@@ -128,12 +137,14 @@ struct State {
 }
 
 impl Line {
-    /// Reads `args` (the linker's words, without the program name).
+    /// Reads `args` (the linker's words, without the program name). Each
+    /// word is placed by the options table (`opts::Table::word`, cli.md
+    /// §2): its row, its value, or an input file.
     #[allow(clippy::too_many_lines)] // one arm per option family
     pub fn parse(args: &[String], files: &dyn Files) -> Line {
+        let table = crate::opts::Table::get();
         let mut l = Line { relro: true, new_dtags: true, ..Line::default() };
         let mut pie: Option<bool> = None;
-        let mut static_ = false;
         let mut static_pie = false;
         let mut no_interp = false;
         let mut shared = false;
@@ -141,20 +152,11 @@ impl Line {
         // whatever its position (GNU ld, lld, mold).
         let mut i = 0;
         while i < args.len() {
-            let a = args[i].as_str();
-            if let Some(d) = a.strip_prefix("--library-path=") {
-                l.lib_dirs.push(d.into());
-            } else if a == "-L" || a == "--library-path" {
-                if let Some(d) = args.get(i + 1) {
-                    l.lib_dirs.push(d.clone());
-                }
-                i += 1;
-            } else if let Some(d) = a.strip_prefix("-L") {
-                l.lib_dirs.push(d.into());
-            } else if WITH_ARG.contains(&a) {
-                i += 1;
+            let (w, used) = table.word(args, i);
+            if let Word::Opt { id: "-L", value: Some(d), .. } = w {
+                l.lib_dirs.push(d);
             }
-            i += 1;
+            i += used;
         }
         let mut st = State { as_needed: false, bstatic: false };
         let mut stack: Vec<(bool, bool)> = Vec::new();
@@ -162,28 +164,40 @@ impl Line {
         let mut groups = 0usize;
         let mut i = 0;
         while i < args.len() {
+            let (w, used) = table.word(args, i);
             let a = args[i].as_str();
-            let next = |i: &mut usize| -> Option<String> {
-                *i += 1;
-                args.get(*i).cloned()
-            };
-            let val = |a: &str, long: &str| -> Option<String> {
-                a.strip_prefix(long).and_then(|r| r.strip_prefix('=')).map(str::to_string)
-            };
-            match a {
-                "-pie" | "--pie" | "-pic-executable" | "--pic-executable" => pie = Some(true),
-                "-no-pie" | "--no-pie" | "-no-pic-executable" | "--no-pic-executable" => {
-                    pie = Some(false);
+            i += used;
+            let (id, value) = match w {
+                Word::Input => {
+                    l.file(a, a, &st, group, files, 0);
+                    continue;
                 }
-                "-static-pie" | "--static-pie" => static_pie = true,
-                "-shared" | "--shared" | "-Bshareable" => shared = true,
-                "-static" | "--static" | "-Bstatic" | "-dn" | "-non_shared" => {
-                    if a == "-static" || a == "--static" {
-                        static_ = true;
+                Word::Z { kw, .. } => {
+                    l.z(kw);
+                    continue;
+                }
+                Word::Unknown => {
+                    // No row of the table: no linker of cli.md has it.
+                    // Two words some callers' lines carry (the drivers'
+                    // spellings) are still read.
+                    match a {
+                        "-static-pie" | "--static-pie" => static_pie = true,
+                        "--now" => l.now = true,
+                        _ => {}
                     }
-                    st.bstatic = true;
+                    continue;
                 }
-                "-Bdynamic" | "-dy" | "-call_shared" => st.bstatic = false,
+                Word::Opt { id, value, .. } => (id, value),
+            };
+            let v = value.unwrap_or_default();
+            match id {
+                "-pie" => pie = Some(true),
+                "-no-pie" => pie = Some(false),
+                "-shared" => shared = true,
+                // cli.md §3.2: `-static` is `-Bstatic`; neither decides the
+                // kind (every spelling of the row alike, WP-131).
+                "-Bstatic" => st.bstatic = true,
+                "-Bdynamic" => st.bstatic = false,
                 "--as-needed" => st.as_needed = true,
                 "--no-as-needed" => st.as_needed = false,
                 "--push-state" => stack.push((st.as_needed, st.bstatic)),
@@ -196,123 +210,74 @@ impl Line {
                     }
                 }
                 "--no-dynamic-linker" => no_interp = true,
-                "-dynamic-linker" | "--dynamic-linker" | "-I" => l.interp = next(&mut i),
-                "-E" | "--export-dynamic" => l.export_dynamic = true,
+                "-I" => l.interp = Some(v),
+                "-E" => l.export_dynamic = true,
                 "--no-export-dynamic" => l.export_dynamic = false,
+                "--export-dynamic-symbol" | "--export-dynamic-symbol-list" => {
+                    l.export_symbols = true;
+                }
                 "--allow-shlib-undefined" => l.allow_shlib_undefined = true,
                 "--no-allow-shlib-undefined" => l.allow_shlib_undefined = false,
                 "--enable-new-dtags" => l.new_dtags = true,
                 "--disable-new-dtags" => l.new_dtags = false,
-                "--start-group" | "-(" => {
+                "-(" => {
                     group = Some(groups);
                     groups += 1;
                 }
-                "--end-group" | "-)" => group = None,
-                "-z" => {
-                    if let Some(z) = next(&mut i) {
-                        l.z(&z);
+                "-)" => group = None,
+                "-rpath" => l.rpath.extend(v.split(':').map(str::to_string)),
+                // GNU ld: `-R` (`--just-symbols`) naming a directory is
+                // `-rpath`; naming a file it takes only its symbols, which
+                // stage 3 does not model.
+                "-R" => {
+                    if files.read(&v).is_some() {
+                        l.outside.push(format!("--just-symbols {v} (cli.md: refused)"));
+                    } else {
+                        l.rpath.extend(v.split(':').map(str::to_string));
                     }
                 }
-                "-rpath" | "-R" | "--rpath" => {
-                    if let Some(p) = next(&mut i) {
-                        l.rpath.extend(p.split(':').map(str::to_string));
-                    }
-                }
-                "-rpath-link" | "--rpath-link" => {
-                    if let Some(p) = next(&mut i) {
-                        l.rpath_link.extend(p.split(':').map(str::to_string));
-                    }
-                }
-                "-u" | "--undefined" => {
-                    if let Some(u) = next(&mut i) {
-                        l.undefined.push(u);
-                    }
-                }
-                "-e" | "--entry" => l.entry = next(&mut i),
-                "-init" | "--init" => l.init = next(&mut i),
-                "-fini" | "--fini" => l.fini = next(&mut i),
-                "-l" | "--library" => {
-                    if let Some(n) = next(&mut i) {
-                        l.library(&n, &st, group, files);
-                    }
-                }
-                "-L" | "--library-path" => i += 1,
-                "--now" => l.now = true,
+                "-rpath-link" => l.rpath_link.extend(v.split(':').map(str::to_string)),
+                "-u" => l.undefined.push(v),
+                "-e" => l.entry = Some(v),
+                "-init" => l.init = Some(v),
+                "-fini" => l.fini = Some(v),
+                "-l" => l.library(&v, &st, group, files),
                 "--copy-dt-needed-entries" => {
                     l.outside.push("--copy-dt-needed-entries (dyn.md D-15)".into());
                 }
-                "--hash-style" => {
-                    if let Some(v) = next(&mut i) {
-                        l.hash_style(&v);
-                    }
-                }
-                "--export-dynamic-symbol"
-                | "-export-dynamic-symbol"
-                | "--export-dynamic-symbol-list"
-                | "-export-dynamic-symbol-list" => {
-                    l.export_symbols = true;
-                    i += 1;
-                }
-                _ if WITH_ARG.contains(&a) => i += 1,
-                _ => {
-                    if let Some(v) =
-                        val(a, "--dynamic-linker").or_else(|| val(a, "-dynamic-linker"))
-                    {
-                        l.interp = Some(v);
-                    } else if let Some(z) = a.strip_prefix("-z") {
-                        l.z(z);
-                    } else if let Some(n) =
-                        val(a, "--library").or_else(|| a.strip_prefix("-l").map(str::to_string))
-                    {
-                        l.library(&n, &st, group, files);
-                    } else if let Some(p) = val(a, "--rpath").or_else(|| val(a, "-rpath")) {
-                        l.rpath.extend(p.split(':').map(str::to_string));
-                    } else if let Some(p) = val(a, "--rpath-link").or_else(|| val(a, "-rpath-link"))
-                    {
-                        l.rpath_link.extend(p.split(':').map(str::to_string));
-                    } else if let Some(u) = val(a, "--undefined") {
-                        l.undefined.push(u);
-                    } else if let Some(e) = val(a, "--entry") {
-                        l.entry = Some(e);
-                    } else if let Some(f) = val(a, "--init").or_else(|| val(a, "-init")) {
-                        l.init = Some(f);
-                    } else if let Some(f) = val(a, "--fini").or_else(|| val(a, "-fini")) {
-                        l.fini = Some(f);
-                    } else if let Some(v) = val(a, "--hash-style").or_else(|| val(a, "-hash-style"))
-                    {
-                        l.hash_style(&v);
-                    } else if ["--export-dynamic-symbol", "-export-dynamic-symbol"]
-                        .iter()
-                        .chain(&["--export-dynamic-symbol-list", "-export-dynamic-symbol-list"])
-                        .any(|o| val(a, o).is_some())
-                    {
-                        l.export_symbols = true;
-                    } else if a.starts_with('-') {
-                        // Every other option leaves the inputs alone.
-                    } else {
-                        l.file(a, a, &st, group, files, 0);
-                    }
-                }
+                "--hash-style" => l.hash_style(&v),
+                "-Bsymbolic"
+                | "-Bsymbolic-functions"
+                | "--Bsymbolic-non-weak"
+                | "--Bsymbolic-non-weak-functions" => l.symbolic = Some(id),
+                "-Bno-symbolic" => l.symbolic = None,
+                // Every other option leaves the inputs alone.
+                _ => {}
             }
-            i += 1;
+        }
+        // D-1 and cli.md §3.2: the kind is the line's (`-pie`, the
+        // interpreter) and the inputs' (a shared object loaded makes the
+        // executable dynamic); never the output's (WP-131, V5).
+        let loads_shared = l.items.iter().any(|i| matches!(i, Item::Shared { .. }));
+        if no_interp {
+            l.interp = None;
         }
         l.kind = Some(if shared {
             l.outside.push("-shared (M4)".into());
             OutputKind::Pie
-        } else if static_pie || (pie == Some(true) && (static_ || no_interp)) {
+        } else if static_pie {
             OutputKind::StaticPie
-        } else if static_ {
-            OutputKind::Static
         } else if pie == Some(true) {
-            if l.interp.is_none() && no_interp { OutputKind::StaticPie } else { OutputKind::Pie }
-        } else if l.interp.is_some() || l.items.iter().any(|i| matches!(i, Item::Shared { .. })) {
+            if l.interp.is_none() && (no_interp || !loads_shared) {
+                OutputKind::StaticPie
+            } else {
+                OutputKind::Pie
+            }
+        } else if l.interp.is_some() || loads_shared {
             OutputKind::Exec
         } else {
             OutputKind::Static
         });
-        if no_interp {
-            l.interp = None;
-        }
         l
     }
 
@@ -655,5 +620,187 @@ mod tests {
                 ("sub/libw.so".into(), "sub/libw.so".into())
             ]
         );
+    }
+
+    /// Every way the table lets `name` (a spelling without its dashes) be
+    /// written with a value `v` (cli.md §2.2, §2.3): one or two dashes as
+    /// §2.2 allows, a required value joined by `=` (a short option's by
+    /// nothing) or in the next word, an optional one by `=` only.
+    fn forms(name: &str, takes: Option<bool>, v: &str) -> Vec<Vec<String>> {
+        let mut out = Vec::new();
+        for dashes in [1, 2] {
+            if !crate::opts::dashes_allow(name, dashes) {
+                continue;
+            }
+            let o = format!("{}{name}", "-".repeat(dashes));
+            let short = name.chars().count() == 1;
+            match takes {
+                None => out.push(vec![o]),
+                Some(true) => {
+                    out.push(vec![o.clone(), v.to_string()]);
+                    out.push(vec![if short { format!("{o}{v}") } else { format!("{o}={v}") }]);
+                }
+                Some(false) => {
+                    out.push(vec![o.clone()]);
+                    out.push(vec![format!("{o}={v}")]);
+                }
+            }
+        }
+        out
+    }
+
+    /// The state of a line, everything [`Line`] holds.
+    fn state(words: &[String], m: &Mem) -> String {
+        format!("{:?}", Line::parse(words, m))
+    }
+
+    // spec: plumb.md §3.2a, §12.1 (WP-131, V1 and V6) — the reader takes
+    // its spellings and values from the options table: for EVERY row of
+    // the table (accepted or refused), every spelling in every form
+    // reaches the state its first spelling reaches; a row the reader does
+    // not interpret leaves the state as it was (its value, in either form,
+    // is consumed, never read as an input file); a row it interprets
+    // changes it. A test over the table, not over a hand list.
+    #[test]
+    fn s12_1_every_spelling_of_a_row_reads_alike() {
+        let mut files = HashMap::new();
+        files.insert("/l/libg.so".to_string(), elf(3));
+        files.insert("/l/libg.a".to_string(), b"!<arch>\n".to_vec());
+        files.insert("/l/libh.so".to_string(), elf(3));
+        let m = Mem(files);
+        let t = crate::opts::Table::get();
+        // The line each option is put in: `h.o -lg` after the context
+        // that lets an interpreted option show (an undoing option after
+        // what it undoes).
+        let context = |id: &str| -> (&str, &str) {
+            match id {
+                "-no-pie" => ("-pie", ""),
+                "-Bdynamic" => ("-Bstatic", ""),
+                "--no-as-needed" => ("--as-needed", ""),
+                "--push-state" => ("", "--as-needed --pop-state"),
+                "--pop-state" => ("--push-state --as-needed", ""),
+                "-)" => ("-(", ""),
+                "--no-dynamic-linker" => ("-dynamic-linker /x", ""),
+                "--no-export-dynamic" => ("-E", ""),
+                "--no-allow-shlib-undefined" => ("--allow-shlib-undefined", ""),
+                "--enable-new-dtags" => ("--disable-new-dtags", ""),
+                "-Bno-symbolic" => ("-Bsymbolic", ""),
+                _ => ("", ""),
+            }
+        };
+        // The value given to an option: a word that would be an input
+        // file (`zzval: cannot be read`) if it were not consumed.
+        let value = |id: &str| match id {
+            "-l" => "h",
+            "-L" | "-rpath" | "-rpath-link" | "-R" => "/l",
+            "--hash-style" => "sysv",
+            _ => "zzval",
+        };
+        let line = |id: &str, opt: &[String]| -> Vec<String> {
+            let (before, after) = context(id);
+            let mut w = words(&format!("-L/l h.o {before}"));
+            w.extend(opt.iter().cloned());
+            w.extend(words(&format!("{after} -lg")));
+            w
+        };
+        let mut interpreted = std::collections::BTreeSet::new();
+        let rows = t.rows();
+        assert!(rows.len() + t.keywords().len() > 480, "the whole table: {}", rows.len());
+        for (id, names, takes, _) in &rows {
+            let v = value(id);
+            let mut want: Option<String> = None;
+            for name in names {
+                // An abbreviation of a GNU long name (§2.4) is a spelling
+                // too, where it names this row alone.
+                let mut spellings = vec![(*name).to_string()];
+                if name.len() > 3 {
+                    let ab = &name[..name.len() - 1];
+                    if matches!(
+                        t.word(&[format!("--{ab}")], 0).0,
+                        Word::Opt { id: x, .. } if x == *id
+                    ) {
+                        spellings.push(ab.to_string());
+                    }
+                }
+                for sp in spellings {
+                    for f in forms(&sp, *takes, v) {
+                        let got = state(&line(id, &f), &m);
+                        match &want {
+                            None => want = Some(got),
+                            Some(w) => assert_eq!(&got, w, "row {id}: {f:?}"),
+                        }
+                    }
+                }
+            }
+            let got = want.unwrap_or_default();
+            let plain = state(&line(id, &[]), &m);
+            if INTERPRETED.contains(id) {
+                assert_ne!(got, plain, "row {id} is interpreted and changes nothing");
+                interpreted.insert(*id);
+            } else {
+                assert_eq!(got, plain, "row {id} is not interpreted and changes the state");
+            }
+        }
+        let listed: std::collections::BTreeSet<&str> = INTERPRETED.iter().copied().collect();
+        assert_eq!(interpreted, listed, "INTERPRETED names rows the table does not have");
+        for (kw, takes, _) in t.keywords() {
+            let mut want: Option<String> = None;
+            let k = if *takes { format!("{kw}=0x1000") } else { (*kw).to_string() };
+            for f in [vec!["-z".to_string(), k.clone()], vec![format!("-z{k}")]] {
+                let got = state(&line("", &f), &m);
+                match &want {
+                    None => want = Some(got),
+                    Some(w) => assert_eq!(&got, w, "-z {kw}: {f:?}"),
+                }
+            }
+            let got = want.unwrap_or_default();
+            let plain = state(&line("", &[]), &m);
+            let lazy = *kw == "lazy" || *kw == "relro"; // the defaults
+            if INTERPRETED_Z.contains(kw) && !lazy {
+                assert_ne!(got, plain, "-z {kw} is interpreted and changes nothing");
+            } else {
+                assert_eq!(got, plain, "-z {kw} is not interpreted and changes the state");
+            }
+        }
+    }
+
+    // spec: plumb.md §12.1 (WP-112 V1) — two dashes: `--dy` and
+    // `--call_shared` undo `-Bstatic` as `-dy` does, `--dn`,
+    // `--non_shared` and `--static` set it as `-dn` does.
+    #[test]
+    fn s12_1_v1_two_dashes() {
+        let mut files = HashMap::new();
+        files.insert("/l/libg.so".to_string(), elf(3));
+        files.insert("/l/libg.a".to_string(), b"!<arch>\n".to_vec());
+        let m = Mem(files);
+        let shared = |s: &str| {
+            let l = Line::parse(&words(s), &m);
+            assert!(l.problems.is_empty(), "{s}: {:?}", l.problems);
+            l.items.iter().any(|i| matches!(i, Item::Shared { .. }))
+        };
+        for on in ["-dy", "--dy", "-call_shared", "--call_shared", "-Bdynamic", "--Bdynamic"] {
+            assert!(shared(&format!("-L/l -Bstatic {on} -lg")), "{on}");
+        }
+        for off in ["-dn", "--dn", "-non_shared", "--non_shared", "-static", "--static", "--Bstatic"]
+        {
+            assert!(!shared(&format!("-L/l {off} -lg")), "{off}");
+        }
+    }
+
+    // spec: plumb.md §12.1 (WP-111 V6) — `--sort-section` takes its value
+    // in the next word (BusyBox's `trylink` writes `--sort-section
+    // alignment`): the value is never an input file.
+    #[test]
+    fn s12_1_v6_sort_section_takes_the_next_word() {
+        let m = Mem(HashMap::new());
+        for s in [
+            "-pie -dynamic-linker /x --sort-section alignment",
+            "-pie -dynamic-linker /x -sort-section alignment",
+            "-pie -dynamic-linker /x --sort-section=name",
+            "-pie -dynamic-linker /x --sort-sec alignment",
+        ] {
+            let l = Line::parse(&words(s), &m);
+            assert!(l.items.is_empty() && l.problems.is_empty(), "{s}: {:?}", l.problems);
+        }
     }
 }
