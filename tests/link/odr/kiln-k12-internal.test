@@ -1,0 +1,46 @@
+# K12 with kiln's rows (kiln 3b77b13c7, scheme kiln-odr-1.d4; spec/odr.md
+# O-15, O-16, X5; WP-199): an inline function in a header that odr-uses
+# a variable in an unnamed namespace (same) or a static function (next),
+# compiled into two units from ONE source, so every hash is equal. kiln
+# K-3e sets USES_INTERNAL (flag 16) on both rows of each, and not on
+# bylim, which reads a namespace-scope `const int` by value (N17: not an
+# odr-use). Under --odr=strict mortar reports odr-internal-reference, a
+# warning, for next and same (each unit's copy refers to its own
+# `counter`); nothing for bylim; the hashes agree, so no odr-violation.
+# The program shows K12's effect: both units' calls reach a.o's copies,
+# which count a.o's `counter` (fa: 1 + 2 + 4, fb: 3 + 4 + 4).
+#@ spec: odr.md O-16
+#@ arch: aarch64 x86_64
+#@ requires: kiln g++
+#@ diag: odr-internal-reference a.o b.o
+#@ diag: odr-internal-reference a.o b.o
+
+cxx(kiln) -O0 -DUNIT=fa -fmason-metadata u.cc -o a.o
+cxx(kiln) -O0 -DUNIT=fb -fmason-metadata u.cc -o b.o
+cxx(kiln) -O0 main.cc -o main.o
+link(bfd,lld,mold) g++ main.o a.o b.o -o prog
+link(mortar) g++ main.o a.o b.o -Wl,--odr=strict -Wl,--odr-stats -o prog
+  diag: ^mortar: warning: _Z4nextv refers to an entity with internal linkage, which differs in each translation unit$
+  diag: ^mortar: warning: _Z4samev refers to an entity with internal linkage, which differs in each translation unit$
+  diag: ^>>> each translation unit's copy refers to its own entity with internal linkage
+  diag: ^mortar: odr-stats: mode strict; units 2, rows * kind 2 6,* record findings 2;
+  no-diag: _Z5bylimv
+  no-diag: violates the one-definition rule
+run prog
+  stdout: 7 11
+
+#--- h.h
+namespace { int counter = 0; }
+static int bump_s() { return ++counter; }
+__attribute__((noinline)) inline int next() { return bump_s(); }
+__attribute__((noinline)) inline int same() { return ++counter; }
+static const int lim = 4;
+__attribute__((noinline)) inline int bylim() { return lim; }
+#--- u.cc
+#include "h.h"
+int UNIT() { return next() + same() + bylim(); }
+#--- main.cc
+#include <cstdio>
+int fa();
+int fb();
+int main() { std::printf("%d %d\n", fa(), fb()); }
