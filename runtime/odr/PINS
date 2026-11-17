@@ -17,9 +17,9 @@ command x86_64-exe KILN_BACKEND=hod KILN_HOD=<hod> KILN_HOD_STRICT=1 <kiln> --ta
 command i386-so <clang-i386> --target=i686-linux-gnu -O0 -fPIC -fno-exceptions -fno-rtti -S -emit-llvm -o <object>.ll mason_odr_rt.cpp && <hod-i386> -O0 -filetype=obj -mtriple=i686-linux-gnu -relocation-model=pic --strict <object>.ll -o <object>
 command i386-exe <clang-i386> --target=i686-linux-gnu -O0 -fPIC -fno-exceptions -fno-rtti -DMASON_RT_EXE -S -emit-llvm -o <object>.ll mason_odr_rt.cpp && <hod-i386> -O0 -filetype=obj -mtriple=i686-linux-gnu -relocation-model=pic --strict <object>.ll -o <object>
 # The objects: name, SHA-256, size in bytes.
-object mason_odr_rt-aarch64-so.o 64d8027ddb0bbca5387772b22a9f22e9d645420edb539f45e5974651feeb836f 44512
-object mason_odr_rt-aarch64-exe.o 4e560637f5686b5e0e3be812130c5209c0ecac2cad9b5e7326a0b2ae8b0f8965 43912
-object mason_odr_rt-x86_64-so.o 183aac908ca932cea8b726731ee917ef27e7628de79dd40ebbb9ae4114bc330a 47392
-object mason_odr_rt-x86_64-exe.o 9d81cb9c394ee8f3f775cf3daaed52033b779f04db2a859f11f121bc0ea74f34 46752
-object mason_odr_rt-i386-so.o 4b08704c1cdf5914e7d7b7b43811d21092c434739b4a0846fe3256875637e7d5 54116
-object mason_odr_rt-i386-exe.o a831f3ffbfa4e6c8c3d7e76a0e6f5461a4bfa51815ec76e4b0e10eda9c14cbc3 53440
+object mason_odr_rt-aarch64-so.o b5afd6a6f0d2fc57478fcf63046e28cf06211f9a9b6090a4369a59602d5bf28d 45280
+object mason_odr_rt-aarch64-exe.o 72fa81f9605425af8f37bdd0348bb7fa95948a8131696b3a1e7a0574a3a3a53b 44680
+object mason_odr_rt-x86_64-so.o ab0843ffb036c9dba7e319293d78c639c03b49eb3a82f024b570a6825bf005c8 48208
+object mason_odr_rt-x86_64-exe.o 47cb3b4c1f40aa0b8ece149a9ed62e3fff5853c3a26058232546fb79a2ad3be1 47568
+object mason_odr_rt-i386-so.o 48f3678bfc4f0a7d9f757b71376c3b68b86d373958005a1bd004f2425a4e5d6c 54992
+object mason_odr_rt-i386-exe.o 4e6b5a5ceb32f63c601aa8545606bd721feb26f9e2bb26ecd1291efb1f0d4fd9 54308

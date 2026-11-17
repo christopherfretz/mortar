@@ -157,8 +157,18 @@ r() {
   rep=$(printf '%s\n' "$out" | grep -c ': odr-violation-at-load: [^0-9]')
   warn=$(printf '%s\n' "$out" | grep -c 'mason: warning: odr-\(hook\|interposed\)')
   LAST="reports=$rep other-warnings=$warn exit=$st"
+  LASTOUT=$out
   echo "    [$label] $LAST"
 }
+
+# stv FIELD: the sum of FIELD over the last run's statistics lines (MASON_ODR_STATS=1)
+stv() {
+  printf '%s\n' "$LASTOUT" | awk -v f="$1" '/mason-stats/ { for (i = 1; i <= NF; i++) { split($i, kv, "="); if (kv[1] == f) s += kv[2] } } END { print s + 0 }'
+}
+# warned NAME: how many times the last run warned NAME
+warned() { printf '%s\n' "$LASTOUT" | grep -c "mason: warning: $1"; }
+# row ID REQUIRED OK DETAIL: a matrix row whose verdict the case computed (OK = 0 for pass)
+row() { echo "MATRIX $T $RT_FLAVOR $1 required=$2 observed: $LAST ${4:-} => $([ "$3" = 0 ] && echo pass || echo FAIL)"; }
 
 # verdict ID REQUIRED: REQUIRED = none | report | report-or-exclusion; reads $LAST
 verdict() {

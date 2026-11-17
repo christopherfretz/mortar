@@ -1372,7 +1372,34 @@ static const char* env_get(const char* name) {
   return 0;
 }
 
+// Every module with the runtime reads MASON_ODR; one speaks for the process
+// about a bad word (Q-77.5: ONE warning): the first module in load order
+// whose note says it carries the runtime (the executable's .preinit_array
+// entry when it has one), else, when no module has the note, each entry.
+struct FirstRt {
+  uintptr_t self;
+  int me;
+  int found;
+};
+
+static int first_rt_cb(struct dl_phdr_info* info, size_t sz, void* data) {
+  (void)sz;
+  FirstRt* f = (FirstRt*)data;
+  Mod m;
+  fill(&m, info);
+  if (!m.hasrt) return 0;
+  f->found = 1;
+  f->me = f->self >= m.lo && f->self < m.hi;
+  return 1;
+}
+
 static void bad_mode(const char* w, size_t n, uint32_t dflt) {
+  FirstRt f;
+  f.self = (uintptr_t)&__ehdr_start;
+  f.me = 0;
+  f.found = 0;
+  dl_iterate_phdr(first_rt_cb, &f);
+  if (f.found && !f.me) return;
   Out o;
   o.n = 0;
   out_str(&o, "mason: warning: odr-hook-bad-mode: MASON_ODR: unknown word '");
@@ -1391,7 +1418,9 @@ static void bad_mode(const char* w, size_t n, uint32_t dflt) {
 // can only turn secure execution on.
 static uint32_t secure_execution(void) {
   if (getauxval(AT_SECURE)) return 1;
-  return env_get("MASON_ODR_TEST_SECURE") != 0;
+  // the test seam: exactly "1" turns secure mode on; nothing turns it off
+  const char* s = env_get("MASON_ODR_TEST_SECURE");
+  return s && s[0] == '1' && s[1] == 0;
 }
 
 static void parse_env(Ctx* c, uint32_t dflt) {
@@ -1465,7 +1494,8 @@ static void fatal(Ctx* c) {
   o.n = 0;
   out_str(&o, "mason: fatal: odr-violation-at-load: ");
   out_dec(&o, c->mismatches);
-  out_str(&o, " mismatch(es); the process stops (MASON_ODR=report continues)\n");
+  out_str(&o, c->secure ? " mismatch(es); the process stops (secure execution: MASON_ODR is not read)\n"
+                        : " mismatch(es); the process stops (MASON_ODR=report continues)\n");
   out_flush(&o);
   abort();
 }
