@@ -393,21 +393,41 @@ a row without it is information. Names defined now [kiln]:
 |---|---|---|---|
 | `producer` | `kiln 0.1.0 (hod 0.1.0)` | no | diagnostics |
 | `source` | the main file's path after `-ffile-prefix-map` | no | diagnostics |
-| `odr.scheme` | the definition-hash scheme, e.g. `kiln-odr-1` | no | rows of kinds 2, 3 are compared only between equal schemes (`odr.md` O-11) |
+| `odr.scheme` | the definition-hash scheme, e.g. `kiln-odr-1` | no | rows of kinds 2, 3 are compared only between equal schemes (`odr.md` O-11). Written by a unit that carries rows of kind 2 or 3 and by no other: a unit without hashed rows has no serialization to name and leaves the row out (kiln K-1/K-2 today) |
 | `std` | the language standard, e.g. `c++20` | no | `odr.md` O-32 |
 | `lang` | `c` or `c++` | no | `odr.md` O-33: C units get no kind 3 rows and C-linkage kind 5 rows are compared under C's rules |
 | `abi.rtti` | `on`/`off` | **no** (a note: mixing `-fno-rtti` libraries with RTTI code is common and legal, `odr.md` N24) | K16c: `odr.md` O-25 reads it |
 | `abi.exceptions` | `on`/`off` | no (mixing is supported; recorded for diagnostics) | |
 | `abi.short-enums` | `on`/`off` | yes | K16a |
 | `abi.stdlib` | `libc++`/`libstdc++` | yes | different `std::` layouts under the same names when inline namespaces are not used |
-| `abi.stdlib-abi` | e.g. libc++ `_LIBCPP_ABI_VERSION`, libstdc++ `_GLIBCXX_USE_CXX11_ABI` | yes | |
-| `abi.stdlib-debug` | `_GLIBCXX_DEBUG`/`_GLIBCXX_ASSERTIONS`/libc++ hardening mode, `off` | yes for the layout-changing modes (`_GLIBCXX_DEBUG`, libc++ debug ABI), no for the others | K16b |
+| `abi.stdlib-abi` | e.g. libc++ `_LIBCPP_ABI_VERSION`, libstdc++ `_GLIBCXX_USE_CXX11_ABI`; for libc++ also its layout-changing ABI switches (below) | yes | |
+| `abi.stdlib-debug` | the library's layout-changing debug mode: `_GLIBCXX_DEBUG`, or `off` | yes, on **every** value, `off` included | K16b: the mismatch that crashes is a `_GLIBCXX_DEBUG` unit against a plain one, and O-30 compares only rows that both carry `ENFORCE` |
+| `abi.stdlib-hardening` | a checking mode that does not change layout: `_GLIBCXX_ASSERTIONS`, or libc++'s hardening mode (`none`, `fast`, `extensive`, `debug`); left out when the library has none | no | diagnostics; mixing is supported |
 | `abi.struct-return` | `reg`/`mem` (i386 only) | yes | K16e |
 | `abi.char` | `signed`/`unsigned` | yes | |
 | `abi.wchar` | size in bytes | yes | |
 | `abi.long-double` | size in bits | yes | |
 | `isa` | the target feature string the TU was compiled for | no | K16d: `odr.md` O-31 |
 | `reloc-model` [hod; M4; planned: hod H-3, mortar's reader WP-129; request R-MT11] | `static`, `pie` or `pic`: the relocation model hod's code generation used (`-fno-pic`, `-fPIE`, `-fPIC`) | no | `dyn.md` D-117: exact refusal of non-PIC code in a shared object (`static` or `pie` in an object defining an exported preemptible datum refuses it, `non-pic-in-shared-object`; `pic` never exempts) |
+
+The three `abi.stdlib*` rows come from the macro state at the end of the
+TU: a unit that includes no library header has `abi.stdlib` at most, and
+a C unit has none of them, so neither is ever a party to an O-30
+mismatch on them. **`abi.stdlib-debug` is a class, not a mode**: its
+values are the layouts, so that two units of one layout have equal rows
+whatever checking either asks for (`_GLIBCXX_ASSERTIONS` is `off` here
+and named in `abi.stdlib-hardening`). Until 2026-11-16 the one row held
+both and carried `ENFORCE` on the layout-changing values only, which
+left `_GLIBCXX_DEBUG` against `off` unreported (found by kiln while
+building K-2). **libc++** (17 and later) has no debug ABI of that kind:
+its hardening mode does not change layout, and a libc++ unit writes
+`abi.stdlib-debug` `off`. What changes its layouts are the vendor's ABI
+switches (`_LIBCPP_ABI_VERSION`, and the `_LIBCPP_ABI_BOUNDED_*` family
+that widens iterators and `unique_ptr<T[]>`); they belong to
+`abi.stdlib-abi`, as the version followed by `+<macro>` for each such
+switch that is defined, in byte order of the macro names [kiln K-5;
+planned: the list of switches is kiln's to measure against the libc++
+it ships with; mortar compares the string and nothing else].
 
 **MT-27 (kinds 2-5).** Their rows are specified in `spec/odr.md` §5
 (kind 2), §6 (kinds 3, 4) and §8.2 (kind 5); the row sizes above are

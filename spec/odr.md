@@ -1677,7 +1677,8 @@ Estimates are the receiving agents' own (kiln's and hod's review,
 - **K-2 — kind 1 (TU summary).** Rows of (name, value) strings, sorted:
   `producer`, `source`, `odr.scheme`, `std`, `lang` (`c`/`c++`),
   `abi.rtti`, `abi.exceptions`, `abi.short-enums`, `abi.stdlib`,
-  `abi.stdlib-abi`, `abi.stdlib-debug`, `abi.struct-return` (i386),
+  `abi.stdlib-abi`, `abi.stdlib-debug`, `abi.stdlib-hardening`,
+  `abi.struct-return` (i386),
   `abi.char`, `abi.wchar`, `abi.long-double`, `isa`, with the `ENFORCE`
   flag on the layout-changing ones (`spec/meta.md` MT-26 lists which;
   `abi.rtti` is not enforced). From the driver's options and the target.
