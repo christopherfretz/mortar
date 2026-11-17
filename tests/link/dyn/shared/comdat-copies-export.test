@@ -1,0 +1,66 @@
+# An inline function and an inline constructor (C1 and C2 in one
+# COMDAT group) with a weak copy in each of three archive members,
+# compiled -O0 -fPIC, exported from a library (dyn.md D-110; plumb.md
+# P-D19, WP-147b). lib.o references k3 only; k3.o references k2, k2.o
+# k1, so the members are extracted k3, k2, k1: GNU ld and lld keep k3's
+# copy (the archive's last member), mold and mortar k1's (resolve.md
+# §6.1). Only k2.o has a `.rodata`, so in every map k2.o is named first:
+# its copy is discarded under every linker. lld and mold write no line
+# for a discarded group (the copy is "absent"); before WP-147b the
+# verifier took the first copy in object order (k2's) as the key's
+# definition and reported "its definition has no place" for the
+# exported `_Z4pickv` and `_ZN3BoxC1Ev`/`C2Ev` (the shape of Debian's
+# unoptimised cross libstdc++.a, `tls-shared-cxx.test` on x86-64).
+#@ spec: dyn.md "D-110"
+#@ requires: g++
+#@ arch: aarch64 x86_64
+
+cxx -O0 -fPIC k1.cc -o k1.o
+cxx -O0 -fPIC k2.cc -o k2.o
+cxx -O0 -fPIC k3.cc -o k3.o
+cxx -O1 -fPIC lib.cc -o lib.o
+cxx -O1 -fPIE main.cc -o main.o
+ar rcs libk.a k1.o k2.o k3.o
+link g++ -shared lib.o libk.a -o libck.so
+check nm -D libck.so
+  has: W _Z4pickv$
+  has: W _ZN3BoxC1Ev$
+  has: W _ZN3BoxC2Ev$
+host g++ -pie main.o -L. -lck -o prog
+run prog
+  stdout: 143 40 7
+
+#--- k.h
+struct Box {
+  int v;
+  Box() : v(7) {}
+};
+inline int pick() { return 40; }
+#--- k1.cc
+#include "k.h"
+int k1() { return Box().v + pick(); }
+#--- k2.cc
+#include "k.h"
+int k1();
+extern const int k2tab[4] = {1, 2, 3, 4};
+int k2(int i) { return k1() + Box().v + pick() + k2tab[i & 3]; }
+#--- k3.cc
+#include "k.h"
+int k2(int);
+int k3() { return k2(1) + Box().v + pick(); }
+#--- lib.cc
+int k3();
+int lib_value() { return k3(); }
+#--- main.cc
+#include <cstdio>
+struct Box {
+  int v;
+  Box();
+};
+int pick();
+int lib_value();
+int main() {
+  Box b;
+  std::printf("%d %d %d\n", lib_value(), pick(), b.v);
+  return 0;
+}

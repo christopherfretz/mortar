@@ -20,6 +20,12 @@
 //!   nothing under `-pie`, mold nothing); GNU ld's absolute form at
 //!   another value is a finding in a library (an executable's export set
 //!   is not P-D19's: `-pie --export-dynamic` is not judged).
+//! - WP-147b: a key with a weak COMDAT copy in two files (`cka.s` kept,
+//!   `ckb.s` named first by every map) is judged by its kept copy: GNU
+//!   ld's, lld's and mold's libraries are clean (lld and mold write no
+//!   line for the discarded copy, which is "absent"); with the kept copy's
+//!   line removed from the map, every copy has no place and the export is
+//!   a finding.
 // ELF fields read best by their short names.
 #![allow(clippy::many_single_char_names)]
 
@@ -311,6 +317,85 @@ fn wp147_references_placeless_exports_are_judged_as_measured() {
                     }
                     _ => assert!(e.is_none(), "{label}: gprop in .dynsym"),
                 }
+            }
+        }
+    }
+}
+
+// WP-147b: the definition of a key with several COMDAT copies is the kept
+// one. `cka.o ckb.o`: every linker keeps cka's copies of `_Z4pickv` and
+// of `_ZN3BoxC1Ev`/`C2Ev` (one group); ckb.o alone has a `.rodata`, so
+// each map names it first. Before WP-147b the verifier took ckb's copy,
+// which lld's and mold's maps do not name (absent: no place), as the
+// definition and reported the exports. The kept copy's line removed from
+// the map: every copy has no place, and each export is a finding.
+#[test]
+fn wp147b_comdat_export_is_judged_by_its_kept_copy() {
+    const KEYS: [&str; 3] = ["_Z4pickv", "_ZN3BoxC1Ev", "_ZN3BoxC2Ev"];
+    for arch in ARCHES {
+        let Some(t) = tools(arch) else { continue };
+        let scratch = Scratch::new("plumb-pexport-comdat");
+        let d = scratch.path();
+        for s in ["cka", "ckb"] {
+            std::fs::copy(dir(arch).join(format!("{s}.s")), d.join(format!("{s}.s"))).unwrap();
+            run(d, &t.cc, &["-c".into(), format!("{s}.s"), "-o".into(), format!("{s}.o")]);
+        }
+        let em = if arch == Arch::Aarch64 { "aarch64linux" } else { "elf_x86_64" };
+        for (ld, tag, format) in [
+            (&t.bfd, "bfd", Format::Gnu),
+            (&t.lld, "lld", Format::Lld),
+            (&t.mold, "mold", Format::Mold),
+        ] {
+            let out = format!("libck.{tag}.so");
+            let mut words: Vec<String> = Vec::new();
+            if tag != "bfd" {
+                words.extend(["-m".into(), em.into()]);
+            }
+            words.extend(["-shared", "cka.o", "ckb.o", "-o"].map(String::from));
+            words.push(out.clone());
+            let mut args = words.clone();
+            args.push(format!("-Map={out}.map"));
+            run(d, ld, &args);
+            let label = format!("{} {out}", arch.name());
+            let b = std::fs::read(d.join(&out)).unwrap();
+            for k in KEYS {
+                assert!(sym64(&b, ".dynsym", ".dynstr", k).is_some(), "{label}: {k} not exported");
+            }
+            let text = std::fs::read_to_string(d.join(format!("{out}.map"))).unwrap();
+            let m = map::parse(format, &text).unwrap_or_else(|e| panic!("{label}: {}", e.message));
+            let r = verify(d, &b, &m, Some(words.clone()));
+            let named: Vec<String> = r
+                .findings
+                .iter()
+                .filter(|f| KEYS.iter().any(|k| f.symbol.as_deref() == Some(*k)))
+                .map(|f| format!("{} {}", f.rule.id(), f.message))
+                .collect();
+            assert!(named.is_empty(), "{label}:\n{}", named.join("\n"));
+            // The kept copy removed: lld and mold name cka.o's sections
+            // on one line each (GNU ld's lines wrap; its discarded copies
+            // are listed, so the shape does not arise under its map).
+            if tag == "bfd" {
+                continue;
+            }
+            let cut: String = text
+                .lines()
+                .filter(|l| {
+                    !(l.contains("cka.o")
+                        && (l.contains("(.text._Z4pickv)") || l.contains("(.text._ZN3BoxC2Ev)")))
+                })
+                .flat_map(|l| [l, "\n"])
+                .collect();
+            assert!(cut.len() < text.len(), "{label}: the kept copies' lines not found");
+            let m = map::parse(format, &cut).unwrap_or_else(|e| panic!("{label}: {}", e.message));
+            let r = verify(d, &b, &m, Some(words));
+            for k in KEYS {
+                assert!(
+                    has(&r, "P-D19", &format!("'{k}' is defined in .dynsym (at 0x"))
+                        && r.findings.iter().any(|f| f.symbol.as_deref() == Some(k)
+                            && f.message.contains("but its definition has no place")),
+                    "{label}: {k} with its kept copy removed:\n{}",
+                    r.render(&out)
+                );
             }
         }
     }

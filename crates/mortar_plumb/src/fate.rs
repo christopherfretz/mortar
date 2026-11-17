@@ -217,11 +217,13 @@ type At = (usize, usize);
 /// `--require-defined`, dynamic lists and `--exclude-libs`
 /// (docs/status/options.md), so they are not in its line.
 /// The definition of a key is its first strong one in object order,
-/// else its first. Maps (object, section) to the name.
+/// else its first, a copy of a COMDAT group not kept (`comdat`) never
+/// being one (resolve §6.2; WP-147b). Maps (object, section) to the name.
 fn line_roots(
     objs: &[Obj<'_>],
     opts: &Options,
     exports: Option<&ExportRule>,
+    comdat: &[Vec<bool>],
 ) -> BTreeMap<(usize, usize), String> {
     use mortar_elf::consts::{STB_LOCAL, STB_WEAK, STV_DEFAULT, STV_PROTECTED};
     let mut named: BTreeSet<String> = opts.named_roots.iter().cloned().collect();
@@ -250,6 +252,9 @@ fn line_roots(
                 hidden.insert(split_version(&n).0.to_string());
             }
             let Ok(SymbolSection::Section(k)) = t.section_of(i, &sym) else { continue };
+            if comdat[oi].get(k.0 as usize).copied().unwrap_or(false) {
+                continue;
+            }
             let at = (oi, k.0 as usize);
             let e = defs.entry(n).or_insert((None, at));
             if sym.binding() != STB_WEAK && e.0.is_none() {
@@ -342,7 +347,7 @@ pub(crate) fn check(
     let comdat = comdat_dropped(objs);
     let groups = in_alloc_group(objs);
     let ss = start_stop(objs);
-    let roots = line_roots(objs, opts, exports);
+    let roots = line_roots(objs, opts, exports, &comdat);
     for (oi, o) in objs.iter().enumerate() {
         for (si, s) in o.secs.iter().enumerate() {
             if si == 0 || s.consumed() {

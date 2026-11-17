@@ -1039,7 +1039,8 @@ offset; through the output's `.symtab` that address is `PT_TLS` `p_vaddr`
      loader does not bind the name (§12.5). This predicate, "the section
      has no place" (`spec/resolve.md` §10.1 P-1 as the map shows it), is
      the one derivation every rule that lists the expected symbols asks:
-     this step, Y3, Y4 and P-D19's export set (WP-147): the definition is the first
+     this step, Y3, Y4 and P-D19's export set (WP-147; P-D19 asks it of
+     every definition of the key, WP-147b): the definition is the first
      strong one in object order, else the first, and S follows from its
      section as for a local symbol: R5 (§5.7), or §5.8's tombstone from a
      non-alloc place, whatever the output's `.symtab` says. Before WP-143
@@ -5553,12 +5554,20 @@ and what turns P-D9's equality into a check of D-112.
   (D-110, `__start_`/`__stop_` `PROTECTED` included) with each entry's
   binding, type, visibility and version (D-115). *Read:* `.dynsym`'s
   defined entries and `.gnu.version`. *Reported:* a defined entry
-  missing, extra or with a field or version that differs. A definition
-  whose section has no place (§4.4 step 0's predicate; a key every
-  definition of which is discarded, not a COMDAT copy another object
-  keeps) is not in the export set (`spec/resolve.md` §10.1 P-1: an
-  unreferenced placeless symbol is omitted from `.dynsym`, D-110;
-  WP-147). Under mortar's map such a key defined in `.dynsym`, in any
+  missing, extra or with a field or version that differs. A key every
+  definition of which has no place (§4.4 step 0's predicate: each in a
+  section discarded or absent; a COMDAT copy another object keeps is not
+  the key's definition) is not in the export set (`spec/resolve.md`
+  §10.1 P-1: an unreferenced placeless symbol is omitted from `.dynsym`,
+  D-110; WP-147). Otherwise the key's definition, whose binding, type
+  and size the entry carries, is chosen among the definitions WITH a
+  place: the first strong one in object order, else the first not
+  common. lld and mold write no line for a discarded COMDAT copy, so
+  under their maps the copy is absent and may come before the kept one
+  in object order (WP-147b: Debian's unoptimised cross `libstdc++.a`
+  has a weak copy of an inline function in up to ten members; before
+  WP-147b the first copy was taken as the definition and the export of
+  the kept one reported as placeless). Under mortar's map such a key defined in `.dynsym`, in any
   form, is a finding ("its definition has no place"). Under a
   reference's, what each writes is accepted as measured (an unreferenced
   global in `.note.gnu.property`, `.note.GNU-stack`, an `SHF_EXCLUDE`
