@@ -91,7 +91,7 @@ mlink() {
   printf '\t.section .note.mason,"a",%%note\n\t.p2align 3\n\t.long 10\n\t.long %d\n\t.long 0x4d4f4401\n\t.asciz "MasonMeta"\n\t.p2align 3\n\t.long 1, %d, 24, 0\n\t.zero %d\n\t.section .note.GNU-stack,"",%%progbits\n' $((16 + 24 * n)) "$n" $((24 * n)) > "$W/.mlink.s"
   $CC -c "$W/.mlink.s" -o "$W/.mlink.o" || return 1
   "$drv" -fuse-ld=bfd "${args[@]}" "$W/.mlink.o" -o "$out.0" || return 1
-  "$XTASK" meta table "$rows" --into "$out.0" -o "$out"
+  "$XTASK" meta table "$rows" --into "$out.0" -o "$out" && chmod --reference="$out.0" "$out"
 }
 
 # the plugin source: fmtlite::version() of body N, entry_NAME and plugin_entry
@@ -122,7 +122,13 @@ xrun() {
   while [ "$1" != -- ]; do envs+=("$1"); shift; done
   shift
   if [ ${#RUN[@]} -eq 0 ]; then env "${envs[@]}" "$@"
-  else local e qe=(); for e in "${envs[@]}"; do qe+=(-E "$e"); done; "${RUN[@]}" "${qe[@]}" "$@"; fi
+  else
+    # LD_* must reach the guest only (-E); the rest go through qemu's own
+    # environment, which it passes on (-E splits a value at commas)
+    local e qe=() he=()
+    for e in "${envs[@]}"; do case $e in LD_*) qe+=(-E "$e") ;; *) he+=("$e") ;; esac; done
+    env "${he[@]}" "${RUN[@]}" "${qe[@]}" "$@"
+  fi
 }
 
 # r LABEL ENV... -- PROG ARGS: run, print the output indented, the exit status, and
@@ -133,13 +139,7 @@ r() {
   while [ "$1" != -- ]; do envs+=("$1"); shift; done
   shift
   local out st
-  if [ ${#RUN[@]} -eq 0 ]; then
-    out=$(cd "$W" && env "${envs[@]}" "$@" 2>&1); st=$?
-  else
-    local e qe=()
-    for e in "${envs[@]}"; do qe+=(-E "$e"); done
-    out=$(cd "$W" && "${RUN[@]}" "${qe[@]}" "$@" 2>&1); st=$?
-  fi
+  out=$(cd "$W" && xrun "${envs[@]}" -- "$@" 2>&1); st=$?
   printf '%s\n' "$out" | sed 's/^/    /'
   local rep warn
   rep=$(printf '%s\n' "$out" | grep -c ': odr-violation-at-load: [^0-9]')
