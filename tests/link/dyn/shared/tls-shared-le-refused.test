@@ -10,7 +10,7 @@
 #@ arch: aarch64
 
 cc -O1 -fPIC -ftls-model=local-exec exp.c -o exp.o
-cc -O1 -fPIC -ftls-model=local-exec local.c -o local.o
+cc -O1 -fPIC -fno-section-anchors -ftls-model=local-exec local.c -o local.o
 cc -O1 -fPIC -ftls-model=local-exec imp.c -o imp.o
 cc -O1 -fPIC other.c -o other.o
 shlib gcc other.o -Wl,-soname,libother.so -o libother.so
