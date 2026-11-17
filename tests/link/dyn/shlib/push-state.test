@@ -11,13 +11,13 @@
 # `.dynsym`, a PLT and a JUMP_SLOT record for `greet`, but no `.dynamic`
 # and no DT_NEEDED, and the program crashes at start (SIGSEGV, both
 # architectures); the line with `-lgreet` inside the pair crashes too.
-# The verifier passes those outputs (WP-112 finding V5: an output with
-# PT_INTERP and dynamic records but no PT_DYNAMIC is not reported), so
-# mold is skipped.
+# The verifier reports both (P-D4 "no PT_DYNAMIC, and the line's kind is
+# 'exec'...": plumb.md §12, WP-131 V5; before it, WP-112 finding V5, they
+# passed), so mold's links are an expected failure.
 #@ spec: cli.md "§3.3"
 #@ arch: aarch64 x86_64
 #@ fixture: greet
-#@ skip(mold): mold 2.37 writes a dynamic program without .dynamic after --push-state/--pop-state, which crashes (WP-112 V5)
+#@ xfail(mold): mold 2.37 writes a dynamic program without .dynamic after --push-state/--pop-state, which crashes (P-D4, WP-131 V5)
 
 cc -O1 -fno-pie main.c -o main.o
 ar rcs libgreet.a greet.o
