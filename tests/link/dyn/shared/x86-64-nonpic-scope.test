@@ -1,0 +1,95 @@
+# x64.md X-62, dyn.md D-117 "Scope on x86 (the M-1 ruling)" (WP-127):
+# on x86-64 D-117's address-level rule judges only the uses whose named
+# address is exact. An absolute word (`R_X86_64_64 .data+0`) and a
+# section-relative `PC32` in data (`.data - .`), each naming the exported
+# preemptible `g` through the section, are bound uses: refused,
+# `non-pic-in-shared-object`, naming `g` (lld and GNU ld link both and
+# bind `g` inside the library). The same address through a `PC32` in
+# code (`movl .data+0(%rip)`) is not judged: its addend includes the
+# distance to the end of the instruction, which the relocation does not
+# say; the library links. The two judged forms against a static datum
+# (`.data+4`) are not uses of `g`: that library links too and its words
+# read the static datum (8 8).
+#@ spec: x64.md "X-62"
+#@ arch: x86_64
+
+as -DABS lib.S -o abs.o
+as -DPCDATA lib.S -o pcdata.o
+as -DCODE lib.S -o code.o
+as -DSTATIC lib.S -o static.o
+cc -O1 -fPIE main.c -o main.o
+link(mortar) gcc -shared abs.o -o libabs.so
+  exit: fail
+  diag: abs.o:(.data.rel+0x0): relocation R_X86_64_64 against symbol `g' which may bind externally can not be used when making a shared object; recompile with -fPIC
+  diag: >>> the relocation names .data+0x0, inside the exported preemptible definition `g' of this object
+link(mortar) gcc -shared pcdata.o -o libpcdata.so
+  exit: fail
+  diag: pcdata.o:(.data.rel+0x0): relocation R_X86_64_PC32 against symbol `g' which may bind externally can not be used when making a shared object; recompile with -fPIC
+link gcc -shared code.o -o libcode.so
+link gcc -shared static.o -o libstatic.so
+host gcc -pie main.o -L. -lstatic -o prog
+run prog
+  stdout: 8 8
+
+#--- lib.S
+	.data
+	.globl	g
+	.type	g,@object
+	.size	g,4
+g:	.long	7
+	.type	s,@object
+	.size	s,4
+s:	.long	8
+	.section .data.rel,"aw"
+	.globl	words
+words:
+#ifdef ABS
+	.quad	.data
+#endif
+#ifdef PCDATA
+	.long	.data - .
+#endif
+#ifdef STATIC
+	.quad	.data + 4
+	.long	.data + 4 - .
+#endif
+	.text
+#ifdef CODE
+	.globl	get
+	.type	get,@function
+get:
+	.cfi_startproc
+	movl	.data(%rip), %eax
+	ret
+	.cfi_endproc
+#endif
+#ifdef STATIC
+	.globl	read_abs
+	.type	read_abs,@function
+read_abs:
+	.cfi_startproc
+	movq	words@GOTPCREL(%rip), %rax
+	movq	(%rax), %rax
+	movl	(%rax), %eax
+	ret
+	.cfi_endproc
+	.globl	read_pc
+	.type	read_pc,@function
+read_pc:
+	movq	words@GOTPCREL(%rip), %rax
+	leaq	8(%rax), %rcx
+	movslq	8(%rax), %rax
+	addq	%rcx, %rax
+	movl	(%rax), %eax
+	ret
+#endif
+	.section .note.GNU-stack,"",@progbits
+
+#--- main.c
+#include <stdio.h>
+int read_abs(void);
+int read_pc(void);
+int main(void) {
+  printf("%d %d\n", read_abs(), read_pc());
+  return 0;
+}

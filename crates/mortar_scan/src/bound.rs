@@ -15,22 +15,24 @@
 //! **boundary rule**.
 //!
 //! The facts of a file are built once, on the first record that needs
-//! them ([`crate::view::View::bound_facts`]), and only in a `Shared`
-//! AArch64 link: an executable never reaches this module (D-117: "Neither
-//! changes a link of an executable"). x86 (WP-127, WP-130) judges only
-//! the exact forms of D-117's x86 scope and is not here yet: its
-//! `Shared` output is refused before the scan.
+//! them ([`crate::view::View::bound_facts`]), and only in a `Shared` link
+//! of an architecture with a [`Scope`] (AArch64; x86-64 since WP-127): an
+//! executable never reaches this module (D-117: "Neither changes a link
+//! of an executable"). On x86-64 only the exact forms of D-117's x86
+//! scope are judged (`spec/x64.md` X-62, the M-1 ruling): no
+//! PC-relative field in code, no access at an address, and no analysis.
+//! i386 (WP-130) is refused before the scan.
 //!
 //! The analysis of D-117 ("Bound use through a register", WP-119's
-//! `crate::regflow`) joins here: [`analysis`] is its hook, and its
-//! findings are judged by the same [`judge`].
+//! `crate::regflow`) joins here on AArch64: [`analysis`] is its hook, and
+//! its findings are judged by the same [`judge`].
 
 use std::borrow::Cow;
 
 use mortar_core::{FileId, SymKind, SymbolId};
 use mortar_diag::{Diagnostic, Key, Place};
 use mortar_elf::consts::{SHF_EXECINSTR, SHT_REL, SHT_RELA, STT_SECTION};
-use mortar_elf::{Object, SectionIndex, SymbolIndex, SymbolSection};
+use mortar_elf::{Machine, Object, SectionIndex, SymbolIndex, SymbolSection};
 
 use crate::view::{Raw, ReadFail, View, contents, rec_table};
 
@@ -47,6 +49,75 @@ const ACCESS_TYPES: [u32; 6] = [278, 284, 285, 286, 299, 273];
 /// `LD64_GOT_LO12_NC`, `LD64_GOTPAGE_LO15` (309-313).
 const fn is_got_form(r_type: u32) -> bool {
     matches!(r_type, 300..=306 | 309..=313)
+}
+
+/// `R_X86_64_NONE` and the `SIZE` types (`SIZE32`, `SIZE64`): not uses
+/// (D-117 "A use").
+const X64_NOT_USES: [u32; 3] = [0, 32, 33];
+
+/// `spec/x64.md` X-62: the x86-64 uses whose named address is exact,
+/// judged wherever their place is: the absolute words `64`, `32`, `32S`,
+/// `16`, `8` and `GOTOFF64`.
+const X64_EXACT: [u32; 6] = [1, 10, 11, 12, 14, 25];
+
+/// X-62: the PC-relative fields `PC32`, `PC64`, `PC16`, `PC8`, judged
+/// only in a place without `SHF_EXECINSTR` (in data the addend carries no
+/// instruction tail).
+const X64_PC: [u32; 4] = [2, 24, 13, 15];
+
+/// X-62's self-GOT forms (D-117 (ii)): `GOT32`, `GOTPCREL`, `GOTPCRELX`,
+/// `REX_GOTPCRELX`, `GOT64`, `GOTPCREL64`, `GOTPLT64`.
+const X64_GOT_FORMS: [u32; 7] = [3, 9, 41, 42, 27, 28, 30];
+
+/// The architectures D-117's address-level rule runs on, each with its
+/// scope (D-117 "Scope on x86 (the M-1 ruling)").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Scope {
+    /// Every use is judged; the analysis runs (WP-119).
+    AArch64,
+    /// `spec/x64.md` X-62: only the exact forms; no access; no analysis.
+    X86_64,
+}
+
+impl Scope {
+    /// The scope of `machine`; `None` where a shared object is not linked
+    /// (i386, WP-130: refused before the scan).
+    pub const fn of(machine: Machine) -> Option<Self> {
+        match machine {
+            Machine::AArch64 => Some(Self::AArch64),
+            Machine::X86_64 => Some(Self::X86_64),
+            Machine::I386 => None,
+        }
+    }
+
+    /// Whether a relocation of `r_type` at a place whose section has
+    /// `SHF_EXECINSTR` (`exec`) is a use the rule judges (D-117 "A use",
+    /// with the x86 scope).
+    pub fn judged(self, r_type: u32, exec: bool) -> bool {
+        match self {
+            Self::AArch64 => !NONE_TYPES.contains(&r_type),
+            Self::X86_64 => {
+                !X64_NOT_USES.contains(&r_type)
+                    && (X64_EXACT.contains(&r_type) || (!exec && X64_PC.contains(&r_type)))
+            }
+        }
+    }
+
+    /// The boundary rule's (i), an access at the address: never on x86.
+    fn access(self, r_type: u32) -> bool {
+        match self {
+            Self::AArch64 => ACCESS_TYPES.contains(&r_type),
+            Self::X86_64 => false,
+        }
+    }
+
+    /// The boundary rule's (ii): a GOT form of the self-GOT test.
+    fn got_form(self, r_type: u32) -> bool {
+        match self {
+            Self::AArch64 => is_got_form(r_type),
+            Self::X86_64 => X64_GOT_FORMS.contains(&r_type),
+        }
+    }
 }
 
 /// One preemptible data definition of the file.
@@ -74,6 +145,8 @@ pub(crate) struct FileFacts {
     /// D-117 (ii): a relocation of a GOT form names one of the file's own
     /// preemptible data definitions by a non-local symbol.
     pub self_got: bool,
+    /// The architecture's scope.
+    scope: Scope,
     /// The analysis's verdict (WP-119, `crate::regflow`), run once per
     /// file with the facts: per bound use, the code section it is in and
     /// its keyed `non-pic-in-shared-object` error; or, when the analysis
@@ -103,6 +176,7 @@ impl FileFacts {
     /// The facts of object `file`, or `None` when it has no preemptible
     /// data definition (or is not an object).
     pub fn of(view: &View<'_, '_>, file: FileId) -> Option<Self> {
+        let scope = Scope::of(view.arch.facts().machine)?;
         let prep = view.prep(file)?;
         let obj = prep.obj?;
         let table = prep.table()?;
@@ -150,7 +224,11 @@ impl FileFacts {
             r_sym >= first
                 && map.get((r_sym - first) as usize).is_some_and(|k| keys.binary_search(k).is_ok())
         };
-        let analysed = analyse(view, file, &obj, &defs);
+        // X-62: no analysis on x86 (no instruction decoder).
+        let analysed = match scope {
+            Scope::AArch64 => analyse(view, file, &obj, &defs),
+            Scope::X86_64 => Ok(Vec::new()),
+        };
         let mut buf = Vec::new();
         let mut self_got = false;
         for s in obj.sections() {
@@ -162,12 +240,13 @@ impl FileFacts {
                 continue;
             };
             let n = u32::try_from(recs.len()).unwrap_or(u32::MAX);
-            if (0..n).filter_map(|i| recs.raw(i)).any(|r| is_got_form(r.r_type) && own(r.r_sym)) {
+            if (0..n).filter_map(|i| recs.raw(i)).any(|r| scope.got_form(r.r_type) && own(r.r_sym))
+            {
                 self_got = true;
                 break;
             }
         }
-        Some(Self { defs, ends, self_got, analysed })
+        Some(Self { defs, ends, self_got, scope, analysed })
     }
 
     /// Whether section `section` of the file holds a preemptible data
@@ -198,8 +277,9 @@ pub(crate) fn judge(f: &FileFacts, section: u32, addr: u64, access: bool) -> Opt
 /// The address-level rule for one relocation of the file at a place in
 /// an `SHF_ALLOC` section named `place` (D-117 "A use"): its symbol is
 /// local to the file and defined in a section that holds a preemptible
-/// data definition, its type is not `NONE`, its place not `.eh_frame` or
-/// `.gcc_except_table*`. `addend` is the record's `A`.
+/// data definition, its type is one the architecture's [`Scope`] judges
+/// at that place (`exec`: the place has `SHF_EXECINSTR`), its place not
+/// `.eh_frame` or `.gcc_except_table*`. `addend` is the record's `A`.
 pub(crate) fn rule(
     view: &View<'_, '_>,
     f: &FileFacts,
@@ -207,8 +287,9 @@ pub(crate) fn rule(
     raw: &Raw,
     addend: i64,
     place: &[u8],
+    exec: bool,
 ) -> Option<Bound> {
-    if NONE_TYPES.contains(&raw.r_type)
+    if !f.scope.judged(raw.r_type, exec)
         || place == b".eh_frame"
         || place.starts_with(b".gcc_except_table")
     {
@@ -222,7 +303,7 @@ pub(crate) fn rule(
         return None;
     }
     let addr = sym.st_value.wrapping_add(addend as u64);
-    judge(f, t.0, addr, ACCESS_TYPES.contains(&raw.r_type))
+    judge(f, t.0, addr, f.scope.access(raw.r_type))
 }
 
 /// D-117's analysis (WP-119's [`crate::regflow::analyse`]) of object
@@ -295,7 +376,8 @@ fn analyse<'s>(
 /// WP-123): the keyed errors of the bound uses in code section `section`
 /// of `file`, whose relocation records the walk is reading. Called once
 /// per code section (on the walk of its first block), only in a `Shared`
-/// AArch64 link and only for a file whose [`FileFacts`] exist (D-117 item
+/// link and only for a file whose [`FileFacts`] exist (on x86-64 the
+/// analysis does not run and the list is empty) (D-117 item
 /// 1's pre-filter is then the analysis's own). The analysis ran once for
 /// the file when its facts were made; a bound use is refused,
 /// `non-pic-in-shared-object`, at the instruction, with the note naming

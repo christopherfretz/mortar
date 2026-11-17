@@ -72,7 +72,8 @@ pub(crate) struct View<'a, 's> {
     pub weak_refused: IdSet<SymbolId>,
     /// `spec/dyn.md` D-117's address-level rule (`crate::bound`): per
     /// file, its facts, built on first use; empty (no cost) unless the
-    /// output is a `Shared` AArch64 object.
+    /// output is a `Shared` object of an architecture with a scope
+    /// (`crate::bound::Scope`: AArch64, x86-64).
     bound: Vec<OnceLock<Option<crate::bound::FileFacts>>>,
 }
 
@@ -112,7 +113,7 @@ impl<'a, 's> View<'a, 's> {
             weak_dyn: IdSet::new(),
             weak_refused: IdSet::new(),
             bound: if opts.output == OutputKind::Shared
-                && arch.facts().machine == mortar_elf::Machine::AArch64
+                && crate::bound::Scope::of(arch.facts().machine).is_some()
             {
                 (0..files).map(|_| OnceLock::new()).collect()
             } else {
@@ -122,8 +123,8 @@ impl<'a, 's> View<'a, 's> {
     }
 
     /// D-117's facts of object `file` (`crate::bound`): `None` outside a
-    /// `Shared` AArch64 link and for a file without a preemptible data
-    /// definition.
+    /// `Shared` link with a scope and for a file without a preemptible
+    /// data definition.
     pub fn bound_facts(&self, file: FileId) -> Option<&crate::bound::FileFacts> {
         let cell = self.bound.get(file.0 as usize)?;
         cell.get_or_init(|| crate::bound::FileFacts::of(self, file)).as_ref()

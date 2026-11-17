@@ -129,14 +129,22 @@ pub fn weak_use(r_type: u32, place: &[u8], offset: u64, writable: bool) -> Optio
 
 /// X-57, D-25: a `PC32` whose field follows a branch opcode
 /// ([`on_branch`]) against a `weakdyn` key is a branch, through a PLT
-/// entry. Only a dynamic `exec` or `pie` has `weakdyn` keys.
+/// entry, in a dynamic `exec` or `pie`. Not in `shared` (X-59): a `Pc`
+/// against a non-`local` key is `E` whatever the opcode, `call`/`jmp`
+/// included (`non-pic-in-shared-object`, `class_outcome`'s cell).
 ///
 /// The other dynamic cells are not x86-64's. D-43 (copy in `pie`) and
 /// D-44 (`canonical-plt-in-pie`) are `class_outcome`'s. D-47
 /// (`text-relocation` for a read-only `TX` cell of an output with
 /// `.dynamic`) is the scan driver's (`mortar_scan` `dynamic_error`).
-fn weak_branch(at: &RelocAt<'_>, kind: TargetKind, o: ClassOutcome) -> ClassOutcome {
+fn weak_branch(
+    output: OutputKind,
+    at: &RelocAt<'_>,
+    kind: TargetKind,
+    o: ClassOutcome,
+) -> ClassOutcome {
     if kind == TargetKind::WeakDyn
+        && output.is_exec()
         && at.howto.class == DemandClass::Pc
         && at.r_type == PC32
         && on_branch(at.site.bytes, at.r_offset)
@@ -176,7 +184,7 @@ pub fn scan(m2: bool, cx: &ScanCx<'_>, at: &RelocAt<'_>, out: &mut DemandSink<'_
     let data = matches!(h.field, Field::Data { .. });
     let mut outcome = class_outcome(h.class, data, cx.output, kind, cx.place, sym.tls);
     if m2 && cx.place.alloc {
-        outcome = weak_branch(at, kind, outcome);
+        outcome = weak_branch(cx.output, at, kind, outcome);
     }
     match outcome {
         ClassOutcome::Demand(d) => {

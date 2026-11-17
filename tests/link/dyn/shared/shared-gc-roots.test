@@ -7,7 +7,6 @@
 # WP-128 (refused in a shared object).
 #@ spec: dyn.md "D-124"
 #@ arch: aarch64 x86_64
-#@ xfail(mortar,x86_64): M4: WP-127 (x86-64 shared objects; dyn.md D-100)
 #@ xfail(lld): dyn.md D-124 item 4: lld leaves `__stop_gcset` undefined in the library, and a host link refuses it (W23's kin)
 
 cc -O1 -fPIC -ffunction-sections -fdata-sections lib.c -o lib.o

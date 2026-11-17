@@ -206,10 +206,6 @@ pub const OUT_OF_M2: &[(&str, &str)] = &[
     // The `-shared` lines (LT-7) since WP-123: what "Where the refusal
     // stays" of record WP-110 §D keeps refused in a shared object.
     (
-        "unsupported feature: shared object output on x86-64",
-        "x86-64 shared objects are WP-127's (spec/dyn.md D-100)",
-    ),
-    (
         "unsupported feature: ELFCLASS32 shared object",
         "i386 shared objects are WP-130's (spec/dyn.md D-130)",
     ),
