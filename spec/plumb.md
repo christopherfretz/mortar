@@ -5126,9 +5126,14 @@ and what turns P-D9's equality into a check of D-112.
   on AArch64 the analysis, D-117 items 1-9 (an AArch64 def-use decoder
   of the verifier's own). Each part is checked, off the gate, against
   the oracle `tests/shared-design/exp3/s1d.py` on the record's corpora
-  (same refused objects, same definitions). *Not checked:* non-alloc
-  places (debug sections hold link-time addresses by design); the
-  residual hole D-117 names (asserted not caught, by a test).
+  (same refused objects, same definitions). *Not checked in view B:*
+  non-alloc places (debug sections hold link-time addresses by design:
+  no interposer moves them). View A judges them as §5.8 does for any
+  dynamic output: S is the library's own definition for a key it
+  defines (§4.4 step 1), and for an import §5.8's "A target only a
+  shared library defines", which in a `Shared` output is 0 (there is no
+  copy and no canonical PLT; WP-121). *Not checked:* the residual hole
+  D-117 names (asserted not caught, by a test).
 - **P-D18 (IFUNC; request P-R3).** Every use of one IFUNC key, in every
   place and both views, yields one address: the IPLT entry for a bound
   key, the interposer's or the resolver's record for a preemptible one
@@ -5190,7 +5195,14 @@ and what turns P-D9's equality into a check of D-112.
   compiler emits it); i386 `R_386_RELATIVE` (8), `IRELATIVE` (42, never
   in i386 `Shared`: D-130), `TLS_DTPMOD32` (35), `TLS_TPOFF` (14),
   `TLS_DESC` (41). Every other kind with `r_sym` 0 is reported (P-D9's
-  `RELATIVE`/`IRELATIVE` symbol-0 rule stays).
+  `RELATIVE`/`IRELATIVE` symbol-0 rule stays). From a reference, a
+  record naming a `PROTECTED` key, or naming any bound key of a library
+  that the line makes `-Bsymbolic` and that carries `DT_SYMBOLIC` or
+  `DF_SYMBOLIC`, is accepted: glibc binds both to the object's own
+  definition, and view B judges the value (GNU ld's form, on both
+  targets, and lld's x86-64 GD pair under `-Bsymbolic`; WP-121). A
+  `DTPOFF` record with `r_sym` 0 is accepted from a reference (P-D26).
+  A record whose `r_sym` is past `.dynsym` is reported by name.
 - **P-D26 (TLS in a shared object; request P-R11; replaces P-D12's
   executable forms for `Shared`; D-119).** Per model and binding, the
   records of a live TLS use are:
@@ -5211,7 +5223,9 @@ and what turns P-D9's equality into a check of D-112.
   - LE: none (refused, P-D20).
 
   No relaxation: the number of `__tls_get_addr` calls equals the
-  input's (D-119). `DF_STATIC_TLS` iff some IE slot exists. The values:
+  input's (D-119). `DF_STATIC_TLS` iff some IE slot exists (GNU ld on
+  AArch64 never writes it: accepted from that reference, dyn.md's
+  reference table). The values:
   in view B a preemptible key's module and offset are the interposer's,
   a bound key's the library's (P-D17). P-D12's D-16 direction (W14)
   applies unchanged.

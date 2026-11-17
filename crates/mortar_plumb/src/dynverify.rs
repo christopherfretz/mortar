@@ -142,6 +142,9 @@ fn judge(
         return report;
     };
     let mut line = Line::parse(&args, ctx.files);
+    // P-D16: a `-shared` line and a shared object's headers (§12.5).
+    let shared = crate::shared::accept(image, dout, &mut line, &args);
+    report.findings.extend(shared.findings.iter().cloned());
     // Stage 4 (§13) runs before stage 3's early returns.
     let mut meta_cov = crate::report::MetaCoverage::default();
     // The options of §3.2a's table: for a mortar map, from its words by
@@ -167,7 +170,7 @@ fn judge(
     // modelled: one P-D1 line, nothing judged by them (§12.1).
     if image.header.e_machine == mortar_elf::consts::EM_386 {
         outside = vec!["i386 (EM_386: REL records and DT_REL; stage 3 models the RELA targets AArch64 and x86-64, dyn.md D-1)".into()];
-    } else if dout.has(DT_VERDEF) {
+    } else if dout.has(DT_VERDEF) && line.kind != Some(OutputKind::Shared) {
         outside.push("the output defines versions (.gnu.version_d; dyn.md D-27, M4)".into());
     }
     if !outside.is_empty() {
@@ -229,6 +232,26 @@ fn judge(
         report.sort();
         return report;
     }
+    // §12.5: a `Shared` output's export set, bindings and imports,
+    // recomputed from the inputs and the line.
+    let sets = shared.line.as_ref().map(|sl| {
+        crate::shared::compute(&objs, image, &model.ref_dynamic, sl, ctx.files, map.format)
+    });
+    if let Some(s) = &sets {
+        for p in &s.problems {
+            report.findings.push(Finding::new(Rule::Dyn(2), p.clone()));
+        }
+        for o in &s.outside {
+            report.findings.push(Finding::new(Rule::Dyn(1), format!("{OUTSIDE}{o}")));
+        }
+        if !s.problems.is_empty() || !s.outside.is_empty() {
+            report.sort();
+            return report;
+        }
+    }
+    if let (Some(sl), Some(d)) = (&shared.line, &map.dynamic) {
+        report.findings.extend(crate::shared::map_facts(sl, d));
+    }
     // The loader's order: the image's own DT_NEEDED.
     let mut needed_idx = Vec::new();
     for n in &dout.needed {
@@ -247,14 +270,32 @@ fn judge(
     };
     let kind = line.kind.unwrap_or(OutputKind::Exec);
     let mut checked = crate::dyncheck::check(image, dout, &line, &model, &ld, &objs, map);
-    if map.format != crate::Format::Mortar && line.symbolic == Some("-Bsymbolic") {
+    if let (Some(sl), Some(s)) = (&shared.line, &sets) {
+        // §12.5: P-D16's changes to the executable rules, then P-D19-P-D26.
+        crate::shared::filter_dyncheck(&mut checked, image, dout);
+        report
+            .findings
+            .extend(crate::shared::static_checks(image, dout, &objs, sl, s, &args, map.format));
+    } else if map.format != crate::Format::Mortar && line.symbolic == Some("-Bsymbolic") {
+        // A44 is an executable's: a shared object's DF_SYMBOLIC is P-D22's.
         symbolic_flag(&mut checked);
     }
     report.findings.extend(checked);
     // View 1: bias 0.
-    let p1 = Params::default();
+    // §12.5 view A: a preemptible IFUNC key is what its resolver returns,
+    // through the record that names it (P-D18).
+    let ifr = sets.as_ref().map(crate::shared::ifunc_results).unwrap_or_default();
+    let p1 = Params { interpose: ifr.clone(), ..Params::default() };
     let v1 = loader::apply(image, dout, &ld, &p1, true);
-    report.findings.extend(v1.findings.iter().cloned());
+    report.findings.extend(
+        v1.findings
+            .iter()
+            .filter(|f| {
+                // P-D20 names a `Shared` output's text relocation.
+                sets.is_none() || !f.message.contains("a text relocation (D-47, W6)")
+            })
+            .cloned(),
+    );
     let Ok(img1) = Image::read(&v1.bytes) else {
         report.sort();
         return report;
@@ -269,6 +310,8 @@ fn judge(
     let dso_words = reloc::dsoword::build(image, dout, &model, &ld.order, &plt);
     let mut engine = reloc::Engine::new(&img1, &objs, map.format);
     dyn_engine(&mut engine, &v1, &plt, &depths);
+    engine.shared = sets.is_some();
+    crate::shared::tell_engine(&mut engine, &ifr, |_| true, v1.tls.0);
     engine.dso_words = Some(dso_words.clone());
     run_engine(&mut engine, image, map, None);
     // D-45: an IFUNC's GOT slot holds its IPLT entry, wherever the linker
@@ -284,7 +327,12 @@ fn judge(
         engine.got_demands.insert(g.sym.st_value);
     }
     let abs = std::mem::take(&mut engine.abs_words);
-    if matches!(kind, OutputKind::StaticPie | OutputKind::Pie) {
+    if sets.is_some()
+        && let Some(f) = crate::shared::relaxed(&engine.cov)
+    {
+        report.findings.push(f);
+    }
+    if matches!(kind, OutputKind::StaticPie | OutputKind::Pie | OutputKind::Shared) {
         // §12.4 (a Pie's too since WP-088): no RELATIVE record on a word
         // that holds no address of the executable (what view 2 cannot see
         // when the word is not an
@@ -315,17 +363,20 @@ fn judge(
     let chosen = std::mem::take(&mut engine.ifunc_chosen);
     // A static-pie's exports bind nothing (§12.4, P-D14 judges them): W13
     // is a library's binding, so only an executable that loads one owes it.
-    if kind != OutputKind::StaticPie {
+    if !matches!(kind, OutputKind::StaticPie | OutputKind::Shared) {
         report.findings.extend(exported_ifuncs(image, dout, &model, &chosen, map.format));
     }
-    let view1_findings = std::mem::take(&mut engine.findings);
+    let mut view1_findings = std::mem::take(&mut engine.findings);
+    if let Some(s) = &sets {
+        crate::shared::filter_view1(&mut view1_findings, s, &ifr);
+    }
     report.coverage = std::mem::take(&mut engine.cov);
     report.coverage.meta = meta_cov;
     drop(engine);
     // View 2: a second bias (Pie): every word that holds an address of the
     // executable moves with it, every other word does not.
     if kind == OutputKind::Pie || image.header.e_type == mortar_elf::consts::ET_DYN {
-        let p2 = Params { bias: BIAS2, ..Params::default() };
+        let p2 = Params { bias: BIAS2, interpose: ifr.clone(), ..Params::default() };
         let v2 = loader::apply(image, dout, &ld, &p2, false);
         let mut seen = BTreeSet::new();
         for &(at, w, v, internal) in &abs {
@@ -369,8 +420,54 @@ fn judge(
             fresh.insert(s.name.clone(), FRESH + n * 0x1000);
         }
     }
-    if !fresh.is_empty() {
-        let p3 = Params { bias: 0, fresh: fresh.clone() };
+    if let Some(s) = &sets {
+        // §12.5: view B, the interposer, in place of view 3.
+        let symbolic = dout.has(crate::shared::DT_SYMBOLIC)
+            || dout
+                .get(crate::dynout::DT_FLAGS)
+                .is_some_and(|f| f & crate::shared::DF_SYMBOLIC != 0);
+        let pb = Params { interpose: crate::shared::interposer(s), symbolic, ..Params::default() };
+        let vb = loader::apply(image, dout, &ld, &pb, false);
+        if let Ok(imgb) = Image::read(&vb.bytes) {
+            let names = crate::shared::view_b_names(s);
+            let mut eb = reloc::Engine::new(&imgb, &objs, map.format);
+            dyn_engine(&mut eb, &vb, &plt, &depths);
+            eb.shared = true;
+            // The expected `S`: the interposer's for a preemptible key or
+            // an import; a bound key's module and offset are the
+            // library's own, whatever its records make the loader do.
+            eb.dyn_tls.retain(|k| !s.bound(k));
+            eb.dyn_tls_mod.retain(|k, _| !s.bound(k));
+            crate::shared::tell_engine(
+                &mut eb,
+                &pb.interpose,
+                |k| s.preemptible(k) || s.imports.contains_key(k),
+                vb.tls.0,
+            );
+            eb.dso_words = Some(dso_words.clone());
+            run_engine(&mut eb, image, map, Some(&names));
+            for f in eb.findings.drain(..) {
+                let Some(k) = f.symbol.clone().filter(|k| names.contains(k)) else { continue };
+                let who = if s.preemptible(&k) || s.imports.contains_key(&k) {
+                    "the interposer's"
+                } else {
+                    "the library's own (bound)"
+                };
+                let mut g = Finding::new(
+                    Rule::Dyn(17),
+                    format!("view B (an interposer defines '{k}'; expected: {who}): {}", f.message),
+                );
+                g.addr = f.addr;
+                g.site = f.site;
+                g.reloc = f.reloc;
+                g.symbol = Some(k);
+                g.expected = f.expected;
+                g.found = f.found;
+                report.findings.push(g);
+            }
+        }
+    } else if !fresh.is_empty() {
+        let p3 = Params { bias: 0, fresh: fresh.clone(), ..Params::default() };
         let v3 = loader::apply(image, dout, &ld, &p3, false);
         if let Ok(img3) = Image::read(&v3.bytes) {
             let names: HashSet<String> = fresh.keys().cloned().collect();

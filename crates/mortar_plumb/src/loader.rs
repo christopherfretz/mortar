@@ -62,6 +62,27 @@ pub struct Params {
     pub bias: u64,
     /// `WeakDyn` keys defined at fresh addresses (view 3).
     pub fresh: HashMap<String, u64>,
+    /// §12.5 view B: the interposer, first in lookup order, and its
+    /// definitions (empty: no interposer).
+    pub interpose: HashMap<String, Interposed>,
+    /// The output's `DT_SYMBOLIC`/`DF_SYMBOLIC`: glibc looks a record's
+    /// symbol up in the object itself first (§12.5, W31).
+    pub symbolic: bool,
+}
+
+/// The library index the views give the interposer of §12.5's view B:
+/// its definitions are at `lib_base(INTERPOSER)` and up, its TLS block is
+/// module `2 + INTERPOSER`.
+pub const INTERPOSER: usize = 0xff;
+
+/// A definition of the interposer (§12.5 view B).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Interposed {
+    /// The run-time address; for a TLS key, `lib_base(INTERPOSER)` plus
+    /// its offset in the interposer's block.
+    pub addr: u64,
+    pub size: u64,
+    pub tls: bool,
 }
 
 /// What a symbol of `.dynsym` comes to at load.
@@ -104,6 +125,17 @@ impl Loader<'_> {
     /// (`ELF_RTYPE_CLASS_PLT`).
     pub fn bind(&self, out: &DynOut, j: usize, plt: bool, p: &Params) -> Bound {
         let Some(s) = out.syms.get(j) else { return Bound::Missing };
+        // §12.5 view B: the interposer comes first in the lookup, unless
+        // the object binds its own definitions (`DF_SYMBOLIC`, a protected
+        // or local entry: glibc returns the object's own).
+        if let Some(x) = p.interpose.get(&s.name)
+            && !(s.defined()
+                && (p.symbolic
+                    || s.visibility() == mortar_elf::consts::STV_PROTECTED
+                    || s.binding() == mortar_elf::consts::STB_LOCAL))
+        {
+            return Bound::Lib { i: INTERPOSER, addr: x.addr, size: x.size, tls: x.tls };
+        }
         if s.defined() {
             let v = if s.st_shndx == mortar_elf::consts::SHN_ABS {
                 s.st_value
@@ -222,6 +254,13 @@ pub fn apply(
             // `stdout@GLIBC_2.2.5` for a copied `stdout`).
             if s.sym_type() != mortar_elf::consts::STT_TLS {
                 v.dynbind.entry(s.name.clone()).or_insert_with(|| ld.bind(out, j, false, p).addr());
+            } else if let Bound::Lib { tls: true, i, addr, .. } = ld.bind(out, j, false, p) {
+                // §12.5 view B: a library's preemptible TLS export is the
+                // interposer's.
+                v.dyn_tls.insert(s.name.clone());
+                v.dyn_tls_mod.insert(s.name.clone(), 2 + i as u64);
+                v.dynbind
+                    .insert(s.name.clone(), tls_fake(tls_start, i, addr.wrapping_sub(lib_base(i))));
             }
             continue;
         }
