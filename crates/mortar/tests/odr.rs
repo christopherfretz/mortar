@@ -172,7 +172,7 @@ fn stats_line() {
     assert!(
         last.contains(
             ", container bytes read 0, shared-object tables 0 (0 rows), archive members 0 (0 \
-             units, 0 bytes, 0 rows compared), record findings 0;"
+             units, 0 bytes, 0 rows compared), layout details read 0, record findings 0;"
         ),
         "{e}"
     );

@@ -13,7 +13,8 @@ use std::fmt::Write as _;
 use std::process::Command;
 use std::time::Duration;
 
-use mortar_meta::write::{Declaration, Definition, RawBlock, Summary, Type, section};
+use mortar_meta::details::item;
+use mortar_meta::write::{Declaration, Definition, Detail, RawBlock, Summary, Type, section};
 use mortar_meta::{UnitBuilder, class, flags, fnv1a64, producer};
 use mortar_testutil::{Outcome, Scratch, run_with, tool, tools_required};
 
@@ -290,6 +291,100 @@ fn kind3_within_and_across_schemes() {
     assert!(e.contains("a.o: a class, polymorphic; c.o: a class"), "{e}");
     assert!(e.contains("compared on size, alignment and kind only"), "{e}");
     assert!(e.contains("type groups compared across schemes 2,"), "{e}");
+}
+
+fn member(name: &str, ty: &str, bits: u64) -> Detail {
+    Detail {
+        name: name.as_bytes().to_vec(),
+        ty: ty.as_bytes().to_vec(),
+        value: bits,
+        width: 0,
+        flags: item::MEMBER,
+    }
+}
+
+/// A kind 3 row with a kind 4 entry of `items`.
+fn detailed(name: &str, layout: u64, size: u32, items: Vec<Detail>) -> Type {
+    Type { items: Some(items), ..ty(name, layout, size, 4, 0) }
+}
+
+// spec: odr.md O-19, §9.1 (WP-145): with both rows' details the note is
+// the first difference; with one side's only, today's note; equal
+// entries say so and the finding stays (kind 3 decides); a malformed
+// entry is meta-malformed once, on the finding that reads it, and an
+// entry no finding needs is never read (MT-42).
+#[test]
+fn kind4_first_difference() {
+    let Some(cx) = Cx::new("odr-k4") else { return };
+    let ab = vec![member("a", "i", 0), member("b", "i", 32)];
+    let aeb = vec![member("a", "i", 0), member("extra", "i", 32), member("b", "i", 64)];
+    let mut a = cxx("a.cc");
+    a.types.push(detailed("1S", 0x11, 8, ab.clone()));
+    a.types.push(detailed("1T", 0x21, 8, ab.clone()));
+    a.types.push(detailed("1U", 0x31, 8, ab.clone()));
+    a.types.push(detailed("1V", 0x41, 8, ab.clone()));
+    let mut b = cxx("b.cc");
+    b.types.push(detailed("1S", 0x12, 12, aeb.clone()));
+    // Only b's row has details: today's note.
+    b.types.push(ty("1T", 0x22, 12, 4, 0));
+    // Equal entries, different hashes.
+    b.types.push(detailed("1U", 0x32, 8, ab.clone()));
+    b.types.push(detailed("1V", 0x41, 8, aeb.clone()));
+    cx.object("a.o", &[], Some(&bytes(&[a])));
+    cx.object("b.o", &[], Some(&bytes(&[b])));
+    let (ok, e) = cx.strict(&["a.o", "b.o"], &[]);
+    assert!(!ok, "{e}");
+    assert!(e.contains("error: type 1S violates the one-definition rule"), "{e}");
+    assert!(e.contains(">>> member 'extra' (i) at offset 4 in b.o only\n"), "{e}");
+    assert!(!e.contains("a.o: size 8, alignment 4; b.o: size 12, alignment 4\n>>> a.o: source"));
+    assert!(e.contains("error: type 1T violates"), "{e}");
+    assert!(e.contains(">>> a.o: size 8, alignment 4; b.o: size 12, alignment 4\n"), "{e}");
+    assert!(e.contains("error: type 1U violates"), "{e}");
+    assert!(
+        e.contains(
+            ">>> the layout details are equal: the difference is in something kind 4 does not \
+             describe\n"
+        ),
+        "{e}"
+    );
+    // 1V's layouts are equal: kind 4 is never read for it.
+    assert!(!e.contains("type 1V"), "{e}");
+    assert_eq!(stat(&e, "layout details read "), 4, "{e}");
+    assert_eq!(count(&e, "error: type "), 3, "{e}");
+
+    // A malformed entry: meta-malformed once (two findings read it), the
+    // note today's; an entry no finding reads is never reported.
+    let mut c = cxx("c.cc");
+    let mut bad = detailed("1S", 0x13, 16, ab.clone());
+    bad.items = None;
+    bad.details = 4;
+    c.types.push(bad);
+    let mut bad_t = ty("1T", 0x23, 16, 4, 0);
+    bad_t.details = 4;
+    c.types.push(bad_t);
+    let mut quiet = ty("1Q", 0x1, 4, 4, 0);
+    quiet.details = 12;
+    c.types.push(quiet);
+    c.details = Some(vec![0; 8]);
+    cx.object("c.o", &[], Some(&bytes(&[c])));
+    let (ok, e) = cx.strict(&["a.o", "c.o"], &[]);
+    assert!(!ok, "{e}");
+    assert_eq!(
+        count(&e, "malformed Mason metadata: unit at offset 0: kind 4 block at offset "),
+        1,
+        "{e}"
+    );
+    assert!(
+        e.contains(": entry at offset 4: not a multiple of 8 (odr.md O-19, meta.md MT-14)"),
+        "{e}"
+    );
+    assert!(e.contains(">>> a.o: size 8, alignment 4; c.o: size 16, alignment 4\n"), "{e}");
+    assert!(!e.contains("offset 12"), "{e}");
+    // Default mode: nothing read, nothing reported.
+    let out = cx.link(&["a.o", "c.o"], &["--odr-stats"], "out-d");
+    assert!(out.success(), "{}", out.stderr_text());
+    assert_eq!(stat(&out.stderr_text(), "layout details read "), 0);
+    assert!(!out.stderr_text().contains("Mason metadata"), "{}", out.stderr_text());
 }
 
 // spec: odr.md O-35, O-33 (kind 5: two definitions never compared; C

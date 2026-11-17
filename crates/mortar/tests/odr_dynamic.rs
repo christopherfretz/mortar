@@ -83,6 +83,7 @@ impl Cx {
             file: b"h.h".to_vec(),
             line: 5,
             details: NO_DETAILS,
+            items: None,
         });
         std::fs::write(cx.scratch.join("m.bin"), section(&[u.finish().unwrap()], 0)).unwrap();
         cx.scratch.write("main.c", MAIN);

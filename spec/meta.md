@@ -274,7 +274,11 @@ kind twice, or out of order), `row_count × row_size` runs past its block,
 the string table runs past the unit, overlaps the header or (when not
 empty) does not start with the empty string (MT-12), a string offset is
 past the table or a string has no NUL, or rows that must be sorted are
-not. A malformed unit is skipped whole with the warning `meta-malformed`
+not. Kind 4's entries are the one exception to validating a unit when
+it is opened: an entry is validated when a finding reads it (`odr.md`
+O-19, MT-42), and a malformed entry is reported then (`meta-malformed`,
+`odr.md` §9.1) without taking the unit's rows out of the comparison. A
+malformed unit is skipped whole with the warning `meta-malformed`
 naming the file and the unit's offset; the units after it are read when
 its `unit_size` still says where the next one starts. After a wrong
 magic, a header cut short by the section's end, or a `unit_size` that is
