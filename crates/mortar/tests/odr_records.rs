@@ -381,10 +381,10 @@ fn kind4_first_difference() {
     assert!(e.contains(">>> a.o: size 8, alignment 4; c.o: size 16, alignment 4\n"), "{e}");
     assert!(!e.contains("offset 12"), "{e}");
     // Default mode: nothing read, nothing reported.
-    let o = cx.link(&["a.o", "c.o"], &["--odr-stats"], "out-d");
-    assert!(o.success(), "{}", o.stderr_text());
-    assert_eq!(stat(&o.stderr_text(), "layout details read "), 0);
-    assert!(!o.stderr_text().contains("Mason metadata"), "{}", o.stderr_text());
+    let out = cx.link(&["a.o", "c.o"], &["--odr-stats"], "out-d");
+    assert!(out.success(), "{}", out.stderr_text());
+    assert_eq!(stat(&out.stderr_text(), "layout details read "), 0);
+    assert!(!out.stderr_text().contains("Mason metadata"), "{}", out.stderr_text());
 }
 
 // spec: odr.md O-35, O-33 (kind 5: two definitions never compared; C
