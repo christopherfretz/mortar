@@ -1,0 +1,98 @@
+# PENDING (WP-200; a verifier package): L3 finds `after: M12 libhx.a(hx.o) is in the link and no root or live reference reaches it (resolve §4.1)` on mortar's output, on every architecture: the verifier's §4.1 still counts a dropped COMDAT copy's definition as first(K), which resolve.md §4.1's iterations and §6.2 no longer do (WP-200: a demoted mention is an undefined mention from the moment its copy is dropped). mortar's output was shown correct by its bytes and its run (spec/landed/resolve/WP-200.md §4). Rename this file to .test when the verifier follows §4.1's iterations.
+# A demoted STB_GLOBAL mention of a key only an archive member defines
+# (WP-200; resolve.md §6.2): wb's copy of g is dropped, so its hx is
+# an undefined mention with its binding, a strong one, which extracts
+# libhx.a's member as any strong undefined mention (§4.1), before or
+# after it on the line: Y reads the member's hx, 7 + 1. none: no member,
+# comdat-mismatch (§6.3 case (b)). The references refuse every line:
+# none of them extracts for a demoted mention (GNU ld: undefined
+# reference; lld: relocation refers to a symbol in a discarded section;
+# mold: refers to a discarded COMDAT section).
+#@ spec: resolve.md §6.2
+#@ spec: resolve.md §4.1
+#@ arch: aarch64 x86_64 i386
+
+as wa.S -o wa.o
+as wbs.S -o wbs.o
+cc -O1 hx.c -o hx.o
+cc -O1 wm.c -o wm.o
+ar rcs libhx.a hx.o
+
+link(bfd,lld,mold) gcc -static -no-pie wm.o wa.o wbs.o libhx.a -o after
+  exit: fail
+  diag(bfd): undefined reference to `hx'
+  diag(lld): relocation refers to a symbol in a discarded section: hx
+  diag(mold): hx refers to a discarded COMDAT section
+link(mortar) gcc -static -no-pie wm.o wa.o wbs.o libhx.a -o after
+run(mortar) after
+  exit: 8
+link(bfd,lld,mold) gcc -static -no-pie wm.o wa.o libhx.a wbs.o -o before
+  exit: fail
+  diag(bfd): undefined reference to `hx'
+  diag(lld): relocation refers to a symbol in a discarded section: hx
+  diag(mold): hx refers to a discarded COMDAT section
+link(mortar) gcc -static -no-pie wm.o wa.o libhx.a wbs.o -o before
+run(mortar) before
+  exit: 8
+link gcc -static -no-pie wm.o wa.o wbs.o -o none
+  exit: fail
+  diag(bfd): undefined reference to `hx'
+  diag(lld): relocation refers to a symbol in a discarded section: hx
+  diag(mold): hx refers to a discarded COMDAT section
+  diag(mortar): symbol hx is defined only in a discarded copy of COMDAT group g
+
+#--- wa.S
+	.section .note.GNU-stack,"",%progbits
+	.section .text.g,"axG",%progbits,g,comdat
+	.weak g
+	.type g,%function
+g:
+#if defined(__aarch64__)
+	mov w0, #1
+#else
+	movl $1, %eax
+#endif
+	ret
+#--- wbs.S
+	.section .text.g,"axG",%progbits,g,comdat
+	.weak g
+	.type g,%function
+g:
+#if defined(__aarch64__)
+	mov w0, #2
+#else
+	movl $2, %eax
+#endif
+	ret
+	.globl hx
+	.type hx,%function
+hx:
+#if defined(__aarch64__)
+	mov w0, #40
+#else
+	movl $40, %eax
+#endif
+	ret
+	.text
+	.globl Y
+	.type Y,%function
+Y:
+#if defined(__aarch64__)
+	stp x29, x30, [sp, -16]!
+	bl hx
+	ldp x29, x30, [sp], 16
+#elif defined(__x86_64__)
+	subq $8, %rsp
+	call hx
+	addq $8, %rsp
+#else
+	call hx
+#endif
+	ret
+	.section .note.GNU-stack,"",%progbits
+#--- hx.c
+int hx(void) { return 7; }
+#--- wm.c
+int Y(void);
+int g(void);
+int main(void) { return Y() + g(); }

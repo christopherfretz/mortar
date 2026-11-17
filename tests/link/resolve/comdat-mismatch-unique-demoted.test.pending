@@ -1,0 +1,93 @@
+# PENDING (WP-200; a verifier package): L3 finds `after: M12 libhv.a(hv.o) is in the link and no root or live reference reaches it (resolve §4.1)` on mortar's output, on every architecture: the verifier's §4.1 still counts a dropped COMDAT copy's definition as first(K), which resolve.md §4.1's iterations and §6.2 no longer do (WP-200: a demoted mention is an undefined mention from the moment its copy is dropped). mortar's output was shown correct by its bytes and its run (spec/landed/resolve/WP-200.md §4). Rename this file to .test when the verifier follows §4.1's iterations.
+# A demoted STB_GNU_UNIQUE mention of a key only an archive member defines
+# (WP-200; resolve.md §6.2): wb's copy of g is dropped, so its hv is
+# an undefined mention with its binding, a strong one, which extracts
+# libhv.a's member as any strong undefined mention (§4.1), before or
+# after it on the line: Y reads the member's hv, 7 + 1. none: no member,
+# comdat-mismatch (§6.3 case (b)). The references refuse every line:
+# none of them extracts for a demoted mention (GNU ld: undefined
+# reference; lld: relocation refers to a symbol in a discarded section;
+# mold: refers to a discarded COMDAT section; on i386 it then crashes).
+#@ spec: resolve.md §6.2
+#@ spec: resolve.md §4.1
+#@ xfail(mold,i386): mold crashes (signal 11) after reporting hv refers to a discarded COMDAT section
+#@ arch: aarch64 x86_64 i386
+
+as wa.S -o wa.o
+as wbu.S -o wbu.o
+cc -O1 hv.c -o hv.o
+cc -O1 wm.c -o wm.o
+ar rcs libhv.a hv.o
+
+link(bfd,lld,mold) gcc -static -no-pie wm.o wa.o wbu.o libhv.a -o after
+  exit: fail
+  diag(bfd): undefined reference to `hv'
+  diag(lld): relocation refers to a symbol in a discarded section: hv
+  diag(mold): hv refers to a discarded COMDAT section
+link(mortar) gcc -static -no-pie wm.o wa.o wbu.o libhv.a -o after
+run(mortar) after
+  exit: 8
+link(bfd,lld,mold) gcc -static -no-pie wm.o wa.o libhv.a wbu.o -o before
+  exit: fail
+  diag(bfd): undefined reference to `hv'
+  diag(lld): relocation refers to a symbol in a discarded section: hv
+  diag(mold): hv refers to a discarded COMDAT section
+link(mortar) gcc -static -no-pie wm.o wa.o libhv.a wbu.o -o before
+run(mortar) before
+  exit: 8
+link gcc -static -no-pie wm.o wa.o wbu.o -o none
+  exit: fail
+  diag(bfd): undefined reference to `hv'
+  diag(lld): relocation refers to a symbol in a discarded section: hv
+  diag(mold): hv refers to a discarded COMDAT section
+  diag(mortar): symbol hv is defined only in a discarded copy of COMDAT group g
+
+#--- wa.S
+	.section .note.GNU-stack,"",%progbits
+	.section .text.g,"axG",%progbits,g,comdat
+	.weak g
+	.type g,%function
+g:
+#if defined(__aarch64__)
+	mov w0, #1
+#else
+	movl $1, %eax
+#endif
+	ret
+#--- wbu.S
+	.section .text.g,"axG",%progbits,g,comdat
+	.weak g
+	.type g,%function
+g:
+#if defined(__aarch64__)
+	mov w0, #2
+#else
+	movl $2, %eax
+#endif
+	ret
+	.section .rodata.g,"aG",%progbits,g,comdat
+	.globl hv
+	.type hv,%gnu_unique_object
+	.size hv,4
+hv:
+	.long 40
+	.text
+	.globl Y
+	.type Y,%function
+Y:
+#if defined(__aarch64__)
+	adrp x0, hv
+	ldr w0, [x0, :lo12:hv]
+#elif defined(__x86_64__)
+	movl hv(%rip), %eax
+#else
+	movl hv, %eax
+#endif
+	ret
+	.section .note.GNU-stack,"",%progbits
+#--- hv.c
+int hv = 7;
+#--- wm.c
+int Y(void);
+int g(void);
+int main(void) { return Y() + g(); }

@@ -513,7 +513,8 @@ record):
   the closure runs again from its live files (their pulling references
   kept), the targets computed without the definitions it demotes and
   each demoted mention an undefined mention with its binding (a non-weak
-  one an edge, a weak one none); until an iteration changes nothing. A
+  one an edge when no live object defines its key outside a dropped
+  copy, a weak one none); until an iteration changes nothing. A
   member an earlier iteration extracted stays, as in GNU ld, lld and
   mold, which load it and then drop its copy. Each iteration is a
   function of the one before (§12.2). A link with no mismatched copies
@@ -1088,7 +1089,9 @@ even with the same name). Its symbols:
   counts for everything resolution decides (precedence, and archive
   extraction: a demoted weak mention extracts no member, as any weak
   undefined mention, §4; a demoted `STB_GLOBAL` or `STB_GNU_UNIQUE` one
-  extracts as a strong undefined mention), from the moment its copy is
+  extracts as a strong undefined mention, unless a live object defines
+  the key outside a dropped copy: it binds to that definition and
+  extracts nothing, as GNU ld), from the moment its copy is
   dropped: from then on its definition is no definition of the key for
   extraction (`first`, `cfirst`), a lazy object (`--start-lib`) or a
   `--start-group` member as an archive member, and another file's strong
