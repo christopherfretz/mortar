@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-use mortar_cli::table::{Arg, Form, Status};
+use mortar_cli::table::{Arg, AtRClass, Form, Status};
 use mortar_cli::{
     VersionStyle, help_text, print_version_text, rows, status_markdown, version_line, version_text,
 };
@@ -267,6 +267,87 @@ fn status_file_is_current() {
         have == want,
         "docs/status/options.md is stale: run `MORTAR_BLESS=1 cargo test -p mortar_cli --test table`"
     );
+}
+
+// spec: cli.md C-R2b (every row has a class at `-r`, kept on the row; a
+// row without one is a defect of the table)
+#[test]
+fn every_row_has_a_class_at_r() {
+    let missing: Vec<String> = rows().iter().filter(|r| r.at_r.is_none()).map(|r| r.name()).collect();
+    assert!(missing.is_empty(), "rows without a class at -r: {missing:?}");
+}
+
+// spec: cli.md C-R2b's last bullet (an option that acts at `-r` "until" a
+// package lands is `Refused{Option, "<option> with -r"}` until then), C-R1
+// (`-r` and `-Ur` until the join, RL-7)
+#[test]
+fn the_rows_that_act_until_a_package() {
+    let mut until: Vec<(String, &str, &str)> = rows()
+        .iter()
+        .filter_map(|r| r.at_r.and_then(|a| a.until).map(|u| (r.name(), u.package, u.refusal)))
+        .collect();
+    until.sort();
+    let mut want = vec![
+        ("-r", "RL-7", "relocatable output (-r)"),
+        ("-Ur", "RL-7", "relocatable output (-r)"),
+        ("-d", "RL-11", "-d with -r"),
+        ("-s", "RL-11", "-s with -r"),
+        ("-S", "RL-11", "-S with -r"),
+        ("-x", "RL-11", "-x with -r"),
+        ("-T", "RL-11", "-T with -r"),
+        ("--defsym", "RL-11", "--defsym with -r"),
+        ("--unique", "RL-11", "--unique with -r"),
+        ("-b", "RL-10", "-b with -r"),
+        ("--force-group-allocation", "RL-8", "--force-group-allocation with -r"),
+    ];
+    want.sort();
+    let want: Vec<(String, &str, &str)> =
+        want.into_iter().map(|(n, p, r)| (n.to_owned(), p, r)).collect();
+    assert_eq!(until, want);
+    for r in rows() {
+        if let Some(a) = r.at_r
+            && a.until.is_some()
+        {
+            assert_eq!(a.class, AtRClass::Acts, "{}", r.name());
+        }
+    }
+}
+
+// spec: cli.md C-R1, C-R2a (last row), C-R2b, C-R4 (the rows that are
+// `conflicting-options` with `-r` as `first`)
+#[test]
+fn the_rows_that_conflict_with_r() {
+    let mut have: Vec<String> = rows()
+        .iter()
+        .filter(|r| r.at_r.is_some_and(|a| a.class == AtRClass::Conflicting))
+        .map(|r| r.name())
+        .collect();
+    have.sort();
+    let mut want = vec![
+        "-shared",
+        "-pie",
+        "-z nosectionheader",
+        "-Bsymbolic",
+        "-Bsymbolic-functions",
+        "--Bsymbolic-non-weak",
+        "--Bsymbolic-non-weak-functions",
+        "--dynamic-list",
+        "--dynamic-list-data",
+        "--dynamic-list-cpp-new",
+        "--dynamic-list-cpp-typeinfo",
+        "-E",
+        "--export-dynamic-symbol",
+        "--export-dynamic-symbol-list",
+        "-h",
+        "-rpath",
+        "--enable-new-dtags",
+        "-init",
+        "-fini",
+        "--pack-dyn-relocs",
+        "--android-memtag-mode",
+    ];
+    want.sort_unstable();
+    assert_eq!(have, want);
 }
 
 /// The row named `name`.

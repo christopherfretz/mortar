@@ -881,6 +881,10 @@ impl Parser<'_> {
             Lands::DependencyFile => plan.bookkeeping.dependency_file = Some(text()),
             Lands::Plugin => plan.plugin.path = Some(text()),
             Lands::PluginOpt => plan.plugin.options.push(text()),
+            Lands::Ur => plan.ur = true,
+            Lands::ForceGroupAllocation => plan.force_group_allocation = true,
+            Lands::DefineCommon => plan.define_common = true,
+            Lands::Unique => plan.unique.push(value),
             Lands::Other => plan.other.push(OtherOption { arg, name: row.name(), value }),
         }
         false

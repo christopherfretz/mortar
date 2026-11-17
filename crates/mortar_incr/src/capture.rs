@@ -523,7 +523,7 @@ pub fn capture_timed(
         let ordinal = chunk_ord.ordinal(id.0).ok_or("a chunk")?;
         let (out, part, dep) = match c.kind {
             ChunkKind::Body(pt) | ChunkKind::Patches(pt) => (pt.out.0, pt.part, false),
-            ChunkKind::Merged(o) | ChunkKind::Group(o) | ChunkKind::Relocs(o) => (o.0, 0, false),
+            ChunkKind::Merged(o) | ChunkKind::Relocs(o) => (o.0, 0, false),
             ChunkKind::Synthetic(sy) => (NONE, 0, sy.address_dependent),
             _ => (NONE, 0, false),
         };
@@ -903,9 +903,7 @@ fn map(
         let present = placement.chunks.get(id).ok_or("a chunk")?;
         let (out, part, dep) = match present.kind {
             ChunkKind::Body(pt) | ChunkKind::Patches(pt) => (Some(pt.out), pt.part, false),
-            ChunkKind::Merged(o) | ChunkKind::Group(o) | ChunkKind::Relocs(o) => {
-                (Some(o), 0, false)
-            }
+            ChunkKind::Merged(o) | ChunkKind::Relocs(o) => (Some(o), 0, false),
             ChunkKind::Synthetic(sy) => (None, 0, sy.address_dependent),
             _ => (None, 0, false),
         };
@@ -1183,6 +1181,9 @@ fn replay_inner(
     holes.sort_unstable();
     let l = &s.layout;
     let placement = Placement {
+        // A link state is written by a loadable link only (`-r` is never
+        // incremental, `spec/incr.md` IN-12).
+        kind: mortar_core::PlacementKind::Loadable,
         chunks: Column::from_vec(chunks).map_err(|_| "chunks")?,
         order: s.order.iter().map(|&c| chunk(c)).collect::<Result<_, _>>()?,
         segments: Column::from_vec(

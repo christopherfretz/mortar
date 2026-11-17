@@ -4,7 +4,7 @@
 use std::fmt::Write as _;
 
 use crate::plan::{Emulation, Target, VersionStyle};
-use crate::table::{Arg, Form, Group, Linkers, Row, Spelling, Status, Values, rows};
+use crate::table::{Arg, AtRClass, Form, Group, Linkers, Row, Spelling, Status, Values, rows};
 
 /// mortar's version (the workspace's).
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -157,6 +157,18 @@ pub fn status_markdown() -> String {
         "{} rows: {supported} supported, {partial} partial, {noop} noop, {refused} refused.\n",
         rows().len()
     );
+    let at_r = |class: AtRClass| count(|r| r.at_r.is_some_and(|a| a.class == class));
+    let _ = writeln!(
+        out,
+        "At `-r` (`spec/cli.md` C-R2b): {} act ({} of them refused until their package lands), \
+         {} noop, {} as in a final link, {} conflicting-options with -r, {} refused.\n",
+        at_r(AtRClass::Acts),
+        count(|r| r.at_r.is_some_and(|a| a.until.is_some())),
+        at_r(AtRClass::Noop),
+        at_r(AtRClass::AsFinal),
+        at_r(AtRClass::Conflicting),
+        at_r(AtRClass::Refused),
+    );
     let gnu = count(|r| r.linkers.gnu());
     let lld_only = count(|r| r.linkers == Linkers::L);
     let mold_only = count(|r| r.linkers == Linkers::M);
@@ -174,8 +186,10 @@ pub fn status_markdown() -> String {
     out.push('\n');
     for group in Group::ALL {
         let _ = writeln!(out, "## {}\n", group.title());
-        out.push_str("| Option | Value | Linkers | Targets | Status | Lands in | Help |\n");
-        out.push_str("|---|---|---|---|---|---|---|\n");
+        out.push_str(
+            "| Option | Value | Linkers | Targets | Status | At `-r` | Lands in | Help |\n",
+        );
+        out.push_str("|---|---|---|---|---|---|---|---|\n");
         for row in rows().iter().filter(|r| r.group == group) {
             let spellings: Vec<String> =
                 row.spellings.iter().map(|s| format!("`{}`", s.display())).collect();
@@ -183,14 +197,18 @@ pub fn status_markdown() -> String {
                 Some(note) => format!("refused: {note}"),
                 None => status_cell(row.status),
             };
+            // A row without a class shows the defect (`spec/cli.md` C-R2b;
+            // `every_row_has_a_class_at_r` fails on it).
+            let at_r = row.at_r.map_or_else(|| "(no class)".to_owned(), |a| a.cell());
             let _ = writeln!(
                 out,
-                "| {} | {} | {} | {} | {} | `{}` | {} |",
+                "| {} | {} | {} | {} | {} | {} | `{}` | {} |",
                 spellings.join(", "),
                 value_column(row),
                 row.linkers.names(),
                 targets(row),
                 status,
+                at_r.replace('|', "\\|"),
                 row.lands.field(),
                 row.help.replace('|', "\\|"),
             );
