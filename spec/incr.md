@@ -1898,7 +1898,16 @@ with each phase fed from the state for unchanged files:
   4. its `SECTIONS` rows are one contiguous range of exactly the
      count the writer stores for the file's `e_shnum` (no rows only
      when the file has no sections: zero stored and non-zero new, or
-     the reverse, is not positional).
+     the reverse, is not positional);
+  5. where the reader HAS the file's parsed section headers without
+     reading the file for this check (the test path, whose front
+     parses every input): each row's header fields (type, flags, size,
+     alignment, file offset) equal those of section `k`. A reader that
+     does not have them does not read them (the last sentence of "A row
+     of a file in the set"): a state with two rows of one file swapped
+     and its hashes recomputed is then the forged class below, as a
+     state with two places swapped is for every reader (ruling on
+     WP-064a's question 1, 2026-11-17).
 
   Identities are built for EVERY file outside the set (model §7.1, from
   those files' symbol tables and section names; a global the partial
@@ -1907,20 +1916,29 @@ with each phase fed from the state for unchanged files:
 
   **A row of a file in the set** translates:
   - `SECTIONS` row `first + k` to section `k` of the file;
-  - a local `SYMBOLS` row to the entry `(file, at_index)`, accepted
-    when `at_index` is below the file's `sh_info` (its count of
-    locals);
+  - a local `SYMBOLS` row to the entry `(file, at_index)`; an
+    `at_index` at or above the file's `sh_info` (its count of locals)
+    is `state-corrupt` (a file in the set has no identities to fall
+    back to, and no correct writer stores such a row; ruling on
+    WP-064a's question 2);
   - a global row to `sym_map(at_file)[at_index]`, accepted when that
     key's name and version equal the row's;
   - a fragment of a split section, found in `FRAG_AT` by (section,
     offset), to the offset of the `FRAGS` row `FRAG_AT` names, accepted
     when that row's ordinal is `NONE` (a content that is in two merge
     classes of one output section has ordinals, and its copies are
-    ranked again by an update: never positional).
+    ranked again by an update: never positional) AND every occurrence
+    of the fragment is in a file of the set (fragments are numbered by
+    their first occurrence, model §3.5: a fragment that also occurs in
+    a file outside the set is found by its content hash, never by
+    position; cost: the merge pieces of the files outside the set;
+    ruling on WP-064a's question 3).
 
-  A row that is not accepted does not fall back: it is translated by
-  identity, which either translates it or fails as IN-28 does (the
-  fall-backs of §7). Under these rules an accepted position names the
+  A global or a fragment row that is not accepted does not fall back:
+  it is translated by identity (key bytes; output section and content
+  hash: neither needs the file's identities), which either translates
+  it or fails as IN-28 does (the fall-backs of §7); a failure for one
+  fragment sends every fragment to identity. Under these rules an accepted position names the
   row identity would find, and IN-2 holds. No check reads an unchanged
   input: each is made against the state and the new link's tables, so
   its cost is that of the rows used.
@@ -1948,6 +1966,22 @@ with each phase fed from the state for unchanged files:
   every update of those tests is judged against the full link of the
   same inputs by `xtask plumb --equiv`; the floor test translates by
   position and, with `MORTAR_FLOOR_IDENTITY` set, by identity only.
+- **IN-28b [v1] A local whose identity is a position** (WP-064a §0.1:
+  a wrong program in BOTH translations before it). Model §7.1 gives a
+  local the identity (file, name, ordinal among the file's same-named
+  locals). For a name the file gives to several locals that is a
+  position, and every `STT_SECTION` symbol has the empty name: GAS
+  writes `:got:` relocations against section symbols, so a `SLOTS` row
+  keyed by one translated, after the file's sections were permuted, to
+  another section's symbol, and the slot (not refilled) kept the old
+  address. Until the identity is repaired, a `SLOTS` or thunk row
+  keyed by a local of a CHANGED file whose name that file gives to
+  more than one local does not translate: `resolution-changed`.
+  **Decided for WP-064 (ruling on WP-064a's question 4)**: a section
+  symbol's identity is its SECTION's identity (model §7.1's section
+  row); that package amends model §7.1 and narrows this refusal to
+  same-named locals that are not section symbols. *Test:*
+  `crates/mortar/tests/incr_review.rs` s3.
 - **IN-29 [v1] Liveness** under `--gc-sections` is recomputed in full
   from the roots, without reading unchanged files, by walking a **stored
   graph that is, by construction, the edge set the full link's liveness
