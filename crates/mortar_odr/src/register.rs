@@ -142,7 +142,7 @@ pub const REGISTER: [Row; 20] = [
     Row { check: "kind 5 C++ linkage `odr-declaration-mismatch`", status: Status::Strict },
     Row { check: "kind 5 C linkage", status: Status::Strict },
     Row { check: "kind 3 `odr-type-mismatch` (layout)", status: Status::Strict },
-    Row { check: "kind 3 definition-only differences", status: Status::Strict },
+    Row { check: "kind 3 definition-only differences (X22)", status: Status::Strict },
     Row { check: "kind 3 size and alignment across schemes (O-11)", status: Status::Strict },
     Row { check: "kind 2 `odr-violation` (hash, K13 flags)", status: Status::Strict },
     Row { check: "`odr-internal-reference`", status: Status::Strict },
