@@ -511,7 +511,10 @@ input section:
     root; it is a finding when its link target is placed (I-109). A
     reference from a placed allocated section to a symbol of a collected
     one is R5 (§5.7), which is I-7's edge seen from the other side;
-  - a `discard ... script` record, when the line has `-T`.
+  - a `discard ... script` record, when the line has `-T`;
+  - for an `SHT_NOBITS` section with no record (I-78 lists `discard` only
+    for a section with file bytes): `--gc-sections` on the line and not a
+    root, as for `discard ... gc`.
   A `discard ... comdat` record must be the COMDAT row, `... unspecified`
   one of §10's rows, `... gc` and `... script` as above; anything else, and
   a section with bytes no record names and no row explains, is M10. The
@@ -2297,7 +2300,8 @@ rules below judge the rest. Code: `src/symbols.rs`.
     section placed whole or as pieces, or (mortar's map) without bytes and
     without a record: a finding. A foreign map's merged section is not
     known to hold anything (lld collects the pieces of one under
-    `--gc-sections`), so its names are not judged so. Before WP-143 a
+    `--gc-sections`), so its names are not judged so. A versioned input
+    name (`foo@@V2`) is present when its base name is. Before WP-143 a
     missing name was skipped: mortar's output without `gms` passed;
   - **a label of an empty section without a record** (§3.3, "absent";
     not thread-local): its output value is in or at the end of an

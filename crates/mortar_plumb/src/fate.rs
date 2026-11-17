@@ -6,7 +6,8 @@
 use mortar_elf::consts::{
     GRP_COMDAT, SHF_ALLOC, SHF_EXCLUDE, SHF_GNU_RETAIN, SHF_GROUP, SHF_LINK_ORDER, SHN_UNDEF,
     SHT_AARCH64_ATTRIBUTES, SHT_FINI_ARRAY, SHT_GROUP, SHT_INIT_ARRAY, SHT_LLVM_ADDRSIG,
-    SHT_LLVM_CALL_GRAPH_PROFILE, SHT_LLVM_DEPENDENT_LIBRARIES, SHT_NOTE, SHT_PREINIT_ARRAY,
+    SHT_LLVM_CALL_GRAPH_PROFILE, SHT_LLVM_DEPENDENT_LIBRARIES, SHT_NOBITS, SHT_NOTE,
+    SHT_PREINIT_ARRAY,
 };
 use mortar_elf::{Machine, SymbolIndex, SymbolSection};
 
@@ -261,7 +262,14 @@ pub(crate) fn check(objs: &[Obj<'_>], map: &Map, opts: &Options) -> Vec<Finding>
                 // its labels are judged by §4.4 and Y3), or a copy of a
                 // group not kept with no bytes.
                 (Place::Absent, _) => {
+                    // A `NOBITS` section has no bytes in the file: I-78's
+                    // `discard` lists none, so a collected one has no
+                    // record; `--gc-sections` and no root explain it.
+                    let gc_nobits = s.shdr.sh_type == SHT_NOBITS
+                        && opts.gc_sections
+                        && gc_root(o, s, groups[oi][si], &ss).is_none();
                     if s.shdr.sh_size == 0
+                        || gc_nobits
                         || comdat[oi][si]
                         || dropped_by_row(o, s, opts).is_some()
                         || s.is_eh_frame(o.elf.machine())

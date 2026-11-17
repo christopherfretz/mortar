@@ -319,6 +319,8 @@ fn globals(e: &mut Engine<'_, '_>, fs: &mut Vec<Finding>) {
             let v = vis.get(name.as_str()).copied().unwrap_or(0);
             if !image.symbols.is_empty()
                 && !image.has_name(name)
+                // `foo@@V2`: the output's `.symtab` names it `foo`.
+                && !name.split_once('@').is_some_and(|(base, _)| image.has_name(base))
                 && rank(v) < rank(STV_HIDDEN)
                 && let Some(why) = held_def(e, name)
             {
