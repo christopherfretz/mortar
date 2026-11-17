@@ -1303,11 +1303,22 @@ pub(crate) fn compute(
         if !matches!(v, STV_DEFAULT | STV_PROTECTED) {
             continue;
         }
-        let d = ds
+        // The key's definition: among the definitions with a place, if
+        // any (§4.4 step 0: the key has no place only when EVERY
+        // definition has none), the first strong one in object order,
+        // else the first not common, else the first. A COMDAT copy that a
+        // reference's map does not name (lld and mold write no line for a
+        // discarded group) is `Absent`, no place: the kept copy is the
+        // definition, wherever it stands in object order (WP-147b).
+        let with_place: Vec<&D> = ds.iter().filter(|d| !d.placeless).collect();
+        let pool: Vec<&D> =
+            if with_place.is_empty() { ds.iter().collect() } else { with_place };
+        let d = pool
             .iter()
             .find(|d| d.strong)
-            .or_else(|| ds.iter().find(|d| !d.common))
-            .unwrap_or(&ds[0]);
+            .or_else(|| pool.iter().find(|d| !d.common))
+            .copied()
+            .unwrap_or(pool[0]);
         if d.excluded {
             sets.local.insert(base);
             continue;
