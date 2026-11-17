@@ -300,19 +300,27 @@ impl Built {
             verneed: &verneed,
             rpath: Some(b"/opt/lib"),
             soname: None,
+            verdef: None,
             dynstr: &dynstr,
             names: self,
         }
         .write_all(&mut strtab)
         .map_err(|e| format!("{e:?}"))?;
         let mut versym = vec![0xee; size(K::GnuVersion)];
-        VersymChunk { plan: &plan, inputs: self.inputs(), verneed: &verneed, class }
+        VersymChunk { plan: &plan, inputs: self.inputs(), verneed: &verneed, verdefs: 0, class }
             .write_window(&mut Window::new(0, &mut versym))
             .map_err(|e| format!("{e:?}"))?;
         let mut vn = vec![0xee; size(K::GnuVersionR)];
-        VerneedChunk { needed: &needed, verneed: &verneed, dynstr: &dynstr, names: self, class }
-            .write_all(&mut vn)
-            .map_err(|e| format!("{e:?}"))?;
+        VerneedChunk {
+            needed: &needed,
+            verneed: &verneed,
+            verdefs: 0,
+            dynstr: &dynstr,
+            names: self,
+            class,
+        }
+        .write_all(&mut vn)
+        .map_err(|e| format!("{e:?}"))?;
         Ok(Out { plan, verneed, dynstr, dynsym, gnu_hash: gnu, strtab, versym, verneed_bytes: vn })
     }
 }
@@ -592,7 +600,10 @@ fn refusals_by_name() {
         fx.export("foo", def, (13, 0x1000));
     });
     let e = versioned.plan(&Pool::sequential()).unwrap_err();
-    assert!(e.contains("versioned definition foo@@V1 cannot be exported"), "{e}");
+    assert!(
+        e.contains("versioned definition foo@@V1 cannot be exported from an executable"),
+        "{e}"
+    );
     let hidden = one(&|fx| {
         let def = ProgramDef {
             info: STB_GLOBAL << 4 | STT_FUNC,

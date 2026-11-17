@@ -224,6 +224,7 @@ dependencies = [
  "mortar_elf",
  "mortar_input",
  "mortar_meta",
+ "mortar_script",
  "mortar_testutil",
 ]
 

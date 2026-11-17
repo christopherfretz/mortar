@@ -317,8 +317,8 @@ fn control_characters_are_made_visible() {
         (
             Kind::VersionedExport { name: h(), version: h() },
             format!(
-                "versioned definition {shown}@@{shown} cannot be exported (version definitions \
-                 are not supported)"
+                "versioned definition {shown}{shown} cannot be exported from an executable \
+                 (mortar writes version definitions in a shared object only)"
             ),
         ),
         (Kind::MetaMalformed { reason: h() }, format!("malformed Mason metadata: {shown}")),

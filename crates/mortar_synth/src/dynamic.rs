@@ -34,7 +34,7 @@
 //! | 24-25 | the architecture's tags (`Arch::dyn_tags`) | each one's `TagWhen` | its value |
 //! | 26 | `DT_FLAGS` | `bind_now`, or `Shared` with `symbolic` | `DF_SYMBOLIC`, `DF_BIND_NOW` |
 //! | 27 | `DT_FLAGS_1` | `Pie`, `StaticPie` or `bind_now` | `DF_1_PIE` (never in `Shared`), `DF_1_NOW` |
-//! | 28-30 | `DT_VERNEED`, `DT_VERNEEDNUM`, `DT_VERSYM` | `verneed` | `ChunkAddr(GnuVersionR)`, the count, `ChunkAddr(GnuVersion)` |
+//! | 28-30 | `DT_VERDEF`, `DT_VERDEFNUM` (D-115, a shared object), `DT_VERNEED`, `DT_VERNEEDNUM`, `DT_VERSYM` | `SharedDyn::verdef`, `verneed` | `ChunkAddr(GnuVersionR)`, the count, `ChunkAddr(GnuVersion)` |
 //! | 31 | `DT_RELACOUNT` (`DT_RELCOUNT`) | `relative` | the count |
 //! | 32 | `DT_NULL` × 6 | always | 0 |
 //!
@@ -60,7 +60,7 @@ use mortar_elf::consts::{
     DT_JMPREL, DT_NEEDED, DT_PLTGOT, DT_PLTREL, DT_PLTRELSZ, DT_PREINIT_ARRAY, DT_PREINIT_ARRAYSZ,
     DT_REL, DT_RELA, DT_RELACOUNT, DT_RELAENT, DT_RELASZ, DT_RELCOUNT, DT_RELENT, DT_RELSZ,
     DT_RPATH, DT_RUNPATH, DT_SONAME, DT_STRSZ, DT_STRTAB, DT_SYMBOLIC, DT_SYMENT, DT_SYMTAB,
-    DT_VERNEED, DT_VERNEEDNUM, DT_VERSYM,
+    DT_VERDEF, DT_VERDEFNUM, DT_VERNEED, DT_VERNEEDNUM, DT_VERSYM,
 };
 
 use crate::chunks::SynthKind;
@@ -106,6 +106,9 @@ pub struct SharedDyn {
     /// `DF_STATIC_TLS` (D-103, D-119): some reference of the library uses
     /// the initial-exec model (`Demands.output`'s `STATIC_TLS`).
     pub static_tls: bool,
+    /// `DT_VERDEF`, `DT_VERDEFNUM` (D-115): the `Verdef` count
+    /// (`VerdefPlan::count`); 0 without `.gnu.version_d`.
+    pub verdef: u16,
 }
 
 /// Which tag names the run path (D-30 row 2).
@@ -441,10 +444,18 @@ impl DynamicPlan {
         if flags_1 != 0 {
             put(DT_FLAGS_1, DynValue::Const(flags_1));
         }
-        // Rows 28-30.
+        // Rows 28-30; D-115's `DT_VERDEF`, `DT_VERDEFNUM` first (GNU ld's
+        // order: VERDEF, VERDEFNUM, VERNEED, VERNEEDNUM, VERSYM).
+        let verdef = shared.map_or(0, |s| s.verdef);
+        if verdef != 0 {
+            put(DT_VERDEF, DynValue::ChunkAddr(SynthKind::GnuVersionD));
+            put(DT_VERDEFNUM, DynValue::Const(u64::from(verdef)));
+        }
         if i.verneed != 0 {
             put(DT_VERNEED, DynValue::ChunkAddr(SynthKind::GnuVersionR));
             put(DT_VERNEEDNUM, DynValue::Const(u64::from(i.verneed)));
+        }
+        if i.verneed != 0 || verdef != 0 {
             put(DT_VERSYM, DynValue::ChunkAddr(SynthKind::GnuVersion));
         }
         // Row 31.

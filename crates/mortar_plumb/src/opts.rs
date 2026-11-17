@@ -62,11 +62,14 @@ R No - --no-warn-backrefs
 R Next gnu -L --library-path
 R Next gnu --sysroot
 R Next gnu -rpath-link
+R Next gnu --version-script
 R Eq gnu --sort-common --sort_common
 R Next gnu --sort-section
 R Next gnu --export-dynamic-symbol
 R Next gnu -init
 R Next gnu -fini
+R No gnu --undefined-version
+R No gnu --no-undefined-version
 R No gnu -E --export-dynamic
 R No gnu --no-export-dynamic
 R No gnu -Bsymbolic
@@ -216,7 +219,6 @@ R Next - --chroot
 R Next gnu -T --script
 R Next gnu --default-script --dT
 R Next gnu -c --mri-script
-R Next gnu --version-script
 R Next gnu --dynamic-list
 R Next gnu --export-dynamic-symbol-list
 R Next gnu --retain-symbols-file
@@ -255,8 +257,6 @@ R Eq gnu --demangle
 R No gnu --no-demangle
 R No gnu --default-symver
 R No gnu --default-imported-symver
-R No gnu --undefined-version
-R No gnu --no-undefined-version
 R Next gnu --version-exports-section
 R No gnu --disable-multiple-abs-defs
 R No - --gnu-unique

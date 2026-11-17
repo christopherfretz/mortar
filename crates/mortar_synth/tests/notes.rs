@@ -337,10 +337,11 @@ fn s3_names_and_headers() {
     let h = SynthKind::Symtab.header(Class::Elf32, true).unwrap();
     assert_eq!((h.entsize, h.align), (16, 4));
     // dyn.md D-34 (WP-041 step 0i): the M2 rows have their headers; the
-    // M4 row (verdef) has none.
+    // M4 row (verdef, D-115) has one since WP-125: align 4, no entsize.
     let d = SynthKind::Dynamic.header(Class::Elf64, false).unwrap();
     assert_eq!((d.entsize, d.align), (16, 8));
-    assert!(SynthKind::GnuVersionD.header(Class::Elf64, false).is_none(), "M4");
+    let v = SynthKind::GnuVersionD.header(Class::Elf64, false).unwrap();
+    assert_eq!((v.entsize, v.align), (0, 4));
     assert!(!SynthKind::Got.synth(false).address_dependent);
     assert!(SynthKind::RelrDyn.synth(false).address_dependent);
 }

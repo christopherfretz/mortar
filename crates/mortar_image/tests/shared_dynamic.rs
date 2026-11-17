@@ -342,6 +342,7 @@ fn mortar_dynamic(elf: &Elf, var: &Variant) -> (DynamicPlan, Vec<u8>) {
         soname: var.soname.is_some(),
         symbolic: var.symbolic,
         static_tls: false,
+        verdef: 0,
     });
     let nonempty = |n: &[u8]| elf.sec(n).is_some_and(|s| s.size > 0);
     let gnu = elf.dynamic();
@@ -548,7 +549,8 @@ fn load(arch: target::Arch, name: &str, host: &Path, lib: &Path) {
 #[test]
 fn shared_map_records() {
     let mut r = DynRecords::default();
-    let kind = DynKind::Shared(SharedDyn { soname: true, symbolic: false, static_tls: false });
+    let kind =
+        DynKind::Shared(SharedDyn { soname: true, symbolic: false, static_tls: false, verdef: 0 });
     fill_records(&mut r, kind, None, Some((RunpathTag::Runpath, b"/x")), true, true);
     assert_eq!(r.kind, Some(OutputKind::Shared));
     assert_eq!(r.interp, None);

@@ -84,11 +84,15 @@ const SUPPORTED: &[&str] = &[
     "--sysroot",
     // The dynamic executable (WP-053).
     "-rpath-link",
+    // Version scripts in a shared object (WP-125, dyn.md D-114).
+    "--version-script",
     "--sort-common",
     "--sort-section",
     "--export-dynamic-symbol",
     "-init",
     "-fini",
+    "--undefined-version",
+    "--no-undefined-version",
     "-E",
     "--no-export-dynamic",
     "-Bsymbolic-functions",

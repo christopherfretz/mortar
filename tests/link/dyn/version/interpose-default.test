@@ -1,0 +1,48 @@
+# dyn.md D-114, D-112 (WP-125): an interposer on a default-version
+# symbol. The library defines `foo@V1` (old) and `foo@@V2` (default) by
+# `.symver`, and calls `foo` itself through its default version; the host
+# binds to `foo@V2`. An unversioned interposer preloaded into the host
+# replaces both the host's and the library's call (the definition is
+# preemptible, D-112), while `foo@V1` stays the library's.
+#@ spec: dyn.md "D-114"; dyn.md "D-112"
+#@ arch: aarch64 x86_64
+#@ xfail(bfd): the verifier's R1 on GNU ld's call to foo@plt (bound to foo@@V2), a library that runs right plain and interposed (--no-plumb); reported with WP-125 part 2
+#@ xfail(mortar): M4: WP-149: the verifier's P-D7 'a name twice in .dynsym' on libi.so, whose two entries are foo@V1 (hidden) and foo@@V2 as GNU ld's (bytes checked at the merge); runs right with --no-plumb
+
+cc -O1 -fPIC lib.c -o lib.o
+cc -O1 -fPIC pre.c -o pre.o
+cc -O1 -fPIE main.c -o main.o
+shlib gcc pre.o -Wl,-soname,libpre.so -o libpre.so
+link gcc -shared lib.o -Wl,--version-script,v.map -Wl,-soname,libi.so -o libi.so
+check readelf --dyn-syms -W libi.so
+  has: FUNC GLOBAL DEFAULT * foo@V1$
+  has: FUNC GLOBAL DEFAULT * foo@@V2$
+host gcc -pie main.o -L. -li -o prog
+check readelf --dyn-syms -W prog
+  has: UND foo@V2
+run prog
+  stdout: 2 2 1
+run prog
+  env: LD_PRELOAD=./libpre.so
+  stdout: 9 9 1
+
+#--- lib.c
+#include <stdio.h>
+int foo_v1(void) { return 1; }
+int foo_v2(void) { return 2; }
+__asm__(".symver foo_v1, foo@V1");
+__asm__(".symver foo_v2, foo@@V2");
+extern int foo(void);
+int call_foo(void) { setvbuf(stdout, 0, _IOLBF, 0); return foo(); }
+int call_v1(void) { return foo_v1(); }
+#--- v.map
+V1 { global: call_foo; call_v1; };
+V2 { global: foo; } V1;
+#--- pre.c
+int foo(void) { return 9; }
+#--- main.c
+#include <stdio.h>
+int foo(void);
+int call_foo(void);
+int call_v1(void);
+int main(void) { printf("%d %d %d\n", foo(), call_foo(), call_v1()); return 0; }

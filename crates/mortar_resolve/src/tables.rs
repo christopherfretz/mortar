@@ -614,6 +614,16 @@ impl View for InputsView<'_, '_> {
         ));
     }
 
+    fn default_version(&self, file: FileId, index: SymbolIndex) -> Option<&[u8]> {
+        if self.shared(file).is_some() {
+            return None;
+        }
+        let t = self.symtab.get(file.0 as usize).copied().flatten()?;
+        let name = t.name(&t.get(index).ok()?).ok()?;
+        let at = name.windows(2).position(|w| w == b"@@")?;
+        Some(&name[at + 2..])
+    }
+
     fn version(&self, file: FileId, index: SymbolIndex) -> u16 {
         self.versym
             .get(file.0 as usize)
@@ -710,6 +720,11 @@ pub fn options(plan: &Plan, inputs: &Inputs<'_>, view: &InputsView<'_, '_>) -> O
         ignore_unresolved: ignored,
         shared: shared_link(plan, inputs, view, &by_role(SymbolRole::ExportDynamicSymbol)),
         shared_output: SharedOutput::of(plan),
+        versions: crate::version::VersionLine {
+            script: None,
+            export_dynamic: plan.dynamic.export_dynamic,
+            no_undefined_version: plan.dynamic.undefined_version == Some(false),
+        },
     }
 }
 
@@ -959,6 +974,10 @@ fn dynamic_props<V: View>(
         props.refs |= RefFlags::PREEMPTIBLE;
         props.version = view.version(e.file, e.index);
     }
+    // WP-125: an export of a shared object, its output version (D-115).
+    else if dy.exported[k] {
+        props.version = dy.versions.get(k).copied().unwrap_or(0);
+    }
 }
 
 /// The model's `def` (§3.3): strong and weak definitions are both
@@ -1026,6 +1045,16 @@ pub fn diagnostics(
         let key = Key::new(u16::from(p.key.phase), p.key.unit, p.key.seq);
         (key, ctx.diagnostic(p))
     }));
+    // The version stage's (WP-125, `crate::version::apply`).
+    if let Some(dy) = &r.dynamic {
+        out.extend(dy.version_problems.iter().map(|(k, d, file)| {
+            let d = match file {
+                Some(f) => d.clone().at(ctx.file(*f)),
+                None => d.clone(),
+            };
+            (Key::new(u16::from(k.phase), k.unit, k.seq), d)
+        }));
+    }
     out.sort();
     out
 }
@@ -1373,9 +1402,23 @@ pub struct Outcome {
 /// `check_against`) and the diagnostics.
 #[must_use]
 pub fn resolve_inputs(inputs: &Inputs<'_>, plan: &Plan, pool: &Pool) -> Outcome {
+    resolve_inputs_with(inputs, plan, pool, None)
+}
+
+/// [`resolve_inputs`] with the line's version script, compiled
+/// (`crate::version::VersionScript::compile`; `spec/resolve.md` §9.7):
+/// applied in a `Shared` output.
+#[must_use]
+pub fn resolve_inputs_with(
+    inputs: &Inputs<'_>,
+    plan: &Plan,
+    pool: &Pool,
+    script: Option<std::sync::Arc<crate::version::VersionScript>>,
+) -> Outcome {
     let mut steps = Steps::default();
     let view = InputsView::new_steps(inputs, pool, &mut steps);
-    let opts = options(plan, inputs, &view);
+    let mut opts = options(plan, inputs, &view);
+    opts.versions.script = script;
     steps.step("options");
     let r = resolve_steps(&view, &opts, pool, &mut steps);
     let mut diagnostics = diagnostics(inputs, &view, &opts, &r);

@@ -82,6 +82,9 @@ pub struct Options {
     /// what its export set, preemption and undefined references read.
     /// `None` for every other output kind.
     pub shared_output: Option<SharedOutput>,
+    /// The version script and the options rule 12 and rule 9 read
+    /// (`spec/resolve.md` §9.7; WP-125): applied in a `Shared` output.
+    pub versions: crate::version::VersionLine,
 }
 
 /// What a `Shared` output's resolution reads (`spec/dyn.md` D-110, D-112,
@@ -201,6 +204,7 @@ impl Default for Options {
             ignore_unresolved: Vec::new(),
             shared: SharedLink::default(),
             shared_output: None,
+            versions: crate::version::VersionLine::default(),
         }
     }
 }

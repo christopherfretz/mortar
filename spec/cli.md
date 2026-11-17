@@ -1052,8 +1052,8 @@ until the phase that honors them lands with its test:
     `-shared` status text is the record's §G.4 (written with the row).
     In a `Shared` link until their packages: `-Bsymbolic`,
     `--dynamic-list`, `--exclude-libs`, `-init`, `-fini`,
-    `-z nodelete`/`nodlopen`/`initfirst`/`interpose`/`origin`,
-    `--version-script` are refused (WP-125, WP-128).
+    `-z nodelete`/`nodlopen`/`initfirst`/`interpose`/`origin` are
+    refused (WP-128).
   - WP-118 (`Shared` synth, layout, image): `-z now` in `Shared`
     (`DF_BIND_NOW`, `DF_1_NOW`, D-103; rustc's `cdylib` line passes
     `-z relro,-z now`); the row is `supported` already.
@@ -1061,8 +1061,10 @@ until the phase that honors them lands with its test:
     `-version-script`, an abbreviation, §2.4) `supported`; several
     `--version-script` options are one script, in order (resolve.md
     §9.7 rule 13; all three); `--no-undefined-version` `supported`;
-    `--undefined-version` `noop` (the default: D-114 accepts a name no
-    file defines, with a warning).
+    `--undefined-version` `supported` (the default: D-114 accepts a name no
+    file defines, with a warning; the last of the two wins); in an
+    executable `--version-script` is refused by name (D-114: the
+    references disagree). Landed (WP-125).
   - WP-128 (the option tail): `-Bsymbolic` `supported` (D-112, D-103:
     `DT_SYMBOLIC`, `DF_SYMBOLIC`), `--dynamic-list` `supported` (D-112;
     the grammar is WP-125's), `--exclude-libs` `supported` (D-110 item

@@ -513,6 +513,8 @@ pub enum Lands {
     NoinhibitExec,
     /// `dynamic.allow_shlib_undefined`.
     AllowShlibUndefined(bool),
+    /// `dynamic.undefined_version`.
+    UndefinedVersion(bool),
     /// `diagnostics.warn_backrefs`.
     WarnBackrefs(bool),
     /// `diagnostics.warn_common`.
@@ -655,6 +657,7 @@ impl Lands {
             Self::AllowMultipleDefinition(_) => "diagnostics.allow_multiple_definition",
             Self::NoinhibitExec => "diagnostics.noinhibit_exec",
             Self::AllowShlibUndefined(_) => "dynamic.allow_shlib_undefined",
+            Self::UndefinedVersion(_) => "dynamic.undefined_version",
             Self::WarnBackrefs(_) => "diagnostics.warn_backrefs",
             Self::WarnCommon(_) => "diagnostics.warn_common",
             Self::SortCommon => "shaping.sort_common",
@@ -706,6 +709,7 @@ impl Lands {
                 | Self::WarnUnresolved(_)
                 | Self::AllowMultipleDefinition(_)
                 | Self::AllowShlibUndefined(_)
+                | Self::UndefinedVersion(_)
                 | Self::WarnBackrefs(_)
                 | Self::WarnCommon(_)
                 | Self::SortCommon

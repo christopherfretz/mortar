@@ -390,6 +390,11 @@ pub struct Dynamic {
     /// (`false`); `None`: the default for the output kind
     /// (`spec/input.md` §8.6, `spec/resolve.md` §5.2).
     pub allow_shlib_undefined: Option<bool>,
+    /// `--undefined-version` (`true`), `--no-undefined-version` (`false`);
+    /// the last wins. `None`: accepted, as `true` (`spec/dyn.md` D-114:
+    /// an exact `global:` entry naming no definition warns
+    /// `version-script-undefined-name`; with `false` it is an error).
+    pub undefined_version: Option<bool>,
     /// `-init SYMBOL` (`-init=SYMBOL`); the last wins. `None`: `DT_INIT`
     /// names `_init` when it is defined (`spec/dyn.md` D-30 row 3).
     pub init: Option<OsString>,

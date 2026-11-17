@@ -339,6 +339,55 @@ fn layout_diag(
     (key, diag)
 }
 
+/// The line's `--version-script` files read (relative to `cwd`), parsed
+/// as one script and compiled (`mortar_resolve::version`); `Ok(None)`
+/// without one or outside a `Shared` output (the command line refuses
+/// the option there, `spec/dyn.md` D-114). `Err(())` (diagnostics
+/// emitted) when a file cannot be read or the script is refused.
+fn version_script(
+    plan: &Plan,
+    cwd: &Path,
+    diag: &Collector,
+) -> Result<Option<std::sync::Arc<mortar_resolve::version::VersionScript>>, ()> {
+    if plan.kind != plan::OutputKind::Shared || plan.version_scripts().next().is_none() {
+        return Ok(None);
+    }
+    let mut texts: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut failed = false;
+    for s in plan.version_scripts() {
+        let shown = s.path.to_string_lossy().into_owned();
+        match std::fs::read(cwd.join(&s.path)) {
+            Ok(bytes) => texts.push((shown, bytes)),
+            Err(e) => {
+                failed = true;
+                diag.emit(
+                    Key::new(20, 0, u64::from(s.arg)),
+                    Diagnostic::error(Kind::CannotOpenFile {
+                        path: shown,
+                        reason: mortar_diag::os_reason(&e),
+                    }),
+                );
+            }
+        }
+    }
+    if failed {
+        return Err(());
+    }
+    let files: Vec<mortar_resolve::version::SourceFile<'_>> = texts
+        .iter()
+        .map(|(path, bytes)| mortar_resolve::version::SourceFile { path, bytes })
+        .collect();
+    match mortar_resolve::version::VersionScript::load(&files) {
+        Ok(v) => Ok(Some(std::sync::Arc::new(v))),
+        Err(ds) => {
+            for (i, d) in ds.into_iter().enumerate() {
+                diag.emit(Key::new(30, 0, i as u64), d);
+            }
+            Err(())
+        }
+    }
+}
+
 fn internal(what: impl Into<String>) -> Diagnostic {
     Diagnostic::error(Kind::InternalError { what: what.into() })
 }
@@ -368,8 +417,10 @@ pub fn front<'s>(
     timer.phase(20, "input");
     let pool = capped(pool, &plan, store.stats().resident);
     let machine = inputs.target.machine;
-    // 30: resolve.
-    let outcome = mortar_resolve::resolve_inputs(&inputs, &plan, &pool);
+    // 30: the version script (`spec/script.md` §9; resolve.md §9.7,
+    // dyn.md D-114; WP-125), then resolve.
+    let versions = version_script(&plan, env.cwd, diag).ok()?;
+    let outcome = mortar_resolve::resolve_inputs_with(&inputs, &plan, &pool, versions.clone());
     if time_steps {
         print_steps("resolve", &outcome.steps.times, &outcome.steps.counts);
     }
@@ -629,6 +680,7 @@ pub fn front<'s>(
             got_output,
             relro: options.relro,
             pool: &pool,
+            versions: versions.as_deref(),
         };
         let (got, mut tables) = crate::dynlink::plan(&t, &mut slots, diag)?;
         // O-50 to O-52: the table, once `.dynsym`'s order is known.

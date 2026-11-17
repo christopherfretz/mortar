@@ -48,7 +48,7 @@ use mortar_synth::got::{GotAddrs, GotPlan, Region, SlotValues};
 use mortar_synth::hdr::{HdrAddrs, HdrPlan};
 use mortar_synth::image::{EhChunk, GotChunk, GotPart, HdrChunk, SymTable, SymtabChunk};
 use mortar_synth::symtab::{InternalValue, SymAddrs, SymCtx, SymtabPlan};
-use mortar_synth::version::{VerneedChunk, VersymChunk};
+use mortar_synth::version::{VerdefChunk, VerneedChunk, VersymChunk};
 use mortar_synth::{
     BuildIdPlan, Division, DynAddrs, DynRecord, DynSymSource, DynsymPlan, EhPlan, EhSource,
     EhValue, EhWho, FillCx, InterpPlan, PropertyPlan, RelUnit, RelaPlan, ShstrtabPlan, SizeCx,
@@ -164,6 +164,10 @@ pub struct SharedPlans<'a> {
     pub soname: Option<(&'a [u8], u32)>,
     /// The map's shared-object line records (`map::SharedLine::of(plan)`).
     pub line: &'a crate::map::SharedLine,
+    /// D-115: the version definitions, their `.dynstr` offsets set
+    /// (`mortar_synth::dynstr::dynstr_plan_versioned`); empty without a
+    /// named version node.
+    pub verdef: &'a mortar_synth::version::VerdefPlan,
 }
 
 /// The kind and the shared facts agree (an internal error otherwise: the
@@ -1530,6 +1534,16 @@ fn section_headers(link: &Link<'_, '_>) -> Result<Vec<Shdr>, Diagnostic> {
                         row.sh_link = synth_shndx(link, SynthKind::Dynstr).unwrap_or(0);
                         row.sh_info = link.layout.slots.verneed.len() as u32;
                     }
+                    // D-115.
+                    SynthKind::GnuVersionD => {
+                        row.sh_link = synth_shndx(link, SynthKind::Dynstr).unwrap_or(0);
+                        row.sh_info = link
+                            .synth
+                            .dynamic
+                            .as_ref()
+                            .and_then(|d| d.shared)
+                            .map_or(0, |s| u32::from(s.verdef.count()));
+                    }
                     _ => {}
                 }
             }
@@ -1685,6 +1699,7 @@ struct DynChunks<'v> {
     dynsym: DynsymChunk<'v>,
     dynstr: DynstrChunk<'v>,
     versym: VersymChunk<'v>,
+    verdef: VerdefChunk<'v>,
     verneed: VerneedChunk<'v>,
     dynamic: crate::dynamic::DynamicChunk<'v>,
     rela: RelaDynChunk,
@@ -1700,6 +1715,8 @@ impl<'v> DynChunks<'v> {
         let facts = l.arch.facts();
         let class = facts.class;
         let inputs = view.inputs();
+        let verdef = d.shared.map(|s| s.verdef);
+        let verdefs = verdef.map_or(0, mortar_synth::version::VerdefPlan::count);
         let nobits = |kind: SynthKind| {
             Nobits(
                 view.chunk_id(kind)
@@ -1724,13 +1741,16 @@ impl<'v> DynChunks<'v> {
                 verneed: &slots.verneed,
                 rpath: d.runpath.map(|r| r.1),
                 soname: d.shared.and_then(|s| s.soname),
+                verdef,
                 dynstr: &slots.dynstr,
                 names: d.src,
             },
-            versym: VersymChunk { plan: d.dynsym, inputs, verneed: &slots.verneed, class },
+            versym: VersymChunk { plan: d.dynsym, inputs, verneed: &slots.verneed, verdefs, class },
+            verdef: VerdefChunk { plan: verdef, class },
             verneed: VerneedChunk {
                 needed: &slots.needed,
                 verneed: &slots.verneed,
+                verdefs,
                 dynstr: &slots.dynstr,
                 names: d.src,
                 class,
@@ -1754,6 +1774,7 @@ impl<'v> DynChunks<'v> {
             SynthKind::Dynsym => &self.dynsym,
             SynthKind::Dynstr => &self.dynstr,
             SynthKind::GnuVersion => &self.versym,
+            SynthKind::GnuVersionD => &self.verdef,
             SynthKind::GnuVersionR => &self.verneed,
             SynthKind::Dynamic => &self.dynamic,
             SynthKind::RelaDyn => &self.rela,

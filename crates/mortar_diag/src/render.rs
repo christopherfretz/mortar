@@ -395,9 +395,11 @@ fn message<'d>(kind: &'d Kind, style: &Style<'_>, out: &mut String) -> Option<&'
         Kind::VersionedExport { name, version } => {
             out.push_str("versioned definition ");
             let shown = symbol_into(name, style, out);
-            out.push_str("@@");
             escaped(version, out);
-            out.push_str(" cannot be exported (version definitions are not supported)");
+            out.push_str(
+                " cannot be exported from an executable (mortar writes version definitions in a \
+                 shared object only)",
+            );
             return shown.then_some(name);
         }
         Kind::MetaMalformed { reason } => {

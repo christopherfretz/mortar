@@ -167,6 +167,14 @@ pub trait DynSymSource: DynNames + Sync {
     /// `Common`, `Internal`). `None` only for a key the program does not
     /// define.
     fn program(&self, key: SymbolId) -> Option<ProgramDef<'_>>;
+
+    /// Whether key `key` is a non-default `foo@V` (its version in its
+    /// name; `ProgramDef::version` of a `foo@@V` definition comes from
+    /// the defining entry). Only for messages.
+    fn non_default_version(&self, key: SymbolId) -> bool {
+        let _ = key;
+        false
+    }
     /// The version of the shared definition `entry` (its `versym` index,
     /// the hidden bit cleared, D-27, resolve §9.2): `None` or an index
     /// below 2 for an unversioned definition.
@@ -369,12 +377,26 @@ impl DynsymInputs<'_> {
                         name()
                     )));
                 }
+                // D-115 (WP-125): a shared object's versioned export has
+                // its version node (resolution refused it otherwise, resolve
+                // §9.7 rule 12); an executable's is refused (D-27).
                 if let Some(version) = p.version {
-                    return Err(Diagnostic::error(Kind::VersionedExport {
-                        name: name(),
-                        version: String::from_utf8_lossy(version).into_owned(),
-                    })
-                    .into());
+                    let at = if self.src.non_default_version(key) { "@" } else { "@@" };
+                    let v = self.resolution.props.get(key).map_or(0, |p| p.version);
+                    if !self.shared {
+                        return Err(Diagnostic::error(Kind::VersionedExport {
+                            name: name(),
+                            version: format!("{at}{}", String::from_utf8_lossy(version)),
+                        })
+                        .into());
+                    }
+                    if v == 0 {
+                        return Err(internal(format!(
+                            "{}{at}{} is exported without its version (spec/dyn.md D-115)",
+                            name(),
+                            String::from_utf8_lossy(version)
+                        )));
+                    }
                 }
                 // D-121: a preemptible IFUNC of a shared object is exported
                 // `STT_GNU_IFUNC` at its resolver and has no IPLT entry.
@@ -735,7 +757,24 @@ pub fn chunk_sizes(
     dynstr: &DynStr,
     class: Class,
 ) -> Result<Vec<(crate::chunks::SynthKind, u64)>, SynthError> {
+    chunk_sizes_versioned(plan, verneed, None, dynstr, class)
+}
+
+/// [`chunk_sizes`] for an output that may define versions (D-115):
+/// `.gnu.version_d` with `.gnu.version` when `verdef` has entries.
+///
+/// # Errors
+///
+/// As [`chunk_sizes`].
+pub fn chunk_sizes_versioned(
+    plan: &DynsymPlan,
+    verneed: &crate::version::Verneed,
+    verdef: Option<&crate::version::VerdefPlan>,
+    dynstr: &DynStr,
+    class: Class,
+) -> Result<Vec<(crate::chunks::SynthKind, u64)>, SynthError> {
     use crate::chunks::SynthKind as K;
+    let verdefs = verdef.map_or(0, crate::version::VerdefPlan::count);
     elf64(class)?;
     if dynstr.size == u32::MAX {
         return Err(feature(".dynstr of 4 GiB or more").into());
@@ -745,8 +784,13 @@ pub fn chunk_sizes(
         (K::Dynsym, dynsym_size(plan, class)),
         (K::Dynstr, u64::from(dynstr.size)),
     ];
+    if !verneed.is_empty() || verdefs != 0 {
+        v.push((K::GnuVersion, crate::version::versym_size_with(plan, verneed, verdefs)));
+    }
+    if let Some(d) = verdef.filter(|d| d.count() != 0) {
+        v.push((K::GnuVersionD, d.size()));
+    }
     if !verneed.is_empty() {
-        v.push((K::GnuVersion, crate::version::versym_size(plan, verneed)));
         v.push((K::GnuVersionR, crate::version::verneed_size(verneed)));
     }
     Ok(v)

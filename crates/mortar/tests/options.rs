@@ -100,11 +100,14 @@ const AUDIT: &[(&str, Proof)] = &[
         Test("crates/mortar/tests/sysroot.rs", "sysroot_directories_and_scripts_are_under_it"),
     ),
     ("-rpath-link", Check(dynamic_options)),
+    ("--version-script", Check(version_script)),
     ("--sort-common", Check(sort_common)),
     ("--sort-section", Check(sort_section)),
     ("--export-dynamic-symbol", Check(dynamic_options)),
     ("-init", Check(dynamic_options)),
     ("-fini", Check(dynamic_options)),
+    ("--undefined-version", Check(version_script)),
+    ("--no-undefined-version", Check(version_script)),
     ("-E", Check(dynamic_options)),
     ("--no-export-dynamic", Check(dynamic_options)),
     ("-Bsymbolic", Same(&["-Bsymbolic"], Some(bsymbolic_is_for_shared_objects))),
@@ -1315,6 +1318,64 @@ fn dynamic_options(cx: &Cx) {
     let st = cx.link(&["--no-dynamic-linker"], "dyn-ndl.out");
     assert!(!has_segment(cx, &st, "INTERP"));
     assert!(std::fs::read(&st).unwrap() == cx.bytes(&[], "dyn-ndl-plain.out"));
+}
+
+/// Two exported functions and a hidden one, for [`version_script`].
+const VDSO: &str = "\t.text\n\t.globl vfa\n\t.type vfa, %function\nvfa:\n\tret\n\
+    \t.globl vfb\n\t.type vfb, %function\nvfb:\n\tret\n\
+    \t.globl vfc\n\t.type vfc, %function\nvfc:\n\tret\n\
+    \t.section .note.GNU-stack,\"\",%progbits\n";
+
+// dyn.md D-114, D-115 (WP-125): `--version-script` in a shared object
+// gives `vfa@@V1`, `vfb@@V2` (parent V1), hides `vfc` and writes three
+// `Verdef`s; refused in an executable. A script name no file defines
+// warns; `--no-undefined-version` refuses it; `--undefined-version` after
+// it accepts again (the last wins). mortar runs here without the
+// verifier's map: plumb's accepted-option list does not have the three
+// rows yet (WP-125 hand-back), the link tests `tests/link/dyn/version/`
+// are judged by it when it does.
+fn version_script(cx: &Cx) {
+    let src = cx.scratch.write("v.s", VDSO);
+    let o = cx.run_in(&cx.gcc, &["-c".into(), src.into(), "-o".into(), "v.o".into()]);
+    assert!(o.success(), "gcc v.s: {}", o.stderr_text());
+    cx.scratch.write("v.map", "V1 { global: vfa; local: *; };\nV2 { global: vfb; } V1;\n");
+    cx.scratch.write("u.map", "V1 { global: vfa; nosuch; local: *; };\n");
+    let run = |args: &[&str]| {
+        let words: Vec<OsString> = args.iter().map(OsString::from).collect();
+        cx.run_in(Path::new(MORTAR), &words)
+    };
+    let o = run(&["-shared", "v.o", "--version-script", "v.map", "-o", "libv.so"]);
+    assert!(o.success(), "{}", o.stderr_text());
+    let lib = cx.scratch.join("libv.so");
+    let syms = cx.readelf("--dyn-syms", &lib);
+    assert!(syms.contains(" vfa@@V1") && syms.contains(" vfb@@V2"), "{syms}");
+    assert!(!syms.contains("vfc"), "{syms}");
+    let v = cx.readelf("-V", &lib);
+    assert!(v.contains("Version definition section '.gnu.version_d' contains 3 entries"), "{v}");
+    assert!(v.contains("Name: V2") && v.contains("Parent 1: V1"), "{v}");
+    let o = run(&["v.o", "-e", "vfa", "--version-script", "v.map", "-o", "v.out"]);
+    assert!(!o.success());
+    assert!(
+        o.stderr_text().contains("unsupported option: --version-script"),
+        "{}",
+        o.stderr_text()
+    );
+
+    let warn = "warning: version script assigns nosuch to V1, but no file defines it";
+    let o = run(&["-shared", "v.o", "--version-script", "u.map", "-o", "libu.so"]);
+    assert!(o.success() && o.stderr_text().contains(warn), "{}", o.stderr_text());
+    let base = ["-shared", "v.o", "--version-script", "u.map"];
+    let o = run(&[&base[..], &["--no-undefined-version", "-o", "libu2.so"]].concat());
+    assert!(!o.success(), "--no-undefined-version accepted nosuch");
+    assert!(
+        o.stderr_text().contains("error: version V1 of nosuch is not defined"),
+        "{}",
+        o.stderr_text()
+    );
+    let o =
+        run(&[&base[..], &["--no-undefined-version", "--undefined-version", "-o", "libu3.so"]]
+            .concat());
+    assert!(o.success() && o.stderr_text().contains(warn), "{}", o.stderr_text());
 }
 
 // ---- the reasons of noop rows -------------------------------------------------

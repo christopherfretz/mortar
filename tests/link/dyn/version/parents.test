@@ -1,0 +1,55 @@
+# dyn.md D-114, D-115, D-116 (WP-125): a two-node script with a parent.
+# `foo` gets V1 and `bar` V2; `local: *` hides `hid`. `.gnu.version_d`
+# reads as GNU ld's under `readelf -V` (the base named by the soname,
+# flags, indices, counts, the parent; lld and mold write no parent),
+# `.dynamic` has DT_VERDEF and DT_VERDEFNUM before DT_VERSYM as GNU ld
+# (lld and mold write DT_VERSYM first), and a host linked against the
+# library records the versions it binds and runs.
+#@ spec: dyn.md "D-114"; dyn.md "D-115"; dyn.md "D-116"; resolve.md "9.7"
+#@ arch: aarch64 x86_64
+
+cc -O1 -fPIC lib.c -o lib.o
+cc -O1 -fPIE main.c -o main.o
+link gcc -shared lib.o -Wl,--version-script,v.map -Wl,-soname,libp.so.1 -o libp.so.1
+check readelf -VW libp.so.1
+  has: Version definition section '.gnu.version_d' contains 3 entries
+  has: Rev: 1 Flags: BASE Index: 1 Cnt: 1 Name: libp.so.1
+  has: Rev: 1 Flags: none Index: 2 Cnt: 1 Name: V1
+check(bfd,mortar) readelf -VW libp.so.1
+  has: Rev: 1 Flags: none Index: 3 Cnt: 2 Name: V2
+  then: Parent 1: V1
+check(lld,mold) readelf -VW libp.so.1
+  has: Rev: 1 Flags: none Index: 3 Cnt: 1 Name: V2
+  not: Parent 1
+check readelf --dyn-syms -W libp.so.1
+  has: FUNC GLOBAL DEFAULT * foo@@V1$
+  has: FUNC GLOBAL DEFAULT * bar@@V2$
+  not: hid
+check(bfd,mortar) readelf -dW libp.so.1
+  has: (VERDEF)
+  then: (VERDEFNUM) 3
+  then: (VERSYM)
+check(lld,mold) readelf -dW libp.so.1
+  has: (VERSYM)
+  then: (VERDEF)
+  then: (VERDEFNUM) 3
+host gcc -pie main.o -L. -l:libp.so.1 -o prog
+check readelf -VW prog
+  has: File: libp.so.1 Cnt: 2
+  has: Name: V1 Flags: none Version:
+  has: Name: V2 Flags: none Version:
+run prog
+  stdout: 1 2
+
+#--- lib.c
+int foo(void) { return 1; }
+int bar(void) { return 2; }
+int hid(void) { return 3; }
+#--- v.map
+V1 { global: foo; local: *; };
+V2 { global: bar; } V1;
+#--- main.c
+#include <stdio.h>
+int foo(void);
+int bar(void);
+int main(void) { printf("%d %d\n", foo(), bar()); return 0; }

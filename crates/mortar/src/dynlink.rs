@@ -34,6 +34,7 @@ use mortar_synth::dynamic::{
 use mortar_synth::dynstr::DynNames;
 use mortar_synth::dynsym::{DynSymSource, DynsymInputs, ProgramDef, SharedDef};
 use mortar_synth::symtab::SymDef;
+use mortar_synth::version::VerdefPlan;
 use mortar_synth::{
     DynGotCx, DynamicPlan, GotPlan, InputCopyDefs, InterpPlan, KeyKinds, RelaPlan, SymSource,
     SynthKind,
@@ -203,6 +204,10 @@ impl DynSymSource for DynSource<'_, '_> {
         }
     }
 
+    fn non_default_version(&self, key: SymbolId) -> bool {
+        self.inputs.symbols.get(key).is_some_and(|k| k.version.is_some())
+    }
+
     fn bound_version(&self, entry: SymEntry) -> Option<VerIndex> {
         let v = self.shared_of(entry.file)?.versions.as_ref()?.versym()?;
         v.get(entry.index.0 as usize).map(|s| VerIndex(s.index()))
@@ -273,6 +278,9 @@ pub struct SharedTables {
     pub soname: Option<(Vec<u8>, u32)>,
     /// The map's shared-object line records (`map::SharedLine::of`).
     pub line: mortar_image::map::SharedLine,
+    /// D-115: the version definitions, their `.dynstr` offsets set
+    /// (empty without a named version node).
+    pub verdef: VerdefPlan,
 }
 
 /// What [`plan`] reads.
@@ -293,6 +301,9 @@ pub struct PlanIn<'a, 's> {
     pub got_output: GlobalFlags,
     pub relro: bool,
     pub pool: &'a Pool,
+    /// The line's version script (`spec/dyn.md` D-114, D-115; WP-125):
+    /// its nodes are a shared object's `.gnu.version_d`.
+    pub versions: Option<&'a mortar_resolve::version::VersionScript>,
 }
 
 impl std::fmt::Debug for PlanIn<'_, '_> {
@@ -387,6 +398,24 @@ fn arrays(t: &PlanIn<'_, '_>) -> [bool; 3] {
     has
 }
 
+/// D-115's plan of a shared object: the base (`soname`, else the
+/// output's basename), then the script's named nodes in order with their
+/// parents; empty without one.
+fn verdef_plan(t: &PlanIn<'_, '_>, soname: Option<&[u8]>) -> VerdefPlan {
+    let Some(script) = t.versions.filter(|s| !s.is_anonymous()) else {
+        return VerdefPlan::default();
+    };
+    let output = t.plan.output.as_deref().unwrap_or("a.out".as_ref());
+    let basename = std::path::Path::new(output).file_name().unwrap_or(output);
+    let base = soname.unwrap_or(basename.as_encoded_bytes());
+    let nodes: Vec<(&[u8], &[usize])> = script
+        .nodes()
+        .iter()
+        .map(|n| (n.name.as_deref().unwrap_or_default(), &*n.parents))
+        .collect();
+    VerdefPlan::new(base, &nodes)
+}
+
 /// The `.dynamic` kind of the plan's output and its `.interp` plan (none
 /// in a `StaticPie`, D-1), or the refusal reported through `emit`.
 fn kind_and_interp(
@@ -404,6 +433,8 @@ fn kind_and_interp(
             symbolic: plan.symbolic().is_some_and(mortar_cli::SymbolicLine::writes_symbolic_tags),
             // Set from the scan's demands by `plan` (D-119).
             static_tls: false,
+            // Set from the version script by `plan` (D-115).
+            verdef: 0,
         }),
         _ => {
             emit(refused("this output kind with .dynamic"));
@@ -481,11 +512,16 @@ pub fn plan(
         join_rpath(&t.plan.dynamic.rpath.iter().map(|p| p.as_encoded_bytes()).collect::<Vec<_>>());
     // D-116: a shared object's soname after the needed names.
     let soname_bytes = t.plan.dynamic.soname.as_ref().map(|s| s.as_encoded_bytes().to_vec());
+    // D-115: the version definitions of a shared object, the base named
+    // by the soname, else the output's basename.
+    let mut verdef =
+        if shared { verdef_plan(t, soname_bytes.as_deref()) } else { VerdefPlan::default() };
     let (dynstr, soname_off) = if shared {
-        mortar_synth::dynstr::dynstr_plan_shared(
+        mortar_synth::dynstr::dynstr_plan_versioned(
             &dynsym,
             t.needed,
             soname_bytes.as_deref(),
+            Some(&mut verdef),
             &verneed,
             rpath.as_deref(),
             t.src,
@@ -493,9 +529,18 @@ pub fn plan(
     } else {
         (mortar_synth::dynstr_plan(&dynsym, t.needed, &verneed, rpath.as_deref(), t.src), None)
     };
-    let sizes = mortar_synth::dynsym::chunk_sizes(&dynsym, &verneed, &dynstr, facts.class)
-        .map_err(|e| emit(e.into_diagnostic()))
-        .ok()?;
+    if let DynKind::Shared(s) = &mut kind {
+        s.verdef = verdef.count();
+    }
+    let sizes = mortar_synth::dynsym::chunk_sizes_versioned(
+        &dynsym,
+        &verneed,
+        Some(&verdef),
+        &dynstr,
+        facts.class,
+    )
+    .map_err(|e| emit(e.into_diagnostic()))
+    .ok()?;
     slots.verneed = verneed.iter().cloned().collect();
     slots.dynstr = dynstr;
     // D-46, D-48, D-41; D-120 in a shared object.
@@ -587,7 +632,7 @@ pub fn plan(
                 return None;
             }
         };
-        Some(SharedTables { soname, line })
+        Some(SharedTables { soname, line, verdef })
     } else {
         None
     };
