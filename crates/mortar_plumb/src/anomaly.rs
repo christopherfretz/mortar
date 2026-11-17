@@ -26,15 +26,7 @@ pub fn classify(linker: Format, output: &[u8], f: &Finding) -> Option<&'static s
             "A6: GNU ld, lld and mold fill the GOT slot of a section symbol plus an addend without the addend",
         );
     }
-    if bfd
-        && f.rule == Rule::Structure(8)
-        && f.message.contains(") is outside its section")
-        && f
-            .message
-            .split('\'')
-            .nth(1)
-            .is_some_and(|n| crate::shared::SEVEN.contains(&n) && dyn_sym_object(output, n))
-    {
+    if bfd && a59(output, f) {
         return Some(
             "A59: GNU ld defines the program's own _end, _edata, __bss_start a needed library defines with the library's type and size (STT_OBJECT, 1 byte past the end of its section) (dyn.md D-21 item 2, §13.1)",
         );
@@ -312,7 +304,7 @@ fn dynamic(linker: Format, output: &[u8], f: &Finding) -> Option<&'static str> {
     }
     if bfd
         && d(7)
-        && m.contains("is exported, and no needed library references or defines it and no object's reference")
+        && m.contains("is exported under -E, and no needed library references or defines it and no object's reference")
         && seven(quoted(m))
     {
         return Some(
@@ -511,6 +503,18 @@ fn exports(output: &[u8]) -> bool {
         let shndx = u16::from_le_bytes([e[6], e[7]]);
         shndx != 0 && e[4] & 0xf != mortar_elf::consts::STT_SECTION
     })
+}
+
+/// A59's shape: "... is outside its section" on one of the seven that
+/// `.dynsym` defines as `STT_OBJECT`.
+fn a59(output: &[u8], f: &Finding) -> bool {
+    f.rule == Rule::Structure(8)
+        && f.message.contains(") is outside its section")
+        && f
+            .message
+            .split('\'')
+            .nth(1)
+            .is_some_and(|n| crate::shared::SEVEN.contains(&n) && dyn_sym_object(output, n))
 }
 
 /// `.dynsym` defines `name` as `STT_OBJECT` (A59's form).

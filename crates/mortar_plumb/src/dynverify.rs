@@ -237,11 +237,11 @@ fn judge(
     // serves the program's reference), and the link defines each that a
     // needed or used object references or defines, or that an object
     // references, whatever the output holds (mold defines none: A57).
-    let seven = |n: &str| crate::shared::SEVEN.contains(&n);
+    let is_seven = |n: &str| crate::shared::SEVEN.contains(&n);
     let mut file0: Vec<String> = pre
         .into_iter()
         .filter(|n| {
-            seven(n)
+            is_seven(n)
                 || !model
                     .dsos
                     .iter()
@@ -255,7 +255,13 @@ fn judge(
                 .get(n)
                 .is_some_and(|k| !k.defined && !k.hidden && (k.strong_ref || k.weak_ref));
             let dynamic = model.ref_dynamic.contains(n) || model.def_dynamic.contains(n);
-            if !input_defs.contains(n) && !file0.iter().any(|f| f == n) && (referenced || dynamic)
+            // One `.dynsym` defines (absent from `.symtab`, or stripped)
+            // is the link's too, so D-21 item 2's converse judges it.
+            let exported =
+                dout.syms.iter().skip(1).any(|s| s.name == n && s.st_shndx != 0);
+            if !input_defs.contains(n)
+                && !file0.iter().any(|f| f == n)
+                && (referenced || dynamic || exported)
             {
                 file0.push(n.to_string());
             }

@@ -899,10 +899,12 @@ fn pd7(
                 && let Some(&j) = by_name.get(name.as_str())
                 && out.syms[j].defined()
             {
+                // Under -E the message says so (GNU ld's form, A60).
+                let e = if line.export_dynamic { " under -E" } else { "" };
                 v.push(sym_finding(
                     7,
                     name,
-                    format!("'{name}' is exported, and no needed library references or defines it and no object's reference under -E or --dynamic-list exports it (D-21 item 2)"),
+                    format!("'{name}' is exported{e}, and no needed library references or defines it and no object's reference under -E or --dynamic-list exports it (D-21 item 2)"),
                 ));
             }
             continue;
