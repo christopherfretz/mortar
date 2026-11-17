@@ -364,7 +364,13 @@ fn wp177_case_a_judged_by_the_owning_record() {
         assert_eq!(count(&none), 2, "{from}: {}", text(&none));
         if !from.contains("eh_frame") {
             let t = text(&none);
-            assert!(t.contains(">>> no FDE of b.o has an LSDA at or before this place"), "{t}");
+            let n = ">>> no FDE has an LSDA in this section at or before this place: the \
+                     field's owner is not known\n";
+            assert!(t.contains(n), "{t}");
+        } else {
+            let t = text(&none);
+            let n = ">>> the field is in no record of this section: its owner is not known\n";
+            assert!(t.contains(n), "{t}");
         }
     }
 }

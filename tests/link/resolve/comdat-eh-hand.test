@@ -5,6 +5,10 @@
 # - cie.o: the personality pointer of a CIE that f's live FDE uses: an
 #   error, in every output kind;
 # - lsda.o: a word of f2's LSDA, f2 live: an error;
+# - x.o, tb.o: fx's live FDE (x.o) reads its LSDA from tb.o's table, after
+#   the start of tb.o's dead FDE (g, a dropped copy): the word is fx's, an
+#   error (the review of WP-177: the starts are every file's FDEs; lld
+#   refuses it too, GNU ld and mold link it);
 # The same word in an LSDA whose owner is dead links, and is 0:
 # comdat-eh-dead.test.pending. lld refuses both; GNU ld and mold link
 # both (GNU ld writes 0 into each field; L3 finds R5 there:
@@ -15,6 +19,8 @@ cc -O1 m.c -o m.o
 as a.s -o a.o
 as cie.s -o cie.o
 as lsda.s -o lsda.o
+as x.s -o x.o
+as tb.s -o tb.o
 
 link(lld,mortar) gcc -static m.o a.o cie.o -o cie
   exit: fail
@@ -45,6 +51,13 @@ link(mortar,aarch64,x86_64) gcc m.o a.o lsda.o -o lsda-pie
 link(mortar,aarch64,x86_64) gcc -shared a.o lsda.o -o lsda.so
   exit: fail
   diag(mortar): relocation refers to a symbol in a discarded section: DW.ref.pp
+
+link(lld,mortar) gcc -static m.o a.o x.o tb.o -o xfile
+  exit: fail
+  diag(lld): relocation refers to a symbol in a discarded section: DW.ref.pp
+  diag(mortar): relocation refers to a symbol in a discarded section: DW.ref.pp
+  diag(mortar): >>> referenced by tb.o:(.gcc_except_table+0x
+  diag(mortar): >>> the field is in the exception table (LSDA) of fx, which is written
 
 #--- m.c
 int main(void) { return 0; }
@@ -105,3 +118,43 @@ f2:
 	.p2align 2
 	.4byte DW.ref.pp-.
 .Lend:
+#--- x.s
+	.text
+	.globl fx
+	.type fx, @function
+fx:
+	.cfi_startproc
+	.cfi_lsda 0x1b, xlsda
+	ret
+	.cfi_endproc
+	.size fx, .-fx
+#--- tb.s
+	.section .data.rel.local.DW.ref.pp,"awG",@progbits,DW.ref.pp,comdat
+	.p2align 3
+	.type DW.ref.pp, @object
+	.size DW.ref.pp, 8
+DW.ref.pp:
+	.4byte 0, 0
+	.section .text.g,"axG",@progbits,g,comdat
+	.weak g
+	.type g, @function
+g:
+	.cfi_startproc
+	.cfi_lsda 0x1b, .Lg
+	ret
+	.cfi_endproc
+	.size g, .-g
+	.section .gcc_except_table,"a",@progbits
+	.p2align 2
+.Lg:
+	.byte 0xff, 0xff, 0x1, 0x0
+	.globl xlsda
+xlsda:
+	.byte 0xff, 0x9b
+	.uleb128 .Lxend-.Lxstart
+.Lxstart:
+	.byte 0x1
+	.uleb128 0
+	.p2align 2
+	.4byte DW.ref.pp-.
+.Lxend:

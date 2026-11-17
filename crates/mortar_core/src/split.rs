@@ -82,7 +82,8 @@ pub enum EhOwner {
     /// A record that is not written: its fields are not either.
     Dead,
     /// No record owns the field (a `.gcc_except_table` offset before
-    /// every LSDA start of its file's FDEs; a place outside every record).
+    /// every LSDA start in its section; an `.eh_frame` place outside
+    /// every record).
     None,
 }
 

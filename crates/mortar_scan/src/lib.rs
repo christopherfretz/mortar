@@ -141,8 +141,9 @@ pub trait EhOwners: Sync + std::fmt::Debug {
     /// `offset`.
     fn frame(&self, section: SectionId, offset: u64) -> EhOwner;
     /// The FDE that owns the field at `offset` of the `.gcc_except_table`
-    /// section `table`: of `table`'s file, the one whose LSDA pointer is
-    /// the greatest LSDA start `<= offset`.
+    /// section `table`: of every parsed FDE whose LSDA pointer names
+    /// `table`, whatever its file, the one whose LSDA start is the
+    /// greatest `<= offset`.
     fn lsda(&self, table: SectionId, offset: u64) -> EhOwner;
 }
 

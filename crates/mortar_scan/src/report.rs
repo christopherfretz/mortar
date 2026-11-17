@@ -163,10 +163,11 @@ fn eh_note(view: &View<'_, '_>, d: Diagnostic, r: RefId) -> Diagnostic {
             let f = code.map_or_else(|| "a live function".to_owned(), |c| function_at(view, c));
             d.note(format!("the field is in the {what} of {f}, which is written"))
         }
-        Some(EhOwner::None) => d.note(format!(
-            "no FDE of {} has an LSDA at or before this place: the field's owner is not known",
-            file_text(&view.inputs.files[r.file].display())
-        )),
+        Some(EhOwner::None) => d.note(match place {
+            EhPlace::ExceptTable => "no FDE has an LSDA in this section at or before this \
+                                     place: the field's owner is not known",
+            EhPlace::Frame => "the field is in no record of this section: its owner is not known",
+        }),
         Some(EhOwner::Dead) | None => d,
     }
 }

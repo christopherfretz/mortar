@@ -9,7 +9,6 @@
 
 use std::sync::OnceLock;
 
-use mortar_core::resolution::Resolution;
 use mortar_core::split::EhOwner;
 use mortar_core::{Liveness, SectionId};
 use mortar_merge::EhFrames;
@@ -21,7 +20,6 @@ pub struct Owners<'a> {
     /// Phase 60's `eh_relocs`: per `frames.sections` row.
     pub relocs: &'a [Box<[EhReloc]>],
     pub liveness: &'a Liveness,
-    pub resolution: &'a Resolution,
     lsda: OnceLock<LsdaStarts>,
 }
 
@@ -37,9 +35,8 @@ impl<'a> Owners<'a> {
         frames: &'a EhFrames,
         relocs: &'a [Box<[EhReloc]>],
         liveness: &'a Liveness,
-        resolution: &'a Resolution,
     ) -> Self {
-        Self { frames, relocs, liveness, resolution, lsda: OnceLock::new() }
+        Self { frames, relocs, liveness, lsda: OnceLock::new() }
     }
 }
 
@@ -49,15 +46,9 @@ impl mortar_scan::EhOwners for Owners<'_> {
     }
 
     fn lsda(&self, table: SectionId, offset: u64) -> EhOwner {
-        let starts = self.lsda.get_or_init(|| {
-            let file = |s| self.resolution.file_of(s);
-            LsdaStarts::new(
-                self.frames,
-                self.relocs,
-                |s| self.liveness.is_live(s),
-                |a, b| file(a).is_some() && file(a) == file(b),
-            )
-        });
+        let starts = self
+            .lsda
+            .get_or_init(|| LsdaStarts::new(self.frames, self.relocs, |s| self.liveness.is_live(s)));
         starts.owner(table, offset)
     }
 }

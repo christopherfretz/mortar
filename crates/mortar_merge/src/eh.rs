@@ -342,10 +342,11 @@ impl EhFrames {
 /// One [`LsdaStarts`] row: `(table, start, live, code)`.
 type LsdaRow = (SectionId, u64, bool, Option<(SectionId, u64)>);
 
-/// WP-177 (`spec/resolve.md` §6.3): the LSDA starts of every FDE that has
-/// an LSDA pointer into a section of its own file, for the owner of a
-/// `.gcc_except_table` field: the FDE whose LSDA start is the greatest
-/// `<=` the field's offset. No LSDA is parsed: the starts are enough.
+/// WP-177 (`spec/resolve.md` §6.3): the LSDA starts of every parsed FDE
+/// that has an LSDA pointer into a section, whatever file the FDE is in,
+/// for the owner of a `.gcc_except_table` field: the FDE whose LSDA start
+/// is the greatest `<=` the field's offset. No LSDA is parsed: the starts
+/// are enough.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LsdaStarts {
     /// `(table, start, live, code)`, sorted by `(table, start)`, one row
@@ -357,19 +358,21 @@ pub struct LsdaStarts {
 impl LsdaStarts {
     /// The starts of `frames`, whose relocations are `relocs` (one list
     /// per [`EhFrames::sections`] row, sorted by offset: phase 60's
-    /// `eh_relocs`). `live` is S-41's test of a code section;
-    /// `same_file(eh, table)` whether two sections are of one file. An
-    /// LSDA pointer with no relocation, or whose target is not a section,
-    /// gives no start.
+    /// `eh_relocs`). `live` is S-41's test of a code section. An LSDA
+    /// pointer with no relocation, or whose target is not a section,
+    /// gives no start. An FDE of one file whose LSDA is in another file's
+    /// table (`.cfi_lsda` of a global the other file defines) gives a
+    /// start in that table like any other: every FDE that reads a table
+    /// is among its starts, so no field is judged by an FDE that does not
+    /// read it.
     #[must_use]
     pub fn new(
         frames: &EhFrames,
         relocs: &[Box<[EhReloc]>],
         live: impl Fn(SectionId) -> bool,
-        same_file: impl Fn(SectionId, SectionId) -> bool,
     ) -> Self {
         let mut rows = Vec::new();
-        for (row, s) in frames.sections.iter().enumerate() {
+        for row in 0..frames.sections.len() {
             let Some(rel) = relocs.get(row) else { continue };
             for rec in frames.records_of(row) {
                 let Some(f) = rec.fde() else { continue };
@@ -380,9 +383,6 @@ impl LsdaStarts {
                     continue;
                 };
                 let Target::Section { section: table, value } = r.target else { continue };
-                if !same_file(s.section, table) {
-                    continue;
-                }
                 let start = value.wrapping_add(r.addend.cast_unsigned());
                 rows.push((table, start, fde_live(f, &live), fde_code(f)));
             }

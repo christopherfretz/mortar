@@ -550,7 +550,7 @@ mod owners {
         let (b, r, _) = shape();
         let f = one(&b, &r).unwrap();
         let relocs = [r.clone().into_boxed_slice()];
-        let starts = LsdaStarts::new(&f, &relocs, live, |_, _| true);
+        let starts = LsdaStarts::new(&f, &relocs, live);
         let own = |off| starts.owner(TABLE, off);
         let live1 = EhOwner::Live { code: Some((TEXT, 0x10)) };
         // Before the first start: no owner.
@@ -562,11 +562,55 @@ mod owners {
         // Two FDEs with one start, one live: live.
         assert_eq!(own(0x30), EhOwner::Live { code: Some((TEXT2, 0x10)) });
         assert_eq!(own(0x1000), EhOwner::Live { code: Some((TEXT2, 0x10)) });
-        // A table no LSDA pointer names; a file whose FDEs are another's.
+        // A table no LSDA pointer names.
         assert_eq!(starts.owner(OTHER, 0x8), EhOwner::None);
-        let none = LsdaStarts::new(&f, &relocs, live, |_, _| false);
-        assert_eq!(none.owner(TABLE, 0x8), EhOwner::None);
         // Without relocations, no start.
-        assert_eq!(LsdaStarts::new(&f, &[], live, |_, _| true).owner(TABLE, 8), EhOwner::None);
+        assert_eq!(LsdaStarts::new(&f, &[], live).owner(TABLE, 8), EhOwner::None);
+    }
+
+    /// One `zPLR` CIE and one FDE of `code` whose LSDA pointer names
+    /// `TABLE` at `start` (the review of WP-177: `.cfi_lsda` of a global
+    /// another file defines).
+    fn lsda_fde(code: SectionId, start: u64) -> (Vec<u8>, Vec<EhReloc>) {
+        let mut b = cie("zPLR", &[0x9b, 0, 0, 0, 0, 0x1b, 0x1b]);
+        let at = b.len();
+        b.extend(fde(at, 0, 0, true, Some(0)));
+        b.extend_from_slice(&[0; 4]);
+        let bare = [code_at(at as u64 + 8, code)];
+        let f = one(&b, &bare).unwrap();
+        let l = f.records[1].fde().unwrap().lsda.unwrap().at as u64;
+        let p = f.records[0].cie().unwrap().personality.unwrap().at as u64;
+        let r = vec![
+            pc32(p, Target::Undefined { symbol: SymbolId(7), weak: true }),
+            code_at(at as u64 + 8, code),
+            pc32(at as u64 + l, Target::Section { section: TABLE, value: start }),
+        ];
+        (b, r)
+    }
+
+    fn code_at(offset: u64, section: SectionId) -> EhReloc {
+        pc32(offset, Target::Section { section, value: 0x10 })
+    }
+
+    #[test]
+    fn wp177_lsda_starts_of_every_file() {
+        // File 0's FDE reads its LSDA at 0x30 of TABLE, a table of file 1
+        // whose own FDE (code DEAD) starts at 0x10: a field at 0x34 is the
+        // file 0 FDE's, live (the error) when its code is, dead (the field
+        // 0) when not; a field at 0x14 is file 1's dead FDE's.
+        for (code, want) in [
+            (TEXT, EhOwner::Live { code: Some((TEXT, 0x10)) }),
+            (DEAD, EhOwner::Dead),
+        ] {
+            let f = run(&[lsda_fde(code, 0x30), lsda_fde(DEAD, 0x10)]).unwrap();
+            assert_eq!(f.sections.len(), 2);
+            let relocs: Vec<Box<[EhReloc]>> =
+                [lsda_fde(code, 0x30).1, lsda_fde(DEAD, 0x10).1].map(Into::into).into();
+            let starts = LsdaStarts::new(&f, &relocs, live);
+            assert_eq!(starts.owner(TABLE, 0x34), want);
+            assert_eq!(starts.owner(TABLE, 0x30), want);
+            assert_eq!(starts.owner(TABLE, 0x14), EhOwner::Dead);
+            assert_eq!(starts.owner(TABLE, 0x8), EhOwner::None);
+        }
     }
 }
