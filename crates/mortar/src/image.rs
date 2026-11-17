@@ -218,6 +218,8 @@ pub fn with_link<T>(
                     relro: d.relro,
                     note_mason: d.note_mason.as_ref(),
                     syms: cx,
+                    // WP-123 joins `Shared` (`link::SharedPlans`).
+                    shared: None,
                 }),
                 _ => None,
             },

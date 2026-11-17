@@ -1,0 +1,68 @@
+# `--warn-common` warns when a common symbol is merged with another
+# common or overridden by a definition: GNU ld's five texts map to
+# mortar's two named diagnostics, `common-overridden` and
+# `multiple-common`, one per symbol at its second mention (resolve.md
+# §3.3, diag.md §3.1). Without the option there is no warning; a warning
+# does not change the exit status, `--fatal-warnings` makes the link
+# fail. An archive member that overrides a common is named
+# `libw.a(w2.o)`. GNU ld 2.44 has no `--no-warn-common` (lld and mold do).
+# lld does not extract an archive member for a symbol a
+# common defines, so it neither warns nor checks the archive link.
+#@ spec: resolve.md §3.3
+
+cc -O0 -fcommon main.c -o main.o
+cc -O0 -fcommon w1.c -o w1.o
+cc -O0 -fcommon w2.c -o w2.o
+cc -O0 -fcommon w3.c -o w3.o
+cc -O0 -fcommon use.c -o use.o
+ar rcs libw.a w2.o
+link gcc -static -no-pie main.o w3.o w1.o w2.o -Wl,--warn-common -o prog
+  diag(bfd): w2.o: warning: definition of `x' overriding common from *w1.o
+  diag(bfd): w2.o and *w1.o: warning: multiple common of `y'
+  diag(bfd): w2.o: warning: common of `z' overriding smaller common from *w3.o
+  diag(mortar): warning: *w2.o:(x): common symbol x is overridden by a definition
+  diag(mortar): warning: *w2.o:(y): multiple common symbols: y
+  diag(mortar): warning: *w2.o:(z): multiple common symbols: z
+  diag(lld): warning: common x is overridden
+  diag(lld): warning: multiple common of y
+  diag(lld): warning: multiple common of z
+  diag(mold): warning: *multiple common symbols: y
+  diag(mold): warning: *multiple common symbols: z
+run prog
+  stdout: x 1 y 0 z 0
+link gcc -static -no-pie main.o w3.o w1.o w2.o -o quiet
+  no-diag: common
+link(lld,mold,mortar) gcc -static -no-pie main.o w3.o w1.o w2.o -Wl,--warn-common -Wl,--no-warn-common -o quiet2
+  no-diag: common
+link gcc -static -no-pie main.o w3.o w1.o w2.o -Wl,--warn-common -Wl,--fatal-warnings -o fatal
+  exit: fail
+  diag(mortar): error: *w2.o:(y): multiple common symbols: y
+link(bfd,mortar,mold) gcc -static -no-pie use.o w1.o libw.a -Wl,--warn-common -o member
+  diag(bfd): libw.a(w2.o): warning: definition of `x' overriding common from *w1.o
+  diag(mortar): warning: libw.a(w2.o):(x): common symbol x is overridden by a definition
+  diag(mold): warning: *multiple common symbols: x
+
+#--- main.c
+#include <stdio.h>
+extern int x, y;
+extern long long z;
+int main(void) {
+  printf("x %d y %d z %lld\n", x, y, z);
+  return 0;
+}
+#--- w1.c
+int x;
+int y;
+#--- w2.c
+int x = 1;
+int y;
+long long z;
+#--- w3.c
+int z;
+#--- use.c
+#include <stdio.h>
+extern int x;
+int main(void) {
+  printf("x %d\n", x);
+  return 0;
+}

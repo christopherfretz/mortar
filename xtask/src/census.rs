@@ -75,12 +75,14 @@ impl Lang {
     }
 }
 
-/// The objects a variation links: plain, `-fsanitize=address`, `-flto`.
+/// The objects a variation links: plain, `-fsanitize=address`, `-flto`,
+/// `-fPIC` (a shared object's, WP-120).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Flavour {
     Plain,
     Asan,
     Lto,
+    Pic,
 }
 
 impl Flavour {
@@ -89,6 +91,7 @@ impl Flavour {
             Self::Plain => "plain",
             Self::Asan => "asan",
             Self::Lto => "lto",
+            Self::Pic => "pic",
         }
     }
 
@@ -97,6 +100,7 @@ impl Flavour {
             Self::Plain => &[],
             Self::Asan => &["-fsanitize=address"],
             Self::Lto => &["-flto"],
+            Self::Pic => &["-fPIC"],
         }
     }
 }
@@ -146,7 +150,33 @@ pub const VARIATIONS: &[Variation] = &[
     v("x-bdynamic", &["-Wl,-Bstatic", "-Wl,-Bdynamic"], Flavour::Plain),
     v("x-runpath-old", &["-Wl,-rpath,/x", "-Wl,--disable-new-dtags"], Flavour::Plain),
     v("x-ztext", &["-Wl,-z,text"], Flavour::Plain),
+    // The `-shared` lines (WP-120, spec/harness.md LT-7): a shared object
+    // of the hello, loaded by `dlopen` from a loader the driver links.
+    v("shared", &["-shared"], Flavour::Pic),
+    v("shared-soname", &["-shared", "-Wl,-soname,libcensus.so"], Flavour::Pic),
+    v(
+        "shared-ldshared",
+        &["-shared", "-Wl,-O1", "-Wl,-Bsymbolic-functions", "-Wl,-z,relro"],
+        Flavour::Pic,
+    ),
 ];
+
+/// The source of the loader of a `-shared` line's library (LT-7): it
+/// `dlopen`s its argument and prints whether that loaded. C that is also
+/// C++, so that every driver links it.
+const LOADER: (&str, &str) = (
+    "census-load.c",
+    "#include <dlfcn.h>\n#include <stdio.h>\nint main(int argc, char **argv) {\n\
+     void *h = argc > 1 ? dlopen(argv[1], RTLD_NOW) : 0;\n\
+     puts(h ? \"loaded\" : \"failed\");\nreturn h ? 0 : 1;\n}\n",
+);
+
+impl Variation {
+    /// Whether the line links a shared object (LT-7).
+    pub fn is_shared(&self) -> bool {
+        self.args.contains(&"-shared")
+    }
+}
 
 /// The drivers of `--quick` (by [`Driver::name`]'s family and language).
 pub const QUICK_DRIVERS: &[&str] = &["gcc/c", "gcc/c++", "gcc/fortran", "clang22/c++"];
@@ -173,6 +203,7 @@ pub const OUT_OF_M2: &[(&str, &str)] = &[
     ),
     ("unsupported feature: dynamically linked output on i386", "i386 dynamic output is M4"),
     ("unsupported feature: position-independent executable output", "i386 PIE output is M4"),
+    ("unsupported option: -shared", "shared-object output is M4 (spec/dyn.md D-112; WP-123)"),
 ];
 
 /// Lines whose REFERENCE program is known broken: the variation, the
@@ -437,16 +468,52 @@ impl Lane {
     }
 
     fn run_program(&self, arch: Arch, exe: &Path) -> Result<(End, String), String> {
+        self.run_with(arch, exe, &[])
+    }
+
+    fn run_with(&self, arch: Arch, exe: &Path, extra: &[String]) -> Result<(End, String), String> {
         let dir = exe.parent().unwrap_or(Path::new("."));
-        let (program, args) = match &self.arch_tools[&arch].runner {
+        let (program, mut args) = match &self.arch_tools[&arch].runner {
             Runner::Native => (exe.to_path_buf(), Vec::new()),
             Runner::Emulated { qemu, sysroot } => (
                 qemu.clone(),
                 vec!["-L".to_owned(), sysroot.display().to_string(), exe.display().to_string()],
             ),
         };
+        args.extend(extra.iter().cloned());
         let o = run(&program, &args, dir, &[], RUN_LIMITS)?;
         Ok((o.end, String::from_utf8_lossy(&o.stdout).into_owned()))
+    }
+
+    /// What a `-shared` line's library does (LT-7): the loader, linked by
+    /// the line's driver with GNU ld into `dir` once, `dlopen`s it.
+    fn load(&self, d: &Driver, dir: &Path, library: &Path) -> Result<(End, String), String> {
+        let loader = dir.join("census-load");
+        if !loader.is_file() {
+            let source = dir.join(LOADER.0);
+            std::fs::write(&source, LOADER.1).map_err(|e| format!("{}: {e}", source.display()))?;
+            let mut argv = d.args.clone();
+            argv.push(format!("-B{}/", self.wrap_dir(d.arch).display()));
+            argv.extend([source.display().to_string(), "-o".to_owned()]);
+            argv.push(loader.display().to_string());
+            let env: Vec<(&str, &str)> =
+                d.env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+            let linked = run(&d.program, &argv, dir, &env, TOOL_LIMITS)?;
+            if !linked.end.success() {
+                return Err(format!("the loader: {}", linked.first_error_line()));
+            }
+        }
+        self.run_with(d.arch, &loader, &[library.display().to_string()])
+    }
+
+    /// The line's output, run: the program, or a `-shared` line's library
+    /// under the loader.
+    fn try_output(&self, d: &Driver, var: &Variation, out: &Path) -> Result<(End, String), String> {
+        if var.is_shared() {
+            self.load(d, out.parent().unwrap_or(Path::new(".")), out)
+        } else {
+            self.run_program(d.arch, out)
+        }
     }
 
     /// The run of `d`'s reference program in the variation `oracle`,
@@ -507,7 +574,7 @@ impl Lane {
             .map(str::to_owned)
             .collect();
         let ref_run = if linked.end.success() && reference.is_file() {
-            match self.run_program(d.arch, &reference) {
+            match self.try_output(d, var, &reference) {
                 Ok(r) => Some(r),
                 Err(e) => return Outcome::Fail(format!("the reference's program: {e}")),
             }
@@ -560,7 +627,7 @@ impl Lane {
                 Outcome::Fail(format!("refused, no rule puts it out of M2: {first}"))
             };
         }
-        let ours = match self.run_program(d.arch, &out) {
+        let ours = match self.try_output(d, var, &out) {
             Ok(r) => r,
             Err(e) => return Outcome::Fail(format!("mortar's program: {e}")),
         };
@@ -790,6 +857,7 @@ pub fn run_lane(args: &Args) -> Result<bool, String> {
     });
     print!("{}", report(&results, &notes, &compile_failures));
     let failed = results.iter().filter(|l| !l.outcome.passes()).count() + compile_failures.len();
+    eprintln!("{}", shared_count(&results));
     eprintln!(
         "census: {} lines, {} drivers, {} pass, {failed} fail, in {:.1} s",
         results.len(),
@@ -816,6 +884,24 @@ fn set_executable(p: &Path) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o755))
         .map_err(|e| format!("{}: {e}", p.display()))
+}
+
+/// The `-shared` lines' count (LT-7): how many, how many mortar linked
+/// (its library loaded as the reference's and the verifier passed it, or
+/// its finding is known), how many it refused by name.
+pub fn shared_count(lines: &[Line]) -> String {
+    let shared: Vec<&Line> = lines
+        .iter()
+        .filter(|l| VARIATIONS.iter().any(|v| v.name == l.variation && v.is_shared()))
+        .collect();
+    let linked = shared
+        .iter()
+        .filter(|l| {
+            matches!(l.outcome, Outcome::Ok | Outcome::OkSameFailure | Outcome::KnownFinding(..))
+        })
+        .count();
+    let refused = shared.iter().filter(|l| matches!(l.outcome, Outcome::OutOfM2(..))).count();
+    format!("census: -shared: {} lines, {linked} linked, {refused} refused by name", shared.len())
 }
 
 /// The table (architecture, variation, outcome: count), then every line
@@ -904,6 +990,28 @@ mod tests {
             assert!(["gcc", "clang22", "clang19", "kiln"].contains(&family));
             assert!(["c", "c++", "fortran"].contains(&lang));
         }
+    }
+
+    // LT-7: the `-shared` lines are counted, linked and refused by name.
+    #[test]
+    fn shared_lines_are_counted() {
+        let line = |variation, outcome| Line {
+            driver: "gcc/aarch64/c".into(),
+            short: "gcc/c".into(),
+            arch: Arch::Aarch64,
+            variation,
+            outcome,
+        };
+        let refused = OUT_OF_M2.iter().find(|(k, _)| k.contains("-shared")).unwrap();
+        let lines = [
+            line("default", Outcome::Ok),
+            line("shared", Outcome::OutOfM2(refused.0, refused.1)),
+            line("shared-soname", Outcome::Ok),
+            line("shared-ldshared", Outcome::Fail("x".into())),
+        ];
+        assert_eq!(shared_count(&lines), "census: -shared: 3 lines, 1 linked, 1 refused by name");
+        assert!(VARIATIONS.iter().filter(|v| v.is_shared()).all(|v| v.flavour == Flavour::Pic));
+        assert!(!QUICK_VARIATIONS.iter().any(|q| q.starts_with("shared-") || *q == "shared"));
     }
 
     #[test]

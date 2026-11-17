@@ -22,6 +22,9 @@ pub(crate) fn check_content(e: &mut Engine<'_, '_>) {
     let objs = e.objs;
     let image = e.image;
     for o in objs {
+        // Most of an object's placed sections are compared: one read
+        // (§8.1).
+        o.load();
         let machine = o.elf.machine();
         for (si, s) in o.secs.iter().enumerate() {
             let Place::Whole(addr) = s.place else { continue };
@@ -61,9 +64,10 @@ pub(crate) fn check_content(e: &mut Engine<'_, '_>) {
                 continue;
             };
             let cov = covered(o, si);
+            let data = o.data(si);
             // x86 rewritings are recorded byte by byte (§5.9, §5.11).
             let gran = if machine == mortar_elf::Machine::AArch64 { 4 } else { 1 };
-            if let Some(k) = first_difference(s.data, &cov, out, gran, |k| {
+            if let Some(k) = first_difference(&data, &cov, out, gran, |k| {
                 // A word an erratum 843419 patch replaced by a branch (W8).
                 let p = addr + k;
                 if e.rewritten_words.contains(&p) {
@@ -72,7 +76,7 @@ pub(crate) fn check_content(e: &mut Engine<'_, '_>) {
                 if gran == 1 {
                     return false;
                 }
-                let Some(inw) = s.data.get(k as usize..k as usize + 4) else { return false };
+                let Some(inw) = data.get(k as usize..k as usize + 4) else { return false };
                 let inw = u32::from_le_bytes([inw[0], inw[1], inw[2], inw[3]]);
                 let outw = u32::from_le_bytes([
                     out[k as usize],
@@ -97,7 +101,7 @@ pub(crate) fn check_content(e: &mut Engine<'_, '_>) {
                 )
                 .at(addr + k)
                 .site(o.site(si, k));
-                f.expected = Some(u64::from(s.data[k as usize]));
+                f.expected = Some(u64::from(data[k as usize]));
                 f.found = Some(u64::from(out[k as usize]));
                 e.findings.push(f);
             }
@@ -228,8 +232,9 @@ fn nonalloc_content(e: &mut Engine<'_, '_>, o: &crate::locate::Obj<'_>, si: usiz
     };
     e.cov.content_bytes += size;
     let cov = covered(o, si);
+    let data = o.data(si);
     if let Some(k) =
-        first_difference(s.data, &cov, out, 4, |k| e.nonalloc_rewritten.contains(&(i, addr + k)))
+        first_difference(&data, &cov, out, 4, |k| e.nonalloc_rewritten.contains(&(i, addr + k)))
     {
         let mut f = Finding::new(
             Rule::Structure(12),
@@ -239,7 +244,7 @@ fn nonalloc_content(e: &mut Engine<'_, '_>, o: &crate::locate::Obj<'_>, si: usiz
         )
         .at(addr + k)
         .site(o.site(si, k));
-        f.expected = Some(u64::from(s.data[k as usize]));
+        f.expected = Some(u64::from(data[k as usize]));
         f.found = Some(u64::from(out[k as usize]));
         e.findings.push(f);
     }

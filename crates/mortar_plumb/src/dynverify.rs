@@ -15,7 +15,8 @@ use crate::loader::{self, Loader, Params};
 use crate::locate::{self, Obj};
 use crate::map::{Map, OutputKind};
 use crate::report::{Finding, OUTSIDE, Report, Rule};
-use crate::{Input, reloc, run_engine, structure};
+use crate::store::Store;
+use crate::{Input, Source, reloc, run_engine, structure};
 
 /// What stage 3 needs beyond stage 2's arguments.
 #[allow(missing_debug_implementations)]
@@ -57,22 +58,56 @@ pub(crate) fn names_any(o: &Obj<'_>, si: usize, names: &HashSet<String>) -> bool
 
 /// Verifies a link (§2), with stage 3 for a dynamic output. A static
 /// output is verified as [`crate::verify`] does.
-#[allow(clippy::too_many_lines)] // the views in order
 pub fn verify_with(output: &[u8], inputs: &[Input<'_>], map: &Map, ctx: &Ctx<'_>) -> Report {
-    let mut report = Report::default();
+    verify_src(output, &inputs, map, ctx)
+}
+
+/// [`verify_with`] over a source (§8.1).
+pub(crate) fn verify_src(output: &[u8], src: &dyn Source, map: &Map, ctx: &Ctx<'_>) -> Report {
+    let store = Store::read(src, &[map]);
+    crate::prof::mark("skeletons");
+    let mut report = verify_in(output, &store, 0, map, ctx);
+    crate::read_errors(&store, &mut report);
+    report
+}
+
+/// [`verify_with`] over the inputs of map `m` of `store` (the caller
+/// reports the reads that fail, [`crate::read_errors`]).
+pub(crate) fn verify_in(
+    output: &[u8],
+    store: &Store<'_>,
+    m: usize,
+    map: &Map,
+    ctx: &Ctx<'_>,
+) -> Report {
     let image = match Image::read(output) {
         Ok(i) => i,
         Err(e) => {
+            let mut report = Report::default();
             report.findings.push(Finding::new(Rule::OutputUnreadable, e));
             return report;
         }
     };
     let Some(dout) = DynOut::read(&image) else {
-        return crate::verify(output, inputs, map);
+        return crate::verify_static_in(output, store, m, map);
     };
-    report.findings.extend(structure::check(&image));
-    report.findings.extend(structure::check_layout(&image, map.format));
-    let located = locate::locate(map, inputs, &image);
+    judge(&image, &dout, store, m, map, ctx)
+}
+
+/// Stage 3 over a dynamic output (§12).
+#[allow(clippy::too_many_lines)] // the views in order
+fn judge(
+    image: &Image<'_>,
+    dout: &DynOut,
+    store: &Store<'_>,
+    m: usize,
+    map: &Map,
+    ctx: &Ctx<'_>,
+) -> Report {
+    let mut report = Report::default();
+    report.findings.extend(structure::check(image));
+    report.findings.extend(structure::check_layout(image, map.format));
+    let located = locate::locate(map, store, m, image);
     report.findings.extend(located.findings);
     let objs = located.objs;
     // A mortar map's line is its `arg` records (§3.2a); a reference's is
@@ -94,7 +129,7 @@ pub fn verify_with(output: &[u8], inputs: &[Input<'_>], map: &Map, ctx: &Ctx<'_>
     };
     let mut line = Line::parse(&args, ctx.files);
     // P-D16: a `-shared` line and a shared object's headers (§12.5).
-    let shared = crate::shared::accept(&image, &dout, &mut line, &args);
+    let shared = crate::shared::accept(image, dout, &mut line, &args);
     report.findings.extend(shared.findings.iter().cloned());
     // Stage 4 (§13) runs before stage 3's early returns.
     let mut meta_cov = crate::report::MetaCoverage::default();
@@ -110,7 +145,7 @@ pub fn verify_with(output: &[u8], inputs: &[Input<'_>], map: &Map, ctx: &Ctx<'_>
             &args.iter().map(|w| w.as_bytes().to_vec()).collect::<Vec<_>>(),
         ),
     };
-    let meta = crate::odrtable::check(&image, &objs, map, Some(&opts), Some(&line), &mut meta_cov);
+    let meta = crate::odrtable::check(image, &objs, map, Some(&opts), Some(&line), &mut meta_cov);
     report.findings.extend(meta);
     report.coverage.meta = meta_cov.clone();
     // P-D1: a link stage 3 does not model is reported by name, as one
@@ -186,7 +221,7 @@ pub fn verify_with(output: &[u8], inputs: &[Input<'_>], map: &Map, ctx: &Ctx<'_>
     // §12.5: a `Shared` output's export set, bindings and imports,
     // recomputed from the inputs and the line.
     let sets = shared.line.as_ref().map(|sl| {
-        crate::shared::compute(&objs, &image, &model.ref_dynamic, sl, ctx.files, map.format)
+        crate::shared::compute(&objs, image, &model.ref_dynamic, sl, ctx.files, map.format)
     });
     if let Some(s) = &sets {
         for p in &s.problems {
@@ -220,13 +255,13 @@ pub fn verify_with(output: &[u8], inputs: &[Input<'_>], map: &Map, ctx: &Ctx<'_>
         machine: image.header.e_machine,
     };
     let kind = line.kind.unwrap_or(OutputKind::Exec);
-    let mut checked = crate::dyncheck::check(&image, &dout, &line, &model, &ld, &objs, map);
+    let mut checked = crate::dyncheck::check(image, dout, &line, &model, &ld, &objs, map);
     if let (Some(sl), Some(s)) = (&shared.line, &sets) {
         // §12.5: P-D16's changes to the executable rules, then P-D19-P-D26.
-        crate::shared::filter_dyncheck(&mut checked, &image, &dout);
+        crate::shared::filter_dyncheck(&mut checked, image, dout);
         report
             .findings
-            .extend(crate::shared::static_checks(&image, &dout, &objs, sl, s, &args, map.format));
+            .extend(crate::shared::static_checks(image, dout, &objs, sl, s, &args, map.format));
     }
     report.findings.extend(checked);
     // View 1: bias 0.
@@ -234,7 +269,7 @@ pub fn verify_with(output: &[u8], inputs: &[Input<'_>], map: &Map, ctx: &Ctx<'_>
     // through the record that names it (P-D18).
     let ifr = sets.as_ref().map(crate::shared::ifunc_results).unwrap_or_default();
     let p1 = Params { interpose: ifr.clone(), ..Params::default() };
-    let v1 = loader::apply(&image, &dout, &ld, &p1, true);
+    let v1 = loader::apply(image, dout, &ld, &p1, true);
     report.findings.extend(
         v1.findings
             .iter()
@@ -248,23 +283,23 @@ pub fn verify_with(output: &[u8], inputs: &[Input<'_>], map: &Map, ctx: &Ctx<'_>
         report.sort();
         return report;
     };
-    let plt = loader::plt_entries(&image);
+    let plt = loader::plt_entries(image);
     let depths = if image.header.e_machine == mortar_elf::consts::EM_X86_64 {
-        crate::plt::x64_depths(&image)
+        crate::plt::x64_depths(image)
     } else {
         std::collections::BTreeMap::new()
     };
     // §5.8: a non-alloc word against a name only a library defines.
-    let dso_words = reloc::dsoword::build(&image, &dout, &model, &ld.order, &plt);
+    let dso_words = reloc::dsoword::build(image, dout, &model, &ld.order, &plt);
     let mut engine = reloc::Engine::new(&img1, &objs, map.format);
     dyn_engine(&mut engine, &v1, &plt, &depths);
     engine.shared = sets.is_some();
     crate::shared::tell_engine(&mut engine, &ifr, |_| true, v1.tls.0);
     engine.dso_words = Some(dso_words.clone());
-    run_engine(&mut engine, &image, map, None);
+    run_engine(&mut engine, image, map, None);
     // D-45: an IFUNC's GOT slot holds its IPLT entry, wherever the linker
     // put the entry (mortar's follow the PLT entries in `.plt`).
-    engine.got_demands.extend(crate::dynfields::iplt_entries(&image, &dout));
+    engine.got_demands.extend(crate::dynfields::iplt_entries(image, dout));
     // mold gives an x86-64 `GOTPC64`/`GOTPC32` reference to
     // `_GLOBAL_OFFSET_TABLE_` a GOT slot of that symbol, which no input
     // loads (WP-101, measured on `weak-class-table` and the large-model
@@ -298,7 +333,7 @@ pub fn verify_with(output: &[u8], inputs: &[Input<'_>], map: &Map, ctx: &Ctx<'_>
                 let why = if placed {
                     Some("a RELATIVE record on a word of an input section that no input relocation makes an address of the executable".to_string())
                 } else {
-                    crate::dynfields::linker_word(&image, r.offset, a, &engine.got_demands)
+                    crate::dynfields::linker_word(image, r.offset, a, &engine.got_demands)
                 };
                 let Some(why) = why else { continue };
                 report.findings.push(Finding::new(Rule::Dyn(9), why).at(r.offset));
@@ -306,17 +341,13 @@ pub fn verify_with(output: &[u8], inputs: &[Input<'_>], map: &Map, ctx: &Ctx<'_>
         }
     }
     if map.format == crate::Format::Mortar {
-        report.findings.extend(crate::dynfields::unrecorded_got(
-            &image,
-            &dout,
-            &engine.got_demands,
-        ));
+        report.findings.extend(crate::dynfields::unrecorded_got(image, dout, &engine.got_demands));
     }
     let chosen = std::mem::take(&mut engine.ifunc_chosen);
     // A static-pie's exports bind nothing (§12.4, P-D14 judges them): W13
     // is a library's binding, so only an executable that loads one owes it.
     if !matches!(kind, OutputKind::StaticPie | OutputKind::Shared) {
-        report.findings.extend(exported_ifuncs(&image, &dout, &model, &chosen, map.format));
+        report.findings.extend(exported_ifuncs(image, dout, &model, &chosen, map.format));
     }
     let mut view1_findings = std::mem::take(&mut engine.findings);
     if let Some(s) = &sets {
@@ -329,13 +360,13 @@ pub fn verify_with(output: &[u8], inputs: &[Input<'_>], map: &Map, ctx: &Ctx<'_>
     // executable moves with it, every other word does not.
     if kind == OutputKind::Pie || image.header.e_type == mortar_elf::consts::ET_DYN {
         let p2 = Params { bias: BIAS2, interpose: ifr.clone(), ..Params::default() };
-        let v2 = loader::apply(&image, &dout, &ld, &p2, false);
+        let v2 = loader::apply(image, dout, &ld, &p2, false);
         let mut seen = BTreeSet::new();
         for &(at, w, v, internal) in &abs {
             if !seen.insert(at) {
                 continue;
             }
-            let Some(off) = file_off(&image, at, u64::from(w)) else { continue };
+            let Some(off) = file_off(image, at, u64::from(w)) else { continue };
             let mut b = [0u8; 8];
             b[..w as usize].copy_from_slice(&v2.bytes[off..off + w as usize]);
             let found = u64::from_le_bytes(b);
@@ -379,7 +410,7 @@ pub fn verify_with(output: &[u8], inputs: &[Input<'_>], map: &Map, ctx: &Ctx<'_>
                 .get(crate::dynout::DT_FLAGS)
                 .is_some_and(|f| f & crate::shared::DF_SYMBOLIC != 0);
         let pb = Params { interpose: crate::shared::interposer(s), symbolic, ..Params::default() };
-        let vb = loader::apply(&image, &dout, &ld, &pb, false);
+        let vb = loader::apply(image, dout, &ld, &pb, false);
         if let Ok(imgb) = Image::read(&vb.bytes) {
             let names = crate::shared::view_b_names(s);
             let mut eb = reloc::Engine::new(&imgb, &objs, map.format);
@@ -397,7 +428,7 @@ pub fn verify_with(output: &[u8], inputs: &[Input<'_>], map: &Map, ctx: &Ctx<'_>
                 vb.tls.0,
             );
             eb.dso_words = Some(dso_words.clone());
-            run_engine(&mut eb, &image, map, Some(&names));
+            run_engine(&mut eb, image, map, Some(&names));
             for f in eb.findings.drain(..) {
                 let Some(k) = f.symbol.clone().filter(|k| names.contains(k)) else { continue };
                 let who = if s.preemptible(&k) || s.imports.contains_key(&k) {
@@ -420,13 +451,13 @@ pub fn verify_with(output: &[u8], inputs: &[Input<'_>], map: &Map, ctx: &Ctx<'_>
         }
     } else if !fresh.is_empty() {
         let p3 = Params { bias: 0, fresh: fresh.clone(), ..Params::default() };
-        let v3 = loader::apply(&image, &dout, &ld, &p3, false);
+        let v3 = loader::apply(image, dout, &ld, &p3, false);
         if let Ok(img3) = Image::read(&v3.bytes) {
             let names: HashSet<String> = fresh.keys().cloned().collect();
             let mut e3 = reloc::Engine::new(&img3, &objs, map.format);
             dyn_engine(&mut e3, &v3, &plt, &depths);
             e3.dso_words = Some(dso_words.clone());
-            run_engine(&mut e3, &image, map, Some(&names));
+            run_engine(&mut e3, image, map, Some(&names));
             let mut bad: HashMap<String, Vec<Finding>> = HashMap::new();
             let mut ok: HashMap<String, u64> = HashMap::new();
             for f in e3.findings.drain(..) {

@@ -1,0 +1,18 @@
+# A shared library linked by each linker (spec/harness.md LT-4), for the
+# smoke tests of tests/link/shared: `libhello.so` (soname `libhello.so`)
+# defines `hello`, which returns `hello_value() + 1`, and `hello_value`
+# (41), a default-visibility function the library calls itself, so that
+# a definition loaded before the library preempts it (D-112).
+
+cc -O1 -fPIC hello.c -o hello.o
+link gcc -shared hello.o -Wl,-soname,libhello.so -o libhello.so
+check readelf -W -d libhello.so
+  has: (SONAME) Library soname: [libhello.so]
+
+#--- hello.h
+int hello(void);
+int hello_value(void);
+#--- hello.c
+#include "hello.h"
+int hello_value(void) { return 41; }
+int hello(void) { return hello_value() + 1; }

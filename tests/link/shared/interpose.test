@@ -1,0 +1,42 @@
+# The smoke test of a shared-object output (spec/harness.md LT-1 to
+# LT-6): a library linked by each linker, a host linked against it by
+# each pair (LT-3), run plain and with an interposer preloaded into the
+# host alone (LT-6), every run compared with the GNU ld pair's (LT-5).
+# `f` has default visibility and the library calls it itself, so the
+# interposer's `f` preempts it there too (D-112); `g` is protected, so
+# the library's own call stays bound to its own `g` while the host's
+# call goes to the interposer's.
+#@ spec: harness.md "LT-3"
+#@ arch: aarch64 x86_64
+#@ xfail(mortar): M4: mortar refuses -shared until WP-123 (spec/dyn.md D-112)
+
+cc -O1 -fPIC lib.c -o lib.o
+cc -O1 -fPIC pre.c -o pre.o
+cc -O1 -fPIE main.c -o main.o
+shlib gcc pre.o -Wl,-soname,libpre.so -o libpre.so
+link gcc -shared lib.o -Wl,-soname,libsi.so -o libsi.so
+check readelf -W --dyn-syms libsi.so
+  has: FUNC * DEFAULT * call_f$
+  has: FUNC * PROTECTED * g$
+host gcc -pie main.o -L. -lsi -o prog
+run prog
+  stdout: 1 1 2 2
+run prog
+  env: LD_PRELOAD=./libpre.so
+  stdout: 7 7 8 2
+
+#--- lib.c
+int f(void) { return 1; }
+__attribute__((visibility("protected"))) int g(void) { return 2; }
+int call_f(void) { return f(); }
+int call_g(void) { return g(); }
+#--- pre.c
+int f(void) { return 7; }
+int g(void) { return 8; }
+#--- main.c
+#include <stdio.h>
+int f(void);
+int g(void);
+int call_f(void);
+int call_g(void);
+int main(void) { printf("%d %d %d %d\n", f(), call_f(), g(), call_g()); return 0; }

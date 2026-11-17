@@ -197,7 +197,13 @@ fn invoke_with(
         Some(Exit::Help) if !parsed.failed() => return done(mortar_cli::help_text(prog)),
         _ => {}
     }
-    if let Some(style) = plan.print_version
+    // cli.md §5.1: `--verbose` without inputs answers as `-V` does.
+    let style = if plan.bookkeeping.verbose {
+        Some(mortar_cli::VersionStyle::Emulations)
+    } else {
+        plan.print_version
+    };
+    if let Some(style) = style
         && !parsed.failed()
         && plan.inputs.is_empty()
     {
@@ -237,6 +243,19 @@ fn invoke_with(
                 .note("an option above is refused, so nothing is linked (docs/status/options.md)"),
         );
         return failed(diagnostics, String::new());
+    }
+    // cli.md §5.1: `-v` and `-V` on a line with inputs print their text
+    // on standard output before the link, which then goes on; the exit
+    // status is the link's. (Captured, it is in `Linked`'s `stdout`.)
+    let mut stdout = String::new();
+    if let Some(style) = plan.print_version {
+        let text = mortar_cli::print_version_text(style);
+        match print_to {
+            PrintMap::Capture => stdout.push_str(&text),
+            PrintMap::Stdout => {
+                let _ = mortar_diag::stream::to_stdout(&text);
+            }
+        }
     }
     let pool = match pool_of(plan) {
         Ok(p) => p,
@@ -281,7 +300,6 @@ fn invoke_with(
         f.keep_leaves = session.is_some();
     }
     let mut incremental_lines = String::new();
-    let mut stdout = String::new();
     let removed = front.as_ref().map_or_else(String::new, |f| removed_lines(prog, f));
     // cli.md §3.14: no file the link writes is a file it read or another
     // file it writes, decided before anything is written.
@@ -314,12 +332,23 @@ fn invoke_with(
             if let Some(d) = &dependency_path {
                 write_dependency_file(f, d, &diagnostics);
             }
+            // cli.md §5.1: `--verbose`'s text (a message, S-1) of a link
+            // that succeeded, before -M's map.
+            if plan.bookkeeping.verbose && !diagnostics.has_errors() {
+                let text = mortar_cli::print_version_text(mortar_cli::VersionStyle::Emulations);
+                match print_to {
+                    PrintMap::Capture => stdout.push_str(&text),
+                    PrintMap::Stdout => {
+                        let _ = mortar_diag::stream::to_stdout(&text);
+                    }
+                }
+            }
             // cli.md §3.15 (S-2): -M's map is an output; written last of
             // the outputs that can fail the link, before the state.
             if print_map && !diagnostics.has_errors() {
                 let text = String::from_utf8_lossy(&maps.text);
                 match print_to {
-                    PrintMap::Capture => stdout = text.into_owned(),
+                    PrintMap::Capture => stdout.push_str(&text),
                     PrintMap::Stdout => {
                         if let Err(e) = mortar_diag::stream::to_stdout(&text) {
                             diagnostics.emit(
@@ -521,8 +550,8 @@ mod tests {
         assert!(!report.contains("--frab"), "{report}");
     }
 
-    // spec: cli.md §5 (--version and --help are answered; -v and -V when
-    // nothing is to be linked)
+    // spec: cli.md §5 (--version and --help are answered; -v and -V alone
+    // when nothing is to be linked)
     #[test]
     fn requests_are_answered() {
         let done = |args: &[&str]| {
@@ -541,7 +570,8 @@ mod tests {
         assert_eq!(done(&["--help"]), Some(mortar_cli::help_text("ld")));
         assert_eq!(done(&["-v", "a.o"]), None);
         assert_eq!(done(&["--frob", "--version"]), None);
-        // `-v` with an input links it (here: the input is missing).
+        // `-v` with an input prints the line and links it (here: the
+        // input is missing, so the link fails; spec/cli.md §5.1).
         assert!(failed(&["-v", "a.o"]).contains("ld: error: a.o: cannot open a.o"));
     }
 

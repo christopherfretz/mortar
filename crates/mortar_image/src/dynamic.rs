@@ -37,6 +37,12 @@ pub trait DynamicAddrs: Sync {
     fn section(&self, section: ArraySection) -> Option<(u64, u64)>;
     /// A symbol's address (its final value); `None` when it has none.
     fn symbol(&self, key: SymbolId) -> Option<u64>;
+    /// The `.dynstr` offset of a shared object's `-soname` string
+    /// (`spec/dyn.md` D-116, `mortar_synth::dynstr::dynstr_plan_shared`);
+    /// `None` (the default) in an output without one.
+    fn soname(&self) -> Option<u32> {
+        None
+    }
 }
 
 /// The value of `v` (D-30's value column). A reference to something the
@@ -68,6 +74,9 @@ pub fn value(v: DynValue, dynstr: &DynStr, addrs: &dyn DynamicAddrs) -> Result<u
         ),
         DynValue::RunpathName => u64::from(
             dynstr.runpath.ok_or_else(|| missing("a run path with no .dynstr string".into()))?,
+        ),
+        DynValue::SonameName => u64::from(
+            addrs.soname().ok_or_else(|| missing("a soname with no .dynstr string".into()))?,
         ),
         DynValue::DynstrSize => {
             if dynstr.is_empty() {
@@ -137,7 +146,9 @@ pub fn dynamic_symbol(addrs: &dyn DynamicAddrs) -> Option<u64> {
 
 /// The map's dynamic records this package owns (`spec/plumb.md` §3.2,
 /// P-D3): `output`, `interp`, `runpath`/`rpath`, `bind`, `relro`. The
-/// run path is the string `mortar_synth::dynamic::join_rpath` gives.
+/// run path is the string `mortar_synth::dynamic::join_rpath` gives. A
+/// `Shared` output is `output shared` (its line records,
+/// `DynRecords::shared`, are set by the caller from `SharedLine::of`).
 pub fn fill_records(
     records: &mut DynRecords,
     kind: DynKind,
@@ -150,6 +161,7 @@ pub fn fill_records(
         DynKind::Exec => map::OutputKind::Exec,
         DynKind::Pie => map::OutputKind::Pie,
         DynKind::StaticPie => map::OutputKind::StaticPie,
+        DynKind::Shared(_) => map::OutputKind::Shared,
     });
     records.interp = interp.map(|i| i.path().to_vec());
     records.runpath = runpath.map(|(tag, paths)| {

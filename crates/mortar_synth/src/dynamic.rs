@@ -21,18 +21,19 @@
 //! | # | tag | present when ([`DynamicInputs`]) | value ([`DynValue`]) |
 //! |---|---|---|---|
 //! | 1 | `DT_NEEDED` × n | `needed` (`Slots.needed.len()`) | `NeededName(i)` |
+//! | after 1 | `DT_SONAME`, then `DT_SYMBOLIC` (D-102) | `Shared` with [`SharedDyn::soname`], [`SharedDyn::symbolic`] | `SonameName`, 0 |
 //! | 2 | `DT_RUNPATH` / `DT_RPATH` | `runpath` | `RunpathName` |
 //! | 3-4 | `DT_INIT`, `DT_FINI` | `init`, `fini` | `Symbol` |
 //! | 5-10 | the three arrays and their sizes | `preinit_array`, `init_array`, `fini_array` | `SectionAddr`, `SectionSize` |
 //! | 11 | `DT_GNU_HASH` | always | `ChunkAddr(GnuHash)` |
 //! | 12-15 | `DT_STRTAB`, `DT_SYMTAB`, `DT_STRSZ`, `DT_SYMENT` | always | `ChunkAddr(Dynstr)`, `ChunkAddr(Dynsym)`, `DynstrSize`, 24 (16) |
-//! | 16 | `DT_DEBUG` | always | 0 |
+//! | 16 | `DT_DEBUG` | not `Shared` (D-100) | 0 |
 //! | 17 | `DT_PLTGOT` | `got_plt` | `ChunkAddr(GotPlt)` |
 //! | 18-20 | `DT_PLTRELSZ`, `DT_PLTREL`, `DT_JMPREL` | `rela_plt` | `ChunkSize(RelaPlt)`, `DT_RELA` (`DT_REL`), `ChunkAddr(RelaPlt)` |
 //! | 21-23 | `DT_RELA`, `DT_RELASZ`, `DT_RELAENT` (REL: `DT_REL*`) | `rela_dyn` | `ChunkAddr(RelaDyn)`, `ChunkSize(RelaDyn)`, entsize |
 //! | 24-25 | the architecture's tags (`Arch::dyn_tags`) | each one's `TagWhen` | its value |
-//! | 26 | `DT_FLAGS` | `bind_now` | `DF_BIND_NOW` |
-//! | 27 | `DT_FLAGS_1` | `Pie`, `StaticPie` or `bind_now` | `DF_1_PIE`, `DF_1_NOW` |
+//! | 26 | `DT_FLAGS` | `bind_now`, or `Shared` with `symbolic` | `DF_SYMBOLIC`, `DF_BIND_NOW` |
+//! | 27 | `DT_FLAGS_1` | `Pie`, `StaticPie` or `bind_now` | `DF_1_PIE` (never in `Shared`), `DF_1_NOW` |
 //! | 28-30 | `DT_VERNEED`, `DT_VERNEEDNUM`, `DT_VERSYM` | `verneed` | `ChunkAddr(GnuVersionR)`, the count, `ChunkAddr(GnuVersion)` |
 //! | 31 | `DT_RELACOUNT` (`DT_RELCOUNT`) | `relative` | the count |
 //! | 32 | `DT_NULL` × 6 | always | 0 |
@@ -40,20 +41,30 @@
 //! `StaticPie` (D-1, D-2) takes the same rows under the same conditions:
 //! with no shared input there is no `DT_NEEDED`, version or `JUMP_SLOT`,
 //! and `DT_FLAGS_1` holds `DF_1_PIE`.
+//!
+//! `Shared` (`spec/dyn.md` D-100, D-102, D-103) takes D-30's rows with
+//! D-102's changes: `DT_SONAME` and `DT_SYMBOLIC` after row 1, no
+//! `DT_DEBUG`, no `DF_1_PIE`, `DF_SYMBOLIC` with `DT_SYMBOLIC`; a
+//! `.preinit_array` is refused by name (class `feature`, `.preinit_array
+//! in a shared object`, `spec/landed/dyn/WP-116.md` §2) and an explicit
+//! `-init`/`-fini` naming an undefined symbol is `undefined-init-symbol`
+//! ([`shared_init_key`]).
 
 use mortar_arch::{DynTag, Facts, GotBase, RelForm, TagWhen};
 use mortar_core::id::SymbolId;
+use mortar_diag::{Diagnostic, Kind};
 use mortar_elf::Class;
 use mortar_elf::consts::{
-    DF_1_NOW, DF_1_PIE, DF_BIND_NOW, DT_DEBUG, DT_FINI, DT_FINI_ARRAY, DT_FINI_ARRAYSZ, DT_FLAGS,
-    DT_FLAGS_1, DT_GNU_HASH, DT_INIT, DT_INIT_ARRAY, DT_INIT_ARRAYSZ, DT_JMPREL, DT_NEEDED,
-    DT_PLTGOT, DT_PLTREL, DT_PLTRELSZ, DT_PREINIT_ARRAY, DT_PREINIT_ARRAYSZ, DT_REL, DT_RELA,
-    DT_RELACOUNT, DT_RELAENT, DT_RELASZ, DT_RELCOUNT, DT_RELENT, DT_RELSZ, DT_RPATH, DT_RUNPATH,
-    DT_STRSZ, DT_STRTAB, DT_SYMENT, DT_SYMTAB, DT_VERNEED, DT_VERNEEDNUM, DT_VERSYM,
+    DF_1_NOW, DF_1_PIE, DF_BIND_NOW, DF_SYMBOLIC, DT_DEBUG, DT_FINI, DT_FINI_ARRAY,
+    DT_FINI_ARRAYSZ, DT_FLAGS, DT_FLAGS_1, DT_GNU_HASH, DT_INIT, DT_INIT_ARRAY, DT_INIT_ARRAYSZ,
+    DT_JMPREL, DT_NEEDED, DT_PLTGOT, DT_PLTREL, DT_PLTRELSZ, DT_PREINIT_ARRAY, DT_PREINIT_ARRAYSZ,
+    DT_REL, DT_RELA, DT_RELACOUNT, DT_RELAENT, DT_RELASZ, DT_RELCOUNT, DT_RELENT, DT_RELSZ,
+    DT_RPATH, DT_RUNPATH, DT_SONAME, DT_STRSZ, DT_STRTAB, DT_SYMBOLIC, DT_SYMENT, DT_SYMTAB,
+    DT_VERNEED, DT_VERNEEDNUM, DT_VERSYM,
 };
 
 use crate::chunks::SynthKind;
-use crate::error::{SynthError, internal};
+use crate::error::{SynthError, feature, internal};
 use crate::out::Window;
 
 /// The number of `DT_NULL` entries that end `.dynamic` (D-30 row 32): the
@@ -69,6 +80,29 @@ pub enum DynKind {
     Pie,
     /// `-pie` without an interpreter (D-2).
     StaticPie,
+    /// `-shared` (`spec/dyn.md` D-100): what the line adds to D-30's rows.
+    Shared(SharedDyn),
+}
+
+impl DynKind {
+    /// A position-independent output (`ET_DYN`, base 0): `Pie`,
+    /// `StaticPie` and `Shared`.
+    #[must_use]
+    pub fn position_independent(self) -> bool {
+        !matches!(self, Self::Exec)
+    }
+}
+
+/// The `.dynamic` facts of a `Shared` line (`spec/dyn.md` D-102, D-103).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct SharedDyn {
+    /// `-soname`/`-h` was given: `DT_SONAME` (its string is
+    /// `DynValue::SonameName`, placed by D-116).
+    pub soname: bool,
+    /// `DT_SYMBOLIC` and `DF_SYMBOLIC`: `Plan::symbolic()`'s
+    /// `SymbolicLine::writes_symbolic_tags()` (D-112: the line's last
+    /// `-Bsymbolic` form is `-Bsymbolic`, without `--dynamic-list`).
+    pub symbolic: bool,
 }
 
 /// Which tag names the run path (D-30 row 2).
@@ -126,6 +160,32 @@ pub fn init_key(named: Option<Option<SymbolId>>, underscore: Option<SymbolId>) -
     match named {
         Some(key) => key,
         None => underscore,
+    }
+}
+
+/// The key of `DT_INIT` (or `DT_FINI`) of a shared object (`spec/dyn.md`
+/// D-102 rows 3-4): as [`init_key`], except that an explicit `-init=SYM`
+/// (`-fini=SYM`) naming a symbol that is not defined is refused,
+/// `undefined-init-symbol` (GNU ld, lld and mold drop both tags silently
+/// and the library's `_init`/`_fini` never run). `named` is the option's
+/// symbol name and its key when defined; `underscore` is `_init`
+/// (`_fini`) when defined (an undefined default omits the tag silently,
+/// D-30 rows 3-4).
+///
+/// # Errors
+///
+/// `undefined-init-symbol` naming SYM.
+pub fn shared_init_key(
+    named: Option<(&[u8], Option<SymbolId>)>,
+    underscore: Option<SymbolId>,
+) -> Result<Option<SymbolId>, SynthError> {
+    match named {
+        Some((_, Some(key))) => Ok(Some(key)),
+        Some((name, None)) => Err(Diagnostic::error(Kind::UndefinedInitSymbol {
+            name: String::from_utf8_lossy(name).into_owned(),
+        })
+        .into()),
+        None => Ok(underscore),
     }
 }
 
@@ -209,6 +269,9 @@ pub enum DynValue {
     NeededName(u32),
     /// The `.dynstr` offset of the run path (`Slots.dynstr.runpath`).
     RunpathName,
+    /// The `.dynstr` offset of the `-soname` string (D-116:
+    /// `crate::dynstr::SharedDynStr::soname`).
+    SonameName,
     /// `.dynstr`'s size (`Slots.dynstr.size`).
     DynstrSize,
     /// A synthetic chunk's address.
@@ -256,7 +319,11 @@ impl DynamicPlan {
     /// tables guarantee): a `StaticPie` with a needed object or a version
     /// need (input §8.4 refuses its shared inputs); more `Verneed`s than
     /// needed objects (D-27); `RELATIVE` records in an empty `.rela.dyn`;
-    /// a `.rela.plt` without `.got.plt`.
+    /// a `.rela.plt` without `.got.plt`. `refused` (class `feature`,
+    /// `.preinit_array in a shared object`) for a `Shared` output with a
+    /// `.preinit_array` (D-102 rows 5-6: glibc runs the pre-initialisers of
+    /// the executable only).
+    #[allow(clippy::too_many_lines, reason = "D-30's rows in order, each a few lines")]
     pub fn new(inputs: &DynamicInputs) -> Result<Self, SynthError> {
         let i = inputs;
         if i.kind == DynKind::StaticPie && (i.needed != 0 || i.verneed != 0) {
@@ -271,12 +338,28 @@ impl DynamicPlan {
         if i.rela_plt && !i.got_plt {
             return Err(internal(".rela.plt without .got.plt"));
         }
+        let shared = match i.kind {
+            DynKind::Shared(s) => Some(s),
+            DynKind::Exec | DynKind::Pie | DynKind::StaticPie => None,
+        };
+        if shared.is_some() && i.preinit_array {
+            return Err(feature(".preinit_array in a shared object").into());
+        }
         let rel = i.rel_form == RelForm::Rel;
         let mut e: Vec<DynEntry> = Vec::with_capacity(40 + i.needed as usize);
         let mut put = |tag: i64, value: DynValue| e.push(DynEntry { tag, value });
         // Row 1.
         for n in 0..i.needed {
             put(DT_NEEDED, DynValue::NeededName(n));
+        }
+        // D-102: after row 1, `DT_SONAME` then `DT_SYMBOLIC` (GNU ld's).
+        if let Some(s) = shared {
+            if s.soname {
+                put(DT_SONAME, DynValue::SonameName);
+            }
+            if s.symbolic {
+                put(DT_SYMBOLIC, DynValue::Const(0));
+            }
         }
         // Row 2.
         if let Some(t) = i.runpath {
@@ -306,7 +389,10 @@ impl DynamicPlan {
         put(DT_SYMTAB, DynValue::ChunkAddr(SynthKind::Dynsym));
         put(DT_STRSZ, DynValue::DynstrSize);
         put(DT_SYMENT, DynValue::Const(if i.class == Class::Elf64 { 24 } else { 16 }));
-        put(DT_DEBUG, DynValue::Const(0));
+        // D-100: a shared object has no `DT_DEBUG`.
+        if shared.is_none() {
+            put(DT_DEBUG, DynValue::Const(0));
+        }
         // Row 17.
         if i.got_plt {
             put(DT_PLTGOT, DynValue::ChunkAddr(SynthKind::GotPlt));
@@ -336,9 +422,14 @@ impl DynamicPlan {
             }
         }
         // Rows 26-27.
-        if i.bind_now {
-            put(DT_FLAGS, DynValue::Const(DF_BIND_NOW));
+        // D-103: `DF_SYMBOLIC` with `DT_SYMBOLIC`; `DF_BIND_NOW` for `-z now`.
+        let symbolic = shared.is_some_and(|s| s.symbolic);
+        let flags =
+            if symbolic { DF_SYMBOLIC } else { 0 } | if i.bind_now { DF_BIND_NOW } else { 0 };
+        if flags != 0 {
+            put(DT_FLAGS, DynValue::Const(flags));
         }
+        // D-100: no `DF_1_PIE` in a shared object.
         let pie = matches!(i.kind, DynKind::Pie | DynKind::StaticPie);
         let flags_1 = if pie { DF_1_PIE } else { 0 } | if i.bind_now { DF_1_NOW } else { 0 };
         if flags_1 != 0 {

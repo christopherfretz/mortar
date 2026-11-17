@@ -3,12 +3,9 @@
 # and the four names"): on a line with inputs the version is printed
 # and the link is made, the same bytes as without the option. GNU ld,
 # lld and mold all print it and link.
-#
-# FINDING F1 (WP-112): mortar links but prints nothing when the line has
-# an input (crates/mortar/src/lib.rs prints `print_version` only when
-# `plan.inputs` is empty); `mortar -v` alone prints the line.
+# (WP-112's finding F1, mortar printing nothing on a line with inputs,
+# was fixed by WP-111.)
 #@ spec: cli.md "§5.1"
-#@ xfail(mortar): WP-112 finding F1: -v and -V print nothing on a line with inputs
 
 as start-%{arch}.s -o start.o
 link ld start.o -o plain

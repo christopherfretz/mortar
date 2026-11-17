@@ -60,11 +60,12 @@ pub fn roles(arch: &dyn Arch, cx: &ScanCx<'_>, at: &RelocAt<'_>) -> Vec<DynRole>
 
 /// Whether the fill clears the field of the record at `at` after writing
 /// it (D-46: under RELA the place of a symbolic, `GLOB_DAT`, `COPY` or IE
-/// `TPOFF` record holds 0). Only a `Shlib` or `WeakDyn` target can make
-/// such a record, so a static output never pays for the call.
+/// `TPOFF` record holds 0). Only a `Shlib`, `WeakDyn` or (in a shared
+/// object, `spec/dyn.md` D-113) `Preemptible` target can make such a
+/// record, so a static output never pays for the call.
 #[must_use]
 pub fn zeroed_place(arch: &dyn Arch, kind: TargetKind, cx: &ScanCx<'_>, at: &RelocAt<'_>) -> bool {
-    if !matches!(kind, TargetKind::Shlib { .. } | TargetKind::WeakDyn) {
+    if !matches!(kind, TargetKind::Shlib { .. } | TargetKind::WeakDyn | TargetKind::Preemptible) {
         return false;
     }
     let form = arch.facts().rel_form;

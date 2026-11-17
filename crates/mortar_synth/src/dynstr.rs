@@ -9,6 +9,12 @@
 //! `Slots.needed` order, the version names of `.gnu.version_r` in its
 //! order, the run path. No tail merging: the size is `1 + Σ (string + 1)`
 //! over the distinct strings and every offset a prefix sum (S-108).
+//!
+//! A shared object (`spec/dyn.md` D-116) places its `-soname` string after
+//! the `DT_NEEDED` names ([`dynstr_plan_shared`]); its offset is not a
+//! field of `DynStr` (a core type) but travels beside it, to the writer
+//! ([`DynstrChunk::soname`]) and to `.dynamic` (`DynValue::SonameName`).
+//! The `Verdef` names (WP-125) are not written here.
 
 use std::collections::HashMap;
 use std::ops::Range;
@@ -52,22 +58,41 @@ pub fn dynstr_plan(
     rpath: Option<&[u8]>,
     names: &dyn DynNames,
 ) -> DynStr {
+    dynstr_plan_shared(dynsym, needed, None, verneed, rpath, names).0
+}
+
+/// D-116: [`dynstr_plan`] with a shared object's `-soname` string placed
+/// after the `DT_NEEDED` names and before the version names (one copy of
+/// each distinct string: a soname equal to an earlier string shares its
+/// offset). Returns the table and the soname's offset (`None` without
+/// `-soname`). With `soname` `None` it is exactly [`dynstr_plan`].
+#[must_use]
+pub fn dynstr_plan_shared(
+    dynsym: &DynsymPlan,
+    needed: &[FileId],
+    soname: Option<&[u8]>,
+    verneed: &[(FileId, Box<[VerIndex]>)],
+    rpath: Option<&[u8]>,
+    names: &dyn DynNames,
+) -> (DynStr, Option<u32>) {
     let mut t = Strings { seen: HashMap::with_capacity(dynsym.order().len() + 16), size: 1 };
     let symbols: Box<[u32]> = dynsym.order().iter().map(|&k| t.add(names.symbol(k))).collect();
     let needed_offs: Box<[u32]> = needed.iter().map(|&f| t.add(names.needed(f))).collect();
+    let soname_off = soname.map(|s| t.add(s));
     let versions: Box<[Box<[u32]>]> = verneed
         .iter()
         .map(|(f, vs)| vs.iter().map(|&v| t.add(names.version(*f, v))).collect())
         .collect();
     let runpath = rpath.map(|r| t.add(r));
     let size = t.size;
-    DynStr {
+    let table = DynStr {
         symbols,
         needed: needed_offs,
         versions,
         runpath,
         size: size.min(u64::from(u32::MAX)) as u32,
-    }
+    };
+    (table, soname_off)
 }
 
 /// The distinct strings so far and the size they take.
@@ -98,6 +123,9 @@ pub struct DynstrChunk<'a> {
     pub needed: &'a [FileId],
     pub verneed: &'a [(FileId, Box<[VerIndex]>)],
     pub rpath: Option<&'a [u8]>,
+    /// A shared object's `-soname` string and its offset
+    /// ([`dynstr_plan_shared`]); `None` otherwise.
+    pub soname: Option<(&'a [u8], u32)>,
     pub dynstr: &'a DynStr,
     pub names: &'a (dyn DynNames + Sync),
 }
@@ -147,6 +175,9 @@ impl DynstrChunk<'_> {
         }
         for (&f, &o) in self.needed.iter().zip(&d.needed) {
             put(o, self.names.needed(f))?;
+        }
+        if let Some((s, o)) = self.soname {
+            put(o, s)?;
         }
         for ((f, vs), offs) in self.verneed.iter().zip(&d.versions) {
             for (&v, &o) in vs.iter().zip(offs) {
@@ -215,6 +246,7 @@ mod tests {
             needed: &[FileId(1)],
             verneed: &verneed,
             rpath: Some(b"/opt/lib"),
+            soname: None,
             dynstr: &d,
             names: &Names,
         };

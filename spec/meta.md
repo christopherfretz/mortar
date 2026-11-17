@@ -217,7 +217,7 @@ unit is
 | 12 | `u32 header_size` | 32 in 1.0; the first block is at this offset (a later minor may grow the header) |
 | 16 | `u32 block_count` | |
 | 20 | `u32 strtab_offset` | the unit's string table; 0 if none |
-| 24 | `u32 strtab_size` | |
+| 24 | `u32 strtab_size` | bytes of the string table itself; the zero bytes that pad the unit up to `unit_size` are not counted |
 | 28 | `u16 producer` | 1 kiln, 2 hod, 3 mortar, 4 the test producer of §12, 0xffff another |
 | 30 | `u16 flags` | 0 in 1.0; a reader ignores bits it does not know |
 
@@ -341,7 +341,12 @@ section that is in no group (MT-2). [M4; planned, request R-MT11,
 WP-129] One unit per translation unit **and producer**: kiln's unit
 and hod's (H-3) may share one container, each written by its own
 producer; a reader merges kind 1 rows of one translation unit's units
-only by name, as it would rows of two translation units. Records describe every definition
+only by name, as it would rows of two translation units. No order is
+defined between the producers' units in a container (hod appends its
+unit after kiln's bytes, which it leaves unchanged), and an object may
+hold more than one container (a producer that finds an incoming
+container it cannot extend, for one malformed, writes its unit in a
+section of its own): every section that passes MT-6 is read. Records describe every definition
 the TU emits **whether or not its copy is kept**; which copy is kept is
 the linker's business and the record says nothing about it.
 

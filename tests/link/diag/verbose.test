@@ -1,0 +1,51 @@
+# `--verbose` on a link line prints `-V`'s text on standard output after
+# the link and changes nothing in it (cli.md §5.1; its text is checked by
+# crates/mortar/tests/options.rs `verbose`, since a link step's standard
+# output is not an expectation). The second link is BusyBox's
+# `scripts/trylink` line: `--sort-common`, `--sort-section=alignment`,
+# `--warn-common`, `--verbose` and `--gc-sections` together, with
+# commons, a constructor and thread-local data, and it runs.
+#@ spec: cli.md §5.1
+#@ spec: layout.md L-53a
+# GNU ld on i386: the crtbegin/crtend labels of an empty section (A10)
+# show once the sections are sorted (not run-wide on i386).
+#@ anomaly(bfd,i386): A10
+
+cc -O2 -fcommon main.c -o main.o
+cc -O2 -fcommon -ffunction-sections -fdata-sections parts.c -o parts.o
+link gcc -static -no-pie main.o parts.o -Wl,--verbose -o prog
+run prog
+  stdout: ctor 1 tls 7 sum 6 big 0
+link gcc -static -no-pie -Wl,--sort-common -Wl,--sort-section,alignment main.o parts.o -Wl,--warn-common -Wl,--verbose -Wl,--gc-sections -o trylink
+run trylink
+  stdout: ctor 1 tls 7 sum 6 big 0
+
+#--- main.c
+#include <stdio.h>
+
+int counter;
+char big[100];
+extern __thread int tls;
+int sum(void);
+extern int ctor;
+
+int main(void) {
+  printf("ctor %d tls %d sum %d big %d\n", ctor, tls, sum(), big[99] + counter);
+  return 0;
+}
+#--- parts.c
+char small;
+short half;
+long long wide;
+__thread int tls = 7;
+int ctor;
+
+static void __attribute__((constructor)) init(void) { ctor = 1; }
+
+static const int values[3] = {1, 2, 3};
+
+int sum(void) {
+  return values[0] + values[1] + values[2] + small + half + (int)wide;
+}
+
+int unused(void) { return 42; }

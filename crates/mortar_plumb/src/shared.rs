@@ -1556,9 +1556,10 @@ pub(crate) fn static_checks(
     // NEEDED_INDIRECT_EXTERN_ACCESS kept iff an input has it (D-112).
     let w = word as usize;
     let input_has = objs.iter().any(|o| {
-        o.secs.iter().any(|s| {
+        // One small note per object, read by position (§8.1).
+        o.secs.iter().enumerate().any(|(si, s)| {
             s.name == ".note.gnu.property"
-                && needed_bits(s.data, w) & NEEDED_INDIRECT_EXTERN_ACCESS != 0
+                && needed_bits(&o.data(si), w) & NEEDED_INDIRECT_EXTERN_ACCESS != 0
         })
     });
     let output_has = image.sections.iter().any(|s| {
