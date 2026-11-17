@@ -553,7 +553,7 @@ impl Line {
     }
 
     /// The subset of the script language a shared-library script uses:
-    /// `INPUT`, `GROUP`, `AS_NEEDED`, `OUTPUT_FORMAT`, comments. Anything
+    /// `INPUT`, `GROUP`, `AS_NEEDED`, `INCLUDE`, `OUTPUT_FORMAT`, comments. Anything
     /// else is a problem (named).
     #[allow(clippy::too_many_lines)] // one arm per script command
     fn script(
@@ -606,6 +606,44 @@ impl Line {
                     }
                 }
                 "AS_NEEDED" => as_needed_at = Some(depth_paren),
+                // script.md §2.8, input §5 (WP-193): the named script's
+                // text in place, with this script's state and group;
+                // searched in the current directory, then the -L path.
+                "INCLUDE" if !in_input => {
+                    let Some(name) = toks.get(i + 1).map(|t| t.0.clone()) else {
+                        self.problems.push(format!("{path}: INCLUDE without a file"));
+                        return;
+                    };
+                    let found = if name.starts_with('/') || files.len(&name).is_some() {
+                        Some(name.clone())
+                    } else {
+                        self.lib_dirs
+                            .iter()
+                            .map(|d| format!("{d}/{name}"))
+                            .find(|p| files.len(p).is_some())
+                    };
+                    let Some(found) = found else {
+                        self.problems.push(format!("INCLUDE {name} (in {path}): not found"));
+                        return;
+                    };
+                    if depth >= 10 {
+                        self.problems.push(format!("{found}: INCLUDE nested too deeply"));
+                        return;
+                    }
+                    let Some(text) = files.read(&found) else {
+                        self.problems.push(format!("{found}: cannot be read"));
+                        return;
+                    };
+                    self.script(
+                        &found,
+                        &String::from_utf8_lossy(&text),
+                        st,
+                        group,
+                        files,
+                        depth + 1,
+                    );
+                    i += 1;
+                }
                 // input §5.1: recorded for the phases that use them (the
                 // input set's roots, §3.8; resolve §4.2).
                 "EXTERN" | "ENTRY" if !in_input => {
@@ -680,10 +718,36 @@ impl Line {
         }
     }
 
-    /// The position of the first relocatable item named `path` (D-19a).
+    /// The position of the first relocatable item that is the file
+    /// `path` (D-19a; `spec/plumb.md` §12.1a): the same path up to its
+    /// spelling (`same_file`), so a map's `./use_x.o` (GNU ld names a file
+    /// a script found by the script's directory) is the line's `use_x.o`.
     pub fn position_of(&self, path: &str) -> Option<usize> {
-        self.items.iter().position(|i| matches!(i, Item::Relocatable { path: p, .. } if p == path))
+        self.items
+            .iter()
+            .position(|i| matches!(i, Item::Relocatable { path: p, .. } if same_file(p, path)))
     }
+}
+
+/// Whether two spellings name one file lexically: equal once each `.`
+/// component and each repeated `/` is removed and each `d/..` is
+/// collapsed (`a/./b`, `./b`, `a//b`; mold's map names the driver's
+/// `/usr/lib/gcc/T/14/../../../T/crti.o` as `/usr/lib/T/crti.o`). The
+/// collapse is lexical: through a symbolic link it could name another
+/// file, which no line or map of the corpus does.
+pub(crate) fn same_file(a: &str, b: &str) -> bool {
+    fn parts(p: &str) -> (bool, Vec<&str>) {
+        let mut out: Vec<&str> = Vec::new();
+        for c in p.split('/').filter(|c| !c.is_empty() && *c != ".") {
+            if c == ".." && out.last().is_some_and(|l| *l != "..") {
+                out.pop();
+            } else {
+                out.push(c);
+            }
+        }
+        (p.starts_with('/'), out)
+    }
+    parts(a) == parts(b)
 }
 
 /// The command match's key for a quoted word: no keyword, parenthesis or
@@ -792,6 +856,20 @@ mod tests {
             ]
         );
         assert_eq!(l.position_of("h.o"), Some(0));
+        assert_eq!(l.position_of("./h.o"), Some(0));
+    }
+
+    #[test]
+    fn one_file_by_its_spellings() {
+        // plumb.md §12.1a (WP-193).
+        assert!(same_file("use_x.o", "./use_x.o"));
+        assert!(same_file("a//b/./c.o", "a/b/c.o"));
+        assert!(same_file("/l/x.so", "/l/./x.so"));
+        assert!(!same_file("/use_x.o", "use_x.o"));
+        assert!(same_file("a/../b.o", "b.o"));
+        assert!(same_file("/usr/lib/gcc/T/14/../../../T/crti.o", "/usr/lib/T/crti.o"));
+        assert!(!same_file("../b.o", "b.o"));
+        assert!(!same_file("d/use_x.o", "use_x.o"));
     }
 
     #[test]

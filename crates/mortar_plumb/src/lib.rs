@@ -234,6 +234,7 @@ pub(crate) fn verify_static_in(
     engine.exports = exports;
     engine.set_wrap(wrap::Wrap::of(line_opts.as_ref()));
     engine.set_defsym(defsym::Defsym::of(line_opts.as_ref()));
+    engine.set_keeper_line(line);
     run_engine(&mut engine, &image, map, None);
     report.findings.append(&mut engine.findings);
     // M8 (§3.3): an output with no dynamic section has no COPY record.

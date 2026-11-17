@@ -182,6 +182,9 @@ pub struct View {
     pub dynbind: HashMap<String, u64>,
     /// Names bound to a library's thread-local definition.
     pub dyn_tls: std::collections::HashSet<String>,
+    /// Names whose `COPY` record the loader binds to a library's
+    /// definition (the output's definition of the name is that copy).
+    pub copied: std::collections::HashSet<String>,
     /// The module index of each name bound to a library's TLS.
     pub dyn_tls_mod: HashMap<String, u64>,
     /// The block the views use: the output's `PT_TLS`, or an empty one
@@ -220,6 +223,7 @@ pub fn apply(
         findings: Vec::new(),
         dynbind: HashMap::new(),
         dyn_tls: std::collections::HashSet::new(),
+        copied: std::collections::HashSet::new(),
         dyn_tls_mod: HashMap::new(),
         tls: (0, 0),
     };
@@ -337,6 +341,9 @@ pub fn apply(
                 }
             }
             Kind::Copy => {
+                if matches!(ld.bind_copy(out, r.sym as usize, p), Bound::Lib { .. }) {
+                    v.copied.insert(name());
+                }
                 if with_findings {
                     let b = ld.bind_copy(out, r.sym as usize, p);
                     let own = out.syms.get(r.sym as usize);

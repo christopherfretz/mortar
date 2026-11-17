@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use mortar_elf::consts::{
     SHN_ABS, SHN_COMMON, SHN_UNDEF, STB_GLOBAL, STB_GNU_UNIQUE, STB_WEAK, STV_HIDDEN, STV_INTERNAL,
 };
-use mortar_elf::{SharedObject, SymbolIndex, Version};
+use mortar_elf::{SharedObject, SymbolIndex, SymbolSection, Version};
 
 use crate::line::{Files, Item, Line};
 use crate::locate::Obj;
@@ -487,6 +487,17 @@ impl Model {
         }
         // The program's keys.
         m.keys = Self::keys_of(line, objs.iter(), file0);
+        // §12.1a (WP-193): an input the map names and the line does not is
+        // no reason at any position; D-19a's order is not computed without
+        // it (it was counted before every mention).
+        for o in objs {
+            if o.symtab.is_some() && line.position_of(&o.path).is_none() {
+                m.problems.push(format!(
+                    "{}: an input of the map that no line item is (D-19a needs its position)",
+                    o.path
+                ));
+            }
+        }
         // An executable's dynamic list (D-1: none in a static-pie; a
         // `Shared` line's list decides preemption, §12.5).
         if matches!(line.kind, Some(OutputKind::Exec | OutputKind::Pie))
@@ -684,7 +695,15 @@ impl Model {
         // (D-110 item 1, WP-161).
         let mut in_excluded: HashSet<String> = HashSet::new();
         let mut in_kept: HashSet<String> = HashSet::new();
-        for o in objs {
+        // resolve §6.2 (WP-178): a non-local mention defined in a dropped
+        // COMDAT copy (the verifier's own keeper, `fate`, in the line's
+        // order) is an undefined
+        // mention of its key with its binding: no definition.
+        let objs: Vec<&Obj<'a>> = objs.collect();
+        let dropped = crate::fate::comdat_dropped_ranked(&objs, |o| {
+            o.member.is_none().then(|| line.position_of(&o.path)).flatten()
+        });
+        for (o, dropped) in objs.into_iter().zip(&dropped) {
             let Some(t) = o.symtab else { continue };
             let excluded = o.member.is_some() && line.exclude_libs.excludes(&o.path);
             let pos = line.position_of(&o.path);
@@ -699,10 +718,20 @@ impl Model {
                 let Ok(raw) = t.name(&s) else { continue };
                 let full = String::from_utf8_lossy(raw).into_owned();
                 let (name, ver) = split_version(&full);
-                let defined = s.st_shndx != SHN_UNDEF;
+                let demoted = t.section_of(i, &s).is_ok_and(|w| match w {
+                    SymbolSection::Section(k) => {
+                        dropped.get(k.0 as usize).copied().unwrap_or(false)
+                    }
+                    _ => false,
+                });
+                let defined = s.st_shndx != SHN_UNDEF && !demoted;
                 // resolve §7.1 (WP-170): an undefined, unversioned mention
                 // is its `--wrap` key's reference.
-                let name = if defined || ver.is_some() { name.into() } else { wrap.key(name) };
+                let name = if s.st_shndx != SHN_UNDEF || ver.is_some() {
+                    name.into()
+                } else {
+                    wrap.key(name)
+                };
                 let name: &str = &name;
                 let k = keys.entry(name.to_string()).or_default();
                 if matches!(s.st_other & 3, STV_HIDDEN | STV_INTERNAL) {

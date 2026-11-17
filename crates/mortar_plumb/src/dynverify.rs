@@ -21,8 +21,8 @@ use crate::{Input, Source, reloc, run_engine, structure};
 /// What stage 3 needs beyond stage 2's arguments.
 #[allow(missing_debug_implementations)]
 pub struct Ctx<'f> {
-    /// The linker's words (`--inputs-from`'s line, or the mortar map's
-    /// `arg` records when `None`).
+    /// The linker's words (`--inputs-from`'s line; for a mortar map its
+    /// `arg` records only when `None`, §12.1).
     pub line: Option<Vec<String>>,
     pub files: &'f dyn Files,
 }
@@ -469,6 +469,7 @@ fn judge(
     dyn_engine(&mut engine, &v1, &plt, &depths);
     engine.set_wrap(wrap.clone());
     engine.set_defsym(defsym.clone());
+    engine.set_keeper_line(ctx.line.as_deref());
     engine.shared = sets.is_some();
     // M10's export roots (WP-147): the shared set's one derivation, or an
     // executable's `-E` without a script (WP-149) or `--dynamic-list`
@@ -662,6 +663,7 @@ fn judge(
             dyn_engine(&mut eb, &vb, &plt, &depths);
             eb.set_wrap(wrap.clone());
             eb.set_defsym(defsym.clone());
+            eb.set_keeper_line(ctx.line.as_deref());
             eb.shared = true;
             // The expected `S`: the interposer's for a preemptible key or
             // an import; a bound key's module and offset are the
@@ -705,6 +707,7 @@ fn judge(
             dyn_engine(&mut e3, &v3, &plt, &depths);
             e3.set_wrap(wrap.clone());
             e3.set_defsym(defsym.clone());
+            e3.set_keeper_line(ctx.line.as_deref());
             e3.dso_words = Some(dso_words.clone());
             run_engine(&mut e3, image, map, Some(&names));
             let mut bad: HashMap<String, Vec<Finding>> = HashMap::new();
@@ -858,13 +861,16 @@ fn script_local_linker_keys(
 /// The link's words: a mortar map's `arg` records (§3.2a), a
 /// reference's from the caller.
 fn line_words(map: &Map, ctx: &Ctx<'_>) -> Option<Vec<String>> {
-    if map.format == crate::Format::Mortar {
-        (!map.args.is_empty()).then(|| {
-            map.args.iter().map(|w| String::from_utf8_lossy(w).into_owned()).collect::<Vec<_>>()
-        })
-    } else {
-        ctx.line.clone()
+    // §12.1 (WP-193): the caller's line, whatever the format; a mortar
+    // map's `arg` records (mortar's own account of its line) only when
+    // the caller has none. A mention's state, group and position are the
+    // line's, never what the judged linker writes of them.
+    if ctx.line.is_some() || map.format != crate::Format::Mortar {
+        return ctx.line.clone();
     }
+    (!map.args.is_empty()).then(|| {
+        map.args.iter().map(|w| String::from_utf8_lossy(w).into_owned()).collect::<Vec<_>>()
+    })
 }
 
 /// `DF_SYMBOLIC` (0x2) in a reference's `DT_FLAGS` under `-Bsymbolic`:
@@ -1158,6 +1164,7 @@ fn dyn_engine(
     e.plt_depths = Some(depths.clone());
     e.dynbind = v.dynbind.iter().map(|(k, x)| (k.clone(), *x)).collect();
     e.dyn_tls.clone_from(&v.dyn_tls);
+    e.copied.clone_from(&v.copied);
     e.dyn_tls_mod = v.dyn_tls_mod.iter().map(|(k, x)| (k.clone(), *x)).collect();
     e.plt = plt.clone();
     e.dynamic = true;

@@ -554,6 +554,9 @@ pub(crate) struct Engine<'a, 'b> {
     /// imports, from the loader model (0: no definition, weak).
     pub(crate) dynbind: HashMap<String, u64>,
     /// Names bound to a library's thread-local definition: not judged.
+    /// Names whose `COPY` record the loader binds to a library (the
+    /// loader view's `copied`).
+    pub(crate) copied: std::collections::HashSet<String>,
     pub(crate) dyn_tls: std::collections::HashSet<String>,
     /// Stage 3: the module index of each name in `dyn_tls`.
     pub(crate) dyn_tls_mod: HashMap<String, u64>,
@@ -618,7 +621,29 @@ pub(crate) struct Engine<'a, 'b> {
     /// §6.9: each record's outcome, by section and offset, when the
     /// equivalence check runs the engine (`None` otherwise).
     pub(crate) trace: Option<crate::equiv::Trace>,
+    /// §5.7a (WP-178): the copies of COMDAT groups not kept, the
+    /// verifier's own keeper (`fate`), made when a record first asks.
+    comdat: std::cell::OnceCell<Vec<Vec<bool>>>,
+    /// §5.7a: the demoted weak mention `(object, symbol, key)` whose record
+    /// is being judged as an undefined weak, to name the form of its R5.
+    trial: Option<(usize, u32, String)>,
+    /// §5.7a: the R5 of each such record whose GOT group decides the form,
+    /// by place and type.
+    demoted_pending: BTreeMap<(u64, u32), (Finding, bool)>,
 }
+
+/// The words §5.7a adds to R5 when the field holds what the reference
+/// would hold as an undefined weak one (A103, `spec/plumb.md` §10.2).
+/// Whether line word `w` names input path `p`: equal, or one a suffix of
+/// the other at a `/` (the map's spelling and the line's may differ by a
+/// directory).
+fn names_path(w: &str, p: &str) -> bool {
+    crate::line::same_file(w, p)
+        || w.strip_suffix(p).is_some_and(|d| d.ends_with('/'))
+        || p.strip_suffix(w).is_some_and(|d| d.ends_with('/'))
+}
+
+pub(crate) const DEMOTED_WEAK: &str = " (a weak mention defined in a dropped COMDAT copy, whose key nothing live defines, written as an undefined weak reference: resolve.md §6.3 case (b))";
 
 impl<'a, 'b> Engine<'a, 'b> {
     /// The sizes of the engine's tables (WP-109), under
@@ -987,6 +1012,7 @@ impl<'a, 'b> Engine<'a, 'b> {
             findings: Vec::new(),
             dynbind: HashMap::default(),
             dyn_tls: std::collections::HashSet::new(),
+            copied: std::collections::HashSet::new(),
             dyn_tls_mod: HashMap::default(),
             dynamic: false,
             shared: false,
@@ -1010,6 +1036,9 @@ impl<'a, 'b> Engine<'a, 'b> {
                 (lo, hi)
             },
             trace: None,
+            comdat: std::cell::OnceCell::new(),
+            trial: None,
+            demoted_pending: BTreeMap::new(),
         };
         e.build_iplt();
         e
@@ -1144,6 +1173,9 @@ impl<'a, 'b> Engine<'a, 'b> {
     }
 
     fn resolve(&mut self, oi: usize, idx: u32) -> Target {
+        if self.trial.as_ref().is_some_and(|t| (t.0, t.1) == (oi, idx)) {
+            return self.resolve_uncached(oi, idx);
+        }
         if let Some(t) = self.cache.get(oi).and_then(|c| c.get(idx as usize)).and_then(Clone::clone)
         {
             return t;
@@ -1226,7 +1258,9 @@ impl<'a, 'b> Engine<'a, 'b> {
         } else {
             name
         };
-        let undefined = matches!(where_, Ok(SymbolSection::Undefined));
+        // §5.7a: a demoted weak mention judged as an undefined one.
+        let undefined = matches!(where_, Ok(SymbolSection::Undefined))
+            || self.trial.as_ref().is_some_and(|t| (t.0, t.1) == (oi, idx));
         let here_ifunc = (sym.sym_type() == STT_GNU_IFUNC
             && matches!(where_, Ok(SymbolSection::Section(_))))
         .then_some((oi, idx));
@@ -1270,7 +1304,20 @@ impl<'a, 'b> Engine<'a, 'b> {
         // or §5.8's tombstone from a non-alloc place. Before WP-143 the
         // steps below looked at placed definitions only and ended in
         // `symbol-unresolved`, a count, never R5: a word left 0 passed.
-        if !bound_by_loader && let Some((doi, di, k)) = self.placeless_def(&name) {
+        // The loader binds it when the output imports it and the loader
+        // model finds a definition (a needed library's, or the copy of
+        // one: resolve.md §6.2, WP-178); §5.7a's trial judges the name as
+        // an undefined weak.
+        let bound_dyn = self.copied.contains(&name)
+            || self.dynbind.get(&name).is_some_and(|&a| a != 0)
+                && (self.image.symbols.is_empty()
+                    || self.image.global(&name).is_none_or(|o| o.sym.st_shndx == 0));
+        let in_trial = self.trial.as_ref().is_some_and(|t| t.2 == name);
+        if !bound_by_loader
+            && !bound_dyn
+            && !in_trial
+            && let Some((doi, di, k)) = self.placeless_def(&name)
+        {
             let value = self.objs[doi]
                 .symtab
                 .and_then(|dt| dt.get(SymbolIndex(di)).ok())
@@ -1519,6 +1566,19 @@ impl<'a, 'b> Engine<'a, 'b> {
         }
         self.cov.failed += 1;
         self.findings.push(f);
+    }
+
+    /// §5.7a's COMDAT keeper in the order of the line's words `line` (the
+    /// command line the verifier reads, never a mortar-written record of
+    /// it): an object is ranked by the first word that names its path.
+    /// Without a line the keeper follows `FileId` order.
+    pub fn set_keeper_line(&mut self, line: Option<&[String]>) {
+        let Some(words) = line else { return };
+        let objs: Vec<&Obj<'a>> = self.objs.iter().collect();
+        let rank = |o: &Obj<'a>| {
+            o.member.is_none().then(|| words.iter().position(|w| names_path(w, &o.path))).flatten()
+        };
+        self.comdat = crate::fate::comdat_dropped_ranked(&objs, rank).into();
     }
 
     /// Sets the line's `--defsym` assignments (§4.4b, WP-170 part 2).
@@ -1940,8 +2000,97 @@ impl<'a, 'b> Engine<'a, 'b> {
         }
     }
 
-    #[allow(clippy::too_many_lines)] // §5.1 steps 2 to 7, in order
+    /// §5.1 for one record, with §5.7a's form of R5 at a demoted weak
+    /// mention whose key nothing live defines (WP-178): the record is R5
+    /// (§4.4 step 0), and is judged as an undefined weak reference only
+    /// to say whether its field holds that form (the words
+    /// [`DEMOTED_WEAK`]); the trial's own outcome is not kept.
     fn record(&mut self, oi: usize, si: usize, recs: &[Rec], sorted: &[(u64, usize)], i: usize) {
+        let rec = &recs[i];
+        let Some((name, sec)) = self.demoted_weak(oi, si, rec) else {
+            return self.record_judged(oi, si, recs, sorted, i);
+        };
+        let site = self.objs[oi].site(si, rec.off);
+        let symbol = self.sym_name(oi, rec.sym);
+        let plain = Self::finding(
+            Rule::DiscardedTarget,
+            rec,
+            &site,
+            &symbol,
+            format!("refers to section '{sec}', which is not in the output"),
+        );
+        let (cov, n) = (self.cov.clone(), self.findings.len());
+        let members = |e: &Self| e.got_groups.values().map(|g| g.members.len()).sum::<usize>();
+        let pending = members(self);
+        self.trial = Some((oi, rec.sym, name));
+        self.record_judged(oi, si, recs, sorted, i);
+        self.trial = None;
+        let deferred = members(self) > pending;
+        let shown = |c: &Coverage| {
+            (
+                c.verified.values().sum::<u64>() + c.accepted.values().sum::<u64>(),
+                c.not_checked.values().sum::<u64>(),
+            )
+        };
+        let (was, now) = (shown(&cov), shown(&self.cov));
+        let clean = self.findings.len() == n && now.1 == was.1;
+        let weak_form = clean && now.0 > was.0;
+        self.findings.truncate(n);
+        self.cov = cov;
+        if deferred {
+            // The GOT group decides (`finish_got`); a trial that already
+            // failed is plain R5 whatever it decides.
+            self.demoted_pending.insert((rec.p, rec.def.r_type), (plain, clean));
+            return;
+        }
+        let mut f = plain;
+        if weak_form {
+            f.message.push_str(DEMOTED_WEAK);
+        }
+        self.fail(f);
+    }
+
+    /// §5.7a: when `rec`, in an allocated section of object `oi`, is
+    /// against a weak symbol of `oi` defined in a section of a COMDAT copy
+    /// that is not kept (the verifier's keeper) and without a place, and
+    /// §4.4 step 0 makes it R5 (no definition of its key has a place, and
+    /// the loader does not bind it): the key and the section's name.
+    fn demoted_weak(&mut self, oi: usize, si: usize, rec: &Rec) -> Option<(String, String)> {
+        if !self.objs[oi].secs.get(si)?.alloc() {
+            return None;
+        }
+        let t = self.objs[oi].symtab?;
+        let s = t.get(SymbolIndex(rec.sym)).ok()?;
+        if s.binding() != STB_WEAK {
+            return None;
+        }
+        let Ok(SymbolSection::Section(k)) = t.section_of(SymbolIndex(rec.sym), &s) else {
+            return None;
+        };
+        let k = k.0 as usize;
+        let objs = self.objs;
+        let dropped = self.comdat.get_or_init(|| crate::fate::comdat_dropped(objs));
+        if !dropped.get(oi).and_then(|d| d.get(k)).copied().unwrap_or(false)
+            || !self.objs[oi].no_place(k, self.output_eh_frame().is_some())
+        {
+            return None;
+        }
+        let name = String::from_utf8_lossy(t.name(&s).ok()?).into_owned();
+        match self.resolve_at(oi, rec.sym, rec.addend).0 {
+            Target::Discarded(sec) => Some((name, sec)),
+            _ => None,
+        }
+    }
+
+    #[allow(clippy::too_many_lines)] // §5.1 steps 2 to 7, in order
+    fn record_judged(
+        &mut self,
+        oi: usize,
+        si: usize,
+        recs: &[Rec],
+        sorted: &[(u64, usize)],
+        i: usize,
+    ) {
         let rec = &recs[i];
         let site = self.objs[oi].site(si, rec.off);
         let symbol = self.sym_name(oi, rec.sym);
@@ -2843,6 +2992,49 @@ impl<'a, 'b> Engine<'a, 'b> {
         }
     }
 
+    /// A GOT group with no pair (§5.5): its records are not checked, but
+    /// a demoted weak mention's record is R5 whatever (§5.7a).
+    fn got_unpaired(&mut self, g: &Group) {
+        let key = |p: &Pending| (p.rec.p, p.rec.def.r_type);
+        let demoted =
+            g.members.iter().filter(|m| self.demoted_pending.contains_key(&key(&m.0))).count();
+        self.not_checked(Reason::GotUnpaired, (g.members.len() - demoted) as u64);
+        for (pend, _) in &g.members {
+            if let Some((f, _)) = self.demoted_pending.remove(&key(pend)) {
+                self.fail(f);
+                continue;
+            }
+            let form = crate::equiv::Form::NotChecked(Reason::GotUnpaired);
+            crate::equiv::reform(self, pend.rec.p, form);
+        }
+    }
+
+    /// A GOT group's record that reaches no slot holding what it wants
+    /// (§5.5): its finding.
+    fn got_no_slot(&mut self, pend: &Pending, want: Want, cands: &[u64]) {
+        let rec = &pend.rec;
+        let mut f = Self::finding(
+            Rule::GotSlot,
+            rec,
+            &pend.site,
+            &pend.symbol,
+            match want {
+                Want::Word(v) if !rec.def.op.is_tls() => {
+                    format!("the GOT-indirect reference reaches no slot that holds S+A ({v:#x})")
+                }
+                Want::Word(v) => format!(
+                    "the GOT-indirect reference reaches no entry that holds the thread-pointer offset {v:#x}"
+                ),
+                Want::Pair(m, v) => format!(
+                    "the GOT-indirect reference reaches no entry that holds the module index {m} and the offset {v:#x}"
+                ),
+            },
+        );
+        f.expected = Some(want.first());
+        f.found = cands.first().and_then(|&c| self.image.value(c, self.word() as u8));
+        self.fail(f);
+    }
+
     /// Decides the GOT groups (§5.5).
     pub fn finish_got(&mut self) {
         let groups = std::mem::take(&mut self.got_groups);
@@ -2852,12 +3044,9 @@ impl<'a, 'b> Engine<'a, 'b> {
             crate::equiv::index_places(self, &wanted);
         }
         for ((_, goi, gsym, _), g) in groups {
+            let key = |p: &Pending| (p.rec.p, p.rec.def.r_type);
             if g.unpaired() {
-                self.not_checked(Reason::GotUnpaired, g.members.len() as u64);
-                for (pend, _) in &g.members {
-                    let form = crate::equiv::Form::NotChecked(Reason::GotUnpaired);
-                    crate::equiv::reform(self, pend.rec.p, form);
-                }
+                self.got_unpaired(&g);
                 continue;
             }
             let want = g.members[0].0.want;
@@ -2872,29 +3061,14 @@ impl<'a, 'b> Engine<'a, 'b> {
                 }
                 held = self.trace.is_some().then(|| (pend.rec.p, crate::equiv::tally(self)));
                 let rec = &pend.rec;
-                if valid.is_empty() {
-                    let mut f = Self::finding(
-                        Rule::GotSlot,
-                        rec,
-                        &pend.site,
-                        &pend.symbol,
-                        match want {
-                            Want::Word(v) if !rec.def.op.is_tls() => {
-                                format!(
-                                    "the GOT-indirect reference reaches no slot that holds S+A ({v:#x})"
-                                )
-                            }
-                            Want::Word(v) => format!(
-                                "the GOT-indirect reference reaches no entry that holds the thread-pointer offset {v:#x}"
-                            ),
-                            Want::Pair(m, v) => format!(
-                                "the GOT-indirect reference reaches no entry that holds the module index {m} and the offset {v:#x}"
-                            ),
-                        },
-                    );
-                    f.expected = Some(want.first());
-                    f.found = cands.first().and_then(|&c| self.image.value(c, self.word() as u8));
+                if valid.is_empty()
+                    && let Some((f, _)) = self.demoted_pending.remove(&key(pend))
+                {
                     self.fail(f);
+                    continue;
+                }
+                if valid.is_empty() {
+                    self.got_no_slot(pend, want, &cands);
                     continue;
                 }
                 let mut last = None;
@@ -2910,6 +3084,15 @@ impl<'a, 'b> Engine<'a, 'b> {
                         }
                         v => last = Some((v, x)),
                     }
+                }
+                // §5.7a: the form of a demoted weak mention's R5 (its
+                // slot's word is no verified word of view 2).
+                if let Some((mut f, clean)) = self.demoted_pending.remove(&key(pend)) {
+                    if clean && ok.is_some() {
+                        f.message.push_str(DEMOTED_WEAK);
+                    }
+                    self.fail(f);
+                    continue;
                 }
                 if ok.is_some()
                     && let Want::Word(v) = want
@@ -2935,6 +3118,10 @@ impl<'a, 'b> Engine<'a, 'b> {
             if let Some((p, b)) = held {
                 crate::equiv::retraced(self, p, &b);
             }
+        }
+        // §5.7a: a record no group decided is R5 as step 0 gives it.
+        for (_, (f, _)) in std::mem::take(&mut self.demoted_pending) {
+            self.fail(f);
         }
     }
 

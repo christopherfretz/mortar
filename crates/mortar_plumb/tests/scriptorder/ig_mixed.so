@@ -1,0 +1,1 @@
+INPUT ( libnx.so ) GROUP ( libny.so use_x.o )

@@ -1,0 +1,45 @@
+# comdat-mismatch-weak-dynamic.test's shape with the key also defined by
+# a shared object (WP-176 record §2, a cell it measured but did not
+# commit; WP-178). Under --as-needed wb.o's demoted weak mention does not
+# make libhx.so needed (dyn.md D-11: a weak reference never does), so the
+# key ends with no definition: the reference through the mention is
+# comdat-mismatch (resolve.md §6.3 case (b), the supervisor's ruling at
+# WP-176's merge). GNU ld and lld write an import no DT_NEEDED library
+# defines: Y reads 0, exit 1 (the verifier's A103); mold refuses. Under
+# --no-as-needed: comdat-mismatch-weak-needed-live.test.
+#@ spec: resolve.md §6.3
+#@ spec: dyn.md D-11
+#@ anomaly(bfd,lld): A103
+#@ arch: aarch64 x86_64
+
+cc -O1 -fno-pie wm.c -o wm.o
+cc -O1 -fno-pie wa.c -o wa.o
+cc -O1 -fno-pie wb.c -o wb.o
+cc -O1 -fPIC hxs.c -o hxs.o
+shlib gcc hxs.o -Wl,-soname,libhx.so -o libhx.so
+
+link(bfd,lld) gcc -no-pie wm.o wa.o wb.o -Wl,--as-needed -L. -lhx -o asn
+run(bfd,lld) asn
+  exit: 1
+check(bfd,lld) readelf -dW asn
+  not: [libhx.so]
+link(mold,mortar) gcc -no-pie wm.o wa.o wb.o -Wl,--as-needed -L. -lhx -o asn
+  exit: fail
+  diag(mold): hx refers to a discarded COMDAT section probably due to an ODR violation
+  diag(mortar): symbol hx is defined only in a discarded copy of COMDAT group g
+
+#--- wm.c
+extern int g;
+int Y(void);
+int main(void) { return Y() + g; }
+#--- wa.c
+__asm__(".section .data.g,\"awG\",%progbits,g,comdat\n"
+        ".weak g\n.type g,%object\n.size g,4\ng: .long 1\n.previous\n");
+#--- wb.c
+__asm__(".section .data.g,\"awG\",%progbits,g,comdat\n"
+        ".weak g\n.type g,%object\n.size g,4\ng: .long 2\n"
+        ".weak hx\n.type hx,%object\n.size hx,4\nhx: .long 40\n.previous\n");
+extern int hx __attribute__((weak));
+int Y(void) { return &hx ? hx : 0; }
+#--- hxs.c
+int hx = 7;

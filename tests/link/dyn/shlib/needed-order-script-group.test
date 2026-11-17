@@ -1,4 +1,4 @@
-# PENDING (WP-172): the verifier's P-D6 judges GNU ld's own list wrong on this line ("DT_NEEDED order is [libna.so, libnb.so, libnx.so, libnc.so, libc.so.6]; D-19a gives [libna.so, libnx.so, libnb.so, libnc.so, libc.so.6]": it does not count an object in a script's own GROUP as a reason for a mention again inside that GROUP, directly or through a nested script: the same finding on all three lines here); the verifier package that follows WP-172 renames this file to .test.
+# Written by WP-172; the verifier's P-D6 judges these lines by dyn.md D-19a's script-group rule (plumb.md §12.1a, WP-193).
 # dyn.md D-19a (WP-172): a script GROUP holding an object that
 # references f_nx and a mention again of libnx.so (first named
 # as-needed and unreferenced on the command line), directly
@@ -77,6 +77,48 @@ run(bfd,mortar) nested-group-asn
   stdout: nc nx nb na main
 run(lld) nested-group-asn
   stdout: nc nb nx na main
+
+# include_again (WP-193): the mention again reached through INCLUDE
+# (i_sx.so: INCLUDE s_x.lds; s_x.lds: INPUT(libnx.so)), named plain after
+# libnb.so: kept at the script, as s_named_off (GNU ld, mortar; lld first
+# mention; mold 2.37.1 cannot read INCLUDE in an input script).
+link(bfd,lld,mortar) gcc -pie main0.o -Wl,--no-as-needed libna.so -Wl,--as-needed libnx.so -Wl,--no-as-needed libnb.so i_sx.so libnc.so -o include-again
+check(bfd,lld,mortar) readelf -dW include-again
+  count(bfd,mortar): 5 (NEEDED)
+  has(bfd,mortar): [libna.so]
+  then(bfd,mortar): [libnb.so]
+  then(bfd,mortar): [libnx.so]
+  then(bfd,mortar): [libnc.so]
+  then(bfd,mortar): [libc.so.6]
+  count(lld): 5 (NEEDED)
+  has(lld): [libna.so]
+  then(lld): [libnx.so]
+  then(lld): [libnb.so]
+  then(lld): [libnc.so]
+  then(lld): [libc.so.6]
+run(bfd,mortar) include-again
+  stdout: nc nx nb na main
+run(lld) include-again
+  stdout: nc nb nx na main
+link(mold) gcc -pie main0.o -Wl,--no-as-needed libna.so -Wl,--as-needed libnx.so -Wl,--no-as-needed libnb.so i_sx.so libnc.so -o include-again
+  exit: fail
+  diag(mold): unknown linker script token
+
+# g_anx_obj in a -shared output (WP-193): the same list.
+link gcc -shared -Wl,--no-as-needed libna.so -Wl,--as-needed libnx.so -Wl,--no-as-needed libnb.so g_anx_obj.so libnc.so -o libg-anx-obj.so
+check readelf -dW libg-anx-obj.so
+  count(bfd,mortar): 5 (NEEDED)
+  has(bfd,mortar): [libna.so]
+  then(bfd,mortar): [libnb.so]
+  then(bfd,mortar): [libnx.so]
+  then(bfd,mortar): [libnc.so]
+  then(bfd,mortar): [libc.so.6]
+  count(lld,mold): 5 (NEEDED)
+  has(lld,mold): [libna.so]
+  then(lld,mold): [libnx.so]
+  then(lld,mold): [libnb.so]
+  then(lld,mold): [libnc.so]
+  then(lld,mold): [libc.so.6]
 #--- use_x.c
 int f_nx(void);
 int use_x(void) { return f_nx(); }
@@ -90,3 +132,7 @@ INPUT ( AS_NEEDED ( libnx.so ) )
 GROUP ( s_x.so use_x.o )
 #--- g_sanx_use.so
 GROUP ( s_anx.so use_x.o )
+#--- s_x.lds
+INPUT ( libnx.so )
+#--- i_sx.so
+INCLUDE s_x.lds

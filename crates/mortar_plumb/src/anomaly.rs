@@ -108,10 +108,18 @@ pub fn classify(linker: Format, output: &[u8], f: &Finding) -> Option<&'static s
             "A19: mold gives an FDE with address range 0 an entry in .eh_frame_hdr's table (spec/synth.md S-59)",
         );
     }
-    if let Some(a) = dynamic(linker, output, f) {
+    if let Some(a) = demoted_weak(linker, f).or_else(|| dynamic(linker, output, f)) {
         return Some(a);
     }
     if mold { ifunc_alias(output, f) } else { None }
+}
+
+/// A103, a finding on GNU ld's or lld's output.
+fn demoted_weak(linker: Format, f: &Finding) -> Option<&'static str> {
+    (matches!(linker, Format::Gnu | Format::Lld)
+        && f.rule == Rule::DiscardedTarget && f.message.ends_with(crate::reloc::DEMOTED_WEAK)).then_some(
+        "A103: GNU ld and lld write a reference through a weak mention defined only in a dropped COMDAT copy, whose key nothing live defines, as an undefined weak reference (resolve.md §6.3 case (b): comdat-mismatch)",
+    )
 }
 
 /// The anomalies of dynamic outputs (stage 3, `spec/plumb.md` §10.2,

@@ -1,4 +1,4 @@
-# PENDING (WP-176): no reference passes: the verifier finds the references' outputs wrong (R5 "refers to section '.text.g'/'.data.g', which is not in the output": the undefined-weak value of a reference through a demoted mention), which is right; the verifier package that follows WP-176 records it as a reference anomaly (an anomaly(bfd,lld) directive) and renames this file to .test.
+# Not the obvious answer: GNU ld's and lld's libraries are wrong and the verifier says so (plumb.md §10.2 A103, WP-178: R5 at the GOT reference, the slot the undefined-weak import's).
 # comdat-mismatch-weak-dynamic.test's shape in a shared object (WP-176):
 # the library holds wa.o's and wb.o's copies of group g; mortar keeps
 # wa.o's (resolve.md §6.1), and wb.o's Y reads hx through its demoted
@@ -8,10 +8,10 @@
 # defined. GNU ld and lld write hx as an undefined weak dynamic symbol
 # (Y then returns 0 in every process: comdat-mismatch-weak-dynamic.test
 # runs that shape); mold refuses it. With wb.o first all four keep its
-# copy and export hx. No host: a refused library has no pair (harness.md
-# LT-2).
+# copy and export hx. No host: a refused library has no pair (harness.md LT-2).
 #@ spec: resolve.md §6.3
 #@ spec: resolve.md §5.2
+#@ anomaly(bfd,lld): A103
 #@ arch: aarch64 x86_64
 
 cc -O1 -fPIC wa.c -o wa.o
