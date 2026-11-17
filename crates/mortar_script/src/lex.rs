@@ -30,7 +30,7 @@ pub enum Mode {
     /// EXPRESSION state).
     Expression,
     /// Version scripts and dynamic lists (`spec/script.md` §9.1; GNU ld's
-    /// VERS_START, VERS_SCRIPT and VERS_NODE states): names that may hold
+    /// `VERS_START`, `VERS_SCRIPT` and `VERS_NODE` states): names that may hold
     /// glob bytes, `::` and `~`, quoted strings, `{ } ; :`. No keywords:
     /// `global`, `local` and `extern` are names the parser reads by
     /// context.

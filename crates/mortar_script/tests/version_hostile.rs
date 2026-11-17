@@ -123,10 +123,10 @@ fn exercise(bytes: &[u8], other: &[u8]) {
         Ok(s) => check_script(&s, &two),
         Err(d) => check_error(&d, &two),
     }
-    let list = [SourceFile { path: "d.list", bytes }];
-    match parse_dynamic_list(&list) {
-        Ok(l) => check_list(&l, &list),
-        Err(d) => check_error(&d, &list),
+    let dynamic = [SourceFile { path: "d.list", bytes }];
+    match parse_dynamic_list(&dynamic) {
+        Ok(l) => check_list(&l, &dynamic),
+        Err(d) => check_error(&d, &dynamic),
     }
     let mut lexer = Lexer::new(bytes);
     let mut last = 0;

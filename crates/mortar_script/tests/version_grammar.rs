@@ -104,7 +104,11 @@ fn names(script: &VersionScript) -> Vec<String> {
     script
         .nodes
         .iter()
-        .map(|n| n.name.as_ref().map_or_else(|| "<anon>".to_owned(), |w| w.to_string_lossy()))
+        .map(|n| {
+            n.name
+                .as_ref()
+                .map_or_else(|| "<anon>".to_owned(), mortar_script::Word::to_string_lossy)
+        })
         .collect()
 }
 
