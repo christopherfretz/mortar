@@ -1,0 +1,46 @@
+# x64.md §5.1 (WP-127 part 1; kept when WP-124 lifted the refusal on
+# AArch64): TLS (X-61) and the library's own IFUNC (dyn.md D-121) in an
+# x86-64 shared object are refused by name until WP-127 part 2; the
+# references link the TLS lines. Each TLS model is refused, the relaxable
+# forms included (no reference relaxes in a shared object, D-119: until
+# the forms are implemented none may reach the architecture's scan). The
+# references do not link the descriptor line here: the verifier does not
+# know a descriptor kept in an x86-64 shared object yet (its R1 names
+# X-28 and X-58, an executable's forms: part 2's verifier side); nor the
+# IFUNC line: mold binds a preemptible IFUNC locally
+# (`refused-shared-target`'s note).
+#@ spec: x64.md "5.1"; dyn.md "D-119"
+#@ arch: x86_64
+
+cc -O1 -fPIC tls.c -o gd.o
+cc -O1 -fPIC -ftls-model=initial-exec tls.c -o ie.o
+cc -O1 -fPIC -mtls-dialect=gnu2 tls.c -o desc.o
+cc -O1 -fPIC -fvisibility=hidden tls.c -o ld.o
+cc -O1 -fPIC ifunc.c -o ifunc.o
+link(bfd,lld,mold) gcc -shared gd.o -o libgd.so
+link(mortar) gcc -shared gd.o -o libgd.so
+  exit: fail
+  diag: unsupported feature: TLS in a shared object
+link(bfd,lld,mold) gcc -shared ie.o -o libie.so
+link(mortar) gcc -shared ie.o -o libie.so
+  exit: fail
+  diag: unsupported feature: TLS in a shared object
+link(mortar) gcc -shared desc.o -o libdesc.so
+  exit: fail
+  diag: unsupported feature: TLS in a shared object
+link(bfd,lld,mold) gcc -shared ld.o -o libld.so
+link(mortar) gcc -shared ld.o -o libld.so
+  exit: fail
+  diag: unsupported feature: TLS in a shared object
+link(mortar) gcc -shared ifunc.o -o libifunc.so
+  exit: fail
+  diag: unsupported feature: IFUNC in a shared object
+
+#--- tls.c
+__thread int t = 1;
+int get_t(void) { return t; }
+#--- ifunc.c
+static int one(void) { return 1; }
+static int (*pick(void))(void) { return one; }
+int sel(void) __attribute__((ifunc("pick")));
+int call_sel(void) { return sel(); }

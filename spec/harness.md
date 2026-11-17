@@ -1251,7 +1251,8 @@ pair writes is under the unit's directory.
 in `--quick`, kiln not run). A line's library is loaded by `dlopen` from
 a loader the line's driver links with GNU ld; mortar's library loads as
 the reference's (exit status and output) and the verifier is clean, or
-mortar refuses `-shared` by name (`OUT_OF_M2`, until WP-123). The lane
+mortar refuses the line by name (`OUT_OF_M2`: what a `-shared` line
+may still ask for that has not landed). The lane
 prints `census: -shared: N lines, L linked, R refused by name`.
 
 **LT-8 (the real builds' `-shared` lines).** `cargo xtask realbuild`
