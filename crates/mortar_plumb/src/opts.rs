@@ -61,6 +61,8 @@ R No - --no-warn-backrefs
 R Next gnu -L --library-path
 R Next gnu --sysroot
 R Next gnu -rpath-link
+R Eq gnu --sort-common --sort_common
+R Next gnu --sort-section
 R Next gnu --export-dynamic-symbol
 R Next gnu -init
 R Next gnu -fini
@@ -83,6 +85,8 @@ R No gnu -w --no-warnings
 R Eq - --color-diagnostics
 R No - --no-color-diagnostics
 R No gnu --no-undefined
+R No gnu --warn-common
+R No - --no-warn-common
 R No gnu --warn-execstack
 R Next - --odr
 R No - --no-odr-check
@@ -97,6 +101,7 @@ R No gnu -V
 R No gnu --help
 R Next gnu -Map
 R No gnu -M --print-map
+R Eq gnu --verbose
 R Next gnu --dependency-file
 R Eq - --threads
 R Next - --mortar-map

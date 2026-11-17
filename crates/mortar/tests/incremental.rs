@@ -387,6 +387,23 @@ fn update_unsupported_and_reproducible() {
     assert!(!o.stderr_text().contains("SOURCE_DATE_EPOCH"), "a plain link: {}", o.stderr_text());
 }
 
+// spec: incr.md IN-12 (`--sort-common` and `--sort-section` link plain,
+// with the warning naming the option; WP-111)
+#[test]
+fn sort_options_are_unsupported() {
+    let Some(prog) = Prog::asm() else { return };
+    for (out, opt) in [("sc", "--sort-common"), ("ss", "--sort-section=alignment")] {
+        let o = prog.mortar_env(out, &["--incremental", opt], &[]);
+        let err = o.stderr_text();
+        assert!(o.success(), "{err}");
+        let name = opt.split('=').next().unwrap_or(opt);
+        assert!(err.contains(&format!("--incremental is not supported with {name}")), "{err}");
+        assert!(!prog.state_of(out).exists(), "{opt}: no state");
+        let o = prog.mortar_env(&format!("{out}2"), &["--incremental=update", opt], &[]);
+        assert!(!o.success() && o.stderr_text().contains("incremental-unsupported"), "{opt}");
+    }
+}
+
 /// Checks the reader on one damaged state: a named reason or a state,
 /// never a panic.
 fn read_damaged(bytes: &[u8], what: &str) {

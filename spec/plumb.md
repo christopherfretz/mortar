@@ -3187,29 +3187,52 @@ coverage (§7.2), not dropped.
 What is held, and for how long:
 
 - the output, whole, for the run (every rule reads it);
-- the inputs the map names, whole, for the run (WP-109's design for
-  positioned reads, which hold an object's skeleton only, is in
-  `spec/landed/plumb/WP-109.md`);
+- of every object the map names, its skeleton (WP-109b): the file
+  header, the section header table, the section names, the symbol table
+  with its strings and extended indexes, the groups and `.mason.meta`;
+  an archive's member headers. A section's body is read through the
+  caller's `Source` (the command's open files, by position) when a rule
+  asks for it and kept only in a bounded cache (64 MiB of sections, the
+  last two objects a phase read whole). An object whose skeleton
+  `mortar_elf` finds not enough to read (a malformed file) is read
+  whole, so the verdict is the whole bytes' in every case; a read that
+  fails after the skeletons were read (the file changed under the
+  verifier) is an I2 finding naming the file;
 - per record, nothing after its verdict, except the members of a GOT
   group (§5.5) and of a piece group (§5.6) until the group is decided
   (§5.6: as early as its members are known);
-- `--equiv`: each side's traced form per record, keyed by input section
-  (§6.9), and its identity spans in a segment tree (each lookup
-  logarithmic in the spans, linear in those that hold the address).
+- `--equiv`: both outputs whole, one skeleton store for both sides, and
+  each side's traced form per record, keyed by input section (§6.9),
+  its offsets in 32 bits when they fit, and its identity spans in a
+  segment tree (each lookup logarithmic in the spans, linear in those
+  that hold the address); the update's relocated ranges (the full
+  link's are not read).
 
 `MORTAR_PLUMB_PROFILE=1` (or `=<file>`) prints (or appends to the file,
 line by line, so a run killed at a memory cap keeps them) the resident
 set and its peak after each phase and the sizes of the large structures.
 It is the measurement of this section, not a rule; it changes no verdict.
 
-Measured (WP-109, the dev-profile verifier as the bench and CI run it):
+Measured (WP-109b, the dev-profile verifier as the bench and CI run it;
+the linker's peak in brackets):
 
 | link | plain: peak, time | `--equiv`: peak, time |
 |---|---|---|
-| protoc `-g` static (control) | 365 MB, 1.0 s | |
-| clang split (`cxx-large-split`) | 1.83 GB, 3.8 s | 4.7 GB, 22 s |
-| opt `-g` (`cxx-large-g-opt`) | 1.80 GB, 5.9 s | 3.4 GB, 17 s |
-| clang `-g` (`cxx-large-g`) | 3.85 GB, 15 s | not run (the two outputs alone are 2.3 GB) |
+| protoc `-g` static (control) | 206 MiB, 1.0 s (251 MiB) | |
+| clang split (`cxx-large-split`) | 1,285 MiB, 4.0 s (777 MiB) | 2,700 MiB, 27 s |
+| opt `-g` (`cxx-large-g-opt`) | 823 MiB, 5.5 s (951 MiB) | 2,025 MiB, 32 s |
+| clang `-g` (`cxx-large-g`) | 1,795 MiB, 14 s (1,960 MiB) | 4,307 MiB, 57 s |
+
+The plain pass is within the budget on all four. `--equiv` is not on
+clang `-g`: it holds both outputs whole (2 x 1,163 MiB) and, while the
+full link's side runs, the update's kept forms, units and spans
+(about 0.6 GiB) and the second engine. Its peak is about the two
+outputs plus 0.9 to 2.0 GiB for the rest (931 MiB on opt `-g`, 1,478 on
+split, 1,981 on clang `-g`): it passes 4 GiB at about 1 GiB of output
+per side with an input set the size of clang `-g`'s. The remedy (the
+outputs read by position too, each held whole only while its own side's
+engine runs) is designed in `spec/landed/plumb/WP-109b.md` §5 and not
+done. Times vary by some 30 % with the host's load.
 
 ## 9. Validation
 

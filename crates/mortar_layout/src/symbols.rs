@@ -355,10 +355,13 @@ fn entry(
     defined: &[Defined],
 ) -> Result<(Option<u64>, Vec<LayoutDiag>), LayoutDiag> {
     let cx = table.cx;
-    let name = match &options.entry {
+    // `spec/dyn.md` D-101: a shared object's default `_start` gives 0
+    // silently when undefined; `-e`'s symbol keeps L-103's warning.
+    let (name, warn) = match &options.entry {
         EntryName::None => return Ok((None, Vec::new())),
         EntryName::Address(a) => return in_code(table, *a).map(|a| (Some(a), Vec::new())),
-        EntryName::Symbol(name) => name,
+        EntryName::Symbol(name) => (name, true),
+        EntryName::IfDefined(name) => (name, false),
     };
     let key = cx
         .symbols
@@ -382,7 +385,7 @@ fn entry(
         if let Some(a) = std::str::from_utf8(name).ok().and_then(parse_number) {
             return in_code(table, a).map(|a| (Some(a), Vec::new()));
         }
-        return Ok((None, vec![entry_not_found(name)]));
+        return Ok((None, if warn { vec![entry_not_found(name)] } else { Vec::new() }));
     };
     let addr = table.addr(value).ok_or_else(|| internal("the entry symbol has no address"))?;
     in_code(table, addr).map(|a| (Some(a), Vec::new()))

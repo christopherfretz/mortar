@@ -75,7 +75,7 @@ fn stages(w: &World, pool: &Pool) -> [(&'static str, Duration); 7] {
     let t = Instant::now();
     let ranks = out_ranks(&a);
     let ordered =
-        order(&a, &w.headers, &w.resolution, &w.liveness, &w.folds, &ranks, pool).unwrap();
+        order(&a, &w.headers, &w.resolution, &w.liveness, &w.folds, &ranks, None, pool).unwrap();
     let tb = t.elapsed();
     let t = Instant::now();
     let keep_empty = start_stop_outputs(&a, &w.resolution, &w.symbols);

@@ -4,7 +4,7 @@ Generated from `crates/mortar_cli/src/rows.rs` by `mortar_cli::status_markdown`;
 do not edit. `MORTAR_BLESS=1 cargo test -p mortar_cli --test table` rewrites it.
 The rules are `spec/cli.md`.
 
-487 rows: 81 supported, 4 partial, 34 noop, 368 refused.
+487 rows: 86 supported, 4 partial, 34 noop, 363 refused.
 
 Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 18 mortar's own.
 
@@ -149,8 +149,8 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 18 mortar'
 | `--bp-compression-sort-startup-functions` |  | lld | all | refused | `other` | Order startup functions for compression too |
 | `--verbose-bp-section-orderer` |  | lld | all | refused | `other` | Report on balanced partitioning |
 | `--orphan-handling` | place \| discard \| warn \| error | GNU, lld | all | refused | `other` | Handle sections no script statement places |
-| `--sort-common`, `--sort_common` | optional, `=` only: ascending \| descending | GNU, lld, mold | all | refused | `other` | Sort common symbols by alignment |
-| `--sort-section` | name \| alignment | GNU, lld, mold | all | refused | `other` | Sort sections matched by wildcards |
+| `--sort-common`, `--sort_common` | optional, `=` only: ascending \| descending | GNU, lld, mold | all | supported | `shaping.sort_common` | Sort common symbols by alignment |
+| `--sort-section` | name \| alignment | GNU, lld, mold | all | supported | `shaping.sort_section` | Sort sections matched by wildcards |
 | `--unique` | optional, `=` only: SECTION | GNU, lld, mold | all | refused | `other` | Do not merge orphan sections (or SECTION) |
 | `--enable-non-contiguous-regions` |  | GNU, lld | all | refused | `other` | Spill sections into later matching memory regions |
 | `--enable-non-contiguous-regions-warnings` |  | GNU | all | refused | `other` | Warn where non-contiguous regions can surprise |
@@ -269,8 +269,8 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 18 mortar'
 | `--no-allow-multiple-definition` |  | lld | all | refused | `diagnostics.allow_multiple_definition` | Report symbols defined more than once (default) |
 | `--noinhibit-exec`, `--noinhibit_exec` |  | GNU, lld, mold | all | refused | `diagnostics.noinhibit_exec` | Write the output even after errors |
 | `--error-handling-script` | SCRIPT | GNU, lld | all | refused | `other` | Run SCRIPT for undefined symbols and missing libraries |
-| `--warn-common` |  | GNU, lld, mold | all | refused | `diagnostics.warn_common` | Warn about common symbols |
-| `--no-warn-common` |  | lld, mold | all | refused | `diagnostics.warn_common` | Do not warn about common symbols (default) |
+| `--warn-common` |  | GNU, lld, mold | all | supported | `diagnostics.warn_common` | Warn about common symbols |
+| `--no-warn-common` |  | lld, mold | all | supported | `diagnostics.warn_common` | Do not warn about common symbols (default) |
 | `--warn-constructors` |  | GNU, mold | all | refused | `other` | Warn about global constructors |
 | `--warn-multiple-gp` |  | GNU | all | refused | `other` | Warn about several GP values |
 | `--warn-once` |  | GNU, lld, mold | all | refused | `other` | Warn about each undefined symbol once |
@@ -314,7 +314,7 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 18 mortar'
 | `--no-print-map-locals` |  | GNU | all | refused | `other` | Do not show local symbols in the map (default) |
 | `--cref` |  | GNU, lld | all | refused | `bookkeeping.cref` | Write a cross-reference table |
 | `-t`, `--trace` |  | GNU, lld, mold | all | refused | `bookkeeping.trace` | Print the name of each input file |
-| `--verbose` | optional, `=` only: LEVEL (number) | GNU, lld, mold | all | refused | `bookkeeping.verbose` | Print what the link does |
+| `--verbose` | optional, `=` only: LEVEL (number) | GNU, lld, mold | all | supported | `bookkeeping.verbose` | Print the version and the emulations, as -V does |
 | `--dependency-file` | FILE | GNU, lld, mold | all | supported | `bookkeeping.dependency_file` | Write make dependencies of the link to FILE |
 | `--reproduce` | FILE | lld | all | refused | `bookkeeping.reproduce` | Write a tar archive that reproduces the link |
 | `--repro` |  | mold | all | refused | `other` | Embed the inputs in a .repro section |

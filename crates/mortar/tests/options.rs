@@ -99,6 +99,8 @@ const AUDIT: &[(&str, Proof)] = &[
         Test("crates/mortar/tests/sysroot.rs", "sysroot_directories_and_scripts_are_under_it"),
     ),
     ("-rpath-link", Check(dynamic_options)),
+    ("--sort-common", Check(sort_common)),
+    ("--sort-section", Check(sort_section)),
     ("--export-dynamic-symbol", Check(dynamic_options)),
     ("-init", Check(dynamic_options)),
     ("-fini", Check(dynamic_options)),
@@ -124,6 +126,8 @@ const AUDIT: &[(&str, Proof)] = &[
     ("--color-diagnostics", Check(color)),
     ("--no-color-diagnostics", Check(color)),
     ("--no-undefined", Same(&["--no-undefined"], Some(undefined_is_an_error))),
+    ("--warn-common", Check(warn_common)),
+    ("--no-warn-common", Check(warn_common)),
     ("--warn-execstack", Same(&["--warn-execstack"], Some(execstack_warns_by_default))),
     ("--odr", Test("crates/mortar/tests/odr.rs", "modes")),
     ("--no-odr-check", Test("crates/mortar/tests/odr.rs", "off_reads_nothing_and_changes_no_byte")),
@@ -147,6 +151,7 @@ const AUDIT: &[(&str, Proof)] = &[
         Test("crates/mortar/tests/pipeline.rs", "the_text_map_matches_the_output_and_gnus_map"),
     ),
     ("-M", Test("crates/mortar/tests/pipeline.rs", "print_map_writes_the_map_to_standard_output")),
+    ("--verbose", Check(verbose)),
     ("--dependency-file", Check(dependency_file)),
     (
         "--threads",
@@ -821,6 +826,214 @@ fn warning_switches(cx: &Cx) {
     assert!(back.success(), "{}", back.stderr_text());
     let quiet = run(&["-w"]);
     assert!(quiet.success() && quiet.stderr_text().is_empty(), "{}", quiet.stderr_text());
+}
+
+/// Assembles `text` into `<name>.o` in the scratch directory.
+fn assemble(cx: &Cx, name: &str, text: &str) {
+    let src = cx.scratch.write(&format!("{name}.s"), text);
+    let args = ["-c".into(), src.into_os_string(), "-o".into(), format!("{name}.o").into()];
+    let o = cx.run_in(&cx.gcc, &args);
+    assert!(o.success(), "gcc {name}: {}", o.stderr_text());
+}
+
+/// The names of `path`'s symbols among `names`, in address order.
+fn by_address(cx: &Cx, path: &Path, names: &[&str]) -> Vec<String> {
+    let mut found: Vec<(u64, String)> = cx
+        .readelf("-sW", path)
+        .lines()
+        .filter_map(|l| {
+            let w: Vec<&str> = l.split_whitespace().collect();
+            (w.len() >= 8 && names.contains(&w[7]))
+                .then(|| (u64::from_str_radix(w[1], 16).unwrap(), w[7].to_owned()))
+        })
+        .collect();
+    found.sort();
+    found.into_iter().map(|(_, n)| n).collect()
+}
+
+/// `_start` and commons of the alignments 1 to 64, two ties at 8 (`c8b`
+/// first: ties go in `SymbolId` order, the order of first mention).
+const COMMONS: &str = "\t.text\n\t.globl _start\n_start:\n\tmov x0, #0\n\tmov x8, #93\n\tsvc #0\n\
+    \t.comm c4,5,4\n\t.comm c64,3,64\n\t.comm c8b,3,8\n\t.comm c1,3,1\n\t.comm c32,7,32\n\
+    \t.comm c8a,9,8\n\t.comm c16,5,16\n\t.comm c2,3,2\n\
+    \t.section .note.GNU-stack,\"\",%progbits\n";
+
+// spec: layout.md L-88a (`--sort-common[=ascending|descending]`: by the
+// common alignment, then `SymbolId`), against GNU ld's classes
+fn sort_common(cx: &Cx) {
+    assemble(cx, "commons", COMMONS);
+    let names = ["c1", "c2", "c4", "c8b", "c8a", "c16", "c32", "c64"];
+    // GNU ld's classes: 16 and over (in its hash order), 8, 4, 2, 1.
+    let distinct = ["c1", "c2", "c4", "c8b", "c16"];
+    for (extra, want) in [
+        (&[][..], None),
+        (&["--sort-common"][..], Some(["c64", "c32", "c16", "c8b", "c8a", "c4", "c2", "c1"])),
+        (
+            &["--sort-common=descending"],
+            Some(["c64", "c32", "c16", "c8b", "c8a", "c4", "c2", "c1"]),
+        ),
+        (&["--sort-common=ascending"], Some(["c1", "c2", "c4", "c8b", "c8a", "c16", "c32", "c64"])),
+    ] {
+        let mut args = vec!["commons.o", "-o", "sc.out"];
+        args.extend_from_slice(extra);
+        let o = cx.mortar(&args);
+        assert!(o.success(), "{extra:?}: {}", o.stderr_text());
+        let got = by_address(cx, &cx.scratch.join("sc.out"), &names);
+        let Some(want) = want else {
+            // L-88: SymbolId order without the option.
+            assert_eq!(got, ["c4", "c64", "c8b", "c1", "c32", "c8a", "c16", "c2"]);
+            continue;
+        };
+        assert_eq!(got, want, "{extra:?}");
+        args[2] = "sc.bfd";
+        let o = cx.ld(&args);
+        assert!(o.success(), "ld.bfd {extra:?}: {}", o.stderr_text());
+        let gnu = by_address(cx, &cx.scratch.join("sc.bfd"), &distinct);
+        let ours: Vec<String> =
+            got.iter().filter(|n| distinct.contains(&n.as_str())).cloned().collect();
+        assert_eq!(ours, gnu, "{extra:?}: GNU ld's order of distinct classes");
+    }
+}
+
+/// Input sections of `.text` (two categories), `.rodata` and `.data` of
+/// distinct names and alignments.
+const SECTIONS: &str = "\t.section .text.zfun,\"ax\",%progbits\n\t.p2align 2\nzfun:\tnop\n\
+    \t.section .text.afun,\"ax\",%progbits\n\t.p2align 6\nafun:\tnop\n\
+    \t.section .text.unlikely.cold2,\"ax\",%progbits\n\t.p2align 2\ncold2:\tnop\n\
+    \t.section .text.unlikely.cold1,\"ax\",%progbits\n\t.p2align 5\ncold1:\tnop\n\
+    \t.section .text.mfun,\"ax\",%progbits\n\t.p2align 4\nmfun:\tnop\n\
+    \t.text\n\t.p2align 3\n\t.globl _start\n_start:\tmov x0, #0\n\tmov x8, #93\n\tsvc #0\n\
+    \t.section .rodata.zr,\"a\",%progbits\n\t.p2align 2\nzr:\t.byte 7\n\
+    \t.section .rodata.ar,\"a\",%progbits\nar:\t.byte 8\n\
+    \t.section .rodata,\"a\",%progbits\n\t.p2align 4\nr0:\t.byte 9\n\
+    \t.section .data.zd,\"aw\",%progbits\n\t.p2align 1\nzd:\t.byte 1\n\
+    \t.section .data.ad,\"aw\",%progbits\n\t.p2align 5\nad:\t.byte 1\n\
+    \t.section .note.GNU-stack,\"\",%progbits\n";
+
+// spec: layout.md L-53a (`--sort-section`: per output section, inside the
+// L-53 categories), the same order as GNU ld's
+fn sort_section(cx: &Cx) {
+    assemble(cx, "sections", SECTIONS);
+    let text = ["cold2", "cold1", "zfun", "afun", "mfun", "_start"];
+    let rodata = ["zr", "ar", "r0"];
+    let data = ["zd", "ad"];
+    for (extra, want) in [
+        (
+            &[][..],
+            [
+                &["cold2", "cold1", "_start", "zfun", "afun", "mfun"][..],
+                &["zr", "ar", "r0"],
+                &["zd", "ad"],
+            ],
+        ),
+        (
+            &["--sort-section=alignment"][..],
+            [
+                &["cold1", "cold2", "afun", "mfun", "_start", "zfun"][..],
+                &["r0", "zr", "ar"],
+                &["ad", "zd"],
+            ],
+        ),
+        (
+            &["--sort-section", "name"][..],
+            [
+                &["cold1", "cold2", "_start", "afun", "mfun", "zfun"][..],
+                &["r0", "ar", "zr"],
+                &["ad", "zd"],
+            ],
+        ),
+    ] {
+        let mut args = vec!["sections.o", "-o", "ss.out"];
+        args.extend_from_slice(extra);
+        let o = cx.mortar(&args);
+        assert!(o.success(), "{extra:?}: {}", o.stderr_text());
+        args[2] = "ss.bfd";
+        let o = cx.ld(&args);
+        assert!(o.success(), "ld.bfd {extra:?}: {}", o.stderr_text());
+        for (names, want) in [&text[..], &rodata, &data].into_iter().zip(want) {
+            let got = by_address(cx, &cx.scratch.join("ss.out"), names);
+            assert_eq!(got, want, "{extra:?}");
+            assert_eq!(got, by_address(cx, &cx.scratch.join("ss.bfd"), names), "{extra:?}: GNU");
+        }
+    }
+    // The last use wins.
+    let o = cx.mortar(&[
+        "sections.o",
+        "-o",
+        "ss.out",
+        "--sort-section=name",
+        "--sort-section=alignment",
+    ]);
+    assert!(o.success(), "{}", o.stderr_text());
+    assert_eq!(by_address(cx, &cx.scratch.join("ss.out"), &data), ["ad", "zd"]);
+}
+
+/// A common `x` in two objects, and a definition of `y` over a common.
+const COMMON_A: &str = "\t.comm x,4,4\n\t.comm y,4,4\n\t.section .note.GNU-stack,\"\",%progbits\n";
+const COMMON_B: &str = "\t.comm x,8,8\n\t.data\n\t.p2align 2\n\t.globl y\n\t.type y, %object\n\
+    \t.size y, 4\ny:\t.word 1\n\
+    \t.section .note.GNU-stack,\"\",%progbits\n";
+
+// spec: resolve.md §3.3 (`--warn-common`: `multiple-common`,
+// `common-overridden`; silent without it and after `--no-warn-common`)
+fn warn_common(cx: &Cx) {
+    assemble(cx, "cma", COMMON_A);
+    assemble(cx, "cmb", COMMON_B);
+    let run = |extra: &[&str]| {
+        let mut args = vec!["start.o", "cma.o", "cmb.o", "-o", "wc.out"];
+        args.extend_from_slice(extra);
+        let o = cx.mortar(&args);
+        assert!(o.success(), "{extra:?}: {}", o.stderr_text());
+        o.stderr_text()
+    };
+    let e = run(&["--warn-common"]);
+    assert!(e.contains("warning: cmb.o:(x): multiple common symbols: x"), "{e}");
+    assert!(e.contains("warning: cmb.o:(y): common symbol y is overridden by a definition"), "{e}");
+    assert_eq!(e.matches("warning:").count(), 2, "{e}");
+    assert_eq!(run(&[]), "");
+    assert_eq!(run(&["--warn-common", "--no-warn-common"]), "");
+    let o = cx.mortar(&[
+        "start.o",
+        "cma.o",
+        "cmb.o",
+        "-o",
+        "wc.out",
+        "--warn-common",
+        "--fatal-warnings",
+    ]);
+    assert!(!o.success() && o.stderr_text().contains("error: cmb.o:(x)"), "{}", o.stderr_text());
+}
+
+// spec: cli.md §5.1 (`--verbose`: `-V`'s text on standard output, alone
+// with no input, after the link with inputs)
+fn verbose(cx: &Cx) {
+    let v = mortar_cli::print_version_text(mortar_cli::VersionStyle::Emulations);
+    for extra in [&["--verbose"][..], &["--verbose=2"]] {
+        let o = cx.mortar(extra);
+        assert!(o.success(), "{extra:?}: {}", o.stderr_text());
+        assert_eq!(o.stdout_text(), v, "{extra:?}");
+        assert_eq!(o.stderr_text(), "");
+    }
+    let plain = cx.bytes(&[], "verbose-plain");
+    let o = cx.mortar(&["start.o", "-o", "verbose.out", "--verbose"]);
+    assert!(o.success(), "{}", o.stderr_text());
+    assert_eq!(o.stdout_text(), v);
+    assert_eq!(std::fs::read(cx.scratch.join("verbose.out")).unwrap(), plain, "same output");
+    // A failed link prints only its diagnostics.
+    let o = cx.mortar(&["undef.o", "-o", "verbose.out", "--verbose"]);
+    assert!(!o.success() && o.stdout_text().is_empty(), "{}", o.stdout_text());
+    assert!(!cx.mortar(&["--verbose=x"]).success());
+    // cli.md §5.1: `-v` and `-V` on a line with inputs print their text
+    // before the link, which goes on; the exit status is the link's.
+    for (flag, text) in [("-v", mortar_cli::version_text()), ("-V", v.clone())] {
+        let o = cx.mortar(&[flag, "start.o", "-o", "verbose.out"]);
+        assert!(o.success(), "{flag}: {}", o.stderr_text());
+        assert_eq!(o.stdout_text(), text, "{flag}");
+        assert_eq!(std::fs::read(cx.scratch.join("verbose.out")).unwrap(), plain, "{flag}");
+        let o = cx.mortar(&["undef.o", flag, "-o", "verbose.out"]);
+        assert!(!o.success(), "{flag}");
+        assert_eq!(o.stdout_text(), text, "{flag}: printed before the failed link");
+    }
 }
 
 // spec: diag.md (colored diagnostics)

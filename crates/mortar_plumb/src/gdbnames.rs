@@ -20,6 +20,7 @@ use crate::image::Image;
 use crate::locate::{Obj, Place};
 use crate::map::{ChunkKind, DiscardReason, Map, SectionRef};
 use crate::report::Finding;
+use crate::store::Bytes;
 
 const PUBNAMES: &str = ".debug_gnu_pubnames";
 const PUBTYPES: &str = ".debug_gnu_pubtypes";
@@ -134,6 +135,8 @@ struct InView<'o, 'a> {
     machine: u16,
     /// Per section: `r_offset` -> (symbol, type, addend).
     relocs: Vec<Option<Relocs>>,
+    /// Per section: its contents, read when first asked for (§8.1).
+    data: Vec<std::sync::OnceLock<Bytes<'a>>>,
 }
 
 impl<'o, 'a> InView<'o, 'a> {
@@ -156,7 +159,8 @@ impl<'o, 'a> InView<'o, 'a> {
                 Some(recs.into_iter().map(|(off, sym, ty, a)| (off, (sym, ty, a))).collect())
             })
             .collect();
-        InView { obj, machine, relocs }
+        let data = obj.secs.iter().map(|_| std::sync::OnceLock::new()).collect();
+        InView { obj, machine, relocs, data }
     }
 
     /// Whether `ty` is a relocation of absolute class `w` bytes wide
@@ -176,7 +180,7 @@ impl<'o, 'a> InView<'o, 'a> {
 
 impl View for InView<'_, '_> {
     fn bytes(&self, s: usize) -> &[u8] {
-        self.obj.secs.get(s).map_or(&[], |x| x.data)
+        self.data.get(s).map_or(&[], |c| c.get_or_init(|| self.obj.data(s)))
     }
     fn field(&self, s: usize, off: u64, w: u8) -> Result<Addr, String> {
         let b = self.bytes(s);
@@ -312,7 +316,7 @@ pub(crate) fn content(
     for &(base, oi, si) in &live {
         let o = &objs[oi];
         let v = &views[&oi];
-        let (us, err) = gdbdwarf::units(o.secs[si].data);
+        let (us, err) = gdbdwarf::units(v.bytes(si));
         if let Some((off, e)) = err {
             out.push(finding(7, format!("an input unit cannot be read at {off:#x}: {e} (S-G2: gdb-index-malformed-unit)")).site(o.site(si, off)));
         }
@@ -398,7 +402,7 @@ pub(crate) fn content(
                 continue;
             }
             let mut p = 0u64;
-            while p < s.data.len() as u64 {
+            while p < v.bytes(si).len() as u64 {
                 match read_set(v, si, p) {
                     Err(e) => {
                         out.push(finding(7, format!("an input {} set cannot be read: {e} (S-G4a: gdb-index-malformed-name-set)", s.name)).site(o.site(si, p)));
@@ -520,12 +524,12 @@ pub(crate) fn content(
 
 /// One set at `p` of section `s`: the next set's offset, the unit it
 /// names (section, offset), its entries (S-G4a).
-fn read_set<'a>(
-    v: &InView<'_, 'a>,
+fn read_set<'v>(
+    v: &'v InView<'_, '_>,
     s: usize,
     p: u64,
-) -> Result<(u64, (usize, u64), Set<'a>), String> {
-    let b: &'a [u8] = v.obj.secs[s].data;
+) -> Result<(u64, (usize, u64), Set<'v>), String> {
+    let b: &'v [u8] = v.bytes(s);
     let mut r = gdbdwarf::Rd::new(b, p as usize);
     let len = r.u32()?;
     if len == 0xffff_ffff {

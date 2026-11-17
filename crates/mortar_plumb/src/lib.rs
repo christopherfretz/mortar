@@ -45,6 +45,7 @@ pub mod report;
 pub mod shared;
 pub mod sharedflow;
 mod spie;
+mod store;
 mod structure;
 pub mod sweep;
 mod symbols;
@@ -146,44 +147,49 @@ fn whole_read_at(files: &[Input<'_>], i: usize, offset: u64, buf: &mut [u8]) -> 
     }
 }
 
-/// The whole bytes of every file of `src`, in its order; a file that
-/// cannot be read whole is left out, with an I2 finding naming it.
-fn read_whole(src: &dyn Source, findings: &mut Vec<Finding>) -> Vec<(String, Vec<u8>)> {
-    let mut files = Vec::with_capacity(src.count());
-    for i in 0..src.count() {
-        let path = src.path(i).to_owned();
-        let Ok(n) = usize::try_from(src.len(i)) else {
-            findings.push(Finding::new(Rule::InputUnreadable, format!("{path}: too large")));
-            continue;
-        };
-        let mut bytes = vec![0u8; n];
-        match src.read_at(i, 0, &mut bytes) {
-            Ok(()) => files.push((path, bytes)),
-            Err(e) => findings.push(Finding::new(Rule::InputUnreadable, e)),
-        }
-    }
-    files
-}
-
 /// Verifies a link (§2) whose inputs are read through `src`, with stage 3
 /// for a dynamic output (§12; a static output is judged as [`verify`]
-/// judges it). The verdict is [`verify_with`]'s on the same bytes.
+/// judges it). The verdict is [`verify_with`]'s on the same bytes: only the
+/// objects' skeletons are held, the rest is read when a rule needs it
+/// (§8.1).
 pub fn verify_from(output: &[u8], src: &dyn Source, map: &Map, ctx: &Ctx<'_>) -> Report {
-    let mut unread = Vec::new();
-    let files = read_whole(src, &mut unread);
-    let inputs: Vec<Input<'_>> = files.iter().map(|(p, b)| Input { path: p, bytes: b }).collect();
-    prof::mark("read inputs (whole, through the source)");
-    let mut report = verify_with(output, &inputs, map, ctx);
-    if !unread.is_empty() {
-        report.findings.extend(unread);
-        report.sort();
-    }
-    report
+    dynverify::verify_src(output, src, map, ctx)
 }
 
 /// Verifies a link (§2): the output's bytes, the inputs the map names, and
 /// the map. Never panics on any input; what it cannot read is a finding.
 pub fn verify(output: &[u8], inputs: &[Input<'_>], map: &Map) -> Report {
+    verify_static(output, &inputs, map)
+}
+
+/// The I2 findings of the reads that failed after the skeletons were read
+/// (§8.1: a file that changed or shrank since it was opened), in the
+/// report's order.
+pub(crate) fn read_errors(store: &store::Store<'_>, report: &mut Report) {
+    let errors = store.take_errors();
+    if !errors.is_empty() {
+        report.findings.extend(errors.into_iter().map(|e| Finding::new(Rule::InputUnreadable, e)));
+        report.sort();
+    }
+}
+
+/// [`verify`] over a source.
+pub(crate) fn verify_static(output: &[u8], src: &dyn Source, map: &Map) -> Report {
+    let store = store::Store::read(src, &[map]);
+    prof::mark("skeletons");
+    let mut report = verify_static_in(output, &store, 0, map);
+    read_errors(&store, &mut report);
+    report
+}
+
+/// [`verify`] over the inputs of map `m` of `store` (the caller reports
+/// the reads that fail, [`read_errors`]).
+pub(crate) fn verify_static_in(
+    output: &[u8],
+    store: &store::Store<'_>,
+    m: usize,
+    map: &Map,
+) -> Report {
     let mut report = Report::default();
     let image = match image::Image::read(output) {
         Ok(i) => i,
@@ -196,12 +202,12 @@ pub fn verify(output: &[u8], inputs: &[Input<'_>], map: &Map) -> Report {
     report.findings.extend(structure::check(&image));
     report.findings.extend(structure::check_layout(&image, map.format));
     prof::mark("structure");
-    let located = locate::locate(map, inputs, &image);
+    let located = locate::locate(map, store, m, &image);
     report.findings.extend(located.findings);
     let objs = located.objs;
     prof::mark("locate");
     if prof::enabled() {
-        gauges(inputs, map, &objs);
+        gauges(store, map, &objs);
     }
     let mut engine = reloc::Engine::new(&image, &objs, map.format);
     prof::mark("engine new");
@@ -235,13 +241,10 @@ pub fn verify(output: &[u8], inputs: &[Input<'_>], map: &Map) -> Report {
 
 /// The sizes of the inputs, the map's rows and the located objects
 /// (WP-109's table), under [`prof::enabled`].
-fn gauges(inputs: &[Input<'_>], map: &Map, objs: &[locate::Obj<'_>]) {
+fn gauges(store: &store::Store<'_>, map: &Map, objs: &[locate::Obj<'_>]) {
     use std::mem::size_of;
     let n = |len: usize, size: usize| (len * size) as u64;
-    prof::gauge(
-        "inputs held (bytes of the files)",
-        inputs.iter().map(|i| i.bytes.len() as u64).sum(),
-    );
+    prof::gauge("inputs held (skeletons, objects read whole)", store.resident());
     prof::gauge("map files", n(map.files.len(), size_of::<MapFile>()));
     prof::gauge("map placed", n(map.placed.len(), size_of::<map::Placed>()));
     prof::gauge("map discarded", n(map.discarded.len(), size_of::<map::Discarded>()));
@@ -282,6 +285,10 @@ pub(crate) fn run_engine(
         if prof::enabled() && oi % 400 == 399 {
             prof::mark(&format!("records of {} objects", oi + 1));
             engine.gauges();
+        }
+        // Every placed section is judged: one read of the object (§8.1).
+        if only.is_none() {
+            o.load();
         }
         for (si, s) in o.secs.iter().enumerate() {
             if s.consumed() {

@@ -488,6 +488,11 @@ lands in `plan.other` (§3.12).
 - `emit_relocs`;
 - `gdb_index` (`--gdb-index`, `--no-gdb-index`; the last wins;
   `spec/synth.md` S-G1).
+- `sort_common` (`--sort-common` is `Descending`, `=descending` too,
+  `=ascending` is `Ascending`; the last use wins; `spec/layout.md` L-88a,
+  WP-111);
+- `sort_section` (`--sort-section=name|alignment`; the last use wins;
+  `spec/layout.md` L-53a, WP-111).
 
 ### 3.9 Diagnostic switches
 
@@ -536,7 +541,7 @@ The facade does two things with these:
   `--threads` alone included, sets the count exactly;
 - `mortar_map`, `time_phases` and `verify`, which are mortar's own
   options;
-- `verbose`;
+- `verbose` (`--verbose[=N]`: §5.1);
 - `trace` (`-t`);
 - `dependency_file`.
 
@@ -919,7 +924,8 @@ this list are those of WP-027e; WP-031, WP-027d's later rows and WP-042
 - 376 rows are `refused`, `--gc-sections` among them (`spec/image.md`
   I-5): it was `supported` while every link that used it was refused by
   liveness. `--warn-common` stays refused (WP-027e: it needs a resolve
-  warning with GNU's three texts).
+  warning with GNU's three texts). WP-111 accepts it: GNU's five texts
+  map to mortar's two named diagnostics (`spec/resolve.md` §3.3).
 
 WP-097 (`spec/synth.md` §17) changed three rows of the output group:
 - `--gdb-index` is `supported`: it writes `.gdb_index` (S-G1), or the
@@ -1145,6 +1151,32 @@ because a failed link prints nothing on standard output
 - `-v` prints the same line and parsing goes on.
 - `-V` prints the line, then `  Supported emulations:` and the four
   names, each indented by three spaces, as GNU ld does.
+- `-v` and `-V` (either, any number of times; `-V`'s text if both) print
+  on standard output, through descriptor 1:
+  - with no input file, the text alone, exit status 0;
+  - on a line with inputs, the text once, before the link, which then
+    goes on: the exit status is the link's, and a link that fails (or
+    whose inputs cannot be opened) has still printed the text. A line
+    whose parse fails, or that names a refused option, prints nothing
+    and links nothing (§4.3). Measured (WP-112): GNU ld 2.44, lld and
+    mold print their version line and link.
+- `--verbose` and `--verbose=N` (`N` a decimal number, as the row says,
+  else `invalid-option-value`; measured, GNU ld 2.44 also accepts a
+  word that is not a number) print `-V`'s text on standard output, through
+  descriptor 1 (never by opening a path), WP-111:
+  - with no input file, the text alone, exit status 0, and no
+    `no-input-files` error (GNU ld's behaviour: exit 0; lld and mold
+    fail with no input);
+  - on a link, the text after a successful link, before `-M`'s map; a
+    failed link prints nothing more than its diagnostics.
+  GNU ld also prints its built-in script between `=====` lines and an
+  `attempt to open` line per file it tries. mortar has no built-in script
+  (it does not print a fake one) and no built-in search directories (so
+  no `SEARCH_DIR` lines), and does not trace its opens (`-t` is the
+  trace). Measured (WP-111): BusyBox's `scripts/trylink` sends the text
+  to a file and reads it only to show a failed link's output; no project
+  of the realbuild survey's configure runs (autotools, libtool's
+  `ld --verbose`-free probes, CMake 3.31's modules) reads `ld --verbose`.
 
 ### 5.2 `--help`
 

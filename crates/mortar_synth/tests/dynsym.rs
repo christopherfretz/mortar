@@ -259,6 +259,7 @@ impl Built {
             demands: &self.demands,
             slots: &self.slots,
             src: self,
+            shared: false,
         }
     }
 
@@ -298,6 +299,7 @@ impl Built {
             needed: &needed,
             verneed: &verneed,
             rpath: Some(b"/opt/lib"),
+            soname: None,
             dynstr: &dynstr,
             names: self,
         }
