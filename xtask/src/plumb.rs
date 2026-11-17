@@ -143,35 +143,6 @@ pub fn response_entries(text: &str) -> Vec<String> {
     out
 }
 
-/// Options whose value is the next word (GNU ld's spelling and the long
-/// forms the drivers write): the value is not an input.
-const SEPARATE_VALUE: [&str; 24] = [
-    "-o",
-    "--output",
-    "-m",
-    "-e",
-    "--entry",
-    "-T",
-    "--script",
-    "-z",
-    "-h",
-    "-soname",
-    "-u",
-    "--undefined",
-    "-y",
-    "-plugin",
-    "-plugin-opt",
-    "-dynamic-linker",
-    "-I",
-    "-rpath",
-    "-rpath-link",
-    "-Map",
-    "--version-script",
-    "--dynamic-list",
-    "--sysroot",
-    "--library-path",
-];
-
 /// The files a link with this response file reads, as paths (relative
 /// ones from `cwd`): its file entries, and each `-l` resolved as the
 /// linker resolves it (spec/input.md §4.2-4.4): through the `-L` and
@@ -255,7 +226,12 @@ pub fn response_inputs(text: &str, cwd: &Path) -> Result<Vec<PathBuf>, String> {
             "-Bdynamic" | "-dy" | "-call_shared" => link_static = false,
             "--push-state" => states.push(link_static),
             "--pop-state" => link_static = states.pop().unwrap_or(link_static),
-            w if SEPARATE_VALUE.contains(&w) || w == "-L" => at += 1,
+            // An option and its value: whether it takes the next word
+            // is its row's (mortar_plumb's one reader of the options
+            // table, spec/plumb.md §3.2a; WP-131).
+            w if w.starts_with('-') && w != "-" => {
+                at += mortar_plumb::opts::Table::get().word(&words, at - 1).1 - 1;
+            }
             w if !w.starts_with('-') => out.extend(script_inputs(&cwd.join(w), cwd, &dirs, 0)?),
             _ => {}
         }
@@ -1093,6 +1069,14 @@ mod tests {
         assert_eq!(
             got("--library-path=d1 -plugin p.so -m aarch64linux -o out -lf -dynamic-linker ld.so"),
             ["d1/libf.a"]
+        );
+        // WP-131: whether an option takes the next word is its row's in
+        // the options table, for every row: a refused option's value, an
+        // option no hand list named, and an abbreviation are not inputs
+        // (before, `alignment`, `x.o` and `y.o` were read as files).
+        assert_eq!(
+            got("-Ld1 --sort-section alignment --retain-symbols-file x.o --outp y.o -lf a.o"),
+            ["d1/libf.a", "a.o"]
         );
     }
 

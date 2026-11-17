@@ -61,6 +61,8 @@ R No - --no-warn-backrefs
 R Next gnu -L --library-path
 R Next gnu --sysroot
 R Next gnu -rpath-link
+R Eq gnu --sort-common --sort_common
+R Next gnu --sort-section
 R Next gnu --export-dynamic-symbol
 R Next gnu -init
 R Next gnu -fini
@@ -85,6 +87,8 @@ R No gnu -w --no-warnings
 R Eq - --color-diagnostics
 R No - --no-color-diagnostics
 R No gnu --no-undefined
+R No gnu --warn-common
+R No - --no-warn-common
 R No gnu --warn-execstack
 R Next - --odr
 R No - --no-odr-check
@@ -99,6 +103,7 @@ R No gnu -V
 R No gnu --help
 R Next gnu -Map
 R No gnu -M --print-map
+R Eq gnu --verbose
 R Next gnu --dependency-file
 R Eq - --threads
 R Next - --mortar-map
@@ -229,8 +234,6 @@ R Next - --bp-compression-sort
 R No - --bp-compression-sort-startup-functions
 R No - --verbose-bp-section-orderer
 R Next gnu --orphan-handling
-R Eq gnu --sort-common --sort_common
-R Next gnu --sort-section
 R Eq gnu --unique
 R No gnu --enable-non-contiguous-regions
 R No gnu --enable-non-contiguous-regions-warnings
@@ -305,8 +308,6 @@ R No gnu --allow-multiple-definition
 R No - --no-allow-multiple-definition
 R No gnu --noinhibit-exec --noinhibit_exec
 R Next gnu --error-handling-script
-R No gnu --warn-common
-R No - --no-warn-common
 R No gnu --warn-constructors
 R No gnu --warn-multiple-gp
 R No gnu --warn-once
@@ -331,7 +332,6 @@ R No gnu --print-map-locals
 R No gnu --no-print-map-locals
 R No gnu --cref
 R No gnu -t --trace
-R Eq gnu --verbose
 R Next - --reproduce
 R No - --repro
 R Next - --thread-count
@@ -545,14 +545,14 @@ struct Row {
 /// with its row, and each `-z` keyword with whether it takes `=VALUE` and
 /// whether it is accepted.
 #[derive(Debug)]
-pub(crate) struct Table {
+pub struct Table {
     names: Vec<(&'static str, Row)>,
     z: Vec<(&'static str, bool, bool)>,
 }
 
 /// What a word of a line is, read by [`Table::word`] (cli.md §2).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Word {
+pub enum Word {
     /// An input: a word that does not start with `-`, or `-` alone
     /// (cli.md §2.1).
     Input,
@@ -577,7 +577,7 @@ fn val(s: &str) -> Val {
 
 impl Table {
     /// The table, read once.
-    pub(crate) fn get() -> &'static Table {
+    pub fn get() -> &'static Table {
         static T: std::sync::OnceLock<Table> = std::sync::OnceLock::new();
         T.get_or_init(|| {
             let mut t = Table { names: Vec::new(), z: Vec::new() };
@@ -636,7 +636,7 @@ impl Table {
     /// word). cli.md §2.2's lookup in its order: an exact name, a short
     /// option, an abbreviation of a GNU long name (§2.4), then a short
     /// option with its value joined (step 5); §2.3's values; §2.7's `-z`.
-    pub(crate) fn word<W: AsRef<[u8]>>(&self, words: &[W], i: usize) -> (Word, usize) {
+    pub fn word<W: AsRef<[u8]>>(&self, words: &[W], i: usize) -> (Word, usize) {
         let Some(w) = words.get(i).map(AsRef::as_ref) else { return (Word::Unknown, 1) };
         if !w.starts_with(b"-") || w == b"-" {
             return (Word::Input, 1);

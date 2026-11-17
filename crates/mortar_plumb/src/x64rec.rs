@@ -401,11 +401,11 @@ impl Engine<'_, '_> {
         rec: &Rec,
         before: u64,
         after: u64,
-    ) -> Option<(&[u8], &[u8])> {
-        let data = self.objs[oi].secs[si].data;
+    ) -> Option<(Vec<u8>, &[u8])> {
+        let data = self.objs[oi].data(si);
         let lo = rec.off.checked_sub(before)?;
         let hi = rec.off.checked_add(u64::from(rec.def.field.width()) + after)?;
-        let inp = data.get(usize::try_from(lo).ok()?..usize::try_from(hi).ok()?)?;
+        let inp = data.get(usize::try_from(lo).ok()?..usize::try_from(hi).ok()?)?.to_vec();
         let out = self.image.bytes(rec.p.checked_sub(before)?, hi - lo)?;
         Some((inp, out))
     }
@@ -446,7 +446,7 @@ impl Engine<'_, '_> {
             _ => return None,
         };
         let (inp, out) = self.x64_window(oi, si, rec, k, 0)?;
-        let (inp, out) = (inp.to_vec(), out.to_vec());
+        let (inp, out) = (inp.clone(), out.to_vec());
         let k = k as usize;
         let (op, modrm) = (inp[k - 2], inp[k - 1]);
         let rex = (k == 3).then(|| inp[0]).filter(|r| r & 0xf0 == 0x40);
@@ -602,7 +602,7 @@ impl Engine<'_, '_> {
             })
         };
         // The forms: (before, after, rewritten-output).
-        let data = self.objs[oi].secs[si].data;
+        let data = self.objs[oi].data(si);
         let at = |k: i64, n: usize| -> Option<&[u8]> {
             let lo = usize::try_from((lead.off as i64).checked_add(k)?).ok()?;
             data.get(lo..lo.checked_add(n)?)
@@ -860,7 +860,7 @@ impl Engine<'_, '_> {
         let Some((inp, out)) = self.x64_window(oi, si, rec, 3, 0) else {
             return self.not_checked(Reason::TlsSequence, 1);
         };
-        let (inp, out) = (inp.to_vec(), out.to_vec());
+        let (inp, out) = (inp.clone(), out.to_vec());
         let (rex, op, modrm) = (inp[0], inp[1], inp[2]);
         let reg = rip_reg(modrm).filter(|_| rex & 0xf0 == 0x40 && rec.addend == -4);
         let f = self.format;

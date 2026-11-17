@@ -125,10 +125,10 @@ impl Engine<'_, '_> {
     }
 
     /// The input bytes `[off + k, off + k + n)` of section `si`.
-    fn x86_in(&self, oi: usize, si: usize, off: u64, k: i64, n: usize) -> Option<&[u8]> {
-        let data = self.objs[oi].secs[si].data;
+    fn x86_in(&self, oi: usize, si: usize, off: u64, k: i64, n: usize) -> Option<Vec<u8>> {
+        let data = self.objs[oi].data(si);
         let lo = usize::try_from((off as i64).checked_add(k)?).ok()?;
-        data.get(lo..lo.checked_add(n)?)
+        data.get(lo..lo.checked_add(n)?).map(<[u8]>::to_vec)
     }
 
     /// One i386 record (§5.1 steps 2 to 7).
@@ -215,7 +215,7 @@ impl Engine<'_, '_> {
         // X86-13: the operand of a GOT32/GOT32X decides its value.
         let nobase;
         let rec = if matches!(ty, x::GOT32 | x::GOT32X) {
-            match operand(self.objs[oi].secs[si].data, rec.off, exec) {
+            match operand(&self.objs[oi].data(si), rec.off, exec) {
                 Operand::Refused(why) => {
                     self.x64_rewrote(rec.p.wrapping_sub(2), rec.p + 4);
                     let mut f = Self::finding(Rule::Insn, rec, &site, &symbol, why);
@@ -539,13 +539,20 @@ impl Engine<'_, '_> {
         }
         let (before, after, want): (u64, u64, Vec<u8>) = if gd {
             let le = x::gd_le(t as u32, mold).to_vec();
-            if at(-3, 3) == Some(&[0x8d, 0x04, 0x1d]) && at(4, 1) == Some(&[0xe8]) && direct(5) {
+            if at(-3, 3).as_deref() == Some(&[0x8d, 0x04, 0x1d])
+                && at(4, 1).as_deref() == Some(&[0xe8])
+                && direct(5)
+            {
                 // D1.
                 (3, 5, le)
             } else if based && indirect() {
                 // D2.
                 (2, 6, le)
-            } else if based && at(4, 1) == Some(&[0xe8]) && direct(5) && at(9, 1) == Some(&[0x90]) {
+            } else if based
+                && at(4, 1).as_deref() == Some(&[0xe8])
+                && direct(5)
+                && at(9, 1).as_deref() == Some(&[0x90])
+            {
                 // D3. mold writes its 12 bytes from P − 3 (W4).
                 if mold {
                     let lo = lead.p - 3;
@@ -563,7 +570,7 @@ impl Engine<'_, '_> {
             }
         } else if !based {
             return unrec();
-        } else if at(4, 1) == Some(&[0xe8]) && direct(5) {
+        } else if at(4, 1).as_deref() == Some(&[0xe8]) && direct(5) {
             // L1.
             let v = if mold {
                 [&x::MOV_GS0_EAX[..], &[0x2d], &size.to_le_bytes()].concat()
@@ -661,13 +668,14 @@ impl Engine<'_, '_> {
             return self.x64_judge(rec, &site, &symbol, xv as i64);
         }
         // I1 reads one byte before the field, the others two.
-        let i1 =
-            ty == x::TLS_IE && rec.off >= 1 && self.x86_in(oi, si, rec.off, -1, 1) == Some(&[0xa1]);
+        let i1 = ty == x::TLS_IE
+            && rec.off >= 1
+            && self.x86_in(oi, si, rec.off, -1, 1).as_deref() == Some(&[0xa1]);
         let k: u64 = if i1 { 1 } else { 2 };
         let Some((inp, out)) = self.x64_window(oi, si, rec, k.min(rec.off), 0) else {
             return self.not_checked(Reason::TlsSequence, 1);
         };
-        let (inp, out) = (inp.to_vec(), out.to_vec());
+        let (inp, out) = (inp.clone(), out.to_vec());
         if inp.len() < k as usize + 4 {
             return self.x86_unjudged(rec, Reason::TlsSequence);
         }

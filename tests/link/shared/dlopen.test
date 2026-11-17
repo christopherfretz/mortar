@@ -1,0 +1,39 @@
+# A linked fixture's library (spec/harness.md LT-4) under each pair's
+# host (LT-3): linked against it and run, run with an interposer of its
+# `hello_value` preloaded (D-112), and loaded by `dlopen` (the third run
+# form).
+#@ spec: harness.md "LT-4"
+#@ arch: aarch64 x86_64
+#@ fixture: shared-hello
+#@ xfail(mortar): M4: mortar refuses -shared until WP-123 (spec/dyn.md D-112)
+
+cc -O1 -fPIC pre.c -o pre.o
+cc -O1 -fPIE main.c -o main.o
+cc -O1 -fPIE load.c -o load.o
+shlib gcc pre.o -Wl,-soname,libpre.so -o libpre.so
+host gcc -pie main.o -L. -lhello -o prog
+host gcc -pie load.o -o load
+run prog
+  stdout: 42
+run prog
+  env: LD_PRELOAD=./libpre.so
+  stdout: 8
+run load
+  stdout: 42
+
+#--- pre.c
+int hello_value(void) { return 7; }
+#--- main.c
+#include <stdio.h>
+#include "hello.h"
+int main(void) { printf("%d\n", hello()); return 0; }
+#--- load.c
+#include <dlfcn.h>
+#include <stdio.h>
+int main(void) {
+  void *h = dlopen("libhello.so", RTLD_NOW);
+  if (!h) { printf("%s\n", dlerror()); return 1; }
+  int (*hello)(void) = (int (*)(void))dlsym(h, "hello");
+  printf("%d\n", hello ? hello() : -1);
+  return 0;
+}

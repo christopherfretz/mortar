@@ -566,6 +566,11 @@ pub struct Comparison {
     pub new: Vec<String>,
     /// In the baseline, not in the run.
     pub lost: Vec<String>,
+    /// The run's `-shared` lines (`spec/harness.md` LT-8, WP-120).
+    pub shared: usize,
+    /// Of those, the lines that newly link: not linked in the baseline (or
+    /// not in it), linked now.
+    pub shared_fixed: usize,
 }
 
 pub fn compare(baseline: &[Row], run: &[Row]) -> Comparison {
@@ -580,6 +585,13 @@ pub fn compare(baseline: &[Row], run: &[Row]) -> Comparison {
     let now: BTreeMap<String, &Row> = run.iter().map(|r| (key(r), r)).collect();
     let mut c = Comparison::default();
     for (k, r) in &now {
+        if r.kind == OutputKind::Shared {
+            c.shared += 1;
+            let before = old.get(k).map(|o| &o.outcome);
+            if r.outcome == Outcome::Linked && before != Some(&Outcome::Linked) {
+                c.shared_fixed += 1;
+            }
+        }
         let Some(o) = old.get(k) else {
             c.new.push(format!("{k}: {}", r.outcome.to_text()));
             if r.outcome.is_defect() {
@@ -757,5 +769,37 @@ mod tests {
         // Another project's rows are not compared.
         let other = vec![Row { project: "lua".into(), ..row("a", Outcome::Linked) }];
         assert_eq!(compare(&base, &other).lost.len(), 0);
+    }
+
+    // spec/harness.md LT-8: the `-shared` lines that newly link are
+    // counted, on recorded rows: a refusal that links now and a new line
+    // that links do; a line linked before, one still refused and another
+    // kind's fixed line do not.
+    #[test]
+    fn shared_lines_that_newly_link_are_counted() {
+        let row = |line: &str, kind, o| Row {
+            project: "zlib".into(),
+            row: "gcc".into(),
+            line: line.into(),
+            kind,
+            outcome: o,
+        };
+        let refused = || Outcome::Refused(vec!["option: -shared".into()]);
+        let base = vec![
+            row("libz.so", OutputKind::Shared, refused()),
+            row("libzz.so", OutputKind::Shared, Outcome::Linked),
+            row("libq.so", OutputKind::Shared, refused()),
+            row("example", OutputKind::Pie, refused()),
+        ];
+        let run = vec![
+            row("libz.so", OutputKind::Shared, Outcome::Linked),
+            row("libzz.so", OutputKind::Shared, Outcome::Linked),
+            row("libq.so", OutputKind::Shared, refused()),
+            row("libnew.so", OutputKind::Shared, Outcome::Linked),
+            row("example", OutputKind::Pie, Outcome::Linked),
+        ];
+        let c = compare(&base, &run);
+        assert_eq!((c.shared, c.shared_fixed), (4, 2));
+        assert_eq!(c.fixed.len(), 2);
     }
 }

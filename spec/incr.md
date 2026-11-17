@@ -1084,7 +1084,9 @@ program is the program a from-scratch link would have made.
   options without `--incremental`, the directory's entries).
 - **IN-12 [v1] Incompatible modes.** With `-r`, `--emit-relocs`, a
   `SECTIONS` script, `--compress-debug-sections` other than `none`,
-  `--gdb-index`/`--debug-names` generation or `--icf`, and (until WP-066)
+  `--gdb-index`/`--debug-names` generation, `--icf`, `--sort-common` or
+  `--sort-section` (`spec/layout.md` L-88a, L-53a: an update keeps each
+  input's place and does not re-sort; WP-111), and (until WP-066)
   an output kind other than a static executable (`-pie`, `-static-pie`,
   `-shared`, a dynamic `-no-pie` executable; keyed on the plan's output
   kind, so `-no-pie` without `-static` is unsupported even when no
@@ -2079,7 +2081,7 @@ with each phase fed from the state for unchanged files:
   | section headers, `.shstrtab`, program headers | rewritten whole; their count does not change | `new-output-section` if an output section or segment appears or disappears |
   | thunks, islands, erratum 843419 patches (arch.md "Incremental links") | re-evaluated for refilled and moved units only; new ones go into their island within capacity | `island-exhausted` |
   | `__start_SEC`/`__stop_SEC`, `_etext`, `_edata`, `_end` | global targets in the index (IN-25) | none |
-  | `--icf`, `-r`, `--emit-relocs`, `SECTIONS` scripts, compressed debug, generated debug indexes | not supported in incremental mode (IN-12) | plain link |
+  | `--icf`, `-r`, `--emit-relocs`, `SECTIONS` scripts, compressed debug, generated debug indexes, `--sort-common`, `--sort-section` | not supported in incremental mode (IN-12) | plain link |
 
   *Test:* one L10 scenario per row: an edit that exercises the rule and
   one that triggers the fall-back.

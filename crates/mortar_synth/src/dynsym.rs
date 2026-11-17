@@ -16,6 +16,15 @@
 //! **Write** ([`DynsymChunk`], image): any range of entries in O(range ×
 //! log), each entry recomputed from the tables (the form) and an address
 //! oracle ([`DynAddrs`]); divisible (S-4).
+//!
+//! **A shared object** (`spec/dyn.md` D-111; [`dynsym_plan_shared`],
+//! [`DynsymInputs::shared`]): the export set (`Resolution::exported`,
+//! preemptible or bound alike), the imports, and every undefined key a
+//! live relocatable object references (`RefFlags::FROM_OBJECT`): a strong
+//! one is [`Form::Undefined`] (`STB_GLOBAL STT_NOTYPE SHN_UNDEF`, D-111
+//! item 2), a weak one [`Form::WeakDyn`] (item 3). No copy alias and no
+//! canonical PLT entry exists (D-122): one is an internal error. An
+//! exported IFUNC or TLS definition is refused by name until WP-124.
 
 use std::ops::Range;
 
@@ -185,6 +194,11 @@ pub struct DynsymInputs<'a> {
     pub demands: &'a Demands,
     pub slots: &'a Slots,
     pub src: &'a dyn DynSymSource,
+    /// The output is a shared object (`spec/dyn.md` D-111): an undefined
+    /// key is an entry of its own (strong: [`Form::Undefined`]; weak:
+    /// [`Form::WeakDyn`] whether or not the scan named it), and copies
+    /// and canonical PLT entries do not exist.
+    pub shared: bool,
 }
 
 impl std::fmt::Debug for DynsymInputs<'_> {
@@ -207,8 +221,12 @@ pub enum Form {
     Copy(u32),
     /// A program definition (hashed).
     Export,
-    /// A `WeakDyn` key (D-25): `WEAK UND` (unhashed).
+    /// A `WeakDyn` key (D-25): `WEAK UND` (unhashed). In a shared object
+    /// every weak undefined key a live object references (D-111 item 3).
     WeakDyn,
+    /// A shared object's strong undefined key (D-111 item 2): `STB_GLOBAL
+    /// STT_NOTYPE SHN_UNDEF` (unhashed), left to the loader.
+    Undefined,
 }
 
 impl Form {
@@ -216,7 +234,7 @@ impl Form {
     /// non-zero value).
     #[must_use]
     pub fn hashed(self) -> bool {
-        !matches!(self, Self::Import | Self::WeakDyn)
+        !matches!(self, Self::Import | Self::WeakDyn | Self::Undefined)
     }
 }
 
@@ -257,6 +275,7 @@ impl DynsymInputs<'_> {
     /// IPLT entry), or `internal-error` when the tables contradict each
     /// other (an undefined key that is not `WeakDyn`, an export the
     /// program does not define or that is hidden).
+    #[allow(clippy::too_many_lines, reason = "one arm per definition kind (D-23, D-111)")]
     pub fn form(&self, key: SymbolId) -> Result<Form, SynthError> {
         let res = self.resolution;
         let name = || String::from_utf8_lossy(self.src.symbol(key)).into_owned();
@@ -274,6 +293,19 @@ impl DynsymInputs<'_> {
                 let def = self.src.shared(e).ok_or_else(|| {
                     internal::<SynthError>(format!("the shared definition of {} is absent", name()))
                 })?;
+                if self.shared {
+                    // D-122: no copy and no canonical PLT in a shared object.
+                    if flags.intersects(DemandFlags::COPY | DemandFlags::CANON_PLT)
+                        || !self.slots.copy_of.is_empty()
+                    {
+                        return Err(internal(format!(
+                            "a copy or canonical PLT entry of {} in a shared object \
+                             (spec/dyn.md D-122)",
+                            name()
+                        )));
+                    }
+                    return Ok(Form::Import);
+                }
                 let by_value = self.copy_at(e.file, def.value);
                 let copy_of = &self.slots.copy_of;
                 let by_key =
@@ -329,6 +361,16 @@ impl DynsymInputs<'_> {
                     })
                     .into());
                 }
+                // D-121 (WP-124): an exported IFUNC or TLS definition of a
+                // shared object is refused by name until its package.
+                if self.shared && matches!(p.info & 0xf, STT_GNU_IFUNC | STT_TLS) {
+                    let what = if p.info & 0xf == STT_TLS { "TLS" } else { "IFUNC" };
+                    return Err(feature(format!(
+                        "exported {what} definition {} in a shared object",
+                        name()
+                    ))
+                    .into());
+                }
                 if p.info & 0xf == STT_GNU_IFUNC && !flags.contains(DemandFlags::IPLT) {
                     return Err(feature(format!(
                         "exported IFUNC {} that no relocation names (it has no IPLT entry, \
@@ -338,6 +380,18 @@ impl DynsymInputs<'_> {
                     .into());
                 }
                 Ok(Form::Export)
+            }
+            Some(Def::Undefined { weak }) if self.shared => {
+                // D-111 items 2 and 3: a live reference makes the entry.
+                let live =
+                    res.props.get(key).is_some_and(|p| p.refs.contains(RefFlags::FROM_OBJECT));
+                if !live && !weak_dyn {
+                    return Err(internal(format!(
+                        "undefined {} in .dynsym has no live reference (spec/dyn.md D-111)",
+                        name()
+                    )));
+                }
+                Ok(if weak { Form::WeakDyn } else { Form::Undefined })
             }
             Some(Def::Undefined { weak }) => {
                 if weak && weak_dyn {
@@ -417,12 +471,14 @@ impl DynsymInputs<'_> {
             // D-23's `WeakDyn` row: `STO_AARCH64_VARIANT_PCS` when a
             // reference has it (resolve §3.7), so that a `JUMP_SLOT` to a
             // vector-PCS function a library supplies is bound at load
-            // (D-30 row 25; GNU ld and lld).
-            Form::WeakDyn => {
+            // (D-30 row 25; GNU ld and lld). D-111 item 2's strong
+            // undefined entry is the same with `STB_GLOBAL`.
+            form @ (Form::WeakDyn | Form::Undefined) => {
                 let pcs = machine == Machine::AArch64
                     && res.props.get(k).is_some_and(|p| p.refs.contains(RefFlags::VARIANT_PCS));
                 let other = if pcs { STO_AARCH64_VARIANT_PCS } else { 0 };
-                (STB_WEAK << 4 | STT_NOTYPE, other, u32::from(SHN_UNDEF), 0, 0)
+                let bind = if form == Form::WeakDyn { STB_WEAK } else { STB_GLOBAL };
+                (bind << 4 | STT_NOTYPE, other, u32::from(SHN_UNDEF), 0, 0)
             }
         };
         if shndx >= u32::from(SHN_LORESERVE) && shndx != u32::from(SHN_ABS) {
@@ -468,7 +524,47 @@ pub fn dynsym_plan(
     pool: &Pool,
     diag: &Collector,
 ) -> Result<DynsymPlan, Failed> {
-    let t = DynsymInputs { resolution, demands, slots, src };
+    let t = DynsymInputs { resolution, demands, slots, src, shared: false };
+    plan_of(&t, pool, diag)
+}
+
+/// D-111: the `.dynsym` of a shared object, as [`dynsym_plan`] with
+/// [`DynsymInputs::shared`]: the exports (`Resolution::exported`), the
+/// imports, the `EXPORT` demands, and every undefined key with
+/// `RefFlags::FROM_OBJECT` (a live relocatable object references it;
+/// strong: [`Form::Undefined`], weak: [`Form::WeakDyn`]). The order is
+/// D-22's (unhashed by `SymbolId`, then hashed by bucket and `SymbolId`),
+/// `.gnu.hash`'s geometry D-26's: the same functions as an executable's.
+///
+/// # Errors
+///
+/// [`Failed`] after emitting each failing key's diagnostic (an exported
+/// IFUNC or TLS definition: `refused`, class `feature`).
+pub fn dynsym_plan_shared(
+    resolution: &Resolution,
+    demands: &Demands,
+    slots: &Slots,
+    src: &dyn DynSymSource,
+    pool: &Pool,
+    diag: &Collector,
+) -> Result<DynsymPlan, Failed> {
+    let t = DynsymInputs { resolution, demands, slots, src, shared: true };
+    plan_of(&t, pool, diag)
+}
+
+/// The undefined keys a live relocatable object references (D-111 items
+/// 2 and 3), in `SymbolId` order.
+fn live_undefined(resolution: &Resolution) -> impl Iterator<Item = SymbolId> + '_ {
+    resolution.def.iter().filter_map(|(k, d)| {
+        let live = resolution.props.get(k).is_some_and(|p| p.refs.contains(RefFlags::FROM_OBJECT));
+        (matches!(d, Def::Undefined { .. }) && live).then_some(k)
+    })
+}
+
+/// The plan of [`dynsym_plan`] and [`dynsym_plan_shared`].
+fn plan_of(t: &DynsymInputs<'_>, pool: &Pool, diag: &Collector) -> Result<DynsymPlan, Failed> {
+    let (resolution, demands, slots, src) = (t.resolution, t.demands, t.slots, t.src);
+    let undefined = t.shared.then(|| live_undefined(resolution)).into_iter().flatten();
     let mut keys: Vec<SymbolId> = resolution
         .imported
         .iter()
@@ -476,15 +572,16 @@ pub fn dynsym_plan(
         .chain(demands.weak_dyn.iter())
         .chain(demands.keys_with(DemandFlags::EXPORT).filter_map(SymKey::as_global))
         .chain(slots.copy_of.iter().map(|row| row.0))
+        .chain(undefined)
         .collect();
     pool.unit_cost(20).sort_by(&mut keys, Ord::cmp);
     keys.dedup();
     if !slots.copies.is_empty() {
-        let aliases = copy_aliases(&t, &keys, pool);
+        let aliases = copy_aliases(t, &keys, pool);
         keys.extend(aliases);
         pool.unit_cost(20).sort_by(&mut keys, Ord::cmp);
     }
-    if let Err(d) = one_entry_per_definition(&t, &keys) {
+    if let Err(d) = one_entry_per_definition(t, &keys) {
         diag.emit(key(0), d.into_diagnostic());
         return Err(Failed);
     }

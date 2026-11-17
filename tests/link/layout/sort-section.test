@@ -1,0 +1,175 @@
+# `--sort-section=alignment|name` orders the inputs of each output section
+# of GNU ld's default script by alignment (largest first) or by name
+# (byte order), inside the groups the section has without the option
+# (the `.text` categories), ties in input order (layout.md L-53a). GNU ld
+# 2.44 does the same with its built-in script; lld and mold accept the
+# option and ignore it (no script), so their order is not checked. Each
+# section's own symbols are checked in order; the program links against
+# the static C library with every one of its sections sorted too, and
+# runs. Without the option, input order (L-53).
+#@ spec: layout.md L-53a
+# GNU ld on i386: the crtbegin/crtend labels of an empty section (A10)
+# show once the sections are sorted (not run-wide on i386).
+#@ anomaly(bfd,i386): A10
+
+as s1.s -o s1.o
+as s2.s -o s2.o
+cc -O1 main.c -o main.o
+link gcc -static -no-pie main.o s1.o s2.o -o plain
+run plain
+  stdout: ok
+check nm -n plain
+  has: afun$
+  has(bfd,mortar): r zr$
+  then(bfd,mortar): r ar$
+  then(bfd,mortar): r r0$
+  then(bfd,mortar): r br$
+  has(bfd,mortar): T zfun$
+  then(bfd,mortar): t afun$
+  then(bfd,mortar): t mfun$
+  then(bfd,mortar): t bfun$
+  then(bfd,mortar): t yfun$
+link gcc -static -no-pie main.o s1.o s2.o -Wl,--sort-section,alignment -o align
+run align
+  stdout: ok
+check nm -n align
+  has: afun$
+  has(bfd,mortar): t cold1$
+  then(bfd,mortar): t cold2$
+  has(bfd,mortar): t afun$
+  then(bfd,mortar): t bfun$
+  then(bfd,mortar): t plain2$
+  then(bfd,mortar): t mfun$
+  then(bfd,mortar): t mfun2$
+  then(bfd,mortar): t plain1$
+  then(bfd,mortar): T zfun$
+  then(bfd,mortar): t yfun$
+  has(bfd,mortar): r br$
+  then(bfd,mortar): r r0$
+  then(bfd,mortar): r zr$
+  then(bfd,mortar): r ar$
+  has(bfd,mortar): d ad$
+  then(bfd,mortar): d bd$
+  then(bfd,mortar): d zd$
+  has(bfd,mortar): b ab$
+  then(bfd,mortar): b bb$
+  then(bfd,mortar): b zb$
+  has(bfd,mortar): d at1$
+  then(bfd,mortar): d zt$
+link gcc -static -no-pie main.o s1.o s2.o -Wl,--sort-section=name -o name
+run name
+  stdout: ok
+check nm -n name
+  has: afun$
+  has(bfd,mortar): t cold1$
+  then(bfd,mortar): t cold2$
+  has(bfd,mortar): t plain1$
+  then(bfd,mortar): t plain2$
+  then(bfd,mortar): t afun$
+  then(bfd,mortar): t bfun$
+  then(bfd,mortar): t mfun$
+  then(bfd,mortar): t mfun2$
+  then(bfd,mortar): t yfun$
+  then(bfd,mortar): T zfun$
+  has(bfd,mortar): r r0$
+  then(bfd,mortar): r ar$
+  then(bfd,mortar): r br$
+  then(bfd,mortar): r zr$
+  has(bfd,mortar): d ad$
+  then(bfd,mortar): d bd$
+  then(bfd,mortar): d zd$
+  has(bfd,mortar): b ab$
+  then(bfd,mortar): b bb$
+  then(bfd,mortar): b zb$
+  has(bfd,mortar): d at1$
+  then(bfd,mortar): d zt$
+# BusyBox's scripts/trylink spelling, the value as the next word, on a
+# dynamic and a PIE link (AArch64 and x86-64: mortar's i386 output is
+# static only): stage 3's line reader takes `alignment` as the
+# option's value, not as an input (WP-131 V6; spec/landed/layout/WP-111.md
+# saw P-D2 "the command line: alignment: cannot be read" here).
+link(aarch64,x86_64) gcc -no-pie main.o -Wl,--sort-common -Wl,--sort-section,alignment -Wl,--warn-common -o trylink
+run(aarch64,x86_64) trylink
+  stdout: ok
+link(aarch64,x86_64) gcc -pie main.o -Wl,--sort-common -Wl,--sort-section,alignment -Wl,--warn-common -o trylink-pie
+run(aarch64,x86_64) trylink-pie
+  stdout: ok
+
+#--- main.c
+#include <stdio.h>
+
+static __thread int tls = 7;
+
+int main(void) {
+  printf(tls == 7 ? "ok\n" : "tls\n");
+  return 0;
+}
+#--- s1.s
+	.section .text.zfun,"ax",@progbits
+	.p2align 2
+	.globl zfun
+zfun:	.byte 1
+	.section .text.afun,"ax",@progbits
+	.p2align 6
+afun:	.byte 2
+	.section .text.mfun,"ax",@progbits
+	.p2align 4
+mfun:	.byte 3
+	.section .text.unlikely.cold2,"ax",@progbits
+	.p2align 2
+cold2:	.byte 4
+	.section .text.unlikely.cold1,"ax",@progbits
+	.p2align 5
+cold1:	.byte 5
+	.section .text,"ax",@progbits
+	.p2align 3
+plain1:	.byte 6
+	.section .rodata.zr,"a",@progbits
+	.p2align 2
+zr:	.byte 7
+	.section .rodata.ar,"a",@progbits
+	.p2align 0
+ar:	.byte 8
+	.section .rodata,"a",@progbits
+	.p2align 4
+r0:	.byte 9
+	.section .data.zd,"aw",@progbits
+	.p2align 1
+zd:	.byte 1
+	.section .data.ad,"aw",@progbits
+	.p2align 5
+ad:	.byte 1
+	.section .bss.zb,"aw",@nobits
+	.p2align 0
+zb:	.zero 1
+	.section .bss.ab,"aw",@nobits
+	.p2align 4
+ab:	.zero 1
+	.section .tdata.zt,"awT",@progbits
+	.p2align 0
+zt:	.byte 1
+	.section .tdata.at,"awT",@progbits
+	.p2align 3
+at1:	.byte 1
+#--- s2.s
+	.section .text.bfun,"ax",@progbits
+	.p2align 6
+bfun:	.byte 1
+	.section .text.yfun,"ax",@progbits
+	.p2align 2
+yfun:	.byte 1
+	.section .text,"ax",@progbits
+	.p2align 5
+plain2:	.byte 6
+	.section .rodata.br,"a",@progbits
+	.p2align 5
+br:	.byte 8
+	.section .data.bd,"aw",@progbits
+	.p2align 3
+bd:	.byte 1
+	.section .bss.bb,"aw",@nobits
+	.p2align 3
+bb:	.zero 1
+	.section .text.mfun,"ax",@progbits
+	.p2align 4
+mfun2:	.byte 3

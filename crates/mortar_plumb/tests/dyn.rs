@@ -1890,6 +1890,34 @@ fn s12_p_d4_no_pt_dynamic() {
     judge("nodyn");
 }
 
+// spec/plumb.md §12 P-D4 (WP-131): `equiv`'s side takes the kind from the
+// line and the output's contents too, not from PT_DYNAMIC: the `nodyn`
+// mutant as X against the correct link as F is P-D4 on X.
+#[test]
+fn s12_p_d4_no_pt_dynamic_in_equiv() {
+    let Some(c) = corpus() else { return };
+    let mut n = 0;
+    for o in c.outs.iter().filter(|o| o.case == "nodyn") {
+        n += 1;
+        let map = o.link.parse_map();
+        let files = o.link.inputs(&map);
+        let inputs: Vec<Input<'_>> =
+            files.iter().map(|(p, b)| Input { path: p, bytes: b }).collect();
+        let good = o.link.output.with_extension("");
+        let good = std::fs::read(&good).unwrap();
+        let e = mortar_plumb::equiv::check(&o.link.output_bytes(), &map, &good, &map, &inputs);
+        assert!(
+            e.x.findings
+                .iter()
+                .any(|f| f.rule.id() == "P-D4" && f.message.starts_with("no PT_DYNAMIC")),
+            "{}: X has no P-D4\n{}",
+            o.label(),
+            e.x.render("x")
+        );
+    }
+    assert!(n > 0 || c.outs.is_empty(), "no nodyn outputs");
+}
+
 #[test]
 fn s12_p_d4_gnu_stack_execute() {
     judge("stack");

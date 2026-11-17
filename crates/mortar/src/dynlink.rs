@@ -313,7 +313,9 @@ fn kind_and_interp(
     // nothing can bind the exports: WP-056; judged by P-D14, WP-088).
     // D-1: a `StaticPie` names no interpreter and has no `.interp`.
     let interp = match kind {
-        DynKind::StaticPie => None,
+        // D-100: a shared object has no `.interp` (unreached until WP-123:
+        // the match above refuses `Shared`).
+        DynKind::StaticPie | DynKind::Shared(_) => None,
         DynKind::Exec | DynKind::Pie => Some(interp(plan).map_err(emit).ok()?),
     };
     Some((kind, interp))
@@ -348,7 +350,13 @@ pub fn plan(
     slots.dynsym_unhashed = dynsym.unhashed();
     slots.gnu_hash_buckets = dynsym.nbuckets();
     // D-27.
-    let inputs = DynsymInputs { resolution: t.resolution, demands: t.demands, slots, src: t.src };
+    let inputs = DynsymInputs {
+        resolution: t.resolution,
+        demands: t.demands,
+        slots,
+        src: t.src,
+        shared: false,
+    };
     let verneed = mortar_synth::version::verneed_plan(&dynsym, &inputs, t.needed, diag).ok()?;
     // D-24.
     let rpath =

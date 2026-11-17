@@ -350,17 +350,19 @@ impl Gen<'_, '_> {
 /// The relocated places of the placed input sections.
 #[allow(clippy::many_single_char_names)] // the spec's names
 fn places(image: &Image<'_>, map: &Map, inputs: &[Input<'_>]) -> Vec<Place_> {
-    let located = locate::locate(map, inputs, image);
+    let store = crate::store::Store::read(&inputs, &[map]);
+    let located = locate::locate(map, &store, 0, image);
     let g = Gen { image, out: Vec::new() };
     let mut out = Vec::new();
     for (oi, o) in located.objs.iter().enumerate() {
         let machine = o.elf.machine();
-        for s in &o.secs {
+        for (si, s) in o.secs.iter().enumerate() {
             let Some(rs) = s.relocs else { continue };
             if !s.alloc() || s.shdr.sh_type == SHT_NOBITS || s.shdr.sh_flags & SHF_TLS != 0 {
                 continue;
             }
             let Some(recs) = o.records(rs) else { continue };
+            let data = o.data(si);
             for (r_offset, sym, ty, _) in recs {
                 let Some(def) = def_of(machine, ty) else { continue };
                 // A marker (x86-64 TLSDESC_CALL, i386 TLS_DESC_CALL) has no
@@ -385,8 +387,8 @@ fn places(image: &Image<'_>, map: &Map, inputs: &[Input<'_>]) -> Vec<Place_> {
                 };
                 let Some(off) = g.off(p, w) else { continue };
                 let lo = r_offset.saturating_sub(4) as usize;
-                let hi = (r_offset as usize + 16).min(s.data.len());
-                if hi <= lo || r_offset as usize + w as usize > s.data.len() {
+                let hi = (r_offset as usize + 16).min(data.len());
+                if hi <= lo || r_offset as usize + w as usize > data.len() {
                     continue;
                 }
                 let key = o
@@ -402,7 +404,7 @@ fn places(image: &Image<'_>, map: &Map, inputs: &[Input<'_>]) -> Vec<Place_> {
                     p,
                     off,
                     def,
-                    input: s.data[lo..hi].to_vec(),
+                    input: data[lo..hi].to_vec(),
                     at: r_offset as usize - lo,
                     key,
                 });
@@ -1267,7 +1269,9 @@ pub fn run_with(
     ctx: Option<&crate::Ctx<'_>>,
 ) -> Result<Outcome, String> {
     let verify = |out: &[u8], inputs: &[Input<'_>], map: &Map| match ctx {
-        Some(c) if crate::is_dynamic(out) => crate::verify_with(out, inputs, map, c),
+        Some(c) if crate::dynverify::judged_dynamic(out, map, c) => {
+            crate::verify_with(out, inputs, map, c)
+        }
         _ => verify(out, inputs, map),
     };
     let image = Image::read(output)?;

@@ -14,8 +14,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use super::format::{
-    Anomaly, ArchXfail, Check, CheckTool, Driver, Exit, Expectation, Fixture, Language, Link,
-    Marker, MarkerKind, Run, Stdout, Step, StepKind, Template, Test, Vars, Want,
+    Anomaly, ArchXfail, Check, CheckTool, Driver, Exit, Expectation, Fixture,
+    LINKED_FIXTURE_PREFIX, Language, Link, Marker, MarkerKind, Run, Stdout, Step, StepKind,
+    Template, Test, Vars, Want,
 };
 use super::outcome::{self, Outcome, Printed, Raw, Reference, Verdict};
 use super::pattern::Pattern;
@@ -129,9 +130,117 @@ impl Producer {
     }
 }
 
-/// The fixtures a run has built or is building, by name and architecture:
-/// the first unit that needs one builds it, the others wait for it.
-pub type FixtureCache = Mutex<BTreeMap<(String, Arch), Arc<OnceLock<Result<PathBuf, String>>>>>;
+/// The fixtures a run has built or is building, by name, architecture
+/// and, for a linked fixture's libraries (`spec/harness.md` LT-4), the
+/// linker that linked them: the first unit that needs one builds it, the
+/// others wait for it.
+pub type FixtureCache =
+    Mutex<BTreeMap<(String, Arch, Option<Linker>), Arc<OnceLock<Result<PathBuf, Raw>>>>>;
+
+/// The program that sets a natively run program's environment on its own
+/// `exec` (`spec/harness.md` LT-6): the variables of a run step reach the
+/// program, never the shell that sets its limits.
+pub const ENV_PROGRAM: &str = "/usr/bin/env";
+
+/// A pair of the pair part (`spec/harness.md` LT-3): the linker of the
+/// library and the linker of the host linked against it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Pair {
+    pub library: Linker,
+    pub host: Linker,
+}
+
+impl Pair {
+    /// The pair's directory in the unit: the library linker's own
+    /// directory for its own pair, `<library>+<host>` for another (a copy
+    /// of the library linker's directory as its library part left it).
+    pub fn dir_name(self) -> String {
+        if self.library == self.host {
+            self.library.name().to_owned()
+        } else {
+            format!("{}+{}", self.library.name(), self.host.name())
+        }
+    }
+
+    /// The pairs of the record of `linker`, in the order they run (LT-3):
+    /// for mortar, first each reference library of `passed` under a mortar
+    /// host; then the linker's own pair and, unless the linker is GNU ld,
+    /// its library under a GNU ld host (when `linkers`, the run's, has GNU
+    /// ld). The digest mode has mortar's own pair alone.
+    pub fn of(linker: Linker, linkers: &[Linker], passed: &[Linker], digest: bool) -> Vec<Pair> {
+        let own = Pair { library: linker, host: linker };
+        if digest {
+            return vec![own];
+        }
+        let mut pairs = Vec::new();
+        if linker == Linker::Mortar {
+            pairs.extend(
+                passed
+                    .iter()
+                    .filter(|r| r.is_reference())
+                    .map(|&library| Pair { library, host: Linker::Mortar }),
+            );
+        }
+        pairs.push(own);
+        if linker != Linker::Bfd && linkers.contains(&Linker::Bfd) {
+            pairs.push(Pair { library: linker, host: Linker::Bfd });
+        }
+        pairs
+    }
+
+    /// `[library mortar, host bfd]`: the pair in a result's detail.
+    pub fn label(self) -> String {
+        format!("[library {}, host {}]", self.library.name(), self.host.name())
+    }
+}
+
+/// What one run step of a pair did (LT-5): how its program ended and what
+/// it printed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Ran {
+    pub line: usize,
+    pub end: End,
+    pub stdout: Vec<u8>,
+}
+
+/// LT-5: a run of a pair against the same run of the baseline pair, whose
+/// library and host `by` linked: the same end and the same standard
+/// output. A run the baseline did not make (a step not for that linker) is
+/// not compared.
+pub fn against_baseline(ran: &Ran, by: Linker, baseline: &[Ran]) -> Result<(), String> {
+    let Some(want) = baseline.iter().find(|b| b.line == ran.line) else {
+        return Ok(());
+    };
+    let by = by.name();
+    if want.end != ran.end {
+        return Err(format!(
+            "ended with {}, the {by}/{by} pair's program with {}",
+            ran.end, want.end
+        ));
+    }
+    if want.stdout != ran.stdout {
+        return Err(format!(
+            "printed {}, the {by}/{by} pair printed {}",
+            outcome::quoted(&ran.stdout),
+            outcome::quoted(&want.stdout)
+        ));
+    }
+    Ok(())
+}
+
+/// The pair part's state across the linkers of a unit (LT-3, LT-5).
+#[derive(Debug, Default)]
+pub struct PairState {
+    /// The baseline: the runs of GNU ld's own pair, or, without it, of the
+    /// first reference whose record passes; with its linker.
+    pub baseline: Option<(Linker, Vec<Ran>)>,
+    /// The runs of the current record's own pair: what its other pairs
+    /// are compared with while there is no baseline.
+    pub own: Option<Vec<Ran>>,
+    /// The references whose records passed, in matrix order: mortar hosts
+    /// are linked against their libraries.
+    pub passed: Vec<Linker>,
+}
 
 /// The reason a dynamic output is not judged while the verifier has no
 /// stage 3 (`spec/harness.md` "L3").
@@ -671,6 +780,16 @@ impl Unit<'_> {
         let mut requires = self.test.requires.clone();
         for name in &self.test.fixtures {
             match self.matrix.fixtures.get(name) {
+                Some(Ok(fixture))
+                    if fixture.is_linked() && !name.starts_with(LINKED_FIXTURE_PREFIX) =>
+                {
+                    let detail = format!(
+                        "fixture {name}: it links libraries, and a linked fixture's name begins \
+                         '{LINKED_FIXTURE_PREFIX}' (spec/harness.md LT-4)"
+                    );
+                    results.records.push(self.record(None, Outcome::Error, detail));
+                    return results;
+                }
                 Some(Ok(fixture)) => requires.extend(fixture.requires.iter().copied()),
                 Some(Err(why)) => {
                     let detail = format!("fixture {name}: {why}");
@@ -711,6 +830,7 @@ impl Unit<'_> {
             return results;
         }
         let linkers = self.matrix.linkers_of(self.tools);
+        let mut pairs = PairState::default();
         let mut references = Vec::new();
         for linker in linkers.iter().copied().filter(|linker| linker.is_reference()) {
             let marker = self.test.marker(self.arch(), linker);
@@ -724,8 +844,16 @@ impl Unit<'_> {
                 });
                 continue;
             }
-            let (raw, printed) = self.run_linker(linker, None, &mut results.plumb);
+            let (raw, printed) = self.run_linker(linker, None, &mut results.plumb, &mut pairs);
             let (outcome, detail) = outcome::marked(&raw, marker.map(|m| m.reason.as_str()));
+            // LT-3, LT-5: a reference that passed lends its library to a
+            // mortar host, and the first one's own pair is the baseline.
+            if matches!(outcome, Outcome::Pass | Outcome::Xpass) {
+                pairs.passed.push(linker);
+                if pairs.baseline.is_none() {
+                    pairs.baseline = pairs.own.take().map(|runs| (linker, runs));
+                }
+            }
             results.records.push(self.record(Some(linker), outcome, detail.clone()));
             references.push(Reference { linker, outcome: Some(outcome), detail, printed });
         }
@@ -735,7 +863,7 @@ impl Unit<'_> {
             return results;
         }
         if linkers.contains(&Linker::Mortar) {
-            let record = self.judge_mortar(&verdict, &references, &mut results.plumb);
+            let record = self.judge_mortar(&verdict, &references, &mut results.plumb, &mut pairs);
             results.records.push(record);
         }
         results
@@ -753,7 +881,8 @@ impl Unit<'_> {
             return;
         }
         let mut judged = Judged::default();
-        let (raw, _) = self.run_steps(Linker::Mortar, None, &mut judged);
+        let mut pairs = PairState::default();
+        let (raw, _) = self.run_steps(Linker::Mortar, None, &mut judged, &mut pairs);
         let (outcome, detail) = outcome::marked(&raw, None);
         results.records.push(self.record(mortar, outcome, detail));
         results.digests = judged.digests;
@@ -765,6 +894,7 @@ impl Unit<'_> {
         verdict: &Verdict,
         references: &[Reference],
         plumb: &mut Plumb,
+        pairs: &mut PairState,
     ) -> Record {
         let mortar = Some(Linker::Mortar);
         let marker = self.test.marker(self.arch(), Linker::Mortar);
@@ -795,7 +925,7 @@ impl Unit<'_> {
                 .map(|r| r.printed.clone())
                 .unwrap_or_default(),
         };
-        let (raw, _) = self.run_linker(Linker::Mortar, Some(&expected), plumb);
+        let (raw, _) = self.run_linker(Linker::Mortar, Some(&expected), plumb, pairs);
         let (outcome, detail) = outcome::marked(&raw, xfail);
         self.record(mortar, outcome, detail)
     }
@@ -821,20 +951,112 @@ impl Unit<'_> {
         let cell = {
             let mut built =
                 self.matrix.built.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            Arc::clone(built.entry((name.to_owned(), self.arch())).or_default())
+            Arc::clone(built.entry((name.to_owned(), self.arch(), None)).or_default())
         };
-        cell.get_or_init(|| {
+        let built = cell.get_or_init(|| {
             let Some(Ok(fixture)) = self.matrix.fixtures.get(name) else {
-                return Err("not loaded".to_owned());
+                return Err(Raw::Error("not loaded".to_owned()));
             };
             let dir = self.matrix.fixture_dir.join(self.arch().name()).join(name);
-            match self.build(&fixture.files, &fixture.steps, &dir) {
-                Ok(()) => Ok(dir),
-                Err(Raw::Error(e) | Raw::Fail(e) | Raw::Killed(e) | Raw::Skip(e)) => Err(e),
-                Err(Raw::Pass) => Err(String::new()),
+            self.build(&fixture.files, &fixture.steps, &dir).map(|()| dir)
+        });
+        match built {
+            Ok(dir) => Ok(dir.clone()),
+            Err(Raw::Error(e) | Raw::Fail(e) | Raw::Killed(e) | Raw::Skip(e)) => Err(e.clone()),
+            Err(Raw::Pass) => Err(String::new()),
+        }
+    }
+
+    /// The directory of the libraries `linker` linked from the linked
+    /// fixture `name` (`spec/harness.md` LT-4), on the unit's
+    /// architecture: its built inputs, copied, then its `link` and
+    /// `check` steps run there with `linker`, each link judged by L3 with
+    /// the run-wide defaults and nothing of a test's. Linked by the first
+    /// unit of the run that asks, once; its L3 counts are that unit's.
+    fn linked_fixture(
+        &self,
+        name: &str,
+        fixture: &Fixture,
+        linker: Linker,
+        judged: &mut Judged,
+    ) -> Result<PathBuf, Raw> {
+        let cell = {
+            let mut built =
+                self.matrix.built.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            Arc::clone(built.entry((name.to_owned(), self.arch(), Some(linker))).or_default())
+        };
+        let prefix = |raw: Raw| prefixed(raw, &format!("fixture {name}:"));
+        cell.get_or_init(|| {
+            let built =
+                self.fixture(name).map_err(|e| Raw::Error(format!("fixture {name}: {e}")))?;
+            let dir = self
+                .matrix
+                .fixture_dir
+                .join(self.arch().name())
+                .join(format!("{name}.{}", linker.name()));
+            copy_dir(&built, &dir).map_err(Raw::Error)?;
+            let test = Test {
+                spec: Vec::new(),
+                arches: vec![self.arch()],
+                requires: fixture.requires.clone(),
+                markers: Vec::new(),
+                anomalies: Vec::new(),
+                odr: Vec::new(),
+                timeout: None,
+                memory_mib: None,
+                steps: fixture.steps.clone(),
+                files: Vec::new(),
+                fixtures: Vec::new(),
+            };
+            let label = format!("fixture {name}");
+            let unit = Unit {
+                matrix: self.matrix,
+                tools: self.tools,
+                test: &test,
+                name: &label,
+                dir: dir.clone(),
+            };
+            let vars = Vars { arch: self.arch(), host: self.matrix.host, linker: Some(linker) };
+            // A fixture's links have no digest rows; their L3 counts go to
+            // the unit that linked them.
+            let mut own = Judged::default();
+            for step in &test.steps {
+                if step.is_build() || !step.scope.applies(self.arch(), linker) {
+                    continue;
+                }
+                let result = match &step.kind {
+                    StepKind::Link(link) => unit.link(step, link, linker, &dir, vars, &mut own),
+                    StepKind::Check(check) => unit.check(step, check, linker, &dir, vars),
+                    _ => Err(Raw::Error(format!(
+                        "{}: not a step of a fixture (LT-4)",
+                        step.describe()
+                    ))),
+                };
+                if let Err(raw) = result {
+                    judged.plumb.add(&own.plumb);
+                    return Err(prefix(raw));
+                }
             }
+            judged.plumb.add(&own.plumb);
+            Ok(dir)
         })
         .clone()
+    }
+
+    /// A linker's directory before its steps: the libraries it linked from
+    /// the test's linked fixtures (LT-4; their L3 files left behind), then
+    /// the unit's inputs over them, so that a test's file replaces a
+    /// fixture's of the same name.
+    fn prepare(&self, linker: Linker, dir: &Path, judged: &mut Judged) -> Result<(), Raw> {
+        for name in &self.test.fixtures {
+            let Some(Ok(fixture)) = self.matrix.fixtures.get(name) else { continue };
+            if !fixture.is_linked() {
+                continue;
+            }
+            let libraries = self.linked_fixture(name, fixture, linker, judged)?;
+            copy_dir_skipping(&libraries, dir, LINKTEST_FILES).map_err(Raw::Error)?;
+        }
+        copy_dir(&self.dir.join("inputs"), dir).map_err(Raw::Error)
     }
 
     /// Writes `files` to `dir` and runs the build steps of `steps` there.
@@ -1075,7 +1297,7 @@ impl Unit<'_> {
                 let before = vec!["-shared".into(), "-fuse-ld=bfd".into()];
                 (program.ok_or_else(missing)?.clone(), before)
             }
-            StepKind::Link(_) | StepKind::Run(_) | StepKind::Check(_) => {
+            StepKind::Link(_) | StepKind::Host(_) | StepKind::Run(_) | StepKind::Check(_) => {
                 unreachable!("{} does not build an input", step.describe())
             }
         })
@@ -1090,9 +1312,10 @@ impl Unit<'_> {
         linker: Linker,
         expected: Option<&[Printed]>,
         plumb: &mut Plumb,
+        pairs: &mut PairState,
     ) -> (Raw, Vec<Printed>) {
         let mut judged = Judged::default();
-        let result = self.run_steps(linker, expected, &mut judged);
+        let result = self.run_steps(linker, expected, &mut judged, pairs);
         plumb.add(&judged.plumb);
         let (raw, printed) = result;
         if raw != Raw::Pass || judged.plumb.verified == 0 {
@@ -1118,19 +1341,145 @@ impl Unit<'_> {
         }
     }
 
+    /// A linker's record: its library part in its directory, then the
+    /// pair part once per pair (`spec/harness.md` LT-2, LT-3); a test
+    /// without a `host` step is all library part. It stops at the first
+    /// step that does not pass.
     fn run_steps(
         &self,
         linker: Linker,
         expected: Option<&[Printed]>,
         judged: &mut Judged,
+        pairs: &mut PairState,
     ) -> (Raw, Vec<Printed>) {
         let dir = self.dir.join(linker.name());
         let mut printed = Vec::new();
-        if let Err(e) = copy_dir(&self.dir.join("inputs"), &dir) {
-            return (Raw::Error(e), printed);
+        pairs.own = None;
+        let split = self.test.pair_start().unwrap_or(self.test.steps.len());
+        let (library, pair_part) = self.test.steps.split_at(split);
+        let linkers = self.matrix.linkers_of(self.tools);
+        let all = Pair::of(linker, &linkers, &pairs.passed, self.matrix.digest);
+        // LT-3: mortar hosts the references' libraries first, whatever
+        // becomes of its own library.
+        if !pair_part.is_empty() {
+            for pair in all.iter().filter(|pair| pair.library != linker) {
+                if let Err(raw) = self.run_pair(*pair, linker, pair_part, judged, pairs) {
+                    return (raw, printed);
+                }
+            }
         }
+        if let Err(raw) = self.prepare(linker, &dir, judged) {
+            return (raw, printed);
+        }
+        if let Err(raw) = self.run_library(linker, library, &dir, expected, judged, &mut printed) {
+            return (raw, printed);
+        }
+        if pair_part.is_empty() {
+            return (Raw::Pass, printed);
+        }
+        // The library as this linker's library part left it, for the
+        // pairs whose host another linker links: this record's, and a
+        // reference's under a mortar host (mortar's record, later).
+        let mut copies: Vec<Pair> = all
+            .iter()
+            .filter(|pair| pair.library == linker && pair.host != linker)
+            .copied()
+            .collect();
+        if linker.is_reference() && !self.matrix.digest && linkers.contains(&Linker::Mortar) {
+            copies.push(Pair { library: linker, host: Linker::Mortar });
+        }
+        for pair in copies {
+            if let Err(e) = copy_dir(&dir, &self.dir.join(pair.dir_name())) {
+                return (Raw::Error(e), printed);
+            }
+        }
+        for pair in all.iter().filter(|pair| pair.library == linker) {
+            if let Err(raw) = self.run_pair(*pair, linker, pair_part, judged, pairs) {
+                return (raw, printed);
+            }
+        }
+        (Raw::Pass, printed)
+    }
+
+    /// The pair part's steps for one pair of `linker`'s record, in the
+    /// pair's directory (LT-3): each `host` linked by the pair's host
+    /// linker, each run compared with the baseline pair's (LT-5), each
+    /// check as the record's. A result of another pair than the record's
+    /// own names the pair.
+    fn run_pair(
+        &self,
+        pair: Pair,
+        linker: Linker,
+        steps: &[Step],
+        judged: &mut Judged,
+        pairs: &mut PairState,
+    ) -> Result<(), Raw> {
+        let dir = self.dir.join(pair.dir_name());
         let vars = Vars { arch: self.arch(), host: self.matrix.host, linker: Some(linker) };
-        for step in &self.test.steps {
+        let own = pair == Pair { library: linker, host: linker };
+        let label = |raw: Raw| if own { raw } else { prefixed(raw, &pair.label()) };
+        let mut ran = Vec::new();
+        // The references' output of a pair is the baseline's, not the
+        // self-check's: what a pair's run prints is compared below.
+        let mut unused = Vec::new();
+        for step in steps {
+            if step.is_build() || !step.scope.applies(self.arch(), linker) {
+                continue;
+            }
+            if self.matrix.digest && !matches!(step.kind, StepKind::Host(_)) {
+                continue;
+            }
+            let result = match &step.kind {
+                StepKind::Host(link) => self.link(step, link, pair.host, &dir, vars, judged),
+                StepKind::Run(run) => self
+                    .run_program(step, run, &dir, vars, None, &mut unused)
+                    .and_then(|(end, stdout)| {
+                        let this = Ran { line: step.line, end, stdout };
+                        let baseline = match (&pairs.baseline, &pairs.own) {
+                            (Some((by, runs)), _) => Some((*by, runs.as_slice())),
+                            (None, Some(runs)) if !own => Some((linker, runs.as_slice())),
+                            _ => None,
+                        };
+                        if let Some((by, runs)) = baseline {
+                            against_baseline(&this, by, runs).map_err(|what| {
+                                Raw::Fail(format!("{}: {what}", step.describe()))
+                            })?;
+                        }
+                        ran.push(this);
+                        Ok(())
+                    }),
+                StepKind::Check(check) => self.check(step, check, linker, &dir, vars),
+                StepKind::Link(_)
+                | StepKind::Compile(_)
+                | StepKind::Yaml2obj(_)
+                | StepKind::Ar(_)
+                | StepKind::Meta(_)
+                | StepKind::Shlib(_) => {
+                    unreachable!("the pair part links no library (LT-2); builds ran before")
+                }
+            };
+            result.map_err(label)?;
+        }
+        if own {
+            pairs.own = Some(ran);
+        }
+        Ok(())
+    }
+
+    /// The library part of a record (all of a test without a `host`
+    /// step), in the linker's directory.
+    fn run_library(
+        &self,
+        linker: Linker,
+        steps: &[Step],
+        dir: &Path,
+        expected: Option<&[Printed]>,
+        judged: &mut Judged,
+        printed: &mut Vec<Printed>,
+    ) -> Result<(), Raw> {
+        let dir = dir.to_path_buf();
+        let vars = Vars { arch: self.arch(), host: self.matrix.host, linker: Some(linker) };
+        for step in steps {
             if step.is_build() || !step.scope.applies(self.arch(), linker) {
                 continue;
             }
@@ -1140,9 +1489,10 @@ impl Unit<'_> {
             let result = match &step.kind {
                 StepKind::Link(link) => self.link(step, link, linker, &dir, vars, judged),
                 StepKind::Run(run) => {
-                    self.run_program(step, run, &dir, vars, expected, &mut printed)
+                    self.run_program(step, run, &dir, vars, expected, printed).map(|_| ())
                 }
                 StepKind::Check(check) => self.check(step, check, linker, &dir, vars),
+                StepKind::Host(_) => unreachable!("the library part ends at the first host"),
                 StepKind::Compile(_)
                 | StepKind::Yaml2obj(_)
                 | StepKind::Ar(_)
@@ -1151,11 +1501,9 @@ impl Unit<'_> {
                     unreachable!("build steps are run once, before the linkers")
                 }
             };
-            if let Err(raw) = result {
-                return (raw, printed);
-            }
+            result?;
         }
-        (Raw::Pass, printed)
+        Ok(())
     }
 
     #[allow(clippy::too_many_lines)] // the driver, the end, the diagnostics, then L3
@@ -1577,7 +1925,7 @@ impl Unit<'_> {
         vars: Vars,
         expected: Option<&[Printed]>,
         printed: &mut Vec<Printed>,
-    ) -> Result<(), Raw> {
+    ) -> Result<(End, Vec<u8>), Raw> {
         let fail = |what: &dyn Display| Raw::Fail(format!("{}: {what}", step.describe()));
         let name = run.program.expand(vars);
         let path = dir.join(&name);
@@ -1638,7 +1986,7 @@ impl Unit<'_> {
                 }
             }
             Stdout::Reference => match expected {
-                None => printed.push(Printed { line: step.line, stdout: output.stdout }),
+                None => printed.push(Printed { line: step.line, stdout: output.stdout.clone() }),
                 Some(expected) => {
                     let Some(want) = expected.iter().find(|p| p.line == step.line) else {
                         return Err(Raw::Error(format!(
@@ -1656,7 +2004,7 @@ impl Unit<'_> {
                 }
             },
         }
-        Ok(())
+        Ok((output.end, output.stdout))
     }
 
     /// The program, arguments and host environment that run `program` of
@@ -1673,8 +2021,8 @@ impl Unit<'_> {
     ) -> (PathBuf, Vec<OsString>, Vec<(String, OsString)>) {
         match &self.tools.runner {
             Runner::Native => {
-                let host = env.iter().map(|(n, v)| (n.clone(), OsString::from(v))).collect();
-                (program.to_path_buf(), args.into_iter().map(OsString::from).collect(), host)
+                let (program, args) = native_command(program, env, args);
+                (program, args, Vec::new())
             }
             Runner::Emulated { qemu, sysroot } => {
                 let mut full: Vec<OsString> = vec!["-L".into(), sysroot.clone().into_os_string()];
@@ -2002,7 +2350,7 @@ fn build_args(step: &Step) -> &[Template] {
         StepKind::Compile(compile) => &compile.args,
         StepKind::Yaml2obj(args) | StepKind::Ar(args) | StepKind::Meta(args) => args,
         StepKind::Shlib(shlib) => &shlib.args,
-        StepKind::Link(_) | StepKind::Run(_) | StepKind::Check(_) => &[],
+        StepKind::Link(_) | StepKind::Host(_) | StepKind::Run(_) | StepKind::Check(_) => &[],
     }
 }
 
@@ -2143,6 +2491,67 @@ fn first_lines(text: &str) -> String {
 }
 
 /// Copies the directory `from` to `to`, recursively.
+/// A natively run program's command (`spec/harness.md` LT-6): with an
+/// environment, `env NAME=value... program args`, so that the variables
+/// (an `LD_PRELOAD`) are set on the program's own `exec` and reach nothing
+/// else, not the shell that sets the limits; without one, the program.
+pub fn native_command(
+    program: &Path,
+    env: &[(String, String)],
+    args: Vec<String>,
+) -> (PathBuf, Vec<OsString>) {
+    if env.is_empty() {
+        return (program.to_path_buf(), args.into_iter().map(OsString::from).collect());
+    }
+    let mut full: Vec<OsString> =
+        env.iter().map(|(name, value)| format!("{name}={value}").into()).collect();
+    full.push(program.as_os_str().to_owned());
+    full.extend(args.into_iter().map(OsString::from));
+    (PathBuf::from(ENV_PROGRAM), full)
+}
+
+/// The prefix of the files the harness writes beside a link (its maps,
+/// the wrapper's status and line files): not copied out of a linked
+/// fixture (LT-4), so that none stands in for a test's own.
+pub const LINKTEST_FILES: &str = ".linktest-";
+
+/// `raw` with `what` before its detail: the place of a fixture's step, a
+/// pair's label.
+fn prefixed(raw: Raw, what: &str) -> Raw {
+    match raw {
+        Raw::Pass => Raw::Pass,
+        Raw::Fail(d) => Raw::Fail(format!("{what} {d}")),
+        Raw::Killed(d) => Raw::Killed(format!("{what} {d}")),
+        Raw::Error(d) => Raw::Error(format!("{what} {d}")),
+        Raw::Skip(d) => Raw::Skip(format!("{what} {d}")),
+    }
+}
+
+/// [`copy_dir`] without the files of the top directory whose names begin
+/// with `skip`.
+fn copy_dir_skipping(from: &Path, to: &Path, skip: &str) -> Result<(), String> {
+    let cannot = |what: &str, path: &Path, e: std::io::Error| {
+        format!("cannot {what} '{}': {e}", path.display())
+    };
+    std::fs::create_dir_all(to).map_err(|e| cannot("create", to, e))?;
+    let entries = std::fs::read_dir(from).map_err(|e| cannot("read", from, e))?;
+    let mut names = Vec::new();
+    for entry in entries {
+        names.push(entry.map_err(|e| cannot("read", from, e))?.file_name());
+    }
+    names.sort();
+    for name in names.into_iter().filter(|n| !n.to_string_lossy().starts_with(skip)) {
+        let (source, target) = (from.join(&name), to.join(&name));
+        let kind = source.symlink_metadata().map_err(|e| cannot("read", &source, e))?;
+        if kind.is_dir() {
+            copy_dir(&source, &target)?;
+        } else {
+            std::fs::copy(&source, &target).map_err(|e| cannot("copy", &source, e))?;
+        }
+    }
+    Ok(())
+}
+
 fn copy_dir(from: &Path, to: &Path) -> Result<(), String> {
     let cannot = |what: &str, path: &Path, e: std::io::Error| {
         format!("cannot {what} '{}': {e}", path.display())
@@ -2358,6 +2767,91 @@ mod tests {
             program_env(dir, &own, vars),
             [("LD_LIBRARY_PATH".to_owned(), "x86_64".to_owned())]
         );
+    }
+
+    // LT-6: a native run's environment is set by `env` on the program's
+    // own exec, never in the environment of the shell before it.
+    #[test]
+    fn a_native_runs_environment_is_the_programs_alone() {
+        use std::ffi::OsString;
+        let program = std::path::Path::new("/w/u/aarch64/bfd/prog");
+        let (bare, args) = super::native_command(program, &[], vec!["a".to_owned()]);
+        assert_eq!((bare.as_path(), args), (program, vec![OsString::from("a")]));
+        let env = [
+            ("LD_LIBRARY_PATH".to_owned(), "/w/u/aarch64/bfd".to_owned()),
+            ("LD_PRELOAD".to_owned(), "./libpre.so".to_owned()),
+        ];
+        let (env_program, args) = super::native_command(program, &env, vec!["a".to_owned()]);
+        assert_eq!(env_program, std::path::Path::new(super::ENV_PROGRAM));
+        let args: Vec<String> = args.iter().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert_eq!(
+            args,
+            [
+                "LD_LIBRARY_PATH=/w/u/aarch64/bfd",
+                "LD_PRELOAD=./libpre.so",
+                "/w/u/aarch64/bfd/prog",
+                "a"
+            ]
+        );
+    }
+
+    // LT-3: the pairs of each record, in order, and their directories.
+    #[test]
+    fn the_pairs_of_a_record() {
+        use super::Pair;
+        let all = [Linker::Bfd, Linker::Lld, Linker::Mold, Linker::Mortar];
+        let p = |library, host| Pair { library, host };
+        assert_eq!(Pair::of(Linker::Bfd, &all, &[], false), [p(Linker::Bfd, Linker::Bfd)]);
+        assert_eq!(
+            Pair::of(Linker::Lld, &all, &[Linker::Bfd], false),
+            [p(Linker::Lld, Linker::Lld), p(Linker::Lld, Linker::Bfd)]
+        );
+        // mortar hosts the libraries of the references that passed first.
+        assert_eq!(
+            Pair::of(Linker::Mortar, &all, &[Linker::Bfd, Linker::Mold], false),
+            [
+                p(Linker::Bfd, Linker::Mortar),
+                p(Linker::Mold, Linker::Mortar),
+                p(Linker::Mortar, Linker::Mortar),
+                p(Linker::Mortar, Linker::Bfd),
+            ]
+        );
+        // Without GNU ld in the run, no library goes under its host; the
+        // digest mode has mortar's own pair alone.
+        assert_eq!(
+            Pair::of(Linker::Mortar, &[Linker::Mortar], &[], false),
+            [p(Linker::Mortar, Linker::Mortar)]
+        );
+        assert_eq!(
+            Pair::of(Linker::Mortar, &all, &[Linker::Bfd], true),
+            [p(Linker::Mortar, Linker::Mortar)]
+        );
+        assert_eq!(p(Linker::Mold, Linker::Mold).dir_name(), "mold");
+        assert_eq!(p(Linker::Lld, Linker::Mortar).dir_name(), "lld+mortar");
+        assert_eq!(p(Linker::Mortar, Linker::Bfd).label(), "[library mortar, host bfd]");
+    }
+
+    // LT-5: a pair's run against the baseline pair's: the same end and the
+    // same output, a run the baseline did not make not compared.
+    #[test]
+    fn a_pairs_run_against_the_baseline() {
+        use super::{Ran, against_baseline};
+        use crate::process::End;
+        let ran = |line, end, out: &str| Ran { line, end, stdout: out.as_bytes().to_vec() };
+        let baseline = [ran(10, End::Exit(0), "7 7\n"), ran(12, End::Exit(3), "")];
+        assert_eq!(
+            against_baseline(&ran(10, End::Exit(0), "7 7\n"), Linker::Bfd, &baseline),
+            Ok(())
+        );
+        let differs = against_baseline(&ran(10, End::Exit(0), "7 1\n"), Linker::Bfd, &baseline);
+        assert_eq!(
+            differs,
+            Err("printed \"7 1\\n\", the bfd/bfd pair printed \"7 7\\n\"".to_owned())
+        );
+        let ends =
+            against_baseline(&ran(12, End::Exit(0), ""), Linker::Lld, &baseline).unwrap_err();
+        assert!(ends.contains("the lld/lld pair's program"), "{ends}");
+        assert_eq!(against_baseline(&ran(14, End::Exit(1), "x"), Linker::Bfd, &baseline), Ok(()));
     }
 
     // "L3", "Stage 3": the verifier has stage 3 since WP-050.
