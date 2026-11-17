@@ -1,5 +1,5 @@
 //! Stage 3's static checks of a dynamic image (`spec/plumb.md` §12: P-D1,
-//! P-D4..P-D8, P-D10..P-D13, and P-D9's record-order part). Where the
+//! P-D4..P-D8, P-D10..P-D13, P-D24, and P-D9's record-order part). Where the
 //! references differ by design (`dyn.md` §13.1) a reference output is
 //! judged by its own linker's form; `Format::Mortar` is judged by the
 //! D rules exactly (`spec/plumb.md` §12.1, "a reference to its own
@@ -87,6 +87,7 @@ pub(crate) fn check(
     pd9_order(out, ld.machine, &mut v);
     pd10(image, out, ld.machine, format, spie, &mut v);
     let copies = pd11_13(image, out, model, ld, format, &mut v);
+    pd24(out, line, model, ld, &mut v);
     if format == Format::Mortar {
         // M8 (§3.3): the map's copy records are the output's copies.
         v.extend(crate::maprec::copies(map, &copies));
@@ -1358,6 +1359,207 @@ fn pd11_13(
         }
     }
     actual
+}
+
+/// How a library binds its definitions to itself, as P-D24 reads it.
+enum SelfBound {
+    /// `DT_SYMBOLIC`, or `DF_SYMBOLIC` in the last `DT_FLAGS`.
+    Symbolic,
+    /// The `.dynsym` indices of its `.note.mason` table's rows with
+    /// `NONPREEMPTIBLE` (odr.md O-51, O-60).
+    Rows(BTreeSet<u32>),
+    /// A table note that does not parse (why): every definition counts as
+    /// bound (nothing tells which is not).
+    Unreadable(String),
+}
+
+/// What P-D24 reads of one library, again from its bytes: program
+/// headers and `.dynamic` only, never its section headers.
+struct SelfBinding<'a> {
+    so: mortar_elf::SharedObject<'a>,
+    bound: SelfBound,
+    /// `(p_vaddr, p_memsz, PF_W)` of every `PT_LOAD`.
+    loads: Vec<(u64, u64, bool)>,
+    /// `(p_vaddr, p_memsz)` of every `PT_GNU_RELRO`.
+    relro: Vec<(u64, u64)>,
+}
+
+/// O-52's table note: owner `MasonMeta`, type `NT_MASON_ODR`.
+const ODR_NOTE_OWNER: &[u8] = b"MasonMeta\0";
+const NT_MASON_ODR: u32 = 0x4d4f_4401;
+/// O-51's `NONPREEMPTIBLE` flag bit.
+const ROW_NONPREEMPTIBLE: u16 = 0x8000;
+const DT_SYMBOLIC_TAG: i64 = 16;
+const DT_FLAGS_TAG: i64 = 30;
+const DF_SYMBOLIC_BIT: u64 = 0x2;
+
+/// O-51's table: the `.dynsym` indices of the rows with `NONPREEMPTIBLE`,
+/// or why the descriptor is not a table (header `{version 1, count,
+/// row_size 24, reserved}`, rows `{key u64, hash [8], dynsym u32, flags
+/// u16, reserved u16}` sorted by key).
+fn nonpreemptible_rows(desc: &[u8]) -> Result<BTreeSet<u32>, String> {
+    let u32_at = |b: &[u8], at: usize| {
+        b.get(at..at + 4).map(|w| u32::from_le_bytes([w[0], w[1], w[2], w[3]]))
+    };
+    if desc.len() < 16 {
+        return Err(format!("a descriptor of {} bytes holds no header", desc.len()));
+    }
+    let (version, count, row_size) =
+        (u32_at(desc, 0).unwrap_or(0), u32_at(desc, 4).unwrap_or(0), u32_at(desc, 8).unwrap_or(0));
+    if version != 1 {
+        return Err(format!("version {version}"));
+    }
+    if row_size != 24 {
+        return Err(format!("row_size {row_size}"));
+    }
+    let room = (desc.len() - 16) / 24;
+    if count as usize > room {
+        return Err(format!("{count} rows in room for {room}"));
+    }
+    let mut rows = BTreeSet::new();
+    let mut last = 0u64;
+    for n in 0..count as usize {
+        let r = &desc[16 + 24 * n..16 + 24 * (n + 1)];
+        let mut k = [0u8; 8];
+        k.copy_from_slice(&r[..8]);
+        let key = u64::from_le_bytes(k);
+        if key < last {
+            return Err(format!("row {n} out of key order"));
+        }
+        last = key;
+        if u16::from_le_bytes([r[20], r[21]]) & ROW_NONPREEMPTIBLE != 0 {
+            rows.insert(u32_at(r, 16).unwrap_or(0));
+        }
+    }
+    Ok(rows)
+}
+
+/// The library's own binding (P-D24), or `None` when it binds nothing
+/// to itself (or is not readable through its `.dynamic`, which the model
+/// reports).
+fn self_binding(bytes: &[u8]) -> Option<SelfBinding<'_>> {
+    use mortar_elf::consts::PT_NOTE;
+    let so = mortar_elf::SharedObject::parse_by(bytes, mortar_elf::Entry::Dynamic).ok()?;
+    let dynamic = so.dynamic().ok()??;
+    let mut symbolic = false;
+    let mut flags = 0;
+    for e in &dynamic {
+        match e.d_tag {
+            DT_SYMBOLIC_TAG => symbolic = true,
+            DT_FLAGS_TAG => flags = e.d_val,
+            _ => {}
+        }
+    }
+    let mut loads = Vec::new();
+    let mut relro = Vec::new();
+    let mut desc = None;
+    for seg in &so.program_headers() {
+        let h = seg.header();
+        match h.p_type {
+            PT_LOAD => loads.push((h.p_vaddr, h.p_memsz, h.p_flags & PF_W != 0)),
+            PT_GNU_RELRO => relro.push((h.p_vaddr, h.p_memsz)),
+            PT_NOTE if desc.is_none() => {
+                let Ok(notes) = seg.notes() else { continue };
+                for n in notes {
+                    let Ok(n) = n else { break };
+                    if n.n_type == NT_MASON_ODR && n.name_bytes() == ODR_NOTE_OWNER {
+                        desc = Some(n.desc());
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let bound = if symbolic || flags & DF_SYMBOLIC_BIT != 0 {
+        SelfBound::Symbolic
+    } else {
+        match nonpreemptible_rows(desc?) {
+            Ok(rows) if rows.is_empty() => return None,
+            Ok(rows) => SelfBound::Rows(rows),
+            Err(why) => SelfBound::Unreadable(why),
+        }
+    };
+    Some(SelfBinding { so, bound, loads, relro })
+}
+
+/// P-D24 (request P-R9; `spec/dyn.md` D-43a), added to P-D11 for `Exec`
+/// and `Pie`: a `COPY` of a definition its library binds to itself whose
+/// `st_value` lies in a writable `PT_LOAD` of that library outside every
+/// `PT_GNU_RELRO`, or in no `PT_LOAD`, gives the program and the library
+/// two objects where the program has one. A copy of read-only or RELRO
+/// data is two equal constants and is not reported. A `PT_LOAD` whose
+/// `p_vaddr + p_memsz` overflows leaves the place unknown (reported); a
+/// `PT_GNU_RELRO` whose end overflows covers nothing.
+fn pd24(out: &DynOut, line: &Line, model: &Model, ld: &Loader<'_>, v: &mut Vec<Finding>) {
+    if !matches!(line.kind.unwrap_or(OutputKind::Exec), OutputKind::Exec | OutputKind::Pie) {
+        return;
+    }
+    let mut libs: HashMap<usize, Option<SelfBinding<'_>>> = HashMap::new();
+    for r in &out.rels {
+        if kind(ld.machine, r.ty) != Kind::Copy {
+            continue;
+        }
+        let Some(s) = out.syms.get(r.sym as usize) else { continue };
+        let ver = out.need_of(r.sym as usize).map(|n| n.name.as_str());
+        let Some((i, d)) = model.lookup(&ld.order, &s.name, ver) else { continue };
+        let lib = &model.dsos[i];
+        let Some(b) = libs.entry(i).or_insert_with(|| self_binding(&lib.bytes)) else { continue };
+        let how = match &b.bound {
+            SelfBound::Symbolic => {
+                "it is linked -Bsymbolic (DT_SYMBOLIC or DF_SYMBOLIC)".to_owned()
+            }
+            SelfBound::Unreadable(why) => {
+                format!("its .note.mason table does not parse ({why}), so every definition counts")
+            }
+            SelfBound::Rows(rows) => {
+                // The definition's `.dynsym` entries (through DT_SYMTAB
+                // and the hash table's count), by name and value.
+                let Ok(Some(table)) = b.so.symbols() else { continue };
+                let marked = table.iter().any(|(j, y)| {
+                    y.st_shndx != 0
+                        && y.st_value == d.value
+                        && table.name(&y).is_ok_and(|n| n == s.name.as_bytes())
+                        && rows.contains(&j.0)
+                });
+                if !marked {
+                    continue;
+                }
+                "its .note.mason row is NONPREEMPTIBLE".to_owned()
+            }
+        };
+        let mut overflow = false;
+        let mut found: Option<bool> = None;
+        for &(at, size, w) in &b.loads {
+            match at.checked_add(size) {
+                None => overflow = true,
+                Some(end) if at <= d.value && d.value < end => {
+                    found = Some(found.unwrap_or(false) || w);
+                }
+                Some(_) => {}
+            }
+        }
+        let in_relro = b.relro.iter().any(|&(at, size)| {
+            at.checked_add(size).is_some_and(|end| at <= d.value && d.value < end)
+        });
+        let place = match found {
+            _ if overflow => "a library whose PT_LOAD ends past the address space",
+            None => "no PT_LOAD of its library",
+            Some(true) if !in_relro => "a writable PT_LOAD of its library, outside PT_GNU_RELRO",
+            Some(_) => continue,
+        };
+        v.push(
+            sym_finding(
+                24,
+                &s.name,
+                format!(
+                    "a COPY of '{}', which {} binds to itself ({how}), and whose definition at {:#x} lies in {place}: the program and the library use two objects (D-43a, W30)",
+                    s.name, lib.path, d.value
+                ),
+            )
+            .at(r.offset),
+        );
+    }
 }
 
 /// D-48's kept descriptor (a64 R2, WP-082): the slot pairs that a kept

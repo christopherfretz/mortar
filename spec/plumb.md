@@ -4023,6 +4023,11 @@ is accepted from its linker only, never from mortar's map.
   S the place on AArch64 (X = A, as GNU ld and mortar write): R1 ending
   "; it holds A − P, S = 0 for an undefined weak (spec/plumb.md §4.4,
   §5.8)". On x86 all four write A − P (S = 0 there).
+- **A44 (GNU ld, lld, mold; WP-122).** An executable takes a `COPY` of
+  writable data that its library binds to itself (`-Bsymbolic`, or a
+  `NONPREEMPTIBLE` row): the program and the library use two objects
+  (`spec/dyn.md` D-43a, W30), which mortar refuses. P-D24 ending "(D-43a,
+  W30)". Reproducer: `tests/link/dyn/shlib/copy-of-symbolic.test`.
 
 lld also links a `.hidden` or `.protected` undefined reference that only
 a library defines (writing 0) and drops the library from `DT_NEEDED`:
