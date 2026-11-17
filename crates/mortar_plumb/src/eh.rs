@@ -837,7 +837,11 @@ impl Engine<'_, '_> {
         let value = |&(raw, at): &(u64, u64)| decode(p.enc, raw, at).map(|v| v & mask);
         let zero = outs.iter().all(|&(raw, _)| raw & fmask == 0);
         let at_zero = outs.iter().all(|x| value(x) == Some(a as u64 & mask));
-        let demoted = at_zero && self.demoted_weak_sym(oi, sym, a).is_some();
+        // §4.4's undefined weak value of a PC-relative field is the place
+        // (the field holds `A`); `S = 0` is the form some linkers write.
+        let place =
+            p.enc & 0x70 == 0x10 && outs.iter().all(|&(raw, _)| raw & fmask == a as u64 & fmask);
+        let demoted = (at_zero || place) && self.demoted_weak_sym(oi, sym, a).is_some();
         f.message.push_str(if demoted {
             super::DEMOTED_WEAK
         } else if zero {

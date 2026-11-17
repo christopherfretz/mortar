@@ -16,7 +16,7 @@
 # either: no diagnostic.
 #@ spec: resolve.md §10
 #@ anomaly(mold): A11
-#@ skip(mold,aarch64): mold 2.37 writes Clang's `$d` mapping symbols of the dropped `.llvm.call-graph-profile` as `SHN_ABS` locals of value 0, which the verifier reports (Y4 local symbol '$d' is not where any input local of its name was placed at 0x0); no anomaly names it yet (WP-194)
+#@ anomaly(mold,aarch64): A104
 #@ requires: clang
 
 as(clang) start-%{arch}.s -o start.o

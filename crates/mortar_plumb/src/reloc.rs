@@ -1441,8 +1441,11 @@ impl<'a, 'b> Engine<'a, 'b> {
                 };
             }
         }
-        // 3. The one output symbol of the name, of any binding.
-        if let Some(out) = self.image.unique(&name) {
+        // 3. The one output symbol of the name, of any binding. Not in
+        // §5.7a's trial: no definition of the key has a place, and an
+        // output local of the name (an input's local, `objcopy
+        // --localize-hidden`'s kept copy) binds no mention (WP-201).
+        if !in_trial && let Some(out) = self.image.unique(&name) {
             if out.sym.sym_type() == STT_GNU_IFUNC && out.sym.st_shndx != 0 {
                 return Target::Ifunc { resolver: out.sym.st_value, key: IfKey::Global(name) };
             }
@@ -1618,7 +1621,9 @@ impl<'a, 'b> Engine<'a, 'b> {
 
     /// §5.7a's COMDAT keeper in the order of the line's words `line` (the
     /// command line the verifier reads, never a mortar-written record of
-    /// it): an object is ranked by the first word that names its path.
+    /// it): an object is ranked by the first word that names its path, an
+    /// archive member by the first word that names its archive (its path,
+    /// `-l<name>` for `lib<name>.a`, `-l:<file>`).
     /// Without a line the keeper follows `FileId` order.
     /// The line is also the one the options are read from (§3.2a).
     pub fn set_keeper_line(&mut self, line: Option<&[String]>) {
@@ -1626,7 +1631,20 @@ impl<'a, 'b> Engine<'a, 'b> {
         let Some(words) = line else { return };
         let objs: Vec<&Obj<'a>> = self.objs.iter().collect();
         let rank = |o: &Obj<'a>| {
-            o.member.is_none().then(|| words.iter().position(|w| names_path(w, &o.path))).flatten()
+            if o.member.is_none() {
+                return words.iter().position(|w| names_path(w, &o.path));
+            }
+            // An archive member is read where its archive is (WP-201): the
+            // word naming the archive's path, or `-l<name>` / `-l:<file>`
+            // naming its file name.
+            let file = o.path.rsplit('/').next().unwrap_or(&o.path);
+            words.iter().position(|w| {
+                names_path(w, &o.path)
+                    || w.strip_prefix("-l:").is_some_and(|f| f == file)
+                    || w.strip_prefix("-l").is_some_and(|n| {
+                        file.strip_prefix("lib").and_then(|f| f.strip_suffix(".a")) == Some(n)
+                    })
+            })
         };
         self.comdat = crate::fate::comdat_dropped_ranked(&objs, rank).into();
     }
@@ -1856,6 +1874,15 @@ impl<'a, 'b> Engine<'a, 'b> {
         let o = &objs[oi];
         let s = &o.secs[si];
         if s.alloc() && s.is_eh_frame(o.elf.machine()) {
+            // §6.4 (WP-201): an `.eh_frame` that is a member of a COMDAT
+            // copy the keeper drops is not read by the link; its records
+            // are absent.
+            let dropped = self.comdat.get_or_init(|| crate::fate::comdat_dropped(objs));
+            if dropped.get(oi).and_then(|d| d.get(si)).copied().unwrap_or(false) {
+                let n = s.relocs.and_then(|rs| o.records(rs)).map_or(0, |r| r.len() as u64);
+                self.cov.absent_records += n;
+                return;
+            }
             // §6.4: by CIE and FDE, after every other section.
             self.eh_sections.push((oi, si));
             return;

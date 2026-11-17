@@ -1,0 +1,9 @@
+-static
+-z
+max-page-size=4096
+-o
+drop.mold
+start.o
+a.o
+drop.o
+-Map=drop.mold.map
