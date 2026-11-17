@@ -35,6 +35,7 @@ const SOURCES: &[(&str, &str)] = src![
     "w19.c",
     "w21a.c",
     "w21b.c",
+    "w22.c",
     "w23.c",
     "w23.map",
     "w24.c",
@@ -124,13 +125,25 @@ impl Out {
     }
 
     fn verify_bytes(&self, out: &[u8]) -> Report {
-        let map = self.link.parse_map();
+        self.verify_line(out, self.words())
+    }
+
+    /// The words the linker saw.
+    fn words(&self) -> Vec<String> {
+        std::fs::read_to_string(&self.line).unwrap().lines().map(str::to_string).collect()
+    }
+
+    /// `out` judged as the output of the line `words`.
+    fn verify_line(&self, out: &[u8], words: Vec<String>) -> Report {
+        let mut map = self.link.parse_map();
         let files = self.link.inputs(&map);
         let inputs: Vec<Input<'_>> =
             files.iter().map(|(p, b)| Input { path: p, bytes: b }).collect();
-        let line: Vec<String> =
-            std::fs::read_to_string(&self.line).unwrap().lines().map(str::to_string).collect();
-        let ctx = Ctx { line: Some(line), files: &Dir(&self.link.dir) };
+        // A map that records its line gets the words too.
+        if !map.args.is_empty() {
+            map.args = words.iter().map(|w| w.as_bytes().to_vec()).collect();
+        }
+        let ctx = Ctx { line: Some(words), files: &Dir(&self.link.dir) };
         mortar_plumb::verify_with(out, &inputs, &map, &ctx)
     }
 }
@@ -362,32 +375,38 @@ fn rows(b: &mut Builder<'_>) {
     let pic = ["-O1", "-fPIC"];
     b.so(a, &d, "dep.c", "libdep.so", "libdep.so");
     b.obj(a, &d, "w19.c", &["-O1", "-fPIC", "-ftls-model=local-exec"], "w19.o");
-    b.link("rows", a, &d, "w19.so", &["-shared", "w19.o"], Bfd, ROW_W19);
+    b.link("rows", a, &d, "w19.so", &["-shared", "w19.o"], Bfd, row(Bfd, ROW_W19));
     b.obj(a, &d, "w21a.c", &pic, "w21a.o");
     b.obj(a, &d, "w21b.c", &pic, "w21b.o");
     for l in [Bfd, Mold] {
-        b.link("rows", a, &d, "w21.so", &["-shared", "w21a.o", "w21b.o"], l, row(l, ROW_W21));
+        // GNU ld's IRELATIVE records in `.rela.dyn` run before the
+        // JUMP_SLOTs (P-D10, H1: an executable rule kept for `Shared`).
+        let want = if l == Bfd { ROW_W21_BFD } else { ROW_W21 };
+        b.link("rows", a, &d, "w21.so", &["-shared", "w21a.o", "w21b.o"], l, row(l, want));
     }
+    b.obj(a, &d, "w22.c", &["-O1", "-fPIC", "-ffunction-sections"], "w22.o");
+    let w22 = ["-shared", "w22.o", "-Wl,--gc-sections", "-Wl,-init,w22_init"];
+    b.link("rows", a, &d, "w22.so", &w22, Mold, row(Mold, ROW_W22));
     b.obj(a, &d, "w23.c", &pic, "w23.o");
     let w23 = ["-shared", "w23.o", "-Wl,--gc-sections", "-Wl,--version-script=w23.map"];
-    b.link("rows", a, &d, "w23.so", &w23, Lld, ROW_W23);
+    b.link("rows", a, &d, "w23.so", &w23, Lld, row(Lld, ROW_W23));
     b.obj(a, &d, "w24.c", &pic, "w24.o");
-    b.link("rows", a, &d, "w24.so", &["-shared", "w24.o"], Lld, ROW_W24);
+    b.link("rows", a, &d, "w24.so", &["-shared", "w24.o"], Lld, row(Lld, ROW_W24));
     b.obj(a, &d, "w32.s", &[], "w32.o");
-    b.link("rows", a, &d, "w32.so", &["-shared", "w32.o"], Mold, ROW_W32);
+    b.link("rows", a, &d, "w32.so", &["-shared", "w32.o"], Mold, row(Mold, ROW_W32));
     b.obj(a, &d, "w33.s", &[], "w33.o");
-    b.link("rows", a, &d, "w33.so", &["-shared", "w33.o"], Bfd, ROW_W33);
+    b.link("rows", a, &d, "w33.so", &["-shared", "w33.o"], Bfd, row(Bfd, ROW_W33));
     b.obj(a, &d, "w38.c", &["-O1", "-fno-pic"], "w38.o");
-    b.link("rows", a, &d, "w38.so", &["-shared", "w38.o", "libdep.so"], Mold, ROW_W38);
+    b.link("rows", a, &d, "w38.so", &["-shared", "w38.o", "libdep.so"], Mold, row(Mold, ROW_W38));
     b.obj(a, &d, "w40.cc", &pic, "w40.o");
     let w40 = ["-shared", "w40.o", "-Wl,--version-script=w40.map"];
-    b.link("rows", a, &d, "w40.so", &w40, Mold, ROW_W40);
+    b.link("rows", a, &d, "w40.so", &w40, Mold, row(Mold, ROW_W40));
     let vdep = b.root.join("vdep.c").display().to_string();
     let cc = b.cc(a).to_path_buf();
     let vs = ["-fPIC", "-shared", "-Wl,-soname,libvdep.so", "-Wl,--version-script=vdep.map"];
     must(&d, &cc, &[&vs[..], &[vdep.as_str(), "-o", "libvdep.so"]].concat());
     b.obj(a, &d, "w42.c", &pic, "w42.o");
-    b.link("rows", a, &d, "w42.so", &["-shared", "w42.o", "libvdep.so"], Mold, ROW_W42);
+    b.link("rows", a, &d, "w42.so", &["-shared", "w42.o", "libvdep.so"], Mold, row(Mold, ROW_W42));
     // W44 and the address clause: bound uses by the analysis (gap.c
     // -fPIE) and by the rule (before.c -O0, a known refusal of correct
     // code); their -fPIC, -O2 and -Bsymbolic forms clean; the residual
@@ -410,33 +429,83 @@ fn rows(b: &mut Builder<'_>) {
     let d = b.dir(x, "rows");
     b.so(x, &d, "dep.c", "libdep.so", "libdep.so");
     b.obj(x, &d, "w34.s", &[], "w34.o");
-    b.link("rows", x, &d, "w34.so", &["-shared", "w34.o"], Bfd, ROW_W34);
+    b.link("rows", x, &d, "w34.so", &["-shared", "w34.o"], Bfd, row(Bfd, ROW_W34));
     b.obj(x, &d, "w41.c", &["-O1", "-fPIC", "-mno-direct-extern-access"], "w41.o");
     for l in [Lld, Mold] {
         b.link("rows", x, &d, "w41.so", &["-shared", "w41.o", "libdep.so"], l, row(l, ROW_W41));
     }
 }
 
-/// A row's findings, with mold's anomaly A3 (every mold library).
+/// A row's findings, with mold's anomaly A3 (every mold library) and GNU
+/// ld's A10 (its label of an empty section it removes: some libraries,
+/// so tolerated, not required: `?`).
 fn row(l: Linker, want: &'static [&'static str]) -> &'static [&'static str] {
-    if l != Linker::Mold {
-        return want;
-    }
-    let v: Vec<&'static str> = std::iter::once("A3").chain(want.iter().copied()).collect();
+    let extra = match l {
+        Linker::Mold => "A3",
+        Linker::Bfd => "?A10",
+        Linker::Lld => return want,
+    };
+    let v: Vec<&'static str> = std::iter::once(extra).chain(want.iter().copied()).collect();
     Vec::leak(v)
 }
 
-const ROW_W19: &[&str] = &[];
-const ROW_W21: &[&str] = &[];
-const ROW_W23: &[&str] = &[];
-const ROW_W24: &[&str] = &[];
-const ROW_W32: &[&str] = &[];
-const ROW_W33: &[&str] = &[];
-const ROW_W34: &[&str] = &[];
-const ROW_W38: &[&str] = &[];
-const ROW_W40: &[&str] = &[];
-const ROW_W41: &[&str] = &[];
-const ROW_W42: &[&str] = &[];
+// Each row: the rules P-D23's table names, as the verifier reports them.
+// View A's findings keep stage 2's ids (R1 a field's value, R2 its range);
+// view B's are P-D17's (P-D17's sentence).
+/// W19: the LE form itself (P-D26's LE row is P-D20's).
+const ROW_W19: &[&str] = &["P-D20@a local-exec TLS form"];
+/// W21: `&hif` is the IPLT entry in one unit, the resolved function in
+/// the other (a GOT slot and data words with IRELATIVE records). P-D18's
+/// bound-key clause is stage 2's F3, reported under its id.
+const ROW_W21: &[&str] = &["F3@two addresses for one function"];
+const ROW_W21_BFD: &[&str] =
+    &["F3@two addresses for one function", "P-D10@an IRELATIVE record is applied before"];
+/// W22: mold collects the hidden `-init` function.
+const ROW_W22: &[&str] = &["P-D22@DT_INIT"];
+/// W23: lld drops `cid_gc`; `__start_cid_gc` is the link's own (L-96),
+/// bound by the script, and left undefined with a `GLOB_DAT` naming it.
+const ROW_W23: &[&str] = &[
+    "P-D17@'__start_cid_gc' computes the address of section 'cid_gc'",
+    "P-D9@no definition of '__start_cid_gc'",
+    "P-D25@'__start_cid_gc'",
+    "P-D7@'__start_cid_gc'",
+];
+const ROW_W24: &[&str] = &["P-D20@an output section .ctors"];
+/// W32: `ADR_PREL_LO21`, `LD_PREL_LO19` and `PREL32` against `w32_g`.
+const ROW_W32: &[&str] = &[
+    "P-D17@view B (an interposer defines 'w32_g'",
+    "P-D17@R_AARCH64_ADR_PREL_LO21",
+    "P-D17@R_AARCH64_LD_PREL_LO19",
+    "P-D17@R_AARCH64_PREL32",
+];
+/// W33: the preemptible key and the weak undefined one, view B (P-D9's
+/// view 3 is view B for `Shared`, P-D16).
+const ROW_W33: &[&str] = &[
+    "P-D17@view B (an interposer defines 'w33_g'",
+    "P-D17@view B (an interposer defines 'w33_wu'",
+];
+/// W34: GNU ld's dynamic `PC32` records (type 2), which no loader applies
+/// to 64 bits: P-D9 names the record, view A finds the place's link-time
+/// value (R1), view B the interposer's keys.
+const ROW_W34: &[&str] = &[
+    "P-D9@a dynamic record of unknown type 2",
+    "R1",
+    "P-D17@view B (an interposer defines 'w34_g'",
+    "P-D17@view B (an interposer defines 'w34_ext'",
+];
+/// W38: view A's value is `imp`'s definition, the place holds the stub.
+const ROW_W38: &[&str] = &["R1", "R2", "P-D17@view B (an interposer defines 'imp'"];
+/// W40: the verifier has no demangler: `extern "C++"` is outside stage 3
+/// by name (D-114), so P-D19 never sees the empty export set.
+const ROW_W40: &[&str] = &["P-D1@extern \"C++\" needs the demangler"];
+const ROW_W41: &[&str] = &["P-D22@NEEDED_INDIRECT_EXTERN_ACCESS"];
+/// W42: `vf@VA` imported unversioned, `libvdep.so` not needed.
+const ROW_W42: &[&str] = &[
+    "P-D6@DT_NEEDED lacks 'libvdep.so'",
+    "P-D8@the input reference asks for 'VA'",
+    "P-D9@no definition of 'vf'",
+    "P-D7@'vf'",
+];
 const ROW_ANALYSIS: &[&str] = &["P-D17@the address clause (D-117 analysis)"];
 const ROW_RULE: &[&str] = &["P-D17@the address clause (D-117):"];
 
@@ -460,16 +529,23 @@ fn judge(case: &str) {
                 None => found.insert(f.rule.id()),
             };
         }
-        let rule = |e: &str| e.split_once('@').map_or(e, |(r, _)| r).to_string();
+        // `?id`: allowed, not required (an anomaly some links show).
+        let rule = |e: &str| {
+            let e = e.trim_start_matches('?');
+            e.split_once('@').map_or(e, |(r, _)| r).to_string()
+        };
         let allowed: BTreeSet<String> = o.expect.iter().map(|e| rule(e)).collect();
         let missing: Vec<&&str> = o
             .expect
             .iter()
+            .filter(|e| !e.starts_with('?'))
             .filter(|e| match e.split_once('@') {
                 None => !found.contains(**e),
-                Some((id, text)) => {
-                    !r.findings.iter().any(|f| f.rule.id() == id && f.message.contains(text))
-                }
+                Some((id, text)) => !r.findings.iter().any(|f| {
+                    f.rule.id() == id
+                        && (f.message.contains(text)
+                            || f.reloc.as_deref().is_some_and(|x| x == text))
+                }),
             })
             .collect();
         let extra: Vec<&String> = found.iter().filter(|f| !allowed.contains(*f)).collect();
@@ -798,4 +874,119 @@ fn p_d4_relro_ends_on_the_lines_maxpage() {
         assert!(got.iter().any(|g| g.contains("maxpage 0x1000")), "{} moved: {got:#?}", o.label());
     }
     assert!(n > 0 || c.outs.is_empty(), "no reference ends RELRO on 4 KiB");
+}
+
+const PT_GNU_EH_FRAME: u32 = 0x6474_e550;
+
+// spec/plumb.md P-D23, W28 (NOT caught): a C++ library linked without
+// `--eh-frame-hdr` has no `.eh_frame_hdr` and no `PT_GNU_EH_FRAME`, which
+// is what its line asks for; only a check of the line could name it
+// (WP-130). GNU ld re-run on each g++ library's recorded words without
+// `--eh-frame-hdr` (and without the LTO plugin's): the clean library's
+// verdict.
+#[test]
+fn p_d23_w28_is_not_caught() {
+    let Some(c) = corpus() else { return };
+    let mut n = 0;
+    let verdict =
+        |r: &Report| -> BTreeSet<String> { r.findings.iter().map(|f| f.rule.id()).collect() };
+    for o in c.outs.iter().filter(|o| {
+        o.link.linker == Linker::Bfd && o.link.output.to_string_lossy().contains("libwo.so")
+    }) {
+        let name = "libwo-w28.so.bfd";
+        let mut words = Vec::new();
+        let mut it = o.words().into_iter();
+        while let Some(w) = it.next() {
+            match w.as_str() {
+                "--eh-frame-hdr" => {}
+                "-plugin" => drop(it.next()),
+                "-o" => {
+                    drop(it.next());
+                    words.extend(["-o".to_string(), name.to_string()]);
+                }
+                _ if w.starts_with("-plugin-opt") => {}
+                _ if w.starts_with("-Map=") => words.push(format!("-Map={name}.map")),
+                _ => words.push(w),
+            }
+        }
+        let root = o.link.dir.parent().and_then(Path::parent).unwrap();
+        let ld = root.join(format!("ld-{}-bfd", o.arch.name())).join("ld");
+        let line = o.link.dir.join(format!("{name}.line"));
+        let w: Vec<&str> = words.iter().map(String::as_str).collect();
+        assert!(run_in(&o.link.dir, &ld, &w, Some(&line)), "{}: the W28 link failed", o.label());
+        let w28 = Out {
+            case: "w28",
+            arch: o.arch,
+            link: Link {
+                case: "w28",
+                linker: Linker::Bfd,
+                dir: o.link.dir.clone(),
+                output: o.link.dir.join(name),
+                map: o.link.dir.join(format!("{name}.map")),
+            },
+            line,
+            expect: &[],
+        };
+        let b = w28.link.output_bytes();
+        assert!(
+            phdr(&b, PT_GNU_EH_FRAME).is_none(),
+            "{}: W28's form has no PT_GNU_EH_FRAME",
+            o.label()
+        );
+        n += 1;
+        assert_eq!(
+            verdict(&w28.verify()),
+            verdict(&o.verify()),
+            "{}: W28 is asserted NOT caught (P-D23)",
+            o.label()
+        );
+    }
+    assert!(n > 0 || c.outs.is_empty(), "no g++ library of GNU ld");
+}
+
+// spec/plumb.md P-D23: the i386 rows (W25-W29, W35-W37, W39) are outside
+// stage 3 (i386 dynamic outputs are P-D1 by name, §12.1): an i386 library
+// by GNU ld is one P-D1 finding naming i386, and nothing else is judged.
+#[test]
+fn p_d23_i386_is_outside_stage_3() {
+    let (Some(cc), Some(ld)) = (tool("i686-linux-gnu-gcc"), tool("i686-linux-gnu-ld.bfd")) else {
+        return;
+    };
+    let scratch = Scratch::new("plumb-shared-i386");
+    let d = scratch.path();
+    std::fs::write(d.join("dep.c"), SOURCES.iter().find(|s| s.0 == "dep.c").unwrap().1).unwrap();
+    let bin = d.join("ld-bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let script =
+        format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$LINE_OUT\"\nexec {} \"$@\"\n", ld.display());
+    std::fs::write(bin.join("ld"), script).unwrap();
+    let mut perm = std::fs::metadata(bin.join("ld")).unwrap().permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut perm, 0o755);
+    std::fs::set_permissions(bin.join("ld"), perm).unwrap();
+    must(d, &cc, &["-O1", "-fPIC", "-c", "dep.c", "-o", "dep.o"]);
+    let b = format!("-B{}/", bin.display());
+    let line = d.join("lib.line");
+    let args = [b.as_str(), "-shared", "dep.o", "-o", "lib.so", "-Wl,-Map=lib.map"];
+    assert!(run_in(d, &cc, &args, Some(&line)), "the i386 link failed");
+    let o = Out {
+        case: "i386",
+        arch: Arch::X64,
+        link: Link {
+            case: "i386",
+            linker: Linker::Bfd,
+            dir: d.to_path_buf(),
+            output: d.join("lib.so"),
+            map: d.join("lib.map"),
+        },
+        line,
+        expect: &[],
+    };
+    let r = o.verify();
+    let ids: Vec<String> = r.findings.iter().map(|f| f.rule.id()).collect();
+    assert!(
+        r.findings.iter().any(|f| f.rule.id() == "P-D1" && f.message.contains("i386 (EM_386")),
+        "{:#?}",
+        r.findings
+    );
+    assert!(ids.iter().all(|i| i == "P-D1"), "{:#?}", r.findings);
 }

@@ -272,7 +272,7 @@ fn judge(
     let mut checked = crate::dyncheck::check(image, dout, &line, &model, &ld, &objs, map);
     if let (Some(sl), Some(s)) = (&shared.line, &sets) {
         // §12.5: P-D16's changes to the executable rules, then P-D19-P-D26.
-        crate::shared::filter_dyncheck(&mut checked, image, dout, sl);
+        crate::shared::filter_dyncheck(&mut checked, image, dout, sl, s);
         report
             .findings
             .extend(crate::shared::static_checks(image, dout, &objs, sl, s, &args, map.format));
@@ -301,10 +301,10 @@ fn judge(
                 // §12.5 view A: an unversioned import no shared input
                 // defines is the host's (D-118) unless the line has `-z
                 // defs`; view B's interposer defines it.
-                shared.line.as_ref().is_none_or(|sl| {
+                shared.line.as_ref().zip(sets.as_ref()).is_none_or(|(sl, s)| {
                     sl.zdefs
                         || !f.message.starts_with("the loader finds no definition of ")
-                        || !f.symbol.as_deref().is_some_and(|n| crate::shared::host_import(dout, n))
+                        || !f.symbol.as_deref().is_some_and(|n| crate::shared::host_import(s, n))
                 })
             })
             .cloned(),

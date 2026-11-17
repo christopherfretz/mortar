@@ -858,6 +858,9 @@ pub struct Import {
     /// The type of the references (`STT_TLS`, `STT_OBJECT`, `STT_FUNC`,
     /// `STT_NOTYPE`).
     pub ty: u8,
+    /// Some reference names a version (`foo@V`, a `.symver` reference):
+    /// view A owes its definition (W42), never the host's (D-118).
+    pub versioned: bool,
 }
 
 /// The sets of §12.5, recomputed from the inputs and the line.
@@ -875,6 +878,10 @@ pub struct Sets {
     pub problems: Vec<String>,
     /// A form refused by name (P-D1).
     pub outside: Vec<String>,
+    /// `__start_X`/`__stop_X` a live section's relocation names, with `X`
+    /// a section of the inputs that the map keeps none of (layout L-96
+    /// keeps them all live; W23): the key and `X`.
+    pub dropped: Vec<(String, String)>,
 }
 
 impl Sets {
@@ -936,6 +943,74 @@ fn c_ident(s: &str) -> bool {
     !s.is_empty()
         && !s.as_bytes()[0].is_ascii_digit()
         && s.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_')
+}
+
+/// Layout L-96 (W23): each `__start_X`/`__stop_X` that a relocation of a
+/// live input section names, where `X` is a C identifier and an allocated
+/// section of some input: the link defines it, and every input section
+/// `X` is live. Maps the key to `X` and whether the map keeps one of them.
+/// Only objects whose symbol table references such a name are read for
+/// their relocations (§8.1).
+fn start_stop(
+    objs: &[Obj<'_>],
+    refs: &BTreeMap<String, Import>,
+) -> BTreeMap<String, (String, bool)> {
+    let wanted: BTreeMap<&str, &str> = refs
+        .keys()
+        .filter_map(|n| {
+            let sec = n.strip_prefix("__start_").or_else(|| n.strip_prefix("__stop_"))?;
+            c_ident(sec).then_some((n.as_str(), sec))
+        })
+        .collect();
+    let mut secs: BTreeMap<&str, bool> = BTreeMap::new();
+    if !wanted.is_empty() {
+        for o in objs {
+            for s in &o.secs {
+                if s.alloc() && wanted.values().any(|w| *w == s.name) {
+                    let kept = !matches!(s.place, Place::Absent | Place::Discarded);
+                    *secs.entry(s.name.as_str()).or_default() |= kept;
+                }
+            }
+        }
+    }
+    let mut out = BTreeMap::new();
+    if secs.is_empty() {
+        return out;
+    }
+    for o in objs {
+        let Some(t) = &o.symtab else { continue };
+        let named: BTreeSet<u32> = t
+            .globals()
+            .filter(|(_, s)| s.st_shndx == 0)
+            .filter_map(|(i, s)| {
+                let n = String::from_utf8_lossy(t.name(&s).ok()?).into_owned();
+                let sec = wanted.get(n.as_str())?;
+                secs.contains_key(sec).then_some(i.0)
+            })
+            .collect();
+        if named.is_empty() {
+            continue;
+        }
+        for s in &o.secs {
+            if matches!(s.place, Place::Absent | Place::Discarded) {
+                continue;
+            }
+            let Some(recs) = s.relocs.and_then(|rs| o.records(rs)) else { continue };
+            for (_, sym, _, _) in recs {
+                if !named.contains(&sym) {
+                    continue;
+                }
+                let Ok(z) = t.get(mortar_elf::SymbolIndex(sym)) else { continue };
+                let Ok(n) = t.name(&z) else { continue };
+                let n = String::from_utf8_lossy(n).into_owned();
+                if let Some(sec) = wanted.get(n.as_str()) {
+                    let kept = secs.get(sec).copied().unwrap_or(false);
+                    out.insert(n, ((*sec).to_string(), kept));
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Reads the line's files (version scripts or dynamic lists).
@@ -1031,7 +1106,12 @@ pub(crate) fn compute(
             }
             let live = match t.section_of(i, &s) {
                 Ok(SymbolSection::Undefined) => {
-                    let r = refs.entry(name).or_insert(Import { weak: true, ty: STT_NOTYPE });
+                    let versioned = split_version(&name).1.is_some();
+                    let r = refs.entry(name).or_insert(Import {
+                        weak: true,
+                        ty: STT_NOTYPE,
+                        versioned,
+                    });
                     r.weak &= s.binding() == STB_WEAK;
                     if s.sym_type() != STT_NOTYPE {
                         r.ty = s.sym_type();
@@ -1060,11 +1140,16 @@ pub(crate) fn compute(
     }
     let defined_base: HashSet<String> =
         defs.keys().map(|n| split_version(n).0.to_string()).collect();
+    // Layout L-96: `__start_X`/`__stop_X` named from a live section, `X` a
+    // C-identifier section of the inputs, is the link's own definition.
+    let startstop = start_stop(objs, &refs);
     for (name, r) in refs {
         let base = split_version(&name).0;
-        if !defined_base.contains(base) && !sets.imports.contains_key(base) {
-            sets.imports.insert(base.to_string(), r);
+        if defined_base.contains(base) {
+            continue;
         }
+        let versioned = r.versioned;
+        sets.imports.entry(base.to_string()).or_insert(r).versioned |= versioned;
     }
     // A key's version and whether a script or --exclude-libs hides it.
     let decide = |name: &str, sets: &mut Sets| -> Option<VerOut> {
@@ -1171,14 +1256,44 @@ pub(crate) fn compute(
             optional: startstop && format == Format::Mold,
         });
     }
+    // L-96's keys the output does not define (W23): still the link's own,
+    // decided as above from the inputs and the script; their section is
+    // gone (`dropped`) unless the map keeps one.
+    for (name, (sec, kept)) in &startstop {
+        let in_output = image
+            .symbols
+            .iter()
+            .any(|s| s.name == *name && s.sym.st_shndx != 0 && s.sym.sym_type() != STT_SECTION);
+        if !kept {
+            sets.dropped.push((name.clone(), sec.clone()));
+        }
+        if in_output || sets.exports.contains_key(name) || sets.local.contains(name) {
+            continue;
+        }
+        let Some(version) = decide(name, &mut sets) else {
+            sets.local.insert(name.clone());
+            continue;
+        };
+        sets.exports.entry(name.clone()).or_default().push(Export {
+            name: name.clone(),
+            version,
+            ty: STT_NOTYPE,
+            bind: STB_GLOBAL,
+            vis: STV_PROTECTED,
+            size: 0,
+            preemptible: false,
+            optional: format == Format::Mold,
+        });
+    }
     // A name the linker defines (`__start_`/`__stop_`, mold's local
     // forms included) is not an import; unexported, it is bound.
     let mut own = Vec::new();
     sets.imports.retain(|n, _| {
-        let linker_def = image
-            .symbols
-            .iter()
-            .any(|s| s.name == *n && s.sym.st_shndx != 0 && s.sym.sym_type() != STT_SECTION);
+        let linker_def = startstop.contains_key(n)
+            || image
+                .symbols
+                .iter()
+                .any(|s| s.name == *n && s.sym.st_shndx != 0 && s.sym.sym_type() != STT_SECTION);
         if linker_def && !sets.exports.contains_key(n) {
             own.push(n.clone());
         }
@@ -1371,6 +1486,20 @@ pub(crate) fn static_checks(
 ) -> Vec<Finding> {
     use crate::loader::{Kind, kind};
     let mut v = pd19(out, sets, format);
+    // P-D17 (W23): the input's relocation against `__start_X` computes
+    // section X's address, and the output has no X to hold.
+    for (key, sec) in &sets.dropped {
+        let mut f = fd(
+            17,
+            format!(
+                "view A: a live input section's relocation against '{key}' computes the address \
+                 of section '{sec}', which layout L-96 keeps live, and the output holds no \
+                 '{sec}' (W23)"
+            ),
+        );
+        f.symbol = Some(key.clone());
+        v.push(f);
+    }
     let m = image.header.e_machine;
     let name_of = |r: &crate::dynout::DynRel| {
         out.syms.get(r.sym as usize).map_or_else(String::new, |s| s.name.clone())
@@ -1852,16 +1981,14 @@ const SHARED_TAGS: &[u64] = &[
     0x6fff_fef7, // DT_TLSDESC_GOT (GNU ld)
 ];
 
-/// §12.5 view A, D-118: `name` is an unversioned import of the output,
-/// which the host resolves when nothing the link loads defines it and the
-/// line has no `-z defs` (a versioned one needs its version, W42).
-pub(crate) fn host_import(out: &DynOut, name: &str) -> bool {
-    out.syms.iter().enumerate().any(|(j, s)| {
-        j > 0
-            && s.name == name
-            && !s.defined()
-            && out.versym.as_ref().and_then(|v| v.get(j)).is_none_or(|&x| x & 0x7fff <= 1)
-    })
+/// §12.5 view A, D-118: `name` is an unversioned import, which the host
+/// resolves when nothing the link loads defines it and the line has no
+/// `-z defs` (a versioned one needs its version, W42). Decided from the
+/// sets the verifier recomputes from the inputs, never from the output's
+/// `.dynsym` or `.gnu.version` (a name the link defines, L-96's
+/// `__start_X` included, is no import: W23).
+pub(crate) fn host_import(sets: &Sets, name: &str) -> bool {
+    sets.imports.get(split_version(name).0).is_some_and(|i| !i.versioned)
 }
 
 /// D-115: every entry of `name` with `VERSYM_HIDDEN` is a definition whose
@@ -1899,6 +2026,7 @@ pub(crate) fn filter_dyncheck(
     image: &Image<'_>,
     out: &DynOut,
     sl: &SharedLine,
+    sets: &Sets,
 ) {
     let entry0 = image.header.e_entry == 0;
     let mask = DF_SYMBOLIC | crate::dynout::DF_STATIC_TLS;
@@ -1938,7 +2066,7 @@ pub(crate) fn filter_dyncheck(
                 !m.contains("is not exported (D-12, W8)")
                     && (!m.contains("is imported and no needed or used object defines it visibly")
                         || sl.zdefs
-                        || !f.symbol.as_deref().is_some_and(|n| host_import(out, n)))
+                        || !f.symbol.as_deref().is_some_and(|n| host_import(sets, n)))
             }
             Rule::Dyn(8)
                 if m.starts_with("a .gnu.version entry with bit 15 set")
