@@ -11,7 +11,7 @@
 #include <dlfcn.h>
 #include <stdio.h>
 #include <string.h>
-static struct { char p[512]; void* h; } hs[64];
+static struct { char p[512]; void* h; } hs[1024];
 static int nh;
 int main(int argc, char** argv) {
   setvbuf(stdout, 0, _IONBF, 0);

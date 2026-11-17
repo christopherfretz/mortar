@@ -75,6 +75,7 @@ struct Row {
 
 struct Mod {
   uintptr_t base;
+  const ElfW(Phdr)* phdr;
   uintptr_t lo;
   uintptr_t hi;
   const char* name;
@@ -153,13 +154,31 @@ static void out_str(Out* o, const char* s) {
   }
 }
 
+// v / 10 without a 64-bit division (no __udivdi3 from libgcc on i386)
+static uint64_t div10(uint64_t v, uint32_t* rem) {
+  uint64_t q = (v >> 1) + (v >> 2);
+  q = q + (q >> 4);
+  q = q + (q >> 8);
+  q = q + (q >> 16);
+  q = q + (q >> 32);
+  q = q >> 3;
+  uint64_t r = v - q * 10;
+  while (r > 9) {
+    q = q + 1;
+    r = r - 10;
+  }
+  *rem = (uint32_t)r;
+  return q;
+}
+
 static void out_dec(Out* o, uint64_t v) {
   char t[24];
   int i = 0;
   do {
-    t[i] = (char)('0' + (int)(v % 10));
+    uint32_t rem = 0;
+    v = div10(v, &rem);
+    t[i] = (char)('0' + (int)rem);
     i++;
-    v = v / 10;
   } while (v && i < 24);
   while (i > 0) {
     i--;
@@ -265,12 +284,13 @@ static uint32_t gnu_hash_count(const uint32_t* h) {
   return max + 1;
 }
 
-static void fill(Mod* m, struct dl_phdr_info* info) {
-  m->base = info->dlpi_addr;
+static void fill_from(Mod* m, uintptr_t base, const ElfW(Phdr)* ph, int phnum, const char* name, int is_main) {
+  m->base = base;
+  m->phdr = ph;
   m->lo = ~(uintptr_t)0;
   m->hi = 0;
-  m->name = info->dlpi_name && info->dlpi_name[0] ? info->dlpi_name : "(main program)";
-  m->main = !(info->dlpi_name && info->dlpi_name[0]);
+  m->name = name;
+  m->main = is_main;
   m->rows = 0;
   m->count = 0;
   m->malformed = 0;
@@ -281,8 +301,8 @@ static void fill(Mod* m, struct dl_phdr_info* info) {
   m->hasrt = 0;
   m->rtmode = 0;
   m->rtflags = 0;
-  for (int i = 0; i < info->dlpi_phnum; i++) {
-    const ElfW(Phdr)* p = &info->dlpi_phdr[i];
+  for (int i = 0; i < phnum; i++) {
+    const ElfW(Phdr)* p = &ph[i];
     if (p->p_type == PT_LOAD) {
       uintptr_t a = m->base + p->p_vaddr;
       if (a < m->lo) m->lo = a;
@@ -291,8 +311,8 @@ static void fill(Mod* m, struct dl_phdr_info* info) {
       m->dyn = (const ElfW(Dyn)*)(m->base + p->p_vaddr);
     }
   }
-  for (int i = 0; i < info->dlpi_phnum; i++) {
-    const ElfW(Phdr)* p = &info->dlpi_phdr[i];
+  for (int i = 0; i < phnum; i++) {
+    const ElfW(Phdr)* p = &ph[i];
     if (p->p_type == PT_NOTE) read_notes(m, p);
   }
   if (!m->dyn) return;
@@ -321,6 +341,35 @@ static void fill(Mod* m, struct dl_phdr_info* info) {
     m->rows = 0;
     m->count = 0;
   }
+}
+
+static void fill(Mod* m, struct dl_phdr_info* info) {
+  int is_main = !(info->dlpi_name && info->dlpi_name[0]);
+  fill_from(m, info->dlpi_addr, info->dlpi_phdr, info->dlpi_phnum, is_main ? "(main program)" : info->dlpi_name,
+            is_main);
+}
+
+// The module's name, found by its program headers when it was filled without one.
+struct FindName {
+  const ElfW(Phdr)* phdr;
+  const char* name;
+};
+
+static int find_name_cb(struct dl_phdr_info* info, size_t sz, void* data) {
+  (void)sz;
+  FindName* f = (FindName*)data;
+  if (info->dlpi_phdr != f->phdr) return 0;
+  f->name = info->dlpi_name && info->dlpi_name[0] ? info->dlpi_name : "(main program)";
+  return 1;
+}
+
+static const char* mod_name(const Mod* m) {
+  if (m->name) return m->name;
+  FindName f;
+  f.phdr = m->phdr;
+  f.name = "(unknown module)";
+  dl_iterate_phdr(find_name_cb, &f);
+  return f.name;
 }
 
 struct FindAddr {
@@ -396,7 +445,7 @@ static const Row* row_by_addr(const Mod* m, uint64_t key, uintptr_t addr) {
 static int is_preloaded(const Ctx* c, const Mod* m) {
   const char* p = c->preload;
   if (!p || m->main) return 0;
-  const char* mine = base_name(m->name);
+  const char* mine = base_name(mod_name(m));
   char tok[256];
   while (*p) {
     while (*p == ' ' || *p == ':') p++;
@@ -409,7 +458,7 @@ static int is_preloaded(const Ctx* c, const Mod* m) {
       p++;
     }
     tok[n] = 0;
-    if (n && (str_eq(tok, m->name) || str_eq(base_name(tok), mine))) return 1;
+    if (n && (str_eq(tok, mod_name(m)) || str_eq(base_name(tok), mine))) return 1;
   }
   return 0;
 }
@@ -426,9 +475,9 @@ static void report(Ctx* c, const Mod* x, const Mod* y, const char* name, const R
   }
   out_str(&o, name);
   out_str(&o, ": ");
-  out_str(&o, x->name);
+  out_str(&o, mod_name(x));
   out_str(&o, interposed ? " binds the preloaded definition in " : " binds the definition in ");
-  out_str(&o, y->name);
+  out_str(&o, mod_name(y));
   out_str(&o, ", which differs from its own (hash ");
   out_hex(&o, rx->hash);
   out_str(&o, " here, ");
@@ -569,7 +618,7 @@ static void lazy_warning(const Mod* x, uint32_t lazy) {
   Out o;
   o.n = 0;
   out_str(&o, "mason: warning: odr-hook-lazy: ");
-  out_str(&o, x->name);
+  out_str(&o, mod_name(x));
   out_str(&o, ": ");
   out_dec(&o, lazy);
   out_str(&o, " reference(s) with rows are bound lazily and NOT checked (link the module with -z now)\n");
@@ -580,7 +629,7 @@ static void malformed_warning(const Mod* x) {
   Out o;
   o.n = 0;
   out_str(&o, "mason: warning: odr-hook-malformed-table: ");
-  out_str(&o, x->name);
+  out_str(&o, mod_name(x));
   out_str(&o, ": its table does not parse; the module is NOT checked\n");
   out_flush(&o);
 }
@@ -646,7 +695,7 @@ static void check_module(Ctx* c, const Mod* x) {
     Out o;
     o.n = 0;
     out_str(&o, "mason-stats ");
-    out_str(&o, x->name);
+    out_str(&o, mod_name(x));
     out_str(&o, " rows=");
     out_dec(&o, x->count);
     out_str(&o, " relocs=");
@@ -678,37 +727,43 @@ static void check_module(Ctx* c, const Mod* x) {
 
 // ---- the entries ----
 
-static void self_marker(void) {}
 
-struct FindSelf {
-  uintptr_t marker;
-  Mod* self;
-  Mod* main;
-  int found;
-  int foundmain;
-};
+// This module's own file header: every linker that links the runtime
+// (GNU ld, lld, mold, mortar: spec/layout.md L-15) defines it when it is
+// referenced. Its program headers give the module without walking the
+// loader's list, which would make N modules' entries cost O(N^2).
+extern "C" const ElfW(Ehdr) __ehdr_start __attribute__((visibility("hidden")));
 
-static int find_self_cb(struct dl_phdr_info* info, size_t sz, void* data) {
-  (void)sz;
-  FindSelf* f = (FindSelf*)data;
-  if (!f->foundmain && !(info->dlpi_name && info->dlpi_name[0])) {
-    fill(f->main, info);
-    f->foundmain = 1;
-  }
-  if (!f->found) {
-    for (int i = 0; i < info->dlpi_phnum; i++) {
-      const ElfW(Phdr)* p = &info->dlpi_phdr[i];
-      if (p->p_type != PT_LOAD) continue;
-      uintptr_t a = info->dlpi_addr + p->p_vaddr;
-      if (f->marker >= a && f->marker < a + p->p_memsz) {
-        fill(f->self, info);
-        f->found = 1;
-        break;
-      }
+static void fill_self(Mod* m) {
+  const ElfW(Ehdr)* eh = &__ehdr_start;
+  const ElfW(Phdr)* ph = (const ElfW(Phdr)*)((const char*)eh + eh->e_phoff);
+  uintptr_t base = (uintptr_t)eh;
+  for (int i = 0; i < eh->e_phnum; i++) {
+    if (ph[i].p_type == PT_LOAD && ph[i].p_offset == 0) {
+      base = (uintptr_t)eh - ph[i].p_vaddr;
+      break;
     }
   }
-  return f->found && f->foundmain;
+  fill_from(m, base, ph, eh->e_phnum, 0, eh->e_type == ET_EXEC);
 }
+
+#if !defined(MASON_RT_EXE)
+// The main program: the loader's first entry (glibc).
+static int find_main_cb(struct dl_phdr_info* info, size_t sz, void* data) {
+  (void)sz;
+  Mod* m = (Mod*)data;
+  if (!(info->dlpi_name && info->dlpi_name[0])) fill(m, info);
+  else m->dyn = 0;
+  return 1;
+}
+
+static void fill_main(Mod* m) {
+  m->hasrt = 0;
+  m->rows = 0;
+  m->malformed = 0;
+  dl_iterate_phdr(find_main_cb, m);
+}
+#endif
 
 // glibc runs .preinit_array before libc's __environ is set: getenv() there
 // returns NULL for every name (measured, glibc 2.41). The loader passes
@@ -785,7 +840,7 @@ static void sweep(Ctx* c, const Mod* skip, int only_without_rt) {
   s.c = c;
   s.skip = skip ? skip->base : 0;
   s.only_without_rt = only_without_rt;
-  s.self = (uintptr_t)&self_marker;
+  s.self = (uintptr_t)&__ehdr_start;
   dl_iterate_phdr(sweep_cb, &s);
 }
 
@@ -825,6 +880,7 @@ static void entry_line(const char* what, const char* name) {
   out_flush(&o);
 }
 
+#if !defined(MASON_RT_EXE)
 static void mason_odr_init(int argc, char** argv, char** envp) {
   (void)argc;
   (void)argv;
@@ -832,21 +888,15 @@ static void mason_odr_init(int argc, char** argv, char** envp) {
   uint64_t t0 = env_get("MASON_ODR_TIME") ? now_ns() : 0;
   Mod self;
   Mod main;
-  FindSelf f;
-  f.marker = (uintptr_t)&self_marker;
-  f.self = &self;
-  f.main = &main;
-  f.found = 0;
-  f.foundmain = 0;
-  dl_iterate_phdr(find_self_cb, &f);
-  if (!f.found) return;
+  fill_self(&self);
+  fill_main(&main);
   uint32_t dflt = MODE_REPORT;
-  if (f.foundmain && main.hasrt) dflt = main.rtmode;
+  if (main.hasrt) dflt = main.rtmode;
   else if (self.hasrt) dflt = self.rtmode;
   Ctx c;
   init_ctx(&c);
   parse_env(&c, dflt);
-  if (c.stats) entry_line("mason-entry ", self.name);
+  if (c.stats) entry_line("mason-entry ", mod_name(&self));
   if (c.mode == MODE_OFF) return;
   check_module(&c, &self);
   if (c.mismatches && c.mode == MODE_FATAL) {
@@ -860,7 +910,6 @@ static void mason_odr_init(int argc, char** argv, char** envp) {
   time_line(t0);
 }
 
-#if !defined(MASON_RT_EXE)
 __attribute__((section(".init_array.00000"), used)) static void (*const mason_odr_init_p)(int, char**, char**) =
     mason_odr_init;
 #endif
@@ -876,19 +925,12 @@ static void mason_odr_preinit(int argc, char** argv, char** envp) {
   mason_envp = envp;
   uint64_t t0 = env_get("MASON_ODR_TIME") ? now_ns() : 0;
   Mod self;
-  Mod main;
-  FindSelf f;
-  f.marker = (uintptr_t)&self_marker;
-  f.self = &self;
-  f.main = &main;
-  f.found = 0;
-  f.foundmain = 0;
-  dl_iterate_phdr(find_self_cb, &f);
-  uint32_t dflt = f.found && self.hasrt ? self.rtmode : MODE_REPORT;
+  fill_self(&self);
+  uint32_t dflt = self.hasrt ? self.rtmode : MODE_REPORT;
   Ctx c;
   init_ctx(&c);
   parse_env(&c, dflt);
-  if (c.stats) entry_line("mason-preinit ", f.found ? self.name : "?");
+  if (c.stats) entry_line("mason-preinit ", mod_name(&self));
   if (c.mode == MODE_OFF) return;
   sweep(&c, 0, c.mode != MODE_FATAL);
   time_line(t0);

@@ -19,6 +19,11 @@ mkdir -p "$W/wrap"
 printf '#!/bin/sh\nexec %s "$@"\n' "$MORTAR" > "$W/wrap/ld"
 chmod +x "$W/wrap/ld"
 LDM=(-B"$W/wrap/")   # gcc/g++ drive mortar as their ld
+# who writes the tables: mortar (--odr-table, WP-075/129) where it links the
+# module; on i386 mortar links no shared object (dyn.md D-130), so GNU ld links
+# and the test producer fills a placeholder table after the link
+PRODUCER=${PRODUCER:-mortar}
+[ "$T" = i686 ] && PRODUCER=gnu
 
 # the runtime: hod's object (kiln++ on aarch64 and x86-64, clang 22 IR on i386) and GCC -O2's
 build_rt() {
@@ -47,12 +52,46 @@ hash_of() { # a 16-byte kind 2 hash for body tag N
   printf '%016x%016x' $(( ($1 * 2654435761 + 40503) & 0x7fffffffffffffff )) $(( $1 + 4096 ))
 }
 
-# meta OBJ_IN OBJ_OUT "symbol=body ..." [system]: add a test-producer unit with kind 2 rows
+# meta_file DESC OBJ_IN OBJ_OUT: the unit of DESC into the object (mortar
+# reads it); for the GNU producer, the rows of the table it will fill (OUT.rows)
+meta_file() {
+  if [ "$PRODUCER" = mortar ]; then "$XTASK" meta write "$1" --into "$2" -o "$3"
+  else
+    cp "$2" "$3"
+    awk '/^definition/ { n=""; h=""; f="1"; for (i = 2; i <= NF; i++) { split($i, kv, "="); if (kv[1] == "anchor") n = kv[2]; if (kv[1] == "hash") h = substr(kv[2], 1, 16); if (kv[1] == "flags") f = kv[2] } print "row name=" n " hash=" h " flags=" f }' "$1" > "$3.rows"
+  fi
+}
+
+# meta OBJ_IN OBJ_OUT "symbol=body ..." [flags]: add a test-producer unit with kind 2 rows
 meta() {
   local in=$1 out=$2 rows=$3 fl=${4:-1} d=$2.meta a
   echo 'summary name=lang value=c++' > "$d"
   for a in $rows; do echo "definition anchor=${a%%=*} hash=$(hash_of ${a#*=}) class=1 flags=$fl" >> "$d"; done
-  "$XTASK" meta write "$d" --into "$in" -o "$out"
+  meta_file "$d" "$in" "$out"
+}
+
+# mlink DRIVER ARGS...: the link of a module. mortar (with its own table) where
+# PRODUCER=mortar; else GNU ld with a placeholder note of as many rows as the
+# objects' .rows files have, filled by `xtask meta table` after the link
+mlink() {
+  local drv=$1; shift
+  if [ "$PRODUCER" = mortar ]; then "$drv" "${LDM[@]}" "$@"; return; fi
+  local a args=() out="" next=0 table=0 rows=$W/.mlink.rows
+  : > "$rows"
+  for a in "$@"; do
+    if [ $next = 1 ]; then out=$a; next=0; continue; fi
+    case $a in
+      -o) next=1 ;;
+      -Wl,--odr-table=*) table=1 ;;
+      *) args+=("$a"); [ -f "$a.rows" ] && cat "$a.rows" >> "$rows" ;;
+    esac
+  done
+  local n; n=$(grep -c '^row' "$rows")
+  if [ $table = 0 ] || [ "$n" = 0 ]; then "$drv" -fuse-ld=bfd "${args[@]}" -o "$out"; return; fi
+  printf '\t.section .note.mason,"a",%%note\n\t.p2align 3\n\t.long 10\n\t.long %d\n\t.long 0x4d4f4401\n\t.asciz "MasonMeta"\n\t.p2align 3\n\t.long 1, %d, 24, 0\n\t.zero %d\n\t.section .note.GNU-stack,"",%%progbits\n' $((16 + 24 * n)) "$n" $((24 * n)) > "$W/.mlink.s"
+  $CC -c "$W/.mlink.s" -o "$W/.mlink.o" || return 1
+  "$drv" -fuse-ld=bfd "${args[@]}" "$W/.mlink.o" -o "$out.0" || return 1
+  "$XTASK" meta table "$rows" --into "$out.0" -o "$out"
 }
 
 # the plugin source: fmtlite::version() of body N, entry_NAME and plugin_entry
@@ -70,10 +109,10 @@ plug() {
   case $k in
     plain) $CXX -O0 -fPIC -shared "$W/$n.0.o" "$@" -o "$W/$n.so" ;;
     table) meta "$W/$n.0.o" "$W/$n.o" "_ZN7fmtlite7versionEv=$b" && \
-           $CXX "${LDM[@]}" -shared "$W/$n.o" -Wl,--odr-table=exported "$@" -o "$W/$n.so" ;;
+           mlink $CXX -shared "$W/$n.o" -Wl,--odr-table=exported "$@" -o "$W/$n.so" ;;
     rt|rtlazy) local z=now; [ "$k" = rtlazy ] && z=lazy
            meta "$W/$n.0.o" "$W/$n.o" "_ZN7fmtlite7versionEv=$b" && \
-           $CXX "${LDM[@]}" -shared "$W/$n.o" "$RT" "$W/note-report.o" -Wl,--odr-table=exported -Wl,-z,$z "$@" -o "$W/$n.so" ;;
+           mlink $CXX -shared "$W/$n.o" "$RT" "$W/note-report.o" -Wl,--odr-table=exported -Wl,-z,$z "$@" -o "$W/$n.so" ;;
   esac
 }
 
@@ -118,4 +157,36 @@ verdict() {
     report) [ "$rep" -gt 0 ] && ok=pass || ok=FAIL ;;
   esac
   echo "MATRIX $T $RT_FLAVOR $id required=$req observed: $LAST => $ok"
+}
+
+many() { # many N POOL bad|good TAG: N runtime libraries, DT_NEEDED by a foreign executable
+  local n=$1 p=$2 b=$3 d=$W/many-$4 libs="" i
+  mkdir -p "$d"
+  for i in $(seq 1 "$n"); do
+    local bad=""; [ "$i" -eq "$n" ] && [ "$b" = bad ] && bad=bad
+    python3 "$H/gen_pool.py" "$d/m$i" "$p" "s${i}x" $bad
+    $CC -O1 -fPIC -c "$d/m$i.c" -o "$d/m$i.0.o" && meta_file "$d/m$i.meta" "$d/m$i.0.o" "$d/m$i.o" || return 1
+    mlink $CC -shared "$d/m$i.o" "$RT" "$W/note-report.o" -Wl,--odr-table=exported -Wl,-z,now -Wl,-soname,libm$i.so -o "$d/libm$i.so" || return 1
+    libs="$libs -lm$i"
+  done
+  echo 'int main(void){ return 0; }' > "$d/m.c"
+  $CC "$d/m.c" -Wl,--no-as-needed -L"$d" $libs -Wl,-rpath,'$ORIGIN' -o "$d/many"
+}
+timeit() { # timeit DIR LABEL
+  local k out
+  for k in 1 2 3; do
+    out=$(cd "$1" && xrun MASON_ODR=report MASON_ODR_TIME=1 -- ./many 2>&1)
+    echo "$out" | awk -v l="$2" '/mason-time/{s+=$2; n++} /odr-violation-at-load/{v++} /warning: odr-hook/{w++} END{printf "    %s: entries=%d summed check time=%.2f ms reports=%d hook-warnings=%d\n", l, n, s/1e6, v, w}'
+  done
+}
+quad() { # quad NQ K: NQ plugins with K private inline functions each (all different bodies), in $W/q
+  local NQ=$1 K=$2 i k rows
+  mkdir -p "$W/q"
+  for i in $(seq 1 "$NQ"); do
+    { for k in $(seq 1 $K); do echo "namespace fmtlite { inline int f$k() { return $i; } }"; done
+      printf 'extern "C" int plugin_entry() { return 0'; for k in $(seq 1 $K); do printf ' + fmtlite::f%d()' $k; done; echo '; }'; } > "$W/q/p$i.cpp"
+    rows=""; for k in $(seq 1 $K); do rows="$rows _ZN7fmtlite$(( ${#k} + 1 ))f${k}Ev=$(( i * 100 + k ))"; done
+    $CXX -O0 -fPIC -c "$W/q/p$i.cpp" -o "$W/q/p$i.0.o" && meta "$W/q/p$i.0.o" "$W/q/p$i.o" "$rows"
+    mlink $CXX -shared "$W/q/p$i.o" "$RT" "$W/note-report.o" -Wl,--odr-table=exported -Wl,-z,now -o "$W/q/p$i.so" || return 1
+  done
 }
