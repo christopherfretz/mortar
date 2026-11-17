@@ -187,6 +187,11 @@ pub struct Verdef {
     /// The `Verdaux` names in chain order: the version's own, then its
     /// parents'.
     pub names: Vec<String>,
+    /// `vd_next`: 0 on the last `Verdef` (P-D27).
+    pub next: u32,
+    /// The `vda_next` of the last `Verdaux` read (0 when the chain ends
+    /// where `vd_cnt` says).
+    pub aux_next: u32,
 }
 
 /// The `.gnu.hash` table as written.
@@ -523,6 +528,8 @@ impl DynOut {
                 cnt: u16at(6),
                 hash: u32le(b, 8),
                 names: Vec::new(),
+                next: u32le(b, 16),
+                aux_next: 0,
             };
             let aux = u32le(b, 12);
             let next = u32le(b, 16);
@@ -534,6 +541,7 @@ impl DynOut {
                 };
                 v.names.push(self.string(image, u64::from(u32le(c, 0))).unwrap_or_default());
                 let nx = u32le(c, 4);
+                v.aux_next = nx;
                 if nx == 0 {
                     break;
                 }

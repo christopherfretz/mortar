@@ -1,0 +1,53 @@
+mortar-map 2
+file 0 vd-a64.o
+piece 0 7 0 3d8 14
+piece 0 7 14 3ec 14
+piece 0 7 28 400 14
+piece 0 7 3c 414 14
+piece 0 7 50 428 14
+piece 0 7 64 43c 14
+piece 0 7 78 450 14
+piece 0 7 8c 464 24
+place 0 1 104c0 58
+place 0 3 30690 0
+place 0 4 30690 0
+merged 0 5 .comment
+chunk synthetic .gnu.hash 1c8 3c
+chunk synthetic .dynsym 208 c0
+chunk synthetic .dynstr 2c8 40
+chunk synthetic .gnu.version 308 10
+chunk synthetic .gnu.version_d 318 88
+chunk synthetic .gnu.version_r 3a0 20
+chunk synthetic .rela.plt 3c0 18
+chunk synthetic .eh_frame 3d8 b4
+chunk synthetic .plt 10490 30
+chunk synthetic .got 20668 8
+chunk synthetic .got.plt 30670 20
+chunk synthetic .dynamic 20518 150
+chunk synthetic .symtab - 138
+chunk synthetic .strtab - 51
+chunk synthetic .shstrtab - aa
+chunk synthetic .comment - d
+chunk synthetic .pad.relro 20670 f990
+output shared
+bind lazy
+relro on
+symbolic none
+version-script vd3.map
+arg -shared
+arg -o
+arg libvd3-a64.so
+arg vd-a64.o
+arg libvdx-a64.so
+arg --version-script
+arg vd3.map
+arg --mortar-map=libvd3-a64.map
+needed libvdx.so
+export bar
+export baz
+export q
+export call_ext
+export foo
+export foo
+plt ext@X1
+end

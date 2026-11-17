@@ -212,6 +212,7 @@ pub(crate) fn verify_static_in(
     }
     let mut engine = reloc::Engine::new(&image, &objs, map.format);
     prof::mark("engine new");
+    engine.exports = opts::of(map).and_then(|o| fate::static_exports(map, &o));
     run_engine(&mut engine, &image, map, None);
     report.findings.append(&mut engine.findings);
     // M8 (§3.3): an output with no dynamic section has no COPY record.
@@ -356,7 +357,7 @@ pub(crate) fn run_engine(
         if only.is_none()
             && let Some(o) = opts::of(map)
         {
-            engine.findings.extend(fate::check(objs, map, &o));
+            engine.findings.extend(fate::check(objs, map, &o, engine.exports.as_ref()));
         }
         // M6, M7 (§3.3): the allocation records, in every mortar map.
         engine.findings.extend(maprec::check(image, objs, map));

@@ -1,0 +1,1 @@
+V1 { global: keep; gone; data_gone; local: *; };
