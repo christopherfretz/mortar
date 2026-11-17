@@ -31,6 +31,7 @@ pub mod live;
 pub mod mention;
 pub mod options;
 pub mod problem;
+pub mod relocatable;
 pub mod resolve;
 pub mod sections;
 pub mod shared;

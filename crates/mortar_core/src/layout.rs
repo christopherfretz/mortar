@@ -1108,6 +1108,28 @@ pub struct Layout {
     pub placement: Placement,
 }
 
+/// The layout of a `-r` link (§4.6 MD-R1, `spec/layout.md` §24): what
+/// `mortar_layout::relocatable::layout` (RL-3) gives
+/// `mortar_image::relocatable::write` (RL-4). WP-181 fixed it so that the
+/// two packages, which run at the same time, share this type and no file.
+#[derive(Debug, Clone, Default)]
+pub struct RelocatableLayout<'n> {
+    /// `out_of` by L-R1/L-R2 (an output section is an index, never a name
+    /// alone).
+    pub assignment: Assignment<'n>,
+    /// `placement.kind` is [`PlacementKind::Relocatable`]: MD-R1's chunks
+    /// (the file header, the section headers, `Body(o, 0)` per output
+    /// section, `Group(g)` per kept group, `Relocs(o)` per output section
+    /// with a relocated piece, the synthetic chunks), in L-R8's order,
+    /// with file offsets and no address; `sym_place` holds only `-d`'s
+    /// commons (L-R4). `folds`, `merge` and `slots` are empty.
+    pub layout: Layout,
+    /// L-R6 as data: the `.eh_frame` records removed, as (input
+    /// `.eh_frame` section, offset of the record in it), sorted. A record
+    /// not listed is kept, in input order.
+    pub eh_removed: Box<[(SectionId, u64)]>,
+}
+
 // ---- §4.5 -----------------------------------------------------------------
 
 /// How a symbol-table entry is defined, as the reader gives it: what

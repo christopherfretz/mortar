@@ -11,6 +11,7 @@ use std::ffi::OsString;
 /// What the command line asks for. Built by `mortar_cli::parse`; every field
 /// is filled whatever the option's status (`spec/cli.md` §3.1).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools)] // independent options of the line
 pub struct Plan {
     /// `-o`, `--output`: the output path. `None`: the default, `a.out`.
     pub output: Option<OsString>,

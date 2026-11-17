@@ -273,7 +273,8 @@ fn status_file_is_current() {
 // row without one is a defect of the table)
 #[test]
 fn every_row_has_a_class_at_r() {
-    let missing: Vec<String> = rows().iter().filter(|r| r.at_r.is_none()).map(|r| r.name()).collect();
+    let missing: Vec<String> =
+        rows().iter().filter(|r| r.at_r.is_none()).map(|r| r.name()).collect();
     assert!(missing.is_empty(), "rows without a class at -r: {missing:?}");
 }
 
