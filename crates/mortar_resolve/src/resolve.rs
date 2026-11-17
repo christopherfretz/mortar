@@ -392,7 +392,8 @@ fn resolve_stage<V: View>(
         };
         let acc = Acc::new(keys);
         for root in &roots {
-            acc.flags[root.key.0 as usize].fetch_or(flags::REF_REGULAR | flags::REF_STRONG, Relaxed);
+            acc.flags[root.key.0 as usize]
+                .fetch_or(flags::REF_REGULAR | flags::REF_STRONG, Relaxed);
         }
         let found = Mutex::new(Found::default());
         {
@@ -417,14 +418,13 @@ fn resolve_stage<V: View>(
                     && acc.weak[k].load(Relaxed) == u64::MAX
                     && acc.common[k].load(Relaxed) == u64::MAX
             });
-            let pull =
-                (0..keys).any(|k| open[k] && acc.flags[k].load(Relaxed) & flags::PULLS != 0);
+            let pull = (0..keys).any(|k| open[k] && acc.flags[k].load(Relaxed) & flags::PULLS != 0);
             if back || pull {
                 let p = Prior { live: &file_live, keeper: &keepers.keeper, open: &open };
                 let next = crate::live::next_targets(view, &kinds, &targets, p, pool);
-                let still = prior.as_ref().is_some_and(|(l, k, o)| {
-                    *l == file_live && *k == keepers.keeper && *o == open
-                });
+                let still = prior
+                    .as_ref()
+                    .is_some_and(|(l, k, o)| *l == file_live && *k == keepers.keeper && *o == open);
                 if !(next == targets && still) {
                     targets = next;
                     prior = Some((file_live, keepers.keeper, open));

@@ -488,11 +488,13 @@ fn oracle_once<V: View>(
         }
         buf.clear();
         view.mentions(FileId(f), &mut buf);
-        let demote =
-            prior.is_some_and(|p| p.fill(view, kinds[f as usize], FileId(f), &mut map, &mut scratch));
+        let demote = prior
+            .is_some_and(|p| p.fill(view, kinds[f as usize], FileId(f), &mut map, &mut scratch));
         for m in &buf {
             let target = if demote && is_demoted(m, &map) {
-                prior.filter(|p| p.open[m.key.0 as usize]).and_then(|_| demoted_edge(m, targets, kinds))
+                prior
+                    .filter(|p| p.open[m.key.0 as usize])
+                    .and_then(|_| demoted_edge(m, targets, kinds))
             } else {
                 edge(m, targets, redirect, kinds)
             };

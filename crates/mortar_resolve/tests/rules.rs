@@ -1483,7 +1483,11 @@ fn s6_2_wp200_orders_of_the_strong_reference_and_the_copy() {
         }
         wp200_copy(&mut m, wb, STB_WEAK);
         let r = link(&m);
-        assert!(live_of(&r, wu) && live_of(&r, wb) && live_of(&r, hx), "{order}: {:?}", r.file_live);
+        assert!(
+            live_of(&r, wu) && live_of(&r, wb) && live_of(&r, hx),
+            "{order}: {:?}",
+            r.file_live
+        );
         assert_eq!(def(&m, &r, "hx").entry().unwrap().file, hx, "{order}");
         assert!(r.comdat_mismatch.is_empty(), "{order}: {:?}", r.comdat_mismatch);
         assert_eq!(r.iterations, if order == 3 { 1 } else { 2 }, "{order}");
