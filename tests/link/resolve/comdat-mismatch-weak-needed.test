@@ -6,8 +6,7 @@
 # comdat-mismatch (resolve.md §6.3 case (b), the supervisor's ruling at
 # WP-176's merge). GNU ld and lld write an import no DT_NEEDED library
 # defines: Y reads 0, exit 1 (the verifier's A103); mold refuses. Under
-# --no-as-needed the library is needed and defines hx: every linker binds
-# the reference there (Y reads 7: 8).
+# --no-as-needed: comdat-mismatch-weak-needed-live.test.
 #@ spec: resolve.md §6.3
 #@ spec: dyn.md D-11
 #@ anomaly(bfd,lld): A103
@@ -28,12 +27,6 @@ link(mold,mortar) gcc -no-pie wm.o wa.o wb.o -Wl,--as-needed -L. -lhx -o asn
   exit: fail
   diag(mold): hx refers to a discarded COMDAT section probably due to an ODR violation
   diag(mortar): symbol hx is defined only in a discarded copy of COMDAT group g
-
-link gcc -no-pie wm.o wa.o wb.o -Wl,--no-as-needed -L. -lhx -o nasn
-run nasn
-  exit: 8
-check readelf -dW nasn
-  has: (NEEDED) Shared library: [libhx.so]
 
 #--- wm.c
 extern int g;

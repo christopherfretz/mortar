@@ -5073,9 +5073,7 @@ is accepted from its linker only, never from mortar's map.
   nothing live defines, written as an undefined weak reference:
   resolve.md §6.3 case (b))". mold refuses (`hx refers to a discarded
   COMDAT section probably due to an ODR violation`), as mortar does.
-  On x86-64 lld's `-no-pie` output also shows A25 for the key (its
-  absolute uses have no dynamic record, so view 3's preloaded definition
-  never reaches them). Reproducers: `resolve/comdat-mismatch-weak.test`,
+  Reproducers: `resolve/comdat-mismatch-weak.test`,
   `-dynamic`, `-shared`, `-archive`, `-needed`; `tests/demoted.rs`.
 
 lld also links a `.hidden` or `.protected` undefined reference that only

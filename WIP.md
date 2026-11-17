@@ -1,3 +1,3 @@
 # WIP (WP-178 then WP-193; deleted in the final commit)
-- WP-178: engine §5.7a trial + A103, line-order COMDAT keeper, COPY binds; tests renamed; -archive, -needed, -archive-extract (lld xfail) added. Next: lane on comdat-mismatch-weak*, A25 for x86-64 lld, record.
-- WP-193: not started.
+- WP-178: done (record spec/landed/plumb/WP-178.md); lane 7 tests green. static-identical rows via the final gate.
+- WP-193: item 1 investigation next (rename test, --keep run, plumb on bfd and mortar outputs).
