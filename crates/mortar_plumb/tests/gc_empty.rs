@@ -50,7 +50,7 @@ fn verify(arch: &str, out: &[u8], m: &Map, line: &str) -> Report {
     let d = dir(arch);
     let bytes: Vec<(&str, Vec<u8>)> = line
         .split(' ')
-        .filter(|w| w.ends_with(".o"))
+        .filter(|w| Path::new(w).extension().is_some_and(|e| e == "o"))
         .map(|p| (p, std::fs::read(d.join(p)).unwrap()))
         .collect();
     let inputs: Vec<Input<'_>> = bytes.iter().map(|(p, b)| Input { path: p, bytes: b }).collect();
