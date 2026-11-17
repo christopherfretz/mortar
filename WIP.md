@@ -1,12 +1,10 @@
-# WP-109b work in progress (deleted in the final commit)
+# WP-117 work in progress (deleted in the final commit)
 
-- Step: 1 (the interface) committed; gate running.
-- Interface: `mortar_plumb::Source` (count/path/len/read_at, files by
-  path; regular-archive members found by the verifier through the
-  source), `verify_from`, `equiv::check_from`; `FileSource` in
-  `xtask/src/plumb.rs`. Step 1 reads every file whole through the source.
-- Verdict replay: list of 3,449 calls (`linktest --keep`, all arches) in
-  `.build/target-wp-109b/notes/calls.tsv`; replay program
-  `.build/target-wp-109b/cmp` (base afbdb15 vs this branch's command).
-  Step 1: 3,449 identical, 0 different.
-- Next: step 2 (skeletons resident, bodies on demand).
+- Branch wp/117-shared-front, from the tree with WP-116, WP-112, WP-109b s1.
+- Decisions: `-shared` stays `refused` at the CLI (front's arch_status gives
+  M1 for Shared: a static-path image; record §G.4) with §G.4's text as its
+  note; Shared-only refusals (cli §4.2) in `Parsed::refused_uses`.
+- Measurements: `.build/target-wp-117/measure/run.sh` (s1d.py over kiln+hod,
+  clang-19, gcc, gfortran AArch64 objects).
+- Steps: [ ] CLI rows+refusals [ ] opts.rs [ ] resolve export/preemptible/D-118
+  [ ] scan class cells, bound.rs, driver hook [ ] tests [ ] record [ ] gate
