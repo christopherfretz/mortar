@@ -2785,6 +2785,28 @@ B.7; `tests/relocatable-design/work/facts.log`,
     share a name (group members, L-R1's `SHF_LINK_ORDER` and
     `SHF_GNU_RETAIN` keys, `--unique`), and they share that one string.
   - The type-unit signature's name is written in its file's region.
+  - *Precision (WP-184; the supervisor's rulings S2, S4, S5, S14).*
+    The `.strtab` layout is the 31-byte fixed table, then each entry's
+    name and a NUL in `.symtab` order, except the names of the fixed
+    table (`""`, `$x`, `$d`, `__erratum_843419_veneer`), which point
+    into it; no other sharing. A section symbol's name is `""`; a kept
+    local's is its input spelling; a defined global's is the spelling
+    of its DEFINITION's entry (`foo@@V2` keeps `@@V2`); an undefined or
+    common key's is its name, plus `@` and the version when it has one.
+    Item 4 writes a key iff a live object's table names it, or its
+    `def` is `Undefined` with `FROM_OBJECT`; never an `Internal` one.
+    A defined global keeps its definition's binding (`STB_GNU_UNIQUE`
+    and `STB_WEAK` stay) and type; `st_other` is the merged visibility
+    over the entry's other bits. An undefined key is `STB_WEAK` iff
+    `def` says weak; its type is the one its live undefined mentions
+    agree on, else `STT_NOTYPE`; on AArch64 it carries
+    `STO_AARCH64_VARIANT_PCS` when `refs` has `VARIANT_PCS`. A common
+    without `-d` is `SHN_COMMON`, value its alignment, size the merged
+    one. `.symtab_shndx` exists iff some WRITTEN entry's section index
+    is `0xff00` or more (`SHN_ABS` and `SHN_COMMON` entries never count;
+    not "iff `e_shnum` > 0xff00"), with one word per entry. A local in
+    `.note.GNU-stack` is not kept (the item above), the section itself
+    is copied as placed (ruling S13).
   *Test:* `r-symtab-order`, `r-section-symbols`, `r-eh-frame-mapping-symbols`,
   `r-type-unit-signature`, `r-xindex`.
 - **I-R5 (relocation records).** For every live input relocation record
@@ -2825,6 +2847,22 @@ B.7; `tests/relocatable-design/work/facts.log`,
   `SHT_RELA`/`SHT_REL` as the target's (A-R4), named `.rela<name>` or
   `.rel<name>`, `sh_link` `.symtab`, `sh_info` its target,
   `SHF_INFO_LINK`, plus `SHF_GROUP` when its target is a group member.
+  *Precision (WP-184; rulings S6, S7, S8).* The image writes the
+  relocation section's `sh_link`, `sh_info` and `sh_entsize` (24 on
+  ELF64 RELA, 8 on ELF32 REL); the layout gives its type, flags and
+  alignment. A body's header takes `sh_type`, `sh_flags` and
+  `sh_addralign` from the layout; the image writes `sh_entsize` (the
+  pieces' common `sh_entsize`, else 0) and, for `SHF_LINK_ORDER`, the
+  `sh_link` of the output section of the first piece's linked-to
+  section. An output `SHT_GROUP` holds the input group's flag word,
+  then its members' output section indexes in the input group's member
+  order (L-R3), each member's relocation section right after it when
+  that exists; input members that are relocation sections or have no
+  output section are skipped; `sh_link` `.symtab`, `sh_info` the
+  signature's output symbol index, `sh_entsize` 4. A record whose
+  symbol is a local of a dropped COMDAT copy, or a section symbol of
+  one, is refused by name (`relocations against a dropped COMDAT copy
+  at -r`) until RL-8 writes I-R7.
   All three references rewrite the i386 REL addend of a section-symbol
   record in the bytes correctly (`facts.log` row 8-rcheck: "records
   equal 2"). Every relocation type of the corpus is carried unchanged
@@ -2840,6 +2878,20 @@ B.7; `tests/relocatable-design/work/facts.log`,
   computed from the record's and its CIE's output offsets. Their
   relocation records move with the records, through the input-to-output
   record offset map, by I-R5. *Test:* `r-eh-frame-dropped-fde`.
+  *Precision (WP-184; rulings S1, S11, S12).* The `.eh_frame` of a `-r`
+  output is the synthetic `.eh_frame` chunk; no `EhFrame` input has a
+  `place`. Its content is, for each live `EhFrame` input in `(FileId,
+  section index)` order, the input's bytes in order with the byte
+  ranges of its removed records cut out: nothing is padded or added,
+  and a zero terminator stays where its input has it (an input with no
+  record contributes its whole size). A record's size is 4 + its length
+  word. The record map: a kept byte's output offset is the number of
+  kept bytes before it; it gives the CIE pointers, the relocation
+  offsets, the kept locals' values and the map's `rframe` records (a
+  terminator's included). Relocation records whose `r_offset` lies in a
+  removed record are not written. Until RL-8, a non-empty
+  `eh_removed` is refused by name (`removed .eh_frame records at -r`,
+  noting RL-8).
 - **I-R7 (fields of records not written).** A debug record into a
   dropped COMDAT copy is not written. Its field holds I-47's tombstone
   for the referring section and the field's width. I-112's rule (a
@@ -2890,6 +2942,14 @@ B.7; `tests/relocatable-design/work/facts.log`,
     (`spec/input.md` §6, "`ld -r` outputs"), and so the final link drops
     this note too (`facts-supp.log`, 9-buildid-final: one note in the
     final output, its own).
+  - *Precision (WP-184; rulings S9, S10, S16).* The note's size and
+    bytes are `mortar_synth`'s `BuildIdPlan` (16 + the id's length,
+    rounded to 4), the single source the layout's size also comes from.
+    The merged `.note.gnu.property` is the final link's synthetic note,
+    its existence, size and bytes from `mortar_synth`'s `PropertyPlan`
+    over the live inputs' `.note.gnu.property` sections (not placed).
+    A Mason container or an `SHF_COMPRESSED` input that reaches the
+    image is refused by name, naming the package that lifts it.
   The first version wrote no note at `-r` ("every final link drops
   it"). That is wrong for an `ET_REL` that no further link follows. A
   kernel module is one (the review's x07: Kbuild passes
@@ -2912,6 +2972,12 @@ B.7; `tests/relocatable-design/work/facts.log`,
 - **I-R11 (determinism).** The same line twice gives identical bytes.
   All three references do this (B.7). Nothing in the output depends on
   time, paths beyond the names the inputs carry, or threads.
+  *Precision (WP-184; the rulings' safety net).* The image computes
+  the size of every chunk it fills (`relocatable::sizes`, small pure
+  functions of the tables) and compares it with the layout's size of
+  that chunk, and the existence of `.symtab_shndx` and of the two notes
+  with the layout's: a difference is an internal error naming the chunk
+  and both sizes, and no output is written.
 - **I-R12 (the map).** `--mortar-map` at `-r` records, per output
   section, its pieces `(FileId, section index, offset)`, each kept
   group with its keeper and the dropped copies, and per input FDE

@@ -1120,6 +1120,12 @@ each architecture, plain and interposed).
   unchanged by all three references on the three targets, including
   x86-64 `R_X86_64_REX_GOTPCRELX` from `-fPIC` (`facts-supp.log`,
   9-gotpcrelx) and the AArch64 `TLSDESC` sequence (record §B.4).
+  *Precision (WP-184).* The image runs the two checks with `classify`
+  (an unknown type is its refusal) and the field's width (`Implicit`'s,
+  else the howto's field) against the input section's bytes; a field
+  outside the section is `malformed` ("relocation ... lies outside its
+  section"). `need::branch_candidate` is `None` for every record at
+  `-r`, and `class::cell` is `Impossible` (no demand).
   *Test:* `r-no-relax` (each relaxable form, per target).
 - **A-R2 (REL write-back).** §3.3's write-back for `-r`: the output field
   is `A + delta`, written by `write_addend` with the type's `Implicit`

@@ -118,6 +118,8 @@ dependencies = [
  "mortar_merge",
  "mortar_synth",
  "mortar_testutil",
+ "mortar_x64",
+ "mortar_x86",
 ]
 
 [[package]]

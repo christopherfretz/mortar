@@ -2202,7 +2202,9 @@ impl Image<'_, '_, '_> {
                     }
                 }
                 None if delta != 0 => {
-                    let Some(base) = base.and_then(|b| piece.map(|p| b + p + r.r_offset)) else {
+                    // The field in the file: the output section's offset plus
+                    // the record's output offset (a body's or `.eh_frame`'s).
+                    let Some(base) = base.map(|b| b + out_off) else {
                         return Err((k, internal("a REL field with no place")));
                     };
                     patches.push(RelPatch {

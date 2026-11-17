@@ -24,6 +24,8 @@ mortar_a64.workspace = true
 mortar_cli.workspace = true
 mortar_input.workspace = true
 mortar_testutil.workspace = true
+mortar_x64.workspace = true
+mortar_x86.workspace = true
 
 [lints]
 workspace = true
