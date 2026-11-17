@@ -197,15 +197,101 @@ fn z_defs_refuses_an_undefined_reference() {
     assert_eq!(cx.run_host("uhost.c", &[], "libu.so", "uhost"), "42\n");
 }
 
-// spec: dyn.md D-112 / landed/dyn/WP-110.md §D (`-Bsymbolic` in a shared
-// object is refused by name until WP-128); in an executable it is a noop
+// spec: dyn.md D-112 (`-Bsymbolic`, the line's last form, without
+// `--dynamic-list`, binds every own definition: the interposed host's
+// `f` and `d` do not reach the library's own uses), D-102/D-103
+// (DT_SYMBOLIC after DT_SONAME, DF_SYMBOLIC; GNU ld's tags in GNU ld's
+// order), P-R10 (no dynamic record names an own definition)
 #[test]
-fn bsymbolic_is_refused_in_a_shared_object() {
+fn bsymbolic_binds_every_own_definition() {
     let Some(cx) = Cx::new("shared-bsym") else { return };
-    let o = cx.mortar_shared(&["lib.o"], &["-Wl,-Bsymbolic"], "libx.so");
-    assert!(!o.success());
-    let e = o.stderr_text();
-    assert!(e.contains("unsupported option: -Bsymbolic"), "{e}");
-    assert!(e.contains("WP-128"), "{e}");
-    assert!(!cx.scratch.join("libx.so").exists());
+    cx.library(&["lib.o"], &["-Wl,-Bsymbolic", "-Wl,-soname,libs.so"], "libs.so");
+    std::fs::copy(cx.scratch.join("libs.so"), cx.scratch.join("libs.so.1")).unwrap();
+    assert_eq!(cx.run_host("host.c", &["-DINTERPOSE"], "libs.so", "sym"), "1 10 7\n");
+    assert_eq!(cx.run_host("host.c", &[], "libs.so", "plain"), "1 10 7\n");
+    let dynamic = cx.readelf(&["-dW"], "libs.so");
+    let soname = dynamic.find("(SONAME)").expect("SONAME");
+    let symbolic = dynamic.find("(SYMBOLIC)").expect("SYMBOLIC");
+    assert!(soname < symbolic, "{dynamic}");
+    assert!(dynamic.lines().any(|l| l.contains("(FLAGS)") && l.ends_with(" SYMBOLIC")), "{dynamic}");
+    let relocs = cx.readelf(&["-rW"], "libs.so");
+    for own in [" f + 0", " d + 0", " g + 0"] {
+        assert!(!relocs.contains(own), "{own}: {relocs}");
+    }
+    // The tags, in order, are GNU ld's for the same line.
+    cx.ok(&["-fuse-ld=bfd", "-shared", "lib.o", "-Wl,-Bsymbolic", "-Wl,-soname,libs.so", "-o", "gnu.so"]);
+    assert_eq!(tags(&cx, "libs.so"), tags(&cx, "gnu.so"));
+    // A later `-Bno-symbolic` undoes it: preempted, no tag.
+    cx.library(&["lib.o"], &["-Wl,-Bsymbolic", "-Wl,-Bno-symbolic"], "libn.so");
+    assert!(!cx.readelf(&["-dW"], "libn.so").contains("SYMBOLIC"));
+    assert_eq!(cx.run_host("host.c", &["-DINTERPOSE"], "libn.so", "nosym"), "2 20 7\n");
+}
+
+// spec: dyn.md D-103 (`-z nodelete`, `nodlopen`, `initfirst`, `interpose`,
+// `origin`: DF_1_* in DT_FLAGS_1, `origin` also DF_ORIGIN; GNU ld's
+// bytes of the tags); refused by name in an executable (`rows::SHARED_ONLY`)
+#[test]
+fn z_flags_are_written_in_a_shared_object() {
+    let Some(cx) = Cx::new("shared-zflags") else { return };
+    // The verifier judges the four `DF_1_*` flags (P-D22); DF_ORIGIN in
+    // DT_FLAGS is outside its P-D6 today (reported to the verifier
+    // package), so `-z origin`'s library is compared with GNU ld's only.
+    let four = ["-Wl,-z,nodelete,-z,nodlopen,-z,initfirst,-z,interpose"];
+    let o = cx.mortar_shared(&["lib.o"], &four, "libz.so");
+    assert!(o.success(), "{}", o.stderr_text());
+    verify_but_the_mirror(cx.scratch.path(), "libz.so");
+    let dynamic = cx.readelf(&["-dW"], "libz.so");
+    assert!(dynamic.contains("Flags: NODELETE INITFIRST NOOPEN INTERPOSE\n"), "{dynamic}");
+    assert!(!dynamic.contains("(FLAGS) "), "{dynamic}");
+    let all = ["-Wl,-z,nodelete,-z,nodlopen,-z,initfirst,-z,interpose,-z,origin"];
+    let o = cx.mortar_shared(&["lib.o"], &all, "liball.so");
+    assert!(o.success(), "{}", o.stderr_text());
+    let dynamic = cx.readelf(&["-dW"], "liball.so");
+    assert!(dynamic.contains("Flags: NODELETE INITFIRST NOOPEN ORIGIN INTERPOSE\n"), "{dynamic}");
+    assert!(dynamic.lines().any(|l| l.contains("(FLAGS)") && l.ends_with(" ORIGIN")), "{dynamic}");
+    let mut gnu = vec!["-fuse-ld=bfd", "-shared", "lib.o"];
+    gnu.extend(all);
+    gnu.extend(["-o", "gnu.so"]);
+    cx.ok(&gnu);
+    assert_eq!(values(&cx, "liball.so"), values(&cx, "gnu.so"));
+    assert_eq!(tags(&cx, "liball.so"), tags(&cx, "gnu.so"));
+    for one in ["nodelete", "nodlopen", "initfirst", "interpose", "origin"] {
+        let word = format!("-Wl,-z,{one}");
+        let o = cx.gcc(&[cx.b.as_str(), "-pie", "-fPIE", "host.c", "lib.o", &word, "-o", "exe"]);
+        assert!(!o.success(), "{one}");
+        let e = o.stderr_text();
+        assert!(e.contains(&format!("unsupported option: -z {one}")), "{e}");
+        assert!(e.contains("dyn.md D-103"), "{e}");
+    }
+}
+
+/// [`verify`], but for M9's findings on the line's words: the verifier's
+/// option mirror (`crates/mortar_plumb/src/opts.rs`) predates WP-128's
+/// rows and is regenerated at the merge, after which this is [`verify`].
+fn verify_but_the_mirror(dir: &Path, out: &str) {
+    let findings: Vec<String> =
+        support::plumb::verify_staged(&dir.join(out), &dir.join(format!("{out}.mortar-map")), dir)
+            .iter()
+            .map(|f| format!("{f:?}"))
+            .filter(|f| !f.contains("rule: Map(9)"))
+            .collect();
+    assert!(findings.is_empty(), "plumb on {out}: {findings:#?}");
+}
+
+/// The `.dynamic` tags of `file`, in order.
+fn tags(cx: &Cx, file: &str) -> Vec<String> {
+    cx.readelf(&["-dW"], file)
+        .lines()
+        .filter_map(|l| l.split_whitespace().nth(1).filter(|t| t.starts_with('(')))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The `DT_FLAGS` and `DT_FLAGS_1` lines of `file`, without the tag value.
+fn values(cx: &Cx, file: &str) -> Vec<String> {
+    cx.readelf(&["-dW"], file)
+        .lines()
+        .filter(|l| l.contains("(FLAGS"))
+        .map(|l| l.split_whitespace().skip(1).collect::<Vec<_>>().join(" "))
+        .collect()
 }

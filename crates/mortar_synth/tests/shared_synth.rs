@@ -29,7 +29,7 @@ use mortar_elf::consts::{
 use mortar_elf::{Class, Machine, SymbolIndex};
 use mortar_synth::SynthKind as K;
 use mortar_synth::dynamic::{
-    DynKind, DynValue, DynamicInputs, DynamicPlan, RunpathTag, SharedDyn, shared_init_key,
+    DynKind, DynValue, DynamicInputs, DynamicPlan, RunpathTag, SharedDyn, ZFlags, shared_init_key,
 };
 use mortar_synth::dynstr::{DynNames, DynstrChunk, dynstr_plan, dynstr_plan_shared};
 use mortar_synth::dynsym::{
@@ -73,7 +73,7 @@ fn inputs(kind: DynKind) -> DynamicInputs {
 }
 
 fn shared(soname: bool, symbolic: bool) -> DynKind {
-    DynKind::Shared(SharedDyn { soname, symbolic, static_tls: false, verdef: 0 })
+    DynKind::Shared(SharedDyn { soname, symbolic, ..SharedDyn::default() })
 }
 
 fn tags(i: &DynamicInputs) -> Vec<i64> {
@@ -150,12 +150,51 @@ fn d119_df_static_tls() {
         soname: false,
         symbolic: false,
         static_tls: true,
-        verdef: 0,
+        ..SharedDyn::default()
     }));
     assert_eq!(value(&i, DT_FLAGS), Some(DynValue::Const(DF_STATIC_TLS)));
     i.bind_now = true;
     assert_eq!(value(&i, DT_FLAGS), Some(DynValue::Const(DF_STATIC_TLS | DF_BIND_NOW)));
     assert!(!tags(&inputs(shared(false, false))).contains(&DT_FLAGS));
+}
+
+// D-103 (WP-128): each `-z` keyword sets its `DF_1_*` bit in
+// `DT_FLAGS_1` of a shared object, `-z origin` also `DF_ORIGIN` in
+// `DT_FLAGS`, beside `-Bsymbolic`'s `DF_SYMBOLIC` and `-z now`'s bits;
+// without one there is no tag.
+#[test]
+fn d103_z_flags() {
+    use mortar_elf::consts::{
+        DF_1_INITFIRST, DF_1_INTERPOSE, DF_1_NODELETE, DF_1_NOOPEN, DF_1_ORIGIN, DF_ORIGIN,
+    };
+    let with = |z: ZFlags, symbolic: bool| {
+        inputs(DynKind::Shared(SharedDyn { symbolic, z, ..SharedDyn::default() }))
+    };
+    let one = [
+        (ZFlags { nodelete: true, ..ZFlags::default() }, DF_1_NODELETE),
+        (ZFlags { nodlopen: true, ..ZFlags::default() }, DF_1_NOOPEN),
+        (ZFlags { initfirst: true, ..ZFlags::default() }, DF_1_INITFIRST),
+        (ZFlags { interpose: true, ..ZFlags::default() }, DF_1_INTERPOSE),
+    ];
+    for (z, bit) in one {
+        let i = with(z, false);
+        assert_eq!(value(&i, DT_FLAGS_1), Some(DynValue::Const(bit)), "{z:?}");
+        assert!(!tags(&i).contains(&DT_FLAGS), "{z:?}");
+    }
+    let origin = with(ZFlags { origin: true, ..ZFlags::default() }, false);
+    assert_eq!(value(&origin, DT_FLAGS), Some(DynValue::Const(DF_ORIGIN)));
+    assert_eq!(value(&origin, DT_FLAGS_1), Some(DynValue::Const(DF_1_ORIGIN)));
+    let all = ZFlags { nodelete: true, nodlopen: true, initfirst: true, interpose: true, origin: true };
+    let mut i = with(all, true);
+    i.bind_now = true;
+    assert_eq!(value(&i, DT_FLAGS), Some(DynValue::Const(DF_ORIGIN | DF_SYMBOLIC | DF_BIND_NOW)));
+    assert_eq!(
+        value(&i, DT_FLAGS_1),
+        Some(DynValue::Const(
+            DF_1_NODELETE | DF_1_NOOPEN | DF_1_INITFIRST | DF_1_INTERPOSE | DF_1_ORIGIN | DF_1_NOW
+        ))
+    );
+    assert!(!tags(&with(ZFlags::default(), false)).contains(&DT_FLAGS_1));
 }
 
 #[test]

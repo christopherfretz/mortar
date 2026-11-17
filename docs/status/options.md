@@ -4,7 +4,7 @@ Generated from `crates/mortar_cli/src/rows.rs` by `mortar_cli::status_markdown`;
 do not edit. `MORTAR_BLESS=1 cargo test -p mortar_cli --test table` rewrites it.
 The rules are `spec/cli.md`.
 
-487 rows: 94 supported, 5 partial, 30 noop, 358 refused.
+487 rows: 101 supported, 6 partial, 29 noop, 351 refused.
 
 Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 18 mortar's own.
 
@@ -133,7 +133,7 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 18 mortar'
 | `--default-script`, `--dT` | FILE | GNU, lld | all | refused | `scripts` | Use FILE as the default linker script |
 | `-c`, `--mri-script` | FILE | GNU | all | refused | `other` | Read the MRI script FILE |
 | `--version-script` | FILE | GNU, lld, mold | all | supported | `scripts` | Read the version script FILE |
-| `--dynamic-list` | FILE | GNU, lld, mold | all | refused | `scripts` | Read the dynamic list FILE |
+| `--dynamic-list` | FILE | GNU, lld, mold | all | supported | `scripts` | Read the dynamic list FILE |
 | `--export-dynamic-symbol-list` | FILE | GNU, lld, mold | all | refused | `scripts` | Export the symbols FILE lists |
 | `--retain-symbols-file` | FILE | GNU, lld, mold | all | refused | `scripts` | Keep only the symbols FILE lists |
 | `--section-ordering-file` | FILE | GNU | all | refused | `other` | Order sections as FILE says |
@@ -172,7 +172,7 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 18 mortar'
 | `--defsym` | SYMBOL=EXPR | GNU, lld, mold | all | refused | `symbols` | Define SYMBOL as EXPR |
 | `--wrap` | SYMBOL | GNU, lld, mold | all | refused | `symbols` | Send references to SYMBOL to __wrap_SYMBOL |
 | `--export-dynamic-symbol` | SYMBOL | GNU, lld, mold | all | supported | `symbols` | Export SYMBOL (a glob) |
-| `--exclude-libs` | LIBS | GNU, lld, mold | all | refused | `symbols` | Do not export the symbols of the archives LIBS |
+| `--exclude-libs` | LIBS | GNU, lld, mold | all | partial: dyn.md D-110 item 1: an entry is an archive's file name (ALL: every archive); an entry without .a that names an archive's file name without its .a (libfoo for libfoo.a) is refused by name (GNU ld matches it, lld and mold do not) | `symbols` | Do not export the symbols of the archives LIBS |
 | `-y`, `--trace-symbol` | SYMBOL | GNU, lld, mold | all | refused | `symbols` | Report each file that mentions SYMBOL |
 | `--ignore-unresolved-symbol` | SYMBOL | GNU | all | refused | `symbols` | Do not report SYMBOL as unresolved |
 | `-init` | SYMBOL | GNU, lld, mold | all | supported | `dynamic.init` | Call SYMBOL when the object is loaded |
@@ -195,7 +195,7 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 18 mortar'
 |---|---|---|---|---|---|---|
 | `-E`, `--export-dynamic` |  | GNU, lld, mold | all | supported | `dynamic.export_dynamic` | Export every symbol |
 | `--no-export-dynamic` |  | GNU, lld, mold | all | supported | `dynamic.export_dynamic` | Export only the symbols that need it (default) |
-| `-Bsymbolic` |  | GNU, lld, mold | all | noop: it binds a shared object's references to its own definitions; an executable's are bound locally already, and GNU ld writes nothing for it in an executable (in a shared object it is refused until WP-128) | `dynamic.bsymbolic` | Bind references to global symbols locally |
+| `-Bsymbolic` |  | GNU, lld, mold | all | supported | `dynamic.bsymbolic` | Bind a shared object's references to its own definitions (DT_SYMBOLIC); nothing in an executable |
 | `-Bsymbolic-functions` |  | GNU, lld, mold | all | supported | `dynamic.bsymbolic` | Bind references to global functions locally |
 | `--Bsymbolic-non-weak` |  | lld, mold | all | refused: dyn.md D-112: GNU ld does not know it (lld and mold do); use -Bsymbolic-functions, or a --dynamic-list | `dynamic.bsymbolic` | Bind references to non-weak globals locally |
 | `--Bsymbolic-non-weak-functions` |  | lld, mold | all | refused: dyn.md D-112: GNU ld does not know it (lld and mold do); use -Bsymbolic-functions, or a --dynamic-list | `dynamic.bsymbolic` | Bind references to non-weak global functions locally |
@@ -483,16 +483,16 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 18 mortar'
 | `-z nostart-stop-gc` |  | GNU, lld | all | noop: layout.md L-96: the default | `other` | Let __start_/__stop_ references keep sections (default) |
 | `-z start-stop-visibility` | default \| internal \| hidden \| protected | GNU, lld | all | refused | `other` | Visibility of __start_ and __stop_ symbols |
 | `-z global` |  | GNU, lld | all | refused | `other` | Make the symbols of this object available to later loads |
-| `-z initfirst` |  | GNU, lld, mold | all | refused | `other` | Initialize this object first |
-| `-z interpose` |  | GNU, lld, mold | all | refused | `other` | Let this object interpose all but the executable |
+| `-z initfirst` |  | GNU, lld, mold | all | supported | `other` | Initialize this object first |
+| `-z interpose` |  | GNU, lld, mold | all | supported | `other` | Let this object interpose all but the executable |
 | `-z unique` |  | GNU | all | refused | `other` | Load this object at most once |
 | `-z nounique` |  | GNU | all | refused | `other` | Do not mark the object as unique |
 | `-z loadfltr` |  | GNU | all | refused | `other` | Process the filtees at load time |
 | `-z nodefaultlib` |  | GNU, lld, mold | all | refused | `other` | Do not search the default directories for dependencies |
-| `-z nodelete` |  | GNU, lld, mold | all | refused | `other` | Never unload this object |
-| `-z nodlopen` |  | GNU, lld, mold | all | refused | `other` | Do not allow dlopen of this object |
+| `-z nodelete` |  | GNU, lld, mold | all | supported | `other` | Never unload this object |
+| `-z nodlopen` |  | GNU, lld, mold | all | supported | `other` | Do not allow dlopen of this object |
 | `-z nodump` |  | GNU, mold | all | refused | `other` | Do not allow dldump of this object |
-| `-z origin` |  | GNU, lld, mold | all | refused | `other` | The object uses $ORIGIN |
+| `-z origin` |  | GNU, lld, mold | all | supported | `other` | The object uses $ORIGIN |
 | `-z common` |  | GNU | all | refused | `other` | Give common symbols the type STT_COMMON |
 | `-z nocommon` |  | GNU | all | refused | `other` | Give common symbols the type STT_OBJECT |
 | `-z memory-seal` |  | GNU | all | supported | `z.memory_seal` | Mark the object for memory sealing |

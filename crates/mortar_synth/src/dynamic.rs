@@ -32,8 +32,8 @@
 //! | 18-20 | `DT_PLTRELSZ`, `DT_PLTREL`, `DT_JMPREL` | `rela_plt` | `ChunkSize(RelaPlt)`, `DT_RELA` (`DT_REL`), `ChunkAddr(RelaPlt)` |
 //! | 21-23 | `DT_RELA`, `DT_RELASZ`, `DT_RELAENT` (REL: `DT_REL*`) | `rela_dyn` | `ChunkAddr(RelaDyn)`, `ChunkSize(RelaDyn)`, entsize |
 //! | 24-25 | the architecture's tags (`Arch::dyn_tags`) | each one's `TagWhen` | its value |
-//! | 26 | `DT_FLAGS` | `bind_now`, or `Shared` with `symbolic` | `DF_SYMBOLIC`, `DF_BIND_NOW` |
-//! | 27 | `DT_FLAGS_1` | `Pie`, `StaticPie` or `bind_now` | `DF_1_PIE` (never in `Shared`), `DF_1_NOW` |
+//! | 26 | `DT_FLAGS` | `bind_now`, or `Shared` with `symbolic` or `-z origin` | `DF_ORIGIN`, `DF_SYMBOLIC`, `DF_BIND_NOW` |
+//! | 27 | `DT_FLAGS_1` | `Pie`, `StaticPie`, `bind_now`, or `Shared` with a D-103 `-z` flag ([`ZFlags`]) | `DF_1_PIE` (never in `Shared`), `DF_1_NOW`, [`ZFlags::flags_1`] |
 //! | 28-30 | `DT_VERDEF`, `DT_VERDEFNUM` (D-115, a shared object), `DT_VERNEED`, `DT_VERNEEDNUM`, `DT_VERSYM` | `SharedDyn::verdef`, `verneed` | `ChunkAddr(GnuVersionR)`, the count, `ChunkAddr(GnuVersion)` |
 //! | 31 | `DT_RELACOUNT` (`DT_RELCOUNT`) | `relative` | the count |
 //! | 32 | `DT_NULL` × 6 | always | 0 |
@@ -55,7 +55,8 @@ use mortar_core::id::SymbolId;
 use mortar_diag::{Diagnostic, Kind};
 use mortar_elf::Class;
 use mortar_elf::consts::{
-    DF_1_NOW, DF_1_PIE, DF_BIND_NOW, DF_STATIC_TLS, DF_SYMBOLIC, DT_DEBUG, DT_FINI, DT_FINI_ARRAY,
+    DF_1_INITFIRST, DF_1_INTERPOSE, DF_1_NODELETE, DF_1_NOOPEN, DF_1_NOW, DF_1_ORIGIN, DF_1_PIE,
+    DF_BIND_NOW, DF_ORIGIN, DF_STATIC_TLS, DF_SYMBOLIC, DT_DEBUG, DT_FINI, DT_FINI_ARRAY,
     DT_FINI_ARRAYSZ, DT_FLAGS, DT_FLAGS_1, DT_GNU_HASH, DT_INIT, DT_INIT_ARRAY, DT_INIT_ARRAYSZ,
     DT_JMPREL, DT_NEEDED, DT_PLTGOT, DT_PLTREL, DT_PLTRELSZ, DT_PREINIT_ARRAY, DT_PREINIT_ARRAYSZ,
     DT_REL, DT_RELA, DT_RELACOUNT, DT_RELAENT, DT_RELASZ, DT_RELCOUNT, DT_RELENT, DT_RELSZ,
@@ -109,6 +110,44 @@ pub struct SharedDyn {
     /// `DT_VERDEF`, `DT_VERDEFNUM` (D-115): the `Verdef` count
     /// (`VerdefPlan::count`); 0 without `.gnu.version_d`.
     pub verdef: u16,
+    /// D-103's `-z` flags of the line, as [`ZFlags`].
+    pub z: ZFlags,
+}
+
+/// The `-z` keywords of D-103 a `Shared` line gives (`spec/dyn.md` D-103,
+/// WP-128; no reference has a `no` form of any of them): each sets its
+/// `DF_1_*` bit in `DT_FLAGS_1`, and `-z origin` also `DF_ORIGIN` in
+/// `DT_FLAGS` (all three, every architecture).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct ZFlags {
+    /// `-z nodelete`: `DF_1_NODELETE`.
+    pub nodelete: bool,
+    /// `-z nodlopen`: `DF_1_NOOPEN`.
+    pub nodlopen: bool,
+    /// `-z initfirst`: `DF_1_INITFIRST`.
+    pub initfirst: bool,
+    /// `-z interpose`: `DF_1_INTERPOSE`.
+    pub interpose: bool,
+    /// `-z origin`: `DF_ORIGIN` and `DF_1_ORIGIN`.
+    pub origin: bool,
+}
+
+impl ZFlags {
+    /// The `DT_FLAGS` bits.
+    #[must_use]
+    pub const fn flags(self) -> u64 {
+        if self.origin { DF_ORIGIN } else { 0 }
+    }
+
+    /// The `DT_FLAGS_1` bits.
+    #[must_use]
+    pub const fn flags_1(self) -> u64 {
+        (if self.nodelete { DF_1_NODELETE } else { 0 })
+            | (if self.nodlopen { DF_1_NOOPEN } else { 0 })
+            | (if self.initfirst { DF_1_INITFIRST } else { 0 })
+            | (if self.interpose { DF_1_INTERPOSE } else { 0 })
+            | (if self.origin { DF_1_ORIGIN } else { 0 })
+    }
 }
 
 /// Which tag names the run path (D-30 row 2).
@@ -432,15 +471,18 @@ impl DynamicPlan {
         // `DF_STATIC_TLS` in a shared object with an IE slot (D-119).
         let symbolic = shared.is_some_and(|s| s.symbolic);
         let static_tls = shared.is_some_and(|s| s.static_tls);
+        let z = shared.map_or(ZFlags::default(), |s| s.z);
         let flags = if symbolic { DF_SYMBOLIC } else { 0 }
             | if i.bind_now { DF_BIND_NOW } else { 0 }
-            | if static_tls { DF_STATIC_TLS } else { 0 };
+            | if static_tls { DF_STATIC_TLS } else { 0 }
+            | z.flags();
         if flags != 0 {
             put(DT_FLAGS, DynValue::Const(flags));
         }
         // D-100: no `DF_1_PIE` in a shared object.
         let pie = matches!(i.kind, DynKind::Pie | DynKind::StaticPie);
-        let flags_1 = if pie { DF_1_PIE } else { 0 } | if i.bind_now { DF_1_NOW } else { 0 };
+        let flags_1 =
+            if pie { DF_1_PIE } else { 0 } | if i.bind_now { DF_1_NOW } else { 0 } | z.flags_1();
         if flags_1 != 0 {
             put(DT_FLAGS_1, DynValue::Const(flags_1));
         }

@@ -101,16 +101,18 @@ const AUDIT: &[(&str, Proof)] = &[
     ),
     ("-rpath-link", Check(dynamic_options)),
     ("--version-script", Check(version_script)),
+    ("--dynamic-list", Test("crates/mortar/tests/shared.rs", "dynamic_list_decides_preemption_and_exports")),
     ("--sort-common", Check(sort_common)),
     ("--sort-section", Check(sort_section)),
     ("--export-dynamic-symbol", Check(dynamic_options)),
+    ("--exclude-libs", Test("crates/mortar/tests/shared.rs", "exclude_libs_hides_archive_definitions")),
     ("-init", Check(dynamic_options)),
     ("-fini", Check(dynamic_options)),
     ("--undefined-version", Check(version_script)),
     ("--no-undefined-version", Check(version_script)),
     ("-E", Check(dynamic_options)),
     ("--no-export-dynamic", Check(dynamic_options)),
-    ("-Bsymbolic", Same(&["-Bsymbolic"], Some(bsymbolic_is_for_shared_objects))),
+    ("-Bsymbolic", Test("crates/mortar/tests/shared.rs", "bsymbolic_binds_every_own_definition")),
     (
         "-Bsymbolic-functions",
         Test("crates/mortar/tests/shared.rs", "bsymbolic_functions_binds_functions_not_data"),
@@ -222,6 +224,11 @@ const AUDIT: &[(&str, Proof)] = &[
     ),
     ("-z sectionheader", Same(&["-z", "sectionheader"], None)),
     ("-z nostart-stop-gc", Same(&["-z", "nostart-stop-gc"], None)),
+    ("-z initfirst", Test("crates/mortar/tests/shared.rs", "z_flags_are_written_in_a_shared_object")),
+    ("-z interpose", Test("crates/mortar/tests/shared.rs", "z_flags_are_written_in_a_shared_object")),
+    ("-z nodelete", Test("crates/mortar/tests/shared.rs", "z_flags_are_written_in_a_shared_object")),
+    ("-z nodlopen", Test("crates/mortar/tests/shared.rs", "z_flags_are_written_in_a_shared_object")),
+    ("-z origin", Test("crates/mortar/tests/shared.rs", "z_flags_are_written_in_a_shared_object")),
     ("-z memory-seal", Check(memory_seal)),
     ("-z nomemory-seal", Check(memory_seal)),
     ("-EL", Same(&["-EL"], Some(big_endian_is_refused))),
@@ -1387,17 +1394,6 @@ fn copy_dt_needed_is_refused(cx: &Cx) {
     assert!(!o.success());
     let text = o.stderr_text();
     assert!(text.contains("unsupported option: --copy-dt-needed-entries"), "{text}");
-}
-
-// The reason of `-Bsymbolic`: it binds a shared object's references, and
-// in a shared object it is refused by name until WP-128 (dyn.md D-112;
-// the effect of a shared object's link is `crates/mortar/tests/shared.rs`).
-fn bsymbolic_is_for_shared_objects(cx: &Cx) {
-    let o = cx.mortar(&["start.o", "-shared", "-Bsymbolic", "-o", "dyn.out"]);
-    assert!(!o.success());
-    let e = o.stderr_text();
-    assert!(e.contains("unsupported option: -Bsymbolic"), "{e}");
-    assert!(e.contains("WP-128"), "{e}");
 }
 
 // The reason of `--rosegment` (layout.md L-65).
