@@ -1512,6 +1512,29 @@ pub(crate) fn static_checks(
             ),
         ));
     }
+    // D-115: of the definitions of one name (`.symver` `foo@V1` and
+    // `foo@@V2`), every one but the default carries VERSYM_HIDDEN, or an
+    // unversioned lookup finds the first, not the default.
+    if let Some(vs) = &out.versym {
+        let mut defaults: BTreeMap<&str, usize> = BTreeMap::new();
+        for (j, x) in out.syms.iter().enumerate().skip(1) {
+            if x.defined()
+                && !x.name.is_empty()
+                && x.binding() != STB_LOCAL
+                && vs.get(j).is_some_and(|&w| w & 0x8000 == 0)
+            {
+                *defaults.entry(x.name.as_str()).or_default() += 1;
+            }
+        }
+        for (n, c) in defaults.into_iter().filter(|e| e.1 > 1) {
+            let mut f = fd(
+                22,
+                format!("'{n}' has {c} definitions without VERSYM_HIDDEN in .dynsym (D-115)"),
+            );
+            f.symbol = Some(n.to_string());
+            v.push(f);
+        }
+    }
     // D-102's order (mortar's form; D-30's is an executable's).
     if format == Format::Mortar {
         v.extend(d102_order(&out.entries));
@@ -1841,6 +1864,20 @@ pub(crate) fn host_import(out: &DynOut, name: &str) -> bool {
     })
 }
 
+/// D-115: every entry of `name` with `VERSYM_HIDDEN` is a definition whose
+/// index names a `Verdef` (2 ..= `DT_VERDEFNUM`).
+fn hidden_definition(out: &DynOut, name: &str) -> bool {
+    let Some(vs) = &out.versym else { return false };
+    let defs = out.get(crate::dynout::DT_VERDEFNUM).unwrap_or(0);
+    out.syms
+        .iter()
+        .enumerate()
+        .filter(|(j, s)| s.name == name && vs.get(*j).is_some_and(|x| x & 0x8000 != 0))
+        .all(|(j, s)| {
+            s.defined() && vs.get(j).is_some_and(|&x| (2..=defs).contains(&u64::from(x & 0x7fff)))
+        })
+}
+
 fn hex_after(m: &str, key: &str) -> Option<u64> {
     let r = m.split_once(key)?.1.trim_start();
     let h = r.strip_prefix("0x")?;
@@ -1902,6 +1939,15 @@ pub(crate) fn filter_dyncheck(
                     && (!m.contains("is imported and no needed or used object defines it visibly")
                         || sl.zdefs
                         || !f.symbol.as_deref().is_some_and(|n| host_import(out, n)))
+            }
+            Rule::Dyn(8)
+                if m.starts_with("a .gnu.version entry with bit 15 set")
+                    && f.symbol.as_deref().is_some_and(|n| hidden_definition(out, n)) =>
+            {
+                // D-115: `foo@V` (non-default) is an export with the
+                // node's index and VERSYM_HIDDEN; D-27's "never" is an
+                // executable's.
+                false
             }
             Rule::Dyn(8) => {
                 !(m.contains("names no Vernaux")

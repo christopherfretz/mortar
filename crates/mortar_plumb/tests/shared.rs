@@ -35,6 +35,9 @@ const SOURCES: &[(&str, &str)] = src![
     "before.c",
     "format-pic.s",
     "flags.c",
+    "sv.c",
+    "sv.map",
+    "weak.cc",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -174,6 +177,8 @@ struct Builder<'t> {
     t: &'t Tools,
     root: PathBuf,
     outs: Vec<Out>,
+    /// The driver of the next [`Builder::link`] (`g++`), else `cc`.
+    driver: Option<PathBuf>,
 }
 
 impl Builder<'_> {
@@ -224,7 +229,8 @@ impl Builder<'_> {
         let mut a: Vec<&str> = vec![&b];
         a.extend(args);
         a.extend(["-o", &name, &m]);
-        assert!(run_in(dir, self.cc(arch), &a, Some(&line)), "{case}/{name}: the link failed");
+        let driver = self.driver.take().unwrap_or_else(|| self.cc(arch).to_path_buf());
+        assert!(run_in(dir, &driver, &a, Some(&line)), "{case}/{name}: the link failed");
         self.outs.push(Out {
             case,
             arch,
@@ -273,7 +279,7 @@ fn build() -> Option<Corpus> {
             std::fs::set_permissions(&p, perm).unwrap();
         }
     }
-    let mut b = Builder { t: &t, root: root.clone(), outs: Vec::new() };
+    let mut b = Builder { t: &t, root: root.clone(), outs: Vec::new(), driver: None };
     for arch in [Arch::A64, Arch::X64] {
         let d = b.dir(arch, "forms");
         for f in ["dl.list", "v.map"] {
@@ -392,6 +398,29 @@ fn refs(b: &mut Builder<'_>) {
         must(&d, &clang, &["-O2", "-fPIC", "-c", &src, "-o", "c2.o"]);
         b.link("refs", a, &d, "libc2.so", &["-shared", "c2.o", "-Wl,-soname,libc2.so"], Bfd, &[]);
     }
+    // WP-123's V3: two `.symver` definitions of `foo` (`foo@V1` hidden,
+    // `foo@@V2`) under a version script (D-115), by each reference.
+    b.obj(a, &d, "sv.c", &["-O1", "-fPIC"], "sv.o");
+    std::fs::copy(b.root.join("sv.map"), d.join("sv.map")).unwrap();
+    for l in Linker::ALL {
+        let args = ["-shared", "sv.o", "-Wl,--version-script,sv.map"];
+        b.link("refs", a, &d, "libsv.so", &args, l, row(l, &[]));
+    }
+    // WP-123's V5 (`cxx-weak-only-libc`): g++'s `--as-needed` drops the C
+    // library, whose `__cxa_finalize` crtbeginS references weakly.
+    for (arch, gxx) in [(Arch::A64, "aarch64-linux-gnu-g++"), (Arch::X64, "x86_64-linux-gnu-g++")] {
+        let Some(gxx) = tool(gxx).or_else(|| (arch == Arch::A64).then(|| tool("g++")).flatten())
+        else {
+            continue;
+        };
+        let d = b.dir(arch, "refs");
+        let src = b.root.join("weak.cc").display().to_string();
+        must(&d, &gxx, &["-O1", "-fPIC", "-c", &src, "-o", "weak.o"]);
+        for l in Linker::ALL {
+            b.driver = Some(gxx.clone());
+            b.link("refs", arch, &d, "libwo.so", &["-shared", "weak.o"], l, row(l, &[]));
+        }
+    }
     for arch in [Arch::A64, Arch::X64] {
         let d = b.dir(arch, "refs");
         b.obj(arch, &d, "flags.c", &["-O1", "-fPIC"], "flags.o");
@@ -425,6 +454,30 @@ fn row(l: Linker, want: &'static [&'static str]) -> &'static [&'static str] {
 #[test]
 fn s12_5_reference_link_tests_verify_clean() {
     judge("refs");
+}
+
+// P-D22 (D-115): `foo@V1` without VERSYM_HIDDEN is a second default
+// definition of `foo` (an unversioned lookup finds the first).
+#[test]
+fn p_d22_hidden_version_is_kept() {
+    let Some(c) = corpus() else { return };
+    let mut n = 0;
+    for o in c.outs.iter().filter(|o| o.link.output.to_string_lossy().contains("libsv.so")) {
+        n += 1;
+        let mut b = o.link.output_bytes();
+        let (off, size) = section(&b, ".gnu.version");
+        let at = (off..off + size).step_by(2).find(|&i| u16at(&b, i) & 0x8000 != 0).unwrap();
+        b[at + 1] &= 0x7f;
+        let r = o.verify_bytes(&b);
+        assert!(
+            r.findings.iter().any(|f| f.rule.id() == "P-D22"
+                && f.message.contains("'foo' has 2 definitions without VERSYM_HIDDEN")),
+            "{}: {:#?}",
+            o.label(),
+            r.findings
+        );
+    }
+    assert!(n == 0 || n == 3, "{n} libsv outputs");
 }
 
 // P-D22 (D-103): a `DT_FLAGS_1` bit no `-z` word asks for, and one the

@@ -4455,7 +4455,11 @@ own implementation of D-11-D-27 and compared with the output.
 - **P-D5 (`.gnu.hash`).** Recompute the table from `.dynsym` with D-26's
   formulas and compare word for word; then look up every exported and
   every canonical-PLT name with the loader's algorithm (it is found at
-  its index) and a fixed set of absent names (not found).
+  its index) and a fixed set of absent names (not found). The lookup of
+  an entry is by its name and its `.gnu.version` index, as glibc's
+  `check_match` takes a chain entry only of the version asked: a
+  library's `.symver` `foo@V1` (hidden) and `foo@@V2` are each found at
+  their own index (D-115; WP-121, WP-123's V3).
 - **P-D6 (`.dynamic`).** Each D-30 tag is present iff its condition holds
   (recomputed from the sections and the command line), in D-30's order,
   with the value equal to the address or size of its section; exactly
@@ -4484,7 +4488,15 @@ own implementation of D-11-D-27 and compared with the output.
   needed library that defines the symbol; `vna_hash` is the ELF hash of
   the name, `vn_file` a `DT_NEEDED` name, `vna_other` unique; a
   `memcpy@GLIBC_2.2.5` reference bound to `memcpy@@GLIBC_2.14` is
-  reported.
+  reported. A weak import whose definition is only in a library the
+  output does not need (`--as-needed` dropped it; the loader reaches it
+  through another library's dependencies) has no `Verneed` to name
+  (`vn_file` is a `DT_NEEDED` name): it is unversioned, index 1, as GNU
+  ld writes crtbeginS's `__cxa_finalize` in a `g++ -shared` library
+  (WP-121, WP-123's V5). In a `Shared` output, `VERSYM_HIDDEN` on a
+  definition whose index names a `Verdef` is D-115's `foo@V`, not D-27's
+  "bit 15 never set" (an executable's), and P-D22 reports a name with
+  more than one definition without it.
 - **P-D9 (dynamic relocations).** The extension of stage 2's
   reconstruction: for each input relocation whose place is in the output,
   the run-time value of the place is computed from the output (its
