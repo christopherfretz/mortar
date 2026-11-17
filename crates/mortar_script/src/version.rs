@@ -28,6 +28,8 @@
 //! assert_eq!(err.unwrap_err().kind().id(), "version-script-syntax");
 //! ```
 
+use std::collections::HashMap;
+
 use mortar_diag::{Diagnostic, Kind, Place};
 
 use crate::ast::{
@@ -58,11 +60,12 @@ pub struct SourceFile<'a> {
 /// No file: the empty script.
 pub fn parse_version_script(files: &[SourceFile<'_>]) -> Result<VersionScript, Box<Diagnostic>> {
     let mut script = VersionScript::default();
+    let mut names = NodeNames::new();
     for (index, file) in files.iter().enumerate() {
         let file_index = u32::try_from(index).unwrap_or(u32::MAX);
         let mut parser = Parser::new(file.bytes);
         parser
-            .version_file(file_index, &mut script)
+            .version_file(file_index, &mut script, &mut names)
             .map_err(|f| f.located(VERSION_SCRIPT, file))?;
     }
     Ok(script)
@@ -117,6 +120,10 @@ impl From<LexError> for Failure {
 }
 
 type Parsed<T> = Result<T, Failure>;
+
+/// The named nodes read so far, name to index in the script: lookups of
+/// duplicates and parents stay linear in the script.
+type NodeNames = HashMap<Vec<u8>, usize>;
 
 /// Whether a body may hold `global:`/`local:` labels.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -187,7 +194,12 @@ impl<'a> Parser<'a> {
     }
 
     /// One `--version-script` file: `node+`, or one anonymous node.
-    fn version_file(&mut self, file: u32, script: &mut VersionScript) -> Parsed<()> {
+    fn version_file(
+        &mut self,
+        file: u32,
+        script: &mut VersionScript,
+        names: &mut NodeNames,
+    ) -> Parsed<()> {
         let mut nodes_here = 0usize;
         loop {
             let token = self.next()?;
@@ -217,8 +229,7 @@ impl<'a> Parser<'a> {
                 ));
             }
             if let Some(word) = &name {
-                if script.nodes.iter().any(|n| n.name.as_ref().is_some_and(|m| m.text == word.text))
-                {
+                if names.contains_key(&word.text) {
                     return Err(Failure::new(
                         start,
                         format!("version node '{}' is defined twice", lossy(&word.text)),
@@ -235,11 +246,7 @@ impl<'a> Parser<'a> {
                     TokenKind::Punct(Punct::Semicolon) => break,
                     TokenKind::Name if name.is_some() => {
                         let parent = self.node_name(&token)?;
-                        let Some(node) = script
-                            .nodes
-                            .iter()
-                            .position(|n| n.name.as_ref().is_some_and(|m| m.text == parent.text))
-                        else {
+                        let Some(&node) = names.get(&parent.text) else {
                             return Err(Failure::new(
                                 token.span.start,
                                 format!("parent version '{}' is not a node defined before this one", lossy(&parent.text)),
@@ -261,6 +268,9 @@ impl<'a> Parser<'a> {
                 }
             }
             let end = self.lexer.offset();
+            if let Some(word) = &name {
+                names.insert(word.text.clone(), script.nodes.len());
+            }
             script.nodes.push(VersionNode {
                 name,
                 parents,
