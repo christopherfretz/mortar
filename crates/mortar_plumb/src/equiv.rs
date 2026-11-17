@@ -432,12 +432,16 @@ fn run_side<'a>(
     map: &'a Map,
 ) -> Result<Side<'a>, Report> {
     let Ok(image) = Image::read(output) else {
-        let mut r = crate::verify_static_in(output, store, m, map);
+        let mut r = crate::verify_static_in(output, store, m, map, None);
         crate::read_errors(store, &mut r);
         return Err(r);
     };
     let located = crate::locate::locate(map, store, m, &image);
-    let objs: Vec<Obj<'_>> = located.objs;
+    let mut objs: Vec<Obj<'_>> = located.objs;
+    // §3.3: the empty sections not in the output (WP-156b).
+    let o = crate::opts::of(map);
+    let exports = o.as_ref().and_then(|o| crate::fate::static_exports(map, o));
+    crate::fate::collect_empty(&mut objs, o.as_ref(), exports.as_ref());
     let mut engine = Engine::new(&image, &objs, map.format);
     // Room for every relocation record of the inputs (at most one per 8
     // bytes of their relocation sections): the trace is the side's
