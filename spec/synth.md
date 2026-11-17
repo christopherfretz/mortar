@@ -315,7 +315,26 @@ section symbol with an addend, and a named symbol with an addend.
   symbols (X-5), i386 REL objects included: GCC 14 with GNU as and Clang
   19 (`-O2 -fmerge-all-constants`, `-fno-pic` and `-fPIC`) write
   `"abcdefgh" + 9` as `.LC1`/`.L.str` plus 9 and put constant arrays in
-  plain `.rodata` (X-28).
+  plain `.rodata` (X-28). GNU as does write one: a local label after the
+  last string or entry referred to with addend 0 (`.dc.a .Lend`, and
+  AArch64's `adrp`/`add` of it) becomes the section symbol plus
+  `sh_size` (WP-148). The refusal is the same in every output kind
+  (static, `-pie`, `-static-pie`, `-shared`; `.rela.dyn`'s planner
+  reports it as fill does, never as an internal error) and from every
+  referring section (a debug word too: lld refuses it there as well),
+  and it names the referring place (`file:(section+offset)`), the
+  target section and its file (`defined in`) and the target
+  `section±r` with the section's size. Measured (WP-148,
+  `spec/landed/image/WP-148.md`): at `r == sh_size` lld refuses; GNU
+  writes the end of the input section's bytes in its output section,
+  which is not the end of the string when the string was merged with an
+  earlier copy (`a.o "hello"`, then `b.o "hello"` and its `.Lend`: GNU
+  writes the kept copy's address + 14, not + 6, in a link where another
+  8-byte string precedes); mold writes the end of the last piece for
+  strings, and for `.rodata.cst8` an unrelated address (the start of
+  another output section's merged chunk), and dies on `r < 0`
+  (segmentation fault). No two references write the same address in
+  every case, so the refusal stands.
 - **S-19 [G] (named symbol plus addend).** For any other symbol defined
   in a split section, with value `v = st_value` and addend `A`, the
   value is `out(frag(p)) + (v − start(p)) + A`, where `p` is the piece
@@ -326,7 +345,14 @@ section symbol with an addend, and a named symbol with an addend.
   `plural.o` `sym − 16`, X-1) that only this rule links as compiled.
   The result is the address the producer meant whenever its expression
   stays within the piece or one past its end, which is all that C and
-  C++ define.
+  C++ define. A named symbol at `v == sh_size` (one past the last
+  string) is therefore the end of the string it stands after, wherever
+  that string's fragment lies (merged with an earlier object's copy: the
+  end of the kept copy). Measured (WP-148): mold writes the same; GNU ld
+  the same only when the string is not merged with an earlier copy (else
+  the end of the input section's bytes in its output section, past the
+  kept copy); lld refuses every symbol at a merge section's end, even an
+  unreferenced one (its `.symtab` value). mortar keeps S-22's value.
 - **S-20 [C] (non-allocated targets).** S-17 to S-19 apply unchanged to
   references from non-allocated sections (`.debug_info` into
   `.debug_str`); a reference from a non-alloc section to a piece of a

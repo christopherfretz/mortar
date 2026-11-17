@@ -694,6 +694,39 @@ impl<'a, 's> LinkTables<'a, 's> {
         Some((shndx, base.checked_add(offset)?))
     }
 
+    /// `spec/synth.md` S-18: the refusal of a section symbol plus addend
+    /// `r` outside split `Merge` section `s` (`r < 0` or `r ≥ sh_size`;
+    /// one past the last piece included, as lld: the references disagree
+    /// on its address, WP-148), naming the target: the section and its
+    /// file (`defined in`), `r` and the section's size. The caller adds
+    /// the referring place (fill's record, `.rela.dyn`'s planner).
+    fn outside_merge(&self, s: SectionId, r: i64, w: &mortar_merge::What) -> Diagnostic {
+        let d = Diagnostic::error(Kind::Malformed { what: w.message() });
+        let Some((file, index)) = self.link.resolution.sh_index(s) else { return d };
+        let name = match self.link.inputs.files.get(file).map(|f| &f.reader) {
+            Some(Reader::Object(o)) => o
+                .section(index)
+                .ok()
+                .and_then(|h| h.name().ok())
+                .map(|n| String::from_utf8_lossy(n).into_owned())
+                .unwrap_or_default(),
+            _ => String::new(),
+        };
+        let size = self.section_size(s).unwrap_or(0);
+        let target = if r < 0 {
+            format!("{name}-{:#x}", r.unsigned_abs())
+        } else {
+            format!("{name}+{r:#x}")
+        };
+        let path = layout_plan::file_ref(self.link.inputs, file);
+        d.with(mortar_diag::Relation::DefinedIn, mortar_diag::Place::symbol(path, name)).note(
+            format!(
+                "the reference is to {target} (the section symbol plus addend); the mergeable \
+                 section holds {size:#x} bytes, so no piece contains it (synth.md S-18)"
+            ),
+        )
+    }
+
     /// The chunk holding input section `s`'s bytes (a `Merge` section's:
     /// its output section's merged chunk).
     fn chunk_of(&self, s: SectionId) -> Option<(ChunkId, u64)> {
@@ -923,7 +956,6 @@ impl Tables for LinkTables<'_, '_> {
         addend: i64,
     ) -> Option<Result<Option<u64>, Diagnostic>> {
         let &SplitPlace { section: s, merge, value, section_sym, row, chunk_base } = place;
-        let malformed = |what: String| Diagnostic::error(Kind::Malformed { what });
         if merge {
             let r = (value as i64).wrapping_add(addend);
             let found = if let Some(found) = self.pieces.section_symbol_in(self.link.split, row, r)
@@ -949,7 +981,7 @@ impl Tables for LinkTables<'_, '_> {
                     .and_then(|a| a.checked_add(p.within))
                     .map(Some)
                     .ok_or_else(|| internal("fill: a live merge piece has no address")),
-                Err(w) => Err(malformed(w.message())),
+                Err(w) => Err(self.outside_merge(s, r, &w)),
             });
         }
         let Some((plan, src)) = self.link.eh else {
@@ -1795,8 +1827,8 @@ impl<'v> DynChunks<'v> {
 /// `internal-error` when a record breaks an invariant or the counts
 /// differ from the plan's.
 #[allow(clippy::too_many_lines)]
-fn rela_dyn(view: &DynView<'_, '_, '_>) -> Result<crate::dynrel::RelaDyn, Diagnostic> {
-    use crate::dynrel::{SectionCx, SectionRecords};
+fn rela_dyn(view: &DynView<'_, '_, '_>) -> Result<crate::dynrel::RelaDyn, Failed> {
+    use crate::dynrel::{RecordError, SectionCx, SectionRecords, Unvalued};
     use mortar_arch::DynRole;
     let t = view.t;
     let l = &t.link;
@@ -1809,40 +1841,74 @@ fn rela_dyn(view: &DynView<'_, '_, '_>) -> Result<crate::dynrel::RelaDyn, Diagno
     let ga = t.got_addrs;
     let sections: Vec<SectionId> = d.rela.sections().collect();
     // `S + A` at link time (a `RELATIVE` record's addend): a reference
-    // into a split section through its piece, else the key's value.
-    let value = |key: SymKey, addend: i64| -> Option<u64> {
+    // into a split section through its piece, else the key's value. A
+    // reference S-18 refuses is that refusal, as fill's in a static link
+    // (WP-148); a piece the mark collected, or a key without a place, is
+    // not live: the scan plans no record for either (P-1, I-7), so the
+    // caller's internal error, never `RELATIVE` + 0 (I-124).
+    let value = |key: SymKey, addend: i64| -> Result<u64, Unvalued> {
         match t.split_target(key, addend) {
-            Some(Ok(Some(v))) => Some(v),
-            Some(_) => None,
-            // I-124: a key without a place gives no addend (the caller's
-            // internal error, never `RELATIVE` + 0).
+            Some(Ok(Some(v))) => Ok(v),
+            Some(Ok(None)) => Err(Unvalued::NotLive),
+            Some(Err(d)) => Err(Unvalued::Refused(Box::new(d))),
             None => {
                 let v = t.sym(key);
-                v.live.then(|| v.s.wrapping_add_signed(addend))
+                debug_assert!(v.live, "P-1: a RELATIVE record planned for a key without a place");
+                if v.live { Ok(v.s.wrapping_add_signed(addend)) } else { Err(Unvalued::NotLive) }
             }
         }
     };
     let dynsym = |id: SymbolId| d.dynsym.index(id);
-    let per: Vec<Result<(u64, SectionRecords), Diagnostic>> = l.pool.map(sections.len(), |i| {
+    // Per section: its address and records, or the refusals of its
+    // records' references (S-18, in record order, each at its referring
+    // place with fill's key, so that every refused record is reported, as
+    // fill reports them in a static link), or an internal fault.
+    let per: Vec<Result<(u64, SectionRecords), Failed>> = l.pool.map(sections.len(), |i| {
         let sid = sections[i];
-        let what = |m: &str| internal(format!(".rela.dyn: section {}: {m}", sid.0));
+        let what = |m: &str| failed(internal(format!(".rela.dyn: section {}: {m}", sid.0)));
         let (file, index) = l.resolution.sh_index(sid).ok_or_else(|| what("no input section"))?;
         let rel = l.resolution.sections.get(sid).ok_or_else(|| what("no row"))?.reloc.0;
         let addr = pl.section_addr(sid, 0).ok_or_else(|| what("no address"))?;
         let leads = l.records.leads(sid);
         let mut out = SectionRecords::default();
         let mut err = None;
-        l.facts.walk_records(file, sid, index.0, rel, leads, &mut |cx, at| {
-            if err.is_some() {
-                return;
-            }
-            let scx = SectionCx { arch, scan: *cx, addr, value: &value, dynsym: &dynsym };
-            if let Err(e) = crate::dynrel::push_records(&scx, at, &mut out) {
-                err = Some(e);
-            }
-        })?;
+        let mut refused: Vec<(Key, Diagnostic)> = Vec::new();
+        l.facts
+            .walk_records(file, sid, index.0, rel, leads, &mut |cx, at| {
+                if err.is_some() {
+                    return;
+                }
+                let scx = SectionCx { arch, scan: *cx, addr, value: &value, dynsym: &dynsym };
+                match crate::dynrel::push_records(&scx, at, &mut out) {
+                    Ok(()) => {}
+                    Err(RecordError::Fault(e)) => err = Some(e),
+                    Err(RecordError::Refused(d)) => {
+                        let d = *d;
+                        let d = if d.place().is_some() {
+                            d
+                        } else {
+                            let name = match &l.inputs.files.get(file).map(|f| &f.reader) {
+                                Some(Reader::Object(o)) => o
+                                    .section(index)
+                                    .ok()
+                                    .and_then(|h| h.name().ok())
+                                    .map(|n| String::from_utf8_lossy(n).into_owned())
+                                    .unwrap_or_default(),
+                                _ => String::new(),
+                            };
+                            let path = layout_plan::file_ref(l.inputs, file);
+                            d.at(mortar_diag::Place::section(path, name, at.r_offset))
+                        };
+                        refused.push((mortar_arch::cx::fill_key(file, index.0, at.index), d));
+                    }
+                }
+            })
+            .map_err(failed)?;
         if let Some(e) = err {
             return Err(what(&e));
+        }
+        if !refused.is_empty() {
+            return Err(Failed { diagnostics: refused });
         }
         out.relative.sort_unstable_by_key(|r| r.r_offset);
         let unit = RelUnit::Section(sid);
@@ -1860,23 +1926,39 @@ fn rela_dyn(view: &DynView<'_, '_, '_>) -> Result<crate::dynrel::RelaDyn, Diagno
         Ok((addr, out))
     });
     let mut recs = Vec::with_capacity(per.len());
+    let mut refused = Vec::new();
     for r in per {
-        recs.push(r?);
+        match r {
+            Ok(r) => recs.push(r),
+            // An internal fault stops at once; refusals are all reported.
+            Err(f)
+                if f.diagnostics
+                    .iter()
+                    .any(|(_, d)| matches!(d.kind(), Kind::InternalError { .. })) =>
+            {
+                return Err(f);
+            }
+            Err(mut f) => refused.append(&mut f.diagnostics),
+        }
+    }
+    if !refused.is_empty() {
+        refused.sort_by_key(|r| r.0);
+        return Err(Failed { diagnostics: refused });
     }
     let mut got_relative = Vec::new();
     let mut other = Vec::new();
     for r in got.got_records() {
         let r_offset = ga.got + r.offset;
         if r.role == DynRole::Relative {
-            let v = r
-                .key
-                .and_then(|k| got.iplt_address(&ga, k).or_else(|| t.address(k)))
-                .ok_or_else(|| internal(".rela.dyn: a GOT RELATIVE record without a value"))?;
+            let v =
+                r.key.and_then(|k| got.iplt_address(&ga, k).or_else(|| t.address(k))).ok_or_else(
+                    || failed(internal(".rela.dyn: a GOT RELATIVE record without a value")),
+                )?;
             got_relative.push(DynRecord { r_offset, r_sym: 0, r_type: r.r_type, addend: v as i64 });
         } else {
             // D-119: a shared object's `r_sym` 0 TLS record carries the
             // key's offset in the block; every other one 0.
-            let addend = got.record_addend(r, t).map_err(SynthError::into_diagnostic)?;
+            let addend = got.record_addend(r, t).map_err(|e| failed(e.into_diagnostic()))?;
             other.push(DynRecord { r_offset, r_sym: r.r_sym, r_type: r.r_type, addend });
         }
     }
@@ -1884,15 +1966,14 @@ fn rela_dyn(view: &DynView<'_, '_, '_>) -> Result<crate::dynrel::RelaDyn, Diagno
     if !l.layout.slots.copies.is_empty() {
         let r_type = arch
             .dyn_type(DynRole::Copy)
-            .ok_or_else(|| internal(".rela.dyn: no COPY type (D-42)"))?;
+            .ok_or_else(|| failed(internal(".rela.dyn: no COPY type (D-42)")))?;
         for (a, c) in l.layout.slots.copies.iter().enumerate() {
             let (_, r_offset) = view
                 .copy(a as u32)
-                .ok_or_else(|| internal(format!(".rela.dyn: copy {a} has no address")))?;
-            let r_sym = d
-                .dynsym
-                .index(c.alias)
-                .ok_or_else(|| internal(format!(".rela.dyn: copy {a}'s key not in .dynsym")))?;
+                .ok_or_else(|| failed(internal(format!(".rela.dyn: copy {a} has no address"))))?;
+            let r_sym = d.dynsym.index(c.alias).ok_or_else(|| {
+                failed(internal(format!(".rela.dyn: copy {a}'s key not in .dynsym")))
+            })?;
             other.push(DynRecord { r_offset, r_sym, r_type, addend: 0 });
         }
     }
@@ -1920,14 +2001,14 @@ fn rela_dyn(view: &DynView<'_, '_, '_>) -> Result<crate::dynrel::RelaDyn, Diagno
             None => got_relative.clone(),
         })
     })
-    .map_err(|m| internal(format!(".rela.dyn: {m}")))?;
+    .map_err(|m| failed(internal(format!(".rela.dyn: {m}"))))?;
     for (_, r) in recs {
         other.extend(r.other);
     }
     // S-70: a `StaticPie`'s IPLT `IRELATIVE`s, last.
-    let irelative = got.irelative_records(&ga, t).map_err(SynthError::into_diagnostic)?;
+    let irelative = got.irelative_records(&ga, t).map_err(|e| failed(e.into_diagnostic()))?;
     crate::dynrel::RelaDyn::new(d.rela, class, form, relative, other, irelative)
-        .map_err(SynthError::into_diagnostic)
+        .map_err(|e| failed(e.into_diagnostic()))
 }
 
 // ---- the phase -------------------------------------------------------------
@@ -2182,7 +2263,7 @@ fn with_image<T>(
     }
     let view = link.synth.dynamic.map(|d| DynView { t: &tables, d });
     let dyn_chunks = match &view {
-        Some(v) => Some(DynChunks::new(v, rela_dyn(v).map_err(failed)?)),
+        Some(v) => Some(DynChunks::new(v, rela_dyn(v)?)),
         None => None,
     };
     let pl = &link.layout.placement;

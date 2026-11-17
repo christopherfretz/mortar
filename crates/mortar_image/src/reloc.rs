@@ -41,7 +41,7 @@ use mortar_arch::{
 use mortar_core::demands::DemandFlags;
 use mortar_core::records::Order;
 use mortar_core::{FileId, SectionId, SymEntry, SymKey};
-use mortar_diag::{Diagnostic, Key, Kind};
+use mortar_diag::{Diagnostic, Key, Kind, Place};
 use mortar_elf::Class;
 use mortar_elf::SymbolIndex;
 use mortar_elf::raw::{Record, Rela};
@@ -757,6 +757,15 @@ pub(crate) fn relocate(
                     }
                     Some(Err(d)) => {
                         if reports {
+                            // S-18's refusal names its target; the
+                            // record's place is the head line's (WP-148).
+                            let d = if d.place().is_some() {
+                                d
+                            } else {
+                                let path = plan.path(c.file);
+                                let section = String::from_utf8_lossy(c.name);
+                                d.at(Place::section(path, section, r))
+                            };
                             errs.push((fill_key(c.file, c.index, i), d));
                         }
                         continue;

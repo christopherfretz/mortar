@@ -1,0 +1,131 @@
+# A NAMED symbol one past the last string of a split SHF_MERGE section
+# (st_value == sh_size; `.reloc` keeps the local label, which GNU as would
+# otherwise turn into the section symbol plus sh_size, S-18) has the
+# value of synth.md S-19/S-22: the end of the string it stands after,
+# wherever that string's fragment lies (WP-148). `nend`: a string of its
+# own; `ndedup`: a string an earlier object also has, so the kept copy is
+# that object's and the label is the end of the kept copy. mortar does
+# not tail-merge (S-23).
+#
+# Measured (WP-148): mold writes the same values; GNU ld the same for
+# `nend` but, for `ndedup`, the end of the input section's bytes in its
+# output section, past the kept copy; lld refuses any symbol at a merge
+# section's end (`offset is outside the section`), even an unreferenced
+# one. The verifier reports GNU ld's and mold's `nend` (a correct
+# output): R6 (plumb.md §5.6) maps a named symbol's input byte
+# r = st_value, and at r == sh_size there is no byte, so the reference
+# "reaches other bytes" when other bytes follow (WP-148's hand-back). So
+# the end steps are mortar's only until §5.6 maps r == sh_size to the
+# end of the last piece.
+#@ spec: synth.md "S-19"
+#@ spec: synth.md "S-22"
+
+cc -O1 -fPIE main-mid.c -o main-mid.o
+cc -O1 -fPIE main-end.c -o main-end.o
+as mid.s -o mid.o
+as hello.s -o hello.o
+as nend-%{arch}.s -o nend.o
+as ndedup-%{arch}.s -o ndedup.o
+link gcc -static main-mid.o mid.o -o mid
+run mid
+  exit: 42
+link(mortar) gcc -static main-end.o nend.o -o nend
+run(mortar) nend
+  exit: 42
+link(mortar,aarch64,x86_64) gcc -pie main-end.o nend.o -o nend-pie
+run(mortar,aarch64,x86_64) nend-pie
+  exit: 42
+link(mortar) gcc -static main-end.o hello.o ndedup.o -o ndedup
+run(mortar) ndedup
+  exit: 42
+link(mortar,aarch64,x86_64) gcc -pie main-end.o hello.o ndedup.o -o ndedup-pie
+run(mortar,aarch64,x86_64) ndedup-pie
+  exit: 42
+
+#--- main-mid.c
+extern const char gstr[];
+extern const char *const w1, *const w2;
+int main(void) { return w1 == gstr + 3 && w2 == gstr + 3 ? 42 : 1; }
+#--- main-end.c
+extern const char gstr[];
+extern const char *const w;
+int main(void) { return w == gstr + 7 ? 42 : 1; }
+#--- mid.s
+	.section .rodata.str1.1,"aMS",%progbits,1
+	.globl	gstr
+gstr:	.ascii	"zq7"
+lmid:	.asciz	"hel"
+	.data
+	.p2align 3
+	.globl	w1, w2
+w1:	.dc.a	lmid
+w2:	.dc.a	.rodata.str1.1+3
+	.section .note.GNU-stack,"",%progbits
+#--- hello.s
+	.section .rodata.str1.1,"aMS",%progbits,1
+	.globl	gstr
+gstr:	.asciz	"zq7hel"
+	.section .note.GNU-stack,"",%progbits
+#--- nend-aarch64.s
+	.section .rodata.str1.1,"aMS",%progbits,1
+	.globl	gstr
+gstr:	.asciz	"zq7hel"
+lend:
+	.data
+	.p2align 3
+	.globl	w
+w:	.reloc	., R_AARCH64_ABS64, lend
+	.dc.a	0
+	.section .note.GNU-stack,"",%progbits
+#--- nend-x86_64.s
+	.section .rodata.str1.1,"aMS",%progbits,1
+	.globl	gstr
+gstr:	.asciz	"zq7hel"
+lend:
+	.data
+	.p2align 3
+	.globl	w
+w:	.reloc	., R_X86_64_64, lend
+	.dc.a	0
+	.section .note.GNU-stack,"",%progbits
+#--- nend-i386.s
+	.section .rodata.str1.1,"aMS",%progbits,1
+	.globl	gstr
+gstr:	.asciz	"zq7hel"
+lend:
+	.data
+	.p2align 3
+	.globl	w
+w:	.reloc	., R_386_32, lend
+	.dc.a	0
+	.section .note.GNU-stack,"",%progbits
+#--- ndedup-aarch64.s
+	.section .rodata.str1.1,"aMS",%progbits,1
+	.asciz	"zq7hel"
+lend2:
+	.data
+	.p2align 3
+	.globl	w
+w:	.reloc	., R_AARCH64_ABS64, lend2
+	.dc.a	0
+	.section .note.GNU-stack,"",%progbits
+#--- ndedup-x86_64.s
+	.section .rodata.str1.1,"aMS",%progbits,1
+	.asciz	"zq7hel"
+lend2:
+	.data
+	.p2align 3
+	.globl	w
+w:	.reloc	., R_X86_64_64, lend2
+	.dc.a	0
+	.section .note.GNU-stack,"",%progbits
+#--- ndedup-i386.s
+	.section .rodata.str1.1,"aMS",%progbits,1
+	.asciz	"zq7hel"
+lend2:
+	.data
+	.p2align 3
+	.globl	w
+w:	.reloc	., R_386_32, lend2
+	.dc.a	0
+	.section .note.GNU-stack,"",%progbits

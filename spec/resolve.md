@@ -1647,6 +1647,18 @@ place** or **has no place by a named rule**, and nothing else:
   but not live (`--gc-sections`, §6.1 of `spec/image.md` I-7). The reason
   is named: `mortar_core::place::NoPlace`.
 
+A symbol of a kept **non-allocated** section (`.comment`, which mortar
+merges but does not allocate; a debug section) has a place: its value is
+its offset in its output section (`spec/image.md` I-117). An allocated
+word that names it holds that offset; in a PIE (and a static-pie or a
+shared object) the word gets a `RELATIVE` record whose addend is the
+offset, so the run-time word is the load base plus the offset, an address
+of nothing. GNU ld 2.44 and lld 19 write exactly this, on the three
+targets (WP-148, `.comment`'s section symbol and a label in it); mold
+2.37 stops on an assertion. mortar follows GNU ld and lld. A section
+symbol plus addend one past such a merge section's end is
+`spec/synth.md` S-18's refusal, as in an allocated one.
+
 A reference to a symbol with no place, from a kept and live section, is
 what §6.3's table says of a reference into a dropped copy, whatever the
 reason: from a debug name the tombstone (`spec/image.md` I-47), from
