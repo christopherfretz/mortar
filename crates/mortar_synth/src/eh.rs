@@ -163,6 +163,9 @@ pub struct EhPlan {
     /// The return-address register of a padding CIE (IN-34a: 30 on
     /// AArch64, 16 on x86-64, 8 on i386).
     ra: u8,
+    /// S-48a: no record is listed, but some live input `.eh_frame` holds
+    /// a terminator or is empty: the chunk is the terminator alone.
+    bare: bool,
 }
 
 /// The per-record liveness marks: 0 removed, 1 live FDE, 2 used CIE.
@@ -378,6 +381,10 @@ impl EhPlan {
         let fdes = cie.iter().filter(|&&c| c != NONE).count() as u32;
         let infos: Vec<EhInfo> = (0..n_sec).map(|s| src.info(s)).collect();
         let (align, sh_type) = out_type(&infos);
+        // S-48a: the terminator alone when no record is listed and some
+        // input is a frame list without records (an input terminator, or
+        // an empty section).
+        let bare = total == 0 && sections.iter().any(|s| s.terminator.is_some() || s.size == 0);
         Ok(Self {
             records: records.into(),
             glob: glob.into(),
@@ -393,6 +400,7 @@ impl EhPlan {
             fdes,
             pads: pads.into(),
             ra,
+            bare,
         })
     }
 
@@ -409,10 +417,11 @@ impl EhPlan {
         &self.records
     }
 
-    /// Whether the chunk exists (S-3: some live record).
+    /// Whether the chunk exists (S-3: some live record; S-48a: else the
+    /// terminator alone, when some live input is a terminator or empty).
     #[must_use]
     pub fn exists(&self) -> bool {
-        !self.records.is_empty()
+        !self.records.is_empty() || self.bare
     }
 
     /// The chunk's size (S-49): the records' output sizes plus the

@@ -112,7 +112,7 @@ a diagnostic is model §8's: 60 for split and merge (unit `FileId`, seq
   | 11 | `.relr.dyn` | packed relative relocations | `-z pack-relative-relocs` | M4 (`spec/dyn.md` D-27, D-62) |
   | 12 | `.rela.plt` (`.rel.plt`) | `JUMP_SLOT`, `IRELATIVE` | a PLT or IPLT entry exists | M1 |
   | 13 | `.eh_frame_hdr` | the FDE table (§5) | `--eh-frame-hdr` and some live FDE | M1 |
-  | 14 | `.eh_frame` | the live records (§4) | some live record | M1 |
+  | 14 | `.eh_frame` | the live records (§4) | some live record; else some live input `.eh_frame` that holds a terminator or is empty (S-48a) | M1 |
   | 15 | `.plt` | PLT and IPLT entries | a PLT or IPLT entry exists | M1 |
   | 16 | `.got` | GOT slots (§6.1) | a slot or the header word exists | M1 |
   | 17 | `.got.plt` | PLT and IPLT words (§6.2) | a PLT or IPLT entry, or the x86 header (S-67) | M1 |
@@ -616,6 +616,31 @@ with one terminator, and the pointers inside them rewritten.
   the middle and crashes in the unwinder; lld and mold write it last and
   run (X-13). A link with no `crtend.o` gets one too (lld, mold; GNU
   none). This changes layout L-58 (§14).
+- **S-48a [C] (the terminator alone).** When no record is live but some
+  input `.eh_frame` of the link holds a terminator or is empty (0
+  bytes), the output `.eh_frame` exists and is the terminator alone: 4
+  bytes, at S-47's alignment and of L-49's type, with no FDE, so no
+  `.eh_frame_hdr` (S-57). A symbol defined in, and a relocation into,
+  such an input takes S-50's value, which is then the section's start
+  (rule 1 at `r = 0`; rule 3, the final terminator, at a removed
+  record or `r = sh_size`). With neither a live record nor such an
+  input, there is no `.eh_frame` (records that all die, S-41, S-42,
+  leave none). The line that has it: objects compiled with
+  `-fno-asynchronous-unwind-tables -fno-unwind-tables` (or assembly
+  without CFI) whose crt files bring no record, as `gcc -shared` on
+  x86-64 (`crti.o` and `crtbeginS.o` have no `.eh_frame`, `crtendS.o`
+  only the terminator, `__FRAME_END__`); every executable line has
+  `crt1.o`'s or `Scrt1.o`'s FDE, and AArch64's `crtbeginS.o` its own.
+  GNU ld, lld and mold write the same 4 bytes for a terminator input
+  (WP-142's measurement, `spec/landed/synth/WP-142.md`); GNU ld and
+  lld place a symbol at `r = sh_size` after the terminator (lld: 4
+  bytes past the output's start, also when records precede it), mold
+  drops `__FRAME_END__` and refuses a global at the end in a shared
+  object. For an empty input (x86 `crtbeginT.o`'s, with
+  `frame_dummy`'s reference to its start) with no terminator, lld and
+  mold write the terminator and GNU ld a 0-byte section, so the frame
+  list that reference names starts on the next section's bytes: mortar
+  writes the terminator, the walk's end (S-51).
 - **S-49 [C] (Slots).** `Slots.eh_records` lists the output records in
   order as `(SectionId, record index)`; the terminator is implied. It is
   a decision of the layout (`spec/layout.md` §4.3): S-41 to S-46 choose
@@ -1539,7 +1564,7 @@ the rules below keep their ids and cite it (request R-S1).
   | `.note.gnu.build-id` | `16 + align_up(n, 4)` (S-91) |
   | `.rela.plt` | `(PLT + IPLT entries) × entsize` |
   | `.eh_frame_hdr` | `12 + 8 × entries` (S-59) |
-  | `.eh_frame` | Σ output sizes of the live records (S-47) + 4 |
+  | `.eh_frame` | Σ output sizes of the live records (S-47) + 4 (4 alone under S-48a) |
   | `.plt` | `PltShape` header + entries + `iplt_entry × IPLT` |
   | `.got` | Σ region capacities × slot size (S-63) |
   | `.got.plt` | `(reserved + PLT + IPLT) × word` |
@@ -1652,6 +1677,9 @@ edit changes.
 | `.eh_frame` order | input, CIE at first use | CIE then its FDEs | CIEs, then FDEs | input (S-46) | GNU; keeps crtbeginT's walk |
 | input terminators | kept in place | dropped, one at end | dropped, one at end | dropped, one at end (S-48) | crtend.o position independent |
 | no `crtend.o` | no terminator | terminator | terminator | terminator (S-48) | |
+| no live record, an input terminator | the terminator | the terminator | the terminator | the terminator (S-48a) | all agree |
+| no live record, an empty input `.eh_frame` only | a 0-byte section | the terminator | the terminator | the terminator (S-48a) | a reference names a frame list to walk |
+| a symbol at `sh_size` of a terminator input | after the terminator | 4 bytes past the output's start | dropped (refused in a shared object) | the final terminator (S-50 rule 3) | one rule for every removed record |
 | reference to offset 0 of an input `.eh_frame` | the record's place, or the next kept record's (crtbeginT: misses earlier objects' FDEs) | the record's place; the start when that CIE was de-duplicated or the section is empty | the start plus the offset | the start of `.eh_frame` (S-50 rule 1) | the registry walk sees every FDE (X-25) |
 | `__EH_FRAME_BEGIN__` in `.symtab` | 16 to 40 bytes before `.eh_frame` | `.eh_frame` start | dropped | `.eh_frame` start (S-50) | one rule for symbols and relocations |
 | record length not a multiple of 4 | trailing nops removed, padded to 4 | copied | copied | padded to 4 (S-47) | records stay aligned |
