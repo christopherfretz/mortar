@@ -347,7 +347,7 @@ fn wp177_case_a_judged_by_the_owning_record() {
             s.diagnostics.iter().filter(|d| d.1.id() == "discarded-section-reference").count()
         };
         let text = |s: &mortar_scan::Scanned| {
-            let v: Vec<_> = s.diagnostics.to_vec();
+            let v: Vec<_> = s.diagnostics.clone();
             render(&v, Policy::default())
         };
         assert_eq!(count(&l.scanned), 1, "{from}: {}", l.rendered());

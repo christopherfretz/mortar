@@ -339,6 +339,9 @@ impl EhFrames {
     }
 }
 
+/// One [`LsdaStarts`] row: `(table, start, live, code)`.
+type LsdaRow = (SectionId, u64, bool, Option<(SectionId, u64)>);
+
 /// WP-177 (`spec/resolve.md` §6.3): the LSDA starts of every FDE that has
 /// an LSDA pointer into a section of its own file, for the owner of a
 /// `.gcc_except_table` field: the FDE whose LSDA start is the greatest
@@ -348,7 +351,7 @@ pub struct LsdaStarts {
     /// `(table, start, live, code)`, sorted by `(table, start)`, one row
     /// per start: two FDEs with one start make a live row if either is
     /// live (the code is then a live one's).
-    rows: Box<[(SectionId, u64, bool, Option<(SectionId, u64)>)]>,
+    rows: Box<[LsdaRow]>,
 }
 
 impl LsdaStarts {

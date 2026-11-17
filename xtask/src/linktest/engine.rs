@@ -1537,10 +1537,9 @@ impl Unit<'_> {
             }
             StepKind::Yaml2obj(_) => (common.yaml2obj.clone().ok_or_else(missing)?, Vec::new()),
             StepKind::Ar(_) => (self.tools.ar.clone(), Vec::new()),
-            // WP-177: the architecture's own objcopy (the tool guard,
-            // scripts/ci-tools.sh, has it for each triple).
-            StepKind::Objcopy(_) => (self.tools.objcopy.clone(), Vec::new()),
-            StepKind::Meta(_) => (self.tools.objcopy.clone(), Vec::new()),
+            // WP-177: `objcopy` runs the architecture's own objcopy (the
+            // tool guard, scripts/ci-tools.sh, has it for each triple).
+            StepKind::Objcopy(_) | StepKind::Meta(_) => (self.tools.objcopy.clone(), Vec::new()),
             // The system's own GNU ld links every fixture library, whatever
             // linkers the run has.
             StepKind::Shlib(shlib) => {

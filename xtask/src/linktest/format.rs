@@ -2451,8 +2451,8 @@ FileHeader:
     #[test]
     fn objcopy_step() {
         let with = |text: &str| format!("#@ spec: resolve.md \"6.3\"\n{text}");
-        let text = "objcopy --localize-hidden r.o r.lh.o\nlink gcc r.lh.o\n";
-        let test = parse(&with(text)).unwrap();
+        let src = "objcopy --localize-hidden r.o r.lh.o\nlink gcc r.lh.o\n";
+        let test = parse(&with(src)).unwrap();
         let StepKind::Objcopy(args) = &test.steps[0].kind else { panic!() };
         let vars = Vars { arch: Arch::I386, host: Some(Arch::Aarch64), linker: None };
         let args: Vec<String> = args.iter().map(|a| a.expand(vars)).collect();
