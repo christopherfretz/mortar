@@ -2761,30 +2761,39 @@ a pass over a whole table of the state; **O(output)**.
   one case per adjacent pair (two reasons at once give the earlier).
 
 - **IN-71 [v1] Delta resolution, O(change)** (narrows the cost of IN-26,
-  not its result). The update re-resolves only the **affected keys**:
-  every global key a changed, appeared, gone, newly extracted or no
-  longer extracted file mentions, in its old version (`MENTIONS`, the
-  file's range) or its new one (its parsed symbol table). For each
-  affected key the resolution is recomputed over **all** its mentions,
-  in load order: the stored mentions of unchanged files (`KEY_REFS`,
-  by key: IN-18e) and the changed files' new ones. COMDAT groups the
-  changed files name are re-elected the same way (`GROUPS`, by
-  signature). Archive extraction is recomputed for the affected keys
-  through the stored armaps (IN-19): a key that becomes undefined and is
-  defined by an archive member extracts it (an appeared file, and its
-  keys become affected: the closure is iterated); a member none of whose
-  definitions is still needed is no longer extracted (a gone file).
+  not its result; amended by WP-207). The update re-resolves only the
+  **affected keys**: every global key a changed, appeared, gone, drawn-in
+  (IN-72 item 2a), newly extracted or no longer extracted file mentions,
+  in its old version (`MENTIONS`, the file's range) or its new one (its
+  parsed symbol table); every linker-defined key IN-71c names; and every
+  key whose common size or alignment changes (IN-72 item 11). For each
+  affected key the resolution is recomputed over **all** its mentions, in
+  load order: the stored mentions of every other file (`KEY_REFS`, by
+  key: one row per (key, mentioning file), single mentioners, archive
+  members not extracted and file 0 included, IN-18e) and the changed
+  files' new ones. COMDAT groups the changed files name are re-elected
+  the same way (`GROUPS`, by signature), and so is every group with a
+  copy in a file whose extraction flips. Archive extraction is IN-71b.
   The result is IN-26's for every key (a key no file of the delta
   mentions has the stored resolution, which IN-26 would recompute
-  equal). The differences are IN-27's causes. A difference in
-  attributes (IN-26's list) for a key that an unchanged file references:
+  equal). For an affected key whose mentioners change, `at_file` becomes
+  the first live mentioner in load order among `KEY_REFS`'s rows and the
+  changed files' (IN-18a3's rule), and `at_index` is that file's entry
+  index among its non-local entries: from its new symbol table when it is
+  a changed file, else from its `MENTIONS` row (which stores the index);
+  `NONE` only when no live file mentions the key (review-in77 B-4). The
+  differences are IN-27's causes. A difference in attributes (IN-26's
+  list) for a key that an unchanged file references:
   - binding (weak ↔ global, `STB_GNU_UNIQUE`), visibility, a common
     becoming a definition in a section or the reverse: in a **static
     executable** these change which definition wins and its value, not
     a relocation's form (no preemption, no copy relocation, no PLT
     choice), so they are IN-27's "a global's definition moved or
     changed" row: the referrers are refilled (WP-064a §3: W1, W1b, n2,
-    n4). Dynamic outputs keep IN-26's rule (WP-066);
+    n4; verified by review-in72 §5 in `mortar_arch`'s class table). A
+    visibility change that demotes a global to a local of its definer's
+    block, or promotes it back (S-74), draws the definer in (IN-72 item
+    2a, IN-49a). Dynamic outputs keep IN-26's rule (WP-066);
   - type to or from `STT_GNU_IFUNC` or `STT_TLS`, a definition becoming
     absolute or the reverse, `st_other` bits other than the visibility:
     `symbol-kind-changed` (an unchanged referrer's relocation types,
@@ -2792,11 +2801,148 @@ a pass over a whole table of the state; **O(output)**.
   A local becoming global (W10) is a key that appears; a global becoming
   local, one that disappears from the file's mentions; both are affected
   keys like any other. Extraction order that changes the relative order
-  of two unchanged files: `inputs-reordered`. *Test:* WP-064a §3's
-  cases, each now an update equivalent to the full link (`w-meaning.sh`
-  W1, W1b, W9, W10, n2, n4; `ifunc-type` stays `symbol-kind-changed`);
-  a key whose only definer becomes a newly extracted member; a member no
-  longer extracted; a COMDAT keeper change both ways.
+  of two unchanged files: `inputs-reordered`. **U4 and U5 iterate**
+  (review-in72 m-3): a file that IN-71b newly extracts, or IN-72 item 2a
+  draws in, is read (U4) and its keys become affected (U5), until no
+  file flips; each round only adds files, so it ends. *Test:* WP-064a
+  §3's cases, each now an update equivalent to the full link
+  (`w-meaning.sh` W1, W1b, W9, W10, n2, n4; `ifunc-type` stays
+  `symbol-kind-changed`); `common_first_referenced_by_changed_file` and
+  `first_mentioner_drops_then_readds_key` (three hops, review-in77 B-4);
+  `key_refs_single_mentioner`; a COMDAT keeper change both ways and
+  `comdat_keeper_flips_twice`.
+
+- **IN-71b [v1] Archive extraction in an update** (WP-207; review-in72
+  B-1). It is resolve.md §4.1's reachability recomputed, never a rule of
+  its own: a member is extracted iff it is reachable from the non-archive
+  files and the root options through §4.1's edges (a non-weak undefined
+  mention of `K` → `first(K)`, the lowest `FileId`, extracted or lazy,
+  with a defined or common mention of `K`; a common mention → `cfirst(K)`;
+  a root option → `first(K)`), computed from the members' own symbol
+  tables, never the armap.
+  - **Stored** (IN-18e): every member of every archive of the link has a
+    `FILES` row, extracted or not (flag `LAZY` when not), at its place in
+    load order; a lazy member's defined and common mentions are its
+    `MENTIONS` range and its `KEY_REFS` rows (with the attributes §4.1
+    reads: definedness, binding, common, section or absolute), and the
+    common's size and alignment are `COMMONS` rows; a lazy member's
+    undefined mentions are not stored. Each extracted member's `FILES`
+    row carries its **round**: a number such that some live file or root
+    with an edge to it has a smaller round (non-archive files and roots
+    0); the first link writes the breadth-first round of §4.1's walk.
+    A full link already parses every member's symbol table (resolve.md
+    §4.1; odr.md O-23), so the capture costs only the rows.
+  - **Edges of a key.** For an affected key `K`, `first(K)` and
+    `cfirst(K)` are read from `KEY_REFS(K)` (lowest rank among the rows
+    with the right attributes, lazy rows included), and its edges are the
+    live mentioners' undefined (common) rows pointing at a lazy
+    `first(K)` (`cfirst(K)`), plus a root's. The update computes each
+    affected key's edge set before and after the changed files' rows are
+    replaced: **lost** and **gained** edges.
+  - **Removal (decremental).** A member that lost an edge keeps its
+    extraction iff some edge from a live file of smaller round still
+    reaches it (its in-edges: the keys it is `first`/`cfirst` of, from its
+    own `MENTIONS` range, and their mentioners, from `KEY_REFS`). The
+    members without such support, and transitively the members they
+    alone supported, form a cone; the cone's members are re-seeded from
+    the live files outside it in round order (a member reached gets the
+    smallest supporting round + 1), and what is not reached is no longer
+    extracted: a gone file for the update. This is the cycle case
+    review-in72 R1b found: two members supporting each other have no
+    smaller-round support once the outside edge is gone.
+  - **Addition (forward).** A gained edge whose target is lazy extracts
+    it (round = source's + 1): it is an appeared file, read from its
+    archive (below), and its undefined mentions add edges, followed
+    breadth-first; an edge to a `first(K)` at a lower position than the
+    key's current definer (review-in72 R1a: a strong member before a weak
+    definition) is an edge like any other.
+  - **Reading a member.** An unchanged archive's newly extracted member
+    is read through the archive's descriptor at the member's stored
+    offset, after the descriptor's `fstat` equals the archive's `STAT`
+    row (IN-28a condition 2); else `input-changed`. A changed archive's
+    members are per-member changed, appeared or gone files (IN-24). No
+    unchanged archive is parsed: its members' rows are the state's.
+  - **Bound** (`extraction-changed`): more than 1,024 members flipping, or
+    a removal cone whose re-seeding reads more than 65,536 `KEY_REFS`
+    rows, ends the update with `extraction-changed` before anything is
+    written (a full link is cheaper there). The bound values are
+    *argued, not run*.
+  - **Modelled** (`tests/incr-design/model_extract.py`, written from this
+    text): R1a and R1b give the full link's member set; 3,000 random
+    programs (members interleaved with objects, weak, common and
+    weak-undefined mentions, root keys) with four edit hops each, 12,000
+    updates with 3,534 extraction flips: 0 differ from §4.1's closure
+    from scratch. Not modelled: `--whole-archive`, `--start-group`
+    semantics beyond §4.1's, shared objects, `--wrap`, file 0's Assign
+    candidates.
+  - **Cost.** State: a lazy member's defined or common mention costs a
+    `MENTIONS` row (12 B) and a `KEY_REFS` row (12 B); measured here,
+    `libstdc++.a` (GCC 14, AArch64) has 7,271 defined globals in 189
+    members (38.5 a member), `libc.a` 4,568 in 2,022. At the operator's
+    1,000-3,000 archives, *estimate* with libstdc++'s density and 50
+    members an archive: 1.9-5.8 M lazy definitions, 46-139 MB if no
+    member were extracted, less by the extracted share (whose rows exist
+    anyway); not measured on the operator's code base. Per update: for
+    each affected key a binary search of `KEY_REFS` (WP-105: 225 preads
+    for `RESOLVED` on g10x), plus the cone's in-edge reads; no archive is
+    opened except to read a newly extracted member.
+  *Test (U-3):* `weak_definition_vs_later_member` (R1a),
+  `member_cycle_dropped_together` (R1b), `newly_extracted_member`,
+  `no_longer_extracted_member`, `member_flips_back_on_third_hop`, each
+  judged by IN-79; `extraction_bound_is_extraction_changed`; the model's
+  random series as a property test over hand-made `KEY_REFS`.
+
+- **IN-71c [v1] Linker-defined keys are affected keys** (WP-207;
+  review-in72 B-2, review-in77 B-3 trace 2). Every update recomputes
+  `DEFINED` (the values of the keys of resolve.md §8.1's table, the one
+  table of linker-defined symbols, and of `__start_`/`__stop_` keys) from
+  its `Placement` (O(rows of `DEFINED`): tens to a few hundred), and every
+  key whose value, section or existence differs from the stored row is an
+  affected key, whose referrers (`KEY_REFS`: `libc-start.o` for
+  `__init_array_end`, `dl-minimal-malloc.o` for `_end`, measured by
+  review-in72) are refilled. No list is consulted, so a linker-defined
+  symbol added to §8.1's table later is covered without an edit here.
+  Today that set is: `_GLOBAL_OFFSET_TABLE_`, `__ehdr_start`,
+  `__executable_start`, `_etext`/`etext`/`__etext`, `_edata`/`edata`,
+  `__bss_start`, `_end`/`end`, AArch64's `__data_start`, `__end__`,
+  `__bss_start__`, `__bss_end__`, `_bss_end__`,
+  `__init_array_start`/`_end`, `__preinit_array_start`/`_end`,
+  `__fini_array_start`/`_end`, `__rela_iplt_start`/`_end` (i386
+  `__rel_iplt_*`), `__start_SEC`/`__stop_SEC`, `_TLS_MODULE_BASE_`,
+  `__GNU_EH_FRAME_HDR`; the ones a delta layout can move are all but
+  `__ehdr_start` and `__executable_start`, but the rule does not depend
+  on that judgment. *Test (U-3, U-10):* `init_array_grows`,
+  `init_array_shrinks`, `init_array_grows_then_shrinks`,
+  `start_stop_registry_grows_then_shrinks`,
+  `ifunc_added_moves_rela_iplt_end`, `local_ifunc_slot_dead_and_appended`
+  (IN-28b's IPLT case, review-in72 m-5), `bss_grows_moves_end`, each a
+  first update and a third hop.
+
+- **IN-71d [v1] ODR checks and `.mason.meta` in an update** (WP-207).
+  O-20's findings are a function of the rows of the live units, grouped
+  by key; an update recomputes them for the **ODR-affected keys** only:
+  every key with a row in a unit of a changed, appeared, gone, drawn-in,
+  newly extracted or no longer extracted file (old or new version), and
+  every key whose COMDAT keeper changed (O-21 names the kept file). For
+  each, its classes are recomputed from `ODR_REFS` (one row per (ODR key,
+  file, row kind): the class the row's hash and layout fall in) and the
+  changed files' new rows; findings of other keys are the stored ones
+  (`DIAGS`, IN-75a). O-23's archive rows are stored only under
+  `--odr-check-archives`. The default severity is `--odr=warn` (operator,
+  2026-11-17); a finding the mode makes fatal fails the update as it
+  fails a full link (IN-5). The operator's code base does not mix `-std`
+  levels in one executable, so O-32 needs no update rule beyond being
+  recomputed with its key. *Estimate* (odr.md O-21, O-22's counts): about
+  1,600 rows a heavy TU, 12 B each, 19 MB for 1,000 TUs, plus one 28-byte
+  class row per key; zero when no input has `.mason.meta` or under
+  `--odr=off`. **`.mason.meta` in the output** (`--keep-mason-meta`,
+  MT-32) is a non-allocated per-file contribution like a debug section:
+  until G-1's contributions cover it, an update whose changed files carry
+  units under that option is `update-not-implemented` (detail `meta`).
+  *Argued, not run* (no update code; kiln's kind 2 rows are not yet
+  emitted). *Test (O-1 package):* each K of odr.md §2 introduced by an
+  update, removed by the next, introduced again (three hops): the
+  diagnostics equal the full link's.
 
 - **IN-71a [v1] Liveness from stored edges.** IN-29's stored graph is the
   `EDGES` table (IN-18e: per file a range of rows, each IN-29's row
