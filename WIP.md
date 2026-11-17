@@ -1,16 +1,12 @@
-# WIP: WP-155 (D-25's call-only cell)
+# WIP: WP-155 (D-25's call-only cell; ruling (A))
 
-State: measured (scratch `.build/target-wp-140/wp155/m/`: `meas.sh`, `table-before.txt`,
-`table-after.txt`, `crt.sh`). Code: `crates/mortar_scan/src/weak.rs` `WeakUses::verdict`
-(a branch alone -> WeakDyn; branch + unfillable stays Weak0 in Exec), unit test
-`d25_verdicts`, `crates/mortar_scan/tests/dynamic.rs` `d25_weak_classes` updated.
-Default C/C++ links (-pie, -no-pie, static-pie, both arches) byte-identical before/after.
+Done: spec (D-25, §13.1, arch §3.12/§4.3, a64 §7.1, x64 X-16/X-57), code
+(`weak.rs` verdict, `mortar_arch::weak_use_kind`, `SectionOut::writable`, a64/x64
+scan+apply, image reloc, sites probe), unit tests, link tests weak-branch-{call,split,gc},
+weak-class-table updated, static-identical re-recorded (AArch64), record
+`spec/landed/dyn/WP-155.md` (census section to fill).
 
-WAITING for the supervisor's ruling on the mixed cell (branch + unfillable use in Exec):
-GNU ld and lld disagree on x86-64 (GNU ld: Weak0, call 0, SIGSEGV even with LD_PRELOAD;
-lld: JUMP_SLOT, the preloaded definition is called, the test reads 0); on AArch64 both
-write the JUMP_SLOT.
-
-Next after the ruling: the spec (D-25 "Then:" + closing Weak0 sentence, D-11 wording,
-§13.1 row, a64 §7.1, x64 X-57), link tests under tests/link/dyn/reloc, the
-weak-class-table branch row, static-identical, census, the lane, the record WP-155.md.
+Next: census (script `.build/target-wp-140/wp155/census.sh`, logs in `wp155/census/`):
+quick and --filter shared before/after; x86-64 no-pie kept dirs -> diff dynsyms
+(new keys, count) -> record §5. Then the whole lane and the gate in the background,
+record the lines, delete WIP.md, final commit.
