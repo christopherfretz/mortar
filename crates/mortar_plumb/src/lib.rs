@@ -39,6 +39,7 @@ pub mod map;
 mod maprec;
 mod meta;
 pub mod mutate;
+mod odrrt;
 mod odrtable;
 pub mod opts;
 mod plt;

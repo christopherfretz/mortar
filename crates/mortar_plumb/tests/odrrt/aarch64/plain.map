@@ -1,0 +1,44 @@
+mortar-map 2
+file 0 main.o
+piece 0 13 0 360 14
+piece 0 13 14 374 14
+piece 0 13 28 388 14
+piece 0 13 3c 39c 14
+piece 0 13 50 3b0 14
+piece 0 13 64 3c4 14
+place 0 1 103dc 3c
+place 0 9 20418 8
+place 0 7 20420 8
+place 0 5 20428 8
+place 0 3 30598 0
+place 0 4 30598 4
+merged 0 11 .comment
+chunk synthetic .interp 270 b
+chunk synthetic .gnu.hash 2d0 1c
+chunk synthetic .dynsym 2f0 18
+chunk synthetic .dynstr 308 b
+chunk synthetic .rela.dyn 318 48
+chunk synthetic .eh_frame 360 7c
+chunk synthetic .got 20590 8
+chunk synthetic .dynamic 20430 160
+chunk synthetic .symtab - 180
+chunk synthetic .strtab - 58
+chunk synthetic .shstrtab - a5
+chunk synthetic .comment - d
+chunk synthetic .note.mason 280 50
+chunk synthetic .pad.relro 20598 fa68
+output pie
+interp /lib/ld.so
+bind lazy
+relro on
+arg -pie
+arg -dynamic-linker
+arg /lib/ld.so
+arg -o
+arg plain
+arg main.o
+arg libc.so.6
+arg --odr-table=full
+arg --mortar-map=plain.map
+needed libc.so.6
+end

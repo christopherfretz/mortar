@@ -616,6 +616,8 @@ pub enum Lands {
     OdrStats,
     /// `diagnostics.odr.table` (`--odr-table=`).
     OdrTable,
+    /// `diagnostics.odr.runtime` (`--odr-runtime=`).
+    OdrRuntime,
     /// `diagnostics.odr.check_archives` (`--odr-check-archives`).
     OdrCheckArchives,
     /// `diagnostics.odr.keep_meta` (`--keep-mason-meta`).
@@ -677,6 +679,26 @@ pub enum Lands {
     Other,
 }
 
+/// The `Plan` field a `-z` keyword lands in.
+const fn z_field(field: ZField) -> &'static str {
+    match field {
+        ZField::Now(_) => "z.now",
+        ZField::Relro(_) => "z.relro",
+        ZField::Execstack(_) => "z.execstack",
+        ZField::Text(_) => "z.text",
+        ZField::SeparateCode(_) => "z.separate_code",
+        ZField::Defs(_) => "z.defs",
+        ZField::MaxPageSize => "z.max_page_size",
+        ZField::CommonPageSize => "z.common_page_size",
+        ZField::StackSize => "z.stack_size",
+        ZField::PackRelativeRelocs(_) => "z.pack_relative_relocs",
+        ZField::Copyreloc(_) => "z.copyreloc",
+        ZField::Combreloc(_) => "z.combreloc",
+        ZField::Sectionheader(_) => "z.sectionheader",
+        ZField::MemorySeal(_) => "z.memory_seal",
+    }
+}
+
 impl Lands {
     /// The `Plan` field the option lands in, for the generated table.
     #[must_use]
@@ -712,22 +734,7 @@ impl Lands {
             Self::PackDynRelocs => "dynamic.pack_dyn_relocs",
             Self::Init => "dynamic.init",
             Self::Fini => "dynamic.fini",
-            Self::Z(field) => match field {
-                ZField::Now(_) => "z.now",
-                ZField::Relro(_) => "z.relro",
-                ZField::Execstack(_) => "z.execstack",
-                ZField::Text(_) => "z.text",
-                ZField::SeparateCode(_) => "z.separate_code",
-                ZField::Defs(_) => "z.defs",
-                ZField::MaxPageSize => "z.max_page_size",
-                ZField::CommonPageSize => "z.common_page_size",
-                ZField::StackSize => "z.stack_size",
-                ZField::PackRelativeRelocs(_) => "z.pack_relative_relocs",
-                ZField::Copyreloc(_) => "z.copyreloc",
-                ZField::Combreloc(_) => "z.combreloc",
-                ZField::Sectionheader(_) => "z.sectionheader",
-                ZField::MemorySeal(_) => "z.memory_seal",
-            },
+            Self::Z(field) => z_field(field),
             Self::GcSections(_) => "shaping.gc_sections",
             Self::PrintGcSections(_) => "shaping.print_gc_sections",
             Self::GcKeepExported => "shaping.gc_keep_exported",
@@ -760,6 +767,7 @@ impl Lands {
             Self::Odr | Self::NoOdrCheck => "diagnostics.odr.mode",
             Self::OdrStats => "diagnostics.odr.stats",
             Self::OdrTable => "diagnostics.odr.table",
+            Self::OdrRuntime => "diagnostics.odr.runtime",
             Self::OdrCheckArchives => "diagnostics.odr.check_archives",
             Self::KeepMasonMeta => "diagnostics.odr.keep_meta",
             Self::Map => "bookkeeping.map",

@@ -33,7 +33,7 @@ i386 fit.
 | 1 | `ET_EXEC`, static, non-PIE, AArch64. Placement, relocations (the §4.2 table), the GOT slots of a static link, structure (§6), content, symbol values | — |
 | 2 (WP-028) | Static TLS: every AAELF64 TLS type and the relaxations W9–W13 (§4.7); IFUNC/`IRELATIVE`, `.eh_frame` and `.eh_frame_hdr` contents (§6.4), the symbol table (§6.5), non-alloc (DWARF) relocations | `tls` (except the constructs §4.7 names), `ifunc`, `eh-frame` (except labels inside `.eh_frame`, §6.4), `non-alloc` |
 | 3 (M2) | Dynamic executables (`Exec`, `Pie`) and static PIE: the dynamic sections, dynamic relocations, PLT, copies, shared inputs (§12, P-D1-P-D13; static-pie P-D14 and P-D15, §12.4). Shared-object output is M4 | — |
-| 4 (M6) | Mason metadata and the one-definition-rule table: `.mason.meta` in outputs, `.note.mason` (§13, P-M1-P-M3; WP-078) | — |
+| 4 (M6) | Mason metadata and the one-definition-rule table: `.mason.meta` in outputs, `.note.mason` (§13, P-M1-P-M3; WP-078); an output with the load-time runtime (`--odr-runtime`): the runtime's note, its input read from the verifier's own copy, its entry, exports, imports and sections (§13.1, P-M2, P-M3; WP-197) | — |
 | x | x86-64 and i386 tables (§4.5) | `machine` |
 | G (WP-098) | `.gdb_index`: gdb's format for every producer (P-G1–P-G5) and synth.md §17 for mortar's (P-G6–P-G9), §6.10. `.debug_names` is not judged | — |
 | R (M4-r; planned: RL-5, WP-185) | Relocatable outputs (`-r`, `ET_REL`): every input section and relocation once, the symbol table, `.eh_frame`, groups, the header, the container, the notes, every section header (§14, P-P2-P-P11, accepted by P-P9); the final program through `-r` against the direct link, on two final links (P-P1). Until it lands, S1 rejects `ET_REL` and the lane counts the output as `relocatable` (`spec/harness.md`) | — |
@@ -101,6 +101,13 @@ itself a member of another archive is refused (I2).
 An input object must be `ET_REL` of the output's machine. Otherwise the
 finding is I2. A file the map names that is not among the inputs is I1,
 reported once per path.
+
+One input is never the caller's (WP-197): the load-time ODR runtime,
+which mortar adds under the name `<mortar:odr-runtime>` (`spec/cli.md`
+C-ODR-RT). When a mortar map names that file and its line asks for the
+runtime, the verifier reads it from its own copy of the object (§13.1),
+whatever the caller supplies by that name; otherwise the name is a path
+like any other.
 
 ### 2.3 The map
 
@@ -406,6 +413,7 @@ of: mortar accepted the line, so it named exactly one GNU spelling
 | P-G6 (§6.10) | the last of `--gdb-index` and `--no-gdb-index`; `-s`, `--strip-all`, `-S`, `--strip-debug` | the line | not judged: P-G6 to P-G9 are mortar's rules |
 | B1 (§6.7) | the last of `--build-id[=STYLE]` and `--no-build-id` (I-69): presence, length and tree | the line; the build-id chunk's style, when it states one, must be the line's | not judged (no tool recomputes their ids) |
 | P-M1's kept section, P-M2's presence, P-M3's second half (§13) | `--keep-mason-meta`; the last `--odr-table`; the last of `--odr=M` and `--no-odr-check` | the line | none of them (a reference has none of mortar's options) |
+| P-M2's runtime note, P-M3's runtime rules, the runtime input (§13.1, WP-197); P-D3's and P-D6's `now` | the last `--odr-runtime` (default `off`); whether `--odr-table` is spelled; the last of `-z now` and `-z lazy` | the line | none (a reference has none of mortar's options: its `now` is the line's `-z` words alone) |
 | P-D4's `PF_X` (dynamic), S10's `PF_X` (static) | the last of `-z execstack` and `-z noexecstack` (L-84) | the line | P-D4: the caller's line; S10: not judged (no line) |
 | stage 3 (§12, P-D1 to P-D15) | the whole line: D-1's kind, the files, `-dynamic-linker`, `-z now`, `-z relro`, `-E`, ... (`line.rs`) | the line | the caller's line (`Ctx.line`); without one, P-D2 |
 | P-D7, P-D19, M10's export roots, the export set's one derivation (`shared::ExportRule`) | `--exclude-libs` (every kind) and `--dynamic-list`, `--version-script` (their files' contents) | the line's words; each file read from the path the line names, relative to the link's directory (`Ctx.files`): the map's `dynamic-list`/`version-script` records (a `Shared` map only) give the path, never the content, so a file changed after the link is judged as it now reads (WP-161) | the caller's line, the files as above |
@@ -420,7 +428,10 @@ Still read without the line, and why: P-M3's second half ("every
 relocatable file the map names is on the command line") needs the
 line's files found as the linker found them (`-l` searched in the `-L`
 directories, scripts read), which only stage 3's entry has (`Ctx.files`):
-on a static output it is not judged. S7's entry symbol (`-e`) is judged
+on a static output it is not judged. The runtime's position on the line
+(after every input, WP-197) is the words' too, so the input set and
+stage 3 read it on a dynamic output only; a static output with the
+runtime is a line mortar refuses (P-M2's presence). S7's entry symbol (`-e`) is judged
 in stage 3 only (P-D4); a static output's entry is held to "some
 symbol's value" (S7, mortar's clause).
 
@@ -3733,7 +3744,9 @@ and left unchecked, the bytes S12 compared, and the FDEs and header
 entries of §6.4, the symbols of §6.5, the IRELATIVE records and IPLT
 entries of §4.8, and the property types §6.6 judged and did not judge, what B1 made of
 the build id (§6.7), the x86-64 large sections whose placement no
-rule judges (`placement_not_judged`, §6.5), stage 4's `meta` (§13.2), and for an output with a
+rule judges (`placement_not_judged`, §6.5), stage 4's `meta` (§13.2;
+with the ODR runtime also `ODR runtime: outputs, entries, imports`,
+WP-197), and for an output with a
 `.gdb_index` its version, units, address entries and names and the rules
 that judged it (`gdb index: ...`, §6.10). A stripped dynamic output
 (no `.symtab`; WP-164) adds one line, a `-r` output its `relocatable`
@@ -6073,6 +6086,11 @@ named equivalent), 3.1 s on AArch64 and 3.6 s on x86-64.
   `DT_FLAGS_1` only `DF_1_NOW`, `DF_1_PIE`. **(mortar)** `DT_FLAGS` is
   present exactly under `-z now` and is then exactly `DF_BIND_NOW`;
   `DT_RELACOUNT` is present exactly when a `RELATIVE` record is.
+  Throughout stage 3, `-z now` is the effective one (§13.1, WP-197): the
+  line's last of `-z now`/`-z lazy`, or, for a mortar map whose line asks
+  for the ODR runtime and says neither, `-z now` (cli.md C-ODR-RT:
+  `DF_BIND_NOW` and `DF_1_NOW`, and P-D3's `bind now`); with `-z lazy`
+  the output is as without the option.
 - **P-D7.** `.dynsym` entry 0 is all zero (its `st_name` field, not the
   string it names: WP-161); `st_other` has no bits beyond
   the visibility (AArch64: also `STO_AARCH64_VARIANT_PCS`, 0x80, which a
@@ -6824,6 +6842,44 @@ stage 3 puts outside (P-D1) is still judged here.
   `--odr=M` and `--odr M` (default `warn`), `--no-odr-check`
   (`--odr=off`), `--keep-mason-meta`. A reference's map has none of
   them (none of mortar's options).
+- **The runtime's options** (WP-197; `spec/cli.md` C-ODR-RT, `spec/odr.md`
+  O-53a): `--odr-runtime=MODE` and `--odr-runtime MODE`, the last one
+  (default `off`; `report` and `fatal` ask for the runtime, any other
+  value is a line mortar refuses); whether the line spells `--odr-table`
+  at all; the last of `-z now` and `-z lazy`. With the runtime asked
+  for, the **effective** options are: `--odr-table` `exported` unless
+  the line spells one (`=full` and `=exported` stand; an explicit last
+  `=off` is `conflicting-options`, a line mortar refuses: a P-M2
+  finding), the table due under `--odr=off` too (cli.md: "the runtime
+  reads the table"; WP-198 §2: the two are independent), and `-z now`
+  unless the line's last of the two is `-z lazy` (stage 3's `now`,
+  P-D3 and P-D6, reads the effective value). A reference's map has none
+  of them.
+- **The runtime input** (WP-197). With the runtime asked for, mortar
+  adds the object of the output's machine and kind as an input after
+  every input of the line, named `<mortar:odr-runtime>` (cli.md
+  C-ODR-RT). The verifier holds its own copy of the six objects
+  (`include_bytes!` of `runtime/odr/obj/*.o`; a unit test holds each
+  equal to `runtime/odr/PINS`' SHA-256 and size) and chooses one by the
+  **expected runtime id**, derived from the output alone, never from
+  the map: the machine (`EM_AARCH64` 0, `EM_X86_64` 2, `EM_386` 4) plus
+  1 for an executable (the output has `PT_INTERP`, PIE or not) and 0 for
+  a shared object (`ET_DYN` without `PT_INTERP`); an output of neither
+  (a static executable) has no id. When a mortar map names the file
+  `<mortar:odr-runtime>` (not an archive member) and its line asks for
+  the runtime, that object is the file's bytes for every reader, the
+  caller's file of that name hidden: the store (§8.1), so the
+  placement, relocation re-application (§5), merged pieces, `.eh_frame`
+  (§6.4), symbols (§6.5), content (S12) and the dead-range rules judge
+  its sections as any object's; the line's readers (`Ctx.files`), so
+  the input set (§3.8) and stage 3's model (§12: D-11's needed
+  libraries, P-D7's references, the dynamic relocations) see its
+  references; and the line's words, which get the name appended after
+  every word (the input's place in resolve §4.1's order). An object
+  that is not the one of the output's machine and kind would show as
+  bytes the output does not hold (§5, S12), and its note's id is P-M2's
+  finding. Without the option, or for a reference's map, the name is
+  a path like any other: not among the inputs, I1 (today's rule).
 - **The output kind.** A table is due (O-50, as implemented: WP-075)
   exactly when the output has a `PT_INTERP` (a dynamic executable, PIE
   or not), `--odr-table` is not `off` and `--odr` is not `off`, units
@@ -6923,10 +6979,29 @@ stage 3 puts outside (P-D1) is still judged here.
     the name padded to 4 and the descriptor to 8 from offset 24, O-52;
     every padding byte zero, since the bytes are a function of the rows,
     O-50: WP-078's spec finding 11), each owned by `MasonMeta` (`n_namesz` 10), with types `0x4d4f4401`
-    (exactly one) and `0x4d4f4402` (at most one, after the first).
-  - *Presence.* The section exists exactly when a table is due (§13.1);
-    the second note exactly when `--odr-table=full`. Options unknown:
-    presence is not judged, the content rules run.
+    (exactly one, first), `0x4d4f4402` (at most one, right after the
+    first) and `0x4d4f4403` (at most one, last; O-52 as WP-198 wrote
+    it), and no other type.
+  - *Presence.* The section exists exactly when a table is due (§13.1,
+    with the runtime's effective options);
+    the second note exactly when `--odr-table=full`; the runtime note
+    (WP-197) exactly when the line's last `--odr-runtime` is `report` or
+    `fatal` and the output has `PT_INTERP` or is a shared object. A line
+    that asks for the runtime is itself a finding when mortar refuses
+    it: an output with neither (a static executable or static PIE,
+    `odr-runtime-static`), an explicit last `--odr-table=off` beside it
+    (`conflicting-options`), a value other than `off`, `report`,
+    `fatal`. A `-r` output is stage R's (the option is a no-op there,
+    cli.md C-R2b: P-P8 holds it to no `.note.mason`). Options unknown
+    (a reference's map is held to none of mortar's options, so a
+    runtime note in a reference's output is a presence finding as the
+    table's note is): presence is not judged, the content rules run.
+  - *Runtime note* (WP-197; O-52, O-59): `n_descsz` exactly 16; the
+    descriptor's four little-endian `u32` are version 1, the mode (1
+    for `report`, 2 for `fatal`, the line's last `--odr-runtime`;
+    options unknown: 1 or 2), flags 0, and the runtime id, which is
+    the output's expected id (§13.1: its machine and kind, from the
+    header and `PT_INTERP`; an output that has none is a finding).
   - *Header and shape* (O-51): version 1, `row_size` 24, reserved 0,
     `n_descsz` exactly `16 + 24 × count`; each row's reserved `u16` 0;
     rows sorted by key, then `.dynsym` index, no two equal; each
@@ -6969,25 +7044,80 @@ stage 3 puts outside (P-D1) is still judged here.
     and name) of the live units, the group's first row in (file, unit,
     row) order, carrying its key, the first 8 bytes of its hash, its
     layout, size, alignment and flags.
-- **P-M3 (no code).** In an output with a `.note.mason` or with
-  `--odr-table` not `off`: every byte of `.init_array`, `.fini_array`
+- **P-M3 (no code, or exactly this code).** In an output with a
+  `.note.mason`, with `--odr-table` not `off` or with the runtime asked
+  for: every byte of `.init_array`, `.fini_array`
   and `.preinit_array` (by `sh_type`) is covered by input sections of the
   same type the map places there, and no `chunk` record lies in them;
   every relocatable file the map names is on the command line (a
   `Relocatable` item of `Line`, by path, or a member of an archive that
-  is). Options unknown: the second half is not judged.
+  is), except, exactly when the line asks for the runtime, the one file
+  `<mortar:odr-runtime>`, whose bytes are the verifier's (§13.1). Options
+  unknown: the second half is not judged. With the runtime asked for
+  (WP-197; O-59), also:
+  - *input*: the map names `<mortar:odr-runtime>`, and no file that is
+    not an archive member follows it in the map's file order (the
+    runtime is the line's last input; members extracted after it, as
+    for it, may follow). Without the option the file is not on the
+    command line: the rule above, unchanged.
+  - *kept*: every allocated section of the runtime with bytes has a
+    place (§4.4 step 0's `no_place` is false: an input `.eh_frame`
+    merged into the output's counts as placed): `--gc-sections` keeps
+    it (its entry is a start-up root, `spec/live.md` E14 Q5), and nothing
+    else removes it. ICF is not judged: mortar refuses `--icf`
+    (cli.md), so no output folds it.
+  - *entry*: the runtime's entry section (its `.preinit_array` in an
+    executable, its `.init_array.00000` in a shared object; the two
+    flavours have one each) is placed whole, once, inside an output
+    section of that `sh_type`. Every other input section of that type
+    the map places in the same output section lies before the entry
+    exactly when the order puts it there, derived from the input
+    sections' names and the map's file order (WP-198 §2.2, measured on
+    the three references and mortar): in `.preinit_array` input order
+    (an earlier file before, a later after); in `.init_array` by
+    priority, `.init_array.N` being N and an unnumbered `.init_array`
+    or `.ctors` after every numbered one, then input order. So a user's
+    own `.preinit_array` or priority-0 entry of a file of the line runs
+    before the runtime's, and every other constructor after it. That
+    the entry word holds the runtime's function is §5's (its `.rela`
+    record re-applied, a RELATIVE record's addend by P-D9).
+  - *exports*: no `.dynsym` definition lies inside a placed section of
+    the runtime, and neither do `DT_INIT` nor `DT_FINI` (O-53: it
+    defines and exports no symbol; its entry is the init array's). No
+    version definition can name it (a version definition names a
+    `.dynsym` definition). A `DT_NEEDED` the runtime alone needs is
+    judged by D-11 (P-D6) with the runtime's references in the model
+    (§13.1): libc is needed exactly when some reference, the runtime's
+    included, binds to it.
+  - *imports*: each non-weak undefined symbol of the runtime but
+    `__ehdr_start` and `_GLOBAL_OFFSET_TABLE_` (the linker's, O-53) is
+    imported by `.dynsym` or defined by the output or an input. The six
+    objects need `clock_gettime`, `dl_iterate_phdr`, `getauxval`,
+    `getenv`, `write`, `mmap`, `munmap` and `abort` (O-53's list;
+    `-nostdlib` fails the link, cli.md). That each import binds to a
+    needed library's definition is stage 3's (P-D7).
 
 Messages start with the sub-rule's name (`kept section`, `place`,
-`presence`, `header`, `order`, `key`, `version`, `row set`, `hash`,
-`flags`, `full`, `init array`, `input`), so a mutant's catch is named
+`presence`, `runtime`, `header`, `order`, `key`, `version`, `row set`, `hash`,
+`flags`, `full`, `init array`, `input`, `kept`, `entry`, `exports`,
+`imports`), so a mutant's catch is named
 by rule and field. Coverage: `meta` counts outputs judged, live units,
 rows checked, names not judged, and whether the options were known
-(§7.2; `Report::summary`'s `ODR metadata` line).
+(§7.2; `Report::summary`'s `ODR metadata` line); with the runtime
+(WP-197), `runtime_outputs`, `runtime_entries` (entry sections judged)
+and `runtime_imports` (undefined symbols of the runtime judged), the
+`ODR runtime` line. The runtime's relocation records, bytes, FDEs and
+symbols are counted where any object's are (records, S12's bytes, §6.4,
+§6.5), not apart.
 
 What stage 4 does **not** judge: `-r` outputs (stage R's, §14.5 P-P8); MT-32's
 loaded-bytes sentence (above: two links); a unit's kinds 4 and 5 beyond their framing; the ODR verdict
 itself (`spec/odr.md` Q11, answered in WP-078's record: not
-implemented); the load-time hook (O-58).
+implemented); the load-time hook (O-58): the runtime's BEHAVIOUR at
+load (what it checks, reports and aborts on) is `tests/hook/run.sh`'s
+matrix, not a rule of one output; the verifier judges that the bytes,
+the entry, the note and the binding mode are the ones that behaviour
+was measured on.
 
 ## 14. Stage R: relocatable outputs (M4-r; planned: RL-5, WP-185)
 

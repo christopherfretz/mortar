@@ -39,10 +39,18 @@ enum Table {
 
 /// The options stage 4 reads (§13.1).
 #[derive(Debug, Clone, Copy)]
+#[allow(clippy::struct_excessive_bools)] // independent facts of the line, one per option
 struct Opts {
     table: Table,
     odr_off: bool,
     keep: bool,
+    /// `--odr-runtime` (WP-197): the note's mode, `None` for off.
+    runtime: Option<u32>,
+    /// The line refuses with `conflicting-options`: an explicit last
+    /// `--odr-table=off` beside the runtime (`spec/cli.md` C-ODR-RT).
+    conflict: bool,
+    /// The line asks for the runtime with a value mortar refuses.
+    runtime_refused: bool,
 }
 
 /// Stage 4's options from §3.2a's reader.
@@ -55,6 +63,9 @@ fn options(o: &Options) -> Opts {
         },
         odr_off: o.odr_off,
         keep: o.keep_mason_meta,
+        runtime: crate::odrrt::mode(o.odr_runtime),
+        conflict: crate::odrrt::on(o) && o.odr_table_given && o.odr_table == OdrTable::Off,
+        runtime_refused: o.odr_runtime == crate::opts::OdrRuntime::Other,
     }
 }
 
@@ -280,7 +291,14 @@ pub(crate) fn check(
     let opts = if mortar {
         opts.map(options)
     } else {
-        Some(Opts { table: Table::Off, odr_off: false, keep: false })
+        Some(Opts {
+            table: Table::Off,
+            odr_off: false,
+            keep: false,
+            runtime: None,
+            conflict: false,
+            runtime_refused: false,
+        })
     };
     cov.options_known = opts.is_some();
     let has_note = image.sections.iter().any(|s| s.name == ".note.mason");
@@ -402,8 +420,27 @@ pub(crate) fn check(
 
     // P-M2.
     let interp = image.phdrs.iter().any(|p| p.p_type == PT_INTERP);
-    let due = opts.map(|o| (interp || shared) && o.table != Table::Off && !o.odr_off);
+    // The runtime (WP-197, spec/cli.md C-ODR-RT) implies `--odr-table=
+    // exported` and writes the table under `--odr=off` too.
+    let rt = opts.and_then(|o| o.runtime);
+    let due = opts.map(|o| {
+        (interp || shared)
+            && (o.table != Table::Off || o.runtime.is_some())
+            && (!o.odr_off || o.runtime.is_some())
+    });
+    let rt_due = opts.map(|o| (interp || shared) && o.runtime.is_some());
     let full = opts.map(|o| o.table == Table::Full);
+    if let Some(o) = opts {
+        if o.runtime.is_some() && !(interp || shared) {
+            f.push(Finding::new(Rule::Meta(2), "presence: the line asks for the runtime (--odr-runtime) and the output is no dynamic executable or shared object: mortar refuses the line (odr-runtime-static, spec/cli.md C-ODR-RT)"));
+        }
+        if o.conflict {
+            f.push(Finding::new(Rule::Meta(2), "presence: the line's last --odr-table is off beside --odr-runtime: mortar refuses the line (conflicting-options, spec/cli.md C-ODR-RT)"));
+        }
+        if o.runtime_refused {
+            f.push(Finding::new(Rule::Meta(2), "presence: the line's --odr-runtime has a value mortar refuses (spec/cli.md: off, report, fatal)"));
+        }
+    }
     let note_sec = image.sections.iter().position(|s| s.name == ".note.mason");
     let Some(ni) = note_sec else {
         if due == Some(true) {
@@ -412,8 +449,8 @@ pub(crate) fn check(
                 "presence: no .note.mason, and --odr-table asks for one (O-50)",
             ));
         }
-        if opts.is_some_and(|o| o.table != Table::Off) {
-            pm3(image, objs, map, opts.is_some(), line, &mut f);
+        if opts.is_some_and(|o| o.table != Table::Off || o.runtime.is_some()) {
+            pm3(image, objs, map, opts.is_some(), rt.is_some(), line, cov, &mut f);
         }
         return f;
     };
@@ -454,12 +491,40 @@ pub(crate) fn check(
     };
     let firsts: Vec<&Note<'_>> = notes.iter().filter(|n| n.ty == NT_ODR).collect();
     let seconds: Vec<&Note<'_>> = notes.iter().filter(|n| n.ty == NT_ODR_FULL).collect();
+    let thirds: Vec<&Note<'_>> = notes.iter().filter(|n| n.ty == crate::odrrt::NT_ODR_RT).collect();
+    // O-52: the table's note, at most one =full note after it, at most
+    // one runtime note last (WP-198).
     if firsts.len() != 1
         || seconds.len() > 1
-        || notes.len() != firsts.len() + seconds.len()
+        || thirds.len() > 1
+        || notes.len() != firsts.len() + seconds.len() + thirds.len()
         || notes.first().is_some_and(|n| n.ty != NT_ODR)
+        || (seconds.len() == 1 && notes.get(1).is_some_and(|n| n.ty != NT_ODR_FULL))
+        || (!thirds.is_empty() && notes.last().is_some_and(|n| n.ty != crate::odrrt::NT_ODR_RT))
     {
-        f.push(Finding::new(Rule::Meta(2), format!("place: {} notes, {} of type 0x4d4f4401 and {} of 0x4d4f4402; O-52 is one table note, then at most one =full note", notes.len(), firsts.len(), seconds.len())).at(sh.sh_addr));
+        f.push(Finding::new(Rule::Meta(2), format!("place: {} notes, {} of type 0x4d4f4401, {} of 0x4d4f4402 and {} of 0x4d4f4403; O-52 is one table note, then at most one =full note, then at most one runtime note", notes.len(), firsts.len(), seconds.len(), thirds.len())).at(sh.sh_addr));
+    }
+    if let Some(d) = rt_due
+        && d == thirds.is_empty()
+    {
+        f.push(
+            Finding::new(
+                Rule::Meta(2),
+                format!(
+                    "presence: the runtime note is {} and the line's --odr-runtime is {} (O-52, O-53a)",
+                    if thirds.is_empty() { "absent" } else { "present" },
+                    match rt {
+                        Some(1) => "report",
+                        Some(_) => "fatal",
+                        None => "off",
+                    }
+                ),
+            )
+            .at(sh.sh_addr),
+        );
+    }
+    for n in &thirds {
+        crate::odrrt::note(n.desc, sh.sh_addr + n.at as u64, image, rt, &mut f);
     }
     if let Some(full) = full
         && due == Some(true)
@@ -488,7 +553,7 @@ pub(crate) fn check(
         let base = sh.sh_addr + n.at as u64;
         full_note(n.desc, base, image, &live, &carried, cov, &mut f);
     }
-    pm3(image, objs, map, opts.is_some(), line, &mut f);
+    pm3(image, objs, map, opts.is_some(), rt.is_some(), line, cov, &mut f);
     f
 }
 
@@ -930,12 +995,15 @@ fn sort_key(r: &[u8]) -> (u64, [u8; 8], u64, u32, u16, u16) {
 }
 
 /// P-M3: a table adds no code (§13.2).
+#[allow(clippy::too_many_arguments)]
 fn pm3(
     image: &Image<'_>,
     objs: &[Obj<'_>],
     map: &Map,
     inputs: bool,
+    rt: bool,
     line: Option<&Line>,
+    cov: &mut MetaCoverage,
     f: &mut Vec<Finding>,
 ) {
     for s in &image.sections {
@@ -992,6 +1060,8 @@ fn pm3(
             }
         }
     }
+    // The runtime's code (WP-197): its entry, exports, imports, sections.
+    crate::odrrt::pm3(image, objs, map, rt, cov, f);
     if !inputs {
         return;
     }
@@ -1002,8 +1072,14 @@ fn pm3(
         .map(|i| match i {
             Item::Relocatable { path, .. } | Item::Shared { path, .. } => path.as_str(),
         })
+        // The runtime is no file of the line (WP-197): the verifier's
+        // reading of the line has it after every input.
+        .filter(|p| *p != crate::odrrt::PATH)
         .collect();
     for o in objs.iter().filter(|o| o.elf.header().e_type == ET_REL) {
+        if rt && o.path == crate::odrrt::PATH && o.member.is_none() {
+            continue;
+        }
         if !on_line.contains(o.path.as_str()) {
             f.push(Finding::new(
                 Rule::Meta(3),

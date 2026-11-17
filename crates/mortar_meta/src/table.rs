@@ -133,6 +133,32 @@ pub fn full_note(definitions: &[FullRow], types: &[FullRow]) -> Vec<u8> {
     out
 }
 
+/// `n_type` of the runtime note (`NT_MASON_ODR_RT`, O-52, O-53a; WP-198),
+/// the third note of `.note.mason`, written by `--odr-runtime=report|fatal`.
+pub const NT_MASON_ODR_RT: u32 = 0x4d4f_4403;
+/// The runtime note's mode word for `report` (O-53a).
+pub const RT_MODE_REPORT: u32 = 1;
+/// The runtime note's mode word for `fatal` (O-53a).
+pub const RT_MODE_FATAL: u32 = 2;
+
+/// The runtime note (O-52, O-53a; WP-198): owner `MasonMeta`, type
+/// [`NT_MASON_ODR_RT`], descriptor `{u32 version = 1; u32 mode; u32 flags
+/// = 0; u32 runtime id}`; 40 bytes, a multiple of 8, so a note after it
+/// stays aligned under both note layouts.
+#[must_use]
+pub fn runtime_note(mode: u32, runtime_id: u32) -> Vec<u8> {
+    let mut out = Vec::with_capacity(DESC_OFFSET + 16);
+    out.extend_from_slice(&(OWNER.len() as u32).to_le_bytes());
+    out.extend_from_slice(&16u32.to_le_bytes());
+    out.extend_from_slice(&NT_MASON_ODR_RT.to_le_bytes());
+    out.extend_from_slice(OWNER);
+    out.resize(DESC_OFFSET, 0);
+    for word in [VERSION, mode, 0, runtime_id] {
+        out.extend_from_slice(&word.to_le_bytes());
+    }
+    out
+}
+
 /// What makes a table malformed (O-51).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TableError {
@@ -413,6 +439,18 @@ mod tests {
     }
 
     // odr.md O-51, O-52: the encoding, sorted, read back.
+    // spec: odr.md §10.2 (WP-198): the runtime's note, 40 bytes: namesz
+    // 10, descsz 16, type 0x4d4f4403, "MasonMeta", the descriptor at 24.
+    #[test]
+    fn runtime_note_bytes() {
+        let n = runtime_note(RT_MODE_FATAL, 3);
+        assert_eq!(n.len(), 40);
+        let w = |o: usize| u32::from_le_bytes(n[o..o + 4].try_into().unwrap());
+        assert_eq!((w(0), w(4), w(8)), (10, 16, 0x4d4f_4403));
+        assert_eq!(&n[12..24], b"MasonMeta\0\0\0");
+        assert_eq!((w(24), w(28), w(32), w(36)), (1, 2, 0, 3));
+    }
+
     #[test]
     fn encodes_and_reads_back() {
         let rows = [row(9, 3), row(2, 7), row(9, 1)];

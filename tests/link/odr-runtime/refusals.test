@@ -1,0 +1,43 @@
+# --odr-runtime's refusals and its no-op (spec/cli.md --odr-runtime,
+# spec/diag.md §4; WP-198): a static executable or static PIE has no
+# loader to check (odr-runtime-static); an explicit --odr-table=off
+# contradicts the table the runtime reads (conflicting options);
+# --incremental cannot record an input that is no file yet
+# (odr-runtime-incremental); -nostdlib leaves the runtime's references
+# to libc undefined: the ordinary undefined-symbol error, which names
+# the runtime input <mortar:odr-runtime>. At -r the option is a no-op:
+# the line fails as the line without it does, by -r's own refusal. i386
+# is refused by name (odr-runtime-unsupported-target).
+#@ spec: cli.md "--odr-runtime"
+#@ spec: diag.md "§4"
+
+cc -O1 -fPIE main.c -o main.o
+cc -O1 -fno-pic -fno-PIE nolibc.c -o nolibc.o
+link(mortar,aarch64,x86_64) gcc -static main.o -Wl,--odr-runtime=report -o s
+  exit: fail
+  diag: unsupported feature: odr-runtime-static
+link(mortar,aarch64,x86_64) gcc -static-pie main.o -Wl,--odr-runtime=fatal -o sp
+  exit: fail
+  diag: unsupported feature: odr-runtime-static
+link(mortar,aarch64,x86_64) gcc -pie main.o -Wl,--odr-runtime=report -Wl,--odr-table=off -o c
+  exit: fail
+  diag: --odr-runtime=report and --odr-table=off cannot be used together
+link(mortar,aarch64,x86_64) gcc -pie main.o -Wl,--odr-runtime=report -Wl,--incremental -o i
+  exit: fail
+  diag: unsupported feature: odr-runtime-incremental
+link(mortar,aarch64,x86_64) gcc -nostdlib -no-pie nolibc.o -Wl,--odr-runtime=report -Wl,-e,start -o n
+  exit: fail
+  diag: undefined symbol: write
+  diag: <mortar:odr-runtime>
+link(mortar,aarch64,x86_64) ld -r main.o --odr-runtime=fatal -o r.o
+  exit: fail
+  diag: unsupported option: -r
+  no-diag: odr-runtime
+link(mortar,i386) gcc -pie main.o -Wl,--odr-runtime=report -o i386
+  exit: fail
+  diag: unsupported feature: odr-runtime-unsupported-target
+
+#--- main.c
+int main(void) { return 0; }
+#--- nolibc.c
+void start(void) { for (;;) { } }

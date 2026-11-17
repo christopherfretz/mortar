@@ -20,6 +20,7 @@ pub mod floor;
 pub mod front;
 pub mod image;
 pub mod incremental;
+pub mod odr_runtime;
 mod proof;
 mod sites;
 pub mod syms;
@@ -272,6 +273,10 @@ fn invoke_with(
     // `MORTAR_STORE=resident` is the tests' switch to the other.
     // spec/meta.md MT-42, odr.md O-42: containers are kept only when a
     // record check reads them.
+    // `--odr-runtime` (WP-198): the plan the line implies (the table, `-z
+    // now`). Without the option, one field read and the plan as it is.
+    let with_runtime = odr_runtime::effective(plan);
+    let plan = with_runtime.as_ref().unwrap_or(plan);
     let config = StoreConfig {
         containers: mortar_odr::reads_containers(&plan.diagnostics.odr),
         ..StoreConfig::default()
@@ -425,6 +430,8 @@ fn write_dependency_file(f: &front::Front<'_>, path: &Path, diagnostics: &Collec
     let paths: Vec<&[u8]> = scripts
         .map(|s| s.path.as_encoded_bytes())
         .chain(mortar_input::dependency_paths(&f.inputs.link))
+        // The runtime input (WP-198) is no file: Make has nothing to stat.
+        .filter(|p| *p != odr_runtime::NAME.as_bytes())
         .filter(|p| seen.insert(*p))
         .collect();
     match depfile::render(target.as_encoded_bytes(), &paths) {

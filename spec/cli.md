@@ -527,7 +527,9 @@ lands in `plan.other` (§3.12).
   strict|off` (default `warn`; `--no-odr-check` is `off`);
   `check_archives` (`--odr-check-archives`); `table`
   (`--odr-table=off|exported|full`, default `off`); `stats`
-  (`--odr-stats`); `keep_meta` (`--keep-mason-meta`).
+  (`--odr-stats`); `keep_meta` (`--keep-mason-meta`); `runtime`
+  (`--odr-runtime=off|report|fatal`, default `off`, the last one wins;
+  WP-198).
 
 The facade does two things with these:
 - It applies `error_limit`, `fatal_warnings` and `no_warnings` to the
@@ -918,7 +920,9 @@ of the rows C-R2, C-R2a, C-R3 and C-R4 do not name:
   `--odr-table` (the table belongs to a loadable output; the units are
   carried by MT-30 and the final link writes it: a line that carries
   the option for every link must not fail at its `-r` step, as
-  `--eh-frame-hdr` does not).
+  `--eh-frame-hdr` does not), and `--odr-runtime` for the same reason
+  (the runtime belongs to the final link: nothing is added to a `-r`
+  output and nothing is checked on the line, WP-198).
 - **`--start-lib`, `--end-lib`**: lazy objects, as in a final link
   (RV-R2; lld's reading, GNU ld does not know the option).
 - **`--require-defined=SYM`**: a root for extraction like `-u`
@@ -1211,6 +1215,7 @@ edited:
   of `spec/odr.md` O-41; WP-072;
 - `--odr-check-archives`, `--odr-table=off|exported|full` (default
   `off`), `--keep-mason-meta`: WP-075 and WP-076.
+- `--odr-runtime=off|report|fatal` (default `off`): WP-198.
 
 WP-072 landed the first four: `--odr`, `--no-odr-check` and `--odr-stats`
 `supported`, `--detect-odr-violations` `noop` (its reason is O-41's sentence;
@@ -1225,7 +1230,43 @@ and `--keep-mason-meta` `supported` (`spec/odr.md` O-23, O-50;
 `spec/meta.md` MT-32). The first two act in `warn`, `error` and
 `strict` and do nothing under `--odr=off`; `--keep-mason-meta` acts in
 every mode, `--odr=off` included.
+WP-198 added `--odr-runtime` `supported` (C-ODR-RT below).
 `docs/status/options.md` has the counts.
+
+**C-ODR-RT (`--odr-runtime=off|report|fatal`; WP-198).** The load-time
+one-definition-rule check (`spec/odr.md` O-53a, §10.3). With `report` or
+`fatal`, in a dynamic executable (`Executable`, `PieExecutable`) or a
+shared object:
+- the runtime object of the output's machine and kind (the `exe`
+  flavour for an executable, `so` for a shared object; embedded in
+  mortar, `runtime/odr/obj/`) is an ordinary input after every input of
+  the line, named `<mortar:odr-runtime>` in `-Map`, the diagnostics and
+  the tables (it is no file: the dependency file does not list it);
+- `--odr-table=exported` is implied (a table named on the line stands:
+  `=full` is kept); an explicit `--odr-table=off`, the last one of the
+  line, is `conflicting-options` (the runtime reads the table);
+- the output is linked `-z now` (`DF_BIND_NOW`, `DF_1_NOW`) unless the
+  line says `-z lazy`, which is accepted (the runtime then says what it
+  cannot check, `odr-hook-lazy`). What `-z now` changes: every symbol
+  is bound when the module is loaded, so a reference to an undefined
+  function that is never called, which a lazy binding never resolves,
+  now fails the load (the loader's `symbol lookup error`), and the load
+  takes the time of every binding;
+- `.note.mason` carries, after the table's note(s), the runtime's note
+  (`spec/odr.md` §10.2: type `0x4d4f4403`, mode 1 `report` or 2
+  `fatal`).
+
+Refused by name: a static executable or static PIE
+(`odr-runtime-static`: there is no loader and no binding to check), a
+machine the runtime is not linked for (`odr-runtime-unsupported-target`:
+i386, whose objects are embedded but not validated, `spec/dyn.md`
+D-130), and `--incremental` (`odr-runtime-incremental`: the state has
+no row for an input that is no file). At `-r` the option is a no-op
+(C-R2b). `-nostdlib` is no refusal: the runtime's references to libc
+(`write`, `mmap`, `getenv`, `dl_iterate_phdr`, ...) are undefined as
+any input's would be, and the error names `<mortar:odr-runtime>`. `off`
+is the line without the option, byte for byte; a link without the
+option reads the one field and nothing else.
 
 Rows whose status the M1 and M2 packages change (`spec/input.md` §17,
 `spec/resolve.md` §18). Their fields exist (§3); the rows stay `refused`

@@ -41,7 +41,7 @@ use mortar_core::{Liveness, SymbolId};
 use mortar_diag::{Collector, Diagnostic, Key, Kind, Place};
 use mortar_elf::consts::SHT_NOTE;
 use mortar_elf::{Class, SectionIndex};
-use mortar_input::load::{LoadEnv, load_steps};
+use mortar_input::load::{LoadEnv, load_steps_with};
 use mortar_input::store::Store;
 use mortar_layout::chunk::{Common, SynthChunk, commons};
 use mortar_layout::fixed::RangeExtension;
@@ -444,12 +444,18 @@ pub fn front<'s>(
     let load_env = LoadEnv { cwd: env.cwd.to_path_buf(), pool };
     let time_steps = mortar_core::wp032b_steps::enabled();
     let mut steps = mortar_input::steps::Steps::default();
-    let inputs = load_steps(&plan, &load_env, store, diag, &mut steps);
+    let embedded = crate::odr_runtime::embedded(&plan);
+    let inputs = load_steps_with(&plan, &load_env, store, diag, &mut steps, embedded);
     if time_steps {
         print_steps("input", &steps.times, &steps.counts);
     }
     let inputs = inputs?;
     timer.phase(20, "input");
+    // `--odr-runtime` on a machine the runtime is not linked for.
+    if let Some((k, d)) = crate::odr_runtime::refuse_target(&plan, inputs.target.machine) {
+        diag.emit(k, d);
+        return None;
+    }
     let pool = capped(pool, &plan, store.stats().resident);
     let machine = inputs.target.machine;
     // 30: the version script (`spec/script.md` §9; resolve.md §9.7,
@@ -738,8 +744,13 @@ pub fn front<'s>(
         };
         let (got, mut tables) = crate::dynlink::plan(&t, &mut slots, diag)?;
         // O-50 to O-52: the table, once `.dynsym`'s order is known.
+        // WP-198: and the runtime's note after them (`spec/odr.md` §10.2).
         if let Some(rows) = &odr_table {
-            tables.note_mason = Some(note_mason(&inputs, rows, odr_full.as_ref(), &slots.dynsym));
+            let runtime = crate::odr_runtime::mode_word(plan.diagnostics.odr.runtime).zip(
+                crate::odr_runtime::runtime_id(machine, plan.kind == plan::OutputKind::Shared),
+            );
+            tables.note_mason =
+                Some(note_mason(&inputs, rows, odr_full.as_ref(), runtime, &slots.dynsym));
         }
         (got, Some(tables), placeless)
     } else {
@@ -1451,11 +1462,13 @@ fn got_base_defined(
 /// the null symbol). A row whose symbol is not in `.dynsym` has no index
 /// and is not written (O-50's rows are exported, so in `.dynsym`, D-21).
 /// With `=full` its second note follows the first in the same section
-/// (O-52, WP-076); both are a multiple of 8 bytes long.
+/// (O-52, WP-076); both are a multiple of 8 bytes long. With
+/// `--odr-runtime`, the runtime's note is last (WP-198; 40 bytes).
 fn note_mason(
     inputs: &Inputs<'_>,
     rows: &[mortar_odr::TableRow],
     full: Option<&mortar_odr::FullRows>,
+    runtime: Option<(u32, u32)>,
     dynsym: &[SymbolId],
 ) -> mortar_synth::NoteMasonPlan {
     let mut index: Vec<(SymbolId, u32)> =
@@ -1472,6 +1485,10 @@ fn note_mason(
     let mut bytes = mortar_odr::table_note(&table);
     if let Some(f) = full {
         bytes.extend(mortar_odr::full_note(&f.definitions, &f.types));
+    }
+    // WP-198: `--odr-runtime`'s note (mode, runtime id), 40 bytes.
+    if let Some((mode, id)) = runtime {
+        bytes.extend(mortar_odr::runtime_note(mode, id));
     }
     mortar_synth::NoteMasonPlan::new(bytes)
 }

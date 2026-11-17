@@ -1,0 +1,196 @@
+mortar-map 2
+file 0 lib.o
+file 1 <mortar:odr-runtime>
+place 0 1 27b0 30
+place 0 9 a200 8
+place 0 5 a210 8
+place 0 7 a218 8
+place 0 3 b400 0
+place 0 4 b400 4
+piece 1 3 0 518 d
+piece 1 3 d 525 a
+piece 1 3 17 52f f
+piece 1 3 26 53e a
+piece 1 3 30 548 4
+piece 1 3 34 54c 7
+piece 1 3 3b 553 6
+piece 1 3 41 559 7
+piece 1 3 48 560 10
+piece 1 3 58 570 16
+piece 1 3 6e 586 f
+piece 1 3 7d 595 b
+piece 1 3 88 5a0 16
+piece 1 3 9e 5b6 3d
+piece 1 3 db 5f3 5
+piece 1 3 e0 5f8 2
+piece 1 3 e2 5fa 49
+piece 1 3 12b 643 1e
+piece 1 3 149 661 7
+piece 1 3 150 668 11
+piece 1 3 161 679 d
+piece 1 3 16e 686 7
+piece 1 3 175 68d 9
+piece 1 3 17e 696 6
+piece 1 3 184 69c 7
+piece 1 3 18b 6a3 9
+piece 1 3 194 6ac d
+piece 1 3 1a1 6b9 b
+piece 1 3 1ac 6c4 9
+piece 1 3 1b5 6cd 7
+piece 1 3 1bc 6d4 a
+piece 1 3 1c6 6de 7
+piece 1 3 1cd 6e5 9
+piece 1 3 1d6 6ee 10
+piece 1 3 1e6 6fe 8
+piece 1 3 1ee 706 6
+piece 1 3 1f4 70c c
+piece 1 3 200 718 c
+piece 1 3 20c 724 2
+piece 1 3 20e 726 2b
+piece 1 3 239 751 3
+piece 1 3 23c 754 30
+piece 1 3 26c 784 3
+piece 1 3 26f 787 1d
+piece 1 3 28c 7a4 5a
+piece 1 3 2e6 7fe 17
+piece 1 3 2fd 815 2b
+piece 1 3 328 840 43
+piece 1 3 36b 883 37
+piece 1 3 3a2 8ba 3c
+piece 1 3 3de 8f6 2a
+piece 1 3 408 920 1e
+piece 1 3 426 93e 55
+piece 1 3 47b 993 3e
+piece 1 3 4b9 9d1 35
+piece 1 3 4ee a06 25
+piece 1 3 513 a2b 19
+piece 1 3 52c a44 29
+piece 1 3 555 a6d 26
+piece 1 3 57b a93 28
+piece 1 3 5a3 abb 24
+piece 1 3 5c7 adf 1a
+piece 1 3 5e1 af9 24
+piece 1 3 605 b1d 8
+piece 1 3 60d b25 9
+piece 1 3 616 b2e 11
+piece 1 3 627 b3f 20
+piece 1 3 647 b5f 58
+piece 1 3 69f bb7 c
+piece 1 3 6ab bc3 26
+piece 1 3 6d1 be9 4c
+piece 1 3 71d c35 3f
+piece 1 5 0 c78 18
+piece 1 5 18 c90 24
+piece 1 5 3c cb4 24
+piece 1 5 60 cd8 2c
+piece 1 5 8c d04 24
+piece 1 5 b0 d28 24
+piece 1 5 d4 d4c 28
+piece 1 5 fc d74 24
+piece 1 5 120 d98 24
+piece 1 5 144 dbc 28
+piece 1 5 16c de4 24
+piece 1 5 190 e08 28
+piece 1 5 1b8 e30 24
+piece 1 5 1dc e54 28
+piece 1 5 204 e7c 2c
+piece 1 5 230 ea8 28
+piece 1 5 258 ed0 28
+piece 1 5 280 ef8 28
+piece 1 5 2a8 f20 24
+piece 1 5 2cc f44 28
+piece 1 5 2f4 f6c 28
+piece 1 5 31c f94 24
+piece 1 5 340 fb8 24
+piece 1 5 364 fdc 24
+piece 1 5 388 1000 24
+piece 1 5 3ac 1024 28
+piece 1 5 3d4 104c 28
+piece 1 5 3fc 1074 28
+piece 1 5 424 109c 28
+piece 1 5 44c 10c4 28
+piece 1 5 474 10ec 28
+piece 1 5 49c 1114 28
+piece 1 5 4c4 113c 28
+piece 1 5 4ec 1164 24
+piece 1 5 510 1188 24
+piece 1 5 534 11ac 2c
+piece 1 5 560 11d8 24
+piece 1 5 584 11fc 24
+piece 1 5 5a8 1220 24
+piece 1 5 5cc 1244 24
+piece 1 5 5f0 1268 28
+piece 1 5 618 1290 28
+piece 1 5 640 12b8 28
+piece 1 5 668 12e0 28
+piece 1 5 690 1308 2c
+piece 1 5 6bc 1334 28
+piece 1 5 6e4 135c 28
+piece 1 5 70c 1384 28
+piece 1 5 734 13ac 28
+piece 1 5 75c 13d4 24
+piece 1 5 780 13f8 28
+piece 1 5 7a8 1420 28
+piece 1 5 7d0 1448 24
+piece 1 5 7f4 146c 28
+piece 1 5 81c 1494 28
+piece 1 5 844 14bc 28
+piece 1 5 86c 14e4 28
+piece 1 5 894 150c 2c
+piece 1 5 8c0 1538 28
+piece 1 5 8e8 1560 28
+piece 1 5 910 1588 28
+piece 1 5 938 15b0 28
+piece 1 5 960 15d8 28
+piece 1 5 988 1600 28
+piece 1 5 9b0 1628 24
+piece 1 5 9d4 164c 28
+piece 1 5 9fc 1674 28
+piece 1 5 a24 169c 28
+piece 1 5 a4c 16c4 24
+piece 1 5 a70 16e8 28
+place 1 1 27e0 6a1d
+place 1 2 a208 8
+place 1 4 b408 8
+merged 0 11 .comment
+chunk synthetic .gnu.hash 250 24
+chunk synthetic .dynsym 278 108
+chunk synthetic .dynstr 380 5f
+chunk synthetic .rela.dyn 3e0 78
+chunk synthetic .rela.plt 458 c0
+chunk synthetic .eh_frame c78 a9c
+chunk synthetic .plt 2720 90
+chunk synthetic .got a3a0 8
+chunk synthetic .got.plt a3a8 58
+chunk synthetic .dynamic a220 180
+chunk synthetic .symtab - 798
+chunk synthetic .strtab - 72d
+chunk synthetic .shstrtab - ae
+chunk synthetic .comment - d
+chunk synthetic .note.mason 200 50
+chunk synthetic .pad.relro a400 c00
+define _GLOBAL_OFFSET_TABLE_ a3a8
+define __ehdr_start 0
+output shared
+bind now
+relro on
+symbolic none
+arg -shared
+arg -o
+arg lib.so
+arg lib.o
+arg libc.so.6
+arg --odr-runtime=fatal
+arg --mortar-map=lib.map
+needed libc.so.6
+export seen
+export user_fn
+plt clock_gettime
+plt getenv
+plt mmap
+plt getauxval
+plt abort
+plt write
+plt dl_iterate_phdr
+plt munmap
+end

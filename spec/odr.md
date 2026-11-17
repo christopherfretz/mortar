@@ -4,8 +4,10 @@
 and re-review, `briefs/reviews/review-070-meta-odr.md` and
 `review-070-meta-odr-re.md`, and the coordinator's rulings). The
 container and the static checks (§1-§9, §10.1-§10.2, O-24) are accepted
-for implementation; the load-time hook (§10.3) is a design direction for
-a prototype package, not a rule; the operator's decisions are §15.** Rules are `O-n`. The
+for implementation; the load-time check (§10.3) is a built runtime
+(WP-196: rules O-53..O-59, objects under `runtime/odr/obj/`) linked by
+an option (`--odr-runtime`, WP-198), off by default; the operator's
+decisions are §15.** Rules are `O-n`. The
 container they read is `spec/meta.md` (`MT-n`). Every statement about
 what a compiler, linker or loader does names its experiment (Appendix A;
 scripts in the WP-070 review directory, record in
@@ -111,8 +113,9 @@ assumed), or if it is one of these exclusions.
   reported only with `--odr-check-archives` (O-23); K18 that only load
   time sees (a different build of a library at run time, `dlopen`ed
   libraries, libraries the link never named, indirect dependencies, and
-  libraries without a table) is not reported: the load-time hook is a
-  prototype direction, not a rule (§10.3).
+  libraries without a table) is not reported by the static checks: it
+  is the load-time check's (§10.3, `--odr-runtime=report|fatal`, off by
+  default).
 - **X13** two units with different `odr.scheme` strings (typically
   different kiln versions): their kind 2 and 3 rows are incomparable, an
   `--odr-stats` count only (O-11).
@@ -1802,8 +1805,8 @@ warning: f(int) violates the one-definition rule
   kind 2, 5 `odr-internal-reference`, 6 `isa` (O-31), 7 O-25, 8 the
   container findings; the W checks have tag 0 (WP-073).
 
-The load-time hook's prototype messages (§10.3) would be the runtime's,
-not mortar diagnostics: `odr-violation-at-load`,
+The load-time check's messages (§10.3) are the runtime's, not mortar
+diagnostics: `odr-violation-at-load`,
 `odr-hook-out-of-memory`, `odr-hook-stopped`.
 
 ### 9.2 Severity and switches
@@ -1838,9 +1841,14 @@ every warning (`spec/diag.md` §6.3).
   container byte is read (O-42), the W checks do not run, and no
   loadable table is written (§10). The output is byte-identical to the
   default link's when that link succeeds and the table is off (T-O-41).
+  One exception (WP-198): with `--odr-runtime=report|fatal` the
+  loadable table IS written under `--odr=off` (the table's pass runs,
+  and reads what the table needs; nothing is reported at link time):
+  the runtime compares tables, and a module linked with the runtime and
+  without a table would be checked against nothing.
 - `--odr-check-archives` (O-23), `--odr-table=off|exported|full` (O-50),
   `--odr-stats` (O-44). With `--odr=off` the first two do nothing (no
-  check runs, no table is written); in `warn`, `error` and `strict` each
+  check runs, no table is written, but for the exception above); in `warn`, `error` and `strict` each
   does the same thing, except that the record checks O-24 and O-32 make
   strict-only decisions inside them (WP-076). `--keep-mason-meta`
   (`meta.md` MT-32) is not an ODR switch: it keeps the containers in
@@ -1916,7 +1924,7 @@ O-47's table, by amendment.
 | O-34 kind 5 vs foreign sizes | K-5 | strict | cannot run yet | WP-074's oracle at zero |
 | `SYSTEM` `-std` differences (O-32) | K-3 | strict (warnings, O-32); an `--odr-stats` count in any other mode that compares | `std-mix`: 210 in one pair of TUs | Q6 |
 | `odr-archive-shadow` | K-3 | opt-in flag | — | never by default |
-| load-time hook | a runtime | **none**: a prototype direction (§10.3), never in M6 | the matrix of O-58 not yet green | O-58, then Q2 and Q3 |
+| load-time check | a runtime (WP-196) linked by `--odr-runtime` (WP-198) | off by default; `report` or `fatal` by option (the operator's ruling of 2026-11-17: fatal is never the only mode) | O-58's matrix is the gate of every change to the runtime | the verifier's rules for the runtime's outputs (WP-197); Q2's default |
 
 Outside the table: `meta-malformed` for a section named `.mason.meta`
 that is not a container (`spec/meta.md` MT-6) is resolution's
@@ -1978,8 +1986,8 @@ carry `NONPREEMPTIBLE` (O-51). Hidden definitions are never bound by
 another module and have no row. With `=full`, also hidden vague
 definitions and kind 3 types (strict use only, Q14). With `=off` (the
 default), no table. The table is data only: it adds no code to the
-output. The runtime of §10.3 is added only by the prototype option of
-WP-077, never by `--odr-table`.
+output. The runtime of §10.3 is added only by `--odr-runtime` (O-53a),
+which implies `=exported`; never by `--odr-table` alone.
 
 Implemented (WP-075) for dynamic executables, PIE or not: `=exported`
 writes the table; `=full` writes it and a second note (WP-076, O-52);
@@ -2009,7 +2017,7 @@ units: the bytes are deterministic (T-O-50). What O-24 does with them:
 second is read by `table::find_full` (`xtask meta table`'s reader and
 the tests), and a malformed second note is not reported by a link. A
 reader that compares types across modules (Q14: strict use only) is
-future work (WP-077's runtime, Tuck); the encoding is fixed here so that
+future work (the load-time runtime, Tuck); the encoding is fixed here so that
 it does not change under them.
 
 **O-51 (row).** `{u64 key; u64 hash; u32 dynsym; u16 flags; u16
@@ -2110,7 +2118,21 @@ a second note after the first: the same owner, `n_type`
 **`0x4d4f4402`** (`NT_MASON_ODR_FULL`), descriptor = `=full`'s header
 and rows (O-51) (WP-076). A reader of the first note never sees the
 second (a different type), so `=exported`'s readers read a `=full`
-table unchanged. It lies in a
+table unchanged. With `--odr-runtime=report|fatal` (O-53a, `spec/cli.md`
+C-ODR-RT; WP-198) it holds a third note, last: the same owner,
+`n_type` **`0x4d4f4403`** (`NT_MASON_ODR_RT`), `n_descsz` 16, the
+descriptor four little-endian `u32`: `{version 1, mode, flags 0,
+runtime id}`, mode 1 `report` or 2 `fatal` (the module's default, which
+`MASON_ODR` overrides at load time; a library's entry takes the main
+program's note first, then its own), the runtime id the index of the
+embedded runtime object mortar linked (its table, with each object's
+SHA-256, is `crates/mortar/src/odr_runtime.rs`: 0 AArch64 `so`, 1
+AArch64 `exe`, 2 x86-64 `so`, 3 x86-64 `exe`, 4 and 5 i386, embedded
+and refused). The note is 40 bytes (24 of header and owner, 16 of
+descriptor), a multiple of 8, so the notes before and after it keep
+their alignment. The runtime finds it by its type in any `PT_NOTE` of
+the module (`dl_iterate_phdr`), whatever notes come before it; a reader
+of the first or the second note never sees it. It lies in a
 `PT_NOTE` with `p_align` 8, which it may share with other 8-aligned notes
 (`spec/layout.md` places one `PT_NOTE` per run of notes of one
 alignment); readers walk every note of every `PT_NOTE`. With `n_namesz`
@@ -2163,182 +2185,354 @@ inspection (`readelf -n`), and it is what `dyn.md` §14 anticipated.
 `PT_LOOS+0xd736e00` (`PT_MASON`) stays unused, recorded so that nobody
 takes it.
 
-### 10.3 The load-time hook (a design direction, not a rule)
+### 10.3 The load-time check
 
-Nothing in this section is a rule an implementation follows. It records
-the direction a prototype package (WP-077) explores, what two
-prototypes measured, the open problem that stops it, and the matrix the
-prototype must pass before any rule is written. No mortar output gets a
-runtime in M6 without a further decision (O-58, Q2).
+A module that carries the **runtime** checks, when it is loaded, that
+every reference with a row in its table bound to a definition with the
+same hash. The static link (O-24) cannot see what a process assembles at
+load time: the libraries of the running system, `dlopen`ed modules and
+indirect dependencies (O-55). These rules are the runtime that ships
+(WP-196, after the prototypes of WP-077: `spec/landed/meta/WP-077.md`,
+`WP-196.md`). The option's `spec/cli.md` row is WP-198's; the verifier's
+rules are §12.5's, and O-59 is what this section asks of them.
 
-**O-53 (the runtime, if one ships).** A small object, the runtime, that
-mortar would add as an ordinary input of an output that asks for it. It
-is C (prototype 2, `hook2/mason_rt2.c`, is 230 lines), and mortar stays
+**O-53 (the runtime).** One source, `runtime/odr/mason_odr_rt.cpp`, and
+one object per target and kind in `runtime/odr/obj/`
+(`mason_odr_rt-<arch>-<kind>.o`; arch `aarch64`, `x86_64`, `i386`; kind
+`so`, or `exe`, built with `-DMASON_RT_EXE`). Mortar adds the object as
+an ordinary input when `--odr-runtime` asks for it (O-53a), and stays
 `forbid(unsafe_code)`: the runtime is bytes it links, not code it runs.
-How its bytes would be produced and verified is the operator's Q3 (three
-options with costs; recommended: the C source and the generated object
-bytes per target checked in, embedded in mortar, a byte-identical
-rebuild check in CI). In no option does building mortar need a cross
-compiler.
+The objects are built by hod at `-O0`:
 
-**O-54 (the direction, and what the prototypes measured).**
+- through IR from kiln on aarch64 and x86-64;
+- through IR from clang 22 on i386, until kiln takes that target.
 
-*What holds* (prototype 2, glibc 2.41, AArch64 natively, x86-64 and
-i386 under qemu-user, identical outcomes; the re-review re-ran it
-natively):
+The source is C++ without exceptions, RTTI, static constructors of its
+own, libstdc++ or stdio. It needs from libc only:
 
-- **Entry** in `.init_array.00000` and `.fini_array.00000` of every
-  module that carries the runtime, executable and shared object alike
-  (priorities 0-100 are the implementation's; user code starts at 101).
-  Case I: the runtime runs before a user `constructor(101)` and before
-  default constructors, under GNU ld, lld and mold.
-- **One index per scope, found through the loader's own binding**: every
-  runtime copy defines one exported `__mason_odr_state` and reads it
-  through its GOT, so each module binds the first copy its lookup scope
-  reaches; a `dlmopen` namespace never sees another's (case E). No
-  loader internal is read. Under a version script the state object must
-  be exempt or carry a fixed node (`MASON_1`): with per-library nodes
-  each library binds its own versioned copy and is silently compared
-  with nothing (re-review R6, `vhook`).
-- **Memory**: registry and hash index in `mmap`ed memory, no `malloc`, no
-  module limit; an `mmap` failure prints `odr-hook-out-of-memory` once
-  and `odr-hook-stopped` for each later module, never silence (cases G,
-  H).
-- **`SYSTEM` rows** are skipped unless `MASON_ODR=strict`.
-- **`DT_STRTAB`/`DT_SYMTAB`**: glibc relocates these `d_ptr`s in place
-  for the executable, libc and ld.so but not for the vDSO
-  (`preinit-dynamic`); a reader adds the load base when `d_ptr` is below
-  it. Other loaders (musl) [unverified].
-- **Threads and `fork`**: glibc runs constructors and destructors under
-  its load lock (`dl_load_lock`, recursive); case J (8 threads × 300
-  `dlopen`/`dlclose`, `fork`) ran clean three times per target.
+- `dl_iterate_phdr`, `write`, `mmap`, `munmap`;
+- `getenv`, `getauxval`, `clock_gettime`, `abort`.
 
-*The open problem.* **The runtime can ask where a module would bind now,
-not where it bound.** Prototype 2 asks, for a key seen with two hashes,
-each holder `X` to call `dlsym(RTLD_DEFAULT, name)` from its own code.
-That answers where a lookup from `X` would go at this moment, which is
-not where `X`'s GOT and PLT went:
+From the linker it needs only `__ehdr_start`, plus
+`_GLOBAL_OFFSET_TABLE_` on i386. It defines and exports no symbol.
 
-- **immediate vs lazy binding.** An `RTLD_NOW` module bound its
-  references at its load; a later global module changes the answer to
-  the question but not the binding: R1m (`h2` `LOCAL|NOW` bound its own
-  copy, then `h1` `GLOBAL` and `h1b`) is a correct process that
-  prototype 2 aborts. A lazy module binds at first call, after its init
-  ran: R3m (`h2lazy` `LOCAL|LAZY`, then `h1lazy` `GLOBAL|LAZY`, then the
-  call) really binds the other body and prototype 2 does not see it.
-  Debian links lazily by default.
-- **promotion.** `dlopen(h1, RTLD_NOLOAD|RTLD_GLOBAL)` moves a loaded
-  module into the global scope without loading anything: R2m is a
-  correct process that prototype 2 aborts.
-- **per-library version nodes.** References carry the version of the
-  definition they were linked against (`.gnu.version` of the referencing
-  module); an unversioned `dlsym` finds another library's default
-  version: R6 (`vmhook`, two libraries with nodes `LIB1_1`, `LIB2_1`) is a
-  correct process that prototype 2 aborts.
-- **protected and `-Bsymbolic` definitions** are bound by other modules
-  (R4/R5); prototype 2's tables had no rows for them (fixed in O-50).
+Tests: I (the entry first under bfd, lld, mold and mortar), and the
+identical-bytes job (O-53b).
 
-In M6 the hook **never aborts**: whatever WP-077 produces reports and
-continues. `MASON_ODR=abort` is a later decision, after its matrix is
-green.
+**O-53a (the option).** `--odr-runtime=off|report|fatal`, default `off`.
 
-*Candidate mechanisms WP-077 must evaluate, without this spec choosing:*
+- It adds the runtime object of the output's kind.
+- It implies `--odr-table=exported`.
+- It links `-z now`. An explicit `-z lazy` is kept, and the module's
+  lazy references are named at load (`odr-hook-lazy`, Q-77.2).
+- It writes the runtime note in `.note.mason` (O-52), after the table.
+  The note has owner `MasonMeta`, `n_type` **`0x4d4f4403`**
+  (`NT_MASON_ODR_RT`) and the descriptor `{u32 version = 1; u32 mode;
+  u32 flags = 0; u32 runtime id}`, where mode 1 is report and 2 is
+  fatal. Readers find the note by its type and owner in any `PT_NOTE`
+  (Q-77.4).
 
-1. **Recorded answers**: each module records, once at its own init (or
-   at first need), where each of its keyed references bound, by reading
-   its own GOT entry for the symbol (filled at load for data, and for
-   functions under `-z now`, which mortar could force for modules with a
-   table) and never re-asks. Evaluate: lazy PLT entries (R3m) unless
-   `-z now`; the cost of forcing `-z now`; promotion (R2m).
-2. **glibc's audit interface** (`LD_AUDIT`, `la_symbind32/64`,
-   `la_objopen`): reports actual bindings, lazy ones included, with the
-   binding module and the version. Evaluate: it needs a separate audit
-   library named in the environment (it cannot be a linked-in object of
-   the program), it disables some lazy-binding fast paths, it is
-   glibc-only, and whether that is usable for development builds at all.
-3. **Comparing only within the initial global scope** (the executable
-   and its `DT_NEEDED` closure, bound before any user code runs) and
-   treating every `dlopen`ed module as a named exclusion or a warning
-   only. Evaluate: what it misses (C1, B1, D) against what it avoids
-   (R1m, R2m, R3m).
-4. **Versioned keys**: rows identified by (name, version node) as in
-   O-24, lookups with `dlvsym` using the version the reference names.
-   Evaluate together with 1-3; it is needed by every option (R6).
+Refusals by name:
 
-*Measurements of prototype 2* (AArch64, in-process time summed over every
-module's init entry, three runs; `MASON_ODR_TIME`):
+- for a static executable (`odr-runtime-static`);
+- on a target without embedded runtime bytes
+  (`odr-runtime-unsupported-target`). That includes i386 until mortar
+  links i386 shared objects (WP-130) and the i386 rows have been rerun
+  with mortar's tables.
 
-| modules × rows | prototype 2 | first draft's pairwise prototype |
+A link that does not ask pays nothing. Tests: the `spec/cli.md` row, and
+link tests for the note, the `-z now` flag and the two refusals.
+
+**O-53b (the bytes).** The objects are checked in, and the tools and
+commands that made them are recorded in `runtime/odr/PINS`:
+
+- the kiln and hod commits;
+- the commit of the hod that builds i386;
+- clang's version line;
+- each object's SHA-256 and size.
+
+`cargo xtask odr-runtime --check` verifies the digests, rebuilds the six
+objects with the pinned tools (`MASON_KILN`, `MASON_HOD`,
+`MASON_HOD_I386`, `MASON_CLANG_I386`) and fails unless every byte is
+identical. Without the pinned tools it is a named skip, or a failure
+under `MORTAR_REQUIRE_TOOLS=1`. `--update` rewrites the objects and PINS.
+
+A change of source or pins updates the objects, PINS, the matrix (O-58)
+and the cost tables in one commit. The objects carry no path of the
+machine that built them.
+
+**O-54 (the check: read the binding).** At its entry (O-54a), a module
+with the runtime checks each of its dynamic relocations that meets two
+conditions:
+
+- its type is `GLOB_DAT`, `JUMP_SLOT` or the absolute word;
+- its symbol has a row in the module's own table.
+
+For each such relocation:
+
+1. It reads the bound value from the slot, minus the addend for RELA
+   `GLOB_DAT` and absolute words. With `-z now`, the loader filled every
+   slot before the first constructor ran (data references always).
+2. It finds the module `y` that holds that address (`dl_iterate_phdr`,
+   with a cache of 16 modules).
+3. It takes `y`'s row of the same key whose symbol is defined at that
+   address.
+4. It compares the two rows' hashes.
+
+The lookups go through maps from `.dynsym` index to row, 4 bytes per
+symbol, built in one linear pass (Q-77.9):
+
+- **the module's own map** covers indexes up to the largest index a row
+  names. It sits on the stack up to 4,096 entries and is `mmap`ed above.
+- **`y`'s map** is built the first time a reference binds into a `y`
+  with at least 64 rows. It is `mmap`ed, and the name's candidates come
+  from `y`'s `DT_GNU_HASH` or `DT_HASH`.
+
+Without memory, both lookups fall back to binary searches of the sorted
+rows (O-54b).
+
+The runtime never asks the loader where a name would bind (`dlsym`,
+`dlvsym`), keeps no state shared between modules and exports no symbol.
+
+Each binding has one outcome. With `MASON_ODR_STATS=1` the module prints
+one statistics line with every outcome counted:
+
+| outcome | the binding | result |
 |---|---|---|
-| 4 × 1,250 | 0.08-0.09 ms | 0.03 ms |
-| 4 × 12,500 | 0.81-0.94 ms | 0.32 ms |
-| 4 × 125,000 | 16.5-18.3 ms | 3.9 ms |
-| 300 × 1,250, clean | 6.4-6.9 ms | 143 ms (review), and missed past 256 |
-| 300 × 1,250, one violating key | 43.8-47.4 ms (one `dlsym` per module holding the key) | |
+| `own` | the module's own definition | nothing to compare |
+| `same` / `differ` | a row in `y` with the same / another hash | `differ` is a mismatch (O-56) |
+| `interposed` | `differ`, into a module named in `LD_PRELOAD` | `odr-interposed-at-load`, a warning (O-56a) |
+| `no-table` | `y` has no table | never checked, never blamed |
+| `no-row` | `y` has a table and no row at that address | not compared |
+| `lazy` | a `JUMP_SLOT` still pointing into the module itself (not bound yet) | named: `odr-hook-lazy` |
+| `copy` | the executable's `R_*_COPY` target (CR) | judged against the copy's source (below) |
+| `canonical-plt` | the executable's canonical PLT entry (CP) | judged against the definition the entry calls (below) |
+| `ifunc` | an IFUNC: the slot holds the resolver's result, which names no definition (IF) | counted, not compared |
+| `tls` | a TLS relocation with a row: the slot holds a module id or an offset (TL) | counted (the exclusion `odr-hook-tls`), not compared, no warning |
+| `system` | either row `SYSTEM` | skipped unless `strict` |
+| `unknown` | none of the above can say (below) | counted, not compared |
+| `malformed` | `y`'s table is malformed (O-54b) | named, not compared |
 
-The clean path is linear in rows and independent of the module count;
-the **conflict path is quadratic** in the number of holders of one key:
-N legal `RTLD_LOCAL` plugins with private versions of one key make the
-key `MULTI` from the second on, and each load asks every earlier holder
-(re-review `hook-quadratic`: 0.1 ms at 50 plugins, 0.6 ms at 100,
-3.2-3.4 ms at 200). WP-077 measures it at 300 with K = 10 keys and
-either bounds it or caches each holder's answer (candidate 1 needs the
-cache anyway). The x86-64 and i386 timings under qemu emulate the code
-and are not costs.
+- **A value inside the module itself** is one of three things:
+  - its own definition: `own`;
+  - its own IFUNC: `ifunc`;
+  - otherwise, for a `JUMP_SLOT`: `lazy`; for anything else: `unknown`.
+- **The executable is never blamed for a copy or a PLT entry.** A
+  binding into the executable at an address without a row is checked
+  two ways:
+  - If it is the target of one of the executable's `R_*_COPY`
+    relocations, it is judged against the copy's source.
+  - If the executable's `.dynsym` holds the name undefined with that
+    value (a canonical PLT entry, which a non-PIE executable gets when
+    it takes a library function's address without PIC), it is judged
+    against the definition the entry calls.
 
-*The matrix* (Appendix A, experiment 5 and the re-review's cases;
-REQUIRED for WP-077, on AArch64, x86-64 and i386; R cases need not pass
-today):
+  Either way, the definition is the first module after the executable,
+  in load order, that defines the name. When that module defines
+  several versions of the name, the binding is `unknown` (VC). Measured:
+  bfd, lld, mold and mortar give the executable that undefined symbol
+  with a value, and every module's `GLOB_DAT` binds it (CP).
+- **The name must be the row's key.** When the FNV-1a 64 of the
+  relocation's symbol name is not the key of the row its index names,
+  the binding is `unknown`, and the module's table is named
+  (`odr-hook-malformed-table`: "a row's key is not its symbol's name").
+- **IFUNC in `y`.** A binding into `y` at an address without a row,
+  where `y` has a row for the key whose symbol is an IFUNC, is `ifunc`.
 
-| case | shape | required outcome | prototype 2 |
-|---|---|---|---|
-| A1-A3 | two `RTLD_LOCAL` plugins with private versions, non-Mason and Mason host (N29) | no report | pass |
-| E | `dlmopen(LM_ID_NEWLM)` (N30) | no report | pass |
-| F | `dlclose`, then another global plugin | no report | pass |
-| C2 | plugin 2 `RTLD_LOCAL`, then plugin 1 `RTLD_GLOBAL` | no report | pass |
-| R1m | `h2` `LOCAL\|NOW`, `h1` `GLOBAL`, `h1b` `LOCAL` (same body as `h1`), Mason host | no report | **fails** (abort) |
-| R2m | `h2` `LOCAL`, `h1` `LOCAL`, `h1` `NOLOAD\|GLOBAL`, `h1b` `LOCAL`, Mason host | no report | **fails** (abort) |
-| R6 | two libraries, one version node each, different bodies, Mason executable (`vmhook`) and none (`vhook`) | no report; `vhook` must not be silently unchecked | **fails** (abort; `vhook` silent) |
-| R8m | `RTLD_DEEPBIND` plugin binding its own copy | no report | measured by the re-review's script |
-| B1, B2 | Mason host exports v1, `RTLD_LOCAL` plugin v2 binds it | report | pass |
-| C1 | plugin 1 `GLOBAL`, plugin 2 `LOCAL` binds it | report | pass |
-| D | a plugin's dependency binds the plugin's different copy | report | pass |
-| G | 300 modules × 1,250 rows, a violation in module 300 | report; cost recorded | pass |
-| R3m | lazy binding of another module's different body after init | report, or a named exclusion of the prototype's rule | **fails** (silent) |
-| R4/R5 | `-Bsymbolic`, `-Bsymbolic-functions`, `protected` definition bound by a later library's references | report, or a named exclusion | **fails** (no rows) |
-| versioned | `dlvsym` with the reference's version; the version in the key | per (name, version) | not prototyped |
-| H | `mmap` failure | named warnings, never silence | pass |
-| I | init order, three linkers, `.so` and executable | runtime first | pass |
-| J | threads, `dlopen`/`dlclose`, `fork` | no crash, no hang | pass |
-| quadratic | `hook-quadratic` at 300 plugins, K = 10 | cost recorded and bounded | not run at K = 10 |
+Tests: every row of the matrix (O-58).
 
-**O-55 (what only load time sees).** The static link proves what O-24
-says; only a runtime could add a different build of a library at run
-time, `dlopen`ed libraries and indirect dependencies (X12 until then).
+*Cost* (aarch64 natively; in-process time summed over every entry,
+`MASON_ODR_TIME`, two rounds of three runs; the record WP-196 has the wall times and
+loads):
 
-**O-56 (compatibility, for the prototype).** A mortar-made executable
-with foreign libraries: they have no table and are not checked. Intentional
-interposition of a vague definition (`LD_PRELOAD`) would be reported;
-interposing strong definitions (`malloc`) is in no table (N5).
+| modules × rows | hod `-O0` | GCC `-O2` | prototype 3, hod (no maps) | prototype 2 |
+|---|---|---|---|---|
+| 4 × 1,250 clean | 0.37-0.41 ms | 0.13-0.17 ms | 0.61-0.78 ms | 0.08-0.09 ms |
+| 4 × 12,500 clean | 4.0-10.6 ms | 1.5-2.9 ms | 7.4-9.9 ms | 0.81-0.94 ms |
+| 4 × 125,000 clean | 44-60 ms | 17-24 ms | 91-128 ms | 16.5-18.3 ms |
+| 300 × 1,250 clean | 39-47 ms | 11-18 ms | 57-66 ms | 6.4-6.9 ms |
+| 300 × 1,250, one violating key | 38-49 ms | 12-26 ms | 55-62 ms | 43.8-47.4 ms |
+| 300 `RTLD_LOCAL` plugins, K = 10 private keys | 0.98-1.32 ms | 1.0-2.0 ms | 0.85-1.02 ms | 3.2-3.4 ms at 200, quadratic |
+
+Load 10 to 15 (provisional). The clean path is linear in the keyed
+relocations and independent of the module count, and the conflict path
+costs nothing extra. Prototype 2 compared tables without reading
+bindings, and was wrong on R1m, R2m, R3m and R6.
+
+**O-54a (entries).**
+
+- **Shared object**: `.init_array.00000`, which runs before every user
+  constructor, priority 101 included. It checks the module itself.
+- **Executable**: `.preinit_array`, which runs before any constructor of
+  any module. In fatal mode it checks the executable and every module of
+  the initial set that has a table. In report mode it checks the
+  executable and the initial set's table-only modules; modules with the
+  runtime report themselves. It reads the environment from its `envp`
+  argument, because `getenv` returns NULL there (glibc 2.41).
+
+Tests: I, S-fatal, S-report, T2-initial-now.
+
+**O-54b (memory and malformed input).** Every byte of another module is
+untrusted. The runtime reads a module's memory only inside one of its
+readable `PT_LOAD` ranges (the first 16 such ranges; a module with more
+is read only within those). The program headers come from the loader
+(`dl_iterate_phdr`) and are trusted. A module is malformed when any of
+the following holds:
+
+- its table note does not parse (version, row size, or a count past the
+  descriptor);
+- it has two table notes;
+- a `PT_NOTE` lies outside its segments;
+- its dynamic section lies outside its segments or has no `DT_NULL`;
+- neither hash table gives its symbol count;
+- its symbol or string table lies outside its segments;
+- a relocation table lies outside its segments, or has entries of the
+  wrong size;
+- `DT_PLTREL` names the other relocation format;
+- a row's `.dynsym` index is 0 or past `.dynsym`;
+- the rows are out of key order;
+- a slot lies outside its segments;
+- a key is not its symbol's name.
+
+The runtime treats a malformed module as table-less and names it, with
+the reason:
+
+- `mason: warning: odr-hook-malformed-table: <module>: <reason>; the
+  module is NOT checked` for the module's own table;
+- `...; its definitions are NOT compared (bound from <module>)` for a
+  module that references bind into, once per entry. Those bindings count
+  as `malformed`.
+
+The runtime never crashes and never stays silent. glibc 2.41 itself
+refuses a module whose `DT_PLTREL` names the other format: `ld.so`
+asserts at the load, before any constructor (RB-pltrel). The runtime's
+check stays for other loaders. glibc's x86-64 loader also parses every
+`PT_NOTE` itself (GNU properties) and faults on one outside the
+module's mapping before any constructor, in a process with no runtime
+too (MT-off on x86-64). The runtime cannot run before the loader; on
+aarch64 and i386 that module loads, and the runtime names it.
+
+When `mmap` fails (or under `MASON_ODR_TEST_NOMMAP=1`), the module above
+4,096 entries is checked with binary searches and no memory. The result
+is the same; the statistics line says `path=slow`.
+
+Tests: MT-count, MT-trunc, MT-seg, MT-off, MT-sym, MT-order, MT-own,
+RB-pltrel-x, RB-pltrel-y, H-map, H-nommap, and RB-4096, RB-4097 and
+RB-16385 (both paths).
+
+**O-55 (what only load time sees).** The libraries of the running
+system, `dlopen`ed modules and indirect dependencies. The load-time check
+judges **bindings**. Two private copies are outside it: hidden vague
+definitions (`-fvisibility-inlines-hidden`, HV), and `RTLD_LOCAL`
+plugins that each bind their own copy (A1-A3). Each runs its own copy,
+and nothing binds across.
+
+**O-56 (modes).**
+
+- **Default**: the `NT_MASON_ODR_RT` mode of the main program, else the
+  module's own, else `report` (Q-77.3).
+- **`MASON_ODR=off|report|fatal[,strict]`** overrides it, word by word.
+  An unknown word gets one warning per process, `odr-hook-bad-mode`,
+  naming the word; the rest of the words then apply over the default
+  (Q-77.5: `MASON_ODR=fatl` is never read silently as the default). The
+  warning comes from the first module in load order whose note says it
+  carries the runtime.
+- **report** prints every mismatch as a warning and goes on.
+- **fatal** prints every mismatch, then a sweep of every module with a
+  table, then `mason: fatal: odr-violation-at-load: N mismatch(es); the
+  process stops (MASON_ODR=report continues)`, then calls `abort()`
+  (Q-77.1).
+  - At program start this happens before any constructor.
+  - At a `dlopen`, it happens in the opened module's init, and `dlopen`
+    does not return. **No mode makes `dlopen` return an error**: no
+    public glibc interface allows that after the module is bound.
+- **strict** compares `SYSTEM` rows and treats an interposition as a
+  mismatch.
+- **Secure execution** (`AT_SECURE`: a set-user-ID or set-group-ID
+  program, or one with file capabilities): the runtime reads none of its
+  environment variables and does not read `LD_PRELOAD`; the notes
+  decide, as the loader ignores `LD_*` there. A binding into a preloaded
+  module is then judged like any other binding. The fatal line then
+  says `(secure execution: MASON_ODR is not read)`.
+
+The diagnostics are environment variables that change no outcome:
+
+- `MASON_ODR_STATS=1`: the statistics line;
+- `MASON_ODR_TIME=1`: `mason-time`, nanoseconds per entry;
+- `MASON_ODR_TEST_NOMMAP=1`: the no-memory path;
+- `MASON_ODR_TEST_SECURE=1`: secure execution, for the matrix. Only the
+  exact value `1` turns it on, and nothing turns it off.
+
+Tests: C1-fatal, B1, B2, S-env, S-off, P2, BM-a, BM-b, BM-c, SE-off,
+SE-fatal, SE-preload, SE-seam.
+
+**O-56a (who is checked).**
+
+| case | outcome |
+|---|---|
+| a module with the runtime | checks its own references |
+| a table-only module in the initial set of an executable with the runtime | checked by the executable's entry |
+| a table-only module opened later (exclusion `T2-dlopen`) | not checked |
+| a module with neither | never checked and never blamed (`no-table`) |
+| a binding into a module named in `LD_PRELOAD` | `odr-interposed-at-load`, a warning, never fatal unless `strict` (N5); under secure execution, judged as any binding |
+
+Tests: T1, T2-dlopen, T2-initial-now, T2-initial-lazy, P1, P3,
+CR-foreign, SE-preload.
 
 **O-57 (the D-21 boundary).** K18c shows that a library loaded with
-`RTLD_LOCAL` gets its own instance of a vague definition the executable
-does not export (`spec/dyn.md` §14). The table does not change that; Q8
-asks whether an M6 export class should.
+`RTLD_LOCAL` gets its own instance of a vague definition that the
+executable does not export (`spec/dyn.md` §14). The table does not
+change that; Q8 asks whether an M6 export class should.
 
-**O-58 (the gate).** No output gets the runtime in M6. WP-077 is a
-**prototype package**: its deliverable is the matrix above, green on
-three targets with the candidate mechanism it chose and the reasons it
-rejected the others, not shipped code. Experiment 5 does **not** count
-as passed until the matrix's must-not-report cases (A1-A3, E, F, C2,
-R1m, R2m, R6, R8m) give no report and its must-report cases (B1, C1, D,
-G, R3m, R4/R5) report or are named exclusions, with versioned lookup and
-the quadratic cost measured. A package that ships a runtime is cut only
-after that **and** the operator's decisions Q2 and Q3; `MASON_ODR=abort`
-after a further decision.
+**O-58 (the matrix: the gate of every change to the runtime).**
+`tests/hook/run.sh WORK TARGET [hod|gcc]` builds every case with the
+checked-in objects. Every change to the runtime runs it:
 
-**O-59 (what the verifier checks of the dynamic side).** §12.5's rules
-for the table; the runtime rule applies only if a runtime ships.
+- on aarch64 (natively, both the hod objects and GCC `-O2` of the
+  source);
+- on x86-64 and i386 (under qemu-user).
+
+Each row must hold on every target:
+
+- **must-not-report**: A1-A3, E, F, C2, R1m, R2m, R3m-now, R6 (both),
+  R8m, VER-a, P1 (a warning only), P3, CR-foreign, CR-mason, Q, CP (per
+  linker), IF-own, IF-bind, TL, HV, VC, BM-b, SE-seam, RB-sym (both),
+  RB-0rows and RB-norel;
+- **must-report**: B1, B2, C1 (also foreign and fatal), D, R4/R5 (three
+  forms), VER-b, T1, T2-initial-now, S-*, G, H-*, CR-b, CP-b (per
+  linker), P2, BM-a, BM-c, SE-off, SE-fatal, SE-preload, RB-norelro,
+  RB-relro, RB-relr and RB-<n> (both paths);
+- **named and counted, never a report**:
+  - `odr-hook-lazy`: R3m-lazy, T2-initial-lazy;
+  - `T2-dlopen`;
+  - `canonical-plt` (CP), `ifunc` (IF), `tls` (TL) and `unknown` (VC);
+- **named, never a crash**: `odr-hook-malformed-table` for MT-*. Two
+  loader outcomes count as met, because the runtime never runs: a
+  refusal by the loader (RB-pltrel-*, `ld.so`'s assertion), and the
+  loader's own fault on MT-off on x86-64. The row checks that the
+  foreign host, with no runtime, faults the same way;
+- **runtime-first**: I under bfd, lld, mold and mortar;
+- **no crash, no hang**: J (8 threads), RB-J2 (32 threads).
+
+RB-1M (a table of 1,000,000 rows, `BIG=1`) runs on aarch64. With each
+change, the cost tables of O-54 are recorded again. Fatal mode ships only
+while every must-not-report row is green.
+
+**O-59 (a request to the verifier).** §12.5 is asked to judge an output
+whose `.note.mason` holds `NT_MASON_ODR_RT`. The output must show:
+
+- exactly one runtime note, with descriptor `{1, mode, 0, id}`, mode 1
+  or 2 and as the option gave it, and the table (O-50) beside it;
+- the runtime's entry first: the shared object's first `.init_array`
+  entry, or the executable's `.preinit_array` entry, is the runtime's;
+- the runtime's bytes: the sections of the embedded object for the
+  target and kind, as `runtime id` names it;
+- `DF_BIND_NOW` (or `DF_1_NOW`), unless the link was given `-z lazy`;
+- no runtime note in a static executable.
+
+P-M2 accepts the note type `0x4d4f4403` (Q-77.4). The verifier rules and
+their tests are the verifier package's (WP-197); until they exist, an
+output with the runtime is not shipped by any lane.
 
 ## 11. Requests to kiln and hod
 
@@ -2778,7 +2972,7 @@ implementation of the verdict) is Q11.
 | O-45 | T-O-45 | the bench lane's comparison |
 | O-50, O-51 | T-O-50 | `=full` (WP-076, `tests/link/dyn/odr/o50-full{,-input}.test`, `odr_dynamic.rs::full_table_in_a_dynamic_executable`, `mortar_meta::table`'s mutation test of the second note): hidden vague definitions and types in the second note, the first note unchanged; a `.so` input with a `=full` table read by O-24 as with `=exported`. The row set: default, protected, `-Bsymbolic` and `-Bsymbolic-functions` definitions have rows (the last three `NONPREEMPTIBLE`), hidden and version-script `local:` ones do not; versioned names; the keeper's hash after a warned link. In an executable (WP-075, `tests/link/dyn/odr/o50-table.test`, `crates/mortar/tests/odr_dynamic.rs`): default and protected rows, every one `NONPREEMPTIBLE`, none for hidden; identical bytes on two links; none without the option |
 | O-52 | T-O-52 | `note-final`'s tolerance matrix |
-| O-53, O-54, O-56 | T-O-54 | WP-077's prototype matrix (O-58) on three targets; not a release test until a runtime ships |
+| O-53, O-54, O-56 | T-O-54 | the matrix (O-58, `tests/hook/run.sh`) on three targets with the shipped objects (WP-196); `cargo xtask odr-runtime --check` |
 | O-55, O-57 | T-O-57 | K18c's two outcomes unchanged by the table |
 | O-58 | T-O-58 | no output carries a runtime in M6; no table without `--odr-table` |
 | O-59 | T-O-59 | §12.5's rules on good and mutated outputs |

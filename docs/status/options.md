@@ -4,11 +4,11 @@ Generated from `crates/mortar_cli/src/rows.rs` by `mortar_cli::status_markdown`;
 do not edit. `MORTAR_BLESS=1 cargo test -p mortar_cli --test table` rewrites it.
 The rules are `spec/cli.md`.
 
-487 rows: 110 supported, 8 partial, 29 noop, 340 refused.
+488 rows: 111 supported, 8 partial, 29 noop, 340 refused.
 
-At `-r` (`spec/cli.md` C-R2b): 25 act (11 of them refused until their package lands), 152 noop, 271 as in a final link, 20 conflicting-options with -r, 19 refused.
+At `-r` (`spec/cli.md` C-R2b): 25 act (11 of them refused until their package lands), 153 noop, 271 as in a final link, 20 conflicting-options with -r, 19 refused.
 
-Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 18 mortar's own.
+Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 19 mortar's own.
 
 - AArch64: 14 rows of that target only
 - x86-64: 26 rows of that target only
@@ -297,6 +297,7 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 18 mortar'
 | `--odr-stats` |  | mortar | all | supported | as in a final link (MT-30a) | `diagnostics.odr.stats` | Print one line of one-definition-rule statistics |
 | `--odr-check-archives` |  | mortar | all | supported | as in a final link (MT-30a) | `diagnostics.odr.check_archives` | Also compare the archive members that are not linked (odr.md O-23) |
 | `--odr-table` | off \| exported \| full | mortar | all | supported | noop: by what the option is; the final link writes the table (C-R2b) | `diagnostics.odr.table` | Write a loadable one-definition-rule table: off (default), exported or full |
+| `--odr-runtime` | off \| report \| fatal | mortar | all | supported | noop: by what the option is; the final link links the runtime (C-R2b) | `diagnostics.odr.runtime` | Link the load-time one-definition-rule check: off (default), report or fatal |
 | `--keep-mason-meta` |  | mortar | all | supported | noop: by what the option is; MT-30 always writes the container (C-R2b, MT-30) | `diagnostics.odr.keep_meta` | Keep the inputs' Mason metadata in the output (meta.md MT-32) |
 | `--detect-odr-violations` |  | mortar | all | noop: odr.md O-41: mortar checks the one-definition rule by default; --detect-odr-violations has no further effect | noop: gold's spelling, a no-op in a final link (C-R2b) | `other` | GNU gold's: check the one-definition rule |
 

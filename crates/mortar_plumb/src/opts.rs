@@ -110,6 +110,7 @@ R No - --no-odr-check
 R No - --odr-stats
 R No - --odr-check-archives
 R Next - --odr-table
+R Next - --odr-runtime
 R No - --keep-mason-meta
 R No - --detect-odr-violations
 R No gnu --version
@@ -735,6 +736,16 @@ pub enum OdrTable {
     Full,
 }
 
+/// `--odr-runtime`'s value (§13.1, WP-197; default `off`). `Other`: a
+/// value mortar refuses (`spec/cli.md` C-ODR-RT), so no output of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OdrRuntime {
+    Off,
+    Report,
+    Fatal,
+    Other,
+}
+
 /// The build id the line asks for (`spec/image.md` I-69; the last of
 /// `--build-id[=STYLE]` and `--no-build-id` wins).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -801,6 +812,15 @@ pub struct Options {
     /// Words that no accepted option spells, in order, with their index
     /// in the line (M9).
     pub unread: Vec<(usize, String)>,
+    /// The last `--odr-runtime=MODE` (§13.1, WP-197; default `off`).
+    pub odr_runtime: OdrRuntime,
+    /// Whether the line spells `--odr-table` at all (§13.1: the runtime's
+    /// implied table stands only when the line names none; an explicit
+    /// last `=off` beside the runtime is a line mortar refuses).
+    pub odr_table_given: bool,
+    /// The last of `-z now` (true) and `-z lazy` (false), when the line
+    /// has either (§13.1: the runtime's `-z now` unless `-z lazy`).
+    pub z_now: Option<bool>,
 }
 
 impl Default for Options {
@@ -822,6 +842,9 @@ impl Default for Options {
             export_dynamic: false,
             named_roots: Vec::new(),
             max_page: None,
+            odr_runtime: OdrRuntime::Off,
+            odr_table_given: false,
+            z_now: None,
             wrap: Vec::new(),
             defsym: Vec::new(),
             unread: Vec::new(),
@@ -872,6 +895,8 @@ impl Options {
         match kw {
             "execstack" => self.execstack = Some(true),
             "noexecstack" => self.execstack = Some(false),
+            "now" => self.z_now = Some(true),
+            "lazy" => self.z_now = Some(false),
             "max-page-size" => self.max_page = value.and_then(number),
             _ => {}
         }
@@ -902,6 +927,7 @@ impl Options {
             "--wrap" => self.wrap.extend(value.map(str::to_string)),
             "--defsym" => self.defsym.extend(value.map(str::to_string)),
             "--odr-table" => {
+                self.odr_table_given = true;
                 self.odr_table = match value {
                     Some("exported") => OdrTable::Exported,
                     Some("full") => OdrTable::Full,
@@ -909,6 +935,16 @@ impl Options {
                 };
             }
             "--odr" => self.odr_off = value == Some("off"),
+            "--odr-runtime" => {
+                self.odr_runtime = match value {
+                    Some("report") => OdrRuntime::Report,
+                    Some("fatal") => OdrRuntime::Fatal,
+                    Some("off") => OdrRuntime::Off,
+                    // mortar refuses any other value: the line is not one
+                    // it linked (§13.1).
+                    _ => OdrRuntime::Other,
+                };
+            }
             "--no-odr-check" => self.odr_off = true,
             "--build-id" => {
                 self.build_id = match value {
@@ -1064,6 +1100,20 @@ mod tests {
         assert!(read(&["--no-odr-check"]).odr_off);
         assert!(!read(&["--no-odr-check", "--odr=warn"]).odr_off);
         assert!(read(&["--odr", "off"]).odr_off);
+        // §13.1 (WP-197): --odr-runtime, the last one; the table spelled;
+        // the last of -z now and -z lazy.
+        assert_eq!(read(&["--odr-runtime=report"]).odr_runtime, OdrRuntime::Report);
+        assert_eq!(read(&["--odr-runtime", "fatal"]).odr_runtime, OdrRuntime::Fatal);
+        assert_eq!(
+            read(&["--odr-runtime=fatal", "--odr-runtime=off"]).odr_runtime,
+            OdrRuntime::Off
+        );
+        assert_eq!(read(&["--odr-runtime=loud"]).odr_runtime, OdrRuntime::Other);
+        assert_eq!(read(&[]).odr_runtime, OdrRuntime::Off);
+        assert!(!read(&[]).odr_table_given && read(&["--odr-table=off"]).odr_table_given);
+        assert_eq!(read(&["-z", "now", "-zlazy"]).z_now, Some(false));
+        assert_eq!(read(&["-z", "lazy", "-z", "now"]).z_now, Some(true));
+        assert_eq!(read(&["-z", "relro"]).z_now, None);
         assert!(read(&["--keep-mason-meta"]).keep_mason_meta);
         assert_eq!(read(&["--build-id"]).build_id, BuildId::Style("default".into()));
         assert_eq!(read(&["--build-id=0xabcd"]).build_id, BuildId::Given);

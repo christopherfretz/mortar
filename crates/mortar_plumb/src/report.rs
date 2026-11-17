@@ -510,6 +510,11 @@ pub struct MetaCoverage {
     pub not_judged: u64,
     /// Bytes of the kept `.mason.meta` compared.
     pub kept_bytes: u64,
+    /// Outputs with the load-time ODR runtime judged (§13.2 P-M3, WP-197),
+    /// its entries placed and judged, and its imports judged.
+    pub runtime_outputs: u64,
+    pub runtime_entries: u64,
+    pub runtime_imports: u64,
 }
 
 impl Coverage {
@@ -687,6 +692,13 @@ impl Report {
                 m.kept_bytes,
                 if m.options_known { "known" } else { "none (a reference's map)" }
             );
+            if m.runtime_outputs > 0 {
+                let _ = writeln!(
+                    s,
+                    "ODR runtime: outputs {}, entries {}, imports {}",
+                    m.runtime_outputs, m.runtime_entries, m.runtime_imports
+                );
+            }
         }
         if let Some(b) = &c.build_id {
             let _ = writeln!(s, "build id: {b}");

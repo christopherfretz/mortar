@@ -74,6 +74,19 @@ pub fn verify_with(output: &[u8], inputs: &[Input<'_>], map: &Map, ctx: &Ctx<'_>
 
 /// [`verify_with`] over a source (§8.1).
 pub(crate) fn verify_src(output: &[u8], src: &dyn Source, map: &Map, ctx: &Ctx<'_>) -> Report {
+    // §13.1 (WP-197): the load-time ODR runtime's bytes are the
+    // verifier's own copy, an input by its name for every reader.
+    if let Some(bytes) = crate::odrrt::embedded(output, map) {
+        let src = crate::odrrt::Overlay { inner: src, bytes };
+        let files = crate::odrrt::OverlayFiles { inner: ctx.files, bytes };
+        let ctx = Ctx { line: ctx.line.clone(), files: &files };
+        return verify_src_read(output, &src, map, &ctx);
+    }
+    verify_src_read(output, src, map, ctx)
+}
+
+/// [`verify_src`] once its inputs are what the verifier reads.
+fn verify_src_read(output: &[u8], src: &dyn Source, map: &Map, ctx: &Ctx<'_>) -> Report {
     let store = Store::read(src, &[map]);
     crate::prof::mark("skeletons");
     let mut report = verify_in(output, &store, 0, map, ctx);
@@ -189,6 +202,11 @@ fn judge(
             &args.iter().map(|w| w.as_bytes().to_vec()).collect::<Vec<_>>(),
         ),
     };
+    // §13.1 (WP-197; spec/cli.md C-ODR-RT): the runtime links `-z now`
+    // unless the line says `-z lazy` (P-D3's and P-D6's `now`).
+    if map.format == crate::Format::Mortar && crate::odrrt::on(&opts) && opts.z_now != Some(false) {
+        line.now = true;
+    }
     // §3.3: the empty sections not in the output (WP-156b). The
     // export set is derived later; an output that exports roots every
     // global here (plain rule), which can only leave a section unjudged
@@ -865,12 +883,21 @@ fn line_words(map: &Map, ctx: &Ctx<'_>) -> Option<Vec<String>> {
     // map's `arg` records (mortar's own account of its line) only when
     // the caller has none. A mention's state, group and position are the
     // line's, never what the judged linker writes of them.
-    if ctx.line.is_some() || map.format != crate::Format::Mortar {
+    if map.format != crate::Format::Mortar {
         return ctx.line.clone();
     }
-    (!map.args.is_empty()).then(|| {
-        map.args.iter().map(|w| String::from_utf8_lossy(w).into_owned()).collect::<Vec<_>>()
-    })
+    let words = if ctx.line.is_some() {
+        ctx.line.clone()
+    } else {
+        (!map.args.is_empty()).then(|| {
+            map.args.iter().map(|w| String::from_utf8_lossy(w).into_owned()).collect::<Vec<_>>()
+        })
+    };
+    // §13.1 (WP-197): the runtime mortar adds is read after every input.
+    if crate::odrrt::serves(map) {
+        return words.map(|w| crate::odrrt::words_with_runtime(&w));
+    }
+    words
 }
 
 /// `DF_SYMBOLIC` (0x2) in a reference's `DT_FLAGS` under `-Bsymbolic`:

@@ -63,6 +63,8 @@ fn main() -> ExitCode {
         #[cfg(unix)]
         Some("meta") => xtask::meta::main(&args[1..]),
         #[cfg(unix)]
+        Some("odr-runtime") => xtask::odr_runtime::main(&args[1..]),
+        #[cfg(unix)]
         Some("incr-oracle") => xtask::incr_oracle::main(&args[1..]),
         #[cfg(unix)]
         Some("realbuild") => ExitCode::from(xtask::realbuild::main(&args[1..])),
