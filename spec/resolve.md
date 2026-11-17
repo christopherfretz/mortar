@@ -1095,8 +1095,8 @@ reference does (E9, R13):
 | referring section | GNU ld | lld | mold | mortar |
 |---|---|---|---|---|
 | non-alloc, **GNU ld's debug names**: prefix `.debug` (any continuation: `.debug`, `.debug_info`, `.debugx`), `.zdebug`, `.line`, `.stab` (`.stab`, `.stabstr`, `.stab.foo`), `.gnu.linkonce.wi.`, `.gnu.debuglto_.debug_`, and exactly `.gnu_debuglink` | accepted (tombstone) | accepted | accepted | accepted: `spec/image.md` writes the tombstone |
-| `.eh_frame` | the FDE is dropped (all) | | | the FDE is dead (`spec/model.md` §3.6 rule) |
-| exactly `.gcc_except_table` (alloc or not; not in the group) | accepted, the field is 0 | alloc: **error**; non-alloc: accepted | accepted, the field is the addend | accepted, the field is 0 (GNU ld): the table is reached only from the dead FDE |
+| `.eh_frame` (WP-177) | a dead FDE is dropped, its fields with it (all three); a CIE no live FDE uses is not written (all three); a field of a **live** record (a live CIE's personality pointer, a live FDE's LSDA pointer): accepted, the field is 0: the first throw through the frame aborts (`terminate called after throwing an instance of ...`) | live record: error `relocation refers to a symbol in a discarded section` | live record: accepted, a wrong value: the measured programs die (SIGSEGV, SIGBUS) | judged by the **record that owns the field** (below): a field of a dead record is no error, the record is not written; a field of a live record is an error, `discarded-section-reference` (case (a)) or `comdat-mismatch` (case (b)); an FDE's initial location is never an error (it is what makes the FDE dead) |
+| exactly `.gcc_except_table` (alloc or not; not in the group) (WP-177) | accepted, the field is 0 (a live LSDA's type entry 0 is a catch-all: `catch (const std::exception &)` catches an `int`) | alloc: **error**, live or dead owner; non-alloc: accepted | accepted, the field is the addend (live owner: the measured programs die) | judged by the **record that owns the field** (below): owner live, an error, `discarded-section-reference` (a) or `comdat-mismatch` (b); owner dead, accepted, the field is 0 (GNU ld); no owner, an error |
 | any other non-alloc section (`.comment`, `.comment.x`, `.note.x`, `.gcc_except_table.foo`, `.gnu_debugaltlink`, `.debu`, `.lin`, `.gnu.debuglto_.debug`, `.gnu.linkonce.wix`) | error | accepted | accepted | error `discarded-section-reference` (GNU ld, finding 11) |
 | an alloc section whose name is a debug name (`.debug_x`, `"a"`) | error | error | accepted | error |
 | any other alloc section (`.text`, `.data`, `.rodata`, `.stapsdt.*`, `.gcc_except_table.foo`, …), case (a) | error ``` `lg' referenced in section `.text' of b.o: defined in discarded section `.text.g[g]' of b.o``` | error `relocation refers to a symbol in a discarded section: lg` | accepted silently, or crashes (E9: mold 2.37.1 segfaults after its own error) | error `discarded-section-reference` |
@@ -1115,11 +1115,15 @@ needed (§4.4, D-11: GNU ld and lld write an import no `DT_NEEDED`
 library defines, and the program dies) are not definitions, and the
 reference is `comdat-mismatch` (the supervisor's ruling of 2026-11-17:
 the demoted mention's binding is not rewritten for extraction or for the
-needed set; mold refuses both as well). Two cells refuse a program the
-references link correctly and are packages of their own: the only
+needed set; mold refuses both as well). One cell refuses a program the
+references link correctly and is a package of its own: the only
 surviving reference is from a debug section (WP-179: the tombstone, as
-case (a), for either binding), or from a `.eh_frame` record that is not
-written (WP-177: a field is judged by the record that owns it).
+case (a), for either binding). A reference from a `.eh_frame` or
+`.gcc_except_table` record that is not written (a CIE no live FDE uses,
+an LSDA whose FDE is dead) is no error (WP-177, below), weak or strong:
+GNU ld and lld refuse the strong form (GNU ld an undefined reference
+from `.eh_frame`, lld a discarded-section reference from
+`.gcc_except_table`), and mortar links it (§16).
 The diagnostic names the symbol, the group signature, the keeper's file,
 and the dropped copy's file that defines the symbol: ``symbol hx is
 defined only in a discarded copy of COMDAT group g``, `>>> kept copy:
@@ -1140,6 +1144,54 @@ case (a) from an alloc section when the kept copy's corresponding section
 has the same size (it redirects to it; measured only for a mix of sizes,
 E9): not followed, the reference is to bytes of a copy that does not
 exist.
+
+**A field of `.eh_frame` or `.gcc_except_table` is judged by the record
+that owns it, not by its section's name** (WP-177, the supervisor's
+ruling of 2026-11-17). Both cases, (a) and (b), and every output kind:
+
+- `.eh_frame`: the owner is the CIE or FDE whose bytes hold the
+  relocation's `r_offset`. An FDE is live by `spec/model.md` §3.6; a CIE
+  is live exactly when a live FDE of its section uses it. A field of a
+  live record is an error, `discarded-section-reference` (a) or
+  `comdat-mismatch` (b): the record is written, and its field would be a
+  wrong value (GNU ld's 0 personality aborts the first throw through the
+  frame). A field of a dead record is no error: the record is not
+  written. The FDE's initial location (the first field after the CIE
+  pointer) is never an error: a reference into a dropped copy there is
+  what makes the FDE dead. A place in no record (past the last one) is
+  an error.
+- exactly `.gcc_except_table`: no LSDA is parsed. The owner of the field
+  at offset `r` is the FDE of the same file whose LSDA pointer names
+  this section at the greatest start `<= r`, over **all** of the file's
+  FDEs, live or dead; of two FDEs with the same start, the owner is live
+  if either is. Owner live: an error, as above. Owner dead: no error, and
+  the field is 0 (GNU ld's value; the LSDA is reached only from the dead
+  FDE). No owner (`r` before the first start, or no FDE of the file
+  points into the section): an error, the owner not known. The start is
+  the LSDA pointer's relocation (a section-relative target in the table
+  plus its addend); an LSDA pointer without one is no start.
+
+The diagnostic adds, for a field of these sections, the function the
+owning record describes (`>>> the field is in the unwind information of
+{function}, which is written`; `>>> the field is in the exception table
+(LSDA) of {function}, which is written`; with no owner, `>>> no FDE of
+{file} has an LSDA at or before this place: the field's owner is not
+known`), and for case (a) the group and the kept copy (`>>> the section
+is in a discarded copy of COMDAT group {sig}`, `>>> kept copy:
+{file}`). When the local symbol's name is the group signature, or a name
+the kept copy defines non-locally (case (a)), or the kept copy defines
+the key's name as a local (case (b)), the symbol was probably made local
+after a partial link (`objcopy --localize-hidden`,
+`--keep-global-symbol`, `--localize-symbol` of an `ld -r` output, whose
+groups survive): a note says so, and that the sound idiom is to
+dissolve the groups first (`ld -r --force-group-allocation`), then
+localize.
+
+Not followed: redirecting such a reference to the kept copy's symbol of
+the same name. The reference names a local symbol of its own file, the
+kept copy's symbol is another definition (in case (a) the reference may
+not even be to a symbol), and the copies may differ; a localized
+component's groups are the build's error, which the note names.
 
 ### 6.4 Groups that are not COMDAT
 
@@ -2304,7 +2356,14 @@ Each states the references' behavior it pins; until M1 each also carries
 | `resolve/comdat-mismatch-weak.test.pending` | WP-176, §6.3 case (b) with a weak demoted call, three targets, static: bfd, lld run the undefined-weak call (AArch64 exit 2, x86 SIGSEGV); mold and mortar refuse; kept order 42; `--gc-sections` collecting the reference links | pending (no reference passes L3: R5) |
 | `resolve/comdat-mismatch-weak-dynamic.test.pending` | WP-176, weak demoted data through the GOT, `-no-pie` and `-pie`: bfd, lld run 1 instead of 41; mold and mortar refuse | pending (no reference passes L3: R5) |
 | `resolve/comdat-mismatch-weak-shared.test.pending` | WP-176, `-shared` (and `-z defs`): bfd, lld export `hx` as `WEAK UND`; mold and mortar refuse | pending (no reference passes L3: R5) |
-| `resolve/comdat-mismatch-weak-prelink.test.pending` | WP-176, `ld -r` + `objcopy --localize-hidden`: the live CIE's personality pointer and the LSDA's type entry through demoted weak hidden `DW.ref.*`: bfd, lld abort at the first throw; mortar `comdat-mismatch` | pending the lane's `partial` step (WP-175) |
+| `resolve/comdat-mismatch-weak-prelink.test.pending` | WP-176, `ld -r` + `objcopy --localize-hidden`: the live CIE's personality pointer and the LSDA's type entry through demoted weak hidden `DW.ref.*`: bfd, lld abort at the first throw; mortar `comdat-mismatch` | runs since WP-177 (`partial`, `objcopy`); pending WP-178 (no reference passes L3: R5) |
+| `resolve/comdat-eh-cie.test` | WP-177, §6.3 case (a) from a live CIE and a live LSDA: `ld -r` (bfd, lld) then `objcopy --localize-hidden`, `--keep-global-symbol`, `--localize-symbol`; static, PIE, `-shared`, static PIE; i386 also the dropped `__x86.get_pc_thunk.*` | lld and mortar refuse |
+| `resolve/comdat-eh-lsda.test` | WP-177, case (a) from a live LSDA's type entry (`--localize-symbol=DW.ref._ZTISt9exception`); the direct link sound with all four | lld and mortar refuse |
+| `resolve/comdat-eh-hand.test` | WP-177, case (a) assembled by hand: a live CIE's personality pointer, a live LSDA's word; the prelink note (the name is the signature) | lld and mortar refuse |
+| `resolve/comdat-eh-sound.test` | WP-177, the sound idiom: `ld -r --force-group-allocation` (bfd, lld), then localize: links and runs with all four, exceptions caught by type | written |
+| `resolve/comdat-eh-unused-cie.test` | WP-177, case (b) from a CIE no live FDE uses and an LSDA whose FDE is dead (`--gc-sections`): bfd, mold, mortar run 7; the strong form: bfd, lld refuse, mold and mortar run 7 | lld's link in `comdat-eh-dead.test.pending` |
+| `resolve/comdat-eh-wrong.test.pending` | WP-177, the wrong programs of `comdat-eh-cie` and `comdat-eh-lsda`: bfd aborts (signal 6) or runs the wrong handler; mold dies (signal 11) | pending a verifier package (L3's R5 on bfd and mold, right: an anomaly to record) |
+| `resolve/comdat-eh-dead.test.pending` | WP-177, case (a) from an LSDA whose FDE is dead: bfd and mortar write 0, mold the addend, lld refuses; lld's `comdat-eh-unused-cie` link | pending a verifier package (L3's R5 on every output, mortar's included: a field of a record that is not written) |
 | `resolve/entry-default-root.test` | R9: `ld -static m0.o -lst`, no `-e`, `_start` only in an archive member: all three extract it | written (§15.3) |
 | `resolve/tls-ref-mismatch.test` | R7: TLS reference vs non-TLS reference, no definition between them (bfd error, lld/mold link); mortar `tls-mismatch` | per linker |
 | `resolve/hidden-unused.test` | R14: `.hidden zz` with no use: bfd error, lld/mold/mortar link | `link(bfd)` `exit: fail` |
@@ -2376,7 +2435,10 @@ Every disagreement found; "E" is the experiment in the landed record.
 | reference into a dropped copy from a non-alloc section that is not a debug name (`.comment`, `.note.x`, …) | error | accepted | accepted | error | R13 |
 | the same from an alloc section with a debug name | error | error | accepted | error | R13 |
 | section-symbol group signature | section name | empty name (merges unrelated groups) | section name | section name | E18 |
-| reference into a dropped copy from `.gcc_except_table` | 0 | error | addend | 0 | E9 |
+| reference into a dropped copy from `.gcc_except_table`, the LSDA's FDE dead | 0 | error | addend | 0 (§6.3: judged by the owning record) | E9, WP-177 |
+| the same, the LSDA's FDE live (a localized `ld -r` output: `comdat-eh-lsda`) | 0: a catch-all type entry, the wrong handler runs | error | links, the program dies | `discarded-section-reference` (§6.3) | WP-177 |
+| reference into a dropped copy from a live CIE's personality pointer (`comdat-eh-cie`) | 0: the first throw aborts | error | links, the program dies | `discarded-section-reference` (§6.3) | WP-177 |
+| a strong demoted mention nothing live defines, named only by a CIE no live FDE uses and an LSDA whose FDE is dead (`comdat-eh-unused-cie`) | ``ks.o:(.eh_frame+0x13): undefined reference to `DW.ref.pp'`` | `relocation refers to a symbol in a discarded section` (from `.gcc_except_table`) | links | links: the records are not written (§6.3) | WP-177 |
 | reference to a local of a dropped copy from alloc code/data | error | error | accepted / crash | error | E9 |
 | `.gnu.linkonce` | deduplicated | duplicate | duplicate | refused | E11 |
 | `SHF_EXCLUDE` allocated section | dropped | dropped | kept | dropped | E18 |

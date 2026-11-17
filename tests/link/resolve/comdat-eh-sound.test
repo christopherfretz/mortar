@@ -1,0 +1,100 @@
+# The SOUND form of comdat-eh-cie.test and comdat-eh-lsda.test
+# (resolve.md §6.3, WP-177): the component's groups are dissolved in the
+# partial link (`ld -r --force-group-allocation`) before it is
+# localized, so its DW.ref.* words are sections of their own that no
+# other copy replaces, and its unwind information and LSDAs name them.
+# Links and runs with all four linkers, exceptions caught by type. On
+# i386 only the forms that localize the dissolved __x86.get_pc_thunk.*
+# too (lh, kg): `--localize-symbol` of the DW.ref.* words alone leaves
+# them global beside m.o's copies, a duplicate definition for every
+# linker.
+#@ spec: resolve.md §6.3
+#@ requires: g++
+
+cxx -O1 p1.cc -o p1.o
+cxx -O1 p2.cc -o p2.o
+cxx -O1 q1.cc -o q1.o
+cxx -O1 m.cc -o m.o
+partial bfd --force-group-allocation p1.o p2.o q1.o -o r.bfd.o
+partial lld --force-group-allocation p1.o p2.o q1.o -o r.lld.o
+objcopy --localize-hidden r.bfd.o lh.bfd.o
+objcopy --localize-hidden r.lld.o lh.lld.o
+objcopy --keep-global-symbol=_Z4api1i --keep-global-symbol=_Z4api2i --keep-global-symbol=_Z4api3i r.bfd.o kg.bfd.o
+objcopy --localize-symbol=DW.ref._ZTISt9exception r.lld.o ti.lld.o
+
+link(aarch64,x86_64) g++ m.o lh.bfd.o -o p1
+run(aarch64,x86_64) p1
+  stdout: main caught x
+  stdout: 8 -1 12 p9
+  stdout: api3(1) caught int 42 (right)
+link g++ -static m.o lh.lld.o -o p2
+run p2
+  stdout: main caught x
+  stdout: 8 -1 12 p9
+  stdout: api3(1) caught int 42 (right)
+link g++ -static m.o kg.bfd.o -o p3
+run p3
+  stdout: main caught x
+  stdout: 8 -1 12 p9
+  stdout: api3(1) caught int 42 (right)
+link(aarch64,x86_64) g++ -static m.o ti.lld.o -o p4
+run(aarch64,x86_64) p4
+  stdout: main caught x
+  stdout: 8 -1 12 p9
+  stdout: api3(1) caught int 42 (right)
+
+#--- p1.cc
+#include <stdexcept>
+#include <string>
+inline std::string greet(int n) { return "p" + std::to_string(n); }
+__attribute__((visibility("hidden"))) int hidden_helper(int x) {
+  if (x < 0) throw std::runtime_error("neg");
+  return x * 2;
+}
+int api1(int x) {
+  try {
+    return hidden_helper(x) + (int)greet(x).size();
+  } catch (const std::exception &) {
+    return -1;
+  }
+}
+#--- p2.cc
+#include <string>
+inline std::string greet(int n) { return "p" + std::to_string(n); }
+int hidden_helper(int);
+int api2(int x) { return hidden_helper(x + 1) + (int)greet(x).size(); }
+#--- q1.cc
+#include <stdexcept>
+__attribute__((noinline)) static int thrower(int x) {
+  if (x == 1) throw 42;
+  return x;
+}
+int api3(int x) {
+  try {
+    return thrower(x);
+  } catch (const std::exception &) {
+    return -1;
+  }
+}
+#--- m.cc
+#include <cstdio>
+#include <stdexcept>
+#include <string>
+inline std::string greet(int n) { return "p" + std::to_string(n); }
+int api1(int);
+int api2(int);
+int api3(int);
+int main() {
+  try {
+    throw std::logic_error("x");
+  } catch (const std::exception &e) {
+    std::printf("main caught %s\n", e.what());
+  }
+  std::printf("%d %d %d %s\n", api1(3), api1(-1), api2(4), greet(9).c_str());
+  try {
+    std::printf("api3(1) returned %d (wrong)\n", api3(1));
+  } catch (int i) {
+    std::printf("api3(1) caught int %d (right)\n", i);
+  }
+  return 0;
+}

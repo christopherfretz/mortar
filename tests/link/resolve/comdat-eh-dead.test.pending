@@ -1,0 +1,128 @@
+# PENDING (a verifier package, WP-177's record): the lane refuses it. L3 finds R5 `refers to section '.data.rel.local.DW.ref.pp', which is not in the output` on every output that links here, mortar's included, on every architecture: a field of a record that is not written (an LSDA whose owner, the FDE, is dead), which resolve.md §6.3 accepts (WP-177: a field is judged by the record that owns it). Rename this file to .test when the verifier judges such fields so.
+# resolve.md §6.3 (WP-177): a field of .gcc_except_table whose owner is
+# dead is no error, and is 0.
+# - dead.o (case (a)): a word of g's LSDA names the local symbol DW.ref.pp
+#   of dead.o's copy of the group DW.ref.pp, which is dropped (a.o's copy
+#   comes first); g is in dead.o's copy of the group G, dropped too, so
+#   the LSDA's owner (g's FDE) is dead. GNU ld and mortar write 0
+#   (between the markers 0x11223344 and 0x55667788), mold the addend
+#   pc-relative; lld refuses it (an alloc .gcc_except_table, §6.3's
+#   table). g's FDE uses dead.o's CIE alone.
+# - kg.o (case (b), comdat-eh-unused-cie.test's shape): lld's output.
+#@ spec: resolve.md §6.3
+
+cc -O1 m.c -o m.o
+cc -O1 mk.c -o mk.o
+as a.s -o a.o
+as dead.s -o dead.o
+as ka.s -o ka.o
+as kg.s -o kg.o
+
+link(lld) gcc -static m.o a.o dead.o -o dead
+  exit: fail
+  diag(lld): relocation refers to a symbol in a discarded section: DW.ref.pp
+  diag(lld): >>> referenced by dead.o:(.gcc_except_table+0x4)
+link(bfd,mold,mortar) gcc -static m.o a.o dead.o -o dead
+check(bfd,mold,mortar) objdump -s -j .gcc_except_table dead
+  has(bfd,mortar): 44332211 00000000 88776655
+  has(mold): 44332211 * 88776655
+link(bfd,mold,mortar,aarch64,x86_64) gcc m.o a.o dead.o -o dead-pie
+check(bfd,mold,mortar,aarch64,x86_64) objdump -s -j .gcc_except_table dead-pie
+  has(bfd,mortar): 44332211 00000000 88776655
+  has(mold): 44332211 * 88776655
+link(bfd,mold,mortar,aarch64,x86_64) gcc -shared a.o dead.o -o dead.so
+check(bfd,mold,mortar,aarch64,x86_64) objdump -s -j .gcc_except_table dead.so
+  has(bfd,mortar): 44332211 00000000 88776655
+  has(mold): 44332211 * 88776655
+
+link(lld) gcc -static -Wl,--gc-sections mk.o ka.o kg.o -o weak
+run(lld) weak
+  exit: 7
+link(lld,aarch64,x86_64) gcc -Wl,--gc-sections mk.o ka.o kg.o -o weak-pie
+run(lld,aarch64,x86_64) weak-pie
+  exit: 7
+
+#--- m.c
+int main(void) { return 0; }
+#--- a.s
+	.section .data.rel.local.DW.ref.pp,"awG",@progbits,DW.ref.pp,comdat
+	.p2align 3
+	.weak DW.ref.pp
+	.hidden DW.ref.pp
+	.type DW.ref.pp, @object
+	.size DW.ref.pp, 8
+DW.ref.pp:
+	.4byte 0, 0
+	.section .text.g,"axG",@progbits,g,comdat
+	.weak g
+	.type g, @function
+g:
+	ret
+#--- dead.s
+	.section .data.rel.local.DW.ref.pp,"awG",@progbits,DW.ref.pp,comdat
+	.p2align 3
+	.type DW.ref.pp, @object
+	.size DW.ref.pp, 8
+DW.ref.pp:
+	.4byte 0, 0
+	.section .text.g,"axG",@progbits,g,comdat
+	.weak g
+	.type g, @function
+g:
+	.cfi_startproc
+	.cfi_lsda 0x1b, .LLSDA
+	ret
+	.cfi_endproc
+	.size g, .-g
+	.section .gcc_except_table,"a",@progbits
+	.p2align 4
+.LLSDA:
+	.4byte 0x11223344
+	.4byte DW.ref.pp-.
+	.4byte 0x55667788
+	.4byte 0
+#--- mk.c
+extern int K;
+int main(void) { return K; }
+#--- ka.s
+	.section .data.rel.local.DW.ref.pp,"awG",@progbits,DW.ref.pp,comdat
+	.p2align 3
+	.type DW.ref.pp, @object
+	.size DW.ref.pp, 8
+DW.ref.pp:
+	.4byte 0x1234, 0
+	.data
+	.globl K
+	.type K, @object
+	.size K, 4
+K:
+	.4byte 7
+#--- kg.s
+	.section .data.rel.local.DW.ref.pp,"awG",@progbits,DW.ref.pp,comdat
+	.p2align 3
+	.weak DW.ref.pp
+	.hidden DW.ref.pp
+	.type DW.ref.pp, @object
+	.size DW.ref.pp, 8
+DW.ref.pp:
+	.4byte 0x1234, 0
+	.section .text.F,"ax",@progbits
+	.globl F
+	.type F, @function
+F:
+	.cfi_startproc
+	.cfi_personality 0x9b, DW.ref.pp
+	.cfi_lsda 0x1b, .LLSDA
+	ret
+	.cfi_endproc
+	.section .gcc_except_table,"a",@progbits
+	.p2align 2
+.LLSDA:
+	.byte 0xff, 0x9b
+	.uleb128 .Lend-.Lstart
+.Lstart:
+	.byte 0x1
+	.uleb128 0
+	.p2align 2
+	.4byte DW.ref.pp-.
+.Lend:

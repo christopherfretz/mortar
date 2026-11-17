@@ -1,0 +1,107 @@
+# resolve.md §6.3 case (a) in .eh_frame and .gcc_except_table, assembled
+# by hand (WP-177): the local symbol DW.ref.pp of a COMDAT group DW.ref.pp
+# whose copy is dropped (a.o's copy, which defines it as a hidden weak
+# global, comes first). A field is judged by the record that owns it:
+# - cie.o: the personality pointer of a CIE that f's live FDE uses: an
+#   error, in every output kind;
+# - lsda.o: a word of f2's LSDA, f2 live: an error;
+# The same word in an LSDA whose owner is dead links, and is 0:
+# comdat-eh-dead.test.pending. lld refuses both; GNU ld and mold link
+# both (GNU ld writes 0 into each field; L3 finds R5 there:
+# comdat-eh-wrong.test.pending has the real shapes).
+#@ spec: resolve.md §6.3
+
+cc -O1 m.c -o m.o
+as a.s -o a.o
+as cie.s -o cie.o
+as lsda.s -o lsda.o
+
+link(lld,mortar) gcc -static m.o a.o cie.o -o cie
+  exit: fail
+  diag(lld): relocation refers to a symbol in a discarded section: DW.ref.pp
+  diag(mortar): relocation refers to a symbol in a discarded section: DW.ref.pp
+  diag(mortar): >>> defined in cie.o:(.data.rel.local.DW.ref.pp)
+  diag(mortar): >>> the section is in a discarded copy of COMDAT group DW.ref.pp
+  diag(mortar): >>> kept copy: a.o
+  diag(mortar): >>> referenced by cie.o:(.eh_frame+0x
+  diag(mortar): >>> the field is in the unwind information of f, which is written
+  diag(mortar): >>> DW.ref.pp is local in its file: it was probably made local after a partial link * then localize
+link(mortar,aarch64,x86_64) gcc m.o a.o cie.o -o cie-pie
+  exit: fail
+  diag(mortar): relocation refers to a symbol in a discarded section: DW.ref.pp
+link(mortar,aarch64,x86_64) gcc -shared a.o cie.o -o cie.so
+  exit: fail
+  diag(mortar): relocation refers to a symbol in a discarded section: DW.ref.pp
+
+link(lld,mortar) gcc -static m.o a.o lsda.o -o lsda
+  exit: fail
+  diag(lld): relocation refers to a symbol in a discarded section: DW.ref.pp
+  diag(mortar): relocation refers to a symbol in a discarded section: DW.ref.pp
+  diag(mortar): >>> referenced by lsda.o:(.gcc_except_table+0x
+  diag(mortar): >>> the field is in the exception table (LSDA) of f2, which is written
+link(mortar,aarch64,x86_64) gcc m.o a.o lsda.o -o lsda-pie
+  exit: fail
+  diag(mortar): relocation refers to a symbol in a discarded section: DW.ref.pp
+link(mortar,aarch64,x86_64) gcc -shared a.o lsda.o -o lsda.so
+  exit: fail
+  diag(mortar): relocation refers to a symbol in a discarded section: DW.ref.pp
+
+#--- m.c
+int main(void) { return 0; }
+#--- a.s
+	.section .data.rel.local.DW.ref.pp,"awG",@progbits,DW.ref.pp,comdat
+	.p2align 3
+	.weak DW.ref.pp
+	.hidden DW.ref.pp
+	.type DW.ref.pp, @object
+	.size DW.ref.pp, 8
+DW.ref.pp:
+	.4byte 0, 0
+	.section .text.g,"axG",@progbits,g,comdat
+	.weak g
+	.type g, @function
+g:
+	ret
+#--- cie.s
+	.section .data.rel.local.DW.ref.pp,"awG",@progbits,DW.ref.pp,comdat
+	.p2align 3
+	.type DW.ref.pp, @object
+	.size DW.ref.pp, 8
+DW.ref.pp:
+	.4byte 0, 0
+	.text
+	.globl f
+	.type f, @function
+f:
+	.cfi_startproc
+	.cfi_personality 0x9b, DW.ref.pp
+	ret
+	.cfi_endproc
+	.size f, .-f
+#--- lsda.s
+	.section .data.rel.local.DW.ref.pp,"awG",@progbits,DW.ref.pp,comdat
+	.p2align 3
+	.type DW.ref.pp, @object
+	.size DW.ref.pp, 8
+DW.ref.pp:
+	.4byte 0, 0
+	.text
+	.globl f2
+	.type f2, @function
+f2:
+	.cfi_startproc
+	.cfi_lsda 0x1b, .LLSDA
+	ret
+	.cfi_endproc
+	.size f2, .-f2
+	.section .gcc_except_table,"a",@progbits
+	.p2align 2
+.LLSDA:
+	.byte 0xff, 0x9b
+	.uleb128 .Lend-.Lstart
+.Lstart:
+	.byte 0x1
+	.uleb128 0
+	.p2align 2
+	.4byte DW.ref.pp-.
+.Lend:

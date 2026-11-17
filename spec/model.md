@@ -355,6 +355,10 @@ piece occurrence) is part of the contract (§9).
 - `frag_live[FragId]: bool`: referenced from a live section;
 - an FDE is live exactly when the section its code lies in is live and
   not folded away (§4.1); this is a rule, not a column.
+- a CIE is live exactly when a live FDE of its section uses it; a field
+  of `.eh_frame` or `.gcc_except_table` is judged by the record that
+  owns it (`spec/resolve.md` §6.3, WP-177): the scan asks these rules
+  only of a reference into a dropped copy, so they stay rules.
 
 ### 3.7 `Demands` (written by `mortar_arch` scan)
 
