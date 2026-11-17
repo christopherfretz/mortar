@@ -1,0 +1,39 @@
+# The silent side of kiln-k2-mixed-std-user.test (spec/odr.md Q6; WP-174):
+# the same c++17 and c++20 units linked at --odr=warn report nothing (kind
+# 2 is compared under strict only, O-47), and the equal-source twin with
+# both units at c++20 is silent under strict.
+#@ spec: odr.md O-32, O-47
+#@ arch: aarch64 x86_64
+#@ requires: kiln g++
+
+cxx(kiln) -std=c++17 -O0 -fmason-metadata a.cc -o a.o
+cxx(kiln) -std=c++20 -O0 -fmason-metadata b.cc -o b.o
+cxx(kiln) -std=c++20 -O0 -fmason-metadata a.cc -o a20.o
+cxx(kiln) -std=c++17 -O0 main.cc -o main.o
+link(bfd,lld,mold) g++ -static -no-pie main.o a.o b.o -o prog
+link(mortar) g++ -static -no-pie main.o a.o b.o -Wl,--odr=warn -Wl,--odr-stats -o prog
+  diag: ^mortar: odr-stats: mode warn; units 0,* record findings 0;
+run prog
+  stdout: 1 1
+link(bfd,lld,mold) g++ -static -no-pie main.o a20.o b.o -o prog20
+link(mortar) g++ -static -no-pie main.o a20.o b.o -Wl,--odr=strict -Wl,--odr-stats -o prog20
+  diag: ^mortar: odr-stats: mode strict; units 2, rows * kind 2 2,* record findings 0;
+run prog20
+  stdout: 1 1
+
+#--- m.h
+#include <sstream>
+#include <string>
+__attribute__((noinline)) inline std::string show(int x) { std::ostringstream o; o << x; return o.str(); }
+#--- a.cc
+#include "m.h"
+std::string fa() { return show(1); }
+#--- b.cc
+#include "m.h"
+std::string fb() { return show(1); }
+#--- main.cc
+#include <cstdio>
+#include <string>
+std::string fa();
+std::string fb();
+int main() { std::printf("%s %s\n", fa().c_str(), fb().c_str()); }

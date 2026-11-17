@@ -1,0 +1,44 @@
+# TODAY's behaviour for spec/odr.md Q6 (open, the operator's decision;
+# WP-174): a USER inline function whose own tokens are equal in both
+# units (one header, one line: m.h:3) is reported under --odr=strict when
+# the units' -std differ, because a SYSTEM entity it names is another
+# entity at the other -std. `show` calls `std::ostringstream::str()`:
+# libstdc++ declares `str() const` at C++17
+# (_ZNKSt7__cxx1119basic_ostringstreamIcSt11char_traitsIcESaIcEE3strEv)
+# and `str() const &` at C++20
+# (_ZNKRSt7__cxx1119basic_ostringstreamIcSt11char_traitsIcESaIcEE3strEv);
+# kiln hashes a callee by its mangled name (kiln spec/abi.md "Names and
+# types"), so the two rows' hashes differ. The row is not SYSTEM, so O-32
+# does not apply: an error under strict, nothing in the other modes (kind
+# 2 is strict-only, O-47; kiln-k2-mixed-std-user-silent.test). Whatever
+# Q6 decides shows as a diff here.
+#@ spec: odr.md O-32, O-47
+#@ arch: aarch64 x86_64
+#@ requires: kiln g++
+#@ diag: odr-violation a.o b.o
+
+cxx(kiln) -std=c++17 -O0 -fmason-metadata a.cc -o a.o
+cxx(kiln) -std=c++20 -O0 -fmason-metadata b.cc -o b.o
+cxx(kiln) -std=c++17 -O0 main.cc -o main.o
+link(mortar) g++ -static -no-pie main.o a.o b.o -Wl,--odr=strict -Wl,--odr-stats -o prog
+  exit: fail
+  diag: ^mortar: error: _Z4showB5cxx11i violates the one-definition rule$
+  diag: ^>>> a.o: std=c++17; b.o: c++20$
+  diag: ^mortar: odr-stats: mode strict; units 2, rows * kind 2 2,* system -std differences 0,* record findings 1;* findings W1 0, W2 0, W3 0, W4 0;
+
+#--- m.h
+#include <sstream>
+#include <string>
+__attribute__((noinline)) inline std::string show(int x) { std::ostringstream o; o << x; return o.str(); }
+#--- a.cc
+#include "m.h"
+std::string fa() { return show(1); }
+#--- b.cc
+#include "m.h"
+std::string fb() { return show(1); }
+#--- main.cc
+#include <cstdio>
+#include <string>
+std::string fa();
+std::string fb();
+int main() { std::printf("%s %s\n", fa().c_str(), fb().c_str()); }
