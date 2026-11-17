@@ -1,0 +1,41 @@
+mortar-map 2
+file 0 start-bo-x64.o
+file 1 call-x64.o
+place 0 1 1340 1a
+place 0 3 34b0 0
+place 0 4 34b0 8
+place 1 1 1360 5
+place 1 3 34b0 0
+place 1 4 34b8 0
+merged 0 5 .comment
+merged 1 5 .comment
+chunk synthetic .interp 238 1c
+chunk synthetic .gnu.hash 258 1c
+chunk synthetic .dynsym 278 48
+chunk synthetic .dynstr 2c0 13
+chunk synthetic .rela.plt 2d8 30
+chunk synthetic .plt 1310 30
+chunk synthetic .got.plt 3488 28
+chunk synthetic .dynamic 2368 120
+chunk synthetic .symtab - a8
+chunk synthetic .strtab - 44
+chunk synthetic .shstrtab - 7d
+chunk synthetic .comment - d
+chunk synthetic .pad.relro 2488 b78
+output pie
+interp /lib64/ld-linux-x86-64.so.2
+bind lazy
+relro on
+arg -pie
+arg -o
+arg bo-pie-x64
+arg -dynamic-linker
+arg /lib64/ld-linux-x86-64.so.2
+arg start-bo-x64.o
+arg call-x64.o
+arg libm2-x64.so
+arg --mortar-map=bo-pie-x64.map
+needed libm2.so
+plt m2fn
+plt vfn
+end

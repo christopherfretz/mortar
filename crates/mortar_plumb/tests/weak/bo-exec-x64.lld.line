@@ -1,0 +1,10 @@
+-z
+max-page-size=4096
+-o
+bo-exec-x64.lld
+-dynamic-linker
+/lib64/ld-linux-x86-64.so.2
+start-bo-x64.o
+call-x64.o
+libm2-x64.so
+-Map=bo-exec-x64.lld.map

@@ -1,0 +1,10 @@
+-z
+max-page-size=4096
+-o
+bo-exec-a64.lld
+-dynamic-linker
+/lib/ld-linux-aarch64.so.1
+start-bo-a64.o
+call-a64.o
+libm2-a64.so
+-Map=bo-exec-a64.lld.map

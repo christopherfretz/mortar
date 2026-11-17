@@ -21,6 +21,7 @@
 # library needed. Its runs are not held here.
 #@ spec: dyn.md "D-25"
 #@ arch: aarch64 x86_64
+#@ anomaly(mold): A55
 
 cc -O2 -fPIC v.c -o v.o
 cc -O2 -fPIC m2.c -o m2.o

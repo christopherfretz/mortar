@@ -18,12 +18,13 @@
 # reached by a branch and an unfillable use"): a program that works under
 # it never executes the call while the key is undefined, and works under
 # mortar's output. mold makes the key 0 (no entry; on AArch64 the skipped
-# call returns into a trap). Their runs are held to what they print.
+# call returns into a trap). Their runs are held to what they print; the
+# verifier names their missing entry, A55 (mold) and A56 (GNU ld x86-64),
+# and holds the others to the ruled form (spec/plumb.md P-D7, P-D9; WP-165).
 #@ spec: dyn.md "D-25"
 #@ arch: aarch64 x86_64
-#@ xfail(bfd,aarch64): the verifier's P-D9 view 3 on the unfillable use beside the branch's JUMP_SLOT (today's D-25; a VERIFIER package follows WP-155)
-#@ xfail(mortar): the verifier's P-D9 view 3 on the unfillable use beside the branch's JUMP_SLOT (today's D-25; a VERIFIER package follows WP-155)
-#@ xfail(lld): the verifier's P-D9 view 3 on the unfillable use beside the branch's JUMP_SLOT (today's D-25; a VERIFIER package follows WP-155)
+#@ anomaly(mold): A55
+#@ anomaly(bfd,x86_64): A56
 
 cc -O2 -fPIC v.c -o v.o
 cc -O2 -fPIC m2.c -o m2.o
