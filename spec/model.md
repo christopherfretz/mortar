@@ -652,8 +652,10 @@ the link state and never an input to another phase.
   The output index of `(FileId, st_index)` stays a prefix sum per file.
   The output index of a key stays a function of `SymbolId`, so no table
   has a row per symbol (§5).
-- **MD-R3 (what is not computed).** Addresses, the entry, the build ID,
-  GNU properties beyond their merge, and every dynamic table. A phase
+- **MD-R3 (what is not computed).** Addresses, the entry, GNU
+  properties beyond their merge, and every dynamic table. (The build ID
+  IS computed under `--build-id`, over the `-r` output:
+  `spec/image.md` I-R8, `spec/cli.md` C-R3.) A phase
   that needs one of them does not run at `-r`. That a phase does not
   run is a function of `Plan.kind`, never of the inputs.
 

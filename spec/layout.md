@@ -1906,6 +1906,23 @@ B.2, B.5; `tests/relocatable-design/work/facts.log`).
       treats every symbol as address-significant. Dropping the section
       gives that same safe reading without a stale table (record §B.2,
       corrected by the review's m8).
+    - `.llvm.call-graph-profile` (`SHT_LLVM_CALL_GRAPH_PROFILE`) is
+      dropped with its relocation section. Clang writes it for every
+      object with a call-graph profile (PGO, `.cg_profile`): weights
+      whose caller and callee are named by an `SHT_REL` section of
+      `R_*_NONE` records, on every target, AArch64 and x86-64 included
+      (WP-180's case 13). It is a hint for a final link's function
+      order, which mortar does not use; GNU ld and lld copy both
+      sections, mold drops the relocation section alone and leaves
+      weights that name nothing. Dropping both loses only the hint: a
+      later lld link with `--call-graph-profile-sort` orders those
+      functions as if unprofiled. It is carried (the section
+      concatenated, its records by I-R5 in an `SHT_REL` section) when a
+      line needs it; until then its relocation section is not an
+      "input relocation section of the other type" for
+      `spec/arch.md` A-R4, because its target is not placed.
+      *Test:* `r-cg-profile-dropped` (clang objects, AArch64 and
+      x86-64: the link succeeds, neither section in the output).
   - `.note.GNU-stack` and `.note.gnu.property` are merged into one
     output section each. The stack note follows L-R6a. The property
     note follows `spec/synth.md` S-94/S-95, property by property,
@@ -2179,8 +2196,13 @@ B.2, B.5; `tests/relocatable-design/work/facts.log`).
     and no `entry`.
   Added for `-r`: every kept group has exactly one `SHT_GROUP` chunk
   whose members are output sections with `SHF_GROUP`; every output
-  section with a relocated piece has exactly one relocation chunk; no
-  relocation chunk targets a group chunk or a relocation chunk.
+  section with a relocated piece has exactly one relocation chunk, and
+  an output section with none has no relocation chunk (a *relocated
+  piece* is a piece with at least one output record by
+  `spec/image.md` I-R5, a `NONE` record included: an input relocation
+  section whose records are all dropped by `spec/resolve.md` RV-R7
+  gives no chunk); no relocation chunk targets a group chunk or a
+  relocation chunk.
 - **L-R11 (`--unique[=PATTERN]`, accepted in RL-11).** One output
   section per input section, for the input sections it selects, which
   keep their names. Duplicate section names are legal ELF.

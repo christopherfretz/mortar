@@ -2788,7 +2788,7 @@ B.7; `tests/relocatable-design/work/facts.log`,
   *Test:* `r-symtab-order`, `r-section-symbols`, `r-eh-frame-mapping-symbols`,
   `r-type-unit-signature`, `r-xindex`.
 - **I-R5 (relocation records).** For every live input relocation record
-  of a placed input section `S`, other than `R_*_NONE`, the output has
+  of a placed input section `S`, `R_*_NONE` included, the output has
   exactly one record:
   - in the relocation section of `S`'s output section;
   - in the order of `S`'s pieces, then the input record order;
@@ -2806,8 +2806,22 @@ B.7; `tests/relocatable-design/work/facts.log`,
     `relocation-out-of-range`.
   The records `spec/resolve.md` RV-R7 drops (`.eh_frame` of a dropped
   FDE; debug and `.gcc_except_table` records into dropped copies) have
-  no output record. The input's `R_*_NONE` records are not written
-  (GNU ld writes its own: L-R6). The relocation section is
+  no output record. An input's `R_*_NONE` record is a record like any
+  other and is carried (its offset moved, its symbol renumbered, the
+  symbol kept in `.symtab` as any named symbol is): it is a reference.
+  I-7's liveness counts it as an edge (`.reloc ., R_*_NONE, sym` is the
+  idiom that keeps `sym`'s section under `--gc-sections`), and so do GNU
+  ld and lld; both carry it through their `-r`. Measured (WP-180's
+  ruling on Q-R1, AArch64): `_start` with `.reloc ., R_AARCH64_NONE,
+  keepme`, `keepme` in its own section of a second object; a
+  `--gc-sections` link keeps `keepme` directly and through GNU ld's and
+  lld's `-r` (one `NONE` record in each), by GNU ld, lld and mortar
+  alike; without the record it is collected. A `-r` that dropped the
+  record would make the final link drop code a direct link keeps, with
+  no diagnostic. What mortar does not write are the `NONE` records GNU
+  ld makes of its own for a removed FDE (L-R6): those are no input's. A
+  relocation section exists exactly when it holds at least one output
+  record (`spec/layout.md` L-R10). The relocation section is
   `SHT_RELA`/`SHT_REL` as the target's (A-R4), named `.rela<name>` or
   `.rel<name>`, `sh_link` `.symtab`, `sh_info` its target,
   `SHF_INFO_LINK`, plus `SHF_GROUP` when its target is a group member.
@@ -2818,7 +2832,9 @@ B.7; `tests/relocatable-design/work/facts.log`,
   `GOTTPOFF`, `TLSGD`; AArch64 `ADR_GOT_PAGE`, `LD64_GOT_LO12_NC`,
   `TLSDESC_*`, `CALL26`; i386 `GOT32X`, `GOTPC`, `TLS_GOTIE`).
   *Test:* `r-reloc-moved`, `r-reloc-section-symbol-addend` (per target),
-  `r-reloc-types-kept`, `r-i386-rel-addend`.
+  `r-reloc-types-kept`, `r-i386-rel-addend`, `r-none-record-kept` (per
+  target: the measured case above, the final link with `--gc-sections`
+  run, and a section whose only records are `NONE`).
 - **I-R6 (`.eh_frame` bytes).** The kept CIEs and FDEs of L-R6 are
   copied byte for byte. Only the FDEs' CIE-pointer words change, each
   computed from the record's and its CIE's output offsets. Their
@@ -2899,5 +2915,7 @@ B.7; `tests/relocatable-design/work/facts.log`,
 - **I-R12 (the map).** `--mortar-map` at `-r` records, per output
   section, its pieces `(FileId, section index, offset)`, each kept
   group with its keeper and the dropped copies, and per input FDE
-  whether it was dropped. This is what V-R1 to V-R11 read. A GNU-style
-  `-Map` lists the output sections and their pieces without addresses.
+  whether it was dropped. This is what V-R1 to V-R11 read; the records
+  and their form are `spec/plumb.md` §14.2's (`rplace`, `rframe`,
+  `rgroup`, `rcommon`). `-Map` at `-r` writes mortar's own map as in any
+  link, without addresses.
