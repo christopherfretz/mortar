@@ -2006,8 +2006,10 @@ V5).** These clauses read the line (§3.2a):
   in a `PT_NOTE` (L-67).
 - **S20 (mortar).** With a `.pad.relro` (rank 7 non-empty, L-64) there
   is a `PT_GNU_RELRO`, and its memory ends where `.pad.relro` ends.
-- **Y2 (mortar).** There is a `.symtab` exactly when the line has no
-  `-s`/`--strip-all` (synth.md S-84).
+- **Y2 (mortar).** There is a `.symtab` when the line has no
+  `-s`/`--strip-all` (synth.md S-84). (A `.symtab` under `-s` is not
+  judged here: the options audit reads a line with `-s` added against an
+  unstripped output, and expects P-G6 alone.)
 - **S1 (mortar).** No section is `SHF_COMPRESSED` (V4); `.interp`,
   `.eh_frame_hdr`, `.eh_frame` (on x86-64 also `SHT_X86_64_UNWIND`),
   `.dynamic`, `.dynsym`, `.symtab`, `.dynstr`, `.strtab`, `.shstrtab`,

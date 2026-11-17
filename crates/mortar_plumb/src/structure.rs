@@ -1031,7 +1031,7 @@ pub(crate) fn check_layout(image: &Image<'_>, map: &crate::Map) -> Vec<Finding> 
 /// The headers and tables mortar always writes, absent (WP-131 V5; §6.2):
 /// S10 one `PT_GNU_STACK` (L-84); S11 every allocated note in a `PT_NOTE`
 /// (L-67); S20 a `PT_GNU_RELRO` when there is a `.pad.relro`, ending
-/// where it ends (L-64, L-67); Y2 a `.symtab` exactly when the
+/// where it ends (L-64, L-67); Y2 a `.symtab` when the
 /// line has no `-s` (synth.md S-84); S1 the special sections have their
 /// gABI types (a reader finds them by type), and none is `SHF_COMPRESSED`
 /// (mortar writes `--compress-debug-sections=none` only; WP-131 V4).
@@ -1083,13 +1083,11 @@ fn present(image: &Image<'_>, opts: Option<&crate::opts::Options>) -> Vec<Findin
     }
     if let Some(o) = opts {
         let symtab = image.sections.iter().any(|x| x.shdr.sh_type == SHT_SYMTAB);
-        if symtab == o.strip_all {
-            let msg = if o.strip_all {
-                "a .symtab, and the line says -s (synth.md S-84)"
-            } else {
-                "no .symtab (SHT_SYMTAB), and the line does not say -s (synth.md S-84)"
-            };
-            out.push(Finding::new(Rule::SymbolTable(2), msg));
+        if !symtab && !o.strip_all {
+            out.push(Finding::new(
+                Rule::SymbolTable(2),
+                "no .symtab (SHT_SYMTAB), and the line does not say -s (synth.md S-84)",
+            ));
         }
     }
     for x in image.sections.iter().skip(1).filter(|x| x.shdr.sh_flags & SHF_COMPRESSED != 0) {
