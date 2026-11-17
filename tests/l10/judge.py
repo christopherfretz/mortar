@@ -132,8 +132,8 @@ PLUMB_TIMEOUT = 300
 
 
 class Tools:
-    def __init__(self, xtask, runner, run_timeout=60):
-        self.xtask, self.runner, self.run_timeout = xtask, runner, run_timeout
+    def __init__(self, xtask, runner, run_timeout=60, args=()):
+        self.xtask, self.runner, self.run_timeout, self.args = xtask, runner, run_timeout, tuple(args)
 
 
 class Link:
@@ -201,7 +201,7 @@ def _tail(text, n=2):
 
 def run_program(tools, link):
     """(status, stdout) of the program, run in its directory."""
-    argv = tools.runner + ['./' + link.out]
+    argv = tools.runner + ['./' + link.out] + list(tools.args)
     try:
         p = subprocess.run(argv, cwd=link.dir, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                            timeout=tools.run_timeout)
@@ -262,6 +262,10 @@ def judge_step(tools, x, f, base, new):
         return v
     if not R.ended:
         v.add('oracle', 'n/a no prediction in the report (%s)' % (R.reason or v.reason or 'none'))
+        return v
+    if R.elided:
+        # IN-10b: a report past the bound is one the oracle cannot judge (protoc's are)
+        v.add('oracle', 'n/a the report elided lines (IN-10b): %s' % '; '.join(R.elided))
         return v
     note = ''
     for attempt in (1, 2):

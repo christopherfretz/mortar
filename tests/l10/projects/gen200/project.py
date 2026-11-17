@@ -21,15 +21,31 @@ edit (edits.py) sets knobs. Knob -> what it changes:
 
   body.K   0..7   unit K's constant (same size in the code: the values of
                   BODY are 16-bit, odd, not AArch64 logical immediates)
-  grow.K   0..2   statements added to uK_run (it grows / shrinks)
+  grow.K   0..4   statements added to uK_run, GROW[level] of them (0, 1, 2,
+                  48, 600: step by step past a region, a section's tail
+                  and a segment's reserve; and back)
   newfn.K  bool   a new global function uK_extra, called
   lit.K    0..1   uK's string literal made longer
   ctor.K   bool   uK gains a `constructor` function (.init_array grows)
   reg.K    bool   uK gains an `l10_reg` entry (the __start_/__stop_ set grows)
+  gvar.K   0..6   a global variable of uK: none; .data int64[4]; .data
+                  int64[64]; .bss int64[4]; .bss int64[256]; .rodata
+                  const int64[8]; const char *const[2] (.data.rel.ro when
+                  PIC, else .rodata)
+  flit.K   bool   uK uses a floating constant and a string literal
+                  (default True: the edit removes them, the inverse restores)
+  rename.K bool   uK's helper function uK_hlp is named uK_hlp_renamed
+  static.K bool   uK's helper function is static (else global)
+  eh.K     bool   uK_run has a try/catch with a throw (C++ units only)
   tls.K    1..4   uK's TLS array length (only K % 25 == 4)
   keeper   bool   u002 instantiates L10Keep<1> (the COMDAT keeper moves to u006 without)
   gc_call  bool   u010 calls l10_gc_helper, defined in unchanged u011 (dies and
                   revives under --gc-sections -ffunction-sections)
+  gc_call2 bool   u012 calls l10_gc_helper2, defined in unchanged u013;
+                  default False: no live code calls it at the first link
+  decl_hidden bool u041 declares l10_attr_fn hidden (the definer, u040, is
+                  demoted) and calls it
+  common_size 0..1 u021's second COMMON l10_cbuf is int[4] or int[64]
   common_ref bool u020 reads COMMON l10_counter that only u021 mentions (B-4)
   fcommon_ref bool u022 reads the Fortran COMMON /l10blk/ (B-4, Fortran)
   move_def 0..1   l10_moved defined in u030 or u031
@@ -41,12 +57,14 @@ edit (edits.py) sets knobs. Knob -> what it changes:
   hdr      0..3   comment lines added to l10.h (every C++ unit's l10_hdr_line)
   fbody    0..3   the Fortran unit's constant
   ar_order.A 0..2 lib<A>.a's members rotated by a third
-  gc       bool   --gc-sections on the link line
+  gc       bool   --gc-sections flipped from the configuration's default
+                  (on with -ffunction-sections, off without)
 """
 
 NAME = 'gen200'
 NUNITS = 200
 ARCHIVES = (('lib0.a', 0, 67, False), ('lib1.a', 67, 134, True), ('lib2.a', 134, 200, False))
+GROW = (0, 1, 2, 48, 600)
 BODY = (0x1235, 0x2a57, 0x3c91, 0x4d1b, 0x5e63, 0x6f29, 0x70b5, 0x31cd)
 TLS_UNITS = tuple(k for k in range(NUNITS) if k % 25 == 4)
 C_UNITS = frozenset(k for k in range(NUNITS) if k % 4 == 1) | {20, 21, 22}
@@ -61,13 +79,18 @@ def knobs():
         k['lit.%d' % u] = 0
         k['ctor.%d' % u] = False
         k['reg.%d' % u] = False
+        k['gvar.%d' % u] = 0
+        k['flit.%d' % u] = True
+        k['rename.%d' % u] = False
+        k['static.%d' % u] = False
+        k['eh.%d' % u] = False
     for u in TLS_UNITS:
         k['tls.%d' % u] = 2
     for a in range(len(ARCHIVES)):
         k['ar_order.%d' % a] = 0
     k.update({'keeper': True, 'gc_call': True, 'common_ref': False, 'fcommon_ref': False, 'move_def': 0,
               'attr': 0, 'undef': False, 'dup': False, 'extract': False, 'extra_input': False, 'hdr': 0,
-              'fbody': 0, 'gc': False})
+              'fbody': 0, 'gc': False, 'gc_call2': False, 'decl_hidden': False, 'common_size': 0})
     return k
 
 
@@ -121,6 +144,20 @@ def unit_src(u, k):
         L.append('__thread int l10_tls_hits;')
     if u == 21:
         L.append('int l10_counter;   /* a tentative definition: COMMON with -fcommon */')
+        L.append('int l10_cbuf[%d];   /* a second COMMON, its size an edit */' % (4, 64)[k['common_size']])
+    gv = k['gvar.%d' % u]
+    if gv in (1, 2):
+        L.append('int64_t %s_gv[%d] = { %d, 1, 2, 3 };' % (n, (4, 64)[gv - 1], u))
+    elif gv in (3, 4):
+        L.append('int64_t %s_gv[%d];' % (n, (4, 256)[gv - 3]))
+    elif gv == 5:
+        L.append('extern const int64_t %s_gv[8];' % n)
+        L.append('const int64_t %s_gv[8] = { %d, 5, 6, 7, 8, 9, 10, 11 };' % (n, u))
+    elif gv == 6:
+        L.append('extern const char *const %s_gv[2];' % n)
+        L.append('const char *const %s_gv[2] = { "gv-%s-a", "gv-%s-b" };' % (n, n, n))
+    L.append('%suint64_t %s_hlp%s(uint64_t h) { return l10_mixs(h, %du); }' % (
+        'static ' if k['static.%d' % u] else '', n, '_renamed' if k['rename.%d' % u] else '', u * 11 + 3))
     if k.get('newfn.%d' % u):
         L.append('EXTC uint64_t %s_extra(uint64_t h) { return l10_mixs(h, %du * 3u + 5u); }' % (n, u))
     if u in TLS_UNITS:
@@ -138,6 +175,12 @@ def unit_src(u, k):
         L.append('L10_REG static const struct l10_reg %s_reg%d = { %d, %s_regfn%d };' % (n, i, i, n, i))
     if u == 11:
         L.append('EXTC uint64_t l10_gc_helper(uint64_t h) { return l10_mixs(h, 4242); }')
+    if u == 13:
+        L.append('EXTC uint64_t l10_gc_helper2(uint64_t h) { return l10_mixs(h, 4343); }')
+    if u == 12 and k['gc_call2']:
+        L.append('EXTC uint64_t l10_gc_helper2(uint64_t h);')
+    if u == 41 and k['decl_hidden']:
+        L.append('__attribute__((visibility("hidden"))) EXTC uint64_t l10_attr_fn(uint64_t h);')
     if u == 10 and k['gc_call']:
         L.append('EXTC uint64_t l10_gc_helper(uint64_t h);')
     if u == 20 and k['common_ref']:
@@ -157,8 +200,18 @@ def unit_src(u, k):
         L.append('EXTC uint64_t l10_lazy_fn(uint64_t h);')
     L.append('EXTC uint64_t %s_run(uint64_t h) {' % n)
     L.append('  h = l10_mixs(h, %#x);' % BODY[k['body.%d' % u]])
-    for j in range(k['grow.%d' % u]):
-        L.append('  h = l10_mixs(h, h >> %d);' % (j + 3))
+    for j in range(GROW[k['grow.%d' % u]]):
+        L.append('  h = l10_mixs(h, h >> %d);' % (j % 61 + 3))
+    L.append('  h = %s_hlp%s(h);' % (n, '_renamed' if k['rename.%d' % u] else ''))
+    if gv in (1, 2, 3, 4, 5):
+        L.append('  h = l10_mixs(h, (uint64_t)%s_gv[%d]);' % (n, gv % 3 if gv != 5 else u % 8))
+    elif gv == 6:
+        L.append('  h = l10_mixs(h, l10_hash_str(%s_gv[h & 1]));' % n)
+    if k['flit.%d' % u]:
+        L.append('  h = l10_mixs(h, (uint64_t)(%d.25 * (double)(h & 0xff))); h = l10_mixs(h, l10_hash_str("flit-%s"));'
+                 % (u + 1, n))
+    if k['eh.%d' % u] and not c:
+        L.append('  try { if ((h & 0xffff) == 0x1dea) throw (int)(h & 7); } catch (int e) { h ^= (uint64_t)e; }')
     if k.get('newfn.%d' % u):
         L.append('  h = %s_extra(h);' % n)
     lit = 'lit-%s' % n + ('-made-longer-by-an-edit' if k['lit.%d' % u] else '')
@@ -181,6 +234,13 @@ def unit_src(u, k):
         L.append('  l10_counter += 1; h = l10_mixs(h, (uint64_t)l10_counter);')
     if u == 10 and k['gc_call']:
         L.append('  h = l10_gc_helper(h);')
+    if u == 12 and k['gc_call2']:
+        L.append('  h = l10_gc_helper2(h);')
+    if u == 41 and k['decl_hidden']:
+        L.append('  h = l10_attr_fn(h);')
+    if u == 21:
+        i = (3, 63)[k['common_size']]
+        L.append('  l10_cbuf[%d] += 1; h = l10_mixs(h, (uint64_t)l10_cbuf[%d]);' % (i, i))
     if u == 20 and k['common_ref']:
         L.append('  h = l10_mixs(h, (uint64_t)l10_counter);')
     if u == 22 and k['fcommon_ref']:
@@ -306,7 +366,7 @@ def plan(k, cfg):
         r = k['ar_order.%d' % a] * len(members) // 3
         members = members[r:] + members[:r]
         inputs.append(('a', name, members, thin))
-    return inputs, (['--gc-sections'] if k['gc'] else [])
+    return inputs, (['--gc-sections'] if k['gc'] != cfg.fs else [])
 
 
 def units_needed(k, cfg):

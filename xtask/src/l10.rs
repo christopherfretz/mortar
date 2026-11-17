@@ -7,7 +7,7 @@
 //! example when a run needs it), holds `-j` jobserver tokens for the
 //! lane's workers and runs it.
 //!
-//!   cargo xtask l10 [--quick] [--seed N]... [--steps N] [--project P,...]
+//!   cargo xtask l10 [--quick] [--seed N]... [--steps N] [--hops 2|3] [--project P,...]
 //!                   [--compiler gcc|clang|kiln,...] [--target a64|x64|i386,...]
 //!                   [--config NAME,...] [--edits ROW,...] [--subject mortar|floor|PATH]
 //!                   [-j N] [--keep] [--replay FILE]... [--regressions]
@@ -22,15 +22,17 @@ use std::process::{Command, ExitCode};
 
 use crate::process;
 
-pub const USAGE: &str = "usage: cargo xtask l10 [--quick] [--seed <n>]... [--steps <n>] [--project <p>,...] \
+pub const USAGE: &str = "usage: cargo xtask l10 [--quick] [--seed <n>]... [--steps <n>] [--hops 2|3] \
+                         [--project <p>,...] \
                          [--compiler gcc|clang|kiln,...] [--target a64|x64|i386,...] [--config <name>,...] \
                          [--edits <row>,...] [--subject mortar|floor|<path>] [-j <n>] [--keep] \
                          [--replay <file>]... [--regressions] [--minimize <file>] [--self-test] [--mortar <path>]\n";
 
 /// The arguments that take a value, passed to the lane as they are.
-const VALUED: [&str; 12] = [
+const VALUED: [&str; 13] = [
     "--seed",
     "--steps",
+    "--hops",
     "--project",
     "--compiler",
     "--target",

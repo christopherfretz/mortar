@@ -219,22 +219,26 @@ def capture(work, cfg):
 _UNKNOWN = object()
 
 
+def digest(data):
+    return hashlib.sha256(data).digest(), len(data)
+
+
 def write_if_changed(path, data, inplace=False, old=_UNKNOWN):
     """Writes `data` at `path` unless it already holds it (an unchanged
     input keeps its stamp, as a build system leaves it). A new file is
     written beside and renamed over (a new inode, as a compiler writes),
     unless `inplace` and the sizes agree: then the same inode is rewritten.
-    `old` is the file's bytes when the caller knows them (None: no file).
-    Returns True when the file changed."""
+    `old` is digest() of the file's bytes when the caller knows them (None:
+    no file). Returns True when the file changed."""
     if old is _UNKNOWN:
         try:
             with open(path, 'rb') as f:
-                old = f.read()
+                old = digest(f.read())
         except OSError:
             old = None
-    if old == data:
+    if old == digest(data):
         return False
-    if inplace and old is not None and len(old) == len(data):
+    if inplace and old is not None and old[1] == len(data):
         with open(path, 'r+b') as f:
             f.write(data)
         return True
@@ -245,10 +249,12 @@ def write_if_changed(path, data, inplace=False, old=_UNKNOWN):
     return True
 
 
-def build_archive(cfg, stage, name, members, objs, thin, wdir):
+def build_archive(cfg, stage, name, members, objs, thin, wdir, names=None):
     """The archive's bytes: members [(unit, object path)] in order. A thin
     archive names its members' files in `wdir` (they must be installed
-    there first); a regular one is built from links in `stage`."""
+    there first); a regular one is built from links in `stage`. `names`
+    gives a member's name in the archive when it is not `<unit>.o` (two
+    members may share a name: each gets its own directory in `stage`)."""
     ar = cfg.tool('ar')
     if thin:
         tmp = os.path.join(wdir, name + '.l10new')
@@ -260,10 +266,14 @@ def build_archive(cfg, stage, name, members, objs, thin, wdir):
         if os.path.isdir(sd):
             shutil.rmtree(sd)
         os.makedirs(sd)
+        paths = []
         for m in members:
-            os.symlink(objs[m], os.path.join(sd, m + '.o'))
+            p = m + '.o' if names is None else os.path.join(m, names[m])
+            os.makedirs(os.path.dirname(os.path.join(sd, p)), exist_ok=True)
+            os.symlink(objs[m], os.path.join(sd, p))
+            paths.append(p)
         tmp = os.path.join(sd, name)
-        sh([ar, 'rcsD', name] + [m + '.o' for m in members], sd)
+        sh([ar, 'rcsD', name] + paths, sd)
     with open(tmp, 'rb') as f:
         data = f.read()
     os.remove(tmp)

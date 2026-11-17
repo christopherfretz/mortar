@@ -5,7 +5,7 @@
 --work and -j (the jobserver tokens it holds).
 
   l10.py --mortar BIN --xtask BIN --work DIR [-j N]
-         [--quick] [--seed N]... [--steps N] [--project P,...]
+         [--quick] [--seed N]... [--steps N] [--hops 2|3] [--project P,...]
          [--compiler C,...] [--target A,...] [--config NAME,...]
          [--edits ROW,...] [--subject mortar|floor|PATH] [--floor BIN]
          [--keep] [--replay FILE]... [--minimize FILE] [--self-test]
@@ -64,8 +64,10 @@ import build  # noqa: E402
 import edits  # noqa: E402
 import judge  # noqa: E402
 
-PROJECTS = ('gen200', 'corpus40')
+PROJECTS = ('gen200', 'corpus40')          # the nightly run's
+FLAGGED_PROJECTS = ('protoc', 'gonogo')     # only by name (--project), IN-63's large ones
 SEEDS = (1, 2, 3)
+THREE_HOP_SEEDS = (3,)   # the nightly run generates these in the three-hop mode (WP-207 §D 14)
 STEPS = 30
 SUBJECTS = os.path.join(HERE, 'subjects')
 REGRESSIONS = os.path.join(HERE, 'regressions')
@@ -84,19 +86,49 @@ def nightly_configs():
     sections and at -O2 (kiln: -O0) without, static; and PIE lines."""
     out = []
     for comp in ('gcc', 'clang', 'kiln'):
-        for arch in ('a64', 'x64', 'i386'):
+        for arch in ('a64', 'x64') if comp == 'kiln' else ('a64', 'x64', 'i386'):   # kiln: no i386
             out.append('%s-%s-O0-g-fs-static' % (comp, arch))
             out.append('%s-%s-%s-nog-nofs-static' % (comp, arch, 'O0' if comp == 'kiln' else 'O2'))
     out += ['gcc-a64-O0-nog-nofs-pie', 'clang-x64-O2-g-fs-pie', 'kiln-a64-O0-g-nofs-pie', 'gcc-i386-O0-g-fs-pie']
     return out
 
 
+_PROJECTS = {}
+
+
 def load_project(name):
+    """The project's module, loaded once per process (protoc keeps its index)."""
+    if name not in _PROJECTS:
+        _PROJECTS[name] = _load_project(name)
+    return _PROJECTS[name]
+
+
+def _load_project(name):
     path = os.path.join(HERE, 'projects', name, 'project.py')
     spec = importlib.util.spec_from_file_location('l10_project_' + name, path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
+
+
+GONOGO_TODO = ('the go/no-go workload (spec/incr.md §1.5, the bench\'s cxx-large-g: some 1.1 GB of output) '
+               'needs per step three outputs of the step and three of the previous one, over the 2 GB the lane '
+               'may use, and the Python oracle reads both outputs whole; a follow-up (a streaming oracle, '
+               'snapshots of the outputs only when a check needs them)')
+
+
+def project_missing(name, cfg, work):
+    """Why the project cannot run in this configuration here, or None
+    (protoc: only the bench's own configuration, and only when the bench
+    has its objects); prepares the project when it can."""
+    proj = load_project(name)
+    if hasattr(proj, 'missing'):
+        why = proj.missing(cfg)
+        if why:
+            return why
+    if hasattr(proj, 'prepare'):
+        proj.prepare(work)
+    return None
 
 
 def host_cfg(name):
@@ -106,14 +138,14 @@ def host_cfg(name):
 # ------------------------------------------------------------- sequences --
 class Seq:
     """A sequence to run: everything needed to reproduce it."""
-    def __init__(self, project, config, seed, steps, subject='mortar', label=None, env=None, rows=None):
+    def __init__(self, project, config, seed, steps, subject='mortar', label=None, env=None, rows=None, hops=None):
         self.project, self.config, self.seed, self.steps = project, config, seed, steps
-        self.subject, self.env, self.rows = subject, dict(env or {}), rows
-        self.label = label or '%s.%s.%s' % (project, config, seed)
+        self.subject, self.env, self.rows, self.hops = subject, dict(env or {}), rows, hops
+        self.label = label or '%s.%s.%s%s' % (project, config, seed, '.h3' if hops == 3 else '')
 
     def to_json(self, extra=None):
         d = {'lane': 'l10', 'version': 1, 'project': self.project, 'config': self.config, 'seed': self.seed,
-             'subject': self.subject, 'env': self.env, 'rows': self.rows, 'steps': self.steps}
+             'subject': self.subject, 'env': self.env, 'rows': self.rows, 'hops': self.hops, 'steps': self.steps}
         d.update(extra or {})
         return d
 
@@ -122,11 +154,12 @@ class Seq:
         if d.get('lane') != 'l10':
             raise ValueError('not an L10 sequence file')
         return Seq(d['project'], d['config'], d['seed'], d['steps'], d.get('subject', 'mortar'),
-                   label, d.get('env'), d.get('rows'))
+                   label, d.get('env'), d.get('rows'), d.get('hops'))
 
 
 def describe(s):
-    return 'project=%s config=%s seed=%s subject=%s' % (s.project, s.config, s.seed, os.path.basename(s.subject))
+    return 'project=%s config=%s seed=%s%s subject=%s' % (s.project, s.config, s.seed, ' hops=3' if s.hops == 3 else '',
+                                                         os.path.basename(s.subject))
 
 
 # ------------------------------------------------------------- compiling --
@@ -134,6 +167,8 @@ def unit_jobs(seq, cache):
     """[(key, compile args)] of every object the sequence needs."""
     proj = load_project(seq.project)
     cfg = build.Cfg(seq.config)
+    if hasattr(proj, 'prepare'):
+        proj.prepare(os.path.dirname(cache.dir))
     jobs = {}
     k = proj.knobs()
     for i in range(-1, len(seq.steps)):
@@ -187,9 +222,11 @@ class Runner:
         self.stage = os.path.join(self.base, 'stage')
         self.links = 0
         self.archives = {}       # (name, thin, ((member, object path), ...)) -> bytes
-        self.installed = {}      # name in W -> the bytes the lane last wrote there
+        self.installed = {}      # name in W -> digest of the bytes the lane last wrote there
         self.objbytes = {}       # cache object path -> bytes
         self.pre, self.post = build.capture(opts['work'], self.cfg)
+        if hasattr(self.proj, 'prepare'):
+            self.proj.prepare(opts['work'])
         sub = seq.subject
         if sub == 'mortar':
             self.subject = [opts['mortar']]
@@ -209,6 +246,10 @@ class Runner:
             extra = self.proj.unit_flags(u)
             key = build.object_key(self.cfg, u, lang, text, headers, extra)
             objs[u] = self.cache.compile(self.cfg, u, fname, lang, text, headers, extra, key)
+        if hasattr(self.proj, 'prebuilt'):
+            # objects the project does not compile (protoc: the bench's, read only)
+            for u, path in self.proj.prebuilt(k, self.cfg).items():
+                objs.setdefault(u, path)
         return objs
 
     def wanted(self, k):
@@ -241,13 +282,16 @@ class Runner:
                 akey = (name, thin, tuple((m, objs[m]) for m in members))
                 data = self.archives.get(akey)
                 if data is None:
-                    data = build.build_archive(self.cfg, self.stage, name, members, objs, thin, self.W)
-                    if len(self.archives) >= 16:
+                    names = getattr(self.proj, 'member_names', lambda: None)()
+                    data = build.build_archive(self.cfg, self.stage, name, members, objs, thin, self.W, names)
+                    # bounded: protoc's archives are 85 and 117 MB
+                    while self.archives and (len(self.archives) >= 16 or sum(
+                            len(d) for d in self.archives.values()) + len(data) > 320 << 20):
                         self.archives.pop(next(iter(self.archives)))
                     self.archives[akey] = data
             if build.write_if_changed(path, data, inplace, self.installed.get(name)):
                 changed.append(name)
-            self.installed[name] = data
+            self.installed[name] = build.digest(data)
         return changed
 
     def read_object(self, path):
@@ -321,7 +365,7 @@ class Runner:
             shutil.rmtree(self.base)
         os.makedirs(self.W)
         os.makedirs(self.stage)
-        tools = judge.Tools(self.opts['xtask'], self.cfg.runner())
+        tools = judge.Tools(self.opts['xtask'], self.cfg.runner(), args=getattr(self.proj, 'RUN_ARGS', ()))
         env = dict(os.environ)
         env.update({'L10_MORTAR': self.opts['mortar'], 'L10_FLOOR': self.opts.get('floor') or '',
                     'L10_WORK': self.base, 'PYTHONDONTWRITEBYTECODE': '1'})
@@ -330,7 +374,7 @@ class Runner:
         steps = [None] + list(self.seq.steps)
         res = {'steps': len(self.seq.steps), 'reasons': collections.Counter(), 'failed_links': 0,
                'updates': 0, 'failure': None, 'at': None, 'rows': collections.defaultdict(collections.Counter),
-               'lines': [], 'phase': collections.Counter()}
+               'lines': [], 'phase': collections.Counter(), 'hops': collections.defaultdict(collections.Counter)}
         ph = res['phase']
         prev = None          # S_{i-1}: the previous successful step's snapshot
         preinstalled = False
@@ -428,6 +472,8 @@ class Runner:
                 res.setdefault('fail_diag', (f.diags[0][:160] if f.diags else 'status %s' % fs))
             row = 'base' if step is None else step['edit']
             res['rows'][row][reason] += 1
+            if step is not None:
+                res['hops'][row][step.get('hop', 1)] += 1
             res['lines'].append('step %s %-22s %s reason=%s%s' % (
                 sid, row, v.line(), reason,
                 (' (F: %s)' % (f.diags[0][:160] if f.diags else 'status %s' % fs)) if fs != 0 else ''))
@@ -446,6 +492,7 @@ class Runner:
         if res['failure'] is None and not self.opts.get('keep'):
             shutil.rmtree(self.base)
         res['rows'] = {r: dict(c) for r, c in res['rows'].items()}
+        res['hops'] = {r: dict(c) for r, c in res['hops'].items()}
         res['reasons'] = dict(res['reasons'])
         res['phase'] = dict(res['phase'])
         return res
@@ -649,7 +696,7 @@ def self_test(opts, log=print):
 
 # ------------------------------------------------------------------ main --
 def parse(argv):
-    o = {'seeds': [], 'steps': None, 'projects': None, 'compilers': None, 'targets': None, 'configs': None,
+    o = {'hops': None, 'seeds': [], 'steps': None, 'projects': None, 'compilers': None, 'targets': None, 'configs': None,
          'quick': False, 'keep': False, 'jobs': 1, 'replay': [], 'minimize': None, 'subject': 'mortar',
          'edits': None, 'self_test': False, 'regressions': False, 'floor': None, 'require_tools': False}
     i = 0
@@ -662,6 +709,10 @@ def parse(argv):
             o['seeds'].append(int(val())); i += 2
         elif a == '--steps':
             o['steps'] = int(val()); i += 2
+        elif a == '--hops':
+            o['hops'] = int(val()); i += 2
+            if o['hops'] not in (2, 3):
+                sys.exit('l10.py: --hops 2|3')
         elif a in ('--project', '--compiler', '--target', '--config', '--edits'):
             key = {'--project': 'projects', '--compiler': 'compilers', '--target': 'targets',
                    '--config': 'configs', '--edits': 'edits'}[a]
@@ -708,10 +759,13 @@ def plan_sequences(o, log):
     for p, c, s, n in lines:
         if o['steps']:
             n = o['steps']
-        if p not in PROJECTS:
-            sys.exit('l10.py: unknown project %s (%s)' % (p, ', '.join(PROJECTS)))
+        if p not in PROJECTS + FLAGGED_PROJECTS:
+            sys.exit('l10.py: unknown project %s (%s)' % (p, ', '.join(PROJECTS + FLAGGED_PROJECTS)))
+        if p == 'gonogo':
+            skipped.append('gonogo %s: TODO (not in the lane): %s' % (c, GONOGO_TODO))
+            continue
         cfg = build.Cfg(c)
-        why = cfg.missing()
+        why = cfg.missing() or project_missing(p, cfg, o['work'])
         if why:
             skipped.append('%s %s: %s' % (p, c, why))
             continue
@@ -719,8 +773,10 @@ def plan_sequences(o, log):
         if o['edits'] and not edits.rows_for(p, o['edits']):
             skipped.append('%s %s: none of the edit rows applies' % (p, c))
             continue
-        steps = edits.generate(proj, cfg, s, n, o['edits'])
-        seqs.append(Seq(p, c, s, steps, o['subject'], rows=o['edits']))
+        hops = o['hops'] or (3 if s in THREE_HOP_SEEDS and not o['quick'] and not o['seeds'] else None)
+        hops = None if hops == 2 else hops
+        steps = edits.generate(proj, cfg, s, n, o['edits'], hops)
+        seqs.append(Seq(p, c, s, steps, o['subject'], rows=o['edits'], hops=hops))
     return seqs, skipped
 
 
@@ -728,14 +784,25 @@ def edit_table(results, log):
     """Per edit row: how many steps applied it, and the reasons seen."""
     count = collections.Counter()
     seen = collections.defaultdict(collections.Counter)
+    hops = collections.defaultdict(collections.Counter)
     for _seq, r in results:
         for row, reasons in r['rows'].items():
             for reason, n in reasons.items():
                 count[row] += n
                 seen[row][reason] += n
+        for row, hc in r.get('hops', {}).items():
+            hops[row].update(hc)
     for row in ['base'] + [r.name for r in edits.ROWS]:
-        log('L10 EDIT %-22s steps=%-4d reasons=%s' % (row, count[row], ','.join(
-            '%s:%d' % kv for kv in sorted(seen[row].items())) or '-'))
+        R = edits.BY_NAME.get(row)
+        extra = ''
+        if R is not None:
+            extra = ' hops=%s' % '/'.join(str(hops[row][h]) for h in (1, 2, 3))
+            if R.shape:
+                extra += ' shape="%s"' % R.shape
+            if R.wp207:
+                extra += ' wp207=%s' % ','.join(map(str, R.wp207))
+        log('L10 EDIT %-22s steps=%-4d reasons=%s%s' % (row, count[row], ','.join(
+            '%s:%d' % kv for kv in sorted(seen[row].items())) or '-', extra))
 
 
 def main():
