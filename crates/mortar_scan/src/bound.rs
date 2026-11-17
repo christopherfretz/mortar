@@ -240,7 +240,8 @@ impl FileFacts {
                 continue;
             };
             let n = u32::try_from(recs.len()).unwrap_or(u32::MAX);
-            if (0..n).filter_map(|i| recs.raw(i)).any(|r| scope.got_form(r.r_type) && own(r.r_sym)) {
+            if (0..n).filter_map(|i| recs.raw(i)).any(|r| scope.got_form(r.r_type) && own(r.r_sym))
+            {
                 self_got = true;
                 break;
             }

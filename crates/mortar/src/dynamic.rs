@@ -45,7 +45,9 @@ pub fn arch_status(plan: &Plan, machine: Machine) -> Result<Status, Diagnostic> 
                 RefusalClass::Feature,
                 "ELFCLASS32 shared object",
             )
-            .note("dyn.md D-130: i386 shared objects are WP-130's (docs/status/options.md, -shared)")),
+            .note(
+                "dyn.md D-130: i386 shared objects are WP-130's (docs/status/options.md, -shared)",
+            )),
         };
     }
     let dynamic = matches!(plan.kind, OutputKind::Executable | OutputKind::PieExecutable);

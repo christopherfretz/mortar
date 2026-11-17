@@ -843,16 +843,15 @@ fn walk_unit(view: &View<'_, '_>, u: &Unit, global: &[AtomicU16], bufs: &mut Buf
             // D-117's address-level rule: a bound use of exported data.
             if sec.place.alloc
                 && let Some(f) = facts
-                && let Some(b) =
-                    crate::bound::rule(
-                        view,
-                        f,
-                        key,
-                        &raw,
-                        sec.recs.addend(&raw, &h),
-                        sec.name,
-                        sec.place.exec == Some(true),
-                    )
+                && let Some(b) = crate::bound::rule(
+                    view,
+                    f,
+                    key,
+                    &raw,
+                    sec.recs.addend(&raw, &h),
+                    sec.name,
+                    sec.place.exec == Some(true),
+                )
             {
                 faults.push((i, Fault::Bound(b)));
                 continue;
