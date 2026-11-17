@@ -1976,7 +1976,8 @@ B.2, B.5; `tests/relocatable-design/work/facts.log`).
     link's choice per piece.
   - `SHF_COMPRESSED` inputs are decompressed (L-52) and the output is
     not compressed (`--compress-debug-sections` is refused at `-r`,
-    `spec/cli.md` C-R4).
+    `spec/cli.md` C-R4). Such a piece is placed at its decompressed
+    size and alignment (`ch_size`, `ch_addralign`).
   Measured: `"a"` and `"aw"` pieces of one name give `WA` and the
   largest alignment, in all three (B.1). L-47's refusal of alloc with
   non-alloc, and of TLS with non-TLS, stays.
@@ -2017,7 +2018,8 @@ B.2, B.5; `tests/relocatable-design/work/facts.log`).
 - **L-R4 (pieces within an output section).** The pieces are in input
   order, `(FileId, section index)`, each at the next offset aligned to
   its `sh_addralign`, and the gaps are zero. All three references
-  concatenate in input order. With `-d`, commons are allocated at the
+  concatenate in input order. `.eh_frame` is not placed this way
+  (L-R6): its bytes are contiguous, with no padding between inputs. With `-d`, commons are allocated at the
   end of the first `.bss` output section, or of a new `.bss` (NOBITS,
   `WA`) placed after the last output section of the first file that
   mentions a common, in `SymbolId` order. Each common is aligned to its
@@ -2062,6 +2064,21 @@ B.2, B.5; `tests/relocatable-design/work/facts.log`).
     its CIE;
   - a zero terminator is kept where an input has one. The driver adds
     no `crtend.o` to a `-r` line (`spec/cli.md` C-R6).
+  In bytes: the output `.eh_frame` is the synthetic `.eh_frame` chunk
+  (`spec/model.md` MD-R1), not a `Body`, and an `.eh_frame` input has
+  no place. Its content is each live `.eh_frame` input's bytes, in
+  `(FileId, section index)` order, with the byte ranges of its removed
+  FDEs cut out. Nothing is padded or added: L-R4's alignment of pieces
+  does not apply, so the chunk is contiguous from its offset 0, and an
+  input with no record (a terminator alone) contributes its whole
+  size. The chunk's size is the sum of the inputs' `sh_size` less the
+  sizes of the removed records, each 4 + its length word. Its type and
+  flags are L-R1a's, its alignment the inputs' largest. Every live
+  `.eh_frame` input goes to this one output section; what would make
+  two (`SHF_GNU_RETAIN` or `SHF_LINK_ORDER` on one, or an `.eh_frame`
+  group member) is refused by name until a later package. Its
+  relocation section holds the records of the inputs' relocation
+  sections except those whose `r_offset` lies in a removed record.
   This is GNU ld's choice, without the `R_*_NONE` records GNU ld leaves
   where it removed an FDE. mortar 3ad9867a refused those records on
   AArch64, where they sit at the offset of a live record (record §D,
