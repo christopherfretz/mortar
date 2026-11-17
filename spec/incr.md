@@ -1576,51 +1576,108 @@ with each phase fed from the state for unchanged files:
   count and the capacity of the file's range, and a `gone` flag (a file
   removed by an update: its ranges are dead until the next compaction).
   The reader checks that the ranges are in bounds and do not overlap.
-- **IN-18e [v1] Format version 5: the tables an update reads and
-  writes.** Three kinds of table, each with its way of changing:
-  - **Small tables** (`META`, `OUTSECS`, `SEGMENTS`, `LAYOUT`, `SIZES`,
-    `PROBES`, `CHUNKS`, `SLOTS`, `PATCHES`, `REDIRECTS`, `LEAVES`): read
-    whole, patched by block (same row count) or rewritten by the
-    compaction.
-  - **File-keyed tables**, one range per file through `FILE_INDEX`:
-    `SECTIONS`, `MENTIONS`, `INDEX`, `EDGES` (kind 42, IN-71a), `FRAG_AT`,
-    `EH_RECORDS`, `SYMTAB` (kind 43, below). A full link writes each
-    range with **row slack**: capacity = count + max(4, count/8) rows,
-    the unused rows zero (*estimate*: +12.5% of these tables' rows). An
-    update rewrites a changed file's range in place when the new count
-    fits the capacity; otherwise the state is compacted (IN-77).
-  - **Key-keyed tables**: `SYMBOLS` (one row per key, appended; a key no
-    file mentions any more is a tombstone, kind `GONE`), `RESOLVED` (one
-    row per global `SYMBOLS` row, in its order), `GROUPS` (kind 44:
-    COMDAT signature and keeper, the kind-6 rows of `RESOLVED` until
-    now), `KEY_REFS` (kind 45: (key, mentioning file) for every key that
-    more than one file mentions, sorted by key), `FRAGS` (sorted by
-    (output section, merge class, content hash), with a reference count
-    `refs`). The sorted ones have a body and an **append area**: a
-    lookup binary-searches the body (WP-105: RESOLVED by binary search,
-    225 preads on g10x) and scans the append area; a deleted row is a
-    tombstone. The compaction runs when an append area passes max(65,536
-    rows, 1% of its body), when tombstones pass 25% of a table's rows,
-    or when a file's range overflows its capacity; every full link
-    writes the state compact.
+- **IN-18e [v1] Format version 5: every table, its class and its patch
+  rule** (rewritten by WP-207; review-in77 B-5, M-9). Every table of the
+  format is in exactly one of five classes. "Capacity" is rows the body
+  holds; unused rows are zero. A patch (W5, IN-46b) that does not fit a
+  table's capacity, or its class's bound, is the compaction (IN-18f).
+
+  | class | tables (kind) | how an update changes it |
+  |---|---|---|
+  | **whole** (small; capacity = rows + max(64, rows/8)) | `META` (1), `PROBES` (4), `OUTSECS` (5), `CHUNKS` (8), `ORDER` (9), `SEGMENTS` (10), `SLOTS` (12), `SIZES` (15), `SYM_PLACE` (16), `DEFINED` (17), `PATCHES` (18), `REDIRECTS` (19), `SIZED` (20), `LAYOUT` (21), `LEAVES` (22) | the table is written again whole into its capacity when any row differs (its blocks only; the rest of the state is untouched); over capacity: compaction. Together under 2 MB on g10x (WP-105 §3's "the rest" and `CHUNKS`). `LEAVES`' row count follows the output's size (W3 truncates or extends), within its capacity |
+  | **append-only** | `FILES` (3), `STAT` (2), `FILE_INDEX` (41), `STRINGS` (23) | rows (bytes, for `STRINGS`) are only appended, into a reserved append area of max(4,096 rows, rows/64); a row is never moved, so references to it stay valid. `FILES` and `FILE_INDEX` are parallel (one row each per file, members of archives included, `LAZY` when not extracted); `STAT` has one row per file plus the device rows; a file's load-order position is its `FILES.rank` (`u64`): the first link writes `rank = FileId << 20`, an appeared or newly extracted file takes the integer midpoint of its neighbours' ranks (none left: compaction), and `FileId` order is `rank` order. A gone file's row is marked `GONE`. A string is never overwritten or reused; strings no row names any more are dead until compaction. The build id is in `META` (a length and 64 bytes), not in `STRINGS`, so an update appends no string for it |
+  | **file-keyed** (one range per file through `FILE_INDEX`, with row slack: capacity = count + max(4, count/8)) | `SECTIONS` (7), `MENTIONS` (32), `INDEX` (34), `EDGES` (42), `FRAG_AT` (40), `EH_RECORDS` (13), `SYMTAB` (43: per file its local block and `.strtab` region; file 0's range holds the global area's row) | a changed, drawn-in or appeared file's range is rewritten in place when the new count fits its capacity; a file's `SECTIONS` rows are also rewritten when IN-72 moved, killed or revived its sections (IN-78); a gone file's ranges are dead (`FILE_INDEX.gone`); a new file gets new ranges in the table's append area (max(4,096 rows, rows/64)); no room: compaction |
+  | **key-keyed** (sorted body + append area of max(4,096 rows, rows/64) + tombstones) | `KEY_REFS` (45: key, file, attributes), `GROUPS` (44: signature, keeper), `FRAGS` (11: identity, offset, `refs`), `HOLES` (39: by (chunk, offset)), `COMMONS` (46: key, file, size, alignment), `ODR_CLASSES` (47: ODR key, class hash and layout), `ODR_REFS` (48: ODR key, file, row kind, class), `DIAGS` (49: subject, code, text, order) | a lookup binary-searches the body and scans the append area; a new row is appended; a deleted row is a tombstone (its key kept, a flag set); a changed row is changed in place when its key is unchanged, else deleted and appended. Compaction when an append area is full or tombstones pass 25% of a table's rows |
+  | **key-parallel** (one row per `SYMBOLS` row, in its order) | `SYMBOLS` (6), `RESOLVED` (33), `SYMTAB_KEYS` (50: a global's `.symtab` index and `.strtab` offset) | a key's rows are changed in place by its `SYMBOLS` row number; a new key appends a row to each (append area of max(4,096 rows, rows/64)); a key no file mentions any more is a tombstone (`SYMBOLS.kind` `GONE`) |
+
+  Table 14 (`SYMTAB_LOCALS`) is gone (`SYMTAB` and `SYMTAB_KEYS` replace
+  it); `LEAVES` no longer keeps its row count ("patched by block, same row
+  count" is withdrawn); `RESOLVED`'s kind-6 and kind-7 rows are gone:
+  groups are `GROUPS`, and a file's extraction is its `FILES` flags and
+  **round** (IN-71b). A
+  table not in this list is a format defect: the reader refuses an
+  unknown kind (`state-corrupt`).
+
+  **`KEY_REFS`** holds **one row per (key, mentioning file)**: every key,
+  including keys one file mentions (review-in77 B-4), file 0's
+  linker-defined keys (file 0 is the definer of each; every file that
+  mentions one has a row, review-in72 B-2), and the defined and common
+  mentions of archive members not extracted (IN-71b). A row is 12 bytes:
+  key (`u32`, the `SYMBOLS` row), file (`u32`, the `FILES` row), and the
+  attributes resolution reads (definedness, binding, type, visibility,
+  common, section or absolute, `LAZY`). It is `MENTIONS` transposed, so
+  its row count equals `MENTIONS`' (plus nothing: the lazy members'
+  defined mentions are `MENTIONS` rows of their files too).
+  **`at_file`** is maintained by IN-71's rule.
+
   **Shrinking.** `MENTIONS` drops its `file` column (the range gives
   it): 12 bytes a row. `RESOLVED` drops `symbol` (its row is the key's),
-  `file` (the section's row gives it) and `name` (`GROUPS` holds the
-  signatures): 24 bytes a row. `INDEX` is grouped by referring file and
-  packed to 9 bytes a row. On g10x (WP-105 §3's rows), *estimate*:
-  `MENTIONS` 69.0 → 51.7 MB, `RESOLVED` 66.1 → 39.6 MB, `INDEX` 32.3 →
-  24.2 MB, `KEY_REFS` at most 34.5 MB (one row per mention; keys with
-  one mentioning file have none), so at most 150 MB against 167.4 MB.
-  The shrink is small; what the update gains is the ranged read (above).
-  The package that builds the format measures the real sizes, and the
-  format may not exceed format 4's total on g10x and `cxx-large-g` (a
-  gate).
-  **`SYMTAB`** (replaces `SYMTAB_LOCALS`): per file its `.symtab` local
-  block (first entry, count, capacity) and its `.strtab` region (first
-  byte, length, capacity); per global key (a column beside `RESOLVED`)
-  its `.symtab` index and the `.strtab` offset of its name; and one row
-  for the global area (first entry, count) and the `.strtab` globals'
-  region (first byte, length). IN-49a uses them.
+  `file` (the section's row gives it; a common's or an absolute's file is
+  `KEY_REFS`'s definer row) and `name` (`GROUPS` holds the signatures): 24
+  bytes a row. `INDEX` is grouped by referring file and packed to 9 bytes
+  a row.
+
+  **Size, restated** (*estimate* over WP-105 §3's measured rows, the
+  arithmetic in `spec/landed/incr/WP-207.md` §S; review-in77 M-9):
+
+  | | g10x | `cxx-large-g` |
+  |---|---|---|
+  | format 4 (measured) | 404.2 MB | 246.6 MB |
+  | `MENTIONS`, `RESOLVED`, `INDEX` shrunk | −51.7 | −7.4 |
+  | `KEY_REFS` (12 B × `MENTIONS` rows) | +51.7 | +3.6 |
+  | `SYMTAB_KEYS` (8 B a key) | +13.2 | +0.9 |
+  | `EDGES` (`--gc-sections` only; 17.5 B a section, from protoc's 0.48 MB) | +3.2 | +9.9 |
+  | row slack (12.5% of the file-keyed tables) | +16.6 | +12.9 |
+  | append areas (1/64 of key-keyed and `STRINGS`; 1% used here) | +2.9 | +1.5 |
+  | block lists (16 B a 4 KiB block) and `FILE_INDEX` | +2.4 | +1.3 |
+  | **format 5** | **442.5 MB (+9.5%)** | **269.3 MB (+9.2%)** |
+
+  `GROUPS` takes `RESOLVED`'s kind-6 rows (no net change); `COMMONS`,
+  the `FILES` round and `DIAGS` are under 1 MB here; `ODR_*` are zero for
+  GCC and Clang objects (IN-71d's estimate applies to kiln's). WP-202's
+  "at most 150 MB against 167.4" compared three tables and left out the
+  slack and the new tables; it is withdrawn. **U-2's gate**: the format-5
+  state measured on g10x and `cxx-large-g` is at most 1.15 × format 4's
+  measured total (465 and 284 MB), and U-2 reports the per-table sizes
+  against this table; a state above it goes to the supervisor with the
+  table, it is not trimmed silently.
+
+- **IN-18f [v1] The compaction** (WP-207; review-in77 B-5). An algorithm,
+  not "the whole new state":
+  1. Read every block of `S` through U1's descriptor and check it against
+     its block-list entry and the list against the directory (IN-18c);
+     any failure is `state-corrupt` (before W1: the update does not run;
+     the full link that follows writes a fresh state). O(state): WP-105
+     measured the whole read and validation at 562 ms on g10x and 201 ms
+     on `cxx-large-g`.
+  2. Apply the update's patch to the rows in memory (what W5 would write).
+  3. Drop: `GONE` files' `FILES`, `STAT`, `FILE_INDEX` rows and their
+     ranges; tombstones of every key-keyed and key-parallel table; slack
+     and append areas; strings no remaining row names.
+  4. Renumber, through one old→new map per referenced table, built in
+     the order the full link's capture numbers rows: `FILES` by `rank`
+     (new `FileId` = position), `SYMBOLS` in the full link's `SymbolId`
+     order (its first-mention order, `at_file`'s rank then `at_index`;
+     keys no file mentions by name), `SECTIONS` by (file, index),
+     `FRAGS` by identity, `CHUNKS` by (output section, ordinal, part),
+     `STRINGS` offsets by the new pool. Every reference (`FRAG_AT` →
+     `FRAGS`; `INDEX`, `MENTIONS`, `SLOTS`, `DEFINED`, `SYM_PLACE`,
+     `KEY_REFS` → `SYMBOLS`; everything → `SECTIONS`, `FILES`, `STRINGS`)
+     goes through its map; a reference with no image in a map is a
+     defect (`state-corrupt` in a test build, a panic never).
+  5. Write the tables in kind order with fresh slack (IN-18e's
+     capacities), sort the key-keyed bodies, rebuild the block lists, the
+     directory and the header (flag clear), to `<S>.mortar-compact`, then
+     IN-77's rename.
+  The result is, byte for byte, the state the full link of the update's
+  inputs writes when its layout is the update's `Placement` (IN-78's
+  `C(U)`), except `META`'s history fields; every full link writes a state
+  that is compact by construction. *Test (U-2):*
+  `compaction_equals_full_link_capture` (after a series of patches, the
+  compacted state's bytes equal `C(U)`'s); `compaction_reads_every_block`
+  (a flipped byte in a block no patch touches: `state-corrupt`);
+  `rank_midpoint_exhausted_compacts`.
+
 - **IN-46b [v1] The state patched in place.** W5 of IN-77 writes only
   the blocks whose rows changed, their block-list entries, the
   directory entries and the header; rows inserted go into a file's row
