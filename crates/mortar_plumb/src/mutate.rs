@@ -1269,7 +1269,9 @@ pub fn run_with(
     ctx: Option<&crate::Ctx<'_>>,
 ) -> Result<Outcome, String> {
     let verify = |out: &[u8], inputs: &[Input<'_>], map: &Map| match ctx {
-        Some(c) if crate::is_dynamic(out) => crate::verify_with(out, inputs, map, c),
+        Some(c) if crate::dynverify::judged_dynamic(out, map, c) => {
+            crate::verify_with(out, inputs, map, c)
+        }
         _ => verify(out, inputs, map),
     };
     let image = Image::read(output)?;

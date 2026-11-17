@@ -83,6 +83,17 @@ check nm -n name
   then(bfd,mortar): b zb$
   has(bfd,mortar): d at1$
   then(bfd,mortar): d zt$
+# BusyBox's scripts/trylink spelling, the value as the next word, on a
+# dynamic and a PIE link (AArch64 and x86-64: mortar's i386 output is
+# static only): stage 3's line reader takes `alignment` as the
+# option's value, not as an input (WP-131 V6; spec/landed/layout/WP-111.md
+# saw P-D2 "the command line: alignment: cannot be read" here).
+link(aarch64,x86_64) gcc -no-pie main.o -Wl,--sort-common -Wl,--sort-section,alignment -Wl,--warn-common -o trylink
+run(aarch64,x86_64) trylink
+  stdout: ok
+link(aarch64,x86_64) gcc -pie main.o -Wl,--sort-common -Wl,--sort-section,alignment -Wl,--warn-common -o trylink-pie
+run(aarch64,x86_64) trylink-pie
+  stdout: ok
 
 #--- main.c
 #include <stdio.h>

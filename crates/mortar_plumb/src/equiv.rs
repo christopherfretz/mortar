@@ -453,16 +453,17 @@ fn run_side<'a>(
     engine.trace = Some(Trace::with_capacity(usize::try_from(n).unwrap_or(0)));
     crate::run_engine(&mut engine, &image, map, None);
     crate::prof::mark("side: engine");
-    let dynamic = crate::is_dynamic(output);
-    let report = if dynamic {
-        let ctx = crate::Ctx { line: None, files: &crate::HostFiles };
+    // The kind from the line and the output's contents, as stage 3
+    // decides it (§12 P-D4, WP-131): not from PT_DYNAMIC alone.
+    let ctx = crate::Ctx { line: None, files: &crate::HostFiles };
+    let report = if crate::dynverify::judged_dynamic(output, map, &ctx) {
         let mut r = crate::dynverify::verify_in(output, store, m, map, &ctx);
         crate::read_errors(store, &mut r);
         r
     } else {
         let mut r = Report::default();
         r.findings.extend(crate::structure::check(&image));
-        r.findings.extend(crate::structure::check_layout(&image, map.format));
+        r.findings.extend(crate::structure::check_layout(&image, map));
         r.findings.extend(located.findings);
         r.findings.append(&mut engine.findings);
         r.coverage = std::mem::take(&mut engine.cov);

@@ -4,13 +4,13 @@
 # - The part that works: `=none`, the same bytes as no option (debug
 #   sections uncompressed, no SHF_COMPRESSED), on every linker.
 # - The part that does not: every compressing value is refused by name,
-#   `unsupported option value`, with the row's reason as the note. The
-#   references compress under `=zlib` (SHF_COMPRESSED), but their links
-#   with it are not made here: the verifier reads a compressed debug
-#   section's bytes as they are in the file, not decompressed, and
-#   reports R6 ("the reference to offset 0x89 of mergeable section
-#   '.debug_line_str' reaches other bytes") on GNU ld's and lld's correct
-#   outputs (WP-112 finding V4).
+#   `unsupported option value`, with the row's reason as the note.
+# - The references compress under `=zlib` (SHF_COMPRESSED) and their
+#   links are made: the verifier does not judge a compressed section's
+#   contents by R6 and counts it "not judged: compressed" (plumb.md §5.6;
+#   WP-131 V4, before which R6 read the deflated bytes raw and reported
+#   GNU ld's and lld's correct outputs). From mortar a compressed section
+#   is an S1 finding.
 #@ spec: cli.md "§3.8"
 
 cc -g -O1 prog.c -o prog.o
@@ -23,6 +23,11 @@ check cmp none plain
 check readelf -SW plain
   has: .debug_info 
   not: .debug_info * C 
+link(bfd,lld,mold) gcc -static prog.o -Wl,--compress-debug-sections=zlib -o zlib
+run(bfd,lld,mold) zlib
+  stdout: hello 42
+check(bfd,lld,mold) readelf -SW zlib
+  has: .debug_info * C 
 link(mortar) gcc -static prog.o -Wl,--compress-debug-sections=zlib -o zlib
   exit: fail
   diag: unsupported option value: --compress-debug-sections=zlib

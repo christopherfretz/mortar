@@ -149,6 +149,376 @@ R Next gnu --hash-size
 R Next gnu --max-cache-size
 ";
 
+/// The rows of `docs/status/options.md` whose status is `refused`, in
+/// the same form as [`ACCEPTED`] (a test holds it equal to the table).
+/// No word of mortar's map spells one (M9), but a reference linker's line
+/// may (the caller's words, §12.1; `realbuild` judges the control
+/// linker's output of a line mortar refused): whether such an option
+/// takes the next word is the table's, as for every row (WP-131, V6).
+pub const REFUSED: &str = "\
+R No gnu -shared --Bshareable
+R No gnu -r -i --relocatable
+R Next gnu --oformat
+R No gnu -Ur
+R No gnu -d --dc --dp
+R No gnu --no-define-common
+R No gnu -q --emit-relocs
+R No gnu --no-strip-discarded
+R No gnu -n --nmagic
+R No gnu -N --omagic
+R No gnu --no-omagic
+R No - --no-nmagic
+R Eq gnu --package-metadata
+R Next - --icf
+R No - --no-icf
+R No - --print-icf-sections
+R No - --no-print-icf-sections
+R Next - --keep-unique
+R No - --ignore-data-address-equality
+R No - --ignore-function-address-equality
+R No - --debug-names
+R No gnu --relax
+R No gnu --no-relax
+R No gnu --force-group-allocation
+R No gnu --traditional-format
+R No gnu --embedded-relocs
+R No gnu --force-exe-suffix
+R Next gnu --out-implib
+R No - --execute-only
+R No - --no-execute-only
+R Next - --compress-sections
+R Eq - --separate-debug-file
+R No - --no-separate-debug-file
+R Next gnu -R --just-symbols
+R Next gnu -b --format
+R No - --start-lib
+R No - --end-lib
+R No gnu --whole-archive
+R No gnu --no-whole-archive
+R No gnu --copy-dt-needed-entries --add-needed
+R No gnu --accept-unknown-input-arch
+R No gnu --no-accept-unknown-input-arch
+R No gnu --no-warn-mismatch
+R No gnu --no-warn-search-mismatch
+R Next gnu --remap-inputs-file
+R Next gnu --remap-inputs
+R No - --dependent-libraries
+R No - --fortran-common
+R No - --no-fortran-common
+R Next - --warn-backrefs-exclude
+R Next - --why-extract
+R Next - --print-archive-stats
+R No - --fat-lto-objects
+R No - --no-fat-lto-objects
+R No gnu -nostdlib
+R Next gnu -Y
+R Next - -C --directory
+R Next - --chroot
+R Next gnu -T --script
+R Next gnu --default-script --dT
+R Next gnu -c --mri-script
+R Next gnu --version-script
+R Next gnu --dynamic-list
+R Next gnu --export-dynamic-symbol-list
+R Next gnu --retain-symbols-file
+R Next gnu --section-ordering-file
+R Next - --symbol-ordering-file
+R No - --no-warn-symbol-ordering
+R No - --warn-symbol-ordering
+R Next - --call-graph-ordering-file
+R Next - --call-graph-profile-sort
+R Next - --print-symbol-order
+R Next - --irpgo-profile
+R Next - --bp-startup-sort
+R Next - --bp-compression-sort
+R No - --bp-compression-sort-startup-functions
+R No - --verbose-bp-section-orderer
+R Next gnu --orphan-handling
+R Eq gnu --unique
+R No gnu --enable-non-contiguous-regions
+R No gnu --enable-non-contiguous-regions-warnings
+R No gnu --disable-linker-version
+R No gnu --enable-linker-version
+R No gnu --check-sections
+R No gnu --no-check-sections
+R Eq - --shuffle-sections
+R No - --reverse-sections
+R Next - --randomize-section-padding
+R Next gnu -u --undefined
+R Next gnu --require-defined
+R Next - --undefined-glob
+R Next gnu --defsym
+R Next gnu --wrap
+R Next gnu --exclude-libs
+R Next gnu -y --trace-symbol
+R Next gnu --ignore-unresolved-symbol
+R Eq gnu --demangle
+R No gnu --no-demangle
+R No gnu --default-symver
+R No gnu --default-imported-symver
+R No gnu --undefined-version
+R No gnu --no-undefined-version
+R Next gnu --version-exports-section
+R No gnu --disable-multiple-abs-defs
+R No - --gnu-unique
+R No - --no-gnu-unique
+R Next gnu --task-link
+R Next gnu -h -soname
+R Next - --pack-dyn-relocs
+R Next gnu -f --auxiliary
+R Next gnu -F --filter
+R Next gnu --audit
+R Next gnu -P --depaudit
+R No gnu -Bgroup
+R No gnu --dynamic-list-data
+R No gnu --dynamic-list-cpp-new
+R No gnu --dynamic-list-cpp-typeinfo
+R No gnu --allow-shlib-undefined
+R No gnu --no-allow-shlib-undefined
+R Next gnu --spare-dynamic-tags
+R Next - --spare-program-headers
+R No - --apply-dynamic-relocs
+R No - --use-android-relr-tags
+R No - --no-use-android-relr-tags
+R No - --android-memtag-heap
+R No - --android-memtag-stack
+R Next - --android-memtag-mode
+R Next gnu -Ttext
+R Next gnu -Tdata
+R Next gnu -Tbss
+R Next gnu -Ttext-segment
+R Next gnu -Trodata-segment
+R Next gnu -Tldata-segment
+R Next gnu --section-start
+R Next gnu --image-base
+R No gnu --no-rosegment
+R No - --xosegment
+R No - --no-xosegment
+R Eq gnu --split-by-file
+R Eq gnu --split-by-reloc
+R Next gnu -G --gpsize
+R No - --optimize-bb-jumps
+R No - --no-optimize-bb-jumps
+R No - --branch-to-branch
+R No - --no-branch-to-branch
+R Next gnu --unresolved-symbols
+R No gnu --warn-unresolved-symbols
+R No gnu --error-unresolved-symbols
+R No gnu --allow-multiple-definition
+R No - --no-allow-multiple-definition
+R No gnu --noinhibit-exec --noinhibit_exec
+R Next gnu --error-handling-script
+R No gnu --warn-constructors
+R No gnu --warn-multiple-gp
+R No gnu --warn-once
+R No gnu --warn-section-align
+R No gnu --warn-textrel --warn-shared-textrel
+R No gnu --warn-alternate-em
+R No gnu --warn-execstack-objects
+R No gnu --no-warn-execstack
+R No gnu --error-execstack
+R No gnu --no-error-execstack
+R No gnu --warn-rwx-segments
+R No gnu --no-warn-rwx-segments
+R No gnu --error-rwx-segments
+R No gnu --no-error-rwx-segments
+R No - --warn-ifunc-textrel
+R No - --no-warn-ifunc-textrel
+R No - --vs-diagnostics
+R Next - --why-live
+R No gnu --print-map-discarded
+R No gnu --no-print-map-discarded
+R No gnu --print-map-locals
+R No gnu --no-print-map-locals
+R No gnu --cref
+R No gnu -t --trace
+R Next - --reproduce
+R No - --repro
+R Next - --thread-count
+R No - --no-threads
+R No - --verify
+R Next - --incremental-write
+R Next - --incremental-sync
+R No - --incremental-verify
+R Next - --incremental-changed
+R No gnu --stats
+R No - --perf
+R Eq - --time-trace
+R Next - --time-trace-granularity
+R No gnu --print-memory-usage
+R No gnu --print-output-format
+R No gnu --print-sysroot
+R No gnu --target-help
+R No - --fork
+R No - --no-fork
+R No - --quick-exit
+R No - --no-quick-exit
+R No - --detach
+R No - --no-detach
+R No - --mmap-output-file
+R No - --no-mmap-output-file
+R Next - --rsp-quoting
+R Next - --run
+R Next - --lto
+R Next - --lto-O
+R Next - --lto-CGO
+R Next - --lto-partitions
+R Next - --lto-aa-pipeline
+R Next - --lto-newpm-passes
+R No - --lto-debug-pass-manager
+R No - --lto-emit-asm
+R No - --lto-emit-llvm
+R Next - --lto-sample-profile
+R Next - --lto-cs-profile-file
+R No - --lto-cs-profile-generate
+R No - --lto-whole-program-visibility
+R No - --no-lto-whole-program-visibility
+R No - --lto-pgo-warn-mismatch
+R No - --no-lto-pgo-warn-mismatch
+R Next - --lto-basic-block-sections
+R No - --lto-basic-block-address-map
+R No - --no-lto-basic-block-address-map
+R No - --lto-unique-basic-block-section-names
+R No - --no-lto-unique-basic-block-section-names
+R No - --lto-validate-all-vtables-have-type-infos
+R No - --no-lto-validate-all-vtables-have-type-infos
+R Next - --lto-known-safe-vtables
+R Next - --load-pass-plugin
+R Next - --mllvm
+R Eq - --save-temps
+R Next - --opt-remarks-filename
+R Next - --opt-remarks-format
+R Next - --opt-remarks-passes
+R Next - --opt-remarks-hotness-threshold
+R No - --opt-remarks-with-hotness
+R Next - --thinlto-cache-dir
+R Next - --thinlto-cache-policy
+R Next - --thinlto-jobs
+R Next - --thinlto-single-module
+R Next - --thinlto-distributor
+R Next - --thinlto-distributor-arg
+R Next - --thinlto-remote-compiler
+R Next - --thinlto-remote-compiler-arg
+R Next - --thinlto-remote-compiler-prepend-arg
+R No gnu --fix-cortex-a53-835769
+R No gnu --no-apply-dynamic-relocs
+R No gnu --pic-veneer
+R Next gnu --stub-group-size
+R No gnu --no-enum-size-warning
+R No gnu --no-wchar-size-warning
+R No gnu --no-pipeline-knowledge
+R No gnu --ld-generated-unwind-info
+R No gnu --no-ld-generated-unwind-info
+Z force-bti No
+Z bti-report Eq
+Z pac-plt No
+Z gcs Next
+Z gcs-report Eq
+Z gcs-report-dynamic Next
+Z noextern-protected-data No
+Z indirect-extern-access No
+Z noindirect-extern-access No
+Z dynamic-undefined-weak No
+Z nodynamic-undefined-weak No
+Z call-nop Next
+Z ibtplt No
+Z ibt No
+Z shstk No
+Z cet-report Next
+Z report-relative-reloc No
+Z x86-64-baseline No
+Z x86-64-v2 No
+Z x86-64-v3 No
+Z x86-64-v4 No
+Z isa-level-report Next
+Z noreloc-overflow No
+Z lam-u48 No
+Z lam-u48-report Next
+Z lam-u57 No
+Z lam-u57-report Next
+Z lam-report Next
+Z mark-plt No
+Z nomark-plt No
+Z notext No
+Z undefs No
+Z stack-size Next
+Z pack-relative-relocs No
+Z nopack-relative-relocs No
+Z copyreloc No
+Z nocopyreloc No
+Z combreloc No
+Z nocombreloc No
+Z nosectionheader No
+Z muldefs No
+Z unique-symbol No
+Z nounique-symbol No
+Z globalaudit No
+Z start-stop-gc No
+Z start-stop-visibility Next
+Z global No
+Z initfirst No
+Z interpose No
+Z unique No
+Z nounique No
+Z loadfltr No
+Z nodefaultlib No
+Z nodelete No
+Z nodlopen No
+Z nodump No
+Z origin No
+Z common No
+Z nocommon No
+Z dead-reloc-in-nonalloc Next
+Z execute-only-report Next
+Z force-ibt No
+Z hazardplt No
+Z ifunc-noplt No
+Z keep-text-section-prefix No
+Z nokeep-text-section-prefix No
+Z nognustack No
+Z rel No
+Z rela No
+Z retpolineplt No
+Z rodynamic No
+Z separate-loadable-segments No
+Z wxneeded No
+Z lrodata-after-bss No
+Z nolrodata-after-bss No
+Z zicfilp Next
+Z zicfiss Next
+Z zicfilp-unlabeled-report Next
+Z zicfilp-func-sig-report Next
+Z zicfiss-report Next
+Z execstack-if-needed No
+Z rewrite-endbr No
+Z norewrite-endbr No
+R Next gnu -a
+R Next gnu -A --architecture
+R No gnu -EB
+R No gnu --dll-verbose
+R No gnu --ctf-variables
+R No gnu --no-ctf-variables
+R Next gnu --ctf-share-types
+R No - --be8
+R No - --fix-cortex-a8
+R No - --merge-exidx-entries
+R No - --no-merge-exidx-entries
+R No - --target1-abs
+R No - --target1-rel
+R Next - --target2
+R No - --cmse-implib
+R Next - --in-implib
+R No - --relax-gp
+R No - --no-relax-gp
+R No - --pcrel-optimize
+R No - --no-pcrel-optimize
+R No - --toc-optimize
+R No - --no-toc-optimize
+R Eq - --power10-stubs
+R No - --no-power10-stubs
+R Next - --split-stack-adjust-size
+";
+
 /// How a row takes its value (cli.md §2.3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Val {
@@ -161,41 +531,200 @@ enum Val {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct Row<'t> {
-    /// The row's first spelling: its name in [`Options::read`].
-    id: &'t str,
+struct Row {
+    /// The row's first spelling: its name in [`Options::read`] and
+    /// [`Word::Opt`].
+    id: &'static str,
     value: Val,
     gnu: bool,
+    /// A row of [`ACCEPTED`] (else of [`REFUSED`]).
+    accepted: bool,
 }
 
-/// Each spelling's name, without its dashes, and its row.
-type Names = Vec<(String, Row<'static>)>;
-/// Each `-z` keyword and whether it takes `=VALUE`.
-type Keywords = Vec<(&'static str, bool)>;
+/// The whole table (WP-131): each spelling's name, without its dashes,
+/// with its row, and each `-z` keyword with whether it takes `=VALUE` and
+/// whether it is accepted.
+#[derive(Debug)]
+pub struct Table {
+    names: Vec<(&'static str, Row)>,
+    z: Vec<(&'static str, bool, bool)>,
+}
 
-/// The accepted rows: the spellings' names and the `-z` keywords.
-fn rows() -> (Names, Keywords) {
-    let mut names = Vec::new();
-    let mut z = Vec::new();
-    for line in ACCEPTED.lines() {
-        let t: Vec<&'static str> = line.split(' ').collect();
-        let val = |s: &str| match s {
-            "Next" => Val::Next,
-            "Eq" => Val::Eq,
-            _ => Val::No,
-        };
-        match t.as_slice() {
-            ["Z", kw, v] => z.push((*kw, val(v) != Val::No)),
-            ["R", v, gnu, spellings @ ..] if !spellings.is_empty() => {
-                let row = Row { id: spellings[0], value: val(v), gnu: *gnu == "gnu" };
-                for s in spellings {
-                    names.push((s.trim_start_matches('-').to_string(), row));
+/// What a word of a line is, read by [`Table::word`] (cli.md §2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Word {
+    /// An input: a word that does not start with `-`, or `-` alone
+    /// (cli.md §2.1).
+    Input,
+    /// An option of a row, by the row's first spelling, with its value.
+    Opt { id: &'static str, value: Option<String>, accepted: bool },
+    /// `-z keyword[=value]` (§2.7).
+    Z { kw: &'static str, value: Option<String>, accepted: bool },
+    /// A word starting with `-` that no row spells, or spells wrongly (a
+    /// value given to an option that takes none, a required value missing
+    /// at the end of the line, a word that is not UTF-8): M9 in a mortar
+    /// map.
+    Unknown,
+}
+
+fn val(s: &str) -> Val {
+    match s {
+        "Next" => Val::Next,
+        "Eq" => Val::Eq,
+        _ => Val::No,
+    }
+}
+
+impl Table {
+    /// The table, read once.
+    pub fn get() -> &'static Table {
+        static T: std::sync::OnceLock<Table> = std::sync::OnceLock::new();
+        T.get_or_init(|| {
+            let mut t = Table { names: Vec::new(), z: Vec::new() };
+            for (text, accepted) in [(ACCEPTED, true), (REFUSED, false)] {
+                for line in text.lines() {
+                    let w: Vec<&'static str> = line.split(' ').collect();
+                    match w.as_slice() {
+                        ["Z", kw, v] => t.z.push((*kw, val(v) != Val::No, accepted)),
+                        ["R", v, gnu, spellings @ ..] if !spellings.is_empty() => {
+                            let row = Row {
+                                id: spellings[0],
+                                value: val(v),
+                                gnu: *gnu == "gnu",
+                                accepted,
+                            };
+                            for s in spellings {
+                                t.names.push((s.trim_start_matches('-'), row));
+                            }
+                        }
+                        _ => {}
+                    }
                 }
             }
-            _ => {}
+            t
+        })
+    }
+
+    /// Every row: its first spelling, its spellings, whether it takes a
+    /// value (`Some(true)` required, `Some(false)` optional by `=`) and
+    /// whether it is accepted. For tests over the table.
+    #[cfg(test)]
+    pub(crate) fn rows(&self) -> Vec<(&'static str, Vec<&'static str>, Option<bool>, bool)> {
+        let mut v: Vec<(&'static str, Vec<&'static str>, Option<bool>, bool)> = Vec::new();
+        for (name, r) in &self.names {
+            let takes = match r.value {
+                Val::No => None,
+                Val::Next => Some(true),
+                Val::Eq => Some(false),
+            };
+            match v.iter_mut().find(|x| x.0 == r.id) {
+                Some(x) => x.1.push(name),
+                None => v.push((r.id, vec![name], takes, r.accepted)),
+            }
+        }
+        v
+    }
+
+    /// The `-z` keywords: name, takes `=VALUE`, accepted. For tests.
+    #[cfg(test)]
+    pub(crate) fn keywords(&self) -> &[(&'static str, bool, bool)] {
+        &self.z
+    }
+
+    /// Reads the word at `i` of `words` and the value it takes: what it
+    /// is and how many words it used (1, or 2 with a value in the next
+    /// word). cli.md §2.2's lookup in its order: an exact name, a short
+    /// option, an abbreviation of a GNU long name (§2.4), then a short
+    /// option with its value joined (step 5); §2.3's values; §2.7's `-z`.
+    pub fn word<W: AsRef<[u8]>>(&self, words: &[W], i: usize) -> (Word, usize) {
+        let Some(w) = words.get(i).map(AsRef::as_ref) else { return (Word::Unknown, 1) };
+        if !w.starts_with(b"-") || w == b"-" {
+            return (Word::Input, 1);
+        }
+        let next = || words.get(i + 1).map(|n| String::from_utf8_lossy(n.as_ref()).into_owned());
+        let Ok(text) = std::str::from_utf8(w) else {
+            // An option's name is ASCII: a word starting with `-` that
+            // is not UTF-8 spells no option.
+            return (Word::Unknown, 1);
+        };
+        // `-z keyword` and `-zkeyword` (cli.md §2.7).
+        let (kw, used) = if text == "-z" {
+            match next() {
+                Some(k) => (Some(k), 2),
+                None => return (Word::Unknown, 1),
+            }
+        } else {
+            (text.strip_prefix("-z").filter(|k| !k.is_empty()).map(str::to_string), 1)
+        };
+        if let Some(kw) = kw {
+            let (k, v) = match kw.split_once('=') {
+                Some((k, v)) => (k, Some(v.to_string())),
+                None => (kw.as_str(), None),
+            };
+            return match self.z.iter().find(|(name, _, _)| *name == k) {
+                Some((name, takes, accepted)) if *takes == v.is_some() => {
+                    (Word::Z { kw: name, value: v, accepted: *accepted }, used)
+                }
+                _ => (Word::Unknown, used),
+            };
+        }
+        let dashes = if text.starts_with("--") { 2 } else { 1 };
+        let body = &text[dashes..];
+        let (name, joined) = match body.split_once('=') {
+            Some((n, v)) => (n, Some(v)),
+            None => (body, None),
+        };
+        // Step 1: an exact name; 3: a short option (cli.md §2.2).
+        let exact = self.names.iter().find(|(n, _)| *n == name && dashes_allow(n, dashes));
+        // Step 4: an abbreviation of a GNU long name: an accepted line
+        // names exactly one (cli.md §2.4).
+        let abbrev = || {
+            if name.chars().count() < 2 || !dashes_allow(name, dashes) {
+                return None;
+            }
+            let mut hits = self.names.iter().filter(|(n, r)| {
+                r.gnu && n.len() > name.len() && n.starts_with(name) && n.chars().count() > 1
+            });
+            let first = hits.next()?;
+            // Several spellings of one row are still one option here:
+            // mortar refuses the abbreviation (cli.md §2.4), and an
+            // accepted line never has one.
+            if hits.any(|(_, r)| r.id != first.1.id) {
+                return None;
+            }
+            Some(first)
+        };
+        if let Some((_, row)) = exact.or_else(abbrev) {
+            let opt =
+                |value: Option<String>| Word::Opt { id: row.id, value, accepted: row.accepted };
+            return match (row.value, joined) {
+                (Val::No, Some(_)) => (Word::Unknown, 1),
+                (Val::No | Val::Eq, None) => (opt(None), 1),
+                (_, Some(v)) => (opt(Some(v.to_string())), 1),
+                (Val::Next, None) => match next() {
+                    Some(v) => (opt(Some(v)), 2),
+                    None => (Word::Unknown, 1),
+                },
+            };
+        }
+        // Step 5: one dash, a short option, its value joined.
+        let short = (dashes == 1).then(|| body.chars().next()).flatten().and_then(|c| {
+            self.names
+                .iter()
+                .find(|(n, r)| r.value == Val::Next && n.chars().eq(std::iter::once(c)))
+        });
+        match short {
+            Some((n, row)) if body.len() > n.len() => (
+                Word::Opt {
+                    id: row.id,
+                    value: Some(body[n.len()..].to_string()),
+                    accepted: row.accepted,
+                },
+                1,
+            ),
+            _ => (Word::Unknown, 1),
         }
     }
-    (names, z)
 }
 
 /// `--odr-table`'s value (§13.1; default `off`).
@@ -243,6 +772,11 @@ pub struct Options {
     pub build_id: BuildId,
     /// The last of `-z execstack` (true) and `-z noexecstack` (false).
     pub execstack: Option<bool>,
+    /// `-s`/`--strip-all` (synth.md S-84: no `.symtab`).
+    pub strip_all: bool,
+    /// The last `-z max-page-size=N` (layout.md L-74; `N = 0` means the
+    /// default), when its value reads as a number.
+    pub max_page: Option<u64>,
     /// Words that no accepted option spells, in order, with their index
     /// in the line (M9).
     pub unread: Vec<(usize, String)>,
@@ -259,6 +793,8 @@ impl Default for Options {
             odr_off: false,
             build_id: BuildId::None,
             execstack: None,
+            strip_all: false,
+            max_page: None,
             unread: Vec::new(),
         }
     }
@@ -271,7 +807,7 @@ fn unread(o: &mut Options, at: usize, w: &[u8]) {
 /// Whether a spelling's name may be written with `dashes` (cli.md §2.2):
 /// a one-letter name with one dash only; a long name starting with `l`,
 /// `m` or `o` with two only; every other name with either.
-fn dashes_allow(name: &str, dashes: usize) -> bool {
+pub(crate) fn dashes_allow(name: &str, dashes: usize) -> bool {
     if name.chars().count() == 1 {
         return dashes == 1;
     }
@@ -282,118 +818,32 @@ fn dashes_allow(name: &str, dashes: usize) -> bool {
 }
 
 impl Options {
-    /// The options of the link's `words` (the program name left out).
-    #[allow(clippy::too_many_lines, clippy::many_single_char_names)] // cli.md §2.2's lookup in its order
+    /// The options of the link's `words` (the program name left out), by
+    /// [`Table::word`]: a word no accepted row spells is M9's.
     pub fn read(words: &[Vec<u8>]) -> Options {
-        let (names, z) = rows();
+        let t = Table::get();
         let mut o = Options::default();
         let mut i = 0;
         while i < words.len() {
-            let w = &words[i];
-            let at = i;
-            i += 1;
-            if !w.starts_with(b"-") || w.as_slice() == b"-" {
-                continue; // an input (cli.md §2.1)
+            let (w, used) = t.word(words, i);
+            match w {
+                Word::Input => {}
+                Word::Opt { id, value, accepted: true } => o.apply(id, value.as_deref()),
+                Word::Z { kw, value, accepted: true } => o.z(kw, value.as_deref()),
+                Word::Opt { accepted: false, .. } | Word::Z { .. } | Word::Unknown => {
+                    unread(&mut o, i, &words[i]);
+                }
             }
-            let Ok(text) = std::str::from_utf8(w) else {
-                // An option's name is ASCII: a word starting with `-` that
-                // is not UTF-8 spells no option.
-                unread(&mut o, at, w);
-                continue;
-            };
-            // `-z keyword` and `-zkeyword` (cli.md §2.7).
-            let kw = if text == "-z" {
-                let Some(next) = words.get(i) else {
-                    unread(&mut o, at, w);
-                    continue;
-                };
-                i += 1;
-                Some(String::from_utf8_lossy(next).into_owned())
-            } else {
-                text.strip_prefix("-z").filter(|k| !k.is_empty()).map(str::to_string)
-            };
-            if let Some(kw) = kw {
-                let (k, v) = match kw.split_once('=') {
-                    Some((k, v)) => (k, Some(v)),
-                    None => (kw.as_str(), None),
-                };
-                match z.iter().find(|(name, _)| *name == k) {
-                    Some((_, takes)) if *takes == v.is_some() => o.z(k),
-                    _ => unread(&mut o, at, w),
-                }
-                continue;
-            }
-            let dashes = if text.starts_with("--") { 2 } else { 1 };
-            let body = &text[dashes..];
-            let (name, joined) = match body.split_once('=') {
-                Some((n, v)) => (n, Some(v)),
-                None => (body, None),
-            };
-            // Step 1: an exact name; 3: a short option (cli.md §2.2).
-            let exact = names.iter().find(|(n, _)| n == name && dashes_allow(n, dashes));
-            // Step 4: an abbreviation of a GNU long name: the line was
-            // accepted, so it names exactly one (cli.md §2.4).
-            let abbrev = || {
-                if name.chars().count() < 2 || !dashes_allow(name, dashes) {
-                    return None;
-                }
-                let mut hits = names.iter().filter(|(n, r)| {
-                    r.gnu && n.len() > name.len() && n.starts_with(name) && n.chars().count() > 1
-                });
-                let first = hits.next()?;
-                // Several spellings of one row are still one option here:
-                // mortar refuses the abbreviation (cli.md §2.4), and an
-                // accepted line never has one.
-                if hits.any(|(_, r)| r.id != first.1.id) {
-                    return None;
-                }
-                Some(first)
-            };
-            let found = exact.or_else(abbrev);
-            let (row, value) = if let Some((_, row)) = found {
-                let value = match (row.value, joined) {
-                    (Val::No, Some(_)) => {
-                        unread(&mut o, at, w);
-                        continue;
-                    }
-                    (Val::No | Val::Eq, None) => None,
-                    (_, Some(v)) => Some(v.to_string()),
-                    (Val::Next, None) => {
-                        let Some(next) = words.get(i) else {
-                            unread(&mut o, at, w);
-                            continue;
-                        };
-                        i += 1;
-                        Some(String::from_utf8_lossy(next).into_owned())
-                    }
-                };
-                (*row, value)
-            } else {
-                // Step 5: one dash, a short option, its value joined.
-                let short = (dashes == 1).then(|| body.chars().next()).flatten().and_then(|c| {
-                    names
-                        .iter()
-                        .find(|(n, r)| r.value == Val::Next && n.chars().eq(std::iter::once(c)))
-                });
-                match short {
-                    Some((n, row)) if body.len() > n.len() => {
-                        (*row, Some(body[n.len()..].to_string()))
-                    }
-                    _ => {
-                        unread(&mut o, at, w);
-                        continue;
-                    }
-                }
-            };
-            o.apply(row.id, value.as_deref());
+            i += used;
         }
         o
     }
 
-    fn z(&mut self, kw: &str) {
+    fn z(&mut self, kw: &str, value: Option<&str>) {
         match kw {
             "execstack" => self.execstack = Some(true),
             "noexecstack" => self.execstack = Some(false),
+            "max-page-size" => self.max_page = value.and_then(number),
             _ => {}
         }
     }
@@ -404,7 +854,11 @@ impl Options {
             "--fix-cortex-a53-843419" => self.fix_843419 = true,
             "--gdb-index" => self.gdb_index = true,
             "--no-gdb-index" => self.gdb_index = false,
-            "-s" | "-S" => self.strip_debug = true,
+            "-s" => {
+                self.strip_debug = true;
+                self.strip_all = true;
+            }
+            "-S" => self.strip_debug = true,
             "--keep-mason-meta" => self.keep_mason_meta = true,
             "--odr-table" => {
                 self.odr_table = match value {
@@ -426,6 +880,18 @@ impl Options {
             "--no-build-id" => self.build_id = BuildId::None,
             _ => {}
         }
+    }
+}
+
+/// A number as GNU's `-z` values spell it: `0x` hex, a leading `0`
+/// octal, else decimal.
+fn number(v: &str) -> Option<u64> {
+    if let Some(h) = v.strip_prefix("0x").or_else(|| v.strip_prefix("0X")) {
+        u64::from_str_radix(h, 16).ok()
+    } else if v.len() > 1 && v.starts_with('0') {
+        u64::from_str_radix(&v[1..], 8).ok()
+    } else {
+        v.parse().ok()
     }
 }
 
@@ -466,12 +932,13 @@ mod tests {
     }
 
     // §3.2a: ACCEPTED is docs/status/options.md's rows that are not
-    // refused, in the table's order.
+    // refused, REFUSED its refused rows, each in the table's order.
     #[test]
     fn s3_2a_accepted_is_the_options_table() {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/status/options.md");
         let text = std::fs::read_to_string(path).unwrap();
         let mut want = String::new();
+        let mut refused = String::new();
         for line in text.lines().filter(|l| l.starts_with("| `")) {
             // Cells split at `|` not escaped by a backslash.
             let mut cells = Vec::new();
@@ -487,9 +954,7 @@ mod tests {
             }
             let cells = &cells[1..];
             let spellings: Vec<&str> = cells[0].split('`').skip(1).step_by(2).collect();
-            if cells[4].starts_with("refused") {
-                continue;
-            }
+            let want = if cells[4].starts_with("refused") { &mut refused } else { &mut want };
             let v = if cells[1].is_empty() {
                 "No"
             } else if cells[1].starts_with("optional") {
@@ -507,6 +972,10 @@ mod tests {
         assert_eq!(
             ACCEPTED, want,
             "ACCEPTED is not the options table; replace it with the right side"
+        );
+        assert_eq!(
+            REFUSED, refused,
+            "REFUSED is not the options table's refused rows; replace it with the right side"
         );
     }
 

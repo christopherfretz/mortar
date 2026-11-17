@@ -777,6 +777,27 @@ fn build() -> Option<Corpus> {
                 );
             }
         }
+        // P-D4 (WP-131, V5): PT_DYNAMIC removed (its header made
+        // PT_NULL) from each linker's `-no-pie` hello: the line, the
+        // PT_INTERP, `.dynsym` and the JUMP_SLOT records still say
+        // dynamic, and the program would find no `.dynamic` (mold 2.37's
+        // output after `--push-state -Bstatic --pop-state`).
+        let hello = b.dir(arch, "hello");
+        for linker in Linker::ALL {
+            let from = format!("hello-no-pie.now.{}", linker.name());
+            b.patched(
+                "nodyn",
+                arch,
+                &hello,
+                &from,
+                &format!("{from}.nodyn"),
+                &format!("{from}.map"),
+                &format!("{from}.line"),
+                linker,
+                no_pt_dynamic,
+                &["P-D4@no PT_DYNAMIC, and the line's kind is 'exec' (D-1), it has PT_INTERP"],
+            );
+        }
         let hello = b.dir(arch, "hello");
         for linker in Linker::ALL {
             let from = format!("hello-pie.lazy.{}", linker.name());
@@ -1487,6 +1508,14 @@ fn data_executable(b: &mut [u8]) {
     b[o + 4] |= 1;
 }
 
+/// P-D4 (V5): `PT_DYNAMIC`'s header made `PT_NULL`.
+fn no_pt_dynamic(b: &mut [u8]) {
+    let (phoff, phentsize, phnum) = (le64(b, 0x20) as usize, le16(b, 0x36), le16(b, 0x38));
+    let o =
+        (0..phnum).map(|i| phoff + i * phentsize).find(|&o| le32(b, o) == 2).expect("PT_DYNAMIC");
+    b[o..o + 4].copy_from_slice(&[0; 4]);
+}
+
 /// P-D4: `PT_GNU_STACK`'s `PF_X` flipped.
 fn gnu_stack_x_flipped(b: &mut [u8]) {
     let (phoff, phentsize, phnum) = (le64(b, 0x20) as usize, le16(b, 0x36), le16(b, 0x38));
@@ -1679,8 +1708,13 @@ fn judge(case: &str) {
                     .join("\n")
             ));
         }
-        // P-D2 stops stage 3 before any record is judged.
-        assert!(r.coverage.records > 0 || o.case == "PD2", "{}: no records", o.label());
+        // P-D2 stops stage 3 before any record is judged, and so does
+        // P-D4 without PT_DYNAMIC (V5).
+        assert!(
+            r.coverage.records > 0 || ["PD2", "nodyn"].contains(&o.case),
+            "{}: no records",
+            o.label()
+        );
     }
     assert!(n > 0 || c.outs.is_empty(), "no outputs of case {case}");
     assert!(failures.is_empty(), "{}", failures.join("\n"));
@@ -1849,6 +1883,41 @@ fn s6_2_s5_no_unneeded_permission() {
 
 // spec/plumb.md §12 P-D4 (WP-088): PT_GNU_STACK's PF_X against the line's
 // `-z execstack`/`-z noexecstack` and the inputs' stack notes.
+// spec/plumb.md §12 P-D4 (WP-131, V5): an output the line and its
+// contents show dynamic, without PT_DYNAMIC, is a finding.
+#[test]
+fn s12_p_d4_no_pt_dynamic() {
+    judge("nodyn");
+}
+
+// spec/plumb.md §12 P-D4 (WP-131): `equiv`'s side takes the kind from the
+// line and the output's contents too, not from PT_DYNAMIC: the `nodyn`
+// mutant as X against the correct link as F is P-D4 on X.
+#[test]
+fn s12_p_d4_no_pt_dynamic_in_equiv() {
+    let Some(c) = corpus() else { return };
+    let mut n = 0;
+    for o in c.outs.iter().filter(|o| o.case == "nodyn") {
+        n += 1;
+        let map = o.link.parse_map();
+        let files = o.link.inputs(&map);
+        let inputs: Vec<Input<'_>> =
+            files.iter().map(|(p, b)| Input { path: p, bytes: b }).collect();
+        let good = o.link.output.with_extension("");
+        let good = std::fs::read(&good).unwrap();
+        let e = mortar_plumb::equiv::check(&o.link.output_bytes(), &map, &good, &map, &inputs);
+        assert!(
+            e.x.findings
+                .iter()
+                .any(|f| f.rule.id() == "P-D4" && f.message.starts_with("no PT_DYNAMIC")),
+            "{}: X has no P-D4\n{}",
+            o.label(),
+            e.x.render("x")
+        );
+    }
+    assert!(n > 0 || c.outs.is_empty(), "no nodyn outputs");
+}
+
 #[test]
 fn s12_p_d4_gnu_stack_execute() {
     judge("stack");

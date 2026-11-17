@@ -200,7 +200,7 @@ pub(crate) fn verify_static_in(
     };
     prof::mark("image");
     report.findings.extend(structure::check(&image));
-    report.findings.extend(structure::check_layout(&image, map.format));
+    report.findings.extend(structure::check_layout(&image, map));
     prof::mark("structure");
     let located = locate::locate(map, store, m, &image);
     report.findings.extend(located.findings);

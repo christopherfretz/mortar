@@ -39,6 +39,16 @@ pub fn is_dynamic(output: &[u8]) -> bool {
     Image::read(output).is_ok_and(|i| i.phdrs.iter().any(|p| p.p_type == PT_DYNAMIC))
 }
 
+/// Whether stage 3 judges the output (§12 P-D4, WP-131): it has
+/// `PT_DYNAMIC`, or the line or its contents say it is dynamic (D-1), so
+/// that its missing `PT_DYNAMIC` is a finding. The one decision of
+/// [`verify_in`], `equiv`'s sides and the mutation runner.
+pub(crate) fn judged_dynamic(output: &[u8], map: &Map, ctx: &Ctx<'_>) -> bool {
+    let Ok(image) = Image::read(output) else { return false };
+    image.phdrs.iter().any(|p| p.p_type == PT_DYNAMIC)
+        || !no_dynamic(&image, line_words(map, ctx).as_deref(), ctx.files).is_empty()
+}
+
 /// Whether section `si` of `o` has a record naming one of `names`.
 pub(crate) fn names_any(o: &Obj<'_>, si: usize, names: &HashSet<String>) -> bool {
     // A non-alloc use is never relocated at run time: view 3 leaves it to
@@ -89,7 +99,20 @@ pub(crate) fn verify_in(
         }
     };
     let Some(dout) = DynOut::read(&image) else {
-        return crate::verify_static_in(output, store, m, map);
+        // No PT_DYNAMIC: a link the line or the output shows dynamic is
+        // a finding (P-D4, P-D6; WP-131 V5), and only the structure rules
+        // judge it besides (a static judging of a dynamic program names
+        // its PLT and its imports wrongly); any other is static.
+        let missing = no_dynamic(&image, line_words(map, ctx).as_deref(), ctx.files);
+        if missing.is_empty() {
+            return crate::verify_static_in(output, store, m, map);
+        }
+        let mut report = Report::default();
+        report.findings.extend(structure::check(&image));
+        report.findings.extend(structure::check_layout(&image, map));
+        report.findings.extend(missing);
+        report.sort();
+        return report;
     };
     judge(&image, &dout, store, m, map, ctx)
 }
@@ -106,20 +129,11 @@ fn judge(
 ) -> Report {
     let mut report = Report::default();
     report.findings.extend(structure::check(image));
-    report.findings.extend(structure::check_layout(image, map.format));
+    report.findings.extend(structure::check_layout(image, map));
     let located = locate::locate(map, store, m, image);
     report.findings.extend(located.findings);
     let objs = located.objs;
-    // A mortar map's line is its `arg` records (§3.2a); a reference's is
-    // the caller's.
-    let args = if map.format == crate::Format::Mortar {
-        (!map.args.is_empty()).then(|| {
-            map.args.iter().map(|w| String::from_utf8_lossy(w).into_owned()).collect::<Vec<_>>()
-        })
-    } else {
-        ctx.line.clone()
-    };
-    let Some(args) = args else {
+    let Some(args) = line_words(map, ctx) else {
         report.findings.push(Finding::new(
             Rule::Dyn(2),
             "a dynamic output and no command line: stage 3 needs the link's words",
@@ -232,7 +246,11 @@ fn judge(
         machine: image.header.e_machine,
     };
     let kind = line.kind.unwrap_or(OutputKind::Exec);
-    report.findings.extend(crate::dyncheck::check(image, dout, &line, &model, &ld, &objs, map));
+    let mut checked = crate::dyncheck::check(image, dout, &line, &model, &ld, &objs, map);
+    if map.format != crate::Format::Mortar && line.symbolic == Some("-Bsymbolic") {
+        symbolic_flag(&mut checked);
+    }
+    report.findings.extend(checked);
     // View 1: bias 0.
     let p1 = Params::default();
     let v1 = loader::apply(image, dout, &ld, &p1, true);
@@ -410,6 +428,140 @@ fn judge(
     report.findings.extend(view1_findings);
     report.sort();
     report
+}
+
+/// The link's words: a mortar map's `arg` records (§3.2a), a
+/// reference's from the caller.
+fn line_words(map: &Map, ctx: &Ctx<'_>) -> Option<Vec<String>> {
+    if map.format == crate::Format::Mortar {
+        (!map.args.is_empty()).then(|| {
+            map.args.iter().map(|w| String::from_utf8_lossy(w).into_owned()).collect::<Vec<_>>()
+        })
+    } else {
+        ctx.line.clone()
+    }
+}
+
+/// `DF_SYMBOLIC` (0x2) in a reference's `DT_FLAGS` under `-Bsymbolic`:
+/// D-30's P-D6 finding split, so that its own message names it (§10.2
+/// A44, WP-131 V2); other bits keep D-30's message.
+fn symbolic_flag(findings: &mut Vec<Finding>) {
+    const DF_SYMBOLIC: u64 = 0x2;
+    let mut extra = Vec::new();
+    for f in findings.iter_mut() {
+        if f.rule != Rule::Dyn(6) {
+            continue;
+        }
+        let Some(rest) = f.message.strip_prefix("DT_FLAGS 0x") else { continue };
+        let Some((fl, rest)) = rest.split_once(" has bits 0x") else { continue };
+        let Some(bad) = rest.strip_suffix(" (D-30)") else { continue };
+        let (Ok(fl), Ok(bad)) = (u64::from_str_radix(fl, 16), u64::from_str_radix(bad, 16)) else {
+            continue;
+        };
+        if bad & DF_SYMBOLIC == 0 {
+            continue;
+        }
+        let mut g = f.clone();
+        g.message = SYMBOLIC.into();
+        extra.push(g);
+        let left = bad & !DF_SYMBOLIC;
+        f.message = format!("DT_FLAGS {fl:#x} has bits {left:#x} (D-30)");
+        if left == 0 {
+            f.message.clear();
+        }
+    }
+    findings.retain(|f| !f.message.is_empty());
+    findings.extend(extra);
+}
+
+/// The message of a reference's `DF_SYMBOLIC` under `-Bsymbolic` (A44).
+pub const SYMBOLIC: &str =
+    "DT_FLAGS has DF_SYMBOLIC under -Bsymbolic in an executable, where D-30 writes none";
+
+/// §12 (WP-131, V5): an output without `PT_DYNAMIC` is dynamic all the
+/// same when its line asks for a dynamic kind (D-1: `-dynamic-linker`,
+/// `-pie`, a shared object loaded; never decided from what the output
+/// happens to hold) or when it holds what only a dynamic output has
+/// (`PT_INTERP`, `.dynsym`, `.dynamic`, a dynamic relocation record other
+/// than `IRELATIVE`): the loader then finds no `.dynamic`, no `DT_NEEDED`,
+/// no relocation table, and the program fails (mold 2.37's
+/// `--push-state -Bstatic --pop-state -lgreet`: SIGSEGV). Each is P-D4;
+/// each shared object the line loads but not `--as-needed` is P-D6 (no
+/// `DT_NEEDED` can name it).
+fn no_dynamic(image: &Image<'_>, words: Option<&[String]>, files: &dyn Files) -> Vec<Finding> {
+    use mortar_elf::consts::{
+        EM_386, EM_AARCH64, EM_X86_64, PT_INTERP, SHT_DYNSYM, SHT_REL, SHT_RELA,
+    };
+    let mut v = Vec::new();
+    let mut why = Vec::new();
+    if let Some(w) = words {
+        let line = Line::parse(w, files);
+        if let Some(k @ (OutputKind::Exec | OutputKind::Pie | OutputKind::StaticPie)) = line.kind {
+            why.push(format!("the line's kind is '{}' (D-1)", k.name()));
+        }
+        for i in &line.items {
+            if let crate::line::Item::Shared { named, as_needed: false, .. } = i {
+                v.push(Finding::new(
+                    Rule::Dyn(6),
+                    format!("no PT_DYNAMIC, so no DT_NEEDED names '{named}', which the line loads (D-11, W9)"),
+                ));
+            }
+        }
+    }
+    if image.phdrs.iter().any(|p| p.p_type == PT_INTERP) {
+        why.push("it has PT_INTERP".into());
+    }
+    for s in &image.sections {
+        if s.shdr.sh_type == SHT_DYNSYM {
+            why.push(format!("it has {} (SHT_DYNSYM)", s.name));
+        } else if s.name == ".dynamic" {
+            why.push("it has a .dynamic section".into());
+        }
+    }
+    // A record other than IRELATIVE (and NONE) in an allocated relocation
+    // section is the loader's to apply, through `.dynamic`'s tags.
+    let irelative = match image.header.e_machine {
+        EM_AARCH64 => 1032,
+        EM_X86_64 => 37,
+        EM_386 => 42,
+        _ => u32::MAX,
+    };
+    let elf64 = image.class() == mortar_elf::Class::Elf64;
+    let dynamic_record = image.sections.iter().find(|s| {
+        let sh = &s.shdr;
+        if !s.alloc() || !matches!(sh.sh_type, SHT_RELA | SHT_REL) || sh.sh_entsize == 0 {
+            return false;
+        }
+        let Some(b) = usize::try_from(sh.sh_offset)
+            .ok()
+            .zip(usize::try_from(sh.sh_size).ok())
+            .and_then(|(o, n)| image.data.get(o..o.checked_add(n)?))
+        else {
+            return false;
+        };
+        let es = usize::try_from(sh.sh_entsize).unwrap_or(usize::MAX);
+        b.chunks_exact(es).any(|r| {
+            let ty = if elf64 {
+                r.get(8..12).map(|x| u32::from_le_bytes([x[0], x[1], x[2], x[3]]))
+            } else {
+                r.get(4).map(|&x| u32::from(x))
+            };
+            ty.is_some_and(|t| t != 0 && t != irelative)
+        })
+    });
+    if let Some(s) = dynamic_record {
+        why.push(format!("{} holds a dynamic relocation record other than IRELATIVE", s.name));
+    }
+    if !why.is_empty() {
+        v.push(Finding::new(
+            Rule::Dyn(4),
+            format!(
+                "no PT_DYNAMIC, and {}: the loader finds no .dynamic, so no DT_NEEDED and no relocation table (D-1)",
+                why.join(", ")
+            ),
+        ));
+    }
+    v
 }
 
 fn file_off(image: &Image<'_>, addr: u64, len: u64) -> Option<usize> {
