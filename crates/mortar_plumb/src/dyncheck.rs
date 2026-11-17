@@ -1903,6 +1903,10 @@ fn fields(
     const STB_GNU_UNIQUE: u8 = 10;
     // The names the inputs define only STB_GNU_UNIQUE (dyn.md D-23's
     // export row: the output binding is `.symtab`'s, unique).
+    // And the names an input defines STO_AARCH64_VARIANT_PCS (AAELF64:
+    // the export carries its definition's bit; WP-161, the sweep's
+    // survivor), by base name.
+    let mut vpcs = BTreeSet::new();
     let unique = {
         let (mut u, mut other) = (BTreeSet::new(), BTreeSet::new());
         for o in objs {
@@ -1913,6 +1917,9 @@ fn fields(
                     continue;
                 }
                 let n = String::from_utf8_lossy(t.name(&x).unwrap_or(b"")).into_owned();
+                if x.st_other & 0x80 != 0 {
+                    vpcs.insert(n.split('@').next().unwrap_or_default().to_owned());
+                }
                 if x.binding() == STB_GNU_UNIQUE {
                     u.insert(n)
                 } else {
@@ -1933,8 +1940,12 @@ fn fields(
         v.push(fd(8, ".gnu.version entry 0 (the null symbol's) is not 0"));
     }
     // P-D7: the null symbol and every entry's fields.
+    // `st_name` itself, not the string it names: an offset at another
+    // string's NUL reads as "" (WP-161, the sweep's survivor).
+    let st_name0 = out.get(DT_SYMTAB).and_then(|a| image.value(a, 4)).unwrap_or(0);
     if let Some(z) = out.syms.first()
         && (!z.name.is_empty()
+            || st_name0 != 0
             || z.st_info != 0
             || z.st_other != 0
             || z.st_shndx != 0
@@ -2123,6 +2134,15 @@ fn fields(
             }
             if o.sym.st_info != s.st_info {
                 diff.push(format!("st_info {:#x} (.symtab {:#x})", s.st_info, o.sym.st_info));
+            }
+            if m == EM_AARCH64
+                && s.sym_type() != mortar_elf::consts::STT_SECTION
+                && (s.st_other & 0x80 != 0) != vpcs.contains(&s.name)
+            {
+                diff.push(format!(
+                    "STO_AARCH64_VARIANT_PCS {} (AAELF64: its definition's)",
+                    if s.st_other & 0x80 != 0 { "set" } else { "missing" }
+                ));
             }
             if !diff.is_empty() {
                 v.push(sym_finding(

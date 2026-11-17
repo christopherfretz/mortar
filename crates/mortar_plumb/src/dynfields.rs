@@ -421,7 +421,8 @@ fn spare_nulls(image: &Image<'_>, out: &DynOut, v: &mut Vec<Finding>) {
 /// P-D9 **(mortar)**, D-46: under RELA a record's place holds, in the
 /// file, `S + A` for `RELATIVE` (the record's addend) and 0 for
 /// `GLOB_DAT` and the symbolic word type (AAELF64 `R_AARCH64_ABS64`,
-/// x86-64 `R_X86_64_64`), and D-48's TLS slot 0. Every RELA type of the
+/// x86-64 `R_X86_64_64`), and D-48's TLS slot 0, and both words of a
+/// `TLSDESC` record's descriptor 0 (D-119). Every RELA type of the
 /// two machines but a lazy `JUMP_SLOT` ignores the place's contents
 /// (AAELF64 and the x86-64 psABI compute each from S, A and the base),
 /// so for another linker the bytes are equivalent (§12.3's table).
@@ -440,6 +441,27 @@ fn places(image: &Image<'_>, out: &DynOut, v: &mut Vec<Finding>) {
             _ if r.plt => continue,
             Kind::Relative => r.addend.unwrap_or(0) as u64,
             Kind::GlobDat | Kind::Abs | Kind::TpOff => 0,
+            // D-119: a descriptor's two words, place 0 under RELA (the
+            // loader writes both; WP-161, the sweep's survivors).
+            Kind::TlsDesc => {
+                for at in [r.offset, r.offset + 8] {
+                    let Some(have) = image.value(at, 8) else { continue };
+                    if have != 0 {
+                        let mut f = fd(
+                            9,
+                            format!(
+                                "word {} of a TlsDesc record's descriptor holds {have:#x} in the file; D-119 writes 0",
+                                (at - r.offset) / 8
+                            ),
+                        )
+                        .at(at);
+                        f.expected = Some(0);
+                        f.found = Some(have);
+                        v.push(f);
+                    }
+                }
+                continue;
+            }
             _ => continue,
         };
         let Some(have) = image.value(r.offset, 8) else { continue };

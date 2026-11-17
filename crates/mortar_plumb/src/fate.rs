@@ -213,9 +213,11 @@ type At = (usize, usize);
 /// protected visibility (no object makes its name hidden or internal)
 /// that the one derivation of the export set exports: a name a version
 /// script's `local:` takes out is not a root, a `.symver` key is one when
-/// its node exports it (`shared::ExportRule`, D-114, resolve §9.7; WP-149). mortar refuses `-u`,
-/// `--require-defined`, dynamic lists and `--exclude-libs`
-/// (docs/status/options.md), so they are not in its line.
+/// its node exports it (`shared::ExportRule`, D-114, resolve §9.7; WP-149);
+/// a key `--exclude-libs` excludes is not, an executable's
+/// `--dynamic-list` key is (WP-161, the same derivation). mortar refuses
+/// `-u` and `--require-defined` (docs/status/options.md), so they are not
+/// in its line.
 /// The definition of a key is its first strong one in object order,
 /// else its first. Maps (object, section) to the name.
 fn line_roots(

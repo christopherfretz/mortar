@@ -1,7 +1,7 @@
 //! The byte sweep of a dynamic output's synthetic sections (WP-082,
 //! `spec/plumb.md` §12.2): every byte of `.plt`, `.plt.sec`, `.plt.got`,
 //! `.iplt`, `.got`, `.got.plt`, `.dynamic`, `.dynsym`, `.dynstr`,
-//! `.gnu.hash`, `.gnu.version`, `.gnu.version_r`, `.rela.dyn`,
+//! `.gnu.hash`, `.gnu.version`, `.gnu.version_d` (WP-161), `.gnu.version_r`, `.rela.dyn`,
 //! `.rela.plt`, `.interp`, `.eh_frame_hdr`, `.gdb_index` (WP-098) and of
 //! the `.eh_frame` records that cover a PLT section is flipped (bit 0, then bit 7), the mutant is
 //! judged, and every byte no flip makes a new finding for is a survivor.
@@ -14,7 +14,7 @@ use std::fmt::Write as _;
 
 use mortar_elf::consts::SHT_NOBITS;
 
-use crate::dynout::{DT_VERNEEDNUM, DynOut};
+use crate::dynout::{DT_VERDEFNUM, DT_VERNEEDNUM, DynOut};
 use crate::image::Image;
 use crate::{Input, Map};
 
@@ -25,6 +25,7 @@ pub const SECTIONS: &[&str] = &[
     ".dynsym",
     ".dynstr",
     ".gnu.version",
+    ".gnu.version_d",
     ".gnu.version_r",
     ".rela.dyn",
     ".rela.plt",
@@ -52,11 +53,18 @@ pub const BUILD_ID: &str = ".note.gnu.build-id";
 /// the table): `(section, field kind, who reads it and why no correct
 /// consumer can do otherwise)`. Equivalence is by field, never by offset;
 /// a survivor of any other field fails the lane.
-pub const EQUIVALENT: &[(&str, &str, &str)] = &[(
-    ".plt",
-    "code no path executes",
-    "no path executes it: every PLT entry and its lazy path, walked as §12.2 walks them, ends in an unconditional indirect jump before these bytes, and every input branch into the PLT is judged to reach an entry",
-)];
+pub const EQUIVALENT: &[(&str, &str, &str)] = &[
+    (
+        ".plt",
+        "code no path executes",
+        "no path executes it: every PLT entry and its lazy path, walked as §12.2 walks them, ends in an unconditional indirect jump before these bytes, and every input branch into the PLT is judged to reach an entry",
+    ),
+    (
+        ".dynamic",
+        "d_val DT_SYMBOLIC",
+        "the gABI's table of dynamic tags says DT_SYMBOLIC's d_un is ignored (a loader reads only the tag's presence: glibc's l_info[DT_SYMBOLIC] test); mortar writes 0 (WP-161)",
+    ),
+];
 
 /// The reason a surviving byte is equivalent, when its field is in
 /// [`EQUIVALENT`].
@@ -324,6 +332,57 @@ fn field(
                     break;
                 }
                 vn += next;
+            }
+            at("padding")
+        }
+        ".gnu.version_d" => {
+            // Walk the chain: Verdef (20) then its Verdaux (8 each).
+            let b = image.bytes(addr, size).unwrap_or(&[]);
+            let rd = |o: usize, w: usize| -> u64 {
+                b.get(o..o + w).map_or(0, |x| x.iter().rev().fold(0, |a, &c| a << 8 | u64::from(c)))
+            };
+            let o = off as usize;
+            let mut vd = 0usize;
+            for _ in 0..out.get(DT_VERDEFNUM).unwrap_or(0).min(256) {
+                let ndx = rd(vd + 4, 2);
+                if (vd..vd + 20).contains(&o) {
+                    let k = [
+                        "vd_version",
+                        "vd_flags",
+                        "vd_ndx",
+                        "vd_cnt",
+                        "vd_hash",
+                        "vd_aux",
+                        "vd_next",
+                    ][match o - vd {
+                        0..2 => 0,
+                        2..4 => 1,
+                        4..6 => 2,
+                        6..8 => 3,
+                        8..12 => 4,
+                        12..16 => 5,
+                        _ => 6,
+                    }];
+                    return (k.into(), format!("verdef {ndx}"));
+                }
+                let (cnt, aux, next) =
+                    (rd(vd + 6, 2), rd(vd + 12, 4) as usize, rd(vd + 16, 4) as usize);
+                let mut a = vd + aux;
+                for i in 0..cnt.min(256) {
+                    if (a..a + 8).contains(&o) {
+                        let k = if o - a < 4 { "vda_name" } else { "vda_next" };
+                        return (k.into(), format!("verdef {ndx} aux {i}"));
+                    }
+                    let n = rd(a + 4, 4) as usize;
+                    if n == 0 {
+                        break;
+                    }
+                    a += n;
+                }
+                if next == 0 {
+                    break;
+                }
+                vd += next;
             }
             at("padding")
         }

@@ -85,6 +85,8 @@ pub fn tag_name(tag: u64) -> String {
         DT_INIT => "DT_INIT",
         DT_FINI => "DT_FINI",
         DT_SONAME => "DT_SONAME",
+        // WP-161: the sweep names the field by it.
+        16 => "DT_SYMBOLIC",
         DT_RPATH => "DT_RPATH",
         DT_REL => "DT_REL",
         DT_RELSZ => "DT_RELSZ",
@@ -112,6 +114,7 @@ pub fn tag_name(tag: u64) -> String {
         DT_RELCOUNT => "DT_RELCOUNT",
         DT_FLAGS_1 => "DT_FLAGS_1",
         DT_VERDEF => "DT_VERDEF",
+        DT_VERDEFNUM => "DT_VERDEFNUM",
         DT_VERNEED => "DT_VERNEED",
         DT_VERNEEDNUM => "DT_VERNEEDNUM",
         DT_AARCH64_BTI_PLT => "DT_AARCH64_BTI_PLT",
