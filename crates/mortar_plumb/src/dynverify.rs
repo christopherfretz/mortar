@@ -64,6 +64,22 @@ pub fn verify_with(output: &[u8], inputs: &[Input<'_>], map: &Map, ctx: &Ctx<'_>
 
 /// [`verify_with`] over a source (§8.1).
 pub(crate) fn verify_src(output: &[u8], src: &dyn Source, map: &Map, ctx: &Ctx<'_>) -> Report {
+    let store = Store::read(src, &[map]);
+    crate::prof::mark("skeletons");
+    let mut report = verify_in(output, &store, 0, map, ctx);
+    crate::read_errors(&store, &mut report);
+    report
+}
+
+/// [`verify_with`] over the inputs of map `m` of `store` (the caller
+/// reports the reads that fail, [`crate::read_errors`]).
+pub(crate) fn verify_in(
+    output: &[u8],
+    store: &Store<'_>,
+    m: usize,
+    map: &Map,
+    ctx: &Ctx<'_>,
+) -> Report {
     let image = match Image::read(output) {
         Ok(i) => i,
         Err(e) => {
@@ -73,21 +89,25 @@ pub(crate) fn verify_src(output: &[u8], src: &dyn Source, map: &Map, ctx: &Ctx<'
         }
     };
     let Some(dout) = DynOut::read(&image) else {
-        return crate::verify_static(output, src, map);
+        return crate::verify_static_in(output, store, m, map);
     };
-    let store = Store::read(src, &[map]);
-    let mut report = judge(&image, &dout, &store, map, ctx);
-    crate::read_errors(&store, &mut report);
-    report
+    judge(&image, &dout, store, m, map, ctx)
 }
 
 /// Stage 3 over a dynamic output (§12).
 #[allow(clippy::too_many_lines)] // the views in order
-fn judge(image: &Image<'_>, dout: &DynOut, store: &Store<'_>, map: &Map, ctx: &Ctx<'_>) -> Report {
+fn judge(
+    image: &Image<'_>,
+    dout: &DynOut,
+    store: &Store<'_>,
+    m: usize,
+    map: &Map,
+    ctx: &Ctx<'_>,
+) -> Report {
     let mut report = Report::default();
     report.findings.extend(structure::check(image));
     report.findings.extend(structure::check_layout(image, map.format));
-    let located = locate::locate(map, store, 0, image);
+    let located = locate::locate(map, store, m, image);
     report.findings.extend(located.findings);
     let objs = located.objs;
     // A mortar map's line is its `arg` records (§3.2a); a reference's is

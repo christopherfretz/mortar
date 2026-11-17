@@ -175,6 +175,21 @@ pub(crate) fn read_errors(store: &store::Store<'_>, report: &mut Report) {
 
 /// [`verify`] over a source.
 pub(crate) fn verify_static(output: &[u8], src: &dyn Source, map: &Map) -> Report {
+    let store = store::Store::read(src, &[map]);
+    prof::mark("skeletons");
+    let mut report = verify_static_in(output, &store, 0, map);
+    read_errors(&store, &mut report);
+    report
+}
+
+/// [`verify`] over the inputs of map `m` of `store` (the caller reports
+/// the reads that fail, [`read_errors`]).
+pub(crate) fn verify_static_in(
+    output: &[u8],
+    store: &store::Store<'_>,
+    m: usize,
+    map: &Map,
+) -> Report {
     let mut report = Report::default();
     let image = match image::Image::read(output) {
         Ok(i) => i,
@@ -187,14 +202,12 @@ pub(crate) fn verify_static(output: &[u8], src: &dyn Source, map: &Map) -> Repor
     report.findings.extend(structure::check(&image));
     report.findings.extend(structure::check_layout(&image, map.format));
     prof::mark("structure");
-    let store = store::Store::read(src, &[map]);
-    prof::mark("skeletons");
-    let located = locate::locate(map, &store, 0, &image);
+    let located = locate::locate(map, store, m, &image);
     report.findings.extend(located.findings);
     let objs = located.objs;
     prof::mark("locate");
     if prof::enabled() {
-        gauges(&store, map, &objs);
+        gauges(store, map, &objs);
     }
     let mut engine = reloc::Engine::new(&image, &objs, map.format);
     prof::mark("engine new");
@@ -222,9 +235,6 @@ pub(crate) fn verify_static(output: &[u8], src: &dyn Source, map: &Map) -> Repor
     let meta = odrtable::check(&image, &objs, map, opts.as_ref(), None, &mut report.coverage.meta);
     report.findings.extend(meta);
     report.sort();
-    drop(engine);
-    drop(objs);
-    read_errors(&store, &mut report);
     prof::mark("odr table, sort");
     report
 }
