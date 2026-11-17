@@ -218,8 +218,11 @@ pub fn with_link<T>(
                     relro: d.relro,
                     note_mason: d.note_mason.as_ref(),
                     syms: cx,
-                    // WP-123 joins `Shared` (`link::SharedPlans`).
-                    shared: None,
+                    // D-102, D-116, plumb.md §3.2 (WP-123).
+                    shared: d.shared.as_ref().map(|sh| link::SharedPlans {
+                        soname: sh.soname.as_ref().map(|(b, o)| (b.as_slice(), *o)),
+                        line: &sh.line,
+                    }),
                 }),
                 _ => None,
             },

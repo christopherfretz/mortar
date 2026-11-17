@@ -745,6 +745,15 @@ impl Row {
         crate::rows::SHARED_LATER.iter().find(|(n, _)| *n == name).map(|(_, note)| *note)
     }
 
+    /// The note of the row's refusal in a link whose output kind is not
+    /// `Shared`, when its effect exists only in a shared object
+    /// (`crate::rows::SHARED_ONLY`).
+    #[must_use]
+    pub fn shared_only(&self) -> Option<&'static str> {
+        let name = self.name();
+        crate::rows::SHARED_ONLY.iter().find(|(n, _)| *n == name).map(|(_, note)| *note)
+    }
+
     /// Whether the row is a `-z` keyword.
     #[must_use]
     pub fn is_z(&self) -> bool {

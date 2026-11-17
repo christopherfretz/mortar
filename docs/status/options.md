@@ -4,7 +4,7 @@ Generated from `crates/mortar_cli/src/rows.rs` by `mortar_cli::status_markdown`;
 do not edit. `MORTAR_BLESS=1 cargo test -p mortar_cli --test table` rewrites it.
 The rules are `spec/cli.md`.
 
-487 rows: 86 supported, 4 partial, 34 noop, 363 refused.
+487 rows: 91 supported, 5 partial, 30 noop, 361 refused.
 
 Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 18 mortar's own.
 
@@ -17,7 +17,7 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 18 mortar'
 | Option | Value | Linkers | Targets | Status | Lands in | Help |
 |---|---|---|---|---|---|---|
 | `-o`, `--output` | FILE | GNU, lld, mold | all | supported | `output` | Write the output to FILE (default a.out) |
-| `-shared`, `--Bshareable` |  | GNU, lld, mold | all | refused: shared-object output is not joined to the link until WP-123; then: partial: AArch64 (x86-64 and i386 refused, `feature`, until WP-127 and WP-130; TLS and IFUNC in a shared object until WP-124; version scripts until WP-125). Not caught (with every reference): non-PIC AArch64 code that reaches its own exported data only through a form dyn.md D-117's analysis does not follow (a spilled or reloaded base, a computed index, a 32-bit register, a value passed to a callee, code outside a sized function symbol, hand-written assembly; 3 of 306 measured bound definitions, every object refused for another use). Refused although correct: -fPIC code that forms an address before the start of a static object placed after exported data (`tab - 1`, GCC and Clang AArch64 -O0; dyn.md D-117; remedy -fdata-sections) | `kind` | Produce a shared object |
+| `-shared`, `--Bshareable` |  | GNU, lld, mold | all | partial: AArch64 (x86-64 and i386 refused, `feature`, until WP-127 and WP-130; TLS and IFUNC in a shared object until WP-124; version scripts until WP-125). Not caught (with every reference): non-PIC AArch64 code that reaches its own exported data only through a form dyn.md D-117's analysis does not follow (a spilled or reloaded base, a computed index, a 32-bit register, a value passed to a callee, code outside a sized function symbol, hand-written assembly; 3 of 306 measured bound definitions, every object refused for another use). Refused although correct: -fPIC code that forms an address before the start of a static object placed after exported data (`tab - 1`, GCC and Clang AArch64 -O0; dyn.md D-117; remedy -fdata-sections) | `kind` | Produce a shared object |
 | `-pie`, `--pic-executable` |  | GNU, lld, mold | all | supported | `kind` | Produce a position-independent executable |
 | `-no-pie`, `--no-pic-executable` |  | GNU, lld, mold | all | supported | `kind` | Produce a position-dependent executable (default) |
 | `-r`, `-i`, `--relocatable` |  | GNU, lld, mold | all | refused | `kind` | Produce a relocatable object |
@@ -195,12 +195,12 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 18 mortar'
 |---|---|---|---|---|---|---|
 | `-E`, `--export-dynamic` |  | GNU, lld, mold | all | supported | `dynamic.export_dynamic` | Export every symbol |
 | `--no-export-dynamic` |  | GNU, lld, mold | all | supported | `dynamic.export_dynamic` | Export only the symbols that need it (default) |
-| `-Bsymbolic` |  | GNU, lld, mold | all | noop: it binds a shared object's references to its own definitions; an executable's are bound locally already, and GNU ld writes nothing for it in an executable (shared objects as output are M4) | `dynamic.bsymbolic` | Bind references to global symbols locally |
-| `-Bsymbolic-functions` |  | GNU, lld, mold | all | noop: it binds a shared object's references to its own definitions; an executable's are bound locally already, and GNU ld writes nothing for it in an executable (shared objects as output are M4) | `dynamic.bsymbolic` | Bind references to global functions locally |
+| `-Bsymbolic` |  | GNU, lld, mold | all | noop: it binds a shared object's references to its own definitions; an executable's are bound locally already, and GNU ld writes nothing for it in an executable (in a shared object it is refused until WP-128) | `dynamic.bsymbolic` | Bind references to global symbols locally |
+| `-Bsymbolic-functions` |  | GNU, lld, mold | all | supported | `dynamic.bsymbolic` | Bind references to global functions locally |
 | `--Bsymbolic-non-weak` |  | lld, mold | all | refused: dyn.md D-112: GNU ld does not know it (lld and mold do); use -Bsymbolic-functions, or a --dynamic-list | `dynamic.bsymbolic` | Bind references to non-weak globals locally |
 | `--Bsymbolic-non-weak-functions` |  | lld, mold | all | refused: dyn.md D-112: GNU ld does not know it (lld and mold do); use -Bsymbolic-functions, or a --dynamic-list | `dynamic.bsymbolic` | Bind references to non-weak global functions locally |
-| `-Bno-symbolic` |  | GNU, lld, mold | all | noop: it binds a shared object's references to its own definitions; an executable's are bound locally already, and GNU ld writes nothing for it in an executable (shared objects as output are M4) | `dynamic.bsymbolic` | Undo -Bsymbolic (default) |
-| `-h`, `-soname` | NAME | GNU, lld, mold | all | refused | `dynamic.soname` | Record NAME as DT_SONAME |
+| `-Bno-symbolic` |  | GNU, lld, mold | all | supported | `dynamic.bsymbolic` | Undo -Bsymbolic (default) |
+| `-h`, `-soname` | NAME | GNU, lld, mold | all | supported | `dynamic.soname` | Record NAME as DT_SONAME |
 | `-rpath` | DIR | GNU, lld, mold | all | supported | `dynamic.rpath` | Add DIR to the run-time search path |
 | `-I`, `--dynamic-linker` | FILE | GNU, lld, mold | all | supported | `dynamic.dynamic_linker` | Use FILE as the program interpreter |
 | `--no-dynamic-linker` |  | GNU, lld, mold | all | supported | `dynamic.dynamic_linker` | Write no program interpreter |
@@ -261,7 +261,7 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 18 mortar'
 | `-w`, `--no-warnings` |  | GNU, lld | all | supported | `diagnostics.no_warnings` | Report no warnings |
 | `--color-diagnostics` | optional, `=` only: auto \| always \| never | lld, mold | all | supported | `diagnostics.color` | Color diagnostics: always (alone), auto (default) or never |
 | `--no-color-diagnostics` |  | lld | all | supported | `diagnostics.color` | Do not color diagnostics |
-| `--no-undefined` |  | GNU, lld, mold | all | noop: resolve.md §5: an undefined symbol of an executable's objects is an error already; the option only changes a shared object's link (shared objects as output are M4) | `z.defs` | Report undefined symbols even in a shared object |
+| `--no-undefined` |  | GNU, lld, mold | all | supported | `z.defs` | Report undefined symbols even in a shared object |
 | `--unresolved-symbols` | report-all \| ignore-all \| ignore-in-object-files \| ignore-in-shared-libs | GNU, lld, mold | all | refused | `diagnostics.unresolved_symbols` | How to treat unresolved symbols |
 | `--warn-unresolved-symbols` |  | GNU, lld, mold | all | refused | `diagnostics.warn_unresolved_symbols` | Report unresolved symbols as warnings |
 | `--error-unresolved-symbols` |  | GNU, lld, mold | all | refused | `diagnostics.warn_unresolved_symbols` | Report unresolved symbols as errors (default) |
@@ -462,7 +462,7 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 18 mortar'
 | `-z notext`, `-z textoff` |  | GNU, lld, mold | all | refused | `z.text` | Accept text relocations |
 | `-z separate-code` |  | GNU, lld, mold | all | supported | `z.separate_code` | Put code in segments of its own pages |
 | `-z noseparate-code` |  | GNU, lld, mold | all | supported | `z.separate_code` | Let code share pages with other data |
-| `-z defs` |  | GNU, lld, mold | all | noop: resolve.md §5: an undefined symbol of an executable's objects is an error already; the option only changes a shared object's link (shared objects as output are M4) | `z.defs` | Report undefined symbols of object files |
+| `-z defs` |  | GNU, lld, mold | all | supported | `z.defs` | Report undefined symbols of object files |
 | `-z undefs` |  | GNU, lld, mold | all | refused | `z.defs` | Accept undefined symbols in a shared object |
 | `-z max-page-size` | SIZE | GNU, lld, mold | all | supported | `z.max_page_size` | The largest page size the output supports |
 | `-z common-page-size` | SIZE | GNU, lld, mold | all | noop: layout.md L-75: the value is checked, and no layout rule reads it | `z.common_page_size` | The common page size |

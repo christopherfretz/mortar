@@ -91,6 +91,9 @@ pub fn help_text(prog: &str) -> String {
             match row.status {
                 Status::Supported => {}
                 Status::Noop(_) => right.push_str(" [noop]"),
+                // A `partial` row with no refused value (`-shared`): its
+                // refusals are by name, in the link.
+                Status::Partial { refused: [], .. } => right.push_str(" [partial]"),
                 Status::Partial { refused, .. } => {
                     let _ = write!(right, " [partial: refused ={}]", refused.join(", ="));
                 }
@@ -201,6 +204,7 @@ pub fn status_markdown() -> String {
 fn status_cell(status: Status) -> String {
     match status {
         Status::Noop(reason) => format!("noop: {reason}"),
+        Status::Partial { refused: [], note } => format!("partial: {note}"),
         Status::Partial { refused, note } => {
             format!("partial: `={}` refused ({note})", refused.join("`, `="))
         }

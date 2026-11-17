@@ -353,6 +353,7 @@ impl World {
             liveness: &self.liveness,
             demands: &self.demands,
             shapes: &self.shapes,
+            shared: false,
         }
     }
 

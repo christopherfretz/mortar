@@ -109,10 +109,11 @@ impl Parsed {
             if lands.last_wins() && last.get(lands.field()) != Some(&i) {
                 continue;
             }
-            let shared_later =
-                self.plan.kind == OutputKind::Shared && use_.row().shared_later().is_some();
+            let shared = self.plan.kind == OutputKind::Shared;
+            let shared_later = shared && use_.row().shared_later().is_some();
+            let shared_only = !shared && use_.row().shared_only().is_some();
             match use_.row().status {
-                _ if shared_later && !seen[use_.row] => {
+                _ if (shared_later || shared_only) && !seen[use_.row] => {
                     seen[use_.row] = true;
                     out.push(use_);
                 }
@@ -141,10 +142,12 @@ impl Parsed {
                 // In a `Shared` link a row of `rows::SHARED_LATER` names
                 // the later package (`spec/cli.md` §4.2's M4 block); every
                 // other link's refusals are unchanged.
-                match use_.row().shared_later() {
-                    Some(note) if shared && use_.row().refused_note().is_none() => {
+                match (use_.row().shared_later(), use_.row().shared_only()) {
+                    (Some(note), _) if shared && use_.row().refused_note().is_none() => {
                         (key, d.note(note))
                     }
+                    // `rows::SHARED_ONLY` outside a `Shared` link.
+                    (_, Some(note)) if !shared => (key, d.note(note)),
                     _ => (key, d),
                 }
             })

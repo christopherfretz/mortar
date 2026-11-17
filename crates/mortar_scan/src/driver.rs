@@ -790,12 +790,7 @@ fn walk_unit(view: &View<'_, '_>, u: &Unit, global: &[AtomicU16], bufs: &mut Buf
         && u.lo == 0
         && let Some(f) = facts
     {
-        for j in crate::bound::analysis(view, u.file, f, u.index) {
-            if let Some(b) = crate::bound::judge(f, j.section, j.addr, j.access) {
-                let (k, d) = sec.fault(j.record, Fault::Bound(b));
-                analysed.push((k, d.note(j.note)));
-            }
-        }
+        analysed = crate::bound::analysis(view, u.file, f, u.index);
     }
     for i in u.lo..u.hi {
         out.records += 1;

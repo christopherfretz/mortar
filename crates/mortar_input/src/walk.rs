@@ -2185,17 +2185,32 @@ impl<'c, 's> Walk<'c, 's> {
     /// §8.6: breadth first over `(needing FileId, DT_NEEDED index)`.
     #[allow(clippy::too_many_lines, reason = "the steps of §8.6 in order")]
     fn closure(&mut self) {
-        let mut roots = self.closure_roots();
+        let loads = self.closure_roots();
+        // A shared object of a `Shared` output whose closure is not loaded
+        // (no `--no-allow-shlib-undefined`) still has its edges: each
+        // satisfied by a shared object the walk loaded with that soname,
+        // else unsatisfied, with no search (`spec/dyn.md` D-11 item 3's
+        // `reach`; WP-123). Every other kind is unchanged.
+        let mut roots: Vec<(u32, bool)> = if self.plan.kind == OutputKind::Shared {
+            self.link.sonames.iter().map(|u| (u.file, loads.contains(&u.file))).collect()
+        } else {
+            loads.into_iter().map(|f| (f, true)).collect()
+        };
         roots.sort_unstable();
+        roots.dedup_by_key(|r| r.0);
         let mut queue: Vec<(u32, u32, Spelled)> = Vec::new();
-        for r in roots {
+        // Per entry of `queue`: whether its edge is searched.
+        let mut searched: Vec<bool> = Vec::new();
+        for (r, search) in roots {
             self.push_needed(r, &mut queue);
+            searched.resize(queue.len(), search);
         }
         let mut reported: HashSet<(Spelled, u32)> = HashSet::new();
         let mut refused_runpath: HashSet<u32> = HashSet::new();
         let mut i = 0;
         while i < queue.len() {
             let (needing, index, name) = queue[i].clone();
+            let search = searched.get(i).copied().unwrap_or(true);
             i += 1;
             let edge = u32::try_from(self.link.closure.len()).unwrap_or(u32::MAX);
             self.link.closure.push(ClosureEdge {
@@ -2206,6 +2221,9 @@ impl<'c, 's> Walk<'c, 's> {
             });
             if let Some(&u) = self.soname_units.get(&name) {
                 self.link.closure[edge as usize].satisfied = Some(self.link.sonames[u].file);
+                continue;
+            }
+            if !search {
                 continue;
             }
             let s = &self.files[needing as usize - 1];
