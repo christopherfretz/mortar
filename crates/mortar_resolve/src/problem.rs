@@ -113,7 +113,14 @@ pub enum What {
     /// `linker-symbol-redefined` (§8.2).
     LinkerSymbolRedefined { key: SymbolId, entry: SymEntry },
     /// `required-symbol` (§4.2).
-    RequiredSymbol { key: OptId<SymbolId>, name: Box<[u8]>, arg: u32 },
+    RequiredSymbol {
+        key: OptId<SymbolId>,
+        name: Box<[u8]>,
+        arg: u32,
+        /// The shared object's definition, when only one defines it
+        /// (WP-152: it does not satisfy the option, as in GNU ld).
+        shared: Option<SymEntry>,
+    },
     /// `entry-not-found` (§5.5), a warning.
     EntryNotFound { key: OptId<SymbolId>, name: Box<[u8]>, arg: u32 },
     /// `common-larger-than-definition` (§3.3), a warning.
