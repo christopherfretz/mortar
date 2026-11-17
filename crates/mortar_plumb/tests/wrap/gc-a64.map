@@ -1,0 +1,27 @@
+mortar-map 2
+file 0 gcm-a64.o
+file 1 gcf-a64.o
+place 0 1 401120 20
+place 0 4 402140 4
+merged 0 5 .comment
+merged 1 5 .comment
+discard 1 4 gc
+chunk synthetic .symtab - c0
+chunk synthetic .strtab - 3c
+chunk synthetic .shstrtab - 2f
+chunk synthetic .comment - d
+arg -m
+arg aarch64linux
+arg -z
+arg max-page-size=4096
+arg -o
+arg gc-a64
+arg -static
+arg -e
+arg _start
+arg --gc-sections
+arg gcm-a64.o
+arg gcf-a64.o
+arg --wrap=f
+arg --mortar-map=gc-a64.map
+end

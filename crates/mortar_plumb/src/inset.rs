@@ -407,7 +407,7 @@ impl Inputs {
                 .iter()
                 .any(|w| w == "--fortran-common" || w == "-fortran-common"),
         };
-        let wrap: Vec<&str> = line.wrap.iter().map(String::as_str).collect();
+        let wrap = crate::wrap::Wrap::new(line.wrap.iter().cloned());
         // File 0.
         let mut zero = File {
             kind: Kind::Zero,
@@ -685,7 +685,7 @@ impl Inputs {
         &mut self,
         src: &dyn crate::Source,
         at: At,
-        wrap: &[&str],
+        wrap: &crate::wrap::Wrap,
     ) -> Result<(Vec<(u32, u8)>, bool), String> {
         let skel = crate::store::skeleton(src, at)?;
         let view = skel.view(at.len);
@@ -979,6 +979,29 @@ impl Inputs {
         v
     }
 
+    /// [`crate::wrap::WRAPPED_ONLY`] when lazy file `i` defines a
+    /// `--wrap` word SYM and a reached file's undefined mention binds to
+    /// `__wrap_SYM`: only wrapped references name it (resolve §7.1; lld
+    /// extracts it, A83). Empty otherwise.
+    fn wrapped_only(&self, i: usize, reached: &[bool], line: &Line) -> &'static str {
+        let defines =
+            |f: usize, k: u32| self.files[f].mentions.iter().any(|&(x, b)| x == k && b & DEF != 0);
+        let wanted = |k: u32| {
+            (0..self.files.len()).any(|j| {
+                reached[j]
+                    && self.files[j]
+                        .mentions
+                        .iter()
+                        .any(|&(x, b)| x == k && b & (UNDEF | WUNDEF) != 0)
+            })
+        };
+        let hit = line.wrap.iter().any(|w| {
+            let key = |n: &str| self.keys.get(n.as_bytes()).copied();
+            key(w).is_some_and(|k| defines(i, k)) && key(&format!("__wrap_{w}")).is_some_and(wanted)
+        });
+        if hit { crate::wrap::WRAPPED_ONLY } else { "" }
+    }
+
     /// A reference's map (§3.8 rule 2).
     #[allow(clippy::too_many_lines)]
     fn loose(&self, map: &Map, line: &Line, words: &[String]) -> Verdict {
@@ -1129,8 +1152,9 @@ impl Inputs {
                         format!("{} is in the link and {UNNEEDED_AS_NEEDED}", self.label(i))
                     } else {
                         format!(
-                            "{} is in the link and no root or reference of the link reaches it (§3.8)",
-                            self.label(i)
+                            "{} is in the link and no root or reference of the link reaches it (§3.8){}",
+                            self.label(i),
+                            self.wrapped_only(i, &reached, line)
                         )
                     };
                     v.findings.push(Finding::new(EXTRA, m));
@@ -1397,22 +1421,13 @@ fn find(h: &[u8], n: &[u8]) -> Option<usize> {
     h.windows(n.len()).position(|w| w == n)
 }
 
-/// resolve §7.1: an undefined `SYM` is `__wrap_SYM`, `__real_SYM` is `SYM`.
-fn redirect(name: &[u8], wrap: &[&str]) -> Vec<u8> {
-    if wrap.is_empty() {
-        return name.to_vec();
+/// resolve §7.1: an undefined `SYM` is `__wrap_SYM`, `__real_SYM` is `SYM`
+/// (the one derivation, `wrap.rs`).
+fn redirect(name: &[u8], wrap: &crate::wrap::Wrap) -> Vec<u8> {
+    match std::str::from_utf8(name) {
+        Ok(n) => wrap.key(n).into_owned().into_bytes(),
+        Err(_) => name.to_vec(),
     }
-    if wrap.iter().any(|w| w.as_bytes() == name) {
-        let mut v = b"__wrap_".to_vec();
-        v.extend_from_slice(name);
-        return v;
-    }
-    if let Some(r) = name.strip_prefix(b"__real_")
-        && wrap.iter().any(|w| w.as_bytes() == r)
-    {
-        return r.to_vec();
-    }
-    name.to_vec()
 }
 
 /// `--defsym A=EXPR`: `A`, the names `EXPR` refers to, and whether the
@@ -1970,10 +1985,11 @@ mod tests {
 
     #[test]
     fn wrap_redirects_undefined_mentions() {
-        assert_eq!(redirect(b"f", &["f"]), b"__wrap_f");
-        assert_eq!(redirect(b"__real_f", &["f"]), b"f");
-        assert_eq!(redirect(b"g", &["f"]), b"g");
-        assert_eq!(redirect(b"__wrap_f", &["f"]), b"__wrap_f");
+        let w = crate::wrap::Wrap::new(["f".to_string()]);
+        assert_eq!(redirect(b"f", &w), b"__wrap_f");
+        assert_eq!(redirect(b"__real_f", &w), b"f");
+        assert_eq!(redirect(b"g", &w), b"g");
+        assert_eq!(redirect(b"__wrap_f", &w), b"__wrap_f");
     }
 
     #[test]

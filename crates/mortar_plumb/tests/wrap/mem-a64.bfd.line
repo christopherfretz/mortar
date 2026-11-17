@@ -1,0 +1,14 @@
+-m
+aarch64linux
+-z
+max-page-size=4096
+-o
+mem-a64.bfd
+-static
+-e
+_start
+mf-a64.o
+w7-a64.o
+libfo-a64.a
+--wrap=f
+-Map=mem-a64.bfd.map

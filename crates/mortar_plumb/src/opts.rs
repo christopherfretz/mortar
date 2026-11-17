@@ -792,6 +792,9 @@ pub struct Options {
     /// The last `-z max-page-size=N` (layout.md L-74; `N = 0` means the
     /// default), when its value reads as a number.
     pub max_page: Option<u64>,
+    /// The `--wrap=SYM` names, in order (`spec/resolve.md` §7.1; the
+    /// derivation is `wrap.rs`'s, WP-170).
+    pub wrap: Vec<String>,
     /// Words that no accepted option spells, in order, with their index
     /// in the line (M9).
     pub unread: Vec<(usize, String)>,
@@ -816,6 +819,7 @@ impl Default for Options {
             export_dynamic: false,
             named_roots: Vec::new(),
             max_page: None,
+            wrap: Vec::new(),
             unread: Vec::new(),
         }
     }
@@ -891,6 +895,7 @@ impl Options {
                 self.named_roots.extend(value.map(str::to_string));
             }
             "--keep-mason-meta" => self.keep_mason_meta = true,
+            "--wrap" => self.wrap.extend(value.map(str::to_string)),
             "--odr-table" => {
                 self.odr_table = match value {
                     Some("exported") => OdrTable::Exported,

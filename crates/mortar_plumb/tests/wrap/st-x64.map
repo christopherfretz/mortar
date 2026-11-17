@@ -1,0 +1,35 @@
+mortar-map 2
+file 0 m-x64.o
+file 1 f-x64.o
+file 2 w-x64.o
+place 0 1 401120 1e
+place 0 3 402160 0
+place 0 4 402160 4
+place 1 1 40113e 11
+place 1 3 402160 0
+place 1 4 402164 0
+place 2 1 40114f 11
+place 2 3 402160 0
+place 2 4 402164 0
+merged 0 5 .comment
+merged 1 5 .comment
+merged 2 5 .comment
+chunk synthetic .symtab - d8
+chunk synthetic .strtab - 41
+chunk synthetic .shstrtab - 2f
+chunk synthetic .comment - d
+arg -m
+arg elf_x86_64
+arg -z
+arg max-page-size=4096
+arg -o
+arg st-x64
+arg -static
+arg -e
+arg _start
+arg m-x64.o
+arg f-x64.o
+arg w-x64.o
+arg --wrap=f
+arg --mortar-map=st-x64.map
+end

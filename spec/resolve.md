@@ -1159,9 +1159,9 @@ SYM." Exactly that, and no more (measured by WP-153 against GNU ld 2.44,
 lld 19.1.7 and mold 2.37.1, the lane's lld 22 the same on its cells:
 AArch64 and x86-64 static, `-no-pie`, PIE, static-pie and `-shared`,
 i386 static; every cell below runs and prints which function was called,
-`tests/link/resolve/wrap*.test.pending`,
-`tests/link/dyn/shared/wrap-shared.test.pending`, `.test` once the
-verifier follows this section):
+`tests/link/resolve/wrap*.test`,
+`tests/link/dyn/shared/wrap-shared.test`; the verifier follows this
+section since WP-170, `spec/plumb.md` §4.4a):
 
 - `redirect[SYM] = __wrap_SYM` and `redirect[__real_SYM] = SYM`, **for
   undefined mentions only**. A reference in the file that defines `SYM`
@@ -1244,7 +1244,7 @@ verifier follows this section):
      second live copy is accepted (GNU ld and mold agree; lld wraps the
      defining file's calls, E13). The common C++ lines (`--wrap=malloc`,
      `free`, `open` with libstdc++, static and dynamic) are unaffected
-     (`tests/link/resolve/wrap-cxx.test.pending`).
+     (`tests/link/resolve/wrap-cxx.test`).
 - LTO is refused (§1.2), so lld's interaction of `--wrap` with bitcode
   does not arise.
 - `--odr` (`spec/odr.md`): a wrapped key is a key like any other; the
@@ -2258,7 +2258,7 @@ Each states the references' behavior it pins; until M1 each also carries
 | `resolve/comdat-discarded-ref.test` | E9: reference to a local of a dropped copy fails (bfd, lld); mold crashes | `skip(mold)`: mold 2.37.1 segfaults |
 | `resolve/comdat-except-table.test` | E9: `.gcc_except_table` reference into a dropped copy links (bfd, mold) | `xfail(lld)` |
 | `resolve/linkonce.test` | E11: bfd dedups, lld/mold duplicate; mortar refuses | `diag(mortar): unsupported feature: .gnu.linkonce sections` |
-| `resolve/wrap.test` (WP-153: `.test.pending` until the verifier follows §7.1) | E13: same-object reference not wrapped (bfd, mold g=10; lld g=1010), archive extraction through `__wrap_`/`__real_` | per linker (`run(lld)`) |
+| `resolve/wrap.test` (WP-153; judged by the verifier since WP-170) | E13: same-object reference not wrapped (bfd, mold g=10; lld g=1010), archive extraction through `__wrap_`/`__real_` | per linker (`run(lld)`) |
 | `resolve/defsym.test` (M4) | E13: number, alias, alias overriding a definition, `k+4` (mold refuses) | per linker |
 | `resolve/linker-symbols.test` | E14: the §8.1 table, per architecture, with weak references | `has(...)` per linker |
 | `resolve/linker-symbols-user.test` | E14: user definitions of provided names win (bfd, lld); forced names: mortar refuses | per linker |

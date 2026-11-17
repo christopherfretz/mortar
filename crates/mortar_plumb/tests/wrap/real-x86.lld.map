@@ -1,0 +1,20 @@
+     VMA      LMA     Size Align Out     In      Symbol
+  4010d4   4010d4       16     2 .text
+  4010d4   4010d4       10     2         mr-x86.o:(.text)
+  4010d4   4010d4       10     1                 _start
+  4010e4   4010e4        6     1         libfo-x86.a(fo-x86.o):(.text)
+  4020ea   4020ea        0     1 .data
+  4020ea   4020ea        0     1         mr-x86.o:(.data)
+  4020ea   4020ea        0     1         libfo-x86.a(fo-x86.o):(.data)
+  4020ec   4020ec        4     4 .bss
+  4020ec   4020ec        4     4         mr-x86.o:(.bss)
+  4020ec   4020ec        4     1                 r
+  4020f0   4020f0        0     1         libfo-x86.a(fo-x86.o):(.bss)
+       0        0       3a     1 .comment
+       0        0       3a     1         <internal>:(.comment)
+       0        0       70     4 .symtab
+       0        0       70     4         <internal>:(.symtab)
+       0        0       35     1 .shstrtab
+       0        0       35     1         <internal>:(.shstrtab)
+       0        0       1f     1 .strtab
+       0        0       1f     1         <internal>:(.strtab)

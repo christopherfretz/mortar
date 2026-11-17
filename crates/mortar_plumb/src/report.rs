@@ -233,6 +233,9 @@ pub enum Reason {
     /// Stage 3: a dynamic construct the loader model does not judge
     /// (named in the record, `spec/plumb.md` §12).
     Dynamic,
+    /// A mention of a `--wrap` word in a shape `spec/resolve.md` §7.1
+    /// refuses by name, in a reference's output (§4.4a, WP-170).
+    Wrap,
 }
 
 impl Reason {
@@ -253,6 +256,7 @@ impl Reason {
             Reason::GotUnpaired => "got-unpaired",
             Reason::InputUnreadable => "input-unreadable",
             Reason::Dynamic => "dynamic",
+            Reason::Wrap => "wrap-shape",
         }
     }
 
@@ -460,6 +464,9 @@ pub struct Coverage {
     /// What a stripped output (no `.symtab`) leaves a rule unable to
     /// judge, by name (WP-164: P-D6, P-D22's `DT_INIT`/`DT_FINI`).
     pub stripped_not_judged: Vec<String>,
+    /// The `--wrap` shapes `spec/resolve.md` §7.1 refuses by name whose
+    /// redirection the verifier does not derive (§4.4a, WP-170).
+    pub wrap_not_judged: Vec<String>,
     /// Erratum 843419 sites found with their fix (C1), and sites not
     /// judged: the option unknown, beyond what both references fix, or
     /// unproved code in a reference's output (§5.10).
@@ -693,6 +700,9 @@ impl Report {
                 "placement not judged (large sections, X-54): {}",
                 c.placement_not_judged.join(", ")
             );
+        }
+        if !c.wrap_not_judged.is_empty() {
+            let _ = writeln!(s, "--wrap, not judged: {}", c.wrap_not_judged.join("; "));
         }
         if !c.stripped_not_judged.is_empty() {
             let _ = writeln!(

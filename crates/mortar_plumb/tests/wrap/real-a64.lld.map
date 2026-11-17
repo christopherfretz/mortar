@@ -1,0 +1,23 @@
+             VMA              LMA     Size Align Out     In      Symbol
+          201158           201158       20     4 .text
+          201158           201158       18     4         mr-a64.o:(.text)
+          201158           201158        0     1                 $x
+          201158           201158       18     1                 _start
+          201170           201170        8     4         libfo-a64.a(fo-a64.o):(.text)
+          201170           201170        0     1                 $x
+          202178           202178        0     1 .data
+          202178           202178        0     1         mr-a64.o:(.data)
+          202178           202178        0     1         libfo-a64.a(fo-a64.o):(.data)
+          202178           202178        4     4 .bss
+          202178           202178        4     4         mr-a64.o:(.bss)
+          202178           202178        0     1                 $d
+          202178           202178        4     1                 r
+          20217c           20217c        0     1         libfo-a64.a(fo-a64.o):(.bss)
+               0                0       3a     1 .comment
+               0                0       3a     1         <internal>:(.comment)
+               0                0       f0     8 .symtab
+               0                0       f0     8         <internal>:(.symtab)
+               0                0       35     1 .shstrtab
+               0                0       35     1         <internal>:(.shstrtab)
+               0                0       28     1 .strtab
+               0                0       28     1         <internal>:(.strtab)

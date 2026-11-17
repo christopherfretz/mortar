@@ -1,0 +1,16 @@
+             VMA              LMA     Size Align Out     In      Symbol
+          201158           201158       18     2 .text
+          201158           201158       18     2         gcm-x64.o:(.text)
+          201158           201158        6     1                 __wrap_f
+          20115e           20115e       12     1                 _start
+          202170           202170        4     4 .bss
+          202170           202170        4     4         gcm-x64.o:(.bss)
+          202170           202170        4     1                 r
+               0                0       3a     1 .comment
+               0                0       3a     1         <internal>:(.comment)
+               0                0       90     8 .symtab
+               0                0       90     8         <internal>:(.symtab)
+               0                0       2f     1 .shstrtab
+               0                0       2f     1         <internal>:(.shstrtab)
+               0                0       1e     1 .strtab
+               0                0       1e     1         <internal>:(.strtab)

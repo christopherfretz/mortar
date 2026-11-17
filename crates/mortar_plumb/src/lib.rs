@@ -52,6 +52,7 @@ mod structure;
 pub mod sweep;
 mod symbols;
 mod weakclass;
+mod wrap;
 pub mod x64;
 pub mod x86;
 mod x86op;
@@ -225,6 +226,7 @@ pub(crate) fn verify_static_in(
     let mut engine = reloc::Engine::new(&image, &objs, map.format);
     prof::mark("engine new");
     engine.exports = exports;
+    engine.set_wrap(wrap::Wrap::of(line_opts.as_ref()));
     run_engine(&mut engine, &image, map, None);
     report.findings.append(&mut engine.findings);
     // M8 (§3.3): an output with no dynamic section has no COPY record.

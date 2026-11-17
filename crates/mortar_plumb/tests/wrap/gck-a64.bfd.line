@@ -1,0 +1,13 @@
+-m
+aarch64linux
+-z
+max-page-size=4096
+-o
+gck-a64.bfd
+-static
+-e
+_start
+gcm-a64.o
+gcf-a64.o
+--wrap=f
+-Map=gck-a64.bfd.map

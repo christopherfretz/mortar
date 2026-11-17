@@ -1,0 +1,14 @@
+-m
+elf_x86_64
+-z
+max-page-size=4096
+-o
+mem-x64.mold
+-static
+-e
+_start
+mf-x64.o
+w7-x64.o
+libfo-x64.a
+--wrap=f
+-Map=mem-x64.mold.map

@@ -679,6 +679,7 @@ impl Model {
         file0: &[String],
     ) -> BTreeMap<String, Key> {
         let mut keys: BTreeMap<String, Key> = BTreeMap::new();
+        let wrap = crate::wrap::Wrap::new(line.wrap.iter().cloned());
         // Keys defined in an excluded archive member, and elsewhere
         // (D-110 item 1, WP-161).
         let mut in_excluded: HashSet<String> = HashSet::new();
@@ -698,11 +699,15 @@ impl Model {
                 let Ok(raw) = t.name(&s) else { continue };
                 let full = String::from_utf8_lossy(raw).into_owned();
                 let (name, ver) = split_version(&full);
+                let defined = s.st_shndx != SHN_UNDEF;
+                // resolve §7.1 (WP-170): an undefined, unversioned mention
+                // is its `--wrap` key's reference.
+                let name = if defined || ver.is_some() { name.into() } else { wrap.key(name) };
+                let name: &str = &name;
                 let k = keys.entry(name.to_string()).or_default();
                 if matches!(s.st_other & 3, STV_HIDDEN | STV_INTERNAL) {
                     k.hidden = true;
                 }
-                let defined = s.st_shndx != SHN_UNDEF;
                 if defined {
                     // A versioned definition `foo@@V` defines `foo`.
                     let _ = (SHN_ABS, SHN_COMMON);

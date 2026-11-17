@@ -1,0 +1,13 @@
+-m
+elf_x86_64
+-z
+max-page-size=4096
+-o
+real-x64.mold
+-static
+-e
+_start
+mr-x64.o
+libfo-x64.a
+--wrap=f
+-Map=real-x64.mold.map

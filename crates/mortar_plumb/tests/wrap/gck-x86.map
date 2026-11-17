@@ -1,0 +1,30 @@
+mortar-map 2
+file 0 gcm-x86.o
+file 1 gcf-x86.o
+place 0 1 80490b4 16
+place 0 3 804a0d0 0
+place 0 4 804a0d0 4
+place 1 1 80490ca 0
+place 1 4 80490ca 6
+place 1 2 804a0d0 0
+place 1 3 804a0d4 0
+merged 0 5 .comment
+merged 1 5 .comment
+chunk synthetic .symtab - 70
+chunk synthetic .strtab - 3e
+chunk synthetic .shstrtab - 2f
+chunk synthetic .comment - d
+arg -m
+arg elf_i386
+arg -z
+arg max-page-size=4096
+arg -o
+arg gck-x86
+arg -static
+arg -e
+arg _start
+arg gcm-x86.o
+arg gcf-x86.o
+arg --wrap=f
+arg --mortar-map=gck-x86.map
+end

@@ -1,0 +1,14 @@
+-m
+elf_x86_64
+-z
+max-page-size=4096
+-o
+dm-x64.lld
+-pie
+-dynamic-linker
+/lib64/ld-linux-x86-64.so.2
+dm-x64.o
+libmal-x64.so
+--wrap=malloc
+--wrap=_start
+-Map=dm-x64.lld.map

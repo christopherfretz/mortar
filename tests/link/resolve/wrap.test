@@ -1,0 +1,146 @@
+# --wrap=SYM (resolve.md §7.1, WP-153) on a static executable: an
+# undefined mention of SYM binds to __wrap_SYM, an undefined mention of
+# __real_SYM binds to SYM, definitions are not renamed. Each program
+# prints which function each call reached.
+#
+# Cells (GNU ld 2.44, lld 19, mold 2.37, mortar = GNU ld and mold):
+# - a reference to f inside f's own object (g) is defined there, not
+#   undefined, so it is not wrapped (finding E13: lld wraps it, g=1010);
+# - __real_f extracts the member defining f; a member that defines only f
+#   is not extracted under --wrap=f (lld 19 extracts it: §16);
+# - __wrap_f undefined is the undefined-symbol error naming __wrap_f; a
+#   __real_f with no f names f (lld names __real_f);
+# - a weak reference to f with no __wrap_f is null;
+# - --wrap=f twice is once; --wrap=f --wrap=__wrap_f is a chain of one
+#   step per mention;
+# - --gc-sections keeps f only when __real_f reaches it;
+# - -u f still names f (a root is not a mention: §4.2).
+#@ anomaly(lld): A80
+#@ anomaly(lld): A83
+#@ anomaly(lld): A84
+#@ spec: resolve.md §7.1
+#@ arch: aarch64 x86_64 i386
+
+cc -O0 -fno-inline m.c -o m.o
+cc -O0 -fno-inline f.c -o f.o
+cc -O0 -fno-inline w.c -o w.o
+cc -O0 mf.c -o mf.o
+cc -O0 mr.c -o mr.o
+cc -O0 fo.c -o fo.o
+cc -O0 w7.c -o w7.o
+cc -O0 mwk.c -o mwk.o
+cc -O0 ch.c -o ch.o
+cc -O0 chd.c -o chd.o
+cc -O0 -ffunction-sections gcm.c -o gcm.o
+cc -O0 -ffunction-sections gcm2.c -o gcm2.o
+cc -O0 -ffunction-sections gcf.c -o gcf.o
+ar rcs libfo.a fo.o
+ar rcs libw7.a w7.o
+
+link gcc -static m.o f.o w.o -Wl,--wrap=f -o basic
+run(bfd,mold,mortar) basic
+  stdout: f=101 g=10 real=1
+run(lld) basic
+  stdout: f=101 g=1010 real=1
+link gcc -static m.o f.o w.o -Wl,--wrap=f -Wl,--wrap=f -o twice
+run(bfd,mold,mortar) twice
+  stdout: f=101 g=10 real=1
+run(lld) twice
+  stdout: f=101 g=1010 real=1
+
+link gcc -static mr.o libfo.a -Wl,--wrap=f -o real-member
+run real-member
+  stdout: real=1
+link gcc -static mf.o libw7.a libfo.a -Wl,--wrap=f -o wrap-member
+run wrap-member
+  stdout: f=7
+check(bfd,mold,mortar) nm wrap-member
+  has: * __wrap_f$
+  not: * f$
+check(lld) nm wrap-member
+  has: * f$
+
+link gcc -static mf.o fo.o -Wl,--wrap=f -o no-wrap
+  exit: fail
+  diag(bfd): undefined reference to `__wrap_f'
+  diag(lld): undefined symbol: __wrap_f
+  diag(mold): undefined symbol: __wrap_f
+  diag(mortar): undefined symbol: __wrap_f
+link gcc -static mr.o -Wl,--wrap=f -o no-real
+  exit: fail
+  diag(bfd): undefined reference to `f'
+  diag(lld): undefined symbol: __real_f
+  diag(mold): undefined symbol: f
+  diag(mortar): undefined symbol: f
+link gcc -static mwk.o -Wl,--wrap=f -o weak
+run weak
+  stdout: f=(nil)
+
+link gcc -static ch.o chd.o -Wl,--wrap=f -Wl,--wrap=__wrap_f -o chain
+run chain
+  stdout: f=2 wrap=3 real=1
+
+link gcc -static gcm.o gcf.o -Wl,--gc-sections -Wl,--wrap=f -o gc-real
+run gc-real
+  stdout: f=50 real=1
+check nm gc-real
+  has: * f$
+link gcc -static gcm2.o gcf.o -Wl,--gc-sections -Wl,--wrap=f -o gc-wrap
+run gc-wrap
+  stdout: f=50
+check nm gc-wrap
+  not: * f$
+
+link gcc -static mf.o w7.o libfo.a -Wl,-u,f -Wl,--wrap=f -o root
+run root
+  stdout: f=7
+check nm root
+  has: * f$
+
+#--- m.c
+#include <stdio.h>
+int f(void); int g(void); int __real_f(void);
+int main(void) { printf("f=%d g=%d real=%d\n", f(), g(), __real_f()); return 0; }
+#--- f.c
+int f(void) { return 1; }
+int g(void) { return f() * 10; }
+#--- w.c
+int __real_f(void);
+int __wrap_f(void) { return 100 + __real_f(); }
+#--- mf.c
+#include <stdio.h>
+int f(void);
+int main(void) { printf("f=%d\n", f()); return 0; }
+#--- mr.c
+#include <stdio.h>
+int __real_f(void);
+int main(void) { printf("real=%d\n", __real_f()); return 0; }
+#--- fo.c
+int f(void) { return 1; }
+#--- w7.c
+int __wrap_f(void) { return 7; }
+#--- mwk.c
+#include <stdio.h>
+int f(void) __attribute__((weak));
+int main(void) { printf("f=%p\n", (void *)f); return 0; }
+#--- ch.c
+#include <stdio.h>
+int f(void); int __wrap_f(void); int __real_f(void);
+int main(void) { printf("f=%d wrap=%d real=%d\n", f(), __wrap_f(), __real_f()); return 0; }
+#--- chd.c
+int f(void) { return 1; }
+int __wrap_f(void) { return 2; }
+int __wrap___wrap_f(void) { return 3; }
+int __real_f(void) { return 4; }
+#--- gcm.c
+#include <stdio.h>
+int __real_f(void); int f(void);
+int __wrap_f(void) { return 50; }
+int main(void) { printf("f=%d real=%d\n", f(), __real_f()); return 0; }
+#--- gcm2.c
+#include <stdio.h>
+int f(void);
+int __wrap_f(void) { return 50; }
+int main(void) { printf("f=%d\n", f()); return 0; }
+#--- gcf.c
+int f(void) { return 1; }
