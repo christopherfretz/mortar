@@ -1006,7 +1006,9 @@ writes a value chosen by the referring section's name, as
   `sh_size`, and K is live: `S` is K's address plus the symbol's
   `st_value` (K's offset in its output section, as for any non-alloc
   target), and the field is written as for a live target (range checked,
-  I-43). Otherwise I-47's tombstone. No DWARF is parsed and no bytes
+  I-43). K and D are placed whole (neither `SHF_MERGE` nor
+  `.eh_frame`); otherwise I-47's tombstone. Otherwise I-47's tombstone.
+  No DWARF is parsed and no bytes
   are compared. GCC's `-g3` puts each header's macros in such a group
   (`wm4.<file>.<line>.<md5>`) and imports it by offset
   (`DW_MACRO_import`); the tombstone there crashes gdb 16 and loses the
