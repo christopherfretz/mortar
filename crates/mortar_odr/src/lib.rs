@@ -53,6 +53,10 @@ pub struct Outcome {
     /// `=full`'s rows (O-50, WP-076), with the table, under
     /// `--odr-table=full`.
     pub full: Option<FullRows>,
+    /// The subjects of the W1-W4 diagnostics (`foreign::diagnostic`), one
+    /// per W diagnostic, in no order: what an incremental state's capture
+    /// stores with each (`spec/incr.md` IN-75a, WP-220).
+    pub w_subjects: Vec<foreign::Subjects>,
 }
 
 /// The one-definition-rule phase (40, after resolution): runs the checks
@@ -82,7 +86,8 @@ pub fn check(
     s.stds = checks.w4;
     // The record checks first: W4's note reads the units' `std` (§8.1).
     let (records, mut r, rows) = records::check(inputs, resolution, s, pool);
-    let (mut diagnostics, counts) = foreign::check(inputs, resolution, checks, &rows.stds, pool);
+    let (mut diagnostics, w_subjects, counts) =
+        foreign::check(inputs, resolution, checks, &rows.stds, pool);
     diagnostics.extend(records);
     let mut table = None;
     let mut full = None;
@@ -99,7 +104,7 @@ pub fn check(
         full = found.full;
     }
     let stats = odr.stats.then(|| stats_line(*odr, &counts, &r, start.elapsed().as_micros()));
-    Outcome { diagnostics, stats, table, full }
+    Outcome { diagnostics, stats, table, full, w_subjects }
 }
 
 /// The dynamic checks the switches turn on, for a dynamic output

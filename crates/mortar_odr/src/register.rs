@@ -137,6 +137,45 @@ impl Status {
     }
 }
 
+/// The checks an incremental update computes exactly (`spec/incr.md`
+/// IN-71d, WP-220): W1 and W2, by `foreign::compare_copies` over the
+/// state's `COPIES` rows. Their rows in [`REGISTER`].
+pub const UPDATE_EXACT: [usize; 2] = [0, 1];
+
+/// Whether an incremental update must give `update-not-implemented
+/// (meta)` for the ODR phase, decided from the switches alone, before any
+/// row is read (`spec/incr.md` IN-71d, WP-220's rulings): the switch that
+/// forces it, or `None` when the update computes everything that runs
+/// (`--odr=off`: nothing; `warn` and `error`: W1 and W2). The switches
+/// named, then every check of [`REGISTER`] other than [`UPDATE_EXACT`]
+/// that these switches run: a check moved to on by default (O-46) forces
+/// the fall-back until the update computes it, never "an update without
+/// the check". `--keep-mason-meta`'s clause depends on the changed files
+/// (IN-71d) and is the update's, not this function's.
+#[must_use]
+pub fn update_fallback(odr: &Odr) -> Option<&'static str> {
+    if odr.mode == OdrMode::Strict {
+        return Some("--odr=strict");
+    }
+    if odr.check_archives {
+        return Some("--odr-check-archives");
+    }
+    if !matches!(odr.table, OdrTable::Off) {
+        return Some("--odr-table");
+    }
+    if !matches!(odr.runtime, OdrRuntime::Off) {
+        return Some("--odr-runtime");
+    }
+    if odr.stats {
+        return Some("--odr-stats");
+    }
+    REGISTER
+        .iter()
+        .enumerate()
+        .find(|(i, row)| !UPDATE_EXACT.contains(i) && row.status.runs(odr))
+        .map(|(_, row)| row.check)
+}
+
 /// O-47's table, in the spec's order.
 pub const REGISTER: [Row; 20] = [
     Row { check: "W1 `odr-size-mismatch`", status: Status::On },
@@ -209,6 +248,49 @@ mod tests {
             assert_eq!(check, row.check);
             assert_eq!(status_of(cell), row.status, "{check}");
         }
+    }
+
+    // spec: incr.md IN-71d (WP-220: the update's options-only fall-back)
+    #[test]
+    fn update_falls_back_on_each_switch() {
+        let at = |mode| Odr { mode, ..Odr::default() };
+        for mode in [OdrMode::Off, OdrMode::Warn, OdrMode::Error] {
+            assert_eq!(update_fallback(&at(mode)), None, "{mode:?}");
+        }
+        assert_eq!(update_fallback(&at(OdrMode::Strict)), Some("--odr=strict"));
+        for mode in [OdrMode::Off, OdrMode::Warn, OdrMode::Error] {
+            let archives = Odr { check_archives: true, ..at(mode) };
+            assert_eq!(update_fallback(&archives), Some("--odr-check-archives"));
+            for table in [OdrTable::Exported, OdrTable::Full] {
+                assert_eq!(update_fallback(&Odr { table, ..at(mode) }), Some("--odr-table"));
+            }
+            for runtime in [OdrRuntime::Report, OdrRuntime::Fatal] {
+                let rt = Odr { runtime, ..at(mode) };
+                assert_eq!(update_fallback(&rt), Some("--odr-runtime"));
+            }
+            assert_eq!(update_fallback(&Odr { stats: true, ..at(mode) }), Some("--odr-stats"));
+            // `--keep-mason-meta` is the update's clause (changed files).
+            assert_eq!(update_fallback(&Odr { keep_meta: true, ..at(mode) }), None);
+        }
+    }
+
+    // spec: incr.md IN-71d, odr.md O-47 (WP-220: a check moved to on by
+    // default must be one the update computes, or the update falls back)
+    #[test]
+    fn update_knows_every_default_check() {
+        let default = Odr { mode: OdrMode::Warn, ..Odr::default() };
+        let on: Vec<usize> = (0..REGISTER.len())
+            .filter(|i| REGISTER[*i].status == Status::On || REGISTER[*i].status.runs(&default))
+            .collect();
+        assert_eq!(
+            on, UPDATE_EXACT,
+            "O-47 turned a check on by default: an incremental update does not compute it \
+             (update_fallback now forces the fall-back); compute it in the update or keep it \
+             off (WP-220, WP-236)"
+        );
+        assert_eq!(update_fallback(&default), None);
+        assert_eq!(Check::W1.row().check, REGISTER[UPDATE_EXACT[0]].check);
+        assert_eq!(Check::W2.row().check, REGISTER[UPDATE_EXACT[1]].check);
     }
 
     // spec: odr.md O-40, O-41 (which mode runs which check)
