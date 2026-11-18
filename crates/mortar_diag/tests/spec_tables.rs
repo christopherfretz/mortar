@@ -108,10 +108,12 @@ fn warning_kinds_have_subjects() {
         assert!(Kind::IDS.contains(id), "{id} is not a kind");
     }
     for row in &rows {
-        let (id, cell) = (row[0].as_str(), row.last().map(String::as_str).unwrap_or(""));
+        let (id, cell) = (row[0].as_str(), row.last().map_or("", String::as_str));
         assert_eq!(row.len(), 5, "{id}: the subjects column is missing");
         match subjects(cell) {
-            None => assert!(!WARNING_KINDS.contains(&id), "{id} can be a warning: it needs subjects"),
+            None => {
+                assert!(!WARNING_KINDS.contains(&id), "{id} can be a warning: it needs subjects");
+            }
             Some(words) => {
                 assert!(!words.is_empty(), "{id}: empty subjects");
                 for (i, word) in words.iter().enumerate() {
