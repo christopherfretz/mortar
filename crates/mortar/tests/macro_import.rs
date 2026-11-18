@@ -393,56 +393,58 @@ fn ref_eh(arch: Arch) -> String {
 
 /// The 4-byte word after `tag` in `bytes`.
 fn word_after(bytes: &[u8], tag: &[u8], label: &str) -> u32 {
-    let at = find(bytes, tag).unwrap_or_else(|| panic!("{label}: no {}", String::from_utf8_lossy(tag)))
+    let at = find(bytes, tag)
+        .unwrap_or_else(|| panic!("{label}: no {}", String::from_utf8_lossy(tag)))
         + tag.len();
     u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap())
 }
 
 fn referrers(arch: Arch) {
     let dir = Scratch::new(&format!("i47a-ref-{}", arch.name()));
-    let Some(k) = assemble(arch, dir.path(), "k", &ref_keeper(arch)) else { return };
-    let Some(d) = assemble(arch, dir.path(), "d", REF_DROPPED) else { return };
-    let Some(n) = assemble(arch, dir.path(), "n", REF_NOTE) else { return };
-    let Some(e) = assemble(arch, dir.path(), "e", &ref_eh(arch)) else { return };
+    let Some(keep) = assemble(arch, dir.path(), "k", &ref_keeper(arch)) else { return };
+    let Some(dropped) = assemble(arch, dir.path(), "d", REF_DROPPED) else { return };
+    let Some(note) = assemble(arch, dir.path(), "n", REF_NOTE) else { return };
+    let Some(ehf) = assemble(arch, dir.path(), "e", &ref_eh(arch)) else { return };
     let link = |out: &str, objs: &[&PathBuf]| {
         let mut args: Vec<&OsStr> =
             ["-m", emulation(arch), "-static", "-e", "_start", "-o", out].map(OsStr::new).to_vec();
-        args.extend(objs.iter().map(|o| o.as_os_str()));
-        run_with(Command::new(MORTAR).args(&args).current_dir(dir.path()), b"", Duration::from_mins(5))
+        args.extend(objs.iter().map(|res| res.as_os_str()));
+        run_with(
+            Command::new(MORTAR).args(&args).current_dir(dir.path()),
+            b"",
+            Duration::from_mins(5),
+        )
     };
     let label = arch.name();
 
     // An alloc referrer, `.gcc_except_table` under a dead FDE: I-46's 0;
     // a debug-named non-alloc referrer of the same target: the redirect.
-    let o = link("kd", &[&k, &d]);
-    assert!(o.success(), "{label} k d: {}", o.stderr_text());
+    let res = link("kd", &[&keep, &dropped]);
+    assert!(res.success(), "{label} k d: {}", res.stderr_text());
     let out = dir.join("kd");
     let lsda = word_after(&section(&out, ".gcc_except_table"), b"LSDAWORD", label);
     assert_eq!(lsda, 0, "{label}: .gcc_except_table field (I-46)");
     let macro_ = section(&out, ".debug_macro");
-    let keep = find(&macro_, b"SAMEkeep").unwrap() as u32;
+    let kept_at = find(&macro_, b"SAMEkeep").unwrap() as u32;
     let dbug = word_after(&section(&out, ".debug_wp249"), b"DBUGWORD", label);
-    assert_eq!(dbug, keep, "{label}: .debug_wp249 field (I-47a)");
+    assert_eq!(dbug, kept_at, "{label}: .debug_wp249 field (I-47a)");
     // The dead FDE is not written: one FDE (the keeper's), no LSDA CIE.
     let eh = section(&out, ".eh_frame");
     assert!(find(&eh, b"zPLR").is_none(), "{label}: the dead FDE's CIE is written");
 
     // A dead FDE's own field naming `.Le1`: the FDE is not written.
-    let o = link("ke", &[&k, &e]);
-    assert!(o.success(), "{label} k e: {}", o.stderr_text());
+    let res = link("ke", &[&keep, &ehf]);
+    assert!(res.success(), "{label} k e: {}", res.stderr_text());
     let eh = section(&dir.join("ke"), ".eh_frame");
     assert!(find(&eh, b"zLR").is_none(), "{label}: the dead FDE's CIE is written");
     assert!(find(&section(&dir.join("ke"), ".debug_macro"), b"SAMEdrop").is_none());
 
     // A non-alloc referrer without a debug name: refused (resolve.md
     // §6.3), as before WP-249 and as GNU ld does.
-    let o = link("kn", &[&k, &n]);
-    assert!(!o.success(), "{label} k n: linked");
-    let err = o.stderr_text();
-    assert!(
-        err.contains("discarded section") && err.contains(".wp249note"),
-        "{label} k n: {err}"
-    );
+    let res = link("kn", &[&keep, &note]);
+    assert!(!res.success(), "{label} k n: linked");
+    let err = res.stderr_text();
+    assert!(err.contains("discarded section") && err.contains(".wp249note"), "{label} k n: {err}");
 
     // GNU ld agrees on each.
     let Some(bfd) = arch.tool("ld.bfd") else {
@@ -450,16 +452,16 @@ fn referrers(arch: Arch) {
         return;
     };
     let gnu = |out: &str, objs: &[&PathBuf]| {
-        let mut c = Command::new(&bfd);
-        c.args(["-static", "-e", "_start", "-o", out]).args(objs).current_dir(dir.path());
-        run_with(&mut c, b"", Duration::from_mins(2))
+        let mut cmd = Command::new(&bfd);
+        cmd.args(["-static", "-e", "_start", "-o", out]).args(objs).current_dir(dir.path());
+        run_with(&mut cmd, b"", Duration::from_mins(2))
     };
-    assert!(gnu("gkd", &[&k, &d]).success(), "{label}: GNU ld k d");
-    let g = dir.join("gkd");
-    assert_eq!(word_after(&section(&g, ".gcc_except_table"), b"LSDAWORD", label), 0);
-    let gkeep = find(&section(&g, ".debug_macro"), b"SAMEkeep").unwrap() as u32;
-    assert_eq!(word_after(&section(&g, ".debug_wp249"), b"DBUGWORD", label), gkeep);
-    assert!(!gnu("gkn", &[&k, &n]).success(), "{label}: GNU ld k n linked");
+    assert!(gnu("gkd", &[&keep, &dropped]).success(), "{label}: GNU ld k d");
+    let gout = dir.join("gkd");
+    assert_eq!(word_after(&section(&gout, ".gcc_except_table"), b"LSDAWORD", label), 0);
+    let gkeep = find(&section(&gout, ".debug_macro"), b"SAMEkeep").unwrap() as u32;
+    assert_eq!(word_after(&section(&gout, ".debug_wp249"), b"DBUGWORD", label), gkeep);
+    assert!(!gnu("gkn", &[&keep, &note]).success(), "{label}: GNU ld k n linked");
 }
 
 /// I-47a's referrer condition on AArch64.
