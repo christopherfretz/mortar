@@ -35,6 +35,7 @@ use mortar_incr::format::Str;
 use mortar_incr::format::def_kind::SECTION;
 use mortar_incr::update::rows::MentionRow;
 use mortar_incr::update::testing::MemoryState;
+use mortar_incr::update::view::StateView;
 use mortar_input::store::{Store, StorePolicy};
 use mortar_testutil::target::Arch;
 use mortar_testutil::{Scratch, run_with, tools_required};
@@ -234,6 +235,8 @@ struct Seen {
     /// The scale run (not strict): the fall-backs by reason and the
     /// definer's section kind.
     reasons: BTreeMap<String, u32>,
+    /// The scale run: keys whose `SYMBOLS` row is not their `SymbolId`.
+    renumbered: u32,
     /// The scale run: `StoredRows::new`, and `value_of` over every key,
     /// microseconds, each run.
     new_us: Vec<u128>,
@@ -354,36 +357,40 @@ fn compare(
         if fr != st {
             return Err(format!("{label}: the TLS module slot: front {fr:x?}, stored {st:x?}"));
         }
+        let by_name = if opts.tally { globals_by_name(&view)? } else { HashMap::new() };
         for i in 0..l.inputs.symbols.len() {
             let key = SymKey::global(SymbolId(i));
             let name = front_rows.name(key).to_vec();
             let shown = String::from_utf8_lossy(&name).into_owned();
-            if stored.name(key) != &name[..] {
-                return Err(format!("{label}: key {i} ({shown}) names another key"));
-            }
+            // The scale run matches keys by name (the state's numbering is
+            // not the in-process front's there: see the record).
+            let sid = if opts.tally {
+                let Some(r) = stored_id(&by_name, &name, i, &mut seen) else { continue };
+                r
+            } else if stored.name(key) == &name[..] {
+                i
+            } else {
+                let other = String::from_utf8_lossy(stored.name(key)).into_owned();
+                return Err(format!("{label}: key {i} ({shown}) names another key: {other}"));
+            };
+            let skey = SymKey::global(SymbolId(sid));
             seen.keys += 1;
-            same_rows(&front_rows, &stored, SymbolId(i), &format!("{label}: {shown}"), &mut seen)?;
+            same_rows(
+                &front_rows,
+                &stored,
+                (SymbolId(i), SymbolId(sid)),
+                &format!("{label}: {shown}"),
+                &mut seen,
+            )?;
             let want = rows::sym(&front_rows, key);
-            match stored.value_of(key) {
+            match stored.value_of(skey) {
                 Ok(got) if got == want => seen.equal += 1,
                 Ok(got) => {
                     return Err(format!("{label}: {shown}: front {want:x?}, stored {got:x?}"));
                 }
                 Err(e) => {
-                    // A named fall-back only: a key defined in a merge
-                    // section (§9.3) or an input `.eh_frame`.
-                    let def_kind = rows::def_entry(&front_rows, key)
-                        .and_then(|e| front_rows.entry(e))
-                        .and_then(|d| d.place?.ok())
-                        .and_then(|s| front_rows.section_kind(s));
-                    let named = matches!(def_kind, Some(SectionKind::Merge | SectionKind::EhFrame))
-                        && e == IncrReason::UpdateNotImplemented(Some(Unimplemented::Image));
-                    if opts.tally {
-                        *seen.reasons.entry(format!("{e:?} / {def_kind:?}")).or_default() += 1;
-                    } else if !named {
-                        return Err(format!("{label}: {shown} has no stored value: {e:?}"));
-                    }
-                    seen.fallbacks += 1;
+                    fallback(&front_rows, key, &e, opts, &mut seen)
+                        .map_err(|()| format!("{label}: {shown} has no stored value: {e:?}"))?;
                     continue;
                 }
             }
@@ -405,31 +412,94 @@ fn compare(
     .unwrap()
 }
 
+/// A key the stored side could not value: a named fall-back only (a key
+/// defined in a merge section, §9.3, or an input `.eh_frame`), or in the
+/// scale run any reason, tallied.
+fn fallback(
+    front: &FrontRows<'_, '_>,
+    key: SymKey,
+    e: &IncrReason,
+    opts: Opts,
+    seen: &mut Seen,
+) -> Result<(), ()> {
+    let def_kind = rows::def_entry(front, key)
+        .and_then(|d| front.entry(d))
+        .and_then(|d| d.place?.ok())
+        .and_then(|s| front.section_kind(s));
+    let named = matches!(def_kind, Some(SectionKind::Merge | SectionKind::EhFrame))
+        && *e == IncrReason::UpdateNotImplemented(Some(Unimplemented::Image));
+    if opts.tally {
+        *seen.reasons.entry(format!("{e:?} / {def_kind:?}")).or_default() += 1;
+    } else if !named {
+        return Err(());
+    }
+    seen.fallbacks += 1;
+    Ok(())
+}
+
+/// The state's `GLOBAL` rows by name (`None`: two rows of one name).
+fn globals_by_name(view: &StateView<'_>) -> Result<HashMap<Vec<u8>, Option<u32>>, String> {
+    let mut by_name = HashMap::new();
+    for r in 0..u32::try_from(view.count(mortar_incr::format::kind::SYMBOLS)).unwrap() {
+        let row = view.symbol(SymbolId(r)).map_err(|e| format!("SYMBOLS: {e:?}"))?;
+        if row.kind == mortar_incr::format::sym_kind::GLOBAL {
+            let n = view.string(row.name).map_err(|e| format!("STRINGS: {e:?}"))?;
+            by_name.entry(n).and_modify(|v| *v = None).or_insert(Some(r));
+        }
+    }
+    Ok(by_name)
+}
+
+/// The scale run matches keys by name (the state's numbering is not the
+/// in-process front's there: see the record): front key `i`'s row, or
+/// `None` with the reason tallied.
+fn stored_id(
+    by_name: &HashMap<Vec<u8>, Option<u32>>,
+    name: &[u8],
+    i: u32,
+    seen: &mut Seen,
+) -> Option<u32> {
+    match by_name.get(name) {
+        Some(&Some(r)) => {
+            if r != i {
+                seen.renumbered += 1;
+            }
+            Some(r)
+        }
+        found => {
+            let why = if found.is_some() { "two SYMBOLS rows" } else { "no SYMBOLS row" };
+            let shown = String::from_utf8_lossy(name);
+            *seen.reasons.entry(format!("{why} (e.g. {shown})")).or_default() += 1;
+            None
+        }
+    }
+}
+
 /// Beside the value: one key's slot addresses, PLT entry and definition
 /// row (its entry included) agree; `at` names the key.
 fn same_rows(
     front: &FrontRows<'_, '_>,
     stored: &StoredRows<'_, '_>,
-    id: SymbolId,
+    (fid, sid): (SymbolId, SymbolId),
     at: &str,
     seen: &mut Seen,
 ) -> Result<(), String> {
-    let key = SymKey::global(id);
+    let (fkey, skey) = (SymKey::global(fid), SymKey::global(sid));
     for kind in SLOT_KINDS {
-        let (fr, st) = (rows::slot(front, key, kind), rows::slot(stored, key, kind));
+        let (fr, st) = (rows::slot(front, fkey, kind), rows::slot(stored, skey, kind));
         if fr != st {
             return Err(format!("{at}: {kind:?} slot: front {fr:x?}, stored {st:x?}"));
         }
         seen.slots += 1;
     }
-    let (fr, st) = (rows::plt(front, key), rows::plt(stored, key));
+    let (fr, st) = (rows::plt(front, fkey), rows::plt(stored, skey));
     if fr != st {
         return Err(format!("{at}: PLT entry: front {fr:x?}, stored {st:x?}"));
     }
     // The definition row, its entry included (WP-255c3: the value
     // alone does not see a definer's `MENTIONS` rows reordered,
     // the derived index stays consistent inside the state).
-    let (fr, st) = (front.def(id), stored.def(id));
+    let (fr, st) = (front.def(fid), stored.def(sid));
     if fr != st && !(st.is_none() && stored.failure().is_some()) {
         return Err(format!("{at}: def: front {fr:?}, stored {st:?}"));
     }
@@ -748,10 +818,11 @@ fn stored_rows_scale() {
                 let n = u128::from(seen.keys.max(1));
                 eprintln!(
                     "[wp255c3-scale] {label}: link {link_ms} ms, out {out_len} B, state {state_len} B; \
-                     keys {}, equal {}, .symtab {}, slots {}; fall-backs {:?}; \
+                     keys {}, renumbered {}, equal {}, .symtab {}, slots {}; fall-backs {:?}; \
                      StoredRows::new median {} us {:?}; value_of all keys median {} us {:?} \
                      ({} ns a key)",
                     seen.keys,
+                    seen.renumbered,
                     seen.equal,
                     seen.symtab,
                     seen.slots,
