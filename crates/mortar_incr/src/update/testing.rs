@@ -11,9 +11,9 @@ use mortar_core::{ChunkId, FileId, OutSecId, SectionId, SymbolId};
 
 use super::diags::DiagRow;
 use super::rows::{
-    CommonRow, EdgeRow, FileIndexRow, FileRow, FragRow, GroupRow, HoleRow, IndexRow, KeyRefRow,
-    MentionRow, MetaRow, NameRow, OdrClassRow, OdrRefRow, RegionRow, ResolvedRow, SymbolRow,
-    SymtabKeyRow, SymtabRow,
+    CommonRow, CopyRow, EdgeRow, FileIndexRow, FileRow, FragRow, GroupRow, HoleRow, IndexRow,
+    KeyRefRow, MentionRow, MetaRow, NameRow, OdrClassRow, OdrRefRow, RegionRow, ResolvedRow,
+    SymbolRow, SymtabKeyRow, SymtabRow,
 };
 use super::view::{Rows, StateRows, StateView};
 use crate::format::{
@@ -60,6 +60,7 @@ pub struct MemoryState {
     pub frags: Vec<FragRow>,
     pub holes: Vec<HoleRow>,
     pub commons: Vec<CommonRow>,
+    pub copies: Vec<CopyRow>,
     pub odr_classes: Vec<OdrClassRow>,
     pub odr_refs: Vec<OdrRefRow>,
     pub diags: Vec<DiagRow>,
@@ -88,7 +89,8 @@ impl MemoryState {
     /// format 4 did not resolve: the default row); `GROUPS` from
     /// `RESOLVED`'s kind-6 rows; `FRAGS` with `refs` 1; `META`'s build id
     /// inline. **Not derivable from format 4**, left empty: `EDGES`,
-    /// `SYMTAB`, `SYMTAB_KEYS`, `COMMONS`, `ODR_*`, `DIAGS`, `LAZY` members
+    /// `SYMTAB`, `SYMTAB_KEYS`, `COMMONS`, `ODR_*`, `COPIES` (format 4
+    /// stores no `st_size` and no symbol-table index), `DIAGS`, `LAZY` members
     /// (format 4 stores none), and the boot id. `FILE_INDEX` gives each
     /// file's position and count in these vectors. WP-215's shapes:
     /// `GROUPS` holds **the keeper's row only** (format 4 stores the
@@ -325,6 +327,7 @@ impl StateRows for &MemoryState {
             kind::KEY_REFS => self.key_refs.len(),
             kind::DIAGS => self.diags.len(),
             kind::NAMES => self.names.len(),
+            kind::COPIES => self.copies.len(),
             _ => 0,
         };
         n as u64
@@ -453,6 +456,10 @@ impl StateRows for &MemoryState {
     }
     fn commons(&self, key: SymbolId) -> Rows<Vec<CommonRow>> {
         Ok(self.commons.iter().filter(|c| c.key == key.0 && !c.tomb).copied().collect())
+    }
+    fn copies(&self, key: SymbolId) -> Rows<Vec<CopyRow>> {
+        // No promised order (WP-220): the rows' order is the vector's.
+        Ok(self.copies.iter().filter(|c| c.key == key.0 && !c.tomb).copied().collect())
     }
     fn odr_classes(&self, odr_key: u32) -> Rows<Vec<OdrClassRow>> {
         Ok(self.odr_classes.iter().filter(|c| c.key == odr_key && !c.tomb).copied().collect())

@@ -2,13 +2,13 @@
 //! "until it lands" value; U-8 replaces it.
 
 use mortar_core::incr::{IncrReason, Unimplemented};
-use mortar_core::plan::OdrMode;
+use mortar_core::plan::{Odr, OdrMode};
 use mortar_core::{FileId, SectionId};
 use mortar_incr::update::odr::odr;
 use mortar_incr::update::resolve::ResolveDelta;
 use mortar_incr::update::rows::FileRow;
 use mortar_incr::update::testing::MemoryState;
-use mortar_incr::update::view::{Change, ChangedFile, ChangedFiles};
+use mortar_incr::update::view::{Change, ChangedFile, ChangedFiles, OdrRows};
 
 // spec: incr.md IN-71d (until U-8: units in a changed file are `meta`)
 #[test]
@@ -17,7 +17,8 @@ fn odr_until_it_lands() {
     let view = m.view();
     let resolved = ResolveDelta::default();
     let mut changed = ChangedFiles::default();
-    assert_eq!(odr(&view, &changed, &resolved, OdrMode::Warn), Ok(Vec::new()));
+    let warn = Odr { mode: OdrMode::Warn, ..Odr::default() };
+    assert_eq!(odr(&view, &changed, &resolved, &warn), Ok(Vec::new()));
     changed.files.push(ChangedFile {
         file: FileId(1),
         change: Change::Changed,
@@ -32,9 +33,10 @@ fn odr_until_it_lands() {
         meta_units: 1,
         debug: false,
         versioned: 0,
+        odr: OdrRows::default(),
     });
     assert_eq!(
-        odr(&view, &changed, &resolved, OdrMode::Warn),
+        odr(&view, &changed, &resolved, &warn),
         Err(IncrReason::UpdateNotImplemented(Some(Unimplemented::Meta)))
     );
 }
