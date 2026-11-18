@@ -4441,7 +4441,11 @@ file changes or when one of its file's sections moves (IN-25).
   rounded up to `m·2^k` with `m` in 8..15 (at most 12.5% over, at least 32
   bytes), and to the next class when the slack would be smaller than the
   section's minimum neutral form (IN-51b); the bytes between its end and
-  the allotment's end are a dead range in that form. A changed file's new contribution
+  the allotment's end are a dead range in that form. A `.debug_abbrev`
+  contribution is allotted the class of at least `size + size/8` (WP-228
+  P2: an edit's added abbreviation then fits in place; +113.7 KB on
+  protoc `-g`, files with under 32 bytes of abbreviation slack from 301
+  to 10 of 2,366; an incremental-mode link only). A changed file's new contribution
   goes, first fit:
   1. **in place**, if it fits the file's current allotment (the common
      case: sizes barely move, §1.1);
