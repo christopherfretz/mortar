@@ -100,19 +100,19 @@ pub enum ClipError {
     /// is `update-not-implemented (image)`.
     NotYet(NotYet, ChunkId),
     /// The inputs are not a clip plan's (an `internal-error`).
-    Internal(Diagnostic),
+    Internal(Box<Diagnostic>),
 }
 
 impl From<Diagnostic> for ClipError {
     fn from(d: Diagnostic) -> Self {
-        Self::Internal(d)
+        Self::Internal(Box::new(d))
     }
 }
 
-fn internal(what: String) -> ClipError {
-    ClipError::Internal(Diagnostic::error(Kind::InternalError {
+fn internal(what: &str) -> ClipError {
+    ClipError::Internal(Box::new(Diagnostic::error(Kind::InternalError {
         what: format!("image: clip plan: {what}"),
-    }))
+    })))
 }
 
 /// Whether `[lo, hi)` meets one of `clips` (sorted, disjoint).
@@ -141,7 +141,7 @@ pub fn for_clips<R: Rows>(
     parts: &ClipParts<'_>,
 ) -> Result<Plan, ClipError> {
     if clips.iter().any(|c| c.start >= c.end) || clips.windows(2).any(|w| w[0].end > w[1].start) {
-        return Err(internal(format!("clips {clips:x?} are not sorted, disjoint and non-empty")));
+        return Err(internal(&format!("clips {clips:x?} are not sorted, disjoint and non-empty")));
     }
     let chunks = rows.chunks();
     let file_size = chunks
@@ -159,10 +159,10 @@ pub fn for_clips<R: Rows>(
             ChunkKind::Body(_) => continue,
             ChunkKind::FileHeader | ChunkKind::ProgramHeaders | ChunkKind::SectionHeaders => {
                 let bytes = parts.structure.get(&id).ok_or_else(|| {
-                    internal(format!("the structural chunk {} has no bytes", id.0))
+                    internal(&format!("the structural chunk {} has no bytes", id.0))
                 })?;
                 if bytes.len() as u64 != c.size {
-                    return Err(internal(format!(
+                    return Err(internal(&format!(
                         "the structural chunk {} has {} bytes for {}",
                         id.0,
                         bytes.len(),
@@ -184,20 +184,20 @@ pub fn for_clips<R: Rows>(
         let (c, off) = s.place;
         let chunk = chunks
             .get(c)
-            .ok_or_else(|| internal(format!("section {} in no chunk", s.section.0)))?;
+            .ok_or_else(|| internal(&format!("section {} in no chunk", s.section.0)))?;
         if !chunk.in_file() || !matches!(chunk.kind, ChunkKind::Body(_)) {
-            return Err(internal(format!(
+            return Err(internal(&format!(
                 "section {} is not in an in-file body chunk",
                 s.section.0
             )));
         }
         let at = chunk.offset + off;
         if at < last {
-            return Err(internal(format!("section {} is out of file order", s.section.0)));
+            return Err(internal(&format!("section {} is out of file order", s.section.0)));
         }
         last = at;
         if !meets(clips, at, at + s.front.size) {
-            return Err(internal(format!("section {} meets no clip", s.section.0)));
+            return Err(internal(&format!("section {} meets no clip", s.section.0)));
         }
         if s.front.name == b".eh_frame" {
             return Err(ClipError::NotYet(NotYet::EhFrame, c));
@@ -206,7 +206,7 @@ pub fn for_clips<R: Rows>(
     }
     for (h, name) in parts.holes {
         let Some(c) = chunks.get(h.chunk) else {
-            return Err(internal(format!("a hole in no chunk {}", h.chunk.0)));
+            return Err(internal(&format!("a hole in no chunk {}", h.chunk.0)));
         };
         let at = c.offset + h.offset;
         if !c.in_file() || !meets(clips, at, at + h.size) {

@@ -327,7 +327,11 @@ fn debug_holes(m: &Model<'_, '_>, target: Target, b: &mut Builder) -> Result<(),
         if !c.in_file() {
             continue;
         }
-        let name = c.name(m.assignment).unwrap_or(b"");
+        // The name is read for a debug unit only, as before the helper.
+        let name = match h.kind {
+            HoleKind::Debug | HoleKind::DeadDebug => c.name(m.assignment).unwrap_or(b""),
+            _ => b"",
+        };
         if let Some(bytes) = hole_bytes(h, name, target, abbrev)? {
             b.bytes(c.offset + h.offset, bytes.into_boxed_slice());
         }

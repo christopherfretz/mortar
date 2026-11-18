@@ -108,6 +108,7 @@ fn with_link<T>(s: &Scratch, go: impl FnOnce(&Link<'_, '_>) -> T) -> T {
 }
 
 /// The file range of input section `sec` of the object `file`.
+#[allow(clippy::many_single_char_names)]
 fn placed(l: &Link<'_, '_>, file: &str, sec: &[u8]) -> Range<u64> {
     let pl = &l.layout.placement;
     for (s, p) in pl.place.iter() {
@@ -179,6 +180,7 @@ type Case = (&'static str, Vec<Range<u64>>);
 /// The cases over link `l`: one input section, a section's edge, two
 /// windows, a code gap (every exec byte no section covers, the `.text`
 /// tail included), the headers, and several at once.
+#[allow(clippy::single_range_in_vec_init)]
 fn cases(l: &Link<'_, '_>) -> Vec<Case> {
     let c_text = placed(l, "c.o", b".text");
     let a_text = placed(l, "a.o", b".text");
@@ -257,6 +259,7 @@ fn clip_plan_rows_equal_the_whole_plan_clipped() {
 // a clip over `.symtab` is `NotYet(Synth)`, over the merged strings
 // `NotYet(Merged)`.
 #[test]
+#[allow(clippy::single_range_in_vec_init)]
 fn clip_plan_fills_every_byte() {
     for arch in ARCHES {
         let Some(s) = fixture(arch, "clip-fill", 0x3000) else { continue };
