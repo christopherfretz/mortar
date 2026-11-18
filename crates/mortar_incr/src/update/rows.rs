@@ -203,6 +203,11 @@ pub struct ResolvedRow {
     pub value: u64,
     /// `st_size` (bytes).
     pub size: u64,
+    /// The scan's packed `SymFacts` of the key (R-4a, WP-239:
+    /// `Walker::facts(SymKey::global(id))`); the packing is the scan
+    /// package's, the state stores the `u32` as given. Written by capture
+    /// and U-2; read by U-3, U-5.
+    pub facts: u32,
 }
 
 /// `INDEX` (kind 34, file-keyed, grouped by referring file; IN-18e): the
@@ -702,8 +707,16 @@ mod tests {
         // here first).
         let MentionRow { symbol: _, kind: _, bind: _, typ: _, other: _, section: _ } =
             MentionRow::default();
-        let ResolvedRow { kind: _, typ: _, bind: _, other: _, section: _, value: _, size: _ } =
-            ResolvedRow::default();
+        let ResolvedRow {
+            kind: _,
+            typ: _,
+            bind: _,
+            other: _,
+            section: _,
+            value: _,
+            size: _,
+            facts: _,
+        } = ResolvedRow::default();
         let KeyRefRow { key: _, file: _, def: _, bind: _, typ: _, flags: _, demand: _, tomb: _ } =
             KeyRefRow::default();
         let FragUseRow { file: _, out: _, class: _, hash: _ } = FragUseRow::default();

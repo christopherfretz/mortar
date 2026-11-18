@@ -1608,7 +1608,7 @@ with each phase fed from the state for unchanged files:
   |---|---|---|
   | **whole** (small; capacity = rows + max(64, rows/8)) | `META` (1), `PROBES` (4), `OUTSECS` (5), `CHUNKS` (8), `ORDER` (9), `SEGMENTS` (10), `SLOTS` (12), `SIZES` (15), `SYM_PLACE` (16), `DEFINED` (17), `PATCHES` (18), `REDIRECTS` (19), `SIZED` (20), `LAYOUT` (21), `LEAVES` (22) | the table is written again whole into its capacity when any row differs (its blocks only; the rest of the state is untouched); over capacity: compaction. Together under 2 MB on g10x (WP-105 §3's "the rest" and `CHUNKS`). `LEAVES`' row count follows the output's size (W3 truncates or extends), within its capacity |
   | **append-only** | `FILES` (3), `STAT` (2), `FILE_INDEX` (41), `STRINGS` (23) | rows (bytes, for `STRINGS`) are only appended, into a reserved append area of max(4,096 rows, rows/64); a row is never moved, so references to it stay valid. `FILES` and `FILE_INDEX` are parallel (one row each per file, members of archives included, `LAZY` when not extracted); `STAT` has one row per file plus the device rows; a file's load-order position is its `FILES.rank` (`u64`): the first link writes `rank = FileId << 20`, an appeared or newly extracted file takes the integer midpoint of its neighbours' ranks (none left: compaction), and `FileId` order is `rank` order. A gone file's row is marked `GONE`. A string is never overwritten or reused; strings no row names any more are dead until compaction. The build id is in `META` (a length and 64 bytes), not in `STRINGS`, so an update appends no string for it |
-  | **file-keyed** (one range per file through `FILE_INDEX`, with row slack: capacity = count + max(4, count/8)) | `SECTIONS` (7), `MENTIONS` (32), `INDEX` (34), `EDGES` (42: one row per stored edge, 17 bytes: kind `u8`, source `u32`, target `u32`, offset `u64`), `FRAG_USE` (56: one row per (file, fragment its live split pieces name), 28 bytes, below; WP-239), `EH_RECORDS` (13), `SYMTAB` (43: per file its local block and `.strtab` region; file 0's range holds the global area's row), `REGIONS` (51: per file its regions, one row per (output section, category, ordinal): the chunk, offset and capacity; IN-72 item 2, WP-213) | a changed, drawn-in or appeared file's range is rewritten in place when the new count fits its capacity; a file's `SECTIONS` rows are also rewritten when IN-72 moved, killed or revived its sections (IN-78); a gone file's ranges are dead (`FILE_INDEX.gone`); a new file gets new ranges in the table's append area (max(4,096 rows, rows/64)); no room: compaction |
+  | **file-keyed** (one range per file through `FILE_INDEX`, with row slack: capacity = count + max(4, count/8)) | `SECTIONS` (7), `MENTIONS` (32), `INDEX` (34), `EDGES` (42: one row per stored edge, 17 bytes: kind `u8`, source `u32`, target `u32`, offset `u64`), `FRAG_USE` (56: one row per (file, fragment its live split pieces name), 28 bytes, below; WP-239), `SYMTAB` (43: per file its local block and `.strtab` region; file 0's range holds the global area's row), `REGIONS` (51: per file its regions, one row per (output section, category, ordinal): the chunk, offset and capacity; IN-72 item 2, WP-213) | a changed, drawn-in or appeared file's range is rewritten in place when the new count fits its capacity; a file's `SECTIONS` rows are also rewritten when IN-72 moved, killed or revived its sections (IN-78); a gone file's ranges are dead (`FILE_INDEX.gone`); a new file gets new ranges in the table's append area (max(4,096 rows, rows/64)); no room: compaction |
   | **key-keyed** (sorted body + append area of max(4,096 rows, rows/64), kept sorted on insert + tombstones) | `KEY_REFS` (45: key, file, attributes, `demand`), `GROUPS` (44: by (signature, file): one row per live relocatable object's copy; the keeper is the copy whose file has the least `FILES.rank` (resolve.md §6.1; never the least row number: `FILES` is append-only), not stored; WP-215), `FRAGS` (11: by (out, class, hash), offset, `refs`; below), `HOLES` (39: by (chunk, offset)), `COMMONS` (46: by (key, file): one row per live file with a common mention of the key, its size and alignment (`max(1, st_value)`, as `RESOLVED.value` of a common); the winning common (resolve.md §3.3: the file of least `FILES.rank`, the largest size and alignment) is computed from the rows, not stored; WP-215), `ODR_CLASSES` (47: ODR key, class hash and layout; PROVISIONAL, not written until WP-236), `ODR_REFS` (48: ODR key, file, row kind, class; PROVISIONAL, not written until WP-236), `COPIES` (55: by (key, file, symbol index): one row per global definition in a section of a live COMDAT copy, its `st_size` and `st_type`, 24 bytes, for every input unless `--odr=off`; the copy's group is its `MENTIONS` row's section's `SECTIONS.anchor` (`anchor_kind` 1, the signature), not stored; no rank stored: W1 and W2 order copies by the files' current `FILES.rank`; kinds 53 and 54 are reserved for WP-236; WP-220), `DIAGS` (49: subjects, code, text, order), `NAMES` (52: the by-name index of `SYMBOLS`' globals, 12 bytes, keyed by (hash, row): `hash` is model.md's 64-bit hash (`mortar_core::hash::hash_bytes`) of the bytes of `SYMBOLS.name`, one zero byte and the bytes of `SYMBOLS.version` (empty when unversioned), as `STRINGS` holds them; `row` the `SYMBOLS` row; a lookup compares the name and version bytes of every row of the hash, so a hash never identifies a key alone; a `GONE` key keeps its row, and a key that comes back takes its old `SYMBOLS` row; WP-213) | a lookup binary-searches the body and the append area (the area is kept sorted: a new row is inserted into it at its place, moving at most the area's rows; WP-211, review-wp207 m-3: no linear scan of up to 4,096 rows per lookup); a deleted row is a tombstone (its key kept, a flag set); a changed row is changed in place when its key is unchanged, else deleted and appended. Compaction when an append area is full or tombstones pass 25% of a table's rows |
   | **key-parallel** (one row per `SYMBOLS` row, in its order) | `SYMBOLS` (6), `RESOLVED` (33), `SYMTAB_KEYS` (50: a global's `.symtab` index and `.strtab` offset) | a key's rows are changed in place by its `SYMBOLS` row number; a new key appends a row to each (append area of max(4,096 rows, rows/64)); a key no file mentions any more is a tombstone (`SYMBOLS.kind` `GONE`) |
 
@@ -1632,7 +1632,18 @@ with each phase fed from the state for unchanged files:
   file's live units (counted per file; `INDEX` is never the demand). It is `MENTIONS` transposed, so
   its row count equals `MENTIONS`' (plus nothing: the lazy members'
   defined mentions are `MENTIONS` rows of their files too).
-  **`at_file`** is maintained by IN-71's rule.
+  **`at_file`** is maintained by IN-71's rule: the first LIVE
+  mentioner, by the files' **current** `FILES.rank` (never by `FILES`
+  row number, never a file that is gone, dead or an archive member not
+  extracted: such a member's mentions decide nothing stored), and
+  `at_index` its entry among that file's non-local entries; `NONE` and 0
+  when no live file mentions the key. The full link's capture writes
+  the same rule (WP-214 F-12: today's format-4 capture takes the first
+  mention among ALL loaded files; the format-5 capture from a link
+  changes to this rule). The output does not read `at_file`: `.symtab`'s
+  globals are in `SymbolId` order (synth.md S-75; read from the code,
+  not compared on bytes); `at_file` orders `SYMBOLS`' rows (IN-18e) and
+  places a positional replay.
 
   **Items 5, 6, 7's data** (WP-239, ruled; the arithmetic and the
   experiments in `spec/landed/incr/WP-239.md`):
@@ -1658,11 +1669,11 @@ with each phase fed from the state for unchanged files:
     refuses the state (`state-limit`, §7).
   - **`SLOTS`** gains `refs` (`u32`): the live files whose
     `KEY_REFS.demand` needs the slot (a local's slot, IN-28b: 1).
-  - `EH_RECORDS` has no reader in an update after this design (the
-    format-4 replay reads its own); the format package drops it when
-    nothing else does.
+  - `EH_RECORDS` (kind 13) is not in format 5 (WP-214, third part): the
+    `FILES` eh columns replace it; the format-4 replay reads its own.
   - Measured (WP-239 §8, against U-2's format 5): protoc 1.241 → 1.112,
-    `cxx-large-g` 1.130 → 0.674 of format 4.
+    `cxx-large-g` 1.130 → 0.674 of format 4. As built (WP-214 §10, with
+    a stand-in `KEY_REFS` row per LAZY definition): 1.117 and 0.664.
 
   **`MENTIONS` by position** (WP-215 D7): a file's `MENTIONS` range holds
   **one row per non-local entry of its symbol table, in the table's
@@ -2991,8 +3002,9 @@ a pass over a whole table of the state; **O(output)**.
   The result is IN-26's for every key (a key no file of the delta
   mentions has the stored resolution, which IN-26 would recompute
   equal). For an affected key whose mentioners change, `at_file` becomes
-  the first live mentioner in load order among `KEY_REFS`'s rows and the
-  changed files' (IN-18a3's rule), and `at_index` is that file's entry
+  the first live mentioner by current `FILES.rank` among `KEY_REFS`'s
+  rows of live files and the changed files' (IN-18e's rule; a
+  non-extracted member's row decides nothing), and `at_index` is that file's entry
   index among its non-local entries: from its new symbol table when it is
   a changed file, else from its `MENTIONS` row (whose position gives the
   index: the file's `first_global` plus the row's position in its range,
@@ -4138,7 +4150,7 @@ a pass over a whole table of the state; **O(output)**.
     `FILE_INDEX.first_global`, `META`'s `iterations` and `versioned`
     (WP-215), `STAT`, `MENTIONS`, `KEY_REFS`, `RESOLVED`, `GROUPS`,
     `COMMONS`,
-    `INDEX`, `EDGES`, `FRAG_USE`, `EH_RECORDS`, `FRAGS.refs`,
+    `INDEX`, `EDGES`, `FRAG_USE`, `FILES`' eh columns, `FRAGS.refs`,
     `SLOTS.refs`, `KEY_REFS.demand` (WP-239), `SYMBOLS` (with `at_file`,
     `at_index`), `NAMES` (WP-213), `SYMTAB`'s entries, **`SYMTAB_KEYS`** (recomputed: it
     follows from the `.symtab` blocks' places and the resolution),
@@ -4184,7 +4196,7 @@ a pass over a whole table of the state; **O(output)**.
 
   | cause | rows that change |
   |---|---|
-  | a changed, appeared, drawn-in or newly extracted file | its `FILES` row (hash, rank, flags, round (any supporting value, IN-71b); `POSITIONAL` recaptured or cleared, IN-28a), its `STAT` row (tuple re-taken), its ranges of `SECTIONS`, `MENTIONS`, `INDEX`, `EDGES`, `FRAG_USE`, `EH_RECORDS`, `SYMTAB`; its `FILES` eh columns (WP-239); its `FILE_INDEX.first_global` (WP-215; from `ChangedFile::first_global`, the new version's `sh_info`, WP-215 seam 3; always written, never kept from the stored row: `update::view::FileRanges::first_global`, WP-239 seam 5, U-2's F-10); its `KEY_REFS`, `GROUPS`, `COMMONS`, `COPIES` (WP-220) and `DIAGS` rows |
+  | a changed, appeared, drawn-in or newly extracted file | its `FILES` row (hash, rank, flags, round (any supporting value, IN-71b); `POSITIONAL` recaptured or cleared, IN-28a), its `STAT` row (tuple re-taken), its ranges of `SECTIONS`, `MENTIONS`, `INDEX`, `EDGES`, `FRAG_USE`, `SYMTAB`; its `FILES` eh columns (WP-239); its `FILE_INDEX.first_global` (WP-215; from `ChangedFile::first_global`, the new version's `sh_info`, WP-215 seam 3; always written, never kept from the stored row: `update::view::FileRanges::first_global`, WP-239 seam 5, U-2's F-10); its `KEY_REFS`, `GROUPS`, `COMMONS`, `COPIES` (WP-220) and `DIAGS` rows |
   | a gone or no longer extracted file | its row marked gone (extracted → `LAZY` with its defined rows kept), its ranges gone, its key-keyed rows deleted |
   | an input `stat`ed again but hashed equal (touched) | its `STAT` row (review-in77 M-8) |
   | the device stamps (IN-22a) | the device rows of `STAT` |

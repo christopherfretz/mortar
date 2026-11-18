@@ -58,7 +58,7 @@ pub struct Keys<'s> {
 }
 
 /// The slot lists in `SLOTS`' kind order (IN-18a).
-const SLOT_LISTS: [SlotKind; 6] = [
+pub(crate) const SLOT_LISTS: [SlotKind; 6] = [
     SlotKind::Got,
     SlotKind::Plt,
     SlotKind::Iplt,
@@ -89,7 +89,7 @@ fn slot_list_mut(slots: &mut Slots, kind: SlotKind) -> &mut Box<[SymKey]> {
     }
 }
 
-const TAGS: [ChunkTag; 9] = [
+pub(crate) const TAGS: [ChunkTag; 9] = [
     ChunkTag::FileHeader,
     ChunkTag::ProgramHeaders,
     ChunkTag::SectionHeaders,
@@ -101,7 +101,7 @@ const TAGS: [ChunkTag; 9] = [
     ChunkTag::Relocs,
 ];
 
-fn hole_byte(kind: HoleKind) -> u8 {
+pub(crate) fn hole_byte(kind: HoleKind) -> u8 {
     match kind {
         HoleKind::Fill => hole_kind::FILL,
         HoleKind::EhPad => hole_kind::EH_PAD,
@@ -113,7 +113,7 @@ fn hole_byte(kind: HoleKind) -> u8 {
     }
 }
 
-fn hole_of(b: u8) -> Result<HoleKind, String> {
+pub(crate) fn hole_of(b: u8) -> Result<HoleKind, String> {
     Ok(match b {
         hole_kind::FILL => HoleKind::Fill,
         hole_kind::EH_PAD => HoleKind::EhPad,

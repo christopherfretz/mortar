@@ -146,17 +146,22 @@ pub mod kind {
     /// File-keyed: per file its `.symtab` block and `.strtab` region;
     /// file 0's range holds the global area's row (IN-49a).
     pub const SYMTAB: u32 = 43;
-    /// Key-keyed: COMDAT signature, keeper (IN-71).
+    /// Key-keyed: one row per (COMDAT signature, file with a copy); the
+    /// keeper is not stored (IN-71; WP-215).
     pub const GROUPS: u32 = 44;
     /// Key-keyed: one row per (key, mentioning file) (IN-18e, IN-71).
     pub const KEY_REFS: u32 = 45;
-    /// Key-keyed: key, file, size, alignment of each common (IN-72 item 11).
+    /// Key-keyed: one row per (key, file with a common mention): size,
+    /// alignment; the winner is not stored (IN-72 item 11; WP-215).
     pub const COMMONS: u32 = 46;
-    /// Key-keyed: ODR key, class hash and layout (IN-71d).
+    /// Key-keyed: ODR key, class hash and layout (IN-71d). PROVISIONAL:
+    /// not written until WP-236 (format 5 has no such table).
     pub const ODR_CLASSES: u32 = 47;
-    /// Key-keyed: ODR key, file, row kind, class (IN-71d).
+    /// Key-keyed: ODR key, file, row kind, class (IN-71d). PROVISIONAL:
+    /// not written until WP-236 (format 5 has no such table).
     pub const ODR_REFS: u32 = 48;
-    /// Key-keyed: the stored warnings: subjects, code, text, order (IN-75a).
+    /// Key-keyed: the stored warnings: subjects, code, text, order
+    /// (IN-75a). Written by format 5 (not provisional: only 47 and 48 are).
     pub const DIAGS: u32 = 49;
     /// Key-parallel: a global's `.symtab` index and `.strtab` offset
     /// (IN-49a).
@@ -169,7 +174,9 @@ pub mod kind {
     /// Key-keyed: each COMDAT copy's global definition, `(key, file,
     /// symbol index)` → `st_size`, `st_type`: W1 and W2 in an update
     /// (IN-71d; WP-220). Kinds 53 and 54 are reserved for WP-236 (the
-    /// record families' `ODR_KEYS`, `ODR_FILE_KEYS`; not written).
+    /// record families' `ODR_KEYS`, `ODR_FILE_KEYS`; not written); 56 is
+    /// `FRAG_USE` (WP-239 seam 5); 40 (`FRAG_AT`) is retired with it and
+    /// never reused.
     pub const COPIES: u32 = 55;
     /// File-keyed: per file one row per fragment its live split pieces name
     /// (not `.debug_*`), by the fragment's key (IN-18e; WP-239 S4-2, R-1).
@@ -714,37 +721,37 @@ impl Strings {
 
 // ---- reading and writing fields ----------------------------------------------
 
-struct W<'a>(&'a mut Vec<u8>);
+pub(crate) struct W<'a>(pub(crate) &'a mut Vec<u8>);
 
 impl W<'_> {
-    fn u8(&mut self, v: u8) -> &mut Self {
+    pub(crate) fn u8(&mut self, v: u8) -> &mut Self {
         self.0.push(v);
         self
     }
-    fn u16(&mut self, v: u16) -> &mut Self {
+    pub(crate) fn u16(&mut self, v: u16) -> &mut Self {
         self.0.extend_from_slice(&v.to_le_bytes());
         self
     }
-    fn u32(&mut self, v: u32) -> &mut Self {
+    pub(crate) fn u32(&mut self, v: u32) -> &mut Self {
         self.0.extend_from_slice(&v.to_le_bytes());
         self
     }
-    fn u64(&mut self, v: u64) -> &mut Self {
+    pub(crate) fn u64(&mut self, v: u64) -> &mut Self {
         self.0.extend_from_slice(&v.to_le_bytes());
         self
     }
-    fn i64(&mut self, v: i64) -> &mut Self {
+    pub(crate) fn i64(&mut self, v: i64) -> &mut Self {
         self.0.extend_from_slice(&v.to_le_bytes());
         self
     }
-    fn pad(&mut self, n: usize) -> &mut Self {
+    pub(crate) fn pad(&mut self, n: usize) -> &mut Self {
         self.0.extend(std::iter::repeat_n(0, n));
         self
     }
-    fn s(&mut self, s: Str) -> &mut Self {
+    pub(crate) fn s(&mut self, s: Str) -> &mut Self {
         self.u32(s.off).u32(s.len)
     }
-    fn bytes(&mut self, b: &[u8]) -> &mut Self {
+    pub(crate) fn bytes(&mut self, b: &[u8]) -> &mut Self {
         self.0.extend_from_slice(b);
         self
     }
@@ -753,17 +760,17 @@ impl W<'_> {
 /// A cursor over one row's bytes. Reads past the end give zeros (never
 /// reached: the row's width was checked), and pad fields that are not zero
 /// are remembered.
-struct R<'a> {
+pub(crate) struct R<'a> {
     b: &'a [u8],
     at: usize,
-    bad_pad: bool,
+    pub(crate) bad_pad: bool,
 }
 
 impl<'a> R<'a> {
-    fn new(b: &'a [u8]) -> Self {
+    pub(crate) fn new(b: &'a [u8]) -> Self {
         Self { b, at: 0, bad_pad: false }
     }
-    fn take<const N: usize>(&mut self) -> [u8; N] {
+    pub(crate) fn take<const N: usize>(&mut self) -> [u8; N] {
         let mut out = [0u8; N];
         if let Some(src) = self.at.checked_add(N).and_then(|end| self.b.get(self.at..end)) {
             out.copy_from_slice(src);
@@ -771,28 +778,28 @@ impl<'a> R<'a> {
         self.at = self.at.saturating_add(N);
         out
     }
-    fn u8(&mut self) -> u8 {
+    pub(crate) fn u8(&mut self) -> u8 {
         self.take::<1>()[0]
     }
-    fn u16(&mut self) -> u16 {
+    pub(crate) fn u16(&mut self) -> u16 {
         u16::from_le_bytes(self.take())
     }
-    fn u32(&mut self) -> u32 {
+    pub(crate) fn u32(&mut self) -> u32 {
         u32::from_le_bytes(self.take())
     }
-    fn u64(&mut self) -> u64 {
+    pub(crate) fn u64(&mut self) -> u64 {
         u64::from_le_bytes(self.take())
     }
-    fn i64(&mut self) -> i64 {
+    pub(crate) fn i64(&mut self) -> i64 {
         i64::from_le_bytes(self.take())
     }
-    fn h(&mut self) -> Hash16 {
+    pub(crate) fn h(&mut self) -> Hash16 {
         self.take()
     }
-    fn s(&mut self) -> Str {
+    pub(crate) fn s(&mut self) -> Str {
         Str { off: self.u32(), len: self.u32() }
     }
-    fn pad(&mut self, n: usize) {
+    pub(crate) fn pad(&mut self, n: usize) {
         for _ in 0..n {
             if self.u8() != 0 {
                 self.bad_pad = true;
@@ -802,7 +809,7 @@ impl<'a> R<'a> {
 }
 
 /// One row type: its width and its two conversions.
-trait Row: Sized {
+pub(crate) trait Row: Sized {
     const WIDTH: usize;
     fn put(&self, w: &mut W<'_>);
     fn get(r: &mut R<'_>) -> Self;

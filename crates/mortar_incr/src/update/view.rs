@@ -26,7 +26,7 @@ use super::rows::{
     ResolvedRow, SlotRow, SymbolRow, SymtabKeyRow, SymtabRow,
 };
 use crate::format::{
-    ChunkRow, DefinedRow, EhRow, LayoutRow, OutSecRow, PatchRow, ProbeRow, RedirectRow, SectionRow,
+    ChunkRow, DefinedRow, LayoutRow, OutSecRow, PatchRow, ProbeRow, RedirectRow, SectionRow,
     SegmentRow, SizeRow, StatRow, Str, SymPlaceRow,
 };
 
@@ -186,11 +186,6 @@ pub trait StateRows: Sync {
     /// # Errors
     /// `state-corrupt`.
     fn frag_uses_of(&self, file: FileId) -> Rows<Vec<FragUseRow>>;
-    /// A file's `EH_RECORDS` rows (kind 13; range).
-    ///
-    /// # Errors
-    /// `state-corrupt`.
-    fn eh_records_of(&self, file: FileId) -> Rows<Vec<EhRow>>;
     /// A file's `SYMTAB` row (kind 43; range of 0 or 1 row); file 0's is
     /// the global area.
     ///
@@ -430,8 +425,6 @@ pub struct ChangedFile {
     pub index: Vec<IndexRow>,
     /// Its `EDGES` rows (under `--gc-sections`), ids as `index`.
     pub edges: Vec<EdgeRow>,
-    /// Its `EH_RECORDS` rows.
-    pub eh_records: Vec<EhRow>,
     /// `.mason.meta` units it carries (IN-71d; 0 for GCC and Clang).
     pub meta_units: u32,
     /// It has debug sections or a split-DWARF skeleton (IN-70: the G
@@ -576,7 +569,6 @@ pub struct FileRanges {
     pub index: Option<Vec<IndexRow>>,
     pub edges: Option<Vec<EdgeRow>>,
     pub frag_uses: Option<Vec<FragUseRow>>,
-    pub eh_records: Option<Vec<EhRow>>,
     pub symtab: Option<Option<SymtabRow>>,
     /// `REGIONS` (kind 51): rewritten when a region of the file was opened,
     /// grown or moved (IN-78's derived table).

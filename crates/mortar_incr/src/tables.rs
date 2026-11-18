@@ -99,6 +99,17 @@ pub(crate) fn fill(
     let per_file = pool.map(tables.len(), |n| -> Result<_, String> {
         let Some((object, table)) = &tables[n] else { return Ok((Vec::new(), Vec::new())) };
         let file = FileId(n as u32);
+        // Every non-local entry has a key (IN-18e: MENTIONS by position,
+        // none skipped): a map shorter than the table is a fault, never
+        // a silently dropped mention (WP-214; `file_mentions`' skip
+        // cannot be reached past this check).
+        let globals = table.len().saturating_sub(table.first_global().0) as usize;
+        if inputs.sym_map_of(file).len() < globals {
+            return Err(format!(
+                "{}: the symbol table is not the one the input phase read",
+                String::from_utf8_lossy(inputs.files[file].path)
+            ));
+        }
         let mentions = file_mentions(inputs, res, file, table);
         let mut index = Vec::new();
         index_file(inputs, link, file, object, table, arch, &mut index)?;
