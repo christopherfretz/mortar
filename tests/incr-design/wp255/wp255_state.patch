@@ -1,0 +1,198 @@
+diff --git a/crates/mortar/tests/wp255_state.rs b/crates/mortar/tests/wp255_state.rs
+new file mode 100644
+index 00000000..c932967b
+--- /dev/null
++++ b/crates/mortar/tests/wp255_state.rs
+@@ -0,0 +1,192 @@
++//! WP-255 THROWAWAY (never committed under crates/; kept as
++//! tests/incr-design/wp255/state.patch): the primitives of an update's
++//! read of a real format-5 state, timed: open, the FILES/STAT pass, the
++//! changed file's rows, its keys' rows, the referrers (IN-74) and the
++//! whole tables a placement needs; and the raw parse of the changed
++//! member. Env: WP255_STATE (a format-5 state), WP255_ARCHIVE (the
++//! archive, a path), WP255_MEMBER, WP255_REPS.
++
++use std::collections::BTreeSet;
++use std::fs::File;
++use std::time::Instant;
++
++use mortar_core::{FileId, SymbolId};
++use mortar_incr::state5;
++use mortar_incr::update::view::{StateRows as _, StateView};
++
++fn env(k: &str) -> String {
++    std::env::var(k).unwrap_or_else(|_| panic!("{k}"))
++}
++
++fn ms(t: Instant) -> f64 {
++    t.elapsed().as_secs_f64() * 1e3
++}
++
++fn member_bytes(archive: &[u8], member: &[u8]) -> Vec<u8> {
++    let mut at = 8usize;
++    let mut names: &[u8] = b"";
++    while at + 60 <= archive.len() {
++        let h = &archive[at..at + 60];
++        let size: usize = std::str::from_utf8(&h[48..58]).unwrap().trim().parse().unwrap();
++        let mut name = h[..16].trim_ascii_end();
++        let body = at + 60;
++        if name == b"//" {
++            names = &archive[body..body + size];
++        } else if name.len() > 1 && name[0] == b'/' && name[1..].iter().all(u8::is_ascii_digit) {
++            let off: usize = std::str::from_utf8(&name[1..]).unwrap().parse().unwrap();
++            let end = names[off..].windows(2).position(|w| w == b"/\n").unwrap();
++            name = &names[off..off + end];
++        } else if let Some(n) = name.strip_suffix(b"/") {
++            name = n;
++        }
++        if name == member {
++            return archive[body..body + size].to_vec();
++        }
++        at = body + size + (size & 1);
++    }
++    panic!("no member");
++}
++
++#[test]
++#[ignore = "WP-255 experiment: run by tests/incr-design/wp255/state.sh"]
++fn wp255_state() {
++    let path = env("WP255_STATE");
++    let member = env("WP255_MEMBER");
++    let reps: usize = std::env::var("WP255_REPS").ok().and_then(|s| s.parse().ok()).unwrap_or(5);
++    let head = std::fs::read(&path).unwrap();
++    let mut plan = [0u8; 16];
++    plan.copy_from_slice(&head[32..48]);
++    let size = head.len();
++    drop(head);
++    let mut lines: Vec<Vec<(String, f64, u64)>> = Vec::new();
++    for _ in 0..reps {
++        let mut row: Vec<(String, f64, u64)> = Vec::new();
++        let file = File::open(&path).unwrap();
++        let t = Instant::now();
++        let view: StateView<'_> = state5::open(&file, plan).unwrap();
++        let read = |v: &StateView<'_>| state5::read::bytes_read(v).unwrap_or(0);
++        row.push(("open".into(), ms(t), read(&view)));
++        // U2: every FILES row and its STAT row (the change detection).
++        let t = Instant::now();
++        let n = view.count(mortar_incr::format::kind::FILES);
++        let mut changed = None;
++        for f in 0..n as u32 {
++            let r = view.file(FileId(f)).unwrap();
++            let s = view.stat(f);
++            let _ = s;
++            if r.member == 1 || r.member_name.len != 0 {
++                let name = view.string(r.member_name).unwrap();
++                if name == member.as_bytes() {
++                    changed = Some(FileId(f));
++                }
++            }
++        }
++        let changed = changed.expect("the member's FILES row");
++        row.push((format!("U2 FILES+STAT pass ({n} rows)"), ms(t), read(&view)));
++        // The changed file's own rows.
++        let t = Instant::now();
++        let _ = view.file_index(changed).unwrap();
++        let secs = view.sections_of(changed).unwrap();
++        let mentions = view.mentions_of(changed).unwrap();
++        let index = view.index_of(changed).unwrap();
++        let _ = view.symtab_of(changed).unwrap();
++        let _ = view.frag_uses_of(changed).unwrap();
++        let _ = view.regions_of(changed).unwrap();
++        row.push((
++            format!(
++                "changed file's rows ({} sections, {} mentions, {} index)",
++                secs.len(),
++                mentions.len(),
++                index.len()
++            ),
++            ms(t),
++            read(&view),
++        ));
++        // Its keys: SYMBOLS, RESOLVED, KEY_REFS.
++        let t = Instant::now();
++        let keys: BTreeSet<u32> = mentions.iter().map(|m| m.symbol).collect();
++        let mut refs = 0usize;
++        let mut referrers: BTreeSet<u32> = BTreeSet::new();
++        for &k in &keys {
++            let _ = view.symbol(SymbolId(k)).unwrap();
++            let _ = view.resolved(SymbolId(k)).unwrap();
++            for r in view.key_refs(SymbolId(k)).unwrap() {
++                refs += 1;
++                if !r.tomb && r.file != changed.0 {
++                    referrers.insert(r.file);
++                }
++            }
++        }
++        row.push((
++            format!("its {} keys: SYMBOLS+RESOLVED+KEY_REFS ({refs} refs)", keys.len()),
++            ms(t),
++            read(&view),
++        ));
++        // IN-74: the referring files' INDEX ranges (an upper bound: every
++        // file mentioning a key of the changed file).
++        let t = Instant::now();
++        let mut idx = 0usize;
++        for &f in &referrers {
++            idx += view.index_of(FileId(f)).unwrap().len();
++        }
++        row.push((
++            format!("INDEX of the {} mentioning files ({idx} rows)", referrers.len()),
++            ms(t),
++            read(&view),
++        ));
++        let t = Instant::now();
++        let ch = view.chunks().unwrap().len();
++        let _ = view.segments().unwrap();
++        let _ = view.outsecs().unwrap();
++        let _ = view.slots().unwrap();
++        row.push((format!("CHUNKS ({ch}), SEGMENTS, OUTSECS, SLOTS whole"), ms(t), read(&view)));
++        let t = Instant::now();
++        let l = view.leaves().unwrap().len();
++        row.push((format!("LEAVES whole ({l})"), ms(t), read(&view)));
++        lines.push(row);
++    }
++    // The raw parse of the changed member: headers, every symbol, every
++    // relocation record.
++    let archive = std::fs::read(env("WP255_ARCHIVE")).unwrap();
++    let bytes = member_bytes(&archive, member.as_bytes());
++    let mut parse = Vec::new();
++    let mut what = String::new();
++    for _ in 0..reps {
++        let t = Instant::now();
++        let o = mortar_elf::object::Object::parse(&bytes).unwrap();
++        let (mut ns, mut nsym, mut nrel) = (0u64, 0u64, 0u64);
++        for s in o.sections() {
++            ns += 1;
++            let _ = s.name();
++            if s.sh_type() == 4 {
++                if let Some(r) = s.file_range().unwrap() {
++                    nrel += (r.end - r.start) as u64 / 24;
++                }
++            }
++        }
++        if let Some(t) = o.symbols().unwrap() {
++            for i in 0..t.len() {
++                let _ = t.get(mortar_elf::SymbolIndex(i)).unwrap();
++                nsym += 1;
++            }
++        }
++        parse.push(ms(t));
++        what = format!("{} bytes, {ns} sections, {nsym} symbols, {nrel} relocations", bytes.len());
++    }
++    println!("[wp255-state] state {size} bytes; member {member}: {what}");
++    let k = lines[0].len();
++    for i in 0..k {
++        let mut v: Vec<f64> = lines.iter().map(|r| r[i].1).collect();
++        v.sort_by(f64::total_cmp);
++        println!(
++            "[wp255-state] {}: median {:.3} ms (min {:.3}, max {:.3}), cumulative bytes read {}",
++            lines[0][i].0,
++            v[v.len() / 2],
++            v[0],
++            v[v.len() - 1],
++            lines[0][i].2
++        );
++    }
++    parse.sort_by(f64::total_cmp);
++    println!("[wp255-state] raw parse of the member: median {:.3} ms", parse[parse.len() / 2]);
++}

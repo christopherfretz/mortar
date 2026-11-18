@@ -40,6 +40,7 @@ mod rel;
 mod reloc;
 pub mod relocatable;
 pub mod relrel;
+pub mod rows;
 pub mod source;
 pub mod synth;
 pub mod target;
