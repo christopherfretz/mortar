@@ -712,6 +712,12 @@ impl Rec for EdgeRow {
     }
 }
 
+/// The reader's check of an `EDGES` row (`Rec::ok`), for the capture: a
+/// row the reader would refuse is never written.
+pub(crate) fn edge_row_ok(row: &EdgeRow) -> bool {
+    row.ok()
+}
+
 impl Rec for SymtabRow {
     const WIDTH: usize = 36;
     fn put(&self, w: &mut W<'_>) {

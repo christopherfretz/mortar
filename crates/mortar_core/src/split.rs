@@ -120,6 +120,21 @@ fn piece_at(
     })
 }
 
+/// "Every piece of the section": the offset no piece lookup takes
+/// (`spec/model.md` §3.5: a split section is under 4 GiB, so it is never
+/// a real offset).
+pub const EVERY_PIECE: u32 = u32::MAX;
+
+/// A symbol's value (or a reference's offset) as the offset whose piece
+/// it marks in a split section, [`EVERY_PIECE`] when it does not fit:
+/// THE conversion of the full link's mark, the incremental capture's
+/// live-set hash and the update's walk (WP-238 F12; one function for the
+/// three, so that they cannot differ on a value of 2^32 - 1 or more).
+#[must_use]
+pub fn piece_offset(value: u64) -> u32 {
+    u32::try_from(value).unwrap_or(EVERY_PIECE)
+}
+
 impl Split {
     /// The pieces of a `Merge` section.
     #[must_use]

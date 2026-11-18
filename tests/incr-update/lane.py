@@ -246,7 +246,13 @@ class Run:
         pre, post = self.words()
         tools = judge.Tools(self.opts['xtask'], self.cfg.runner(), elflint=shutil.which('eu-elflint'))
         env = dict(os.environ)
-        env.update({'INCR_MORTAR': self.opts['hooked'], 'PYTHONDONTWRITEBYTECODE': '1'})
+        # WP-238 P0-7: every link runs the liveness rows' Rust oracle
+        # (a testhooks build's; the others ignore the variable). It runs
+        # where the state is captured under --gc-sections: the subject's
+        # incremental-mode full links of such a scenario; a disagreement
+        # fails the link, so the hop.
+        env.update({'INCR_MORTAR': self.opts['hooked'], 'PYTHONDONTWRITEBYTECODE': '1',
+                    'MORTAR_INCR_LIVE_CHECK': '1'})
         if self.wrong_at is not None:
             env['INCR_WRONG_AT'] = str(self.wrong_at)
         prev = None             # the previous successful hop's G (the oracle's base)
@@ -278,6 +284,11 @@ class Run:
             xs, xerr = self.link(self.subject_argv(), W, pre, post,
                                  ['--incremental', '--incremental-report=' + os.path.join(H, 'rep.txt'),
                                   '--mortar-map=prog.map'], senv)
+            for l in xerr.splitlines():
+                if 'incremental: live-check ' in l:
+                    w = l.split('incremental: live-check ', 1)[1].split()
+                    k = w[0] if w[0] != 'refused' else 'refused ' + w[1].rstrip(':')
+                    res.setdefault('live', {})[k] = res.setdefault('live', {}).get(k, 0) + 1
             for src, dst in (('prog', 'x'), ('prog.map', 'x.map')):
                 if os.path.exists(os.path.join(W, src)):
                     shutil.copy2(os.path.join(W, src), os.path.join(H, dst))
@@ -534,6 +545,12 @@ def main(argv):
             ','.join('%s:%d' % kv for kv in sorted(r['reasons'].items())) or '-', r['wall']))
         if r.get('trace'):
             log(r['trace'])
+    live = {}
+    for r in results:
+        for k, n in r.get('live', {}).items():
+            live[k] = live.get(k, 0) + n
+    log('incr-update: live-check (WP-238 P0-7): %d links: %s' % (
+        sum(live.values()), ' '.join('%s:%d' % kv for kv in sorted(live.items())) or '-'))
     names = {s.name for s, _c, _t in runs}
     log('incr-update: %d scenarios, %d hops: %d PASS, %d FAIL, %d n/a (%s); %d runs, %d not here '
         '(scenario: %d, tools: %d); %.0fs' % (

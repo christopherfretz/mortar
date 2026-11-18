@@ -75,7 +75,7 @@ fn corrupt(what: impl std::fmt::Display) -> IncrReason {
 /// An option's operand as its key's name and version
 /// (`mortar_core::incr::OptionKey::name`, as `key_of` splits it): `foo@V`
 /// is `(foo, V)`, `foo@@V` is `foo` with no version.
-fn split_version(name: &[u8]) -> (&[u8], &[u8]) {
+pub(crate) fn split_version(name: &[u8]) -> (&[u8], &[u8]) {
     match name.iter().position(|&b| b == b'@') {
         None => (name, b""),
         Some(i) if name.get(i + 1) == Some(&b'@') => (&name[..i], b""),
