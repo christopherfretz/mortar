@@ -2205,7 +2205,9 @@ with each phase fed from the state for unchanged files:
   equivalent to the full link; a hand-written object with two
   same-named locals at one value, each referenced through the GOT,
   edited.
-- **IN-29 [v1] Liveness** under `--gc-sections` is recomputed in full
+- **IN-29 [v1] Liveness** (*not built: WP-238*; until then an update
+  under `--gc-sections` is `update-not-implemented (live)`, WP-215 seam
+  3) under `--gc-sections` is recomputed in full
   from the roots, without reading unchanged files, by walking a **stored
   graph that is, by construction, the edge set the full link's liveness
   pass walks** (image.md I-6 roots, I-7 edges; the re-review's N2). This
@@ -2961,6 +2963,26 @@ a pass over a whole table of the state; **O(output)**.
   (review-in72 m-3): a file that IN-71b newly extracts, or IN-72 item 2a
   draws in, is read (U4) and its keys become affected (U5), until no
   file flips; each round only adds files, so it ends.
+  **Values** (WP-215 seam 3): a changed file's `st_value` and `st_size`
+  per mention are passed in (`ChangedFile::values`, made by the capture
+  function that makes its `MENTIONS` rows; never stored). An unchanged
+  file that becomes a key's definer, a common's winning file or a
+  group's keeper is **drawn in**: `resolve` returns the files to read
+  (`Resolution::DrawIn`) instead of a delta, never a partial delta; the
+  join reads them (`Change::DrawnIn`, IN-75's `STAT` check first) and
+  calls `resolve` again. A drawn-in file's mentions equal its stored
+  rows, so it adds no affected key beyond those the first call derived
+  and changes no candidate or winner: the second call asks for nothing
+  (at most `RESOLVE_CALLS` = 2 calls; a second draw-in means a drawn-in
+  file's bytes disagree with its rows: `input-changed`). Drawn-in files
+  count toward IN-16's bound.
+  **Strings** (WP-215 seam 3): the changed files' `Str`s (section names,
+  signatures) are of the update's id space: one buffer
+  (`ChangedFiles::strings`, at or past the state's `STRINGS` length) that
+  `StatePatch::strings` begins with, read by one function
+  (`ChangedFiles::string`). Names are equal by **bytes**, never by `Str`
+  value. Every update appends the changed files' names again (no lookup
+  by content).
   **Options** (WP-215 D3-D5): the keys the options name (resolve.md
   §4.2's roots: the entry or `_start`, `-u`, `EXTERN`,
   `--require-defined`, the `--defsym` operands; `--wrap`; the `--defsym`
@@ -3214,7 +3236,11 @@ a pass over a whole table of the state; **O(output)**.
   fall-back and the register test (`update_knows_every_default_check`);
   `odr_runtime_note_under_update` asserts the fall-back by name.
 
-- **IN-71a [v1] Liveness from stored edges.** IN-29's stored graph is the
+- **IN-71a [v1] Liveness from stored edges** (*not built: WP-238*;
+  until then `live` returns the empty delta without `--gc-sections`, read
+  from `OptionKeys::gc_sections`, and `update-not-implemented (live)`
+  with it, on every update, decided from the option alone: WP-215 seam
+  3). IN-29's stored graph is the
   `EDGES` table (IN-18e: per file a range of rows, each IN-29's row
   kind). The update walks it from the roots with the changed files'
   ranges replaced by their fresh rows. A walk reads every row: its cost
@@ -3945,7 +3971,7 @@ a pass over a whole table of the state; **O(output)**.
 
   | cause | rows that change |
   |---|---|
-  | a changed, appeared, drawn-in or newly extracted file | its `FILES` row (hash, rank, flags, round (any supporting value, IN-71b); `POSITIONAL` recaptured or cleared, IN-28a), its `STAT` row (tuple re-taken), its ranges of `SECTIONS`, `MENTIONS`, `INDEX`, `EDGES`, `FRAG_AT`, `EH_RECORDS`, `SYMTAB`; its `FILE_INDEX.first_global` (WP-215); its `KEY_REFS`, `GROUPS`, `COMMONS`, `COPIES` (WP-220) and `DIAGS` rows |
+  | a changed, appeared, drawn-in or newly extracted file | its `FILES` row (hash, rank, flags, round (any supporting value, IN-71b); `POSITIONAL` recaptured or cleared, IN-28a), its `STAT` row (tuple re-taken), its ranges of `SECTIONS`, `MENTIONS`, `INDEX`, `EDGES`, `FRAG_AT`, `EH_RECORDS`, `SYMTAB`; its `FILE_INDEX.first_global` (WP-215; from `ChangedFile::first_global`, the new version's `sh_info`, WP-215 seam 3); its `KEY_REFS`, `GROUPS`, `COMMONS`, `COPIES` (WP-220) and `DIAGS` rows |
   | a gone or no longer extracted file | its row marked gone (extracted → `LAZY` with its defined rows kept), its ranges gone, its key-keyed rows deleted |
   | an input `stat`ed again but hashed equal (touched) | its `STAT` row (review-in77 M-8) |
   | the device stamps (IN-22a) | the device rows of `STAT` |
@@ -4424,7 +4450,7 @@ update), reported as `incremental: full (<reason>)` (IN-10). With
 | `state-busy` | the state's path named another inode after its lock was acquired, 8 times in a row (IN-77b, WP-207): another link keeps replacing it | permanent |
 | `lock-unavailable` | the file system does not enforce `flock` on the state (image.md I-59's probe), so two updates could interleave (IN-77b, WP-207) | permanent |
 | `small-output` | the output the state describes (`META`'s output size) is smaller than 256 MiB (`mortar_incr::SMALL_OUTPUT`), checked after every row above. Not with `--incremental=update`, which updates whatever the size. **A policy constant, not a measured crossover**: an update was measured at 55 MB (0.67-1.15 of a plain link, saving at most 124 ms) and at 583-832 MB (0.70-0.94; 0.19-0.26 with the state read and written by range), and on no workload between (WP-094 §7). 256 MiB is a power of two between them, so that the mode can be told from `ls -l`; WP-105 measures a workload in that range and moves it if the crossover is elsewhere | permanent (the bound a policy constant) |
-| `update-not-implemented` | the state is valid, the plan and the output match it, the output is not small, and the update path does not exist yet (WP-061 stage A: every incremental link is a full one after the checks above, in this order; `--incremental=update` fails with it whatever the size) | stage A only. Amended (WP-202, IN-70): after the update joins (U-10), only a changed, appeared or newly extracted file with debug sections or a split-DWARF skeleton gives it (`update-not-implemented (debug)`), or with `.mason.meta` units under `--keep-mason-meta` (`update-not-implemented (meta)`, IN-71d, WP-207), or a stored `link`-subject warning the update cannot raise again within O(change) (`update-not-implemented (diags)`, IN-75a, WP-212), or a symbol-table entry named `foo@V` or `foo@@V` in the stored link or in a changed file's new bytes (`update-not-implemented (versioned)`, IN-71 Versions, WP-215; [later] the version of a `@@` definition stored); the G packages delete the row (the `versioned` clause stays until its [later]). Until the join, each entry point of the cut that has not landed gives its own word (WP-213: `state5`, `resolve`, `refill`, `layout`, `symtab`, `image`, `write`, `meta`, `debug`, `diags`; WP-215: `versioned`; the floor's stage-A reason prints none); the reasons are one type, `mortar_core::incr::IncrReason` |
+| `update-not-implemented` | the state is valid, the plan and the output match it, the output is not small, and the update path does not exist yet (WP-061 stage A: every incremental link is a full one after the checks above, in this order; `--incremental=update` fails with it whatever the size) | stage A only. Amended (WP-202, IN-70): after the update joins (U-10), only a changed, appeared or newly extracted file with debug sections or a split-DWARF skeleton gives it (`update-not-implemented (debug)`), or with `.mason.meta` units under `--keep-mason-meta` (`update-not-implemented (meta)`, IN-71d, WP-207), or a stored `link`-subject warning the update cannot raise again within O(change) (`update-not-implemented (diags)`, IN-75a, WP-212), or a symbol-table entry named `foo@V` or `foo@@V` in the stored link or in a changed file's new bytes (`update-not-implemented (versioned)`, IN-71 Versions, WP-215; [later] the version of a `@@` definition stored), or a link under `--gc-sections` (`update-not-implemented (live)`, IN-71a, WP-215 seam 3; [later] WP-238); the G packages delete the row (the `versioned` and `live` clauses stay until their [later]). Until the join, each entry point of the cut that has not landed gives its own word (WP-213: `state5`, `resolve`, `refill`, `layout`, `symtab`, `image`, `write`, `meta`, `debug`, `diags`; WP-215: `versioned`, `live`; the floor's stage-A reason prints none); the reasons are one type, `mortar_core::incr::IncrReason` |
 | `extraction-changed` | IN-71b's bound: more than 1,024 archive members flip, or a removal cone's re-seeding reads more than 65,536 `KEY_REFS` rows (WP-207) | v1; [later] the bound measured and moved |
 | `closure-iterated` | the stored link's closure ran more than one iteration, or the full link of the update's inputs would (resolve.md §4.1; IN-71b Iterations; WP-215) | v1; [later] an iteration-aware state |
 | `inputs-reordered` | two unchanged inputs' relative order changed. The input list's order is in the plan (`options-changed`, checked first), so the delta meets this only through archive extraction order (WP-063: two unchanged `FILES` rows in a different relative order) | v1; [later] when no COMDAT keeper or placement order depends on it |
