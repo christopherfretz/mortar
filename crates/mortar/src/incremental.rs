@@ -27,7 +27,6 @@ use mortar_image::link::Written;
 use mortar_incr::capture::{Keys, Link};
 use mortar_incr::format::{self, Meta, StatRow, State, Strings, stat_tag};
 use mortar_incr::stamp::{self, DeviceStamp, Tuple};
-use mortar_incr::testhook::crash_point;
 use mortar_input::store::Store;
 
 use crate::front::Front;
@@ -591,6 +590,8 @@ impl Session {
                 }
             }
         }
+        // IN-77b: the lock is held to the state's last write.
+        drop(self.lock.take());
         let (changed, refilled) =
             dry.as_ref().map_or((f.inputs.files.len().saturating_sub(1) as usize, 0), |d| {
                 (d.changed, d.refilled)

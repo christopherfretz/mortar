@@ -1596,11 +1596,12 @@ fn two_updates_one_output_serialize() {
     let w = World::create(&tmp.0, false);
     let (started_tx, started_rx) = std::sync::mpsc::channel();
     let (done, acquired) = std::thread::scope(|scope| {
-        let second = scope.spawn(|| {
+        let wr = &w;
+        let second = scope.spawn(move || {
             started_rx.recv().unwrap();
-            let lock = lock_state(&w.s, &mut StdOps).unwrap().expect("a state");
+            let lock = lock_state(&wr.s, &mut StdOps).unwrap().expect("a state");
             let at = std::time::Instant::now();
-            let verdict = judge(&w, &real, None);
+            let verdict = judge(wr, &real, None);
             drop(lock);
             (at, verdict)
         });
@@ -1658,7 +1659,7 @@ fn boot_id_changed_checks_leaves() {
     let p = tmp.0.join("out");
     let bytes: Vec<u8> = (0..(5 << 19)).map(|i: u32| (i % 241) as u8).collect();
     std::fs::write(&p, &bytes).unwrap();
-    let sealed = (3 << 20) + 16..(3 << 20) + 36; // the build id, in leaf 3
+    let sealed = (1 << 20) + 16..(1 << 20) + 36; // the build id, in leaf 1
     let mut m = MemoryState::default();
     m.meta.file_size = bytes.len() as u64;
     m.meta.leaf_fn = 0;
