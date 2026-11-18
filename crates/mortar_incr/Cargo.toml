@@ -14,6 +14,8 @@ mortar_core.workspace = true
 mortar_diag.workspace = true
 mortar_digest.workspace = true
 mortar_elf.workspace = true
+# The debug placement's size classes are the full link's (WP-228 B2-1).
+mortar_layout.workspace = true
 # W1 and W2 in an update call the full link's comparator (WP-220).
 mortar_odr.workspace = true
 

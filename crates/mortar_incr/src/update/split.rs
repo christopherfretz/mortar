@@ -19,8 +19,8 @@
 //!    units inside the object); a `.debug_info` in a COMDAT group (DWARF 5
 //!    type units, g++ and clang++); a unit whose type is not
 //!    `DW_UT_compile` (1) or `DW_UT_skeleton` (4) (type, partial,
-//!    split-compile, split-type, an unknown type); a header that cannot be
-//!    read (a version outside 2..=5, a length past its section, contents
+//!    split-compile, split-type, an unknown type); a 64-bit DWARF unit
+//!    (WP-228 B2-6); a header that cannot be read (a version outside 2..=5, a length past its section, contents
 //!    not resident).
 //! 3. Otherwise [`Handled`]: compile units (DWARF 2 to 5) and skeleton
 //!    units are ordinary per-file contributions for G-1 (IN-50..IN-57).
@@ -121,7 +121,7 @@ fn first_reason(found: &mut Option<IncrReason>, r: IncrReason) {
 }
 
 /// The unit headers of one `.debug_info` section: counts into `h`, or the
-/// reason. Reads `unit_length` (32- or 64-bit DWARF), `version` and, for
+/// reason. Reads `unit_length` (a 64-bit unit is `debug-unit-kind`), `version` and, for
 /// DWARF 5, `unit_type`; never a DIE.
 fn units(data: &[u8], h: &mut Handled, v4: &mut bool) -> Rows<()> {
     let bad = |what: &str| unit_kind(format!(".debug_info: unreadable unit header ({what})"));
@@ -130,13 +130,13 @@ fn units(data: &[u8], h: &mut Handled, v4: &mut bool) -> Rows<()> {
     };
     let mut p = 0usize;
     while p < data.len() {
-        let mut len = u64::from(u32_at(p).ok_or_else(|| bad("truncated unit_length"))?);
+        let len = u64::from(u32_at(p).ok_or_else(|| bad("truncated unit_length"))?);
         p += 4;
         if len == 0xffff_ffff {
-            let lo = u64::from(u32_at(p).ok_or_else(|| bad("truncated unit_length"))?);
-            let hi = u64::from(u32_at(p + 4).ok_or_else(|| bad("truncated unit_length"))?);
-            len = lo | (hi << 32);
-            p += 8;
+            // WP-228 B2-6 (B1-5): a 64-bit DWARF unit in a changed file is
+            // `debug-unit-kind` in v1 (the update's offsets and neutral
+            // forms are 32-bit words).
+            return Err(unit_kind(".debug_info: a 64-bit DWARF unit"));
         } else if len >= 0xffff_fff0 {
             return Err(bad("reserved unit_length"));
         }
@@ -275,10 +275,12 @@ mod tests {
             let e = units(&unit5(t), &mut h, &mut v4).unwrap_err();
             assert!(matches!(&e, IncrReason::DebugUnitKind(d) if d.contains(why)), "{e:?}");
         }
+        // WP-228 B2-6: a 64-bit unit is `debug-unit-kind`.
         let mut long = vec![0xff; 4];
         long.extend(8u64.to_le_bytes());
         long.extend([5, 0, 1, 8, 0, 0, 0, 0]);
-        units(&long, &mut h, &mut v4).unwrap();
+        let e = units(&long, &mut h, &mut v4).unwrap_err();
+        assert!(matches!(&e, IncrReason::DebugUnitKind(d) if d.contains("64-bit")), "{e:?}");
         for bad in [
             vec![1, 0],
             100u32.to_le_bytes().to_vec(),

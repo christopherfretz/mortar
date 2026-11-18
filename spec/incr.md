@@ -2122,7 +2122,7 @@ with each phase fed from the state for unchanged files:
   | a global's definition moved or changed (value, size, definer, kind) | the index's referrers of that global, and its slots' units (GOT, PLT, `.dynsym` per §5.8) |
   | a COMDAT group's keeper changed | the old keeper's group members become holes; the new keeper's are placed (§5.6) and refilled; the referrers of the group's symbols; and **every file whose copy of the group became dead or live** (the old and the new keeper's files, changed or not): that file's `.eh_frame` contribution and all its non-allocated units |
   | a demand flag of a global changed (`GOT_NORELAX`, `TLSIE_NORELAX`, `CANON_PLT`, `COPY`; model §7.2) | the units the index records for that flag and that global |
-  | a section of an unchanged file moved (a growth step, L-144) | that section's unit; the index's referrers of the section and of the globals defined in it; all non-allocated units of its file |
+  | a section of an unchanged file moved (a growth step, L-144) | that section's unit; the index's referrers of the section and of the globals defined in it; all non-allocated units of its file. In an output with debug sections a growth step is `debug-growth` in v1 (WP-228 R-8): the step would refill every debug byte |
   | a synthetic table changed (§5.7) | its units, and the referrers of its end symbols |
   | a patch or thunk was added, moved or removed (arch.md "Incremental links") | the sites' units and the island's |
   | liveness changed (IN-29): a section of any file became dead or live | sections that became live are placed and refilled; sections that died become holes; the referrers of their globals; and that file's `.eh_frame` contribution and all its non-allocated units |
@@ -4441,13 +4441,20 @@ file changes or when one of its file's sections moves (IN-25).
   rounded up to `m·2^k` with `m` in 8..15 (at most 12.5% over, at least 32
   bytes), and to the next class when the slack would be smaller than the
   section's minimum neutral form (IN-51b); the bytes between its end and
-  the allotment's end are a dead range in that form. A changed file's new contribution
+  the allotment's end are a dead range in that form. A `.debug_abbrev`
+  contribution is allotted the class of at least `size + size/8` (WP-228
+  P2: an edit's added abbreviation then fits in place; +113.7 KB on
+  protoc `-g`, files with under 32 bytes of abbreviation slack from 301
+  to 10 of 2,366; an incremental-mode link only). A changed file's new contribution
   goes, first fit:
   1. **in place**, if it fits the file's current allotment (the common
      case: sizes barely move, §1.1);
   2. else **best fit into a dead range** of the same section, where the
      remainder is 0 or at least the section's minimum neutral length
-     (IN-53);
+     (IN-53) and a multiple of its granule; a reused range's remainder
+     stays a dead range in the section's form, a contribution placed in
+     place keeps its old allotment and its remainder is the allotment's
+     slack (`HOLES` kind 2);
   3. else **at the section's tail** reserve (IN-33);
   and the old allotment, if left, becomes a dead range (IN-3a). A full
   link's first-time placement is the full-link order with every
@@ -4735,7 +4742,12 @@ file changes or when one of its file's sections moves (IN-25).
 - **IN-57 [v1] Compaction.** When the dead bytes **summed over all debug
   sections** exceed a quarter of their summed size, or a contribution
   fits nowhere (IN-50), the update falls back (`debug-compaction`): the
-  full link writes the debug sections without dead ranges. Measured by
+  full link writes the debug sections without dead ranges. The merged
+  strings (`.debug_str`, `.debug_line_str`, IN-56) and `.debug_aranges`
+  (IN-54) are in neither sum (WP-228 B2-4): neither has dead ranges, and
+  counting their bytes would only delay the trigger. A dead range smaller
+  than its section's minimum neutral form (IN-51b) is `debug-compaction`
+  too (B2-5). Measured by
   the M2 model (`corpus2/debug_tail_reuse.py`: the real protoc `-g` map,
   every contribution in its size class, IN-50's three placements, new
   sizes drawn from the corpus's 745 drift samples, 500 consecutive

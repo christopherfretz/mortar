@@ -995,6 +995,52 @@ fn appearing_non_alloc_output_section_is_refused() {
     }
 }
 
+// spec: incr.md IN-50 and §7's `update-not-implemented (debug)` (WP-228
+// R-1: a `.debug_*` section is left to the debug placement only when the
+// caller says it runs; otherwise it is refused, so no tree has a debug
+// section neither placed nor refused. The other side is
+// `place_leaves_no_debug_section_unplaced` in mortar_incr's
+// `update_debug.rs`)
+#[test]
+fn debug_section_refused_unless_debug_placement_runs() {
+    let debug = |size| sec(b".debug_info", SHT_PROGBITS, 0, size, 0);
+    for m in [Machine::X86_64, Machine::AArch64] {
+        let mut files = two_text_files();
+        files[0].push(debug(48));
+        files[1].push(debug(40));
+        let s0 = first(m, &files);
+        let t = &s0.world.target;
+        let stored = StoredLayout::new(&s0.mem);
+        let old = s0.world.sid(1, 4);
+        let at = s0.placed.placement.place[old].get().expect("the full link places .debug_info");
+        let grown = {
+            let mut f = s0.files();
+            f[0][3] = debug(64);
+            Edit::new(f).changed(&[1])
+        };
+        let died = Edit::new(s0.files()).changed(&[1]).dead(&[(1, 4)]);
+        for edit in [&grown, &died] {
+            let (changes, ids2) = changes_of(&s0, edit);
+            let e = layout(&stored, &input(&changes), t).err();
+            assert_eq!(
+                e,
+                Some(IncrReason::UpdateNotImplemented(Some(Unimplemented::Debug))),
+                "{m:?}"
+            );
+            let inp = LayoutInput { debug: true, ..input(&changes) };
+            let d = layout(&stored, &inp, t).unwrap();
+            let now = ids2[changes.iter().position(|c| c.key.name == b".debug_info").unwrap()];
+            assert_eq!(d.place_of(&stored, now).unwrap(), PlaceNow::NotPlaced, "{m:?}");
+            assert!(d.files.contains(&FileId(1)), "{m:?}");
+            assert!(d.killed.contains(&old), "{m:?} {:?}", d.killed);
+            assert!(!d.hole_chunks.contains(&at.0), "{m:?} {:?}", d.hole_chunks);
+            // The other file's `.debug_info` keeps its stored place.
+            let other = s0.world.sid(2, 3);
+            assert!(matches!(d.place_of(&stored, other).unwrap(), PlaceNow::Stored(_)), "{m:?}");
+        }
+    }
+}
+
 // spec: incr.md IN-72 item 9 (the island keeps its first-link capacity;
 // `_etext` (DEFINED) does not move in U7 but by a growth step; a tail in
 // the island cannot take a region: reserve-exhausted, WP-216 F-3)
