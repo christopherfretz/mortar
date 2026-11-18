@@ -356,11 +356,11 @@ pub struct KeyRefRow {
     pub tomb: bool,
 }
 
-/// `FRAGS` (kind 11, key-keyed by identity; IN-72 item 6): a merged
-/// fragment's identity, offset and reference count. Written by capture
-/// and U-2 (from `LayoutDelta::frags`); read by U-4, U-6. As
-/// `mortar_core::incr::StoredFrag` (whose `class` is this `ordinal`) plus
-/// `tomb`.
+/// `FRAGS` (kind 11, key-keyed by `(out, hash, ordinal)`; IN-72 item 6):
+/// a merged fragment's identity, offset and reference count. Written by
+/// capture and U-2 (from `LayoutDelta::frags`); read by U-4, U-6. As
+/// `mortar_core::incr::StoredFrag` plus `tomb`; `ordinal` is not the merge
+/// class (`StoredFrag::ordinal`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct FragRow {
     pub out: u32,

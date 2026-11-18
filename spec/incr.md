@@ -1580,7 +1580,12 @@ with each phase fed from the state for unchanged files:
   and 562 ms on g10x, exceeds protoc's whole budget, so the go/no-go gate
   of §10 would be missed by design). The only whole reads are the
   compaction (IN-18f), `incr_state` and the tests' `canon`; a
-  `StateView` is built lazily, per block. *Test (U-2):*
+  `StateView` is built lazily, per block. The update's own `Placement`
+  (IN-72's `LayoutDelta`) is sparse in the same way (WP-216 R-3): it
+  names the files whose sections it places and the chunks whose holes it
+  replaces; any other section's place and chunk's holes are the stored
+  rows, read by key through one reader (`LayoutDelta::place_of`,
+  `holes_of`), never copied whole into it. *Test (U-2):*
   `update_reads_only_touched_blocks` (the reader's block count for a
   one-file edit on the large fixture is O(the delta's rows), and a
   flipped byte in an untouched block does not stop the update).
@@ -3249,7 +3254,8 @@ a pass over a whole table of the state; **O(output)**.
   and `lsda-edges` as updates; the mutation per edge kind (IN-63b).
 
 - **IN-72 [v1] The delta layout** (amended by WP-207: items 2, 2a, 3, 6,
-  10, 11 and the growth step; by WP-211: items 2a, 9, 11). From the stored layout, never a fresh one.
+  10, 11 and the growth step; by WP-211: items 2a, 9, 11; by WP-216 seam 4:
+  items 2a, 5, 6, 7, 11). From the stored layout, never a fresh one.
   Rows of unchanged files are read only where the delta reaches them
   (their `SECTIONS` rows by `FILE_INDEX` range; `HOLES` and `CHUNKS` by
   output section). Before item 1, IN-71's COMDAT election and IN-71a's
@@ -3320,9 +3326,11 @@ a pass over a whole table of the state; **O(output)**.
      a section of it becomes live (IN-71a) or kept (IN-71's election), or
      stops being so; one of its globals is demoted to a local of its
      block by the merged visibility (S-74) or promoted back; it becomes,
-     or stops being, the **winning file of a common** (item 11: a changed
-     file adds or removes a common mention less by ≺ than the current
-     winner, or the winner's own mention changes; review-wp207 M-3). A drawn-in
+     or stops being, the **winning file of a common** ([later], with item
+     11's placing rule: a changed file adds or removes a common mention
+     less by ≺ than the current winner, or the winner's own mention
+     changes; review-wp207 M-3; v1 draws no file in for a common, item
+     11). A drawn-in
      file is processed exactly as a changed file whose bytes are its old
      bytes: it is opened, `fstat`ed and compared with its `STAT` row
      (IN-28a condition 2; else `input-changed`; review-in72 M-6) and read
@@ -3364,7 +3372,26 @@ a pass over a whole table of the state; **O(output)**.
      m-4: IN-2 item 5 holds for `IRELATIVE`;
      `two_ifuncs_added_irelative_order`).
   5. **`.eh_frame`** by IN-34a (a range rewritten from its start; on
-     overflow the whole section rewritten in full-link order).
+     overflow the whole section rewritten in full-link order). Input
+     (WP-216 seam 4, `mortar_core::incr::EhFile`): per changed, drawn-in
+     or gone file, its kept records as the full link's selection gives
+     them (S-46..S-49 over the file alone, sizes by S-47) and its
+     **current rank** (S-46's order is the load order: `FILES.rank`
+     composed with the update's ranks, never the `FILES` row number);
+     stored: the file's `EH_RECORDS` range. Output (`LayoutDelta::eh`):
+     the ranges rewritten (file, offset, capacity, each record's offset),
+     or the section rewritten whole with every range. A range's unused
+     tail is 0 bytes, 4, 8 or 12 bytes absorbed into its last record, or
+     an `EhPad` hole of at least 16 bytes; the padding CIE's bytes and
+     `.eh_frame_hdr` are U-6's. A file that appears between two stored
+     ranges rewrites the section whole (every later range moves and its
+     FDEs' PC-relative fields change). **v1** (WP-216 seam 4, finding
+     S4-3): neither a file's range (offset, capacity) nor a stored
+     record's size is stored, and the incremental-mode full link packs
+     the records with no per-file pad (IN-33's slack is past the chunk
+     only); so a changed, drawn-in, appeared or gone file with kept
+     records in either version is `update-not-implemented (layout)` until
+     the datum is ruled.
   6. **Merged sections** (S-110, L-147): a fragment is identified by
      (output section, merge class, content hash), where the merge class
      is (`sh_flags`, `sh_entsize`, alignment) of the input pieces. A
@@ -3377,11 +3404,42 @@ a pass over a whole table of the state; **O(output)**.
      after its fill would otherwise read the fill). No fragment of an
      unchanged file ever moves, so the contents edits WP-064a refused
      (s4, W6) need no refill outside the changed files. Its tail
-     exhausted: `reserve-exhausted`.
+     exhausted: `reserve-exhausted`. Input (WP-216 seam 4,
+     `mortar_core::incr::FilePieces`): per changed, drawn-in or gone file,
+     its pieces as the full link's split gives them (S-6..S-10: section,
+     offset, size, output section, merge class, L128); stored: `FRAGS` by
+     the identity prefix `(out, hash)` (key-keyed, two binary searches;
+     never a whole read of an output section's fragments) and the file's
+     `FRAG_AT` rows (its old version's fragments). Output:
+     `LayoutDelta::frags`. `FRAGS.refs` after an update is exact (IN-78
+     compares it with the state computed afresh). **v1** (WP-216 seam 4,
+     findings S4-1, S4-2): `FRAGS.ordinal` is a rank among the fragments
+     of one `(out, hash)`, not the merge class, and `FRAG_AT` holds one row
+     per live fragment at its first occurrence in the file, not each
+     piece; so a piece whose `(out, hash)` has a stored row, or a file
+     whose old version had merged pieces, is `update-not-implemented
+     (layout)` until the datum is ruled; a piece of a new identity is
+     appended.
   7. **Slots** (S-113): new GOT, IPLT and TLS slots appended within the
      slot region's capacity, dead slots written 0;
      `reserve-exhausted` past it. A slot keyed by a local of a changed
-     file follows IN-28b.
+     file follows IN-28b. Input (WP-216 seam 4,
+     `mortar_core::incr::FileDemands`): per changed, drawn-in or gone file,
+     its slot demand (key and flags) from the same per-unit scan as the
+     full link's; stored: `SLOTS` (whole) and the file's `INDEX` rows of
+     kinds `SLOT` and `GLOBAL` (what its old version used). An update's
+     `SLOTS` is the full link's set (IN-78's `SLOTS` row; plumb.md P-E5
+     item 5 compares the GOT's words outside the update's holes with the
+     full link's as multisets, so a kept slot that no file demands is an
+     extra word): a slot no live file demands is dead, written 0 and a
+     hole. A slot keyed by a local of a changed file is dead (IN-28b: a
+     local has no identity across versions) and the new version's demand
+     appended. **v1** (WP-216 seam 4, finding S4-4): which slot kinds a
+     file demanded, and how many live files demand a slot, are not
+     stored; so a stored global slot of a key that the changed file's old
+     version used through a slot (or a gone file used), of a kind its new
+     version does not demand, is `update-not-implemented (layout)` until
+     the datum is ruled.
   8. **TLS**: every TLS input section's TP offset under the new layout
      equals its stored one, or `tls-layout-changed` (IN-34).
   9. **Thunks and patches** (arch.md "Incremental links") for refilled
@@ -3406,7 +3464,16 @@ a pass over a whole table of the state; **O(output)**.
       `note_abi_tag_size_change`). An
       output section's alignment growing past its stored address's:
       `reserve-exhausted`.
-  11. **Commons** (review-in72 M-2, option (a)): in an incremental-mode
+  11. **Commons.** **v1** (WP-216 R-2): commons stay in the commons
+      chunk (layout.md L-88) in every mode, as the capture stores them,
+      and an update places none. An update in which a winning common
+      appears, goes, becomes a definition (or a definition a common), or
+      changes size or alignment is `update-not-implemented (common)`,
+      decided by the join (U-10) after U-3's re-election, from
+      `ResolveDelta::commons` against the stored `COMMONS` rows, before
+      the layout is called; a winning mention that only moves to another
+      file changes nothing in the layout and is no fall-back. **[later]**
+      (review-in72 M-2, option (a)): in an incremental-mode
       output each winning common is placed as a section of its **winning
       file: the file of its winning mention** (resolve.md §3.3: `def` is
       `Common{file, st_index}` of the least common mention by ≺; WP-211,
@@ -3440,9 +3507,10 @@ a pass over a whole table of the state; **O(output)**.
   `comdat_election_before_region`; `alignment_padding_counts`;
   `delta_layout_same_on_1_and_n_threads`; `gc_section_dies_then_revives`
   (first link without the section, too), `comdat_keeper_moves_to_unchanged_file`,
-  `n2_visibility_demotes_unchanged_definer`, `n4_common_grows`,
-  `common_appears`, `two_commons_one_grows`, `merged_constant_dies_revives`,
-  `common_winner_moves_to_unchanged_file` (WP-211),
+  `n2_visibility_demotes_unchanged_definer`,
+  `merged_constant_dies_revives` (`n4_common_grows`, `common_appears`,
+  `two_commons_one_grows` and `common_winner_moves_to_unchanged_file`,
+  WP-211, are the join's in v1: WP-216 R-2),
   `hole_inside_kept_shrunk_section` (the freed tail of a kept section is
   filled and listed exactly as a region's slack, IN-3a, P-I5; WP-211 from
   review-wp207 §10), `link_order_target_dies` (an unchanged file's
@@ -3465,7 +3533,7 @@ a pass over a whole table of the state; **O(output)**.
   | a definition moved inside its section (n1) | IN-72 item 2, IN-27 global row (value) | `reserve-exhausted` |
   | visibility (n2) | IN-71 (static), IN-27 | none |
   | a function made an IFUNC (n3) | IN-71 | `symbol-kind-changed` |
-  | a common made a definition (n4) | IN-71, IN-72 items 2 and 11 | `reserve-exhausted` |
+  | a common made a definition (n4) | IN-71, IN-72 items 2 and 11 | `update-not-implemented (common)` in v1 (WP-216 R-2); [later] `reserve-exhausted` |
   | a local made global (W10) | IN-71 (a key appears), IN-49a | `symtab-exhausted` |
   | a `--gc-sections` liveness flip (W8) | IN-71a, IN-27 liveness row, IN-72 item 1 | `reserve-exhausted` |
   | merged contents changed (s4, W6) | IN-72 item 6 | `reserve-exhausted` |
@@ -4450,7 +4518,7 @@ update), reported as `incremental: full (<reason>)` (IN-10). With
 | `state-busy` | the state's path named another inode after its lock was acquired, 8 times in a row (IN-77b, WP-207): another link keeps replacing it | permanent |
 | `lock-unavailable` | the file system does not enforce `flock` on the state (image.md I-59's probe), so two updates could interleave (IN-77b, WP-207) | permanent |
 | `small-output` | the output the state describes (`META`'s output size) is smaller than 256 MiB (`mortar_incr::SMALL_OUTPUT`), checked after every row above. Not with `--incremental=update`, which updates whatever the size. **A policy constant, not a measured crossover**: an update was measured at 55 MB (0.67-1.15 of a plain link, saving at most 124 ms) and at 583-832 MB (0.70-0.94; 0.19-0.26 with the state read and written by range), and on no workload between (WP-094 §7). 256 MiB is a power of two between them, so that the mode can be told from `ls -l`; WP-105 measures a workload in that range and moves it if the crossover is elsewhere | permanent (the bound a policy constant) |
-| `update-not-implemented` | the state is valid, the plan and the output match it, the output is not small, and the update path does not exist yet (WP-061 stage A: every incremental link is a full one after the checks above, in this order; `--incremental=update` fails with it whatever the size) | stage A only. Amended (WP-202, IN-70): after the update joins (U-10), only a changed, appeared or newly extracted file with debug sections or a split-DWARF skeleton gives it (`update-not-implemented (debug)`), or with `.mason.meta` units under `--keep-mason-meta` (`update-not-implemented (meta)`, IN-71d, WP-207), or a stored `link`-subject warning the update cannot raise again within O(change) (`update-not-implemented (diags)`, IN-75a, WP-212), or a symbol-table entry named `foo@V` or `foo@@V` in the stored link or in a changed file's new bytes (`update-not-implemented (versioned)`, IN-71 Versions, WP-215; [later] the version of a `@@` definition stored), or a link under `--gc-sections` (`update-not-implemented (live)`, IN-71a, WP-215 seam 3; [later] WP-238); the G packages delete the row (the `versioned` and `live` clauses stay until their [later]). Until the join, each entry point of the cut that has not landed gives its own word (WP-213: `state5`, `resolve`, `refill`, `layout`, `symtab`, `image`, `write`, `meta`, `debug`, `diags`; WP-215: `versioned`, `live`; the floor's stage-A reason prints none); the reasons are one type, `mortar_core::incr::IncrReason` |
+| `update-not-implemented` | the state is valid, the plan and the output match it, the output is not small, and the update path does not exist yet (WP-061 stage A: every incremental link is a full one after the checks above, in this order; `--incremental=update` fails with it whatever the size) | stage A only. Amended (WP-202, IN-70): after the update joins (U-10), only a changed, appeared or newly extracted file with debug sections or a split-DWARF skeleton gives it (`update-not-implemented (debug)`), or with `.mason.meta` units under `--keep-mason-meta` (`update-not-implemented (meta)`, IN-71d, WP-207), or a stored `link`-subject warning the update cannot raise again within O(change) (`update-not-implemented (diags)`, IN-75a, WP-212), or a symbol-table entry named `foo@V` or `foo@@V` in the stored link or in a changed file's new bytes (`update-not-implemented (versioned)`, IN-71 Versions, WP-215; [later] the version of a `@@` definition stored), or a link under `--gc-sections` (`update-not-implemented (live)`, IN-71a, WP-215 seam 3; [later] WP-238), or a winning common that appears, goes, becomes a definition (or a definition a common), or changes size or alignment (`update-not-implemented (common)`, IN-72 item 11 as ruled for v1, WP-216 R-2: decided by the join from `ResolveDelta::commons` against the stored `COMMONS` rows; [later] item 11's placing rule); the G packages delete the row (the `versioned`, `live` and `common` clauses stay until their [later]). Until the join, each entry point of the cut that has not landed gives its own word (WP-213: `state5`, `resolve`, `refill`, `layout`, `symtab`, `image`, `write`, `meta`, `debug`, `diags`; WP-215: `versioned`, `live`; WP-216: `common`; the floor's stage-A reason prints none); the reasons are one type, `mortar_core::incr::IncrReason` |
 | `extraction-changed` | IN-71b's bound: more than 1,024 archive members flip, or a removal cone's re-seeding reads more than 65,536 `KEY_REFS` rows (WP-207) | v1; [later] the bound measured and moved |
 | `closure-iterated` | the stored link's closure ran more than one iteration, or the full link of the update's inputs would (resolve.md §4.1; IN-71b Iterations; WP-215) | v1; [later] an iteration-aware state |
 | `inputs-reordered` | two unchanged inputs' relative order changed. The input list's order is in the plan (`options-changed`, checked first), so the delta meets this only through archive extraction order (WP-063: two unchanged `FILES` rows in a different relative order) | v1; [later] when no COMDAT keeper or placement order depends on it |

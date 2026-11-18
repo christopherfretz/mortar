@@ -442,10 +442,14 @@ impl StateRows for &MemoryState {
         // No promised order (WP-215): the rows' order is the vector's.
         Ok(v)
     }
-    fn frags_in(&self, out: OutSecId) -> Rows<Vec<FragRow>> {
-        let mut v: Vec<FragRow> =
-            self.frags.iter().filter(|f| f.out == out.0 && !f.tomb).copied().collect();
-        v.sort_by_key(|f| f.offset);
+    fn frags_of(&self, out: OutSecId, hash: [u8; 16]) -> Rows<Vec<FragRow>> {
+        let mut v: Vec<FragRow> = self
+            .frags
+            .iter()
+            .filter(|f| f.out == out.0 && f.hash == hash && !f.tomb)
+            .copied()
+            .collect();
+        v.sort_by_key(|f| f.ordinal);
         Ok(v)
     }
     fn holes_in(&self, chunk: ChunkId) -> Rows<Vec<HoleRow>> {
