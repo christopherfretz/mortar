@@ -1125,6 +1125,110 @@ struct File5<'s> {
     groups: Vec<&'s [u8]>,
 }
 
+/// One file's part of [`rows5`] (its symbol table's rows: `MENTIONS`,
+/// `KEY_REFS`' refs, `COMMONS`, `COPIES`, `GROUPS`), the per-file task of
+/// the format-5 capture (WP-225 G-2b: moved out of `rows5` as it was).
+#[allow(clippy::too_many_lines)]
+fn file5<'s>(
+    inputs: &'s Inputs<'_>,
+    res: &Resolution,
+    copies: bool,
+    file: FileId,
+) -> Result<File5<'s>, String> {
+    use crate::format::def_kind;
+    use crate::update::rows::key_ref_flags;
+    use mortar_core::resolution::FileLive;
+    let live_file = |f: FileId| res.file_live.get(f).is_some_and(|l| *l != FileLive::Dead);
+    let f = &inputs.files[file];
+    let Reader::Object(object) = f.reader else { return Ok(File5::default()) };
+    let bad = || format!("{}: symbol table", String::from_utf8_lossy(f.path));
+    let Some(table) = object.symbols().map_err(|_| bad())? else {
+        return Ok(File5::default());
+    };
+    let live = live_file(file);
+    let first = table.first_global().0;
+    let mut acc = File5 { first_global: first, lazy: !live, ..File5::default() };
+    acc.flags = object_flags(inputs, file);
+    let globals = table.len().saturating_sub(first) as usize;
+    if inputs.sym_map_of(file).len() < globals {
+        return Err(format!(
+            "{}: the symbol table is not the one the input phase read",
+            String::from_utf8_lossy(f.path)
+        ));
+    }
+    let rows = crate::tables::file_mentions(inputs, res, file, &table);
+    let mut seen: mortar_core::hash::HashSet<u32> = mortar_core::hash::HashSet::default();
+    let mut commons: HashMap<u32, usize> = HashMap::default();
+    for (k, m) in rows.iter().enumerate() {
+        let index = first + k as u32;
+        let sym = table.get(mortar_elf::symbol::SymbolIndex(index)).map_err(|_| bad())?;
+        let name = table.name(&sym).map_err(|_| bad())?;
+        if name.contains(&b'@') {
+            acc.versioned += 1;
+        }
+        let in_section = matches!(
+            table.section_of(mortar_elf::symbol::SymbolIndex(index), &sym),
+            Ok(SymbolSection::Section(_))
+        );
+        let mut def = m.kind;
+        if !live && in_section {
+            // A member not extracted has no section ids: its
+            // definition in a section is one (IN-71b).
+            def = def_kind::SECTION;
+        }
+        let mut flags = m.other & key_ref_flags::VISIBILITY;
+        if def == def_kind::SECTION {
+            flags |= key_ref_flags::IN_SECTION;
+        }
+        if !live {
+            if def == def_kind::UNDEFINED {
+                continue;
+            }
+            flags |= key_ref_flags::LAZY;
+        }
+        if seen.insert(m.symbol) {
+            acc.refs.push((m.symbol, def, m.bind, m.typ, flags));
+        }
+        if !live {
+            continue;
+        }
+        if m.kind == def_kind::COMMON {
+            let align = sym.st_value.max(1);
+            if let Some(&at) = commons.get(&m.symbol) {
+                let c = &mut acc.commons[at];
+                c.1 = c.1.max(sym.st_size);
+                c.2 = c.2.max(align);
+            } else {
+                commons.insert(m.symbol, acc.commons.len());
+                acc.commons.push((m.symbol, sym.st_size, align));
+            }
+        }
+        if copies
+            && m.kind == def_kind::SECTION
+            && m.bind != 0
+            && res.sections.get(SectionId(m.section)).is_some_and(|r| r.comdat.get().is_some())
+        {
+            acc.copies.push((m.symbol, index, sym.st_size, m.typ));
+        }
+    }
+    if live {
+        acc.mentions = rows;
+        let range = res.section_base[file];
+        let mut groups: Vec<&[u8]> = Vec::new();
+        for sid in range.start.0..range.end.0 {
+            let Some(row) = res.sections.get(SectionId(sid)) else { continue };
+            let Some(c) = row.comdat.get().and_then(|c| inputs.comdats.get(c)) else {
+                continue;
+            };
+            groups.push(c.name);
+        }
+        groups.sort_unstable();
+        groups.dedup();
+        acc.groups = groups;
+    }
+    Ok(acc)
+}
+
 #[allow(clippy::too_many_lines, clippy::too_many_arguments)] // one block per table
 fn rows5(
     link: &Link<'_, '_>,
@@ -1149,97 +1253,7 @@ fn rows5(
     let live_file = |f: FileId| res.file_live.get(f).is_some_and(|l| *l != FileLive::Dead);
     // ---- the files' symbol tables: MENTIONS, KEY_REFS, COMMONS, COPIES,
     // GROUPS, `versioned`, `first_global` (one task per file).
-    let per_file = pool.map(n_files, |n| -> Result<File5<'_>, String> {
-        let file = FileId(n as u32);
-        let f = &inputs.files[file];
-        let Reader::Object(object) = f.reader else { return Ok(File5::default()) };
-        let bad = || format!("{}: symbol table", String::from_utf8_lossy(f.path));
-        let Some(table) = object.symbols().map_err(|_| bad())? else {
-            return Ok(File5::default());
-        };
-        let live = live_file(file);
-        let first = table.first_global().0;
-        let mut acc = File5 { first_global: first, lazy: !live, ..File5::default() };
-        acc.flags = object_flags(inputs, file);
-        let globals = table.len().saturating_sub(first) as usize;
-        if inputs.sym_map_of(file).len() < globals {
-            return Err(format!(
-                "{}: the symbol table is not the one the input phase read",
-                String::from_utf8_lossy(f.path)
-            ));
-        }
-        let rows = crate::tables::file_mentions(inputs, res, file, &table);
-        let mut seen: mortar_core::hash::HashSet<u32> = mortar_core::hash::HashSet::default();
-        let mut commons: HashMap<u32, usize> = HashMap::default();
-        for (k, m) in rows.iter().enumerate() {
-            let index = first + k as u32;
-            let sym = table.get(mortar_elf::symbol::SymbolIndex(index)).map_err(|_| bad())?;
-            let name = table.name(&sym).map_err(|_| bad())?;
-            if name.contains(&b'@') {
-                acc.versioned += 1;
-            }
-            let in_section = matches!(
-                table.section_of(mortar_elf::symbol::SymbolIndex(index), &sym),
-                Ok(SymbolSection::Section(_))
-            );
-            let mut def = m.kind;
-            if !live && in_section {
-                // A member not extracted has no section ids: its
-                // definition in a section is one (IN-71b).
-                def = def_kind::SECTION;
-            }
-            let mut flags = m.other & key_ref_flags::VISIBILITY;
-            if def == def_kind::SECTION {
-                flags |= key_ref_flags::IN_SECTION;
-            }
-            if !live {
-                if def == def_kind::UNDEFINED {
-                    continue;
-                }
-                flags |= key_ref_flags::LAZY;
-            }
-            if seen.insert(m.symbol) {
-                acc.refs.push((m.symbol, def, m.bind, m.typ, flags));
-            }
-            if !live {
-                continue;
-            }
-            if m.kind == def_kind::COMMON {
-                let align = sym.st_value.max(1);
-                if let Some(&at) = commons.get(&m.symbol) {
-                    let c = &mut acc.commons[at];
-                    c.1 = c.1.max(sym.st_size);
-                    c.2 = c.2.max(align);
-                } else {
-                    commons.insert(m.symbol, acc.commons.len());
-                    acc.commons.push((m.symbol, sym.st_size, align));
-                }
-            }
-            if extra.copies
-                && m.kind == def_kind::SECTION
-                && m.bind != 0
-                && res.sections.get(SectionId(m.section)).is_some_and(|r| r.comdat.get().is_some())
-            {
-                acc.copies.push((m.symbol, index, sym.st_size, m.typ));
-            }
-        }
-        if live {
-            acc.mentions = rows;
-            let range = res.section_base[file];
-            let mut groups: Vec<&[u8]> = Vec::new();
-            for sid in range.start.0..range.end.0 {
-                let Some(row) = res.sections.get(SectionId(sid)) else { continue };
-                let Some(c) = row.comdat.get().and_then(|c| inputs.comdats.get(c)) else {
-                    continue;
-                };
-                groups.push(c.name);
-            }
-            groups.sort_unstable();
-            groups.dedup();
-            acc.groups = groups;
-        }
-        Ok(acc)
-    });
+    let per_file = pool.map(n_files, |n| file5(inputs, res, extra.copies, FileId(n as u32)));
     let mut files5 = Vec::with_capacity(n_files);
     for f in per_file {
         files5.push(f?);
