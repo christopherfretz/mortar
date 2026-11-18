@@ -19,10 +19,15 @@
 //! internal file last; never by `FILES` row number), each with capacity
 //! `size + Slack::eh_pad(size)`, then the terminator. An unchanged file's
 //! size is its range's bytes before its trailing hole (the bytes U-6 walks
-//! and moves). The whole rewrite reads every `FILES` row with a range,
-//! which `LayoutRows` does not give (WP-243's finding F-1): `layout`
-//! passes no enumeration and the whole rewrite is `update-not-implemented
-//! (layout)` until it does.
+//! and moves). The whole rewrite reads every `FILES` row with a range
+//! once (`LayoutRows::eh_ranges`, seam 6; IN-34a allows O(files with
+//! records) there).
+//!
+//! `.eh_frame_hdr` (S-57, `12 + 8 × FDEs`): its new size is the stored
+//! chunk's FDE count, minus the touched files' stored `fdes`, plus their
+//! new FDEs (the records that are not `cie`; seam 6, WP-245). Past its
+//! chunk's capacity it is `reserve-exhausted`; no FDE left is
+//! `new-output-section` (S-57: no `.eh_frame_hdr`).
 //!
 //! What `EhLayout::ranges` tells U-6: in place, the rewritten ranges only
 //! (each with its record offsets); whole, every range, a rewritten one
@@ -66,6 +71,9 @@ pub(super) struct EhOut {
     pub(super) holes: Vec<Hole>,
     /// The holes the update made (not stored before), by offset.
     pub(super) made: Vec<Hole>,
+    /// `.eh_frame_hdr`'s chunk and its size after the update, when the
+    /// output has one.
+    pub(super) hdr: Option<(ChunkId, u64)>,
 }
 
 /// A touched file with records now or a range before.
@@ -136,11 +144,7 @@ pub(super) fn item_5(
         }
         None => return Err(IncrReason::NewOutputSection(".eh_frame".into())),
     };
-    // `.eh_frame_hdr`'s size follows the FDE count, which no stored row
-    // gives (WP-243 F-4).
-    if find(chunks, EH_FRAME_HDR)?.is_some() {
-        return Err(not_implemented());
-    }
+    let hdr = hdr_size(chunks, &now, all)?;
     if c.size < TERMINATOR || c.size % 4 != 0 || c.capacity < c.size {
         return Err(corrupt(".eh_frame chunk size"));
     }
@@ -156,10 +160,71 @@ pub(super) fn item_5(
     let fits =
         now.iter().all(|n| n.size == 0 || n.old.is_some_and(|o| n.size <= u64::from(o.capacity)));
     if fits && let Some(out) = in_place(chunk, c.size, &now, &stored_holes)? {
-        return Ok(Some(out));
+        return Ok(Some(EhOut { hdr, ..out }));
     }
     let Some(all) = all else { return Err(not_implemented()) };
-    whole(chunk, c, &now, &stored_holes, &all()?).map(Some)
+    let out = whole(chunk, c, &now, &stored_holes, &all()?)?;
+    Ok(Some(EhOut { hdr, ..out }))
+}
+
+/// `.eh_frame_hdr`'s header before its table (S-57).
+const HDR_HEAD: u64 = 12;
+/// One table entry (S-57).
+const HDR_ENTRY: u64 = 8;
+
+/// `.eh_frame_hdr`'s chunk and new size (S-57: `12 + 8 × FDEs`): the
+/// stored count less the touched files' stored `fdes`, plus their new
+/// FDEs. No chunk: the output has none (no `--eh-frame-hdr`, or no live
+/// FDE); when the update brings FDEs and no touched file had one, the
+/// stored ranges tell which (`all`, read once: any stored FDE means the
+/// option is off); without them, `update-not-implemented (layout)`.
+fn hdr_size(
+    chunks: &Column<ChunkId, Chunk>,
+    now: &[Now<'_>],
+    all: Option<AllRanges<'_>>,
+) -> Result<Option<(ChunkId, u64)>, IncrReason> {
+    let mut old = 0u64;
+    let mut new = 0u64;
+    for n in now {
+        if let Some(o) = n.old {
+            if o.fdes >= o.records {
+                // A range starts with a CIE (S-44 per file).
+                return Err(corrupt(format!("file {}'s .eh_frame FDE count", n.file.0)));
+            }
+            old += u64::from(o.fdes);
+        }
+        new += n.records.iter().filter(|r| !r.cie).count() as u64;
+    }
+    let Some((id, h)) = find(chunks, EH_FRAME_HDR)? else {
+        if new > 0 && old == 0 {
+            let Some(all) = all else { return Err(not_implemented()) };
+            if all()?.iter().all(|e| e.2.fdes == 0) {
+                // No FDE before: whether `--eh-frame-hdr` was given is not
+                // known to the layout.
+                return Err(not_implemented());
+            }
+        }
+        return Ok(None);
+    };
+    if h.size < HDR_HEAD || !(h.size - HDR_HEAD).is_multiple_of(HDR_ENTRY) || h.capacity < h.size {
+        return Err(corrupt(".eh_frame_hdr chunk size"));
+    }
+    let stored = (h.size - HDR_HEAD) / HDR_ENTRY;
+    let Some(rest) = stored.checked_sub(old) else {
+        return Err(corrupt(".eh_frame_hdr holds fewer FDEs than the ranges"));
+    };
+    let count = rest + new;
+    if count == 0 {
+        return Err(IncrReason::NewOutputSection(".eh_frame_hdr left with no FDE".into()));
+    }
+    let size = HDR_HEAD + HDR_ENTRY * count;
+    if size > h.capacity {
+        return Err(IncrReason::ReserveExhausted(format!(
+            ".eh_frame_hdr needs {size} bytes, its chunk holds {}",
+            h.capacity
+        )));
+    }
+    Ok(Some((id, size)))
 }
 
 /// The one chunk named `name`, if any.
@@ -256,7 +321,13 @@ fn in_place(
     }
     ranges.sort_by_key(|r| r.offset);
     let made = holes.iter().filter(|h| !stored.contains(h)).copied().collect();
-    Ok(Some(EhOut { layout: EhLayout { chunk, whole: false, ranges }, size, holes, made }))
+    Ok(Some(EhOut {
+        layout: EhLayout { chunk, whole: false, ranges },
+        size,
+        holes,
+        made,
+        hdr: None,
+    }))
 }
 
 /// A range of the whole rewrite: (the internal file, rank, file, size,
@@ -322,7 +393,7 @@ fn whole(
         return Err(exhausted(size, c.capacity));
     }
     let made = holes.iter().filter(|h| !stored.contains(h)).copied().collect();
-    Ok(EhOut { layout: EhLayout { chunk, whole: true, ranges }, size, holes, made })
+    Ok(EhOut { layout: EhLayout { chunk, whole: true, ranges }, size, holes, made, hdr: None })
 }
 
 /// An unchanged range's bytes: its capacity less the hole that ends it
@@ -438,6 +509,8 @@ mod tests {
         rows: MemoryLayout,
         ranks: BTreeMap<FileId, u64>,
         bytes: BTreeMap<FileId, u64>,
+        /// Each file's FDEs (its records but the first).
+        fdes: BTreeMap<FileId, u64>,
     }
 
     fn order_key(file: FileId, rank: u64) -> (bool, u64, FileId) {
@@ -473,7 +546,13 @@ mod tests {
             .iter()
             .map(|&(file, offset, cap)| {
                 let n = by[&file].sizes.len() as u32;
-                (file, StoredEhRange { offset: offset as u32, capacity: cap as u32, records: n })
+                let r = StoredEhRange {
+                    offset: offset as u32,
+                    capacity: cap as u32,
+                    records: n,
+                    fdes: n - 1,
+                };
+                (file, r)
             })
             .collect();
         State {
@@ -484,7 +563,24 @@ mod tests {
                 .map(|f| (f.file, f.sizes.iter().sum()))
                 .filter(|e| e.1 > 0)
                 .collect(),
+            fdes: files.iter().map(|f| (f.file, fdes_of(&f.sizes))).collect(),
         }
+    }
+
+    fn fdes_of(sizes: &[u64]) -> u64 {
+        sizes.len().saturating_sub(1) as u64
+    }
+
+    /// [`first`] with an `.eh_frame_hdr` chunk (chunk 1) of `12 + 8 ×
+    /// FDEs` and `extra` bytes of capacity.
+    fn first_hdr(files: &[F], extra: u64) -> State {
+        let mut s = first(files, 4096);
+        let n: u64 = s.fdes.values().sum();
+        let mut h = synth(EH_FRAME_HDR, HDR_HEAD + HDR_ENTRY * n);
+        h.capacity = h.size + extra;
+        s.rows.chunks.push(h);
+        s.rows.order.push(ChunkId(1));
+        s
     }
 
     fn eh_files(touched: &[F]) -> Vec<EhFile> {
@@ -535,6 +631,7 @@ mod tests {
             } else {
                 next.bytes.insert(t.file, n);
             }
+            next.fdes.insert(t.file, fdes_of(&t.sizes));
         }
         if out.layout.whole {
             next.rows.eh_ranges = Vec::new();
@@ -542,18 +639,28 @@ mod tests {
             next.rows.eh_ranges.retain(|(f, _)| !by.contains_key(f));
         }
         for r in &out.layout.ranges {
-            let records =
-                if r.records.is_empty() { old[&r.file].records } else { r.records.len() as u32 };
+            // The join counts a rewritten range's FDEs from its records
+            // that are not `cie` (seam 6); a moved one keeps its row's.
+            let (records, fdes) = if r.records.is_empty() {
+                (old[&r.file].records, old[&r.file].fdes)
+            } else {
+                let t = by[&r.file];
+                (r.records.len() as u32, fdes_of(&t.sizes) as u32)
+            };
             let row = StoredEhRange {
                 offset: u32::try_from(r.offset).unwrap(),
                 capacity: u32::try_from(r.capacity).unwrap(),
                 records,
+                fdes,
             };
             next.rows.eh_ranges.push((r.file, row));
         }
         next.rows.eh_ranges.sort_by_key(|e| e.0);
         next.rows.holes = out.holes.clone();
         next.rows.chunks[0].size = out.size;
+        if let Some((id, size)) = out.hdr {
+            next.rows.chunks[id.0 as usize].size = size;
+        }
         exact(&next, &out, &by);
         (next, out.layout.whole)
     }
@@ -563,6 +670,14 @@ mod tests {
         let c = s.rows.chunks[0];
         assert_eq!(c.size, out.size);
         assert!(c.size <= c.capacity);
+        // `.eh_frame_hdr`: 12 + 8 × the live FDEs of a fresh link.
+        if let Some(h) = s.rows.chunks.get(1) {
+            let n: u64 = s.fdes.values().sum();
+            assert_eq!(out.hdr, Some((ChunkId(1), HDR_HEAD + HDR_ENTRY * n)));
+            assert_eq!(h.size, HDR_HEAD + HDR_ENTRY * n, "the FDE table of a fresh link");
+        } else {
+            assert_eq!(out.hdr, None);
+        }
         // Every file with records has one range, no other.
         let with: BTreeSet<FileId> = s.bytes.keys().copied().collect();
         let rows: BTreeSet<FileId> = s.rows.eh_ranges.iter().map(|e| e.0).collect();
@@ -817,6 +932,57 @@ mod tests {
         assert!(layout_err(&run(&s, &[f(9, 1, &[24])], false).unwrap_err()));
     }
 
+    // spec: incr.md IN-34a, synth.md S-57 (`.eh_frame_hdr` is 12 + 8 ×
+    // the live FDEs: the stored count less the touched files' stored
+    // `fdes` plus their new FDEs; seam 6, WP-245): three hops (edit,
+    // inverse, edit again), A then B, a whole rewrite, a file leaving
+    #[test]
+    fn eh_frame_hdr_follows_the_fde_count() {
+        let s0 = first_hdr(&base(), 256);
+        let (s1, w) = hop(&s0, &[f(1, 1 << 20, &[24, 48])]);
+        assert!(!w);
+        let (s2, _) = hop(&s1, &[f(1, 1 << 20, &[24, 48, 32])]);
+        assert_eq!(s2.rows.chunks[1].size, s0.rows.chunks[1].size, "the inverse");
+        let (s3, _) = hop(&s2, &[f(1, 1 << 20, &[24, 48])]);
+        // A then B; B grows past its range: whole, the hdr follows.
+        let (s4, _) = hop(&s3, &[f(2, 2 << 20, &[20, 16, 16])]);
+        let (s5, w) = hop(&s4, &[f(3, 3 << 20, &[24, 40, 40, 40, 40, 40, 40, 40])]);
+        assert!(w);
+        // A file leaves; an appeared file with FDEs (whole).
+        let (s6, _) = hop(&s5, &[f(4, 4 << 20, &[])]);
+        let (_, w) = hop(&s6, &[f(6, 6 << 20, &[24, 24, 24])]);
+        assert!(w);
+    }
+
+    // spec: synth.md S-57 (`.eh_frame_hdr` past its chunk's capacity:
+    // `reserve-exhausted`; no FDE left: no `.eh_frame_hdr`,
+    // `new-output-section`; no chunk and a first FDE: the option is not
+    // known, `update-not-implemented (layout)`)
+    #[test]
+    fn eh_frame_hdr_edges() {
+        let s = first_hdr(&base(), 8);
+        assert!(run(&s, &[f(1, 1 << 20, &[24, 48, 32, 16])], true).is_ok(), "one entry fits");
+        let e = run(&s, &[f(1, 1 << 20, &[24, 48, 32, 16, 16])], true).unwrap_err();
+        assert_eq!(e.name(), "reserve-exhausted", "{e:?}");
+        let s = first_hdr(&[f(1, 1 << 20, &[24, 48]), f(2, 2 << 20, &[20])], 0);
+        let e = run(&s, &[f(1, 1 << 20, &[24])], true).unwrap_err();
+        assert_eq!(e, IncrReason::NewOutputSection(".eh_frame_hdr left with no FDE".into()));
+        // No `.eh_frame_hdr` chunk: an update that keeps FDEs needs none;
+        // a file's first FDE with another file's FDE stored: the option
+        // is off; the first FDE of the link cannot tell `--eh-frame-hdr`.
+        let s = first(&[f(1, 1 << 20, &[24, 48]), f(2, 2 << 20, &[20])], 4096);
+        assert_eq!(run(&s, &[f(1, 1 << 20, &[24, 48, 16])], true).unwrap().unwrap().hdr, None);
+        assert_eq!(run(&s, &[f(2, 2 << 20, &[20, 16])], true).unwrap().unwrap().hdr, None);
+        assert!(layout_err(&run(&s, &[f(2, 2 << 20, &[20, 16])], false).unwrap_err()));
+        let s = first(&[f(1, 1 << 20, &[24]), f(2, 2 << 20, &[20])], 4096);
+        assert!(layout_err(&run(&s, &[f(2, 2 << 20, &[20, 16])], true).unwrap_err()));
+        // A stored FDE count that is not below the record count.
+        let mut c = s.clone();
+        c.rows.eh_ranges[0].1.fdes = 2;
+        let e = run(&c, &[f(1, 1 << 20, &[24])], true).unwrap_err();
+        assert!(matches!(e, IncrReason::StateCorrupt(_)), "{e:?}");
+    }
+
     #[test]
     fn refusals() {
         // A range and no `EhFile` for a file of the update.
@@ -824,10 +990,11 @@ mod tests {
         let stored = StoredLayout::new(&s.rows);
         let chunks = Column::from_vec(s.rows.chunks.clone()).unwrap();
         assert!(layout_err(&item_5(&stored, &[], &[FileId(2)], &chunks, None).unwrap_err()));
-        // `.eh_frame_hdr` (its size needs the FDE count).
-        let mut h = s.clone();
-        h.rows.chunks.push(synth(EH_FRAME_HDR, 52));
-        assert!(layout_err(&run(&h, &[f(2, 2 << 20, &[20, 60])], true).unwrap_err()));
+        // `.eh_frame_hdr` whose size is not 12 + 8 n.
+        let mut odd = s.clone();
+        odd.rows.chunks.push(synth(EH_FRAME_HDR, 50));
+        let e = run(&odd, &[f(2, 2 << 20, &[20, 60])], true).unwrap_err();
+        assert!(matches!(e, IncrReason::StateCorrupt(_)), "{e:?}");
         // An FDE first, a record not of whole words.
         let mut eh = eh_files(&[f(2, 2 << 20, &[20, 64])]);
         eh[0].records[0].cie = false;
@@ -835,13 +1002,21 @@ mod tests {
         let eh = eh_files(&[f(2, 2 << 20, &[20, 62])]);
         assert!(layout_err(&item_5(&stored, &eh, &[], &chunks, None).unwrap_err()));
         // A corrupt range.
-        let mut c = s.clone();
-        c.rows.eh_ranges[1].1.capacity = 1 << 20;
-        assert!(matches!(run(&c, &[f(2, 2 << 20, &[20])], true), Err(IncrReason::StateCorrupt(_))));
+        let mut bad = s.clone();
+        bad.rows.eh_ranges[1].1.capacity = 1 << 20;
+        assert!(matches!(
+            run(&bad, &[f(2, 2 << 20, &[20])], true),
+            Err(IncrReason::StateCorrupt(_))
+        ));
         // Records and no `.eh_frame` chunk.
         let mut n = MemoryLayout::default();
         n.chunks.push(Chunk { kind: ChunkKind::FileHeader, ..synth(b"", 64) });
-        let st = State { rows: n, ranks: BTreeMap::new(), bytes: BTreeMap::new() };
+        let st = State {
+            rows: n,
+            ranks: BTreeMap::new(),
+            bytes: BTreeMap::new(),
+            fdes: BTreeMap::new(),
+        };
         assert!(matches!(run(&st, &[f(1, 1, &[24])], true), Err(IncrReason::NewOutputSection(_))));
     }
 

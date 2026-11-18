@@ -100,9 +100,10 @@ pub fn layout(
     }
     let ids: Vec<FileId> = files.keys().copied().collect();
     let base = Base::read(stored, target)?;
-    // Item 5 (WP-243): its whole rewrite needs every `FILES` row with a
-    // range, which `LayoutRows` does not give (F-1): none is passed.
-    let eh = eh::item_5(stored, input.eh, &ids, &base.chunks, None)?;
+    // Item 5 (WP-243): its whole rewrite reads every `FILES` row with a
+    // range (`eh_ranges`, seam 6), only when it runs.
+    let all = || stored.eh_ranges();
+    let eh = eh::item_5(stored, input.eh, &ids, &base.chunks, Some(&all))?;
     let mut u = Update::new(&base, changes);
     for (&file, members) in &files {
         u.file(stored, file, members)?;
@@ -113,18 +114,20 @@ pub fn layout(
         .iter()
         .map(|&file| slots::FileOf { file, changed: u.changed.contains(&file) })
         .collect();
-    let (slots_dead, slots_appended) = slots::item_7(stored, &file_of, input.demands)?;
+    u.slots =
+        slots::item_7(stored, &file_of, input.demands, &base.chunks, target.class, target.machine)?;
     u.overflow()?;
     u.growth()?;
     u.holes(stored)?;
     u.left_empty(stored)?;
     if let Some(o) = &eh {
         u.chunks[o.layout.chunk].size = o.size;
+        if let Some((h, size)) = o.hdr {
+            u.chunks[h].size = size;
+        }
     }
     let mut delta = u.finish()?;
     delta.files = files.into_keys().collect();
-    delta.slots_dead = slots_dead;
-    delta.slots_appended = slots_appended;
     if let Some(o) = eh {
         let c = o.layout.chunk;
         let Err(at) = delta.hole_chunks.binary_search(&c) else {
@@ -645,6 +648,8 @@ struct Update<'b, 'c> {
     pieces: BTreeSet<SectionId>,
     /// Item 6's result.
     merged: frags::Merged,
+    /// Item 7's lists and `DeadSlot` holes (`slots`).
+    slots: slots::Out,
 }
 
 impl<'b, 'c> Update<'b, 'c> {
@@ -669,6 +674,7 @@ impl<'b, 'c> Update<'b, 'c> {
             hole_chunks: Vec::new(),
             pieces: BTreeSet::new(),
             merged: frags::Merged::default(),
+            slots: slots::Out::default(),
         }
     }
 
@@ -1180,13 +1186,21 @@ impl<'b, 'c> Update<'b, 'c> {
         for h in &self.merged.made {
             by_chunk.entry(h.chunk).or_default().1.push(*h);
         }
+        // Item 7: retired slots' `DeadSlot` holes; revived slots' go.
+        for c in self.slots.chunks() {
+            by_chunk.entry(c).or_default();
+        }
+        for h in &self.slots.made {
+            by_chunk.entry(h.chunk).or_default().1.push(*h);
+        }
         let mut all = Vec::new();
         let mut made = Vec::new();
         self.hole_chunks = by_chunk.keys().copied().collect();
         for (chunk, (ranges, new)) in by_chunk {
             let old = stored.holes_in(chunk)?;
             let mut kept = Vec::new();
-            for h in old.iter().filter(|h| !self.merged.gone.contains(h)) {
+            let gone = |h: &Hole| self.merged.gone.contains(h) || self.slots.gone.contains(h);
+            for h in old.iter().filter(|h| !gone(h)) {
                 // The parts of a stored hole outside every touched region.
                 let mut pieces = vec![(h.offset, h.offset + h.size)];
                 for &(s, e) in &ranges {
@@ -1458,7 +1472,9 @@ impl<'b, 'c> Update<'b, 'c> {
             eh: None,
             frags: self.merged.rows,
             slots_appended: Vec::new(),
-            slots_dead: Vec::new(),
+            slots_dead: self.slots.dead,
+            slots_revived: self.slots.revived,
+            slots_recounted: self.slots.recounted,
         })
     }
 }
