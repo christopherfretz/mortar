@@ -1076,7 +1076,14 @@ mod tests {
     // linked half in `crates/mortar/tests/update_image.rs`.
     #[test]
     fn growth_step_rewrites_headers_hand_made() {
-        let row = |in_file, alloc, addr, offset, size| Row { name: 0, in_file, alloc, addr, offset, size };
+        let row = |in_file, alloc, addr, offset, size| Row {
+            name: 0,
+            in_file,
+            alloc,
+            addr,
+            offset,
+            size,
+        };
         let old = Table {
             class64: true,
             shstrndx: 0,
@@ -1101,7 +1108,9 @@ mod tests {
         assert_eq!(s.map(0x2104), 0x2184);
         assert_eq!(s.map(0x2120), 0x21a0, "NOBITS moves in address");
         assert_eq!(s.map(0x3000), 0x3000, "past every section");
-        assert_eq!(Shift::grown_tails(&old, &new), [0x1100..0x1180]);
+        let tails: Vec<(u64, u64)> =
+            Shift::grown_tails(&old, &new).into_iter().map(|r| (r.start, r.end)).collect();
+        assert_eq!(tails, [(0x1100, 0x1180)]);
         // No byte of padding between the moved sections: no gap to fill.
         assert!(s.gaps(&new).is_empty(), "{:?}", s.gaps(&new));
     }

@@ -28,7 +28,9 @@ use mortar_core::layout::Layout;
 use mortar_core::par::Pool;
 use mortar_core::{FileId, SectionId};
 use mortar_diag::{Collector, Policy};
-use mortar_image::update::{Counts, RefillError, Shift, output_size, patch_eh, refill_counted, walk_eh};
+use mortar_image::update::{
+    Counts, RefillError, Shift, output_size, patch_eh, refill_counted, walk_eh,
+};
 use mortar_input::store::{Store, StorePolicy};
 use mortar_testutil::target::Arch;
 use mortar_testutil::{Scratch, run_with, tools_required};
@@ -101,7 +103,7 @@ impl Fixture {
         assert!(o.success(), "gcc: {}", o.stderr_text());
     }
 
-    fn args(&self, out: &str) -> Vec<OsString> {
+    fn args(out: &str) -> Vec<OsString> {
         ["a.o", "b.o", "c.o", "-static", "--eh-frame-hdr", "--build-id=sha1", "-o", out]
             .iter()
             .map(OsString::from)
@@ -120,7 +122,7 @@ impl Fixture {
         replay: Option<&Layout>,
         go: impl FnOnce(&mut Front<'_>, &Store) -> T,
     ) -> T {
-        let parsed = mortar_cli::parse(&self.args(out));
+        let parsed = mortar_cli::parse(&Self::args(out));
         assert!(!parsed.failed());
         let store = Store::new(StorePolicy::from_env());
         let diag = Collector::new(Policy::default());
@@ -448,9 +450,15 @@ fn eh_frame_moved_from_its_own_bytes() {
         let Some(fx) = Fixture::new(arch, "u6-eh") else { continue };
         fx.write("prev", None);
         let elf = std::fs::read(fx.path("prev")).unwrap();
-        let le = |at: usize, n: usize| elf[at..at + n].iter().rev().fold(0u64, |a, &x| a << 8 | u64::from(x));
-        let (shoff, ent, num, strx) =
-            (le(0x28, 8) as usize, le(0x3a, 2) as usize, le(0x3c, 2) as usize, le(0x3e, 2) as usize);
+        let le = |at: usize, n: usize| {
+            elf[at..at + n].iter().rev().fold(0u64, |a, &x| a << 8 | u64::from(x))
+        };
+        let (shoff, ent, num, strx) = (
+            le(0x28, 8) as usize,
+            le(0x3a, 2) as usize,
+            le(0x3c, 2) as usize,
+            le(0x3e, 2) as usize,
+        );
         let sh = |i: usize, f: usize| le(shoff + i * ent + f, 8);
         let names = sh(strx, 24) as usize;
         let name_of = |i: usize| {
@@ -467,14 +475,15 @@ fn eh_frame_moved_from_its_own_bytes() {
         let fdes: Vec<_> = records.iter().filter(|r| r.cie.is_some()).collect();
         assert!(fdes.len() >= 2, "{arch:?}: {records:?}");
         // Nothing moved: nothing patched.
-        let none = patch_eh(bytes, &records, eh_addr, eh_addr, &Shift::default(), &mut counts).unwrap();
+        let none =
+            patch_eh(bytes, &records, eh_addr, eh_addr, &Shift::default(), &mut counts).unwrap();
         assert!(none.is_empty());
         let (t_addr, t_size) = (sh(text, 16), sh(text, 32));
         let mut shift = Shift::default();
-        shift.addrs =
-            vec![(t_addr..t_addr + t_size, 0x1000), (eh_addr..eh_addr + eh_size, 0x2000)];
+        shift.addrs = vec![(t_addr..t_addr + t_size, 0x1000), (eh_addr..eh_addr + eh_size, 0x2000)];
         shift.addrs.sort_by_key(|a| a.0.start);
-        let patches = patch_eh(bytes, &records, eh_addr, eh_addr + 0x2000, &shift, &mut counts).unwrap();
+        let patches =
+            patch_eh(bytes, &records, eh_addr, eh_addr + 0x2000, &shift, &mut counts).unwrap();
         assert_eq!(patches.len(), fdes.len(), "{arch:?}: one pc_begin per FDE");
         let mut moved = bytes.to_vec();
         for (o, b) in &patches {
@@ -554,7 +563,12 @@ fn update_map_states_the_symtab_plan() {
             .unwrap();
             let with = String::from_utf8(with).unwrap();
             let lines: Vec<&str> = with.lines().collect();
-            for want in ["incremental", "hole .symtab 180 60", "hole .strtab 90 30", "dead .strtab 1 5 strings"] {
+            for want in [
+                "incremental",
+                "hole .symtab 180 60",
+                "hole .strtab 90 30",
+                "dead .strtab 1 5 strings",
+            ] {
                 assert!(lines.contains(&want), "{arch:?}: no `{want}` in\n{with}");
             }
             assert!(
@@ -571,7 +585,9 @@ fn update_map_states_the_symtab_plan() {
 
 /// The file range of the section named `name` of an ELF64 file.
 fn section_range(elf: &[u8], name: &[u8]) -> std::ops::Range<usize> {
-    let le = |at: usize, n: usize| elf[at..at + n].iter().rev().fold(0u64, |a, &x| a << 8 | u64::from(x));
+    let le = |at: usize, n: usize| {
+        elf[at..at + n].iter().rev().fold(0u64, |a, &x| a << 8 | u64::from(x))
+    };
     let (shoff, ent, num, strx) =
         (le(0x28, 8) as usize, le(0x3a, 2) as usize, le(0x3c, 2) as usize, le(0x3e, 2) as usize);
     let names = le(shoff + strx * ent + 24, 8) as usize;
@@ -579,7 +595,8 @@ fn section_range(elf: &[u8], name: &[u8]) -> std::ops::Range<usize> {
         .find_map(|i| {
             let at = names + le(shoff + i * ent, 4) as usize;
             let end = at + elf[at..].iter().position(|&b| b == 0).unwrap();
-            let (o, n) = (le(shoff + i * ent + 24, 8) as usize, le(shoff + i * ent + 32, 8) as usize);
+            let (o, n) =
+                (le(shoff + i * ent + 24, 8) as usize, le(shoff + i * ent + 32, 8) as usize);
             (&elf[at..end] == name).then_some(o..o + n)
         })
         .unwrap()
