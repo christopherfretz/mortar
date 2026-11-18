@@ -4064,6 +4064,13 @@ a pass over a whole table of the state; **O(output)**.
   - Before C2 (copy): `T` is removed; `P` and `S` are left (the old
     pair); the link fails.
   - Before W1 (in place): nothing was written; the link fails.
+  - **A write without a planned state patch is refused before W1 and
+    before C1** (`state-corrupt`: a full link; batch 13, the junction of
+    WP-214 and WP-219). W5/C4 is what binds the state to the new
+    output; with the empty plan it would write nothing and W6/C5 would
+    clear the flag over a state that still describes the old output.
+    Every update changes the output's tuple, so every update has a
+    plan (`write_refuses_the_empty_plan_before_w1`).
   - From W1/C2 on: the flag stays set (or is set: a failed W1 leaves it
     as the disk has it, and the next link reads it), except when the
     last sync fails (W6's or C5's `fdatasync`, or the compaction's

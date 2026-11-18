@@ -119,6 +119,7 @@ fn odr_resolved_absolute_of_several_definers() {
                 typ: STT_OBJECT,
                 flags: 0,
                 tomb: false,
+                demand: 0,
             });
             mention(m, file, 1, def_kind::ABSOLUTE, bind);
         }

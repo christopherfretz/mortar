@@ -428,11 +428,11 @@ fn run(
 
 // ---- the entry point --------------------------------------------------------
 
-// spec: incr.md IN-77 (W5 is U-2's `state5::patch`, which returns its
-// "until it lands" value: `write` writes the output, then fails at W5 as
-// IN-77e says, the flag set and the output removed)
+// spec: incr.md IN-77e (the empty plan is refused before W1: W5 would
+// write no binding and W6 would clear the flag over a state still bound
+// to the old output; nothing is written, the old pair stays)
 #[test]
-fn write_reaches_w5_with_u2_until_it_lands() {
+fn write_refuses_the_empty_plan_before_w1() {
     let tmp = Tmp::new("entry");
     let w = World::create(&tmp.0, false);
     let (out, state) = w.open(true);
@@ -448,10 +448,9 @@ fn write_reaches_w5_with_u2_until_it_lands() {
         &mut ops,
         policy(WritePath::InPlace),
     );
-    let want = IncrReason::UpdateNotImplemented(Some(Unimplemented::State5));
-    assert!(matches!(r, Err(WriteFailure::Fallback(ref e)) if *e == want), "{r:?}");
-    assert_eq!(judge(&w, &real, None), Ok(Verdict::Named("output-torn")));
-    assert!(!w.p.exists() && !w.a.exists(), "IN-77e: the file at P after W4's link is removed");
+    assert!(matches!(r, Err(WriteFailure::Fallback(IncrReason::StateCorrupt(_)))), "{r:?}");
+    assert!(ops.log.is_empty(), "no operation before the refusal: {:?}", ops.log);
+    assert_eq!(judge(&w, &real, None), Ok(Verdict::OldPair));
 }
 
 // ---- power loss: every prefix and subset ------------------------------------

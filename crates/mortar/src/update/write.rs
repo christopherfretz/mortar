@@ -121,7 +121,8 @@ fn dir_of(path: &Path) -> PathBuf {
 /// # Errors
 /// [`WriteFailure`] (IN-77e): `Fallback` for a named reason found before
 /// anything it forbids was written (`output-changed` before W2/C3 and
-/// W2's foreign file; `state-corrupt` from `META`); `Failed` for an I/O
+/// W2's foreign file; `state-corrupt` from `META`, and for the empty
+/// plan, before W1: W5 would write no binding, IN-77e); `Failed` for an I/O
 /// error, and for W4's `EEXIST` (the link fails with `output-changed`).
 pub fn write(
     pair: &Pair<'_>,
@@ -132,6 +133,13 @@ pub fn write(
     ops: &mut dyn WriteOps,
     policy: WritePolicy,
 ) -> Result<Written, WriteFailure> {
+    if plan.is_empty() {
+        // Nothing was planned: W5 would leave the state bound to the old
+        // output with its flag cleared at W6. Nothing is written.
+        return Err(WriteFailure::Fallback(IncrReason::StateCorrupt(
+            "no state patch was planned for this update".to_owned(),
+        )));
+    }
     let compacts = plan.compacts();
     let state_path = pair.state_path;
     write_with(pair, view, ranges, bytes, compacts, ops, policy, &mut |output, ops| {

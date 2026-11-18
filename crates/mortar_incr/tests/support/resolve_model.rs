@@ -517,6 +517,10 @@ impl Link {
                 section: row.sec.map_or(NONE, |(f, l)| first_section[&f] + l),
                 value: row.value,
                 size: row.size,
+                // The resolution's model: `facts` and `demand` are the
+                // scan's, written by the join (0 here as `resolve` leaves
+                // them).
+                facts: 0,
             };
         }
         // Roots are the options' (`OptionKeys`), never `KEY_REFS` rows.
@@ -538,7 +542,7 @@ fn key_ref(k: u32, file: u32, x: &M, lazy: bool) -> KeyRefRow {
     if x.kind == def_kind::SECTION {
         flags |= key_ref_flags::IN_SECTION;
     }
-    KeyRefRow { key: k, file, def: x.kind, bind: x.bind, typ: x.typ, flags, tomb: false }
+    KeyRefRow { key: k, file, def: x.kind, bind: x.bind, typ: x.typ, flags, demand: 0, tomb: false }
 }
 
 /// A changed file's rows as the join gives them: its sections from
@@ -609,7 +613,6 @@ fn changed_file(
         values,
         index: Vec::new(),
         edges: Vec::new(),
-        eh_records: Vec::new(),
         meta_units: 0,
         debug: false,
         versioned: 0,

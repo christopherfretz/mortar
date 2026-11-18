@@ -816,6 +816,10 @@ impl<'c, 'a, 's> Res<'c, 'a, 's> {
                 section: if x.kind == def_kind::SECTION { x.section } else { NONE },
                 value: v.value,
                 size: v.size,
+                // Not known here: the scan runs after the resolution. The
+                // join writes the key's packed `SymFacts` into the row
+                // before the patch is applied (R-4a, WP-239 section 13).
+                facts: 0,
             });
         }
         // An unchanged live object (a member already extracted included).
@@ -842,6 +846,8 @@ impl<'c, 'a, 's> Res<'c, 'a, 's> {
             section: if x.kind == def_kind::SECTION { x.section } else { NONE },
             value: 0,
             size: 0,
+            // As above: the join's, after the scan (R-4a).
+            facts: 0,
         })
     }
 
@@ -1138,5 +1144,8 @@ fn key_ref_row(key: u32, file: u32, m: &MentionRow, lazy: bool) -> KeyRefRow {
     if lazy {
         flags |= key_ref_flags::LAZY;
     }
-    KeyRefRow { key, file, def: m.kind, bind: m.bind, typ: m.typ, flags, tomb: false }
+    // `demand` is not known here: the join ORs a changed file's
+    // `FileDemands` into its rows after the scan (WP-239 S4-4, S4-5); a
+    // lazy member has no live unit and keeps 0.
+    KeyRefRow { key, file, def: m.kind, bind: m.bind, typ: m.typ, flags, demand: 0, tomb: false }
 }

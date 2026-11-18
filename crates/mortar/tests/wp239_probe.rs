@@ -72,6 +72,7 @@ type Split = (u32, u32, bool, u32, u8, Vec<u8>);
 #[test]
 #[ignore = "WP-239 design probe: needs WP239_OBJS"]
 fn per_file_pieces_and_identity_equal_the_full_merge() {
+    type Ident = (u32, bool, u32, u8, [u8; 16]);
     let files = files();
     assert!(!files.is_empty(), "set WP239_OBJS");
     let mut outs: BTreeMap<Vec<u8>, u32> = BTreeMap::new();
@@ -127,7 +128,6 @@ fn per_file_pieces_and_identity_equal_the_full_merge() {
         .collect();
     let merged = merge(&Pool::new(4), &ins).expect("no problem");
     // The per-file producer: cut each section alone, identity (out, class, L128).
-    type Ident = (u32, bool, u32, u8, [u8; 16]);
     let mut by_ident: HashMap<Ident, FragId> = HashMap::new();
     let mut pairs: HashSet<(u32, Ident)> = HashSet::new();
     let (mut pieces, mut offsets_differ, mut ident_conflicts) = (0usize, 0usize, 0usize);

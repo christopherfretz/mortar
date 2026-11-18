@@ -791,6 +791,7 @@ fn local_ifunc_slot_dead_and_appended() {
         kind: SlotKind::Iplt,
         key: SymKey::local(SymEntry { file: FileId(1), index: mortar_elf::SymbolIndex(3) }),
         index: 0,
+        refs: 1,
     };
     let (keys, units) = a.hop(&b, (vec![local], vec![local]));
     assert_eq!(keys, ["__rela_iplt_end"].into_iter().collect());
@@ -801,6 +802,7 @@ fn local_ifunc_slot_dead_and_appended() {
         kind: SlotKind::Iplt,
         key: SymKey::global(SymbolId(b.id("resolver"))),
         index: 1,
+        refs: 1,
     };
     let (keys, units) = b.hop(&c, (vec![global], Vec::new()));
     assert_eq!(keys, ["__rela_iplt_end"].into_iter().collect());
@@ -1172,6 +1174,7 @@ fn undefined_versioned_root() {
             typ: FUNC,
             flags: 0,
             tomb: false,
+            demand: 0,
         });
         m.key_refs.sort_by_key(|r| (r.key, r.file));
         m.resolved[k as usize] = ResolvedRow {
@@ -1225,6 +1228,7 @@ fn shared_definer_is_not_implemented() {
             typ: FUNC,
             flags: 0,
             tomb: false,
+            demand: 0,
         });
         m.key_refs.sort_by_key(|r| (r.key, r.file));
     };

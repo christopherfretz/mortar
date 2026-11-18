@@ -401,6 +401,13 @@ impl PatchPlan {
         self.compacts
     }
 
+    /// The empty plan (`Default`): nothing was planned, so W5 would write
+    /// no binding. `mortar::update::write` refuses it before W1 (IN-77e).
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.inner.is_none()
+    }
+
     /// Why the plan compacts (empty when it does not).
     #[must_use]
     pub fn reason(&self) -> &str {

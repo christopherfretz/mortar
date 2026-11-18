@@ -13,6 +13,9 @@
 //!   `mortar: crash hook <point>` to standard error;
 //! - `MORTAR_INCR_DIRTY=<path>`: [`dirty_ranges`] writes the update's
 //!   dirty ranges to `<path>`.
+//! - `MORTAR_INCR_UNENFORCED` (set to anything; read in
+//!   `mortar::update::write`, WP-219): the probe of image.md I-59 answers that a
+//!   lock is not enforced, so a link answers `lock-unavailable` (IN-77d).
 
 use mortar_core::incr::DirtyRange;
 
