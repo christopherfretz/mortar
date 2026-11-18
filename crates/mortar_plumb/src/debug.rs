@@ -1,6 +1,8 @@
 //! Non-alloc references to sections that are not in the output
 //! (`spec/plumb.md` §5.8): the tombstone each linker writes.
 
+use std::fmt::Write as _;
+
 use mortar_elf::consts::{SHF_GROUP, STB_LOCAL, STT_SECTION};
 use mortar_elf::{Class, SymbolIndex, SymbolSection};
 
@@ -57,6 +59,7 @@ impl Engine<'_, '_> {
     /// copy of the group has exactly one member K of `k`'s name, without
     /// `SHF_ALLOC`, of `k`'s `sh_size`; K is in the output. `None`: the
     /// rule does not apply (an allocated target, or not a dropped copy).
+    #[allow(clippy::many_single_char_names)] // o, d, k, m: the spec's names
     fn i47a(&self, oi: usize, k: usize) -> Option<Kept> {
         let o = &self.objs[oi];
         let d = o.secs.get(k)?;
@@ -110,6 +113,7 @@ impl Engine<'_, '_> {
     /// `st_info` and `st_other`, sorted by name: a section symbol and
     /// AArch64's `$d` count), when its size is `k`'s; its name is not
     /// compared.
+    #[allow(clippy::many_single_char_names)] // o, d, k, m: the spec's names
     fn gnu_kept(&self, oi: usize, k: usize) -> GnuKept {
         let o = &self.objs[oi];
         let Some(d) = o.secs.get(k) else { return GnuKept::None };
@@ -260,8 +264,7 @@ impl Engine<'_, '_> {
                 },
             );
             if let Some(why) = fallback {
-                f.message
-                    .push_str(&format!("; spec/image.md I-47a keeps the tombstone here: {why}"));
+                let _ = write!(f.message, "; spec/image.md I-47a keeps the tombstone here: {why}");
             }
             f.expected = want.first().copied();
             f.found = Some(got);
