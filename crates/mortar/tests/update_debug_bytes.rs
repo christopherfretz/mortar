@@ -36,6 +36,13 @@
 //! `llvm-dwarfdump --verify`, `readelf --debug-dump` (no warning `F` does
 //! not have, beyond IN-51b's accepted ones). `MORTAR_WP228_KEEP=<dir>`
 //! keeps each `U`, `F` and their maps there for `cargo xtask plumb`.
+//!
+//! Several changed files are taken (`Edit::more`, in link order). A file
+//! the new link no longer has (IN-52) is NOT written on bytes: the image
+//! of the old layout without it breaks the layout's synthetic tables
+//! (`.symtab`'s per-file locals and sizes, which are the update's symbol
+//! table, not G-1's); IN-52 is judged by the decision test
+//! `removed_file_contributions_neutral` only.
 
 mod support;
 
@@ -112,18 +119,38 @@ int area(struct pt *p) {
 }
 ";
 
-/// One edit of `b.c` that leaves its allocated bytes alone.
+/// One edit that leaves the allocated bytes alone: `b` (and the other
+/// files of `more`) changed, or removed.
 #[derive(Debug, Clone, Copy)]
 struct Edit {
     name: &'static str,
+    /// The old `b.c`.
+    b_old: &'static str,
     /// The new `b.c`.
     b: &'static str,
     /// The placement the edit's `.debug_info` must take, if the test pins it.
     info: Option<Taken>,
+    /// More files after `b` on the link line: (stem, old text, new text or
+    /// `None` for a file the new link no longer has, IN-52), and the
+    /// placement its `.debug_info` must take if pinned.
+    more: &'static [(&'static str, &'static str, Option<&'static str>, Option<Taken>)],
+    /// Extra compiler flags.
+    flags: &'static [&'static str],
+    /// Extra gdb questions (asked without running).
+    gdb: &'static [&'static str],
+    /// The languages it runs in (C, C++).
+    langs: &'static [bool],
 }
+
+const C_ONLY: &[bool] = &[false];
 
 const LINES: Edit = Edit {
     name: "lines",
+    b_old: B_OLD,
+    more: &[],
+    flags: &[],
+    gdb: &[],
+    langs: &[false, true],
     b: r"struct pt { int x, y; };
 struct small_b { long s1, s2; };
 /* three
@@ -141,6 +168,11 @@ int area(struct pt *p) {
 
 const RENAME: Edit = Edit {
     name: "rename",
+    b_old: B_OLD,
+    more: &[],
+    flags: &[],
+    gdb: &[],
+    langs: &[false, true],
     b: r"struct pt { int x, y; };
 struct small_b { long s1, s2; };
 static int scale = 5;
@@ -155,6 +187,11 @@ int area(struct pt *p) {
 
 const GROW: Edit = Edit {
     name: "grow",
+    b_old: B_OLD,
+    more: &[],
+    flags: &[],
+    gdb: &[],
+    langs: &[false, true],
     b: r"struct pt { int x, y; };
 struct small_b { long s1, s2; };
 struct grown_type_of_wp228 {
@@ -170,47 +207,178 @@ int area(struct pt *p) {
     info: Some(Taken::Tail),
 };
 
+/// `c.c` of [`REUSE`]: smaller than `b`'s `.debug_info`, so that grown a
+/// little it fits `b`'s old allotment.
+const C_OLD: &str = r"struct small_c { long c1, c2; };
+int c_value(int v) {
+    int t = v + 1;
+    return t; /*C*/
+}
+";
+
+/// IN-50 step 2 (best fit into a dead range): `b` grows to the tail, its old
+/// allotment dead (R-3); `c`, later in the update, grows past its own
+/// slack and takes `b`'s old range.
+const REUSE: Edit = Edit {
+    name: "reuse",
+    b_old: B_OLD,
+    b: GROW.b,
+    info: Some(Taken::Tail),
+    more: &[(
+        "c",
+        C_OLD,
+        Some(
+            r"struct small_c { long c1, c2; };
+struct c_grown_for_wp228_reuse { long r1, r2; };
+int c_value(int v) {
+    int t = v + 1;
+    return t; /*C*/
+}
+",
+        ),
+        Some(Taken::DeadRange),
+    )],
+    flags: &[],
+    gdb: &["ptype struct c_grown_for_wp228_reuse", "info scope c_value"],
+    langs: &[false, true],
+};
+
+/// R-5 on a reached path (B3-1): GCC `-g3` macro groups (`wm4.*`,
+/// `DW_MACRO_import`); `b` changed, `a` the keeper of the shared groups,
+/// `b` alone keeps the group of its own header.
+const MACROS: Edit = Edit {
+    name: "macros",
+    b_old: B_MACROS_OLD,
+    b: r"#include <limits.h>
+#define B_SCALE_WP228 5
+struct pt { int x, y; };
+struct small_b { long s1, s2; };
+static int scale = B_SCALE_WP228;
+/* moved down */
+int area(struct pt *p) {
+    int w = p->x + scale;
+    int h = p->y;
+    return w * h; /*B*/
+}
+",
+    info: None,
+    more: &[],
+    flags: &["-g3"],
+    gdb: &[
+        "info macro -at b.c:9 B_SCALE_WP228",
+        "macro expand B_SCALE_WP228 + 1",
+        "info macro -at b.c:9 INT_MAX",
+        "info macro -at a.c:1510 EOF",
+    ],
+    langs: &[false],
+};
+
+/// The old `b.c` of [`MACROS`].
+const B_MACROS_OLD: &str = r"#include <limits.h>
+#define B_SCALE_WP228 5
+struct pt { int x, y; };
+struct small_b { long s1, s2; };
+static int scale = B_SCALE_WP228;
+int area(struct pt *p) {
+    int w = p->x + scale;
+    int h = p->y;
+    return w * h; /*B*/
+}
+";
+
+/// What C++ adds to every source: COMDAT code shared by `a` and `b`
+/// (an inline function, a template instance), so that `b`'s units name
+/// dropped copies.
+fn cxx_tail(stem: &str) -> String {
+    format!(
+        "namespace wp228 {{ template <class T> struct Box {{ T v; T get() const {{ return v; }} }};\n\
+         inline int twice(int v) {{ return v * 2; }} }}\n\
+         int use_box_{stem}(long v) {{ wp228::Box<long> b{{v}}; return int(b.get()) + wp228::twice(1); }}\n"
+    )
+}
+
+/// The compiler.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Cc {
+    Gcc,
+    Clang,
+    /// kiln (front end) and hod (code generator), C++ only.
+    Kiln,
+}
+
 /// A compiler configuration.
 #[derive(Debug, Clone, Copy)]
 struct Cfg {
     arch: Arch,
-    clang: bool,
+    cc: Cc,
+    cxx: bool,
     dwarf: u8,
+}
+
+/// The workspace's kiln, as the gate names it.
+fn kiln() -> Option<PathBuf> {
+    ["MASON_KILN", "MORTAR_KILN"]
+        .iter()
+        .filter_map(std::env::var_os)
+        .map(PathBuf::from)
+        .find(|p| p.is_file())
 }
 
 impl Cfg {
     fn label(self) -> String {
-        format!(
-            "{}-{}-dwarf{}",
-            self.arch.name(),
-            if self.clang { "clang" } else { "gcc" },
-            self.dwarf
-        )
+        let cc = match self.cc {
+            Cc::Gcc => "gcc",
+            Cc::Clang => "clang",
+            Cc::Kiln => "kiln",
+        };
+        let pp = if self.cxx && self.cc != Cc::Kiln { "++" } else { "" };
+        format!("{}-{cc}{pp}-dwarf{}", self.arch.name(), self.dwarf)
     }
 
-    /// The driver's name and its leading flags.
-    fn driver(self) -> (String, Vec<String>) {
+    fn ext(self) -> &'static str {
+        if self.cxx { "cc" } else { "c" }
+    }
+
+    /// The GNU driver whose link line the test takes, and its flags.
+    fn driver(self, extra: &[&str]) -> (String, Vec<String>) {
         let mut f = Vec::new();
-        let cc = if self.clang {
-            f.extend(self.arch.clang_args());
-            "clang".to_owned()
-        } else {
-            self.arch.gnu("gcc")
+        let cc = match (self.cc, self.cxx) {
+            (Cc::Clang, cxx) => {
+                f.extend(self.arch.clang_args());
+                if cxx { "clang++" } else { "clang" }.to_owned()
+            }
+            (_, true) => self.arch.gnu("g++"),
+            (_, false) => self.arch.gnu("gcc"),
         };
         f.extend(
             ["-g", &format!("-gdwarf-{}", self.dwarf), "-O0", "-fno-eliminate-unused-debug-types"]
                 .map(String::from),
         );
+        f.extend(extra.iter().map(|s| (*s).to_owned()));
         (cc, f)
+    }
+
+    /// The compiler of the test's objects and its flags.
+    fn compiler(self, extra: &[&str]) -> Option<(PathBuf, Vec<String>)> {
+        if self.cc == Cc::Kiln {
+            let mut f = vec![format!("--target={}", self.arch.triple())];
+            f.extend(["-g", &format!("-gdwarf-{}", self.dwarf), "-O0"].map(String::from));
+            f.extend(extra.iter().map(|s| (*s).to_owned()));
+            return kiln().map(|k| (k, f));
+        }
+        let (cc, f) = self.driver(extra);
+        tool(&cc).map(|t| (t, f))
     }
 }
 
-fn configs() -> Vec<Cfg> {
+fn configs(langs: &[bool]) -> Vec<Cfg> {
     let mut v = Vec::new();
     for arch in [Arch::Aarch64, Arch::X86_64] {
-        for clang in [false, true] {
-            for dwarf in [4, 5] {
-                v.push(Cfg { arch, clang, dwarf });
+        for &cxx in langs {
+            for cc in [Cc::Gcc, Cc::Clang] {
+                for dwarf in [4, 5] {
+                    v.push(Cfg { arch, cc, cxx, dwarf });
+                }
             }
         }
     }
@@ -273,13 +441,12 @@ struct Fixture {
     cfg: Cfg,
     edit: Edit,
     scratch: Scratch,
-    /// The driver's link line (`-o out`), objects `a.c.o` and `b.c.o`.
+    /// The driver's link line (`-o out`), objects `a.c.o`, `b.c.o`, ...
     args: Vec<String>,
 }
 
-fn compile(cfg: Cfg, dir: &Path, src: &str, obj: &str) {
-    let (cc, flags) = cfg.driver();
-    let cc = tool(&cc).unwrap();
+fn compile(cfg: Cfg, edit: Edit, dir: &Path, src: &str, obj: &str) {
+    let (cc, flags) = cfg.compiler(edit.flags).expect("the compiler");
     let mut c = Command::new(cc);
     c.current_dir(dir).args(&flags).args(["-c", src, "-o", obj]);
     let o = run_with(&mut c, b"", Duration::from_mins(2));
@@ -287,21 +454,54 @@ fn compile(cfg: Cfg, dir: &Path, src: &str, obj: &str) {
 }
 
 impl Fixture {
+    /// The stems of the files the edit changes or removes, in link order.
+    fn stems(edit: Edit) -> Vec<&'static str> {
+        std::iter::once("b").chain(edit.more.iter().map(|m| m.0)).collect()
+    }
+
+    /// The text of `stem` in the language of `cfg`.
+    fn text(cfg: Cfg, stem: &str, body: &str) -> String {
+        if cfg.cxx { format!("{body}{}", cxx_tail(stem)) } else { body.to_owned() }
+    }
+
     fn new(cfg: Cfg, edit: Edit) -> Option<Self> {
-        let (cc, flags) = cfg.driver();
+        cfg.compiler(edit.flags)?;
+        let (cc, flags) = cfg.driver(&[]);
         let scratch = Scratch::new(&format!("wp228-b3-{}-{}", cfg.label(), edit.name));
         let flags: Vec<&str> = flags.iter().map(String::as_str).collect();
-        let sources = [Source { name: "a.c", text: "" }, Source { name: "b.c", text: B_OLD }];
+        let ext = cfg.ext();
+        let mut sources =
+            vec![Source { name: Box::leak(format!("a.{ext}").into_boxed_str()), text: "" }];
+        for stem in Self::stems(edit) {
+            sources.push(Source {
+                name: Box::leak(format!("{stem}.{ext}").into_boxed_str()),
+                text: "",
+            });
+        }
         let built = build_by(&scratch, &cc, &flags, &sources)?;
-        scratch.write("a.c", a_c());
         // Every object compiled alike (relative names, the scratch as the
         // directory): the link line's objects are replaced.
-        compile(cfg, scratch.path(), "a.c", "a.c.o");
-        compile(cfg, scratch.path(), "b.c", "b1.o");
-        std::fs::remove_file(scratch.join("b.c.o")).unwrap();
-        scratch.write("b.c", edit.b);
-        compile(cfg, scratch.path(), "b.c", "b2.o");
+        let a = format!("a.{ext}");
+        scratch.write(&a, Self::text(cfg, "a", &a_c()));
+        compile(cfg, edit, scratch.path(), &a, &format!("{a}.o"));
+        let mut versions = vec![("b", edit.b_old, Some(edit.b))];
+        versions.extend(edit.more.iter().map(|m| (m.0, m.1, m.2)));
+        for (stem, old, new) in versions {
+            let src = format!("{stem}.{ext}");
+            scratch.write(&src, Self::text(cfg, stem, old));
+            compile(cfg, edit, scratch.path(), &src, &format!("{stem}1.o"));
+            std::fs::remove_file(scratch.join(format!("{src}.o"))).unwrap();
+            if let Some(new) = new {
+                scratch.write(&src, Self::text(cfg, stem, new));
+                compile(cfg, edit, scratch.path(), &src, &format!("{stem}2.o"));
+            }
+        }
         Some(Self { cfg, edit, scratch, args: built.args })
+    }
+
+    /// Whether `stem` is in the link of version `v`.
+    fn present(&self, stem: &str, v: u8) -> bool {
+        v == 1 || stem == "b" || self.edit.more.iter().any(|m| m.0 == stem && m.2.is_some())
     }
 
     fn label(&self) -> String {
@@ -313,14 +513,24 @@ impl Fixture {
         let args: Vec<String> = self
             .args
             .iter()
-            .map(|a| {
-                if a.ends_with("b.c.o") {
-                    self.scratch.join(format!("b{v}.o")).display().to_string()
-                } else {
-                    a.clone()
+            .filter_map(|a| {
+                let ext = self.cfg.ext();
+                for stem in Self::stems(self.edit) {
+                    if a.ends_with(&format!("/{stem}.{ext}.o")) {
+                        let o = self.scratch.join(format!("{stem}{v}.o"));
+                        return self.present(stem, v).then(|| o.display().to_string());
+                    }
                 }
+                Some(a.clone())
             })
             .collect();
+        // A file the new link no longer has is the LAST input of both
+        // links, so that no other file's ids move (the writer keeps the
+        // old layout's per-file and per-symbol data).
+        let (mut args, last): (Vec<String>, Vec<String>) = args.into_iter().partition(|a| {
+            !self.edit.more.iter().any(|m| m.2.is_none() && a.ends_with(&format!("/{}1.o", m.0)))
+        });
+        args.extend(last);
         let mut a = with_output(&args, &self.scratch.join(out));
         a.extend(["--incremental=full", "--incremental-state"].iter().map(OsString::from));
         a.push(self.scratch.join(format!("{out}.mortar-state")).into_os_string());
@@ -373,6 +583,23 @@ struct Old {
     layout: Layout,
     frags: HashMap<(Vec<u8>, Vec<u8>), u64>,
     base: Column<FileId, mortar_core::id::IdRange<SectionId>>,
+    /// Each file's path, for an object named on the link line.
+    paths: Vec<Option<Vec<u8>>>,
+}
+
+/// Each file's path, for an object named on the link line.
+fn paths_of(inputs: &mortar_core::inputs::Inputs<'_>) -> Vec<Option<Vec<u8>>> {
+    let mut v = vec![None; inputs.files.len() as usize];
+    for o in &inputs.link.opened {
+        if let mortar_core::inputs::OpenedKind::Object(id) = o.kind {
+            v[id.0 as usize] = Some(o.path.to_vec());
+        }
+    }
+    v
+}
+
+fn ends(p: Option<&Vec<u8>>, s: &str) -> bool {
+    p.is_some_and(|p| p.ends_with(s.as_bytes()))
 }
 
 fn old_of(fx: &Fixture) -> Old {
@@ -390,7 +617,12 @@ fn old_of(fx: &Fixture) -> Old {
         let bytes = data[fr.offset as usize..(fr.offset + fr.size) as usize].to_vec();
         frags.entry((name, bytes)).or_insert(off);
     }
-    Old { layout: f.layout.clone(), frags, base: f.resolution.section_base.clone() }
+    Old {
+        layout: f.layout.clone(),
+        frags,
+        base: f.resolution.section_base.clone(),
+        paths: paths_of(&f.inputs),
+    }
 }
 
 /// The `DEBUG_STRS` rows WP-247's capture will store for `P` (every live
@@ -405,10 +637,17 @@ fn emulated_debug_strs(old: &Old) -> HashMap<(u8, u64), u32> {
     m
 }
 
-/// The changed file `b` from the new capture's rows.
-fn changed_of(old: &MemoryState, new: &MemoryState, b: FileId, first: SectionId) -> ChangedFiles {
+/// The changed file `ob` (`nb` in the new link) from the new capture's
+/// rows, into `cf`.
+fn changed_of(
+    old: &MemoryState,
+    new: &MemoryState,
+    ob: FileId,
+    nb: FileId,
+    first: SectionId,
+    cf: &mut ChangedFiles,
+) {
     let base = old.strings.len() as u32;
-    let mut cf = ChangedFiles::default();
     let intern = |s: Str, cf: &mut ChangedFiles| -> Str {
         if s.len == 0 {
             return Str::default();
@@ -419,10 +658,11 @@ fn changed_of(old: &MemoryState, new: &MemoryState, b: FileId, first: SectionId)
         Str { off, len: s.len }
     };
     let mut sections = Vec::new();
-    for r in new.sections.iter().filter(|r| r.file == b.0) {
-        let name = intern(r.name, &mut cf);
-        let anchor = if r.anchor_kind == 1 { intern(r.anchor, &mut cf) } else { r.anchor };
+    for r in new.sections.iter().filter(|r| r.file == nb.0) {
+        let name = intern(r.name, cf);
+        let anchor = if r.anchor_kind == 1 { intern(r.anchor, cf) } else { r.anchor };
         sections.push(SectionRow {
+            file: ob.0,
             name,
             anchor,
             place_chunk: mortar_incr::format::NONE,
@@ -430,11 +670,21 @@ fn changed_of(old: &MemoryState, new: &MemoryState, b: FileId, first: SectionId)
             ..*r
         });
     }
-    cf.files.push(ChangedFile {
-        file: b,
-        change: Change::Changed,
-        row: old.files[b.0 as usize].clone(),
-        first_section: first,
+    cf.files.push(file_row(old, ob, Change::Changed, first, sections));
+}
+
+fn file_row(
+    old: &MemoryState,
+    file: FileId,
+    change: Change,
+    first_section: SectionId,
+    sections: Vec<SectionRow>,
+) -> ChangedFile {
+    ChangedFile {
+        file,
+        change,
+        row: old.files[file.0 as usize].clone(),
+        first_section,
         sections,
         keys: Vec::new(),
         first_global: 0,
@@ -446,8 +696,7 @@ fn changed_of(old: &MemoryState, new: &MemoryState, b: FileId, first: SectionId)
         debug: true,
         versioned: 0,
         odr: OdrRows::default(),
-    });
-    cf
+    }
 }
 
 /// What the update decided, and the image of the new inputs with its
@@ -481,32 +730,57 @@ fn update(
     let out: RefCell<Option<Result<DebugPlan, String>>> = RefCell::new(None);
     let hook = |link: &mortar_incr::capture::Link<'_, '_>, _computed: &Layout| {
         let r = (|| -> Result<(Layout, DebugPlan), String> {
-            // The changed file: the one whose path is `b2.o`.
-            let b = (0..link.inputs.files.len())
-                .map(FileId)
-                .find(|&f| {
-                    link.inputs.link.opened.iter().any(|o| {
-                        matches!(o.kind, mortar_core::inputs::OpenedKind::Object(id) if id == f)
-                            && o.path.ends_with(b"b2.o")
-                    })
-                })
-                .ok_or("no b2.o")?;
-            let nb = link.resolution.section_base[b];
-            let ob = old.base[b];
-            if nb.len() != ob.len() {
-                return Err("the edit changed b's section count".into());
+            // The files: the new link's are the old one's without the
+            // removed ones, in order; the changed ones are `<stem>2.o`.
+            let paths = paths_of(link.inputs);
+            let stems = Fixture::stems(fx.edit);
+            let find = |ps: &[Option<Vec<u8>>], tail: &str| {
+                (0..ps.len() as u32).map(FileId).find(|f| ends(ps[f.0 as usize].as_ref(), tail))
+            };
+            let mut removed = Vec::new();
+            for s in stems.iter().filter(|s| !fx.present(s, 2)) {
+                removed.push(find(&old.paths, &format!("/{s}1.o")).ok_or("no removed file")?);
+            }
+            let map: Vec<FileId> =
+                (0..old.paths.len() as u32).map(FileId).filter(|f| !removed.contains(f)).collect();
+            if map.len() != paths.len() {
+                return Err("the new link's files are not the old ones less the removed".into());
+            }
+            let mut ch: Vec<(FileId, FileId)> = Vec::new();
+            for s in stems.iter().filter(|s| fx.present(s, 2)) {
+                let nb = find(&paths, &format!("/{s}2.o")).ok_or("no changed file")?;
+                let ob = map[nb.0 as usize];
+                if !ends(old.paths[ob.0 as usize].as_ref(), &format!("/{s}1.o")) {
+                    return Err(format!("{s}: the file map"));
+                }
+                if link.resolution.section_base[nb].len() != old.base[ob].len() {
+                    return Err(format!("the edit changed {s}'s section count"));
+                }
+                ch.push((nb, ob));
             }
             let view = rows.view();
             let lo = LayoutOf { view: &view };
             let stored = StoredLayout::new(&lo);
-            let first = SectionId(rows.sections.len() as u32);
-            let changed = changed_of(rows, new, b, first);
+            let mut changed = ChangedFiles::default();
+            let mut firsts: HashMap<FileId, SectionId> = HashMap::new();
+            let mut first = SectionId(rows.sections.len() as u32);
+            for &(nb, ob) in &ch {
+                changed_of(rows, new, ob, nb, first, &mut changed);
+                firsts.insert(nb, first);
+                first = SectionId(first.0 + old.base[ob].len() as u32);
+            }
+            for &ob in &removed {
+                changed.files.push(file_row(rows, ob, Change::Gone, first, Vec::new()));
+            }
             // (1) strings.
             let mut inputs = Vec::new();
-            for k in 0..nb.len() {
-                let (name, data) = sec(link.inputs, link.resolution, nb.nth(k).unwrap());
-                if let Some(class) = debug::str_class(&name) {
-                    inputs.push((b, class, data));
+            for &(nb, ob) in &ch {
+                let r = link.resolution.section_base[nb];
+                for k in 0..r.len() {
+                    let (name, data) = sec(link.inputs, link.resolution, r.nth(k).unwrap());
+                    if let Some(class) = debug::str_class(&name) {
+                        inputs.push((ob, class, data));
+                    }
                 }
             }
             let empty = HashMap::new();
@@ -522,20 +796,23 @@ fn update(
                 format!("strings: {e:?}; not in the rows: {miss:?}; rows {}", strs.len())
             })?;
             // (2) what layout(debug: true) gives a debug-only edit.
+            let olds: Vec<FileId> = ch.iter().map(|c| c.1).chain(removed.iter().copied()).collect();
             let mut d = LayoutDelta {
                 placement: old.layout.placement.clone(),
-                files: vec![b],
+                files: olds.clone(),
                 ..LayoutDelta::default()
             };
-            for k in 0..ob.len() {
-                let id = ob.nth(k).unwrap();
-                let r = &rows.sections[id.0 as usize];
-                let name = view.string(r.name).map_err(|e| e.name().to_owned())?;
-                if r.sh_flags & 2 == 0
-                    && name.starts_with(b".debug_")
-                    && d.placement.place[id].get().is_some()
-                {
-                    d.killed.push(id);
+            for &ob in &olds {
+                for k in 0..old.base[ob].len() {
+                    let id = old.base[ob].nth(k).unwrap();
+                    let r = &rows.sections[id.0 as usize];
+                    let name = view.string(r.name).map_err(|e| e.name().to_owned())?;
+                    if r.sh_flags & 2 == 0
+                        && name.starts_with(b".debug_")
+                        && d.placement.place[id].get().is_some()
+                    {
+                        d.killed.push(id);
+                    }
                 }
             }
             // (3) place.
@@ -543,6 +820,19 @@ fn update(
                 .map_err(|e| format!("place: {} ({e:?})", e.name()))?;
             // (4) the layout of the new link with the update's placement.
             let mut l = old.layout.clone();
+            if !removed.is_empty() {
+                // The removed files' locals leave `.symtab` (the update's
+                // symbol table, not G-1's: the writer keeps `P`'s).
+                let locals = &old.layout.slots.symtab_locals;
+                let mut at = locals.iter().next().map_or(0, |(_, s)| s.start);
+                let mut spans = Vec::new();
+                for &o in &map {
+                    let len = locals[o].len;
+                    spans.push(mortar_core::id::Span { start: at, len });
+                    at += len;
+                }
+                l.slots.symtab_locals = Column::from_vec(spans).map_err(|_| "symtab_locals")?;
+            }
             l.placement.chunks.clone_from(&d.placement.chunks);
             l.placement.holes.clone_from(&d.placement.holes);
             for (chunk, at, bytes) in plan.strings.appended.values() {
@@ -551,10 +841,11 @@ fn update(
             let n = link.resolution.section_base.iter().map(|(_, r)| r.end.0).max().unwrap_or(0);
             let mut place = Column::filled(n, Place::NONE);
             for (f, r) in link.resolution.section_base.iter() {
+                let o = map[f.0 as usize];
                 for k in 0..r.len() {
                     let id = r.nth(k).unwrap();
-                    let oid = old.base[f].nth(k).unwrap();
-                    place[id] = if f == b {
+                    let oid = old.base[o].nth(k).unwrap();
+                    place[id] = if let Some(first) = firsts.get(&f) {
                         let (name, _) = sec(link.inputs, link.resolution, id);
                         let flags = rows.sections[oid.0 as usize].sh_flags;
                         let placed_by_place = !matches!(
@@ -605,17 +896,18 @@ fn update(
             for (_, fr) in link.split.frags.iter() {
                 let (name, data) = sec(link.inputs, link.resolution, fr.section);
                 let bytes = data[fr.offset as usize..(fr.offset + fr.size) as usize].to_vec();
-                let in_b = link.resolution.file_of(fr.section) == Some(b);
+                let file = link.resolution.file_of(fr.section);
+                let in_b = file.is_some_and(|f| firsts.contains_key(&f));
                 let off = match debug::str_class(&name) {
                     Some(class) if in_b => plan
                         .strings
-                        .output_offset(b, class, u64::from(fr.offset))
-                        .ok_or("a string of b without an output offset")?,
+                        .output_offset(map[file.unwrap().0 as usize], class, u64::from(fr.offset))
+                        .ok_or("a string of a changed file without an output offset")?,
                     _ => match old.frags.get(&(name.clone(), bytes)) {
                         Some(&o) => o,
                         None if in_b => {
                             return Err(format!(
-                                "a new fragment of b in {}",
+                                "a new fragment of a changed file in {}",
                                 String::from_utf8_lossy(&name)
                             ));
                         }
@@ -661,11 +953,10 @@ fn update(
 /// writes nothing.
 fn write_update(label: &str, prev: &[u8], u: &Update, rows: &MemoryState) -> Vec<u8> {
     let img = &u.image;
-    assert_eq!(
-        img.len(),
-        prev.len(),
-        "{label}: the image with the update's placement has P's size"
-    );
+    // The symbol tables and what follows them may differ (a removed
+    // file's `STT_FILE` symbol: the update's symbol table, not G-1's);
+    // every other section is where `P` has it.
+    let tables = |n: &str| matches!(n, ".symtab" | ".strtab" | ".shstrtab");
     let mut out = prev.to_vec();
     let view = rows.view();
     let lo = LayoutOf { view: &view };
@@ -700,27 +991,34 @@ fn write_update(label: &str, prev: &[u8], u: &Update, rows: &MemoryState) -> Vec
     // file's new sets are the image's sets naming its new `.debug_info`.
     if let (Some(pa), Some(ia)) = (section(prev, ".debug_aranges"), section(img, ".debug_aranges"))
     {
-        let info =
-            u.plan.contributions.iter().find(|c| chunk_name(rows, c.chunk) == b".debug_info");
         let mut replaced = Vec::new();
-        if let Some(c) = info {
-            let (s, e) = (c.allot.offset, c.allot.offset + c.size);
+        for &(file, os, oe) in &u.plan.aranges {
+            // The file's new sets: the image's sets naming its new
+            // `.debug_info` (none for a removed file).
+            let info = u
+                .plan
+                .contributions
+                .iter()
+                .find(|c| c.file == file && chunk_name(rows, c.chunk) == b".debug_info");
             let mut sets = Vec::new();
-            let mut at = 0;
-            while at + 10 <= ia.len() {
-                let len = u32_at(ia, at) as usize;
-                if len == 0 {
-                    break;
+            if let Some(c) = info {
+                let (s, e) = (c.allot.offset, c.allot.offset + c.size);
+                let mut at = 0;
+                while at + 10 <= ia.len() {
+                    let len = u32_at(ia, at) as usize;
+                    if len == 0 {
+                        break;
+                    }
+                    let off = u64::from(u32_at(ia, at + 6));
+                    if (s..e).contains(&off) {
+                        sets.extend_from_slice(&ia[at..at + 4 + len]);
+                    }
+                    at += 4 + len;
                 }
-                let off = u64::from(u32_at(ia, at + 6));
-                if (s..e).contains(&off) {
-                    sets.extend_from_slice(&ia[at..at + 4 + len]);
-                }
-                at += 4 + len;
             }
-            let (_, os, oe) = u.plan.aranges[0];
             replaced.push((os, oe, sets));
         }
+        replaced.sort_by_key(|r| r.0);
         let new = debug::aranges(pa, &replaced).unwrap();
         assert_eq!(new, ia, "{label}: IN-54's rewrite equals the full link's order");
         let sh = shdrs(prev).into_iter().find(|s| s.name == ".debug_aranges").unwrap();
@@ -730,7 +1028,11 @@ fn write_update(label: &str, prev: &[u8], u: &Update, rows: &MemoryState) -> Vec
     let (ps, is) = (shdrs(prev), shdrs(img));
     assert_eq!(ps.len(), is.len(), "{label}: section count");
     for (p, i) in ps.iter().zip(&is) {
-        assert_eq!((&p.name, p.offset), (&i.name, i.offset), "{label}: section headers");
+        assert_eq!(p.name, i.name, "{label}: section headers");
+        if tables(&p.name) {
+            continue;
+        }
+        assert_eq!(p.offset, i.offset, "{label}: {}'s offset", p.name);
         if p.size != i.size {
             assert!(i.name.starts_with(".debug_"), "{label}: {} changed size", i.name);
             out[p.at..p.at + 8].copy_from_slice(&i.size.to_le_bytes());
@@ -745,6 +1047,7 @@ fn write_update(label: &str, prev: &[u8], u: &Update, rows: &MemoryState) -> Vec
         if s.size == 0
             || s.sh_type == 8
             || e > img.len()
+            || tables(&s.name)
             || s.name == ".debug_str"
             || s.name == ".debug_line_str"
             || s.name.starts_with(".note")
@@ -787,13 +1090,15 @@ fn line_of(src: &str, mark: &str) -> usize {
 }
 
 /// gdb's transcript of the questions on `prog`.
-fn gdb(cfg: Cfg, prog: &Path, dir: &Path, b: &str) -> String {
-    let (bl, al) = (line_of(b, "/*B*/"), line_of(&a_c(), "/*A*/"));
+fn gdb(cfg: Cfg, edit: Edit, prog: &Path, dir: &Path) -> String {
+    let (bl, al) = (line_of(edit.b, "/*B*/"), line_of(&a_c(), "/*A*/"));
+    let x = cfg.ext();
     let mut ex: Vec<String> =
         ["set pagination off", "set width 0", "set confirm off"].map(String::from).to_vec();
-    ex.push(format!("break b.c:{bl}"));
-    ex.push(format!("break a.c:{al}"));
-    ex.push(format!("info line b.c:{bl}"));
+    ex.push(format!("break b.{x}:{bl}"));
+    ex.push(format!("break a.{x}:{al}"));
+    ex.push(format!("info line b.{x}:{bl}"));
+    ex.extend(edit.gdb.iter().map(|q| q.replace(".c:", &format!(".{x}:"))));
     ex.push("info line helper".into());
     ex.push("ptype struct pt".into());
     ex.push("ptype struct small_b".into());
@@ -829,11 +1134,12 @@ fn gdb(cfg: Cfg, prog: &Path, dir: &Path, b: &str) -> String {
     tool_text(&exe, &args, dir)
 }
 
-fn lldb(cfg: Cfg, prog: &Path, dir: &Path, b: &str) -> String {
-    let (bl, al) = (line_of(b, "/*B*/"), line_of(&a_c(), "/*A*/"));
+fn lldb(cfg: Cfg, edit: Edit, prog: &Path, dir: &Path) -> String {
+    let (bl, al) = (line_of(edit.b, "/*B*/"), line_of(&a_c(), "/*A*/"));
+    let x = cfg.ext();
     let mut o: Vec<String> = vec!["settings set target.disable-aslr false".into()];
-    o.push(format!("breakpoint set -f b.c -l {bl}"));
-    o.push(format!("breakpoint set -f a.c -l {al}"));
+    o.push(format!("breakpoint set -f b.{x} -l {bl}"));
+    o.push(format!("breakpoint set -f a.{x} -l {al}"));
     o.push("image lookup -n area".into());
     o.push("image lookup -t pt".into());
     o.push("image lookup -t small_b".into());
@@ -938,19 +1244,26 @@ fn verify(prog: &Path, dir: &Path) -> (bool, String) {
 }
 
 /// The judges: `u` (the update's output) against `f` (the full link).
-fn judge(label: &str, cfg: Cfg, dir: &Path, u: &Path, f: &Path, b: &str) {
-    let (gu, gf) = (gdb(cfg, u, dir, b), gdb(cfg, f, dir, b));
+fn judge(label: &str, cfg: Cfg, edit: Edit, dir: &Path, u: &Path, f: &Path) {
+    let (gu, gf) = (gdb(cfg, edit, u, dir), gdb(cfg, edit, f, dir));
     let (gu, gf) = (norm(&gu, u), norm(&gf, f));
     assert!(gf.contains("Breakpoint 1 at"), "{label}: gdb on the full link: {gf}");
     assert_eq!(gu, gf, "{label}: gdb reads the update's output differently");
-    let (lu, lf) = (lldb(cfg, u, dir, b), lldb(cfg, f, dir, b));
+    let (lu, lf) = (lldb(cfg, edit, u, dir), lldb(cfg, edit, f, dir));
     let (lu, lf) = (norm(&lu, u), norm(&lf, f));
     assert!(lf.contains("Breakpoint 1:"), "{label}: lldb on the full link: {lf}");
     assert_eq!(lu, lf, "{label}: lldb reads the update's output differently");
+    // `--verify`: the update's output has no error the full link has not
+    // (the full link of C++ on x86-64 with dropped COMDAT copies has one:
+    // overlapping `DW_AT_ranges` at the tombstone, recorded in WP-228 B3).
     let (vf, ef) = verify(f, dir);
-    assert!(vf, "{label}: --verify on the full link: {ef}");
     let (vu, eu) = verify(u, dir);
-    assert!(vu, "{label}: --verify on the update's output: {eu}");
+    let fl: std::collections::BTreeSet<&str> = ef.lines().collect();
+    let new: Vec<&str> = eu.lines().filter(|l| !fl.contains(l)).collect();
+    assert!(vu || new.is_empty(), "{label}: --verify on the update's output: {new:?}");
+    if !vf {
+        eprintln!("[wp228-b3] {label}: --verify fails on the FULL link too (same errors): {ef:?}");
+    }
     let (wu, wf) = (readelf_warnings(cfg, u, dir), readelf_warnings(cfg, f, dir));
     let new: Vec<&String> = wu.iter().filter(|w| !wf.contains(*w) && !accepted(w)).collect();
     assert!(new.is_empty(), "{label}: readelf warns anew: {new:?}");
@@ -963,11 +1276,15 @@ fn judge(label: &str, cfg: Cfg, dir: &Path, u: &Path, f: &Path, b: &str) {
 /// One edit on every configuration: P, F, the update with and without
 /// emulated `DEBUG_STRS` rows, each judged.
 fn scenario(edit: Edit) {
+    scenario_on(edit, &configs(edit.langs));
+}
+
+fn scenario_on(edit: Edit, cfgs: &[Cfg]) {
     if !tools_required() && tool("lldb").is_none() {
         return;
     }
     let keep = std::env::var_os("MORTAR_WP228_KEEP").map(PathBuf::from);
-    for cfg in configs() {
+    for &cfg in cfgs {
         let Some(fx) = Fixture::new(cfg, edit) else {
             assert!(!tools_required(), "{}: a compiler is missing", cfg.label());
             continue;
@@ -994,20 +1311,40 @@ fn scenario(edit: Edit) {
                 }
                 Err(e) => panic!("{l}: {e}"),
             };
-            let info =
-                u.plan.contributions.iter().find(|c| chunk_name(&rows, c.chunk) == b".debug_info");
-            if let (Some(want), Some(c)) = (edit.info, info) {
-                assert_eq!(c.taken, want, "{l}: .debug_info's placement");
-            }
             let s = &u.plan.strings;
             eprintln!(
-                "[wp228-b3] {l}: {} contributions {:?}, strings hits {} misses {} appended {:?}",
+                "[wp228-b3] {l}: {} contributions {:?}, comdat in place {}, strings hits {} \
+                 misses {} appended {:?}",
                 u.plan.contributions.len(),
-                u.plan.contributions.iter().map(|c| c.taken).collect::<Vec<_>>(),
+                u.plan
+                    .contributions
+                    .iter()
+                    .map(|c| {
+                        let n = String::from_utf8_lossy(&chunk_name(&rows, c.chunk)).into_owned();
+                        format!("{}:{n}:{:?}:{}/{}", c.file.0, c.taken, c.size, c.allot.size)
+                    })
+                    .collect::<Vec<_>>(),
+                u.plan.comdat_in_place.len(),
                 s.hits,
                 s.misses,
                 s.appended.values().map(|a| a.2.len()).collect::<Vec<_>>()
             );
+            // The pinned placements, per changed file in link order.
+            let infos: Vec<Taken> = u
+                .plan
+                .contributions
+                .iter()
+                .filter(|c| chunk_name(&rows, c.chunk) == b".debug_info")
+                .map(|c| c.taken)
+                .collect();
+            let pins: Vec<Option<Taken>> = std::iter::once(edit.info)
+                .chain(edit.more.iter().filter(|m| m.2.is_some()).map(|m| m.3))
+                .collect();
+            for (k, (want, got)) in pins.iter().zip(&infos).enumerate() {
+                if let Some(want) = want {
+                    assert_eq!(got, want, "{l}: changed file {k}'s .debug_info placement");
+                }
+            }
             if with_rows {
                 assert!(s.hits > 0, "{l}: no string found through the rows");
             } else {
@@ -1018,15 +1355,16 @@ fn scenario(edit: Edit) {
             std::fs::write(&up, &out).unwrap();
             std::fs::set_permissions(&up, std::os::unix::fs::PermissionsExt::from_mode(0o755))
                 .unwrap();
-            judge(&l, cfg, fx.scratch.path(), &up, &fx.scratch.join("full"), edit.b);
+            judge(&l, cfg, edit, fx.scratch.path(), &up, &fx.scratch.join("full"));
             if let Some(k) = &keep {
                 let d = k.join(format!("{}-{}-{tag}", cfg.label(), edit.name));
                 std::fs::create_dir_all(&d).unwrap();
                 std::fs::copy(&up, d.join("upd")).unwrap();
                 std::fs::copy(fx.scratch.join("full"), d.join("full")).unwrap();
                 std::fs::copy(fx.scratch.join("full.map"), d.join("full.map")).unwrap();
-                for src in ["a.c", "b.c"] {
-                    std::fs::copy(fx.scratch.join(src), d.join(src)).unwrap();
+                for stem in std::iter::once("a").chain(Fixture::stems(edit)) {
+                    let src = format!("{stem}.{}", cfg.ext());
+                    std::fs::copy(fx.scratch.join(&src), d.join(&src)).unwrap();
                 }
             }
         }
@@ -1055,4 +1393,246 @@ fn appended_string_reads_as_the_full_link() {
 #[test]
 fn tail_and_dead_range_read_as_the_full_link() {
     scenario(GROW);
+}
+
+// spec: incr.md IN-50 step 2 (best fit into a dead range), R-3: `b` grows
+// to the tail and its old allotment is dead; `c`, changed in the same
+// update, grows past its slack and takes `b`'s old range.
+#[test]
+fn dead_range_reuse_reads_as_the_full_link() {
+    scenario(REUSE);
+}
+
+// spec: WP-228 R-5 on image.md I-47a (B3-1): GCC `-g3` macro groups; the
+// changed file's imports of groups `a` keeps name `a`'s copies, the group
+// only `b` keeps stays in place (R-5 a); gdb `info macro`, `macro expand`.
+#[test]
+fn macro_group_import_reads_as_the_full_link() {
+    let cfgs: Vec<Cfg> = configs(C_ONLY).into_iter().filter(|c| c.cc == Cc::Gcc).collect();
+    scenario_on(MACROS, &cfgs);
+}
+
+// spec: incr.md IN-50, IN-56 on kiln/hod objects (C++, DWARF 5), both
+// targets: the line edit and the growth to the tail.
+#[test]
+fn kiln_objects_read_as_the_full_link() {
+    if kiln().is_none() {
+        assert!(!tools_required() || std::env::var_os("MASON_KILN").is_none(), "kiln");
+        return;
+    }
+    let cfgs: Vec<Cfg> = [Arch::Aarch64, Arch::X86_64]
+        .into_iter()
+        .map(|arch| Cfg { arch, cc: Cc::Kiln, cxx: true, dwarf: 5 })
+        .collect();
+    scenario_on(LINES, &cfgs);
+    // kiln's allotments differ: the growth's placement is not pinned.
+    scenario_on(Edit { info: None, ..GROW }, &cfgs);
+}
+
+// ---- item 4: the update's debug steps at scale ------------------------------------
+
+/// The median of `n` runs of `f`, after one warm-up.
+fn median_of<T>(n: usize, mut f: impl FnMut() -> T) -> (Duration, T) {
+    let mut last = f();
+    let mut ts = Vec::new();
+    for _ in 0..n {
+        let t = std::time::Instant::now();
+        last = f();
+        ts.push(t.elapsed());
+    }
+    ts.sort_unstable();
+    (ts[ts.len() / 2], last)
+}
+
+// WP-228 B3 item 4: `strings`, `place` and `aranges` on the state of a
+// real `-g` link (the response file `MORTAR_WP228_RSP`, run in
+// `MORTAR_WP228_CWD`), for a one-file change of the file with the largest,
+// the median and the smallest `.debug_info` (its own bytes again: a body
+// edit that keeps every size). Prints wall times (median of 5) and what
+// each step reads.
+#[test]
+#[ignore = "a measurement: MORTAR_WP228_RSP and MORTAR_WP228_CWD"]
+#[allow(clippy::too_many_lines, reason = "one measurement in order")]
+fn measure_debug_steps_at_scale() {
+    let (Some(rsp), Some(cwd)) =
+        (std::env::var_os("MORTAR_WP228_RSP"), std::env::var_os("MORTAR_WP228_CWD"))
+    else {
+        return;
+    };
+    let cwd = PathBuf::from(cwd);
+    let scratch = Scratch::new("wp228-b3-measure");
+    let words: Vec<String> = std::fs::read_to_string(&rsp)
+        .unwrap()
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(String::from)
+        .collect();
+    let out = scratch.join("prog");
+    let mut line = with_output(&words, &out);
+    line.extend(["--incremental=full", "--incremental-state"].iter().map(OsString::from));
+    line.push(scratch.join("prog.mortar-state").into_os_string());
+    let sink: Rows5Sink = std::sync::Arc::default();
+    let t = std::time::Instant::now();
+    let inv = mortar::invoke_state5(
+        "mortar",
+        &line,
+        &cwd,
+        State5 { path: scratch.join("prog.state5"), collide: false, rows: Some(sink.clone()) },
+    );
+    assert!(matches!(inv.outcome, mortar::Outcome::Linked { .. }), "{:?}", inv.outcome);
+    eprintln!("[wp228-b3-measure] full link (in-process, debug build) {:?}", t.elapsed());
+    let rows = sink.lock().unwrap().take().expect("rows");
+    let prev = std::fs::read(&out).unwrap();
+    let store = support::store();
+    let parsed = mortar_cli::parse(&line);
+    assert!(!parsed.failed());
+    let diag = Collector::new(Policy::default());
+    let env = Env { cwd: &cwd, pool: Pool::new(2), replay: None, slack: true, state5: true };
+    let f = front(parsed.plan, env, &store, &diag, &mut Timer::new(false)).expect("front");
+    let mut frags = HashMap::new();
+    for (id, fr) in f.merge.split.frags.iter() {
+        let Some(off) = f.layout.merge.offset(id) else { continue };
+        let (name, data) = sec(&f.inputs, &f.resolution, fr.section);
+        let bytes = data[fr.offset as usize..(fr.offset + fr.size) as usize].to_vec();
+        frags.entry((name, bytes)).or_insert(off);
+    }
+    let old = Old {
+        layout: f.layout.clone(),
+        frags,
+        base: f.resolution.section_base.clone(),
+        paths: Vec::new(),
+    };
+    let strs = emulated_debug_strs(&old);
+    let view = rows.view();
+    let lo = LayoutOf { view: &view };
+    let stored = StoredLayout::new(&lo);
+    let mut by: Vec<(u64, FileId)> = Vec::new();
+    for (file, r) in f.resolution.section_base.iter() {
+        let s: u64 = (0..r.len())
+            .map(|k| r.nth(k).unwrap())
+            .filter(|&id| sec(&f.inputs, &f.resolution, id).0 == b".debug_info")
+            .map(|id| rows.sections[id.0 as usize].size)
+            .sum();
+        if s > 0 {
+            by.push((s, file));
+        }
+    }
+    by.sort_unstable();
+    let debug_chunks: Vec<ChunkId> = stored
+        .chunks()
+        .unwrap()
+        .into_iter()
+        .filter(|(id, _)| chunk_name(&rows, *id).starts_with(b".debug_"))
+        .map(|c| c.0)
+        .collect();
+    let pa = section(&prev, ".debug_aranges").unwrap_or(&[]).to_vec();
+    eprintln!(
+        "[wp228-b3-measure] files with debug {}; rows: sections {}, DEBUG_STRS (emulated) {}; \
+         output {} B; .debug_aranges {} B; debug chunks {}",
+        by.len(),
+        rows.sections.len(),
+        strs.len(),
+        prev.len(),
+        pa.len(),
+        debug_chunks.len()
+    );
+    for (tag, &(size, file)) in
+        [("largest", by.last().unwrap()), ("median", &by[by.len() / 2]), ("smallest", &by[0])]
+    {
+        let r = f.resolution.section_base[file];
+        let first = SectionId(rows.sections.len() as u32);
+        let mut changed = ChangedFiles::default();
+        changed_of(&rows, &rows, file, file, first, &mut changed);
+        let mut inputs = Vec::new();
+        for k in 0..r.len() {
+            let (name, data) = sec(&f.inputs, &f.resolution, r.nth(k).unwrap());
+            if let Some(class) = debug::str_class(&name) {
+                inputs.push((file, class, data));
+            }
+        }
+        let in_bytes: usize = inputs.iter().map(|i| i.2.len()).sum();
+        let lookup = |class: u8, hash: u64| Ok(strs.get(&(class, hash)).copied());
+        let (t_rows, s_rows) =
+            median_of(5, || debug::strings_with(&lookup, &stored, &inputs, &prev).unwrap());
+        let none = |_: u8, _: u64| Ok(None);
+        let (t_none, s_none) = median_of(5, || debug::strings_with(&none, &stored, &inputs, &prev));
+        let mut killed = Vec::new();
+        for k in 0..r.len() {
+            let id = r.nth(k).unwrap();
+            let row = &rows.sections[id.0 as usize];
+            if row.sh_flags & 2 == 0
+                && sec(&f.inputs, &f.resolution, id).0.starts_with(b".debug_")
+                && f.layout.placement.place[id].get().is_some()
+            {
+                killed.push(id);
+            }
+        }
+        // `place` on a fresh delta each run (the clone outside the time).
+        let mut ts = Vec::new();
+        let mut plan = None;
+        let mut holes = 0;
+        for _ in 0..6 {
+            let mut d = LayoutDelta {
+                placement: f.layout.placement.clone(),
+                files: vec![file],
+                killed: killed.clone(),
+                ..LayoutDelta::default()
+            };
+            let s = s_rows.clone();
+            let t = std::time::Instant::now();
+            let p = debug::place(&view, &stored, &changed, s, &mut d);
+            ts.push(t.elapsed());
+            plan = Some(p);
+            holes = debug_chunks
+                .iter()
+                .map(|&c| d.holes_of(&stored, c).map_or(0, |h| h.len()))
+                .sum::<usize>();
+        }
+        ts.remove(0);
+        ts.sort_unstable();
+        let plan = plan.unwrap();
+        let (t_ar, ar_len) = match &plan {
+            Ok(p) if !pa.is_empty() && !p.aranges.is_empty() => {
+                let (_, os, oe) = p.aranges[0];
+                // The file's own sets again (a body edit keeps them).
+                let mut sets = Vec::new();
+                let mut at = 0;
+                while at + 10 <= pa.len() {
+                    let len = u32_at(&pa, at) as usize;
+                    if len == 0 {
+                        break;
+                    }
+                    if (os..oe).contains(&u64::from(u32_at(&pa, at + 6))) {
+                        sets.extend_from_slice(&pa[at..at + 4 + len]);
+                    }
+                    at += 4 + len;
+                }
+                let (t, v) = median_of(5, || debug::aranges(&pa, &[(os, oe, sets.clone())]));
+                (Some(t), v.map(|v| v.len()).unwrap_or(0))
+            }
+            _ => (None, 0),
+        };
+        eprintln!(
+            "[wp228-b3-measure] {tag}: .debug_info {size} B; its strings {in_bytes} B; \
+             strings(rows) {t_rows:?} hits {} misses {} appended {} B; \
+             strings(no rows) {t_none:?} {}; place {:?} -> {}; holes rows read {holes}; \
+             aranges {t_ar:?} writes {ar_len} B",
+            s_rows.hits,
+            s_rows.misses,
+            s_rows.appended.values().map(|a| a.2.len()).sum::<usize>(),
+            match &s_none {
+                Ok(s) =>
+                    format!("appended {} B", s.appended.values().map(|a| a.2.len()).sum::<usize>()),
+                Err(e) => format!("{} ({e:?})", e.name()),
+            },
+            ts[ts.len() / 2],
+            match &plan {
+                Ok(p) =>
+                    format!("{:?}", p.contributions.iter().map(|c| c.taken).collect::<Vec<_>>()),
+                Err(e) => format!("{} ({e:?})", e.name()),
+            },
+        );
+    }
+    drop(f);
+    std::fs::remove_file(&out).unwrap();
 }
