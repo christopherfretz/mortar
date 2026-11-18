@@ -1089,7 +1089,8 @@ program is the program a from-scratch link would have made.
   options without `--incremental`, the directory's entries).
 - **IN-12 [v1] Incompatible modes.** With `-r`, `--emit-relocs`, a
   `SECTIONS` script, `--compress-debug-sections` other than `none`,
-  `--gdb-index`/`--debug-names` generation, `--icf`, `--sort-common` or
+  `--gdb-index`/`--debug-names` generation, `--icf` other than `none`,
+  `--sort-common` or
   `--sort-section` (`spec/layout.md` L-88a, L-53a: an update keeps each
   input's place and does not re-sort; WP-111), `--start-lib` (its
   objects are lazy files but not archive members, IN-71b; WP-212, F-9;

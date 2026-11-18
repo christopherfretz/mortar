@@ -1007,9 +1007,8 @@ writes a value chosen by the referring section's name, as
   `st_value` (K's offset in its output section, as for any non-alloc
   target), and the field is written as for a live target (range checked,
   I-43). K and D are placed whole (neither `SHF_MERGE` nor
-  `.eh_frame`); otherwise I-47's tombstone. Otherwise I-47's tombstone.
-  No DWARF is parsed and no bytes
-  are compared. GCC's `-g3` puts each header's macros in such a group
+  `.eh_frame`); otherwise I-47's tombstone. No DWARF is parsed and no
+  bytes are compared. GCC's `-g3` puts each header's macros in such a group
   (`wm4.<file>.<line>.<md5>`) and imports it by offset
   (`DW_MACRO_import`); the tombstone there crashes gdb 16 and loses the
   unit's macros in lldb 19, and 0 (lld) names the output's first macro
@@ -2328,7 +2327,7 @@ pub trait SynthChunk {
 | subject | GNU ld 2.44 | lld 22 | mold 2.37.1 | mortar | rule |
 |---|---|---|---|---|---|
 | debug reference into a dropped COMDAT copy, ELFCLASS64 (`.debug_info`, `line`, `frame`) | the kept copy's address + addend when the sizes are equal, else 0 | 0 | 0 | all ones | I-47 |
-| debug reference into a dropped COMDAT copy of a NON-ALLOC group member (GCC `-g3` `DW_MACRO_import`) | a kept member with matching local symbols and equal size, of any name (+ st_value + addend), else 0 | 0 | none dropped for `wm4.*` (every copy kept); else 0 | the keeper's same-named, same-size, live non-alloc member + st_value + addend, else the tombstone | I-47a |
+| debug reference into a dropped COMDAT copy of a NON-ALLOC group member (GCC `-g3` `DW_MACRO_import`) | a kept member with matching local symbols and equal size, of any name (+ st_value + addend), else 0 | 0 | none dropped for `wm4.*` (every copy kept); else 0 + addend (0 for an `SHF_ALLOC` target; WP-250's probe) | the keeper's same-named, same-size, live non-alloc member + st_value + addend, else the tombstone | I-47a |
 | the same in `.debug_rnglists`, `.debug_loclists`, `.debug_addr` | redirect or 0 | 0 | 0 | 0 | I-47 |
 | the same, ELFCLASS32 | redirect or 0 | 0 | 0 | 0 (`.debug_frame`: all ones) | I-47 |
 | the same in `.debug_aranges` | redirect or 0 | 0 | 0 | all ones, length 0 | I-47, I-112 |
