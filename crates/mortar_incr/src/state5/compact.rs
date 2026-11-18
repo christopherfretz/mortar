@@ -228,7 +228,12 @@ fn keyed<T: Keyed>(
             (true, Some(i)) if rows[i].tomb() => {
                 return Err(corrupt(format!("a key-keyed delete of a dead key ({key:?})")));
             }
-            (true, Some(i)) => rows[i].set_tomb(true),
+            (true, Some(i)) => {
+                rows[i].set_tomb(true);
+                if !rows[i].tomb() {
+                    return Err(corrupt("a delete from a table whose rows are not deleted (NAMES)"));
+                }
+            }
             (false, Some(i)) => {
                 let mut r = row.clone();
                 r.set_tomb(false);

@@ -44,9 +44,9 @@ pub mod compact;
 pub mod read;
 pub mod write;
 
-pub use canon::{Canon, CanonDiff, canon, compare};
+pub use canon::{Canon, CanonDiff, canon, canon_of, compare};
 pub use compact::compact;
-pub use read::{LayoutOf, open};
+pub use read::{LayoutOf, open, size_report};
 pub use write::{PatchPlan, patch, plan_patch};
 
 /// `MORTARSR` (format 4's `MORTARST` is another magic: no reader of one

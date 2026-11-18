@@ -601,6 +601,47 @@ pub fn decode(bytes: &[u8]) -> Result<MemoryState, StateError> {
     decode_core(&core).map_err(to_state_error)
 }
 
+/// The state's size by table (U-2's gate, `state5_size_report`): per
+/// table its rows, capacity and bytes (list and body) with its share;
+/// the total; and the lazy archive members' share (their `FILES`,
+/// `FILE_INDEX` and `STAT` rows and their file-keyed rows) on its own
+/// line.
+///
+/// # Errors
+/// The state's own.
+pub fn size_report(bytes: &[u8]) -> Result<String, StateError> {
+    use std::fmt::Write as _;
+    let core = Core::open(Src::Bytes(bytes.to_vec()), None).map_err(to_state_error)?;
+    let total = bytes.len() as u64;
+    let pct = |b: u64| if total == 0 { 0.0 } else { b as f64 * 100.0 / total as f64 };
+    let mut out = String::new();
+    let _ = writeln!(out, "{:<12} {:>12} {:>12} {:>14} {:>7}", "table", "rows", "capacity", "bytes", "share");
+    let head = (HEADER + core.dir.len() * ENTRY) as u64;
+    let _ = writeln!(out, "{:<12} {:>12} {:>12} {:>14} {:>6.2}%", "header+dir", "", "", head, pct(head));
+    for e in &core.dir {
+        let b = e.list_len() + e.body_len();
+        let _ = writeln!(out, "{:<12} {:>12} {:>12} {:>14} {:>6.2}%", name(e.kind), e.rows, e.capacity, b, pct(b));
+    }
+    let _ = writeln!(out, "{:<12} {:>12} {:>12} {:>14} {:>6.2}%", "total", "", "", total, 100.0);
+    // lazy members
+    let files: Vec<FileRow> = core.all(kind::FILES).map_err(to_state_error)?;
+    let index: Vec<FileIndexRow> = core.all(kind::FILE_INDEX).map_err(to_state_error)?;
+    let mut lazy = 0u64;
+    let mut n = 0u64;
+    for (f, idx) in files.iter().zip(&index) {
+        if f.flags & crate::update::rows::file_flags::LAZY == 0 {
+            continue;
+        }
+        n += 1;
+        lazy += (FileRow::WIDTH + FileIndexRow::WIDTH + <StatRow as Rec>::WIDTH) as u64;
+        for t in FileTable::ALL {
+            lazy += u64::from(idx.ranges[t as usize].capacity) * u64::from(core.entry(t.kind()).width);
+        }
+    }
+    let _ = writeln!(out, "lazy members {n} files, {lazy} bytes, {:.2}%", pct(lazy));
+    Ok(out)
+}
+
 /// The `incr_state` tool's guard (U-2 brief): a state whose "updating"
 /// flag (bit 0 of the flags word, IN-18c) is set is mid-update, refused.
 ///

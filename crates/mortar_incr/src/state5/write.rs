@@ -613,6 +613,9 @@ impl Ed<'_> {
                 }
                 (true, Some((in_body, i, mut r))) => {
                     r.set_tomb(true);
+                    if !r.tomb() {
+                        return Err(PlanError::Fail(corrupt(format!("{}: its rows are not deleted", name(k)))));
+                    }
                     dead += 1;
                     if in_body {
                         body_writes.push((i, r));
