@@ -1909,6 +1909,14 @@ pub fn refill(link: &Link<'_, '_>, path: &Path, windows: &[u64]) -> Result<Refil
             out.push((j, buf));
         }
         steps.step("refill", out.iter().map(|j| j.1.len() as u64).sum(), "byte");
+        // WP-255 §9.1, the written-bitmap rule: every clip byte a row's.
+        #[cfg(debug_assertions)]
+        for (j, _) in &out {
+            if let Err(d) = crate::clip_plan::check_written(plan, &link.layout.placement.chunks, j)
+            {
+                diagnostics.push((Key::new(PHASE_IMAGE, 0, 0), d));
+            }
+        }
         if !diagnostics.is_empty() {
             return Err(Failed { diagnostics });
         }
@@ -2018,6 +2026,142 @@ fn clip_jobs(
         }
     }
     out
+}
+
+/// The inputs of [`crate::clip_plan::for_clips`] for `ranges` from
+/// `link` (WP-255c2a; an update finds them in its state, 255e): every
+/// member section that meets a range, by file offset, the pad views, the
+/// holes of the chunks a range meets, the abbreviation table's offset and
+/// the structural chunks' bytes; the plan over `rows`.
+fn clip_plan_of<R: Rows>(
+    link: &Link<'_, '_>,
+    rows: &R,
+    ranges: &[std::ops::Range<u64>],
+) -> Result<crate::plan::Plan, crate::clip_plan::ClipError> {
+    use crate::clip_plan::{ClipParts, ClipSection};
+    let model = Model {
+        inputs: link.inputs,
+        resolution: link.resolution,
+        liveness: link.liveness,
+        split: link.split,
+        layout: link.layout,
+        assignment: link.assignment,
+        order: Some(link.order),
+        eh: link.eh.map(|e| e.1),
+    };
+    let pl = &link.layout.placement;
+    let meets = |lo: u64, hi: u64| ranges.iter().any(|r| r.start < hi && lo < r.end && lo < hi);
+    let mut sections = Vec::new();
+    for (s, place) in pl.place.iter() {
+        let Some((c, off)) = place.get() else { continue };
+        let chunk = &pl.chunks[c];
+        if !meets(chunk.offset, chunk.offset + chunk.size) || !layout_plan::is_member(&model, s) {
+            continue;
+        }
+        let Some(front) = layout_plan::member_front(&model, s, chunk)? else { continue };
+        let at = chunk.offset + off;
+        if meets(at, at + front.size) {
+            sections.push(ClipSection { section: s, place: (c, off), front });
+        }
+    }
+    sections.sort_by_key(|s| pl.chunks[s.place.0].offset + s.place.1);
+    let (chunk_views, seg_views) = layout_plan::pad_views(&model);
+    let holes: Vec<(mortar_core::layout::Hole, &[u8])> = pl
+        .holes
+        .iter()
+        .filter(|h| {
+            let c = &pl.chunks[h.chunk];
+            meets(c.offset, c.offset + c.size.max(c.capacity))
+        })
+        .map(|h| (*h, pl.chunks[h.chunk].name(link.assignment).unwrap_or(b"")))
+        .collect();
+    let structure = structure(link)?;
+    let parts = ClipParts {
+        target: Target::from_facts(link.arch.facts()),
+        chunk_views: &chunk_views,
+        seg_views: &seg_views,
+        separate_code: link.options.separate_code,
+        holes: &holes,
+        abbrev: layout_plan::abbrev_offset(&pl.holes, &pl.chunks)?,
+        structure: &structure,
+        proof: link.proof,
+    };
+    crate::clip_plan::for_clips(rows, ranges, &sections, &parts)
+}
+
+/// What [`refill_clip_plan`] built and filled.
+#[derive(Debug)]
+pub struct ClipFill {
+    /// The whole plan of the link.
+    pub whole: crate::plan::Plan,
+    /// The clip plan of the ranges, as filled (after the caller's edit).
+    pub clip: crate::plan::Plan,
+    /// The fill pieces ([`clip_jobs`] of the clip plan) and their bytes.
+    pub jobs: Vec<(std::ops::Range<u64>, Vec<u8>)>,
+}
+
+/// WP-255c2a's clip filler, a test path until 255e: the clip plan of
+/// `ranges` (sorted, disjoint) built from `link`'s rows
+/// ([`crate::clip_plan::for_clips`]), changed by `edit` (a test's hook:
+/// identity in every other use), and its pieces filled by
+/// [`fill::fill_range`] as [`refill_ranges`] fills the whole plan's; under
+/// `debug_assertions`, the written-bitmap rule over every piece (§9.1).
+/// Nothing is written.
+///
+/// # Errors
+///
+/// `Err(Ok(why))`: the clip plan was not built
+/// ([`crate::clip_plan::ClipError`]); `Err(Err(failed))`: every diagnostic
+/// of the fill, and the bitmap rule's `internal-error`.
+pub fn refill_clip_plan(
+    link: &Link<'_, '_>,
+    ranges: &[std::ops::Range<u64>],
+    edit: impl FnOnce(&mut crate::plan::Plan),
+) -> Result<ClipFill, Result<crate::clip_plan::ClipError, Failed>> {
+    let tables = LinkTables::new(*link);
+    let mut clip = clip_plan_of(link, tables.rows(), ranges).map_err(Ok)?;
+    edit(&mut clip);
+    with_image(link, Path::new(""), |img, whole, _, _| {
+        clip.deferred_order = deferred_orders(link, &clip)?;
+        let cimg = Image { plan: &clip, ..*img };
+        let jobs = clip_jobs(&clip, ranges);
+        let mut diagnostics = Vec::new();
+        let mut out = Vec::with_capacity(jobs.len());
+        for j in jobs {
+            let mut buf = vec![0u8; (j.end - j.start) as usize];
+            let mut errs = Vec::new();
+            if let Err(kd) = fill::fill_range(&cimg, j.start, &mut buf, &mut errs) {
+                errs.push(kd);
+            }
+            diagnostics.extend(errs);
+            #[cfg(debug_assertions)]
+            if let Err(d) =
+                crate::clip_plan::check_written(&clip, &link.layout.placement.chunks, &j)
+            {
+                diagnostics.push((Key::new(PHASE_IMAGE, 0, 0), d));
+            }
+            out.push((j, buf));
+        }
+        if !diagnostics.is_empty() {
+            return Err(Failed { diagnostics });
+        }
+        Ok(ClipFill { whole: whole.clone(), clip: clip.clone(), jobs: out })
+    })
+    .map_err(Err)
+}
+
+/// [`refill_ranges`] for a test outside the crate (WP-255c2a): the whole
+/// plan's fill of `ranges`' pieces.
+///
+/// # Errors
+///
+/// As [`refill_ranges`].
+#[doc(hidden)]
+pub fn refill_ranges_for_test(
+    link: &Link<'_, '_>,
+    ranges: &[std::ops::Range<u64>],
+) -> Result<Refilled, Failed> {
+    refill_ranges(link, ranges)
 }
 
 // ---- the map (§9.2) --------------------------------------------------------

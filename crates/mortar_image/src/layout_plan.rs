@@ -537,7 +537,7 @@ pub struct SegView {
 
 /// The pad pass's views of `m`'s placement: every in-file chunk with
 /// bytes, and every `PT_LOAD` segment, in column order.
-fn pad_views(m: &Model<'_, '_>) -> (Vec<ChunkView>, Vec<SegView>) {
+pub(crate) fn pad_views(m: &Model<'_, '_>) -> (Vec<ChunkView>, Vec<SegView>) {
     let pl = &m.layout.placement;
     let chunks = pl
         .chunks
