@@ -74,7 +74,8 @@ class Hop:
             if not w:
                 continue
             if w[0] == 'file':
-                self.files[int(w[1])] = (w[2], int(w[4], 16) if len(w) > 4 else None)
+                p = w[2] if w[2].startswith('/') else here + '/' + w[2]
+                self.files[int(w[1])] = (p, int(w[4], 16) if len(w) > 4 else None)
             elif w[0] == 'piece':
                 pieces.append((int(w[1]), int(w[2]), int(w[3], 16), int(w[4], 16), int(w[5], 16)))
             elif w[0] == 'merged':
@@ -236,7 +237,10 @@ def main():
         tp = set()
         for k in touched:
             for fk in list(da) + list(db):
-                if fk[0] == k[0] or fk[0].endswith('/' + k[0].rsplit('/', 1)[-1]) and k[1] is None:
+                # an object by its base name; an archive member by archive and member name
+                # (the map gives the member's offset, the state its name: matched via the
+                # archive's base name only when the member is the changed file, never here)
+                if k[1] is None and fk[1] == '' and fk[0].rsplit('/', 1)[-1] == k[0].rsplit('/', 1)[-1]:
                     tp.add(fk)
         m_refs = refs(da)
         for fk in tp:
