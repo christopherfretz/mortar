@@ -430,7 +430,39 @@ impl PatchPlan {
 #[derive(Debug)]
 pub(crate) enum Planned {
     InPlace(InPlace),
-    Compact { core: Arc<Core>, state: Box<MemoryState> },
+    Compact { core: Arc<Core>, state: Box<MemoryState>, strs: Strs },
+}
+
+/// How the plan placed the patch's strings (F-11): each appended `Str`
+/// of the patch (by its offset and length in the patch's id space) to
+/// the stored `Str` of equal bytes it reuses, or to its place in the
+/// bytes the plan appends. `old` is the state's `STRINGS` length.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Strs {
+    pub(crate) old: u64,
+    pub(crate) map: BTreeMap<(u32, u32), Str>,
+}
+
+impl Strs {
+    /// `x` in the plan's string space: a stored `Str` unchanged, a
+    /// patch's `Str` mapped; one the patch's rows never named is
+    /// `state-corrupt` (its bytes were not kept).
+    pub(crate) fn of(&self, x: Str) -> Rows<Str> {
+        if x.len == 0 || u64::from(x.off) + u64::from(x.len) <= self.old {
+            return Ok(x);
+        }
+        self.map.get(&(x.off, x.len)).copied().ok_or_else(|| {
+            corrupt(format!(
+                "STRINGS: the patch's string at {} ({} bytes) is named by none of its rows",
+                x.off, x.len
+            ))
+        })
+    }
+
+    /// W4's output row in the plan's string space.
+    pub(crate) fn output(&self, row: &StatRow) -> Rows<StatRow> {
+        Ok(StatRow { path: self.of(row.path)?, fstype: self.of(row.fstype)?, ..row.clone() })
+    }
 }
 
 /// The in-place patch: every block W5 writes, with its new bytes (each
@@ -444,6 +476,7 @@ pub(crate) struct InPlace {
     pub(crate) lists: BTreeMap<usize, Arc<Vec<Hash16>>>,
     pub(crate) dir: Vec<Entry>,
     pub(crate) stat_out: u64,
+    pub(crate) strs: Strs,
 }
 
 /// Why the patch does not fit (IN-18e): the compaction.
@@ -719,6 +752,8 @@ pub fn plan_patch(view: &StateView<'_>, patch: &StatePatch) -> Result<PatchPlan,
             mortar_core::incr::Unimplemented::State5,
         )));
     };
+    let (owned, strs) = intern_patch(&core, patch)?;
+    let patch = &owned;
     let linked = core.src.file().and_then(|f| f.metadata().ok()).is_some_and(|m| {
         use std::os::unix::fs::MetadataExt as _;
         m.nlink() > 1
@@ -727,7 +762,8 @@ pub fn plan_patch(view: &StateView<'_>, patch: &StatePatch) -> Result<PatchPlan,
         "the state is hard-linked".to_owned()
     } else {
         match plan_in_place(&core, patch) {
-            Ok(p) => {
+            Ok(mut p) => {
+                p.strs = strs;
                 return Ok(PatchPlan {
                     compacts: false,
                     reason: String::new(),
@@ -747,7 +783,7 @@ pub fn plan_patch(view: &StateView<'_>, patch: &StatePatch) -> Result<PatchPlan,
     Ok(PatchPlan {
         compacts: true,
         reason: why,
-        inner: Some(Arc::new(Planned::Compact { core, state: Box::new(state) })),
+        inner: Some(Arc::new(Planned::Compact { core, state: Box::new(state), strs })),
     })
 }
 
@@ -976,7 +1012,14 @@ fn plan_in_place(core: &Arc<Core>, p: &StatePatch) -> Plan<InPlace> {
         }
         blocks.insert((t, k), b);
     }
-    Ok(InPlace { core: Arc::clone(core), blocks, lists, dir: ed.dir, stat_out })
+    Ok(InPlace {
+        core: Arc::clone(core),
+        blocks,
+        lists,
+        dir: ed.dir,
+        stat_out,
+        strs: Strs::default(),
+    })
 }
 
 /// One file's new rows of one file-keyed table (IN-18e): in place when they
@@ -1123,6 +1166,7 @@ pub fn patch(
     let Some(file) = file else {
         return Err(WriteFailure::Fallback(corrupt("the plan is not this view's")));
     };
+    let output = &p.strs.output(output).map_err(WriteFailure::Fallback)?;
     for (off, bytes) in writes(p, output) {
         ops.pwrite(file, off, &bytes)
             .map_err(|error| WriteFailure::Failed { step: "W5", error })?;
@@ -1135,6 +1179,7 @@ pub fn patch(
 #[must_use]
 pub fn patched_bytes(bytes: &[u8], plan: &PatchPlan, output: &StatRow) -> Option<Vec<u8>> {
     let Some(Planned::InPlace(p)) = plan.inner.as_deref() else { return None };
+    let output = &p.strs.output(output).ok()?;
     let mut out = bytes.to_vec();
     for (off, b) in writes(p, output) {
         let off = usize::try_from(off).ok()?;
@@ -1148,4 +1193,192 @@ impl From<Overflow> for IncrReason {
     fn from(o: Overflow) -> Self {
         corrupt(o.0)
     }
+}
+
+// ---- the patch's strings (F-11) ------------------------------------------
+
+/// Every `Str` of a patch's rows, with whether its bytes may be a group
+/// signature (a `GROUPS` row's, a section's anchor).
+fn each_str(q: &mut StatePatch, f: &mut dyn FnMut(&mut Str, bool) -> Rows<()>) -> Rows<()> {
+    use crate::update::diags::Subject;
+    if let Some(m) = &mut q.meta {
+        f(&mut m.version, false)?;
+    }
+    for r in q.probes.iter_mut().flatten() {
+        f(&mut r.path, false)?;
+    }
+    for r in q.outsecs.iter_mut().flatten() {
+        f(&mut r.name, false)?;
+    }
+    for r in q.chunks.iter_mut().flatten() {
+        f(&mut r.name, false)?;
+    }
+    for r in q.files_set.iter_mut().map(|x| &mut x.1).chain(q.files_append.iter_mut()) {
+        f(&mut r.path, false)?;
+        f(&mut r.member_name, false)?;
+    }
+    for r in q.stat_set.iter_mut().map(|x| &mut x.1).chain(q.stat_append.iter_mut()) {
+        f(&mut r.path, false)?;
+        f(&mut r.fstype, false)?;
+    }
+    for r in q.ranges.iter_mut().flat_map(|x| x.sections.iter_mut().flatten()) {
+        f(&mut r.name, false)?;
+        f(&mut r.anchor, r.anchor_kind == 1)?;
+    }
+    for r in q.groups.put.iter_mut().chain(q.groups.delete.iter_mut()) {
+        f(&mut r.signature, true)?;
+    }
+    for d in q.diags.put.iter_mut().chain(q.diags.delete.iter_mut()) {
+        for x in &mut d.subjects {
+            if let Subject::OdrKey { name, .. } = x {
+                f(name, false)?;
+            }
+        }
+    }
+    for r in q.symbols.set.iter_mut().map(|x| &mut x.1).chain(q.symbols.append.iter_mut()) {
+        f(&mut r.name, false)?;
+        f(&mut r.version, false)?;
+    }
+    Ok(())
+}
+
+/// The patch with its strings placed (F-11, IN-18e): a string whose bytes
+/// the state already holds WHERE THE UPDATE LOOKS ANYWAY names the stored
+/// `Str`: the old rows of the same file (`SECTIONS` names and anchors),
+/// the old row a set replaces (`FILES`, `STAT`, `SYMBOLS`,
+/// `META`, the whole tables `PROBES`, `OUTSECS`, `CHUNKS`), and a
+/// signature's `GROUPS` rows (the key-keyed lookup by bytes). Every other
+/// string is appended once (equal bytes within the patch share one
+/// place). No global index, no whole read of `STRINGS`; a string no row
+/// names is dropped. The same placed patch feeds the in-place plan and
+/// the compaction, so both see one string space.
+#[allow(clippy::too_many_lines)] // one source per table
+fn intern_patch(core: &Core, p: &StatePatch) -> Rows<(StatePatch, Strs)> {
+    use crate::format::{ChunkRow, OutSecRow, ProbeRow, SectionRow};
+    use crate::update::rows::{FileRow, GroupRow, MetaRow, SymbolRow};
+    use std::collections::HashMap;
+    let old = core.entry(kind::STRINGS).rows;
+    let mut strs = Strs { old, map: BTreeMap::new() };
+    let mut q = p.clone();
+    q.strings = Vec::new();
+    let fresh = |x: Str| x.len != 0 && u64::from(x.off) + u64::from(x.len) > old;
+    let bytes_of = |x: Str| -> Rows<&[u8]> {
+        let start = u64::from(x.off)
+            .checked_sub(old)
+            .ok_or_else(|| corrupt("STRINGS: a patch string straddles the state's end"))?;
+        usize::try_from(start)
+            .ok()
+            .and_then(|a| a.checked_add(x.len as usize).map(|b| (a, b)))
+            .and_then(|(a, b)| p.strings.get(a..b))
+            .ok_or_else(|| corrupt("STRINGS: a patch string past the patch's bytes"))
+    };
+    let mut known: HashMap<Vec<u8>, Str> = HashMap::new();
+    let learn = |known: &mut HashMap<Vec<u8>, Str>, x: Str| -> Rows<()> {
+        if x.len != 0 && !fresh(x) {
+            let b = core.string(x)?;
+            known.entry(b).or_insert(x);
+        }
+        Ok(())
+    };
+    // The old rows the patch replaces, read only when a new row has a
+    // string of the patch.
+    if let Some(m) = &p.meta
+        && fresh(m.version)
+    {
+        let o: MetaRow = core.row(kind::META, 0)?;
+        learn(&mut known, o.version)?;
+    }
+    if p.probes.iter().flatten().any(|r| fresh(r.path)) {
+        for r in core.all::<ProbeRow>(kind::PROBES)? {
+            learn(&mut known, r.path)?;
+        }
+    }
+    if p.outsecs.iter().flatten().any(|r| fresh(r.name)) {
+        for r in core.all::<OutSecRow>(kind::OUTSECS)? {
+            learn(&mut known, r.name)?;
+        }
+    }
+    if p.chunks.iter().flatten().any(|r| fresh(r.name)) {
+        for r in core.all::<ChunkRow>(kind::CHUNKS)? {
+            learn(&mut known, r.name)?;
+        }
+    }
+    let files = core.entry(kind::FILES).rows;
+    for (f, r) in &p.files_set {
+        if (fresh(r.path) || fresh(r.member_name)) && u64::from(f.0) < files {
+            let o: FileRow = core.row(kind::FILES, u64::from(f.0))?;
+            learn(&mut known, o.path)?;
+            learn(&mut known, o.member_name)?;
+        }
+    }
+    let stats = core.entry(kind::STAT).rows;
+    for (i, r) in &p.stat_set {
+        if (fresh(r.path) || fresh(r.fstype)) && u64::from(*i) < stats {
+            let o: StatRow = core.row(kind::STAT, u64::from(*i))?;
+            learn(&mut known, o.path)?;
+            learn(&mut known, o.fstype)?;
+        }
+    }
+    let indexed = core.entry(kind::FILE_INDEX).rows;
+    for fr in &p.ranges {
+        let new = fr.sections.iter().flatten().any(|r| fresh(r.name) || fresh(r.anchor));
+        if new && u64::from(fr.file.0) < indexed {
+            for r in core.range::<SectionRow>(fr.file, FileTable::Sections)? {
+                learn(&mut known, r.name)?;
+                learn(&mut known, r.anchor)?;
+            }
+        }
+    }
+    let syms = core.entry(kind::SYMBOLS).rows;
+    for (k, r) in &p.symbols.set {
+        if (fresh(r.name) || fresh(r.version)) && u64::from(k.0) < syms {
+            let o: SymbolRow = core.row(kind::SYMBOLS, u64::from(k.0))?;
+            learn(&mut known, o.name)?;
+            learn(&mut known, o.version)?;
+        }
+    }
+    // Place every string of the rows.
+    let mut placed: HashMap<Vec<u8>, Str> = HashMap::new();
+    let mut buf: Vec<u8> = Vec::new();
+    let mut place = |x: &mut Str, signature: bool| -> Rows<()> {
+        if !fresh(*x) {
+            return Ok(());
+        }
+        if let Some(&y) = strs.map.get(&(x.off, x.len)) {
+            *x = y;
+            return Ok(());
+        }
+        let b = bytes_of(*x)?;
+        let mut y = known.get(b).copied();
+        if y.is_none() && signature {
+            let lo = (b.to_vec(), 0);
+            let rows = core.keyed::<GroupRow>(kind::GROUPS, &lo, &|k| k.0.as_slice() == b)?;
+            if let Some(g) = rows.first() {
+                known.insert(b.to_vec(), g.signature);
+                y = Some(g.signature);
+            }
+        }
+        let y = match y {
+            Some(y) => y,
+            None => match placed.get(b) {
+                Some(&y) => y,
+                None => {
+                    let off = old + buf.len() as u64;
+                    let y = Str {
+                        off: u32::try_from(off).map_err(|_| corrupt("STRINGS: past 4 GiB"))?,
+                        len: x.len,
+                    };
+                    buf.extend_from_slice(b);
+                    placed.insert(b.to_vec(), y);
+                    y
+                }
+            },
+        };
+        strs.map.insert((x.off, x.len), y);
+        *x = y;
+        Ok(())
+    };
+    each_str(&mut q, &mut place)?;
+    q.strings = buf;
+    Ok((q, strs))
 }

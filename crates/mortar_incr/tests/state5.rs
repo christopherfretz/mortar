@@ -623,3 +623,155 @@ fn seam_rows_round_trip_and_patch() {
     assert_eq!(d.file_index.iter().map(|i| i.first_global).collect::<Vec<_>>(), vec![2, 4]);
     assert_eq!((d.meta.iterations, d.meta.versioned), (1, 3));
 }
+
+/// A string of the update's own pool (U-10's `ChangedFiles::strings`
+/// convention): its bytes appended to `p.strings`, at the state's length
+/// plus their place.
+fn fresh_str(p: &mut StatePatch, old: usize, b: &[u8]) -> Str {
+    let off = u32::try_from(old + p.strings.len()).expect("small");
+    p.strings.extend_from_slice(b);
+    Str { off, len: u32::try_from(b.len()).expect("small") }
+}
+
+// spec: incr.md IN-18e (F-11: an update appends a string only when the
+// state does not hold its bytes where the update looks: the old version's
+// rows of the same file, a GROUPS row of the same signature); IN-78 (the
+// deduplicated state's canon equals a fresh capture's)
+#[test]
+fn update_reuses_stored_strings() {
+    let bytes = full(&sample(&[0, 1, 2], 3));
+    let m = read::decode(&bytes).expect("decode");
+    let old = m.strings.len();
+    let view = read::open_bytes(bytes.clone()).expect("open");
+    // file 0 recompiled: its three sections again (every name and anchor
+    // in the update's own pool), one new section, its group's copy again
+    let mut p = StatePatch::default();
+    let mut rows = Vec::new();
+    for r in m.sections.iter().filter(|r| r.file == 0) {
+        let name = fresh_str(&mut p, old, &s(&m, r.name));
+        rows.push(SectionRow { name, size: 32, ..r.clone() });
+    }
+    let name = fresh_str(&mut p, old, b".text.0.new");
+    let twice = fresh_str(&mut p, old, b".text.0.new");
+    rows.push(SectionRow { file: 0, name, ordinal: 3, size: 32, ..SectionRow::default() });
+    let mut fr = FileRanges {
+        file: FileId(0),
+        sections: Some(rows),
+        mentions: None,
+        index: None,
+        edges: None,
+        frag_at: None,
+        eh_records: None,
+        symtab: None,
+        regions: None,
+        gone: false,
+    };
+    // the same new bytes named twice: one place
+    if let Some(rows) = &mut fr.sections {
+        rows[0].anchor = twice;
+        rows[0].anchor_kind = 2;
+    }
+    p.ranges.push(fr);
+    let signature = fresh_str(&mut p, old, b"grp");
+    p.groups.put.push(GroupRow { signature, file: 0, tomb: false });
+    let appended = p.strings.len();
+    let plan = state5::plan_patch(&view, &p).expect("plan");
+    assert!(!plan.compacts(), "{}", plan.reason());
+    let patched = write::patched_bytes(&bytes, &plan, &output_of(&bytes)).expect("in place");
+    let got = read::decode(&patched).expect("decode");
+    let grew = got.strings.len() - old;
+    eprintln!("the patch's pool {appended} bytes, STRINGS grew {grew} bytes");
+    assert_eq!(grew, b".text.0.new".len(), "only the new name is appended, once");
+    // the fresh capture of the same inputs
+    let mut want = sample(&[0, 1, 2], 3);
+    let new = add(&mut want.strings, b".text.0.new");
+    for r in want.sections.iter_mut().filter(|r| r.file == 0) {
+        r.size = 32;
+    }
+    let at = want.sections.iter().rposition(|r| r.file == 0).expect("file 0") + 1;
+    want.sections.insert(
+        at,
+        SectionRow { file: 0, name: new, ordinal: 3, size: 32, ..SectionRow::default() },
+    );
+    if let Some(r) = want.sections.iter_mut().find(|r| r.file == 0) {
+        r.anchor = new;
+        r.anchor_kind = 2;
+    }
+    for (_, r) in &mut want.mentions {
+        if r.section >= u32::try_from(at).expect("small") {
+            r.section += 1;
+        }
+    }
+    for (_, r) in &mut want.frag_at {
+        if r.section >= u32::try_from(at).expect("small") {
+            r.section += 1;
+        }
+    }
+    let n = want.stat.len();
+    want.stat[n - 1].size = 4242;
+    assert_eq!(
+        state5::canon(&patched).expect("canon"),
+        state5::canon(&full(&want)).expect("canon"),
+        "the deduplicated state's canon is the fresh capture's"
+    );
+}
+
+// spec: incr.md IN-71 (`at_file` is the first LIVE mentioner by current
+// rank), IN-18e (SYMBOLS' order), IN-18f, IN-78: after the mentioner a
+// key's `at_file` named goes, a compaction and a fresh capture of the
+// remaining inputs give the SYMBOLS rows in one order
+#[test]
+fn compaction_and_capture_order_symbols_alike() {
+    // `shared`: mentioned by files 1 and 2 (entry 3 of each)
+    let with_shared = |ids: &[u32]| {
+        let mut m = sample(ids, 2);
+        let name = add(&mut m.strings, b"shared");
+        let k = u32::try_from(m.symbols.len()).expect("small");
+        let mentioners: Vec<u32> = ids
+            .iter()
+            .enumerate()
+            .filter(|(_, id)| **id != 0)
+            .map(|(f, _)| u32::try_from(f).expect("small"))
+            .collect();
+        m.symbols.push(SymbolRow {
+            kind: sym_kind::GLOBAL,
+            file: u32::MAX,
+            name,
+            at_file: mentioners[0],
+            at_index: 3,
+            ..SymbolRow::default()
+        });
+        m.resolved.push(ResolvedRow { section: u32::MAX, ..ResolvedRow::default() });
+        m.symtab_keys.push(SymtabKeyRow { index: u32::MAX, strtab: 0 });
+        for &f in &mentioners {
+            m.mentions.push((FileId(f), MentionRow { symbol: k, ..MentionRow::default() }));
+            m.key_refs.push(KeyRefRow { key: k, file: f, ..KeyRefRow::default() });
+        }
+        m
+    };
+    let bytes = full(&with_shared(&[0, 1, 2]));
+    let m = read::decode(&bytes).expect("decode");
+    let view = read::open_bytes(bytes.clone()).expect("open");
+    let shared = view.find_key(b"shared", b"").expect("lookup").expect("shared");
+    let mut p = remove_file_1(&m);
+    // IN-71: the next live mentioner by rank is file 2
+    let row = m.symbols[shared.0 as usize];
+    assert_eq!(row.at_file, 1);
+    p.symbols.set.push((shared, SymbolRow { at_file: 2, ..row }));
+    p.key_refs
+        .delete
+        .push(*m.key_refs.iter().find(|r| r.key == shared.0 && r.file == 1).expect("its ref"));
+    let plan = state5::plan_patch(&view, &p).expect("plan");
+    assert!(plan.compacts(), "{}", plan.reason());
+    let got = compact::plan_bytes(&plan, &output_of(&bytes)).expect("compacted");
+    let mut want = with_shared(&[0, 2]);
+    let n = want.stat.len();
+    want.stat[n - 1].size = 4242;
+    let want = full(&want);
+    let order = |b: &[u8]| -> Vec<Vec<u8>> {
+        let d = read::decode(b).expect("decode");
+        d.symbols.iter().map(|r| s(&d, r.name)).collect()
+    };
+    assert_eq!(order(&got), order(&want), "SYMBOLS' row order");
+    assert_eq!(state5::canon(&got).expect("c"), state5::canon(&want).expect("c"));
+}

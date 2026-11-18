@@ -689,9 +689,10 @@ pub fn compact(
     ops: &mut dyn WriteOps,
     state_path: &Path,
 ) -> Result<(), WriteFailure> {
-    let Some(Planned::Compact { core, state }) = plan.inner.as_deref() else {
+    let Some(Planned::Compact { core, state, strs }) = plan.inner.as_deref() else {
         return Err(WriteFailure::Fallback(corrupt("an in-place plan given to compact")));
     };
+    let output = &strs.output(output).map_err(WriteFailure::Fallback)?;
     if !super::read::core_of(view).is_some_and(|c| std::sync::Arc::ptr_eq(&c, core)) {
         return Err(WriteFailure::Fallback(corrupt("the plan is not this view's")));
     }
@@ -743,6 +744,6 @@ pub(crate) fn compacted_bytes(
 /// The compacted bytes of a plan (tests, `incr_state`).
 #[must_use]
 pub fn plan_bytes(plan: &PatchPlan, output: &StatRow) -> Option<Vec<u8>> {
-    let Some(Planned::Compact { state, .. }) = plan.inner.as_deref() else { return None };
-    compacted_bytes(state, output).ok()
+    let Some(Planned::Compact { state, strs, .. }) = plan.inner.as_deref() else { return None };
+    compacted_bytes(state, &strs.output(output).ok()?).ok()
 }
