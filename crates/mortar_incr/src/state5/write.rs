@@ -1358,21 +1358,17 @@ fn intern_patch(core: &Core, p: &StatePatch) -> Rows<(StatePatch, Strs)> {
                 y = Some(g.signature);
             }
         }
-        let y = match y {
-            Some(y) => y,
-            None => match placed.get(b) {
-                Some(&y) => y,
-                None => {
-                    let off = old + buf.len() as u64;
-                    let y = Str {
-                        off: u32::try_from(off).map_err(|_| corrupt("STRINGS: past 4 GiB"))?,
-                        len: x.len,
-                    };
-                    buf.extend_from_slice(b);
-                    placed.insert(b.to_vec(), y);
-                    y
-                }
-            },
+        let y = if let Some(y) = y.or_else(|| placed.get(b).copied()) {
+            y
+        } else {
+            let off = old + buf.len() as u64;
+            let y = Str {
+                off: u32::try_from(off).map_err(|_| corrupt("STRINGS: past 4 GiB"))?,
+                len: x.len,
+            };
+            buf.extend_from_slice(b);
+            placed.insert(b.to_vec(), y);
+            y
         };
         strs.map.insert((x.off, x.len), y);
         *x = y;
