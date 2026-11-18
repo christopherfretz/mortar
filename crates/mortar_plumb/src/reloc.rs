@@ -545,8 +545,6 @@ pub(crate) struct Engine<'a, 'b> {
     /// Words of non-alloc output sections a tombstone rule wrote outside
     /// every record (I-112's aranges length): `(section, address)`.
     pub(crate) nonalloc_rewritten: std::collections::BTreeSet<(usize, u64)>,
-    /// GNU ld's redirect targets: placed group sections by name and size.
-    redirects: Option<HashMap<(String, u64), Vec<u64>>>,
     /// The veneers W6 accepted, by start address, each with the first
     /// record that branches to it (for R9, §5.4).
     veneers: BTreeMap<u64, (Rec, Site, String, u64)>,
@@ -626,6 +624,9 @@ pub(crate) struct Engine<'a, 'b> {
     /// §5.7a (WP-178): the copies of COMDAT groups not kept, the
     /// verifier's own keeper (`fate`), made when a record first asks.
     comdat: std::cell::OnceCell<Vec<Vec<bool>>>,
+    /// §5.8 (WP-250): the keeper of each COMDAT signature, decided with
+    /// `comdat`'s order.
+    keepers: std::cell::OnceCell<crate::fate::Keepers>,
     /// §5.7a: the demoted weak mention `(object, symbol, key)` whose record
     /// is being judged as an undefined weak, to name the form of its R5.
     trial: Option<(usize, u32, String)>,
@@ -1052,7 +1053,6 @@ impl<'a, 'b> Engine<'a, 'b> {
             ifunc_groups: BTreeMap::new(),
             format,
             nonalloc_rewritten: std::collections::BTreeSet::new(),
-            redirects: None,
             veneers: BTreeMap::new(),
             cov: Coverage::default(),
             findings: Vec::new(),
@@ -1083,6 +1083,7 @@ impl<'a, 'b> Engine<'a, 'b> {
             },
             trace: None,
             comdat: std::cell::OnceCell::new(),
+            keepers: std::cell::OnceCell::new(),
             trial: None,
             demoted_pending: BTreeMap::new(),
             lsda_starts: None,
@@ -1646,7 +1647,27 @@ impl<'a, 'b> Engine<'a, 'b> {
                     })
             })
         };
-        self.comdat = crate::fate::comdat_dropped_ranked(&objs, rank).into();
+        let (dropped, keepers) = crate::fate::comdat_ranked(&objs, rank);
+        self.comdat = dropped.into();
+        self.keepers = keepers.into();
+    }
+
+    /// The verifier's keeper of each COMDAT signature (§5.7a's, in the
+    /// order `comdat` was decided in).
+    pub(crate) fn keepers(&self) -> &crate::fate::Keepers {
+        let objs = self.objs;
+        self.keepers.get_or_init(|| {
+            let all: Vec<&Obj<'a>> = objs.iter().collect();
+            crate::fate::comdat_ranked(&all, |_| None).1
+        })
+    }
+
+    /// Whether section `k` of object `oi` is in a COMDAT copy the
+    /// verifier's keeper drops.
+    pub(crate) fn comdat_dropped_section(&self, oi: usize, k: usize) -> bool {
+        let objs = self.objs;
+        let dropped = self.comdat.get_or_init(|| crate::fate::comdat_dropped(objs));
+        dropped.get(oi).and_then(|d| d.get(k)).copied().unwrap_or(false)
     }
 
     /// Sets the line's `--defsym` assignments (§4.4b, WP-170 part 2).

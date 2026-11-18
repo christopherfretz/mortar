@@ -95,6 +95,19 @@ pub(crate) fn comdat_dropped_ranked<'o, 'a: 'o>(
     objs: &[&'o Obj<'a>],
     rank: impl Fn(&Obj<'a>) -> Option<usize>,
 ) -> Vec<Vec<bool>> {
+    comdat_ranked(objs, rank).0
+}
+
+/// The keeper of each COMDAT signature (`spec/resolve.md` §6.1): the
+/// object (an index of the slice [`comdat_ranked`] was given) and its
+/// `SHT_GROUP` section.
+pub(crate) type Keepers = BTreeMap<Vec<u8>, (usize, usize)>;
+
+/// [`comdat_dropped_ranked`] and the keeper of each signature it decided.
+pub(crate) fn comdat_ranked<'o, 'a: 'o>(
+    objs: &[&'o Obj<'a>],
+    rank: impl Fn(&Obj<'a>) -> Option<usize>,
+) -> (Vec<Vec<bool>>, Keepers) {
     let mut last = 0;
     let ranks: Vec<usize> = objs
         .iter()
@@ -105,7 +118,7 @@ pub(crate) fn comdat_dropped_ranked<'o, 'a: 'o>(
         .collect();
     let mut order: Vec<usize> = (0..objs.len()).collect();
     order.sort_by_key(|&i| ranks[i]);
-    let mut kept: BTreeSet<Vec<u8>> = BTreeSet::new();
+    let mut kept = Keepers::new();
     let mut out: Vec<Vec<bool>> = objs.iter().map(|o| vec![false; o.secs.len()]).collect();
     for oi in order {
         let o = objs[oi];
@@ -118,7 +131,8 @@ pub(crate) fn comdat_dropped_ranked<'o, 'a: 'o>(
                 continue;
             }
             let Some(sig) = signature(o, SymbolIndex(g.shdr.sh_info)) else { continue };
-            if kept.insert(sig) {
+            if let std::collections::btree_map::Entry::Vacant(e) = kept.entry(sig) {
+                e.insert((oi, gi));
                 continue;
             }
             for m in members {
@@ -128,7 +142,30 @@ pub(crate) fn comdat_dropped_ranked<'o, 'a: 'o>(
             }
         }
     }
-    out
+    (out, kept)
+}
+
+/// The COMDAT group of object `o` that section `k` is a member of: its
+/// `SHT_GROUP` section, signature and member indexes (`None`: no
+/// `GRP_COMDAT` group lists it).
+pub(crate) fn comdat_group_of(o: &Obj<'_>, k: usize) -> Option<(usize, Vec<u8>, Vec<usize>)> {
+    o.secs.iter().enumerate().find_map(|(gi, g)| {
+        if g.shdr.sh_type != SHT_GROUP {
+            return None;
+        }
+        let (flags, members) = group_words(o, gi);
+        if flags & GRP_COMDAT == 0 || !members.contains(&k) {
+            return None;
+        }
+        let sig = signature(o, SymbolIndex(g.shdr.sh_info))?;
+        Some((gi, sig, members))
+    })
+}
+
+/// The member indexes of `SHT_GROUP` section `gi` of `o`, in the group's
+/// order.
+pub(crate) fn group_members(o: &Obj<'_>, gi: usize) -> Vec<usize> {
+    group_words(o, gi).1
 }
 
 /// The flag word and member indexes of `SHT_GROUP` section `gi` (gABI

@@ -299,6 +299,9 @@ pub enum Via {
     /// A non-alloc reference to a section not in the output: the
     /// linker's tombstone (§5.8).
     Tombstone,
+    /// A non-alloc reference to a dropped COMDAT copy, filled against the
+    /// kept copy (§5.8: `spec/image.md` I-47a, GNU ld's kept section).
+    KeptCopy,
     /// Stage 3: a branch to a PLT entry whose `.got.plt` word holds S
     /// after the loader's work (§12, P-D9).
     Plt,
@@ -317,6 +320,7 @@ impl Via {
             Via::EhFrame => "eh-frame",
             Via::Iplt => "iplt",
             Via::Tombstone => "tombstone",
+            Via::KeptCopy => "kept-copy",
             Via::Plt => "plt",
             Via::Place => "place",
             Via::String => "string",

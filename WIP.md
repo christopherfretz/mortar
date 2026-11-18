@@ -1,13 +1,13 @@
-# WIP — WP-249 (DW_MACRO_import into a dropped .debug_macro copy)
+# WIP — WP-250 (mortar_plumb: spec/image.md I-47a, the reference columns)
 
-Step 1 (measure, propose): scripts in tests/image-design/wp249/ (README there).
-Scratch: /Volumes/AgentWork/mortar-helper/.build/target-wp-143/wp249/ (survey/, linkers/, modes/, plumb/, rule/).
+(The base 70c8021c carried WP-249's WIP.md; this file replaces it and is
+deleted in WP-250's final commit.)
 
-Done: survey.sh (class census), rule.sh (GNU ld's condition by experiment), linkers.sh
-(5 linkers + 2 patched mortar outputs, gdb/lldb/verify), modes.sh (gc, -r, incremental),
-plumbprobe.sh (verifier on patched outputs).
+Done: debug.rs i47a/gnu_kept/kept_copy (Via::KeptCopy); fate.rs keepers;
+locate.rs non-alloc bytes + the §5.7a tie-break (§3.3 steps 3-4);
+tests/macro_import.rs + fixtures (gen.sh); spec/plumb.md §3.3, §5.8, §7.2, §10.6.
 
-Next: interim hand-back to the supervisor; on the ruling, step 2: the rule in
-crates/mortar_image/src/link.rs LinkTables::sym_value_of (Local, facts.dead branch),
-lane tests under tests/link/, unit tests, record spec/landed/image/WP-249.md.
-Resume: re-run the scripts (each prints its DONE line), see the record draft.
+Next: run every mortar_plumb test; fix tests relying on the old GNU/mold
+columns; record spec/landed/plumb/WP-250.md; full gate.
+Scratch: .build/target-wp-156/wp250/scripts (t.sh <test>, bx.sh, wl.sh,
+probe.sh, rprobe.sh); each prints a final line.

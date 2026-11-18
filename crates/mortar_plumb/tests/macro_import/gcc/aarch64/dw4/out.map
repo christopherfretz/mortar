@@ -1,0 +1,119 @@
+mortar-map 2
+file 0 a.o
+file 1 b.o
+file 2 c.o
+piece 0 68 0 400190 14
+piece 0 68 14 4001a4 24
+place 0 18 410204 54
+place 0 20 430290 0
+place 0 21 430294 0
+piece 1 67 14 4001c8 1c
+place 1 18 410258 18
+place 1 19 430290 4
+place 1 20 430294 0
+piece 2 97 14 4001e4 1c
+place 2 28 410270 18
+place 2 29 430294 0
+place 2 30 430294 0
+nplace 0 22 .debug_info 0 105
+nplace 0 24 .debug_abbrev 0 ad
+nplace 0 25 .debug_aranges 0 30
+nplace 0 27 .debug_macro 0 133
+nplace 0 29 .debug_macro 133 b20
+nplace 0 31 .debug_macro c53 28
+nplace 0 33 .debug_macro c7b 190
+nplace 0 35 .debug_macro e0b 10
+nplace 0 37 .debug_macro e1b 199
+nplace 0 39 .debug_macro fb4 10
+nplace 0 41 .debug_macro fc4 51
+nplace 0 43 .debug_macro 1015 1ca
+nplace 0 45 .debug_macro 11df 82
+nplace 0 47 .debug_macro 1261 4c
+nplace 0 49 .debug_macro 12ad 58
+nplace 0 51 .debug_macro 1305 67
+nplace 0 53 .debug_macro 136c 100
+nplace 0 55 .debug_macro 146c 10
+nplace 0 57 .debug_macro 147c 16
+nplace 0 59 .debug_macro 1492 1b1
+nplace 0 61 .debug_macro 1643 10
+nplace 0 63 .debug_line 0 234
+merged 0 65 .debug_str
+merged 0 66 .comment
+nplace 1 21 .debug_info 105 c7
+nplace 1 23 .debug_abbrev ad 7c
+nplace 1 24 .debug_aranges 30 30
+nplace 1 26 .debug_macro 1653 12d
+nplace 1 62 .debug_line 234 20e
+merged 1 64 .debug_str
+merged 1 65 .comment
+nplace 2 31 .debug_info 1cc a9
+nplace 2 33 .debug_abbrev 129 5a
+nplace 2 34 .debug_aranges 60 30
+nplace 2 36 .debug_macro 1780 1bd
+nplace 2 42 .debug_macro 193d 10
+nplace 2 58 .debug_macro 194d 1f
+nplace 2 60 .debug_macro 196c bd
+nplace 2 62 .debug_macro 1a29 1c
+nplace 2 64 .debug_macro 1a45 58
+nplace 2 66 .debug_macro 1a9d 5e
+nplace 2 68 .debug_macro 1afb 28
+nplace 2 70 .debug_macro 1b23 76
+nplace 2 72 .debug_macro 1b99 ee
+nplace 2 78 .debug_macro 1c87 5e
+nplace 2 92 .debug_line 442 2b9
+merged 2 94 .debug_str
+merged 2 95 .comment
+discard 1 28 comdat
+discard 1 30 comdat
+discard 1 32 comdat
+discard 1 34 comdat
+discard 1 36 comdat
+discard 1 38 comdat
+discard 1 40 comdat
+discard 1 42 comdat
+discard 1 44 comdat
+discard 1 46 comdat
+discard 1 48 comdat
+discard 1 50 comdat
+discard 1 52 comdat
+discard 1 54 comdat
+discard 1 56 comdat
+discard 1 58 comdat
+discard 1 60 comdat
+discard 2 38 comdat
+discard 2 40 comdat
+discard 2 44 comdat
+discard 2 46 comdat
+discard 2 48 comdat
+discard 2 50 comdat
+discard 2 52 comdat
+discard 2 54 comdat
+discard 2 56 comdat
+discard 2 74 comdat
+discard 2 76 comdat
+discard 2 80 comdat
+discard 2 82 comdat
+discard 2 84 comdat
+discard 2 86 comdat
+discard 2 88 comdat
+discard 2 90 comdat
+chunk synthetic .eh_frame 400190 74
+chunk synthetic .got 420288 8
+chunk synthetic .symtab - 168
+chunk synthetic .strtab - 3c
+chunk synthetic .shstrtab - 97
+chunk synthetic .comment - d
+chunk synthetic .pad.relro 420290 fd70
+arg -m
+arg aarch64linux
+arg -static
+arg --build-id=none
+arg -e
+arg main
+arg a.o
+arg b.o
+arg c.o
+arg -o
+arg out
+arg --mortar-map=out.map
+end
