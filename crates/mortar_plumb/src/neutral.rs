@@ -13,6 +13,8 @@
 //! The judgement is a pure function of a [`View`] so that the forms and
 //! their mutations are tested byte by byte (the tests below), apart from
 //! any link.
+#![allow(clippy::many_single_char_names)] // L, A, T, B, D, k: IN-51b's notation
+#![allow(clippy::too_many_lines)] // the test table: one row per (form, mutation)
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -105,9 +107,8 @@ fn first_not(b: &[u8], from: usize, want: u8) -> Option<usize> {
 pub(crate) fn block(rest: usize) -> Option<Vec<u8>> {
     let k = (1..=10).find(|&k| rest > k && uleb_len((rest - k) as u64) <= k)?;
     let n = (rest - k) as u64;
-    let mut v: Vec<u8> = (0..k)
-        .map(|i| ((n >> (7 * i)) & 0x7f) as u8 | if i + 1 < k { 0x80 } else { 0 })
-        .collect();
+    let mut v: Vec<u8> =
+        (0..k).map(|i| ((n >> (7 * i)) & 0x7f) as u8 | if i + 1 < k { 0x80 } else { 0 }).collect();
     v.resize(rest, 0);
     Some(v)
 }
@@ -164,7 +165,10 @@ fn sized(b: &[u8], p: usize, hi: usize, min: usize) -> Result<usize, (usize, Str
         return Err((p, format!("length {len:#x} runs past the range ({:#x} bytes left)", hi - p)));
     }
     if l < min {
-        return Err((p, format!("a form of {l} bytes is below the minimum {min} (incr.md IN-51b)")));
+        return Err((
+            p,
+            format!("a form of {l} bytes is below the minimum {min} (incr.md IN-51b)"),
+        ));
     }
     Ok(l)
 }
@@ -206,8 +210,8 @@ pub(crate) fn judge(v: &View<'_>) -> Vec<Bad> {
     // one `neutral` line.
     let mut table: Option<usize> = None;
     let abbrev = v.data.get(".debug_abbrev").copied();
-    let needs_table = v.incremental
-        || v.ranges.iter().any(|r| matches!(r.sec, ".debug_info" | ".debug_types"));
+    let needs_table =
+        v.incremental || v.ranges.iter().any(|r| matches!(r.sec, ".debug_info" | ".debug_types"));
     if let Some(ab) = abbrev
         && needs_table
     {
@@ -243,18 +247,17 @@ pub(crate) fn judge(v: &View<'_>) -> Vec<Bad> {
     if let Some(ab) = abbrev {
         for r in of(v, ".debug_abbrev") {
             let skip = table.filter(|&t| r.lo <= t && t < r.hi);
-            for p in r.lo..r.hi.min(ab.len()) {
+            for (p, &byte) in ab.iter().enumerate().take(r.hi).skip(r.lo) {
                 if skip.is_some_and(|t| p >= t) {
                     break;
                 }
-                if ab[p] != 0 {
+                if byte != 0 {
                     bad(
                         Some(r.id),
                         (
                             p,
                             format!(
-                                "a neutral .debug_abbrev range is zero bytes but IN-51's one table at the section's end: byte {:#04x}",
-                                ab[p]
+                                "a neutral .debug_abbrev range is zero bytes but IN-51's one table at the section's end: byte {byte:#04x}"
                             ),
                         ),
                     );
@@ -269,9 +272,13 @@ pub(crate) fn judge(v: &View<'_>) -> Vec<Bad> {
             Some(w) if u64::from(t) == w => Ok(()),
             Some(w) => Err((
                 at,
-                format!("a neutral unit names the abbreviation table at {t:#x}, not IN-51's at {w:#x}"),
+                format!(
+                    "a neutral unit names the abbreviation table at {t:#x}, not IN-51's at {w:#x}"
+                ),
             )),
-            None => Err((at, format!("a neutral unit names abbreviation table {t:#x}: no IN-51 table"))),
+            None => {
+                Err((at, format!("a neutral unit names abbreviation table {t:#x}: no IN-51 table")))
+            }
         }
     };
 
@@ -405,10 +412,21 @@ pub(crate) fn judge(v: &View<'_>) -> Vec<Bad> {
                         .next()
                         .map_or(r.hi, |&e| usize::try_from(e).unwrap_or(r.hi).min(r.hi));
                     let l = end - p;
-                    if l < a || l % a != 0 {
-                        Err((p, format!("a headerless neutral .debug_addr table is a multiple of {a} bytes, at least {a}, not {l}")))
+                    if l < a || !l.is_multiple_of(a) {
+                        Err((
+                            p,
+                            format!(
+                                "a headerless neutral .debug_addr table is a multiple of {a} bytes, at least {a}, not {l}"
+                            ),
+                        ))
                     } else if let Some(i) = first_not(&ad[..end], p, 0) {
-                        Err((i, format!("a headerless neutral .debug_addr table (named by a DW_AT_GNU_addr_base) is zero bytes: byte {:#04x}", ad[i])))
+                        Err((
+                            i,
+                            format!(
+                                "a headerless neutral .debug_addr table (named by a DW_AT_GNU_addr_base) is zero bytes: byte {:#04x}",
+                                ad[i]
+                            ),
+                        ))
                     } else {
                         gnu_starts.insert(p as u64);
                         Ok(l)
@@ -461,10 +479,15 @@ pub(crate) fn judge(v: &View<'_>) -> Vec<Bad> {
         let zeros = |min: usize| -> Result<(), (usize, String)> {
             let l = r.hi - r.lo;
             if l < min {
-                return Err((r.lo, format!("a neutral {} range is at least {min} zero bytes, not {l}", r.sec)));
+                return Err((
+                    r.lo,
+                    format!("a neutral {} range is at least {min} zero bytes, not {l}", r.sec),
+                ));
             }
             match first_not(&d[..r.hi], r.lo, 0) {
-                Some(i) => Err((i, format!("a neutral {} range is zero bytes: byte {:#04x}", r.sec, d[i]))),
+                Some(i) => {
+                    Err((i, format!("a neutral {} range is zero bytes: byte {:#04x}", r.sec, d[i])))
+                }
                 None => Ok(()),
             }
         };
@@ -498,11 +521,11 @@ pub(crate) fn judge(v: &View<'_>) -> Vec<Bad> {
 
 /// One form of a section with self-contained forms at `p`: its length.
 fn form(name: &str, d: &[u8], p: usize, hi: usize, asz: u8) -> Result<usize, (usize, String)> {
-    let body = |from: usize, end: usize, fill: u8, what: &str| match first_not(&d[..end], from, fill)
-    {
-        Some(i) => Err((i, format!("{what}: byte {:#04x}, not {fill:#04x}", d[i]))),
-        None => Ok(()),
-    };
+    let body =
+        |from: usize, end: usize, fill: u8, what: &str| match first_not(&d[..end], from, fill) {
+            Some(i) => Err((i, format!("{what}: byte {:#04x}, not {fill:#04x}", d[i]))),
+            None => Ok(()),
+        };
     match name {
         ".debug_line" => {
             let l = sized(d, p, hi, 24)?;
@@ -518,7 +541,12 @@ fn form(name: &str, d: &[u8], p: usize, hi: usize, asz: u8) -> Result<usize, (us
                 (h, 24)
             };
             if l < min {
-                return Err((p, format!("a neutral line table of version {ver} is at least {min} bytes, not {l}")));
+                return Err((
+                    p,
+                    format!(
+                        "a neutral line table of version {ver} is at least {min} bytes, not {l}"
+                    ),
+                ));
             }
             exact(d, p + 4, &head, "a neutral line table's header")?;
             body(p + min, p + l, 6, "a neutral line table's program is DW_LNS_negate_stmt")?;
@@ -526,15 +554,30 @@ fn form(name: &str, d: &[u8], p: usize, hi: usize, asz: u8) -> Result<usize, (us
         }
         ".debug_rnglists" | ".debug_loclists" => {
             let l = sized(d, p, hi, 12)?;
-            exact(d, p + 4, &[5, 0, asz, 0, 0, 0, 0, 0], "a neutral list table's header is 05 00 A 00 u32(0)")?;
+            exact(
+                d,
+                p + 4,
+                &[5, 0, asz, 0, 0, 0, 0, 0],
+                "a neutral list table's header is 05 00 A 00 u32(0)",
+            )?;
             body(p + 12, p + l, 0, "a neutral list table's body is zero")?;
             Ok(l)
         }
         ".debug_str_offsets" => {
             let l = sized(d, p, hi, 8)?;
-            exact(d, p + 4, &[5, 0, 0, 0], "a neutral .debug_str_offsets table's header is 05 00 00 00")?;
+            exact(
+                d,
+                p + 4,
+                &[5, 0, 0, 0],
+                "a neutral .debug_str_offsets table's header is 05 00 00 00",
+            )?;
             if l % 4 != 0 {
-                return Err((p, format!("a neutral .debug_str_offsets table holds whole 4-byte entries: {l} bytes")));
+                return Err((
+                    p,
+                    format!(
+                        "a neutral .debug_str_offsets table holds whole 4-byte entries: {l} bytes"
+                    ),
+                ));
             }
             body(p + 8, p + l, 0, "a neutral .debug_str_offsets table's entries are zero")?;
             Ok(l)
@@ -556,15 +599,31 @@ fn form(name: &str, d: &[u8], p: usize, hi: usize, asz: u8) -> Result<usize, (us
             match ver {
                 Some(4 | 5) => {}
                 Some(v) => {
-                    return Err((p, format!("a neutral .debug_macro unit is version 4 or 5, not {v}")));
+                    return Err((
+                        p,
+                        format!("a neutral .debug_macro unit is version 4 or 5, not {v}"),
+                    ));
                 }
-                None => return Err((p, format!("{} bytes left: no form fits (minimum 7)", hi - p))),
+                None => {
+                    return Err((p, format!("{} bytes left: no form fits (minimum 7)", hi - p)));
+                }
             }
-            exact(d, p + 2, &[0, 2, 0], "a neutral .debug_macro unit is flags 0, DW_MACRO_undef, line 0")?;
+            exact(
+                d,
+                p + 2,
+                &[0, 2, 0],
+                "a neutral .debug_macro unit is flags 0, DW_MACRO_undef, line 0",
+            )?;
             let s = p + 5;
             let e = (s..hi).find(|&i| d[i] != b'x').unwrap_or(hi);
             exact(d, e, &[0, 0], "a neutral .debug_macro unit's string of 'x' ends with 00 00")
-                .and_then(|()| if e + 2 > hi { Err((e, "the unit runs past the range".into())) } else { Ok(()) })?;
+                .and_then(|()| {
+                    if e + 2 > hi {
+                        Err((e, "the unit runs past the range".into()))
+                    } else {
+                        Ok(())
+                    }
+                })?;
             Ok(e + 2 - p)
         }
         _ => Err((p, format!("'{name}' has no neutral form (incr.md IN-51b)"))),
@@ -661,16 +720,13 @@ mod tests {
         /// The header after the length field: `[from, to)` of the form.
         fn header(self) -> Option<(usize, usize)> {
             Some(match self {
-                Info5 | InfoType5 => (4, 13),
-                Info4 => (4, 12),
+                Info5 | InfoType5 | Frame => (4, 13),
+                Info4 | Rnglists | Loclists => (4, 12),
                 Info5Base => (4, 17),
                 Info4Base => (4, 16),
-                Types => (4, 24),
+                Types | Line4 => (4, 24),
                 Line5 => (4, 32),
-                Line4 => (4, 24),
-                Rnglists | Loclists => (4, 12),
                 StrOffsets | Addr5 => (4, 8),
-                Frame => (4, 13),
                 Macro5 | Macro4 => (0, 5),
                 Abbrev | AddrGnu | Ranges | Loc | Macinfo => return None,
             })
@@ -686,7 +742,9 @@ mod tests {
 
     /// IN-51b's `B` for `rest` bytes, written apart from [`block`].
     fn b(rest: usize) -> Vec<u8> {
-        let k = (1..=10).find(|&k| rest > k && (rest - k) >> (7 * k) == 0).expect("a block of at least one byte");
+        let k = (1..=10)
+            .find(|&k| rest > k && (rest - k) >> (7 * k) == 0)
+            .expect("a block of at least one byte");
         let n = rest - k;
         let mut v: Vec<u8> = (0..k)
             .map(|i| ((n >> (7 * i)) & 0x7f) as u8 | if i + 1 < k { 0x80 } else { 0 })
@@ -871,7 +929,10 @@ mod tests {
         };
         let body_to = if matches!(f, Macro5 | Macro4) { l - 2 } else { l };
         if body_to > body_from {
-            for (name, i) in [("body: a middle byte", (body_from + body_to) / 2), ("body: the last byte", body_to - 1)] {
+            for (name, i) in [
+                ("body: a middle byte", usize::midpoint(body_from, body_to)),
+                ("body: the last byte", body_to - 1),
+            ] {
                 row(name.into(), &|c| {
                     let s = c.secs.get_mut(sec).unwrap();
                     s[at + i] = if s[at + i] == 1 { 2 } else { 1 };
@@ -925,7 +986,11 @@ mod tests {
         }
         match f {
             Info5 | Info4 if l >= if f == Info5 { 19 } else { 18 } => {
-                let (code, name) = if f == Info5 { (4, "code 4 in a v5 unit") } else { (3, "code 3 in a v4 unit") };
+                let (code, name) = if f == Info5 {
+                    (4, "code 4 in a v5 unit")
+                } else {
+                    (3, "code 3 in a v4 unit")
+                };
                 row(name.into(), &|c| {
                     let s = c.secs.get_mut(sec).unwrap();
                     let p = if f == Info5 { 12 } else { 11 };
@@ -1029,7 +1094,9 @@ mod tests {
     /// versions: "either version's form in any neutral range".
     #[test]
     fn in51b_versions_mix_in_one_range() {
-        for (x, y) in [(Info5, Info4), (Info4, Info5), (Line5, Line4), (Line4, Line5), (Macro5, Macro4)] {
+        for (x, y) in
+            [(Info5, Info4), (Info4, Info5), (Line5, Line4), (Line4, Line5), (Macro5, Macro4)]
+        {
             let (mut c, at) = case(x, 40, 8);
             let second = write(y, 33, 8, at + 40, 0);
             let s = c.secs.get_mut(x.sec()).unwrap();
@@ -1089,7 +1156,8 @@ mod tests {
         // The unit naming the second table, not the one at the end.
         let mut c2 = rows.last().unwrap().1.clone();
         c2.secs.get_mut(".debug_abbrev").unwrap()[6..44].fill(0);
-        c2.secs.get_mut(".debug_info").unwrap()[at + 8..at + 12].copy_from_slice(&6u32.to_le_bytes());
+        c2.secs.get_mut(".debug_info").unwrap()[at + 8..at + 12]
+            .copy_from_slice(&6u32.to_le_bytes());
         rows.push(("a unit naming another offset".into(), c2));
         for (name, c) in rows {
             assert!(!c.judge().is_empty(), "{name}: accepted");

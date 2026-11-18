@@ -664,9 +664,9 @@ fn neutral_line(version: u16, len: usize, asz: u8) -> Vec<u8> {
 
 /// IN-51's neutral abbreviation table (`spec/incr.md` IN-51, 38 bytes).
 const TABLE: [u8; 38] = [
-    0x01, 0x11, 0x00, 0x80, 0x40, 0x09, 0x00, 0x00, 0x02, 0x41, 0x00, 0x80, 0x40, 0x09, 0x00,
-    0x00, 0x03, 0x11, 0x00, 0x73, 0x17, 0x80, 0x40, 0x09, 0x00, 0x00, 0x04, 0x11, 0x00, 0xb3,
-    0x42, 0x17, 0x80, 0x40, 0x09, 0x00, 0x00, 0x00,
+    0x01, 0x11, 0x00, 0x80, 0x40, 0x09, 0x00, 0x00, 0x02, 0x41, 0x00, 0x80, 0x40, 0x09, 0x00, 0x00,
+    0x03, 0x11, 0x00, 0x73, 0x17, 0x80, 0x40, 0x09, 0x00, 0x00, 0x04, 0x11, 0x00, 0xb3, 0x42, 0x17,
+    0x80, 0x40, 0x09, 0x00, 0x00, 0x00,
 ];
 
 /// `tbl.o`: a `.debug_abbrev` of IN-51's table alone. Linked last, it is
@@ -713,6 +713,7 @@ struct Debug {
     main_line: u64,
 }
 
+#[allow(clippy::too_many_lines)] // one model, built in one place
 fn build_debug(arch: Arch, dwarf: u16) -> Option<(Scratch, Debug)> {
     let gcc = tool(arch, "gcc")?;
     let ld = tool(arch, "ld.bfd")?;
@@ -800,8 +801,16 @@ fn build_debug(arch: Arch, dwarf: u16) -> Option<(Scratch, Debug)> {
     let (_, info, info_size) = get(&d, ".debug_info");
     let (_, line, line_size) = get(&d, ".debug_line");
     d.patch_nonalloc(".debug_abbrev", ab, &vec![0; ab_size as usize]);
-    d.patch_nonalloc(".debug_info", info, &neutral_unit(dwarf, info_size as usize, t as u32, d.b.word() as u8));
-    d.patch_nonalloc(".debug_line", line, &neutral_line(dwarf, line_size as usize, d.b.word() as u8));
+    d.patch_nonalloc(
+        ".debug_info",
+        info,
+        &neutral_unit(dwarf, info_size as usize, t as u32, d.b.word() as u8),
+    );
+    d.patch_nonalloc(
+        ".debug_line",
+        line,
+        &neutral_line(dwarf, line_size as usize, d.b.word() as u8),
+    );
     d.b.dead(".debug_abbrev", ab, ab_size, DeadKind::Neutral);
     d.b.dead(".debug_info", info, info_size, DeadKind::Neutral);
     d.b.dead(".debug_line", line, line_size, DeadKind::Neutral);
@@ -906,7 +915,14 @@ fn in3a_debug_mutations_are_rejected() {
             expect(arch, &case("table byte"), &base, &m, "P-I6", "neutral abbreviation table");
             let mut m = d.b.clone();
             m.map.dead.retain(|x| x.section != ".debug_abbrev" || x.offset + x.size != size_ab);
-            expect(arch, &case("table line"), &base, &m, "P-I6", "38-byte neutral abbreviation table");
+            expect(
+                arch,
+                &case("table line"),
+                &base,
+                &m,
+                "P-I6",
+                "38-byte neutral abbreviation table",
+            );
             // A neutral line table with a program byte other than 0x06.
             let mut m = d.b.clone();
             let (_, line, size) = d.dead.iter().find(|x| x.0 == ".debug_line").cloned().unwrap();
