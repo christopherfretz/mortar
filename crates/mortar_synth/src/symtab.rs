@@ -306,7 +306,9 @@ pub fn tail_room(locals: u32) -> u32 {
 
 /// IN-49a's file slack after `.symtab` or `.strtab` of `size` bytes:
 /// max(4 KiB, size/16) (`spec/layout.md` L-72: the layout's tail, the same
-/// numbers as `mortar_layout::slack::Slack::tail`).
+/// numbers as `mortar_layout::slack::Slack::tail`; the two crates do not
+/// depend on each other, and `mortar`'s test
+/// `symtab_file_slack_is_the_layout_tail` fails if they part, WP-217 item 9).
 #[must_use]
 pub fn file_slack(size: u64) -> u64 {
     FILE_SLACK_MIN.max(size / FILE_SLACK_DIV)
