@@ -18,7 +18,9 @@
 //!   lock is not enforced, so a link answers `lock-unavailable` (IN-77d);
 //! - `MORTAR_INCR_STATE5=<path>`, `MORTAR_INCR_STATE5_COLLIDE=1`: WP-244's
 //!   format-5 capture beside the format-4 state ([`state5_path`],
-//!   [`state5_collide`]).
+//!   [`state5_collide`]);
+//! - `MORTAR_INCR_SMALL_OUTPUT=<bytes>`: `small-output`'s bound for the
+//!   process (WP-225, G-13; [`small_output_bound`]).
 
 use mortar_core::incr::DirtyRange;
 
@@ -167,6 +169,26 @@ pub fn state5_collide() -> bool {
     false
 }
 
+/// WP-225's knob (G-13): with the feature and `MORTAR_INCR_SMALL_OUTPUT`
+/// set to a number of bytes, `small-output`'s bound (`crate::SMALL_OUTPUT`)
+/// is that number for this process (`0`: every output updates, so the
+/// lane's small scenarios reach the update). A value that is not a
+/// decimal number is ignored. Without the feature: `None` (a release
+/// build keeps the policy constant).
+#[cfg(feature = "testhooks")]
+#[must_use]
+pub fn small_output_bound() -> Option<u64> {
+    std::env::var("MORTAR_INCR_SMALL_OUTPUT").ok()?.parse().ok()
+}
+
+/// WP-225's knob: without the `testhooks` feature, `None`.
+#[cfg(not(feature = "testhooks"))]
+#[inline]
+#[must_use]
+pub fn small_output_bound() -> Option<u64> {
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -198,5 +220,6 @@ mod tests {
         crash_point("W1");
         dirty_ranges(&[DirtyRange { offset: 0, len: 1 }]);
         assert!(state5_path().is_none() && !state5_collide());
+        assert!(small_output_bound().is_none());
     }
 }
