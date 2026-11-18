@@ -1586,8 +1586,10 @@ with each phase fed from the state for unchanged files:
   flipped byte in an untouched block does not stop the update).
 - **IN-18d [v1] The per-file index.** `FILE_INDEX` (kind 41), one row
   per `FILES` row: for each file-keyed table (IN-18e) the first row, the
-  count and the capacity of the file's range, and a `gone` flag (a file
-  removed by an update: its ranges are dead until the next compaction).
+  count and the capacity of the file's range, a `gone` flag (a file
+  removed by an update: its ranges are dead until the next compaction),
+  and `first_global` (`u32`: its `.symtab`'s `sh_info`, 0 for a file
+  without one; the index of its `MENTIONS` rows, IN-18e; WP-215 D7).
   The reader checks that the ranges are in bounds and do not overlap.
 - **IN-18e [v1] Format version 5: every table, its class and its patch
   rule** (rewritten by WP-207; review-in77 B-5, M-9). Every table of the
@@ -1600,7 +1602,7 @@ with each phase fed from the state for unchanged files:
   | **whole** (small; capacity = rows + max(64, rows/8)) | `META` (1), `PROBES` (4), `OUTSECS` (5), `CHUNKS` (8), `ORDER` (9), `SEGMENTS` (10), `SLOTS` (12), `SIZES` (15), `SYM_PLACE` (16), `DEFINED` (17), `PATCHES` (18), `REDIRECTS` (19), `SIZED` (20), `LAYOUT` (21), `LEAVES` (22) | the table is written again whole into its capacity when any row differs (its blocks only; the rest of the state is untouched); over capacity: compaction. Together under 2 MB on g10x (WP-105 §3's "the rest" and `CHUNKS`). `LEAVES`' row count follows the output's size (W3 truncates or extends), within its capacity |
   | **append-only** | `FILES` (3), `STAT` (2), `FILE_INDEX` (41), `STRINGS` (23) | rows (bytes, for `STRINGS`) are only appended, into a reserved append area of max(4,096 rows, rows/64); a row is never moved, so references to it stay valid. `FILES` and `FILE_INDEX` are parallel (one row each per file, members of archives included, `LAZY` when not extracted); `STAT` has one row per file plus the device rows; a file's load-order position is its `FILES.rank` (`u64`): the first link writes `rank = FileId << 20`, an appeared or newly extracted file takes the integer midpoint of its neighbours' ranks (none left: compaction), and `FileId` order is `rank` order. A gone file's row is marked `GONE`. A string is never overwritten or reused; strings no row names any more are dead until compaction. The build id is in `META` (a length and 64 bytes), not in `STRINGS`, so an update appends no string for it |
   | **file-keyed** (one range per file through `FILE_INDEX`, with row slack: capacity = count + max(4, count/8)) | `SECTIONS` (7), `MENTIONS` (32), `INDEX` (34), `EDGES` (42: one row per stored edge, 17 bytes: kind `u8`, source `u32`, target `u32`, offset `u64`), `FRAG_AT` (40), `EH_RECORDS` (13), `SYMTAB` (43: per file its local block and `.strtab` region; file 0's range holds the global area's row), `REGIONS` (51: per file its regions, one row per (output section, category, ordinal): the chunk, offset and capacity; IN-72 item 2, WP-213) | a changed, drawn-in or appeared file's range is rewritten in place when the new count fits its capacity; a file's `SECTIONS` rows are also rewritten when IN-72 moved, killed or revived its sections (IN-78); a gone file's ranges are dead (`FILE_INDEX.gone`); a new file gets new ranges in the table's append area (max(4,096 rows, rows/64)); no room: compaction |
-  | **key-keyed** (sorted body + append area of max(4,096 rows, rows/64), kept sorted on insert + tombstones) | `KEY_REFS` (45: key, file, attributes), `GROUPS` (44: signature, keeper), `FRAGS` (11: identity, offset, `refs`), `HOLES` (39: by (chunk, offset)), `COMMONS` (46: key, file, size, alignment), `ODR_CLASSES` (47: ODR key, class hash and layout), `ODR_REFS` (48: ODR key, file, row kind, class), `DIAGS` (49: subjects, code, text, order), `NAMES` (52: the by-name index of `SYMBOLS`' globals, 12 bytes, keyed by (hash, row): `hash` is model.md's 64-bit hash (`mortar_core::hash::hash_bytes`) of the bytes of `SYMBOLS.name`, one zero byte and the bytes of `SYMBOLS.version` (empty when unversioned), as `STRINGS` holds them; `row` the `SYMBOLS` row; a lookup compares the name and version bytes of every row of the hash, so a hash never identifies a key alone; a `GONE` key keeps its row, and a key that comes back takes its old `SYMBOLS` row; WP-213) | a lookup binary-searches the body and the append area (the area is kept sorted: a new row is inserted into it at its place, moving at most the area's rows; WP-211, review-wp207 m-3: no linear scan of up to 4,096 rows per lookup); a deleted row is a tombstone (its key kept, a flag set); a changed row is changed in place when its key is unchanged, else deleted and appended. Compaction when an append area is full or tombstones pass 25% of a table's rows |
+  | **key-keyed** (sorted body + append area of max(4,096 rows, rows/64), kept sorted on insert + tombstones) | `KEY_REFS` (45: key, file, attributes), `GROUPS` (44: by (signature, file): one row per live relocatable object's copy; the keeper is the least row (resolve.md §6.1), not stored; WP-215), `FRAGS` (11: identity, offset, `refs`), `HOLES` (39: by (chunk, offset)), `COMMONS` (46: by (key, file): one row per live file with a common mention of the key, its size and alignment; the winning common (resolve.md §3.3) is computed from the rows, not stored; WP-215), `ODR_CLASSES` (47: ODR key, class hash and layout), `ODR_REFS` (48: ODR key, file, row kind, class), `DIAGS` (49: subjects, code, text, order), `NAMES` (52: the by-name index of `SYMBOLS`' globals, 12 bytes, keyed by (hash, row): `hash` is model.md's 64-bit hash (`mortar_core::hash::hash_bytes`) of the bytes of `SYMBOLS.name`, one zero byte and the bytes of `SYMBOLS.version` (empty when unversioned), as `STRINGS` holds them; `row` the `SYMBOLS` row; a lookup compares the name and version bytes of every row of the hash, so a hash never identifies a key alone; a `GONE` key keeps its row, and a key that comes back takes its old `SYMBOLS` row; WP-213) | a lookup binary-searches the body and the append area (the area is kept sorted: a new row is inserted into it at its place, moving at most the area's rows; WP-211, review-wp207 m-3: no linear scan of up to 4,096 rows per lookup); a deleted row is a tombstone (its key kept, a flag set); a changed row is changed in place when its key is unchanged, else deleted and appended. Compaction when an append area is full or tombstones pass 25% of a table's rows |
   | **key-parallel** (one row per `SYMBOLS` row, in its order) | `SYMBOLS` (6), `RESOLVED` (33), `SYMTAB_KEYS` (50: a global's `.symtab` index and `.strtab` offset) | a key's rows are changed in place by its `SYMBOLS` row number; a new key appends a row to each (append area of max(4,096 rows, rows/64)); a key no file mentions any more is a tombstone (`SYMBOLS.kind` `GONE`) |
 
   Table 14 (`SYMTAB_LOCALS`) is gone (`SYMTAB` and `SYMTAB_KEYS` replace
@@ -1622,6 +1624,19 @@ with each phase fed from the state for unchanged files:
   its row count equals `MENTIONS`' (plus nothing: the lazy members'
   defined mentions are `MENTIONS` rows of their files too).
   **`at_file`** is maintained by IN-71's rule.
+
+  **`MENTIONS` by position** (WP-215 D7): a file's `MENTIONS` range holds
+  **one row per non-local entry of its symbol table, in the table's
+  order, none skipped; the entry's index is the file's
+  `FILE_INDEX.first_global` plus the row's position in the file's
+  range**. (Format 4's capture sorts a file's rows by key and drops
+  repeats; format 5's does neither.) **`META`** (WP-215 D1, D8) gains
+  `iterations` (`u32`: the iterations of resolve.md §4.1's closure in the
+  full link that wrote the state; IN-71b Iterations) and `versioned`
+  (`u32`: the non-local symbol-table entries named `foo@V` or `foo@@V`
+  over the link's relocatable objects and archive members, extracted or
+  not; IN-71 Versions): 8 bytes. What the command line gives (the root
+  keys, `--wrap`, `--defsym`) is passed in, never stored (IN-71).
 
   **Shrinking.** `MENTIONS` drops its `file` column (the range gives
   it): 12 bytes a row. `RESOLVED` drops `symbol` (its row is the key's),
@@ -1661,7 +1676,8 @@ with each phase fed from the state for unchanged files:
   | block lists (16 B a 4 KiB block) and `FILE_INDEX` | +2.4 | +1.3 |
   | **format 5** | **442.5 MB (+9.5%)** | **269.3 MB (+9.2%)** |
 
-  `GROUPS` takes `RESOLVED`'s kind-6 rows (no net change); `COMMONS`,
+  `GROUPS` takes `RESOLVED`'s kind-6 rows, plus one row for each further
+  live copy (WP-215: by (signature, file); U-2 measures it); `COMMONS`,
   the `FILES` round and `DIAGS` are under 1 MB here; `ODR_*` are zero for
   GCC and Clang objects (IN-71d's estimate applies to kiln's). WP-202's
   "at most 150 MB against 167.4" compared three tables and left out the
@@ -2903,15 +2919,20 @@ a pass over a whole table of the state; **O(output)**.
   key: one row per (key, mentioning file), single mentioners, archive
   members not extracted and file 0 included, IN-18e) and the changed
   files' new ones. COMDAT groups the changed files name are re-elected
-  the same way (`GROUPS`, by signature), and so is every group with a
-  copy in a file whose extraction flips. Archive extraction is IN-71b.
+  the same way (`GROUPS`, by signature: the keeper is the least of the
+  signature's rows once the changed files' rows replace their old ones;
+  WP-215), and so is every group with a copy in a file whose extraction
+  flips. A common's size, alignment and winning file are computed from
+  the key's `COMMONS` rows the same way (resolve.md §3.3). Archive extraction is IN-71b.
   The result is IN-26's for every key (a key no file of the delta
   mentions has the stored resolution, which IN-26 would recompute
   equal). For an affected key whose mentioners change, `at_file` becomes
   the first live mentioner in load order among `KEY_REFS`'s rows and the
   changed files' (IN-18a3's rule), and `at_index` is that file's entry
   index among its non-local entries: from its new symbol table when it is
-  a changed file, else from its `MENTIONS` row (which stores the index);
+  a changed file, else from its `MENTIONS` row (whose position gives the
+  index: the file's `first_global` plus the row's position in its range,
+  IN-18e; WP-215 D7);
   `NONE` only when no live file mentions the key (review-in77 B-4). The
   differences are IN-27's causes. A difference in attributes (IN-26's
   list) for a key that an unchanged file references:
@@ -2935,13 +2956,39 @@ a pass over a whole table of the state; **O(output)**.
   of two unchanged files: `inputs-reordered`. **U4 and U5 iterate**
   (review-in72 m-3): a file that IN-71b newly extracts, or IN-72 item 2a
   draws in, is read (U4) and its keys become affected (U5), until no
-  file flips; each round only adds files, so it ends. *Test:* WP-064a
+  file flips; each round only adds files, so it ends.
+  **Options** (WP-215 D3-D5): the keys the options name (resolve.md
+  §4.2's roots: the entry or `_start`, `-u`, `EXTERN`,
+  `--require-defined`, the `--defsym` operands; `--wrap`; the `--defsym`
+  keys) are **passed in, never stored** (`mortar_core::incr::OptionKeys`,
+  built by the join from the plan and the scripts' directives as the
+  full link's resolution reads them; an update has the stored link's
+  options, else `options-changed`). `--wrap`'s redirection (resolve.md
+  §7.1) is applied when a stored undefined row is read, by name.
+  **Versions** (WP-215 D8): a `foo@@V` definition defines `foo` and,
+  when the link has that key, `foo@V` (resolve.md's `also`), and the
+  state stores neither which definition was `@@` nor its version. So an
+  update is `update-not-implemented (versioned)`, before anything is
+  written, when the stored link has a non-local symbol-table entry named
+  with an `@` (`META.versioned` not 0) or a changed, appeared, drawn-in
+  or newly extracted file has one in its new bytes
+  (`ChangedFile::versioned`). This is sound: when both are 0, no file of
+  the old link (every relocatable object and member, `LAZY` or not, is
+  counted) and none of the new one (the old link's unchanged files and
+  the changed files' new bytes) has such an entry, so no key has a
+  version and no definition an `also` key in either link. Measured not
+  to fire (WP-215): protoc (`cxx-medium-static`), a C and a Fortran
+  hello, static, GCC 14 with glibc 2.41 (`libc.a`, `libm.a`,
+  `libstdc++.a`, `libgfortran.a`, `libgcc.a`, `libgcc_eh.a`, the crt
+  objects; AArch64; and the x86-64 and i386 `libc.a`): no non-local
+  entry with an `@`. *Test:* WP-064a
   §3's cases, each now an update equivalent to the full link
   (`w-meaning.sh` W1, W1b, W9, W10, n2, n4; `ifunc-type` stays
   `symbol-kind-changed`); `common_first_referenced_by_changed_file` and
   `first_mentioner_drops_then_readds_key` (three hops, review-in77 B-4);
   `key_refs_single_mentioner`; a COMDAT keeper change both ways and
-  `comdat_keeper_flips_twice`.
+  `comdat_keeper_flips_twice`; `versioned_old_or_new_is_fallback`
+  (WP-215: `foo`, `foo@V`, `foo@@V`, gained and lost).
 
 - **IN-71b [v1] Archive extraction in an update** (WP-207; review-in72
   B-1; amended by WP-211, review-wp207 B-1). It is resolve.md §4.1's
@@ -2967,9 +3014,11 @@ a pass over a whole table of the state; **O(output)**.
     `FILES` row, extracted or not (flag `LAZY` when not), at its place in
     load order; a `LAZY` member's defined and common mentions are its
     `MENTIONS` range and its `KEY_REFS` rows (with the attributes §4.1
-    reads: definedness, binding, common, section or absolute), and the
-    common's size and alignment are `COMMONS` rows; a `LAZY` member's
-    undefined mentions are not stored (an extracted member's are). Each
+    reads: definedness, binding, common, section or absolute); a `LAZY`
+    member's common's size and alignment are not stored (`COMMONS` holds
+    the live files' rows, IN-18e; WP-215 D6): an extracted member is read,
+    and they come from its bytes; a `LAZY` member's undefined mentions
+    are not stored (an extracted member's are). Each
     extracted member's `FILES` row carries its **round**: a number such
     that some live file or root with an edge to it has a smaller round
     (non-archive files and roots 0): the **support property**. The first
@@ -2990,6 +3039,19 @@ a pass over a whole table of the state; **O(output)**.
     is still an edge: the removal below needs it. The update computes each
     affected key's edge set before and after the changed files' rows are
     replaced: **lost** and **gained** edges.
+  - **Iterations** (resolve.md §4.1, WP-200; WP-215). An update never
+    iterates the closure. A link whose closure ran more than one
+    iteration (`META.iterations`) is not updated: every update of its
+    state is `closure-iterated`. Otherwise, after the extraction and the
+    re-election, for every affected key `K` and each of `first(K)`,
+    `cfirst(K)` that is a live relocatable object whose mention of `K` is
+    defined in a section of a COMDAT copy the new keepers drop, the
+    update ends with `closure-iterated` (the full link would iterate).
+    Only an affected key can start an iteration
+    (`spec/landed/incr/WP-215.md` §Q.2). Measured: protoc and
+    `cxx-large-g` run one iteration. *Test (U-3):*
+    `feedback_check_is_sound_random`, `stored_link_iterated_is_fallback`,
+    `affected_key_feeds_back_is_fallback`.
   - **Removal (decremental).** A member that lost an edge keeps its
     extraction iff some edge from a live file of smaller round still
     reaches it (its in-edges: the keys it is `first`/`cfirst` of, from its
@@ -3809,7 +3871,9 @@ a pass over a whole table of the state; **O(output)**.
     blocks' places (each file's `(first, count, capacity)` and `.strtab`
     region)), with every other row computed afresh from the inputs by the
     full link's own front, resolution, liveness and capture: `FILES`,
-    `STAT`, `MENTIONS`, `KEY_REFS`, `RESOLVED`, `GROUPS`, `COMMONS`,
+    `FILE_INDEX.first_global`, `META`'s `iterations` and `versioned`
+    (WP-215), `STAT`, `MENTIONS`, `KEY_REFS`, `RESOLVED`, `GROUPS`,
+    `COMMONS`,
     `INDEX`, `EDGES`, `FRAG_AT`, `EH_RECORDS`, `SYMBOLS` (with `at_file`,
     `at_index`), `NAMES` (WP-213), `SYMTAB`'s entries, **`SYMTAB_KEYS`** (recomputed: it
     follows from the `.symtab` blocks' places and the resolution),
@@ -3851,12 +3915,12 @@ a pass over a whole table of the state; **O(output)**.
 
   | cause | rows that change |
   |---|---|
-  | a changed, appeared, drawn-in or newly extracted file | its `FILES` row (hash, rank, flags, round (any supporting value, IN-71b); `POSITIONAL` recaptured or cleared, IN-28a), its `STAT` row (tuple re-taken), its ranges of `SECTIONS`, `MENTIONS`, `INDEX`, `EDGES`, `FRAG_AT`, `EH_RECORDS`, `SYMTAB`; its `KEY_REFS`, `COMMONS`, `ODR_REFS` and `DIAGS` rows |
+  | a changed, appeared, drawn-in or newly extracted file | its `FILES` row (hash, rank, flags, round (any supporting value, IN-71b); `POSITIONAL` recaptured or cleared, IN-28a), its `STAT` row (tuple re-taken), its ranges of `SECTIONS`, `MENTIONS`, `INDEX`, `EDGES`, `FRAG_AT`, `EH_RECORDS`, `SYMTAB`; its `FILE_INDEX.first_global` (WP-215); its `KEY_REFS`, `GROUPS`, `COMMONS`, `ODR_REFS` and `DIAGS` rows |
   | a gone or no longer extracted file | its row marked gone (extracted → `LAZY` with its defined rows kept), its ranges gone, its key-keyed rows deleted |
   | an input `stat`ed again but hashed equal (touched) | its `STAT` row (review-in77 M-8) |
   | the device stamps (IN-22a) | the device rows of `STAT` |
   | an affected key | its `SYMBOLS` row (appended when new; `at_file`/`at_index`, IN-71), `RESOLVED`, `KEY_REFS`; a new key's `NAMES` row (WP-213) |
-  | a re-elected group | its `GROUPS` row, and the drawn-in files of IN-72 item 2a (review-in77 M-7) |
+  | a re-elected group | no row of its own (the keeper is the least `GROUPS` row, not stored; WP-215 D2); the drawn-in files of IN-72 item 2a (review-in77 M-7) |
   | a section moved, killed or revived (IN-72 items 1-5, 11), in any file | its `SECTIONS` row, whether or not its file changed (review-in77 B-3); its file's `REGIONS` range when a region was opened, grown or moved (WP-213) |
   | a linker-defined key's value or a placed symbol's place | `DEFINED`, `SYM_PLACE` (IN-71c) |
   | a growth step, a packed rewrite, a TLS template's size, `-e` in a changed file | `CHUNKS`, `SIZES`, `SIZED`, `SEGMENTS`, `ORDER`, `LAYOUT`, `OUTSECS`; the `REGIONS` ranges of the files whose regions a growth step moved (WP-213) |
@@ -4331,8 +4395,9 @@ update), reported as `incremental: full (<reason>)` (IN-10). With
 | `state-busy` | the state's path named another inode after its lock was acquired, 8 times in a row (IN-77b, WP-207): another link keeps replacing it | permanent |
 | `lock-unavailable` | the file system does not enforce `flock` on the state (image.md I-59's probe), so two updates could interleave (IN-77b, WP-207) | permanent |
 | `small-output` | the output the state describes (`META`'s output size) is smaller than 256 MiB (`mortar_incr::SMALL_OUTPUT`), checked after every row above. Not with `--incremental=update`, which updates whatever the size. **A policy constant, not a measured crossover**: an update was measured at 55 MB (0.67-1.15 of a plain link, saving at most 124 ms) and at 583-832 MB (0.70-0.94; 0.19-0.26 with the state read and written by range), and on no workload between (WP-094 §7). 256 MiB is a power of two between them, so that the mode can be told from `ls -l`; WP-105 measures a workload in that range and moves it if the crossover is elsewhere | permanent (the bound a policy constant) |
-| `update-not-implemented` | the state is valid, the plan and the output match it, the output is not small, and the update path does not exist yet (WP-061 stage A: every incremental link is a full one after the checks above, in this order; `--incremental=update` fails with it whatever the size) | stage A only. Amended (WP-202, IN-70): after the update joins (U-10), only a changed, appeared or newly extracted file with debug sections or a split-DWARF skeleton gives it (`update-not-implemented (debug)`), or with `.mason.meta` units under `--keep-mason-meta` (`update-not-implemented (meta)`, IN-71d, WP-207), or a stored `link`-subject warning the update cannot raise again within O(change) (`update-not-implemented (diags)`, IN-75a, WP-212); the G packages delete the row. Until the join, each entry point of the cut that has not landed gives its own word (WP-213: `state5`, `resolve`, `refill`, `layout`, `symtab`, `image`, `write`, `meta`, `debug`, `diags`; the floor's stage-A reason prints none); the reasons are one type, `mortar_core::incr::IncrReason` |
+| `update-not-implemented` | the state is valid, the plan and the output match it, the output is not small, and the update path does not exist yet (WP-061 stage A: every incremental link is a full one after the checks above, in this order; `--incremental=update` fails with it whatever the size) | stage A only. Amended (WP-202, IN-70): after the update joins (U-10), only a changed, appeared or newly extracted file with debug sections or a split-DWARF skeleton gives it (`update-not-implemented (debug)`), or with `.mason.meta` units under `--keep-mason-meta` (`update-not-implemented (meta)`, IN-71d, WP-207), or a stored `link`-subject warning the update cannot raise again within O(change) (`update-not-implemented (diags)`, IN-75a, WP-212), or a symbol-table entry named `foo@V` or `foo@@V` in the stored link or in a changed file's new bytes (`update-not-implemented (versioned)`, IN-71 Versions, WP-215; [later] the version of a `@@` definition stored); the G packages delete the row (the `versioned` clause stays until its [later]). Until the join, each entry point of the cut that has not landed gives its own word (WP-213: `state5`, `resolve`, `refill`, `layout`, `symtab`, `image`, `write`, `meta`, `debug`, `diags`; WP-215: `versioned`; the floor's stage-A reason prints none); the reasons are one type, `mortar_core::incr::IncrReason` |
 | `extraction-changed` | IN-71b's bound: more than 1,024 archive members flip, or a removal cone's re-seeding reads more than 65,536 `KEY_REFS` rows (WP-207) | v1; [later] the bound measured and moved |
+| `closure-iterated` | the stored link's closure ran more than one iteration, or the full link of the update's inputs would (resolve.md §4.1; IN-71b Iterations; WP-215) | v1; [later] an iteration-aware state |
 | `inputs-reordered` | two unchanged inputs' relative order changed. The input list's order is in the plan (`options-changed`, checked first), so the delta meets this only through archive extraction order (WP-063: two unchanged `FILES` rows in a different relative order) | v1; [later] when no COMDAT keeper or placement order depends on it |
 | `too-much-changed` | IN-16's threshold | permanent (it is the compaction rule) |
 | `reserve-exhausted` | a segment reserve, a packed array's, `.eh_frame`'s, a slot region's or a dynamic table's capacity is exhausted (IN-32, IN-34) | permanent |

@@ -31,6 +31,7 @@ fn odr_until_it_lands() {
         eh_records: Vec::new(),
         meta_units: 1,
         debug: false,
+        versioned: 0,
     });
     assert_eq!(
         odr(&view, &changed, &resolved, OdrMode::Warn),
