@@ -2261,3 +2261,28 @@ fn the_report_is_bounded() {
     assert!(mask(&reports[0]) == mask(&reports[1]), "two reports of one history differ");
     eprintln!("the report: {} bytes, {} lines; {listed}", rep.len(), rep.lines().count());
 }
+
+// spec: synth.md S-63, incr.md IN-72 item 7 (WP-245: the delta layout
+// locates a retired slot's `DeadSlot` hole with its own copy of S-63's
+// slot words, 1, 1, 2, 2 and 2 for the module slot, checked against
+// AArch64's table in `mortar_layout::delta::slots`; here both 64-bit back
+// ends' tables agree, the crate that sees both, so no new dependency edge.
+// Its `.got` decoding allows a header word on AArch64 alone: the facts.)
+#[test]
+fn slot_words_agree_on_both_64_bit_targets() {
+    use mortar_arch::{Arch as _, GotBase, SlotKind as K};
+    let a = mortar_a64::A64::M1.got();
+    let x = mortar_x64::X64::M1.got();
+    for k in [K::Addr, K::TpOff { negated: false }, K::TlsGd, K::TlsLd, K::TlsDesc] {
+        assert_eq!((a.slot_words)(k), (x.slot_words)(k), "{k:?}");
+    }
+    let words = [K::Addr, K::TpOff { negated: false }, K::TlsGd, K::TlsDesc, K::TlsLd]
+        .map(|k| (x.slot_words)(k));
+    assert_eq!(words, [1, 1, 2, 2, 2]);
+    assert_eq!((mortar_a64::FACTS.got_base, mortar_a64::FACTS.got_header), (GotBase::GotStart, 1));
+    assert_eq!(
+        (mortar_x64::FACTS.got_base, mortar_x64::FACTS.got_header),
+        (GotBase::GotPltStart, 0)
+    );
+    assert_eq!((mortar_a64::FACTS.word, mortar_x64::FACTS.word), (8, 8));
+}

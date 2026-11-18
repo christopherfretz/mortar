@@ -1426,9 +1426,26 @@ fn slots_run(
     dynamic: bool,
     demand: &[(mortar_core::id::SymKey, DemandFlags)],
 ) -> Result<(LayoutDelta, Vec<Hole>), IncrReason> {
+    let (s0, got) = slots_state(machine, slots, key_refs, dead, dynamic);
+    slots_update(&s0, got, demand)
+}
+
+/// The stored state of `slots_run`, and its `.got` chunk.
+fn slots_state(
+    machine: Machine,
+    slots: &[StoredSlot],
+    key_refs: &[StoredKeyRef],
+    dead: &[(SlotKind, u32)],
+    dynamic: bool,
+) -> (State, ChunkId) {
     use mortar_core::layout::Synth;
     let files = two_text_files();
-    let mut w = world(machine, &files);
+    // Keys 0..8 (the slots' keys; weak undefined, value 0).
+    let undef = mortar_core::resolution::Def::Undefined { weak: true };
+    let names: [&'static [u8]; 8] = [b"k0", b"k1", b"k2", b"k3", b"k4", b"k5", b"k6", b"k7"];
+    let keys = names.map(|n| (n, undef));
+    let mut w = World::new(machine, &files, &keys);
+    w.options.slack = Slack::INCREMENTAL;
     let sc = |name: &'static [u8], size| mortar_layout::chunk::SynthChunk {
         synth: Synth { name, address_dependent: false },
         sh_type: SHT_PROGBITS,
@@ -1457,9 +1474,19 @@ fn slots_run(
         s0.mem.holes.push(Hole { chunk: got, offset, size, kind: HoleKind::DeadSlot });
     }
     s0.mem.holes.sort_by_key(|h| (h.chunk, h.offset));
+    (s0, got)
+}
+
+/// File 1 changed (its `.text.a` grown) with its new slot demand, over
+/// `s0`: the delta and the `.got` chunk's holes after it.
+fn slots_update(
+    s0: &State,
+    got: ChunkId,
+    demand: &[(mortar_core::id::SymKey, DemandFlags)],
+) -> Result<(LayoutDelta, Vec<Hole>), IncrReason> {
     let mut files = s0.files();
     files[0][0].size = 60;
-    let (changes, _) = changes_of(&s0, &Edit::new(files).changed(&[1]));
+    let (changes, _) = changes_of(s0, &Edit::new(files).changed(&[1]));
     let demands = [FileDemands {
         file: FileId(1),
         demands: demand.iter().map(|&(key, flags)| SlotDemand { key, flags }).collect(),
@@ -1596,6 +1623,83 @@ fn item7_got_retired_and_counted() {
         // A stored demand with no slot: corrupt.
         let e = slots_hop(m, &[], &[key_ref(3, 1, GOT)], &[]).unwrap_err();
         assert_eq!(e.name(), "state-corrupt", "{e:?}");
+    }
+}
+
+// spec: incr.md IN-72 item 7, model.md §4.3 (Seam 7a, WP-245: a retired
+// slot keeps its row and its key in the positional list; the update's
+// layout passes `Layout::validate` with `CheckContext::retired` holding
+// every `SLOTS` row at refs 0, and fails without it; a LATER hop that
+// does not touch the slot keeps its `DeadSlot` hole (the stored `HOLES`
+// row, not that hop's `slots_dead`) and still validates; a revival
+// removes both)
+#[test]
+fn item7_retired_slot_validates_over_hops() {
+    use mortar_core::demands::Demands;
+    use mortar_core::layout::Slots;
+    const GOT: DemandFlags = DemandFlags::GOT;
+    for m in [Machine::X86_64, Machine::AArch64] {
+        let stored = [slot(SlotKind::Got, gkey(3), 0, 1), slot(SlotKind::Got, gkey(4), 1, 1)];
+        let refs = [key_ref(3, 1, GOT), key_ref(4, 2, GOT)];
+        let (mut st, got) = slots_state(m, &stored, &refs, &[], false);
+        // The layout's slot lists from `SLOTS` (positional), its demands
+        // from `KEY_REFS`, `retired` from the rows at 0.
+        let validate = |st: &State, retired_given: bool| {
+            let mut rows = st.mem.slots.clone();
+            rows.sort_by_key(|r| (r.kind, r.index));
+            let list: Box<[mortar_core::id::SymKey]> =
+                rows.iter().filter(|r| r.kind == SlotKind::Got).map(|r| r.key).collect();
+            let mut demands = Demands::empty(8);
+            for r in &st.mem.key_refs {
+                demands.global[r.key] |= r.demand;
+            }
+            let retired: Vec<(SlotKind, u32)> = if retired_given {
+                rows.iter().filter(|r| r.refs == 0).map(|r| (r.kind, r.index)).collect()
+            } else {
+                Vec::new()
+            };
+            let slots = Slots { got: list, ..Slots::default() };
+            st.world.check_slots(&st.assignment, &st.placed, slots, &demands, &retired)
+        };
+        validate(&st, true).unwrap();
+        // Applied as U-2 would: the rows of the four lists, file 1's
+        // `KEY_REFS` from its new demand, the `.got` chunk's holes.
+        let apply = |st: &mut State, d: &LayoutDelta, h: Vec<Hole>, demand: &[u32]| {
+            let mem = &mut st.mem;
+            for r in d.slots_dead.iter().chain(&d.slots_revived).chain(&d.slots_recounted) {
+                let row = mem.slots.iter_mut().find(|x| (x.kind, x.index) == (r.kind, r.index));
+                *row.unwrap() = *r;
+            }
+            mem.key_refs.retain(|r| r.file != FileId(1));
+            mem.key_refs.extend(demand.iter().map(|&k| key_ref(k, 1, GOT)));
+            mem.key_refs.sort();
+            mem.holes.retain(|x| x.chunk != got);
+            mem.holes.extend(h);
+            mem.holes.sort_by_key(|x| (x.chunk, x.offset));
+        };
+        let dead_of = |h: &[Hole]| h.iter().filter(|x| x.kind == HoleKind::DeadSlot).count();
+        // Hop 1: file 1 drops key 3: retired.
+        let (d1, h1) = slots_update(&st, got, &[]).unwrap();
+        assert_eq!(d1.slots_dead, vec![slot(SlotKind::Got, gkey(3), 0, 0)]);
+        assert_eq!(dead_of(&h1), 1);
+        apply(&mut st, &d1, h1.clone(), &[]);
+        validate(&st, true).unwrap();
+        let v = validate(&st, false).unwrap_err();
+        assert!(v.what.contains("got slot without a demand"), "{v:?}");
+        // Hop 2: file 1 edited again, no slot change: no list names the
+        // retired row, its hole is the stored one, and it validates.
+        let (d2, h2) = slots_update(&st, got, &[]).unwrap();
+        assert!(d2.slots_dead.is_empty() && d2.slots_revived.is_empty(), "{d2:?}");
+        assert_eq!(h2, h1, "the earlier hop's DeadSlot hole kept");
+        apply(&mut st, &d2, h2, &[]);
+        validate(&st, true).unwrap();
+        // Hop 3: key 3 demanded again: revived at index 0, no hole.
+        let (d3, h3) = slots_update(&st, got, &[(gkey(3), GOT)]).unwrap();
+        assert_eq!(d3.slots_revived, vec![slot(SlotKind::Got, gkey(3), 0, 1)]);
+        assert_eq!(dead_of(&h3), 0);
+        apply(&mut st, &d3, h3, &[3]);
+        validate(&st, true).unwrap();
+        validate(&st, false).unwrap();
     }
 }
 

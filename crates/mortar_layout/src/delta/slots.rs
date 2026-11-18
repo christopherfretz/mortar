@@ -29,8 +29,9 @@
 //! `.dynamic` (PIE, shared object, dynamic executable: its slot may carry
 //! a dynamic relocation, `R_*_RELATIVE`, `GLOB_DAT`, `TPOFF`, `DTPMOD`,
 //! `TLSDESC` in `.rela.dyn`, whose count, `DT_RELACOUNT` and `.dynsym`
-//! demands the delta does not give: v1 refuses before the first write);
-//! a `.got` chunk whose size is not S-63's regions over the stored counts.
+//! demands the delta does not give: v1 refuses before the first write).
+//! A `.got` chunk whose size is not S-63's regions over the stored counts
+//! is `state-corrupt`.
 //!
 //! Where a slot lies in `.got` (S-63, `mortar_synth::got::GotPlan`): the
 //! regions header, `got`, `tls_ie`, `tls_gd`, the module slot, `tls_desc`,
@@ -101,9 +102,9 @@ impl Out {
 /// # Errors
 /// [`plan`]'s; `reserve-exhausted` for an appended slot;
 /// `update-not-implemented (layout)` for a PLT/IPLT slot retired or revived
-/// (finding F), any slot retired or revived in an output with `.dynamic`,
-/// a `.got` that is not S-63's regions; `state-corrupt` for a revived slot
-/// without its stored hole, a retired slot with no `.got`.
+/// (finding F), any slot retired or revived in an output with `.dynamic`;
+/// `state-corrupt` for a revived slot without its stored hole, a retired
+/// slot with no `.got`, a `.got` that is not S-63's regions.
 pub(super) fn item_7(
     stored: &StoredLayout<'_>,
     files: &[FileOf],
@@ -225,15 +226,25 @@ impl Got {
         let n = |k: SlotKind| u64::from(count.get(&k).copied().unwrap_or(0)) * words_of(k);
         let regions =
             n(SlotKind::Got) + n(SlotKind::TlsIe) + n(SlotKind::TlsGd) + n(SlotKind::TlsDesc);
-        // The residual in words: AArch64's header word (`GotBase::GotStart`
-        // with `GOT_BASE`) and the module slot.
+        // The residual in words, r = size / word - the regions' words: the
+        // header word (AArch64's `GotBase::GotStart`, present with
+        // `GOT_BASE`) plus 2 x the module slot (`TLS_LD`). AArch64: r in
+        // 0..=3, header r % 2, module r / 2; x86-64: r is 0 or 2 (no
+        // header). Anything else (a size not of whole words, smaller than
+        // the regions, another residual) is not the chunk the full link
+        // wrote for the stored rows: `state-corrupt`.
         let header_allowed = machine == Machine::AArch64;
         let residual = (c.size % word == 0).then(|| (c.size / word).checked_sub(regions)).flatten();
         let (header, module) = match residual {
             Some(r @ 0..=3) if r % MODULE_WORDS == 0 || header_allowed => {
                 (r % MODULE_WORDS, r / MODULE_WORDS)
             }
-            _ => return Err(not_implemented()),
+            _ => {
+                return Err(corrupt(format!(
+                    ".got of {} bytes is not S-63's regions over the stored SLOTS ({regions} words)",
+                    c.size
+                )));
+            }
         };
         let addr = header * word;
         let tls_ie = addr + n(SlotKind::Got) * word;
@@ -391,8 +402,10 @@ pub(super) fn plan(
     rows.settle(&net, fresh)
 }
 
-/// The stored `SLOTS` rows: the live one of each `(kind, key)`, the last
-/// dead one, and each kind's count (its next index).
+/// The stored `SLOTS` rows: the live one of each `(kind, key)`, the dead
+/// one, and each kind's count (its next index). A key has at most one
+/// live and one dead row of a kind (the dead one a changed file's old
+/// local, IN-28b, whose append v1 refuses: see `settle`).
 struct Rows {
     live: BTreeMap<(SlotKind, SymKey), StoredSlot>,
     dead: BTreeMap<(SlotKind, SymKey), StoredSlot>,
@@ -419,8 +432,11 @@ impl Rows {
                         kind_name(s.kind)
                     )));
                 }
-            } else {
-                dead.insert((s.kind, s.key), *s);
+            } else if dead.insert((s.kind, s.key), *s).is_some() {
+                return Err(corrupt(format!(
+                    "SLOTS: two dead {} slots of one key",
+                    kind_name(s.kind)
+                )));
             }
         }
         let mut count: BTreeMap<SlotKind, u32> = BTreeMap::new();
@@ -478,8 +494,21 @@ impl Rows {
                 },
             }
         }
+        // A changed file's new local demand: a key whose row is retired
+        // (dead since an earlier hop) revives it at its index, written
+        // again (WP-245: one row per key, `Layout::validate`'s "given
+        // twice" holds over every position, Seam 7a); any other is
+        // appended (IN-28b). A key whose row is live dies in this hop (its
+        // old version's) and is appended: refused below in v1
+        // (`reserve-exhausted`); the reserve-policy package must reuse
+        // that row instead (WP-245 record, R-1).
         for k in fresh {
-            append.insert(k);
+            match dead.get(&k) {
+                Some(s) => out.changed.push((*s, StoredSlot { refs: 1, ..*s })),
+                None => {
+                    append.insert(k);
+                }
+            }
         }
         // Appended per kind in `SymKey` order (S-64's order within the new
         // ones; S-113: after every stored slot of the kind).
@@ -648,6 +677,63 @@ mod tests {
         // The same file without a new version (liveness only): locals kept.
         let (_, p) = hop(&s0, &m0, &[(1, false)]);
         assert!(p.changed.is_empty() && p.appended.is_empty(), "{p:?}");
+    }
+
+    // spec: incr.md IN-72 item 7, IN-28b (WP-245, the supervisor's ruling
+    // 3: a key demanded again whose retired row exists is revived at its
+    // index, never appended: one row per key, `Layout::validate`'s "given
+    // twice" over every position; a global, and a changed file's local)
+    #[test]
+    fn retired_then_demanded_again_revives() {
+        let v0 =
+            files(&[Some(&[(g(1), GOT), (l(1, 5), GOT), (l(1, 6), IE)]), Some(&[(g(2), GOT)])]);
+        let v1 = files(&[Some(&[(l(1, 6), IE)]), Some(&[(g(2), GOT)])]);
+        let s0 = scratch(&v0);
+        let at = |m: &MemoryLayout, k: SymKey| -> Vec<(u32, u32)> {
+            m.slots.iter().filter(|s| s.key == k).map(|s| (s.index, s.refs)).collect()
+        };
+        // Hop 1: file 1 changed, g1 and l(1,5) no longer demanded: retired.
+        // l(1,6) (live, demanded again by the new version) dies and is
+        // appended (IN-28b): `plan` gives it, `item_7` refuses it in v1.
+        let (s1, p1) = hop(&s0, &v1, &[(1, true)]);
+        assert_eq!(at(&s1, g(1)), [(0, 0)]);
+        assert_eq!(at(&s1, l(1, 5)), [(2, 0)], "after g1, g2 in SymKey order");
+        assert_eq!(p1.appended.len(), 1, "{p1:?}");
+        // The state the v1 update can reach: l(1,6) not demanded in hop 1.
+        let v1b = files(&[Some(&[]), Some(&[(g(2), GOT)])]);
+        let (s1, _) = hop(&s0, &v1b, &[(1, true)]);
+        assert_eq!(at(&s1, l(1, 6)), [(0, 0)]);
+        // Hop 2: file 1 changed again and demands both again: revived at
+        // their indices, nothing appended, one row per key.
+        let (s2, p2) = hop(&s1, &v0, &[(1, true)]);
+        assert!(p2.appended.is_empty(), "{p2:?}");
+        assert_eq!(at(&s2, g(1)), [(0, 1)]);
+        assert_eq!(at(&s2, l(1, 5)), [(2, 1)]);
+        assert_eq!(at(&s2, l(1, 6)), [(0, 1)]);
+        assert_eq!(s2.slots.len(), s0.slots.len());
+        // Through `item_7` (the delta's lists): all three `slots_revived`.
+        let chunks = got_chunks(&s1, false, false, false);
+        let d = demands_of(&v0, &[1]);
+        let of = [FileOf { file: FileId(1), changed: true }];
+        let mut s1h = s1.clone();
+        for r in s1.slots.iter().filter(|r| r.refs == 0) {
+            let hole = Got::read(
+                &chunks,
+                &Rows::read(&s1.slots).unwrap().count,
+                Class::Elf64,
+                Machine::X86_64,
+            )
+            .unwrap()
+            .hole(r.kind, r.index)
+            .unwrap();
+            s1h.holes.push(hole);
+        }
+        s1h.holes.sort_by_key(|h| (h.chunk, h.offset));
+        let o = item_7(&StoredLayout::new(&s1h), &of, &d, &chunks, Class::Elf64, Machine::X86_64)
+            .unwrap();
+        assert_eq!(o.revived.len(), 3, "{o:?}");
+        assert!(o.dead.is_empty() && o.recounted.is_empty(), "{o:?}");
+        assert_eq!(o.gone.len(), 3);
     }
 
     // spec: incr.md IN-72 item 7 (an appeared file, a gone file, a drawn-in
@@ -954,10 +1040,25 @@ mod tests {
         let s2 = scratch(&files(&[Some(&[(g(1), GOT), (g(2), PLT)])]));
         let e = run(&got_chunks(&s2, false, false, false), &s2, &both).unwrap_err();
         assert_eq!(e, not_implemented(), "a PLT slot retired");
-        // `.got` one word off S-63's regions; a header on x86-64.
-        let mut odd = got_chunks(&s0, false, false, false);
+        // `.got` not S-63's regions over the stored rows: one word more on
+        // x86-64 (a header, which x86-64 has not), four words more
+        // (residual past header + module), one word fewer than the
+        // regions, not whole words: `state-corrupt`, by name.
+        for extra in [WORD as i64, 4 * WORD as i64, -(WORD as i64), 3] {
+            let mut odd = got_chunks(&s0, false, false, false);
+            odd[ChunkId(0)].size = odd[ChunkId(0)].size.checked_add_signed(extra).unwrap();
+            let e = run(&odd, &s0, &gone).unwrap_err();
+            assert_eq!(e.name(), "state-corrupt", "{extra}: {e:?}");
+            assert!(e.report().contains("S-63"), "{e:?}");
+        }
+        // The same on AArch64: header and module (3 words) decode; 4 not.
+        let a64 = |m: &MemoryLayout, c: &Column<ChunkId, Chunk>| {
+            item_7(&StoredLayout::new(m), &of, &gone, c, Class::Elf64, Machine::AArch64)
+        };
+        assert!(a64(&s0, &got_chunks(&s0, true, true, false)).is_ok());
+        let mut odd = got_chunks(&s0, true, true, false);
         odd[ChunkId(0)].size += WORD;
-        assert_eq!(run(&odd, &s0, &gone).unwrap_err(), not_implemented());
+        assert_eq!(a64(&s0, &odd).unwrap_err().name(), "state-corrupt");
         // A revived slot whose stored hole is not there.
         let mut dead = s0.clone();
         dead.slots.iter_mut().find(|s| s.key == g(1)).unwrap().refs = 0;
@@ -968,8 +1069,9 @@ mod tests {
     }
 
     // spec: synth.md S-63 (the delta layout's slot words are
-    // `mortar_arch::GotShape`'s: AArch64's here; x86-64's are the same
-    // table, `mortar_x64::slot_words`, tested in `mortar_x64/tests/table.rs`)
+    // `mortar_arch::GotShape`'s: AArch64's here; x86-64's equal AArch64's,
+    // `crates/mortar/tests/incremental.rs`
+    // `slot_words_agree_on_both_64_bit_targets`, where both are visible)
     #[test]
     fn slot_words_are_the_architectures() {
         use mortar_arch::{Arch as _, SlotKind as A};
