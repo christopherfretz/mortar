@@ -149,7 +149,7 @@ fn s3_3_empty_comdat_copy_mutated() {
                 let mut b = bytes.clone();
                 put(&mut b, addr + 8, v);
                 // GNU ld's redirect is judged as a kept copy (§5.8, WP-250).
-                let want = if out.ends_with(".gnu") {
+                let want = if m.contains(".gnu.") {
                     format!(
                         "{gnu}{}",
                         if what == "an address" { "" } else { "; it holds a tombstone" }
