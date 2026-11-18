@@ -75,11 +75,18 @@ pub enum Unimplemented {
     /// within O(change) (IN-75a as amended by WP-212, F-13): it is never
     /// repeated from the stored row; the update falls back.
     Diags,
+    /// A symbol-table entry named `foo@V` or `foo@@V` in the stored link
+    /// (`META.versioned` not 0) or in a changed file's new bytes
+    /// (`ChangedFile::versioned` not 0): IN-71's affected keys do not
+    /// cover the `also` key a `foo@@V` definition defines (resolve.md
+    /// §2; the old version of a file's `@@` is not stored). WP-215 (U-3);
+    /// [later] the version of a `@@` definition stored.
+    Versioned,
 }
 
 impl Unimplemented {
     /// Every word, in `spec/incr.md` §7's order.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::State5,
         Self::Resolve,
         Self::Refill,
@@ -90,6 +97,7 @@ impl Unimplemented {
         Self::Meta,
         Self::Debug,
         Self::Diags,
+        Self::Versioned,
     ];
 
     /// The word (`spec/incr.md` §7).
@@ -106,6 +114,7 @@ impl Unimplemented {
             Self::Meta => "meta",
             Self::Debug => "debug",
             Self::Diags => "diags",
+            Self::Versioned => "versioned",
         }
     }
 }
@@ -153,6 +162,10 @@ pub enum IncrReason {
     UpdateNotImplemented(Option<Unimplemented>),
     /// `extraction-changed`: IN-71b's bound.
     ExtractionChanged(String),
+    /// `closure-iterated`: the stored link's closure ran more than one
+    /// iteration (`META.iterations`), or the full link of the update's
+    /// inputs would (resolve.md §4.1; IN-71b "Iterations"; WP-215).
+    ClosureIterated(String),
     /// `inputs-reordered`: two unchanged inputs' relative order changed.
     InputsReordered(String),
     /// `too-much-changed`: IN-16's threshold.
@@ -196,7 +209,7 @@ pub enum IncrReason {
 impl IncrReason {
     /// Every reason's name, in `spec/incr.md` §7's order (the spec test
     /// compares it with the table).
-    pub const NAMES: [&'static str; 29] = [
+    pub const NAMES: [&'static str; 30] = [
         "no-state",
         "state-corrupt",
         "state-version",
@@ -208,6 +221,7 @@ impl IncrReason {
         "small-output",
         "update-not-implemented",
         "extraction-changed",
+        "closure-iterated",
         "inputs-reordered",
         "too-much-changed",
         "reserve-exhausted",
@@ -243,6 +257,7 @@ impl IncrReason {
             Self::SmallOutput(_) => "small-output",
             Self::UpdateNotImplemented(_) => "update-not-implemented",
             Self::ExtractionChanged(_) => "extraction-changed",
+            Self::ClosureIterated(_) => "closure-iterated",
             Self::InputsReordered(_) => "inputs-reordered",
             Self::TooMuchChanged(_) => "too-much-changed",
             Self::ReserveExhausted(_) => "reserve-exhausted",
@@ -280,6 +295,7 @@ impl IncrReason {
             | Self::LockUnavailable(d)
             | Self::SmallOutput(d)
             | Self::ExtractionChanged(d)
+            | Self::ClosureIterated(d)
             | Self::InputsReordered(d)
             | Self::TooMuchChanged(d)
             | Self::ReserveExhausted(d)
@@ -327,6 +343,7 @@ impl IncrReason {
                 }
             }
             "extraction-changed" => Self::ExtractionChanged(d),
+            "closure-iterated" => Self::ClosureIterated(d),
             "inputs-reordered" => Self::InputsReordered(d),
             "too-much-changed" => Self::TooMuchChanged(d),
             "reserve-exhausted" => Self::ReserveExhausted(d),
@@ -365,6 +382,137 @@ impl IncrReason {
 impl fmt::Display for IncrReason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.name())
+    }
+}
+
+// ---- the option-given keys (passed in, never stored) -------------------------
+
+/// The keys a link's options name (WP-215 D3-D5; `spec/incr.md` IN-71,
+/// IN-71b, IN-71c): resolve.md §4.2's roots, `--wrap` (§7.1) and
+/// `--defsym` (§7.2), **by name**. Never stored: an update has the full
+/// link's options (else `options-changed`, IN-18b), so the join (U-10)
+/// builds this from the plan and the scripts' directives exactly as the
+/// full link's resolution reads them (`mortar_resolve::tables::options`
+/// and its `defsyms`: the names of `Options::entry`, `undefined`,
+/// `require_defined`, `wrap`, `defsym`), and U-3's entry points
+/// (`extract`, `resolve`, `live`) take it by reference and map each name
+/// to its key with `StateRows::find_key`. A name with no key is no root
+/// (as `Options::roots`: a root whose key the link has no row for is
+/// none). Written by the join; read by U-3.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OptionKeys {
+    /// The entry root (§4.2): `-e SYM` or the last script `ENTRY(SYM)`,
+    /// else `_start`; `None` for an output with no entry (`-shared`,
+    /// `-r`). Its `arg` is 0 (the plan keeps `-e`'s value, not its index).
+    pub entry: Option<OptionKey>,
+    /// `-u SYM` in command-line order, then each script `EXTERN(SYM)`
+    /// (its `arg` is `mortar_resolve::options::EXTERN_ARG` plus the
+    /// directive's ordinal).
+    pub undefined: Vec<OptionKey>,
+    /// `--require-defined=SYM`, in command-line order.
+    pub require_defined: Vec<OptionKey>,
+    /// `--wrap=SYM`'s `SYM`, in the plan's order (`Plan::wraps`); several
+    /// of one symbol are one (§7.1).
+    pub wrap: Vec<Box<[u8]>>,
+    /// `--defsym=SYM=EXPR`: the last option of each `SYM`, in
+    /// command-line order of those (§7.2).
+    pub defsym: Vec<OptionDefsym>,
+}
+
+/// A key an option names (§4.2), by name, with the option's argument
+/// index (`Named::arg`: the `seq` of a root's pulling reference, §4.1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OptionKey {
+    /// The key's name (unversioned: an option names no version).
+    pub name: Box<[u8]>,
+    pub arg: u32,
+}
+
+/// One `--defsym` (§7.2): the key it defines and its expression.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OptionDefsym {
+    /// The defined key's name.
+    pub name: Box<[u8]>,
+    pub value: DefsymOperand,
+    /// The option's argument index (the root's `arg` of its operand).
+    pub arg: u32,
+}
+
+/// A `--defsym` expression by name (`mortar_resolve::options::DefsymValue`
+/// with names for keys).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum DefsymOperand {
+    /// An absolute number.
+    Number(u64),
+    /// An alias of the named key.
+    Alias(Box<[u8]>),
+    /// The named key's address plus the addend.
+    Offset(Box<[u8]>, i64),
+}
+
+impl DefsymOperand {
+    /// The key the expression names, if any (a root, §7.2).
+    #[must_use]
+    pub fn base(&self) -> Option<&[u8]> {
+        match self {
+            Self::Number(_) => None,
+            Self::Alias(b) | Self::Offset(b, _) => Some(b),
+        }
+    }
+}
+
+impl OptionKeys {
+    /// The root names with their `arg`, in `mortar_resolve::Options::roots`'
+    /// order: the entry, `-u` and `EXTERN`, `--require-defined`, then each
+    /// `--defsym` operand's base.
+    #[must_use]
+    pub fn roots(&self) -> Vec<(&[u8], u32)> {
+        let mut out: Vec<(&[u8], u32)> = Vec::new();
+        out.extend(self.entry.iter().map(|k| (&*k.name, k.arg)));
+        for k in self.undefined.iter().chain(&self.require_defined) {
+            out.push((&k.name, k.arg));
+        }
+        for d in &self.defsym {
+            if let Some(b) = d.value.base() {
+                out.push((b, d.arg));
+            }
+        }
+        out
+    }
+
+    /// The `--defsym` keys' names (the keys IN-71c makes affected).
+    pub fn defsym_names(&self) -> impl Iterator<Item = &[u8]> {
+        self.defsym.iter().map(|d| &*d.name)
+    }
+
+    /// The name an **undefined** mention of the unversioned key `name`
+    /// binds to (§7.1; `mortar_resolve::Options::redirect` by name): for
+    /// each `--wrap=S` in order, `S` binds to `__wrap_S` and `__real_S`
+    /// to `S`, the last such option deciding; `None` when no option names
+    /// it (the mention binds to its own key). A versioned key is never
+    /// redirected (`--wrap` names the unversioned key).
+    #[must_use]
+    pub fn redirect(&self, name: &[u8]) -> Option<Vec<u8>> {
+        let mut to = None;
+        for s in &self.wrap {
+            if name == &**s {
+                to = Some([b"__wrap_".as_slice(), s].concat());
+            } else if name.strip_prefix(b"__real_".as_slice()) == Some(&**s) {
+                to = Some(s.to_vec());
+            }
+        }
+        to
+    }
+
+    /// Whether any `--wrap` option names `name` as `S`, `__wrap_S` or
+    /// `__real_S` (a key whose binding a `--wrap` decides).
+    #[must_use]
+    pub fn wrapped(&self, name: &[u8]) -> bool {
+        self.wrap.iter().any(|s| {
+            name == &**s
+                || name.strip_prefix(b"__wrap_".as_slice()) == Some(&**s)
+                || name.strip_prefix(b"__real_".as_slice()) == Some(&**s)
+        })
     }
 }
 
@@ -921,6 +1069,41 @@ mod tests {
         }
         assert!(IncrReason::from_name("update-not-implemented", "nonsense").is_none());
         assert!(IncrReason::from_name("full requested", "").is_none());
+    }
+
+    // spec: resolve.md §7.1 (`--wrap` by name: `S` to `__wrap_S`,
+    // `__real_S` to `S`, the last option deciding), §4.2 (the roots' order)
+    #[test]
+    fn option_keys_redirect_and_roots() {
+        let k = |n: &str, arg| OptionKey { name: n.as_bytes().into(), arg };
+        let o = OptionKeys {
+            entry: Some(k("_start", 0)),
+            undefined: vec![k("u", 3)],
+            require_defined: vec![k("r", 5)],
+            wrap: vec![b"foo".as_slice().into(), b"__real_foo".as_slice().into()],
+            defsym: vec![
+                OptionDefsym {
+                    name: b"d".as_slice().into(),
+                    value: DefsymOperand::Number(1),
+                    arg: 7,
+                },
+                OptionDefsym {
+                    name: b"e".as_slice().into(),
+                    value: DefsymOperand::Offset(b"base".as_slice().into(), 4),
+                    arg: 8,
+                },
+            ],
+        };
+        assert_eq!(o.redirect(b"foo"), Some(b"__wrap_foo".to_vec()));
+        // `__real_foo` is `S` of the second option, which decides.
+        assert_eq!(o.redirect(b"__real_foo"), Some(b"__wrap___real_foo".to_vec()));
+        assert_eq!(o.redirect(b"__real___real_foo"), Some(b"__real_foo".to_vec()));
+        assert_eq!(o.redirect(b"bar"), None);
+        assert!(o.wrapped(b"__wrap_foo") && !o.wrapped(b"bar"));
+        let roots: Vec<(&[u8], u32)> = o.roots();
+        let want: Vec<(&[u8], u32)> = vec![(b"_start", 0), (b"u", 3), (b"r", 5), (b"base", 8)];
+        assert_eq!(roots, want);
+        assert_eq!(o.defsym_names().collect::<Vec<_>>(), [b"d".as_slice(), b"e"]);
     }
 
     // spec: incr.md §7 (the type has exactly the table's reasons, in its

@@ -3,7 +3,7 @@
 //! **filled by U-3** (the function only).
 
 use mortar_core::SectionId;
-use mortar_core::incr::{IncrReason, Unimplemented};
+use mortar_core::incr::{IncrReason, OptionKeys, Unimplemented};
 
 use super::resolve::ResolveDelta;
 use super::view::{ChangedFiles, StateView};
@@ -21,7 +21,8 @@ pub struct LiveDelta {
 }
 
 /// The update's liveness (WP-211 §C; IN-71a). Called by the join after
-/// `resolve` (IN-70 U6).
+/// `resolve` (IN-70 U6). `options`: the link's root keys (liveness
+/// roots), passed in (WP-215 D3-D5).
 ///
 /// # Errors
 /// `state-corrupt`. Until U-3 lands: `update-not-implemented (resolve)`.
@@ -29,7 +30,8 @@ pub fn live(
     view: &StateView<'_>,
     changed: &ChangedFiles,
     resolved: &ResolveDelta,
+    options: &OptionKeys,
 ) -> Result<LiveDelta, IncrReason> {
-    let _ = (view, changed, resolved);
+    let _ = (view, changed, resolved, options);
     Err(IncrReason::UpdateNotImplemented(Some(Unimplemented::Resolve)))
 }
