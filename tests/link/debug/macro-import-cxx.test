@@ -1,0 +1,99 @@
+# macro-import-c.test in C++ (GCC `-g3`, DWARF 4 and 5): each unit's
+# `DW_MACRO_import`s of the shared header's `.debug_macro` COMDAT groups,
+# the copies of b.o and c.o dropped, are filled against a.o's copy of the
+# same name and size (image.md I-47a). The inline function and the class
+# template's member are COMDAT code: their dropped copies' debug
+# references keep I-47's tombstone. lld writes 0 into the imports (gdb and
+# lldb then read a.cc's macros in b.cc): skipped. gdb and lldb run host
+# programs only. The verifier's §5.8 still demands the tombstone in the
+# imports (R1) until WP-250.
+#@ spec: image.md I-47a
+#@ arch: aarch64 x86_64
+#@ requires: g++ gdb lldb
+#@ skip(lld): writes 0: gdb and lldb read a.cc's macros in b.cc (WP-249 §2.3)
+
+cxx -O0 -g3 -gdwarf-4 a.cc -o a4.o
+cxx -O0 -g3 -gdwarf-4 b.cc -o b4.o
+cxx -O0 -g3 -gdwarf-4 c.cc -o c4.o
+cxx -O0 -g3 -gdwarf-5 a.cc -o a5.o
+cxx -O0 -g3 -gdwarf-5 b.cc -o b5.o
+cxx -O0 -g3 -gdwarf-5 c.cc -o c5.o
+link g++ -static a4.o b4.o c4.o -o p4
+link g++ -static a5.o b5.o c5.o -o p5
+run p4
+  stdout: b
+  stdout: 57 7 84
+run p5
+  stdout: b
+  stdout: 57 7 84
+check readelf --debug-dump=macro p4
+  has: DW_MACRO_import - offset : 0x
+  not: DW_MACRO_import - offset : 0xffffffff
+check readelf --debug-dump=macro p5
+  has: DW_MACRO_import - offset : 0x
+  not: DW_MACRO_import - offset : 0xffffffff
+check gdb p4 "break b_f" run "info macro WP249_ANSWER" "macro expand WP249_TWICE(WP249_ANSWER)" "info macro WP249_A_ONLY" "info macro __GNUC__" "ptype Point" kill
+  has: ^#define WP249_ANSWER 42$
+  has: ^expands to: ((42) \* 2)$
+  has: The symbol `WP249_A_ONLY' has no definition
+  has: ^-D__GNUC__=
+  has: ^type = struct Point {
+  not: This is a bug
+check gdb p5 "break b_f" run "info macro WP249_ANSWER" "macro expand WP249_TWICE(WP249_ANSWER)" "info macro WP249_A_ONLY" "info macro __GNUC__" "ptype Point" kill
+  has: ^#define WP249_ANSWER 42$
+  has: ^expands to: ((42) \* 2)$
+  has: The symbol `WP249_A_ONLY' has no definition
+  has: ^-D__GNUC__=
+  has: ^type = struct Point {
+  not: This is a bug
+check lldb p4 "b b_f" run bt "expr WP249_TWICE(WP249_ANSWER)" kill
+  has: stop reason = breakpoint 1.1
+  has: frame #1: * p4`main() at a.cc:
+  has: (int) $0 = 84
+check lldb p5 "b b_f" run bt "expr WP249_TWICE(WP249_ANSWER)" kill
+  has: stop reason = breakpoint 1.1
+  has: frame #1: * p5`main() at a.cc:
+  has: (int) $0 = 84
+
+#--- h.h
+#pragma once
+#define WP249_ANSWER 42
+#define WP249_TWICE(x) ((x) * 2)
+struct Point { int x; long y; };
+template <typename T> struct Box {
+  T v;
+  T get() const { return v + 1; }
+};
+inline int twice(int x) { return x * 2; }
+int b_f(int);
+int c_f(int);
+extern int g_b;
+#--- a.cc
+#include <cstdio>
+#include "h.h"
+#define WP249_A_ONLY 1 /* a macro of a.cc only: not defined in b.cc */
+int main() {
+  Point p{1, 2};
+  Box<int> bx{p.x};
+  int r = b_f(bx.get()) + c_f(twice((int)p.y));
+  std::printf("%d %d %d\n", r, g_b, WP249_TWICE(WP249_ANSWER));
+  return 0;
+}
+#--- b.cc
+#include <cstdio>
+#include "h.h"
+int g_b = 7;
+int b_f(int x) {
+  Point q{x, WP249_ANSWER};
+  Box<long> bl{q.y};
+  std::puts("b");
+  return twice(q.x) + (int)bl.get();
+}
+#--- c.cc
+#include <cstring>
+#include "h.h"
+int c_f(int x) {
+  Point q{WP249_TWICE(x), 3};
+  Box<int> bx{q.x};
+  return bx.get() + (int)std::strlen("c");
+}

@@ -1,0 +1,73 @@
+# image.md I-47a under `--gc-sections` (I-7): u.o comes first, so it keeps
+# every shared `.debug_macro` group, and its only function is collected.
+# A group without an alloc member is a root by its type: the keeper's
+# macro copies stay, and the imports of a.o, b.o and c.o are filled
+# against them; gdb answers as without `--gc-sections`. lld writes 0 into
+# the imports: skipped. gdb runs host programs only. The verifier's §5.8
+# still demands the tombstone in the imports (R1) until WP-250.
+#@ spec: image.md I-47a
+#@ spec: image.md I-7
+#@ arch: aarch64 x86_64
+#@ requires: gdb
+#@ skip(lld): writes 0: gdb reads u.c's macros in b.c (WP-249 §2.3)
+
+cc -O0 -g3 -ffunction-sections -fdata-sections u.c -o u.o
+cc -O0 -g3 -ffunction-sections -fdata-sections a.c -o a.o
+cc -O0 -g3 -ffunction-sections -fdata-sections b.c -o b.o
+cc -O0 -g3 -ffunction-sections -fdata-sections c.c -o c.o
+link gcc -static -Wl,--gc-sections u.o a.o b.o c.o -o prog
+run prog
+  stdout: b
+  stdout: 48 7 84
+check nm prog
+  not: u_unused
+check readelf --debug-dump=macro prog
+  has: DW_MACRO_import - offset : 0x
+  not: DW_MACRO_import - offset : 0xffffffff
+check gdb prog "break b_f" run "info macro WP249_ANSWER" "info macro WP249_A_ONLY" "info macro WP249_U_ONLY" kill
+  has: ^#define WP249_ANSWER 42$
+  has: The symbol `WP249_A_ONLY' has no definition
+  has: The symbol `WP249_U_ONLY' has no definition
+  not: This is a bug
+
+#--- h.h
+#ifndef WP249_H
+#define WP249_H
+#define WP249_ANSWER 42
+#define WP249_TWICE(x) ((x) * 2)
+struct wp249_point { int x; long y; };
+int b_f(int);
+int c_f(int);
+extern int g_b;
+#endif
+#--- u.c
+#include <stdio.h>
+#include "h.h"
+#define WP249_U_ONLY 1
+int u_unused(void) { printf("u"); return WP249_ANSWER; }
+#--- a.c
+#include <stdio.h>
+#include "h.h"
+#define WP249_A_ONLY 1 /* a macro of a.c only: not defined in b.c */
+int main(void) {
+  struct wp249_point p = { 1, 2 };
+  int r = b_f(p.x) + c_f((int)p.y);
+  printf("%d %d %d\n", r, g_b, WP249_TWICE(WP249_ANSWER));
+  return 0;
+}
+#--- b.c
+#include <stdio.h>
+#include "h.h"
+int g_b = 7;
+int b_f(int x) {
+  struct wp249_point q = { x, WP249_ANSWER };
+  puts("b");
+  return q.x + (int)q.y;
+}
+#--- c.c
+#include <string.h>
+#include "h.h"
+int c_f(int x) {
+  struct wp249_point q = { WP249_TWICE(x), 3 };
+  return q.x + (int)strlen("c");
+}

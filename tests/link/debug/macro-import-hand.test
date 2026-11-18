@@ -1,0 +1,47 @@
+# image.md I-47a by hand: d.o's `.debug_macro` copy of COMDAT group `g` is
+# dropped (k.o keeps the group), and k.o's copy has the same name and
+# size, so the reference from d.o's debug section `.debug_wp249` into the
+# dropped copy (its section symbol, addend 4) is filled against k.o's
+# copy: 0x10 (k.o's 16-byte non-group `.debug_macro` comes first) + 4.
+# GNU ld writes the same (its kept section has matching local symbols:
+# k.o refers to its copy, which gives the copy its section symbol); lld
+# and mold write 0. The field is in a section of its own, and the kept
+# copy's offset is that of the first linker's concatenation in input
+# order (GNU ld, mortar). The verifier's §5.8 still demands the tombstone
+# (R1) until WP-250.
+#@ spec: image.md I-47a
+#@ arch: aarch64 x86_64
+
+as k.S -o k.o
+as d.S -o d.o
+link ld -static -e _start k.o d.o -o prog
+check objdump -s -j .debug_wp249 prog
+  has(bfd,mortar): 0000 14000000
+  has(lld,mold): 0000 00000000
+
+#--- k.S
+  .text
+  .globl _start
+_start:
+#ifdef __aarch64__
+  mov x8, #93
+  svc #0
+#else
+  movl $60, %eax
+  syscall
+#endif
+  .section .debug_macro,"",@progbits
+  .ascii "PADPADPADPADPAD."
+  .section .debug_macro,"G",@progbits,g,comdat
+.Lk:
+  .ascii "SAMEkeep"
+  .8byte 0
+  .section .debug_info,"",@progbits
+  .4byte .Lk
+#--- d.S
+  .section .debug_macro,"G",@progbits,g,comdat
+.Ld:
+  .ascii "SAMEdrop"
+  .8byte 0
+  .section .debug_wp249,"",@progbits
+  .4byte .Ld+4

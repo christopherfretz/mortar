@@ -630,6 +630,61 @@ impl<'a, 's> LinkTables<'a, 's> {
         pl.chunks.get(row.chunk)?.addr?.checked_add(row.offset)
     }
 
+    /// I-47a: the value of a local symbol at `v` in section `d`, when `d`
+    /// has no `SHF_ALLOC`, is not live only because its COMDAT group copy
+    /// is dropped (`spec/resolve.md` §6.2), and the group's keeper has, in
+    /// its copy, exactly one section `k` of `d`'s name, `k` has no
+    /// `SHF_ALLOC`, `d`'s `sh_size`, and is live: the value at `v` in `k`.
+    /// `None` otherwise (I-47's tombstone). Section names and sizes only:
+    /// no DWARF is parsed, no bytes are compared. Only a dead key's path
+    /// asks, and an alloc `d` (a dropped copy's code) costs one flag test.
+    /// `d` and `k` are of a kind placed as a whole (a `Merge` or
+    /// `.eh_frame` member is not redirected: its value is not
+    /// `k`'s address plus an offset).
+    fn kept_copy_value(&self, d: SectionId, v: u64) -> Option<Valued> {
+        use mortar_core::resolution::{DropReason, SectionState};
+        let r = self.link.resolution;
+        let row = r.sections.get(d)?;
+        if row.state != SectionState::Dropped(DropReason::Comdat) || !row.kind.is_placed() {
+            return None;
+        }
+        let shdr = |s: SectionId| {
+            let (file, index) = r.sh_index(s)?;
+            let Reader::Object(o) = &self.link.inputs.files.get(file)?.reader else { return None };
+            let sec = o.section(index).ok()?;
+            Some((sec.name().ok()?, sec.flags(), sec.size()))
+        };
+        let (name, flags, size) = shdr(d)?;
+        if flags & SHF_ALLOC != 0 {
+            return None;
+        }
+        let group = row.comdat.get()?;
+        let keeper = r.comdat.get(group)?.get()?;
+        let mut found = None;
+        for k in r.section_base.get(keeper)?.iter() {
+            if r.sections.get(k)?.comdat.get() != Some(group) {
+                continue;
+            }
+            let Some(kh) = shdr(k) else { continue };
+            if kh.0 == name {
+                if found.is_some() {
+                    return None;
+                }
+                found = Some((k, kh));
+            }
+        }
+        let (k, (_, k_flags, k_size)) = found?;
+        let k_row = r.sections.get(k)?;
+        if k_flags & SHF_ALLOC != 0 || k_size != size || !k_row.is_kept() || !k_row.kind.is_placed()
+        {
+            return None;
+        }
+        match self.value_in(k, v) {
+            Valued::At(a) => Some(Valued::At(a)),
+            Valued::Import | Valued::NoPlace(_) | Valued::Missing => None,
+        }
+    }
+
     /// The entry defining `key` in a section (a local's own, a global's
     /// regular definition).
     fn def_entry(&self, key: SymKey) -> Option<SymEntry> {
@@ -786,7 +841,16 @@ impl LinkTables<'_, '_> {
         // tombstone, 0 in `.gcc_except_table`) or stops: never `S = 0`.
         let value = match key.kind() {
             SymKind::Local(_) => {
-                if facts.dead || piece_dead(&place) {
+                if facts.dead {
+                    // I-47a: a non-alloc member of a dropped COMDAT copy
+                    // is read in the keeper's copy; otherwise I-47.
+                    match &place {
+                        Some(Ok((d, sym))) => {
+                            self.kept_copy_value(*d, sym.st_value).unwrap_or(Valued::Missing)
+                        }
+                        _ => Valued::Missing,
+                    }
+                } else if piece_dead(&place) {
                     Valued::Missing
                 } else if is_split {
                     Valued::Import

@@ -1,13 +1,19 @@
-# WIP — WP-249 (DW_MACRO_import into a dropped .debug_macro copy)
+# WIP — WP-249 step 2 (I-47a in the linker)
 
-Step 1 (measure, propose): scripts in tests/image-design/wp249/ (README there).
-Scratch: /Volumes/AgentWork/mortar-helper/.build/target-wp-143/wp249/ (survey/, linkers/, modes/, plumb/, rule/).
+Brief: /Volumes/AgentWork/mortar-helper/briefs/wp-249-step2.md. Step 1 is done and ruled (record
+spec/landed/image/WP-249.md §1-§6). Scratch: /Volumes/AgentWork/mortar-helper/.build/target-wp-143/wp249/s2/.
 
-Done: survey.sh (class census), rule.sh (GNU ld's condition by experiment), linkers.sh
-(5 linkers + 2 patched mortar outputs, gdb/lldb/verify), modes.sh (gc, -r, incremental),
-plumbprobe.sh (verifier on patched outputs).
+Done (uncompiled until noted):
+- crates/mortar_image/src/link.rs: `LinkTables::kept_copy_value` (private), called from
+  `sym_value_of`'s Local arm when `facts.dead`.
+- crates/mortar/tests/macro_import.rs: branch tests (a64, x64, i386), GCC -g3 vs GNU ld
+  (units by contents), --incremental=full equality, x86-64 gdb via qemu -g.
+- tests/link/debug/macro-import-{c,cxx,gc,fallback,hand}.test.
 
-Next: interim hand-back to the supervisor; on the ruling, step 2: the rule in
-crates/mortar_image/src/link.rs LinkTables::sym_value_of (Local, facts.dead branch),
-lane tests under tests/link/, unit tests, record spec/landed/image/WP-249.md.
-Resume: re-run the scripts (each prints its DONE line), see the record draft.
+Next: build, run the unit tests, the lane on tests/link/debug, then static-identical,
+the protoc -g timing, the full gate, the record's "Step 2".
+
+Findings for the supervisor (so far):
+- `.gcc_except_table` / dead-FDE fields into a non-alloc dropped group member would now get the
+  redirect instead of 0 (the helper does not see the referring section); no producer.
+- Merge / .eh_frame kinds are not redirected (value is not K + offset): falls back.
