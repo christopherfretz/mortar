@@ -1086,8 +1086,9 @@ mod tests {
             assert!(FORMS.iter().any(|f| f.sec() == *s), "{s}: no form in the table");
         }
         assert_eq!(FORMS.len(), 20);
-        eprintln!("mutation rows: {total} {per:?}");
-        assert!(total > 600, "{total}");
+        // The table's size, as spec/landed/plumb/WP-253.md records it: a
+        // change to the table restates it there.
+        assert_eq!(total, 1916, "mutation rows: {per:?}");
     }
 
     /// A second form after the first in one range, every pair of
