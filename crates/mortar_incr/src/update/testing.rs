@@ -90,7 +90,14 @@ impl MemoryState {
     /// inline. **Not derivable from format 4**, left empty: `EDGES`,
     /// `SYMTAB`, `SYMTAB_KEYS`, `COMMONS`, `ODR_*`, `DIAGS`, `LAZY` members
     /// (format 4 stores none), and the boot id. `FILE_INDEX` gives each
-    /// file's position and count in these vectors.
+    /// file's position and count in these vectors. WP-215's shapes:
+    /// `GROUPS` holds **the keeper's row only** (format 4 stores the
+    /// keeper, not the other copies: a group's other live copies are
+    /// missing); `META.iterations` 1 and `META.versioned` 0 (format 4
+    /// stores neither: assumed, not read); `FILE_INDEX.first_global` 0
+    /// (format 4 does not store `sh_info`, and its `MENTIONS` are sorted by
+    /// key and deduplicated, not in symbol-table order: a row's entry
+    /// index is not derivable).
     #[must_use]
     pub fn from_format4(s: &crate::format::State) -> Self {
         let mut m = Self {
@@ -130,6 +137,7 @@ impl MemoryState {
             sealed_end: s.meta.sealed_end,
             build_id_len: u8::try_from(n).unwrap_or(0),
             build_id,
+            iterations: 1,
             ..MetaRow::default()
         };
         m.files = s
@@ -192,7 +200,7 @@ impl MemoryState {
         m.resolved = vec![ResolvedRow::default(); s.symbols.len()];
         for r in &s.resolved {
             if r.kind == def_kind::COMDAT {
-                m.groups.push(GroupRow { signature: r.name, keeper: r.file, tomb: false });
+                m.groups.push(GroupRow { signature: r.name, file: r.file, tomb: false });
             } else if let Some(slot) = m.resolved.get_mut(r.symbol as usize) {
                 *slot = ResolvedRow {
                     kind: r.kind,
@@ -421,13 +429,15 @@ impl StateRows for &MemoryState {
         v.sort_by_key(|r| r.file);
         Ok(v)
     }
-    fn group(&self, signature: &[u8]) -> Rows<Option<GroupRow>> {
+    fn group(&self, signature: &[u8]) -> Rows<Vec<GroupRow>> {
+        let mut v = Vec::new();
         for g in self.groups.iter().filter(|g| !g.tomb) {
             if self.string(g.signature)? == signature {
-                return Ok(Some(*g));
+                v.push(*g);
             }
         }
-        Ok(None)
+        v.sort_by_key(|g| g.file);
+        Ok(v)
     }
     fn frags_in(&self, out: OutSecId) -> Rows<Vec<FragRow>> {
         let mut v: Vec<FragRow> =
@@ -441,8 +451,11 @@ impl StateRows for &MemoryState {
         v.sort_by_key(|h| h.offset);
         Ok(v)
     }
-    fn common(&self, key: SymbolId) -> Rows<Option<CommonRow>> {
-        Ok(self.commons.iter().find(|c| c.key == key.0 && !c.tomb).copied())
+    fn commons(&self, key: SymbolId) -> Rows<Vec<CommonRow>> {
+        let mut v: Vec<CommonRow> =
+            self.commons.iter().filter(|c| c.key == key.0 && !c.tomb).copied().collect();
+        v.sort_by_key(|c| c.file);
+        Ok(v)
     }
     fn odr_classes(&self, odr_key: u32) -> Rows<Vec<OdrClassRow>> {
         Ok(self.odr_classes.iter().filter(|c| c.key == odr_key && !c.tomb).copied().collect())
@@ -533,6 +546,32 @@ mod tests {
             (1, 2 | super::super::rows::key_ref_flags::IN_SECTION)
         );
         assert_eq!(v.file_index(FileId(1)).unwrap().ranges[0].count, 1);
+        assert_eq!(v.meta().unwrap().iterations, 1);
+    }
+
+    // spec: incr.md IN-18e (`GROUPS` by (signature, file), `COMMONS` by
+    // (key, file); the keeper and the winning common computed, WP-215)
+    #[test]
+    fn groups_and_commons_by_file() {
+        let mut m = MemoryState::default();
+        let sig = m.intern(b"_ZN1fEv");
+        let other = m.intern(b"g");
+        for (file, tomb) in [(4, false), (2, true), (3, false)] {
+            m.groups.push(GroupRow { signature: sig, file, tomb });
+        }
+        m.groups.push(GroupRow { signature: other, file: 1, tomb: false });
+        m.commons.push(CommonRow { key: 0, file: 5, size: 16, align: 4, tomb: false });
+        m.commons.push(CommonRow { key: 0, file: 3, size: 8, align: 8, tomb: false });
+        m.commons.push(CommonRow { key: 1, file: 1, size: 99, align: 1, tomb: false });
+        let v = m.view();
+        let rows = v.group(b"_ZN1fEv").unwrap();
+        assert_eq!(rows.iter().map(|r| r.file).collect::<Vec<_>>(), [3, 4]);
+        assert_eq!(super::super::rows::keeper(&rows).map(|r| r.file), Some(3));
+        assert!(v.group(b"none").unwrap().is_empty());
+        assert_eq!(v.commons(SymbolId(0)).unwrap().len(), 2);
+        let w = v.common(SymbolId(0)).unwrap().unwrap();
+        assert_eq!((w.file, w.size, w.align), (3, 16, 8));
+        assert_eq!(v.common(SymbolId(2)).unwrap(), None);
     }
 
     // spec: incr.md IN-18e (`NAMES`: a hash never identifies a key alone;
