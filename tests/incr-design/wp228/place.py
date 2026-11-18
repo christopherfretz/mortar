@@ -56,6 +56,9 @@ from elfdbg import Elf  # noqa: E402
 
 ABBREV = bytes([0x01, 0x11, 0x00, 0x80, 0x40, 0x09, 0x00, 0x00])
 ABBREV_ADDR = bytes([0x01, 0x11, 0x00, 0x73, 0x17, 0x80, 0x40, 0x09, 0x00, 0x00])
+# PROPOSED: a type unit's neutral table (DW_TAG_type_unit 0x41), written in
+# the dead file's .debug_abbrev range after the addr_base table's place
+ABBREV_TYPE = bytes([0x01, 0x41, 0x00, 0x80, 0x40, 0x09, 0x00, 0x00])
 
 u16 = lambda v: struct.pack('<H', v)
 u32 = lambda v: struct.pack('<I', v)
@@ -240,6 +243,10 @@ def main():
     for f in dead_files:
         addr = ranges.get((f, '.debug_addr'), [])
         abr = ranges.get((f, '.debug_abbrev'), [])
+        type_abbrev = None
+        if (f, '.debug_types') in ranges:
+            assert abr and abr[0][1] >= 19, 'no room for the type-unit table'
+            type_abbrev = abr[0][0] + 11
         for name in sorted({n for (ff, n) in ranges if ff == f}):
             if name == '.debug_aranges':
                 continue
@@ -274,16 +281,20 @@ def main():
                     if as_pieces and name != '.debug_addr':
                         q = o
                         for L in pieces(name, size):
-                            data = neutral(name, L, abbrev_at, sig=0xdead000000000000 | q)
+                            data = neutral(name, L, type_abbrev if name == '.debug_types' else abbrev_at,
+                                           sig=0xdead000000000000 | q)
                             assert len(data) == L
                             b[s.off + q:s.off + q + L] = data
                             q += L
                     else:
-                        data = neutral(name, size, abbrev_at, sig=0xdead000000000000 | o)
+                        data = neutral(name, size, type_abbrev if name == '.debug_types' else abbrev_at,
+                                       sig=0xdead000000000000 | o)
                         assert len(data) == size, (name, size, len(data))
                         b[s.off + o:s.off + o + size] = data
                     if name == '.debug_abbrev' and addr_base_on and addr and (o, size) == abr[0] and size >= 11:
                         b[s.off + o:s.off + o + len(ABBREV_ADDR)] = ABBREV_ADDR
+                    if name == '.debug_abbrev' and type_abbrev is not None and (o, size) == abr[0]:
+                        b[s.off + type_abbrev:s.off + type_abbrev + len(ABBREV_TYPE)] = ABBREV_TYPE
                 new_dead.append((name, o, size))
                 r = report.setdefault(name, [0, 0])
                 r[0] += 1
