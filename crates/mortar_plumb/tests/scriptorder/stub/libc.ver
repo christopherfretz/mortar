@@ -1,0 +1,2 @@
+GLIBC_2.17 { global: puts; printf; abort; __cxa_finalize; __cxa_atexit; __cxa_at_quick_exit; __register_atfork; __stack_chk_fail; local: *; };
+GLIBC_2.34 { global: __libc_start_main; } GLIBC_2.17;

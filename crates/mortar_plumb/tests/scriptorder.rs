@@ -10,16 +10,59 @@
 //! the image unchanged, is judged as before: the order comes from the
 //! line and the scripts the verifier reads, never from what the judged
 //! linker writes of them.
+//!
+//! The lines are GCC 14's driver lines of an AArch64 host: they name the
+//! host's crt objects, `-lgcc`, `-lgcc_s`, `-lc` and `-L` directories by
+//! absolute paths. Those are read from `tests/scriptorder/sys/`, never
+//! from the host running the test (WP-241: on an x86-64 host the host's
+//! own files are absent and every verdict was I1/P-D1/P-D2): the crt
+//! objects, the two GNU ld scripts and `libc_nonshared.a` are the AArch64
+//! host's own bytes, and `libc.so.6`, `ld-linux-aarch64.so.1`,
+//! `libgcc_s.so.1` and `libgcc.a` stand-ins built from `stub/` (`gen.sh`)
+//! with the sonames, `DT_NEEDED` edges, versions and symbols the outputs
+//! bind. `s12_1a_the_sysroot_stands_for_the_aarch64_host` checks on an
+//! AArch64 host with those files that every verdict is the same with the
+//! host's real files; elsewhere it is a named skip.
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use mortar_plumb::{Ctx, Files, Format, Input, Report};
 
-struct Dir<'a>(&'a Path);
+/// The fixture directory, and where an absolute path of the line or the
+/// map is read: `root` joined with the path (normalized without leaving
+/// `root`). An absolute path into the fixture directory itself is read
+/// there (`s12_1a_an_input_the_line_does_not_name_stops_the_order`).
+struct Dir<'a> {
+    dir: &'a Path,
+    root: &'a Path,
+}
+
+impl Dir<'_> {
+    fn resolve(&self, path: &str) -> PathBuf {
+        let p = Path::new(path);
+        if !p.is_absolute() || p.starts_with(self.dir) {
+            return self.dir.join(p);
+        }
+        let mut rel = PathBuf::new();
+        for c in p.components() {
+            match c {
+                Component::Normal(n) => rel.push(n),
+                Component::ParentDir => {
+                    rel.pop();
+                }
+                Component::RootDir | Component::CurDir | Component::Prefix(_) => {}
+            }
+        }
+        self.root.join(rel)
+    }
+    fn read_file(&self, path: &str) -> Option<Vec<u8>> {
+        std::fs::read(self.resolve(path)).ok()
+    }
+}
 
 impl Files for Dir<'_> {
     fn read(&self, path: &str) -> Option<Vec<u8>> {
-        std::fs::read(self.0.join(path)).ok()
+        self.read_file(path)
     }
 }
 
@@ -27,19 +70,26 @@ fn dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scriptorder")
 }
 
+/// The checked-in stand-in for the AArch64 host's system files.
+fn sys() -> PathBuf {
+    dir().join("sys")
+}
+
 /// One fixture: the output `{cell}.{linker}`, its map with text replaced
-/// (`edits`), judged with the line the lane recorded (`line`) or none.
+/// (`edits`), judged with the line the lane recorded (`line`) or none,
+/// its absolute paths read under `root`.
 struct Fx {
     name: String,
     format: Format,
     edits: Vec<(String, String)>,
     line: bool,
+    root: PathBuf,
 }
 
 impl Fx {
     fn new(cell: &str, linker: &str) -> Fx {
         let format = if linker == "mortar" { Format::Mortar } else { Format::Gnu };
-        Fx { name: format!("{cell}.{linker}"), format, edits: Vec::new(), line: true }
+        Fx { name: format!("{cell}.{linker}"), format, edits: Vec::new(), line: true, root: sys() }
     }
     fn bytes(&self) -> Vec<u8> {
         std::fs::read(dir().join(&self.name)).unwrap()
@@ -52,10 +102,11 @@ impl Fx {
             text = text.replace(a.as_str(), b);
         }
         let map = mortar_plumb::map::parse(self.format, &text).unwrap();
+        let files = Dir { dir: &d, root: &self.root };
         let inputs: Vec<(String, Vec<u8>)> = map
             .paths()
             .into_iter()
-            .filter_map(|p| std::fs::read(d.join(p)).ok().map(|b| (p.to_string(), b)))
+            .filter_map(|p| files.read_file(p).map(|b| (p.to_string(), b)))
             .collect();
         let inputs: Vec<Input<'_>> =
             inputs.iter().map(|(p, b)| Input { path: p, bytes: b }).collect();
@@ -66,7 +117,15 @@ impl Fx {
                 .map(str::to_string)
                 .collect()
         });
-        mortar_plumb::verify_with(bytes, &inputs, &map, &Ctx { line, files: &Dir(&d) })
+        mortar_plumb::verify_with(bytes, &inputs, &map, &Ctx { line, files: &files })
+    }
+    /// Every finding, anomalies included.
+    fn all(&self, bytes: &[u8]) -> Vec<String> {
+        self.verify(bytes)
+            .findings
+            .iter()
+            .map(|f| format!("{} {}", f.rule.id(), f.message))
+            .collect()
     }
     /// The findings no anomaly of the format names.
     fn plain(&self, bytes: &[u8]) -> Vec<String> {
@@ -267,5 +326,73 @@ fn s12_1a_gnu_ld_map_spelling_is_the_same_file() {
         assert!(fx.plain(&b).is_empty(), "{cell}: {:#?}", fx.plain(&b));
         let lld = CELLS.iter().find(|c| c.0 == cell).unwrap().2;
         assert!(p_d6(&fx.plain(&reorder(&b, lld))), "{cell}");
+    }
+}
+
+/// The system files of the lines under `sys/`: the host's own bytes
+/// (`true`) or a stand-in built from `stub/` (`false`).
+const SYSTEM: [(&str, bool); 12] = [
+    ("/usr/lib/aarch64-linux-gnu/Scrt1.o", true),
+    ("/usr/lib/aarch64-linux-gnu/crti.o", true),
+    ("/usr/lib/aarch64-linux-gnu/crtn.o", true),
+    ("/usr/lib/gcc/aarch64-linux-gnu/14/crtbeginS.o", true),
+    ("/usr/lib/gcc/aarch64-linux-gnu/14/crtendS.o", true),
+    ("/usr/lib/aarch64-linux-gnu/libc.so", true),
+    ("/usr/lib/aarch64-linux-gnu/libc_nonshared.a", true),
+    ("/usr/lib/gcc/aarch64-linux-gnu/14/libgcc_s.so", true),
+    ("/usr/lib/gcc/aarch64-linux-gnu/14/libgcc.a", false),
+    ("/usr/lib/aarch64-linux-gnu/libgcc_s.so.1", false),
+    ("/lib/aarch64-linux-gnu/libc.so.6", false),
+    ("/lib/ld-linux-aarch64.so.1", false),
+];
+
+#[test]
+fn s12_1a_the_sysroot_stands_for_the_aarch64_host() {
+    let sys = sys();
+    for (p, _) in SYSTEM {
+        assert!(sys.join(&p[1..]).is_file(), "sys{p} is missing");
+    }
+    // The host's files at the lines' paths: present, and the kept ones
+    // the same bytes as `sys/`'s (else the host is not the one the lines
+    // were recorded on).
+    let host = |p: &str| std::fs::read(p).ok();
+    let differ: Vec<&str> = SYSTEM
+        .iter()
+        .filter(|(p, kept)| match host(p) {
+            None => true,
+            Some(b) => *kept && std::fs::read(sys.join(&p[1..])).ok() != Some(b),
+        })
+        .map(|(p, _)| *p)
+        .collect();
+    if !differ.is_empty() {
+        mortar_testutil::named_skip(
+            "scriptorder::s12_1a_the_sysroot_stands_for_the_aarch64_host/aarch64-gcc14",
+            &format!(
+                "the host's GCC 14 / glibc AArch64 files are absent or other bytes: {}",
+                differ.join(", ")
+            ),
+        );
+        return;
+    }
+    let both = |fx: Fx, b: &[u8], what: &str| {
+        let mine = fx.all(b);
+        let host = Fx { root: PathBuf::from("/"), ..fx };
+        assert_eq!(mine, host.all(b), "{}: {what}", host.name);
+    };
+    // input-then-group: mortar's base list (WP-172 record §2).
+    let base: &[&str] = &["na", "nb", "nx", "nc", "c"];
+    for (cell, _, lld) in CELLS.iter().copied().chain([("input-then-group", &[][..], base)]) {
+        for linker in ["bfd", "mortar"] {
+            if cell == "input-then-group" && linker == "bfd" {
+                continue; // GNU ld refuses the line
+            }
+            let b = Fx::new(cell, linker).bytes();
+            both(Fx::new(cell, linker), &b, "as linked");
+            both(Fx::new(cell, linker), &reorder(&b, lld), "permuted");
+        }
+        for edits in map_edits(cell) {
+            let b = Fx::new(cell, "mortar").bytes();
+            both(Fx { edits, ..Fx::new(cell, "mortar") }, &b, "a mutated map");
+        }
     }
 }
