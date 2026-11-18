@@ -410,7 +410,7 @@ fn detail_item(directive: &[u8], fields: &Fields) -> Result<Option<Detail>, Stri
             if scoped > 1 || fixed > 1 {
                 return Err("scoped= and fixed= are 0 or 1".to_owned());
             }
-            x.value = scoped * item::SCOPED | fixed * item::FIXED;
+            x.value = (scoped * item::SCOPED) | (fixed * item::FIXED);
             x
         }
         b"item" => {

@@ -505,7 +505,7 @@ pub fn fetch_archive(
             Some(place) => std::os::unix::fs::symlink(target, &place)
                 .map_err(|e| format!("{what}: cannot make the link {}: {e}", place.display()))?,
             None => {
-                log(&format!("{what}: not unpacked (a link outside what was unpacked): {name}"))
+                log(&format!("{what}: not unpacked (a link outside what was unpacked): {name}"));
             }
         }
     }
