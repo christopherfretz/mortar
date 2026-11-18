@@ -819,7 +819,7 @@ mod tests {
         }
     }
 
-    const fn row(group: u32, file: u32, sym_type: u8, size: u64) -> Row {
+    fn row(group: u32, file: u32, sym_type: u8, size: u64) -> Row {
         Row { group, file, rank: u64::from(file) << 20, index: 7, sym_type, size }
     }
 
