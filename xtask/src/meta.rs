@@ -818,7 +818,9 @@ fn print_items(out: &mut String, u: &Unit<'_>, offset: u32) -> bool {
                 format!("enumerator name={name} value={v}")
             }
             item::UNDERLYING
-                if it.name == 0 && it.width == 0 && it.value & !(item::SCOPED | item::FIXED) == 0 =>
+                if it.name == 0
+                    && it.width == 0
+                    && it.value & !(item::SCOPED | item::FIXED) == 0 =>
             {
                 let mut l = format!("underlying type={ty}");
                 if it.value & item::SCOPED != 0 {

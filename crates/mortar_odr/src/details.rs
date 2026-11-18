@@ -107,7 +107,9 @@ impl<'l> Resolved<'l> {
                 };
                 ("enumerator ", format!("'{}' = {v}", lossy(self.name)))
             }
-            _ => ("underlying type ", format!("{}{}", lossy(self.ty), enum_bits(self.value, false))),
+            _ => {
+                ("underlying type ", format!("{}{}", lossy(self.ty), enum_bits(self.value, false)))
+            }
         };
         for at in &self.outer {
             let _ = write!(rest, " of the unnamed member at offset {}", offset_text(*at, false));

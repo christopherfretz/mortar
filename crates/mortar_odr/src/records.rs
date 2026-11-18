@@ -851,11 +851,7 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
             unit.types().len(),
             unit.declarations().len(),
         ];
-        Counts {
-            rows: rows.map(|r| r as u64),
-            reserved: reserved_rows(unit),
-            ..Counts::default()
-        }
+        Counts { rows: rows.map(|r| r as u64), reserved: reserved_rows(unit), ..Counts::default() }
     }
 
     /// The entries of unit `u`; what it sets aside is [`Cx::skipped`]'s.
@@ -1674,11 +1670,8 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
             out.push(Found::count(Counts { system_std: 1, ..Counts::default() }));
             return;
         }
-        let severity = if c_linkage || noexcept_only || system {
-            Severity::Warning
-        } else {
-            Severity::Error
-        };
+        let severity =
+            if c_linkage || noexcept_only || system { Severity::Warning } else { Severity::Error };
         let (first, second) = (&classes[0][0], &classes[1][0]);
         let mut notes = Vec::new();
         if let (Some(ra), Some(rb)) = (decl(first), decl(second)) {
