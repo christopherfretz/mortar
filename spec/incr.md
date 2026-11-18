@@ -3286,7 +3286,8 @@ a pass over a whole table of the state; **O(output)**.
       non-common definition, and undefined for a key with only common
       mentions), of the common's size and alignment (the largest over its
       live mentions, `COMMONS` rows), in that file's `.bss` region; the
-      map's `common` line names the file. When the winning mention moves
+      map's `common` line names the file (its fifth field, written in an
+      incremental-mode map only: `spec/plumb.md` §3.2). When the winning mention moves
       to another file, the old and the new winning files are drawn in
       (item 2a): the common's section leaves the one (a hole) and is
       placed by item 2 in the other. A size or alignment change is a section of that file that

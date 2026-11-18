@@ -1751,7 +1751,10 @@ random input's).
     - `common <name> <addr> <size> <align>` per common symbol the link
       allocated (`spec/layout.md` L-88: `.bss`, or `.lbss` for an x86-64
       large common), its address, size and the alignment it was placed
-      at, after the `chunk` records;
+      at, after the `chunk` records; in an incremental-mode output, and
+      only there, a fifth field `<file>`, the map id of the common's
+      winning file (`spec/incr.md` IN-72 item 11; `spec/plumb.md` §3.2):
+      a plain link's map does not change;
     - `copy <name> <addr> <size> <align>` (P-D3's hint) with the
       alignment the copy was placed at (`spec/dyn.md` D-42);
   - `define` per symbol of file 0 that layout defined

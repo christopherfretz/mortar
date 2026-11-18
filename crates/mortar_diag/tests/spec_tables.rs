@@ -45,10 +45,10 @@ fn kind_ids_match_the_spec_table() {
     assert!(!is_kebab_case("Undefined-symbol") && !is_kebab_case("a--b") && !is_kebab_case("a_b"));
 }
 
-/// The kinds that can be emitted as a warning, by default or under an
-/// option (diag.md §3.2 says which in prose; the table has no severity
-/// column, since severity is not part of a kind, §2.2). WP-212 read each
-/// from where the linker raises it.
+/// The kinds the linker raises as a warning, by default or under an
+/// option or a condition: the code's side, read by WP-212 from where each
+/// is raised, compared with diag.md §3.1's severity column both ways until
+/// U-9's `mortar_diag::subject::subjects` replaces it.
 const WARNING_KINDS: &[&str] = &[
     "skipped-incompatible",
     "ignored-member",
@@ -97,34 +97,58 @@ fn subjects(cell: &str) -> Option<Vec<&str>> {
     Some(cell.split(',').map(str::trim).collect())
 }
 
-// spec: diag.md §3.1 (the subjects column), incr.md IN-75a: every kind
-// that can be a warning has subjects, each from {file, key, output
-// section, link}; a kind that is never one has `—`
+/// Whether a severity cell of §3.1 says the kind can be a warning:
+/// `Some(false)` for `error`, `Some(true)` for `warning` or `error; warning
+/// <condition>`, `None` for anything else.
+fn can_be_a_warning(cell: &str) -> Option<bool> {
+    match cell {
+        "error" => Some(false),
+        "warning" => Some(true),
+        _ => cell
+            .strip_prefix("error; warning ")
+            .and_then(|condition| (!condition.trim().is_empty()).then_some(true)),
+    }
+}
+
+// spec: diag.md §3.1 (the severity column, the subjects column), incr.md
+// IN-75a: the column's warning kinds are the code's, both ways; each has
+// subjects from {file, key, output section, link}; an `error` kind has `—`
 #[test]
 fn warning_kinds_have_subjects() {
     const SET: [&str; 4] = ["file", "key", "output section", "link"];
     let rows = table("### 3.1 ");
     for id in WARNING_KINDS {
         assert!(Kind::IDS.contains(id), "{id} is not a kind");
+        assert!(rows.iter().any(|row| row[0] == *id), "{id} has no row");
     }
     for row in &rows {
-        let (id, cell) = (row[0].as_str(), row.last().map_or("", String::as_str));
-        assert_eq!(row.len(), 5, "{id}: the subjects column is missing");
-        match subjects(cell) {
-            None => {
-                assert!(!WARNING_KINDS.contains(&id), "{id} can be a warning: it needs subjects");
-            }
+        let id = row[0].as_str();
+        assert_eq!(row.len(), 6, "{id}: the severity or the subjects column is missing");
+        let warning = can_be_a_warning(&row[4])
+            .unwrap_or_else(|| panic!("{id}: severity '{}' is not one of the three forms", row[4]));
+        assert_eq!(
+            warning,
+            WARNING_KINDS.contains(&id),
+            "{id}: the severity column and WARNING_KINDS disagree"
+        );
+        match subjects(&row[5]) {
+            None => assert!(!warning, "{id} can be a warning: it needs subjects"),
             Some(words) => {
+                assert!(warning, "{id} has subjects but its severity is error");
                 assert!(!words.is_empty(), "{id}: empty subjects");
                 for (i, word) in words.iter().enumerate() {
                     assert!(SET.contains(word), "{id}: '{word}' is not a subject");
                     assert!(!words[..i].contains(word), "{id}: '{word}' twice");
                 }
-                assert!(WARNING_KINDS.contains(&id), "{id} has subjects but is not a warning kind");
             }
         }
     }
-    // The checker itself: `—`, a word outside the set, an empty cell.
+    // The checkers themselves.
+    assert_eq!(can_be_a_warning("error"), Some(false));
+    assert_eq!(can_be_a_warning("warning"), Some(true));
+    assert_eq!(can_be_a_warning("error; warning under -z x"), Some(true));
+    assert_eq!(can_be_a_warning("error; warning "), None);
+    assert_eq!(can_be_a_warning("note"), None);
     assert_eq!(subjects("—"), None);
     assert_eq!(subjects("file, key"), Some(vec!["file", "key"]));
     assert!(subjects("section").is_some_and(|w| !w.iter().all(|w| SET.contains(w))));

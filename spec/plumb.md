@@ -151,7 +151,7 @@ merged <file> <section> <output-section>
 discard <file> <section> gc|comdat|script|unspecified
 fold <file> <section> <into-file> <into-section>
 chunk thunk|patch|synthetic|common <name> <addr>|- <size> [<target> <addend>]
-common <name> <addr> <size> <align>
+common <name> <addr> <size> <align> [<file>]
 define <name> <value>
 incremental
 hole <output-section> <offset> <size>
@@ -313,12 +313,16 @@ the map claims coverage.
 | record | count | meaning |
 |---|---|---|
 | `chunk synthetic <name> <addr> <size>` | one per linker-made `NOBITS` section | the memory of a `NOBITS` synthetic chunk that holds no allocation of its own: today `.pad.relro` (`spec/layout.md` L-64, L-156). The copy chunks (`.dynbss`, `.bss.rel.ro`'s, `spec/dyn.md` D-42) are not listed: their allocations are `copy` records. The record is the existing `chunk` form, so it has no new grammar |
-| `common <name> <addr> <size> <align>` | one per common symbol allocated | a common symbol (gABI `SHN_COMMON`, x86-64 `SHN_X86_64_LCOMMON`) the link allocated (`spec/layout.md` L-88): `<name>` its symbol, `<addr>` and `<size>` its allocation, `<align>` the alignment it was placed at. After the `chunk` records |
+| `common <name> <addr> <size> <align> [<file>]` | one per common symbol allocated | a common symbol (gABI `SHN_COMMON`, x86-64 `SHN_X86_64_LCOMMON`) the link allocated (`spec/layout.md` L-88): `<name>` its symbol, `<addr>` and `<size>` its allocation, `<align>` the alignment it was placed at; `<file>`, the id of an earlier `file` record, is the common's winning file (`spec/incr.md` IN-72 item 11), written in a map that says `incremental` and only there. After the `chunk` records |
 | `copy <name> <addr> <size> <align>` | one per `COPY` record | the copy allocation (above), with `<align>` the alignment it was placed at (`spec/dyn.md` D-42) |
 
 `<align>` is hex as every other number, a power of two (1 included). A
 `common` or `copy` record with an `<align>` that is not a power of two,
-or a wrong number of fields, is a `MapError`. A foreign map never has
+or a wrong number of fields, is a `MapError`. A `common` record has five
+fields exactly in a map that says `incremental` and four elsewhere: a
+fifth field in a plain map, its absence in an incremental-mode map, or
+a `<file>` that names no earlier `file` record is a `MapError`. A plain
+link's map is unchanged by the field (not one byte). A foreign map never has
 them (§3.4 to §3.6 do not change): GNU ld's and lld's `COMMON` and
 mold's `.common` stay `common` chunks, one per file, and their maps
 state no alignment.
@@ -3500,7 +3504,10 @@ record is a CIE (`CIE_id` 0) is not a unit of this rule; an FDE piece is,
 its size equal or (in `X` only) larger by 4, 8 or 12. Chunks: the
 `common` chunks by name and the `synthetic` chunks by `(name, k)` are
 the same sets, and so are the `common` records by name (an update that
-allocates a common the full link does not, or the reverse, is P-E2); `thunk` and `patch` chunks may differ (item 4). `fold`
+allocates a common the full link does not, or the reverse, is P-E2),
+and a common's `<file>` names, on both sides, the file of one identity
+(a file by its identity, as the units' files are; another winning
+file is P-E2); `thunk` and `patch` chunks may differ (item 4). `fold`
 records are the same set. Each identity of one side missing from the
 other is one finding.
 
