@@ -284,9 +284,6 @@ pub fn refill(
             }
             want.extend(in_file(*id).map(whole));
         }
-        // The padding around each moved section, and a grown section's
-        // new tail.
-        want.extend(shift.gaps(&new));
     }
     want.extend(Shift::grown_tails(&old, &new));
     let headers: Vec<Range<u64>> = pl
@@ -300,6 +297,19 @@ pub fn refill(
         })
         .map(|(_, c)| c.offset..c.offset + c.size)
         .collect();
+    if eh_moves {
+        // The padding around each moved section, up to its neighbours:
+        // another section, or the section header table after the last
+        // one (a moved section changes that table's fields, so it is
+        // written whole whatever is joined to it).
+        let table: Vec<Range<u64>> = pl
+            .chunks
+            .iter()
+            .filter(|(_, c)| c.kind == ChunkKind::SectionHeaders)
+            .map(|(_, c)| c.offset..c.offset + c.size)
+            .collect();
+        want.extend(shift.gaps(&new, &table));
+    }
     want.extend(headers.iter().cloned());
     let want = normalize(want);
     let windows = windows_of(&want);
@@ -762,8 +772,12 @@ impl Shift {
     }
 
     /// The padding before and after each moved section in the update's
-    /// output (up to its neighbours in file order), for the image to fill.
-    fn gaps(&self, new: &Table) -> Vec<Range<u64>> {
+    /// output (up to its neighbours in file order: a section, or one of
+    /// `fixed`, the header tables that bound the sections), for the image
+    /// to fill. Without `fixed` the padding after the LAST section kept
+    /// the previous output's bytes (batch 14: three bytes of the old
+    /// `.shstrtab` before the section header table).
+    fn gaps(&self, new: &Table, fixed: &[Range<u64>]) -> Vec<Range<u64>> {
         let mut spans: Vec<(u64, u64, usize)> = new
             .rows
             .iter()
@@ -771,6 +785,7 @@ impl Shift {
             .skip(1)
             .filter(|(_, r)| r.in_file && r.size > 0)
             .map(|(i, r)| (r.offset, r.offset + r.size, i))
+            .chain(fixed.iter().map(|r| (r.start, r.end, usize::MAX)))
             .collect();
         spans.sort_unstable();
         let mut out = Vec::new();
@@ -1085,9 +1100,8 @@ fn write_symtab(
         }
         for e in b.chunks_exact_mut(es as usize) {
             counts.symtab_entries += 1;
-            let (info, shndx, vat) =
-                if new.class64 { (e[4], le(e, 6, 2), 8) } else { (e[12], le(e, 14, 2), 4) };
-            let w = if new.class64 { 8 } else { 4 };
+            let (info, shndx, vat, w) =
+                if new.class64 { (e[4], le(e, 6, 2), 8, 8) } else { (e[12], le(e, 14, 2), 4, 4) };
             if shndx == 0 || shndx >= 0xff00 || info & 0xf == 6 {
                 continue;
             }
@@ -1307,7 +1321,12 @@ mod tests {
             Shift::grown_tails(&old, &new).into_iter().map(|r| (r.start, r.end)).collect();
         assert_eq!(tails, [(0x1100, 0x1180)]);
         // No byte of padding between the moved sections: no gap to fill.
-        assert!(s.gaps(&new).is_empty(), "{:?}", s.gaps(&new));
+        assert!(s.gaps(&new, &[]).is_empty(), "{:?}", s.gaps(&new, &[]));
+        // The padding between the last moved section and the section
+        // header table is one (the table is no section: a bound only).
+        let table = |start: u64| [Range { start, end: start + 0x140 }];
+        assert!(s.gaps(&new, &table(0x11d8)).is_empty());
+        assert_eq!(s.gaps(&new, &table(0x11e0)), table(0x11d8).map(|r| r.start..0x11e0));
     }
 
     /// A hand-made previous output for `write_symtab`: `.text` at 0x1000,

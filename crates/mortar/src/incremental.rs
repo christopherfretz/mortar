@@ -40,7 +40,7 @@ pub enum Start {
     /// A plain link: nothing of incremental mode happens.
     Plain,
     /// A full link in incremental mode, which writes a state at the end.
-    Full(Session),
+    Full(Box<Session>),
     /// `--incremental=update` cannot update: the error is emitted and
     /// nothing is linked or written.
     Failed,
@@ -322,7 +322,7 @@ pub fn start(parsed: &Parsed, cwd: &Path, out_path: &Path, diagnostics: &Collect
         emit(diagnostics, 2, Diagnostic::error(Kind::IncrementalUpdateFailed { reason }));
         return Start::Failed;
     }
-    Start::Full(Session {
+    Start::Full(Box::new(Session {
         state_path,
         report,
         plan_hash,
@@ -335,7 +335,7 @@ pub fn start(parsed: &Parsed, cwd: &Path, out_path: &Path, diagnostics: &Collect
         lock,
         writes_no_state,
         state5: None,
-    })
+    }))
 }
 
 /// I-58b for incremental mode's own files: `cannot-write-output` naming

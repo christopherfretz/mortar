@@ -410,15 +410,16 @@ fn input_rewritten_after_u4_is_input_changed() {
 
 // spec: U-5's Q2-5, incr.md IN-49a (a shrinking global area: the entries
 // [new end, old end) are zeros; WP-218 resume ruling 2), and the guard of
-// that zeroing: c.o loses an absolute global. A replayed layout cannot
-// shrink `.symtab` on this base (the front: "a synthetic plan made from
-// the layout's tables is not its chunk's size"), and a fresh full link has
-// no slack after its table (`.strtab` follows it): the previous table's
-// tail is the update's `.strtab`, so zeroing it is refused by name, never
-// written over another section. The zeros themselves:
+// that zeroing: c.o loses an absolute global and the full link's table is
+// one entry shorter. Where the previous table's tail is the new output's
+// `.strtab` (no slack after the table), zeroing it is refused by name,
+// never written over another section; where IN-49's slack follows the
+// table (an incremental-mode output since U-5), the tail is inside the
+// table's own reserve, the zeros are written and the patched output is the
+// full link's. The zeros themselves:
 // `symtab_move_inside_remap_is_remapped_and_shrink_zeroed` (hand-made).
 #[test]
-fn symtab_shrink_onto_another_section_is_refused() {
+fn symtab_shrink_zeroes_its_own_tail_only() {
     for arch in ARCHES {
         let Some(fx) = Fixture::new(arch, "u6-shrink") else { continue };
         let [_, _, c_s] = sources(arch, 42, 0);
@@ -432,21 +433,33 @@ fn symtab_shrink_onto_another_section_is_refused() {
         assert_eq!(o.start, n.start, "{arch:?}: the table stays in place");
         assert!(o.end > n.end, "{arch:?}: the table shrinks: {o:?} -> {n:?}");
         let strtab = section_range(&want, b".strtab");
-        assert!(
-            strtab.start < o.end,
-            "{arch:?}: .strtab {strtab:?} in the old tail {:?}",
-            n.end..o.end
-        );
+        let reserved = strtab.start >= o.end;
+        eprintln!("[u6] {arch:?} shrink: old tail {:?}, .strtab {strtab:?}", n.end..o.end);
         fx.with_front("want", None, |f, store| {
             let c_o = file_of(f, "c.o");
             let delta = LayoutDelta { files: vec![c_o], ..LayoutDelta::default() };
             let set = RefillSet { units: units(f, &["c.o"]), ..RefillSet::default() };
             let plan = whole_symtab_plan(&want);
             match run_refill(f, store, &delta, &plan, &set, &fx, "prev") {
-                Err(RefillError::Fallback(IncrReason::StateCorrupt(d))) => {
+                Ok((r, b, _, size, _)) if reserved => {
+                    assert_eq!(size, want.len() as u64, "{arch:?}: output_size");
+                    judge(&format!("{arch:?} symtab shrink"), &prev, &want, &r, &b);
+                    assert!(
+                        want[n.end..o.end].iter().all(|&x| x == 0),
+                        "{arch:?}: the full link's reserve is zeros"
+                    );
+                    assert!(
+                        prev[n.end..o.end].iter().any(|&x| x != 0),
+                        "{arch:?}: the old tail held an entry"
+                    );
+                }
+                Err(RefillError::Fallback(IncrReason::StateCorrupt(d))) if !reserved => {
                     assert!(d.contains("reaches another section"), "{arch:?}: {d}");
                 }
-                other => panic!("{arch:?}: want state-corrupt, got {:?}", other.map(|x| x.2)),
+                other => panic!(
+                    "{arch:?}: reserve after the table {reserved}, got {:?}",
+                    other.map(|x| x.2)
+                ),
             }
         });
     }

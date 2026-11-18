@@ -315,7 +315,8 @@ fn invoke_with(
     // spec/incr.md §5: nothing at all without --incremental (IN-11).
     let session = match incremental::start(&parsed, cwd, &out_path, &diagnostics) {
         incremental::Start::Plain => None,
-        incremental::Start::Full(mut s) => {
+        incremental::Start::Full(s) => {
+            let mut s = *s;
             s.set_state5(state5);
             Some(s)
         }
