@@ -19,14 +19,16 @@ use std::path::Path;
 
 use mortar_arch::{Arch, FillTables, OutputKind, ProofRun, SymFacts, SymNames, TlsBlock};
 use mortar_core::assignment::Assignment;
+use mortar_core::assignment::OutSec;
 use mortar_core::demands::Demands;
 use mortar_core::inputs::{CopyError, Reader};
-use mortar_core::layout::{AllocKey, ChunkKind, DefValue, Layout};
+use mortar_core::layout::{AllocKey, Chunk, ChunkKind, DefValue, Layout, Segment};
 use mortar_core::par::Pool;
 use mortar_core::records::RecIndex;
 use mortar_core::resolution::{Def, SectionKind};
 use mortar_core::{
-    ChunkId, FileId, Inputs, Liveness, Resolution, SectionId, Split, SymEntry, SymKey, SymbolId,
+    ChunkId, Column, FileId, Inputs, Liveness, OutSecId, Resolution, SectionId, SegmentId, Split,
+    SymEntry, SymKey, SymbolId,
 };
 use mortar_diag::{Diagnostic, FileRef, Key, Kind};
 use mortar_digest::TreeStyle;
@@ -714,8 +716,59 @@ fn file_fixups(link: &Link<'_, '_>) -> Result<Vec<fill::Fixup>, Diagnostic> {
     Ok(out)
 }
 
+/// What the three structural chunks (I-40) are written from (WP-255b):
+/// data lists, not the `Link`, so that an update writes them from its
+/// own rows with the same writer ([`write_structure`]).
+#[derive(Debug, Clone)]
+pub struct StructureData<'d> {
+    pub class: mortar_elf::Class,
+    pub osabi: u8,
+    pub e_machine: u16,
+    pub e_type: u16,
+    pub e_flags: u32,
+    pub e_entry: u64,
+    pub chunks: &'d Column<ChunkId, Chunk>,
+    pub segments: &'d Column<SegmentId, Segment>,
+    /// The section header table ([`section_headers_of`]).
+    pub shdrs: Vec<Shdr>,
+    /// `.shstrtab`'s section index (0: none).
+    pub shstrndx: u32,
+}
+
+/// What the section header table (I-40, L-86) is written from: the
+/// chunks, the synthetic chunks' kinds, `.shstrtab`'s names, the output
+/// sections (a merge class's entsize) and the few values its synthetic
+/// headers' `sh_link`/`sh_info` take.
+#[derive(Clone, Copy)]
+pub struct ShdrData<'d, 'n> {
+    pub class: mortar_elf::Class,
+    /// The target's word, in bytes.
+    pub word: u64,
+    /// REL relocations (i386).
+    pub rel: bool,
+    pub chunks: &'d Column<ChunkId, Chunk>,
+    pub synth: &'d [(SynthKind, ChunkId)],
+    pub shstrtab: &'d ShstrtabPlan,
+    pub outsecs: &'d Column<OutSecId, OutSec<'n>>,
+    /// `.symtab`'s `sh_info` (0 without one).
+    pub symtab_info: u32,
+    /// Whether the output has `.dynamic`.
+    pub dynamic: bool,
+    /// `.gnu.version_r`'s `sh_info`: the needed files.
+    pub verneed: u32,
+    /// `.gnu.version_d`'s `sh_info`: the definitions.
+    pub verdef: u32,
+}
+
+impl std::fmt::Debug for ShdrData<'_, '_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ShdrData").field("synth", &self.synth).finish_non_exhaustive()
+    }
+}
+
 /// The bytes of the three structural chunks (I-40): the ELF header, the
-/// program header table and the section header table, by chunk.
+/// program header table and the section header table, by chunk; their
+/// data lists from `link`, written by [`write_structure`].
 ///
 /// # Errors
 ///
@@ -725,15 +778,88 @@ pub fn structure(
     link: &Link<'_, '_>,
 ) -> Result<std::collections::BTreeMap<ChunkId, Box<[u8]>>, Diagnostic> {
     let facts = link.arch.facts();
-    let class = facts.class;
     let pl = &link.layout.placement;
+    if !pl.chunks.iter().any(|(_, c)| c.kind == ChunkKind::FileHeader) {
+        return Err(internal("image: no file header chunk (I-40)"));
+    }
+    let shdrs = section_headers_of(&ShdrData {
+        class: facts.class,
+        word: u64::from(facts.word),
+        rel: matches!(facts.rel_form, mortar_arch::RelForm::Rel),
+        chunks: &pl.chunks,
+        synth: link.synth.chunks,
+        shstrtab: link.synth.shstrtab,
+        outsecs: &link.assignment.outsecs,
+        symtab_info: link.synth.symtab.map_or(0, |s| s.0.sh_info()),
+        dynamic: link.synth.dynamic.is_some(),
+        verneed: link.layout.slots.verneed.len() as u32,
+        verdef: link
+            .synth
+            .dynamic
+            .as_ref()
+            .and_then(|d| d.shared)
+            .map_or(0, |s| u32::from(s.verdef.count())),
+    })?;
+    let shstrndx = synth_shndx(link, SynthKind::Shstrtab).unwrap_or(0);
+    let e_type = match link.options.output {
+        OutputKind::Static | OutputKind::Exec => ET_EXEC,
+        OutputKind::Pie | OutputKind::Shared => ET_DYN,
+        OutputKind::Relocatable => ET_REL,
+    };
+    let phnum = pl.segments.len();
+    if u16::try_from(phnum).is_err() {
+        return Err(internal(format!("image: {phnum} program headers")));
+    }
+    let e_flags = link.arch.e_flags(&mut live_flags(link)).map_err(|r| r.diagnostic())?;
+    // `EI_OSABI` (a64.md Q11, ruled by WP-027c): `ELFOSABI_GNU` when the
+    // output uses a GNU extension of the gABI: an `STT_GNU_IFUNC` or
+    // `STB_GNU_UNIQUE` symbol, or an `IRELATIVE` record (GNU ld's rule;
+    // eu-elflint rejects the IFUNC symbol under 0); else the target's.
+    let gnu = link.synth.symtab.is_some_and(|(p, _)| p.gnu_symbols())
+        || !link.layout.slots.iplt.is_empty()
+        || link.synth.dynamic.is_some_and(|d| {
+            let inputs = DynsymInputs {
+                resolution: link.resolution,
+                demands: link.demands,
+                slots: &link.layout.slots,
+                src: d.src,
+                shared: matches!(d.kind, DynKind::Shared(_)),
+            };
+            mortar_synth::dynsym::gnu_symbols(d.dynsym, &inputs)
+        });
+    write_structure(StructureData {
+        class: facts.class,
+        osabi: if gnu { ELFOSABI_GNU } else { facts.osabi },
+        e_machine: facts.e_machine,
+        e_type,
+        e_flags,
+        e_entry: pl.entry.unwrap_or(0),
+        chunks: &pl.chunks,
+        segments: &pl.segments,
+        shdrs,
+        shstrndx,
+    })
+}
+
+/// The writer of the three structural chunks (I-40) from their data
+/// lists.
+///
+/// # Errors
+///
+/// `internal-error` when there is no file header chunk, when the header
+/// chunks do not have the size of what they hold, or for more program
+/// headers than `e_phnum` counts.
+pub fn write_structure(
+    d: StructureData<'_>,
+) -> Result<std::collections::BTreeMap<ChunkId, Box<[u8]>>, Diagnostic> {
+    let class = d.class;
     let find =
-        |kind: ChunkKind| pl.chunks.iter().find(|(_, c)| c.kind == kind).map(|(id, c)| (id, *c));
+        |kind: ChunkKind| d.chunks.iter().find(|(_, c)| c.kind == kind).map(|(id, c)| (id, *c));
     let (eh_id, eh_chunk) = find(ChunkKind::FileHeader)
         .ok_or_else(|| internal("image: no file header chunk (I-40)"))?;
     let ph = find(ChunkKind::ProgramHeaders);
     let sh = find(ChunkKind::SectionHeaders);
-    let phdrs: Vec<Phdr> = pl
+    let phdrs: Vec<Phdr> = d
         .segments
         .iter()
         .map(|(_, s)| Phdr {
@@ -747,15 +873,9 @@ pub fn structure(
             p_align: 1u64 << s.align,
         })
         .collect();
-    let shdrs = section_headers(link)?;
+    let mut shdrs = d.shdrs;
     let shnum = shdrs.len() as u32;
-    let shstrndx = synth_shndx(link, SynthKind::Shstrtab).unwrap_or(0);
-    let e_type = match link.options.output {
-        OutputKind::Static | OutputKind::Exec => ET_EXEC,
-        OutputKind::Pie | OutputKind::Shared => ET_DYN,
-        OutputKind::Relocatable => ET_REL,
-    };
-    let mut shdrs = shdrs;
+    let shstrndx = d.shstrndx;
     // gABI extended numbering: the count and the string table's index in
     // section header 0 when they do not fit `e_shnum`/`e_shstrndx`.
     let (e_shnum, e_shstrndx) = {
@@ -779,31 +899,14 @@ pub fn structure(
     };
     let phnum = u16::try_from(phdrs.len())
         .map_err(|_| internal(format!("image: {} program headers", phdrs.len())))?;
-    let e_flags = link.arch.e_flags(&mut live_flags(link)).map_err(|r| r.diagnostic())?;
-    // `EI_OSABI` (a64.md Q11, ruled by WP-027c): `ELFOSABI_GNU` when the
-    // output uses a GNU extension of the gABI: an `STT_GNU_IFUNC` or
-    // `STB_GNU_UNIQUE` symbol, or an `IRELATIVE` record (GNU ld's rule;
-    // eu-elflint rejects the IFUNC symbol under 0); else the target's.
-    let gnu = link.synth.symtab.is_some_and(|(p, _)| p.gnu_symbols())
-        || !link.layout.slots.iplt.is_empty()
-        || link.synth.dynamic.is_some_and(|d| {
-            let inputs = DynsymInputs {
-                resolution: link.resolution,
-                demands: link.demands,
-                slots: &link.layout.slots,
-                src: d.src,
-                shared: matches!(d.kind, DynKind::Shared(_)),
-            };
-            mortar_synth::dynsym::gnu_symbols(d.dynsym, &inputs)
-        });
     let ehdr = Ehdr {
-        osabi: if gnu { ELFOSABI_GNU } else { facts.osabi },
-        e_type,
-        e_machine: facts.e_machine,
-        e_entry: pl.entry.unwrap_or(0),
+        osabi: d.osabi,
+        e_type: d.e_type,
+        e_machine: d.e_machine,
+        e_entry: d.e_entry,
         e_phoff: ph.map_or(0, |p| p.1.offset),
         e_shoff: sh.map_or(0, |s| s.1.offset),
-        e_flags,
+        e_flags: d.e_flags,
         e_phnum: phnum,
         e_shnum,
         e_shstrndx,
@@ -842,24 +945,31 @@ fn synth_shndx(link: &Link<'_, '_>, kind: SynthKind) -> Option<u32> {
     link.layout.placement.chunks.get(id)?.shndx
 }
 
-/// The section header table (I-40, L-86): the null header, then one per
-/// output section in index order.
-fn section_headers(link: &Link<'_, '_>) -> Result<Vec<Shdr>, Diagnostic> {
-    let pl = &link.layout.placement;
-    let facts = link.arch.facts();
-    let class = facts.class;
-    let word = u64::from(facts.word);
-    let rel = matches!(facts.rel_form, mortar_arch::RelForm::Rel);
-    let secs = crate::rows::out_sections(&link.layout.placement.chunks);
+/// The section header table (I-40, L-86) from its data list: the null
+/// header, then one per output section in index order.
+///
+/// # Errors
+///
+/// `internal-error` for a section without a name in `.shstrtab`, a
+/// synthetic chunk without a plan, or a section index without a chunk.
+pub fn section_headers_of(d: &ShdrData<'_, '_>) -> Result<Vec<Shdr>, Diagnostic> {
+    let class = d.class;
+    let word = d.word;
+    let rel = d.rel;
+    let secs = crate::rows::out_sections(d.chunks);
     let mut rows: Vec<Option<Shdr>> = vec![None; secs.len().max(1)];
     rows[0] = Some(Shdr::default());
-    let kind_of = |id: ChunkId| link.synth.chunks.iter().find(|c| c.1 == id).map(|c| c.0);
-    for (id, c) in pl.chunks.iter() {
+    let kind_of = |id: ChunkId| d.synth.iter().find(|c| c.1 == id).map(|c| c.0);
+    let shndx = |kind: SynthKind| {
+        let id = d.synth.iter().find(|c| c.0 == kind)?.1;
+        d.chunks.get(id)?.shndx
+    };
+    for (id, c) in d.chunks.iter() {
         let Some(n) = c.shndx else { continue };
         let n = n as usize;
         let sec = secs[n];
         let row = rows[n].get_or_insert(Shdr {
-            sh_name: link.synth.shstrtab.sh_name(n as u32).ok_or_else(|| {
+            sh_name: d.shstrtab.sh_name(n as u32).ok_or_else(|| {
                 internal(format!("image: section {n} has no name in .shstrtab (S-90)"))
             })?,
             sh_type: c.sh_type,
@@ -885,45 +995,40 @@ fn section_headers(link: &Link<'_, '_>) -> Result<Vec<Shdr>, Diagnostic> {
                 }
                 match kind {
                     SynthKind::Symtab => {
-                        row.sh_link = synth_shndx(link, SynthKind::Strtab).unwrap_or(0);
-                        row.sh_info = link.synth.symtab.map_or(0, |s| s.0.sh_info());
+                        row.sh_link = shndx(SynthKind::Strtab).unwrap_or(0);
+                        row.sh_info = d.symtab_info;
                     }
                     SynthKind::SymtabShndx => {
-                        row.sh_link = synth_shndx(link, SynthKind::Symtab).unwrap_or(0);
+                        row.sh_link = shndx(SynthKind::Symtab).unwrap_or(0);
                     }
                     // S-69: `sh_link` 0 in a static output (`.dynsym` in a
                     // dynamic one), `sh_info` `.got.plt`.
                     SynthKind::RelaPlt => {
-                        row.sh_info = synth_shndx(link, SynthKind::GotPlt).unwrap_or(0);
-                        if link.synth.dynamic.is_some() {
-                            row.sh_link = synth_shndx(link, SynthKind::Dynsym).unwrap_or(0);
+                        row.sh_info = shndx(SynthKind::GotPlt).unwrap_or(0);
+                        if d.dynamic {
+                            row.sh_link = shndx(SynthKind::Dynsym).unwrap_or(0);
                         }
                     }
                     // gABI: a symbol table's and `.dynamic`'s strings, a
                     // hash table's, versym's and relocations' symbols.
                     SynthKind::Dynsym => {
-                        row.sh_link = synth_shndx(link, SynthKind::Dynstr).unwrap_or(0);
+                        row.sh_link = shndx(SynthKind::Dynstr).unwrap_or(0);
                         row.sh_info = 1;
                     }
                     SynthKind::Dynamic => {
-                        row.sh_link = synth_shndx(link, SynthKind::Dynstr).unwrap_or(0);
+                        row.sh_link = shndx(SynthKind::Dynstr).unwrap_or(0);
                     }
                     SynthKind::GnuHash | SynthKind::GnuVersion | SynthKind::RelaDyn => {
-                        row.sh_link = synth_shndx(link, SynthKind::Dynsym).unwrap_or(0);
+                        row.sh_link = shndx(SynthKind::Dynsym).unwrap_or(0);
                     }
                     SynthKind::GnuVersionR => {
-                        row.sh_link = synth_shndx(link, SynthKind::Dynstr).unwrap_or(0);
-                        row.sh_info = link.layout.slots.verneed.len() as u32;
+                        row.sh_link = shndx(SynthKind::Dynstr).unwrap_or(0);
+                        row.sh_info = d.verneed;
                     }
                     // D-115.
                     SynthKind::GnuVersionD => {
-                        row.sh_link = synth_shndx(link, SynthKind::Dynstr).unwrap_or(0);
-                        row.sh_info = link
-                            .synth
-                            .dynamic
-                            .as_ref()
-                            .and_then(|d| d.shared)
-                            .map_or(0, |s| u32::from(s.verdef.count()));
+                        row.sh_link = shndx(SynthKind::Dynstr).unwrap_or(0);
+                        row.sh_info = d.verdef;
                     }
                     _ => {}
                 }
@@ -932,7 +1037,7 @@ fn section_headers(link: &Link<'_, '_>) -> Result<Vec<Shdr>, Diagnostic> {
                 // L-50: the merge class's entsize when `SHF_MERGE` is kept;
                 // the gABI's pointer arrays have entries of a word.
                 if row.sh_flags & SHF_MERGE != 0 {
-                    let class = kind.out().and_then(|o| link.assignment.outsecs.get(o)?.merge);
+                    let class = kind.out().and_then(|o| d.outsecs.get(o)?.merge);
                     row.sh_entsize = class.map_or(0, |m| m.entsize);
                 } else if matches!(row.sh_type, SHT_INIT_ARRAY | SHT_FINI_ARRAY | SHT_PREINIT_ARRAY)
                 {
@@ -2168,7 +2273,7 @@ impl LinkTables<'_, '_> {
         }
         // Per section index, the start of its first chunk.
         let mut starts: std::collections::BTreeMap<u32, u64> = std::collections::BTreeMap::new();
-        let pos = |c: &mortar_core::layout::Chunk| c.addr.unwrap_or(c.offset);
+        let pos = |c: &Chunk| c.addr.unwrap_or(c.offset);
         for (_, c) in pl.chunks.iter() {
             if let Some(i) = c.shndx {
                 let e = starts.entry(i).or_insert(u64::MAX);
@@ -2206,7 +2311,7 @@ impl LinkTables<'_, '_> {
             // code chunk is fill no item owns and no alignment explains:
             // an incremental-mode map lists it as a hole (plumb.md §6.8,
             // P-I1). From the end of the chunk before it in the section.
-            let mut alloc: Vec<&mortar_core::layout::Chunk> = pl
+            let mut alloc: Vec<&Chunk> = pl
                 .chunks
                 .iter()
                 .map(|(_, c)| c)
