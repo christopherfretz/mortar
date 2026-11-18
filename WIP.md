@@ -17,8 +17,15 @@ Brief: `/Volumes/AgentWork/mortar-helper/briefs/wp-238-step2.md`. Rulings:
 - `l10drive.py` also runs the oracle (ORA1/ORA2 lines).
 
 ## Next
-- Part 0 handed back (interim, record S1-S7 at 358850da+); WAITING for the coordinator's word. The probe binary was deleted: rebuild with scratch `build.sh probe 2`.
-- Then Part 1 (seam 9, ONE commit, the diff of S7), Part 2, 3, 4.
+- Part 0 accepted (rulings "After Part 0", P0-1..P0-7).
+- Part 1 DONE: seam 9 is commit e968996e (the first commit after 7d242c1f;
+  differences from S7 listed in the hand-back). Gate script: scratch
+  `p1-gate.sh` (logs in scratch `gate/`).
+- **WAITING for the coordinator's word before Part 2** (the second review,
+  `briefs/review-238-live-2.md`, may amend the stored form).
+- Then Part 2 (producer `stored_edges` body + capture of rows and
+  `live_hash`), Part 3 (walk in `update/live.rs`), Part 4 (delete probe and
+  scripts).
 
 ## How to resume
 - Probe build: scratch `build.sh probe 2` (release mortar with the feature,
