@@ -30,7 +30,7 @@ use std::os::unix::fs::FileExt as _;
 use std::path::Path;
 
 use mortar_core::incr::{
-    DirtyRange, IncrReason, LayoutDelta, RefillSet, SymtabPlan, Unimplemented,
+    DirtyRange, IncrReason, LayoutDelta, RefillSet, StoredLayout, SymtabPlan, Unimplemented,
 };
 use mortar_core::layout::{ChunkKind, Placement};
 use mortar_core::{ChunkId, FileId};
@@ -119,7 +119,10 @@ pub struct Refill {
 /// output) and give the dirty ranges, sorted and disjoint, with their
 /// bytes concatenated in range order, and the new leaves and build id
 /// (WP-211 §C; IN-73, IN-75). `leaves` are the stored `LEAVES` of the
-/// previous output, whole. Called by the join (IN-70 U9).
+/// previous output, whole. `stored` gives the one row the placement
+/// does not hold: an unchanged file's stored `.eh_frame` range
+/// (`eh_range_of`), read for each range a whole rewrite moves. Called by
+/// the join (IN-70 U9).
 ///
 /// # Errors
 /// [`RefillError`]: `input-changed` for an input that is not the file the
@@ -134,6 +137,7 @@ pub fn refill(
     layout: &LayoutDelta,
     symtab: &SymtabPlan,
     set: &RefillSet,
+    stored: &StoredLayout<'_>,
     previous: &File,
     leaves: &[[u8; 32]],
 ) -> Result<Refill, RefillError> {
@@ -220,11 +224,16 @@ pub fn refill(
     let hole_range = |h: &mortar_core::layout::Hole| {
         in_file(h.chunk).map(|c| c.offset + h.offset..c.offset + h.offset + h.size)
     };
-    want.extend(layout.holes.iter().filter_map(hole_range));
+    // A dead string piece's bytes are left as written (`DeadFragment`,
+    // L-147): not refilled.
+    let refilled_hole =
+        |h: &&mortar_core::layout::Hole| h.kind != mortar_core::layout::HoleKind::DeadFragment;
+    want.extend(layout.holes.iter().filter(refilled_hole).filter_map(hole_range));
     want.extend(
         pl.holes
             .iter()
             .filter(|h| layout.hole_chunks.binary_search(&h.chunk).is_ok())
+            .filter(refilled_hole)
             .filter_map(hole_range),
     );
     if !layout.frags.is_empty() {
@@ -233,7 +242,12 @@ pub fn refill(
     let synth =
         |k: SynthKind| link.synth.chunks.iter().find(|c| c.0 == k).and_then(|c| in_file(c.1));
     let whole = |c: &mortar_core::layout::Chunk| c.offset..c.offset + c.capacity.max(c.size);
-    if !layout.slots_appended.is_empty() || !layout.slots_dead.is_empty() {
+    // Seam 6 (IN-72 item 7): appended and revived slots written; a
+    // recounted one changes no byte.
+    if !layout.slots_appended.is_empty()
+        || !layout.slots_dead.is_empty()
+        || !layout.slots_revived.is_empty()
+    {
         for k in [SynthKind::Got, SynthKind::GotPlt, SynthKind::Plt, SynthKind::RelaPlt] {
             want.extend(synth(k).map(whole));
         }
@@ -306,6 +320,13 @@ pub fn refill(
         }
         overlay.put(r.start, bytes);
     }
+    // A retired slot's words are zero (`HoleKind::DeadSlot`, IN-72 item
+    // 7): the hole U-4 gives, over what the image filled.
+    for h in layout.holes.iter().filter(|h| h.kind == mortar_core::layout::HoleKind::DeadSlot) {
+        if let Some(r) = hole_range(h) {
+            overlay.put(r.start, vec![0; (r.end - r.start) as usize]);
+        }
+    }
     // 3. `.eh_frame`'s unchanged records: their PC-relative fields moved
     // with the code (IN-34a "Pad and move"), from the previous bytes.
     if let (Some(i), Some(records), true) = (eh_index, &eh_records, eh_moves) {
@@ -317,6 +338,33 @@ pub fn refill(
                 continue;
             }
             overlay.put(at, p.1.to_vec());
+        }
+    }
+    // `.eh_frame`'s unchanged ranges a whole rewrite moves (WP-243's
+    // shape: no record offsets): from the previous bytes at the stored
+    // offset, over what the image filled. A range with offsets is the
+    // image's (the new records); a changed file not listed has none.
+    if let (Some(eh), Some(c), Some(i)) = (&layout.eh, eh_chunk, eh_index) {
+        let o = &old.rows[i];
+        for r in eh.ranges.iter().filter(|r| r.records.is_empty() && r.capacity > 0) {
+            let Some(sr) = stored.eh_range_of(r.file).map_err(RefillError::Fallback)? else {
+                return Err(not_implemented(Unimplemented::Eh));
+            };
+            if u64::from(sr.capacity) != r.capacity {
+                return Err(not_implemented(Unimplemented::Eh));
+            }
+            let lo = o.offset + u64::from(sr.offset);
+            let bytes = prev.read(lo..lo + r.capacity)?;
+            counts.copied += r.capacity;
+            let moved = move_eh_range(
+                &bytes,
+                o.addr + u64::from(sr.offset),
+                c.addr.unwrap_or(0) + r.offset,
+                sr.fdes,
+                &shift,
+                &mut counts,
+            )?;
+            overlay.put(c.offset + r.offset, moved);
         }
     }
     // 4. `.symtab` and `.strtab` from U-5's plan (IN-49a).
@@ -435,34 +483,31 @@ fn section_size(link: &Link<'_, '_>, s: mortar_core::SectionId) -> Option<u64> {
 }
 
 /// The file ranges of `layout.frags` whose count is not 0 (IN-72 item 6:
-/// a fragment appended, or whose count rises from 0, is rewritten).
+/// a fragment appended, or whose count rises from 0, is rewritten): each
+/// from its row's `offset` and `size` (seam 6) in its output section's
+/// merged chunk; O(changed fragments), no other fragment read.
 fn frag_ranges(link: &Link<'_, '_>, layout: &LayoutDelta) -> Vec<Range<u64>> {
-    let pl = &link.layout.placement;
-    let mut by_out: BTreeMap<u32, Vec<u64>> = BTreeMap::new();
-    for f in layout.frags.iter().filter(|f| f.refs > 0) {
-        by_out.entry(f.out.0).or_default().push(f.offset);
-    }
-    let mut out = Vec::new();
-    for (frag, &off) in link.layout.merge.frag_off.iter() {
-        if off == mortar_core::layout::MergeMap::NONE {
-            continue;
-        }
-        let Some(row) = link.split.frags.get(frag) else { continue };
-        let Some(o) = link.assignment.out(row.section) else { continue };
-        if !by_out.get(&o.0).is_some_and(|v| v.contains(&off)) {
-            continue;
-        }
-        let chunk = pl
-            .chunks
-            .iter()
-            .find(|(_, c)| c.kind == ChunkKind::Merged(o))
-            .map(|(_, c)| c)
-            .filter(|c| c.in_file());
-        if let Some(c) = chunk {
-            out.push(c.offset + off..c.offset + off + u64::from(row.size));
-        }
-    }
-    out
+    let merged: BTreeMap<u32, (u64, u64)> = link
+        .layout
+        .placement
+        .chunks
+        .iter()
+        .filter(|(_, c)| c.in_file())
+        .filter_map(|(_, c)| match c.kind {
+            ChunkKind::Merged(o) => Some((o.0, (c.offset, c.size))),
+            _ => None,
+        })
+        .collect();
+    layout
+        .frags
+        .iter()
+        .filter(|f| f.refs > 0)
+        .filter_map(|f| {
+            let &(at, size) = merged.get(&f.out.0)?;
+            let end = f.offset + u64::from(f.size);
+            (end <= size).then(|| at + f.offset..at + end)
+        })
+        .collect()
 }
 
 /// IN-34a moves an unchanged file's FDEs only through the growth steps: a
@@ -929,6 +974,40 @@ pub fn patch_eh(
                 }
             }
         }
+    }
+    Ok(out)
+}
+
+/// An unchanged file's `.eh_frame` range that MOVES in a whole rewrite
+/// (IN-34a; WP-243's shape: a range of `LayoutDelta::eh` with an empty
+/// `records` list): its bytes `range` as the previous output holds them
+/// at `old_addr`, walked, checked against the stored row's FDE count
+/// `fdes`, and their PC-relative fields re-targeted for `new_addr` and the
+/// code's moves `shift`. The CIE pointers are distances inside the range
+/// (one CIE a file, IN-34a) and do not change; an FDE whose CIE is
+/// outside the range is `update-not-implemented (eh)`.
+///
+/// # Errors
+/// `update-not-implemented (eh)`; `state-corrupt` for an FDE count that
+/// is not the stored one.
+pub fn move_eh_range(
+    range: &[u8],
+    old_addr: u64,
+    new_addr: u64,
+    fdes: u32,
+    shift: &Shift,
+    counts: &mut Counts,
+) -> Result<Vec<u8>, RefillError> {
+    let records = walk_eh(range, counts)?;
+    let n = records.iter().filter(|r| r.cie.is_some()).count();
+    if n != fdes as usize {
+        return Err(RefillError::Fallback(IncrReason::StateCorrupt(format!(
+            "FILES.eh_fdes: {fdes} stored, {n} in the output's range"
+        ))));
+    }
+    let mut out = range.to_vec();
+    for (at, b) in patch_eh(range, &records, old_addr, new_addr, shift, counts)? {
+        out[at as usize..at as usize + 4].copy_from_slice(&b);
     }
     Ok(out)
 }

@@ -15,6 +15,7 @@ type Refill = fn(
     &LayoutDelta,
     &SymtabPlan,
     &RefillSet,
+    &StoredLayout<'_>,
     &File,
     &[[u8; 32]],
 ) -> Result<Refilled, RefillError>;

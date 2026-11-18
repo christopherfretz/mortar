@@ -327,6 +327,9 @@ pub struct MapSlot {
     pub kind: MapSlotKind,
     pub key: MapSlotKey,
     pub addr: u64,
+    /// Its index in its kind's list (not written: an update's
+    /// `slots_dead` are found by it).
+    pub index: u32,
 }
 
 /// A `redirect` record (I-78a): the site (map file, section index,
@@ -767,7 +770,7 @@ pub(crate) fn decisions_of(t: &crate::link::LinkTables<'_, '_>) -> Decisions {
                 addr: &dyn Fn(u32) -> Option<u64>| {
         for (n, &k) in keys.iter().enumerate() {
             if let (Some(key), Some(addr)) = (key_of(k), addr(n as u32)) {
-                out.push(MapSlot { kind, key, addr });
+                out.push(MapSlot { kind, key, addr, index: n as u32 });
             }
         }
     };
@@ -781,6 +784,7 @@ pub(crate) fn decisions_of(t: &crate::link::LinkTables<'_, '_>) -> Decisions {
             kind: MapSlotKind::TlsLd,
             key: MapSlotKey::Module,
             addr: got.got + plan.got_offset(Region::TlsLd, 0),
+            index: 0,
         });
     }
     let plt = |n: u32| plan.plt_address(&got, slots.plt[n as usize]);
@@ -900,7 +904,6 @@ pub fn update_map(
     stored: &mortar_core::incr::StoredLayout<'_>,
     symtab: &mortar_core::incr::SymtabPlan,
 ) -> Result<Map, mortar_core::incr::IncrReason> {
-    let _ = layout;
     let mut m = crate::link::map_of(link);
     m.incremental = true;
     if m.decisions.is_none() {
@@ -949,11 +952,29 @@ pub fn update_map(
         keyed.sort_by_key(|k| (k.0, k.1));
         m.dead = keyed.into_iter().map(|k| k.2).collect();
     }
+    // Seam 6 (IN-72 item 7): a retired slot has no `slot` record (its
+    // words are zero, a `DeadSlot` hole's `hole` line); an appended or
+    // revived one is the placement's.
+    if let Some(d) = &mut m.decisions
+        && !layout.slots_dead.is_empty()
+    {
+        use mortar_core::layout::SlotKind;
+        let kind_of = |k: SlotKind| match k {
+            SlotKind::Got => MapSlotKind::Got,
+            SlotKind::Plt => MapSlotKind::Plt,
+            SlotKind::Iplt => MapSlotKind::Iplt,
+            SlotKind::TlsDesc => MapSlotKind::TlsDesc,
+            SlotKind::TlsGd => MapSlotKind::TlsGd,
+            SlotKind::TlsIe => MapSlotKind::GotTprel,
+        };
+        d.slots.retain(|s| {
+            !layout.slots_dead.iter().any(|x| kind_of(x.kind) == s.kind && x.index == s.index)
+        });
+    }
     // The plan's blocks, then every other file's stored block.
     let mut all: Vec<(mortar_core::FileId, mortar_core::incr::SymtabBlock)> = symtab.blocks.clone();
-    let placed = |f: mortar_core::FileId, all: &[(mortar_core::FileId, _)]| {
-        all.iter().any(|(g, _)| *g == f)
-    };
+    let placed =
+        |f: mortar_core::FileId, all: &[(mortar_core::FileId, _)]| all.iter().any(|(g, _)| *g == f);
     for (file, _) in link.inputs.files.iter() {
         if !placed(file, &all)
             && let Some(b) = stored.symtab_block(file)?
@@ -1469,17 +1490,25 @@ mod tests {
                         kind: MapSlotKind::Got,
                         key: MapSlotKey::Global(b"g".to_vec()),
                         addr: 0x403000,
+                        index: 0,
                     },
                     MapSlot {
                         kind: MapSlotKind::GotTprel,
                         key: MapSlotKey::Local { file: 0, index: 12 },
                         addr: 0x403008,
+                        index: 0,
                     },
-                    MapSlot { kind: MapSlotKind::TlsLd, key: MapSlotKey::Module, addr: 0x403010 },
+                    MapSlot {
+                        kind: MapSlotKind::TlsLd,
+                        key: MapSlotKey::Module,
+                        addr: 0x403010,
+                        index: 0,
+                    },
                     MapSlot {
                         kind: MapSlotKind::Iplt,
                         key: MapSlotKey::Global(b"f@V 1".to_vec()),
                         addr: 0x404000,
+                        index: 0,
                     },
                 ],
                 redirects: vec![MapRedirect { file: 0, section: 3, offset: 0x18, addr: 0x402050 }],

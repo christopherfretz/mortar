@@ -21,15 +21,15 @@ use std::time::Duration;
 use mortar::front::{Env, Front, front};
 use mortar::timing::Timer;
 use mortar_core::incr::{
-    DirtyRange, EhLayout, GrowthStep, IncrReason, LayoutDelta, RefillSet, RefillUnit, SymtabEntry,
-    SymtabPlan, SymtabTables,
+    DirtyRange, EhLayout, GrowthStep, IncrReason, LayoutDelta, MemoryLayout, RefillSet, RefillUnit,
+    StoredLayout, SymtabEntry, SymtabPlan, SymtabTables,
 };
 use mortar_core::layout::Layout;
 use mortar_core::par::Pool;
 use mortar_core::{FileId, SectionId};
 use mortar_diag::{Collector, Policy};
 use mortar_image::update::{
-    Counts, RefillError, Shift, output_size, patch_eh, refill, walk_eh,
+    Counts, RefillError, Shift, move_eh_range, output_size, patch_eh, refill, walk_eh,
 };
 use mortar_input::store::{Store, StorePolicy};
 use mortar_testutil::target::Arch;
@@ -273,8 +273,12 @@ fn run_refill_with(
     leaves: &[[u8; 32]],
 ) -> Result<Got, RefillError> {
     let file = File::open(fx.path(prev)).unwrap();
+    // No stored row is read unless a whole `.eh_frame` rewrite moves a
+    // range (`eh_range_of`): an empty stored layout.
+    let rows = MemoryLayout::default();
+    let stored = StoredLayout::new(&rows);
     mortar::image::with_link(f, store, &|_| {}, |l| {
-        refill(l, delta, plan, set, &file, leaves)
+        refill(l, delta, plan, set, &stored, &file, leaves)
             .map(|u| (u.ranges, u.bytes, u.counts, output_size(l), u.leaves))
     })
     .unwrap()
@@ -341,8 +345,7 @@ fn dirty_ranges_cover_every_differing_byte() {
             let delta = LayoutDelta { files: vec![c_o], ..LayoutDelta::default() };
             let set = RefillSet { units: units(f, &["c.o"]), ..RefillSet::default() };
             let (r, b, counts, size, leaves) =
-                run_refill(f, store, &delta, &SymtabPlan::default(), &set, &fx, "prev")
-                    .unwrap();
+                run_refill(f, store, &delta, &SymtabPlan::default(), &set, &fx, "prev").unwrap();
             assert_eq!(size, want.len() as u64);
             judge(&format!("{arch:?} same-size edit"), &prev, &want, &r, &b);
             // The new leaves are the full link's (I-76, IN-75).
@@ -606,6 +609,42 @@ fn eh_frame_moved_from_its_own_bytes() {
             // The CIE pointer (a distance inside the section) unchanged.
             assert_eq!(moved[at - 4..at], bytes[at - 4..at]);
         }
+        // WP-243's moving range (a whole rewrite's range with no record
+        // offsets): the first file's CIE and its FDEs, moved 0x40 bytes
+        // with the code where it was; each FDE still names its code.
+        let ranges: Vec<u64> =
+            records.iter().filter(|r| r.cie.is_none()).map(|r| r.offset).chain([eh_size]).collect();
+        let (lo, hi) = (ranges[0] as usize, ranges[1] as usize);
+        let range = &bytes[lo..hi];
+        let n = records.iter().filter(|r| r.cie == Some(lo as u64)).count() as u32;
+        assert!(n >= 1, "{arch:?}: the first CIE's FDEs");
+        let old_at = eh_addr + lo as u64;
+        let moved =
+            move_eh_range(range, old_at, old_at + 0x40, n, &Shift::default(), &mut counts).unwrap();
+        for r in records.iter().filter(|r| r.cie == Some(lo as u64)) {
+            let at = r.offset as usize - lo + 8;
+            let v0 = i32::from_le_bytes(range[at..at + 4].try_into().unwrap());
+            let v1 = i32::from_le_bytes(moved[at..at + 4].try_into().unwrap());
+            assert_eq!(
+                (old_at + at as u64).wrapping_add(i64::from(v0) as u64),
+                (old_at + 0x40 + at as u64).wrapping_add(i64::from(v1) as u64),
+                "{arch:?}: the FDE at {:#x} names its code",
+                r.offset
+            );
+        }
+        // The stored FDE count disagrees: `state-corrupt`; a range cut
+        // from its CIE: `update-not-implemented (eh)`.
+        assert!(matches!(
+            move_eh_range(range, old_at, old_at, n + 1, &Shift::default(), &mut counts),
+            Err(RefillError::Fallback(IncrReason::StateCorrupt(_)))
+        ));
+        let fde = records.iter().find(|r| r.cie == Some(lo as u64)).unwrap().offset as usize;
+        assert!(matches!(
+            move_eh_range(&bytes[fde..hi], old_at, old_at, n, &Shift::default(), &mut counts),
+            Err(RefillError::Fallback(IncrReason::UpdateNotImplemented(Some(
+                mortar_core::incr::Unimplemented::Eh
+            ))))
+        ));
         // An encoding IN-34a does not move: `update-not-implemented (eh)`.
         let cie = records.iter().find(|r| r.cie.is_none() && r.z).unwrap();
         let mut bad = bytes.to_vec();
@@ -629,7 +668,7 @@ fn eh_frame_moved_from_its_own_bytes() {
 // states U-5's plan; a default plan leaves the full link's lines.
 #[test]
 fn update_map_states_the_symtab_plan() {
-    use mortar_core::incr::{MemoryLayout, StoredLayout, SymtabBlock};
+    use mortar_core::incr::SymtabBlock;
     use mortar_image::map::{render, update_map};
     for arch in ARCHES {
         let Some(fx) = Fixture::new(arch, "u6-map") else { continue };
@@ -681,10 +720,7 @@ fn update_map_states_the_symtab_plan() {
             let (with, without, full) = mortar::image::with_link(f, store, &|_| {}, |l| {
                 (
                     render(&update_map(l, &delta, &stored, &plan).unwrap(), &pool),
-                    render(
-                        &update_map(l, &delta, &none, &SymtabPlan::default()).unwrap(),
-                        &pool,
-                    ),
+                    render(&update_map(l, &delta, &none, &SymtabPlan::default()).unwrap(), &pool),
                     render(&mortar_image::link::map_of(l), &pool),
                 )
             })
@@ -702,7 +738,8 @@ fn update_map_states_the_symtab_plan() {
             // F-4 (ruling 3): a fragment's class in the inputs' terms:
             // `sh_flags` bits (SHF_MERGE 0x10, SHF_STRINGS 0x20),
             // `sh_entsize`, `sh_addralign` in BYTES.
-            let frags: Vec<&str> = lines.iter().copied().filter(|l| l.starts_with("frag ")).collect();
+            let frags: Vec<&str> =
+                lines.iter().copied().filter(|l| l.starts_with("frag ")).collect();
             assert!(
                 frags.iter().any(|l| l.split(' ').nth(2) == Some("30,1,1")),
                 "{arch:?}: the strings' class: {frags:?}"
@@ -765,8 +802,7 @@ fn build_id_is_the_tree_over_the_whole_new_output() {
             let delta = LayoutDelta { files: vec![file_of(f, "c.o")], ..LayoutDelta::default() };
             let set = RefillSet { units: units(f, &["c.o"]), ..RefillSet::default() };
             let (r, b, counts, _, leaves) =
-                run_refill(f, store, &delta, &SymtabPlan::default(), &set, &fx, "prev")
-                    .unwrap();
+                run_refill(f, store, &delta, &SymtabPlan::default(), &set, &fx, "prev").unwrap();
             assert_eq!(leaves, fx.leaves_of("want"), "{arch:?}: the new leaves");
             assert!(counts.build_id_read < want.len() as u64, "{arch:?}: {counts:?}");
             let got = patched(&prev, &r, &b, want.len() as u64);
@@ -808,8 +844,7 @@ fn a_folded_section_is_in_no_region() {
                     .iter()
                     .find(|&s| {
                         f.layout.placement.place[s].get().is_some_and(|(c, _)| {
-                            f.layout.placement.chunks[c].name(&f.assignment)
-                                == Some(&b".text"[..])
+                            f.layout.placement.chunks[c].name(&f.assignment) == Some(&b".text"[..])
                         })
                     })
                     .unwrap()
@@ -824,6 +859,133 @@ fn a_folded_section_is_in_no_region() {
             let after = regions(f);
             assert!(after.iter().all(|r| before.contains(r)), "{arch:?}: {before:?} -> {after:?}");
             assert_eq!(after.len() + 1, before.len(), "{arch:?}: c.o's region gone: {after:?}");
+        });
+    }
+}
+
+/// a.s with its GOT load of `d` made a direct one of the same size: the
+/// slot's demand is gone.
+fn a_without_got(arch: Arch) -> String {
+    let [a, _, _] = sources(arch, 42, 0);
+    let (from, to) = match arch {
+        Arch::X86_64 => ("movq d@GOTPCREL(%rip), %rax", "leaq d(%rip), %rax"),
+        _ => ("adrp x1, :got:d\n\tldr x1, [x1, :got_lo12:d]", "adrp x1, d\n\tadd x1, x1, :lo12:d"),
+    };
+    assert!(a.contains(from));
+    a.replace(from, to)
+}
+
+// spec: incr.md IN-72 item 7 (seam 6: `slots_dead`: a retired slot's
+// words written 0, a `HoleKind::DeadSlot` hole; IN-3a), image.md I-78a
+// (no `slot` record for it; the `hole` line). A hand-made delta retires
+// d's GOT slot; P_U is the first link's layout replayed with the hole;
+// its image with the slot's words zero is what the update must equal. With
+// `MORTAR_U6_DUMP`, the output, its map and the inputs are kept for
+// `cargo xtask plumb`.
+#[test]
+fn a_retired_slot_is_zero_and_a_hole() {
+    use mortar_core::layout::{Hole, HoleKind};
+    use mortar_image::map::{render, update_map};
+    for arch in ARCHES {
+        let Some(fx) = Fixture::new(arch, "u6-deadslot") else { continue };
+        let l0 = fx.write("prev", None);
+        let prev = std::fs::read(fx.path("prev")).unwrap();
+        if l0.slots.got.is_empty() {
+            eprintln!("[u6] {arch:?}: the GOT load was relaxed, no slot to retire");
+            continue;
+        }
+        assert_eq!(l0.slots.got.len(), 1, "{arch:?}: d's slot only");
+        // The edit that retires the slot (a.o's load made direct) cannot
+        // be linked with the slot kept: the layout's rule `Slots` refuses
+        // "a got slot without a demand" (WP-218 finding, the join's). The
+        // delta retires it by hand; a.o is unchanged.
+        let _ = a_without_got;
+        fx.write("want", Some(&l0));
+        let mut want = std::fs::read(fx.path("want")).unwrap();
+        fx.with_front("want", Some(&l0), |f, store| {
+            let pl = &f.layout.placement;
+            let (got, chunk) = pl
+                .chunks
+                .iter()
+                .find(|(_, c)| c.name(&f.assignment) == Some(&b".got"[..]))
+                .map(|(id, c)| (id, c.clone()))
+                .unwrap();
+            // d's slot: the 8-byte word of `.got` holding d's address.
+            let d = {
+                let plan = whole_symtab_plan(&prev);
+                let names = &plan.strtab[0].1;
+                plan.entries
+                    .iter()
+                    .find(|e| {
+                        let n = &names[e.name as usize..];
+                        &n[..n.iter().position(|&b| b == 0).unwrap()] == b"d"
+                    })
+                    .unwrap()
+                    .value
+            };
+            let at = (0..chunk.size / 8)
+                .map(|k| k * 8)
+                .find(|&k| {
+                    let o = (chunk.offset + k) as usize;
+                    prev[o..o + 8] == d.to_le_bytes()
+                })
+                .expect("d's GOT slot");
+            let hole = Hole { chunk: got, offset: at, size: 8, kind: HoleKind::DeadSlot };
+            let mut holes = f.layout.placement.holes.to_vec();
+            holes.push(hole);
+            holes.sort_by_key(|h| (h.chunk, h.offset));
+            f.layout.placement.holes = holes.into_boxed_slice();
+            let dead = mortar_core::incr::StoredSlot {
+                kind: mortar_core::layout::SlotKind::Got,
+                key: l0.slots.got[0],
+                index: 0,
+                refs: 0,
+            };
+            let delta = LayoutDelta {
+                files: vec![file_of(f, "a.o")],
+                hole_chunks: vec![got],
+                holes: vec![hole],
+                slots_dead: vec![dead],
+                placement: f.layout.placement.clone(),
+                ..LayoutDelta::default()
+            };
+            let set = RefillSet { units: units(f, &["a.o"]), ..RefillSet::default() };
+            let (r, b, counts, _, _) =
+                run_refill(f, store, &delta, &SymtabPlan::default(), &set, &fx, "prev").unwrap();
+            eprintln!("[u6] {arch:?} dead slot: {counts:?}");
+            // P_U with the slot's words zero; its build id follows.
+            let o = (chunk.offset + at) as usize;
+            want[o..o + 8].fill(0);
+            let got_bytes = patched(&prev, &r, &b, want.len() as u64);
+            assert_eq!(got_bytes[o..o + 8], [0; 8], "{arch:?}: the retired slot is zero");
+            let note = section_range(&want, b".note.gnu.build-id");
+            let mut a = got_bytes.clone();
+            a[note.clone()].fill(0);
+            want[note].fill(0);
+            assert!(a == want, "{arch:?}: P_U with the slot zero, the note aside");
+            let rows = MemoryLayout::default();
+            let stored = StoredLayout::new(&rows);
+            let pool = Pool::new(1);
+            let map = mortar::image::with_link(f, store, &|_| {}, |l| {
+                render(&update_map(l, &delta, &stored, &SymtabPlan::default()).unwrap(), &pool)
+            })
+            .unwrap();
+            let map = String::from_utf8(map).unwrap();
+            let hole_line = format!("hole .got {at:x} 8");
+            assert!(map.lines().any(|l| l == hole_line), "{arch:?}: no `{hole_line}` in\n{map}");
+            assert!(
+                !map.lines().any(|l| l.starts_with("slot got d ")),
+                "{arch:?}: a retired slot's record:\n{map}"
+            );
+            if let Some(dir) = std::env::var_os("MORTAR_U6_DUMP") {
+                let d = Path::new(&dir).join(format!("{arch:?}-deadslot"));
+                std::fs::create_dir_all(&d).unwrap();
+                std::fs::write(d.join("want"), &got_bytes).unwrap();
+                std::fs::write(d.join("want.map"), &map).unwrap();
+                for i in ["a.o", "b.o", "c.o"] {
+                    std::fs::copy(fx.path(i), d.join(i)).unwrap();
+                }
+            }
         });
     }
 }
