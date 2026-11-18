@@ -175,8 +175,10 @@ impl Collector {
             });
             all.truncate(end.map_or(all.len(), |index| index + 1));
         }
+        let keys = all.iter().map(|entry| entry.key).collect();
         Report {
             diagnostics: all.into_iter().map(|entry| entry.diagnostic).collect(),
+            keys,
             errors,
             warnings,
             truncated,
@@ -195,6 +197,9 @@ impl Collector {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Report {
     diagnostics: Vec<Diagnostic>,
+    /// `diagnostics`' keys, index for index (an incremental link's capture
+    /// stores a warning with its key: `spec/incr.md` IN-75a).
+    keys: Vec<Key>,
     errors: usize,
     warnings: usize,
     truncated: bool,
@@ -212,6 +217,16 @@ impl Report {
     #[must_use]
     pub fn diagnostics(&self) -> &[Diagnostic] {
         &self.diagnostics
+    }
+
+    /// Every warning shown, with its key, in report order (an incremental
+    /// link's capture, `spec/incr.md` IN-75a; WP-221 F-7).
+    pub fn warnings(&self) -> impl Iterator<Item = (Key, &Diagnostic)> {
+        self.keys
+            .iter()
+            .zip(&self.diagnostics)
+            .filter(|(_, d)| d.severity() == Severity::Warning)
+            .map(|(k, d)| (*k, d))
     }
 
     /// How many errors were emitted, warnings made errors included, shown

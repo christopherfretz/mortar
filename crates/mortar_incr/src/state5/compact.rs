@@ -645,7 +645,13 @@ pub fn normalize(m: &MemoryState) -> Result<MemoryState, StateError> {
                 other => *other,
             });
         }
-        n.diags.push(DiagRow { subjects, ..d.clone() });
+        // WP-221 seam 7: a reference's file is a `FILES` row like a subject's.
+        let mut refs = Vec::with_capacity(d.refs.len());
+        for r in &d.refs {
+            refs.push(crate::update::diags::DiagRef { file: fid(r.file)?, ..*r });
+        }
+        refs.sort_unstable();
+        n.diags.push(DiagRow { subjects, refs, ..d.clone() });
     }
     let _ = &mut intern;
     // NAMES: the globals' index, rebuilt (it is derived from SYMBOLS).

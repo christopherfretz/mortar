@@ -125,8 +125,14 @@ pub fn canon_of(m: &MemoryState) -> Result<Canon, StateError> {
         .diags
         .iter()
         .map(|d| {
-            format!("{:?}", (d.key.phase, d.key.unit, d.key.seq, &d.code, &d.text, &d.subjects))
-                .into_bytes()
+            format!(
+                "{:?}",
+                (
+                    (d.key.phase, d.key.unit, d.key.seq, &d.code, &d.text, &d.subjects),
+                    (&d.refs, d.ref_count),
+                )
+            )
+            .into_bytes()
         })
         .collect();
     let mut diags = diags;
