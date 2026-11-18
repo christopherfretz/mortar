@@ -17,8 +17,9 @@ use mortar_incr::state5::columns::{COLUMNS, To, references};
 use mortar_incr::state5::{self, TABLES, compact, read, write};
 use mortar_incr::update::diags::{DiagRef, DiagRow, Subject};
 use mortar_incr::update::rows::{
-    CommonRow, CopyRow, EdgeRow, FileRow, FragRow, FragUseRow, GroupRow, HoleRow, KeyRefRow,
-    MentionRow, RegionRow, ResolvedRow, SlotRow, SymbolRow, SymtabKeyRow, edge_kind, sym_kind,
+    CommonRow, CopyRow, EdgeRow, FileRow, FileTable, FragRow, FragUseRow, GroupRow, HoleRow,
+    KeyRefRow, MentionRow, RegionRow, ResolvedRow, SlotRow, SymbolRow, SymtabKeyRow, edge_kind,
+    sym_kind,
 };
 use mortar_incr::update::testing::MemoryState;
 use mortar_incr::update::view::StatePatch;
@@ -665,4 +666,186 @@ fn the_patch_and_its_compaction_keep_every_reference() {
     );
     let compacted = view_of(&compact::normalize(&want).expect("normalize"));
     same(&want, &compacted, "the compaction written");
+}
+
+/// Seals `b` again after a test changed bytes of a table's body: every
+/// block list, every list hash, the directory's hash and the header's,
+/// from the bodies as they are (WP-247 item g). A mutation that the
+/// hashes would catch then reaches the reader's row checks.
+fn reseal(b: &mut [u8]) {
+    let dir_end = state5::HEADER + TABLES.len() * state5::ENTRY;
+    let h = state5::Header::parse(b).expect("header");
+    let mut dir = state5::parse_directory(&h, &b[state5::HEADER..dir_end]).expect("directory");
+    for e in &mut dir {
+        let body = &b[e.body as usize..(e.body + e.body_len()) as usize];
+        let list: Vec<u8> =
+            body.chunks(state5::BLOCK).flat_map(|blk| mortar_digest::l128(blk)).collect();
+        assert_eq!(list.len() as u64, e.list_len());
+        b[e.list as usize..(e.list + e.list_len()) as usize].copy_from_slice(&list);
+        e.list_hash = mortar_digest::l128(&list);
+    }
+    let dir_bytes = state5::directory_bytes(&dir);
+    b[state5::HEADER..dir_end].copy_from_slice(&dir_bytes);
+    let h = state5::Header { dir_hash: mortar_digest::l128(&dir_bytes), ..h };
+    b[..state5::HEADER].copy_from_slice(&h.bytes());
+}
+
+fn entry(b: &[u8], k: u32) -> state5::Entry {
+    let dir_end = state5::HEADER + TABLES.len() * state5::ENTRY;
+    let h = state5::Header::parse(b).expect("header");
+    state5::parse_directory(&h, &b[state5::HEADER..dir_end])
+        .expect("directory")
+        .into_iter()
+        .find(|e| e.kind == k)
+        .expect("the table")
+}
+
+/// Every reader of a state: the whole decode and its compaction, the
+/// canon, and the lazy view's per-file and per-key reads. `Err` if any
+/// refused; a panic is the test's failure.
+fn read_all(b: &[u8]) -> Result<(), String> {
+    use mortar_incr::update::view::StateRows;
+    let m = read::decode(b).map_err(|e| format!("decode: {e}"))?;
+    compact::normalize(&m).map_err(|e| format!("normalize: {e}"))?;
+    state5::canon(b).map_err(|e| format!("canon: {e}"))?;
+    let view = read::open_bytes(b.to_vec()).map_err(|e| format!("open: {e:?}"))?;
+    let e = |x: mortar_core::incr::IncrReason| format!("{x:?}");
+    for f in 0..view.count(kind::FILES) as u32 {
+        let f = FileId(f);
+        view.file(f).map_err(e)?;
+        view.sections_of(f).map_err(e)?;
+        view.mentions_of(f).map_err(e)?;
+        view.index_of(f).map_err(e)?;
+        view.edges_of(f).map_err(e)?;
+        view.frag_uses_of(f).map_err(e)?;
+        view.symtab_of(f).map_err(e)?;
+        view.regions_of(f).map_err(e)?;
+    }
+    for k in 0..view.count(kind::SYMBOLS) as u32 {
+        let k = SymbolId(k);
+        view.key_refs(k).map_err(e)?;
+        view.commons(k).map_err(e)?;
+        view.copies(k).map_err(e)?;
+    }
+    view.diags().map_err(e)?;
+    state5::plan_patch(&view, &patch_of(&m)).map_err(e)?;
+    Ok(())
+}
+
+fn no_panic(b: &[u8], what: &str) -> Result<(), String> {
+    std::panic::catch_unwind(|| read_all(b)).unwrap_or_else(|_| panic!("{what}: a reader panicked"))
+}
+
+fn fresh_bytes() -> Vec<u8> {
+    write::encode(&compact::normalize(&every_reference()).expect("normalize")).expect("encode")
+}
+
+// spec: incr.md IN-18c, IN-18e (a row out of range is state-corrupt);
+// WP-247 item g
+#[test]
+fn file_index_row_out_of_range_is_state_corrupt() {
+    let mut b = fresh_bytes();
+    assert_eq!(no_panic(&b, "clean"), Ok(()));
+    let e = entry(&b, kind::FILE_INDEX);
+    // row 0's SECTIONS range: first 0xFFFF_FFFF, count 2
+    let at = e.body as usize;
+    b[at..at + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+    b[at + 4..at + 8].copy_from_slice(&2u32.to_le_bytes());
+    reseal(&mut b);
+    let r = no_panic(&b, "FILE_INDEX first 0xFFFF_FFFF count 2");
+    assert!(r.as_ref().is_err_and(|e| e.contains("state-corrupt")), "{r:?}");
+}
+
+/// The references format 5's readers take unchecked (WP-247 item g's
+/// finding; the record proposes the check): the whole tables' chunk,
+/// output-section and patch rows (format 4's `validate` checked them;
+/// format 5's decode does not), `NAMES.row`, a global's `SYMBOLS.file`
+/// (not read for a global), and `DIAGS.unit` (a value outside the file
+/// phases: the row mutated here is phase 10's).
+const UNCHECKED: &[&str] = &[
+    "SYMBOLS.file",
+    "SECTIONS.place_chunk",
+    "CHUNKS.out",
+    "ORDER.chunk",
+    "SIZES.chunk",
+    "SYM_PLACE.chunk",
+    "DEFINED.chunk",
+    "PATCHES.chunk",
+    "PATCHES.symbol",
+    "PATCHES.section",
+    "REDIRECTS.patch",
+    "SIZED.chunk",
+    "HOLES.chunk",
+    "REGIONS.out",
+    "REGIONS.chunk",
+    "NAMES.row",
+    "DIAGS.unit",
+];
+
+// WP-247 item g: every column of every table's first and last row set to
+// all ones, then to all ones but the low byte (0x..FE: out of range for
+// any row count here), the state sealed again: no reader panics, and a
+// reference column so changed is refused (or names NONE, its "no row").
+#[test]
+fn every_column_mutated_no_reader_panics() {
+    let clean = fresh_bytes();
+    let mut accepted_refs = Vec::new();
+    for (k, cols) in &COLUMNS {
+        let e = entry(&clean, *k);
+        if e.rows == 0 || *k == kind::STRINGS {
+            continue;
+        }
+        let width = e.width as u64;
+        // a file-keyed table: rows inside a file's range (slack rows are
+        // never read)
+        let rows: Vec<u64> = match FileTable::ALL.iter().position(|t| t.kind() == *k) {
+            Some(t) => {
+                let m = read::decode(&clean).expect("decode");
+                let mut v: Vec<u64> = m
+                    .file_index
+                    .iter()
+                    .filter(|i| i.ranges[t].count != 0)
+                    .flat_map(|i| [i.ranges[t].first, i.ranges[t].first + i.ranges[t].count - 1])
+                    .map(u64::from)
+                    .collect();
+                v.sort_unstable();
+                v.dedup();
+                v
+            }
+            None if *k == kind::META => vec![0],
+            None => vec![0, e.rows.min(e.capacity) - 1],
+        };
+        for row in rows {
+            let mut off = 0;
+            for c in *cols {
+                for fill in [0xFFu8, 0xFE] {
+                    let mut b = clean.clone();
+                    let at = (e.body + row * width) as usize + off;
+                    for (i, x) in b[at..at + c.width].iter_mut().enumerate() {
+                        *x = if i == 0 { fill } else { 0xFF };
+                    }
+                    if b == clean {
+                        continue;
+                    }
+                    reseal(&mut b);
+                    let what = format!("{}.{} row {row} fill {fill:#x}", state5::name(*k), c.name);
+                    let r = no_panic(&b, &what);
+                    let named = format!("{}.{}", state5::name(*k), c.name);
+                    if r.is_ok()
+                        && c.to != To::Value
+                        && !(fill == 0xFF && c.width == 4)
+                        && !UNCHECKED.contains(&named.as_str())
+                    {
+                        accepted_refs.push(what);
+                    }
+                }
+                off += c.width;
+            }
+        }
+    }
+    assert!(
+        accepted_refs.is_empty(),
+        "references out of range read without a refusal:\n{}",
+        accepted_refs.join("\n")
+    );
 }
