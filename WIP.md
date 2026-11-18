@@ -17,7 +17,7 @@ Brief: `/Volumes/AgentWork/mortar-helper/briefs/wp-238-step2.md`. Rulings:
 - `l10drive.py` also runs the oracle (ORA1/ORA2 lines).
 
 ## Next
-- Hand Part 0 back (interim) and WAIT for the coordinator's word.
+- Part 0 handed back (interim, record S1-S7 at 358850da+); WAITING for the coordinator's word. The probe binary was deleted: rebuild with scratch `build.sh probe 2`.
 - Then Part 1 (seam 9, ONE commit, the diff of S7), Part 2, 3, 4.
 
 ## How to resume
