@@ -979,8 +979,16 @@ fn r_xindex_past_shn_loreserve() {
     let readelf = mortar_testutil::tool("readelf").expect("readelf");
     let r = sh(dir.path(), &readelf, &["-h", "-S", "-s", "-W", "r.o"]);
     assert!(r.success() && r.stderr_text().trim().is_empty(), "{}", r.stderr_text());
+    // GNU ld of the AArch64 target (`aarch64-linux-gnu-ld.bfd` off an
+    // AArch64 host: a host's own `ld.bfd` has no `aarch64linux`
+    // emulation); `ld.lld` reads the machine from its input on any host.
     for ld in ["ld.bfd", "ld.lld"] {
-        let Some(l) = mortar_testutil::tool(ld) else {
+        let found = if ld == "ld.bfd" {
+            TArch::Aarch64.tool(ld)
+        } else {
+            mortar_testutil::tool(ld)
+        };
+        let Some(l) = found else {
             assert!(!tools_required(), "{ld} is required");
             named_skip(&format!("{T} ({ld})"), &format!("{ld} is not installed"));
             continue;
