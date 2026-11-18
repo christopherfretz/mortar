@@ -1158,6 +1158,10 @@ describe: grouped by key and name (O-4), each group is partitioned by
 hash (and, for types, by layout); more than one class is a finding. This
 rule defines the result; any implementation must report exactly its
 findings.
+An incremental update recomputes O-20's findings for the keys its delta
+touches and repeats the stored ones (`spec/incr.md` IN-71d: the
+ODR-affected keys, the rest from `DIAGS`); its findings equal a full
+link's. (WP-212 applied WP-207's §R.11.)
 
 **O-21 (an optimisation of O-20).** For vague-linkage entities the
 copies are `comdat_copies` (`spec/resolve.md` §6.7: `(ComdatId, FileId)`
