@@ -135,7 +135,26 @@ pub fn invoke(prog: &str, args: &[OsString]) -> Invocation {
 /// [`invoke`] with relative paths relative to `cwd`.
 #[must_use]
 pub fn invoke_in(prog: &str, args: &[OsString], cwd: &Path) -> Invocation {
-    invoke_with(prog, args, cwd, None, PrintMap::Capture)
+    invoke_with(prog, args, cwd, None, PrintMap::Capture, hooked_state5())
+}
+
+/// WP-244's switch from the test hooks (`MORTAR_INCR_STATE5`, a
+/// `testhooks` build only; `None` otherwise).
+fn hooked_state5() -> Option<incremental::State5> {
+    mortar_incr::testhook::state5_path()
+        .map(|path| incremental::State5 { path, collide: mortar_incr::testhook::state5_collide() })
+}
+
+/// [`invoke_in`] with WP-244's switch on (tests): an incremental-mode
+/// full link also writes its format-5 state to `state5.path`.
+#[must_use]
+pub fn invoke_state5(
+    prog: &str,
+    args: &[OsString],
+    cwd: &Path,
+    state5: incremental::State5,
+) -> Invocation {
+    invoke_with(prog, args, cwd, None, PrintMap::Capture, Some(state5))
 }
 
 /// [`invoke`] as the executable runs it: `-M`'s map is written to standard
@@ -146,7 +165,7 @@ pub fn invoke_in(prog: &str, args: &[OsString], cwd: &Path) -> Invocation {
 #[must_use]
 pub fn run(prog: &str, args: &[OsString]) -> Invocation {
     let cwd = std::env::current_dir().unwrap_or_default();
-    invoke_with(prog, args, &cwd, None, PrintMap::Stdout)
+    invoke_with(prog, args, &cwd, None, PrintMap::Stdout, hooked_state5())
 }
 
 /// Where `-M`'s map goes (`spec/cli.md` §3.15).
@@ -174,7 +193,7 @@ pub fn replay_link(
         let keys = mortar_incr::capture::Keys::new(link)?;
         mortar_incr::capture::replay(link, &keys, state, computed)
     };
-    invoke_with(prog, args, cwd, Some(&hook), PrintMap::Capture)
+    invoke_with(prog, args, cwd, Some(&hook), PrintMap::Capture, None)
 }
 
 #[allow(clippy::too_many_lines, reason = "the steps of spec/cli.md §4.3 in order")]
@@ -184,6 +203,7 @@ fn invoke_with(
     cwd: &Path,
     replay: Option<&front::Replay<'_>>,
     print_to: PrintMap,
+    state5: Option<incremental::State5>,
 ) -> Invocation {
     let parsed = mortar_cli::parse(args);
     let plan = &parsed.plan;
@@ -291,13 +311,22 @@ fn invoke_with(
     // spec/incr.md §5: nothing at all without --incremental (IN-11).
     let session = match incremental::start(&parsed, cwd, &out_path, &diagnostics) {
         incremental::Start::Plain => None,
-        incremental::Start::Full(s) => Some(s),
+        incremental::Start::Full(mut s) => {
+            s.set_state5(state5);
+            Some(s)
+        }
         incremental::Start::Failed => {
             emit_refusals(&diagnostics);
             return failed(diagnostics, timer.finish());
         }
     };
-    let env = front::Env { cwd, pool, replay, slack: session.is_some() };
+    let env = front::Env {
+        cwd,
+        pool,
+        replay,
+        slack: session.is_some(),
+        state5: session.as_ref().is_some_and(incremental::Session::state5),
+    };
     let mut front = front::front(plan.clone(), env, &store, &diagnostics, &mut timer);
     // The map's `arg` records, in every map (`spec/plumb.md` §3.2a).
     if let Some(f) = &mut front {

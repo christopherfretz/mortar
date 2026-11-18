@@ -144,6 +144,24 @@ pub struct Front<'s> {
     /// The erratum fixes (`spec/a64.md` §11.2): words written over fill's
     /// bytes, by address, sorted (`LinkSites::erratum_fixes`).
     pub erratum_fixes: Vec<mortar_image::fill::Fixup>,
+    /// What a format-5 capture reads beyond format 4's (WP-244), each
+    /// from its one producer; `None` unless [`Env::state5`].
+    pub incr5: Option<Incr5>,
+}
+
+/// The data of a format-5 capture that the link computes on its way
+/// (WP-244; `spec/incr.md` IN-18e, WP-239 S4-1..S4-5, R-4a): made only
+/// in an incremental-mode link with [`Env::state5`].
+#[derive(Debug, Clone)]
+pub struct Incr5 {
+    /// Per file, the OR of the scan's demands per key over its live
+    /// units (`mortar_scan::scan_recording`).
+    pub demands: Vec<mortar_core::incr::FileDemands>,
+    /// Per `SymbolId`: `SymFacts::pack(Walker::key_facts(id))`.
+    pub facts: Vec<u32>,
+    /// Each file's `.eh_frame` range in the final plan
+    /// (`EhPlan::file_runs`), or why there is none to store.
+    pub eh: Result<Vec<mortar_synth::eh::EhRun>, String>,
 }
 
 /// One output section of a [`Front`]'s layout, as its section header will
@@ -272,6 +290,13 @@ pub struct Env<'e> {
     /// layout takes IN-33's slack and `.eh_frame` its per-file CIEs.
     /// `false` in a plain link, which pays nothing for it (L-87).
     pub slack: bool,
+    /// With `slack`: the link also computes what a format-5 capture
+    /// reads ([`Incr5`]: per-file demand, facts) and gives each file's
+    /// `.eh_frame` records a range with `Slack::eh_pad` bytes after them
+    /// (WP-244). The join (U-10) makes it the incremental-mode default;
+    /// until then only `mortar_incr::testhook::state5_path` and the
+    /// tests set it.
+    pub state5: bool,
 }
 
 /// The replay hook's function (IN-61).
@@ -285,6 +310,7 @@ impl std::fmt::Debug for Env<'_> {
             .field("pool", &self.pool)
             .field("replay", &self.replay.is_some())
             .field("slack", &self.slack)
+            .field("state5", &self.state5)
             .finish()
     }
 }
@@ -646,7 +672,15 @@ pub fn front<'s>(
     let sections: Option<&dyn mortar_scan::weak::SectionMap> =
         if dynamic { Some(&out_writable) } else { None };
     let scan_options = ScanOptions { output, dynamic, sections, proof: link_arch.proof() };
-    let mut scanned = scan(arch, &scan_inputs, &scan_options, &pool);
+    // WP-244: the per-file demand of a format-5 capture (the same walk,
+    // a recording sink; a plain link takes `scan`, unchanged).
+    let state5 = env.slack && env.state5;
+    let (mut scanned, file_demands) = if state5 {
+        let (s, d) = mortar_scan::scan_recording(arch, &scan_inputs, &scan_options, &pool);
+        (s, Some(d))
+    } else {
+        (scan(arch, &scan_inputs, &scan_options, &pool), None)
+    };
     // The branch candidates are the sites' input only: dropped once the
     // sites are final, before the image.
     let branch_candidates = std::mem::take(&mut scanned.branches);
@@ -686,6 +720,30 @@ pub fn front<'s>(
     let live = |s: SectionId| liveness.is_live(s);
     let eh_list = EhPlan::select_in(&merge_eh, live, env.slack, &pool, diag).ok()?;
     let mut eh = EhPlan::from_records(&merge_eh, &eh_list, &pool, diag).ok()?;
+    // WP-244 (IN-34a, IN-72 item 5): each file's records a range of
+    // `size + Slack::eh_pad(size)` bytes, the pad a padding CIE.
+    let mut eh_runs: Result<(), String> = Ok(());
+    if state5 {
+        match eh.file_runs(&merge_eh) {
+            Ok(runs) => {
+                let pad = |size| mortar_layout::slack::Slack::INCREMENTAL.eh_pad(size);
+                match EhPlan::run_pads(&runs, pad) {
+                    Some(pads) if !pads.is_empty() => {
+                        let ra = padding_ra(machine);
+                        eh = EhPlan::from_records_padded(
+                            &merge_eh, &eh_list, &pads, ra, &pool, diag,
+                        )
+                        .ok()?;
+                    }
+                    Some(_) => {}
+                    None => eh_runs = Err("the .eh_frame runs are not contiguous".to_owned()),
+                }
+            }
+            Err(file) => {
+                eh_runs = Err(format!("file {} has two runs of .eh_frame records", file.0));
+            }
+        }
+    }
     drop(eh_list);
     steps.step("eh plan", 0, "");
     let eh_frame_hdr = plan.shaping.eh_frame_hdr.unwrap_or(false);
@@ -710,6 +768,14 @@ pub fn front<'s>(
     let got_output = got_base_defined(&inputs, &resolution, scanned.demands.output);
     let walker = Walker::new(arch, &scan_inputs, scan_options)
         .with_weak_dyn(scanned.demands.weak_dyn.clone());
+    // WP-239 R-4a: each key's facts, packed, as `RESOLVED.facts` stores
+    // them (the walker's per-key facts, the one producer).
+    let facts5 = if state5 {
+        let n = inputs.symbols.len() as usize;
+        pool.map(n, |i| walker.key_facts(SymbolId(i as u32)).pack())
+    } else {
+        Vec::new()
+    };
     let (got, dyn_tables, placeless) = if has_dynamic {
         let src =
             crate::dynlink::DynSource::new(&inputs, &resolution, &assignment, &liveness, &plan);
@@ -1261,6 +1327,13 @@ pub fn front<'s>(
     timer.phase(90, "layout");
     deferred.disarm();
     drop(walker);
+    let incr5 = file_demands.map(|demands| Incr5 {
+        demands,
+        facts: facts5,
+        eh: eh_runs.and_then(|()| {
+            eh.file_runs(&merge_eh).map_err(|f| format!("file {} has two .eh_frame runs", f.0))
+        }),
+    });
     drop(merge_eh);
     Some(Front {
         plan,
@@ -1288,6 +1361,7 @@ pub fn front<'s>(
         layout,
         placed,
         erratum_fixes,
+        incr5,
     })
 }
 
@@ -1358,15 +1432,31 @@ fn same_slot_lists(a: &Slots, b: &Slots) -> bool {
 }
 
 /// `Slots` from `Demands` (S-64): each kind's keys in `SymKey` order.
+/// The demand bits that make a slot of `kind`: the one mapping of the
+/// slot lists ([`slots_of`]) and of format 5's `SLOTS.refs` (WP-244).
+#[must_use]
+pub fn slot_demand(kind: mortar_core::layout::SlotKind) -> DemandFlags {
+    use mortar_core::layout::SlotKind;
+    match kind {
+        SlotKind::Got => DemandFlags::GOT,
+        SlotKind::Plt => DemandFlags::PLT | DemandFlags::CANON_PLT,
+        SlotKind::Iplt => DemandFlags::IPLT,
+        SlotKind::TlsDesc => DemandFlags::TLS_DESC,
+        SlotKind::TlsGd => DemandFlags::TLS_GD,
+        SlotKind::TlsIe => DemandFlags::GOT_TPREL,
+    }
+}
+
 fn slots_of(d: &mortar_core::Demands, resolution: &Resolution) -> Slots {
-    let list = |f: DemandFlags| -> Box<[SymKey]> { d.keys_with(f).collect() };
+    use mortar_core::layout::SlotKind;
+    let list = |k: SlotKind| -> Box<[SymKey]> { d.keys_with(slot_demand(k)).collect() };
     Slots {
-        got: list(DemandFlags::GOT),
-        plt: list(DemandFlags::PLT | DemandFlags::CANON_PLT),
-        iplt: list(DemandFlags::IPLT),
-        tls_desc: list(DemandFlags::TLS_DESC),
-        tls_gd: list(DemandFlags::TLS_GD),
-        tls_ie: list(DemandFlags::GOT_TPREL),
+        got: list(SlotKind::Got),
+        plt: list(SlotKind::Plt),
+        iplt: list(SlotKind::Iplt),
+        tls_desc: list(SlotKind::TlsDesc),
+        tls_gd: list(SlotKind::TlsGd),
+        tls_ie: list(SlotKind::TlsIe),
         tls_ld: d.output.contains(mortar_core::demands::GlobalFlags::TLS_LD),
         symtab_locals: Column::filled(resolution.file_live.len(), mortar_core::Span::default()),
         ..Slots::default()

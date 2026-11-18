@@ -285,23 +285,69 @@ impl<'a, 's> View<'a, 's> {
     /// file that is not live (§6.1); `comdat_only`, a key only dropped
     /// COMDAT copies define (`ComdatMismatch`); `gnu_warning`, a key with
     /// a `.gnu.warning` section in a live file.
+    ///
+    /// For a global it is the composition of its two steps (WP-239
+    /// §13.6): [`View::key_facts`], then [`View::at_mention`].
     pub fn facts(&self, key: SymKey, mention: Option<SymEntry>) -> SymFacts {
         match key.kind() {
             SymKind::Local(e) => self.local_facts(e),
             SymKind::Global(id) => {
-                let mut f = self.global_facts(id, mention, 0);
-                f.comdat_only = self.is_mismatch(id);
-                f.gnu_warning = self.is_warned(id);
-                // WP-176: a reference through a demoted mention of a key
-                // nothing live defines is `comdat-mismatch` in every
-                // output kind, never the undefined-weak zero nor (in a
-                // shared object) an import ([`Self::is_demoted_mismatch`]).
-                if mention.is_some_and(|m| self.is_demoted_mismatch(id, m)) {
-                    f.kind = TargetKind::Undefined;
-                }
-                f
+                let (f, undefined) = self.key_facts_def(id);
+                self.mention_facts(f, undefined, id, mention)
             }
         }
+    }
+
+    /// The per-key part of a global's facts: [`View::facts`] with no
+    /// mention (`Walker::facts(SymKey::global(id))`). What an incremental
+    /// link's state stores, packed (`SymFacts::pack`, `spec/incr.md`
+    /// IN-18e `RESOLVED.facts`; WP-239 R-4a).
+    pub fn key_facts(&self, id: SymbolId) -> SymFacts {
+        self.key_facts_def(id).0
+    }
+
+    /// [`View::key_facts`], and whether the key's definition is
+    /// `Def::Undefined` (the one case where the mention's own entry
+    /// gives the type and `st_other`).
+    fn key_facts_def(&self, id: SymbolId) -> (SymFacts, bool) {
+        let mut f = self.global_facts(id, 0);
+        f.comdat_only = self.is_mismatch(id);
+        f.gnu_warning = self.is_warned(id);
+        (f, matches!(self.def(id), Def::Undefined { .. }))
+    }
+
+    /// The facts of global `id` for a record whose symbol is `mention`,
+    /// from its per-key facts `f` ([`View::key_facts`]): an undefined key
+    /// takes the mention's type and `st_other`; a reference through a
+    /// demoted mention is `Undefined` ([`View::is_demoted_mismatch`]).
+    /// `None`: `f` itself.
+    pub fn at_mention(&self, f: SymFacts, id: SymbolId, mention: Option<SymEntry>) -> SymFacts {
+        let undefined = matches!(self.def(id), Def::Undefined { .. });
+        self.mention_facts(f, undefined, id, mention)
+    }
+
+    fn mention_facts(
+        &self,
+        mut f: SymFacts,
+        undefined: bool,
+        id: SymbolId,
+        mention: Option<SymEntry>,
+    ) -> SymFacts {
+        let Some(m) = mention else { return f };
+        if undefined {
+            let s = self.sym(m.file, m.index);
+            f.sym_type = s.map_or(0, |s| s.sym_type());
+            f.st_other = s.map_or(0, |s| s.st_other);
+            f.tls = s.is_some_and(|s| s.sym_type() == STT_TLS);
+        }
+        // WP-176: a reference through a demoted mention of a key nothing
+        // live defines is `comdat-mismatch` in every output kind, never
+        // the undefined-weak zero nor (in a shared object) an import
+        // ([`Self::is_demoted_mismatch`]).
+        if self.is_demoted_mismatch(id, m) {
+            f.kind = TargetKind::Undefined;
+        }
+        f
     }
 
     fn local_facts(&self, e: SymEntry) -> SymFacts {
@@ -339,7 +385,7 @@ impl<'a, 's> View<'a, 's> {
         }
     }
 
-    fn global_facts(&self, id: SymbolId, mention: Option<SymEntry>, depth: u32) -> SymFacts {
+    fn global_facts(&self, id: SymbolId, depth: u32) -> SymFacts {
         let of = |kind, s: Option<Sym>| SymFacts {
             kind,
             sym_type: s.map_or(0, |s| s.sym_type()),
@@ -397,7 +443,7 @@ impl<'a, 's> View<'a, 's> {
             // resolve refuses an alias of an undefined, a shared or a
             // `--defsym` symbol, so `B` is a definition of this output.
             Def::Internal(InternalDef::Alias(to)) if to != id && depth < 8 => {
-                let b = self.global_facts(to, None, depth + 1);
+                let b = self.global_facts(to, depth + 1);
                 let kind = match b.kind {
                     TargetKind::Abs => TargetKind::Abs,
                     _ if preemptible => TargetKind::Preemptible,
@@ -411,7 +457,7 @@ impl<'a, 's> View<'a, 's> {
             // PIE, lld and mold do not: resolve.md §16).
             Def::Internal(InternalDef::Assign(i)) => match self.resolution.assigned(i) {
                 Some(Assigned::Offset { to, .. }) if to != id && depth < 8 => {
-                    let b = self.global_facts(to, None, depth + 1);
+                    let b = self.global_facts(to, depth + 1);
                     let kind = match b.kind {
                         TargetKind::Abs => TargetKind::Abs,
                         _ if preemptible => TargetKind::Preemptible,
@@ -439,10 +485,8 @@ impl<'a, 's> View<'a, 's> {
                     gnu_warning: false,
                 }
             }
-            Def::Undefined { weak } => {
-                let s = mention.and_then(|m| self.sym(m.file, m.index));
-                of(self.undefined_kind(id, weak, props.verdict), s)
-            }
+            // The mention's type and `st_other`: `mention_facts`.
+            Def::Undefined { weak } => of(self.undefined_kind(id, weak, props.verdict), None),
         }
     }
 
@@ -463,7 +507,7 @@ impl<'a, 's> View<'a, 's> {
                     self.undefined_kind(id, weak, verdict.unwrap_or_default())
                         == TargetKind::Undefined
                 }
-                Def::Internal(_) => self.global_facts(id, None, 0).kind == TargetKind::Undefined,
+                Def::Internal(_) => self.global_facts(id, 0).kind == TargetKind::Undefined,
             };
             if undefined {
                 v.push(id);

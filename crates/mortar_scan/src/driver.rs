@@ -553,11 +553,73 @@ pub(crate) struct UnitOut {
     /// The records that raised `COPY` or `CANON_PLT` on a global key, in
     /// record order (`spec/dyn.md` D-18, D-42: checked per key).
     pub copy_refs: Vec<(SymbolId, u32)>,
+    /// The unit's demands on global keys, `(id, flags)` in the order
+    /// raised (consecutive raises on one key or-ed): kept by a
+    /// [`Recording`] sink only, empty otherwise (WP-239 S4-5).
+    pub demands: Vec<(SymbolId, DemandFlags)>,
+}
+
+/// Where the scan's demands on global keys go (WP-239 S4-5, `spec/incr.md`
+/// IN-18e `KEY_REFS.demand`): one walk ([`run_unit`]), generic over this,
+/// so that the plain link and the incremental-mode capture run the same
+/// code. [`Shared`] is the link-wide column alone (the plain link);
+/// [`Recording`] also keeps each unit's own demands.
+pub(crate) trait GlobalDemand {
+    fn raise(&mut self, id: SymbolId, flags: DemandFlags);
+    /// At the unit's end: what the sink keeps goes into `out`.
+    fn finish(self, out: &mut UnitOut);
+}
+
+/// The link-wide demand column: one cell per key, or-ed (I-16).
+pub(crate) struct Shared<'u>(pub &'u [AtomicU16]);
+
+impl GlobalDemand for Shared<'_> {
+    #[inline]
+    fn raise(&mut self, id: SymbolId, flags: DemandFlags) {
+        or_cell(self.0, id, flags);
+    }
+    #[inline]
+    fn finish(self, _out: &mut UnitOut) {}
+}
+
+/// I-16: read before or-ing, so the line stays shared.
+#[inline]
+fn or_cell(cells: &[AtomicU16], id: SymbolId, flags: DemandFlags) {
+    if let Some(cell) = cells.get(id.0 as usize) {
+        let bits = flags.bits();
+        if cell.load(Ordering::Relaxed) & bits != bits {
+            cell.fetch_or(bits, Ordering::Relaxed);
+        }
+    }
+}
+
+/// [`Shared`]'s column (when `cells` is given) and the unit's own
+/// demands, `(id, flags)`: the per-file demand of an incremental link's
+/// state (the caller ors a file's units). `cells: None`: the unit's own
+/// only (an update's changed file, WP-239 §5).
+pub(crate) struct Recording<'u> {
+    pub cells: Option<&'u [AtomicU16]>,
+    pub log: Vec<(SymbolId, DemandFlags)>,
+}
+
+impl GlobalDemand for Recording<'_> {
+    fn raise(&mut self, id: SymbolId, flags: DemandFlags) {
+        if let Some(cells) = self.cells {
+            or_cell(cells, id, flags);
+        }
+        match self.log.last_mut() {
+            Some(last) if last.0 == id => last.1 |= flags,
+            _ => self.log.push((id, flags)),
+        }
+    }
+    fn finish(self, out: &mut UnitOut) {
+        out.demands = self.log;
+    }
 }
 
 /// The sink one record's `arch.scan` writes (`spec/arch.md` §3.4).
-struct Sink<'u> {
-    global: &'u [AtomicU16],
+struct Sink<G> {
+    global: G,
     locals: Vec<(LocalSym, DemandFlags)>,
     output: GlobalFlags,
     counts: [u32; 4],
@@ -568,7 +630,7 @@ struct Sink<'u> {
     errored: bool,
 }
 
-impl DemandOut for Sink<'_> {
+impl<G: GlobalDemand> DemandOut for Sink<G> {
     fn raise(&mut self, key: SymKey, flags: DemandFlags) {
         if flags.is_empty() {
             return;
@@ -580,13 +642,7 @@ impl DemandOut for Sink<'_> {
                 {
                     self.copy_refs.push((id, self.record));
                 }
-                // I-16: read before or-ing, so the line stays shared.
-                if let Some(cell) = self.global.get(id.0 as usize) {
-                    let bits = flags.bits();
-                    if cell.load(Ordering::Relaxed) & bits != bits {
-                        cell.fetch_or(bits, Ordering::Relaxed);
-                    }
-                }
+                self.global.raise(id, flags);
             }
             SymKind::Local(sym) => match self.locals.last_mut() {
                 Some(last) if last.0 == sym => last.1 |= flags,
@@ -663,8 +719,9 @@ fn weak0(view: &View<'_, '_>, tables: &RecTables<'_, '_, '_>, key: SymKey) -> bo
     w
 }
 
-/// Walks one unit (§4.1 step 2): every record in record order.
-pub(crate) fn run_unit(view: &View<'_, '_>, u: &Unit, global: &[AtomicU16]) -> UnitOut {
+/// Walks one unit (§4.1 step 2): every record in record order; its
+/// demands on global keys go to `global` ([`Shared`] in a plain link).
+pub(crate) fn run_unit<G: GlobalDemand>(view: &View<'_, '_>, u: &Unit, global: G) -> UnitOut {
     with_bufs(|bufs| walk_unit(view, u, global, bufs))
 }
 
@@ -672,7 +729,12 @@ pub(crate) fn run_unit(view: &View<'_, '_>, u: &Unit, global: &[AtomicU16]) -> U
 /// is one of `Arch::nonalloc_demand_types`: `arch.scan` as the walk calls
 /// it, its demands kept and nothing else (the checks are fill's). The
 /// section is opened only when a record has such a type.
-fn walk_types(view: &View<'_, '_>, u: &Unit, global: &[AtomicU16], bufs: &mut Bufs) -> UnitOut {
+fn walk_types<G: GlobalDemand>(
+    view: &View<'_, '_>,
+    u: &Unit,
+    global: G,
+    bufs: &mut Bufs,
+) -> UnitOut {
     let mut out = UnitOut { sorted: true, ..UnitOut::default() };
     let types = view.arch.nonalloc_demand_types();
     let Some(obj) = view.prep(u.file).and_then(|p| p.obj) else { return out };
@@ -723,12 +785,18 @@ fn walk_types(view: &View<'_, '_>, u: &Unit, global: &[AtomicU16], bufs: &mut Bu
     out.output = sink.output;
     out.counts = DynCounts(sink.counts);
     out.nonalloc = out.records;
+    sink.global.finish(&mut out);
     out
 }
 
 /// [`run_unit`] with the worker's buffers.
 #[allow(clippy::too_many_lines, reason = "the per-record steps of §4.1, in order")]
-fn walk_unit(view: &View<'_, '_>, u: &Unit, global: &[AtomicU16], bufs: &mut Bufs) -> UnitOut {
+fn walk_unit<G: GlobalDemand>(
+    view: &View<'_, '_>,
+    u: &Unit,
+    global: G,
+    bufs: &mut Bufs,
+) -> UnitOut {
     if u.types_only {
         return walk_types(view, u, global, bufs);
     }
@@ -935,6 +1003,7 @@ fn walk_unit(view: &View<'_, '_>, u: &Unit, global: &[AtomicU16], bufs: &mut Buf
     out.output = sink.output;
     out.counts = DynCounts(sink.counts);
     out.copy_refs = sink.copy_refs;
+    sink.global.finish(&mut out);
     out
 }
 

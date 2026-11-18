@@ -150,6 +150,70 @@ pub struct SymFacts {
     pub gnu_warning: bool,
 }
 
+impl SymFacts {
+    /// The facts as one `u32` (the state's `RESOLVED.facts`, `spec/incr.md`
+    /// IN-18e; WP-239 §13.1, R-4a): bits 0-2 the kind (`Local` 0, `Abs`
+    /// 1, `Preemptible` 2, `Shlib` 3, `Ifunc` 4, `Weak0` 5, `WeakDyn` 6,
+    /// `Undefined` 7), bit 3 `Shlib.func`, bits 8-11 `sym_type`, bits
+    /// 16-23 `st_other`, bits 24-26 `dead`, `comdat_only`, `gnu_warning`;
+    /// every other bit 0. `tls` is not stored: [`SymFacts::unpack`] gives
+    /// `sym_type == STT_TLS`, which is what every global's facts hold.
+    #[must_use]
+    pub const fn pack(self) -> u32 {
+        let (kind, func) = match self.kind {
+            TargetKind::Local => (0, false),
+            TargetKind::Abs => (1, false),
+            TargetKind::Preemptible => (2, false),
+            TargetKind::Shlib { func } => (3, func),
+            TargetKind::Ifunc => (4, false),
+            TargetKind::Weak0 => (5, false),
+            TargetKind::WeakDyn => (6, false),
+            TargetKind::Undefined => (7, false),
+        };
+        kind | (func as u32) << 3
+            | ((self.sym_type as u32) & 0xf) << 8
+            | (self.st_other as u32) << 16
+            | (self.dead as u32) << 24
+            | (self.comdat_only as u32) << 25
+            | (self.gnu_warning as u32) << 26
+    }
+
+    /// The facts [`SymFacts::pack`] stored; `None` for a word no `pack`
+    /// gives (a bit outside the layout, or `func` on a kind other than
+    /// `Shlib`): a state's reader refuses it.
+    #[must_use]
+    pub const fn unpack(w: u32) -> Option<Self> {
+        const USED: u32 = 0x7 | 0x8 | 0xf00 | 0xff_0000 | 0x700_0000;
+        if w & !USED != 0 {
+            return None;
+        }
+        let func = w & 0x8 != 0;
+        let kind = match w & 0x7 {
+            0 => TargetKind::Local,
+            1 => TargetKind::Abs,
+            2 => TargetKind::Preemptible,
+            3 => TargetKind::Shlib { func },
+            4 => TargetKind::Ifunc,
+            5 => TargetKind::Weak0,
+            6 => TargetKind::WeakDyn,
+            _ => TargetKind::Undefined,
+        };
+        if func && w & 0x7 != 3 {
+            return None;
+        }
+        let sym_type = ((w >> 8) & 0xf) as u8;
+        Some(Self {
+            kind,
+            sym_type,
+            st_other: (w >> 16) as u8,
+            tls: sym_type == mortar_elf::consts::STT_TLS,
+            dead: w & (1 << 24) != 0,
+            comdat_only: w & (1 << 25) != 0,
+            gnu_warning: w & (1 << 26) != 0,
+        })
+    }
+}
+
 /// The tables scan reads (§3.4: `Inputs`, `Resolution`, `Liveness`),
 /// as the generic phase provides them.
 pub trait ScanTables: SymNames {
