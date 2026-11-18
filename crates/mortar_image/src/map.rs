@@ -591,9 +591,9 @@ fn text_cat(name: &[u8]) -> u8 {
 #[must_use]
 #[allow(clippy::too_many_lines)]
 pub(crate) fn decisions_of(t: &crate::link::LinkTables<'_, '_>) -> Decisions {
+    use mortar_core::SymKind;
     use mortar_core::layout::{AllocKey, ChunkKind, HoleKind};
     use mortar_core::resolution::Def;
-    use mortar_core::SymKind;
     use mortar_elf::consts::{SHF_EXECINSTR, SHF_MERGE, SHF_STRINGS};
     use mortar_synth::got::Region;
     let l = t.link();
@@ -690,6 +690,11 @@ pub(crate) fn decisions_of(t: &crate::link::LinkTables<'_, '_>) -> Decisions {
             let Some(id) = id_of(file) else { continue };
             let Some((name, flags, size, _, _)) = input_header(l, sid) else { continue };
             let chunk = &pl.chunks[c];
+            // L-159: an empty output section's members are placed beside
+            // a neighbour; they are not the chunk's members.
+            if l.assignment.out(sid) != chunk.kind.out() {
+                continue;
+            }
             let text = chunk.name(l.assignment) == Some(b".text".as_slice());
             let cat = if text && flags & SHF_EXECINSTR != 0 { text_cat(name) } else { 0 };
             members.entry(c.0).or_default().push((at, at + size, id, cat));
@@ -899,12 +904,8 @@ pub fn update_map(
     };
     let t = &symtab.tables;
     if shndx_of(b".symtab").is_some() {
-        let symtab_dead = |out: &[u8], offset, size| DeadLine {
-            out: out.to_vec(),
-            offset,
-            size,
-            kind: None,
-        };
+        let symtab_dead =
+            |out: &[u8], offset, size| DeadLine { out: out.to_vec(), offset, size, kind: None };
         m.dead.retain(|d| d.out != b".symtab" && d.out != b".strtab");
         if t.symtab_slack > 0 {
             m.dead.push(symtab_dead(b".symtab", t.symtab_size, t.symtab_slack));
@@ -1381,6 +1382,7 @@ mod tests {
         assert_eq!(OutputKind::Relocatable.token(), "relocatable");
     }
 
+    #[allow(clippy::unreadable_literal)]
     fn decisions_map() -> Map {
         Map {
             files: vec![MapFile { path: b"a.o".to_vec(), member: None }],
