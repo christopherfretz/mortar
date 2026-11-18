@@ -240,6 +240,7 @@ fn wp246_p_e3_a_local_renamed_on_one_side() {
         let files: Vec<(String, Vec<u8>)> = x
             .map
             .paths()
+            .into_iter()
             .map(|p| (p.to_string(), std::fs::read(d.join(p)).unwrap()))
             .collect();
         let inputs: Vec<Input<'_>> =

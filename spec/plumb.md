@@ -3147,19 +3147,30 @@ rules below judge the rest. Code: `src/symbols.rs`.
   - a `--defsym` key (§4.4b judges it);
   - under lld's map: `__AArch64ADRPThunk_*`, `__AArch64AbsLongThunk_*`,
     `__CortexA53843419_*` and `__dso_handle` (layout.md §13.1, E-24);
-    under mold's: a name with `$`, `__start_EHDR`, `__start_PHDR` and
-    `__dso_handle` (the not-judged list below);
+    under mold's: a name with `$`, `__start_EHDR`, `__start_PHDR`,
+    `_PROCEDURE_LINKAGE_TABLE_` and `__dso_handle` (the not-judged list
+    below; `_PROCEDURE_LINKAGE_TABLE_` measured in WP-246: mold 2.x
+    writes it, undefined or at `.plt`, in every output of the lane);
+  - a name `.dynsym` has, or whose base before `@` it has (a copy
+    relocation's or a shared library's symbol, a versioned reference
+    `puts@GLIBC_2.2.5`): stage 3 judges the dynamic symbols (P-D5);
   - any name, when the line has a linker script (`-T`): the script may
     assign it; listed as `<name> (the line has a script)`.
 
   Also a finding: an entry with no name (other than an `STT_SECTION` or
   `STT_FILE` one: §6.9's fillers and GNU ld's and mold's section symbols
   are unnamed `STT_SECTION`; Y7 judges file symbols), and an undefined
-  entry whose name no input symbol, defined or not, has. Before WP-246
+  entry whose name (or its base before `@`) no input symbol, defined or
+  not, has and that is none of the above. Before WP-246
   every name outside the table was "not judged": mortar's incremental
   output with `readed` (the middle of `__libc_single_threaded`) at
   `.symtab` entry 2489 passed with zero findings.
-- **Y6. The locals of each input file (WP-246).** For each input file in
+- **Y6. The locals of each input file (WP-246).** Under mortar's map
+  only: a foreign map does not say which locals the linker kept (GNU ld
+  keeps crtbegin's `__TMC_LIST__` or not by its own rules, mold makes
+  `__gmon_start__` and `_ITM_*` locals, GNU ld names a file symbol after
+  the object), so there Y6 judges nothing and says so (`every local:
+  Y6's rules are mortar's …`). For each input file in
   the link (§3.8: a file of the map's), each local the rules keep is in
   `.symtab` with its name, `st_info`, `st_other`, `st_size`, section and
   value, and each output local is one of them, a demoted global or the
@@ -3212,7 +3223,9 @@ rules below judge the rest. Code: `src/symbols.rs`.
   it is the name of an input's `STT_FILE` entry (S-83: copied in place;
   under GNU ld's map also the base name of an input's path or member,
   which GNU ld inserts for a file with none, S-83, X-32). An unnamed one
-  is a finding (`.symtab entry i is an STT_FILE with no name`), and so is
+  is a finding (but under GNU ld's map, where it closes the inputs'
+  file symbols before the linker's own locals: measured in WP-246 in
+  every GNU ld output of the lane, `pie-x64.bfd` entry 3) (`.symtab entry i is an STT_FILE with no name`), and so is
   one of another name. Under mortar's map Y6 also holds them to their
   files as a multiset.
 
