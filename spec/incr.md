@@ -2625,7 +2625,10 @@ objects.
     `ETXTBSY`, measured, §1.5);
   - no process visible in `/proc` maps `P` or holds it open (a scan of
     `/proc/*/maps`, measured above, and of `/proc/*/fd`, whose cost is not
-    measured here), and the user is
+    measured here; a descriptor of `P` held by a child of the linking
+    process between its fork and its exec is held elsewhere too: the
+    result is the copy path, safe and slower; mortar starts no process
+    while U1 holds `P` open, WP-219 F-11), and the user is
     told, once per link, that processes outside the scan's view are not
     protected (`incremental-in-place-unchecked`, a note);
   - an exclusive lock on the state file is acquired and the file system
@@ -3693,7 +3696,12 @@ a pass over a whole table of the state; **O(output)**.
   is not enforced on `S`'s file system, no update is attempted
   (`lock-unavailable`, a full link), on both write paths: the copy path
   does not make an unlocked update safe, because `S` is patched in place
-  on both. A link that finds no state (the first link, or after
+  on both. That full link **writes no state, and removes a state at `S`
+  by its exact name** (WP-219 rulings-2): IN-77d's temporary rests on
+  its `try_lock`, which is not enforced there either, so two floors
+  could write one temporary; and no later link could use the state,
+  since each answers `lock-unavailable` before it reads a byte. Its
+  `incremental:` line names the reason each time. A link that finds no state (the first link, or after
   `state-corrupt`) has nothing to lock; two such links racing are IN-21's
   post-rename check (the loser removes the state it wrote) and IN-77d's
   lock on the state's temporary. `ENOENT` on `S` is "no state", also
@@ -3886,7 +3894,12 @@ a pass over a whole table of the state; **O(output)**.
   file once locked, is another live link's temporary: the floor writes
   no state (`state-busy`, the link itself succeeds; any state at `S` is
   left, as IN-21 leaves it when no state is written); the update's
-  compaction fails (IN-77e: the flag stays set). A free one is a
+  compaction fails (IN-77e: the flag stays set). Once locked, I-59's
+  probe runs on the temporary (a second descriptor's `try_lock` must
+  fail): where it does not, the lock is not enforced and the floor
+  writes no state (`lock-unavailable`; the temporary is removed by its
+  exact name, any state at `S` too, IN-77b); this covers the link that
+  found no state, which has no `S` to probe. A free one is a
   leftover: truncated and reused. So two links that find no state
   never write one temporary at once, and the sweep above, which removes
   the name only once it holds the lock, never removes a live link's
@@ -4505,7 +4518,7 @@ update), reported as `incremental: full (<reason>)` (IN-10). With
 | `output-changed` | `P` is missing, or its stat tuple or build id differs from the state's, or it is racy and a build-id leaf differs (IN-21) | permanent |
 | `output-torn` | the state's "updating" flag is set (IN-46, IN-77); read before any hash (WP-207) | permanent |
 | `state-busy` | the state's path named another inode after its lock was acquired, 8 times in a row (IN-77b, WP-207): another link keeps replacing it | permanent |
-| `lock-unavailable` | the file system does not enforce `flock` on the state (image.md I-59's probe), so two updates could interleave (IN-77b, WP-207) | permanent |
+| `lock-unavailable` | the file system does not enforce `flock` on the state (image.md I-59's probe), so two updates could interleave (IN-77b, WP-207); the full link writes no state and removes the one at the state path (IN-77b, IN-77d, WP-219) | permanent |
 | `small-output` | the output the state describes (`META`'s output size) is smaller than 256 MiB (`mortar_incr::SMALL_OUTPUT`), checked after every row above. Not with `--incremental=update`, which updates whatever the size. **A policy constant, not a measured crossover**: an update was measured at 55 MB (0.67-1.15 of a plain link, saving at most 124 ms) and at 583-832 MB (0.70-0.94; 0.19-0.26 with the state read and written by range), and on no workload between (WP-094 §7). 256 MiB is a power of two between them, so that the mode can be told from `ls -l`; WP-105 measures a workload in that range and moves it if the crossover is elsewhere | permanent (the bound a policy constant) |
 | `update-not-implemented` | the state is valid, the plan and the output match it, the output is not small, and the update path does not exist yet (WP-061 stage A: every incremental link is a full one after the checks above, in this order; `--incremental=update` fails with it whatever the size) | stage A only. Amended (WP-202, IN-70): after the update joins (U-10), only a changed, appeared or newly extracted file with debug sections or a split-DWARF skeleton gives it (`update-not-implemented (debug)`), or with `.mason.meta` units under `--keep-mason-meta` (`update-not-implemented (meta)`, IN-71d, WP-207), or a stored `link`-subject warning the update cannot raise again within O(change) (`update-not-implemented (diags)`, IN-75a, WP-212), or a symbol-table entry named `foo@V` or `foo@@V` in the stored link or in a changed file's new bytes (`update-not-implemented (versioned)`, IN-71 Versions, WP-215; [later] the version of a `@@` definition stored), or a link under `--gc-sections` (`update-not-implemented (live)`, IN-71a, WP-215 seam 3; [later] WP-238); the G packages delete the row (the `versioned` and `live` clauses stay until their [later]). Until the join, each entry point of the cut that has not landed gives its own word (WP-213: `state5`, `resolve`, `refill`, `layout`, `symtab`, `image`, `write`, `meta`, `debug`, `diags`; WP-215: `versioned`, `live`; the floor's stage-A reason prints none); the reasons are one type, `mortar_core::incr::IncrReason` |
 | `extraction-changed` | IN-71b's bound: more than 1,024 archive members flip, or a removal cone's re-seeding reads more than 65,536 `KEY_REFS` rows (WP-207) | v1; [later] the bound measured and moved |
