@@ -445,8 +445,18 @@ pub fn normalize(m: &MemoryState) -> Result<MemoryState, StateError> {
             version: intern(r.version)?,
             ..*r
         });
-        n.resolved.push(*m.resolved.get(i).ok_or_else(|| bad("a RESOLVED row"))?);
-        n.symtab_keys.push(*m.symtab_keys.get(i).ok_or_else(|| bad("a SYMTAB_KEYS row"))?);
+        // a key-parallel table shorter than SYMBOLS (a format-4 capture
+        // has no SYMTAB_KEYS) reads as its empty rows, as the writer pads
+        n.resolved.push(m.resolved.get(i).copied().unwrap_or(crate::update::rows::ResolvedRow {
+            section: NONE,
+            ..Default::default()
+        }));
+        n.symtab_keys.push(
+            m.symtab_keys
+                .get(i)
+                .copied()
+                .unwrap_or(crate::update::rows::SymtabKeyRow { index: NONE, strtab: 0 }),
+        );
     }
     // SECTIONS: live files' rows by (new file, position); fillers dropped.
     let mut secs: Vec<(u32, usize)> = Vec::new();
