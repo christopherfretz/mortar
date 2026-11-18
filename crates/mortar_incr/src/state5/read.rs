@@ -530,11 +530,9 @@ impl StateRows for Reader {
         let lo = (signature.to_vec(), 0);
         self.core.keyed::<GroupRow>(kind::GROUPS, &lo, &|k| k.0.as_slice() == signature)
     }
-    fn frags_in(&self, out: OutSecId) -> Rows<Vec<FragRow>> {
-        let mut v =
-            self.core.keyed::<FragRow>(kind::FRAGS, &(out.0, [0; 16], 0), &|k| k.0 == out.0)?;
-        v.sort_by_key(|f| f.offset);
-        Ok(v)
+    fn frags_of(&self, out: OutSecId, hash: [u8; 16]) -> Rows<Vec<FragRow>> {
+        // the key's order is the ordinal's within (out, hash)
+        self.core.keyed::<FragRow>(kind::FRAGS, &(out.0, hash, 0), &|k| k.0 == out.0 && k.1 == hash)
     }
     fn holes_in(&self, chunk: ChunkId) -> Rows<Vec<HoleRow>> {
         self.core.keyed::<HoleRow>(kind::HOLES, &(chunk.0, 0), &|k| k.0 == chunk.0)
@@ -1019,18 +1017,12 @@ impl LayoutRows for LayoutOf<'_, '_> {
             })
             .collect()
     }
-    fn frags_in(&self, out: OutSecId) -> Result<Vec<StoredFrag>, IncrReason> {
+    fn frags_of(&self, out: OutSecId, hash: [u8; 16]) -> Result<Vec<StoredFrag>, IncrReason> {
         Ok(self
             .view
-            .frags_in(out)?
+            .frags_of(out, hash)?
             .into_iter()
-            .map(|f| StoredFrag {
-                out,
-                class: f.ordinal,
-                hash: f.hash,
-                offset: f.offset,
-                refs: f.refs,
-            })
+            .map(|f| StoredFrag { out, hash, ordinal: f.ordinal, offset: f.offset, refs: f.refs })
             .collect())
     }
     fn slots(&self) -> Result<Vec<StoredSlot>, IncrReason> {
