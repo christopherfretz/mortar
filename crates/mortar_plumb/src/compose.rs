@@ -220,6 +220,18 @@ impl Spans {
         if inside.is_empty() { at_end } else { inside }
     }
 
+    /// The pieces holding `t` (not those that only end at it), whole:
+    /// `(start, end, object, section, input offset)`.
+    fn holders(&self, t: u64) -> Vec<(u64, u64, usize, usize, u64)> {
+        let n = self.v.partition_point(|s| s.0 <= t);
+        (0..n)
+            .rev()
+            .take_while(|&i| self.max_end[i] >= t)
+            .filter(|&i| t < self.v[i].1)
+            .map(|i| self.v[i])
+            .collect()
+    }
+
     /// Whether a piece holds `t` (not only ends at it).
     fn holds(&self, t: u64) -> bool {
         let n = self.v.partition_point(|s| s.0 <= t);
@@ -350,6 +362,102 @@ impl Side<'_> {
 
     fn mask(&self, v: u64) -> u64 {
         if self.class64 { v } else { v & 0xffff_ffff }
+    }
+
+    /// The input section a record's symbol is defined in.
+    fn sym_section(&self, o: usize, sym: u32) -> Option<usize> {
+        let t = self.objs.get(o)?.symtab?;
+        let y = t.get(mortar_elf::SymbolIndex(sym)).ok()?;
+        match t.section_of(mortar_elf::SymbolIndex(sym), &y) {
+            Ok(mortar_elf::SymbolSection::Section(k)) => Some(k.0 as usize),
+            _ => None,
+        }
+    }
+
+    /// What `t` is by content, once per mergeable input piece holding it
+    /// (P-P1 item 3 for a mergeable target, WP-232): see [`MergeKey`].
+    /// Empty when no `SHF_MERGE` piece holds `t`, or when its entry or
+    /// string does not end inside the piece.
+    fn merge_keys(&self, space: &Space, t: u64) -> Vec<MergeKey> {
+        let Some(sp) = self.spans.get(space) else { return Vec::new() };
+        let out = match space {
+            Space::Mem => self.image.alloc_section_of(t, 1).map(|(_, s)| s),
+            Space::Non(name) => self.image.nonalloc_section(name).map(|i| &self.image.sections[i]),
+        };
+        let Some(out) = out else { return Vec::new() };
+        let mut keys: Vec<MergeKey> = Vec::new();
+        for (a, z, o, s, b) in sp.holders(t) {
+            let sh = &self.objs[o].secs[s].shdr;
+            if sh.sh_flags & SHF_MERGE == 0 {
+                continue;
+            }
+            let e = sh.sh_entsize.max(1);
+            let inner = b.wrapping_add(t - a) % e;
+            let start = t - inner;
+            if start < a {
+                continue;
+            }
+            let end = if sh.sh_flags & SHF_STRINGS != 0 {
+                // The string's terminator: the first entry of zeros at or
+                // after `t`'s entry, inside the piece.
+                let mut k = start;
+                loop {
+                    if k.saturating_add(e) > z {
+                        break None;
+                    }
+                    match self.bytes(space, k, e) {
+                        Some(u) if u.iter().all(|&x| x == 0) => break Some(k + e),
+                        Some(_) => k += e,
+                        None => break None,
+                    }
+                }
+            } else {
+                (start.saturating_add(e) <= z).then_some(start + e)
+            };
+            let from = if sh.sh_flags & SHF_STRINGS != 0 { t } else { start };
+            let Some(bytes) = end.and_then(|end| self.bytes(space, from, end - from)) else {
+                continue;
+            };
+            let k = MergeKey {
+                flags: sh.sh_flags,
+                entsize: sh.sh_entsize,
+                out: out.name.clone(),
+                out_flags: out.shdr.sh_flags,
+                bytes: bytes.to_vec(),
+                inner,
+            };
+            if !keys.contains(&k) {
+                keys.push(k);
+            }
+        }
+        keys
+    }
+}
+
+/// A place inside a mergeable input piece, by content (P-P1 item 3,
+/// WP-232): the input section's `sh_flags` and `sh_entsize`, the output
+/// section's name and `sh_flags`, the bytes (a string: from the place
+/// through its terminator; fixed-size entries: the entry's), and the
+/// place's offset inside its entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MergeKey {
+    flags: u64,
+    entsize: u64,
+    out: String,
+    out_flags: u64,
+    bytes: Vec<u8>,
+    inner: u64,
+}
+
+impl MergeKey {
+    fn show(&self) -> String {
+        format!(
+            "{:?} in {} (flags {:#x}, entsize {})",
+            String::from_utf8_lossy(&self.bytes),
+            self.out,
+            self.flags,
+            self.entsize
+        )
     }
 }
 
@@ -695,8 +803,11 @@ fn items23(cx: &mut Cx<'_, '_>) {
                 }
                 continue;
             };
-            // Item 2: the output section of the same name.
-            let (nd, nv) = (d.out_name(&space, da, size), v.out_name(&vspace, va, size));
+            // Item 2: the output section of the same name. A mergeable
+            // section's pieces are placed apart (and shared), so its size
+            // is not its extent: its first byte names the section.
+            let n = if sec.shdr.sh_flags & SHF_MERGE != 0 { size.min(1) } else { size };
+            let (nd, nv) = (d.out_name(&space, da, n), v.out_name(&vspace, va, n));
             if size > 0 && nd != nv {
                 cx.out.push(
                     p1(format!(
@@ -782,6 +893,42 @@ fn items23(cx: &mut Cx<'_, '_>) {
                     continue;
                 };
                 let tspace = target_space(d, o, sym);
+                // A target in a mergeable piece (WP-232): by content. The
+                // field's full value is the place (`S + A` of a merged
+                // section is the piece holding `A`, not `S` plus `A`), so
+                // the addend's effect is judged with it.
+                if d.sym_section(o, sym).is_some_and(|k| {
+                    d.objs[o].secs.get(k).is_some_and(|x| x.shdr.sh_flags & SHF_MERGE != 0)
+                }) && let (Some(fd), Some(fv)) =
+                    (full_target(d, &space, pd, ty), full_target(v, &v.space_of(wo, ws), pv, ty))
+                {
+                    let kd = d.merge_keys(&tspace, fd);
+                    if !kd.is_empty() {
+                        cx.cov.merged_by_content += 1;
+                        let kv = v.merge_keys(&tspace, fv);
+                        if kv.iter().any(|k| kd.contains(k)) {
+                            let (_, exact) = cx.phi_addr(&tspace, fd);
+                            if !cx.hits(&exact, &tspace, fv) {
+                                cx.tol("t5");
+                            }
+                        } else {
+                            let shown = kv
+                                .first()
+                                .map_or_else(|| "no mergeable piece".to_string(), MergeKey::show);
+                            cx.out.push(
+                                p1(format!(
+                                    "P-P1 {}+{off:#x} {tname} resolves to {fd:#x} ({}: {}) in the direct link and to {fv:#x} ({shown}) through -r, not equal content",
+                                    d.label(o, s),
+                                    describe(d, &tspace, fd),
+                                    kd[0].show()
+                                ))
+                                .site(at_site)
+                                .at(pv),
+                            );
+                        }
+                        continue;
+                    }
+                }
                 // S = (S + A) - A with D's addend on both sides: x86's
                 // `S - 4` may lie in the piece before S.
                 let ad = addend_of(d, o, s, off, w, a);

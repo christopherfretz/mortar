@@ -809,6 +809,217 @@ fn judge(arch: Arch) {
     assert!(bad.is_empty(), "{arch:?}:\n{}", bad.join("\n"));
 }
 
+// ---- WP-232: a field whose target is a merged string ----
+
+/// The component of the merged-string case (RL-7's `r-kernel-style`,
+/// libc-free): `ka.c`'s `"kernel"` is 7 bytes in a `.rodata.str1.8`, so
+/// the `-r` output's section holds a byte of padding after it, which a
+/// final link reads as a string `""` of its own, earlier on the line than
+/// `kc.o`'s: through `-r` every `""` of the link is merged into it.
+const KA: &str = "const char *ka_name(void) { return \"kernel\"; }\n";
+const KB: &str = "const char *kb_fmt(void) { return \"a=%d b=%d s=%s\\n\"; }\n";
+/// After the component: pointers to `""`, to `"kernel"` (merged with
+/// `ka.c`'s), to `"other"`, to a suffix (`.LC + 2`), and the same bytes
+/// in sections that are not mergeable (the mutations' targets).
+const KC: &str = r#"
+const char kc_plain[] = "kernel";
+const char kc_zero[8] = {0};
+const char *const kc_tbl[] = {"", "kernel", "other", "", "kernel" + 2};
+"#;
+const KMAIN: &str = r"
+const char *ka_name(void); const char *kb_fmt(void);
+extern const char *const kc_tbl[];
+__attribute__((used)) void *const keep[] = { (void *)ka_name, (void *)kb_fmt, (void *)kc_tbl };
+void _start(void) { for (;;) ; }
+";
+const KSTR: Comp = Comp { name: "kstr", inputs: &["ka.o", "kb.o"] };
+const KLINE: [&str; 4] = ["kmain.o", "ka.o", "kb.o", "kc.o"];
+
+/// The file offset of `V`'s address `a` (an allocated section's bytes).
+fn off_of(e: &Ed, a: u64) -> Option<usize> {
+    (1..e.shnum()).map(|i| e.sh(i)).find_map(|sh| {
+        (sh.flags & 2 != 0 && sh.ty != 8 && sh.addr <= a && a < sh.addr + sh.size)
+            .then(|| (a - sh.addr + sh.offset) as usize)
+    })
+}
+
+/// `kc_tbl[i]`'s word in `V`: its file offset and width.
+fn tbl_word(e: &Ed, i: u64) -> Option<(usize, usize)> {
+    let w = if e.c64 { 8 } else { 4 };
+    let y = e.sym(e.sym_by_name("kc_tbl")?);
+    Some((off_of(e, y.value + i * w as u64)?, w))
+}
+
+/// A field of `V` (`kc_tbl[1]`, `"kernel"`) retargeted to a different
+/// string of the same section (`kc_tbl[2]`'s `"other"`).
+fn mm_other(e: &mut Ed, _: &mut String) -> bool {
+    let (Some((a, w)), Some((b, _))) = (tbl_word(e, 1), tbl_word(e, 2)) else { return false };
+    let x = e.rd(b, w);
+    e.wr(a, w, x);
+    true
+}
+
+/// `kc_tbl[1]` to the equal string plus one (`"ernel"`: the suffix
+/// differs).
+fn mm_plus1(e: &mut Ed, _: &mut String) -> bool {
+    let Some((a, w)) = tbl_word(e, 1) else { return false };
+    let x = e.rd(a, w);
+    e.wr(a, w, x + 1);
+    true
+}
+
+/// `kc_tbl[1]` to equal bytes in a section that is not mergeable
+/// (`kc_plain`, `"kernel"` in `.rodata`).
+fn mm_plain(e: &mut Ed, _: &mut String) -> bool {
+    let (Some((a, w)), Some(k)) = (tbl_word(e, 1), e.sym_by_name("kc_plain")) else {
+        return false;
+    };
+    let y = e.sym(k);
+    e.wr(a, w, y.value);
+    true
+}
+
+/// `kc_tbl[0]` (`""`) to a zero byte that is not a mergeable piece
+/// (`kc_zero`): the padding of something that is not a string.
+fn mm_zero(e: &mut Ed, _: &mut String) -> bool {
+    let (Some((a, w)), Some(k)) = (tbl_word(e, 0), e.sym_by_name("kc_zero")) else {
+        return false;
+    };
+    let y = e.sym(k);
+    e.wr(a, w, y.value + 1);
+    true
+}
+
+/// V's address of the -r output's `.rodata.str1.8` piece at offset 7
+/// (the byte of padding after `"kernel"`), from mortar's map.
+fn padding_piece(dir: &Path, vout: &str, rpath: &str, rout: &[u8]) -> Option<u64> {
+    let si = Ed::new(rout).find(".rodata.str1.8")?;
+    let text = std::fs::read_to_string(dir.join(format!("{vout}.map"))).ok()?;
+    let fi = text.lines().find_map(|l| {
+        let w: Vec<&str> = l.split_whitespace().collect();
+        (w.len() == 3 && w[0] == "file" && w[2] == rpath).then(|| w[1].to_string())
+    })?;
+    text.lines().find_map(|l| {
+        let w: Vec<&str> = l.split_whitespace().collect();
+        (w.len() == 6 && w[0] == "piece" && w[1] == fi && w[2] == si.to_string() && w[3] == "7")
+            .then(|| u64::from_str_radix(w[4], 16).ok())
+            .flatten()
+    })
+}
+
+const MERGE_MUTANTS: &[Mutant] = &[
+    Mutant {
+        name: "merged: a different string of the section",
+        edit: mm_other,
+        expect: "not equal content",
+    },
+    Mutant {
+        name: "merged: the equal string plus one",
+        edit: mm_plus1,
+        expect: "not equal content",
+    },
+    Mutant {
+        name: "merged: equal bytes, not mergeable",
+        edit: mm_plain,
+        expect: "(no mergeable piece) through -r, not equal content",
+    },
+    Mutant {
+        name: "merged: a zero byte, not mergeable",
+        edit: mm_zero,
+        expect: "(no mergeable piece) through -r, not equal content",
+    },
+];
+
+/// The merged-string case: GNU ld's `-r` of `ka.o kb.o`, mortar's finals
+/// (the only map with every piece's place). The base composes clean, its
+/// `""` fields by content; on AArch64 (`.rodata.str1.8`) at least one
+/// needs (t5); every mutant is named.
+fn judge_merged(arch: Arch) {
+    let Some(t) = Tools::find(arch) else {
+        eprintln!("skipped: the {arch:?} tools are not installed");
+        return;
+    };
+    if t.mortar.is_none() {
+        eprintln!("skipped: mortar is not built");
+        return;
+    }
+    let scratch = Scratch::new(&format!("plumb-compose-merged-{}", arch.name()));
+    let dir = scratch.path();
+    for (name, text) in [("ka.c", KA), ("kb.c", KB), ("kc.c", KC), ("kmain.c", KMAIN)] {
+        std::fs::write(dir.join(name), text).unwrap();
+        let obj = name.replace(".c", ".o");
+        run_ok(dir, &t.gcc, &s(&["-O2", "-fno-stack-protector", "-c", name, "-o", &obj]))
+            .unwrap_or_else(|e| panic!("{arch:?}: {e}"));
+    }
+    let (rpath, r) =
+        partial(&t, L::Bfd, dir, &KSTR, &[], "").unwrap_or_else(|e| panic!("{arch:?}: {e}"));
+    let d = final_link(&t, L::Mortar, dir, "kd", &[], &KLINE)
+        .unwrap_or_else(|e| panic!("{arch:?}: {e}"));
+    let vout = "kv";
+    let v = final_link(&t, L::Mortar, dir, vout, &[], &via_line(&KLINE, &KSTR, &rpath))
+        .unwrap_or_else(|e| panic!("{arch:?}: {e}"));
+    let mut log = String::new();
+    let mut bad = Vec::new();
+    let base = p1(&d, &v, &r, &rpath);
+    let cov = base.coverage.composition.clone().unwrap_or_default();
+    let t5 = cov.tolerances.get("t5").copied().unwrap_or(0);
+    let _ = writeln!(
+        log,
+        "{arch:?} merged: judged {}, {} findings, merged-by-content {}, (t5) {t5}",
+        cov.judged,
+        p1_findings(&base).len(),
+        cov.merged_by_content
+    );
+    if cov.judged != 1 || !p1_findings(&base).is_empty() {
+        bad.push(format!("{arch:?} merged base: {:?}", p1_findings(&base)));
+    }
+    // kc_tbl's five fields at least.
+    if cov.merged_by_content < 5 {
+        bad.push(format!("{arch:?}: {} fields judged by content", cov.merged_by_content));
+    }
+    // AArch64 (`.rodata.str1.8`): the case RL-7 measured. `kc_tbl[0]`
+    // (`""`) is the -r output's padding byte in V and kc.o's own `""` in
+    // D: two addresses for one string, judged clean.
+    if arch == Arch::Aarch64 {
+        let pad = padding_piece(dir, vout, &rpath, &r.out);
+        let word = |x: &Read| {
+            let e = Ed::new(&x.out);
+            tbl_word(&e, 0).map(|(a, w)| e.rd(a, w))
+        };
+        let (wd, wv) = (word(&d), word(&v));
+        let _ = writeln!(
+            log,
+            "{arch:?} merged: kc_tbl[0] is {wd:x?} in D, {wv:x?} in V; the -r's padding piece {pad:x?}"
+        );
+        if pad.is_none() || wv != pad || wd == pad {
+            bad.push(format!(
+                "{arch:?}: the fixture no longer has V's \"\" at the -r's padding: {wd:x?} {wv:x?} {pad:x?}"
+            ));
+        }
+    }
+    let (a, k, mut b) =
+        mutate(dir, &Base { d: &d, v: &v, vout, r: &r, rpath: &rpath }, MERGE_MUTANTS, &mut log);
+    let _ = writeln!(log, "{arch:?} merged mutants: {a} applied, {k} caught");
+    bad.append(&mut b);
+    eprintln!("{log}");
+    assert!(bad.is_empty(), "{arch:?}:\n{}", bad.join("\n"));
+}
+
+#[test]
+fn p_p1_merged_aarch64() {
+    judge_merged(Arch::Aarch64);
+}
+
+#[test]
+fn p_p1_merged_x86_64() {
+    judge_merged(Arch::X86_64);
+}
+
+#[test]
+fn p_p1_merged_i386() {
+    judge_merged(Arch::I386);
+}
+
 #[test]
 fn p_p1_aarch64() {
     judge(Arch::Aarch64);
