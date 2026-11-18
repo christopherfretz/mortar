@@ -1375,3 +1375,81 @@ fn object_flags_on_a_real_link() {
         eprintln!("{}: EH_FIXED on {members} archive members besides hand.s.o", line.label);
     }
 }
+
+/// Whether `m` has a global `SYMBOLS` row named `name` with the option bit.
+fn option_row(m: &MemoryState, name: &[u8]) -> Option<bool> {
+    m.symbols
+        .iter()
+        .find(|r| {
+            r.kind == sym_kind::GLOBAL
+                && string(m, r.name) == name
+                && string(m, r.version).is_empty()
+        })
+        .map(|r| r.option)
+}
+
+// spec: WP-247 item b (WP-244 F-6; IN-71b "Live keys"): every name the
+// options root (`OptionKeys::live_roots`: the entry, `-u`, `--require-
+// defined`, `--defsym`, then `-init`, `-fini`) and `--wrap`'s three names
+// have their `SYMBOLS` row with the option bit, a row added when no file
+// mentions the name; one link per option
+#[test]
+fn option_names_have_their_rows() {
+    let cases: [(&[&str], &[&[u8]]); 7] = [
+        (&["-e", "wp247_entry"], &[b"wp247_entry"]),
+        (&["-u", "wp247_undef"], &[b"wp247_undef"]),
+        (&["--require-defined=main"], &[b"main"]),
+        (
+            &["--wrap=wp247_wrapped"],
+            &[b"wp247_wrapped", b"__wrap_wp247_wrapped", b"__real_wp247_wrapped"],
+        ),
+        (&["--defsym=wp247_alias=main"], &[b"wp247_alias", b"main"]),
+        (&["-init", "wp247_init"], &[b"wp247_init"]),
+        (&["-fini", "wp247_fini"], &[b"wp247_fini"]),
+    ];
+    for line in lines() {
+        let plain = rows5(&line, "opt0", &[]);
+        for (args, names) in cases {
+            // `main` is mentioned (a file defines it) and has no bit without
+            // an option naming it
+            for n in names {
+                let had = option_row(&plain, n);
+                assert!(had != Some(true), "{}: {:?} has the bit without {args:?}", line.label, n);
+            }
+            let m = rows5(&line, "opt", args);
+            for n in names {
+                assert_eq!(
+                    option_row(&m, n),
+                    Some(true),
+                    "{}: {args:?}: {}",
+                    line.label,
+                    String::from_utf8_lossy(n)
+                );
+            }
+            // the rows reach the state's bytes and back, and a compaction
+            // keeps them (the bit keeps an unmentioned key live)
+            let n = mortar_incr::state5::compact::normalize(&m).expect("normalize");
+            for name in names {
+                assert_eq!(option_row(&n, name), Some(true), "{}: {args:?} normalized", line.label);
+            }
+        }
+    }
+}
+
+// spec: WP-247 item 3 (U-10 notes items a, j): decode, normalize, encode
+// of a real capture is BYTE-EQUAL (`MORTAR_WP244_SERIES` adds real link
+// lines: protoc), with and without `-g`
+#[test]
+fn capture_round_trip_is_byte_equal() {
+    for line in lines_and_series().into_iter().chain(lines_by(&["-O1", "-g"])) {
+        let (err, bytes) = link5(&line, "rt2", &[], false);
+        let bytes = bytes.unwrap_or_else(|| panic!("{}: no format-5 state: {err}", line.label));
+        let m = decode(&bytes).unwrap_or_else(|e| panic!("{}: {e}", line.label));
+        let n = mortar_incr::state5::compact::normalize(&m)
+            .unwrap_or_else(|e| panic!("{}: normalize: {e}", line.label));
+        let again = mortar_incr::state5::write::encode(&n)
+            .unwrap_or_else(|e| panic!("{}: encode: {e}", line.label));
+        assert!(again == bytes, "{}: not byte-equal: {}", line.label, differing(&bytes, &again));
+        eprintln!("{}: {} bytes, byte-equal", line.label, bytes.len());
+    }
+}

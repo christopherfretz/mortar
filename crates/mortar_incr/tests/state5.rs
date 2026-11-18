@@ -1826,3 +1826,78 @@ fn eh_fixed_check_reads_the_bit() {
     m.files[0].flags = file_flags::ALL + 1;
     assert!(matches!(read::decode(&full(&m)), Err(StateError::Corrupt(_))));
 }
+
+// spec: WP-247 item 3 (U-10 notes items a, j; WP-244 F-2): decode,
+// normalize, encode of a capture is BYTE-EQUAL, with `DIAGS` rows (their
+// strings in the pool once), 24-byte property strings (one shared by two
+// files), `EDGES` of every kind, `META.live_hash` and `DEBUG_STRS` rows
+#[test]
+fn decode_normalize_encode_is_byte_equal() {
+    let mut m = sample(&[0, 1, 2], 3);
+    m.diags = vec![
+        diag_with_refs(vec![(0, 1 << 32, 0x10), (1, 3 << 32, 0x1c)], 2),
+        diag_with_refs(Vec::new(), 0),
+    ];
+    m.diags[1].key.seq = 7;
+    let mut pool = std::mem::take(&mut m.strings);
+    let p = add(&mut pool, &[1; 24]);
+    let q = add(&mut pool, &[2; 24]);
+    m.strings = pool;
+    m.files[0].properties = p;
+    m.files[1].properties = p;
+    m.files[2].properties = q;
+    add_edges(&mut m, 1, 1);
+    m.meta.live_hash = LIVE_HASH;
+    m.debug_strs = vec![dstr(1, 4, 0), dstr(0, 9, 3)];
+    let bytes = full(&m);
+    let back = read::decode(&bytes).expect("decode");
+    assert_eq!(s(&back, back.files[1].properties), vec![1; 24]);
+    assert_eq!(back.diags.len(), 2);
+    let again = write::encode(&compact::normalize(&back).expect("normalize")).expect("encode");
+    assert_eq!(again.len(), bytes.len());
+    assert!(
+        again == bytes,
+        "decode, normalize, encode is not byte-equal: {}",
+        where_differ(&bytes, &again)
+    );
+    // and once more (a fixpoint, not a coincidence of one pass)
+    let third = full(&read::decode(&again).expect("decode"));
+    assert!(third == bytes);
+}
+
+/// Where two states of one shape first differ: the table and the offset.
+fn where_differ(a: &[u8], b: &[u8]) -> String {
+    let skip = state5::HEADER;
+    let Some(at) = a.iter().zip(b).skip(skip).position(|(x, y)| x != y).map(|i| i + skip) else {
+        return "equal past the header".into();
+    };
+    let h = state5::Header::parse(a).expect("h");
+    let dir_end = state5::HEADER + state5::TABLES.len() * state5::ENTRY;
+    let dir = state5::parse_directory(&h, &a[state5::HEADER..dir_end]).expect("dir");
+    for e in &dir {
+        let (body, len) = (
+            usize::try_from(e.body).expect("small"),
+            usize::try_from(e.body_len()).expect("small"),
+        );
+        if (body..body + len).contains(&at) {
+            let w = e.width as usize;
+            return format!(
+                "byte {at}: {} row {} byte {}",
+                state5::name(e.kind),
+                (at - body) / w,
+                (at - body) % w
+            );
+        }
+        let list = usize::try_from(e.list).expect("small");
+        if (list..list + usize::try_from(e.list_len()).expect("small")).contains(&at) {
+            return format!("byte {at}: {} block list", state5::name(e.kind));
+        }
+    }
+    let entry = (at - state5::HEADER) / state5::ENTRY;
+    format!(
+        "byte {at}: directory entry {} ({}) byte {}",
+        entry,
+        state5::name(dir[entry].kind),
+        (at - state5::HEADER) % state5::ENTRY
+    )
+}

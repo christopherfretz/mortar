@@ -16,6 +16,16 @@ Brief: /Volumes/AgentWork/mortar-helper/briefs/wp-247.md. Scratch: .build/target
   state5_capture.rs object_flags_on_a_real_link (0 EH_FIXED members on both targets).
 - Measurement switch: MORTAR_INCR_NO_DEBUG_STRS (testhooks build) in debug_str_rows.
 
+- Item 1 measured (protoc -g, 9 interleaved runs, load 7.9-8.3): base plain 0.260 s/250.7 MiB, plain
+  0.270/249.9; rows 0.650/402.2, norows 0.610/396.3; DEBUG_STRS 77490 rows 1,064,762 B (2.95% of
+  36,052,992); duty check on the real output 0 problems. Format 4 of protoc -g = 31,016,292 (U-2's 31.0).
+  Evidence: .build/target-wp-157/wp247/cxx-medium-g-static-meas/.
+- Item 6: capture::option_names (plan.option_keys() + OptionKeys::live_roots() names), ONE line in
+  crates/mortar/src/front.rs (Incr5.option_keys); state5_rows adds rows for unmentioned names.
+  Test state5_capture.rs option_names_have_their_rows (7 options, both targets).
+- Item 3: normalize sorts DIAGS by the writer's key (the bug: append order of DIAGS strings).
+  Tests: state5.rs decode_normalize_encode_is_byte_equal; state5_capture.rs capture_round_trip_is_byte_equal.
+
 ## Next
 - Item 1: seam 8a cherry-picked (d148c1e0) and applied (plan_in_place, compact::apply; deletes refused;
   test debug_strs_patch_puts_rows). LEFT: measurement on protoc -g (cxx-medium-g-static).

@@ -1692,15 +1692,12 @@ pub fn state5_rows(
         let mut named: mortar_core::hash::HashSet<(&[u8], &[u8])> =
             mortar_core::hash::HashSet::default();
         for b in &rows.option_keys {
-            let key = match b.iter().position(|&c| c == b'@') {
-                None => (b.as_slice(), &[][..]),
-                Some(i) if b.get(i + 1) == Some(&b'@') => (&b[..i], &[][..]),
-                Some(i) => (&b[..i], &b[i + 1..]),
-            };
-            named.insert(key);
+            named.insert(option_key_of(b));
         }
         let text = |x: Str| m.strings.get(x.off as usize..(x.off + x.len) as usize);
         let mut set = Vec::new();
+        let mut found: mortar_core::hash::HashSet<(&[u8], &[u8])> =
+            mortar_core::hash::HashSet::default();
         for (i, r) in m.symbols.iter().enumerate() {
             if !matches!(r.kind, sym_kind::GLOBAL | sym_kind::VERSIONED) {
                 continue;
@@ -1709,10 +1706,40 @@ pub fn state5_rows(
                 && named.contains(&(n, v))
             {
                 set.push(i);
+                found.insert((n, v));
+            }
+        }
+        // WP-247 item b: a name an option roots (entry, `-u`, `EXTERN`,
+        // `--require-defined`, `-init`, `-fini`) that no file mentions has
+        // no key in the link: its row is added here, unmentioned, with the
+        // bit (IN-71b: never dead while the option names it), in the
+        // options' order; the compaction sorts it among the unmentioned.
+        let mut missing: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+        for b in &rows.option_keys {
+            let key = option_key_of(b);
+            if !found.contains(&key) && !missing.iter().any(|(n, v)| (&n[..], &v[..]) == key) {
+                missing.push((key.0.to_vec(), key.1.to_vec()));
             }
         }
         for i in set {
             m.symbols[i].option = true;
+        }
+        for (name, version) in missing {
+            let mut add = |b: &[u8]| -> Result<Str, String> {
+                let off = u32::try_from(m.strings.len()).map_err(|_| "STRINGS over 4 GiB")?;
+                m.strings.extend_from_slice(b);
+                Ok(Str { off, len: u32::try_from(b.len()).map_err(|_| "an option's name")? })
+            };
+            let (name, version) = (add(&name)?, add(&version)?);
+            m.symbols.push(SymbolRow {
+                kind: if version.len == 0 { sym_kind::GLOBAL } else { sym_kind::VERSIONED },
+                file: NONE,
+                name,
+                version,
+                at_file: NONE,
+                option: true,
+                ..SymbolRow::default()
+            });
         }
     }
     if collide && let Some(&r) = m.frags.first() {
@@ -1720,6 +1747,37 @@ pub fn state5_rows(
     }
     crate::state5::check_capture(&m).map_err(|r| r.report())?;
     crate::state5::compact::normalize(&m).map_err(|e| e.to_string())
+}
+
+/// An option's operand as its key (`OptionKey::name`'s rule, as
+/// `compact::live_keys` matches it): split at the first `@`; `foo@@V` is
+/// `foo` with no version.
+fn option_key_of(b: &[u8]) -> (&[u8], &[u8]) {
+    match b.iter().position(|&c| c == b'@') {
+        None => (b, &[][..]),
+        Some(i) if b.get(i + 1) == Some(&b'@') => (&b[..i], &[][..]),
+        Some(i) => (&b[..i], &b[i + 1..]),
+    }
+}
+
+/// The names whose `SYMBOLS` rows carry the option bit (seam 6's
+/// `SYMBOLS.option`, WP-247 item b): `Plan::option_keys` (`--wrap`'s
+/// three names, `--defsym`'s symbol and the symbol its expression names)
+/// then the names [`OptionKeys::live_roots`] lists that are not among
+/// them (the entry, `-u` and `EXTERN`, `--require-defined`, `--defsym`'s
+/// operand, `-init`, `-fini`). The front passes it to the capture
+/// (`Incr5.option_keys`).
+///
+/// [`OptionKeys::live_roots`]: mortar_core::incr::OptionKeys::live_roots
+#[must_use]
+pub fn option_names(plan_keys: Vec<Vec<u8>>, keys: &mortar_core::incr::OptionKeys) -> Vec<Vec<u8>> {
+    let mut out = plan_keys;
+    for (name, _) in keys.live_roots() {
+        if !out.iter().any(|n| n == name) {
+            out.push(name.to_vec());
+        }
+    }
+    out
 }
 
 /// [`state5_rows`]' bytes (`state5::write::encode`).

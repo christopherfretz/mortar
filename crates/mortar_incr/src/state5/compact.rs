@@ -701,6 +701,18 @@ pub fn normalize(m: &MemoryState) -> Result<MemoryState, StateError> {
         refs.sort_unstable();
         n.diags.push(DiagRow { subjects, refs, ..d.clone() });
     }
+    // In the writer's key order (WP-247 item 3): `encode` appends each
+    // row's strings in this order, so a capture's and its decode's
+    // compactions are the same bytes.
+    n.diags.sort_by(|a, b| {
+        (a.key.phase, a.key.unit, a.key.seq, &a.code, &a.text).cmp(&(
+            b.key.phase,
+            b.key.unit,
+            b.key.seq,
+            &b.code,
+            &b.text,
+        ))
+    });
     let _ = &mut intern;
     // NAMES: the globals' index, rebuilt (it is derived from SYMBOLS).
     for (row, r) in n.symbols.iter().enumerate() {
