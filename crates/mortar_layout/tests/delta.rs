@@ -18,9 +18,9 @@ use mortar_core::id::{ChunkId, FileId, OutSecId, SectionId};
 use mortar_core::identity::{Anchor, SectionKey};
 use mortar_core::incr::{
     EhFile, EhRecordIn, FileDemands, FilePieces, IncrReason, LayoutDelta, LayoutInput, LayoutRows,
-    MemoryLayout, MergeClass, MergedPiece, PlaceNow, SectionChange, SlotDemand, StoredEhRecord,
-    StoredFragAt, StoredLayout, StoredRegion, StoredSection, StoredSlot, StoredUse, SymtabBlock,
-    SymtabTables, Unimplemented,
+    MemoryLayout, MergeClass, MergedPiece, PlaceNow, SectionChange, SlotDemand, StoredEhRange,
+    StoredFragUse, StoredKeyRef, StoredLayout, StoredRegion, StoredSection, StoredSlot,
+    SymtabBlock, SymtabTables, Unimplemented,
 };
 use mortar_core::layout::{
     Chunk, ChunkKind, Defined, Hole, HoleKind, Patch, Place, Placement, Redirect, Segment,
@@ -192,9 +192,9 @@ fn capture(
         regions: regions.to_vec(),
         holes: p.holes.to_vec(),
         frags: Vec::new(),
-        frag_at: Vec::new(),
-        eh_records: Vec::new(),
-        uses: Vec::new(),
+        frag_uses: Vec::new(),
+        eh_ranges: Vec::new(),
+        key_refs: Vec::new(),
         slots: Vec::new(),
         patches: p.patches.to_vec(),
         redirects: p.redirects.to_vec(),
@@ -1027,7 +1027,7 @@ struct Counting<'a> {
     regions: AtomicUsize,
     holes: AtomicUsize,
     frags: AtomicUsize,
-    /// `EH_RECORDS`, `FRAG_AT` and `INDEX` ranges.
+    /// `FILES`' eh columns, `FRAG_USE` and `KEY_REFS` ranges.
     ranges: AtomicUsize,
 }
 
@@ -1072,22 +1072,23 @@ impl LayoutRows for Counting<'_> {
     fn frags_of(
         &self,
         out: OutSecId,
+        class: u32,
         hash: [u8; 16],
-    ) -> Result<Vec<mortar_core::incr::StoredFrag>, IncrReason> {
+    ) -> Result<Option<mortar_core::incr::StoredFrag>, IncrReason> {
         self.frags.fetch_add(1, Ordering::Relaxed);
-        self.inner.frags_of(out, hash)
+        self.inner.frags_of(out, class, hash)
     }
-    fn frag_at_of(&self, file: FileId) -> Result<Vec<StoredFragAt>, IncrReason> {
+    fn frag_uses_of(&self, file: FileId) -> Result<Vec<StoredFragUse>, IncrReason> {
         self.ranges.fetch_add(1, Ordering::Relaxed);
-        self.inner.frag_at_of(file)
+        self.inner.frag_uses_of(file)
     }
-    fn eh_records_of(&self, file: FileId) -> Result<Vec<StoredEhRecord>, IncrReason> {
+    fn eh_range_of(&self, file: FileId) -> Result<Option<StoredEhRange>, IncrReason> {
         self.ranges.fetch_add(1, Ordering::Relaxed);
-        self.inner.eh_records_of(file)
+        self.inner.eh_range_of(file)
     }
-    fn uses_of(&self, file: FileId) -> Result<Vec<StoredUse>, IncrReason> {
+    fn key_refs_of(&self, file: FileId) -> Result<Vec<StoredKeyRef>, IncrReason> {
         self.ranges.fetch_add(1, Ordering::Relaxed);
-        self.inner.uses_of(file)
+        self.inner.key_refs_of(file)
     }
     fn section(&self, id: SectionId) -> Result<Option<StoredSection>, IncrReason> {
         self.inner.section(id)
@@ -1388,16 +1389,18 @@ fn items_5_6_7_refused_wholesale() {
         f(&mut m);
         run(&m, &input(&changes)).err()
     };
-    let r = StoredEhRecord { section: sid, piece: 0 };
-    assert_eq!(old(&|m| m.eh_records.push((f1, r))), Some(not_implemented()));
-    let fa = StoredFragAt { section: sid, offset: 0, out: OutSecId(0), hash: [1; 16], ordinal: 0 };
-    assert_eq!(old(&|m| m.frag_at.push((f1, fa))), Some(not_implemented()));
-    let slot = StoredUse { key: mortar_core::id::SymbolId(3), slot: true };
-    assert_eq!(old(&|m| m.uses.push((f1, slot))), Some(not_implemented()));
-    // A plain global use is no slot; another file's rows are not read.
-    let plain = StoredUse { key: mortar_core::id::SymbolId(3), slot: false };
-    assert!(old(&|m| m.uses.push((f1, plain))).is_none());
-    assert!(old(&|m| m.eh_records.push((FileId(2), r))).is_none());
+    let r = StoredEhRange { offset: 0, capacity: 40, records: 1 };
+    assert_eq!(old(&|m| m.eh_ranges.push((f1, r))), Some(not_implemented()));
+    let fu = StoredFragUse { file: f1, out: OutSecId(0), class: 0, hash: [1; 16] };
+    assert_eq!(old(&|m| m.frag_uses.push(fu)), Some(not_implemented()));
+    let key = mortar_core::id::SymbolId(3);
+    let got = mortar_core::demands::DemandFlags::GOT;
+    let slot = StoredKeyRef { key, file: f1, demand: got };
+    assert_eq!(old(&|m| m.key_refs.push(slot)), Some(not_implemented()));
+    // A mention with no demand is no slot; another file's rows are not read.
+    let plain = StoredKeyRef { key, file: f1, demand: mortar_core::demands::DemandFlags::empty() };
+    assert!(old(&|m| m.key_refs.push(plain)).is_none());
+    assert!(old(&|m| m.eh_ranges.push((FileId(2), r))).is_none());
 }
 
 // ---- item 10: an output section left empty (F-6) ----------------------------

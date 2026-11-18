@@ -9,8 +9,8 @@
 //! What it reads (IN-18c, O(change)): the whole small tables (`CHUNKS`,
 //! `ORDER`, `SEGMENTS`, `OUTSECS`, `PATCHES`, `REDIRECTS`, `SYM_PLACE`,
 //! `DEFINED`, `LAYOUT`; `SLOTS` only when a file changed), and per file of
-//! `changes` its `SECTIONS`, `REGIONS`, `EH_RECORDS`, `FRAG_AT` and
-//! `INDEX` ranges, and `HOLES` of the chunks a touched region or a new
+//! `changes` its `SECTIONS`, `REGIONS`, `FRAG_USE` and `KEY_REFS` ranges
+//! and its `FILES` row's `.eh_frame` columns, and `HOLES` of the chunks a touched region or a new
 //! region is in, or of an output section that lost a member (item 10).
 //! Nothing else.
 //!
@@ -85,7 +85,10 @@ pub fn layout(
     for (i, c) in changes.iter().enumerate() {
         files.entry(c.file).or_default().push(i);
     }
-    items_5_6_7_refused(stored, input, files.keys().copied())?;
+    let ids: Vec<FileId> = files.keys().copied().collect();
+    item_5_refused(stored, input, &ids)?;
+    item_6_refused(stored, input, &ids)?;
+    item_7_refused(stored, input, &ids)?;
     let base = Base::read(stored, target)?;
     let mut u = Update::new(&base, changes);
     for (&file, members) in &files {
@@ -101,30 +104,62 @@ pub fn layout(
     Ok(delta)
 }
 
-/// Items 5, 6 and 7, refused wholesale until WP-239's ruling on the stored
-/// state (the supervisor's word on WP-216's seam 4): a file of the update
-/// with kept `.eh_frame` records, merged pieces or a slot demand, in its
-/// new version (`input`) or its old one (`EH_RECORDS`, `FRAG_AT`, an
-/// `INDEX` row of kind `SLOT`), is `update-not-implemented (layout)`. An
-/// accessor the stored rows do not give is the same reason (its provided
-/// body). A merged section placed whole and kept at its place (S-6) is
-/// not a piece and stays item 4's.
-fn items_5_6_7_refused(
+// Items 5, 6 and 7 are refused wholesale until they are built (the
+// supervisor's word on WP-216's seam 4), one clause per item so that each
+// can be taken by its own package: a file of the update with kept
+// `.eh_frame` records, merged pieces or a slot demand, in its new version
+// (`input`) or its old one (its stored range), is `update-not-implemented
+// (layout)`; so is a non-empty list in `input` for any file. An accessor the
+// stored rows do not give is the same reason (its provided body). A merged
+// section placed whole and kept at its place (S-6) is not a piece and stays
+// item 4's.
+
+/// Item 5 (`.eh_frame`, IN-34a): refused wholesale (WP-243's).
+fn item_5_refused(
     stored: &StoredLayout<'_>,
     input: &LayoutInput<'_>,
-    files: impl Iterator<Item = FileId>,
+    files: &[FileId],
 ) -> Result<(), IncrReason> {
-    if input.eh.iter().any(|f| !f.records.is_empty())
-        || input.pieces.iter().any(|f| !f.pieces.is_empty())
-        || input.demands.iter().any(|f| !f.demands.is_empty())
-    {
+    if input.eh.iter().any(|f| !f.records.is_empty()) {
         return Err(not_implemented());
     }
-    for file in files {
-        if !stored.eh_records_of(file)?.is_empty()
-            || !stored.frag_at_of(file)?.is_empty()
-            || stored.uses_of(file)?.iter().any(|u| u.slot)
-        {
+    for &file in files {
+        if stored.eh_range_of(file)?.is_some() {
+            return Err(not_implemented());
+        }
+    }
+    Ok(())
+}
+
+/// Item 6 (merged pieces): refused wholesale.
+fn item_6_refused(
+    stored: &StoredLayout<'_>,
+    input: &LayoutInput<'_>,
+    files: &[FileId],
+) -> Result<(), IncrReason> {
+    if input.pieces.iter().any(|f| !f.pieces.is_empty()) {
+        return Err(not_implemented());
+    }
+    for &file in files {
+        if !stored.frag_uses_of(file)?.is_empty() {
+            return Err(not_implemented());
+        }
+    }
+    Ok(())
+}
+
+/// Item 7 (slots): refused wholesale (a stored demand on any key of the
+/// file).
+fn item_7_refused(
+    stored: &StoredLayout<'_>,
+    input: &LayoutInput<'_>,
+    files: &[FileId],
+) -> Result<(), IncrReason> {
+    if input.demands.iter().any(|f| !f.demands.is_empty()) {
+        return Err(not_implemented());
+    }
+    for &file in files {
+        if stored.key_refs_of(file)?.iter().any(|r| !r.demand.is_empty()) {
             return Err(not_implemented());
         }
     }
