@@ -6,6 +6,7 @@
 //! incr_state canon <state>
 //! incr_state compare <state A> <state B>
 //! incr_state size <state> [<format-4 state> <mortar version string>]
+//! incr_state strings <format-4 state> <mortar version string> <path suffix>...
 //! ```
 //!
 //! `convert` writes the format-5 state of a format-4 one (the full link's
@@ -95,6 +96,99 @@ fn seam_rows(m: &mut MemoryState) {
     m.copies = copies;
 }
 
+/// `STRINGS`' rows and capacity in a format-5 state's directory.
+fn strings_entry(bytes: &[u8]) -> Result<(u64, u64), String> {
+    let h = state5::Header::parse(bytes).map_err(|e| e.to_string())?;
+    let end = state5::HEADER + state5::TABLES.len() * state5::ENTRY;
+    let dir = state5::parse_directory(&h, bytes.get(state5::HEADER..end).ok_or("short")?)
+        .map_err(|e| e.to_string())?;
+    let e = &dir[state5::table_index(format::kind::STRINGS).ok_or("no STRINGS")?];
+    Ok((e.rows, e.capacity))
+}
+
+/// F-11's measurement: per file whose path ends with one of `suffixes`,
+/// the update of that file recompiled unchanged (its `SECTIONS` names and
+/// anchors and its `GROUPS` signatures all in the update's own pool, as
+/// `ChangedFiles::strings` gives them): the pool's bytes (what a patch
+/// appended before F-11) and what `STRINGS` grows by now.
+fn strings_growth(path4: &str, version: &str, suffixes: &[&str]) -> Result<(), String> {
+    use mortar_core::FileId;
+    use mortar_incr::update::rows::GroupRow;
+    use mortar_incr::update::view::{FileRanges, StatePatch};
+    let bytes = convert(path4, version)?;
+    let m = read::decode(&bytes).map_err(|e| e.to_string())?;
+    let (rows, capacity) = strings_entry(&bytes)?;
+    let old = m.strings.len();
+    let s = |x: format::Str| m.strings[x.off as usize..(x.off + x.len) as usize].to_vec();
+    let mut out: Vec<(usize, u64, String)> = Vec::new();
+    for (f, file) in m.files.iter().enumerate() {
+        let path = String::from_utf8_lossy(&s(file.path)).into_owned();
+        if !suffixes.iter().any(|x| path.ends_with(x)) {
+            continue;
+        }
+        let f32 = u32::try_from(f).map_err(|e| e.to_string())?;
+        let mut p = StatePatch::default();
+        let fresh = |p: &mut StatePatch, b: &[u8]| {
+            let off = u32::try_from(old + p.strings.len()).unwrap_or(u32::MAX);
+            p.strings.extend_from_slice(b);
+            format::Str { off, len: u32::try_from(b.len()).unwrap_or(u32::MAX) }
+        };
+        let mut sections = Vec::new();
+        for r in m.sections.iter().filter(|r| r.file == f32) {
+            let name = fresh(&mut p, &s(r.name));
+            let anchor = if r.anchor.len == 0 { r.anchor } else { fresh(&mut p, &s(r.anchor)) };
+            sections.push(format::SectionRow { name, anchor, ..r.clone() });
+        }
+        for g in m.groups.iter().filter(|g| g.file == f32 && !g.tomb) {
+            let signature = fresh(&mut p, &s(g.signature));
+            p.groups.put.push(GroupRow { signature, ..*g });
+        }
+        p.ranges.push(FileRanges {
+            file: FileId(f32),
+            sections: Some(sections),
+            mentions: None,
+            index: None,
+            edges: None,
+            frag_at: None,
+            eh_records: None,
+            symtab: None,
+            regions: None,
+            gone: false,
+        });
+        let view = read::open_bytes(bytes.clone()).map_err(|e| e.to_string())?;
+        let plan = state5::plan_patch(&view, &p).map_err(|e| e.to_string())?;
+        let out_row =
+            m.stat.iter().rfind(|r| r.tag == format::stat_tag::OUTPUT).cloned().unwrap_or_default();
+        let grew = match write::patched_bytes(&bytes, &plan, &out_row) {
+            Some(b) => strings_entry(&b)?.0 - rows,
+            None => u64::MAX,
+        };
+        let member = String::from_utf8_lossy(&s(file.member_name)).into_owned();
+        out.push((p.strings.len(), grew, member));
+    }
+    out.sort_by_key(|x| x.0);
+    let area = capacity - rows;
+    println!("files {} STRINGS rows {rows} capacity {capacity} area {area}", out.len());
+    let n = out.len();
+    if n == 0 {
+        return Ok(());
+    }
+    for (label, i) in [("median", n / 2), ("p90", n * 9 / 10), ("max", n - 1)] {
+        let (pool, grew, name) = &out[i];
+        println!("{label} (by pool): {name} pool {pool} grew {grew}");
+    }
+    let mut grew: Vec<u64> = out.iter().map(|x| x.1).collect();
+    grew.sort_unstable();
+    println!(
+        "grew median {} p90 {} max {}; compacted {}",
+        grew[n / 2],
+        grew[n * 9 / 10],
+        grew[n - 1],
+        grew.iter().filter(|&&g| g == u64::MAX).count()
+    );
+    Ok(())
+}
+
 fn run(args: &[String]) -> Result<ExitCode, String> {
     match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
         ["convert", from, to, version] => {
@@ -150,6 +244,10 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
             #[allow(clippy::cast_precision_loss)] // a ratio for people
             let ratio = bytes.len() as f64 / four as f64;
             println!("format 4 {four} bytes, format 5 {} bytes, ratio {ratio:.3} (gate 1.15)", bytes.len());
+            Ok(ExitCode::SUCCESS)
+        }
+        ["strings", path4, version, suffixes @ ..] => {
+            strings_growth(path4, version, suffixes)?;
             Ok(ExitCode::SUCCESS)
         }
         _ => Err("usage: incr_state convert <4> <out> <version> | canon <s> | compare <a> <b> | size <s> | size <4> <version>"

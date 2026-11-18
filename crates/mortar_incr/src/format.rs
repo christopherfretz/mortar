@@ -146,17 +146,22 @@ pub mod kind {
     /// File-keyed: per file its `.symtab` block and `.strtab` region;
     /// file 0's range holds the global area's row (IN-49a).
     pub const SYMTAB: u32 = 43;
-    /// Key-keyed: COMDAT signature, keeper (IN-71).
+    /// Key-keyed: one row per (COMDAT signature, file with a copy); the
+    /// keeper is not stored (IN-71; WP-215).
     pub const GROUPS: u32 = 44;
     /// Key-keyed: one row per (key, mentioning file) (IN-18e, IN-71).
     pub const KEY_REFS: u32 = 45;
-    /// Key-keyed: key, file, size, alignment of each common (IN-72 item 11).
+    /// Key-keyed: one row per (key, file with a common mention): size,
+    /// alignment; the winner is not stored (IN-72 item 11; WP-215).
     pub const COMMONS: u32 = 46;
-    /// Key-keyed: ODR key, class hash and layout (IN-71d).
+    /// Key-keyed: ODR key, class hash and layout (IN-71d). PROVISIONAL:
+    /// not written until WP-236 (format 5 has no such table).
     pub const ODR_CLASSES: u32 = 47;
-    /// Key-keyed: ODR key, file, row kind, class (IN-71d).
+    /// Key-keyed: ODR key, file, row kind, class (IN-71d). PROVISIONAL:
+    /// not written until WP-236 (format 5 has no such table).
     pub const ODR_REFS: u32 = 48;
-    /// Key-keyed: the stored warnings: subjects, code, text, order (IN-75a).
+    /// Key-keyed: the stored warnings: subjects, code, text, order
+    /// (IN-75a). Written by format 5 (not provisional: only 47 and 48 are).
     pub const DIAGS: u32 = 49;
     /// Key-parallel: a global's `.symtab` index and `.strtab` offset
     /// (IN-49a).
@@ -169,7 +174,9 @@ pub mod kind {
     /// Key-keyed: each COMDAT copy's global definition, `(key, file,
     /// symbol index)` → `st_size`, `st_type`: W1 and W2 in an update
     /// (IN-71d; WP-220). Kinds 53 and 54 are reserved for WP-236 (the
-    /// record families' `ODR_KEYS`, `ODR_FILE_KEYS`; not written).
+    /// record families' `ODR_KEYS`, `ODR_FILE_KEYS`; not written); 56 is
+    /// `FRAG_USE` (WP-239 seam 5); 40 (`FRAG_AT`) is retired with it and
+    /// never reused.
     pub const COPIES: u32 = 55;
     /// The number of tables of versions 3 and 4.
     pub const COUNT: u32 = 28;

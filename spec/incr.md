@@ -1628,7 +1628,18 @@ with each phase fed from the state for unchanged files:
   common, section or absolute, `LAZY`). It is `MENTIONS` transposed, so
   its row count equals `MENTIONS`' (plus nothing: the lazy members'
   defined mentions are `MENTIONS` rows of their files too).
-  **`at_file`** is maintained by IN-71's rule.
+  **`at_file`** is maintained by IN-71's rule: the first LIVE
+  mentioner, by the files' **current** `FILES.rank` (never by `FILES`
+  row number, never a file that is gone, dead or an archive member not
+  extracted: such a member's mentions decide nothing stored), and
+  `at_index` its entry among that file's non-local entries; `NONE` and 0
+  when no live file mentions the key. The full link's capture writes
+  the same rule (WP-214 F-12: today's format-4 capture takes the first
+  mention among ALL loaded files; the format-5 capture from a link
+  changes to this rule). The output does not read `at_file`: `.symtab`'s
+  globals are in `SymbolId` order (synth.md S-75; read from the code,
+  not compared on bytes); `at_file` orders `SYMBOLS`' rows (IN-18e) and
+  places a positional replay.
 
   **`MENTIONS` by position** (WP-215 D7): a file's `MENTIONS` range holds
   **one row per non-local entry of its symbol table, in the table's
@@ -2938,8 +2949,9 @@ a pass over a whole table of the state; **O(output)**.
   The result is IN-26's for every key (a key no file of the delta
   mentions has the stored resolution, which IN-26 would recompute
   equal). For an affected key whose mentioners change, `at_file` becomes
-  the first live mentioner in load order among `KEY_REFS`'s rows and the
-  changed files' (IN-18a3's rule), and `at_index` is that file's entry
+  the first live mentioner by current `FILES.rank` among `KEY_REFS`'s
+  rows of live files and the changed files' (IN-18e's rule; a
+  non-extracted member's row decides nothing), and `at_index` is that file's entry
   index among its non-local entries: from its new symbol table when it is
   a changed file, else from its `MENTIONS` row (whose position gives the
   index: the file's `first_global` plus the row's position in its range,
