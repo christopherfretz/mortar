@@ -98,6 +98,26 @@ fn gone(view: &StateView<'_>, f: FileId) -> Result<bool, IncrReason> {
     Ok(view.file(f)?.flags & super::rows::file_flags::GONE != 0 || view.file_index(f)?.gone)
 }
 
+/// `options.live_roots()` through `find_key` (WP-238 F1): per root name,
+/// in order, its `SYMBOLS` row (`None`: no row of that name and version).
+/// The ONE lookup of the walk's option roots, and the F1 test's subject.
+///
+/// # Errors
+/// What `find_key` reads.
+pub fn live_root_keys(
+    view: &StateView<'_>,
+    options: &OptionKeys,
+) -> Result<Vec<Option<SymbolId>>, IncrReason> {
+    options
+        .live_roots()
+        .into_iter()
+        .map(|(name, _)| {
+            let (name, version) = super::extract::split_version(name);
+            view.find_key(name, version)
+        })
+        .collect()
+}
+
 /// The stored-form walk of WP-238 S2 and S3 over `view`'s `EDGES` alone
 /// (with `RESOLVED`, `SYMBOLS`, `SECTIONS.name` and `NAMES`): the roots
 /// are every `ROOT` row's source and `options.live_roots()` through
@@ -205,11 +225,8 @@ pub fn walk_stored(
     for e in rows.iter().filter(|e| e.kind == edge_kind::ROOT) {
         w.mark(e.source, WHOLE)?;
     }
-    for (name, _) in options.live_roots() {
-        let (name, version) = super::extract::split_version(name);
-        if let Some(k) = view.find_key(name, version).map_err(io)? {
-            w.read_key(k)?;
-        }
+    for k in live_root_keys(view, options).map_err(io)?.into_iter().flatten() {
+        w.read_key(k)?;
     }
     while let Some(s) = w.stack.pop() {
         let span = first[s as usize] as usize..first[s as usize + 1] as usize;
