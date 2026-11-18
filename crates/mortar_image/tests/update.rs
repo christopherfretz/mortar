@@ -1,25 +1,30 @@
-//! U-6's tests (`spec/incr.md` IN-73, IN-75). WP-213 (U-1): the entry
-//! points' signatures, checked at compile time: an image `Link` is built by
-//! the `mortar` crate's front (`mortar::image::with_link`), which this
-//! crate's tests cannot call, so the "until it lands" values
-//! (`update-not-implemented (image)`; the full link's `Map`) are not run
-//! here. U-6 replaces this with tests over a full link's image.
+//! U-6's entry points' signatures, checked at compile time (`spec/incr.md`
+//! IN-73, IN-75): an image `Link` is built by the `mortar` crate's front,
+//! which this crate's tests cannot call; the tests over linked fixtures
+//! are `crates/mortar/tests/update_image.rs` (WP-218).
 
 use std::fs::File;
 
-use mortar_core::incr::{DirtyRange, LayoutDelta, RefillSet, SymtabPlan};
+use mortar_core::incr::{IncrReason, LayoutDelta, RefillSet, StoredLayout, SymtabPlan};
 use mortar_image::link::Link;
 use mortar_image::map::{Map, update_map};
-use mortar_image::update::{RefillError, refill};
+use mortar_image::update::{Refill as Refilled, RefillError, refill};
 
 type Refill = fn(
     &Link<'_, '_>,
     &LayoutDelta,
     &SymtabPlan,
     &RefillSet,
+    &StoredLayout<'_>,
     &File,
-) -> Result<(Vec<DirtyRange>, Vec<u8>), RefillError>;
-type UpdateMap = fn(&Link<'_, '_>, &LayoutDelta, &SymtabPlan) -> Map;
+    &[[u8; 32]],
+) -> Result<Refilled, RefillError>;
+type UpdateMap = for<'a, 'b, 'c, 'd> fn(
+    &Link<'a, 'b>,
+    &LayoutDelta,
+    &StoredLayout<'c>,
+    &'d SymtabPlan,
+) -> Result<Map, IncrReason>;
 
 // spec: incr.md IN-73, IN-75 (until U-6: the signatures)
 #[test]

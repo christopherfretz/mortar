@@ -1866,7 +1866,9 @@ fn plain_and_incremental_maps_state_the_allocations() {
                 .filter_map(|l| {
                     let t: Vec<&str> = l.split(' ').collect();
                     (t[0] == "common").then(|| {
-                        assert_eq!(t.len(), 5, "{l}");
+                        // I-78's `<file>` (I-78a): in an incremental-mode
+                        // map only; a plain map does not change.
+                        assert_eq!(t.len(), if out == "full" { 6 } else { 5 }, "{l}");
                         (t[1].to_owned(), u64::from_str_radix(t[4], 16).unwrap())
                     })
                 })
