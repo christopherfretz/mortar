@@ -844,9 +844,8 @@ pub(crate) fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()>
         Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
         _ => PathBuf::from("."),
     };
-    let mut tmp = path.as_os_str().to_owned();
-    tmp.push(format!(".tmp-{}", std::process::id()));
-    let tmp = PathBuf::from(tmp);
+    // IN-77d: `dir(S)/.<base(S)>.mortar-compact`, no pid (WP-219).
+    let tmp = crate::update::write::beside(path, crate::update::write::COMPACT);
     // I-58b: the state is replaced only where the link may replace a file.
     mortar_image::output::may_replace(path).map_err(std::io::Error::other)?;
     let result = (|| {
