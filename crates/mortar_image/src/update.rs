@@ -1049,16 +1049,39 @@ fn write_symtab(
         }
         e
     };
+    // The moves by their new index. U-5 drops a move whose `to` `entries`
+    // writes (a `Changed` global a removal moves): two writers of one index
+    // are a plan that contradicts itself.
+    let mut from_of: BTreeMap<u32, u32> = BTreeMap::new();
     for &(from, to) in &plan.moves {
-        let b = prev.read(o.offset + u64::from(from) * es..o.offset + u64::from(from + 1) * es)?;
-        overlay.put(n.offset + u64::from(to) * es, b);
+        if from_of.insert(to, from).is_some() || plan.entries.iter().any(|e| e.index == to) {
+            return Err(RefillError::Fallback(IncrReason::StateCorrupt(format!(
+                "SYMTAB: the plan writes .symtab index {to} twice (a move and another writer)"
+            ))));
+        }
+    }
+    let old_entry =
+        |i: u32| prev.read(o.offset + u64::from(i) * es..o.offset + u64::from(i + 1) * es);
+    // Every move is read from the previous output, as read, before any
+    // write (an appended entry may take a move's `from`): `prev` is the
+    // previous output's descriptor, never the overlay.
+    for (&to, &from) in &from_of {
+        overlay.put(n.offset + u64::from(to) * es, old_entry(from)?);
         counts.symtab_entries += 1;
     }
+    // A remap range is the table as it stands after the moves (IN-49a,
+    // U-5's plan: "U-6 copies the moves, then remaps"): at index i the
+    // source is the previous output's entry at a move's `from` when a move
+    // has `to == i`, else its entry at i; `st_value` mapped, the rest as
+    // read. A moved entry is remapped.
     for &(lo, hi) in &plan.remap {
         let at = n.offset + u64::from(lo) * es;
         let old_at = o.offset + u64::from(lo) * es;
         let mut b = prev.read(old_at..old_at + u64::from(hi - lo) * es)?;
-        overlay.read_over(at, &mut b);
+        for (&to, &from) in from_of.range(lo..hi) {
+            let k = ((to - lo) as usize) * es as usize;
+            b[k..k + es as usize].copy_from_slice(&old_entry(from)?);
+        }
         for e in b.chunks_exact_mut(es as usize) {
             counts.symtab_entries += 1;
             let (info, shndx, vat) =
@@ -1261,6 +1284,166 @@ mod tests {
         assert_eq!(tails, [(0x1100, 0x1180)]);
         // No byte of padding between the moved sections: no gap to fill.
         assert!(s.gaps(&new).is_empty(), "{:?}", s.gaps(&new));
+    }
+
+    /// A hand-made previous output for `write_symtab`: `.text` at 0x1000,
+    /// `.data` at 0x2000, a 5-entry `.symtab` at 0x100 (null, local L,
+    /// global A in `.text`, global R and global M in `.data`), and the
+    /// update's table: `.text` grown by 0x80 (`.data` moves by 0x80 in
+    /// address and file), `.symtab` of `new_entries` entries at 0x180.
+    struct SymtabCase {
+        old: Table,
+        new: Table,
+        names: Vec<Vec<u8>>,
+        prev: File,
+    }
+
+    const ES: u64 = 24;
+    const L: u32 = 1;
+    const A: u32 = 3;
+    const R: u32 = 5;
+    const M: u32 = 7;
+    const N: u32 = 9;
+
+    fn sym(name: u32, info: u8, shndx: u16, value: u64, size: u64) -> Vec<u8> {
+        let mut e = Vec::new();
+        e.extend_from_slice(&name.to_le_bytes());
+        e.extend_from_slice(&[info, 0]);
+        e.extend_from_slice(&shndx.to_le_bytes());
+        e.extend_from_slice(&value.to_le_bytes());
+        e.extend_from_slice(&size.to_le_bytes());
+        e
+    }
+
+    fn symtab_case(new_entries: u64) -> SymtabCase {
+        let row =
+            |alloc, addr, offset, size| Row { name: 0, in_file: true, alloc, addr, offset, size };
+        let old = Table {
+            class64: true,
+            shstrndx: 0,
+            rows: vec![
+                Row::default(),
+                row(true, 0x1000, 0x40, 0x40),
+                row(true, 0x2000, 0x80, 0x20),
+                row(false, 0, 0x100, 5 * ES),
+                row(false, 0, 0x200, 0x20),
+            ],
+        };
+        let new = Table {
+            rows: vec![
+                Row::default(),
+                row(true, 0x1000, 0x40, 0xc0),
+                row(true, 0x2080, 0x100, 0x20),
+                row(false, 0, 0x180, new_entries * ES),
+                row(false, 0, 0x280, 0x20),
+            ],
+            ..old.clone()
+        };
+        let mut bytes = vec![0u8; 0x300];
+        let table = [
+            vec![0; ES as usize],
+            sym(L, 0x02, 1, 0x1004, 4),
+            sym(A, 0x12, 1, 0x1008, 4),
+            sym(R, 0x11, 2, 0x2000, 8),
+            sym(M, 0x11, 2, 0x2008, 8),
+        ]
+        .concat();
+        bytes[0x100..0x100 + table.len()].copy_from_slice(&table);
+        // The previous output: a file of this process, unlinked once open
+        // (the descriptor is what refill reads).
+        let path = std::env::temp_dir().join(format!(
+            "mortar-wp218-symtab-{}-{new_entries}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::write(&path, &bytes).unwrap();
+        let prev = File::open(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        let names =
+            [&b""[..], b".text", b".data", b".symtab", b".strtab"].map(<[u8]>::to_vec).to_vec();
+        SymtabCase { old, new, names, prev }
+    }
+
+    /// The new table's bytes [0, `n` entries) as `write_symtab` leaves
+    /// them (0xaa where nothing was written).
+    fn symtab_written(c: &SymtabCase, plan: &SymtabPlan, n: u64) -> Result<Vec<u8>, RefillError> {
+        let prev = Previous::new(&c.prev)?;
+        let shift = Shift::new(&c.old, &c.new);
+        let mut overlay = Overlay::default();
+        let mut counts = Counts::default();
+        write_symtab(&prev, &c.old, &c.new, &c.names, plan, &shift, &mut overlay, &mut counts)?;
+        let mut out = vec![0xaa; (n * ES) as usize];
+        overlay.read_over(c.new.rows[3].offset, &mut out);
+        Ok(out)
+    }
+
+    fn entry_at(t: &[u8], i: usize) -> &[u8] {
+        &t[i * ES as usize..(i + 1) * ES as usize]
+    }
+
+    // spec: incr.md IN-49a (a removed global's index taken by the area's
+    // last entry, a `move`; every growth step makes the rest of the area a
+    // `remap` range, the move's `to` included: U-6 copies the moves, then
+    // remaps; WP-218 resume ruling 1), U-5's Q2-5 (a shrinking global area:
+    // the entries [new end, old end) are zeros, the file slack of a full
+    // link). R removed, M (in `.data`, which the growth moves by 0x80)
+    // moved from 4 to 3.
+    #[test]
+    fn symtab_move_inside_remap_is_remapped_and_shrink_zeroed() {
+        let c = symtab_case(4);
+        let plan = SymtabPlan {
+            moves: vec![(4, 3)],
+            remap: vec![(1, 4)],
+            tables: mortar_core::incr::SymtabTables {
+                symtab_size: 4 * ES,
+                symtab_slack: ES,
+                ..Default::default()
+            },
+            ..SymtabPlan::default()
+        };
+        let t = symtab_written(&c, &plan, 4).unwrap();
+        assert_eq!(entry_at(&t, 1), sym(L, 0x02, 1, 0x1004, 4), "L: .text did not move");
+        assert_eq!(entry_at(&t, 2), sym(A, 0x12, 1, 0x1008, 4));
+        assert_eq!(entry_at(&t, 3), sym(M, 0x11, 2, 0x2088, 8), "M moved, value mapped");
+        for i in 1..4 {
+            let name = u32::from_le_bytes(entry_at(&t, i)[..4].try_into().unwrap());
+            assert_ne!(name, R, "the removed symbol's name at index {i}");
+        }
+    }
+
+    // spec: incr.md IN-49a, U-5's plan (every move READ from the previous
+    // output before any appended entry is written: an appended entry may
+    // take a move's `from`; WP-218 resume ruling 3), and two writers of one
+    // index refused (ruling 1: U-5 drops a move whose `to` `entries`
+    // writes).
+    #[test]
+    fn symtab_appended_entry_over_a_move_source() {
+        let c = symtab_case(5);
+        let n = mortar_core::incr::SymtabEntry {
+            index: 4,
+            name: N,
+            info: 0x12,
+            other: 0,
+            shndx: 1,
+            value: 0x1010,
+            size: 4,
+        };
+        let plan = SymtabPlan {
+            moves: vec![(4, 3)],
+            remap: vec![(1, 4)],
+            entries: vec![n],
+            ..SymtabPlan::default()
+        };
+        let t = symtab_written(&c, &plan, 5).unwrap();
+        assert_eq!(entry_at(&t, 3), sym(M, 0x11, 2, 0x2088, 8), "M read before N was written");
+        assert_eq!(entry_at(&t, 4), sym(N, 0x12, 1, 0x1010, 4), "the appended entry");
+        let both =
+            SymtabPlan { entries: vec![mortar_core::incr::SymtabEntry { index: 3, ..n }], ..plan };
+        let r = symtab_written(&c, &both, 5);
+        assert!(
+            matches!(r, Err(RefillError::Fallback(IncrReason::StateCorrupt(_)))),
+            "a move and an entry at one index: {r:?}"
+        );
     }
 
     // spec: incr.md IN-75 (a later write over an earlier one; the ranges
