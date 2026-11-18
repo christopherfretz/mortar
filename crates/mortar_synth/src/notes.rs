@@ -353,6 +353,88 @@ fn note_map(
     Ok(out)
 }
 
+/// One object's own properties (S-94, S-126; WP-244, seam 6's
+/// `FILES.properties`): its notes combined by each property's rule, as
+/// the merge across objects reads them; empty for an object with no
+/// note. Unknown types are kept here (the merge drops them) and warned
+/// once per object and type (`unknown-property`); a malformed note or
+/// disagreeing `EqualOrAbsent` properties within the object are emitted
+/// and refuse the link (`Err`). `processor` is `arch.property_merge`.
+///
+/// # Errors
+/// [`Failed`] after emitting the object's diagnostics.
+pub fn object_properties(
+    obj: &ObjectNotes<'_>,
+    class: Class,
+    processor: &dyn Fn(u32) -> Option<PropMerge>,
+    diag: &Collector,
+) -> Result<BTreeMap<u32, Vec<u8>>, Failed> {
+    let word = class.word_size();
+    let rule_of = |t: u32| rule(t, processor);
+    let mut failed = false;
+    let okey = key(obj.sections.first().map_or(0, |s| u64::from(s.0.0)));
+    let mut notes: Vec<BTreeMap<u32, Value>> = Vec::new();
+    let mut unknown = std::collections::BTreeSet::new();
+    for &(id, bytes, align) in obj.sections {
+        let mut bad = None;
+        for note in Notes::new(bytes, align as usize, class, 0) {
+            let Ok(note) = note else {
+                bad = Some(malformed("program property is too short"));
+                break;
+            };
+            let Some(props) = note.gnu_properties() else { continue };
+            match note_props(props, word, &rule_of) {
+                Ok(props) => {
+                    for p in &props {
+                        if rule_of(p.0) == Rule::Unknown {
+                            unknown.insert(p.0);
+                        }
+                    }
+                    if let Ok(m) = note_map(props, &rule_of) {
+                        notes.push(m);
+                    } else {
+                        bad = Some(feature(PAUTH_DIFFERS));
+                        break;
+                    }
+                }
+                Err(d) => {
+                    bad = Some(d.into_diagnostic());
+                    break;
+                }
+            }
+        }
+        if let Some(d) = bad {
+            diag.emit(
+                key(u64::from(id.0)),
+                d.at(mortar_diag::Place::section(
+                    mortar_diag::FileRef::new(obj.path),
+                    ".note.gnu.property",
+                    0,
+                )),
+            );
+            failed = true;
+        }
+    }
+    for t in unknown {
+        diag.emit(
+            okey,
+            Diagnostic::warning(Kind::UnknownProperty { path: obj.path.to_owned(), pr_type: t }),
+        );
+    }
+    // S-126: the object's notes, as objects. An object with no property
+    // note has every property absent.
+    let combined = if notes.is_empty() {
+        BTreeMap::new()
+    } else {
+        merge_level(&notes, &rule_of).unwrap_or_else(|_| {
+            diag.emit(okey, feature(PAUTH_DIFFERS).at(mortar_diag::FileRef::new(obj.path)));
+            failed = true;
+            BTreeMap::new()
+        })
+    };
+    if failed { Err(Failed) } else { Ok(combined) }
+}
+
 impl PropertyPlan {
     /// S-94 to S-96 and S-126 over every live relocatable object.
     /// `processor` is `arch.property_merge`; `memory_seal` is `-z
@@ -362,7 +444,8 @@ impl PropertyPlan {
     ///
     /// Within an object, its notes combine by each property's own rule
     /// as if each note were an object (S-126, the supervisor's ruling on
-    /// Q12); across objects as S-95.
+    /// Q12); across objects as S-95. [`object_properties`] per object,
+    /// then [`PropertyPlan::merged`].
     pub fn new(
         objects: &[ObjectNotes<'_>],
         class: Class,
@@ -370,80 +453,37 @@ impl PropertyPlan {
         memory_seal: bool,
         diag: &Collector,
     ) -> Result<Self, Failed> {
-        let word = class.word_size();
-        let rule_of = |t: u32| rule(t, processor);
         let mut per_object = Vec::with_capacity(objects.len());
         let mut failed = false;
         for obj in objects {
-            let okey = key(obj.sections.first().map_or(0, |s| u64::from(s.0.0)));
-            let mut notes: Vec<BTreeMap<u32, Value>> = Vec::new();
-            let mut unknown = std::collections::BTreeSet::new();
-            for &(id, bytes, align) in obj.sections {
-                let mut bad = None;
-                for note in Notes::new(bytes, align as usize, class, 0) {
-                    let Ok(note) = note else {
-                        bad = Some(malformed("program property is too short"));
-                        break;
-                    };
-                    let Some(props) = note.gnu_properties() else { continue };
-                    match note_props(props, word, &rule_of) {
-                        Ok(props) => {
-                            for p in &props {
-                                if rule_of(p.0) == Rule::Unknown {
-                                    unknown.insert(p.0);
-                                }
-                            }
-                            if let Ok(m) = note_map(props, &rule_of) {
-                                notes.push(m);
-                            } else {
-                                bad = Some(feature(PAUTH_DIFFERS));
-                                break;
-                            }
-                        }
-                        Err(d) => {
-                            bad = Some(d.into_diagnostic());
-                            break;
-                        }
-                    }
-                }
-                if let Some(d) = bad {
-                    diag.emit(
-                        key(u64::from(id.0)),
-                        d.at(mortar_diag::Place::section(
-                            mortar_diag::FileRef::new(obj.path),
-                            ".note.gnu.property",
-                            0,
-                        )),
-                    );
-                    failed = true;
-                }
+            match object_properties(obj, class, processor, diag) {
+                Ok(m) => per_object.push(m),
+                Err(Failed) => failed = true,
             }
-            for t in unknown {
-                diag.emit(
-                    okey,
-                    Diagnostic::warning(Kind::UnknownProperty {
-                        path: obj.path.to_owned(),
-                        pr_type: t,
-                    }),
-                );
-            }
-            // S-126: the object's notes, as objects. An object with no
-            // property note has every property absent.
-            let combined = if notes.is_empty() {
-                BTreeMap::new()
-            } else {
-                merge_level(&notes, &rule_of).unwrap_or_else(|_| {
-                    diag.emit(okey, feature(PAUTH_DIFFERS).at(mortar_diag::FileRef::new(obj.path)));
-                    failed = true;
-                    BTreeMap::new()
-                })
-            };
-            per_object.push(combined);
         }
         if failed {
             return Err(Failed);
         }
-        let Ok(mut merged) = merge_level(&per_object, &rule_of) else {
+        Self::merged(&per_object, class, processor, memory_seal, diag)
+    }
+
+    /// S-95 and S-96 over each live object's own properties
+    /// ([`object_properties`], in load order): the output's. The one merge
+    /// of the full link and of an incremental update's join over stored
+    /// `FILES.properties` (seam 6).
+    ///
+    /// # Errors
+    /// [`Failed`] after emitting the refusal of disagreeing
+    /// `EqualOrAbsent` properties.
+    pub fn merged(
+        per_object: &[BTreeMap<u32, Vec<u8>>],
+        class: Class,
+        processor: &dyn Fn(u32) -> Option<PropMerge>,
+        memory_seal: bool,
+        diag: &Collector,
+    ) -> Result<Self, Failed> {
+        let rule_of = |t: u32| rule(t, processor);
+        let Ok(mut merged) = merge_level(per_object, &rule_of) else {
             return fail(diag, key(0), feature(PAUTH_DIFFERS));
         };
         // An `And` type that no input has is absent (merge_level saw no
@@ -453,7 +493,7 @@ impl PropertyPlan {
         }
         Ok(Self {
             props: merged.into_iter().map(|(t, v)| (t, v.into_boxed_slice())).collect(),
-            word: word as u64,
+            word: class.word_size() as u64,
         })
     }
 

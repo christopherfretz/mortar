@@ -51,7 +51,13 @@ fn facts_per_key_and_mention() {
     let diag = mortar_diag::Collector::new(mortar_diag::Policy::default());
     let f = mortar::front::front(
         parsed.plan,
-        mortar::front::Env { cwd: Path::new(&cwd), pool: Pool::new(4), replay: None, slack: true },
+        mortar::front::Env {
+            cwd: Path::new(&cwd),
+            pool: Pool::new(4),
+            replay: None,
+            slack: true,
+            state5: false,
+        },
         &store,
         &diag,
         &mut mortar::timing::Timer::new(false),

@@ -32,7 +32,13 @@ pub mod file_flags {
     pub const POSITIONAL: u8 = 1;
     pub const LAZY: u8 = 2;
     pub const GONE: u8 = 4;
-    pub const ALL: u8 = 7;
+    /// The file's `.eh_frame` range holds a CIE whose FDE, LSDA or
+    /// personality encoding is not one an update moves by a delta
+    /// (`0x1b`, `0x1b`, `0x9b`): an update that writes the range answers
+    /// `update-not-implemented (eh)` (WP-244; PROPOSED, needs the
+    /// supervisor's word).
+    pub const EH_FIXED: u8 = 8;
+    pub const ALL: u8 = 15;
 }
 
 /// `FILES` (kind 3, append-only; IN-18e): one row per file of the link,

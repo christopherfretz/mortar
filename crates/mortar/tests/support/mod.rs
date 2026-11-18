@@ -468,7 +468,7 @@ pub fn front_of<'s>(
     let diag = Collector::new(Policy::default());
     let f = front(
         parsed.plan,
-        Env { cwd, pool, replay: None, slack: false },
+        Env { cwd, pool, replay: None, slack: false, state5: false },
         store,
         &diag,
         &mut Timer::new(false),

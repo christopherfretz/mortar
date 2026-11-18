@@ -177,7 +177,7 @@ impl MemoryState {
             .collect();
         m.keyed_from_format4(s);
         m.name_rows();
-        m.file_index = (0..m.files.len()).map(|f| m.index_row(FileId(f as u32))).collect();
+        m.file_index = m.index_rows();
         m
     }
 
@@ -272,38 +272,48 @@ impl MemoryState {
             .collect();
     }
 
-    /// `FILE_INDEX`'s row of `file` over these vectors (first position and
-    /// count of the file's rows; capacity = count).
-    fn index_row(&self, file: FileId) -> FileIndexRow {
+    /// `FILE_INDEX`'s rows over these vectors (per file the first
+    /// position and the count of its rows; capacity = count), one pass
+    /// per table (WP-244: a pass per file was quadratic, 0.8 s of protoc's
+    /// incremental link).
+    fn index_rows(&self) -> Vec<FileIndexRow> {
         use super::rows::{FileTable, RowRange};
-        fn range(at: impl Iterator<Item = bool>) -> RowRange {
-            let mut r = RowRange::default();
-            for (i, mine) in at.enumerate() {
-                if mine {
-                    if r.count == 0 {
-                        r.first = u32::try_from(i).unwrap_or(u32::MAX);
-                    }
-                    r.count += 1;
+        fn note(r: &mut RowRange, i: usize) {
+            if r.count == 0 {
+                r.first = u32::try_from(i).unwrap_or(u32::MAX);
+            }
+            r.count += 1;
+            r.capacity = r.count;
+        }
+        let mut rows = vec![FileIndexRow::default(); self.files.len()];
+        let mut by = |t: FileTable, files: &mut dyn Iterator<Item = u32>| {
+            for (i, f) in files.enumerate() {
+                if let Some(row) = rows.get_mut(f as usize) {
+                    note(&mut row.ranges[t as usize], i);
                 }
             }
-            r.capacity = r.count;
-            r
-        }
-        let mut row = FileIndexRow::default();
-        row.ranges[FileTable::Sections as usize] =
-            range(self.sections.iter().map(|s| s.file == file.0));
-        row.ranges[FileTable::Mentions as usize] = range(self.mentions.iter().map(|r| r.0 == file));
-        row.ranges[FileTable::Index as usize] = range(self.index.iter().map(|r| r.0 == file));
-        row.ranges[FileTable::Edges as usize] = range(self.edges.iter().map(|r| r.0 == file));
-        row.ranges[FileTable::FragUse as usize] = range(self.frag_uses.iter().map(|r| r.0 == file));
-        row.ranges[FileTable::Symtab as usize] = range(self.symtab.iter().map(|r| r.0 == file));
-        row.ranges[FileTable::Regions as usize] = range(self.regions.iter().map(|r| r.0 == file));
+        };
+        by(FileTable::Sections, &mut self.sections.iter().map(|s| s.file));
+        by(FileTable::Mentions, &mut self.mentions.iter().map(|r| r.0.0));
+        by(FileTable::Index, &mut self.index.iter().map(|r| r.0.0));
+        by(FileTable::Edges, &mut self.edges.iter().map(|r| r.0.0));
+        by(FileTable::FragUse, &mut self.frag_uses.iter().map(|r| r.0.0));
+        by(FileTable::Symtab, &mut self.symtab.iter().map(|r| r.0.0));
+        by(FileTable::Regions, &mut self.regions.iter().map(|r| r.0.0));
         // The file's locals: the run of `SYMBOLS` rows (seam 6); format
         // 4's capture writes them together, as format 5's does.
-        let local = |r: &SymbolRow| r.kind == super::rows::sym_kind::LOCAL && r.file == file.0;
-        let r = range(self.symbols.iter().map(local));
-        row.locals = super::rows::LocalRange { first: r.first, count: r.count };
-        row
+        for (i, r) in self.symbols.iter().enumerate() {
+            if r.kind != super::rows::sym_kind::LOCAL {
+                continue;
+            }
+            if let Some(row) = rows.get_mut(r.file as usize) {
+                if row.locals.count == 0 {
+                    row.locals.first = u32::try_from(i).unwrap_or(u32::MAX);
+                }
+                row.locals.count += 1;
+            }
+        }
+        rows
     }
 
     /// `NAMES` made afresh: one row per global (kinds 0 and 1) and `GONE`

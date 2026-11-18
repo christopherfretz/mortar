@@ -132,6 +132,24 @@ impl EhSource for MergeEh<'_> {
 
 const NONE: u32 = u32::MAX;
 
+/// One file's run of output `.eh_frame` records ([`EhPlan::file_runs`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EhRun {
+    pub file: FileId,
+    /// The first record's output offset.
+    pub offset: u64,
+    /// The records' output sizes, summed (no pad).
+    pub size: u64,
+    /// `size` plus the pad that follows the run's last record, if any
+    /// (IN-34a: the run's range in the chunk).
+    pub capacity: u64,
+    pub records: u32,
+    pub fdes: u32,
+    /// Every kept CIE's FDE and LSDA encodings are `0x1b` and its
+    /// personality's `0x9b`.
+    pub movable: bool,
+}
+
 /// The output `.eh_frame` (S-46 to S-49).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EhPlan {
@@ -447,6 +465,81 @@ impl EhPlan {
     #[must_use]
     pub fn fde_count(&self) -> u32 {
         self.fdes
+    }
+
+    /// Each file's run of output records (`spec/incr.md` IN-34a, IN-18e
+    /// `FILES`' eh columns; WP-239 S4-3), in output order: its first
+    /// record's output offset, the records' output size (pads excluded),
+    /// its range's capacity (the size and the pad after it), its record
+    /// and FDE counts, and whether every kept CIE of the run
+    /// has the pointer encodings an update can move by a delta (FDE
+    /// location and LSDA `0x1b`, personality `0x9b`; WP-239 §3). A file
+    /// whose records are not one contiguous run (a plan not selected
+    /// per file, S-111) gives `Err` with that file.
+    ///
+    /// # Errors
+    /// The first file with two runs.
+    pub fn file_runs<S: EhSource + ?Sized>(&self, src: &S) -> Result<Vec<EhRun>, FileId> {
+        let frames = src.frames();
+        let mut runs: Vec<EhRun> = Vec::new();
+        for k in 0..self.records.len() {
+            let file = src.info(self.src[k] as usize).file;
+            let rec = &frames.records[self.glob[k] as usize];
+            if runs.last().is_none_or(|r| r.file != file) {
+                if runs.iter().any(|r| r.file == file) {
+                    return Err(file);
+                }
+                runs.push(EhRun {
+                    file,
+                    offset: self.out_off[k],
+                    size: 0,
+                    capacity: 0,
+                    records: 0,
+                    fdes: 0,
+                    movable: true,
+                });
+            }
+            let Some(run) = runs.last_mut() else { continue };
+            run.size += rec.out_size();
+            run.records += 1;
+            match rec.cie() {
+                None => run.fdes += 1,
+                Some(c) => {
+                    run.movable &= c.fde_enc == 0x1b
+                        && c.lsda_enc.is_none_or(|e| e == 0x1b)
+                        && c.personality.is_none_or(|p| p.enc == 0x9b);
+                }
+            }
+        }
+        for r in &mut runs {
+            let end = r.offset + r.size;
+            let pad = self.pads.binary_search_by_key(&end, |p| p.0).map_or(0, |i| self.pads[i].1);
+            r.capacity = r.size + pad;
+        }
+        Ok(runs)
+    }
+
+    /// The pads that give each run of `runs` (an unpadded plan's
+    /// [`EhPlan::file_runs`], contiguous) `pad(size)` bytes after its
+    /// records, as [`EhPlan::from_records_padded`] takes them (offsets in
+    /// the padded section). `None` when the runs are not contiguous from
+    /// offset 0.
+    #[must_use]
+    pub fn run_pads(runs: &[EhRun], pad: impl Fn(u64) -> u64) -> Option<Vec<(u64, u64)>> {
+        let mut pads = Vec::with_capacity(runs.len());
+        let (mut at, mut shift) = (0u64, 0u64);
+        for r in runs {
+            if r.offset != at {
+                return None;
+            }
+            at = r.offset + r.size;
+            let p = pad(r.size);
+            if p > 0 {
+                pads.push((at + shift, p));
+            }
+            shift += p;
+        }
+        Some(pads)
     }
 
     /// The output offset of output record `n`; `n == records().len()` is

@@ -82,7 +82,28 @@ pub struct Session {
     /// IN-77b: `state-busy` or `lock-unavailable`: this link writes no
     /// state (and, for `lock-unavailable`, removes the one at `S`).
     writes_no_state: Option<&'static str>,
+    /// WP-244: the format-5 capture written beside the format-4 state.
+    state5: Option<State5>,
 }
+
+/// WP-244's switch (until the join, U-10, writes format 5 as THE state):
+/// the format-5 state of the link is also captured and written to
+/// `path`; `collide` injects a `FRAGS` collision (`state-collision`).
+/// Set from `mortar_incr::testhook::{state5_path, state5_collide}` (a
+/// `testhooks` build) or by [`crate::invoke_state5`] (tests).
+#[derive(Debug, Clone)]
+pub struct State5 {
+    pub path: PathBuf,
+    pub collide: bool,
+    /// Where the state's rows also go, normalized, before encoding (tests:
+    /// seam 6's columns that format 5's bytes do not hold until U-2
+    /// encodes them). `None`: nowhere.
+    pub rows: Option<Rows5Sink>,
+}
+
+/// [`State5::rows`]: the last capture's normalized rows.
+pub type Rows5Sink =
+    std::sync::Arc<std::sync::Mutex<Option<mortar_incr::update::testing::MemoryState>>>;
 
 /// WP-094: timed parts (name, ms), shared with the caller.
 pub type Times = std::rc::Rc<std::cell::RefCell<Vec<(&'static str, f64)>>>;
@@ -313,6 +334,7 @@ pub fn start(parsed: &Parsed, cwd: &Path, out_path: &Path, diagnostics: &Collect
         times: Times::default(),
         lock,
         writes_no_state,
+        state5: None,
     })
 }
 
@@ -530,6 +552,17 @@ impl Session {
         own_files(&self.state_path, self.report.as_ref())
     }
 
+    /// WP-244: also capture the format-5 state, to `s.path`.
+    pub fn set_state5(&mut self, s: Option<State5>) {
+        self.state5 = s;
+    }
+
+    /// Whether the format-5 capture is on ([`Session::set_state5`]).
+    #[must_use]
+    pub fn state5(&self) -> bool {
+        self.state5.is_some()
+    }
+
     /// The fall-back reason (for tests); `None` for `--incremental=full`.
     #[must_use]
     pub fn reason(&self) -> Option<&IncrReason> {
@@ -589,12 +622,12 @@ impl Session {
             let _ = writeln!(stderr, "incremental: no state written: {why}");
         } else {
             match self.state(f, store, written, cwd) {
-                Ok(state) => {
+                Ok((state, rows5)) => {
                     if let Some(old) = self.old.take() {
                         dry = Some(dry_run(&old, &state, f));
                     }
                     let mut t = Instant::now();
-                    let r = self.write_state(state, out_path, written);
+                    let r = self.write_state(state, rows5, out_path, written, &mut stderr);
                     lap(&self.times, &mut t, "bind, encode and write");
                     if let Err(why) = r {
                         let _ = writeln!(stderr, "incremental: no state written: {why}");
@@ -602,6 +635,9 @@ impl Session {
                 }
                 Err(why) => {
                     let _ = mortar_image::output::remove_if_replaceable(&self.state_path);
+                    if let Some(s5) = &self.state5 {
+                        let _ = mortar_image::output::remove_if_replaceable(&s5.path);
+                    }
                     let _ = writeln!(stderr, "incremental: no state written: {why}");
                 }
             }
@@ -657,10 +693,20 @@ impl Session {
         stderr
     }
 
-    fn write_state(&self, state: State, out_path: &Path, written: &Written) -> Result<(), String> {
+    fn write_state(
+        &self,
+        state: State,
+        rows5: Option<mortar_incr::capture::Rows5>,
+        out_path: &Path,
+        written: &Written,
+        stderr: &mut String,
+    ) -> Result<(), String> {
         let mut t = Instant::now();
         let result = bind(state, out_path, written).and_then(|state| {
             lap(&self.times, &mut t, "bind");
+            if let Some(s5) = &self.state5 {
+                self.write_state5(s5, &state, rows5, &mut t, stderr);
+            }
             let bytes = format::encode(&state);
             lap(&self.times, &mut t, "encode");
             // I-58b: the state is replaced only where the link may replace
@@ -695,7 +741,44 @@ impl Session {
         result
     }
 
-    /// The state of the link `f`, all but its output row.
+    /// WP-244: the format-5 state of `state` (bound) and `rows5`, written
+    /// to `s5.path`; on any failure the `incremental:` line says why, no
+    /// format-5 state is written and a previous one is removed by its
+    /// name (`state-collision`, `state-limit`: WP-239 R-2, S4-3).
+    fn write_state5(
+        &self,
+        s5: &State5,
+        state: &State,
+        rows5: Option<mortar_incr::capture::Rows5>,
+        t: &mut Instant,
+        stderr: &mut String,
+    ) {
+        let r =
+            rows5.ok_or_else(|| "the link computed no format-5 data".to_owned()).and_then(|rows| {
+                for n in &rows.notes {
+                    let _ = writeln!(stderr, "incremental: state5 {n}");
+                }
+                let m = mortar_incr::capture::state5_rows(state, rows, s5.collide)?;
+                let bytes = mortar_incr::capture::state5_encode(&m)?;
+                if let Some(sink) = &s5.rows
+                    && let Ok(mut g) = sink.lock()
+                {
+                    *g = Some(m);
+                }
+                lap(&self.times, t, "format 5: normalize and encode");
+                let _ = writeln!(stderr, "incremental: state5 bytes={}", bytes.len());
+                write_atomically(&s5.path, &bytes)
+                    .map_err(|e| format!("cannot write {}: {e}", s5.path.display()))
+            });
+        lap(&self.times, t, "format 5: write and sync");
+        if let Err(why) = r {
+            let _ = mortar_image::output::remove_if_replaceable(&s5.path);
+            let _ = writeln!(stderr, "incremental: no state written: {why}");
+        }
+    }
+
+    /// The state of the link `f`, all but its output row; with the
+    /// format-5 switch, format 5's own rows beside it (WP-244).
     #[allow(clippy::too_many_lines)] // the state's parts, each timed (WP-094)
     fn state(
         &self,
@@ -703,7 +786,7 @@ impl Session {
         store: &Store,
         written: &Written,
         cwd: &Path,
-    ) -> Result<State, String> {
+    ) -> Result<(State, Option<mortar_incr::capture::Rows5>), String> {
         let link = Link {
             inputs: &f.inputs,
             resolution: &f.resolution,
@@ -731,16 +814,84 @@ impl Session {
         lap(&self.times, &mut t, "file hashes");
         let file_hash = |id: FileId| hashes.get(id.0 as usize).copied().flatten();
         let mut laps = mortar_incr::capture::Laps::new();
-        let mut state = mortar_incr::capture::capture_timed(
-            &link,
-            &keys,
-            &f.layout,
-            &mut strings,
-            &file_hash,
-            f.arch.get(),
-            &f.pool,
-            &mut laps,
-        )?;
+        let (mut state, rows5) = match (&self.state5, &f.incr5) {
+            (Some(_), Some(i5)) => {
+                let classes: Vec<mortar_core::incr::MergeClass> = f
+                    .merge
+                    .meta
+                    .iter()
+                    .map(|m| mortar_core::incr::MergeClass {
+                        strings: m.strings,
+                        entsize: m.entsize,
+                        align: m.align,
+                    })
+                    .collect();
+                let eh: Result<Vec<mortar_incr::capture::EhFile>, &str> =
+                    i5.eh.as_ref().map_err(String::as_str).map(|runs| {
+                        runs.iter()
+                            .map(|r| mortar_incr::capture::EhFile {
+                                file: r.file,
+                                offset: r.offset,
+                                capacity: r.capacity,
+                                records: r.records,
+                                fdes: r.fdes,
+                                movable: r.movable,
+                            })
+                            .collect()
+                    });
+                let stack: Vec<(FileId, u8)> = i5
+                    .stack
+                    .iter()
+                    .map(|&(file, n)| {
+                        use mortar_incr::update::rows::file_stack;
+                        use mortar_layout::stack::StackNote;
+                        let b = match n {
+                            StackNote::Absent => file_stack::ABSENT,
+                            StackNote::NonExec => file_stack::NON_EXEC,
+                            StackNote::Exec => file_stack::EXEC,
+                        };
+                        (file, b)
+                    })
+                    .collect();
+                let five = mortar_incr::capture::Link5 {
+                    stack: &stack,
+                    properties: &i5.properties,
+                    option_keys: &i5.option_keys,
+                    liveness: &f.liveness,
+                    classes: &classes,
+                    eh: eh.as_deref().map_err(|e| *e),
+                    demands: &i5.demands,
+                    facts: &i5.facts,
+                    slot_demand: crate::front::slot_demand,
+                    copies: f.plan.diagnostics.odr.mode != mortar_core::plan::OdrMode::Off,
+                };
+                let (s, r) = mortar_incr::capture::capture5_timed(
+                    &link,
+                    &keys,
+                    &f.layout,
+                    &mut strings,
+                    &file_hash,
+                    f.arch.get(),
+                    &f.pool,
+                    &mut laps,
+                    &five,
+                )?;
+                (s, Some(r))
+            }
+            _ => (
+                mortar_incr::capture::capture_timed(
+                    &link,
+                    &keys,
+                    &f.layout,
+                    &mut strings,
+                    &file_hash,
+                    f.arch.get(),
+                    &f.pool,
+                    &mut laps,
+                )?,
+                None,
+            ),
+        };
         lap(&self.times, &mut t, "capture");
         self.times.borrow_mut().extend(laps);
         state.plan_hash = self.plan_hash;
@@ -816,7 +967,7 @@ impl Session {
             state.leaves.push(row);
         }
         state.strings = strings.into_bytes();
-        Ok(state)
+        Ok((state, rows5))
     }
 }
 

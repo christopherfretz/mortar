@@ -324,8 +324,13 @@ fn r_sizes_agree() {
         let parsed = mortar_cli::parse(&args);
         assert!(!parsed.failed(), "{}: {:?}", case.name, parsed.diagnostics);
         let diag = Collector::new(Policy::default());
-        let env =
-            mortar::front::Env { cwd: s.path(), pool: Pool::new(2), replay: None, slack: false };
+        let env = mortar::front::Env {
+            cwd: s.path(),
+            pool: Pool::new(2),
+            replay: None,
+            slack: false,
+            state5: false,
+        };
         let mut timer = mortar::timing::Timer::new(false);
         let f = mortar::relocatable::front(parsed.plan, env, &store, &diag, &mut timer);
         let failed = diag.finish();

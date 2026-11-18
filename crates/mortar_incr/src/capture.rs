@@ -458,7 +458,7 @@ pub fn capture(
 }
 
 /// [`capture`], with its parts timed into `laps` (WP-094).
-#[allow(clippy::too_many_lines, clippy::too_many_arguments)] // one block per table, in IN-18a's order
+#[allow(clippy::too_many_arguments)] // capture's, and the laps
 pub fn capture_timed(
     link: &Link<'_, '_>,
     keys: &Keys<'_>,
@@ -469,6 +469,46 @@ pub fn capture_timed(
     pool: &Pool,
     laps: &mut Laps,
 ) -> Result<State, String> {
+    capture_in(link, keys, layout, strings, file_hash, arch, pool, laps, None).map(|x| x.0)
+}
+
+/// [`capture_timed`], and the rows of format 5 that format 4 does not
+/// hold, from `extra` (WP-244): the format-4 state is unchanged; the
+/// caller completes it (`META`, `STAT`, ...) and gives both to
+/// [`state5_bytes`].
+///
+/// # Errors
+/// As [`capture_timed`]; and the format-5 capture's refusals (a demand
+/// on a key the file does not mention, a fragment without class).
+#[allow(clippy::too_many_arguments)] // capture's, the laps and the format-5 data
+pub fn capture5_timed(
+    link: &Link<'_, '_>,
+    keys: &Keys<'_>,
+    layout: &Layout,
+    strings: &mut Strings,
+    file_hash: &dyn Fn(FileId) -> Option<[u8; 16]>,
+    arch: &dyn mortar_arch::Arch,
+    pool: &Pool,
+    laps: &mut Laps,
+    extra: &Link5<'_>,
+) -> Result<(State, Rows5), String> {
+    let (s, rows) =
+        capture_in(link, keys, layout, strings, file_hash, arch, pool, laps, Some(extra))?;
+    Ok((s, rows.ok_or("no format-5 rows")?))
+}
+
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)] // one block per table, in IN-18a's order
+fn capture_in(
+    link: &Link<'_, '_>,
+    keys: &Keys<'_>,
+    layout: &Layout,
+    strings: &mut Strings,
+    file_hash: &dyn Fn(FileId) -> Option<[u8; 16]>,
+    arch: &dyn mortar_arch::Arch,
+    pool: &Pool,
+    laps: &mut Laps,
+    extra: Option<&Link5<'_>>,
+) -> Result<(State, Option<Rows5>), String> {
     let mut clock = Clock { laps, at: std::time::Instant::now() };
     let slots = &layout.slots;
     let p = &layout.placement;
@@ -652,6 +692,8 @@ pub fn capture_timed(
     s.frags = frags;
     s.frag_at.sort_unstable();
     clock.lap("capture frags");
+    // Format 5's FRAGS read the same hashes (one per live fragment).
+    let live_frags = if extra.is_some() { live } else { Vec::new() };
     let mut syms = Symbols {
         keys,
         inputs,
@@ -761,11 +803,633 @@ pub fn capture_timed(
     crate::tables::fill(link, &mut syms, strings, &mut s, arch, pool, &mut sub)?;
     clock.lap("capture delta tables");
     clock.laps.extend(sub);
+    let rows5 = match extra {
+        Some(extra) => {
+            let r = rows5(link, keys, &mut syms, strings, &s, layout, extra, &live_frags, pool)?;
+            clock.lap("capture format 5");
+            Some(r)
+        }
+        None => None,
+    };
     s.symbols = syms.rows;
     if !strings.fits() {
         return Err("the string pool exceeds 4 GiB".into());
     }
-    Ok(s)
+    Ok((s, rows5))
+}
+
+// ---- format 5 (WP-244) ---------------------------------------------------------
+
+/// One file's `.eh_frame` range in the output (`spec/incr.md` IN-34a,
+/// IN-18e `FILES`' eh columns; the full link's `EhPlan::file_runs`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EhFile {
+    pub file: FileId,
+    /// Bytes from the `.eh_frame` chunk's start.
+    pub offset: u64,
+    /// The records' bytes and the pad after them.
+    pub capacity: u64,
+    /// Kept records (CIEs and FDEs).
+    pub records: u32,
+    /// The FDEs among `records` (seam 6's `FILES.eh_fdes`).
+    pub fdes: u32,
+    /// Every kept CIE's pointer encodings are ones an update moves by a
+    /// delta (FDE and LSDA `0x1b`, personality `0x9b`; WP-239 §3).
+    pub movable: bool,
+}
+
+/// What a format-5 capture reads of the link beyond a format-4 one
+/// (WP-244), each from the producer the update's front also calls.
+#[derive(Clone, Copy)]
+pub struct Link5<'a> {
+    pub liveness: &'a mortar_core::Liveness,
+    /// Per `Split::merge_of` row: its pieces' class
+    /// (`mortar_merge::phase::Phase::meta`, less `out`).
+    pub classes: &'a [mortar_core::incr::MergeClass],
+    /// The files' `.eh_frame` ranges, or why the link has none to store.
+    pub eh: Result<&'a [EhFile], &'a str>,
+    /// Per file, the scan's demand per key (`mortar_scan::scan_recording`),
+    /// sorted by file.
+    pub demands: &'a [mortar_core::incr::FileDemands],
+    /// Per `SymbolId`: `SymFacts::pack(Walker::key_facts(id))`.
+    pub facts: &'a [u32],
+    /// The demand bits that make a slot of each kind (the full link's
+    /// slot lists, `mortar::front`).
+    pub slot_demand: fn(SlotKind) -> mortar_core::demands::DemandFlags,
+    /// `COPIES` is written (every `--odr` mode but `off`, WP-220).
+    pub copies: bool,
+    /// Per object file that takes part in L-84: its `.note.GNU-stack` as
+    /// a `rows::file_stack` byte (`mortar_layout::stack::file_note`), by
+    /// file (seam 6's `FILES.stack`).
+    pub stack: &'a [(FileId, u8)],
+    /// Per live object with properties: its own after S-126, as
+    /// `rows::encode_properties` writes them
+    /// (`mortar_synth::notes::object_properties`), by file (seam 6's
+    /// `FILES.properties`).
+    pub properties: &'a [(FileId, Vec<u8>)],
+    /// `mortar_core::plan::Plan::option_keys` (seam 6's `SYMBOLS.option`).
+    pub option_keys: &'a [Vec<u8>],
+}
+
+impl std::fmt::Debug for Link5<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Link5").field("demands", &self.demands.len()).finish_non_exhaustive()
+    }
+}
+
+/// One file's format-5 columns beyond format 4's ([`Rows5`]).
+#[derive(Debug, Clone, Default)]
+struct FileCols {
+    /// `FILES.flags` to add (`LAZY`, `EH_FIXED`).
+    flags: u8,
+    /// `FILES`' eh columns: offset, capacity, records, FDEs.
+    eh: [u32; 4],
+    /// `FILE_INDEX.first_global`.
+    first_global: u32,
+    /// `FILES.stack` (seam 6).
+    stack: u8,
+    /// `FILES.properties`' bytes (seam 6; empty: none).
+    properties: Vec<u8>,
+}
+
+/// The rows of format 5 that format 4 does not hold, captured beside a
+/// format-4 state (its `SYMBOLS`, `SECTIONS`, `FILES` and `OUTSECS` rows
+/// as references); [`state5_bytes`] makes the state of both.
+#[derive(Debug, Clone, Default)]
+pub struct Rows5 {
+    /// Per file: its columns beyond format 4's.
+    files: Vec<FileCols>,
+    /// `Plan::option_keys` (seam 6): the rows they name get the bit.
+    option_keys: Vec<Vec<u8>>,
+    mentions: Vec<(FileId, crate::update::rows::MentionRow)>,
+    key_refs: Vec<crate::update::rows::KeyRefRow>,
+    frags: Vec<crate::update::rows::FragRow>,
+    frag_uses: Vec<(FileId, crate::update::rows::FragUseRow)>,
+    /// Parallel to format 4's `SLOTS`.
+    slot_refs: Vec<u32>,
+    /// Per `SYMBOLS` row: `(at_file, at_index, facts)`; a local's is its
+    /// format-4 row's.
+    symbols: Vec<Option<(u32, u32, u32)>>,
+    groups: Vec<crate::update::rows::GroupRow>,
+    commons: Vec<crate::update::rows::CommonRow>,
+    copies: Vec<crate::update::rows::CopyRow>,
+    versioned: u32,
+    /// Counts for the experiments (`incremental: state5 ...` lines).
+    pub notes: Vec<String>,
+}
+
+/// `FILES.flags`' bit for a file whose `.eh_frame` range holds a CIE
+/// with a pointer encoding an update cannot move by a delta (WP-244:
+/// `update-not-implemented (eh)` before the first write). PROPOSED
+/// (`update::rows::file_flags::EH_FIXED`).
+pub const EH_FIXED: u8 = crate::update::rows::file_flags::EH_FIXED;
+
+/// One file's part of [`rows5`], with keys as `SymbolId`s.
+#[derive(Default)]
+struct File5<'s> {
+    first_global: u32,
+    versioned: u32,
+    lazy: bool,
+    /// Positional (IN-18e "`MENTIONS` by position"); a live object's only.
+    mentions: Vec<crate::format::MentionRow>,
+    /// `(key, def, bind, typ, flags)`, one per key, the first mention.
+    refs: Vec<(u32, u8, u8, u8, u8)>,
+    /// `(key, size, align)`, the maximum of each per key.
+    commons: Vec<(u32, u64, u64)>,
+    /// `(key, symbol index, size, type)`.
+    copies: Vec<(u32, u32, u64, u8)>,
+    /// The COMDAT signatures the file has a copy of.
+    groups: Vec<&'s [u8]>,
+}
+
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)] // one block per table
+fn rows5(
+    link: &Link<'_, '_>,
+    keys: &Keys<'_>,
+    syms: &mut Symbols<'_, '_>,
+    strings: &mut Strings,
+    four: &State,
+    layout: &Layout,
+    extra: &Link5<'_>,
+    live_frags: &[(u32, [u8; 16], u32, u64)],
+    pool: &Pool,
+) -> Result<Rows5, String> {
+    use crate::format::def_kind;
+    use crate::update::rows::{
+        CommonRow, CopyRow, FragRow, FragUseRow, GroupRow, KeyRefRow, MentionRow, key_ref_flags,
+    };
+    use mortar_core::resolution::FileLive;
+    let inputs = link.inputs;
+    let res = link.resolution;
+    let n_files = inputs.files.len() as usize;
+    let mut out = Rows5::default();
+    let live_file = |f: FileId| res.file_live.get(f).is_some_and(|l| *l != FileLive::Dead);
+    // ---- the files' symbol tables: MENTIONS, KEY_REFS, COMMONS, COPIES,
+    // GROUPS, `versioned`, `first_global` (one task per file).
+    let per_file = pool.map(n_files, |n| -> Result<File5<'_>, String> {
+        let file = FileId(n as u32);
+        let f = &inputs.files[file];
+        let Reader::Object(object) = f.reader else { return Ok(File5::default()) };
+        let bad = || format!("{}: symbol table", String::from_utf8_lossy(f.path));
+        let Some(table) = object.symbols().map_err(|_| bad())? else {
+            return Ok(File5::default());
+        };
+        let live = live_file(file);
+        let first = table.first_global().0;
+        let mut acc = File5 { first_global: first, lazy: !live, ..File5::default() };
+        let globals = table.len().saturating_sub(first) as usize;
+        if inputs.sym_map_of(file).len() < globals {
+            return Err(format!(
+                "{}: the symbol table is not the one the input phase read",
+                String::from_utf8_lossy(f.path)
+            ));
+        }
+        let rows = crate::tables::file_mentions(inputs, res, file, &table);
+        let mut seen: mortar_core::hash::HashSet<u32> = mortar_core::hash::HashSet::default();
+        let mut commons: HashMap<u32, usize> = HashMap::default();
+        for (k, m) in rows.iter().enumerate() {
+            let index = first + k as u32;
+            let sym = table.get(mortar_elf::symbol::SymbolIndex(index)).map_err(|_| bad())?;
+            let name = table.name(&sym).map_err(|_| bad())?;
+            if name.contains(&b'@') {
+                acc.versioned += 1;
+            }
+            let in_section = matches!(
+                table.section_of(mortar_elf::symbol::SymbolIndex(index), &sym),
+                Ok(SymbolSection::Section(_))
+            );
+            let mut def = m.kind;
+            if !live && in_section {
+                // A member not extracted has no section ids: its
+                // definition in a section is one (IN-71b).
+                def = def_kind::SECTION;
+            }
+            let mut flags = m.other & key_ref_flags::VISIBILITY;
+            if def == def_kind::SECTION {
+                flags |= key_ref_flags::IN_SECTION;
+            }
+            if !live {
+                if def == def_kind::UNDEFINED {
+                    continue;
+                }
+                flags |= key_ref_flags::LAZY;
+            }
+            if seen.insert(m.symbol) {
+                acc.refs.push((m.symbol, def, m.bind, m.typ, flags));
+            }
+            if !live {
+                continue;
+            }
+            if m.kind == def_kind::COMMON {
+                let align = sym.st_value.max(1);
+                if let Some(&at) = commons.get(&m.symbol) {
+                    let c = &mut acc.commons[at];
+                    c.1 = c.1.max(sym.st_size);
+                    c.2 = c.2.max(align);
+                } else {
+                    commons.insert(m.symbol, acc.commons.len());
+                    acc.commons.push((m.symbol, sym.st_size, align));
+                }
+            }
+            if extra.copies
+                && m.kind == def_kind::SECTION
+                && m.bind != 0
+                && res.sections.get(SectionId(m.section)).is_some_and(|r| r.comdat.get().is_some())
+            {
+                acc.copies.push((m.symbol, index, sym.st_size, m.typ));
+            }
+        }
+        if live {
+            acc.mentions = rows;
+            let range = res.section_base[file];
+            let mut groups: Vec<&[u8]> = Vec::new();
+            for sid in range.start.0..range.end.0 {
+                let Some(row) = res.sections.get(SectionId(sid)) else { continue };
+                let Some(c) = row.comdat.get().and_then(|c| inputs.comdats.get(c)) else {
+                    continue;
+                };
+                groups.push(c.name);
+            }
+            groups.sort_unstable();
+            groups.dedup();
+            acc.groups = groups;
+        }
+        Ok(acc)
+    });
+    let mut files5 = Vec::with_capacity(n_files);
+    for f in per_file {
+        files5.push(f?);
+    }
+    // ---- demand per (file, key), and SLOTS.refs (WP-239 S4-4, S4-5).
+    let mut demand: HashMap<(u32, u32), u16> = HashMap::default();
+    let mut slot_files: HashMap<u32, [u32; 6]> = HashMap::default();
+    for fd in extra.demands {
+        if !live_file(fd.file) {
+            return Err(format!("file {} has demand but is not live", fd.file.0));
+        }
+        for d in &fd.demands {
+            let SymKind::Global(id) = d.key.kind() else { continue };
+            *demand.entry((fd.file.0, id.0)).or_default() |= d.flags.bits();
+            for (k, kind) in SLOT_LISTS.iter().enumerate() {
+                if d.flags.intersects((extra.slot_demand)(*kind)) {
+                    slot_files.entry(id.0).or_default()[k] += 1;
+                }
+            }
+        }
+    }
+    // ---- KEY_REFS (IN-18e: MENTIONS transposed, the LAZY members'
+    // definitions, file 0's linker-defined keys), MENTIONS, COMMONS,
+    // COPIES, GROUPS.
+    let mut used = 0usize;
+    let mut lazy_rows = 0usize;
+    let mut lazy_files = 0usize;
+    for (n, f) in files5.iter().enumerate() {
+        let file = n as u32;
+        if f.lazy && !f.refs.is_empty() {
+            lazy_files += 1;
+        }
+        for &(id, def, bind, typ, flags) in &f.refs {
+            let d = demand.get(&(file, id)).copied().unwrap_or(0);
+            if d != 0 {
+                used += 1;
+            }
+            if f.lazy {
+                lazy_rows += 1;
+            }
+            out.key_refs.push(KeyRefRow {
+                key: syms.row(strings, SymKey::global(SymbolId(id)))?,
+                file,
+                def,
+                bind,
+                typ,
+                flags,
+                demand: d,
+                tomb: false,
+            });
+        }
+        for m in &f.mentions {
+            let row = MentionRow {
+                symbol: syms.row(strings, SymKey::global(SymbolId(m.symbol)))?,
+                kind: m.kind,
+                bind: m.bind,
+                typ: m.typ,
+                other: m.other,
+                section: m.section,
+            };
+            out.mentions.push((FileId(file), row));
+        }
+        for &(id, size, align) in &f.commons {
+            let key = syms.row(strings, SymKey::global(SymbolId(id)))?;
+            out.commons.push(CommonRow { key, file, size, align, tomb: false });
+        }
+        for &(id, index, size, typ) in &f.copies {
+            let key = syms.row(strings, SymKey::global(SymbolId(id)))?;
+            out.copies.push(CopyRow { key, file, index, size, typ, tomb: false });
+        }
+        for g in &f.groups {
+            out.groups.push(GroupRow { signature: strings.add(g), file, tomb: false });
+        }
+    }
+    if used != demand.len() {
+        // A demand on a key the file has no row of: a reference the scan
+        // redirected (`--wrap`), which no stored row carries.
+        return Err("a file's demand names a key it does not mention (--wrap)".into());
+    }
+    let mut internal = 0usize;
+    for (id, &def) in res.def.iter() {
+        if let mortar_core::resolution::Def::Internal(_) = def {
+            let other = res.props.get(id).map_or(0, |p| p.visibility);
+            out.key_refs.push(KeyRefRow {
+                key: syms.row(strings, SymKey::global(id))?,
+                file: 0,
+                def: def_kind::INTERNAL,
+                flags: other & key_ref_flags::VISIBILITY,
+                ..KeyRefRow::default()
+            });
+            internal += 1;
+        }
+    }
+    out.key_refs.sort_by_key(|r| (r.key, r.file));
+    out.key_refs.dedup_by_key(|r| (r.key, r.file));
+    // ---- SLOTS.refs: parallel to format 4's rows (`SLOT_LISTS` order).
+    let mut zero = 0usize;
+    for (k, kind) in SLOT_LISTS.iter().enumerate() {
+        for &key in slot_list(&layout.slots, *kind) {
+            let count = match key.kind() {
+                SymKind::Local(_) => 1,
+                SymKind::Global(id) => slot_files.get(&id.0).map_or(0, |c| c[k]),
+            };
+            if count == 0 {
+                zero += 1;
+            }
+            out.slot_refs.push(count);
+        }
+    }
+    if out.slot_refs.len() != four.slots.len() {
+        return Err("SLOTS: the lists changed under the capture".into());
+    }
+    // ---- SYMBOLS' first LIVE mentioner (IN-71, WP-214 F-12) and
+    // RESOLVED.facts (R-4a).
+    let mut first = vec![(NONE, 0u32); inputs.symbols.len() as usize];
+    for (file, _) in inputs.files.iter() {
+        if !live_file(file) {
+            continue;
+        }
+        for (i, id) in inputs.sym_map_of(file).iter().enumerate() {
+            if let Some(slot @ (NONE, _)) = first.get_mut(id.0 as usize) {
+                *slot = (file.0, i as u32);
+            }
+        }
+    }
+    let n_rows = syms.rows.len();
+    out.symbols = vec![None; n_rows];
+    for (i, &(at_file, at_index)) in first.iter().enumerate() {
+        let id = SymbolId(i as u32);
+        let row = syms.row(strings, SymKey::global(id))? as usize;
+        let facts = extra.facts.get(i).copied().ok_or("RESOLVED.facts: a key without facts")?;
+        if let Some(x) = out.symbols.get_mut(row) {
+            *x = Some((at_file, at_index, facts));
+        }
+    }
+    if syms.rows.len() != n_rows {
+        return Err("SYMBOLS: a key without a format-4 row".into());
+    }
+    // ---- FRAGS (out, class, hash) and FRAG_USE (WP-239 S4-1, S4-2; R-1:
+    // no `.debug_*` row).
+    let outsec_debug: Vec<bool> = link
+        .assignment
+        .outsecs
+        .ids()
+        .iter()
+        .map(|id| {
+            mortar_core::identity::outsec_identity(&keys.outsecs, id)
+                .is_some_and(|o| o.name.starts_with(b".debug_"))
+        })
+        .collect();
+    let debug = |out: u32| outsec_debug.get(out as usize).copied().unwrap_or(false);
+    let split = link.split;
+    let n_frags = split.frags.len() as usize;
+    let mut class = vec![NONE; n_frags];
+    for (row, m) in split.merge_of.iter().enumerate() {
+        let c = extra.classes.get(row).ok_or("a merged section without class")?.word();
+        for p in m.pieces.slots() {
+            if let Some(&frag) = split.piece_frag.get(p)
+                && let Some(x) = class.get_mut(frag.0 as usize)
+            {
+                *x = c;
+            }
+        }
+    }
+    let mut hash: Vec<Option<[u8; 16]>> = vec![None; n_frags];
+    for &(o, h, frag, offset) in live_frags {
+        if debug(o) {
+            continue;
+        }
+        hash[frag as usize] = Some(h);
+        let c = class[frag as usize];
+        if c == NONE {
+            return Err("a live fragment without class".into());
+        }
+        // FRAGS.size (seam 6): the fragment's bytes, a function of its
+        // identity (`Frag::size`, the bytes `frag_hash` read).
+        let size = split.frags.get(FragId::from_index(frag)).ok_or("a fragment")?.size;
+        out.frags.push(FragRow { out: o, class: c, hash: h, offset, size, refs: 0, tomb: false });
+    }
+    out.frags.sort_by_key(|r| (r.out, r.class, r.hash, r.offset));
+    out.frags.dedup_by_key(|r| (r.out, r.class, r.hash, r.offset));
+    for (row, m) in split.merge_of.iter().enumerate() {
+        let Some(osec) = link.assignment.out(m.section) else { continue };
+        if debug(osec.0) || !extra.liveness.is_live(m.section) {
+            continue;
+        }
+        let (file, _) = res.sh_index(m.section).ok_or("a merged section without index")?;
+        let c = extra.classes.get(row).ok_or("a merged section without class")?.word();
+        for p in m.pieces.slots() {
+            let Some(&frag) = split.piece_frag.get(p) else { continue };
+            let Some(Some(h)) = hash.get(frag.0 as usize) else { continue };
+            let r = FragUseRow { file: file.0, out: osec.0, class: c, hash: *h };
+            out.frag_uses.push((file, r));
+        }
+    }
+    out.frag_uses.sort_unstable_by_key(|(f, r)| (f.0, *r));
+    out.frag_uses.dedup();
+    // ---- FILES: LAZY, the eh columns, `first_global`.
+    let eh = extra.eh.map_err(|why| format!("no .eh_frame ranges: {why}"))?;
+    out.files = files5
+        .iter()
+        .map(|f| FileCols {
+            flags: if f.lazy { crate::update::rows::file_flags::LAZY } else { 0 },
+            first_global: f.first_global,
+            ..FileCols::default()
+        })
+        .collect();
+    let mut fixed = 0usize;
+    for e in eh {
+        let [offset, capacity, records] =
+            crate::state5::eh_columns(e.offset, e.capacity, u64::from(e.records))
+                .map_err(|r| r.report())?;
+        let row = out.files.get_mut(e.file.0 as usize).ok_or("an .eh_frame range's file")?;
+        row.eh = [offset, capacity, records, e.fdes];
+        if !e.movable {
+            row.flags |= EH_FIXED;
+            fixed += 1;
+        }
+    }
+    // ---- FILES.stack, FILES.properties (seam 6): 0 and empty for a LAZY
+    // row (it takes no part until extracted).
+    for &(file, b) in extra.stack {
+        let row = out.files.get_mut(file.0 as usize).ok_or("a stack note's file")?;
+        if row.flags & crate::update::rows::file_flags::LAZY == 0 {
+            row.stack = b;
+        }
+    }
+    for (file, bytes) in extra.properties {
+        let row = out.files.get_mut(file.0 as usize).ok_or("a property note's file")?;
+        if row.flags & crate::update::rows::file_flags::LAZY == 0 {
+            row.properties.clone_from(bytes);
+        }
+    }
+    out.option_keys = extra.option_keys.to_vec();
+    out.versioned = files5.iter().map(|f| f.versioned).sum();
+    out.notes = vec![
+        format!(
+            "KEY_REFS {} (lazy {lazy_rows} of {lazy_files} files, linker-defined {internal}), demand on {used}",
+            out.key_refs.len()
+        ),
+        format!("MENTIONS {} (positional)", out.mentions.len()),
+        format!("FRAGS {} FRAG_USE {}", out.frags.len(), out.frag_uses.len()),
+        format!("SLOTS {} (refs 0: {zero})", out.slot_refs.len()),
+        format!(
+            "GROUPS {} COMMONS {} COPIES {}",
+            out.groups.len(),
+            out.commons.len(),
+            out.copies.len()
+        ),
+        format!("eh files {} (fixed encodings {fixed}), versioned {}", eh.len(), out.versioned),
+    ];
+    Ok(out)
+}
+
+/// The format-5 state of a full link (WP-244): `state`, the link's
+/// format-4 capture completed and bound, with `rows`, captured beside it
+/// by [`capture5_timed`]; checked (`state5::check_capture`), normalized
+/// and encoded: `encode(normalize(capture))`. `collide` is the test
+/// injection of `testhook::state5_collide` (the first `FRAGS` row again at
+/// another offset).
+///
+/// # Errors
+/// The report of `state-collision` or `state-limit`, or why the rows do
+/// not make a state.
+pub fn state5_bytes(state: &State, rows: Rows5, collide: bool) -> Result<Vec<u8>, String> {
+    state5_encode(&state5_rows(state, rows, collide)?)
+}
+
+/// [`state5_bytes`]' rows: `state` and `rows` as one format-5 state,
+/// checked (`check_capture`) and normalized (`compact::normalize`), not
+/// yet encoded. Row-level tests read seam 6's columns here (format 5's
+/// bytes do not hold them until U-2 encodes them).
+///
+/// # Errors
+/// As [`state5_bytes`], but the encoding's.
+pub fn state5_rows(
+    state: &State,
+    rows: Rows5,
+    collide: bool,
+) -> Result<crate::update::testing::MemoryState, String> {
+    use crate::update::rows::sym_kind;
+    use crate::update::testing::MemoryState;
+    let mut m = MemoryState::from_format4(state);
+    if rows.files.len() != m.files.len() || rows.symbols.len() != m.symbols.len() {
+        return Err("the format-5 rows are not this state's".into());
+    }
+    // FILES.properties: each distinct value interned once.
+    let mut interned: HashMap<Vec<u8>, Str> = HashMap::default();
+    for (i, (f, c)) in m.files.iter_mut().zip(rows.files).enumerate() {
+        f.flags |= c.flags;
+        [f.eh_offset, f.eh_capacity, f.eh_records, f.eh_fdes] = c.eh;
+        f.stack = c.stack;
+        if !c.properties.is_empty() {
+            f.properties = if let Some(&v) = interned.get(&c.properties) {
+                v
+            } else {
+                let v = Str {
+                    off: u32::try_from(m.strings.len()).map_err(|_| "STRINGS over 4 GiB")?,
+                    len: u32::try_from(c.properties.len()).map_err(|_| "a property list")?,
+                };
+                m.strings.extend_from_slice(&c.properties);
+                interned.insert(c.properties, v);
+                v
+            };
+        }
+        if let Some(x) = m.file_index.get_mut(i) {
+            x.first_global = c.first_global;
+        }
+    }
+    m.mentions = rows.mentions;
+    m.key_refs = rows.key_refs;
+    m.frags = rows.frags;
+    m.frag_uses = rows.frag_uses;
+    m.groups = rows.groups;
+    m.commons = rows.commons;
+    m.copies = rows.copies;
+    m.meta.versioned = rows.versioned;
+    if rows.slot_refs.len() != m.slots.len() {
+        return Err("SLOTS: the rows are not this state's".into());
+    }
+    for (r, refs) in m.slots.iter_mut().zip(rows.slot_refs) {
+        r.refs = refs;
+    }
+    for (i, x) in rows.symbols.into_iter().enumerate() {
+        let Some((at_file, at_index, facts)) = x else { continue };
+        m.symbols[i].at_file = at_file;
+        m.symbols[i].at_index = at_index;
+        if let Some(r) = m.resolved.get_mut(i) {
+            r.facts = facts;
+        }
+    }
+    // SYMBOLS.option (seam 6): the rows `Plan::option_keys` names, matched
+    // as `compact::live_keys` matches an option name (split at the first
+    // `@`; `foo@@V` is `foo`).
+    if !rows.option_keys.is_empty() {
+        let mut named: mortar_core::hash::HashSet<(&[u8], &[u8])> =
+            mortar_core::hash::HashSet::default();
+        for b in &rows.option_keys {
+            let key = match b.iter().position(|&c| c == b'@') {
+                None => (b.as_slice(), &[][..]),
+                Some(i) if b.get(i + 1) == Some(&b'@') => (&b[..i], &[][..]),
+                Some(i) => (&b[..i], &b[i + 1..]),
+            };
+            named.insert(key);
+        }
+        let text = |x: Str| m.strings.get(x.off as usize..(x.off + x.len) as usize);
+        let mut set = Vec::new();
+        for (i, r) in m.symbols.iter().enumerate() {
+            if !matches!(r.kind, sym_kind::GLOBAL | sym_kind::VERSIONED) {
+                continue;
+            }
+            if let (Some(n), Some(v)) = (text(r.name), text(r.version))
+                && named.contains(&(n, v))
+            {
+                set.push(i);
+            }
+        }
+        for i in set {
+            m.symbols[i].option = true;
+        }
+    }
+    if collide && let Some(&r) = m.frags.first() {
+        m.frags.push(crate::update::rows::FragRow { offset: r.offset + 1, ..r });
+    }
+    crate::state5::check_capture(&m).map_err(|r| r.report())?;
+    crate::state5::compact::normalize(&m).map_err(|e| e.to_string())
+}
+
+/// [`state5_rows`]' bytes (`state5::write::encode`).
+///
+/// # Errors
+/// The encoding's (a table past its limits).
+pub fn state5_encode(m: &crate::update::testing::MemoryState) -> Result<Vec<u8>, String> {
+    crate::state5::write::encode(m).map_err(|e| e.to_string())
 }
 
 // ---- replay (IN-61) ------------------------------------------------------------

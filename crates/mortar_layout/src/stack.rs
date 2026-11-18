@@ -1,6 +1,7 @@
 //! `PT_GNU_STACK` (`spec/layout.md` L-84): whether the stack is
 //! executable, and the `executable-stack` warning.
 
+use mortar_core::FileId;
 use mortar_core::inputs::{Inputs, Reader};
 use mortar_core::resolution::{FileLive, Resolution};
 use mortar_elf::consts::SHF_EXECINSTR;
@@ -26,23 +27,51 @@ pub fn notes(inputs: &Inputs<'_>, resolution: &Resolution) -> Vec<(String, Stack
     let mut out = Vec::new();
     for (file, row) in inputs.files.iter() {
         let Reader::Object(object) = row.reader else { continue };
-        if resolution.file_live.get(file).is_none_or(|l| *l == FileLive::Dead) {
+        if !takes_part(resolution, file) {
             continue;
         }
-        let mut note = StackNote::Absent;
-        for s in object.sections() {
-            if s.name().ok() == Some(b".note.GNU-stack") {
-                note = if s.flags() & SHF_EXECINSTR != 0 {
-                    StackNote::Exec
-                } else {
-                    StackNote::NonExec
-                };
-                break;
-            }
-        }
-        out.push((display(&row.display()), note));
+        out.push((display(&row.display()), file_note(&object)));
     }
     out
+}
+
+/// [`notes`] without the display names, with each file's id (WP-244: a
+/// format-5 capture's `FILES.stack`, seam 6). The same files, the same
+/// [`file_note`].
+#[must_use]
+pub fn file_notes(inputs: &Inputs<'_>, resolution: &Resolution) -> Vec<(FileId, StackNote)> {
+    let mut out = Vec::new();
+    for (file, row) in inputs.files.iter() {
+        let Reader::Object(object) = row.reader else { continue };
+        if takes_part(resolution, file) {
+            out.push((file, file_note(&object)));
+        }
+    }
+    out
+}
+
+/// Whether `file` takes part in L-84 (live or not, but not an archive
+/// member never extracted).
+fn takes_part(resolution: &Resolution, file: FileId) -> bool {
+    resolution.file_live.get(file).is_some_and(|l| *l != FileLive::Dead)
+}
+
+/// What L-84 reads from ONE object: its `.note.GNU-stack` (the first
+/// section of that name). The one producer of [`notes`] and of a
+/// format-5 state's `FILES.stack` (seam 6), which an update's join
+/// merges again by [`executable_stack`].
+#[must_use]
+pub fn file_note(object: &mortar_elf::Object<'_>) -> StackNote {
+    for s in object.sections() {
+        if s.name().ok() == Some(b".note.GNU-stack") {
+            return if s.flags() & SHF_EXECINSTR != 0 {
+                StackNote::Exec
+            } else {
+                StackNote::NonExec
+            };
+        }
+    }
+    StackNote::Absent
 }
 
 /// A file as diagnostics name it: `path` or `archive(member)`.

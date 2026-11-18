@@ -343,7 +343,7 @@ fn run(
     };
     // The state is an incremental-mode link's: its layout has IN-33's slack
     // and per-file CIEs (WP-062), and the replay reproduces that layout.
-    let env = crate::front::Env { cwd, pool, replay: Some(&hook), slack: true };
+    let env = crate::front::Env { cwd, pool, replay: Some(&hook), slack: true, state5: false };
     let front = crate::front::front(plan.clone(), env, &store, &diagnostics, timer);
     let Some(mut f) = front else {
         *report = Some(diagnostics.finish());

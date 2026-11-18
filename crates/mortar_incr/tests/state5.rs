@@ -294,6 +294,7 @@ fn edit(base: &MemoryState, grow: u32) -> StatePatch {
     p.ranges.push(FileRanges {
         file: FileId(0),
         first_global: base.file_index[0].first_global,
+        locals: None,
         sections: Some(rows),
         mentions: Some(mentions),
         index: None,
@@ -301,7 +302,6 @@ fn edit(base: &MemoryState, grow: u32) -> StatePatch {
         frag_uses: Some(frag_uses),
         symtab: None,
         regions: None,
-        locals: None,
         gone: false,
     });
     p.key_refs.put.push(KeyRefRow { key: 1, file: 0, ..KeyRefRow::default() });
@@ -409,6 +409,7 @@ fn remove_file_1(m: &MemoryState) -> StatePatch {
     p.ranges.push(FileRanges {
         file: FileId(1),
         first_global: 0,
+        locals: None,
         sections: None,
         mentions: None,
         index: None,
@@ -416,7 +417,6 @@ fn remove_file_1(m: &MemoryState) -> StatePatch {
         frag_uses: None,
         symtab: None,
         regions: None,
-        locals: None,
         gone: true,
     });
     for (i, r) in m.symbols.iter().enumerate() {
@@ -688,6 +688,7 @@ fn update_reuses_stored_strings() {
     let mut fr = FileRanges {
         file: FileId(0),
         first_global: m.file_index[0].first_global,
+        locals: None,
         sections: Some(rows),
         mentions: None,
         index: None,
@@ -695,7 +696,6 @@ fn update_reuses_stored_strings() {
         frag_uses: None,
         symtab: None,
         regions: None,
-        locals: None,
         gone: false,
     };
     // the same new bytes named twice: one place
@@ -899,6 +899,7 @@ fn seam5_rows_round_trip_and_patch() {
     p.ranges.push(FileRanges {
         file: FileId(1),
         first_global: 9,
+        locals: None,
         sections: None,
         mentions: None,
         index: None,
@@ -906,7 +907,6 @@ fn seam5_rows_round_trip_and_patch() {
         frag_uses: Some(vec![FragUseRow { file: 1, out: 0, class: CLASS, hash: [7; 16] }]),
         symtab: None,
         regions: None,
-        locals: None,
         gone: false,
     });
     p.frags.put.push(FragRow {
@@ -1001,6 +1001,7 @@ fn dead_key_dropped_by_compaction() {
     p.ranges.push(FileRanges {
         file: FileId(1),
         first_global: m.file_index[1].first_global,
+        locals: None,
         sections: None,
         mentions: Some(Vec::new()),
         index: None,
@@ -1008,7 +1009,6 @@ fn dead_key_dropped_by_compaction() {
         frag_uses: None,
         symtab: None,
         regions: None,
-        locals: None,
         gone: false,
     });
     p.key_refs.delete.push(*m.key_refs.iter().find(|r| r.key == g1.0).expect("its row"));

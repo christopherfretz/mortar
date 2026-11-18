@@ -2288,6 +2288,7 @@ fn slot_words_agree_on_both_64_bit_targets() {
     );
     assert_eq!((mortar_a64::FACTS.word, mortar_x64::FACTS.word), (8, 8));
 }
+
 // spec: incr.md IN-49a, layout.md L-72 (WP-217 item 9: one file slack).
 // `.symtab`'s and `.strtab`'s file slack (`mortar_synth::symtab::file_slack`)
 // is the layout's tail (`mortar_layout::slack::Slack::tail`): the two crates

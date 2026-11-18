@@ -52,7 +52,9 @@ use mortar_core::inputs::Inputs;
 use mortar_core::par::Pool;
 use mortar_core::resolution::Resolution;
 pub use mortar_core::split::EhOwner;
-use mortar_core::{ComdatId, Demands, FileId, Liveness, LocalSym, SectionId, SymEntry, SymbolId};
+use mortar_core::{
+    ComdatId, Demands, FileId, Liveness, LocalSym, SectionId, SymEntry, SymKey, SymbolId,
+};
 use mortar_diag::{Diagnostic, Key};
 use mortar_elf::SectionIndex;
 
@@ -235,13 +237,38 @@ const SORT_RUN: usize = 8192;
 /// parallel call, plus a parallel sort when the link has more than 8192
 /// events or local demands, plus one for unsorted sections' permutations.
 #[must_use]
-#[allow(clippy::too_many_lines)] // the steps, timed one by one
 pub fn scan(
     arch: &dyn Arch,
     t: &ScanInputs<'_, '_>,
     opts: &ScanOptions<'_>,
     pool: &Pool,
 ) -> Scanned {
+    scan_in(arch, t, opts, pool, false).0
+}
+
+/// [`scan`], and each file's own demand (WP-239 S4-5, `spec/incr.md`
+/// IN-18e `KEY_REFS.demand`): per file with any, the or of the flags its
+/// live units raised on each key (globals and locals), sorted by key.
+/// The same walk as [`scan`]'s, with the recording sink: what an
+/// incremental-mode full link's capture stores.
+#[must_use]
+pub fn scan_recording(
+    arch: &dyn Arch,
+    t: &ScanInputs<'_, '_>,
+    opts: &ScanOptions<'_>,
+    pool: &Pool,
+) -> (Scanned, Vec<mortar_core::incr::FileDemands>) {
+    scan_in(arch, t, opts, pool, true)
+}
+
+#[allow(clippy::too_many_lines)] // the steps, timed one by one
+fn scan_in(
+    arch: &dyn Arch,
+    t: &ScanInputs<'_, '_>,
+    opts: &ScanOptions<'_>,
+    pool: &Pool,
+    record: bool,
+) -> (Scanned, Vec<mortar_core::incr::FileDemands>) {
     let mut steps = mortar_core::wp032b_steps::Steps::new("scan");
     let mut view = view::View::new(arch, t, *opts);
     steps.step("view", 0, "");
@@ -256,8 +283,14 @@ pub fn scan(
     let symbols = t.inputs.symbols.len() as usize;
     let global: Vec<AtomicU16> = (0..symbols).map(|_| AtomicU16::new(0)).collect();
     let mut stats = Stats { units: units.len() as u32, par_calls: 1, ..Stats::default() };
-    let mut results: Vec<driver::UnitOut> =
-        pool.map(units.len(), |i| driver::run_unit(&view, &units[i], &global));
+    let mut results: Vec<driver::UnitOut> = if record {
+        pool.map(units.len(), |i| {
+            let g = driver::Recording { cells: Some(&global), log: Vec::new() };
+            driver::run_unit(&view, &units[i], g)
+        })
+    } else {
+        pool.map(units.len(), |i| driver::run_unit(&view, &units[i], driver::Shared(&global)))
+    };
     if steps.on() {
         let n: u64 = results.iter().map(|o| o.records).sum();
         let nonalloc: u64 = results.iter().map(|o| o.nonalloc).sum();
@@ -312,8 +345,13 @@ pub fn scan(
     let mut output = mortar_core::demands::GlobalFlags::empty();
     let mut branches: Vec<Vec<BranchRec>> = Vec::new();
     let mut copy_refs: Vec<(SymbolId, Key, usize, u32)> = Vec::new();
+    let mut per_file: Vec<(FileId, SymKey, DemandFlags)> = Vec::new();
     for (k, o) in results.iter_mut().enumerate() {
         let u = &units[k];
+        if record {
+            per_file.extend(o.demands.drain(..).map(|(id, f)| (u.file, SymKey::global(id), f)));
+            per_file.extend(o.locals.iter().map(|&(l, f)| (u.file, SymKey::local(l), f)));
+        }
         copy_refs.extend(
             o.copy_refs.drain(..).map(|(id, r)| (id, driver::key_at(u.file, u.index, r), k, r)),
         );
@@ -372,7 +410,31 @@ pub fn scan(
         weak_dyn: weak.weak_dyn,
     };
     let order = RecIndex::new(permuted, leads).with_deferred(deferred);
-    Scanned { demands, order, branches, diagnostics, stats }
+    (Scanned { demands, order, branches, diagnostics, stats }, file_demands(per_file))
+}
+
+/// The per-file demand rows (or-ed per (file, key), empty flags dropped)
+/// as `FileDemands`, by file, each sorted by key.
+fn file_demands(
+    mut rows: Vec<(FileId, SymKey, DemandFlags)>,
+) -> Vec<mortar_core::incr::FileDemands> {
+    use mortar_core::incr::{FileDemands, SlotDemand};
+    rows.sort_unstable_by_key(|r| (r.0, r.1));
+    let mut out: Vec<FileDemands> = Vec::new();
+    for (file, key, flags) in rows {
+        if flags.is_empty() {
+            continue;
+        }
+        if out.last().is_none_or(|f| f.file != file) {
+            out.push(FileDemands { file, demands: Vec::new() });
+        }
+        let Some(f) = out.last_mut() else { continue };
+        match f.demands.last_mut() {
+            Some(last) if last.key == key => last.flags |= flags,
+            _ => f.demands.push(SlotDemand { key, flags }),
+        }
+    }
+    out
 }
 
 /// The diagnostics of the sections whose checks are fill's (I-14,
@@ -416,7 +478,7 @@ fn deferred_report(
     let symbols = view.inputs.symbols.len() as usize;
     let global: Vec<AtomicU16> = (0..symbols).map(|_| AtomicU16::new(0)).collect();
     let results: Vec<driver::UnitOut> =
-        pool.map(units.len(), |i| driver::run_unit(view, &units[i], &global));
+        pool.map(units.len(), |i| driver::run_unit(view, &units[i], driver::Shared(&global)));
     let mut events = Vec::with_capacity(results.len());
     for mut o in results {
         diagnostics.append(&mut o.diags);

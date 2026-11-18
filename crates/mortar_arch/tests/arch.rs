@@ -927,3 +927,38 @@ fn r_a6_record_place_per_role() {
     }
     assert!(DynRole::ALL.iter().all(|r| r.place(RelForm::Rel).is_none()));
 }
+
+// ---------------------------------------------------------------- §3.4 (incr.md IN-18e: RESOLVED.facts)
+
+// spec: incr.md IN-18e (`RESOLVED.facts`, WP-239 §13.1: the packing)
+#[test]
+fn symfacts_pack_round_trip() {
+    use mortar_arch::SymFacts;
+    let mut n = 0;
+    for kind in TargetKind::ALL {
+        for sym_type in [0u8, 1, 2, 6, 10, 15] {
+            for st_other in [0u8, 1, 2, 3, 0x80, 0xff] {
+                for bits in 0..8u8 {
+                    let f = SymFacts {
+                        kind,
+                        sym_type,
+                        st_other,
+                        tls: sym_type == 6,
+                        dead: bits & 1 != 0,
+                        comdat_only: bits & 2 != 0,
+                        gnu_warning: bits & 4 != 0,
+                    };
+                    let w = f.pack();
+                    assert_eq!(SymFacts::unpack(w), Some(f), "{f:?} as {w:#x}");
+                    n += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(n, 9 * 6 * 6 * 8);
+    // A word no `pack` gives is refused.
+    assert_eq!(SymFacts::unpack(1 << 4), None);
+    assert_eq!(SymFacts::unpack(1 << 31), None);
+    assert_eq!(SymFacts::unpack(0x8), None, "func on Local");
+    assert_eq!(SymFacts::unpack(0x8 | 3).map(|f| f.kind), Some(TargetKind::Shlib { func: true }));
+}

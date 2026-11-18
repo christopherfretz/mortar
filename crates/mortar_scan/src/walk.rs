@@ -107,6 +107,29 @@ impl<'a, 's> Walker<'a, 's> {
         self.view.facts(key, mention)
     }
 
+    /// The per-key facts of global `id` ([`crate::view::View::key_facts`]):
+    /// what an incremental link's state stores, packed (`RESOLVED.facts`,
+    /// `spec/incr.md` IN-18e; WP-239 R-4a). Equal to
+    /// `facts(SymKey::global(id))`.
+    #[must_use]
+    pub fn key_facts(&self, id: mortar_core::SymbolId) -> SymFacts {
+        self.view.key_facts(id)
+    }
+
+    /// The facts of global `id` for a record whose symbol is `mention`,
+    /// from its per-key facts `f` ([`crate::view::View::at_mention`]):
+    /// `facts_at(SymKey::global(id), mention)` is
+    /// `at_mention(key_facts(id), id, mention)`.
+    #[must_use]
+    pub fn at_mention(
+        &self,
+        f: SymFacts,
+        id: mortar_core::SymbolId,
+        mention: Option<SymEntry>,
+    ) -> SymFacts {
+        self.view.at_mention(f, id, mention)
+    }
+
     /// The scan's diagnostics of `sections`, sections whose checks the
     /// scan left to fill (`RecIndex::deferred`, `spec/image.md` I-14):
     /// each walked whole as the scan walks it, keyed at phase

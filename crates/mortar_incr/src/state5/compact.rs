@@ -499,6 +499,21 @@ pub fn normalize(m: &MemoryState) -> Result<MemoryState, StateError> {
                 .unwrap_or(crate::update::rows::SymtabKeyRow { index: NONE, strtab: 0 }),
         );
     }
+    // FILE_INDEX.locals (seam 6): the locals are the sorted tail, each
+    // file's one run (by new file, then index).
+    for (row, r) in n.symbols.iter().enumerate() {
+        if r.kind != sym_kind::LOCAL {
+            continue;
+        }
+        let row = u32::try_from(row).map_err(|_| state_corrupt("SYMBOLS over 2^32"))?;
+        let Some(idx) = n.file_index.get_mut(r.file as usize) else {
+            return Err(bad(&format!("a local's file {}", r.file)));
+        };
+        if idx.locals.count == 0 {
+            idx.locals.first = row;
+        }
+        idx.locals.count += 1;
+    }
     // SECTIONS: live files' rows by (new file, position); fillers dropped.
     let mut secs: Vec<(u32, usize)> = Vec::new();
     for (i, r) in m.sections.iter().enumerate() {
@@ -530,6 +545,12 @@ pub fn normalize(m: &MemoryState) -> Result<MemoryState, StateError> {
             .filter(|&v| v != NONE)
             .ok_or_else(|| bad(&format!("SECTIONS row {x}")))
     };
+    // RESOLVED.section names a SECTIONS row: renumbered with them (the
+    // encode does the same; without it a decoded state's fillers left
+    // every later reference pointing at another section).
+    for r in &mut n.resolved {
+        r.section = sec(r.section)?;
+    }
     for r in &m.chunks {
         n.chunks.push(crate::format::ChunkRow { name: intern(r.name)?, ..r.clone() });
     }

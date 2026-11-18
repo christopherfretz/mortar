@@ -1148,6 +1148,8 @@ fn merge_rows(alloc: bool, refs: u32) -> (MemoryLayout, LayoutDelta) {
         class: CLASS.word(),
         hash: [hash; 16],
         offset,
+        // Seam 6's stored size: not read by the symbol tables.
+        size: 4,
         refs,
     };
     rows.frags = vec![frag(1, 0x10)];

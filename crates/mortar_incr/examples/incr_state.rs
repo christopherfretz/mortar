@@ -168,6 +168,7 @@ fn strings_growth(path4: &str, version: &str, suffixes: &[&str]) -> Result<(), S
         p.ranges.push(FileRanges {
             file: FileId(f32),
             first_global: m.file_index.get(f).map_or(0, |i| i.first_global),
+            locals: None,
             sections: Some(sections),
             mentions: None,
             index: None,
@@ -175,7 +176,6 @@ fn strings_growth(path4: &str, version: &str, suffixes: &[&str]) -> Result<(), S
             frag_uses: None,
             symtab: None,
             regions: None,
-            locals: None,
             gone: false,
         });
         let view = read::open_bytes(bytes.clone()).map_err(|e| e.to_string())?;

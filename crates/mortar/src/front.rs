@@ -143,6 +143,33 @@ pub struct Front<'s> {
     /// The erratum fixes (`spec/a64.md` §11.2): words written over fill's
     /// bytes, by address, sorted (`LinkSites::erratum_fixes`).
     pub erratum_fixes: Vec<mortar_image::fill::Fixup>,
+    /// What a format-5 capture reads beyond format 4's (WP-244), each
+    /// from its one producer; `None` unless [`Env::state5`].
+    pub incr5: Option<Incr5>,
+}
+
+/// The data of a format-5 capture that the link computes on its way
+/// (WP-244; `spec/incr.md` IN-18e, WP-239 S4-1..S4-5, R-4a): made only
+/// in an incremental-mode link with [`Env::state5`].
+#[derive(Debug, Clone)]
+pub struct Incr5 {
+    /// Per file, the OR of the scan's demands per key over its live
+    /// units (`mortar_scan::scan_recording`).
+    pub demands: Vec<mortar_core::incr::FileDemands>,
+    /// Per `SymbolId`: `SymFacts::pack(Walker::key_facts(id))`.
+    pub facts: Vec<u32>,
+    /// Each file's `.eh_frame` range in the final plan
+    /// (`EhPlan::file_runs`), or why there is none to store.
+    pub eh: Result<Vec<mortar_synth::eh::EhRun>, String>,
+    /// Per live object with properties: its own, encoded
+    /// (`notes::object_properties`, `rows::encode_properties`; seam 6's
+    /// `FILES.properties`), by file.
+    pub properties: Vec<(FileId, Vec<u8>)>,
+    /// Per object file that takes part (L-84): its `.note.GNU-stack`
+    /// (`stack::file_note`, seam 6's `FILES.stack`), by file.
+    pub stack: Vec<(FileId, mortar_layout::stack::StackNote)>,
+    /// `Plan::option_keys` (seam 6's `SYMBOLS.option`).
+    pub option_keys: Vec<Vec<u8>>,
 }
 
 /// One output section of a [`Front`]'s layout, as its section header will
@@ -271,6 +298,13 @@ pub struct Env<'e> {
     /// layout takes IN-33's slack and `.eh_frame` its per-file CIEs.
     /// `false` in a plain link, which pays nothing for it (L-87).
     pub slack: bool,
+    /// With `slack`: the link also computes what a format-5 capture
+    /// reads ([`Incr5`]: per-file demand, facts) and gives each file's
+    /// `.eh_frame` records a range with `Slack::eh_pad` bytes after them
+    /// (WP-244). The join (U-10) makes it the incremental-mode default;
+    /// until then only `mortar_incr::testhook::state5_path` and the
+    /// tests set it.
+    pub state5: bool,
 }
 
 /// The replay hook's function (IN-61).
@@ -284,6 +318,7 @@ impl std::fmt::Debug for Env<'_> {
             .field("pool", &self.pool)
             .field("replay", &self.replay.is_some())
             .field("slack", &self.slack)
+            .field("state5", &self.state5)
             .finish()
     }
 }
@@ -645,7 +680,15 @@ pub fn front<'s>(
     let sections: Option<&dyn mortar_scan::weak::SectionMap> =
         if dynamic { Some(&out_writable) } else { None };
     let scan_options = ScanOptions { output, dynamic, sections, proof: link_arch.proof() };
-    let mut scanned = scan(arch, &scan_inputs, &scan_options, &pool);
+    // WP-244: the per-file demand of a format-5 capture (the same walk,
+    // a recording sink; a plain link takes `scan`, unchanged).
+    let state5 = env.slack && env.state5;
+    let (mut scanned, file_demands) = if state5 {
+        let (s, d) = mortar_scan::scan_recording(arch, &scan_inputs, &scan_options, &pool);
+        (s, Some(d))
+    } else {
+        (scan(arch, &scan_inputs, &scan_options, &pool), None)
+    };
     // The branch candidates are the sites' input only: dropped once the
     // sites are final, before the image.
     let branch_candidates = std::mem::take(&mut scanned.branches);
@@ -685,13 +728,38 @@ pub fn front<'s>(
     let live = |s: SectionId| liveness.is_live(s);
     let eh_list = EhPlan::select_in(&merge_eh, live, env.slack, &pool, diag).ok()?;
     let mut eh = EhPlan::from_records(&merge_eh, &eh_list, &pool, diag).ok()?;
+    // WP-244 (IN-34a, IN-72 item 5): each file's records a range of
+    // `size + Slack::eh_pad(size)` bytes, the pad a padding CIE.
+    let mut eh_runs: Result<(), String> = Ok(());
+    if state5 {
+        match eh.file_runs(&merge_eh) {
+            Ok(runs) => {
+                let pad = |size| mortar_layout::slack::Slack::INCREMENTAL.eh_pad(size);
+                match EhPlan::run_pads(&runs, pad) {
+                    Some(pads) if !pads.is_empty() => {
+                        let ra = padding_ra(machine);
+                        eh = EhPlan::from_records_padded(
+                            &merge_eh, &eh_list, &pads, ra, &pool, diag,
+                        )
+                        .ok()?;
+                    }
+                    Some(_) => {}
+                    None => eh_runs = Err("the .eh_frame runs are not contiguous".to_owned()),
+                }
+            }
+            Err(file) => {
+                eh_runs = Err(format!("file {} has two runs of .eh_frame records", file.0));
+            }
+        }
+    }
     drop(eh_list);
     steps.step("eh plan", 0, "");
     let eh_frame_hdr = plan.shaping.eh_frame_hdr.unwrap_or(false);
     let hdr = HdrPlan::new(&merge_eh, &eh, eh_frame_hdr, &pool, diag).ok()?;
     steps.step("hdr plan", 0, "");
     let memory_seal = plan.z.memory_seal == Some(true);
-    let property = property_plan(&inputs, &resolution, &headers, arch, memory_seal, diag).ok()?;
+    let (property, properties5) =
+        property_plan(&inputs, &resolution, &headers, arch, memory_seal, state5, diag).ok()?;
     let feature_1_and = property.value_u32(link_arch.feature_1().0);
     // D-49: `-z now` binds every PLT entry at load (always `false` in a
     // static link).
@@ -709,6 +777,14 @@ pub fn front<'s>(
     let got_output = got_base_defined(&inputs, &resolution, scanned.demands.output);
     let walker = Walker::new(arch, &scan_inputs, scan_options)
         .with_weak_dyn(scanned.demands.weak_dyn.clone());
+    // WP-239 R-4a: each key's facts, packed, as `RESOLVED.facts` stores
+    // them (the walker's per-key facts, the one producer).
+    let facts5 = if state5 {
+        let n = inputs.symbols.len() as usize;
+        pool.map(n, |i| walker.key_facts(SymbolId(i as u32)).pack())
+    } else {
+        Vec::new()
+    };
     let (got, dyn_tables, placeless) = if has_dynamic {
         let src =
             crate::dynlink::DynSource::new(&inputs, &resolution, &assignment, &liveness, &plan);
@@ -1263,6 +1339,16 @@ pub fn front<'s>(
     timer.phase(90, "layout");
     deferred.disarm();
     drop(walker);
+    let incr5 = file_demands.map(|demands| Incr5 {
+        demands,
+        facts: facts5,
+        eh: eh_runs.and_then(|()| {
+            eh.file_runs(&merge_eh).map_err(|f| format!("file {} has two .eh_frame runs", f.0))
+        }),
+        properties: properties5,
+        stack: mortar_layout::stack::file_notes(&inputs, &resolution),
+        option_keys: plan.option_keys(),
+    });
     drop(merge_eh);
     Some(Front {
         plan,
@@ -1290,6 +1376,7 @@ pub fn front<'s>(
         layout,
         placed,
         erratum_fixes,
+        incr5,
     })
 }
 
@@ -1359,6 +1446,14 @@ fn same_slot_lists(a: &Slots, b: &Slots) -> bool {
         && a.tls_ld == b.tls_ld
 }
 
+/// The demand bits that make a slot of `kind`: `SlotKind::demand`, the
+/// one mapping of the slot lists ([`slots_of`]) and of format 5's
+/// `SLOTS.refs` (WP-244's capture takes it as a function).
+#[must_use]
+pub fn slot_demand(kind: SlotKind) -> mortar_core::demands::DemandFlags {
+    kind.demand()
+}
+
 /// `Slots` from `Demands` (S-64): each kind's keys in `SymKey` order.
 fn slots_of(d: &mortar_core::Demands, resolution: &Resolution) -> Slots {
     let list = |k: SlotKind| -> Box<[SymKey]> { d.keys_with(k.demand()).collect() };
@@ -1376,15 +1471,20 @@ fn slots_of(d: &mortar_core::Demands, resolution: &Resolution) -> Slots {
 }
 
 /// S-94: the property notes of every live object (those without one take
-/// part as "every property absent", S-95).
+/// part as "every property absent", S-95). With `keep` (a format-5
+/// capture, WP-244), also each live object's own properties
+/// (`object_properties`, the merge's input: `FILES.properties`), encoded.
+#[allow(clippy::type_complexity)] // the plan, and the per-file values
 fn property_plan(
     inputs: &Inputs<'_>,
     resolution: &Resolution,
     headers: &Headers<'_>,
     arch: &dyn Arch,
     memory_seal: bool,
+    keep: bool,
     diag: &Collector,
-) -> Result<PropertyPlan, mortar_synth::Failed> {
+) -> Result<(PropertyPlan, Vec<(FileId, Vec<u8>)>), mortar_synth::Failed> {
+    let mut ids: Vec<FileId> = Vec::new();
     let mut paths: Vec<String> = Vec::new();
     let mut per: Vec<Vec<(SectionId, &[u8], u64)>> = Vec::new();
     for (file, row) in inputs.files.iter() {
@@ -1423,6 +1523,7 @@ fn property_plan(
             }
         }
         let f = row.display();
+        ids.push(file);
         paths.push(match f.member() {
             Some(m) => format!("{}({m})", f.path()),
             None => f.path().to_owned(),
@@ -1432,8 +1533,35 @@ fn property_plan(
     let objects: Vec<ObjectNotes<'_>> =
         paths.iter().zip(&per).map(|(p, s)| ObjectNotes { path: p, sections: s }).collect();
     let processor = |t: u32| arch.property_merge(t);
+    let class = arch.facts().class;
+    // S-94..S-96: each object's own properties, then the one merge
+    // (`PropertyPlan::new`'s two steps, kept apart for the capture).
+    let mut per_object = Vec::with_capacity(objects.len());
+    let mut failed = false;
+    for obj in &objects {
+        match mortar_synth::notes::object_properties(obj, class, &processor, diag) {
+            Ok(m) => per_object.push(m),
+            Err(mortar_synth::Failed) => failed = true,
+        }
+    }
+    if failed {
+        return Err(mortar_synth::Failed);
+    }
     // `-z memory-seal` (R-C3): the last of it and `-z nomemory-seal` wins.
-    PropertyPlan::new(&objects, arch.facts().class, &processor, memory_seal, diag)
+    let plan = PropertyPlan::merged(&per_object, class, &processor, memory_seal, diag)?;
+    let kept = if keep {
+        ids.iter()
+            .zip(&per_object)
+            .filter(|(_, m)| !m.is_empty())
+            .map(|(&f, m)| {
+                let props: Vec<(u32, &[u8])> = m.iter().map(|(t, v)| (*t, v.as_slice())).collect();
+                (f, mortar_incr::update::rows::encode_properties(&props))
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    Ok((plan, kept))
 }
 
 /// The output demands the GOT is planned from: the scan's, with

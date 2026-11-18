@@ -151,6 +151,7 @@ impl Fixture {
             pool: Pool::new(2),
             replay: replay.map(|_| &hook as &mortar::front::Replay<'_>),
             slack: true,
+            state5: false,
         };
         let mut f = front(parsed.plan, env, &store, &diag, &mut Timer::new(false))
             .unwrap_or_else(|| panic!("front: {:?}", diag.finish()));

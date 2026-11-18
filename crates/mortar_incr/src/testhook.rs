@@ -12,10 +12,13 @@
 //!   `<point>` (one of [`CRASH_POINTS`]), after printing
 //!   `mortar: crash hook <point>` to standard error;
 //! - `MORTAR_INCR_DIRTY=<path>`: [`dirty_ranges`] writes the update's
-//!   dirty ranges to `<path>`.
+//!   dirty ranges to `<path>`;
 //! - `MORTAR_INCR_UNENFORCED` (set to anything; read in
 //!   `mortar::update::write`, WP-219): the probe of image.md I-59 answers that a
-//!   lock is not enforced, so a link answers `lock-unavailable` (IN-77d).
+//!   lock is not enforced, so a link answers `lock-unavailable` (IN-77d);
+//! - `MORTAR_INCR_STATE5=<path>`, `MORTAR_INCR_STATE5_COLLIDE=1`: WP-244's
+//!   format-5 capture beside the format-4 state ([`state5_path`],
+//!   [`state5_collide`]).
 
 use mortar_core::incr::DirtyRange;
 
@@ -126,6 +129,44 @@ pub fn dirty_ranges(ranges: &[DirtyRange]) {
     let _ = ranges;
 }
 
+/// WP-244's switch (until the join, U-10, makes format 5 the state):
+/// with the feature and `MORTAR_INCR_STATE5=<path>` set, an
+/// incremental-mode full link also captures the format-5 state of the
+/// link and writes it to `<path>`, beside the format-4 state it writes as
+/// before, and lays out IN-34a's per-file `.eh_frame` pads. Without the
+/// feature: `None`.
+#[cfg(feature = "testhooks")]
+#[must_use]
+pub fn state5_path() -> Option<std::path::PathBuf> {
+    std::env::var_os("MORTAR_INCR_STATE5").filter(|v| !v.is_empty()).map(Into::into)
+}
+
+/// WP-244's switch: without the `testhooks` feature, `None`.
+#[cfg(not(feature = "testhooks"))]
+#[inline]
+#[must_use]
+pub fn state5_path() -> Option<std::path::PathBuf> {
+    None
+}
+
+/// WP-244's collision injection (WP-239 R-2, `state-collision`): with the
+/// feature and `MORTAR_INCR_STATE5_COLLIDE=1`, the format-5 capture
+/// repeats its first `FRAGS` row at another offset before its checks.
+/// Without the feature: `false`.
+#[cfg(feature = "testhooks")]
+#[must_use]
+pub fn state5_collide() -> bool {
+    std::env::var_os("MORTAR_INCR_STATE5_COLLIDE").is_some_and(|v| v == "1")
+}
+
+/// WP-244's collision injection: without the `testhooks` feature, `false`.
+#[cfg(not(feature = "testhooks"))]
+#[inline]
+#[must_use]
+pub fn state5_collide() -> bool {
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -156,5 +197,6 @@ mod tests {
     fn hooks_do_nothing_without_the_feature() {
         crash_point("W1");
         dirty_ranges(&[DirtyRange { offset: 0, len: 1 }]);
+        assert!(state5_path().is_none() && !state5_collide());
     }
 }
