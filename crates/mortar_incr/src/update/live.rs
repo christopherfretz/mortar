@@ -133,6 +133,7 @@ pub fn live_root_keys(
 /// (`gc-keep-exported` R-5; `defsym-symbol` F9; a `REFUSE` row's
 /// `fde-global` or `def-dropped`, S5); `state-corrupt` for a row the
 /// reader cannot follow.
+#[allow(clippy::too_many_lines, reason = "S2/S3's walk: refusals, rows, roots, worklist")]
 pub fn walk_stored(
     view: &StateView<'_>,
     options: &OptionKeys,

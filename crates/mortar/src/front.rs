@@ -679,17 +679,20 @@ pub fn front<'s>(
         let fail = |(_, d): (Key, Diagnostic)| {
             format!("EDGES: {}", d.render(&mortar_diag::Style::plain("mortar")).trim_end())
         };
-        let r = mortar_live::stored_edges(&live, live_options, None, &pool).and_then(|edges| {
-            let at = mortar_live::live_positions(&live, live_options, &edges, &liveness, &pool)?;
-            Ok((edges, at))
-        });
+        let r = mortar_live::stored_edges(&live, live_options, None, &pool).map_err(fail).and_then(
+            |edges| {
+                let at = mortar_live::live_positions(&live, live_options, &edges, &liveness, &pool)
+                    .map_err(fail)?;
+                Ok((edges, at))
+            },
+        );
         if timer.on() {
             timer.line(format!(
                 "mortar: incremental: live rows: {:.1} ms",
                 t.elapsed().as_secs_f64() * 1e3
             ));
         }
-        r.map_err(fail)
+        r
     });
 
     // 70: scan. WP-177: the owners of `.eh_frame` and

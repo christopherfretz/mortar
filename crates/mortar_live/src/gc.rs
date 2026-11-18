@@ -328,6 +328,7 @@ impl<'s> Prep<'s> {
 /// Steps 1 to 3 of the mark (step 2 when `defs`, step 3 when `frames`).
 /// `Err`: the least-keyed diagnostic of a file or `.eh_frame` section that
 /// could not be read.
+#[allow(clippy::too_many_lines, reason = "the mark's steps 1 to 3, in order")]
 fn prepare<'s>(
     tables_in: &LiveInputs<'_, 's>,
     options: LiveOptions,
@@ -605,6 +606,7 @@ fn kept(r: &Resolution, s: SectionId) -> bool {
 /// non-section symbol names; `REFUSE` code 2 (F11) per section that is
 /// not kept and holds the definition of a key whose `RESOLVED` row is
 /// `SECTION`, whatever dropped the section.
+#[allow(clippy::many_single_char_names, reason = "the mark's names: t, p, r, w")]
 pub(crate) fn stored(
     t: &LiveInputs<'_, '_>,
     options: LiveOptions,
@@ -714,6 +716,7 @@ pub(crate) fn stored(
 }
 
 /// One file's rows of [`stored`] but the rings and code 2.
+#[allow(clippy::many_single_char_names, reason = "the mark's names: w, r, s")]
 fn file_rows(w: &Walk<'_, '_, '_>, named: &[bool], file: FileId) -> Result<Vec<LiveEdge>, Keyed> {
     let r = w.r;
     let mut out = Vec::new();
@@ -850,21 +853,11 @@ pub(crate) fn positions(
             (K_RELOC | K_START_STOP | K_FDE_KEY | K_NONALLOC_KEY, LiveTarget::Key(k)) => {
                 project(def(k), &mut at);
             }
-            (K_LOCAL | K_FDE_SECTION | K_NONALLOC_SECTION, LiveTarget::Section(s)) => {
-                if split(s) {
-                    at.push((s, e.offset));
-                }
+            (K_LOCAL | K_FDE_SECTION | K_NONALLOC_SECTION, LiveTarget::Section(s)) if split(s) => {
+                at.push((s, e.offset));
             }
-            (K_LINK_ORDER | K_GROUP, LiveTarget::Section(s)) => {
-                if split(s) {
-                    at.push((s, WHOLE));
-                }
-            }
-            (K_ROOT, _) => {
-                if split(e.source) {
-                    at.push((e.source, WHOLE));
-                }
-            }
+            (K_LINK_ORDER | K_GROUP, LiveTarget::Section(s)) if split(s) => at.push((s, WHOLE)),
+            (K_ROOT, _) if split(e.source) => at.push((e.source, WHOLE)),
             _ => {}
         }
     }

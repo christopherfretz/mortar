@@ -304,6 +304,7 @@ fn duplicate_file_agrees() {
 /// rooting through the entry, `-u`, `EXTERN`, `--require-defined`, a
 /// `--defsym` base, `-init` and `-fini`.
 #[test]
+#[allow(clippy::many_single_char_names, reason = "l, m, f, s, k: the line, its state, its front")]
 fn live_roots_are_resolves_roots() {
     for (arch, cc, _) in TARGETS {
         let src = [

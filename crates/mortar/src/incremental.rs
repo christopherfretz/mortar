@@ -237,6 +237,7 @@ fn emit(diagnostics: &Collector, seq: u64, d: Diagnostic) {
 /// # Errors
 /// The first section or fragment that differs, a marked section that is
 /// not kept, a hash that differs, or a `state-corrupt` of the walk.
+#[allow(clippy::many_single_char_names, reason = "f, m, r, s, n: the front, the state, its rows")]
 pub fn live_check(
     f: &Front<'_>,
     m: &mortar_incr::update::testing::MemoryState,
@@ -681,6 +682,7 @@ impl Session {
     /// After a successful full link: the state written and bound to the
     /// output, and the lines for standard error (the fall-back's, or the
     /// report's when it goes there).
+    #[allow(clippy::too_many_lines, reason = "the state's write, then the lines, in order")]
     pub fn finish(
         mut self,
         f: &Front<'_>,

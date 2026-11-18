@@ -227,6 +227,7 @@ pub fn stored_edges(
 /// # Errors
 /// As [`liveness`].
 #[allow(clippy::result_large_err, reason = "the phases' diagnostic pair, returned once per link")]
+#[allow(clippy::type_complexity, reason = "S4's lists, as `LiveDelta::pieces` holds them")]
 pub fn live_positions(
     t: &LiveInputs<'_, '_>,
     options: LiveOptions,
