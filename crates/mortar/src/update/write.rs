@@ -958,9 +958,16 @@ pub fn lock_state(path: &Path, ops: &mut dyn WriteOps) -> Result<Option<File>, I
     Err(IncrReason::StateBusy(String::new()))
 }
 
-/// image.md I-59's probe on `S` while this link holds its lock: a second
-/// descriptor's `try_lock` must find it held.
+/// image.md I-59's probe on `S` (or the floor's temporary) while this
+/// link holds its lock: a second descriptor's `try_lock` must find it
+/// held. With the `testhooks` feature, `MORTAR_INCR_UNENFORCED` set makes
+/// it say "not enforced" (a file system that does not enforce `flock` is
+/// not at hand in the tests; a default build reads no variable, IN-61).
 fn lock_enforced(path: &Path, ops: &mut dyn WriteOps) -> bool {
+    #[cfg(feature = "testhooks")]
+    if std::env::var_os("MORTAR_INCR_UNENFORCED").is_some() {
+        return false;
+    }
     File::open(path)
         .is_ok_and(|other| matches!(ops.flock(&other, LockMode::TryExclusive), Ok(false)))
 }
@@ -1056,12 +1063,16 @@ pub fn remove_leftovers(out_path: &Path, state_path: &Path, ops: &mut dyn WriteO
 /// its path once locked; then truncated, written, `fdatasync`ed, renamed
 /// over `path`, the directory `fsync`ed. `Ok(false)`: the temporary is
 /// held by another live link (or was removed under this one before its
-/// lock): no state is written (`state-busy`) and nothing is touched. On
-/// an error the temporary is removed if it is still this link's.
+/// lock): no state is written (`state-busy`) and nothing is touched.
+/// Once locked, I-59's probe (IN-77d): where the lock is not enforced,
+/// the temporary is removed by its exact name and the error is
+/// `lock-unavailable`. On an error the temporary is removed if it is
+/// still this link's.
 ///
 /// # Errors
-/// The first failing call's error (`S` is then as it was, or replaced:
-/// the rename is the last write).
+/// `lock-unavailable` (kind `Unsupported`); else the first failing
+/// call's error (`S` is then as it was, or replaced: the rename is the
+/// last write).
 pub fn write_state_whole(path: &Path, bytes: &[u8], ops: &mut dyn WriteOps) -> io::Result<bool> {
     let dir = dir_of(path);
     let tmp = beside(path, COMPACT);
@@ -1069,6 +1080,13 @@ pub fn write_state_whole(path: &Path, bytes: &[u8], ops: &mut dyn WriteOps) -> i
     let id = file.metadata().map(|m| (m.dev(), m.ino()))?;
     if !ops.flock(&file, LockMode::TryExclusive)? || identity(&tmp) != Some(id) {
         return Ok(false);
+    }
+    if !lock_enforced(&tmp, ops) {
+        let _ = ops.unlink(&tmp);
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "lock-unavailable (flock is not enforced on its file system, IN-77d)",
+        ));
     }
     let result = (|| {
         ops.set_len(&file, 0)?;

@@ -79,8 +79,9 @@ pub struct Session {
     /// drop with the session releases the lock); `None` when no state was
     /// found or it could not be locked.
     lock: Option<std::fs::File>,
-    /// IN-77b: `state-busy`: this link writes no state.
-    writes_no_state: bool,
+    /// IN-77b: `state-busy` or `lock-unavailable`: this link writes no
+    /// state (and, for `lock-unavailable`, removes the one at `S`).
+    writes_no_state: Option<&'static str>,
 }
 
 /// WP-094: timed parts (name, ms), shared with the caller.
@@ -260,7 +261,11 @@ pub fn start(parsed: &Parsed, cwd: &Path, out_path: &Path, diagnostics: &Collect
     if lock.is_some() {
         crate::update::write::remove_leftovers(out_path, &state_path, &mut ops);
     }
-    let writes_no_state = matches!(locked, Err(IncrReason::StateBusy(_)));
+    let writes_no_state = match locked {
+        Err(IncrReason::StateBusy(_)) => Some("state-busy"),
+        Err(IncrReason::LockUnavailable(_)) => Some("lock-unavailable"),
+        _ => None,
+    };
     let (reason, recorded_target, old) = match locked {
         Err(reason) if mode != IncrementalMode::Full => (Some(reason), None, None),
         // `--incremental=full` links from scratch whatever the state says.
@@ -568,9 +573,15 @@ impl Session {
                     option: "a shared object input (a dynamic executable)".to_owned(),
                 }),
             );
-        } else if self.writes_no_state {
-            // IN-77b: another link keeps replacing the state.
-            let _ = writeln!(stderr, "incremental: no state written: state-busy");
+        } else if let Some(why) = self.writes_no_state {
+            // IN-77b: another link keeps replacing the state (`state-busy`:
+            // it is left), or `flock` is not enforced there
+            // (`lock-unavailable`: no later link could use it; removed by
+            // its exact name).
+            if why == "lock-unavailable" {
+                let _ = mortar_image::output::remove_if_replaceable(&self.state_path);
+            }
+            let _ = writeln!(stderr, "incremental: no state written: {why}");
         } else {
             match self.state(f, store, written, cwd) {
                 Ok(state) => {

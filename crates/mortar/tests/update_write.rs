@@ -1800,3 +1800,46 @@ fn full_link_during_compaction() {
         }
     }
 }
+
+// spec: incr.md IN-77b, IN-77d, §7 `lock-unavailable` (WP-219 rulings-2:
+// where `flock` is not enforced, the full link writes no state and
+// removes a previous one by its exact name; its output is a full link's;
+// a link that found no state, probing the temporary, writes none either)
+#[cfg(feature = "testhooks")]
+#[test]
+fn lock_unavailable_writes_no_state() {
+    let Some(fl) = Floor::new("lock-unavailable") else { return };
+    fl.link(&[]);
+    assert!(fl.state().exists());
+    let full = std::fs::read(fl.dir().join("out")).unwrap();
+    let o = fl.command(&[]).env("MORTAR_INCR_UNENFORCED", "1").fork_output().unwrap();
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(o.status.success(), "{err}");
+    assert!(err.contains("no state written: lock-unavailable"), "{err}");
+    assert!(!fl.state().exists(), "the previous state is removed");
+    assert!(!fl.temporary().exists());
+    assert_eq!(std::fs::read(fl.dir().join("out")).unwrap(), full, "a full link's output");
+    // No state before: the temporary's probe says the same.
+    let o = fl.command(&[]).env("MORTAR_INCR_UNENFORCED", "1").fork_output().unwrap();
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(o.status.success(), "{err}");
+    assert!(err.contains("no state written") && err.contains("lock-unavailable"), "{err}");
+    assert!(!fl.state().exists() && !fl.temporary().exists());
+}
+
+// spec: incr.md IN-77d (the floor's temporary, locked, probed: not
+// enforced is `lock-unavailable`, the temporary removed, `S` untouched)
+#[test]
+fn state_temporary_probe_unenforced() {
+    let tmp = Tmp::new("tmp-probe");
+    let s = tmp.0.join("out.mortar-state");
+    let mut ops = Faulty::new(None, |_, _| {});
+    ops.unenforced = true;
+    let e = write_state_whole(&s, b"state", &mut ops).unwrap_err();
+    assert_eq!(e.kind(), io::ErrorKind::Unsupported, "{e}");
+    assert!(e.to_string().contains("lock-unavailable"), "{e}");
+    assert!(!s.exists());
+    assert!(!tmp.0.join(".out.mortar-state.mortar-compact").exists());
+    assert!(write_state_whole(&s, b"state", &mut StdOps).unwrap());
+    assert_eq!(std::fs::read(&s).unwrap(), b"state");
+}
