@@ -26,7 +26,9 @@ Brief: /Volumes/AgentWork/mortar-helper/briefs/wp-247.md. Scratch: .build/target
 - Item 3: normalize sorts DIAGS by the writer's key (the bug: append order of DIAGS strings).
   Tests: state5.rs decode_normalize_encode_is_byte_equal; state5_capture.rs capture_round_trip_is_byte_equal.
 
+- Items 3 (real: protoc, protoc -g, clang -g byte-equal), 4 (state5::columns + state5_columns.rs; DIAGS.unit
+  F-1 fix), 5/g (reseal, FILE_INDEX, every column mutated; UNCHECKED list), 9 (sizes), h: done. Record written:
+  spec/landed/incr/WP-247.md (items 8 and 9 proposals in it).
+
 ## Next
-- Item 1: seam 8a cherry-picked (d148c1e0) and applied (plan_in_place, compact::apply; deletes refused;
-  test debug_strs_patch_puts_rows). LEFT: measurement on protoc -g (cxx-medium-g-static).
-- Items 2..10 per the brief.
+- Gates (scratch gates.sh, log gates.log, final line "gates done"), then delete WIP.md, hand back.
