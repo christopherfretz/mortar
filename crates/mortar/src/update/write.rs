@@ -18,7 +18,7 @@
 //! A plain link never reaches this file (IN-11).
 
 use std::ffi::OsString;
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io;
 use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::fs::{FileExt, MetadataExt};
@@ -47,6 +47,12 @@ pub struct Pair<'a> {
     /// `S`'s descriptor (read-write, locked, IN-77b) and its path.
     pub state: &'a File,
     pub state_path: &'a Path,
+    /// `P`'s tuple as U1's `fstat` gave it (IN-77a: what `write` and the
+    /// checks before W2 and C3 compare with; WP-219 F-7).
+    pub checked: Tuple,
+    /// The new output's size in bytes (U-6's; W3 and C1 truncate or extend
+    /// to it, image.md I-97; WP-219 S-1).
+    pub size: u64,
 }
 
 /// What the writes did (for the report: IN-76 "the report says which",
@@ -59,6 +65,12 @@ pub struct Written {
     pub path: WritePath,
     /// W5/C4 was the compaction (IN-18f).
     pub compacted: bool,
+    /// IN-76 "the report says which": the IN-45 condition that forced the
+    /// copy path when the policy's default was in place. `None` in place,
+    /// and `None` when the copy path was the policy's own choice (below
+    /// the bound, or `--incremental-write=copy`): the report tells those
+    /// apart by the size and the option.
+    pub copy_because: Option<&'static str>,
 }
 
 /// The aside name's suffix: `A = dir(P)/.<base(P)>.mortar-torn` (IN-77).
@@ -101,10 +113,10 @@ fn dir_of(path: &Path) -> PathBuf {
 /// `written-file-clash`, which the link decides before U10 (no input
 /// list reaches this function).
 ///
-/// **The new output's size** (W3 "truncate or extend"): no argument
-/// carries it (WP-219's finding S-1); until one does, it is the larger of
-/// `META`'s output size and the end of the last range, so an output that
-/// grows is extended and one that would shrink is NOT truncated.
+/// **The new output's size** is `pair.size` (U-6's; WP-219 S-1): W3 and
+/// C1 truncate or extend to it (image.md I-97). **U1's tuple** is
+/// `pair.checked`: the descriptor's `fstat` must still give it before W1,
+/// and `stat(P)` before W2 and C3 (IN-77a; WP-219 F-7).
 ///
 /// # Errors
 /// [`WriteFailure`] (IN-77e): `Fallback` for a named reason found before
@@ -160,18 +172,26 @@ pub fn write_with(
     // 1. What needs nothing written (IN-13: a fall-back is decided before
     //    W1).
     let meta = view.meta()?;
-    let Some(new_size) = sized(meta.file_size, ranges, bytes) else {
-        debug_assert!(false, "dirty ranges not sorted, disjoint and as long as their bytes");
+    if !well_formed(pair.size, ranges, bytes) {
+        debug_assert!(false, "dirty ranges not sorted, disjoint, as long as their bytes and in size");
         return Err(WriteFailure::Fallback(IncrReason::UpdateNotImplemented(Some(
             Unimplemented::Write,
         ))));
-    };
-    let size = pair.out.metadata().map_err(|e| failed("before W1", e))?.len();
-    if size != meta.file_size {
+    }
+    let checked = pair.checked;
+    if checked.size != meta.file_size {
         return Err(changed(format!(
-            "{} is {size} bytes, the state says {} (IN-77a)",
+            "{} is {} bytes, the state says {} (IN-77a)",
             pair.out_path.display(),
+            checked.size,
             meta.file_size
+        )));
+    }
+    let now = Tuple::of(&pair.out.metadata().map_err(|e| failed("before W1", e))?);
+    if now != checked {
+        return Err(changed(format!(
+            "{} was written after the update checked it (IN-77a)",
+            pair.out_path.display()
         )));
     }
     if !compacts && state_shared(pair) {
@@ -184,22 +204,32 @@ pub fn write_with(
 
     // 2. IN-77d: the leftovers, by exact name, before any write of ours.
     let aside = beside(pair.out_path, ASIDE);
+    let second_name = identity(&aside) == Some((checked.dev, checked.ino));
     let aside_clear = remove_leftover(ops, &aside);
     remove_leftover(ops, &beside(pair.out_path, TEMPORARY));
     remove_leftover(ops, &beside(pair.state_path, COMPACT));
 
-    // The descriptor's tuple once the leftovers are gone (removing an `A`
-    // that is a second name of `P`, a kill inside W4's leftover, changes
-    // `P`'s link count and ctime): what IN-77a's checks compare with.
+    // The descriptor's tuple once the leftovers are gone: U1's, but for
+    // the ctime when the update removed an `A` that was a second name of
+    // `P` (a kill inside W4 left it; the unlink changes the inode's link
+    // count and ctime: IN-77a). What the checks before W2 and C3 compare.
     let out_meta = pair.out.metadata().map_err(|e| failed("before W1", e))?;
     let start = Tuple::of(&out_meta);
-    if start.size != meta.file_size {
-        return Err(changed(format!("{} changed size (IN-77a)", pair.out_path.display())));
+    let ours = Tuple { ctime_ns: checked.ctime_ns, ..start } == checked;
+    if start != checked && !(second_name && ours) {
+        return Err(changed(format!(
+            "{} was written after the update checked it (IN-77a)",
+            pair.out_path.display()
+        )));
     }
 
     // 3. IN-76: the path.
-    let path = if policy.default_for(meta.file_size) == WritePath::InPlace
-        && in_place_blocked(pair, &out_meta, &meta, aside_clear).is_none()
+    let copy_because = if policy.default_for(meta.file_size) == WritePath::InPlace {
+        in_place_blocked(pair, &out_meta, &meta, aside_clear)
+    } else {
+        None
+    };
+    let path = if policy.default_for(meta.file_size) == WritePath::InPlace && copy_because.is_none()
     {
         WritePath::InPlace
     } else {
@@ -207,12 +237,12 @@ pub fn write_with(
     };
 
     // 4. The protocol.
-    let job = Job { pair, ranges, bytes, start, new_size, compacts };
+    let job = Job { pair, ranges, bytes, start, new_size: pair.size, compacts };
     let tuple = match path {
         WritePath::InPlace => job.in_place(ops, &aside, w5)?,
         WritePath::Copy => job.by_copy(ops, w5)?,
     };
-    Ok(Written { tuple, path, compacted: compacts })
+    Ok(Written { tuple, path, compacted: compacts, copy_because })
 }
 
 fn failed(step: &'static str, error: io::Error) -> WriteFailure {
@@ -223,19 +253,20 @@ fn changed(why: String) -> WriteFailure {
     WriteFailure::Fallback(IncrReason::OutputChanged(why))
 }
 
-/// The new output's size, or `None` when the ranges are not sorted,
-/// disjoint and exactly as long as `bytes` (U-6's contract, IN-75).
-fn sized(old: u64, ranges: &[DirtyRange], bytes: &[u8]) -> Option<u64> {
+/// U-6's contract (IN-75): the ranges sorted, disjoint, inside the new
+/// output's `size`, and exactly as long as `bytes`.
+fn well_formed(size: u64, ranges: &[DirtyRange], bytes: &[u8]) -> bool {
     let mut end = 0u64;
     let mut total = 0u64;
     for r in ranges {
-        if r.offset < end {
-            return None;
+        let Some(e) = r.offset.checked_add(r.len) else { return false };
+        if r.offset < end || e > size {
+            return false;
         }
-        end = r.offset.checked_add(r.len)?;
-        total = total.checked_add(r.len)?;
+        end = e;
+        total = total.saturating_add(r.len);
     }
-    (total == u64::try_from(bytes.len()).ok()?).then_some(old.max(end))
+    u64::try_from(bytes.len()).is_ok_and(|n| n == total)
 }
 
 /// IN-77b: `S` with other hard links or reached through a symbolic link.
@@ -858,6 +889,193 @@ fn tuple_of(row: &StatRow) -> Tuple {
     }
 }
 
+// ---- IN-77b, IN-77c, IN-77d: the lock, the boot id, the state's temporary ----
+
+/// How many times [`lock_state`] opens `S` again after finding its path
+/// renamed while it waited (IN-77b), before `state-busy`.
+const LOCK_ROUNDS: usize = 8;
+
+/// IN-77b's lock on `S` (WP-219, the supervisor's ruling F-5): every link
+/// in incremental mode that finds a state calls this before it reads any
+/// byte of `S` past the header's magic, and holds the returned descriptor
+/// (read-write where the file allows it, else read-only) to its last
+/// write; closing it releases the lock. `Ok(None)`: no state at `path`
+/// (also an `ENOENT` a file system shows spuriously: "no state", the
+/// virtiofs note of IN-77b). The lock is `ops.flock(Exclusive)` (it
+/// blocks while another link holds it); once held, `stat(path)` must give
+/// the locked `(dev, ino)`, else `S` was renamed while this link waited
+/// and it starts again, at most [`LOCK_ROUNDS`] times. Then image.md
+/// I-59's probe: a second descriptor's `try_lock` must fail.
+///
+/// # Errors
+/// `state-busy` after the last round; `lock-unavailable` when `flock`
+/// fails or the probe finds it not enforced; `state-corrupt` for a path
+/// that is not a regular file or cannot be opened (I-58b: a pipe or a
+/// device is never opened, so never read).
+pub fn lock_state(path: &Path, ops: &mut dyn WriteOps) -> Result<Option<File>, IncrReason> {
+    for _ in 0..LOCK_ROUNDS {
+        match std::fs::metadata(path) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(IncrReason::StateCorrupt(format!("cannot read the state: {e}"))),
+            Ok(m) if !m.is_file() => {
+                return Err(IncrReason::StateCorrupt("not a regular file".to_owned()));
+            }
+            Ok(_) => {}
+        }
+        let opened = OpenOptions::new().read(true).write(true).open(path).or_else(|e| {
+            if matches!(e.kind(), io::ErrorKind::PermissionDenied | io::ErrorKind::ReadOnlyFilesystem) {
+                File::open(path)
+            } else {
+                Err(e)
+            }
+        });
+        let file = match opened {
+            Ok(f) => f,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(IncrReason::StateCorrupt(format!("cannot read the state: {e}"))),
+        };
+        if let Err(e) = ops.flock(&file, LockMode::Exclusive) {
+            return Err(IncrReason::LockUnavailable(format!("flock: {e}")));
+        }
+        let locked = file.metadata().map(|m| (m.dev(), m.ino())).ok();
+        let named = std::fs::metadata(path).ok().map(|m| (m.dev(), m.ino()));
+        if locked.is_some() && named == locked {
+            return if lock_enforced(path, ops) {
+                Ok(Some(file))
+            } else {
+                Err(IncrReason::LockUnavailable(String::new()))
+            };
+        }
+        // Renamed (or removed) while this link waited: the lock is on an
+        // inode the path no longer names. Closing `file` releases it.
+    }
+    Err(IncrReason::StateBusy(String::new()))
+}
+
+/// image.md I-59's probe on `S` while this link holds its lock: a second
+/// descriptor's `try_lock` must find it held.
+fn lock_enforced(path: &Path, ops: &mut dyn WriteOps) -> bool {
+    File::open(path).is_ok_and(|other| matches!(ops.flock(&other, LockMode::TryExclusive), Ok(false)))
+}
+
+/// The boot id (IN-77c): `/proc/sys/kernel/random/boot_id`'s 16 bytes, or
+/// `None` where it cannot be read (an update then treats it as changed).
+#[must_use]
+pub fn boot_id() -> Option<[u8; 16]> {
+    parse_boot_id(&std::fs::read_to_string("/proc/sys/kernel/random/boot_id").ok()?)
+}
+
+/// A boot id's text (a UUID: 32 hexadecimal digits and dashes) as its 16
+/// bytes.
+fn parse_boot_id(text: &str) -> Option<[u8; 16]> {
+    let digits: Vec<u8> = text.trim().bytes().filter(|b| *b != b'-').collect();
+    if digits.len() != 32 {
+        return None;
+    }
+    let mut id = [0u8; 16];
+    for (i, pair) in digits.chunks(2).enumerate() {
+        let pair = std::str::from_utf8(pair).ok()?;
+        id[i] = u8::from_str_radix(pair, 16).ok()?;
+    }
+    Some(id)
+}
+
+/// IN-77c's update side (WP-219, ruling F-5): when `META`'s
+/// `output-synced` bit is 0 and its boot id is not `boot` (the current
+/// one, [`boot_id`]; `None`, unreadable, counts as another), every leaf
+/// of `P` read through U1's descriptor `out` must equal `LEAVES` before
+/// `P` is trusted (the build id's bytes hashed as zeros, image.md I-73).
+/// U1 calls it after IN-21's checks; `Ok` when nothing is needed.
+///
+/// # Errors
+/// `output-changed` naming the first leaf that differs, or a size that
+/// differs or a read that fails; the view's own reasons.
+pub fn boot_check(view: &StateView<'_>, out: &File, boot: Option<[u8; 16]>) -> Result<(), IncrReason> {
+    let meta = view.meta()?;
+    if meta.output_synced || boot == Some(meta.boot_id) {
+        return Ok(());
+    }
+    let changed = |why: String| IncrReason::OutputChanged(format!("{why} (after a reboot, IN-77c)"));
+    let f = match meta.leaf_fn {
+        0 => mortar_digest::TreeFn::L128,
+        1 => mortar_digest::TreeFn::Sha1,
+        _ => mortar_digest::TreeFn::Sha256,
+    };
+    let size = out.metadata().map_err(|e| changed(format!("cannot stat the output: {e}")))?.len();
+    if size != meta.file_size {
+        return Err(changed("its size differs".to_owned()));
+    }
+    let leaves = view.leaves()?;
+    if mortar_digest::leaf_range(size, leaves.len() as u64).start != size {
+        return Err(changed("its leaves do not cover it".to_owned()));
+    }
+    let mut window = Vec::new();
+    for (i, want) in leaves.iter().enumerate() {
+        let r = mortar_digest::leaf_range(size, i as u64);
+        window.clear();
+        window.resize(usize::try_from(r.end - r.start).unwrap_or(0), 0);
+        out.read_exact_at(&mut window, r.start)
+            .map_err(|e| changed(format!("cannot read the output: {e}")))?;
+        let lo = meta.sealed_start.max(r.start);
+        let hi = meta.sealed_end.min(r.end);
+        if lo < hi {
+            window[(lo - r.start) as usize..(hi - r.start) as usize].fill(0);
+        }
+        let leaf = mortar_digest::leaf(f, &window);
+        if leaf.as_bytes() != &want[..f.leaf_len()] {
+            return Err(changed(format!("window {i} differs from its leaf")));
+        }
+    }
+    Ok(())
+}
+
+/// IN-77d's sweep, for a link that holds `S`'s lock (the floor calls it;
+/// [`write`] does it itself): `A`, `T` and the compaction's temporary,
+/// each removed by its exact name only once its `try_lock` succeeds.
+pub fn remove_leftovers(out_path: &Path, state_path: &Path, ops: &mut dyn WriteOps) {
+    remove_leftover(ops, &beside(out_path, ASIDE));
+    remove_leftover(ops, &beside(out_path, TEMPORARY));
+    remove_leftover(ops, &beside(state_path, COMPACT));
+}
+
+/// The floor's state write (IN-17), with IN-77d's protocol for the
+/// temporary `dir(S)/.<base(S)>.mortar-compact` (WP-219 F-8): opened
+/// without truncation (created if absent), `try_lock`ed, still named by
+/// its path once locked; then truncated, written, `fdatasync`ed, renamed
+/// over `path`, the directory `fsync`ed. `Ok(false)`: the temporary is
+/// held by another live link (or was removed under this one before its
+/// lock): no state is written (`state-busy`) and nothing is touched. On
+/// an error the temporary is removed if it is still this link's.
+///
+/// # Errors
+/// The first failing call's error (`S` is then as it was, or replaced:
+/// the rename is the last write).
+pub fn write_state_whole(path: &Path, bytes: &[u8], ops: &mut dyn WriteOps) -> io::Result<bool> {
+    let dir = dir_of(path);
+    let tmp = beside(path, COMPACT);
+    let file = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(&tmp)?;
+    let id = file.metadata().map(|m| (m.dev(), m.ino()))?;
+    if !ops.flock(&file, LockMode::TryExclusive)? || identity(&tmp) != Some(id) {
+        return Ok(false);
+    }
+    let result = (|| {
+        ops.set_len(&file, 0)?;
+        ops.pwrite(&file, 0, bytes)?;
+        crash_point("F-state-written");
+        ops.fdatasync(&file)?;
+        crash_point("F-state-synced");
+        ops.rename(&tmp, path)?;
+        crash_point("F-state-renamed");
+        ops.fsync_dir(&dir)?;
+        crash_point("F-state-dir");
+        Ok(())
+    })();
+    if result.is_err() && identity(&tmp) == Some(id) {
+        let _ = ops.unlink(&tmp);
+    }
+    result.map(|()| true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -873,14 +1091,25 @@ mod tests {
         );
     }
 
+    // spec: incr.md IN-77c (the boot id's text)
+    #[test]
+    fn the_boot_id_parsed() {
+        let id = parse_boot_id("0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0\n").unwrap();
+        assert_eq!(id[..4], [0x0f, 0x1e, 0x2d, 0x3c]);
+        assert_eq!(id[15], 0xf0);
+        assert_eq!(parse_boot_id("0f1e"), None);
+        assert_eq!(parse_boot_id("zz1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0"), None);
+    }
+
     // spec: incr.md IN-75 (the ranges' contract), IN-77 W3 (the size)
     #[test]
     fn ranges_and_the_new_size() {
         let r = |offset, len| DirtyRange { offset, len };
-        assert_eq!(sized(100, &[], &[]), Some(100));
-        assert_eq!(sized(100, &[r(0, 4), r(96, 8)], &[0; 12]), Some(104));
-        assert_eq!(sized(100, &[r(0, 4), r(2, 4)], &[0; 8]), None, "overlap");
-        assert_eq!(sized(100, &[r(8, 4), r(0, 4)], &[0; 8]), None, "unsorted");
-        assert_eq!(sized(100, &[r(0, 4)], &[0; 5]), None, "bytes too long");
+        assert!(well_formed(100, &[], &[]));
+        assert!(well_formed(104, &[r(0, 4), r(96, 8)], &[0; 12]));
+        assert!(!well_formed(100, &[r(0, 4), r(96, 8)], &[0; 12]), "past the new size");
+        assert!(!well_formed(100, &[r(0, 4), r(2, 4)], &[0; 8]), "overlap");
+        assert!(!well_formed(100, &[r(8, 4), r(0, 4)], &[0; 8]), "unsorted");
+        assert!(!well_formed(100, &[r(0, 4)], &[0; 5]), "bytes too long");
     }
 }

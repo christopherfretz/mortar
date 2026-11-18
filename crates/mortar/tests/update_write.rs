@@ -16,7 +16,9 @@ use std::os::unix::fs::{FileExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use mortar::update::write::{Pair, Written, write, write_with};
+use mortar::update::write::{
+    Pair, Written, boot_check, boot_id, lock_state, write, write_state_whole, write_with,
+};
 use mortar_core::incr::{DirtyRange, IncrReason, Unimplemented};
 use mortar_incr::format::{FLAG_UPDATING, FLAGS_OFFSET, StatRow};
 use mortar_incr::ops::{Disk, LockMode, Op, RecordingOps, StdOps, WriteFailure, WriteOps};
@@ -58,9 +60,28 @@ fn p_old() -> Vec<u8> {
     v
 }
 
+/// How the edit changes the output's size.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Size {
+    Same,
+    Grow,
+    /// W3/C1 truncate (image.md I-97; WP-219 S-1).
+    Shrink,
+}
+
+impl From<bool> for Size {
+    fn from(grow: bool) -> Self {
+        if grow { Self::Grow } else { Self::Same }
+    }
+}
+
+/// The size a shrinking edit leaves.
+const SHRUNK: usize = 7000;
+
 /// The update's dirty ranges and their bytes: the header (a new
-/// `e_ident` past the magic), a window, and the end (grown or not).
-fn edit(grow: bool) -> (Vec<DirtyRange>, Vec<u8>) {
+/// `e_ident` past the magic), a window, and the end (grown, the same, or
+/// cut), with the new output's size.
+fn edit(size: Size) -> (Vec<DirtyRange>, Vec<u8>, u64) {
     let mut ranges = Vec::new();
     let mut bytes = Vec::new();
     let mut add = |offset: u64, len: u64, fill: u8| {
@@ -69,16 +90,25 @@ fn edit(grow: bool) -> (Vec<DirtyRange>, Vec<u8>) {
     };
     add(0, 64, 0x11);
     add(4096, 100, 0x22);
-    if grow {
-        add(P_LEN as u64 - 50, 350, 0x33);
-    } else {
-        add(8000, 100, 0x33);
-    }
+    let len = match size {
+        Size::Grow => {
+            add(P_LEN as u64 - 50, 350, 0x33);
+            P_LEN as u64 + 300
+        }
+        Size::Same => {
+            add(8000, 100, 0x33);
+            P_LEN as u64
+        }
+        Size::Shrink => {
+            add(6000, 100, 0x33);
+            SHRUNK as u64
+        }
+    };
     bytes[..4].copy_from_slice(b"\x7fELF");
-    (ranges, bytes)
+    (ranges, bytes, len)
 }
 
-fn apply(old: &[u8], ranges: &[DirtyRange], bytes: &[u8]) -> Vec<u8> {
+fn apply(old: &[u8], ranges: &[DirtyRange], bytes: &[u8], len: u64) -> Vec<u8> {
     let mut v = old.to_vec();
     let mut at = 0;
     for r in ranges {
@@ -89,6 +119,7 @@ fn apply(old: &[u8], ranges: &[DirtyRange], bytes: &[u8]) -> Vec<u8> {
         v[o..o + n].copy_from_slice(&bytes[at..at + n]);
         at += n;
     }
+    v.resize(len as usize, 0);
     v
 }
 
@@ -98,6 +129,8 @@ fn apply(old: &[u8], ranges: &[DirtyRange], bytes: &[u8]) -> Vec<u8> {
 const S_LEN: usize = 112;
 const OLD_BODY: u8 = 0xaa;
 const NEW_BODY: u8 = 0xbb;
+/// The body of a state another (full) link wrote.
+const OTHER_BODY: u8 = 0xcc;
 
 fn fnv(bytes: &[u8]) -> u64 {
     bytes
@@ -145,17 +178,31 @@ fn stub_compact(s: &Path, row: &StatRow, ops: &mut dyn WriteOps) -> Result<(), W
     let tmp = beside(s, ".mortar-compact");
     let fail = |e| WriteFailure::Failed { step: "compact", error: e };
     let file = ops.create_new(&tmp).map_err(fail)?;
+    let id = file.metadata().map(|m| (m.dev(), m.ino())).map_err(fail)?;
+    // IN-77d (WP-219 F-8): the name must still name the locked file.
+    let ours = |p: &Path| std::fs::metadata(p).ok().map(|m| (m.dev(), m.ino())) == Some(id);
+    match ops.flock(&file, LockMode::TryExclusive) {
+        Ok(true) if ours(&tmp) => {}
+        Ok(_) => return Err(fail(io::Error::other("the temporary is another link's (IN-77d)"))),
+        Err(e) => {
+            if ours(&tmp) {
+                let _ = ops.unlink(&tmp);
+            }
+            return Err(fail(e));
+        }
+    }
     let img = s_image(row.dev, row.ino, row.size, NEW_BODY, 0);
-    let res = ops
-        .flock(&file, LockMode::TryExclusive)
-        .and_then(|_| ops.pwrite(&file, 0, &img))
-        .and_then(|()| ops.fdatasync(&file));
+    let res = ops.pwrite(&file, 0, &img).and_then(|()| ops.fdatasync(&file));
     if let Err(e) = res {
-        let _ = ops.unlink(&tmp);
+        if ours(&tmp) {
+            let _ = ops.unlink(&tmp);
+        }
         return Err(fail(e));
     }
     if let Err(e) = ops.rename(&tmp, s) {
-        let _ = ops.unlink(&tmp);
+        if ours(&tmp) {
+            let _ = ops.unlink(&tmp);
+        }
         return Err(fail(e));
     }
     ops.fsync_dir(s.parent().unwrap()).map_err(fail)
@@ -181,16 +228,18 @@ struct World {
     ranges: Vec<DirtyRange>,
     bytes: Vec<u8>,
     p_new: Vec<u8>,
+    /// The new output's size (`Pair::size`).
+    size: u64,
 }
 
 impl World {
     /// The names in `dir` (the child of a kill test sees the same).
-    fn names(dir: &Path, grow: bool) -> Self {
+    fn names(dir: &Path, size: impl Into<Size>) -> Self {
         let p = dir.join("out");
         let s = dir.join("out.mortar-state");
-        let (ranges, bytes) = edit(grow);
+        let (ranges, bytes, size) = edit(size.into());
         let p_old = p_old();
-        let p_new = apply(&p_old, &ranges, &bytes);
+        let p_new = apply(&p_old, &ranges, &bytes, size);
         Self {
             dir: dir.to_path_buf(),
             a: beside(&p, ".mortar-torn"),
@@ -203,12 +252,13 @@ impl World {
             ranges,
             bytes,
             p_new,
+            size,
         }
     }
 
     /// Creates `P` (mode 755) and its state bound to it.
-    fn create(dir: &Path, grow: bool) -> Self {
-        let mut w = Self::names(dir, grow);
+    fn create(dir: &Path, size: impl Into<Size>) -> Self {
+        let mut w = Self::names(dir, size);
         std::fs::write(&w.p, &w.p_old).unwrap();
         std::fs::set_permissions(&w.p, std::fs::Permissions::from_mode(0o755)).unwrap();
         let m = std::fs::metadata(&w.p).unwrap();
@@ -223,6 +273,13 @@ impl World {
         let out = File::options().read(true).write(writable).open(&self.p).unwrap();
         let state = File::options().read(true).write(true).open(&self.s).unwrap();
         (out, state)
+    }
+
+    /// The pair as U1 hands it to `write`: the descriptors, U1's `fstat`
+    /// of `P` now, the new size.
+    fn pair<'a>(&'a self, out: &'a File, state: &'a File) -> Pair<'a> {
+        let checked = Tuple::of(&out.metadata().unwrap());
+        Pair { out, out_path: &self.p, state, state_path: &self.s, checked, size: self.size }
     }
 
     fn view(&self) -> MemoryState {
@@ -248,6 +305,9 @@ enum Verdict {
     NewPair,
     /// A named reason: a full link.
     Named(&'static str),
+    /// Another link's pair (its output `foreign`, its state bound to it
+    /// with `OTHER_BODY`): consistent, and not the update's.
+    OtherPair,
 }
 
 /// The real files: `P` or `S` by path.
@@ -287,6 +347,7 @@ fn judge(w: &World, read: &Reader<'_>, foreign: Option<&[u8]>) -> Result<Verdict
     match (s[40], bytes == w.p_old, bytes == w.p_new) {
         (OLD_BODY, true, _) => Ok(Verdict::OldPair),
         (NEW_BODY, _, true) => Ok(Verdict::NewPair),
+        (OTHER_BODY, _, _) if Some(bytes.as_slice()) == foreign => Ok(Verdict::OtherPair),
         (body, old, new) => {
             Err(format!("a trusted mix: state body {body:#x} with an output old {old}, new {new}"))
         }
@@ -303,7 +364,7 @@ fn run(
     ops: &mut dyn WriteOps,
     rows: &mut Vec<StatRow>,
 ) -> Result<Written, WriteFailure> {
-    let pair = Pair { out, out_path: &w.p, state, state_path: &w.s };
+    let pair = w.pair(out, state);
     let m = w.view();
     let s = w.s.clone();
     write_with(
@@ -331,7 +392,7 @@ fn write_reaches_w5_with_u2_until_it_lands() {
     let tmp = Tmp::new("entry");
     let w = World::create(&tmp.0, false);
     let (out, state) = w.open(true);
-    let pair = Pair { out: &out, out_path: &w.p, state: &state, state_path: &w.s };
+    let pair = w.pair(&out, &state);
     let m = w.view();
     let mut ops = RecordingOps::default();
     let r = write(
@@ -353,9 +414,9 @@ fn write_reaches_w5_with_u2_until_it_lands() {
 
 /// Records one update, then replays every power loss onto byte buffers
 /// and judges each; the verdicts seen, by kind.
-fn power_loss(path: WritePath, compacts: bool, grow: bool) -> Vec<(usize, Verdict)> {
+fn power_loss(path: WritePath, compacts: bool, size: Size) -> Vec<(usize, Verdict)> {
     let tmp = Tmp::new("power");
-    let w = World::create(&tmp.0, grow);
+    let w = World::create(&tmp.0, size);
     let (out, state) = w.open(path == WritePath::InPlace);
     let mut ops = RecordingOps::default();
     let mut rows = Vec::new();
@@ -396,7 +457,7 @@ fn power_loss(path: WritePath, compacts: bool, grow: bool) -> Vec<(usize, Verdic
         .unwrap();
     assert!(bad.is_empty(), "{} of {n} outcomes:\n{}", bad.len(), bad.join("\n"));
     eprintln!(
-        "power loss {path:?} compacts {compacts} grow {grow}: {} calls, {n} outcomes",
+        "power loss {path:?} compacts {compacts} size {size:?}: {} calls, {n} outcomes",
         ops.log.len()
     );
     assert!(seen.iter().any(|(_, v)| *v == Verdict::OldPair), "the old pair is reachable");
@@ -408,17 +469,20 @@ fn power_loss(path: WritePath, compacts: bool, grow: bool) -> Vec<(usize, Verdic
 // spec: incr.md IN-77 (power loss after every prefix with every subset of
 // the unsynced calls: the old pair, the new pair or a named reason, never
 // a trusted mix and never a torn output at P), in place and by copy, with
-// and without the compaction, a same-size and a growing edit; IN-77
+// and without the compaction, a same-size, a growing and a shrinking edit
+// (W3/C1 truncate: WP-219 S-1); IN-77e/F-4 (the prefix ending at W6's or
+// C5's flag write, with and without that write durable: a failed final
+// sync); IN-77
 // "Why never a silent mix" (a torn state has its flag set: the next link
 // says `output-torn` before any hash)
 #[test]
 fn power_loss_every_prefix_and_subset() {
     for path in [WritePath::InPlace, WritePath::Copy] {
         for compacts in [false, true] {
-            for grow in [false, true] {
-                let seen = power_loss(path, compacts, grow);
+            for size in [Size::Same, Size::Grow, Size::Shrink] {
+                let seen = power_loss(path, compacts, size);
                 let torn = seen.iter().filter(|(_, v)| *v == Verdict::Named("output-torn")).count();
-                assert!(torn > 0, "{path:?} {compacts} {grow}: the flag is seen set");
+                assert!(torn > 0, "{path:?} {compacts} {size:?}: the flag is seen set");
             }
         }
     }
@@ -429,7 +493,7 @@ fn power_loss_every_prefix_and_subset() {
 // reads `output-torn` first)
 #[test]
 fn torn_state_with_flag_is_output_torn() {
-    let seen = power_loss(WritePath::InPlace, false, false);
+    let seen = power_loss(WritePath::InPlace, false, Size::Same);
     assert!(
         !seen.iter().any(|(_, v)| *v == Verdict::Named("state-corrupt")),
         "a torn state is never judged by its checksum: its flag is set"
@@ -488,11 +552,20 @@ struct Faulty<'f> {
     calls: Vec<Kind>,
     fail: Option<(usize, i32)>,
     after: Box<dyn FnMut(usize, Kind) + 'f>,
+    /// Every `try_lock` succeeds: a file system that does not enforce
+    /// `flock` (image.md I-59's probe sees it).
+    unenforced: bool,
 }
 
 impl<'f> Faulty<'f> {
     fn new(fail: Option<(usize, i32)>, after: impl FnMut(usize, Kind) + 'f) -> Self {
-        Self { rec: RecordingOps::default(), calls: Vec::new(), fail, after: Box::new(after) }
+        Self {
+            rec: RecordingOps::default(),
+            calls: Vec::new(),
+            fail,
+            after: Box::new(after),
+            unenforced: false,
+        }
     }
 
     fn go<T>(
@@ -539,7 +612,8 @@ impl WriteOps for Faulty<'_> {
         self.go(Kind::FsyncDir, |r| r.fsync_dir(dir))
     }
     fn flock(&mut self, file: &File, mode: LockMode) -> io::Result<bool> {
-        self.go(Kind::Flock, |r| r.flock(file, mode))
+        let fake = self.unenforced && matches!(mode, LockMode::TryExclusive);
+        self.go(Kind::Flock, |r| if fake { Ok(true) } else { r.flock(file, mode) })
     }
     fn create_new(&mut self, path: &Path) -> io::Result<File> {
         self.go(Kind::CreateNew, |r| r.create_new(path))
@@ -910,7 +984,7 @@ fn write_path_default_by_size() {
         let ino = out.metadata().unwrap().ino();
         let mut m = w.view();
         m.meta.file_size = len;
-        let pair = Pair { out: &out, out_path: &w.p, state: &state, state_path: &w.s };
+        let pair = Pair { size: len, ..w.pair(&out, &state) };
         let r = write_with(
             &pair,
             &m.view(),
@@ -930,6 +1004,7 @@ fn write_path_default_by_size() {
             assert_ne!(after.ino(), ino, "a new inode");
         }
         assert_eq!(after.len(), len);
+        assert_eq!(r.copy_because, None, "IN-76: the default is no condition's");
     }
 }
 
@@ -946,7 +1021,7 @@ fn condition(
     let mut child = setup(&w);
     let (out, state) = w.open(writable);
     let ino = out.metadata().unwrap().ino();
-    let pair = Pair { out: &out, out_path: &w.p, state: &state, state_path: &w.s };
+    let pair = w.pair(&out, &state);
     let mut m = w.view();
     m.meta.output_kind = kind;
     let r = write_with(
@@ -965,6 +1040,7 @@ fn condition(
     }
     let r = r.unwrap_or_else(|e| panic!("{label}: {e:?}"));
     assert_eq!(r.path, WritePath::Copy, "{label}");
+    assert!(r.copy_because.is_some(), "{label}: IN-76, the report says which");
     let after = std::fs::symlink_metadata(&w.p).unwrap();
     assert!(after.is_file() && after.ino() != ino, "{label}: a new inode at P");
     assert_eq!(std::fs::read(&w.p).unwrap(), w.p_new, "{label}");
@@ -1243,48 +1319,430 @@ fn make_relinks_after_kill_at_w3() {
     assert_eq!(make(&tmp.0), Some(true), "make relinks after a kill at W3");
 }
 
+// ---- the floor (a full link in incremental mode) ------------------------------
+
+/// A directory with a one-instruction object `a.o`, and the floor's
+/// command line `mortar a.o -static --incremental -o out` in it; `None`
+/// (the test passes) where no assembler is found and tools are optional.
+struct Floor {
+    tmp: Tmp,
+}
+
+impl Floor {
+    fn new(label: &str) -> Option<Self> {
+        let tmp = Tmp::new(label);
+        let src = tmp.0.join("a.s");
+        let text = if cfg!(target_arch = "aarch64") {
+            "\t.text\n\t.globl _start\n_start:\n\tmov x0, #0\n\tmov x8, #93\n\tsvc #0\n"
+        } else {
+            "\t.text\n\t.globl _start\n_start:\n\tmov $60, %eax\n\txor %edi, %edi\n\tsyscall\n"
+        };
+        std::fs::write(&src, text).unwrap();
+        let cc = std::process::Command::new("cc")
+            .arg("-c")
+            .arg(&src)
+            .arg("-o")
+            .arg(tmp.0.join("a.o"))
+            .status();
+        if !cc.is_ok_and(|s| s.success()) {
+            assert!(!mortar_testutil::tools_required(), "cc is required");
+            return None;
+        }
+        Some(Self { tmp })
+    }
+
+    fn dir(&self) -> &Path {
+        &self.tmp.0
+    }
+
+    fn command(&self, extra: &[&str]) -> std::process::Command {
+        let mut c = std::process::Command::new(env!("CARGO_BIN_EXE_mortar"));
+        c.current_dir(self.dir()).args(["a.o", "-static", "--incremental", "-o", "out"]).args(extra);
+        c
+    }
+
+    fn link(&self, extra: &[&str]) -> std::process::Output {
+        let o = self.command(extra).output().unwrap();
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        o
+    }
+
+    fn state(&self) -> PathBuf {
+        self.dir().join("out.mortar-state")
+    }
+
+    fn temporary(&self) -> PathBuf {
+        self.dir().join(".out.mortar-state.mortar-compact")
+    }
+
+    /// The next link's reason (`--incremental-report` on standard error).
+    fn next_reason(&self) -> String {
+        let o = self.link(&["--incremental-report"]);
+        String::from_utf8_lossy(&o.stderr)
+            .lines()
+            .find_map(|l| l.strip_prefix("incremental: full ("))
+            .map(|l| l.split(')').next().unwrap_or_default().to_owned())
+            .unwrap_or_default()
+    }
+}
+
 // spec: incr.md IN-77d (the floor's state temporary is
 // `dir(S)/.<base(S)>.mortar-compact`, no pid: a kill after it is written
-// leaves that name, and the next link replaces it)
+// leaves that name, and the next link, finding it unheld, reuses it)
 #[cfg(feature = "testhooks")]
 #[test]
 fn floor_state_temporary_is_the_compact_name() {
-    let tmp = Tmp::new("floor-name");
-    let src = tmp.0.join("a.s");
-    let text = if cfg!(target_arch = "aarch64") {
-        "\t.text\n\t.globl _start\n_start:\n\tmov x0, #0\n\tmov x8, #93\n\tsvc #0\n"
-    } else {
-        "\t.text\n\t.globl _start\n_start:\n\tmov $60, %eax\n\txor %edi, %edi\n\tsyscall\n"
-    };
-    std::fs::write(&src, text).unwrap();
-    let cc = std::process::Command::new("cc")
-        .arg("-c")
-        .arg(&src)
-        .arg("-o")
-        .arg(tmp.0.join("a.o"))
-        .status();
-    if !cc.is_ok_and(|s| s.success()) {
-        assert!(!mortar_testutil::tools_required(), "cc is required");
-        return;
-    }
-    let link = |crash: Option<&str>| {
-        let mut c = std::process::Command::new(env!("CARGO_BIN_EXE_mortar"));
-        c.current_dir(&tmp.0).args(["a.o", "-static", "--incremental", "-o", "out"]);
-        if let Some(p) = crash {
-            c.env("MORTAR_INCR_CRASH", p);
-        }
-        c.output().unwrap()
-    };
-    let o = link(Some("F-state-written"));
+    let Some(fl) = Floor::new("floor-name") else { return };
+    let o = fl.command(&[]).env("MORTAR_INCR_CRASH", "F-state-written").output().unwrap();
     assert!(!o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
-    let names: Vec<String> = std::fs::read_dir(&tmp.0)
+    let names: Vec<String> = std::fs::read_dir(fl.dir())
         .unwrap()
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
         .collect();
     assert!(names.contains(&".out.mortar-state.mortar-compact".to_owned()), "{names:?}");
     assert!(!names.iter().any(|n| n.contains(".tmp-")), "{names:?}");
-    let o = link(None);
-    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
-    assert!(tmp.0.join("out.mortar-state").exists());
-    assert!(!tmp.0.join(".out.mortar-state.mortar-compact").exists());
+    fl.link(&[]);
+    assert!(fl.state().exists());
+    assert!(!fl.temporary().exists());
+}
+
+// spec: incr.md IN-77d, IN-21 (WP-219 F-8: a temporary held by a live
+// link: this link writes no state, `state-busy`, and touches neither the
+// temporary nor `S`; the link itself succeeds)
+#[test]
+fn floor_temporary_held_writes_no_state() {
+    let Some(fl) = Floor::new("floor-held") else { return };
+    std::fs::write(fl.temporary(), b"another link's state, half written").unwrap();
+    let held = File::options().read(true).write(true).open(fl.temporary()).unwrap();
+    held.try_lock().unwrap();
+    let o = fl.link(&[]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("no state written") && err.contains("state-busy"), "{err}");
+    assert!(fl.dir().join("out").exists(), "the link wrote its output");
+    assert!(!fl.state().exists(), "no state");
+    assert_eq!(std::fs::read(fl.temporary()).unwrap(), b"another link's state, half written");
+    drop(held);
+}
+
+// spec: incr.md IN-77d (WP-219 F-8: an unheld temporary is a leftover:
+// truncated and reused; the state written is whole)
+#[test]
+fn floor_reuses_a_leftover_temporary() {
+    let Some(fl) = Floor::new("floor-leftover") else { return };
+    std::fs::write(fl.temporary(), vec![0x5a; 1 << 20]).unwrap();
+    fl.link(&[]);
+    assert!(!fl.temporary().exists());
+    assert!(fl.state().exists());
+    let reason = fl.next_reason();
+    assert!(!reason.contains("state-corrupt"), "{reason}");
+}
+
+// spec: incr.md IN-21, IN-77d (WP-219 F-8: two full links that find no
+// state, at once: each succeeds, no temporary is left, and the state that
+// remains, if any, is whole: never `state-corrupt`)
+#[test]
+fn two_floors_at_once() {
+    let Some(fl) = Floor::new("two-floors") else { return };
+    for round in 0..10 {
+        let _ = std::fs::remove_file(fl.state());
+        let mut a = fl.command(&[]).stderr(std::process::Stdio::piped()).spawn().unwrap();
+        let mut b = fl.command(&[]).stderr(std::process::Stdio::piped()).spawn().unwrap();
+        let (sa, sb) = (a.wait().unwrap(), b.wait().unwrap());
+        assert!(sa.success() && sb.success(), "round {round}");
+        assert!(!fl.temporary().exists(), "round {round}: no temporary left");
+        let reason = fl.next_reason();
+        assert!(!reason.contains("state-corrupt"), "round {round}: {reason}");
+    }
+}
+
+// spec: incr.md IN-77b (the full link in incremental mode that finds a
+// state takes the same lock: it waits while another link holds it)
+#[test]
+fn floor_waits_for_the_state_lock() {
+    let Some(fl) = Floor::new("floor-lock") else { return };
+    fl.link(&[]);
+    let held = File::open(fl.state()).unwrap();
+    held.lock().unwrap();
+    let mut child = fl.command(&[]).stderr(std::process::Stdio::null()).spawn().unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    assert!(child.try_wait().unwrap().is_none(), "the link waits for the lock");
+    drop(held);
+    assert!(child.wait().unwrap().success());
+}
+
+// ---- IN-77a: U1's tuple (WP-219 F-7) ------------------------------------------------
+
+// spec: incr.md IN-77a (the descriptor's `fstat` must still give U1's
+// tuple, mtime and ctime included: a write to `P` in place after U1's
+// check, the size kept, is `output-changed` with nothing written)
+#[test]
+fn output_written_after_u1_check() {
+    for path in [WritePath::InPlace, WritePath::Copy] {
+        let tmp = Tmp::new("after-u1");
+        let w = World::create(&tmp.0, false);
+        let (out, state) = w.open(path == WritePath::InPlace);
+        let pair = w.pair(&out, &state);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        File::options().write(true).open(&w.p).unwrap().write_all_at(b"XX", 100).unwrap();
+        let m = w.view();
+        let mut ops = RecordingOps::default();
+        let r = write_with(
+            &pair,
+            &m.view(),
+            &w.ranges,
+            &w.bytes,
+            false,
+            &mut ops,
+            policy(path),
+            &mut |row, ops| stub_patch(&state, row, ops),
+        );
+        assert!(
+            matches!(r, Err(WriteFailure::Fallback(IncrReason::OutputChanged(_)))),
+            "{path:?}: {r:?}"
+        );
+        assert!(ops.log.is_empty(), "{path:?}: nothing written: {:?}", ops.log);
+        assert_eq!(std::fs::read(&w.s).unwrap(), w.s_old);
+    }
+}
+
+// ---- IN-77b: the lock ---------------------------------------------------------------
+
+// spec: incr.md IN-77b (no state: nothing to lock; a path that is no
+// regular file is never opened: `state-corrupt`)
+#[test]
+fn lock_state_no_state_and_not_a_file() {
+    let tmp = Tmp::new("lock-none");
+    let s = tmp.0.join("out.mortar-state");
+    assert!(matches!(lock_state(&s, &mut StdOps), Ok(None)));
+    let made = std::process::Command::new("mkfifo").arg(&s).status();
+    if made.is_ok_and(|x| x.success()) {
+        assert!(matches!(lock_state(&s, &mut StdOps), Err(IncrReason::StateCorrupt(_))));
+    }
+}
+
+// spec: incr.md IN-77b (a rename of `S` while a link waits for its lock:
+// the waiter wakes on the old inode, fails the check, and locks the new
+// one)
+#[test]
+fn state_renamed_while_waiting_retries() {
+    let tmp = Tmp::new("lock-rename");
+    let w = World::create(&tmp.0, false);
+    let holder = File::open(&w.s).unwrap();
+    holder.lock().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let s = w.s.clone();
+    let waiter = std::thread::spawn(move || {
+        let mut ops = RecordingOps::default();
+        let r = lock_state(&s, &mut ops);
+        tx.send(()).unwrap();
+        (r, ops.log)
+    });
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    assert!(rx.try_recv().is_err(), "the waiter blocks while the lock is held");
+    // The holder compacts: a new state renamed over `S`, then unlocks.
+    let new = w.dir.join("new-state");
+    std::fs::write(&new, &w.s_old).unwrap();
+    std::fs::rename(&new, &w.s).unwrap();
+    let new_ino = std::fs::metadata(&w.s).unwrap().ino();
+    drop(holder);
+    let (r, log) = waiter.join().unwrap();
+    let file = r.unwrap().expect("a state");
+    assert_eq!(file.metadata().unwrap().ino(), new_ino, "the new inode is locked");
+    let rounds =
+        log.iter().filter(|o| matches!(o, Op::Flock { mode: LockMode::Exclusive, .. })).count();
+    assert_eq!(rounds, 2, "a second round: {log:?}");
+}
+
+// spec: incr.md IN-77b (renamed at every round: `state-busy` after 8
+// rounds, never a lock on a state the path does not name)
+#[test]
+fn state_busy_after_eight_rounds() {
+    let tmp = Tmp::new("lock-busy");
+    let w = World::create(&tmp.0, false);
+    let mut n = 0;
+    let mut ops = Faulty::new(None, |_, k| {
+        if k == Kind::Flock {
+            n += 1;
+            let new = w.dir.join(format!("state-{n}"));
+            std::fs::write(&new, &w.s_old).unwrap();
+            std::fs::rename(&new, &w.s).unwrap();
+        }
+    });
+    let r = lock_state(&w.s, &mut ops);
+    assert!(matches!(r, Err(IncrReason::StateBusy(_))), "{r:?}");
+    let rounds = ops.calls.iter().filter(|k| **k == Kind::Flock).count();
+    assert_eq!(rounds, 8);
+}
+
+// spec: incr.md IN-77b, image.md I-59 (where `flock` is not enforced,
+// `lock-unavailable`)
+#[test]
+fn lock_unavailable_when_not_enforced() {
+    let tmp = Tmp::new("lock-unenforced");
+    let w = World::create(&tmp.0, false);
+    let mut ops = Faulty::new(None, |_, _| {});
+    ops.unenforced = true;
+    let r = lock_state(&w.s, &mut ops);
+    assert!(matches!(r, Err(IncrReason::LockUnavailable(_))), "{r:?}");
+    let mut ops = Faulty::new(None, |_, _| {});
+    assert!(lock_state(&w.s, &mut ops).unwrap().is_some(), "enforced here");
+}
+
+// spec: incr.md IN-77b (two updates of one output: the second's lock
+// waits until the first's last write; it then finds the first's new pair)
+#[test]
+fn two_updates_one_output_serialize() {
+    let tmp = Tmp::new("serialize");
+    let w = World::create(&tmp.0, false);
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let (done, acquired) = std::thread::scope(|scope| {
+        let second = scope.spawn(|| {
+            started_rx.recv().unwrap();
+            let lock = lock_state(&w.s, &mut StdOps).unwrap().expect("a state");
+            let at = std::time::Instant::now();
+            let verdict = judge(&w, &real, None);
+            drop(lock);
+            (at, verdict)
+        });
+        let lock = lock_state(&w.s, &mut StdOps).unwrap().expect("a state");
+        started_tx.send(()).unwrap();
+        let out = File::options().read(true).write(true).open(&w.p).unwrap();
+        let mut ops = Faulty::new(None, |_, k| {
+            if k == Kind::Fdatasync {
+                std::thread::sleep(std::time::Duration::from_millis(30));
+            }
+        });
+        run(&w, &out, &lock, WritePath::InPlace, false, &mut ops, &mut Vec::new()).unwrap();
+        let done = std::time::Instant::now();
+        drop(lock);
+        (done, second.join().unwrap())
+    });
+    let (at, verdict) = acquired;
+    assert!(at >= done, "the second link locked only after the first's last write");
+    assert_eq!(verdict, Ok(Verdict::NewPair), "it finds the first's new pair");
+}
+
+// ---- IN-77c: the boot id --------------------------------------------------------------
+
+/// The leaves of `bytes` (L128, `sealed` hashed as zeros, image.md I-73).
+fn leaves_of(bytes: &[u8], sealed: std::ops::Range<u64>) -> Vec<[u8; 32]> {
+    let size = bytes.len() as u64;
+    let mut out = Vec::new();
+    let mut i = 0;
+    loop {
+        let r = mortar_digest::leaf_range(size, i);
+        if r.start >= size {
+            break;
+        }
+        let mut window = bytes[r.start as usize..r.end as usize].to_vec();
+        let (lo, hi) = (sealed.start.max(r.start), sealed.end.min(r.end));
+        if lo < hi {
+            window[(lo - r.start) as usize..(hi - r.start) as usize].fill(0);
+        }
+        let leaf = mortar_digest::leaf(mortar_digest::TreeFn::L128, &window);
+        let mut row = [0u8; 32];
+        row[..leaf.as_bytes().len()].copy_from_slice(leaf.as_bytes());
+        out.push(row);
+        i += 1;
+    }
+    out
+}
+
+// spec: incr.md IN-77c (bit 0 and another boot id: every leaf of `P`
+// against `LEAVES` before `P` is trusted; an unreadable boot id is a
+// changed one; bit 1 or the same boot: nothing read)
+#[test]
+fn boot_id_changed_checks_leaves() {
+    assert!(boot_id().is_some(), "Linux has /proc/sys/kernel/random/boot_id");
+    let tmp = Tmp::new("boot");
+    let p = tmp.0.join("out");
+    let bytes: Vec<u8> = (0..(5 << 19)).map(|i: u32| (i % 241) as u8).collect();
+    std::fs::write(&p, &bytes).unwrap();
+    let sealed = (3 << 20) + 16..(3 << 20) + 36; // the build id, in leaf 3
+    let mut m = MemoryState::default();
+    m.meta.file_size = bytes.len() as u64;
+    m.meta.leaf_fn = 0;
+    m.meta.sealed_start = sealed.start;
+    m.meta.sealed_end = sealed.end;
+    m.meta.boot_id = [1; 16];
+    m.meta.output_synced = false;
+    m.leaves = leaves_of(&bytes, sealed.clone());
+    assert!(m.leaves.len() >= 3);
+    let out = File::open(&p).unwrap();
+    let same = Some([1; 16]);
+    let other = Some([2; 16]);
+    assert_eq!(boot_check(&m.view(), &out, same), Ok(()));
+    assert_eq!(boot_check(&m.view(), &out, other), Ok(()), "every leaf matches");
+    assert_eq!(boot_check(&m.view(), &out, None), Ok(()), "unreadable: compared, matches");
+    // The build id's bytes are hashed as zeros: a change there is no change.
+    File::options().write(true).open(&p).unwrap().write_all_at(b"!", sealed.start).unwrap();
+    assert_eq!(boot_check(&m.view(), &out, other), Ok(()));
+    // A byte of leaf 2 that did not reach the disk.
+    File::options().write(true).open(&p).unwrap().write_all_at(b"!", (2 << 20) + 5).unwrap();
+    for boot in [other, None] {
+        let r = boot_check(&m.view(), &out, boot);
+        assert!(
+            matches!(&r, Err(IncrReason::OutputChanged(why)) if why.contains("window 2")),
+            "{boot:?}: {r:?}"
+        );
+    }
+    assert_eq!(boot_check(&m.view(), &out, same), Ok(()), "the same boot: not read");
+    m.meta.output_synced = true;
+    assert_eq!(boot_check(&m.view(), &out, other), Ok(()), "synced at W4/C1: not read");
+}
+
+// ---- IN-77b's virtiofs note: a full link that saw no state -----------------------
+
+/// A full link that found no state (its `open(S)` gave `ENOENT`): its own
+/// output renamed over `P`, then its state, bound to that output, written
+/// by the floor's protocol (IN-77d); IN-21's check after the rename (the
+/// output still its own) else its state removed. No lock on `S`.
+fn full_link_without_state(w: &World) {
+    let t = w.dir.join("full-link-output");
+    std::fs::write(&t, OTHER_OUTPUT).unwrap();
+    std::fs::rename(&t, &w.p).unwrap();
+    let m = std::fs::metadata(&w.p).unwrap();
+    let img = s_image(m.dev(), m.ino(), m.size(), OTHER_BODY, 0);
+    if let Ok(true) = write_state_whole(&w.s, &img, &mut StdOps) {
+        let now = std::fs::metadata(&w.p).ok().map(|n| (n.dev(), n.ino()));
+        if now != Some((m.dev(), m.ino())) {
+            let _ = std::fs::remove_file(&w.s);
+        }
+    }
+}
+
+const OTHER_OUTPUT: &[u8] = b"\x7fELF another link's output";
+
+// spec: incr.md IN-77b (the virtiofs note: `ENOENT` on `S` is "no state";
+// such a full link takes no lock): an update holding the lock, and a full
+// link that saw no state run in full after each of the update's calls
+// (its compaction's among them), in place and by copy: what remains is
+// the update's pair, the full link's pair, or a reason the next link
+// names; never a trusted mix
+#[test]
+fn full_link_during_compaction() {
+    for path in [WritePath::InPlace, WritePath::Copy] {
+        for compacts in [true, false] {
+            let calls = clean_calls(path, compacts);
+            for at in 0..calls.len() {
+                let tmp = Tmp::new("full-during");
+                let w = World::create(&tmp.0, false);
+                let (out, state) = w.open(path == WritePath::InPlace);
+                let mut ops = Faulty::new(None, |n, _| {
+                    if n == at {
+                        full_link_without_state(&w);
+                    }
+                });
+                let r = run(&w, &out, &state, path, compacts, &mut ops, &mut Vec::new());
+                let kind = calls[at];
+                let v = judge(&w, &real, Some(OTHER_OUTPUT))
+                    .unwrap_or_else(|e| panic!("{path:?} {compacts} after {at} ({kind:?}): {e}"));
+                assert!(
+                    matches!(v, Verdict::OtherPair | Verdict::Named(_)),
+                    "{path:?} {compacts} after {at} ({kind:?}): {v:?} ({r:?})"
+                );
+                assert_eq!(std::fs::read(&w.p).unwrap(), OTHER_OUTPUT, "the full link's output");
+            }
+        }
+    }
 }
