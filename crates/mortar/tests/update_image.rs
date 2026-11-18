@@ -29,7 +29,7 @@ use mortar_core::par::Pool;
 use mortar_core::{FileId, SectionId};
 use mortar_diag::{Collector, Policy};
 use mortar_image::update::{
-    Counts, RefillError, Shift, output_size, patch_eh, refill_counted, walk_eh,
+    Counts, RefillError, Shift, output_size, patch_eh, refill, walk_eh,
 };
 use mortar_input::store::{Store, StorePolicy};
 use mortar_testutil::target::Arch;
@@ -77,6 +77,8 @@ fn sources(arch: Arch, imm: u32, pad: usize) -> [String; 3] {
 struct Fixture {
     scratch: Scratch,
     arch: Arch,
+    /// The leaves of each output written (`LEAVES`, IN-18e).
+    leaves: std::cell::RefCell<std::collections::BTreeMap<String, Vec<[u8; 32]>>>,
 }
 
 impl Fixture {
@@ -85,12 +87,25 @@ impl Fixture {
             assert!(!tools_required(), "{} is required", arch.gnu("gcc"));
             return None;
         }
-        let f = Self { scratch: Scratch::new(label), arch };
+        let f = Self { scratch: Scratch::new(label), arch, leaves: Default::default() };
         let [a, b, c] = sources(arch, 42, 0);
         f.assemble("a", &a);
         f.assemble("b", &b);
         f.assemble("c", &c);
         Some(f)
+    }
+
+    /// As [`Fixture::new`], with 4 MiB of data in b.o: an output of five
+    /// leaves (I-72's 1 MiB blocks), the text in the first.
+    fn big(arch: Arch, label: &str) -> Option<Self> {
+        let f = Self::new(arch, label)?;
+        let [_, b, _] = sources(arch, 42, 0);
+        f.assemble("b", &(b + "\t.data\n\t.skip 0x400000, 1\n"));
+        Some(f)
+    }
+
+    fn leaves_of(&self, out: &str) -> Vec<[u8; 32]> {
+        self.leaves.borrow()[out].clone()
     }
 
     fn assemble(&self, name: &str, text: &str) {
@@ -144,8 +159,18 @@ impl Fixture {
     /// The full link to `out`; its layout.
     fn write(&self, out: &str, replay: Option<&Layout>) -> Layout {
         self.with_front(out, replay, |f, store| {
-            mortar::image::write(f, store, &self.path(out), &|_| {}, &mut |_, _| {})
+            let w = mortar::image::write(f, store, &self.path(out), &|_| {}, &mut |_, _| {})
                 .unwrap_or_else(|e| panic!("write: {:?}", e.diagnostics));
+            let (_, leaves) = w.leaves.expect("an incremental-mode link keeps its leaves");
+            let leaves = leaves
+                .iter()
+                .map(|l| {
+                    let mut d = [0u8; 32];
+                    d[..l.as_bytes().len()].copy_from_slice(l.as_bytes());
+                    d
+                })
+                .collect();
+            self.leaves.borrow_mut().insert(out.to_owned(), leaves);
             f.layout.clone()
         })
     }
@@ -217,17 +242,38 @@ fn judge(what: &str, prev: &[u8], want: &[u8], ranges: &[DirtyRange], bytes: &[u
     }
 }
 
+/// What a refill gave: ranges, bytes, counts, the output's size, leaves.
+type Got = (Vec<DirtyRange>, Vec<u8>, Counts, u64, Vec<[u8; 32]>);
+
+/// `refill` against the output `prev` of `fx`, with its stored leaves.
+#[allow(clippy::too_many_arguments)]
 fn run_refill(
     f: &Front<'_>,
     store: &Store,
     delta: &LayoutDelta,
     plan: &SymtabPlan,
     set: &RefillSet,
-    prev: &Path,
-) -> Result<(Vec<DirtyRange>, Vec<u8>, Counts, u64), RefillError> {
-    let file = File::open(prev).unwrap();
+    fx: &Fixture,
+    prev: &str,
+) -> Result<Got, RefillError> {
+    run_refill_with(f, store, delta, plan, set, fx, prev, &fx.leaves_of(prev))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_refill_with(
+    f: &Front<'_>,
+    store: &Store,
+    delta: &LayoutDelta,
+    plan: &SymtabPlan,
+    set: &RefillSet,
+    fx: &Fixture,
+    prev: &str,
+    leaves: &[[u8; 32]],
+) -> Result<Got, RefillError> {
+    let file = File::open(fx.path(prev)).unwrap();
     mortar::image::with_link(f, store, &|_| {}, |l| {
-        refill_counted(l, delta, plan, set, &file).map(|(r, b, c)| (r, b, c, output_size(l)))
+        refill(l, delta, plan, set, &file, leaves)
+            .map(|u| (u.ranges, u.bytes, u.counts, output_size(l), u.leaves))
     })
     .unwrap()
 }
@@ -241,23 +287,45 @@ const ARCHES: [Arch; 2] = [Arch::Aarch64, Arch::X86_64];
 #[test]
 fn dirty_ranges_cover_every_differing_byte() {
     for arch in ARCHES {
-        let Some(fx) = Fixture::new(arch, "u6-cover") else { continue };
+        let Some(fx) = Fixture::big(arch, "u6-cover") else { continue };
         let l0 = fx.write("prev", None);
         let prev = std::fs::read(fx.path("prev")).unwrap();
         // An empty delta: no byte.
         fx.with_front("prev", Some(&l0), |f, store| {
-            let (r, b, c, size) = run_refill(
+            let (r, b, c, size, leaves) = run_refill(
                 f,
                 store,
                 &LayoutDelta::default(),
                 &SymtabPlan::default(),
                 &RefillSet::default(),
-                &fx.path("prev"),
+                &fx,
+                "prev",
             )
             .unwrap();
             assert_eq!(size, prev.len() as u64, "{arch:?}: output_size");
             assert!(r.is_empty() && b.is_empty(), "{arch:?}: an empty delta wrote {r:?}");
             assert_eq!(c.copied, 0);
+            assert_eq!(leaves, fx.leaves_of("prev"), "{arch:?}: the stored leaves kept");
+            assert_eq!(c.leaves_hashed, 1, "{arch:?}: the note's block only");
+            // A stored leaf vector of the wrong length: `state-corrupt`,
+            // before any byte is used.
+            let mut short = fx.leaves_of("prev");
+            short.pop();
+            let r = run_refill_with(
+                f,
+                store,
+                &LayoutDelta::default(),
+                &SymtabPlan::default(),
+                &RefillSet::default(),
+                &fx,
+                "prev",
+                &short,
+            );
+            assert!(
+                matches!(r, Err(RefillError::Fallback(IncrReason::StateCorrupt(_)))),
+                "{arch:?}: {:?}",
+                r.map(|x| x.2)
+            );
         });
         let [_, _, c] = sources(arch, 43, 0);
         fx.assemble("c", &c);
@@ -270,18 +338,24 @@ fn dirty_ranges_cover_every_differing_byte() {
             let c_o = file_of(f, "c.o");
             let delta = LayoutDelta { files: vec![c_o], ..LayoutDelta::default() };
             let set = RefillSet { units: units(f, &["c.o"]), ..RefillSet::default() };
-            let (r, b, counts, size) =
-                run_refill(f, store, &delta, &SymtabPlan::default(), &set, &fx.path("prev"))
+            let (r, b, counts, size, leaves) =
+                run_refill(f, store, &delta, &SymtabPlan::default(), &set, &fx, "prev")
                     .unwrap();
             assert_eq!(size, want.len() as u64);
             judge(&format!("{arch:?} same-size edit"), &prev, &want, &r, &b);
+            // The new leaves are the full link's (I-76, IN-75).
+            assert_eq!(leaves, fx.leaves_of("want"), "{arch:?}: the new leaves");
+            assert!(leaves.len() >= 5, "{arch:?}: {} leaves", leaves.len());
             // O(change): the edited instruction's range and the build id;
             // nothing copied, no `.eh_frame` walk (nothing moved).
             eprintln!("[u6] {arch:?} same-size edit: {counts:?}");
             assert!(counts.ranges <= 3, "{arch:?}: {r:?}");
             assert!(counts.dirty <= 64, "{arch:?}: {} dirty bytes", counts.dirty);
             assert_eq!((counts.copied, counts.eh_records), (0, 0));
-            assert_eq!(counts.build_id_read, prev.len() as u64, "the tree reads the output once");
+            // The tree reads the dirty blocks only: the note and the text
+            // share the first.
+            assert_eq!(counts.leaves_hashed, 1, "{arch:?}: {counts:?}");
+            assert_eq!(counts.build_id_read, mortar_digest::IMAGE_BLOCK, "{arch:?}");
         });
     }
 }
@@ -315,7 +389,8 @@ fn input_rewritten_after_u4_is_input_changed() {
                 &LayoutDelta::default(),
                 &SymtabPlan::default(),
                 &set,
-                &fx.path("prev"),
+                &fx,
+                "prev",
             );
             match r {
                 Err(RefillError::Fallback(IncrReason::InputChanged(d))) => {
@@ -387,8 +462,32 @@ fn whole_symtab_plan(elf: &[u8]) -> SymtabPlan {
 fn growth_step_rewrites_headers() {
     for arch in ARCHES {
         let Some(fx) = Fixture::new(arch, "u6-growth") else { continue };
-        fx.write("prev", None);
+        // b.o's data sized so that the previous output ends 0x800 bytes
+        // short of a block's end and the grown one past it: the leaf count
+        // changes (I-72).
+        // The data's slack grows with it (IN-33): the size is near-linear
+        // in the data's, found by secant steps.
+        let target = (4u64 << 20) - 0x800;
+        let size_with = |skip: u64| {
+            let [_, b, _] = sources(arch, 42, 0);
+            fx.assemble("b", &(b + &format!("\t.data\n\t.skip {skip}, 1\n")));
+            fx.write("prev", None);
+            std::fs::metadata(fx.path("prev")).unwrap().len()
+        };
+        let (mut s0, mut z0) = (0u64, size_with(0));
+        let (mut s1, mut z1) = (target - z0, size_with(target - z0));
+        for _ in 0..6 {
+            if z1 <= target && target - z1 < 0x400 {
+                break;
+            }
+            let slope = (z1 - z0) as f64 / (s1 - s0) as f64;
+            let next = s1 as f64 + ((target - 0x200) as f64 - z1 as f64) / slope;
+            (s0, z0) = (s1, z1);
+            s1 = next as u64;
+            z1 = size_with(s1);
+        }
         let prev = std::fs::read(fx.path("prev")).unwrap();
+        assert!((target - 0x400..=target).contains(&(prev.len() as u64)), "{}", prev.len());
         let [_, _, c] = sources(arch, 42, 0x3000);
         fx.assemble("c", &c);
         fx.write("want", None);
@@ -417,10 +516,16 @@ fn growth_step_rewrites_headers() {
             // relocation, so its bytes are copied.
             let set = RefillSet { units: units(f, &["a.o", "c.o"]), ..RefillSet::default() };
             let plan = whole_symtab_plan(&want);
-            let (r, b, counts, size) =
-                run_refill(f, store, &delta, &plan, &set, &fx.path("prev")).unwrap();
+            let (r, b, counts, size, leaves) =
+                run_refill(f, store, &delta, &plan, &set, &fx, "prev").unwrap();
+            assert_eq!(leaves, fx.leaves_of("want"), "{arch:?}: the new leaves");
             assert_eq!(size, want.len() as u64);
-            eprintln!("[u6] {arch:?} growth: {counts:?}");
+            eprintln!("[u6] {arch:?} growth: {counts:?}; {} bytes to {}", prev.len(), want.len());
+            assert_eq!(
+                (fx.leaves_of("prev").len(), leaves.len()),
+                (4, 5),
+                "{arch:?}: a growth past a block's end adds a leaf"
+            );
             judge(&format!("{arch:?} growth"), &prev, &want, &r, &b);
             // The ELF header, and both header tables whole.
             let le = |b: &[u8], at: usize, n: usize| {
@@ -522,7 +627,7 @@ fn eh_frame_moved_from_its_own_bytes() {
 // states U-5's plan; a default plan leaves the full link's lines.
 #[test]
 fn update_map_states_the_symtab_plan() {
-    use mortar_core::incr::SymtabBlock;
+    use mortar_core::incr::{MemoryLayout, StoredLayout, SymtabBlock};
     use mortar_image::map::{render, update_map};
     for arch in ARCHES {
         let Some(fx) = Fixture::new(arch, "u6-map") else { continue };
@@ -552,11 +657,32 @@ fn update_map_states_the_symtab_plan() {
                 strtab_dead: vec![(1, 5)],
                 ..SymtabPlan::default()
             };
+            // The stored rows: a.o's block (unchanged, not in the plan) and
+            // the global area (WP-218 ruling 2).
+            let blk = |first, count, capacity, off| SymtabBlock {
+                first,
+                count,
+                capacity,
+                strtab_offset: off,
+                strtab_len: 4,
+                strtab_capacity: 0x10,
+            };
+            let rows = MemoryLayout {
+                symtab_blocks: vec![(file_of(f, "a.o"), blk(1, 2, 4, 0x8))],
+                global_area: blk(12, 3, 8, 0x60),
+                ..MemoryLayout::default()
+            };
+            let stored = StoredLayout::new(&rows);
+            let empty = MemoryLayout::default();
+            let none = StoredLayout::new(&empty);
             let pool = Pool::new(1);
             let (with, without, full) = mortar::image::with_link(f, store, &|_| {}, |l| {
                 (
-                    render(&update_map(l, &delta, &plan), &pool),
-                    render(&update_map(l, &delta, &SymtabPlan::default()), &pool),
+                    render(&update_map(l, &delta, &stored, &plan).unwrap(), &pool),
+                    render(
+                        &update_map(l, &delta, &none, &SymtabPlan::default()).unwrap(),
+                        &pool,
+                    ),
                     render(&mortar_image::link::map_of(l), &pool),
                 )
             })
@@ -571,10 +697,12 @@ fn update_map_states_the_symtab_plan() {
             ] {
                 assert!(lines.contains(&want), "{arch:?}: no `{want}` in\n{with}");
             }
-            assert!(
-                lines.iter().any(|l| l.starts_with("symblock ") && l.ends_with(" 9 1 3 40 20")),
-                "{arch:?}: no symblock in\n{with}"
-            );
+            let blocks: Vec<&str> =
+                lines.iter().copied().filter(|l| l.starts_with("symblock ")).collect();
+            assert_eq!(blocks.len(), 3, "{arch:?}: {blocks:?}");
+            assert!(blocks[0].ends_with(" 1 2 4 8 10"), "{arch:?}: a.o's stored block: {blocks:?}");
+            assert!(blocks[1].ends_with(" 9 1 3 40 20"), "{arch:?}: c.o's planned: {blocks:?}");
+            assert_eq!(blocks[2], "symblock - 12 3 8 60 10", "{arch:?}: the global area");
             assert!(lines.iter().any(|l| l.starts_with("region ")), "{arch:?}: no region");
             // The full link was incremental-mode: its own map has the
             // decision records; a default plan changes no line of it.
@@ -607,7 +735,7 @@ fn section_range(elf: &[u8], name: &[u8]) -> std::ops::Range<usize> {
 #[test]
 fn build_id_is_the_tree_over_the_whole_new_output() {
     for arch in ARCHES {
-        let Some(fx) = Fixture::new(arch, "u6-buildid") else { continue };
+        let Some(fx) = Fixture::big(arch, "u6-buildid") else { continue };
         let l0 = fx.write("prev", None);
         let prev = std::fs::read(fx.path("prev")).unwrap();
         let [_, _, c] = sources(arch, 45, 0);
@@ -622,9 +750,11 @@ fn build_id_is_the_tree_over_the_whole_new_output() {
         fx.with_front("want", Some(&l0), |f, store| {
             let delta = LayoutDelta { files: vec![file_of(f, "c.o")], ..LayoutDelta::default() };
             let set = RefillSet { units: units(f, &["c.o"]), ..RefillSet::default() };
-            let (r, b, _, _) =
-                run_refill(f, store, &delta, &SymtabPlan::default(), &set, &fx.path("prev"))
+            let (r, b, counts, _, leaves) =
+                run_refill(f, store, &delta, &SymtabPlan::default(), &set, &fx, "prev")
                     .unwrap();
+            assert_eq!(leaves, fx.leaves_of("want"), "{arch:?}: the new leaves");
+            assert!(counts.build_id_read < want.len() as u64, "{arch:?}: {counts:?}");
             let got = patched(&prev, &r, &b, want.len() as u64);
             assert_eq!(got[id.clone()], want[id.clone()], "{arch:?}: the update's id");
         });

@@ -70,9 +70,12 @@ pub struct Counts {
     pub symtab_entries: u64,
     /// Inputs rechecked (twice each: before the fill and after it).
     pub rechecked: u64,
-    /// Bytes of the previous output read for the build id (IN-75's tree:
-    /// the stored `LEAVES` are not an input of `refill`, WP-218 R2).
+    /// Bytes hashed again for the leaves (IN-75, I-76): the blocks a
+    /// dirty range or the note touches, and those whose length the new
+    /// size changes; every other leaf is the stored one.
     pub build_id_read: u64,
+    /// Leaves recomputed.
+    pub leaves_hashed: u64,
     /// The ranges returned and their bytes.
     pub ranges: u64,
     pub dirty: u64,
@@ -94,42 +97,58 @@ pub fn output_size(link: &Link<'_, '_>) -> u64 {
         .unwrap_or(0)
 }
 
+/// What [`refill`] gives the join (WP-218; WP-211 §C, as ruled on the
+/// hand-back: the leaves in and out).
+#[derive(Debug, Clone, Default)]
+pub struct Refill {
+    /// The dirty ranges, sorted and disjoint (IN-75).
+    pub ranges: Vec<DirtyRange>,
+    /// Their bytes, concatenated in range order.
+    pub bytes: Vec<u8>,
+    /// The new output's leaves, whole (`StatePatch::leaves`; `LEAVES`,
+    /// IN-18e): one per block of the new size (I-72), each digest
+    /// zero-filled to 32 bytes; a stored leaf where no byte of its block
+    /// changed.
+    pub leaves: Vec<[u8; 32]>,
+    /// The build id written into the note (`None` without one).
+    pub build_id: Option<Vec<u8>>,
+    pub counts: Counts,
+}
+
 /// Refill the update's units against `previous` (U1's descriptor of the
 /// output) and give the dirty ranges, sorted and disjoint, with their
-/// bytes concatenated in range order (WP-211 §C; IN-73, IN-75). Called by
-/// the join (IN-70 U9).
+/// bytes concatenated in range order, and the new leaves and build id
+/// (WP-211 §C; IN-73, IN-75). `leaves` are the stored `LEAVES` of the
+/// previous output, whole. Called by the join (IN-70 U9).
 ///
 /// # Errors
 /// [`RefillError`]: `input-changed` for an input that is not the file the
-/// front read (IN-75); `update-not-implemented (eh)` for an `.eh_frame`
-/// encoding IN-34a does not move (decided before W1);
+/// front read (IN-75); `state-corrupt` for `leaves` not one per block of
+/// the previous output; `update-not-implemented (eh)` for an
+/// `.eh_frame` encoding IN-34a does not move (decided before W1);
 /// `update-not-implemented (image)` for what this writer does not do
 /// (an output section added or removed, a 64-bit DWARF record).
+#[allow(clippy::too_many_lines, reason = "IN-75's list of dirty sources, in order")]
 pub fn refill(
     link: &Link<'_, '_>,
     layout: &LayoutDelta,
     symtab: &SymtabPlan,
     set: &RefillSet,
     previous: &File,
-) -> Result<(Vec<DirtyRange>, Vec<u8>), RefillError> {
-    refill_counted(link, layout, symtab, set, previous).map(|(r, b, _)| (r, b))
-}
-
-/// [`refill`], with its [`Counts`].
-///
-/// # Errors
-/// As [`refill`].
-#[allow(clippy::too_many_lines, reason = "IN-75's list of dirty sources, in order")]
-pub fn refill_counted(
-    link: &Link<'_, '_>,
-    layout: &LayoutDelta,
-    symtab: &SymtabPlan,
-    set: &RefillSet,
-    previous: &File,
-) -> Result<(Vec<DirtyRange>, Vec<u8>, Counts), RefillError> {
+    leaves: &[[u8; 32]],
+) -> Result<Refill, RefillError> {
     let mut counts = Counts::default();
     let pl = &link.layout.placement;
     let prev = Previous::new(previous)?;
+    // The stored leaves are the previous output's (I-72), checked before
+    // any byte is used.
+    if leaves.len() as u64 != mortar_digest::leaf_count(prev.len) {
+        return Err(RefillError::Fallback(IncrReason::StateCorrupt(format!(
+            "LEAVES: {} leaves for an output of {} bytes",
+            leaves.len(),
+            prev.len
+        ))));
+    }
     // IN-75: every input is checked against the file the front read
     // before its first byte is used.
     recheck(link, &mut counts)?;
@@ -302,41 +321,91 @@ pub fn refill_counted(
     }
     // 4. `.symtab` and `.strtab` from U-5's plan (IN-49a).
     write_symtab(&prev, &old, &new, &names, symtab, &shift, &mut overlay, &mut counts)?;
-    // 5. The build id: the tree over the whole new output (IN-75).
+    // 5. The ranges, those equal to the previous output dropped.
     let file_size = refilled.file_size;
-    if let (Some(style), Some(sealed)) = (refilled.build_id, refilled.sealed.clone()) {
-        let w = IMAGE_BLOCK;
-        let f = style.tree_fn();
-        let mut leaves = Vec::new();
-        let mut k = 0;
-        while k * w < file_size {
-            let r = k * w..((k + 1) * w).min(file_size);
-            let mut win = prev.read(r.clone())?;
-            counts.build_id_read += win.len() as u64;
-            overlay.read_over(r.start, &mut win);
-            zero(&mut win, r.start, &sealed);
-            leaves.push((k, mortar_digest::leaf(f, &win)));
-            k += 1;
-        }
-        let id = crate::digest::build_id(style, file_size, &leaves)
-            .map_err(|_| not_implemented(Unimplemented::Image))?;
-        let mut note = id;
-        note.resize((sealed.end - sealed.start) as usize, 0);
-        overlay.put(sealed.start, note);
+    let dirty = differing(&prev, overlay)?;
+    // 6. The leaves (IN-75, I-76): a block a dirty range or the note
+    // touches is hashed again from the new bytes, as is a block whose
+    // length the new size changes; every other leaf is the stored one.
+    let w = IMAGE_BLOCK;
+    let f = refilled.leaf_fn;
+    let sealed = refilled.sealed.clone().filter(|_| refilled.build_id.is_some());
+    let (old_n, new_n) = (leaves.len() as u64, mortar_digest::leaf_count(file_size));
+    let mut blocks: Vec<u64> = Vec::new();
+    for (at, bytes) in &dirty {
+        blocks.extend(at / w..(at + bytes.len() as u64).div_ceil(w));
     }
-    // 6. The ranges, those equal to the previous output dropped.
+    if let Some(r) = &sealed {
+        blocks.extend(r.start / w..r.end.div_ceil(w));
+    }
+    if file_size != prev.len {
+        blocks.extend(old_n.saturating_sub(1)..new_n);
+        blocks.extend(new_n.saturating_sub(1)..new_n);
+    }
+    blocks.retain(|&k| k < new_n);
+    blocks.sort_unstable();
+    blocks.dedup();
+    let mut now = Overlay::default();
+    for (at, bytes) in &dirty {
+        now.put(*at, bytes.clone());
+    }
+    let mut new_leaves: Vec<[u8; 32]> =
+        (0..new_n).map(|k| leaves.get(k as usize).copied().unwrap_or([0; 32])).collect();
+    for &k in &blocks {
+        let r = mortar_digest::leaf_range(file_size, k);
+        let mut win = prev.read(r.clone())?;
+        now.read_over(r.start, &mut win);
+        if let Some(s) = &sealed {
+            zero(&mut win, r.start, s);
+        }
+        counts.build_id_read += win.len() as u64;
+        counts.leaves_hashed += 1;
+        let mut d = [0u8; 32];
+        let l = mortar_digest::leaf(f, &win);
+        d[..l.as_bytes().len()].copy_from_slice(l.as_bytes());
+        new_leaves[k as usize] = d;
+    }
+    let mut build_id = None;
+    let dirty = match (refilled.build_id, &sealed) {
+        (Some(style), Some(sealed)) => {
+            let mut kept = Vec::with_capacity(new_leaves.len());
+            for (k, d) in new_leaves.iter().enumerate() {
+                let leaf = mortar_digest::Leaf::kept(f, file_size, k as u64, d)
+                    .ok_or_else(|| not_implemented(Unimplemented::Image))?;
+                kept.push((k as u64, leaf));
+            }
+            let id = crate::digest::build_id(style, file_size, &kept)
+                .map_err(|_| not_implemented(Unimplemented::Image))?;
+            let mut note = id.clone();
+            note.resize((sealed.end - sealed.start) as usize, 0);
+            build_id = Some(id);
+            now.put(sealed.start, note);
+            differing(&prev, now)?
+        }
+        _ => dirty,
+    };
     let mut ranges = Vec::new();
     let mut out = Vec::new();
-    for (at, bytes) in overlay.merged() {
-        if bytes.is_empty() || prev.read(at..at + bytes.len() as u64)? == bytes {
-            continue;
-        }
+    for (at, bytes) in dirty {
         ranges.push(DirtyRange { offset: at, len: bytes.len() as u64 });
         out.extend_from_slice(&bytes);
     }
     counts.ranges = ranges.len() as u64;
     counts.dirty = out.len() as u64;
-    Ok((ranges, out, counts))
+    Ok(Refill { ranges, bytes: out, leaves: new_leaves, build_id, counts })
+}
+
+/// The overlay's runs whose bytes differ from the previous output's
+/// (IN-75: an empty delta writes no byte).
+fn differing(prev: &Previous<'_>, overlay: Overlay) -> Result<Vec<(u64, Vec<u8>)>, RefillError> {
+    let mut out = Vec::new();
+    for (at, bytes) in overlay.merged() {
+        if bytes.is_empty() || prev.read(at..at + bytes.len() as u64)? == bytes {
+            continue;
+        }
+        out.push((at, bytes));
+    }
+    Ok(out)
 }
 
 fn not_implemented(u: Unimplemented) -> RefillError {

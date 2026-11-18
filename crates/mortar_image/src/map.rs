@@ -879,15 +879,20 @@ pub(crate) fn decisions_of(t: &crate::link::LinkTables<'_, '_>) -> Decisions {
 /// file slack `hole .symtab`/`hole .strtab`, and the `.strtab` dead names
 /// (`dead .strtab <off> <size> strings`). The map is written whole.
 ///
-/// Not stated: the `symblock` of a block the plan does not place (an
-/// unchanged file's: its place is the stored `SYMTAB` row, which this
-/// function is not given; WP-218's record, finding R1).
-#[must_use]
+/// A block the plan does not place (an unchanged file's) is stated from
+/// its stored `SYMTAB` row (`stored.symtab_block`, one read a file: the
+/// map is whole by nature, WP-218 ruling 2), and the global area from the
+/// stored tables when the plan does not place it.
+///
+/// # Errors
+/// The stored rows' (`state-corrupt`; `update-not-implemented (layout)`
+/// until given).
 pub fn update_map(
     link: &crate::link::Link<'_, '_>,
     layout: &mortar_core::incr::LayoutDelta,
+    stored: &mortar_core::incr::StoredLayout<'_>,
     symtab: &mortar_core::incr::SymtabPlan,
-) -> Map {
+) -> Result<Map, mortar_core::incr::IncrReason> {
     let _ = layout;
     let mut m = crate::link::map_of(link);
     m.incremental = true;
@@ -937,9 +942,26 @@ pub fn update_map(
         keyed.sort_by_key(|k| (k.0, k.1));
         m.dead = keyed.into_iter().map(|k| k.2).collect();
     }
+    // The plan's blocks, then every other file's stored block.
+    let mut all: Vec<(mortar_core::FileId, mortar_core::incr::SymtabBlock)> = symtab.blocks.clone();
+    let placed = |f: mortar_core::FileId, all: &[(mortar_core::FileId, _)]| {
+        all.iter().any(|(g, _)| *g == f)
+    };
+    for (file, _) in link.inputs.files.iter() {
+        if !placed(file, &all)
+            && let Some(b) = stored.symtab_block(file)?
+        {
+            all.push((file, b));
+        }
+    }
+    if !placed(mortar_core::FileId::INTERNAL, &all) && !symtab.blocks.is_empty() {
+        let (area, _) = stored.symtab_tables()?;
+        if area.capacity > 0 {
+            all.push((mortar_core::FileId::INTERNAL, area));
+        }
+    }
     if let Some(d) = &mut m.decisions {
-        let mut blocks: Vec<MapSymblock> = symtab
-            .blocks
+        let mut blocks: Vec<MapSymblock> = all
             .iter()
             .filter_map(|&(file, b)| {
                 let file = if file == mortar_core::FileId::INTERNAL {
@@ -960,7 +982,7 @@ pub fn update_map(
         blocks.sort_by_key(|b| b.first);
         d.symblocks = blocks;
     }
-    m
+    Ok(m)
 }
 
 /// The text of `map` (I-79): groups formatted in parallel per file and
