@@ -233,6 +233,13 @@ pub enum IncrReason {
     DebugNameIndex(String),
     /// `debug-unit-kind` (IN-55a).
     DebugUnitKind(String),
+    /// `debug-comdat-keeper`: the keeper of a debug section group (a type
+    /// unit, a `.debug_macro` group) is a changed file whose new version
+    /// drops the group, or the kept copy must move (WP-228 R-5).
+    DebugComdatKeeper(String),
+    /// `debug-growth`: a growth step in an output that has debug sections
+    /// (WP-228 R-8; v1: the refill of every debug byte is a later package).
+    DebugGrowth(String),
     /// `input-changed`: a file the update read is not the file it judged
     /// (IN-28a condition 2, IN-75).
     InputChanged(String),
@@ -254,7 +261,7 @@ pub enum IncrReason {
 impl IncrReason {
     /// Every reason's name, in `spec/incr.md` §7's order (the spec test
     /// compares it with the table).
-    pub const NAMES: [&'static str; 32] = [
+    pub const NAMES: [&'static str; 34] = [
         "no-state",
         "state-corrupt",
         "state-version",
@@ -282,6 +289,8 @@ impl IncrReason {
         "debug-compaction",
         "debug-name-index",
         "debug-unit-kind",
+        "debug-comdat-keeper",
+        "debug-growth",
         "input-changed",
         "state-collision",
         "state-limit",
@@ -320,6 +329,8 @@ impl IncrReason {
             Self::DebugCompaction(_) => "debug-compaction",
             Self::DebugNameIndex(_) => "debug-name-index",
             Self::DebugUnitKind(_) => "debug-unit-kind",
+            Self::DebugComdatKeeper(_) => "debug-comdat-keeper",
+            Self::DebugGrowth(_) => "debug-growth",
             Self::InputChanged(_) => "input-changed",
             Self::StateCollision(_) => "state-collision",
             Self::StateLimit(_) => "state-limit",
@@ -360,6 +371,8 @@ impl IncrReason {
             | Self::DebugCompaction(d)
             | Self::DebugNameIndex(d)
             | Self::DebugUnitKind(d)
+            | Self::DebugComdatKeeper(d)
+            | Self::DebugGrowth(d)
             | Self::InputChanged(d)
             | Self::StateCollision(d)
             | Self::StateLimit(d)
@@ -410,6 +423,8 @@ impl IncrReason {
             "debug-compaction" => Self::DebugCompaction(d),
             "debug-name-index" => Self::DebugNameIndex(d),
             "debug-unit-kind" => Self::DebugUnitKind(d),
+            "debug-comdat-keeper" => Self::DebugComdatKeeper(d),
+            "debug-growth" => Self::DebugGrowth(d),
             "input-changed" => Self::InputChanged(d),
             "state-collision" => Self::StateCollision(d),
             "state-limit" => Self::StateLimit(d),

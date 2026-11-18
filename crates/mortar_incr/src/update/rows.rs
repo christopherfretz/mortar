@@ -752,6 +752,46 @@ pub fn name_hash(name: &[u8], version: &[u8]) -> u64 {
     mortar_core::hash::hash_bytes(&bytes)
 }
 
+/// `DEBUG_STRS.out` (IN-56; WP-228 R-2.2): which merged debug string
+/// section a row indexes, by class, never by `OUTSECS` row (ids are not
+/// stable across format changes).
+pub mod debug_str_class {
+    /// `.debug_str`.
+    pub const STR: u8 = 0;
+    /// `.debug_line_str`.
+    pub const LINE_STR: u8 = 1;
+}
+
+/// `DEBUG_STRS` (kind 57, key-keyed by `(out, hash)`; IN-56; WP-228 R-2,
+/// seam 8): one row per distinct string of the output's `.debug_str` and
+/// `.debug_line_str`, 13 bytes: its offset there, so that an update names
+/// a changed file's strings that are already present instead of
+/// appending them. `hash` is [`name_hash`]`(bytes, b"")` of the string's
+/// bytes without its NUL. One row per key: of two strings of one hash the
+/// capture keeps the one at the lower offset (the other is appended when
+/// an update needs it). No tomb: a string stays until the compaction
+/// (IN-56), which rewrites the table whole; an update puts a row per
+/// string it appends.
+///
+/// **An accelerator, never trusted** (R-2.1): the update checks every hit
+/// against the previous output's bytes at `offset` (the string and its
+/// NUL, inside the section); a miss, a mismatch or an offset outside the
+/// section appends the string, never an error and never a wrong offset.
+/// Judged against THIS output (every row names a string that is there,
+/// every string a live unit of a changed file names is found), not for
+/// equality with a full link's capture (R-2.3). Written by capture and
+/// U-2; read by G-1 (`update::debug`) through
+/// [`super::view::StateRows::debug_str`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DebugStrRow {
+    /// [`debug_str_class`]: the key's first part.
+    pub out: u8,
+    /// [`name_hash`] of the string without its NUL: the key's second part.
+    pub hash: u64,
+    /// Bytes from the output section's start.
+    pub offset: u32,
+}
+
 /// W-1's clone probe record in `META` (IN-76a): the output's device, its
 /// file system type and the measured copy time.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -870,6 +910,8 @@ mod tests {
         assert_eq!(edge, 13);
         let name = 8 + 4;
         assert_eq!(name, 12);
+        let debug_str = 1 + 8 + 4; // out, hash, offset (WP-228 R-2)
+        assert_eq!(debug_str, 13);
         let copy = 4 + 4 + 4 + 8 + 1 + 1 + 2; // key, file, index, size, typ, tomb, pad
         assert_eq!(copy, 24);
         // FILES' format-5 columns after format 4's: rank, round, the four
@@ -923,6 +965,7 @@ mod tests {
         let OdrRefRow { key: _, file: _, kind: _, class: _, tomb: _ } = OdrRefRow::default();
         let EdgeRow { kind: _, source: _, target: _, offset: _ } = EdgeRow::default();
         let NameRow { hash: _, row: _ } = NameRow::default();
+        let DebugStrRow { out: _, hash: _, offset: _ } = DebugStrRow::default();
         assert_eq!(FileTable::ALL.len(), FileTable::COUNT);
         let GroupRow { signature: _, file: _, tomb: _ } = GroupRow::default();
         let CommonRow { key: _, file: _, size: _, align: _, tomb: _ } = CommonRow::default();
