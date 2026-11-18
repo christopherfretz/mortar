@@ -1597,9 +1597,18 @@ fn item7_got_retired_and_counted() {
         assert!(d.slots_recounted.is_empty() && d.slots_revived.is_empty(), "{d:?}");
         // GOT|GOT_TPREL in one row, once per file per kind: both retired,
         // each region's word.
-        let stored = [slot(SlotKind::Got, gkey(3), 0, 1), slot(SlotKind::TlsIe, gkey(3), 0, 1)];
-        let (d, h) =
-            slots_run(m, &stored, &[key_ref(3, 1, GOT.union(IE))], &[], false, &[]).unwrap();
+        // Key 4 (file 2) keeps `.got` live; without it the update would
+        // retire the last slot: `new-output-section` (follow-up A).
+        let lone = [slot(SlotKind::Got, gkey(3), 0, 1), slot(SlotKind::TlsIe, gkey(3), 0, 1)];
+        let e = slots_run(m, &lone, &[key_ref(3, 1, GOT.union(IE))], &[], false, &[]).unwrap_err();
+        assert_eq!(e, IncrReason::NewOutputSection(".got left with no live slot".into()), "{m:?}");
+        let stored = [
+            slot(SlotKind::Got, gkey(3), 0, 1),
+            slot(SlotKind::Got, gkey(4), 1, 1),
+            slot(SlotKind::TlsIe, gkey(3), 0, 1),
+        ];
+        let refs34 = [key_ref(3, 1, GOT.union(IE)), key_ref(4, 2, GOT)];
+        let (d, h) = slots_run(m, &stored, &refs34, &[], false, &[]).unwrap();
         assert_eq!(
             d.slots_dead,
             vec![slot(SlotKind::Got, gkey(3), 0, 0), slot(SlotKind::TlsIe, gkey(3), 0, 0)]
@@ -2951,4 +2960,55 @@ fn end_rows_follow_a_grown_chunk() {
 
 fn text_of(b: &[u8]) -> String {
     String::from_utf8_lossy(b).into_owned()
+}
+
+// spec: incr.md IN-71c (`--defsym` keys are recomputed from the
+// `Placement`), WP-245 follow-up B: what the delta layout gives today
+// for a `--defsym x=d+4` row whose base `d` (file 1's `.data`) moves.
+// The full link stores `x` as `At { chunk, offset }` (symbols.rs: an
+// `Assign` resolves to its base's place plus the addend), a row that has
+// no kind to tell it from §8.1's. The layout passes it through
+// UNCHANGED while `d` moves to an overflow region, and U-3's `recompute`
+// compares rows and chunk addresses only, so it reports no change: the
+// value is SILENTLY STALE unless the join refuses (record X.14).
+#[test]
+fn defsym_of_a_moved_symbol_passes_through_stale() {
+    use mortar_core::layout::DefValue;
+    const PROVIDE: mortar_core::resolution::Def =
+        mortar_core::resolution::Def::Internal(mortar_core::resolution::InternalDef::Provide {
+            conditional: false,
+        });
+    // Key 1 stands for `x` (the World resolves table symbols only; its
+    // stored row is replaced by `x`'s below).
+    let syms = [(&b"_edata"[..], PROVIDE), (&b"etext"[..], PROVIDE)];
+    for m in [Machine::X86_64, Machine::AArch64] {
+        let v = |data1: u64| {
+            vec![
+                vec![text(b".text.a", 100), data(b".data", data1), bss(b".bss", 64)],
+                vec![text(b".text.c", 200), data(b".data", 16), bss(b".bss", 64)],
+            ]
+        };
+        let mut w0 = World::new(m, &v(16), &syms);
+        w0.options.slack = Slack::INCREMENTAL;
+        let s0 = first_with(w0, no_anchors(&v(16)));
+        let (c, o) = s0.placed.placement.place[s0.world.sid(1, 2)].get().unwrap();
+        // The stored row of `x`, as a full link with `--defsym x=d+4`
+        // (d at the start of file 1's `.data`) writes it.
+        let mut mem = s0.mem.clone();
+        let x = mem.defined.iter_mut().find(|d| d.symbol.0 == 1).unwrap();
+        x.value = DefValue::At { chunk: c, offset: o + 4 };
+        let stored_x = *x;
+        // File 1's `.data` grows past its region: it moves.
+        let edit = Edit::new(v(1024)).changed(&[1]);
+        let (changes, _) = changes_of(&s0, &edit);
+        let stored = StoredLayout::new(&mem);
+        let d = layout(&stored, &input(&changes), &s0.world.target).unwrap();
+        let id = changes.iter().find(|ch| ch.key.name == b".data").unwrap().id;
+        let PlaceNow::Here(p) = d.place_of(&stored, id).unwrap() else { panic!("{m:?}") };
+        let (c1, o1) = p.get().unwrap();
+        assert_ne!((c1, o1), (c, o), "{m:?}: d moved");
+        let x1 = *d.placement.defined.iter().find(|r| r.symbol.0 == 1).unwrap();
+        assert_eq!(x1, stored_x, "{m:?}: the row is passed through");
+        assert_ne!(x1.value, DefValue::At { chunk: c1, offset: o1 + 4 }, "{m:?}: stale");
+    }
 }

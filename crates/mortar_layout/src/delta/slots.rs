@@ -153,7 +153,35 @@ pub(super) fn item_7(
             out.gone.push(hole);
         }
     }
+    if !out.dead.is_empty() {
+        got_left_empty(stored, &out)?;
+    }
     Ok(out)
+}
+
+/// IN-72 item 10 for `.got` (WP-245 follow-up A): an update that retires
+/// the last live GOT/TLS slot would keep `.got` as `DeadSlot` holes, but a
+/// full link of the new inputs demands no slot and gives a different
+/// output. Measured with mortar's full links (`tests/incr-design/wp245/
+/// got-empty.sh`): with no slot demanded neither target has a `.got`
+/// (x86-64's `_GLOBAL_OFFSET_TABLE_` is in `.got.plt`); AArch64 with
+/// `_GLOBAL_OFFSET_TABLE_` referenced has a `.got` of the header word
+/// alone (8 bytes), never the kept holes. So: `new-output-section`, as for
+/// an output section left empty, before any list is produced.
+fn got_left_empty(stored: &StoredLayout<'_>, out: &Out) -> Result<(), IncrReason> {
+    let in_got = |k: SlotKind| !matches!(k, SlotKind::Plt | SlotKind::Iplt);
+    let live = stored.slots()?.iter().filter(|s| in_got(s.kind) && s.refs > 0).count();
+    let after = (live + out.revived.iter().filter(|s| in_got(s.kind)).count())
+        .checked_sub(out.dead.iter().filter(|s| in_got(s.kind)).count())
+        .ok_or_else(|| corrupt("more GOT slots retired than are live"))?;
+    if after == 0 {
+        return Err(got_left_empty_reason());
+    }
+    Ok(())
+}
+
+fn got_left_empty_reason() -> IncrReason {
+    IncrReason::NewOutputSection(".got left with no live slot".into())
 }
 
 /// A PLT or IPLT slot retired: S-113 removes its relocation from
@@ -1000,15 +1028,45 @@ mod tests {
             assert!(s2.holes.is_empty());
             // Edit again; then B drops g7 and g2 (now its last users).
             let (s3, _) = hop7(&s2, &v1, &[(1, true)], machine, header, module).unwrap();
+            // B dropping g7 and g2 (their last users) would leave `.got`
+            // with no live slot: `new-output-section` (follow-up A).
             let v4 = files(&[Some(a1), Some(&[])]);
-            let (s4, o) = hop7(&s3, &v4, &[(2, true)], machine, header, module).unwrap();
-            assert_eq!(o.dead.len(), 2, "{o:?}");
-            assert_eq!(s4.holes.len(), 5, "every slot dead, each a hole");
-            // B takes g7 back alone; A takes g1.
+            let e = hop7(&s3, &v4, &[(2, true)], machine, header, module).unwrap_err();
+            assert_eq!(e, got_left_empty_reason());
+            // B drops g2 alone: four dead, each a hole; then A takes g1.
             let v5 = files(&[Some(a1), Some(&[(g(7), desc)])]);
-            let (s5, _) = hop7(&s4, &v5, &[(2, true)], machine, header, module).unwrap();
+            let (s5, o) = hop7(&s3, &v5, &[(2, true)], machine, header, module).unwrap();
+            assert_eq!(o.dead.len(), 1, "{o:?}");
+            assert_eq!(s5.holes.len(), 4, "every dead slot a hole");
             let v6 = files(&[Some(&[(g(1), GOT)]), Some(&[(g(7), desc)])]);
             hop7(&s5, &v6, &[(1, true)], machine, header, module).unwrap();
+        }
+    }
+
+    // spec: incr.md IN-72 item 10 for `.got` (WP-245 follow-up A: the
+    // last live GOT/TLS slot retired is `new-output-section`; mortar's full
+    // link of such inputs has no `.got`, or AArch64's header word alone;
+    // a PLT slot still live does not keep `.got`)
+    #[test]
+    fn last_got_slot_retired_is_new_output_section() {
+        let gd = DemandFlags::TLS_GD;
+        for (machine, header, module) in [
+            (Machine::X86_64, false, false),
+            (Machine::X86_64, false, true),
+            (Machine::AArch64, true, false),
+            (Machine::AArch64, true, true),
+        ] {
+            let v0 = files(&[Some(&[(g(1), GOT), (g(2), gd)]), Some(&[(g(3), PLT)])]);
+            let s0 = scratch(&v0);
+            let v1 = files(&[Some(&[]), Some(&[(g(3), PLT)])]);
+            let e = hop7(&s0, &v1, &[(1, true)], machine, header, module).unwrap_err();
+            assert_eq!(e, got_left_empty_reason(), "{machine:?}");
+            assert_eq!(e.name(), "new-output-section");
+            // One of the two kept: accepted, the other a hole.
+            let v2 = files(&[Some(&[(g(2), gd)]), Some(&[(g(3), PLT)])]);
+            let (s2, o) = hop7(&s0, &v2, &[(1, true)], machine, header, module).unwrap();
+            assert_eq!(o.dead.len(), 1, "{o:?}");
+            assert_eq!(s2.holes.len(), 1);
         }
     }
 
@@ -1018,7 +1076,9 @@ mod tests {
     // without its stored hole is corrupt)
     #[test]
     fn item7_refusals() {
-        let v0 = files(&[Some(&[(g(1), GOT), (g(2), PLT)]), Some(&[(g(2), PLT)])]);
+        // File 2's g4 keeps a GOT slot live (follow-up A: retiring the
+        // last one is `new-output-section`, tested on its own).
+        let v0 = files(&[Some(&[(g(1), GOT), (g(2), PLT)]), Some(&[(g(2), PLT), (g(4), GOT)])]);
         let s0 = scratch(&v0);
         let of = [FileOf { file: FileId(1), changed: true }];
         let gone = demands_of(&files(&[Some(&[(g(2), PLT)])]), &[1]);
