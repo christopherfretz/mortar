@@ -4,6 +4,7 @@
 //! stored placement and judged by `Layout::check` against the edited link
 //! (its own assignment, liveness and headers); hops chain, the next one
 //! reading the state the previous one gave.
+#![allow(clippy::many_single_char_names)] // the harness's w, a, p, f, s, h, c
 
 mod common;
 
@@ -99,11 +100,7 @@ fn file_len(w: &World, f: u32) -> u32 {
 /// A full link's regions (IN-30): per body chunk of a hole-tolerant
 /// output section, each run of one file's members of one category, to the
 /// end of the fill hole after it.
-fn regions_of_full_link(
-    w: &World,
-    a: &Assignment<'static>,
-    p: &Placement,
-) -> Vec<StoredRegion> {
+fn regions_of_full_link(w: &World, a: &Assignment<'static>, p: &Placement) -> Vec<StoredRegion> {
     let mut members: BTreeMap<ChunkId, Vec<(u64, u64, u32, u8)>> = BTreeMap::new();
     for f in 1..=nfiles(w) {
         for i in 1..=file_len(w, f) {
@@ -120,9 +117,7 @@ fn regions_of_full_link(
         let ch = &p.chunks[c];
         let ChunkKind::Body(part) = ch.kind else { continue };
         let o = &a.outsecs[part.out];
-        if ch.flags & SHF_ALLOC == 0
-            || slack::class(o.name, o.flags) != slack::Class::Tolerant
-        {
+        if ch.flags & SHF_ALLOC == 0 || slack::class(o.name, o.flags) != slack::Class::Tolerant {
             continue;
         }
         list.sort_unstable();
@@ -406,7 +401,12 @@ fn in_stored_ids(mut a: Assignment<'static>, stored: &Assignment<'static>) -> As
         .outsecs
         .iter()
         .map(|(_, o)| {
-            stored.outsecs.iter().find(|(_, x)| x.name == o.name).map(|(id, _)| id).expect("an output section the stored link has")
+            stored
+                .outsecs
+                .iter()
+                .find(|(_, x)| x.name == o.name)
+                .map(|(id, _)| id)
+                .expect("an output section the stored link has")
         })
         .collect();
     assert_eq!(a.outsecs.len(), stored.outsecs.len(), "the same output sections");
@@ -417,7 +417,7 @@ fn in_stored_ids(mut a: Assignment<'static>, stored: &Assignment<'static>) -> As
     }
     let mut outs = stored.outsecs.clone();
     for (old, o) in a.outsecs.iter() {
-        outs[map[old.0 as usize]] = o.clone();
+        outs[map[old.0 as usize]] = *o;
     }
     a.outsecs = outs;
     a
@@ -433,7 +433,14 @@ impl State {
                 (1..=file_len(&self.world, f))
                     .map(|i| {
                         let h = &self.world.headers[self.world.sid(f, i)];
-                        Sec { name: h.name, ty: h.sh_type, flags: h.flags, size: h.size, align: h.align, link: 0 }
+                        Sec {
+                            name: h.name,
+                            ty: h.sh_type,
+                            flags: h.flags,
+                            size: h.size,
+                            align: h.align,
+                            link: 0,
+                        }
                     })
                     .collect()
             })
@@ -483,7 +490,13 @@ fn hole_inside_kept_shrunk_section() {
     let (s3, d3) = hop(&s2, &Edit::new(files).changed(&[1])).unwrap();
     assert_eq!(s3.addr(1, 1), Some(a0));
     assert!(d3.moved.is_empty());
-    assert!(!s3.placed.placement.holes.iter().any(|h| h.chunk == chunk && h.offset < off + 100 && h.offset + h.size > off));
+    assert!(
+        !s3.placed
+            .placement
+            .holes
+            .iter()
+            .any(|h| h.chunk == chunk && h.offset < off + 100 && h.offset + h.size > off)
+    );
 }
 
 // spec: incr.md IN-72 item 2 (WP-211, review-wp207 §10: three sections of
@@ -590,7 +603,13 @@ fn new_section_without_region_opens_tail_region() {
     let (s3, d3) = hop(&s2, &Edit::new(files).changed(&[1])).unwrap();
     assert_eq!(d3.killed.len(), 1);
     let (chunk, off) = (r.chunk, r.offset);
-    assert!(s3.placed.placement.holes.iter().any(|h| h.chunk == chunk && h.offset == off && h.size == r.capacity));
+    assert!(
+        s3.placed
+            .placement
+            .holes
+            .iter()
+            .any(|h| h.chunk == chunk && h.offset == off && h.size == r.capacity)
+    );
 }
 
 // spec: incr.md IN-72 item 3 (M-4 (b): several files' new regions in one
@@ -797,8 +816,8 @@ fn comdat_keeper_moves_to_unchanged_file() {
     // hop 2: file 1 takes its copy back and keeps it; file 2 drawn in, its
     // copy not kept: killed, a hole.
     files[0].push(text(b".text.inl", 40));
-    let (s2, d2) = hop(&s1, &Edit::new(files.clone()).changed(&[1]).drawn(&[2]).not_kept(&[(2, 2)]))
-        .unwrap();
+    let (s2, d2) =
+        hop(&s1, &Edit::new(files.clone()).changed(&[1]).drawn(&[2]).not_kept(&[(2, 2)])).unwrap();
     assert!(s2.addr(2, 2).is_none());
     assert!(d2.killed.contains(&s1.world.sid(2, 2)));
     assert!(s2.addr(1, 2).is_some());
@@ -932,10 +951,12 @@ fn section_without_output_is_new_output_section() {
 // the island cannot take a region: reserve-exhausted, WP-216 F-3)
 #[test]
 fn thunk_growth_moves_etext() {
-    let files = vec![vec![text(b".text.a", 100), text(b".text.b", 40)], vec![text(b".text.c", 200)]];
+    let files =
+        vec![vec![text(b".text.a", 100), text(b".text.b", 40)], vec![text(b".text.c", 200)]];
     let s0 = first(Machine::AArch64, &files);
     let p0 = &s0.placed.placement;
-    let island = p0.order.iter().copied().find(|&c| matches!(p0.chunks[c].kind, ChunkKind::Patches(_)));
+    let island =
+        p0.order.iter().copied().find(|&c| matches!(p0.chunks[c].kind, ChunkKind::Patches(_)));
     let island = island.expect("an AArch64 .text has an island");
     let mut files = s0.files();
     files[0][1].size = 60; // grows in place inside the region's slack.
@@ -1074,7 +1095,9 @@ impl LayoutRows for Counting<'_> {
 #[test]
 fn reads_only_what_changed() {
     let files: Vec<Vec<Sec>> = (0..60)
-        .map(|_| vec![text(b".text", 64), data(b".data", 16), bss(b".bss", 32), rodata(b".rodata", 8)])
+        .map(|_| {
+            vec![text(b".text", 64), data(b".data", 16), bss(b".bss", 32), rodata(b".rodata", 8)]
+        })
         .collect();
     let s0 = first(Machine::X86_64, &files);
     let mut files = s0.files();
@@ -1177,7 +1200,8 @@ fn m1_fixture(dir: &str) -> BTreeMap<String, Obj> {
 /// PROGBITS/NOBITS, not empty, not merged, not `.eh_frame`, in a
 /// hole-tolerant output section; with their ELF index.
 fn m1_sections(o: &Obj) -> (Vec<Sec>, Vec<Anchor<'static>>, Vec<u32>) {
-    const TOL: [&[u8]; 6] = [b".text", b".rodata", b".data.rel.ro", b".data", b".bss", b".gcc_except_table"];
+    const TOL: [&[u8]; 6] =
+        [b".text", b".rodata", b".data.rel.ro", b".data", b".bss", b".gcc_except_table"];
     let mut secs = Vec::new();
     let mut anchors = Vec::new();
     let mut index = Vec::new();
@@ -1196,7 +1220,7 @@ fn m1_sections(o: &Obj) -> (Vec<Sec>, Vec<Anchor<'static>>, Vec<u32>) {
     (secs, anchors, index)
 }
 
-/// The first link of main.o, strutil_base.o and a stand-in for the rest of
+/// The first link of `main.o`, `strutil_base.o` and a stand-in for the rest of
 /// protoc's files (its `.data.rel.ro`, `.data` and `.bss`, which addfn's
 /// new `.data.rel.ro` needs, M-4 (a)), on x86-64 (no islands, so `.text`'s
 /// tail is its body's), and the five hops' edits.
@@ -1272,3 +1296,31 @@ fn edit_moves_only_changed_sections() {
         assert_eq!(got, expect, "{dir}");
     }
 }
+
+// Item 11 (a winning common is a section of its winning file) needs each
+// common's SymbolId, size and alignment in the update's input, and
+// `SectionChange` carries none: `LayoutDelta::commons` stays empty
+// (WP-216.md, R-2). These tests wait for that ruling.
+
+#[test]
+#[ignore = "item 11: no common input in SectionChange (WP-216.md R-2)"]
+fn n4_common_grows() {}
+
+#[test]
+#[ignore = "item 11: no common input in SectionChange (WP-216.md R-2)"]
+fn common_appears() {}
+
+#[test]
+#[ignore = "item 11: no common input in SectionChange (WP-216.md R-2)"]
+fn two_commons_one_grows() {}
+
+#[test]
+#[ignore = "item 11: no common input in SectionChange (WP-216.md R-2)"]
+fn common_winner_moves_to_unchanged_file() {}
+
+// IN-28b's slots: the order of IRELATIVE slots needs the update's slot
+// demand (which IFUNCs a changed file now needs), and the input has none
+// (WP-216.md R-4).
+#[test]
+#[ignore = "IN-28b slots: no slot demand input (WP-216.md R-4)"]
+fn two_ifuncs_added_irelative_order() {}

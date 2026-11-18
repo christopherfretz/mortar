@@ -139,8 +139,8 @@ fn admit(
     if align <= 1u64 << ch.align.min(63) {
         return Ok(());
     }
-    let at_addr = ch.addr.is_none_or(|a| a % align == 0);
-    let at_offset = !ch.in_file() || ch.offset % align == 0;
+    let at_addr = ch.addr.is_none_or(|a| a.is_multiple_of(align));
+    let at_offset = !ch.in_file() || ch.offset.is_multiple_of(align);
     if at_addr && at_offset && align <= page {
         ch.align = align.trailing_zeros() as u8;
         return Ok(());
@@ -190,8 +190,9 @@ impl Base {
         if rows.iter().enumerate().any(|(i, (id, _))| id.0 as usize != i) {
             return Err(corrupt("CHUNKS ids are not dense"));
         }
-        let chunks: Column<ChunkId, Chunk> = Column::from_vec(rows.into_iter().map(|(_, c)| c).collect())
-            .map_err(|_| corrupt("CHUNKS too large"))?;
+        let chunks: Column<ChunkId, Chunk> =
+            Column::from_vec(rows.into_iter().map(|(_, c)| c).collect())
+                .map_err(|_| corrupt("CHUNKS too large"))?;
         let order = stored.order()?;
         let n = chunks.len() as usize;
         let mut at = vec![usize::MAX; n];
@@ -523,7 +524,12 @@ impl Group {
         if a == e {
             // An empty section is free anywhere but strictly inside
             // another.
-            return self.occupied.range(..a).next_back().filter(|&(_, &end)| end > a).map(|(_, &x)| x);
+            return self
+                .occupied
+                .range(..a)
+                .next_back()
+                .filter(|&(_, &end)| end > a)
+                .map(|(_, &x)| x);
         }
         self.occupied.range(..e).next_back().filter(|&(_, &end)| end > a).map(|(_, &x)| x)
     }
@@ -553,6 +559,9 @@ impl Group {
         None
     }
 }
+
+/// A touched chunk: its touched regions' ranges and its new holes.
+type Touched = (Vec<(u64, u64)>, Vec<Hole>);
 
 /// The update's working state.
 struct Update<'b, 'c> {
@@ -668,14 +677,15 @@ impl<'b, 'c> Update<'b, 'c> {
                 ChunkKind::Body(p) if p.out == r.out => {}
                 _ => return Err(corrupt(format!("a region of file {} not in a body", file.0))),
             }
-            self.groups
-                .entry((file, r.out, r.category))
-                .or_default()
-                .regions
-                .push(Reg { row: *r, start, end });
+            self.groups.entry((file, r.out, r.category)).or_default().regions.push(Reg {
+                row: *r,
+                start,
+                end,
+            });
         }
         self.opened.extend(regions.iter().copied());
-        for g in self.groups.range_mut((file, OutSecId(0), 0)..=(file, OutSecId(u32::MAX), u8::MAX)) {
+        for g in self.groups.range_mut((file, OutSecId(0), 0)..=(file, OutSecId(u32::MAX), u8::MAX))
+        {
             g.1.regions.sort_by_key(|r| r.row.ordinal);
         }
 
@@ -685,8 +695,13 @@ impl<'b, 'c> Update<'b, 'c> {
             let c = self.changes[i];
             let prev = self.prev[i].as_ref();
             let placed_before = prev.is_some_and(|p| p.place.get().is_some());
-            let shape =
-                Shape { index: c.index, name: c.key.name, sh_type: c.sh_type, flags: c.sh_flags, size: c.size };
+            let shape = Shape {
+                index: c.index,
+                name: c.key.name,
+                sh_type: c.sh_type,
+                flags: c.sh_flags,
+                size: c.size,
+            };
             let fate = base.fate(&shape, placed_before);
             let here = c.live && c.kept;
             if !here {
@@ -705,7 +720,11 @@ impl<'b, 'c> Update<'b, 'c> {
                         let chunk = base.chunks.get(ch)?;
                         let same = chunk.kind.out() == Some(out)
                             && p.size == c.size
-                            && chunk.addr.unwrap_or(0).checked_add(off)? % align_bytes(c.align)? == 0;
+                            && chunk
+                                .addr
+                                .unwrap_or(0)
+                                .checked_add(off)?
+                                .is_multiple_of(align_bytes(c.align)?);
                         same.then_some((ch, off))
                     });
                     match keep {
@@ -726,63 +745,67 @@ impl<'b, 'c> Update<'b, 'c> {
         let page = base.rules.max_page;
         for ((out, cat), mut list) in by_group {
             list.sort_by_key(|&i| self.changes[i].index);
-            let g = self.groups.entry((file, out, cat)).or_default();
+            let grp = self.groups.entry((file, out, cat)).or_default();
             // Where each section's previous version was in this (O, c).
             let mut was: Vec<Option<(u64, usize)>> = Vec::with_capacity(list.len());
             for &i in &list {
-                let w = match self.prev[i].as_ref().and_then(|p| p.place.get().map(|pl| (p, pl))) {
-                    Some((p, (ch, off)))
+                let row = self.prev[i].as_ref();
+                let before = match row.and_then(|row| row.place.get().map(|at| (row, at))) {
+                    Some((row, (ch, off)))
                         if base.chunk(ch)?.kind.out() == Some(out)
                             && matches!(base.chunk(ch)?.kind, ChunkKind::Body(_))
-                            && category(&p.name, p.sh_flags) == cat =>
+                            && category(&row.name, row.sh_flags) == cat =>
                     {
-                        let a = base.addr(ch, off)?;
-                        g.regions.iter().position(|r| r.start <= a && a < r.end.max(r.start + 1)).map(|k| (a, k))
+                        let addr = base.addr(ch, off)?;
+                        grp.regions
+                            .iter()
+                            .position(|r| r.start <= addr && addr < r.end.max(r.start + 1))
+                            .map(|pos| (addr, pos))
                     }
                     _ => None,
                 };
-                was.push(w);
+                was.push(before);
             }
             // Keep.
             let mut rest = Vec::new();
-            for (k, &i) in list.iter().enumerate() {
+            for (pos, &i) in list.iter().enumerate() {
                 let c = &self.changes[i];
                 let align = align_bytes(c.align).unwrap_or(1);
                 let old_size = self.prev[i].as_ref().map_or(0, |p| p.size);
-                match was[k] {
-                    Some((a, r)) if c.size <= old_size && a % align == 0 => {
-                        let e = a.checked_add(c.size).ok_or_else(not_implemented)?;
-                        if g.clash(a, e).is_some() || e > g.regions[r].end {
+                match was[pos] {
+                    Some((a, r)) if c.size <= old_size && a.is_multiple_of(align) => {
+                        let end = a.checked_add(c.size).ok_or_else(not_implemented)?;
+                        if grp.clash(a, end).is_some() || end > grp.regions[r].end {
                             // Two previous versions overlapping: the stored
                             // rows are not a layout.
                             return Err(corrupt(format!("sections of file {} overlap", file.0)));
                         }
-                        g.take(a, e);
-                        let reg = &g.regions[r];
+                        grp.take(a, end);
+                        let reg = &grp.regions[r];
                         admit(&mut self.chunks, reg.row.chunk, align, page, c.key.name)?;
                         self.place[i] = Some((reg.row.chunk, reg.row.offset + (a - reg.start)));
                     }
-                    _ => rest.push(k),
+                    _ => rest.push(pos),
                 }
             }
             // Place.
-            for k in rest {
-                let i = list[k];
+            for pos in rest {
+                let i = list[pos];
                 let c = &self.changes[i];
                 let align = align_bytes(c.align).unwrap_or(1);
                 let mut got = None;
-                if let Some((a, r)) = was[k]
-                    && a % align == 0
-                    && let Some(e) = a.checked_add(c.size)
-                    && e <= g.regions[r].end
-                    && g.clash(a, e).is_none()
+                if let Some((a, r)) = was[pos]
+                    && a.is_multiple_of(align)
+                    && let Some(end) = a.checked_add(c.size)
+                    && end <= grp.regions[r].end
+                    && grp.clash(a, end).is_none()
                 {
                     got = Some((a, r));
                 }
                 if got.is_none()
-                    && let Some(a) = g.first_fit(c.size, align)
+                    && let Some(a) = grp.first_fit(c.size, align)
                 {
-                    let r = g
+                    let r = grp
                         .regions
                         .iter()
                         .position(|r| r.start <= a && a + c.size <= r.end)
@@ -791,13 +814,13 @@ impl<'b, 'c> Update<'b, 'c> {
                 }
                 match got {
                     Some((a, r)) => {
-                        let reg = &g.regions[r];
+                        let reg = &grp.regions[r];
                         admit(&mut self.chunks, reg.row.chunk, align, page, c.key.name)?;
                         let at = (reg.row.chunk, reg.row.offset + (a - reg.start));
-                        g.take(a, a + c.size);
+                        grp.take(a, a + c.size);
                         self.place[i] = Some(at);
                     }
-                    None => g.overflow.push(i),
+                    None => grp.overflow.push(i),
                 }
             }
         }
@@ -821,7 +844,13 @@ impl<'b, 'c> Update<'b, 'c> {
             }
         }
         for p in fixed_rows {
-            let shape = Shape { index: p.index, name: &p.name, sh_type: p.sh_type, flags: p.sh_flags, size: p.size };
+            let shape = Shape {
+                index: p.index,
+                name: &p.name,
+                sh_type: p.sh_type,
+                flags: p.sh_flags,
+                size: p.size,
+            };
             match base.fate(&shape, true) {
                 Fate::Fixed { why, .. } => killed_fixed.push((p.clone(), why)),
                 // A dead `.eh_frame` or merged section of a changed file
@@ -837,12 +866,17 @@ impl<'b, 'c> Update<'b, 'c> {
         // Item 4: a live `SHF_LINK_ORDER` section in a file whose code
         // moved, died or revived (its order follows its target's).
         for (i, c) in self.changes.iter().enumerate() {
-            if !matches!(self.fate[i], Fate::Fixed { why: Why::LinkOrder, .. }) || self.place[i].is_none() {
+            if !matches!(self.fate[i], Fate::Fixed { why: Why::LinkOrder, .. })
+                || self.place[i].is_none()
+            {
                 continue;
             }
-            let moved = self.changes.iter().enumerate().any(|(j, d)| {
-                d.file == c.file && self.region_section_changed(j)
-            }) || self.orphans.iter().any(|o| o.file == c.file);
+            let moved = self
+                .changes
+                .iter()
+                .enumerate()
+                .any(|(j, d)| d.file == c.file && self.region_section_changed(j))
+                || self.orphans.iter().any(|o| o.file == c.file);
             if moved {
                 return Err(Why::LinkOrder.reason(c.key.name, "follows a section that moved"));
             }
@@ -881,11 +915,10 @@ impl<'b, 'c> Update<'b, 'c> {
             self.groups.iter().filter(|(_, g)| !g.overflow.is_empty()).map(|(k, _)| *k).collect();
         for key in keys {
             let (file, out, cat) = key;
-            let last = *base
-                .of_out
-                .get(&out)
-                .and_then(|v| v.last())
-                .ok_or_else(|| IncrReason::NewOutputSection(format!("output section {}", out.0)))?;
+            let last =
+                *base.of_out.get(&out).and_then(|v| v.last()).ok_or_else(|| {
+                    IncrReason::NewOutputSection(format!("output section {}", out.0))
+                })?;
             let chunk = *base.chunk(last)?;
             let name = base.names.get(&out).map_or_else(String::new, |n| text(n));
             if !matches!(chunk.kind, ChunkKind::Body(_)) {
@@ -894,20 +927,27 @@ impl<'b, 'c> Update<'b, 'c> {
                 // (`spec/landed/incr/WP-216.md` §5 F-3).
                 return Err(IncrReason::ReserveExhausted(format!(
                     "{name}: its tail is in a {} chunk",
-                    if matches!(chunk.kind, ChunkKind::Patches(_)) { "patch island" } else { "merged" }
+                    if matches!(chunk.kind, ChunkKind::Patches(_)) {
+                        "patch island"
+                    } else {
+                        "merged"
+                    }
                 )));
             }
             let g = self.groups.get_mut(&key).ok_or_else(not_implemented)?;
-            let list = std::mem::take(&mut g.overflow);
-            let max_align =
-                list.iter().map(|&i| align_bytes(self.changes[i].align).unwrap_or(1)).max().unwrap_or(1);
+            let pending = std::mem::take(&mut g.overflow);
+            let max_align = pending
+                .iter()
+                .map(|&i| align_bytes(self.changes[i].align).unwrap_or(1))
+                .max()
+                .unwrap_or(1);
             admit(&mut self.chunks, last, max_align, base.rules.max_page, name.as_bytes())?;
             let caddr = chunk.addr.ok_or_else(|| corrupt("a body chunk without an address"))?;
             let size = self.chunks[last].size;
             let tail = caddr.checked_add(size).ok_or_else(not_implemented)?;
             let start = round_up(tail, max_align).ok_or_else(not_implemented)?;
             let mut at = start;
-            for &i in &list {
+            for &i in &pending {
                 let c = &self.changes[i];
                 at = round_up(at, align_bytes(c.align).unwrap_or(1)).ok_or_else(not_implemented)?;
                 self.place[i] = Some((last, at - caddr));
@@ -931,7 +971,12 @@ impl<'b, 'c> Update<'b, 'c> {
             let end = start.checked_add(capacity).ok_or_else(not_implemented)?;
             g.regions.push(Reg { row, start, end });
             if start > tail {
-                self.pads.push(Hole { chunk: last, offset: size, size: start - tail, kind: HoleKind::Fill });
+                self.pads.push(Hole {
+                    chunk: last,
+                    offset: size,
+                    size: start - tail,
+                    kind: HoleKind::Fill,
+                });
             }
             self.chunks[last].size = row.offset + capacity;
         }
@@ -954,10 +999,17 @@ impl<'b, 'c> Update<'b, 'c> {
                 }
                 let out = ch.kind.out().ok_or_else(not_implemented)?;
                 let need = ch.size - ch.capacity;
-                let osize: u64 = base.of_out.get(&out).map_or(0, |v| v.iter().map(|&x| self.chunks[x].size).sum());
+                let osize: u64 = base
+                    .of_out
+                    .get(&out)
+                    .map_or(0, |v| v.iter().map(|&x| self.chunks[x].size).sum());
                 let followers = &members[k + 1..];
                 let relro = ch.relro || followers.iter().any(|&f| self.chunks[f].relro);
-                let mut a = followers.iter().map(|&f| 1u64 << self.chunks[f].align.min(63)).max().unwrap_or(1);
+                let mut a = followers
+                    .iter()
+                    .map(|&f| 1u64 << self.chunks[f].align.min(63))
+                    .max()
+                    .unwrap_or(1);
                 if relro {
                     a = a.max(page);
                 }
@@ -981,7 +1033,9 @@ impl<'b, 'c> Update<'b, 'c> {
                 ch.addr = ch.addr.and_then(|x| x.checked_add(s));
                 ch.offset = ch.offset.checked_add(s).ok_or_else(not_implemented)?;
                 if ch.addr.is_none() {
-                    return Err(IncrReason::ReserveExhausted("growth step past the address space".into()));
+                    return Err(IncrReason::ReserveExhausted(
+                        "growth step past the address space".into(),
+                    ));
                 }
             }
             let mem_end: u128 = members
@@ -998,7 +1052,11 @@ impl<'b, 'c> Update<'b, 'c> {
                 }
                 None => base.address_limit,
             };
-            let name = |r: usize| base.names.get(&base.chunks[base.runs[r][0]].kind.out().unwrap_or(OutSecId(u32::MAX))).map_or_else(|| "a PT_LOAD".to_owned(), |n| text(n));
+            let name = |r: usize| {
+                base.names
+                    .get(&base.chunks[base.runs[r][0]].kind.out().unwrap_or(OutSecId(u32::MAX)))
+                    .map_or_else(|| "a PT_LOAD".to_owned(), |n| text(n))
+            };
             if mem_end > limit {
                 return Err(IncrReason::ReserveExhausted(format!(
                     "the PT_LOAD of {}: segment reserve (memory)",
@@ -1033,7 +1091,7 @@ impl<'b, 'c> Update<'b, 'c> {
     /// padding before a new region; the stored holes of the touched
     /// chunks elsewhere are kept.
     fn holes(&mut self, stored: &StoredLayout<'_>) -> Result<(), IncrReason> {
-        let mut by_chunk: BTreeMap<ChunkId, (Vec<(u64, u64)>, Vec<Hole>)> = BTreeMap::new();
+        let mut by_chunk: BTreeMap<ChunkId, Touched> = BTreeMap::new();
         for g in self.groups.values() {
             for r in &g.regions {
                 let caddr = r.start - r.row.offset;
@@ -1042,12 +1100,22 @@ impl<'b, 'c> Update<'b, 'c> {
                 let mut at = r.start;
                 for (&s, &e) in g.occupied.range(r.start..r.end) {
                     if s > at {
-                        entry.1.push(Hole { chunk: r.row.chunk, offset: at - caddr, size: s - at, kind: HoleKind::Fill });
+                        entry.1.push(Hole {
+                            chunk: r.row.chunk,
+                            offset: at - caddr,
+                            size: s - at,
+                            kind: HoleKind::Fill,
+                        });
                     }
                     at = at.max(e);
                 }
                 if r.end > at {
-                    entry.1.push(Hole { chunk: r.row.chunk, offset: at - caddr, size: r.end - at, kind: HoleKind::Fill });
+                    entry.1.push(Hole {
+                        chunk: r.row.chunk,
+                        offset: at - caddr,
+                        size: r.end - at,
+                        kind: HoleKind::Fill,
+                    });
                 }
             }
         }
@@ -1121,12 +1189,15 @@ impl<'b, 'c> Update<'b, 'c> {
                 .find(|&&c| {
                     let ch = &base.chunks[c];
                     ch.takes_memory()
-                        && ch.addr.is_some_and(|s| s <= a && u128::from(a) < u128::from(s) + u128::from(ch.capacity))
+                        && ch.addr.is_some_and(|s| {
+                            s <= a && u128::from(a) < u128::from(s) + u128::from(ch.capacity)
+                        })
                 })
                 .map_or(0, |&c| self.shift[c.0 as usize])
         };
         let tls = base.rest.tls.map(|mut t| {
-            let first = base.order.iter().find(|&&c| base.chunks[c].is_alloc() && base.chunks[c].is_tls());
+            let first =
+                base.order.iter().find(|&&c| base.chunks[c].is_alloc() && base.chunks[c].is_tls());
             t.start += first.map_or(0, |&c| self.shift[c.0 as usize]);
             t
         });
