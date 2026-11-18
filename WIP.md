@@ -1,35 +1,25 @@
 # WIP: WP-225 (U-10, the join)
 
-Done: Step 0 (record "Step 0"); rulings in
-`/Volumes/AgentWork/mortar-helper/briefs/wp-225-rulings.md`.
+Done: Step 0 (aa4ad63d). M1: e8e3daff (G-13 knob), 4539fdaf (the flip,
+Start::Update, U1-U3, lane.py's line), 51676760 (the record's M1
+section: findings, static-identical rows, cost). Handed back at M1
+(context budget).
 
-M1 (in progress, on this branch):
-- e8e3daff G-13: `mortar_incr::testhook::small_output_bound`
-  (`MORTAR_INCR_SMALL_OUTPUT`, testhooks only).
-- the flip (uncommitted while its tests go green): format 5 at `S`
-  (`incremental.rs` `write_state`/`state5_bytes`), U1 on format 5
-  (`check`: the flag first, `state5::open`, the mortar version,
-  `output_matches5` through P's descriptor, `boot_check`), `small-output`
-  with the knob, `Start::Update` -> `update::run` (U2 `detect`, U3, the
-  debug condition, `(live)`, then `(resolve)`), `lib.rs` handles it.
-  Format 4 only: the side state `<S>.format4` (`testhook::state4`,
-  `MORTAR_INCR_STATE4=1`; `mortar::invoke_state4`), and the legacy mode
-  (`mortar::invoke_legacy4`, `replay_link`: no format-5 data, no IN-34a
-  pads) for the format-4 replay's tests. The floor reads/writes the side
-  state. lane.py: one line (knob + side state).
+Blocked on a ruling: the dry run is gone from plain builds, so the
+L10 lane (`cargo xtask l10 --quick`, in `xtask ci`) and the IN-63a
+oracle lane (`crates/mortar/tests/incr_oracle.rs`) FAIL "the report
+has no `delta end`". Options in the record (M1, 0.7's items).
+static-identical: 12 incremental rows differ (IN-34a pads), baseline
+not updated.
 
-Next: tests green (crate tests: incremental, incr_review, update_write,
-state5_capture, streams), then `cargo xtask l10 --quick` (L10's release
-subject loses its dry run: see the open question below), incr-update,
-the quick gate, static-identical (incremental rows change by IN-34a
-pads: say which), the cost of the incremental full link (protoc).
+Next (M2, path (A)): `update::image_link` (the whole front over the
+new inputs, P_U replayed), G-2's `pub fn` at the end of `capture.rs`
+(own commit), refill, update_map, plan_patch, write_with with the w5
+closure, the (d) check after every hop, the named M2 tests; G-10
+(`--defsym` symbol operand -> (layout)), G-7 (-Map/-M/--print-map ->
+(image)), G-15 (diags), G-6 (state5). Start in `update/mod.rs`
+`steps()` where it returns `(resolve)`.
 
-Open: L10 runs the RELEASE mortar with `--incremental-report`; after
-the flip a release build has no format-4 state, so no dry run, and the
-judge's oracle FAILs "no delta end" for reasons small-output /
-update-not-implemented. Needs a ruling (L10 on the hooked binary with
-MORTAR_INCR_STATE4=1, or the judge's rule) unless it passes.
-
-Resume: `git diff` in this worktree; scripts in
-`/Volumes/AgentWork/mortar-helper/.build/target-wp-155/wp225/` (`t.sh
-<log> <cargo test args>`, `before.sh`; `before.log` = the "before").
+Resume: scripts in `/Volumes/AgentWork/mortar-helper/.build/target-wp-155/wp225/`
+(`t.sh <log> <cargo test args>`, `gate.sh`, `cost.sh`, `m1.sh`);
+`bin/mortar-base` is the base's release build.
