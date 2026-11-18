@@ -81,7 +81,7 @@ pub const CRASH_POINTS: &[&str] = &[
 pub fn crash_point(name: &str) {
     debug_assert!(CRASH_POINTS.contains(&name), "unknown crash point {name}");
     if std::env::var_os("MORTAR_INCR_CRASH").is_some_and(|v| v == name) {
-        eprintln!("mortar: crash hook {name}");
+        mortar_diag::stream::to_stderr(&format!("mortar: crash hook {name}\n"));
         std::process::abort();
     }
 }
@@ -111,7 +111,7 @@ pub fn dirty_ranges(ranges: &[DirtyRange]) {
         let _ = writeln!(text, "{:#x} {:#x}", r.offset, r.len);
     }
     if let Err(e) = std::fs::write(&path, text) {
-        eprintln!("mortar: dirty ranges hook: {e}");
+        mortar_diag::stream::to_stderr(&format!("mortar: dirty ranges hook: {e}\n"));
         std::process::abort();
     }
 }
