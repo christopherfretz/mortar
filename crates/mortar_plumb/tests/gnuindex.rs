@@ -40,8 +40,11 @@ fn load(arch: &str, name: &str) -> Link {
     let output = std::fs::read(d.join(name)).unwrap();
     let text = std::fs::read_to_string(d.join(format!("{name}.map"))).unwrap();
     let map = map::parse(Format::Mortar, &text).unwrap_or_else(|e| panic!("{name}: {}", e.message));
-    let files =
-        map.paths().into_iter().map(|p| (p.to_string(), std::fs::read(d.join(p)).unwrap())).collect();
+    let files = map
+        .paths()
+        .into_iter()
+        .map(|p| (p.to_string(), std::fs::read(d.join(p)).unwrap()))
+        .collect();
     Link { output, files, map }
 }
 
@@ -188,30 +191,29 @@ fn wp251_set_left_out_of_plain_output_is_m10() {
 }
 
 /// The map says `incremental` but the line rules the mode out (no
-/// `--incremental`, `--no-incremental` last, or an IN-12 option): one
-/// M10 for the map's word, and the output is judged as a plain one (the
-/// four sets left out are M10).
+/// `--incremental`, `--no-incremental` last, or an IN-12 option): the
+/// map's word is not taken alone, the output is judged as a plain one
+/// and the four sets left out are M10 (none under `--gdb-index`, whose
+/// own row, S-G6, drops them). The negations keep the mode: clean.
 #[test]
-fn wp251_map_word_against_the_line_is_m10() {
-    let cases: [(&[&str], &[&str], &str); 5] = [
-        (&["--incremental=full"], &[], "does not ask for incremental mode"),
-        (&[], &["--no-incremental"], "does not ask for incremental mode"),
-        (&[], &["--sort-common"], "the line's --sort-common makes"),
-        (&[], &["--gdb-index"], "the line's --gdb-index makes"),
-        (&[], &["--compress-debug-sections=zlib"], "the line's --compress-debug-sections makes"),
+fn wp251_map_word_against_the_line_is_plain() {
+    let cases: [(&[&str], &[&str]); 6] = [
+        (&["--incremental=full"], &[]),
+        (&[], &["--no-incremental"]),
+        (&[], &["--sort-common"]),
+        (&[], &["--gdb-index"]),
+        (&[], &["--compress-debug-sections=zlib"]),
+        (&[], &["-r"]),
     ];
     for arch in ARCHES {
-        for (drop, add, text) in cases {
+        for (drop, add) in cases {
             let mut l = load(arch, "inc");
             l.line(drop, add);
             let f = m10(&l.verify());
-            let word: Vec<_> = f.iter().filter(|m| m.contains("the map says 'incremental'")).collect();
-            assert!(word.len() == 1 && word[0].contains(text), "{arch} {add:?}: {f:#?}");
-            // --gdb-index's own row (S-G6) accepts the sets.
             let left = if add == ["--gdb-index"] { 0 } else { 4 };
-            assert_eq!(f.iter().filter(|m| m.contains(LEFT_OUT)).count(), left, "{arch}: {f:#?}");
+            assert_eq!(f.iter().filter(|m| m.contains(LEFT_OUT)).count(), left, "{arch} {add:?}");
+            assert_eq!(f.len(), left, "{arch} {add:?}: {f:#?}");
         }
-        // Negations: the line still asks for the mode.
         for add in [
             &["--gdb-index", "--no-gdb-index"][..],
             &["--compress-debug-sections=none"],
@@ -297,9 +299,6 @@ fn wp251_group_member_set() {
         assert_eq!(d.reason, DiscardReason::Unspecified, "{arch}");
         d.reason = DiscardReason::Comdat;
         let f = m10(&l.verify());
-        assert!(
-            f.len() == 1 && f[0].contains("its group is the keeper"),
-            "{arch}: {f:#?}"
-        );
+        assert!(f.len() == 1 && f[0].contains("its group is the keeper"), "{arch}: {f:#?}");
     }
 }

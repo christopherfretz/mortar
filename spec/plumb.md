@@ -628,21 +628,23 @@ input section:
     inputs: the same section names, types and segments but for the two
     sets; only sizes and addresses differ, by IN-72's slack, which no rule
     can tell from a plain layout). The map's word is therefore not taken
-    alone: a map that says `incremental` beside a line that rules the mode
-    out is M10 once ("the map says 'incremental' but ..."), and the output
-    is then judged as a plain one. The other way (a line that asks for
-    the mode, a map that does not say `incremental`) is not judged: a
-    `SECTIONS` script, the output kind (IN-12, IN-12a) and a full link
-    that writes no state (IN-77b) are not read from the words, so the
-    output is judged as a plain one, where a left-out set is M10.
+    alone: when the map and the line disagree, either way, the output is
+    judged as a plain one, where a left-out set is M10. The disagreement
+    is not itself a finding: mortar's own replay tests
+    (`crates/mortar/tests/incremental.rs`) write maps that say
+    `incremental` from a line without `--incremental` (WP-251 §0), and a
+    line that asks for the mode beside a map that does not say it is
+    right when a `SECTIONS` script, the output kind (IN-12, IN-12a) or a
+    full link that writes no state (IN-77b) made the link plain, none of
+    which the words show.
     Tests: `tests/gnuindex.rs` (mortar's `--incremental=full`, plain,
     `--incremental --sort-common`, COMDAT-group and allocated links, AArch64
     and x86-64: clean; mutations: a set placed in an incremental-mode
     output, the sets' bytes beside `discard` records, the sets left out of
     a plain output, the map's word against the line (no `--incremental`,
     `--no-incremental`, `--sort-common`, `--gdb-index`,
-    `--compress-debug-sections=zlib`) and the negations that keep the
-    mode, `.debug_pubnames` left out, the allocated section left out, a
+    `--compress-debug-sections=zlib`, `-r`: judged plain)
+    and the negations that keep the mode, `.debug_pubnames` left out, the allocated section left out, a
     set with no record, the group's set given `comdat`) and the link test
     `split/incr-gnu-index.test`;
   - a member of a COMDAT group that is not its signature's keeper

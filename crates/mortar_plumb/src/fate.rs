@@ -35,25 +35,13 @@ fn is_gnu_index_name(n: &str) -> bool {
 /// (`spec/plumb.md` §3.3 M10, WP-251): the map says `incremental` AND the
 /// line's words ask for that mode (`--incremental` last, none of IN-12's
 /// options that make the link plain). The output cannot show the mode
-/// (IN-17: the state is a file beside it). `Err`: the map's word against
-/// a line that rules the mode out, the finding's text; the output is then
-/// judged as a plain one.
-pub(crate) fn incremental_mode(map: &Map, opts: &Options) -> Result<bool, String> {
-    if !map.incremental {
-        return Ok(false);
-    }
-    if !opts.incremental {
-        return Err("the map says 'incremental' but the line does not ask for incremental mode \
-                    (no --incremental, or --no-incremental last; incr.md IN-10, IN-11)"
-            .into());
-    }
-    match opts.incr_plain().first() {
-        Some(w) => Err(format!(
-            "the map says 'incremental' but the line's {w} makes an --incremental link a plain \
-             one (incr.md IN-12)"
-        )),
-        None => Ok(true),
-    }
+/// (IN-17: the state is a file beside it), so the map's word is never
+/// taken alone; when the two disagree the output is judged as a plain
+/// one (a left-out set is then M10). The disagreement itself is not a
+/// finding: mortar's own replay tests write `incremental` maps from a line
+/// without `--incremental` (WP-251 §0).
+pub(crate) fn incremental_mode(map: &Map, opts: &Options) -> bool {
+    map.incremental && opts.incremental_by_words()
 }
 
 /// Why a section of a live object may be without a place, by
@@ -457,6 +445,28 @@ pub(crate) fn collect_empty(
     out.len()
 }
 
+/// M10 for the output's own sections (WP-251): each non-allocated one
+/// named `.debug_gnu_pubnames` or `.debug_gnu_pubtypes`, with bytes, in an
+/// incremental-mode output (IN-55 option (A) leaves them out).
+fn gnu_index_in_output(image: &Image<'_>) -> Vec<Finding> {
+    image
+        .sections
+        .iter()
+        .skip(1)
+        .filter(|t| !t.alloc() && is_gnu_index_name(&t.name) && t.shdr.sh_size > 0)
+        .map(|t| {
+            Finding::new(
+                Rule::Map(10),
+                format!(
+                    "the incremental-mode output has section '{}' ({:#x} bytes): \
+                     incr.md IN-55 option (A) leaves the GNU name index out",
+                    t.name, t.shdr.sh_size
+                ),
+            )
+        })
+        .collect()
+}
+
 /// M10 over every section of every live object of mortar's map.
 pub(crate) fn check(
     image: &Image<'_>,
@@ -469,10 +479,7 @@ pub(crate) fn check(
     if map.format != Format::Mortar {
         return out;
     }
-    let incremental = incremental_mode(map, opts).unwrap_or_else(|m| {
-        out.push(Finding::new(Rule::Map(10), m));
-        false
-    });
+    let incremental = incremental_mode(map, opts);
     // IN-55 option (A): in incremental mode no set is placed (WP-251).
     let mut set_placed = false;
     let comdat = comdat_dropped(objs);
@@ -506,10 +513,7 @@ pub(crate) fn check(
                 // update would find a dead unit by name. A set `-S`/`-s`
                 // strips, or in a COMDAT copy not kept, is not this row's.
                 (Place::Whole(_) | Place::Pieces(_) | Place::Merged | Place::Rewritten, _)
-                    if incremental
-                        && gnu_index_set(s)
-                        && !opts.strip_debug
-                        && !comdat[oi][si] =>
+                    if incremental && gnu_index_set(s) && !opts.strip_debug && !comdat[oi][si] =>
                 {
                     set_placed = true;
                     out.push(
@@ -568,18 +572,7 @@ pub(crate) fn check(
     // name in an incremental-mode output that no record places (a record
     // that does is the finding above).
     if incremental && !set_placed {
-        for t in image.sections.iter().skip(1) {
-            if !t.alloc() && is_gnu_index_name(&t.name) && t.shdr.sh_size > 0 {
-                out.push(Finding::new(
-                    Rule::Map(10),
-                    format!(
-                        "the incremental-mode output has section '{}' ({:#x} bytes): \
-                         incr.md IN-55 option (A) leaves the GNU name index out",
-                        t.name, t.shdr.sh_size
-                    ),
-                ));
-            }
-        }
+        out.extend(gnu_index_in_output(image));
     }
     out
 }
