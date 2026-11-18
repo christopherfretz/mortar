@@ -639,12 +639,16 @@ def self_test(opts, log=print):
     cfg = host_cfg('gcc-HOST-O0-nog-nofs-static')
     proj = load_project('gen200')
     out = []
-    changing = {'e1', 'member-replace', 'e2', 'e9', 'e10'}
+    # rows that change a unit's code or data (the wrong subjects need one)
+    changing = {'e1', 'e2', 'e3', 'e5', 'e6', 'e9', 'e10', 'member-replace', 'global-var', 'const-remove',
+                'many-files', 'static-global', 'common-grow', 'tls-grow-shrink'}
 
     def target(steps, seed):
         rng = random.Random('l10-self-test/%d' % seed)
         start = rng.randrange(len(steps) // 2)
-        return next((s['id'] for s in steps[start:] if s['edit'] in changing and s['set']), None)
+        found = [s['id'] for s in steps[1:] if s['edit'] in changing and s['set']]
+        # the first changing step at or after a seeded start, else the first one
+        return next((i for i in found if i >= start), found[0] if found else None)
 
     cases = []
     for name, sub, seed in (('prev-output', 'prev_output.py', 11), ('flip-word', 'flip_word.py', 12)):

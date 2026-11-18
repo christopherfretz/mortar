@@ -1805,7 +1805,8 @@ step; its sequence file goes to `failed/`, and `--minimize` reduces it
 by delta debugging (over steps, then each step's knobs and action) to
 the same failing check, writing `tests/l10/regressions/<label>.json` with
 the seed and the failure's first line; `--regressions` replays every one
-(the nightly run does). A base link mortar refuses by name (`unsupported
+(the nightly run does): a regression fails until what it records is
+fixed, and then guards it. A base link mortar refuses by name (`unsupported
 feature`) ends the sequence as REFUSED; a sequence whose links all fail
 alike is FLAGGED.
 
@@ -1837,7 +1838,12 @@ time. Without `--quick` and without a selection, the nightly run: every
 project of `PROJECTS` x the configurations of `nightly_configs()` x
 seeds 1-3 (3 three-hop) x 30 steps, then the regressions and the self
 test. Under `MORTAR_REQUIRE_TOOLS=1` a skipped configuration is an
-error. COST_PLACEHOLDER
+error. Measured (WP-067, 12 shared cores at a load of 6-15): the
+smoke takes 51 s warm, 65 s with an empty object cache (9 s compiling
+550 objects); the nightly run 120 sequences, about 10,000 links, 44
+minutes at `-j 4`, scratch peak 1.6 GB under `.build/target-*/l10/`.
+The oracle and the equivalence check are the largest phases (a quarter
+of the time each). `--project protoc` (by name; 6 steps) takes 100 s.
 
 ## Hosted CI
 

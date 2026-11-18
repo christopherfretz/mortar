@@ -1,0 +1,35 @@
+{
+ "lane": "l10",
+ "version": 1,
+ "project": "corpus40",
+ "config": "clang-x64-O2-nog-nofs-static",
+ "seed": 2,
+ "subject": "mortar",
+ "env": {},
+ "rows": null,
+ "hops": null,
+ "steps": [
+  {
+   "id": 5,
+   "edit": "e9",
+   "set": {
+    "e9": true
+   },
+   "action": null,
+   "hop": 3,
+   "fault": null
+  },
+  {
+   "id": 6,
+   "edit": "e6",
+   "set": {
+    "e6": true
+   },
+   "action": null,
+   "hop": 1,
+   "fault": null
+  }
+ ],
+ "failure": "step 6 (e6) equiv: FAIL equiv exit 1: F: 0 findings, 26634 records | equiv: 3 findings; X 0 findings, F 0 findings; 23233 records, 1249886 bytes, 4589 symbols, 2943 table entries compared",
+ "check": "equiv"
+}
