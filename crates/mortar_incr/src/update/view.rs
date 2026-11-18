@@ -206,9 +206,9 @@ pub trait StateRows: Sync {
     /// `state-corrupt`.
     fn key_refs(&self, key: SymbolId) -> Rows<Vec<KeyRefRow>>;
     /// The `GROUPS` rows of a signature (kind 44; key: every row of the
-    /// signature, one per live file with a copy), ascending by `file`, no
-    /// tombstone; the keeper is [`super::rows::keeper`] of them (WP-215
-    /// D2).
+    /// signature, one per live file with a copy), in **no promised
+    /// order**, no tombstone; the keeper is [`super::rows::keeper`] of
+    /// them, by the files' current `FILES.rank` (WP-215 D2).
     ///
     /// # Errors
     /// `state-corrupt`.
@@ -224,22 +224,25 @@ pub trait StateRows: Sync {
     /// `state-corrupt`.
     fn holes_in(&self, chunk: ChunkId) -> Rows<Vec<HoleRow>>;
     /// A key's `COMMONS` rows (kind 46; key: one per live file with a
-    /// common mention of it), ascending by `file`, no tombstone (WP-215
-    /// D6).
+    /// common mention of it), in **no promised order**, no tombstone
+    /// (WP-215 D6).
     ///
     /// # Errors
     /// `state-corrupt`.
     fn commons(&self, key: SymbolId) -> Rows<Vec<CommonRow>>;
-    /// A key's common as resolve.md §3.3 gives it (kind 46; key):
-    /// [`super::rows::winning_common`] of [`Self::commons`] (the winning
-    /// file, the maximum size and alignment), `None` when no live file
-    /// has a common mention of it. Provided: an implementation does not
-    /// override it (no winner is stored).
+    /// A key's **stored** common as resolve.md §3.3 gives it (kind 46;
+    /// key, plus one `FILES` row per common mention):
+    /// [`super::rows::winning_common`] of [`Self::commons`] ranked by this
+    /// view's own `FILES.rank` (the winning file, the maximum size and
+    /// alignment), `None` when no live file has a common mention of it.
+    /// An update whose changed, appeared or drawn-in files have new ranks
+    /// calls `winning_common` itself with the current ranks. Provided: an
+    /// implementation does not override it (no winner is stored).
     ///
     /// # Errors
     /// `state-corrupt`.
     fn common(&self, key: SymbolId) -> Rows<Option<CommonRow>> {
-        Ok(super::rows::winning_common(&self.commons(key)?))
+        super::rows::winning_common(&self.commons(key)?, |f| Ok(self.file(FileId(f))?.rank))
     }
     /// An ODR key's `ODR_CLASSES` rows (kind 47; key). **PROVISIONAL
     /// (U-8's design step)**: the key's numbering and this accessor's
