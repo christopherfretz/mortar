@@ -1569,15 +1569,11 @@ must make possible, so that M1 does not foreclose it.
   update is IN-72 (from the stored layout, never a fresh one); this
   spec's own rules apply to its result, which `Layout::check` accepts
   (WP-212 applied WP-202's §R.5 and WP-207's §R.5b).
-- **L-145 [C] [M7]** Step 4 reruns stage D: a sequential O(chunks) pass
-  that recomputes every address, alignment gap, 843419 start padding
-  and the `.pad.relro` size from the stage C output and the patch
-  set (L-21). Stages A to C rerun only for the output sections whose
-  members changed. Then the fixed point (arch.md §6) starts from the
-  previous patches, and round 1 re-evaluates every site against the new
-  addresses: its cost is one pass over the branch and erratum sites of
-  the code, as in a full link (the fast path of L-113 applies). Then
-  stage F, and the refill of every unit that moved.
+- **L-145 [C] [M7]** An update's delta layout is `spec/incr.md` IN-72;
+  its islands keep the capacity the first link gave them (IN-72 item 9).
+  (WP-212, F-11: this rule said step 4 reruns stage D and the fixed point
+  from the previous patches, which §9's step 4, a full link, and IN-72
+  replace.)
 - **L-146 [C] [M7]** Islands are addressed by (output section, part), so
   they survive an edit elsewhere. An incremental link may add patches to
   an existing island within its capacity.

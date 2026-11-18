@@ -1086,7 +1086,9 @@ program is the program a from-scratch link would have made.
   `SECTIONS` script, `--compress-debug-sections` other than `none`,
   `--gdb-index`/`--debug-names` generation, `--icf`, `--sort-common` or
   `--sort-section` (`spec/layout.md` L-88a, L-53a: an update keeps each
-  input's place and does not re-sort; WP-111), and (until WP-066)
+  input's place and does not re-sort; WP-111), `--start-lib` (its
+  objects are lazy files but not archive members, IN-71b; WP-212, F-9;
+  U-3 implements), and (until WP-066)
   an output kind other than a static executable (`-pie`, `-static-pie`,
   `-shared`, a dynamic `-no-pie` executable; keyed on the plan's output
   kind, so `-no-pie` without `-static` is unsupported even when no
@@ -2951,7 +2953,12 @@ a pass over a whole table of the state; **O(output)**.
   or not it is extracted. **`LAZY`** is the `FILES` flag of a member
   that is **not extracted**. Edges, `first`/`cfirst` and `cfirst`'s
   (a)/(b) split are by *member*; only "extracts" and "is no longer
-  extracted" read or set `LAZY`.
+  extracted" read or set `LAZY`. An object of a `--start-lib` region is
+  a lazy file (resolve.md §2) but not a member; v1 does not update a
+  link whose line has such a region: `--start-lib` joins the options
+  incremental mode does not take (`incremental-unsupported`, a plain
+  full link; IN-12), until U-3 shows them to be members under this rule
+  (WP-212, F-9).
   - **Stored** (IN-18e): every member of every archive of the link has a
     `FILES` row, extracted or not (flag `LAZY` when not), at its place in
     load order; a `LAZY` member's defined and common mentions are its
@@ -3417,12 +3424,23 @@ a pass over a whole table of the state; **O(output)**.
   file and the key; a `.gnu.warning.SYM` warning's are the file holding
   the warning section, every referring file and the key, since a changed
   referrer decides whether it appears and its "referenced by" text:
-  `tests/incr-design/review-wp207/gnu-warning.sh`). An update drops every row with
+  `tests/incr-design/review-wp207/gnu-warning.sh`). A key subject is a
+  `SYMBOLS` row or an ODR key (`ODR_CLASSES`' key, for the
+  one-definition rule's codes); `DIAGS`' row says which (WP-212, F-12).
+  An update drops every row with
   **any** subject that is a changed, appeared, gone, drawn-in, newly
   extracted or no longer extracted file, an affected or ODR-affected key
-  (IN-71, IN-71d), or an output section or the link (these are recomputed
-  from the update's `Placement` every time), recomputes those subjects'
-  warnings, and emits the union in diag.md §6.2's report order. **The
+  (IN-71, IN-71d), or an output section or the link: recomputed every
+  time, from the update's `Placement` or by the update's own front
+  (U1-U4) for a warning the front raises. **A warning with the subject
+  `link` that the update cannot raise again within O(change) is never
+  repeated from the stored row: the update falls back
+  (`update-not-implemented`, detail `diags`), by code, until U-9 shows
+  per code how it is recomputed.** An option is not a reason for
+  `link`: the options are in the plan hash, and a changed plan is a full
+  link (`options-changed`) (WP-212, F-13). The update recomputes those
+  subjects' warnings and emits the union in diag.md §6.2's report
+  order. **The
   stored order** is diag.md §6.1's `Key` (`phase`, `unit`, `seq`) with
   `unit` stored as the file's `FILES` row (never as an ordinal, which an
   appeared file or a rank midpoint makes stale) and mapped at emission to
