@@ -184,6 +184,12 @@ def main():
     fr_miss, fr_extra = N.live_frags - frags, frags - N.live_frags
     # Liveness flips of sections of unchanged files (item 5's subjects).
     flips = [si for si in N.info if si[0] in same and O.info.get(si, (0, 0, False))[2] != N.info[si][2]]
+    # Piece-level flips: split sections of unchanged files, live in both,
+    # whose set of live piece offsets differs.
+    def live_pieces(D, si):
+        return {o for o, f in D.pieces.get(si, []) if f in D.live_frags}
+    piece_flips = [si for si in N.info if si[0] in same and N.info[si][4] and N.info[si][2]
+                   and O.info.get(si, (0, 0, False))[2] and live_pieces(O, si) != live_pieces(N, si)]
     # Item 4's skip rule.
     reasons = []
     if gone or any(fi not in O.hash for fi in N.hash):
@@ -212,8 +218,9 @@ def main():
         skip_ok = olive == want
     ok = not (sec_miss or sec_extra or fr_miss or fr_extra or stale_rows or stale_roots) and skip_ok is not False
     print('changed %d drawn-by-election %d unchanged %d gone %d; unchanged files with stale rows %d, stale roots %d; '
+          'piece flips in unchanged files %d; '
           'flips in unchanged files %d %s' % (len(changed), len(drawn), len(same), len(gone), stale_rows, stale_roots,
-                                               len(flips), sorted(f'{s[0][0].split("/")[-1]}{s[0][1]}:{s[1]}:{N.info[s][0]}:{int(N.info[s][2])}' for s in flips)[:4]))
+                                               len(piece_flips), len(flips), sorted(f'{s[0][0].split("/")[-1]}{s[0][1]}:{s[1]}:{N.info[s][0]}:{int(N.info[s][2])}' for s in flips)[:4]))
     print('%s sections live %d (miss %d extra %d) fragments live %d (miss %d extra %d); skip rule %s%s' % (
         'AGREE' if ok else 'DISAGREE', len(want), len(sec_miss), len(sec_extra), len(N.live_frags), len(fr_miss),
         len(fr_extra), 'HOLDS' if skip else 'fails: ' + ','.join(reasons),

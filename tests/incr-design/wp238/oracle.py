@@ -316,6 +316,11 @@ class Link:
         with open(p, 'rb') as f:
             if mem is None:
                 return f.read()
+            if f.read(8) == b'!<thin>\n':
+                # WP-238: a thin archive's member is the file it names
+                # (relative to the archive's directory).
+                with open(os.path.join(os.path.dirname(p), mem), 'rb') as g:
+                    return g.read()
             f.seek(off); h = f.read(60)
             return f.read(int(h[48:58].decode().strip()))
 

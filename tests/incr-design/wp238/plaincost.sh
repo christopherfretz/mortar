@@ -5,7 +5,7 @@
 # captured link plus --gc-sections, at the load the host has; per run the
 # wall time and phase 50's (liveness) time from --time-phases; the
 # outputs of base and new compared by cmp. Writes one line per run and a
-# FINAL line. Run under a 1-minute load below 12 only.
+# FINAL line. EXTRA (environment): more linker words (--threads=1). Run under a 1-minute load below 12 only.
 ulimit -c 0
 base=$1; new=$2; out=$3; log=$4; runs=$5; shift 5
 resp=/Volumes/AgentWork/mortar-helper/.build/target-wp-125/wp238/resp
@@ -19,7 +19,7 @@ for w in "$@"; do
       while [ "$(cut -d' ' -f1 /proc/loadavg | cut -d. -f1)" -ge 12 ]; do sleep 15; done
       load=$(cut -d' ' -f1 /proc/loadavg)
       t0=$(date +%s%N)
-      (cd "$cwd" && "$bin" @"$resp/$w.txt" --gc-sections --time-phases -o "$out/$which.out" 2> "$out/$which.err")
+      (cd "$cwd" && "$bin" @"$resp/$w.txt" --gc-sections --time-phases $EXTRA -o "$out/$which.out" 2> "$out/$which.err")
       rc=$?
       t1=$(date +%s%N)
       p50=$(grep -o '50 liveness: wall [0-9.]*' "$out/$which.err" | awk '{print $4}'); peak=$(grep -o 'total: .*peak [0-9.]*' "$out/$which.err" | awk '{print $NF}')

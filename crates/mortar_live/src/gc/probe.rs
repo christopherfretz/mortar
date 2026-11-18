@@ -157,6 +157,59 @@ pub(super) fn run<'t>(
         best = best.min(t.elapsed().as_micros());
     }
     let (wl, wf) = got;
+    // 2b. The update's path (step 1 item 3): the rows as 17-byte records
+    // (IN-18e's `EdgeRow`: kind u8, source u32, target u32, offset u64),
+    // then decoded, indexed by source and walked, timed together.
+    let key_kind = |k: u8| matches!(k, 0 | 1 | 4 | 5);
+    let mut bytes = Vec::with_capacity(rows.len() * 17);
+    for r in &rows {
+        let (t, off) = match r.to {
+            To::Key(k) => (k.0, 0u64),
+            To::Section(s, o) => (s.0, if o == WHOLE { u64::MAX } else { u64::from(o) }),
+        };
+        bytes.push(r.kind);
+        bytes.extend_from_slice(&r.src.to_le_bytes());
+        bytes.extend_from_slice(&t.to_le_bytes());
+        bytes.extend_from_slice(&off.to_le_bytes());
+    }
+    let stored = || -> (Vec<bool>, u128) {
+        let t = Instant::now();
+        let u32_at = |b: &[u8], i: usize| u32::from_le_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]]);
+        let mut dec: Vec<(u32, To)> = Vec::with_capacity(bytes.len() / 17);
+        let mut idx = vec![0u32; n + 1];
+        for c in bytes.chunks_exact(17) {
+            let src = u32_at(c, 1);
+            let tgt = u32_at(c, 5);
+            let off = u64::from_le_bytes([c[9], c[10], c[11], c[12], c[13], c[14], c[15], c[16]]);
+            let to = if key_kind(c[0]) {
+                To::Key(SymbolId(tgt))
+            } else {
+                To::Section(SectionId(tgt), if off == u64::MAX { WHOLE } else { off as u32 })
+            };
+            idx[src as usize + 1] += 1;
+            dec.push((src, to));
+        }
+        for s in 0..n {
+            idx[s + 1] += idx[s];
+        }
+        let marks = make();
+        let mut stack = Vec::new();
+        roots(&marks, &mut stack);
+        while let Some(s) = stack.pop() {
+            for (_, to) in &dec[idx[s.0 as usize] as usize..idx[s.0 as usize + 1] as usize] {
+                marks.target(w.resolve(*to), &mut stack);
+            }
+        }
+        let l: Vec<bool> = marks.live.iter().map(|b| b.load(Ordering::Relaxed)).collect();
+        (l, t.elapsed().as_micros())
+    };
+    let mut best_stored = u128::MAX;
+    let mut stored_diff = 0;
+    for _ in 0..3 {
+        let (l, us) = stored();
+        best_stored = best_stored.min(us);
+        stored_diff = l.iter().zip(live).filter(|(x, y)| x != y).count();
+    }
     let diff = |a: &[bool], b: &[bool]| a.iter().zip(b).filter(|(x, y)| x != y).count();
     let lost = |a: &[bool], b: &[bool]| a.iter().zip(b).filter(|(x, y)| **x && !**y).count();
     let sec_diff = diff(live, &wl);
@@ -182,6 +235,11 @@ pub(super) fn run<'t>(
         t_sort.as_micros()
     );
     let _ = writeln!(sum, "replay: sections differ {sec_diff} fragments differ {frag_diff}");
+    let _ = writeln!(
+        sum,
+        "stored-form: {} bytes at 17 B a row; decode + index + walk (best of 3) {best_stored} us, sections differ {stored_diff}",
+        bytes.len()
+    );
     let mut distinct = [0u64; 9];
     let mut live_src = [0u64; 9];
     for r in &rows {
@@ -202,6 +260,26 @@ pub(super) fn run<'t>(
         "total distinct {} live-source {}",
         distinct.iter().sum::<u64>(),
         live_src.iter().sum::<u64>()
+    );
+    // The stored form's other counts (step 1 item 2): group rows as a ring
+    // (one per member of a group of 2 or more), root sections with
+    // outgoing edges or allocated (the ones a walk must start from),
+    // C-identifier named kept sections (`__start_`/`__stop_` targets).
+    let ring: std::collections::BTreeSet<u32> =
+        rows.iter().filter(|r| r.kind == 8).map(|r| r.src).collect();
+    let walk_roots = (0..n)
+        .filter(|&s| {
+            w.r.sections[SectionId(s as u32)].is_kept()
+                && w.facts.get(s).is_none_or(|b| b & ROOT != 0 && b & (ALLOC | EDGES) != 0)
+        })
+        .count();
+    let srcs: std::collections::BTreeSet<u32> = rows.iter().map(|r| r.src).collect();
+    let _ = writeln!(
+        sum,
+        "group-ring rows {} walk-roots {walk_roots} named-c-ident-sections {} sources-with-rows {}",
+        ring.len(),
+        w.marks.named.len(),
+        srcs.len()
     );
     // Keys defined in a split section that a row names (fragment-level
     // liveness through a key, step 1 item 2).

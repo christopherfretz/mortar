@@ -65,6 +65,8 @@ def main():
         lm = subprocess.run([sys.executable, '-I', os.path.join(HERE, 'livemodel.py'), r.W, '--frag', '--quiet'], cwd=r.W,
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='replace')
         lml = [l.strip() for l in lm.stdout.splitlines() if l.startswith('==') or 'fragment sets' in l]
+        if not lml:
+            lml = ['NO RESULT (rc %d): %s' % (lm.returncode, ' | '.join(lm.stdout.strip().splitlines()[-3:]))]
         print('LINK %s: %s | livemodel: %s' % (label, '; '.join(rep), ' / '.join(lml)), flush=True)
         shutil.copy(os.path.join(r.W, 'prog.map'), os.path.join(d, 'prog.map'))
         os.remove(os.path.join(r.W, 'prog'))
