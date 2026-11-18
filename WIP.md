@@ -1,3 +1,31 @@
+# WIP — WP-255d (the per-file front)
+
+Branch `wp/255d-file-front`, base dbe047c4. Brief: `briefs/wp-255d.md`
+(workspace root).
+
+## Done
+- M1: `spec/landed/incr/WP-255d.md`, the phase table (seams named).
+- M2 (unchanged file): `crates/mortar/src/update/file_front.rs`
+  (`front_of`, `FrontCache`, `Ids`), `pub mod file_front;` in
+  `update/mod.rs`.
+- M3: `crates/mortar/tests/file_front.rs` (equality over every object file
+  of the C++ static link + a two-member archive, both 64-bit targets; the
+  two `input-changed` tests).
+
+## Next
+- `Ids::Update` (a changed file) is coded (sections at the join's
+  `first_section`, keys `None` when `find_key` has none) but not tested.
+- Split pieces and the scan with stored facts: the seams of M1's table
+  (`mortar_merge::phase::units` private; `mortar_scan::driver::run_unit`
+  private): need the supervisor's ruling first.
+
+## Resume
+`bash /Volumes/AgentWork/mortar-helper/.build/target-wp-116/wp255d/t.sh`
+runs the test (log `t.log`, final line `FINAL rc=`).
+
+---
+(Below: the join's WIP.md of the base, unchanged; not WP-255d's.)
+
 # WIP: WP-225 (U-10, the join)
 
 Done: Step 0 (aa4ad63d). M1: e8e3daff, 4539fdaf, 51676760. M1b:

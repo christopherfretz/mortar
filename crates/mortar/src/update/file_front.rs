@@ -105,7 +105,8 @@ pub struct FileFront<'s> {
     pub object: Object<'s>,
     /// Its bytes (`base .. base + len` of the file it was read from).
     pub bytes: &'s [u8],
-    /// One per section index, index 0 included (as `SECTIONS` holds them).
+    /// One per section index, index 0 included (as `SECTIONS` holds them);
+    /// none for a file the state holds no `SECTIONS` rows of (`Ids::Stored`).
     pub sections: Vec<FrontSection<'s>>,
     /// The symbol table's first non-local entry (`sh_info`; 0 without one).
     pub first_global: u32,
@@ -251,14 +252,21 @@ fn open<'s>(
             let index = view.file_index(file)?;
             let range = index.ranges[FileTable::Sections as usize];
             let stored = view.sections_of(file)?;
-            if stored.len() != count as usize || range.count != count {
+            // A file without `SECTIONS` rows (a member not extracted; on
+            // x86-64 also one member without the `LAZY` flag, see the
+            // record): the state gives it no section ids (an extraction is
+            // a changed file's, `Ids::Update`). Its keys are still read.
+            if stored.is_empty() && range.count == 0 {
+                (SectionId(range.first), Some(stored))
+            } else if stored.len() != count as usize || range.count != count {
                 return Err(corrupt(format!(
                     "file {}: {} SECTIONS rows for {count} sections",
                     file.0,
                     stored.len()
                 )));
+            } else {
+                (SectionId(range.first), Some(stored))
             }
-            (SectionId(range.first), Some(stored))
         }
         Ids::Update { first_section } => (first_section, None),
     };
@@ -336,7 +344,8 @@ fn open<'s>(
 
     let mut sections = Vec::with_capacity(len);
     let mut seen: BTreeMap<(Anchor<'s>, &'s [u8]), u32> = BTreeMap::new();
-    for i in 0..count {
+    let with_ids = if stored.as_ref().is_some_and(Vec::is_empty) { 0 } else { count };
+    for i in 0..with_ids {
         let s = object.section(SectionIndex(i)).map_err(|_| bad("section header"))?;
         let name = if i > 0 { s.name().map_err(|_| bad("section name"))? } else { &[][..] };
         let id = SectionId(first_section.0 + i);
@@ -346,7 +355,8 @@ fn open<'s>(
         // Whether it is dropped is the keeper's (whole-program): an
         // unchanged file's stored row says.
         let link_order = i > 0 && s.flags() & SHF_LINK_ORDER != 0 && sig.is_none();
-        let linked = if link_order { s.link().ok().and_then(|l| comdat[l.0 as usize]) } else { None };
+        let linked =
+            if link_order { s.link().ok().and_then(|l| comdat[l.0 as usize]) } else { None };
         if let (Some(l), Some(st)) = (linked, &stored) {
             let r = &st[i as usize];
             if r.anchor_kind == 1 && view.string(r.anchor)? == l {
@@ -365,18 +375,15 @@ fn open<'s>(
             (Some(_), Some(r)) => Some(rela_table(&object, file, r).map_err(|e| bad(&e))?),
             _ => None,
         };
-        let offset = if i == 0 {
-            0
-        } else {
-            s.file_range().ok().flatten().map_or(0, |r| r.start as u64)
-        };
+        // `capture::header_fields`' five, section 0 included.
+        let offset = s.file_range().ok().flatten().map_or(0, |r| r.start as u64);
         sections.push(FrontSection {
             id,
             index: SectionIndex(i),
-            sh_type: if i == 0 { 0 } else { s.sh_type() },
-            flags: if i == 0 { 0 } else { s.flags() },
-            size: if i == 0 { 0 } else { s.size() },
-            align: if i == 0 { 0 } else { s.alignment().unwrap_or(0) },
+            sh_type: s.sh_type(),
+            flags: s.flags(),
+            size: s.size(),
+            align: s.alignment().unwrap_or(0),
             offset,
             name,
             anchor,
