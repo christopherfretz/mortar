@@ -734,8 +734,12 @@ fn file_rows(m: &MemoryState, file: usize) -> Vec<(&'static str, String)> {
     }
     for (_, r) in m.frag_uses.iter().filter(|r| r.0.0 == file as u32) {
         // its file is the range's (a row number: moves when a file appears)
-        let r = mortar_incr::update::rows::FragUseRow { file: 0, ..*r };
-        out.push(("FRAG_USE", format!("{r:?}")));
+        // and its output section by name: an OUTSECS row number moves when
+        // a file brings a new output section (seen: a GCC stub's
+        // .debug_aranges among kiln/hod objects)
+        let osec = m.outsecs.get(r.out as usize).map(|o| (string(m, o.name), o.ordinal));
+        let r = mortar_incr::update::rows::FragUseRow { file: 0, out: 0, ..*r };
+        out.push(("FRAG_USE", format!("{osec:?} {r:?}")));
     }
     let mut refs: Vec<String> = m
         .key_refs
