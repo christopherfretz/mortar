@@ -700,37 +700,37 @@ impl Strings {
 
 // ---- reading and writing fields ----------------------------------------------
 
-struct W<'a>(&'a mut Vec<u8>);
+pub(crate) struct W<'a>(pub(crate) &'a mut Vec<u8>);
 
 impl W<'_> {
-    fn u8(&mut self, v: u8) -> &mut Self {
+    pub(crate) fn u8(&mut self, v: u8) -> &mut Self {
         self.0.push(v);
         self
     }
-    fn u16(&mut self, v: u16) -> &mut Self {
+    pub(crate) fn u16(&mut self, v: u16) -> &mut Self {
         self.0.extend_from_slice(&v.to_le_bytes());
         self
     }
-    fn u32(&mut self, v: u32) -> &mut Self {
+    pub(crate) fn u32(&mut self, v: u32) -> &mut Self {
         self.0.extend_from_slice(&v.to_le_bytes());
         self
     }
-    fn u64(&mut self, v: u64) -> &mut Self {
+    pub(crate) fn u64(&mut self, v: u64) -> &mut Self {
         self.0.extend_from_slice(&v.to_le_bytes());
         self
     }
-    fn i64(&mut self, v: i64) -> &mut Self {
+    pub(crate) fn i64(&mut self, v: i64) -> &mut Self {
         self.0.extend_from_slice(&v.to_le_bytes());
         self
     }
-    fn pad(&mut self, n: usize) -> &mut Self {
+    pub(crate) fn pad(&mut self, n: usize) -> &mut Self {
         self.0.extend(std::iter::repeat_n(0, n));
         self
     }
-    fn s(&mut self, s: Str) -> &mut Self {
+    pub(crate) fn s(&mut self, s: Str) -> &mut Self {
         self.u32(s.off).u32(s.len)
     }
-    fn bytes(&mut self, b: &[u8]) -> &mut Self {
+    pub(crate) fn bytes(&mut self, b: &[u8]) -> &mut Self {
         self.0.extend_from_slice(b);
         self
     }
@@ -739,17 +739,17 @@ impl W<'_> {
 /// A cursor over one row's bytes. Reads past the end give zeros (never
 /// reached: the row's width was checked), and pad fields that are not zero
 /// are remembered.
-struct R<'a> {
+pub(crate) struct R<'a> {
     b: &'a [u8],
     at: usize,
-    bad_pad: bool,
+    pub(crate) bad_pad: bool,
 }
 
 impl<'a> R<'a> {
-    fn new(b: &'a [u8]) -> Self {
+    pub(crate) fn new(b: &'a [u8]) -> Self {
         Self { b, at: 0, bad_pad: false }
     }
-    fn take<const N: usize>(&mut self) -> [u8; N] {
+    pub(crate) fn take<const N: usize>(&mut self) -> [u8; N] {
         let mut out = [0u8; N];
         if let Some(src) = self.at.checked_add(N).and_then(|end| self.b.get(self.at..end)) {
             out.copy_from_slice(src);
@@ -757,28 +757,28 @@ impl<'a> R<'a> {
         self.at = self.at.saturating_add(N);
         out
     }
-    fn u8(&mut self) -> u8 {
+    pub(crate) fn u8(&mut self) -> u8 {
         self.take::<1>()[0]
     }
-    fn u16(&mut self) -> u16 {
+    pub(crate) fn u16(&mut self) -> u16 {
         u16::from_le_bytes(self.take())
     }
-    fn u32(&mut self) -> u32 {
+    pub(crate) fn u32(&mut self) -> u32 {
         u32::from_le_bytes(self.take())
     }
-    fn u64(&mut self) -> u64 {
+    pub(crate) fn u64(&mut self) -> u64 {
         u64::from_le_bytes(self.take())
     }
-    fn i64(&mut self) -> i64 {
+    pub(crate) fn i64(&mut self) -> i64 {
         i64::from_le_bytes(self.take())
     }
-    fn h(&mut self) -> Hash16 {
+    pub(crate) fn h(&mut self) -> Hash16 {
         self.take()
     }
-    fn s(&mut self) -> Str {
+    pub(crate) fn s(&mut self) -> Str {
         Str { off: self.u32(), len: self.u32() }
     }
-    fn pad(&mut self, n: usize) {
+    pub(crate) fn pad(&mut self, n: usize) {
         for _ in 0..n {
             if self.u8() != 0 {
                 self.bad_pad = true;
@@ -788,7 +788,7 @@ impl<'a> R<'a> {
 }
 
 /// One row type: its width and its two conversions.
-trait Row: Sized {
+pub(crate) trait Row: Sized {
     const WIDTH: usize;
     fn put(&self, w: &mut W<'_>);
     fn get(r: &mut R<'_>) -> Self;
