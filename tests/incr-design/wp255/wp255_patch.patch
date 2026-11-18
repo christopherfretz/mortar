@@ -1,0 +1,155 @@
+diff --git a/crates/mortar_incr/tests/wp255_patch.rs b/crates/mortar_incr/tests/wp255_patch.rs
+new file mode 100644
+index 00000000..455a3902
+--- /dev/null
++++ b/crates/mortar_incr/tests/wp255_patch.rs
+@@ -0,0 +1,149 @@
++//! WP-255 THROWAWAY (kept as tests/incr-design/wp255/wp255_patch.patch):
++//! the size and the write time of the state's PATCH for a body edit of
++//! one archive member, on a real format-5 state: every file-keyed range
++//! of the member rewritten with its own rows, its locals replaced
++//! (appended again), its KEY_REFS and GROUPS put again, its defined
++//! globals' RESOLVED set again, its FILES and its archive's STAT row set,
++//! LEAVES and META whole: an upper bound of what the join puts for a
++//! same-size edit. Env: WP255_STATE, WP255_MEMBER, WP255_REPS, WP255_WORK
++//! (a copy of the state is written there and deleted by the caller).
++
++use std::fs::OpenOptions;
++use std::time::Instant;
++
++use mortar_core::{FileId, SymbolId};
++use mortar_incr::ops::StdOps;
++use mortar_incr::state5::{self, read, write};
++use mortar_incr::update::rows::LocalRange;
++use mortar_incr::update::view::{FileRanges, StatePatch};
++
++fn env(k: &str) -> String {
++    std::env::var(k).unwrap_or_else(|_| panic!("{k}"))
++}
++
++#[test]
++#[ignore = "WP-255 experiment"]
++fn wp255_patch() {
++    let path = env("WP255_STATE");
++    let member = env("WP255_MEMBER");
++    let work = env("WP255_WORK");
++    let reps: usize = std::env::var("WP255_REPS").ok().and_then(|s| s.parse().ok()).unwrap_or(5);
++    let bytes = std::fs::read(&path).unwrap();
++    let mut plan_hash = [0u8; 16];
++    plan_hash.copy_from_slice(&bytes[32..48]);
++    let m = read::decode(&bytes).unwrap();
++    let s = |x: mortar_incr::format::Str| m.strings[x.off as usize..(x.off + x.len) as usize].to_vec();
++    let f = m.files.iter().position(|r| r.member_name.len != 0 && s(r.member_name) == member.as_bytes()).unwrap();
++    let fid = FileId(f as u32);
++    let f32 = f as u32;
++    let fi = m.file_index[f].clone();
++    let mut p = StatePatch::default();
++    let mut frow = m.files[f].clone();
++    frow.hash[0] ^= 1;
++    p.files_set.push((fid, frow.clone()));
++    let apath = s(frow.path);
++    if let Some(k) = m.stat.iter().position(|r| s(r.path) == apath) {
++        let mut st = m.stat[k].clone();
++        st.mtime_ns += 1;
++        p.stat_set.push((k as u32, st));
++    }
++    let sections: Vec<_> = m.sections.iter().filter(|r| r.file == f32).cloned().collect();
++    let mentions: Vec<_> = m.mentions.iter().filter(|r| r.0 == fid).map(|r| r.1.clone()).collect();
++    let index: Vec<_> = m.index.iter().filter(|r| r.0 == fid).map(|r| r.1.clone()).collect();
++    let edges: Vec<_> = m.edges.iter().filter(|r| r.0 == fid).map(|r| r.1.clone()).collect();
++    let frag_uses: Vec<_> = m.frag_uses.iter().filter(|r| r.0 == fid).map(|r| r.1.clone()).collect();
++    let symtab = m.symtab.iter().find(|r| r.0 == fid).map(|r| r.1.clone());
++    let regions: Vec<_> = m.regions.iter().filter(|r| r.0 == fid).map(|r| r.1.clone()).collect();
++    // Its locals appended again (the symbol table replaced, IN-71).
++    let first = m.symbols.len() as u32;
++    let lr = fi.locals;
++    for k in lr.first..lr.first + lr.count {
++        p.symbols.append.push(m.symbols[k as usize].clone());
++        p.resolved.append.push(m.resolved[k as usize]);
++        p.symtab_keys.append.push(m.symtab_keys[k as usize].clone());
++    }
++    let counts = (sections.len(), mentions.len(), index.len(), edges.len(), frag_uses.len(), lr.count);
++    p.ranges.push(FileRanges {
++        file: fid,
++        first_global: fi.first_global,
++        sections: Some(sections),
++        mentions: Some(mentions),
++        index: Some(index),
++        edges: Some(edges),
++        frag_uses: Some(frag_uses),
++        symtab: Some(symtab),
++        locals: Some(LocalRange { first, count: lr.count }),
++        regions: Some(regions),
++        gone: false,
++    });
++    let refs: Vec<_> = m.key_refs.iter().filter(|r| r.file == f32).cloned().collect();
++    let nrefs = refs.len();
++    p.key_refs.put = refs;
++    p.groups.put = m.groups.iter().filter(|g| g.file == f32 && !g.tomb).cloned().collect();
++    // Its defined globals' RESOLVED rows set again.
++    let mut defs = 0;
++    for (k, r) in m.resolved.iter().enumerate() {
++        if k >= m.symbols.len() || m.symbols[k].kind == 2 {
++            continue;
++        }
++        if m.sections.get(r.section as usize).is_some_and(|x| x.file == f32) {
++            p.resolved.set.push((SymbolId(k as u32), *r));
++            defs += 1;
++        }
++    }
++    p.leaves = Some(m.leaves.clone());
++    p.meta = Some(m.meta.clone());
++    let mut kinds = [0usize; 8];
++    for r in &m.slots {
++        kinds[(r.kind as usize).min(7)] += 1;
++    }
++    println!("[wp255-patch] SLOTS {} rows, by kind {kinds:?}; CHUNKS {}", m.slots.len(), m.chunks.len());
++    let out_row = m.stat.iter().rfind(|r| r.tag == mortar_incr::format::stat_tag::OUTPUT).cloned().unwrap_or_default();
++    // Plan on the bytes: blocks and size.
++    let view = read::open_bytes(bytes.clone()).unwrap();
++    let t = Instant::now();
++    let plan = state5::plan_patch(&view, &p).unwrap();
++    let plan_ms = t.elapsed().as_secs_f64() * 1e3;
++    let after = write::patched_bytes(&bytes, &plan, &out_row).unwrap();
++    let differ = bytes.iter().zip(&after).filter(|(a, b)| a != b).count() + after.len().abs_diff(bytes.len());
++    println!(
++        "[wp255-patch] state {} bytes; member {member}: sections {} mentions {} index {} edges {} frag_uses {} locals {} key_refs {nrefs} defined {defs}",
++        bytes.len(), counts.0, counts.1, counts.2, counts.3, counts.4, counts.5
++    );
++    println!(
++        "[wp255-patch] plan {plan_ms:.2} ms, compacts {} ({}), blocks {}, bytes differing {differ}, size after {}",
++        plan.compacts(), plan.reason(), plan.blocks(), after.len()
++    );
++    // The write: patch() over a copy, pwrite + fdatasync, and a whole
++    // rewrite + fdatasync of the same size, interleaved.
++    let copy = format!("{work}/patch.state5");
++    let whole = format!("{work}/whole.state5");
++    let (mut tp, mut tw) = (Vec::new(), Vec::new());
++    for _ in 0..reps {
++        std::fs::write(&copy, &bytes).unwrap();
++        let file = OpenOptions::new().read(true).write(true).open(&copy).unwrap();
++        file.sync_all().unwrap();
++        let view = state5::open(&file, plan_hash).unwrap();
++        let plan = state5::plan_patch(&view, &p).unwrap();
++        let t = Instant::now();
++        state5::patch(&view, &plan, &out_row, &mut StdOps).unwrap();
++        tp.push(t.elapsed().as_secs_f64() * 1e3);
++        drop(view);
++        let t = Instant::now();
++        {
++            use std::io::Write as _;
++            let mut w = std::fs::File::create(&whole).unwrap();
++            w.write_all(&after).unwrap();
++            w.sync_data().unwrap();
++        }
++        tw.push(t.elapsed().as_secs_f64() * 1e3);
++    }
++    let med = |v: &mut Vec<f64>| {
++        v.sort_by(f64::total_cmp);
++        (v[v.len() / 2], v[0], v[v.len() - 1])
++    };
++    let (a, b, c) = med(&mut tp);
++    let (d, e, g) = med(&mut tw);
++    println!("[wp255-patch] patch write+fdatasync: median {a:.2} ms (min {b:.2}, max {c:.2})");
++    println!("[wp255-patch] whole write+fdatasync: median {d:.2} ms (min {e:.2}, max {g:.2})");
++}
