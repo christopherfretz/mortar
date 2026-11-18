@@ -11,9 +11,9 @@
 //! - `F`: the incremental-mode full link of the NEW inputs (the judge) and
 //!   its capture (the changed file's `SECTIONS` rows: its `ChangedFile`);
 //!
-//! it runs the update's debug steps on the real rows ([`debug::strings`]'
-//! core over `DEBUG_STRS` rows emulated from `P`'s merge, as WP-247's
-//! capture will store them, or over none; `place` on the delta
+//! it runs the update's debug steps on the real rows ([`debug::strings`]
+//! over the capture's `DEBUG_STRS` rows (WP-247), or, in one test, a state
+//! without the table; `place` on the delta
 //! `layout(debug: true)` gives for a debug-only edit: the stored placement,
 //! the changed file's old debug rows in `killed`), then writes the image of
 //! the NEW inputs with the update's placement (IN-78's "full link with the
@@ -140,6 +140,8 @@ struct Edit {
     gdb: &'static [&'static str],
     /// The languages it runs in (C, C++).
     langs: &'static [bool],
+    /// The placement `b`'s `.debug_addr` must take, if the test pins it.
+    addr: Option<Taken>,
 }
 
 const C_ONLY: &[bool] = &[false];
@@ -151,6 +153,7 @@ const LINES: Edit = Edit {
     flags: &[],
     gdb: &[],
     langs: &[false, true],
+    addr: None,
     b: r"struct pt { int x, y; };
 struct small_b { long s1, s2; };
 /* three
@@ -173,6 +176,7 @@ const RENAME: Edit = Edit {
     flags: &[],
     gdb: &[],
     langs: &[false, true],
+    addr: None,
     b: r"struct pt { int x, y; };
 struct small_b { long s1, s2; };
 static int scale = 5;
@@ -192,6 +196,7 @@ const GROW: Edit = Edit {
     flags: &[],
     gdb: &[],
     langs: &[false, true],
+    addr: None,
     b: r"struct pt { int x, y; };
 struct small_b { long s1, s2; };
 struct grown_type_of_wp228 {
@@ -241,6 +246,7 @@ int c_value(int v) {
     flags: &[],
     gdb: &["ptype struct c_grown_for_wp228_reuse", "info scope c_value"],
     langs: &[false, true],
+    addr: None,
 };
 
 /// R-5 on a reached path (B3-1): GCC `-g3` macro groups (`wm4.*`,
@@ -271,6 +277,7 @@ int area(struct pt *p) {
         "info macro -at a.c:1510 EOF",
     ],
     langs: &[false],
+    addr: None,
 };
 
 /// The old `b.c` of [`MACROS`].
@@ -285,6 +292,88 @@ int area(struct pt *p) {
     return w * h; /*B*/
 }
 ";
+
+/// The old `b.c` of [`SPLIT5`]: `split_extra_wp228` without debug
+/// information under Clang (`nodebug`); `split_base_wp228` makes the unit
+/// span several sections in both versions (`DW_AT_ranges`, so that the
+/// edit adds no `.debug_rnglists` section).
+const B_SPLIT_OLD: &str = r"struct pt { int x, y; };
+struct small_b { long s1, s2; };
+#ifdef __clang__
+#define WP228_NODEBUG __attribute__((nodebug))
+#else
+#define WP228_NODEBUG
+#endif
+static int scale = 5;
+int area(struct pt *p) {
+    int w = p->x + scale;
+    int h = p->y;
+    return w * h; /*B*/
+}
+int split_base_wp228(int v) {
+    return v - 1;
+}
+WP228_NODEBUG int split_extra_wp228(int v) {
+    return v + 7;
+}
+";
+
+/// B3-7: DWARF 5 split DWARF (`-gsplit-dwarf -gdwarf-5`: a
+/// `DW_UT_skeleton` unit, `.debug_addr` with its header) through the
+/// update. The edit adds `.debug_addr` entries and no allocated byte
+/// (the writer's premise; a real added function moves code, which is not
+/// G-1's): under Clang `split_extra_wp228` gains its debug information
+/// (`nodebug` dropped; `-ffunction-sections` gives its `DW_AT_low_pc` an
+/// entry of its own), under GCC (no `nodebug`) two labels in it (each a
+/// `DW_TAG_label` with an address entry). `.debug_addr` goes to the tail,
+/// its old range a dead DWARF 5 table; gdb and lldb read the `.dwo` files
+/// through the updated skeletons.
+const SPLIT5: Edit = Edit {
+    name: "split5",
+    b_old: B_SPLIT_OLD,
+    b: r"struct pt { int x, y; };
+struct small_b { long s1, s2; };
+#define WP228_NODEBUG
+static int scale = 5;
+int area(struct pt *p) {
+    int w = p->x + scale;
+    int h = p->y;
+    return w * h; /*B*/
+}
+int split_base_wp228(int v) {
+    return v - 1;
+}
+WP228_NODEBUG int split_extra_wp228(int v) {
+#ifndef __clang__
+wp228_one: ;
+wp228_two: ;
+#endif
+    return v + 7;
+}
+",
+    info: None,
+    more: &[],
+    flags: &["-gsplit-dwarf", "-ffunction-sections"],
+    gdb: &[
+        "info scope split_extra_wp228",
+        "info line split_extra_wp228",
+        "info address split_extra_wp228",
+    ],
+    langs: &[false],
+    addr: Some(Taken::Tail),
+};
+
+/// B3-7: the GNU split DWARF of DWARF 4 (`DW_AT_GNU_addr_base`, a
+/// headerless `.debug_addr`): `b` changed in its lines.
+const SPLIT4: Edit = Edit { name: "split4", flags: &["-gsplit-dwarf"], ..LINES };
+
+/// B3-7: the same objects, `c` removed (IN-52).
+const SPLIT4_GONE: Edit = Edit {
+    name: "split4-gone",
+    more: &[("c", C_OLD, None, None)],
+    flags: &["-gsplit-dwarf"],
+    ..LINES
+};
 
 /// What C++ adds to every source: COMDAT code shared by `a` and `b`
 /// (an inline function, a template instance), so that `b`'s units name
@@ -482,18 +571,40 @@ impl Fixture {
         // Every object compiled alike (relative names, the scratch as the
         // directory): the link line's objects are replaced.
         let a = format!("a.{ext}");
-        scratch.write(&a, Self::text(cfg, "a", &a_c()));
+        let split = edit.flags.contains(&"-gsplit-dwarf");
+        let mut a_text = a_c();
+        if split {
+            // `.debug_addr`'s tail reserve (`size/32`, IN-33) must hold
+            // `b`'s grown table: 320 functions, an address entry each.
+            for k in 0..320 {
+                a_text.push_str(&format!("int wp228_fill_{k}(int v) {{ return v + {k}; }}\n"));
+            }
+        }
+        scratch.write(&a, Self::text(cfg, "a", &a_text));
         compile(cfg, edit, scratch.path(), &a, &format!("{a}.o"));
         let mut versions = vec![("b", edit.b_old, Some(edit.b))];
         versions.extend(edit.more.iter().map(|m| (m.0, m.1, m.2)));
+        // Split DWARF: both versions compiled as `<stem>.o`, so that the
+        // skeleton names the same `<stem>.dwo` (as a rebuild of one object
+        // does); `<stem>.dwo` is the new version's, the one the debuggers
+        // read through `F` and the update.
+        let version = |src: &str, stem: &str, v: u8| {
+            if split {
+                compile(cfg, edit, scratch.path(), src, &format!("{stem}.o"));
+                let to = scratch.join(format!("{stem}{v}.o"));
+                std::fs::rename(scratch.join(format!("{stem}.o")), to).unwrap();
+            } else {
+                compile(cfg, edit, scratch.path(), src, &format!("{stem}{v}.o"));
+            }
+        };
         for (stem, old, new) in versions {
             let src = format!("{stem}.{ext}");
             scratch.write(&src, Self::text(cfg, stem, old));
-            compile(cfg, edit, scratch.path(), &src, &format!("{stem}1.o"));
+            version(&src, stem, 1);
             std::fs::remove_file(scratch.join(format!("{src}.o"))).unwrap();
             if let Some(new) = new {
                 scratch.write(&src, Self::text(cfg, stem, new));
-                compile(cfg, edit, scratch.path(), &src, &format!("{stem}2.o"));
+                version(&src, stem, 2);
             }
         }
         Some(Self { cfg, edit, scratch, args: built.args })
@@ -521,7 +632,10 @@ impl Fixture {
                         return self.present(stem, v).then(|| o.display().to_string());
                     }
                 }
-                Some(a.clone())
+                // No build id: an update re-seals it over the whole output
+                // (not G-1's; the writer copies `P`'s, which the verifier's
+                // B1 would report on every output).
+                (!a.starts_with("--build-id")).then(|| a.clone())
             })
             .collect();
         // A file the new link no longer has is the LAST input of both
@@ -625,14 +739,14 @@ fn old_of(fx: &Fixture) -> Old {
     }
 }
 
-/// The `DEBUG_STRS` rows WP-247's capture will store for `P` (every live
-/// debug string fragment's hash and offset), as a lookup.
-fn emulated_debug_strs(old: &Old) -> HashMap<(u8, u64), u32> {
-    let mut m = HashMap::new();
-    for ((name, bytes), &off) in &old.frags {
-        let Some(class) = debug::str_class(name) else { continue };
-        let s = bytes.strip_suffix(&[0]).unwrap_or(bytes);
-        m.entry((class, name_hash(s, b""))).or_insert(u32::try_from(off).unwrap());
+/// The capture's `DEBUG_STRS` rows (WP-247) as a hashed lookup, the
+/// lowest offset per key as [`MemoryState`]'s own `debug_str` (which scans
+/// every row: too slow for the measurement's timings).
+fn debug_strs_of(rows: &MemoryState) -> HashMap<(u8, u64), u32> {
+    let mut m: HashMap<(u8, u64), u32> = HashMap::new();
+    for r in &rows.debug_strs {
+        let e = m.entry((r.out, r.hash)).or_insert(r.offset);
+        *e = (*e).min(r.offset);
     }
     m
 }
@@ -705,11 +819,16 @@ struct Update {
     plan: DebugPlan,
     /// The image of the new inputs with the update's placement.
     image: Vec<u8>,
+    /// The machine map of that image (mortar's format, `spec/plumb.md`
+    /// §3.2): the update's placement, its `dead` and `hole` records; the
+    /// map `cargo xtask plumb` judges the update's output by.
+    map: Vec<u8>,
 }
 
 /// The update of `fx` (old link `old`, its rows `rows`, previous output
-/// `prev`; new rows `new`): `debug::strings`' core over `strs` (emulated
-/// `DEBUG_STRS`, or none), `place`, and the image with that placement.
+/// `prev`; new rows `new`): `debug::strings` over the capture's
+/// `DEBUG_STRS` rows (or, `with_rows` false, a state without the table),
+/// `place`, and the image with that placement.
 #[allow(
     clippy::too_many_lines,
     clippy::many_single_char_names,
@@ -721,11 +840,12 @@ fn update(
     rows: &MemoryState,
     new: &MemoryState,
     prev: &[u8],
-    strs: Option<&HashMap<(u8, u64), u32>>,
+    with_rows: bool,
 ) -> Result<Update, String> {
     let store = support::store();
     let parsed = mortar_cli::parse(&fx.line(2, "upd-image"));
     assert!(!parsed.failed());
+    let args: Vec<Vec<u8>> = parsed.args.iter().map(|a| a.as_encoded_bytes().to_vec()).collect();
     let diag = Collector::new(Policy::default());
     let out: RefCell<Option<Result<DebugPlan, String>>> = RefCell::new(None);
     let hook = |link: &mortar_incr::capture::Link<'_, '_>, _computed: &Layout| {
@@ -783,17 +903,24 @@ fn update(
                     }
                 }
             }
-            let empty = HashMap::new();
-            let strs = strs.unwrap_or(&empty);
-            let lookup = |class: u8, hash: u64| Ok(strs.get(&(class, hash)).copied());
-            let strings = debug::strings_with(&lookup, &stored, &inputs, prev).map_err(|e| {
+            // The capture's real `DEBUG_STRS` rows (WP-247) through the
+            // update's own lookup, or a state without the table.
+            let none = |_: u8, _: u64| Ok(None);
+            let strings = if with_rows {
+                debug::strings(&view, &stored, &inputs, prev)
+            } else {
+                debug::strings_with(&none, &stored, &inputs, prev)
+            }
+            .map_err(|e| {
+                let keys: std::collections::HashSet<(u8, u64)> =
+                    rows.debug_strs.iter().map(|r| (r.out, r.hash)).collect();
                 let miss: Vec<String> = inputs
                     .iter()
                     .flat_map(|(_, c, d)| d.split(|&x| x == 0).map(move |w| (*c, w)))
-                    .filter(|(c, w)| !w.is_empty() && !strs.contains_key(&(*c, name_hash(w, b""))))
+                    .filter(|(c, w)| !w.is_empty() && !keys.contains(&(*c, name_hash(w, b""))))
                     .map(|(c, w)| format!("{c}:{}", String::from_utf8_lossy(w)))
                     .collect();
-                format!("strings: {e:?}; not in the rows: {miss:?}; rows {}", strs.len())
+                format!("strings: {e:?}; not in the rows: {miss:?}; rows {}", keys.len())
             })?;
             // (2) what layout(debug: true) gives a debug-only edit.
             let olds: Vec<FileId> = ch.iter().map(|c| c.1).chain(removed.iter().copied()).collect();
@@ -939,13 +1066,17 @@ fn update(
     };
     let f = front(parsed.plan, env, &store, &diag, &mut Timer::new(false));
     let plan = out.borrow_mut().take().ok_or("the replay did not run")??;
-    let f = f.ok_or_else(|| format!("front: {:?}", diag.finish()))?;
+    let mut f = f.ok_or_else(|| format!("front: {:?}", diag.finish()))?;
+    // The line records of the map (`spec/plumb.md` §3.2a), as a link sets them.
+    f.args = args;
     let path = fx.scratch.join("upd-image");
     mortar::image::write(&f, &store, &path, &|_| {}, &mut |_, _| {})
         .map_err(|e| format!("image: {:?}", e.diagnostics))?;
     let image = std::fs::read(&path).unwrap();
     std::fs::remove_file(&path).unwrap();
-    Ok(Update { plan, image })
+    let map = mortar::image::map_of(&f, &store).map_err(|e| format!("map: {e:?}"))?;
+    let map = mortar_image::map::render(&map, &f.pool);
+    Ok(Update { plan, image, map })
 }
 
 /// The update's output: a copy of `prev` with what an update writes
@@ -1036,6 +1167,18 @@ fn write_update(label: &str, prev: &[u8], u: &Update, rows: &MemoryState) -> Vec
         if p.size != i.size {
             assert!(i.name.starts_with(".debug_"), "{label}: {} changed size", i.name);
             out[p.at..p.at + 8].copy_from_slice(&i.size.to_le_bytes());
+        }
+    }
+    // The symbol table (U-5's, emulated): with no file removed it has the
+    // image's size and place, and the image's is the update's (the changed
+    // file's locals in its debug sections, Clang's `$d` on AArch64, at
+    // their new places: WP-228 record §7.2).
+    for name in [".symtab", ".strtab"] {
+        let (p, i) = (ps.iter().find(|s| s.name == name), is.iter().find(|s| s.name == name));
+        if let (Some(p), Some(i)) = (p, i)
+            && (p.offset, p.size) == (i.offset, i.size)
+        {
+            copy(p.offset, p.size, &mut out);
         }
     }
     // Where the update writes nothing, the image of the update's
@@ -1220,11 +1363,18 @@ fn readelf_warnings(cfg: Cfg, prog: &Path, dir: &Path) -> std::collections::BTre
         .collect()
 }
 
-/// IN-51b's accepted readelf differences (record §A.3's causes).
+/// IN-51b's accepted readelf differences (record §A.3's causes), and
+/// B3-7's: a dead DWARF 5 `.debug_addr` table no unit names (IN-51 as
+/// amended) is read by readelf as the next table's "header". `w` is
+/// masked as [`readelf_warnings`] masks (every hex digit `#`, letters
+/// `a`-`f` and `A`-`F` too), so the patterns are masked alike.
 fn accepted(w: &str) -> bool {
-    ["hole", "unused bytes", "Corrupt .debug_addr", "There are ### unused bytes"]
+    let mask = |p: &str| -> String {
+        p.chars().map(|c| if c.is_ascii_hexdigit() { '#' } else { c }).collect()
+    };
+    ["hole", "unused bytes", "Corrupt .debug_addr", "There are 0 unused bytes"]
         .iter()
-        .any(|p| w.contains(p))
+        .any(|p| w.contains(&mask(p)))
 }
 
 fn verify(prog: &Path, dir: &Path) -> (bool, String) {
@@ -1249,6 +1399,12 @@ fn judge(label: &str, cfg: Cfg, edit: Edit, dir: &Path, u: &Path, f: &Path) {
     let (gu, gf) = (norm(&gu, u), norm(&gf, f));
     assert!(gf.contains("Breakpoint 1 at"), "{label}: gdb on the full link: {gf}");
     assert_eq!(gu, gf, "{label}: gdb reads the update's output differently");
+    if edit.flags.contains(&"-gsplit-dwarf") {
+        // The `.dwo` was read through the skeleton: the parameter of the
+        // function whose debug information the edit added is known.
+        assert!(gu.contains("Symbol v is"), "{label}: gdb did not read b.dwo: {gu}");
+        assert!(!gu.contains("Could not find DWO"), "{label}: {gu}");
+    }
     let (lu, lf) = (lldb(cfg, edit, u, dir), lldb(cfg, edit, f, dir));
     let (lu, lf) = (norm(&lu, u), norm(&lf, f));
     assert!(lf.contains("Breakpoint 1:"), "{label}: lldb on the full link: {lf}");
@@ -1268,22 +1424,30 @@ fn judge(label: &str, cfg: Cfg, edit: Edit, dir: &Path, u: &Path, f: &Path) {
     let new: Vec<&String> = wu.iter().filter(|w| !wf.contains(*w) && !accepted(w)).collect();
     assert!(new.is_empty(), "{label}: readelf warns anew: {new:?}");
     let acc = wu.iter().filter(|w| !wf.contains(*w)).count();
-    eprintln!("[wp228-b3] {label}: gdb SAME, lldb SAME, verify ok, readelf: {acc} accepted new");
+    eprintln!("[wp228-b4] {label}: gdb SAME, lldb SAME, verify ok, readelf: {acc} accepted new");
 }
 
 // ---- the scenarios ----------------------------------------------------------------
 
-/// One edit on every configuration: P, F, the update with and without
-/// emulated `DEBUG_STRS` rows, each judged.
+/// One edit on every configuration: P, F, the update through the
+/// capture's real `DEBUG_STRS` rows, judged.
 fn scenario(edit: Edit) {
     scenario_on(edit, &configs(edit.langs));
 }
 
 fn scenario_on(edit: Edit, cfgs: &[Cfg]) {
+    scenario_with(edit, cfgs, true);
+}
+
+/// `with_rows` false: a state without the `DEBUG_STRS` table (every
+/// string a miss, appended, IN-56; past the tail reserve IN-57's named
+/// fall-back): never a wrong string.
+fn scenario_with(edit: Edit, cfgs: &[Cfg], with_rows: bool) {
     if !tools_required() && tool("lldb").is_none() {
         return;
     }
     let keep = std::env::var_os("MORTAR_WP228_KEEP").map(PathBuf::from);
+    let tag = if with_rows { "rows" } else { "no-rows" };
     for &cfg in cfgs {
         let Some(fx) = Fixture::new(cfg, edit) else {
             assert!(!tools_required(), "{}: a compiler is missing", cfg.label());
@@ -1294,17 +1458,17 @@ fn scenario_on(edit: Edit, cfgs: &[Cfg]) {
         let prev = std::fs::read(fx.scratch.join("prev")).unwrap();
         let new = fx.full(2, "full");
         let old = old_of(&fx);
-        let strs = emulated_debug_strs(&old);
-        for (with_rows, tag) in [(true, "rows"), (false, "no-rows")] {
+        assert!(!rows.debug_strs.is_empty(), "{label}: the capture wrote no DEBUG_STRS rows");
+        {
             let l = format!("{label} {tag}");
-            let u = match update(&fx, &old, &rows, &new, &prev, with_rows.then_some(&strs)) {
+            let u = match update(&fx, &old, &rows, &new, &prev, with_rows) {
                 Ok(u) => u,
                 // Without rows every string is appended (IN-56): past the
                 // merged section's tail reserve (`size/32`, small in a small
                 // program) it is IN-57's named fall-back.
                 Err(e) if !with_rows && e.starts_with("strings: DebugCompaction") => {
                     eprintln!(
-                        "[wp228-b3] {l}: debug-compaction (the string tail): {}",
+                        "[wp228-b4] {l}: debug-compaction (the string tail): {}",
                         &e[..e.find(';').unwrap_or(e.len())]
                     );
                     continue;
@@ -1313,7 +1477,7 @@ fn scenario_on(edit: Edit, cfgs: &[Cfg]) {
             };
             let s = &u.plan.strings;
             eprintln!(
-                "[wp228-b3] {l}: {} contributions {:?}, comdat in place {}, strings hits {} \
+                "[wp228-b4] {l}: {} contributions {:?}, comdat in place {}, strings hits {} \
                  misses {} appended {:?}",
                 u.plan.contributions.len(),
                 u.plan
@@ -1345,6 +1509,15 @@ fn scenario_on(edit: Edit, cfgs: &[Cfg]) {
                     assert_eq!(got, want, "{l}: changed file {k}'s .debug_info placement");
                 }
             }
+            if let Some(want) = edit.addr {
+                let got = u
+                    .plan
+                    .contributions
+                    .iter()
+                    .find(|c| chunk_name(&rows, c.chunk) == b".debug_addr")
+                    .map(|c| c.taken);
+                assert_eq!(got, Some(want), "{l}: b's .debug_addr placement");
+            }
             if with_rows {
                 assert!(s.hits > 0, "{l}: no string found through the rows");
             } else {
@@ -1355,18 +1528,37 @@ fn scenario_on(edit: Edit, cfgs: &[Cfg]) {
             std::fs::write(&up, &out).unwrap();
             std::fs::set_permissions(&up, std::os::unix::fs::PermissionsExt::from_mode(0o755))
                 .unwrap();
-            judge(&l, cfg, edit, fx.scratch.path(), &up, &fx.scratch.join("full"));
+            // Kept before the judges, so that a failed one is kept too.
             if let Some(k) = &keep {
-                let d = k.join(format!("{}-{}-{tag}", cfg.label(), edit.name));
-                std::fs::create_dir_all(&d).unwrap();
-                std::fs::copy(&up, d.join("upd")).unwrap();
-                std::fs::copy(fx.scratch.join("full"), d.join("full")).unwrap();
-                std::fs::copy(fx.scratch.join("full.map"), d.join("full.map")).unwrap();
-                for stem in std::iter::once("a").chain(Fixture::stems(edit)) {
-                    let src = format!("{stem}.{}", cfg.ext());
-                    std::fs::copy(fx.scratch.join(&src), d.join(&src)).unwrap();
-                }
+                std::fs::write(fx.scratch.join(format!("upd-{tag}.map")), &u.map).unwrap();
+                keep_for_plumb(&k.join(format!("{}-{}-{tag}", cfg.label(), edit.name)), &fx);
             }
+            judge(&l, cfg, edit, fx.scratch.path(), &up, &fx.scratch.join("full"));
+        }
+    }
+}
+
+/// `MORTAR_WP228_KEEP`: the scratch's files into `d` (the update's output
+/// `upd-<tag>` and its map `upd-<tag>.map`, which is the image's: the
+/// update's placement and its `dead`/`hole` records; `P` and `F` with
+/// their maps; the objects, `.dwo` files and sources; no state), the maps'
+/// paths rewritten from the scratch to `d`, for `cargo xtask plumb
+/// <d>/upd-<tag> --map <d>/upd-<tag>.map --map-format mortar`.
+fn keep_for_plumb(d: &Path, fx: &Fixture) {
+    std::fs::create_dir_all(d).unwrap();
+    let from = fx.scratch.path().display().to_string();
+    let to = d.display().to_string();
+    for e in std::fs::read_dir(fx.scratch.path()).unwrap() {
+        let e = e.unwrap();
+        let name = e.file_name().to_string_lossy().into_owned();
+        if !e.file_type().unwrap().is_file() || name.contains("state") {
+            continue;
+        }
+        if name.ends_with(".map") {
+            let t = std::fs::read_to_string(e.path()).unwrap();
+            std::fs::write(d.join(&name), t.replace(&from, &to)).unwrap();
+        } else {
+            std::fs::copy(e.path(), d.join(&name)).unwrap();
         }
     }
 }
@@ -1427,6 +1619,57 @@ fn kiln_objects_read_as_the_full_link() {
     scenario_on(LINES, &cfgs);
     // kiln's allotments differ: the growth's placement is not pinned.
     scenario_on(Edit { info: None, ..GROW }, &cfgs);
+}
+
+// spec: incr.md IN-56 (WP-228 B4 item 2): a state without the
+// `DEBUG_STRS` table: every string appended, or IN-57's named fall-back
+// past the tail reserve; never a wrong string (judged as every update).
+#[test]
+fn state_without_debug_strs_appends_or_falls_back() {
+    scenario_with(RENAME, &configs(C_ONLY), false);
+}
+
+/// DWARF 5 configurations of GCC and Clang, C, both targets.
+fn dwarf5_gcc_clang() -> Vec<Cfg> {
+    configs(C_ONLY).into_iter().filter(|c| c.dwarf == 5).collect()
+}
+
+// spec: WP-228 B3-7 (WP-229 section 8 item 3a): DWARF 5 split DWARF goes
+// through the update; `.debug_addr` to the tail, its old range a dead
+// DWARF 5 table (IN-51 as amended: a dead table with a header need not be
+// named); gdb and lldb read the `.dwo` files through the new skeletons.
+#[test]
+fn split5_skeleton_edit_reads_as_the_full_link() {
+    scenario_on(SPLIT5, &dwarf5_gcc_clang());
+}
+
+// spec: WP-228 B3-7, B3-4 (G-1c): a changed or removed file with GNU split
+// DWARF of DWARF 4 (a headerless `.debug_addr` a dead range must keep
+// named, which `Hole` cannot say yet) is `debug-unit-kind`, before the
+// update writes anything.
+#[test]
+fn dwarf4_split_changed_file_is_debug_unit_kind() {
+    let cfgs: Vec<Cfg> = configs(C_ONLY).into_iter().filter(|c| c.dwarf == 4).collect();
+    for edit in [SPLIT4, SPLIT4_GONE] {
+        for &cfg in &cfgs {
+            let Some(fx) = Fixture::new(cfg, edit) else {
+                assert!(!tools_required(), "{}: a compiler is missing", cfg.label());
+                continue;
+            };
+            let label = fx.label();
+            let rows = fx.full(1, "prev");
+            let prev = std::fs::read(fx.scratch.join("prev")).unwrap();
+            let new = fx.full(2, "full");
+            let old = old_of(&fx);
+            match update(&fx, &old, &rows, &new, &prev, true) {
+                Err(e) if e.starts_with("place: debug-unit-kind") && e.contains("G-1c") => {
+                    eprintln!("[wp228-b4] {label}: {e}");
+                }
+                Err(e) => panic!("{label}: not debug-unit-kind: {e}"),
+                Ok(_) => panic!("{label}: a DWARF 4 split file went through the update"),
+            }
+        }
+    }
 }
 
 // ---- item 4: the update's debug steps at scale ------------------------------------
@@ -1493,20 +1736,7 @@ fn measure_debug_steps_at_scale() {
     let diag = Collector::new(Policy::default());
     let env = Env { cwd: &cwd, pool: Pool::new(2), replay: None, slack: true, state5: true };
     let f = front(parsed.plan, env, &store, &diag, &mut Timer::new(false)).expect("front");
-    let mut frags = HashMap::new();
-    for (id, fr) in f.merge.split.frags.iter() {
-        let Some(off) = f.layout.merge.offset(id) else { continue };
-        let (name, data) = sec(&f.inputs, &f.resolution, fr.section);
-        let bytes = data[fr.offset as usize..(fr.offset + fr.size) as usize].to_vec();
-        frags.entry((name, bytes)).or_insert(off);
-    }
-    let old = Old {
-        layout: f.layout.clone(),
-        frags,
-        base: f.resolution.section_base.clone(),
-        paths: Vec::new(),
-    };
-    let strs = emulated_debug_strs(&old);
+    let strs = debug_strs_of(&rows);
     let view = rows.view();
     let lo = LayoutOf { view: &view };
     let stored = StoredLayout::new(&lo);
@@ -1531,7 +1761,7 @@ fn measure_debug_steps_at_scale() {
         .collect();
     let pa = section(&prev, ".debug_aranges").unwrap_or(&[]).to_vec();
     eprintln!(
-        "[wp228-b3-measure] files with debug {}; rows: sections {}, DEBUG_STRS (emulated) {}; \
+        "[wp228-b3-measure] files with debug {}; rows: sections {}, DEBUG_STRS {}; \
          output {} B; .debug_aranges {} B; debug chunks {}",
         by.len(),
         rows.sections.len(),

@@ -641,6 +641,25 @@ pub fn place(
         } else {
             stored.sections_of(c.file)?
         };
+        // B3-7 (G-1c): a DWARF 4 split-DWARF file (`DW_AT_GNU_addr_base`)
+        // has a HEADERLESS `.debug_addr` table, which a dead range must
+        // keep named by a unit with that base; `Hole` carries no such
+        // variant yet, so a changed or removed file that is one, in its
+        // old or its new version, falls back.
+        let new_names: Vec<(Vec<u8>, u64)> = c
+            .sections
+            .iter()
+            .map(|s| Ok((changed.string(view, s.name)?, s.size)))
+            .collect::<Result<_, IncrReason>>()?;
+        if headerless_addr(old_rows.iter().map(|r| (&r.name[..], r.size)))
+            || headerless_addr(new_names.iter().map(|(n, s)| (&n[..], *s)))
+        {
+            return Err(IncrReason::DebugUnitKind(
+                "a DWARF 4 split-DWARF file (a headerless .debug_addr table): its dead \
+                 range must stay named (G-1c)"
+                    .to_owned(),
+            ));
+        }
         // The old version's debug contributions, by output section.
         let mut old: BTreeMap<Vec<u8>, (Allot, Vec<&StoredSection>)> = BTreeMap::new();
         for r in &old_rows {
@@ -697,6 +716,12 @@ pub fn place(
             let id = SectionId(c.first_section.0 + k as u32);
             let f = form(&name).ok_or_else(debug_reason)?;
             match f.policy {
+                // IN-55 option (A): the GNU sets are left out of an
+                // incremental-mode output (`incr_discard`), as in the
+                // full link: nothing to place (`split::classify_*` gives
+                // them no reason either). B3-7: split DWARF's skeletons
+                // (GCC and Clang write the sets with `-gsplit-dwarf`).
+                Policy::NameIndex if mortar_layout::incr_discard::left_out(&name) => continue,
                 Policy::NameIndex => return Err(IncrReason::DebugNameIndex(text(&name))),
                 Policy::Strings | Policy::Whole => continue,
                 _ => {}
@@ -1017,6 +1042,23 @@ fn with_slack(a: Allot, holes: &[Hole]) -> Allot {
 /// being reused).
 fn remove_range(holes: &mut Vec<Hole>, s: u64, e: u64) {
     holes.retain(|h| h.offset + h.size <= s || h.offset >= e);
+}
+
+/// Whether one version of a file (its sections' names and sizes) has a
+/// HEADERLESS `.debug_addr` table: a non-empty `.debug_addr` and no
+/// `.debug_line_str`. A DWARF 5 producer that writes `.debug_addr` (GCC
+/// and Clang, split or not) also writes `.debug_line_str`; DWARF 2 to 4
+/// define no `.debug_line_str`, and their `.debug_addr` is GNU split
+/// DWARF's (`split::Handled::dwarf4_split`, here from names alone, as the
+/// old version has no bytes). A DWARF 5 file without `.debug_line_str`
+/// falls back too (conservative).
+fn headerless_addr<'n>(sections: impl Iterator<Item = (&'n [u8], u64)>) -> bool {
+    let (mut addr, mut line_str) = (false, false);
+    for (n, _) in sections.filter(|s| s.1 > 0) {
+        addr |= n == b".debug_addr";
+        line_str |= n == b".debug_line_str";
+    }
+    addr && !line_str
 }
 
 /// A dead range in its section's neutral form (R-3): refused when the
