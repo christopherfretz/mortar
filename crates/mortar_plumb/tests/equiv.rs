@@ -925,6 +925,8 @@ fn with_line(map: &Map) -> Map {
         if m.args.is_empty() {
             m.args.push(b"a.o".to_vec());
         }
+        // `Pair::link`'s `-x`: S-78 drops every local (§6.5 Y6, WP-246).
+        m.args.insert(0, b"-x".to_vec());
     }
     m
 }

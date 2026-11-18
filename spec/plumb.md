@@ -3143,10 +3143,18 @@ rules below judge the rest. Code: `src/symbols.rs`.
     `__tdata_start`, and `__start_X`/`__stop_X` for a C identifier X;
   - on AArch64, a thunk's or a patch's name of `synth.md` S-80
     (`__<target>…_veneer`, `__erratum_843419_veneer`; GNU ld's stubs
-    have the same form);
+    have the same form), and the ABI's mapping symbols `$x`, `$d`,
+    `$x.…`, `$d.…` (S-80; lld writes them for its thunks);
+  - under GNU ld's map on AArch64: its erratum 843419 stubs
+    `e843419@…` (measured in WP-246, `tests/spie.rs`'s `cxx.bfd`);
   - a `--defsym` key (§4.4b judges it);
   - under lld's map: `__AArch64ADRPThunk_*`, `__AArch64AbsLongThunk_*`,
-    `__CortexA53843419_*` and `__dso_handle` (layout.md §13.1, E-24);
+    `__AArch64BTIThunk_*`, `__CortexA53843419_*` and `__dso_handle`
+    (layout.md §13.1, E-24); and, listed as `<name> (at no input section
+    lld's map lists)`, a name at an address no listed input section
+    occupies: lld's map does not list a member whose sections are all
+    merged (glibc's `C_name.o`, `SYS_libc.o`, `itoa-digits.o`, only
+    `.rodata.str*`; measured in WP-246 on the corpus's `debug-gc`);
     under mold's: a name with `$`, `__start_EHDR`, `__start_PHDR`,
     `_PROCEDURE_LINKAGE_TABLE_` and `__dso_handle` (the not-judged list
     below; `_PROCEDURE_LINKAGE_TABLE_` measured in WP-246: mold 2.x
@@ -3155,13 +3163,20 @@ rules below judge the rest. Code: `src/symbols.rs`.
     relocation's or a shared library's symbol, a versioned reference
     `puts@GLIBC_2.2.5`): stage 3 judges the dynamic symbols (P-D5);
   - any name, when the line has a linker script (`-T`): the script may
-    assign it; listed as `<name> (the line has a script)`.
+    assign it; listed as `<name> (the line has a script)`;
+  - any name, when there is no line (a foreign map read alone): a
+    `--defsym` may define it and GNU ld's map does not record one;
+    listed as `<name> (no line: a --defsym may define it)`.
 
   Also a finding: an entry with no name (other than an `STT_SECTION` or
   `STT_FILE` one: §6.9's fillers and GNU ld's and mold's section symbols
   are unnamed `STT_SECTION`; Y7 judges file symbols), and an undefined
   entry whose name (or its base before `@`) no input symbol, defined or
-  not, has and that is none of the above. Before WP-246
+  not, has, the line does not name (`-e`, `-u`, `--require-defined`,
+  `-init`, `-fini`, `--export-dynamic-symbol`, `--wrap`'s `__wrap_X`
+  and `__real_X`) and that is none of the above; with no line such a
+  name is listed (`<name> (undefined; no line: a -u may name it)`).
+  Before WP-246
   every name outside the table was "not judged": mortar's incremental
   output with `readed` (the middle of `__libc_single_threaded`) at
   `.symtab` entry 2489 passed with zero findings.
@@ -3204,10 +3219,11 @@ rules below judge the rest. Code: `src/symbols.rs`.
   - a **demoted** global: an input defines the name globally (or as a
     common, or the line makes it local): Y3 judges it (S-77);
   - the **linker's own**: a name of Y5's closed set or a `--defsym` key,
-    or a mapping symbol (`$x…`, `$d…`) at an address no input section
-    occupies (S-80; Y4's second exception);
+    or a mapping symbol (`$x…`, `$d…`) in an allocated section at an
+    address no input section occupies (S-80; Y4's second exception);
   - named as a local not judged (below), in the section such a local
-    would be in.
+    would be in (asked first: a `$d` of a merged `.debug_str` is counted
+    there, not as the linker's).
 
   **Not judged** (counted by reason in `input locals not judged`): the
   locals of an input `.eh_frame` when the output has one (S-50 drops a
@@ -3225,7 +3241,12 @@ rules below judge the rest. Code: `src/symbols.rs`.
   which GNU ld inserts for a file with none, S-83, X-32). An unnamed one
   is a finding (but under GNU ld's map, where it closes the inputs'
   file symbols before the linker's own locals: measured in WP-246 in
-  every GNU ld output of the lane, `pie-x64.bfd` entry 3) (`.symtab entry i is an STT_FILE with no name`), and so is
+  every GNU ld output of the lane, `pie-x64.bfd` entry 3). Under lld's
+  and mold's maps a name no listed input's `STT_FILE` has is counted
+  not judged (`STT_FILE names of files the map does not list`): both
+  leave out of the map a file whose sections are all collected and
+  still copy its `STT_FILE` (measured in WP-246, `tests/wrap.rs`'s
+  `gc` cell: `gcf-a64.o`'s `fo.c`) (`.symtab entry i is an STT_FILE with no name`), and so is
   one of another name. Under mortar's map Y6 also holds them to their
   files as a multiset.
 

@@ -800,6 +800,9 @@ pub struct Options {
     /// The names of `-init`, `-fini` and `--export-dynamic-symbol` (M10's
     /// roots of the line, `spec/resolve.md` §4.7, WP-147).
     pub named_roots: Vec<String>,
+    /// The names of `-u`/`--undefined` and `--require-defined`: names the
+    /// line mentions (§6.5 Y5's undefined entry, WP-246).
+    pub undefined: Vec<String>,
     /// The last `-z max-page-size=N` (layout.md L-74; `N = 0` means the
     /// default), when its value reads as a number.
     pub max_page: Option<u64>,
@@ -858,6 +861,7 @@ impl Default for Options {
             shared: false,
             export_dynamic: false,
             named_roots: Vec::new(),
+            undefined: Vec::new(),
             max_page: None,
             odr_runtime: OdrRuntime::Off,
             odr_table_given: false,
@@ -944,6 +948,7 @@ impl Options {
             "-init" | "-fini" | "--export-dynamic-symbol" => {
                 self.named_roots.extend(value.map(str::to_string));
             }
+            "-u" | "--require-defined" => self.undefined.extend(value.map(str::to_string)),
             "--keep-mason-meta" => self.keep_mason_meta = true,
             "--wrap" => self.wrap.extend(value.map(str::to_string)),
             "--defsym" => self.defsym.extend(value.map(str::to_string)),

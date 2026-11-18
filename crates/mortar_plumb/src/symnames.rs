@@ -79,6 +79,13 @@ pub(crate) fn linker_name(name: &str, format: Format, machine: u16) -> Option<&'
     if common.is_some() {
         return common;
     }
+    // AArch64 ELF ABI mapping symbols (`$x`, `$d`, `$x.<any>`): a veneer's
+    // or a patch's (S-80), and lld's thunks' (measured in WP-246).
+    if aarch64
+        && (name == "$x" || name == "$d" || name.starts_with("$x.") || name.starts_with("$d."))
+    {
+        return Some("synth.md S-80 (mapping symbols)");
+    }
     if let Some(x) = name.strip_prefix("__start_").or_else(|| name.strip_prefix("__stop_"))
         && c_identifier(x)
     {
@@ -95,7 +102,9 @@ pub(crate) fn linker_name(name: &str, format: Format, machine: u16) -> Option<&'
             if aarch64 && veneer(name) {
                 return Some("GNU ld's AArch64 stubs (synth.md S-80)");
             }
-            None
+            // GNU ld's erratum 843419 stub, `e843419@<n>_<sec>_<off>`
+            // (measured in WP-246: tests/spie.rs's `cxx.bfd`).
+            (aarch64 && name.starts_with("e843419@")).then_some("GNU ld's erratum 843419 stubs")
         }
         Format::Lld => {
             // lld's thunks and patches (§6.5, `__CortexA53843419_` judged by
@@ -103,6 +112,7 @@ pub(crate) fn linker_name(name: &str, format: Format, machine: u16) -> Option<&'
             if name.starts_with("__AArch64ADRPThunk_")
                 || name.starts_with("__AArch64AbsLongThunk_")
                 || name.starts_with("__CortexA53843419_")
+                || name.starts_with("__AArch64BTIThunk_")
             {
                 return Some("lld's thunks and patches (§6.5)");
             }
@@ -154,6 +164,8 @@ const NJ_MERGED: &str = "locals of sections merged without pieces";
 const NJ_UNKNOWN: &str = "locals of sections whose place the map does not give";
 const NJ_TLS: &str = "thread-local locals without a usable PT_TLS";
 const NJ_UNDEF: &str = "undefined or common locals";
+const NJ_FILE_UNLISTED: &str =
+    "STT_FILE names of files the map does not list (lld, mold: every section collected)";
 const NJ_LINE: &str = "every local: the link's -x/-X options are not known";
 const NJ_FOREIGN: &str = "every local: Y6's rules are mortar's (S-76, S-83; GNU ld inserts an STT_FILE per object and an unnamed one, drops crtbegin's __TMC_LIST__; mold makes every global local, A9)";
 
@@ -376,18 +388,24 @@ pub(crate) fn locals(e: &mut Engine<'_, '_>, map: &Map, fs: &mut Vec<Finding>) {
             demoted += 1;
             continue;
         }
-        let mapping = out.name.starts_with("$x") || out.name.starts_with("$d");
-        if linker_name(&out.name, e.format, machine).is_some()
-            || e.defsym.defines(&out.name)
-            || (mapping && !e.occupied_at(s.st_value))
-        {
-            own += 1;
-            continue;
-        }
+        // A local named as one not judged, in the section such a local
+        // would be in, before the linker's mapping symbols: those are the
+        // linker's only at an allocated address no input section occupies.
         if unjudged.get(&out.name).is_some_and(|v| {
             v.iter().any(|x| x.is_none_or(|k| usize::from(s.st_shndx) == k))
         }) {
             extra_nj += 1;
+            continue;
+        }
+        let mapping = out.name.starts_with("$x") || out.name.starts_with("$d");
+        let alloc = s.st_shndx != SHN_UNDEF
+            && s.st_shndx < SHN_LORESERVE
+            && image.sections.get(usize::from(s.st_shndx)).is_some_and(|x| x.alloc());
+        if linker_name(&out.name, e.format, machine).is_some()
+            || e.defsym.defines(&out.name)
+            || (mapping && alloc && !e.occupied_at(s.st_value))
+        {
+            own += 1;
             continue;
         }
         extra += 1;
@@ -435,7 +453,7 @@ pub(crate) fn locals(e: &mut Engine<'_, '_>, map: &Map, fs: &mut Vec<Finding>) {
     if extra_nj > 0 {
         nj.insert("output locals named as an input local not judged", extra_nj);
     }
-    c.input_locals_not_judged = nj.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
+    c.input_locals_not_judged.extend(nj.into_iter().map(|(k, v)| (k.to_string(), v)));
 }
 
 /// Y7 (§6.5, WP-246): every `STT_FILE` entry has a name, an input's
@@ -460,7 +478,7 @@ pub(crate) fn files(e: &mut Engine<'_, '_>, fs: &mut Vec<Finding>) {
             }
         }
     }
-    let mut judged = 0u64;
+    let (mut judged, mut unlisted) = (0u64, 0u64);
     for out in &image.symbols {
         if out.index == 0 || out.sym.sym_type() != STT_FILE {
             continue;
@@ -474,6 +492,11 @@ pub(crate) fn files(e: &mut Engine<'_, '_>, fs: &mut Vec<Finding>) {
         }
         if out.name.is_empty() {
             fs.push(y(7, format!(".symtab entry {} is an STT_FILE with no name", out.index)));
+        } else if !names.contains(&out.name) && matches!(e.format, Format::Lld | Format::Mold) {
+            // lld's and mold's maps do not list a file whose sections are
+            // all collected, but both copy its STT_FILE (measured in
+            // WP-246: tests/wrap.rs's `gc` cell, `gcf-a64.o`'s `fo.c`).
+            unlisted += 1;
         } else if !names.contains(&out.name) {
             fs.push(named(
                 y(
@@ -487,7 +510,10 @@ pub(crate) fn files(e: &mut Engine<'_, '_>, fs: &mut Vec<Finding>) {
             ));
         }
     }
-    e.cov.file_symbols_judged = judged;
+    e.cov.file_symbols_judged = judged - unlisted;
+    if unlisted > 0 {
+        e.cov.input_locals_not_judged.push((NJ_FILE_UNLISTED.to_string(), unlisted));
+    }
 }
 
 /// Y5's closed set (§6.5, WP-246): of the names Y5 found no value rule
@@ -498,7 +524,8 @@ pub(crate) fn files(e: &mut Engine<'_, '_>, fs: &mut Vec<Finding>) {
 fn unexplained(e: &mut Engine<'_, '_>, map: &Map, fs: &mut Vec<Finding>) {
     let image = e.image;
     let machine = image.header.e_machine;
-    let script = options(e, map).is_some_and(|o| o.script);
+    let opts = options(e, map);
+    let script = opts.as_ref().is_some_and(|o| o.script);
     let dynsym = dynsym_names(image);
     // A name `.dynsym` has (stage 3 judges it against the shared objects:
     // an import, a copy and its aliases), with or without GNU ld's
@@ -518,7 +545,24 @@ fn unexplained(e: &mut Engine<'_, '_>, map: &Map, fs: &mut Vec<Finding>) {
             kept.push(format!("{n} (the line has a script)"));
             continue;
         }
+        // With no line (a foreign map read alone) a `--defsym` the line
+        // gave is not known: GNU ld's map does not record it.
+        if opts.is_none() {
+            kept.push(format!("{n} (no line: a --defsym may define it)"));
+            continue;
+        }
         if dynamic(&n) {
+            continue;
+        }
+        // lld's map does not list a member whose sections are all merged
+        // (glibc's `C_name.o`, `SYS_libc.o`, `itoa-digits.o`: only
+        // `.rodata.str*`; measured in WP-246 on the corpus's `debug-gc`):
+        // a name at an address no listed input section occupies may be
+        // such a member's.
+        let unlisted = e.format == Format::Lld
+            && image.symbols.iter().filter(|o| o.name == n).all(|o| !e.occupied_at(o.sym.st_value));
+        if unlisted {
+            kept.push(format!("{n} (at no input section lld's map lists)"));
             continue;
         }
         for out in image.symbols.iter().filter(|o| o.name == n) {
@@ -534,7 +578,23 @@ fn unexplained(e: &mut Engine<'_, '_>, map: &Map, fs: &mut Vec<Finding>) {
         }
     }
     e.cov.linker_defined_not_judged = kept;
+    // The names the line mentions: `-e`, `-u`, `--require-defined`,
+    // `-init`, `-fini`, `--export-dynamic-symbol`, and `--wrap`'s
+    // `__wrap_X` and `__real_X` (resolve.md §7.1).
+    let mut line_names: Vec<String> = Vec::new();
+    if let Some(o) = &opts {
+        line_names.extend(o.entry.iter().cloned());
+        line_names.extend(o.undefined.iter().cloned());
+        line_names.extend(o.named_roots.iter().cloned());
+        for w in &o.wrap {
+            line_names.push(format!("__wrap_{w}"));
+            line_names.push(format!("__real_{w}"));
+        }
+    }
     let mut mentioned: HashSet<&[u8]> = HashSet::default();
+    for n in &line_names {
+        mentioned.insert(n.as_bytes());
+    }
     for o in e.objs {
         if let Some(t) = &o.symtab {
             for (_, s) in t.iter() {
@@ -544,6 +604,7 @@ fn unexplained(e: &mut Engine<'_, '_>, map: &Map, fs: &mut Vec<Finding>) {
             }
         }
     }
+    let mut unmentioned = Vec::new();
     for out in &image.symbols {
         let s = &out.sym;
         if out.index == 0 || matches!(s.sym_type(), STT_SECTION | STT_FILE) {
@@ -563,6 +624,10 @@ fn unexplained(e: &mut Engine<'_, '_>, map: &Map, fs: &mut Vec<Finding>) {
             && !dynamic(&out.name)
             && linker_name(&out.name, e.format, machine).is_none()
         {
+            if opts.is_none() {
+                unmentioned.push(format!("{} (undefined; no line: a -u may name it)", out.name));
+                continue;
+            }
             fs.push(named(
                 y(
                     5,
@@ -575,6 +640,7 @@ fn unexplained(e: &mut Engine<'_, '_>, map: &Map, fs: &mut Vec<Finding>) {
             ));
         }
     }
+    e.cov.linker_defined_not_judged.extend(unmentioned);
 }
 
 /// The names of the output's `.dynsym`, if it has one.

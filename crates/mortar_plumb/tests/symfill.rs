@@ -201,7 +201,14 @@ fn p_e3_nonalloc_locals_by_identity() {
     let Some(x) = edit("a64", "x", &["l1"]) else { return };
     let f = edit::<&str>("a64", "f", &[]).unwrap();
     let e = rejected_by_equiv(&x, &f, "l1", "P-E3", "the local '$d' at .debug_info+0x0");
-    assert!(e.x.findings.is_empty() && e.f.findings.is_empty());
+    // X alone: Y6 (WP-246) finds the moved `$d` too, as an input local
+    // not in .symtab and an output local that is no kept input's.
+    assert!(e.f.findings.is_empty(), "{:#?}", lines(&e.f.findings));
+    let xl = lines(&e.x.findings);
+    assert!(
+        !xl.is_empty() && xl.iter().all(|l| l.starts_with("Y6 ") && l.contains("'$d'")),
+        "{xl:#?}"
+    );
 }
 
 // §6.9 (WP-222): a near-filler, one field away from the form before
@@ -215,7 +222,19 @@ fn near_filler_reported() {
             let x = edit(arch, "x", &with(&[&format!("near={field}")])).unwrap();
             let e =
                 rejected_by_equiv(&x, &f, field, "P-E3", &format!("a filler but for its {field}"));
-            assert!(e.x.findings.is_empty(), "{arch} {field}: {:#?}", lines(&e.x.findings));
+            // A near-filler of st_info 0 is an unnamed NOTYPE local: X
+            // alone finds it by Y5 and Y6 (WP-246), naming the entry.
+            let xl = lines(&e.x.findings);
+            if field == "st_info" {
+                assert!(
+                    xl.len() == 2
+                        && xl.iter().any(|l| l.starts_with("Y5 ") && l.contains("has no name"))
+                        && xl.iter().any(|l| l.starts_with("Y6 ") && l.contains("('', st_info 0x0")),
+                    "{arch} {field}: {xl:#?}"
+                );
+            } else {
+                assert!(xl.is_empty(), "{arch} {field}: {xl:#?}");
+            }
             assert_eq!(e.x.coverage.fillers, Some(69), "{arch} {field}");
         }
         let fs = edit(arch, "f", &["shndx"]).unwrap();
