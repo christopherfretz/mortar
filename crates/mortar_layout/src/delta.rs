@@ -31,8 +31,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use mortar_core::column::Column;
 use mortar_core::id::{ChunkId, FileId, OutSecId, SectionId, SymKind};
 use mortar_core::incr::{
-    GrowthStep, IncrReason, LayoutDelta, SectionChange, StoredLayout, StoredRegion, StoredSection,
-    Unimplemented,
+    GrowthStep, IncrReason, LayoutDelta, LayoutInput, SectionChange, StoredLayout, StoredRegion,
+    StoredSection, Unimplemented,
 };
 use mortar_core::layout::{
     Chunk, ChunkKind, Hole, HoleKind, LoadClass, Place, Placement, PlacementKind, Segment,
@@ -71,9 +71,10 @@ use crate::target::Target;
 /// (`spec/landed/incr/WP-216.md` §4).
 pub fn layout(
     stored: &StoredLayout<'_>,
-    changes: &[SectionChange<'_>],
+    input: &LayoutInput<'_>,
     target: &Target,
 ) -> Result<LayoutDelta, IncrReason> {
+    let changes = input.changes;
     debug_assert!(changes.windows(2).all(|w| w[0].id < w[1].id), "changes sorted by id");
     let base = Base::read(stored, target)?;
     let mut files: BTreeMap<FileId, Vec<usize>> = BTreeMap::new();
@@ -1286,7 +1287,9 @@ impl<'b, 'c> Update<'b, 'c> {
             holes: made,
             regions_opened,
             growth_steps: steps.into_iter().map(|s| s.1).collect(),
-            commons: Vec::new(),
+            files: Vec::new(),
+            hole_chunks: Vec::new(),
+            eh: None,
             frags: Vec::new(),
             slots_appended: Vec::new(),
             slots_dead: Vec::new(),

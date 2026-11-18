@@ -17,8 +17,8 @@ use mortar_core::column::Column;
 use mortar_core::id::{ChunkId, FileId, OutSecId, SectionId};
 use mortar_core::identity::{Anchor, SectionKey};
 use mortar_core::incr::{
-    IncrReason, LayoutDelta, LayoutRows, MemoryLayout, SectionChange, StoredLayout, StoredRegion,
-    StoredSection, StoredSlot, SymtabBlock, SymtabTables, Unimplemented,
+    IncrReason, LayoutDelta, LayoutInput, LayoutRows, MemoryLayout, SectionChange, StoredLayout,
+    StoredRegion, StoredSection, StoredSlot, SymtabBlock, SymtabTables, Unimplemented,
 };
 use mortar_core::layout::{
     Chunk, ChunkKind, Defined, Hole, HoleKind, Patch, Place, Placement, Redirect, Segment,
@@ -190,6 +190,9 @@ fn capture(
         regions: regions.to_vec(),
         holes: p.holes.to_vec(),
         frags: Vec::new(),
+        frag_at: Vec::new(),
+        eh_records: Vec::new(),
+        uses: Vec::new(),
         slots: Vec::new(),
         patches: p.patches.to_vec(),
         redirects: p.redirects.to_vec(),
@@ -315,7 +318,11 @@ fn world_of(prev: &State, edit: &Edit) -> World {
 /// checked. `Err` is the update's reason.
 fn hop(prev: &State, edit: &Edit) -> Result<(State, LayoutDelta), IncrReason> {
     let (changes, ids2) = changes_of(prev, edit);
-    let delta = layout(&StoredLayout::new(&prev.mem), &changes, &prev.world.target)?;
+    let delta = layout(
+        &StoredLayout::new(&prev.mem),
+        &LayoutInput { changes: &changes, ..LayoutInput::default() },
+        &prev.world.target,
+    )?;
     let next = overlay(prev, edit, &changes, &ids2, &delta);
     Ok((next, delta))
 }
@@ -942,7 +949,13 @@ fn section_without_output_is_new_output_section() {
     let mut files = s0.files();
     files[0].push(sec(b"my_section", SHT_PROGBITS, WA, 8, 3));
     let (changes, _) = changes_of(&s0, &Edit::new(files).changed(&[1]));
-    let e = layout(&StoredLayout::new(&s0.mem), &changes, &s0.world.target).err().unwrap();
+    let e = layout(
+        &StoredLayout::new(&s0.mem),
+        &LayoutInput { changes: &changes, ..LayoutInput::default() },
+        &s0.world.target,
+    )
+    .err()
+    .unwrap();
     assert_eq!(e.name(), "new-output-section", "{e:?}");
 }
 
@@ -1060,9 +1073,13 @@ impl LayoutRows for Counting<'_> {
         self.holes.fetch_add(1, Ordering::Relaxed);
         self.inner.holes_in(chunk)
     }
-    fn frags_in(&self, out: OutSecId) -> Result<Vec<mortar_core::incr::StoredFrag>, IncrReason> {
+    fn frags_of(
+        &self,
+        out: OutSecId,
+        hash: [u8; 16],
+    ) -> Result<Vec<mortar_core::incr::StoredFrag>, IncrReason> {
         self.frags.fetch_add(1, Ordering::Relaxed);
-        self.inner.frags_in(out)
+        self.inner.frags_of(out, hash)
     }
     fn slots(&self) -> Result<Vec<StoredSlot>, IncrReason> {
         self.inner.slots()
@@ -1105,7 +1122,12 @@ fn reads_only_what_changed() {
     files[29][1].size = 600; // overflows .data: a new region.
     let (changes, _) = changes_of(&s0, &Edit::new(files).changed(&[30]).drawn(&[7]));
     let rows = Counting::new(&s0.mem);
-    let d = layout(&StoredLayout::new(&rows), &changes, &s0.world.target).unwrap();
+    let d = layout(
+        &StoredLayout::new(&rows),
+        &LayoutInput { changes: &changes, ..LayoutInput::default() },
+        &s0.world.target,
+    )
+    .unwrap();
     assert_eq!(rows.sections.load(Ordering::Relaxed), 2, "one SECTIONS range per file");
     assert_eq!(rows.regions.load(Ordering::Relaxed), 2, "one REGIONS range per file");
     // The chunks of the two files' regions (.text, .data, .bss, .rodata)
@@ -1121,10 +1143,22 @@ fn reads_only_what_changed() {
 fn delta_layout_same_on_1_and_n_threads() {
     let (s0, hops) = m1_world("o2fs");
     let (changes, _) = changes_of(&s0, &hops[3]);
-    let one = layout(&StoredLayout::new(&s0.mem), &changes, &s0.world.target);
+    let one = layout(
+        &StoredLayout::new(&s0.mem),
+        &LayoutInput { changes: &changes, ..LayoutInput::default() },
+        &s0.world.target,
+    );
     let many: Vec<_> = std::thread::scope(|sc| {
         let h: Vec<_> = (0..4)
-            .map(|_| sc.spawn(|| layout(&StoredLayout::new(&s0.mem), &changes, &s0.world.target)))
+            .map(|_| {
+                sc.spawn(|| {
+                    layout(
+                        &StoredLayout::new(&s0.mem),
+                        &LayoutInput { changes: &changes, ..LayoutInput::default() },
+                        &s0.world.target,
+                    )
+                })
+            })
             .collect();
         h.into_iter().map(|h| h.join().unwrap()).collect()
     });
