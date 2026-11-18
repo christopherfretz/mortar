@@ -2,28 +2,28 @@
 
 Brief: `briefs/wp-187.md` + `briefs/rl-common.md` in the context repo.
 Scratch: `.build/target-wp-154/rl7/` (cargo.sh = cargo with env + load wait;
-m1 = stack-note measurement, m2 = .gnu.warning measurement).
+lane.sh, census.sh, bb.sh = gates in the background; compose.py = P-P1 by
+hand over a kept lane run; tools.py/tools2.sh = tool warnings vs GNU ld;
+m1/m2/m3 = measurements: stack note, .gnu.warning, symver).
 
-## Done (uncommitted until the first test run passes)
-- Driver `crates/mortar/src/relocatable.rs` (front, write, text map,
-  size_disagreements), dispatch in lib.rs; -r/-Ur rows Supported.
-- Named refusals: section groups (RL-8), {machine} output (RL-9),
-  removed .eh_frame records (RL-8, shared with the image).
-- stack note L-R6a in mortar_layout; undefined_without_key written;
-  property warnings routed; odr-runtime -r test; census OUT_OF_M4R.
-- Lane tests written: partial-mortar (renamed), r-busybox-gcc/clang,
-  r-kernel-style(-m), r-archive-{alone,u,after-ref}, r-thin-whole-archive,
-  r-start-group, r-dev-null-m, r-stack-note.
-- crates/mortar/tests/relocatable.rs: sizes, -e, -u, symver, gnu.warning,
-  unknown property.
-- Spec: cli.md §3.16/C-R2b/C-R3 row, resolve.md §1.2/§11, layout.md L-R8
-  (option-made note last), L-R1 .gnu.warning (carried, measured), diag.md.
+## Done
+- Driver, refusals lifted, records' items, lane tests, texts (commits
+  3645fc53, 5589e53b and the next).
+- Lane run-715813: 63 PASS, 0 FAIL, 1 XFAIL (WP-203). Stage R: no finding.
+- P-P1 by hand (compose.py): all clean but r-kernel-style(-m) via [mortar]:
+  36 findings, merged-string "" dedup (a verifier question, INTERIM).
+- Tools: no warning on mortar's -r output that GNU ld's does not get.
+- BusyBox gcc + clang-22: -r by all four, finals by GNU ld and mortar run;
+  busybox --list 401 applets.
+- Census 1: C++ AArch64 -r lines hit an internal error (group check before
+  the refusal): fixed (kept_group by file liveness), test
+  r_section_groups_refused; Mason container key named (RL-12).
 
 ## Next
-1. Tests pass; commit. options.md bless + mirror script.
-2. Lane on relocatable/ tests; stage R findings; compose by hand.
-3. BusyBox real build; census; static-identical; gates.
-4. harness.md cells; record spec/landed/layout/WP-187.md; plumb.md lines.
+1. Census 2 (t4.log): confirm the split; commit.
+2. INTERIM hand-back to the supervisor (verifier findings list).
+3. After resume: final gates (ci --quick, whole lane, census,
+   static-identical --update), record §E/§F, delete WIP.md, hand-back.
 
 ## Resume
 Read this file, `git log`, then continue at the first Next item.

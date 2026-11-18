@@ -32,7 +32,7 @@ use mortar_core::inputs::{CopyError, Inputs};
 use mortar_core::layout::{ChunkKind, SegmentRules};
 use mortar_core::par::Pool;
 use mortar_core::plan::Plan;
-use mortar_core::resolution::{Resolution, SectionKind};
+use mortar_core::resolution::{FileLive, Resolution, SectionKind};
 use mortar_core::split::Split;
 use mortar_core::{Liveness, RelocatableLayout};
 use mortar_diag::{Collector, Diagnostic, Key, Place};
@@ -134,14 +134,20 @@ impl<'s> Link<'s> for EhOnly<'_, 's> {
     }
 }
 
-/// A diagnostic at the first kept `SHT_GROUP` section, when the inputs
-/// have one: writing section groups at `-r` is RL-8's (L-R2, L-R3).
+/// A diagnostic at the first `SHT_GROUP` section of a file in the link,
+/// when the inputs have one: writing section groups at `-r` is RL-8's
+/// (L-R2, L-R3). The group section's own row is never `Kept` (a final
+/// link consumes it), so the test is the file's liveness: any group of a
+/// live file is refused, also a COMDAT copy that loses (RL-8 decides
+/// which copies are written).
 fn kept_group(inputs: &Inputs<'_>, resolution: &Resolution) -> Option<(Key, Diagnostic)> {
-    let (s, _) = resolution
-        .sections
-        .iter()
-        .find(|(_, r)| r.is_kept() && r.kind == SectionKind::Group)?;
-    let (file, index) = resolution.sh_index(s)?;
+    let (file, index) = resolution.sections.iter().find_map(|(s, r)| {
+        if r.kind != SectionKind::Group {
+            return None;
+        }
+        let (file, index) = resolution.sh_index(s)?;
+        (!matches!(resolution.file_live[file], FileLive::Dead)).then_some((file, index))
+    })?;
     let f = &inputs.files[file];
     let mut d = mortar_diag::relocatable::refused_section_groups();
     if let mortar_core::inputs::Reader::Object(o) = f.reader

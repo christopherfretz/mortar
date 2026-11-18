@@ -476,3 +476,27 @@ fn r_unknown_property_warns() {
     assert!(o.stderr_text().contains("warning"), "{}", o.stderr_text());
     assert!(o.stderr_text().contains("0xc0000123"), "{}", o.stderr_text());
 }
+
+// Brief item 2, `spec/diag.md` §4.4: a COMDAT group (what every C++ object
+// has: an inline function) is refused by name until RL-8, never an internal
+// error. The group section's own row is never `Kept` in the resolution;
+// the census's C++ `-r` lines found the layout check failing first.
+#[test]
+fn r_section_groups_refused() {
+    let Some((gcc, _)) = host() else { return };
+    let s = Scratch::new("rl7-groups");
+    s.write(
+        "g.s",
+        "\t.section .text.inl,\"axG\",@progbits,inl,comdat\n\t.globl inl\n\t.type inl, %function\ninl:\n\tret\n\
+         \t.text\n\t.globl user\n\t.type user, %function\nuser:\n\tb inl\n",
+    );
+    ok(&run_in(s.path(), &gcc, &["-c", "g.s", "-o", "g.o"]), "g.s");
+    for line in [&["-r", "g.o", "-o", "g.r.o"][..], &["-m", "aarch64linux", "-Ur", "g.o", "-o", "g2.r.o"][..]] {
+        let o = mortar(s.path(), line);
+        let e = o.stderr_text();
+        assert!(!o.success(), "{line:?}: refused");
+        assert!(e.contains("unsupported feature: section groups with -r"), "{line:?}: {e}");
+        assert!(!e.contains("internal error"), "{line:?}: {e}");
+        assert!(!s.join(line[line.len() - 1]).exists(), "{line:?}: no output");
+    }
+}

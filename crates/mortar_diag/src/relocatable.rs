@@ -38,6 +38,10 @@ pub const TARGET_WITH_R_NOTE: &str = "RL-9 lifts this at -r (AArch64 only until 
 /// dropped section is removed with its records, RL-8's (the image and the
 /// driver both refuse a non-empty `eh_removed`).
 pub const EH_RECORDS_REMOVED: &str = "removed .eh_frame records at -r";
+/// An input with a Mason container section (kiln's objects): MT-30 at
+/// `-r` is RL-12's. `mortar_layout::relocatable` raises it (WP-183 §B.12)
+/// with this text; listed in `spec/diag.md` §4.4 by WP-187.
+pub const MASON_CONTAINER: &str = "the Mason container at -r (RL-12)";
 /// The note of [`EH_RECORDS_REMOVED`].
 pub const EH_RECORDS_REMOVED_NOTE: &str = "RL-8 (spec/layout.md L-R6) lifts this at -r";
 
@@ -258,6 +262,7 @@ pub const ROWS: &[Row] = &[
     refusal(SECTION_GROUPS, RefusalClass::Feature, &[SECTION_GROUPS], "RL-8"),
     refusal(TARGET_WITH_R, RefusalClass::Feature, &[TARGET_WITH_R], "RL-9"),
     refusal(EH_RECORDS_REMOVED, RefusalClass::Feature, &[EH_RECORDS_REMOVED], "RL-8"),
+    refusal(MASON_CONTAINER, RefusalClass::Feature, &[MASON_CONTAINER], "RL-12"),
     refusal(
         NO_INPUT_OF_A_KNOWN_MACHINE,
         RefusalClass::Feature,

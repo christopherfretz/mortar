@@ -218,6 +218,7 @@ pub const OUT_OF_M4R: &[(&str, &str)] = &[
         "unsupported feature: relocations against a dropped COMDAT copy at -r",
         "RL-8: spec/image.md I-R7",
     ),
+    ("unsupported feature: the Mason container at -r", "RL-12: spec/meta.md MT-30 at -r (kiln's objects)"),
     ("unsupported feature: x86-64 output with -r", "RL-9: x86-64 at -r"),
     ("unsupported feature: i386 output with -r", "RL-9: i386 (REL) at -r"),
     ("unsupported option: -s with -r", "RL-11: spec/image.md I-R9"),
