@@ -44,7 +44,10 @@ pub type Rows<T> = Result<T, IncrReason>;
 /// **scan** (a key-keyed table read whole: named where IN-75a needs it).
 pub trait StateRows: Sync {
     /// Rows of table `kind` as the directory gives them (header). The
-    /// update's id space (`mortar_core::incr`) starts new ids here.
+    /// update's id space (`mortar_core::incr`) starts new ids here. For
+    /// `STRINGS` (kind 23) the count is its length in bytes: the boundary
+    /// of [`ChangedFiles::strings`] and [`StatePatch::strings`] (WP-215
+    /// seam 3).
     fn count(&self, kind: u32) -> u64;
     /// The plan hash in the header (IN-18b; header).
     fn plan_hash(&self) -> [u8; 16];
@@ -143,7 +146,9 @@ pub trait StateRows: Sync {
     /// # Errors
     /// `state-corrupt`.
     fn stat(&self, row: u32) -> Rows<StatRow>;
-    /// A string of `STRINGS` (kind 23; the blocks it spans).
+    /// A string of `STRINGS` (kind 23; the blocks it spans). Never called
+    /// on a `Str` taken from a [`ChangedFile`]: that one is read with
+    /// [`ChangedFiles::string`] (WP-215 seam 3).
     ///
     /// # Errors
     /// `state-corrupt`.
@@ -347,8 +352,11 @@ pub enum Change {
     Appeared,
     /// No longer in the link (`FILES` flag `GONE`).
     Gone,
-    /// Unchanged, but read again because the update reaches it (IN-72
-    /// item 2a: a group re-elected to it; IN-71's drawn-in files).
+    /// Unchanged, but read again because the update reaches it: U-3's
+    /// [`super::resolve::Resolution::DrawIn`] (IN-71: it becomes a key's
+    /// definer or a common's winning file, IN-72 item 2a: a group is
+    /// re-elected to it). Its rows equal its stored ones; it is read for
+    /// its [`ChangedFile::values`] and section rows.
     DrawnIn,
     /// A `LAZY` member now extracted (IN-71b; set by U-3's `Extraction`,
     /// the front reads it then).
@@ -391,12 +399,30 @@ pub struct ChangedFile {
     /// state's `SECTIONS` count, in [`ChangedFiles::files`] order.
     pub first_section: SectionId,
     /// Its `SECTIONS` rows from the new bytes (place [`crate::format::NONE`]:
-    /// U-4 places them).
+    /// U-4 places them). Their `Str`s (`anchor`, which is the COMDAT
+    /// signature when `anchor_kind` is 1, and `name`) are of the update's
+    /// id space: read with [`ChangedFiles::string`]. **Names are equal by
+    /// BYTES, never by `Str` value**: the same bytes can sit at two
+    /// offsets (the state's `STRINGS` and [`ChangedFiles::strings`]).
     pub sections: Vec<SectionRow>,
     /// The keys it mentions, by name.
     pub keys: Vec<KeyName>,
-    /// Its `MENTIONS` rows, `symbol` = position in `keys`.
+    /// Its new version's `sh_info`: the index of its symbol table's first
+    /// non-local entry (WP-215 D7 for a changed file, seam 3): `mentions[k]`
+    /// (and `values[k]`) is entry `first_global + k`. U-2 writes it into
+    /// `FILE_INDEX.first_global` (IN-78); U-8 finds a new copy's group
+    /// through `mentions[index - first_global].section`. 0 for a gone or
+    /// no longer extracted file.
+    pub first_global: u32,
+    /// Its `MENTIONS` rows, `symbol` = position in `keys`; the `k`-th is
+    /// symbol-table entry `first_global + k`, none skipped (D7).
     pub mentions: Vec<MentionRow>,
+    /// The `st_value` and `st_size` of each mention, position for position
+    /// with `mentions` (WP-215 seam 3, G1): made by the capture function
+    /// that makes `mentions` (one producer). Never stored (`MENTIONS`
+    /// stays 12 bytes): U-3 writes the winners' into `RESOLVED` and
+    /// `COMMONS`. Empty for a gone or no longer extracted file.
+    pub values: Vec<MentionValue>,
     /// Its `INDEX` rows (`unit` and section targets in the new id space,
     /// key targets = position in `keys`).
     pub index: Vec<IndexRow>,
@@ -418,6 +444,15 @@ pub struct ChangedFile {
     /// Its new version's ODR rows (IN-71d; WP-220); empty for a gone or
     /// no longer extracted file.
     pub odr: OdrRows,
+}
+
+/// A mention's `st_value` and `st_size` ([`ChangedFile::values`]; WP-215
+/// seam 3). For a common mention `value` is its alignment, as in ELF
+/// (resolve.md §3.3: 0 is alignment 1).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MentionValue {
+    pub value: u64,
+    pub size: u64,
 }
 
 /// A changed file's ODR rows (IN-71d; WP-220), made by the capture's own
@@ -443,6 +478,52 @@ pub struct ChangedFiles {
     /// The positional set (IN-28a, U3): files whose `POSITIONAL` flag is
     /// set, read from `FILES` (none of them changed).
     pub positional: Vec<FileId>,
+    /// The strings of the changed files' rows (section names, signatures),
+    /// ONE buffer for the update (WP-215 seam 3, G2), with
+    /// [`StatePatch::strings`]' convention: a `Str` at or past the state's
+    /// `STRINGS` length (`StateRows::count(kind::STRINGS)`) is an offset
+    /// into this buffer. [`StatePatch::strings`] BEGINS with it, unchanged
+    /// (U-2 appends new key names after it). Every update appends these
+    /// names again (no lookup by content). Read with
+    /// [`ChangedFiles::string`] only.
+    pub strings: Vec<u8>,
+}
+
+impl ChangedFiles {
+    /// The bytes of a `Str` of the update's id space: the state's
+    /// `STRINGS` below its length, this update's [`ChangedFiles::strings`]
+    /// at or past it. The one reader every package uses for a `Str` taken
+    /// from a [`ChangedFile`] (WP-215 seam 3). **Names are equal by
+    /// BYTES, never by `Str` value.**
+    ///
+    /// # Errors
+    /// `state-corrupt`: a `Str` that straddles the boundary or runs past
+    /// the buffer, or the state's own failure.
+    pub fn string(&self, view: &StateView<'_>, at: Str) -> Rows<Vec<u8>> {
+        let base = view.count(crate::format::kind::STRINGS);
+        let (off, len) = (u64::from(at.off), u64::from(at.len));
+        let end = off + len;
+        if end <= base {
+            return view.string(at);
+        }
+        if off < base {
+            return Err(IncrReason::StateCorrupt(format!(
+                "a string at {off}+{len} straddles STRINGS' end {base}"
+            )));
+        }
+        let (lo, hi) = (off - base, end - base);
+        usize::try_from(lo)
+            .ok()
+            .zip(usize::try_from(hi).ok())
+            .and_then(|(lo, hi)| self.strings.get(lo..hi))
+            .map(<[u8]>::to_vec)
+            .ok_or_else(|| {
+                IncrReason::StateCorrupt(format!(
+                    "a string at {off}+{len} runs past the update's {} bytes",
+                    self.strings.len()
+                ))
+            })
+    }
 }
 
 // ---- what W5 writes -----------------------------------------------------------
@@ -531,7 +612,10 @@ pub struct StatePatch {
     /// `STAT` rows changed in place (by `STAT` row) and appended.
     pub stat_set: Vec<(u32, StatRow)>,
     pub stat_append: Vec<StatRow>,
-    /// Bytes appended to `STRINGS`.
+    /// Bytes appended to `STRINGS`. They BEGIN with
+    /// [`ChangedFiles::strings`], unchanged (the changed files' `Str`s
+    /// keep their offsets); U-2 appends new key names after it (WP-215
+    /// seam 3).
     pub strings: Vec<u8>,
     // file-keyed
     pub ranges: Vec<FileRanges>,

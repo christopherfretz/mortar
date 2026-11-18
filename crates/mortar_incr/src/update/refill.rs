@@ -8,20 +8,23 @@ pub use mortar_core::incr::{RefillChunk, RefillSet, RefillUnit};
 
 use super::defined::DefinedChange;
 use super::resolve::ResolveDelta;
-use super::view::StateView;
+use super::view::{ChangedFiles, StateView};
 
 /// The units the update refills (WP-211 §C; IN-74). Called by the join
-/// after `recompute` (IN-70 U8).
+/// after `recompute` (IN-70 U8). `changed` (WP-215 seam 3): the new
+/// sections' rows (`ChangedFile::sections`, their sizes count toward
+/// IN-16's bound) and the files of IN-27's row 1.
 ///
 /// # Errors
 /// `too-much-changed`, `state-corrupt`. Until U-3 lands:
 /// `update-not-implemented (refill)`.
 pub fn refill_set(
     view: &StateView<'_>,
+    changed: &ChangedFiles,
     resolved: &ResolveDelta,
     layout: &LayoutDelta,
     defined: &[DefinedChange],
 ) -> Result<RefillSet, IncrReason> {
-    let _ = (view, resolved, layout, defined);
+    let _ = (view, changed, resolved, layout, defined);
     Err(IncrReason::UpdateNotImplemented(Some(Unimplemented::Refill)))
 }
