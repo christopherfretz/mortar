@@ -7,10 +7,12 @@
 # incremental-mode full link (format 4) by this package's plain build,
 # and with the format-5 switch (the testhooks build).
 #
-#   plaincost.sh BINDIR WORKLOADS_DIR NAME SCRATCH [RUNS]
+#   plaincost.sh BINDIR WORKLOADS_DIR NAME SCRATCH [RUNS] [incr]
+#
+# `incr` as the sixth word: the incremental-mode pair only.
 set -u
 ulimit -c 0
-bin=$1; wl=$2/$3; name=$3; out=$4/$3-cost; runs=${5:-5}
+bin=$1; wl=$2/$3; name=$3; out=$4/$3-cost; runs=${5:-5}; parts=${6:-all}
 mkdir -p "$out"
 cwd=$(awk '$1=="cwd"{print $2}' "$wl/stamp")
 awk -v o="$out/out" 'prev=="-o"{print o; prev=""; next} /^--dependency-file=/{next} {print; prev=$0}' "$wl/response.txt" > "$out/response.txt"
@@ -31,7 +33,7 @@ one() { # tag binary extra...
 	printf '%s\t%s\t%s\n' "$tag" "$(cat "$out/t.txt")" "$l" >> "$out/runs.tsv"
 }
 : > "$out/runs.tsv"
-for i in $(seq "$runs"); do
+[ "$parts" = incr ] || for i in $(seq "$runs"); do
 	one base "$bin/mortar-base"
 	one plain "$bin/mortar-plain"
 done

@@ -1088,10 +1088,19 @@ fn experiment_states_round_trip() {
     let Some(list) = std::env::var_os("MORTAR_WP244_STATES") else { return };
     for p in std::fs::read_to_string(list).expect("the list").lines().filter(|l| !l.is_empty()) {
         let bytes = std::fs::read(p).expect("a state");
+        let t = std::time::Instant::now();
         let back = decode(&bytes).map_err(|e| e.to_string());
+        let t_decode = t.elapsed();
         let again = back.and_then(|m| {
+            let t = std::time::Instant::now();
             let n = mortar_incr::state5::compact::normalize(&m).map_err(|e| e.to_string())?;
-            mortar_incr::state5::write::encode(&n).map_err(|e| e.to_string())
+            let t_norm = t.elapsed();
+            let b = mortar_incr::state5::write::encode(&n).map_err(|e| e.to_string());
+            println!(
+                "{p}: decode {t_decode:?}, normalize {t_norm:?}, encode {:?}",
+                t.elapsed() - t_norm
+            );
+            b
         });
         match again {
             Ok(b) if b == bytes => println!("{p}: round trip equal"),
