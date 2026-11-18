@@ -710,8 +710,7 @@ pub fn live_keys(m: &MemoryState, options: &OptionKeys) -> Result<Vec<bool>, Sta
         }
     }
     // The option names, as (name, version).
-    let mut named: std::collections::HashSet<(Vec<u8>, Vec<u8>)> =
-        std::collections::HashSet::new();
+    let mut named: std::collections::HashSet<(Vec<u8>, Vec<u8>)> = std::collections::HashSet::new();
     let mut name = |b: &[u8]| {
         let key = match b.iter().position(|&c| c == b'@') {
             None => (b.to_vec(), Vec::new()),

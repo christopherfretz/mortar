@@ -716,8 +716,7 @@ mod tests {
             value: _,
             size: _,
             facts: _,
-        } =
-            ResolvedRow::default();
+        } = ResolvedRow::default();
         let KeyRefRow { key: _, file: _, def: _, bind: _, typ: _, flags: _, demand: _, tomb: _ } =
             KeyRefRow::default();
         let FragUseRow { file: _, out: _, class: _, hash: _ } = FragUseRow::default();

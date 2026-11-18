@@ -95,6 +95,27 @@ fn seam_rows(m: &mut MemoryState) {
     m.groups = groups;
     m.commons = commons;
     m.copies = copies;
+    // IN-71b "Live keys": a key format 4 names only through a member it
+    // did not extract (its first mention, `at_file`, and no `MENTIONS`
+    // row) is a `LAZY` definition: the capture writes its `KEY_REFS` row
+    // of that member and keeps the key. Format 4 has no such row; one row
+    // per key from `at_file` stands in (a lower bound: one definer each).
+    let mut has: std::collections::BTreeSet<u32> = m.key_refs.iter().map(|r| r.key).collect();
+    let mut lazy = 0usize;
+    for (k, r) in m.symbols.iter().enumerate() {
+        let k = u32::try_from(k).unwrap_or(u32::MAX);
+        if r.kind != format::sym_kind::LOCAL && r.at_file != u32::MAX && has.insert(k) {
+            m.key_refs.push(mortar_incr::update::rows::KeyRefRow {
+                key: k,
+                file: r.at_file,
+                def: format::def_kind::SECTION,
+                ..Default::default()
+            });
+            lazy += 1;
+        }
+    }
+    m.key_refs.sort_by_key(|r| (r.key, r.file));
+    eprintln!("KEY_REFS rows of LAZY definitions (from at_file): {lazy}");
 }
 
 /// `STRINGS`' rows and capacity in a format-5 state's directory.
@@ -190,6 +211,36 @@ fn strings_growth(path4: &str, version: &str, suffixes: &[&str]) -> Result<(), S
     Ok(())
 }
 
+/// The keys the conversion's rows leave dead (IN-71b, `live_keys` with
+/// no option): their count by stored definition and a sample.
+fn dead_keys(path4: &str, version: &str) -> Result<(), String> {
+    let bytes = std::fs::read(path4).map_err(|e| format!("{path4}: {e}"))?;
+    let s = format::decode(&bytes, version.as_bytes()).map_err(|e| format!("{path4}: {e}"))?;
+    let mut m = MemoryState::from_format4(&s);
+    seam_rows(&mut m);
+    let live = state5::live_keys(&m, &mortar_core::incr::OptionKeys::default())
+        .map_err(|e| e.to_string())?;
+    let mut by: std::collections::BTreeMap<(u8, bool, u8), usize> = Default::default();
+    let mut sample = Vec::new();
+    for (k, r) in m.symbols.iter().enumerate() {
+        if live[k] {
+            continue;
+        }
+        let res = m.resolved.get(k).copied().unwrap_or_default();
+        *by.entry((r.kind, r.at_file == u32::MAX, res.kind)).or_default() += 1;
+        if sample.len() < 12 {
+            let n = m.strings.get(r.name.off as usize..(r.name.off + r.name.len) as usize);
+            sample.push(String::from_utf8_lossy(n.unwrap_or_default()).into_owned());
+        }
+    }
+    println!("keys {}, dead {}", live.len(), live.iter().filter(|x| !**x).count());
+    for ((kind, unmentioned, def), n) in by {
+        println!("  kind {kind} at_file NONE {unmentioned} RESOLVED.kind {def}: {n}");
+    }
+    println!("  sample: {}", sample.join(" "));
+    Ok(())
+}
+
 fn run(args: &[String]) -> Result<ExitCode, String> {
     match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
         ["convert", from, to, version] => {
@@ -245,6 +296,10 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
             #[allow(clippy::cast_precision_loss)] // a ratio for people
             let ratio = bytes.len() as f64 / four as f64;
             println!("format 4 {four} bytes, format 5 {} bytes, ratio {ratio:.3} (gate 1.15)", bytes.len());
+            Ok(ExitCode::SUCCESS)
+        }
+        ["dead", path4, version] => {
+            dead_keys(path4, version)?;
             Ok(ExitCode::SUCCESS)
         }
         ["strings", path4, version, suffixes @ ..] => {

@@ -176,7 +176,10 @@ pub fn encode(m: &MemoryState) -> Result<Vec<u8>, StateError> {
     };
     let (frags, _) = sorted(&m.frags, s)?;
     let live_frags: Vec<_> = frags.iter().filter(|r| !r.tomb).collect();
-    if live_frags.windows(2).any(|w| (w[0].out, w[0].class, w[0].hash) == (w[1].out, w[1].class, w[1].hash)) {
+    if live_frags
+        .windows(2)
+        .any(|w| (w[0].out, w[0].class, w[0].hash) == (w[1].out, w[1].class, w[1].hash))
+    {
         return Err(state_corrupt("FRAGS: two live rows of one key"));
     }
     let mut mentions = Vec::with_capacity(m.mentions.len());

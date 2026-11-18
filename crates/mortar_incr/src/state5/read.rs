@@ -16,11 +16,11 @@ use std::os::unix::fs::FileExt as _;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
+use mortar_core::demands::DemandFlags;
 use mortar_core::incr::{
     IncrReason, LayoutRows, StoredEhRange, StoredFrag, StoredFragUse, StoredKeyRef, StoredRegion,
     StoredSection, StoredSlot, SymtabBlock, SymtabTables,
 };
-use mortar_core::demands::DemandFlags;
 use mortar_core::layout::{
     AllocKey, Chunk, ChunkKind, DefValue, Defined, Erratum, Hole, Part, Patch, PatchKind, Place,
     Redirect, Segment, SymPlace, Synth, ThunkTarget, Tls,

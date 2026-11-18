@@ -128,7 +128,13 @@ fn sample(ids: &[u32], sections: u32) -> MemoryState {
     for r in &mut m.key_refs {
         r.key += 1;
     }
-    m.frags.push(FragRow { out: 0, class: CLASS, hash: hash_of(0), offset: 0, ..FragRow::default() });
+    m.frags.push(FragRow {
+        out: 0,
+        class: CLASS,
+        hash: hash_of(0),
+        offset: 0,
+        ..FragRow::default()
+    });
     let users = u32::try_from(ids.len()).expect("small");
     for r in &mut m.frags {
         r.refs = if r.hash == hash_of(0) { users } else { 1 };
@@ -888,9 +894,21 @@ fn seam5_rows_round_trip_and_patch() {
         regions: None,
         gone: false,
     });
-    p.frags.put.push(FragRow { out: 0, class: CLASS, hash: [7; 16], offset: 99, refs: 1, tomb: false });
-    p.files_set.push((FileId(1), FileRow { eh_offset: 1, eh_capacity: 2, eh_records: 1, ..d.files[1].clone() }));
-    p.resolved.set.push((refs[0].key, ResolvedRow { facts: 7, ..d.resolved[refs[0].key.0 as usize] }));
+    p.frags.put.push(FragRow {
+        out: 0,
+        class: CLASS,
+        hash: [7; 16],
+        offset: 99,
+        refs: 1,
+        tomb: false,
+    });
+    p.files_set.push((
+        FileId(1),
+        FileRow { eh_offset: 1, eh_capacity: 2, eh_records: 1, ..d.files[1].clone() },
+    ));
+    p.resolved
+        .set
+        .push((refs[0].key, ResolvedRow { facts: 7, ..d.resolved[refs[0].key.0 as usize] }));
     let plan = state5::plan_patch(&view, &p).expect("plan");
     assert!(!plan.compacts(), "{}", plan.reason());
     let patched = write::patched_bytes(&bytes, &plan, &output_of(&bytes)).expect("in place");
