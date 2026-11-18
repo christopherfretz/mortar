@@ -60,6 +60,9 @@ use mortar_elf::{Object, SectionIndex, SymbolIndex, SymbolSection, SymbolTable};
 use crate::read::{self, ReadFail};
 use crate::{LiveInputs, LiveOptions, PHASE};
 
+#[cfg(feature = "wp238-probe")]
+mod probe;
+
 /// A diagnostic with its key.
 pub(crate) type Keyed = (Key, Diagnostic);
 
@@ -77,6 +80,34 @@ enum Target {
     At(SectionId, u32),
     /// `__start_NAME` / `__stop_NAME`: the sections `named[lo..hi]`.
     Named(u32, u32),
+}
+
+/// What an edge of I-7 names, as the one edge enumerator ([`Walk::edges`])
+/// gives it, before resolution (`spec/incr.md` IN-29: an update walks the
+/// same enumerator's output, stored for unchanged files).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) enum To {
+    /// A global key, after `sym_map` and an undefined mention's `redirect`:
+    /// the section of its definition is found when the edge is walked
+    /// ([`Walk::resolve`]).
+    Key(SymbolId),
+    /// A section of the source's own file, and in a split mergeable
+    /// section the piece holding byte `at` ([`WHOLE`]: every piece).
+    Section(SectionId, u32),
+}
+
+/// How the enumerator reached an edge (I-7's kinds; IN-29's row kinds are
+/// these refined by the source's flags and the key's name).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Via {
+    /// A relocation record of the section.
+    Record,
+    /// A relocation of one of its FDEs or of their CIEs.
+    Frame,
+    /// A `SHF_LINK_ORDER` section whose `sh_link` is the section (I-109).
+    LinkOrder,
+    /// Another member of its section group.
+    Group,
 }
 
 /// Section fact bits.
@@ -316,10 +347,9 @@ pub(crate) fn collect(
 
     // 3. Frames.
     let eh_rows = &split.eh_of;
-    let eh: Vec<Result<Vec<(u32, Target)>, Keyed>> = pool
-        .unit_cost(EH_NS)
-        .map(eh_rows.len(), |row| eh_edges(inputs, r, split, &tables, &defs, row));
-    let mut eh_edges_of: Vec<Vec<(u32, Target)>> = Vec::with_capacity(eh.len());
+    let eh: Vec<Result<Vec<(u32, To)>, Keyed>> =
+        pool.unit_cost(EH_NS).map(eh_rows.len(), |row| eh_edges(inputs, r, split, &tables, row));
+    let mut eh_edges_of: Vec<Vec<(u32, To)>> = Vec::with_capacity(eh.len());
     for e in eh {
         match e {
             Ok(v) => eh_edges_of.push(v),
@@ -379,24 +409,27 @@ pub(crate) fn collect(
     // once, whatever the schedule. Budget 0 is the breadth-first rounds:
     // round `k + 1` is what round `k`'s edges first marked, and the mark
     // stops after the first round with a failure.
-    let mark = |marks: &Marks<'_>, budget: usize| -> Option<Keyed> {
-        // Round 0: the roots, in section then key order.
-        let mut round: Vec<SectionId> = Vec::new();
+    // Round 0: the roots, in section then key order.
+    let roots = |marks: &Marks<'_>, round: &mut Vec<SectionId>| {
         for (s, &bits) in facts.iter().enumerate() {
             if bits & ROOT != 0 {
-                marks.at(SectionId(s as u32), WHOLE, &mut round);
+                marks.at(SectionId(s as u32), WHOLE, round);
             }
         }
         for &root in tables_in.roots {
             if let Some(&(target, _)) = defs.get(root.0 as usize) {
-                marks.target(target, &mut round);
+                marks.target(target, round);
             }
         }
         for &(target, rooted) in &defs {
             if rooted {
-                marks.target(target, &mut round);
+                marks.target(target, round);
             }
         }
+    };
+    let mark = |marks: &Marks<'_>, budget: usize| -> Option<Keyed> {
+        let mut round: Vec<SectionId> = Vec::new();
+        roots(marks, &mut round);
         let cx = Walk {
             inputs,
             r,
@@ -443,6 +476,26 @@ pub(crate) fn collect(
 
     let live: Vec<bool> = marks.live.into_iter().map(AtomicBool::into_inner).collect();
     let frag_live: Vec<bool> = marks.frag.into_iter().map(AtomicBool::into_inner).collect();
+    #[cfg(feature = "wp238-probe")]
+    {
+        let fresh = new_marks();
+        let cx = Walk {
+            inputs,
+            r,
+            split,
+            tables: &tables,
+            defs: &defs,
+            facts: &facts,
+            link_order: &link_order,
+            group_of: &group_of,
+            group_members: &group_members,
+            by_code: &by_code,
+            eh_edges: &eh_edges_of,
+            marks: &fresh,
+            arch: tables_in.arch,
+        };
+        probe::run(&cx, &new_marks, &roots, tables_in.roots, &live, &frag_live);
+    }
     Ok(Liveness {
         live: Column::from_vec(live).unwrap_or_default(),
         frag_live: Column::from_vec(frag_live).unwrap_or_default(),
@@ -655,29 +708,29 @@ fn def_target(
     }
 }
 
-/// What record `raw` of `file` refers to (I-7): a local or section
-/// symbol's section, or the definition of a global's key (`sym_map`,
-/// `redirect` for an undefined mention, `def`). `None`: a record whose
-/// symbol cannot be read, which the scan reports in a live section.
-fn record_target(
+/// What record `raw` of `file` names (I-7): a local or section symbol's
+/// section, or a global's key (`sym_map`, `redirect` for an undefined
+/// mention), whose definition is resolved when walked. `None`: no edge
+/// (symbol 0), or a record whose symbol cannot be read, which the scan
+/// reports in a live section.
+fn record_to(
     inputs: &Inputs<'_>,
     r: &Resolution,
     table: &SymbolTable<'_>,
-    defs: &[(Target, bool)],
     file: FileId,
     raw: read::Raw,
-) -> Target {
+) -> Option<To> {
     if raw.r_sym == 0 {
-        return Target::None;
+        return None;
     }
     let index = SymbolIndex(raw.r_sym);
-    let Ok(sym) = table.get(index) else { return Target::None };
+    let sym = table.get(index).ok()?;
     let first = table.first_global().0;
     if raw.r_sym < first || sym.sym_type() == STT_SECTION {
         let Ok(SymbolSection::Section(i)) = table.section_of(index, &sym) else {
-            return Target::None;
+            return None;
         };
-        let Some(s) = r.section_id(file, i) else { return Target::None };
+        let s = r.section_id(file, i)?;
         let at = if sym.sym_type() == STT_SECTION {
             raw.addend
                 .and_then(|a| i64::try_from(sym.st_value).ok()?.checked_add(a))
@@ -686,11 +739,9 @@ fn record_target(
         } else {
             u32::try_from(sym.st_value).unwrap_or(WHOLE)
         };
-        return Target::At(s, at);
+        return Some(To::Section(s, at));
     }
-    let Some(&id) = inputs.sym_map_of(file).get((raw.r_sym - first) as usize) else {
-        return Target::None;
-    };
+    let &id = inputs.sym_map_of(file).get((raw.r_sym - first) as usize)?;
     let to = r.redirect.get(id).copied().unwrap_or(id);
     let id =
         if to != id && table.section_of(index, &sym).is_ok_and(|s| s == SymbolSection::Undefined) {
@@ -698,7 +749,7 @@ fn record_target(
         } else {
             id
         };
-    defs.get(id.0 as usize).map_or(Target::None, |d| d.0)
+    Some(To::Key(id))
 }
 
 /// The relocations of `.eh_frame` row `row`, resolved, with the ordinal of
@@ -709,9 +760,8 @@ fn eh_edges(
     r: &Resolution,
     split: &Split,
     tables: &[FileFacts<'_>],
-    defs: &[(Target, bool)],
     row: usize,
-) -> Result<Vec<(u32, Target)>, Keyed> {
+) -> Result<Vec<(u32, To)>, Keyed> {
     let sr = split.eh_of[row];
     let s = sr.section;
     let sec = r.sections[s];
@@ -731,9 +781,8 @@ fn eh_edges(
         let Some(raw) = recs.get(i) else { continue };
         let Ok(off) = u32::try_from(raw.r_offset) else { continue };
         let Some(p) = split.eh_piece_at(s, off) else { continue };
-        let target = record_target(inputs, r, table, defs, file, raw);
-        if target != Target::None {
-            out.push((p.ordinal, target));
+        if let Some(to) = record_to(inputs, r, table, file, raw) {
+            out.push((p.ordinal, to));
         }
     }
     out.sort_by_key(|e| e.0);
@@ -801,7 +850,7 @@ struct Walk<'w, 't, 's> {
     group_of: &'w [(SectionId, u32, u32)],
     group_members: &'w [SectionId],
     by_code: &'w [(SectionId, u32, u32)],
-    eh_edges: &'w [Vec<(u32, Target)>],
+    eh_edges: &'w [Vec<(u32, To)>],
     marks: &'w Marks<'t>,
     arch: Option<&'w dyn mortar_arch::Arch>,
 }
@@ -872,18 +921,37 @@ impl Walk<'_, '_, '_> {
         out.extend(marked.into_iter().map(Out::Marked));
     }
 
-    /// The edges of one unit: its records, and for a section's first unit
-    /// its FDEs', its `SHF_LINK_ORDER` dependents and its group mates.
+    /// What an edge makes live: a key's definition (I-7, through `def`),
+    /// or the section (and piece) it names.
+    fn resolve(&self, to: To) -> Target {
+        match to {
+            To::Key(id) => self.defs.get(id.0 as usize).map_or(Target::None, |d| d.0),
+            To::Section(s, at) => Target::At(s, at),
+        }
+    }
+
+    /// Marks the edges of one unit (I-8).
     fn unit(&self, u: Unit, marked: &mut Vec<SectionId>, out: &mut Vec<Out>) {
-        if let Err(e) = self.records(u, marked) {
+        let marks = self.marks;
+        if let Err(e) = self.edges(u, &mut |_, to| marks.target(self.resolve(to), marked)) {
             out.push(Out::Failed(Box::new(e)));
         }
+    }
+
+    /// THE edge enumerator of I-7 (`spec/incr.md` IN-29: there is no
+    /// second derivation of the edges): every edge of unit `u` with how it
+    /// was reached, into `sink`: its records, and for a section's first
+    /// unit its FDEs' (and their CIEs'), its `SHF_LINK_ORDER` dependents
+    /// and its group mates. A failure to read the records is returned
+    /// after the other edges are given.
+    pub(crate) fn edges(&self, u: Unit, sink: &mut impl FnMut(Via, To)) -> Result<(), Keyed> {
+        let records = self.records(u, sink);
         if u.lo != 0 {
-            return;
+            return records;
         }
         let bits = self.facts.get(u.s.0 as usize).copied().unwrap_or(0);
         if bits & FDES != 0 {
-            self.frames(u.s, marked);
+            self.frames(u.s, sink);
         }
         if bits & LINKED != 0 {
             let from = self.link_order.partition_point(|&(t, _)| t < u.s);
@@ -891,7 +959,7 @@ impl Walk<'_, '_, '_> {
                 if t != u.s {
                     break;
                 }
-                self.marks.at(dep, WHOLE, marked);
+                sink(Via::LinkOrder, To::Section(dep, WHOLE));
             }
         }
         // I-7: the members of a section group live together.
@@ -902,13 +970,14 @@ impl Walk<'_, '_, '_> {
             {
                 let span = start as usize..(start + len) as usize;
                 for &mate in self.group_members.get(span).unwrap_or_default() {
-                    self.marks.at(mate, WHOLE, marked);
+                    sink(Via::Group, To::Section(mate, WHOLE));
                 }
             }
         }
+        records
     }
 
-    fn records(&self, u: Unit, marked: &mut Vec<SectionId>) -> Result<(), Keyed> {
+    fn records(&self, u: Unit, sink: &mut impl FnMut(Via, To)) -> Result<(), Keyed> {
         if u.hi == 0 {
             return Ok(());
         }
@@ -946,24 +1015,31 @@ impl Walk<'_, '_, '_> {
         let mut field = Vec::new();
         for i in u.lo..u.hi {
             let Some(raw) = recs.get(i) else { continue };
-            let mut t = record_target(self.inputs, self.r, table, self.defs, file, raw);
+            let Some(mut to) = record_to(self.inputs, self.r, table, file, raw) else { continue };
             // A REL section-symbol reference into a split section: its
-            // piece by the implicit addend (I-7, X86-5).
-            if let (Target::At(s, WHOLE), None, Some(arch)) = (t, raw.addend, self.arch)
+            // piece by the implicit addend (I-7, X86-5). (A key's piece is
+            // its definition's value: the addend does not change it.)
+            if let (To::Section(s, WHOLE), None, Some(arch)) = (to, raw.addend, self.arch)
                 && self.split.merge_of.binary_search_by_key(&s, |r| r.section).is_ok()
                 && let Some(a) =
                     read::implicit(arch, self.inputs, file, obj, index, raw, &mut field)
+                && let Some(t) = record_to(
+                    self.inputs,
+                    self.r,
+                    table,
+                    file,
+                    read::Raw { addend: Some(a), ..raw },
+                )
             {
-                let raw = read::Raw { addend: Some(a), ..raw };
-                t = record_target(self.inputs, self.r, table, self.defs, file, raw);
+                to = t;
             }
-            self.marks.target(t, marked);
+            sink(Via::Record, to);
         }
         Ok(())
     }
 
     /// I-7: the edges of `code`'s live FDEs and of their CIEs.
-    fn frames(&self, code: SectionId, marked: &mut Vec<SectionId>) {
+    fn frames(&self, code: SectionId, sink: &mut impl FnMut(Via, To)) {
         let from = self.by_code.partition_point(|&(c, _, _)| c < code);
         for &(c, row, ord) in &self.by_code[from..] {
             if c != code {
@@ -976,11 +1052,11 @@ impl Walk<'_, '_, '_> {
             for want in [Some(ord), cie] {
                 let Some(want) = want else { continue };
                 let lo = edges.partition_point(|e| e.0 < want);
-                for &(o, t) in &edges[lo..] {
+                for &(o, to) in &edges[lo..] {
                     if o != want {
                         break;
                     }
-                    self.marks.target(t, marked);
+                    sink(Via::Frame, to);
                 }
             }
         }
