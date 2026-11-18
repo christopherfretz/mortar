@@ -699,7 +699,13 @@ pub fn normalize(m: &MemoryState) -> Result<MemoryState, StateError> {
             refs.push(crate::update::diags::DiagRef { file: fid(r.file)?, ..*r });
         }
         refs.sort_unstable();
-        n.diags.push(DiagRow { subjects, refs, ..d.clone() });
+        // WP-247 item 4 (F-1's class): a file phase's unit is a `FILES`
+        // row (`diags::file_unit`, read as a rank by the report order).
+        let mut key = d.key;
+        if crate::update::diags::file_unit(key.phase) {
+            key.unit = file(key.unit)?;
+        }
+        n.diags.push(DiagRow { subjects, refs, key, ..d.clone() });
     }
     // In the writer's key order (WP-247 item 3): `encode` appends each
     // row's strings in this order, so a capture's and its decode's

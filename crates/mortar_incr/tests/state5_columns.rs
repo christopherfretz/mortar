@@ -1,0 +1,668 @@
+//! WP-247 item 4 (the F-1 class, table-driven): `state5::columns::COLUMNS`
+//! is every column of every format-5 table, checked against `TABLES`
+//! (widths), and every column it lists as naming a row of another table
+//! keeps what it names through `normalize`, `encode` and its decode, the
+//! compaction (`apply` then `normalize`) and the in-place patch. Each
+//! listed reference has one identity reader here; a listed reference
+//! without one, or a reader of an unlisted column, fails.
+
+use std::collections::BTreeMap;
+
+use mortar_core::{FileId, SymbolId};
+use mortar_incr::format::{
+    ChunkRow, DefinedRow, IndexRow, OutSecRow, PatchRow, ProbeRow, RedirectRow, SectionRow,
+    SizeRow, StatRow, Str, SymPlaceRow, index_kind, kind, patch_kind, stat_tag,
+};
+use mortar_incr::state5::columns::{COLUMNS, To, references};
+use mortar_incr::state5::{self, TABLES, compact, read, write};
+use mortar_incr::update::diags::{DiagRef, DiagRow, Subject};
+use mortar_incr::update::rows::{
+    CommonRow, CopyRow, EdgeRow, FileRow, FragRow, FragUseRow, GroupRow, HoleRow, KeyRefRow,
+    MentionRow, RegionRow, ResolvedRow, SlotRow, SymbolRow, SymtabKeyRow, edge_kind, sym_kind,
+};
+use mortar_incr::update::testing::MemoryState;
+use mortar_incr::update::view::StatePatch;
+
+const NONE: u32 = u32::MAX;
+
+// spec: incr.md IN-18e (the table list): one entry per table, in kind
+// order; a table's columns sum to its row width
+#[test]
+fn every_table_has_its_columns() {
+    assert_eq!(COLUMNS.len(), TABLES.len());
+    for ((k, cols), (tk, _, width)) in COLUMNS.iter().zip(TABLES.iter()) {
+        assert_eq!(k, tk, "COLUMNS is in TABLES' order");
+        let sum: usize = cols.iter().map(|c| c.width).sum();
+        assert_eq!(sum, *width, "{}: the columns' widths against the row width", state5::name(*k));
+        let mut names: Vec<&str> = cols.iter().map(|c| c.name).collect();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), cols.len(), "{}: a column twice", state5::name(*k));
+        for c in *cols {
+            assert!(
+                c.to != To::Strings || c.width == 8,
+                "{}.{}: a Str is 8 bytes",
+                state5::name(*k),
+                c.name
+            );
+        }
+    }
+}
+
+fn lossy(b: &[u8]) -> String {
+    String::from_utf8_lossy(b).into_owned()
+}
+fn bytes(m: &MemoryState, x: Str) -> Vec<u8> {
+    m.strings[x.off as usize..(x.off + x.len) as usize].to_vec()
+}
+fn st(m: &MemoryState, x: Str) -> Option<String> {
+    (x.len != 0).then(|| format!("s:{}", lossy(&bytes(m, x))))
+}
+fn fl(m: &MemoryState, f: u32) -> Option<String> {
+    (f != NONE).then(|| format!("f:{}", lossy(&bytes(m, m.files[f as usize].path))))
+}
+fn sy(m: &MemoryState, k: u32) -> Option<String> {
+    (k != NONE).then(|| {
+        let r = &m.symbols[k as usize];
+        format!("k:{}@{}", lossy(&bytes(m, r.name)), lossy(&bytes(m, r.version)))
+    })
+}
+fn se(m: &MemoryState, s: u32) -> Option<String> {
+    (s != NONE).then(|| {
+        let r = &m.sections[s as usize];
+        format!("sec:{:?}:{}", fl(m, r.file), lossy(&bytes(m, r.name)))
+    })
+}
+fn ch(m: &MemoryState, c: u32) -> Option<String> {
+    (c != NONE).then(|| format!("c:{}", lossy(&bytes(m, m.chunks[c as usize].name))))
+}
+fn os(m: &MemoryState, o: u32) -> Option<String> {
+    (o != NONE).then(|| format!("o:{}", lossy(&bytes(m, m.outsecs[o as usize].name))))
+}
+fn live_secs(m: &MemoryState) -> impl Iterator<Item = &SectionRow> {
+    m.sections.iter().filter(|r| r.file != NONE)
+}
+
+type Reader = fn(&MemoryState) -> Vec<Option<String>>;
+
+/// One identity reader per listed reference: what each row's column
+/// names, by the named row's own identity (a path, a name, ...).
+fn readers() -> BTreeMap<(u32, &'static str), Reader> {
+    let mut r: BTreeMap<(u32, &'static str), Reader> = BTreeMap::new();
+    r.insert((kind::META, "version"), |m| vec![st(m, m.meta.version)]);
+    r.insert((kind::STAT, "path"), |m| m.stat.iter().map(|x| st(m, x.path)).collect());
+    r.insert((kind::STAT, "fstype"), |m| m.stat.iter().map(|x| st(m, x.fstype)).collect());
+    r.insert((kind::FILES, "path"), |m| m.files.iter().map(|x| st(m, x.path)).collect());
+    r.insert((kind::FILES, "member_name"), |m| {
+        m.files.iter().map(|x| st(m, x.member_name)).collect()
+    });
+    r.insert((kind::FILES, "properties"), |m| {
+        m.files.iter().map(|x| st(m, x.properties)).collect()
+    });
+    r.insert((kind::PROBES, "path"), |m| m.probes.iter().map(|x| st(m, x.path)).collect());
+    r.insert((kind::OUTSECS, "name"), |m| m.outsecs.iter().map(|x| st(m, x.name)).collect());
+    r.insert((kind::SYMBOLS, "file"), |m| {
+        let f = |x: &SymbolRow| if x.kind == sym_kind::LOCAL { fl(m, x.file) } else { None };
+        m.symbols.iter().map(|x| f(x).map(|v| format!("{:?}={v}", st(m, x.name)))).collect()
+    });
+    r.insert((kind::SYMBOLS, "name"), |m| m.symbols.iter().map(|x| st(m, x.name)).collect());
+    r.insert((kind::SYMBOLS, "version"), |m| m.symbols.iter().map(|x| st(m, x.version)).collect());
+    r.insert((kind::SYMBOLS, "at_file"), |m| {
+        m.symbols
+            .iter()
+            .map(|x| fl(m, x.at_file).map(|v| format!("{:?}={v}", st(m, x.name))))
+            .collect()
+    });
+    r.insert((kind::SECTIONS, "file"), |m| live_secs(m).map(|x| fl(m, x.file)).collect());
+    r.insert((kind::SECTIONS, "anchor"), |m| live_secs(m).map(|x| st(m, x.anchor)).collect());
+    r.insert((kind::SECTIONS, "name"), |m| live_secs(m).map(|x| st(m, x.name)).collect());
+    r.insert((kind::SECTIONS, "place_chunk"), |m| {
+        live_secs(m).map(|x| ch(m, x.place_chunk)).collect()
+    });
+    r.insert((kind::CHUNKS, "name"), |m| m.chunks.iter().map(|x| st(m, x.name)).collect());
+    r.insert((kind::CHUNKS, "out"), |m| m.chunks.iter().map(|x| os(m, x.out)).collect());
+    r.insert((kind::ORDER, "chunk"), |m| m.order.iter().map(|&c| ch(m, c)).collect());
+    r.insert((kind::FRAGS, "out"), |m| m.frags.iter().map(|x| os(m, x.out)).collect());
+    r.insert((kind::SLOTS, "symbol"), |m| m.slots.iter().map(|x| sy(m, x.symbol)).collect());
+    r.insert((kind::SIZES, "chunk"), |m| m.sizes.iter().map(|x| ch(m, x.chunk)).collect());
+    r.insert((kind::SYM_PLACE, "symbol"), |m| {
+        m.sym_place.iter().map(|x| sy(m, x.symbol)).collect()
+    });
+    r.insert((kind::SYM_PLACE, "chunk"), |m| m.sym_place.iter().map(|x| ch(m, x.chunk)).collect());
+    r.insert((kind::DEFINED, "symbol"), |m| m.defined.iter().map(|x| sy(m, x.symbol)).collect());
+    r.insert((kind::DEFINED, "chunk"), |m| m.defined.iter().map(|x| ch(m, x.chunk)).collect());
+    r.insert((kind::PATCHES, "chunk"), |m| m.patches.iter().map(|x| ch(m, x.chunk)).collect());
+    r.insert((kind::PATCHES, "symbol"), |m| {
+        m.patches
+            .iter()
+            .map(|x| if x.kind == patch_kind::E843419 { None } else { sy(m, x.symbol) })
+            .collect()
+    });
+    r.insert((kind::PATCHES, "section"), |m| {
+        m.patches
+            .iter()
+            .map(|x| if x.kind == patch_kind::E843419 { se(m, x.section) } else { None })
+            .collect()
+    });
+    r.insert((kind::REDIRECTS, "section"), |m| {
+        m.redirects.iter().map(|x| se(m, x.section)).collect()
+    });
+    r.insert((kind::REDIRECTS, "patch"), |m| {
+        m.redirects
+            .iter()
+            .map(|x| {
+                let p = &m.patches[x.patch as usize];
+                Some(format!("p:{:?}:{}", ch(m, p.chunk), p.offset))
+            })
+            .collect()
+    });
+    r.insert((kind::SIZED, "chunk"), |m| m.sized.iter().map(|x| ch(m, x.chunk)).collect());
+    r.insert((kind::MENTIONS, "symbol"), |m| {
+        m.mentions
+            .iter()
+            .map(|(f, x)| sy(m, x.symbol).map(|v| format!("{:?}:{v}", fl(m, f.0))))
+            .collect()
+    });
+    r.insert((kind::MENTIONS, "section"), |m| {
+        m.mentions
+            .iter()
+            .map(|(f, x)| se(m, x.section).map(|v| format!("{:?}:{v}", fl(m, f.0))))
+            .collect()
+    });
+    r.insert((kind::RESOLVED, "section"), |m| {
+        (0..m.symbols.len())
+            .map(|k| {
+                let s = m.resolved.get(k).map_or(NONE, |x| x.section);
+                se(m, s).map(|v| format!("{:?}={v}", sy(m, k as u32)))
+            })
+            .collect()
+    });
+    r.insert((kind::INDEX, "unit"), |m| m.index.iter().map(|(_, x)| se(m, x.unit)).collect());
+    r.insert((kind::INDEX, "target"), |m| {
+        m.index
+            .iter()
+            .map(|(_, x)| match x.kind {
+                index_kind::GLOBAL | index_kind::SLOT => sy(m, x.target),
+                _ => se(m, x.target),
+            })
+            .collect()
+    });
+    r.insert((kind::HOLES, "chunk"), |m| m.holes.iter().map(|x| ch(m, x.chunk)).collect());
+    // FILE_INDEX's ranges and locals run: from the written ranges when
+    // there are any (a decoded state), else from the rows' own files (a
+    // state in memory: the writer builds the ranges).
+    r.insert((kind::FILE_INDEX, "ranges"), |m| {
+        let written = m.file_index.iter().any(|i| i.ranges.iter().any(|r| r.count != 0));
+        (0..m.files.len() as u32)
+            .map(|f| {
+                let secs: Vec<String> = if written {
+                    let r = m.file_index[f as usize].ranges[0];
+                    (r.first..r.first + r.count).filter_map(|s| se(m, s)).collect()
+                } else {
+                    live_secs(m)
+                        .filter(|x| x.file == f)
+                        .filter_map(|x| {
+                            se(
+                                m,
+                                m.sections
+                                    .iter()
+                                    .position(|y| std::ptr::eq(x, y))
+                                    .map(|p| p as u32)
+                                    .unwrap_or(NONE),
+                            )
+                        })
+                        .collect()
+                };
+                Some(format!("{:?}: {secs:?}", fl(m, f)))
+            })
+            .collect()
+    });
+    r.insert((kind::FILE_INDEX, "locals.first"), |m| {
+        let written = m.file_index.iter().any(|i| i.locals.count != 0);
+        (0..m.files.len() as u32)
+            .map(|f| {
+                let mut ks: Vec<String> = if written {
+                    let r = m.file_index[f as usize].locals;
+                    (r.first..r.first + r.count).filter_map(|k| sy(m, k)).collect()
+                } else {
+                    (0..m.symbols.len() as u32)
+                        .filter(|&k| {
+                            let s = &m.symbols[k as usize];
+                            s.kind == sym_kind::LOCAL && s.file == f
+                        })
+                        .filter_map(|k| sy(m, k))
+                        .collect()
+                };
+                ks.sort();
+                Some(format!("{:?}: {ks:?}", fl(m, f)))
+            })
+            .collect()
+    });
+    r.insert((kind::EDGES, "source"), |m| m.edges.iter().map(|(_, x)| se(m, x.source)).collect());
+    r.insert((kind::EDGES, "target"), |m| {
+        m.edges
+            .iter()
+            .map(|(_, x)| match edge_kind::target(x.kind) {
+                Some(edge_kind::Target::Section) => se(m, x.target),
+                Some(edge_kind::Target::Key) => sy(m, x.target),
+                _ => None,
+            })
+            .collect()
+    });
+    r.insert((kind::GROUPS, "signature"), |m| {
+        m.groups
+            .iter()
+            .map(|x| st(m, x.signature).map(|v| format!("{v}/{:?}", fl(m, x.file))))
+            .collect()
+    });
+    r.insert((kind::GROUPS, "file"), |m| m.groups.iter().map(|x| fl(m, x.file)).collect());
+    r.insert((kind::KEY_REFS, "key"), |m| {
+        m.key_refs
+            .iter()
+            .map(|x| sy(m, x.key).map(|v| format!("{v}/{:?}", fl(m, x.file))))
+            .collect()
+    });
+    r.insert((kind::KEY_REFS, "file"), |m| m.key_refs.iter().map(|x| fl(m, x.file)).collect());
+    r.insert((kind::COMMONS, "key"), |m| {
+        m.commons.iter().map(|x| sy(m, x.key).map(|v| format!("{v}/{:?}", fl(m, x.file)))).collect()
+    });
+    r.insert((kind::COMMONS, "file"), |m| m.commons.iter().map(|x| fl(m, x.file)).collect());
+    r.insert((kind::DIAGS, "unit"), |m| {
+        m.diags
+            .iter()
+            .map(|d| match d.key.phase {
+                30 | 40 | 45 | 50 | 60 | 70 | 100 => {
+                    fl(m, d.key.unit).map(|v| format!("{}={v}", d.text))
+                }
+                _ => Some(format!("{}={}", d.text, d.key.unit)),
+            })
+            .collect()
+    });
+    r.insert((kind::DIAGS, "subjects"), |m| {
+        m.diags
+            .iter()
+            .map(|d| {
+                let v: Vec<Option<String>> = d
+                    .subjects
+                    .iter()
+                    .map(|s| match s {
+                        Subject::File(f) => fl(m, f.0),
+                        Subject::Key(k) => sy(m, k.0),
+                        Subject::OdrKey { name, class } => {
+                            st(m, *name).map(|v| format!("{v}/{class}"))
+                        }
+                        other => Some(format!("{other:?}")),
+                    })
+                    .collect();
+                Some(format!("{}={v:?}", d.text))
+            })
+            .collect()
+    });
+    r.insert((kind::DIAGS, "code"), |m| m.diags.iter().map(|d| Some(d.code.clone())).collect());
+    r.insert((kind::DIAGS, "text"), |m| m.diags.iter().map(|d| Some(d.text.clone())).collect());
+    r.insert((kind::DIAGS, "refs"), |m| {
+        m.diags
+            .iter()
+            .map(|d| {
+                let mut v: Vec<(Option<String>, u64, u64)> =
+                    d.refs.iter().map(|x| (fl(m, x.file.0), x.seq, x.offset)).collect();
+                v.sort();
+                Some(format!("{}={v:?}", d.text))
+            })
+            .collect()
+    });
+    r.insert((kind::REGIONS, "out"), |m| m.regions.iter().map(|(_, x)| os(m, x.out)).collect());
+    r.insert((kind::REGIONS, "chunk"), |m| m.regions.iter().map(|(_, x)| ch(m, x.chunk)).collect());
+    r.insert((kind::NAMES, "row"), |m| m.names.iter().map(|x| sy(m, x.row)).collect());
+    r.insert((kind::COPIES, "key"), |m| {
+        m.copies.iter().map(|x| sy(m, x.key).map(|v| format!("{v}/{:?}", fl(m, x.file)))).collect()
+    });
+    r.insert((kind::COPIES, "file"), |m| m.copies.iter().map(|x| fl(m, x.file)).collect());
+    r.insert((kind::FRAG_USE, "file"), |m| {
+        m.frag_uses
+            .iter()
+            .map(|(f, x)| fl(m, x.file).map(|v| format!("{:?}/{v}", fl(m, f.0))))
+            .collect()
+    });
+    r.insert((kind::FRAG_USE, "out"), |m| m.frag_uses.iter().map(|(_, x)| os(m, x.out)).collect());
+    r
+}
+
+/// Every listed reference has its reader, every reader is of a listed
+/// reference (a column added to the list without one fails here).
+#[test]
+fn every_listed_reference_has_its_reader() {
+    let listed: Vec<(u32, &str)> = references().map(|(k, c)| (k, c.name)).collect();
+    let have: Vec<(u32, &str)> = readers().keys().copied().collect();
+    let mut sorted = listed.clone();
+    sorted.sort_unstable();
+    let name = |v: &[(u32, &str)]| -> Vec<String> {
+        v.iter().map(|(k, c)| format!("{}.{c}", state5::name(*k))).collect()
+    };
+    assert_eq!(name(&sorted), name(&have), "the listed references against the test's readers");
+}
+
+/// What every listed reference names, per column, as a sorted multiset
+/// (rows move: the writer sorts, the compaction renumbers).
+fn identities(m: &MemoryState) -> BTreeMap<String, Vec<String>> {
+    let readers = readers();
+    references()
+        .map(|(k, c)| {
+            let mut v: Vec<String> = readers[&(k, c.name)](m).into_iter().flatten().collect();
+            v.sort();
+            (format!("{}.{}", state5::name(k), c.name), v)
+        })
+        .collect()
+}
+
+fn same(a: &MemoryState, b: &MemoryState, what: &str) {
+    let (x, y) = (identities(a), identities(b));
+    let mut bad = Vec::new();
+    for (col, v) in &x {
+        if y.get(col) != Some(v) {
+            bad.push(format!("{col}:\n  before {v:?}\n  after  {:?}", y.get(col)));
+        }
+    }
+    assert!(bad.is_empty(), "{what}: a reference names another row\n{}", bad.join("\n"));
+}
+
+fn add(m: &mut MemoryState, b: &[u8]) -> Str {
+    let off = u32::try_from(m.strings.len()).expect("small");
+    m.strings.extend_from_slice(b);
+    Str { off, len: u32::try_from(b.len()).expect("small") }
+}
+
+/// A state with a row in every table that has a listed reference, and
+/// every renumbering the compaction does: files out of rank order, keys
+/// out of IN-18e's order, a filler `SECTIONS` row first, strings at other
+/// offsets (one string stored twice).
+#[allow(clippy::too_many_lines)]
+fn every_reference() -> MemoryState {
+    let mut m = MemoryState { plan_hash: [3; 16], ..MemoryState::default() };
+    m.meta.version = add(&mut m, b"mortar test");
+    m.meta.iterations = 1;
+    let _junk = add(&mut m, b"junk");
+    // three files, ranks 3, 1, 2: the compaction orders them 1, 2, 0
+    for (i, rank) in [3u64, 1, 2].iter().enumerate() {
+        let path = add(&mut m, format!("f{i}.o").as_bytes());
+        let member_name = add(&mut m, format!("m{i}").as_bytes());
+        let properties = add(&mut m, format!("p{i}").as_bytes());
+        m.files.push(FileRow {
+            path,
+            member_name,
+            properties,
+            rank: rank << 20,
+            ..FileRow::default()
+        });
+        let fstype = add(&mut m, b"ext4");
+        m.stat.push(StatRow { tag: stat_tag::INPUT, path, fstype, ..StatRow::default() });
+        m.file_index.push(mortar_incr::update::rows::FileIndexRow::default());
+    }
+    let out_path = add(&mut m, b"a.out");
+    m.stat.push(StatRow { tag: stat_tag::OUTPUT, path: out_path, ..StatRow::default() });
+    let probe = add(&mut m, b"libz.a");
+    m.probes.push(ProbeRow { path: probe, present: 1 });
+    for (o, n) in [b".text".as_slice(), b".rodata"].iter().enumerate() {
+        let name = add(&mut m, n);
+        m.outsecs.push(OutSecRow { name, ordinal: o as u32 });
+    }
+    // chunks: 0 in outsec 1, 1 in outsec 0
+    for (c, out) in [1u32, 0].iter().enumerate() {
+        let name = add(&mut m, format!("chunk{c}").as_bytes());
+        m.chunks.push(ChunkRow { name, ordinal: c as u32, out: *out, ..ChunkRow::default() });
+    }
+    m.order = vec![1, 0];
+    // a filler, then two sections of each file, the last file first
+    m.sections.push(SectionRow { file: NONE, ..SectionRow::default() });
+    for f in [2u32, 0, 1] {
+        for k in 0..2u32 {
+            let name = add(&mut m, format!(".text.f{f}.{k}").as_bytes());
+            let anchor = add(&mut m, format!("a{f}{k}").as_bytes());
+            m.sections.push(SectionRow {
+                file: f,
+                anchor_kind: 1,
+                anchor,
+                name,
+                ordinal: k,
+                place_chunk: k,
+                size: 16,
+                ..SectionRow::default()
+            });
+        }
+    }
+    let sec = |f: u32, k: u32| -> u32 { 1 + 2 * [1, 2, 0][f as usize] + k };
+    // keys: an unmentioned option key first, globals of files 0, 1, 2
+    // (IN-18e orders them by first file, so 1, 2, 0), each file's local
+    let opt = add(&mut m, b"opt");
+    m.symbols.push(SymbolRow {
+        kind: sym_kind::GLOBAL,
+        file: NONE,
+        name: opt,
+        at_file: NONE,
+        option: true,
+        ..SymbolRow::default()
+    });
+    for f in 0..3u32 {
+        let name = add(&mut m, format!("g{f}").as_bytes());
+        let version = if f == 1 { add(&mut m, b"V1") } else { Str::default() };
+        let kind = if f == 1 { sym_kind::VERSIONED } else { sym_kind::GLOBAL };
+        m.symbols.push(SymbolRow {
+            kind,
+            file: NONE,
+            name,
+            version,
+            at_file: f,
+            at_index: 1,
+            ..SymbolRow::default()
+        });
+    }
+    for f in 0..3u32 {
+        let name = add(&mut m, format!("l{f}").as_bytes());
+        m.symbols.push(SymbolRow {
+            kind: sym_kind::LOCAL,
+            file: f,
+            name,
+            at_file: f,
+            at_index: 0,
+            ..SymbolRow::default()
+        });
+    }
+    let g = |f: u32| 1 + f;
+    let l = |f: u32| 4 + f;
+    m.resolved = vec![ResolvedRow { section: NONE, ..ResolvedRow::default() }; m.symbols.len()];
+    m.symtab_keys = vec![SymtabKeyRow { index: NONE, strtab: 0 }; m.symbols.len()];
+    for f in 0..3u32 {
+        m.resolved[g(f) as usize].section = sec(f, 0);
+        m.resolved[g(f) as usize].kind = 1;
+        m.resolved[l(f) as usize].section = sec(f, 1);
+        m.mentions.push((
+            FileId(f),
+            MentionRow { symbol: g(f), section: sec(f, 0), ..MentionRow::default() },
+        ));
+        m.mentions.push((
+            FileId(f),
+            MentionRow { symbol: g((f + 1) % 3), section: NONE, ..MentionRow::default() },
+        ));
+        m.mentions.push((
+            FileId(f),
+            MentionRow { symbol: l(f), section: sec(f, 1), ..MentionRow::default() },
+        ));
+        m.key_refs.push(KeyRefRow { key: g(f), file: f, def: 1, ..KeyRefRow::default() });
+        m.key_refs.push(KeyRefRow { key: g((f + 1) % 3), file: f, ..KeyRefRow::default() });
+        m.index.push((
+            FileId(f),
+            IndexRow { unit: sec(f, 0), kind: index_kind::GLOBAL, target: g(f) },
+        ));
+        m.index.push((
+            FileId(f),
+            IndexRow { unit: sec(f, 1), kind: index_kind::SECTION, target: sec(f, 0) },
+        ));
+        m.edges.push((
+            FileId(f),
+            EdgeRow {
+                kind: edge_kind::FDE_SECTION,
+                source: sec(f, 0),
+                target: sec(f, 1),
+                offset: 0,
+            },
+        ));
+        m.edges.push((
+            FileId(f),
+            EdgeRow {
+                kind: edge_kind::FDE_KEY,
+                source: sec(f, 1),
+                target: g((f + 2) % 3),
+                offset: 0,
+            },
+        ));
+        m.regions.push((
+            FileId(f),
+            RegionRow { out: f % 2, chunk: (f + 1) % 2, ordinal: f, ..RegionRow::default() },
+        ));
+        let signature = add(&mut m, b"grp");
+        m.groups.push(GroupRow { signature, file: f, tomb: false });
+        m.commons.push(CommonRow { key: 0, file: f, size: 8, align: 8, tomb: false });
+        m.copies.push(CopyRow { key: g(f), file: f, index: 2, size: 16, typ: 1, tomb: false });
+        let hash = [f as u8 + 1; 16];
+        m.frags.push(FragRow {
+            out: f % 2,
+            class: 0x8000_0001,
+            hash,
+            offset: 8 * u64::from(f),
+            refs: 1,
+            ..FragRow::default()
+        });
+        m.frag_uses.push((FileId(f), FragUseRow { file: f, out: f % 2, class: 0x8000_0001, hash }));
+        let text = format!("finding in f{f}");
+        m.diags.push(DiagRow {
+            subjects: vec![
+                Subject::File(FileId(f)),
+                Subject::Key(SymbolId(g((f + 1) % 3))),
+                Subject::OdrKey { name: opt, class: 1 },
+            ],
+            code: format!("code{f}"),
+            text,
+            key: mortar_diag::Key { phase: 30, unit: f, seq: u64::from(f) },
+            refs: vec![DiagRef { file: FileId((f + 1) % 3), seq: 1, offset: 2 }],
+            ref_count: 1,
+            tomb: false,
+        });
+    }
+    m.diags.push(DiagRow {
+        subjects: vec![Subject::Link],
+        code: "plain".into(),
+        text: "an argument".into(),
+        key: mortar_diag::Key { phase: 10, unit: 7, seq: 0 },
+        refs: Vec::new(),
+        ref_count: 0,
+        tomb: false,
+    });
+    m.slots.push(SlotRow { kind: 0, symbol: g(2), refs: 1 });
+    m.sizes.push(SizeRow { chunk: 1, size: 64 });
+    m.sized.push(SizeRow { chunk: 0, size: 32 });
+    m.sym_place.push(SymPlaceRow { kind: 0, symbol: g(0), chunk: 1, ..SymPlaceRow::default() });
+    m.defined.push(DefinedRow { symbol: g(1), kind: 1, chunk: 0, value: 0 });
+    m.patches.push(PatchRow {
+        chunk: 1,
+        kind: patch_kind::THUNK,
+        offset: 0,
+        symbol: g(2),
+        section: NONE,
+        value: 0,
+    });
+    m.patches.push(PatchRow {
+        chunk: 0,
+        kind: patch_kind::E843419,
+        offset: 8,
+        symbol: NONE,
+        section: sec(1, 0),
+        value: 0,
+    });
+    m.redirects.push(RedirectRow { section: sec(2, 1), patch: 1, offset: 4 });
+    m.holes.push(HoleRow { chunk: 1, kind: 0, offset: 0, size: 8, tomb: false });
+    m.name_rows();
+    m
+}
+
+fn view_of(m: &MemoryState) -> MemoryState {
+    read::decode(&write::encode(m).expect("encode")).expect("decode")
+}
+
+// spec: incr.md IN-18e (references), IN-78 (the compaction's renumbering)
+#[test]
+fn normalize_encode_and_compaction_keep_every_reference() {
+    let m = every_reference();
+    let n = compact::normalize(&m).expect("normalize");
+    same(&m, &n, "normalize");
+    let back = view_of(&n);
+    same(&m, &back, "encode, decode");
+    // the compaction of the decoded state (no patch): apply, normalize
+    let mut c = back.clone();
+    let aux = c.frags.len();
+    compact::apply(&mut c, &StatePatch::default(), aux).expect("apply");
+    same(&m, &compact::normalize(&c).expect("normalize"), "compaction");
+    // a state written without the compaction (fillers, files out of rank)
+    same(&m, &view_of(&m), "encode of an uncompacted state");
+}
+
+/// A patch with a new file (rank first: the compaction moves it to row 0)
+/// and rows naming it, an existing key and a new string, in every
+/// key-keyed table with a reference.
+fn patch_of(base: &MemoryState) -> StatePatch {
+    let mut p = StatePatch::default();
+    let at = base.strings.len();
+    let mut fresh = |b: &[u8]| {
+        let off = u32::try_from(at + p.strings.len()).expect("small");
+        p.strings.extend_from_slice(b);
+        Str { off, len: u32::try_from(b.len()).expect("small") }
+    };
+    let path = fresh(b"new.o");
+    let sig = fresh(b"newgrp");
+    let new = u32::try_from(base.files.len()).expect("small");
+    p.files_append.push(FileRow { path, rank: 1, ..FileRow::default() });
+    let key = base
+        .symbols
+        .iter()
+        .position(|r| bytes(base, r.name) == b"g2")
+        .map(|k| k as u32)
+        .expect("g2");
+    p.key_refs.put.push(KeyRefRow { key, file: new, ..KeyRefRow::default() });
+    p.groups.put.push(GroupRow { signature: sig, file: new, tomb: false });
+    p.commons.put.push(CommonRow { key, file: new, size: 4, align: 4, tomb: false });
+    p.copies.put.push(CopyRow { key, file: new, index: 3, size: 8, typ: 1, tomb: false });
+    p.diags.put.push(DiagRow {
+        subjects: vec![Subject::File(FileId(new)), Subject::Key(SymbolId(key))],
+        code: "code-new".into(),
+        text: "finding in new.o".into(),
+        key: mortar_diag::Key { phase: 30, unit: new, seq: 0 },
+        refs: vec![DiagRef { file: FileId(new), seq: 0, offset: 0 }],
+        ref_count: 1,
+        tomb: false,
+    });
+    p
+}
+
+// spec: incr.md IN-46b (the patch's rows are in the state's own row
+// space), IN-78 (the compaction after it)
+#[test]
+fn the_patch_and_its_compaction_keep_every_reference() {
+    let bytes = write::encode(&compact::normalize(&every_reference()).expect("n")).expect("encode");
+    let base = read::decode(&bytes).expect("decode");
+    let p = patch_of(&base);
+    let mut want = base.clone();
+    compact::apply(&mut want, &p, base.frags.len()).expect("apply");
+    let view = read::open_bytes(bytes.clone()).expect("open");
+    let plan = state5::plan_patch(&view, &p).expect("plan");
+    let m = read::decode(&bytes).expect("decode");
+    let out = m.stat.iter().rfind(|r| r.tag == stat_tag::OUTPUT).expect("output").clone();
+    assert!(!plan.compacts(), "the patch fits in place: {}", plan.reason());
+    let patched = write::patched_bytes(&bytes, &plan, &out).expect("in place");
+    same(&want, &read::decode(&patched).expect("decode"), "the patch in place");
+    same(
+        &want,
+        &compact::normalize(&want).expect("normalize"),
+        "the compaction of the patched state",
+    );
+    let compacted = view_of(&compact::normalize(&want).expect("normalize"));
+    same(&want, &compacted, "the compaction written");
+}

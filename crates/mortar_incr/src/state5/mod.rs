@@ -40,6 +40,7 @@ use crate::update::rows::{
 use crate::update::view::Rows;
 
 pub mod canon;
+pub mod columns;
 pub mod compact;
 pub mod read;
 pub mod write;

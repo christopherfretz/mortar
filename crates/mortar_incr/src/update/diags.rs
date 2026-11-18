@@ -621,7 +621,7 @@ fn executable_stack(
 }
 
 /// Whether a phase's `unit` is a `FileId` (`spec/model.md` §8).
-const fn file_unit(phase: u16) -> bool {
+pub(crate) const fn file_unit(phase: u16) -> bool {
     matches!(phase, 30 | 40 | 45 | 50 | 60 | 70 | 100)
 }
 
