@@ -638,7 +638,8 @@ impl Fixture {
             // `.debug_addr`'s tail reserve (`size/32`, IN-33) must hold
             // `b`'s grown table: 320 functions, an address entry each.
             for k in 0..320 {
-                a_text.push_str(&format!("int wp228_fill_{k}(int v) {{ return v + {k}; }}\n"));
+                use std::fmt::Write as _;
+                let _ = writeln!(a_text, "int wp228_fill_{k}(int v) {{ return v + {k}; }}");
             }
         }
         scratch.write(&a, Self::text(cfg, "a", &a_text));
@@ -1142,6 +1143,7 @@ fn update(
 /// The update's output: a copy of `prev` with what an update writes
 /// (module doc). Checks the image agrees with `prev` where the update
 /// writes nothing.
+#[allow(clippy::too_many_lines, reason = "what an update writes, in order")]
 fn write_update(label: &str, prev: &[u8], u: &Update, rows: &MemoryState) -> Vec<u8> {
     let img = &u.image;
     // The symbol tables and what follows them may differ (a removed
@@ -1614,7 +1616,7 @@ fn keep_for_plumb(d: &Path, fx: &Fixture) {
         if !e.file_type().unwrap().is_file() || name.contains("state") {
             continue;
         }
-        if name.ends_with(".map") {
+        if Path::new(&name).extension().is_some_and(|e| e == "map") {
             let t = std::fs::read_to_string(e.path()).unwrap();
             std::fs::write(d.join(&name), t.replace(&from, &to)).unwrap();
         } else {
