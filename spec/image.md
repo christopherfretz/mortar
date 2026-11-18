@@ -993,6 +993,43 @@ writes a value chosen by the referring section's name, as
   the kept copy was rejected: it asserts that the two copies are the same
   code, which the linker does not know (the ODR question `mortar_odr`
   exists for, M6), and it gives `addr2line` a wrong line for `main`.
+  That is for code: a non-alloc member of a debug group is redirected
+  (I-47a).
+- **I-47a [M1] [C] A debug reference into a dropped copy of a debug
+  group** (WP-249). A relocation in a live non-alloc section with a
+  debug name (I-45) whose symbol is a section symbol or a local symbol
+  defined in a section D, where D has no `SHF_ALLOC` and is not live
+  only because its COMDAT group copy is dropped (`spec/resolve.md`
+  §6.2), is filled against the kept copy instead of the tombstone when
+  the group's keeper (`spec/resolve.md` §6.1) has, in its copy of the
+  group, exactly one section K with D's name, no `SHF_ALLOC`, D's
+  `sh_size`, and K is live: `S` is K's address plus the symbol's
+  `st_value` (K's offset in its output section, as for any non-alloc
+  target), and the field is written as for a live target (range checked,
+  I-43). K and D are placed whole (neither `SHF_MERGE` nor
+  `.eh_frame`); otherwise I-47's tombstone. Otherwise I-47's tombstone.
+  No DWARF is parsed and no bytes
+  are compared. GCC's `-g3` puts each header's macros in such a group
+  (`wm4.<file>.<line>.<md5>`) and imports it by offset
+  (`DW_MACRO_import`); the tombstone there crashes gdb 16 and loses the
+  unit's macros in lldb 19, and 0 (lld) names the output's first macro
+  unit, so both debuggers give wrong answers silently
+  (`spec/landed/image/WP-249.md` §2.3). The redirect asserts that the
+  two copies of non-alloc group data are the same, which the group's
+  signature states (GCC's is the contents' MD5) and which the keeper's
+  own references already rely on; for code (an `SHF_ALLOC` target) I-47
+  stands. The fall-back is the tombstone and not 0: no producer measured
+  reaches it (2228 of 2228 references meet the condition), and where a
+  hand-made input does, a loud failure is preferred to a silently wrong
+  macro. GNU ld redirects on a weaker condition (matching local symbols
+  and equal size, any name: it writes a `.debug_types` offset into a
+  `.debug_macro` field when the kept group lacks the name, WP-249
+  §2.1); mold keeps every `wm4.*` copy. At `-r` the rule does not apply
+  (the references stay relocations; groups at `-r` are refused until
+  RL-8, which then decides between GNU's rewrite to the kept copy's
+  section symbol and keeping the copies). In an update the keeper's
+  copy does not move and a keeper that drops the group is the fall-back
+  `debug-comdat-keeper` (`spec/incr.md`).
 - **I-112 [M1] The aranges length.** For a relocation in `.debug_aranges`
   whose target is a section that is not live, whose type is the class's
   address-sized absolute type (`ABS64`, `R_X86_64_64`, `R_386_32`), and
@@ -2291,6 +2328,7 @@ pub trait SynthChunk {
 | subject | GNU ld 2.44 | lld 22 | mold 2.37.1 | mortar | rule |
 |---|---|---|---|---|---|
 | debug reference into a dropped COMDAT copy, ELFCLASS64 (`.debug_info`, `line`, `frame`) | the kept copy's address + addend when the sizes are equal, else 0 | 0 | 0 | all ones | I-47 |
+| debug reference into a dropped COMDAT copy of a NON-ALLOC group member (GCC `-g3` `DW_MACRO_import`) | a kept member with matching local symbols and equal size, of any name (+ st_value + addend), else 0 | 0 | none dropped for `wm4.*` (every copy kept); else 0 | the keeper's same-named, same-size, live non-alloc member + st_value + addend, else the tombstone | I-47a |
 | the same in `.debug_rnglists`, `.debug_loclists`, `.debug_addr` | redirect or 0 | 0 | 0 | 0 | I-47 |
 | the same, ELFCLASS32 | redirect or 0 | 0 | 0 | 0 (`.debug_frame`: all ones) | I-47 |
 | the same in `.debug_aranges` | redirect or 0 | 0 | 0 | all ones, length 0 | I-47, I-112 |

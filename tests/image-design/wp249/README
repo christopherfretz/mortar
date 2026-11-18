@@ -1,0 +1,29 @@
+WP-249's experiments (spec/image.md I-47: a debug reference into a dropped
+COMDAT copy of a debug group, GCC's DW_MACRO_import). Not part of any gate;
+run by hand, each script's last line is its DONE line. Record:
+spec/landed/image/WP-249.md. Every number there comes from these.
+
+src/            a.c b.c c.c h.h and a.cc b.cc c.cc h.hh: three units sharing a header
+                (macros, a struct; C++: a template, an inline function). a.* defines
+                WP249_A_ONLY, a macro b.* must not see.
+classes.py      ELF reader (after tests/incr-design/wp228/elfdbg.py); `link CFG OBJ...`
+                counts references from surviving non-alloc sections into non-alloc
+                members of COMDAT groups, by (from, to, type, fate, kept copy has a
+                member of the name, of the size); `groups OBJ...`.
+survey.sh OUT   item 1: GCC 14, Clang 19, Clang 22, kiln/hod; AArch64, x86-64 (i386:
+                GCC only); C, C++; -g, -g3, -fdebug-types-section, -gsplit-dwarf, -gz,
+                -O2; DWARF 4 and 5. OUT/survey.tsv, groups.tsv, refused.txt.
+rule.sh OUT T   item 2: GNU ld's redirect condition by experiment (hand-written k.o, d.o;
+                one case per word), beside lld 19/22, mold, mortar; words.py names each
+                word. KREF=1: k.o also refers to its own copies (section symbols, as
+                GCC's objects have).
+macros.py       judge: what each DW_MACRO_import of a linked output names (keeper's own,
+                redirect to the kept copy, 0, all ones, a byte-identical second copy),
+                without a map; patch: set every import of a dropped copy to
+                redirect | zero | ones (the hand-patched probes).
+linkers.sh OUT  item 2: GCC 14 -g3 (-O0, -O2, -gz) links by mortar, GNU ld, lld 19/22,
+                mold, plus mortar's output patched (redirect, zero); gdb 16 (x86-64:
+                gdb-multiarch on qemu-x86_64 -g), lldb 19 (AArch64), llvm-dwarfdump-22
+                --verify, readelf warnings. OUT/judge.txt, debug.tsv, sessions/.
+modes.sh OUT T  item 3: --gc-sections with the keeper's code collected, -r, --incremental.
+plumbprobe.sh   item 4: cargo xtask plumb on mortar's output and on the patched ones.

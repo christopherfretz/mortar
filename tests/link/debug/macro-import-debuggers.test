@@ -1,0 +1,167 @@
+# The debuggers on image.md I-47a's outputs (macro-import-c.test,
+# macro-import-cxx.test, macro-import-gc.test): in `b_f`, gdb 16's `info
+# macro` and `macro expand` find the shared header's macros through b.c's
+# imports of a.c's (or u.c's) copies, and none of a.c's (u.c's) own; lldb
+# 19 expands the header's macro. With all ones in the imports (I-47, before
+# WP-249) gdb died ("This is a bug") and lldb lost every header macro;
+# with lld's 0 both name a.c's own macro in b.c: lld is skipped. gdb and
+# lldb run host programs only (x86-64's gdb answers: crates/mortar/tests/
+# macro_import.rs `gdb_x86_64_macros`). The verifier's §5.8 still demands
+# the tombstone in the imports (R1) until WP-250.
+#@ spec: image.md I-47a
+#@ arch: aarch64
+#@ requires: g++ gdb lldb
+#@ skip(lld): writes 0: gdb and lldb read a.c's macros in b.c (WP-249 §2.3)
+
+cc -O0 -g3 -gdwarf-4 a.c -o a4.o
+cc -O0 -g3 -gdwarf-4 b.c -o b4.o
+cc -O0 -g3 -gdwarf-4 c.c -o c4.o
+cc -O0 -g3 -gdwarf-5 a.c -o a5.o
+cc -O0 -g3 -gdwarf-5 b.c -o b5.o
+cc -O0 -g3 -gdwarf-5 c.c -o c5.o
+cxx -O0 -g3 -gdwarf-4 a.cc -o xa4.o
+cxx -O0 -g3 -gdwarf-4 b.cc -o xb4.o
+cxx -O0 -g3 -gdwarf-4 c.cc -o xc4.o
+cxx -O0 -g3 -gdwarf-5 a.cc -o xa5.o
+cxx -O0 -g3 -gdwarf-5 b.cc -o xb5.o
+cxx -O0 -g3 -gdwarf-5 c.cc -o xc5.o
+cc -O0 -g3 -ffunction-sections -fdata-sections u.c -o gu.o
+cc -O0 -g3 -ffunction-sections -fdata-sections a.c -o ga.o
+cc -O0 -g3 -ffunction-sections -fdata-sections b.c -o gb.o
+cc -O0 -g3 -ffunction-sections -fdata-sections c.c -o gc.o
+link gcc -static a4.o b4.o c4.o -o p4
+link gcc -static a5.o b5.o c5.o -o p5
+link g++ -static xa4.o xb4.o xc4.o -o x4
+link g++ -static xa5.o xb5.o xc5.o -o x5
+link gcc -static -Wl,--gc-sections gu.o ga.o gb.o gc.o -o pg
+check gdb p4 "break b_f" run "info macro WP249_ANSWER" "macro expand WP249_TWICE(WP249_ANSWER)" "info macro WP249_A_ONLY" "info macro __GNUC__" kill
+  has: ^#define WP249_ANSWER 42$
+  has: ^expands to: ((42) \* 2)$
+  has: The symbol `WP249_A_ONLY' has no definition
+  has: ^-D__GNUC__=
+  not: This is a bug
+check gdb p5 "break b_f" run "info macro WP249_ANSWER" "macro expand WP249_TWICE(WP249_ANSWER)" "info macro WP249_A_ONLY" "info macro __GNUC__" kill
+  has: ^#define WP249_ANSWER 42$
+  has: ^expands to: ((42) \* 2)$
+  has: The symbol `WP249_A_ONLY' has no definition
+  has: ^-D__GNUC__=
+  not: This is a bug
+check gdb x4 "break b_f" run "info macro WP249_ANSWER" "macro expand WP249_TWICE(WP249_ANSWER)" "info macro WP249_A_ONLY" "info macro __GNUC__" "ptype Point" kill
+  has: ^#define WP249_ANSWER 42$
+  has: ^expands to: ((42) \* 2)$
+  has: The symbol `WP249_A_ONLY' has no definition
+  has: ^-D__GNUC__=
+  has: ^type = struct Point {
+  not: This is a bug
+check gdb x5 "break b_f" run "info macro WP249_ANSWER" "macro expand WP249_TWICE(WP249_ANSWER)" "info macro WP249_A_ONLY" "info macro __GNUC__" "ptype Point" kill
+  has: ^#define WP249_ANSWER 42$
+  has: ^expands to: ((42) \* 2)$
+  has: The symbol `WP249_A_ONLY' has no definition
+  has: ^-D__GNUC__=
+  has: ^type = struct Point {
+  not: This is a bug
+check gdb pg "break b_f" run "info macro WP249_ANSWER" "info macro WP249_A_ONLY" "info macro WP249_U_ONLY" kill
+  has: ^#define WP249_ANSWER 42$
+  has: The symbol `WP249_A_ONLY' has no definition
+  has: The symbol `WP249_U_ONLY' has no definition
+  not: This is a bug
+check lldb p4 "b b_f" run bt "expr WP249_TWICE(WP249_ANSWER)" kill
+  has: stop reason = breakpoint 1.1
+  has: frame #1: * p4`main at a.c:
+  has: (int) $0 = 84
+check lldb p5 "b b_f" run bt "expr WP249_TWICE(WP249_ANSWER)" kill
+  has: stop reason = breakpoint 1.1
+  has: frame #1: * p5`main at a.c:
+  has: (int) $0 = 84
+check lldb x4 "b b_f" run bt "expr WP249_TWICE(WP249_ANSWER)" kill
+  has: stop reason = breakpoint 1.1
+  has: frame #1: * x4`main at a.cc:
+  has: (int) $0 = 84
+check lldb x5 "b b_f" run bt "expr WP249_TWICE(WP249_ANSWER)" kill
+  has: stop reason = breakpoint 1.1
+  has: frame #1: * x5`main at a.cc:
+  has: (int) $0 = 84
+
+#--- h.h
+#ifndef WP249_H
+#define WP249_H
+#define WP249_ANSWER 42
+#define WP249_TWICE(x) ((x) * 2)
+struct wp249_point { int x; long y; };
+int b_f(int);
+int c_f(int);
+extern int g_b;
+#endif
+#--- a.c
+#include <stdio.h>
+#include "h.h"
+#define WP249_A_ONLY 1 /* a macro of a.c only: not defined in b.c */
+int main(void) {
+  struct wp249_point p = { 1, 2 };
+  int r = b_f(p.x) + c_f((int)p.y);
+  printf("%d %d %d\n", r, g_b, WP249_TWICE(WP249_ANSWER));
+  return 0;
+}
+#--- b.c
+#include <stdio.h>
+#include "h.h"
+int g_b = 7;
+int b_f(int x) {
+  struct wp249_point q = { x, WP249_ANSWER };
+  puts("b");
+  return q.x + (int)q.y;
+}
+#--- c.c
+#include <string.h>
+#include "h.h"
+int c_f(int x) {
+  struct wp249_point q = { WP249_TWICE(x), 3 };
+  return q.x + (int)strlen("c");
+}
+#--- u.c
+#include <stdio.h>
+#include "h.h"
+#define WP249_U_ONLY 1
+int u_unused(void) { printf("u"); return WP249_ANSWER; }
+#--- h.hh
+#pragma once
+#define WP249_ANSWER 42
+#define WP249_TWICE(x) ((x) * 2)
+struct Point { int x; long y; };
+template <typename T> struct Box {
+  T v;
+  T get() const { return v + 1; }
+};
+inline int twice(int x) { return x * 2; }
+int b_f(int);
+int c_f(int);
+extern int g_b;
+#--- a.cc
+#include <cstdio>
+#include "h.hh"
+#define WP249_A_ONLY 1 /* a macro of a.cc only: not defined in b.cc */
+int main() {
+  Point p{1, 2};
+  Box<int> bx{p.x};
+  int r = b_f(bx.get()) + c_f(twice((int)p.y));
+  std::printf("%d %d %d\n", r, g_b, WP249_TWICE(WP249_ANSWER));
+  return 0;
+}
+#--- b.cc
+#include <cstdio>
+#include "h.hh"
+int g_b = 7;
+int b_f(int x) {
+  Point q{x, WP249_ANSWER};
+  Box<long> bl{q.y};
+  std::puts("b");
+  return twice(q.x) + (int)bl.get();
+}
+#--- c.cc
+#include <cstring>
+#include "h.hh"
+int c_f(int x) {
+  Point q{WP249_TWICE(x), 3};
+  Box<int> bx{q.x};
+  return bx.get() + (int)std::strlen("c");
+}

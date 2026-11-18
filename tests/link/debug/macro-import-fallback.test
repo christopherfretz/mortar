@@ -1,0 +1,48 @@
+# image.md I-47a's fall-back: d.o's `.debug_macro` copy of COMDAT group
+# `g` is dropped (k.o keeps the group), and k.o's copy has another size
+# (16 bytes against 24), so the reference from d.o's debug section
+# `.debug_wp249` into the dropped copy is not redirected: it holds I-47's
+# tombstone, all ones in the 4-byte field (I-47's "every other debug
+# name" row; the field is in a section of its own, so the bytes are
+# stated without layout). GNU ld (no kept section of the size), lld and
+# mold write 0.
+#@ spec: image.md I-47a
+#@ spec: image.md I-47
+#@ arch: aarch64 x86_64
+
+as p.S -o p.o
+as k.S -o k.o
+as d.S -o d.o
+link ld -static -e _start p.o k.o d.o -o prog
+check objdump -s -j .debug_wp249 prog
+  has(mortar): 0000 ffffffff
+  has(bfd,lld,mold): 0000 00000000
+
+#--- p.S
+  .section .debug_macro,"",@progbits
+  .ascii "PADPADPADPADPAD."
+#--- k.S
+  .text
+  .globl _start
+_start:
+#ifdef __aarch64__
+  mov x8, #93
+  svc #0
+#else
+  movl $60, %eax
+  syscall
+#endif
+  .section .debug_macro,"G",@progbits,g,comdat
+.Lk:
+  .ascii "SIZEkeep"
+  .8byte 0
+  .section .debug_info,"",@progbits
+  .4byte .Lk
+#--- d.S
+  .section .debug_macro,"G",@progbits,g,comdat
+.Ld:
+  .ascii "SIZEdrop"
+  .8byte 0
+  .8byte 0
+  .section .debug_wp249,"",@progbits
+  .4byte .Ld
