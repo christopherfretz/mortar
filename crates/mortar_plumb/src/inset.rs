@@ -726,6 +726,7 @@ impl Inputs {
 
     /// An object's non-local mentions (resolve §4.1, the I-file summary):
     /// its own symbol table, never an archive's index.
+    #[allow(clippy::many_single_char_names)] // o, t, k: the ELF parts
     fn object(
         &mut self,
         src: &dyn crate::Source,
@@ -753,25 +754,24 @@ impl Inputs {
             if sec.sh_type() != SHT_GROUP {
                 continue;
             }
-            let g = sec.group().map_err(|e| e.to_string())?;
-            if !g.is_comdat() {
+            let grp = sec.group().map_err(|e| e.to_string())?;
+            if !grp.is_comdat() {
                 continue;
             }
-            let sym = t.get(g.signature()).map_err(|e| e.to_string())?;
+            let sym = t.get(grp.signature()).map_err(|e| e.to_string())?;
             let mut sig = t.name(&sym).map_err(|e| e.to_string())?.to_vec();
-            if sym.sym_type() == STT_SECTION || sig.is_empty() {
-                if let SymbolSection::Section(k) =
-                    t.section_of(g.signature(), &sym).map_err(|e| e.to_string())?
-                {
-                    sig = o.section(k).and_then(|x| x.name()).map_err(|e| e.to_string())?.to_vec();
-                }
+            if (sym.sym_type() == STT_SECTION || sig.is_empty())
+                && let SymbolSection::Section(k) =
+                    t.section_of(grp.signature(), &sym).map_err(|e| e.to_string())?
+            {
+                sig = o.section(k).and_then(|x| x.name()).map_err(|e| e.to_string())?.to_vec();
             }
             let id = self.sig(&sig);
             let gi = groups.len() as u32;
             groups.push(id);
-            for m in g.members() {
-                let m = m.map_err(|e| e.to_string())?;
-                in_group.entry(m.0).or_insert(gi);
+            for member in grp.members() {
+                let member = member.map_err(|e| e.to_string())?;
+                in_group.entry(member.0).or_insert(gi);
             }
         }
         let mut grouped = Vec::new();
@@ -914,10 +914,7 @@ impl Inputs {
                 if !live[i] || !matches!(f.kind, Kind::Object | Kind::Member) {
                     return vec![false; f.groups.len()];
                 }
-                f.groups
-                    .iter()
-                    .map(|&g| std::mem::replace(&mut kept[g as usize], true))
-                    .collect()
+                f.groups.iter().map(|&g| std::mem::replace(&mut kept[g as usize], true)).collect()
             })
             .collect()
     }
@@ -1088,9 +1085,8 @@ impl Inputs {
     /// (its dropped copy of COMDAT group `G`)`. `None` when there is none.
     fn demoted_only(&self, i: usize, c: &Closure) -> Option<String> {
         let names = self.names();
-        let defines = |k: u32| {
-            self.files[i].mentions.iter().any(|&(x, b)| x == k && b & (DEF | COMMON) != 0)
-        };
+        let defines =
+            |k: u32| self.files[i].mentions.iter().any(|&(x, b)| x == k && b & (DEF | COMMON) != 0);
         self.files.iter().enumerate().find_map(|(j, f)| {
             if !c.live[j] || j == i {
                 return None;
@@ -2297,17 +2293,11 @@ mod tests {
             ("wb.o", wb),
             ("hx.o", obj(&[("hx", 'D')])),
             ("libhx.a", ar(&[("hx.o", obj(&[("hx", 'D')]))])),
-            (
-                "libhxg.a",
-                ar(&[("hxg.o", gobj(&[("g", 'W'), ("hx", 'D')], &[("g", &["g"])]))]),
-            ),
+            ("libhxg.a", ar(&[("hxg.o", gobj(&[("g", 'W'), ("hx", 'D')], &[("g", &["g"])]))])),
             ("libwa2.a", ar(&[("wa2.o", gobj(&[("g", 'W'), ("A", 'D')], &[("g", &["g"])]))])),
             (
                 "wb2.o",
-                gobj(
-                    &[("g", 'W'), ("hx", 'W'), ("Y", 'D'), ("A", 'U')],
-                    &[("g", &["g", "hx"])],
-                ),
+                gobj(&[("g", 'W'), ("hx", 'W'), ("Y", 'D'), ("A", 'U')], &[("g", &["g", "hx"])]),
             ),
         ]
     }
@@ -2375,13 +2365,17 @@ mod tests {
         let v = judge(&map_of(&["wu.o", "wa.o", "wb.o"]), Some(&line), &f);
         assert_eq!(
             ids(&v),
-            ["M11 libhx.a(hx.o) is not in the link: wu.o refers to `hx` and it is the target (resolve §4.1)"]
+            [
+                "M11 libhx.a(hx.o) is not in the link: wu.o refers to `hx` and it is the target (resolve §4.1)"
+            ]
         );
         let line = words("wu.o --start-group libwa2.a wb2.o --end-group libhx.a");
         let v = judge(&map_of(&["wu.o", "libwa2.a(wa2.o)", "wb2.o"]), Some(&line), &f);
         assert_eq!(
             ids(&v),
-            ["M11 libhx.a(hx.o) is not in the link: wu.o refers to `hx` and it is the target (resolve §4.1)"]
+            [
+                "M11 libhx.a(hx.o) is not in the link: wu.o refers to `hx` and it is the target (resolve §4.1)"
+            ]
         );
     }
 
@@ -2419,7 +2413,9 @@ mod tests {
         let v = judge(&map_of(&["wu.o", "wb.o", "wa.o", "libhx.a(hx.o)"]), Some(&line), &f);
         assert_eq!(
             ids(&v),
-            ["M12 libhx.a(hx.o) is in the link and no root or live reference reaches it (resolve §4.1)"]
+            [
+                "M12 libhx.a(hx.o) is in the link and no root or live reference reaches it (resolve §4.1)"
+            ]
         );
     }
 

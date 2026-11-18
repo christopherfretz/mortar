@@ -843,8 +843,7 @@ pub(crate) const ROOT_NEEDED: &str = " (only a root names a definition of it: D-
 /// (resolve §6.2: defined in a dropped COMDAT copy) refer to a definition
 /// of: a demoted mention makes no `--as-needed` library needed, whatever
 /// its binding (D-11 item 2, WP-200); GNU ld does, anomaly A128 (WP-231).
-pub(crate) const DEMOTED_NEEDED: &str =
-    " (only a mention defined in a dropped COMDAT copy refers to a definition of it: resolve §6.2, D-11 item 2)";
+pub(crate) const DEMOTED_NEEDED: &str = " (only a mention defined in a dropped COMDAT copy refers to a definition of it: resolve §6.2, D-11 item 2)";
 
 /// The suffix of P-D6 and P-D7 for a library only an object of the
 /// output that no stage of D-12 extracts makes needed (dyn.md D-12: an

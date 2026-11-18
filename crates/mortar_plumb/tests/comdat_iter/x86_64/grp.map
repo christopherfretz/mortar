@@ -1,0 +1,34 @@
+mortar-map 2
+file 0 wu.o
+file 1 libwa2.a wa2.o 54
+file 2 wb2.o
+file 3 libhx.a hx.o 50
+place 0 1 4010e8 11
+place 0 3 401119 0
+place 0 4 401119 0
+place 1 2 4010f9 1
+place 1 5 4010fa 6
+place 1 3 401119 0
+place 1 4 401119 0
+place 2 2 401100 13
+place 2 4 401119 0
+place 2 5 401119 0
+place 3 1 401113 6
+place 3 2 401119 0
+place 3 3 401119 0
+discard 2 6 comdat
+chunk synthetic .symtab - 90
+chunk synthetic .strtab - 2f
+chunk synthetic .shstrtab - 2a
+chunk synthetic .comment - d
+arg -static
+arg wu.o
+arg --start-group
+arg libwa2.a
+arg wb2.o
+arg --end-group
+arg libhx.a
+arg -o
+arg grp
+arg --mortar-map=grp.map
+end

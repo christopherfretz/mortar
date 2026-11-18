@@ -7,11 +7,13 @@
 # is comdat-mismatch (§6.3 case (b)). other: wz.o's strong reference to
 # z makes libhx.so needed, and the demoted mention binds to its hx:
 # 7 + 1 + 0. GNU ld makes the library needed for the demoted mention too
-# (asn exits 8); lld refuses both lines (relocation refers to a symbol in
-# a discarded section), even with the library needed; mold refuses asn
-# and links other as mortar does.
+# (asn exits 8): the verifier's P-D6, anomaly A128 (WP-231); lld refuses
+# both lines (relocation refers to a symbol in a discarded section), even
+# with the library needed; mold refuses asn and links other as mortar
+# does.
 #@ spec: resolve.md §6.2
 #@ spec: dyn.md D-11
+#@ anomaly(bfd): A128
 #@ arch: aarch64 x86_64
 
 cc -O1 -fno-pie wm.c -o wm.o
