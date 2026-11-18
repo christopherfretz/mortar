@@ -219,7 +219,217 @@ pub struct CommonAlloc {
     pub size: u64,
     /// The alignment it was placed at: a power of two.
     pub align: u64,
+    /// The common's winning file, an index into [`Map::files`]: the fifth
+    /// field, written in a map that says `incremental` only (§3.2;
+    /// `spec/incr.md` IN-72 item 11).
+    pub file: Option<u32>,
     pub line: u32,
+}
+
+/// `region <file> <out> <cat> <addr> <capacity>` (§3.2's decision
+/// records; `spec/image.md` I-78a): a file's region in a hole-tolerant
+/// output section.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Region {
+    pub file: u32,
+    pub out: String,
+    pub cat: u32,
+    pub addr: u64,
+    pub capacity: u64,
+    pub line: u32,
+}
+
+/// A chunk's kind and part in a `capacity` record (§3.2): `b<k>`, `p<k>`,
+/// `m` or `s`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Part {
+    /// `b<k>`: the body part `k`.
+    Body(u32),
+    /// `p<k>`: the island after part `k`.
+    Island(u32),
+    /// `m`: the merged chunk.
+    Merged,
+    /// `s`: a synthetic chunk.
+    Synthetic,
+}
+
+impl Part {
+    /// The token (§3.2).
+    pub fn token(self) -> String {
+        match self {
+            Part::Body(k) => format!("b{k}"),
+            Part::Island(k) => format!("p{k}"),
+            Part::Merged => "m".into(),
+            Part::Synthetic => "s".into(),
+        }
+    }
+
+    /// Reads a token; `None` outside the list.
+    pub fn from_token(t: &str) -> Option<Part> {
+        let k = |r: &str| dec(r).and_then(|v| u32::try_from(v).ok());
+        match t {
+            "m" => Some(Part::Merged),
+            "s" => Some(Part::Synthetic),
+            _ => match t.split_at_checked(1)? {
+                ("b", r) => k(r).map(Part::Body),
+                ("p", r) => k(r).map(Part::Island),
+                _ => None,
+            },
+        }
+    }
+}
+
+/// `capacity <out> <ordinal> <part> <addr>|- <size> <capacity>` (§3.2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Capacity {
+    pub out: String,
+    pub ordinal: u32,
+    pub part: Part,
+    /// `None` for a non-allocated chunk (`-`).
+    pub addr: Option<u64>,
+    pub size: u64,
+    pub capacity: u64,
+    pub line: u32,
+}
+
+/// `order <out> <n>...` (§3.2): the chunks' ordinals in file order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Order {
+    pub out: String,
+    pub ordinals: Vec<u32>,
+    pub line: u32,
+}
+
+/// A slot's kind (§3.2 `slot`; `spec/model.md` §4.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SlotKind {
+    Got,
+    GotTprel,
+    TlsGd,
+    TlsDesc,
+    TlsLd,
+    Plt,
+    Iplt,
+}
+
+impl SlotKind {
+    /// Every kind, in I-78a's order.
+    pub const ALL: [SlotKind; 7] = [
+        SlotKind::Got,
+        SlotKind::GotTprel,
+        SlotKind::TlsGd,
+        SlotKind::TlsDesc,
+        SlotKind::TlsLd,
+        SlotKind::Plt,
+        SlotKind::Iplt,
+    ];
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            SlotKind::Got => "got",
+            SlotKind::GotTprel => "got-tprel",
+            SlotKind::TlsGd => "tls-gd",
+            SlotKind::TlsDesc => "tls-desc",
+            SlotKind::TlsLd => "tls-ld",
+            SlotKind::Plt => "plt",
+            SlotKind::Iplt => "iplt",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|k| k.name() == name)
+    }
+}
+
+/// Whose slot a `slot` record states (§3.2's three forms).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SlotKey {
+    /// `slot <kind> <key> <addr>`: a global key by name (`name` or
+    /// `name@version`).
+    Global(String),
+    /// `slot <kind> <file> <index> <addr>`: a local by file id and
+    /// symbol-table index.
+    Local { file: u32, index: u32 },
+    /// `slot tls-ld <addr>`: the module slot, without a key.
+    Module,
+}
+
+/// A `slot` record (§3.2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Slot {
+    pub kind: SlotKind,
+    pub key: SlotKey,
+    pub addr: u64,
+    pub line: u32,
+}
+
+/// `redirect <file> <section> <offset> <addr>` (§3.2): a site and the
+/// address of the patch it names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Redirect {
+    pub file: u32,
+    pub section: SectionRef,
+    pub offset: u64,
+    pub addr: u64,
+    pub line: u32,
+}
+
+/// `frag <out> <class> <hash> <offset>` (§3.2): a live fragment of a
+/// merged output section.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Frag {
+    pub out: String,
+    /// The merge class: `<flags>,<entsize>,<align>`.
+    pub class: (u64, u64, u64),
+    /// The content hash, 32 lower-case hex digits as written.
+    pub hash: String,
+    pub offset: u64,
+    pub line: u32,
+}
+
+/// `symblock <file>|- <first> <count> <capacity> <strtab-off>
+/// <strtab-cap>` (§3.2): a `.symtab` local block (`spec/incr.md` IN-49a).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SymBlock {
+    /// `None` for the internal file (`-`).
+    pub file: Option<u32>,
+    pub first: u64,
+    pub count: u64,
+    pub capacity: u64,
+    pub strtab_off: u64,
+    pub strtab_cap: u64,
+    pub line: u32,
+}
+
+/// The decision records of an incremental-mode map (§3.2; `spec/image.md`
+/// I-78a): `P_U` for H-1's judgement (d). The verifier judges only each
+/// `region`'s place (§6.8, P-I2).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Decisions {
+    pub regions: Vec<Region>,
+    pub capacities: Vec<Capacity>,
+    pub orders: Vec<Order>,
+    pub slots: Vec<Slot>,
+    pub redirects: Vec<Redirect>,
+    pub frags: Vec<Frag>,
+    pub symblocks: Vec<SymBlock>,
+}
+
+impl Decisions {
+    /// How many records were read.
+    pub fn len(&self) -> usize {
+        self.regions.len()
+            + self.capacities.len()
+            + self.orders.len()
+            + self.slots.len()
+            + self.redirects.len()
+            + self.frags.len()
+            + self.symblocks.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 /// A linker-defined symbol and its value (§3.2; not read by stage 1).
@@ -438,6 +648,9 @@ pub struct Map {
     /// mode, and the map claims IN-60's coverage even with no `hole` or
     /// `dead` line.
     pub incremental: bool,
+    /// mortar's decision records (§3.2; `spec/image.md` I-78a): only in a
+    /// map that says `incremental`.
+    pub decisions: Decisions,
     /// GNU ld's preamble (§3.4): each archive member it included, with
     /// the reason it prints, in map order. Empty for every other format.
     pub included: Vec<Included>,
@@ -557,6 +770,7 @@ impl Map {
             args: Vec::new(),
             dead: Vec::new(),
             incremental: false,
+            decisions: Decisions::default(),
             included: Vec::new(),
             rel: None,
             blocks: Vec::new(),

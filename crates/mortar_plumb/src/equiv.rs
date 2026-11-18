@@ -43,6 +43,8 @@ pub struct Equiv {
     pub bytes: u64,
     pub symbols: u64,
     pub entries: u64,
+    /// What a rule read and could not judge, by name (§7.2): one line.
+    pub not_judged: Vec<String>,
 }
 
 impl Equiv {
@@ -58,7 +60,7 @@ impl Equiv {
 
     /// One summary line for the pair.
     pub fn summary(&self) -> String {
-        format!(
+        let mut s = format!(
             "equiv: {} findings; X {} findings, F {} findings; {} records, {} bytes, {} symbols, {} table entries compared",
             self.findings.len(),
             self.x.findings.len(),
@@ -67,7 +69,11 @@ impl Equiv {
             self.bytes,
             self.symbols,
             self.entries
-        )
+        );
+        if !self.not_judged.is_empty() {
+            let _ = write!(s, "\nequiv not judged: {}", self.not_judged.join("; "));
+        }
+        s
     }
 }
 
@@ -317,6 +323,10 @@ struct Side<'a> {
     /// The `.tbss` input sections, `(path, member, index)`: their TLS
     /// addresses overlap what follows them.
     tbss: BTreeSet<(String, Option<String>, u32)>,
+    /// The `nplace` units of each non-allocated output section by name:
+    /// `(offset, end, id)` sorted by offset (§6.9: a non-allocated
+    /// local's identities, L10's L-1).
+    nspans: BTreeMap<String, Vec<(u64, u64, String)>>,
 }
 
 fn file_key(map: &Map, file: u32) -> String {
@@ -392,6 +402,36 @@ impl<'a> Side<'a> {
                 .map(|(o, a, _)| a + (value - o))
         };
         at(true).or_else(|| at(false))
+    }
+
+    /// The identities of offset `v` of non-allocated output section
+    /// `sec` (§6.9): `(unit, offset)` for every `nplace` unit of the
+    /// section at `o` with size `z` and `o ≤ v ≤ o + z`, plus the
+    /// section's start and end.
+    fn nonalloc_ids(&self, sec: &str, v: u64) -> BTreeSet<(String, u64)> {
+        let mut out = BTreeSet::new();
+        if let Some(units) = self.nspans.get(sec) {
+            // Units do not overlap: walk back from the last one starting
+            // at or before `v` while they reach it (empty ones share an
+            // offset).
+            let n = units.partition_point(|u| u.0 <= v);
+            for (o, z, id) in units[..n].iter().rev() {
+                if *z < v {
+                    break;
+                }
+                out.insert((id.clone(), v - o));
+            }
+        }
+        if let Some(i) = self.sec(sec) {
+            let size = self.image.sections[i].shdr.sh_size;
+            if v == 0 {
+                out.insert((format!("s:{sec}"), 0));
+            }
+            if v == size {
+                out.insert((format!("e:{sec}"), 0));
+            }
+        }
+        out
     }
 
     fn word(&self) -> u64 {
@@ -618,6 +658,16 @@ fn run_side<'a>(
     for k in (1..leaves).rev() {
         ends[k] = ends[2 * k].max(ends[2 * k + 1]);
     }
+    let mut nspans: BTreeMap<String, Vec<(u64, u64, String)>> = BTreeMap::new();
+    for n in &map.nonalloc {
+        if let Some(o) = n.offset {
+            let id = format!("u:{}:{}", file_key(map, n.file), sec_key(&n.section));
+            nspans.entry(n.out.clone()).or_default().push((o, o.saturating_add(n.size), id));
+        }
+    }
+    for v in nspans.values_mut() {
+        v.sort();
+    }
     let tls = image.phdrs.iter().find(|p| p.p_type == PT_TLS).map(|p| p.p_vaddr);
     let tbss = units
         .iter()
@@ -641,6 +691,7 @@ fn run_side<'a>(
         tls,
         machine,
         tbss,
+        nspans,
     })
 }
 
@@ -716,6 +767,11 @@ fn finding(n: u8, msg: impl Into<String>) -> Finding {
     Finding::new(Rule::Equiv(n), msg)
 }
 
+/// L-64's padding section: its chunk has a record only when its size is
+/// above 0 (§3.2), so P-E1's segment lists and P-E2's chunk sets leave it
+/// out (each side's own S20 and M6 judge it).
+const PAD_RELRO: &str = ".pad.relro";
+
 /// [`check`] with the inputs read through `src` (§8.1), which holds the
 /// files both maps name; both sides share it. A file that cannot be read
 /// is an I2 finding of each side that reads it.
@@ -755,7 +811,9 @@ fn compare<'a>(eq: &mut Equiv, x: Result<Side<'a>, Report>, f: Result<Side<'a>, 
     headers(&x, &f, &mut out);
     units(&x, &f, &mut out, eq);
     crate::prof::mark("equiv headers, units");
-    symbols(&x, &f, &mut out, eq);
+    let (skip_x, nx) = fillers(&x, &mut out, eq);
+    let (skip_f, nf) = fillers(&f, &mut out, eq);
+    symbols(&x, &f, (&skip_x, &skip_f), &mut out, eq);
     crate::prof::mark("equiv symbols");
     records(&x, &f, &mut out, eq);
     crate::prof::mark("equiv records");
@@ -778,6 +836,69 @@ fn compare<'a>(eq: &mut Equiv, x: Result<Side<'a>, Report>, f: Result<Side<'a>, 
     eq.findings = out;
     eq.x = x.report;
     eq.f = f.report;
+    eq.x.coverage.fillers = nx;
+    eq.f.coverage.fillers = nf;
+}
+
+/// P-E3's fillers (§6.9, IN-49a): the `.symtab` indexes every other
+/// clause passes over, and the count of a side whose map says
+/// `incremental`. A filler in a side whose map does not, a filler at or
+/// after `sh_info`, and an entry before it one field from the form (a
+/// near-filler) are each one finding. A side that writes another
+/// linker's section symbols (GNU ld's) has none: its section 1 symbol
+/// has the form.
+fn fillers(s: &Side<'_>, out: &mut Vec<Finding>, eq: &mut Equiv) -> (BTreeSet<u32>, Option<u64>) {
+    use crate::symfill::{Form, Table};
+    let mut skip = BTreeSet::new();
+    let count = s.map.incremental.then_some(0u64);
+    if let Some(k) = Table::section_symbols(&s.image) {
+        eq.not_judged.push(format!(
+            "{}: fillers (the side writes section symbols, one of section {k}: another linker's convention)",
+            s.tag
+        ));
+        return (skip, count);
+    }
+    let Some(t) = Table::of(&s.image) else { return (skip, count) };
+    let mut n = 0u64;
+    for y in s.image.symbols.iter().skip(1) {
+        let before = y.index < t.info;
+        match t.classify(y) {
+            Some(Form::Filler) => {
+                skip.insert(y.index);
+                if !s.map.incremental {
+                    out.push(finding(
+                        3,
+                        format!(
+                            "{}: .symtab entry {} is a filler, in a link whose map does not say incremental (IN-49a: a plain link has none)",
+                            s.tag, y.index
+                        ),
+                    ));
+                } else if !before {
+                    out.push(finding(
+                        3,
+                        format!(
+                            "{}: .symtab entry {} is a filler at or after sh_info {} (IN-49a: fillers are in the local area only)",
+                            s.tag, y.index, t.info
+                        ),
+                    ));
+                } else {
+                    n += 1;
+                }
+            }
+            Some(Form::Near(field)) if before => {
+                skip.insert(y.index);
+                out.push(finding(
+                    3,
+                    format!(
+                        "{}: .symtab entry {} is a filler but for its {field} (a near-filler: S-79, mortar writes no such entry)",
+                        s.tag, y.index
+                    ),
+                ));
+            }
+            _ => {}
+        }
+    }
+    (skip, count.map(|_| n))
 }
 
 /// P-E1: sections and segments.
@@ -837,6 +958,9 @@ fn headers(x: &Side<'_>, f: &Side<'_>, out: &mut Vec<Finding>) {
             .filter(|c| {
                 c.alloc()
                     && c.shdr.sh_size > 0
+                    // L-64's `.pad.relro` is there with size 0 when the
+                    // RELRO end is aligned: its size is a layout fact.
+                    && c.name != PAD_RELRO
                     && (c.shdr.sh_flags & mortar_elf::consts::SHF_TLS != 0) == (p.p_type == PT_TLS)
                     && p.p_memsz > 0
                     && p.p_vaddr <= c.shdr.sh_addr
@@ -855,7 +979,7 @@ fn headers(x: &Side<'_>, f: &Side<'_>, out: &mut Vec<Finding>) {
 }
 
 /// P-E2: the same live units, each placed once.
-fn units(x: &Side<'_>, f: &Side<'_>, out: &mut Vec<Finding>, _eq: &mut Equiv) {
+fn units(x: &Side<'_>, f: &Side<'_>, out: &mut Vec<Finding>, eq: &mut Equiv) {
     // (unit identity, input offset) -> (size, is an FDE piece, line)
     type Set = BTreeMap<(String, String, Option<u64>), (u64, bool, bool)>;
     let set = |s: &Side<'_>, out: &mut Vec<Finding>| -> Set {
@@ -930,7 +1054,9 @@ fn units(x: &Side<'_>, f: &Side<'_>, out: &mut Vec<Finding>, _eq: &mut Equiv) {
         let mut nth: BTreeMap<(ChunkKind, String), u32> = BTreeMap::new();
         let mut set = BTreeSet::new();
         for c in &s.map.chunks {
-            if matches!(c.kind, ChunkKind::Thunk | ChunkKind::Patch) {
+            if matches!(c.kind, ChunkKind::Thunk | ChunkKind::Patch)
+                || (c.kind == ChunkKind::Synthetic && c.name == PAD_RELRO)
+            {
                 continue;
             }
             let k = nth.entry((c.kind, c.name.clone())).or_default();
@@ -958,6 +1084,31 @@ fn units(x: &Side<'_>, f: &Side<'_>, out: &mut Vec<Finding>, _eq: &mut Equiv) {
         for c in a.difference(&b) {
             out.push(finding(2, format!("the common '{c}' is allocated only in {which}")));
         }
+    }
+    // A common's `<file>` (§3.2, incremental maps): the same file by
+    // identity on both sides; where a side's map states none it is read,
+    // not judged (the verifier does not derive resolve.md §3.3's winner).
+    let files = |s: &Side<'_>| -> BTreeMap<String, Option<String>> {
+        s.map.commons.iter().map(|c| (c.name.clone(), c.file.map(|i| file_key(s.map, i)))).collect()
+    };
+    let (fx, ff) = (files(x), files(f));
+    let mut unstated = 0u64;
+    for (name, a) in &fx {
+        match (a, ff.get(name)) {
+            (Some(a), Some(Some(b))) if a != b => out.push(finding(
+                2,
+                format!(
+                    "the common '{name}' is allocated from {a} in the update, {b} in the full link"
+                ),
+            )),
+            (Some(_), Some(Some(_))) | (_, None) => {}
+            _ => unstated += 1,
+        }
+    }
+    if unstated > 0 {
+        eq.not_judged.push(format!(
+            "common <file> of {unstated} common(s): a map states none (resolve.md §3.3's winner is not derived)"
+        ));
     }
     let folds = |s: &Side<'_>| -> BTreeSet<String> {
         s.map
@@ -999,10 +1150,14 @@ fn shndx_kind(s: &Side<'_>, n: u16) -> String {
 /// The globals of `.symtab` by name; a name twice is P-E3.
 fn globals<'s>(
     s: &'s Side<'_>,
+    skip: &BTreeSet<u32>,
     out: &mut Vec<Finding>,
 ) -> BTreeMap<&'s str, &'s crate::image::OutSym> {
     let mut m: BTreeMap<&str, &crate::image::OutSym> = BTreeMap::new();
     for y in s.image.symbols.iter().skip(1) {
+        if skip.contains(&y.index) {
+            continue;
+        }
         if bind_global(y.sym.binding()) && m.insert(y.name.as_str(), y).is_some() {
             out.push(finding(
                 3,
@@ -1014,9 +1169,15 @@ fn globals<'s>(
 }
 
 /// P-E3: symbols.
-fn symbols(x: &Side<'_>, f: &Side<'_>, out: &mut Vec<Finding>, eq: &mut Equiv) {
+fn symbols(
+    x: &Side<'_>,
+    f: &Side<'_>,
+    (skip_x, skip_f): (&BTreeSet<u32>, &BTreeSet<u32>),
+    out: &mut Vec<Finding>,
+    eq: &mut Equiv,
+) {
     type Key = (String, u8, u8, u64, String);
-    let (gx, gf) = (globals(x, out), globals(f, out));
+    let (gx, gf) = (globals(x, skip_x, out), globals(f, skip_f, out));
     for (name, a) in &gx {
         let Some(b) = gf.get(name) else {
             out.push(finding(3, format!("the global '{name}' is only in the update")));
@@ -1052,12 +1213,14 @@ fn symbols(x: &Side<'_>, f: &Side<'_>, out: &mut Vec<Finding>, eq: &mut Equiv) {
         }
     }
     // Locals: a multiset with corresponding values.
-    let locals = |s: &Side<'_>| {
+    let locals = |s: &Side<'_>, skip: &BTreeSet<u32>| {
         let mut m: BTreeMap<Key, Vec<u64>> = BTreeMap::new();
         for y in s.image.symbols.iter().skip(1) {
             // A per-file CIE's mapping symbol (IN-34a) is in one link only,
-            // as are a thunk's or a patch's own symbols (W6-W8 may differ).
-            if bind_global(y.sym.binding())
+            // as are a thunk's or a patch's own symbols (W6-W8 may differ);
+            // the fillers are passed over (above).
+            if skip.contains(&y.index)
+                || bind_global(y.sym.binding())
                 || shndx_kind(s, y.sym.st_shndx) == ".eh_frame"
                 || in_thunk(s, y.sym.st_value)
             {
@@ -1074,7 +1237,7 @@ fn symbols(x: &Side<'_>, f: &Side<'_>, out: &mut Vec<Finding>, eq: &mut Equiv) {
         }
         m
     };
-    let (lx, lf) = (locals(x), locals(f));
+    let (lx, lf) = (locals(x, skip_x), locals(f, skip_f));
     for (k, vx) in &lx {
         let empty = Vec::new();
         let vf = lf.get(k).unwrap_or(&empty);
@@ -1088,6 +1251,12 @@ fn symbols(x: &Side<'_>, f: &Side<'_>, out: &mut Vec<Finding>, eq: &mut Equiv) {
         eq.symbols += vx.len() as u64;
         let ty = k.1 & 0xf;
         if ty == STT_SECTION || ty == STT_FILE {
+            continue;
+        }
+        // A local of a non-allocated section: its value is an offset,
+        // its identities those of the section's `nplace` units (§6.9).
+        if x.sec(&k.4).is_some_and(|i| !x.image.sections[i].alloc()) {
+            nonalloc_locals(x, f, k, vx, vf, out);
             continue;
         }
         let tls = |s: &Side<'_>, v: u64| if ty == STT_TLS { s.tls.map_or(v, |t| t + v) } else { v };
@@ -1152,6 +1321,60 @@ fn symbols(x: &Side<'_>, f: &Side<'_>, out: &mut Vec<Finding>, eq: &mut Equiv) {
                 3,
                 format!(".dynsym entry {i} ('{}') differs from the full link's ('{}')", a.0, b.0),
             ));
+        }
+    }
+}
+
+/// P-E3's locals of one key in a non-allocated section (§6.9): the same
+/// multiset of values by identity, the section's `nplace` units' (L10's
+/// L-1: an update's debug sections carry slack, IN-51, so offsets
+/// differ); values with no identity on either side by equality.
+fn nonalloc_locals(
+    x: &Side<'_>,
+    f: &Side<'_>,
+    k: &(String, u8, u8, u64, String),
+    vx: &[u64],
+    vf: &[u64],
+    out: &mut Vec<Finding>,
+) {
+    let sec = k.4.as_str();
+    let fids: Vec<BTreeSet<(String, u64)>> = vf.iter().map(|&b| f.nonalloc_ids(sec, b)).collect();
+    let mut used = vec![false; vf.len()];
+    let mut by: BTreeMap<(String, u64), Vec<usize>> = BTreeMap::new();
+    for (j, ids) in fids.iter().enumerate() {
+        let c = ids.iter().next().cloned().unwrap_or((String::new(), vf[j]));
+        by.entry(c).or_default().push(j);
+    }
+    let mut rest = Vec::new();
+    for &a in vx {
+        let ids = x.nonalloc_ids(sec, a);
+        let c = ids.iter().next().cloned().unwrap_or((String::new(), a));
+        match by.get_mut(&c).and_then(Vec::pop) {
+            Some(j) => used[j] = true,
+            None => rest.push((a, ids)),
+        }
+    }
+    for (a, ids) in rest {
+        let hit = (0..vf.len()).find(|&j| {
+            !used[j]
+                && if ids.is_empty() && fids[j].is_empty() {
+                    a == vf[j]
+                } else {
+                    ids.iter().any(|i| fids[j].contains(i))
+                }
+        });
+        if let Some(j) = hit {
+            used[j] = true;
+        } else {
+            let mut g = finding(
+                3,
+                format!(
+                    "the local '{}' at {sec}+{a:#x} has a value no local of the full link corresponds to",
+                    k.0
+                ),
+            );
+            g.symbol = Some(k.0.clone());
+            out.push(g);
         }
     }
 }

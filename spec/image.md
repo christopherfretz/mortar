@@ -1853,9 +1853,10 @@ random input's).
   files only, so a map id is not a rank position). **The writer is U-6**
   (`mortar_image::map::update_map` and the full link's map,
   `crates/mortar_image/src/map.rs`, WP-211 §C); the reader of `P_U` is
-  **H-1** (IN-79 (d)); the verifier (V-1) checks only their syntax and
-  that each `region` lies in its output section (`spec/plumb.md` §3.2,
-  §6.8). Until U-6 writes them, (d) compares the decision rows the map
+  **H-1** (IN-79 (d)); the verifier (V-1) checks only their syntax,
+  each `region`'s place in its section and against the other regions
+  of that section, and each `symblock` within `.symtab`'s local area
+  (`spec/plumb.md` §3.2, §6.8). Until U-6 writes them, (d) compares the decision rows the map
   has and reports the others "not compared" (IN-79).
 - **I-79 [M1]** The map is a function of the tables and the file names,
   written after layout and independent of fill. Each record group is

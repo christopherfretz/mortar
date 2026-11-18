@@ -510,6 +510,12 @@ pub struct Coverage {
     pub relocatable: Option<RelCoverage>,
     /// P-P1 (§14.5, §14.6), on a composition's report.
     pub composition: Option<CompCoverage>,
+    /// The decision records' coverage line (§3.2, §7.2), for a map that
+    /// has them.
+    pub decisions: Option<String>,
+    /// The fillers P-E3 passed over (§6.9, `fillers=<n>`), for a side of
+    /// `--equiv` whose map says `incremental`.
+    pub fillers: Option<u64>,
 }
 
 /// What P-P1 compared (§14.6: `composition: {x} judged, {y} not judged
@@ -768,6 +774,12 @@ impl Report {
         }
         if let Some(g) = &c.gdb_index {
             let _ = writeln!(s, "gdb index: {g}");
+        }
+        if let Some(d) = &c.decisions {
+            let _ = writeln!(s, "{d}");
+        }
+        if let Some(n) = c.fillers {
+            let _ = writeln!(s, "symbol table: fillers={n}");
         }
         if !c.linker_defined_not_judged.is_empty() {
             let _ = writeln!(

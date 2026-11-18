@@ -1,0 +1,60 @@
+mortar-map 2
+file 0 start-x64.o
+file 1 a-x64.o
+file 2 b-x64.o
+place 0 2 411120 22
+place 1 2 411190 c
+place 2 2 4111e0 c
+nplace 0 4 .debug_abbrev 0 73
+nplace 0 5 .debug_info 0 70
+nplace 0 7 .debug_str_offsets 0 28
+merged 0 9 .debug_str
+nplace 0 10 .debug_addr 0 20
+merged 0 12 .comment
+nplace 0 14 .debug_frame 0 38
+nplace 0 16 .debug_line 0 63
+merged 0 18 .debug_line_str
+nplace 1 4 .debug_abbrev 78 86
+nplace 1 5 .debug_info 70 66
+nplace 1 7 .debug_str_offsets 28 2c
+merged 1 9 .debug_str
+nplace 1 10 .debug_addr 20 18
+merged 1 12 .comment
+nplace 1 14 .debug_frame 38 30
+nplace 1 16 .debug_line 90 60
+merged 1 18 .debug_line_str
+nplace 2 4 .debug_abbrev 108 c4
+nplace 2 5 .debug_info e8 a0
+nplace 2 7 .debug_str_offsets 54 34
+merged 2 9 .debug_str
+nplace 2 10 .debug_addr 38 20
+merged 2 12 .comment
+nplace 2 14 .debug_frame 68 30
+nplace 2 16 .debug_line f0 61
+merged 2 18 .debug_line_str
+chunk synthetic .symtab - c0
+chunk synthetic .strtab - 49
+chunk synthetic .shstrtab - 9c
+chunk synthetic .comment - d
+common shared_c 422230 10 10
+incremental
+hole .text 22 4e
+hole .text 7c 44
+hole .text cc 44
+dead .debug_abbrev 73 5 neutral
+dead .debug_abbrev fe a neutral
+dead .debug_abbrev 1cc c neutral
+dead .debug_abbrev 1d8 9 neutral
+dead .debug_info d6 12 neutral
+dead .debug_line 63 2d neutral
+dead .debug_line 151 2f neutral
+arg -static
+arg -o
+arg x-x64
+arg start-x64.o
+arg a-x64.o
+arg b-x64.o
+arg --incremental=full
+arg --incremental-state=state-x64
+arg --mortar-map=x-x64.map
+end

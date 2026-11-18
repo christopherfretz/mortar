@@ -1,0 +1,49 @@
+mortar-map 2
+file 0 start-a64.o
+file 1 a-a64.o
+file 2 b-a64.o
+place 0 2 410120 1c
+place 1 2 41013c 14
+place 2 2 410150 18
+nplace 0 4 .debug_abbrev 0 73
+nplace 0 5 .debug_info 0 70
+nplace 0 7 .debug_str_offsets 0 28
+merged 0 9 .debug_str
+nplace 0 10 .debug_addr 0 20
+merged 0 12 .comment
+nplace 0 14 .debug_frame 0 38
+nplace 0 16 .debug_line 0 62
+merged 0 18 .debug_line_str
+nplace 1 4 .debug_loclists 0 1e
+nplace 1 5 .debug_abbrev 73 c2
+nplace 1 6 .debug_info 70 8f
+nplace 1 8 .debug_str_offsets 28 30
+merged 1 10 .debug_str
+nplace 1 11 .debug_addr 20 20
+merged 1 13 .comment
+nplace 1 15 .debug_frame 38 30
+nplace 1 17 .debug_line 62 63
+merged 1 19 .debug_line_str
+nplace 2 4 .debug_loclists 1e 1e
+nplace 2 5 .debug_abbrev 135 c7
+nplace 2 6 .debug_info ff a3
+nplace 2 8 .debug_str_offsets 58 34
+merged 2 10 .debug_str
+nplace 2 11 .debug_addr 40 20
+merged 2 13 .comment
+nplace 2 15 .debug_frame 68 30
+nplace 2 17 .debug_line c5 63
+merged 2 19 .debug_line_str
+chunk synthetic .symtab - 3c0
+chunk synthetic .strtab - 49
+chunk synthetic .shstrtab - ac
+chunk synthetic .comment - d
+common shared_c 420168 10 4
+arg -static
+arg -o
+arg f-a64
+arg start-a64.o
+arg a-a64.o
+arg b-a64.o
+arg --mortar-map=f-a64.map
+end
