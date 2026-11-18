@@ -1052,7 +1052,10 @@ gdb, lldb, perf, nm, addr2line, objdump and valgrind (§12).
      locals in table order, then its **demoted** symbols (S-77) in
      `SymbolId` order; a file with neither has no block.
 
-  This is lld's order (X-17; GNU keeps hidden symbols global).
+  This is lld's order (X-17; GNU keeps hidden symbols global). In an
+  update, a global demoted to a local by the merged visibility is
+  written into its definer's block, which the update rewrites
+  (`spec/incr.md` IN-49a, IN-72 item 2a; WP-212 applied WP-207's §R.4).
 - **S-75 [C] (the global part).** After the locals: every global that the
   output keeps (resolve.md §3.7, its output binding not `STB_LOCAL`), in
   `SymbolId` order. `STB_GLOBAL`, `STB_WEAK` and `STB_GNU_UNIQUE` keep
@@ -1199,7 +1202,9 @@ gdb, lldb, perf, nm, addr2line, objdump and valgrind (§12).
   The last of these on the command line wins. `-x` and `-X` do not
   affect globals.
 - **S-79 [C] (section symbols).** mortar writes no `STT_SECTION`
-  symbols. lld writes none; GNU writes one per output section on AArch64
+  symbols, except the **fillers** of an incremental-mode output
+  (`spec/incr.md` IN-49a: section 1, value section 1's `sh_addr`), which
+  the verifier passes over (`spec/plumb.md` §6.9, P-E3). lld writes none; GNU writes one per output section on AArch64
   and none on x86-64 (X-17); mold writes one per output section. No tool
   needs them in an executable: section symbols exist for relocations,
   and an executable has none against them. (`-r` output, M4, writes
@@ -1348,6 +1353,13 @@ gdb, lldb, perf, nm, addr2line, objdump and valgrind (§12).
   per-file ranges with null-entry holes would admit other spans (a block
   with room to grow); with them the plan would place each file's block
   at its span instead of checking it.
+  **In an incremental-mode output** (`spec/incr.md` IN-49a; WP-212
+  applied WP-207's §R.4, which closes Q8) each file's span is
+  `(first, count, capacity)` and the spans follow IN-49a's capacities
+  (a block followed by fillers up to its capacity, the local tail
+  reserve after the last block); the state's `SYMTAB` and `SYMTAB_KEYS`
+  tables (IN-18e) replace `Slots.symtab_locals` there. A plain link is
+  as above: `(first, count)`, the plan's spans only.
 - **S-89 [C] (cost).** For 10^7 symbols (240 MB of `.symtab` on ELF64,
   and about 300 MB of names for a large C++ program): counting is one
   parallel pass over the kept symbols; filling is parallel by window
@@ -1629,9 +1641,9 @@ the rules below keep their ids and cite it (request R-S1).
   | `.plt` | `PltShape` header + entries + `iplt_entry × IPLT` |
   | `.got` | Σ region capacities × slot size (S-63) |
   | `.got.plt` | `(reserved + PLT + IPLT) × word` |
-  | `.symtab` | `entsize × (1 + locals + globals)` (S-88) |
+  | `.symtab` | `entsize × (1 + locals + globals)` (S-88); in an incremental-mode output the locals count each block's capacity and the local tail reserve (fillers, `spec/incr.md` IN-49a) |
   | `.symtab_shndx` | `4 × .symtab entries` |
-  | `.strtab` | `1 + fixed table + Σ name bytes + 1 per entry` |
+  | `.strtab` | `1 + fixed table + Σ name bytes + 1 per entry`; in an incremental-mode output plus each block's region slack (IN-49a) |
   | `.shstrtab` | `1 + Σ (name + 1)` over output sections |
   | `.interp` [M2] | `len(path) + 1` (D-31) |
   | `.gnu.hash` [M2] | `16 + (W/8) × maskwords + 4 × nbuckets + 4 × n` for `n` hashed entries (D-26; `W` the word size in bits) |
@@ -1680,18 +1692,20 @@ edit changes.
   the shape allows it because `Slots.eh_records` is a table and a hole
   can be a linker-made CIE that no FDE uses.
 - **S-112 [M7] (a symbol added or removed).** `.symtab`, `.strtab` and
-  `.symtab_shndx` are rewritten whole: they are non-allocated and last
-  (layout rank 10), so their size changes no address and no other unit.
-  Rewriting 10^7 symbols is about 0.12 s on 8 threads (S-89, measured). A per-file capacity in
-  `.symtab` (with null local entries as holes) is possible and is not
-  done unless the bench shows the rewrite matters; Q8 records it.
+  `.symtab_shndx` of an incremental-mode output follow `spec/incr.md`
+  IN-49a (per-file blocks with fillers, a dense global area, file
+  slack); `symtab-exhausted` when their reserves run out ([later]:
+  rewritten whole at the file's end). (WP-212 applied WP-207's §R.4;
+  before it this rule said "rewritten whole", 10^7 symbols in about
+  0.12 s on 8 threads, S-89.)
 - **S-113 [M7] (a GOT or IPLT slot added or removed).** A new slot is
   appended to its kind's region within its capacity; a removed slot stays,
-  written 0. A new IPLT entry appends to `.plt`, `.got.plt` and
-  `.rela.plt`. `.rela.plt` is refilled whole with no holes (a hole would
-  be an `IRELATIVE` that glibc applies): a removed entry's relocation is
-  removed and the chunk compacted, while its `.plt` and `.got.plt` words
-  stay as dead slots. `__rela_iplt_end` moves with the count, which
+  written 0. A new IPLT entry appends to `.plt` and `.got.plt`. In an
+  update `.rela.plt` is rewritten whole in the full link's order
+  (`spec/incr.md` IN-72 item 4; IN-2 item 5 holds for `IRELATIVE`;
+  WP-212 applied WP-207's §R.4), with no holes (a hole would be an
+  `IRELATIVE` that glibc applies): a removed entry's relocation is
+  removed, while its `.plt` and `.got.plt` words stay as dead slots. `__rela_iplt_end` moves with the count, which
   changes only the start-up code's unit (refilled through the dependency
   index).
 - **S-114 [M7] (properties, build id, `.comment`).** `.note.gnu.property`
@@ -2173,7 +2187,6 @@ Ranked by how much depends on each.
 | Q2 | Piece-level liveness of merge pieces under `--gc-sections` (lld marks pieces; GNU keeps whole sections). | `spec/live.md` decides; S-16 keeps all pieces without gc | size of `.rodata` with gc; symbol drops of S-22 |
 | Q11 | *Ruled*: the default accepted (no symbol). A local symbol naming each IPLT entry (say `f@iplt`), so that gdb's `info symbol` on a function pointer to an IFUNC names it (S-71's one cost). No reference writes one. | none | gdb on canonical IFUNC pointers |
 | Q6 | PLT and thunk unwind info (FDEs for `.plt`, thunks) for perf. | none (lld) | perf's unwinding through PLTs [M2] |
-| Q8 | Per-file capacity in `.symtab` for incremental links. | rewrite whole (S-112) | M7 time for 10^7-symbol programs |
 
 Closed by the coordinator's rulings on the review: Q1 (no tail merging,
 S-23); Q4 (the build-id styles are image.md's, R-I1); Q5 (no
@@ -2184,6 +2197,11 @@ have it agree and refused when they do not, S-95); Q10 (the reviewer's
 scan of all three targets' libraries and corpus has no two live FDEs
 with one initial location, and no FDE initial-location relocation
 against a global symbol, so S-59's refusal stands untriggered).
+
+Closed by `spec/incr.md` IN-49a (WP-207's §R.4, applied by WP-212):
+Q8 (per-file capacity in `.symtab` for incremental links: per-file
+blocks with fillers in an incremental-mode output, S-88, S-112; a plain
+link is unchanged).
 
 ## 16. Tests
 
