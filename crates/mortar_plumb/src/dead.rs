@@ -50,6 +50,9 @@ pub(crate) struct Range {
     pub end: u64,
     pub kind: Option<DeadKind>,
     pub line: u32,
+    /// The file slack of `.symtab` or `.strtab` (§6.8, IN-49a): a `hole`
+    /// past the section's end, in no section's bytes.
+    pub slack: bool,
 }
 
 impl Range {
@@ -58,6 +61,7 @@ impl Range {
         let s = &image.sections[self.sec];
         let off = self.start - s.shdr.sh_addr;
         let what = match self.kind {
+            None if self.slack => "file slack".to_string(),
             None => "hole".to_string(),
             Some(k) => format!("dead range ({})", k.name()),
         };
@@ -273,8 +277,15 @@ fn finding(n: u8, msg: String) -> Finding {
 }
 
 /// Resolves the lines: P-I2 for a line that names no output section,
-/// lies outside it, is empty, or overlaps another line.
-pub(crate) fn resolve(image: &Image<'_>, lines: &[DeadRange], out: &mut Vec<Finding>) -> DeadSet {
+/// lies outside it (but the symbol tables' file slack in an
+/// `incremental` map, [`crate::symfill::slack`]), is empty, or overlaps
+/// another line.
+pub(crate) fn resolve(
+    image: &Image<'_>,
+    lines: &[DeadRange],
+    incremental: bool,
+    out: &mut Vec<Finding>,
+) -> DeadSet {
     let mut set = DeadSet::default();
     for d in lines {
         let found: Vec<usize> = image
@@ -297,6 +308,25 @@ pub(crate) fn resolve(image: &Image<'_>, lines: &[DeadRange], out: &mut Vec<Find
             continue;
         };
         let s = &image.sections[sec].shdr;
+        match crate::symfill::slack(image, incremental, d, sec) {
+            Some(Ok(())) => {
+                let start = s.sh_addr.wrapping_add(d.offset);
+                set.ranges.push(Range {
+                    sec,
+                    start,
+                    end: start + d.size,
+                    kind: None,
+                    line: d.line,
+                    slack: true,
+                });
+                continue;
+            }
+            Some(Err(m)) => {
+                out.push(finding(2, m));
+                continue;
+            }
+            None => {}
+        }
         if d.size == 0 || d.offset.checked_add(d.size).is_none_or(|e| e > s.sh_size) {
             out.push(finding(
                 2,
@@ -308,7 +338,14 @@ pub(crate) fn resolve(image: &Image<'_>, lines: &[DeadRange], out: &mut Vec<Find
             continue;
         }
         let start = s.sh_addr.wrapping_add(d.offset);
-        set.ranges.push(Range { sec, start, end: start + d.size, kind: d.kind, line: d.line });
+        set.ranges.push(Range {
+            sec,
+            start,
+            end: start + d.size,
+            kind: d.kind,
+            line: d.line,
+            slack: false,
+        });
     }
     set.ranges.sort_by_key(|r| (r.sec, r.start, r.end, r.line));
     let mut keep: Vec<Range> = Vec::with_capacity(set.ranges.len());
@@ -672,7 +709,7 @@ pub(crate) fn coverage(
 pub(crate) fn check(e: &mut Engine<'_, '_>, map: &Map) {
     let image = e.image;
     let mut out = Vec::new();
-    let set = resolve(image, &map.dead, &mut out);
+    let set = resolve(image, &map.dead, map.incremental, &mut out);
     let _ = coverage(image, e.objs, map, &set, true, &mut out);
     let ends = live_ends(image, e.objs, map, false);
     admit(image, e.objs, map, &set, &mut out);
@@ -683,6 +720,7 @@ pub(crate) fn check(e: &mut Engine<'_, '_>, map: &Map) {
     let places = relocated_places(e);
     named_by_tables(image, &set, &ends, &places, &mut out);
     crate::deaddwarf::check(image, e.objs, map, &set, &mut out);
+    e.cov.decisions = crate::symfill::check(image, map, &set, &mut out);
     e.findings.append(&mut out);
 }
 
@@ -764,7 +802,10 @@ fn admit(image: &Image<'_>, objs: &[Obj<'_>], map: &Map, set: &DeadSet, out: &mu
             _ if s.name == ".debug_aranges" => Some(
                 "'.debug_aranges' has no dead range: it is rewritten whole (incr.md IN-54)".into(),
             ),
-            None if !alloc => Some("a hole is in an allocated section only (IN-3)".into()),
+            None if r.slack => None,
+            None if !alloc => Some(
+                "a hole is in an allocated section only (IN-3), or the file slack of .symtab or .strtab in an incremental map (IN-49a)".into(),
+            ),
             None if !eh && packed(&s.name, sh.sh_type) => Some(format!(
                 "'{}' is a packed section (layout.md L-142, incr.md IN-30): it has no hole",
                 s.name
@@ -828,6 +869,7 @@ fn strings_section(
     } else {
         s.name == ".debug_str"
             || s.name == ".debug_line_str"
+            || (s.name == ".strtab" && map.incremental)
             || map.nonalloc.iter().any(|n| n.offset.is_none() && n.out == s.name)
     };
     if found { Ok(()) } else { Err("is in a section with no merged strings".into()) }
@@ -1453,7 +1495,7 @@ pub fn coverage_table(
     let store = crate::store::Store::read(&inputs, &[map]);
     let located = crate::locate::locate(map, &store, 0, &image);
     let mut out = Vec::new();
-    let set = resolve(&image, &map.dead, &mut out);
+    let set = resolve(&image, &map.dead, map.incremental, &mut out);
     let cover = coverage(&image, &located.objs, map, &set, true, &mut out);
     Ok((cover, out))
 }

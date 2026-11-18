@@ -152,7 +152,7 @@ pub(crate) fn check(
     let debug_ranges: Vec<&Range> = set
         .ranges
         .iter()
-        .filter(|r| image.sections[r.sec].shdr.sh_flags & SHF_ALLOC == 0)
+        .filter(|r| image.sections[r.sec].shdr.sh_flags & SHF_ALLOC == 0 && !r.slack)
         .collect();
     for r in &debug_ranges {
         let name = image.sections[r.sec].name.as_str();
@@ -174,7 +174,10 @@ pub(crate) fn check(
             out.push(finding(6, format!("{}: {m}", r.describe(image))).at(r.start));
         }
     }
-    if debug_ranges.is_empty() && !set.ranges.iter().any(|r| crate::dead::is_eh_frame(image, r.sec))
+    // `.strtab`'s dead names (IN-49a) are judged above (their NUL) and
+    // in `crate::symfill`; they name nothing the DWARF walk reads.
+    let dwarf = debug_ranges.iter().any(|r| image.sections[r.sec].name != ".strtab");
+    if !dwarf && !set.ranges.iter().any(|r| crate::dead::is_eh_frame(image, r.sec))
     {
         return;
     }
