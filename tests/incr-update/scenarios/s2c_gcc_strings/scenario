@@ -1,0 +1,12 @@
+# tests/incr-review S2c: gcc -O2 objects; a.o's edit swaps two calls (its
+# .rodata.str1.1 in the new order at the same size); c.o shares a string
+# literal with a.o and is edited at hop 2; a.o back.
+proves: hop 2's update of c.o prints "shared line!" (the deduplicated fragment, not a.o's other string)
+source: tests/incr-review/s2c-gcc-strings.sh (with libc: put() is fputs)
+edit A: a.c
+edit C: c.c
+hops: -, A, A+C, C
+link: main.o a.o c.o
+cflags: -O2
+compilers: gcc
+not kiln: C at -O2: kiln compiles C++ only and hod -O0 only; the shape is gcc's string merging

@@ -45,9 +45,11 @@ IN-79's checks (hop given), in order (IN79_CHECKS; spec/harness.md
   dirty    IN-75: every byte in which x's output differs from the previous
            output lies inside a range of the subject's MORTAR_INCR_DIRTY
            file; the ranges are sorted, disjoint and inside the file
-  verify   as L10's
   elflint  (b) `eu-elflint --gnu-ld` on x's output: every complaint is one
-           of harness.md's four allow patterns (ELFLINT_ALLOW)
+           of harness.md's four allow patterns (ELFLINT_ALLOW). Before
+           verify: the outside tool speaks first (every corruption elflint
+           was seen to reject, verify rejects too; WP-223's record)
+  verify   as L10's
   equiv    (b) as L10's, with the update's own map
   run      (a) as L10's
   oracle   (c) as L10's
@@ -76,7 +78,7 @@ sys.dont_write_bytecode = True
 import oracle  # noqa: E402  (tests/incr-oracle/oracle.py, the IN-63a oracle, as a library)
 
 CHECKS = ('exit', 'verify', 'equiv', 'run', 'oracle')
-IN79_CHECKS = ('exit', 'stderr', 'dirty', 'verify', 'elflint', 'equiv', 'run', 'oracle', 'state', 'duty')
+IN79_CHECKS = ('exit', 'stderr', 'dirty', 'elflint', 'verify', 'equiv', 'run', 'oracle', 'state', 'duty')
 PLUMB_TIMEOUT = 300
 ELFLINT_TIMEOUT = 120
 
@@ -586,9 +588,8 @@ def judge_step(tools, x, f, base, new, hop=None):
         return v
     if hop is not None:
         _dirty(v, x, hop)
-    _verify(v, tools, x)
-    if hop is not None:
         _elflint(v, tools, x)
+    _verify(v, tools, x)
     _equiv(v, tools, x, f)
     _run_check(v, tools, x, f)
     _oracle(v, x, base, new)

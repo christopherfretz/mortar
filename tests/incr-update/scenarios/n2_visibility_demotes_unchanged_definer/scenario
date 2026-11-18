@@ -1,0 +1,7 @@
+# WP-207 §D: c.o declares foo hidden (the definer in unchanged u.o is
+# demoted: foo becomes local in .symtab), default again, hidden again.
+proves: the definer's .symtab block and the global area were true after a demotion and a promotion, so the second demotion writes the same entries as a full link
+source: WP-207 §D, the two- and three-hop series
+edit: c.cc
+link: main.o c.o u.o
+compilers: gcc kiln

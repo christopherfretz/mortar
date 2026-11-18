@@ -1,0 +1,9 @@
+# WP-207 §D: of two commons, a.o's buf grows from 4 to 256 bytes, back,
+# again; b.o's counter does not change (C, -fcommon).
+proves: counter never moved and buf's region was true after the shrink, so the second growth places both as a full link does
+source: WP-207 §D, the two- and three-hop series
+edit: a.c
+link: main.o a.o b.o
+cflags: -fcommon
+compilers: gcc
+not kiln: C (`-fcommon`): kiln compiles C++ only, and C++ has no common symbols

@@ -1,0 +1,11 @@
+# tests/incr-review S4: a string present in two merge classes of one output
+# section (.rodata.str1.1 and .rodata.str1.8) has a FRAGS identity with
+# ordinals; a.o's copy changes from "abc" to "xyz" and back.
+proves: the fragments' ordinals were true after hop 1, so hop 2's revival of a.o's "abc" ranks with b.o's copy as a full link does
+source: tests/incr-review/s4-frag-ordinals.sh
+edit: a.S
+link: a.o b.o
+
+compilers: gcc
+not kiln: assembly (.S): kiln compiles C++ only; the shape is written in the assembly
+nolibc: yes

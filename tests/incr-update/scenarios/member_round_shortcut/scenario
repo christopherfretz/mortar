@@ -1,0 +1,9 @@
+# WP-211 (review-r2 M-1): lib.a's members m1 -> m2 -> m3 call in a chain
+# (m3 extracted at round 3); c.o calls m3 directly as well (round 1); back;
+# again.
+proves: the support property of the stored rounds (IN-71b) held after the shortcut and its removal, so m3 stays extracted with any supporting round and the output equals a full link's
+source: WP-211 M-1 (spec/landed/incr/WP-211.md), U-3, H-1
+edit: c.cc
+link: main.o c.o lib.a
+archive lib.a: m1.o m2.o m3.o
+compilers: gcc kiln

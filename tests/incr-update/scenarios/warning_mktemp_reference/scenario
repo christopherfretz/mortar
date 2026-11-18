@@ -1,0 +1,6 @@
+# IN-75a: c.o starts referring to mktemp (the link warns), stops, starts.
+proves: the update's diagnostics equal the full link's, line for line: the warning is raised at hops 1 and 3 with c.o as the referrer and gone at hop 2
+source: IN-75a; WP-211 M-5 (`gnu_warning_reference_removed`); U-9
+edit: c.cc
+link: main.o c.o
+compilers: gcc kiln

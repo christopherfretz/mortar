@@ -16,7 +16,7 @@ update's dirty ranges), X the xtask binary (`plumb`, `plumb --equiv`).
 A scenario (scenarios/<name>/scenario) is a first link in incremental
 mode and three updates: hop 1 the edit, hop 2 its inverse, hop 3 the edit
 again (`hops:` may say otherwise). Each hop installs the inputs (a changed
-object as a new inode, an unchanged one untouched), and links three times:
+object as a new inode, an unchanged one untouched; H gets copies), and links three times:
 F, the plain full link (in its own directory, same output name); G, the
 incremental-mode full link (`--incremental=full`, IN-63a's link); X, the
 SUBJECT (`--incremental --incremental-report=`, in the directory that
@@ -44,6 +44,10 @@ SCENARIOS = os.path.join(HERE, 'scenarios')
 SUBJECTS = os.path.join(HERE, 'subjects')
 COMMON = os.path.join(SCENARIOS, '_common')
 TARGETS = ('a64', 'x64', 'i386')
+# the operator's ruling (2026-11-17): the two 64-bit targets are required;
+# i386 runs only when asked for (`--target i386`) and only the scenario
+# files as they are: an i386-only failure is parked, not chased
+DEFAULT_TARGETS = ('a64', 'x64')
 EMULATION = {'a64': 'aarch64linux', 'x64': 'elf_x86_64', 'i386': 'elf_i386'}
 DEFAULT_HOPS = '-, EDIT, -, EDIT'
 # the quick subset (one target, gcc): a scenario of each kind of shape
@@ -90,7 +94,11 @@ class Scenario:
             elif word == 'link':
                 self.link = value.split()
             elif word in ('archive', 'thin-archive'):
-                self.archives[arg] = (word == 'thin-archive', [m[:-2] for m in value.split()])
+                # a member is `unit.o` or `unit=name.o` (its name in the
+                # archive, when two members share one)
+                ms = [m.partition('=') for m in value.split()]
+                self.archives[arg] = (word == 'thin-archive', [u[:-2] if u.endswith('.o') else u for u, _e, _n in ms],
+                                      {u[:-2] if u.endswith('.o') else u: n for u, _e, n in ms if n})
             elif word == 'options':
                 self.options = value.split()
             elif word == 'cflags':
@@ -200,8 +208,9 @@ class Run:
             names.append(unit + '.o')
         stage = os.path.join(self.base, 'stage')
         os.makedirs(stage, exist_ok=True)
-        for name, (thin, members) in sorted(self.sc.archives.items()):
-            data = build.build_archive(self.cfg, stage, name, members, objs, thin, W)
+        for name, (thin, members, renamed) in sorted(self.sc.archives.items()):
+            in_ar = {m: renamed.get(m, m + '.o') for m in members} if renamed else None
+            data = build.build_archive(self.cfg, stage, name, members, objs, thin, W, in_ar)
             build.write_if_changed(os.path.join(W, name), data)
             names.append(name)
         return names
@@ -238,8 +247,11 @@ class Run:
             Hf = os.path.join(H, 'f')
             os.makedirs(Hf)
             for n in names:
-                os.link(os.path.join(W, n), os.path.join(H, n))
-                os.link(os.path.join(W, n), os.path.join(Hf, n))
+                # copies, not hard links: on the workspace's virtiofs a hard
+                # link whose other name was just renamed over opens ENOENT
+                # for a while (seen here: listed, then not found)
+                shutil.copyfile(os.path.join(W, n), os.path.join(H, n))
+                shutil.copyfile(os.path.join(W, n), os.path.join(Hf, n))
             prev_out = None
             if os.path.exists(os.path.join(W, 'prog')):
                 prev_out = os.path.join(H, 'prev')
@@ -362,7 +374,7 @@ SELF_TEST = (
     ('no_ranges', 'init_array_grows_then_shrinks', 1, 'dirty'),
     ('flip_word', 'gc_section_dies_then_revives', 2, 'verify'),
     ('elflint_bad', 'init_array_grows_then_shrinks', 1, 'elflint'),
-    ('wrong_local', 'gc_section_dies_then_revives', 2, 'equiv'),
+    ('wrong_local', 'gc_section_dies_then_revives', 2, 'verify'),
     ('prev_output', 'init_array_grows_then_shrinks', 2, 'equiv'),
     ('no_exec', 'init_array_grows_then_shrinks', 1, 'run'),
     ('drop_delta', 'growth_step_moves_unchanged_then_edit_referrer', 1, 'oracle'),
@@ -439,7 +451,7 @@ def select(o):
     elif o['quick']:
         scs = [s for s in scs if s.name in QUICK]
     host = build.HOST or 'a64'
-    targets = o['targets'] or ([host] if o['quick'] else list(TARGETS))
+    targets = o['targets'] or ([host] if o['quick'] else list(DEFAULT_TARGETS))
     compilers = o['compilers'] or (['gcc'] if o['quick'] else ['gcc', 'kiln'])
     runs, skips = [], []
     for s in scs:

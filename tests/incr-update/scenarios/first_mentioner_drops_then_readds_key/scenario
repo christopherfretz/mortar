@@ -1,0 +1,7 @@
+# WP-207 §D: c.o, the first file that mentions the key `k_value`, stops
+# mentioning it; mentions it again; stops again (main.o still mentions it).
+proves: at_file/at_index and KEY_REFS were true after the drop and the re-add, so the second drop leaves main.o the first mentioner
+source: WP-207 §D, the two- and three-hop series
+edit: c.cc
+link: c.o main.o u.o
+compilers: gcc kiln

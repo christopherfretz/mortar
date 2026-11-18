@@ -1,0 +1,7 @@
+# WP-207 §D: a.o gains an entry of the registry section `reg` (read through
+# __start_reg/__stop_reg), loses it, gains it.
+proves: DEFINED's __stop_reg was rewritten at hop 2: the registry walk sees the right entries again
+source: WP-207 §D, the two- and three-hop series
+edit: a.cc
+link: main.o a.o b.o
+compilers: gcc kiln

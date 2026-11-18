@@ -1,0 +1,7 @@
+# WP-207 §D: c.o, the only user of a string literal and a floating
+# constant (both in merged sections), drops them, uses them again, drops.
+proves: the fragments' bytes were rewritten on revival at hop 2 (IN-72 item 6) and `refs` was true, so the second death leaves the same image as a full link
+source: WP-207 §D, the two- and three-hop series
+edit: c.cc
+link: main.o c.o
+compilers: gcc kiln

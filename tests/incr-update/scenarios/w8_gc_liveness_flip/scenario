@@ -1,0 +1,9 @@
+# tests/incr-review w-meaning.sh W8: x.o calls f, then g (same size), under --gc-sections (edit, inverse, edit).
+proves: f's and g's sections die and revive in turn in unchanged a.o (want K, L, K)
+source: tests/incr-review/w-meaning.sh, case W8
+edit: x.S
+link: a.o x.o
+options: --gc-sections
+compilers: gcc
+not kiln: assembly (.S): kiln compiles C++ only; the shape is written in the assembly
+nolibc: yes

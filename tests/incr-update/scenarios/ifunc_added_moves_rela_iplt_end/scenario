@@ -1,0 +1,7 @@
+# WP-207 §D: c.o gains an IFUNC (one more IRELATIVE record: __rela_iplt_end
+# moves), loses it, gains it.
+proves: __rela_iplt_end's referrers (libc's start-up loop) were rewritten at hop 2, so the IFUNC of hop 3 is resolved before main
+source: WP-207 §D, the two- and three-hop series
+edit: c.cc
+link: main.o c.o
+compilers: gcc kiln

@@ -1,0 +1,9 @@
+# tests/incr-review w-archive.sh A1: x.o calls f, then h (extracting the member h.o it did not); lib.a has two members m.o (edit, inverse, edit).
+proves: h.o is extracted at hops 1 and 3 and dropped at hop 2 (want K, M, K)
+source: tests/incr-review/w-archive.sh, case A1
+edit: x.S
+link: x.o lib.a
+archive lib.a: d1m=m.o h d2m=m.o
+compilers: gcc
+not kiln: assembly (.S): kiln compiles C++ only; the shape is written in the assembly
+nolibc: yes

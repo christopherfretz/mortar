@@ -16,6 +16,8 @@ pub mod ci;
 pub mod identical;
 #[cfg(unix)]
 pub mod incr_oracle;
+#[cfg(unix)]
+pub mod incr_update;
 pub mod jobs;
 #[cfg(unix)]
 pub mod l10;

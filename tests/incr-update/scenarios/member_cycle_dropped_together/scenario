@@ -1,0 +1,8 @@
+# WP-207 §D: d.o drops its only call into m1 (members m1.o and m2.o of
+# lib.a call each other; m1.o has a constructor); the call back; dropped.
+proves: the cycle was extracted again at hop 2 with its rounds, so the second drop removes both members and the constructor runs iff the full link runs it
+source: WP-207 §D, the two- and three-hop series
+edit: d.cc
+link: main.o d.o lib.a
+archive lib.a: m1.o m2.o
+compilers: gcc kiln

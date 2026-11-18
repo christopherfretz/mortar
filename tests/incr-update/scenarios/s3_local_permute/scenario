@@ -1,0 +1,14 @@
+# tests/incr-review S3: a.o's two LOCAL data symbols, both loaded through
+# the GOT, are permuted at the same size (A); c.o is edited (C); a.o back.
+proves: the locals' SYMBOLS rows (at_index) were rewritten at hop 1, so hop 2's update of c.o maps their GOT slots by identity (want N, F, P: 14, 6, 16)
+source: tests/incr-review/s3-local-permute.sh
+edit A: a.S
+edit C: c.S
+hops: -, A, A+C, C
+link: a.o c.o
+targets: a64 x64
+not i386: parked (operator, 2026-11-17: i386 where free): the GOT load needs a PIC base register on i386
+
+compilers: gcc
+not kiln: assembly (.S): kiln compiles C++ only; the shape is written in the assembly
+nolibc: yes

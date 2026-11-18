@@ -1,0 +1,8 @@
+# tests/incr-review w-meaning.sh W9: x.o calls f, then g (same size), no --gc-sections (edit, inverse, edit).
+proves: the changed file's undefined reference moves between unchanged a.o's symbols (want K, L, K)
+source: tests/incr-review/w-meaning.sh, case W9
+edit: x.S
+link: a.o x.o
+compilers: gcc
+not kiln: assembly (.S): kiln compiles C++ only; the shape is written in the assembly
+nolibc: yes

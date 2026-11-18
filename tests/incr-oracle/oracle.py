@@ -319,12 +319,26 @@ class Link:
         (path, member, ordinal among the members of that name), keeping the
         offset in real_offset for reading (WP-067 §7.2 patch 2)."""
         seen, remap, self.real_offset = {}, {}, {}
+        listed = {}
         for fid in sorted(self.files):
             path, mem, off = self.files[fid]
             if mem is None:
                 continue
-            n = seen.get((path, mem), 0)
-            seen[(path, mem)] = n + 1
+            # the ordinal among the ARCHIVE's members of that name (its
+            # headers), not among the members this link extracted: when
+            # the first of two `m.o` stops being extracted, the second
+            # keeps its ordinal (WP-223, w_archive_a1)
+            if path not in listed:
+                try:
+                    listed[path] = archive_members(path if os.path.isabs(path) else os.path.join(self.d, path))
+                except (OSError, ValueError):
+                    listed[path] = None
+            names = listed[path]
+            if names is not None and (off, mem) in names:
+                n = sum(1 for o, m in names if m == mem and o < off)
+            else:
+                n = seen.get((path, mem), 0)
+            seen[(path, mem)] = seen.get((path, mem), 0) + 1
             new = (path, mem, n)
             remap[(path, mem, off)] = new
             self.real_offset[new] = off
@@ -350,6 +364,36 @@ class Link:
                 return f.read()
             f.seek(off); h = f.read(60)
             return f.read(int(h[48:58].decode().strip()))
+
+
+def archive_members(archive):
+    """[(offset, name)] of an archive's members, regular or thin (the
+    symbol tables and the long-name table left out; a thin archive's
+    members have only their headers in it)."""
+    with open(archive, 'rb') as f:
+        data = f.read()
+    if data[:8] not in (b'!<arch>\n', b'!<thin>\n'):
+        raise ValueError('not an archive: %s' % archive)
+    thin = data[:8] == b'!<thin>\n'
+    out, longnames, p = [], b'', 8
+    while p + 60 <= len(data):
+        h = data[p:p + 60]
+        raw = h[:16].decode('latin1').rstrip()
+        size = int(h[48:58].decode('latin1').strip())
+        special = raw in ('/', '//', '/SYM64/')
+        if raw == '//':
+            longnames = data[p + 60:p + 60 + size]
+        if not special:
+            if raw.startswith('/') and raw[1:].isdigit():
+                i = int(raw[1:])
+                name = longnames[i:longnames.index(b'\n', i)].decode('latin1').rstrip('/')
+            else:
+                name = raw.rstrip('/')
+            out.append((p, name))
+        step = size if (special or not thin) else 0
+        p += 60 + step
+        p += p & 1
+    return out
 
 
 def thin_member(archive, off):
