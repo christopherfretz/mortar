@@ -639,6 +639,11 @@ pub(crate) struct Engine<'a, 'b> {
     /// The caller's command line, when it gives one (§3.2a: the options
     /// of a mortar output come from it; WP-201).
     pub(crate) caller_line: Option<Vec<String>>,
+    /// The names the line roots (`Line::root_names`: `-e` or a script's
+    /// `ENTRY`, `-u`, `--require-defined`, an implicit script's `EXTERN`)
+    /// when the caller could read the line's files: names the line
+    /// mentions (§6.5 Y5, WP-246).
+    pub(crate) roots: Vec<String>,
 }
 
 /// The words §5.7a adds to R5 when the field holds what the reference
@@ -1087,6 +1092,7 @@ impl<'a, 'b> Engine<'a, 'b> {
             demoted_pending: BTreeMap::new(),
             lsda_starts: None,
             caller_line: None,
+            roots: Vec::new(),
         };
         e.build_iplt();
         e

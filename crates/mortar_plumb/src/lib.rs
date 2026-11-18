@@ -59,6 +59,7 @@ mod structure;
 pub mod sweep;
 mod symbols;
 mod symfill;
+mod symnames;
 mod weakclass;
 mod wrap;
 pub mod x64;
@@ -197,7 +198,7 @@ pub(crate) fn read_errors(store: &store::Store<'_>, report: &mut Report) {
 pub(crate) fn verify_static(output: &[u8], src: &dyn Source, map: &Map) -> Report {
     let store = store::Store::read(src, &[map]);
     prof::mark("skeletons");
-    let mut report = verify_static_in(output, &store, 0, map, None);
+    let mut report = verify_static_in(output, &store, 0, map, None, &[]);
     read_errors(&store, &mut report);
     report
 }
@@ -205,12 +206,14 @@ pub(crate) fn verify_static(output: &[u8], src: &dyn Source, map: &Map) -> Repor
 /// [`verify`] over the inputs of map `m` of `store` (the caller reports
 /// the reads that fail, [`read_errors`]). `line`: a reference's command
 /// line, when the caller has one (a mortar map's is its `arg` records).
+/// `roots`: the names the line roots, read with its files (WP-246).
 pub(crate) fn verify_static_in(
     output: &[u8],
     store: &store::Store<'_>,
     m: usize,
     map: &Map,
     line: Option<&[String]>,
+    roots: &[String],
 ) -> Report {
     if relocatable::applies(output, map, line) {
         return relocatable::verify_in(output, store, m, map, line);
@@ -248,6 +251,7 @@ pub(crate) fn verify_static_in(
     engine.set_wrap(wrap::Wrap::of(line_opts.as_ref()));
     engine.set_defsym(defsym::Defsym::of(line_opts.as_ref()));
     engine.set_keeper_line(line);
+    engine.roots = roots.to_vec();
     run_engine(&mut engine, &image, map, None);
     report.findings.append(&mut engine.findings);
     // M8 (§3.3): an output with no dynamic section has no COPY record.
@@ -378,6 +382,9 @@ pub(crate) fn run_engine(
     content::check_symbols(engine);
     prof::mark("erratum, padding, content symbols");
     symbols::check(engine);
+    if only.is_none() {
+        symnames::check(engine, map);
+    }
     prof::mark("symbols");
     let caller = engine.caller_line.clone();
     let (gdb, line) = gdbindex::check(image, objs, map, caller.as_deref());

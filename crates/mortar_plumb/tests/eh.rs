@@ -243,14 +243,26 @@ fn s4_4_eh_frame_offset_zero_is_the_output_section_start() {
             2,
             "{arch:?}: words[0] and cwords[0]: {found:#?}"
         );
-        assert_eq!(found.len(), 4, "{arch:?}: {found:#?}");
+        // GNU ld's STT_FILE named after each object, judged as mortar's
+        // (S-83: copied, none inserted): Y7 and Y6 (WP-246).
+        assert!(has("Y7", "STT_FILE named 'b.o'"), "{arch:?}: {found:#?}");
+        let rest = found.iter().filter(|f| !f.starts_with("Y6 ") && !f.starts_with("Y7 "));
+        assert_eq!(rest.count(), 4, "{arch:?}: {found:#?}");
 
         // The accepted shape: offset 0 is the section's start.
         b.set_data("words", 0, start);
         b.set_data("cwords", 0, start);
         b.set_sym("__B_BEGIN__", start);
         b.set_sym("__C_BEGIN__", start);
-        let accepted = b.judge(Format::Mortar);
+        // Past the mutant, GNU ld's object-named STT_FILEs (above) are set
+        // aside: the rest is what the test is about.
+        let mortar = |b: &s50::Built| -> Vec<String> {
+            b.judge(Format::Mortar)
+                .into_iter()
+                .filter(|f| !((f.starts_with("Y6 ") || f.starts_with("Y7 ")) && f.contains(".o'")))
+                .collect()
+        };
+        let accepted = mortar(&b);
         assert!(accepted.is_empty(), "{arch:?}: {accepted:#?}");
 
         // Elsewhere is found: one word past the start, and the FDE's
@@ -259,7 +271,7 @@ fn s4_4_eh_frame_offset_zero_is_the_output_section_start() {
         {
             let mut m = b.clone();
             m.set_data(name, n, v);
-            let f = m.judge(Format::Mortar);
+            let f = mortar(&m);
             assert!(
                 f.len() == 1 && f[0].starts_with("R1 "),
                 "{arch:?}: {name}[{n}] = {v:#x}: {f:#?}"
@@ -267,7 +279,7 @@ fn s4_4_eh_frame_offset_zero_is_the_output_section_start() {
         }
         let mut m = b.clone();
         m.set_sym("__B_BEGIN__", start + 4);
-        let f = m.judge(Format::Mortar);
+        let f = mortar(&m);
         assert!(f.len() == 1 && f[0].starts_with("Y4 "), "{arch:?}: {f:#?}");
     }
 }

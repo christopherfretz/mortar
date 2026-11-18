@@ -149,7 +149,19 @@ fn verify_kind(
             .and_then(|w| crate::inset::Stager::new(&w, ctx.files))
             .map(crate::inset::Stager::without_sources);
         if missing.is_empty() {
-            return (crate::verify_static_in(output, store, m, map, ctx.line.as_deref()), staged);
+            // The line's roots, read with its files (an implicit script's
+            // `EXTERN`): names the line mentions (§6.5 Y5, WP-246).
+            let roots: Vec<String> = line_words(map, ctx)
+                .map(|w| {
+                    Line::parse(&w, ctx.files)
+                        .root_names()
+                        .into_iter()
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default();
+            let r = crate::verify_static_in(output, store, m, map, ctx.line.as_deref(), &roots);
+            return (r, staged);
         }
         let mut report = Report::default();
         report.findings.extend(structure::check(&image));
@@ -493,6 +505,7 @@ fn judge(
     engine.set_wrap(wrap.clone());
     engine.set_defsym(defsym.clone());
     engine.set_keeper_line(ctx.line.as_deref());
+    engine.roots = line.root_names().into_iter().map(str::to_string).collect();
     engine.shared = sets.is_some();
     // M10's export roots (WP-147): the shared set's one derivation, or an
     // executable's `-E` without a script (WP-149) or `--dynamic-list`

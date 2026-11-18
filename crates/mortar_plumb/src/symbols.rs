@@ -209,6 +209,17 @@ fn held_def(e: &Engine<'_, '_>, name: &str) -> Option<String> {
             return None;
         };
         let s = o.secs.get(k.0 as usize)?;
+        // GNU ld drops a hidden definition in an empty input `.eh_frame`
+        // (x86 crtbeginT.o's shape; measured in WP-246 on
+        // tests/link/layout/eh-frame-terminator-only{,-pie}.test, x86-64,
+        // where its output `.eh_frame` has 0 bytes): not known to be held.
+        if e.format == Format::Gnu
+            && d.visibility() != 0
+            && s.name == ".eh_frame"
+            && s.shdr.sh_size == 0
+        {
+            return None;
+        }
         // A foreign map's merged section may have lost every piece (lld
         // under --gc-sections): not known to be held.
         // Placed as pieces: the piece holding the label must be live
@@ -378,14 +389,14 @@ fn globals(e: &mut Engine<'_, '_>, fs: &mut Vec<Finding>) {
         let Some(out) = image.global(name).or_else(|| image.unique(name)) else {
             // Y3 (WP-143): a name an input defines globally in a section
             // the output holds is in a `.symtab` the output has.
-            let v = vis.get(name.as_str()).copied().unwrap_or(0);
             if !image.symbols.is_empty()
                 && !image.has_name(name)
                 // `foo@@V2`: lld's and mold's `.symtab` name it `foo`;
                 // mortar's keeps the versioned name (synth S-75, WP-150).
                 && (e.format == Format::Mortar
                     || !name.split_once('@').is_some_and(|(base, _)| image.has_name(base)))
-                && rank(v) < rank(STV_HIDDEN)
+                // A hidden one is a local of its definer's block (synth.md
+                // S-77; WP-246): present all the same.
                 && let Some(why) = held_def(e, name)
             {
                 // §4.4a (WP-170): lld leaves a defined `__real_SYM` of a
