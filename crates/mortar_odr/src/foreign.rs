@@ -93,10 +93,19 @@ pub struct At {
 /// link's [`Definition`] and an incremental update's stored row alike
 /// (WP-220: one comparator, [`compare_copies`]). `Group` identifies the
 /// copy's COMDAT group: equal for two copies of one group.
+///
+/// "First" is by load order: [`CopyDef::rank`], never the `FileId` alone.
+/// A full link's `FileId` order is its load order; an updated state's
+/// `FILES` rows are append-only, so a file that appears in an update has
+/// an appended row whose `FILES.rank` is not last (`spec/incr.md`
+/// IN-18e). The update passes each copy's CURRENT rank (the stored
+/// `FILES.rank` composed with the update's new ranks).
 pub trait CopyDef {
     type Group: Copy + Eq;
     fn group(&self) -> Self::Group;
     fn at(&self) -> At;
+    /// The copy's file's load-order position: what orders copies.
+    fn rank(&self) -> u64;
     fn sym_type(&self) -> u8;
     fn size(&self) -> u64;
 }
@@ -108,6 +117,10 @@ impl CopyDef for Definition {
     }
     fn at(&self) -> At {
         At { file: self.file, index: self.index }
+    }
+    /// A full link's load order is its `FileId` order.
+    fn rank(&self) -> u64 {
+        u64::from(self.file.0)
     }
     fn sym_type(&self) -> u8 {
         self.sym_type
@@ -317,8 +330,9 @@ fn agree<D: CopyDef>(defs: &[D]) -> bool {
 
 /// W1 and W2 for one key (`spec/odr.md` §8.1), the full link's and an
 /// incremental update's one comparator (WP-220): `defs` are the key's
-/// COMDAT definitions, contiguous by group and sorted by (file, index)
-/// within a group; `outside` says the key's resolved definition is not
+/// COMDAT definitions, contiguous by group and sorted by
+/// ([`CopyDef::rank`], index) within a group (the order of each class's
+/// files, its first file, and so §9.1's key); `outside` says the key's resolved definition is not
 /// one of them, and `resolved` gives it (called only when W2 runs and
 /// `outside`). The default mode's fast path ([`agree`]) is inside: copies
 /// that agree and nothing outside cost no allocation. Each finding comes
@@ -424,7 +438,7 @@ fn check_w2<D: CopyDef>(
         add(s, type_word(r.sym_type, r.common), r.at);
     }
     let mut sorted: Vec<&D> = defs.iter().collect();
-    sorted.sort_by_key(|d| d.at());
+    sorted.sort_by_key(|d| (d.rank(), d.at().index));
     for d in sorted {
         if let Some(s) = side(d.sym_type(), false) {
             add(s, type_word(d.sym_type(), false), d.at());
@@ -766,6 +780,7 @@ mod tests {
     struct Row {
         group: u32,
         file: u32,
+        rank: u64,
         index: u32,
         sym_type: u8,
         size: u64,
@@ -778,6 +793,9 @@ mod tests {
         }
         fn at(&self) -> At {
             At { file: FileId(self.file), index: SymbolIndex(self.index) }
+        }
+        fn rank(&self) -> u64 {
+            self.rank
         }
         fn sym_type(&self) -> u8 {
             self.sym_type
@@ -802,7 +820,7 @@ mod tests {
     }
 
     const fn row(group: u32, file: u32, sym_type: u8, size: u64) -> Row {
-        Row { group, file, index: 7, sym_type, size }
+        Row { group, file, rank: u64::from(file) << 20, index: 7, sym_type, size }
     }
 
     fn run(defs: &[Row], resolved: Option<Resolved>) -> Vec<(usize, Finding)> {
@@ -868,5 +886,37 @@ mod tests {
         assert_eq!(key, Key::new(PHASE, 2, 7));
         assert_eq!(subjects.symbol, SymbolId(3));
         assert_eq!(subjects.files, vec![FileId(2), FileId(3), FileId(5)]);
+    }
+
+    // spec: incr.md IN-18e (an appended FILES row with a middle rank is
+    // ordered by its rank, WP-220)
+    #[test]
+    fn copies_are_ordered_by_rank_not_file_id() {
+        // File 9 appeared in an update between files 1 and 2: its row is
+        // appended, its rank is the midpoint.
+        let mid = Row { file: 9, rank: (1 << 20) + (1 << 19), ..row(1, 9, STT_OBJECT, 16) };
+        let defs = [row(1, 1, STT_OBJECT, 8), mid, row(1, 2, STT_OBJECT, 8)];
+        let found = run(&defs, None);
+        let files: Vec<Vec<u32>> =
+            found[0].1.classes.iter().map(|c| c.iter().map(|a| a.file.0).collect()).collect();
+        assert_eq!(files, vec![vec![1, 2], vec![9]]);
+        // W2 sorts its copies by rank too.
+        let func = Row { file: 9, rank: (1 << 20) + (1 << 19), ..row(1, 9, STT_FUNC, 0) };
+        let defs = [row(1, 1, STT_OBJECT, 8), func, row(1, 2, STT_OBJECT, 8)];
+        let w2: Vec<Vec<u32>> = run(&defs, None)
+            .iter()
+            .find(|(w, _)| *w == 1)
+            .map(|(_, f)| f.classes.iter().map(|c| c.iter().map(|a| a.file.0).collect()).collect())
+            .unwrap_or_default();
+        assert_eq!(w2, vec![vec![1, 2], vec![9]]);
+        // With the rank order 1, 9, 2 the second class starts at 9 when 9
+        // is the odd one, and at 2 when 2 is: §9.1's key follows the rank.
+        let odd = Row { size: 16, ..row(1, 2, STT_OBJECT, 8) };
+        let mid8 = Row { file: 9, rank: (1 << 20) + (1 << 19), ..row(1, 9, STT_OBJECT, 8) };
+        let found = run(&[row(1, 1, STT_OBJECT, 8), mid8, odd], None);
+        let names = |file: FileId| Some(FileRef::new(format!("f{}.o", file.0)));
+        let (key, _, _) = diagnostic(&names, found[0].1.clone());
+        assert_eq!(key, Key::new(PHASE, 2, 7));
+        assert_eq!(found[0].1.classes[0].iter().map(|a| a.file.0).collect::<Vec<_>>(), vec![1, 9]);
     }
 }
