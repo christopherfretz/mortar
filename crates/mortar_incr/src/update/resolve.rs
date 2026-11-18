@@ -4,7 +4,7 @@
 //! WP-213 (U-1): the type [`ResolveDelta`] and the entry point
 //! [`resolve`]; **filled by U-3** (the function only).
 
-use mortar_core::incr::{IncrReason, Unimplemented};
+use mortar_core::incr::{IncrReason, OptionKeys, Unimplemented};
 use mortar_core::{FileId, SymbolId};
 
 use super::extract::Extraction;
@@ -46,7 +46,8 @@ pub struct ResolveDelta {
     pub gone: Vec<SymbolId>,
     /// `at_file`, `at_index` of keys whose first mention changed (IN-71).
     pub at: Vec<(SymbolId, u32, u32)>,
-    /// `KEY_REFS`, `GROUPS`, `COMMONS` edits.
+    /// `KEY_REFS`, `GROUPS` (per (signature, file)), `COMMONS` (per (key,
+    /// file)) edits.
     pub key_refs: KeyEdits<KeyRefRow>,
     pub groups: KeyEdits<GroupRow>,
     pub commons: KeyEdits<CommonRow>,
@@ -56,16 +57,20 @@ pub struct ResolveDelta {
 }
 
 /// Resolve the affected keys (WP-211 §C; IN-71). Called by the join after
-/// `extract` (IN-70 U5).
+/// `extract` (IN-70 U5). `options`: the link's roots, `--wrap` (applied
+/// when a stored row is read) and `--defsym` keys, passed in (WP-215
+/// D3-D5).
 ///
 /// # Errors
-/// A §7 reason (`symbol-kind-changed`, `state-corrupt`, ...). Until U-3
-/// lands: `update-not-implemented (resolve)`.
+/// A §7 reason (`symbol-kind-changed`, `closure-iterated`,
+/// `state-corrupt`, ...). Until U-3 lands: `update-not-implemented
+/// (resolve)`.
 pub fn resolve(
     view: &StateView<'_>,
     changed: &ChangedFiles,
     extraction: &Extraction,
+    options: &OptionKeys,
 ) -> Result<ResolveDelta, IncrReason> {
-    let _ = (view, changed, extraction);
+    let _ = (view, changed, extraction, options);
     Err(IncrReason::UpdateNotImplemented(Some(Unimplemented::Resolve)))
 }
