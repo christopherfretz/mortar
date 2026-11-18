@@ -155,8 +155,12 @@ def walk(N, rows, rootbits):
 def main():
     O, N = Dump(sys.argv[1]), Dump(sys.argv[2])
     changed, drawn, same = [], [], []
+    unknown = 0
     for fi in N.hash:
-        if O.hash.get(fi) != N.hash[fi]:
+        # The probe's hash is 0 when the object was read sparsely
+        # (`View::get` over parts fails): unknown, taken as changed.
+        if O.hash.get(fi) != N.hash[fi] or N.hash[fi] == '0' * 16:
+            unknown += N.hash[fi] == '0' * 16
             changed.append(fi)
             continue
         okept = {si[1] for si in O.file_secs(fi) if O.info[si][1]}
@@ -217,6 +221,7 @@ def main():
         olive = {si for si, inf in O.info.items() if inf[2]}
         skip_ok = olive == want
     ok = not (sec_miss or sec_extra or fr_miss or fr_extra or stale_rows or stale_roots) and skip_ok is not False
+    print('hash-unknown (taken as changed) %d; ' % unknown, end='')
     print('changed %d drawn-by-election %d unchanged %d gone %d; unchanged files with stale rows %d, stale roots %d; '
           'piece flips in unchanged files %d; '
           'flips in unchanged files %d %s' % (len(changed), len(drawn), len(same), len(gone), stale_rows, stale_roots,

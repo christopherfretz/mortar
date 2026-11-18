@@ -1,16 +1,11 @@
 # WP-238 WIP (step 1: design with experiments)
 
-Record: `spec/landed/incr/WP-238.md` "Step 1" (committed; the "running:"
-marks are amended when the scratch's `chain1.sh` ends).
-Running: `.build/target-wp-125/wp238/chain1.sh` > `chain1.log`, in this order:
-- the L10 drives `l10-<cfg>.log`, one per configuration;
-- `si.log` (static-identical);
-- the cost logs: `cost-default.log`, `cost-t1.log`, `cost-large.log`;
-- `lane.log`.
-Its last line is "FINAL chain1".
-Then:
-- fill in the medians, the AGREE counts and the skip-rule frequency;
-- delete `mortar-base`, `mortar-probe` and `mortar-probe2/3` after the timings, and the `l10-*` work dirs;
-- remove `/tmp/mortar-wp238-bWI1Ed`;
-- hand back.
-Scripts: `tests/incr-design/wp238/` (`l10drive.py`, `emulate.py`, `gscen.sh`, `plaincost.sh`).
+Step 1 is done and handed back: `spec/landed/incr/WP-238.md` "Step 1". The rulings
+R-1..R-7 are awaited. No step-2 code until they come. Experiment logs (small)
+are in `.build/target-wp-125/wp238/`; the work dirs and binaries were deleted.
+To re-run:
+- `tests/incr-design/wp238/l10drive.py PROBE WORK CFG` for (a), (b), (d) on L10;
+- `gscen.sh PROBE WORK` for the g scenario;
+- `emulate.py OLD.rows NEW.rows`;
+- `plaincost.sh` for item 1.
+A probe build is `cargo build --release -p mortar --features mortar_live/wp238-probe`, run with `MORTAR_WP238=<dir>`.
