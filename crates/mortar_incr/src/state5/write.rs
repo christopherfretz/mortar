@@ -120,7 +120,7 @@ fn by_file<T: Rec>(
 /// `incr_state convert`'s. `m`'s numbering is kept but for two tables the
 /// format numbers itself: `SECTIONS` (a file's rows contiguous, with its
 /// slack: every section reference is renumbered; `file` [`NONE`] rows are
-/// dropped) and `FRAGS` (sorted by identity: `FRAG_AT.frag` renumbered).
+/// dropped) and `FRAGS` (sorted by its key, which `FRAG_USE` names).
 /// Key-keyed tables are sorted by key; tombstones are kept.
 ///
 /// # Errors
@@ -174,10 +174,10 @@ pub fn encode(m: &MemoryState) -> Result<Vec<u8>, StateError> {
             state_corrupt(format!("a reference to SECTIONS row {x}, which has none"))
         })
     };
-    let (frags, frag_order) = sorted(&m.frags, s)?;
-    let mut frag_map = vec![0u64; m.frags.len()];
-    for (new, &old) in frag_order.iter().enumerate() {
-        frag_map[old] = new as u64;
+    let (frags, _) = sorted(&m.frags, s)?;
+    let live_frags: Vec<_> = frags.iter().filter(|r| !r.tomb).collect();
+    if live_frags.windows(2).any(|w| (w[0].out, w[0].class, w[0].hash) == (w[1].out, w[1].class, w[1].hash)) {
+        return Err(state_corrupt("FRAGS: two live rows of one key"));
     }
     let mut mentions = Vec::with_capacity(m.mentions.len());
     for (f, r) in &m.mentions {
@@ -204,25 +204,14 @@ pub fn encode(m: &MemoryState) -> Result<Vec<u8>, StateError> {
         };
         edges.push((*f, crate::update::rows::EdgeRow { source: sec(r.source)?, target, ..*r }));
     }
-    let mut frag_at = Vec::with_capacity(m.frag_at.len());
-    for (f, r) in &m.frag_at {
-        let frag = *frag_map
-            .get(usize::try_from(r.frag).unwrap_or(usize::MAX))
-            .ok_or_else(|| state_corrupt("FRAG_AT: a FRAGS row out of range"))?;
-        frag_at.push((
-            *f,
-            crate::format::FragAtRow { section: sec(r.section)?, offset: r.offset, frag },
-        ));
-    }
-    let mut eh = Vec::with_capacity(m.eh_records.len());
-    for (f, r) in &m.eh_records {
-        eh.push((*f, crate::format::EhRow { section: sec(r.section)?, piece: r.piece }));
+    if m.frag_uses.iter().any(|(f, r)| r.file != f.0) {
+        return Err(state_corrupt("FRAG_USE: a row in another file's range"));
     }
     let (men_body, _) = by_file(files, mentions.into_iter(), &mut ranges, FileTable::Mentions)?;
     let (idx_body, _) = by_file(files, index.into_iter(), &mut ranges, FileTable::Index)?;
     let (edge_body, _) = by_file(files, edges.into_iter(), &mut ranges, FileTable::Edges)?;
-    let (fa_body, _) = by_file(files, frag_at.into_iter(), &mut ranges, FileTable::FragAt)?;
-    let (eh_body, _) = by_file(files, eh.into_iter(), &mut ranges, FileTable::EhRecords)?;
+    let (fu_body, _) =
+        by_file(files, m.frag_uses.iter().copied(), &mut ranges, FileTable::FragUse)?;
     let (st_body, _) = by_file(files, m.symtab.iter().copied(), &mut ranges, FileTable::Symtab)?;
     let (reg_body, _) = by_file(files, m.regions.iter().copied(), &mut ranges, FileTable::Regions)?;
     for (f, idx) in ranges.iter().enumerate() {
@@ -289,7 +278,6 @@ pub fn encode(m: &MemoryState) -> Result<Vec<u8>, StateError> {
         (kind::SEGMENTS, body(&m.segments, Class::Whole)),
         (kind::FRAGS, keyed_body(&frags)),
         (kind::SLOTS, body(&m.slots, Class::Whole)),
-        (kind::EH_RECORDS, eh_body),
         (kind::SIZES, body(&m.sizes, Class::Whole)),
         (kind::SYM_PLACE, body(&m.sym_place, Class::Whole)),
         (kind::DEFINED, body(&m.defined, Class::Whole)),
@@ -303,7 +291,6 @@ pub fn encode(m: &MemoryState) -> Result<Vec<u8>, StateError> {
         (kind::RESOLVED, body(&resolved, Class::KeyParallel)),
         (kind::INDEX, idx_body),
         (kind::HOLES, keyed_body(&sorted(&m.holes, s)?.0)),
-        (kind::FRAG_AT, fa_body),
         (kind::FILE_INDEX, body(&ranges, Class::AppendOnly)),
         (kind::EDGES, edge_body),
         (kind::SYMTAB, st_body),
@@ -315,6 +302,7 @@ pub fn encode(m: &MemoryState) -> Result<Vec<u8>, StateError> {
         (kind::REGIONS, reg_body),
         (kind::NAMES, keyed_body(&sorted(&m.names, s)?.0)),
         (kind::COPIES, keyed_body(&sorted(&m.copies, s)?.0)),
+        (kind::FRAG_USE, fu_body),
     ];
     debug_assert!(bodies.iter().zip(TABLES).all(|((k, _), t)| *k == t.0));
     Ok(assemble(&mut bodies, m.plan_hash, 0))
@@ -599,8 +587,9 @@ impl Ed<'_> {
     /// A key-keyed table's edits (IN-18e): deletes are tombstones; a put
     /// of a present key (live or dead) changes the row in place; another
     /// put is inserted into the sorted append area. `stable_rows`: rows
-    /// are named by number elsewhere (`FRAGS`, by `FRAG_AT`), so an insert
-    /// that would move an area row is the compaction.
+    /// are named by number elsewhere, so an insert that would move an area
+    /// row is the compaction (no table since WP-239: `FRAG_USE` names
+    /// `FRAGS` by key).
     #[allow(clippy::too_many_lines, clippy::many_single_char_names)] // one arm per edit
     fn keyed<T: Keyed>(&mut self, k: u32, edits: &KeyEdits<T>, stable_rows: bool) -> Plan<()> {
         if edits.put.is_empty() && edits.delete.is_empty() {
@@ -910,6 +899,8 @@ fn plan_in_place(core: &Arc<Core>, p: &StatePatch) -> Plan<InPlace> {
         let mut idx: FileIndexRow =
             if f < old_files { core.file_index(fr.file)? } else { FileIndexRow::default() };
         let was_gone = idx.gone;
+        // F-10: ALWAYS given (never "keep the stored value").
+        idx.first_global = fr.first_global;
         macro_rules! range {
             ($field:expr, $t:expr) => {
                 if let Some(rows) = $field {
@@ -921,8 +912,7 @@ fn plan_in_place(core: &Arc<Core>, p: &StatePatch) -> Plan<InPlace> {
         range!(fr.mentions.as_deref(), FileTable::Mentions);
         range!(fr.index.as_deref(), FileTable::Index);
         range!(fr.edges.as_deref(), FileTable::Edges);
-        range!(fr.frag_at.as_deref(), FileTable::FragAt);
-        range!(fr.eh_records.as_deref(), FileTable::EhRecords);
+        range!(fr.frag_uses.as_deref(), FileTable::FragUse);
         range!(fr.symtab.as_ref().map(Option::as_slice), FileTable::Symtab);
         range!(fr.regions.as_deref(), FileTable::Regions);
         idx.gone = idx.gone || fr.gone;
@@ -931,7 +921,7 @@ fn plan_in_place(core: &Arc<Core>, p: &StatePatch) -> Plan<InPlace> {
     // key-keyed
     ed.keyed(kind::KEY_REFS, &p.key_refs, false)?;
     ed.keyed(kind::GROUPS, &p.groups, false)?;
-    ed.keyed(kind::FRAGS, &p.frags, true)?;
+    ed.keyed(kind::FRAGS, &p.frags, false)?;
     ed.keyed(kind::HOLES, &p.holes, false)?;
     ed.keyed(kind::COMMONS, &p.commons, false)?;
     ed.keyed(kind::COPIES, &p.copies, false)?;
@@ -1376,5 +1366,44 @@ fn intern_patch(core: &Core, p: &StatePatch) -> Rows<(StatePatch, Strs)> {
     };
     each_str(&mut q, &mut place)?;
     q.strings = buf;
+    local_ordinals(core, &mut q)?;
     Ok((q, strs))
+}
+
+/// U-3's §R.7 finding (WP-214 §10): a new local key's `SYMBOLS.ordinal`
+/// (IN-18e: among its file's locals with the same name, by symbol-table
+/// index, as the capture's `LocalIdentity::ordinal`) is written here, the
+/// update having no local numbering: the appended locals of one file are
+/// that file's every local (a changed file's locals are all new keys,
+/// §R.7), so the ordinal is counted among them. `q`'s strings are placed.
+fn local_ordinals(core: &Core, q: &mut StatePatch) -> Rows<()> {
+    use crate::update::rows::sym_kind;
+    let old = core.entry(kind::STRINGS).rows;
+    let mut locals: Vec<(u32, Vec<u8>, u32, usize)> = Vec::new();
+    for (i, r) in q.symbols.append.iter().enumerate() {
+        if r.kind != sym_kind::LOCAL {
+            continue;
+        }
+        let name = if u64::from(r.name.off) >= old && r.name.len != 0 {
+            let a = usize::try_from(u64::from(r.name.off) - old).unwrap_or(usize::MAX);
+            q.strings
+                .get(a..a.saturating_add(r.name.len as usize))
+                .ok_or_else(|| corrupt("STRINGS: a local's name past the patch's bytes"))?
+                .to_vec()
+        } else {
+            core.string(r.name)?
+        };
+        locals.push((r.file, name, r.at_index, i));
+    }
+    locals.sort();
+    let mut n = 0u32;
+    for k in 0..locals.len() {
+        n = if k > 0 && (locals[k - 1].0, &locals[k - 1].1) == (locals[k].0, &locals[k].1) {
+            n + 1
+        } else {
+            0
+        };
+        q.symbols.append[locals[k].3].ordinal = n;
+    }
+    Ok(())
 }

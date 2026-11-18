@@ -17,7 +17,7 @@ use super::rows::{
 };
 use super::view::{Rows, StateRows, StateView};
 use crate::format::{
-    ChunkRow, DefinedRow, EhRow, LayoutRow, OutSecRow, PatchRow, ProbeRow, RedirectRow, SectionRow,
+    ChunkRow, DefinedRow, LayoutRow, OutSecRow, PatchRow, ProbeRow, RedirectRow, SectionRow,
     SegmentRow, SizeRow, StatRow, Str, SymPlaceRow, kind,
 };
 
@@ -52,7 +52,6 @@ pub struct MemoryState {
     pub index: Vec<(FileId, IndexRow)>,
     pub edges: Vec<(FileId, EdgeRow)>,
     pub frag_uses: Vec<(FileId, FragUseRow)>,
-    pub eh_records: Vec<(FileId, EhRow)>,
     pub symtab: Vec<(FileId, SymtabRow)>,
     pub regions: Vec<(FileId, RegionRow)>,
     pub key_refs: Vec<KeyRefRow>,
@@ -222,6 +221,7 @@ impl MemoryState {
                     section: r.section,
                     value: r.value,
                     size: r.size,
+                    facts: 0,
                 };
             }
         }
@@ -239,7 +239,6 @@ impl MemoryState {
                 Some((file, row))
             })
             .collect();
-        m.eh_records = s.eh_records.iter().map(|r| (file_of(r.section), r.clone())).collect();
         m.frags = s
             .frags
             .iter()
@@ -289,8 +288,6 @@ impl MemoryState {
         row.ranges[FileTable::Index as usize] = range(self.index.iter().map(|r| r.0 == file));
         row.ranges[FileTable::Edges as usize] = range(self.edges.iter().map(|r| r.0 == file));
         row.ranges[FileTable::FragUse as usize] = range(self.frag_uses.iter().map(|r| r.0 == file));
-        row.ranges[FileTable::EhRecords as usize] =
-            range(self.eh_records.iter().map(|r| r.0 == file));
         row.ranges[FileTable::Symtab as usize] = range(self.symtab.iter().map(|r| r.0 == file));
         row.ranges[FileTable::Regions as usize] = range(self.regions.iter().map(|r| r.0 == file));
         row
@@ -438,9 +435,6 @@ impl StateRows for &MemoryState {
         let mut v = of(&self.frag_uses, file);
         v.sort();
         Ok(v)
-    }
-    fn eh_records_of(&self, file: FileId) -> Rows<Vec<EhRow>> {
-        Ok(self.eh_records.iter().filter(|(f, _)| *f == file).map(|(_, r)| r.clone()).collect())
     }
     fn symtab_of(&self, file: FileId) -> Rows<Option<SymtabRow>> {
         Ok(of(&self.symtab, file).first().copied())

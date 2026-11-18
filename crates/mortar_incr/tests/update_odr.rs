@@ -31,7 +31,6 @@ fn odr_until_it_lands() {
         first_global: 0,
         index: Vec::new(),
         edges: Vec::new(),
-        eh_records: Vec::new(),
         meta_units: 1,
         debug: false,
         versioned: 0,

@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use mortar_core::incr::IncrReason;
+use mortar_core::incr::{IncrReason, OptionKeys};
 use mortar_core::{FileId, SymbolId};
 
 use super::write::{PatchPlan, Planned};
@@ -76,21 +76,12 @@ pub fn apply(m: &mut MemoryState, p: &StatePatch, frags_aux: usize) -> Rows<()> 
     // Appended STAT rows go after the extent, the output's row stays.
     m.stat.extend(p.stat_append.iter().cloned());
     m.strings.extend_from_slice(&p.strings);
-    // Key-keyed edits first: a FRAGS insert shifts the old FRAG_AT rows'
-    // references; the patch's own FRAG_AT rows are in the new numbering.
+    // Key-keyed edits (FRAG_USE names FRAGS by key: no row numbers).
     let s_pool = m.strings.clone();
     let s: StrFn<'_> = &|x: Str| pool_string(&s_pool, x);
     keyed(&mut m.key_refs, &p.key_refs, s, 0, |_| {})?;
     keyed(&mut m.groups, &p.groups, s, 0, |_| {})?;
-    let mut inserted = Vec::new();
-    keyed(&mut m.frags, &p.frags, s, frags_aux, |at| inserted.push(at))?;
-    for at in inserted {
-        for (_, r) in &mut m.frag_at {
-            if r.frag >= at as u64 {
-                r.frag += 1;
-            }
-        }
-    }
+    keyed(&mut m.frags, &p.frags, s, frags_aux, |_| {})?;
     keyed(&mut m.holes, &p.holes, s, 0, |_| {})?;
     keyed(&mut m.commons, &p.commons, s, 0, |_| {})?;
     keyed(&mut m.copies, &p.copies, s, 0, |_| {})?;
@@ -115,6 +106,7 @@ pub fn apply(m: &mut MemoryState, p: &StatePatch, frags_aux: usize) -> Rows<()> 
             m.files[f].flags |= file_flags::GONE;
         }
         let idx = &mut m.file_index[f];
+        idx.first_global = fr.first_global;
         let was_gone = idx.gone;
         if let Some(rows) = &fr.sections {
             let old = idx.ranges[FileTable::Sections as usize];
@@ -154,8 +146,7 @@ pub fn apply(m: &mut MemoryState, p: &StatePatch, frags_aux: usize) -> Rows<()> 
         range!(mentions, FileTable::Mentions);
         range!(index, FileTable::Index);
         range!(edges, FileTable::Edges);
-        range!(frag_at, FileTable::FragAt);
-        range!(eh_records, FileTable::EhRecords);
+        range!(frag_uses, FileTable::FragUse);
         range!(regions, FileTable::Regions);
         if let Some(st) = &fr.symtab {
             m.symtab.retain(|(g, _)| *g != fr.file);
@@ -170,8 +161,7 @@ pub fn apply(m: &mut MemoryState, p: &StatePatch, frags_aux: usize) -> Rows<()> 
             m.mentions.retain(|(g, _)| *g != fr.file);
             m.index.retain(|(g, _)| *g != fr.file);
             m.edges.retain(|(g, _)| *g != fr.file);
-            m.frag_at.retain(|(g, _)| *g != fr.file);
-            m.eh_records.retain(|(g, _)| *g != fr.file);
+            m.frag_uses.retain(|(g, _)| *g != fr.file);
             m.symtab.retain(|(g, _)| *g != fr.file);
             m.regions.retain(|(g, _)| *g != fr.file);
         }
@@ -332,14 +322,17 @@ pub fn normalize(m: &MemoryState) -> Result<MemoryState, StateError> {
             .ok_or_else(|| bad(&format!("FILES row {f}")))
     };
     let fid = |f: FileId| file(f.0).map(FileId);
-    // SYMBOLS in the stated order; GONE keys and the locals of gone files
-    // dropped.
+    // SYMBOLS in the stated order; GONE keys, dead keys (IN-71b "Live
+    // keys", by [`live_keys`]; no option set is stored: see there) and the
+    // locals of gone files dropped.
+    let alive = live_keys(m, &OptionKeys::default())?;
     let mut globals = Vec::new();
     let mut unmentioned = Vec::new();
     let mut locals = Vec::new();
     for (i, r) in m.symbols.iter().enumerate() {
         match r.kind {
             sym_kind::GONE => {}
+            sym_kind::GLOBAL | sym_kind::VERSIONED if !alive[i] => {}
             sym_kind::LOCAL => {
                 if let Ok(f) = file(r.file) {
                     locals.push(((f, r.at_index), i));
@@ -505,7 +498,7 @@ pub fn normalize(m: &MemoryState) -> Result<MemoryState, StateError> {
     n.order.clone_from(&m.order);
     n.segments.clone_from(&m.segments);
     for r in &m.slots {
-        n.slots.push(crate::format::SlotRow { symbol: sym(r.symbol)?, ..*r });
+        n.slots.push(crate::update::rows::SlotRow { symbol: sym(r.symbol)?, ..*r });
     }
     n.sizes.clone_from(&m.sizes);
     for r in &m.sym_place {
@@ -568,28 +561,54 @@ pub fn normalize(m: &MemoryState) -> Result<MemoryState, StateError> {
         };
         Ok(crate::update::rows::EdgeRow { source: sec(r.source)?, target, ..*r })
     })?;
-    // FRAG_AT keeps naming FRAGS rows of `m`; encode renumbers both
-    // (tombstoned frags dropped below, so map them first).
-    let mut frag_map = vec![u64::MAX; m.frags.len()];
-    let mut k = 0u64;
-    for (i, r) in m.frags.iter().enumerate() {
-        if !r.tomb {
-            frag_map[i] = k;
-            k += 1;
-            n.frags.push(*r);
-        }
+    // FRAGS and FRAG_USE (WP-239): keyed by (out, class, hash), no row of
+    // a `.debug_*` output section (R-1), tombstones dropped; `refs` is
+    // the number of live files with a `FRAG_USE` row of the key (a row
+    // with none stays: a dead range, IN-72 item 6). A `FRAG_USE` key with
+    // no `FRAGS` row, or two live `FRAGS` rows of one key, is a defect
+    // (the capture's refusal is `state-collision`, [`check_capture`]).
+    let mut debug = Vec::with_capacity(m.outsecs.len());
+    for o in &m.outsecs {
+        debug.push(s(o.name)?.starts_with(b".debug_"));
     }
-    n.frag_at = per_file(&m.frag_at, &fid, &gone, |r| {
-        let frag = frag_map
-            .get(usize::try_from(r.frag).unwrap_or(usize::MAX))
-            .copied()
-            .filter(|&v| v != u64::MAX)
-            .ok_or_else(|| bad(&format!("FRAGS row {}", r.frag)))?;
-        Ok(crate::format::FragAtRow { section: sec(r.section)?, frag, ..*r })
-    })?;
-    n.eh_records = per_file(&m.eh_records, &fid, &gone, |r| {
-        Ok(crate::format::EhRow { section: sec(r.section)?, ..r.clone() })
-    })?;
+    let is_debug = |out: u32| debug.get(out as usize).copied().unwrap_or(false);
+    let uses = per_file(&m.frag_uses, &fid, &gone, |r| Ok(*r))?;
+    let mut refs: std::collections::BTreeMap<(u32, u32, crate::format::Hash16), u32> =
+        std::collections::BTreeMap::new();
+    let mut kept: std::collections::BTreeMap<_, u64> = std::collections::BTreeMap::new();
+    for r in m.frags.iter().filter(|r| !r.tomb && !is_debug(r.out)) {
+        let key = (r.out, r.class, r.hash);
+        match kept.insert(key, r.offset) {
+            Some(o) if o == r.offset => continue,
+            Some(_) => {
+                return Err(state_corrupt(format!(
+                    "FRAGS: two live rows of the key (out {}, class {:#x})",
+                    r.out, r.class
+                )));
+            }
+            None => {}
+        }
+        refs.insert(key, 0);
+        n.frags.push(crate::update::rows::FragRow { refs: 0, ..*r });
+    }
+    let mut last: Option<(FileId, (u32, u32, crate::format::Hash16))> = None;
+    let mut sorted_uses = uses;
+    sorted_uses.sort_by_key(|(f, r)| (f.0, *r));
+    for (f, r) in sorted_uses {
+        if is_debug(r.out) {
+            continue;
+        }
+        let key = (r.out, r.class, r.hash);
+        if last == Some((f, key)) {
+            continue;
+        }
+        last = Some((f, key));
+        *refs.get_mut(&key).ok_or_else(|| bad("a FRAG_USE key's FRAGS row"))? += 1;
+        n.frag_uses.push((f, crate::update::rows::FragUseRow { file: f.0, ..r }));
+    }
+    for r in &mut n.frags {
+        r.refs = refs.get(&(r.out, r.class, r.hash)).copied().unwrap_or(0);
+    }
     n.symtab = per_file(&m.symtab, &fid, &gone, |r| Ok(*r))?;
     n.regions = per_file(&m.regions, &fid, &gone, |r| Ok(*r))?;
     // Key-keyed: tombstones dropped, references mapped (encode sorts).
@@ -643,6 +662,132 @@ pub fn normalize(m: &MemoryState) -> Result<MemoryState, StateError> {
     }
     n.strings = pool;
     Ok(n)
+}
+
+/// IN-71b "Live keys" (WP-215 R.6 3, `briefs/wp-215-rulings-3.md` item
+/// 3), per `SYMBOLS` row of `m`: a global key is LIVE when a stored row
+/// gives it a mention by a live file (a `KEY_REFS` row, a definition: its
+/// `RESOLVED` section in a live file, a `COMMONS` row), a `LAZY` member's
+/// definition (a `KEY_REFS` row of a `LAZY` file: its undefined mentions
+/// are not stored), or an option names it (`options`, matched by name as
+/// `InputsView::key_of` matches: split at the first `@`, `foo@@V` is
+/// `foo`); any other global is DEAD. A local is live while its file is,
+/// a `GONE` key never. The one rule of the canon and the compaction
+/// ([`normalize`] drops the dead keys); public for other packages' tests
+/// (U-3's series replaces its stand-in by it).
+///
+/// `options` is never stored (`OptionKeys`): [`normalize`], so the
+/// compaction and the canon, pass the empty set, and a key that only an
+/// option names is dropped there (a finding of WP-214 §10).
+///
+/// # Errors
+/// `state-corrupt` for a string out of the pool.
+pub fn live_keys(m: &MemoryState, options: &OptionKeys) -> Result<Vec<bool>, StateError> {
+    let gone = |f: u32| {
+        let f = f as usize;
+        m.files.get(f).is_none_or(|r| r.flags & file_flags::GONE != 0)
+            || m.file_index.get(f).is_some_and(|i| i.gone)
+    };
+    let mut live = vec![false; m.symbols.len()];
+    let mut mark = |k: u32| {
+        if let Some(x) = live.get_mut(k as usize) {
+            *x = true;
+        }
+    };
+    for r in m.key_refs.iter().filter(|r| !r.tomb && (r.file == 0 || !gone(r.file))) {
+        mark(r.key);
+    }
+    for r in m.commons.iter().filter(|r| !r.tomb && !gone(r.file)) {
+        mark(r.key);
+    }
+    for (k, r) in m.resolved.iter().enumerate() {
+        if r.section != NONE
+            && let Some(sec) = m.sections.get(r.section as usize)
+            && sec.file != NONE
+            && !gone(sec.file)
+        {
+            mark(u32::try_from(k).unwrap_or(NONE));
+        }
+    }
+    // The option names, as (name, version).
+    let mut named: std::collections::HashSet<(Vec<u8>, Vec<u8>)> =
+        std::collections::HashSet::new();
+    let mut name = |b: &[u8]| {
+        let key = match b.iter().position(|&c| c == b'@') {
+            None => (b.to_vec(), Vec::new()),
+            Some(i) if b.get(i + 1) == Some(&b'@') => (b[..i].to_vec(), Vec::new()),
+            Some(i) => (b[..i].to_vec(), b[i + 1..].to_vec()),
+        };
+        named.insert(key);
+    };
+    for k in options.entry.iter().chain(&options.undefined).chain(&options.require_defined) {
+        name(&k.name);
+    }
+    for w in &options.wrap {
+        name(w);
+        name(&[b"__wrap_".as_slice(), w].concat());
+        name(&[b"__real_".as_slice(), w].concat());
+    }
+    for d in &options.defsym {
+        name(&d.name);
+        if let Some(b) = d.value.base() {
+            name(b);
+        }
+    }
+    let s = |x: Str| pool_string(&m.strings, x).map_err(super::read::to_state_error);
+    for (k, r) in m.symbols.iter().enumerate() {
+        match r.kind {
+            sym_kind::GONE => live[k] = false,
+            sym_kind::LOCAL => live[k] = !gone(r.file),
+            _ if live[k] || named.is_empty() => {}
+            _ => live[k] = named.contains(&(s(r.name)?, s(r.version)?)),
+        }
+    }
+    Ok(live)
+}
+
+/// The capture's checks (WP-239 R-2), run where the capture's rows are
+/// built and before any byte of a state is written: two different live
+/// `FRAGS` rows with one key `(out, class, hash)` at the capture's sort
+/// are `state-collision` (the caller writes no state and removes the
+/// previous one). The same row twice is one.
+///
+/// # Errors
+/// `state-collision`.
+pub fn check_capture(m: &MemoryState) -> Result<(), IncrReason> {
+    let mut keys: Vec<_> = m.frags.iter().filter(|r| !r.tomb).collect();
+    keys.sort_by_key(|r| (r.out, r.class, r.hash, r.offset));
+    for w in keys.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        if (a.out, a.class, a.hash) == (b.out, b.class, b.hash) && a.offset != b.offset {
+            return Err(IncrReason::StateCollision(format!(
+                "two merged fragments of output section {} (class {:#x}) have one 128-bit \
+                 hash (offsets {} and {})",
+                a.out, a.class, a.offset, b.offset
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// A file's `.eh_frame` range as `FILES`' three `u32` columns (WP-239
+/// S4-3): bytes from the chunk's start, bytes held, kept records. A value
+/// past `u32` is `state-limit` (no state is written, as
+/// `state-collision`): the capture builds every `FILES` row through this.
+///
+/// # Errors
+/// `state-limit`.
+pub fn eh_columns(offset: u64, capacity: u64, records: u64) -> Result<[u32; 3], IncrReason> {
+    let col = |v: u64, what: &str| {
+        u32::try_from(v).map_err(|_| {
+            IncrReason::StateLimit(format!(
+                "a file's .eh_frame {what} ({v}) is past the state's 32-bit column"
+            ))
+        })
+    };
+    let end = offset.checked_add(capacity).unwrap_or(u64::MAX);
+    col(end, "range end")?;
+    Ok([col(offset, "offset")?, col(capacity, "capacity")?, col(records, "record count")?])
 }
 
 fn s_new(pool: &[u8], x: Str) -> Result<Vec<u8>, StateError> {

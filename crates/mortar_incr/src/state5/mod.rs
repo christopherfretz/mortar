@@ -27,15 +27,14 @@
 use mortar_core::incr::IncrReason;
 
 use crate::format::{
-    ChunkRow, DefinedRow, EhRow, FragAtRow, Hash16, LayoutRow, OutSecRow, PatchRow, ProbeRow, R,
-    RedirectRow, Row, SectionRow, SegmentRow, SizeRow, SlotRow, StatRow, StateError, Str,
-    SymPlaceRow, W, kind,
+    ChunkRow, DefinedRow, Hash16, LayoutRow, OutSecRow, PatchRow, ProbeRow, R, RedirectRow, Row,
+    SectionRow, SegmentRow, SizeRow, StatRow, StateError, Str, SymPlaceRow, W, kind,
 };
 use crate::update::diags::{DiagRow, Subject};
 use crate::update::rows::{
-    CloneProbe, CommonRow, CopyRow, EdgeRow, FileIndexRow, FileRow, FileTable, FragRow, GroupRow,
-    HoleRow, IndexRow, KeyRefRow, MentionRow, MetaRow, NameRow, RegionRow, ResolvedRow, RowRange,
-    SymbolRow, SymtabKeyRow, SymtabRow, key_ref_flags,
+    CloneProbe, CommonRow, CopyRow, EdgeRow, FileIndexRow, FileRow, FileTable, FragRow, FragUseRow,
+    GroupRow, HoleRow, IndexRow, KeyRefRow, MentionRow, MetaRow, NameRow, RegionRow, ResolvedRow,
+    RowRange, SlotRow, SymbolRow, SymtabKeyRow, SymtabRow, key_ref_flags,
 };
 use crate::update::view::Rows;
 
@@ -45,7 +44,7 @@ pub mod read;
 pub mod write;
 
 pub use canon::{Canon, CanonDiff, canon, canon_of, compare};
-pub use compact::compact;
+pub use compact::{check_capture, compact, eh_columns, live_keys};
 pub use read::{LayoutOf, open, size_report};
 pub use write::{PatchPlan, patch, plan_patch};
 
@@ -77,7 +76,10 @@ pub enum Class {
 /// width. A kind not here is `state-corrupt` (IN-18e). `ODR_CLASSES` (47)
 /// and `ODR_REFS` (48) are not written (supervisor's ruling on WP-220,
 /// R-1: provisional until WP-236; kinds 53 and 54 reserved for it).
-pub const TABLES: [(u32, Class, usize); 38] = [
+/// `EH_RECORDS` (13) and `FRAG_AT` (40) are format 4's only (WP-239: the
+/// `FILES` eh columns and `FRAG_USE`, 56, in their place); `FILE_INDEX`'s
+/// `EhRecords` range is always empty in format 5.
+pub const TABLES: [(u32, Class, usize); 37] = [
     (kind::META, Class::Whole, MetaRow::WIDTH),
     (kind::STAT, Class::AppendOnly, <StatRow as Rec>::WIDTH),
     (kind::FILES, Class::AppendOnly, FileRow::WIDTH),
@@ -89,8 +91,7 @@ pub const TABLES: [(u32, Class, usize); 38] = [
     (kind::ORDER, Class::Whole, <u32 as Rec>::WIDTH),
     (kind::SEGMENTS, Class::Whole, <SegmentRow as Rec>::WIDTH),
     (kind::FRAGS, Class::KeyKeyed, FragRow::WIDTH),
-    (kind::SLOTS, Class::Whole, <SlotRow as Rec>::WIDTH),
-    (kind::EH_RECORDS, Class::FileKeyed, <EhRow as Rec>::WIDTH),
+    (kind::SLOTS, Class::Whole, SlotRow::WIDTH),
     (kind::SIZES, Class::Whole, <SizeRow as Rec>::WIDTH),
     (kind::SYM_PLACE, Class::Whole, <SymPlaceRow as Rec>::WIDTH),
     (kind::DEFINED, Class::Whole, <DefinedRow as Rec>::WIDTH),
@@ -104,7 +105,6 @@ pub const TABLES: [(u32, Class, usize); 38] = [
     (kind::RESOLVED, Class::KeyParallel, ResolvedRow::WIDTH),
     (kind::INDEX, Class::FileKeyed, <IndexRow as Rec>::WIDTH),
     (kind::HOLES, Class::KeyKeyed, HoleRow::WIDTH),
-    (kind::FRAG_AT, Class::FileKeyed, <FragAtRow as Rec>::WIDTH),
     (kind::FILE_INDEX, Class::AppendOnly, FileIndexRow::WIDTH),
     (kind::EDGES, Class::FileKeyed, EdgeRow::WIDTH),
     (kind::SYMTAB, Class::FileKeyed, <SymtabRow as Rec>::WIDTH),
@@ -116,6 +116,19 @@ pub const TABLES: [(u32, Class, usize); 38] = [
     (kind::REGIONS, Class::FileKeyed, RegionRow::WIDTH),
     (kind::NAMES, Class::KeyKeyed, NameRow::WIDTH),
     (kind::COPIES, Class::KeyKeyed, CopyRow::WIDTH),
+    (kind::FRAG_USE, Class::FileKeyed, FragUseRow::WIDTH),
+];
+
+/// The file-keyed tables of format 5 ([`FileTable::ALL`] without
+/// `EhRecords`, format 4's only; its `FILE_INDEX` range is all zero).
+pub(crate) const FILE_TABLES: [FileTable; FileTable::COUNT - 1] = [
+    FileTable::Sections,
+    FileTable::Mentions,
+    FileTable::Index,
+    FileTable::Edges,
+    FileTable::FragUse,
+    FileTable::Symtab,
+    FileTable::Regions,
 ];
 
 /// The position of `kind` in [`TABLES`].
@@ -399,13 +412,10 @@ same_as_format4!(
     ProbeRow,
     OutSecRow,
     SymbolRow,
-    FragAtRow,
     SectionRow,
     ChunkRow,
     u32,
     SegmentRow,
-    SlotRow,
-    EhRow,
     SizeRow,
     SymPlaceRow,
     DefinedRow,
@@ -487,11 +497,12 @@ impl Rec for MetaRow {
 }
 
 impl Rec for FileRow {
-    const WIDTH: usize = 72;
+    const WIDTH: usize = 84;
     fn put(&self, w: &mut W<'_>) {
         w.u8(self.kind).u8(self.member).u8(self.flags).pad(1).s(self.path).u32(self.mention);
         w.s(self.member_name).u32(self.member_ordinal).u64(self.base).u64(self.len);
         w.bytes(&self.hash).u64(self.rank).u32(self.round);
+        w.u32(self.eh_offset).u32(self.eh_capacity).u32(self.eh_records);
     }
     fn get(r: &mut R<'_>) -> Self {
         let (kind, member, flags) = (r.u8(), r.u8(), r.u8());
@@ -509,10 +520,15 @@ impl Rec for FileRow {
             hash: r.h(),
             rank: r.u64(),
             round: r.u32(),
+            eh_offset: r.u32(),
+            eh_capacity: r.u32(),
+            eh_records: r.u32(),
         }
     }
     fn ok(&self) -> bool {
-        self.flags & !crate::update::rows::file_flags::ALL == 0 && self.member <= 1
+        self.flags & !crate::update::rows::file_flags::ALL == 0
+            && self.member <= 1
+            && (self.eh_records == 0 || self.eh_capacity > 0)
     }
 }
 
@@ -540,6 +556,7 @@ impl Rec for FileIndexRow {
     }
     fn ok(&self) -> bool {
         self.ranges.iter().all(|r| r.count <= r.capacity)
+            && self.ranges[FileTable::EhRecords as usize] == RowRange::default()
     }
 }
 
@@ -562,10 +579,10 @@ impl Rec for MentionRow {
 }
 
 impl Rec for ResolvedRow {
-    const WIDTH: usize = 24;
+    const WIDTH: usize = 28;
     fn put(&self, w: &mut W<'_>) {
         w.u8(self.kind).u8(self.typ).u8(self.bind).u8(self.other).u32(self.section);
-        w.u64(self.value).u64(self.size);
+        w.u64(self.value).u64(self.size).u32(self.facts);
     }
     fn get(r: &mut R<'_>) -> Self {
         Self {
@@ -576,7 +593,32 @@ impl Rec for ResolvedRow {
             section: r.u32(),
             value: r.u64(),
             size: r.u64(),
+            facts: r.u32(),
         }
+    }
+}
+
+/// `SLOTS` (format 4's 8 bytes plus `refs`, WP-239).
+impl Rec for SlotRow {
+    const WIDTH: usize = 12;
+    fn put(&self, w: &mut W<'_>) {
+        w.u8(self.kind).pad(3).u32(self.symbol).u32(self.refs);
+    }
+    fn get(r: &mut R<'_>) -> Self {
+        let kind = r.u8();
+        r.pad(3);
+        Self { kind, symbol: r.u32(), refs: r.u32() }
+    }
+}
+
+/// `FRAG_USE` (kind 56, file-keyed): a file's fragments by key.
+impl Rec for FragUseRow {
+    const WIDTH: usize = 28;
+    fn put(&self, w: &mut W<'_>) {
+        w.u32(self.file).u32(self.out).u32(self.class).bytes(&self.hash);
+    }
+    fn get(r: &mut R<'_>) -> Self {
+        Self { file: r.u32(), out: r.u32(), class: r.u32(), hash: r.h() }
     }
 }
 
@@ -675,18 +717,23 @@ impl Rec for CopyRow {
 }
 
 impl Rec for KeyRefRow {
-    const WIDTH: usize = 12;
+    const WIDTH: usize = 14;
     fn put(&self, w: &mut W<'_>) {
         let flags =
             (self.flags & !key_ref_flags::TOMB) | if self.tomb { key_ref_flags::TOMB } else { 0 };
         w.u32(self.key).u32(self.file).u8(self.def).u8(self.bind).u8(self.typ).u8(flags);
+        w.u16(self.demand);
     }
     fn get(r: &mut R<'_>) -> Self {
         let (key, file, def, bind, typ, flags) = (r.u32(), r.u32(), r.u8(), r.u8(), r.u8(), r.u8());
-        if flags & !(key_ref_flags::TOMB * 2 - 1) != 0 {
+        let demand = r.u16();
+        if flags & !(key_ref_flags::TOMB * 2 - 1) != 0
+            || mortar_core::demands::DemandFlags::from_bits(demand).is_none()
+        {
             r.bad_pad = true;
         }
         Self {
+            demand,
             key,
             file,
             def,
@@ -701,13 +748,13 @@ impl Rec for KeyRefRow {
 impl Rec for FragRow {
     const WIDTH: usize = 37;
     fn put(&self, w: &mut W<'_>) {
-        w.u32(self.out).u32(self.ordinal).bytes(&self.hash).u64(self.offset).u32(self.refs);
+        w.u32(self.out).u32(self.class).bytes(&self.hash).u64(self.offset).u32(self.refs);
         w.u8(u8::from(self.tomb));
     }
     fn get(r: &mut R<'_>) -> Self {
         Self {
             out: r.u32(),
-            ordinal: r.u32(),
+            class: r.u32(),
             hash: r.h(),
             offset: r.u64(),
             refs: r.u32(),
@@ -878,7 +925,7 @@ macro_rules! keyed {
 }
 
 keyed!(KeyRefRow, (u32, u32), |x| (x.key, x.file));
-keyed!(FragRow, (u32, Hash16, u32), |x| (x.out, x.hash, x.ordinal));
+keyed!(FragRow, (u32, u32, Hash16), |x| (x.out, x.class, x.hash));
 keyed!(HoleRow, (u32, u64), |x| (x.chunk, x.offset));
 keyed!(CommonRow, (u32, u32), |x| (x.key, x.file));
 keyed!(CopyRow, (u32, u32, u32), |x| (x.key, x.file, x.index));

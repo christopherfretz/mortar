@@ -9,7 +9,9 @@
 //! its first mentioner and index or its name, sections by (file,
 //! position), strings re-interned in table order so equal bytes give equal
 //! offsets), then each table's rows encoded, key-keyed tables sorted by
-//! key, `FRAGS` by identity with `FRAG_AT` following. IN-78's exceptions:
+//! key (`FRAGS` by `(out, class, hash)`, each file's `FRAG_USE` rows by
+//! that key), dead keys dropped (IN-71b, [`super::live_keys`], through
+//! `normalize`). IN-78's exceptions:
 //! `LEAVES` dropped; `META`'s binding (build id) and history fields (boot
 //! id, `output-synced`, compactions) zeroed, and the `STAT` output row's
 //! tuple; `FILES.round` replaced by 0 (the support property is NOT
@@ -99,14 +101,8 @@ pub fn canon_of(m: &MemoryState) -> Result<Canon, StateError> {
             .map(<[u8]>::to_vec)
             .ok_or_else(|| super::corrupt("STRINGS: a string out of range"))
     };
-    // FRAGS by identity, FRAG_AT following.
-    let mut order: Vec<usize> = (0..n.frags.len()).collect();
-    order.sort_by_key(|&i| (n.frags[i].out, n.frags[i].hash, n.frags[i].ordinal));
-    let mut map = vec![0u64; n.frags.len()];
-    for (new, &old) in order.iter().enumerate() {
-        map[old] = new as u64;
-    }
-    let frags: Vec<_> = order.iter().map(|&i| n.frags[i]).collect();
+    let mut frag_uses = n.frag_uses.clone();
+    frag_uses.sort_by_key(|(f, r)| (f.0, *r));
     let file_rows = |v: Vec<Vec<u8>>, f: &[mortar_core::FileId]| -> Vec<Vec<u8>> {
         v.into_iter()
             .zip(f)
@@ -124,13 +120,6 @@ pub fn canon_of(m: &MemoryState) -> Result<Canon, StateError> {
             file_rows(rows(&r), &f)
         }};
     }
-    let frag_at: Vec<_> = n
-        .frag_at
-        .iter()
-        .map(|(f, r)| {
-            (*f, crate::format::FragAtRow { frag: map[usize::try_from(r.frag).unwrap_or(0)], ..*r })
-        })
-        .collect();
     // DIAGS: compared by their strings' bytes.
     let diags: Vec<Vec<u8>> = n
         .diags
@@ -153,9 +142,8 @@ pub fn canon_of(m: &MemoryState) -> Result<Canon, StateError> {
         (kind::CHUNKS, rows(&n.chunks)),
         (kind::ORDER, rows(&n.order)),
         (kind::SEGMENTS, rows(&n.segments)),
-        (kind::FRAGS, rows(&frags)),
+        (kind::FRAGS, sorted(&n.frags, s)?),
         (kind::SLOTS, rows(&n.slots)),
-        (kind::EH_RECORDS, per_file!(n.eh_records)),
         (kind::SIZES, rows(&n.sizes)),
         (kind::SYM_PLACE, rows(&n.sym_place)),
         (kind::DEFINED, rows(&n.defined)),
@@ -168,7 +156,6 @@ pub fn canon_of(m: &MemoryState) -> Result<Canon, StateError> {
         (kind::RESOLVED, rows(&n.resolved)),
         (kind::INDEX, per_file!(n.index)),
         (kind::HOLES, sorted(&n.holes, s)?),
-        (kind::FRAG_AT, per_file!(frag_at)),
         // normalized: `first_global` only (the ranges are the writer's)
         (kind::FILE_INDEX, rows(&n.file_index)),
         (kind::EDGES, per_file!(n.edges)),
@@ -181,6 +168,7 @@ pub fn canon_of(m: &MemoryState) -> Result<Canon, StateError> {
         (kind::REGIONS, per_file!(n.regions)),
         (kind::NAMES, sorted(&n.names, s)?),
         (kind::COPIES, sorted(&n.copies, s)?),
+        (kind::FRAG_USE, per_file!(frag_uses)),
     ];
     Ok(Canon { tables })
 }

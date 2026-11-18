@@ -1,17 +1,17 @@
 //! U-2's tests (`spec/incr.md` IN-18c..IN-18f, IN-46b, IN-78; WP-214).
 //! The states are made by hand (`sample`): a few files with sections,
 //! a global and a local each, `MENTIONS`, `KEY_REFS`, `FRAGS` and
-//! `FRAG_AT`; the files are named by their index in the full set, so the
+//! `FRAG_USE`; the files are named by their index in the full set, so the
 //! capture of a subset is the full link of those inputs.
 
 use mortar_core::incr::{IncrReason, MemoryLayout, StoredLayout};
 use mortar_core::{FileId, SymbolId};
-use mortar_incr::format::{FragAtRow, SectionRow, StatRow, StateError, Str, kind, stat_tag};
+use mortar_incr::format::{SectionRow, StatRow, StateError, Str, kind, stat_tag};
 use mortar_incr::ops::{StdOps, WriteFailure};
 use mortar_incr::state5::{self, compact, read, write};
 use mortar_incr::update::rows::{
-    CommonRow, CopyRow, FileIndexRow, FileRow, FragRow, GroupRow, KeyRefRow, MentionRow, NameRow,
-    ResolvedRow, SymbolRow, SymtabKeyRow, file_flags, sym_kind,
+    CommonRow, CopyRow, FileIndexRow, FileRow, FragRow, FragUseRow, GroupRow, KeyRefRow,
+    MentionRow, NameRow, ResolvedRow, SymbolRow, SymtabKeyRow, file_flags, sym_kind,
 };
 use mortar_incr::update::testing::MemoryState;
 use mortar_incr::update::view::{FileRanges, KeyEdits, StatePatch};
@@ -32,7 +32,14 @@ fn sample(ids: &[u32], sections: u32) -> MemoryState {
     for (f, &id) in ids.iter().enumerate() {
         let f = u32::try_from(f).expect("small");
         let path = add(&mut pool, format!("f{id}.o").as_bytes());
-        m.files.push(FileRow { path, rank: u64::from(id) << 20, ..FileRow::default() });
+        m.files.push(FileRow {
+            path,
+            rank: u64::from(id) << 20,
+            eh_offset: 64 * id,
+            eh_capacity: 40,
+            eh_records: 2,
+            ..FileRow::default()
+        });
         m.stat.push(StatRow {
             tag: stat_tag::INPUT,
             path,
@@ -72,16 +79,20 @@ fn sample(ids: &[u32], sections: u32) -> MemoryState {
         });
         m.mentions
             .push((FileId(f), MentionRow { symbol: g, section: first, ..MentionRow::default() }));
-        m.key_refs.push(KeyRefRow { key: g, file: f, ..KeyRefRow::default() });
-        let frag = m.frags.len() as u64;
+        m.key_refs.push(KeyRefRow { key: g, file: f, demand: 1, ..KeyRefRow::default() });
+        // its own fragment, and the one every file shares (`refs` is the
+        // number of files with a FRAG_USE row: normalize counts it)
         m.frags.push(FragRow {
             out: 0,
-            ordinal: id,
-            hash: hash_of(id),
-            offset: u64::from(id) * 8,
+            class: CLASS,
+            hash: hash_of(id + 1),
+            offset: u64::from(id + 1) * 8,
             ..FragRow::default()
         });
-        m.frag_at.push((FileId(f), FragAtRow { section: first, offset: 0, frag }));
+        for h in [hash_of(id + 1), hash_of(0)] {
+            let row = FragUseRow { file: f, out: 0, class: CLASS, hash: h };
+            m.frag_uses.push((FileId(f), row));
+        }
         // WP-215/WP-220 rows: every file has a copy of one group (its own
         // `Str` of the same bytes), a common mention and a COMDAT copy of
         // the unmentioned key (row 0 below), and its `sh_info`.
@@ -117,12 +128,26 @@ fn sample(ids: &[u32], sections: u32) -> MemoryState {
     for r in &mut m.key_refs {
         r.key += 1;
     }
-    m.resolved = vec![ResolvedRow { section: u32::MAX, ..ResolvedRow::default() }; m.symbols.len()];
+    m.frags.push(FragRow { out: 0, class: CLASS, hash: hash_of(0), offset: 0, ..FragRow::default() });
+    let users = u32::try_from(ids.len()).expect("small");
+    for r in &mut m.frags {
+        r.refs = if r.hash == hash_of(0) { users } else { 1 };
+    }
+    // `facts`: the scan's packed word, stored as given (R-4a)
+    m.resolved = vec![
+        ResolvedRow { section: u32::MAX, facts: FACTS, ..ResolvedRow::default() };
+        m.symbols.len()
+    ];
     m.symtab_keys = vec![SymtabKeyRow { index: u32::MAX, strtab: 0 }; m.symbols.len()];
     m.stat.push(StatRow { tag: stat_tag::OUTPUT, path: out, ..StatRow::default() });
     m.strings = pool;
     m
 }
+
+/// A merge class word (`MergeClass::word`: strings, align 1, entsize 1).
+const CLASS: u32 = 0x8000_0001;
+/// A `RESOLVED.facts` word (opaque to the state).
+const FACTS: u32 = 0x0001_0005;
 
 fn hash_of(id: u32) -> [u8; 16] {
     let mut h = [0u8; 16];
@@ -257,20 +282,15 @@ fn edit(base: &MemoryState, grow: u32) -> StatePatch {
         .filter(|r| r.0 == FileId(0))
         .map(|r| MentionRow { section: first, ..r.1 })
         .collect();
-    let frag_at = base
-        .frag_at
-        .iter()
-        .filter(|r| r.0 == FileId(0))
-        .map(|r| FragAtRow { section: first, ..r.1 })
-        .collect();
+    let frag_uses = base.frag_uses.iter().filter(|r| r.0 == FileId(0)).map(|r| r.1).collect();
     p.ranges.push(FileRanges {
         file: FileId(0),
+        first_global: base.file_index[0].first_global,
         sections: Some(rows),
         mentions: Some(mentions),
         index: None,
         edges: None,
-        frag_at: Some(frag_at),
-        eh_records: None,
+        frag_uses: Some(frag_uses),
         symtab: None,
         regions: None,
         gone: false,
@@ -278,7 +298,7 @@ fn edit(base: &MemoryState, grow: u32) -> StatePatch {
     p.key_refs.put.push(KeyRefRow { key: 1, file: 0, ..KeyRefRow::default() });
     p.frags.put.push(FragRow {
         out: 9,
-        ordinal: 0,
+        class: CLASS,
         hash: [9; 16],
         offset: 72,
         ..FragRow::default()
@@ -378,12 +398,12 @@ fn remove_file_1(m: &MemoryState) -> StatePatch {
     p.files_set.push((FileId(1), row));
     p.ranges.push(FileRanges {
         file: FileId(1),
+        first_global: 0,
         sections: None,
         mentions: None,
         index: None,
         edges: None,
-        frag_at: None,
-        eh_records: None,
+        frag_uses: None,
         symtab: None,
         regions: None,
         gone: true,
@@ -402,7 +422,7 @@ fn remove_file_1(m: &MemoryState) -> StatePatch {
                 .push(*m.key_refs.iter().find(|k| k.key == i as u32).expect("its ref"));
         }
     }
-    p.frags.delete.push(*m.frags.iter().find(|f| f.ordinal == 1).expect("its frag"));
+    p.frags.delete.push(*m.frags.iter().find(|f| f.hash == hash_of(2)).expect("its frag"));
     p.groups.delete.extend(m.groups.iter().filter(|g| g.file == 1).copied());
     p.commons.delete.extend(m.commons.iter().filter(|g| g.file == 1).copied());
     p.copies.delete.extend(m.copies.iter().filter(|g| g.file == 1).copied());
@@ -656,12 +676,12 @@ fn update_reuses_stored_strings() {
     rows.push(SectionRow { file: 0, name, ordinal: 3, size: 32, ..SectionRow::default() });
     let mut fr = FileRanges {
         file: FileId(0),
+        first_global: m.file_index[0].first_global,
         sections: Some(rows),
         mentions: None,
         index: None,
         edges: None,
-        frag_at: None,
-        eh_records: None,
+        frag_uses: None,
         symtab: None,
         regions: None,
         gone: false,
@@ -698,11 +718,6 @@ fn update_reuses_stored_strings() {
         r.anchor_kind = 2;
     }
     for (_, r) in &mut want.mentions {
-        if r.section >= u32::try_from(at).expect("small") {
-            r.section += 1;
-        }
-    }
-    for (_, r) in &mut want.frag_at {
         if r.section >= u32::try_from(at).expect("small") {
             r.section += 1;
         }
@@ -774,4 +789,263 @@ fn compaction_and_capture_order_symbols_alike() {
     };
     assert_eq!(order(&got), order(&want), "SYMBOLS' row order");
     assert_eq!(state5::canon(&got).expect("c"), state5::canon(&want).expect("c"));
+}
+
+/// `m` without its `SYMBOLS` row `k` (every reference renumbered): the
+/// fresh capture of inputs that no longer name that key.
+fn drop_key(m: &mut MemoryState, k: u32) {
+    let fix = |x: &mut u32| {
+        assert_ne!(*x, k, "a row still names the dropped key");
+        if *x > k {
+            *x -= 1;
+        }
+    };
+    m.symbols.remove(k as usize);
+    m.resolved.remove(k as usize);
+    m.symtab_keys.remove(k as usize);
+    for (_, r) in &mut m.mentions {
+        fix(&mut r.symbol);
+    }
+    for r in &mut m.key_refs {
+        fix(&mut r.key);
+    }
+    for r in &mut m.commons {
+        fix(&mut r.key);
+    }
+    for r in &mut m.copies {
+        fix(&mut r.key);
+    }
+}
+
+// spec: WP-239 seam 5 as format 5 (FRAGS by (out, class, hash) with
+// `refs` per file, FRAG_USE 56, FILES' eh columns, KEY_REFS.demand,
+// SLOTS.refs, RESOLVED.facts, FILE_INDEX.first_global from FileRanges;
+// no `.debug_*` fragment): written, read back by the accessors and
+// `LayoutOf`, patched
+#[test]
+#[allow(clippy::too_many_lines)]
+fn seam5_rows_round_trip_and_patch() {
+    use mortar_core::incr::LayoutRows as _;
+    use mortar_core::{OutSecId, SectionId};
+    use mortar_incr::update::rows::SlotRow;
+    let mut m = sample(&[0, 1, 2], 2);
+    // a `.debug_str` output section with a fragment every file names
+    let name = add(&mut m.strings, b".debug_str");
+    m.outsecs.push(mortar_incr::format::OutSecRow { name, ordinal: 0 });
+    let name = add(&mut m.strings, b".rodata");
+    m.outsecs.insert(0, mortar_incr::format::OutSecRow { name, ordinal: 0 });
+    m.frags.push(FragRow { out: 1, class: CLASS, hash: [5; 16], offset: 0, refs: 3, tomb: false });
+    for f in 0..3 {
+        let row = FragUseRow { file: f, out: 1, class: CLASS, hash: [5; 16] };
+        m.frag_uses.push((FileId(f), row));
+    }
+    m.slots.push(SlotRow { kind: 0, symbol: 1, refs: 2 });
+    let bytes = full(&m);
+    let d = read::decode(&bytes).expect("decode");
+    assert!(d.frags.iter().all(|r| r.out == 0), "no .debug_* row");
+    assert!(d.frag_uses.iter().all(|r| r.1.out == 0), "no .debug_* row");
+    assert_eq!(d.frags.len(), 4);
+    assert_eq!(d.frag_uses.len(), 6);
+    let view = read::open_bytes(bytes.clone()).expect("open");
+    let shared = view.frags_of(OutSecId(0), CLASS, hash_of(0)).expect("lookup").expect("a row");
+    assert_eq!((shared.offset, shared.refs), (0, 3), "refs: the files with a FRAG_USE row");
+    assert!(view.frags_of(OutSecId(0), CLASS + 1, hash_of(0)).expect("lookup").is_none());
+    let layout = read::LayoutOf { view: &view };
+    let f = layout.frags_of(OutSecId(0), CLASS, hash_of(2)).expect("lookup").expect("a row");
+    assert_eq!((f.class, f.offset, f.refs), (CLASS, 16, 1));
+    let uses = layout.frag_uses_of(FileId(1)).expect("rows");
+    let mut want = vec![hash_of(0), hash_of(2)];
+    want.sort_unstable();
+    assert_eq!(uses.iter().map(|u| u.hash).collect::<Vec<_>>(), want, "by key");
+    assert!(uses.iter().all(|u| u.file == FileId(1) && u.class == CLASS));
+    let eh = layout.eh_range_of(FileId(2)).expect("row").expect("a range");
+    assert_eq!((eh.offset, eh.capacity, eh.records), (128, 40, 2));
+    let refs = layout.key_refs_of(FileId(1)).expect("rows");
+    assert_eq!(refs.len(), 1);
+    assert_eq!(refs[0].demand.bits(), 1);
+    assert_eq!(view.resolved(refs[0].key).expect("row").facts, FACTS);
+    let slots = layout.slots().expect("rows");
+    assert_eq!(slots.len(), 1);
+    assert_eq!(slots[0].refs, 2);
+    let first = d.file_index[1].ranges[0].first;
+    let sec = layout.section(SectionId(first + 1)).expect("row").expect("a section");
+    assert_eq!((sec.file, sec.index), (FileId(1), 1));
+    assert!(layout.section(SectionId(first + 2)).expect("row").is_none(), "slack");
+    let past = u32::try_from(view.count(kind::SECTIONS)).expect("small");
+    assert!(layout.section(SectionId(past)).expect("row").is_none(), "new to the update");
+    // a patch: file 1's FRAG_USE range and first_global rewritten; a new
+    // fragment; file 1's eh columns and a key's facts changed
+    let mut p = StatePatch::default();
+    p.ranges.push(FileRanges {
+        file: FileId(1),
+        first_global: 9,
+        sections: None,
+        mentions: None,
+        index: None,
+        edges: None,
+        frag_uses: Some(vec![FragUseRow { file: 1, out: 0, class: CLASS, hash: [7; 16] }]),
+        symtab: None,
+        regions: None,
+        gone: false,
+    });
+    p.frags.put.push(FragRow { out: 0, class: CLASS, hash: [7; 16], offset: 99, refs: 1, tomb: false });
+    p.files_set.push((FileId(1), FileRow { eh_offset: 1, eh_capacity: 2, eh_records: 1, ..d.files[1].clone() }));
+    p.resolved.set.push((refs[0].key, ResolvedRow { facts: 7, ..d.resolved[refs[0].key.0 as usize] }));
+    let plan = state5::plan_patch(&view, &p).expect("plan");
+    assert!(!plan.compacts(), "{}", plan.reason());
+    let patched = write::patched_bytes(&bytes, &plan, &output_of(&bytes)).expect("in place");
+    let v = read::open_bytes(patched.clone()).expect("open");
+    let layout = read::LayoutOf { view: &v };
+    assert_eq!(v.file_index(FileId(1)).expect("row").first_global, 9, "F-10");
+    let uses = layout.frag_uses_of(FileId(1)).expect("rows");
+    assert_eq!(uses.iter().map(|u| u.hash).collect::<Vec<_>>(), vec![[7; 16]]);
+    let f = layout.frags_of(OutSecId(0), CLASS, [7; 16]).expect("lookup").expect("a row");
+    assert_eq!(f.offset, 99);
+    let eh = layout.eh_range_of(FileId(1)).expect("row").expect("a range");
+    assert_eq!((eh.offset, eh.capacity, eh.records), (1, 2, 1));
+    assert_eq!(v.resolved(refs[0].key).expect("row").facts, 7);
+    // the compaction recounts `refs` from FRAG_USE: the shared fragment
+    // lost file 1
+    let mut c = read::decode(&patched).expect("decode");
+    compact::apply(&mut c, &StatePatch::default(), 0).expect("apply");
+    let n = compact::normalize(&c).expect("normalize");
+    let r = n.frags.iter().find(|r| r.hash == hash_of(0)).expect("shared");
+    assert_eq!(r.refs, 2);
+    // the same through the in-memory path
+    let mut want = read::decode(&bytes).expect("decode");
+    compact::apply(&mut want, &p, 4).expect("apply");
+    let out = want.stat.iter_mut().rfind(|r| r.tag == stat_tag::OUTPUT).expect("output row");
+    *out = output_of(&bytes);
+    assert_eq!(
+        state5::canon_of(&read::decode(&patched).expect("decode")).expect("c"),
+        state5::canon_of(&want).expect("c")
+    );
+}
+
+// spec: WP-239 R-2 (`state-collision`: two different fragments with one
+// key at the capture's sort; no state is written), S4-3 (`state-limit`:
+// an `.eh_frame` range past the `u32` columns); the injection point is
+// `state5::check_capture` over the capture's rows (no format-5 capture
+// from a `Link` exists yet: WP-214 §10)
+#[test]
+fn capture_collision_and_limit_are_refused() {
+    let mut m = sample(&[0, 1], 1);
+    assert_eq!(state5::check_capture(&m), Ok(()));
+    // the same row twice is one fragment
+    let again = m.frags[0];
+    m.frags.push(again);
+    assert_eq!(state5::check_capture(&m), Ok(()));
+    // an injected collision: another fragment (another offset) of one key
+    m.frags.push(FragRow { offset: 4096, ..again });
+    let r = state5::check_capture(&m).expect_err("a collision");
+    assert_eq!(r.name(), "state-collision", "{r:?}");
+    // the writer refuses it too (a defect if the capture did not)
+    assert!(compact::normalize(&m).is_err());
+    assert_eq!(state5::eh_columns(64, 40, 2), Ok([64, 40, 2]));
+    let r = state5::eh_columns(u64::from(u32::MAX) - 8, 40, 2).expect_err("past u32");
+    assert_eq!(r.name(), "state-limit", "{r:?}");
+    let r = state5::eh_columns(0, 1 << 32, 2).expect_err("past u32");
+    assert_eq!(r.name(), "state-limit");
+}
+
+// spec: incr.md IN-71b "Live keys", IN-78 canon (wp-215-rulings-3 item 3):
+// an update leaves a dead key (its last mention went, the key not
+// `GONE`); the compaction and the canon drop it by `live_keys`; the
+// result equals a fresh capture's of inputs that never named it
+#[test]
+fn dead_key_dropped_by_compaction() {
+    use mortar_core::incr::{OptionKey, OptionKeys};
+    // eight files: one KEY_REFS tombstone in eight stays in place
+    let ids: Vec<u32> = (0..8).collect();
+    let bytes = full(&sample(&ids, 2));
+    let m = read::decode(&bytes).expect("decode");
+    let view = read::open_bytes(bytes.clone()).expect("open");
+    let g1 = view.find_key(b"g1", b"").expect("lookup").expect("g1");
+    // file 1 recompiled without g1: its MENTIONS range emptied, its
+    // KEY_REFS row deleted; the key's SYMBOLS row is left as it is
+    let mut p = StatePatch::default();
+    p.ranges.push(FileRanges {
+        file: FileId(1),
+        first_global: m.file_index[1].first_global,
+        sections: None,
+        mentions: Some(Vec::new()),
+        index: None,
+        edges: None,
+        frag_uses: None,
+        symtab: None,
+        regions: None,
+        gone: false,
+    });
+    p.key_refs.delete.push(*m.key_refs.iter().find(|r| r.key == g1.0).expect("its row"));
+    let plan = state5::plan_patch(&view, &p).expect("plan");
+    assert!(!plan.compacts(), "{}", plan.reason());
+    let patched = write::patched_bytes(&bytes, &plan, &output_of(&bytes)).expect("in place");
+    let left = read::decode(&patched).expect("decode");
+    assert_eq!(left.symbols[g1.0 as usize].kind, sym_kind::GLOBAL, "left in place");
+    let live = state5::live_keys(&left, &OptionKeys::default()).expect("rule");
+    assert!(!live[g1.0 as usize], "dead");
+    assert_eq!(live.iter().filter(|x| !**x).count(), 1, "only g1");
+    // an option naming it keeps it
+    let named = OptionKeys {
+        undefined: vec![OptionKey { name: b"g1".to_vec().into_boxed_slice(), arg: 1 }],
+        ..OptionKeys::default()
+    };
+    assert!(state5::live_keys(&left, &named).expect("rule")[g1.0 as usize]);
+    // the compaction (apply + normalize, the plan's own steps) drops it
+    let mut c = read::decode(&bytes).expect("decode");
+    compact::apply(&mut c, &p, 4).expect("apply");
+    let n = compact::normalize(&c).expect("normalize");
+    assert!(n.symbols.iter().all(|r| s(&n, r.name) != b"g1"), "dropped");
+    // the fresh capture of the same inputs: g1 never named
+    let mut want = sample(&ids, 2);
+    let k = want.symbols.iter().position(|r| s(&want, r.name) == b"g1").expect("g1");
+    want.mentions.retain(|(f, _)| *f != FileId(1));
+    want.key_refs.retain(|r| r.file != 1);
+    drop_key(&mut want, u32::try_from(k).expect("small"));
+    let n_want = want.stat.len();
+    want.stat[n_want - 1].size = 4242;
+    let out = c.stat.iter_mut().rfind(|r| r.tag == stat_tag::OUTPUT).expect("output row");
+    *out = output_of(&bytes);
+    let (a, b) = (state5::canon_of(&c).expect("c"), state5::canon(&full(&want)).expect("c"));
+    let rows = MemoryLayout::default();
+    let diffs = state5::compare(&a, &b, &StoredLayout::new(&rows));
+    assert!(diffs.is_empty(), "{diffs:#?}");
+    // and the bytes but META's history (`output-synced`: the patch's)
+    let mut n = compact::normalize(&c).expect("n");
+    n.meta.output_synced = false;
+    assert_eq!(write::encode(&n).expect("e"), full(&want));
+    let mut cp = read::decode(&patched).expect("decode");
+    let out = cp.stat.iter_mut().rfind(|r| r.tag == stat_tag::OUTPUT).expect("output row");
+    *out = output_of(&bytes);
+    assert_eq!(state5::canon_of(&cp).expect("c"), state5::canon(&full(&want)).expect("c"));
+}
+
+// spec: U-3's §R.7 (WP-214 §10): a new local key's `SYMBOLS.ordinal` is
+// its rank among its file's locals of the same name by symbol-table
+// index (the capture's `LocalIdentity::ordinal`), written by the plan
+#[test]
+fn new_local_keys_get_their_ordinal() {
+    let bytes = full(&sample(&[0, 1], 1));
+    let m = read::decode(&bytes).expect("decode");
+    let old = m.strings.len();
+    let view = read::open_bytes(bytes.clone()).expect("open");
+    let mut p = StatePatch::default();
+    for at in [7, 3, 5] {
+        let name = fresh_str(&mut p, old, if at == 5 { b"y" } else { b"x" });
+        p.symbols.append.push(SymbolRow {
+            kind: sym_kind::LOCAL,
+            file: 0,
+            name,
+            at_file: 0,
+            at_index: at,
+            ordinal: 0,
+            ..SymbolRow::default()
+        });
+    }
+    let plan = state5::plan_patch(&view, &p).expect("plan");
+    let patched = write::patched_bytes(&bytes, &plan, &output_of(&bytes)).expect("in place");
+    let d = read::decode(&patched).expect("decode");
+    let got: Vec<(u32, u32)> =
+        d.symbols[m.symbols.len()..].iter().map(|r| (r.at_index, r.ordinal)).collect();
+    assert_eq!(got, vec![(7, 1), (3, 0), (5, 0)]);
 }

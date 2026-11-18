@@ -34,6 +34,7 @@ fn convert(path4: &str, version: &str) -> Result<Vec<u8>, String> {
     let s = format::decode(&bytes, version.as_bytes()).map_err(|e| format!("{path4}: {e}"))?;
     let mut m = MemoryState::from_format4(&s);
     seam_rows(&mut m);
+    state5::check_capture(&m).map_err(|e| format!("{path4}: {}", e.report()))?;
     let n = compact::normalize(&m).map_err(|e| format!("{path4}: {e}"))?;
     write::encode(&n).map_err(|e| format!("{path4}: {e}"))
 }
@@ -145,12 +146,12 @@ fn strings_growth(path4: &str, version: &str, suffixes: &[&str]) -> Result<(), S
         }
         p.ranges.push(FileRanges {
             file: FileId(f32),
+            first_global: m.file_index.get(f).map_or(0, |i| i.first_global),
             sections: Some(sections),
             mentions: None,
             index: None,
             edges: None,
-            frag_at: None,
-            eh_records: None,
+            frag_uses: None,
             symtab: None,
             regions: None,
             gone: false,

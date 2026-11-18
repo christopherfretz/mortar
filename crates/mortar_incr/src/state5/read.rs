@@ -17,9 +17,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use mortar_core::incr::{
-    IncrReason, LayoutRows, StoredFrag, StoredRegion, StoredSection, StoredSlot, SymtabBlock,
-    SymtabTables,
+    IncrReason, LayoutRows, StoredEhRange, StoredFrag, StoredFragUse, StoredKeyRef, StoredRegion,
+    StoredSection, StoredSlot, SymtabBlock, SymtabTables,
 };
+use mortar_core::demands::DemandFlags;
 use mortar_core::layout::{
     AllocKey, Chunk, ChunkKind, DefValue, Defined, Erratum, Hole, Part, Patch, PatchKind, Place,
     Redirect, Segment, SymPlace, Synth, ThunkTarget, Tls,
@@ -28,19 +29,19 @@ use mortar_core::{ChunkId, FileId, OutSecId, SectionId, SymEntry, SymKey, Symbol
 use mortar_elf::SymbolIndex;
 
 use super::{
-    BLOCK, DiagRaw, ENTRY, Entry, HEADER, Header, Keyed, Rec, StrFn, TABLES, corrupt, decode_rows,
-    diag_row, name, parse_directory, table_index,
+    BLOCK, DiagRaw, ENTRY, Entry, FILE_TABLES, HEADER, Header, Keyed, Rec, StrFn, TABLES, corrupt,
+    decode_rows, diag_row, name, parse_directory, table_index,
 };
 use crate::format::{
-    ChunkRow, DefinedRow, EhRow, FragAtRow, Hash16, LayoutRow, NONE, OutSecRow, PatchRow, ProbeRow,
-    RedirectRow, SectionRow, SegmentRow, SizeRow, SlotRow, StatRow, StateError, Str, SymPlaceRow,
-    chunk_bits, kind, layout_bits, patch_kind,
+    ChunkRow, DefinedRow, Hash16, LayoutRow, NONE, OutSecRow, PatchRow, ProbeRow, RedirectRow,
+    SectionRow, SegmentRow, SizeRow, StatRow, StateError, Str, SymPlaceRow, chunk_bits, kind,
+    layout_bits, patch_kind,
 };
 use crate::update::diags::DiagRow;
 use crate::update::rows::{
-    CommonRow, CopyRow, EdgeRow, FileIndexRow, FileRow, FileTable, FragRow, GroupRow, HoleRow,
-    IndexRow, KeyRefRow, MentionRow, MetaRow, NameRow, OdrClassRow, OdrRefRow, RegionRow,
-    ResolvedRow, SymbolRow, SymtabKeyRow, SymtabRow, sym_kind,
+    CommonRow, CopyRow, EdgeRow, FileIndexRow, FileRow, FileTable, FragRow, FragUseRow, GroupRow,
+    HoleRow, IndexRow, KeyRefRow, MentionRow, MetaRow, NameRow, OdrClassRow, OdrRefRow, RegionRow,
+    ResolvedRow, SlotRow, SymbolRow, SymtabKeyRow, SymtabRow, sym_kind,
 };
 use crate::update::testing::MemoryState;
 use crate::update::view::{Rows, StateRows, StateView};
@@ -275,7 +276,7 @@ impl Core {
     /// extents.
     pub(crate) fn file_index(&self, file: FileId) -> Rows<FileIndexRow> {
         let row: FileIndexRow = self.row(kind::FILE_INDEX, u64::from(file.0))?;
-        for t in FileTable::ALL {
+        for t in FILE_TABLES {
             let r = row.ranges[t as usize];
             let extent = self.entry(t.kind()).rows;
             if u64::from(r.first) + u64::from(r.capacity) > extent && r.capacity != 0 {
@@ -505,11 +506,13 @@ impl StateRows for Reader {
     fn edges_of(&self, file: FileId) -> Rows<Vec<EdgeRow>> {
         self.core.range(file, FileTable::Edges)
     }
-    fn frag_at_of(&self, file: FileId) -> Rows<Vec<FragAtRow>> {
-        self.core.range(file, FileTable::FragAt)
-    }
-    fn eh_records_of(&self, file: FileId) -> Rows<Vec<EhRow>> {
-        self.core.range(file, FileTable::EhRecords)
+    fn frag_uses_of(&self, file: FileId) -> Rows<Vec<FragUseRow>> {
+        let mut rows: Vec<FragUseRow> = self.core.range(file, FileTable::FragUse)?;
+        if rows.iter().any(|r| r.file != file.0) {
+            return Err(corrupt(format!("FRAG_USE: file {}'s range names another file", file.0)));
+        }
+        rows.sort();
+        Ok(rows)
     }
     fn symtab_of(&self, file: FileId) -> Rows<Option<SymtabRow>> {
         let mut rows: Vec<SymtabRow> = self.core.range(file, FileTable::Symtab)?;
@@ -530,9 +533,13 @@ impl StateRows for Reader {
         let lo = (signature.to_vec(), 0);
         self.core.keyed::<GroupRow>(kind::GROUPS, &lo, &|k| k.0.as_slice() == signature)
     }
-    fn frags_of(&self, out: OutSecId, hash: [u8; 16]) -> Rows<Vec<FragRow>> {
-        // the key's order is the ordinal's within (out, hash)
-        self.core.keyed::<FragRow>(kind::FRAGS, &(out.0, hash, 0), &|k| k.0 == out.0 && k.1 == hash)
+    fn frags_of(&self, out: OutSecId, class: u32, hash: [u8; 16]) -> Rows<Option<FragRow>> {
+        let key = (out.0, class, hash);
+        let mut rows = self.core.keyed::<FragRow>(kind::FRAGS, &key, &|k| *k == key)?;
+        if rows.len() > 1 {
+            return Err(corrupt(format!("FRAGS: {} live rows of one key", rows.len())));
+        }
+        Ok(rows.pop())
     }
     fn holes_in(&self, chunk: ChunkId) -> Rows<Vec<HoleRow>> {
         self.core.keyed::<HoleRow>(kind::HOLES, &(chunk.0, 0), &|k| k.0 == chunk.0)
@@ -660,7 +667,7 @@ pub fn size_report(bytes: &[u8]) -> Result<String, StateError> {
         }
         n += 1;
         lazy += (FileRow::WIDTH + FileIndexRow::WIDTH + <StatRow as Rec>::WIDTH) as u64;
-        for t in FileTable::ALL {
+        for t in FILE_TABLES {
             lazy +=
                 u64::from(idx.ranges[t as usize].capacity) * u64::from(core.entry(t.kind()).width);
         }
@@ -766,14 +773,13 @@ pub(crate) fn decode_core(c: &Core) -> Rows<MemoryState> {
     let mentions: Vec<MentionRow> = c.all(kind::MENTIONS)?;
     let index: Vec<IndexRow> = c.all(kind::INDEX)?;
     let edges: Vec<EdgeRow> = c.all(kind::EDGES)?;
-    let frag_at: Vec<FragAtRow> = c.all(kind::FRAG_AT)?;
-    let eh: Vec<EhRow> = c.all(kind::EH_RECORDS)?;
+    let frag_uses: Vec<FragUseRow> = c.all(kind::FRAG_USE)?;
     let symtab: Vec<SymtabRow> = c.all(kind::SYMTAB)?;
     let regions: Vec<RegionRow> = c.all(kind::REGIONS)?;
     let mut spans: Vec<Vec<(u64, u64)>> = vec![Vec::new(); FileTable::COUNT];
     for (f, idx) in m.file_index.iter().enumerate() {
         let file = FileId(u32::try_from(f).unwrap_or(NONE));
-        for t in FileTable::ALL {
+        for t in FILE_TABLES {
             let r = idx.ranges[t as usize];
             if u64::from(r.first) + u64::from(r.capacity) > extent(t) && r.capacity != 0 {
                 return Err(corrupt(format!(
@@ -803,15 +809,20 @@ pub(crate) fn decode_core(c: &Core) -> Rows<MemoryState> {
         m.mentions.extend(mentions[at(FileTable::Mentions)].iter().map(|r| (file, *r)));
         m.index.extend(index[at(FileTable::Index)].iter().map(|r| (file, *r)));
         m.edges.extend(edges[at(FileTable::Edges)].iter().map(|r| (file, *r)));
-        m.frag_at.extend(frag_at[at(FileTable::FragAt)].iter().map(|r| (file, *r)));
-        m.eh_records.extend(eh[at(FileTable::EhRecords)].iter().map(|r| (file, r.clone())));
+        for i in at(FileTable::FragUse) {
+            if frag_uses[i].file != file.0 {
+                return Err(corrupt(format!("FRAG_USE row {i}: in file {f}'s range")));
+            }
+            m.frag_uses.push((file, frag_uses[i]));
+        }
         m.symtab.extend(symtab[at(FileTable::Symtab)].iter().map(|r| (file, *r)));
         m.regions.extend(regions[at(FileTable::Regions)].iter().map(|r| (file, *r)));
         if idx.ranges[FileTable::Symtab as usize].count > 1 {
             return Err(corrupt(format!("SYMTAB: file {f} has more than one row")));
         }
     }
-    for (t, mut v) in FileTable::ALL.into_iter().zip(spans) {
+    for t in FILE_TABLES {
+        let mut v = std::mem::take(&mut spans[t as usize]);
         v.sort_unstable();
         if v.windows(2).any(|w| w[0].1 > w[1].0) {
             return Err(corrupt(format!("FILE_INDEX: two {} ranges overlap", name(t.kind()))));
@@ -877,6 +888,35 @@ impl LayoutOf<'_, '_> {
             SymKey::local(SymEntry { file: FileId(s.file), index: SymbolIndex(s.at_index) })
         } else {
             SymKey::global(SymbolId(row))
+        })
+    }
+
+    /// A `SECTIONS` row as the core's stored section.
+    #[allow(clippy::trivially_copy_pass_by_ref)]
+    fn stored_section(
+        &self,
+        sid: SectionId,
+        file: FileId,
+        index: u32,
+        r: &SectionRow,
+    ) -> Rows<StoredSection> {
+        Ok(StoredSection {
+            id: sid,
+            file,
+            index,
+            anchor_kind: r.anchor_kind,
+            anchor: self.view.string(r.anchor)?,
+            name: self.view.string(r.name)?,
+            ordinal: r.ordinal,
+            sh_type: r.sh_type,
+            sh_flags: r.sh_flags,
+            size: r.size,
+            align: r.align,
+            place: if r.place_chunk == NONE {
+                Place::NONE
+            } else {
+                Place::at(ChunkId(r.place_chunk), r.place_offset)
+            },
         })
     }
 
@@ -966,26 +1006,29 @@ impl LayoutRows for LayoutOf<'_, '_> {
         let rows = self.view.sections_of(file)?;
         let mut out = Vec::with_capacity(rows.len());
         for (k, r) in rows.iter().enumerate() {
-            out.push(StoredSection {
-                id: SectionId(first + id(k)),
-                file,
-                index: id(k),
-                anchor_kind: r.anchor_kind,
-                anchor: self.view.string(r.anchor)?,
-                name: self.view.string(r.name)?,
-                ordinal: r.ordinal,
-                sh_type: r.sh_type,
-                sh_flags: r.sh_flags,
-                size: r.size,
-                align: r.align,
-                place: if r.place_chunk == NONE {
-                    Place::NONE
-                } else {
-                    Place::at(ChunkId(r.place_chunk), r.place_offset)
-                },
-            });
+            out.push(self.stored_section(SectionId(first + id(k)), file, id(k), r)?);
         }
         Ok(out)
+    }
+    fn section(&self, sid: SectionId) -> Result<Option<StoredSection>, IncrReason> {
+        // Past the extent: new to the update. A row of no file's live
+        // range (slack; a gone file's) is no stored section either.
+        if u64::from(sid.0) >= self.view.count(kind::SECTIONS) {
+            return Ok(None);
+        }
+        // A row is its file's when it lies in that file's live range (a
+        // slack row is zeros: "file 0", outside file 0's range).
+        let r = self.view.section(sid)?;
+        if r.file == NONE || u64::from(r.file) >= self.view.count(kind::FILE_INDEX) {
+            return Ok(None);
+        }
+        let file = FileId(r.file);
+        let idx = self.view.file_index(file)?;
+        let range = idx.ranges[FileTable::Sections as usize];
+        if idx.gone || sid.0 < range.first || sid.0 - range.first >= range.count {
+            return Ok(None);
+        }
+        Ok(Some(self.stored_section(sid, file, sid.0 - range.first, &r)?))
     }
     fn regions_of(&self, file: FileId) -> Result<Vec<StoredRegion>, IncrReason> {
         Ok(self
@@ -1017,13 +1060,55 @@ impl LayoutRows for LayoutOf<'_, '_> {
             })
             .collect()
     }
-    fn frags_of(&self, out: OutSecId, hash: [u8; 16]) -> Result<Vec<StoredFrag>, IncrReason> {
+    fn frags_of(
+        &self,
+        out: OutSecId,
+        class: u32,
+        hash: [u8; 16],
+    ) -> Result<Option<StoredFrag>, IncrReason> {
+        Ok(self.view.frags_of(out, class, hash)?.map(|f| StoredFrag {
+            out,
+            class,
+            hash,
+            offset: f.offset,
+            refs: f.refs,
+        }))
+    }
+    fn frag_uses_of(&self, file: FileId) -> Result<Vec<StoredFragUse>, IncrReason> {
         Ok(self
             .view
-            .frags_of(out, hash)?
+            .frag_uses_of(file)?
             .into_iter()
-            .map(|f| StoredFrag { out, hash, ordinal: f.ordinal, offset: f.offset, refs: f.refs })
+            .map(|r| StoredFragUse { file, out: OutSecId(r.out), class: r.class, hash: r.hash })
             .collect())
+    }
+    fn eh_range_of(&self, file: FileId) -> Result<Option<StoredEhRange>, IncrReason> {
+        let f = self.view.file(file)?;
+        Ok((f.eh_records != 0).then_some(StoredEhRange {
+            offset: f.eh_offset,
+            capacity: f.eh_capacity,
+            records: f.eh_records,
+        }))
+    }
+    fn key_refs_of(&self, file: FileId) -> Result<Vec<StoredKeyRef>, IncrReason> {
+        let mut keys: Vec<u32> = self.view.mentions_of(file)?.iter().map(|m| m.symbol).collect();
+        keys.sort_unstable();
+        keys.dedup();
+        let mut out = Vec::with_capacity(keys.len());
+        for key in keys {
+            let row = self
+                .view
+                .key_refs(SymbolId(key))?
+                .into_iter()
+                .find(|r| r.file == file.0)
+                .ok_or_else(|| {
+                    corrupt(format!("KEY_REFS: no row of key {key} for file {}", file.0))
+                })?;
+            let demand = DemandFlags::from_bits(row.demand)
+                .ok_or_else(|| corrupt(format!("KEY_REFS: key {key}'s demand")))?;
+            out.push(StoredKeyRef { key: SymbolId(key), file, demand });
+        }
+        Ok(out)
     }
     fn slots(&self) -> Result<Vec<StoredSlot>, IncrReason> {
         let mut out = Vec::new();
@@ -1033,7 +1118,12 @@ impl LayoutRows for LayoutOf<'_, '_> {
                 .get(s.kind as usize)
                 .ok_or_else(|| corrupt("SLOTS: kind"))?;
             let i = &mut index[s.kind as usize];
-            out.push(StoredSlot { kind: *k, key: self.sym_key(s.symbol)?, index: *i });
+            out.push(StoredSlot {
+                kind: *k,
+                key: self.sym_key(s.symbol)?,
+                index: *i,
+                refs: s.refs,
+            });
             *i += 1;
         }
         Ok(out)
