@@ -29,20 +29,20 @@ E
 : > detect.tsv
 dwo() { llvm-dwarfdump-22 --debug-info "$1" 2>/dev/null | grep -o 'DW_AT_\(GNU_\)\?dwo_name\|DW_TAG_skeleton_unit' | sort -u | tr '\n' ' '; }
 run() { # tag target comp flags...
-  tag=$1; tgt=$2; comp=$3; shift 3
+  tag=$1; tgt=$2; cc=$3; shift 3
   tf=""
   if [ "$tgt" = x64 ]; then
-    case $comp in g++) comp=x86_64-linux-gnu-g++;; *) tf="--target=x86_64-linux-gnu";; esac
+    case $cc in g++) cc=x86_64-linux-gnu-g++;; *) tf="--target=x86_64-linux-gnu";; esac
   fi
   d="$W/$tgt-$(echo "$tag" | tr ' =' '__')"; mkdir -p "$d"
-  if ! (cd "$d" && $comp $tf "$@" -I"$W" -c "$W/m.cc" -o m.o 2>cc.err && $comp $tf "$@" -I"$W" -c "$W/u.cc" -o u.o 2>>cc.err); then
+  if ! (cd "$d" && $cc $tf "$@" -I"$W" -c "$W/m.cc" -o m.o 2>cc.err && $cc $tf "$@" -I"$W" -c "$W/u.cc" -o u.o 2>>cc.err); then
     printf '%s\t%s\tCOMPILE FAILED: %s\n' "$tgt" "$tag" "$(head -1 "$d/cc.err")" >> detect.tsv; return
   fi
   ans=$(python3 -I "$D/classify.py" "$d/m.o" | sed "s|^$d/||")
   printf '%s\t%s\t%s\tdwo-attrs: %s\tdwo-file: %s\n' "$tgt" "$tag" "$ans" "$(dwo "$d/m.o")" "$(ls "$d" | grep -c '\.dwo$')" >> detect.tsv
   if [ -n "$M" ] && [ "$tgt" = a64 ]; then
     mkdir -p "$W/bin"; ln -sf "$M" "$W/bin/ld"
-    if (cd "$d" && $comp $tf -static -B"$W/bin" -Wl,--incremental=full -Wl,--gc-sections m.o u.o -o out 2>ld.err); then
+    if (cd "$d" && $cc $tf -static -B"$W/bin" -Wl,--incremental=full -Wl,--gc-sections m.o u.o -o out 2>ld.err); then
       v=$(llvm-dwarfdump-22 --verify "$d/out" 2>&1 | grep -c 'error:')
       s=$(readelf -SW "$d/out" | grep -c 'debug_gnu_pub')
       printf '%s\t%s\tlink(incremental=full): ok verify-errors=%s gnu-index-sections=%s\n' "$tgt" "$tag" "$v" "$s" >> detect.tsv

@@ -17,6 +17,7 @@
 #@ spec: incr.md IN-55 IN-12; image.md I-46 I-47 I-78
 #@ arch: aarch64 x86_64
 #@ requires: g++ llvm-dwarfdump
+#@ xfail(mortar): L3 rule M10 has no row for the GNU name index an incremental session leaves out (WP-229; the verifier row is its own package). Without L3 (--no-plumb) every step passes.
 
 cxx -g -gsplit-dwarf -gdwarf-5 -O0 main.cc -o main5.o
 cxx -g -gsplit-dwarf -gdwarf-5 -O0 b.cc -o b5.o
