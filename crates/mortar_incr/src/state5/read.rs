@@ -24,7 +24,8 @@ use mortar_core::layout::{
     AllocKey, Chunk, ChunkKind, DefValue, Defined, Erratum, Hole, Part, Patch, PatchKind, Place,
     Redirect, Segment, SymPlace, Synth, ThunkTarget, Tls,
 };
-use mortar_core::{ChunkId, FileId, OutSecId, SectionId, SymEntry, SymKey, SymbolId, SymbolIndex};
+use mortar_core::{ChunkId, FileId, OutSecId, SectionId, SymEntry, SymKey, SymbolId};
+use mortar_elf::SymbolIndex;
 
 use super::{
     BLOCK, DiagRaw, ENTRY, Entry, HEADER, Header, Keyed, Rec, StrFn, TABLES,
