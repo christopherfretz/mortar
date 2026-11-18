@@ -1,0 +1,273 @@
+{
+ "lane": "l10",
+ "version": 1,
+ "project": "gen200",
+ "config": "clang-a64-O2-nog-nofs-static",
+ "seed": 1,
+ "subject": "mortar",
+ "env": {},
+ "rows": null,
+ "hops": null,
+ "steps": [
+  {
+   "id": 0,
+   "edit": "move-def",
+   "set": {
+    "move_def": 1
+   },
+   "action": null,
+   "hop": 1,
+   "fault": null
+  },
+  {
+   "id": 1,
+   "edit": "gc-kill-revive",
+   "set": {
+    "gc_call": false
+   },
+   "action": null,
+   "hop": 1,
+   "fault": null
+  },
+  {
+   "id": 2,
+   "edit": "gc-kill-revive",
+   "set": {
+    "gc_call": true
+   },
+   "action": null,
+   "hop": 2,
+   "fault": null
+  },
+  {
+   "id": 3,
+   "edit": "e9",
+   "set": {
+    "newfn.9": true
+   },
+   "action": null,
+   "hop": 1,
+   "fault": null
+  },
+  {
+   "id": 4,
+   "edit": "gc-kill-revive",
+   "set": {
+    "gc_call": false
+   },
+   "action": null,
+   "hop": 3,
+   "fault": null
+  },
+  {
+   "id": 5,
+   "edit": "touch",
+   "set": {},
+   "action": "touch:u109",
+   "hop": 1,
+   "fault": null
+  },
+  {
+   "id": 6,
+   "edit": "eh-add",
+   "set": {
+    "eh.186": true
+   },
+   "action": null,
+   "hop": 1,
+   "fault": null
+  },
+  {
+   "id": 7,
+   "edit": "rename",
+   "set": {
+    "rename.20": true
+   },
+   "action": null,
+   "hop": 1,
+   "fault": null
+  },
+  {
+   "id": 8,
+   "edit": "rename",
+   "set": {
+    "rename.20": false
+   },
+   "action": null,
+   "hop": 2,
+   "fault": null
+  },
+  {
+   "id": 9,
+   "edit": "registry-grow-shrink",
+   "set": {
+    "reg.97": true
+   },
+   "action": null,
+   "hop": 1,
+   "fault": null
+  },
+  {
+   "id": 10,
+   "edit": "extraction",
+   "set": {
+    "extract": true
+   },
+   "action": null,
+   "hop": 1,
+   "fault": null
+  },
+  {
+   "id": 11,
+   "edit": "extraction",
+   "set": {
+    "extract": false
+   },
+   "action": null,
+   "hop": 2,
+   "fault": null
+  },
+  {
+   "id": 12,
+   "edit": "gc-kill-revive",
+   "set": {
+    "gc_call": true
+   },
+   "action": null,
+   "hop": 1,
+   "fault": null
+  },
+  {
+   "id": 13,
+   "edit": "common-ref",
+   "set": {
+    "common_ref": true
+   },
+   "action": null,
+   "hop": 1,
+   "fault": null
+  },
+  {
+   "id": 14,
+   "edit": "common-ref",
+   "set": {
+    "common_ref": false
+   },
+   "action": null,
+   "hop": 2,
+   "fault": null
+  },
+  {
+   "id": 15,
+   "edit": "gc-kill-revive",
+   "set": {
+    "gc_call": false
+   },
+   "action": null,
+   "hop": 2,
+   "fault": null
+  },
+  {
+   "id": 16,
+   "edit": "gc-kill-revive",
+   "set": {
+    "gc_call": true
+   },
+   "action": null,
+   "hop": 3,
+   "fault": null
+  },
+  {
+   "id": 17,
+   "edit": "move-def",
+   "set": {
+    "move_def": 0
+   },
+   "action": null,
+   "hop": 1,
+   "fault": null
+  },
+  {
+   "id": 18,
+   "edit": "move-def",
+   "set": {
+    "move_def": 1
+   },
+   "action": null,
+   "hop": 2,
+   "fault": null
+  },
+  {
+   "id": 19,
+   "edit": "static-global",
+   "set": {
+    "static.80": true
+   },
+   "action": null,
+   "hop": 1,
+   "fault": null
+  },
+  {
+   "id": 20,
+   "edit": "ctor-grow-shrink",
+   "set": {
+    "ctor.138": true
+   },
+   "action": null,
+   "hop": 1,
+   "fault": null
+  },
+  {
+   "id": 21,
+   "edit": "const-remove",
+   "set": {
+    "flit.141": false
+   },
+   "action": null,
+   "hop": 1,
+   "fault": null
+  },
+  {
+   "id": 22,
+   "edit": "const-remove",
+   "set": {
+    "flit.141": true
+   },
+   "action": null,
+   "hop": 2,
+   "fault": null
+  },
+  {
+   "id": 23,
+   "edit": "ctor-grow-shrink",
+   "set": {
+    "ctor.138": false
+   },
+   "action": null,
+   "hop": 2,
+   "fault": null
+  },
+  {
+   "id": 24,
+   "edit": "const-remove",
+   "set": {
+    "flit.141": false
+   },
+   "action": null,
+   "hop": 3,
+   "fault": null
+  },
+  {
+   "id": 25,
+   "edit": "e10",
+   "set": {
+    "lit.37": true
+   },
+   "action": null,
+   "hop": 1,
+   "fault": null
+  }
+ ],
+ "failure": "step 25 (e10) equiv: FAIL equiv exit 1: F: 0 findings, 16842 records | equiv: 3 findings; X 0 findings, F 0 findings; 15261 records, 679317 bytes, 4760 symbols, 1723 table entries compared [not minimized: ddmin over these 26 steps did not finish in 30 minutes; the steps after the failing one dropped]",
+ "check": "equiv"
+}

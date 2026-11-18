@@ -250,7 +250,9 @@ pub fn run(args: &Args) -> bool {
             Some(cargo_args) => cargo_step(&cargo_args),
             // Any exit status but 0 fails the gate ("Link tests", "Exit
             // status").
-            None if name == LINKTEST => crate::linktest::main(&linktest_args(args.quick)) == 0,
+            None if name == LINKTEST => {
+                crate::linktest::main(&linktest_args(args.quick)) == 0 && crate::l10::ci(args.quick)
+            }
             #[cfg(unix)]
             None if name == CENSUS => crate::census::main(&census_args(args.quick)) == 0,
             None if name == MASON => crate::mason::ci(args.quick),

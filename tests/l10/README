@@ -1,0 +1,31 @@
+L10: the random edit-sequence lane of incremental linking
+(spec/incr.md IN-63; spec/harness.md "L10"; docs/VALIDATION.md; WP-067).
+
+  cargo xtask l10 --quick            the pre-merge smoke (the gate runs it)
+  cargo xtask l10                    the nightly run: the matrix, the
+                                     regressions, the lane's own test
+  cargo xtask l10 --seed 7 --project gen200 --config gcc-a64-O0-g-fs-static --steps 40
+  cargo xtask l10 --replay tests/l10/regressions/<file>.json
+  cargo xtask l10 --minimize <work>/failed/<file>.json   (into regressions/)
+  cargo xtask l10 --self-test        the lane's own test
+  cargo xtask l10 --subject floor --edits e1,member-replace,touch --project gen200
+
+Files:
+  l10.py      the lane: sequences, the runner (three links a step), the
+              statistics, the minimizer (ddmin), the self test
+  judge.py    judge_step(tools, x, f, base, new): one step's verdict
+              (exit, verify, equiv, run, oracle). H-1 puts IN-79's judge
+              behind the same function; nothing in it is L10's.
+  edits.py    the edit table (ROWS) and the seeded sequence generator
+  build.py    configurations, the object cache, the captured link line
+  projects/gen200/project.py    the generated 200-unit program
+  projects/corpus40/project.py  R2's 40-unit corpus (corpus_gen.py)
+  subjects/   floor.py (the test path's update as the subject) and the
+              deliberately wrong subjects of the self test:
+              prev_output.py, flip_word.py, drop_diag.py
+  regressions/  minimized failing sequences (JSON), replayed nightly
+
+Work directory: <cargo target dir>/l10 (cache/: objects by content;
+capture/: each configuration's linker words; seq/<label>/: a running
+sequence, removed when it passes unless --keep; failed/: the sequence
+files of failures).

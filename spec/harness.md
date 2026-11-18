@@ -1742,6 +1742,129 @@ tests differ (262 under `dyn/`); in static-pies only, 38 links of 22
 tests (34 under `dyn/`); without the dynamic cases the same lane saw 1
 and 4.
 
+## L10
+
+`cargo xtask l10 [--quick] [--seed <n>]... [--steps <n>] [--hops 2|3]
+[--project <p>,...] [--compiler gcc|clang|kiln,...] [--target
+a64|x64|i386,...] [--config <name>,...] [--edits <row>,...] [--subject
+mortar|floor|<path>] [-j <n>] [--keep] [--replay <file>]...
+[--regressions] [--minimize <file>] [--self-test] [--mortar <path>]` is
+L10, the random edit-sequence lane of incremental linking
+(`spec/incr.md` IN-63, `docs/VALIDATION.md`; WP-067). The command
+(`xtask/src/l10.rs`) builds mortar (and the floor's example,
+`crates/mortar/examples/incr_floor.rs`, when the run needs it), holds
+`-j` jobserver tokens for the lane's workers and runs
+`tests/l10/l10.py`; the work directory is `<build directory>/l10`
+(`cache/`: objects by content, kept between runs; `capture/`: each
+configuration's linker words; `seq/<label>/`: a running sequence, removed
+when it passes unless `--keep`; `failed/`: the sequence files of
+failures).
+
+**A sequence** is (project, configuration, seed, steps). Its steps come
+from `tests/l10/edits.py`: one row per edit, each an assignment of the
+project's knobs (and optionally an action on the files: `touch`, a
+same-size rewrite in place right after the previous link, the output
+rewritten with its own bytes right after its link); a two-hop row
+schedules its inverse one to three steps later and, half the time, the
+edit again after that (review-in77's B-3 and B-4 shapes, where the stale
+datum shows on the second or third update); `--hops 3` (and the nightly
+run's seed 3) makes every two-hop edit three-hop: the edit, its inverse,
+the edit again (WP-207 §D 14). `random.Random` seeded with a string is
+the same on every host and Python, and the lane's workers only run
+sequences, so the same seed gives the same steps and the same verdict on
+any host and at any `-j`. A configuration is
+`<gcc|clang|kiln>-<a64|x64|i386>-<O0|O2>-<g|nog>-<fs|nofs>-<static|pie>`
+(kiln: the 64-bit targets, `-O0`, an AArch64 host, `MASON_KILN` and
+`MASON_HOD` set); x86-64 and i386 programs run under qemu. The linker
+words are captured once per configuration from the compiler driver
+through a `-B` wrapper (as the census does). `--gc-sections` is on by
+default with `-ffunction-sections` and off without; the `option-flip`
+row flips it.
+
+**Projects.** `gen200` (`projects/gen200/project.py`): 200 generated
+units (C and C++), `main.cc` linked directly, three archives (lib1.a
+thin), a Fortran unit with a COMMON block (a C stand-in without the
+target's gfortran), a lazily extracted member; templates and inline
+functions (COMDAT keepers), TLS, constructors whose `.init_array` order
+the program prints, a `__start_l10_reg`/`__stop_l10_reg` registry it
+iterates, `-fcommon` C. Its transcript depends on every unit.
+`corpus40` (`projects/corpus40/`): R2's 40-unit corpus
+(`spec/incr.md` §1.1) with its edits e1-e10, a regular and a thin
+archive. `protoc` (only by `--project protoc`): the bench's protoc
+objects (`cxx-medium-g-static`), read in place; an edit recompiles one
+source of the bench's tree into the cache; only
+`gcc-a64-O0-g-nofs-static`, skipped by name when the bench has not
+prepared it. `gonogo`: a named TODO (its 1.1 GB outputs do not fit the
+lane's scratch; the reason is printed).
+
+**A step** applies the edit, compiles what changed (the content-addressed
+cache: only what changed), installs the inputs in the work directory W
+(an unchanged input keeps its stamp; a changed one is a new inode, as a
+compiler writes it) and links three times in W: F, the plain full link;
+G, the incremental-mode full link (`--incremental=full`); X, the
+SUBJECT (`--incremental --incremental-report=`). Then the step's
+snapshot (the inputs as hard links, made private before any in-place
+rewrite; X's, F's and G's outputs and maps; X's report) is judged by
+`judge.judge_step(tools, x, f, base, new) -> Verdict` (`tests/l10/
+judge.py`; H-1's judge puts IN-79's checks behind the same function):
+
+1. exit: X's status and diagnostics equal F's (lines naming `incremental`
+   dropped, the output's name as `<out>`);
+2. verify: `cargo xtask plumb` accepts X's output with its map;
+3. equiv: `plumb --equiv` of X against F when X's map claims coverage
+   (`incremental`); otherwise (an IN-12 plain link) X's bytes equal F's;
+4. run: the two programs (qemu off the host) print and exit alike;
+5. oracle: IN-63a's `tests/incr-oracle/oracle.py`, as a library, over
+   the previous step's G and this step's G with X's report (it passes a
+   fall-back; two adapters: thin archive members are read from their
+   files, and archive members are identified by name and ordinal, not by
+   offset).
+
+The report's reason is recorded. A sequence stops at its first failing
+step; its sequence file goes to `failed/`, and `--minimize` reduces it
+by delta debugging (over steps, then each step's knobs and action) to
+the same failing check, writing `tests/l10/regressions/<label>.json` with
+the seed and the failure's first line; `--regressions` replays every one
+(the nightly run does): a regression fails until what it records is
+fixed, and then guards it. A base link mortar refuses by name (`unsupported
+feature`) ends the sequence as REFUSED; a sequence whose links all fail
+alike is FLAGGED.
+
+**Output.** Per sequence `L10 RESULT ... verdict=PASS|FAIL at=<step>
+<check>|REFUSED (...)`, `L10 STATS ... updates=<n>
+fallbacks=<reason>:<n>,... failed-links=<n>` (FLAGGED, in one line, when
+a passing sequence never updated: today every one), `L10 COST ...
+wall= links= load= [inputs= links= snapshot= exit= verify= equiv= run=
+oracle=]` (seconds per phase); per edit row `L10 EDIT <row> steps=
+reasons= hops=<1>/<2>/<3> [shape=..] [wp207=..]`; `L10 SUMMARY`. Exit
+status 1 when a sequence fails.
+
+**Subjects.** `mortar` (the product path), `floor` (`subjects/floor.py`:
+the test path's same-size update, WP-061, as the subject: a refusal is
+named in the report), or any executable; the self test's deliberately
+wrong ones are in `subjects/`. The seam for H-2's faults is the step's
+`fault` field, always null here (the runner refuses a non-null one).
+
+**`--self-test`** (the lane's own test, IN-63's last sentence): a
+subject that hands back the previous output at a seeded step, and one
+that flips one relocated word of an unchanged unit, are each found and
+minimized to at most 3 steps; a subject that drops one diagnostic is
+found by the exit check; the floor on same-size edits passes, and each
+step is an update or a refusal the floor names.
+
+**`--quick`** is the pre-merge smoke, run by `cargo xtask ci` after the
+link tests (`QUICK` in `l10.py`); IN-63's budget is 5 minutes of wall
+time. Without `--quick` and without a selection, the nightly run: every
+project of `PROJECTS` x the configurations of `nightly_configs()` x
+seeds 1-3 (3 three-hop) x 30 steps, then the regressions and the self
+test. Under `MORTAR_REQUIRE_TOOLS=1` a skipped configuration is an
+error. Measured (WP-067, 12 shared cores at a load of 6-15): the
+smoke takes 51 s warm, 65 s with an empty object cache (9 s compiling
+550 objects); the nightly run 120 sequences, about 10,000 links, 44
+minutes at `-j 4`, scratch peak 1.6 GB under `.build/target-*/l10/`.
+The oracle and the equivalence check are the largest phases (a quarter
+of the time each). `--project protoc` (by name; 6 steps) takes 100 s.
+
 ## Hosted CI
 
 GitHub Actions runs the gate on real hardware of both 64-bit

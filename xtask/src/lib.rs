@@ -18,6 +18,8 @@ pub mod identical;
 pub mod incr_oracle;
 pub mod jobs;
 #[cfg(unix)]
+pub mod l10;
+#[cfg(unix)]
 pub mod linktest;
 #[cfg(unix)]
 pub mod mason;
