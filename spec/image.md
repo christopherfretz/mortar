@@ -2212,12 +2212,15 @@ On the share, dirty mapped pages count as resident (599–1454 MiB for
 things move. The image's part:
 
 - **I-95 [M7]** An incremental link refills whole units (model §7.2):
-  the units the dependency index names, plus the units that moved. The
-  **dirty windows** are the windows their file ranges overlap. Only
-  dirty windows are filled, hashed and written; every byte of a dirty
-  window is refilled from the plan (a window's bytes are a function of
-  the tables, I-33), so neighbours of a changed unit in the same window
-  are rewritten with their unchanged bytes.
+  the units the dependency index names, plus the units that moved.
+  **The update fills its dirty ranges; the 1 MiB block is the unit of
+  the leaf hash, not of the fill** (WP-255a): the image fills exactly
+  the ranges the update must write (`spec/incr.md` IN-75), each from the
+  whole plan's rows (section bytes, I-41's pads, synthetic chunks,
+  headers; a range's bytes are a function of the tables, I-33), cut at
+  the jobs (I-31) and widened over a whole chunk it touches (I-104).
+  The blocks the written ranges touch are hashed again (I-76); the
+  bytes of a block outside its ranges are the previous output's.
 - **I-96 [M7] Writing in place.** The output is updated in place only
   when all of these hold; otherwise the whole output is written as in
   §7:
