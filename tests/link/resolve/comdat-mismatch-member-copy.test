@@ -1,0 +1,104 @@
+# comdat-mismatch-weak-archive-extract.test's shape where the member
+# that defines hx also has a copy of group g (WP-200; resolve.md §6.1,
+# §6.2): extracted after wa.o's copy is kept, its copy is dropped as
+# well, and its hx, outside the group, defines the key: wu.o's and Y's
+# calls bind to it, 7 + 7 + 1. GNU ld and mold refuse (undefined
+# reference / undefined symbol: they count wb.o's dropped definition
+# when they scan the archive); lld extracts nothing and writes the calls
+# as an undefined weak value. The member before wa.o (its copy kept):
+# comdat-mismatch-archive-first.test.
+#@ spec: resolve.md §6.2
+#@ spec: resolve.md §6.1
+#@ xfail(lld): lld leaves libhxg.a's member out although wu.o's strong reference needs hx, and writes wu.o's call as an undefined weak value (exit 3 on AArch64, a crash on x86-64 and i386)
+#@ arch: aarch64 x86_64 i386
+
+as wa.S -o wa.o
+as wb.S -o wb.o
+as hxg.S -o hxg.o
+cc -O1 wu.c -o wu.o
+ar rcs libhxg.a hxg.o
+
+link(bfd,mold) gcc -static -no-pie wu.o wa.o wb.o libhxg.a -o later
+  exit: fail
+  diag(bfd): undefined reference to `hx'
+  diag(mold): undefined symbol: hx
+link(lld,mortar) gcc -static -no-pie wu.o wa.o wb.o libhxg.a -o later
+run(mortar) later
+  exit: 15
+
+#--- wa.S
+	.section .note.GNU-stack,"",%progbits
+	.section .text.g,"axG",%progbits,g,comdat
+	.weak g
+	.type g,%function
+g:
+#if defined(__aarch64__)
+	mov w0, #1
+#else
+	movl $1, %eax
+#endif
+	ret
+#--- wb.S
+	.section .text.g,"axG",%progbits,g,comdat
+	.weak g
+	.type g,%function
+g:
+#if defined(__aarch64__)
+	mov w0, #2
+#else
+	movl $2, %eax
+#endif
+	ret
+	.weak hx
+	.type hx,%function
+hx:
+#if defined(__aarch64__)
+	mov w0, #40
+#else
+	movl $40, %eax
+#endif
+	ret
+	.text
+	.globl Y
+	.type Y,%function
+Y:
+#if defined(__aarch64__)
+	stp x29, x30, [sp, -16]!
+	bl hx
+	ldp x29, x30, [sp], 16
+#elif defined(__x86_64__)
+	subq $8, %rsp
+	call hx
+	addq $8, %rsp
+#else
+	call hx
+#endif
+	ret
+	.section .note.GNU-stack,"",%progbits
+#--- hxg.S
+	.section .text.g,"axG",%progbits,g,comdat
+	.weak g
+	.type g,%function
+g:
+#if defined(__aarch64__)
+	mov w0, #3
+#else
+	movl $3, %eax
+#endif
+	ret
+	.text
+	.globl hx
+	.type hx,%function
+hx:
+#if defined(__aarch64__)
+	mov w0, #7
+#else
+	movl $7, %eax
+#endif
+	ret
+	.section .note.GNU-stack,"",%progbits
+#--- wu.c
+int Y(void);
+int g(void);
+int hx(void);
+int main(void) { return Y() + hx() + g(); }

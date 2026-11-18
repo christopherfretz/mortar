@@ -1399,6 +1399,219 @@ fn s6_3_comdat_mismatch_names_group_and_files() {
     assert_eq!(cm.dropped.file, gh);
 }
 
+/// WP-200's shape: `wa` keeps group G (`g`), `wb`'s dropped copy also
+/// defines `hx` with `binding`, `wb` defines `Y`; returns the section of
+/// its copy. The caller places the files.
+fn wp200_copy(m: &mut Model, wb: FileId, binding: u8) -> u32 {
+    let s = m.comdat_def(wb, "G", "g");
+    m.sym(wb, "hx", binding, STT_FUNC, SymbolSection::Section(SectionIndex(s)), 4, 4);
+    m.def(wb, "Y");
+    s
+}
+
+/// The member that defines `hx`, in an archive of its own.
+fn wp200_hx(m: &mut Model) -> FileId {
+    let ar = m.archive();
+    let hx = m.member(ar, "hx.o");
+    m.def(hx, "hx");
+    hx
+}
+
+fn wp200_main(m: &mut Model, label: &str, strong_hx: bool) -> FileId {
+    let main = m.obj(label);
+    m.undef(main, "Y");
+    m.undef(main, "g");
+    if strong_hx {
+        m.undef(main, "hx");
+    }
+    main
+}
+
+#[test]
+fn s6_2_wp200_strong_reference_extracts_past_a_dropped_weak_definition() {
+    // `wu.o wa.o wb.o libhx.a`: wb.o's weak hx is in its dropped copy of
+    // G, a demoted mention; wu.o's strong undefined hx extracts hx.o.
+    let mut m = Model::new(A64);
+    let wu = wp200_main(&mut m, "wu.o", true);
+    let wa = m.obj("wa.o");
+    m.comdat_def(wa, "G", "g");
+    let wb = m.obj("wb.o");
+    wp200_copy(&mut m, wb, STB_WEAK);
+    let hx = wp200_hx(&mut m);
+    let r = link(&m);
+    assert!(live_of(&r, hx), "{:?}", r.file_live);
+    assert_eq!(r.file_live[hx.0 as usize], FileLive::Extracted(e(wu, SymbolIndex(3))));
+    assert_eq!(def(&m, &r, "hx").entry().unwrap().file, hx);
+    assert_eq!(def(&m, &r, "g").entry().unwrap().file, wa);
+    assert!(r.comdat_mismatch.is_empty(), "{:?}", r.comdat_mismatch);
+    assert_eq!(r.iterations, 2);
+    assert_eq!(r.targets.first[m.id("hx").0 as usize], wb.0, "the targets before the closure");
+}
+
+#[test]
+fn s6_2_wp200_orders_of_the_strong_reference_and_the_copy() {
+    // The strong reference after the copy, after the archive (a back
+    // reference: the closure has no order), and the dropped copy in a
+    // member; the archive before the copy (extracted in one iteration).
+    for order in 0..4 {
+        let mut m = Model::new(A64);
+        let wa = m.obj("wa.o");
+        m.comdat_def(wa, "G", "g");
+        let (wu, wb, hx);
+        match order {
+            0 => {
+                wb = m.obj("wb.o");
+                wu = wp200_main(&mut m, "wu.o", true);
+                hx = wp200_hx(&mut m);
+            }
+            1 => {
+                wb = m.obj("wb.o");
+                hx = wp200_hx(&mut m);
+                wu = wp200_main(&mut m, "wu.o", true);
+            }
+            2 => {
+                wu = wp200_main(&mut m, "wu.o", true);
+                let ar = m.archive();
+                wb = m.member(ar, "wb.o");
+                hx = wp200_hx(&mut m);
+            }
+            _ => {
+                wu = wp200_main(&mut m, "wu.o", true);
+                hx = wp200_hx(&mut m);
+                wb = m.obj("wb.o");
+            }
+        }
+        wp200_copy(&mut m, wb, STB_WEAK);
+        let r = link(&m);
+        assert!(
+            live_of(&r, wu) && live_of(&r, wb) && live_of(&r, hx),
+            "{order}: {:?}",
+            r.file_live
+        );
+        assert_eq!(def(&m, &r, "hx").entry().unwrap().file, hx, "{order}");
+        assert!(r.comdat_mismatch.is_empty(), "{order}: {:?}", r.comdat_mismatch);
+        assert_eq!(r.iterations, if order == 3 { 1 } else { 2 }, "{order}");
+    }
+}
+
+#[test]
+fn s6_2_wp200_demoted_mention_extracts_nothing_whatever_its_binding() {
+    // No other reference to hx: a demoted mention pulls nothing, whatever
+    // its binding (§6.2, the supervisor's ruling on WP-200); with nothing
+    // live defining hx it is comdat-mismatch (§6.3 case (b)), its binding
+    // the verdict's. GNU ld, lld and mold refuse these cells.
+    for binding in [STB_WEAK, STB_GLOBAL, STB_GNU_UNIQUE] {
+        for archive_first in [false, true] {
+            let mut m = Model::new(A64);
+            wp200_main(&mut m, "wm.o", false);
+            let wa = m.obj("wa.o");
+            m.comdat_def(wa, "G", "g");
+            let hx_first = archive_first.then(|| wp200_hx(&mut m));
+            let wb = m.obj("wb.o");
+            wp200_copy(&mut m, wb, binding);
+            let hx = hx_first.unwrap_or_else(|| wp200_hx(&mut m));
+            let r = link(&m);
+            let what = format!("binding {binding}, archive first {archive_first}");
+            assert!(!live_of(&r, hx), "{what}");
+            let weak = binding == STB_WEAK;
+            assert_eq!(def(&m, &r, "hx"), Def::Undefined { weak }, "{what}");
+            assert_eq!(r.comdat_mismatch.len(), 1, "{what}");
+        }
+    }
+}
+
+#[test]
+fn s6_2_wp200_demoted_mention_of_a_defined_key_extracts_nothing() {
+    // The i386 thunk shape: every object has a copy of group T defining
+    // the global (hidden) `thunk`; an archive member before them has one
+    // too. The kept copy defines the key, so the demoted mentions bind to
+    // it and extract no member (GNU ld leaves the member out).
+    let mut m = Model::new(A64);
+    let ar = m.archive();
+    let lazy = m.member(ar, "lazy.o");
+    let s = m.comdat_def(lazy, "T", "x");
+    m.sym(lazy, "thunk", STB_GLOBAL, STT_FUNC, SymbolSection::Section(SectionIndex(s)), 0, 4);
+    let mut objs = Vec::new();
+    for label in ["a.o", "b.o", "c.o"] {
+        let f = m.obj(label);
+        let s = m.comdat_def(f, "T", "x");
+        m.sym(f, "thunk", STB_GLOBAL, STT_FUNC, SymbolSection::Section(SectionIndex(s)), 0, 4);
+        objs.push(f);
+    }
+    let r = link(&m);
+    assert!(!live_of(&r, lazy), "{:?}", r.file_live);
+    assert_eq!(def(&m, &r, "thunk").entry().unwrap().file, objs[0]);
+    assert_eq!(r.iterations, 1);
+}
+
+#[test]
+fn s6_2_wp200_keeper_extracted_after_the_copy() {
+    // `wu.o libwa.a wb.o libhx.a`: wb.o references A, which only wa.o
+    // (lower FileId) defines; wa.o, extracted, keeps G and drops wb.o's
+    // copy; then wu.o's strong hx extracts hx.o.
+    let mut m = Model::new(A64);
+    let wu = wp200_main(&mut m, "wu.o", true);
+    let ar = m.archive();
+    let wa = m.member(ar, "wa.o");
+    m.comdat_def(wa, "G", "g");
+    m.def(wa, "A");
+    let wb = m.obj("wb.o");
+    wp200_copy(&mut m, wb, STB_WEAK);
+    m.undef(wb, "A");
+    let hx = wp200_hx(&mut m);
+    let r = link(&m);
+    assert!(live_of(&r, wa) && live_of(&r, hx), "{:?}", r.file_live);
+    assert_eq!(r.keepers.keeper[m.find_sig(b"G").unwrap().0 as usize].get(), Some(wa));
+    assert_eq!(def(&m, &r, "hx").entry().unwrap().file, hx);
+    assert!(r.comdat_mismatch.is_empty(), "{:?}", r.comdat_mismatch);
+    let _ = wu;
+}
+
+#[test]
+fn s6_2_wp200_member_brings_another_copy() {
+    // hx.o also has a copy of G: after wa.o's, it is dropped too; its hx
+    // is outside the group and defines the key. Before wa.o (the archive
+    // first) its copy is the keeper.
+    for archive_first in [false, true] {
+        let mut m = Model::new(A64);
+        wp200_main(&mut m, "wu.o", true);
+        let hx_first = archive_first.then(|| wp200_hx(&mut m));
+        let wa = m.obj("wa.o");
+        m.comdat_def(wa, "G", "g");
+        let wb = m.obj("wb.o");
+        wp200_copy(&mut m, wb, STB_WEAK);
+        let hx = hx_first.unwrap_or_else(|| wp200_hx(&mut m));
+        m.comdat_def(hx, "G", "g");
+        let r = link(&m);
+        assert!(live_of(&r, hx));
+        assert_eq!(def(&m, &r, "hx").entry().unwrap().file, hx);
+        let keeper = r.keepers.keeper[m.find_sig(b"G").unwrap().0 as usize].get();
+        assert_eq!(keeper, Some(if archive_first { hx } else { wa }));
+        assert!(r.comdat_mismatch.is_empty(), "{:?}", r.comdat_mismatch);
+    }
+}
+
+#[test]
+fn s6_2_wp200_demoted_strong_definition_does_not_stop_a_common() {
+    // A common's target skips a strong definition demoted by its dropped
+    // copy: the member's data definition is extracted (§4.5).
+    let mut m = Model::new(A64);
+    let main = m.obj("main.o");
+    m.common(main, "c", 4, 4);
+    m.undef(main, "g");
+    let wa = m.obj("wa.o");
+    m.comdat_def(wa, "G", "g");
+    let wb = m.obj("wb.o");
+    let s = m.comdat_def(wb, "G", "g");
+    m.sym(wb, "c", STB_GLOBAL, STT_OBJECT, SymbolSection::Section(SectionIndex(s)), 4, 4);
+    let ar = m.archive();
+    let cm = m.member(ar, "c.o");
+    m.data(cm, "c", 4);
+    let r = link(&m);
+    assert!(live_of(&r, cm), "{:?}", r.file_live);
+    assert_eq!(def(&m, &r, "c").entry().unwrap().file, cm);
+}
+
 #[test]
 fn s6_4_non_comdat_groups_are_not_merged() {
     let mut m = Model::new(A64);

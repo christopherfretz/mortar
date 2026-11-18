@@ -819,7 +819,13 @@ own symbol table (never an archive index; thin members at their stored
 path, a member of a nested thin archive not judged) and kept as `(key,
 kind)`: a definition (weak or not, function or data, resolve §4.5's
 classes), a common (`SHN_COMMON`, `SHN_X86_64_LCOMMON`), a strong or
-weak undefined mention after `--wrap` redirection (resolve §7.1). Keys
+weak undefined mention after `--wrap` redirection (resolve §7.1). Each
+object's `GRP_COMDAT` groups are read too, in section-index order, with
+their signatures as resolve §6.1 computes them (the signature symbol's
+name; for an `STT_SECTION` symbol the name of its section), and each
+definition in a section of one of them is marked with its group (the
+first group that lists the section); this is what the iterations below
+read (WP-231). Keys
 follow resolve §9.4: `foo@@V` is `foo` and also binds `foo@V`; `foo@V`
 is its own key. A shared object's visible dynamic definitions are its
 definitions (a default `foo@@V` is `foo` and `foo@V`, a hidden `foo@V`
@@ -886,11 +892,63 @@ and with it on the line M12 is not judged (the coverage says so).
 
 **mortar's map (rule 1, exact).** The closure of resolve §4.1 is
 computed twice: the lower bound with the open keys defined by file 0 and
-the open roots not followed, the upper bound the other way. A file the
+the open roots not followed, the upper bound the other way.
+
+**§4.1's iterations (WP-200, WP-231).** Each closure (each bound, each
+of D-12's stages, and the comparison of rule 2) is resolve §4.1's
+procedure "A dropped copy's definitions stop counting when it is
+dropped", computed from the inputs as the text states it and from
+nothing the output or the map shows:
+1. `T₁` is `first` and `cfirst` over every file's mentions (a
+   `--defsym` key's target is file 0, which is live: no edge, §4.1's
+   "with §7.2's `--defsym` keys removed"); `L₁` the closure from the
+   roots; `C₁` the keepers of resolve §6.1 over the relocatable objects
+   (named objects, members, `--start-lib` objects) of `L₁`: per
+   signature the live file of least `FileId` with a group of it, its
+   first group by section index; every other copy dropped.
+2. The trigger ("a mention feeds back when it is a defined (strong,
+   weak or common) non-local mention of a relocatable object live in
+   `L_i`, in a section `C_i` drops, and that object is `first(K)` or
+   `cfirst(K)` in `T_i` for its key `K` or, for a versioned `foo@V`
+   mention, for the unversioned `foo` too"): a definition marked with a
+   dropped group, of a live object that is the key's `first` or `cfirst`
+   in `T_i` (for a key with `@`, also the key before the `@`). A common
+   is in no section and never feeds back. None: the closure is `L_i`.
+3. "`T_{i+1}`: `first` and `cfirst` computed over all files as above,
+   except that a mention of a file live in `L_i` defined in a section
+   `C_i` drops is not counted; then, per key and per column, the later
+   of that and `T_i`" (no target is later than every file); "`L_{i+1}`:
+   the closure under `T_{i+1}` from the roots of §4.2 and every file
+   live in `L_i`" (a pulling reference already recorded stays: only the
+   M11 message reads it); "`C_{i+1}`: the keepers over the relocatable
+   objects of `L_{i+1}`". The edges are the ones above: a demoted mention
+   is a defined mention and none.
+4. The end, as written: after computing `T_{i+1}`, stop when `T_{i+1} =
+   T_i`, `L_i = L_{i−1}` and `C_i = C_{i−1}`, with `L_i` and `C_i`;
+   else go to 2 with `i+1`. (The text's indices mix `i+1` and `i−1`;
+   the reading "stop when `(T, L, C)` repeats" gives the same set:
+   `T_{i+1} = T_i` makes `L_{i+1} = L_i` and `C_{i+1} = C_i`, so the
+   literal condition holds one iteration later with the same `L`.)
+
+The bounds each run their own iterations. D-12's stages take the last
+iteration's `first(k)` for item 3's rule (a reference whose `first(k)`
+is a lazy file the stage has not made live). A link with no mismatched
+copy runs one iteration; one where a dropped copy's definition is a
+target but nothing refers to it strongly runs two and extracts nothing
+(the trigger does not ask whether anything refers to the key).
+The coverage line ends "; resolve §4.1's closure iterated n times" when
+the lower bound's ran more than once. A file the
 lower bound reaches and the map does not name is M11, with the
 reference that pulls it (the least edge found, by name); a file the map
 names that the upper bound does not reach, or that is not an input of
-the line, is M12. A file between the bounds is not judged. Files are
+the line, is M12. An M12 member that defines the key of a demoted mention
+of a file the upper bound reaches (a definition in a copy its last
+iteration drops) says so, naming the mention, its file and the group:
+"... and no root or live reference reaches it, only the demoted mention
+`hx` of wb.o (its dropped copy of COMDAT group `g`) (resolve §6.2: a
+demoted mention pulls nothing)" (resolve §6.2: "a demoted mention, weak,
+`STB_GLOBAL` or `STB_GNU_UNIQUE`, extracts no archive member, no lazy
+object (`--start-lib`) and no `--start-group` member"; WP-200's ruling). A file between the bounds is not judged. Files are
 compared by identity (resolve §4.6; `spec/model.md` §7.1): the path
 normalized lexically (`.`, `..` and repeated `/` removed: GNU ld and
 lld print the path as found, mold normalizes it, §3.6), the member name,
@@ -901,7 +959,17 @@ so, `lib/one.o`, not `libthin.a(lib/one.o)`).
 
 **A reference's map (rule 2).** Each reference follows its own
 extraction rule (resolve §16); the rule holds it to what all of them
-share. The files in the link are the members the map names (GNU ld's:
+share. Rule 2 computes no keepers: a definition in a COMDAT copy defines
+its key whichever copy the reference kept, as GNU ld, lld and mold read
+it when they scan an archive (WP-200's cells: GNU ld and mold refuse a
+strong reference whose only earlier definition is in a dropped copy, lld
+writes it as an undefined weak value; none of them extracts for it).
+So rule 2 has no M11 for a member only §4.1's iterations reach; a
+reference that leaves such a reference unsatisfied is judged by R5 at
+the reference (§5.7a; lld's outputs, an `xfail(lld)` of the lane's
+`resolve/comdat-mismatch-weak-archive-extract.test`,
+`-extract-orders.test`, `-member-copy.test`). Only the closure compared
+as coverage (below) is iterated. The files in the link are the members the map names (GNU ld's:
 with the preamble's), the files live from the start, and the shared
 objects. lld's and mold's maps name only files with a section they
 list: under `--gc-sections` neither names a file all of whose sections
@@ -945,7 +1013,8 @@ counted (`not judged n (files the map may leave out: …)`).
   coverage, not a finding: resolve §16 records where each differs.
 
 **Coverage**: one line, `input set: files judged n of m (in the link k,
-required r)` for mortar's map, `input set: files judged n of m (in the
+required r)` for mortar's map (with "; resolve §4.1's closure iterated
+n times" when it ran more than once), `input set: files judged n of m (in the
 link k); mortar's closure: the same` (or `differs (+a -b, c open)`) for a
 reference's, followed by what was not judged; or `input set: not judged
 (why)`. `m` counts the relocatable files of the line, members one by
@@ -955,7 +1024,11 @@ one.
 members by their headers; nothing else of a member); a file of at most
 64 MiB is read whole once and dropped when its item is done, a larger one
 by position. The mentions are kept as 5 bytes per symbol with the names
-interned once; the closure is linear in the mentions. Measured on
+interned once; the closure is linear in the mentions. A COMDAT group
+costs its signature (interned) and 8 bytes per definition in it; each
+iteration of §4.1 past the first recomputes the targets over every
+mention and the closure from every live file (only for a dropped copy's
+definition that is a target). Measured on
 `cxx-large-g` (7,603 files on the line, 2,845 in the link): the rule
 adds 2.9-3.2 s to a 13-14 s pass (5.9 s at a load of 9) and nothing to
 the peak (1,709 MiB by GNU time, the linker's 1,977 MiB); the landed
@@ -966,7 +1039,14 @@ symbol in two archives, an archive named twice, weak references and
 commons, the roots, GNU ld's position, a thin member by its path, maps
 that leave files out), `tests/inset.rs` (the EXTERN
 defect of 2026-11-17 by name, GNU ld's link of the same line clean, the
-mutations of §9.2 (s)), `map::gnu::tests::s3_4_the_preamble_s_members_and_reasons`.
+mutations of §9.2 (s)), `map::gnu::tests::s3_4_the_preamble_s_members_and_reasons`;
+§4.1's iterations: `inset::tests::s3_8_a_dropped_copy_s_definition_stops_counting`,
+`s3_8_a_demoted_mention_pulls_nothing`, `s3_8_no_mismatched_copy_runs_once`
+(synthetic objects, every order and kind of lazy file of WP-200's
+table), `tests/comdat_iter.rs` (mortar's links of WP-200's cells on
+AArch64 and x86-64, `tests/comdat_iter/gen.sh`; §9.2 (s) (6) to (8)),
+the lane's `resolve/comdat-mismatch-weak-archive-extract.test`,
+`-extract-orders.test`, `-member-copy.test`, `-keeper-later.test`.
 
 ## 4. Relocation values
 
@@ -2021,7 +2101,13 @@ holding `A` (the place, §4.4) or `S = 0` in every output CIE that
 carries it. Stage 3's model (§12.1) takes a demoted mention as
 an undefined mention of its key too: it defines nothing, and a weak one
 is a weak reference (so an import of such a key is no P-D7 "no input
-references it"). Tests: `tests/demoted.rs`; the lane's
+references it"). A non-weak one is a strong reference for the binding
+it asks of the output, never for D-11's neededness (resolve §6.2, dyn.md
+D-11 item 2, WP-200; WP-231): a library in `DT_NEEDED` that only such
+mentions refer to a definition of is P-D6 "... which D-11 does not make
+needed (only a mention defined in a dropped COMDAT copy refers to a
+definition of it: resolve §6.2, D-11 item 2)"; GNU ld makes it needed
+(A128). Tests: `tests/demoted.rs`; the lane's
 `resolve/comdat-mismatch-weak*.test`.
 
 ### 5.7b A field of `.eh_frame` or `.gcc_except_table`: its owner (WP-201)
@@ -4288,6 +4374,15 @@ produce a finding that is not a recorded anomaly (`tests/mutation.rs`):
   that only a weak reference names: M12; (5) GNU ld's printed reason
   made false: M12 naming the map line. The two orders of an archive and
   the object referring to it give mortar the same set, both clean.
+  §4.1's iterations (WP-231, `tests/comdat_iter.rs`, mortar's links of
+  WP-200's cells `ext`, `after`, `member`, `copy`, `grp` and `dem`):
+  (6) the member only the second iteration reaches removed: M11 naming
+  it and `hx`, by wu.o's reference (the model before WP-231, which
+  counted the dropped copy's `hx` as `first(hx)`, passed that map and
+  called the member in the unmutated one M12); (7) a member added that
+  only a demoted `STB_GLOBAL` mention names (`dem`): M12 naming the
+  mention, its file and the group; (8) the unmutated links: clean, the
+  coverage naming two iterations.
 
 - **(t)** Relocatable outputs (§14; V-R12 of record
   `spec/landed/layout/WP-154.md`; RL-5, WP-185, `tests/relocatable.rs`; (21) RL-6, WP-186, `tests/compose.rs`),
@@ -5258,6 +5353,18 @@ is accepted from its linker only, never from mortar's map.
   on x86-64). Reproducer: `tests/relocatable.rs`,
   `opt-s` (the D.3 C component, `-r -s`), every target. A QUESTION to
   the supervisor: an anomaly, or lld's form accepted at `-r -s`.
+
+- **A128 (GNU ld; WP-231).** GNU ld makes an `--as-needed` library
+  needed for a mention defined in a dropped COMDAT copy (a demoted
+  `STB_GLOBAL` mention) when nothing else refers to the library: an
+  extra `DT_NEEDED` entry, the program linked and run (8), where
+  resolve §6.2 and dyn.md D-11 item 2 (WP-200's ruling) refuse it
+  (`comdat-mismatch`), as lld and mold do. P-D6 with the message "...
+  which D-11 does not make needed (only a mention defined in a dropped
+  COMDAT copy refers to a definition of it: resolve §6.2, D-11 item
+  2)"; on mortar's output the same P-D6, a FAIL. Reproducer:
+  `resolve/comdat-mismatch-strong-demoted-needed.test` (`asn`, AArch64
+  and x86-64).
 
 lld also links a `.hidden` or `.protected` undefined reference that only
 a library defines (writing 0) and drops the library from `DT_NEEDED`:

@@ -1,0 +1,69 @@
+# comdat-mismatch-weak-needed.test's shape with a STRONG reference to hx
+# from the program's own object (WP-200; resolve.md §6.2, dyn.md D-11):
+# wb.o's demoted weak mention makes no library needed, but wm.o's strong
+# reference does, so libhx.so is needed, defines hx, and both the
+# program's read and Y's (through the demoted mention) bind to it:
+# 7 + 7 + 1. In -shared the same: libw.so needs libhx.so and its host
+# exits 15. GNU ld agrees (and mortar linked both before WP-200: the
+# needed set is decided after the closure, by the strong reference).
+# lld leaves libhx.so out of DT_NEEDED and writes hx as an undefined
+# weak value (exit 128 on AArch64, a crash on x86-64); mold refuses the
+# executable (undefined symbol: hx), leaves libhx.so out of libw.so's
+# DT_NEEDED and writes Y's read against the dropped .data.g (R5).
+#@ spec: resolve.md §6.2
+#@ spec: dyn.md D-11
+#@ xfail(lld): lld does not make libhx.so needed for wm.o's strong reference to hx (a dropped COMDAT copy defines hx weakly) and writes hx as an undefined weak value: exit 128 on AArch64, a crash on x86-64
+#@ xfail(mold): mold's libw.so leaves Y's read of hx against wb.o's dropped .data.g (the verifier's R5: refers to section '.data.g', which is not in the output)
+#@ arch: aarch64 x86_64
+
+cc -O1 -fno-pie wm.c -o wm.o
+cc -O1 -fno-pie wa.c -o wa.o
+cc -O1 -fno-pie wb.c -o wb.o
+cc -O1 -fPIC wmp.c -o wmp.o
+cc -O1 -fPIC wa.c -o wap.o
+cc -O1 -fPIC wb.c -o wbp.o
+cc -O1 -fPIC hxs.c -o hxs.o
+cc -O1 -fPIE main.c -o main.o
+shlib gcc hxs.o -Wl,-soname,libhx.so -o libhx.so
+
+link(mold) gcc -no-pie wm.o wa.o wb.o -Wl,--as-needed -L. -lhx -o asn
+  exit: fail
+  diag(mold): undefined symbol: hx
+link(bfd,lld,mortar) gcc -no-pie wm.o wa.o wb.o -Wl,--as-needed -L. -lhx -o asn
+run(bfd,mortar) asn
+  exit: 15
+check(bfd,mortar) readelf -dW asn
+  has: (NEEDED) Shared library: [libhx.so]
+link gcc -shared wmp.o wap.o wbp.o -Wl,--as-needed -L. -lhx -Wl,-soname,libw.so -o libw.so
+check(bfd,mortar) readelf -dW libw.so
+  has: (NEEDED) Shared library: [libhx.so]
+check(lld,mold) readelf -dW libw.so
+  not: [libhx.so]
+host gcc -pie main.o -L. -lw -lhx -o h
+run h
+  exit: 15
+
+#--- wm.c
+extern int g;
+extern int hx;
+int Y(void);
+int main(void) { return Y() + hx + g; }
+#--- wmp.c
+extern int g;
+extern int hx;
+int Y(void);
+int W(void) { return Y() + hx + g; }
+#--- main.c
+int W(void);
+int main(void) { return W(); }
+#--- wa.c
+__asm__(".section .data.g,\"awG\",%progbits,g,comdat\n"
+        ".weak g\n.type g,%object\n.size g,4\ng: .long 1\n.previous\n");
+#--- wb.c
+__asm__(".section .data.g,\"awG\",%progbits,g,comdat\n"
+        ".weak g\n.type g,%object\n.size g,4\ng: .long 2\n"
+        ".weak hx\n.type hx,%object\n.size hx,4\nhx: .long 40\n.previous\n");
+extern int hx __attribute__((weak));
+int Y(void) { return &hx ? hx : 0; }
+#--- hxs.c
+int hx = 7;

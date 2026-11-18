@@ -501,10 +501,53 @@ record):
   only `f` is not extracted unless `__real_f` is referenced (GNU ld and
   mold, E13; lld 19 extracts it, the programs run alike: §7.1, §16,
   WP-153).
-- **COMDAT does not feed back.** Extraction treats a definition in a group
-  section as a definition whichever copy is kept: the keeper is chosen
-  after the closure (§6.1). A key defined only in copies that end up
-  dropped is the error of §6.3.
+- **A dropped copy's definitions stop counting when it is dropped**
+  (§6.2; WP-200, the supervisor's ruling). While its file is lazy, a
+  definition in a group section is a definition whichever copy will be
+  kept. Once a live file of lower `FileId` holds the group (§6.1), the
+  copy is dropped and its definitions are no definitions of their keys
+  for `first` and `cfirst`; another file's strong reference then extracts
+  the member that defines the key. A demoted mention itself is never an
+  edge, whatever its binding (§6.2). So the closure is **iterated**, as
+  this procedure (within each stage of `spec/dyn.md` D-12):
+  1. Iteration 1: `T₁` is `first` and `cfirst` as above (with §7.2's
+     `--defsym` keys removed); `L₁` the closure of this section from the
+     roots of §4.2 under `T₁`; `C₁` the keepers of §6.1 over the
+     relocatable objects of `L₁`.
+  2. **Trigger.** After iteration `i`, a mention **feeds back** when it is
+     a defined (strong, weak or common) non-local mention of a
+     relocatable object live in `L_i`, in a section `C_i` drops (§6.2),
+     and that object is `first(K)` or `cfirst(K)` in `T_i` for its key
+     `K` or, for a versioned `foo@V` mention, for the unversioned `foo`
+     too. If none does, the closure is `L_i` and the keepers `C_i`: stop.
+  3. **Recomputed.** `T_{i+1}`: `first` and `cfirst` computed over all
+     files as above, except that a mention of a file live in `L_i`
+     defined in a section `C_i` drops is not counted; then, per key and
+     per column, the later of that and `T_i` (no file counts as later
+     than every file, so a key `T_i` has none of keeps none). `L_{i+1}`:
+     the closure under `T_{i+1}` from the roots of §4.2 and every file
+     live in `L_i` (an extracted member stays extracted; its pulling
+     reference is the least of the one it had and those of this
+     closure's edges into it); the edges are this section's, so a
+     demoted mention, a defined mention, adds none. `C_{i+1}`: the
+     keepers over the relocatable objects of `L_{i+1}`.
+  4. **End.** Go to 2 with `i+1`, except when the iteration would repeat
+     the one before: `T_{i+1} = T_i`, `L_i = L_{i−1}` and
+     `C_i = C_{i−1}`; then the closure is `L_i` and the keepers `C_i`.
+     (The indices are meant as written: `L_{i+1}` is a function of
+     `T_{i+1}` and `L_i`, and `C_{i+1}` of `L_{i+1}`, so these three
+     equalities give `L_{i+1} = L_i` and `C_{i+1} = C_i` without
+     computing them. The trigger of step 2 needs no reference to the
+     key: an iteration it starts that changes nothing ends here.
+     WP-231's questions, the supervisor's ruling.)
+  The live sets and the dropped copies only grow and the targets only
+  move to higher `FileId`s, so it ends. A member an earlier iteration
+  extracted stays even if its definition is later dropped, as in GNU ld,
+  lld and mold, which load it and then drop its copy. A link with no
+  mismatched copies runs once: a kept copy that defines the key has the
+  lower `FileId`, so `first` is never the dropped one's. A key that no
+  live file defines after the iterations, only dropped copies, is the
+  error of §6.3.
 - **Extraction reads the members' own symbol tables, never the archive's
   index** (finding 13): `spec/archive.md` reads every member anyway, a
   stale index cannot mislead mortar, and an archive without an index
@@ -1069,10 +1112,20 @@ even with the same name). Its symbols:
 
 - a non-local mention defined in a dropped section is **demoted** (§2): it
   takes part in resolution as an undefined mention of its key with its
-  binding, so it binds to the keeper's definition (all three). The binding
-  counts for everything resolution decides (precedence, and archive
-  extraction: a demoted weak mention extracts no member, as any weak
-  undefined mention, §4), but not for the verdict of a reference through
+  binding, so it binds to the keeper's definition (all three), or to
+  whatever defines the key once the closure has ended: another live
+  file's definition, a member some other reference extracted, a shared
+  object needed for another reason. Its binding counts for precedence and
+  for the verdict's wording, **never for extraction or neededness**: a
+  demoted mention, weak, `STB_GLOBAL` or `STB_GNU_UNIQUE`, extracts no
+  archive member, no lazy object (`--start-lib`) and no `--start-group`
+  member, and makes no `--as-needed` shared object needed (`spec/dyn.md`
+  D-11 item 2) (WP-200, the supervisor's ruling: GNU ld, lld and mold
+  extract nothing for one either, and refuse the program). From the
+  moment its copy is dropped its definition is no definition of the key
+  for `first` and `cfirst`, so another file's strong reference extracts
+  the member that defines the key (§4.1's iterations). Its binding does
+  not make the verdict of a reference through
   it: when the key ends with no definition, such a reference is
   `comdat-mismatch` (§6.3 case (b)) **whatever the mention's binding**
   (WP-176, the supervisor's ruling of 2026-11-17). The file had a
@@ -2325,7 +2378,7 @@ The ODR checks are as `spec/odr.md` says for a final link, with the
 
 | column | merge | order |
 |---|---|---|
-| `first(K)`, `cfirst(K)` | atomic minimum of `FileId` over the qualifying mentions of **all** files (§4.1), once, before the closure | `FileId` |
+| `first(K)`, `cfirst(K)` | atomic minimum of `FileId` over the qualifying mentions of **all** files (§4.1), before the closure; again before each further iteration of §4.1 (WP-200), without the definitions the previous iteration's keepers demote, never lower than before | `FileId` |
 | `file_live` | reachability: per round, each file of the frontier ORs `live[M]` for the lazy targets of its edges; the next frontier is the newly set bits in `FileId` order; the pulling reference is an atomic minimum of `(FileId << 32) \| st_index` per member | `≺` |
 | per-key class minima over live files (`Strong`, `Common`, `Weak`, `Shared`, `Shared` data, `Assign`, `Provide`) | atomic minimum of `(FileId << 32) \| st_index` per class, after the closure | `≺` |
 | `def` | a pure function of the class minima (§3.2) | — |
@@ -2362,8 +2415,14 @@ The ODR checks are as `spec/odr.md` says for a final link, with the
   to the member, also order-independent.
 - **`def` after the closure** is a function of class minima over the final
   live set.
-- **COMDAT** does not feed back into extraction (§4.1), so the keeper,
-  computed once over the final live set, cannot change `file_live`.
+- **COMDAT** feeds back into extraction only through §4.1's iterations
+  (WP-200): each is a closure over a graph fixed by the inputs and the
+  iteration before (its live set and its keepers, minima over that set),
+  so each is unique as above, and the sequence is. The live set and the
+  dropped copies only grow from one iteration to the next, the targets
+  only move to higher `FileId`s, and the iterations end when one changes
+  nothing (at most one per lazy file and key). The sequential reference
+  iterates the same way.
 - **The `--warn-backrefs` simulation** is sequential by definition and
   reads only the inputs and the final `def`; it changes no table.
 - **The sequential reference**: a worklist in `FileId` order. Tests run
@@ -2401,7 +2460,10 @@ honest ones).
   summary and on `FileId` order; the edges out of an `--as-needed`
   shared object depend on N too (`spec/dyn.md` D-12's stages, WP-167),
   a function of the same summaries and the line, so a change that
-  changes N runs the stages again. Replacing file `F` changes it only
+  changes N runs the stages again; and the iterations of §4.1 (WP-200)
+  make them depend on the keepers of the live set, so a change that
+  moves a keeper or the keys a group's copy defines runs the closure
+  again. Replacing file `F` changes it only
   through `F`'s own entries: the targets `first(K)` and `cfirst(K)` for
   the keys `F` defines (before or after), and the edges out of `F`. A
   change of a definition's **type** between function and data, or of its

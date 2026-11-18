@@ -1,9 +1,10 @@
 # comdat-mismatch-weak-archive.test with a STRONG reference to hx from
-# another file, first on the line (WP-178): resolve.md §6.2 counts wb.o's
-# demoted weak mention as an undefined weak mention for extraction, so
-# wu.o's strong undefined hx extracts libhx.a's member and hx is defined:
-# both calls bind to it, 7 + 7 + 1 = 15. mortar refuses it today (the
-# xfail: a refusal, no output). The references differ:
+# another file, first on the line (WP-178): wb.o's copy of g is dropped,
+# so its hx stops counting as a definition for extraction (resolve.md
+# §4.1's iterations, §6.2), and wu.o's strong undefined hx extracts libhx.a's member and hx is defined:
+# both calls bind to it, 7 + 7 + 1 = 15. mortar refused it until WP-200
+# (comdat-mismatch); it now extracts the member in the closure's second
+# iteration (resolve.md §4.1). The references differ:
 # GNU ld and mold take wb.o's dropped copy as a definition when they scan
 # the archive, extract nothing and then refuse the strong reference
 # (undefined reference); lld extracts nothing either and writes BOTH
@@ -13,7 +14,6 @@
 #@ spec: resolve.md §6.2
 #@ spec: resolve.md §4
 #@ xfail(lld): lld leaves libhx.a's member out although wu.o's strong reference needs hx, and writes wu.o's call as an undefined weak value (R5 at wu.o's call: every definition of hx it read is in a dropped COMDAT copy)
-#@ xfail(mortar): mortar refuses (comdat-mismatch, "symbol hx is defined only in a discarded copy of COMDAT group g") although wu.o's strong reference extracts libhx.a's member under resolve.md §6.2; with hx.o on the line in its place mortar links and the program exits 15 (WP-178 record §5)
 #@ arch: aarch64 x86_64 i386
 
 as wa.S -o wa.o

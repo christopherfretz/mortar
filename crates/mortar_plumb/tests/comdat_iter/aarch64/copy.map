@@ -1,0 +1,33 @@
+mortar-map 2
+file 0 wu.o
+file 1 wa.o
+file 2 wb.o
+file 3 libhxg.a hxg.o 56
+place 0 1 4100e8 10
+place 0 3 410118 0
+place 0 4 410118 0
+place 1 2 4100f8 0
+place 1 5 4100f8 8
+place 1 3 410118 0
+place 1 4 410118 0
+place 2 2 410100 10
+place 2 4 410118 0
+place 2 5 410118 0
+place 3 2 410110 8
+place 3 3 410118 0
+place 3 4 410118 0
+discard 2 6 comdat
+discard 3 5 comdat
+chunk synthetic .symtab - d8
+chunk synthetic .strtab - 2d
+chunk synthetic .shstrtab - 2a
+chunk synthetic .comment - d
+arg -static
+arg wu.o
+arg wa.o
+arg wb.o
+arg libhxg.a
+arg -o
+arg copy
+arg --mortar-map=copy.map
+end

@@ -1,0 +1,128 @@
+# comdat-mismatch-weak-archive-extract.test's shape in the other orders
+# of resolve.md §6.2 (WP-200): wb.o's copy of g is dropped (wa.o keeps
+# it), so its weak hx is a demoted mention, an undefined weak mention
+# from the moment its copy is dropped, and wu.o's strong reference
+# extracts libhx.a's member wherever it is on the line (§4.1's closure
+# has no order, its iterations, WP-200): every program exits 7 + 7 + 1.
+# - after: wu.o after the dropped copy; back: after the archive (a
+#   back reference: GNU ld has passed the archive); member: the dropped
+#   copy itself in an archive member that Y extracts; grp: in a group
+#   after the member defining hx (GNU ld's rescan); lazy: hx.o under
+#   --start-lib (lld, mold); t1, t8: one and eight threads, the same
+#   bytes.
+# GNU ld counts the dropped copy's definition when it scans the archive
+# and refuses (undefined reference to `hx'), in the group too (with the
+# member defining hx first in the group, it links: comdat-mismatch-
+# archive-first.test); mold refuses after, back and lazy (undefined
+# symbol) and links member and grp (exit 15); lld extracts nothing and writes both calls as an
+# undefined weak value (AArch64 exit 3, x86-64 and i386 a crash), the
+# strong reference of wu.o included: a wrong output.
+#@ spec: resolve.md §6.2
+#@ spec: resolve.md §4.1
+#@ xfail(lld): lld leaves libhx.a's member (or the lazy hx.o) out although wu.o's strong reference needs hx, and writes wu.o's call as an undefined weak value (the program exits 3 on AArch64, crashes on x86-64 and i386)
+#@ arch: aarch64 x86_64 i386
+
+as wa.S -o wa.o
+as wb.S -o wb.o
+cc -O1 hx.c -o hx.o
+cc -O1 wu.c -o wu.o
+ar rcs libhx.a hx.o
+ar rcs libwb.a wb.o
+
+link(bfd,mold) gcc -static -no-pie wa.o wb.o wu.o libhx.a -o after
+  exit: fail
+  diag(bfd): undefined reference to `hx'
+  diag(mold): undefined symbol: hx
+link(lld,mortar) gcc -static -no-pie wa.o wb.o wu.o libhx.a -o after
+run(mortar) after
+  exit: 15
+link(bfd,mold) gcc -static -no-pie wa.o wb.o libhx.a wu.o -o back
+  exit: fail
+  diag(bfd): undefined reference to `hx'
+  diag(mold): undefined symbol: hx
+link(lld,mortar) gcc -static -no-pie wa.o wb.o libhx.a wu.o -o back
+run(mortar) back
+  exit: 15
+link(bfd) gcc -static -no-pie wu.o wa.o libwb.a libhx.a -o member
+  exit: fail
+  diag(bfd): undefined reference to `hx'
+link(lld,mold,mortar) gcc -static -no-pie wu.o wa.o libwb.a libhx.a -o member
+run(mold,mortar) member
+  exit: 15
+link(bfd) gcc -static -no-pie wu.o wa.o -Wl,--start-group libwb.a libhx.a -Wl,--end-group -o grp
+  exit: fail
+  diag(bfd): undefined reference to `hx'
+link(lld,mold,mortar) gcc -static -no-pie wu.o wa.o -Wl,--start-group libwb.a libhx.a -Wl,--end-group -o grp
+run(mold,mortar) grp
+  exit: 15
+link(mold) gcc -static -no-pie wu.o wa.o wb.o -Wl,--start-lib hx.o -Wl,--end-lib -o lazy
+  exit: fail
+  diag(mold): undefined symbol: hx
+link(lld,mortar) gcc -static -no-pie wu.o wa.o wb.o -Wl,--start-lib hx.o -Wl,--end-lib -o lazy
+run(mortar) lazy
+  exit: 15
+link(mortar) gcc -static -no-pie wu.o wa.o wb.o libhx.a -Wl,--threads=1 -o t1
+run(mortar) t1
+  exit: 15
+link(mortar) gcc -static -no-pie wu.o wa.o wb.o libhx.a -Wl,--threads=8 -o t8
+run(mortar) t8
+  exit: 15
+check(mortar) cmp t1 t8
+  has: ^identical$
+
+#--- wa.S
+	.section .note.GNU-stack,"",%progbits
+	.section .text.g,"axG",%progbits,g,comdat
+	.weak g
+	.type g,%function
+g:
+#if defined(__aarch64__)
+	mov w0, #1
+#else
+	movl $1, %eax
+#endif
+	ret
+#--- wb.S
+	.section .text.g,"axG",%progbits,g,comdat
+	.weak g
+	.type g,%function
+g:
+#if defined(__aarch64__)
+	mov w0, #2
+#else
+	movl $2, %eax
+#endif
+	ret
+	.weak hx
+	.type hx,%function
+hx:
+#if defined(__aarch64__)
+	mov w0, #40
+#else
+	movl $40, %eax
+#endif
+	ret
+	.text
+	.globl Y
+	.type Y,%function
+Y:
+#if defined(__aarch64__)
+	stp x29, x30, [sp, -16]!
+	bl hx
+	ldp x29, x30, [sp], 16
+#elif defined(__x86_64__)
+	subq $8, %rsp
+	call hx
+	addq $8, %rsp
+#else
+	call hx
+#endif
+	ret
+	.section .note.GNU-stack,"",%progbits
+#--- hx.c
+int hx(void) { return 7; }
+#--- wu.c
+int Y(void);
+int g(void);
+int hx(void);
+int main(void) { return Y() + hx() + g(); }

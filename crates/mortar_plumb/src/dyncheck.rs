@@ -619,6 +619,18 @@ fn pd6(
                             .is_some_and(|k| k.root && !k.defined && !k.strong_ref)
                 })
             });
+        // resolve §6.2: a library only demoted mentions refer to.
+        let demoted = !hidden
+            && !root
+            && model.by_soname(m).is_some_and(|i| {
+                model.dsos[i].defs.iter().any(|(name, defs)| {
+                    defs.iter().any(crate::dynmodel::SoDef::visible)
+                        && model
+                            .keys
+                            .get(name)
+                            .is_some_and(|k| k.strong_ref && !k.need_ref && !k.defined)
+                })
+            });
         v.push(fd(
             6,
             format!(
@@ -627,6 +639,8 @@ fn pd6(
                     " (only a STV_HIDDEN entry: W1)"
                 } else if root {
                     ROOT_NEEDED
+                } else if demoted {
+                    DEMOTED_NEEDED
                 } else if model.by_soname(m).is_some_and(|i| model.unreached_needed.contains(&i)) {
                     UNREACHED_NEEDS
                 } else {
@@ -832,6 +846,12 @@ fn d30_rank() -> HashMap<u64, usize> {
 /// definition of (D-11 item 2: a root never makes an `--as-needed`
 /// library needed; mold does, anomaly A48; WP-163).
 pub(crate) const ROOT_NEEDED: &str = " (only a root names a definition of it: D-11 item 2)";
+
+/// P-D6's suffix for a library in `DT_NEEDED` that only demoted mentions
+/// (resolve §6.2: defined in a dropped COMDAT copy) refer to a definition
+/// of: a demoted mention makes no `--as-needed` library needed, whatever
+/// its binding (D-11 item 2, WP-200); GNU ld does, anomaly A128 (WP-231).
+pub(crate) const DEMOTED_NEEDED: &str = " (only a mention defined in a dropped COMDAT copy refers to a definition of it: resolve §6.2, D-11 item 2)";
 
 /// The suffix of P-D6 and P-D7 for a library only an object of the
 /// output that no stage of D-12 extracts makes needed (dyn.md D-12: an

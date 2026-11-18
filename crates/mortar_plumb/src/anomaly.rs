@@ -255,6 +255,11 @@ fn dynamic(linker: Format, output: &[u8], f: &Finding) -> Option<&'static str> {
             "A71: lld drops an --as-needed library needed at stage 1 when a later stage's member defines what it gave; GNU ld, mold and mortar keep it (dyn.md D-12 row 2a: N only grows)",
         );
     }
+    if bfd && d(6) && m.ends_with(crate::dyncheck::DEMOTED_NEEDED) {
+        return Some(
+            "A128: GNU ld makes an --as-needed library needed for a mention defined in a dropped COMDAT copy (a demoted STB_GLOBAL mention); lld, mold and mortar do not (resolve §6.2, dyn.md D-11 item 2)",
+        );
+    }
     if mold && d(6) && m.ends_with(crate::dyncheck::ROOT_NEEDED) {
         return Some(
             "A48: mold makes an --as-needed library needed when only a root (-u, -e, EXTERN) names a definition of it (dyn.md D-11 item 2)",

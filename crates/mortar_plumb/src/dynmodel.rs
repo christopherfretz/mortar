@@ -237,6 +237,12 @@ pub struct Key {
     pub hidden: bool,
     pub strong_ref: bool,
     pub weak_ref: bool,
+    /// A strong reference that is no demoted mention (resolve §6.2: a
+    /// mention defined in a dropped COMDAT copy makes no `--as-needed`
+    /// library needed, whatever its binding; D-11 item 2, WP-200): what
+    /// D-11 counts. `strong_ref` without it: only demoted `STB_GLOBAL`
+    /// or `STB_GNU_UNIQUE` mentions refer to the key (WP-231).
+    pub need_ref: bool,
     /// The version a reference asks for (`.symver`).
     pub version: Option<String>,
     /// The positions (line items) of the objects that reference it
@@ -753,7 +759,10 @@ impl Model {
                         k.weak_ref = true;
                     } else {
                         k.strong_ref = true;
-                        k.ref_pos.push((pos.unwrap_or(0), group));
+                        if !demoted {
+                            k.need_ref = true;
+                            k.ref_pos.push((pos.unwrap_or(0), group));
+                        }
                     }
                 }
             }
@@ -797,7 +806,7 @@ impl Model {
     ) -> Stage {
         let mut st = Stage::default();
         let strong: Vec<&String> =
-            keys.iter().filter(|(_, k)| k.strong_ref && !k.defined).map(|(n, _)| n).collect();
+            keys.iter().filter(|(_, k)| k.need_ref && !k.defined).map(|(n, _)| n).collect();
         let mut n0: BTreeSet<usize> =
             self.c.iter().copied().filter(|&i| !self.dsos[i].as_needed).collect();
         for k in &strong {

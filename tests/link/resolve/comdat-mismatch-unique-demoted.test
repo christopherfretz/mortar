@@ -1,0 +1,89 @@
+# A demoted STB_GNU_UNIQUE mention of a key only an archive member defines
+# (WP-200; resolve.md §6.2, the supervisor's ruling): wbu's copy of g is
+# dropped, and a demoted mention pulls nothing whatever its binding, so
+# libhv.a's member is not extracted, before or after it on the line, or
+# without it: the key ends with no definition and Y's reference through
+# the mention is comdat-mismatch (§6.3 case (b)). The references refuse
+# every line too: none of them extracts for a demoted mention (GNU ld:
+# undefined reference; lld: relocation refers to a symbol in a discarded
+# section; mold: refers to a discarded COMDAT section; on i386 it then
+# crashes).
+#@ spec: resolve.md §6.2
+#@ spec: resolve.md §4.1
+#@ xfail(mold,i386): mold crashes (signal 11) after reporting hv refers to a discarded COMDAT section
+#@ arch: aarch64 x86_64 i386
+
+as wa.S -o wa.o
+as wbu.S -o wbu.o
+cc -O1 hv.c -o hv.o
+cc -O1 wm.c -o wm.o
+ar rcs libhv.a hv.o
+
+link gcc -static -no-pie wm.o wa.o wbu.o libhv.a -o after
+  exit: fail
+  diag(bfd): undefined reference to `hv'
+  diag(lld): relocation refers to a symbol in a discarded section: hv
+  diag(mold): hv refers to a discarded COMDAT section
+  diag(mortar): symbol hv is defined only in a discarded copy of COMDAT group g
+link gcc -static -no-pie wm.o wa.o libhv.a wbu.o -o before
+  exit: fail
+  diag(bfd): undefined reference to `hv'
+  diag(lld): relocation refers to a symbol in a discarded section: hv
+  diag(mold): hv refers to a discarded COMDAT section
+  diag(mortar): symbol hv is defined only in a discarded copy of COMDAT group g
+link gcc -static -no-pie wm.o wa.o wbu.o -o none
+  exit: fail
+  diag(bfd): undefined reference to `hv'
+  diag(lld): relocation refers to a symbol in a discarded section: hv
+  diag(mold): hv refers to a discarded COMDAT section
+  diag(mortar): symbol hv is defined only in a discarded copy of COMDAT group g
+
+#--- wa.S
+	.section .note.GNU-stack,"",%progbits
+	.section .text.g,"axG",%progbits,g,comdat
+	.weak g
+	.type g,%function
+g:
+#if defined(__aarch64__)
+	mov w0, #1
+#else
+	movl $1, %eax
+#endif
+	ret
+#--- wbu.S
+	.section .text.g,"axG",%progbits,g,comdat
+	.weak g
+	.type g,%function
+g:
+#if defined(__aarch64__)
+	mov w0, #2
+#else
+	movl $2, %eax
+#endif
+	ret
+	.section .rodata.g,"aG",%progbits,g,comdat
+	.globl hv
+	.type hv,%gnu_unique_object
+	.size hv,4
+hv:
+	.long 40
+	.text
+	.globl Y
+	.type Y,%function
+Y:
+#if defined(__aarch64__)
+	adrp x0, hv
+	ldr w0, [x0, :lo12:hv]
+#elif defined(__x86_64__)
+	movl hv(%rip), %eax
+#else
+	movl hv, %eax
+#endif
+	ret
+	.section .note.GNU-stack,"",%progbits
+#--- hv.c
+int hv = 7;
+#--- wm.c
+int Y(void);
+int g(void);
+int main(void) { return Y() + g(); }

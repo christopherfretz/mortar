@@ -500,6 +500,10 @@ every default line links. Notation:
    whether or not its section survives `--gc-sections`: needed is
    decided by resolution, before liveness; GNU ld and mold agree, lld
    drops the library, E-shlib 2.6a); call the sets of items 1-2 **N0**.
+   A **demoted** mention of a dropped COMDAT copy (resolve §6.2) is not
+   such a reference, whatever its binding (WP-200, the supervisor's
+   ruling): it binds to `bind(k)` when another reason makes a definer
+   needed, and is otherwise `comdat-mismatch` (resolve §6.3).
    A **root** of resolve §4.2 that comes from an option or a script
    directive (`-u`, `--require-defined`, `-e`/`ENTRY`, `EXTERN`) is not
    such a reference: it makes no shared object needed (GNU ld's manual

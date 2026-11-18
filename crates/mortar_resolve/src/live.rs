@@ -16,9 +16,10 @@ use std::sync::atomic::Ordering::Relaxed;
 
 use mortar_core::par::Pool;
 use mortar_core::resolution::FileLive;
-use mortar_core::{FileId, SymbolId};
+use mortar_core::{FileId, OptId, SymbolId};
 use mortar_elf::SymbolIndex;
 
+use crate::comdat::SectionMap;
 use crate::mention::{Bits, Class, atomics_u32, atomics_u64, classify, is_data, min_u32, min_u64};
 use crate::options::Root;
 use crate::view::{FileKind, Mention, View, entry_word, word_entry};
@@ -62,10 +63,24 @@ pub fn targets<V: View>(view: &V, pool: &Pool) -> Targets {
 }
 
 pub(crate) fn targets_with<V: View>(view: &V, kinds: &[FileKind], pool: &Pool) -> Targets {
+    targets_demoted(view, kinds, None, pool)
+}
+
+/// `first(K)` and `cfirst(K)` without the definitions `prior` demotes
+/// (§6.2, WP-200): a mention of a file live in `prior` defined in a
+/// section of a copy its keepers drop is not a definition, it is an
+/// undefined mention of its key from the moment its copy is dropped.
+fn targets_demoted<V: View>(
+    view: &V,
+    kinds: &[FileKind],
+    prior: Option<Prior<'_>>,
+    pool: &Pool,
+) -> Targets {
     let keys = view.keys() as usize;
     let first = atomics_u32(keys, NO_FILE);
     let cfirst = atomics_u32(keys, NO_FILE);
-    pool.unit_cost(280).for_each_init(kinds.len(), Vec::new, |buf: &mut Vec<Mention>, f| {
+    let init = || (Vec::new(), SectionMap::default(), Vec::new());
+    pool.unit_cost(280).for_each_init(kinds.len(), init, |(buf, map, scratch), f| {
         let kind = kinds[f];
         let file = FileId(f as u32);
         if !defines(view, kind, file) || kind == FileKind::Internal {
@@ -73,10 +88,11 @@ pub(crate) fn targets_with<V: View>(view: &V, kinds: &[FileKind], pool: &Pool) -
         }
         buf.clear();
         view.mentions(file, buf);
+        let demote = prior.is_some_and(|p| p.fill(view, kind, file, map, scratch));
         let lazy = kind.is_lazy();
         for m in buf.iter() {
             let (class, _) = classify(m, mortar_core::SymEntry { file, index: m.index });
-            if !class.is_candidate() {
+            if !class.is_candidate() || (demote && is_demoted(m, map)) {
                 continue;
             }
             let c =
@@ -93,6 +109,81 @@ pub(crate) fn targets_with<V: View>(view: &V, kinds: &[FileKind], pool: &Pool) -
         first: first.into_iter().map(std::sync::atomic::AtomicU32::into_inner).collect(),
         cfirst: cfirst.into_iter().map(std::sync::atomic::AtomicU32::into_inner).collect(),
     }
+}
+
+/// A [`Prior`]'s columns, owned between iterations.
+pub(crate) type PriorOwned = (Vec<FileLive>, Vec<OptId<FileId>>);
+
+/// The previous iteration of the closure (§4.1, §6.2; WP-200): its live
+/// files and the keepers over them. A mention of one of those files in a
+/// section its keepers drop is demoted: from then on its definition is no
+/// definition of its key for `first` and `cfirst`. It is no edge either
+/// (§6.2: a demoted mention extracts nothing, whatever its binding).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Prior<'a> {
+    pub live: &'a [FileLive],
+    pub keeper: &'a [OptId<FileId>],
+}
+
+impl Prior<'_> {
+    /// Fills `map` for `file` when it was live and has groups; whether
+    /// its mentions can be demoted.
+    fn fill<V: View>(
+        self,
+        view: &V,
+        kind: FileKind,
+        file: FileId,
+        map: &mut SectionMap,
+        scratch: &mut Vec<crate::problem::Problem>,
+    ) -> bool {
+        if !kind.is_object() || !self.live.get(file.0 as usize).is_some_and(|l| l.is_live()) {
+            return false;
+        }
+        scratch.clear();
+        map.fill(view, file, view.file(file).sections, self.keeper, false, scratch);
+        map.any
+    }
+}
+
+/// Whether mention `m` is defined in a section `map` drops (§6.2).
+#[inline]
+pub(crate) fn is_demoted(m: &Mention, map: &SectionMap) -> bool {
+    match m.place {
+        mortar_elf::SymbolSection::Section(s) => map.is_dropped(s.0),
+        _ => false,
+    }
+}
+
+/// Whether the definition the demoted mention `m` of the live file `file`
+/// had is `first` or `cfirst` of its key (§6.2, WP-200), which then moves
+/// on. A link without a mismatched COMDAT copy has none: a kept copy
+/// defining the key has a lower `FileId`.
+#[inline]
+pub(crate) fn feeds_back(m: &Mention, file: FileId, targets: &Targets) -> bool {
+    [Some(m.key), m.also.get()].into_iter().flatten().any(|key| {
+        let k = key.0 as usize;
+        targets.first[k] == file.0 || targets.cfirst[k] == file.0
+    })
+}
+
+/// The targets of the iteration after `prior` (§6.2, WP-200): `targets`
+/// without the definitions `prior` demotes. Never lower than `targets`
+/// (a `--defsym` key keeps [`NO_FILE`]).
+pub(crate) fn next_targets<V: View>(
+    view: &V,
+    kinds: &[FileKind],
+    targets: &Targets,
+    prior: Prior<'_>,
+    pool: &Pool,
+) -> Targets {
+    let mut next = targets_demoted(view, kinds, Some(prior), pool);
+    for (n, t) in next.first.iter_mut().zip(&targets.first) {
+        *n = (*n).max(*t);
+    }
+    for (n, t) in next.cfirst.iter_mut().zip(&targets.cfirst) {
+        *n = (*n).max(*t);
+    }
+    next
 }
 
 /// The lazy target of the edge out of mention `m` (§4.1 edges 1 and 2),
@@ -143,7 +234,9 @@ const INLINE_FRONTIER: usize = 16;
 /// `sources` (per `FileId`, may be short) are the shared objects whose
 /// references are edges in this stage although [`extracts`] says no: the
 /// members of N under `--as-needed` of an earlier stage (`spec/dyn.md`
-/// D-12, WP-167).
+/// D-12, WP-167). `prior` (§4.1's iterations, WP-200): the live files of
+/// the iteration before, which stay live with their pulling references.
+#[allow(clippy::too_many_arguments, reason = "the closure's inputs, one per column")]
 pub(crate) fn closure<V: View>(
     view: &V,
     kinds: &[FileKind],
@@ -151,6 +244,7 @@ pub(crate) fn closure<V: View>(
     redirect: &[SymbolId],
     roots: &[Root],
     sources: &[bool],
+    prior: Option<&[FileLive]>,
     pool: &Pool,
 ) -> Closure {
     let n = kinds.len();
@@ -159,7 +253,13 @@ pub(crate) fn closure<V: View>(
     let mut frontier: Vec<u32> = Vec::new();
     for (f, kind) in kinds.iter().enumerate() {
         let source = sources.get(f).copied().unwrap_or(false);
-        if (source || extracts(view, *kind, FileId(f as u32))) && !kind.is_lazy() {
+        let before = prior.and_then(|p| p.get(f)).copied();
+        if let Some(FileLive::Extracted(e)) = before {
+            min_u64(&pull[f], entry_word(e.file, e.index));
+        }
+        if ((source || extracts(view, *kind, FileId(f as u32))) && !kind.is_lazy())
+            || before.is_some_and(FileLive::is_live)
+        {
             live.set(f);
             if *kind != FileKind::Internal {
                 frontier.push(f as u32);
@@ -189,7 +289,7 @@ pub(crate) fn closure<V: View>(
         run.unit_cost(1500).for_each_init(
             frontier.len(),
             || (Vec::new(), Vec::new()),
-            |(buf, found): &mut (Vec<Mention>, Vec<u32>), u| {
+            |(buf, found), u| {
                 let file = FileId(frontier[u]);
                 buf.clear();
                 view.mentions(file, buf);
@@ -239,6 +339,11 @@ pub fn oracle<V: View>(
 /// [`oracle`] with the shared objects `sources` (per `FileId`) as sources
 /// of edges, as [`crate::resolve`]'s later stages have them (`spec/dyn.md`
 /// D-12, WP-167).
+///
+/// The iterations of §4.1 (WP-200): after each closure, the keepers over
+/// its live objects (§6.1); when a demoted mention [`feeds_back`], the
+/// closure again from its live files with the targets without the demoted
+/// definitions; until no demoted mention feeds back or nothing changes.
 pub fn oracle_with<V: View>(
     view: &V,
     targets: &Targets,
@@ -247,13 +352,68 @@ pub fn oracle_with<V: View>(
     sources: &[bool],
 ) -> Vec<FileLive> {
     let kinds = kinds(view);
+    let seq = Pool::sequential();
+    let mut targets = targets.clone();
+    let mut prior: Option<PriorOwned> = None;
+    loop {
+        let p = prior.as_ref().map(|(live, _)| live.as_slice());
+        let live = oracle_once(view, &kinds, &targets, redirect, roots, sources, p);
+        let objects: Vec<FileId> = (0..kinds.len())
+            .filter(|&f| live[f].is_live() && kinds[f].is_object())
+            .map(|f| FileId(f as u32))
+            .collect();
+        let keeper = crate::comdat::keepers(view, &objects, &seq).keeper;
+        let mut map = SectionMap::default();
+        let mut scratch = Vec::new();
+        let mut buf = Vec::new();
+        let mut back = false;
+        for &file in &objects {
+            map.fill(view, file, view.file(file).sections, &keeper, false, &mut scratch);
+            buf.clear();
+            view.mentions(file, &mut buf);
+            for m in &buf {
+                let (class, _) = classify(m, mortar_core::SymEntry { file, index: m.index });
+                if class.is_candidate() && map.any && is_demoted(m, &map) {
+                    back |= feeds_back(m, file, &targets);
+                }
+            }
+        }
+        if !back {
+            return live;
+        }
+        let p = Prior { live: &live, keeper: &keeper };
+        let next = next_targets(view, &kinds, &targets, p, &seq);
+        if next == targets && prior.as_ref().is_some_and(|(l, k)| *l == live && *k == keeper) {
+            return live;
+        }
+        targets = next;
+        prior = Some((live, keeper));
+    }
+}
+
+/// One closure of [`oracle_with`], sequentially.
+fn oracle_once<V: View>(
+    view: &V,
+    kinds: &[FileKind],
+    targets: &Targets,
+    redirect: &[SymbolId],
+    roots: &[(SymbolId, u32)],
+    sources: &[bool],
+    prior: Option<&[FileLive]>,
+) -> Vec<FileLive> {
     let n = kinds.len();
     let mut live = vec![false; n];
     let mut pull = vec![u64::MAX; n];
     let mut work = std::collections::BTreeSet::new();
     for (f, kind) in kinds.iter().enumerate() {
         let source = sources.get(f).copied().unwrap_or(false);
-        if (source || extracts(view, *kind, FileId(f as u32))) && !kind.is_lazy() {
+        let before = prior.and_then(|p| p.get(f)).copied();
+        if let Some(FileLive::Extracted(e)) = before {
+            pull[f] = pull[f].min(entry_word(e.file, e.index));
+        }
+        if ((source || extracts(view, *kind, FileId(f as u32))) && !kind.is_lazy())
+            || before.is_some_and(FileLive::is_live)
+        {
             live[f] = true;
             work.insert(f as u32);
         }
@@ -277,7 +437,7 @@ pub fn oracle_with<V: View>(
         buf.clear();
         view.mentions(FileId(f), &mut buf);
         for m in &buf {
-            if let Some(target) = edge(m, targets, redirect, &kinds) {
+            if let Some(target) = edge(m, targets, redirect, kinds) {
                 let t = target as usize;
                 pull[t] = pull[t].min(m.word(FileId(f)));
                 if !live[t] {

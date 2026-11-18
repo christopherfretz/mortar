@@ -13,7 +13,7 @@
 //! D1, sorted by `(key, ≺)`.
 
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU8, AtomicU16, AtomicU64, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU64, Ordering::Relaxed};
 
 use mortar_core::par::{Pool, split_offsets};
 use mortar_core::resolution::{
@@ -25,7 +25,7 @@ use mortar_elf::{SectionIndex, SymbolSection};
 
 use crate::comdat::{Keepers, SectionMap, keepers};
 use crate::linker::{self, Provided};
-use crate::live::{Closure, Targets, closure, kinds, targets_with};
+use crate::live::{Closure, Prior, PriorOwned, Targets, closure, kinds, targets_with};
 use crate::mention::{
     Class, align_log2, atomics_u8, atomics_u16, atomics_u64, classify, max_u8, max_u64, min_u8,
     min_u64, or_u16, rank_vis, vis_rank,
@@ -113,7 +113,9 @@ pub mod flags {
     /// demoted mention; [`REF_REGULAR`] without the roots of §4.2).
     /// `spec/dyn.md` D-11 item 2: a root makes no shared object needed.
     pub const OBJ_REF: u16 = 1 << 11;
-    /// One of the [`OBJ_REF`] mentions is not weak.
+    /// One of the [`OBJ_REF`] mentions is an undefined mention that is not
+    /// weak. A demoted mention never sets it (§6.2, WP-200: it makes no
+    /// `--as-needed` shared object needed, whatever its binding).
     pub const OBJ_STRONG: u16 = 1 << 12;
 }
 
@@ -144,7 +146,12 @@ pub struct Resolved {
     /// references were edges of the last stage's closure although
     /// `--as-needed` (the members of N of the stage before it).
     pub sources: Vec<bool>,
-    /// `first`/`cfirst` (§4.1).
+    /// The closure's iterations of the last stage (§6.2, WP-200): 1 unless
+    /// a demoted mention fed back.
+    pub iterations: u32,
+    /// `first`/`cfirst` (§4.1) before the closure: the iterations' own
+    /// (without the demoted definitions) are recomputed from them,
+    /// [`crate::live::oracle`] does.
     pub targets: Targets,
     /// `def` (§3.2).
     pub def: Vec<Def>,
@@ -213,6 +220,15 @@ struct Ctx<'a, V> {
     redirect: &'a [SymbolId],
     lto_slim: Option<SymbolId>,
     opts: &'a Options,
+    /// D1 only: what a demoted mention is checked against (§6.2, WP-200).
+    feedback: Option<Feedback<'a>>,
+}
+
+/// The closure's iteration D1 checks (§4.1, WP-200): `again` is set when
+/// a demoted mention of a live file feeds back (`live::feeds_back`).
+struct Feedback<'a> {
+    targets: &'a Targets,
+    again: &'a AtomicBool,
 }
 
 /// The effect of one mention of a live object, after demotion (§6.2).
@@ -304,68 +320,104 @@ fn resolve_stage<V: View>(
 ) -> (Resolved, Option<crate::shared::Stage>) {
     let keys = view.keys() as usize;
     let kinds = kinds.to_vec();
-    let targets = targets.clone();
+    let base = targets;
+    let mut targets = targets.clone();
     let redirect = opts.redirect(view.keys());
     let roots = opts.roots();
     let mut problems = Vec::new();
-    let Closure { live: mut file_live, rounds } =
-        closure(view, &kinds, &targets, &redirect, &roots, &stage.sources, pool);
-    steps.step("resolve.closure");
-    let live_objects: Vec<FileId> = (0..kinds.len())
-        .filter(|&f| file_live[f].is_live() && kinds[f].is_object())
-        .map(|f| FileId(f as u32))
-        .collect();
-    let keepers = keepers(view, &live_objects, pool);
-    steps.step("resolve.keepers");
+    // §4.1's iterations (WP-200): a dropped copy's definitions stop
+    // counting for `first` and `cfirst` when it is dropped. The closure
+    // runs again from its live files when D1 finds a demoted mention whose
+    // definition was `first` or `cfirst` of its key (`live::feeds_back`),
+    // with the targets recomputed without the demoted definitions; a link
+    // without one runs once.
+    let mut prior: Option<PriorOwned> = None;
+    let mut iterations = 1;
+    let (mut file_live, rounds, live_objects, keepers, section_base, sections, acc, found) = loop {
+        let p = prior.as_ref().map(|(live, _)| live.as_slice());
+        let Closure { live: file_live, rounds } =
+            closure(view, &kinds, &targets, &redirect, &roots, &stage.sources, p, pool);
+        steps.step("resolve.closure");
+        let live_objects: Vec<FileId> = (0..kinds.len())
+            .filter(|&f| file_live[f].is_live() && kinds[f].is_object())
+            .map(|f| FileId(f as u32))
+            .collect();
+        let keepers = keepers(view, &live_objects, pool);
+        steps.step("resolve.keepers");
 
-    // section_base (§10): an exclusive prefix sum over the live objects.
-    let mut section_base = Vec::with_capacity(kinds.len());
-    let mut offsets = Vec::with_capacity(live_objects.len());
-    let mut next = 0u32;
-    for f in 0..kinds.len() {
-        let start = SectionId(next);
-        if file_live[f].is_live() && kinds[f].is_object() {
-            offsets.push(next as usize);
-            next = next.saturating_add(view.file(FileId(f as u32)).sections);
+        // section_base (§10): an exclusive prefix sum over the live objects.
+        let mut section_base = Vec::with_capacity(kinds.len());
+        let mut offsets = Vec::with_capacity(live_objects.len());
+        let mut next = 0u32;
+        for f in 0..kinds.len() {
+            let start = SectionId(next);
+            if file_live[f].is_live() && kinds[f].is_object() {
+                offsets.push(next as usize);
+                next = next.saturating_add(view.file(FileId(f as u32)).sections);
+            }
+            section_base.push(IdRange::new(start, SectionId(next)));
         }
-        section_base.push(IdRange::new(start, SectionId(next)));
-    }
-    offsets.push(next as usize);
-    let blank = SectionRow {
-        kind: SectionKind::Null,
-        state: SectionState::Dropped(DropReason::Consumed),
-        reloc: SectionIndex(0),
-        comdat: OptId::NONE,
-    };
-    let mut sections = vec![blank; next as usize];
-    steps.step("resolve.section_base");
+        offsets.push(next as usize);
+        let blank = SectionRow {
+            kind: SectionKind::Null,
+            state: SectionState::Dropped(DropReason::Consumed),
+            reloc: SectionIndex(0),
+            comdat: OptId::NONE,
+        };
+        let mut sections = vec![blank; next as usize];
+        steps.step("resolve.section_base");
 
+        let again = AtomicBool::new(false);
+        let ctx = Ctx {
+            view,
+            keeper: &keepers.keeper,
+            redirect: &redirect,
+            lto_slim: view.find_key(b"__gnu_lto_slim"),
+            opts,
+            feedback: Some(Feedback { targets: &targets, again: &again }),
+        };
+        let acc = Acc::new(keys);
+        for root in &roots {
+            acc.flags[root.key.0 as usize]
+                .fetch_or(flags::REF_REGULAR | flags::REF_STRONG, Relaxed);
+        }
+        let found = Mutex::new(Found::default());
+        {
+            let parts = split_offsets(&mut sections, &offsets);
+            pool.unit_cost(6300).for_each_part_init(
+                live_objects.iter().copied().zip(parts),
+                Scratch::default,
+                |scratch, _, (file, rows)| {
+                    let mut out = Found::default();
+                    d1_file(&ctx, &acc, file, rows, scratch, &mut out);
+                    if !out.is_empty() {
+                        found.lock().unwrap_or_else(std::sync::PoisonError::into_inner).append(out);
+                    }
+                },
+            );
+        }
+        if again.into_inner() {
+            let p = Prior { live: &file_live, keeper: &keepers.keeper };
+            let next = crate::live::next_targets(view, &kinds, &targets, p, pool);
+            let still =
+                prior.as_ref().is_some_and(|(l, k)| *l == file_live && *k == keepers.keeper);
+            if !(next == targets && still) {
+                targets = next;
+                prior = Some((file_live, keepers.keeper));
+                iterations += 1;
+                continue;
+            }
+        }
+        break (file_live, rounds, live_objects, keepers, section_base, sections, acc, found);
+    };
     let ctx = Ctx {
         view,
         keeper: &keepers.keeper,
         redirect: &redirect,
         lto_slim: view.find_key(b"__gnu_lto_slim"),
         opts,
+        feedback: None,
     };
-    let acc = Acc::new(keys);
-    for root in &roots {
-        acc.flags[root.key.0 as usize].fetch_or(flags::REF_REGULAR | flags::REF_STRONG, Relaxed);
-    }
-    let found = Mutex::new(Found::default());
-    {
-        let parts = split_offsets(&mut sections, &offsets);
-        pool.unit_cost(6300).for_each_part_init(
-            live_objects.iter().copied().zip(parts),
-            Scratch::default,
-            |scratch, _, (file, rows)| {
-                let mut out = Found::default();
-                d1_file(&ctx, &acc, file, rows, scratch, &mut out);
-                if !out.is_empty() {
-                    found.lock().unwrap_or_else(std::sync::PoisonError::into_inner).append(out);
-                }
-            },
-        );
-    }
     let mut found = found.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner);
     problems.append(&mut found.problems);
     found.retained.sort_unstable();
@@ -524,7 +576,8 @@ fn resolve_stage<V: View>(
         rounds,
         stages: 1,
         sources: Vec::new(),
-        targets,
+        iterations,
+        targets: base.clone(),
         def,
         props,
         common,
@@ -649,12 +702,23 @@ fn d1_file<V: View>(
             flags::NON_TLS
         };
         let rank = vis_rank(m.visibility);
+        if dropped
+            && class.is_candidate()
+            && let Some(fb) = &ctx.feedback
+            && !fb.again.load(Relaxed)
+            && crate::live::feeds_back(m, file, fb.targets)
+        {
+            fb.again.store(true, Relaxed);
+        }
         match effect(m, class, dropped, ctx.redirect) {
             Effect::Ref { key, weak } => {
                 let k = key.0 as usize;
                 let mut bits = tls | flags::REF_REGULAR | flags::OBJ_REF;
                 if !weak {
-                    bits |= flags::REF_STRONG | flags::OBJ_STRONG;
+                    bits |= flags::REF_STRONG;
+                    if !dropped {
+                        bits |= flags::OBJ_STRONG;
+                    }
                 }
                 if dropped {
                     bits |= flags::DEMOTED;
