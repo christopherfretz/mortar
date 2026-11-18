@@ -1,0 +1,6 @@
+# WP-207 §D: a.o gains a constructor (.init_array grows), loses it, gains it.
+proves: DEFINED's __init_array_end was rewritten at hop 2: libc's loop runs over the right entries again
+source: WP-207 §D, the two- and three-hop series
+edit: a.cc
+link: main.o a.o b.o
+compilers: gcc kiln

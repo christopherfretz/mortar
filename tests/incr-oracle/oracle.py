@@ -12,8 +12,12 @@ Adapted from WP-060's refill oracle (R3, `.build/review-incr/oracle.py`,
 56 of 56 pairs): its ELF and map readers, its units and its by-value
 comparison of moved units (unit_by_value) are kept; its own predictor is
 replaced by the report. A file is identified across the two links by
-(map path, member, offset); it is CHANGED when its bytes differ, it is
-missing in one link, or it is extracted in only one.
+(map path, member name, ordinal among the archive's members of that name)
+(WP-067 §7.2, applied by WP-223: an earlier member's growth moves every
+later member, which stays the same file, as mortar's change detection,
+IN-24, and its report see it); it is CHANGED when its bytes differ, it is
+missing in one link, or it is extracted in only one. A thin archive's
+member is read from the file its header names.
 
 Units: `place` (allocated input section), `nplace` (non-allocated, offset
 in the output section) and `piece` groups (a file's contributions of one
@@ -235,6 +239,7 @@ class Link:
             ps.sort()
             self.units[k] = tuple(ps)
             self.ranges[k] = [self.at_addr(a, z) for (_i, a, z) in ps]
+        self.by_name()
         self.keys = set(self.files.values())
         self._eh_rev = None
         self.nobits = set()    # units whose input section is NOBITS (set by main)
@@ -309,14 +314,71 @@ class Link:
             out += self.out[s['off'] + o:s['off'] + o + z]
         return out
 
+    def by_name(self):
+        """Re-keys every archive member from (path, member, offset) to
+        (path, member, ordinal among the members of that name), keeping the
+        offset in real_offset for reading (WP-067 §7.2 patch 2)."""
+        seen, remap, self.real_offset = {}, {}, {}
+        for fid in sorted(self.files):
+            path, mem, off = self.files[fid]
+            if mem is None:
+                continue
+            n = seen.get((path, mem), 0)
+            seen[(path, mem)] = n + 1
+            new = (path, mem, n)
+            remap[(path, mem, off)] = new
+            self.real_offset[new] = off
+        if not remap:
+            return
+        rk = lambda k: remap.get(k, k)
+        self.files = {i: rk(k) for i, k in self.files.items()}
+        self.units = {(rk(k), kind, sec): v for (k, kind, sec), v in self.units.items()}
+        self.ranges = {(rk(k), kind, sec): v for (k, kind, sec), v in self.ranges.items()}
+        self.discard = {(rk(k), sec) for (k, sec) in self.discard}
+
     def file_bytes(self, key):
         path, mem, off = key
         p = path if os.path.isabs(path) else os.path.join(self.d, path)
+        if mem is not None:
+            off = self.real_offset.get(key, off)
+            member = thin_member(p, off)
+            if member is not None:
+                with open(member, 'rb') as f:
+                    return f.read()
         with open(p, 'rb') as f:
             if mem is None:
                 return f.read()
             f.seek(off); h = f.read(60)
             return f.read(int(h[48:58].decode().strip()))
+
+
+def thin_member(archive, off):
+    """The file a thin archive's member header at `off` names (relative to
+    the archive), or None for a regular archive (WP-067 §7.2 patch 1: a
+    thin archive holds only the members' headers)."""
+    with open(archive, 'rb') as f:
+        if f.read(8) != b'!<thin>\n':
+            return None
+        f.seek(off)
+        name = f.read(16).decode('latin1').rstrip()
+        if name.startswith('/') and name[1:].isdigit():
+            f.seek(8)
+            while True:          # the `//` long-name table
+                h = f.read(60)
+                if len(h) < 60:
+                    return None
+                size = int(h[48:58].decode().strip())
+                if h[:3] == b'// ':
+                    table = f.read(size).decode('latin1')
+                    at = int(name[1:])
+                    name = table[at:table.index('\n', at)]
+                    break
+                if h[:1] == b'/':
+                    f.seek(size + (size & 1), 1)
+                else:
+                    return None
+        name = name.rstrip('/')
+    return os.path.join(os.path.dirname(archive), name)
 
     def tls_offsets(self, objs):
         """TP offset of every placed TLS input section."""
