@@ -14,7 +14,11 @@ Branch `wp/255d-file-front`, base dbe047c4. Brief: `briefs/wp-255d.md`
 
 ## Next
 - `Ids::Update` (a changed file) is coded (sections at the join's
-  `first_section`, keys `None` when `find_key` has none) but not tested.
+  `first_section`, keys `None` when `find_key` has none) but NOT tested:
+  next line to write is a test that edits `x1.cpp`, builds the new object,
+  and compares `front_of(.., Ids::Update { first_section })` with the
+  whole front of the new inputs.
+- The versioned-duplicate key case (brief) is not in the test.
 - Split pieces and the scan with stored facts: the seams of M1's table
   (`mortar_merge::phase::units` private; `mortar_scan::driver::run_unit`
   private): need the supervisor's ruling first.
