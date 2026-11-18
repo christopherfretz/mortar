@@ -4450,17 +4450,43 @@ file changes or when one of its file's sections moves (IN-25).
   code 1, `DW_TAG_compile_unit`, `DW_CHILDREN_no`, attribute 0x2000
   (`DW_AT_lo_user`, ULEB `80 40`) with form `DW_FORM_block` (0x09), whose
   ULEB length (padded to a fixed width when needed) makes the DIE end
-  exactly at the unit's end, with no null entries after it. Its
-  abbreviation table is `01 11 00 80 40 09 00 00`. For a file that has a
-  `.debug_addr` contribution (Clang DWARF 5), the neutral unit also keeps
-  `DW_AT_addr_base` (0x73, `DW_FORM_sec_offset` 0x17) aimed at the file's
-  dead `.debug_addr` table, with the abbreviation table `01 11 00 73 17 80
-  40 09 00 00`. readelf reads `.debug_addr` tables only through the units
+  exactly at the unit's end, with no null entries after it.
+
+  **The neutral abbreviation table.** Every incremental-mode output with
+  a `.debug_abbrev` section holds, at the end of `.debug_abbrev` (the
+  `ABBREV_TABLE` hole, **38 bytes**), one table of four abbreviations,
+  each without children, and its end:
+
+  ```
+  01 11 00 80 40 09 00 00          code 1  DW_TAG_compile_unit: DW_AT_lo_user DW_FORM_block
+  02 41 00 80 40 09 00 00          code 2  DW_TAG_type_unit:    DW_AT_lo_user DW_FORM_block
+  03 11 00 73 17 80 40 09 00 00    code 3  DW_TAG_compile_unit: DW_AT_addr_base DW_FORM_sec_offset, DW_AT_lo_user DW_FORM_block
+  04 11 00 b3 42 17 80 40 09 00 00 code 4  DW_TAG_compile_unit: DW_AT_GNU_addr_base (0x2133) DW_FORM_sec_offset, DW_AT_lo_user DW_FORM_block
+  00                               the end of the table
+  ```
+
+  It is written whatever the inputs (with or without type units or
+  address tables), so an update never needs to grow it, and every
+  neutral unit of the output names it (`T` in IN-51b); no other neutral
+  table exists, and no abbreviation is ever written into a dead
+  contribution's own `.debug_abbrev` range (WP-228 part A, §A.2: a
+  skeleton's whole contribution is smaller than the table, and a
+  contribution placed in place leaves no dead range).
+
+  **Units that keep an address base.** A dead unit whose file has a
+  `.debug_addr` contribution keeps its address base as the first
+  attribute of its one DIE: `DW_AT_addr_base` (code 3) in a DWARF 5
+  unit, aimed past the 8-byte header of the file's dead `.debug_addr`
+  table; `DW_AT_GNU_addr_base` (code 4) in a DWARF 2–4 unit, aimed at
+  the start of the file's dead table (a GNU table has no header). One
+  rule for both versions (WP-229: the DWARF 4 base is not required by
+  any tool; it is kept so that the rule is one rule). readelf reads `.debug_addr` tables only through the units
   that name them, so an unnamed dead table between live ones gives
-  "Corrupt .debug_addr section". The rest of the file's dead
+  "Corrupt .debug_addr section". A file's dead
   `.debug_abbrev` contribution is zero bytes, and each zero byte is an
-  empty table. Minimum unit length: 14 bytes (DWARF 4), 15 (DWARF 5) or
-  19 (with `DW_AT_addr_base`), so that the block holds at least one byte.
+  empty table. Minimum unit length: 14 bytes (DWARF 4), 15 (DWARF 5),
+  18 or 19 (keeping an address base, DWARF 4 or 5), so that the block
+  holds at least one byte.
   A 0-byte block makes readelf warn "Block ends prematurely".
   Measured by R9 (`debug_chain.sh` with `dwarf_pad.py --form=block`): 20
   dead versions of one file, g++ and clang++, DWARF 4 and 5.
@@ -4472,8 +4498,21 @@ file changes or when one of its file's sections moves (IN-25).
   | block with `DW_AT_addr_base` (Clang DWARF 5) | 0 | 0, and none in a full `readelf --debug-dump` | same |
   | tombstoned only (E6's "emul") | 0 on DWARF 4; 116 (g++) and 250 (clang) on DWARF 5 | 0 | differ |
 
-  Type and skeleton units are detected (IN-55a) and fall back
-  (`debug-unit-kind`) until S5 tests their conversion. *Test:* R9 in L10
+  A skeleton unit (`DW_UT_skeleton`, or a DWARF 4 compile unit with
+  `DW_AT_GNU_dwo_name`) is neutralized like a compile unit: a DWARF 5
+  skeleton becomes `DW_UT_compile`, and its 8-byte dwo_id is part of
+  the block. The rest of a skeleton file's dead contributions follow
+  IN-53 and IN-54. Measured by WP-229 (`skel.sh`): g++ 14 and clang++
+  22, DWARF 4 and 5, AArch64 and x86-64, one file edited: gdb and lldb
+  transcripts equal the full link's with the `.dwo` files and after
+  `llvm-dwp` (GCC DWARF 5: `.dwo` only, as llvm-dwp does not finish on
+  its `.dwo`); verify clean; readelf clean, except one "Corrupt
+  `.debug_addr`" on DWARF 5 when the base is dropped (hence the rule
+  above). Type units are detected (IN-55a); their neutral forms are
+  IN-51b's (a `.debug_types` unit, a DWARF 5 `DW_UT_type` unit), and
+  until the debug placement lands (WP-228 part B, with IN-52a's rules
+  for their COMDAT groups) a changed file that has them falls back
+  (`debug-unit-kind`). *Test:* R9 in L10
   per compiler and DWARF version. plumb checks that each dead
   `.debug_info` range is a sequence of block-form units.
 - **IN-51b [v1] Neutral forms of the other debug sections.** A dead
@@ -4481,18 +4520,66 @@ file changes or when one of its file's sections moves (IN-25).
   its compiler wrote it (IN-53), or a remainder or allotment slack in the
   section's neutral form:
 
-  | section | neutral form | minimum, granule (bytes) |
+  Notation: `L` is the range's size, `A` the output's address size (8
+  on AArch64 and x86-64, 4 on ELFCLASS32), `u16(x)`, `u32(x)`, `u64(x)`
+  the value in the output's byte order, bytes in hex, `T` the offset of
+  the neutral abbreviation table in `.debug_abbrev` (IN-51), `B` IN-51's
+  block: a ULEB128 length `n` written in `k` bytes (padded with `0x80`
+  continuation bytes when `n` needs fewer), `k` the smallest with
+  `n + k` = the rest of the unit and `n` at least 1, then `n` zero
+  bytes.
+
+  | section | neutral form of `L` bytes | minimum, granule (bytes) |
   |---|---|---|
-  | `.debug_info` | IN-51's block unit | 14 / 15 / 19, 1 |
-  | `.debug_abbrev` | zero bytes | 1, 1 |
-  | `.debug_line` v5 | a header with `opcode_base` 7, one format entry `[DW_LNCT_path, DW_FORM_string]` for directories and for files, each with count 0, `header_length` exact, and the rest `DW_LNS_negate_stmt` (0x06) bytes | 32, 1 |
-  | `.debug_line` v2–v4 | the same with empty directory and file lists | 24, 1 |
-  | `.debug_rnglists`, `.debug_loclists` | a v5 header with `offset_entry_count` 0, the body zero (`DW_RLE_end_of_list`/`DW_LLE_end_of_list`) | 12, 1 |
-  | `.debug_str_offsets` | a v5 header, then zero entries | 8, 4 |
-  | `.debug_addr` | a v5 header (address size 8), then zeros | 8, 8; never split (see below) |
-  | `.debug_ranges` (v4) | zero bytes | 16, 1 |
-  | `.debug_frame` | a CIE (version 1, empty augmentation), then `DW_CFA_nop` | 13, 1 |
+  | `.debug_info` v5 | `u32(L−4) 05 00 01 A u32(T) 01 B` | 15, 1 |
+  | `.debug_info` v2–v4 | `u32(L−4) 04 00 u32(T) A 01 B` | 14, 1 |
+  | `.debug_info` v5 keeping its address base | `u32(L−4) 05 00 01 A u32(T) 03 u32(D+8) B`, `D` the offset of the file's dead `.debug_addr` table (its 8-byte header skipped) | 19, 1 |
+  | `.debug_info` v2–v4 keeping its address base (GNU split) | `u32(L−4) 04 00 u32(T) A 04 u32(D) B` (a GNU table has no header) | 18, 1 |
+  | `.debug_info` type units (v5, `DW_UT_type`) | the `.debug_info` v5 compile unit above | 15, 1 |
+  | `.debug_types` (v4) | `u32(L−4) 04 00 u32(T) A u64(S) u32(23) 02 B`, `S` = `0xdead` in the top 16 bits and the unit's offset in `.debug_types` below them (no two neutral units share a signature; no `DW_FORM_ref_sig8` names one) | 26, 1 |
+  | `.debug_abbrev` | `L` zero bytes (each an empty table); the one table of IN-51 in its hole | 1, 1 |
+  | `.debug_line` v5 | `u32(L−4) 05 00 A 00 u32(20) 01 01 01 fb 0e 07 00 01 01 01 01 00 01 01 08 00 01 01 08 00`, then `L−32` bytes `06` (`DW_LNS_negate_stmt`): `opcode_base` 7, one format entry `[DW_LNCT_path, DW_FORM_string]` for directories and for files, each with count 0 | 32, 1 |
+  | `.debug_line` v2–v4 | `u32(L−4) 04 00 u32(14) 01 01 01 fb 0e 07 00 01 01 01 01 00 00 00`, then `L−24` bytes `06`: the same with empty directory and file lists | 24, 1 |
+  | `.debug_rnglists`, `.debug_loclists` | `u32(L−4) 05 00 A 00 u32(0)`, then `L−12` zero bytes (`DW_RLE_end_of_list`, `DW_LLE_end_of_list`) | 12, 1 |
+  | `.debug_str_offsets` | `u32(L−4) 05 00 00 00`, then zero entries | 8, 4 |
+  | `.debug_addr` v5 | `u32(L−4) 05 00 A 00`, then zero entries; never split (see below) | 8, `A` |
+  | `.debug_addr` named by a v2–v4 unit (GNU split: the range a code-4 unit's base names) | `L` zero bytes (no header); never split | `A`, `A` |
+  | `.debug_ranges` (v2–v4) | `L` zero bytes | 2·`A`, 1 |
+  | `.debug_loc` (v2–v4) | `L` zero bytes (end-of-list pairs) | 2·`A`, 1 |
+  | `.debug_frame` | one CIE: `u32(L−4) ff ff ff ff 01 00 01 7c 1e`, then `L−13` bytes `00` (`DW_CFA_nop`): version 1, augmentation "", code alignment 1, data alignment −4, return-address column 30 on every machine (no FDE names it) | 13, 1 |
+  | `.debug_macro` (v5, and GNU v4 in v2–v4 outputs) | `u16(V) 00 02 00`, then `L−7` bytes `78` (`x`), then `00 00`: version `V` (5, or 4 for a v2–v4 unit), flags 0, one `DW_MACRO_undef` at line 0 whose inline string fills the range, its NUL, the 0 that ends the unit | 7, 1 |
+  | `.debug_macinfo` (v2–v4) | `L` zero bytes (each ends a list) | 1, 1 |
   | `.debug_aranges` | none: rewritten whole (IN-54) | — |
+  | `.debug_str`, `.debug_line_str` | none: dead strings stay (IN-56) | — |
+
+  The version of a neutral form is the writer's choice, not its
+  neighbours': a dead unit keeps its own version (IN-51), allotment
+  slack and remainders (which never were a unit) take the v5 form of
+  `.debug_info`, `.debug_line` and `.debug_macro`, and a reader (the
+  verifier) accepts either version's form in any neutral range.
+
+  **`.debug_loc` (R-9 of WP-228).** readelf walks `.debug_loc` from the
+  offsets live units name and reports every byte no unit names: a dead
+  range in the middle of the section gives "There is a hole [0x… -
+  0x…] in .debug_loc section." and one at its end "There are N unused
+  bytes at the end of section .debug_loc". These warnings are a known
+  and accepted difference from the full link: a compiler-written dead
+  contribution (IN-53) gives the same ones, no form avoids them (nothing
+  names the range), and gdb, lldb and `llvm-dwarfdump --verify` read
+  the zero form as the full link (108 of 108 outputs in WP-228 step 1,
+  816 of 816 in part A). The same warning for a dead `.debug_loclists`
+  table last in its section ("There are N unused bytes at the end of
+  section .debug_loclists") is accepted on the same terms until the cut
+  at a section's end is tested.
+
+  The new forms (WP-228 part A: `.debug_loc`, `.debug_macro`,
+  `.debug_macinfo`, `.debug_types`, the units keeping a base, the
+  headerless `.debug_addr`) were placed by `tests/incr-design/wp228/forms.sh`
+  in 816 linked outputs (AArch64 444, x86-64 372; GCC 14, Clang 19 and
+  22, kiln; DWARF 4 and 5): gdb 816 of 816 as the full link,
+  `llvm-dwarfdump --verify` 816 of 816 clean, readelf without a new
+  warning.
+
 
   Measured by R9 (`neutral_chain.sh`, `dwarf_neutral.py`). Neutral
   pieces of 4 to 36 lengths per section, many of them odd, were spliced
@@ -4588,7 +4675,9 @@ file changes or when one of its file's sections moves (IN-25).
   falls back (`debug-name-index`) in v1. g++ `-gpubnames` emits
   `.debug_pubnames`/`.debug_pubtypes`, clang `-gpubnames` emits
   `.debug_names`, and `-ggnu-pubnames` and **every `-gsplit-dwarf`
-  object** emit `.debug_gnu_pubnames`/`.debug_gnu_pubtypes` (R10, both
+  object** emit `.debug_gnu_pubnames`/`.debug_gnu_pubtypes`, except
+  Clang's and kiln's with `-gno-pubnames` after `-gsplit-dwarf` (GCC 14
+  ignores that option there; WP-229) (R10, both
   compilers; R14: 166 of protoc's 168 objects, the other two empty, and
   kiln++ 1.2.1). [later, WP-065, ordered into S5 because of split DWARF]
   either leave the GNU index out of incremental-mode outputs or
@@ -4609,11 +4698,16 @@ file changes or when one of its file's sections moves (IN-25).
   - type units, DWARF 4: a `.debug_types` section;
   - type units, DWARF 5: a `.debug_info` unit of type `DW_UT_type`
     (0x02) or `DW_UT_split_type` (0x06), in COMDAT groups;
-  - split DWARF, DWARF 5: a unit of type `DW_UT_skeleton` (0x04);
+  - split DWARF, DWARF 5: a unit of type `DW_UT_skeleton` (0x04),
+    handled (IN-51);
   - split DWARF, DWARF 4: the header cannot tell (a plain compile unit
-    with `DW_AT_GNU_dwo_name`). Such objects always carry
-    `.debug_gnu_pubnames` (above), so IN-55 catches them first. A
-    DWARF 4 object with `.debug_addr` is also treated as split.
+    with `DW_AT_GNU_dwo_name`). Such a unit is handled as a compile
+    unit. Its file has a non-empty `.debug_addr` exactly when the unit
+    names an address table (`DW_AT_GNU_addr_base`): every GCC, Clang
+    and kiln object with code or data (WP-229 §3). A GCC unit with
+    neither has no `.debug_addr` and no address base. Clang and kiln
+    with `-gsplit-dwarf -gno-pubnames` write no GNU name index, so the
+    index does not detect it (WP-229 refutes "always carry").
   *Test:* R10's 18 configurations in L10, each reporting its reason.
 - **IN-56 [v1] Strings.** `.debug_str` and `.debug_line_str` are merged
   sections: new strings are appended (S-110), dead ones stay. A neutralized
@@ -4833,7 +4927,7 @@ update), reported as `incremental: full (<reason>)` (IN-10). With
 | `dynamic-changed` | `DT_NEEDED`'s order changes or `.dynamic`'s spares run out (IN-42) | v1 |
 | `debug-compaction` | IN-57 | v1; [later] the debug-only rewrite |
 | `debug-name-index` | IN-55 | v1; [later] neutralized sets |
-| `debug-unit-kind` | a changed file has type units or split-DWARF skeletons (IN-55a) | v1; [later] after S5's tests |
+| `debug-unit-kind` | a changed file has type units (until WP-228 part B), a partial unit, a `.dwo` section (`-gsplit-dwarf=single`), or an unreadable unit header (IN-55a) | v1; [later] after S5's tests |
 | `input-changed` | a file the update read is not the file change detection judged: the descriptor's `fstat` after the read (input.md §11.5) differs from the judged tuple, or the update read an inode it did not judge (IN-28a condition 2; the review's m3); WP-207: every input an update reads for a refill, a placement, a drawn-in file or a newly extracted member is checked so (IN-75, IN-71b) | permanent (WP-064a, on the test path; an update that reads no unchanged input meets it only for the files it reads) |
 | `state-collision` | the capture of an incremental-mode link finds two different merged fragments with one `FRAGS` key (out, class, hash) (IN-18e, WP-239 R-2): the link is written, its stderr carries this `incremental:` line, no state is written, and the next link is a full one | permanent (a 128-bit hash collision; tested by an injected collision) |
 | `state-limit` | the capture of an incremental-mode link finds a datum past its stored column: an `.eh_frame` chunk past `u32` (`FILES`' eh columns, IN-18e, WP-239 S4-3): the link is written, no state is written, the next link is a full one | permanent for that output |
