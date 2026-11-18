@@ -1,23 +1,29 @@
 # WIP: WP-228 (G-1), debug information in an incremental update
 
-Step 1 (design with experiments) DONE and handed back; step 2 waits for the
-supervisor's ruling on the record `spec/landed/incr/WP-228.md` "Step 1"
-(rulings R-1..R-10 in its §0).
+Step 1 DONE and ruled (`/Volumes/AgentWork/mortar-helper/briefs/wp-228-rulings.md`).
+NOW: step 2, **Part A only** (IN-51b text, neutral.rs forms with tool
+tests, the 17-byte table as the LAST commit, plumb findings per form).
+Part B (R-1 commit, R-2 seam commit, `update/debug.rs`) waits for the
+supervisor's word and a new base (batch 14).
 
-Done (step 1):
-- item 1's survey: `tests/incr-design/wp228/survey.sh`, `elfdbg.py`.
-- `place.py` (hand-made neutralization of a dead file's debug contributions,
-  incl. `.debug_types` with a type-unit abbreviation table; the edited map
-  for plumb), `emulate.sh` (S1-S5 x variants; readelf, llvm-dwarfdump
-  --verify, gdb, lldb, xtask plumb), `tally.py` (DIFF classes),
-  `measure.py` + `protoc.sh` (item 5). Results in the record §5, §6.1.
-- No Rust changed in `crates/`.
+Done (part A):
+- `crates/mortar_image/src/neutral.rs`: forms of `.debug_loclists`,
+  `.debug_loc`, `.debug_frame`, `.debug_addr`, `.debug_macro`,
+  `.debug_macinfo` in `unit` (signature unchanged), new `info_addr_base`,
+  `type_unit`, `type_signature`, `ABBREV_TABLE_ADDR_BASE`,
+  `ABBREV_TYPE_UNIT`; exact-byte tests; `emit_forms` (ignored) for scripts.
+- `place.py --rust=BIN` takes every form from neutral.rs; `emulate.sh`
+  `RUST_BIN`, `VARIANTS` (adds `v4`); `forms.sh` the batch driver.
 
-Next (step 2, after the ruling): fill `crates/mortar_incr/src/update/debug.rs`
-(`debug::place`), `crates/mortar_image/src/neutral.rs`, tests in
-`crates/mortar_incr/tests/update_debug.rs`, per the rulings; seam diffs in
-the record §3.3 need the supervisor's word first.
+Next:
+1. `forms.sh` batches (scratch `.build/target-wp-154/wp228/a2/`), tally,
+   plumb findings per form with rule ids.
+2. Record: "Step 2, part A" section in `spec/landed/incr/WP-228.md`
+   (IN-51b sentences, verdicts, findings).
+3. Gate before the last commit (quick ci, linktest, census, fmt, clippy,
+   static-identical, incr-update).
+4. LAST commit: the 17-byte table (`neutral::ABBREV_TABLE` 16 bytes,
+   `mortar_layout::slack::ABBREV_TABLE` 17); static-identical rows listed;
+   lane with and without it; forms rerun on the types batch.
 
-Resume: scratch `/Volumes/AgentWork/mortar-helper/.build/target-wp-154/wp228`
-(logs only now; rerun `emulate.sh OUTDIR CONFIG...` to regenerate outputs).
-Run scripts in the background with a load wait (< 12).
+Resume: scripts run in the background with a load wait (< 12).

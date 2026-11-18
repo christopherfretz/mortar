@@ -261,7 +261,9 @@ def main():
         if o.startswith('--form-version='):
             FORMV = int(o.split('=', 1)[1])
     if RUST is not None:
-        assert rust('table compile') == ABBREV, 'the compile-unit table'
+        # neutral.rs's table: the compile-unit abbreviation first (8 bytes;
+        # 16 with the type unit's after the 17-byte table's commit)
+        assert rust('table compile')[:8] == ABBREV, 'the compile-unit table'
         ABBREV_ADDR = rust('table addrbase')
         # the 17-byte table: both abbreviations and the 0 ending it
         ABBREV_TYPE = ABBREV + rust('table type') + b'\0'
