@@ -632,3 +632,57 @@ fn dwarf64_unit_in_changed_file_is_debug_unit_kind() {
     }
     assert!(ran > 0 || !tools_required(), "no compiler");
 }
+
+// spec: WP-228 B3-1 (IN-55a): a changed file with type units
+// (`-fdebug-types-section`: `.debug_types` in DWARF 4, `DW_UT_type` units
+// in COMDAT `.debug_info` groups in DWARF 5) is `debug-unit-kind` through
+// the classifier, before `place`'s R-5 could run; real g++ and clang++
+// objects, both 64-bit targets; the same source without the flag is
+// handled.
+#[test]
+fn type_units_in_changed_file_are_debug_unit_kind() {
+    use mortar_core::incr::IncrReason;
+    use mortar_incr::update::split::classify_object;
+    use mortar_testutil::target::Arch;
+    use mortar_testutil::{DEFAULT_TIMEOUT, Scratch, run_with, tool, tools_required};
+    let dir = Scratch::new("wp228-type-units");
+    let src = dir.write(
+        "a.cc",
+        "struct Shape { int sides; long area; virtual ~Shape() {} };\n\
+         template <class T> struct Box { T v; T get() const { return v; } };\n\
+         int use(Shape *s) { Box<long> b{s->area}; return s->sides + int(b.get()); }\n",
+    );
+    let mut ran = 0;
+    for arch in [Arch::Aarch64, Arch::X86_64] {
+        let gxx = arch.tool("g++").map(|g| (g, Vec::new()));
+        let clang = tool("clang++").map(|c| (c, arch.clang_args()));
+        for (cc, pre) in [gxx, clang].into_iter().flatten() {
+            for v in ["-gdwarf-4", "-gdwarf-5"] {
+                for types in [true, false] {
+                    let obj = dir.join("a.o");
+                    let mut c = std::process::Command::new(&cc);
+                    c.current_dir(dir.path()).args(&pre).args(["-g", v, "-O0", "-c"]);
+                    if types {
+                        c.arg("-fdebug-types-section");
+                    }
+                    c.arg(&src).arg("-o").arg(&obj);
+                    let o = run_with(&mut c, b"", DEFAULT_TIMEOUT);
+                    assert!(o.success(), "{} {v}: {}", cc.display(), o.stderr_text());
+                    let bytes = std::fs::read(&obj).unwrap();
+                    let object = mortar_elf::Object::parse(&bytes).unwrap();
+                    let got = classify_object(&object);
+                    let label =
+                        format!("{} {} {v} types {types}: {got:?}", arch.name(), cc.display());
+                    if types {
+                        assert!(matches!(&got, Err(IncrReason::DebugUnitKind(_))), "{label}");
+                    } else {
+                        assert!(got.is_ok(), "{label}");
+                    }
+                    ran += 1;
+                }
+            }
+        }
+    }
+    eprintln!("[wp228] type units: {ran} objects classified");
+    assert!(ran > 0 || !tools_required(), "no compiler");
+}
